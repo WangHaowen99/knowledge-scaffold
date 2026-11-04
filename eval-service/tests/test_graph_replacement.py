@@ -7,7 +7,7 @@ from neo4j.exceptions import ServiceUnavailable
 
 from evaluation.core import Failure, Identity
 from evaluation.data_sources import DataSources
-from evaluation.graph_import import GraphImports, graph_scope
+from evaluation.graph_import import GraphImports, graph_scope, import_state
 from test_evaluation import environment, wait
 
 
@@ -56,22 +56,31 @@ class Graph:
                 self.edges = deepcopy(graph.edges)
                 self.marker = deepcopy(graph.marker)
                 self.committed = False
+                self.bookkeeping = False
             def __enter__(self): return self
             def __exit__(self, *args):
                 if not self.committed: graph.rollbacks += 1
             def commit(self):
                 graph.nodes, graph.edges, graph.marker = self.nodes, self.edges, self.marker
                 self.committed = True
-                graph.commits += 1
+                graph.commits += 0 if self.bookkeeping else 1
                 if graph.lose_commit:
                     graph.lose_commit = False
                     raise ServiceUnavailable('Synthetic lost acknowledgement')
             def run(self, query, **params):
                 graph.calls.append((query, params))
+                if 'SET m.graph_snapshot' in query:
+                    self.marker = {**self.marker, 'snapshot': params['snapshot']}
+                    self.bookkeeping = True
+                    return Result()
+                if 'SET m.run_id' in query and 'MATCH (m:' in query:
+                    self.marker = {**self.marker, 'run_id': params['run_id']}
+                    return Result()
                 if 'MATCH (m:' in query:
                     return Result([self.marker] if self.marker else [])
                 if 'MERGE (m:' in query:
-                    self.marker = {'run_id': params['run_id'], 'fingerprint': params['fingerprint']}
+                    self.marker = {'run_id': params['run_id'], 'fingerprint': params['fingerprint'],
+                                   'data_fingerprint': params['data_fingerprint']}
                     return Result()
                 scoped = {key for key, node in self.nodes.items()
                           if node.get('evaluation_scope') == params['workspace'] and node.get('knowledge_package_id') == params['ontology']}
@@ -79,8 +88,10 @@ class Graph:
                 boundary = {key for key, (a, b) in self.edges.items() if (a in scoped) != (b in scoped)}
                 if 'count(n)' in query: return Result([{'total': len(scoped)}])
                 if 'count(r)' in query: return Result([{'total': len(boundary if 'coalesce' in query else internal)}])
-                if 'RETURN elementId(n)' in query: return Result([{'id': key} for key in sorted(scoped)])
-                if 'RETURN elementId(r)' in query: return Result([{'id': key} for key in sorted(internal)])
+                if 'RETURN elementId(n)' in query:
+                    return Result([{'id': key, 'kind': [], 'properties': self.nodes[key]} for key in sorted(scoped)])
+                if 'RETURN elementId(r)' in query:
+                    return Result([{'id': key, 'kind': 'related', 'properties': {}} for key in sorted(internal)])
                 if 'DELETE r' in query:
                     assert 'a.`evaluation_scope`=$workspace AND a.`knowledge_package_id`=$ontology' in query
                     assert 'b.`evaluation_scope`=$workspace AND b.`knowledge_package_id`=$ontology' in query
@@ -112,11 +123,11 @@ def graph(monkeypatch):
     return value
 
 
-def preparation(client, name='prepare_graph'):
+def preparation(client, name='prepare_graph', content=b'id,value\nitem_0001,2\n'):
     connection = {'uri': 'bolt://service.example.net:7687', 'database': 'neo4j', 'username': 'operator_a',
                   'password': 'synthetic-invalid-password', 'workspace_property': 'evaluation_scope',
                   'workspace_value': 'workspace_demo', 'ontology_property': 'knowledge_package_id'}
-    uploaded = client.post('/evaluation/api/inputs', files={'file': ('items.csv', b'id,value\nitem_0001,2\n', 'text/csv')}).json()
+    uploaded = client.post('/evaluation/api/inputs', files={'file': ('items.csv', content, 'text/csv')}).json()
     source = client.post('/evaluation/api/data-sources', json={
         'name': 'Synthetic graph', 'mode': 'connection', 'provider': 'neo4j', 'connection': connection,
         'import_data': True, 'input_ids': [uploaded['id']],
@@ -366,3 +377,125 @@ def test_resuming_after_a_later_import_refuses_to_query_replaced_graph_data(envi
         time.sleep(.02)
     assert state['error']['code'] == 'graph_scope_changed'
     assert len(deps.submissions) == count and graph.commits == 1
+
+
+def finish_first_import(client, deps):
+    consumer(deps)
+    query, intent = preparation(client)
+    started = client.post('/evaluation/api/runs', json={**intent, 'graph_check_id': check(client, query)['id'], 'replace_existing_graph': True})
+    assert wait(client, started.json()['id'])['status'] == 'completed'
+    return started.json()['id']
+
+
+def second_run(client, name, content=b'id,value\nitem_0001,2\n'):
+    query, intent = preparation(client, name, content)
+    return query, {**intent, 'request_id': name + '_run'}
+
+
+def test_unchanged_data_is_reused_without_deleting_or_importing(environment, graph):
+    client, app, deps, cfg = environment
+    finish_first_import(client, deps)
+    nodes, edges = deepcopy(graph.nodes), deepcopy(graph.edges)
+    query, intent = second_run(client, 'prepare_same')
+    inspected = check(client, query)
+    assert inspected['import_state'] == 'unchanged' and inspected['node_count'] == 1
+    graph.calls.clear()
+    started = client.post('/evaluation/api/runs', json={**intent, 'graph_check_id': inspected['id']})
+    assert started.status_code == 202, started.text
+    assert wait(client, started.json()['id'])['status'] == 'completed'
+    assert graph.nodes == nodes and graph.edges == edges
+    assert not any('DELETE' in sql or sql.startswith('UNWIND') for sql, _ in graph.calls)
+    assert graph.marker['run_id'] == started.json()['id']
+
+
+def test_changed_data_asks_before_replacing(environment, graph):
+    client, app, deps, cfg = environment
+    finish_first_import(client, deps)
+    query, intent = second_run(client, 'prepare_changed', b'id,value\nitem_0002,3\n')
+    inspected = check(client, query)
+    assert inspected['import_state'] == 'data_changed'
+    refused = client.post('/evaluation/api/runs', json={**intent, 'graph_check_id': inspected['id']})
+    assert refused.status_code == 409 and refused.json()['code'] == 'graph_confirmation_required'
+    assert 'new_item_0001' in graph.nodes
+    started = client.post('/evaluation/api/runs', json={**intent, 'graph_check_id': inspected['id'], 'replace_existing_graph': True})
+    assert wait(client, started.json()['id'])['status'] == 'completed'
+    assert 'new_item_0002' in graph.nodes and 'new_item_0001' not in graph.nodes
+
+
+def test_graph_edited_after_import_is_not_reused(environment, graph):
+    client, app, deps, cfg = environment
+    finish_first_import(client, deps)
+    graph.nodes['late_node'] = dict(graph.nodes['new_item_0001'])
+    query, intent = second_run(client, 'prepare_edited')
+    inspected = check(client, query)
+    assert inspected['import_state'] == 'graph_changed'
+    refused = client.post('/evaluation/api/runs', json={**intent, 'graph_check_id': inspected['id']})
+    assert refused.status_code == 409 and refused.json()['code'] == 'graph_confirmation_required'
+
+
+def test_scope_without_import_receipt_asks_before_replacing(environment, graph):
+    client, app, deps, cfg = environment
+    query, intent = preparation(client)
+    assert check(client, query)['import_state'] == 'unrecorded'
+
+
+def test_check_before_preparation_cannot_claim_data_is_unchanged(environment, graph):
+    client, app, deps, cfg = environment
+    query, intent = preparation(client)
+    assert check(client, {**query, 'preparation_id': ''})['import_state'] == 'unknown'
+
+
+def test_graph_changing_after_reuse_was_confirmed_stops_without_writing(environment, graph):
+    client, app, deps, cfg = environment
+    finish_first_import(client, deps)
+    query, intent = second_run(client, 'prepare_race')
+    inspected = check(client, query)
+    assert inspected['import_state'] == 'unchanged'
+    commits = graph.commits
+
+    def write_late_node():
+        graph.nodes.update(late_node=dict(graph.nodes['new_item_0001']))
+    graph.before_write = write_late_node
+    started = client.post('/evaluation/api/runs', json={**intent, 'graph_check_id': inspected['id']}).json()
+    result = wait(client, started['id'])
+    assert result['status'] == 'interrupted' and result['error']['code'] == 'graph_scope_changed'
+    assert graph.commits == commits and not any('DELETE' in sql for sql, _ in graph.calls[-5:])
+
+
+@pytest.mark.parametrize(('marker', 'state'), [
+    ({'fingerprint': 'import_b', 'data_fingerprint': 'data_a', 'snapshot': 'snapshot_a'}, 'mapping_changed'),
+    ({'fingerprint': 'import_b', 'data_fingerprint': 'data_b', 'snapshot': 'snapshot_a'}, 'data_changed'),
+    # Receipts written before the data was recorded separately cannot name the cause.
+    ({'fingerprint': 'import_b', 'snapshot': 'snapshot_a'}, 'data_changed'),
+    ({'fingerprint': 'import_a', 'data_fingerprint': 'data_a', 'snapshot': 'snapshot_a'}, 'unchanged'),
+    ({'fingerprint': 'import_a', 'data_fingerprint': 'data_a'}, 'graph_changed'),
+])
+def test_import_state_names_what_differs_from_the_last_import(marker, state):
+    counts = {'node_count': 2, 'boundary_relationship_count': 0, 'snapshot': 'snapshot_a'}
+    assert import_state(counts, marker, 'import_a', 'data_a') == state
+
+
+def test_edited_property_after_import_is_not_reused(environment, graph):
+    client, app, deps, cfg = environment
+    finish_first_import(client, deps)
+    graph.nodes['new_item_0001'] = {**graph.nodes['new_item_0001'], 'value': '999'}
+    query, intent = second_run(client, 'prepare_property')
+    inspected = check(client, query)
+    assert inspected['import_state'] == 'graph_changed'
+    assert '999' not in str(inspected)
+    refused = client.post('/evaluation/api/runs', json={**intent, 'graph_check_id': inspected['id']})
+    assert refused.status_code == 409 and refused.json()['code'] == 'graph_confirmation_required'
+
+
+def test_cross_scope_relationship_after_import_is_not_reused(environment, graph):
+    client, app, deps, cfg = environment
+    finish_first_import(client, deps)
+    graph.edges['late_cross_edge'] = ('new_item_0001', 'other_workspace')
+    query, intent = second_run(client, 'prepare_boundary')
+    inspected = check(client, query)
+    assert inspected['import_state'] == 'graph_changed' and inspected['boundary_relationship_count'] == 1
+    for confirmed in (False, True):
+        refused = client.post('/evaluation/api/runs', json={**intent, 'graph_check_id': inspected['id'],
+                                                           'replace_existing_graph': confirmed})
+        assert refused.status_code == 409 and refused.json()['code'] == 'graph_boundary_conflict'
+    assert 'late_cross_edge' in graph.edges

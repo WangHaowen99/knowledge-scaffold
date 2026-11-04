@@ -233,6 +233,8 @@ Hub 不可用时发布失败；Hub 已提交、本地关联尚未写入时提示
 
 建模备份包含 `hub-tasks/` 中的主体包关联、冻结发布输入及恢复记录，不保存用户令牌；Hub 卷单独备份。发布门槛继续提示资料分析、对象提取、操作提取和质量检查；示例数据、场景验证及可选步骤不阻塞发布。带发布副作用的 GET `export?scope=package` 已取消，应先 POST 发布，再下载指定版本。
 
+发布前结构自检：发布检查和提交 Hub 前，都会按与正式发布相同的参数导出知识包，再用 consumer 自己的导入规则检查。consumer 导入时会拒绝的包（数量或大小超限、别名冲突、文件名只差大小写、求解布局错误等）列在发布检查的「知识包结构」一栏，不能降级发布；提交时发现问题则返回 `package_structure_invalid`，不会向 Hub 预留版本。规则是 consumer 上游代码的副本，位于 `backend/app/services/consumer_package_rules/`，由人工同步，来源与同步步骤见其中的 `PROVENANCE.md`。部署调整了 consumer 的数量上限时，要在本服务设置同名环境变量：`ONTOLOGY_OBJECT_MAX_COUNT`（默认 200）、`ONTOLOGY_OPERATION_MAX_COUNT`（默认 100）、`ENTITY_ATTRIBUTE_MAX_COUNT`（默认 100）、`ONTOLOGY_OPERATION_MAX_CHARS`（默认 15000）。
+
 
 ## 独立评测入口（eval1）
 
@@ -243,6 +245,8 @@ Hub 不可用时发布失败；Hub 已提交、本地关联尚未写入时提示
 - 直连（默认）：未设置时，浏览器打开与建模页面同主机的 `http://<主机>:8090/evaluation/`，整栈同机部署无需配置。评测在其他主机、端口或经 HTTPS 时设为完整地址（如 `http://eval.example.com:8090/evaluation/`），须为 http(s)、不含账号和查询参数，路径固定为 `/evaluation/`。点击评测时打开新窗口，登录经 `postMessage` 只交给该地址的来源；评测侧的来源限制见评测服务说明。
 
 默认全栈 `bash deploy/deploy.sh` 包含评测；仅部署建模不会启动评测。也可从仓库根执行 `bash deploy/deploy.sh --eval-only` 独立部署评测，并按说明注入受保护的运行配置。健康检查返回 404 时检查路由，502/503 时检查评测上游，返回 HTML 时检查是否误入建模页面回退。正确响应应为 `{"status":"ok","service":"evaluation"}`。
+
+求解知识包（启用了求解契约）发布不再要求先通过端到端验证：发布只受求解契约静态检查与结构自检约束，发布检查中须勾选“求解能力尚未经端到端验证”的确认，后端未确认时返回 `solver_validation_acknowledgement_required`（409）；当前求解契约修订最近一次求解验证已通过时免确认。MCP 发布遵守同一规则：`preview_package_publish` 返回 `solver.requires_acknowledgement`，需要确认时 `publish_package_version` 须带 `solver_unverified_acknowledged: true`，否则返回 `SOLVER_VALIDATION_ACKNOWLEDGEMENT_REQUIRED`（409）。发布后在「已发布版本（知识包评测）」或求解模型面板点“去评测”，在评测页面以“求解验证”类型对该版本执行；版本列表显示每个版本的求解验证状态与验证报告。每次发布记下当时的求解契约修订（含对象的数据绑定），求解模型面板据此提示当前修改是否已发布并通过验证。建模侧原有的验证用例只读，可导出 JSON 后导入评测页面的求解验证集；保存用例与发起验证的接口返回 `solver_validation_moved`（410）。
 
 进度栏不再提供“数据评测（可选）”和数据源编辑。项目「已发布版本」列表提供「评测」入口，仅携带 Hub 包/版本引用跳转生效的评测入口，不自动执行，URL 中不含令牌或项目 ID。未配置独立评测时明确提示，不回退到 Core。
 

@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import {
   ACTIVE,
+  RUN_TYPES,
   STATUS,
+  isSolverRun,
   needsAttention,
   optimizationTag,
   packageName,
@@ -67,7 +69,8 @@ function PackageVersionCell({ run }) {
     <td data-label="知识包版本">
       <span className="version-tag" title={base ? undefined : `基础版本 ID：${baseId || '未知'}`}>
         {base || '—'}
-      </span>
+      </span>{' '}
+      {isSolverRun(run) && <Badge tone="blue">{RUN_TYPES.solver}</Badge>}
     </td>
   );
 }

@@ -1,5 +1,7 @@
 """Read-only graph scope checks and explicitly confirmed, atomic replacement."""
 import hashlib
+import json
+import logging
 import threading
 import time
 
@@ -10,6 +12,7 @@ MAX_NODES = 100000
 MAX_RELATIONSHIPS = 200000
 CHECK_SECONDS = 600
 RECEIPT_LABEL = '_EvaluationGraphImport'
+logger = logging.getLogger(__name__)
 
 
 def graph_scope(connection):
@@ -47,18 +50,22 @@ def snapshot(tx, scope, include_ids=False):
         raise Failure('graph_scope_limit', '图范围超过 10 万个节点或 20 万条关系，请缩小范围后重新检查', 413, 'data_import')
     fingerprint = hashlib.sha256()
     node_ids, relationship_ids = [], []
-    # Only bounded element identifiers are streamed; graph properties never leave the database.
+    # Labels, types and properties only feed the digest, so an edited value is detected; they are never
+    # stored, logged or returned. The node and relationship counts stay bounded as above.
     for kind, query, count, maximum, ids in (
-        ('node', match + ' RETURN elementId(n) AS id ORDER BY id LIMIT $maximum', nodes, MAX_NODES, node_ids),
-        ('relationship', internal + ' RETURN elementId(r) AS id ORDER BY id LIMIT $maximum', relationships,
-         MAX_RELATIONSHIPS, relationship_ids),
+        ('node', match + ' RETURN elementId(n) AS id, labels(n) AS kind, properties(n) AS properties '
+         'ORDER BY id LIMIT $maximum', nodes, MAX_NODES, node_ids),
+        ('relationship', internal + ' RETURN elementId(r) AS id, type(r) AS kind, properties(r) AS properties '
+         'ORDER BY id LIMIT $maximum', relationships, MAX_RELATIONSHIPS, relationship_ids),
     ):
         observed = 0
         for record in tx.run(query, **params, maximum=maximum + 1):
             observed += 1
             if observed > maximum:
                 raise Failure('graph_scope_changed', '图数据在检查期间发生变化，请重新检查并确认', 409, 'data_import')
-            fingerprint.update(canonical([kind, record['id']]).encode())
+            # Temporal and spatial values are not JSON types; their text form is stable.
+            fingerprint.update(json.dumps([kind, record['id'], record['kind'], record['properties']], default=str,
+                                          ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode())
             if include_ids: ids.append(record['id'])
         if observed != count:
             raise Failure('graph_scope_changed', '图数据在检查期间发生变化，请重新检查并确认', 409, 'data_import')
@@ -66,6 +73,40 @@ def snapshot(tx, scope, include_ids=False):
               'snapshot': fingerprint.hexdigest()}
     if include_ids: result['identifiers'] = {'node': node_ids, 'relationship': relationship_ids}
     return result
+
+
+def import_identity(connection, tables, mapping, relations):
+    """Identifies what an import would write: the target scope, the data, the mapping and the relations."""
+    return digest([scope_target(connection), tables, mapping, relations])
+
+
+def data_identity(tables):
+    """The uploaded data alone, so a changed import can be told apart from a changed mapping."""
+    return digest(tables)
+
+
+def import_state(counts, marker, expected, expected_data=''):
+    """How the graph scope compares with the data a prepared run would import."""
+    if not counts['node_count']:
+        return 'empty'
+    if not expected:
+        return 'unknown'
+    if not marker:
+        return 'unrecorded'
+    if marker.get('fingerprint') != expected:
+        # The receipt is keyed by the target scope, so the same data means the mapping or relations changed.
+        # Receipts written before the data was recorded separately cannot tell the two apart.
+        same_data = bool(expected_data) and marker.get('data_fingerprint') == expected_data
+        return 'mapping_changed' if same_data else 'data_changed'
+    # A receipt without a snapshot cannot prove that nothing else wrote to the scope, and an import never
+    # leaves relationships across the scope boundary, so either one means the graph was changed.
+    unchanged = marker.get('snapshot') == counts['snapshot'] and not counts['boundary_relationship_count']
+    return 'unchanged' if unchanged else 'graph_changed'
+
+
+def unchanged_since(current, consent):
+    """The scope still has the snapshot the user confirmed and no relationship across its boundary."""
+    return current['snapshot'] == consent['snapshot'] and not current['boundary_relationship_count']
 
 
 class GraphImports:
@@ -86,25 +127,61 @@ class GraphImports:
         return digest([source.get('id'), source.get('revision'), source.get('input_ids', []),
                        source.get('tables_snapshot'), connection])
 
-    def inspect(self, owner, source, ontology_id, preparation_id=''):
+    def inspect(self, owner, source, ontology_id, preparation_id='', preparation=None):
         from neo4j import GraphDatabase, READ_ACCESS
         from neo4j.exceptions import DriverError, Neo4jError
         connection = self.connection(self.store, source, ontology_id)
         scope = graph_scope(connection)
+        expected = expected_data = ''
+        if preparation:
+            tables = self.store.decrypt(source['tables_snapshot']) if source.get('tables_snapshot') else {}
+            expected = import_identity(connection, tables, preparation.get('mapping'), preparation.get('preview', {}).get('relations', {}))
+            expected_data = data_identity(tables)
         try:
             with GraphDatabase.driver(connection['uri'], auth=(connection.get('username', ''), connection.get('password', '')),
                                       connection_timeout=10) as driver:
                 with driver.session(database=connection.get('database', 'neo4j'), default_access_mode=READ_ACCESS) as session:
                     with session.begin_transaction(timeout=30) as tx:
                         counts = snapshot(tx, scope)
+                        marker = tx.run('MATCH (m:`' + RECEIPT_LABEL + '` {scope_fingerprint:$target}) '
+                                        'RETURN m.import_fingerprint AS fingerprint, m.data_fingerprint AS data_fingerprint, '
+                                        'm.graph_snapshot AS snapshot',
+                                        target=scope_target(connection)).single()
         except (DriverError, Neo4jError, OSError) as exc:
             raise Failure('graph_check_unavailable', '无法检查旧图数据，请检查图库连接与读取权限后重试', 503, 'data_import') from exc
         checked_at = time.time()
         record = self.store.create(owner, 'graph_checks', {
-            **counts, 'fingerprint': self.fingerprint(source, connection), 'preparation_id': preparation_id,
+            **counts, 'import_state': import_state(counts, marker, expected, expected_data),
+            'fingerprint': self.fingerprint(source, connection), 'preparation_id': preparation_id,
             'checked_at': checked_at, 'expires_at': checked_at + CHECK_SECONDS,
         })
-        return {key: record[key] for key in ('id', 'node_count', 'relationship_count', 'boundary_relationship_count', 'expires_at')} | {'scope': scope}
+        public = ('id', 'node_count', 'relationship_count', 'boundary_relationship_count', 'expires_at', 'import_state')
+        return {key: record[key] for key in public} | {'scope': scope}
+
+    def existing_nodes(self, source, ontology_id):
+        """Nodes already in a read-only graph source's scope; None when the source does not name both scope fields.
+
+        Solver validation of such a source reads only data that is already there, so an empty scope cannot pass.
+        """
+        from neo4j import GraphDatabase, READ_ACCESS
+        from neo4j.exceptions import DriverError, Neo4jError
+        connection = self.store.decrypt(source['connection']) if source.get('connection') else {}
+        if not isinstance(connection, dict) or not connection.get('ontology_property'):
+            return None
+        connection = {**connection, 'ontology_value': ontology_id}
+        try:
+            scope = graph_scope(connection)
+        except Failure:
+            return None
+        auth = (connection.get('username', ''), connection.get('password', ''))
+        try:
+            with GraphDatabase.driver(connection.get('uri', ''), auth=auth, connection_timeout=10) as driver:
+                with driver.session(database=connection.get('database', 'neo4j'), default_access_mode=READ_ACCESS) as session:
+                    with session.begin_transaction(timeout=30) as tx:
+                        query = 'MATCH (n) WHERE ' + predicate('n', scope) + ' RETURN count(n) AS total'
+                        return tx.run(query, **parameters(scope)).single()['total']
+        except (DriverError, Neo4jError, OSError) as exc:
+            raise Failure('graph_check_unavailable', '无法检查图中已有数据，请检查图库连接与读取权限后重试', 503, 'data_import') from exc
 
     def authorize(self, owner, prep, check_id, replace_existing):
         if not check_id:
@@ -115,12 +192,14 @@ class GraphImports:
             raise Failure('graph_check_stale', '数据源或知识包范围已变化，请重新检查旧图数据', 409, 'data_import')
         if record['expires_at'] < time.time():
             raise Failure('graph_check_expired', '旧图数据检查已过期，请重新检查并确认', 409, 'data_import')
+        # Unchanged data is reused as it is: nothing gets deleted, so nothing needs confirming.
+        reuse = record.get('import_state') == 'unchanged' and not replace_existing
         if record['boundary_relationship_count']:
             raise Failure('graph_boundary_conflict', '此范围存在跨隔离范围的关系，请先处理这些关系或调整范围', 409, 'data_import')
-        if record['node_count'] and not replace_existing:
+        if record['node_count'] and not replace_existing and not reuse:
             raise Failure('graph_confirmation_required', '发现旧图数据，请确认删除后再导入新数据', 409, 'data_import')
         return {'snapshot': record['snapshot'], 'fingerprint': record['fingerprint'],
-                'replace_existing': replace_existing, 'check_id': check_id}
+                'replace_existing': replace_existing, 'reuse': reuse, 'check_id': check_id}
 
     def ensure_current(self, run_id, source, ontology_id):
         from neo4j import GraphDatabase, READ_ACCESS
@@ -147,7 +226,7 @@ class GraphImports:
             raise Failure('graph_check_required', '本轮缺少有效的图数据范围确认，请重新创建评测并确认', 409, 'data_import')
         objects, edges = self.plan(scope, tables, mapping, relations)
         target = scope_target(connection)
-        import_fingerprint = digest([target, tables, mapping, relations])
+        import_fingerprint = import_identity(connection, tables, mapping, relations)
         params = parameters(scope)
         try:
             with self.guard:
@@ -160,6 +239,15 @@ class GraphImports:
                             if marker and marker['run_id'] == run_id and marker['fingerprint'] == import_fingerprint:
                                 return
                             current = snapshot(tx, scope, include_ids=True)
+                            if consent.get('reuse'):
+                                receipt_matches = bool(marker) and marker['fingerprint'] == import_fingerprint
+                                if not receipt_matches or not unchanged_since(current, consent):
+                                    raise Failure('graph_scope_changed', '图数据在确认后发生变化，请重新创建评测并确认；本次未修改数据', 409, 'data_import')
+                                # The run takes over the receipt, so its later checks see the data as its own.
+                                tx.run('MATCH (m:`' + RECEIPT_LABEL + '` {scope_fingerprint:$target}) SET m.run_id=$run_id',
+                                       target=target, run_id=run_id).consume()
+                                tx.commit()
+                                return
                             if current['snapshot'] != consent['snapshot'] or current['boundary_relationship_count']:
                                 raise Failure('graph_scope_changed', '旧图数据范围已变化，请重新创建评测并确认；本次未替换数据', 409, 'data_import')
                             if current['node_count']:
@@ -180,12 +268,32 @@ class GraphImports:
                             for statement in edges:
                                 tx.run(statement, **params).consume()
                             tx.run('MERGE (m:`' + RECEIPT_LABEL + '` {scope_fingerprint:$target}) '
-                                   'SET m.run_id=$run_id, m.import_fingerprint=$fingerprint',
-                                   target=target, run_id=run_id, fingerprint=import_fingerprint).consume()
+                                   'SET m.run_id=$run_id, m.import_fingerprint=$fingerprint, m.data_fingerprint=$data_fingerprint',
+                                   target=target, run_id=run_id, fingerprint=import_fingerprint,
+                                   data_fingerprint=data_identity(tables)).consume()
                             tx.commit()
+                        self.record_snapshot(session, scope, target, run_id, import_fingerprint)
         except (DriverError, Neo4jError, OSError) as exc:
             raise Failure('graph_import_unavailable', '图数据替换未获确认成功，请检查连接或写入权限后恢复；恢复会先核对导入回执',
                           503, 'data_import') from exc
+
+    @staticmethod
+    def record_snapshot(session, scope, target, run_id, import_fingerprint):
+        """Remember what the committed import left, so a later run can tell the graph is untouched.
+
+        Runs after the commit because element ids are read across transactions. It is best effort:
+        without a snapshot the next run asks before replacing instead of reusing the data.
+        """
+        from neo4j.exceptions import DriverError, Neo4jError
+        try:
+            with session.begin_transaction(timeout=30) as tx:
+                counts = snapshot(tx, scope)
+                tx.run('MATCH (m:`' + RECEIPT_LABEL + '` {scope_fingerprint:$target}) '
+                       'WHERE m.run_id=$run_id AND m.import_fingerprint=$fingerprint SET m.graph_snapshot=$snapshot',
+                       target=target, run_id=run_id, fingerprint=import_fingerprint, snapshot=counts['snapshot']).consume()
+                tx.commit()
+        except (DriverError, Neo4jError, OSError, Failure):
+            logger.warning('Could not record the graph snapshot of a committed import', exc_info=True)
 
     @staticmethod
     def plan(scope, tables, mapping, relations):

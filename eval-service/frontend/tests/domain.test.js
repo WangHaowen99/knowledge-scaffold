@@ -14,6 +14,7 @@ import {
   modelingProjectQueries,
   modelingProjectLabel,
   DEFAULT_CONCURRENCY,
+  MAX_CONCURRENCY,
   modelOptionLabel,
   packageVersions,
   taskRows,
@@ -254,4 +255,56 @@ test('routes and states of consumer feedback runs', () => {
   const review = { status: 'completed', artifacts: { report: 'ready' }, optimization: { status: 'awaiting_review' } };
   assert.equal(feedbackStatus(review).label, '待负责人确认');
   assert.equal(feedbackStatus({ ...review, optimization: { status: 'dismissed', reason: 'Synthetic' } }).hint, 'Synthetic');
+});
+
+import {
+  concurrencyLimits,
+  isSolverRun,
+  parseSolverCases,
+  solverCasePayload,
+  solverCaseRows,
+  assertionNote,
+} from '../src/domain.js';
+
+// Solver validation cases are synthetic.
+test('solver validation runs use their own concurrency defaults', () => {
+  assert.deepEqual(concurrencyLimits('solver'), { default: 1, max: 4 });
+  assert.deepEqual(concurrencyLimits('data'), { default: DEFAULT_CONCURRENCY, max: MAX_CONCURRENCY });
+  assert.equal(isSolverRun({ run_type: 'solver' }), true);
+  assert.equal(isSolverRun({}), false);
+});
+
+test('solver case rows round-trip through the API payload', () => {
+  const cases = [{ id: 'case_1', name: '两个项目', solver_key: 'plan_route', arguments: { items: [1, 2] }, expected_candidate_count: 4 }];
+  const rows = solverCaseRows(cases);
+  assert.equal(rows[0].argumentsText, JSON.stringify({ items: [1, 2] }, null, 2));
+  assert.deepEqual(solverCasePayload(rows), cases);
+  assert.deepEqual(solverCasePayload([{ ...rows[0], expected: '', question: '  ' }]), [
+    { id: 'case_1', name: '两个项目', solver_key: 'plan_route', arguments: { items: [1, 2] } },
+  ]);
+});
+
+test('solver case payload names the first invalid row', () => {
+  const row = { id: 'case_1', name: 'x', solver_key: 'plan_route', argumentsText: '{}', question: '', expected: '' };
+  assert.throws(() => solverCasePayload([{ ...row, argumentsText: '{' }]), /用例 1 的入参不是有效的 JSON/);
+  assert.throws(() => solverCasePayload([{ ...row, argumentsText: '[]' }]), /须为 JSON 对象/);
+  assert.throws(() => solverCasePayload([row, { ...row }]), /用例 2 的标识/);
+  assert.throws(() => solverCasePayload([{ ...row, solver_key: '' }]), /请选择或填写有效的求解操作/);
+  assert.throws(() => solverCasePayload([{ ...row, expected: '1.5' }]), /期望候选数/);
+  assert.throws(() => solverCasePayload([]), /1-20/);
+});
+
+test('solver cases import from an array or a cases object, as exported by modeling', () => {
+  const exported = JSON.stringify({ cases: [{ id: 'legacy_1', name: '旧用例', solver_key: 'plan_route', arguments: { a: 1 } }] });
+  const rows = parseSolverCases(exported);
+  assert.equal(rows[0].id, 'legacy_1');
+  assert.equal(parseSolverCases(JSON.stringify([{ solver_key: 'plan_route', arguments: {} }]))[0].id, 'case_1');
+  assert.throws(() => parseSolverCases('{"items": []}'), /cases 数组/);
+  assert.throws(() => parseSolverCases('not json'), /有效的 JSON/);
+});
+
+test('assertion notes explain candidate counts and failing paths', () => {
+  assert.equal(assertionNote({ name: 'candidate_count', expected: 4, actual: 3 }), '期望 4，实际 3');
+  assert.equal(assertionNote({ name: 'arguments_match', diff: ['items[0].id'] }), 'items[0].id');
+  assert.equal(assertionNote({ name: 'evidence', missing: ['job_id'] }), 'job_id');
 });

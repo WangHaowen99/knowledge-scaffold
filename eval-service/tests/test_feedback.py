@@ -209,6 +209,19 @@ def test_an_owner_reviews_generates_and_confirms_for_modeling(flywheel):
     listed = env.client.get('/evaluation/api/package-evaluations', params={'ontology_id': PACKAGE, 'origin': 'all'}).json()
     assert [entry['origin'] for entry in listed['releases']] == ['consumer_feedback']
     assert env.client.get('/evaluation/api/package-evaluations', params={'ontology_id': PACKAGE}).json()['releases'] == []
+    # A solver validation of the same version is listed beside the feedback run, in its own section.
+    from evaluation.core import Identity, canonical
+    owner = Identity(env.cfg, env.deps).verify('synthetic-user-a')
+    reference = {'ontology_id': PACKAGE, 'release_id': 'release_demo', 'version': '0.1.1'}
+    solver_run = env.app.state.store.create(owner, 'runs', dict(
+        status='completed', run_type='solver', base_ref=reference, package_ref=reference, created_at=1.0, finished_at=2.0))
+    env.app.state.store.put_artifacts(owner, solver_run['id'], 1, {'meta': canonical(dict(
+        revision=1, status='ready', report='ready', suggestions='ready', summary={'total': 1},
+        solver_summary={'total': 1, 'passed': 1, 'failed': 0}))})
+    both = env.client.get('/evaluation/api/package-evaluations', params={'ontology_id': PACKAGE, 'origin': 'all'}).json()
+    assert [entry['origin'] for entry in both['releases']] == ['consumer_feedback']
+    assert [entry['run_id'] for entry in both['solver_releases']] == [solver_run['id']]
+    assert both['solver_releases'][0]['solver_summary']['failed'] == 0 and both['solver_releases'][0]['optimization'] is None
     assert env.client.post(f'/evaluation/api/runs/{rid}/results/0/override', json={
         'verdict': 'fail', 'reason': 'Synthetic', 'revision': ready['revision']}).json()['code'] == 'invalid_state'
     # Modeling writes back the release it published from these suggestions.

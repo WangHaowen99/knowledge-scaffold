@@ -3,7 +3,8 @@ import { Alert, Button, Empty, Input, Modal, Space, Table, Tag, Tooltip, Typogra
 import { api } from '../lib/api';
 import { openEvaluation, prefetchEvaluationEntry } from '../lib/evaluation.js';
 import {
-  EVALUATION_HINT, canReportFailure, hasFeedback, optimizationBlock, processingState, releaseEvaluation, releaseFeedback, writebackNotice,
+  EVALUATION_HINT, SOLVER_VALIDATION_STATES, canReportFailure, hasFeedback, optimizationBlock, processingState, releaseEvaluation,
+  releaseFeedback, releaseSolverValidation, writebackNotice,
 } from '../lib/packageEvaluation.js';
 import { EvaluationReportModal, EvaluationSuggestionsModal, ReasonButton, usePackageEvaluations } from './PackageEvaluationModals.jsx';
 
@@ -68,6 +69,29 @@ export default function PublishedVersionsDialog({ projectId, onClose, onCommand 
     const idle = <Tooltip title={source.report.reason}>{source.idle}</Tooltip>;
     return sourceCell(row, source, false, idle);
   };
+  // 求解验证在发布后的独立评测中进行：只有发布时启用了求解契约、或已有验证记录的版本显示
+  const solverValidation = (row) => {
+    const validation = releaseSolverValidation(evaluations.status, row.release_id);
+    if (!validation) return <Typography.Text type="secondary">—</Typography.Text>;
+    const view = SOLVER_VALIDATION_STATES[validation.state];
+    const target = validation.entry && { runId: validation.entry.run_id, version: row.version, releaseId: row.release_id };
+    return (
+      <Space size={10}>
+        <Tooltip title={validation.reason}>
+          <Tag color={view.color} style={{ margin: 0 }}>{view.label}</Tag>
+        </Tooltip>
+        {target && validation.state !== 'running' && (
+          <Button {...LINK} onClick={() => setReportTarget(target)}>验证报告</Button>
+        )}
+        {['unverified', 'failed'].includes(validation.state) && (
+          <Button {...LINK} onClick={() => openEvaluation(row, { runType: 'solver' }).catch((e) => message.error(e.message))}>
+            去验证
+          </Button>
+        )}
+      </Space>
+    );
+  };
+  const hasSolver = data.releases.some((row) => releaseSolverValidation(evaluations.status, row.release_id));
   const optimized = (command) => {
     setSuggestionsTarget(null);
     setReportTarget(null);
@@ -96,6 +120,7 @@ export default function PublishedVersionsDialog({ projectId, onClose, onCommand 
                 </>
               ) },
               { title: '评测', render: (_, row) => evaluationCell(row) },
+              ...(hasSolver ? [{ title: '求解验证', render: (_, row) => solverValidation(row) }] : []),
               ...(hasFeedback(evaluations.status) ? [{ title: '用户反馈',
                 render: (_, row) => sourceCell(row, releaseFeedback(evaluations.status, row.release_id), true, '—') }] : []),
               { title: '操作', width: 130, render: (_, row) => (

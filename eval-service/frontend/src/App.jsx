@@ -7,6 +7,7 @@ import { TaskCenter } from './TaskCenter.jsx';
 import { Wizard } from './Wizard.jsx';
 import { RunDetail } from './RunDetail.jsx';
 import { CaseEditor } from './CaseEditor.jsx';
+import { SolverCaseEditor } from './SolverCaseEditor.jsx';
 import { SourceEditor } from './SourceEditor.jsx';
 import { JudgeSettings } from './JudgeSettings.jsx';
 import { UserMenu } from './UserMenu.jsx';
@@ -30,6 +31,7 @@ export default function App() {
     [authError, setAuthError] = useState('');
   const [runs, setRuns] = useState([]),
     [sets, setSets] = useState([]),
+    [solverSets, setSolverSets] = useState([]),
     [sources, setSources] = useState([]),
     [loading, setLoading] = useState(false),
     [syncError, setSyncError] = useState(''),
@@ -49,6 +51,7 @@ export default function App() {
     setSession(null);
     setRuns([]);
     setSets([]);
+    setSolverSets([]);
     setSources([]);
     setSyncError('');
     setLastSync(null);
@@ -112,10 +115,11 @@ export default function App() {
   }
   async function refreshDefinitions() {
     const epoch = authEpoch.current;
-    const [s, d] = await Promise.all([allPages('/eval-sets'), allPages('/data-sources')]);
+    const [s, d, v] = await Promise.all([allPages('/eval-sets'), allPages('/data-sources'), allPages('/solver-sets')]);
     if (epoch === authEpoch.current) {
       setSets(s);
       setSources(d);
+      setSolverSets(v);
     }
   }
   useEffect(() => {
@@ -285,7 +289,7 @@ export default function App() {
             <button
               key={page}
               title={label}
-              className={`nav-item ${route.page === page || (page === 'tasks' && ['run', 'new'].includes(route.page)) ? 'selected' : ''}`}
+              className={`nav-item ${route.page === page || (page === 'tasks' && ['run', 'new'].includes(route.page)) || (page === 'sets' && route.page === 'solverSets') ? 'selected' : ''}`}
               aria-current={route.page === page ? 'page' : undefined}
               onClick={() => navigate(path)}
             >
@@ -348,6 +352,7 @@ export default function App() {
           <Wizard
             key={`${session.subject}-${route.from || ''}-${route.release || ''}`}
             sets={sets}
+            solverSets={solverSets}
             sources={sources}
             runs={runs}
             session={session}
@@ -369,12 +374,13 @@ export default function App() {
             onChanged={refreshRuns}
           />
         )}
-        {['sets', 'sources'].includes(route.page) && (
+        {['sets', 'solverSets', 'sources'].includes(route.page) && (
           <Definitions
             key={route.page}
             kind={route.page}
             id={route.id}
-            items={route.page === 'sets' ? sets : sources}
+            items={{ sets, solverSets, sources }[route.page]}
+            counts={{ sets: sets.length, solverSets: solverSets.length }}
             refresh={refreshDefinitions}
             navigate={navigate}
             registerDirty={(value) => {
@@ -502,9 +508,14 @@ function Login({ onLogin, error: authError, returnToRun }) {
   );
 }
 
-function Definitions({ kind, id, items, refresh, navigate, registerDirty }) {
-  const sets = kind === 'sets',
-    path = sets ? '/eval-sets' : '/data-sources';
+function Definitions({ kind, id, items, counts, refresh, navigate, registerDirty }) {
+  const solver = kind === 'solverSets',
+    sets = kind === 'sets',
+    cases = solver || sets,
+    path = solver ? '/solver-sets' : sets ? '/eval-sets' : '/data-sources',
+    label = solver ? '求解验证集' : sets ? '评测集' : '数据源',
+    pageTitle = cases ? '评测集' : '数据源',
+    editorLabel = cases ? label : '数据源配置';
   const [editing, setEditing] = useState(null),
     [deleting, setDeleting] = useState(null),
     [search, setSearch] = useState(''),
@@ -542,11 +553,11 @@ function Definitions({ kind, id, items, refresh, navigate, registerDirty }) {
       return (
         <>
           <Breadcrumb
-            parent={sets ? '评测集' : '数据源'}
-            current={`${id === 'new' ? '新建' : '编辑'}${sets ? '评测集' : '数据源配置'}`}
+            parent={pageTitle}
+            current={`${id === 'new' ? '新建' : '编辑'}${editorLabel}`}
             onBack={closeEditor}
           />
-          <Heading title={`${id === 'new' ? '新建' : '编辑'}${sets ? '评测集' : '数据源配置'}`} />
+          <Heading title={`${id === 'new' ? '新建' : '编辑'}${editorLabel}`} />
           {loadError ? (
             <Empty
               title="配置暂时无法加载"
@@ -558,6 +569,20 @@ function Definitions({ kind, id, items, refresh, navigate, registerDirty }) {
             <Skeleton />
           )}
         </>
+      );
+    if (solver)
+      return (
+        <SolverCaseEditor
+          key={id}
+          record={record.id ? record : null}
+          onDirty={registerDirty}
+          onDiscard={() => dirtyRef.current(false)}
+          onClose={closeEditor}
+          onSaved={async () => {
+            await refresh();
+            closeEditor();
+          }}
+        />
       );
     return sets ? (
       <CaseEditor
@@ -587,22 +612,41 @@ function Definitions({ kind, id, items, refresh, navigate, registerDirty }) {
   return (
     <>
       <Heading
-        title={sets ? '评测集' : '数据源'}
+        title={pageTitle}
         actions={
           <Button variant="primary" icon="plus" onClick={() => navigate(`${path}/new`)}>
-            新建{sets ? '评测集' : '数据源'}
+            新建{label}
           </Button>
         }
       >
-        {sets
-          ? '管理可复用的问题与参考答案，已有任务保留原用例快照。'
-          : '保存并复用连接与数据文件，按 Provider 配置评测数据源。'}
+        {solver
+          ? '管理可复用的求解验证用例，已有任务保留原用例快照。'
+          : sets
+            ? '管理可复用的问题与参考答案，已有任务保留原用例快照。'
+            : '保存并复用连接与数据文件，按 Provider 配置评测数据源。'}
       </Heading>
       <section className="panel table-panel">
         <div className="table-toolbar">
-          <strong>
-            {items.length} 个{sets ? '评测集' : '数据源'}
-          </strong>
+          {cases ? (
+            <div className="tabs">
+              {[
+                ['sets', '/eval-sets', '数据评测集'],
+                ['solverSets', '/solver-sets', '求解验证集'],
+              ].map(([value, target, title]) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={kind === value ? 'selected' : ''}
+                  aria-pressed={kind === value}
+                  onClick={() => navigate(target)}
+                >
+                  {title} {counts[value]}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <strong>{items.length} 个数据源</strong>
+          )}
           <label className="search-input">
             <Icon name="search" />
             <input
@@ -615,7 +659,7 @@ function Definitions({ kind, id, items, refresh, navigate, registerDirty }) {
         </div>
         {!filtered.length ? (
           <Empty
-            title={items.length ? '没有匹配的配置' : `还没有${sets ? '评测集' : '数据源'}`}
+            title={items.length ? '没有匹配的配置' : `还没有${label}`}
             action={
               <Button icon="plus" onClick={() => navigate(`${path}/new`)}>
                 新建配置
@@ -630,7 +674,7 @@ function Definitions({ kind, id, items, refresh, navigate, registerDirty }) {
               <thead>
                 <tr>
                   <th>名称</th>
-                  <th>{sets ? '用例数量' : '类型与范围'}</th>
+                  <th>{cases ? '用例数量' : '类型与范围'}</th>
                   <th>修订</th>
                   <th>操作</th>
                 </tr>
@@ -642,7 +686,7 @@ function Definitions({ kind, id, items, refresh, navigate, registerDirty }) {
                       <strong>{item.name}</strong>
                     </td>
                     <td>
-                      {sets ? `${item.case_count ?? item.cases?.length ?? 0} 条用例` : sourceSummary(item)}
+                      {cases ? `${item.case_count ?? item.cases?.length ?? 0} 条用例` : sourceSummary(item)}
                     </td>
                     <td>r{item.revision}</td>
                     <td>
@@ -667,7 +711,7 @@ function Definitions({ kind, id, items, refresh, navigate, registerDirty }) {
       </section>
       {deleting && (
         <Confirm
-          title={`删除${sets ? '评测集' : '数据源'}定义？`}
+          title={`删除${label}定义？`}
           label="删除定义"
           danger
           onClose={() => setDeleting(null)}
@@ -677,7 +721,7 @@ function Definitions({ kind, id, items, refresh, navigate, registerDirty }) {
           }}
         >
           <p>
-            删除“{deleting.name}”的已保存定义{sets ? '' : '与连接凭据'}
+            删除“{deleting.name}”的已保存定义{cases ? '' : '与连接凭据'}
             。已有任务仍使用原配置快照，历史报告不会被删除。
           </p>
         </Confirm>

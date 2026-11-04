@@ -385,6 +385,74 @@ def test_package_publish_preview_confirm_status_and_stale_guard(env, monkeypatch
     assert exc.value.code == "PUBLISH_REQUEST_CONFLICT"
 
 
+def solver_publish_env(env, monkeypatch, verified):
+    """A publishable project whose solver contract needs validation; publish records its keyword arguments."""
+    from types import SimpleNamespace
+    manager, meta, _ = env
+    principal = {"project_id": meta["id"], "token_id": "5" * 32, "username": "operator_a",
+                 "scopes": ["package.publish"], "hub_issuer": "https://example.com", "hub_sub": "operator_a"}
+    monkeypatch.setattr(package_publish.knowledge_hub, "configured", lambda: True)
+    monkeypatch.setattr(manager, "package_publish_readiness", lambda pid: {"ready": True, "missing_stages": []})
+    monkeypatch.setattr(manager, "_ensure_solver_publishable", lambda pid: None)
+    monkeypatch.setattr(manager, "solver_check", lambda pid: SimpleNamespace(needs_validation=True, revision="sha256:" + "c" * 64))
+    monkeypatch.setattr(package_publish.knowledge_hub, "source_state", lambda *args: ({}, "a" * 64))
+    monkeypatch.setattr(package_publish.hub_packages, "check_delegation", lambda *args: {"active": True})
+    monkeypatch.setattr(package_publish.hub_packages, "association", lambda *args: None)
+    release = {"release_id": "release_verified", "version": "0.1.1"} if verified else None
+    monkeypatch.setattr(package_publish.package_evaluations, "verified_solver_release", lambda *args: release)
+    published = []
+    receipt = {"status": "committed", "version": "0.1.2", "release_id": "release_demo"}
+    monkeypatch.setattr(package_publish.hub_packages, "publish",
+                        lambda *args, **kwargs: published.append(kwargs) or receipt)
+    monkeypatch.setattr(package_publish.tokens, "verify_id", lambda *args: principal)
+    return manager, principal, published
+
+
+def wait_for_publish(manager, principal, job_id):
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        result = package_publish.status(manager, principal, {"job_id": job_id})
+        if result["status"] in {"committed", "failed"}:
+            return result
+        time.sleep(.01)
+    raise AssertionError(result)
+
+
+def test_mcp_publish_requires_the_unverified_solver_acknowledgement(env, monkeypatch):
+    manager, principal, published = solver_publish_env(env, monkeypatch, verified=False)
+    preview = package_publish.preview(manager, principal, {"request_id": "solver_demo"})
+    assert preview["solver"]["requires_acknowledgement"] is True
+    assert "solver_unverified_acknowledged" in preview["display"]["text"]
+    request = {"request_id": "solver_demo", "confirmation_token": preview["confirmation_token"]}
+    with pytest.raises(McpError) as exc:
+        package_publish.start(manager, principal, request)
+    assert exc.value.code == "SOLVER_VALIDATION_ACKNOWLEDGEMENT_REQUIRED" and exc.value.status == 409
+    assert published == []
+    started = package_publish.start(manager, principal, {**request, "solver_unverified_acknowledged": True})
+    assert wait_for_publish(manager, principal, started["job_id"])["status"] == "committed"
+    assert published[0]["acknowledged_by"] == "operator_a" and published[0]["verified_revision"] == ""
+    # Checking the same request again does not ask for the acknowledgement again.
+    assert package_publish.start(manager, principal, request)["status"] == "committed"
+
+
+def test_mcp_publish_of_a_verified_solver_revision_needs_no_acknowledgement(env, monkeypatch):
+    manager, principal, published = solver_publish_env(env, monkeypatch, verified=True)
+    preview = package_publish.preview(manager, principal, {"request_id": "solver_verified_demo"})
+    assert preview["solver"]["requires_acknowledgement"] is False
+    assert "0.1.1" in preview["display"]["text"]
+    started = package_publish.start(manager, principal, {
+        "request_id": "solver_verified_demo", "confirmation_token": preview["confirmation_token"]})
+    assert wait_for_publish(manager, principal, started["job_id"])["status"] == "committed"
+    assert published[0]["acknowledged_by"] == "" and published[0]["verified_revision"] == "sha256:" + "c" * 64
+
+
+def test_publish_tool_accepts_the_solver_acknowledgement_argument():
+    from app.services.onto_mcp.definitions import definitions
+    tool = next(item for item in definitions() if item["name"] == "publish_package_version")
+    assert tool["inputSchema"]["properties"]["solver_unverified_acknowledged"] == {"type": "boolean"}
+    assert "solver_unverified_acknowledged" not in tool["inputSchema"]["required"]
+
+
 def test_package_publish_preview_reports_page_required_stages(env, monkeypatch):
     manager, meta, _ = env
     principal = {"project_id": meta["id"], "token_id": "4" * 32, "username": "operator_a",

@@ -49,6 +49,7 @@ import {
   validationCaseRows,
   validationSourceOptions,
   validationState,
+  VALIDATION_STATES,
 } from './solver-contract-model.js';
 
 const SIDECARS = {
@@ -524,19 +525,15 @@ test('directories that failed to load are listed so saving does not drop them si
   assert.deepEqual(unloadedDirectories(view([operation()], { findings })), ['broken']);
 });
 
-test('validation state follows the gate of the current revision', () => {
-  const status = (extra) => ({ enabled: true, operations: [{ enabled: true }], gate: [], validation: null, ...extra });
+test('validation state only tells whether solver validation follows publication', () => {
+  const status = (extra) => ({ enabled: true, operations: [{ enabled: true }], ...extra });
   assert.equal(validationState({ enabled: false }), 'none');
   assert.equal(validationState(status({ operations: [{ enabled: false }] })), 'not_needed');
-  assert.equal(validationState(view()), 'required');
-  assert.equal(validationState(status({ validation: { status: 'running' } })), 'running');
-  assert.equal(validationState(status({ validation: { status: 'passed', authoritative: true } })), 'passed');
-  assert.equal(validationState(status({ validation: { status: 'passed', authoritative: false } })), 'failed');
-  assert.equal(validationState(status({ validation: { status: 'failed' } })), 'failed');
-  assert.equal(
-    validationState(status({ gate: [{ code: 'solver_contract_validation_stale' }] })),
-    'stale',
-  );
+  assert.equal(validationState(view()), 'after_publish');
+  // 旧的建模侧验证记录不再影响状态：端到端验证改在发布后的独立评测中进行
+  assert.equal(validationState(status({ validation: { status: 'passed', authoritative: true } })), 'after_publish');
+  assert.equal(validationState(status({ validation: { status: 'running' } })), 'after_publish');
+  assert.deepEqual(Object.keys(VALIDATION_STATES), ['none', 'not_needed', 'after_publish']);
 });
 
 test('managed path detection covers the directory and its files only', () => {

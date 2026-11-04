@@ -13,6 +13,7 @@ import threading
 import time
 
 from . import artifacts as output, modeling_result
+from . import solver_validation
 from .core import Failure, canonical
 from .execution import expiry
 from .feedback.report import render as render_feedback
@@ -29,6 +30,14 @@ def access(token):
     return token() if callable(token) else token
 
 
+# Shutdown waits at most this long for report generation, within the container's stop grace period.
+SHUTDOWN_SECONDS = 5
+
+
+class Stopping(Exception):
+    """Raised inside a generation when the service shuts down."""
+
+
 class ArtifactJobs:
     def __init__(self, store, suggestions, notifier):
         self.store, self.suggestions, self.notifier = store, suggestions, notifier
@@ -40,6 +49,7 @@ class ArtifactJobs:
         # Runs built from consumer feedback reach modeling only after a package owner confirmed them, and only when
         # the deployment says modeling files notifications by source.
         self.notify_feedback = False
+        self.stopping = threading.Event()
 
     def meta(self, owner, run_id):
         _, body = self.store.artifact(owner, run_id, META)
@@ -68,7 +78,7 @@ class ArtifactJobs:
             self.pending[run_id] = dict(owner=owner, token=token, force=force or previous.get('force', False),
                                         suggestions=suggestions or previous.get('suggestions', False),
                                         actor=actor or previous.get('actor'))
-            if run_id in self.running:
+            if run_id in self.running or self.stopping.is_set():
                 return
             self.running.add(run_id)
         self.reports.submit(self._drain, run_id)
@@ -76,7 +86,7 @@ class ArtifactJobs:
     def _drain(self, run_id):
         while True:
             with self.guard:
-                job = self.pending.pop(run_id, None)
+                job = None if self.stopping.is_set() else self.pending.pop(run_id, None)
                 if not job:
                     self.running.discard(run_id)
                     return
@@ -121,16 +131,23 @@ class ArtifactJobs:
             return
         now = time.time()
         revision = previous.get('revision', 0) + 1
-        cases = failed_cases(run) or output.user_suggestions(run)
         summary = output.summarize(run)
+        # Solver validation has deterministic guidance instead of model-written suggestions.
+        solver = run.get('run_type') == 'solver'
+        cases = [] if solver else failed_cases(run) or output.user_suggestions(run)
         # A report-only rebuild keeps the file name, so the kept suggestions still name the report they came from.
         keep = not suggestions and previous.get('suggestions') in ('ready', 'failed', 'pending') and bool(previous.get('stem'))
         stem = previous['stem'] if keep else output.new_stem(run_id, now)
         meta = dict(revision=revision, status='generating' if cases else 'ready', stem=stem, generated_at=now, report='ready',
                     suggestions='generating' if cases else 'ready', suggestions_error=None, suggestions_model=None,
                     fingerprint=fingerprint, summary=summary, suggestions_stale=False)
-        render = render_feedback if run.get('origin') == 'consumer_feedback' else output.render_report
-        values = {'report.md': output.fit('report.md', render(run, stem, now)),
+        if solver:
+            meta['solver_summary'] = solver_validation.summary(run)
+            report = solver_validation.render_report(run, stem, now)
+        else:
+            render = render_feedback if run.get('origin') == 'consumer_feedback' else output.render_report
+            report = render(run, stem, now)
+        values = {'report.md': output.fit('report.md', report),
                   'answers.json': output.render_answers(run),
                   'context.json': output.render_context(self.store, run, stem, revision, summary)}
         draft = bool(cases)
@@ -138,7 +155,9 @@ class ArtifactJobs:
             # A sealed feedback run has no user's login to read the package: a package owner asks for its suggestions.
             draft = False
             meta.update(status='ready', suggestions='pending')
-        if not cases:
+        if solver:
+            values['suggestions.md'] = output.fit('suggestions.md', solver_validation.render_guidance(run, stem, now))
+        elif not cases:
             values['suggestions.md'] = passed(run, stem, now, summary)
         elif keep:
             draft = False
@@ -159,7 +178,7 @@ class ArtifactJobs:
     def _queue(self, owner, run_id, token, revision, actor=None):
         with self.guard:
             self.waiting[run_id] = dict(owner=owner, token=token, revision=revision, actor=actor)
-            if run_id in self.queue or run_id in self.drafting:
+            if run_id in self.queue or run_id in self.drafting or self.stopping.is_set():
                 return
             self.queue.append(run_id)
         self.drafts.submit(self._draft_next)
@@ -173,7 +192,7 @@ class ArtifactJobs:
         try:
             while True:
                 with self.guard:
-                    job = self.waiting.pop(run_id, None)
+                    job = None if self.stopping.is_set() else self.waiting.pop(run_id, None)
                     if not job:
                         return
                 try:
@@ -199,6 +218,9 @@ class ArtifactJobs:
             return (self.meta(owner, run_id) or {}).get('revision') == revision
 
         def progress(value):
+            # Shutdown stops a generation at its next step; recover() then marks it interrupted.
+            if self.stopping.is_set():
+                raise Stopping()
             # Shown on the run page while the judge model works, with how long this generation has waited.
             if current():
                 meta['progress'] = {**value, 'started_at': started}
@@ -212,6 +234,8 @@ class ArtifactJobs:
                                                       self.store.evidence(owner, run_id), progress)
             meta.update(status='ready', suggestions='ready', suggestions_model=profile['model'], progress=None)
             values = {'suggestions.md': output.fit('suggestions.md', text), META: canonical(meta)}
+        except Stopping:
+            return
         except Failure as exc:
             meta.update(status='failed', suggestions='failed', suggestions_error=exc.message, progress=None)
             values = {META: canonical(meta)}
@@ -221,7 +245,7 @@ class ArtifactJobs:
         self.announce(owner, run, meta)
 
     def announce(self, owner, run, meta):
-        state = self.store.optimization(run['id'])
+        state = self.store.optimization(run['id']) if modeling_result.applies(run) else None
         recipient = None
         if run.get('origin') == 'consumer_feedback':
             if not self.notify_feedback or not state or state.get('status') in ('awaiting_review', 'dismissed'):
@@ -231,6 +255,7 @@ class ArtifactJobs:
         base = run.get('base_ref') or {}
         ran = run.get('package_ref') or {}
         self.notifier.enqueue(owner, run['id'], dict(
+            run_type=run.get('run_type') or 'data', solver_summary=meta.get('solver_summary'),
             ontology_id=base.get('ontology_id') or ran.get('ontology_id'),
             release_id=base.get('release_id') or ran.get('release_id'), version=base.get('version') or ran.get('version'),
             status=run['status'], created_at=run.get('created_at'), finished_at=run.get('finished_at') or run.get('updated_at'),
@@ -245,6 +270,20 @@ class ArtifactJobs:
         for row in rows:
             self._abandon(row['owner'], row['run_id'], '服务重启中断了优化建议生成，请点击“重新生成”')
 
-    def close(self):
+    def close(self, timeout=SHUTDOWN_SECONDS):
+        """Stop taking jobs and wait a bounded time; False while a worker may still use the database.
+
+        A judge request already in flight cannot be interrupted, so the caller must leave the database
+        open when this returns False; the generation is marked interrupted on the next start.
+        """
+        self.stopping.set()
         self.reports.shutdown(wait=False, cancel_futures=True)
         self.drafts.shutdown(wait=False, cancel_futures=True)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self.guard:
+                if not self.running and not self.drafting:
+                    return True
+            time.sleep(.05)
+        with self.guard:
+            return not self.running and not self.drafting

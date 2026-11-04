@@ -85,6 +85,8 @@ def definitions():
         ("publish_package_version", "确认发布知识包新版本", {
             "request_id": {"type": "string", "pattern": r"^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,127}$"},
             "confirmation_token": {"type": "string", "pattern": r"^[A-Za-z0-9_-]+\.[a-f0-9]{64}$"},
+            # 预览返回 solver.requires_acknowledgement 时必填 true：确认求解能力尚未经端到端验证
+            "solver_unverified_acknowledged": {"type": "boolean"},
         }, ("request_id", "confirmation_token"), False),
         ("get_package_publish_status", "查询知识包版本发布状态", {
             "job_id": {"type": "string", "pattern": r"^[a-f0-9]{32}$"},

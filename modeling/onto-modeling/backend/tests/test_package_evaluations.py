@@ -203,6 +203,63 @@ def test_overview_reconciles_with_the_evaluation_service(env):
     assert all(token == 'user-token' for _, _, token in stub.calls)
 
 
+SOLVER_SUMMARY = {'total': 1, 'passed': 0, 'failed': 1, 'first_failure_code': 'solver_arguments_mismatch',
+                  'first_failure_message': 'Agent 传给求解工具的入参与用例不一致'}
+
+
+def test_solver_validation_notifications_are_indexed_apart_from_data_evaluations(env):
+    _, pid, stub, client = env
+    assert client.get(f'/api/projects/{pid}/package/evaluations?reconcile=1').json()['reachable'] is True
+    assert notify(client, notification(sequence=1)).status_code == 200
+    solver = notification(sequence=1, run=OTHER_RUN, finished=2000.0, run_type='solver', solver_summary=SOLVER_SUMMARY)
+    assert notify(client, solver).status_code == 200
+    # 求解验证不覆盖同一版本的数据评测条目
+    assert index()['releases']['release_one']['run_id'] == RUN
+    assert index()['solver_releases']['release_one']['run_id'] == OTHER_RUN
+    view = client.get(f'/api/projects/{pid}/package/evaluations').json()
+    assert view['releases']['release_one']['run_type'] == 'data'
+    stored = view['solver_releases']['release_one']
+    assert stored['run_type'] == 'solver' and stored['solver_summary']['first_failure_code'] == 'solver_arguments_mismatch'
+    assert view['solver_revisions'] == {}
+
+
+def test_reconcile_reads_solver_releases_and_accepts_older_services(env):
+    _, pid, stub, client = env
+    stub.listing = {'ontology_id': PACKAGE, 'owner': OWNER, 'releases': [entry()],
+                    'solver_releases': [entry(run=OTHER_RUN, run_type='solver', solver_summary=SOLVER_SUMMARY)],
+                    'active': {'run_id': RUN, 'release_id': 'release_two', 'version': '0.1.2', 'status': 'running',
+                               'run_type': 'solver'}}
+    synced = client.get(f'/api/projects/{pid}/package/evaluations?reconcile=1').json()
+    assert synced['releases']['release_one']['run_id'] == RUN
+    assert synced['solver_releases']['release_one']['run_id'] == OTHER_RUN
+    assert synced['active']['run_type'] == 'solver'
+    # 只有数据评测的评测服务不返回 solver_releases，也没有 run_type
+    stub.listing = {'ontology_id': PACKAGE, 'owner': OWNER, 'releases': [entry()], 'active': None}
+    older = client.get(f'/api/projects/{pid}/package/evaluations?reconcile=1').json()
+    assert older['reachable'] is True and older['solver_releases'] == {}
+    assert older['releases']['release_one']['run_type'] == 'data'
+
+
+def test_index_written_before_solver_validation_is_still_readable(env):
+    _, pid, _, client = env
+    assert client.get(f'/api/projects/{pid}/package/evaluations?reconcile=1').json()['reachable'] is True
+    legacy = {'ontology_id': PACKAGE, 'active': None, 'reconciled_at': 1.0,
+              'releases': {'release_one': {**entry(), 'sequence': 1, 'received_at': 1.0}}}
+    package_evaluations.knowledge_hub.save(package_evaluations._index_path(PACKAGE, OWNER), legacy)
+    view = client.get(f'/api/projects/{pid}/package/evaluations').json()
+    assert list(view['releases']) == ['release_one'] and view['solver_releases'] == {}
+    assert notify(client, notification(sequence=2, run_type='solver', solver_summary=SOLVER_SUMMARY)).status_code == 200
+    assert list(index()['solver_releases']) == ['release_one']
+
+
+def test_solver_validation_runs_cannot_be_optimized(env):
+    manager, pid, stub, client = env
+    stub.run['run_type'] = 'solver'
+    response = client.post(f'/api/projects/{pid}/package/evaluations/{RUN}/optimization', json={})
+    assert response.status_code == 409 and response.json()['code'] == 'optimization_not_supported'
+    assert not (manager.project_root(pid) / 'reports' / f'{STEM}.md').exists()
+
+
 def test_evaluations_of_users_sharing_a_package_stay_separate(env):
     _, pid, stub, client = env
     assert client.get(f'/api/projects/{pid}/package/evaluations?reconcile=1').json()['reachable'] is True
@@ -537,6 +594,34 @@ def test_feedback_runs_are_kept_apart_from_evaluation_runs(env):
                                                      'history': []})).status_code == 200
     assert index()['feedback']['release_one']['optimization']['result']['version'] == '0.1.2'
     assert index()['releases']['release_one']['run_id'] == RUN
+
+
+def test_data_solver_and_feedback_runs_of_one_release_share_the_index(env):
+    """One release with all three kinds of runs: each lands in its own section and never replaces another."""
+    _, pid, stub, client = env
+    data_run = 'e' * 32
+    feedback = entry(run=OTHER_RUN, origin='consumer_feedback', summary={**SUMMARY, 'score': None})
+    solver = entry(run=RUN, run_type='solver', solver_summary=SOLVER_SUMMARY)
+    stub.listing = {'ontology_id': PACKAGE, 'owner': OWNER, 'releases': [entry(run=data_run), feedback],
+                    'solver_releases': [solver], 'active': None}
+    synced = overview(client, pid)
+    assert (synced['releases']['release_one']['run_id'], synced['feedback']['release_one']['run_id'],
+            synced['solver_releases']['release_one']['run_id']) == (data_run, OTHER_RUN, RUN)
+    passed = {**SOLVER_SUMMARY, 'passed': 1, 'failed': 0, 'first_failure_code': None, 'first_failure_message': None}
+    assert notify(client, notification(sequence=2, run=RUN, finished=3000.0, run_type='solver',
+                                       solver_summary=passed)).status_code == 200
+    assert notify(client, notification(sequence=2, run=OTHER_RUN, finished=3000.0, origin='consumer_feedback',
+                                       summary={**SUMMARY, 'score': None})).status_code == 200
+    stored = index()
+    assert stored['releases']['release_one']['run_id'] == data_run and stored['releases']['release_one']['finished_at'] == 1000.0
+    assert stored['feedback']['release_one']['finished_at'] == 3000.0
+    assert stored['solver_releases']['release_one']['solver_summary']['failed'] == 0
+    # Regenerating a run updates its entry wherever it is indexed and leaves the other sections alone.
+    assert client.post(f'/api/projects/{pid}/package/evaluations/{RUN}/regenerate', json={}).status_code == 200
+    after = index()
+    assert after['solver_releases']['release_one']['artifacts']['status'] == 'generating'
+    assert after['releases']['release_one']['artifacts']['status'] == 'ready'
+    assert after['feedback']['release_one']['artifacts']['status'] == 'ready'
 
 
 def test_notifications_with_new_optimization_statuses_are_accepted(env):

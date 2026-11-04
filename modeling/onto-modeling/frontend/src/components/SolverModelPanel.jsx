@@ -1,6 +1,4 @@
 import {
-  ArrowDownOutlined,
-  ArrowUpOutlined,
   DeleteOutlined,
   DownOutlined,
   PlusOutlined,
@@ -13,7 +11,6 @@ import {
   Empty,
   Form,
   Input,
-  InputNumber,
   Modal,
   Popconfirm,
   Select,
@@ -28,15 +25,17 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { setWorkspaceDirty } from '../lib/workspaceDirty.js';
+import { openEvaluation, prefetchEvaluationEntry } from '../lib/evaluation.js';
+import {
+  PACKAGE_PUBLISHED,
+  SOLVER_VALIDATION_STATES,
+  currentRevisionValidation,
+  releaseSolverValidation,
+  solverEvaluationTarget,
+} from '../lib/packageEvaluation.js';
 import {
   ADVANCED,
-  BATCH_FIELDS,
   FINDING_TITLES,
-  MAX_BATCHES,
-  MAX_CASES,
-  MAX_CASE_NAME,
-  MAX_EXPECTED_CANDIDATES,
-  MAX_QUESTION,
   MAX_TEMPLATE_TEXT,
   ROUTE_OPTIONS,
   SIDECAR_TABS,
@@ -44,8 +43,6 @@ import {
   TEXT_PRESENTATION_FIELDS,
   VALIDATION_STATES,
   advancedText,
-  caseBatches,
-  casesText,
   collectMarks,
   diffContracts,
   disablePreview,
@@ -56,20 +53,14 @@ import {
   findProblemFamily,
   findingSource,
   isEnabled,
-  isValidationActive,
   liveSaveBlocker,
   localProblems,
   locateFinding,
-  newBatch,
-  newCase,
   newDraftItem,
-  parseCasesText,
   problemFamily,
   regenerate,
   renderedSidecars,
-  routeCaseHints,
   setAdvanced,
-  setCaseBatches,
   setEnabled,
   setEngineCapabilities,
   setField,
@@ -80,12 +71,9 @@ import {
   setTemplateParam,
   shortRevision,
   shownChecks,
-  startBlocker,
   toManual,
   toPayload,
   unloadedDirectories,
-  validationCaseRows,
-  validationSourceOptions,
   validationState,
 } from '../lib/solver-contract-model.js';
 import CodeEditor from './cm/CodeEditor.jsx';
@@ -94,22 +82,7 @@ import CodeEditor from './cm/CodeEditor.jsx';
 // 后端按基线修订做乐观锁（409 冲突）与结构校验（400 带 findings）。编辑中的草稿停顿后
 // 经即时检查接口按保存与发布的同一套规则检查（不落盘），Profile、评估器等语义问题保存前即可看到。
 
-const VALIDATION_POLL_MS = 3000;
 const LIVE_CHECK_DELAY_MS = 500;
-
-const formatTime = (seconds) => (seconds ? new Date(seconds * 1000).toLocaleString() : '');
-
-const STATE_TEXT = {
-  none: '普通知识包不需要求解验证。',
-  not_needed: '求解能力均已停用，发布不需要端到端验证。',
-  required: '求解知识包发布前，须对当前修订完成一次经 Consumer 的端到端验证。',
-  running: '当前修订的验证进行中（经 Consumer Agent 提问求解，可能需要数分钟），完成后自动刷新。',
-  passed: 'Consumer 已返回当前修订的权威求解结果，可以发布。',
-  stale: '求解契约、绑定的 Operation、评估器或声明式评估器引用的对象文档在通过验证后已修改，请对当前修订重新验证。',
-  failed: '当前修订的验证未通过，按诊断修正后重新验证。',
-};
-
-const RECORD_STATUS = { queued: '排队中', running: '运行中', passed: '通过', failed: '未通过' };
 
 // rejected：最近一次保存被拒；blocking：即时检查判定保存会被拒
 const SOURCE_NOTES = { rejected: '保存被拒', blocking: '保存会被拒' };
@@ -171,458 +144,108 @@ function DiffList({ diff, unloaded = [] }) {
   );
 }
 
-function caseDetail(row) {
-  // 未调用求解工具、入参不一致是 Agent 链路问题，先于求解结果展示
-  if (row.toolCalled === false) return ['Agent 未调用求解工具', row.detail].filter(Boolean).join('：');
-  const diff = row.argumentDiff.slice(0, 5).join('、');
-  return [
-    row.argumentsMatch === false ? `入参与用例不一致${diff ? `：${diff}` : ''}` : '',
-    row.authoritative ? '权威结果' : '非权威结果',
-    row.feasibility === 'infeasible' ? '全不可行' : '',
-    row.candidateCount != null ? `候选 ${row.candidateCount} 个` : '',
-    row.expected != null ? `预期 ${row.expected} 个` : '',
-    row.code,
-    row.passed ? '' : row.detail,
-  ].filter(Boolean).join(' · ');
-}
-
-// 模板契约的用例入参：计划月份、装置与按加工顺序排列的批次（行序即 item_order）
-function RouteCaseFields({ args, unitOptions, onChange }) {
-  const source = args || {};
-  const rows = caseBatches(source);
-  const setRows = (next) => onChange(setCaseBatches(source, next));
-  const setRow = (index, patch) => setRows(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
-  const move = (index, delta) => {
-    const next = [...rows];
-    [next[index], next[index + delta]] = [next[index + delta], next[index]];
-    setRows(next);
-  };
-  const unit = String(source.diesel_unit_no ?? '');
-  const unitChoices = unitOptions.map((value) => ({ value, label: value }));
-  if (unit && !unitOptions.includes(unit)) unitChoices.push({ value: unit, label: `${unit}（不支持）` });
-  const hints = routeCaseHints(source, unitOptions);
-  return (
-    <div className="solver-route-case">
-      <div className="solver-case-fields">
-        <div className="solver-case-field">
-          <span>计划月份</span>
-          <Input
-            size="small"
-            value={String(source.plan_month ?? '')}
-            placeholder="YYYY-MM"
-            maxLength={7}
-            onChange={(event) => onChange({ ...source, plan_month: event.target.value })}
-          />
-        </div>
-        <div className="solver-case-field">
-          <span>装置编号</span>
-          {unitOptions.length ? (
-            <Select
-              size="small"
-              value={unit || undefined}
-              placeholder="选择装置"
-              options={unitChoices}
-              popupMatchSelectWidth={false}
-              onChange={(value) => onChange({ ...source, diesel_unit_no: value })}
-            />
-          ) : (
-            <Input
-              size="small"
-              value={unit}
-              placeholder="评估器未列出可选装置，直接填写"
-              onChange={(event) => onChange({ ...source, diesel_unit_no: event.target.value })}
-            />
-          )}
-        </div>
-      </div>
-      <div className="solver-batch-scroll">
-        <table className="solver-batch-table">
-          <thead>
-            <tr>
-              <th>顺序</th>
-              {BATCH_FIELDS.map((field) => (
-                <th key={field.key}>{field.label}</th>
-              ))}
-              <th aria-label="操作" />
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, index) => (
-              // eslint-disable-next-line react/no-array-index-key
-              <tr key={index}>
-                <td className="solver-meta">{index + 1}</td>
-                {BATCH_FIELDS.map((field) => (
-                  <td key={field.key}>
-                    <Input
-                      size="small"
-                      value={String(row[field.key] ?? '')}
-                      onChange={(event) => setRow(index, { [field.key]: event.target.value })}
-                    />
-                  </td>
-                ))}
-                <td className="solver-batch-actions">
-                  <Button
-                    size="small"
-                    type="text"
-                    icon={<ArrowUpOutlined />}
-                    title="上移"
-                    disabled={index === 0}
-                    onClick={() => move(index, -1)}
-                  />
-                  <Button
-                    size="small"
-                    type="text"
-                    icon={<ArrowDownOutlined />}
-                    title="下移"
-                    disabled={index === rows.length - 1}
-                    onClick={() => move(index, 1)}
-                  />
-                  <Button
-                    size="small"
-                    type="text"
-                    icon={<DeleteOutlined />}
-                    title="删除该批次"
-                    onClick={() => setRows(rows.filter((_, i) => i !== index))}
-                  />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <Button
-        size="small"
-        type="dashed"
-        icon={<PlusOutlined />}
-        disabled={rows.length >= MAX_BATCHES}
-        onClick={() => setRows([...rows, newBatch(rows)])}
-      >
-        添加批次
-      </Button>
-      {hints.length > 0 && <div className="solver-case-hint">{hints.join('；')}</div>}
-    </div>
-  );
-}
-
-function CaseCard({ item, operations, onChange, onRemove }) {
-  const operation = operations.find((entry) => entry.solver_key === item.solver_key);
-  const keyOptions = operations
-    .filter((entry) => entry.enabled || entry.solver_key === item.solver_key)
-    .map((entry) => ({ value: entry.solver_key, label: `${entry.operation}（${entry.solver_key}）` }));
-  const batches = operation?.managed ? caseBatches(item.arguments).length : 0;
-  // 换绑求解能力时，还没填入参的用例按新能力预置
-  const changeKey = (solverKey) => {
-    const target = operations.find((entry) => entry.solver_key === solverKey);
-    const empty = !Object.keys(item.arguments || {}).length;
-    onChange({ ...item, solver_key: solverKey, arguments: empty && target ? newCase(target).arguments : item.arguments });
-  };
-  const setExpected = (value) => {
-    const next = { ...item };
-    if (value == null) delete next.expected_candidate_count;
-    else next.expected_candidate_count = value;
-    onChange(next);
-  };
-  const setQuestion = (value) => {
-    const next = { ...item };
-    if (value) next.question = value;
-    else delete next.question;
-    onChange(next);
-  };
-  return (
-    <div className="solver-case">
-      <div className="solver-case-head">
-        <Input
-          size="small"
-          value={String(item.name ?? '')}
-          maxLength={MAX_CASE_NAME}
-          placeholder="用例名称"
-          onChange={(event) => onChange({ ...item, name: event.target.value })}
-        />
-        <Select
-          size="small"
-          value={item.solver_key || undefined}
-          placeholder="选择求解能力"
-          options={keyOptions}
-          popupMatchSelectWidth={false}
-          onChange={changeKey}
-        />
-        <Typography.Text type="secondary" className="solver-meta">
-          id {item.id}
-        </Typography.Text>
-        <Button size="small" type="text" icon={<DeleteOutlined />} title="删除该用例" onClick={onRemove} />
-      </div>
-      {operation?.managed ? (
-        <RouteCaseFields
-          args={item.arguments}
-          unitOptions={operation.unit_options || []}
-          onChange={(args) => onChange({ ...item, arguments: args })}
-        />
-      ) : (
-        <div className="solver-meta">
-          该求解契约的附属文件为手动编辑，入参在「以 JSON 编辑」中按它的输入 Schema 填写。
-        </div>
-      )}
-      <div className="solver-case-field solver-case-question">
-        <span>提问</span>
-        <Input.TextArea
-          size="small"
-          value={String(item.question ?? '')}
-          maxLength={MAX_QUESTION}
-          autoSize={{ minRows: 1, maxRows: 4 }}
-          placeholder="留空时按求解能力与入参自动生成提问；填写则原样向 Consumer Agent 提问"
-          onChange={(event) => setQuestion(event.target.value)}
-        />
-      </div>
-      <div className="solver-case-field">
-        <span>预期候选数</span>
-        <InputNumber
-          size="small"
-          min={0}
-          max={MAX_EXPECTED_CANDIDATES}
-          precision={0}
-          value={item.expected_candidate_count ?? null}
-          placeholder={operation?.managed ? `默认 2×批次数${batches ? `（${2 * batches}）` : ''}` : '可选'}
-          style={{ width: 180 }}
-          onChange={setExpected}
-        />
-      </div>
-    </div>
-  );
-}
-
-// 端到端验证（DEV-FE-003）：用例与数据源在这里选，执行在后台经 modeling → Consumer；
-// 只有 Consumer 返回的权威结果才算通过，记录随修订失效
-function ValidationCard({ projectId, view, dirty, active, reloadKey, innerRef, onRecord, onReload }) {
-  const state = validationState(view);
-  const record = view.validation;
-  const operations = useMemo(() => view.contract?.operations || [], [view]);
-  const [saved, setSaved] = useState(null); // null：用例尚未读取
-  const [text, setText] = useState('');
-  const [editorKey, setEditorKey] = useState(0);
-  const [sources, setSources] = useState([]);
-  const [sourceId, setSourceId] = useState('');
-  const [busy, setBusy] = useState('');
-  const [showJson, setShowJson] = useState(false);
-
-  const reset = (cases) => {
-    setSaved(cases);
-    setText(casesText(cases));
-    setEditorKey((value) => value + 1);
-  };
-
-  // 面板保持挂载：数据源在评测页增删，切回求解页或点刷新时重读；已选的数据源被删除则回到不使用
+// 求解验证在发布后的独立评测中进行（ADR solver-validation-unified-entry）：这里只显示当前修订是否已发布并通过
+// 验证，并提供去评测与导出旧验证用例的入口；用例在评测页面的求解验证集中维护
+function ValidationStatusCard({ projectId, view, dirty, active, reloadKey }) {
+  const [status, setStatus] = useState(null);
+  const [exporting, setExporting] = useState(false);
+  const [published, setPublished] = useState(0);
+  // 在本面板打开时从左侧发布：面板仍处于激活状态，需按发布通知重读，否则「去评测」仍指向发布前的版本
+  useEffect(() => {
+    const onPublished = (event) => {
+      if (event.detail?.projectId === projectId) setPublished((value) => value + 1);
+    };
+    window.addEventListener(PACKAGE_PUBLISHED, onPublished);
+    return () => window.removeEventListener(PACKAGE_PUBLISHED, onPublished);
+  }, [projectId]);
   useEffect(() => {
     if (!active) return undefined;
     let alive = true;
     api
-      .evalDataSources(projectId)
-      .catch(() => ({ sources: [] }))
-      .then((body) => {
-        if (!alive) return;
-        const next = body.sources || [];
-        setSources(next);
-        setSourceId((prev) => (next.some((source) => source.id === prev) ? prev : ''));
-      });
+      .packageEvaluations(projectId)
+      .then((value) => alive && setStatus(value))
+      .catch(() => alive && setStatus({ configured: false }));
     return () => {
       alive = false;
     };
-  }, [projectId, active, reloadKey]);
-
-  // 挂载与点刷新时读用例；有未保存的用例修改时保留编辑内容
-  const casesDirtyRef = useRef(false);
+  }, [projectId, active, reloadKey, published]);
+  // 点击「去评测」时要立即打开窗口：先取好评测入口地址
   useEffect(() => {
-    if (casesDirtyRef.current) return undefined;
-    let alive = true;
-    api
-      .solverValidationCases(projectId)
-      .then((body) => alive && reset(body.cases || []))
-      .catch((error) => alive && message.error(error.message));
-    return () => {
-      alive = false;
-    };
-  }, [projectId, reloadKey]);
-
-  const parsed = useMemo(() => parseCasesText(text, operations), [text, operations]);
-  const casesDirty = saved != null && text.trim() !== casesText(saved).trim();
-  casesDirtyRef.current = casesDirty;
-  const blocker = saved == null ? '正在读取验证用例' : startBlocker(view, { dirty, casesDirty, cases: saved });
-  const rows = validationCaseRows(record);
-  const sourceOptions = useMemo(() => validationSourceOptions(sources), [sources]);
-
-  const saveCases = async () => {
-    setBusy('cases');
+    prefetchEvaluationEntry().catch(() => {});
+  }, []);
+  if (validationState(view) !== 'after_publish') return null;
+  const current = currentRevisionValidation(status, view.revision);
+  const latest = status?.current_release_id ? releaseSolverValidation(status, status.current_release_id) : null;
+  const target = solverEvaluationTarget(status, view.revision, dirty);
+  let text = '正在读取求解验证状态。';
+  if (dirty) text = '有未保存的修改：保存并发布新版本后，再对新版本发起求解验证。';
+  else if (status?.configured === false) text = '评测服务不可用或未配置，暂时读不到求解验证状态。';
+  else if (current.state === 'passed') text = `当前修订已在 ${current.version} 通过求解验证。`;
+  else if (current.state === 'published') text = '当前修订已发布，尚未通过求解验证：在评测页面对该版本发起求解验证。';
+  else if (status) text = '当前修改尚未发布和验证：发布新版本后，在「已发布版本（知识包评测）」中发起求解验证。';
+  const evaluate = () =>
+    openEvaluation(target.release, { runType: 'solver' }).catch((error) => message.error(error.message));
+  // 确定按钮的点击里同步打开评测窗口；不返回 Promise，弹窗随即关闭
+  const confirmStale = () =>
+    Modal.confirm({
+      title: '将评测不含当前修改的旧版本',
+      content: `${dirty ? '有未保存的修改' : '当前修改尚未发布'}，评测页面将对最近发布的版本 ${target.version} 发起求解验证，结果不代表当前修改；要验证当前修改，请先${dirty ? '保存并' : ''}发布新版本。`,
+      centered: true,
+      okText: '仍去评测',
+      cancelText: '取消',
+      onOk: () => {
+        evaluate();
+      },
+    });
+  const exportCases = async () => {
+    setExporting(true);
     try {
-      reset((await api.saveSolverValidationCases(projectId, parsed.cases)).cases);
-      message.success('验证用例已保存');
+      const { cases = [] } = await api.solverValidationCases(projectId);
+      if (!cases.length) {
+        message.info('建模侧没有保存过验证用例');
+        return;
+      }
+      const url = URL.createObjectURL(new Blob([`${JSON.stringify({ cases }, null, 2)}\n`], { type: 'application/json' }));
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = 'solver-validation-cases.json';
+      anchor.click();
+      URL.revokeObjectURL(url);
     } catch (error) {
       message.error(error.message);
     } finally {
-      setBusy('');
+      setExporting(false);
     }
   };
-
-  // 编辑器文本是唯一来源：表单改动写回文本，JSON 编辑器据 editorKey 重建
-  const editCases = (next) => {
-    setText(casesText(next));
-    setEditorKey((value) => value + 1);
-  };
-  const cases = parsed.cases || [];
-  const enabledOperations = operations.filter((operation) => operation.enabled);
-  const jsonOpen = showJson || Boolean(parsed.error);
-
-  // 优先给还没有用例的启用能力添加
-  const addCase = () => {
-    const covered = new Set(cases.map((item) => item.solver_key));
-    const target = enabledOperations.find((operation) => !covered.has(operation.solver_key)) || enabledOperations[0];
-    if (target) editCases([...cases, newCase(target, cases)]);
-  };
-
-  const start = async (allowUnbound = false) => {
-    setBusy('start');
-    try {
-      const body = await api.startSolverValidation(projectId, {
-        revision: view.revision,
-        dataSourceId: sourceId,
-        allowUnbound,
-      });
-      onRecord(body.validation);
-      message.success('已发起端到端验证，完成后自动刷新');
-    } catch (error) {
-      if (error.code === 'binding_problems' && !allowUnbound) {
-        Modal.confirm({
-          title: '数据绑定未通过检查',
-          content: `${error.message}。忽略后这些对象在本次验证中不绑定数据表。`,
-          okText: '忽略并继续验证',
-          cancelText: '取消',
-          onOk: () => start(true),
-        });
-      } else {
-        message.error(error.message);
-        if (error.status === 409) onReload();
-      }
-    } finally {
-      setBusy('');
-    }
-  };
-
   return (
-    <div className="solver-validation" ref={innerRef}>
+    <div className="solver-validation">
       <div className="solver-validation-head">
-        <span className="solver-section-title">端到端验证</span>
-        <Tag color={VALIDATION_STATES[state].color}>{VALIDATION_STATES[state].label}</Tag>
+        <span className="solver-section-title">求解验证</span>
+        <Tag color={current.state === 'passed' && !dirty ? 'success' : 'warning'}>
+          {current.state === 'passed' && !dirty ? '当前修订已验证' : '待发布后验证'}
+        </Tag>
         <Typography.Text type="secondary" className="solver-meta">
           修订 {shortRevision(view.revision)}
         </Typography.Text>
       </div>
-      <div className="solver-validation-msg">{STATE_TEXT[state]}</div>
-      {record && (
+      <div className="solver-validation-msg">{text}</div>
+      {latest && (
         <div className="solver-meta">
-          最近一次：{RECORD_STATUS[record.status] || record.status}
-          {record.status === 'passed' && record.authoritative !== true ? '（非权威结果）' : ''}
-          {record.candidate_count != null ? ` · 候选 ${record.candidate_count} 个` : ''}
-          {record.message ? ` · ${record.message}` : ''}
-          {record.error_code ? ` · ${record.error_code}` : ''}
-          {record.completed_at ? ` · ${formatTime(record.completed_at)}` : ''}
+          最近发布版本 {status.current_version}：{SOLVER_VALIDATION_STATES[latest.state].label}
+          {latest.reason ? ` · ${latest.reason}` : ''}
         </div>
       )}
-      {rows.length > 0 && (
-        <div className="solver-validation-cases">
-          {rows.map((row) => (
-            <div key={row.id} className="solver-validation-case">
-              <Tag color={row.passed ? 'success' : 'error'}>{row.passed ? '通过' : '未通过'}</Tag>
-              <span title={row.question ? `提问：${row.question}` : '提问：按求解能力与入参自动生成'}>{row.name}</span>
-              <Typography.Text code>{row.solverKey}</Typography.Text>
-              <span className="solver-meta">{caseDetail(row)}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {dirty && state !== 'none' && (
-        <div className="solver-validation-msg">有未保存的修改：保存后修订改变，需要重新验证。</div>
-      )}
-      {state !== 'not_needed' && (
-        <>
-          <div className="solver-validation-head">
-            <span className="solver-section-title">验证用例</span>
-            {casesDirty && <Tag color="warning">未保存</Tag>}
-            <Typography.Text type="secondary" className="solver-meta">
-              模板生成的求解契约按表单填写批次；预期候选数留空时按 2×批次数断言。验证经 Consumer Agent 提问执行，并核对 Agent 是否调用对应求解工具、传入的入参是否与用例一致。用例只存于工作区，不随知识包导出。
-            </Typography.Text>
-          </div>
-          {saved != null && !parsed.error && (
-            <div className="solver-cases">
-              {cases.map((item, index) => (
-                <CaseCard
-                  // eslint-disable-next-line react/no-array-index-key
-                  key={index}
-                  item={item}
-                  operations={operations}
-                  onChange={(next) => editCases(cases.map((entry, i) => (i === index ? next : entry)))}
-                  onRemove={() => editCases(cases.filter((_, i) => i !== index))}
-                />
-              ))}
-              {cases.length === 0 && <Typography.Text type="secondary">还没有验证用例</Typography.Text>}
-            </div>
-          )}
-          {saved != null && jsonOpen && (
-            <div className="solver-sidecar">
-              <div className="solver-meta">
-                每条用例：id、solver_key、arguments（按输入 Schema 填写），可选 name、question（向 Agent 的提问，留空自动生成）与 expected_candidate_count
-              </div>
-              <CodeEditor key={editorKey} value={text} onChange={setText} />
-            </div>
-          )}
-          {parsed.error && casesDirty && <Alert type="error" showIcon message={parsed.error} />}
-          {!parsed.error && parsed.unknown?.length > 0 && (
-            <Alert type="warning" showIcon message={`没有启用的求解能力：${parsed.unknown.join('、')}`} />
-          )}
-          <Space wrap size={6}>
-            <Button
-              size="small"
-              icon={<PlusOutlined />}
-              onClick={addCase}
-              disabled={saved == null || Boolean(parsed.error) || !enabledOperations.length || cases.length >= MAX_CASES}
-            >
-              添加用例
-            </Button>
-            <Button size="small" type="link" disabled={Boolean(parsed.error)} onClick={() => setShowJson((value) => !value)}>
-              {jsonOpen ? '收起 JSON' : '以 JSON 编辑'}
-            </Button>
-            <Button size="small" disabled={!casesDirty} onClick={() => reset(saved)}>
-              放弃用例修改
-            </Button>
-            <Button
-              size="small"
-              loading={busy === 'cases'}
-              disabled={!casesDirty || Boolean(parsed.error)}
-              onClick={saveCases}
-            >
-              保存用例
-            </Button>
-            <Select
-              size="small"
-              value={sourceId}
-              options={sourceOptions}
-              popupMatchSelectWidth={false}
-              style={{ minWidth: 180 }}
-              onChange={setSourceId}
-            />
-            <Button
-              size="small"
-              type="primary"
-              loading={busy === 'start'}
-              disabled={Boolean(blocker)}
-              title={blocker || undefined}
-              onClick={() => start(false)}
-            >
-              发起验证
-            </Button>
-          </Space>
-          {blocker && saved != null && state !== 'running' && (
-            <div className="solver-meta">{blocker}</div>
-          )}
-        </>
-      )}
+      <Space wrap size={6}>
+        <Button size="small" type="primary" disabled={!target} onClick={target?.stale ? confirmStale : evaluate}>
+          去评测
+        </Button>
+        <Button size="small" loading={exporting} onClick={exportCases}>
+          导出验证用例（JSON）
+        </Button>
+      </Space>
+      <Typography.Text type="secondary" className="solver-meta">
+        求解验证集在评测页面维护，可导入此处导出的旧验证用例。发布不再要求先通过验证，发布时需确认求解能力尚未验证。
+      </Typography.Text>
     </div>
   );
 }
@@ -1071,7 +694,7 @@ export default function SolverModelPanel({
 }) {
   const [view, setView] = useState(null);
   const [loadError, setLoadError] = useState('');
-  const [reloadKey, setReloadKey] = useState(0); // 刷新按钮：验证区据此重读数据源与用例
+  const [reloadKey, setReloadKey] = useState(0); // 刷新按钮：验证状态区据此重读
   const [items, setItems] = useState([]);
   const [selected, setSelected] = useState(null);
   const [role, setRole] = useState('entry');
@@ -1085,7 +708,6 @@ export default function SolverModelPanel({
   const [afterSave, setAfterSave] = useState(''); // 保存成功后发给会话的命令（让助手生成评估器）
   const [live, setLive] = useState(null); // 草稿的即时检查结果 { key, rejected, findings, rendered }
   const [liveError, setLiveError] = useState('');
-  const validationRef = useRef(null);
 
   const apply = useCallback((next, keepKey) => {
     const drafts = draftFromView(next);
@@ -1185,34 +807,6 @@ export default function SolverModelPanel({
     return () => window.removeEventListener('beforeunload', guard);
   }, [dirty]);
 
-  // 验证在后台执行：排队 / 运行中时轮询当前修订的记录；结束后无草稿则整体刷新（门禁随之更新）
-  const validating = isValidationActive(view?.validation);
-  useEffect(() => {
-    if (!validating) return undefined;
-    let alive = true;
-    const timer = setInterval(async () => {
-      try {
-        const latest = await api.solverValidationLatest(project.id);
-        if (!alive) return;
-        if (!isValidationActive(latest.validation) && !dirtyRef.current) {
-          load();
-          return;
-        }
-        setView((prev) =>
-          prev && prev.revision === latest.revision ? { ...prev, validation: latest.validation } : prev,
-        );
-      } catch {
-        /* 网络抖动：下一轮重试 */
-      }
-    }, VALIDATION_POLL_MS);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, [validating, project.id, load]);
-
-  const recordStarted = (record) => setView((prev) => ({ ...prev, validation: record }));
-
   const update = (uid, change) =>
     setItems((list) => list.map((item) => (item.uid === uid ? change(item) : item)));
 
@@ -1248,10 +842,8 @@ export default function SolverModelPanel({
       onOpenFile?.(target.file);
       return;
     }
-    if (target.validation) {
-      validationRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      return;
-    }
+    // 旧的端到端验证记录不再参与发布检查，没有可定位的字段
+    if (target.validation) return;
     setSelected(target.uid);
     if (target.role) setRole(target.role);
     setHighlight(target.field || '');
@@ -1440,15 +1032,12 @@ export default function SolverModelPanel({
             <div className="solver-meta">即时检查暂不可用：{liveError}；保存时仍按后端规则完整校验。</div>
           )}
           {view.enabled && (
-            <ValidationCard
+            <ValidationStatusCard
               projectId={project.id}
               view={view}
               dirty={dirty}
               active={active}
               reloadKey={reloadKey}
-              innerRef={validationRef}
-              onRecord={recordStarted}
-              onReload={() => !dirtyRef.current && load()}
             />
           )}
           <div className="solver-body">
@@ -1532,8 +1121,8 @@ export default function SolverModelPanel({
             />
           )}
           {diff.revertsToPlain && <Alert type="info" showIcon message="保存后知识包回到普通知识包（schema 0.1）。" />}
-          {validation === 'passed' && (
-            <Alert type="info" showIcon message="保存会改变求解契约修订，当前的验证结果对新修订不再有效。" />
+          {validation === 'after_publish' && (
+            <Alert type="info" showIcon message="保存会改变求解契约修订：发布新版本后，需对新版本重新发起求解验证。" />
           )}
           {pending > 0 && (
             <Alert
