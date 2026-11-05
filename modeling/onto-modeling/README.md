@@ -69,7 +69,8 @@ cd backend && ONTO_WEB_AUTH_URL=http://127.0.0.1:5056 ONTO_WEB_AUTH_ISSUER=http:
 
 - 打开 `http://127.0.0.1:8100`，用 `admin` 和初始密码登录；模型网关在「系统设置 → 模型接入」或 `.env` 里配。
 - 脚本验证与脚本节点要沙箱网关（`ONTO_WEB_SANDBOX_GATEWAY_URL`），本机没有时这两项报沙箱不可用，其余不受影响；
-  要全套（含网关）用 `docker compose up --build`。
+  要全套（含网关）用 `docker compose up --build`；先生成连接器主密钥（compose 缺这个文件起不来）：
+  `mkdir -p secrets && openssl rand -base64 32 > secrets/connector-master.key && chmod 600 secrets/connector-master.key`。
 - PDF、Word、Excel 转文本要连接器网关（`ONTO_WEB_CONNECTOR_GATEWAY_URL`，ADR-0073），本机没有时这些资料停在「等待转换」；
   本机单独起网关：`cd backend && pip install -r connector-requirements.txt && ONTO_CONNECTOR_CONVERTERS_DIR=../assets/packs
   ONTO_CONNECTOR_ISSUER_KEY_URL=http://127.0.0.1:8100/api/v1/connector/issuer-key python -m app.connector_gateway`，
@@ -565,6 +566,7 @@ Linux 全量用装了它的测试镜像。
 
 ```bash
 ./build.sh <version> [amd|arm]     # 产出 dist/onto-modeling-<version>-linux-<arch>.tar.gz
+mkdir -p secrets && (umask 077 && openssl rand -base64 32 > secrets/connector-master.key)  # 首次：连接器主密钥
 docker compose up --build          # 本地从源码起全栈（onto-modeling + auth-server + 两个网关）验证
 ```
 
@@ -619,6 +621,15 @@ Onto 工作区，新建、导入和克隆项目无需创建 Modeling 关联。�
 - `ONTO_WEB_EVIDENCE_MAX_ARTIFACT_MB`（默认 2048）：上传目标程序的单文件上限；每人同时最多 2 个没完成的上传，24 小时没完成的自动清掉。
 - `ONTO_WEB_EVIDENCE_SNAPSHOT_GIT_MB`（默认 20）：一份快照进 git 的部分（记录、摘要、清单）上限，超了采集失败；原始结果不算在内。
 - 项目侧接口要项目启用系统逆向建模包（`rev`）。
+- 数据库、代码仓库连接器（ADR-0084）跑在网关的子进程里，凭据只存在网关。网关容器的环境变量：
+  - `ONTO_CONNECTOR_MASTER_KEY_FILE`：主密钥文件（32 字节 base64），compose 里指向 `/run/secrets/connector-master-key`；
+    宿主上的文件默认 `./secrets/connector-master.key`，可在 `.env` 用同名变量改。没配时不列这三个提供方，配了但读不出来时
+    它们是 `installed: false`、凭据接口回 503。
+  - `ONTO_CONNECTOR_SECRETS_DIR`（默认 `/secrets`，卷 `connector-secrets`）：凭据密文 `<源>/<版本>.bin`。
+  - `ONTO_CONNECTOR_CONN_DIR`（默认 `/tmp/connector-conn`）：采集子进程的运行目录（记录、克隆的代码），任务清理时删。
+  - `ONTO_CONNECTOR_CONN_MEMORY_MB`（默认 768）、`ONTO_CONNECTOR_CONN_FILE_MB`（默认 256）：每个采集子进程的内存、单文件上限。
+  - `ONTO_CONNECTOR_DB_*`、`ONTO_CONNECTOR_CODE_*`：提供方自己的配置（如 `ONTO_CONNECTOR_DB_PROFILE_ROWS`），原样传给子进程；
+    子进程拿不到其他环境变量。
 
 ## 当前状态
 

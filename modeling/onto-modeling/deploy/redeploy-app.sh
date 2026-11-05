@@ -75,6 +75,20 @@ if [ "${WITH_AUTH}" -eq 1 ]; then
     sed -i "s|^AUTH_SERVER_IMAGE=.*|AUTH_SERVER_IMAGE=onto-modeling-auth-server:${VERSION}|" "${DEPLOY_DIR}/images.env"
 fi
 
+# 部署目录的 compose 要连接器主密钥、但还没有（解包了新版本却没跑 deploy.sh）：按 deploy.sh 同样的规则生成
+if grep -q 'connector-master-key:' "${DEPLOY_DIR}/docker-compose.release.yml"; then
+    (cd "${DEPLOY_DIR}" && {
+        MASTER_KEY_FILE="$(sed -n 's/^ONTO_CONNECTOR_MASTER_KEY_FILE=//p' .env | head -1)"
+        MASTER_KEY_FILE="${MASTER_KEY_FILE:-./secrets/connector-master.key}"
+        if [ ! -f "${MASTER_KEY_FILE}" ]; then
+            mkdir -p "$(dirname "${MASTER_KEY_FILE}")" && chmod 700 "$(dirname "${MASTER_KEY_FILE}")"
+            (umask 077 && { openssl rand -base64 32 2>/dev/null || head -c 32 /dev/urandom | base64; } > "${MASTER_KEY_FILE}")
+            [ "$(id -u)" -eq 0 ] && chown 65534:65534 "${MASTER_KEY_FILE}"
+            echo "已生成连接器主密钥 ${MASTER_KEY_FILE}：和凭据卷分开备份，丢了只能重新录入数据源凭据。"
+        fi
+    })
+fi
+
 COMPOSE="docker compose"
 docker compose version >/dev/null 2>&1 || COMPOSE="docker-compose"
 COMPOSE_FILES=(-f docker-compose.release.yml)
