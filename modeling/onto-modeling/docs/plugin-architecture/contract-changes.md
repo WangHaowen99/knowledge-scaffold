@@ -1304,3 +1304,6 @@ Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`
    EV-04、EV-05 登记人也能调；这类登记只有本人和管理员看得到。要凭据的提供方仍然只有管理员登记。
 3. **错误码**：2.8 加 `artifact_not_found`、`upload_not_found`、`upload_incomplete`、`upload_hash_mismatch`、`upload_too_large`。
 4. 契约 3.19 其余接口按原文实现；EV-06、EV-07（凭据）本轮仍回 `501 evidence_not_available`，等数据库连接器。EV-28 ER 视图只给数据库类，其他回空表。
+5. **非数据库快照的检索形状（前端子任务补）**：证据浏览器左栏要按模块分组、右栏要显示位置和成员，原契约只写了数据库表的形状。
+   EV-23 对非数据库快照按 `attrs.module` 分组、`entities` 多 `type`；EV-25 的 `fields` 列类的成员；EV-23/24/25/27 带 `untrusted_content`
+   （`EvidenceRecord` 加可选字段）；EV-02 自助登记的 `budget`、`masking_policy` 也可省略（登记抽屉不出现这两项）。
