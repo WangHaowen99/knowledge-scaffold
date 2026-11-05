@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import shutil
 import signal
 import subprocess
@@ -135,6 +134,9 @@ def check_egress(target: Target, egress: list[dict]) -> None:
     raise ConnError("egress_denied", f"{target.host}:{target.port} 不在出口白名单里")
 
 
+ASKPASS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "git_askpass.sh")
+
+
 class Workspace:
     """一次克隆的临时目录：`home/`（空的 HOME）、`repo/`（裸取的仓库）、askpass 脚本和令牌文件。"""
 
@@ -156,22 +158,17 @@ class Workspace:
             self._write_askpass(token)
 
     def _write_askpass(self, token: str) -> None:
+        # git 先问用户名（地址里没有时）再问口令；回答由镜像里固定的 askpass 脚本从文件读，令牌不进命令行和环境变量。
+        # 脚本不能写进任务目录：网关的 /tmp 是 noexec 的 tmpfs（11-05 实测 Permission denied）
         self._token_file = os.path.join(self.root, "token")
         fd = os.open(self._token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(token + "\n")
-        # git 先问用户名（地址里没有时）再问口令；回答都从文件里来，令牌不进命令行和环境变量
-        self._askpass = os.path.join(self.root, "askpass.sh")
-        script = (f"#!/bin/sh\ncase \"$1\" in\n  Username*) printf '%s\\n' {shlex.quote(self.username)} ;;\n"
-                  f"  *) cat {shlex.quote(self._token_file)} ;;\nesac\n")
-        fd = os.open(self._askpass, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o700)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(script)
+        self._askpass = ASKPASS
 
     def drop_token(self) -> None:
-        for path in (self._token_file, self._askpass):
-            if path and os.path.exists(path):
-                os.unlink(path)
+        if self._token_file and os.path.exists(self._token_file):
+            os.unlink(self._token_file)
         self._token_file = self._askpass = ""
 
     def close(self) -> None:
@@ -191,7 +188,8 @@ class Workspace:
                "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_ATTR_NOSYSTEM": "1",
                "GIT_TERMINAL_PROMPT": "0", "LANG": "C", "LC_ALL": "C", "MALLOC_ARENA_MAX": "2"}
         if self._askpass:
-            env["GIT_ASKPASS"] = self._askpass
+            env.update({"GIT_ASKPASS": self._askpass, "ONTO_GIT_ASKPASS_USER": self.username,
+                        "ONTO_GIT_ASKPASS_FILE": self._token_file})
         if os.environ.get(CA_FILE_ENV):
             env["GIT_SSL_CAINFO"] = os.environ[CA_FILE_ENV]
         return env

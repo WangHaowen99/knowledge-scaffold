@@ -522,6 +522,9 @@ def test_sample_reads_one_table(monkeypatch):
     assert len(records[0]["attrs"]["rows"]) == 2
     assert [sql for sql in fake.log if "FROM `shop`." in sql] == [next(s for s in fake.log if "`customers`" in s)]
     assert PHONES[0] not in raw
+    # 只展示 2 行，但遮不遮按和快照相同的行数判断，两边的 masked_columns 一致
+    snapshot = _records(_run(monkeypatch, "snapshot")[0])["db:shop-db/shop.customers#sample"]
+    assert records[0]["attrs"]["masked_columns"] == snapshot["attrs"]["masked_columns"]
     _, _, error, _ = _run(monkeypatch, "sample", selector={"object": "ops.audit_log"})
     assert error.code == "out_of_scope"
     _, _, error, _ = _run(monkeypatch, "sample", selector="shop.view:v")

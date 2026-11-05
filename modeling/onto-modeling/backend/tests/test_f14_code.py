@@ -617,6 +617,10 @@ def test_git_environment_is_minimal(git_server, private_tmp, monkeypatch):
         assert all(token not in part for part in command)
         token_file = os.path.join(workspace.root, "token")
         assert os.stat(token_file).st_mode & 0o777 == 0o600
+        # askpass 用镜像里固定的脚本：网关的 /tmp 是 noexec，任务目录里写的脚本执行不了
+        assert env["GIT_ASKPASS"] == code_git.ASKPASS and not env["GIT_ASKPASS"].startswith(workspace.root)
+        assert os.access(code_git.ASKPASS, os.X_OK) and env["ONTO_GIT_ASKPASS_FILE"] == token_file
+        assert not any(name.endswith(".sh") for name in os.listdir(workspace.root))
         workspace.drop_token()
         assert not os.path.exists(token_file) and "GIT_ASKPASS" not in workspace.env()
         assert workspace.clean(f"fatal: https://x-access-token:{token}@host/a.git failed") == \

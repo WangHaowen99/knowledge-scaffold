@@ -874,7 +874,9 @@ def sample(ctx: Context, dialect: Dialect) -> None:
         same_schema = [item for item in tables if item.schema == schema and item.readable]
         collection = Collection(ctx, cur, same_schema)
         collection.load_structure()
-        columns, rows = collection.read_rows(table, limit)
+        # 分类按和快照相同的行数做（几行样本判断不出低基数代码列，会把状态、等级这类列也遮掉，和快照前后不一致），
+        # 只展示 limit 行
+        columns, rows = collection.read_rows(table, collection.row_limit(table, profile_rows()))
         classified = Classified(columns, rows, collection.join_keys.get((schema, name), set()), masker, name)
         collection.emit_sample(table, classified, limit)
     finally:
