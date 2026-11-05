@@ -247,6 +247,7 @@ def ping():
 
 
 app.add_url_rule("/legacy", view_func=ping)
+audit = Table("audit_log", metadata, Column("id", Integer, primary_key=True))
 
 
 class TicketIn(BaseModel):
@@ -279,7 +280,8 @@ def test_python_other_frameworks():
     assert by_id[f"code:{SOURCE}/rule:shop::views::TicketIn::seats::le"]["attrs"]["params"] == {"value": 12}
     assert by_id[f"code:{SOURCE}/sym:shop::views::TicketIn::seats"]["label"] == "座位数"
     assert by_id[f"code:{SOURCE}/sym:shop::views::TicketIn::note"]["attrs"]["nullable"] is True
-    assert any("add_url_rule" in text for text in sink.limitations())
+    notes = " / ".join(sink.limitations())
+    assert "add_url_rule" in notes and "Table()" in notes
 
 
 def test_unrecognized_ts_patterns_become_limitations():

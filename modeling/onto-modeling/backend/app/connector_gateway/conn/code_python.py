@@ -159,6 +159,8 @@ class PythonFile:
             if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "urlpatterns"
                                                       for target in node.targets):
                 self.sink.note("Django urls.py 的路由没有识别", self.path)
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) and short(node.value.func) == "Table":
+                self.sink.note("SQLAlchemy 的 Table() 命令式映射没有识别", self.path)
         for node in ast.walk(self.tree):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                 if node.func.attr == "include_router" and "prefix" in keywords(node):
