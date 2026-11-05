@@ -106,8 +106,7 @@ def load_uninstall_config(path: Path) -> dict:
         if len(entry["releaseName"]) > 49:
             raise ConfigError(f"{side} releaseName is too long for its operation Lease")
         result[side] = {"releaseName": entry["releaseName"], "namespace": entry["namespace"]}
-    if all(result["modeling"].get(key) == result["consumer"].get(key)
-           for key in ("releaseName", "namespace")):
+    if result.get("modeling") == result.get("consumer"):
         raise ConfigError("Consumer and Modeling release identities must differ")
     return result
 
