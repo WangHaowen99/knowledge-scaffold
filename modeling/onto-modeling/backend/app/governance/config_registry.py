@@ -373,6 +373,10 @@ declare(
     C("ONTO_WEB_SANDBOX_GATEWAY_PORT", "8110", "int", minimum=1, maximum=65535, description="沙箱网关监听端口"),
     C("ONTO_WEB_CONNECTOR_GATEWAY_URL", "", "url", effect="immediate",
       description="连接器网关（资料转文本，ADR-0073）；没配时资料停在等待转换"),
+    C("ONTO_WEB_EVIDENCE_MAX_ARTIFACT_MB", "2048", "int", minimum=1, maximum=65536, effect="immediate",
+      description="上传目标程序的单文件上限（MB，ADR-0082）"),
+    C("ONTO_WEB_EVIDENCE_SNAPSHOT_GIT_MB", "20", "int", minimum=1, maximum=1024, effect="immediate",
+      description="一份证据快照进 git 的部分上限（MB，原始结果另存 blob 仓）"),
     # 备份
     C("ONTO_WEB_BACKUP_INTERVAL_HOURS", "24", "int", minimum=1, maximum=720, allow_zero=True,
       description="定期备份间隔（小时），0 关闭"),

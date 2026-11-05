@@ -25,7 +25,8 @@ ISSUER = "onto-modeling"
 AUDIENCE = "connector-gateway"
 ALGORITHM = "EdDSA"
 KEY_FILE = "connector-ticket-key.pem"
-OPERATIONS = ("discover", "snapshot", "sample", "test", "convert")
+# job：查进度、取消、取快照包、清理一个已建的采集任务（范围是 spec.job_scope）
+OPERATIONS = ("discover", "snapshot", "sample", "test", "convert", "job")
 
 
 class TicketError(ValueError):

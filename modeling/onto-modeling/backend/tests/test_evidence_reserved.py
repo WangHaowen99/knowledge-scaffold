@@ -1,5 +1,5 @@
-"""证据源只留接口（ADR-0056）：契约 3.19 的路由与 PL-04、PL-19 一律 501；助手拿不到 evidence.* 工具；
-内核 SPI 只有协议。"""
+"""证据源的接口占位（ADR-0056，F13 起大部分已实现，ADR-0082）：凭据（EV-06、EV-07）与 PL-04、PL-19 仍回 501；
+契约 3.19 的每个接口都登记了路由；助手拿不到 evidence.* MCP 工具；内核 SPI 只有协议。"""
 
 from __future__ import annotations
 
@@ -48,16 +48,18 @@ def test_every_reserved_route_returns_501_with_contract_envelope(env):
         assert set(body) == {"code", "message", "details", "trace_id"}
         assert body["trace_id"] == response.headers["x-trace-id"]
         seen.add(api)
-    # EV-29 的 file: 锚点 I1 已实现（主控 11-02 定），不再整体 501，见 test_i1_material_text
-    assert seen == {f"EV-{n:02d}" for n in range(1, 31)} - {"EV-29"} | {"PL-04", "PL-19"}
-    assert {api for api, _method, _path in evidence.IMPLEMENTED} == {"EV-29"}
+    # F13 起只剩凭据两个接口没开放（等数据库连接器），其余见 test_f13_*
+    assert seen == {"EV-06", "EV-07", "PL-04", "PL-19"}
+    assert {item[0] for item in evidence.IMPLEMENTED} == {f"EV-{n:02d}" for n in range(1, 34)} - {"EV-06", "EV-07"}
 
 
-def test_fixed_segment_wins_over_path_parameter(env):
+def test_fixed_segment_wins_over_path_parameter(env, monkeypatch):
     client, project_id = env
-    diff = client.get(f"/api/v1/projects/{project_id}/evidence/snapshots/diff?from=a&to=b").json()
+    monkeypatch.setattr(evidence, "_pack_enabled", lambda root: True)
+    diff = client.get(f"/api/v1/projects/{project_id}/evidence/snapshots/diff").json()
     one = client.get(f"/api/v1/projects/{project_id}/evidence/snapshots/s-1").json()
-    assert diff["details"]["api"] == "EV-21" and one["details"]["api"] == "EV-19"
+    assert diff["code"] == "invalid_argument" and set(diff["details"]["fields"]) == {"from", "to"}
+    assert one["code"] == "snapshot_not_found"
 
 
 @pytest.mark.skipif(not CONTRACT.is_file(), reason="契约副本不在仓库里")
@@ -72,7 +74,7 @@ def test_routes_cover_contract_section_3_19():
         for suffix in re.findall(r"`\.\.\./(\w+)`", line):  # EV-17 的 `.../resume`、`.../retry`
             declared.add(("POST", f"/api/v1/projects/{{}}/evidence/jobs/{{}}/{suffix}"))
     registered = {(method, re.sub(r"\{[^}]+\}", "{}", path))
-                  for _, method, path in (*evidence.ROUTES, *evidence.IMPLEMENTED)}
+                  for _api, method, path, *_handler in (*evidence.ROUTES, *evidence.IMPLEMENTED)}
     assert declared and declared <= registered, declared - registered
 
 

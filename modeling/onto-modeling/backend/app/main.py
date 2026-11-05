@@ -28,6 +28,12 @@ async def _lifespan(app: FastAPI):
         "solver_validation",
         lambda: solver_validation.sweep_interrupted(deps.workspaces.workspaces_dir),
     )
+    from .evidence import jobs as evidence_jobs
+    from .evidence import uploads as evidence_uploads
+
+    # 采集任务的线程只活在进程内（ADR-0082）：上次还在排队、运行的标失败；超过 24 小时没完成的上传清掉
+    background_jobs.register_startup_sweep("evidence_jobs", evidence_jobs.sweep_interrupted)
+    background_jobs.register_startup_sweep("evidence_uploads", evidence_uploads.cleanup)
     # 启动恢复（详设 8.3、方案 B8）：任何会话开始之前，按登记顺序跑完各模块的恢复步骤——清残留锁、
     # 补提交写入意图、存量迁移、核对装配目录、修对话历史、把没结束的执行改判中断——并留存报告（O-35）
     await asyncio.to_thread(startup_recovery.run, deps.workspaces, include_background=False)
