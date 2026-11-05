@@ -414,8 +414,8 @@ def run(project_id: str, job_id: str) -> None:
             cancel_sent = _try(lambda: collector.cancel(job_id, budget))
         if time.time() - started > budget.get("max_duration_s", 1800) + GRACE_S:
             _try(lambda: collector.cancel(job_id, budget))
-            _fail(project_id, job_id, "timeout", "超过预算时长")
             _cleanup(job_id, budget)
+            _fail(project_id, job_id, "timeout", "超过预算时长")
             return
         cancelled.wait(POLL_S)
         try:
@@ -425,8 +425,8 @@ def run(project_id: str, job_id: str) -> None:
             if exc.status == 404:
                 _fail(project_id, job_id, "gateway_restarted", "连接器网关重启过，任务丢了，可以重试")
                 return
-            _fail(project_id, job_id, exc.code, exc.message)
             _cleanup(job_id, budget)
+            _fail(project_id, job_id, exc.code, exc.message)
             return
         except collector.GatewayUnavailable:
             unreachable_since = unreachable_since or time.time()
@@ -435,37 +435,37 @@ def run(project_id: str, job_id: str) -> None:
                 return
             status = {"state": "running", "phase": job.get("phase")}
 
+    # 先让网关清目录再落最终状态：任务显示结束时网关那边也收拾完了
     if state == "cancelled" or cancelled.is_set():
-        _update(project_id, job_id, state="cancelled", ended_at=time.time(), phase=None)
         _cleanup(job_id, budget)
+        _update(project_id, job_id, state="cancelled", ended_at=time.time(), phase=None)
         return
     if state == "failed":
+        _cleanup(job_id, budget)
         _fail(project_id, job_id, str(status.get("error_code") or "provider_failed"),
               str(status.get("error_message") or "采集失败"))
-        _cleanup(job_id, budget)
         return
-    _collect(project_id, job_id, registration, state)
+    outcome = _collect(project_id, job_id, registration, state)
     _cleanup(job_id, budget)
+    if outcome.get("state") == "failed":
+        _fail(project_id, job_id, outcome["code"], outcome["message"])
+    else:
+        _update(project_id, job_id, **outcome)
 
 
-def _collect(project_id: str, job_id: str, registration: dict, state: str) -> None:
+def _collect(project_id: str, job_id: str, registration: dict, state: str) -> dict:
+    """取快照包、入库；返回任务最终要写的字段（失败时 `{state: failed, code, message}`）。"""
     job = _update(project_id, job_id, phase="入库", progress=None)
     bundle = storage.tmp_dir() / f"{job_id}-{uuid.uuid4().hex[:6]}.tar"
     try:
         collector.bundle(job_id, job["budget"], bundle, _bundle_cap(job))
         if _cancel_event(job_id).is_set():
-            _update(project_id, job_id, state="cancelled", ended_at=time.time(), phase=None)
-            return
+            return {"state": "cancelled", "ended_at": time.time(), "phase": None}
         result = ingest.ingest(_manager(), project_id, registration, job, bundle)
     except collector.GatewayUnavailable:
-        _fail(project_id, job_id, "gateway_unavailable", "取快照包时连接器网关不可达")
-        return
-    except collector.GatewayError as exc:
-        _fail(project_id, job_id, exc.code, exc.message)
-        return
-    except ingest.IngestError as exc:
-        _fail(project_id, job_id, exc.code, exc.message)
-        return
+        return {"state": "failed", "code": "gateway_unavailable", "message": "取快照包时连接器网关不可达"}
+    except (collector.GatewayError, ingest.IngestError) as exc:
+        return {"state": "failed", "code": exc.code, "message": exc.message}
     finally:
         bundle.unlink(missing_ok=True)
     try:
@@ -481,11 +481,11 @@ def _collect(project_id: str, job_id: str, registration: dict, state: str) -> No
     message = f"快照 {result['snapshot_id']}：{sum(int(value or 0) for value in counts.values())} 条记录"
     if manifest.get("masked_hits"):
         message += f"，遮蔽 {manifest['masked_hits']} 处疑似密钥"
-    _update(project_id, job_id, state="succeeded" if complete else "partial", ended_at=time.time(), phase=None,
-            result={"snapshot_id": result["snapshot_id"], "message": message, "commit": result["commit"]},
-            access={"rows": int(used.get("records") or 0), "bytes": int(used.get("bytes") or 0),
-                    "duration_ms": int(float(used.get("duration_s") or 0) * 1000),
-                    "artifact_sha256": (job.get("artifact") or {}).get("sha256")})
+    return {"state": "succeeded" if complete else "partial", "ended_at": time.time(), "phase": None,
+            "result": {"snapshot_id": result["snapshot_id"], "message": message, "commit": result["commit"]},
+            "access": {"rows": int(used.get("records") or 0), "bytes": int(used.get("bytes") or 0),
+                       "duration_ms": int(float(used.get("duration_s") or 0) * 1000),
+                       "artifact_sha256": (job.get("artifact") or {}).get("sha256")}}
 
 
 def _try(call) -> bool:

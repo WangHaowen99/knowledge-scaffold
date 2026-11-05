@@ -50,7 +50,7 @@ def test_every_reserved_route_returns_501_with_contract_envelope(env):
         seen.add(api)
     # F13 起只剩凭据两个接口没开放（等数据库连接器），其余见 test_f13_*
     assert seen == {"EV-06", "EV-07", "PL-04", "PL-19"}
-    assert {item[0] for item in evidence.IMPLEMENTED} == {f"EV-{n:02d}" for n in range(1, 34)} - {"EV-06", "EV-07"}
+    assert {item[0] for item in evidence.IMPLEMENTED} == {f"EV-{n:02d}" for n in range(1, 35)} - {"EV-06", "EV-07"}
 
 
 def test_fixed_segment_wins_over_path_parameter(env, monkeypatch):

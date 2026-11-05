@@ -1,4 +1,4 @@
-"""分块上传目标程序（契约 EV-31～EV-33；ADR-0082 约束 5）。
+"""分块上传目标程序（契约 EV-31～EV-34；ADR-0082 约束 5）。
 
 `DATA_DIR/evidence/uploads/<上传ID>/`：`meta.json` 和每块一个 `<序号>.part`。完成时按序拼进 blob 仓、边写边算 sha256；
 主容器只拼块、算哈希，不看内容。每人同时最多 2 个没完成的上传，24 小时没完成的清掉。
@@ -140,6 +140,12 @@ async def put_chunk(upload_id: str, index: int, owner: str, stream) -> dict:
         temporary.unlink(missing_ok=True)
     total, chunks = _received(meta)
     return {"received_bytes": total, "received_chunks": len(chunks)}
+
+
+def cancel(upload_id: str, owner: str) -> None:
+    """EV-34：上传人删掉没完成的上传（已完成的目录已经不在，回 upload_not_found）。"""
+    meta = _meta(upload_id, owner)
+    shutil.rmtree(_dir() / meta["id"], ignore_errors=True)
 
 
 def complete(upload_id: str, owner: str, sha256) -> dict:

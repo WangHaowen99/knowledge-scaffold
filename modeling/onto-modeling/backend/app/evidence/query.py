@@ -281,31 +281,39 @@ def search(connection: sqlite3.Connection, snapshots: list[str], q: str, kind: s
     return out
 
 
+def untrusted(connection: sqlite3.Connection, snapshot_ids) -> bool:
+    """这些快照里有没有标 `untrusted_content` 的（内容来自目标程序）。"""
+    for snapshot_id in snapshot_ids:
+        row = snapshot_row(connection, snapshot_id) if snapshot_id else None
+        if row is not None and json.loads(row["manifest"]).get("untrusted_content", True):
+            return True
+    return False
+
+
+def _member_type(child: sqlite3.Row, attrs: dict) -> str:
+    return str(attrs.get("signature") or attrs.get("type") or attrs.get("kind") or child["type"])
+
+
 def record_view(connection: sqlite3.Connection, row: sqlite3.Row, snapshot: sqlite3.Row) -> dict:
-    """EvidenceRecord：记录本身，加它的字段（`fields`）和方法、操作（`operations`），各最多 50 条。"""
+    """EvidenceRecord：记录本身，`fields` 列它的成员（类的字段和方法，最多 50 条，`type` 填签名或类型）。"""
     record = _record(row)
     evidence = record.get("evidence") if isinstance(record.get("evidence"), dict) else {}
     children = connection.execute(
-        "SELECT * FROM records WHERE snapshot_id = ? AND parent = ? ORDER BY type, name",
-        (row["snapshot_id"], row["anchor"])).fetchall()
-    fields, operations = [], []
+        "SELECT * FROM records WHERE snapshot_id = ? AND parent = ? AND type IN ('field', 'operation') "
+        "ORDER BY type, name LIMIT ?", (row["snapshot_id"], row["anchor"], CHILDREN_MAX)).fetchall()
+    fields = []
     for child in children:
         body = _record(child)
         attrs = body.get("attrs") if isinstance(body.get("attrs"), dict) else {}
-        if child["type"] == "field" and len(fields) < CHILDREN_MAX:
-            fields.append({"name": child["name"], "type": str(attrs.get("type") or attrs.get("kind") or ""),
-                           "note": child["label"] or "", "confidence": child["confidence"] or "observed",
-                           "masked": False, "anchor": child["anchor"]})
-        elif child["type"] == "operation" and len(operations) < CHILDREN_MAX:
-            operations.append({"name": child["name"], "kind": str(attrs.get("kind") or ""), "anchor": child["anchor"],
-                               "confidence": child["confidence"] or "observed"})
+        fields.append({"name": child["name"], "type": _member_type(child, attrs), "note": child["label"] or "",
+                       "confidence": child["confidence"] or "observed", "masked": False, "anchor": child["anchor"]})
     return {
         "anchor": row["anchor"], "type": row["type"], "name": row["name"], "label": row["label"],
         "parent_anchor": row["parent"], "confidence": row["confidence"] or "observed",
         "evidence": {"provider": str(evidence.get("provider") or ""), "method": str(evidence.get("method") or "")},
         "attrs": record.get("attrs") if isinstance(record.get("attrs"), dict) else {},
-        "fields": fields, "operations": operations,
-        "snapshot": snapshot_ref(snapshot), "untrusted_content": True,
+        "fields": fields, "snapshot": snapshot_ref(snapshot),
+        "untrusted_content": untrusted(connection, [snapshot["id"]]),
     }
 
 
@@ -386,12 +394,15 @@ def diff(connection: sqlite3.Connection, root: Path, refs: References, old: str,
 
 
 def summary_tree(connection: sqlite3.Connection, root: Path, refs: References, snapshot: sqlite3.Row) -> dict:
-    """EV-23：实体按 `attrs.module` 分组；mapped_to 是引用了它的本体条目。"""
+    """EV-23：实体和操作按 `attrs.module` 分组（模块记录本身就是组，不列）；mapped_to 是引用了它的本体条目。"""
     from ..services import project_events
 
     groups: dict[str, list[dict]] = {}
-    for row in connection.execute(
-            "SELECT * FROM records WHERE snapshot_id = ? AND type = 'entity' ORDER BY module, name", (snapshot["id"],)):
+    for row in connection.execute("SELECT * FROM records WHERE snapshot_id = ? AND type IN ('entity', 'operation') "
+                                   "ORDER BY module, type, name", (snapshot["id"],)):
+        attrs = _record(row).get("attrs") or {}
+        if isinstance(attrs, dict) and attrs.get("kind") == "module":
+            continue
         mapped = None
         for rel, _line in refs.anchors.get(row["anchor"], []):
             entries = project_events.entry_refs(root, [rel])
@@ -399,10 +410,12 @@ def summary_tree(connection: sqlite3.Connection, root: Path, refs: References, s
                 mapped = entries[0]
                 break
         groups.setdefault(row["module"] or "", []).append(
-            {"anchor": row["anchor"], "name": row["name"], "label": row["label"], "mapped_to": mapped})
+            {"anchor": row["anchor"], "type": row["type"], "name": row["name"], "label": row["label"],
+             "mapped_to": mapped})
     domains = [{"name": name or "（未分组）", "count": len(entities), "entities": entities}
                for name, entities in sorted(groups.items())]
-    return {"snapshot": snapshot_ref(snapshot), "domains": domains, "untrusted_content": True}
+    return {"snapshot": snapshot_ref(snapshot), "domains": domains,
+            "untrusted_content": untrusted(connection, [snapshot["id"]])}
 
 
 def resolution(connection: sqlite3.Connection, anchor: str, *, declared: dict[str, str] | None = None) -> dict:

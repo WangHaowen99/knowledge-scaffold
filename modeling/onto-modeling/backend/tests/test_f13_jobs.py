@@ -253,3 +253,18 @@ def test_production_requires_confirmation_token(f13):
     reused = f13.client.post(base, json={"source_id": SOURCE, "confirmation_token": preview["confirmation_token"]})
     assert reused.status_code == 410
     f13.wait(project_id, job["id"])
+
+
+def test_access_window_crossing_midnight():
+    from datetime import datetime, timezone
+
+    def at(text: str) -> float:
+        return datetime.fromisoformat(text).replace(tzinfo=timezone.utc).timestamp()
+
+    window = {"days": ["mon"], "start": "22:00", "end": "06:00", "tz": "UTC"}
+    assert jobs.in_window(window, at("2026-11-02T23:00"))       # 周一夜里
+    assert jobs.in_window(window, at("2026-11-03T05:59"))       # 周二凌晨算周一的窗口
+    assert not jobs.in_window(window, at("2026-11-03T23:00"))   # 周二夜里
+    assert not jobs.in_window(window, at("2026-11-02T12:00"))
+    assert jobs.in_window({"days": "daily", "start": "09:00", "end": "17:00", "tz": "UTC"}, at("2026-11-05T09:00"))
+    assert jobs.in_window(None)

@@ -1,4 +1,4 @@
-"""证据源（契约 3.19 EV-01～EV-33；`design/evidence-collection.md`；ADR-0082）。
+"""证据源（契约 3.19 EV-01～EV-34；`design/evidence-collection.md`；ADR-0082）。
 
 实现在 `app/evidence/`：登记 `sources`、上传 `uploads`、任务 `jobs`（经网关 `collector`）、入库 `ingest`、索引 `index`、
 检索 `query`。这里只做权限、参数和视图。
@@ -330,7 +330,7 @@ async def notify_admin(source_id: str, request: Request):
 
 
 # ---------------------------------------------------------------------------
-# EV-31～EV-33：分块上传
+# EV-31～EV-34：分块上传
 # ---------------------------------------------------------------------------
 
 
@@ -341,6 +341,12 @@ async def start_upload(request: Request):
 
 async def put_chunk(upload_id: str, index: int, request: Request):
     return await uploads.put_chunk(upload_id, index, _user(request), request.stream())
+
+
+def cancel_upload(upload_id: str, request: Request):
+    """EV-34：删掉没完成的上传，释放每人的名额。"""
+    uploads.cancel(upload_id, _user(request))
+    return Response(status_code=204)
 
 
 async def complete_upload(upload_id: str, request: Request):
@@ -726,11 +732,13 @@ def search(project_id: str, request: Request, q: str = "", type: str = "", sourc
     if type and type not in RECORD_TYPES:
         raise ApiError("invalid_argument", "type 不合法", 400, {"fields": {"type": "enum"}})
     with index.connect(project_id, root) as connection:
-        items = query.search(connection, _search_snapshots(connection, source_id, snapshot), q, type or None)
+        chosen = _search_snapshots(connection, source_id, snapshot)
+        items = query.search(connection, chosen, q, type or None)
+        flagged = query.untrusted(connection, chosen)
     _query_audit(request, project_id, "EV-24", q=q[:80], snapshot=snapshot, source_id=source_id)
     page = deps.page(items, cursor, limit, {"q": q, "type": type, "source_id": source_id, "snapshot": snapshot})
     return {"items": page["items"], "next_cursor": page["next_cursor"], "total": page["total"],
-            "untrusted_content": True}
+            "untrusted_content": flagged}
 
 
 def _declared(root, path: str) -> dict[str, str]:
@@ -787,8 +795,9 @@ def lineage(project_id: str, request: Request, anchor: str = "", snapshot: str =
             _snapshot(connection, snapshot)
         snapshot_id = query.resolve_snapshot(connection, parsed["source_id"], snapshot=snapshot or None)
         items = query.lineage(connection, snapshot_id, anchor) if snapshot_id else []
+        flagged = query.untrusted(connection, [snapshot_id])
     _query_audit(request, project_id, "EV-27", anchor=anchor[:200], snapshot=snapshot_id)
-    return {"items": items, "untrusted_content": True}
+    return {"items": items, "untrusted_content": flagged}
 
 
 def er_view(project_id: str, request: Request, snapshot: str = ""):
@@ -881,6 +890,7 @@ IMPLEMENTED = (
     ("EV-31", "POST", "/api/v1/evidence/uploads", start_upload),
     ("EV-32", "PUT", "/api/v1/evidence/uploads/{upload_id}/chunks/{index}", put_chunk),
     ("EV-33", "POST", "/api/v1/evidence/uploads/{upload_id}/complete", complete_upload),
+    ("EV-34", "DELETE", "/api/v1/evidence/uploads/{upload_id}", cancel_upload),
 )
 
 for _api, _method, _path, _handler in IMPLEMENTED:

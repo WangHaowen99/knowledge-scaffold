@@ -50,8 +50,8 @@ def test_snapshot_list_detail_search_record_lineage(f13):
 
     shown = f13.client.get(f"{base}/record", params={"anchor": ids["Order"]}).json()
     assert shown["label"] == "订单" and shown["snapshot"] == {"id": snapshot_id, "source_id": SOURCE, "complete": True}
-    assert [item["name"] for item in shown["fields"]] == ["amount"] and shown["fields"][0]["type"] == "number"
-    assert [item["name"] for item in shown["operations"]] == ["approve"]
+    assert [(item["name"], item["type"]) for item in shown["fields"]] == [("amount", "number"),
+                                                                         ("approve", "approve(note)")]
     assert shown["evidence"]["provider"] == "rea-static@0.1.0" and shown["untrusted_content"]
     assert f13.client.get(f"{base}/record", params={"anchor": "nope"}).json()["code"] == "anchor_invalid"
     assert f13.client.get(f"{base}/record", params={"anchor": f"bin:{SOURCE}/sym:Nope"}).json()["code"] == \
@@ -65,7 +65,11 @@ def test_snapshot_list_detail_search_record_lineage(f13):
     assert f13.client.get(f"{base}/er", params={"snapshot": snapshot_id}).json() == {"tables": [], "relations": []}
 
     tree = f13.client.get(f"{base}/summary-tree", params={"snapshot": snapshot_id}).json()
-    assert {domain["name"] for domain in tree["domains"]} == {"renderer", "external"}
+    groups = {domain["name"]: domain for domain in tree["domains"]}
+    assert set(groups) == {"renderer", "main", "external"} and tree["untrusted_content"]
+    assert [(item["type"], item["name"]) for item in groups["renderer"]["entities"]] == [("entity", "Order"),
+                                                                                        ("operation", "approve")]
+    assert groups["main"]["entities"][0]["name"] == "order:create"
 
 
 def test_where_used_resolve_diff_cleanup_and_suggestions(f13):

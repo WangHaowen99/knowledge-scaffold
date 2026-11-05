@@ -25,7 +25,7 @@ STATUS_TIMEOUT_S = 10
 SUBMIT_TIMEOUT_S = 600       # 目标程序可能有几百 MB，边收边转给旁路容器
 BUNDLE_TIMEOUT_S = 300
 _COPY_BYTES = 1024 * 1024
-_catalog: tuple[float, list[dict] | None] | None = None
+_catalog: tuple[str, float, list[dict] | None] | None = None
 _catalog_lock = threading.Lock()
 
 GatewayUnavailable = gateway.GatewayUnavailable
@@ -44,10 +44,10 @@ class GatewayError(Exception):
 def catalog(force: bool = False) -> list[dict] | None:
     """网关里的证据源提供方（`GET /v1/providers` 的 `providers`）；网关不可用时 None。"""
     global _catalog
-    now = time.time()
+    now, url = time.time(), gateway.base_url()
     with _catalog_lock:
-        if not force and _catalog is not None:
-            stamp, value = _catalog
+        if not force and _catalog is not None and _catalog[0] == url:  # 地址改了（即时生效的配置）就重取
+            _url, stamp, value = _catalog
             if now - stamp < (CATALOG_TTL_S if value is not None else DOWN_TTL_S):
                 return value
     try:
@@ -56,7 +56,7 @@ def catalog(force: bool = False) -> list[dict] | None:
     except GatewayUnavailable:
         value = None
     with _catalog_lock:
-        _catalog = (now, value)
+        _catalog = (url, now, value)
     return value
 
 

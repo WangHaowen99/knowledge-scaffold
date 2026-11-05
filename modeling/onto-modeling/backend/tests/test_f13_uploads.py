@@ -90,3 +90,15 @@ def test_uploads_belong_to_uploader(f13):
     # 每人各自算名额
     assert _start(f13, 4, headers=bob).status_code == 201 and _start(f13, 4, headers=bob).status_code == 201
     assert _start(f13, 4, headers=alice).status_code == 201
+
+
+def test_cancel_upload_frees_quota(f13):
+    first, second = _start(f13, 4).json(), _start(f13, 4).json()
+    assert _start(f13, 4).status_code == 429
+    assert f13.client.delete(f"{BASE}/{first['upload_id']}").status_code == 204
+    assert not (storage.root() / "uploads" / first["upload_id"]).exists()
+    assert f13.client.delete(f"{BASE}/{first['upload_id']}").status_code == 404
+    assert _start(f13, 4).status_code == 201
+    f13.client.put(f"{BASE}/{second['upload_id']}/chunks/0", content=b"abcd")
+    f13.client.post(f"{BASE}/{second['upload_id']}/complete", json={"sha256": hashlib.sha256(b"abcd").hexdigest()})
+    assert f13.client.delete(f"{BASE}/{second['upload_id']}").status_code == 404  # 已完成的不能删
