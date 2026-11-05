@@ -130,6 +130,11 @@ class Context:
     def limitation(self, text: str) -> None:
         self._emit("limitation", text=str(text)[:500])
 
+    def artifact(self, info: dict) -> None:
+        """采集对象本身的标识（代码仓库：`repo_url`、`ref`、`commit`），网关写进快照清单的 `artifact`。"""
+        _reject_floats(info, "artifact")
+        self._emit("artifact", artifact=dict(info))
+
     def result(self, *, complete: bool = True, coverage_pct: float = 100.0, checks: list[dict] | None = None) -> None:
         fields: dict = {"complete": bool(complete), "coverage_pct": round(float(coverage_pct), 1)}
         if checks is not None:
