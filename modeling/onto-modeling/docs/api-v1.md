@@ -2523,7 +2523,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `POST /api/v1/me/pack-uploads`（multipart） · 登录即可 · 旧：— · 审计：专项 `pack.upload` · 依据：ADR-0079 · 页面：plugin-upload
 
 - 请求：`file`（zip，≤20 MiB，解压后 ≤64 MiB、≤2000 个文件）。
-- 静态检查比 PL-15 多一项 `private_scope`（只带提示词和资料，白名单见 ADR-0079）和 `private_name`（包名没被占用），按租户包的严格程度查。
+- 能带的内容和管理员上传一样（ADR-0080）：静态检查按 PL-15 租户包的严格程度查，多一项 `private_name`（包名没被占用）。
 - 每人保留最近 20 个上传，更早的自动清掉。
 - 响应 `202`：`PackUpload`（`state="checking"`，`scope="private"`）。
 - 错误：`pack_upload_invalid`（`reason` 多一种 `too_large`）、`payload_too_large`。

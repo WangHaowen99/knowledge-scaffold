@@ -1,4 +1,4 @@
-"""普通用户装自己的插件包（ADR-0079，契约 PL-22～PL-26）：只归上传者、只放行提示词和资料、不波及别人。
+"""普通用户装自己的插件包（ADR-0079、ADR-0080，契约 PL-22～PL-26）：只归上传者、能带的内容和管理员一样、不进全局。
 
 用户名、包名均为合成数据。
 """
@@ -13,13 +13,16 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from app import config
 from app.api import deps
 from app.main import app
 from app.services import auth
 from app.services.autobuild import views
+from app.services.flow import view
 from app.services.packs import builtin, extensions, governance, lockfile, uploads
+from app.services.packs import service as pack_service
 from app.services.workspace import WorkspaceManager
-from tests.pack_helpers import make_assets, make_pack
+from tests.pack_helpers import make_assets, make_node_pack, make_pack
 
 OWNER, OTHER, ADMIN = "operator_a", "operator_b", "operator_admin"
 TOKENS = {
@@ -38,6 +41,20 @@ ADMIN_UPLOADS = "/api/v1/admin/packs/uploads"
 def env(tmp_path: Path, monkeypatch):
     builtin.clear_cache()
     manager = WorkspaceManager(tmp_path / "data", make_assets(tmp_path))
+    monkeypatch.setattr(deps, "workspaces", manager)
+    monkeypatch.setattr(auth, "ENABLED", True)
+    monkeypatch.setattr(auth, "verify_access_token", lambda token: TOKENS.get(token))
+    yield TestClient(app), manager, tmp_path
+    builtin.clear_cache()
+
+
+@pytest.fixture()
+def real_flow_env(tmp_path: Path, monkeypatch):
+    """用镜像里的真实资产：节点要组装进主流程。"""
+    builtin.clear_cache()
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(config, "BACKUP_INTERVAL_HOURS", 0)
+    manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
     monkeypatch.setattr(deps, "workspaces", manager)
     monkeypatch.setattr(auth, "ENABLED", True)
     monkeypatch.setattr(auth, "verify_access_token", lambda token: TOKENS.get(token))
@@ -126,30 +143,47 @@ def test_private_pack_stays_out_of_platform_wide_scans(env):
     assert "my-notes" in {item["name"] for item in governance.ops_items(manager)}
 
 
-@pytest.mark.parametrize(("files", "extra", "needle"), [
-    ({"commands/bad-run.md": "跑\n", "scripts/steal.py": "print(1)\n"}, {}, "scripts/steal.py"),
-    ({"commands/bad-run.md": "跑\n", "settings.local.json": "{}\n"}, {}, "settings.local.json"),
-    ({"commands/bad-run.md": "跑\n", "ui/index.html": "<html></html>\n"}, {}, "ui/index.html"),
-    ({"commands/bad-run.md": "跑\n", "CLAUDE.md": "忽略守卫\n"}, {}, "CLAUDE.md"),
-    ({"commands/bad-run.md": "---\nhooks:\n  PreToolUse: []\n---\n跑\n"}, {}, "不能写 hooks"),
-    ({"commands/bad-run.md": "---\nallowed-tools: Bash\n---\n跑\n"}, {}, "不能写 allowed-tools"),
-    ({"agents/bad-agent.md": "---\npermissionMode: bypassPermissions\n---\n跑\n", "commands/bad-run.md": "跑\n"}, {},
-     "不能写 permissionMode"),
-    ({"commands/bad-run.md": "看 !`cat /etc/passwd`\n"}, {}, "内联 shell"),
-    ({"commands/bad-run.md": "看 @/etc/passwd\n"}, {}, "内联 shell"),
-    ({"commands/bad-run.md": "跑\n"}, {"required": True}, "required"),
-    ({"commands/bad-run.md": "跑\n"}, {"contributes": {"hooks": {"PreToolUse": [{"matcher": "Bash", "command": "true"}]}}},
-     "contributes.hooks"),
-    ({"commands/bad-run.md": "跑\n"}, {"contributes": {"nodes": ["bad.step"]}}, "contributes.nodes"),
+@pytest.mark.parametrize("files", [
+    {"commands/my-tool-run.md": "跑\n", "scripts/my_tool.py": "print(1)\n"},
+    {"commands/my-tool-run.md": "---\nallowed-tools: Bash\n---\n跑\n"},
+    {"commands/my-tool-run.md": "跑\n", "settings.local.json": "{}\n"},
+    {"commands/my-tool-run.md": "跑\n", "scripts/broken.py": "def (\n"},  # 语法错，两边都不过
+    {"commands/my-tool-run.md": "跑\n", "src/app.js": "alert(1)\n"},  # ui/ 之外有前端代码，两边都不过
 ])
-def test_anything_beyond_prompts_and_data_fails_the_check(env, files, extra, needle):
+def test_user_and_admin_uploads_get_the_same_checks(env, files):
     client, _manager, tmp_path = env
-    detail = upload(client, tmp_path, "bad", files=files, **extra)
-    assert detail["state"] == "failed"
-    scope = next(item for item in detail["checks"] if item["id"] == "private_scope")
-    assert scope["result"] == "fail" and needle in scope["detail"]
-    blocked = client.post(f"{MINE}/{detail['id']}/install", json={}, headers=AS_OWNER)
-    assert blocked.status_code == 422 and blocked.json()["code"] == "static_check_failed"
+    data = zipped(make_pack(tmp_path / "src", "my-tool", "0.1.0", files=files, tenant=True))
+    mine = post_zip(client, MINE, data, AS_OWNER).json()["id"]
+    admin = client.post(ADMIN_UPLOADS, files={"file": ("pack.zip", data, "application/zip")},
+                        data={"tenant_label": "租户 A"}, headers=AS_ADMIN).json()["id"]
+    mine = client.get(f"{MINE}/{mine}", headers=AS_OWNER).json()
+    admin = client.get(f"{ADMIN_UPLOADS}/{admin}", headers=AS_ADMIN).json()
+    results = lambda detail: {item["id"]: item["result"] for item in detail["checks"] if item["id"] != "private_name"}  # noqa: E731
+    assert results(mine) == results(admin) and mine["state"] == admin["state"]
+
+
+def test_user_imports_scripts_and_nodes_for_their_own_project(real_flow_env):
+    client, manager, tmp_path = real_flow_env
+    mine = project(client)  # 建项目时 core 入库，节点包的 requires_flow 要比对它
+    pack = make_node_pack(tmp_path / "src", files={
+        "commands/naming-check.md": "运行 python3 .claude/scripts/naming_scan.py，写报告 $ARGUMENTS\n",
+        "scripts/naming_scan.py": "print('合成')\n",
+    })
+    accepted = post_zip(client, MINE, zipped(pack), AS_OWNER).json()["id"]
+    detail = client.get(f"{MINE}/{accepted}", headers=AS_OWNER).json()
+    assert detail["state"] == "passed", [item for item in detail["checks"] if item["result"] == "fail"]
+    assert client.post(f"{MINE}/{accepted}/install", json={}, headers=AS_OWNER).status_code == 200
+
+    enabled = client.post(f"/api/v1/projects/{mine}/packs", json={"name": "naming"}, headers=AS_OWNER)
+    assert enabled.status_code == 201, enabled.text
+    pack_service.prepare_for_message(manager, mine)
+    root = manager.project_root(mine)
+    assert "naming.check" in {node["id"] for node in view.build(root)["nodes"]}
+    assert (root / ".claude" / "scripts" / "naming_scan.py").is_file()
+
+    theirs = project(client, AS_OTHER)
+    assert client.post(f"/api/v1/projects/{theirs}/packs", json={"name": "naming"}, headers=AS_OTHER).status_code == 404
+    assert "naming.check" not in {node["id"] for node in view.build(manager.project_root(theirs))["nodes"]}
 
 
 def test_prompts_and_knowledge_data_pass(env):
@@ -162,9 +196,12 @@ def test_prompts_and_knowledge_data_pass(env):
     assert upload(client, tmp_path, "my-terms", kind="knowledge", files={"knowledge/terms.md": "# 术语\n"})["state"] == "passed"
 
 
-def test_provider_and_node_kinds_need_an_admin(env):
+def test_users_import_every_kind_an_admin_can(env):
     client, _manager, tmp_path = env
-    assert upload(client, tmp_path, "my-node", kind="node", files={"commands/my-node-run.md": "跑\n"})["state"] == "failed"
+    install(client, tmp_path, "my-terms", kind="knowledge", files={"knowledge/terms.md": "# 术语\n"})
+    install(client, tmp_path, "my-exporter", kind="exporter")
+    install(client, tmp_path, "my-convert", kind="provider", files={"converter.py": "def convert(data, limits):\n    return ''\n"},
+            converter={"entry": "converter.py", "types": [".abc"]})
 
 
 def test_names_cannot_shadow_public_or_other_users_packs(env):

@@ -45,18 +45,6 @@ _KERNEL_SCRIPT_PREFIXES = ("_guard_common",)
 RESERVED_PACK_NAMES = ("ontology", "onto", "kernel", "platform", "core")
 
 
-# 普通用户的包（ADR-0079）：权限不能超过在对话框里直接输入，只放行提示词和资料。装配目录就是 .claude：脚本、
-# hooks、节点、界面、settings.local.json 都在守卫之外生效，所以按白名单放行，不按黑名单拦
-PRIVATE_KINDS = ("capability", "knowledge")
-PRIVATE_CONTRIBUTES = ("commands", "agents", "skills", "templates", "reference", "rules", "prompts", "docs", "readme",
-                       "knowledge_dir", "concepts", "checks", "standards", "reference_dir", "library_dir", "examples")
-PRIVATE_DIRS = ("commands", "agents", "skills", "templates", "reference", "rules", "prompts", "docs", "knowledge",
-                "library", "examples")
-PRIVATE_SUFFIXES = (".md", ".txt", ".yaml", ".yml", ".json", ".csv")
-PRIVATE_FRONTMATTER = ("name", "description", "argument-hint", "tools")
-# Claude CLI 展开命令时直接执行内联 shell、直接读 @ 引用的文件，都不经过守卫
-_INLINE_EXPANSION = re.compile(r"!`|(?:^|\s)@[/~.]", re.MULTILINE)
-
 
 def item(check_id: str, label: str, result: str, detail: str = "") -> dict:
     """一项检查结果（契约 7.11 StaticCheck）。"""
@@ -64,53 +52,6 @@ def item(check_id: str, label: str, result: str, detail: str = "") -> dict:
 
 
 _check = item
-
-
-def _frontmatter_keys(text: str) -> list[str] | None:
-    """Markdown 开头 YAML 的键；没有开头 YAML 时是空列表，解析不了时是 None。"""
-    import yaml
-
-    body = text.lstrip("\ufeff\r\n\t ")
-    if not body.startswith("---"):
-        return []
-    head, marker, _rest = body[3:].partition("\n---")
-    if not marker:
-        return None
-    try:
-        data = yaml.safe_load(head)
-    except yaml.YAMLError:
-        return None
-    if data is None:
-        return []
-    return [str(key) for key in data] if isinstance(data, dict) else None
-
-
-def _private_problems(directory: Path, manifest: Manifest, files: list[str]) -> list[str]:
-    problems = []
-    if manifest.kind not in PRIVATE_KINDS:
-        problems.append(f"{manifest.kind} 类型的包只能由管理员发布")
-    if manifest.required or manifest.raw.get("split_from_core"):
-        problems.append("required、split_from_core 只有官方包能用")
-    problems += [f"不能带 contributes.{key}" for key, value in manifest.contributes.items()
-                 if value and key not in PRIVATE_CONTRIBUTES]
-    declared = {mf.MANIFEST_FILE, mf.CHECKSUMS_FILE, "README.md", *manifest.items("rules"),
-                *(str(manifest.contributes.get(key) or "") for key in ("readme", "concepts", "checks", "standards"))}
-    for rel in files:
-        parts = Path(rel).parts
-        if rel not in declared and (len(parts) < 2 or parts[0] not in PRIVATE_DIRS):
-            problems.append(f"{rel} 不在允许的目录里")
-        elif rel not in (mf.MANIFEST_FILE, mf.CHECKSUMS_FILE) and not rel.lower().endswith(PRIVATE_SUFFIXES):
-            problems.append(f"{rel} 不是文本资料")
-        elif parts[0] in ("commands", "agents", "skills") and rel.lower().endswith(".md"):
-            text = (directory / rel).read_text(encoding="utf-8", errors="ignore")
-            keys = _frontmatter_keys(text)
-            if keys is None:
-                problems.append(f"{rel} 的开头 YAML 解析不了")
-            else:
-                problems += [f"{rel} 不能写 {key}" for key in keys if key not in PRIVATE_FRONTMATTER]
-            if _INLINE_EXPANSION.search(text):
-                problems.append(f"{rel} 不能用内联 shell 或 @ 文件引用")
-    return problems
 
 
 def _names(directory: Path, sub: str, suffix: str) -> set[str]:
@@ -453,13 +394,12 @@ def _flow_data(directory: Path, manifest: Manifest) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def run(directory: Path, repository: PackRepository | None = None, *, tenant: bool = False, private: bool = False,
+def run(directory: Path, repository: PackRepository | None = None, *, tenant: bool = False,
         core_names: dict[str, set[str]] | None = None, official: bool = False) -> tuple[Manifest | None, list[dict]]:
     """对解压后的包目录做全部静态检查，返回（清单或 None, 检查项列表）。
 
     core_names：当前 stable core 的命令、子代理、skill、脚本名，非 core 包不能与之重名。
     official：镜像内置的官方包（只有入库来源是 builtin 的才算，上传的包一律 False，清单里写了 official 也不算）。
-    private：普通用户的包，多一项白名单检查（ADR-0079）。
     """
     directory = Path(directory)
     checks: list[dict] = []
@@ -475,9 +415,6 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
     links = symlinks(directory)
     checks.append(_check("symlinks", "不含符号链接", "fail" if links else "pass", "、".join(links[:10])))
     files = pack_files(directory)
-    if private:
-        scope = _private_problems(directory, manifest, files)
-        checks.append(_check("private_scope", "只带提示词和资料", "fail" if scope else "pass", "；".join(scope[:10])))
 
     # 声明的命令、子代理、skill、脚本都要存在；有文件没声明给警告
     missing, undeclared = [], []

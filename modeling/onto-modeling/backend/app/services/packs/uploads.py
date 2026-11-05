@@ -8,8 +8,8 @@
 状态：checking →（静态检查）→ passed | failed →（管理员）→ published | rejected；「暂不发布」
 不调接口，保持 passed。发布才入包仓库：包仓库里的版本目录不可修改，退回的上传不留下任何版本。
 
-普通用户上传的是私有包（scope=private，ADR-0079）：多一项白名单检查，passed →（本人）→ installed，入库后只有
-本人看得见、启用得了。管理员可以把它发布出去，发布后变成公开的包。
+普通用户上传的是私有包（scope=private，ADR-0079、ADR-0080）：能带的内容和管理员一样，按租户包的严格程度查，
+passed →（本人）→ installed，入库后只有本人看得见、启用得了。管理员可以把它发布出去，发布后变成公开的包。
 
 旧的资产包上传（`POST /api/settings/assets/upload`，契约 PL-13 的去向）走同一条路：没有清单的
 资产包当作 core 的新版本，补上镜像里的工作区规则、说明与流程定义，检查通过直接发布到 stable，
@@ -214,7 +214,7 @@ class UploadStore:
             core_names = checks.declared_names(self.repository.manifest(builtin.CORE, stable), core_dir)
         try:
             manifest, items = checks.run(pack, self.repository, tenant=private or bool(record.get("tenant_label")),
-                                         private=private, core_names=core_names)
+                                         core_names=core_names)
         except Exception as exc:  # noqa: BLE001 - 检查本身出错也要落成「失败」，不能一直停在 checking
             _log.exception("静态检查出错：%s", upload_id)
             manifest, items = None, [checks.item("internal", "静态检查", "fail", f"检查过程出错：{type(exc).__name__}")]

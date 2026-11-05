@@ -350,7 +350,7 @@ async def reject_upload(upload_id: str, request: Request):
     return _upload_view(record)
 
 
-# ---- 自己的插件包（登录即可，ADR-0079）：只看得到自己的上传，装好后只有自己能启用 ----
+# ---- 自己的插件包（登录即可，ADR-0079、ADR-0080）：只看得到自己的上传，装好后只有自己能启用 ----
 
 
 def _own_upload(store: UploadStore, upload_id: str, request: Request) -> dict:
