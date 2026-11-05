@@ -1,4 +1,4 @@
-/* 场景走查页：设计稿 mr-* 之外、产品才有的补充样式 */
+/* 场景模拟页：设计稿 mr-* 之外、产品才有的补充样式 */
 .sc-tbl .sc-row{cursor:pointer}
 .sc-tbl .sc-row.on td{background:var(--b50)}
 .sc-tbl .sc-row.on:hover td{background:var(--b50)}

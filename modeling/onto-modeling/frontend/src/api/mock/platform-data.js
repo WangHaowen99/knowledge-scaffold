@@ -35,11 +35,11 @@ export const userLabel = (username) => PLATFORM_USERS.find((u) => u.username ===
 // 别人的项目（合成场景，与 zhangsan 自己的 6 个项目一起构成平台上的一部分项目）
 const OTHERS = [
   { id: 'parcel-sort-6c1f2a90', name: '快递分拣异常处理', owner: 'wanggong', build_mode: 'L4', stage: '建模（按段）', disk_bytes: 412e6, days: 0 },
-  { id: 'clinic-queue-9e3b7d21', name: '社区诊所排队分诊', owner: 'liming', build_mode: 'L2', stage: '校验与走查', disk_bytes: 286e6, days: 0 },
+  { id: 'clinic-queue-9e3b7d21', name: '社区诊所排队分诊', owner: 'liming', build_mode: 'L2', stage: '校验', disk_bytes: 286e6, days: 0 },
   { id: 'hotel-room-2d8a4c55', name: '酒店客房清洁排程', owner: 'chenjing', build_mode: 'L2', stage: '资料分析', disk_bytes: 198e6, days: 1 },
   { id: 'gym-member-7f04b6e3', name: '健身房会员续费提醒', owner: 'zhaolei', build_mode: 'L2', stage: '建模（按段）', disk_bytes: 154e6, days: 2 },
   { id: 'canteen-menu-4a9c1e08', name: '食堂菜单与备餐', owner: 'sunyu', build_mode: 'L2', stage: '发布', disk_bytes: 121e6, days: 3 },
-  { id: 'park-lot-8b2e5f71', name: '停车场车位调度', owner: 'zhoumin', build_mode: 'L4', stage: '校验与走查', disk_bytes: 98e6, days: 5 },
+  { id: 'park-lot-8b2e5f71', name: '停车场车位调度', owner: 'zhoumin', build_mode: 'L4', stage: '校验', disk_bytes: 98e6, days: 5 },
   { id: 'school-bus-3e7d9a46', name: '校车线路排班', owner: 'wuhao', build_mode: 'L2', stage: '资料分析', disk_bytes: 76e6, days: 9 },
 ];
 

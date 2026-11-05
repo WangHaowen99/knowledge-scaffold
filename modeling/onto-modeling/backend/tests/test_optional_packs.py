@@ -91,7 +91,7 @@ def test_core_no_longer_carries_split_out_commands_and_keeps_knowledge_loading()
     toolkit = ASSETS / "workspace-toolkit"
     commands = {path.stem for path in (toolkit / "commands").glob("*.md")}
     assert commands == {"ontology", "ontology-research", "ontology-extract-object", "ontology-extract-operation",
-                        "ontology-extract-rule-metric", "ontology-validate", "ontology-consistency", "ontology-update",
+                        "ontology-extract-rule-metric", "ontology-validate", "ontology-update",
                         "ontology-impact", "ontology-query", "ontology-overview", "version"}
     # 知识的存放与加载留在 core（第 14 章第 15 项），沉淀这一段进知识沉淀包
     assert (toolkit / "scripts" / "knowledge_helper.py").is_file()
@@ -122,7 +122,7 @@ def test_new_project_enables_default_capabilities(env):
     flow = json.loads((root / ".claude" / "flow.yaml").read_text(encoding="utf-8"))
     assert [node["id"] for node in flow["nodes"]] == [
         "core.research", "diagram.flowchart", "core.model", "core.metric", "core.validate", "trace.trace",
-        "codegen.codegen", "codegen.solver", "core.consistency", "core.publish", "core.update"]
+        "codegen.codegen", "codegen.solver", "core.publish", "core.update"]
     assert flow["commands"]["trace"]["node"] == "trace.trace" and flow["commands"]["flowchart"]["node"] == "diagram.flowchart"
     assert "ontology-codegen-scan" in flow["available_commands"]
 
@@ -132,11 +132,11 @@ def test_core_only_project_assembles_and_filters_suggestions(env):
     root = manager.project_root(manager.create_project("只有核心", packs=[])["id"])
     assert set(_lock_names(root)) == {"core"}
     assert _commands(root) == {"ontology", "ontology-research", "ontology-extract-object", "ontology-extract-operation",
-                               "ontology-extract-rule-metric", "ontology-validate", "ontology-consistency",
+                               "ontology-extract-rule-metric", "ontology-validate",
                                "ontology-update", "ontology-impact", "ontology-query", "ontology-overview", "version"}
     flow = json.loads((root / ".claude" / "flow.yaml").read_text(encoding="utf-8"))
     assert [node["id"] for node in flow["nodes"]] == [
-        "core.research", "core.model", "core.metric", "core.validate", "core.consistency", "core.publish",
+        "core.research", "core.model", "core.metric", "core.validate", "core.publish",
         "core.update"]
     model = next(node for node in flow["nodes"] if node["id"] == "core.model")
     assert [step["id"] for step in model["steps"]] == ["object", "operation", "rule", "check"]  # 没有「场景」
@@ -149,7 +149,7 @@ def test_core_only_project_assembles_and_filters_suggestions(env):
     (root / "reports").mkdir(exist_ok=True)
     (root / "reports" / "20260101-000000-all-rule.md").write_text("- [x] 已修\n", encoding="utf-8")
     body = client.get(f"/api/v1/projects/{root.name}/flow").json()
-    # 主线下一步是发布（F8：全局一致性是旁支，不挡发布）
+    # 主线下一步是发布
     assert body["suggestions"]["primary"]["action"] == {"type": "navigate", "page": "publish"}
     assert next(node for node in body["nodes"] if node["id"] == "core.validate")["title"] == "校验"
     # 发布做完：整体视图，不推荐扫描脚本候选
@@ -157,7 +157,7 @@ def test_core_only_project_assembles_and_filters_suggestions(env):
     body = client.get(f"/api/v1/projects/{root.name}/flow").json()
     assert body["suggestions"]["primary"]["action"]["command"] == "/ontology-overview"
     assert body["suggestions"]["secondary"] == []
-    # 场景验证没启用：代码生成挂在质量检查之后
+    # 场景模拟没启用：代码生成挂在质量检查之后
     enabled = client.post(f"/api/v1/projects/{root.name}/packs", json={"name": "codegen"})
     assert enabled.status_code == 201, enabled.text
     manager.packs.apply(root)
@@ -262,7 +262,7 @@ def test_catalog_marks_default_on_and_categories(env):
     assert items["industry-retail"]["label"] == "零售连锁"
     assert {name for name, item in items.items() if item["category"] == "capability" and item["default_on"]} == {
         "core", *DEFAULT_ON}
-    assert items["trace"]["ui"]["kind"] == "page" and items["trace"]["ui"]["pages"] == [{"id": "scenarios", "title": "场景走查"}]
+    assert items["trace"]["ui"]["kind"] == "page" and items["trace"]["ui"]["pages"] == [{"id": "scenarios", "title": "场景模拟"}]
     assert items["evo"]["ui"]["kind"] == "none" and items["trace"]["badges"] == ["recommended"]
 
 

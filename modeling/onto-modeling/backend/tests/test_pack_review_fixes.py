@@ -166,7 +166,7 @@ def test_new_scenario_file_follows_testcase_template(env):
     text = (root / SCENARIO_REL).read_text(encoding="utf-8")
     assert text.startswith("# 测试场景：补货编制主流程\n")
     assert "## 场景 1：缺货补货\n\n- **输入**：\n  - `qty` = `3`\n- **预期路径**：正常完成\n- **数据来源**：自定义\n" in text
-    # 场景走查包自己的解析脚本认得它
+    # 场景模拟包自己的解析脚本认得它
     script = root / ".claude" / "scripts" / "trace_inputs.py"
     import importlib.util
 

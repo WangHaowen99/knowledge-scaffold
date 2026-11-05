@@ -571,15 +571,15 @@ Tell user:
 
 **校验全部完成。**{两三句话：修了哪些、跳过和没处理的还剩几条要用户定}"
 
-不列下一步菜单（界面的建议条会给出）。用户之后在对话里说「测试数据」「追踪」「交互走查」「整体视图」「扫描候选」「代码生成」「增量对象」「增量逻辑」「补充资料分析」「再校验」，按下面的分支做；「再校验」从本命令 Step 0 重新开始。
+不列下一步菜单（界面的建议条会给出）。用户之后在对话里说「测试数据」「追踪」「交互模拟」「整体视图」「扫描候选」「代码生成」「增量对象」「增量逻辑」「补充资料分析」「再校验」，按下面的分支做；「再校验」从本命令 Step 0 重新开始。
 
 > 锁已在小结前释放；下面分支里的 release 再调一次无害。
 
-**If user replies 测试数据:** release validate，然后 read `.claude/commands/ontology-mock.md`（场景走查能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions.
+**If user replies 测试数据:** release validate，然后 read `.claude/commands/ontology-mock.md`（场景模拟能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions.
 
-**If user replies 追踪:** ask "要追踪哪个逻辑（如「创建订单」）？或回复 **全部** 追踪所有逻辑：". Then release validate 并 read `.claude/commands/ontology-trace.md`（场景走查能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions with `ontology/operation/{用户说的逻辑}.md`（用户回复 **全部** 时传 `全部`）.
+**If user replies 追踪:** ask "要追踪哪个逻辑（如「创建订单」）？或回复 **全部** 追踪所有逻辑：". Then release validate 并 read `.claude/commands/ontology-trace.md`（场景模拟能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions with `ontology/operation/{用户说的逻辑}.md`（用户回复 **全部** 时传 `全部`）.
 
-**If user replies 交互走查:** ask "要交互走查哪个逻辑（如「创建订单」）？或回复 **选择** 让我列出所有逻辑：". Then release validate 并 read `.claude/commands/ontology-trace.md`（场景走查能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow it with `交互 ontology/operation/{用户说的逻辑}.md`（如果用户回复 **选择**，传 `交互`）。
+**If user replies 交互模拟:** ask "要交互模拟哪个逻辑（如「创建订单」）？或回复 **选择** 让我列出所有逻辑：". Then release validate 并 read `.claude/commands/ontology-trace.md`（场景模拟能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow it with `交互 ontology/operation/{用户说的逻辑}.md`（如果用户回复 **选择**，传 `交互`）。
 
 **If user replies 整体视图:** release validate，然后 read `.claude/commands/ontology-overview.md` and follow its instructions.
 

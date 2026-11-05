@@ -1,6 +1,6 @@
-// mock · 3.17 插件产物（trace.scenario 场景、trace.mock 示例数据）：场景走查页。
+// mock · 3.17 插件产物（trace.scenario 场景、trace.mock 示例数据）：场景模拟页。
 // 同一路径的 AR 路由先由 routes-artifacts.js 试（它只管 diagram.flowchart，别的类型返回 undefined 交到这里）。
-// 页面命令（S-20，commandHooks）：批量验证、补齐过期场景、交互走查、按场景补生成，按步推进，跑完改场景状态并发 artifacts.updated。
+// 页面命令（S-20，commandHooks）：批量验证、补齐过期场景、交互模拟、按场景补生成，按步推进，跑完改场景状态并发 artifacts.updated。
 // 演示参数：
 //   ?mock=task:scenarios          一打开就在「批量推演 23 个场景」（已推演 9 / 23，静止不动）
 //   ?mock=scope:running|pending   写入范围锁两态：场景目录 ext/trace/scenarios/** 在锁里，23 个场景全部只读
@@ -78,7 +78,7 @@ export const lockScope = {
 };
 
 export const taskSeeds = {
-  scenarios: () => ({ origin: { page: ORIGIN, label: '场景走查' }, title: '助手正在批量推演 23 个场景', percent: 39, step_label: '已推演 9 / 23' }),
+  scenarios: () => ({ origin: { page: ORIGIN, label: '场景模拟' }, title: '助手正在批量推演 23 个场景', percent: 39, step_label: '已推演 9 / 23' }),
 };
 
 const bump = (label) => {
@@ -299,7 +299,7 @@ export function register(ctx) {
   const roundCard = (csId, sum, state, version) => ({
     card_id: `card-trace-${csId}`, card_type: 'round_changes', eyebrow: '这一轮', title: `批量推演 ${sum.total} 个场景`, subtitle: '',
     status: state === 'reverted' ? { key: 'skipped', label: '已撤回' } : { key: 'confirmed', label: version },
-    plugin: { name: 'trace', label: '场景走查' }, open: null, changeset_id: csId, option_key: null, checks: { errors: 0, warnings: 0, pending: 0 }, hints: [],
+    plugin: { name: 'trace', label: '场景模拟' }, open: null, changeset_id: csId, option_key: null, checks: { errors: 0, warnings: 0, pending: 0 }, hints: [],
     groups: [{ kind: 'scenario', label: '场景', items: [{ change: 'test', target: null, text: `推演 ${sum.total} 个：通过 ${sum.pass} · 失败 ${sum.fail} · 过期 ${sum.stale}`, comparable: false }] }],
     state, merged_version_label: version,
   });
@@ -320,7 +320,7 @@ export function register(ctx) {
       st.batch = { csId, cid: task.conversation_id, before: st.scenarios.map((x) => ({ ...x })) };
       setScope(pid, batchLock(pid, 'assistant_running', csId, task.conversation_id));
     },
-    doneText: (b) => `「${b.text || '批量推演'}」跑完了，结果已写进场景走查。`,
+    doneText: (b) => `「${b.text || '批量推演'}」跑完了，结果已写进场景模拟。`,
     finish: (pid) => {
       // 过期的场景 3、6 补上了新口径的输入，推演通过；场景 4 还没有示例数据，仍过期；失败的那个照旧
       const keys = keysOf(pid, (x) => x.key !== 's-04');
@@ -401,8 +401,8 @@ export function register(ctx) {
   });
   commandHooks.push({
     match: (b) => fromPage(b, '/ontology-trace-interactive'),
-    title: (b) => `助手正在${b.text || '交互走查'}`,
-    steps: ['走查到第 1 步', '走查到第 2 步', '走查到第 3 步', '走查完成'],
+    title: (b) => `助手正在${b.text || '交互模拟'}`,
+    steps: ['模拟到第 1 步', '模拟到第 2 步', '模拟到第 3 步', '模拟完成'],
     finish: (pid, b) => {
       const key = b.args?.scenario;
       if (!key) return;

@@ -1,5 +1,5 @@
 // 场景详情抽屉（AR-03 详情、AR-04 版本记录、AR-05 改标题 / 输入 / 预期结论、AR-07 删除）。
-// 写入范围内的场景只读：编辑、删除停用；交互走查照样只发命令。设计稿没画详情，按设计系统的抽屉补。
+// 写入范围内的场景只读：编辑、删除停用；交互模拟照样只发命令。设计稿没画详情，按设计系统的抽屉补。
 import { useEffect, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
@@ -88,7 +88,7 @@ export function ScenarioDrawer({ row, type, lock, tasks, onClose, onChanged }) {
     <>
       <span data-pop={pop}><Button kind="danger" icon="trash" disabled={locked || !d} onClick={() => setConfirmDel(true)}>删除</Button></span>
       <span className="sp" />
-      <SendButton tasks={tasks} command={walk.command} args={walk.args} text={walk.text} icon="hand">交互走查</SendButton>
+      <SendButton tasks={tasks} command={walk.command} args={walk.args} text={walk.text} icon="hand">交互模拟</SendButton>
       <span data-pop={pop}>
         <Button
           kind="primary"

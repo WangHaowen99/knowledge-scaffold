@@ -165,7 +165,7 @@ const SUSPENSION_LOOK = {
   'sp-1521': ['读不出文字，需要补一份文本', imp(['资料', '07-门店C特殊需求.pdf'])],
 };
 const SUSPENSION_ORDER = ['sp-1547', 'sp-1624', 'sp-1521'];
-const SHORT = { s1: '补货申请', s2: '安全库存', s3: '陈列量', s4: '临期', s5: '超量', 'core.consistency': '全局一致性' };
+const SHORT = { s1: '补货申请', s2: '安全库存', s3: '陈列量', s4: '临期', s5: '超量', 'core.validate': '校验' };
 const SLICE_VERSION = { s2: 'v0.14', s3: 'v0.15', s4: 'v0.17', s5: 'v0.19' };
 
 export function runItems(store) {
@@ -182,7 +182,7 @@ export function runItems(store) {
   const high = store.pendingHigh();
   if (high.length) {
     const slices = [...new Set(high.map((l) => l.slice.id))];
-    const short = slices.filter((x) => x !== 'core.consistency').map((x) => SHORT[x]);
+    const short = slices.filter((x) => x !== 'core.validate').map((x) => SHORT[x]);
     out.push([item(`review:${RUN_ID}:high`, 'review', `高置信的 ${high.length} 个自动决定，可以一起接受`, {
       slice: { id: null, name: `${short.length} 段` }, run: run(null), source: 'autobuild', high_confidence: true, confidence: Math.min(...high.map((l) => l.confidence)),
       meta: `置信度都 ≥${THRESHOLD.toFixed(2)}`, created_at: high[high.length - 1].at, actions: ['accept', 'dismiss'],

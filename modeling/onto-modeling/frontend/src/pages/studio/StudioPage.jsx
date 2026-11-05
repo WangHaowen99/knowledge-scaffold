@@ -43,7 +43,7 @@ function StatsBar({ stats, pid }) {
       <span><b>{stats.relations}</b>关系</span>
       {stats.scenarios ? (
         <span style={{ cursor: 'pointer' }} onClick={() => navigate(pagePath('scenarios', pid))}>
-          <b>{stats.scenarios.total}</b>场景 · 推演通过 {stats.scenarios.pass_rate_pct}%<PlugMark label="场景走查" />
+          <b>{stats.scenarios.total}</b>场景 · 推演通过 {stats.scenarios.pass_rate_pct}%<PlugMark label="场景模拟" />
         </span>
       ) : null}
     </div>

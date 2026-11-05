@@ -202,7 +202,7 @@ export function RunDrawer({ ab }) {
     api.autobuildSuspensions(pid, runId).then((r) => setSus((r.items || []).filter((x) => x.state === 'open'))).catch(() => setSus([]));
   }, [api, pid, runId, drawer]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!run) return null;
-  // 步骤的列由 FL-01 的 slice_stages 决定（场景走查未启用时没有「场景」列）；流程还没给时按矩阵里出现的步骤排。
+  // 步骤的列由 FL-01 的 slice_stages 决定（场景模拟未启用时没有「场景」列）；流程还没给时按矩阵里出现的步骤排。
   // F8 起只有一行「全部」，叫「建模」；F8 之前按段跑的老运行才是「分段流水线」
   const multi = multiSlice((run.matrix || []).map((row) => row.slice_id));
   const stageDefs = flow?.slice_stages?.length ? flow.slice_stages : Object.keys(run.matrix?.[0]?.cells || {}).map((id) => ({ id, label: id }));

@@ -92,7 +92,7 @@ def test_B_autobuild_never_deletes_confirmed_content(ab):
     record = store.get(project_id, run["run_id"])
     assert record["slices"]["core.validate"]["state"] == "skipped"
     titles = [item["title"] for item in record["suspensions"]]
-    assert titles == ["「校验与走查」要删除已确认的内容"]
+    assert titles == ["「校验」要删除已确认的内容"]
     assert record["suspensions"][0]["reason"] == "对象「门店」"  # 按业务名说，不出路径（F4b-paths）
 
 

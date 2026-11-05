@@ -1,7 +1,7 @@
 """按段的节点状态（详设 6.6「按段的状态」、6.8、4.3；方案 D13；契约 FL-01 `slices`、`slice_stages`、7.8）。
 
 建模节点（`per_slice: true`，现在是 `core.model`）在建模蓝图的每一段上各算一份状态。段里的步骤来自节点声明的
-`steps`（core 的对象、操作、规则、写入即查）加上包的钩子（场景走查的「场景」）。
+`steps`（core 的对象、操作、规则、写入即查）加上包的钩子（场景模拟的「场景」）。
 
 一段一步的状态：
 
@@ -37,7 +37,7 @@ from . import state as node_state
 
 FULL_SLICE = {"id": "all", "name": "全部", "core_flow": ""}
 DONE = ("confirmed", "auto")
-# 步骤的条目类别 → 目录（操作含旧目录）；testcase 是场景走查的场景文件，一个操作一份
+# 步骤的条目类别 → 目录（操作含旧目录）；testcase 是场景模拟的场景文件，一个操作一份
 KIND_DIRS = {"object": ("ontology/object",), "operation": ("ontology/operation", "ontology/logic"),
              "rule": ("ontology/rule",), "metric": ("ontology/metric",), "testcase": ("ontology/testcase",)}
 LEGACY = {"core.object": "object", "core.operation": "operation", "core.rule_metric": "rule"}
@@ -76,7 +76,7 @@ class _Inputs:
         self.doc = doc
         self.sliced = self.module.mode(doc) == "sliced"
         self.slices = self.module.live_slices(doc) if self.sliced else [dict(FULL_SLICE)]
-        # 全量模式下包加的步骤（场景）不挡建模完成：全量回归另有主线节点（trace.trace），和 0.2 的进度口径一致
+        # 全量模式下包加的步骤（场景）不挡建模完成：场景模拟另有主线节点（trace.trace），和 0.2 的进度口径一致
         self.steps = [step if self.sliced or step.get("pack", "core") == node.get("pack", "core")
                       else {**step, "optional": True} for step in node.get("steps") or []]
         listing = node_state.tree_listing(self.root)

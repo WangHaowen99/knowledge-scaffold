@@ -3,8 +3,8 @@ ADR-0051、ADR-0078）。
 
 F8（ADR-0078）起不再分段：建模节点只有一段「全部」，命令一次做完整个项目（与插件化之前一致）；F8 之前按段建的项目
 （蓝图里存着多段）照样按全量算。
-- 流程形状：资料分析 → 建模 → 校验（装了场景走查是「校验与走查」+ 全量回归）→ 发布；规则是建模里可选的补抽，
-  全局一致性是旁支、不挡发布；场景走查不再往建模里加「场景」一步；没升级的包写的旧锚点照样认；
+- 流程形状：资料分析 → 建模 → 校验（装了场景模拟包，后面接「场景模拟」）→ 发布；规则是建模里可选的补抽，
+  场景模拟不再往建模里加「场景」一步；没升级的包写的旧锚点照样认；
 - 「全部」的状态：进行中、待确认、已确认、过期、跳过规则；0.2 的已确认状态映射过来，进度不往回退；
 - 执行记录一律记在「全部」（老命令带的 slice= 也一样）；一轮结束不再把新条目归到某一段；
 - 下一步：蓝图草案不用确认，资料分析做完直接往下建；目标问题没答时先推荐去回答，不拦着。
@@ -88,24 +88,21 @@ def test_flow_shape_without_slicing_and_with_scenario_walkthrough():
     core = ("core", "0.3.0", _yaml("workspace-toolkit/flow.yaml"))
     bare = assemble.assemble([core])
     ids = [node["id"] for node in bare["nodes"]]
-    assert ids[:6] == ["core.research", "core.model", "core.metric", "core.validate", "core.consistency", "core.publish"]
+    assert ids[:5] == ["core.research", "core.model", "core.metric", "core.validate", "core.publish"]
     by_id = {node["id"]: node for node in bare["nodes"]}
-    assert by_id["core.validate"]["title"] == "校验" and by_id["core.consistency"]["after"] == "core.validate"
+    assert by_id["core.validate"]["title"] == "校验" and "core.consistency" not in by_id  # 11-05 删了
     steps = by_id["core.model"]["steps"]
     assert [step["id"] for step in steps] == ["object", "operation", "rule", "check"]
     assert next(step for step in steps if step["id"] == "rule")["optional"] is True  # 规则随操作一起抽，这一步是补抽
-    # 全局一致性是旁支：不在主线上、不挡发布（插件化之前没有这一步）
-    consistency = by_id["core.consistency"]
-    assert consistency["placement"] == "branch" and consistency["optional"] and not consistency.get("blocks")
     assert by_id["core.publish"]["placement"] == "spine"
     assert by_id["core.metric"]["placement"] == "branch" and by_id["core.metric"]["optional"]
     with_trace = assemble.assemble([core, ("trace", "0.10.0", _yaml("packs/trace/flow.yaml"))])
     by_id = {node["id"]: node for node in with_trace["nodes"]}
-    assert by_id["core.validate"]["title"] == "校验与走查"
-    # 场景走查不再往建模里加「场景」一步：走查在校验之后做
+    assert by_id["core.validate"]["title"] == "校验" and by_id["trace.trace"]["title"] == "场景模拟"
+    # 场景模拟不再往建模里加「场景」一步：场景在校验之后做
     assert [step["id"] for step in by_id["core.model"]["steps"]] == ["object", "operation", "rule", "check"]
     assert {"from": "core.validate", "to": "trace.trace"} in with_trace["edges"]
-    assert {"from": "trace.trace", "to": "core.consistency"} in with_trace["edges"]
+    assert {"from": "trace.trace", "to": "core.publish"} in with_trace["edges"]
     assert "trace.mock" not in by_id and with_trace["commands"]["mock"]["node"] == "trace.trace"
     # 没升级的包写的 0.2 锚点（core.operation）照样认
     legacy = {"nodes": [{"id": "old.node", "title": "旧包节点", "placement": "branch", "section": "optional",
@@ -349,8 +346,8 @@ def test_draft_blueprint_does_not_stop_after_research(env):
     assert _node(built, "core.research")["state"] == "confirmed"
 
 
-def test_consistency_never_gates_publish(env):
-    """F8：全局一致性是旁支，按段建过的项目（老蓝图）也不再挡发布。"""
+def test_sliced_blueprint_never_gates_publish(env):
+    """F8：按段建过的项目（老蓝图）也没有流程关卡。"""
     client, _workspaces, _manager, project_id, root = env
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))
     _blueprint(root)
@@ -358,46 +355,6 @@ def test_consistency_never_gates_publish(env):
     assert not [gate for gate in check["gates"] if gate["source"]["kind"] == "flow"]
     assert _node(view.build(root), "core.publish")["state"] != "blocked"
 
-
-def test_consistency_check_script_reports_relations_and_terms(tmp_path):
-    """一致性检查只看关系与口径；老蓝图里的分段不再报「没归段」「规划了没建」。"""
-    import subprocess
-    import sys
-
-    module = contracts.default().load("blueprint")
-    doc = module.from_draft({**DRAFT, "terms": {"ambiguous": [{"variants": ["门店", "要货方"]}]}})
-    doc = module.apply_edit(doc, {"mode": "draft", "term_choices": [{"term_id": "t1", "chosen": "门店"}]})
-    base = doc["slices"][0]
-    doc["slices"] = [{**base, "id": f"s{n}", "name": item["name"], "objects": item.get("objects", []),
-                      "operations": item.get("operations", []), "rules": item.get("rules", []), "depends_on": []}
-                     for n, item in enumerate(DRAFT["slices"], start=1)]
-    doc["next_ids"]["slice"] = 4
-    (tmp_path / "research").mkdir()
-    (tmp_path / "research" / "blueprint.json").write_text(module.dumps(doc), encoding="utf-8")
-    for rel, text in {
-        "ontology/object/门店.md": obj("门店", "合成"),
-        "ontology/object/库存标准.md": obj("库存标准", "合成"),
-        "ontology/operation/受理申请.md": op("受理申请", "[[门店]] 要货方提交 [[不存在的对象]]"),
-        "ontology/operation/生成提示.md": op("生成提示", "[[门店]][[库存标准]]"),
-        "ontology/operation/段外操作.md": op("段外操作", "[[门店]]"),
-    }.items():
-        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / rel).write_text(text, encoding="utf-8")
-    script = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts" / "consistency_check.py"
-    done = subprocess.run([sys.executable, str(script), "--json"], cwd=tmp_path, capture_output=True, text=True)
-    assert done.returncode == 1, done.stderr
-    result = json.loads(done.stdout)
-    codes = {item["code"] for item in result["findings"]}
-    assert {"dangling_link", "term_variant"} <= codes and not codes & {"unassigned", "planned_missing"}
-    report = (tmp_path / "reports" / "consistency" / "consistency.md").read_text(encoding="utf-8")
-    assert "- [ ]" in report and "要货方" in report
-    # 已勾掉的结论下一次保留
-    first = result["findings"][0]
-    report = report.replace(f"- [ ] {first['text']} ({first['id']})", f"- [x] {first['text']} ({first['id']})")
-    (tmp_path / "reports" / "consistency" / "consistency.md").write_text(report, encoding="utf-8")
-    again = json.loads(subprocess.run([sys.executable, str(script), "--json"], cwd=tmp_path, capture_output=True,
-                                      text=True).stdout)
-    assert again["pending"] == result["pending"] - 1
 
 
 def test_new_core_assembles_with_packs_that_have_not_upgraded_yet():
@@ -422,7 +379,7 @@ def test_new_core_assembles_with_packs_that_have_not_upgraded_yet():
                               ("evo", "0.3.1", old_evo)])
     by_id = {node["id"]: node for node in flow["nodes"]}
     assert by_id["codegen.solver"]["after"] == "core.model" and by_id["evo.evolution"]["after"] == "core.model"
-    assert {"from": "trace.trace", "to": "core.consistency"} in flow["edges"]
+    assert {"from": "trace.trace", "to": "core.publish"} in flow["edges"]
 
 
 def test_project_card_and_run_slices_for_autobuild(env):

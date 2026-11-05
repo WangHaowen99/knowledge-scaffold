@@ -3,7 +3,7 @@
 // 插件中心和项目设置的能力表说的是同一件事；routes-settings.js 留了两处接口：db.seedProjectPacks（初始能力表）、db.packCatalog（PL-06 查目录）。
 // mock 状态 ?mock=plugins:<标记>[+<标记>]：
 //   norec  PL-01 不给推荐（B3a 后端现状：推荐恒为空，整条推荐带不出现）
-//   held   基础建模 1.5 还在 beta，场景走查 0.10.0 依赖它：兼容检查不通过，本项目也没排这次升级（设计稿 plugins、plugin-detail 那一刻）
+//   held   基础建模 1.5 还在 beta，场景模拟 0.10.0 依赖它：兼容检查不通过，本项目也没排这次升级（设计稿 plugins、plugin-detail 那一刻）
 //   ind    零售连锁 1.1.0 已发布到 stable，本项目可以更新（行业包的更新弹窗）
 import { industryEntries, projectEntries } from './knowledge-data.js';
 import { seedSnapshots } from './evidence-data.js';
@@ -93,7 +93,7 @@ export function register(ctx) {
   const flags = pluginFlags(sc);
   db.plugins = { installed: new Set(installedProviders()) };
   db.packCatalog = () => catalogCards(flags);
-  // 初始能力表按 mock 状态改：held 时场景走查没排升级；ind 时零售连锁可更新到 1.1.0
+  // 初始能力表按 mock 状态改：held 时场景模拟没排升级；ind 时零售连锁可更新到 1.1.0
   db.seedProjectPacks = (pid, packs) => packs.forEach((p) => {
     if (flags.has('held') && p.name === 'trace' && p.pending?.kind === 'upgrade') Object.assign(p, { status: 'enabled', pending: null });
     if (flags.has('ind') && p.name === 'industry-retail') p.latest_available = '1.1.0';

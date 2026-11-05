@@ -22,18 +22,18 @@ trace 主代理 prompt 与可能的 mock 子代理 prompt 都需 transclude 该�
 - If $ARGUMENTS first token is `全部` / `all` / `batch`:
   - Set `TRACE_MODE=batch`.
   - Read `.claude/commands/ontology-trace-batch.md` and follow it.
-- If $ARGUMENTS first token is `交互` / `交互走查` / `对话走查` / `走查`:
+- If $ARGUMENTS first token is `交互` / `交互模拟` / `对话模拟` / `模拟` / `交互走查` / `走查`:
   - Set `TRACE_MODE=interactive`.
   - Set `INTERACTIVE_TARGET=<remaining text after 去掉触发词>`（may be empty, a operation path, or a scenario description）。
   - Read `.claude/commands/ontology-trace-interactive.md` and follow it.
 - If $ARGUMENTS is empty, `python3 .claude/scripts/state_helper.py acquire trace confirm` 后 ask:
   "要追踪哪个逻辑（如「创建订单」）？或选择：
   - 回复 **全部** → 批量追踪所有逻辑
-  - 回复 **交互** → 进入交互走查：每个分支由你选方向，我来构造场景和正常测试数据
-  - 回复 **交互 创建订单** → 对指定逻辑做交互走查"
+  - 回复 **交互** → 进入交互模拟：每个分支由你选方向，我来构造场景和正常测试数据
+  - 回复 **交互 创建订单** → 对指定逻辑做交互模拟"
   Then `acquire trace start` and parse the user reply the same way:
   - first token `全部` / `all` / `batch` → set `TRACE_MODE=batch`; read `.claude/commands/ontology-trace-batch.md` and follow it.
-  - first token `交互` / `交互走查` / `对话走查` / `走查` → set `TRACE_MODE=interactive`; set `INTERACTIVE_TARGET=<remaining text after 去掉触发词>`; read `.claude/commands/ontology-trace-interactive.md` and follow it.
+  - first token `交互` / `交互模拟` / `对话模拟` / `模拟` / `交互走查` / `走查` → set `TRACE_MODE=interactive`; set `INTERACTIVE_TARGET=<remaining text after 去掉触发词>`; read `.claude/commands/ontology-trace-interactive.md` and follow it.
   - otherwise → set `TRACE_MODE=single`; set `OPERATION_PATH` to the reply（回复是逻辑名时取 `ontology/operation/{逻辑名}.md`）; read `.claude/commands/ontology-trace-single.md` and follow it.
 - Otherwise:
   - Set `TRACE_MODE=single`.

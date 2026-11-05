@@ -525,7 +525,7 @@ PUBLISH_NODE = "core.publish"
 
 def publish_gates(root: Path) -> list[dict]:
     """发布前的流程关卡（契约 PB-01 `gates` 里 `source.kind=flow` 的几道，7.14 GateResult）：`blocks` 指向发布节点
-    的节点；声明 `blocks_in: sliced` 的（全局一致性）只在按段建模时挡。没确认就挡住发布，动作是去做这一步。"""
+    的节点；声明 `blocks_in: sliced` 的只在按段建模时挡。没确认就挡住发布，动作是去做这一步。"""
     root = Path(root)
     flow = model.load_for(root)
     declared = {node["id"]: node for node in flow.get("nodes") or []

@@ -1,4 +1,4 @@
-/* 插件页（知识沉淀、场景走查、代码生成与求解）、增量更新卡片、版本、发布（设计稿 pages-40-more.js 的 mr-* 原样移植） */
+/* 插件页（知识沉淀、场景模拟、代码生成与求解）、增量更新卡片、版本、发布（设计稿 pages-40-more.js 的 mr-* 原样移植） */
 .mr-2c{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:16px;align-items:start}
 .mr-2c.w{grid-template-columns:minmax(0,1fr) 460px}
 .mr-kl{display:flex;flex-direction:column;gap:8px}

@@ -311,7 +311,7 @@ def view(record: dict) -> dict:
 
 
 def impact(record: dict) -> dict:
-    """INC-05：影响面（确定性）：变更点指到的条目即将标过期；回归场景要等场景走查包的索引（见 gaps）。"""
+    """INC-05：影响面（确定性）：变更点指到的条目即将标过期；回归场景要等场景模拟包的索引（见 gaps）。"""
     started = time.monotonic()
     stale = []
     seen = set()

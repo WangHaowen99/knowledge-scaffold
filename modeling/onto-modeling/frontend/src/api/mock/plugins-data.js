@@ -42,7 +42,7 @@ const BADGES = { reverse: ['new'] };
 export const TENANT_PACKS = [
   {
     name: 'property-compliance', label: '物业合规检查', category: 'industry', latest: '1.0.0', version: '1.0.0', channel: 'stable',
-    description: '发布前检查：挂在「校验与走查」之后、发布之前，不通过就挡住发布。', publisher: { kind: 'tenant', label: '示例租户' },
+    description: '发布前检查：挂在「场景模拟」之后、发布之前，不通过就挡住发布。', publisher: { kind: 'tenant', label: '示例租户' },
     ui: null, batch: null, badges: [], meta: '发布前检查 · 人工 + 脚本', project_status: null, locked_version: null, usage_note: null, default_on: false,
   },
 ];
@@ -181,7 +181,7 @@ export function recommendationsOf(cards, { limit = 2 } = {}) {
 }
 
 // ---------- 版本要求（兼容检查、更新记录的「需要先升级」） ----------
-// 每个版本对 core 的依赖范围；?mock=plugins:held 时场景走查 0.10.0 依赖还在 beta 的基础建模 1.5
+// 每个版本对 core 的依赖范围；?mock=plugins:held 时场景模拟 0.10.0 依赖还在 beta 的基础建模 1.5
 export function requiresCore(name, version, flags = new Set()) {
   if (name === 'core') return null;
   if (name === 'trace' && version === '0.10.0' && flags.has('held')) return '>=1.5';
@@ -196,7 +196,7 @@ const at = (d) => `${d}T10:00:00.000Z`;
 const log = (version, date, notes) => ({ version, date: at(date), notes });
 const MAIN_UI = '左栏页面';
 
-// 每个包的详情。flow_insertions 的 at 是插在主线哪一段（research | model | validate | consistency | publish）；
+// 每个包的详情。flow_insertions 的 at 是插在主线哪一段（research | model | validate | publish）；
 // kind、short 是兼容检查「流程组装」那一行与统计卡里的叫法；flow_note、config_note、contents[].note、contents[].total 是 mock 补的说明，真实后端没有时页面不显示
 const DETAILS = {
   core: {
@@ -207,7 +207,7 @@ const DETAILS = {
       { group: '命令', items: ['主入口', '资料分析', '抽取对象', '抽取操作', '抽取规则', '校验', '查询', '增量更新', '影响分析'] },
       { group: '助手角色', items: ['资料分析', '对象抽取', '操作抽取', '规则抽取', '语义校验', '影响分析'] },
       { group: '模板', items: ['对象', '操作', '规则', '指标'] },
-      { group: '检查规则', items: ['写入即查', '全局一致性'], note: '写入即查在每次改条目后跑；全局一致性在发布前跑' },
+      { group: '检查规则', items: ['写入即查'], note: '写入即查在每次改条目后跑' },
       { group: '界面入口', items: ['工作台', 'Studio', '资料', '发布'], note: '内核页面，不能停用' },
     ],
     config: [{ id: 'research_mode', label: '资料分析方式', value: '本地' }],
@@ -218,28 +218,27 @@ const DETAILS = {
     ],
   },
   trace: {
-    description: '从样例资料生成验收场景，逐条推演操作是否走得通；示例数据按场景需要生成。装上后每段多出「场景」一步，全量回归串在「校验与走查」里；不装就都没有。',
+    description: '从样例资料生成验收场景，逐条推演操作是否走得通；示例数据按场景需要生成。装上后校验之后多出「场景模拟」一步；不装就没有。',
     size: 186 * KB, files: 23,
     flow_insertions: [
-      { id: 'trace.scenario', kind: '节点钩子', title: '每段多一步「场景」', at: 'model', note: '节点钩子 · 写入即查之后', short: '段内「场景」' },
-      { id: 'trace.trace', kind: '串入节点', title: '全量回归', at: 'validate', note: '串入「校验与走查」', short: '全量回归' },
+      { id: 'trace.trace', kind: '串入节点', title: '场景模拟', at: 'validate', note: '串在「校验」之后', short: '场景模拟' },
     ],
     flow_note: '示例数据按场景需要生成，不单独占一步',
     contents: [
-      { group: '加进流程', items: ['每段的「场景」', '全量回归'], note: '「场景」挂在每段「写入即查」之后；全量回归串在「校验与走查」里。对象或操作改了，相关场景会标为过期' },
-      { group: '命令', items: ['场景走查', '单个场景走查', '批量验证', '交互走查', '生成示例数据'] },
+      { group: '加进流程', items: ['场景模拟'], note: '串在「校验」之后。对象或操作改了，相关场景会标为过期' },
+      { group: '命令', items: ['场景模拟', '单个场景模拟', '批量验证', '交互模拟', '生成示例数据'] },
       { group: '助手角色', items: ['场景推演', '示例数据生成'] },
       { group: '模板', items: ['验收场景', '示例数据'] },
       { group: '检查规则', items: ['场景推演通过率 ≥ 80% 才能发布'], note: '不满足时在发布检查里列出' },
-      { group: '界面入口', items: [`${MAIN_UI}「场景走查」`, '对话快捷操作：批量验证', '对话快捷操作：交互走查'], note: '启用后项目左栏「插件」分组出现「场景走查」页面；停用后页面消失，已产生的场景留在知识包里' },
-      { group: '报告格式', items: ['走查报告'], note: '报告审阅里逐条展示' },
+      { group: '界面入口', items: [`${MAIN_UI}「场景模拟」`, '对话快捷操作：批量验证', '对话快捷操作：交互模拟'], note: '启用后项目左栏「插件」分组出现「场景模拟」页面；停用后页面消失，已产生的场景留在知识包里' },
+      { group: '报告格式', items: ['模拟报告'], note: '报告审阅里逐条展示' },
     ],
     config: [{ id: 'max_per_slice', label: '每段最多场景数', value: 6 }, { id: 'regression_mode', label: '回归模式', value: '开' }],
     changelog: [
       log('0.10.0', '2026-10-28', '场景输入写明类型，推演时显式传入；回归时自动加上「守护老路径」的场景'),
       log('0.9.1', '2026-10-12', '默认回归模式（107 秒对 360 秒）；示例数据跳过「数据来源：无」的对象'),
-      log('0.9.0', '2026-09-30', '交互走查支持分支选择卡；走查报告按包声明的格式逐条审阅'),
-      log('0.8.2', '2026-09-08', '修复批量走查时子代理超时不重试'),
+      log('0.9.0', '2026-09-30', '交互模拟支持分支选择卡；模拟报告按包声明的格式逐条审阅'),
+      log('0.8.2', '2026-09-08', '修复批量模拟时子代理超时不重试'),
     ],
   },
   knowledge: {
@@ -347,7 +346,7 @@ const DETAILS = {
     description: '零售连锁行业知识：术语、规则、参考对象和示例项目，附「合规检查」关卡。行业知识现读即生效，不用重连。',
     size: 412 * KB, files: 58,
     flow_insertions: [{ id: 'retail.compliance', kind: '关卡', title: '合规检查', at: 'publish', note: '关卡 · 发布之前', short: '合规检查' }],
-    flow_note: '挂在「校验与走查」之后、发布之前，不通过就挡住发布',
+    flow_note: '挂在「场景模拟」之后、发布之前，不通过就挡住发布',
     contents: [
       { group: '术语', total: 312, items: ['补货单', '安全库存', '陈列量', '到货周期', '临期损耗', '门店等级'] },
       { group: '规则', total: 48, items: ['按类取标准', '门店申请取严', '临时加量须审批', '临期分级'] },
@@ -417,7 +416,7 @@ export function detailOf(card, flags = new Set()) {
     changelog = [log('1.1.0', '2026-10-30', '新增临期损耗规则 3 条；样例补货单 2 份；「陈列量标准」参考对象新增到货周期维度'), ...changelog];
   }
   if (flags.has('held') && card.name === 'core') {
-    changelog = [log(CORE_BETA, '2026-10-29', 'beta 通道小范围试用：节点完成判定按段计算；场景走查 0.10.0 依赖这一版'), ...changelog];
+    changelog = [log(CORE_BETA, '2026-10-29', 'beta 通道小范围试用：节点完成判定按段计算；场景模拟 0.10.0 依赖这一版'), ...changelog];
   }
   return {
     description: d.description || card.description,
@@ -468,7 +467,7 @@ export function projectStatsOf(name, { entries, knowledge, scripts, flowcharts, 
     },
     'industry-retail': {
       produced: { value: knowledge.industry, unit: '条行业知识', note: '知识沉淀里的行业层' },
-      metric: { label: '合规检查', value: '未运行', note: '校验与走查确认后才能运行' },
+      metric: { label: '合规检查', value: '未运行', note: '场景模拟确认后才能运行' },
     },
     'db-mysql': {
       produced: { value: 1, unit: '个数据源在用', note: 'erp-prod' },

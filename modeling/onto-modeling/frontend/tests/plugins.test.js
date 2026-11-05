@@ -20,7 +20,7 @@ const card = (o) => ({ name: 'x', label: 'X', category: 'capability', version: '
 // ---------- 筛选、分组、计数 ----------
 test('筛选：分类、已启用（含待生效）、可更新，搜索名称 / ID / 说明不分大小写', () => {
   const items = [
-    card({ name: 'trace', label: '场景走查', project_status: 'update', description: '每段多一步' }),
+    card({ name: 'trace', label: '场景模拟', project_status: 'update', description: '每段多一步' }),
     card({ name: 'migrate', label: '迁移复用', project_status: 'available' }),
     card({ name: 'knowledge', label: '知识沉淀', project_status: 'pending' }),
     card({ name: 'industry-retail', label: '零售连锁', category: 'industry', project_status: 'enabled' }),
@@ -32,7 +32,7 @@ test('筛选：分类、已启用（含待生效）、可更新，搜索名称 /
   assert.deepEqual(items.filter((p) => matchCard(p, { q: '每段' })).map((p) => p.name), ['trace']);
   const secs = sectionsOf(items, { cat: 'all', q: '' });
   assert.deepEqual(secs.map((s) => [s.key, s.items.length]), [['capability', 3], ['industry', 1], ['provider', 1]]);
-  assert.deepEqual(sectionsOf(items, { cat: 'industry', q: '走查' }), []);
+  assert.deepEqual(sectionsOf(items, { cat: 'industry', q: '模拟' }), []);
   assert.equal(catOf({ cat: 'upd' }), 'upd');
   assert.equal(catOf({ cat: 'provider' }), 'provider');
   assert.equal(catOf({ cat: 'nope' }), 'all');
@@ -115,8 +115,8 @@ test('卡脚：9 种 project_status 的 chip 与按钮（契约 PL-01 的表）'
 });
 
 test('卡片标记：只标带页面的能力包、提供方批次、租户发布方；分类、官方、无独立页面、可更新、后端 meta 都不标', () => {
-  const cap = cardTags(card({ ui: { kind: 'page', pages: [{ id: 'scenarios', title: '场景走查' }] }, meta: '5 命令', project_status: 'enabled' }));
-  assert.deepEqual(cap.tags.map((t) => t.text), ['带页面：场景走查']);
+  const cap = cardTags(card({ ui: { kind: 'page', pages: [{ id: 'scenarios', title: '场景模拟' }] }, meta: '5 命令', project_status: 'enabled' }));
+  assert.deepEqual(cap.tags.map((t) => t.text), ['带页面：场景模拟']);
   assert.equal('meta' in cap, false);
   const upd = cardTags(card({ project_status: 'update', latest: '0.6.0', meta: '2 命令' }));
   assert.deepEqual(upd.tags, []);
@@ -134,7 +134,7 @@ test('界面标记：内核、无独立页面（悬浮说明去掉前缀）、�
   assert.equal(uiChip({ kind: 'kernel', note: '内核：工作台、Studio、资料、发布' }).pop, '工作台、Studio、资料、发布');
   assert.deepEqual(uiChip({ kind: 'none', note: '无独立页面 · 对话里出现流程图卡' }), { text: '无独立页面', tone: 'gray', icon: null, pop: '对话里出现流程图卡' });
   assert.equal(uiChip({ kind: 'subpages', subpages: [{ parent: 'resources' }, { parent: 'resources' }, { parent: 'resources' }] }).text, '带页面：资料页 3 个子页');
-  assert.equal(uiChip({ kind: 'page', pages: [{ title: '场景走查' }] }).pop, '启用后项目左栏「插件」分组出现「场景走查」');
+  assert.equal(uiChip({ kind: 'page', pages: [{ title: '场景模拟' }] }).pop, '启用后项目左栏「插件」分组出现「场景模拟」');
   assert.equal(uiChip(null), null);
 });
 
@@ -170,7 +170,7 @@ test('会带来什么、界面、生效时机、影响、提示语', () => {
   assert.deepEqual(bringsView({ summary_md: '- 规则 3 条\n- 样例 2 份' }), { list: ['规则 3 条', '样例 2 份'] });
   assert.deepEqual(bringsView({ summary_md: '1 个 skill。' }), { text: '1 个 skill。' });
   assert.equal(bringsView({ commands: 2, skills: 1, nodes: [{ id: 'a.b', title: 'a.b' }] }).text, '2 个命令、1 个 skill、1 个流程节点（a.b）。');
-  assert.equal(uiEffectText(null, { kind: 'page', pages: [{ title: '场景走查' }] }), '启用后左栏出现「场景走查」');
+  assert.equal(uiEffectText(null, { kind: 'page', pages: [{ title: '场景模拟' }] }), '启用后左栏出现「场景模拟」');
   assert.equal(uiEffectText(null, { kind: 'none', note: '无独立页面，在对话里生效' }), '在对话里生效');
   assert.equal(uiEffectText({ text: '自定' }, null), '自定');
   assert.deepEqual(['next_message', 'immediate', 'next_safe_point', undefined].map(effectiveNote), ['下一条消息生效', '现读即生效', '下一个安全点后生效', '下一条消息生效']);
@@ -186,9 +186,9 @@ test('会带来什么、界面、生效时机、影响、提示语', () => {
 test('主线图：插入点挂到对应的段，同一段竖排，图下那句话居中在插入点之间', () => {
   const L = flowLayout([
     { id: 'trace.scenario', title: '每段多一步「场景」', at: 'model', note: '节点钩子' },
-    { id: 'trace.trace', title: '全量回归', at: 'validate' },
+    { id: 'trace.trace', title: '场景模拟', at: 'validate' },
   ]);
-  assert.equal(L.width, 944);
+  assert.equal(L.width, 746);
   assert.equal(L.height, 162); // 和设计稿 viewBox 一致
   assert.deepEqual(L.pills.map((p) => [p.at, p.x, p.y, p.lineFrom]), [['model', 204, 88, 69], ['validate', 402, 88, 69]]);
   assert.equal(L.pills[0].sub, ''); // 后端下发的节点说明不画（口径 5）
@@ -197,7 +197,7 @@ test('主线图：插入点挂到对应的段，同一段竖排，图下那句�
   assert.deepEqual(stacked.pills.map((p) => [p.y, p.lineFrom]), [[88, 69], [140, 132]]);
   assert.equal(stacked.height, 140 + 44 + 22 + 8);
   const none = flowLayout([]);
-  assert.equal(none.caption.x, 472);
+  assert.equal(none.caption.x, 373);
   const kernel = flowLayout([{ id: 'x', at: 'model' }], { kernel: true });
   assert.equal(kernel.pills.length, 0);
   assert.ok(kernel.nodes.every((n) => n.hi));
@@ -217,7 +217,7 @@ test('包含什么：mock 的完整分组原样，真实后端的 contents 补�
   const mock = contentGroups({
     contents: [{ group: '加进流程', items: ['a', 'b'], note: 'n' }, { group: '命令', items: ['c'] }, { group: '术语', total: 312, items: ['x'] }],
     config: [{ label: '回归模式', value: '开' }],
-    ui: { kind: 'page', pages: [{ title: '场景走查' }] },
+    ui: { kind: 'page', pages: [{ title: '场景模拟' }] },
   });
   assert.deepEqual(mock.map((g) => [g.title, g.count]), [['加进流程', 2], ['命令', 1], ['术语', 312], ['界面入口', 1], ['可调设置', 1]]);
   assert.equal(mock[4].items[0], '回归模式 开');
@@ -242,7 +242,7 @@ test('英雄区：依赖、大小、日期；按钮与菜单随状态变', () =>
   assert.equal(fmtSize(186 * 1024), '186 KB');
   assert.equal(fmtSize(2.5 * 1024 * 1024), '2.5 MB');
   const d = {
-    category: 'capability', project_status: 'update', latest: '0.10.0', locked_version: '0.9.1', ui: { kind: 'page', pages: [{ title: '场景走查' }] },
+    category: 'capability', project_status: 'update', latest: '0.10.0', locked_version: '0.9.1', ui: { kind: 'page', pages: [{ title: '场景模拟' }] },
     requires: { depends: { core: '>=1.4' } }, size: 190464, released_at: '2026-10-12T10:00:00.000Z', enabled_at: null,
   };
   assert.deepEqual(heroFacts(d), [['需要', '基础建模能力 1.4 以上'], ['发布', '2026-10-12']]);
@@ -252,7 +252,7 @@ test('英雄区：依赖、大小、日期；按钮与菜单随状态变', () =>
   const menu = heroMenu(d);
   assert.deepEqual(menu.map((x) => (x === '-' ? x : x.label)), ['停用', '只在下次自主构建时启用新版本', '-', '在项目设置里查看']);
   assert.equal(menu[1].disabled, false);
-  assert.deepEqual(disableConfirm({ ...d, label: '场景走查' }), { title: '停用场景走查？', body: '左栏「场景走查」页面会消失，已有产物保留。' });
+  assert.deepEqual(disableConfirm({ ...d, label: '场景模拟' }), { title: '停用场景模拟？', body: '左栏「场景模拟」页面会消失，已有产物保留。' });
   assert.equal(disableConfirm({ label: '零售连锁', category: 'industry' }).body, '已有产物保留。');
   assert.equal(heroMenu({ ...d, project_status: 'enabled' })[1].disabled, true);
   assert.equal(heroMenu({ ...d, project_status: 'required' })[0].disabled, true);
@@ -267,7 +267,7 @@ test('英雄区：依赖、大小、日期；按钮与菜单随状态变', () =>
 
 test('统计卡：project_stats 为 null 时显示「—」；更新记录标记', () => {
   // 「加进流程」那格和主线图重复，只留两格
-  const s = statCards({ category: 'capability', project_status: 'enabled', flow_insertions: [{ short: '段内「场景」' }, { title: '全量回归' }], project_stats: null }, { hasProject: true });
+  const s = statCards({ category: 'capability', project_status: 'enabled', flow_insertions: [{ short: '段内「场景」' }, { title: '场景模拟' }], project_stats: null }, { hasProject: true });
   assert.deepEqual(s.map((x) => [x.label, x.value]), [['在本项目产出', '—'], ['运行情况', '—']]);
   assert.equal(s[0].desc, '暂时没有统计');
   const withStats = statCards({ project_status: 'enabled', project_stats: { produced: { value: 23, unit: '个场景', note: 'n' }, metric: { label: '推演通过率', value: '83%', note: 'm' } } }, { hasProject: true });
@@ -349,7 +349,7 @@ test('mock PL-01 带项目：状态按项目设置的能力表算，计数、推
   assert.equal(r.body.items.find((p) => p.name === 'convert-pdf').usage_note, null);
   assert.deepEqual(r.body.counts, { all: 27, capability: 9, industry: 4, system: 3, provider: 11, node: 0, exporter: 0, enabled: 9, updatable: 1 });
   assert.deepEqual(r.body.recommendations.map((x) => [x.pack.name, x.action]), [['migrate', 'enable'], ['diagram', 'upgrade']]);
-  const inst = await api('GET', `/api/v1/packs?project_id=${P}&installed_only=true&q=走查`);
+  const inst = await api('GET', `/api/v1/packs?project_id=${P}&installed_only=true&q=模拟`);
   assert.deepEqual(inst.body.items.map((p) => p.name), ['trace']);
   assert.equal((await api('GET', '/api/v1/packs?project_id=nope')).status, 404);
   const other = await api('GET', '/api/v1/packs?project_id=bike-fleet-7b20e4a1');
@@ -372,7 +372,7 @@ test('mock：插件中心启用后，项目设置的能力表是同一个状态'
   assert.equal((await api('POST', `/api/v1/projects/${P}/packs`, { name: 'property-compliance' })).status, 201);
 });
 
-test('mock ?mock=plugins:held+ind+norec：场景走查没排升级且更新被挡，零售连锁可更新，推荐为空', async () => {
+test('mock ?mock=plugins:held+ind+norec：场景模拟没排升级且更新被挡，零售连锁可更新，推荐为空', async () => {
   const { api } = harness({ sc: { plugins: 'held ind norec' } });
   const r = await api('GET', `/api/v1/packs?project_id=${P}`);
   const st = Object.fromEntries(r.body.items.map((p) => [p.name, p]));
@@ -432,7 +432,7 @@ test('mock PL-02：详情、在用 / 需要先升级的标记、统计只给主�
   assert.equal(d.body.version, '0.9.1');
   assert.equal(d.body.project_status, 'update');
   assert.deepEqual(d.body.requires.depends, { core: '>=1.4' });
-  assert.deepEqual(d.body.flow_insertions.map((x) => x.at), ['model', 'validate']);
+  assert.deepEqual(d.body.flow_insertions.map((x) => x.at), ['validate']);
   assert.deepEqual(d.body.changelog.map((c) => [c.version, c.tags]), [['0.10.0', ['needs_core_upgrade']], ['0.9.1', ['in_use']], ['0.9.0', []], ['0.8.2', []]]);
   assert.equal(d.body.project_stats.produced.value, 23);
   assert.equal(d.body.hot_level, 'H1');

@@ -168,9 +168,9 @@ def detail(manager, name: str, *, project_id: str = "", version: str = "") -> di
     }
 
 
-# 主流程的段（PL-02 `flow_insertions[].at`）：包节点挂在哪个 core 节点前后就归哪一段；指标是建模旁支
+# 主流程的段（PL-02 `flow_insertions[].at`）：包节点挂在哪个 core 节点前后就归哪一段；指标是建模旁支，老包写的全局一致性归校验
 _SEGMENTS = {"core.research": "research", "core.model": "model", "core.metric": "model", "core.validate": "validate",
-             "core.consistency": "consistency", "core.publish": "publish"}
+             "core.consistency": "validate", "core.publish": "publish"}
 
 
 def _flow_insertions(repository, name: str, version: str, manifest) -> list[dict]:

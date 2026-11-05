@@ -207,7 +207,7 @@ export function usedByLabel(ref) {
   return `${KIND_LABEL[ref.kind] || '条目'} ${ref.name}`;
 }
 
-// 点了去哪：本体条目去 Studio 表格，场景去场景走查（按 key 定位）
+// 点了去哪：本体条目去 Studio 表格，场景去场景模拟（按 key 定位）
 export function usedByTarget(ref) {
   if (ref.type === 'trace.scenario') return { page: 'scenarios', query: { key: ref.key } };
   if (ref.type) return null;

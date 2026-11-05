@@ -85,7 +85,7 @@ def conflicted(workspaces, project_id, root, rel="ontology/object/客户.md", na
 
 def test_sources_counts_and_detail_shapes(env):
     client, workspaces, _manager, project_id, root = env
-    # 过期的场景验证节点（场景走查包的节点，计进它的角标）、需复核的对象节点、报告、外部反馈、续跑
+    # 过期的场景模拟节点（场景模拟包的节点，计进它的角标）、需复核的对象节点、报告、外部反馈、续跑
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))
     main_write(root, "ontology/operation/补货.md", "# 补货\n\n## 业务描述\n\n合成\n")
     main_write(root, "ontology/testcase/补货.md", "# 测试场景：补货\n\n## 场景 1：合成\n")
@@ -131,7 +131,7 @@ def test_sources_counts_and_detail_shapes(env):
     stale = client.get(f"/api/v1/projects/{project_id}/inbox/stale:trace.trace").json()["detail"]
     assert set(stale) == {"upstream_diff", "impact", "siblings"}
     assert client.get(f"/api/v1/projects/{project_id}/inbox/nope:1").json()["code"] == "not_found"
-    # 左栏角标：场景走查页（声明了 badge: inbox）
+    # 左栏角标：场景模拟页（声明了 badge: inbox）
     nav = client.get(f"/api/v1/projects/{project_id}/extensions").json()["nav"]
     scenarios = next(item for item in nav if item.get("pack") == "trace")
     assert scenarios["badge"]["count"] == counts["by_pack"]["trace"]

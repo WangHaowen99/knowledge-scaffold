@@ -9,8 +9,8 @@
 # 探针怎么算在 scripts/flow_state.py（只用标准库），后端与 state_helper 共用同一份实现。
 # 装配时组装成装配目录里的 flow.yaml（JSON 写法，也是合法 YAML）。
 #
-# 主线（详设 6.8；F8 起不分段，与插件化之前一致）：资料分析 → 建模（对象、操作，规则与指标随操作一起抽）→ 校验（与走查）
-# → 发布；规则补抽、指标、流程图、全局一致性是旁支，增量更新按需。建模蓝图（research/blueprint.json）只记统一叫法与
+# 主线（详设 6.8；F8 起不分段，与插件化之前一致）：资料分析 → 建模（对象、操作，规则与指标随操作一起抽）→ 校验
+# → 发布；规则补抽、指标、流程图是旁支，增量更新按需。建模蓝图（research/blueprint.json）只记统一叫法与
 # 待定问题，只有一段「全部」（全量模式）。
 #
 # 节点状态由后端按执行记录、变更集、产物指纹算（详设 6.6；方案 D13）。节点上与之相关的声明：
@@ -49,17 +49,16 @@ probes:
   solver: {files: [ontology/solver]}
   rule: {files: [ontology/rule], glob: "*.md", recursive: true}
   metric: {files: [ontology/metric], glob: "*.md", recursive: true}
-  # 全局一致性的报告放在 reports/consistency/ 下：不算进质量检查的 reports_pending（那个只看 reports/ 第一层）
-  consistency_report: {files: [reports/consistency], glob: "*.md"}
-  consistency_pending: {pending: [reports/consistency], glob: "*.md"}
   # 发布过：工作区里有 release/* 标签（发布流程打的，PB-03）
   released: {tags: "release/*"}
 
-# 0.2 的节点编号 → 现在的节点：没升级的包里写的锚点照样认（对象提取、操作提取并进建模，规则与指标成了指标旁支）
+# 0.2 的节点编号 → 现在的节点：没升级的包里写的锚点照样认（对象提取、操作提取并进建模，规则与指标成了指标旁支；
+# 全局一致性 11-05 删了，挂在它上面的锚点算到校验）
 aliases:
   core.object: core.model
   core.operation: core.model
   core.rule_metric: core.metric
+  core.consistency: core.validate
 
 nodes:
   - id: core.research
@@ -127,28 +126,13 @@ nodes:
     entry: {command: /ontology-validate}
     actions:
       - {label: 运行质量检查, command: /ontology-validate}
-  # 全局一致性（详设 6.8 新增）：关系与口径；F8 起是旁支，不在主线上、不挡发布（插件化之前没有这一步）
-  - id: core.consistency
-    title: 全局一致性
-    kind: agent
-    placement: branch
-    section: optional
-    optional: true
-    after: [trace.trace, core.validate]
-    done: [consistency_report, "!consistency_pending"]
-    stale_on: [object, operation, rule, metric]
-    produces: ["reports/consistency/*"]
-    writes: ["ontology/*"]
-    entry: {command: /ontology-consistency}
-    actions:
-      - {label: 全局一致性检查, command: /ontology-consistency}
   # 发布（详设 6.8 新增）：主线终点，关卡都挂在它前面；就是发布页那套流程（PB-01～PB-03），不另写一套
   - id: core.publish
     title: 发布
     kind: human
     placement: spine
     section: required
-    after: core.consistency
+    after: [trace.trace, core.validate]
     done: [released]
     stale_on: [object, operation, rule, metric, script]
     actions:
@@ -189,7 +173,6 @@ commands:
   extract-operation: {node: core.model, requires: [对象已提取], lock_waits: [confirm]}
   extract-rule-metric: {node: core.metric, requires: [], lock_waits: [confirm]}
   validate: {node: core.validate, requires: [逻辑已提取, 对象已提取], lock_waits: [confirm]}
-  consistency: {node: core.consistency, requires: [逻辑已提取, 对象已提取], lock_waits: [confirm]}
   update: {node: core.update, requires: [逻辑已提取, 对象已提取], lock_waits: [confirm]}
   overview: {requires: [对象已提取]}
   impact: {requires: [对象已提取]}
@@ -223,10 +206,9 @@ next_steps:
   校验待审阅:
     - {reply: 继续校验, command: /ontology-validate, text: 继续处理问题清单}
   完成:
-    - {reply: 全局一致性, command: /ontology-consistency, text: 检查关系与口径（可选）}
     - {reply: 测试数据, command: /ontology-mock, text: 生成测试数据}
     - {reply: 追踪, command: /ontology-trace, text: 场景追踪验证}
-    - {reply: 交互走查, command: /ontology-trace 交互, text: 逐个分支由你选方向，AI 辅助构造 testcase 和正常 mock 数据}
+    - {reply: 交互模拟, command: /ontology-trace 交互, text: 逐个分支由你选方向，AI 辅助构造 testcase 和正常 mock 数据}
     - {reply: 扫描候选, command: /ontology-codegen-scan, text: 看哪些逻辑适合转脚本（推荐先扫一遍）}
     - {reply: 代码生成, command: /ontology-codegen, text: 生成 Python 代码}
     - {reply: 整体视图, command: /ontology-overview, text: 查看对象/逻辑全局关系}

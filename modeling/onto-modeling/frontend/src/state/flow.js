@@ -76,7 +76,7 @@ export function mergeFlow(flow, patch) {
 }
 
 // 主线节点按边的顺序排（只放 spine / step / gate；已停用的包的节点只在建模步骤抽屉里列出）。
-// 同一锚点后面挂了两个以上主线节点（节点包串入的一步和场景走查都挂在质量检查之后）时连线排不出唯一顺序，
+// 同一锚点后面挂了两个以上主线节点（节点包串入的一步和场景模拟都挂在质量检查之后）时连线排不出唯一顺序，
 // 按后端给的节点顺序（组装时已按锚点与包顺序排好）
 export function trackNodes(flow) {
   if (!flow) return [];
@@ -109,7 +109,7 @@ export function sectionGroups(flow) {
 
 /**
  * 节点动作怎么执行：
- * - navigate：target 是页面 id（P2 的「刷新」去场景走查、「去确认」去待处理）；
+ * - navigate：target 是页面 id（P2 的「刷新」去场景模拟、「去确认」去待处理）；
  * - command：target 是命令文本（P1 的 start，如 `/ontology-extract-object`），经 S-20 发到对话；
  * - skip / restore / start：调 FL-03 / FL-04 / FL-05。
  */

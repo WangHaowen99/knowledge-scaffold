@@ -1,12 +1,12 @@
-# 场景走查（详设 5.3、5.9.8；方案第 3 章 trace 包）：示例数据、场景推演（单个 / 批量 / 交互）。
+# 场景模拟（详设 5.3、5.9.8；方案第 3 章 trace 包）：示例数据、场景推演（单个 / 批量 / 交互）。
 # 官方包保留原命令名（方案第 6 章第 7 项）。存量产物还在原目录（ontology/testcase、ontology/data-mock），
-# 登记成插件产物供「场景走查」页读；推演结论由 trace_index.py 写进 ext/trace/index/ 的标准索引。
+# 登记成插件产物供「场景模拟」页读；推演结论由 trace_index.py 写进 ext/trace/index/ 的标准索引。
 name: trace
 version: 0.10.0
 kind: capability
 category: capability
-label: 场景走查
-description: 生成示例数据，按场景推演操作逻辑（单个、批量、交互走查），场景与推演结论在「场景走查」页查看。
+label: 场景模拟
+description: 生成示例数据，按场景推演操作逻辑（单个、批量、交互模拟），场景与推演结论在「场景模拟」页查看。
 publisher: {kind: official, label: 平台}
 split_from_core: true
 default_on: true
@@ -15,8 +15,8 @@ badges: [recommended]
 kernel_api: ">=1.0 <2.0"
 page_api: ">=1.0 <2.0"
 engines: [claude, jiuwen]
-depends: {core: ">=0.3"}  # 0.3.0 起建模按段（core.model），「场景」挂在分段里
-changelog: 场景挂进建模的每一段；全量回归串在校验之后，示例数据按场景生成。
+depends: {core: ">=0.3"}  # 0.3.0 起的主流程节点（core.model、core.validate）
+changelog: 改名「场景模拟」，串在校验之后；建模里不再有按段的「场景」一步，示例数据按场景生成。
 contributes:
   commands: [ontology-mock, ontology-trace, ontology-trace-single, ontology-trace-batch, ontology-trace-interactive]
   agents: [trace-agent, mock-data-agent]
@@ -29,12 +29,12 @@ contributes:
   pages:
     - id: scenarios
       page_api: ">=1.0 <2.0"
-      nav: {title: 场景走查, icon: flask, order: 1}
+      nav: {title: 场景模拟, icon: flask, order: 1}
       badge: inbox
       data: {artifacts: [trace.scenario, trace.mock], reports: [], nodes: [trace.trace]}
       actions:
         - {id: batch, label: 批量验证, command: /ontology-trace-batch}
-        - {id: walk, label: 交互走查, command: /ontology-trace-interactive}
+        - {id: walk, label: 交互模拟, command: /ontology-trace-interactive}
         - {id: refresh, label: 补齐过期场景, command: /ontology-trace-batch, hint: 带上过期场景的编号}
         - {id: mock, label: 按场景补生成示例数据, command: /ontology-mock}
 checksums: checksums.sha256

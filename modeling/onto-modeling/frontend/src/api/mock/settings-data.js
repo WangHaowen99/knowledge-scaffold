@@ -1,5 +1,5 @@
 // mock 数据 · 项目设置（合成场景）：本项目的能力（PL-05）、助手可用的 MCP 服务器（P-14）、对外 MCP（M-01、M-02）
-// 版本与状态取自设计稿 proj-settings：场景走查有一个待生效的升级，代码生成可回滚，图示可升级，迁移复用停用过。
+// 版本与状态取自设计稿 proj-settings：场景模拟有一个待生效的升级，代码生成可回滚，图示可升级，迁移复用停用过。
 import { buildClientConfigs } from '../../lib/mcpClientConfig.js';
 
 const MIN = 60 * 1000;
@@ -37,7 +37,7 @@ export function projectPacks() {
   return [
     pk({ name: 'core', label: '基础建模', ui: UI.kernel, locked_version: '1.4.2', status: 'required' }),
     pk({
-      name: 'trace', label: '场景走查', ui: UI.page('scenarios', '场景走查'), locked_version: '0.9.1', latest_available: '0.10.0', status: 'pending',
+      name: 'trace', label: '场景模拟', ui: UI.page('scenarios', '场景模拟'), locked_version: '0.9.1', latest_available: '0.10.0', status: 'pending',
       pending: { from: '0.9.1', to: '0.10.0', kind: 'upgrade', effective: 'next_message' },
     }),
     pk({ name: 'knowledge', label: '知识沉淀', ui: UI.page('knowledge', '知识沉淀'), locked_version: '0.6.0' }),

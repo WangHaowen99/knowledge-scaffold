@@ -210,7 +210,7 @@ export function seedTrash(now, { legacy = false } = {}) {
   const rows = [
     ['trash-parcel-sort-old', 'parcel-sort-0d4b7a12', '快递分拣异常处理（旧）', 'wanggong', '资料分析', 4, 420],
     ['trash-retail-restock-r2', 'retail-restock-r2-6e19c3b8', '门店补货单编制 r2', 'zhangsan', '建模（按段）', 8, 612],
-    ['trash-canteen-pilot-a', 'canteen-pilot-2f7e5a90', '食堂菜单试点 A', 'sunyu', '校验与走查', 17, 188],
+    ['trash-canteen-pilot-a', 'canteen-pilot-2f7e5a90', '食堂菜单试点 A', 'sunyu', '校验', 17, 188],
     ['trash-test-0919', 'test-0919-9a1c4e63', '测试项目 0919', 'liming', '资料分析', 25, 402],
   ];
   return rows.map(([entryId, id, name, owner, stage, daysAgo, mb]) => {

@@ -204,7 +204,7 @@ python3 .claude/scripts/seed_example.py {DEMO_ROOT}
 接下来你可以：
 - 回复 **提取对象**（/ontology-extract-object）→ 从示例流程图提取对象
 - 回复 **完整走一遍** → 自动依次跑 提取 → 校验 → 测试数据 → 追踪 → 代码生成（每步之间暂停让你看结果）
-- 回复 **交互走查** → 用 `/ontology-trace 交互` 逐个分支构造 testcase 和正常 mock 数据
+- 回复 **交互模拟** → 用 `/ontology-trace 交互` 逐个分支构造 testcase 和正常 mock 数据
 - 回复 **清理示例** → 删除示例数据恢复空项目（仅删除 seed_example.py 写入的文件）
 ```
 

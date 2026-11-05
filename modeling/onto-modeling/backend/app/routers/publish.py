@@ -123,7 +123,7 @@ def check_view(project_id: str, commit: str | None = None) -> dict:
     root = deps.workspaces.project_root(project_id)
     data = publish.package_binding_check(deps.workspaces, project_id, commit)
     gates = [_gate_view(gate) for gate in data["gates"]]
-    # 流程关卡（挂在发布节点前面的：全局一致性、包声明的关卡，详设 6.8、B4d）排在平台门禁后面
+    # 流程关卡（挂在发布节点前面的包声明的关卡，详设 6.8、B4d）排在平台门禁后面
     from ..services.flow import view as flow_view
 
     gates += [{**gate, "order": len(gates) + index + 1} for index, gate in enumerate(flow_view.publish_gates(root))]

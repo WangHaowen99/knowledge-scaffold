@@ -56,6 +56,9 @@ def test_policy_validation(env):
         assert saved.json()["scope"]["slice_ids"] == []
     ok = client.put(_url(project_id), json={"scope": {"until_node": "core.validate"}})
     assert ok.status_code == 200 and ok.json()["scope"]["until_node"] == "core.validate"
+    # 全局一致性节点删了：老策略写到它等于跑完主线，不报错
+    old = client.put(_url(project_id), json={"scope": {"until_node": "core.consistency"}})
+    assert old.status_code == 200 and old.json()["scope"]["until_node"] is None
 
 
 def test_platform_limits_and_config_item(env):

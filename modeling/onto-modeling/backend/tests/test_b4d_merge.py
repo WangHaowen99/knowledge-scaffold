@@ -7,7 +7,7 @@ B4d（建模蓝图、按段的主流程）与 B5c（节点包：可补做、已�
 - 可补做照样成立：不计进度分母、不抢主线下一步；
 - 待处理里人工节点的决策卡和建模蓝图的待答问题并存，各自回答各自消失；
 - 发布页的节点（发布）开始时回「在页面里操作」，人工节点照常出卡；
-- 发布门禁链：平台门禁在前，流程关卡（包的关卡节点；F8 起全局一致性是旁支，不再是关卡）在后。
+- 发布门禁链：平台门禁在前，流程关卡（包的关卡节点）在后。
 
 节点包、蓝图全部合成；假引擎不起真实 CLI。
 """
@@ -170,14 +170,14 @@ def test_publish_node_is_a_page_and_flow_gates_follow_platform_gates(env):
     assert started.status_code == 400 and started.json()["details"]["page"] == "publish"
     _blueprint(root)
     main_write(root, "ontology/object/读者.md", obj("读者", "合成"))
-    gate = {**NODE_PACK_FLOW["nodes"][0], "placement": "gate", "after": "core.consistency", "before": "core.publish",
+    gate = {**NODE_PACK_FLOW["nodes"][0], "placement": "gate", "after": "core.consistency", "before": "core.publish",  # 老锚点：别名到校验
             "blocks": ["core.publish"]}
     install(manager, tmp_path, flow={**NODE_PACK_FLOW, "nodes": [gate]})
     enable_and_apply(client, manager, project_id)
     gates = client.get(f"/api/v1/projects/{project_id}/publish/check").json()["gates"]
     kinds = [item["source"]["kind"] for item in gates]
     flow_gates = [item for item in gates if item["source"]["kind"] == "flow"]
-    assert [item["id"] for item in flow_gates] == ["flow:naming.check"]  # F8：全局一致性不再是发布关卡
+    assert [item["id"] for item in flow_gates] == ["flow:naming.check"]
     # 关卡来源写包清单里的名字（F 第 10 条：原来写包名）
     assert flow_gates[0]["source"] == {"kind": "flow", "label": "naming 包", "pack": "naming"}
     assert kinds.index("flow") == len(kinds) - len(flow_gates)  # 流程关卡排在最后

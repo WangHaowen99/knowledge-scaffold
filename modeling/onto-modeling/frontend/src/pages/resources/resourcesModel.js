@@ -251,7 +251,7 @@ export function refSentence(items = []) {
   return `${refCount(items)} 处出处引用了它：${names.join('、')}${more}。删除后这些出处会变成「来源无法核验」。`;
 }
 
-// 点引用去哪：条目去 Studio 表格，流程图去 Studio 表格的流程图行，场景去场景走查
+// 点引用去哪：条目去 Studio 表格，流程图去 Studio 表格的流程图行，场景去场景模拟
 export function refTarget(t) {
   if (!t) return null;
   if (t.id && t.kind) return { page: 'studio-table', query: { entry: t.id } };

@@ -422,7 +422,7 @@ test('页面命令：修复、重新生成描述符、生成脚本、扫描，�
   scan.finish();
   assert.notEqual((await list()).candidates.scanned_at, before.candidates.scanned_at);
   // 不是这一页发的命令不归这里
-  assert.throws(() => s.run({ ...scanCommand(), origin: { page: 'scenarios', label: '场景走查' } }));
+  assert.throws(() => s.run({ ...scanCommand(), origin: { page: 'scenarios', label: '场景模拟' } }));
 });
 
 test('生成评估器：跑的时候这份求解契约进写入范围，跑完解除、修订号加 1', async () => {

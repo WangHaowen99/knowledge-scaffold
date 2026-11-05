@@ -433,7 +433,7 @@ function stageFlow(base, research, bpState = 'none', modelReady = false) {
     if (n.id === 'core.research') return { ...n, ...research };
     if (n.id === 'evo.evolution') return n;
     const reset = { ...n, state: 'not_ready', display_state: 'not_ready', progress: null, flags: { ...n.flags, needs_review: false }, actions: [] };
-    if (n.id === 'trace.trace') return { ...reset, note: '场景走查 · 建模之后才有场景' };
+    if (n.id === 'trace.trace') return { ...reset, note: '场景模拟 · 建模之后才有场景' };
     if (n.id === 'core.update') return { ...reset, note: '资料有修订时再用' };
     if (n.section === 'optional') return { ...reset, actions: [{ kind: 'skip', label: '跳过' }] };
     if (n.id === 'core.model' && modelReady) return { ...reset, state: 'ready', display_state: 'ready' };

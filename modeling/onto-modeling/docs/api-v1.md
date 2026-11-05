@@ -1308,7 +1308,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 响应 `200`：`{objects, operations, rules, metrics, scripts, relations, flowcharts: int|null, scenarios: {total, passed, pass_rate_pct}|null, version_label, head}`。
 
 - `flowcharts` 只在图示包启用时有值；
-- `scenarios` 只在场景走查包启用时有值，这时前端在统计条上加插件标记。
+- `scenarios` 只在场景模拟包启用时有值，这时前端在统计条上加插件标记。
 
 #### ST-02 关系图
 
@@ -1870,7 +1870,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `args` | object | 否 | 命令参数，如 `{scenario: "s-03"}`、`{report_item: "RI-12"}` |
 | `text` | string | 否 | 附带的自然语言说明 |
 | `display_text` | string | 否 | 对话里显示的说明（F4b-paths）；不给时用 `text`。对话里只显示「命令 + 说明」，不带 `args`，说明里的工作区路径换成业务名；发给助手的仍是命令、参数和 `text` 原文 |
-| `origin` | `{page, label}` | 是 | 对话里显示「来自「场景走查」页」用 |
+| `origin` | `{page, label}` | 是 | 对话里显示「来自「场景模拟」页」用 |
 | `conversation_id` | string | 否 | 缺省：引擎当前绑定的对话，没有就取最近更新的一条 |
 | `replace` | bool | 否 | 同 S-07（F7） |
 | `from_suggestion` | bool | 否 | 同 S-07（F7） |
@@ -2347,7 +2347,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   | `ok` | bool | — |
   | `checks` | `CompatCheck[]` | 内核接口 `kernel_api`、会话引擎、依赖、命令 / 子代理 / 脚本名唯一、流程组装、`page_api` |
   | `brings` | object | `{summary_md, commands: int, agents: int, skills: int, nodes: [{id, title, placement}], pages: [{id, title}], subpages: [{parent, id, title}]}` |
-  | `ui_effect` | object | `{kind: "page"\|"subpages"\|"none"\|"kernel", text}`，如「启用后左栏出现「场景走查」」 |
+  | `ui_effect` | object | `{kind: "page"\|"subpages"\|"none"\|"kernel", text}`，如「启用后左栏出现「场景模拟」」 |
   | `effective` | string | `next_message\|next_safe_point\|immediate`：行业包这类纯数据包是 `immediate` |
   | `impact` | object | `{needs_review_after_upgrade: int, affected_artifacts: int, note}`：节点完成判定变化等 |
   | `blocked_reason` | string \| null | 如「需要先升级基础建模能力」 |
@@ -3001,7 +3001,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   | `version_label` | string | — |
   | `package_name` | string | — |
   | `format` | string | `ontology\|solver`：自动判定 |
-  | `gates` | `GateResult[]` | 按顺序：数据绑定、求解契约回执、包声明的门禁（如合规检查）、证据出处检查、全局一致性等流程关卡 |
+  | `gates` | `GateResult[]` | 按顺序：数据绑定、求解契约回执、包声明的门禁（如合规检查）、证据出处检查、流程关卡 |
   | `blocking_count` | int | — |
   | `binding` | object | `{issues: BindingIssue[], warnings: string[], tables: string[], table_count, objects, bound_objects, table_resources: string[]（没标 Schema 的表格资料）, truncated}` |
   | `degradable` | bool | 只有数据绑定不通过时为 true |
@@ -4085,7 +4085,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 | 编号 | type | 持久 | 载荷 | 用在哪 |
 |---|---|---|---|---|
-| EC-10 | `message.user` | 是 | `{message_id, text, attachments: AttachmentRef[], references: (EntryRef\|ArtifactRef\|{kind: "anchor", anchor})[], origin: {kind: "page"\|"inbox"\|"studio"\|"report", page, label, task_id}\|null, delivery: "immediate"\|"steer"\|"deferred"\|"queued"}` | 用户气泡；带 `origin` 时显示「来自「场景走查」页」（第 19 项）；`steer` 是运行中的插话，送达状态看 EC-15 |
+| EC-10 | `message.user` | 是 | `{message_id, text, attachments: AttachmentRef[], references: (EntryRef\|ArtifactRef\|{kind: "anchor", anchor})[], origin: {kind: "page"\|"inbox"\|"studio"\|"report", page, label, task_id}\|null, delivery: "immediate"\|"steer"\|"deferred"\|"queued"}` | 用户气泡；带 `origin` 时显示「来自「场景模拟」页」（第 19 项）；`steer` 是运行中的插话，送达状态看 EC-15 |
 | EC-11 | `message.delta` | 否 | `{message_id, kind: "text"\|"thinking", text}` | 流式输出 |
 | EC-12 | `message.assistant` | 是 | `{message_id, text_md, anchors: [{n: int, anchor}], entry_links: EntryRef[], continued: bool}` | 助手正文。正文里 `[[名称]]` 渲染成去 Studio 的链接，出处角标按 `anchors` 编号悬停看原文。`continued=true` 表示与上一条连续，不重复署名 |
 | EC-13 | `notice` | 是 | `{kind: "merged"\|"discarded"\|"decided"\|"info"\|"warning", text, version_label: string\|null, changeset_id: string\|null, align: "center"\|"left"}` | 系统提示行，如「分段「订单与配送时限」已确认生效 · 版本 v0.12」「步骤 2 选了 A：…」 |
@@ -4111,7 +4111,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 |---|---|---|---|---|
 | EC-30 | `permission.requested` | 是 | `{request_id, title: string（如「助手请求执行一个操作」）, description: string（业务话）, details_text: string（「查看技术细节」里的内容）, timeout_s: 600, expires_at}` | chat-states 第 6 项确认卡 |
 | EC-31 | `permission.resolved` | 是 | `{request_id, behavior: "allow"\|"deny", by: "user"\|"timeout"\|"autobuild_policy", message}` | 确认卡变为已处理 |
-| EC-32 | `question.asked` | 是 | `Question`（kind 见 4.6） | 决策卡、走查分支、请专家确认、交互走查、采集确认、资料用途确认 |
+| EC-32 | `question.asked` | 是 | `Question`（kind 见 4.6） | 决策卡、模拟分支、请专家确认、交互模拟、采集确认、资料用途确认 |
 | EC-33 | `question.answered` | 是 | `{question_id, answer: {option_id?, option_ids?, custom_text?}, by: "user"\|"autobuild_policy", summary: string（如「步骤 2 选了 A：…」）, answered_at}` | 决策卡收起为一行 |
 | EC-34 | `question.withdrawn` | 是 | `{question_id, reason: string}` | 问题失效（撤回这一轮、重启等） |
 
@@ -4139,10 +4139,10 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 |---|---|---|---|---|
 | EP-01 | `flow.updated` | `{flow_hash, nodes: [{id, state, flags, progress}], slices: [{id, stages, note}], suggestions_changed: bool}`，只含变化的节点和分段 | 主线进度条、建模步骤抽屉、projects 卡片 | ㊴ |
 | EP-02 | `inbox.updated` | `{counts: {total, by_filter, by_pack}, added: string[], removed: string[], changed: string[]}` | 左栏工作台角标、「待处理 N」、inbox 列表、插件页角标 | ㊴ |
-| EP-03 | `scope.updated` | `ScopeLock` | Studio、流程图弹窗、场景走查、代码生成、知识沉淀页的锁定条和只读；两态「助手运行中 / 修改待确认」，自主构建下是「这一段自动合入为止」 | 4.3、方案 C10 |
+| EP-03 | `scope.updated` | `ScopeLock` | Studio、流程图弹窗、场景模拟、代码生成、知识沉淀页的锁定条和只读；两态「助手运行中 / 修改待确认」，自主构建下是「这一段自动合入为止」 | 4.3、方案 C10 |
 | EP-04 | `changeset.updated` | `{changeset_id, state: "open"\|"pending_confirm"\|"merged"\|"discarded"\|"conflict", source, conversation_id, version_label: string\|null}` | wb-l2「这一轮」卡、inbox | 8.2 |
 | EP-05 | `workspace.changed` | `{commit, version_label, source: "assistant"\|"web"\|"studio"\|"mcp"\|"autobuild"\|"import"\|"plugin"\|"revert", changeset_id, by, entries: EntryRef[], artifacts: ArtifactRef[], paths: string[≤200]}` | 外壳知识包版本、Studio 表格与图谱刷新、编辑器「文件已被助手修改」提示 | 方案 C2 |
-| EP-06 | `artifacts.updated` | `{type, change: "created"\|"updated"\|"deleted"\|"stale"\|"fresh", keys: string[]}` | 场景走查、代码生成、知识沉淀页列表；Studio 流程图行 | 4.1、5.9.4 |
+| EP-06 | `artifacts.updated` | `{type, change: "created"\|"updated"\|"deleted"\|"stale"\|"fresh", keys: string[]}` | 场景模拟、代码生成、知识沉淀页列表；Studio 流程图行 | 4.1、5.9.4 |
 | EP-07 | `extensions.updated` | `{active_hash, pending_hash, changed: ("nav"\|"pages"\|"subpages"\|"entries"\|"artifact_types"\|"views"\|"gates")[]}` | 左栏插件页面出现或消失、资料子页、Studio 条目类型 | 5.9.6 |
 | EP-08 | `assembly.updated` | `{state: "pending"\|"applied"\|"failed", pending_changes: [{pack, from, to, kind}], effective, error_id: string\|null}` | proj-settings 待生效 chip；与对话流 EC-06 配合 | 8.1 |
 | EP-09 | `exec.updated` | `ExecRecord` | 续跑卡、inbox 续跑、插件页进度 | 8.4、㊶ |
@@ -4206,9 +4206,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | kind | 界面 | 特有字段 | 回答 |
 |---|---|---|---|
 | `decision` | 结构化决策卡（wb-l2、wb-materials 资料用途确认、inbox 决策） | `options[].consequence`；`options[].preview: DiffLine[]`（选中后卡内显示「选 X 会这样改」）；最后一项「其他，我来说」`allow_custom_on` | `S-11`；没选不能确认；键盘 1–4、↵ |
-| `branch` | 走查分支选择卡（chat-states 第 7 项） | `scenario: ArtifactRef`、`context_text` | `S-11`，可带 `custom_text` |
+| `branch` | 模拟分支选择卡（chat-states 第 7 项） | `scenario: ArtifactRef`、`context_text` | `S-11`，可带 `custom_text` |
 | `expert` | 请专家确认卡（chat-states 第 7 项、reports 专家裁决） | `options` 渲染为按钮，含 `dismiss` 型选项「不需要问这个」 | `S-11` |
-| `walkthrough` | 交互走查卡（chat-states 第 20 项） | `scenario: ArtifactRef`、`inputs: [{name, value, type, source: "input"\|"example"}]`、`steps: [{n, label, text, ref: EntryRef\|null, source}]`、判断点 `prompt` | `S-11`；选择记进场景，下次批量验证按这条分支推演 |
+| `walkthrough` | 交互模拟卡（chat-states 第 20 项） | `scenario: ArtifactRef`、`inputs: [{name, value, type, source: "input"\|"example"}]`、`steps: [{n, label, text, ref: EntryRef\|null, source}]`、判断点 `prompt` | `S-11`；选择记进场景，下次批量验证按这条分支推演 |
 | `collection` | 采集确认（陪伴建模下要采生产库时） | `collection: {source: EvidenceSourceRef, summary}`（同 `EV-13` 的 `summary`） | `S-11` 选「同意」后内核发起采集，等价于带确认的 `EV-14` |
 | `confirm` | 一般的是 / 否确认 | 两个选项 | `S-11` |
 
@@ -4283,7 +4283,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | 4 打断之后（继续 / 从打断处继续 / 换个方向） | EC-05、EC-53（`mode="interrupted"`） | 继续：`S-07`；从打断处继续：`S-16`；换个方向：前端清空输入框 |
 | 5 中断续跑卡 | EC-40 `resume`、EP-09 | `S-16`、`S-17` |
 | 6 权限确认卡（允许 / 拒绝，超时按拒绝） | EC-30、EC-31 | `S-10` |
-| 7 走查分支选择、请专家确认 | EC-32 `branch`、`expert`；EC-33 | `S-11` |
+| 7 模拟分支选择、请专家确认 | EC-32 `branch`、`expert`；EC-33 | `S-11` |
 | 8 本轮改了什么（展开明细、对比） | EC-40/41 `round_changes`、EP-03、EP-04 | `CS-02`、`CS-03`、`CS-05` |
 | 9 排队中 | EC-01（`queued`）、EC-02 | `S-12` |
 | 10 上下文占用与自动压缩、项目累计用量 | EC-51、EC-52 | `S-05`、`P-16` |
@@ -4296,7 +4296,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | 17 拖入附件、粘贴截图 | EC-10（`attachments`） | `U-01`、`U-03`、`S-07` |
 | 18 下一步建议条三种情况 | EC-53 | `FL-02`；建议项的 `action` 见 `Suggestion` |
 | 19 插件页发来的任务 | EC-10（`origin`）、EC-20、EP-10 | `S-20`、`S-19` |
-| 20 交互走查卡 | EC-32 `walkthrough`、EC-33 | `S-11` |
+| 20 交互模拟卡 | EC-32 `walkthrough`、EC-33 | `S-11` |
 
 ### 4.9 `wb-l2` 页 → 事件与接口
 
@@ -4358,7 +4358,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `schema` | 证据浏览器 | `EV-18`（快照下拉）、`EV-23`～`EV-28` | — |
 | `publish` | 发布知识包 | `PB-01`～`PB-07`、`P-09`、`SV-04`、`FL-05`（合规检查「去运行」）、`RP-06`（修完重新检查）、`V-01`（版本下拉） | EP-19、EP-01 |
 | `versions` | 版本历史与对比 | `V-01`～`V-08`、`F-06`、`F-03` | EP-05 |
-| `scenarios` | 场景走查（插件） | `AR-01`、`AR-02`、`AR-03`、`AR-04`、`AR-05`、`AR-06`、`AR-07`、`AR-09`（类型 `trace.scenario`、`trace.mock`）、`S-20`（批量验证、交互走查、补齐过期场景、按场景补生成、行内 ▶）、`S-19`、`CS-06`、`IN-01`（`pack=trace` 角标）、`PL-12` | EP-03、EP-06、EP-10 |
+| `scenarios` | 场景模拟（插件） | `AR-01`、`AR-02`、`AR-03`、`AR-04`、`AR-05`、`AR-06`、`AR-07`、`AR-09`（类型 `trace.scenario`、`trace.mock`）、`S-20`（批量验证、交互模拟、补齐过期场景、按场景补生成、行内 ▶）、`S-19`、`CS-06`、`IN-01`（`pack=trace` 角标）、`PL-12` | EP-03、EP-06、EP-10 |
 | `knowledge` | 知识沉淀（插件） | `K-01`～`K-08`、`S-20`（在对话里复核）、`CS-06` | EP-23、EP-03 |
 | `scripts` | 代码生成与求解（插件） | `SC-01`、`SC-02`、`SC-03`、`SV-01`～`SV-04`、`ST-04`（脚本只读预览）、`S-20`（扫描、生成脚本、修复、重新生成、按模板重新生成）、`S-19`、`CS-06` | EP-03、EP-06、EP-10 |
 | `proj-settings` | 项目设置 | `P-04`、`P-05`、`P-06`、`P-07`、`P-12`、`P-13`、`P-14`、`C-06`、`A-09`、`AB-01`、`AB-02`、`AB-03`、`AB-18`、`BP-01`（范围里的分段清单）、`EV-01`（生产库授权行）、`PL-05`～`PL-11`、`M-01`～`M-04` | EP-08、EP-20 |
@@ -4668,7 +4668,7 @@ type ProjectMeta = {
 // admin、ops 看到的元数据视图（1.4），不含目标、资料、产物
 type ProjectMetaView = {
   id: string; name: string; owner: string | null;
-  stage_label: string;            // 如 "建模 3/5 段"、"校验与走查"、"可发布"
+  stage_label: string;            // 如 "建模"、"校验"、"可发布"
   build_mode: "L2" | "L4";
   archived: boolean; created_at: time; last_activity_at: time | null;
   disk_bytes?: number;
@@ -4959,7 +4959,7 @@ type ProgressStep = { id: string; text: string; meta: string; state: "done" | "r
 type NodeState = "not_ready" | "ready" | "running" | "pending_confirm" | "confirmed" | "stale" | "skipped" | "blocked";
 
 type FlowNode = {
-  id: string; title: string;      // 没装场景走查包时 core.validate 的 title 为「校验」
+  id: string; title: string;      // core.validate 的 title 恒为「校验」（11-05 起场景模拟包不再改它的显示名）
   kind: "agent" | "script" | "human" | "external";
   placement: "spine" | "step" | "branch" | "gate" | "on_demand";
   section: "required" | "pre_publish" | "optional" | "on_demand";
@@ -5470,7 +5470,7 @@ type AutobuildRun = AutobuildRunSummary & {
   matrix: { slice_id: string; slice_name: string;
             cells: Record<"object" | "operation" | "rule" | "check" | "scenario", "confirmed" | "auto" | "running" | "queued" | "skipped">;
             result: string }[];
-  tail_text: string;              // 「跑完全部分段后：全局一致性检查 → 合规检查（发布前，留给你）」
+  tail_text: string;              // 「跑完全部分段后：合规检查（发布前，留给你）」
   scope_lock_text: string;
   recovered_from_checkpoint: number;
   report_available: boolean;
@@ -5733,7 +5733,7 @@ type ErrorRecord = {
 |---|---|---|
 | 1 | 登录锁定时长：login 写「连续失败 5 次后需要等 1 分钟」，ops-users 写「锁定 15 分钟」 | 由 auth-server 决定，接口返回 `retry_after_s`，两页都显示实际值 |
 | 2 | L4 平台上限：proj-settings 写「4 小时、10M、¥300」，sys 写「4 小时、8,000,000、¥600」 | 单一来源 `SY-17`，proj-settings 经 `AB-01.platform_limits` 读同一份 |
-| 3 | 场景走查更新到 0.10.0：plugins 页直接提示成功，plugin-detail 弹「暂时不能更新」 | 两页都先调 `PL-03` 兼容检查，按结果显示 |
+| 3 | 场景模拟更新到 0.10.0：plugins 页直接提示成功，plugin-detail 弹「暂时不能更新」 | 两页都先调 `PL-03` 兼容检查，按结果显示 |
 | 4 | 会话池：sys 写「来自环境变量，改了要重建容器」，ops-ctl 却能编辑并保存 | 详设 4.10.3（运维可调整并发上限）。运维面可改（`O-16`）；sys 页只读显示当前值和来源 |
 | 5 | 提供方数量：features 写 8 个，插件目录 9 个（MySQL、PostgreSQL 分开），登记抽屉类型格另有 Oracle、达梦 | 按实现的提供方 ID 列出（`EV-10`）；`kind` 分组对应详设的 8 类 |
 | 6 | 待处理和锁定条里的数字（如过期场景 2 / 3、通过 19 / 21）前后不一 | 示例数据问题，不影响契约 |

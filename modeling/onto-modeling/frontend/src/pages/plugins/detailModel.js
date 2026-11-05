@@ -2,9 +2,9 @@
 // 英雄区按钮与菜单、统计卡、更新记录标记、依赖与大小的说法。PL-02 的实际字段见 contract-changes B3a 第 4 条：
 // flow_insertions 只有 {id, title}（title 暂取 ID）、project_stats 为 null、contents 是 [{group, items}]、config 原样给清单。
 
-// 主线 5 段（详设 6.8；core 的 flow.yaml 定义）
+// 主线 4 段（详设 6.8；core 的 flow.yaml 定义）
 export const MAINLINE = [
-  ['research', '资料分析'], ['model', '建模'], ['validate', '校验与走查'], ['consistency', '全局一致性'], ['publish', '发布'],
+  ['research', '资料分析'], ['model', '建模'], ['validate', '校验'], ['publish', '发布'],
 ];
 const MAIN_IDS = MAINLINE.map(([id]) => id);
 
@@ -21,7 +21,6 @@ export function insertionAt(ins) {
   const id = String(ins?.id || '').toLowerCase();
   if (/research|material|evidence/.test(id)) return 'research';
   if (/publish|release|compliance|gate|feedback/.test(id)) return 'publish';
-  if (/consisten/.test(id)) return 'consistency';
   if (/validat|regression|review|check/.test(id)) return 'validate';
   return 'model';
 }

@@ -1,15 +1,15 @@
 Trace interactive walkthrough mode. Loaded by `.claude/commands/ontology-trace.md` after Step 0.
 
-页面「交互走查」发来的消息带参数 `scenario`（场景编号，形如 `<逻辑名>--<场景序号>`）：直接对这个场景所在的逻辑、从这个场景开始走查。推演核对通过后同样执行 `python3 .claude/scripts/trace_index.py record` 更新场景索引。
+页面「交互模拟」发来的消息带参数 `scenario`（场景编号，形如 `<逻辑名>--<场景序号>`）：直接对这个场景所在的逻辑、从这个场景开始模拟。推演核对通过后同样执行 `python3 .claude/scripts/trace_index.py record` 更新场景索引。
 
 ## Mode Inputs
 
 - `TRACE_MODE=interactive`
-- `INTERACTIVE_TARGET`: remaining text after the trace entrypoint removed the trigger token (`交互` / `交互走查` / `对话走查` / `走查`). It may be empty, a operation path, or a scenario description.
+- `INTERACTIVE_TARGET`: remaining text after the trace entrypoint removed the trigger token (`交互` / `交互模拟` / `对话模拟` / `模拟` / `交互走查` / `走查`). It may be empty, a operation path, or a scenario description.
 
 ## <a id="interactive-walkthrough-mode"></a>Interactive Walkthrough Mode
 
-交互走查用于 **Operation 语义还不够确定、需要人逐个分支定方向** 的场景。它不替代普通 trace；它先帮助用户构造可复用 testcase / 正常 mock 数据，再回到普通 trace 执行推演。
+交互模拟用于 **Operation 语义还不够确定、需要人逐个分支定方向** 的场景。它不替代普通 trace；它先帮助用户构造可复用 testcase / 正常 mock 数据，再回到普通 trace 执行推演。
 
 本模式里每次停下来等用户（选入口、选分支、确认场景、决定缺陷怎么处理、确认保存）前，先 `python3 .claude/scripts/state_helper.py acquire trace confirm`；用户回复后 `acquire trace start`。
 
@@ -18,11 +18,11 @@ Trace interactive walkthrough mode. Loaded by `.claude/commands/ontology-trace.m
 显性告知用户：
 
 ```
-已进入交互走查模式。
+已进入交互模拟模式。
 
 用法：
 - `/ontology-trace 交互`：先列出逻辑，让你选择入口
-- `/ontology-trace 交互 创建订单`：直接走查指定逻辑
+- `/ontology-trace 交互 创建订单`：直接模拟指定逻辑
 - 也可以直接描述业务场景，例如：`交互 1 个订单，库存不足，优惠券已过期`
 
 规则：
@@ -30,7 +30,7 @@ Trace interactive walkthrough mode. Loaded by `.claude/commands/ontology-trace.m
 - 我根据你给的业务特征补具体输入、测试场景和必要的正常测试数据
 - 边界/异常场景写入测试场景的自定义输入，不写入测试数据的边界/异常分区
 
-💡 可选参考：交互走查默认围绕分支选择展开；若本次 Operation 包含规则引擎、红线拦截、连续阈值、多判定器组合或审计链，可先对照 Operation 范式。
+💡 可选参考：交互模拟默认围绕分支选择展开；若本次 Operation 包含规则引擎、红线拦截、连续阈值、多判定器组合或审计链，可先对照 Operation 范式。
 可参阅 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §三 / §四核对范式；若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §三 / §八，补充规则覆盖、约束边界、退化逻辑和跳过审计的负面 Case。无需中断当前流程。
 ```
 
@@ -85,7 +85,7 @@ For each user-selected branch:
 Show the constructed scenario and any mock row changes, then ask（先切 `confirm`）:
 
 ```
-请确认这个走查场景：
+请确认这个模拟场景：
 - 回复 **确认** → 保存场景并继续
 - 回复 **修改 ...** → 调整输入或数据
 - 回复 **换分支** → 回到当前判断点重新选择
@@ -111,7 +111,7 @@ Show:
 Then ask（先切 `confirm`）:
 
 ```
-- 回复 **记录** → 只记录缺陷，继续或结束走查
+- 回复 **记录** → 只记录缺陷，继续或结束模拟
 - 回复 **修复** → 暂停 trace，转入现有修复流程（如 /ontology-validate 或 /ontology-update）
 - 回复 **跳过** → 保留缺陷并选择其他分支
 ```
@@ -135,11 +135,11 @@ After the user stops or all desired branches are covered:
 Final prompt（先 `python3 .claude/scripts/state_helper.py release trace` 与 `update-progress`；不列下一步菜单，界面的建议条会给出）:
 
 ```
-交互走查已完成。
+交互模拟已完成。
 - 测试场景：已保存 {N} 个，下次追踪自动复用
 - 测试数据：{改动了哪些对象的测试数据，或"未改动"}
-- 详细过程见走查报告
+- 详细过程见模拟报告
 {有没处理的语义缺陷或待定假设时补一句}
 ```
 
-用户之后在对话里说「执行追踪」「继续走查」「修复缺陷」时先 `acquire trace start`：执行追踪按单个逻辑模式用 `OPERATION_PATH` 继续（Step 2.5 会复用刚保存的场景）；继续走查回到 I2；修复缺陷按 I5 的「修复」处理。
+用户之后在对话里说「执行追踪」「继续模拟」「修复缺陷」时先 `acquire trace start`：执行追踪按单个逻辑模式用 `OPERATION_PATH` 继续（Step 2.5 会复用刚保存的场景）；继续模拟回到 I2；修复缺陷按 I5 的「修复」处理。

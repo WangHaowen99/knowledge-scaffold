@@ -1,4 +1,4 @@
-// mock 数据 · 场景走查页（插件产物 trace.scenario、trace.mock，全部合成）：
+// mock 数据 · 场景模拟页（插件产物 trace.scenario、trace.mock，全部合成）：
 // 23 个场景（通过 19 / 失败 1 / 过期 3），示例数据 6 组。分段、操作、资料取自 scenario.js；
 // 场景 3、4、6 的 key 与 Studio、增量更新里引用的一致（s-03、s-04、s-06），s-21 是工作台本轮卡里新增的场景。
 import { ANCHORS } from './fixtures.js';

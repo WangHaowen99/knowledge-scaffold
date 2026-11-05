@@ -128,7 +128,7 @@ Allow user to modify specific mock data files before saving the version. If mock
 
 ## Step 4.5: 记下没有生成示例数据的对象
 
-本轮没有生成示例数据的对象（不落库的概念对象、用户选择跳过的对象），逐个执行 `python3 .claude/scripts/trace_index.py mock-skipped --object <对象名> --reason "<一句原因>"`；重新全量生成时先加 `--clear` 清空旧记录。「场景走查」页的示例数据页签据此列出跳过的对象。
+本轮没有生成示例数据的对象（不落库的概念对象、用户选择跳过的对象），逐个执行 `python3 .claude/scripts/trace_index.py mock-skipped --object <对象名> --reason "<一句原因>"`；重新全量生成时先加 `--clear` 清空旧记录。「场景模拟」页的示例数据页签据此列出跳过的对象。
 
 页面「按场景补生成」发来的消息带参数 `by: scenario`：只为场景里用到、还没有示例数据的对象生成。
 

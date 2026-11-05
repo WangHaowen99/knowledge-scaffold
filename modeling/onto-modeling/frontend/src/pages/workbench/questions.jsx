@@ -1,4 +1,4 @@
-// 等用户回答的卡片：决策卡（单选 + 后果 + 改动预览）、走查分支、请专家确认、交互走查、一般确认、权限确认
+// 等用户回答的卡片：决策卡（单选 + 后果 + 改动预览）、模拟分支、请专家确认、交互模拟、一般确认、权限确认
 import { useEffect, useRef, useState } from 'react';
 import { Button, Chip, Icon, Ring, cx } from '../../ui/index.jsx';
 import { useActions } from './cards.jsx';
@@ -79,7 +79,7 @@ export function DecisionCard({ q, active }) {
   );
 }
 
-// 走查分支选择（第 7 项）：点选项即回答；也可以输入自定义回答后回车
+// 模拟分支选择（第 7 项）：点选项即回答；也可以输入自定义回答后回车
 export function BranchCard({ q, initialPick = null }) {
   const [pick, setPick] = useState(initialPick);
   const [custom, setCustom] = useState('');
@@ -91,7 +91,7 @@ export function BranchCard({ q, initialPick = null }) {
   };
   return (
     <div className="wb-dc" style={{ marginTop: 0 }}>
-      <div className="row"><h4><Icon name="fork" size={14} />{q.title || '走查分支选择'}</h4><span className="sp" />{q.scenario ? <Chip tone="line" sm>{q.scenario.title}</Chip> : null}</div>
+      <div className="row"><h4><Icon name="fork" size={14} />{q.title || '模拟分支选择'}</h4><span className="sp" />{q.scenario ? <Chip tone="line" sm>{q.scenario.title}</Chip> : null}</div>
       <div className="sm muted mt4">{q.context_text || q.background_md}</div>
       <div className="opts">
         {q.options.map((o) => (
@@ -130,7 +130,7 @@ export function ExpertCard({ q }) {
   );
 }
 
-// 交互走查卡（第 20 项）：判断点就是决策卡
+// 交互模拟卡（第 20 项）：判断点就是决策卡
 export function WalkthroughCard({ q }) {
   const [pick, setPick] = useState(q.options.find((o) => o.recommended)?.id || null);
   const [busy, submit] = useAnswer(q);

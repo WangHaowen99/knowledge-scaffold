@@ -210,7 +210,7 @@ def test_verifier_error_is_not_json_stdout(tmp_path, monkeypatch, capsys, caplog
 @pytest.mark.parametrize('missing', [False, True])
 def test_json_cli_isolated_from_root_handlers_and_repeated_calls(
         tmp_path, monkeypatch, capsys, module_name, missing):
-    # trace_inputs 随场景走查包拆出了 core（方案 D7 后半）
+    # trace_inputs 随场景模拟包拆出了 core（方案 D7 后半）
     monkeypatch.syspath_prepend(str(SCRIPTS if module_name != 'trace_inputs' else TRACE_SCRIPTS))
     module = importlib.import_module(module_name)
     source = scenario_file(tmp_path) if module_name == 'trace_inputs' else put(tmp_path, 'source.md', '中文来源')

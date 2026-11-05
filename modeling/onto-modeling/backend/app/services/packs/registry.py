@@ -38,7 +38,7 @@ KERNEL_NAV = (
 )
 # 平台内置页面的默认标题与图标：包没写 nav 时用它
 PAGE_DEFAULTS = {
-    "scenarios": ("场景走查", "flask"),
+    "scenarios": ("场景模拟", "flask"),
     "knowledge": ("知识沉淀", "book"),
     "scripts": ("代码生成与求解", "code"),
 }

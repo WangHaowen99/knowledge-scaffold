@@ -27,6 +27,8 @@ LIST_MAX = 20
 TEXT_MAX = 60
 # 做到哪一步：这些节点不能作为终点（发布是硬性不做；资料分析在建模之前）
 NOT_UNTIL = ("core.publish", "core.research", "core.update")
+# 删掉的节点：老策略写到这里，等于跑完主线（全局一致性，11-05 删）
+REMOVED_UNTIL = ("core.consistency",)
 GROUPS = ("scope", "production_collection", "advanced")
 
 
@@ -141,6 +143,8 @@ def normalize(policy: dict, *, slice_ids: list[str], node_ids: list[str]) -> dic
     for key in ("refresh_stale_first", "generate_scenarios", "include_optional"):
         if not isinstance(out_scope[key], bool):
             fields[f"scope.{key}"] = "bool"
+    if out_scope["until_node"] in REMOVED_UNTIL:
+        out_scope["until_node"] = None
     until = out_scope["until_node"]
     if until is not None and (until not in node_ids or until in NOT_UNTIL):
         fields["scope.until_node"] = "unknown"

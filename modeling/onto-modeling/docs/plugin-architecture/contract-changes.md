@@ -1255,3 +1255,20 @@ Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`
 6. **运行报告的检查数**：`AutobuildReport.metrics.checks`、运行详情 `checks` 改为最终版本相对运行开始时的结果（运行记录新增 `final_checks`）。原来把各单元合入时的数字相加，校验里修掉的提醒还算在内。老运行没有这个字段，照旧相加。
 7. **不分段时的措辞**：`autobuild_start` 卡片的「范围」写「未完成的步骤」；待处理里自主构建决定的影响范围写「步骤」，「全部」写成「建模」；启动报告「补完 N 段撤回」改为「补完 N 次撤回」。老运行按段的照旧。
 8. **场景推演**：建模里已经没有这一步。报告指标、运行详情、结果表没有场景数据时不占位；项目设置去掉「生成场景」开关（`generate_scenarios` 字段保留，老策略读得出来）。
+
+## 2026-11-05 · F8 补充（「场景走查」改名「场景模拟」、删掉全局一致性）
+
+用户 11-05 定。原来页面叫「场景走查」、节点叫「全量回归」、校验节点显示成「校验与走查」，三个名字说的是同一件事，看流程找不到对应的页面。
+全局一致性是为分段加的，F8 不分段后跨段检查不再触发，剩下的检查不再保留，也不并进校验。
+
+1. **trace 包**：`label`、左栏页面（`pages[].nav.title`）改为「场景模拟」；节点 `trace.trace` 的 `title` 由「全量回归」改为「场景模拟」；
+   界面和命令文档里的「走查」都改成「模拟」（「交互模拟」「模拟报告」「模拟分支选择」）。编号（`trace`、`trace.trace`、页面 `scenarios`、
+   问题类型 `walkthrough`）和命令名不变；`/ontology-trace 交互走查`、`走查` 这两个旧触发词照样认。
+2. **FL-01**：trace 包不再声明 `node_titles`，`core.validate` 的 `title` 恒为「校验」。`node_titles` 机制保留，没有包在用。
+   主线：资料分析 → 建模 → 校验 → 场景模拟 → 发布。
+3. **删 `core.consistency`**：节点、探针、`consistency` 命令、`/ontology-consistency`、`consistency_check.py`、建议条的「全局一致性」都去掉；
+   `core.publish` 的 `after` 改为 `[trace.trace, core.validate]`。
+   - 老包写的 `core.consistency` 锚点：`aliases` 映射到 `core.validate`；PL-02 `flow_insertions[].at` 不再有 `consistency`，归 `validate`。
+   - AB-02 老策略的 `scope.until_node` 是 `core.consistency` 时按 `null`（跑完主线）处理，不回 400。
+   - 已有的 `reports/consistency/` 报告留着，报告列表照常显示，不再更新。
+4. 官方包版本号带内容摘要，改动后是 core、trace 的新版本；跟随通道的项目在下一条消息前升级。已有执行记录、对话里的旧名字不改写。

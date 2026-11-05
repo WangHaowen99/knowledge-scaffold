@@ -1,11 +1,9 @@
-# 场景走查包往主流程上挂的（详设 6.8）：全量回归 trace.trace 串在校验之后，这时主线上的「校验」显示为「校验与走查」
-# （`node_titles`）。F8 起不分段，建模里不再有按段的「场景」一步（与插件化之前一致：走查在校验之后做）。
+# 场景模拟包往主流程上挂的（详设 6.8）：场景模拟 trace.trace 串在校验之后，「校验」不再改显示名（11-05 起，原来叫「全量回归」、
+# 校验显示为「校验与走查」）。F8 起不分段，建模里不再有按段的「场景」一步（与插件化之前一致：场景在校验之后做）。
 # 完成判定用 core 的探针（testcase）。
-node_titles:
-  core.validate: 校验与走查
 nodes:
   - id: trace.trace
-    title: 全量回归
+    title: 场景模拟
     kind: agent
     # 串在校验之后；随 core 拆出、本来就在主线上，按主线位置（spine）算，不当成新插进来的可补做节点（ADR-0066）
     placement: spine
@@ -17,7 +15,7 @@ nodes:
     entry: {command: /ontology-trace}
     actions:
       - {label: 批量验证, command: /ontology-trace 全部}
-      - {label: 交互走查, command: /ontology-trace 交互}
+      - {label: 交互模拟, command: /ontology-trace 交互}
       - {label: 生成示例数据, command: /ontology-mock}
 commands:
   mock: {node: trace.trace, requires: [对象已提取], lock_waits: [confirm]}

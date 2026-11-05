@@ -1,6 +1,6 @@
 # 基础建模能力（core 包，详设 5.3；方案 D7）。
 # 工作区工具箱迁成的官方包，命令名不变（方案第 6 章第 7 项）。0.2.0 起拆出可选包（D7 后半）：
-# 场景走查 trace、知识沉淀 knowledge、代码生成与求解 codegen、图示 diagram、反馈演进 evo、
+# 场景模拟 trace、知识沉淀 knowledge、代码生成与求解 codegen、图示 diagram、反馈演进 evo、
 # 联网调研 websearch、迁移复用 migrate，源目录在 assets/packs/<名>/。知识条目的存放与加载、
 # 增量更新（按需节点）、共享契约库留在 core（第 14 章第 15、16 项）。守卫与 hooks 基线不在包里，
 # 由内核注入（backend/app/kernel_guards）。镜像启动时把本目录导入包仓库，版本号加内容摘要后缀
@@ -11,8 +11,8 @@ version: 0.3.0
 kind: capability
 category: capability
 label: 基础建模能力
-description: 资料分析与分段规划、分段建模、指标、校验、全局一致性、发布、增量更新、影响分析、业务知识的存放与加载、共享契约库。
-changelog: 建模按段走（建模蓝图）；新增全局一致性与发布节点。
+description: 资料分析、建模、指标、校验、发布、增量更新、影响分析、业务知识的存放与加载、共享契约库。
+changelog: 建模不分段；去掉全局一致性节点。
 publisher:
   kind: official
   label: 平台
@@ -28,7 +28,6 @@ contributes:
     - ontology-extract-operation
     - ontology-extract-rule-metric
     - ontology-validate
-    - ontology-consistency
     - ontology-update
     - ontology-impact
     - ontology-query
@@ -54,7 +53,6 @@ contributes:
     - candidate_revision.py
     - check_diagrams.py
     - check_eval_data.py
-    - consistency_check.py
     - excel_context.py
     - field_semantics.py
     - flow_state.py

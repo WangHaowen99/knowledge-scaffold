@@ -26,7 +26,7 @@ const SL = {
   s3: { id: 's3', name: '陈列量核定' },
   s4: { id: 's4', name: '临期与损耗检查' },
   s5: { id: 's5', name: '超量与审批提示' },
-  gc: { id: 'core.consistency', name: '全局一致性检查' },
+  gc: { id: 'core.validate', name: '校验' },
 };
 export const RUN_SLICES = SL;
 
@@ -127,11 +127,11 @@ export function ledger() {
       { reason_text: '低于阈值，采用了不新增对象的选项并记为假设。', affected: [entryRef('approval_hint'), entryRef('replenish_ledger')] }),
     L('led-1631', '16:31', 's5', '超出标准的项怎么处理', '一律生成审批提示', 0.92, A.r114, '补货规则 §11.4', '超量：超出标准一律生成审批提示',
       [adopted('A', '一律生成审批提示', ''), opt('B', '超出 10% 以内不提示', '')]),
-    L('led-1640', '16:40', 'gc', '「要货方」和「门店」是不是同一个说法', '统一叫「门店」', 0.97, A.r92, '补货规则 §9.2', '全局一致性：「要货方」统一叫「门店」',
+    L('led-1640', '16:40', 'gc', '「要货方」和「门店」是不是同一个说法', '统一叫「门店」', 0.97, A.r92, '补货规则 §9.2', '校验：「要货方」统一叫「门店」',
       [adopted('A', '统一叫「门店」', ''), opt('B', '保留两种叫法', '')]),
-    L('led-1644', '16:44', 'gc', '商品品类的关系是推断的还是声明的', '改为声明', 0.85, A.db, 'ERP 补货标准表', '全局一致性：商品品类的关系改为声明',
+    L('led-1644', '16:44', 'gc', '商品品类的关系是推断的还是声明的', '改为声明', 0.85, A.db, 'ERP 补货标准表', '校验：商品品类的关系改为声明',
       [adopted('A', '改为声明', ''), opt('B', '保持推断', '')]),
-    L('led-1652', '16:52', 'gc', 'R-07 缺适用品类', '补上适用品类', 0.81, A.r73, '补货规则 §7.3', '全局一致性：R-07 补上适用品类',
+    L('led-1652', '16:52', 'gc', 'R-07 缺适用品类', '补上适用品类', 0.81, A.r73, '补货规则 §7.3', '校验：R-07 补上适用品类',
       [adopted('A', '补上适用品类', ''), opt('B', '先不补', '')]),
   ];
 }
@@ -215,7 +215,7 @@ export function runOf(state = 'running', { led = ledger().filter(upTo(state)), s
     scenarios: done ? { passed: 16, total: 18 } : { passed: 14, total: 15 },
     fix_rounds: { used: 1, limit: 2 },
     matrix,
-    tail_text: '跑完全部分段后：全局一致性检查 → 合规检查（发布前，留给你）',
+    tail_text: '跑完全部分段后：校验 → 合规检查（发布前，留给你）',
     scope_lock_text: '正在做的这一段，写入范围内的条目在 Studio 和插件页里只读，到这一段自动合入为止；其他条目照常编辑，保存即生效',
     recovered_from_checkpoint: done ? 1 : 0,
     report_available: ended,
@@ -344,7 +344,7 @@ export function sliceCard(sid, state) {
   }
   return base(SL.gc, {
     state: 'done', summary: '0 个错误 · 3 个提醒 · 修复 1 轮', decision_ids: ['led-1640', 'led-1644', 'led-1652'],
-    timeline: [step('a', '全局一致性检查：0 个错误，3 个提醒', '16:38 – 16:58'), step('b', '修复 1 轮：统一「门店」叫法、补上 R-07 适用品类', '16:58')],
+    timeline: [step('a', '校验：0 个错误，3 个提醒', '16:38 – 16:58'), step('b', '修复 1 轮：统一「门店」叫法、补上 R-07 适用品类', '16:58')],
   });
 }
 

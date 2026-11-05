@@ -1,7 +1,7 @@
 """自主构建测试共用的假引擎、项目与等待（测试数据全部为合成内容）。
 
 F8 起不分段：项目是全量模式，一次运行只有一段「全部」（后面可以再跟校验等主线节点）。假引擎按收到的消息现做：
-对象提取一次写全部合成对象、操作提取写全部操作、场景走查写场景文件，命令锁开、放都按工具箱的样子；测试可以往
+对象提取一次写全部合成对象、操作提取写全部操作、场景模拟写场景文件，命令锁开、放都按工具箱的样子；测试可以往
 `AutoEngine.hooks` 里放「在某条命令里先做的动作」（提问、等测试放行），键是「命令:段」（`/ontology-extract-object:all`）
 或只写命令。不起真实 CLI。
 """
@@ -38,7 +38,7 @@ OPERATIONS = [f"操作{n}" for n in range(1, ENTRIES + 1)]
 DRAFT = {"goal_md": "合成目标", "slices": [{"name": "合成业务", "objects": OBJECTS, "operations": OPERATIONS}]}
 UNIT = "all"
 COMMANDS = {"/ontology-extract-object": "extract-object", "/ontology-extract-operation": "extract-operation",
-            "/ontology-trace": "trace", "/ontology-validate": "validate", "/ontology-consistency": "consistency"}
+            "/ontology-trace": "trace", "/ontology-validate": "validate"}
 
 
 def op(name: str) -> str:
@@ -136,8 +136,7 @@ class AutoEngine:
                   "extract-operation": [(f"ontology/operation/{name}.md", op(name)) for name in OPERATIONS],
                   "trace": [(f"ontology/testcase/{name}.md", f"# 测试场景：{name}\n\n## 场景 1：合成\n")
                             for name in OPERATIONS],
-                  "validate": [("reports/20260101-rule.md", "# 规则检查\n\n- [x] 合成\n")],
-                  "consistency": [("reports/consistency/20260101.md", "# 全局一致性\n\n- [x] 合成\n")]}[command]
+                  "validate": [("reports/20260101-rule.md", "# 规则检查\n\n- [x] 合成\n")]}[command]
         steps = [_lock(command), *items, *(_write(rel, body) for rel, body in writes)]
         if key not in AutoEngine.leave_open:
             steps.append(_release_all)

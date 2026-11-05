@@ -88,7 +88,7 @@ def _count(project_id: str, event_type: str) -> int:
 def test_page_action_resolves_to_pack_command_and_disabled_pack_is_409(host):
     client, _, project_id, _ = host
     action = {"pack": "trace", "page": "scenarios", "action_id": "batch"}
-    body = {"action": action, "args": {"scope": "all"}, "origin": {"page": "scenarios", "label": "场景走查"}}
+    body = {"action": action, "args": {"scope": "all"}, "origin": {"page": "scenarios", "label": "场景模拟"}}
     sent = client.post(f"/api/v1/projects/{project_id}/commands", json=body)
     assert sent.status_code == 202, sent.text
     assert wait(lambda: FakeEngine.sent)[0] == "/ontology-trace-batch scope=all"
@@ -168,7 +168,7 @@ def test_extensions_changed_lists_only_changed_kinds(host):
     client, _, project_id, _ = host
     _pack(client, project_id, "trace", enable=False)
     disabled = buffered(project_id, "extensions.updated")[-1]["data"]
-    # 场景走查包有左栏页面、产物类型与视图，没有资料子页、入口、门禁
+    # 场景模拟包有左栏页面、产物类型与视图，没有资料子页、入口、门禁
     assert disabled["changed"] == ["nav", "pages", "artifact_types", "views"]
     # 停用在下一条消息前生效：左栏、产物类型早就跟着锁文件变了，这次没有哪一类再变
     fingerprint.prepare(project_id)

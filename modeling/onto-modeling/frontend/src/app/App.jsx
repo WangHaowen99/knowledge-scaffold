@@ -41,7 +41,7 @@ const StudioPage = routePage(() => import('../pages/studio/StudioPage.jsx'));
 const StudioTablePage = routePage(() => import('../pages/studio/StudioTablePage.jsx'));
 const ReportsPage = routePage(() => import('../pages/reports/ReportsPage.jsx'));
 const InboxPage = routePage(() => import('../pages/inbox/InboxPage.jsx'));
-// F3：插件页（知识沉淀、场景走查、代码生成）与项目页（版本、发布、资料与证据源、项目设置）
+// F3：插件页（知识沉淀、场景模拟、代码生成）与项目页（版本、发布、资料与证据源、项目设置）
 const KnowledgePage = routePage(() => import('../pages/knowledge/KnowledgePage.jsx'));
 const ScenariosPage = routePage(() => import('../pages/scenarios/ScenariosPage.jsx'));
 const ScriptsPage = routePage(() => import('../pages/scripts/ScriptsPage.jsx'));

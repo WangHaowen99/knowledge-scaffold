@@ -1,4 +1,4 @@
-// 场景走查页的纯逻辑：场景行的状态与筛选、统计卡文字、写入范围只读、页面命令（S-20）、趋势线（契约 AR-02 / AR-09、7.11）
+// 场景模拟页的纯逻辑：场景行的状态与筛选、统计卡文字、写入范围只读、页面命令（S-20）、趋势线（契约 AR-02 / AR-09、7.11）
 import { sliceName } from '../../state/flow.js';
 import { isLocked, lockState } from '../../state/readonly.js';
 
@@ -109,7 +109,7 @@ export function rowLocked(lock, row, type) {
   return !!row.locked || isLocked(lock, { type: SCENARIO, key: row.key }) || isLocked(lock, { path: scenarioPath(type, row.key) });
 }
 
-// 锁来自批量推演（全量回归节点）
+// 锁来自批量推演（场景模拟节点）
 export const fromBatch = (lock) => /^trace\./.test(lock?.node?.id || '');
 
 // 页面上那条只读条的文字：{ running: [标题, 说明], pending: [标题, 说明] }；说明只在待确认时给推演计数
@@ -137,10 +137,10 @@ export function rowLockPop(lock) {
 // ---------- 页面命令（S-20）：只发命令，助手在工作台对话里跑 ----------
 export const batchCommand = (total) => ({ command: '/ontology-trace-batch', args: { scope: 'all' }, text: `批量推演 ${total} 个场景` });
 export const refreshCommand = (staleRows) => ({ command: '/ontology-trace-batch', args: { keys: staleRows.map((r) => r.key) }, text: `补齐 ${staleRows.length} 个过期场景` });
-export const walkCommand = (row) => ({ command: '/ontology-trace-interactive', args: { scenario: row.key }, text: `交互走查「${row.title}」` });
+export const walkCommand = (row) => ({ command: '/ontology-trace-interactive', args: { scenario: row.key }, text: `交互模拟「${row.title}」` });
 export const mockCommand = () => ({ command: '/ontology-mock', args: { by: 'scenario' }, text: '按场景补生成示例数据' });
 
-// 页头「交互走查」走哪个场景：选中的，没有就第一个失败的，再没有就第一个
+// 页头「交互模拟」走哪个场景：选中的，没有就第一个失败的，再没有就第一个
 export function walkTarget(rows, selectedKey) {
   const list = rows || [];
   return list.find((r) => r.key === selectedKey) || list.find((r) => rowState(r) === 'fail') || list[0] || null;

@@ -1,4 +1,4 @@
-// 场景走查页：页面纯逻辑（scenariosModel）与 mock（trace.scenario、trace.mock 的 AR 路由、页面命令）
+// 场景模拟页：页面纯逻辑（scenariosModel）与 mock（trace.scenario、trace.mock 的 AR 路由、页面命令）
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
@@ -83,7 +83,7 @@ test('页面命令：只发 S-20，文字就是对话里那句', () => {
   // 后端命令名（contract-changes B4c 映射表）：补齐过期也是 /ontology-trace-batch，只带 keys
   assert.deepEqual(refreshCommand([row('s-03', 'stale')]).command, '/ontology-trace-batch');
   assert.deepEqual(refreshCommand([row('s-03', 'stale')]).args, { keys: ['s-03'] });
-  assert.deepEqual(walkCommand({ key: 's-21', title: '门店申请严于标准，按门店执行' }), { command: '/ontology-trace-interactive', args: { scenario: 's-21' }, text: '交互走查「门店申请严于标准，按门店执行」' });
+  assert.deepEqual(walkCommand({ key: 's-21', title: '门店申请严于标准，按门店执行' }), { command: '/ontology-trace-interactive', args: { scenario: 's-21' }, text: '交互模拟「门店申请严于标准，按门店执行」' });
   assert.equal(mockCommand().text, '按场景补生成示例数据');
   const rows = [row('a', 'pass'), row('b', 'fail')];
   assert.equal(walkTarget(rows, 'a').key, 'a');
@@ -172,9 +172,9 @@ test('AR-03 / AR-04 / AR-05 / AR-07：详情、历史、保存改输入后过期
   assert.deepEqual(lockScope.artifacts.map((a) => a.key), ['s-21', 's-22', 's-19', 's-20', 's-23']);
 });
 
-test('页面命令：批量验证、补齐过期、交互走查、按场景补生成跑完改结果并发 artifacts.updated', async () => {
+test('页面命令：批量验证、补齐过期、交互模拟、按场景补生成跑完改结果并发 artifacts.updated', async () => {
   const { call, hooks, events } = server();
-  const origin = { page: 'scenarios', label: '场景走查' };
+  const origin = { page: 'scenarios', label: '场景模拟' };
   const find = (command, args) => hooks.find((h) => h.match({ command, origin, args }));
   assert.equal(hooks.find((h) => h.match({ command: '/ontology-trace-batch', origin: { page: 'wb-l2' } })), undefined);
   const batch = find('/ontology-trace-batch');
@@ -204,7 +204,7 @@ test('?mock=trace:batch 把开场的锁标成批量推演（只读条用「批�
 });
 
 test('批量验证：开跑进锁（助手运行中）→ 跑完这一轮就存成版本、解锁、对话里出这一轮卡（F3）；撤回这一轮恢复原结果', async () => {
-  const origin = { page: 'scenarios', label: '场景走查' };
+  const origin = { page: 'scenarios', label: '场景模拟' };
   const body = { command: '/ontology-trace-batch', origin, text: '批量推演 23 个场景' };
   const s1 = server();
   const hook = s1.hooks.find((h) => h.match(body));
@@ -213,7 +213,7 @@ test('批量验证：开跑进锁（助手运行中）→ 跑完这一轮就存�
   assert.equal(s1.lockBox.lock.node.id, 'trace.trace');
   assert.equal(s1.lockBox.lock.artifacts.length, 23);
   assert.ok((await s1.call('GET', `${P}/artifacts/${SC}`)).body.items.every((r) => r.locked));
-  assert.match(hook.doneText(body), /已写进场景走查/);
+  assert.match(hook.doneText(body), /已写进场景模拟/);
   const csId = s1.lockBox.lock.changeset_id;
   hook.finish(F.MAIN_PID, body);
   assert.equal(s1.lockBox.lock.state, 'none');

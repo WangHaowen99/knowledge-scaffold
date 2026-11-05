@@ -65,7 +65,7 @@ SCENARIOS = {
                    "reports/20260101-000000-all-rule.md": "- [x] 已修\n"}, "完成", 2),
     "validate_pending": ({"ontology/object/a.md": "x", "ontology/operation/b.md": "x",
                           "reports/20260101-000000-all-rule.md": "- [ ] 待修\n"}, "校验待审阅", 1),
-    # 建模、流程图、校验、全量回归、代码生成；全局一致性、发布还没做
+    # 建模、流程图、校验、场景模拟、代码生成；发布还没做
     "full": ({"ontology/object/a.md": "x", "ontology/operation/b.md": "x", "ontology/rule/r.md": "x",
               "reports/20260101-000000-all-semantic.md": "ok\n", "ontology/data-mock/m.md": "x",
               "ontology/testcase/t.md": "x", "ontology/scripts/s.py": "x", "ontology/diagrams/d.drawio": "x"},

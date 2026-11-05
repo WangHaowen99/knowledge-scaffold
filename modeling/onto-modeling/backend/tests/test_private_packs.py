@@ -272,7 +272,7 @@ def test_version_quota(env, monkeypatch):
 
 
 def _run(**extra) -> dict:
-    units = [{"id": "all", "name": "全部", "kind": "slice"}, {"id": "core.validate", "name": "校验与走查", "kind": "node"}]
+    units = [{"id": "all", "name": "全部", "kind": "slice"}, {"id": "core.validate", "name": "校验", "kind": "node"}]
     return {"run_id": "run-1", "run_no": 1, "state": "completed", "units": units, "policy": {"scope": {"mode": "all_pending"}},
             "slices": {"all": {"checks": {"errors": 0, "warnings": 8}}, "core.validate": {"checks": {"errors": 0, "warnings": 0}}},
             "ledger": [], "budget": {}, **extra}

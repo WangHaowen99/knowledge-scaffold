@@ -11,7 +11,7 @@ export const CONVERSATIONS = [
 
 export const COMMANDS = [
   ['建模', [['引导式建模', '从头带你走一遍'], ['资料分析', '读全资料，统一叫法'], ['提取对象', '从资料里抽出业务对象', 1], ['提取操作', '抽出业务流程和步骤'], ['规则与指标', '抽出判断规则和统计口径'], ['质量检查', '规则检查 + 语义检查'], ['增量更新', '资料变了，只改受影响的部分']]],
-  ['可选能力', [['场景验证', '用样例推演，看结论对不对'], ['生成示例数据', '按场景需要生成'], ['画流程图', '创建或打磨业务流程图'], ['扫描脚本候选', '找出适合写成脚本的操作']]],
+  ['可选能力', [['场景模拟', '用样例推演，看结论对不对'], ['生成示例数据', '按场景需要生成'], ['画流程图', '创建或打磨业务流程图'], ['扫描脚本候选', '找出适合写成脚本的操作']]],
 ];
 
 // 第 3 项：运行中，质量检查派出 3 个子任务
@@ -54,7 +54,7 @@ export function permissionItem() {
 }
 
 export const BRANCH_Q = {
-  question_id: 'qb', kind: 'branch', title: '走查分支选择', scenario: { type: 'trace.scenario', key: 's-3', title: '场景 3 · 门店更严' },
+  question_id: 'qb', kind: 'branch', title: '模拟分支选择', scenario: { type: 'trace.scenario', key: 's-3', title: '场景 3 · 门店更严' },
   context_text: '推演到判断「申请量是否严于标准」：门店申请牛奶 96 箱，标准上限 120 箱。走哪条？',
   options: [{ id: 'o1', key: '1', label: '严于标准 → 按门店执行' }, { id: 'o2', key: '2', label: '超出标准 → 生成审批提示' }],
 };
@@ -115,7 +115,7 @@ export const SUG_STRIPS = [
 ];
 
 export const WALK_Q = {
-  question_id: 'qw', kind: 'walkthrough', title: '交互走查 · 门店申请量超出标准',
+  question_id: 'qw', kind: 'walkthrough', title: '交互模拟 · 门店申请量超出标准',
   operation: { kind: 'operation', id: 'operation:overage', key: 'overage', name: '超量与审批提示' },
   inputs: [{ name: '门店', value: '示例门店' }, { name: '品类', value: '乳制品' }, { name: '商品', value: '牛奶' }, { name: '到货周期', value: '2 天' }, { name: '申请量', value: '150 箱' }],
   steps: [

@@ -22,7 +22,7 @@ def test_plugin_nodes_show_manifest_label(tmp_path: Path, monkeypatch):
     project_id = workspaces.create_project("插件节点", owner="employee_0001")["id"]
     plugins = {node["id"]: node["plugin"] for node in view.build(workspaces.project_root(project_id))["nodes"]
                if node["plugin"]}
-    assert plugins["trace.trace"] == {"name": "trace", "label": "场景走查"}
+    assert plugins["trace.trace"] == {"name": "trace", "label": "场景模拟"}
     assert plugins["codegen.codegen"] == {"name": "codegen", "label": "代码生成与求解"}
 
 

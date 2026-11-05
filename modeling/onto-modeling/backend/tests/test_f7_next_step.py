@@ -230,7 +230,7 @@ def _states(root, **overrides) -> dict:
 def test_flow_rules_in_order(api):
     _, _, _, root = api
     fresh = _states(root, core_research="ready", core_model="not_ready", core_validate="not_ready",
-                    core_consistency="not_ready", core_publish="not_ready")
+                    core_publish="not_ready")
     # 9：主线下一个必经步骤（资料分析的几个入口）
     mainline = _suggest(root, fresh, {"blueprint": {"state": "none"}})
     assert mainline["mode"] == "normal" and mainline["primary"]["id"].startswith("core.research#")
@@ -287,7 +287,7 @@ def test_flow_rule_commands_are_accepted_by_the_api(api):
     stale_step = {"slice_id": "all", "slice_name": "全部", "step": "rule", "step_label": "规则", "label": "提取规则",
                   "command": "/ontology-extract-rule-metric", "sliced": False, "upstream": "对象、操作"}
     fresh = _states(root, core_research="ready", core_model="not_ready", core_validate="not_ready",
-                    core_consistency="not_ready", core_publish="not_ready")
+                    core_publish="not_ready")
     produced = [
         _suggest(root, fresh, {"blueprint": {"state": "none"}, "changeset": {"id": "cs-1", "state": "conflict"}}),
         _suggest(root, _states(root, core_research="confirmed", core_model="not_ready"),

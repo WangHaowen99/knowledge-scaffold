@@ -275,7 +275,7 @@ export function createMockServer() {
 
   const routes = [];
   const commandHooks = [];
-  // AR-01 的产物类型：图示包的流程图之外，F3 各页的 mock 往这里登记（如场景走查的 trace.scenario、trace.mock）
+  // AR-01 的产物类型：图示包的流程图之外，F3 各页的 mock 往这里登记（如场景模拟的 trace.scenario、trace.mock）
   const artifactTypeDefs = [];
   const on = (method, pattern, handler) => routes.push({ method, re: new RegExp(`^/api/v1${pattern}$`), handler });
 

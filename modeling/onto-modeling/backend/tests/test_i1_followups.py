@@ -17,10 +17,10 @@ def test_flow_insertions_carry_title_and_segment(tmp_path: Path):
     builtin.import_packs(manager.packs.repository, Path(config.ASSETS_DIR))
     try:
         trace = catalog.detail(manager, "trace")
-        assert {"id": "trace.trace", "title": "全量回归", "at": "validate"} in trace["flow_insertions"]
+        assert {"id": "trace.trace", "title": "场景模拟", "at": "validate"} in trace["flow_insertions"]
         codegen = catalog.detail(manager, "codegen")
         assert all(item["title"] != item["id"] for item in codegen["flow_insertions"])
-        assert all(item.get("at") in {"research", "model", "validate", "consistency", "publish"}
+        assert all(item.get("at") in {"research", "model", "validate", "publish"}
                    for item in codegen["flow_insertions"])
     finally:
         builtin.clear_cache()

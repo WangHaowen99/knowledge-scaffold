@@ -42,15 +42,15 @@ test('运行状态行：子任务在跑时写在等哪个子任务，做完了�
   let s = applyEvents(initialConversation(), [
     ev('session.state', { state: 'running', turn_started_at: '2026-11-03T03:56:00.000Z' }),
     ev('message.user', { message_id: 'm1', text: '/ontology-validate', delivery: 'immediate' }),
-    ev('progress', { group_id: 'g1', title: '校验与走查', state: 'done', steps: [{ id: 's1', text: '列出资料', state: 'done' }] }),
+    ev('progress', { group_id: 'g1', title: '校验', state: 'done', steps: [{ id: 's1', text: '列出资料', state: 'done' }] }),
     sub(null, { status: 'running', title: '语义检查' }),
   ]);
-  assert.deepEqual(runStatus(s), { title: '校验与走查', doing: '等子任务「语义检查」', since: '2026-11-03T03:56:00.000Z', thinking: '' });
+  assert.deepEqual(runStatus(s), { title: '校验', doing: '等子任务「语义检查」', since: '2026-11-03T03:56:00.000Z', thinking: '' });
   s = applyEvent(s, sub(null, { status: 'done', title: '语义检查' }));
   assert.equal(runStatus(s).doing, '思考中');
   // 运行中插的话不算开启新的一轮：标题还是这一轮的
   s = applyEvent(s, ev('message.user', { message_id: 'm2', text: '顺便看看规则', delivery: 'steer' }));
-  assert.equal(runStatus(s).title, '校验与走查');
+  assert.equal(runStatus(s).title, '校验');
   s = applyEvent(s, ev('session.state', { state: 'idle' }));
   assert.equal(runStatus(s), null);
 });

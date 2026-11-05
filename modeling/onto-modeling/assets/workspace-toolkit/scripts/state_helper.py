@@ -371,7 +371,7 @@ def _node_patterns(node: dict) -> list:
 
 
 def _slice_node(flow: dict, command: str):
-    """后端开始执行时记的是按段的节点、这条命令是它的一步（如带分段的规则提取、场景走查）时返回那个节点。"""
+    """后端开始执行时记的是按段的节点、这条命令是它的一步（如带分段的规则提取、场景模拟）时返回那个节点。"""
     try:
         marker = json.loads(EXEC_MARKER.read_text(encoding='utf-8'))
     except (OSError, ValueError):
@@ -386,7 +386,7 @@ def _slice_node(flow: dict, command: str):
 def _command_scope(command: str) -> tuple:
     """命令所属节点与它的写入范围（produces + writes）；不属于任何节点时为 (None, None)：不限范围。
 
-    这一次是按段的节点的一步时，节点取按段的那个、范围是两者的并集（规则提取还会写指标，场景走查写场景文件）。"""
+    这一次是按段的节点的一步时，节点取按段的那个、范围是两者的并集（规则提取还会写指标，场景模拟写场景文件）。"""
     try:
         flow = _flow()
     except (OSError, ValueError):

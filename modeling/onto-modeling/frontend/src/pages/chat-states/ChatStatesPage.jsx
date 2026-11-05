@@ -126,7 +126,7 @@ export default function ChatStatesPage() {
       <PermissionCard item={S.permissionItem()} />
       <div className="xs faint mt8">只在系统设置为「逐操作确认」时出现</div>
     </Item>,
-    <Item key={7} n={7} title="走查分支选择 · 请专家确认" head={false}>
+    <Item key={7} n={7} title="模拟分支选择 · 请专家确认" head={false}>
       <BranchCard q={S.BRANCH_Q} initialPick="o1" />
       <ExpertCard q={S.EXPERT_Q} />
     </Item>,
@@ -206,16 +206,16 @@ export default function ChatStatesPage() {
     <Item key={19} n={19} title="插件页发来的任务" feat="按钮只发命令，进度回到插件页" head={false}>
       <div className="row" style={{ justifyContent: 'flex-end' }}>
         <div className="g2-src" style={{ maxWidth: '88%', padding: '9px 12px', borderRadius: 12, background: '#EEF2F8', fontSize: 13 }}>
-          <div className="xs muted row g4" style={{ marginBottom: 3 }}><Icon name="flask" size={12} />来自「场景走查」页</div>批量推演 23 个场景
+          <div className="xs muted row g4" style={{ marginBottom: 3 }}><Icon name="flask" size={12} />来自「场景模拟」页</div>批量推演 23 个场景
         </div>
       </div>
       <div className="tl mt12">
         <Tli k="ok" t="读取 23 个场景和示例数据" m="22 秒" />
         <div className="tl-i"><span className="tl-dot wait"><span className="spin" style={{ width: 10, height: 10 }} /></span><div><div className="tl-t">推演到第 9 个 · 超量与审批提示</div><div className="tl-m">进行中 · 推演到的场景在这一轮结束前只读</div></div></div>
       </div>
-      <div className="row xs muted g4 mt4"><Icon name="info" size={12} />页面上同时显示进度条和「去对话里看」；跑完结果回到场景走查页的列表</div>
+      <div className="row xs muted g4 mt4"><Icon name="info" size={12} />页面上同时显示进度条和「去对话里看」；跑完结果回到场景模拟页的列表</div>
     </Item>,
-    <Item key={20} n={20} title="交互走查卡" feat="从场景走查页发起，判断点就是决策卡" head={false}><WalkthroughCard q={S.WALK_Q} /></Item>,
+    <Item key={20} n={20} title="交互模拟卡" feat="从场景模拟页发起，判断点就是决策卡" head={false}><WalkthroughCard q={S.WALK_Q} /></Item>,
   ];
   const cols = [[], [], []];
   items.forEach((h, i) => cols[i % 3].push(h));

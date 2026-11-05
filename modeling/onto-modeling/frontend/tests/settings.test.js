@@ -111,7 +111,7 @@ test('能力表：界面列、状态 chip、行内按钮与设计稿一致', () 
   const items = projectPacks().map((p) => ({ ...p, actions: actionsOf(p) }));
   const by = (n) => items.find((p) => p.name === n);
   assert.deepEqual(uiCell(by('core').ui), { kind: 'kernel', text: '内核：工作台 · Studio · 资料 · 发布' });
-  assert.deepEqual(uiCell(by('trace').ui), { kind: 'page', text: '左栏页面：场景走查' });
+  assert.deepEqual(uiCell(by('trace').ui), { kind: 'page', text: '左栏页面：场景模拟' });
   assert.deepEqual(uiCell(by('reverse').ui), { kind: 'subpages', text: '资料页 3 个子页', pop: '业务系统数据源、采集与快照、证据浏览器' });
   assert.deepEqual(uiCell(by('industry-retail').ui), { kind: 'none', text: '—' });
   assert.deepEqual(statusChip(by('core')), { tone: 'blue', icon: 'lock', text: '必装' });
@@ -125,7 +125,7 @@ test('能力表：界面列、状态 chip、行内按钮与设计稿一致', () 
   assert.deepEqual(labels('codegen'), [null, ['回滚', '停用'], []]);
   assert.deepEqual(labels('diagram'), [null, ['升级'], ['停用']]);
   assert.deepEqual(labels('migrate'), [null, ['启用'], []]);
-  assert.equal(pendingSummary([{ pack: 'trace', from: '0.9.1', to: '0.10.0', kind: 'upgrade' }], items), '1 个待生效的切换：场景走查 0.9.1 → 0.10.0');
+  assert.equal(pendingSummary([{ pack: 'trace', from: '0.9.1', to: '0.10.0', kind: 'upgrade' }], items), '1 个待生效的切换：场景模拟 0.9.1 → 0.10.0');
   assert.equal(pendingSummary([], items), '');
   assert.equal(switchToast('upgrade', by('diagram'), { effective: 'next_message', pack: { pending: { to: '0.6.0' } } }), '已升级到图示 0.6.0，下一条消息生效');
   assert.equal(switchToast('disable', by('knowledge'), { effective: 'next_message' }), '已停用「知识沉淀」，左栏的「知识沉淀」已移除，下一条消息生效');
@@ -257,7 +257,7 @@ test('mock PL-06～PL-09：升级、回滚待生效；纯数据包立即生效�
   assert.deepEqual(en.body.pack.pending, { from: null, to: '0.2.0', kind: 'enable', effective: 'next_message' });
   assert.equal((await call('POST', `${P}/packs`, { name: 'knowledge' })).body.code, 'pack_already_enabled');
   assert.equal((await call('POST', `${P}/packs`, { name: 'websearch' })).body.code, 'pack_unavailable');
-  // 停用场景走查（有待生效的升级）要先撤销
+  // 停用场景模拟（有待生效的升级）要先撤销
   await call('POST', `${P}/packs/trace/cancel-pending`);
   await call('POST', `${P}/packs/trace/disable`);
   await call('POST', `${P}/packs/trace/cancel-pending`);

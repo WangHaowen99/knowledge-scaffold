@@ -24,7 +24,7 @@ function seed() {
     path: 'reports/rule/超量与审批提示.md',
     scope_text: '分段「超量与审批提示」', mode: 'regression', duration_ms: 3200,
     previous: { at: at(10, 31, 21, 31), summary: '错误 2' },
-    progress: { handled: 2, total: 5, note: '没有错误后，节点「校验与走查」才能确认，发布关卡才会放行。' },
+    progress: { handled: 2, total: 5, note: '没有错误后，节点「校验」才能确认，发布关卡才会放行。' },
     repair: { rounds: [{ n: 1, count: 4 }, { n: 2, count: 2 }, { n: 3, count: 1 }], limit: 2, exhausted: true },
     items: [
       item('ri1', 'E-ROUTE-01', 'error', '操作「超量与审批提示」的输出「审批提示」没有交接对象', loc('操作 · 超量与审批提示 · 步骤 4', 'overage_and_hint'), 'expert', '第 2 轮仍未收敛'),
@@ -120,7 +120,7 @@ function seed() {
     simple('rp-trace', '场景追踪报告', 'trace', '追踪', at(10, 31, 21, 31), '21/23 通过', '全部场景 23 个', [
       item('ti1', 'T-FAIL', 'error', '场景 7「门店申请超出标准」推演结果和期望不一致', loc('操作 · 超量与审批提示', 'overage_and_hint'), 'pending', '待处理'),
       item('ti2', 'T-FAIL', 'error', '场景 12「临期品按先到先出核对」缺少到货批次', loc('操作 · 临期损耗编制', 'expiry_check'), 'pending', '待处理'),
-    ], { handled: 21, total: 23, note: '两个没通过的场景处理完，全量回归才算通过。' }),
+    ], { handled: 21, total: 23, note: '两个没通过的场景处理完，场景模拟才算通过。' }),
     simple('rp-candidate', '资料分析候选', 'candidate', '候选', at(10, 30, 18, 20), '候选 41 · 已审阅 41', '资料区 7 份', [], { handled: 41, total: 41, note: '候选都已审阅，进入建模。' }),
     simple('rp-coverage', '覆盖检查报告', 'coverage', '覆盖', at(10, 30, 17, 55), '错误 0 · 警告 1', '全知识包', [
       item('ci1', 'W-COV-01', 'warning', '规则「R-03 必填项提示」没有场景覆盖', loc('规则 · R-03', 'r03_required_hint'), 'pending', '待处理'),

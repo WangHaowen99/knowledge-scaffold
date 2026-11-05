@@ -137,7 +137,7 @@ test('子任务先于进展组到达（历史窗口从组中间开始）：照�
   const s = applyEvents(initialConversation(), [
     ev('subagent.updated', { task_id: 't1', group_id: 'g1', title: '子任务', status: 'running', progress_text: '读取资料' }),
     ev('subagent.updated', { task_id: 't1', group_id: 'g1', status: 'running', progress_text: '汇总结果' }),
-    ev('progress.updated', { group_id: 'g1', title: '校验与走查', state: 'done', steps: [] }),
+    ev('progress.updated', { group_id: 'g1', title: '校验', state: 'done', steps: [] }),
     ev('subagent.updated', { task_id: 't1', group_id: 'g1', status: 'done', progress_text: '' }),
   ]);
   const cards = timelineBlocks(s).flatMap((b) => b.items || []).filter((x) => x.kind === 'subagent');

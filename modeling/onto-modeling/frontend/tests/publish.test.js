@@ -23,7 +23,7 @@ test('门禁卡片：不通过 / 还没运行 / 通过（含有提醒）三种�
   assert.equal(gateView({ id: 'reverse.anchor_coverage', status: 'warn', source: { kind: 'pack' } }).cls, 'ok');
   assert.equal(gateView({ id: 'reverse.anchor_coverage', status: 'warn', source: { kind: 'pack' } }).icon, 'quote');
   assert.equal(gateView({ id: 'solver_receipt', status: 'pass' }).icon, 'badge');
-  assert.equal(gateView({ id: 'core.consistency', status: 'pass', source: { kind: 'flow' } }).icon, 'check');
+  assert.equal(gateView({ id: 'retail.compliance', status: 'pass', source: { kind: 'flow' } }).icon, 'check');
   assert.deepEqual(blockingSummary({ blocking_count: 2 }), { text: '2 项挡住发布', tone: 'red' });
   assert.deepEqual(blockingSummary({ blocking_count: 0 }), { text: '全部通过', tone: 'teal' });
   assert.equal(publishBlockedTitle({ blocking_count: 2 }), '2 项未通过');

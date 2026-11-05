@@ -20,7 +20,7 @@ These rules apply to all work in this repository.
 
 | 能力 | 命令 / 技能 |
 |---|---|
-| 场景走查 | `/ontology-trace`、`/ontology-trace-single`、`/ontology-trace-batch`、`/ontology-trace-interactive`、`/ontology-mock` |
+| 场景模拟 | `/ontology-trace`、`/ontology-trace-single`、`/ontology-trace-batch`、`/ontology-trace-interactive`、`/ontology-mock` |
 | 代码生成与求解 | `/ontology-codegen-scan`、`/ontology-codegen`、`/ontology-solver-evaluator` |
 | 图示 | `/ontology-flowchart`、`/ontology-validate-diagrams`、mermaid-flowchart 技能 |
 | 知识沉淀 | `/knowledge-record`、`/knowledge-review`、`/knowledge-nominate`，`.claude/KNOWLEDGE_SEDIMENTATION.md` |
