@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
 import { register, taskSeeds } from '../src/api/mock/routes-evidence.js';
-import { SNAP } from '../src/api/mock/evidence-data.js';
+import { REA_ARTIFACT, SNAP } from '../src/api/mock/evidence-data.js';
+import { createArtifactUpload } from '../src/pages/evidence/artifactUpload.js';
 import {
   checkDetail, collectBody, connText, defaultDiffPair, diffPair, domainIndex, emptyForm, fieldAnchor, fmtBudget, fmtDuration, fmtEgress,
   fmtRate, fmtWhen, formFromSource, hubTable, inWindow, jobActions, jobDuration, jobFilterQuery, jobMatches, jobOpText, jobPhase,
   layoutEr, mergeJob, monthText, parseAnchor, parseBudget, parseDbAnchor, parseEgress, parsePortDb, parseRate, parseWindow,
-  pickSnapshot, previewPairs, registerBody, scopeTag, scopeWindowText, shortSnap, snapRecords, toggleSnapPick, validateForm, windowText,
+  pickSnapshot, previewPairs, registerBody, artifactPatch, wizardSteps, artifactText, isArtifactSource, canManageSource, collectOps, canIncremental,
+  snapshotPairs, snapshotLimits, snapshotKind, isDbKind, browseTarget, binPathType, recordIcon, recordKindText, recordPairs, firstTreeAnchor, scopeTag, scopeWindowText, shortSnap, snapRecords, toggleSnapPick, validateForm, windowText,
 } from '../src/pages/evidence/evidenceModel.js';
 
 // ---------- 纯逻辑 ----------
@@ -105,6 +107,7 @@ test('登记表单：一行输入的格式化与解析能来回', () => {
   assert.equal(parsePortDb('erp'), null);
 });
 
+const REA_PROVIDER = { id: 'rea-static', kind: 'rea', cred_fields: [], self_service: true, input: 'artifact', capabilities: ['snapshot'] };
 const MYSQL = {
   id: 'db-mysql', kind: 'db', cred_fields: [
     { name: 'host', label: '主机' }, { name: 'port', label: '端口' }, { name: 'database', label: '库名' }, { name: 'username', label: '用户名' }, { name: 'password', label: '密码', secret: true },
@@ -242,10 +245,11 @@ function server({ role = 'admin', now = new Date(2026, 10, 1, 22, 41).getTime() 
   };
   register(ctx);
   const user = { username: 'zhangsan', role };
-  const call = async (method, path, body) => {
+  const call = async (method, path, body, as = user) => {
     const u = new URL(path, 'http://mock.local');
+    const bin = body instanceof Uint8Array;
     for (const r of routes.filter((x) => x.method === method && x.re.test(u.pathname))) {
-      const res = await r.handler({ m: u.pathname.match(r.re), query: u.searchParams, body: body || {}, user });
+      const res = await r.handler({ m: u.pathname.match(r.re), query: u.searchParams, body: bin ? {} : body || {}, init: bin ? { body } : {}, user: as });
       if (res !== undefined) return { status: res.status, body: res.status === 204 ? null : await res.json() };
     }
     assert.fail(`${method} ${path} 没有路由`);
@@ -258,15 +262,15 @@ const P = `/api/v1/projects/${F.MAIN_PID}`;
 test('EV-01：新建向导、资料分析用的 total / authorized_count 形状不变；带项目时标授权', async () => {
   const { call } = server();
   const plain = await call('GET', '/api/v1/evidence/sources');
-  assert.equal(plain.body.total, 2);
+  assert.equal(plain.body.total, 3);
   assert.equal(plain.body.authorized_count, 0);
-  assert.deepEqual(plain.body.items.map((s) => s.id), ['erp-prod', 'crm-test']);
+  assert.deepEqual(plain.body.items.map((s) => s.id), ['erp-prod', 'crm-test', 'sample-orders']);
   const mine = await call('GET', `/api/v1/evidence/sources?project_id=${F.MAIN_PID}`);
-  assert.equal(mine.body.authorized_count, 1);
-  assert.deepEqual(mine.body.items.map((s) => s.authorized_for_project), [true, false]);
+  assert.equal(mine.body.authorized_count, 2);
+  assert.deepEqual(mine.body.items.map((s) => s.authorized_for_project), [true, false, true]);
   assert.deepEqual(mine.body.items[0].last_job, { at: '2026-10-31T22:18:00+08:00', state: 'succeeded' });
   assert.deepEqual((await call('GET', `/api/v1/evidence/sources?project_id=${F.MAIN_PID}&filter=production`)).body.items.map((s) => s.id), ['erp-prod']);
-  assert.deepEqual((await call('GET', `/api/v1/evidence/sources?project_id=${F.MAIN_PID}&filter=authorized`)).body.items.map((s) => s.id), ['erp-prod']);
+  assert.deepEqual((await call('GET', `/api/v1/evidence/sources?project_id=${F.MAIN_PID}&filter=authorized`)).body.items.map((s) => s.id), ['erp-prod', 'sample-orders']);
 });
 
 test('EV-02 / EV-03 / EV-08：管理员登记并授权，普通用户只能申请、只能测已授权的源', async () => {
@@ -280,7 +284,7 @@ test('EV-02 / EV-03 / EV-08：管理员登记并授权，普通用户只能申�
   assert.equal(made.body.cred_ref, 'cred://pos-test/1');
   assert.equal(made.body.authorized_for_project, true);
   assert.equal((await admin.call('POST', '/api/v1/admin/evidence/sources', body)).body.code, 'source_id_taken');
-  assert.equal((await admin.call('POST', '/api/v1/admin/evidence/sources', { ...body, id: 'rea-x', provider: 'rea-binary' })).body.code, 'provider_not_installed');
+  assert.equal((await admin.call('POST', '/api/v1/admin/evidence/sources', { ...body, id: 'log-x', provider: 'log-file' })).body.code, 'provider_not_installed');
   const rot = await admin.call('PUT', '/api/v1/admin/evidence/sources/erp-prod/secret', { fields: { password: 'new' } });
   assert.equal(rot.body.cred_ref, 'cred://erp-prod/4');
   const t = await admin.call('POST', '/api/v1/evidence/sources/crm-test/test', {});
@@ -322,7 +326,7 @@ test('EV-13 / EV-14：生产库先预览拿 token，缺 token 返回 428（detai
   assert.match(last.result.snapshot_id, /^20261101-224100-[0-9a-f]{4}$/);
   const snaps = await call('GET', `${P}/evidence/snapshots`);
   assert.equal(snaps.body.items[0].id, last.result.snapshot_id);
-  assert.equal(snaps.body.items.length, 5);
+  assert.equal(snaps.body.items.length, 6);
   assert.equal((await call('POST', `${P}/evidence/jobs/preview`, { source_id: 'crm-test', operation: 'discover' })).body.code, 'source_not_authorized');
 });
 
@@ -340,9 +344,9 @@ test('EV-13 / EV-14：窗口外的任务排队，不推进', async () => {
 test('EV-15～EV-17：列表筛选、取消、续采、生产库重试要重新确认', async () => {
   const { call, tick } = server();
   const all = await call('GET', `${P}/evidence/jobs`);
-  assert.deepEqual(all.body.items.map((j) => j.state), ['running', 'queued', 'succeeded', 'partial', 'failed', 'cancelled']);
+  assert.deepEqual(all.body.items.map((j) => j.state), ['running', 'queued', 'succeeded', 'partial', 'failed', 'cancelled', 'succeeded']);
   assert.deepEqual((await call('GET', `${P}/evidence/jobs?state=active`)).body.items.map((j) => j.id), ['job-0131', 'job-0132']);
-  assert.equal((await call('GET', `${P}/evidence/jobs?state=finished`)).body.items.length, 4);
+  assert.equal((await call('GET', `${P}/evidence/jobs?state=finished`)).body.items.length, 5);
   const c = await call('POST', `${P}/evidence/jobs/job-0131/cancel`);
   assert.equal(c.body.state, 'cancelled');
   assert.deepEqual(c.body.actions, ['retry']);
@@ -364,9 +368,9 @@ test('EV-15～EV-17：列表筛选、取消、续采、生产库重试要重新�
 test('EV-12 / EV-18～EV-22：统计、被引用的快照不能清理、对比 9c1d → 5e2b（乳制品区域配额 140 → 150）', async () => {
   const { call } = server();
   const sum = (await call('GET', `${P}/evidence/summary`)).body;
-  assert.deepEqual(sum.snapshots, { count: 4, sources: 1, referenced: 2, last_at: '2026-10-31T22:32:03+08:00' });
+  assert.deepEqual(sum.snapshots, { count: 5, sources: 2, referenced: 2, last_at: '2026-10-31T22:32:03+08:00' });
   assert.equal(sum.referenced_anchors, 23);
-  assert.deepEqual(sum.jobs_this_month, { total: 4, succeeded: 1, partial: 1, failed: 1, cancelled: 1 });
+  assert.deepEqual(sum.jobs_this_month, { total: 5, succeeded: 2, partial: 1, failed: 1, cancelled: 1 });
   assert.equal(sum.running_jobs, 1);
   assert.equal(sum.queued_jobs, 1);
   assert.equal((await call('DELETE', `${P}/evidence/snapshots/${SNAP.s9c}`)).body.code, 'snapshot_referenced');
@@ -410,4 +414,220 @@ test('EV-23～EV-28：分层摘要 42 实体、检索、记录详情按快照变
   assert.deepEqual(other.tables.map((t) => t.name), ['expiry_check', 'arrival_record']);
   assert.ok(hooks[0].match({ command: '/ontology-evidence-impact' }));
   assert.equal(taskSeeds.snapshots().origin.page, 'snapshots');
+});
+
+// ---------- F13：程序逆向（自助登记、分块上传、采集、证据浏览器） ----------
+
+test('EV-10：rea-static 已装、自助、要上传程序；其他提供方按连接参数', async () => {
+  const { call } = server({ role: 'user' });
+  const items = (await call('GET', '/api/v1/evidence/providers')).body.items;
+  const rea = items.find((p) => p.id === 'rea-static');
+  assert.deepEqual([rea.kind, rea.installed, rea.self_service, rea.input, rea.capabilities, rea.cred_fields], ['rea', true, true, 'artifact', ['snapshot'], []]);
+  assert.equal(rea.max_artifact_bytes, 2048 * 1024 * 1024);
+  assert.ok(items.filter((p) => p.id !== 'rea-static').every((p) => !p.self_service && p.input === 'connection'));
+  assert.ok(!items.some((p) => p.id === 'rea-binary'));
+});
+
+// 把 mock 包成 EV-31～EV-33 的客户端，让真实的上传状态机去跑
+const uploadApi = (call, as) => {
+  const unwrap = (r) => { if (r.status >= 400) throw Object.assign(new Error(r.body.code), { status: r.status, code: r.body.code, details: r.body.details }); return r.body; };
+  return {
+    startEvidenceUpload: async (b) => unwrap(await call('POST', '/api/v1/evidence/uploads', b, as)),
+    putEvidenceUploadChunk: async (id, i, bytes) => unwrap(await call('PUT', `/api/v1/evidence/uploads/${id}/chunks/${i}`, bytes, as)),
+    completeEvidenceUpload: async (id, b) => unwrap(await call('POST', `/api/v1/evidence/uploads/${id}/complete`, b, as)),
+  };
+};
+const MiB = 1024 * 1024;
+async function uploadVia(call, as, size = 2.5 * MiB, name = 'my-client.zip') {
+  const file = { name, size, bytes: new Uint8Array(size).fill(7) };
+  const up = createArtifactUpload({ api: uploadApi(call, as), file, read: async (f, s, e) => f.bytes.slice(s, e), sleep: async () => {} });
+  await up.start();
+  return up.state;
+}
+
+test('EV-31～EV-33：分块上传，块大小要对、缺块不能完成；上限与未完成数配额', async () => {
+  const { call } = server({ role: 'user' });
+  const me = { username: 'modeler01', role: 'user' };
+  const st = await uploadVia(call, me);
+  assert.equal(st.phase, 'done');
+  assert.deepEqual([st.artifact.size, st.artifact.filename], [2.5 * MiB, 'my-client.zip']);
+  assert.match(st.artifact.sha256, /^[0-9a-f]{64}$/);
+
+  const begin = await call('POST', '/api/v1/evidence/uploads', { filename: 'x.zip', size: MiB + 10 }, me);
+  assert.equal(begin.status, 201);
+  assert.equal(begin.body.chunk_bytes, MiB);
+  const id = begin.body.upload_id;
+  assert.equal((await call('PUT', `/api/v1/evidence/uploads/${id}/chunks/1`, new Uint8Array(9), me)).body.code, 'invalid_argument');
+  assert.equal((await call('PUT', `/api/v1/evidence/uploads/${id}/chunks/2`, new Uint8Array(10), me)).body.code, 'invalid_argument');
+  assert.equal((await call('PUT', `/api/v1/evidence/uploads/${id}/chunks/1`, new Uint8Array(10), me)).status, 200);
+  const inc = await call('POST', `/api/v1/evidence/uploads/${id}/complete`, { sha256: 'a'.repeat(64) }, me);
+  assert.deepEqual([inc.status, inc.body.code, inc.body.details.missing], [409, 'upload_incomplete', [0]]);
+  assert.equal((await call('PUT', `/api/v1/evidence/uploads/${id}/chunks/0`, new Uint8Array(10), { username: 'someone', role: 'user' })).body.code, 'upload_not_found');
+
+  assert.equal((await call('POST', '/api/v1/evidence/uploads', { filename: 'y.zip', size: 10 }, me)).status, 201);
+  assert.equal((await call('POST', '/api/v1/evidence/uploads', { filename: 'z.zip', size: 10 }, me)).body.code, 'quota_exceeded');
+  const big = await call('POST', '/api/v1/evidence/uploads', { filename: 'huge.zip', size: 3 * 1024 * MiB }, { username: 'other', role: 'user' });
+  assert.deepEqual([big.status, big.body.code, big.body.details.max_bytes], [413, 'upload_too_large', 2048 * MiB]);
+});
+
+test('自助登记（EV-02 / EV-04 / EV-05）：登录用户直接登记，只有本人和管理员看得到、改得了', async () => {
+  const { call } = server({ role: 'user' });
+  const me = { username: 'modeler01', role: 'user' };
+  const other = { username: 'modeler02', role: 'user' };
+  const admin = { username: 'zhangsan', role: 'admin' };
+  const v1 = (await uploadVia(call, me)).artifact;
+  const user = { username: 'modeler01', display_name: '建模者' };
+  const form = { ...emptyForm(user), provider: 'rea-static', display_name: '我的客户端', id: 'my-client', note: '许可允许静态分析', artifact: v1 };
+  const body = registerBody(form, REA_PROVIDER, { grantProjectId: F.MAIN_PID });
+  assert.equal((await call('POST', '/api/v1/admin/evidence/sources', { ...body, connection: { artifact_sha256: 'f'.repeat(64) } }, me)).body.code, 'artifact_not_found');
+  assert.equal((await call('POST', '/api/v1/admin/evidence/sources', { ...body, authorization_note: null }, me)).body.code, 'invalid_argument');
+  const made = await call('POST', '/api/v1/admin/evidence/sources', body, me);
+  assert.equal(made.status, 201);
+  assert.deepEqual([made.body.owner, made.body.environment, made.body.authorized_for_project, made.body.cred_ref], ['modeler01', 'test', true, null]);
+  assert.deepEqual(made.body.connection, { artifact_sha256: v1.sha256, artifact_filename: 'my-client.zip', artifact_size: 2.5 * MiB });
+  assert.equal((await call('POST', '/api/v1/admin/evidence/sources', { ...body, id: 'db-x', provider: 'db-mysql' }, me)).status, 403);
+
+  const ids = async (as) => (await call('GET', '/api/v1/evidence/sources', undefined, as)).body.items.map((s) => s.id);
+  assert.deepEqual(await ids(me), ['erp-prod', 'crm-test', 'my-client']);
+  assert.deepEqual(await ids(other), ['erp-prod', 'crm-test']);
+  assert.deepEqual(await ids(admin), ['erp-prod', 'crm-test', 'sample-orders', 'my-client']);
+  const mine = (await call('GET', '/api/v1/evidence/sources', undefined, me)).body.items.find((s) => s.id === 'my-client');
+  assert.equal(mine.authorization_note, '许可允许静态分析');
+
+  // 上传新版本 = 上传完后 PATCH connection
+  const v2 = (await uploadVia(call, me, 3 * MiB, 'my-client-2.zip')).artifact;
+  const patch = await call('PATCH', '/api/v1/admin/evidence/sources/my-client', artifactPatch({ ...form, artifact: v2 }), me);
+  assert.equal(patch.status, 200);
+  assert.equal(patch.body.connection.artifact_filename, 'my-client-2.zip');
+  assert.equal(patch.body.owner, 'modeler01');
+  assert.equal((await call('PATCH', '/api/v1/admin/evidence/sources/my-client', { display_name: 'x' }, other)).status, 403);
+  assert.equal((await call('PATCH', '/api/v1/admin/evidence/sources/erp-prod', { display_name: 'x' }, me)).status, 403);
+  assert.equal((await call('DELETE', '/api/v1/admin/evidence/sources/my-client', undefined, other)).status, 403);
+  assert.equal((await call('DELETE', '/api/v1/admin/evidence/sources/my-client', undefined, me)).status, 204);
+});
+
+test('采集 REA 数据源：只能快照，不用确认，进度按步推进，生成的快照带 manifest 和不可信标记', async () => {
+  const { call, tick, events } = server();
+  assert.equal((await call('POST', `${P}/evidence/jobs/preview`, { source_id: 'sample-orders', operation: 'discover' })).body.code, 'invalid_argument');
+  const pv = (await call('POST', `${P}/evidence/jobs/preview`, { source_id: 'sample-orders', operation: 'snapshot' })).body;
+  assert.deepEqual([pv.requires_confirmation, pv.confirmation_token, pv.summary.scope_text], [false, null, 'sample-orders-1.4.2.zip']);
+  const j = (await call('POST', `${P}/evidence/jobs`, { source_id: 'sample-orders', operation: 'snapshot' })).body;
+  assert.deepEqual([j.state, j.phase, j.progress.unit, j.progress.total, j.consent, j.scope_text], ['running', '判定类型', '步', 4, null, 'sample-orders-1.4.2.zip']);
+  while (tick());
+  const phases = events.filter((e) => e.data.id === j.id).map((e) => e.data.phase);
+  assert.deepEqual(phases, ['判定类型', '解析程序', '转换记录', '组装快照', null]);
+  const last = events.filter((e) => e.data.id === j.id).at(-1).data;
+  assert.equal(last.state, 'succeeded');
+  const detail = (await call('GET', `${P}/evidence/snapshots/${last.result.snapshot_id}`)).body;
+  assert.equal(detail.provider, 'rea-static@0.1.0');
+  assert.equal(detail.previous, SNAP.rea);
+  assert.equal(detail.manifest.untrusted_content, true);
+  assert.deepEqual(detail.manifest.artifact, { sha256: REA_ARTIFACT.sha256, size: REA_ARTIFACT.size, filename: 'sample-orders-1.4.2.zip', detected: 'electron' });
+  assert.ok(detail.manifest.limitations.length);
+});
+
+test('证据浏览器读 REA 快照：按模块分组、检索、记录详情带位置和成员、相邻记录、ER 为空', async () => {
+  const { call } = server();
+  const q = `snapshot=${SNAP.rea}`;
+  const tree = (await call('GET', `${P}/evidence/summary-tree?${q}`)).body;
+  assert.deepEqual(tree.domains.map((d) => d.name), ['main.js', 'preload.js', 'orders.js', 'customers.js', 'erp-client.js']);
+  const orders = tree.domains.find((d) => d.name === 'orders.js').entities;
+  assert.deepEqual(orders.map((e) => [e.name, e.type]), [['Order', 'entity'], ['Order.create', 'operation'], ['Order.cancel', 'operation']]);
+  assert.equal(orders[0].anchor, 'bin:sample-orders/sym:orders%2Ejs::Order');
+  const hits = (await call('GET', `${P}/evidence/search?${q}&q=order&type=operation`)).body;
+  assert.ok(hits.items.some((h) => h.anchor === 'bin:sample-orders/ipc:order:create'));
+  assert.ok(hits.items.every((h) => h.type === 'operation'));
+  const rec = (await call('GET', `${P}/evidence/record?anchor=${encodeURIComponent('bin:sample-orders/sym:orders%2Ejs::Order')}&${q}`)).body;
+  assert.deepEqual(rec.attrs.loc, { file: 'orders.js', line: 8 });
+  assert.equal(rec.untrusted_content, true);
+  assert.deepEqual(rec.fields.map((f) => f.name), ['orderNo', 'qty', 'Order.create', 'Order.cancel']);
+  const lin = (await call('GET', `${P}/evidence/lineage?anchor=${encodeURIComponent('bin:sample-orders/ipc:order:create')}&${q}`)).body.items;
+  assert.deepEqual(lin.map((x) => [x.label, x.basis]), [['api.createOrder', '被调用'], ['Order.create', '由它处理']]);
+  const ext = 'bin:sample-orders/ext:POST%20https:%2F%2Ferp%2Eexample%2Ecom%2Fapi%2Forders';
+  assert.equal((await call('GET', `${P}/evidence/record?anchor=${encodeURIComponent(ext)}&${q}`)).body.attrs.url, 'https://erp.example.com/api/orders');
+  assert.deepEqual((await call('GET', `${P}/evidence/er?${q}`)).body, { tables: [], relations: [] });
+  assert.equal((await call('GET', `${P}/evidence/record?anchor=${encodeURIComponent('bin:sample-orders/sym:nope')}&${q}`)).body.code, 'anchor_not_found');
+});
+
+test('上传程序的提供方：三步校验、自助登记请求体、修改请求体，不带出口、窗口、限流、预算', () => {
+  const user = { username: 'modeler01' };
+  const blank = { ...emptyForm(user), provider: 'rea-static' };
+  assert.deepEqual(wizardSteps(REA_PROVIDER), ['选择类型', '上传程序', '授权说明']);
+  assert.equal(wizardSteps(MYSQL).length, 6);
+  const v0 = validateForm(blank, { provider: REA_PROVIDER, admin: false });
+  assert.deepEqual(Object.keys(v0.errors).sort(), ['artifact', 'display_name', 'id', 'note']);
+  assert.deepEqual([v0.done, v0.current], [[true, false, false], 1]);
+  const art = { sha256: 'a'.repeat(64), size: 48 * 1024 * 1024, filename: 'sample-orders.zip' };
+  const form = { ...blank, display_name: '订货客户端', id: 'sample-orders', artifact: art, note: ' 许可允许静态分析 ' };
+  const v = validateForm(form, { provider: REA_PROVIDER, admin: false });
+  assert.deepEqual([v.errors, v.done, v.current], [{}, [true, true, true], -1]);
+  assert.deepEqual(validateForm({ ...form, note: '' }, { provider: REA_PROVIDER }).done, [true, true, false]);
+
+  const body = registerBody(form, REA_PROVIDER, { grantProjectId: 'p1' });
+  assert.deepEqual(body, {
+    id: 'sample-orders', display_name: '订货客户端', provider: 'rea-static', environment: 'test',
+    connection: { artifact_sha256: 'a'.repeat(64), artifact_filename: 'sample-orders.zip', artifact_size: 48 * 1024 * 1024 },
+    authorization_note: '许可允许静态分析', owner: 'modeler01', grant_project_id: 'p1',
+  });
+  const src = { provider: { id: 'rea-static' }, connection: body.connection, owner: 'modeler01', display_name: '订货客户端', id: 'sample-orders', authorization_note: 'x', environment: 'test' };
+  assert.deepEqual(formFromSource(src).artifact, art);
+  assert.deepEqual(Object.keys(artifactPatch(form)).sort(), ['authorization_note', 'connection', 'display_name']);
+});
+
+test('自助类数据源的展示：程序文件名和大小、范围为空、谁能管理、按提供方或连接参数判断', () => {
+  const s = { provider: { id: 'rea-static' }, owner: 'modeler01', connection: { artifact_sha256: 'b'.repeat(64), artifact_filename: 'sample-orders.zip', artifact_size: 48 * 1024 * 1024 + 5 } };
+  assert.equal(connText(s), 'sample-orders.zip · 48 MB');
+  assert.equal(artifactText({ filename: 'x.exe', size: 3 * 1024 ** 3 }), 'x.exe · 3 GB');
+  assert.equal(scopeWindowText(s), '—');
+  assert.ok(isArtifactSource(s, [REA_PROVIDER]));
+  assert.ok(isArtifactSource(s, []));
+  assert.ok(!isArtifactSource({ provider: { id: 'db-mysql' }, connection: { host: 'h' } }, [MYSQL]));
+  assert.ok(canManageSource(s, { username: 'modeler01' }, false));
+  assert.ok(!canManageSource(s, { username: 'modeler02' }, false));
+  assert.ok(canManageSource(s, { username: 'zhangsan' }, true));
+});
+
+test('发起采集只列提供方支持的操作；程序逆向没有增量', () => {
+  assert.deepEqual(collectOps(REA_PROVIDER).map(([k]) => k), ['snapshot']);
+  assert.deepEqual(collectOps({ capabilities: ['discover', 'snapshot', 'sample', 'incremental'] }).map(([k]) => k), ['discover', 'snapshot', 'sample']);
+  assert.equal(collectOps(null).length, 3);
+  assert.equal(canIncremental(REA_PROVIDER), false);
+  assert.equal(canIncremental(MYSQL), true);
+});
+
+test('快照详情：程序逆向的 manifest 展开成程序、类型、哈希、工具，局限原样加未识别数；数据库快照照旧', () => {
+  const rea = {
+    provider: 'rea-static@0.1.0', coverage_pct: 100,
+    manifest: { tool: { name: 'rea', version: '6.8.0' }, masking_policy: 'none', untrusted_content: true, limitations: ['动态通道没有展开'], unknowns: 7, artifact: { sha256: 'c'.repeat(64), size: 2 * 1024 * 1024, filename: 'a.zip', detected: 'electron' } },
+    inventory: { skipped: [{ object: 'node_modules/', reason: '第三方依赖' }] },
+  };
+  assert.deepEqual(snapshotPairs(rea), [
+    ['程序', 'a.zip · 2 MB'], ['类型', 'Electron'], ['SHA-256', `${'c'.repeat(12)}…`], ['工具', 'rea 6.8.0'], ['覆盖率', '100%'], ['跳过', 'node_modules/（第三方依赖）'],
+  ]);
+  assert.deepEqual(snapshotLimits(rea), ['动态通道没有展开', '未识别 7 处']);
+  const db = { provider: 'db-mysql@1.0.0', coverage_pct: 79, manifest: { provider: 'db-mysql@1.0.0', masking_policy: 'mask-v3', scope: ['erp.*'] }, inventory: { skipped: [] } };
+  assert.deepEqual(snapshotPairs(db), [['连接器', 'db-mysql@1.0.0'], ['范围', 'erp.*'], ['覆盖率', '79%'], ['脱敏', 'mask-v3']]);
+  assert.deepEqual(snapshotLimits(db), []);
+});
+
+test('证据浏览器：快照类别、能打开的锚点、记录图标与键值、默认选中', () => {
+  assert.equal(snapshotKind({ provider: 'rea-static@0.1.0' }, [REA_PROVIDER]), 'rea');
+  assert.equal(snapshotKind({ provider: 'db-mysql@1.0.0' }, []), 'db');
+  assert.equal(snapshotKind({ provider: 'rea-static@0.1.0' }, []), 'rea');
+  assert.ok(isDbKind('db') && !isDbKind('rea'));
+  assert.deepEqual(browseTarget('db:erp-prod/erp.replenish_std.max_qty'), { source: 'erp-prod', table: 'db:erp-prod/erp.replenish_std', field: 'max_qty' });
+  const cls = 'bin:sample-orders/sym:orders%2Ejs::Order';
+  assert.deepEqual(browseTarget(cls), { source: 'sample-orders', table: cls, field: null });
+  assert.equal(browseTarget('file:resource/text/a.md#L3'), null);
+  assert.equal(binPathType('bin:sample-orders/ipc:order:create'), 'ipc');
+  assert.equal(recordIcon({ anchor: cls, type: 'entity' }), 'cube');
+  assert.equal(recordIcon({ anchor: `${cls}::create`, type: 'operation' }), 'code');
+  assert.equal(recordIcon({ anchor: 'bin:x/ext:GET%20https:%2F%2Ferp%2Eexample%2Ecom', type: 'entity' }), 'cloud');
+  assert.equal(recordIcon({ anchor: 'bin:x/ipc:a', type: 'operation' }), 'send');
+  const rec = { type: 'operation', attrs: { kind: 'method', module: 'orders.js', loc: { file: 'orders.js', line: 21 }, signature: 'create(draft)' }, evidence: { method: 'rea analyze-javascript-application' } };
+  assert.equal(recordKindText(rec), '方法');
+  assert.deepEqual(recordPairs(rec), [['位置', 'orders.js:21'], ['签名', 'create(draft)'], ['来源', 'rea analyze-javascript-application']]);
+  assert.deepEqual(recordPairs({ attrs: { kind: 'endpoint', module: 'erp-client.js', method: 'POST', url: 'https://erp.example.com/api/orders' } }), [['模块', 'erp-client.js'], ['地址', 'POST https://erp.example.com/api/orders']]);
+  assert.equal(firstTreeAnchor({ domains: [{ entities: [] }, { entities: [{ anchor: 'a' }, { anchor: 'b' }] }] }), 'a');
+  assert.equal(firstTreeAnchor(null), null);
 });

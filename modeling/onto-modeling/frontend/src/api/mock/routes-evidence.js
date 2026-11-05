@@ -1,4 +1,5 @@
-// mock · 3.19 证据源（EV-01～EV-30）：数据源、采集与快照、证据浏览器
+// mock · 3.19 证据源（EV-01～EV-33）：数据源、采集与快照、证据浏览器、分块上传目标程序
+// 自助类提供方（rea-static，F13）：登录用户可以自己登记，登记只有本人和管理员看得到、改得了；采集不用确认，快照按 REA 的合成结果生成。
 // EV-26 被谁引用在 routes-studio.js（Studio 证据卡先用），EV-29 锚点解析在 index.js（所有页面的出处悬停）
 // 生产库采集：EV-13 预览拿 confirmation_token（10 分钟），EV-14 / EV-17 retry 不带有效 token 返回 428；
 // 新发起的采集按 0.9 秒一步推进，经项目流 evidence.job.updated 推送；种子里那条运行中的任务静止不动（方便和设计稿对照）。
@@ -37,6 +38,10 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
   const srcs = D.sources();
   const prov = D.providers();
   const tokens = new Map();
+  // 分块上传（EV-31～EV-33）与 blob 仓：只记大小和哈希，不存字节
+  const uploads = new Map();
+  const artifacts = new Map([[D.REA_ARTIFACT.sha256, { ...D.REA_ARTIFACT }]]);
+  const manifests = new Map([[D.SNAP.rea, D.reaManifest()]]);
   const timers = new Map();
   const projects = new Map();
   let jobSeq = 133;
@@ -63,10 +68,16 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
   };
   const view = (s, pid, user) => {
     const out = { ...s, last_job: lastJob(s), authorized_for_project: pid ? authorized(pid, s.id) : null };
-    // 普通用户只看不敏感的登记字段
-    if (!isAdmin(user)) { delete out.egress; delete out.authorization_note; }
+    // 普通用户只看不敏感的登记字段（自己登记的除外）
+    if (!isAdmin(user) && s.owner !== user?.username) { delete out.egress; delete out.authorization_note; }
     return out;
   };
+  // 自助类提供方（F13）：不要凭据、不连业务网络，登录用户可以自己登记；登记只有本人和管理员看得到、改得了
+  const provOf = (id) => prov.items.find((x) => x.id === id);
+  const selfService = (s) => !!provOf(s.provider?.id)?.self_service;
+  const visible = (s, user) => isAdmin(user) || !selfService(s) || s.owner === user?.username;
+  const canEdit = (s, user) => isAdmin(user) || (selfService(s) && s.owner === user?.username);
+  const isRea = (s) => provOf(s?.provider?.id)?.kind === 'rea';
   const emitJob = (pid, j) => emitProj(pid, 'evidence.job.updated', j);
 
   // ---------- EV-01～EV-12 数据源 ----------
@@ -75,22 +86,37 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     if (sc.evidence === 'off') return err(501, 'evidence_not_available', '这一版没有开放业务系统的连接器');
     const pid = query.get('project_id');
     const filter = query.get('filter') || 'all';
-    let items = srcs.map((s) => view(s, pid, user));
+    let items = srcs.filter((s) => visible(s, user)).map((s) => view(s, pid, user));
     if (filter === 'authorized') items = items.filter((s) => s.authorized_for_project);
     if (filter === 'production') items = items.filter((s) => s.environment === 'production');
-    return json(200, { items, total: items.length, authorized_count: pid ? srcs.filter((s) => authorized(pid, s.id)).length : 0 });
+    return json(200, { items, total: items.length, authorized_count: pid ? srcs.filter((s) => visible(s, user) && authorized(pid, s.id)).length : 0 });
   });
 
-  const validate = (body, { creating }) => {
+  const validate = (body, { creating, self = false }) => {
     const fields = {};
     if (creating && !/^[a-z0-9][a-z0-9-]{1,40}$/.test(body.id || '')) fields.id = 'pattern';
     if (creating && !body.display_name) fields.display_name = 'required';
-    if (creating && !(body.scope_allowlist || []).length) fields.scope_allowlist = 'required';
+    if (creating && !self && !(body.scope_allowlist || []).length) fields.scope_allowlist = 'required';
+    if (self && provOf(body.provider)?.kind === 'rea' && !String(body.authorization_note || '').trim()) fields.authorization_note = 'required';
     return Object.keys(fields).length ? err(400, 'invalid_argument', '登记信息不完整', { fields }) : null;
+  };
+  // 自助类的 connection 只认已上传完的程序（blob 仓里有）
+  const artifactConn = (c) => {
+    const a = artifacts.get(c?.artifact_sha256);
+    return a ? { artifact_sha256: a.sha256, artifact_filename: a.filename, artifact_size: a.size } : null;
   };
   const build = (body, user) => {
     const p = prov.items.find((x) => x.id === body.provider);
     const secret = body.secret && Object.values(body.secret).some(Boolean);
+    if (p.self_service) {
+      return {
+        id: body.id, display_name: body.display_name, environment: body.environment || 'test',
+        provider: { id: p.id, version: p.version, label: p.label }, connection: artifactConn(body.connection),
+        cred_ref: null, secret_fields: [], scope_allowlist: [], scope_summary: '', egress: [], access_window: null,
+        budget: body.budget || { max_rows: 200000, max_bytes: 256 * 1024 ** 2, max_duration_s: 1800 }, rate_limit: null,
+        masking_policy: 'none', authorization_note: body.authorization_note || null, owner: user.username, last_job: null, authorized_for_project: null,
+      };
+    }
     return {
       id: body.id, display_name: body.display_name, environment: body.environment || 'test',
       provider: { id: p.id, version: p.version, label: p.label }, connection: body.connection || {},
@@ -103,12 +129,14 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     };
   };
   on('POST', '/admin/evidence/sources', async ({ body, user }) => {
-    if (!isAdmin(user)) return err(403, 'forbidden', '需要管理员权限');
-    const bad = validate(body, { creating: true });
+    const p = provOf(body.provider);
+    const self = !!p?.self_service;
+    if (!isAdmin(user) && !self) return err(403, 'forbidden', '需要管理员权限');
+    const bad = validate(body, { creating: true, self });
     if (bad) return bad;
     if (srcOf(body.id)) return err(409, 'source_id_taken', '数据源 ID 已被占用');
-    const p = prov.items.find((x) => x.id === body.provider);
     if (!p?.installed) return err(409, 'provider_not_installed', '连接器未安装', { provider: body.provider });
+    if (self && !artifactConn(body.connection)) return err(409, 'artifact_not_found', '程序还没上传完');
     await wait(300);
     const s = build(body, user);
     srcs.push(s);
@@ -123,18 +151,24 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     return json(202, { request_id: `req-${uid()}` });
   });
   on('PATCH', '/admin/evidence/sources/([^/]+)', ({ m, body, user }) => {
-    if (!isAdmin(user)) return err(403, 'forbidden', '需要管理员权限');
     const s = srcOf(m[1]);
-    if (!s) return err(404, 'source_not_found', '数据源不存在');
-    const { id, provider, secret, grant_project_id, ...rest } = body;
+    if (!s || !visible(s, user)) return isAdmin(user) ? err(404, 'source_not_found', '数据源不存在') : err(403, 'forbidden', '需要管理员权限');
+    if (!canEdit(s, user)) return err(403, 'forbidden', '需要管理员权限');
+    const { id, provider, secret, grant_project_id, owner, ...rest } = body;
+    // 自助类换版本：connection 换成新上传的程序，旧快照不动
+    if (selfService(s) && rest.connection) {
+      rest.connection = artifactConn(rest.connection);
+      if (!rest.connection) return err(409, 'artifact_not_found', '程序还没上传完');
+    }
+    if (!selfService(s) && owner) rest.owner = owner;
     Object.assign(s, rest);
     if (rest.scope_allowlist) s.scope_summary = s.id === 'erp-prod' && rest.scope_allowlist.some((x) => x.startsWith('erp.')) ? 'erp.* 42 表' : rest.scope_allowlist.join(' ');
     return json(200, view(s, null, user));
   });
   on('DELETE', '/admin/evidence/sources/([^/]+)', ({ m, user }) => {
-    if (!isAdmin(user)) return err(403, 'forbidden', '需要管理员权限');
     const s = srcOf(m[1]);
-    if (!s) return err(404, 'source_not_found', '数据源不存在');
+    if (!s || !visible(s, user)) return isAdmin(user) ? err(404, 'source_not_found', '数据源不存在') : err(403, 'forbidden', '需要管理员权限');
+    if (!canEdit(s, user)) return err(403, 'forbidden', '需要管理员权限');
     const busy = [...projects.values()].flatMap((p) => p.jobs).find((j) => j.source.id === s.id && j.state === 'running');
     if (busy) return err(409, 'job_state_invalid', '有正在运行的采集任务', { state: 'running' });
     srcs.splice(srcs.indexOf(s), 1);
@@ -214,6 +248,15 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
   // ---------- EV-13～EV-17 采集 ----------
   function preview(pid, body) {
     const s = srcOf(body.source_id);
+    if (isRea(s)) {
+      return {
+        requires_confirmation: false, confirmation_token: null,
+        summary: {
+          scope_text: s.connection?.artifact_filename || '', tables: null, window: null, in_window_now: true, rate_limit: null, estimate: null,
+          readonly_methods: [provOf(s.provider.id).readonly_method], masking: null, ticket: { ttl_s: 600, single_use: true },
+        },
+      };
+    }
     const base = body.incremental_base;
     const scopeText = {
       snapshot: `${s.scope_summary.replace(/\s*\d+\s*表$/, '')}，42 张表${base ? `（增量，基于 ${base.split('-').pop()}）` : ''}`,
@@ -246,14 +289,16 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     return null;
   }
   const PHASES = [[15, '读取表清单'], [60, '采集字段与约束'], [85, '采集数据画像'], [101, '脱敏采样']];
+  const REA_PHASES = [[25, '判定类型'], [50, '解析程序'], [75, '转换记录'], [101, '组装快照']];
   function run(pid, j) {
     const p = proj(pid);
+    const rea = isRea(srcOf(j.source.id));
     const step = () => {
       const cur = p.jobs.find((x) => x.id === j.id);
       if (!cur || cur.state !== 'running') return;
       const done = Math.min(cur.progress.total, cur.progress.done + Math.max(1, Math.ceil(cur.progress.total / 6)));
       const pct = Math.round((done / cur.progress.total) * 100);
-      Object.assign(cur, { progress: { ...cur.progress, done, pct }, phase: PHASES.find(([x]) => pct < x)[1] });
+      Object.assign(cur, { progress: { ...cur.progress, done, pct }, phase: (rea ? REA_PHASES : PHASES).find(([x]) => pct < x)[1] });
       if (done < cur.progress.total) {
         emitJob(pid, { ...cur });
         timers.set(j.id, later(step, 900));
@@ -261,7 +306,19 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
       }
       const ended = clock();
       Object.assign(cur, { state: 'succeeded', phase: null, ended_at: new Date(ended).toISOString(), duration_ms: ended - Date.parse(cur.started_at), actions: [] });
-      if (cur.operation === 'snapshot') {
+      if (cur.operation === 'snapshot' && rea) {
+        const s = srcOf(cur.source.id);
+        const id = `${stamp(Date.parse(cur.started_at))}-${uid().slice(-4).padStart(4, '0')}`;
+        const prev = p.snapshots.find((x) => x.complete && x.source.id === cur.source.id);
+        const art = artifacts.get(s?.connection?.artifact_sha256) || D.REA_ARTIFACT;
+        manifests.set(id, D.reaManifest(cur.source.id, art, cur.id));
+        p.snapshots.unshift({
+          id, source: cur.source, provider: 'rea-static@0.1.0', complete: true, coverage_pct: 100, referenced: 0, masking_policy: 'none',
+          previous: prev?.id || null, job_id: cur.id, git_bytes: 18000, records: { ...D.REA_COUNTS }, started_at: cur.started_at, ended_at: cur.ended_at,
+        });
+        cur.result = { snapshot_id: id, message: `生成快照 ${id}` };
+        cur.actions = ['browse'];
+      } else if (cur.operation === 'snapshot') {
         const latest = p.snapshots.find((s) => s.complete && s.source.id === cur.source.id) || p.snapshots[0];
         const id = `${stamp(Date.parse(cur.started_at))}-${uid().slice(-4).padStart(4, '0')}`;
         p.snapshots.unshift({
@@ -285,12 +342,13 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     const p = proj(pid);
     const now = clock();
     const open = inWindow(s.access_window, now);
-    const total = body.operation === 'sample' ? 1 : 42;
+    const rea = isRea(s);
+    const total = rea ? 4 : body.operation === 'sample' ? 1 : 42;
     const j = {
       id: `job-${String(jobSeq++).padStart(4, '0')}`, project_id: pid, source: D.sourceRef(s), operation: body.operation,
-      scope_text: body.operation === 'sample' ? `${body.sample?.selector || 'replenish_std'} ${Math.min(20, body.sample?.limit || 20)} 行` : body.operation === 'snapshot' ? `42 表${body.incremental_base ? '（增量）' : ''}` : '',
-      incremental_base: body.incremental_base || null, state: open ? 'running' : 'queued', phase: open ? '读取表清单' : null,
-      progress: { done: startDone, total, unit: '表', pct: Math.round((startDone / total) * 100) },
+      scope_text: rea ? s.connection?.artifact_filename || '' : body.operation === 'sample' ? `${body.sample?.selector || 'replenish_std'} ${Math.min(20, body.sample?.limit || 20)} 行` : body.operation === 'snapshot' ? `42 表${body.incremental_base ? '（增量）' : ''}` : '',
+      incremental_base: body.incremental_base || null, state: open ? 'running' : 'queued', phase: open ? (rea ? REA_PHASES : PHASES)[0][1] : null,
+      progress: { done: startDone, total, unit: rea ? '步' : '表', pct: Math.round((startDone / total) * 100) },
       queue_reason: open ? null : `等待访问窗口 ${s.access_window.start}`,
       started_at: open ? new Date(now).toISOString() : null, ended_at: null, duration_ms: null, result: null, error: null,
       resumed_from: resumedFrom, checkpoint: false, initiated_by: user.username,
@@ -306,7 +364,7 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     const s = srcOf(body.source_id);
     if (!s) return err(404, 'source_not_found', '数据源不存在');
     if (!authorized(m[1], s.id)) return err(403, 'source_not_authorized', '本项目没有获授权使用该数据源');
-    if (!['discover', 'snapshot', 'sample'].includes(body.operation)) return err(400, 'invalid_argument', '操作不对', { fields: { operation: 'enum' } });
+    if (!['discover', 'snapshot', 'sample'].includes(body.operation) || !provOf(s.provider.id)?.capabilities.includes(body.operation)) return err(400, 'invalid_argument', '操作不对', { fields: { operation: 'enum' } });
     if (body.operation === 'sample' && !body.sample?.selector) return err(400, 'invalid_argument', '补采样本要写表名', { fields: { 'sample.selector': 'required' } });
     await wait(200);
     return json(200, preview(m[1], body));
@@ -402,6 +460,9 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
   on('GET', '/projects/([^/]+)/evidence/snapshots/([^/]+)', ({ m }) => {
     const s = proj(m[1]).snapshots.find((x) => x.id === m[2]);
     if (!s) return err(404, 'snapshot_not_found', '快照不存在');
+    if (manifests.has(s.id)) {
+      return json(200, { ...s, manifest: manifests.get(s.id), inventory: { collected: 5, skipped: [{ object: 'node_modules/', reason: '第三方依赖，只列清单' }] } });
+    }
     return json(200, { ...s, manifest: { provider: s.provider, masking_policy: s.masking_policy, scope: ['erp.*'] }, inventory: { collected: s.records.entity, skipped: s.complete ? [] : [{ object: 'erp.arrival_record 等 9 张表', reason: '预算用尽' }] } });
   });
   on('DELETE', '/projects/([^/]+)/evidence/snapshots/([^/]+)', ({ m }) => {
@@ -425,9 +486,33 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     return s || null;
   };
 
+  // 程序逆向的快照：记录来自合成的 REA 结果；分层摘要按 attrs.module 分组，列实体和操作（模块本身是组，不再列）
+  const reaSnap = (s) => /^rea-/.test(s?.provider || '');
+  const reaOf = (s) => D.reaRecords(s.source.id);
+  const reaItem = (r) => ({ anchor: r.id, type: r.type, name: r.name, label: r.label, mapped_to: r.attrs.kind === 'class' && r.name === 'Order' ? entryRef('replenish_order') : null });
+  const reaTree = (s) => {
+    const recs = reaOf(s).filter((r) => (r.type === 'entity' && r.attrs.kind !== 'module') || r.type === 'operation');
+    const mods = [...new Set(reaOf(s).filter((r) => r.attrs.kind === 'module').map((r) => r.attrs.module))];
+    return mods.map((name) => {
+      const list = recs.filter((r) => r.attrs.module === name);
+      return { name, count: list.length, entities: list.map(reaItem) };
+    }).filter((d) => d.count);
+  };
+  const reaRel = (s, anchor) => {
+    const recs = reaOf(s);
+    const byId = new Map(recs.map((r) => [r.id, r]));
+    const TEXT = { calls: ['调用', '被调用'], handles: ['处理', '由它处理'], requests: ['请求', '被请求'], exposes: ['暴露', '被暴露'] };
+    return recs.filter((r) => r.type === 'relation' && (r.attrs.from === anchor || r.attrs.to === anchor)).map((r) => {
+      const out = r.attrs.from === anchor;
+      const other = byId.get(out ? r.attrs.to : r.attrs.from);
+      return { anchor: other.id, label: other.name, basis: (TEXT[r.name] || [r.name, r.name])[out ? 0 : 1], confidence: r.evidence.confidence };
+    });
+  };
+
   on('GET', '/projects/([^/]+)/evidence/summary-tree', ({ m, query }) => {
     const s = needSnap(m[1], query);
     if (!s) return err(404, 'snapshot_not_found', '快照不存在');
+    if (reaSnap(s)) return json(200, { snapshot: { id: s.id, source_id: s.source.id, complete: s.complete }, domains: reaTree(s), untrusted_content: true });
     return json(200, {
       snapshot: { id: s.id, source_id: s.source.id, complete: s.complete },
       domains: D.DOMAINS.map(([name, count, list]) => ({ name, count, entities: list.map(entityItem) })),
@@ -439,6 +524,11 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     const q = (query.get('q') || '').trim().toLowerCase();
     const type = query.get('type');
     const items = [];
+    if (q && reaSnap(s)) {
+      reaOf(s).filter((r) => r.type !== 'relation' && (!type || r.type === type) && (r.name.toLowerCase().includes(q) || r.id.toLowerCase().includes(q)))
+        .forEach((r) => items.push({ anchor: r.id, type: r.type, name: r.name, label: r.label, parent_anchor: r.parent, snippet: `${r.attrs.loc.file}:${r.attrs.loc.line}`, confidence: r.evidence.confidence }));
+      return json(200, { items: items.slice(0, 50), next_cursor: null, total: items.length, untrusted_content: true });
+    }
     if (q) {
       Object.entries(D.TABLES).forEach(([name, t]) => {
         if ((!type || type === 'entity') && (name.includes(q) || t.label.toLowerCase().includes(q))) {
@@ -457,6 +547,19 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
   });
   on('GET', '/projects/([^/]+)/evidence/record', ({ m, query }) => {
     const anchor = query.get('anchor') || '';
+    if (anchor.startsWith('bin:')) {
+      const s = needSnap(m[1], query);
+      const r = s && reaSnap(s) ? reaOf(s).find((x) => x.id === anchor) : null;
+      if (!r) return err(404, 'anchor_not_found', '锚点在所声明的快照里不存在');
+      const members = reaOf(s).filter((x) => x.parent === r.id).map((x) => ({
+        name: x.name, type: x.attrs.signature || x.attrs.kind, note: '', confidence: x.evidence.confidence, masked: false, anchor: x.id,
+      }));
+      return json(200, {
+        anchor: r.id, type: r.type, name: r.name, label: r.label, parent_anchor: r.parent, confidence: r.evidence.confidence,
+        evidence: { provider: r.evidence.provider, method: r.evidence.method }, attrs: r.attrs, ...(members.length ? { fields: members } : {}),
+        snapshot: { id: s.id, source_id: s.source.id, complete: s.complete }, untrusted_content: true,
+      });
+    }
     const a = splitAnchor(anchor);
     if (!a) return err(400, 'anchor_invalid', '锚点格式不合法');
     const s = needSnap(m[1], query);
@@ -483,6 +586,10 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     .map(([a, b, confidence, basis]) => ({ a, b, confidence, basis, ta: a.split('.')[0], tb: b.split('.')[0] }))
     .filter((r) => names.includes(r.ta) && names.includes(r.tb));
   on('GET', '/projects/([^/]+)/evidence/lineage', ({ m, query }) => {
+    if (String(query.get('anchor') || '').startsWith('bin:')) {
+      const s = needSnap(m[1], query);
+      return s && reaSnap(s) ? json(200, { items: reaRel(s, query.get('anchor')), untrusted_content: true }) : err(404, 'anchor_not_found', '锚点不存在');
+    }
     const a = splitAnchor(query.get('anchor'));
     if (!a || !D.TABLES[a.table]) return err(404, 'anchor_not_found', '锚点不存在');
     const seen = new Set();
@@ -498,6 +605,8 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
   on('GET', '/projects/([^/]+)/evidence/er', ({ m, query }) => {
     const s = needSnap(m[1], query);
     if (!s) return err(404, 'snapshot_not_found', '快照不存在');
+    // ER 视图只给数据库类，其他回空表（F13）
+    if (reaSnap(s)) return json(200, { tables: [], relations: [] });
     const focus = splitAnchor(query.get('focus'))?.table || 'replenish_std';
     const depth = Math.max(1, Math.min(3, Number(query.get('depth') || 1)));
     let names;
@@ -518,6 +627,45 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
       })),
       relations: relationsOf(names).map((r) => ({ from_anchor: `db:erp-prod/erp.${r.a}`, to_anchor: `db:erp-prod/erp.${r.b}`, confidence: r.confidence, basis: r.basis })),
     });
+  });
+
+  // ---------- EV-31～EV-33 分块上传目标程序 ----------
+  // mock 一块 1 MiB（真实 8 MiB），开发服务器上能看到进度；?mock=upload:flaky 时第 2 块头一次回 503，看自动重试
+  const UP_CHUNK = 1024 * 1024;
+  const UP_MAX = 2048 * 1024 * 1024;
+  const byteLen = (b) => b?.byteLength ?? b?.size ?? 0;
+  on('POST', '/evidence/uploads', ({ body, user }) => {
+    const size = Number(body.size);
+    if (!body.filename || !Number.isInteger(size) || size <= 0) return err(400, 'invalid_argument', '文件名和大小不对', { fields: { size: 'positive' } });
+    if (size > UP_MAX) return err(413, 'upload_too_large', '程序超过上限', { max_bytes: UP_MAX });
+    if ([...uploads.values()].filter((u) => u.owner === user.username).length >= 2) return err(429, 'quota_exceeded', '没传完的程序太多，先等它们传完或过期', { limit: 2 });
+    const id = `up-${uid()}`;
+    uploads.set(id, { owner: user.username, filename: String(body.filename), size, got: new Map(), tries: new Map() });
+    return json(201, { upload_id: id, chunk_bytes: UP_CHUNK, max_bytes: UP_MAX });
+  });
+  on('PUT', '/evidence/uploads/([^/]+)/chunks/(\\d+)', async ({ m, init, user }) => {
+    const u = uploads.get(m[1]);
+    if (!u || u.owner !== user.username) return err(404, 'upload_not_found', '上传不存在或已过期');
+    const i = Number(m[2]);
+    const n = Math.ceil(u.size / UP_CHUNK);
+    const want = i < n - 1 ? UP_CHUNK : u.size - UP_CHUNK * (n - 1);
+    if (i >= n || byteLen(init?.body) !== want) return err(400, 'invalid_argument', '块大小或序号不对', { fields: { index: i, expected_bytes: want } });
+    u.tries.set(i, (u.tries.get(i) || 0) + 1);
+    if (sc.upload === 'flaky' && i === 1 && u.tries.get(i) === 1) return err(503, 'upstream_unavailable', '临时不可用');
+    await wait(120);
+    u.got.set(i, want);
+    return json(200, { received_bytes: [...u.got.values()].reduce((x, y) => x + y, 0), received_chunks: u.got.size });
+  });
+  on('POST', '/evidence/uploads/([^/]+)/complete', ({ m, body, user }) => {
+    const u = uploads.get(m[1]);
+    if (!u || u.owner !== user.username) return err(404, 'upload_not_found', '上传不存在或已过期');
+    const missing = Array.from({ length: Math.ceil(u.size / UP_CHUNK) }, (_, i) => i).filter((i) => !u.got.has(i));
+    if (missing.length) return err(409, 'upload_incomplete', '还有块没传', { missing });
+    if (!/^[0-9a-f]{64}$/.test(body.sha256 || '')) return err(422, 'upload_hash_mismatch', '哈希对不上');
+    const artifact = { sha256: body.sha256, size: u.size, filename: u.filename };
+    artifacts.set(artifact.sha256, artifact);
+    uploads.delete(m[1]);
+    return json(200, { artifact });
   });
 
   // ---------- EV-30 ----------
