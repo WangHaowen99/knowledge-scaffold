@@ -68,6 +68,23 @@ def derive(raw, mapping, version):
     return output.getvalue()
 
 
+CONFLICTS = 20
+
+
+def conflicts(resolution):
+    """Blocking binding issues of a package: object, kind, the table it names or matched, candidates and the reason.
+
+    Only names from the user's own package and data tables; at most CONFLICTS issues."""
+    found=[]
+    for issue in resolution.get('issues') or []:
+        if not issue.get('blocking'): continue
+        found.append({'object':issue.get('object',''),'kind':issue.get('kind',''),
+                      'table':issue.get('table') or issue.get('declared') or '',
+                      'candidates':[c.get('table') for c in issue.get('candidates') or [] if isinstance(c,dict) and c.get('table')][:3],
+                      'message':str(issue.get('message') or '')[:300]})
+    return found[:CONFLICTS]
+
+
 def generate_mapping(raw, tables, graph=False):
     files, _ = unpack(raw)
     with tempfile.TemporaryDirectory(prefix='eval-mapping-') as directory:
@@ -79,7 +96,8 @@ def generate_mapping(raw, tables, graph=False):
                 path.write_bytes(data)
         resolution=mapping_rules.resolve_object_tables(root, tables=tables)
         if resolution['problems']:
-            raise Failure('mapping_conflict', '对象绑定与数据表不一致，请检查映射预览', 422, 'mapping')
+            raise Failure('mapping_conflict', f"有 {len(resolution['problems'])} 个对象与数据表不一致，请按下方清单在建模中修改对象的表绑定后重新发布，"
+                          '或改用“不使用数据源”评测', 422, 'mapping', details={'issues':conflicts(resolution)})
         mapping=mapping_rules.object_data_mappings(resolution,graph=graph)
         if not mapping['objects']:
             raise Failure('mapping_empty','没有可绑定的数据对象',422,'mapping')

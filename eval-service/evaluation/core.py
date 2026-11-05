@@ -20,18 +20,39 @@ UPSTREAM_CODE = re.compile(r'"error_code"\s*:\s*"([a-z][a-z0-9_]{2,63})"')
 
 class Failure(Exception):
     def __init__(self, code, message, status=400, phase='input', *, upstream_status=None, context_overflow=False,
-                 upstream_code=''):
+                 upstream_code='', details=None, retry_after=None):
         super().__init__(message)
         self.code, self.message, self.status, self.phase = code, message, status, phase
+        # Structured, user-facing detail such as which objects conflict with the data tables; returned with the error.
+        self.details = details
         # Available for contextual diagnostics, never included in the public payload.
         self.upstream_status = upstream_status
         # The provider said the request exceeds its model's context window; callers may send less and retry.
         self.context_overflow = context_overflow
         self.upstream_code = upstream_code
+        # Seconds a rate-limited or unavailable dependency asked callers to wait, when it said so.
+        self.retry_after = retry_after
 
     def payload(self):
-        return dict(code=self.code, message=self.message, phase=self.phase,
-                    retryable=self.status in (429, 502, 503, 504))
+        value = dict(code=self.code, message=self.message, phase=self.phase,
+                     retryable=self.status in (429, 502, 503, 504))
+        if self.details is not None:
+            value['details'] = self.details
+        return value
+
+
+def transient(error):
+    """A dependency failure that may pass by itself: rate limits, unavailable or overloaded services, timeouts."""
+    return error.status in (429, 502, 503, 504)
+
+
+def retry_after(value):
+    """Seconds of a Retry-After header given as a number; dates and other forms are ignored."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return seconds if 0 <= seconds <= 3600 else None
 
 
 def canonical(value):
@@ -59,7 +80,11 @@ ENVIRONMENT = ('EVAL_AUTH_URL', 'EVAL_AUTH_ISSUER', 'EVAL_HUB_URL', 'EVAL_HUB_SE
                'EVAL_CONSUMER_API_URL', 'EVAL_CONSUMER_SERVICE_TOKEN', 'EVAL_ENCRYPTION_KEY',
                'EVAL_JUDGE_BASE_URL', 'EVAL_JUDGE_API_KEY', 'EVAL_JUDGE_MODEL',
                'EVAL_JUDGE_CONFIG_REVISION', 'EVAL_SQL_CONFIG', 'EVAL_NL2SQL_URL', 'EVAL_TRUSTED_ORIGINS',
-               'EVAL_MODELING_URL', 'EVAL_MODELING_SERVICE_TOKEN')
+               'EVAL_MODELING_URL', 'EVAL_MODELING_SERVICE_TOKEN', 'EVAL_NOTIFICATION_MAX_ATTEMPTS',
+               'EVAL_JUDGE_ALLOWED_HOSTS', 'EVAL_FEEDBACK_ENABLED', 'EVAL_FLYWHEEL_SERVICE_TOKEN',
+               'EVAL_NOTIFY_FEEDBACK_RUNS', 'EVAL_FEEDBACK_RETENTION_DAYS', 'EVAL_FEEDBACK_WINDOW_DAYS',
+               'EVAL_FEEDBACK_L1_MIN_USERS', 'EVAL_FEEDBACK_L1_MIN_DOWNVOTES', 'EVAL_FEEDBACK_SEAL_CLUSTERS',
+               'EVAL_FEEDBACK_SEAL_IDLE_MINUTES')
 
 
 @dataclass
@@ -82,6 +107,32 @@ class Config:
     modeling_url: str = ''
     # Sent with completion notifications to onto-modeling; empty disables them.
     modeling_service_token: str = ''
+    # Deliveries of one notification before it is given up as failed.
+    notification_max_attempts: str = ''
+    # Comma-separated host names a judge gateway may use although they resolve to a private address.
+    judge_allowed_hosts: str = ''
+    # Consumer feedback (data flywheel): off unless 'true'. The service token is the consumer's FLYWHEEL_SERVICE_TOKEN.
+    feedback_enabled: str = ''
+    flywheel_token: str = ''
+    # Whether runs built from consumer feedback are announced to onto-modeling; on once modeling files them by source.
+    notify_feedback_runs: str = ''
+    feedback_retention_days: str = ''
+    feedback_window_days: str = ''
+    feedback_min_users: str = ''
+    feedback_min_downvotes: str = ''
+    feedback_seal_clusters: str = ''
+    feedback_seal_idle_minutes: str = ''
+
+    def number(self, field, default):
+        """A positive integer setting; empty or invalid values fall back to the default."""
+        try:
+            value = int(str(getattr(self, field) or '').strip())
+        except ValueError:
+            return default
+        return value if value > 0 else default
+
+    def flag(self, field):
+        return str(getattr(self, field) or '').strip().lower() in ('1', 'true', 'yes', 'on')
 
     @classmethod
     def environment(cls):
@@ -128,7 +179,8 @@ class Transport:
                         raise Failure('dependency_rejected', '依赖服务拒绝请求', response.status_code
                                       if response.status_code in (401,403,404,409,410,413,422,429) else 503, 'dependency',
                                       upstream_status=response.status_code, context_overflow=overflow,
-                                      upstream_code=code.group(1) if code else '')
+                                      upstream_code=code.group(1) if code else '',
+                                      retry_after=retry_after(response.headers.get('retry-after')))
                     return bytes(raw)
         except httpx.TimeoutException as exc:
             raise Failure('dependency_timeout', '依赖服务响应超时，请稍后重试', 504, 'dependency') from exc

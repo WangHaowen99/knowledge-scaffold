@@ -10,6 +10,11 @@ import uuid
 from cryptography.fernet import Fernet
 from .core import Failure, canonical, digest
 
+# Owner keys of runs built from consumer feedback; their questions, answers and user suggestions are consumer
+# users' content and are kept encrypted, unlike the definitions users enter into the evaluation service itself.
+FEEDBACK_OWNER = 'feedback-'
+SEALED = ('cases', 'feedback')
+
 
 class Store:
     def __init__(self, root, encryption_key=''):
@@ -43,8 +48,38 @@ class Store:
         CREATE TABLE IF NOT EXISTS evidence(
           run_id TEXT NOT NULL, owner TEXT NOT NULL, case_index INTEGER NOT NULL,
           body TEXT NOT NULL, updated REAL NOT NULL, PRIMARY KEY(run_id,case_index));
+        CREATE TABLE IF NOT EXISTS optimizations(
+          run_id TEXT PRIMARY KEY, owner TEXT NOT NULL, body TEXT NOT NULL, updated REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS feedback_signals(
+          signal_id TEXT PRIMARY KEY, actor_key TEXT NOT NULL, signal_type TEXT NOT NULL,
+          signal_seq INTEGER NOT NULL DEFAULT 0, detected_by TEXT, vote TEXT, run_key TEXT,
+          ontology_id TEXT, package_version TEXT, question_fingerprint TEXT, level TEXT,
+          processing_status TEXT NOT NULL, status_reason TEXT, cluster_id TEXT, payload_hash TEXT NOT NULL,
+          body TEXT, derived TEXT, received REAL NOT NULL, updated REAL NOT NULL, purge_after REAL NOT NULL);
+        CREATE INDEX IF NOT EXISTS feedback_signals_status ON feedback_signals(processing_status,received);
+        CREATE INDEX IF NOT EXISTS feedback_signals_package ON feedback_signals(ontology_id,package_version,cluster_id);
+        CREATE INDEX IF NOT EXISTS feedback_signals_run ON feedback_signals(run_key);
+        CREATE INDEX IF NOT EXISTS feedback_signals_purge ON feedback_signals(purge_after);
+        CREATE TABLE IF NOT EXISTS feedback_votes(
+          run_key TEXT PRIMARY KEY, actor_key TEXT NOT NULL, latest_seq INTEGER NOT NULL, vote TEXT NOT NULL,
+          reason_category TEXT, signal_id TEXT NOT NULL, updated REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS feedback_clusters(
+          cluster_id TEXT PRIMARY KEY, ontology_id TEXT NOT NULL, package_version TEXT NOT NULL,
+          cluster_kind TEXT NOT NULL, fingerprint TEXT NOT NULL, level TEXT NOT NULL, status TEXT NOT NULL,
+          status_reason TEXT, run_id TEXT, distinct_users INTEGER NOT NULL DEFAULT 0,
+          downvotes INTEGER NOT NULL DEFAULT 0, upvotes INTEGER NOT NULL DEFAULT 0, error_count INTEGER NOT NULL DEFAULT 0,
+          suggestion_count INTEGER NOT NULL DEFAULT 0, has_expected_answer INTEGER NOT NULL DEFAULT 0,
+          priority_score INTEGER NOT NULL DEFAULT 0, body TEXT NOT NULL,
+          first_signal REAL NOT NULL, latest_signal REAL NOT NULL, updated REAL NOT NULL);
+        CREATE UNIQUE INDEX IF NOT EXISTS feedback_clusters_fp ON feedback_clusters(ontology_id,package_version,cluster_kind,fingerprint);
+        CREATE INDEX IF NOT EXISTS feedback_clusters_status ON feedback_clusters(ontology_id,package_version,status);
         ''')
         self.db.commit()
+
+    def close(self):
+        """Close under the lock: a background job still running then gets an error, never a half-closed connection."""
+        with self.lock:
+            self.db.close()
 
     def setting(self, key):
         """Service-wide settings, not owned by any user."""
@@ -80,6 +115,19 @@ class Store:
             raise Failure('encryption_unconfigured', '评测凭据加密密钥不可用', 503, 'configuration')
         return json.loads(self.cipher.decrypt(value.encode()))
 
+    def pack(self, owner, body):
+        if owner.startswith(FEEDBACK_OWNER) and any(key in body for key in SEALED):
+            sealed = {key: body[key] for key in SEALED if key in body}
+            body = {key: value for key, value in body.items() if key not in SEALED}
+            body['sealed'] = self.encrypt(sealed)
+        return canonical(body)
+
+    def unpack(self, owner, text):
+        body = json.loads(text)
+        if owner.startswith(FEEDBACK_OWNER) and 'sealed' in body:
+            body.update(self.decrypt(body.pop('sealed')))
+        return body
+
     def lookup_request(self, owner, kind, request_id, identity):
         with self.lock:
             row = self.db.execute('SELECT * FROM requests WHERE owner=? AND operation=? AND request_id=?',
@@ -101,18 +149,26 @@ class Store:
                     return self.get(owner, row['record_id'], kind)
             rid = uuid.uuid4().hex
             self.db.execute('INSERT INTO records VALUES(?,?,?,?,?,?)',
-                            (rid, owner, kind, 1, canonical(body), time.time()))
+                            (rid, owner, kind, 1, self.pack(owner, body), time.time()))
             if request_id:
                 self.db.execute('INSERT INTO requests VALUES(?,?,?,?,?)',
                                 (owner, kind, request_id, digest(identity if identity is not None else body), rid))
             return dict(id=rid, revision=1, **body)
+
+    def find(self, rid, kind):
+        """A record and its owner by ID alone, for records whose access is not decided by ownership."""
+        with self.lock:
+            row = self.db.execute('SELECT * FROM records WHERE id=? AND kind=?', (rid, kind)).fetchone()
+            if not row:
+                raise Failure('not_found', '记录不存在或无权访问', 404)
+            return row['owner'], dict(id=row['id'], revision=row['revision'], **self.unpack(row['owner'], row['body']))
 
     def get(self, owner, rid, kind=None):
         with self.lock:
             row = self.db.execute('SELECT * FROM records WHERE id=? AND owner=?', (rid, owner)).fetchone()
             if not row or (kind and row['kind'] != kind):
                 raise Failure('not_found', '记录不存在或无权访问', 404)
-            return dict(id=row['id'], revision=row['revision'], **json.loads(row['body']))
+            return dict(id=row['id'], revision=row['revision'], **self.unpack(owner, row['body']))
 
     def save(self, owner, rid, body, expected=None):
         with self.transaction():
@@ -121,7 +177,7 @@ class Store:
                 raise Failure('revision_conflict', '记录已变更，请刷新', 409)
             clean = {k: v for k, v in body.items() if k not in ('id', 'revision')}
             self.db.execute('UPDATE records SET body=?,revision=revision+1,updated=? WHERE id=? AND owner=?',
-                            (canonical(clean), time.time(), rid, owner))
+                            (self.pack(owner, clean), time.time(), rid, owner))
             return dict(id=rid, revision=old['revision']+1, **clean)
 
     def list(self, owner, kind, offset=0, limit=20):
@@ -141,11 +197,29 @@ class Store:
             self.db.execute('DELETE FROM artifacts WHERE run_id=?',(rid,))
             self.db.execute('DELETE FROM notifications WHERE run_id=?',(rid,))
             self.db.execute('DELETE FROM evidence WHERE run_id=?',(rid,))
+            self.db.execute('DELETE FROM optimizations WHERE run_id=?',(rid,))
+
+    def optimization(self, run_id):
+        """How a run's suggestions are being handled by modeling, kept apart from the run so verdict changes never race it."""
+        with self.lock:
+            row=self.db.execute('SELECT body FROM optimizations WHERE run_id=?',(run_id,)).fetchone()
+            return json.loads(row['body']) if row else None
+
+    def put_optimization(self, owner, run_id, body, only_new=False):
+        """Write a run's optimization state; ``only_new`` leaves an existing state as it is. Returns the stored state."""
+        with self.transaction():
+            if not self.db.execute("SELECT 1 FROM records WHERE id=? AND owner=? AND kind='runs'",(run_id,owner)).fetchone():
+                raise Failure('not_found','记录不存在或无权访问',404)
+            row=self.db.execute('SELECT body FROM optimizations WHERE run_id=?',(run_id,)).fetchone()
+            if row and only_new:
+                return json.loads(row['body'])
+            self.db.execute('INSERT OR REPLACE INTO optimizations VALUES(?,?,?,?)',(run_id,owner,canonical(body),time.time()))
+            return body
 
     def prune_orphans(self):
         """Drop artifacts, notifications and evidence of runs that no longer exist, e.g. after a restore replayed deletions."""
         with self.transaction():
-            for table in ('artifacts','notifications','evidence'):
+            for table in ('artifacts','notifications','evidence','optimizations'):
                 self.db.execute(f"DELETE FROM {table} WHERE run_id NOT IN (SELECT id FROM records WHERE kind='runs')")
 
     # Runs are grouped by the Hub package they evaluate; evaluation snapshots keep the package ID.

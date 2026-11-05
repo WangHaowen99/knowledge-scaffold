@@ -298,7 +298,7 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
         ))}
       </div>
       <div className="run-outputs-grid">
-        <RunArtifacts run={run} onChanged={refresh} />
+        <RunArtifacts run={run} onChanged={refresh} navigate={navigate} />
         <RunHistory run={run} navigate={navigate} />
       </div>
       <div className="run-grid">

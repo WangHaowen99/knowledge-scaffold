@@ -1,6 +1,16 @@
 # eval1 实施验证
 
-验证日期：2026-10-23。全部测试输入、身份、凭据占位值和依赖响应均为合成数据。
+验证日期：2026-11-04（数据飞轮评测侧与评测独立收尾）。全部测试输入、身份、凭据占位值和依赖响应均为合成数据。
+
+| 范围 | 命令与结果 |
+| --- | --- |
+| 独立后端 | `cd eval-service && python -m pytest tests -q`：190 项通过（新增 test_pipeline_resilience、test_modeling_result、test_feedback、test_mapping_parity） |
+| 评测前端 | `cd eval-service/frontend && npm test && npm run build`：30 个用例通过，生产构建通过（主包约 501 kB，用户反馈页单独分包） |
+| 部署脚本 | `python -m pytest deploy/tests -q`：150 项通过；`test_onto_modeling_migrate.py::test_migration_exports_committed_rows_still_in_wal` 因本机 Node 不支持 `--experimental-sqlite` 失败，与本次改动无关 |
+
+新增覆盖：限流退避与熔断、单题超时对账、映射冲突明细、通知重试上限、判分网关内网地址校验、报告与建议分队列、登录过期提示、改判只重建报告、mapping 与建模一致；建模回写与优化进展；消费反馈接收、投票与纠错、分拣门槛、反馈轮次与报告、负责人确认与驳回、按 Hub 包权限可见、保留期清理。未与真实消费服务（反馈投递未开发）和建模（按来源存放通知未开发）联调。
+
+## 2026-10-23 验证记录
 
 ## 已验证
 

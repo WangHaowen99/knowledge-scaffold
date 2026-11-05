@@ -16,6 +16,11 @@ IDLE_WAIT = 30
 BATCH = 20
 # The request itself is wrong and resending cannot help; anything else may recover (outage, upgrade, credentials).
 REJECTED = (400, 413, 422)
+# Usually a wrong modeling address or notification token: a few attempts, then the user is told to check them.
+MISCONFIGURED = (401, 403, 404)
+MISCONFIGURED_ATTEMPTS = 3
+# Other failures are retried with backoff up to this many deliveries in all, about a day; then they are failed.
+MAX_ATTEMPTS = 30
 
 
 def backoff(attempts):
@@ -25,6 +30,7 @@ def backoff(attempts):
 class Notifier:
     def __init__(self, config, store, http):
         self.config, self.store, self.http = config, store, http
+        self.max_attempts = config.number('notification_max_attempts', MAX_ATTEMPTS)
         self.wake, self.stopping = threading.Event(), threading.Event()
         self.thread = None
 
@@ -32,8 +38,10 @@ class Notifier:
     def enabled(self):
         return bool(self.config.modeling_url and self.config.modeling_service_token)
 
-    def enqueue(self, owner, run_id, body):
-        """Queue the latest state of a run; it replaces any older notification still waiting for that run."""
+    def enqueue(self, owner, run_id, body, recipient=None):
+        """Queue the latest state of a run; it replaces any older notification still waiting for that run.
+
+        ``recipient`` is the user modeling files the notification under when it is not the run's owner."""
         if not self.enabled:
             return
         with self.store.transaction():
@@ -41,7 +49,7 @@ class Notifier:
             sequence = (row[0] or 0) + 1
             self.store.db.execute("UPDATE notifications SET status='superseded' WHERE run_id=? AND status='pending'", (run_id,))
             now = time.time()
-            value = dict(body, event_id=f'{run_id}:{sequence}', sequence=sequence, run_id=run_id, owner=owner)
+            value = dict(body, event_id=f'{run_id}:{sequence}', sequence=sequence, run_id=run_id, owner=recipient or owner)
             self.store.db.execute('INSERT INTO notifications VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                                   (uuid.uuid4().hex, run_id, owner, sequence, canonical(value), 'pending', 0, now, None, now, None))
         self.wake.set()
@@ -56,7 +64,7 @@ class Notifier:
                     last_error=row['last_error'], delivered_at=row['delivered'])
 
     def retry(self, owner, run_id):
-        """Send the latest notification of a run again now, also after modeling rejected it."""
+        """Send the latest notification of a run again now, also after modeling rejected it or delivery gave up."""
         if not self.enabled:
             raise Failure('notification_disabled', '未配置建模通知凭据，无法发送通知', 409)
         with self.store.transaction():
@@ -65,7 +73,8 @@ class Notifier:
             if not row:
                 raise Failure('notification_missing', '此任务还没有可发送的通知', 409)
             if row['status'] != 'delivered':
-                self.store.db.execute("UPDATE notifications SET status='pending',next_attempt=? WHERE id=?", (time.time(), row['id']))
+                self.store.db.execute("UPDATE notifications SET status='pending',attempts=0,next_attempt=? WHERE id=?",
+                                      (time.time(), row['id']))
         self.wake.set()
         return self.status(run_id)
 
@@ -86,10 +95,18 @@ class Notifier:
                                     'Content-Type': 'application/json'}, content=body.encode())
         except Failure as exc:
             status = exc.upstream_status
-            rejected = status in REJECTED
+            attempts += 1
+            if status in REJECTED:
+                outcome = 'rejected'
+            elif attempts >= (MISCONFIGURED_ATTEMPTS if status in MISCONFIGURED else self.max_attempts):
+                outcome = 'failed'
+            else:
+                outcome = 'pending'
             error = f'建模服务返回 {status}' if status else '建模服务不可达'
+            if outcome == 'failed' and status in MISCONFIGURED:
+                error += '，请检查评测的建模服务地址和通知凭据'
             self._finish(rid, "status=?,attempts=?,next_attempt=?,last_error=?",
-                         ('rejected' if rejected else 'pending', attempts + 1, time.time() + backoff(attempts), error))
+                         (outcome, attempts, time.time() + backoff(attempts - 1), error))
         else:
             self._finish(rid, 'status=?,attempts=?,last_error=NULL,delivered=?', ('delivered', attempts + 1, time.time()))
 

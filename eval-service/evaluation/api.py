@@ -6,7 +6,7 @@ from pathlib import Path
 import time
 import uuid
 
-from fastapi import FastAPI, Request, Response, UploadFile, File, Query
+from fastapi import Body as Payload, FastAPI, Request, Response, UploadFile, File, Query
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
@@ -16,7 +16,7 @@ from .core import Config, Failure, Identity, Transport, digest, trusted_origins
 from .store import Store
 from .packages import Packages, generate_mapping, MAPPING, unpack
 from .data_sources import DataSources, read_tables
-from .execution import Consumer, Judge, Engine, report, DEFAULT_CONCURRENCY, MAX_CONCURRENCY
+from .execution import Consumer, Credential, Judge, Engine, report, DEFAULT_CONCURRENCY, MAX_CONCURRENCY
 from .judge_settings import JudgeSettings, connection_test_failure
 from .modeling_projects import linked_projects
 from .nl2sql import QueryService
@@ -26,7 +26,11 @@ from .artifact_jobs import ArtifactJobs
 from .notifications import Notifier
 from .suggestions import Suggestions
 from .artifacts import ACTIVE
-from . import package_routes
+from .feedback.access import PackageAccess
+from .feedback.intake import Intake
+from .feedback.pipeline import Assistant, Pipeline
+from .feedback.store import FeedbackStore, run_owner
+from . import modeling_result, package_routes
 
 
 class Body(BaseModel):
@@ -123,6 +127,12 @@ def create_app(config=None,transport=None):
     notifier=Notifier(config,store,http)
     jobs=ArtifactJobs(store,Suggestions(judge,packages,http),notifier)
     engine.on_stop=jobs.schedule
+    package_access=PackageAccess(packages)
+    # Consumer feedback (data flywheel): off unless EVAL_FEEDBACK_ENABLED; then a background thread processes it.
+    jobs.notify_feedback=config.flag('notify_feedback_runs')
+    pipeline=Pipeline(config,store,Assistant(judge_settings,http),jobs.schedule)
+    intake=Intake(config,store,identity,pipeline.wake)
+    feedback_store=FeedbackStore(store)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -134,11 +144,13 @@ def create_app(config=None,transport=None):
             store.prune_orphans()
             jobs.recover()
             notifier.start()
+            pipeline.start()
             import asyncio
             async def maintenance():
                 while True:
                     await asyncio.sleep(60)
                     store.prune_inputs()
+                    feedback_store.prune()
             sweeper=asyncio.create_task(maintenance())
             try:
                 yield
@@ -146,14 +158,15 @@ def create_app(config=None,transport=None):
                 sweeper.cancel()
                 await asyncio.gather(sweeper,return_exceptions=True)
         finally:
+            pipeline.stop()
             engine.close()
             jobs.close()
             notifier.stop()
-            store.db.close()
+            store.close()
             lock.close()
 
     app=FastAPI(title='Evaluation service',lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
-    app.state.store,app.state.engine,app.state.jobs=store,engine,jobs
+    app.state.store,app.state.engine,app.state.jobs,app.state.feedback=store,engine,jobs,pipeline
     prefix='/evaluation/api'
 
     @app.exception_handler(Failure)
@@ -200,6 +213,46 @@ def create_app(config=None,transport=None):
         value=request.headers.get('x-refresh-token','')
         return value if len(value)<=8192 else ''
 
+    def load_run(request,rid):
+        """A run the caller may use: their own evaluation run, or a run built from feedback on a package they can see in Hub.
+
+        Returns the run's owner, which keys its records and artifacts, the caller, the caller's token and the run."""
+        caller,token=actor(request)
+        owner,run=store.find(rid,'runs')
+        if run.get('origin')=='consumer_feedback':
+            package_access.require(caller,token,(run.get('package_ref') or {}).get('ontology_id'))
+        elif owner!=caller:
+            raise Failure('not_found','记录不存在或无权访问',404)
+        return owner,caller,token,run
+
+    def evaluation_run(request,rid):
+        """Only evaluation runs execute on consumer; runs built from feedback cannot be stopped or resumed."""
+        owner,caller,token,run=load_run(request,rid)
+        if run.get('origin')=='consumer_feedback':
+            raise Failure('not_applicable','消费反馈轮次不执行评测用例，不能停止或恢复',409)
+        return owner,token,run
+
+    def resolve_release(owner,run,token):
+        """The Hub release of a feedback run's package version, found with the caller's login and kept on the run.
+
+        Feedback names a version only; reading the package for suggestions and filing the run in modeling need the release."""
+        ref=run.get('package_ref') or {}
+        if ref.get('release_id'): return run
+        from urllib.parse import quote
+        offset=0
+        while offset is not None:
+            page=packages.call('GET',f"/api/packages/{quote(ref['ontology_id'],safe='')}/releases?offset={offset}&limit=100",token)
+            found=next((item for item in page.get('items') or [] if item.get('version')==ref.get('version')),None)
+            if found:
+                receipt=release_ref(found)
+                return store.save(owner,run['id'],dict(run,package_ref=receipt,base_ref=dict(receipt)))
+            offset=page.get('next_offset')
+        raise Failure('release_unpublished',f"知识包版本 {ref.get('version') or '（未注明）'} 还没有发布到 Hub，请先在建模中发布该版本",409)
+
+    def login(request,token):
+        """The caller's login for work that outlives the request, renewed with its refresh token when one was sent."""
+        return engine.token_source(Credential(token,refresh_of(request)))
+
     def account(request):
         header=request.headers.get('authorization','')
         return identity.account(header[7:] if header.startswith('Bearer ') else '')
@@ -238,7 +291,8 @@ def create_app(config=None,transport=None):
         current=judge_settings.active(profile['subject'])
         return {'subject':profile['subject'],'user':{'username':profile['username'],'role':profile['role']},
                 'judge':{'model':current['model'],'revision':current['revision'],'source':current['source']},
-                'judge_configured':current['configured'],'model_configuration':'MODEL-CONFIG-01'}
+                'judge_configured':current['configured'],'model_configuration':'MODEL-CONFIG-01',
+                'feedback_enabled':config.flag('feedback_enabled')}
 
     @app.get(f'{prefix}/judge-settings')
     def judge_settings_view(request:Request):
@@ -611,12 +665,21 @@ def create_app(config=None,transport=None):
         return dict(run,base_ref=release_ref(base)) if isinstance(base,dict) else run
 
     def run_view(owner,run):
-        return dict(**public(with_base(owner,run)),summary=report(run),artifacts=jobs.view(owner,run['id']),
-                    notification=notifier.status(run['id']))
+        return dict(public(with_base(owner,run)),origin=run.get('origin') or 'evaluation',summary=report(run),
+                    artifacts=jobs.view(owner,run['id']),notification=notifier.status(run['id']),
+                    optimization=modeling_result.public(modeling_result.state(store,jobs,owner,run)))
 
     @app.get(f'{prefix}/runs')
-    def runs(request:Request,offset:int=Query(0,ge=0),limit:int=Query(20,ge=1,le=20),ontology_id:str=Query('',max_length=128)):
-        owner,_=actor(request)
+    def runs(request:Request,offset:int=Query(0,ge=0),limit:int=Query(20,ge=1,le=20),ontology_id:str=Query('',max_length=128),
+             origin:str=Query('evaluation',pattern=r'^(evaluation|consumer_feedback)$')):
+        owner,token=actor(request)
+        if origin=='consumer_feedback':
+            # Feedback runs of one package, for whoever may read that package in Hub.
+            if not ontology_id: raise Failure('ontology_required','查看消费反馈轮次需要指定知识包',422)
+            package_access.require(owner,token,ontology_id)
+            page=store.package_runs(run_owner(ontology_id),ontology_id,offset,limit)
+            page['items']=[run_view(run_owner(ontology_id),r) for r in page['items']]
+            return page
         page=store.package_runs(owner,ontology_id,offset,limit) if ontology_id else store.list(owner,'runs',offset,limit)
         page['items']=[run_view(owner,r) for r in page['items']]
         return page
@@ -638,13 +701,12 @@ def create_app(config=None,transport=None):
 
     @app.get(f'{prefix}/runs/{{rid}}')
     def run(rid:str,request:Request):
-        owner,_=actor(request)
-        return run_view(owner,store.get(owner,rid,'runs'))
+        owner,_,_,record=load_run(request,rid)
+        return run_view(owner,record)
 
     @app.get(f'{prefix}/runs/{{rid}}/results')
     def results(rid:str,request:Request,offset:int=Query(0,ge=0)):
-        owner,_=actor(request)
-        cases=store.get(owner,rid,'runs')['cases']
+        cases=load_run(request,rid)[3]['cases']
         items=[]
         for c in cases[offset:offset+20]:
             item={k:v for k,v in c.items() if k not in ('answer','reference','overrides','judgement','override','trace')}
@@ -657,20 +719,17 @@ def create_app(config=None,transport=None):
 
     @app.get(f'{prefix}/runs/{{rid}}/results/{{cid}}/answer')
     def answer(rid:str,cid:int,request:Request):
-        owner,_=actor(request)
-        cases=store.get(owner,rid,'runs')['cases']
+        cases=load_run(request,rid)[3]['cases']
         if not 0<=cid<len(cases): raise Failure('not_found','用例不存在',404)
         return cases[cid]
 
     @app.get(f'{prefix}/runs/{{rid}}/results/{{cid}}/evidence')
     def evidence(rid:str,cid:int,request:Request):
-        owner,_=actor(request)
-        run=store.get(owner,rid,'runs')
+        _,_,token,run=load_run(request,rid)
         if not 0<=cid<len(run['cases']): raise Failure('not_found','用例不存在',404)
         case=run['cases'][cid]
-        if not case.get('remote_id') or case['status'] in ('executing','unknown','pending'):
+        if not case.get('remote_id') or not run.get('workspace') or case['status'] in ('executing','unknown','pending'):
             return {'trace_status':'unavailable','events':[],'message':'消费执行尚未结算'}
-        _,token=actor(request)
         try:
             raw=http.request('GET',config.consumer_url,f"/agentic/runs/{case['remote_id']}/events?after=0",
                              token=token,workspace=run['workspace'],limit=1024*1024)
@@ -691,12 +750,11 @@ def create_app(config=None,transport=None):
 
     @app.get(f'{prefix}/runs/{{rid}}/report')
     def get_report(rid:str,request:Request):
-        owner,_=actor(request)
-        return report(store.get(owner,rid,'runs'))
+        return report(load_run(request,rid)[3])
 
     @app.post(f'{prefix}/runs/{{rid}}/cancel')
     def cancel(rid:str,request:Request):
-        owner,token=actor(request)
+        owner,token,_=evaluation_run(request,rid)
         value=engine.stop(owner,rid)
         engine.start(owner,rid,token,refresh_of(request))
         return public(value)
@@ -704,8 +762,7 @@ def create_app(config=None,transport=None):
     @app.post(f'{prefix}/runs/{{rid}}/resume')
     @app.post(f'{prefix}/runs/{{rid}}/credentials')
     def resume(rid:str,request:Request):
-        owner,token=actor(request)
-        run=store.get(owner,rid,'runs')
+        owner,token,run=evaluation_run(request,rid)
         if (run.get('error') or {}).get('code')=='configuration_changed' and not run.get('cancel_requested'): raise Failure('configuration_changed','配置已变化，请创建新评测',409)
         if (run.get('error') or {}).get('code') in ('graph_scope_changed','graph_check_required','graph_confirmation_required') and not run.get('cancel_requested'):
             raise Failure('graph_confirmation_required','请重新创建评测并确认当前图数据范围',409,'data_import')
@@ -720,9 +777,15 @@ def create_app(config=None,transport=None):
 
     @app.post(f'{prefix}/runs/{{rid}}/results/{{cid}}/override')
     def override(rid:str,cid:int,body:dict,request:Request):
-        owner,token=actor(request)
+        owner,caller,token,_=load_run(request,rid)
         with engine.guard:
             run=store.get(owner,rid,'runs')
+            feedback=run.get('origin')=='consumer_feedback'
+            if feedback and (store.optimization(rid) or {}).get('status')!='awaiting_review':
+                raise Failure('invalid_state','这一轮消费反馈已确认或驳回，不能再修改',409)
+            reference=body.get('reference')
+            if reference is not None and (not feedback or not isinstance(reference,str) or len(reference)>4000):
+                raise Failure('override_invalid','只有消费反馈轮次可以补充标准答案，且不超过 4000 字',422)
             if (owner,rid) in engine.active: raise Failure('run_active','运行中不能改判',409)
             reason=body.get('reason')
             valid_reason=isinstance(reason,str) and 0<len(reason)<=4000
@@ -731,16 +794,24 @@ def create_app(config=None,transport=None):
             if body.get('revision')!=run['revision']: raise Failure('revision_conflict','请刷新后重试',409)
             case=run['cases'][cid]
             if not case.get('answer'): raise Failure('answer_missing','未获得答案不能改判',409)
-            value=dict(verdict=body['verdict'],reason=body['reason'],source='human',actor=owner,time=time.time())
+            if reference is not None: case['reference']=reference.strip()
+            value=dict(verdict=body['verdict'],reason=body['reason'],source='human',actor=caller,time=time.time())
             case.setdefault('overrides',[]).append(value)
             case['override']=value
             saved=public(store.save(owner,rid,run,body['revision']))
-        jobs.schedule(owner,rid,token)  # The verdict changed: rebuild the report and tell onto-modeling.
+        # The verdict changed: rebuild the report and tell onto-modeling; suggestions are regenerated on request only.
+        jobs.schedule(owner,rid,login(request,token),suggestions=False)
         return saved
 
     @app.delete(f'{prefix}/runs/{{rid}}')
     def delete_run(rid:str,request:Request):
-        owner,token=actor(request)
+        owner,_,token,record=load_run(request,rid)
+        if record.get('origin')=='consumer_feedback':
+            # Its clusters return and join the next feedback run of the package version.
+            if record['status']=='collecting': raise Failure('run_active','反馈轮次仍在收集中，生成报告后才能删除',409)
+            pipeline.release(rid)
+            store.delete(owner,rid)
+            return {'deleted':True}
         with engine.guard:
             run=store.get(owner,rid,'runs')
             if (owner,rid) in engine.active:
@@ -764,7 +835,42 @@ def create_app(config=None,transport=None):
             store.delete(owner,rid)
             return {'deleted':True}
 
-    package_routes.register(app,prefix,actor,store,engine,jobs,notifier,run_view)
+    @app.post(f'{prefix}/internal/feedback-signals',status_code=202)
+    def feedback_signals(body:dict,request:Request):
+        """Consumer pushes feedback with the submitting user's login and its own service token."""
+        header=request.headers.get('authorization','')
+        return intake.receive(body,header[7:] if header.startswith('Bearer ') else '',request.headers.get('x-eval-service-token',''))
+
+    @app.post(f'{prefix}/runs/{{rid}}/modeling-result')
+    def modeling_result_api(rid:str,body:modeling_result.ModelingResult,request:Request):
+        """Modeling reports how it handled this run's suggestions: the new release it published, or why it failed."""
+        owner,caller,token,run=load_run(request,rid)
+        value=modeling_result.record(store,jobs,packages,owner,run,body,token,caller)
+        return {'run_id':rid,'optimization':modeling_result.public(value)}
+
+    def decide(owner,caller,token,run,body):
+        """A package owner confirms a feedback run for modeling, or dismisses it with a reason."""
+        decision=(body or {}).get('decision')
+        state=modeling_result.state(store,jobs,owner,run) or {}
+        if state.get('status')!='awaiting_review':
+            raise Failure('invalid_state','这一轮消费反馈已确认或驳回',409)
+        now=time.time()
+        if decision=='dismiss':
+            reason=(body or {}).get('reason')
+            if not isinstance(reason,str) or not 0<len(reason.strip())<=2000: raise Failure('reason_required','请填写驳回原因',422)
+            state=dict(state,status='dismissed',reason=reason.strip(),dismissed_by=caller,updated_at=now)
+            store.put_optimization(owner,run['id'],state)
+            return state
+        if decision!='confirm': raise Failure('decision_required','请确认交给建模，或填写原因后驳回',422)
+        run=resolve_release(owner,run,token)
+        state=dict(state,status='notified',confirmed_by=caller,notified_at=now,updated_at=now)
+        store.put_optimization(owner,run['id'],state)
+        meta=jobs.meta(owner,run['id'])
+        if meta: jobs.announce(owner,run,meta)
+        return state
+
+    package_routes.register(app,prefix,actor,load_run,store,engine,jobs,notifier,run_view,login,
+                            dict(access=package_access,store=feedback_store,pipeline=pipeline,decide=decide,resolve=resolve_release))
 
     assets=Path(__file__).parents[1]/'frontend'/'dist'
     if assets.exists(): app.mount('/evaluation',StaticFiles(directory=assets,html=True),name='evaluation')

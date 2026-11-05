@@ -13,6 +13,7 @@ import yaml
 from evaluation.api import create_app
 from evaluation.core import Config, Failure, digest
 from evaluation.packages import derive, generate_mapping, unpack
+from evaluation import execution
 from evaluation.execution import report
 from evaluation.store import Store
 
@@ -84,7 +85,10 @@ class Dependencies:
         if path=='/token': return {'access_token':'synthetic-user-a','refresh_token':'synthetic-refresh'}
         if path.startswith('/api/packages'):
             if token!='synthetic-user-a': raise Failure('not_found','Not found',404)
-            if '/releases/' in path: return self.releases[path.split('/')[-1]][1]
+            if '/releases/' in path:
+                if path.split('/')[-1] not in self.releases:
+                    raise Failure('dependency_rejected','Not found',404,'dependency',upstream_status=404)
+                return self.releases[path.split('/')[-1]][1]
             return {'items':[self.receipt], 'total':1,'next_offset':None}
         if path=='/api/package-publish-requests':
             body=kwargs['json']; key=body['request_id']
@@ -233,13 +237,12 @@ def test_judge_retry_does_not_repeat_question(environment):
     assert len(deps.submissions)==1
 
 
-def test_unknown_submission_reconciles_same_id(environment):
+def test_unknown_submission_is_resent_under_the_same_id(environment,monkeypatch):
     client,app,deps,cfg=environment
+    monkeypatch.setattr(execution,'remote_delay',lambda attempt,hint=None:0)
     deps.fail_submit_response=True
     record=run(client,preparation(client))
-    assert wait(client,record['id'])['status']=='interrupted'
-    client.post(f"/evaluation/api/runs/{record['id']}/resume",json={})
-    time.sleep(.05)
+    # The outage is retried in place with the same idempotency key: one question, no interruption.
     assert wait(client,record['id'])['status']=='completed'
     assert len(deps.submissions)==1
 

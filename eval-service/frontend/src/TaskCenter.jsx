@@ -3,6 +3,7 @@ import {
   ACTIVE,
   STATUS,
   needsAttention,
+  optimizationTag,
   packageName,
   packageVersions,
   phaseName,
@@ -272,6 +273,9 @@ export function TaskCenter({
                     <StartTimeCell run={run} />
                     <td data-label="状态">
                       <Badge tone={STATUS[run.status]?.[1]}>{STATUS[run.status]?.[0] || run.status}</Badge>
+                      {optimizationTag(run) && (
+                        <Badge tone={optimizationTag(run).tone}>{optimizationTag(run).label}</Badge>
+                      )}
                     </td>
                     <td data-label="判分进度">
                       <b className="tabular">

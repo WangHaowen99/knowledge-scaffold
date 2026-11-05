@@ -62,7 +62,7 @@ def test_defaults_and_invalid_run_options(environment):
     client, app, deps, cfg = environment
     prep = preparation(client)
     cases = eval_set(client, 1, 'Synthetic defaults')
-    for options in ({'concurrency': 0}, {'concurrency': 9}, {'model_profile_id': 'workspace:private_demo'}):
+    for options in ({'concurrency': 0}, {'concurrency': 17}, {'model_profile_id': 'workspace:private_demo'}):
         assert start(client, prep, cases, 'run_invalid', **options).status_code == 422
     response = start(client, prep, cases, 'run_defaults')
     assert response.json()['concurrency'] == 4 and response.json()['model_profile_id'] == ''

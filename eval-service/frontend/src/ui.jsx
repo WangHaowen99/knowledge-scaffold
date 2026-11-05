@@ -57,6 +57,7 @@ const paths = {
   stop: <rect x="5" y="5" width="14" height="14" rx="2" />,
   logout: <path d="M9 4H4v16h5m5-8h7m-4-4 4 4-4 4" />,
   box: <path d="m12 3 9 5-9 5-9-5zM3 8v10l9 4 9-4V8M12 13v9M7 6l9 5" />,
+  message: <path d="M4 5h16v11H10l-5 4v-4H4zM8 9h8M8 12h5" />,
 };
 export function Icon({ name, ...props }) {
   return (
@@ -219,24 +220,28 @@ export function Modal({ title, children, onClose, footer, drawer = false }) {
 }
 export function useAction() {
   const [busy, setBusy] = useState(false),
-    [error, setError] = useState('');
+    [error, setError] = useState(''),
+    [details, setDetails] = useState(null);
   const locked = useRef(false);
   async function act(work) {
     if (locked.current) return;
     locked.current = true;
     setBusy(true);
     setError('');
+    setDetails(null);
     try {
       return await work();
     } catch (e) {
       setError(e.message);
+      // Structured detail of the error, such as the objects that conflict with the data tables.
+      setDetails(e.details || null);
       return undefined;
     } finally {
       locked.current = false;
       setBusy(false);
     }
   }
-  return { busy, error, setError, act };
+  return { busy, error, setError, details, act };
 }
 export function Confirm({ title, children, onConfirm, onClose, label = '确认', danger = false }) {
   const { busy, error, act } = useAction();

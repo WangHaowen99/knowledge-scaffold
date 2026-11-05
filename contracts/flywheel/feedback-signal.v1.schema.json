@@ -1,0 +1,583 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/contracts/flywheel/feedback-signal.v1.schema.json",
+  "$comment": "FeedbackSignal v1 as the evaluation service accepts it (eval-service/evaluation/feedback/models.py). Receivers ignore unknown fields; removing or changing a field needs v2.",
+  "$defs": {
+    "Actor": {
+      "properties": {
+        "user_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "User Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "user_id"
+      ],
+      "title": "Actor",
+      "type": "object"
+    },
+    "Correction": {
+      "properties": {
+        "text": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "matched": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Matched",
+          "type": "string"
+        },
+        "next_answer": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Next Answer",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "Correction",
+      "type": "object"
+    },
+    "Detection": {
+      "properties": {
+        "detected_by": {
+          "enum": [
+            "user_vote",
+            "user_correction",
+            "system_rule"
+          ],
+          "title": "Detected By",
+          "type": "string"
+        },
+        "rules": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Rules",
+          "type": "array"
+        }
+      },
+      "required": [
+        "detected_by"
+      ],
+      "title": "Detection",
+      "type": "object"
+    },
+    "Document": {
+      "properties": {
+        "path": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Path",
+          "type": "string"
+        },
+        "version": {
+          "default": "",
+          "maxLength": 64,
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "title": "Document",
+      "type": "object"
+    },
+    "Evidence": {
+      "properties": {
+        "evidence_level": {
+          "default": "",
+          "maxLength": 32,
+          "title": "Evidence Level",
+          "type": "string"
+        },
+        "partial": {
+          "default": false,
+          "title": "Partial",
+          "type": "boolean"
+        },
+        "read_documents": {
+          "items": {
+            "$ref": "#/$defs/Document"
+          },
+          "maxItems": 50,
+          "title": "Read Documents",
+          "type": "array"
+        },
+        "tool_failures": {
+          "items": {
+            "$ref": "#/$defs/ToolFailure"
+          },
+          "maxItems": 50,
+          "title": "Tool Failures",
+          "type": "array"
+        },
+        "iteration_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Iteration Count"
+        },
+        "tool_event_total": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Event Total"
+        },
+        "tool_events": {
+          "items": {
+            "$ref": "#/$defs/ToolEvent"
+          },
+          "maxItems": 40,
+          "title": "Tool Events",
+          "type": "array"
+        }
+      },
+      "title": "Evidence",
+      "type": "object"
+    },
+    "Origin": {
+      "properties": {
+        "service": {
+          "default": "consumer",
+          "maxLength": 64,
+          "title": "Service",
+          "type": "string"
+        },
+        "workspace_id": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Workspace Id",
+          "type": "string"
+        },
+        "session_id": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "run_id": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        }
+      },
+      "title": "Origin",
+      "type": "object"
+    },
+    "Package": {
+      "properties": {
+        "ontology_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "title": "Ontology Id",
+          "type": "string"
+        },
+        "version": {
+          "default": "",
+          "maxLength": 64,
+          "title": "Version",
+          "type": "string"
+        },
+        "content_digest": {
+          "default": "",
+          "maxLength": 128,
+          "title": "Content Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ontology_id"
+      ],
+      "title": "Package",
+      "type": "object"
+    },
+    "QA": {
+      "properties": {
+        "question": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Question",
+          "type": "string"
+        },
+        "answer": {
+          "default": "",
+          "maxLength": 8000,
+          "title": "Answer",
+          "type": "string"
+        },
+        "turn_status": {
+          "default": "",
+          "maxLength": 64,
+          "title": "Turn Status",
+          "type": "string"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        },
+        "conversation_context": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 3,
+          "title": "Conversation Context",
+          "type": "array"
+        }
+      },
+      "required": [
+        "question"
+      ],
+      "title": "QA",
+      "type": "object"
+    },
+    "ScopeHint": {
+      "properties": {
+        "operation_key": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operation Key"
+        },
+        "entity_key": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entity Key"
+        },
+        "kind_hint": {
+          "anyOf": [
+            {
+              "maxLength": 32,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kind Hint"
+        }
+      },
+      "title": "ScopeHint",
+      "type": "object"
+    },
+    "Suggestion": {
+      "properties": {
+        "content": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Content",
+          "type": "string"
+        },
+        "scope_hint": {
+          "$ref": "#/$defs/ScopeHint"
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "title": "Suggestion",
+      "type": "object"
+    },
+    "ToolEvent": {
+      "properties": {
+        "index": {
+          "default": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "tool": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Tool",
+          "type": "string"
+        },
+        "arguments": {
+          "default": "",
+          "maxLength": 1000,
+          "title": "Arguments",
+          "type": "string"
+        },
+        "result": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Result",
+          "type": "string"
+        },
+        "failed": {
+          "default": false,
+          "title": "Failed",
+          "type": "boolean"
+        }
+      },
+      "title": "ToolEvent",
+      "type": "object"
+    },
+    "ToolFailure": {
+      "properties": {
+        "tool": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Tool",
+          "type": "string"
+        },
+        "error_code": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Error Code",
+          "type": "string"
+        },
+        "message": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "title": "ToolFailure",
+      "type": "object"
+    },
+    "Vote": {
+      "properties": {
+        "vote": {
+          "enum": [
+            "up",
+            "down",
+            "none"
+          ],
+          "title": "Vote",
+          "type": "string"
+        },
+        "previous_vote": {
+          "anyOf": [
+            {
+              "maxLength": 8,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Previous Vote"
+        },
+        "reason_category": {
+          "anyOf": [
+            {
+              "enum": [
+                "wrong_answer",
+                "missing_data",
+                "wrong_process",
+                "other"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Category"
+        },
+        "comment": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Comment",
+          "type": "string"
+        },
+        "expected_answer": {
+          "default": "",
+          "maxLength": 4000,
+          "title": "Expected Answer",
+          "type": "string"
+        }
+      },
+      "required": [
+        "vote"
+      ],
+      "title": "Vote",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "schema": {
+      "const": "consumer-feedback-signal.v1",
+      "title": "Schema",
+      "type": "string"
+    },
+    "signal_id": {
+      "pattern": "^sig_[0-9a-f]{32}$",
+      "title": "Signal Id",
+      "type": "string"
+    },
+    "signal_type": {
+      "enum": [
+        "turn_feedback",
+        "error_qa",
+        "user_suggestion"
+      ],
+      "title": "Signal Type",
+      "type": "string"
+    },
+    "signal_seq": {
+      "default": 0,
+      "maximum": 1000000000,
+      "minimum": 0,
+      "title": "Signal Seq",
+      "type": "integer"
+    },
+    "occurred_at": {
+      "default": "",
+      "maxLength": 64,
+      "title": "Occurred At",
+      "type": "string"
+    },
+    "origin": {
+      "$ref": "#/$defs/Origin"
+    },
+    "actor": {
+      "$ref": "#/$defs/Actor"
+    },
+    "package": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Package"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "qa": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/QA"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "feedback": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Vote"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "suggestion": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Suggestion"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "error_detection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Detection"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "correction": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Correction"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "evidence": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Evidence"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "schema",
+    "signal_id",
+    "signal_type",
+    "actor"
+  ],
+  "type": "object",
+  "title": "consumer-feedback-signal.v1"
+}

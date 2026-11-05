@@ -23,6 +23,48 @@ export function GraphScopeStatus({ check }) {
   );
 }
 
+// Objects of the package whose table binding does not match the data tables, returned with a mapping conflict.
+const CONFLICT_KINDS = {
+  declared_missing: '声明的来源表不在数据中',
+  no_columns: '绑定的表没有一列能对上属性',
+};
+export function MappingConflicts({ details }) {
+  const issues = details?.issues;
+  if (!issues?.length) return null;
+  return (
+    <div className="mapping-preview mapping-conflicts">
+      <div className="section-title">
+        <h3>对象与数据表不一致</h3>
+        <Badge tone="red">{issues.length} 个对象</Badge>
+      </div>
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>对象</th>
+              <th>声明或匹配的表</th>
+              <th>问题</th>
+            </tr>
+          </thead>
+          <tbody>
+            {issues.map((issue) => (
+              <tr key={issue.object + issue.kind}>
+                <td>{issue.object}</td>
+                <td>
+                  {issue.table || '—'}
+                  {issue.candidates?.length > 0 && <small>可选：{issue.candidates.join('、')}</small>}
+                </td>
+                <td>{CONFLICT_KINDS[issue.kind] || issue.message}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="notice">在建模中修改这些对象的“数据来源”后重新发布，或改用“不使用数据源”评测。</p>
+    </div>
+  );
+}
+
 export function MappingPreview({ preview }) {
   if (!preview) return null;
   const objects = Array.isArray(preview.objects)
@@ -107,7 +149,7 @@ export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, pa
   const [uploads, setUploads] = useState([]),
     [reading, setReading] = useState(false),
     [readError, setReadError] = useState('');
-  const { busy, error, act } = useAction(),
+  const { busy, error, details, act } = useAction(),
     file = useRef(null),
     revision = useRef(0),
     mounted = useRef(true),
@@ -286,6 +328,7 @@ export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, pa
       </Heading>
       <section className="panel definition-editor">
         {error && <Alert tone="red">{error}</Alert>}
+        <MappingConflicts details={details} />
         <div className="segmented modes">
           {[
             ['none', 'box', '不使用数据源'],

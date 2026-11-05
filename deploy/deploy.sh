@@ -306,6 +306,18 @@ ensure_evaluation_service_token() { # <consumer backend/.env>
         || die "EVALUATION_SERVICE_TOKEN must differ from MODELING_SERVICE_TOKEN"
     env_set "$1" EVALUATION_SERVICE_TOKEN "${secret}"
     log "Consumer evaluation service token is ready (value is not printed)"
+    ensure_flywheel_service_token "$1"
+}
+
+# consumer 向评测推送用户反馈（数据飞轮）的服务凭据：已有值保留，缺失时生成，须与其他服务凭据不同。
+ensure_flywheel_service_token() { # <consumer backend/.env>
+    local secret
+    secret="${FLYWHEEL_SERVICE_TOKEN:-$(env_get "$1" FLYWHEEL_SERVICE_TOKEN)}"
+    [ -n "${secret}" ] || secret="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+    [ "${#secret}" -ge 32 ] || die "FLYWHEEL_SERVICE_TOKEN must contain at least 32 characters"
+    [ "${secret}" != "$(env_get "$1" MODELING_SERVICE_TOKEN)" ] && [ "${secret}" != "$(env_get "$1" EVALUATION_SERVICE_TOKEN)" ] \
+        || die "FLYWHEEL_SERVICE_TOKEN must differ from MODELING_SERVICE_TOKEN and EVALUATION_SERVICE_TOKEN"
+    env_set "$1" FLYWHEEL_SERVICE_TOKEN "${secret}"
 }
 
 first_env_value() { # <键> <文件>...：返回第一个非空值，用于在源码、发布包与安装目录布局间查找
@@ -387,6 +399,8 @@ deploy_evaluation() {
         "${root}/consumer/backend/.env" "${root}/backend/.env" "${INSTALL_DIR}/backend/.env")" \
     EVAL_MODELING_SERVICE_TOKEN="$(first_env_value ONTO_EVALUATION_SERVICE_TOKEN \
         "${root}/modeling/onto-modeling/.env" "${root}/onto-modeling/.env" "${INSTALL_DIR}/onto-modeling/.env")" \
+    EVAL_FLYWHEEL_SERVICE_TOKEN="$(first_env_value FLYWHEEL_SERVICE_TOKEN \
+        "${root}/consumer/backend/.env" "${root}/backend/.env" "${INSTALL_DIR}/backend/.env")" \
         bash "$SCRIPT_DIR/../eval-service/deploy/deploy.sh"
 }
 

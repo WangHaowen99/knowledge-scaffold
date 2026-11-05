@@ -207,30 +207,44 @@ def test_failed_run_gets_report_suggestions_trace_and_notification(service):
     assert app.state.store.evidence(owner, 'f' * 32) == {}
 
 
-def test_all_passing_run_needs_no_model_and_override_regenerates(service):
+def test_all_passing_run_needs_no_model_and_override_rebuilds_only_the_report(service):
     client, app, deps, modeling, verdicts = service
     record = start(client, preparation(client), [('Synthetic passing question', '2')], 'run_passing')
     run = settled(client, record['id'])
     assert run['artifacts']['revision'] == 1 and not deps.suggestion_inputs
+    stem = run['artifacts']['stem']
     assert '无需评测优化' in client.get(f"/evaluation/api/runs/{record['id']}/artifacts/suggestions.md").text
     response = client.post(f"/evaluation/api/runs/{record['id']}/results/0/override",
                            json={'verdict': 'fail', 'reason': 'Synthetic manual review', 'revision': run['revision']})
     assert response.status_code == 200, response.text
+
+    def rebuilt_run():
+        current = client.get(f"/evaluation/api/runs/{record['id']}").json()
+        return current if current['artifacts']['revision'] == 2 else None
+
+    rebuilt = until(rebuilt_run)
+    # Only the report: no model request, the same file name, and suggestions waiting for an explicit regeneration.
+    assert not deps.suggestion_inputs
+    assert rebuilt['artifacts']['stem'] == stem
+    assert rebuilt['artifacts']['suggestions'] == 'pending' and rebuilt['artifacts']['suggestions_stale'] is True
+    report = client.get(f"/evaluation/api/runs/{record['id']}/artifacts/report.md").text
+    assert '❌ fail' in report and 'Synthetic manual review（人工改判）' in report
+    assert rebuilt['summary']['counts']['fail'] == 1
+    until(lambda: modeling.received and modeling.received[-1][1]['artifacts']['revision'] == 2)
+    assert client.post(f"/evaluation/api/runs/{record['id']}/artifacts/regenerate").status_code == 200
+
     def regenerated_run():
         current = client.get(f"/evaluation/api/runs/{record['id']}").json()
-        ready = current['artifacts']['revision'] == 2 and current['artifacts']['suggestions'] == 'ready'
+        ready = current['artifacts']['revision'] == 3 and current['artifacts']['suggestions'] == 'ready'
         return current if ready else None
 
     regenerated = until(regenerated_run)
-    report = client.get(f"/evaluation/api/runs/{record['id']}/artifacts/report.md").text
-    assert '❌ fail' in report and 'Synthetic manual review（人工改判）' in report
-    assert regenerated['summary']['counts']['fail'] == 1
-    until(lambda: modeling.received and modeling.received[-1][1]['artifacts']['revision'] == 2)
+    assert deps.suggestion_inputs and regenerated['artifacts']['suggestions_stale'] is False
     # Stopping again without new results does not create a revision.
     owner = app.state.store.db.execute('SELECT owner FROM records WHERE id=?', (record['id'],)).fetchone()[0]
     app.state.engine.on_stop(owner, record['id'], 'synthetic-user-a')
     time.sleep(.1)
-    assert client.get(f"/evaluation/api/runs/{record['id']}").json()['artifacts']['revision'] == 2
+    assert client.get(f"/evaluation/api/runs/{record['id']}").json()['artifacts']['revision'] == 3
 
 
 def test_package_groups_history_lock_and_release_view(service):

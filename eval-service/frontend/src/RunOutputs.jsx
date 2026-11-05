@@ -2,7 +2,16 @@ import React, { useEffect, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from './api.js';
-import { STATUS, artifactState, notificationState, packageVersions, runStartTime, shortId } from './domain.js';
+import {
+  STATUS,
+  artifactState,
+  notificationState,
+  optimizationState,
+  optimizationTag,
+  packageVersions,
+  runStartTime,
+  shortId,
+} from './domain.js';
 import { Alert, Badge, Button, Modal, Skeleton, useAction } from './ui.jsx';
 
 const HISTORY_PAGE = 3;
@@ -34,12 +43,14 @@ function markdownComponents(onOpenAnswer) {
   };
 }
 
-// Report and suggestions of a stopped run, and whether onto-modeling has been told about them.
-export function RunArtifacts({ run, onChanged }) {
+// Report and suggestions of a stopped run, whether onto-modeling has been told about them, and what it did with them.
+export function RunArtifacts({ run, onChanged, navigate }) {
   const [viewing, setViewing] = useState(null),
     { busy, error, act } = useAction();
   const state = artifactState(run),
-    notice = notificationState(run.notification);
+    notice = notificationState(run.notification),
+    handled = optimizationState(run),
+    earlier = run.optimization?.history || [];
   const regenerate = () =>
     act(async () => {
       await api(`/runs/${run.id}/artifacts/regenerate`, {});
@@ -72,6 +83,27 @@ export function RunArtifacts({ run, onChanged }) {
             )}
           </p>
         )}
+        {handled && (
+          <div className="run-outputs-state">
+            <span className="run-outputs-label">建模处理</span>
+            <Badge tone={handled.tone}>{handled.label}</Badge>
+            {handled.hint && <small>{handled.hint}</small>}
+            {earlier.length > 0 && (
+              <details className="optimization-history">
+                <summary>历次回写</summary>
+                <ul>
+                  {earlier.map((item) => (
+                    <li key={item.reported_at}>
+                      {item.outcome === 'done' ? `新版本 ${item.version || item.release_id}` : '处理失败'}
+                      {item.note && ` · ${item.note}`}
+                      <small>{runStartTime({ created_at: item.reported_at })?.date}</small>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        )}
       </div>
       <div className="context-links">
         <Button variant="text" disabled={!state.report} onClick={() => setViewing('report')}>
@@ -85,13 +117,22 @@ export function RunArtifacts({ run, onChanged }) {
             重新生成
           </Button>
         )}
+        {handled?.releaseId && navigate && run.origin !== 'consumer_feedback' && (
+          // The existing re-evaluation, on the version modeling published from these suggestions.
+          <Button
+            variant="text"
+            onClick={() => navigate(`/new?from=${run.id}&release_id=${encodeURIComponent(handled.releaseId)}`)}
+          >
+            在新版本上再次评测
+          </Button>
+        )}
       </div>
       {viewing && <ArtifactViewer run={run} kind={viewing} onClose={() => setViewing(null)} />}
     </section>
   );
 }
 
-function ArtifactViewer({ run, kind, onClose }) {
+export function ArtifactViewer({ run, kind, onClose }) {
   const [text, setText] = useState(null),
     [error, setError] = useState(''),
     [answerId, setAnswerId] = useState(null);
@@ -199,7 +240,8 @@ export function RunHistory({ run, navigate }) {
       <ul>
         {page.items.map((item) => {
           const start = runStartTime(item),
-            current = item.id === run.id;
+            current = item.id === run.id,
+            tag = optimizationTag(item);
           return (
             <li key={item.id} className={current ? 'selected' : ''}>
               <b className="tabular">{shortId(item.id)}</b>
@@ -207,6 +249,7 @@ export function RunHistory({ run, navigate }) {
               <span className="version-tag">{packageVersions(item).base || '—'}</span>
               <small className="tabular">{start ? `${start.date} ${start.time}` : '—'}</small>
               <Badge tone={STATUS[item.status]?.[1]}>{STATUS[item.status]?.[0] || item.status}</Badge>
+              {tag && <Badge tone={tag.tone}>{tag.label}</Badge>}
               {!current && (
                 <span className="history-open">
                   <Button variant="text" onClick={() => navigate(`/runs/${item.id}`)}>

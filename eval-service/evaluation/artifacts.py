@@ -159,10 +159,20 @@ def summarize(run):
     score = round((counts['pass'] + counts['partial'] * 0.5) * 100 / valid) if valid else None
     technical = run['status'] != 'completed' or bool(counts['error']) or not verdicts
     result_status = 'unavailable' if not valid else 'partial' if technical else 'complete'
+    if run.get('origin') == 'consumer_feedback':
+        # Feedback is what users reported, not a sample of questions: it has no score.
+        score, result_status = None, 'complete' if run['status'] == 'completed' else 'unavailable'
     return dict(total=len(verdicts), **counts, valid=valid, score=score, result_status=result_status)
 
 
+def user_suggestions(run):
+    """Suggestions consumer users made about the package, kept with a feedback run."""
+    return list((run.get('feedback') or {}).get('suggestions') or [])
+
+
 def has_results(run):
+    if run.get('origin') == 'consumer_feedback':
+        return run['status'] == 'completed' and bool(run['cases'] or user_suggestions(run))
     return any(case.get('answer') or case.get('status') in ('execution_error', 'judge_error') for case in run['cases'])
 
 
@@ -265,7 +275,9 @@ def render_context(store, run, stem, revision, summary):
                           release_id=base.get('release_id') or ran.get('release_id'),
                           version=base.get('version') or ran.get('version'), package_version=ran.get('version'),
                           name=ran.get('name'), status=run['status'], finished_at=run.get('finished_at'),
-                          summary=summary, tables=tables(store, run)))
+                          summary=summary, tables=tables(store, run), origin=run.get('origin') or 'evaluation',
+                          **({'feedback': {key: (run.get('feedback') or {}).get(key) for key in ('stats', 'window', 'excluded')}}
+                             if run.get('origin') == 'consumer_feedback' else {})))
 
 
 def fit(name, text):

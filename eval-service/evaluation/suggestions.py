@@ -18,7 +18,7 @@ import json
 import re
 import time
 
-from .artifacts import CHINA, clip, failed_first, outcome, summarize, tool_failure_lines
+from .artifacts import CHINA, clip, failed_first, outcome, summarize, tool_failure_lines, user_suggestions
 from .core import Failure
 from .packages import unpack
 
@@ -69,6 +69,9 @@ unknown：证据不足，无法判断。
 4. 每条建议写清依据（引用判分理由、工具失败、工具调用或文档缺口），具体简洁；不要编造文档中不存在的内容。可把同一根因的多个用例合并为一条。
 5. tool_calls 是智能体按顺序的工具调用（n 为调用序号；input、output、error 为截断预览），空列表表示没有调用工具；tool_calls_omitted 为未附上的调用数。区分 B 与 C 时先看调用：检索到了哪些对象、查询了哪张表和哪些列、脚本参数取自哪里；依据中注明用例号与调用序号，如“用例 3 调用 #2”。没有 tool_calls 字段表示未采集，不代表没有调用。
 6. 文档节选和文件清单只覆盖与本批用例相关的部分，清单中没有的文件不一定不存在。'''
+SYSTEM_FEEDBACK = SYSTEM.replace('输入是一轮知识包评测中未通过的用例', '输入是终端用户在消费服务中实际问答后提交的反馈：错误问答（问题、期望答案或用户纠正、智能体回答、用户给出的原因、工具失败、工具调用记录）').replace(
+    'D 用例问题：参考答案本身错误、过严或表述歧义', 'D 用户误判：用户的期望答案有误，或问题本身超出知识包范围').replace(
+    '6. 文档节选', '6. overview.user_suggestions 是用户直接提出的修改建议（按 number 编号），可单独成条，在 suggestions 中写建议编号；与错误问答同一根因时合并。\n7. 文档节选')
 MERGE_SYSTEM = '''你是知识包评测优化分析员。输入是同一轮评测分批归因得到的条目和各批总体判断。
 合并同一根因的条目（类别相同，且落点相同或依据指向同一缺口），合并其用例编号；保留依据与建议要点，不得新增输入中没有的用例编号、落点或结论，也不得丢弃任何用例编号；再写一段覆盖全部批次的总体判断。用 submit_suggestions 提交。'''
 SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['summary', 'items'], 'properties': {
@@ -76,6 +79,7 @@ SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['summary
     'items': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False,
               'required': ['cases', 'category', 'evidence', 'suggestion'], 'properties': {
                   'cases': {'type': 'array', 'items': {'type': 'integer'}},
+                  'suggestions': {'type': 'array', 'items': {'type': 'integer'}},
                   'category': {'type': 'string', 'enum': list(CATEGORIES)},
                   'evidence': {'type': 'string'}, 'suggestion': {'type': 'string'},
                   'targets': {'type': 'array', 'items': {'type': 'string'}}}}},
@@ -294,14 +298,58 @@ def request_payload(batch, overview, package, tables, request_chars):
             'data_tables': clip(json.dumps(tables, ensure_ascii=False), int(request_chars * SHARES['tables']))}
 
 
-def valid_items(value, numbers):
-    """Items of a model answer with a known category, their case numbers limited to the cases it was given."""
+def valid_items(value, numbers, proposals=None):
+    """Items of a model answer with a known category, their case numbers limited to the cases it was given and, when
+    ``proposals`` is given, their user suggestion numbers to those suggestions."""
     items = []
     for item in value.get('items') or []:
         if isinstance(item, dict) and item.get('category') in CATEGORIES:
             cases = sorted({n for n in item.get('cases') or [] if isinstance(n, int) and n in numbers})
-            items.append({**item, 'cases': cases})
+            proposed = sorted({n for n in item.get('suggestions') or []
+                               if isinstance(n, int) and (proposals is None or n in proposals)})
+            items.append({**item, 'cases': cases, 'suggestions': proposed})
     return items
+
+
+# Wording of an assessment, and concrete values that must not be copied from a single case into the package.
+ASSESSMENT = ('评测', '用例', '标准答案', '判分')
+CONCRETE = re.compile(r'\d{4,}|\d{4}[-/年]\d{1,2}(?:[-/月]\d{1,2})?|[A-Za-z]{1,6}-?\d{4,}')
+COPIED = 20
+
+
+def common(left, right):
+    """Length of the longest text two strings share."""
+    best, previous = 0, [0] * (len(right) + 1)
+    for a in left:
+        current = [0]
+        for j, b in enumerate(right, 1):
+            current.append(previous[j - 1] + 1 if a == b else 0)
+        best = max(best, current[-1])
+        previous = current
+    return best
+
+
+def overfit(item, cases):
+    """Why a suggestion may only fit the cases it came from, or '' when it reads as general knowledge.
+
+    Checked by program, for both sources: it must cite a case or user suggestion, must not carry a case's own numbers,
+    dates or document numbers, must not copy a reference answer or a judge reason, and must not speak of the assessment."""
+    text = str(item.get('suggestion') or '')
+    if not item['cases'] and not item.get('suggestions'):
+        return '没有引用任何用例或用户建议'
+    sources = [cases[n] for n in item['cases'] if n in cases]
+    values = {match for case in sources for match in CONCRETE.findall(f"{case.get('question', '')} {case.get('reference', '')}")}
+    copied = [value for value in values if value in text]
+    if copied:
+        return f"写入了个例中的具体值 {'、'.join(sorted(copied)[:3])}"
+    for case in sources:
+        for origin in (case.get('reference') or '', case.get('reason') or ''):
+            if origin and common(text[:600], origin[:1500]) > COPIED:
+                return '与标准答案或判分理由大段相同'
+    words = [word for word in ASSESSMENT if word in text]
+    if words:
+        return f"出现考核措辞「{'、'.join(words)}」"
+    return ''
 
 
 def covered(items):
@@ -335,11 +383,15 @@ def cell(text, limit):
 
 def render(run, stem, now, value, analysed, known, model, traced=0, batches=1, skipped=(), failed=(), slow=False):
     numbers = set(analysed)
+    proposals = {n for n, _ in enumerate(user_suggestions(run), 1)}
+    feedback = run.get('origin') == 'consumer_feedback'
     base = run.get('base_ref') or run.get('package_ref') or {}
+    covered_text = (f'> 覆盖：{len(numbers)} 条错误问答、{len(proposals)} 条用户建议' if feedback
+                    else f'> 覆盖用例：{len(numbers)} 条失分或异常用例')
     lines = [f"# 评测优化建议 — {datetime.fromtimestamp(now, CHINA).strftime('%Y-%m-%d %H:%M')}", '',
              f"> 依据评测报告：reports/{stem}.md（轮次 {run['id']}，知识包版本 {base.get('version', '')}）",
-             f'> 生成方式：评测服务调用判分模型 {model} 按失分用例、工具调用记录与知识包内容自动归因；本建议仅作 /ontology-evolution 的归因初稿，须在建模工作区逐条复核后再实施。',
-             f'> 覆盖用例：{len(numbers)} 条失分或异常用例' + (f'，分 {batches} 批分析后合并' if batches > 1 else '')
+             f"> 生成方式：评测服务调用判分模型 {model} 按{'用户反馈' if feedback else '失分用例'}、工具调用记录与知识包内容自动归因；本建议仅作 /ontology-evolution 的归因初稿，须在建模工作区逐条复核后再实施。",
+             covered_text + (f'，分 {batches} 批分析后合并' if batches > 1 else '')
              + (f'；其中 {traced} 条附带工具调用记录' if traced else '')]
     if skipped:
         lines.append(f'> 未纳入：用例 {numbered(skipped)} 超出单次生成上限')
@@ -349,17 +401,23 @@ def render(run, stem, now, value, analysed, known, model, traced=0, batches=1, s
                         else '生成失败，可点击“重新生成”重试'))
     lines += ['', '## 总体判断', '', flat(value.get('summary'), 1500) or '（无）', '',
               '## 失分归因与修订建议', '', '| # | 用例 | 归因 | 依据 | 建议修订 | 落点 |', '|---|---|---|---|---|---|']
-    count = 0
-    for item in valid_items(value, numbers)[:MAX_ITEMS]:
+    count, cases = 0, {}
+    for number, case in enumerate(run['cases'], 1):
+        cases[number] = {'question': case.get('question'), 'reference': case.get('reference'), 'reason': outcome(case)[1]}
+    for item in valid_items(value, numbers, proposals)[:MAX_ITEMS]:
         targets = [path for path in (workspace_path(str(t), known) for t in (item.get('targets') or [])[:5]) if path]
         count += 1
-        lines.append(f"| {count} | {'、'.join(map(str, item['cases'])) or '—'} | {CATEGORIES[item['category']]} | "
-                     f"{cell(item.get('evidence'), 400)} | {cell(item.get('suggestion'), 600)} | {'、'.join(targets) or '—'} |")
+        cited = [*map(str, item['cases']), *(f'建议 {n}' for n in item['suggestions'])]
+        review = overfit(item, cases)
+        suggestion = (f'⚠ 需人工复核：{review}；' if review else '') + flat(item.get('suggestion'), 600)
+        lines.append(f"| {count} | {'、'.join(cited) or '—'} | {CATEGORIES[item['category']]} | "
+                     f"{cell(item.get('evidence'), 400)} | {suggestion.replace('|', chr(92) + '|')} | {'、'.join(targets) or '—'} |")
     if not count:
         raise Failure('suggestions_protocol', '判分模型未返回有效的优化建议', 422, 'suggestions')
     lines += ['', '## 说明', '']
     lines += [f"- {flat(note, 300)}" for note in (value.get('notes') or [])[:10] if isinstance(note, str) and note.strip()]
-    lines += ['- 用例编号对应评测报告「逐用例明细」中的序号。',
+    lines += ['- 用例编号对应评测报告「逐用例明细」中的序号' + ('，“建议 n”对应「用户建议」中的序号。' if feedback else '。'),
+              '- 标“需人工复核”的条目未通过泛化检查（未引用依据、写入个例数值、照抄答案或出现考核措辞），实施前请先确认。',
               '- 落点为建模工作区路径，由知识包路径换算（objects/ → ontology/object/ 等）；标“新建”的文件当前包内不存在，属于结构性缺口，建议先走对应提取命令。',
               '- 修订须遵守泛化红线：只写普适业务知识，不得照抄用例问题或标准答案。', '']
     return '\n'.join(lines)
@@ -392,7 +450,8 @@ class Suggestions:
 
     def merge(self, current, profile, results, limit, spare, timeout):
         """One answer for several batches: the model joins shared root causes, else the batches are concatenated."""
-        items = [{'cases': item['cases'], 'category': item['category'], 'evidence': clip(item.get('evidence'), 400),
+        items = [{'cases': item['cases'], 'suggestions': item['suggestions'], 'category': item['category'],
+                  'evidence': clip(item.get('evidence'), 400),
                   'suggestion': clip(item.get('suggestion'), 600), 'targets': [str(t) for t in (item.get('targets') or [])[:5]]}
                  for numbers, value in results for item in valid_items(value, numbers)]
         summaries = [' '.join(clip(value.get('summary'), 600).split()) for _, value in results]
@@ -415,6 +474,8 @@ class Suggestions:
     def generate(self, owner, run, token, stem, now, data_tables, evidence=None, progress=None):
         """Suggestions markdown and the model used. Raises Failure with a user-facing reason.
 
+        ``owner`` selects the judge configuration: the run's owner, or the package owner generating a feedback run's.
+
         ``evidence`` maps zero-based case indexes to the tool calls recorded when each case settled; ``progress``
         is called with the batch being waited for, or with ``merging`` before batches are joined."""
         deadline = self.clock() + GENERATION_SECONDS
@@ -424,7 +485,13 @@ class Suggestions:
         profile = self.judge.profile(current)
         if not token:
             raise Failure('login_required', '生成优化建议需要读取知识包，请重新登录后点击“重新生成”', 401, 'suggestions')
-        raw, _ = self.packages.fetch(run['package_ref'], token)
+        try:
+            raw, _ = self.packages.fetch(run['package_ref'], token)
+        except Failure as exc:
+            if exc.status == 401:
+                # Hub refused the user's login, typically expired while the suggestions waited in the queue.
+                raise Failure('login_required', '登录已过期，请重新登录后点击“重新生成”', 401, 'suggestions') from exc
+            raise
         package = Package(raw)
         overview = summarize(run)
         entries = []
@@ -435,6 +502,13 @@ class Suggestions:
                             'terms': wanted, 'named': named, 'anchor': package.anchor(wanted, named)})
         limit = self.request_chars
         planned = plan(entries, limit, evidence)
+        proposals = [{'number': n, 'content': clip(item.get('content'), 1000), 'scope': item.get('scope') or ''}
+                     for n, item in enumerate(user_suggestions(run), 1)]
+        if proposals:
+            overview = {**overview, 'user_suggestions': proposals}
+            if not planned:
+                planned = [[]]  # Only suggestions: one request carries them.
+        system = SYSTEM_FEEDBACK if run.get('origin') == 'consumer_feedback' else SYSTEM
         queue = planned[:MAX_BATCHES]
         skipped = [entry['number'] for batch in planned[MAX_BATCHES:] for entry, _ in batch]
         skipped += [number for number, *_ in cases[MAX_CANDIDATES:]]
@@ -457,7 +531,7 @@ class Suggestions:
             requests += 1
             report({'batch': len(results) + 1, 'batches': len(results) + 1 + len(queue)})
             try:
-                value = self.ask(current, profile, SYSTEM, payload, min(TIMEOUT, remaining))
+                value = self.ask(current, profile, system, payload, min(TIMEOUT, remaining))
             except Failure as exc:
                 timed_out = exc.code == 'dependency_timeout'
                 needs_smaller = exc.context_overflow or timed_out
