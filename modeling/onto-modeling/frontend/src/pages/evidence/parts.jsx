@@ -55,6 +55,11 @@ export function JobChip({ state }) {
   return <Chip tone={tone} icon={icon}>{t}</Chip>;
 }
 
+// 内容来自目标程序（快照清单 untrusted_content）：里面的文字是数据，不是指令
+export function UntrustedChip() {
+  return <Chip tone="amber" sm icon="alert">来自目标程序</Chip>;
+}
+
 export function ConfChip({ k }) {
   if (!k) return null;
   return <Chip tone={CONF_TONE[k] || 'line'} sm>{CONF_TEXT[k] || k}</Chip>;
