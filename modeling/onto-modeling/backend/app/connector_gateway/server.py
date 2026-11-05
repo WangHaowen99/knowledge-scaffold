@@ -5,6 +5,8 @@
 - POST /v1/convert    请求体是原文件字节，`Authorization: Bearer <票据>`；回 Markdown 与位置对照
 - /v1/jobs…           采集任务：建任务（请求体是目标程序，边收边转给提供方）、查进度、取消、取快照包、清理（`jobs`；
                       证据采集接口 §4）。`GET /v1/providers` 同时列出证据源提供方
+- PUT/DELETE /v1/secrets/{源}   连接型提供方的凭据：只写、只删，没有读出明文的接口（`secrets`；§8）
+- POST /v1/sources/{源}/test    测试连接：同步跑提供方子进程的 test，30 秒上限（§8）
 
 票据由内核签发（`app.evidence.tickets`），网关从内核取公钥验签（ONTO_CONNECTOR_ISSUER_KEY_URL），核对操作、原文件的
 sha256、转换器，用过即作废。同时最多 MAX_CONCURRENT 个转换在跑，另有 MAX_WAITING 个可排队，再多返回 503。
@@ -30,6 +32,7 @@ from ..evidence.spec import decode_job_header, job_scope, scope_hash
 from ..evidence.tickets import TicketError, Verifier, sha256_hex
 from . import bundle, jobs, providers, registry, runner
 from .errors import GatewayError
+from .secrets import SecretStore
 
 _log = logging.getLogger(__name__)
 
@@ -49,6 +52,10 @@ DRAIN_LIMIT_BYTES = 64 * 1024 * 1024
 # 内核在内部网络上，不走任何代理
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 _JOB_PATH = re.compile(r"^/v1/jobs/([A-Za-z0-9][A-Za-z0-9_-]{0,79})(/cancel|/bundle)?$")
+_SECRET_PATH = re.compile(r"^/v1/secrets/([a-z0-9][a-z0-9-]{1,40})$")
+_TEST_PATH = re.compile(r"^/v1/sources/([a-z0-9][a-z0-9-]{1,40})/test$")
+MAX_JSON_BODY = 64 * 1024
+MAX_TESTS = 2
 
 
 class KeySource:
@@ -88,10 +95,13 @@ class Gateway:
     def __init__(self, converters: dict | None = None, keys: KeySource | None = None, *,
                  max_concurrent: int = MAX_CONCURRENT, max_waiting: int = MAX_WAITING,
                  job_limits: runner.JobLimits | None = None, wait_seconds: float = WAIT_SECONDS,
-                 evidence_providers: dict | None = None, job_table: jobs.Jobs | None = None):
+                 evidence_providers: dict | None = None, job_table: jobs.Jobs | None = None,
+                 secrets: SecretStore | None = None):
         self.converters = registry.load() if converters is None else converters
         self.keys = keys or KeySource()
-        self.providers_by_id = providers.load() if evidence_providers is None else evidence_providers
+        self.secrets = secrets or SecretStore()
+        self.providers_by_id = providers.load(self.secrets) if evidence_providers is None else evidence_providers
+        self._tests = threading.BoundedSemaphore(MAX_TESTS)
         self.jobs = job_table or jobs.Jobs(self.providers_by_id)
         self.job_limits = job_limits or runner.JobLimits(timeout_s=JOB_TIMEOUT_S, memory_bytes=JOB_MEMORY_BYTES)
         self._running = threading.BoundedSemaphore(max_concurrent)
@@ -142,8 +152,8 @@ class Gateway:
         except (ValueError, UnicodeError):
             raise GatewayError(400, "bad_request", "X-Onto-Job 头不对") from None
         operation = spec.get("operation")
-        if operation not in ("snapshot", "discover"):
-            raise GatewayError(400, "bad_request", "operation 要是 snapshot 或 discover")
+        if operation not in ("snapshot", "discover", "sample"):
+            raise GatewayError(400, "bad_request", "operation 要是 snapshot、discover 或 sample")
         claims = self.verify(token, operation, scope_hash(spec))
         status = self.jobs.create(spec, body, length)
         _log.info("采集任务 %s 票据 job=%s", spec.get("job_id"), claims.get("job"))
@@ -165,6 +175,46 @@ class Gateway:
         """回 (包里的文件, tar 总字节数, 任务)；调用方先发头再 `bundle.write_tar`。"""
         self.verify(token, "job", job_scope(job_id))
         return self.jobs.bundle(job_id)
+
+    # ---- 凭据与测试连接（证据采集接口 §8）----
+
+    def put_secret(self, token: str, source_id: str, body: dict) -> tuple[int, dict]:
+        fields = body.get("fields")
+        if not isinstance(fields, dict):
+            raise GatewayError(400, "bad_request", "请求体要是 {\"fields\": {…}}")
+        self.verify(token, "secret", scope_hash({"source": source_id, "fields": sorted(fields)}))
+        return 200, self.secrets.put(source_id, fields)
+
+    def delete_secret(self, token: str, source_id: str) -> tuple[int, dict]:
+        self.verify(token, "secret", scope_hash({"source": source_id, "delete": True}))
+        if not self.secrets.ready():
+            raise GatewayError(503, "secrets_unavailable", "网关没有配置主密钥")
+        return 200, self.secrets.delete(source_id)
+
+    def test_source(self, token: str, source_id: str, spec: dict) -> tuple[int, dict]:
+        """请求体是 TestSpec `{source: {id, provider, connection}, cred_ref, egress, rate_limit}`，票据范围是它的哈希。"""
+        self.verify(token, "test", scope_hash(spec))
+        source = spec.get("source")
+        if not isinstance(source, dict) or source.get("id") != source_id:
+            raise GatewayError(400, "bad_request", "source.id 和路径里的数据源不一致")
+        provider = self.providers_by_id.get(str(source.get("provider") or ""))
+        if provider is None or getattr(provider, "input", "") != "connection":
+            raise GatewayError(409, "provider_not_installed", "网关里没有这个连接型提供方")
+        if not self.secrets.ready():
+            raise GatewayError(503, "secrets_unavailable", "网关没有配置主密钥")
+        if not provider.installed():
+            raise GatewayError(409, "provider_not_installed", "网关里没有装这个提供方的驱动")
+        jobs.check_connection(provider, {**spec, "operation": "test"})
+        if not self._tests.acquire(blocking=False):
+            raise GatewayError(503, "busy", "连接器网关繁忙")
+        try:
+            started = time.time()
+            reply = provider.test(spec)
+        finally:
+            self._tests.release()
+        _log.info("测试连接 source=%s provider=%s ok=%s %.1fs", source_id, provider.id, reply["ok"],
+                  time.time() - started)
+        return 200, reply
 
     def convert(self, token: str, data: bytes) -> tuple[int, dict]:
         try:
@@ -222,13 +272,50 @@ def make_handler(gateway: Gateway):
                 self._jobs("GET")
 
         def do_POST(self):
+            test = _TEST_PATH.match(self.path)
             if self.path == "/v1/convert":
                 self._convert()
+            elif test:
+                self._json_route(lambda token, body: gateway.test_source(token, test.group(1), body))
             else:
                 self._jobs("POST")
 
         def do_DELETE(self):
-            self._jobs("DELETE")
+            match = _SECRET_PATH.match(self.path)
+            if match:
+                self._json_route(lambda token, _body: gateway.delete_secret(token, match.group(1)), body=False)
+            else:
+                self._jobs("DELETE")
+
+        def do_PUT(self):
+            match = _SECRET_PATH.match(self.path)
+            if match:
+                self._json_route(lambda token, body: gateway.put_secret(token, match.group(1), body))
+            else:
+                self._reply(404, {"error": "not_found"})
+
+        def _json_route(self, action, *, body: bool = True):
+            try:
+                token = self._token()
+                payload = self._json_body() if body else {}
+                self._reply(*action(token, payload))
+            except GatewayError as exc:
+                self._reply(exc.status, exc.payload())
+
+        def _json_body(self) -> dict:
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = -1
+            if not 0 < length <= MAX_JSON_BODY:
+                raise GatewayError(400, "bad_request", "请求体要是不超过 64 KiB 的 JSON 对象")
+            try:
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                raise GatewayError(400, "bad_request", "请求体不是 JSON") from None
+            if not isinstance(data, dict):
+                raise GatewayError(400, "bad_request", "请求体要是 JSON 对象")
+            return data
 
         def _convert(self):
             auth = self.headers.get("Authorization") or ""

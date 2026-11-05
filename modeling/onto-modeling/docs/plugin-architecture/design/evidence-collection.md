@@ -106,7 +106,7 @@ blobs/<sha256>            # REA 原始结果，可选
 
 | 接口 | 票据 `op` | `scope` 哈希的内容 | 说明 |
 |---|---|---|---|
-| `POST /v1/jobs` | `snapshot` / `discover` | 任务说明 `JobSpec` | 头 `X-Onto-Job: <base64url(JobSpec 的规范 JSON)>`；请求体是目标程序（`input=artifact` 的提供方），否则为空 |
+| `POST /v1/jobs` | `snapshot` / `discover` / `sample` | 任务说明 `JobSpec` | 头 `X-Onto-Job: <base64url(JobSpec 的规范 JSON)>`；请求体是目标程序（`input=artifact` 的提供方），否则为空 |
 | `GET /v1/jobs/{id}` | `job` | `{"job_id": "<id>"}` | 回 `JobStatus` |
 | `POST /v1/jobs/{id}/cancel` | `job` | 同上 | |
 | `GET /v1/jobs/{id}/bundle` | `job` | 同上 | 只在 `succeeded`、`partial` 时给，否则 409 |
@@ -249,7 +249,12 @@ frontmatter 声明了快照就用它，否则用这个源最新的完整快照�
  "selector": null, "limit": null}
 ```
 
-`scope` 是本次范围（登记白名单的子集，内核核对过）；`operation` 取 `discover`、`snapshot`、`sample`（`selector` 是一个对象，`limit` ≤ 20）。
+`scope` 是本次范围（登记白名单的子集，内核核对过）；`operation` 取 `discover`、`snapshot`、`sample`（`selector` 是一个对象名字符串，
+如 `shop.orders`，要在 `scope` 里；`limit` 是 1～20）。
+
+网关建任务时另核对（不过回 400 / 409）：`cred_ref` 存在且属于这个源（`cred_not_found`）；`egress` 非空、每项有 `host` 和整数 `port`
+（`egress_invalid`）；数据库的 `connection.host` / `port`（没写端口用默认端口）、代码仓库 `repo_url` 的主机和端口（没写是 443；
+只收不带用户信息的 https 地址）都在 `egress` 里（`egress_mismatch`）；`operation` 在提供方的 `capabilities` 里。
 
 **子进程协议**（`app/connector_gateway/conn/`）：stdin 第一行是 JSON 头（`provider`、`operation` 和上面的任务说明字段，不含凭据），
 第二行是凭据 JSON（`{"password": "…"}`），然后关闭。stdout 一行一个事件：
@@ -261,26 +266,39 @@ frontmatter 声明了快照就用它，否则用这个源最新的完整快照�
 | `inventory` | `items: [{object, kind, estimate_rows?, estimate_bytes?}]`、`skipped: [{object, reason}]` |
 | `access` | `statement_digest`（语句的 sha256 前 16 位 + 语句类型，如 `select:3f2a…`）、`rows`、`bytes`、`duration_ms` |
 | `limitation` | `text` |
-| `result` | `complete`、`coverage_pct`、`checks`（只 `test` 有） |
+| `result` | `complete`、`coverage_pct`、`checks`（只 `test` 有）、`artifact`（可选，进清单，code-repo 给 `{repo_url, ref, commit}`）、`tool`（可选，`{name, version}`，覆盖网关按驱动包给的） |
 | `error` | `code`、`message`（不带连接串和密码） |
 
-子进程启动时：设资源上限；装审计钩子，`socket.connect` 和 `socket.getaddrinfo` 只放行出口白名单里的主机和端口（`localhost` 以外的
-都要在白名单里）；凭据只在内存里。提供方模块 `app/connector_gateway/conn/<提供方 ID 的下划线写法>.py` 导出 `INFO`（`ProviderInfo` 的字段，
+JSON 头里网关另加 `module`（要导入的模块）、`scheme`（锚点前缀）、`executables`（可执行文件白名单）、`limits`（资源上限）。
+子进程只拿到 `PATH`、`LANG`、`HOME`、`TMPDIR`（都指向任务的工作目录）和 `ONTO_CONNECTOR_DB_*`、`ONTO_CONNECTOR_CODE_*`，
+提供方直接 print 的东西进标准错误，不混进事件流。
+
+子进程启动时：设资源上限（内存、CPU、单文件、core 0）；装审计钩子，`socket.connect`、`socket.sendto`、域名解析只放行出口白名单里的
+主机、端口和启动时解析出的 IP（`localhost` 也要在白名单里），起子进程（`subprocess`、`os.exec*`、`os.posix_spawn`、`os.system`、
+`fork`）只放行清单 `executables` 里的可执行文件（code-repo 是 `git`，数据库类一个都不放）；凭据只在内存里。拦到的连接、子进程让任务
+失败（`egress_denied` / `exec_denied`），提供方吞了异常也一样。白名单内的可执行文件（git）自己发起的连接不经过审计钩子，
+由提供方用参数约束。`ConnError` 报成 `error`（消息里的凭据取值换成 `«已遮蔽»`），`BudgetExceeded` 报成 `result(complete=false)`，
+其余异常只报类型名。子进程超时、被取消时杀整个进程组；退出码不为 0、没给 `result` 都算失败（`crashed`、`memory`、`no_result`）。提供方模块 `app/connector_gateway/conn/<提供方 ID 的下划线写法>.py` 导出 `INFO`（`ProviderInfo` 的字段，
 `input: "connection"`、`self_service: false`）和 `test(ctx)`、`discover(ctx)`、`snapshot(ctx)`、`sample(ctx)`；只用 `ctx`（`conn.context.Context`）
 往外发东西，不直接写 stdout。
 
-**快照包里多的**：清单的 `access_log`（`access` 事件逐条，最多 1000 条，超出的合并成一条汇总）；内核据此出 EV-09。
+**快照包里多的**：清单的 `access_log`（`access` 事件逐条 `{statement_digest, rows, bytes, duration_ms, at}`，`at` 是网关收到的时间；
+最多 1000 条，超出的和第 1000 条合并成一条 `{statement_digest: "*", count, rows, bytes, duration_ms}`）；内核据此出 EV-09。
+清单的 `masking_policy` 取任务说明的 `masking.policy`，`tool` 是驱动包名和版本（如 `{"name": "PyMySQL", "version": "1.2.3"}`），
+`artifact` 取提供方 `result` 给的（数据库为 `null`）；`summary.md` 第一行写「以下内容来自业务系统」，不写程序类型和外部接口。
 
 **凭据**：
 
 | 接口 | 票据 `op` | `scope` 哈希的内容 | 说明 |
 |---|---|---|---|
-| `PUT /v1/secrets/{源}` | `secret` | `{"source": 源, "fields": [字段名，排序]}` | 请求体 `{"fields": {…}}`；回 `{"cred_ref": "cred://源/版本", "written_at"}`，版本递增 |
-| `DELETE /v1/secrets/{源}` | `secret` | `{"source": 源, "delete": true}` | 删这个源的所有版本 |
-| `POST /v1/sources/{源}/test` | `test` | `TestSpec` | 请求体 `TestSpec`：`{source: {id, provider, connection}, cred_ref, egress, rate_limit}`；回 `{ok, checks}` |
+| `PUT /v1/secrets/{源}` | `secret` | `{"source": 源, "fields": [字段名，排序]}` | 请求体 `{"fields": {…}}`；回 `{"cred_ref": "cred://源/版本", "written_at"}`，版本递增；新版本与上一版合并（只给的字段覆盖） |
+| `DELETE /v1/secrets/{源}` | `secret` | `{"source": 源, "delete": true}` | 删这个源的所有版本；回 `{"source", "deleted": 删掉的版本数}` |
+| `POST /v1/sources/{源}/test` | `test` | `TestSpec` | 请求体 `TestSpec`：`{source: {id, provider, connection}, cred_ref, egress, rate_limit}`；按上面的规则核对后同步跑子进程的 `test`（30 秒）；回 `{ok, checks}`，没跑成时多 `error_code`、`error_message`；同时最多 2 个，再多回 503 `busy` |
 
-存放：`ONTO_CONNECTOR_SECRETS_DIR`（卷 `connector-secrets`，只网关挂）下 `<源>/<版本>.bin`，AES-256-GCM，主密钥来自
-`ONTO_CONNECTOR_MASTER_KEY_FILE`（32 字节，base64），文件 0600。新任务用最新版本；每个源保留最近 2 个版本，更旧的在没有任务用时删除。
+存放：`ONTO_CONNECTOR_SECRETS_DIR`（卷 `connector-secrets`，只网关挂）下 `<源>/<版本>.bin`，AES-256-GCM（附加数据绑定源和版本），
+主密钥来自 `ONTO_CONNECTOR_MASTER_KEY_FILE`（32 字节，base64），文件 0600。任务用说明里的 `cred_ref` 那一版（内核登记里存的是最新版）；
+每个源保留最近 2 个版本，更旧的在没有任务用时删除。没设 `ONTO_CONNECTOR_MASTER_KEY_FILE` 时网关不列连接型提供方；设了但读不出来时
+它们 `installed: false`，凭据接口回 503 `secrets_unavailable`。解不开的凭据（换了主密钥）回 409 `cred_undecryptable`，只能重新录入。
 
 ## 9. 数据库（db-mysql、db-postgres）
 

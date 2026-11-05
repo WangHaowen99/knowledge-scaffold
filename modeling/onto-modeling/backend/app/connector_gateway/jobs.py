@@ -22,6 +22,8 @@ from typing import Any, BinaryIO
 
 from ..evidence.registry import SOURCE_ID_PATTERN
 from . import bundle
+from .conn.context import scope_match
+from .conn.worker import host_key
 from .errors import GatewayError
 
 _log = logging.getLogger(__name__)
@@ -36,6 +38,7 @@ MAX_ACTIVE = 2
 HARD_MAX_ROWS = 1_000_000
 MAX_DURATION_S = 7200
 JOB_TTL_S = 6 * 3600
+MAX_SAMPLE_ROWS = 20
 
 
 @dataclass(eq=False)
@@ -179,6 +182,8 @@ class Jobs:
         if provider.input != "artifact":
             if length:
                 raise GatewayError(400, "size_mismatch", "这个提供方不收请求体")
+            if provider.input == "connection":
+                check_connection(provider, spec)
             return provider, budget
         artifact = spec.get("artifact")
         if not isinstance(artifact, dict) or not isinstance(artifact.get("sha256"), str) \
@@ -264,7 +269,7 @@ class Jobs:
             return
         job.total = sum(result["records"].values())
         writer = bundle.RecordWriter(job.directory, source_id, max_rows=job.budget["max_rows"],
-                                     max_bytes=job.budget["max_bytes"])
+                                     max_bytes=job.budget["max_bytes"], scheme=getattr(job.provider, "scheme", "bin"))
         try:
             with job.provider.records(job.id) as stream:
                 while not job.cancel.is_set():
@@ -297,10 +302,13 @@ class Jobs:
         coverage = result["coverage_pct"] if result["coverage_pct"] is not None else 100.0
         if reported > writer.rows:
             coverage = round(coverage * writer.rows / reported, 1)
-        tool = {"name": "rea", "version": result["tool_version"]} if result["tool_version"] else job.provider.tool()
+        tool = {"name": result["tool_name"] or "rea", "version": result["tool_version"]} if result["tool_version"] \
+            else job.provider.tool()
         artifact = job.spec.get("artifact") or {}
+        origin = {"provider": job.provider.id, **(result["source_artifact"] or {})} \
+            if job.provider.input == "connection" else None
         summary = bundle.render_summary(
-            source_id=source_id, digest=writer.digest, counts=writer.counts, complete=complete,
+            source_id=source_id, digest=writer.digest, counts=writer.counts, complete=complete, origin=origin,
             result={**result, "artifact": {"detected": result["detected"], "filename": artifact.get("filename"),
                                            "size": artifact.get("size")}})
         files = {
@@ -345,6 +353,38 @@ class Jobs:
                 del self._jobs[job.id]
         for job in expired:
             self._purge(job)
+
+
+def check_connection(provider, spec: dict) -> None:
+    """连接型提供方的任务说明（或测试连接的 TestSpec）核对（证据采集接口 §8）：凭据存在且属于这个源；出口白名单非空，
+    连接目标（数据库的 host/port、代码仓库 repo_url 的主机和端口）都在里面；取样只取范围内的一个对象、最多 20 行。"""
+    source = spec["source"]
+    if not provider.secrets.ready():
+        raise GatewayError(503, "secrets_unavailable", "网关没有配置主密钥")
+    if not provider.secrets.exists(spec.get("cred_ref"), source["id"]):
+        raise GatewayError(409, "cred_not_found", "凭据不存在或不属于这个数据源")
+    egress = spec.get("egress")
+    if not isinstance(egress, list) or not egress or not all(
+            isinstance(item, dict) and isinstance(item.get("host"), str) and item["host"].strip()
+            and isinstance(item.get("port"), int) and not isinstance(item["port"], bool) and 0 < item["port"] < 65536
+            for item in egress):
+        raise GatewayError(400, "egress_invalid", "出口白名单不能为空，每项要有 host 和 port")
+    allowed = {(host_key(item["host"]), item["port"]) for item in egress}
+    connection = source.get("connection") if isinstance(source.get("connection"), dict) else {}
+    for host, port in provider.targets(connection):
+        if (host, port) not in allowed:
+            raise GatewayError(400, "egress_mismatch", f"连接目标 {host}:{port} 不在出口白名单里")
+    for key in ("rate_limit", "masking"):
+        if spec.get(key) is not None and not isinstance(spec.get(key), dict):
+            raise GatewayError(400, "bad_request", f"{key} 要是对象")
+    if spec.get("operation") == "sample":
+        limit, selector = spec.get("limit"), spec.get("selector")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 0 < limit <= MAX_SAMPLE_ROWS:
+            raise GatewayError(400, "bad_request", f"取样 limit 要是 1～{MAX_SAMPLE_ROWS}")
+        if not isinstance(selector, str) or not selector.strip() or "*" in selector:
+            raise GatewayError(400, "bad_request", "取样 selector 要是一个对象名")
+        if not scope_match(selector, spec.get("scope") or []):
+            raise GatewayError(400, "bad_request", "取样对象不在范围里")
 
 
 def _json_bytes(value) -> bytes:

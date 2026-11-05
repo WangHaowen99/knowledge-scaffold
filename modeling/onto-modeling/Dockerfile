@@ -13,11 +13,16 @@ COPY frontend/ ./
 COPY assets/packs /build/assets/packs
 RUN npm run build
 
-# 连接器网关（ADR-0073）：单独的镜像，`docker build --target connector-gateway`。只有转换库、网关代码与多源连接器协议，
-# 不带 git、助手 CLI 和后端其余代码；转换器在只读目录 /opt/connector/converters，跑在非 root 的子进程里。
+# 连接器网关（ADR-0073）：单独的镜像，`docker build --target connector-gateway`。只有转换库、数据库驱动、网关代码与多源
+# 连接器协议，不带助手 CLI 和后端其余代码；转换器在只读目录 /opt/connector/converters，跑在非 root 的子进程里。
+# git 只给代码仓库提供方按提交浅克隆用（ADR-0084）；凭据库在卷 /secrets（目录先建好归 65534，新卷沿用这个属主）。
 # 放在主服务这一段前面：不带 --target 构建时仍是主服务镜像，也不会构建这一段
 FROM python:3.11-slim AS connector-gateway
 WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && install -d -m 0700 -o 65534 -g 65534 /secrets
 COPY backend/connector-requirements.txt ./
 ARG PIP_INDEX_URL=https://repo.huaweicloud.com/repository/pypi/simple
 RUN --mount=type=bind,source=vendor/wheels,target=/tmp/wheels \
@@ -32,6 +37,7 @@ COPY assets/packs/convert-xlsx /opt/connector/converters/convert-xlsx
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     ONTO_CONNECTOR_CONVERTERS_DIR=/opt/connector/converters \
+    ONTO_CONNECTOR_SECRETS_DIR=/secrets \
     ONTO_CONNECTOR_GATEWAY_PORT=8120
 USER 65534:65534
 EXPOSE 8120
