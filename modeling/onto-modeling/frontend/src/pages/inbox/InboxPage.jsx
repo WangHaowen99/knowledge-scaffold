@@ -403,20 +403,21 @@ function SliceResults({ open, onClose, runId, onReverted }) {
   };
   const span = r ? `${M.hhmm(r.started_at)} – ${M.hhmm(r.ended_at)}` : '';
   const multi = multiSlice((r?.slices || []).map((row) => row.slice_id));
+  const scenarios = (r?.slices || []).some((row) => row.scenarios?.total);
   return (
     <Modal open={open} onClose={onClose} icon="layers" w={860} title={`运行 #${r?.run_no ?? ''} · 运行结果`} sub={r ? M.summarySub({ ...r, cost: null }) : ''}>
       {r ? (
         <>
           <div className="tbl-wrap">
             <table className="tbl compact">
-              <thead><tr><th>{multi ? '分段' : ''}</th><th>结果</th><th>产出</th><th>场景</th><th>运行后</th><th /></tr></thead>
+              <thead><tr><th>{multi ? '分段' : ''}</th><th>结果</th><th>产出</th>{scenarios ? <th>场景</th> : null}<th>运行后</th><th /></tr></thead>
               <tbody>
                 {r.slices.map((row) => (
                   <tr key={row.slice_id}>
                     <td><b style={{ fontWeight: 600 }}>{unitTitle(row.slice_id, row.name)}</b></td>
                     <td><Chip tone={row.reverted || row.result === 'skipped' ? 'gray' : /部分/.test(row.result_text) ? 'amber' : 'indigo'} sm>{row.result_text}</Chip></td>
                     <td className="muted">{row.produced_text}</td>
-                    <td className="num">{row.scenarios?.total ? `${row.scenarios.passed} / ${row.scenarios.total}` : '—'}</td>
+                    {scenarios ? <td className="num">{row.scenarios?.total ? `${row.scenarios.passed} / ${row.scenarios.total}` : '—'}</td> : null}
                     <td><span className="tag">{row.version_label}</span></td>
                     <td>
                       <span className="row g4">

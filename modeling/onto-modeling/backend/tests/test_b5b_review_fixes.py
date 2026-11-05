@@ -537,7 +537,7 @@ def test_revert_interrupted_by_a_shutdown_is_finished_at_startup(ab, monkeypatch
         client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/all/revert")
     monkeypatch.setattr(changeset_store, "update", real)
     report = runner_module.startup_sweep(workspaces)
-    assert report is not None and "补完 1 段撤回" in report["detail"], report
+    assert report is not None and "补完 1 次撤回" in report["detail"], report
     info = store.get(project_id, run["run_id"])["slices"]["all"]
     assert info["reverted"]["commit"] == git(root, "log", "-1", "--format=%H", "--grep", "^revert: 撤回").strip()
     assert runner_module.startup_sweep(workspaces) is None

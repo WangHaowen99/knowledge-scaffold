@@ -821,9 +821,12 @@ class AutobuildRunner:
 
         await step("执行记录", self._close_exec, project_id, (run.get("cursor") or {}).get("exec_id"))
         await step("变更集", self._settle_changeset, run)
+        final_checks = await step("最终检查", self._final_checks, project_id, run)
 
         def change(record: dict) -> None:
             record["state"] = state
+            if final_checks:
+                record["final_checks"] = final_checks
             record["ended_at"] = ended_at
             budget.stop_clock(record, ended_at)
             if reason and not record.get("failure"):
@@ -903,6 +906,17 @@ class AutobuildRunner:
                     raise
         except Exception:  # noqa: BLE001 - 收不了尾时变更集留着，下一轮开始前、重启时再合入
             _log.warning("自主构建结束时整理变更集失败（%s）", run["project_id"], exc_info=True)
+
+    def _final_checks(self, project_id: str, run: dict) -> dict | None:
+        from ...kernel.changesets import gates, worktree
+        from .. import mainline
+
+        root = _ws().project_root(project_id)
+        head = mainline.state(root).get("head")
+        if not head or not run.get("base_commit") or head == run["base_commit"]:
+            return None
+        result = gates.compare(root, worktree.tree_of(root, run["base_commit"]), worktree.tree_of(root, head))
+        return {"errors": result["errors"], "warnings": result["warnings"]}
 
     def _write_report(self, run: dict) -> None:
         """台账与运行报告进 git（`reports/autobuild/<运行号>/`，一次提交，来源 autobuild）。"""
@@ -1248,7 +1262,7 @@ def startup_sweep(manager) -> dict:
     resumed = sum(1 for run in changed if run.get("resume_pending"))
     detail = f"{len(changed)} 次运行停在检查点，{resumed} 次启动后自动续跑" if changed else ""
     if reverted:
-        detail = "，".join(filter(None, [detail, f"补完 {sum(reverted.values())} 段撤回"]))
+        detail = "，".join(filter(None, [detail, f"补完 {sum(reverted.values())} 次撤回"]))
     return {"id": "autobuild_runs", "title": "自主构建", "result": "cleared", "tone": "fix", "detail": detail,
             "projects": [{"project_id": pid, "count": count, "paths": []} for pid, count in sorted(per_project.items())]}
 

@@ -42,6 +42,8 @@ def test_wait_turn_does_not_count_old_error_while_reconnecting(monkeypatch):
         pending_prompts = ["继续"]
         turns_in_flight = 0
         deferred = []
+        steers = {}
+        chaining = False
 
         def __init__(self):
             self.connect_task = object()
@@ -85,18 +87,14 @@ def test_wait_turn_does_not_count_old_error_while_reconnecting(monkeypatch):
 
 
 def test_matrix_does_not_mark_steps_left_out_as_done(ab):
-    """策略关了「生成场景」：这一段合入后，运行详情的流水线把没做的「场景」也标成「自主完成」（流程里这一步还是 ready）。"""
+    """规则补抽默认不排（F8）：这一段合入后，运行详情的流水线不能把没做的一步也标成「自主完成」（流程里这一步还是 ready）。"""
     from tests.autobuild_helpers import start, wait_state
 
     client, _workspaces, project_id, _root = ab
-    run = start(client, project_id, scope={"until_node": "core.model", "generate_scenarios": False,
-                                            "mode": "selected", "slice_ids": ["s1"]})
+    run = start(client, project_id, scope={"until_node": "core.model"})
     done = wait_state(client, project_id, run["run_id"], "completed")
     cells = done["matrix"][0]["cells"]
-    flow = client.get(f"/api/v1/projects/{project_id}/flow").json()
-    stages = next(item for item in flow["slices"] if item["id"] == "s1")["stages"]
-    assert "scenario" in cells and stages["scenario"] not in ("auto", "confirmed")
-    assert cells["scenario"] == "skipped"
+    assert cells["rule"] == "skipped"
     assert cells["object"] == "auto"
 
 
@@ -133,16 +131,17 @@ def test_inbox_rejudge_of_an_autobuild_decision(ab):
     from tests.autobuild_helpers import AutoEngine, ask, start, wait_state, wait_until
 
     client, _workspaces, project_id, _root = ab
-    AutoEngine.hooks["/ontology-extract-object:s1"] = [ask([
+    AutoEngine.hooks["/ontology-extract-object:all"] = [ask([
         {"question": "报修单号几位", "header": "置信度 0.6", "options": [{"label": "八位（推荐）"}, {"label": "十位（保守）"}]}])]
-    run = start(client, project_id, scope={"mode": "selected", "slice_ids": ["s1"], "until_node": "core.model"})
+    run = start(client, project_id, scope={"until_node": "core.model"})
     wait_state(client, project_id, run["run_id"], "completed")
     items = client.get(f"/api/v1/projects/{project_id}/inbox", params={"filter": "autobuild_review"}).json()["items"]
     item = next(entry for entry in items if entry["kind"] == "review" and entry["title"].endswith("十位"))
+    assert item["impact"] == [{"label": "步骤", "items": ["建模"]}]  # 不分段时不提「分段」，也不写「全部」
     detail = client.get(f"/api/v1/projects/{project_id}/inbox/{item['id']}").json()["detail"]
     other = next(option for option in detail["options"] if option["label"].startswith("八位"))
     done = client.post(f"/api/v1/projects/{project_id}/inbox/{item['id']}/actions",
                        json={"action": "rejudge", "option_id": other["id"]})
     assert done.status_code == 200, done.text
     assert done.json()["result"]["entry"]["review_state"] == "rejudged"
-    wait_until(lambda: any(text.startswith("/ontology-extract-object slice=s1\n\n改判：「报修单号几位」") for text in AutoEngine.sent))
+    wait_until(lambda: any(text.startswith("/ontology-extract-object\n\n改判：「报修单号几位」") for text in AutoEngine.sent))

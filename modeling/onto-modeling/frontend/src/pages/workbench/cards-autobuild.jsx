@@ -105,7 +105,7 @@ function SliceProgressCard({ card }) {
   );
 }
 
-function ReportRow({ row, card, multi, onRevert, busy }) {
+function ReportRow({ row, card, multi, scenarios, onRevert, busy }) {
   const { pid } = useContext(WbCtx);
   const tone = row.reverted || row.result === 'skipped' ? 'gray' : row.result === 'partial' || /部分/.test(row.result_text) ? 'amber' : 'indigo';
   return (
@@ -113,7 +113,7 @@ function ReportRow({ row, card, multi, onRevert, busy }) {
       <td><b style={{ fontWeight: 600 }}>{unitTitle(row.slice_id, row.name)}</b></td>
       <td><Chip tone={tone} sm>{row.result_text}</Chip></td>
       <td className="muted">{row.produced_text}</td>
-      <td className="num">{row.scenarios?.total ? `${row.scenarios.passed} / ${row.scenarios.total}` : '—'}</td>
+      {scenarios ? <td className="num">{row.scenarios?.total ? `${row.scenarios.passed} / ${row.scenarios.total}` : '—'}</td> : null}
       <td><span className="tag">{row.version_label}</span></td>
       <td>
         <span className="row g4">
@@ -134,6 +134,7 @@ function RunReportCard({ card }) {
   const [chipText, chipTone] = REPORT_CHIP[card.state] || ['已结束', 'gray'];
   const review = ab?.run?.run_id === card.run_id ? (ab.run.needs_review ?? card.review_count) : card.review_count;
   const multi = multiSlice((card.slices || []).map((row) => row.slice_id));
+  const scenarios = (card.slices || []).some((row) => row.scenarios?.total);
   const revert = async (row) => {
     setBusy(true);
     try {
@@ -172,8 +173,8 @@ function RunReportCard({ card }) {
       </div>
       <div className="tbl-wrap mt12">
         <table className="tbl compact">
-          <thead><tr><th>{multi ? '分段' : ''}</th><th>结果</th><th>产出</th><th>场景</th><th>版本</th><th /></tr></thead>
-          <tbody>{(card.slices || []).map((row) => <ReportRow key={row.slice_id} row={row} card={card} multi={multi} onRevert={revert} busy={busy} />)}</tbody>
+          <thead><tr><th>{multi ? '分段' : ''}</th><th>结果</th><th>产出</th>{scenarios ? <th>场景</th> : null}<th>版本</th><th /></tr></thead>
+          <tbody>{(card.slices || []).map((row) => <ReportRow key={row.slice_id} row={row} card={card} multi={multi} scenarios={scenarios} onRevert={revert} busy={busy} />)}</tbody>
         </table>
       </div>
     </CC>

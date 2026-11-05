@@ -131,7 +131,7 @@ export function StartDialog({ preview: initial, evidenceOn, onClose }) {
 
 export function BuildSection({ d, put, reload, archived, active, autoStart, onAutoStarted }) {
   const { api } = useApp();
-  const { pid, meta, setMeta, hasPlugin } = useProject();
+  const { pid, meta, setMeta } = useProject();
   const bm = d.buildMode || { build_mode: meta.build_mode };
   const policy = d.policy;
   const [mode, setMode] = useState(bm.build_mode);
@@ -264,12 +264,11 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
         <div className="ps-sech"><Icon name="sliders" size={15} /><h3>自主构建策略</h3></div>
         {!policy ? <Note tone="red">自主构建策略没有读出来，刷新页面再试。</Note> : (
           <div className="g2s">
-            {/* F8 起不分段：范围就是全部没做完的步骤，这里只选带不带过期、场景、可选步骤（老策略里选的分段由服务端按全部处理） */}
+            {/* F8 起不分段：范围就是全部没做完的步骤，这里只选带不带过期、可选步骤（老策略里选的分段由服务端按全部处理） */}
             <Card title="范围" icon="layers">
               <div className="sm">全部没做完的步骤</div>
               <div className="row wrap mt12" style={{ gap: 18 }}>
                 <span className="row sm"><Toggle on={scope.refresh_stale_first} disabled={locked} onChange={(v) => setScope({ refresh_stale_first: v })} />先处理过期的内容</span>
-                {hasPlugin('scenarios') ? <span className="row sm"><Toggle on={scope.generate_scenarios} disabled={locked} onChange={(v) => setScope({ generate_scenarios: v })} />生成场景并推演</span> : null}
                 <span className="row sm"><Toggle on={scope.include_optional} disabled={locked} onChange={(v) => setScope({ include_optional: v })} />包括可选步骤：规则与指标、流程图</span>
               </div>
             </Card>

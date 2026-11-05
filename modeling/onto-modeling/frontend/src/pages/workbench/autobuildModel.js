@@ -140,12 +140,12 @@ export function miniMetrics(run) {
     [fmtDur(run.elapsed_ms), ended ? '用时' : `已用时 · 预计${fmtEst(run.est_total_ms)}`],
     [fmtTok(run.tokens?.used), 'token'],
     [`${run.checks?.errors ?? 0} / ${run.checks?.warnings ?? 0}`, '写入即查：错误 / 提醒'],
-    [`${run.scenarios?.passed ?? 0} / ${run.scenarios?.total ?? 0}`, '场景推演通过'],
+    ...(run.scenarios?.total ? [[`${run.scenarios.passed} / ${run.scenarios.total}`, '场景推演通过']] : []),
     [`${run.fix_rounds?.used ?? 0} / ${run.fix_rounds?.limit ?? 0}`, '修复轮次 / 上限'],
   ];
 }
 
-// 运行报告卡的八格指标（不显示金额）
+// 运行报告卡的指标（不显示金额）；F8 起建模里没有场景推演这一步，没有数据时不占格
 export function reportMetrics(r) {
   const m = r?.metrics;
   if (!m) return [];
@@ -154,7 +154,7 @@ export function reportMetrics(r) {
     buildMetric(m.slices || {}),
     ['产出', `+${m.produced.objects} / +${m.produced.operations} / +${m.produced.rules}`, '对象 / 操作 / 规则'],
     ['检查', `${m.checks.errors} 错误`, `${m.checks.warnings} 个提醒`],
-    ['场景推演', `${m.scenarios.passed} / ${m.scenarios.total}`, m.scenarios.suspended_failures ? `${m.scenarios.suspended_failures} 个未通过已挂起` : m.scenarios.total ? '全部通过' : ''],
+    ...(m.scenarios?.total ? [['场景推演', `${m.scenarios.passed} / ${m.scenarios.total}`, m.scenarios.suspended_failures ? `${m.scenarios.suspended_failures} 个未通过已挂起` : m.scenarios.total ? '全部通过' : '']] : []),
     ['自动决策', `${m.decisions.total} 项`, `高置信 ${m.decisions.high_confidence} · 需看 ${m.decisions.needs_look}`],
     ['挂起', `${m.suspended} 项`, m.suspended ? '已放进待处理' : '没有挂起'],
     ['token', fmtTok(m.tokens), ''],

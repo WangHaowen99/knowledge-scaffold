@@ -72,6 +72,15 @@ def _info(run: dict, unit_id: str) -> dict:
     return (run.get("slices") or {}).get(unit_id) or {}
 
 
+def _checks(run: dict, infos: list[dict]) -> dict:
+    """错误与提醒数：运行结束后是最终版本相对运行开始时的结果；前面单元的提醒常在校验里修掉，加起来会多算。
+    还在跑、老运行按各单元合入时的结果相加。"""
+    final = run.get("final_checks")
+    if final:
+        return {"errors": int(final.get("errors") or 0), "warnings": int(final.get("warnings") or 0)}
+    return {key: sum(int((info.get("checks") or {}).get(key) or 0) for info in infos) for key in ("errors", "warnings")}
+
+
 def _current(run: dict) -> dict | None:
     cursor = run.get("cursor") or {}
     unit = next((item for item in _units(run) if item["id"] == cursor.get("unit")), None)
@@ -174,8 +183,7 @@ def run_view(run: dict, stage_ids: list[str], now: float | None = None) -> dict:
         **summary(run, now),
         "conversation_id": run["conversation_id"],
         "policy": {key: (run.get("policy") or {}).get(key) for key in policy.GROUPS},
-        "checks": {"errors": sum(int((item.get("checks") or {}).get("errors") or 0) for item in info),
-                   "warnings": sum(int((item.get("checks") or {}).get("warnings") or 0) for item in info)},
+        "checks": _checks(run, info),
         "scenarios": {"passed": 0, "total": 0},
         "fix_rounds": {"used": sum(int(item.get("fix_rounds") or 0) for item in info),
                        "limit": int(((run.get("policy") or {}).get("advanced") or {}).get("max_fix_rounds") or 0)},
@@ -233,8 +241,7 @@ def report(run: dict, now: float | None = None) -> dict:
             "slices": {"done": sum(1 for row in slices if row["result"] != "skipped"), "total": len(slices),
                        "partial": partial},
             "produced": produced,
-            "checks": {"errors": sum(int((info.get("checks") or {}).get("errors") or 0) for info in infos),
-                       "warnings": sum(int((info.get("checks") or {}).get("warnings") or 0) for info in infos)},
+            "checks": _checks(run, infos),
             "scenarios": {"passed": 0, "total": 0, "suspended_failures": 0},
             "decisions": {"total": len(ledger), "high_confidence": high, "needs_look": len(ledger) - high},
             "suspended": sum(1 for item in live_suspensions(run) if item.get("state") in UNRESOLVED),
@@ -261,7 +268,8 @@ def start_card(run: dict) -> dict:
     scope = pol.get("scope") or {}
     slices = len(_units(run, "slice"))
     chips = [
-        {"label": "范围", "value": f"{'选中的' if scope.get('mode') == 'selected' else '未完成的'} {slices} 段"},
+        {"label": "范围", "value": f"{'选中的' if scope.get('mode') == 'selected' else '未完成的'} {slices} 段"
+         if slices > 1 else "未完成的步骤"},
         {"label": "拿不准时", "value": policy.BELOW_TEXT.get((pol.get("advanced") or {}).get("below_threshold"), "")},
     ]
     return {**_card(f"ab{run['run_no']}-start", "autobuild_start", f"自主构建 · 运行 #{run['run_no']}",
