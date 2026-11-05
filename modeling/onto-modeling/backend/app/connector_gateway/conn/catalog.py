@@ -18,6 +18,7 @@ _COMMON = {
 PROVIDERS: dict[str, dict] = {
     "db-mysql": {
         **_COMMON, "id": "db-mysql", "label": "MySQL", "kind": "db", "scheme": "db", "module": "db_mysql",
+        "drivers": [{"module": "pymysql", "dist": "PyMySQL"}], "executables": [],
         "evidence_types": ["entity", "field", "relation", "constraint", "operation", "rule", "profile", "sample"],
         "capabilities": ["discover", "snapshot", "sample"], "cred_fields": list(_DB_FIELDS),
         "readonly_method": "只读账号 · 只读会话 · 语句白名单", "default_port": 3306,
@@ -26,6 +27,7 @@ PROVIDERS: dict[str, dict] = {
     },
     "db-postgres": {
         **_COMMON, "id": "db-postgres", "label": "PostgreSQL", "kind": "db", "scheme": "db", "module": "db_postgres",
+        "drivers": [{"module": "pg8000", "dist": "pg8000"}], "executables": [],
         "evidence_types": ["entity", "field", "relation", "constraint", "operation", "rule", "profile", "sample"],
         "capabilities": ["discover", "snapshot", "sample"], "cred_fields": list(_DB_FIELDS),
         "readonly_method": "只读账号 · 只读会话 · 语句白名单", "default_port": 5432,
@@ -34,6 +36,7 @@ PROVIDERS: dict[str, dict] = {
     },
     "code-repo": {
         **_COMMON, "id": "code-repo", "label": "代码仓库", "kind": "code", "scheme": "code", "module": "code_repo",
+        "drivers": [{"module": "javalang", "dist": "javalang"}], "executables": ["git"],
         "evidence_types": ["entity", "field", "relation", "operation", "rule"],
         "capabilities": ["snapshot"],
         "cred_fields": [
@@ -47,8 +50,9 @@ PROVIDERS: dict[str, dict] = {
     },
 }
 
-# 不出现在 /v1/providers 里的内部字段
-INTERNAL = ("scheme", "module", "default_port")
+# 不出现在 /v1/providers 里的内部字段。drivers：网关只用 find_spec 看装没装、读包元数据取版本，不导入；
+# executables：子进程审计钩子只放行这些可执行文件（数据库类一个都不放）
+INTERNAL = ("scheme", "module", "default_port", "drivers", "executables")
 
 
 def describe(provider_id: str, *, installed: bool = True) -> dict:
@@ -61,4 +65,6 @@ def scheme_of(provider_id: str) -> str:
 
 
 def module_of(provider_id: str) -> str:
-    return f"app.connector_gateway.conn.{PROVIDERS[provider_id]['module']}"
+    """`module` 写完整模块路径（带点）时原样用，测试的假提供方就这样指过去。"""
+    module = PROVIDERS[provider_id]["module"]
+    return module if "." in module else f"app.connector_gateway.conn.{module}"
