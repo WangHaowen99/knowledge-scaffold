@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
 import {
-  commandFromTarget, commandName, commandNode, mergeFlow, multiSlice, nodeActionKind, normalizeFlow, suggestionCommand, overlayRunning, scriptRunView, sectionGroups, sliceName,
+  commandFromTarget, commandName, commandNode, flowNeedsReload, mergeFlow, multiSlice, nodeActionKind, normalizeFlow, suggestionCommand, overlayRunning, scriptRunView, sectionGroups, sliceName,
   trackNodes, unitTitle, withoutEvidence,
 } from '../src/state/flow.js';
 
@@ -153,4 +153,17 @@ test('建议条 send 动作：text 为空串时只发 command + args；整段命
   assert.deepEqual(suggestionCommand({ type: 'send', text: '/ontology-research phase=blueprint', command: '/ontology-research' }), { command: '/ontology-research', args: { phase: 'blueprint' }, text: '' });
   assert.deepEqual(suggestionCommand({ type: 'send', text: '提取这一段的规则', command: '/ontology-extract-rule-metric' }), { command: '/ontology-extract-rule-metric', text: '提取这一段的规则' });
   assert.equal(suggestionCommand({ type: 'send', text: '继续刚才的任务' }), null);
+});
+
+test('flow.updated 带来新的 flow_hash（节点集合变了，如授权数据源后多出系统取证）时要重取整份流程；增量合不进新节点', () => {
+  const flow = normalizeFlow({ flow_hash: 'h1', nodes: [{ id: 'core.research', state: 'done' }, { id: 'core.model', state: 'ready' }] });
+  assert.equal(flowNeedsReload(flow, { flow_hash: 'h1', nodes: [{ id: 'core.model', state: 'running' }] }), false);
+  assert.equal(flowNeedsReload(flow, { nodes: [{ id: 'core.model', state: 'running' }] }), false);
+  const added = { flow_hash: 'h2', nodes: [{ id: 'rev.evidence', state: 'ready' }] };
+  assert.equal(flowNeedsReload(flow, added), true);
+  assert.equal(flowNeedsReload(null, added), false, '流程还没取到时不另外重取');
+  const merged = mergeFlow(flow, added);
+  assert.deepEqual(merged.nodes.map((n) => n.id), ['core.research', 'core.model']);
+  assert.equal(merged.flow_hash, 'h2');
+  assert.equal(flowNeedsReload(merged, added), false, '同一批事件只重取一次');
 });

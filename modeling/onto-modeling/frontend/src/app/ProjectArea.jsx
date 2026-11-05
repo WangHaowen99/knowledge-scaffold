@@ -4,7 +4,7 @@ import {
   startTransition, useCallback, useEffect, useMemo, useRef, useState,
 } from 'react';
 import { errorText } from '../api/errors.js';
-import { mergeFlow, normalizeFlow } from '../state/flow.js';
+import { flowNeedsReload, mergeFlow, normalizeFlow } from '../state/flow.js';
 import { isOwnedMeta } from '../state/roles.js';
 import { Button, Empty, KV } from '../ui/index.jsx';
 import { ShellG } from '../shell/Shell.jsx';
@@ -22,6 +22,9 @@ export function ProjectArea({ pid, children }) {
   const [scope, setScope] = useState(null);
   const [recentProjects, setRecent] = useState([]);
   const subs = useRef(new Set());
+  // 项目流回调里比对 flow_hash 用；重取在途时先记下新值，同一批事件只重取一次
+  const flowRef = useRef(null);
+  flowRef.current = flow;
 
   // take：首次挂载时接着用启动阶段已经发出的同一请求（earlyData），之后的重拉照常请求。
   // 结果放进 transition：几份数据前后脚到达时整页要重画，分片渲染，不在一个长任务里卡住输入
@@ -60,7 +63,13 @@ export function ProjectArea({ pid, children }) {
       onEvent: (env) => {
         const d = env.data || {};
         switch (env.type) {
-          case 'flow.updated': setFlow((f) => mergeFlow(f, d)); break;
+          case 'flow.updated':
+            if (flowNeedsReload(flowRef.current, d)) {
+              flowRef.current = { ...flowRef.current, flow_hash: d.flow_hash };
+              loadFlow();
+            }
+            setFlow((f) => mergeFlow(f, d));
+            break;
           case 'inbox.updated': setInboxCount(d.counts?.total ?? 0); break;
           case 'scope.updated': setScope(d); break;
           case 'project.updated': setMeta(d.meta); break;
