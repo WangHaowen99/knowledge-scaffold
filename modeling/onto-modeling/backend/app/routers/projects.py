@@ -13,7 +13,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from .. import config
 from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets, package_mapping
 from ..services import modeling_cleanup, modeling_mcp, package_archive, solver_contract, version_revert
-from ..services.workspace import GOAL_PENDING, WorkspaceError, WorkspaceManager, remove_tree
+from ..services.workspace import (
+    GOAL_PENDING,
+    MAX_RESOURCE_FILE_SIZE,
+    WorkspaceError,
+    WorkspaceManager,
+    remove_tree,
+)
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 workspaces = WorkspaceManager(config.DATA_DIR, config.ASSETS_DIR)
@@ -685,7 +691,15 @@ async def upload_resource(
     reading_mode: str = Form("on_demand"),
 ):
     ensure_access(project_id, request, write=True)
-    data = await file.read()
+    # 多读一个字节即可判断越界，避免把任意大的请求文件完整加载进应用内存。
+    data = await file.read(MAX_RESOURCE_FILE_SIZE + 1)
+    if len(data) > MAX_RESOURCE_FILE_SIZE:
+        filename = file.filename or ""
+        raise WorkspaceError(
+            f"文件“{filename}”超过 20 MB，无法上传",
+            413,
+            "resource_file_too_large",
+        )
     # 大文件同步写盘会卡住事件循环（SSE 全体停摆），挪到线程执行
     return await asyncio.to_thread(
         workspaces.save_resource,

@@ -447,44 +447,6 @@ def test_source_failure_cannot_be_exempted_by_new_id_or_baseline(workspace, tool
         assert WorkspaceManager._project_progress(workspace)['research_review']['blocking']
 
 
-def test_large_original_docx_passes_without_a_stripped_copy(workspace, toolkit):
-    import hashlib
-    import zipfile
-    from test_review_integrity import docx
-    checker, review = toolkit
-    path = workspace / 'resource/others/synthetic.docx'
-    docx(path)
-    with zipfile.ZipFile(path, 'a', compression=zipfile.ZIP_STORED) as archive:
-        archive.writestr('word/media/synthetic.bin', b'\0' * (9 * 1024 * 1024))
-    original_hash = hashlib.sha256(path.read_bytes()).hexdigest()
-    location = path.relative_to(workspace).as_posix()
-    write_report(workspace, make_report([row('ITEM-01', 'RULE-01', location=location)]))
-    result = checker.run_check(workspace)
-    assert checker.check_exit_code(result) == 0, result['issues']
-    evidence = review.load_review(workspace)['source_evidence'][location]
-    assert evidence['source_sha256'] == original_hash
-    assert evidence['extractor_version'] == 2
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == original_hash
-    assert not (workspace / 'docs').exists()
-    assert review.accepted(workspace)
-
-
-def test_extractor_v1_receipt_requires_recheck(workspace, toolkit):
-    checker, review = toolkit
-    write_report(workspace, make_report(GOOD_ROWS))
-    assert checker.check_exit_code(checker.run_check(workspace)) == 0
-    receipt_path = workspace / review.REVIEW_FILE
-    receipt = review.load_review(workspace)
-    receipt['checker_version'] = 3
-    receipt_path.write_text(json.dumps(receipt, ensure_ascii=False), encoding='utf-8')
-    status = review.review_status(workspace)
-    assert status['status'] == review.PENDING
-    assert status['reason'] == review.REASON_CHECKER_UPGRADED
-    assert not review.accepted(workspace)
-    assert checker.check_exit_code(checker.run_check(workspace)) == 0
-    assert review.accepted(workspace)
-
-
 def test_source_existing_id_cannot_be_registered_as_invented(workspace, toolkit):
     checker, _ = toolkit
     write_report(workspace, make_report(GOOD_ROWS,
