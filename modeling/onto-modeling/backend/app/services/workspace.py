@@ -43,6 +43,24 @@ _DELETE_RETRIES = 5
 _DELETE_RETRY_SECONDS = 0.2
 SKIP_DIRS = {".git", ".ontology-state", ".obsidian"}
 RESOURCE_SUBDIRS = {"diagrams", "excel", "others"}
+# 领域资料的所有页面入口最终都调用 save_resource；这里是不可绕过的服务层契约。
+MAX_RESOURCE_FILE_SIZE = 20 * 1024 * 1024
+RESOURCE_FILE_SUFFIXES = {
+    ".csv",
+    ".doc",
+    ".docx",
+    ".drawio",
+    ".jpeg",
+    ".jpg",
+    ".md",
+    ".pdf",
+    ".png",
+    ".txt",
+    ".webp",
+    ".xls",
+    ".xlsm",
+    ".xlsx",
+}
 # 已发布知识包导入时的原包留底区：随 git 版本化（跨环境迁移要带走），
 # 但不是用户可编辑内容（隐藏目录，不进文件树）。
 IMPORTED_PACKAGE_DIR = ".imported-package"
@@ -739,6 +757,19 @@ class WorkspaceManager:
         safe_name = Path(filename).name
         if not safe_name or safe_name.startswith(".") or safe_name != filename:
             raise WorkspaceError("无效的文件名")
+        suffix = Path(safe_name).suffix.lower()
+        if suffix not in RESOURCE_FILE_SUFFIXES:
+            raise WorkspaceError(
+                f"不支持文件“{safe_name}”的类型",
+                400,
+                "unsupported_resource_file_type",
+            )
+        if len(data) > MAX_RESOURCE_FILE_SIZE:
+            raise WorkspaceError(
+                f"文件“{safe_name}”超过 20 MB，无法上传",
+                413,
+                "resource_file_too_large",
+            )
         with self._project_lock(project_id):
             root = self.project_root(project_id)
             dest_dir = root / "resource" / subdir

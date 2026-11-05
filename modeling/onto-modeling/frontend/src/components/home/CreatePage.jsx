@@ -1,6 +1,11 @@
 import { useRef, useState } from 'react';
 import { message } from 'antd';
 import { api } from '../../lib/api.js';
+import {
+  RESOURCE_FILE_ACCEPT,
+  rejectedResourceMessage,
+  validateResourceFiles,
+} from '../../lib/resourceUpload.js';
 import { MAX_NAME_LENGTH, useNameConflict } from '../NameConflictDialog.jsx';
 import './modeling-home.css';
 
@@ -21,7 +26,8 @@ export default function CreatePage({ onBack, onCreated }) {
   const nameConflict = useNameConflict();
 
   const addFiles = (items) => {
-    const incoming = [...(items || [])];
+    const { accepted: incoming, rejected } = validateResourceFiles(items);
+    if (rejected.length) message.error(rejectedResourceMessage(rejected));
     setFiles((current) => {
       const names = new Set(current.map((item) => item.name));
       return [
@@ -132,14 +138,14 @@ export default function CreatePage({ onBack, onCreated }) {
             aria-label="选择要上传的建模资料"
           >
             <div className="t1">把资料拖到这里</div>
-            <div className="t2">md / txt / pdf / word / excel / drawio · 也可以点击选择 · 现在没有也可以直接开始</div>
+            <div className="t2">Markdown / TXT / PDF / Word / Excel / CSV / Drawio / 图片 · 单个文件不超过 20 MB</div>
           </div>
           <input
             ref={input}
             type="file"
             multiple
             hidden
-            accept=".md,.txt,.pdf,.doc,.docx,.xls,.xlsx,.csv,.drawio"
+            accept={RESOURCE_FILE_ACCEPT}
             onChange={(event) => {
               addFiles(event.target.files);
               event.target.value = '';
