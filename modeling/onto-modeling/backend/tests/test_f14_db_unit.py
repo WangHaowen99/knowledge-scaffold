@@ -631,3 +631,11 @@ def test_postgres_statements_pass_guard_and_readonly_check():
         cur.query(db_postgres.DIALECT.read_only_probe_sql())
         cur.recover()
         assert cur.statements == len(fake.log) >= 15
+
+
+def test_wide_tables_read_fewer_profile_rows():
+    ctx = Context(_head("snapshot"), {}, io.StringIO(), scheme="db")
+    collection = db_common.Collection(ctx, db_common.GuardedCursor(ctx, FakeMySQL(), db_mysql.DIALECT), [])
+    for width, expected in ((10, 10_000), (100, 2000), (5000, 200)):
+        collection.columns[("shop", "t")] = [_column("t", f"c{i}") for i in range(width)]
+        assert collection.row_limit(_table("t"), 10_000) == expected

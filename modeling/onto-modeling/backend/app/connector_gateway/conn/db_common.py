@@ -22,6 +22,7 @@ SAMPLE_MAX = 20
 DEFINITION_MAX = 4000
 TEXT_PREFIX = 200           # 画像、样本只取文本列的前 200 字
 TOP_K = 10
+PROFILE_CELLS = 200_000     # 宽表按列数压低画像行数，一次最多读这么多格（不低于 200 行）
 CONNECT_TIMEOUT_S = 10
 
 # 写语句探针：测试连接时确认它们在发出前就被白名单拦下（不发给库）
@@ -532,6 +533,10 @@ class Collection:
             self.join_keys[(ref.schema, ref.table)].add(ref.column)
             self.join_keys[(ref.schema, ref.target_table)].add(ref.target_column)
 
+    def row_limit(self, table: Table, limit: int) -> int:
+        width = len(self.columns.get((table.schema, table.name), [])) or 1
+        return min(limit, max(200, PROFILE_CELLS // width))
+
     def read_rows(self, table: Table, limit: int) -> tuple[list[Column], list[tuple]]:
         columns = self.columns.get((table.schema, table.name), [])
         if not columns:
@@ -773,7 +778,8 @@ def snapshot(ctx: Context, dialect: Dialect) -> None:
                 ctx.progress("tables", index, total, "表")
                 classified = None
                 try:
-                    columns, rows = collection.read_rows(table, limit)
+                    table_limit = collection.row_limit(table, limit)
+                    columns, rows = collection.read_rows(table, table_limit)
                     classified = Classified(columns, rows, collection.join_keys.get((table.schema, table.name), set()),
                                             masker, table.name)
                 except ConnError as exc:
@@ -786,7 +792,7 @@ def snapshot(ctx: Context, dialect: Dialect) -> None:
                 for trigger in by_table.get((table.schema, table.name), []):
                     collection.emit_trigger(trigger)
                 if classified is not None:
-                    collection.emit_profile(table, classified, limit)
+                    collection.emit_profile(table, classified, table_limit)
                     collection.emit_sample(table, classified, SAMPLE_MAX)
                     for column in retained.get((table.schema, table.name), ()):
                         values[(table.schema, table.name, column)] = {
