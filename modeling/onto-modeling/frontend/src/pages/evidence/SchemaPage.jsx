@@ -11,8 +11,8 @@ import { errorText } from '../../api/errors.js';
 import { ShellP } from '../../shell/Shell.jsx';
 import { Button, Chip, Empty, Icon, Inp, Seg, Select, Table, cx } from '../../ui/index.jsx';
 import {
-  browseTarget, domainIndex, fieldAnchor, fieldDesc, firstTreeAnchor, fmtNum, hubTable, isDbKind, parseDbAnchor, pickSnapshot, recordIcon,
-  shortName, snapshotKind, treeTotal,
+  browseTarget, dbRecordIcon, domainIndex, erLegend, fieldAnchor, fieldDesc, firstTreeAnchor, fmtNum, hubTable, isDbKind, maskedColumns, pickSnapshot,
+  profileColumns, recordIcon, shortName, snapshotKind, treeTotal, withKeys,
 } from './evidenceModel.js';
 import { ErView } from './ErView.jsx';
 import { RecordDetail, WhereUsed } from './RecordDetail.jsx';
@@ -22,6 +22,7 @@ const SEARCH_TYPES = [['all', '全部'], ['entity', '实体'], ['field', '字段
 const RECORD_SEARCH_TYPES = [['all', '全部'], ['entity', '实体'], ['operation', '操作']];
 const JUMPS = [['fields', '字段'], ['ddl', 'DDL'], ['samples', '样本'], ['profile', '画像'], ['used', '被引用'], ['lineage', '相邻']];
 const ZOOMS = [0.6, 0.8, 1, 1.25, 1.5, 2];
+const ER_DASH = { observed: '1.5 4', inferred: '6 4' };
 
 // generic：非数据库快照，按记录类型和锚点出图标，名字原样显示
 function Tree({ tree, sel, collapsed, onToggle, onPick, generic }) {
@@ -36,7 +37,7 @@ function Tree({ tree, sel, collapsed, onToggle, onPick, generic }) {
             </div>
             {off ? null : d.entities.map((e) => (
               <div key={e.anchor} className={cx('en', e.anchor === sel?.table && 'on')} onClick={() => onPick(e.anchor)}>
-                <Icon name={generic ? recordIcon(e) : 'table'} size={14} />
+                <Icon name={generic ? recordIcon(e) : dbRecordIcon(e.anchor)} size={14} />
                 <span className={cx('mono', generic && 'ell')} style={{ fontSize: 11.5 }}>{generic ? e.name : shortName(e.name)}</span>
                 <span className="muted xs ell">{e.label}</span>
                 <span className="m" data-pop={e.mapped_to ? `已映射到本体对象「${e.mapped_to.name}」` : '还没有映射'}>
@@ -76,7 +77,13 @@ function Hits({ hits, sel, onPick, generic }) {
   );
 }
 
-function Detail({ record, sel, used, lineage, onField, onPick, pid }) {
+// 样本的一格：空值写 NULL，加盐哈希（h:…）换色
+function SampleCell({ value }) {
+  if (value == null) return <span className="faint mono">NULL</span>;
+  return /^h:/.test(String(value)) ? <span className="mono" style={{ color: 'var(--indigo)' }}>{value}</span> : String(value);
+}
+
+function Detail({ record, erTable, sel, used, lineage, onField, onOpen, pid }) {
   const scrollRef = useRef(null);
   const refs = useRef({});
   const mark = (k) => (el) => { refs.current[k] = el; };
@@ -93,13 +100,15 @@ function Detail({ record, sel, used, lineage, onField, onPick, pid }) {
   }, [record, sel?.field]);
 
   const shown = sel?.field ? fieldAnchor(record.anchor, sel.field) : record.anchor;
-  const stats = (record.profile || []).filter((p) => p.stats);
-  const topk = (record.profile || []).filter((p) => p.top_k);
+  const fields = withKeys(record.fields, erTable);
+  const masked = maskedColumns({ ...record, fields });
+  const profile = profileColumns(record.profile);
+  const ddl = record.ddl || record.attrs?.definition;
   return (
     <>
       <div style={{ padding: '14px 14px 10px', borderBottom: '1px solid var(--line)' }}>
         <div className="row">
-          <span style={{ width: 30, height: 30, borderRadius: 9, display: 'grid', placeItems: 'center', background: 'var(--t50)', color: 'var(--teal)' }}><Icon name="table" size={14} /></span>
+          <span style={{ width: 30, height: 30, borderRadius: 9, display: 'grid', placeItems: 'center', background: 'var(--t50)', color: 'var(--teal)' }}><Icon name={dbRecordIcon(record.anchor)} size={14} /></span>
           <div className="grow" style={{ minWidth: 0 }}>
             <div className="b lg ell">{record.name}</div>
             <div className="xs muted">{[record.label, `${record.fields?.length || 0} 个字段`, record.rows != null ? `${fmtNum(record.rows)} 行` : null].filter(Boolean).join(' · ')}</div>
@@ -117,47 +126,55 @@ function Detail({ record, sel, used, lineage, onField, onPick, pid }) {
       </div>
       <div className="scroll evd-det" ref={scrollRef} style={{ flex: 1, padding: '0 14px 14px', position: 'relative' }}>
         <div className="sh" ref={mark('fields')}><Icon name="list" size={12} />字段</div>
-        {(record.fields || []).map((f) => (
-          <div
-            key={f.name}
-            data-f={f.name}
-            className={cx('evd-fl', sel?.field === f.name && 'on')}
-            title={sel?.field === f.name ? '再点一下回到整张表' : '只看这个字段'}
-            onClick={() => onField(sel?.field === f.name ? null : f.name)}
-          >
-            <div><span className="mono b" style={{ fontSize: 12 }}>{f.name}</span><div className="xs muted">{fieldDesc(f)}</div></div>
-            <div><ConfChip k={f.confidence} /></div>
-          </div>
-        ))}
+        {fields.map((f) => {
+          const k = f.pk ? 'PK' : f.fk ? 'FK' : '';
+          return (
+            <div
+              key={f.name}
+              data-f={f.name}
+              className={cx('evd-fl', sel?.field === f.name && 'on')}
+              title={sel?.field === f.name ? '再点一下回到整张表' : '只看这个字段'}
+              onClick={() => onField(sel?.field === f.name ? null : f.name)}
+            >
+              <div><span className="mono b" style={{ fontSize: 12 }}>{f.name}</span>{k ? <span className="mono xs faint" style={{ marginLeft: 6 }}>{k}</span> : null}<div className="xs muted">{fieldDesc(f)}</div></div>
+              <div className="row g4">{f.masked ? <Chip tone="indigo" sm>脱敏</Chip> : null}<ConfChip k={f.confidence} /></div>
+            </div>
+          );
+        })}
         <div className="sh" ref={mark('ddl')}><Icon name="code" size={12} />DDL</div>
-        {record.ddl ? <div className="code" style={{ fontSize: 11 }}>{record.ddl}</div> : <div className="xs muted">这类记录没有 DDL。</div>}
+        {ddl ? <div className="code" style={{ fontSize: 11 }}>{ddl}</div> : <div className="xs muted">这类记录没有 DDL。</div>}
         <div className="sh" ref={mark('samples')}><Icon name="table" size={12} />脱敏样本 {record.samples ? <span className="faint" style={{ fontWeight: 500 }}>{record.samples.shown} / {record.samples.max} 行</span> : null}</div>
         {record.samples?.rows?.length ? (
           <Table
             compact
-            cols={record.samples.columns}
-            rows={record.samples.rows.map((r) => r.map((c) => (/^h:/.test(c) ? <span className="mono" style={{ color: 'var(--indigo)' }}>{c}</span> : c)))}
+            cols={record.samples.columns.map((c) => (masked.has(c) ? { t: <span>{c} <span className="xs" style={{ color: 'var(--indigo)', fontWeight: 500 }}>脱敏</span></span> } : c))}
+            rows={record.samples.rows.map((r) => r.map((c, i) => <SampleCell key={i} value={c} />))}
           />
         ) : <div className="xs muted">这次快照没有采这张表的样本。</div>}
-        <div className="sh" ref={mark('profile')}><Icon name="bars" size={12} />数据画像{topk[0] ? ` · ${topk[0].column} top-k` : ''}</div>
-        {topk.map((p) => p.top_k.map((x) => (
-          <div className="evd-bar" key={`${p.column}-${x.value}`}><span>{x.value}</span><i style={{ width: `${x.pct}%` }} /><span className="num muted">{x.pct}%</span></div>
-        )))}
-        {stats.map((p, i) => (
-          <div className="xs muted mt4" key={p.column}>
-            {p.column}：最小 {fmtNum(p.stats.min)} · 最大 {fmtNum(p.stats.max)} · 空值率 {p.stats.null_pct}%
+        <div className="sh" ref={mark('profile')}><Icon name="bars" size={12} />数据画像</div>
+        {profile.map((p) => (
+          <div key={p.column} className="mt4">
+            {p.top_k?.length ? (
+              <>
+                <div className="xs mono muted">{p.column}</div>
+                {p.top_k.map((x) => (
+                  <div className="evd-bar" key={x.value}><span>{x.value}</span><i style={{ width: `${Math.min(100, x.pct)}%` }} /><span className="num muted">{x.pct}%</span></div>
+                ))}
+              </>
+            ) : null}
+            {p.stats ? <div className="xs muted">{p.column}：最小 {fmtNum(p.stats.min)} · 最大 {fmtNum(p.stats.max)} · 空值率 {p.stats.null_pct}%</div> : null}
           </div>
         ))}
-        {!topk.length && !stats.length ? <div className="xs muted">还没有画像。</div> : null}
+        {!profile.length ? <div className="xs muted">还没有画像。</div> : null}
         <div className="sh" ref={mark('used')}><Icon name="link" size={12} />被引用 <span className="faint" style={{ fontWeight: 500 }}>{used ? used.total : ''}</span>{sel?.field ? <span className="faint" style={{ fontWeight: 500 }}>· 只看 {sel.field}</span> : null}</div>
         <WhereUsed used={used} pid={pid} emptyText={sel?.field ? '还没有产物引用这个字段。' : '还没有产物引用这张表。'} />
         <div className="sh" ref={mark('lineage')}><Icon name="graph" size={12} />相邻记录</div>
-        {lineage === null ? <div className="xs muted">正在查…</div> : lineage.length ? lineage.map((l) => {
+        {lineage === null ? <div className="xs muted">正在查…</div> : lineage.length ? lineage.map((l, i) => {
           const db = /^db:/.test(l.anchor);
-          const t = parseDbAnchor(l.anchor);
+          const go = !!browseTarget(l.anchor);
           return (
-            <div className={cx('evd-wu', db && 'go')} key={l.anchor} title={db ? '打开这张表' : undefined} onClick={() => db && t && onPick(t.tableAnchor)}>
-              <Icon name={db ? 'table' : 'code'} size={14} />
+            <div className={cx('evd-wu', go && 'go')} key={`${l.anchor}-${i}`} title={go ? '打开' : undefined} onClick={() => go && onOpen(l.anchor)}>
+              <Icon name={db ? dbRecordIcon(l.anchor) : 'code'} size={14} />
               <div className="grow" style={{ minWidth: 0 }}><b className="mono" style={{ fontSize: 12 }}>{l.label}</b><div className="xs muted ell">{l.basis}</div></div>
               <ConfChip k={l.confidence} />
             </div>
@@ -191,7 +208,8 @@ function SchemaBody({ route }) {
   const [providers, setProviders] = useState([]);
   useEffect(() => { api.evidenceProviders().then((r) => setProviders(r.items || [])).catch(() => {}); }, [api]);
   const snapRow = (snaps || []).find((s) => s.id === snapshot) || null;
-  const isDb = isDbKind(snapshotKind(snapRow, providers));
+  const kind = snapshotKind(snapRow, providers);
+  const isDb = isDbKind(kind);
 
   // 进页面：快照列表 → 定快照（地址里的、锚点解析出的、或最新完整的）→ 定选中的表
   useEffect(() => {
@@ -281,6 +299,13 @@ function SchemaBody({ route }) {
   const domains = useMemo(() => domainIndex(tree), [tree]);
   const domainOf = useCallback((a) => domains.get(a) || null, [domains]);
   const pick = useCallback((table, field = null) => setSel({ table, field }), []);
+  // 相邻记录、处理方法、上级：同一数据源的在本快照里打开，别的数据源（如表的代码调用方）按锚点重新定快照
+  const open = useCallback((anchor) => {
+    const t = browseTarget(anchor);
+    if (!t) return;
+    if (t.source === snapRow?.source?.id) setSel({ table: t.table, field: t.field });
+    else navigate(pagePath('schema', pid), { anchor });
+  }, [snapRow, pid]);
   const toggleDomain = (name) => setCollapsed((s) => { const n = new Set(s); if (n.has(name)) n.delete(name); else n.add(name); return n; });
   // 换到别的数据源的快照时，原来选中的记录不在里面，重新选
   const changeSnapshot = (id) => {
@@ -327,9 +352,11 @@ function SchemaBody({ route }) {
           <div className="card">
             <div className="row" style={{ padding: '12px 14px', borderBottom: '1px solid var(--line)' }}>
               <b>ER 视图</b><span className="muted sm">{focusTable ? `${focusTable.label || focusTable.name}相关 ${er.tables.length} 张表` : ''}</span><span className="sp" />
-              <span className="row g4 xs muted"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#64748B" strokeWidth="1.6" /></svg>外键</span>
-              <span className="row g4 xs muted"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#64748B" strokeWidth="1.8" strokeDasharray="1.5 4" strokeLinecap="round" /></svg>取值重合</span>
-              <span className="row g4 xs muted"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#64748B" strokeWidth="1.6" strokeDasharray="6 4" /></svg>命名推断</span>
+              {erLegend(er?.relations).map(([k, t]) => (
+                <span key={k} className="row g4 xs muted">
+                  <svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#64748B" strokeWidth={k === 'observed' ? 1.8 : 1.6} strokeDasharray={ER_DASH[k]} strokeLinecap={k === 'observed' ? 'round' : undefined} /></svg>{t}
+                </span>
+              ))}
             </div>
             <div style={{ flex: 1, minHeight: 0, padding: 12, position: 'relative' }}>
               <div className="evp-er-cv">
@@ -345,8 +372,8 @@ function SchemaBody({ route }) {
         ) : null}
         {maxed && isDb ? null : (
           <div className="card">
-            {record && !isDb ? <RecordDetail record={record} used={used} lineage={lineage} pid={pid} onPick={(a) => pick(a)} />
-              : record ? <Detail record={record} sel={sel} used={used} lineage={lineage} pid={pid} onField={(f) => setSel((s) => ({ ...s, field: f }))} onPick={(a) => pick(a)} />
+            {record && !isDb ? <RecordDetail record={record} kind={kind} used={used} lineage={lineage} pid={pid} onPick={open} />
+              : record ? <Detail record={record} erTable={er?.tables.find((t) => t.anchor === record.anchor)} sel={sel} used={used} lineage={lineage} pid={pid} onField={(f) => setSel((s) => ({ ...s, field: f }))} onOpen={open} />
               : recErr ? (
                 <Empty icon="alert" title={recErr.code === 'anchor_not_found' ? '这份快照里没有这条记录' : '读不出记录详情'}>
                   {recErr.code === 'anchor_not_found' ? `${anchorQ || selTable} 不在快照 ${snapshot} 里，换一份快照看看。` : errorText(recErr)}

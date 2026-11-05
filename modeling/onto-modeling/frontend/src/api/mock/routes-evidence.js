@@ -41,7 +41,7 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
   // 分块上传（EV-31～EV-33）与 blob 仓：只记大小和哈希，不存字节
   const uploads = new Map();
   const artifacts = new Map([[D.REA_ARTIFACT.sha256, { ...D.REA_ARTIFACT }]]);
-  const manifests = new Map([[D.SNAP.rea, D.reaManifest()]]);
+  const manifests = new Map([[D.SNAP.rea, D.reaManifest()], [D.SNAP.code, D.codeManifest()]]);
   const timers = new Map();
   const projects = new Map();
   let jobSeq = 133;
@@ -78,6 +78,7 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
   const visible = (s, user) => isAdmin(user) || !selfService(s) || s.owner === user?.username;
   const canEdit = (s, user) => isAdmin(user) || (selfService(s) && s.owner === user?.username);
   const isRea = (s) => provOf(s?.provider?.id)?.kind === 'rea';
+  const isCode = (s) => provOf(s?.provider?.id)?.kind === 'code';
   const emitJob = (pid, j) => emitProj(pid, 'evidence.job.updated', j);
 
   // ---------- EV-01～EV-12 数据源 ----------
@@ -122,7 +123,7 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
       provider: { id: p.id, version: p.version, label: p.label }, connection: body.connection || {},
       cred_ref: secret ? `cred://${body.id}/1` : null,
       secret_fields: (p.cred_fields || []).filter((x) => x.secret).map((x) => ({ name: x.name, set: !!body.secret?.[x.name], written_at: body.secret?.[x.name] ? new Date().toISOString() : null })),
-      scope_allowlist: body.scope_allowlist || [], scope_summary: (body.scope_allowlist || []).join(' '),
+      scope_allowlist: body.scope_allowlist || [], scope_summary: D.scopeSummary(body.scope_allowlist || []),
       egress: body.egress || [], access_window: body.access_window || null, budget: body.budget, rate_limit: body.rate_limit,
       masking_policy: body.masking_policy || 'mask-v3', authorization_note: body.authorization_note || null, owner: body.owner || user.username,
       last_job: null, authorized_for_project: null,
@@ -162,7 +163,7 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     }
     if (!selfService(s) && owner) rest.owner = owner;
     Object.assign(s, rest);
-    if (rest.scope_allowlist) s.scope_summary = s.id === 'erp-prod' && rest.scope_allowlist.some((x) => x.startsWith('erp.')) ? 'erp.* 42 表' : rest.scope_allowlist.join(' ');
+    if (rest.scope_allowlist) s.scope_summary = D.scopeSummary(rest.scope_allowlist);
     return json(200, view(s, null, user));
   });
   on('DELETE', '/admin/evidence/sources/([^/]+)', ({ m, user }) => {
@@ -200,15 +201,22 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     if (!s) return err(404, 'source_not_found', '数据源不存在');
     if (!isAdmin(user) && !(body.project_id && authorized(body.project_id, s.id))) return err(403, 'source_not_authorized', '本项目没有获授权使用该数据源');
     await wait(400);
+    // 旁路容器类（REA）：只查提供方和程序在不在，不签票据（F13）
+    if (isRea(s)) return json(200, { ok: true, checks: [{ name: 'connectivity', ok: true, detail: '提供方已就绪', latency_ms: 12 }], ticket: null });
     const c = s.connection || {};
-    const where = c.host ? `${c.host}${c.port ? `:${c.port}` : ''}` : (c.repo_url || c.spec_url || s.id);
     const credOk = !!s.cred_ref;
+    const ticket = { id_prefix: `tk-${uid().slice(-4).padStart(4, '7')}`, expires_in_s: 600, consumed: true };
+    // 代码仓库：连通即能用只读令牌列出远端引用；没有语句可查
+    if (isCode(s)) {
+      const host = String(c.repo_url || '').replace(/^https:\/\//, '').split('/')[0];
+      return json(200, { ok: credOk, checks: [{ name: 'connectivity', ok: credOk, detail: credOk ? `${host}:443 · ${c.ref}` : '凭据还没写入，连不上', latency_ms: credOk ? 85 : null }], ticket });
+    }
     const checks = [
-      { name: 'connectivity', ok: credOk, detail: credOk ? where : '凭据还没写入，连不上', latency_ms: credOk ? 32 : null },
+      { name: 'connectivity', ok: credOk, detail: credOk ? `${c.host}:${c.port}` : '凭据还没写入，连不上', latency_ms: credOk ? 32 : null },
       { name: 'readonly_account', ok: credOk, detail: credOk ? `${c.username || '只读账号'} 没有 INSERT / UPDATE / DELETE / DDL 权限` : '没有连上，跳过' },
-      { name: 'statement_allowlist', ok: true, detail: '只放行 SELECT / SHOW / DESCRIBE / EXPLAIN' },
+      { name: 'statement_allowlist', ok: true, detail: '只放行 SELECT / SHOW / DESCRIBE / EXPLAIN / WITH' },
     ];
-    return json(200, { ok: checks.every((x) => x.ok), checks, ticket: { id_prefix: `tk-${uid().slice(-4).padStart(4, '7')}`, expires_in_s: 600, consumed: true } });
+    return json(200, { ok: checks.every((x) => x.ok), checks, ticket });
   });
   on('GET', '/evidence/sources/([^/]+)/access-log', ({ m, query, user }) => {
     const s = srcOf(m[1]);
@@ -246,8 +254,19 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
   });
 
   // ---------- EV-13～EV-17 采集 ----------
+  // summary.window 是登记里的窗口对象（同内核 _preview）
   function preview(pid, body) {
     const s = srcOf(body.source_id);
+    if (isCode(s)) {
+      return {
+        requires_confirmation: s.environment === 'production', confirmation_token: null,
+        summary: {
+          scope_text: s.scope_allowlist.join('、') || '全部', tables: null, window: s.access_window, in_window_now: inWindow(s.access_window, clock()),
+          rate_limit: s.rate_limit, estimate: null, readonly_methods: [provOf(s.provider.id).readonly_method], masking: { policy: s.masking_policy, sample_rows: 0 },
+          ticket: { ttl_s: 600, single_use: true },
+        },
+      };
+    }
     if (isRea(s)) {
       return {
         requires_confirmation: false, confirmation_token: null,
@@ -258,11 +277,13 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
       };
     }
     const base = body.incremental_base;
+    // 内核写的是范围前 5 项，没写范围用登记摘要
+    const scope = s.scope_allowlist.slice(0, 5).join('、') || s.scope_summary;
     const scopeText = {
-      snapshot: `${s.scope_summary.replace(/\s*\d+\s*表$/, '')}，42 张表${base ? `（增量，基于 ${base.split('-').pop()}）` : ''}`,
-      discover: `${s.scope_summary.replace(/\s*\d+\s*表$/, '')}（只读元数据）`,
+      snapshot: `${scope}${base ? `（增量，基于 ${base.split('-').pop()}）` : ''}`,
+      discover: scope,
       sample: `${body.sample?.selector || '—'}，最多 ${Math.min(20, body.sample?.limit || 20)} 行`,
-    }[body.operation] || s.scope_summary;
+    }[body.operation] || scope;
     const estimate = { snapshot: base ? { rows: 860000, bytes: 1.2 * 1024 ** 3 } : { rows: 1960000, bytes: 1.9 * 1024 ** 3 }, discover: null, sample: { rows: 20, bytes: 4096 } }[body.operation] ?? null;
     const production = s.environment === 'production';
     const token = production ? `ct-${uid()}${uid()}` : null;
@@ -272,9 +293,9 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
       requires_confirmation: production,
       confirmation_token: token,
       summary: {
-        scope_text: scopeText, tables: 42, window: w ? `${w.start} – ${w.end}` : null, in_window_now: inWindow(w, clock()),
+        scope_text: scopeText, tables: 42, window: w, in_window_now: inWindow(w, clock()),
         rate_limit: s.rate_limit, estimate,
-        readonly_methods: [`只读账号 ${s.connection?.username || ''}`.trim(), '只读会话', '语句白名单'],
+        readonly_methods: [provOf(s.provider.id).readonly_method],
         masking: { policy: s.masking_policy, sample_rows: 20 }, ticket: { ttl_s: 600, single_use: true },
       },
     };
@@ -290,15 +311,18 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
   }
   const PHASES = [[15, '读取表清单'], [60, '采集字段与约束'], [85, '采集数据画像'], [101, '脱敏采样']];
   const REA_PHASES = [[25, '判定类型'], [50, '解析程序'], [75, '转换记录'], [101, '组装快照']];
+  const CODE_PHASES = [[25, '浅克隆'], [50, '解析代码'], [75, '转换记录'], [101, '组装快照']];
+  const phasesOf = (s) => (isRea(s) ? REA_PHASES : isCode(s) ? CODE_PHASES : PHASES);
   function run(pid, j) {
     const p = proj(pid);
     const rea = isRea(srcOf(j.source.id));
+    const code = isCode(srcOf(j.source.id));
     const step = () => {
       const cur = p.jobs.find((x) => x.id === j.id);
       if (!cur || cur.state !== 'running') return;
       const done = Math.min(cur.progress.total, cur.progress.done + Math.max(1, Math.ceil(cur.progress.total / 6)));
       const pct = Math.round((done / cur.progress.total) * 100);
-      Object.assign(cur, { progress: { ...cur.progress, done, pct }, phase: (rea ? REA_PHASES : PHASES).find(([x]) => pct < x)[1] });
+      Object.assign(cur, { progress: { ...cur.progress, done, pct }, phase: phasesOf(srcOf(j.source.id)).find(([x]) => pct < x)[1] });
       if (done < cur.progress.total) {
         emitJob(pid, { ...cur });
         timers.set(j.id, later(step, 900));
@@ -315,6 +339,16 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
         p.snapshots.unshift({
           id, source: cur.source, provider: 'rea-static@0.1.0', complete: true, coverage_pct: 100, referenced: 0, masking_policy: 'none',
           previous: prev?.id || null, job_id: cur.id, git_bytes: 18000, records: { ...D.REA_COUNTS }, started_at: cur.started_at, ended_at: cur.ended_at,
+        });
+        cur.result = { snapshot_id: id, message: `生成快照 ${id}` };
+        cur.actions = ['browse'];
+      } else if (cur.operation === 'snapshot' && code) {
+        const id = `${stamp(Date.parse(cur.started_at))}-${uid().slice(-4).padStart(4, '0')}`;
+        const prev = p.snapshots.find((x) => x.complete && x.source.id === cur.source.id);
+        manifests.set(id, D.codeManifest(cur.source.id, cur.id));
+        p.snapshots.unshift({
+          id, source: cur.source, provider: 'code-repo@0.1.0', complete: true, coverage_pct: 100, referenced: 0, masking_policy: 'none',
+          previous: prev?.id || null, job_id: cur.id, git_bytes: 61000, records: { ...D.CODE_COUNTS }, started_at: cur.started_at, ended_at: cur.ended_at,
         });
         cur.result = { snapshot_id: id, message: `生成快照 ${id}` };
         cur.actions = ['browse'];
@@ -343,12 +377,15 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     const now = clock();
     const open = inWindow(s.access_window, now);
     const rea = isRea(s);
-    const total = rea ? 4 : body.operation === 'sample' ? 1 : 42;
+    const code = isCode(s);
+    const total = rea || code ? 4 : body.operation === 'sample' ? 1 : 42;
+    const scopeText = rea ? s.connection?.artifact_filename || '' : code ? s.scope_summary
+      : body.operation === 'sample' ? `${body.sample?.selector || 'replenish_std'} ${Math.min(20, body.sample?.limit || 20)} 行` : body.operation === 'snapshot' ? `42 表${body.incremental_base ? '（增量）' : ''}` : '';
     const j = {
       id: `job-${String(jobSeq++).padStart(4, '0')}`, project_id: pid, source: D.sourceRef(s), operation: body.operation,
-      scope_text: rea ? s.connection?.artifact_filename || '' : body.operation === 'sample' ? `${body.sample?.selector || 'replenish_std'} ${Math.min(20, body.sample?.limit || 20)} 行` : body.operation === 'snapshot' ? `42 表${body.incremental_base ? '（增量）' : ''}` : '',
-      incremental_base: body.incremental_base || null, state: open ? 'running' : 'queued', phase: open ? (rea ? REA_PHASES : PHASES)[0][1] : null,
-      progress: { done: startDone, total, unit: rea ? '步' : '表', pct: Math.round((startDone / total) * 100) },
+      scope_text: scopeText,
+      incremental_base: body.incremental_base || null, state: open ? 'running' : 'queued', phase: open ? phasesOf(s)[0][1] : null,
+      progress: { done: startDone, total, unit: rea || code ? '步' : '表', pct: Math.round((startDone / total) * 100) },
       queue_reason: open ? null : `等待访问窗口 ${s.access_window.start}`,
       started_at: open ? new Date(now).toISOString() : null, ended_at: null, duration_ms: null, result: null, error: null,
       resumed_from: resumedFrom, checkpoint: false, initiated_by: user.username,
@@ -461,7 +498,9 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     const s = proj(m[1]).snapshots.find((x) => x.id === m[2]);
     if (!s) return err(404, 'snapshot_not_found', '快照不存在');
     if (manifests.has(s.id)) {
-      return json(200, { ...s, manifest: manifests.get(s.id), inventory: { collected: 5, skipped: [{ object: 'node_modules/', reason: '第三方依赖，只列清单' }] } });
+      const code = /^code-/.test(s.provider);
+      const skipped = code ? [{ object: 'src/main/java/com/example/restock/legacy/ImportJob.java', reason: '超过 1 MiB，没读' }] : [{ object: 'node_modules/', reason: '第三方依赖，只列清单' }];
+      return json(200, { ...s, manifest: manifests.get(s.id), inventory: { collected: code ? 14 : 5, skipped } });
     }
     return json(200, { ...s, manifest: { provider: s.provider, masking_policy: s.masking_policy, scope: ['erp.*'] }, inventory: { collected: s.records.entity, skipped: s.complete ? [] : [{ object: 'erp.arrival_record 等 9 张表', reason: '预算用尽' }] } });
   });
@@ -486,13 +525,14 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     return s || null;
   };
 
-  // 程序逆向的快照：记录来自合成的 REA 结果；分层摘要按 attrs.module 分组，列实体和操作（模块本身是组，不再列）
-  const reaSnap = (s) => /^rea-/.test(s?.provider || '');
-  const reaOf = (s) => D.reaRecords(s.source.id);
+  // 程序逆向、代码仓库的快照：记录来自合成的 REA 结果或 Java 补货单服务；分层摘要按 attrs.module 分组，
+  // 列实体和操作（模块本身是组，不再列）；记录详情的成员是下级的字段、方法和校验规则
+  const reaSnap = (s) => /^(rea|code)-/.test(s?.provider || '');
+  const reaOf = (s) => (/^code-/.test(s.provider) ? D.codeRecords(s.source.id) : D.reaRecords(s.source.id));
   const reaItem = (r) => ({ anchor: r.id, type: r.type, name: r.name, label: r.label, mapped_to: r.attrs.kind === 'class' && r.name === 'Order' ? entryRef('replenish_order') : null });
   const reaTree = (s) => {
     const recs = reaOf(s).filter((r) => (r.type === 'entity' && r.attrs.kind !== 'module') || r.type === 'operation');
-    const mods = [...new Set(reaOf(s).filter((r) => r.attrs.kind === 'module').map((r) => r.attrs.module))];
+    const mods = [...new Set(recs.map((r) => r.attrs.module))];
     return mods.map((name) => {
       const list = recs.filter((r) => r.attrs.module === name);
       return { name, count: list.length, entities: list.map(reaItem) };
@@ -501,7 +541,10 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
   const reaRel = (s, anchor) => {
     const recs = reaOf(s);
     const byId = new Map(recs.map((r) => [r.id, r]));
-    const TEXT = { calls: ['调用', '被调用'], handles: ['处理', '由它处理'], requests: ['请求', '被请求'], exposes: ['暴露', '被暴露'] };
+    const TEXT = {
+      calls: ['调用', '被调用'], handles: ['处理', '由它处理'], requests: ['请求', '被请求'], exposes: ['暴露', '被暴露'],
+      one_to_many: ['一对多', '多对一'], many_to_one: ['多对一', '一对多'],
+    };
     return recs.filter((r) => r.type === 'relation' && (r.attrs.from === anchor || r.attrs.to === anchor)).map((r) => {
       const out = r.attrs.from === anchor;
       const other = byId.get(out ? r.attrs.to : r.attrs.from);
@@ -547,12 +590,12 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
   });
   on('GET', '/projects/([^/]+)/evidence/record', ({ m, query }) => {
     const anchor = query.get('anchor') || '';
-    if (anchor.startsWith('bin:')) {
+    if (anchor.startsWith('bin:') || anchor.startsWith('code:')) {
       const s = needSnap(m[1], query);
       const r = s && reaSnap(s) ? reaOf(s).find((x) => x.id === anchor) : null;
       if (!r) return err(404, 'anchor_not_found', '锚点在所声明的快照里不存在');
-      const members = reaOf(s).filter((x) => x.parent === r.id).map((x) => ({
-        name: x.name, type: x.attrs.signature || x.attrs.kind, note: '', confidence: x.evidence.confidence, masked: false, anchor: x.id,
+      const members = reaOf(s).filter((x) => x.parent === r.id && ['field', 'operation', 'rule'].includes(x.type)).map((x) => ({
+        name: x.name, type: x.attrs.signature || x.attrs.data_type || x.attrs.annotation || x.attrs.kind, note: '', confidence: x.evidence.confidence, masked: false, anchor: x.id,
       }));
       return json(200, {
         anchor: r.id, type: r.type, name: r.name, label: r.label, parent_anchor: r.parent, confidence: r.evidence.confidence,
@@ -586,7 +629,7 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     .map(([a, b, confidence, basis]) => ({ a, b, confidence, basis, ta: a.split('.')[0], tb: b.split('.')[0] }))
     .filter((r) => names.includes(r.ta) && names.includes(r.tb));
   on('GET', '/projects/([^/]+)/evidence/lineage', ({ m, query }) => {
-    if (String(query.get('anchor') || '').startsWith('bin:')) {
+    if (/^(bin|code):/.test(String(query.get('anchor') || ''))) {
       const s = needSnap(m[1], query);
       return s && reaSnap(s) ? json(200, { items: reaRel(s, query.get('anchor')), untrusted_content: true }) : err(404, 'anchor_not_found', '锚点不存在');
     }
@@ -599,6 +642,10 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
       if (!other || seen.has(other)) return;
       seen.add(other);
       items.push({ anchor: tableAnchor(other), label: `erp.${other}`, basis: r.basis, confidence: r.confidence });
+    });
+    // 别的数据源里用到这张表的代码（契约 EV-27 的「代码调用方」）：JPA 实体映射的表、内嵌 SQL 涉及的表
+    D.codeRecords().filter((r) => r.attrs.table === a.table || (r.attrs.tables || []).includes(a.table)).forEach((r) => {
+      items.push({ anchor: r.id, label: `${D.CODE.id} · ${r.name}`, basis: r.attrs.table ? '代码实体' : '代码调用方', confidence: 'inferred' });
     });
     return json(200, { items });
   });
@@ -625,7 +672,10 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
         anchor: tableAnchor(n), name: n, label: D.TABLES[n].label,
         fields: fieldsAt(D.TABLES[n], s.id).map((x) => ({ name: x.name, type: x.type, pk: x.pk, fk: x.fk, masked: x.masked })),
       })),
-      relations: relationsOf(names).map((r) => ({ from_anchor: `db:erp-prod/erp.${r.a}`, to_anchor: `db:erp-prod/erp.${r.b}`, confidence: r.confidence, basis: r.basis })),
+      // 外键、推断关系的 from / to 是表锚点（§9），列对放 columns（同记录的 attrs.columns）
+      relations: relationsOf(names).map((r) => ({
+        from_anchor: tableAnchor(r.ta), to_anchor: tableAnchor(r.tb), columns: [[r.a.split('.')[1], r.b.split('.')[1]]], confidence: r.confidence, basis: r.basis,
+      })),
     });
   });
 

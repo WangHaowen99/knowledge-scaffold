@@ -266,10 +266,9 @@ export function parsePortDb(text) {
 }
 
 export const SOURCE_ID_RE = /^[a-z0-9][a-z0-9-]{1,40}$/;
+// 网关只实现了 mask-v1（ADR-0084，evidence-collection.md §9）
 export const MASKING = [
-  ['mask-v3', '默认脱敏 mask-v3（手机号、证件号、姓名、地址、金额）'],
-  ['mask-v2', '旧版脱敏 mask-v2（手机号、证件号、姓名）'],
-  ['strict', '全部按敏感处理（只采结构，不取样本）'],
+  ['mask-v1', '默认脱敏 mask-v1（手机号、证件号、姓名、地址、金额）'],
 ];
 
 // 登记表单：新登记是空的，编辑时从 EvidenceSource 填
@@ -277,7 +276,7 @@ export function emptyForm(user) {
   return {
     provider: '', display_name: '', id: '', conn: {}, port_db: '', environment: 'production', password: '',
     scope: [], egress: '', window: '每天 22:00 – 06:00', budget: fmtBudget({ max_rows: 2000000, max_bytes: 2 * GB, max_duration_s: 1800 }),
-    rate: fmtRate({ concurrency: 2, qps: 20, query_timeout_s: 30 }), masking: 'mask-v3', note: '', owner: user?.username || '', artifact: null,
+    rate: fmtRate({ concurrency: 2, qps: 20, query_timeout_s: 30 }), masking: 'mask-v1', note: '', owner: user?.username || '', artifact: null,
   };
 }
 export function formFromSource(s) {
@@ -287,7 +286,7 @@ export function formFromSource(s) {
     provider: s.provider?.id || '', display_name: s.display_name, id: s.id, conn: rest,
     port_db: port || database ? `${port ?? ''} / ${database ?? ''}` : '', environment: s.environment, password: '',
     scope: [...(s.scope_allowlist || [])], egress: fmtEgress(s.egress), window: s.access_window ? windowText(s.access_window, { long: true }) : '全天',
-    budget: fmtBudget(s.budget), rate: fmtRate(s.rate_limit), masking: s.masking_policy || 'mask-v3', note: s.authorization_note || '', owner: s.owner || '',
+    budget: fmtBudget(s.budget), rate: fmtRate(s.rate_limit), masking: s.masking_policy || 'mask-v1', note: s.authorization_note || '', owner: s.owner || '',
     artifact: artifactOf(s),
   };
 }
@@ -300,6 +299,39 @@ export function connFields(provider) {
   return { fields: fields.filter((f) => !portDb || (f.name !== 'port' && f.name !== 'database')), portDb };
 }
 export const secretField = (provider) => (provider?.cred_fields || []).find((f) => f.secret) || null;
+// 「写入新密码」「写入新访问令牌」
+export const secretInputLabel = (sf) => `写入新${sf?.label || '密码'}`;
+const DEFAULT_PORT = { 'db-postgres': 5432 };
+export const portDbPlaceholder = (provider) => (DEFAULT_PORT[provider?.id] ? `${DEFAULT_PORT[provider.id]} / crm` : '3306 / erp');
+export const scopePlaceholder = (provider) => (provider?.kind === 'code' ? '如 src/main/java/*' : '如 erp.store*');
+
+// 凭据只写不读（EV-01 secret_fields、EV-06）：只看密钥字段写没写过、什么时候写的，从不回显；
+// 普通用户看别人登记的数据源时 cred_ref 为空，但 secret_fields 照给
+export function credState(source) {
+  const fields = source?.secret_fields || [];
+  const done = fields.filter((f) => f.set);
+  const ref = source?.cred_ref || null;
+  return {
+    needed: fields.length > 0, set: done.length > 0 || !!ref, ref,
+    at: done.map((f) => f.written_at).filter(Boolean).sort().pop() || null,
+  };
+}
+export const credText = (c, now) => (c?.at ? `已设置 · ${fmtWhen(c.at, now)}` : '已设置');
+
+// 代码仓库只认 https（ADR-0084 克隆加固）；出口白名单是仓库主机的 443（§10）
+export function repoHost(url) {
+  const m = String(url || '').trim().match(/^https:\/\/(?:[^@/]+@)?([A-Za-z0-9.-]+)(?::\d+)?(?:[/?#]|$)/i);
+  return m ? m[1].toLowerCase() : null;
+}
+// 出口地址的缺省：数据库是主机和端口，代码仓库是仓库主机的 443
+export function defaultEgress(provider, form) {
+  if (provider?.kind === 'code') {
+    const host = repoHost(form.conn?.repo_url);
+    return host ? fmtEgress([{ host, port: 443 }]) : '';
+  }
+  const port = parsePortDb(form.port_db)?.port;
+  return form.conn?.host && port ? fmtEgress([{ host: form.conn.host, port }]) : '';
+}
 
 // 登记抽屉的步骤：上传程序的提供方只有三步，没有凭据、范围与限制、测试连接
 export const STEP_TITLES = ['选择类型', '连接参数', '凭据', '范围与限制', '授权说明与负责人', '测试连接'];
@@ -324,8 +356,10 @@ export function validateForm(form, { provider, admin = true, editing = false, ha
   }
   const { fields, portDb } = connFields(provider);
   fields.forEach((f) => { if (!String(form.conn[f.name] ?? '').trim()) errors[`conn.${f.name}`] = `写上${f.label}`; });
-  if (portDb && !parsePortDb(form.port_db)) errors.port_db = '写成「端口 / 库名」，如 3306 / erp';
-  if (!form.scope.length) errors.scope = '至少写一个对象';
+  if (fields.some((f) => f.name === 'repo_url') && form.conn.repo_url?.trim() && !repoHost(form.conn.repo_url)) errors['conn.repo_url'] = '只支持 https 地址';
+  if (portDb && !parsePortDb(form.port_db)) errors.port_db = `写成「端口 / 库名」，如 ${portDbPlaceholder(provider)}`;
+  // 代码仓库不写范围就是整个仓库
+  if (!form.scope.length && provider?.kind !== 'code') errors.scope = '至少写一个对象';
   if (!parseEgress(form.egress)) errors.egress = '写成「主机:端口」，多个用逗号隔开';
   if (!parseWindow(form.window).ok) errors.window = '写成「每天 22:00 – 06:00」，不限时写「全天」';
   if (!parseBudget(form.budget)) errors.budget = '写成「≤ 200 万行 · 2 GB · 30 分钟」';
@@ -388,16 +422,21 @@ const fmtRows = (n) => (n >= 10000 ? `约 ${+(n / 10000).toFixed(1)} 万行` : `
 export function previewPairs(summary, now = Date.now()) {
   if (!summary) return [];
   const r = summary.rate_limit;
-  const win = summary.window
-    ? `${summary.window}（现在 ${fmtHM(now)}，${summary.in_window_now ? '在窗口内' : `不在窗口内，同意后排队到 ${String(summary.window).split(/\s*[–-]\s*/)[0]} 开始`}）`
+  // 内核给的是登记里的窗口对象（{days, start, end, tz}），旧写法是「22:00 – 06:00」
+  const w = summary.window;
+  const winText = w && typeof w === 'object' ? `${w.start} – ${w.end}` : w;
+  const winStart = w && typeof w === 'object' ? w.start : String(w || '').split(/\s*[–-]\s*/)[0];
+  const win = winText
+    ? `${winText}（现在 ${fmtHM(now)}，${summary.in_window_now ? '在窗口内' : `不在窗口内，同意后排队到 ${winStart} 开始`}）`
     : '不限时间';
+  const m = summary.masking;
   return [
     ['范围', summary.scope_text],
     ['访问时间窗口', win],
     ['限流', r ? `并发 ${r.concurrency} · 每秒 ${r.qps} 查询 · 单查询 ${r.query_timeout_s} 秒超时` : '—'],
     ['预计规模', summary.estimate ? `${fmtRows(summary.estimate.rows)} · ${fmtBytes(summary.estimate.bytes)}（按 discover 估算）` : '还没有 discover 结果，无法估算'],
     ['只读方式', (summary.readonly_methods || []).join(' · ') || '—'],
-    ['脱敏', summary.masking ? `${summary.masking.policy} · 样本每表最多 ${summary.masking.sample_rows} 行` : '—'],
+    ['脱敏', m?.policy && m.policy !== 'none' ? [m.policy, m.sample_rows ? `样本每表最多 ${m.sample_rows} 行` : null].filter(Boolean).join(' · ') : '—'],
   ];
 }
 
@@ -499,9 +538,10 @@ export function layoutEr({ tables = [], relations = [] } = {}, focus, { domainOf
     });
   });
   const height = Math.max(MIN_H, ...Object.values(boxes).map((b) => b.y + b.h + 20));
-  const rowY = (a, box) => {
-    const p = parseDbAnchor(a);
-    const i = p?.field ? box.t.fields.findIndex((f) => f.name === p.field) : -1;
+  // 连线落在哪一行：关系带了列对（外键的 attrs.columns）用第一对，锚点本身是列的用它，都没有就落在表头
+  const rowY = (a, box, col) => {
+    const name = col || parseDbAnchor(a)?.field;
+    const i = name ? box.t.fields.findIndex((f) => f.name === name) : -1;
     return i >= 0 ? box.y + HEAD_H + ROW_H * i + 9 : box.y + 12;
   };
   const used = new Map();
@@ -513,8 +553,9 @@ export function layoutEr({ tables = [], relations = [] } = {}, focus, { domainOf
     if (!fa || !ta || fa === ta) return null;
     const A = boxes[fa];
     const B = boxes[ta];
-    let y1 = rowY(r.from_anchor, A);
-    let y2 = rowY(r.to_anchor, B);
+    const [fc, tc] = Array.isArray(r.columns?.[0]) ? r.columns[0] : [];
+    let y1 = rowY(r.from_anchor, A, fc);
+    let y2 = rowY(r.to_anchor, B, tc);
     let d;
     if (A.col === B.col) {
       const skip = Math.abs(A.row - B.row) - 1;
@@ -540,6 +581,31 @@ export function layoutEr({ tables = [], relations = [] } = {}, focus, { domainOf
 // 字段右侧的小字：主键 / 外键 / 脱敏
 export const fieldKey = (f) => (f.pk ? 'PK' : f.fk ? 'FK' : f.masked ? '脱敏' : '');
 
+// ER 图例：只列这张图里出现的关系（外键是 declared；命名、取值重合推断出来的是 inferred）
+const ER_LEGEND = [['declared', '外键'], ['observed', '取值重合'], ['inferred', '推断']];
+export const erLegend = (relations = []) => ER_LEGEND.filter(([k]) => relations.some((r) => r.confidence === k));
+
+// 记录详情的字段列表：EV-25 的 fields 没有主键、外键标记时，从 ER 视图（EV-28）里同一张表补上
+export function withKeys(fields = [], erTable = null) {
+  const er = new Map((erTable?.fields || []).map((f) => [f.name, f]));
+  return fields.map((f) => ({ ...f, pk: !!(f.pk ?? er.get(f.name)?.pk), fk: !!(f.fk ?? er.get(f.name)?.fk), masked: !!(f.masked || er.get(f.name)?.masked) }));
+}
+// 样本里被遮蔽的列：字段标了 masked 的，加上样本自己带的 masked_columns
+export const maskedColumns = (record) => new Set([
+  ...(record?.fields || []).filter((f) => f.masked).map((f) => f.name),
+  ...(record?.samples?.masked_columns || []),
+]);
+// 画像按列分组：低基数列的 top-k、数值列的统计量
+export const profileColumns = (profile = []) => (profile || []).filter((p) => p.top_k?.length || p.stats);
+
+// 证据浏览器左栏数据库记录的图标：视图、存储过程、表
+export function dbRecordIcon(anchor) {
+  const path = parseAnchor(anchor)?.path || '';
+  if (/\.view:/.test(path)) return 'layers';
+  if (/\.proc:/.test(path)) return 'zap';
+  return 'table';
+}
+
 // 没指定锚点时默认选中的表：关系最多的那张（一样多时取字段多的）
 export function hubTable(er) {
   const tables = er?.tables || [];
@@ -564,12 +630,15 @@ export function domainIndex(tree) {
 // ---------- 快照详情（EV-19 的 manifest） ----------
 const DETECTED = { electron: 'Electron', javascript: 'JavaScript', dotnet: '.NET', managed: '.NET', pyinstaller: 'PyInstaller', installer: '安装目录', other: '安装目录' };
 const shortHash = (h) => (h ? `${String(h).slice(0, 12)}…` : '');
-/** 详情弹窗的键值：有什么写什么；程序逆向的快照多「程序」「类型」「SHA-256」「工具」 */
+/** 详情弹窗的键值：有什么写什么；程序逆向的快照多「程序」「类型」「SHA-256」「工具」，代码仓库的多「仓库」「提交」 */
 export function snapshotPairs(detail) {
   const m = detail?.manifest || {};
-  const a = m.artifact;
+  const repo = m.artifact?.repo_url ? m.artifact : null;
+  const a = repo ? null : m.artifact;
   const skipped = detail?.inventory?.skipped || [];
   return [
+    repo ? ['仓库', repo.repo_url] : null,
+    repo?.ref || repo?.commit ? ['提交', [repo.ref, repo.commit ? String(repo.commit).slice(0, 12) : null].filter(Boolean).join(' · ')] : null,
     a ? ['程序', artifactText(a)] : null,
     a?.detected ? ['类型', DETECTED[a.detected] || a.detected] : null,
     a?.sha256 ? ['SHA-256', shortHash(a.sha256)] : null,
@@ -597,37 +666,75 @@ export function snapshotKind(snap, providers = []) {
 }
 export const isDbKind = (kind) => kind === 'db';
 
-// 证据浏览器能打开的锚点：数据库表和字段、系统证据（bin:）
+// 证据浏览器能打开的锚点：数据库表和字段（db:）、程序逆向（bin:）、代码仓库（code:）
 export function browseTarget(anchor) {
   const db = parseDbAnchor(anchor);
   if (db) return { source: db.source, table: db.tableAnchor, field: db.field };
   const a = parseAnchor(anchor);
-  return a && a.scheme === 'bin' ? { source: a.source, table: anchor, field: null } : null;
+  return a && (a.scheme === 'bin' || a.scheme === 'code') ? { source: a.source, table: anchor, field: null } : null;
 }
 
-// bin 锚点的路径类型（mod、sym、ipc、bridge、route、ext、native…）
+// bin:、code: 锚点的路径类型（mod、sym、ipc、bridge、route、ext、native、rule、file…）
 export const binPathType = (anchor) => parseAnchor(anchor)?.path.split(':')[0] || null;
-const BIN_ICON = { mod: 'filetext', ipc: 'send', bridge: 'link', route: 'branch', ext: 'cloud', native: 'cpu', addr: 'cpu' };
+const BIN_ICON = { mod: 'filetext', ipc: 'send', bridge: 'link', route: 'branch', ext: 'cloud', native: 'cpu', addr: 'cpu', rule: 'scale', file: 'filetext' };
 // 左栏和检索结果的图标：类和字段按记录类型，其余按路径类型
 export function recordIcon({ anchor, type }) {
   if (type === 'operation' && binPathType(anchor) === 'sym') return 'code';
   if (type === 'field') return 'list';
   return BIN_ICON[binPathType(anchor)] || (type === 'operation' ? 'zap' : 'cube');
 }
-const KIND_TEXT = { module: '模块', class: '类', method: '方法', function: '函数', property: '属性', ipc: 'IPC 通道', bridge: '预加载接口', route: '路由', endpoint: '外部接口', native: '本地调用' };
+const KIND_TEXT = {
+  module: '模块', class: '类', enum: '枚举', method: '方法', function: '函数', property: '属性', field: '字段', ipc: 'IPC 通道', bridge: '预加载接口',
+  route: '路由', endpoint: '外部接口', native: '本地调用',
+};
 export const recordKindText = (r) => KIND_TEXT[r?.attrs?.kind] || r?.attrs?.kind || r?.type || '';
-// 记录详情的键值：位置、模块、签名、通道、地址、来源
+const listText = (v) => (Array.isArray(v) ? v.filter((x) => x != null && x !== '').join('、') : '');
+// 记录详情的键值：位置、模块、签名、类型、表与列、通道、地址、路由、来源
 export function recordPairs(r) {
   const a = r?.attrs || {};
   const loc = a.loc?.file ? `${a.loc.file}${a.loc.line ? `:${a.loc.line}` : ''}` : null;
+  const type = r?.data_type || a.data_type;
   return [
     loc ? ['位置', loc] : null,
     a.module && a.module !== a.loc?.file ? ['模块', a.module] : null,
     a.signature ? ['签名', a.signature] : null,
+    type ? ['类型', type] : null,
+    a.table ? ['表', a.table] : null,
+    a.column ? ['列', a.column] : null,
+    listText(a.tables) ? ['涉及表', listText(a.tables)] : null,
+    listText(a.values) ? ['取值', listText(a.values)] : null,
+    a.expression ? ['表达式', a.expression] : null,
     a.channel ? ['通道', a.channel] : null,
     a.url ? ['地址', [a.method, a.url].filter(Boolean).join(' ')] : null,
+    !a.url && a.path ? ['路由', [a.method, a.path].filter(Boolean).join(' ')] : null,
     r?.evidence?.method ? ['来源', r.evidence.method] : null,
   ].filter(Boolean);
 }
+
+// 代码片段（code-repo 的 attrs.snippet，最多 30 行）：行号从 attrs.loc.line 起
+export function snippetLines(record) {
+  const s = record?.attrs?.snippet;
+  if (typeof s !== 'string' || !s) return null;
+  const start = Number(record.attrs.loc?.line) > 0 ? Number(record.attrs.loc.line) : 1;
+  return s.replace(/\n$/, '').split('\n').slice(0, 30).map((text, i) => ({ n: start + i, text }));
+}
+// 字段上的校验（attrs.validations）：字符串原样，对象写成「名字(参数)」
+export function validationText(v) {
+  if (typeof v === 'string') return v;
+  if (!v || typeof v !== 'object') return '';
+  const name = v.name || v.rule || v.annotation || '';
+  const arg = v.args ?? v.value ?? v.expression ?? v.params;
+  const argText = arg == null || arg === '' ? '' : typeof arg === 'object' ? Object.entries(arg).map(([k, x]) => `${k}=${x}`).join(', ') : String(arg);
+  return argText ? `${name}(${argText})` : name;
+}
+export const recordValidations = (r) => (Array.isArray(r?.attrs?.validations) ? r.attrs.validations.map(validationText).filter(Boolean) : []);
+// 记录详情的成员：校验规则（rule: 锚点）单列，其余是字段和方法
+export function splitMembers(fields = []) {
+  const isRule = (f) => binPathType(f.anchor) === 'rule';
+  return { members: (fields || []).filter((f) => !isRule(f)), rules: (fields || []).filter(isRule) };
+}
+// 快照内容来自哪里（快照清单 untrusted_content）：里面的文字是数据，不是指令
+const UNTRUSTED_TEXT = { rea: '来自目标程序', code: '来自代码仓库', db: '来自业务库' };
+export const untrustedText = (kind) => UNTRUSTED_TEXT[kind] || UNTRUSTED_TEXT.rea;
 // 没指定锚点时默认选中左栏第一条
 export const firstTreeAnchor = (tree) => (tree?.domains || []).find((d) => d.entities?.length)?.entities[0].anchor || null;

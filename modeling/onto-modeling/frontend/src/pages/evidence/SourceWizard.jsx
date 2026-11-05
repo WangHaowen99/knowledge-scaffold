@@ -10,8 +10,8 @@ import { errorText } from '../../api/errors.js';
 import { Area, Button, Field, Icon, Inp, Note, Prog, Seg, Select, cx } from '../../ui/index.jsx';
 import { checkArtifactFile, createArtifactUpload, isUploading } from './artifactUpload.js';
 import {
-  CHECK_LABEL, KIND_ICON, KIND_LABEL, MASKING, artifactPatch, checkDetail, connFields, emptyForm, fmtBytes, fmtDay, fmtEgress, formFromSource,
-  isArtifactProvider, parsePortDb, registerBody, secretField, validateForm, wizardSteps,
+  CHECK_LABEL, KIND_ICON, KIND_LABEL, MASKING, artifactPatch, checkDetail, connFields, credState, credText, defaultEgress, emptyForm, fmtBytes,
+  formFromSource, isArtifactProvider, portDbPlaceholder, registerBody, scopePlaceholder, secretField, secretInputLabel, validateForm, wizardSteps,
 } from './evidenceModel.js';
 import { EvdDrawer } from './parts.jsx';
 
@@ -30,7 +30,7 @@ function Step({ n, state, title, extra, right, children }) {
 }
 
 // 范围白名单：标签 + 「+ 添加」
-function ScopeTags({ value, onChange, disabled }) {
+function ScopeTags({ value, onChange, disabled, placeholder }) {
   const [adding, setAdding] = useState(false);
   const [text, setText] = useState('');
   const add = () => {
@@ -51,7 +51,7 @@ function ScopeTags({ value, onChange, disabled }) {
         <input
           autoFocus
           value={text}
-          placeholder="如 erp.store*"
+          placeholder={placeholder}
           onChange={(e) => setText(e.target.value)}
           onBlur={add}
           onKeyDown={(e) => { if (e.key === 'Enter') add(); if (e.key === 'Escape') { setText(''); setAdding(false); } }}
@@ -133,7 +133,7 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
     resetUpload.current();
     if (!open) return;
     setForm(editing && source ? formFromSource(source) : emptyForm(user));
-    setCred(editing && source ? { ref: source.cred_ref, at: source.secret_fields?.find((x) => x.set)?.written_at || null } : null);
+    setCred(editing && source ? credState(source) : null);
     setTest(null);
     setShowErr(false);
     setServerErr({});
@@ -156,7 +156,7 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
   const artifactMode = isArtifactProvider(provider);
   const selfService = !!provider?.self_service;
   const steps = wizardSteps(provider);
-  const v = validateForm(form, { provider, admin, editing, hasCred: !!cred?.ref, tested: !!test?.ok });
+  const v = validateForm(form, { provider, admin, editing, hasCred: !!cred?.set, tested: !!test?.ok });
   const errs = { ...v.errors, ...serverErr };
   const stepState = (i) => (v.done[i] ? 'done' : i === v.current ? 'cur' : 'todo');
   const err = (k) => (showErr && errs[k] ? <span className="evp-err">{errs[k]}</span> : null);
@@ -164,11 +164,8 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
   const set = (patch) => {
     setForm((f) => {
       const next = { ...f, ...patch };
-      // 出口地址没手动改过时，跟着主机和端口走
-      if (!egressTouched && (patch.conn || patch.port_db !== undefined)) {
-        const port = parsePortDb(next.port_db)?.port;
-        next.egress = next.conn.host && port ? fmtEgress([{ host: next.conn.host, port }]) : next.egress;
-      }
+      // 出口地址没手动改过时，跟着主机和端口（代码仓库是仓库主机的 443）走
+      if (!egressTouched && (patch.conn || patch.port_db !== undefined)) next.egress = defaultEgress(provider, next) || next.egress;
       return next;
     });
     if (patch.id !== undefined) setServerErr((e) => ({ ...e, id: undefined }));
@@ -206,10 +203,10 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
 
   const rotate = async () => {
     if (!sf) return;
-    if (!form.password) { toast('先在下面写入新密码，再轮换', 'key'); return; }
+    if (!form.password) { toast(`先在下面${secretInputLabel(sf)}，再轮换`, 'key'); return; }
     try {
       const r = await api.writeEvidenceSecret(source.id, { fields: { [sf.name]: form.password } });
-      setCred({ ref: r.cred_ref, at: r.written_at });
+      setCred({ needed: true, set: true, ref: r.cred_ref, at: r.written_at });
       set({ password: '' });
       toast(`已写入 ${r.cred_ref}`, 'key');
       onSaved?.({ silent: true });
@@ -218,7 +215,7 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
   const dropCred = async () => {
     try {
       await api.deleteEvidenceSecret(source.id);
-      setCred({ ref: null, at: null });
+      setCred({ needed: true, set: false, ref: null, at: null });
       setTest(null);
       toast('已删除凭据', 'trash');
       onSaved?.({ silent: true });
@@ -252,7 +249,7 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
       if (editing) {
         if (form.password && sf) {
           const r = await api.writeEvidenceSecret(source.id, { fields: { [sf.name]: form.password } });
-          setCred({ ref: r.cred_ref, at: r.written_at });
+          setCred({ needed: true, set: true, ref: r.cred_ref, at: r.written_at });
         }
         const { id, provider: p, secret, ...rest } = registerBody(form, provider, { withSecret: false });
         await api.updateEvidenceSource(source.id, rest);
@@ -331,7 +328,7 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
                 {(provider.cred_fields || []).filter((f) => !f.secret).map((f) => {
                   if (portDb && f.name === 'database') return null;
                   if (portDb && f.name === 'port') {
-                    return <Field key="port_db" label="端口 / 库名" hint={err('port_db')}><Inp mono value={form.port_db} placeholder="3306 / erp" onChange={(e) => set({ port_db: e.target.value })} error={showErr && errs.port_db} /></Field>;
+                    return <Field key="port_db" label="端口 / 库名" hint={err('port_db')}><Inp mono value={form.port_db} placeholder={portDbPlaceholder(provider)} onChange={(e) => set({ port_db: e.target.value })} error={showErr && errs.port_db} /></Field>;
                   }
                   if (!fields.some((x) => x.name === f.name)) return null;
                   return <Field key={f.name} label={f.label} hint={err(`conn.${f.name}`)}><Inp mono value={form.conn[f.name] ?? ''} onChange={(e) => setConn(f.name, e.target.value)} error={showErr && errs[`conn.${f.name}`]} /></Field>;
@@ -345,26 +342,26 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
             {provider && !sf ? <div className="sm muted">这类数据源不需要凭据。</div> : !admin ? (
               <>
                 <div className="evd-cred none"><Icon name="key" size={18} /><div className="grow sm muted">凭据由管理员写入</div></div>
-                <div className="mt8"><Field label="写入新密码"><Inp icon="lock" type="password" disabled placeholder="由管理员写入" /></Field></div>
+                <div className="mt8"><Field label={secretInputLabel(sf)}><Inp icon="lock" type="password" disabled placeholder="由管理员写入" /></Field></div>
               </>
             ) : (
               <>
-                {editing && cred?.ref ? (
+                {editing && cred?.set ? (
                   <div className="evd-cred">
                     <Icon name="key" size={18} />
                     <div className="grow">
-                      <div className="anchor" style={{ fontSize: 12.5 }}>{cred.ref}</div>
-                      {cred.at ? <div className="xs muted mt4">{fmtDay(cred.at)} 写入</div> : null}
+                      {cred.ref ? <div className="anchor" style={{ fontSize: 12.5 }}>{cred.ref}</div> : null}
+                      <div className="xs muted mt4">{credText(cred)}</div>
                     </div>
                     <Button size="sm" icon="refresh" onClick={rotate}>轮换</Button>
                     <Button size="sm" icon="trash" kind="ghost" title="删除凭据" onClick={dropCred} />
                   </div>
                 ) : (
-                  <div className="evd-cred none"><Icon name="key" size={18} /><div className="grow sm muted">{editing ? '凭据已删除，写入新密码后才能采集。' : '还没有凭据'}</div></div>
+                  <div className="evd-cred none"><Icon name="key" size={18} /><div className="grow sm muted">还没有凭据</div></div>
                 )}
                 <div className="mt8">
-                  <Field label="写入新密码">
-                    <Inp icon="lock" type="password" autoComplete="new-password" value={form.password} placeholder={sf?.label ? `写入${sf.label}` : ''} onChange={(e) => set({ password: e.target.value })} />
+                  <Field label={secretInputLabel(sf)}>
+                    <Inp icon="lock" type="password" autoComplete="new-password" value={form.password} onChange={(e) => set({ password: e.target.value })} />
                   </Field>
                 </div>
               </>
@@ -372,18 +369,21 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
           </Step>
 
           <Step n={4} state={stepState(3)} title="范围与限制">
-            <Field label="范围白名单" hint={err('scope') || '只采这些对象'}><ScopeTags value={form.scope} onChange={(scope) => set({ scope })} /></Field>
+            <Field label="范围白名单" hint={err('scope') || '只采这些对象'}><ScopeTags value={form.scope} placeholder={scopePlaceholder(provider)} onChange={(scope) => set({ scope })} /></Field>
             <div className="evd-g2 mt8">
-              <Field label="允许连接的地址" hint={err('egress')}><Inp mono value={form.egress} placeholder="192.0.2.14:3306" onChange={(e) => { setEgressTouched(true); set({ egress: e.target.value }); }} error={showErr && errs.egress} /></Field>
+              <Field label="允许连接的地址" hint={err('egress')}><Inp mono value={form.egress} placeholder={provider?.kind === 'code' ? 'git.example.com:443' : '192.0.2.14:3306'} onChange={(e) => { setEgressTouched(true); set({ egress: e.target.value }); }} error={showErr && errs.egress} /></Field>
               <Field label="访问时间窗口" hint={err('window')}><Inp icon="clock" value={form.window} placeholder="全天" onChange={(e) => set({ window: e.target.value })} error={showErr && errs.window} /></Field>
               <Field label="预算" hint={err('budget')}><Inp value={form.budget} onChange={(e) => set({ budget: e.target.value })} error={showErr && errs.budget} /></Field>
               <Field label="限流" hint={err('rate')}><Inp value={form.rate} onChange={(e) => set({ rate: e.target.value })} error={showErr && errs.rate} /></Field>
             </div>
-            <div className="mt8">
-              <Field label="脱敏策略" hint="样本每表最多 20 行">
-                <Select value={form.masking} options={MASKING.map(([value, label]) => ({ value, label }))} onChange={(masking) => set({ masking })} />
-              </Field>
-            </div>
+            {/* 代码仓库不采样本，没有可脱敏的取值 */}
+            {provider?.kind === 'code' ? null : (
+              <div className="mt8">
+                <Field label="脱敏策略" hint="样本每表最多 20 行">
+                  <Select value={form.masking} options={MASKING.map(([value, label]) => ({ value, label }))} onChange={(masking) => set({ masking })} />
+                </Field>
+              </div>
+            )}
           </Step>
 
           <Step n={5} state={stepState(4)} title="授权说明与负责人">

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
 import { register, taskSeeds } from '../src/api/mock/routes-evidence.js';
-import { REA_ARTIFACT, SNAP } from '../src/api/mock/evidence-data.js';
+import { CODE, CODE_REPO, REA_ARTIFACT, SNAP, codeRecords } from '../src/api/mock/evidence-data.js';
 import { createArtifactUpload } from '../src/pages/evidence/artifactUpload.js';
 import {
   checkDetail, collectBody, connText, defaultDiffPair, diffPair, domainIndex, emptyForm, fieldAnchor, fmtBudget, fmtDuration, fmtEgress,
@@ -11,6 +11,8 @@ import {
   layoutEr, mergeJob, monthText, parseAnchor, parseBudget, parseDbAnchor, parseEgress, parsePortDb, parseRate, parseWindow,
   pickSnapshot, previewPairs, registerBody, artifactPatch, wizardSteps, artifactText, isArtifactSource, canManageSource, collectOps, canIncremental,
   snapshotPairs, snapshotLimits, snapshotKind, isDbKind, browseTarget, binPathType, recordIcon, recordKindText, recordPairs, firstTreeAnchor, scopeTag, scopeWindowText, shortSnap, snapRecords, toggleSnapPick, validateForm, windowText,
+  credState, credText, defaultEgress, repoHost, secretInputLabel, portDbPlaceholder, scopePlaceholder, snippetLines, validationText, recordValidations, splitMembers,
+  withKeys, maskedColumns, profileColumns, erLegend, dbRecordIcon, untrustedText, MASKING,
 } from '../src/pages/evidence/evidenceModel.js';
 
 // ---------- 纯逻辑 ----------
@@ -262,15 +264,15 @@ const P = `/api/v1/projects/${F.MAIN_PID}`;
 test('EV-01：新建向导、资料分析用的 total / authorized_count 形状不变；带项目时标授权', async () => {
   const { call } = server();
   const plain = await call('GET', '/api/v1/evidence/sources');
-  assert.equal(plain.body.total, 3);
+  assert.equal(plain.body.total, 4);
   assert.equal(plain.body.authorized_count, 0);
-  assert.deepEqual(plain.body.items.map((s) => s.id), ['erp-prod', 'crm-test', 'sample-orders']);
+  assert.deepEqual(plain.body.items.map((s) => s.id), ['erp-prod', 'crm-test', 'restock-svc', 'sample-orders']);
   const mine = await call('GET', `/api/v1/evidence/sources?project_id=${F.MAIN_PID}`);
-  assert.equal(mine.body.authorized_count, 2);
-  assert.deepEqual(mine.body.items.map((s) => s.authorized_for_project), [true, false, true]);
+  assert.equal(mine.body.authorized_count, 3);
+  assert.deepEqual(mine.body.items.map((s) => s.authorized_for_project), [true, false, true, true]);
   assert.deepEqual(mine.body.items[0].last_job, { at: '2026-10-31T22:18:00+08:00', state: 'succeeded' });
   assert.deepEqual((await call('GET', `/api/v1/evidence/sources?project_id=${F.MAIN_PID}&filter=production`)).body.items.map((s) => s.id), ['erp-prod']);
-  assert.deepEqual((await call('GET', `/api/v1/evidence/sources?project_id=${F.MAIN_PID}&filter=authorized`)).body.items.map((s) => s.id), ['erp-prod', 'sample-orders']);
+  assert.deepEqual((await call('GET', `/api/v1/evidence/sources?project_id=${F.MAIN_PID}&filter=authorized`)).body.items.map((s) => s.id), ['erp-prod', 'restock-svc', 'sample-orders']);
 });
 
 test('EV-02 / EV-03 / EV-08：管理员登记并授权，普通用户只能申请、只能测已授权的源', async () => {
@@ -326,7 +328,7 @@ test('EV-13 / EV-14：生产库先预览拿 token，缺 token 返回 428（detai
   assert.match(last.result.snapshot_id, /^20261101-224100-[0-9a-f]{4}$/);
   const snaps = await call('GET', `${P}/evidence/snapshots`);
   assert.equal(snaps.body.items[0].id, last.result.snapshot_id);
-  assert.equal(snaps.body.items.length, 6);
+  assert.equal(snaps.body.items.length, 7);
   assert.equal((await call('POST', `${P}/evidence/jobs/preview`, { source_id: 'crm-test', operation: 'discover' })).body.code, 'source_not_authorized');
 });
 
@@ -344,9 +346,9 @@ test('EV-13 / EV-14：窗口外的任务排队，不推进', async () => {
 test('EV-15～EV-17：列表筛选、取消、续采、生产库重试要重新确认', async () => {
   const { call, tick } = server();
   const all = await call('GET', `${P}/evidence/jobs`);
-  assert.deepEqual(all.body.items.map((j) => j.state), ['running', 'queued', 'succeeded', 'partial', 'failed', 'cancelled', 'succeeded']);
+  assert.deepEqual(all.body.items.map((j) => j.state), ['running', 'queued', 'succeeded', 'partial', 'failed', 'cancelled', 'succeeded', 'succeeded']);
   assert.deepEqual((await call('GET', `${P}/evidence/jobs?state=active`)).body.items.map((j) => j.id), ['job-0131', 'job-0132']);
-  assert.equal((await call('GET', `${P}/evidence/jobs?state=finished`)).body.items.length, 5);
+  assert.equal((await call('GET', `${P}/evidence/jobs?state=finished`)).body.items.length, 6);
   const c = await call('POST', `${P}/evidence/jobs/job-0131/cancel`);
   assert.equal(c.body.state, 'cancelled');
   assert.deepEqual(c.body.actions, ['retry']);
@@ -368,9 +370,9 @@ test('EV-15～EV-17：列表筛选、取消、续采、生产库重试要重新�
 test('EV-12 / EV-18～EV-22：统计、被引用的快照不能清理、对比 9c1d → 5e2b（乳制品区域配额 140 → 150）', async () => {
   const { call } = server();
   const sum = (await call('GET', `${P}/evidence/summary`)).body;
-  assert.deepEqual(sum.snapshots, { count: 5, sources: 2, referenced: 2, last_at: '2026-10-31T22:32:03+08:00' });
+  assert.deepEqual(sum.snapshots, { count: 6, sources: 3, referenced: 2, last_at: '2026-10-31T22:32:03+08:00' });
   assert.equal(sum.referenced_anchors, 23);
-  assert.deepEqual(sum.jobs_this_month, { total: 5, succeeded: 2, partial: 1, failed: 1, cancelled: 1 });
+  assert.deepEqual(sum.jobs_this_month, { total: 6, succeeded: 3, partial: 1, failed: 1, cancelled: 1 });
   assert.equal(sum.running_jobs, 1);
   assert.equal(sum.queued_jobs, 1);
   assert.equal((await call('DELETE', `${P}/evidence/snapshots/${SNAP.s9c}`)).body.code, 'snapshot_referenced');
@@ -405,7 +407,7 @@ test('EV-23～EV-28：分层摘要 42 实体、检索、记录详情按快照变
   assert.equal((await call('GET', `${P}/evidence/record?anchor=db%3Aerp-prod%2Ferp.nope`)).body.code, 'anchor_not_found');
   assert.equal((await call('GET', `${P}/evidence/record?anchor=nope`)).body.code, 'anchor_invalid');
   const lin = (await call('GET', `${P}/evidence/lineage?anchor=db%3Aerp-prod%2Ferp.replenish_std`)).body.items;
-  assert.deepEqual(lin.map((x) => [x.label, x.confidence]), [['erp.goods_category', 'declared'], ['erp.std_catalog', 'inferred'], ['erp.overage_record', 'observed']]);
+  assert.deepEqual(lin.map((x) => [x.label, x.confidence]), [['erp.goods_category', 'declared'], ['erp.std_catalog', 'inferred'], ['erp.overage_record', 'inferred']]);
   const er = (await call('GET', `${P}/evidence/er?snapshot=${SNAP.s9c}&focus=db%3Aerp-prod%2Ferp.replenish_std&depth=2`)).body;
   assert.equal(er.tables.length, 9);
   assert.ok(er.relations.every((r) => r.from_anchor.startsWith('db:erp-prod/erp.')));
@@ -488,9 +490,9 @@ test('自助登记（EV-02 / EV-04 / EV-05）：登录用户直接登记，只�
   assert.equal((await call('POST', '/api/v1/admin/evidence/sources', { ...body, id: 'db-x', provider: 'db-mysql' }, me)).status, 403);
 
   const ids = async (as) => (await call('GET', '/api/v1/evidence/sources', undefined, as)).body.items.map((s) => s.id);
-  assert.deepEqual(await ids(me), ['erp-prod', 'crm-test', 'my-client']);
-  assert.deepEqual(await ids(other), ['erp-prod', 'crm-test']);
-  assert.deepEqual(await ids(admin), ['erp-prod', 'crm-test', 'sample-orders', 'my-client']);
+  assert.deepEqual(await ids(me), ['erp-prod', 'crm-test', 'restock-svc', 'my-client']);
+  assert.deepEqual(await ids(other), ['erp-prod', 'crm-test', 'restock-svc']);
+  assert.deepEqual(await ids(admin), ['erp-prod', 'crm-test', 'restock-svc', 'sample-orders', 'my-client']);
   const mine = (await call('GET', '/api/v1/evidence/sources', undefined, me)).body.items.find((s) => s.id === 'my-client');
   assert.equal(mine.authorization_note, '许可允许静态分析');
 
@@ -630,4 +632,196 @@ test('证据浏览器：快照类别、能打开的锚点、记录图标与键�
   assert.deepEqual(recordPairs({ attrs: { kind: 'endpoint', module: 'erp-client.js', method: 'POST', url: 'https://erp.example.com/api/orders' } }), [['模块', 'erp-client.js'], ['地址', 'POST https://erp.example.com/api/orders']]);
   assert.equal(firstTreeAnchor({ domains: [{ entities: [] }, { entities: [{ anchor: 'a' }, { anchor: 'b' }] }] }), 'a');
   assert.equal(firstTreeAnchor(null), null);
+});
+
+// ---------- F14：数据库、代码仓库连接器对接真实接口的形状 ----------
+
+const CODE_PROVIDER = {
+  id: 'code-repo', kind: 'code', capabilities: ['snapshot'],
+  cred_fields: [{ name: 'repo_url', label: '仓库地址' }, { name: 'ref', label: '分支或提交' }, { name: 'token', label: '访问令牌', secret: true }],
+};
+
+test('凭据只看写没写过：引用给不给都能判断，从不回显；输入框按提供方的密钥字段命名', () => {
+  const at = '2026-10-28T10:20:00+08:00';
+  const now = new Date(2026, 10, 1, 22, 41).getTime();
+  assert.deepEqual(credState({ cred_ref: 'cred://erp-prod/3', secret_fields: [{ name: 'password', set: true, written_at: at }] }), { needed: true, set: true, ref: 'cred://erp-prod/3', at });
+  // 普通用户看别人登记的：cred_ref 为空，secret_fields 照给
+  assert.deepEqual(credState({ cred_ref: null, secret_fields: [{ name: 'password', set: true, written_at: at }] }), { needed: true, set: true, ref: null, at });
+  assert.deepEqual(credState({ cred_ref: null, secret_fields: [{ name: 'token', set: false, written_at: null }] }), { needed: true, set: false, ref: null, at: null });
+  assert.equal(credState({ secret_fields: [] }).needed, false);
+  assert.equal(credText(credState({ secret_fields: [{ name: 'password', set: true, written_at: at }] }), now), `已设置 · ${fmtWhen(at, now)}`);
+  assert.equal(credText({ set: true, at: null }), '已设置');
+  assert.equal(secretInputLabel({ label: '访问令牌' }), '写入新访问令牌');
+  assert.equal(secretInputLabel(null), '写入新密码');
+  assert.equal(portDbPlaceholder({ id: 'db-postgres' }), '5432 / crm');
+  assert.equal(portDbPlaceholder({ id: 'db-mysql' }), '3306 / erp');
+  assert.equal(scopePlaceholder(CODE_PROVIDER), '如 src/main/java/*');
+  assert.deepEqual(MASKING.map(([k]) => k), ['mask-v1']);
+  assert.equal(emptyForm({}).masking, 'mask-v1');
+});
+
+test('代码仓库登记：只认 https，出口缺省是仓库主机的 443，范围可以不写，令牌走 secret', () => {
+  assert.equal(repoHost('https://git.example.com/demo/restock-service.git'), 'git.example.com');
+  assert.equal(repoHost('https://ci@Git.Example.com:8443/x.git'), 'git.example.com');
+  assert.equal(repoHost('http://git.example.com/x.git'), null);
+  assert.equal(repoHost('git@git.example.com:x.git'), null);
+  assert.equal(defaultEgress(CODE_PROVIDER, { conn: { repo_url: 'https://git.example.com/demo/x.git' } }), 'git.example.com:443');
+  assert.equal(defaultEgress(CODE_PROVIDER, { conn: { repo_url: 'git.example.com/x' } }), '');
+  assert.equal(defaultEgress(MYSQL, { conn: { host: '192.0.2.30' }, port_db: '3306 / pos' }), '192.0.2.30:3306');
+  const form = {
+    ...emptyForm({ username: 'zhangsan' }), provider: 'code-repo', display_name: '补货单服务代码', id: 'restock-svc',
+    conn: { repo_url: 'https://git.example.com/demo/restock-service.git', ref: 'main' }, scope: [], egress: 'git.example.com:443', password: 'tok',
+  };
+  const v = validateForm(form, { provider: CODE_PROVIDER, admin: true, tested: true });
+  assert.deepEqual(v.errors, {});
+  assert.deepEqual(v.done, [true, true, true, true, true, true]);
+  assert.equal(validateForm({ ...form, conn: { ...form.conn, repo_url: 'http://git.example.com/x.git' } }, { provider: CODE_PROVIDER }).errors['conn.repo_url'], '只支持 https 地址');
+  assert.ok(validateForm({ ...form, scope: [] }, { provider: MYSQL }).errors.scope);
+  const body = registerBody(form, CODE_PROVIDER, { grantProjectId: 'p1' });
+  assert.deepEqual(body.connection, { repo_url: 'https://git.example.com/demo/restock-service.git', ref: 'main' });
+  assert.deepEqual(body.secret, { token: 'tok' });
+  assert.deepEqual(body.egress, [{ host: 'git.example.com', port: 443 }]);
+  assert.deepEqual(body.scope_allowlist, []);
+  assert.equal(body.masking_policy, 'mask-v1');
+});
+
+test('采集确认：内核给的窗口是对象，样本行数为 0 时不写；代码仓库快照详情展开成仓库和提交', () => {
+  const now = new Date(2026, 10, 1, 14, 0).getTime();
+  const pairs = previewPairs({
+    scope_text: 'erp.goods_category、erp.replenish_std', window: { days: 'daily', start: '22:00', end: '06:00', tz: 'Asia/Shanghai' }, in_window_now: false,
+    rate_limit: { concurrency: 2, qps: 20, query_timeout_s: 30 }, estimate: null, readonly_methods: ['只读账号 · 只读会话 · 语句白名单'], masking: { policy: 'mask-v1', sample_rows: 0 },
+  }, now);
+  assert.equal(pairs[1][1], '22:00 – 06:00（现在 14:00，不在窗口内，同意后排队到 22:00 开始）');
+  assert.equal(pairs[4][1], '只读账号 · 只读会话 · 语句白名单');
+  assert.equal(pairs[5][1], 'mask-v1');
+  assert.equal(previewPairs({ window: null, masking: { policy: 'none', sample_rows: 0 } }, now)[5][1], '—');
+  const detail = { provider: 'code-repo@0.1.0', coverage_pct: 100, manifest: { artifact: { ...CODE_REPO }, scope: ['src/main/java/*'], masking_policy: 'none' }, inventory: { skipped: [] } };
+  assert.deepEqual(snapshotPairs(detail), [
+    ['仓库', CODE_REPO.repo_url], ['提交', `main · ${CODE_REPO.commit.slice(0, 12)}`], ['连接器', 'code-repo@0.1.0'], ['范围', 'src/main/java/*'], ['覆盖率', '100%'],
+  ]);
+});
+
+test('数据库记录详情：主键外键从 ER 补、被遮蔽的列、画像按列、图例只列出现的关系、ER 连线落在列对上', () => {
+  const fields = [{ name: 'id', type: 'bigint', masked: false }, { name: 'store_code', type: 'varchar(16)' }, { name: 'phone', type: 'varchar(20)', masked: true }];
+  const er = { fields: [{ name: 'id', pk: true, fk: false }, { name: 'store_code', pk: false, fk: true }, { name: 'phone', masked: true }] };
+  assert.deepEqual(withKeys(fields, er).map((f) => [f.name, f.pk, f.fk, f.masked]), [['id', true, false, false], ['store_code', false, true, false], ['phone', false, false, true]]);
+  // EV-25 自己带了就用自己的
+  assert.equal(withKeys([{ name: 'id', pk: false }], er)[0].pk, false);
+  assert.deepEqual(withKeys(fields, null).map((f) => f.pk), [false, false, false]);
+  assert.deepEqual([...maskedColumns({ fields: withKeys(fields), samples: { masked_columns: ['contact_name'] } })].sort(), ['contact_name', 'phone']);
+  assert.deepEqual(profileColumns([{ column: 'a', top_k: [{ value: 'x', pct: 50 }] }, { column: 'b' }, { column: 'c', stats: { min: 1, max: 2, null_pct: 0 } }]).map((p) => p.column), ['a', 'c']);
+  assert.deepEqual(erLegend([{ confidence: 'declared' }, { confidence: 'inferred' }, { confidence: 'declared' }]), [['declared', '外键'], ['inferred', '推断']]);
+  assert.equal(dbRecordIcon('db:erp-prod/erp.view:v_orders'), 'layers');
+  assert.equal(dbRecordIcon('db:erp-prod/erp.proc:calc_quota'), 'zap');
+  assert.equal(dbRecordIcon('db:erp-prod/erp.store'), 'table');
+  // 外键的 from / to 是表锚点，列对在 columns：连线落在 c.x 和 a.id 那两行，和用列锚点时一样
+  const byTable = { ...ER, relations: ER.relations.map((r) => ({ ...r, from_anchor: parseDbAnchor(r.from_anchor).tableAnchor, to_anchor: parseDbAnchor(r.to_anchor).tableAnchor, columns: [[parseDbAnchor(r.from_anchor).field, parseDbAnchor(r.to_anchor).field]] })) };
+  const a = layoutEr(ER, 'db:s/erp.c', { domainOf: (x) => DOM[x] });
+  const b = layoutEr(byTable, 'db:s/erp.c', { domainOf: (x) => DOM[x] });
+  assert.deepEqual(b.edges.map((e) => e.d), a.edges.map((e) => e.d));
+  // 没有列对就落在表头
+  const head = layoutEr({ ...byTable, relations: byTable.relations.map(({ columns, ...r }) => r) }, 'db:s/erp.c', { domainOf: (x) => DOM[x] });
+  assert.match(head.edges[0].d, new RegExp(`^M245 ${head.boxes['db:s/erp.c'].y + 12} `));
+});
+
+test('代码记录：锚点能打开、图标、键值、片段行号、校验、成员里的规则单列、来源标签', () => {
+  const recs = codeRecords();
+  const byName = (n) => recs.find((r) => r.name === n);
+  const order = byName('Order');
+  assert.equal(order.id, 'code:restock-svc/sym:com::example::restock::order::Order');
+  assert.deepEqual(browseTarget(order.id), { source: 'restock-svc', table: order.id, field: null });
+  assert.deepEqual(browseTarget('code:restock-svc/file:src%2Fa%2Ejava#L3-L9'), { source: 'restock-svc', table: 'code:restock-svc/file:src%2Fa%2Ejava#L3-L9', field: null });
+  const rule = recs.find((r) => r.type === 'rule' && r.name === 'Max');
+  assert.equal(rule.id, 'code:restock-svc/rule:com::example::restock::order::OrderItem::requestQty::Max');
+  assert.equal(recordIcon({ anchor: rule.id, type: 'rule' }), 'scale');
+  const route = recs.find((r) => r.attrs.kind === 'route' && r.attrs.path === '/api/orders');
+  assert.equal(route.id, 'code:restock-svc/route:POST%20%2Fapi%2Forders');
+  assert.equal(route.attrs.handler, byName('OrderController.create').id);
+  assert.equal(recordIcon({ anchor: route.id, type: route.type }), 'branch');
+  assert.deepEqual(recordPairs(route), [['位置', 'src/main/java/com/example/restock/order/web/OrderController.java:31'], ['模块', 'com.example.restock.order.web'], ['路由', 'POST /api/orders'], ['来源', 'javalang']]);
+  assert.deepEqual(recordPairs(byName('requestQty')).filter(([k]) => ['类型', '列'].includes(k)), [['类型', 'Integer'], ['列', 'request_qty']]);
+  assert.deepEqual(recordPairs(order).find(([k]) => k === '表'), ['表', 'replenish_order']);
+  assert.deepEqual(recordPairs(byName('OrderRepository.findPendingByStore')).find(([k]) => k === '涉及表'), ['涉及表', 'replenish_order']);
+  assert.deepEqual(recordPairs(byName('OrderStatus')).find(([k]) => k === '取值'), ['取值', 'DRAFT、SUBMITTED、APPROVED、REJECTED']);
+  assert.equal(recordKindText(byName('OrderStatus')), '枚举');
+  const lines = snippetLines(byName('OrderService.submit'));
+  assert.deepEqual(lines[0], { n: 27, text: '@Transactional' });
+  assert.equal(lines.at(-1).n, 27 + lines.length - 1);
+  assert.equal(snippetLines({ attrs: { snippet: Array.from({ length: 40 }, (_, i) => `l${i}`).join('\n') } }).length, 30);
+  assert.equal(snippetLines({ attrs: {} }), null);
+  assert.deepEqual(recordValidations(byName('requestQty')), ['@Min(1)', '@Max(120)']);
+  assert.equal(validationText({ name: '@Size', args: { max: 20 } }), '@Size(max=20)');
+  assert.equal(validationText({ annotation: '@NotNull' }), '@NotNull');
+  const split = splitMembers([{ anchor: byName('orderNo').id }, { anchor: rule.id }]);
+  assert.deepEqual([split.members.length, split.rules.length], [1, 1]);
+  assert.equal(untrustedText('code'), '来自代码仓库');
+  assert.equal(untrustedText('rea'), '来自目标程序');
+  assert.equal(snapshotKind({ provider: 'code-repo@0.1.0' }, []), 'code');
+});
+
+test('mock 对齐真实形状：提供方清单同网关，测试连接按类型回 checks，访问审计只记语句摘要', async () => {
+  const { call } = server();
+  const items = (await call('GET', '/api/v1/evidence/providers')).body.items;
+  assert.deepEqual(items.map((p) => [p.id, p.version, p.kind]), [['db-mysql', '0.1.0', 'db'], ['db-postgres', '0.1.0', 'db'], ['code-repo', '0.1.0', 'code'], ['rea-static', '0.1.0', 'rea']]);
+  assert.deepEqual(items.find((p) => p.id === 'db-mysql').capabilities, ['discover', 'snapshot', 'sample']);
+  assert.deepEqual(items.find((p) => p.id === 'code-repo').cred_fields.filter((f) => f.secret).map((f) => f.name), ['token']);
+  const db = (await call('POST', '/api/v1/evidence/sources/erp-prod/test', { project_id: F.MAIN_PID })).body;
+  assert.deepEqual(db.checks.map((c) => [c.name, c.ok]), [['connectivity', true], ['readonly_account', true], ['statement_allowlist', true]]);
+  assert.ok(db.ticket.id_prefix);
+  const code = (await call('POST', `/api/v1/evidence/sources/${CODE.id}/test`, { project_id: F.MAIN_PID })).body;
+  assert.deepEqual(code.checks.map((c) => [c.name, c.ok, c.detail]), [['connectivity', true, 'git.example.com:443 · main']]);
+  const rea = (await call('POST', '/api/v1/evidence/sources/sample-orders/test', { project_id: F.MAIN_PID })).body;
+  assert.equal(rea.ticket, null);
+  await call('DELETE', `/api/v1/admin/evidence/sources/${CODE.id}/secret`);
+  const off = (await call('POST', `/api/v1/evidence/sources/${CODE.id}/test`, { project_id: F.MAIN_PID })).body;
+  assert.equal(off.ok, false);
+  const src = (await call('GET', `/api/v1/evidence/sources?project_id=${F.MAIN_PID}`)).body.items.find((s) => s.id === CODE.id);
+  assert.deepEqual([src.cred_ref, src.secret_fields], [null, [{ name: 'token', set: false, written_at: null }]]);
+  const rot = (await call('PUT', `/api/v1/admin/evidence/sources/${CODE.id}/secret`, { fields: { token: 'new' } })).body;
+  assert.equal(rot.cred_ref, 'cred://restock-svc/1');
+  const log = (await call('GET', `/api/v1/evidence/sources/erp-prod/access-log?project_id=${F.MAIN_PID}`)).body;
+  assert.ok(log.items.every((x) => /^(select|show):[0-9a-f]{16}$/.test(x.statement_digest)));
+  assert.ok(log.items.every((x) => x.job_id));
+  const pv = (await call('POST', `${P}/evidence/jobs/preview`, { source_id: 'erp-prod', operation: 'discover' })).body;
+  assert.deepEqual(pv.summary.window, { days: 'daily', start: '22:00', end: '06:00', tz: 'Asia/Shanghai' });
+  assert.deepEqual(pv.summary.readonly_methods, ['只读账号 · 只读会话 · 语句白名单']);
+  assert.equal((await call('POST', `${P}/evidence/jobs/preview`, { source_id: CODE.id, operation: 'discover' })).body.code, 'invalid_argument');
+});
+
+test('证据浏览器读代码仓库快照：按包分组、记录详情带片段和成员、字段的成员是校验规则、路由指向处理方法、ER 为空；库表的相邻记录有代码调用方', async () => {
+  const { call, tick, events } = server();
+  const q = `snapshot=${SNAP.code}`;
+  const tree = (await call('GET', `${P}/evidence/summary-tree?${q}`)).body;
+  assert.equal(tree.untrusted_content, true);
+  assert.deepEqual(tree.domains.map((d) => d.name), ['com.example.restock.order', 'com.example.restock.order.web', 'com.example.restock.order.service', 'com.example.restock.order.repo']);
+  const order = tree.domains[0].entities.find((e) => e.name === 'Order');
+  assert.equal(order.mapped_to.key, 'replenish_order');
+  const rec = (await call('GET', `${P}/evidence/record?anchor=${encodeURIComponent(order.anchor)}&${q}`)).body;
+  assert.equal(rec.attrs.snippet.split('\n')[0], '@Entity');
+  assert.deepEqual(rec.attrs.loc, { file: 'src/main/java/com/example/restock/order/Order.java', line: 12, end_line: 40 });
+  assert.deepEqual(rec.fields.map((f) => [f.name, f.type]), [['orderNo', 'String'], ['storeCode', 'String'], ['categoryCode', 'String'], ['status', 'OrderStatus']]);
+  const field = (await call('GET', `${P}/evidence/record?anchor=${encodeURIComponent(rec.fields[0].anchor)}&${q}`)).body;
+  assert.deepEqual(field.attrs.validations, ['@NotNull', '@Size(max = 20)']);
+  assert.deepEqual(splitMembers(field.fields).rules.map((f) => [f.name, f.type]), [['NotNull', '@NotNull'], ['Size', '@Size']]);
+  const hits = (await call('GET', `${P}/evidence/search?${q}&q=orders&type=operation`)).body;
+  const route = hits.items.find((h) => h.anchor === 'code:restock-svc/route:POST%20%2Fapi%2Forders');
+  const routeRec = (await call('GET', `${P}/evidence/record?anchor=${encodeURIComponent(route.anchor)}&${q}`)).body;
+  const handler = (await call('GET', `${P}/evidence/record?anchor=${encodeURIComponent(routeRec.attrs.handler)}&${q}`)).body;
+  assert.equal(handler.name, 'OrderController.create');
+  const lin = (await call('GET', `${P}/evidence/lineage?anchor=${encodeURIComponent(handler.anchor)}&${q}`)).body.items;
+  assert.deepEqual(lin.map((x) => [x.label, x.basis, x.confidence]), [['OrderService.submit', '调用', 'inferred']]);
+  assert.deepEqual((await call('GET', `${P}/evidence/er?${q}`)).body, { tables: [], relations: [] });
+  const dbLin = (await call('GET', `${P}/evidence/lineage?anchor=${encodeURIComponent('db:erp-prod/erp.replenish_order')}&snapshot=${SNAP.s9c}`)).body.items;
+  const callers = dbLin.filter((x) => x.anchor.startsWith('code:'));
+  assert.deepEqual(callers.map((x) => x.basis), ['代码实体', '代码调用方']);
+  assert.ok(callers.every((x) => browseTarget(x.anchor)?.source === CODE.id));
+  const er = (await call('GET', `${P}/evidence/er?snapshot=${SNAP.s9c}&focus=db%3Aerp-prod%2Ferp.replenish_std`)).body;
+  assert.ok(er.relations.every((r) => !parseDbAnchor(r.from_anchor).field && r.columns[0].length === 2));
+  // 再采一次：代码仓库只能快照，测试环境不用确认，按步推进
+  const j = (await call('POST', `${P}/evidence/jobs`, { source_id: CODE.id, operation: 'snapshot' })).body;
+  assert.deepEqual([j.state, j.phase, j.progress.unit, j.scope_text], ['running', '浅克隆', '步', 'src/main/java/*']);
+  while (tick());
+  const last = events.filter((e) => e.data.id === j.id).at(-1).data;
+  const detail = (await call('GET', `${P}/evidence/snapshots/${last.result.snapshot_id}`)).body;
+  assert.deepEqual([detail.provider, detail.previous, detail.manifest.artifact.commit], ['code-repo@0.1.0', SNAP.code, CODE_REPO.commit]);
 });

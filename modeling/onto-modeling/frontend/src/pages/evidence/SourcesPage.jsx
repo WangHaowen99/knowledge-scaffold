@@ -10,7 +10,7 @@ import { errorText, formatBytes } from '../../api/errors.js';
 import { PageHead, ShellP } from '../../shell/Shell.jsx';
 import { Button, Card, Chip, Icon, Modal, Note, Seg, Table, Toggle, cx } from '../../ui/index.jsx';
 import {
-  ENV, JOB_STATE, KIND_ICON, canManageSource, connText, fmtDuration, fmtWhen, isArtifactSource, monthText, providerKind, scopeWindowText,
+  ENV, JOB_STATE, KIND_ICON, canManageSource, connText, credState, fmtDuration, fmtNum, fmtWhen, isArtifactSource, monthText, providerKind, scopeWindowText,
 } from './evidenceModel.js';
 import { EvdPlg, EvidenceGate, RowMenu, useIsAdmin } from './parts.jsx';
 import { SourceWizard } from './SourceWizard.jsx';
@@ -18,10 +18,12 @@ import { SourceWizard } from './SourceWizard.jsx';
 const FILTERS = [['all', '全部'], ['authorized', '已授权'], ['production', '生产环境']];
 const OP_LABEL = { snapshot: '快照', discover: '发现', sample: '补采样本', test: '测试连接' };
 
+// 只看写没写过（secret_fields），引用只有管理员和登记人看得到
 function CredCell({ s }) {
-  if (s.cred_ref) return <span className="row g4"><Icon name="lock" size={12} /><span className="anchor">{s.cred_ref}</span></span>;
-  if ((s.secret_fields || []).length) return <span className="sm" style={{ color: 'var(--amber2)' }}>凭据未写入</span>;
-  return <span className="faint sm">无需凭据</span>;
+  const c = credState(s);
+  if (!c.needed && !c.ref) return <span className="faint sm">无需凭据</span>;
+  if (!c.set) return <span className="sm" style={{ color: 'var(--amber2)' }}>凭据未写入</span>;
+  return <span className="row g4"><Icon name="lock" size={12} />{c.ref ? <span className="anchor">{c.ref}</span> : <span className="sm">已设置</span>}</span>;
 }
 
 function LastJob({ job }) {
@@ -40,13 +42,33 @@ function AuditModal({ source, onClose }) {
   const { api } = useApp();
   const { pid } = useProject();
   const [rows, setRows] = useState(null);
+  const [cursor, setCursor] = useState(null);
+  const [more, setMore] = useState(false);
+  const fetchPage = useCallback((after) => api.evidenceAccessLog(source.id, { project_id: pid, cursor: after || undefined }), [api, pid, source]);
   useEffect(() => {
     if (!source) return;
     setRows(null);
-    api.evidenceAccessLog(source.id, { project_id: pid }).then((r) => setRows(r.items || [])).catch((e) => { toast(errorText(e), 'alert'); setRows([]); });
-  }, [api, pid, source]);
+    setCursor(null);
+    fetchPage().then((r) => { setRows(r.items || []); setCursor(r.next_cursor || null); }).catch((e) => { toast(errorText(e), 'alert'); setRows([]); });
+  }, [source, fetchPage]);
+  // 数据库快照的访问记录按语句逐条记，一页放不下时往后翻（EV-09 next_cursor）
+  const loadMore = async () => {
+    setMore(true);
+    try {
+      const r = await fetchPage(cursor);
+      setRows((x) => [...(x || []), ...(r.items || [])]);
+      setCursor(r.next_cursor || null);
+    } catch (e) { toast(errorText(e), 'alert'); } finally { setMore(false); }
+  };
   return (
-    <Modal open={!!source} onClose={onClose} icon="list" title={`访问审计 · ${source?.display_name || ''}`} w={760} foot={<Button onClick={onClose}>关闭</Button>}>
+    <Modal
+      open={!!source}
+      onClose={onClose}
+      icon="list"
+      title={`访问审计 · ${source?.display_name || ''}`}
+      w={760}
+      foot={<>{cursor ? <Button disabled={more} onClick={loadMore}>加载更多</Button> : null}<Button onClick={onClose}>关闭</Button></>}
+    >
       {rows === null ? <div className="sm muted">正在读取…</div> : rows.length ? (
         <Table
           compact
@@ -55,8 +77,8 @@ function AuditModal({ source, onClose }) {
             <span className="sm muted" style={{ whiteSpace: 'nowrap' }}>{fmtWhen(r.at)}</span>,
             <span className="mono" style={{ whiteSpace: 'nowrap' }}>{r.job_id || '—'}</span>,
             <span className="sm" style={{ whiteSpace: 'nowrap' }}>{OP_LABEL[r.operation] || r.operation}</span>,
-            <span className="mono sm" style={{ color: 'var(--ink2)' }}>{r.statement_digest}</span>,
-            <span className="sm num">{r.rows.toLocaleString('en-US')}</span>,
+            <span className="mono sm" style={{ color: 'var(--ink2)' }}>{r.statement_digest || '—'}</span>,
+            <span className="sm num">{r.rows == null ? '—' : fmtNum(r.rows)}</span>,
             <span className="sm num muted" style={{ whiteSpace: 'nowrap' }}>{r.bytes ? formatBytes(r.bytes) : '—'}</span>,
             <span className="sm num muted" style={{ whiteSpace: 'nowrap' }}>{fmtDuration(r.duration_ms)}</span>,
           ])}

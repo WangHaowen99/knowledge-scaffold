@@ -1,10 +1,11 @@
-// 证据浏览器右栏：非数据库快照（程序逆向等）的记录详情（EV-25）——位置与属性、成员、关系（EV-27）、被引用（EV-26）。
+// 证据浏览器右栏：非数据库快照（程序逆向、代码仓库）的记录详情（EV-25）——位置与属性、代码片段、SQL、校验、成员、
+// 关系（EV-27）、被引用（EV-26）。
 // 数据库表的详情在 SchemaPage 的 Detail；「被引用」两边共用。
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { Button, Chip, Icon, KV, cx } from '../../ui/index.jsx';
 import { backlinkView } from '../studio/studioModel.js';
-import { parseAnchor, recordIcon, recordKindText, recordPairs } from './evidenceModel.js';
+import { parseAnchor, recordIcon, recordKindText, recordPairs, recordValidations, snippetLines, splitMembers } from './evidenceModel.js';
 import { ConfChip, UntrustedChip, copyText } from './parts.jsx';
 
 export function WhereUsed({ used, pid, emptyText }) {
@@ -32,10 +33,30 @@ const anchorTail = (anchor) => {
   try { return decodeURIComponent(path.slice(i + 1)); } catch { return path; }
 };
 
-export function RecordDetail({ record, used, lineage, onPick, pid }) {
-  const members = record.fields || [];
+// 代码片段：等宽，行号从记录所在行起
+function Snippet({ lines }) {
+  return (
+    <div className="code evp-snippet" style={{ fontSize: 11, padding: '8px 0', overflowX: 'auto', whiteSpace: 'pre' }}>
+      {lines.map((l) => (
+        <div key={l.n} style={{ display: 'flex' }}>
+          <span className="faint num" style={{ width: 40, flex: 'none', textAlign: 'right', paddingRight: 10, userSelect: 'none' }}>{l.n}</span>
+          <span>{l.text || ' '}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function RecordDetail({ record, kind, used, lineage, onPick, pid }) {
+  const { members, rules } = splitMembers(record.fields);
+  // 有校验规则记录时列记录（能点开、带置信度），没有时列字段上的 attrs.validations
+  const checks = rules.length ? [] : recordValidations(record);
+  const snippet = snippetLines(record);
+  const link = (anchor) => <a className="link mono" style={{ fontSize: 12, wordBreak: 'break-all' }} onClick={() => onPick(anchor)}>{anchorTail(anchor)}</a>;
   const pairs = recordPairs(record).map(([k, v]) => [k, <span className={cx(k !== '来源' && 'mono')} style={{ fontSize: 12, wordBreak: 'break-all' }}>{v}</span>]);
-  if (record.parent_anchor) pairs.unshift(['上级', <a className="link mono" style={{ fontSize: 12 }} onClick={() => onPick(record.parent_anchor)}>{anchorTail(record.parent_anchor)}</a>]);
+  if (record.parent_anchor) pairs.unshift(['上级', link(record.parent_anchor)]);
+  // 路由的处理方法（attrs.handler 是方法锚点）
+  if (typeof record.attrs?.handler === 'string') pairs.push(['处理', link(record.attrs.handler)]);
   return (
     <>
       <div style={{ padding: '14px 14px 10px', borderBottom: '1px solid var(--line)' }}>
@@ -45,7 +66,7 @@ export function RecordDetail({ record, used, lineage, onPick, pid }) {
             <div className="b lg ell">{record.name}</div>
             <div className="xs muted">{[record.label, recordKindText(record)].filter(Boolean).join(' · ')}</div>
           </div>
-          {record.untrusted_content ? <UntrustedChip /> : null}
+          {record.untrusted_content ? <UntrustedChip kind={kind} /> : null}
           <Chip tone="line" sm>{record.type}</Chip>
           <ConfChip k={record.confidence} />
         </div>
@@ -56,6 +77,20 @@ export function RecordDetail({ record, used, lineage, onPick, pid }) {
       </div>
       <div className="scroll evd-det" style={{ flex: 1, padding: '12px 14px 14px' }}>
         {pairs.length ? <KV w="44px" pairs={pairs} /> : null}
+        {snippet ? <><div className="sh"><Icon name="code" size={12} />代码</div><Snippet lines={snippet} /></> : null}
+        {record.attrs?.sql ? <><div className="sh"><Icon name="db" size={12} />SQL</div><div className="code" style={{ fontSize: 11 }}>{record.attrs.sql}</div></> : null}
+        {checks.length || rules.length ? (
+          <>
+            <div className="sh"><Icon name="scale" size={12} />校验</div>
+            {checks.map((c) => <div key={c} className="mono" style={{ fontSize: 12, padding: '3px 8px' }}>{c}</div>)}
+            {rules.map((f) => (
+              <div key={f.anchor} className="evd-fl" title="打开" onClick={() => onPick(f.anchor)}>
+                <div><span className="mono b" style={{ fontSize: 12 }}>{f.name}</span><div className="xs muted">{f.type}</div></div>
+                <div><ConfChip k={f.confidence} /></div>
+              </div>
+            ))}
+          </>
+        ) : null}
         {members.length ? (
           <>
             <div className="sh"><Icon name="list" size={12} />成员</div>
@@ -68,8 +103,8 @@ export function RecordDetail({ record, used, lineage, onPick, pid }) {
           </>
         ) : null}
         <div className="sh"><Icon name="graph" size={12} />关系</div>
-        {lineage === null ? <div className="xs muted">正在查…</div> : lineage.length ? lineage.map((l) => (
-          <div className="evd-wu go" key={l.anchor} title="打开" onClick={() => onPick(l.anchor)}>
+        {lineage === null ? <div className="xs muted">正在查…</div> : lineage.length ? lineage.map((l, i) => (
+          <div className="evd-wu go" key={`${l.anchor}-${i}`} title="打开" onClick={() => onPick(l.anchor)}>
             <Icon name={recordIcon({ anchor: l.anchor })} size={14} />
             <div className="grow" style={{ minWidth: 0 }}><b className="mono ell" style={{ fontSize: 12, display: 'block' }}>{l.label}</b><div className="xs muted">{l.basis}</div></div>
             <ConfChip k={l.confidence} />
