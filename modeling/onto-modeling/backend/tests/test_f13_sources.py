@@ -71,15 +71,13 @@ def test_self_service_registration_visibility_and_grants(f13):
 def test_credential_providers_need_admin(f13):
     bob, admin = f13.login("bob"), f13.login("root_a", "admin")
     body = {"id": "orders-db", "display_name": "订单库", "provider": "db-mysql", "environment": "test",
-            "connection": {"host": "db.example.com", "port": 3306, "database": "orders"},
+            "connection": {"host": "db.example.com", "port": 3306, "database": "orders", "username": "reader"},
             "scope_allowlist": ["orders.*"], "egress": [{"host": "db.example.com", "port": 3306}],
             "budget": {"max_rows": 1000, "max_bytes": 1000000, "max_duration_s": 60},
-            "rate_limit": {"concurrency": 1, "qps": 2, "query_timeout_s": 30}, "masking_policy": "mask-v3",
+            "rate_limit": {"concurrency": 1, "qps": 2, "query_timeout_s": 30}, "masking_policy": "mask-v1",
             "owner": "bob"}
     denied = f13.client.post(ADMIN_BASE, json=body, headers=bob)
     assert denied.status_code == 403 and denied.json()["code"] == "forbidden"
-    secret = f13.client.post(ADMIN_BASE, json={**body, "secret": {"password": "x"}}, headers=admin)
-    assert secret.status_code == 501
     incomplete = f13.client.post(ADMIN_BASE, json={**body, "budget": None}, headers=admin)
     assert incomplete.status_code == 400
     created = f13.client.post(ADMIN_BASE, json=body, headers=admin)
@@ -92,8 +90,9 @@ def test_credential_providers_need_admin(f13):
     assert f13.client.patch(f"{ADMIN_BASE}/orders-db", json={"display_name": "x"}, headers=bob).status_code == 403
     unknown = f13.client.post(ADMIN_BASE, json={**body, "id": "other-db", "provider": "nope"}, headers=admin)
     assert unknown.status_code == 409 and unknown.json()["code"] == "provider_not_installed"
-    # 凭据接口这一轮仍是 501
-    assert f13.client.put(f"{ADMIN_BASE}/orders-db/secret", json={}, headers=admin).status_code == 501
+    # 凭据接口只有管理员能调（F14 起开放，见 test_f14_kernel_secrets）
+    assert f13.client.put(f"{ADMIN_BASE}/orders-db/secret", json={"fields": {"password": "x"}},
+                          headers=bob).status_code == 403
 
 
 def test_providers_and_gateway_down(f13):
@@ -104,7 +103,7 @@ def test_providers_and_gateway_down(f13):
     assert rea["max_artifact_bytes"] == 1024 * 1024 * 1024
     db = next(item for item in body["items"] if item["id"] == "db-mysql")
     assert db["input"] == "connection" and db["max_artifact_bytes"] is None
-    assert db["cred_fields"] == [{"name": "password", "secret": True, "label": "密码"}]
+    assert db["cred_fields"] == f13_support.DB_FIELDS
     from app import evidence
 
     assert evidence.available_providers() == {"rea", "db"}

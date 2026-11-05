@@ -125,7 +125,7 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
       secret_fields: (p.cred_fields || []).filter((x) => x.secret).map((x) => ({ name: x.name, set: !!body.secret?.[x.name], written_at: body.secret?.[x.name] ? new Date().toISOString() : null })),
       scope_allowlist: body.scope_allowlist || [], scope_summary: D.scopeSummary(body.scope_allowlist || []),
       egress: body.egress || [], access_window: body.access_window || null, budget: body.budget, rate_limit: body.rate_limit,
-      masking_policy: body.masking_policy || 'mask-v3', authorization_note: body.authorization_note || null, owner: body.owner || user.username,
+      masking_policy: body.masking_policy || 'mask-v1', authorization_note: body.authorization_note || null, owner: body.owner || user.username,
       last_job: null, authorized_for_project: null,
     };
   };

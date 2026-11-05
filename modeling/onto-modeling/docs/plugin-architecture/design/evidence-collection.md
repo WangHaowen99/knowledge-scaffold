@@ -191,6 +191,8 @@ blobs/<sha256>            # REA 原始结果，可选
 | `uploads/<上传ID>/` | 分块上传的临时目录，24 小时没完成就清 |
 | `blobs/<前两位>/<sha256>` | 目标程序、REA 原始结果 |
 | `index/<项目>.sqlite` | 检索索引（FTS5），坏了或没有就从工作区的快照重建 |
+| `salts/<项目>.key` | 项目的脱敏盐（32 字节，0600，首次用时生成）；丢了以后加盐哈希的值和旧快照对不上（F14） |
+| `inventories/<项目>/<源>.json` | 最近一次 `discover` 的清单，EV-13 预览的表数和估算用它（F14） |
 
 **自助登记**：提供方 `self_service=true` 时，EV-02 登录用户就能调，`owner` 固定为本人；EV-04、EV-05 只有登记人和管理员能调；
 EV-01 对别人只列管理员登记的和自己登记的。REA 类必须有 `authorization_note`。`connection` 只有 `{artifact_sha256, artifact_filename,
@@ -301,6 +303,17 @@ JSON 头里网关另加 `module`（要导入的模块）、`scheme`（锚点前�
 | `DELETE /v1/secrets/{源}` | `secret` | `{"source": 源, "delete": true}` | 删这个源的所有版本；回 `{"source", "deleted": 删掉的版本数}` |
 | `POST /v1/sources/{源}/test` | `test` | `TestSpec` | 请求体 `TestSpec`：`{source: {id, provider, connection}, cred_ref, egress, rate_limit}`；按上面的规则核对后同步跑子进程的 `test`（30 秒）；回 `{ok, checks}`，没跑成时多 `error_code`、`error_message`；同时最多 2 个，再多回 503 `busy` |
 
+**内核实现时补的**（F14 内核）：
+
+- 写、删凭据的票据：`job` 填源 ID，`budget` 为 `{}`；测试连接的票据同样。内核不留明文：只在 EV-02/04/06 的这一次请求处理里经过，
+  登记只存 `cred_ref` 和这一版各字段的写入时间。网关的错误消息里万一回显了明文，内核换成「«已遮蔽»」再回给前端。
+- 连接型任务说明在内核建任务时按当前登记现填；登记还没有 `cred_ref` 时不提交，任务直接失败（`credential_missing`）。
+- `discover` 的快照包只取 `inventory.json`（校验同快照），存 `DATA_DIR/evidence/inventories/<项目>/<源>.json`，不提交快照；
+  `sample` 入库时内核把清单改成 `operation: "sample"`、`complete: false`、`scope: [selector]`，其余快照的清单补 `operation`。
+- 清单的 `access_log` 内核只留 `statement_digest`（≤ 80 字）、`rows`、`bytes`、`duration_ms`、可选的 `at`，最多 1000 条，同时存进任务记录。
+- 入库时 `sample`、`profile` 记录在密钥扫描之后再扫一遍个人信息（`app/evidence/pii.py`：手机号、18 位证件号、邮箱、16～19 位银行卡号），
+  命中的整个取值换成「«已遮蔽»」，计进 `masked_hits`；画像里的计数、千分比（`null_pct`、`distinct`、`rows`、`count`、`pct`、`permille`）不扫。
+
 存放：`ONTO_CONNECTOR_SECRETS_DIR`（卷 `connector-secrets`，只网关挂）下 `<源>/<版本>.bin`，AES-256-GCM（附加数据绑定源和版本），
 主密钥来自 `ONTO_CONNECTOR_MASTER_KEY_FILE`（32 字节，base64），文件 0600。任务用说明里的 `cred_ref` 那一版（内核登记里存的是最新版）；
 每个源保留最近 2 个版本，更旧的在没有任务用时删除。没设 `ONTO_CONNECTOR_MASTER_KEY_FILE` 时网关不列连接型提供方；设了但读不出来时
@@ -323,7 +336,10 @@ JSON 头里网关另加 `module`（要导入的模块）、`scheme`（锚点前�
 | 画像 `profile` | `db:<源>/<库>.<表>#profile` | `attrs.rows`、`attrs.columns: [{column, null_pct, distinct, top_k?, stats?}]`，百分比用整数千分比（无浮点） |
 | 样本 `sample` | `db:<源>/<库>.<表>#sample` | `attrs.columns`、`attrs.rows`（已脱敏，最多 20 行）、`attrs.masked_columns` |
 
-范围写法：`crm.*`、`crm.customer`、`erp.store*`（`*` 只在末尾）。画像和样本对每表只读前 `ONTO_CONNECTOR_DB_PROFILE_ROWS`（默认 10000）行。
+范围写法：`crm.*`、`crm.customer`、`erp.store*`（`*` 只在末尾）。内核核对本次范围时按写法判断包含（`crm.c*` 落在 `crm.*` 里）。
+
+内核读画像时比例按 `attrs.pct_scale`（缺省 1000）换成百分比，`top_k` 的 `{value, count}` 按画像行数算；推断关系的 EV-27 依据用
+`overlap_permille`（「取值重合 98%」）或 `basis`；视图的列取 `attrs.columns`；表记录的 `attrs.kind` 缺省按 `table`。画像和样本对每表只读前 `ONTO_CONNECTOR_DB_PROFILE_ROWS`（默认 10000）行。
 
 **脱敏 `mask-v1`**（网关 `conn/masking.py`）：
 

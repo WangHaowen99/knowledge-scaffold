@@ -2,7 +2,7 @@
 
 复用资料转换的网关客户端：同一个地址（ONTO_WEB_CONNECTOR_GATEWAY_URL）、同一把票据密钥（`gateway.issuer()`）、
 不走代理。每个请求签一张一次性票据：建任务用 `snapshot` / `discover`，范围是任务说明的规范 JSON；查进度、取消、
-取快照包、清理用 `job`，范围是 `{"job_id": …}`。
+取快照包、清理用 `job`，范围是 `{"job_id": …}`。连接型提供方（F14，spec §8）另有写、删凭据（`secret`）和测试连接（`test`）。
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ DOWN_TTL_S = 10              # 网关不通的结果也缓存一会儿：提供�
 STATUS_TIMEOUT_S = 10
 SUBMIT_TIMEOUT_S = 600       # 目标程序可能有几百 MB，边收边转给旁路容器
 BUNDLE_TIMEOUT_S = 300
+TEST_TIMEOUT_S = 120         # 测试连接要连业务系统、做只读自检
 _COPY_BYTES = 1024 * 1024
 _catalog: tuple[str, float, list[dict] | None] | None = None
 _catalog_lock = threading.Lock()
@@ -174,6 +175,50 @@ def delete(job_id: str, budget: dict) -> None:
     request = urllib.request.Request(_url(f"/v1/jobs/{job_id}"), method="DELETE",
                                      headers={"Authorization": f"Bearer {_job_ticket(job_id, budget)}"})
     _call(request, STATUS_TIMEOUT_S)
+
+
+# ---------------------------------------------------------------------------
+# 凭据与测试连接（spec §8）。明文只在 put_secret 的请求体里经过一次：不记日志、不进异常信息
+# ---------------------------------------------------------------------------
+
+
+def _json_request(method: str, path: str, token: str, payload: dict | None) -> urllib.request.Request:
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
+    headers = {"Authorization": f"Bearer {token}"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    return urllib.request.Request(_url(path), data=data, method=method, headers=headers)
+
+
+def ticket_prefix(token: str) -> str:
+    """票据 jti 的前 8 位（EV-08 的 `ticket.id_prefix`）；只解码载荷，不验签。"""
+    try:
+        import jwt
+
+        return str(jwt.decode(token, options={"verify_signature": False}).get("jti") or "")[:8]
+    except Exception:  # noqa: BLE001 - 只用于展示
+        return ""
+
+
+def put_secret(source_id: str, fields: dict[str, str]) -> dict:
+    """`PUT /v1/secrets/{源}`：回 `{cred_ref, written_at}`。"""
+    token = _ticket(source_id, "secret", spec.secret_scope(source_id, fields), {})
+    request = _json_request("PUT", f"/v1/secrets/{urllib.parse.quote(source_id)}", token, {"fields": dict(fields)})
+    return _call(request, STATUS_TIMEOUT_S)
+
+
+def delete_secret(source_id: str) -> None:
+    """`DELETE /v1/secrets/{源}`：删这个源的所有版本。"""
+    token = _ticket(source_id, "secret", spec.secret_delete_scope(source_id), {})
+    _call(_json_request("DELETE", f"/v1/secrets/{urllib.parse.quote(source_id)}", token, None), STATUS_TIMEOUT_S)
+
+
+def test_source(test_spec: dict) -> tuple[dict, str]:
+    """`POST /v1/sources/{源}/test`：回 (`{ok, checks}`, 票据 jti 前缀)。"""
+    source_id = test_spec["source"]["id"]
+    token = _ticket(source_id, "test", spec.scope_hash(test_spec), {})
+    request = _json_request("POST", f"/v1/sources/{urllib.parse.quote(source_id)}/test", token, test_spec)
+    return _call(request, TEST_TIMEOUT_S), ticket_prefix(token)
 
 
 def bundle(job_id: str, budget: dict, target: Path, max_bytes: int) -> int:

@@ -13,7 +13,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import RECORD_TYPES, storage
+from . import RECORD_TYPES, dbview, storage
 from .index import workspace_snapshots
 
 REFERENCE_DIRS = ("ontology", "reports")
@@ -24,19 +24,25 @@ WHERE_USED_MAX = 500
 LINEAGE_MAX = 100
 CHILDREN_MAX = 50
 SYSTEM_SCHEMES = ("bin", "db", "code", "ui", "api", "cli", "log")
-# 系统锚点：`<scheme>:<源>/<路径类型>:<名字>`；名字里的 `/ . # @ | [ ]` 和空格都已百分号编码
-ANCHOR = re.compile(r"\b(?:bin|db|code|ui|api|cli|log):[a-z0-9][a-z0-9-]{1,40}/[A-Za-z]+:"
+# 系统锚点：`<scheme>:<源>/<路径类型>:<名字>`，数据库是 `db:<源>/<库>.<表>[.<列>]`（§9）；
+# 名字里的 `/ . # @ | [ ]` 和空格都已百分号编码
+ANCHOR = re.compile(r"\b(?:(?:bin|code|ui|api|cli|log):[a-z0-9][a-z0-9-]{1,40}/[A-Za-z]+:|db:[a-z0-9][a-z0-9-]{1,40}/)"
                     r"[^\s`'\"<>()\[\]|,;，。；、：（）【】「」]+")
 ANCHOR_PREFIX = re.compile(r"^(?:bin|db|code|ui|api|cli|log):[a-z0-9][a-z0-9-]{1,40}/")
 _ANCHOR_PARTS = re.compile(r"^(bin|db|code|ui|api|cli|log):([a-z0-9][a-z0-9-]{1,40})/([A-Za-z]+):(.+)$")
 RELATION_VERBS = {"calls": "调用", "handles": "处理", "exposes": "暴露", "requests": "请求", "inherits": "继承",
-                  "imports": "导入", "invokes_native": "原生调用"}
+                  "imports": "导入", "invokes_native": "原生调用", "references": "引用"}
 
 
 def parse_anchor(anchor: str) -> dict | None:
+    """系统锚点 → {scheme, source_id, kind, name}；数据库锚点的 kind 是 `db`，name 是 `<库>.<表>…`。"""
     matched = _ANCHOR_PARTS.match(anchor or "")
     if not matched:
-        return None
+        db = dbview.parse(anchor)
+        if db is None:
+            return None
+        return {"scheme": "db", "source_id": db["source_id"], "kind": "db",
+                "name": anchor.split("/", 1)[1]}
     return {"scheme": matched.group(1), "source_id": matched.group(2), "kind": matched.group(3),
             "name": matched.group(4)}
 
@@ -290,23 +296,36 @@ def untrusted(connection: sqlite3.Connection, snapshot_ids) -> bool:
     return False
 
 
-def _member_type(child: sqlite3.Row, attrs: dict) -> str:
-    return str(attrs.get("signature") or attrs.get("type") or attrs.get("kind") or child["type"])
+def _member_type(child: sqlite3.Row, body: dict, attrs: dict) -> str:
+    """成员的类型：字段类型在记录顶层（`data_type`，§9、§10），方法取签名，都没有取 attrs 里的类型或种类。"""
+    return str(body.get("data_type") or attrs.get("data_type") or attrs.get("signature") or attrs.get("type")
+               or attrs.get("kind") or child["type"])
 
 
 def record_view(connection: sqlite3.Connection, row: sqlite3.Row, snapshot: sqlite3.Row) -> dict:
-    """EvidenceRecord：记录本身，`fields` 列它的成员（类的字段和方法，最多 50 条，`type` 填签名或类型）。"""
+    """EvidenceRecord：记录本身，`fields` 列它的下级（类的字段、方法，代码快照还有校验规则；最多 50 条，`type` 填类型或签名）。"""
     record = _record(row)
     evidence = record.get("evidence") if isinstance(record.get("evidence"), dict) else {}
+    if row["anchor"].startswith("db:"):
+        view = _base_view(connection, row, snapshot, record, evidence, [])
+        return dbview.enrich_record(connection, view, row["snapshot_id"], snapshot["source_id"])
     children = connection.execute(
-        "SELECT * FROM records WHERE snapshot_id = ? AND parent = ? AND type IN ('field', 'operation') "
+        "SELECT * FROM records WHERE snapshot_id = ? AND parent = ? AND type IN ('field', 'operation', 'rule') "
         "ORDER BY type, name LIMIT ?", (row["snapshot_id"], row["anchor"], CHILDREN_MAX)).fetchall()
     fields = []
     for child in children:
         body = _record(child)
         attrs = body.get("attrs") if isinstance(body.get("attrs"), dict) else {}
-        fields.append({"name": child["name"], "type": _member_type(child, attrs), "note": child["label"] or "",
-                       "confidence": child["confidence"] or "observed", "masked": False, "anchor": child["anchor"]})
+        member = {"name": child["name"], "type": _member_type(child, body, attrs), "note": child["label"] or "",
+                  "confidence": child["confidence"] or "observed", "masked": False, "anchor": child["anchor"]}
+        if isinstance(body.get("nullable"), bool):
+            member["nullable"] = body["nullable"]
+        fields.append(member)
+    return _base_view(connection, row, snapshot, record, evidence, fields)
+
+
+def _base_view(connection: sqlite3.Connection, row: sqlite3.Row, snapshot: sqlite3.Row, record: dict,
+               evidence: dict, fields: list[dict]) -> dict:
     return {
         "anchor": row["anchor"], "type": row["type"], "name": row["name"], "label": row["label"],
         "parent_anchor": row["parent"], "confidence": row["confidence"] or "observed",
@@ -318,7 +337,9 @@ def record_view(connection: sqlite3.Connection, row: sqlite3.Row, snapshot: sqli
 
 
 def lineage(connection: sqlite3.Connection, snapshot_id: str, anchor: str) -> list[dict]:
-    """关系记录里的邻居，加上级。"""
+    """关系记录里的邻居，加上级。数据库锚点给外键邻居和推断关系（basis 用记录的 `attrs.basis`）。"""
+    if anchor.startswith("db:"):
+        return dbview.lineage(connection, snapshot_id, anchor, LINEAGE_MAX)
     items: list[dict] = []
 
     def label_of(other: str | None, fallback: str) -> str:
@@ -397,21 +418,26 @@ def summary_tree(connection: sqlite3.Connection, root: Path, refs: References, s
     """EV-23：实体和操作按 `attrs.module` 分组（模块记录本身就是组，不列）；mapped_to 是引用了它的本体条目。"""
     from ..services import project_events
 
+    def mapped(anchor: str) -> dict | None:
+        for rel, _line in refs.anchors.get(anchor, []):
+            entries = project_events.entry_refs(root, [rel])
+            if entries:
+                return entries[0]
+        return None
+
+    if dbview.is_db_snapshot(connection, snapshot["id"]):
+        return {"snapshot": snapshot_ref(snapshot),
+                "domains": dbview.summary_domains(connection, snapshot["id"], mapped),
+                "untrusted_content": untrusted(connection, [snapshot["id"]])}
     groups: dict[str, list[dict]] = {}
     for row in connection.execute("SELECT * FROM records WHERE snapshot_id = ? AND type IN ('entity', 'operation') "
                                    "ORDER BY module, type, name", (snapshot["id"],)):
         attrs = _record(row).get("attrs") or {}
         if isinstance(attrs, dict) and attrs.get("kind") == "module":
             continue
-        mapped = None
-        for rel, _line in refs.anchors.get(row["anchor"], []):
-            entries = project_events.entry_refs(root, [rel])
-            if entries:
-                mapped = entries[0]
-                break
         groups.setdefault(row["module"] or "", []).append(
             {"anchor": row["anchor"], "type": row["type"], "name": row["name"], "label": row["label"],
-             "mapped_to": mapped})
+             "mapped_to": mapped(row["anchor"])})
     domains = [{"name": name or "（未分组）", "count": len(entities), "entities": entities}
                for name, entities in sorted(groups.items())]
     return {"snapshot": snapshot_ref(snapshot), "domains": domains,
@@ -435,6 +461,7 @@ def resolution(connection: sqlite3.Connection, anchor: str, *, declared: dict[st
         return {**base, "reason": "not_in_snapshot", "snapshot_id": snapshot_id}
     record = _record(row)
     attrs = record.get("attrs") if isinstance(record.get("attrs"), dict) else {}
-    return {**base, "resolved": True, "location_label": _loc(attrs), "text": snippet(record),
+    where = dbview.location(anchor) if parsed["scheme"] == "db" else _loc(attrs)
+    return {**base, "resolved": True, "location_label": where, "text": snippet(record),
             "confidence": row["confidence"] or "observed", "snapshot_id": snapshot_id}
 

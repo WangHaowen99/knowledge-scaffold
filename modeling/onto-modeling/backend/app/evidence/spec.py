@@ -35,6 +35,16 @@ def job_scope(job_id: str) -> str:
     return scope_hash({"job_id": job_id})
 
 
+def secret_scope(source_id: str, fields) -> str:
+    """`PUT /v1/secrets/{源}` 的票据 `scope`（spec §8）：只含字段名，不含值。"""
+    return scope_hash({"source": source_id, "fields": sorted(str(name) for name in fields)})
+
+
+def secret_delete_scope(source_id: str) -> str:
+    """`DELETE /v1/secrets/{源}` 的票据 `scope`。"""
+    return scope_hash({"source": source_id, "delete": True})
+
+
 def record_hash(record: dict) -> str:
     """记录的 `hash`：去掉 `hash` 键后的规范 JSON 的 sha256。"""
     return scope_hash({key: value for key, value in record.items() if key != "hash"})

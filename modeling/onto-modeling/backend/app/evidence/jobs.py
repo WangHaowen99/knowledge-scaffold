@@ -4,6 +4,9 @@
 签票据 → 从 blob 仓把目标程序流式发给网关 `POST /v1/jobs` → 每 2 秒查一次进度、推 `evidence.job.updated` →
 成功取快照包、入库 → 调网关清理。后端重启时还在排队、运行的任务标 `failed`（`backend_restarted`）；网关查不到任务
 （网关重启过）标 `failed`（`gateway_restarted`），都可以重试。
+
+连接型（数据库、代码仓库，spec §8）：没有请求体，任务说明带凭据引用、出口、限流、脱敏策略与项目的盐；`discover` 只存清单、
+不提交快照；`sample` 入库成补充快照；快照包清单的 `access_log` 存进任务记录，EV-09 按它出。
 """
 
 from __future__ import annotations
@@ -207,8 +210,9 @@ def _budget(registration: dict, override) -> dict:
 
 
 def create(project_id: str, registration: dict, *, operation: str, scope: list[str], budget, by: str,
-           consent: dict | None, incremental_base: str | None = None, resumed_from: str | None = None) -> dict:
-    """建任务并排队（不在访问窗口里就等窗口）。"""
+           consent: dict | None, incremental_base: str | None = None, resumed_from: str | None = None,
+           selector: str | None = None, limit: int | None = None) -> dict:
+    """建任务并排队（不在访问窗口里就等窗口）。`selector`、`limit` 只有 sample 用。"""
     connection = registration.get("connection") or {}
     artifact = None
     if "artifact_sha256" in connection:
@@ -227,6 +231,8 @@ def create(project_id: str, registration: dict, *, operation: str, scope: list[s
         "state": "queued", "phase": None, "progress": None, "queue_reason": None,
         "created_at": now, "started_at": None, "ended_at": None, "result": None, "error": None,
         "resumed_from": resumed_from, "initiated_by": by, "consent": consent, "access": None,
+        "input": "artifact" if artifact is not None else "connection", "selector": selector, "limit": limit,
+        "access_log": [],
     }
     if not in_window(registration.get("access_window")):
         window = registration["access_window"]
@@ -344,8 +350,13 @@ def _fail(project_id: str, job_id: str, code: str, message: str) -> dict | None:
                    error={"code": code, "message": message[:300]})
 
 
+def connection_job(job: dict) -> bool:
+    """按连接参数采集的任务（数据库、代码仓库）：没有目标程序，要凭据。"""
+    return job.get("artifact") is None and not job.get("self_service")
+
+
 def job_spec(job: dict, registration: dict) -> dict:
-    """网关 `POST /v1/jobs` 的任务说明（spec §4 JobSpec）。"""
+    """网关 `POST /v1/jobs` 的任务说明（spec §4 JobSpec；连接型另带 §8 的字段，都进票据的范围哈希）。"""
     artifact_input = job.get("artifact") is not None
     spec = {"job_id": job["id"], "operation": job["operation"],
             "source": {"id": registration["id"], "provider": registration["provider"],
@@ -353,6 +364,15 @@ def job_spec(job: dict, registration: dict) -> dict:
             "scope": list(job.get("scope") or []), "budget": dict(job["budget"])}
     if artifact_input:
         spec["artifact"] = dict(job["artifact"])
+    elif connection_job(job):
+        spec.update({
+            "cred_ref": registration.get("cred_ref"),
+            "egress": [dict(item) for item in registration.get("egress") or []],
+            "rate_limit": dict(registration.get("rate_limit") or {}),
+            "masking": {"policy": registration.get("masking_policy") or "mask-v1",
+                        "salt": storage.project_salt(job["project_id"])},
+            "selector": job.get("selector"), "limit": job.get("limit"),
+        })
     return spec
 
 
@@ -387,6 +407,9 @@ def run(project_id: str, job_id: str) -> None:
             _fail(project_id, job_id, "artifact_not_found", "目标程序不在 blob 仓里，重新上传后再采集")
             return
         artifact = storage.blob_path(job["artifact"]["sha256"])
+    if connection_job(job) and not registration.get("cred_ref"):
+        _fail(project_id, job_id, "credential_missing", "数据源还没写入凭据，联系管理员")
+        return
     budget = job["budget"]
     started = time.time()
     job = _update(project_id, job_id, state="running", started_at=started, phase="提交任务", queue_reason=None)
@@ -461,6 +484,14 @@ def _collect(project_id: str, job_id: str, registration: dict, state: str) -> di
         collector.bundle(job_id, job["budget"], bundle, _bundle_cap(job))
         if _cancel_event(job_id).is_set():
             return {"state": "cancelled", "ended_at": time.time(), "phase": None}
+        if job["operation"] == "discover":
+            found = ingest.inventory_only(project_id, registration, job, bundle)
+            return {"state": "succeeded" if state == "succeeded" else "partial", "ended_at": time.time(),
+                    "phase": None, "access_log": ingest.access_log(found["manifest"]),
+                    "access": _access(job, found["manifest"]),
+                    "result": {"message": f"发现 {found['items']} 个对象"
+                                          + (f"，跳过 {found['skipped']} 个" if found["skipped"] else ""),
+                               "inventory": {"items": found["items"], "skipped": found["skipped"]}}}
         result = ingest.ingest(_manager(), project_id, registration, job, bundle)
     except collector.GatewayUnavailable:
         return {"state": "failed", "code": "gateway_unavailable", "message": "取快照包时连接器网关不可达"}
@@ -475,17 +506,23 @@ def _collect(project_id: str, job_id: str, registration: dict, state: str) -> di
     except Exception:  # noqa: BLE001 - 推送是增强信息
         _log.exception("流程刷新失败")
     manifest = result["manifest"]
-    complete = bool(manifest.get("complete")) and state == "succeeded"
-    used = manifest.get("budget_used") if isinstance(manifest.get("budget_used"), dict) else {}
+    # 补充样本本来就不是完整快照：网关说成功就是成功
+    complete = state == "succeeded" and (bool(manifest.get("complete")) or job["operation"] == "sample")
     counts = manifest.get("records") or {}
     message = f"快照 {result['snapshot_id']}：{sum(int(value or 0) for value in counts.values())} 条记录"
     if manifest.get("masked_hits"):
-        message += f"，遮蔽 {manifest['masked_hits']} 处疑似密钥"
+        message += f"，遮蔽 {manifest['masked_hits']} 处疑似密钥" + ("或个人信息" if connection_job(job) else "")
     return {"state": "succeeded" if complete else "partial", "ended_at": time.time(), "phase": None,
             "result": {"snapshot_id": result["snapshot_id"], "message": message, "commit": result["commit"]},
-            "access": {"rows": int(used.get("records") or 0), "bytes": int(used.get("bytes") or 0),
-                       "duration_ms": int(float(used.get("duration_s") or 0) * 1000),
-                       "artifact_sha256": (job.get("artifact") or {}).get("sha256")}}
+            "access": _access(job, manifest), "access_log": manifest.get("access_log") or []}
+
+
+def _access(job: dict, manifest: dict) -> dict:
+    """EV-09 没有逐条访问记录时（上传类）的汇总：取清单的 `budget_used`。"""
+    used = manifest.get("budget_used") if isinstance(manifest.get("budget_used"), dict) else {}
+    return {"rows": int(used.get("records") or 0), "bytes": int(used.get("bytes") or 0),
+            "duration_ms": int(float(used.get("duration_s") or 0) * 1000),
+            "artifact_sha256": (job.get("artifact") or {}).get("sha256")}
 
 
 def _try(call) -> bool:

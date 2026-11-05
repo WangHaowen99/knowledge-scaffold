@@ -631,6 +631,9 @@ Onto 工作区，新建、导入和克隆项目无需创建 Modeling 关联。�
   - `ONTO_CONNECTOR_CONN_MEMORY_MB`（默认 768）、`ONTO_CONNECTOR_CONN_FILE_MB`（默认 256）：每个采集子进程的内存、单文件上限。
   - `ONTO_CONNECTOR_DB_*`、`ONTO_CONNECTOR_CODE_*`：提供方自己的配置（如 `ONTO_CONNECTOR_DB_PROFILE_ROWS`），原样传给子进程；
     子进程拿不到其他环境变量。
+- 数据库、代码仓库（ADR-0084）：凭据只在网关，内核收到就转交、只存引用（`cred://<源>/<版本>`）；每个项目的脱敏盐在
+  `evidence/salts/<项目>.key`（随数据卷备份，丢了以后加盐哈希的值和旧快照对不上）；`discover` 的清单在 `evidence/inventories/`。
+  对象文档「# 数据来源」首行可以写 `db:<源>/<库>.<表>`，发布时按这个源最新的完整快照绑定表名和列名。
 
 ## 当前状态
 
