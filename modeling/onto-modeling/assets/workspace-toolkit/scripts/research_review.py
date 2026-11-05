@@ -43,7 +43,8 @@ RESEARCH_DIR = Path('research')
 # 检查项有增减时 +1：旧回执随即失效，退回待核验而不是继续沿用旧结论。
 # 2：业务项清单新增「分类」列、候选段拆成四段（ADR-0012）。
 # 3：原始文档抽取、锚点核验与新增 ID 人工确认；旧基线不再免检。
-CHECKER_VERSION = 3
+# 4：抽取器 v2 支持上传范围内的大 DOCX；旧的超限/来源回执需要重新核验。
+CHECKER_VERSION = 4
 UNVERIFIABLE = 'unverifiable'
 
 NONE = 'none'
