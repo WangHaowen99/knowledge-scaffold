@@ -461,6 +461,11 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `snapshot_referenced` | 409 | 快照被已确认产物引用，不能清理 | `references: int` |
 | `anchor_invalid` | 400 | 锚点格式不合法 | — |
 | `anchor_not_found` | 404 | 锚点在所声明的快照或资料里不存在 | — |
+| `artifact_not_found` | 422 | 登记或采集引用的目标程序不在 blob 仓里（F13） | — |
+| `upload_not_found` | 404 | 上传不存在、已过期或不是本人的（F13） | — |
+| `upload_incomplete` | 409 | 还有块没传（F13） | `missing: int[]` |
+| `upload_hash_mismatch` | 422 | 拼好的文件和声明的 sha256 不一致（F13） | — |
+| `upload_too_large` | 413 | 超过单文件上限（F13） | `max_bytes` |
 
 ### 2.9 发布与三份契约
 
@@ -2740,7 +2745,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### EV-02 登记数据源
 
-`POST /api/v1/admin/evidence/sources` · admin · 旧：— · 审计：专项 `evidence.source.register` · 依据：5.8.7、5.8.6 · 页面：sources（登记抽屉「保存登记并授权本项目」）
+`POST /api/v1/admin/evidence/sources` · admin；自助类提供方（`self_service=true`，如 REA）登录即可（F13） · 旧：— · 审计：专项 `evidence.source.register` · 依据：5.8.7、5.8.6 · 页面：sources（登记抽屉「保存登记并授权本项目」）
 
 - 请求：
 
@@ -2762,8 +2767,10 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   | `owner` | string | 是 | 负责人用户名 |
   | `grant_project_id` | string | 否 | 登记后立即授权给这个项目 |
 
+- 自助类提供方（F13，ADR-0082）：`owner` 固定为本人；`connection` 是 `{artifact_sha256, artifact_filename, artifact_size}`（先用 `EV-31`～`EV-33`
+  上传目标程序）；`scope_allowlist`、`egress`、`access_window`、`rate_limit` 可省略，按提供方缺省；`environment` 缺省 `test`；登记只有本人和管理员看得到。
 - 响应 `201`：`EvidenceSource`（`cred_ref` 如 `cred://mes-prod/1`）。
-- 错误：`source_id_taken`、`provider_not_installed`、`gateway_unavailable`、`invalid_argument`。
+- 错误：`source_id_taken`、`provider_not_installed`、`gateway_unavailable`、`invalid_argument`、`artifact_not_found`（自助类，程序没上传完）、`forbidden`（非管理员登记要凭据的提供方）。
 
 #### EV-03 提交登记申请
 
@@ -2774,14 +2781,14 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### EV-04 修改登记
 
-`PATCH /api/v1/admin/evidence/sources/{source_id}` · admin · 旧：— · 审计：专项 `evidence.source.update` · 依据：5.8.7 · 页面：sources（⋯「编辑登记」）
+`PATCH /api/v1/admin/evidence/sources/{source_id}` · admin；自助类数据源的登记人（F13） · 旧：— · 审计：专项 `evidence.source.update` · 依据：5.8.7 · 页面：sources（⋯「编辑登记」）
 
-- 请求：`EV-02` 里除 `id`、`provider` 外的任意字段。
+- 请求：`EV-02` 里除 `id`、`provider` 外的任意字段。自助类换版本就是把 `connection` 换成新上传的程序，旧快照不动。
 - 响应：`EvidenceSource`。
 
 #### EV-05 删除登记
 
-`DELETE /api/v1/admin/evidence/sources/{source_id}` · admin · 旧：— · 审计：专项 `evidence.source.delete` · 依据：5.8.7 · 页面：sources（⋯「删除登记」）
+`DELETE /api/v1/admin/evidence/sources/{source_id}` · admin；自助类数据源的登记人（F13） · 旧：— · 审计：专项 `evidence.source.delete` · 依据：5.8.7 · 页面：sources（⋯「删除登记」）
 
 - 已有快照保留，锚点照常解析。
 - 响应 `204`。
@@ -2821,7 +2828,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `GET /api/v1/evidence/providers` · 登录 · 旧：— · 审计：否 · 依据：5.8.3 · 页面：sources（登记抽屉类型格）、snapshots（「已加载 N 个提供方」）
 
-- 响应：`{gateway: {status: "ok"|"slow"|"down", checked_at}, items: [{id, version, label, kind: "file"|"db"|"code"|"api"|"rea"|"ui"|"cli"|"log", evidence_types: string[], capabilities: ("discover"|"snapshot"|"sample"|"incremental")[], cred_fields: [{name, secret: bool, label}], readonly_method, runtime: "subprocess"|"sidecar"|"mcp", installed: bool, license_note}]}`。
+- 响应：`{gateway: {status: "ok"|"slow"|"down", checked_at}, items: [{id, version, label, kind: "file"|"db"|"code"|"api"|"rea"|"ui"|"cli"|"log", evidence_types: string[], capabilities: ("discover"|"snapshot"|"sample"|"incremental")[], cred_fields: [{name, secret: bool, label}], readonly_method, runtime: "subprocess"|"sidecar"|"mcp", installed: bool, license_note, self_service: bool, input: "artifact"|"connection", max_artifact_bytes: int\|null}]}`。
+- `self_service`：不要凭据、不连业务网络，登录用户可以自助登记（F13）；`input=artifact` 表示要上传目标程序（`EV-31`～`EV-33`）。
 
 #### EV-11 本项目的授权
 
@@ -2985,6 +2993,31 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 管理员收到 `request_pending` 通知。
 - 响应 `202`：`{request_id}`。
 - 错误：`source_not_authorized`、`source_not_found`。
+
+#### EV-31 开始上传目标程序
+
+`POST /api/v1/evidence/uploads` · 登录 · 旧：— · 审计：否 · 依据：ADR-0082 · 页面：sources（登记抽屉「上传程序」、⋯「上传新版本」）
+
+- 请求：`{filename: string, size: int}`。
+- 响应 `201`：`{upload_id, chunk_bytes: 8388608, max_bytes}`。
+- 原样存进数据目录的 blob 仓，不进工作区，主容器不解析内容。每人同时最多 2 个没完成的上传，24 小时没完成自动清掉。
+- 错误：`upload_too_large`（413，`details.max_bytes`）、`quota_exceeded`（未完成的上传太多）、`invalid_argument`。
+
+#### EV-32 上传一块
+
+`PUT /api/v1/evidence/uploads/{upload_id}/chunks/{index}` · 上传人 · 旧：— · 审计：否 · 依据：ADR-0082
+
+- 请求体是第 `index` 块（从 0 开始）的字节，除最后一块外都是 `chunk_bytes`。同一块可以重传，以最后一次为准。
+- 响应：`{received_bytes, received_chunks}`。
+- 错误：`upload_not_found`（404）、`invalid_argument`（块大小不对、序号越界）。
+
+#### EV-33 完成上传
+
+`POST /api/v1/evidence/uploads/{upload_id}/complete` · 上传人 · 旧：— · 审计：是 · 依据：ADR-0082
+
+- 请求：`{sha256: string}`。
+- 响应：`{artifact: {sha256, size, filename}}`；同一内容已经在 blob 仓里就直接用。
+- 错误：`upload_not_found`、`upload_incomplete`（409，`details.missing: int[]`）、`upload_hash_mismatch`（422）。
 
 ---
 

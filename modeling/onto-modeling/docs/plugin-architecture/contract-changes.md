@@ -1294,3 +1294,13 @@ Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`
 ## 2026-11-05 · F12（「数据接入」改名「多源连接器」）
 
 用户 11-05 定。插件分类、界面和给助手看的文档都改叫「多源连接器」，数据源页的列名和申请详情里叫「连接器」。`category: provider`、`kind: provider`、接口路径都不变。
+
+## 2026-11-05 · F13（REA 逆向连接器与证据层公共底座）
+
+用户 11-05 定：多源连接器先用 REA 打通公共底座，再加数据库和代码连接器。决策见 ADR-0082，三方接口与格式见 `design/evidence-collection.md`。
+
+1. **EV-31～EV-33（新增）**：分块上传目标程序，存数据目录的 blob 仓，不进工作区。
+2. **自助类提供方**：EV-10 多 `self_service`、`input`、`max_artifact_bytes`。`self_service=true` 的提供方（REA）登录用户可以调 EV-02 自助登记，
+   EV-04、EV-05 登记人也能调；这类登记只有本人和管理员看得到。要凭据的提供方仍然只有管理员登记。
+3. **错误码**：2.8 加 `artifact_not_found`、`upload_not_found`、`upload_incomplete`、`upload_hash_mismatch`、`upload_too_large`。
+4. 契约 3.19 其余接口按原文实现；EV-06、EV-07（凭据）本轮仍回 `501 evidence_not_available`，等数据库连接器。EV-28 ER 视图只给数据库类，其他回空表。

@@ -1,0 +1,149 @@
+{
+ "canonical": [
+  {
+   "value": {
+    "b": 1,
+    "a": [
+     true,
+     null,
+     "订单"
+    ],
+    "c": {
+     "z": "x",
+     "y": 2
+    }
+   },
+   "json": "{\"a\":[true,null,\"订单\"],\"b\":1,\"c\":{\"y\":2,\"z\":\"x\"}}",
+   "sha256": "be8e59ffa1e271f18e5950553d1c42378c36d020ce713abbe6a5e30a92c10e48"
+  }
+ ],
+ "segments": [
+  {
+   "text": "orders.js",
+   "encoded": "orders%2Ejs"
+  },
+  {
+   "text": "renderer/app.js",
+   "encoded": "renderer%2Fapp%2Ejs"
+  },
+  {
+   "text": "order:create",
+   "encoded": "order:create"
+  },
+  {
+   "text": "POST /orders",
+   "encoded": "POST%20%2Forders"
+  },
+  {
+   "text": "a#b@c|d[e]%f",
+   "encoded": "a%23b%40c%7Cd%5Be%5D%25f"
+  },
+  {
+   "text": "订单 管理",
+   "encoded": "订单%20管理"
+  }
+ ],
+ "bin_anchor": [
+  {
+   "args": [
+    "crm-client",
+    "sym",
+    "orders.js",
+    "Order"
+   ],
+   "anchor": "bin:crm-client/sym:orders%2Ejs::Order"
+  },
+  {
+   "args": [
+    "crm-client",
+    "mod",
+    "renderer/app.js"
+   ],
+   "anchor": "bin:crm-client/mod:renderer%2Fapp%2Ejs"
+  },
+  {
+   "args": [
+    "crm-client",
+    "ipc",
+    "order:create"
+   ],
+   "anchor": "bin:crm-client/ipc:order:create"
+  },
+  {
+   "args": [
+    "crm-client",
+    "sym",
+    "Contoso",
+    "Orders",
+    "Order",
+    "Approve"
+   ],
+   "anchor": "bin:crm-client/sym:Contoso::Orders::Order::Approve"
+  },
+  {
+   "args": [
+    "crm-client",
+    "ext",
+    "POST https://erp.example.com/api/orders"
+   ],
+   "anchor": "bin:crm-client/ext:POST%20https:%2F%2Ferp%2Eexample%2Ecom%2Fapi%2Forders"
+  }
+ ],
+ "relation": [
+  {
+   "args": [
+    "crm-client",
+    "bin:crm-client/sym:orders%2Ejs::create",
+    "requests",
+    "bin:crm-client/ext:POST%20https:%2F%2Ferp%2Eexample%2Ecom%2Fapi%2Forders"
+   ],
+   "anchor": "bin:crm-client/rel:fca6ba31fd5713ea"
+  }
+ ],
+ "record": [
+  {
+   "record": {
+    "id": "bin:crm-client/sym:orders%2Ejs::Order",
+    "type": "entity",
+    "parent": "bin:crm-client/mod:orders%2Ejs",
+    "name": "Order",
+    "label": null,
+    "attrs": {
+     "kind": "class",
+     "loc": {
+      "file": "orders.js",
+      "line": 2
+     },
+     "module": "orders.js"
+    },
+    "evidence": {
+     "provider": "rea-static@0.1.0",
+     "method": "rea analyze-javascript-application",
+     "confidence": "observed"
+    }
+   },
+   "hash": "6681f5edaa1b19df9331fa1c6ddf6c85bd286bb90f77e50618ef05d76c71c77a"
+  }
+ ],
+ "job_scope": [
+  {
+   "job_id": "ej-0001",
+   "scope": "f54966ffdbd9d57fd19de63b549ea2c909c2405dcb809e0bf768c0ff0ec39032"
+  }
+ ],
+ "job_header": [
+  {
+   "spec": {
+    "job_id": "ej-0001",
+    "operation": "snapshot",
+    "scope": [],
+    "artifact": {
+     "sha256": "ab",
+     "size": 3,
+     "filename": "订单.zip"
+    }
+   },
+   "header": "eyJhcnRpZmFjdCI6eyJmaWxlbmFtZSI6IuiuouWNlS56aXAiLCJzaGEyNTYiOiJhYiIsInNpemUiOjN9LCJqb2JfaWQiOiJlai0wMDAxIiwib3BlcmF0aW9uIjoic25hcHNob3QiLCJzY29wZSI6W119"
+  }
+ ]
+}
