@@ -135,3 +135,18 @@ def test_xlsx_total_expansion_limit_is_not_relaxed(tmp_path, source, monkeypatch
     result = source.extract(path)
     assert result['status'] == 'unverifiable'
     assert 'Office 解压内容超限' in result['reason']
+
+
+@pytest.mark.parametrize('error_type', [RuntimeError, NotImplementedError])
+def test_archive_runtime_errors_remain_unverifiable(tmp_path, source, monkeypatch, error_type):
+    path = tmp_path / 'synthetic.docx'
+    path.write_bytes(package())
+
+    def unreadable_member(*args, **kwargs):
+        raise error_type('Synthetic unreadable archive member')
+
+    monkeypatch.setattr(zipfile.ZipFile, 'open', unreadable_member)
+    result = source.extract(path)
+    assert result['status'] == 'unverifiable'
+    assert result['segments'] == []
+    assert error_type.__name__ in result['reason']

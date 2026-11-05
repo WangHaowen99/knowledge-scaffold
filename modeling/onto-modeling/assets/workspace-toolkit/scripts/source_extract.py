@@ -134,7 +134,7 @@ def extract(path: Path) -> dict:
         if not segments:
             raise ValueError('未抽取到正文，无法核验来源')
         result.update(status='ok', segments=segments)
-    except (OSError, ValueError, KeyError, ImportError, RuntimeError, NotImplementedError,
+    except (OSError, ValueError, KeyError, ImportError, RuntimeError,
             EOFError, ET.ParseError, zipfile.BadZipFile) as exc:
         result['reason'] = f'无法核验：{type(exc).__name__}：{str(exc)[:160]}'
     return result
