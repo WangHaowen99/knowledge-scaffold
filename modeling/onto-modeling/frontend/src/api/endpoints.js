@@ -279,6 +279,7 @@ export function createApi(client) {
     startEvidenceUpload: (body) => client.post('/evidence/uploads', body), // EV-31
     putEvidenceUploadChunk: (uploadId, index, bytes, o) => client.put(`/evidence/uploads/${enc(uploadId)}/chunks/${index}`, bytes, o), // EV-32：请求体是这一块的字节
     completeEvidenceUpload: (uploadId, body) => client.post(`/evidence/uploads/${enc(uploadId)}/complete`, body), // EV-33
+    cancelEvidenceUpload: (uploadId) => client.del(`/evidence/uploads/${enc(uploadId)}`), // EV-34：释放未完成上传的名额
 
     // 3.20 发布
     publishCheck: (id, query) => client.get(`${P(id)}/publish/check`, { query }), // PB-01

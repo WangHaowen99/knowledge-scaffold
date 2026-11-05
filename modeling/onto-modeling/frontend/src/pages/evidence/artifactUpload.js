@@ -113,6 +113,8 @@ export function createArtifactUpload({
       if (!isUploading(st) && st.phase !== 'failed') return;
       if (isUploading(st)) ctrl?.abort();
       else set({ phase: 'cancelled' });
+      // 没完成的上传占着每人 2 个的名额，取消就让服务端删掉（EV-34）；删不掉也不影响界面，24 小时后自动清
+      if (session && st.phase !== 'done') api.cancelEvidenceUpload?.(session.upload_id)?.catch?.(() => {});
     },
   };
 }

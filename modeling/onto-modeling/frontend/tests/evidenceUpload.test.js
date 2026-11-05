@@ -31,6 +31,7 @@ function fakeApi({ chunk = 4, failPut = () => null, complete } = {}) {
       if (e) throw e;
       return { artifact: { sha256: body.sha256, size: 10, filename: 'sample-orders.zip' } };
     },
+    cancelEvidenceUpload: async (id) => { calls.push(['cancel', id]); },
   };
 }
 const sha = (u8) => createHash('sha256').update(u8).digest('hex');
@@ -125,6 +126,7 @@ test('取消：中止在途请求，停在 cancelled，不再继续', async () =
   await up.start();
   assert.equal(up.state.phase, 'cancelled');
   assert.ok(!api.calls.some((c) => c[0] === 'complete'));
+  assert.deepEqual(api.calls.filter((c) => c[0] === 'cancel'), [['cancel', 'up-1']]);
   await up.retry();
   assert.equal(up.state.phase, 'cancelled');
 });

@@ -669,6 +669,13 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     return json(200, { artifact });
   });
 
+  on('DELETE', '/evidence/uploads/([^/]+)', ({ m, user }) => {
+    const u = uploads.get(m[1]);
+    if (!u || u.owner !== user.username) return err(404, 'upload_not_found', '上传不存在或已过期');
+    uploads.delete(m[1]);
+    return json(204, null);
+  });
+
   // ---------- EV-30 ----------
   on('POST', '/evidence/sources/([^/]+)/notify-admin', ({ m, body }) => {
     const s = srcOf(m[1]);
