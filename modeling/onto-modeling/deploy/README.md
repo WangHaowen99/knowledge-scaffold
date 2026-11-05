@@ -194,6 +194,18 @@ onto-modeling 容器里做：上传的文件不可信，解析可能卡死、吃
 - 网关停了不丢活：资料标「等待转换」，网关恢复后 30 秒内自动补转；升级后已有项目里还没有文本版的资料在后台补转一次。
 - 健康状态在运维中心「健康与依赖」的「连接器网关」一行和启动自检报告里。
 
+## REA 旁路容器（程序逆向采集）
+
+上传的业务程序（Electron、.NET、PyInstaller 等）由旁路容器 `rea-sidecar` 用固定版本的 REA 做静态分析，转成带锚点的
+证据记录（ADR-0082）。只有它碰目标程序的字节，不运行目标程序。
+
+- 服务 `rea-sidecar`（容器 `onto-modeling-rea-sidecar`）用**单独的镜像** `onto-modeling-rea-sidecar:<版本>`
+  （源码 `connectors/rea-sidecar`），离线包里多一个镜像 tar，`deploy.sh` 一起加载；`redeploy-app.sh` 一起重建、替换。
+- 只接 `internal: true` 的 `rea` 网络，这个网络上只有连接器网关；onto-modeling 不在上面，助手连不到它。
+  非 root、只读根文件系统、无 capability，内存 3G、2 核、最多 128 个进程；任务目录在命名卷 `onto-web-rea-scratch`。
+- 连接器网关经 `ONTO_CONNECTOR_REA_URL=http://rea-sidecar:8130` 调它；旁路容器不健康时，提供方 `rea-static` 报未安装，不能发起采集。
+- 采集任务在网关内存里，同时最多 2 个；网关重启后进行中的任务标失败，可以重试。
+
 ## 从原 modeling 服务迁移数据
 
 deploy.sh 部署完成后会自动检测 `mw-modeling` 容器（可用

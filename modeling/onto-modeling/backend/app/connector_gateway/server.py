@@ -3,6 +3,8 @@
 - GET  /health        存活与已加载的转换器数（容器健康检查、内核的健康探测）
 - GET  /v1/providers  已加载的转换器：ID、版本、文件类型、许可证
 - POST /v1/convert    请求体是原文件字节，`Authorization: Bearer <票据>`；回 Markdown 与位置对照
+- /v1/jobs…           采集任务：建任务（请求体是目标程序，边收边转给提供方）、查进度、取消、取快照包、清理（`jobs`；
+                      证据采集接口 §4）。`GET /v1/providers` 同时列出证据源提供方
 
 票据由内核签发（`app.evidence.tickets`），网关从内核取公钥验签（ONTO_CONNECTOR_ISSUER_KEY_URL），核对操作、原文件的
 sha256、转换器，用过即作废。同时最多 MAX_CONCURRENT 个转换在跑，另有 MAX_WAITING 个可排队，再多返回 503。
@@ -13,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -23,8 +26,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import jwt
 
 from ..evidence.convert import ConvertLimits
+from ..evidence.spec import decode_job_header, job_scope, scope_hash
 from ..evidence.tickets import TicketError, Verifier, sha256_hex
-from . import registry, runner
+from . import bundle, jobs, providers, registry, runner
+from .errors import GatewayError
 
 _log = logging.getLogger(__name__)
 
@@ -40,8 +45,10 @@ JOB_MEMORY_BYTES = int(os.environ.get("ONTO_CONNECTOR_JOB_MEMORY_MB") or 768) * 
 WAIT_SECONDS = 150
 READ_TIMEOUT_SECONDS = 60
 KEY_REFRESH_SECONDS = 10
+DRAIN_LIMIT_BYTES = 64 * 1024 * 1024
 # 内核在内部网络上，不走任何代理
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+_JOB_PATH = re.compile(r"^/v1/jobs/([A-Za-z0-9][A-Za-z0-9_-]{0,79})(/cancel|/bundle)?$")
 
 
 class KeySource:
@@ -80,9 +87,12 @@ class KeySource:
 class Gateway:
     def __init__(self, converters: dict | None = None, keys: KeySource | None = None, *,
                  max_concurrent: int = MAX_CONCURRENT, max_waiting: int = MAX_WAITING,
-                 job_limits: runner.JobLimits | None = None, wait_seconds: float = WAIT_SECONDS):
+                 job_limits: runner.JobLimits | None = None, wait_seconds: float = WAIT_SECONDS,
+                 evidence_providers: dict | None = None, job_table: jobs.Jobs | None = None):
         self.converters = registry.load() if converters is None else converters
         self.keys = keys or KeySource()
+        self.providers_by_id = providers.load() if evidence_providers is None else evidence_providers
+        self.jobs = job_table or jobs.Jobs(self.providers_by_id)
         self.job_limits = job_limits or runner.JobLimits(timeout_s=JOB_TIMEOUT_S, memory_bytes=JOB_MEMORY_BYTES)
         self._running = threading.BoundedSemaphore(max_concurrent)
         self._admitted = threading.BoundedSemaphore(max_concurrent + max_waiting)
@@ -107,20 +117,60 @@ class Gateway:
         return {"status": "ok", "converters": len(self.converters)}
 
     def providers(self) -> dict:
-        return {"items": [item.info.to_dict() for item in self.converters.values()]}
+        return {"items": [item.info.to_dict() for item in self.converters.values()],
+                "providers": [item.describe() for item in self.providers_by_id.values()]}
 
-    def convert(self, token: str, data: bytes) -> tuple[int, dict]:
+    def verify(self, token: str, operation: str, scope: str) -> dict:
         try:
             kid = str(jwt.get_unverified_header(token).get("kid") or "")
         except jwt.PyJWTError:
-            return 401, {"error": "ticket_invalid", "message": "票据格式不对"}
+            raise GatewayError(401, "ticket_invalid", "票据格式不对") from None
         verifier = self.keys.verifier(kid)
         if verifier is None:
-            return 503, {"error": "issuer_unavailable", "message": "取不到内核的票据公钥"}
+            raise GatewayError(503, "issuer_unavailable", "取不到内核的票据公钥")
         try:
-            claims = verifier.verify(token, operation="convert", scope_hash=sha256_hex(data))
+            return verifier.verify(token, operation=operation, scope_hash=scope)
         except TicketError as exc:
-            return 401, {"error": "ticket_invalid", "message": str(exc)}
+            raise GatewayError(401, "ticket_invalid", str(exc)) from None
+
+    # ---- 采集任务（证据采集接口 §4）----
+
+    def submit_job(self, token: str, header: str, body, length: int) -> tuple[int, dict]:
+        """票据的 op 是任务说明里的 operation，scope 是任务说明的规范 JSON 哈希。"""
+        try:
+            spec = decode_job_header(header)
+        except (ValueError, UnicodeError):
+            raise GatewayError(400, "bad_request", "X-Onto-Job 头不对") from None
+        operation = spec.get("operation")
+        if operation not in ("snapshot", "discover"):
+            raise GatewayError(400, "bad_request", "operation 要是 snapshot 或 discover")
+        claims = self.verify(token, operation, scope_hash(spec))
+        status = self.jobs.create(spec, body, length)
+        _log.info("采集任务 %s 票据 job=%s", spec.get("job_id"), claims.get("job"))
+        return 202, status
+
+    def job_status(self, token: str, job_id: str) -> tuple[int, dict]:
+        self.verify(token, "job", job_scope(job_id))
+        return 200, self.jobs.get(job_id).status()
+
+    def cancel_job(self, token: str, job_id: str) -> tuple[int, dict]:
+        self.verify(token, "job", job_scope(job_id))
+        return 200, self.jobs.cancel(job_id)
+
+    def delete_job(self, token: str, job_id: str) -> tuple[int, dict]:
+        self.verify(token, "job", job_scope(job_id))
+        return 200, self.jobs.delete(job_id)
+
+    def job_bundle(self, token: str, job_id: str):
+        """回 (包里的文件, tar 总字节数, 任务)；调用方先发头再 `bundle.write_tar`。"""
+        self.verify(token, "job", job_scope(job_id))
+        return self.jobs.bundle(job_id)
+
+    def convert(self, token: str, data: bytes) -> tuple[int, dict]:
+        try:
+            claims = self.verify(token, "convert", sha256_hex(data))
+        except GatewayError as exc:
+            return exc.status, exc.payload()
         converter = self.converters.get(str(claims.get("converter") or ""))
         if converter is None:
             return 404, {"error": "converter_not_found", "message": "网关里没有这个转换器"}
@@ -157,18 +207,30 @@ def make_handler(gateway: Gateway):
             self.end_headers()
             self.wfile.write(body)
 
+        def _token(self) -> str:
+            auth = self.headers.get("Authorization") or ""
+            if not auth.startswith("Bearer "):
+                raise GatewayError(401, "ticket_invalid", "缺少票据")
+            return auth[len("Bearer "):].strip()
+
         def do_GET(self):
             if self.path == "/health":
                 self._reply(200, gateway.health())
             elif self.path == "/v1/providers":
                 self._reply(200, gateway.providers())
             else:
-                self._reply(404, {"error": "not_found"})
+                self._jobs("GET")
 
         def do_POST(self):
-            if self.path != "/v1/convert":
-                self._reply(404, {"error": "not_found"})
-                return
+            if self.path == "/v1/convert":
+                self._convert()
+            else:
+                self._jobs("POST")
+
+        def do_DELETE(self):
+            self._jobs("DELETE")
+
+        def _convert(self):
             auth = self.headers.get("Authorization") or ""
             if not auth.startswith("Bearer "):
                 self._reply(401, {"error": "ticket_invalid", "message": "缺少票据"})
@@ -186,7 +248,75 @@ def make_handler(gateway: Gateway):
             data = self.rfile.read(length)
             self._reply(*gateway.convert(auth[len("Bearer "):].strip(), data))
 
+        def _jobs(self, method: str):
+            match = _JOB_PATH.match(self.path)
+            action = match.group(2) if match else None
+            routes = {("GET", None): gateway.job_status, ("POST", "/cancel"): gateway.cancel_job,
+                      ("DELETE", None): gateway.delete_job}
+            try:
+                if self.path == "/v1/jobs" and method == "POST":
+                    self._submit()
+                elif match and (method, action) == ("GET", "/bundle"):
+                    self._bundle(match.group(1))
+                elif match and (method, action) in routes:
+                    self._reply(*routes[(method, action)](self._token(), match.group(1)))
+                else:
+                    self._reply(404, {"error": "not_found"})
+            except GatewayError as exc:
+                self._reply(exc.status, exc.payload())
+
+        def _submit(self):
+            try:
+                length = int(self.headers.get("Content-Length") or -1)
+            except ValueError:
+                length = -1
+            if length < 0:
+                raise GatewayError(400, "size_mismatch", "缺少 Content-Length")
+            body = _CountingReader(self.rfile)
+            try:
+                self._reply(*gateway.submit_job(self._token(), self.headers.get("X-Onto-Job") or "", body, length))
+            except GatewayError:
+                # 没读完请求体就回错误时，对方还在发，直接关连接它多半只看到连接被重置；不大的先读掉再回
+                body.drain(length - body.consumed)
+                raise
+
+        def _bundle(self, job_id: str):
+            items, size, job = gateway.job_bundle(self._token(), job_id)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-tar")
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            try:
+                bundle.write_tar(self.wfile, items, lambda name: job.provider.raw(job.id, name),
+                                 int(job.ended or time.time()))
+            except Exception as exc:  # noqa: BLE001 头已发出：只能断开，内核按 Content-Length 发现包不完整
+                _log.warning("快照包 %s 没发完：%s", job_id, exc)
+                self.close_connection = True
+
     return Handler
+
+
+class _CountingReader:
+    def __init__(self, stream):
+        self._stream = stream
+        self.consumed = 0
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._stream.read(size)
+        self.consumed += len(data)
+        return data
+
+    def drain(self, remaining: int) -> None:
+        if not 0 < remaining <= DRAIN_LIMIT_BYTES:
+            return
+        try:
+            while remaining > 0:
+                data = self._stream.read(min(1 << 20, remaining))
+                if not data:
+                    return
+                remaining -= len(data)
+        except OSError:
+            return
 
 
 def serve(port: int | None = None, gateway: Gateway | None = None, host: str = "0.0.0.0") -> ThreadingHTTPServer:
