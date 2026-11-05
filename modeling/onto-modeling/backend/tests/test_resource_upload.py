@@ -2,9 +2,10 @@
 
 import asyncio
 import io
+from types import SimpleNamespace
 
 import pytest
-from fastapi import UploadFile
+from fastapi import BackgroundTasks, UploadFile
 
 from app.routers import projects
 from app.services.workspace import MAX_RESOURCE_FILE_SIZE, WorkspaceError
@@ -13,7 +14,9 @@ from app.services.workspace import MAX_RESOURCE_FILE_SIZE, WorkspaceError
 def upload(data: bytes, monkeypatch):
     captured = {}
 
-    def save_resource(project_id, subdir, filename, content, purpose, reading_mode):
+    def save_resource(
+        project_id, subdir, filename, content, purpose, reading_mode, author
+    ):
         captured.update(
             project_id=project_id,
             subdir=subdir,
@@ -21,6 +24,7 @@ def upload(data: bytes, monkeypatch):
             content=content,
             purpose=purpose,
             reading_mode=reading_mode,
+            author=author,
         )
         return {"path": f"resource/{subdir}/{filename}", "size": len(content)}
 
@@ -30,7 +34,8 @@ def upload(data: bytes, monkeypatch):
     result = asyncio.run(
         projects.upload_resource(
             "project-alpha",
-            object(),
+            SimpleNamespace(state=SimpleNamespace(user={"sub": "operator_a"})),
+            BackgroundTasks(),
             subdir="others",
             file=file,
             purpose="auto",
@@ -44,6 +49,7 @@ def test_upload_resource_accepts_exact_size_limit(monkeypatch):
     result, captured = upload(b"x" * MAX_RESOURCE_FILE_SIZE, monkeypatch)
     assert result["size"] == MAX_RESOURCE_FILE_SIZE
     assert len(captured["content"]) == MAX_RESOURCE_FILE_SIZE
+    assert captured["author"] == "operator_a"
 
 
 def test_upload_resource_rejects_size_limit_plus_one(monkeypatch):

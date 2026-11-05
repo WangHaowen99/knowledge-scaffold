@@ -174,13 +174,13 @@ def test_schema_candidates_lists_untagged_data_tables(manager: WorkspaceManager)
 
     assert manager.schema_candidates(pid) == {"resource/excel/orders.xlsx": {"tables": ["orders"]}}
 
-    subprocess.run(
+    subprocess.run(  # NOSONAR(S4721)
         ["git", "add", "--", "resource/excel/orders.xlsx", "resource/excel/terms.xlsx"],
         cwd=root,
         check=True,
         capture_output=True,
     )
-    subprocess.run(
+    subprocess.run(  # NOSONAR(S4721)
         ["git", "commit", "-m", "test: add legacy resources"],
         cwd=root,
         check=True,

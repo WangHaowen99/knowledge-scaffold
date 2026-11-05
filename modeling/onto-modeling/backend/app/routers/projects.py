@@ -1663,25 +1663,26 @@ def delete_knowledge(project_id: str, path: str, request: Request):
 @router.get("/{project_id}/versions")
 def versions(project_id: str, request: Request, offset: int = 0, limit: int = 50):
     ensure_access(project_id, request)
-    user = getattr(request.state, "user", None)
-    can_revert = True
-    if user is not None:
-        meta = workspaces.get_project(project_id)
-        role = workspaces.role_of(
-            meta, user.get("sub", ""), user.get("role") == "admin"
-        )
-        can_revert = role in ("owner", "admin") or not meta.get("owner")
+    can_revert = _can_revert(project_id, request)
     entries = workspaces.versions(project_id, limit=limit, offset=offset)
     latest = workspaces.versions(project_id, limit=1)
     total = latest[0]["version"] if latest else 0
     return {
-        "versions": [
-            {**entry, "can_revert": can_revert}
-            for entry in entries
-        ],
+        "versions": [{**entry, "can_revert": can_revert} for entry in entries],
         "total": total,
         "next_offset": offset + len(entries) if offset + len(entries) < total else None,
     }
+
+
+def _can_revert(project_id: str, request: Request) -> bool:
+    user = getattr(request.state, "user", None)
+    if user is None:
+        return True
+    meta = workspaces.get_project(project_id)
+    role = workspaces.role_of(
+        meta, user.get("sub", ""), user.get("role") == "admin"
+    )
+    return role in ("owner", "admin") or not meta.get("owner")
 
 
 @router.get("/{project_id}/history")
@@ -1694,7 +1695,15 @@ def history(project_id: str, request: Request, limit: int = 50, cursor: str = ""
     ensure_access(project_id, request)
     if not 1 <= limit <= 50:
         raise WorkspaceError("分页参数无效")
-    return version_history.page(workspaces, project_id, subject, token, limit, cursor)
+    return version_history.page(
+        workspaces,
+        project_id,
+        subject,
+        token,
+        limit,
+        cursor,
+        can_revert=_can_revert(project_id, request),
+    )
 
 
 @router.post("/{project_id}/versions/revert")

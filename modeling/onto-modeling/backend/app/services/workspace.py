@@ -61,6 +61,15 @@ RESOURCE_FILE_SUFFIXES = {
     ".xlsm",
     ".xlsx",
 }
+
+
+def _literal_pathspec(path: str) -> str:
+    """Return a Git pathspec that never treats user-controlled names as globs."""
+    return f":(literal){path}"
+
+
+def _literal_pathspecs(paths) -> list[str]:
+    return [_literal_pathspec(str(path)) for path in paths]
 # 已发布知识包导入时的原包留底区：随 git 版本化（跨环境迁移要带走），
 # 但不是用户可编辑内容（隐藏目录，不进文件树）。
 IMPORTED_PACKAGE_DIR = ".imported-package"
@@ -577,15 +586,33 @@ class WorkspaceManager:
         仅当工作区原本干净时才提交版本；agent 会话中途的改动留给
         agent 自己的提交收编，避免交叉提交打断其暂存状态。
         """
-        root = self.project_root(project_id)
-        was_clean = not _git(root, "status", "--porcelain").strip()
-        changed = self._migrate_legacy_logic(root)
-        changed = bool(_script_descriptor.sync_workspace_descriptors(root / "ontology")) or changed
-        changed = self._refresh_indexes(root) or changed
-        if changed and was_clean:
-            _git(root, "add", "-A")
-            _git(root, "commit", "-m", "chore: 知识包目录规范化（operation 目录、脚本描述符与索引）")
-        return changed
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            managed_was_clean = not self._managed_dirty_paths(root)
+            changed = self._migrate_legacy_logic(root)
+            changed = bool(
+                _script_descriptor.sync_workspace_descriptors(root / "ontology")
+            ) or changed
+            changed = self._refresh_indexes(root) or changed
+            if changed and managed_was_clean:
+                generated = sorted(
+                    set(self._managed_dirty_paths(root))
+                    | set(self._generated_index_dirty_paths(root))
+                )
+                if generated:
+                    pathspecs = _literal_pathspecs(
+                        self._minimal_pathspecs(generated)
+                    )
+                    _git(root, "add", "-A", "--", *pathspecs)
+                    _git(
+                        root,
+                        "commit",
+                        "-m",
+                        "chore: 知识包目录规范化（operation 目录、脚本描述符与索引）",
+                        "--",
+                        *pathspecs,
+                    )
+            return changed
 
     @staticmethod
     def _migrate_legacy_logic(root: Path) -> bool:
@@ -765,19 +792,23 @@ class WorkspaceManager:
             added_intent = False
             commit = ""
             old_head = _git(root, "rev-parse", "HEAD").strip()
-            if not _git(root, "ls-files", "--", rel).strip():
+            rel_spec = _literal_pathspec(rel)
+            directives_spec = _literal_pathspec(directives_rel)
+            if not _git(root, "ls-files", "--", rel_spec).strip():
                 raise WorkspaceError(
                     "该资料尚未纳入项目版本，请重新上传资料后再保存用途或 Sheet 范围",
                     409,
                     "resource_source_unversioned",
                 )
-            if _git(root, "status", "--porcelain", "--", rel).strip():
+            if _git(root, "status", "--porcelain", "--", rel_spec).strip():
                 raise WorkspaceError(
                     "该资料存在尚未保存为项目版本的内容，请重新上传或恢复资料后再修改设置",
                     409,
                     "resource_source_modified",
                 )
-            if _git(root, "diff", "--cached", "--name-only", "--", directives_rel).strip():
+            if _git(
+                root, "diff", "--cached", "--name-only", "--", directives_spec
+            ).strip():
                 raise WorkspaceError(
                     "资料设置已被其他编辑暂存，请完成或放弃该编辑后重试",
                     409,
@@ -822,33 +853,37 @@ class WorkspaceManager:
                 if version_changed:
                     committed_directives[rel] = directive
                     self._write_resource_directives(root, committed_directives)
-                if version_changed and _git(root, "status", "--porcelain", "--", directives_rel).strip():
+                if version_changed and _git(
+                    root, "status", "--porcelain", "--", directives_spec
+                ).strip():
                     # --only creates the version from this managed settings file without
                     # including unrelated staged or working-tree edits. A new file needs
                     # an intent-to-add entry before git commit --only can address it.
-                    if not _git(root, "ls-files", "--", directives_rel).strip():
-                        _git(root, "add", "-N", "--", directives_rel)
+                    if not _git(root, "ls-files", "--", directives_spec).strip():
+                        _git(root, "add", "-N", "--", directives_spec)
                         added_intent = True
                     who = f" by {author}" if author else ""
                     _git(root, "commit", "--only", "-m", f"web: 保存资料设置 {rel}{who}",
-                         "--", directives_rel)
+                         "--", directives_spec)
                     commit = _git(root, "rev-parse", "HEAD").strip()
                 if version_changed:
                     self._write_resource_directives(root, directives)
             except Exception:
                 if commit and _git(root, "rev-parse", "HEAD").strip() == commit:
                     _git(root, "reset", "--soft", old_head)
-                    _git(root, "reset", "--", directives_rel)
+                    _git(root, "reset", "--", directives_spec)
                 self._restore_snapshot(directives_path, directives_snapshot)
                 self._restore_snapshot(meta_path, meta_snapshot)
                 if added_intent:
-                    _git(root, "reset", "--", directives_rel)
+                    _git(root, "reset", "--", directives_spec)
                 raise
             return {"path": rel, **directives[rel], "commit": commit}
 
     @staticmethod
     def _resource_directives_at_head(root: Path, rel: str) -> dict:
-        if not _git(root, "ls-tree", "--name-only", "HEAD", "--", rel).strip():
+        if not _git(
+            root, "ls-tree", "--name-only", "HEAD", "--", _literal_pathspec(rel)
+        ).strip():
             return {}
         try:
             data = json.loads(_git(root, "show", f"HEAD:{rel}"))
@@ -914,11 +949,12 @@ class WorkspaceManager:
             rel = f"resource/{subdir}/{safe_name}"
             directives_rel = directives_path.relative_to(root).as_posix()
             managed_paths = [rel, directives_rel]
+            managed_specs = _literal_pathspecs(managed_paths)
             old_head = _git(root, "rev-parse", "HEAD").strip()
             commit = ""
             intent_paths = []
             staged = _git(
-                root, "diff", "--cached", "--name-only", "--", *managed_paths
+                root, "diff", "--cached", "--name-only", "--", *managed_specs
             ).splitlines()
             if staged:
                 raise WorkspaceError(
@@ -955,13 +991,14 @@ class WorkspaceManager:
                 commit_paths = [rel]
                 if directives_changed:
                     commit_paths.append(directives_rel)
+                commit_specs = _literal_pathspecs(commit_paths)
                 changed_paths = _git(
-                    root, "status", "--porcelain", "--", *commit_paths
+                    root, "status", "--porcelain", "--", *commit_specs
                 ).strip()
                 if changed_paths:
-                    for path in commit_paths:
-                        if not _git(root, "ls-files", "--", path).strip():
-                            _git(root, "add", "-N", "--", path)
+                    for path, pathspec in zip(commit_paths, commit_specs):
+                        if not _git(root, "ls-files", "--", pathspec).strip():
+                            _git(root, "add", "-N", "--", pathspec)
                             intent_paths.append(path)
                     who = f" by {author}" if author else ""
                     action = "替换" if replaced else "上传"
@@ -972,7 +1009,7 @@ class WorkspaceManager:
                         "-m",
                         f"web: {action}资料 {rel}{who}",
                         "--",
-                        *commit_paths,
+                        *commit_specs,
                     )
                     commit = _git(root, "rev-parse", "HEAD").strip()
                 if directives_changed:
@@ -980,12 +1017,17 @@ class WorkspaceManager:
             except Exception:
                 if commit and _git(root, "rev-parse", "HEAD").strip() == commit:
                     _git(root, "reset", "--soft", old_head)
-                    _git(root, "reset", "--", *managed_paths)
+                    _git(root, "reset", "--", *managed_specs)
                 self._restore_snapshot(dest, file_snapshot)
                 self._restore_snapshot(directives_path, directives_snapshot)
                 self._restore_snapshot(meta_path, meta_snapshot)
                 if intent_paths:
-                    _git(root, "reset", "--", *intent_paths)
+                    _git(
+                        root,
+                        "reset",
+                        "--",
+                        *_literal_pathspecs(intent_paths),
+                    )
                 raise
             result = {
                 "path": rel,
@@ -2464,10 +2506,11 @@ class WorkspaceManager:
             rel_posix = rel.as_posix()
             directives_rel = directives_path.relative_to(root).as_posix()
             managed_paths = [rel_posix, directives_rel]
+            managed_specs = _literal_pathspecs(managed_paths)
             old_head = _git(root, "rev-parse", "HEAD").strip()
             commit = ""
             staged = _git(
-                root, "diff", "--cached", "--name-only", "--", *managed_paths
+                root, "diff", "--cached", "--name-only", "--", *managed_specs
             ).splitlines()
             if staged:
                 raise WorkspaceError(
@@ -2489,12 +2532,15 @@ class WorkspaceManager:
                     self._write_resource_directives(root, committed_directives)
                 self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
                 commit_paths = []
-                if _git(root, "ls-files", "--", rel_posix).strip():
+                if _git(
+                    root, "ls-files", "--", _literal_pathspec(rel_posix)
+                ).strip():
                     commit_paths.append(rel_posix)
                 if directives_changed:
                     commit_paths.append(directives_rel)
+                commit_specs = _literal_pathspecs(commit_paths)
                 if commit_paths and _git(
-                    root, "status", "--porcelain", "--", *commit_paths
+                    root, "status", "--porcelain", "--", *commit_specs
                 ).strip():
                     who = f" by {author}" if author else ""
                     _git(
@@ -2504,7 +2550,7 @@ class WorkspaceManager:
                         "-m",
                         f"web: 删除资料 {rel_posix}{who}",
                         "--",
-                        *commit_paths,
+                        *commit_specs,
                     )
                     commit = _git(root, "rev-parse", "HEAD").strip()
                 if directives_changed or working_changed:
@@ -2512,7 +2558,7 @@ class WorkspaceManager:
             except Exception:
                 if commit and _git(root, "rev-parse", "HEAD").strip() == commit:
                     _git(root, "reset", "--soft", old_head)
-                    _git(root, "reset", "--", *managed_paths)
+                    _git(root, "reset", "--", *managed_specs)
                 self._restore_snapshot(target, file_snapshot)
                 self._restore_snapshot(directives_path, directives_snapshot)
                 self._restore_snapshot(meta_path, meta_snapshot)

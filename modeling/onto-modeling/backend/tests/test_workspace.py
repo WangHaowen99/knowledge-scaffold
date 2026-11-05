@@ -306,6 +306,36 @@ def test_identical_resource_upload_does_not_create_version(
     assert (root / ".onto-web.json").read_bytes() == meta_after_first
 
 
+@pytest.mark.parametrize("filename", ["a[1].md", "a?.md", "a*.md"])
+def test_resource_upload_treats_git_metacharacters_as_literal_paths(
+    manager: WorkspaceManager, filename: str
+):
+    meta = manager.create_project("特殊文件名上传")
+    root = manager.project_root(meta["id"])
+    manager.save_resource(meta["id"], "others", "a1.md", b"old", purpose="goal")
+    decoy = root / "resource" / "others" / "a1.md"
+    decoy.write_bytes(b"unfinished")
+
+    saved = manager.save_resource(
+        meta["id"], "others", filename, b"new", purpose="goal"
+    )
+
+    assert saved["commit"]
+    assert _git(root, "show", "HEAD:resource/others/a1.md") == "old"
+    assert decoy.read_bytes() == b"unfinished"
+    assert _git(
+        root,
+        "ls-tree",
+        "--name-only",
+        "HEAD",
+        "--",
+        f":(literal)resource/others/{filename}",
+    ).strip() == f"resource/others/{filename}"
+    committed = _git(root, "show", "--pretty=format:", "--name-only", "HEAD")
+    assert f"resource/others/{filename}" in committed.splitlines()
+    assert "resource/others/a1.md" not in committed.splitlines()
+
+
 @pytest.mark.parametrize("conflict_path", ["resource/others/source.md", "resource/materials.json"])
 def test_resource_upload_rejects_staged_managed_files(
     manager: WorkspaceManager, conflict_path: str
@@ -552,6 +582,55 @@ def test_resource_delete_can_be_previewed_and_reverted(manager: WorkspaceManager
     root = manager.project_root(meta["id"])
     assert (root / "resource" / "others" / "source.md").exists()
     assert manager.resource_directives(meta["id"])["resource/others/source.md"]["purpose"] == "goal"
+
+
+def test_resource_delete_treats_git_metacharacters_as_literal_paths(
+    manager: WorkspaceManager,
+):
+    meta = manager.create_project("特殊文件名删除")
+    root = manager.project_root(meta["id"])
+    manager.save_resource(meta["id"], "others", "a1.md", b"old", purpose="goal")
+    special = manager.save_resource(
+        meta["id"], "others", "a[1].md", b"special", purpose="goal"
+    )
+    decoy = root / "resource" / "others" / "a1.md"
+    decoy.write_bytes(b"unfinished")
+
+    deleted = manager.delete_resource(meta["id"], special["path"])
+
+    assert deleted["commit"]
+    assert _git(root, "show", "HEAD:resource/others/a1.md") == "old"
+    assert decoy.read_bytes() == b"unfinished"
+    assert not _git(
+        root,
+        "ls-tree",
+        "--name-only",
+        "HEAD",
+        "--",
+        ":(literal)resource/others/a[1].md",
+    ).strip()
+
+
+def test_layout_refresh_commits_generated_index_despite_dirty_metadata(
+    manager: WorkspaceManager,
+):
+    from app.services import version_revert
+
+    meta = manager.create_project("索引规范化")
+    root = manager.project_root(meta["id"])
+    target = _git(root, "rev-parse", "HEAD").strip()
+    manager.write_file(meta["id"], "ontology/object/item.md", "# item")
+    meta_path = root / ".onto-web.json"
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    metadata["resource_updated_at"] = 123
+    meta_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    manager.ensure_package_layout(meta["id"])
+
+    assert _git(root, "status", "--short", "--", ".onto-web.json").startswith(" M")
+    assert _git(root, "status", "--short", "--", "ontology/object/index.md") == ""
+    assert version_revert.manager_for_dirty(root) is False
+    assert version_revert.preview_by_commit(manager, meta["id"], target)["ready"] is True
 
 
 @pytest.mark.parametrize("operation", ["delete", "set"])

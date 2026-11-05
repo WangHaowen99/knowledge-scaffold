@@ -163,6 +163,45 @@ def test_version_tools_preview_apply_are_owner_bound_and_idempotent(env):
     assert manager.versions(meta["id"], limit=1)[0]["version"] == result["created_version"]
 
 
+def test_applied_version_preview_expires_after_replay_window(env, monkeypatch):
+    manager, meta, _root = env
+    from app.services import version_revert
+
+    current = manager.versions(meta["id"], limit=1)[0]["version"]
+    preview = call(
+        env,
+        "preview_project_version_revert",
+        target_version=current - 1,
+    )
+    asyncio.run(
+        version_revert.apply_preview(
+            manager, meta["id"], preview["preview_id"], "", "operator_a"
+        )
+    )
+    expires = version_revert._previews[preview["preview_id"]]["expires"]
+
+    with version_revert._previews_lock:
+        version_revert._purge_locked(expires + 1)
+
+    assert preview["preview_id"] not in version_revert._previews
+
+
+def test_version_preview_cache_enforces_capacity(env, monkeypatch):
+    _manager, meta, _root = env
+    from app.services import version_revert
+
+    monkeypatch.setattr(version_revert, "MAX_PREVIEW_RECORDS", 2)
+    version_revert._previews.clear()
+    current = call(env, "list_project_versions", limit=1)["current_version"]
+    first = call(env, "preview_project_version_revert", target_version=current - 1)
+    second = call(env, "preview_project_version_revert", target_version=current - 1)
+    call(env, "preview_project_version_revert", target_version=current - 1)
+
+    assert len(version_revert._previews) == 2
+    assert first["preview_id"] not in version_revert._previews
+    assert second["preview_id"] in version_revert._previews
+
+
 def test_version_preview_rejects_wrong_token_and_stale_head(env):
     manager, meta, root = env
     from app.services import version_revert

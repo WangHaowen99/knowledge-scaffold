@@ -129,7 +129,7 @@ def test_replacing_workbook_versions_file_and_matching_scope(manager):
         pid, "excel", "sample.xlsx", out.getvalue(), purpose="schema"
     )
 
-    committed_file = subprocess.run(
+    committed_file = subprocess.run(  # NOSONAR(S4721)
         ["git", "show", f"HEAD:{rel}"],
         cwd=root,
         capture_output=True,

@@ -13,6 +13,8 @@ from pathlib import Path
 from .workspace import WorkspaceError, _git
 
 PREVIEW_TTL_SECONDS = 600
+APPLIED_PREVIEW_TTL_SECONDS = 3600
+MAX_PREVIEW_RECORDS = 1000
 _previews: dict[str, dict] = {}
 _previews_lock = threading.RLock()
 
@@ -116,14 +118,14 @@ def _blocking_issues(project_id: str, root: Path) -> list[dict]:
 
 def manager_for_dirty(root: Path) -> bool:
     """Check managed and staged paths without coupling the orchestrator to a manager instance."""
-    from .workspace import ROLLBACK_EXCLUDED_TOP
+    from .workspace import WorkspaceManager
     managed = []
     status = _git(root, "status", "--porcelain")
     for line in status.splitlines():
         if len(line) < 3:
             continue
         path = line[3:].split(" -> ", 1)[-1].strip().strip('"')
-        if path.split("/", 1)[0] not in ROLLBACK_EXCLUDED_TOP:
+        if WorkspaceManager._rollback_path_allowed(path):
             managed.append(path)
     return bool(managed)
 
@@ -153,6 +155,23 @@ def _preview_payload(project_id: str, entry: dict, result: dict, head: str, toke
     }
     with _previews_lock:
         _purge_locked(now)
+        if len(_previews) >= MAX_PREVIEW_RECORDS:
+            removable = sorted(
+                (
+                    (key, value)
+                    for key, value in _previews.items()
+                    if value["state"] != "executing"
+                ),
+                key=lambda item: item[1]["created"],
+            )
+            if removable:
+                del _previews[removable[0][0]]
+            else:
+                raise _error(
+                    "REVERT_PREVIEW_CAPACITY_REACHED",
+                    "版本回退请求较多，请稍后重试",
+                    503,
+                )
         _previews[preview_id] = record
     return {
         "ready": True,
@@ -168,7 +187,7 @@ def _preview_payload(project_id: str, entry: dict, result: dict, head: str, toke
 
 def _purge_locked(now: float) -> None:
     for key, value in list(_previews.items()):
-        if value["expires"] <= now and value["state"] == "pending":
+        if value["expires"] <= now and value["state"] != "executing":
             del _previews[key]
 
 
@@ -232,6 +251,8 @@ def _mark_preview(preview_id: str, state: str, result=None) -> None:
         if record:
             record["state"] = state
             record["result"] = result
+            if state == "applied":
+                record["expires"] = time.time() + APPLIED_PREVIEW_TTL_SECONDS
 
 
 async def _apply_commit(manager, project_id: str, commit: str, expected_head: str, sessions) -> dict:

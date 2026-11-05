@@ -23,3 +23,10 @@ test('Studio refresh reloads an open entry without overwriting a dirty form', ()
   assert.match(handler, /openEntry\(path, elementId\)/);
   assert.match(studio, /onClick=\{refresh\}/);
 });
+
+test('diff editor registers unsaved content with rollback protection', () => {
+  assert.match(center, /const diffDirty\s*=/);
+  assert.match(center, /diffDraft !== diffState\.modified/);
+  assert.match(center, /setWorkspaceDirty\('diff-editor', diffDirty\)/);
+  assert.match(center, /setWorkspaceDirty\('diff-editor', false\)/);
+});

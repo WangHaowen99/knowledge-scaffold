@@ -847,11 +847,18 @@ export default function CenterPane({
   }, [project.id, file]);
 
   const dirty = editing && content?.content != null && draft !== content.content;
+  const diffDirty =
+    focus === 'diff' && diffState?.modified != null && diffDraft !== diffState.modified;
 
   useEffect(() => {
     setWorkspaceDirty('plain-editor', dirty || draftsRef.current.size > 0);
     return () => setWorkspaceDirty('plain-editor', false);
   }, [dirty]);
+
+  useEffect(() => {
+    setWorkspaceDirty('diff-editor', diffDirty);
+    return () => setWorkspaceDirty('diff-editor', false);
+  }, [diffDirty]);
 
   const changeDraft = (text) => {
     setDraft(text);
