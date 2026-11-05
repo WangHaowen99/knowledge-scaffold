@@ -18,7 +18,7 @@ const UI = {
   reverse: {
     kind: 'subpages',
     subpages: [
-      { parent: 'resources', id: 'sources', title: '业务系统数据源' },
+      { parent: 'resources', id: 'sources', title: '数据源' },
       { parent: 'resources', id: 'snapshots', title: '采集与快照' },
       { parent: 'resources', id: 'schema', title: '证据浏览器' },
     ],
