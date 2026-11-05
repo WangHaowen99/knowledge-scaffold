@@ -340,6 +340,38 @@ JSON 头里网关另加 `module`（要导入的模块）、`scheme`（锚点前�
 
 画像：敏感列只给 `null_pct`、`distinct`；低基数（≤ 20 个取值）且不敏感的列给 top-k；数值不敏感列给最小、最大值。
 
+**实现细节**（F14，`conn/db_common.py`、`db_mysql.py`、`db_postgres.py`、`masking.py`、`sqlguard.py`）：
+
+- 字段记录的 `data_type`、`nullable` 在顶层（详设 5.8.4 的例子）；`attrs` 另有 `position`。`sensitivity` 取 `secret`、`phone`、
+  `id_number`、`person_name`、`birth_date`、`email`、`bank_card`、`address`、`amount`、`join_key`、`binary`、`text`、`none`
+  （比上表多出生日期、二进制两类）；`masked` 即 `sensitivity != none`。列注释也参与识别。
+- 外键和推断关系的 `name` 都是 `references`。外键 `attrs`：`constraint`、`columns`、`on_update`、`on_delete`；推断关系 `attrs.basis`
+  取 `naming`（只看命名）或 `naming+values`（两表都读了画像行，另给 `overlap_permille`：本列去重值落在对方键里的千分比）。
+  推断只认同库里叫 `<x>`、`<x>s`、`<x>es`、`<x>ies` 的表，对到它的单列主键（没有就 `id` 列）。
+- 约束 `attrs.kind` 取 `primary_key`、`unique`、`check`；MySQL 检查约束的 `columns` 从表达式里的反引号标识符取。
+- 视图不出字段记录，列在 `attrs.columns: [{name, data_type}]`。存储过程 `attrs`：`kind`（`procedure` / `function`）、`signature`、
+  `language`、`definition`；PostgreSQL 的函数（含触发器函数）也算，重载同名的从第二个起锚点加 `~2`。触发器 `attrs.event` 多个事件用
+  ` OR ` 连接，PostgreSQL 另给 `attrs.function`（触发器函数的锚点）。
+- 画像 `attrs`：`rows`（实际读到的行数）、`row_limit`、`pct_scale: 1000`（`null_pct` 是千分比）、`policy`；`top_k` 最多 10 项
+  `[{value, count}]`；`stats.min/max` 小数、浮点给字符串。画像行按主键排序读前 N 行（没有主键就不排序；宽表压到 20 万格 ÷ 列数，不低于 200 行），文本列只取前 200 字，
+  二进制列只取「是否为空」。样本 `attrs` 另有 `dropped_columns`、`policy`；样本取画像行的前 20 行，不另查。
+- 清单 `kind` 取 `table`、`view`、`proc`，`object` 写 `<库>.<表>`、`<库>.view:<名>`、`<库>.proc:<名>`；`skipped.reason` 取
+  `no_select_privilege`、`budget` 或那张表查询失败的错误码（只少了画像和样本，结构照出）。
+- 范围为空时：MySQL 采连接里的那个库（`<database>.*`），PostgreSQL 采这个库里除系统 schema 外的全部。
+- `sample` 的 `selector` 认表锚点、`<库>.<表>`，或 `{"object" | "anchor": …}`；不在范围里回 `out_of_scope`。
+- 只读自检：MySQL 按 `SHOW GRANTS` 只允许 `USAGE`、`SELECT`、`SHOW VIEW`、`SHOW DATABASES`、`SHOW_ROUTINE`、`PROCESS`、
+  `REPLICATION CLIENT`，其余（含 `EXECUTE`、`TRIGGER`、`GRANT OPTION`、`*_ADMIN`）都算不只读，经角色授权的看不到角色权限，也按不只读；
+  PostgreSQL 查超级用户、能建角色、能建库、属于 `pg_write_all_data` 等写角色、范围内 schema 的 `CREATE`、范围内表和视图的
+  `INSERT, UPDATE, DELETE, TRUNCATE, TRIGGER`。
+- **MySQL 读不到触发器**：`information_schema.TRIGGERS` 只列账号有 `TRIGGER` 权限的表，而 `TRIGGER` 权限能建删触发器（`BEFORE INSERT`
+  触发器能改业务行），自检按写权限拒绝；所以 MySQL 快照没有触发器记录，出一条局限。PostgreSQL 不受影响。
+- 会话：MySQL `SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED`（不长时间占着 MVCC 快照）、`READ ONLY`、
+  `max_execution_time`、`lock_wait_timeout`，再 `START TRANSACTION READ ONLY`；PostgreSQL `default_transaction_read_only`、
+  `statement_timeout`、`lock_timeout`，再 `BEGIN READ ONLY`。某张表查询失败后 `ROLLBACK` 重开只读事务，接着采下一张。
+- 错误码：`connect_failed`、`auth_failed`、`database_not_found`、`query_timeout`、`readonly_violation`、`permission_denied`、
+  `db_error`、`statement_blocked`、`account_not_readonly`、`invalid_connection`、`invalid_selector`、`out_of_scope`、
+  `no_select_privilege`、`unsupported_masking_policy`。消息去掉密码、主机、IP、连接串。
+
 ## 10. 代码仓库（code-repo）
 
 连接参数 `repo_url`、`ref`（分支、标签或提交），凭据 `token`；出口白名单是仓库主机的 443 端口。克隆按 ADR-0084 加固，
