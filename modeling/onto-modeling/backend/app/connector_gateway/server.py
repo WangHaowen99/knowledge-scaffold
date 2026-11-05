@@ -427,6 +427,8 @@ def _configure_logging() -> None:
 def main() -> None:
     _configure_logging()
     gateway = Gateway()
+    # 启动时先取一次内核公钥：第一张票据到的时候内核可能正忙着等网关回话（比如写凭据），这时再回调取钥就要等它
+    threading.Thread(target=gateway.keys.verifier, args=("",), daemon=True, name="issuer-key-prefetch").start()
     server = serve(gateway=gateway)
     _log.info("连接器网关监听 :%s，转换器 %s", server.server_address[1],
               ", ".join(f"{item.info.id}@{item.info.version}" for item in gateway.converters.values()) or "无")

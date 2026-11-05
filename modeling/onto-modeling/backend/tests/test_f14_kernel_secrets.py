@@ -215,3 +215,36 @@ def test_available_providers_include_connection_kinds(f13):
     f13.fake.providers[1]["installed"] = False
     collector.reset()
     assert evidence.available_providers() == {"rea"}
+
+
+def test_gateway_calls_run_off_the_event_loop(f13):
+    """网关验票据时要回调内核取公钥：调网关的接口要是在事件循环里同步调，内核就回不了这个回调（11-05 实测卡 5 秒后 503）。
+    这里断言 EV-02（带凭据）、EV-06、EV-08、EV-14 调到网关时都不在事件循环里。"""
+    import asyncio
+
+    seen: list[tuple[str, bool]] = []
+
+    def off_loop(name, original):
+        def wrapper(*args, **kwargs):
+            try:
+                asyncio.get_running_loop()
+                seen.append((name, False))
+            except RuntimeError:
+                seen.append((name, True))
+            return original(*args, **kwargs)
+        return wrapper
+
+    for name in ("put_secret", "test_source", "submit", "catalog"):
+        f13.monkeypatch.setattr(collector, name, off_loop(name, getattr(collector, name)))
+    project_id, _root = f13.project()
+    created = f13.client.post(ADMIN_BASE, json=f13.db_body(grant_project_id=project_id,
+                                                           secret={"password": secrets.token_urlsafe(12)}))
+    assert created.status_code == 201, created.text
+    assert f13.client.put(f"{ADMIN_BASE}/{DB_SOURCE}/secret",
+                          json={"fields": {"password": secrets.token_urlsafe(12)}}).status_code == 200
+    assert f13.client.post(f"/api/v1/evidence/sources/{DB_SOURCE}/test", json={"project_id": project_id}).status_code == 200
+    job = f13.client.post(f"/api/v1/projects/{project_id}/evidence/jobs", json={"source_id": DB_SOURCE, "operation": "snapshot"})
+    assert job.status_code == 202, job.text
+    called = {name for name, _ in seen}
+    assert {"put_secret", "test_source", "catalog"} <= called
+    assert all(off for _, off in seen), seen

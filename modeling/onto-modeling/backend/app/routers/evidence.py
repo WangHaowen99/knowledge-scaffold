@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import inspect
 import re
 import secrets
 import threading
@@ -22,6 +24,7 @@ import time
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
+from starlette.concurrency import run_in_threadpool
 
 from ..api import deps, errors
 from ..api.errors import ApiError
@@ -50,6 +53,24 @@ ROUTES = (
     ("PL-19", "POST", "/api/v1/admin/packs/{name}/install"),
 )
 
+
+
+def _json_in_thread(handler):
+    """要读 JSON 请求体、又会同步调网关（或拼文件、算哈希）的接口：请求体在事件循环里读，其余放线程池跑。
+
+    网关验票据时要回调内核取公钥（`/api/v1/connector/issuer-key`）；同步调网关要是卡在事件循环里，内核就回不了这个请求，
+    网关等 5 秒后回 503 issuer_unavailable（11-05 实测：登记带凭据的数据库源每次都这样）。
+    """
+    signature = inspect.signature(handler)
+    visible = signature.replace(parameters=[item for name, item in signature.parameters.items() if name != "body"])
+
+    @functools.wraps(handler)
+    async def wrapper(*args, **kwargs):
+        body = await deps.json_body(kwargs["request"])
+        return await run_in_threadpool(handler, *args, body=body, **kwargs)
+
+    wrapper.__signature__ = visible
+    return wrapper
 
 def not_available(api: str):
     return errors.response(CODE, MESSAGE, STATUS, {"api": api})
@@ -189,9 +210,9 @@ def list_sources(request: Request, project_id: str = "", filter: str = "all"):  
             "authorized_count": sum(1 for item in items if item["id"] in authorized)}
 
 
-async def register_source(request: Request):
+@_json_in_thread
+def register_source(request: Request, body: dict):
     """EV-02。自助类提供方登录用户就能登记。"""
-    body = await deps.json_body(request)
     grant_project = str(body.get("grant_project_id") or "")
     if grant_project:
         deps.require_writable(grant_project, request)
@@ -207,9 +228,9 @@ async def register_source(request: Request):
     return JSONResponse(_source_view(request, registration, project_id=grant_project or None), status_code=201)
 
 
-async def request_source(request: Request):
+@_json_in_thread
+def request_source(request: Request, body: dict):
     """EV-03：存申请、通知管理员。"""
-    body = await deps.json_body(request)
     if body.get("secret"):
         raise ApiError("invalid_argument", "申请里不能带凭据", 400, {"fields": {"secret": "forbidden"}})
     if not sources.SOURCE_ID.match(str(body.get("id") or "")) or not str(body.get("provider") or "").strip() \
@@ -224,9 +245,9 @@ async def request_source(request: Request):
     return JSONResponse({"request_id": request_id}, status_code=202)
 
 
-async def update_source(source_id: str, request: Request):
+@_json_in_thread
+def update_source(source_id: str, request: Request, body: dict):
     """EV-04。"""
-    body = await deps.json_body(request)
     registration = sources.update(source_id, body, user=_user(request), admin=_admin(request))
     _audit(request, "evidence.source.update", summary=f"修改数据源 {source_id}",
            detail={"source_id": source_id, "fields": sorted(body)[:20], "cred_ref": registration.get("cred_ref")})
@@ -248,10 +269,10 @@ def _secret_source(source_id: str) -> tuple[dict, dict]:
     return registration, info
 
 
-async def write_secret(source_id: str, request: Request):
+@_json_in_thread
+def write_secret(source_id: str, request: Request, body: dict):
     """EV-06：明文立即转交网关 `PUT /v1/secrets/{源}`，内核只存新的 `cred_ref` 和写入时间；审计只记引用和字段名。"""
     _require_admin(request)
-    body = await deps.json_body(request)
     _registration, info = _secret_source(source_id)
     if "cred_fields" not in info:
         raise ApiError("gateway_unavailable", "连接器网关不可达", 503)
@@ -332,9 +353,9 @@ def _test_connection(request: Request, registration: dict, project_id: str) -> d
     return result
 
 
-async def test_source(source_id: str, request: Request):
+@_json_in_thread
+def test_source(source_id: str, request: Request, body: dict):
     """EV-08：连接型走网关测试；旁路容器类（REA）只查提供方装没装、目标程序在不在。"""
-    body = await deps.json_body(request)
     project_id = str(body.get("project_id") or "")
     registration = _require_source_access(request, source_id, project_id)
     if sources.connection_type(sources.provider_of(registration)):
@@ -392,9 +413,9 @@ def list_providers(request: Request):
     return {"gateway": gateway, "items": [_provider_view(item) for item in providers or []]}
 
 
-async def notify_admin(source_id: str, request: Request):
+@_json_in_thread
+def notify_admin(source_id: str, request: Request, body: dict):
     """EV-30。"""
-    body = await deps.json_body(request)
     project_id = str(body.get("project_id") or "")
     if not project_id:
         raise ApiError("invalid_argument", "要带 project_id", 400, {"fields": {"project_id": "required"}})
@@ -419,8 +440,8 @@ async def notify_admin(source_id: str, request: Request):
 # ---------------------------------------------------------------------------
 
 
-async def start_upload(request: Request):
-    body = await deps.json_body(request)
+@_json_in_thread
+def start_upload(request: Request, body: dict):
     return JSONResponse(uploads.start(_user(request), body.get("filename"), body.get("size")), status_code=201)
 
 
@@ -434,8 +455,8 @@ def cancel_upload(upload_id: str, request: Request):
     return Response(status_code=204)
 
 
-async def complete_upload(upload_id: str, request: Request):
-    body = await deps.json_body(request)
+@_json_in_thread
+def complete_upload(upload_id: str, request: Request, body: dict):
     result = uploads.complete(upload_id, _user(request), body.get("sha256"))
     _audit(request, "evidence.upload", summary=f"上传目标程序 {result['artifact']['filename']}",
            detail=result["artifact"])
@@ -457,9 +478,9 @@ def list_grants(project_id: str, request: Request):
     return {"items": [_grant_view(item) for item in grants.items(project_id)]}
 
 
-async def put_grant(project_id: str, source_id: str, request: Request):
+@_json_in_thread
+def put_grant(project_id: str, source_id: str, request: Request, body: dict):
     _project(project_id, request, write=True)
-    body = await deps.json_body(request)
     if not isinstance(body.get("authorized"), bool):
         raise ApiError("invalid_argument", "authorized 要是 true 或 false", 400, {"fields": {"authorized": "bool"}})
     user, admin = _user(request), _admin(request)
@@ -616,9 +637,9 @@ def _consent(project_id: str, user: str, registration: dict, info: dict, operati
     return {"by": user, "at": time.time()}
 
 
-async def preview_job(project_id: str, request: Request):
+@_json_in_thread
+def preview_job(project_id: str, request: Request, body: dict):
     _project(project_id, request)
-    body = await deps.json_body(request)
     registration, info, operation, scope = _collect_request(project_id, body)
     selector, limit = _sample_args(body, operation, scope, registration)
     return _preview(project_id, _user(request), registration, info, operation, scope, selector, limit)
@@ -640,10 +661,10 @@ def _start(request: Request, project_id: str, registration: dict, operation: str
     return JSONResponse(jobs.view(job), status_code=202)
 
 
-async def create_job(project_id: str, request: Request):
+@_json_in_thread
+def create_job(project_id: str, request: Request, body: dict):
     """EV-14。"""
     _project(project_id, request, write=True)
-    body = await deps.json_body(request)
     registration, info, operation, scope = _collect_request(project_id, body)
     sample = _sample_args(body, operation, scope, registration)
     consent = _consent(project_id, _user(request), registration, info, operation, scope, body.get("confirmation_token"))
@@ -676,9 +697,8 @@ def cancel_job(project_id: str, job_id: str, request: Request):
     return jobs.view(job)
 
 
-async def _again(project_id: str, job_id: str, request: Request, *, resume: bool):
+def _again(project_id: str, job_id: str, request: Request, body: dict, *, resume: bool):
     _project(project_id, request, write=True)
-    body = await deps.json_body(request)
     old = jobs.require(project_id, job_id)
     allowed = ("partial",) if resume else ("failed", "cancelled")
     if old["state"] not in allowed:
@@ -694,12 +714,14 @@ async def _again(project_id: str, job_id: str, request: Request, *, resume: bool
                   resumed_from=job_id if resume else None, budget=old.get("budget"), sample=sample)
 
 
-async def resume_job(project_id: str, job_id: str, request: Request):
-    return await _again(project_id, job_id, request, resume=True)
+@_json_in_thread
+def resume_job(project_id: str, job_id: str, request: Request, body: dict):
+    return _again(project_id, job_id, request, body, resume=True)
 
 
-async def retry_job(project_id: str, job_id: str, request: Request):
-    return await _again(project_id, job_id, request, resume=False)
+@_json_in_thread
+def retry_job(project_id: str, job_id: str, request: Request, body: dict):
+    return _again(project_id, job_id, request, body, resume=False)
 
 
 # ---------------------------------------------------------------------------
@@ -798,13 +820,13 @@ def snapshot_diff(project_id: str, request: Request, cursor: str = "", limit: in
             "untrusted_content": True}
 
 
-async def diff_suggestions(project_id: str, request: Request):
+@_json_in_thread
+def diff_suggestions(project_id: str, request: Request, body: dict):
     """EV-22（最小可用）：差异里被已确认产物（`ontology/`）引用的锚点，每份产物写一份待处理报告
     （`reports/evidence-revise-*.md`），待处理按「报告待处理」列出来。"""
     from ..kernel.writepath import ChangeTx, Origin
 
     root = _project(project_id, request, write=True)
-    body = await deps.json_body(request)
     old, new = str(body.get("from") or ""), str(body.get("to") or "")
     items, _counts, source_id = _diff(project_id, root, old, new)
     by_path: dict[str, list[dict]] = {}
