@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 
 from app.services import workspace as workspace_service
-from app.services.workspace import WorkspaceError, WorkspaceManager, _git
+from app.services.workspace import (
+    MAX_RESOURCE_FILE_SIZE,
+    WorkspaceError,
+    WorkspaceManager,
+    _git,
+)
 
 
 @pytest.fixture()
@@ -161,6 +166,46 @@ def test_save_resource_validates_subdir(manager: WorkspaceManager):
         manager.save_resource(meta["id"], "evil", "x.md", b"")
     with pytest.raises(WorkspaceError):
         manager.save_resource(meta["id"], "others", "../x.md", b"")
+
+
+def test_save_resource_enforces_type_and_size_before_writing(manager: WorkspaceManager):
+    meta = manager.create_project("资料契约")
+    root = manager.project_root(meta["id"])
+    saved = manager.save_resource(
+        meta["id"], "others", "边界.PDF", b"x" * MAX_RESOURCE_FILE_SIZE
+    )
+    assert (root / saved["path"]).stat().st_size == MAX_RESOURCE_FILE_SIZE
+
+    with pytest.raises(WorkspaceError) as oversized:
+        manager.save_resource(
+            meta["id"],
+            "others",
+            "超限.pdf",
+            b"x" * (MAX_RESOURCE_FILE_SIZE + 1),
+        )
+    assert oversized.value.status == 413
+    assert oversized.value.code == "resource_file_too_large"
+    assert not (root / "resource" / "others" / "超限.pdf").exists()
+
+    with pytest.raises(WorkspaceError) as unsupported:
+        manager.save_resource(meta["id"], "others", "程序.exe", b"x")
+    assert unsupported.value.code == "unsupported_resource_file_type"
+    assert not (root / "resource" / "others" / "程序.exe").exists()
+
+
+def test_rejected_resource_replacement_keeps_original(manager: WorkspaceManager):
+    meta = manager.create_project("替换保护")
+    root = manager.project_root(meta["id"])
+    manager.save_resource(meta["id"], "others", "原件.md", b"original")
+
+    with pytest.raises(WorkspaceError):
+        manager.save_resource(
+            meta["id"],
+            "others",
+            "原件.md",
+            b"x" * (MAX_RESOURCE_FILE_SIZE + 1),
+        )
+    assert (root / "resource" / "others" / "原件.md").read_bytes() == b"original"
 
 
 def test_concurrent_resource_uploads_keep_metadata_parseable(manager: WorkspaceManager):

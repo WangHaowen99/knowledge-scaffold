@@ -32,6 +32,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { openEvaluation, prefetchEvaluationEntry } from '../lib/evaluation.js';
 import { isResearchBlocking } from '../lib/researchGate.js';
+import { RESOURCE_FILE_ACCEPT, validateResourceFile } from '../lib/resourceUpload.js';
 import { EMPTY_HISTORY, appendHistoryPage, historyEntryKey, versionTitle } from '../lib/versionHistory.js';
 import { hasWorkspaceDirty } from '../lib/workspaceDirty.js';
 import EvalRunDetail from './EvalRunDetail.jsx';
@@ -573,6 +574,8 @@ export default function LeftPane({
 
   const upload = async (file, forcedSubdir = null) => {
     try {
+      const validation = validateResourceFile(file);
+      if (!validation.valid) throw new Error(validation.message);
       const subdir =
         forcedSubdir || (uploadSubdir === 'auto' ? autoSubdir(file.name) : uploadSubdir);
       const saved = await api.uploadResource(project.id, subdir, file);
@@ -849,12 +852,17 @@ export default function LeftPane({
               ]}
             />
           </Space.Compact>
-          <Upload.Dragger multiple showUploadList={false} beforeUpload={(f) => upload(f)}>
+          <Upload.Dragger
+            multiple
+            accept={RESOURCE_FILE_ACCEPT}
+            showUploadList={false}
+            beforeUpload={(f) => upload(f)}
+          >
             <p className="ant-upload-drag-icon">
               <InboxOutlined />
             </p>
             <p className="ant-upload-text">上传领域资料</p>
-            <p className="ant-upload-hint">支持 Markdown、Word、Excel、PDF、Drawio、TXT；单个文件不超过 20 MB</p>
+            <p className="ant-upload-hint">支持 Markdown、TXT、PDF、Word、Excel、CSV、Drawio 和常见图片；单个文件不超过 20 MB</p>
           </Upload.Dragger>
           <List
             size="small"
@@ -869,6 +877,7 @@ export default function LeftPane({
                   actions={[
                     <Upload
                       key="replace"
+                      accept={RESOURCE_FILE_ACCEPT}
                       showUploadList={false}
                       beforeUpload={(f) => upload(f, itemSubdir)}
                     >

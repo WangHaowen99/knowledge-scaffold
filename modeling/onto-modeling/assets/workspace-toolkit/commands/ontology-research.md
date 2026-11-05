@@ -73,6 +73,12 @@ Wait for response.
 
 **If user provides paths:**
 - Set LOCAL_DOCS_PATHS = list of provided paths
+- 在派遣前逐个执行
+  `python3 .claude/scripts/source_extract.py "{path}" --offset 0 --limit 1` 做来源能力预检。
+  `status=ok` 才继续；`unverifiable` 时立即列出文件和 `reason`。如果文件已经上传但格式不能作为确定性核验来源，
+  明确说明“文件可作为辅助资料保留，但当前格式不能直接用于确定性来源核验”，并建议转换为
+  DOCX、XLSX、Markdown、TXT 或 CSV；其他错误则提示用户修复、拆分或替换资料后重试，
+  不得继续生成一份最终无法通过来源验收的报告。预检只验证能否受控抽取，不替代后续完整读取和内容验收。
 - Ask: "是否同时联网检索资料以补充本地文档未覆盖的内容？[是] [否，仅基于本地文档]"
   - **是**: set WEB_RESEARCH_MODE = supplement
   - **否**: set WEB_RESEARCH_MODE = skip
