@@ -282,6 +282,7 @@ probes:
 | `writes` | 节点会改但不算产出的路径 |
 | `optional` | `true` 表示可以不做，下游不等它 |
 | `progress` | `false` 表示不计入进度 |
+| `visible_if` | 内核条件名，不成立时节点不在这个项目的流程里：`evidence_sources`（项目有授权的数据源）、`evidence_snapshot`（授权的源有完整快照）。提示规则也能写；探针写 `{kernel: <条件名>}` |
 
 ## 11. 节点包：四类节点
 

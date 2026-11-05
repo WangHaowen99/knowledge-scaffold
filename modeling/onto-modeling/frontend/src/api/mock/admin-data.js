@@ -129,9 +129,9 @@ const ERR_TEMPLATES = [
     auto: null, exec: null, session: null,
   },
   {
-    origin: 'collection', pack: 'reverse@0.3.0', node: 'reverse.evidence', older: true,
+    origin: 'collection', pack: 'rev@0.3.0', node: 'rev.evidence', older: true,
     raw: 'connector-gateway: 1045 Access denied for user crm_ro（凭据引用 cred://crm-test/2）', friendly: '连接业务系统失败，请检查数据源配置',
-    stack: (p) => `ConnectorError: 1045 Access denied for user crm_ro (using password: ***)\n  at connector_gateway.connect (db-mysql)\n  at collector.run (reverse/0.3.0)\ncontext: project=${p} source=crm-test cred=cred://crm-test/2`,
+    stack: (p) => `ConnectorError: 1045 Access denied for user crm_ro (using password: ***)\n  at connector_gateway.connect (db-mysql)\n  at collector.run (rev/0.3.0)\ncontext: project=${p} source=crm-test cred=cred://crm-test/2`,
     auto: null, exec: 'ex-0521', session: null,
   },
   {

@@ -3,7 +3,7 @@
 // 项目外（新建向导）与项目设置看 EV-01 读不读得到（本期回 501）。
 
 // 依赖证据源的包：系统逆向建模（数据源、采集与快照、证据浏览器三个子页都由它带来）
-const EVIDENCE_PACKS = new Set(['reverse']);
+const EVIDENCE_PACKS = new Set(['rev']);
 
 // 项目内：project 是 useProject() 的值
 export const evidenceInProject = (project) => !!project?.hasSubpage?.('sources');

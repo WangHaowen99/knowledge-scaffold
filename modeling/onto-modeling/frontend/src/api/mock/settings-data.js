@@ -15,7 +15,7 @@ const dayAt = (daysAgo, h, m) => {
 const UI = {
   kernel: { kind: 'kernel', note: '内核：工作台 · Studio · 资料 · 发布' },
   page: (id, title) => ({ kind: 'page', pages: [{ id, title }], note: `左栏页面：${title}` }),
-  reverse: {
+  rev: {
     kind: 'subpages',
     subpages: [
       { parent: 'resources', id: 'sources', title: '业务系统数据源' },
@@ -42,7 +42,7 @@ export function projectPacks() {
     }),
     pk({ name: 'knowledge', label: '知识沉淀', ui: UI.page('knowledge', '知识沉淀'), locked_version: '0.6.0' }),
     pk({ name: 'codegen', label: '代码生成与求解', ui: UI.page('scripts', '代码生成'), locked_version: '0.9.2', rollback_to: '0.9.1' }),
-    pk({ name: 'reverse', label: '系统逆向建模', ui: UI.reverse, locked_version: '0.3.0' }),
+    pk({ name: 'rev', label: '系统逆向建模', ui: UI.rev, locked_version: '0.3.0' }),
     pk({ name: 'diagram', label: '图示', locked_version: '0.5.0', latest_available: '0.6.0' }),
     pk({ name: 'evo', label: '反馈演进', locked_version: '0.3.0' }),
     pk({ name: 'industry-retail', label: '零售连锁', category: 'industry', ui: null, locked_version: '1.0.3' }),
@@ -102,7 +102,7 @@ export function mcpOverview(pid, { archived = false } = {}) {
     ],
     pack_tools: [
       { name: 'flow.get', scope: 'ontology.read', read_only: true, pack: 'core' },
-      ...['search', 'show', 'where-used', 'lineage', 'diff', 'er'].map((t) => ({ name: `evidence.${t}`, scope: 'ontology.read', read_only: true, pack: 'reverse' })),
+      ...['search', 'show', 'where-used', 'lineage', 'diff', 'er'].map((t) => ({ name: `evidence.${t}`, scope: 'ontology.read', read_only: true, pack: 'rev' })),
     ],
     scope_catalog: [
       { scope: 'ontology.read', description: '列出、读取对象 / 操作 / 规则' },

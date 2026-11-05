@@ -194,8 +194,8 @@ frontmatter 声明了快照就用它，否则用这个源最新的完整快照�
 ## 7. 系统逆向建模包 `rev` 与 `evidence.py`
 
 - 清单：`kind: capability`，`label: 系统逆向建模`，不默认启用；`subpages` 是资料页下的 `sources`、`snapshots`、`schema`。
-- 节点 `rev.evidence`（系统取证）：串在 `core.research` 之后、`core.model` 之前；项目没有授权的数据源时不出现；
-  有一份完整快照就算完成；入口命令 `/rev-evidence`。
+- 节点 `rev.evidence`（系统取证）：串在 `core.research` 之后、`core.model` 之前；项目没有授权的数据源时不出现（`visible_if: evidence_sources`，ADR-0083）；
+  授权的源有一份完整快照就算完成（内核探针 `{kernel: evidence_snapshot}`）；动作「采集快照」去采集与快照子页；入口命令 `/rev-evidence`。
 - `/rev-evidence`：读各快照的 `summary.md`，用 `evidence.py` 检索，写 `reports/evidence/<源>.md`：候选对象、候选操作、外部系统，
   每条带锚点；不改本体。
 - 规则：有快照时，对象、操作抽取先看 `reports/evidence/` 和 `summary.md`；来源列可以写 `bin:` 锚点；从系统证据来的条目都是候选，

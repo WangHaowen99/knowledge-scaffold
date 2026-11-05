@@ -32,11 +32,11 @@ export function pluginFlags(sc) {
 // ---------- 目录 ----------
 const META = {
   core: '22 命令 · 18 子代理', trace: '5 命令 · 段内 1 步 + 回归', knowledge: '3 命令 · 1 子代理 · 纠错提示', codegen: '3 命令 · 旁支节点',
-  reverse: '5 命令 · 串入节点', diagram: '2 命令 · 1 skill', websearch: '1 skill', migrate: '1 skill · 按需节点', evo: '按需节点',
+  rev: '5 命令 · 串入节点', diagram: '2 命令 · 1 skill', websearch: '1 skill', migrate: '1 skill · 按需节点', evo: '按需节点',
   'industry-retail': '附「合规检查」', 'industry-property': '参考对象 22 个', 'industry-workorder': '参考对象 9 个',
   'sys-erp-generic': '表 126 · 状态码 48', 'sys-wms-generic': '表 64', 'sys-pos-generic': '表 38',
 };
-const BADGES = { reverse: ['new'] };
+const BADGES = { rev: ['new'] };
 
 // 租户上传的行业类检查包：只对启用了物业服务行业包的项目适用（applies_to 不进响应）
 export const TENANT_PACKS = [
@@ -281,7 +281,7 @@ const DETAILS = {
       log('0.9.0', '2026-09-22', '新增求解契约与评估器'),
     ],
   },
-  reverse: {
+  rev: {
     description: '连接数据源、采集快照、从系统抽取、文档 × 数据库 × 代码三方对账、快照差异。',
     size: 204 * KB, files: 27,
     flow_insertions: [{ id: 'rev.evidence', kind: '串入节点', title: '系统取证', at: 'research', note: '串入节点 · 登记了数据源才有', short: '系统取证' }],
@@ -453,7 +453,7 @@ export function projectStatsOf(name, { entries, knowledge, scripts, flowcharts, 
       produced: { value: scripts, unit: '个脚本', note: '求解契约 1 份' },
       metric: { label: '沙箱验证', value: '通过', note: '最近一次 10-31' },
     },
-    reverse: {
+    rev: {
       produced: { value: snapshots, unit: '份快照', note: '数据源 erp-prod · crm-test' },
       metric: { label: '最近采集', value: '10-31', note: 'erp-prod · 快照 5e2b' },
     },

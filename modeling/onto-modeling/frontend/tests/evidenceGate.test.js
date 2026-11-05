@@ -16,10 +16,10 @@ test('证据源可用：项目内看有没有数据源子页，项目外看 EV-0
 });
 
 test('依赖证据源的包、节点、MCP、页面', () => {
-  assert.equal(isEvidencePack('reverse'), true);
+  assert.equal(isEvidencePack('rev'), true);
   assert.equal(isEvidencePack('trace'), false);
   assert.equal(isEvidenceNode({ id: 'x', kind: 'external' }), true);
-  assert.equal(isEvidenceNode({ id: 'rev.evidence', kind: 'agent', plugin: { name: 'reverse', label: '系统逆向建模' } }), true);
+  assert.equal(isEvidenceNode({ id: 'rev.evidence', kind: 'agent', plugin: { name: 'rev', label: '系统逆向建模' } }), true);
   assert.equal(isEvidenceNode({ id: 'core.model', kind: 'agent', plugin: null }), false);
   assert.equal(isEvidenceMcp({ id: 'evidence' }), true);
   assert.equal(isEvidenceMcp({ name: 'evidence.search' }), true);

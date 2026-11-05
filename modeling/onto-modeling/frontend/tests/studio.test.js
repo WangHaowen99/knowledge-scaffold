@@ -288,7 +288,7 @@ test('mock：新建重名、删除被引用的条目、证据被谁引用', asyn
 
 test('ER 视图：包选用了 er_view 才有；只画对象和对象之间的关系声明，属性最多列 8 个', () => {
   assert.equal(hasErView({ view_choices: [{ id: 'er_view', pack: 'diagram' }] }), true);
-  assert.equal(hasErView({ view_choices: [{ id: 'schema_browser', pack: 'reverse' }] }), false);
+  assert.equal(hasErView({ view_choices: [{ id: 'schema_browser', pack: 'rev' }] }), false);
   assert.equal(hasErView({}), false);
   assert.equal(hasErView(F.extensions(['trace', 'knowledge', 'codegen', 'diagram'])), true);
   assert.equal(hasErView(F.extensions(['trace'])), false);
