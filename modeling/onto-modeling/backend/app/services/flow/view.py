@@ -503,7 +503,9 @@ def _write_flow_state(root: Path, copy: Path, flow: dict, states: dict, context:
     payload = {
         "flow_hash": flow.get("flow_hash") or "",
         "mainline_head": mainline.state(root)["head"],
-        "nodes": states,
+        # 本项目不出现的节点（ADR-0083）还在装配目录的 flow.yaml 里：记成跳过，state_helper 不会把它当下一步
+        "nodes": {**{node_id: {"state": "skipped", "flags": {"hidden": True}} for node_id in flow.get("hidden_nodes") or []},
+                  **states},
         "context": {key: value for key, value in context.items()
                     if key in ("stage", "changeset", "autobuild", "blueprint", "slice_next", "slice_stale",
                                "stale_upstream")},

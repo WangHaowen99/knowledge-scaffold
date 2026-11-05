@@ -50,7 +50,13 @@ def image_flow() -> dict:
 
 
 def load_for(root: Path) -> dict:
-    """本项目生效中的主流程。"""
+    """本项目生效中的主流程：按项目条件不出现的节点已去掉（ADR-0083）。"""
+    from . import conditions
+
+    return conditions.apply(_assembled(root), root)
+
+
+def _assembled(root: Path) -> dict:
     link = Path(root) / ".claude"
     if os.path.lexists(link):
         real = Path(os.path.realpath(link))
@@ -64,10 +70,11 @@ def load_for(root: Path) -> dict:
 
 
 def flow_state(root: Path):
-    """本项目锁定版本的 flow_state（探针实现）。"""
+    """本项目锁定版本的 flow_state（探针实现），补上内核算的探针（ADR-0083）。"""
     from ..packs import contracts
+    from . import conditions
 
-    return contracts.module_for(root, "flow_state")
+    return conditions.with_kernel_probes(contracts.module_for(root, "flow_state"))
 
 
 def progress(root: Path) -> dict:

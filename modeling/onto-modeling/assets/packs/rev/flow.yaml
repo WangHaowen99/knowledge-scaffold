@@ -1,0 +1,22 @@
+# 系统逆向建模包往主流程上挂的（ADR-0082、ADR-0083）：系统取证串在资料分析之后、建模之前，不挡建模。
+# 项目有授权的数据源才出现（visible_if，内核按数据目录里的授权算）；授权的源有一份完整快照就算完成（内核探针，
+# 工作区里的 flow_state 不认识这类探针，恒为否，节点状态以后端写的 flow-state.json 为准）。
+nodes:
+  - id: rev.evidence
+    title: 系统取证
+    kind: agent
+    placement: step
+    section: required
+    after: core.research
+    before: core.model
+    visible_if: evidence_sources
+    done: [rev_snapshot]
+    produces: ["reports/evidence/*"]
+    entry: {command: /rev-evidence}
+    actions:
+      - {label: 采集快照, page: snapshots}
+      - {label: 整理取证报告, command: /rev-evidence}
+probes:
+  rev_snapshot: {kernel: evidence_snapshot}
+commands:
+  rev-evidence: {node: rev.evidence, requires: []}

@@ -91,6 +91,7 @@ def disabled_nodes(root: Path, flow: dict) -> list[dict]:
     """锁文件里停用了的包声明的节点（不在当前流程里的）：[{**节点, pack, version}]。"""
     from ...api import deps
     from ..packs import lockfile
+    from . import conditions
 
     try:
         lock = lockfile.read(root)
@@ -108,8 +109,10 @@ def disabled_nodes(root: Path, flow: dict) -> list[dict]:
         except Exception:  # noqa: BLE001 - 一个包读不出来不影响流程
             _log.warning("读取停用包 %s %s 的节点失败", entry.name, entry.version, exc_info=True)
             continue
+        # 按项目条件本来就不出现的节点（ADR-0083）也不列成已停用
         out += [{**node, "pack": entry.name, "version": f"{entry.name}@{entry.version}"}
-                for node in declared if node.get("id") and node["id"] not in present]
+                for node in declared if node.get("id") and node["id"] not in present
+                and not (node.get("visible_if") and not conditions.holds(node["visible_if"], root))]
     return out
 
 

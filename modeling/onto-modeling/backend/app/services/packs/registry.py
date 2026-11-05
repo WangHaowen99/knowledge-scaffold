@@ -319,6 +319,8 @@ def prompt_rules(manager, root: Path) -> list[dict]:
 
     会话宿主（详设 4.2 ㊶）在两轮之间按用户消息匹配并注入 text；知识沉淀包的纠错信号就是一条。
     """
+    from ..flow import conditions
+
     rules = []
     for view in active_packs(manager, root):
         for index, rule in enumerate(view.manifest.declared("prompts")):
@@ -326,6 +328,8 @@ def prompt_rules(manager, root: Path) -> list[dict]:
             text = str(rule.get("text") or "").strip()
             if not patterns or not text:
                 continue
+            if rule.get("visible_if") and not conditions.holds(str(rule["visible_if"]), root):
+                continue  # 按项目条件注入（ADR-0083），如有系统快照时的提醒
             compiled = []
             for pattern in patterns:
                 try:
