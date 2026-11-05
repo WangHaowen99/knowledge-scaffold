@@ -172,6 +172,7 @@ def test_core_only_project_assembles_and_filters_suggestions(env):
     ("codegen", "scripts", "ontology-codegen-scan"),
     ("diagram", None, "ontology-flowchart"),
     ("evo", None, "ontology-evolution"),
+    ("incremental", None, "incremental-scope"),
     ("websearch", None, None),
     ("migrate", None, None),
 ])

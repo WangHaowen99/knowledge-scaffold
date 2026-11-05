@@ -99,7 +99,8 @@ def included(row: dict, policy: dict) -> bool:
 
 
 def _tail(root: Path, flow_doc: dict, policy: dict) -> list[dict]:
-    """分段之后主线上的几步：按流程顺序，到 `until_node` 为止（含）；已确认的、可选的（不含可选时）、人工与面板节点不做。"""
+    """分段之后主线上的几步：按流程顺序，到 `until_node` 为止（含）；已确认的、可选的（不含可选时）、人工与面板节点、
+    声明了 `autobuild: false` 的节点（要用户给输入才能做，如增量构建的圈定范围）不做。"""
     from ..flow import view
 
     node = per_slice_node(flow_doc)
@@ -114,6 +115,7 @@ def _tail(root: Path, flow_doc: dict, policy: dict) -> list[dict]:
         state = (states.get(item["id"]) or {}).get("state")
         command = ((item.get("entry") or {}).get("command") or "").strip()
         eligible = not (item["id"] in SKIP_TAIL or item.get("placement", "spine") != "spine"
+                        or item.get("autobuild") is False
                         or item.get("kind") == "human" or item.get("panel") or not command
                         or (item.get("optional") and not policy["scope"].get("include_optional"))
                         or state in ("confirmed", "skipped"))

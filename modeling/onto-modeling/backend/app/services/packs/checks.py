@@ -381,6 +381,24 @@ def _node_pack_problems(directory: Path, manifest: Manifest, files: list[str],
     return problems
 
 
+def _confine_problems(directory: Path, manifest: Manifest, spec) -> list[str]:
+    """flow.yaml 顶层的 confine（ADR-0085）：只写 scope_file；是工作区里的具体文件，不在 ontology/ 和受保护目录下，
+    落在本包某个节点的 produces 里。只能有一个包声明这一条在启用组装时查。"""
+    if not isinstance(spec, dict) or set(spec) != {"scope_file"}:
+        return ["confine 只能写 scope_file"]
+    text = spec.get("scope_file")
+    rel = mf.workspace_rel(text)
+    if rel is None or rel != text or mf.protected_path(rel) or rel.split("/", 1)[0] == "ontology" or any(
+            ch in rel for ch in "*?["):
+        return [f"confine.scope_file 要是工作区里的具体文件，不能在 ontology/ 或受保护目录下：{text or '（空）'}"]
+    nodes, _ = _declared_nodes(directory, manifest)
+    produces = [str(item.get("path") if isinstance(item, dict) else item)
+                for _, node in nodes for item in node.get("produces") or []]
+    if not any(fnmatch.fnmatchcase(rel, pattern) for pattern in produces):
+        return [f"confine.scope_file {rel} 不在本包任何节点的 produces 里"]
+    return []
+
+
 def _flow_data(directory: Path, manifest: Manifest) -> dict | None:
     import yaml
 
@@ -483,6 +501,10 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
     protected, missing_entry = _node_problems(directory, manifest)
     checks.append(_check("write_scope", "写入范围不碰受保护目录", "fail" if protected else "pass", "；".join(protected[:10])))
     checks.append(_check("node_entry", "节点入口命令存在", "fail" if missing_entry else "pass", "；".join(missing_entry[:10])))
+    flow_data = _flow_data(directory, manifest) or {}
+    if "confine" in flow_data:
+        confine = _confine_problems(directory, manifest, flow_data["confine"])
+        checks.append(_check("confine", "范围限定声明正确", "fail" if confine else "pass", "；".join(confine)))
 
     # 守卫：只能追加拒绝型（PreToolUse），不能带自己的 settings.json
     hooks = []

@@ -339,6 +339,10 @@ probes:
 | `before: core.publish` | 只加一条边。没写 `after` 时节点一开始就可开始 |
 | `blocks: [core.publish]` | 本节点没确认时目标节点被挡住，并进入发布关卡 |
 
+**范围限定 `confine`（`flow.yaml` 顶层，可选）。** 写 `confine: {scope_file: <包的状态目录>/scope.json}`：范围文件合入主线、`status` 是 `active` 时，基线提交（`baseline.commit`）里有、`editable` 里没有的本体条目助手不能写也不能删，没有命令在跑时也一样；新增条目不限，网页上人工编辑不限。只认主线上的范围文件，副本里改它扩大不了范围；范围文件只能在它所属节点的命令运行时写。停用包就解除。一次装配只能有一个包声明，范围文件要落在本包某个节点的 `produces` 里。增量构建包（`incremental`）是现成的例子。
+
+**`autobuild: false`** 让自主构建跳过这个节点，用于要用户先给输入才能做的节点。
+
 **`section: required` 不挡发布。** 上面的 `sample-review.check` 挂在 `core.validate` 之后，和场景模拟并列；没做完时发布照样可以进行。要挡发布必须写 `blocks`。
 
 锚点用主线节点 `core.research`、`core.model`、`core.validate`、`core.publish`，或别的包的节点 id。`core.consistency` 这类旧名字不写进新包。
@@ -355,6 +359,7 @@ probes:
 - 锚点不存在，或节点之间成环。
 - 两个节点的 `produces` 重叠。通配互相匹配也算重叠，所以样例用精确文件名。core 占了 `reports/*-rule.md` 和 `reports/*-semantic.md`。
 - 探针名、`commands` 的键和已有的重复。
+- 不止一个包声明了 `confine`，或范围文件不在声明它的包的 `produces` 里。
 
 ## 13. 启用后核对
 
@@ -385,6 +390,7 @@ probes:
 | 探针未声明 | `node_pack` | `done` 里的名字拼错或没写 `probes` | 补 `probes` |
 | `requires_flow` 不满足 | `node_pack` | 版本要求超过仓库里的 core | 放宽范围 |
 | 写入范围不对 | `write_scope` | `produces`、`writes` 碰受保护目录，或 `script.output`、`decision.record` 没写进 `produces` | 改到 `reports/` 或 `ext/<包名>/`，补进 `produces` |
+| 范围限定写错 | `confine` | 写了 `scope_file` 以外的键、路径带通配或在 `ontology/`、受保护目录下、不在本包节点的 `produces` 里 | 改成本包状态目录下的具体文件，并写进范围节点的 `produces` |
 | 入口命令不属于本包 | `node_pack`、`node_entry` | `entry.command` 或钩子命令写了别的包 | 改成本包命令 |
 | 启用返回 409，提示路径同时来自两个包 | `pack_incompatible` | 两个包落到同一路径 | 文件名带包名前缀 |
 | 启用返回 422，提示同时声明输出 | `flow_assembly_failed` | `produces` 通配太宽 | 改成精确路径 |
