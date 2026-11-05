@@ -124,7 +124,8 @@ def test_anchor_resolution_and_where_used_for_db(f13):
     phone = db_anchor("crm", "customer", "phone")
     got = f13.client.post(f"/api/v1/projects/{project_id}/anchors/resolve",
                           json={"anchors": [phone, db_anchor("crm", "gone"), "db:no-snap/crm.x"]}).json()["items"]
-    assert got[0]["resolved"] and got[0]["location_label"] == "crm.customer.phone" and got[0]["snapshot_id"] == snapshot_id
+    assert got[0]["resolved"] and got[0]["location_label"] == "crm.customer.phone"
+    assert got[0]["snapshot_id"] == snapshot_id
     assert got[1]["resolved"] is False and got[1]["reason"] == "not_in_snapshot"
     assert got[2]["resolved"] is False and got[2]["reason"] == "not_available"  # 没有快照的源照旧
     with ChangeTx(f13.workspaces, project_id, Origin("web", "local"), summary="测试") as tx:

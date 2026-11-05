@@ -191,7 +191,8 @@ def db_table(db: str, table: str, columns: list[tuple], *, comment: str = "", ro
     for name, kind, note, pk, masked in columns:
         out.append(db_record("field", db_anchor(db, table, name, source=source), name, parent=anchor,
                              data_type=kind, nullable=not pk,
-                             attrs={"comment": note, "pk": pk, "masked": masked, "sensitivity": "pii" if masked else ""}))
+                             attrs={"comment": note, "pk": pk, "masked": masked,
+                                    "sensitivity": "pii" if masked else ""}))
     keys = [name for name, _kind, _note, pk, _masked in columns if pk]
     if keys:
         out.append(db_record("constraint", f"{anchor}.pk", "pk", parent=anchor, attrs={"columns": keys}))
@@ -202,7 +203,8 @@ def db_records(*, source: str = DB_SOURCE, sample_rows: list[list] | None = None
     customer = db_anchor("crm", "customer", source=source)
     orders = db_anchor("crm", "orders", source=source)
     item = db_anchor("stock", "item", source=source)
-    rows = db_table("crm", "customer", [("id", "bigint", "客户号", True, False), ("name", "varchar(40)", "名称", False, True),
+    rows = db_table("crm", "customer", [("id", "bigint", "客户号", True, False),
+                                        ("name", "varchar(40)", "名称", False, True),
                                         ("phone", "varchar(20)", "电话", False, True),
                                         ("level", "varchar(8)", "等级", False, False)],
                     comment="客户", rows=1200, source=source)
@@ -214,9 +216,11 @@ def db_records(*, source: str = DB_SOURCE, sample_rows: list[list] | None = None
     rows += db_table("stock", "item", [("code", "varchar(20)", "货品编码", True, False),
                                        ("title", "varchar(80)", "品名", False, False)], comment="货品", source=source)
     rows.append(db_record("relation", f"{orders}.fk:fk_orders_customer", "fk_orders_customer", parent=orders,
-                          attrs={"columns": [["customer_id", "id"]], "declared": True}, **{"from": orders, "to": customer}))
+                          attrs={"columns": [["customer_id", "id"]], "declared": True},
+                          **{"from": orders, "to": customer}))
     rows.append(db_record("relation", f"{orders}.ref:item_code", "item_code", parent=orders, confidence="inferred",
-                          attrs={"columns": [["item_code", "code"]], "basis": "取值重合 98%"}, **{"from": orders, "to": item}))
+                          attrs={"columns": [["item_code", "code"]], "basis": "取值重合 98%"},
+                          **{"from": orders, "to": item}))
     rows.append(db_record("profile", f"{customer}#profile", "customer#profile", parent=customer, attrs={
         "rows": 1200, "columns": [
             {"column": "level", "null_pct": 0, "distinct": 3,
@@ -366,7 +370,8 @@ class FakeGateway:
                 parts = self.path.strip("/").split("/")
                 if len(parts) == 4 and parts[:2] == ["v1", "sources"] and parts[3] == "test":
                     test_spec = json.loads(data or b"{}")
-                    if not fake._verify(self, "test", spec.scope_hash(test_spec)) or test_spec["source"]["id"] != parts[2]:
+                    if not fake._verify(self, "test", spec.scope_hash(test_spec)) \
+                            or test_spec["source"]["id"] != parts[2]:
                         return self._reply(401, {"error": "ticket_invalid"})
                     fake.tests.append(test_spec)
                     return self._reply(200, fake.test_result)

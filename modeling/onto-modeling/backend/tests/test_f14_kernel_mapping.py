@@ -66,7 +66,8 @@ def test_anchor_missing_in_snapshot_is_declared_missing(tmp_path):
     result = package_mapping.resolve_object_tables(root)
     issues = {issue["object"]: issue for issue in result["issues"]}
     assert issues["客户"]["kind"] == "declared_missing" and issues["客户"]["blocking"]
-    assert issues["客户"]["candidates"][0]["table"] == "customer" and issues["客户"]["declared"] == db_anchor("crm", "client")
+    assert issues["客户"]["candidates"][0]["table"] == "customer"
+    assert issues["客户"]["declared"] == db_anchor("crm", "client")
     assert issues["货品"]["kind"] == "no_columns" and issues["货品"]["table"] == "item"
     assert issues["列"]["kind"] == "declared_missing"  # 指到列不算表
     assert len(result["problems"]) == 3

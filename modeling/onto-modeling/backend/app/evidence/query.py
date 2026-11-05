@@ -422,7 +422,8 @@ def summary_tree(connection: sqlite3.Connection, root: Path, refs: References, s
         return None
 
     if dbview.is_db_snapshot(connection, snapshot["id"]):
-        return {"snapshot": snapshot_ref(snapshot), "domains": dbview.summary_domains(connection, snapshot["id"], mapped),
+        return {"snapshot": snapshot_ref(snapshot),
+                "domains": dbview.summary_domains(connection, snapshot["id"], mapped),
                 "untrusted_content": untrusted(connection, [snapshot["id"]])}
     groups: dict[str, list[dict]] = {}
     for row in connection.execute("SELECT * FROM records WHERE snapshot_id = ? AND type IN ('entity', 'operation') "

@@ -104,7 +104,8 @@ def test_sample_becomes_supplementary_snapshot(f13):
     bad = (({"selector": "crm.*"}, "required"), ({"selector": "erp.x"}, "outside_allowlist"),
            ({"selector": "crm.customer", "limit": 21}, "range"), ({}, "required"))
     for sample, reason in bad:
-        response = f13.client.post(f"{base}/jobs", json={"source_id": DB_SOURCE, "operation": "sample", "sample": sample})
+        response = f13.client.post(f"{base}/jobs", json={"source_id": DB_SOURCE, "operation": "sample",
+                                                         "sample": sample})
         assert response.status_code == 400 and reason in json.dumps(response.json()["details"]), sample
 
     customer = db_anchor("crm", "customer")
@@ -123,7 +124,8 @@ def test_sample_becomes_supplementary_snapshot(f13):
     # 最新完整快照还是原来那份；记录详情的样本取最新的补充样本
     shown = f13.client.get(f"{base}/record", params={"anchor": customer}).json()
     assert shown["snapshot"]["id"] == full
-    assert shown["samples"]["rows"] == [["9", "张*", "130****9999", "B"]] and shown["samples"]["snapshot_id"] == sample_id
+    assert shown["samples"]["rows"] == [["9", "张*", "130****9999", "B"]]
+    assert shown["samples"]["snapshot_id"] == sample_id
     # 重试沿用 selector
     f13.fake.script = [{"state": "failed", "error_code": "provider_failed", "error_message": "合成失败"}]
     failed = f13.run_db(project_id, operation="sample", sample={"selector": "crm.orders"})

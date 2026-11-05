@@ -66,7 +66,8 @@ def test_plaintext_never_lands_in_data_dir_logs_or_audit(f13, caplog):
     project_id, _root = f13.project()
     plain = [secrets.token_urlsafe(24) for _ in range(4)]
     f13.ready_db(project_id, secret=plain[0])
-    assert f13.client.put(f"{ADMIN_BASE}/{DB_SOURCE}/secret", json={"fields": {"password": plain[1]}}).status_code == 200
+    rotated = f13.client.put(f"{ADMIN_BASE}/{DB_SOURCE}/secret", json={"fields": {"password": plain[1]}})
+    assert rotated.status_code == 200
     # 网关拒绝时：错误码带回，消息里回显的明文遮掉；登记撤回
     f13.fake.secret_error = (422, "secret_rejected", f"不接受 {plain[2]}")
     failed = f13.client.post(ADMIN_BASE, json=f13.db_body(id="other-db", secret={"password": plain[2]}))
@@ -79,7 +80,8 @@ def test_plaintext_never_lands_in_data_dir_logs_or_audit(f13, caplog):
     assert upstream.status_code == 502 and upstream.json()["code"] == "upstream_unavailable"
     assert plain[3] not in upstream.text
     # EV-04 写凭据失败：改动回滚
-    patched = f13.client.patch(f"{ADMIN_BASE}/{DB_SOURCE}", json={"display_name": "改了", "secret": {"password": plain[3]}})
+    patched = f13.client.patch(f"{ADMIN_BASE}/{DB_SOURCE}",
+                               json={"display_name": "改了", "secret": {"password": plain[3]}})
     assert patched.status_code == 502 and sources.get(DB_SOURCE)["display_name"] == "订单库"
     f13.fake.secret_error = None
     job = f13.run_db(project_id)

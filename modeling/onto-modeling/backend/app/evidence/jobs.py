@@ -4,6 +4,9 @@
 签票据 → 从 blob 仓把目标程序流式发给网关 `POST /v1/jobs` → 每 2 秒查一次进度、推 `evidence.job.updated` →
 成功取快照包、入库 → 调网关清理。后端重启时还在排队、运行的任务标 `failed`（`backend_restarted`）；网关查不到任务
 （网关重启过）标 `failed`（`gateway_restarted`），都可以重试。
+
+连接型（数据库、代码仓库，spec §8）：没有请求体，任务说明带凭据引用、出口、限流、脱敏策略与项目的盐；`discover` 只存清单、
+不提交快照；`sample` 入库成补充快照；快照包清单的 `access_log` 存进任务记录，EV-09 按它出。
 """
 
 from __future__ import annotations

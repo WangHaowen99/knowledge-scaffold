@@ -7,6 +7,8 @@
 2. `blobs/` 收进 blob 仓（工作区外）；
 3. 其余文件经写入事务提交到 `resource/systems/<源>/<快照>/`，清单补 `snapshot_id`、`previous`、`initiated_by`、`cred_ref`；
 4. 建索引。
+
+连接型（F14）：`sample`、`profile` 记录在密钥扫描之后再扫一遍个人信息（`pii`）；`discover` 只收清单，不提交快照（`inventory_only`）。
 """
 
 from __future__ import annotations
@@ -278,7 +280,8 @@ def access_log(manifest: dict) -> list[dict]:
     return out
 
 
-def _open_bundle(bundle: Path, work: Path, source_id: str, job_id: str) -> tuple[dict[str, bytes], dict[str, Path], dict]:
+def _open_bundle(bundle: Path, work: Path, source_id: str,
+                 job_id: str) -> tuple[dict[str, bytes], dict[str, Path], dict]:
     texts, blobs = _unpack(bundle, work, git_limit_bytes())
     return texts, blobs, _manifest(texts, blobs, source_id, job_id)
 
