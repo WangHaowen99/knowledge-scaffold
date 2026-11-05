@@ -206,7 +206,7 @@ def preview_by_commit(manager, project_id: str, commit: str, username: str = "")
         return {"ready": False, "blockers": issues, "target": entry, "current": {"version": total, "commit": _head(manager, project_id)}}
     result = manager.preview_revert(project_id, resolved)
     result["current_version"] = total
-    return result
+    return {"ready": True, **result}
 
 
 def _take_preview(preview_id: str, project_id: str, token_id: str, username: str) -> dict:
@@ -235,25 +235,33 @@ def _mark_preview(preview_id: str, state: str, result=None) -> None:
 
 
 async def _apply_commit(manager, project_id: str, commit: str, expected_head: str, sessions) -> dict:
+    from . import modeling_eval
+
     result = None
-    async with sessions._lock:
-        root = manager.project_root(project_id)
-        _ensure_idle(project_id, root)
-        if sessions.workspace_busy(project_id):
-            raise _error("PROJECT_EDITING_BUSY", "助手正在修改该项目，请等待当前任务结束", 409)
-        if expected_head and _head(manager, project_id) != expected_head:
-            raise _error("REVISION_CONFLICT", "项目已产生新版本，请重新预览后再回退", 409)
+    try:
+        with modeling_eval.block_launch(project_id):
+            async with sessions._lock:
+                root = manager.project_root(project_id)
+                _ensure_idle(project_id, root)
+                if sessions.workspace_busy(project_id):
+                    raise _error("PROJECT_EDITING_BUSY", "助手正在修改该项目，请等待当前任务结束", 409)
+                if expected_head and _head(manager, project_id) != expected_head:
+                    raise _error("REVISION_CONFLICT", "项目已产生新版本，请重新预览后再回退", 409)
 
-        def ensure_idle(current_root: Path) -> None:
-            _ensure_idle(project_id, current_root)
+                def ensure_idle(current_root: Path) -> None:
+                    _ensure_idle(project_id, current_root)
 
-        result = await asyncio.to_thread(manager.revert_to, project_id, commit, expected_head, ensure_idle)
-        session = sessions.get(project_id)
-        if session is not None:
-            session.pending_prompts.clear()
-            await sessions._recycle(session)
-        from . import conversation_store
-        conversation_store.clear_all_resume_tokens(project_id)
+                result = await asyncio.to_thread(
+                    manager.revert_to, project_id, commit, expected_head, ensure_idle
+                )
+                session = sessions.get(project_id)
+                if session is not None:
+                    session.pending_prompts.clear()
+                    await sessions._recycle(session)
+                from . import conversation_store
+                conversation_store.clear_all_resume_tokens(project_id)
+    except modeling_eval.EvaluationLaunchBlocked as exc:
+        raise _error("EVALUATION_ACTIVE", str(exc), 409) from exc
     await sessions._drain_waiters()
     return result
 

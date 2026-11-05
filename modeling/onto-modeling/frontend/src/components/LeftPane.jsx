@@ -561,10 +561,8 @@ export default function LeftPane({
     }
   };
 
-  // 资料变更提醒：资料上传/删除时间晚于最近迭代 → 派生产物可能过期
-  const latestVersionTime = versions[0]?.time || 0;
-  const resourceStale =
-    (meta?.resource_updated_at || 0) > latestVersionTime && hasEntry(paths, 'research/');
+  // 资料变更提醒：资料已自动生成版本，由后端比较其与派生产物的提交顺序。
+  const resourceStale = Boolean(meta?.resource_stale) && hasEntry(paths, 'research/');
 
   const autoSubdir = (name) => {
     const lower = name.toLowerCase();

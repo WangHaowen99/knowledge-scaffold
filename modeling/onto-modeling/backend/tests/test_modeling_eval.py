@@ -1067,7 +1067,8 @@ def test_eval_router_forwards_refresh_token_only_for_user_token(tmp_path, monkey
     captured: list = []
 
     async def fake_run(project_id, root_, token, cases, data_source, eval_set_name="",
-                       allow_unbound=False, refresh_token="", judge_model=None):
+                       allow_unbound=False, refresh_token="", model_profile_id="",
+                       case_concurrency=None, judge_model=None):
         captured.append((token, refresh_token))
 
     monkeypatch.setattr(modeling_eval, "run", fake_run)
@@ -1332,6 +1333,108 @@ def test_stop_launched_eval_while_queued_really_dequeues(tmp_path, eval_pool):
     asyncio.run(scenario())
     assert projects[2][0] not in started
     assert modeling_eval.read_state(projects[2][1])["status"] == "stopped"
+
+
+def test_launch_forwards_develop_evaluation_options(tmp_path, monkeypatch):
+    """The concurrency reservation must preserve options added on the develop branch."""
+    received = {}
+    refresh_value = "refresh-value"
+
+    async def capture(*args, **kwargs):
+        received["args"] = args
+        received["kwargs"] = kwargs
+
+    monkeypatch.setattr(modeling_eval, "run", capture)
+
+    async def scenario():
+        task = modeling_eval.launch(
+            "project-options",
+            tmp_path,
+            "token",
+            [{"question": "Q", "groundTruth": "G"}],
+            {"mode": "none"},
+            "set-name",
+            allow_unbound=True,
+            refresh_token=refresh_value,
+            model_profile_id="global:model-a",
+            case_concurrency=7,
+            judge_model={"provider": "synthetic"},
+        )
+        await task
+
+    asyncio.run(scenario())
+    assert received["args"][6:] == (True, refresh_value)
+    assert received["kwargs"] == {
+        "model_profile_id": "global:model-a",
+        "case_concurrency": 7,
+        "judge_model": {"provider": "synthetic"},
+    }
+
+
+def test_version_revert_block_prevents_evaluation_launch(tmp_path):
+    project_id = "project-reverting"
+    with modeling_eval.block_launch(project_id):
+        with pytest.raises(
+            modeling_eval.EvaluationLaunchBlocked,
+            match="正在执行版本回退",
+        ):
+            modeling_eval.launch(
+                project_id,
+                tmp_path,
+                "token",
+                [{"question": "Q", "groundTruth": "G"}],
+            )
+
+    assert project_id not in modeling_eval._launch_blocked
+
+
+def test_version_revert_block_prevents_evaluation_resume(tmp_path):
+    project_id = "project-reverting-resume"
+    with modeling_eval.block_launch(project_id):
+        with pytest.raises(
+            modeling_eval.EvaluationLaunchBlocked,
+            match="正在执行版本回退",
+        ):
+            modeling_eval.resume(project_id, tmp_path, "token")
+
+    assert project_id not in modeling_eval._scheduled
+
+
+def test_reserved_resume_prevents_version_revert_block(tmp_path, monkeypatch):
+    project_id = "project-resuming"
+
+    async def scenario():
+        release = asyncio.Event()
+
+        async def hold_resume(*_args):
+            await release.wait()
+
+        monkeypatch.setattr(modeling_eval, "_run_in_eval_pool", hold_resume)
+        task = modeling_eval.resume(project_id, tmp_path, "token")
+        with pytest.raises(
+            modeling_eval.EvaluationLaunchBlocked,
+            match="已有评测",
+        ):
+            with modeling_eval.block_launch(project_id):
+                pytest.fail("reserved resume must prevent the revert reservation")
+        release.set()
+        await task
+
+    asyncio.run(scenario())
+
+
+def test_active_evaluation_prevents_version_revert_block():
+    project_id = "project-evaluating"
+    modeling_eval._scheduled.add(project_id)
+    try:
+        with pytest.raises(
+            modeling_eval.EvaluationLaunchBlocked,
+            match="已有评测",
+        ):
+            with modeling_eval.block_launch(project_id):
+                pytest.fail("active evaluation must prevent the revert reservation")
+    finally:
+        modeling_eval._scheduled.discard(project_id)
 
 
 def test_delete_while_queued_dequeues_round(tmp_path, eval_pool):

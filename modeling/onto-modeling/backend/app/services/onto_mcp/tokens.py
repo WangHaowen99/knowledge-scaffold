@@ -65,7 +65,10 @@ def issue(manager, meta, body, user):
     subject = meta.get("owner") if user.get("role") == "admin" and meta.get("owner") else user.get("sub", "")
     raw, tid, now = secrets.token_urlsafe(48), secrets.token_hex(16), time.time()
     with database(manager) as conn:
-        conn.execute("INSERT INTO tokens VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
+        conn.execute("""INSERT INTO tokens (
+            id, project_id, digest, name, subject, issued_by,
+            scopes, created, expires, used, revoked
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)""",
                      (tid, meta["id"], hashlib.sha256(raw.encode()).hexdigest(), name, subject,
                       user.get("sub", ""), json.dumps(sorted(set(scopes))), now, now + ttl if ttl else None))
         row = conn.execute("SELECT * FROM tokens WHERE id=?", (tid,)).fetchone()

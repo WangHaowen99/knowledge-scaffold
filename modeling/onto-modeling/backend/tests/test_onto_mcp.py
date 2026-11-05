@@ -1,6 +1,7 @@
 """Synthetic project-local MCP contract, permission and persistence regressions."""
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -230,6 +231,39 @@ def test_token_expiry_boundaries(env, ttl):
                           {"sub": "operator_a"})
     assert (result["token_summary"]["expiresAt"] is None) == (ttl is None)
     assert tokens.verify(manager, meta["id"], result["token"], "read")["username"] == "operator_a"
+
+
+def test_token_issue_uses_native_schema(env):
+    manager, meta, _ = env
+    result = tokens.issue(manager, meta, {"name": "native-schema"}, {"sub": "operator_a"})
+    database_path = manager.workspaces_dir.parent / "onto-mcp.sqlite"
+    with sqlite3.connect(database_path) as conn:
+        columns = conn.execute("PRAGMA table_info(tokens)").fetchall()
+    assert len(columns) == 11
+    principal = tokens.verify(manager, meta["id"], result["token"], "read")
+    assert principal["token_id"] == result["token_summary"]["id"]
+
+
+def test_token_issue_supports_forward_extended_schema(env):
+    manager, meta, _ = env
+    existing = tokens.issue(manager, meta, {"name": "existing-token"}, {"sub": "operator_a"})
+    database_path = manager.workspaces_dir.parent / "onto-mcp.sqlite"
+    with sqlite3.connect(database_path) as conn:
+        conn.execute("ALTER TABLE tokens ADD COLUMN hub_issuer TEXT NOT NULL DEFAULT ''")
+        conn.execute("ALTER TABLE tokens ADD COLUMN hub_sub TEXT NOT NULL DEFAULT ''")
+
+    created = tokens.issue(manager, meta, {"name": "extended-schema"}, {"sub": "operator_a"})
+
+    with sqlite3.connect(database_path) as conn:
+        row = conn.execute(
+            "SELECT hub_issuer, hub_sub FROM tokens WHERE id = ?",
+            (created["token_summary"]["id"],),
+        ).fetchone()
+    assert row == ("", "")
+    assert len(tokens.listing(manager, meta["id"])["tokens"]) == 2
+    assert tokens.verify(manager, meta["id"], existing["token"], "read")["username"] == "operator_a"
+    created_principal = tokens.verify(manager, meta["id"], created["token"], "read")
+    assert created_principal["username"] == "operator_a"
 
 
 @pytest.mark.parametrize("value,schema,valid", [

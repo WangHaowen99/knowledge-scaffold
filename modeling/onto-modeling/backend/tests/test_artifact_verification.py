@@ -302,6 +302,31 @@ def test_explicit_empty_sheet_selection_can_pass_lightweight_verification(tmp_pa
     assert result['status'] == 'passed'
 
 
+def test_unselected_sheet_is_excluded_from_field_profiles(tmp_path, verifier):
+    """The merged verifier must not use values from reference-only sheets as schema evidence."""
+    data = workbook_bytes()
+    table = tmp_path / 'resource/table.xlsx'
+    table.parent.mkdir(parents=True)
+    table.write_bytes(data)
+    put(tmp_path, 'resource/materials.json', json.dumps({
+        'resource/table.xlsx': {
+            'purpose': 'schema',
+            'schema_selection': {
+                'version': 1,
+                'mode': 'manual',
+                'included_sheets': ['table_b'],
+                'reference_sheets': ['table_a'],
+                'file_sha256': hashlib.sha256(data).hexdigest(),
+            },
+        },
+    }))
+
+    tables, profiles = verifier.check_eval_data.load_registered_tables(tmp_path)
+
+    assert set(tables) == {'table_b'}
+    assert set(profiles) == {'table_b'}
+
+
 def test_failed_receipt_and_corruption_fail_closed(tmp_path, verifier):
     put(tmp_path, 'ontology/object/EntityA.md', '')
     failed = verifier.verify(tmp_path, 'objects')

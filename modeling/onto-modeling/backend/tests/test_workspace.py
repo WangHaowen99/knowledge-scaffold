@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services import workspace as workspace_service
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 
 
@@ -186,6 +187,480 @@ def test_concurrent_resource_uploads_keep_metadata_parseable(manager: WorkspaceM
     }
 
 
+def test_resource_upload_creates_complete_isolated_version(manager: WorkspaceManager):
+    meta = manager.create_project("上传资料版本")
+    root = manager.project_root(meta["id"])
+    other = root / "resource" / "others" / "other.md"
+    other.write_text("other", encoding="utf-8")
+    _git(root, "add", "--", "resource/others/other.md")
+    _git(root, "commit", "-m", "test: add other resource")
+    materials = root / "resource" / "materials.json"
+    materials.write_text(
+        json.dumps(
+            {
+                "resource/others/other.md": {
+                    "purpose": "term",
+                    "reading_mode": "on_demand",
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    unfinished = root / "ontology" / "object" / "unfinished.md"
+    unfinished.write_text("unfinished", encoding="utf-8")
+    _git(root, "add", "--", "ontology/object/unfinished.md")
+
+    saved = manager.save_resource(
+        meta["id"], "others", "source.md", b"source", purpose="goal", author="operator_a"
+    )
+
+    committed = json.loads(_git(root, "show", "HEAD:resource/materials.json"))
+    working = json.loads(materials.read_text(encoding="utf-8"))
+    assert saved["commit"]
+    assert _git(root, "show", "--pretty=format:", "--name-only", "HEAD").splitlines() == [
+        "resource/materials.json",
+        "resource/others/source.md",
+    ]
+    assert _git(root, "show", "HEAD:resource/others/source.md") == "source"
+    assert committed == {
+        "resource/others/source.md": {
+            "purpose": "goal",
+            "reading_mode": "on_demand",
+        }
+    }
+    assert working["resource/others/other.md"]["purpose"] == "term"
+    assert working["resource/others/source.md"]["purpose"] == "goal"
+    assert _git(root, "status", "--short", "--", "ontology/object/unfinished.md").startswith("A ")
+    assert _git(root, "status", "--short", "--", "resource/materials.json").startswith(" M")
+
+
+def test_identical_resource_upload_does_not_create_version(
+    manager: WorkspaceManager, monkeypatch
+):
+    meta = manager.create_project("重复上传资料")
+    first = manager.save_resource(
+        meta["id"], "others", "source.md", b"source", purpose="goal"
+    )
+    version = manager.versions(meta["id"], limit=1)[0]["version"]
+    root = manager.project_root(meta["id"])
+    meta_after_first = (root / ".onto-web.json").read_bytes()
+    monkeypatch.setattr(workspace_service.time, "time", lambda: 4102444800)
+
+    second = manager.save_resource(
+        meta["id"], "others", "source.md", b"source", purpose="goal"
+    )
+
+    assert first["commit"]
+    assert second["commit"] == ""
+    assert second["replaced"] is True
+    assert manager.versions(meta["id"], limit=1)[0]["version"] == version
+    assert (root / ".onto-web.json").read_bytes() == meta_after_first
+
+
+@pytest.mark.parametrize("conflict_path", ["resource/others/source.md", "resource/materials.json"])
+def test_resource_upload_rejects_staged_managed_files(
+    manager: WorkspaceManager, conflict_path: str
+):
+    meta = manager.create_project("暂存资料上传")
+    root = manager.project_root(meta["id"])
+    manager.save_resource(meta["id"], "others", "source.md", b"old", purpose="goal")
+    target = root / conflict_path
+    if conflict_path.endswith("materials.json"):
+        directives = json.loads(target.read_text(encoding="utf-8"))
+        directives["resource/others/source.md"]["purpose"] = "term"
+        target.write_text(json.dumps(directives, ensure_ascii=False), encoding="utf-8")
+    else:
+        target.write_bytes(b"staged")
+    _git(root, "add", "--", conflict_path)
+    before = target.read_bytes()
+    head = _git(root, "rev-parse", "HEAD").strip()
+
+    with pytest.raises(WorkspaceError) as exc:
+        manager.save_resource(meta["id"], "others", "source.md", b"new", purpose="evidence")
+
+    assert exc.value.code == "resource_upload_conflict"
+    assert target.read_bytes() == before
+    assert _git(root, "rev-parse", "HEAD").strip() == head
+    assert conflict_path in _git(root, "diff", "--cached", "--name-only", "--").splitlines()
+
+
+def test_resource_upload_commit_failure_restores_transaction(
+    manager: WorkspaceManager, monkeypatch
+):
+    meta = manager.create_project("上传资料提交失败")
+    root = manager.project_root(meta["id"])
+    manager.save_resource(meta["id"], "others", "source.md", b"old", purpose="goal")
+    resource = root / "resource" / "others" / "source.md"
+    materials = root / "resource" / "materials.json"
+    snapshots = {
+        "resource": resource.read_bytes(),
+        "materials": materials.read_bytes(),
+        "meta": (root / ".onto-web.json").read_bytes(),
+        "head": _git(root, "rev-parse", "HEAD").strip(),
+    }
+    original_git = workspace_service._git
+
+    def fail_commit(cwd, *args):
+        if args and args[0] == "commit":
+            raise WorkspaceError("synthetic upload commit failure", 500)
+        return original_git(cwd, *args)
+
+    monkeypatch.setattr(workspace_service, "_git", fail_commit)
+    with pytest.raises(WorkspaceError, match="synthetic upload commit failure"):
+        manager.save_resource(
+            meta["id"], "others", "source.md", b"new", purpose="evidence"
+        )
+
+    assert resource.read_bytes() == snapshots["resource"]
+    assert materials.read_bytes() == snapshots["materials"]
+    assert (root / ".onto-web.json").read_bytes() == snapshots["meta"]
+    assert original_git(root, "rev-parse", "HEAD").strip() == snapshots["head"]
+    assert original_git(root, "status", "--short", "--", "resource").strip() == ""
+
+
+def test_new_resource_commit_failure_removes_created_files(
+    manager: WorkspaceManager, monkeypatch
+):
+    meta = manager.create_project("新资料提交失败")
+    root = manager.project_root(meta["id"])
+    meta_before = (root / ".onto-web.json").read_bytes()
+    head = _git(root, "rev-parse", "HEAD").strip()
+    original_git = workspace_service._git
+
+    def fail_commit(cwd, *args):
+        if args and args[0] == "commit":
+            raise WorkspaceError("synthetic new upload failure", 500)
+        return original_git(cwd, *args)
+
+    monkeypatch.setattr(workspace_service, "_git", fail_commit)
+    with pytest.raises(WorkspaceError, match="synthetic new upload failure"):
+        manager.save_resource(
+            meta["id"], "others", "source.md", b"new", purpose="goal"
+        )
+
+    assert not (root / "resource" / "others" / "source.md").exists()
+    assert not (root / "resource" / "materials.json").exists()
+    assert (root / ".onto-web.json").read_bytes() == meta_before
+    assert original_git(root, "rev-parse", "HEAD").strip() == head
+    assert original_git(root, "status", "--short", "--", "resource").strip() == ""
+
+
+def test_resource_upload_failure_after_commit_restores_head_and_worktree(
+    manager: WorkspaceManager, monkeypatch
+):
+    meta = manager.create_project("上传资料提交后失败")
+    root = manager.project_root(meta["id"])
+    other = root / "resource" / "others" / "other.md"
+    other.write_text("other", encoding="utf-8")
+    _git(root, "add", "--", "resource/others/other.md")
+    _git(root, "commit", "-m", "test: add other resource")
+    materials = root / "resource" / "materials.json"
+    materials.write_text(
+        json.dumps(
+            {
+                "resource/others/other.md": {
+                    "purpose": "term",
+                    "reading_mode": "on_demand",
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    snapshots = {
+        "materials": materials.read_bytes(),
+        "meta": (root / ".onto-web.json").read_bytes(),
+        "head": _git(root, "rev-parse", "HEAD").strip(),
+    }
+    original_write = manager._write_resource_directives
+    writes = 0
+
+    def fail_second_write(workspace_root, directives):
+        nonlocal writes
+        writes += 1
+        if writes == 2:
+            raise WorkspaceError("synthetic post-commit failure", 500)
+        original_write(workspace_root, directives)
+
+    monkeypatch.setattr(manager, "_write_resource_directives", fail_second_write)
+    with pytest.raises(WorkspaceError, match="synthetic post-commit failure"):
+        manager.save_resource(
+            meta["id"], "others", "source.md", b"source", purpose="goal"
+        )
+
+    assert _git(root, "rev-parse", "HEAD").strip() == snapshots["head"]
+    assert not (root / "resource" / "others" / "source.md").exists()
+    assert materials.read_bytes() == snapshots["materials"]
+    assert (root / ".onto-web.json").read_bytes() == snapshots["meta"]
+    assert _git(root, "status", "--short", "--", "resource/materials.json").startswith("??")
+
+
+def test_resource_upload_can_be_previewed_and_reverted(manager: WorkspaceManager):
+    meta = manager.create_project("上传资料回退")
+    root = manager.project_root(meta["id"])
+    target = _git(root, "rev-parse", "HEAD").strip()
+    saved = manager.save_resource(
+        meta["id"], "others", "source.md", b"source", purpose="goal"
+    )
+
+    preview = manager.preview_revert(meta["id"], target)
+    reverted = manager.revert_to(
+        meta["id"], target, expected_head=preview["expected_head"]
+    )
+
+    assert saved["commit"]
+    assert manager._managed_dirty_paths(root) == []
+    assert preview["changes"]["deleted"] == [
+        "resource/materials.json",
+        "resource/others/source.md",
+    ]
+    assert reverted["reverted_to"] == target
+    assert not (root / "resource" / "others" / "source.md").exists()
+    assert manager.resource_directives(meta["id"]) == {}
+
+
+def test_resource_upload_does_not_block_shared_revert_preview(
+    manager: WorkspaceManager, monkeypatch
+):
+    from app.services import version_revert
+
+    meta = manager.create_project("上传资料编排回退", owner="operator_a")
+    root = manager.project_root(meta["id"])
+    target_version = manager.versions(meta["id"], limit=1)[0]["version"]
+    manager.save_resource(
+        meta["id"], "others", "source.md", b"source", purpose="goal"
+    )
+    monkeypatch.setattr(
+        version_revert,
+        "_blocking_issues",
+        lambda project_id, path: (
+            [{"code": "WORKSPACE_DIRTY", "message": "dirty"}]
+            if version_revert.manager_for_dirty(path)
+            else []
+        ),
+    )
+
+    preview = version_revert.preview_by_version(
+        manager, meta["id"], target_version, "synthetic-token", "operator_a"
+    )
+
+    assert preview["ready"] is True
+    assert preview["changes"]["deleted"] == [
+        "resource/materials.json",
+        "resource/others/source.md",
+    ]
+
+
+def test_resource_delete_creates_complete_isolated_version(manager: WorkspaceManager):
+    meta = manager.create_project("删除资料版本")
+    root = manager.project_root(meta["id"])
+    manager.save_resource(meta["id"], "others", "source.md", b"source", purpose="goal")
+    other = root / "resource" / "others" / "other.md"
+    other.write_text("other", encoding="utf-8")
+    _git(root, "add", "--", "resource/others/other.md")
+    _git(root, "commit", "-m", "test: add other resource")
+    materials = root / "resource" / "materials.json"
+    directives = json.loads(materials.read_text(encoding="utf-8"))
+    directives["resource/others/other.md"] = {
+        "purpose": "term",
+        "reading_mode": "on_demand",
+    }
+    materials.write_text(
+        json.dumps(directives, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    unfinished = root / "ontology" / "object" / "unfinished.md"
+    unfinished.write_text("unfinished", encoding="utf-8")
+    _git(root, "add", "--", "ontology/object/unfinished.md")
+
+    deleted = manager.delete_resource(meta["id"], "resource/others/source.md", author="operator_a")
+
+    committed = json.loads(_git(root, "show", "HEAD:resource/materials.json"))
+    working = json.loads(materials.read_text(encoding="utf-8"))
+    assert deleted["commit"]
+    assert _git(root, "show", "--pretty=format:", "--name-only", "HEAD").splitlines() == [
+        "resource/materials.json",
+        "resource/others/source.md",
+    ]
+    assert "resource/others/source.md" not in committed
+    assert "resource/others/other.md" not in committed
+    assert working["resource/others/other.md"]["purpose"] == "term"
+    assert _git(root, "status", "--short", "--", "ontology/object/unfinished.md").startswith("A ")
+    assert _git(root, "status", "--short", "--", "resource/materials.json").startswith(" M")
+
+
+def test_resource_delete_can_be_previewed_and_reverted(manager: WorkspaceManager):
+    meta = manager.create_project("删除资料回退")
+    manager.save_resource(meta["id"], "others", "source.md", b"source", purpose="goal")
+    target = _git(manager.project_root(meta["id"]), "rev-parse", "HEAD").strip()
+    manager.delete_resource(meta["id"], "resource/others/source.md")
+    preview = manager.preview_revert(meta["id"], target)
+    manager.revert_to(meta["id"], target, expected_head=preview["expected_head"])
+
+    root = manager.project_root(meta["id"])
+    assert (root / "resource" / "others" / "source.md").exists()
+    assert manager.resource_directives(meta["id"])["resource/others/source.md"]["purpose"] == "goal"
+
+
+@pytest.mark.parametrize("operation", ["delete", "set"])
+def test_resource_mutation_rejects_staged_managed_file(manager: WorkspaceManager, operation: str):
+    meta = manager.create_project("资料变更冲突")
+    root = manager.project_root(meta["id"])
+    saved = manager.save_resource(meta["id"], "others", "source.md", b"source", purpose="goal")
+    target = root / (saved["path"] if operation == "delete" else "resource/materials.json")
+    target.write_bytes(target.read_bytes() + (b"\n" if operation == "delete" else b" "))
+    _git(root, "add", "--", target.relative_to(root).as_posix())
+
+    with pytest.raises(WorkspaceError) as exc:
+        if operation == "delete":
+            manager.delete_resource(meta["id"], saved["path"])
+        else:
+            manager.set_resource_directive(meta["id"], saved["path"], "term")
+
+    assert exc.value.code in {"resource_delete_conflict", "resource_directive_conflict"}
+
+
+@pytest.mark.parametrize(
+    ("tracked", "expected_code"),
+    [
+        (False, "resource_source_unversioned"),
+        (True, "resource_source_modified"),
+    ],
+)
+def test_resource_directive_requires_clean_versioned_source(
+    manager: WorkspaceManager, tracked: bool, expected_code: str
+):
+    meta = manager.create_project("资料设置源文件状态")
+    root = manager.project_root(meta["id"])
+    resource = root / "resource" / "others" / "source.md"
+    resource.write_text("source", encoding="utf-8")
+    if tracked:
+        _git(root, "add", "--", "resource/others/source.md")
+        _git(root, "commit", "-m", "test: add source")
+        resource.write_text("modified", encoding="utf-8")
+
+    with pytest.raises(WorkspaceError) as exc:
+        manager.set_resource_directive(meta["id"], "resource/others/source.md", "goal")
+
+    assert exc.value.code == expected_code
+    assert not (root / "resource" / "materials.json").exists()
+
+
+def test_resource_delete_commit_failure_restores_transaction(
+    manager: WorkspaceManager, monkeypatch
+):
+    meta = manager.create_project("删除资料提交失败")
+    root = manager.project_root(meta["id"])
+    saved = manager.save_resource(meta["id"], "others", "source.md", b"source", purpose="goal")
+    resource = root / saved["path"]
+    materials = root / "resource" / "materials.json"
+    before = {
+        "resource": resource.read_bytes(),
+        "materials": materials.read_bytes(),
+        "meta": (root / ".onto-web.json").read_bytes(),
+        "head": _git(root, "rev-parse", "HEAD").strip(),
+    }
+    original_git = workspace_service._git
+
+    def fail_commit(cwd, *args):
+        if args and args[0] == "commit":
+            raise WorkspaceError("synthetic delete commit failure", 500)
+        return original_git(cwd, *args)
+
+    monkeypatch.setattr(workspace_service, "_git", fail_commit)
+    with pytest.raises(WorkspaceError, match="synthetic delete commit failure"):
+        manager.delete_resource(meta["id"], saved["path"])
+
+    assert resource.read_bytes() == before["resource"]
+    assert materials.read_bytes() == before["materials"]
+    assert (root / ".onto-web.json").read_bytes() == before["meta"]
+    assert _git(root, "rev-parse", "HEAD").strip() == before["head"]
+
+
+def test_resource_delete_failure_after_commit_restores_head_and_worktree(
+    manager: WorkspaceManager, monkeypatch
+):
+    meta = manager.create_project("删除资料提交后失败")
+    root = manager.project_root(meta["id"])
+    saved = manager.save_resource(
+        meta["id"], "others", "source.md", b"source", purpose="goal"
+    )
+    other = root / "resource" / "others" / "other.md"
+    other.write_text("other", encoding="utf-8")
+    _git(root, "add", "--", "resource/others/other.md")
+    _git(root, "commit", "-m", "test: add other resource")
+    materials = root / "resource" / "materials.json"
+    directives = json.loads(materials.read_text(encoding="utf-8"))
+    directives["resource/others/other.md"] = {
+        "purpose": "term",
+        "reading_mode": "on_demand",
+    }
+    materials.write_text(
+        json.dumps(directives, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    before = {
+        "resource": (root / saved["path"]).read_bytes(),
+        "materials": materials.read_bytes(),
+        "meta": (root / ".onto-web.json").read_bytes(),
+        "head": _git(root, "rev-parse", "HEAD").strip(),
+    }
+    original_write = manager._write_resource_directives
+    writes = 0
+
+    def fail_second_write(workspace_root, next_directives):
+        nonlocal writes
+        writes += 1
+        if writes == 2:
+            raise WorkspaceError("synthetic delete post-commit failure", 500)
+        original_write(workspace_root, next_directives)
+
+    monkeypatch.setattr(manager, "_write_resource_directives", fail_second_write)
+    with pytest.raises(WorkspaceError, match="synthetic delete post-commit failure"):
+        manager.delete_resource(meta["id"], saved["path"])
+
+    assert _git(root, "rev-parse", "HEAD").strip() == before["head"]
+    assert (root / saved["path"]).read_bytes() == before["resource"]
+    assert materials.read_bytes() == before["materials"]
+    assert (root / ".onto-web.json").read_bytes() == before["meta"]
+
+
+def test_resource_delete_does_not_block_shared_revert_preview(
+    manager: WorkspaceManager, monkeypatch
+):
+    from app.services import version_revert
+
+    meta = manager.create_project("删除资料编排回退", owner="operator_a")
+    root = manager.project_root(meta["id"])
+    manager.save_resource(meta["id"], "others", "source.md", b"source", purpose="goal")
+    target_version = manager.versions(meta["id"], limit=1)[0]["version"]
+    manager.delete_resource(meta["id"], "resource/others/source.md")
+    monkeypatch.setattr(
+        version_revert,
+        "_blocking_issues",
+        lambda project_id, path: (
+            [{"code": "WORKSPACE_DIRTY", "message": "dirty"}]
+            if version_revert.manager_for_dirty(path)
+            else []
+        ),
+    )
+
+    preview = version_revert.preview_by_version(
+        manager, meta["id"], target_version, "synthetic-token", "operator_a"
+    )
+
+    assert preview["ready"] is True
+    assert preview["changes"]["added"] == ["resource/others/source.md"]
+    assert preview["changes"]["modified"] == ["resource/materials.json"]
+
+
 def test_concurrent_directives_do_not_overwrite_each_other(manager: WorkspaceManager):
     meta = manager.create_project("并发用途")
     for index in range(20):
@@ -202,6 +677,192 @@ def test_concurrent_directives_do_not_overwrite_each_other(manager: WorkspaceMan
     directives = manager.resource_directives(meta["id"])
     assert len(directives) == 20
     assert all(item["purpose"] == "term" for item in directives.values())
+
+
+def test_resource_directive_creates_only_its_own_version(manager: WorkspaceManager):
+    meta = manager.create_project("资料设置版本")
+    root = manager.project_root(meta["id"])
+    resource = root / "resource" / "others" / "source.md"
+    resource.write_text("source", encoding="utf-8")
+    _git(root, "add", "--", "resource/others/source.md")
+    _git(root, "commit", "-m", "test: add source")
+    unrelated = root / "ontology" / "object" / "unfinished.md"
+    unrelated.write_text("unfinished", encoding="utf-8")
+    _git(root, "add", "--", "ontology/object/unfinished.md")
+    version = manager.versions(meta["id"], limit=1)[0]["version"]
+
+    saved = manager.set_resource_directive(
+        meta["id"], "resource/others/source.md", "goal", author="operator_a"
+    )
+
+    assert saved["commit"]
+    assert manager.versions(meta["id"], limit=1)[0]["version"] == version + 1
+    assert _git(root, "show", "--pretty=format:", "--name-only", "HEAD").strip() == (
+        "resource/materials.json"
+    )
+    assert _git(root, "status", "--short", "--", "resource/materials.json") == ""
+    assert _git(root, "status", "--short", "--", "ontology/object/unfinished.md").startswith("A ")
+
+
+def test_resource_directive_version_can_be_previewed_and_reverted(
+    manager: WorkspaceManager,
+):
+    meta = manager.create_project("资料设置回退")
+    root = manager.project_root(meta["id"])
+    resource = root / "resource" / "others" / "source.md"
+    resource.write_text("source", encoding="utf-8")
+    _git(root, "add", "--", "resource/others/source.md")
+    _git(root, "commit", "-m", "test: add source")
+    target_commit = _git(root, "rev-parse", "HEAD").strip()
+    manager.set_resource_directive(meta["id"], "resource/others/source.md", "goal")
+
+    preview = manager.preview_revert(meta["id"], target_commit)
+    reverted = manager.revert_to(
+        meta["id"], target_commit, expected_head=preview["expected_head"]
+    )
+
+    assert "resource/materials.json" in preview["changes"]["deleted"]
+    assert reverted["reverted_to"] == target_commit
+    assert not (root / "resource" / "materials.json").exists()
+    assert manager.resource_directives(meta["id"]) == {}
+
+
+def test_resource_directive_does_not_block_shared_revert_preview(
+    manager: WorkspaceManager, monkeypatch
+):
+    from app.services import version_revert
+
+    meta = manager.create_project("资料设置编排回退", owner="operator_a")
+    root = manager.project_root(meta["id"])
+    resource = root / "resource" / "others" / "source.md"
+    resource.write_text("source", encoding="utf-8")
+    _git(root, "add", "--", "resource/others/source.md")
+    _git(root, "commit", "-m", "test: add source")
+    target_version = manager.versions(meta["id"], limit=1)[0]["version"]
+    manager.set_resource_directive(meta["id"], "resource/others/source.md", "goal")
+    monkeypatch.setattr(version_revert, "_blocking_issues", lambda project_id, path: (
+        [{"code": "WORKSPACE_DIRTY", "message": "dirty"}]
+        if version_revert.manager_for_dirty(path) else []
+    ))
+
+    preview = version_revert.preview_by_version(
+        manager, meta["id"], target_version, "synthetic-token", "operator_a"
+    )
+
+    assert preview["ready"] is True
+    assert preview["changes"]["deleted"] == ["resource/materials.json"]
+
+
+def test_unchanged_resource_directive_does_not_create_version(manager: WorkspaceManager):
+    meta = manager.create_project("重复资料设置")
+    root = manager.project_root(meta["id"])
+    resource = root / "resource" / "others" / "source.md"
+    resource.write_text("source", encoding="utf-8")
+    _git(root, "add", "--", "resource/others/source.md")
+    _git(root, "commit", "-m", "test: add source")
+    first = manager.set_resource_directive(meta["id"], "resource/others/source.md", "goal")
+    version = manager.versions(meta["id"], limit=1)[0]["version"]
+
+    second = manager.set_resource_directive(meta["id"], "resource/others/source.md", "goal")
+
+    assert first["commit"]
+    assert second["commit"] == ""
+    assert manager.versions(meta["id"], limit=1)[0]["version"] == version
+
+
+def test_resource_directive_does_not_commit_other_unfinished_directives(
+    manager: WorkspaceManager,
+):
+    meta = manager.create_project("隔离资料设置")
+    root = manager.project_root(meta["id"])
+    for name in ("source-a.md", "source-b.md"):
+        (root / "resource" / "others" / name).write_text("source", encoding="utf-8")
+    _git(root, "add", "--", "resource/others/source-a.md", "resource/others/source-b.md")
+    _git(root, "commit", "-m", "test: add sources")
+    manager.set_resource_directive(meta["id"], "resource/others/source-a.md", "goal")
+    materials_path = root / "resource" / "materials.json"
+    directives = json.loads(materials_path.read_text(encoding="utf-8"))
+    directives["resource/others/source-b.md"] = {
+        "purpose": "term",
+        "reading_mode": "on_demand",
+    }
+    materials_path.write_text(
+        json.dumps(directives, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    saved = manager.set_resource_directive(
+        meta["id"], "resource/others/source-a.md", "evidence"
+    )
+
+    committed = json.loads(_git(root, "show", "HEAD:resource/materials.json"))
+    working = json.loads(materials_path.read_text(encoding="utf-8"))
+    assert saved["commit"]
+    assert committed["resource/others/source-a.md"]["purpose"] == "evidence"
+    assert "resource/others/source-b.md" not in committed
+    assert working["resource/others/source-b.md"]["purpose"] == "term"
+    assert _git(root, "status", "--short", "--", "resource/materials.json").startswith(" M")
+
+
+def test_resource_directive_rejects_staged_settings_file(manager: WorkspaceManager):
+    meta = manager.create_project("暂存资料设置")
+    root = manager.project_root(meta["id"])
+    resource = root / "resource" / "others" / "source.md"
+    resource.write_text("source", encoding="utf-8")
+    _git(root, "add", "--", "resource/others/source.md")
+    _git(root, "commit", "-m", "test: add source")
+    materials_path = root / "resource" / "materials.json"
+    materials_path.write_text(
+        json.dumps(
+            {
+                "resource/others/source.md": {
+                    "purpose": "term",
+                    "reading_mode": "on_demand",
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _git(root, "add", "--", "resource/materials.json")
+    before = materials_path.read_bytes()
+    head = _git(root, "rev-parse", "HEAD").strip()
+
+    with pytest.raises(WorkspaceError) as exc:
+        manager.set_resource_directive(meta["id"], "resource/others/source.md", "goal")
+
+    assert exc.value.code == "resource_directive_conflict"
+    assert materials_path.read_bytes() == before
+    assert _git(root, "rev-parse", "HEAD").strip() == head
+    assert _git(root, "diff", "--cached", "--name-only", "--").strip() == (
+        "resource/materials.json"
+    )
+
+
+def test_resource_directive_commit_failure_restores_files(manager: WorkspaceManager, monkeypatch):
+    meta = manager.create_project("资料设置提交失败")
+    root = manager.project_root(meta["id"])
+    resource = root / "resource" / "others" / "source.md"
+    resource.write_text("source", encoding="utf-8")
+    _git(root, "add", "--", "resource/others/source.md")
+    _git(root, "commit", "-m", "test: add source")
+    meta_before = (root / ".onto-web.json").read_bytes()
+    original_git = workspace_service._git
+
+    def fail_commit(cwd, *args):
+        if args and args[0] == "commit":
+            raise WorkspaceError("synthetic commit failure", 500)
+        return original_git(cwd, *args)
+
+    monkeypatch.setattr(workspace_service, "_git", fail_commit)
+    with pytest.raises(WorkspaceError, match="synthetic commit failure"):
+        manager.set_resource_directive(meta["id"], "resource/others/source.md", "goal")
+
+    assert not (root / "resource" / "materials.json").exists()
+    assert (root / ".onto-web.json").read_bytes() == meta_before
+    assert original_git(root, "status", "--short", "--", "resource/materials.json") == ""
 
 
 def test_resource_rolls_back_when_metadata_update_fails(manager: WorkspaceManager, monkeypatch):
@@ -363,6 +1024,23 @@ def test_revert_restores_complete_business_snapshot_and_keeps_metadata(
     assert tracked.startswith("100644 ")
 
 
+def test_web_revert_preview_marks_success_as_ready(manager: WorkspaceManager):
+    from app.services import version_revert
+
+    meta = manager.create_project("t")
+    root = manager.project_root(meta["id"])
+    _write(root, "ontology/object/item.md", "v1")
+    target = _commit(root, "v1")
+    _write(root, "ontology/object/item.md", "v2")
+    _commit(root, "v2")
+
+    preview = version_revert.preview_by_commit(manager, meta["id"], target)
+
+    assert preview["ready"] is True
+    assert preview["reverted_to"] == target
+    assert preview["changes"]["modified"] == ["ontology/object/item.md"]
+
+
 def test_revert_ignores_generated_index_only_difference(manager: WorkspaceManager):
     meta = manager.create_project("t")
     root = manager.project_root(meta["id"])
@@ -376,6 +1054,120 @@ def test_revert_ignores_generated_index_only_difference(manager: WorkspaceManage
 
     with pytest.raises(WorkspaceError, match="业务内容.*一致"):
         manager.preview_revert(meta["id"], target)
+
+
+def test_revert_commits_regenerated_indexes_and_allows_another_revert(
+    manager: WorkspaceManager,
+):
+    from app.services import version_revert
+
+    meta = manager.create_project("t")
+    root = manager.project_root(meta["id"])
+    _write(root, "ontology/object/old.md", "# old")
+    manager._refresh_indexes(root)
+    target = _commit(root, "old object")
+
+    (root / "ontology/object/old.md").unlink()
+    _write(root, "ontology/object/new.md", "# new")
+    manager._refresh_indexes(root)
+    current = _commit(root, "new object")
+
+    manager.revert_to(meta["id"], target)
+
+    assert _git(root, "status", "--porcelain").strip() == ""
+    preview = version_revert.preview_by_commit(manager, meta["id"], current)
+    assert preview["ready"] is True
+    assert preview["changes"]["total"] == 2
+
+
+def test_resource_stale_follows_resource_and_derived_commit_order(
+    manager: WorkspaceManager,
+):
+    meta = manager.create_project("t")
+    root = manager.project_root(meta["id"])
+    _write(root, "resource/others/source.md", "v1")
+    _commit(root, "resource v1")
+    _write(root, "research/report.md", "report v1")
+    _commit(root, "research v1")
+    assert manager._project_progress(root)["resource_stale"] is False
+
+    _write(root, "resource/others/source.md", "v2")
+    _commit(root, "resource v2")
+    assert manager._project_progress(root)["resource_stale"] is True
+
+    _write(root, "research/report.md", "report v2")
+    _commit(root, "research v2")
+    assert manager._project_progress(root)["resource_stale"] is False
+
+
+def test_resource_stale_ignores_unrelated_ontology_and_index_commits(
+    manager: WorkspaceManager,
+):
+    meta = manager.create_project("t")
+    root = manager.project_root(meta["id"])
+    _write(root, "resource/others/source.md", "v1")
+    _commit(root, "resource v1")
+    _write(root, "research/report.md", "report v1")
+    _commit(root, "research v1")
+
+    _write(root, "resource/others/source.md", "v2")
+    _commit(root, "resource v2")
+    assert manager._project_progress(root)["resource_stale"] is True
+
+    _write(root, "ontology/object/item.md", "object")
+    _write(root, "research/index.md", "# index")
+    _commit(root, "unrelated generated output")
+    assert manager._project_progress(root)["resource_stale"] is True
+
+
+def test_resource_stale_uses_reviewed_resource_fingerprints(
+    manager: WorkspaceManager,
+):
+    meta = manager.create_project("t")
+    root = manager.project_root(meta["id"])
+    _write(root, "resource/materials.json", '{}')
+    _write(root, "research/report.md", "report")
+    _commit(root, "analyzed resources")
+    revision = workspace_service._research_review.file_revision(
+        root / "resource/materials.json"
+    )
+    workspace_service._research_review.write_review(
+        root,
+        workspace_service._research_review.PASSED,
+        {
+            "resource/materials.json": revision,
+            "research/report.md": workspace_service._research_review.file_revision(
+                root / "research/report.md"
+            ),
+        },
+        [],
+        [],
+    )
+    assert manager._project_progress(root)["resource_stale"] is False
+
+    _write(root, "resource/materials.json", '{"changed": true}')
+    _commit(root, "resource changed")
+    _write(root, "ontology/object/index.md", "# index")
+    _commit(root, "unrelated index")
+    assert manager._project_progress(root)["resource_stale"] is True
+
+    _write(root, "research/report.md", "report refreshed")
+    _commit(root, "research refreshed")
+    workspace_service._research_review.write_review(
+        root,
+        workspace_service._research_review.PASSED,
+        {
+            "resource/materials.json": workspace_service._research_review.file_revision(
+                root / "resource/materials.json"
+            ),
+            "research/report.md": workspace_service._research_review.file_revision(
+                root / "research/report.md"
+            ),
+        },
+        [],
+        [],
+    )
+    assert manager._project_progress(root)["resource_stale"] is False
 
 
 @pytest.mark.parametrize("dirty_kind", ["modified", "staged", "untracked"])

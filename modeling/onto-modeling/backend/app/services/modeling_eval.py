@@ -29,6 +29,7 @@ import urllib.request
 import uuid
 import weakref
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
 
@@ -50,6 +51,7 @@ _running: set[str] = set()  # project_id 去重（单进程内防并发重复触
 _live_tokens: dict[str, str] = {}  # project_id → 前端轮询接力的最新 token
 _stop_requested: set[str] = set()  # 用户请求停止的 project_id（协作式取消）
 _scheduled: set[str] = set()  # 已由接口登记、等待事件循环启动的编排
+_launch_blocked: set[str] = set()  # 版本回退期间禁止新评测入场
 
 # 一轮编排从打包到收报告都占着一个线程（含每 6 秒一次的轮询等待，最长 30 分钟），
 # 放进评测专用线程池：不占事件循环的默认线程池——后者还承担上传、git、项目导入删除
@@ -68,6 +70,26 @@ def is_active(project_id: str) -> bool:
         return project_id in _scheduled or project_id in _running or project_id in _queued
 
 
+class EvaluationLaunchBlocked(ValueError):
+    """An exclusive project operation prevents a new evaluation launch."""
+
+
+@contextmanager
+def block_launch(project_id: str):
+    """Atomically exclude evaluation launches while a project is being reverted."""
+    with _queue_lock:
+        if project_id in _scheduled or project_id in _running or project_id in _queued:
+            raise EvaluationLaunchBlocked("该项目已有评测正在运行或排队")
+        if project_id in _launch_blocked:
+            raise EvaluationLaunchBlocked("项目正在执行版本回退")
+        _launch_blocked.add(project_id)
+    try:
+        yield
+    finally:
+        with _queue_lock:
+            _launch_blocked.discard(project_id)
+
+
 def launch(
     project_id: str,
     root: Path,
@@ -83,6 +105,8 @@ def launch(
 ) -> asyncio.Task:
     """Reserve the project synchronously, then launch evaluation in the event loop."""
     with _queue_lock:
+        if project_id in _launch_blocked:
+            raise EvaluationLaunchBlocked("项目正在执行版本回退，请稍后再启动评测")
         if project_id in _scheduled or project_id in _running or project_id in _queued:
             raise ValueError("该项目已有评测正在运行或排队")
         _scheduled.add(project_id)
@@ -105,9 +129,9 @@ def launch(
                 eval_set_name,
                 allow_unbound,
                 refresh_token,
-                model_profile_id,
-                case_concurrency,
-                judge_model,
+                model_profile_id=model_profile_id,
+                case_concurrency=case_concurrency,
+                judge_model=judge_model,
             )
         finally:
             _stop_requested.discard(project_id)
@@ -1404,19 +1428,40 @@ def can_resume(root: Path) -> bool:
     return state.get("status") in ("interrupted", "failed") and _resumable(state)
 
 
-async def resume(project_id: str, root: Path, token: str) -> None:
-    """续接上一轮：只收取 modeling 侧已有轮次的结果，绝不重新发起评测。"""
-    if project_id in _running:
-        return
-    _running.add(project_id)
-    _stop_requested.discard(project_id)
-    _live_tokens[project_id] = token
+def resume(project_id: str, root: Path, token: str) -> asyncio.Task:
+    """原子预占并续接上一轮，不给版本回退留下并发入场窗口。"""
+    with _queue_lock:
+        if project_id in _launch_blocked:
+            raise EvaluationLaunchBlocked("项目正在执行版本回退，请稍后再续接评测")
+        if project_id in _scheduled or project_id in _running or project_id in _queued:
+            raise ValueError("该项目已有评测正在运行或排队")
+        _scheduled.add(project_id)
+
+    async def scheduled_resume() -> None:
+        try:
+            with _queue_lock:
+                _scheduled.discard(project_id)
+                _running.add(project_id)
+            if project_id in _stop_requested:
+                return
+            _stop_requested.discard(project_id)
+            _live_tokens[project_id] = token
+            try:
+                await _run_in_eval_pool(project_id, _resume_sync, project_id, root, token)
+            finally:
+                _live_tokens.pop(project_id, None)
+        finally:
+            _stop_requested.discard(project_id)
+            with _queue_lock:
+                _scheduled.discard(project_id)
+                _running.discard(project_id)
+
     try:
-        await _run_in_eval_pool(project_id, _resume_sync, project_id, root, token)
-    finally:
-        _running.discard(project_id)
-        _live_tokens.pop(project_id, None)
-        _stop_requested.discard(project_id)
+        return asyncio.get_running_loop().create_task(scheduled_resume())
+    except Exception:
+        with _queue_lock:
+            _scheduled.discard(project_id)
+        raise
 
 
 def _resume_sync(project_id: str, root: Path, token: str) -> None:

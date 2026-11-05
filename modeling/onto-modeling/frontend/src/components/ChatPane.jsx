@@ -125,7 +125,7 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
     });
     out.push({ key: 'revalidate', label: '重新校验', tooltip: '重新运行完整校验', command: '/ontology-validate' });
   } else if (
-    (meta?.resource_updated_at || 0) > (versions?.[0]?.time || 0) &&
+    meta?.resource_stale &&
     // 需存在真实派生产物才谈"刷新"：目录占位 index.md 不算（新项目误报修复）
     paths.some(
       (p) =>

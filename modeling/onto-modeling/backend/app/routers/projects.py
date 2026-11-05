@@ -779,6 +779,7 @@ async def upload_resource(
         data,
         purpose,
         reading_mode,
+        _request_user(request),
     )
     return result
 
@@ -824,6 +825,7 @@ def set_resource_meta(project_id: str, body: ResourceDirectiveBody, request: Req
     result = workspaces.set_resource_directive(
         project_id, body.path, body.purpose, body.reading_mode,
         body.schema_selection.model_dump() if body.schema_selection is not None else None,
+        author=_request_user(request),
     )
     return result
 
@@ -831,7 +833,9 @@ def set_resource_meta(project_id: str, body: ResourceDirectiveBody, request: Req
 @router.delete("/{project_id}/resources")
 def delete_resource(project_id: str, path: str, request: Request, background: BackgroundTasks):
     ensure_access(project_id, request, write=True)
-    result = workspaces.delete_resource(project_id, path)
+    result = workspaces.delete_resource(
+        project_id, path, author=_request_user(request)
+    )
     return result
 
 
@@ -1342,9 +1346,10 @@ async def eval_resume(project_id: str, request: Request):
     token = _modeling_token(request)
     if not token:
         return JSONResponse(status_code=400, content={"error": "缺少可用于 modeling 的令牌"})
-    import asyncio as _asyncio
-
-    _asyncio.create_task(modeling_eval.resume(project_id, root, token))
+    try:
+        modeling_eval.resume(project_id, root, token)
+    except ValueError as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
     return {"resuming": True}
 
 
@@ -1532,7 +1537,7 @@ async def studio_submit(project_id: str, body: StudioLeaseBody, request: Request
         draft = studio.get_draft(project_id, body.path)
         if not draft:
             raise WorkspaceError("没有待提交的草稿", 404)
-        saved = workspaces.write_file(
+        saved = workspaces._write_file_unlocked(
             project_id,
             body.path,
             draft["content"],

@@ -12,7 +12,7 @@ import pytest
 
 from app import config
 from app.services import eval_import, material_detect, package_mapping
-from app.services.workspace import WorkspaceManager, WorkspaceError
+from app.services.workspace import WorkspaceManager, WorkspaceError, _git
 
 
 @pytest.fixture
@@ -93,6 +93,58 @@ def test_explicit_empty_and_manual_subset(manager):
     # Ordinary reading-mode changes must retain manually selected scope.
     manager.set_resource_directive(pid, rel, "schema", "full")
     assert set(package_mapping.read_source_tables(root)) == {"table_b"}
+
+
+def test_sheet_scope_save_creates_project_version(manager):
+    pid, root, rel = setup_project(manager)
+    scope = manager.schema_scopes(pid)[rel]
+    version = manager.versions(pid, limit=1)[0]["version"]
+
+    saved = manager.set_resource_directive(
+        pid,
+        rel,
+        "schema",
+        schema_selection=manual_request(scope, ["table_b"]),
+    )
+
+    assert saved["commit"]
+    assert manager.versions(pid, limit=1)[0]["version"] == version + 1
+    assert _git(root, "show", "--pretty=format:", "--name-only", "HEAD").strip() == (
+        "resource/materials.json"
+    )
+    assert _git(root, "status", "--short", "--", "resource/materials.json") == ""
+    assert set(package_mapping.read_source_tables(root)) == {"table_b"}
+
+
+def test_replacing_workbook_versions_file_and_matching_scope(manager):
+    pid, root, rel = setup_project(manager)
+    before = manager.versions(pid, limit=1)[0]["version"]
+    wb = openpyxl.load_workbook(io.BytesIO(workbook_bytes()))
+    wb["table_b"].title = "table_c"
+    out = io.BytesIO()
+    wb.save(out)
+    wb.close()
+
+    saved = manager.save_resource(
+        pid, "excel", "sample.xlsx", out.getvalue(), purpose="schema"
+    )
+
+    committed_file = subprocess.run(
+        ["git", "show", f"HEAD:{rel}"],
+        cwd=root,
+        capture_output=True,
+        check=True,
+    ).stdout
+    committed_directive = json.loads(
+        _git(root, "show", "HEAD:resource/materials.json")
+    )[rel]
+    assert saved["commit"]
+    assert saved["replaced"] is True
+    assert manager.versions(pid, limit=1)[0]["version"] == before + 1
+    assert committed_file == out.getvalue()
+    assert committed_directive["schema_selection"]["file_sha256"] == (
+        material_detect.resolve_selection(root / rel)["file_sha256"]
+    )
 
 
 def test_replacement_invalidates_manual_scope_without_losing_file(manager):
@@ -375,7 +427,7 @@ def test_schema_cache_detects_same_size_same_mtime_replacement(manager):
     after = manager.preview_schema(pid, rel)
     assert after['file_sha256'] != before['file_sha256']
     assert after['sheets'][0]['headers'] == ['id', 'code']
-    with pytest.raises(WorkspaceError, match='文件已变化'):
+    with pytest.raises(WorkspaceError, match='尚未保存为项目版本'):
         manager.set_resource_directive(pid, rel, 'schema', schema_selection=manual_request(before, ['sample']))
 
 

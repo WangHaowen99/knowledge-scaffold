@@ -71,6 +71,7 @@ export default function App() {
   const [versionTotal, setVersionTotal] = useState(0);
   const [versionNextOffset, setVersionNextOffset] = useState(null);
   const [workspaceRevision, setWorkspaceRevision] = useState(0);
+  const [studioResetRevision, setStudioResetRevision] = useState(0);
   const [usage, setUsage] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [focusStack, setFocusStack] = useState(['overview']);
@@ -184,6 +185,7 @@ export default function App() {
     setDiffFiles(null);
     setQueryPreset(null);
     setWorkspaceRevision((value) => value + 1);
+    setStudioResetRevision((value) => value + 1);
     if (!projectId) return;
     api.fileTree(projectId).then((data) => setTree(data.tree)).catch(() => {});
     api.versions(projectId).then((data) => {
@@ -1012,6 +1014,7 @@ export default function App() {
                 onPickFile={setSelectedFile}
                 recentFiles={recentFiles}
                 workspaceRevision={workspaceRevision}
+                studioResetRevision={studioResetRevision}
                 drawioAvailable={drawioAvailable}
                 onWorkspaceChanged={refreshWorkspace}
                 onOpenFile={openFile}

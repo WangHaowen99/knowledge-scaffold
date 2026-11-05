@@ -1,6 +1,7 @@
 """表格资料的数据表识别：Sheet 结构判定、上传预填 schema、资料区疑似数据表候选。"""
 
 import io
+import subprocess
 from pathlib import Path
 
 import openpyxl
@@ -163,10 +164,27 @@ def test_schema_candidates_lists_untagged_data_tables(manager: WorkspaceManager)
     # 直接落盘模拟升级前已上传、未打标签的资料
     (excel / "orders.xlsx").write_bytes(_xlsx({"orders": ORDER_ROWS}))
     (excel / "terms.xlsx").write_bytes(_xlsx({"术语表": TERM_ROWS}))
-    (excel / "tagged.xlsx").write_bytes(_xlsx({"orders": ORDER_ROWS}))
-    manager.set_resource_directive(pid, "resource/excel/tagged.xlsx", "evidence")
+    manager.save_resource(
+        pid,
+        "excel",
+        "tagged.xlsx",
+        _xlsx({"orders": ORDER_ROWS}),
+        purpose="evidence",
+    )
 
     assert manager.schema_candidates(pid) == {"resource/excel/orders.xlsx": {"tables": ["orders"]}}
 
+    subprocess.run(
+        ["git", "add", "--", "resource/excel/orders.xlsx", "resource/excel/terms.xlsx"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "test: add legacy resources"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
     manager.set_resource_directive(pid, "resource/excel/orders.xlsx", "schema")
     assert manager.schema_candidates(pid) == {}

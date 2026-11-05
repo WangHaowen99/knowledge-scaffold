@@ -684,6 +684,7 @@ export default function CenterPane({
   onPickFile,
   recentFiles,
   workspaceRevision,
+  studioResetRevision,
   drawioAvailable,
   onWorkspaceChanged,
 }) {
@@ -1016,6 +1017,7 @@ export default function CenterPane({
           >
             <Suspense fallback={<Spin style={{ marginTop: 48 }} />}>
               <StudioView
+                key={`${project.id}:${studioResetRevision}`}
                 project={project}
                 onOpenFile={onOpenFile}
                 onCommand={onCommand}
