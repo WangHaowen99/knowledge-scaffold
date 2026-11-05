@@ -145,7 +145,7 @@ AUTH_SERVER_SRC="${REPOSITORY_ROOT}/auth-server"
 (cd "${AUTH_SERVER_SRC}" && ${BUILD_CMD} -t "onto-modeling-auth-server:${VERSION}" .)
 (cd "${IMAGES_DIR}" && docker save -o "onto-modeling-auth-server-${VERSION}.tar" "onto-modeling-auth-server:${VERSION}")
 
-# 连接器主密钥（ADR-0084）不进交付包：每台目标机由 deploy.sh 在首次部署时各自生成，交付包里带一把就是所有部署共用一把
+# 连接器主密钥（ADR-0086）不进交付包：每台目标机由 deploy.sh 在首次部署时各自生成，交付包里带一把就是所有部署共用一把
 cp "${SCRIPT_DIR}/docker-compose.release.yml" "${BUNDLE_DIR}/"
 cp "${SCRIPT_DIR}/deploy.sh" "${SCRIPT_DIR}/preflight.sh" \
    "${SCRIPT_DIR}/migrate-from-modeling.sh" "${BUNDLE_DIR}/"

@@ -528,7 +528,7 @@ class Env:
         assert done["state"] in ("succeeded", "partial"), done
         return done["result"]["snapshot_id"]
 
-    # ---- 连接型（F14）----
+    # ---- 连接型（F16）----
 
     def db_body(self, **fields) -> dict:
         return {"id": DB_SOURCE, "display_name": "订单库", "provider": "db-mysql", "environment": "test",

@@ -2,7 +2,7 @@
 
 复用资料转换的网关客户端：同一个地址（ONTO_WEB_CONNECTOR_GATEWAY_URL）、同一把票据密钥（`gateway.issuer()`）、
 不走代理。每个请求签一张一次性票据：建任务用 `snapshot` / `discover`，范围是任务说明的规范 JSON；查进度、取消、
-取快照包、清理用 `job`，范围是 `{"job_id": …}`。连接型提供方（F14，spec §8）另有写、删凭据（`secret`）和测试连接（`test`）。
+取快照包、清理用 `job`，范围是 `{"job_id": …}`。连接型提供方（F16，spec §8）另有写、删凭据（`secret`）和测试连接（`test`）。
 """
 
 from __future__ import annotations

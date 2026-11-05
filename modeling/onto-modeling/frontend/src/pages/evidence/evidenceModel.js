@@ -266,7 +266,7 @@ export function parsePortDb(text) {
 }
 
 export const SOURCE_ID_RE = /^[a-z0-9][a-z0-9-]{1,40}$/;
-// 网关只实现了 mask-v1（ADR-0084，evidence-collection.md §9）
+// 网关只实现了 mask-v1（ADR-0086，evidence-collection.md §9）
 export const MASKING = [
   ['mask-v1', '默认脱敏 mask-v1（手机号、证件号、姓名、地址、金额）'],
 ];
@@ -318,7 +318,7 @@ export function credState(source) {
 }
 export const credText = (c, now) => (c?.at ? `已设置 · ${fmtWhen(c.at, now)}` : '已设置');
 
-// 代码仓库只认 https（ADR-0084 克隆加固）；出口白名单是仓库主机的 443（§10）
+// 代码仓库只认 https（ADR-0086 克隆加固）；出口白名单是仓库主机的 443（§10）
 export function repoHost(url) {
   const m = String(url || '').trim().match(/^https:\/\/(?:[^@/]+@)?([A-Za-z0-9.-]+)(?::\d+)?(?:[/?#]|$)/i);
   return m ? m[1].toLowerCase() : null;

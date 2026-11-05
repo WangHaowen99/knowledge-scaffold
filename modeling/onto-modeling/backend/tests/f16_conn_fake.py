@@ -1,4 +1,4 @@
-"""F14 测试专用的假连接型提供方：跑在 `conn.worker` 子进程里，按连接参数 `mode` 做不同的事。数据全部合成。"""
+"""F16 测试专用的假连接型提供方：跑在 `conn.worker` 子进程里，按连接参数 `mode` 做不同的事。数据全部合成。"""
 
 import hashlib
 import os
@@ -16,7 +16,7 @@ def _password(ctx) -> str:
 
 def _table(ctx, index: int) -> dict:
     return {"id": ctx.anchor(f"shop.t{index}"), "type": "entity", "parent": None, "name": f"t{index}", "label": None,
-            "attrs": {"kind": "table"}, "evidence": {"provider": "f14-fake@0.1.0", "method": "fake",
+            "attrs": {"kind": "table"}, "evidence": {"provider": "f16-fake@0.1.0", "method": "fake",
                                                       "confidence": "declared"}}
 
 

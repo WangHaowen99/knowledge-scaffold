@@ -24,11 +24,11 @@ docker compose up -d --wait
 
 ```bash
 docker run --rm -v "$PWD/../../../../..":/chg --add-host=host.docker.internal:host-gateway \
-  -e F14_DB_MYSQL_HOST=host.docker.internal -e F14_DB_MYSQL_PORT=33306 \
-  -e F14_DB_PG_HOST=host.docker.internal -e F14_DB_PG_PORT=55432 \
-  -e F14_DB_RO_PASSWORD="$TESTBED_DB_RO_PASSWORD" -e F14_DB_RW_PASSWORD="$TESTBED_DB_RW_PASSWORD" \
+  -e F16_DB_MYSQL_HOST=host.docker.internal -e F16_DB_MYSQL_PORT=33306 \
+  -e F16_DB_PG_HOST=host.docker.internal -e F16_DB_PG_PORT=55432 \
+  -e F16_DB_RO_PASSWORD="$TESTBED_DB_RO_PASSWORD" -e F16_DB_RW_PASSWORD="$TESTBED_DB_RW_PASSWORD" \
   onto-test:py311 bash -c 'pip install -q PyMySQL pg8000 && cd /chg/modeling/onto-modeling/backend &&
-    python -m pytest -q -p no:cacheprovider tests/test_f14_db_integration.py'
+    python -m pytest -q -p no:cacheprovider tests/test_f16_db_integration.py'
 ```
 
 用完 `docker compose down -v`。

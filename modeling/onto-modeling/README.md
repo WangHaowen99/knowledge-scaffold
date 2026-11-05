@@ -352,7 +352,7 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
 - **系统逆向建模**（ADR-0082、0083）：`assets/packs/rev/`，不默认启用。资料页多数据源、采集与快照、证据浏览器三个子页；
   项目授权了数据源时，资料分析和建模之间多一步「系统取证」（授权的源有完整快照就算完成），`/rev-evidence` 把快照整理成
   `reports/evidence/<源>.md`，`/rev-reconcile` 对照资料、数据库、代码快照写三方对账 `reports/evidence/reconcile.md`（0.2.0，
-  ADR-0084），工作区脚本 `evidence.py` 检索快照（认 `bin:`、`db:`、`code:` 锚点，输出都标 `untrusted_content`）。节点按项目条件出现的写法是
+  ADR-0086），工作区脚本 `evidence.py` 检索快照（认 `bin:`、`db:`、`code:` 锚点，输出都标 `untrusted_content`）。节点按项目条件出现的写法是
   通用的（`visible_if`、内核探针 `{kernel: 条件}`，条件表在 `services/flow/conditions.py`）。
 - **行业包**（ADR-0044）：`assets/packs/industry-retail/`（零售连锁，合成内容）是第一个行业包，新建项目时在向导里选。
   它的知识条目作为只读的行业层加载（项目里同名条目覆盖），`ontology_checker` 按它的声明式规则给警告；在装配目录的
@@ -622,7 +622,7 @@ Onto 工作区，新建、导入和克隆项目无需创建 Modeling 关联。�
 - `ONTO_WEB_EVIDENCE_MAX_ARTIFACT_MB`（默认 2048）：上传目标程序的单文件上限；每人同时最多 2 个没完成的上传，24 小时没完成的自动清掉。
 - `ONTO_WEB_EVIDENCE_SNAPSHOT_GIT_MB`（默认 20）：一份快照进 git 的部分（记录、摘要、清单）上限，超了采集失败；原始结果不算在内。
 - 项目侧接口要项目启用系统逆向建模包（`rev`）。
-- 数据库、代码仓库连接器（ADR-0084）跑在网关的子进程里，凭据只存在网关。网关容器的环境变量：
+- 数据库、代码仓库连接器（ADR-0086）跑在网关的子进程里，凭据只存在网关。网关容器的环境变量：
   - `ONTO_CONNECTOR_MASTER_KEY_FILE`：主密钥文件（32 字节 base64），compose 里指向 `/run/secrets/connector-master-key`；
     宿主上的文件默认 `./secrets/connector-master.key`，可在 `.env` 用同名变量改。没配时不列这三个提供方，配了但读不出来时
     它们是 `installed: false`、凭据接口回 503。
@@ -632,7 +632,7 @@ Onto 工作区，新建、导入和克隆项目无需创建 Modeling 关联。�
   - `ONTO_CONNECTOR_CODE_CA_FILE`：代码仓库用自签证书时，网关容器里 CA 证书的路径（要另外把证书挂进网关）。
   - `ONTO_CONNECTOR_DB_*`、`ONTO_CONNECTOR_CODE_*`：提供方自己的配置（如 `ONTO_CONNECTOR_DB_PROFILE_ROWS`），原样传给子进程；
     子进程拿不到其他环境变量。
-- 数据库、代码仓库（ADR-0084）：凭据只在网关，内核收到就转交、只存引用（`cred://<源>/<版本>`）；每个项目的脱敏盐在
+- 数据库、代码仓库（ADR-0086）：凭据只在网关，内核收到就转交、只存引用（`cred://<源>/<版本>`）；每个项目的脱敏盐在
   `evidence/salts/<项目>.key`（随数据卷备份，丢了以后加盐哈希的值和旧快照对不上）；`discover` 的清单在 `evidence/inventories/`。
   对象文档「# 数据来源」首行可以写 `db:<源>/<库>.<表>`，发布时按这个源最新的完整快照绑定表名和列名。
 

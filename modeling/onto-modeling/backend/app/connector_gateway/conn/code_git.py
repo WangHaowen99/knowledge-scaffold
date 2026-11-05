@@ -1,4 +1,4 @@
-"""代码仓库的加固克隆（ADR-0084；证据采集接口 §10）。
+"""代码仓库的加固克隆（ADR-0086；证据采集接口 §10）。
 
 只认 https，主机和端口要在出口白名单里；`init` + `fetch --depth 1 origin <ref>` 取一个提交，不 checkout：
 `ls-tree` 列文件，`cat-file --batch` 只读要分析的 blob，符号链接、子模块、超大文件都不落盘。

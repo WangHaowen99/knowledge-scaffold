@@ -1,4 +1,4 @@
-"""连接型提供方的子进程运行器（证据采集接口 §8；ADR-0084）。
+"""连接型提供方的子进程运行器（证据采集接口 §8；ADR-0086）。
 
 `SubprocessProvider` 对网关的任务表实现和旁路容器提供方同一套方法（submit / status / cancel / result / records / raw /
 delete），`jobs` 不用区分。每个任务一个子进程（`conn.worker`）：最小环境变量、新会话（超时、取消时杀整组）；凭据由这里

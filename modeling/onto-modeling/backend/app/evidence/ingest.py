@@ -8,7 +8,7 @@
 3. 其余文件经写入事务提交到 `resource/systems/<源>/<快照>/`，清单补 `snapshot_id`、`previous`、`initiated_by`、`cred_ref`；
 4. 建索引。
 
-连接型（F14）：`sample`、`profile` 记录在密钥扫描之后再扫一遍个人信息（`pii`）；`discover` 只收清单，不提交快照（`inventory_only`）。
+连接型（F16）：`sample`、`profile` 记录在密钥扫描之后再扫一遍个人信息（`pii`）；`discover` 只收清单，不提交快照（`inventory_only`）。
 """
 
 from __future__ import annotations

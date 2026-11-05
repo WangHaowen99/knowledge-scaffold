@@ -2762,14 +2762,14 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   | `access_window` | object | 否 | `{days: "daily"\|string[], start: "22:00", end: "06:00", tz}` |
   | `budget` | object | 是 | `{max_rows, max_bytes, max_duration_s}` |
   | `rate_limit` | object | 是 | `{concurrency, qps, query_timeout_s}` |
-  | `masking_policy` | string | 否 | 只能是提供方支持的：数据库 `mask-v1`，其他（REA、代码仓库）`none`；缺省按提供方，填别的回 400 `fields.masking_policy=unsupported`（F14） |
+  | `masking_policy` | string | 否 | 只能是提供方支持的：数据库 `mask-v1`，其他（REA、代码仓库）`none`；缺省按提供方，填别的回 400 `fields.masking_policy=unsupported`（F16） |
   | `authorization_note` | string | REA 类必填 | — |
   | `owner` | string | 是 | 负责人用户名 |
   | `grant_project_id` | string | 否 | 登记后立即授权给这个项目 |
 
 - 自助类提供方（F13，ADR-0082）：`owner` 固定为本人；`connection` 是 `{artifact_sha256, artifact_filename, artifact_size}`（先用 `EV-31`～`EV-33`
   上传目标程序）；`scope_allowlist`、`egress`、`access_window`、`rate_limit`、`budget`、`masking_policy` 可省略，按提供方缺省；`environment` 缺省 `test`；登记只有本人和管理员看得到。
-- 连接型提供方（`input=connection`，数据库、代码仓库，F14）：只有管理员能登记；`connection` 只收提供方 `cred_fields` 里的非密钥字段，
+- 连接型提供方（`input=connection`，数据库、代码仓库，F16）：只有管理员能登记；`connection` 只收提供方 `cred_fields` 里的非密钥字段，
   都必填，密钥字段放进来回 400（不回显值）；`port` 是 1～65535 的整数；`repo_url` 只认 https，不能带用户名和令牌。`egress` 必填，
   且要含连接目标（数据库的 `host:port`，代码仓库的仓库主机 443 或地址里写的端口），不含回 400 `fields.egress=missing_target`；
   `scope_allowlist` 数据库必填（写法 `crm.*`、`crm.customer`、`erp.store*`，`*` 只在末尾），代码仓库可空；`budget`、`rate_limit` 各项是正数。
@@ -2789,7 +2789,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `PATCH /api/v1/admin/evidence/sources/{source_id}` · admin；自助类数据源的登记人（F13） · 旧：— · 审计：专项 `evidence.source.update` · 依据：5.8.7 · 页面：sources（⋯「编辑登记」）
 
 - 请求：`EV-02` 里除 `id`、`provider` 外的任意字段。自助类换版本就是把 `connection` 换成新上传的程序，旧快照不动。
-- 连接型（F14）按合并后的登记整体再核一遍 `EV-02` 的规则（换了主机，出口白名单要跟着换）；改 `connection` 时网关要通（要按它的
+- 连接型（F16）按合并后的登记整体再核一遍 `EV-02` 的规则（换了主机，出口白名单要跟着换）；改 `connection` 时网关要通（要按它的
   `cred_fields` 校验），否则 503。带 `secret`（只有管理员）时先改登记再写凭据，写不进去改动撤回。
 - 响应：`EvidenceSource`。
 
@@ -2829,7 +2829,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 响应：`{ok: bool, checks: [{name: "connectivity"|"readonly_account"|"statement_allowlist", ok, detail, latency_ms?}], ticket: {id_prefix, expires_in_s: 600, consumed: true}}`。
 - 错误：`source_not_authorized`、`gateway_unavailable`、`connection_test_failed`（`ok=false` 时也可以直接返回 200，前端按 `ok` 判断；返回 422 只在网关报错时）。
 - 旁路容器类（REA，F13）：只查提供方装没装、目标程序在不在 blob 仓，`checks` 只有 `connectivity`，不签票据，`ticket` 为 `null`；自助类数据源的登记人不带 `project_id` 也能测。
-- 连接型（F14）：网关 `POST /v1/sources/{源}/test`（票据 op `test`，范围是 `TestSpec` 的哈希），`ok`、`checks` 原样带回（代码仓库不一定
+- 连接型（F16）：网关 `POST /v1/sources/{源}/test`（票据 op `test`，范围是 `TestSpec` 的哈希），`ok`、`checks` 原样带回（代码仓库不一定
   三项都有，项里可能多 `code` 等字段）。
   `ticket.id_prefix` 是票据 jti 的前 8 位。还没写凭据时不调网关，回 `ok=false`、`checks` 只有 `connectivity`（「还没写入凭据」）、`ticket=null`。
   网关拒绝回 422 `connection_test_failed`（`details.gateway_error`），网关不通 503。
@@ -2840,7 +2840,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 查询参数：`project_id?`；分页。
 - 响应：`{items: [{at, job_id, project_id, operation, statement_digest, rows, bytes, duration_ms}], next_cursor}`。
-- 连接型（F14）：每条是快照包清单 `access_log` 里的一次访问（`statement_digest` 如 `select:3f2a…`），`at` 没给时取任务开始时间；
+- 连接型（F16）：每条是快照包清单 `access_log` 里的一次访问（`statement_digest` 如 `select:3f2a…`），`at` 没给时取任务开始时间；
   上传类每个任务一条（`statement_digest` 是 `artifact:<sha256 前 12 位>`）。新的在前。
 
 #### EV-10 提供方列表
@@ -2880,7 +2880,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   | `summary` | object | `{scope_text, tables, window, in_window_now, rate_limit, estimate: {rows, bytes}\|null, readonly_methods: string[], masking: {policy, sample_rows}, ticket: {ttl_s: 600, single_use: true}}` |
 
 - `scope` 逐条核对落在登记白名单里（`crm.customer`、`crm.c*` 都在 `crm.*` 里），不在回 400 `fields.scope=outside_allowlist`；登记没写白名单时不限。
-- `operation=sample`（F14）：`sample.selector` 是范围写法里的单个对象名 `库.表`（不带 `*`），要落在登记白名单和本次范围里，否则 400；
+- `operation=sample`（F16）：`sample.selector` 是范围写法里的单个对象名 `库.表`（不带 `*`），要落在登记白名单和本次范围里，否则 400；
   `sample.limit` 1～20，缺省 20。
 - `summary.window` 是 `EvidenceSource.access_window` 同形的对象或 `null`。
 - `summary.tables`、`summary.estimate` 来自这个源最近一次 `discover` 的清单（按本次范围筛），没做过 discover 为 `null`；
@@ -2894,7 +2894,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 请求：同 `EV-13`，加 `confirmation_token?`。
 - 生产环境没带有效 token 时返回 `428 confirmation_required`，`details` 同 `EV-13` 的响应。
 - 不在访问窗口内的任务进入排队，等窗口开启。
-- 连接型（F14）：任务说明带凭据引用、出口白名单、限流、脱敏策略和项目的盐（`design/evidence-collection.md` §8）；登记还没写凭据时任务
+- 连接型（F16）：任务说明带凭据引用、出口白名单、限流、脱敏策略和项目的盐（`design/evidence-collection.md` §8）；登记还没写凭据时任务
   直接失败（`credential_missing`，动作有「联系管理员」）。`discover` 只存清单、不提交快照，`result` 没有 `snapshot_id`，有
   `inventory: {items, skipped}`；`sample` 入库成补充快照（不完整，`scope` 是那张表），网关成功就是 `succeeded`。
 - 响应 `202`：`CollectionJob`。进度经项目流 `evidence.job.updated` 推送。
@@ -2967,7 +2967,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 查询参数：`snapshot`（必填）。
 - 响应：`{snapshot: SnapshotRef, domains: [{name, count, entities: [{anchor, name, label, mapped_to: EntryRef|null}]}]}`。
-- 数据库快照（F14）：`domains` 按 `<库>`（MySQL 的库、PostgreSQL 的 schema）分组，`entities` 是表和视图（按表名排），每项多 `type`（`entity`）和 `kind`（`table|view`），`label` 没有时取表注释。
+- 数据库快照（F16）：`domains` 按 `<库>`（MySQL 的库、PostgreSQL 的 schema）分组，`entities` 是表和视图（按表名排），每项多 `type`（`entity`）和 `kind`（`table|view`），`label` 没有时取表注释。
 - 非数据库快照（如 REA，F13）：`domains` 按记录的 `attrs.module` 分组，`entities` 列这一组的实体和操作记录（模块记录本身就是组，不再列），每项多 `type`（`entity|operation`）。
 
 #### EV-24 证据检索（evidence.search）
@@ -2983,14 +2983,14 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 查询参数：`anchor`、`snapshot?`（缺省用产物声明的快照，没有则取最新完整快照）、`path?`（引用这个锚点的产物路径，按它 frontmatter 的 `evidence_snapshots` 取快照，F13）。
 - 响应：`EvidenceRecord`，即记录本身，加原始上下文：字段、DDL、脱敏样本（每表最多 20 行）、数据画像（低基数 top-k、数值统计量）。
-- 数据库记录（F14）：表和视图给 `fields`（全部列，按列序，最多 1000；`type` 取列记录顶层的 `data_type`，`note` 是列注释，`masked` 是
+- 数据库记录（F16）：表和视图给 `fields`（全部列，按列序，最多 1000；`type` 取列记录顶层的 `data_type`，`note` 是列注释，`masked` 是
   脱敏标记，多可选的 `pk`、`fk`、`nullable`：`pk` 来自列的标记或主键约束，`fk` 是这一列出现在本表声明外键的 `attrs.columns` 里；视图没有
   列记录，按视图的 `attrs.columns` 列出，`anchor` 为空）、`ddl`（表是生成的建表语句，视图是定义）、`samples`、`profile`、`rows`。
   `samples` 优先取这个源最新的补充样本（sample 任务），没有就用当前快照里的样本，多 `masked_columns`、`snapshot_id`（样本来自哪份快照）；
   单元格都是文字，空值是空串。`profile` 的比例单位是**百分比**（一位小数）：记录里是整数比例（`attrs.pct_scale` 分之几，缺省千分之几），
   `top_k` 记录里是 `{value, count}` 时按画像行数算；每项多 `null_pct`、`distinct`；有统计量时才给 `stats`（`min`、`max` 原样，可能是文字）。
   `rows` 取画像的行数，没有画像取表的估算行数。列记录顶层多 `masked`、`data_type`、`nullable`。
-- 代码记录（F14）：同非数据库记录，`attrs` 原样带 `snippet`、`loc`；`fields` 列下级的字段、方法和校验规则（`rule`，按锚点的路径类型区分），
+- 代码记录（F16）：同非数据库记录，`attrs` 原样带 `snippet`、`loc`；`fields` 列下级的字段、方法和校验规则（`rule`，按锚点的路径类型区分），
   `type` 先取顶层 `data_type`，再取签名、`attrs.type`、`attrs.kind`；有 `nullable` 时带上。
 - 非数据库记录（F13）：`attrs` 带 `loc`、`module` 等（`design/evidence-collection.md` §1）；`fields` 列它的成员（类的字段和方法，最多 50 条，`type` 填签名或 `attrs.kind`）。
   快照清单标了 `untrusted_content` 时，响应顶层带 `untrusted_content: true`（`EV-23`、`EV-24`、`EV-27` 同）。
@@ -3009,7 +3009,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 查询参数：`anchor`、`snapshot?`。
 - 响应：`{items: [{anchor, label, basis: string（如「外键邻居」「取值重合 98%」「代码调用方」）, confidence}]}`。
-- 数据库锚点（F14）：表给外键连着的表（`basis`「外键邻居」，被引用的一侧是「外键邻居（被引用）」）和推断关系连着的表（`basis`：有
+- 数据库锚点（F16）：表给外键连着的表（`basis`「外键邻居」，被引用的一侧是「外键邻居（被引用）」）和推断关系连着的表（`basis`：有
   `attrs.overlap_permille` 时「取值重合 98%」，否则按 `attrs.basis`：`naming`「命名推断」）；列先给所在的表（「上级」），再给它参与的
   关系连着的表。每项多 `relation`（关系锚点）、`columns`（`[[本表列, 对方列]]`）。关系记录的 `name` 是 `references`（「引用」）。
 
@@ -3019,7 +3019,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 查询参数：`snapshot`、`focus?: anchor`、`depth?: 1–3`（默认 1）、`domain?`。
 - 响应：`{tables: [{anchor, name, label, fields: [{name, type, pk: bool, fk: bool, masked: bool}]}], relations: [{from_anchor, to_anchor, confidence: "declared"|"observed"|"inferred", basis}]}`，表数上限 60。
-- F14：只列表（不含视图）；`domain` 是 `<库>`；`focus` 可以是表或列的锚点，从它所在的表按关系走 `depth` 步（广度优先，近的在前），
+- F16：只列表（不含视图）；`domain` 是 `<库>`；`focus` 可以是表或列的锚点，从它所在的表按关系走 `depth` 步（广度优先，近的在前），
   不给 `focus` 时按表名排。`pk` 来自列的标记或主键约束，`fk` 只算声明的外键（推断关系不算）。响应多 `total`（截断前的表数）、
   `truncated`；`relations` 每项多 `anchor`（关系锚点）、`columns`（`[[本表列, 对方列]]`，前端据此把连线落到列上），`basis` 同 `EV-27`，
   只给两端都在本次表里的。非数据库快照回 `{tables: [], relations: []}`。
@@ -3033,7 +3033,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - POST 请求：`{anchors: string[], path?: string}`，最多 100 个。
 - `path`（F13）：引用这些锚点的产物；`bin:` 锚点先按它 frontmatter 声明的快照解析，没声明取这个源最新的完整快照。
   `bin:` 锚点的 `source_label` 是数据源显示名，`location_label` 是记录的 `attrs.loc`（`文件:行号`），`text` 是记录摘要，`page="schema"`；
-  快照里没有时 `reason=not_in_snapshot`。`db`、`code` 锚点（F14）：工作区里有这个源的快照时同样走证据索引，`location_label` 数据库是
+  快照里没有时 `reason=not_in_snapshot`。`db`、`code` 锚点（F16）：工作区里有这个源的快照时同样走证据索引，`location_label` 数据库是
   `<库>.<表>[.<列>]`、代码是 `文件:行号`；没有快照时仍回 `not_available`。其余系统锚点仍回 `not_available`。
 - 响应：`{items: AnchorResolution[]}`。
   - 每项含：来源名、位置、原文（带高亮区间）、置信度、快照、是否可解析。
@@ -5444,7 +5444,7 @@ type CollectionJob = {
   queue_reason: string | null;    // 「等待访问窗口 22:00，前面还有 1 个任务」
   started_at: time | null; ended_at: time | null; duration_ms: number | null;
   result: { snapshot_id?: string; message: string; commit?: string;
-            inventory?: { items: number; skipped: number } } | null;   // inventory：discover 的结果（F14）
+            inventory?: { items: number; skipped: number } } | null;   // inventory：discover 的结果（F16）
   error: { code: string; message: string } | null;   // 「401：凭据已过期」
   resumed_from: string | null; checkpoint: boolean;
   initiated_by: string; consent: { by: string; at: time } | null;
@@ -5473,15 +5473,15 @@ type EvidenceRecord = {
   evidence: { provider: string; method: string };
   attrs: Record<string, any>;
   fields?: { name: string; type: string; note: string; confidence: string; masked: boolean; anchor: string;
-             pk?: boolean; fk?: boolean; nullable?: boolean }[];   // pk、fk、nullable：数据库列（F14）
+             pk?: boolean; fk?: boolean; nullable?: boolean }[];   // pk、fk、nullable：数据库列（F16）
   ddl?: string;
   samples?: { columns: string[]; rows: string[][]; shown: number; max: 20;
-              masked_columns?: string[]; snapshot_id?: string };   // F14
-  profile?: { column: string; null_pct?: number | null; distinct?: number | null;   // F14
+              masked_columns?: string[]; snapshot_id?: string };   // F16
+  profile?: { column: string; null_pct?: number | null; distinct?: number | null;   // F16
               top_k?: { value: string; pct: number }[]; stats?: { min: number; max: number; null_pct: number } }[];
   rows?: number;
-  masked?: boolean;               // 数据库列记录的脱敏标记（F14）
-  data_type?: string; nullable?: boolean;   // 数据库列记录（F14）
+  masked?: boolean;               // 数据库列记录的脱敏标记（F16）
+  data_type?: string; nullable?: boolean;   // 数据库列记录（F16）
   snapshot: SnapshotRef;
   untrusted_content?: boolean;    // 快照内容来自目标程序（F13）
 };

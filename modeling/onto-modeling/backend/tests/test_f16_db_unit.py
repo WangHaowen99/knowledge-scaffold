@@ -1,7 +1,7 @@
-"""F14 数据库提供方（ADR-0084；证据采集接口 §9）：语句白名单、脱敏、推断关系、记录形状、错误信息，不连库。
+"""F16 数据库提供方（ADR-0086；证据采集接口 §9）：语句白名单、脱敏、推断关系、记录形状、错误信息，不连库。
 
 用一个按语句应答的假 DB-API 连接把 db-mysql 的四个操作完整跑一遍；PostgreSQL 方言只核对语句都过白名单和错误映射，
-真库在 test_f14_db_integration.py。
+真库在 test_f16_db_integration.py。
 """
 
 from __future__ import annotations

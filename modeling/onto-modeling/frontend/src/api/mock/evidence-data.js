@@ -93,7 +93,7 @@ export function reaManifest(source = REA.id, artifact = REA_ARTIFACT, jobId = 'j
   };
 }
 
-// ---------- 代码仓库（code-repo，F14）：合成的 Java 补货单服务 ----------
+// ---------- 代码仓库（code-repo，F16）：合成的 Java 补货单服务 ----------
 // 锚点按 evidence-collection.md §10：Java 包名的点拆成段（code:<源>/sym:com::example::restock::order::Order）；
 // 路由 route:<方法> <路径>（attrs.handler 指向方法锚点）；校验规则 rule:<符号段>::<规则名>，上级是字段。
 // 字段的 data_type 放在 attrs 里（EV-25 只透传 attrs）。数量上限 @Max(120) 是按旧口径写的，供三方对账演示矛盾。

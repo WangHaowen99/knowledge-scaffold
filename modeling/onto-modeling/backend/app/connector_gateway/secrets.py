@@ -1,4 +1,4 @@
-"""连接型提供方的凭据库（证据采集接口 §8；ADR-0084）。
+"""连接型提供方的凭据库（证据采集接口 §8；ADR-0086）。
 
 凭据只存在网关：`ONTO_CONNECTOR_SECRETS_DIR`（卷 connector-secrets，只网关挂）下 `<源>/<版本>.bin`，AES-256-GCM，
 主密钥来自 `ONTO_CONNECTOR_MASTER_KEY_FILE`（32 字节 base64）。附加数据绑定源和版本，文件挪到别的源、别的版本下解不开。

@@ -1,4 +1,4 @@
-"""系统逆向建模包 rev（F13、F14；ADR-0082、ADR-0083、ADR-0084）：包检查与安装、取证节点按授权出现、完整快照算完成、
+"""系统逆向建模包 rev（F13、F16；ADR-0082、ADR-0083、ADR-0086）：包检查与安装、取证节点按授权出现、完整快照算完成、
 有快照时的提示规则、工作区脚本 evidence.py 的七个子命令（程序 bin:、数据库 db:、代码仓库 code: 三种锚点）、
 三方对账命令。快照全是测试里现造的合成数据，锚点用 spec.py 生成。"""
 
@@ -188,7 +188,7 @@ def test_assistant_texts_carry_the_trust_rules():
     for text in (doc, prompt):
         assert "候选" in text and "确认" in text and "bin:" in text
     assert "reports/evidence/<源>.md" in command and "不改 `ontology/`" in command
-    # F14：守则和取证命令覆盖数据库、代码仓库；被遮蔽的列只看结构；对象的数据来源可以写表锚点
+    # F16：守则和取证命令覆盖数据库、代码仓库；被遮蔽的列只看结构；对象的数据来源可以写表锚点
     for text in (doc, command, prompt):
         assert "db:" in text and "code:" in text
     for text in (doc, command):
@@ -447,7 +447,7 @@ def test_no_complete_snapshot(tmp_path):
     assert code == 0 and data["items"] == []
 
 
-# ---- F14：数据库（db:）、代码仓库（code:）快照 ----
+# ---- F16：数据库（db:）、代码仓库（code:）快照 ----
 
 DB_SOURCE = "erp-prod"
 CODE_SOURCE = "order-svc"

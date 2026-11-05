@@ -186,7 +186,7 @@ onto-modeling 容器里做：上传的文件不可信，解析可能卡死、吃
   `onto-modeling-connector-gateway:<版本>`（同一个 Dockerfile 的 `connector-gateway` 目标），离线包里多一个
   镜像 tar，`deploy.sh` 一起加载；`redeploy-app.sh` 一起重建、替换（旧部署目录的 compose 没有这个服务时跳过）。
 - 接 `internal: true` 的 `connector` 网络（和 onto-modeling 互通）和 `rea` 网络；另接有出口的 `biz-egress` 网络，
-  只给数据库、代码仓库连接器连业务系统用（ADR-0084），onto-modeling 和旁路容器都不接。不读 `.env`、不发布端口；
+  只给数据库、代码仓库连接器连业务系统用（ADR-0086），onto-modeling 和旁路容器都不接。不读 `.env`、不发布端口；
   非 root、只读根文件系统、无 capability，内存 1.5G、最多 64 个进程。
 - 每个转换一个子进程：120 秒超时、768 MiB 内存、16 MiB 输出上限，同时最多 2 个；
   可用 `ONTO_CONNECTOR_JOB_TIMEOUT_S`、`ONTO_CONNECTOR_JOB_MEMORY_MB`、`ONTO_CONNECTOR_MAX_CONCURRENT` 调（网关容器的环境变量）。
@@ -197,7 +197,7 @@ onto-modeling 容器里做：上传的文件不可信，解析可能卡死、吃
 - 网关停了不丢活：资料标「等待转换」，网关恢复后 30 秒内自动补转；升级后已有项目里还没有文本版的资料在后台补转一次。
 - 健康状态在运维中心「健康与依赖」的「连接器网关」一行和启动自检报告里。
 
-### 数据库、代码仓库连接器的凭据（ADR-0084）
+### 数据库、代码仓库连接器的凭据（ADR-0086）
 
 - 数据源的密码、访问令牌只存在网关：AES-256-GCM 加密后放在卷 `onto-web_connector-secrets`（只挂给网关），
   onto-modeling 收到后立即转交，自己不存；没有任何读出明文的接口。

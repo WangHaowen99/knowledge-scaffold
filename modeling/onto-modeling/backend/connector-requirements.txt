@@ -6,7 +6,7 @@ python-docx>=1.1,<2
 openpyxl>=3.1
 pyyaml>=6
 pyjwt[crypto]>=2.8
-# 连接型提供方（ADR-0084）：都是纯 Python，网关进程不导入，只在提供方子进程里用。
+# 连接型提供方（ADR-0086）：都是纯 Python，网关进程不导入，只在提供方子进程里用。
 # PyMySQL（MIT）连 MySQL；pg8000（BSD-3-Clause）连 PostgreSQL，带上 scramp（MIT）、python-dateutil（Apache-2.0 / BSD-3）；
 # javalang（MIT）解析 Java 源码，带上 six（MIT）。
 PyMySQL>=1.1,<2

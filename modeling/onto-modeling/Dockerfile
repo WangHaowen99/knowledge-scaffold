@@ -15,7 +15,7 @@ RUN npm run build
 
 # 连接器网关（ADR-0073）：单独的镜像，`docker build --target connector-gateway`。只有转换库、数据库驱动、网关代码与多源
 # 连接器协议，不带助手 CLI 和后端其余代码；转换器在只读目录 /opt/connector/converters，跑在非 root 的子进程里。
-# git 只给代码仓库提供方按提交浅克隆用（ADR-0084）；凭据库在卷 /secrets（目录先建好归 65534，新卷沿用这个属主）。
+# git 只给代码仓库提供方按提交浅克隆用（ADR-0086）；凭据库在卷 /secrets（目录先建好归 65534，新卷沿用这个属主）。
 # 放在主服务这一段前面：不带 --target 构建时仍是主服务镜像，也不会构建这一段
 FROM python:3.11-slim AS connector-gateway
 WORKDIR /app

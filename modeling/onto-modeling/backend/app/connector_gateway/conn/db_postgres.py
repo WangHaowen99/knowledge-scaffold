@@ -1,4 +1,4 @@
-"""db-postgres 提供方（ADR-0084；证据采集接口 §8、§9）。驱动 pg8000（纯 Python，BSD-3-Clause），只在网关子进程里导入。
+"""db-postgres 提供方（ADR-0086；证据采集接口 §8、§9）。驱动 pg8000（纯 Python，BSD-3-Clause），只在网关子进程里导入。
 
 锚点里的 `<库>` 是 schema 名；连接里的 `database` 是库名。没写范围时采这个库里除系统 schema 外的全部。
 """

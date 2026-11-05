@@ -1,4 +1,4 @@
-"""F14 代码仓库提供方 code-repo：加固克隆与 Java / Python / TypeScript 静态分析（ADR-0084；证据采集接口 §10）。
+"""F16 代码仓库提供方 code-repo：加固克隆与 Java / Python / TypeScript 静态分析（ADR-0086；证据采集接口 §10）。
 
 测试仓库全是合成代码（`connectors/testbed/code/`）；git 服务用同目录的 `server.py` 起在 127.0.0.1 随机端口，
 令牌每次随机生成。克隆走 http，靠提供方的测试参数 `allow_http` 放开本机地址。

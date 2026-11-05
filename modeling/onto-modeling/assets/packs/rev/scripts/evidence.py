@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""系统证据检索（系统逆向建模包 rev；ADR-0082、ADR-0084，evidence-collection.md 第 7～10 节）。
+"""系统证据检索（系统逆向建模包 rev；ADR-0082、ADR-0086，evidence-collection.md 第 7～10 节）。
 
 只读工作区里内核采集入库的快照 `resource/systems/<源>/<快照>/`；`where-used` 另外读 `ontology/`、`reports/` 下的
 Markdown。只用标准库，不导入后端代码：锚点编码是后端 `app/evidence/spec.py` 的副本，测试核对两边一致。

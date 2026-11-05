@@ -90,7 +90,7 @@ def test_credential_providers_need_admin(f13):
     assert f13.client.patch(f"{ADMIN_BASE}/orders-db", json={"display_name": "x"}, headers=bob).status_code == 403
     unknown = f13.client.post(ADMIN_BASE, json={**body, "id": "other-db", "provider": "nope"}, headers=admin)
     assert unknown.status_code == 409 and unknown.json()["code"] == "provider_not_installed"
-    # 凭据接口只有管理员能调（F14 起开放，见 test_f14_kernel_secrets）
+    # 凭据接口只有管理员能调（F16 起开放，见 test_f16_kernel_secrets）
     assert f13.client.put(f"{ADMIN_BASE}/orders-db/secret", json={"fields": {"password": "x"}},
                           headers=bob).status_code == 403
 

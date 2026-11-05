@@ -1,6 +1,6 @@
-"""F14 数据库提供方连真库（ADR-0084；证据采集接口 §9）：测试床 `connectors/testbed/db`，两个库各跑一遍。
+"""F16 数据库提供方连真库（ADR-0086；证据采集接口 §9）：测试床 `connectors/testbed/db`，两个库各跑一遍。
 
-没给 `F14_DB_MYSQL_HOST` / `F14_DB_PG_HOST` 或没装驱动就跳过。账号密码：`F14_DB_RO_PASSWORD`、`F14_DB_RW_PASSWORD`。
+没给 `F16_DB_MYSQL_HOST` / `F16_DB_PG_HOST` 或没装驱动就跳过。账号密码：`F16_DB_RO_PASSWORD`、`F16_DB_RW_PASSWORD`。
 """
 
 from __future__ import annotations
@@ -19,9 +19,9 @@ from app.connector_gateway.conn.context import ConnError, Context
 SALT = "c3" * 16
 
 DATABASES = {
-    "mysql": {"module": db_mysql, "provider": "db-mysql", "driver": "pymysql", "env": "F14_DB_MYSQL", "port": 3306,
+    "mysql": {"module": db_mysql, "provider": "db-mysql", "driver": "pymysql", "env": "F16_DB_MYSQL", "port": 3306,
               "database": "shop", "procs": 1, "rules": 0},
-    "postgres": {"module": db_postgres, "provider": "db-postgres", "driver": "pg8000", "env": "F14_DB_PG",
+    "postgres": {"module": db_postgres, "provider": "db-postgres", "driver": "pg8000", "env": "F16_DB_PG",
                  "port": 5432, "database": "shopdb", "procs": 2, "rules": 1},
 }
 
@@ -33,8 +33,8 @@ EXPECTED = {"entity": 8, "field": 48, "constraint": 16, "relation": 7, "profile"
 def db(request):
     spec = DATABASES[request.param]
     host = os.environ.get(f"{spec['env']}_HOST")
-    if not host or not os.environ.get("F14_DB_RO_PASSWORD"):
-        pytest.skip(f"没给 {spec['env']}_HOST / F14_DB_RO_PASSWORD")
+    if not host or not os.environ.get("F16_DB_RO_PASSWORD"):
+        pytest.skip(f"没给 {spec['env']}_HOST / F16_DB_RO_PASSWORD")
     pytest.importorskip(spec["driver"])
     return {**spec, "name": request.param, "host": host,
             "port": int(os.environ.get(f"{spec['env']}_PORT") or spec["port"]),
@@ -86,7 +86,7 @@ def _run(db, operation, monkeypatch, *, rw=False, **head):
         return holder["conn"]
 
     monkeypatch.setattr(dialect, "connect", connect)
-    password = os.environ.get("F14_DB_RW_PASSWORD" if rw else "F14_DB_RO_PASSWORD")
+    password = os.environ.get("F16_DB_RW_PASSWORD" if rw else "F16_DB_RO_PASSWORD")
     out = io.StringIO()
     ctx = Context(_head(db, operation, user="onto_rw" if rw else "onto_ro", **head), {"password": password}, out,
                   scheme="db")
@@ -108,7 +108,7 @@ def _records(events):
 
 def _originals(db) -> set[str]:
     """测试床里的原始个人信息（只读账号直接查），用来确认快照里一个都没漏出来。"""
-    password = os.environ["F14_DB_RO_PASSWORD"]
+    password = os.environ["F16_DB_RO_PASSWORD"]
     queries = ["SELECT customer_name, phone, id_card, password_hash, email, address FROM shop.customers",
                "SELECT receiver_name, receiver_phone, shipping_address FROM shop.orders",
                "SELECT card_no FROM shop.payments WHERE card_no IS NOT NULL"]
@@ -140,7 +140,7 @@ def test_test_operation(db, monkeypatch):
     events, error, raw, _, _ = _run(db, "test", monkeypatch, rw=True)
     checks = {check["name"]: check for check in events[-1]["checks"]}
     assert checks["connectivity"]["ok"] and not checks["readonly_account"]["ok"]
-    assert os.environ["F14_DB_RW_PASSWORD"] not in raw and db["host"] not in raw
+    assert os.environ["F16_DB_RW_PASSWORD"] not in raw and db["host"] not in raw
 
 
 def test_write_account_is_refused(db, monkeypatch):
@@ -153,10 +153,10 @@ def test_write_account_is_refused(db, monkeypatch):
 def test_session_is_read_only_even_past_the_allowlist(db, monkeypatch):
     """只读三重保证之二独立生效：写账号进了只读会话，绕过白名单直接发写语句也会被库拒绝。"""
     dialect = db["module"].DIALECT
-    ctx = Context(_head(db, "snapshot", user="onto_rw"), {"password": os.environ.get("F14_DB_RW_PASSWORD")},
+    ctx = Context(_head(db, "snapshot", user="onto_rw"), {"password": os.environ.get("F16_DB_RW_PASSWORD")},
                   io.StringIO(), scheme="db")
-    if not os.environ.get("F14_DB_RW_PASSWORD"):
-        pytest.skip("没给 F14_DB_RW_PASSWORD")
+    if not os.environ.get("F16_DB_RW_PASSWORD"):
+        pytest.skip("没给 F16_DB_RW_PASSWORD")
     cur = db_common.open_cursor(ctx, dialect)
     try:
         with pytest.raises(ConnError) as caught:

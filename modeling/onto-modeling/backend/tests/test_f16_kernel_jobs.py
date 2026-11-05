@@ -1,4 +1,4 @@
-"""F14 内核：连接型采集任务（EV-13/14、EV-09）、discover 清单、sample 补充快照、入库时的个人信息扫描（spec §8、§9）。"""
+"""F16 内核：连接型采集任务（EV-13/14、EV-09）、discover 清单、sample 补充快照、入库时的个人信息扫描（spec §8、§9）。"""
 
 from __future__ import annotations
 

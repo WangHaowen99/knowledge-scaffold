@@ -1,4 +1,4 @@
-# 系统逆向建模（ADR-0082、ADR-0084；evidence-collection.md 第 7～10 节）：资料页的数据源、采集与快照、证据浏览器三个子页，
+# 系统逆向建模（ADR-0082、ADR-0086；evidence-collection.md 第 7～10 节）：资料页的数据源、采集与快照、证据浏览器三个子页，
 # 取证节点 rev.evidence（项目有授权的数据源才出现，ADR-0083），命令 /rev-evidence、/rev-reconcile 与工作区脚本 evidence.py。
 # 登记、上传、采集、入库、检索接口在内核与连接器网关里，包里只有给助手用的部分。
 name: rev

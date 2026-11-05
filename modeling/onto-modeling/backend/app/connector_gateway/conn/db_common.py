@@ -1,4 +1,4 @@
-"""db-mysql、db-postgres 共用的采集流程（ADR-0084；证据采集接口 §8、§9）。
+"""db-mysql、db-postgres 共用的采集流程（ADR-0086；证据采集接口 §8、§9）。
 
 方言（`Dialect` 子类，在 db_mysql / db_postgres 里）只管连接、元数据查询、取值表达式和 DDL 写法；这里管只读三重保证的
 串联、范围、记录组装、画像、样本、脱敏、推断关系和预算。每条语句都经 `GuardedCursor`：限速、过白名单、计时、发访问审计。

@@ -13,5 +13,5 @@ vendor/drawio/**
 !vendor/drawio/webapp/
 !vendor/drawio/webapp/.gitkeep
 docker-compose.stack.yml
-# 连接器网关的主密钥（ADR-0084）：每个部署各自生成，不进仓库
+# 连接器网关的主密钥（ADR-0086）：每个部署各自生成，不进仓库
 secrets/

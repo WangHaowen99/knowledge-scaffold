@@ -634,7 +634,7 @@ test('证据浏览器：快照类别、能打开的锚点、记录图标与键�
   assert.equal(firstTreeAnchor(null), null);
 });
 
-// ---------- F14：数据库、代码仓库连接器对接真实接口的形状 ----------
+// ---------- F16：数据库、代码仓库连接器对接真实接口的形状 ----------
 
 const CODE_PROVIDER = {
   id: 'code-repo', kind: 'code', capabilities: ['snapshot'],

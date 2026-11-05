@@ -1,4 +1,4 @@
-"""代码仓库提供方 `code-repo`（ADR-0084；证据采集接口 §8、§10）。
+"""代码仓库提供方 `code-repo`（ADR-0086；证据采集接口 §8、§10）。
 
 `test`：`git ls-remote` 验证能访问、令牌能读。`snapshot`：加固浅取一个提交 → 文件清单 → 按语言分析 → 发记录。
 `ctx.result(artifact=…)` 交出 `{repo_url（去掉用户信息）, ref, commit}`，网关写进快照清单的 `artifact`。
