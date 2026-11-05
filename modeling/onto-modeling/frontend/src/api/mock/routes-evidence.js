@@ -630,7 +630,8 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
   });
 
   // ---------- EV-31～EV-33 分块上传目标程序 ----------
-  // mock 一块 1 MiB（真实 8 MiB），开发服务器上能看到进度；?mock=upload:flaky 时第 2 块头一次回 503，看自动重试
+  // mock 一块 1 MiB（真实 8 MiB），开发服务器上能看到进度；?mock=upload:flaky 时第 2 块头一次回 503，看自动重试；
+  // ?mock=upload:down 时第 2 块一直回 503，看失败与重试按钮
   const UP_CHUNK = 1024 * 1024;
   const UP_MAX = 2048 * 1024 * 1024;
   const byteLen = (b) => b?.byteLength ?? b?.size ?? 0;
@@ -651,7 +652,7 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     const want = i < n - 1 ? UP_CHUNK : u.size - UP_CHUNK * (n - 1);
     if (i >= n || byteLen(init?.body) !== want) return err(400, 'invalid_argument', '块大小或序号不对', { fields: { index: i, expected_bytes: want } });
     u.tries.set(i, (u.tries.get(i) || 0) + 1);
-    if (sc.upload === 'flaky' && i === 1 && u.tries.get(i) === 1) return err(503, 'upstream_unavailable', '临时不可用');
+    if (i === 1 && (sc.upload === 'down' || (sc.upload === 'flaky' && u.tries.get(i) === 1))) return err(503, 'upstream_unavailable', '临时不可用');
     await wait(120);
     u.got.set(i, want);
     return json(200, { received_bytes: [...u.got.values()].reduce((x, y) => x + y, 0), received_chunks: u.got.size });
