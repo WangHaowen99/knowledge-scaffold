@@ -609,6 +609,17 @@ Onto 工作区，新建、导入和克隆项目无需创建 Modeling 关联。�
 
 设计与兼容边界见 [本地 MCP 设计说明](docs/decisions/onto-local-mcp.md)。
 
+## 证据层（多源连接器）
+
+数据源登记、目标程序上传、采集任务、快照与检索（契约 3.19，ADR-0082，`docs/plugin-architecture/design/evidence-collection.md`）。
+
+- 数据都在 `ONTO_WEB_DATA_DIR/evidence/`（不在工作区）：登记、项目授权、采集任务、上传临时目录、blob 仓（目标程序和 REA 原始结果）、
+  每个项目一个检索索引（SQLite，可以删掉，下次读时从工作区重建）。快照本身经写入事务提交到工作区 `resource/systems/<源>/<快照>/`。
+- 采集经连接器网关（`ONTO_WEB_CONNECTOR_GATEWAY_URL`），全平台同时跑 2 个；后端重启时没跑完的任务标失败，可以重试。
+- `ONTO_WEB_EVIDENCE_MAX_ARTIFACT_MB`（默认 2048）：上传目标程序的单文件上限；每人同时最多 2 个没完成的上传，24 小时没完成的自动清掉。
+- `ONTO_WEB_EVIDENCE_SNAPSHOT_GIT_MB`（默认 20）：一份快照进 git 的部分（记录、摘要、清单）上限，超了采集失败；原始结果不算在内。
+- 项目侧接口要项目启用系统逆向建模包（`rev`）。
+
 ## 当前状态
 
 已有：项目生命周期（创建/导入向导（已发布知识包与工作区内容格式自动识别，识别不出
