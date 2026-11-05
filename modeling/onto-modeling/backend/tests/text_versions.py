@@ -48,5 +48,5 @@ def write_text_versions(root: Path, *, commit: bool = False) -> list[str]:
         subprocess.run(["git", "add", "--", *written], cwd=root, check=True, capture_output=True)
         # 只提交文本版，索引里别人已暂存的改动不带进来（与写入路径的提交口径一致）
         subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "-m",
-                        "数据接入: 资料的文本版", "--", *written], cwd=root, check=True, capture_output=True)
+                        "多源连接器: 资料的文本版", "--", *written], cwd=root, check=True, capture_output=True)
     return written

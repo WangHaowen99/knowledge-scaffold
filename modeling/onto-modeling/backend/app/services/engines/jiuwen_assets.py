@@ -39,7 +39,7 @@ _HOOK_TOOL_NAME = {
     "write_file": "Write",
     "edit_file": "Edit",
     # 读文件也过守卫（F4c）：openjiuwen 的 read_file 遇到 PDF 会用 pdfplumber 在后端进程里解析，资料原件要拦下、
-    # 改读数据接入转出的文本版
+    # 改读多源连接器转出的文本版
     "read_file": "Read",
 }
 # 只读或不碰文件的工具：不过守卫

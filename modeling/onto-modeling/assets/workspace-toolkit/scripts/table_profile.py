@@ -4,7 +4,7 @@
 登记的数据表 = resource/materials.json 中 purpose=schema 的表格资料（一个 Sheet = 一张表，首行 = 列名）。
 对象「# 数据来源」的表名、存储属性的英文名称以它为准；规则检查、产物核验、资料分析验收与
 候选修订都经这里读表，与后端发布包的数据绑定（package_mapping）同一口径。资料区的 Excel 只读
-数据接入转出的文本版（resource/text/<分组>/<原文件名>.md），还没有文本版的单独列出，不当作「没有表」。
+多源连接器转出的文本版（resource/text/<分组>/<原文件名>.md），还没有文本版的单独列出，不当作「没有表」。
 
 三方对账（确定性检查，不经模型）：命令行给出的数据表列 ↔ schema 资料字段 ↔ 对象属性英文名
 （ontology/object/*.md 的「对象属性清单」表格「英文名称」列）。
@@ -60,7 +60,7 @@ _SHEET_RE = re.compile(r"^<!-- 工作表：(.+) -->$")
 
 
 def resource_text(path: Path) -> Path | None:
-    """资料区里的 Excel 原件 → 数据接入转出的文本版（resource/text/<分组>/<原文件名>.md）；不在资料区返回 None。
+    """资料区里的 Excel 原件 → 多源连接器转出的文本版（resource/text/<分组>/<原文件名>.md）；不在资料区返回 None。
     资料区的 Excel 不在这里解析（F4c，ADR-0076：解析不可信文件不在主容器里做），只读文本版里的 Markdown 表。"""
     if path.suffix.lower() == ".csv":
         return None

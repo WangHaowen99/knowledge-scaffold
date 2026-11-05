@@ -47,7 +47,7 @@ export function healthData(now, variant = 'degraded') {
     { name: 'model_gateway', probe: '稳定引擎网关 · https://gateway.example.com/v1/models', latency_ms: 820, status: 'ready', last_issue: null },
     { name: 'auth_server', probe: 'JWKS 公钥拉取', latency_ms: 46, status: 'ready', last_issue: null },
     { name: 'sandbox_gateway', probe: 'sandbox-gateway /v1/status · 脚本验证沙箱已连接', latency_ms: 38, status: 'ready', last_issue: null },
-    { name: 'connector_gateway', probe: 'connector-gateway /health · 已加载 3 个数据接入插件', latency_ms: 1820, status: 'slow', last_issue: `${new Date(now - 41 * MIN).toTimeString().slice(0, 5)} 超时 1 次` },
+    { name: 'connector_gateway', probe: 'connector-gateway /health · 已加载 3 个连接器', latency_ms: 1820, status: 'slow', last_issue: `${new Date(now - 41 * MIN).toTimeString().slice(0, 5)} 超时 1 次` },
     { name: 'disk', probe: '/data 可写探测 · 可用 18%', latency_ms: 4, status: 'warn', last_issue: '低于 20% 阈值' },
     { name: 'git', probe: '工作区读写探测 · git 2.43.0', latency_ms: 12, status: 'ready', last_issue: null },
   ];

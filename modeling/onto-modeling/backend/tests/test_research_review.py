@@ -398,7 +398,7 @@ def test_same_source_ids_across_formats(workspace, toolkit, suffix):
     if suffix == 'md':
         path.write_text('合成规范 ITEM-01 RULE-01', encoding='utf-8')
     else:
-        # F4c：Word、Excel 原件不解析，按数据接入转出的文本版核对（ADR-0076）
+        # F4c：Word、Excel 原件不解析，按多源连接器转出的文本版核对（ADR-0076）
         path.write_bytes(b'PK synthetic')
         text = workspace / 'resource' / 'text' / 'others' / f'规范.{suffix}.md'
         text.parent.mkdir(parents=True, exist_ok=True)

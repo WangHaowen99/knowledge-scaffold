@@ -1,4 +1,4 @@
-# 数据接入：Word（docx）转文本（ADR-0073）。转换器随连接器网关镜像交付，跑在网关的子进程里，内核不导入它。
+# 多源连接器：Word（docx）转文本（ADR-0073）。转换器随连接器网关镜像交付，跑在网关的子进程里，内核不导入它。
 name: convert-docx
 version: 1.0.0
 kind: provider

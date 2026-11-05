@@ -29,7 +29,7 @@ function RequestDetail({ r }) {
     const c = p.connection || {};
     return (
       <KV w="70px" style={{ marginTop: 12 }} pairs={[
-        ['数据接入', p.provider || '—'],
+        ['连接器', p.provider || '—'],
         ['环境', ENV_LABEL[p.environment] || p.environment || '—'],
         ['连接', [c.host, c.port, c.database].filter(Boolean).join(' · ') || '—'],
       ]} />

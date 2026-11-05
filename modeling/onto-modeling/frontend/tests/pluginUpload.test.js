@@ -339,7 +339,7 @@ test('审核申请：筛选、计数、理由、说明', () => {
   assert.equal(filterRequests(items, { state: 'all' }).length, 4);
   assert.deepEqual(requestCounts(items), { all: 3, pack_install: 1, source_registration: 1, knowledge_nomination: 1, done: 1 });
   assert.deepEqual(requestCounts(null), { all: 0, pack_install: 0, source_registration: 0, knowledge_nomination: 0, done: 0 });
-  assert.match(requestReason(items[0]), /平台上还没有装这个数据接入插件/);
+  assert.match(requestReason(items[0]), /平台上还没有装这个连接器/);
   assert.equal(requestReason({ payload: {} }), '');
   assert.equal(requestMeta(items[1], { nameOf: (x) => (x === 'liming' ? '李明' : x), now }), '李明 · 社区诊所排队分诊 · 20:00');
   assert.match(approveHint(items[1]), /先在数据源登记里写入凭据/);

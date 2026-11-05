@@ -165,7 +165,7 @@ def test_utf8_cli_in_isolated_ascii_environment(tmp_path, scripts):
     import subprocess
     import sys
     trace, source = scripts
-    # 命令行只读文本（F4b：Word、PDF 这类原件读数据接入转出的文本版），用一份中文 md 测输出编码
+    # 命令行只读文本（F4b：Word、PDF 这类原件读多源连接器转出的文本版），用一份中文 md 测输出编码
     path = tmp_path / '说明.md'
     path.write_text('合成说明：门店每天提交补货申请。\n', encoding='utf-8')
     for module, args in [(source, [str(path)]), (trace, [str(scenario_file(tmp_path))])]:

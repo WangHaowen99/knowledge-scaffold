@@ -85,7 +85,7 @@ function providerCards() {
   });
 }
 
-// 数据接入里的转换器（ADR-0073）：随连接器网关交付，平台已安装，不按项目启用
+// 多源连接器里的转换器（ADR-0073）：随连接器网关交付，平台已安装，不按项目启用
 const CONVERTER_CARDS = [
   ['convert-pdf', 'PDF 转换', '把文字版 PDF 转成带页码的文本，表格转成表格；扫描件暂不支持。', ['.pdf'], 'pdfplumber（MIT）、pdfminer.six（MIT）'],
   ['convert-docx', 'Word 转换', '把 Word 文档转成文本，保留标题层级、列表和表格。', ['.docx'], 'python-docx（MIT）'],

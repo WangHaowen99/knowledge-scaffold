@@ -544,7 +544,7 @@ def guard_resource(call: Call) -> str | None:
 
 # ---- 资料原件只读文本版（F4c；ADR-0073、0076）----
 
-# 要经数据接入转成文本版才读的资料原件：PDF、Office、图片等。主容器里不解析它们——内测引擎跑在后端进程里，
+# 要经多源连接器转成文本版才读的资料原件：PDF、Office、图片等。主容器里不解析它们——内测引擎跑在后端进程里，
 # 它自带的读文件工具遇到 PDF 会用 pdfplumber 在进程内解析（openjiuwen 依赖 pdfplumber，镜像里卸不掉）
 BINARY_ORIGINALS = (".pdf", ".doc", ".docx", ".docm", ".dot", ".dotx", ".xls", ".xlsx", ".xlsm", ".xlsb", ".ppt",
                     ".pptx", ".pptm", ".odt", ".ods", ".odp", ".rtf", ".wps", ".et", ".dps", ".png", ".jpg", ".jpeg",
@@ -571,7 +571,7 @@ def _original_reason(call: Call, path: Path, shown: str) -> str:
     if path.suffix.lower() in _IMAGES:
         return f"图片资料「{shown}」暂不支持读取，按未读处理。"
     if text and (call.root / text).is_file():
-        return f"资料原件「{shown}」不在这里解析，改读它的文本版 {text}（数据接入转出的 Markdown，带页码、工作表标记）。"
+        return f"资料原件「{shown}」不在这里解析，改读它的文本版 {text}（多源连接器转出的 Markdown，带页码、工作表标记）。"
     return (f"资料原件「{shown}」还没有文本版（转换中、暂不支持或转换失败），这里不解析原件；"
             "这份资料按未读处理，资料区能看到原因。")
 

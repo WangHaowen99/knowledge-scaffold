@@ -141,7 +141,7 @@ def test_release_manifest_gives_source_version_label(manager, monkeypatch):
 
 
 def test_pack_catalog_has_no_meta_line_and_data_access_only_converters(env):
-    """数据接入分类里只有转换器（F4a，ADR-0073）；数据库采集这类证据源仍不出现（ADR-0056，见下一条）。"""
+    """多源连接器分类里只有转换器（F4a，ADR-0073）；数据库采集这类证据源仍不出现（ADR-0056，见下一条）。"""
     client, _manager, project_id, _tmp = env
     body = client.get("/api/v1/packs", params={"project_id": project_id}).json()
     assert body["items"] and all("meta" not in item for item in body["items"])

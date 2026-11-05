@@ -3,7 +3,7 @@
 
 CLI（工作区根目录执行）：
   source_extract.py --sources          列出资料和各自要读的文本：md/txt/csv 等读原文件，PDF、Word、Excel
-                                       读数据接入转出的文本版 resource/text/<分组>/<原文件名>.md，没有文本版的标 missing
+                                       读多源连接器转出的文本版 resource/text/<分组>/<原文件名>.md，没有文本版的标 missing
   source_extract.py FILE [--offset N] [--limit N]
                                        只读文本：FILE 是 PDF、Word 这类原件时不解析，回 use_text_version（附文本版路径）
                                        或 no_text_version，退出码 2（资料分析只读文本，F4b）
@@ -125,7 +125,7 @@ SKIP = {'resource/materials.json'}
 
 
 def text_version(rel: str) -> str:
-    """资料的文本版路径（数据接入转出，ADR-0073）：resource/others/合同.pdf → resource/text/others/合同.pdf.md"""
+    """资料的文本版路径（多源连接器转出，ADR-0073）：resource/others/合同.pdf → resource/text/others/合同.pdf.md"""
     return f"{TEXT_DIR}/{rel.removeprefix('resource/')}.md"
 
 
@@ -174,7 +174,7 @@ def main() -> int:
     if args.file is None:
         parser.error('要给资料路径，或用 --sources 列出资料')
     if args.file.suffix.lower() not in TEXT_SUFFIXES:
-        # 资料分析只读文本（F4b）：原件交给数据接入转换，这里不解析
+        # 资料分析只读文本（F4b）：原件交给多源连接器转换，这里不解析
         rel = args.file.as_posix().removeprefix('./')
         if Path(text_version(rel)).is_file():
             _print_json({'status': 'use_text_version', 'text': text_version(rel)})

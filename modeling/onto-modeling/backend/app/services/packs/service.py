@@ -399,7 +399,7 @@ def _require_version(repository, name: str, version: str | None) -> str:
     missing = _missing_providers(repository, name, version)
     if missing:
         # 外部节点要经连接器网关调外部系统（详设 6.5）；本期证据源只留接口，没有提供方
-        raise PackError("pack_unavailable", f"需要的数据接入插件不可用：{'、'.join(missing)}", 409,
+        raise PackError("pack_unavailable", f"需要的连接器不可用：{'、'.join(missing)}", 409,
                         {"reason": "not_installed", "providers": missing})
     if manifest.page_api and not mf.satisfies(mf.PAGE_API, manifest.page_api):
         raise PackError("page_api_unsupported", f"需要平台页面接口 {manifest.page_api}", 409,
@@ -623,7 +623,7 @@ def compatibility(manager, name: str, version: str, project_id: str) -> dict:
         if spec and not mf.satisfies(version, spec):
             bad.append(f"{entry.name} 需要 {name} {spec}")
     missing = _missing_providers(repository, name, version)
-    bad += [f"需要的数据接入插件不可用：{'、'.join(missing)}"] if missing else []
+    bad += [f"需要的连接器不可用：{'、'.join(missing)}"] if missing else []
     add("depends", "依赖", not bad, "；".join(bad))
     names_ok, flow_ok, detail_names, detail_flow = True, True, "", ""
     trial_flow = None

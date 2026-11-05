@@ -280,7 +280,7 @@ class FilesMixin:
             (root / "resource" / subdir).mkdir(parents=True, exist_ok=True)
             replaced = (root / rel).exists()
             tx.write(rel, data)
-            # 换了原文件，旧的文本版作废（ADR-0073）：同一个提交里删掉，不让助手读到过期文本，数据接入再转
+            # 换了原文件，旧的文本版作废（ADR-0073）：同一个提交里删掉，不让助手读到过期文本，多源连接器再转
             stale_text = resource_text_path(rel)
             if (root / stale_text).is_file():
                 tx.remove(stale_text)

@@ -319,7 +319,7 @@ def test_upload_commits_only_its_own_paths(manager, tmp_path):
     assert git_paths(root, "diff", "--cached", "--name-only").split() == ["research/分析.md"]
     assert "ontology/object/订单.md" in git_paths(root, "diff", "--name-only")
 
-    # 数据接入把它转成文本版（这里直接调转换器）后，发布就能读到：对象绑上它
+    # 多源连接器把它转成文本版（这里直接调转换器）后，发布就能读到：对象绑上它
     write_text_versions(root, commit=True)
     manager.write_file(pid, "ontology/object/客户.md", object_doc("T_CUSTOMER", ["CUSTOMER_ID", "NAME"]))
     publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")

@@ -203,7 +203,7 @@ def parse_object_doc(text: str) -> dict:
 
 
 def _resource_text(path: Path) -> Path | None:
-    """资料区里的 Excel 原件 → 它的文本版（数据接入转出，resource/text/<分组>/<原文件名>.md）；不在资料区返回 None。"""
+    """资料区里的 Excel 原件 → 它的文本版（多源连接器转出，resource/text/<分组>/<原文件名>.md）；不在资料区返回 None。"""
     for parent in path.parents:
         if parent.name == "resource":
             rel = path.relative_to(parent)

@@ -255,7 +255,7 @@ test('证据源不可用时运维管控不列证据相关的行：提供方与�
   const inv = D.versions();
   assert.equal(visibleInventory(inv).some((r) => r.category === 'provider' || r.component === 'reverse' || r.component.startsWith('evidence')), false);
   assert.deepEqual(visibleInventory(inv, { evidenceOn: true }), inv);
-  // 数据接入里的转换器照常列（ADR-0073）
+  // 多源连接器里的转换器照常列（ADR-0073）
   const conv = { category: 'provider', component: 'convert-pdf', version: '1.0.0', note: 'PDF 转换', converter: true };
   assert.deepEqual(visibleInventory([...inv, conv]).filter((r) => r.category === 'provider'), [conv]);
   const tasks = D.tasks(Date.now()).items || D.tasks(Date.now());

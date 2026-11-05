@@ -244,7 +244,7 @@ export function createApi(client) {
 
     // 3.19 证据源
     evidenceSources: (query) => (client.features?.evidence === false
-      ? Promise.reject(new ApiError({ status: 501, code: 'evidence_not_available', message: '这一版没有开放业务系统的数据接入' }))
+      ? Promise.reject(new ApiError({ status: 501, code: 'evidence_not_available', message: '这一版没有开放业务系统的连接器' }))
       : client.get('/evidence/sources', { query })), // EV-01
     registerEvidenceSource: (body) => client.post('/admin/evidence/sources', body), // EV-02
     requestEvidenceSource: (body) => client.post('/evidence/source-requests', body), // EV-03

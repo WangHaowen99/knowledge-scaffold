@@ -19,7 +19,7 @@ def make_workspace(tmp_path: Path, sheets: dict[str, list[str]]) -> Path:
     for name, columns in sheets.items():
         workbook.create_sheet(name).append(columns)
     workbook.save(root / "resource" / "excel" / "业务数据.xlsx")
-    # 资料区的 Excel 由数据接入转成文本版（F4a），表头从文本版读、不解析原件（F4c）
+    # 资料区的 Excel 由多源连接器转成文本版（F4a），表头从文本版读、不解析原件（F4c）
     from app.evidence.convert import md_table, sheet_marker
 
     text = root / "resource" / "text" / "excel" / "业务数据.xlsx.md"

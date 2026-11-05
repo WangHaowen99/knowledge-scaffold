@@ -1,5 +1,5 @@
 """F4a 资料的文本版（ADR-0073）：上传后台转换、状态、查看文本、重新转换、网关不可用时等待并自动补转、升级迁移、
-换默认转换器、资料变化让资料分析回执失效、「数据接入」进插件中心、健康检查。
+换默认转换器、资料变化让资料分析回执失效、「多源连接器」进插件中心、健康检查。
 
 网关是真的（app.connector_gateway，在测试进程里起 HTTP 服务、用内核的公钥验票据、每个任务一个子进程），转换器用
 只依赖标准库的假转换器（ID 与官方转换器相同），不依赖转换库。
@@ -237,7 +237,7 @@ def test_reconvert_with_new_default_invalidates_research_receipt(env, tmp_path):
     client, workspaces, pid, root, gw = env
     _upload(client, pid, "a.pdf", "正文".encode())
     material_conversion.drain()
-    # 平台多了一个能转 PDF 的转换器（包仓库里一个数据接入包 + 网关里一份）
+    # 平台多了一个能转 PDF 的转换器（包仓库里一个连接器包 + 网关里一份）
     extra = _fake_converters(tmp_path / "more", {"pdf-alt": ([".pdf"], OTHER_PDF)})
     gw.converters["pdf-alt"] = extra["pdf-alt"]
     from app.services.packs.repository import write_checksums

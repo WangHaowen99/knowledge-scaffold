@@ -68,7 +68,7 @@ def card(manager, name: str, project: dict | None) -> dict | None:
 
 
 def _converter(name: str, manifest) -> dict | None:
-    """数据接入里的转换器（清单 `converter` 段）：能转的文件类型、现在是哪几种的默认。"""
+    """多源连接器里的转换器（清单 `converter` 段）：能转的文件类型、现在是哪几种的默认。"""
     spec = manifest.raw.get("converter")
     if manifest.kind != "provider" or not isinstance(spec, dict):
         return None
@@ -93,7 +93,7 @@ def catalog(manager, *, category: str = "", q: str = "", project_id: str = "", v
     if wanted - set(CATEGORY_KEYS):
         raise PackError("invalid_argument", f"category 只能取 {'|'.join(CATEGORY_KEYS)}", 400,
                         {"fields": {"category": "enum"}})
-    # 数据接入里只列转换器（ADR-0073）；数据库采集这类证据源本期不开放（ADR-0056），目录和计数里都没有
+    # 多源连接器里只列转换器（ADR-0073）；数据库采集这类证据源本期不开放（ADR-0056），目录和计数里都没有
     names = [*repository.names()[:500], *repository.private_names(viewer)]
     cards = [item for item in (card(manager, name, project) for name in names)
              if item and (item["category"] != "provider" or item["converter"] is not None)]

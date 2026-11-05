@@ -8,10 +8,10 @@ export const PACK_CATEGORIES = {
   capability: ['能力包', 'cube', '决定怎么建模'],
   industry: ['行业包', 'book', '行业知识资产，只有数据'],
   system: ['系统知识包', 'server', '商用系统的表字段字典'],
-  provider: ['数据接入', 'db', '连接器网关里运行，管理员安装'],
+  provider: ['多源连接器', 'db', '连接器网关里运行，管理员安装'],
   exporter: ['导出器', 'download', '把知识包导出成其他格式'],
 };
-// 有包时才出现在左栏的分类：导出器设计稿没画；数据接入现在只有转换器（ADR-0073），采集类本期只留接口（ADR-0056）
+// 有包时才出现在左栏的分类：导出器设计稿没画；多源连接器现在只有转换器（ADR-0073），采集类本期只留接口（ADR-0056）
 export const OPTIONAL_CATEGORIES = ['exporter', 'provider'];
 // 卡片图标底色（设计稿 .pl-ico.cap / .ind / .sys / .prov / .exp）
 export const PACK_ICON_CLASS = { capability: 'cap', industry: 'ind', system: 'sys', provider: 'prov', exporter: 'exp' };
@@ -30,7 +30,7 @@ export const isInstalled = (p) => INSTALLED.includes(p?.project_status);
 
 // ---------- 证据采集 ----------
 /**
- * 证据采集本期不开放（ADR-0056）：EV-01 读不到时，数据接入里的采集类（没有 converter 的）和依赖它的包（系统逆向建模）
+ * 证据采集本期不开放（ADR-0056）：EV-01 读不到时，多源连接器里的采集类（没有 converter 的）和依赖它的包（系统逆向建模）
  * 不出现，转换器照常出现（ADR-0073）；计数、推荐按剩下的重算。不依赖后端碰巧不下发
  */
 export const isConverter = (p) => !!p?.converter;

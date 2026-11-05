@@ -15,7 +15,7 @@ PURGE_MARKER = ".onto-web.purging"  # 原地清除兜底：顶替 META_FILE，�
 SKIP_DIRS = {".git", ".ontology-state", ".obsidian"}
 RESOURCE_SUBDIRS = {"diagrams", "excel", "others"}
 RESOURCE_DIRECTIVES = "resource/materials.json"
-# 资料的文本版（ADR-0073）：数据接入插件把 PDF、Word、Excel 转成的 Markdown，和原文件一一对应、随版本走；
+# 资料的文本版（ADR-0073）：连接器把 PDF、Word、Excel 转成的 Markdown，和原文件一一对应、随版本走；
 # 不是资料分组，资料列表里不出现，只由内核写
 RESOURCE_TEXT_DIR = "resource/text"
 

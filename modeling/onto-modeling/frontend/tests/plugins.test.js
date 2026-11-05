@@ -58,7 +58,7 @@ test('证据源不可用时：提供方和系统逆向建模不出现，计数�
   assert.equal(visibleCatalog(null, false), null);
 });
 
-test('数据接入里的转换器（ADR-0073）：证据采集不可用时照样出现，分类叫「数据接入」', () => {
+test('多源连接器里的转换器（ADR-0073）：证据采集不可用时照样出现，分类叫「多源连接器」', () => {
   const data = {
     items: [
       card({ name: 'convert-pdf', category: 'provider', project_status: 'platform_installed', converter: { types: ['.pdf'], default_for: ['.pdf'] } }),
@@ -70,7 +70,7 @@ test('数据接入里的转换器（ADR-0073）：证据采集不可用时照样
   const off = visibleCatalog(data, false);
   assert.deepEqual(off.items.map((p) => p.name), ['convert-pdf']);
   assert.equal(off.counts.provider, 1);
-  assert.equal(PACK_CATEGORIES.provider[0], '数据接入');
+  assert.equal(PACK_CATEGORIES.provider[0], '多源连接器');
   assert.deepEqual(cardFoot(off.items[0]).left, { type: 'chip', text: '平台已安装', tone: 'teal', icon: 'check' });
 });
 

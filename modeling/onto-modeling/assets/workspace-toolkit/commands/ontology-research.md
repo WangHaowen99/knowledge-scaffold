@@ -70,7 +70,7 @@ d) 自定义方向...
 python3 .claude/scripts/source_extract.py --sources
 ```
 
-只读文本：每份资料读它的 `read`（md、txt、csv 是原文件，PDF、Word、Excel 是数据接入转出的文本版
+只读文本：每份资料读它的 `read`（md、txt、csv 是原文件，PDF、Word、Excel 是多源连接器转出的文本版
 `resource/text/…`）；`read` 为空的资料还没有文本版（转换中、暂不支持或转换失败），记为未读，不要自己解析原件。
 一份可读的文本都没有时停下（`acquire research confirm`），告诉用户先在资料区上传资料或等资料转成文本。
 

@@ -31,7 +31,7 @@ ACTIVE = ("converting", "waiting")
 WORKERS = 2
 WAIT_RETRY_S = 30
 CONVERTERS_TTL_S = 30
-AUTHOR = "数据接入"
+AUTHOR = "多源连接器"
 
 
 def _manager():
@@ -66,7 +66,7 @@ _converters_lock = threading.Lock()
 
 
 def known_converters(force: bool = False) -> list[dict]:
-    """平台装了哪些转换器：包仓库里 stable 版本带 `converter` 段的数据接入包。
+    """平台装了哪些转换器：包仓库里 stable 版本带 `converter` 段的连接器包。
 
     [{id, label, version, types, license, official}]；版本去掉内容摘要（1.0.0+3f9a… → 1.0.0）。
     """

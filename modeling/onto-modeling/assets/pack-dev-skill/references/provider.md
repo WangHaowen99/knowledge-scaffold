@@ -1,8 +1,8 @@
-# 数据接入包（provider）：文件转换器
+# 连接器包（provider）：文件转换器
 
-**结论先说**：数据接入包能打包、上传导入，导入后插件中心「数据接入」里看得到它；但上传导入后转换器**不会运行**，资料不会因此被转换。转换器跑在连接器网关容器里，主服务不能往网关放代码，所以要由运维把包**打进连接器网关镜像**、重建网关后才会运行（第 9 节）。助手交付时必须把这一点和运维要做的事一起告诉用户（第 11 节）。
+**结论先说**：连接器包能打包、上传导入，导入后插件中心「多源连接器」里看得到它；但上传导入后转换器**不会运行**，资料不会因此被转换。转换器跑在连接器网关容器里，主服务不能往网关放代码，所以要由运维把包**打进连接器网关镜像**、重建网关后才会运行（第 9 节）。助手交付时必须把这一点和运维要做的事一起告诉用户（第 11 节）。
 
-目前数据接入包只有一种：文件转换器。它把用户上传的资料（原文件字节）转成 Markdown 文本版，建模助手读的是文本版。
+目前连接器包只有一种：文件转换器。它把用户上传的资料（原文件字节）转成 Markdown 文本版，建模助手读的是文本版。
 
 ## 1. 包结构
 
@@ -15,7 +15,7 @@
 ```
 
 - `checksums.sha256` 由 `pack_tool.py check` 或 `build` 生成，不手写。
-- 数据接入包不带 commands、agents、skills、scripts、ui、settings.json。
+- 连接器包不带 commands、agents、skills、scripts、ui、settings.json。
 - 改完名字后要改的：`label`、`description`、`converter.types`、`converter.license`、`convert()` 的解析逻辑。
 
 ## 2. 清单
@@ -148,7 +148,7 @@ env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
 
 | 卡片字段 | 值 |
 |---|---|
-| `category` | `provider`（「数据接入」分类） |
+| `category` | `provider`（「多源连接器」分类） |
 | `converter` | `{types: [".kvtxt"], default_for: [], license: "…"}` |
 | `project_status` | `platform_installed`：平台级，不按项目启用 |
 | `publisher` | `{kind: private, label: 仅自己可见}` |
@@ -201,7 +201,7 @@ env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
 助手收尾时照下面的意思说，替换尖括号里的内容：
 
 ```
-插件包 <名字>-<版本>.zip 已生成，在插件中心上传并安装后，「数据接入」里能看到它。
+插件包 <名字>-<版本>.zip 已生成，在插件中心上传并安装后，「多源连接器」里能看到它。
 它现在不会转换资料：转换器要打进连接器网关镜像才运行。请把包目录交给运维，按下面几步做：
 1. 把 <名字>/ 放到 modeling/onto-modeling/assets/packs/<名字>/；
 2. Dockerfile 的 connector-gateway 段加 COPY assets/packs/<名字> /opt/connector/converters/<名字>；

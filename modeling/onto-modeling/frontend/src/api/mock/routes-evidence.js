@@ -72,7 +72,7 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
   // ---------- EV-01～EV-12 数据源 ----------
   on('GET', '/evidence/sources', ({ query, user }) => {
     // ?mock=evidence:off：按本期后端（ADR-0056）回 501，前端按「证据源不可用」过滤露出
-    if (sc.evidence === 'off') return err(501, 'evidence_not_available', '这一版没有开放业务系统的数据接入');
+    if (sc.evidence === 'off') return err(501, 'evidence_not_available', '这一版没有开放业务系统的连接器');
     const pid = query.get('project_id');
     const filter = query.get('filter') || 'all';
     let items = srcs.map((s) => view(s, pid, user));
@@ -108,7 +108,7 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     if (bad) return bad;
     if (srcOf(body.id)) return err(409, 'source_id_taken', '数据源 ID 已被占用');
     const p = prov.items.find((x) => x.id === body.provider);
-    if (!p?.installed) return err(409, 'provider_not_installed', '数据接入插件未安装', { provider: body.provider });
+    if (!p?.installed) return err(409, 'provider_not_installed', '连接器未安装', { provider: body.provider });
     await wait(300);
     const s = build(body, user);
     srcs.push(s);

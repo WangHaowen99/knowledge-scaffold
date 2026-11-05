@@ -96,7 +96,7 @@ export const ERROR_ITEM = { error_id: 'err-7f3a', message: '模型服务暂时�
 
 export const PACK_CARD = {
   card_id: 'pk', card_type: 'pack_recommendation', pack: { name: 'provider-db', version: '0.3.0', label: '业务数据库' },
-  category_label: '数据接入', description: '只读采集 MySQL / PostgreSQL，凭据只放在连接器网关，助手拿不到', reason: '',
+  category_label: '多源连接器', description: '只读采集 MySQL / PostgreSQL，凭据只放在连接器网关，助手拿不到', reason: '',
 };
 
 export const ATTACH_GROUP = {

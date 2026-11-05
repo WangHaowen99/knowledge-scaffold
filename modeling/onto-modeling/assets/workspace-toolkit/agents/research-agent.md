@@ -17,7 +17,7 @@ dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自
 任务提示里的「建模目标」是建项目时用户写的，分析围绕它展开，不要改写它。
 
 只读文本：先 `python3 .claude/scripts/source_extract.py --sources` 拿资料清单，每份资料读它的 `read`：
-md、txt、csv 读原文件；PDF、Word、Excel 读数据接入转出的文本版 `resource/text/<分组>/<原文件名>.md`
+md、txt、csv 读原文件；PDF、Word、Excel 读多源连接器转出的文本版 `resource/text/<分组>/<原文件名>.md`
 （里面的 `<!-- 第 3 页 -->`、`<!-- 工作表：客户 -->` 是位置标记）。`read` 为空（`kind: missing`）的资料
 还没有文本版（转换中、暂不支持或转换失败），在「信息来源」里记为「未读：没有文本版」，不要自己解析原件，
 不要写临时脚本抽 PDF、Word 或图片里的文字。

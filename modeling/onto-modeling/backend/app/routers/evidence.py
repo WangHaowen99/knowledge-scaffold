@@ -20,7 +20,7 @@ router = APIRouter(tags=["evidence"])
 
 STATUS = 501
 CODE = "evidence_not_available"
-MESSAGE = "这一版没有开放业务系统的数据接入"
+MESSAGE = "这一版没有开放业务系统的连接器"
 
 _P = "/api/v1/projects/{project_id}"
 # (接口编号, 方法, 路径)
