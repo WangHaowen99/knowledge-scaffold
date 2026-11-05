@@ -26,6 +26,14 @@ from upgrade import transition as modeling_transition
 JOINT_SIDE_ORDER = ("consumer", "modeling")
 
 
+class ChildOperationError(RuntimeError):
+    """A child installer failed; keep its structured result without echoing stderr."""
+
+    def __init__(self, side: str, action: str, payload: dict):
+        self.side, self.action, self.payload = side, action, payload
+        super().__init__(f"{side} {action} failed: {payload.get('errorCode') or 'CHILD_OPERATION_FAILED'}")
+
+
 def lease_timestamp(value: datetime) -> str:
     """Serialize Lease timestamps in the CCE-accepted RFC3339 microsecond form."""
     return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
@@ -65,6 +73,38 @@ def load_config(path: Path):
     raw["stateDir"] = absolute(path.parent, raw["stateDir"])
     raw["compatibilityFile"] = absolute(path.parent, raw["compatibilityFile"])
     return raw
+
+
+def load_uninstall_config(path: Path) -> dict:
+    """The uninstall entry needs only release coordinates and a writable journal directory."""
+    raw = read_yaml(path)
+    allowed = {"schemaVersion", "cluster", "stateDir", "consumer", "modeling", "timeoutSeconds",
+               "compatibilityFile"}
+    if not isinstance(raw, dict) or raw.get("schemaVersion") != "cce-joint/v1" or set(raw) - allowed:
+        raise ConfigError("invalid joint uninstall config")
+    cluster = raw.get("cluster")
+    if not isinstance(cluster, dict) or set(cluster) != {"context"} or not isinstance(cluster["context"], str) or not cluster["context"]:
+        raise ConfigError("joint uninstall requires a cluster context")
+    if not isinstance(raw.get("stateDir"), str) or not raw["stateDir"]:
+        raise ConfigError("joint uninstall requires stateDir")
+    timeout = raw.get("timeoutSeconds", 900)
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout < 1:
+        raise ConfigError("joint uninstall requires a positive timeoutSeconds")
+    result = {"cluster": cluster, "stateDir": absolute(path.parent, raw["stateDir"]), "timeoutSeconds": timeout}
+    for side in JOINT_SIDE_ORDER:
+        entry = raw.get(side)
+        if not isinstance(entry, dict) or not isinstance(entry.get("releaseName"), str) or \
+                not isinstance(entry.get("namespace"), str) or \
+                set(entry) - {"releaseName", "namespace", "package", "values", "resolvedImages"}:
+            raise ConfigError(f"joint uninstall requires {side} releaseName and namespace")
+        validate_name(entry["releaseName"], f"{side} releaseName")
+        validate_name(entry["namespace"], f"{side} namespace")
+        if len(entry["releaseName"]) > 49:
+            raise ConfigError(f"{side} releaseName is too long for its operation Lease")
+        result[side] = {"releaseName": entry["releaseName"], "namespace": entry["namespace"]}
+    if all(result["modeling"][key] == result["consumer"][key] for key in ("releaseName", "namespace")):
+        raise ConfigError("Consumer and Modeling release identities must differ")
+    return result
 
 
 def validate_combination(config, packages):
@@ -186,14 +226,94 @@ def matches_installed_combination(combination: dict, installed: dict) -> bool:
     )
 
 
+def installed_identity_without_manifest(config: dict, side: str) -> dict:
+    """Read the actual Helm identity without requiring a previous local manifest."""
+    entry = config[side]
+    status = json.loads(run("helm", "--kube-context", config["cluster"]["context"],
+                            "--namespace", entry["namespace"], "status", entry["releaseName"], "-o", "json"))
+    if status.get("info", {}).get("status") != "deployed":
+        raise ConfigError(f"installed {side} release is not deployed")
+    if side == "consumer":
+        return consumer_installed_metadata(config)
+    values = json.loads(run("helm", "--kube-context", config["cluster"]["context"],
+                            "--namespace", entry["namespace"], "get", "values", entry["releaseName"], "-o", "json"))
+    version = values.get("global", {}).get("releaseVersion")
+    chart = release_chart(config, side)
+    if not isinstance(version, str) or not version or not chart.startswith("modeling-"):
+        raise ConfigError("installed Modeling release identity is incomplete")
+    return {"releaseVersion": version, "chartVersion": chart.removeprefix("modeling-")}
+
+
+def installed_consumer_contract(config: dict, installed: dict, target: dict) -> dict:
+    """Reconstruct old API versions only from the installed Consumer's durable state."""
+    entry = config["consumer"]
+    raw = json.loads(kubectl(config, "-n", entry["namespace"], "get", "configmap",
+                             f"{entry['releaseName']}-cce-state", "-o", "json"))
+    try:
+        state = json.loads(raw["data"]["state.json"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CompatibilityError("installed Consumer endpoint contract is unavailable; restore the old release package or verified manifest") from exc
+    expected = {"releaseName": entry["releaseName"], "namespace": entry["namespace"],
+                "releaseVersion": installed["consumer"]["releaseVersion"],
+                "chartVersion": installed["consumer"]["chartVersion"], "phase": "ready",
+                "platform": target["platform"]}
+    if not isinstance(state, dict) or any(state.get(key) != value for key, value in expected.items()):
+        raise CompatibilityError("installed Consumer state differs from Helm or target platform")
+    endpoints = state.get("endpoints")
+    if not isinstance(endpoints, list):
+        raise CompatibilityError("installed Consumer endpoint contract is unavailable")
+    by_id = {}
+    for item in endpoints:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or item["id"] in by_id:
+            raise CompatibilityError("installed Consumer endpoint contract is invalid or ambiguous")
+        by_id[item["id"]] = item
+    versions = {}
+    for endpoint_id, suffix, port, field in (("auth", "auth", 5056, "authApiVersion"),
+                                             ("consumer-api", "backend", 5055, "consumerApiVersion")):
+        item = by_id.get(endpoint_id, {})
+        expected = {"serviceName": f"{entry['releaseName']}-{suffix}",
+                    "namespace": entry["namespace"], "port": port}
+        if any(item.get(key) != value for key, value in expected.items()):
+            raise CompatibilityError(f"installed Consumer {endpoint_id} endpoint contract is invalid")
+        api_version = item.get("apiVersion")
+        if not isinstance(api_version, str) or not api_version:
+            raise CompatibilityError(f"installed Consumer {endpoint_id} endpoint contract is invalid")
+        service = json.loads(kubectl(config, "-n", entry["namespace"], "get", "service",
+                                     item["serviceName"], "-o", "json"))
+        actual_ports = service.get("spec", {}).get("ports", [])
+        if not isinstance(actual_ports, list) or port not in [part.get("port") for part in actual_ports
+                                                                if isinstance(part, dict)]:
+            raise CompatibilityError(f"installed Consumer {endpoint_id} Service port differs from recorded contract")
+        versions[field] = api_version
+    return {"consumerReleaseVersion": installed["consumer"]["releaseVersion"],
+            "consumerChartVersion": installed["consumer"]["chartVersion"],
+            "modelingReleaseVersion": installed["modeling"]["releaseVersion"],
+            "modelingChartVersion": installed["modeling"]["chartVersion"],
+            "platform": target["platform"], "operationSchemaVersion": "cce-operation/v1",
+            "endpointSchemaVersion": "cce-endpoints/v1", **versions}
+
+
+def _installed_for_compatibility(config: dict, existing_manifest: bool) -> dict:
+    if not existing_manifest:
+        return {side: installed_identity_without_manifest(config, side) for side in JOINT_SIDE_ORDER}
+    try:
+        return {side: installed_identity(config, side) for side in JOINT_SIDE_ORDER}
+    except CompatibilityError as exc:
+        if not str(exc).endswith("Chart version is absent in compatibility manifest"):
+            raise
+        return {side: installed_identity_without_manifest(config, side) for side in JOINT_SIDE_ORDER}
+
+
 def prepare_compatibility(config: dict, *, upgrade: bool, confirmed: bool,
                           no_migration_confirmed: bool) -> dict:
     path = config["compatibilityFile"]
+    existing_manifest = path.is_file()
     if upgrade:
-        if not path.is_file():
-            raise ConfigError("existing verified compatibility manifest required for upgrade")
-        original_checksum = checksum(path)
-        manifest = validate_compatibility_manifest(read_yaml(path))
+        if path.exists() and not existing_manifest:
+            raise ConfigError("compatibilityFile exists but is not a regular file")
+        original_checksum = checksum(path) if existing_manifest else None
+        manifest = (validate_compatibility_manifest(read_yaml(path)) if existing_manifest else
+                    {"schemaVersion": "cce-compatibility/v1", "combinations": [], "transitions": []})
     elif path.exists():
         raise ConfigError("compatibilityFile already exists; keep the verified manifest")
     else:
@@ -208,14 +328,23 @@ def prepare_compatibility(config: dict, *, upgrade: bool, confirmed: bool,
         target = candidate_combination(packages)
         validate_cross_side(config, packages, read_yaml(config["consumer"]["values"]),
                             read_yaml(config["modeling"]["values"]), target)
+    verified_before_candidate = list(manifest["combinations"])
     target_id = include_combination(manifest, target)
     transition_id = None
     old_combination = None
     middle_combination = None
+    reconstructed_old = False
     if upgrade:
-        installed = {side: installed_identity(config, side) for side in JOINT_SIDE_ORDER}
-        old = [item for item in manifest["combinations"]
+        # Existing verified combinations keep their IDs and do not need a
+        # Consumer state lookup. Only a missing old combination is rebuilt.
+        installed = _installed_for_compatibility(config, existing_manifest)
+        old = [item for item in verified_before_candidate
                if matches_installed_combination(item, installed)]
+        if not old:
+            old_fields = installed_consumer_contract(config, installed, target)
+            old_id = include_combination(manifest, old_fields)
+            old = [item for item in manifest["combinations"] if item["id"] == old_id]
+            reconstructed_old = True
         if len(old) != 1:
             raise CompatibilityError("installed Consumer/Modeling combination is missing or ambiguous")
         old_combination = old[0]
@@ -242,7 +371,7 @@ def prepare_compatibility(config: dict, *, upgrade: bool, confirmed: bool,
     if confirmed:
         path.parent.mkdir(parents=True, exist_ok=True)
         output = yaml.safe_dump(manifest, allow_unicode=True, sort_keys=False)
-        if upgrade:
+        if upgrade and existing_manifest:
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
                                              prefix=".compatibility-", delete=False) as stream:
                 stream.write(output)
@@ -260,6 +389,8 @@ def prepare_compatibility(config: dict, *, upgrade: bool, confirmed: bool,
             "targetCombinationId": target_id, "targetCombination": {"id": target_id, **target},
             "oldCombination": old_combination, "intermediateCombination": middle_combination,
             "transitionId": transition_id,
+            "reconstructedOldCombination": reconstructed_old,
+            "oldCombinationSource": "installed Consumer state and Helm" if reconstructed_old else "verified manifest" if upgrade else None,
             "sameVersion": bool(old_combination and old_combination["id"] == target_id),
             "confirmationsRequired": (["joint-compatibility", "modeling-data-no-migration"] if upgrade
                                       else ["joint-compatibility"])}
@@ -279,7 +410,7 @@ def effective_images(config, state: Path, source: str, operation_id: str) -> Pat
         raise ConfigError("JiuwenBox requires an immutable Consumer image reference")
     if modeling_images.get("jiuwenbox") not in (None, digest):
         raise ConfigError("Modeling JiuwenBox reference conflicts with selected Consumer digest")
-    if set(modeling_images) - {"modeling", "modelingAgent", "ontoModeling", "jiuwenbox"}:
+    if set(modeling_images) - {"modeling", "modelingAgent", "ontoModeling", "knowledgeHub", "evaluation", "jiuwenbox"}:
         raise ConfigError("unexpected Modeling image ID")
     modeling_images["jiuwenbox"] = digest
     effective = state / f"{operation_id}-modeling-effective-images.yaml"
@@ -318,15 +449,32 @@ def invoke(side, action, config, package, operation_id, image_file, resume="", b
         if side != "modeling" or action != "preflight":
             raise ConfigError("only Modeling preflight may defer Consumer Service lookup")
         options.append("--defer-external-services")
-    result = run_program(options, text=True, capture_output=True, timeout=config.get("timeoutSeconds", 900) + 30)
+    try:
+        result = run_program(options, text=True, capture_output=True, timeout=config.get("timeoutSeconds", 900) + 30)
+    except subprocess.TimeoutExpired as exc:
+        raise ChildOperationError(side, action, {"status": "failed", "phase": "invoke",
+            "errorCode": "TIMEOUT", "message": "child operation timed out; inspect actual state before retry",
+            "retryable": False}) from exc
     try:
         payload = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"{side} {action} returned invalid JSON") from exc
-    if result.returncode or payload.get("schemaVersion") != "cce-operation/v1" or payload.get("status") != "succeeded":
-        raise RuntimeError(f"{side} {action} failed: {payload.get('errorCode', 'UNKNOWN')}")
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ChildOperationError(side, action, {"status": "failed", "phase": "invoke",
+            "errorCode": "CHILD_RESPONSE_INVALID", "message": "child operation returned invalid JSON",
+            "retryable": False}) from exc
+    if not isinstance(payload, dict) or payload.get("schemaVersion") != "cce-operation/v1":
+        raise ChildOperationError(side, action, {"status": "failed", "phase": "invoke",
+            "errorCode": "CHILD_RESPONSE_INVALID", "message": "child operation returned an invalid result schema",
+            "retryable": False})
+    if result.returncode or payload.get("status") != "succeeded":
+        if payload.get("status") == "succeeded":
+            raise ChildOperationError(side, action, {"status": "failed", "phase": "invoke",
+                "errorCode": "CHILD_RESPONSE_INVALID", "message": "child exit status conflicts with result status",
+                "retryable": False})
+        raise ChildOperationError(side, action, payload)
     if payload.get("releaseVersion") != package[1]["releaseVersion"] or payload.get("chartVersion") != package[1]["chartVersion"]:
-        raise RuntimeError(f"{side} {action} returned a release version mismatch")
+        raise ChildOperationError(side, action, {"status": "failed", "phase": "invoke",
+            "errorCode": "CHILD_RESPONSE_INVALID", "message": "child release version differs from target package",
+            "retryable": False})
     return payload
 
 
@@ -338,6 +486,287 @@ def operation_fingerprint(config) -> str:
             identity[side][field] = checksum(config[side][field])
     identity["compatibility"] = checksum(config["compatibilityFile"])
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+
+
+def uninstall_fingerprint(config) -> str:
+    """Pin release coordinates independently of a management machine's local paths."""
+    identity = {"context": config["cluster"]["context"]}
+    for side in JOINT_SIDE_ORDER:
+        identity[side] = {"releaseName": config[side]["releaseName"], "namespace": config[side]["namespace"]}
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+
+
+def _uninstall_release_identity(config, side: str) -> dict | None:
+    """Read the installed Helm identity; an absent release is distinct from a query failure."""
+    entry = config[side]
+    response = run_program(("helm", "--kube-context", config["cluster"]["context"], "--namespace",
+                            entry["namespace"], "get", "metadata", entry["releaseName"], "-o", "json"),
+                           text=True, capture_output=True)
+    if response.returncode:
+        if (response.stderr or "").strip().lower() in ("error: release: not found", "error: release not found"):
+            return None
+        raise RuntimeError(f"unable to inspect {side} Helm release")
+    try:
+        metadata = json.loads(response.stdout)
+        if (not isinstance(metadata, dict) or metadata.get("name", entry["releaseName"]) != entry["releaseName"] or
+                metadata.get("namespace", entry["namespace"]) != entry["namespace"] or
+                not isinstance(metadata.get("version"), str) or not metadata["version"]):
+            raise ValueError
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(f"{side} Helm release identity is invalid") from exc
+    if side == "consumer":
+        version = metadata.get("appVersion")
+    else:
+        values = json.loads(run("helm", "--kube-context", config["cluster"]["context"], "--namespace",
+                                entry["namespace"], "get", "values", entry["releaseName"], "-o", "json"))
+        version = values.get("global", {}).get("releaseVersion") if isinstance(values, dict) else None
+    if not isinstance(version, str) or not version:
+        raise ConfigError(f"{side} Helm release version is missing")
+    return {"releaseVersion": version, "chartVersion": metadata["version"]}
+
+
+def _assert_uninstall_release_chart(config, side: str, version: str) -> None:
+    chart = release_chart(config, side)
+    prefix = "modeling-" if side == "modeling" else "consumer-cce-"
+    if chart != prefix + version:
+        raise ConfigError(f"{side} Helm Chart identity differs from expected release")
+
+
+def _uninstall_cluster_state(config, side: str) -> dict | None:
+    entry = config[side]
+    response = run_program(("kubectl", "--context", config["cluster"]["context"], "-n", entry["namespace"],
+                            "get", "configmap", f"{entry['releaseName']}-cce-state", "-o", "json"),
+                           text=True, capture_output=True)
+    if response.returncode:
+        if "notfound" in (response.stderr or "").lower() or "not found" in (response.stderr or "").lower():
+            return None
+        raise RuntimeError(f"unable to inspect {side} operation state")
+    try:
+        resource = json.loads(response.stdout)
+        state = json.loads(resource["data"]["state.json"])
+        if resource["metadata"]["labels"]["app.kubernetes.io/instance"] != entry["releaseName"] or \
+                not isinstance(state, dict) or state.get("releaseName", entry["releaseName"]) != entry["releaseName"] or \
+                state.get("namespace", entry["namespace"]) != entry["namespace"]:
+            raise ValueError
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigError(f"{side} operation state is invalid") from exc
+    return state
+
+
+def _delete_uninstall_state(config, side: str, operation_id: str) -> None:
+    """Drop only this release's installer state after Helm has removed its workload."""
+    entry = config[side]
+    name = f"{entry['releaseName']}-cce-state"
+    state = _uninstall_cluster_state(config, side)
+    if state is None:
+        return
+    if side == "consumer" and state.get("phase") not in ("ready", "uninstalling"):
+        raise ConfigError("Consumer installation state changed during uninstall")
+    if side == "modeling" and state.get("stage") not in (None, "complete", "old-service-restored"):
+        raise ConfigError("Modeling operation state changed during uninstall")
+    recorded_operation = state.get("operationId") if side == "consumer" and state.get("phase") == "uninstalling" else None
+    if recorded_operation and recorded_operation != operation_id:
+        raise ConfigError("Consumer uninstall state belongs to another operation")
+    run("kubectl", "--context", config["cluster"]["context"], "-n", entry["namespace"],
+        "delete", "configmap", name, "--ignore-not-found=true")
+    if _uninstall_cluster_state(config, side) is not None:
+        raise RuntimeError(f"{side} installation state remains after uninstall")
+
+
+def _assert_uninstall_state_ready(config, side: str) -> None:
+    state = _uninstall_cluster_state(config, side)
+    if not state:
+        if side == "consumer":
+            raise ConfigError("Consumer installation state is missing; inspect release before uninstall")
+        return
+    if side == "modeling":
+        if state.get("stage") not in (None, "complete", "old-service-restored"):
+            raise ConfigError("finish or inspect the active Modeling operation before uninstall")
+    elif (state.get("maintenance") or
+          (state.get("recovery") or {}).get("step") not in (None, "completed", "aborted") or
+          state.get("phase") not in (None, "ready", "uninstalling")):
+        raise ConfigError("finish the active Consumer operation before uninstall")
+
+
+def _assert_uninstall_manifest_safe(config, side: str) -> None:
+    entry = config[side]
+    manifest = run("helm", "--kube-context", config["cluster"]["context"], "--namespace", entry["namespace"],
+                   "get", "manifest", entry["releaseName"])
+    allowed = {"Deployment", "Service", "Ingress", "ConfigMap", "Job"}
+    seen = False
+    try:
+        for item in yaml.safe_load_all(manifest):
+            if not item:
+                continue
+            if not isinstance(item, dict) or item.get("kind") not in allowed:
+                raise ConfigError(f"{side} release contains a resource outside the uninstall allowlist")
+            metadata = item.get("metadata", {})
+            prefix = (entry["releaseName"][:40].rstrip("-") if side == "consumer"
+                      else entry["releaseName"])
+            if not isinstance(metadata, dict) or not isinstance(metadata.get("name"), str) or \
+                    not ((metadata["name"] == prefix and item["kind"] == "Ingress") or
+                         metadata["name"].startswith(prefix + "-")):
+                raise ConfigError(f"{side} release manifest ownership is unclear")
+            seen = True
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"{side} release manifest is invalid") from exc
+    if not seen:
+        raise ConfigError(f"{side} release manifest is empty")
+
+
+def _owned_resource_items(config, side: str, kind: str) -> list[dict]:
+    entry = config[side]
+    prefix = entry["releaseName"][:40].rstrip("-") if side == "consumer" else entry["releaseName"]
+    response = run_program(("kubectl", "--context", config["cluster"]["context"], "-n", entry["namespace"],
+                            "get", kind, "-o", "json"), text=True, capture_output=True)
+    if response.returncode:
+        if "not found" in (response.stderr or "").lower():
+            return []
+        raise RuntimeError(f"unable to inspect residual {side} {kind}")
+    try:
+        items = json.loads(response.stdout).get("items", [])
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"residual {side} {kind} response is invalid") from exc
+    if not isinstance(items, list):
+        raise ConfigError(f"residual {side} {kind} list is invalid")
+    selected = []
+    for item in items:
+        metadata = item.get("metadata", {}) if isinstance(item, dict) else {}
+        labels = metadata.get("labels", {}) if isinstance(metadata, dict) else {}
+        annotations = metadata.get("annotations", {}) if isinstance(metadata, dict) else {}
+        owned = labels.get("app.kubernetes.io/instance") == entry["releaseName"] or \
+                annotations.get("meta.helm.sh/release-name") == entry["releaseName"]
+        if owned:
+            if metadata.get("namespace", entry["namespace"]) != entry["namespace"] or \
+                    not isinstance(metadata.get("name"), str) or not metadata["name"].startswith(prefix + "-"):
+                raise ConfigError(f"residual {side} {kind} ownership is ambiguous")
+            selected.append(item)
+    return selected
+
+
+def _cleanup_uninstall_residuals(config, side: str) -> None:
+    entry = config[side]
+    for kind in ("replicasets", "jobs", "deployments", "services", "ingresses"):
+        for item in _owned_resource_items(config, side, kind):
+            name = item["metadata"]["name"]
+            run("kubectl", "--context", config["cluster"]["context"], "-n", entry["namespace"],
+                "delete", kind, name, "--wait=true", f"--timeout={config.get('timeoutSeconds', 900)}s")
+    for kind in ("replicasets", "jobs", "deployments", "services", "ingresses"):
+        if _owned_resource_items(config, side, kind):
+            raise RuntimeError(f"residual {side} {kind} remains after uninstall")
+
+
+def _uninstall_side(config, side: str) -> None:
+    entry = config[side]
+    run("helm", "--kube-context", config["cluster"]["context"], "--namespace", entry["namespace"],
+        "uninstall", entry["releaseName"], "--wait", f"--timeout={config['timeoutSeconds']}s")
+
+
+def uninstall_releases(config, operation_id: str, resume: bool, result: dict) -> None:
+    """Remove the two verified Helm releases in dependency order, retaining external data."""
+    journal_path = config["stateDir"] / f"{operation_id}.json"
+    fingerprint = uninstall_fingerprint(config)
+    if resume:
+        if not journal_path.is_file():
+            raise ConfigError("uninstall resume journal is missing")
+        journal = json.loads(journal_path.read_text())
+        if not isinstance(journal, dict) or journal.get("action") != "uninstall" or journal.get("fingerprint") != fingerprint or \
+                journal.get("operationId") != operation_id or not isinstance(journal.get("identities"), dict) or \
+                not isinstance(journal.get("completed"), list) or \
+                not set(journal["completed"]).issubset(JOINT_SIDE_ORDER) or \
+                journal.get("phase") not in ("prepared", "modeling-started", "modeling-completed",
+                                             "consumer-started", "consumer-completed"):
+            raise ConfigError("uninstall resume journal is invalid")
+        if any(not isinstance(journal["identities"].get(side), dict) or
+               not all(isinstance(journal["identities"][side].get(key), str) and
+                       journal["identities"][side][key] for key in ("releaseVersion", "chartVersion"))
+               for side in journal["completed"]):
+            raise ConfigError("uninstall resume journal lacks a completed release identity")
+    else:
+        if journal_path.exists():
+            raise ConfigError("operation ID already exists")
+        journal = {"operationId": operation_id, "action": "uninstall", "fingerprint": fingerprint,
+                   "identities": {}, "completed": [], "phase": "prepared"}
+    order = tuple(reversed(JOINT_SIDE_ORDER))
+    leases = []
+    try:
+        for _, _, side in sorted((config[side]["namespace"], config[side]["releaseName"], side) for side in order):
+            lease = Lease(config, side, operation_id)
+            lease.acquire()
+            leases.append(lease)
+        for side in order:
+            actual = _uninstall_release_identity(config, side)
+            if side in journal["completed"]:
+                if actual is not None:
+                    raise ConfigError(f"completed {side} release has reappeared; inspect before resuming")
+                continue
+            if resume and journal.get("phase") == f"{side}-started":
+                if actual is not None and actual != journal["identities"].get(side):
+                    raise ConfigError(f"{side} release identity changed during uninstall")
+                if actual is not None:
+                    _assert_uninstall_release_chart(config, side, actual["chartVersion"])
+                continue
+            if actual is None:
+                raise ConfigError(f"{side} Helm release is absent")
+            if resume and actual != journal["identities"].get(side):
+                raise ConfigError(f"{side} release identity changed during uninstall")
+            _assert_uninstall_release_chart(config, side, actual["chartVersion"])
+            _assert_uninstall_state_ready(config, side)
+            _assert_uninstall_manifest_safe(config, side)
+            journal["identities"][side] = actual
+        if not resume:
+            write_journal(journal_path, journal)
+        for side in order:
+            result["phase"] = side
+            if side in journal["completed"]:
+                result["results"][side] = {"status": "succeeded", "phase": "already-uninstalled"}
+                continue
+            for lease in leases:
+                lease.check()
+            actual = _uninstall_release_identity(config, side)
+            if actual is None:
+                if not resume or journal.get("phase") != f"{side}-started":
+                    raise ConfigError(f"{side} release disappeared before uninstall")
+            elif actual != journal["identities"].get(side):
+                raise ConfigError(f"{side} release identity changed during uninstall")
+            if actual is not None:
+                _assert_uninstall_release_chart(config, side, actual["chartVersion"])
+                _assert_uninstall_state_ready(config, side)
+                _assert_uninstall_manifest_safe(config, side)
+                journal["phase"] = f"{side}-started"
+                write_journal(journal_path, journal)
+                _uninstall_side(config, side)
+            if _uninstall_release_identity(config, side) is not None:
+                raise RuntimeError(f"{side} Helm release remains after uninstall")
+            _cleanup_uninstall_residuals(config, side)
+            _delete_uninstall_state(config, side, operation_id)
+            result["results"][side] = {"status": "succeeded", "phase": "uninstalled",
+                                       **journal["identities"][side]}
+            journal["completed"].append(side)
+            journal["phase"] = f"{side}-completed"
+            write_journal(journal_path, journal)
+        result.update(status="succeeded", phase="uninstalled", message="releases removed; PVCs and Secrets retained")
+    finally:
+        for lease in reversed(leases):
+            try:
+                lease.release()
+            except Exception:
+                result.setdefault("warnings", []).append("could not release operation lease")
+                if result.get("errorCode") is None and result.get("status") == "succeeded":
+                    result.update(status="failed", errorCode="LOCK_CONFLICT",
+                                  message="could not release operation lease")
+
+
+def release_exists(config, side: str) -> bool:
+    entry = config[side]
+    response = run_program(("helm", "--kube-context", config["cluster"]["context"], "--namespace",
+                            entry["namespace"], "status", entry["releaseName"], "-o", "json"),
+                           text=True, capture_output=True)
+    if response.returncode:
+        if "not found" in response.stderr.lower():
+            return False
+        raise RuntimeError(f"unable to inspect {side} Helm release")
+    return True
 
 
 def write_journal(path: Path, journal: dict) -> None:
@@ -448,8 +877,10 @@ def installed_identity(config, side):
                 if isinstance(item, dict) and item.get(f"{side}ChartVersion")}
     chart = release_chart(config, side)
     matches = [version for version in versions if chart.endswith(f"-{version}")]
+    if not matches:
+        raise CompatibilityError(f"installed {side} Chart version is absent in compatibility manifest")
     if len(matches) != 1:
-        raise CompatibilityError(f"installed {side} Chart version is absent or ambiguous in compatibility manifest")
+        raise CompatibilityError(f"installed {side} Chart version is ambiguous in compatibility manifest")
     return {"releaseVersion": values["global"]["releaseVersion"],
             "chartVersion": matches[0]}
 
@@ -602,7 +1033,7 @@ class Lease:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare-compatibility", "plan", "preflight", "install", "upgrade", "status", "verify"))
+    parser.add_argument("action", choices=("prepare-compatibility", "plan", "preflight", "install", "upgrade", "uninstall", "status", "verify"))
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--scope", choices=("consumer", "modeling", "both"))
     parser.add_argument("--resume")
@@ -627,19 +1058,22 @@ def main():
         parser.error("upgrade requires --scope")
     if args.action == "upgrade" and args.scope != "both":
         parser.error("this joint entry currently supports only --scope both for upgrade")
+    if args.action == "uninstall" and args.scope not in (None, "both"):
+        parser.error("joint uninstall requires --scope both")
     if args.snapshot_retention < 1:
         parser.error("--snapshot-retention must be at least 1")
     if not 0 <= args.min_free_percent <= 100:
         parser.error("--min-free-percent must be between 0 and 100")
-    if args.resume and args.action not in ("install", "upgrade"):
-        parser.error("--resume is only supported for install or upgrade")
+    if args.resume and args.action not in ("install", "upgrade", "uninstall"):
+        parser.error("--resume is only supported for install, upgrade or uninstall")
     operation_id = args.resume or str(uuid.uuid4())
     leases = []
     result = {"schemaVersion": "cce-joint-operation/v1", "operationId": operation_id,
               "action": args.action, "status": "failed", "phase": "input", "errorCode": None,
-              "message": "", "results": {}}
+              "message": "", "retryable": False, "results": {}}
     try:
-        config = load_config(args.config.resolve())
+        config = (load_uninstall_config(args.config.resolve()) if args.action == "uninstall"
+                  else load_config(args.config.resolve()))
         if args.action == "prepare-compatibility":
             result = prepare_compatibility(config, upgrade=args.upgrade_candidate,
                                            confirmed=args.confirm_verified,
@@ -660,6 +1094,10 @@ def main():
             result.update(status="succeeded", phase="status", message="completed")
             emit_stdout(json.dumps(result, ensure_ascii=False))
             return 0
+        if args.action == "uninstall":
+            uninstall_releases(config, operation_id, bool(args.resume), result)
+            emit_stdout(json.dumps(result, ensure_ascii=False))
+            return 0 if result["status"] == "succeeded" else 1
         with tempfile.TemporaryDirectory(prefix="cce-packages-", dir=state) as temporary:
             packages = {}
             for side in JOINT_SIDE_ORDER:
@@ -740,9 +1178,11 @@ def main():
                     leases.append(current_lease)
             if args.action == "upgrade":
                 if "consumer" not in journal["completed"] and journal.get("phase") != "consumer-started":
+                    result["phase"] = "consumer-preflight"
                     invoke("consumer", "preflight", config, packages["consumer"], operation_id,
                            image_files["consumer"], lock_holder=operation_id)
                 if "modeling" not in journal["completed"] and journal.get("phase") != "modeling-started":
+                    result["phase"] = "modeling-preflight"
                     invoke("modeling", "preflight", config, packages["modeling"], operation_id,
                            image_files["modeling"], backup_record=args.backup_record or "",
                            transition_id=args.transition_id if args.backup_record else "",
@@ -768,8 +1208,10 @@ def main():
                 if args.action == "preflight" and side == "modeling":
                     defer_external_services = defer_consumer_services(config)
                 if args.action == "install" and side == "modeling":
+                    result["phase"] = "modeling-preflight"
                     invoke("modeling", "preflight", config, packages["modeling"], operation_id,
                            image_files["modeling"], lock_holder=operation_id)
+                    result["phase"] = side
                 if journal:
                     journal["phase"] = f"{side}-started"
                     write_journal(journal_path, journal)
@@ -792,6 +1234,26 @@ def main():
                     journal["phase"] = f"{side}-completed"
                     write_journal(journal_path, journal)
             result.update(status="succeeded", message="completed")
+    except ChildOperationError as exc:
+        child = exc.payload
+        code = child.get("errorCode")
+        message = child.get("message")
+        recovery = child.get("recovery")
+        recovery_status = recovery.get("status") if isinstance(recovery, dict) else None
+        previous = result["results"].get(exc.side)
+        result["results"][exc.side] = {**child, "operationResult": previous} if exc.action == "verify" and previous else child
+        result.update(failedSide=exc.side, failedAction=exc.action,
+                      errorCode=code if isinstance(code, str) and code else "CHILD_OPERATION_FAILED",
+                      message=message if isinstance(message, str) and message else str(exc),
+                      retryable=child.get("retryable") is True)
+        if args.action == "upgrade" and exc.action != "preflight":
+            result["retryable"] = False
+            result["nextAction"] = "inspect the operation journal and actual Helm releases before retry"
+        if result["errorCode"] == "RECOVERY_REQUIRED" or recovery_status in ("degraded", "failed"):
+            result["retryable"] = False
+            result["nextAction"] = "inspect the child operation and cluster recovery state before retry"
+        elif result["errorCode"] in ("TIMEOUT", "CHILD_RESPONSE_INVALID"):
+            result["nextAction"] = "inspect the child operation and actual cluster state before retry"
     except (ConfigError, RuntimeError, OSError, subprocess.TimeoutExpired, KeyError, json.JSONDecodeError) as exc:
         if isinstance(exc, CompatibilityError):
             code = "INCOMPATIBLE_VERSION"
@@ -811,7 +1273,9 @@ def main():
             try:
                 current_lease.release()
             except Exception:
-                result.update(status="failed", errorCode="LOCK_CONFLICT", message="could not release operation lease")
+                result.setdefault("warnings", []).append("could not release operation lease")
+                if result["errorCode"] is None:
+                    result.update(status="failed", errorCode="LOCK_CONFLICT", message="could not release operation lease")
     emit_stdout(json.dumps(result, ensure_ascii=False))
     return 0 if result["status"] == "succeeded" else 1
 

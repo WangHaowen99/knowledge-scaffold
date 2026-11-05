@@ -41,6 +41,9 @@ spec:
                 {{- else if eq .endpointId "onto-modeling" }}
                 name: {{ $.Release.Name }}-onto
                 port: {number: 8100}
+                {{- else if eq .endpointId "evaluation" }}
+                name: {{ $.Release.Name }}-evaluation
+                port: {number: 8090}
                 {{- else }}
                 {{- fail (printf "unknown external endpointId %s" .endpointId) }}
                 {{- end }}
@@ -91,6 +94,9 @@ spec:
                 {{- else if eq .endpointId "onto-modeling" }}
                 name: {{ $.Release.Name }}-onto
                 port: {number: 8100}
+                {{- else if eq .endpointId "evaluation" }}
+                name: {{ $.Release.Name }}-evaluation
+                port: {number: 8090}
                 {{- else }}
                 {{- fail (printf "unknown external endpointId %s" .endpointId) }}
                 {{- end }}

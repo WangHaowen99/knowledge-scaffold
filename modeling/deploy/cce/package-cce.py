@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package three local or digest-pinned Modeling images for offline delivery."""
+"""Package five local or digest-pinned Modeling, Hub, and Evaluation images."""
 
 import argparse
 import hashlib
@@ -20,8 +20,14 @@ import yaml
 from common import ConfigError, bounded_archive_members, emit_stdout, extract_regular_members, run_program
 
 
-IMAGE_IDS = {"modeling", "modelingAgent", "ontoModeling"}
-LOCAL_NAMES = {"modeling": "modeling", "modelingAgent": "modeling-agent", "ontoModeling": "onto-modeling"}
+LOCAL_NAMES = {
+    "modeling": "modeling",
+    "modelingAgent": "modeling-agent",
+    "ontoModeling": "onto-modeling",
+    "knowledgeHub": "knowledge-hub",
+    "evaluation": "evaluation",
+}
+IMAGE_IDS = set(LOCAL_NAMES)
 IMAGE_RE = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 LOGGER = logging.getLogger(__name__)
 MAX_HELM_BINARY_BYTES = 100 * 1024 * 1024
@@ -98,7 +104,7 @@ def main():
     parser.add_argument("--arch", choices=("amd64", "arm64"), required=True)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--local", action="store_true", help="archive images built locally by build-images.sh")
-    source.add_argument("--image", action="append", help="id=registry/repo@sha256:digest; repeat for all three images")
+    source.add_argument("--image", action="append", help="id=registry/repo@sha256:digest; repeat for all five images")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]*", args.version):
@@ -113,12 +119,12 @@ def main():
         for item in args.image:
             image_id, separator, reference = item.partition("=")
             if not separator or image_id in images:
-                parser.error("provide modeling, modelingAgent and ontoModeling once each, pinned by digest")
+                parser.error("provide modeling, modelingAgent, ontoModeling, knowledgeHub and evaluation once each, pinned by digest")
             if image_id not in IMAGE_IDS or not IMAGE_RE.fullmatch(reference):
-                parser.error("provide modeling, modelingAgent and ontoModeling once each, pinned by digest")
+                parser.error("provide modeling, modelingAgent, ontoModeling, knowledgeHub and evaluation once each, pinned by digest")
             images[image_id] = reference
         if images.keys() != IMAGE_IDS:
-            parser.error("missing Modeling image")
+            parser.error("all five owned images are required")
     root = Path(__file__).resolve().parents[2]
     chart_source = root / "deploy/cce/chart"
     chart_version = yaml.safe_load((chart_source / "Chart.yaml").read_text())["version"]
@@ -131,6 +137,12 @@ def main():
         deploy.mkdir()
         docs = folder / "docs"
         docs.mkdir()
+        packaged_chart = Path(temp) / "chart"
+        shutil.copytree(chart_source, packaged_chart)
+        chart_metadata = yaml.safe_load((packaged_chart / "Chart.yaml").read_text())
+        chart_metadata["appVersion"] = args.version
+        (packaged_chart / "Chart.yaml").write_text(
+            yaml.safe_dump(chart_metadata, allow_unicode=True, sort_keys=False))
         package_images = {}
         for image_id, reference in sorted(images.items()):
             if not args.local:
@@ -155,9 +167,9 @@ def main():
             }
         helm, chart_delivery = resolve_helm(Path(temp))
         if helm:
-            run(helm, "lint", str(chart_source), "-f", str(root / "deploy/cce/values.customer.example.yaml"),
+            run(helm, "lint", str(packaged_chart), "-f", str(root / "deploy/cce/values.customer.example.yaml"),
                 "-f", str(root / "deploy/cce/resolved-images.example.yaml"))
-            run(helm, "package", str(chart_source), "--destination", str(deploy))
+            run(helm, "package", str(packaged_chart), "--destination", str(deploy))
             chart_archive = next(deploy.glob("modeling-*.tgz"))
             with tarfile.open(chart_archive, "r:gz") as chart:  # NOSONAR: bounded generated Chart
                 members = bounded_archive_members(chart)
@@ -171,7 +183,7 @@ def main():
             (deploy / "modeling").rename(deploy / "chart")
             chart_archive.unlink()
         else:
-            shutil.copytree(chart_source, deploy / "chart")
+            shutil.copytree(packaged_chart, deploy / "chart")
         for name in ("install-cce.sh", "install-cce.py", "common.py", "upgrade.py", "joint-cce.py", "deployment.schema.json",
                      "deployment.customer.example.yaml", "storage-inventory.yaml", "endpoints.yaml", "compatibility.yaml",
                      "values.customer.example.yaml", "resolved-images.example.yaml"):
@@ -186,7 +198,7 @@ def main():
         manifest = {
             "schemaVersion": "cce-release/v1", "releaseVersion": args.version,
             "chartVersion": chart_version, "platform": f"linux-{args.arch}",
-            "components": ["modeling", "modelingAgent", "ontoModeling"],
+            "components": list(package_images),
             "chartDelivery": chart_delivery,
             "images": package_images,
             "imageDependencies": {"jiuwenbox": {"sourceSide": "consumer", "sourceImageId": "jiuwenbox"}},
