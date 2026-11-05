@@ -871,9 +871,10 @@ class CceContractTests(unittest.TestCase):
             if kind == "service":
                 return {"spec": {"ports": [{"port": 9999}]}}
             return resource(_args, verb, kind, *rest)
-        present_secret = lambda _args, *argv: (
-            {"type": "Opaque", "data": {"service-token": "synthetic"}}
-            if argv[-1] == "modeling-integration" else None)
+        def present_secret(_args, *argv):
+            if argv[-1] == "modeling-integration":
+                return {"type": "Opaque", "data": {"service-token": "synthetic"}}
+            return None
         with mock.patch.object(INSTALL, "kube", side_effect=wrong_port), \
              mock.patch.object(INSTALL, "_optional_json", side_effect=present_secret):
             with self.assertRaisesRegex(ConfigError, "service port mismatch"):
@@ -1543,7 +1544,7 @@ class CceContractTests(unittest.TestCase):
             JOINT.uninstall_releases(config, "remove-demo", True, result)
         self.assertEqual(calls, ["modeling", "consumer", "consumer"])
         self.assertEqual([call.args[1] for call in cleanup.call_args_list], ["modeling", "consumer"])
-        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(result.get("status"), "succeeded")
         self.assertEqual(result["results"]["modeling"]["phase"], "already-uninstalled")
         self.assertEqual(json.loads((self.base / "remove-demo.json").read_text())["completed"],
                          ["modeling", "consumer"])
@@ -1562,14 +1563,15 @@ class CceContractTests(unittest.TestCase):
     def test_joint_uninstall_modeling_version_comes_from_installed_values(self):
         config = {"cluster": {"context": "synthetic"},
                   "modeling": {"releaseName": "modeling", "namespace": "modeling-demo"}}
+        release_version = "release-demo"
         metadata = {"name": "modeling", "namespace": "modeling-demo", "version": "0.2.0",
                     "appVersion": "0.2.0"}
         def command(args, **_kwargs):
             return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps(metadata))
         with mock.patch.object(JOINT, "run_program", side_effect=command), \
-             mock.patch.object(JOINT, "run", return_value=json.dumps({"global": {"releaseVersion": "0.26.11.1"}})):
+             mock.patch.object(JOINT, "run", return_value=json.dumps({"global": {"releaseVersion": release_version}})):
             identity = JOINT._uninstall_release_identity(config, "modeling")
-        self.assertEqual(identity, {"releaseVersion": "0.26.11.1", "chartVersion": "0.2.0"})
+        self.assertEqual(identity, {"releaseVersion": release_version, "chartVersion": "0.2.0"})
 
     def test_joint_uninstall_entry_does_not_open_release_packages(self):
         path = self.base / "uninstall.yaml"
@@ -2210,7 +2212,7 @@ class CceContractTests(unittest.TestCase):
         ingress = (chart / "templates/ingress.yaml").read_text()
         values = yaml.safe_load((chart / "values.yaml").read_text())
         images = yaml.safe_load((ROOT / "resolved-images.example.yaml").read_text())
-        self.assertEqual({"knowledgeHub", "evaluation"}.issubset(images["global"]["resolvedImages"]), True)
+        self.assertTrue({"knowledgeHub", "evaluation"}.issubset(images["global"]["resolvedImages"]))
         for component, path in (("hub", "/api/health"), ("evaluation", "/evaluation/api/health")):
             self.assertIn(f'name: {{{{ include "modeling.name" . }}}}-{component}', source)
             self.assertIn(path, source)
@@ -2284,7 +2286,10 @@ class CceContractTests(unittest.TestCase):
         def get_secret(_args, name, namespace=None):
             values = {"custom-hub": {"onto-key": "same", "eval-key": "different"},
                       "integration": {"service-token": "same"}}
-            return {"data": values[name]}
+            data = values.get(name)
+            if data is None:
+                raise AssertionError(f"unexpected synthetic Secret: {name}")
+            return {"data": data}
         with mock.patch.object(INSTALL, "_read_secret", side_effect=get_secret):
             with self.assertRaisesRegex(ConfigError, "must be distinct"):
                 INSTALL._assert_distinct_internal_tokens(args, merged)
@@ -2315,9 +2320,13 @@ class CceContractTests(unittest.TestCase):
             "precreated-notify": {"notification-key": "fifth"},
             "integration": {"service-token": "fourth"},
         }
-        with mock.patch.object(INSTALL, "_read_secret", side_effect=lambda _args, name: {
-            "type": "Opaque", "data": secrets[name]
-        }), mock.patch.object(INSTALL, "run_program", side_effect=AssertionError("create attempted")):
+        def get_secret(_args, name):
+            data = secrets.get(name)
+            if data is None:
+                raise AssertionError(f"unexpected synthetic Secret: {name}")
+            return {"type": "Opaque", "data": data}
+        with mock.patch.object(INSTALL, "_read_secret", side_effect=get_secret), \
+             mock.patch.object(INSTALL, "run_program", side_effect=AssertionError("create attempted")):
             INSTALL.ensure_application_secrets(args, merged)
 
     def test_internal_secret_create_failure_requires_precreation(self):

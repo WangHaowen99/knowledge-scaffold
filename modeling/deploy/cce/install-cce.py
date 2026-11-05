@@ -277,9 +277,10 @@ def load_inputs(args, root: Path):
         raise ConfigError("Hub internal token keys must be distinct")
     internal_names = set(_internal_secret_specs(merged))
     external_names = {merged["global"]["integration"]["serviceTokenSecret"]["name"]}
-    external_names.update(ref["name"] for section in ("hub", "evaluation")
-                          for key, ref in merged[section]["secrets"].items()
-                          if key not in ("internal", "encryptionKey", "notificationToken") and ref["name"])
+    for section in ("hub", "evaluation"):
+        for key, ref in merged[section]["secrets"].items():
+            if key not in ("internal", "encryptionKey", "notificationToken") and ref["name"]:
+                external_names.add(ref["name"])
     if len(internal_names) != 2 or internal_names & external_names:
         raise ConfigError("internal Secrets must use distinct objects from external credentials")
     notification_name, notification_key = _notification_secret_ref(args, merged)

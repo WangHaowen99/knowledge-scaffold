@@ -83,7 +83,9 @@ def load_uninstall_config(path: Path) -> dict:
     if not isinstance(raw, dict) or raw.get("schemaVersion") != "cce-joint/v1" or set(raw) - allowed:
         raise ConfigError("invalid joint uninstall config")
     cluster = raw.get("cluster")
-    if not isinstance(cluster, dict) or set(cluster) != {"context"} or not isinstance(cluster["context"], str) or not cluster["context"]:
+    if not isinstance(cluster, dict) or set(cluster) != {"context"}:
+        raise ConfigError("joint uninstall requires a cluster context")
+    if not isinstance(cluster.get("context"), str) or not cluster.get("context"):
         raise ConfigError("joint uninstall requires a cluster context")
     if not isinstance(raw.get("stateDir"), str) or not raw["stateDir"]:
         raise ConfigError("joint uninstall requires stateDir")
@@ -93,16 +95,19 @@ def load_uninstall_config(path: Path) -> dict:
     result = {"cluster": cluster, "stateDir": absolute(path.parent, raw["stateDir"]), "timeoutSeconds": timeout}
     for side in JOINT_SIDE_ORDER:
         entry = raw.get(side)
-        if not isinstance(entry, dict) or not isinstance(entry.get("releaseName"), str) or \
-                not isinstance(entry.get("namespace"), str) or \
-                set(entry) - {"releaseName", "namespace", "package", "values", "resolvedImages"}:
+        if not isinstance(entry, dict):
+            raise ConfigError(f"joint uninstall requires {side} releaseName and namespace")
+        if set(entry) - {"releaseName", "namespace", "package", "values", "resolvedImages"}:
+            raise ConfigError(f"joint uninstall requires {side} releaseName and namespace")
+        if not isinstance(entry.get("releaseName"), str) or not isinstance(entry.get("namespace"), str):
             raise ConfigError(f"joint uninstall requires {side} releaseName and namespace")
         validate_name(entry["releaseName"], f"{side} releaseName")
         validate_name(entry["namespace"], f"{side} namespace")
         if len(entry["releaseName"]) > 49:
             raise ConfigError(f"{side} releaseName is too long for its operation Lease")
         result[side] = {"releaseName": entry["releaseName"], "namespace": entry["namespace"]}
-    if all(result["modeling"][key] == result["consumer"][key] for key in ("releaseName", "namespace")):
+    if all(result["modeling"].get(key) == result["consumer"].get(key)
+           for key in ("releaseName", "namespace")):
         raise ConfigError("Consumer and Modeling release identities must differ")
     return result
 
@@ -508,9 +513,13 @@ def _uninstall_release_identity(config, side: str) -> dict | None:
         raise RuntimeError(f"unable to inspect {side} Helm release")
     try:
         metadata = json.loads(response.stdout)
-        if (not isinstance(metadata, dict) or metadata.get("name", entry["releaseName"]) != entry["releaseName"] or
-                metadata.get("namespace", entry["namespace"]) != entry["namespace"] or
-                not isinstance(metadata.get("version"), str) or not metadata["version"]):
+        if not isinstance(metadata, dict):
+            raise ValueError
+        if (metadata.get("name", entry["releaseName"]) != entry["releaseName"] or
+                metadata.get("namespace", entry["namespace"]) != entry["namespace"]):
+            raise ValueError
+        version = metadata.get("version")
+        if not isinstance(version, str) or not version:
             raise ValueError
     except (ValueError, TypeError) as exc:
         raise ConfigError(f"{side} Helm release identity is invalid") from exc
@@ -544,9 +553,12 @@ def _uninstall_cluster_state(config, side: str) -> dict | None:
     try:
         resource = json.loads(response.stdout)
         state = json.loads(resource["data"]["state.json"])
-        if resource["metadata"]["labels"]["app.kubernetes.io/instance"] != entry["releaseName"] or \
-                not isinstance(state, dict) or state.get("releaseName", entry["releaseName"]) != entry["releaseName"] or \
-                state.get("namespace", entry["namespace"]) != entry["namespace"]:
+        if resource["metadata"]["labels"]["app.kubernetes.io/instance"] != entry["releaseName"]:
+            raise ValueError
+        if not isinstance(state, dict):
+            raise ValueError
+        if (state.get("releaseName", entry["releaseName"]) != entry["releaseName"] or
+                state.get("namespace", entry["namespace"]) != entry["namespace"]):
             raise ValueError
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError(f"{side} operation state is invalid") from exc
@@ -670,12 +682,16 @@ def uninstall_releases(config, operation_id: str, resume: bool, result: dict) ->
         if not journal_path.is_file():
             raise ConfigError("uninstall resume journal is missing")
         journal = json.loads(journal_path.read_text())
-        if not isinstance(journal, dict) or journal.get("action") != "uninstall" or journal.get("fingerprint") != fingerprint or \
-                journal.get("operationId") != operation_id or not isinstance(journal.get("identities"), dict) or \
-                not isinstance(journal.get("completed"), list) or \
-                not set(journal["completed"]).issubset(JOINT_SIDE_ORDER) or \
+        if not isinstance(journal, dict):
+            raise ConfigError("uninstall resume journal is invalid")
+        if (journal.get("action") != "uninstall" or journal.get("fingerprint") != fingerprint or
+                journal.get("operationId") != operation_id):
+            raise ConfigError("uninstall resume journal is invalid")
+        if not isinstance(journal.get("identities"), dict) or not isinstance(journal.get("completed"), list):
+            raise ConfigError("uninstall resume journal is invalid")
+        if (not set(journal["completed"]).issubset(JOINT_SIDE_ORDER) or
                 journal.get("phase") not in ("prepared", "modeling-started", "modeling-completed",
-                                             "consumer-started", "consumer-completed"):
+                                             "consumer-started", "consumer-completed")):
             raise ConfigError("uninstall resume journal is invalid")
         if any(not isinstance(journal["identities"].get(side), dict) or
                not all(isinstance(journal["identities"][side].get(key), str) and
