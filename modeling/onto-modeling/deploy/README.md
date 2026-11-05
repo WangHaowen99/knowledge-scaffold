@@ -191,6 +191,8 @@ onto-modeling 容器里做：上传的文件不可信，解析可能卡死、吃
   可用 `ONTO_CONNECTOR_JOB_TIMEOUT_S`、`ONTO_CONNECTOR_JOB_MEMORY_MB`、`ONTO_CONNECTOR_MAX_CONCURRENT` 调（网关容器的环境变量）。
 - onto-modeling 经 `ONTO_WEB_CONNECTOR_GATEWAY_URL=http://connector-gateway:8120` 调它，每次带一张内核签的一次性
   票据；网关从 `http://onto-modeling:8100/api/v1/connector/issuer-key` 取公钥验签。
+- 程序逆向采集（ADR-0082）上传的目标程序和 REA 原始结果存在数据卷的 `evidence/blobs/`，按程序大小预留磁盘；上限在
+  onto-modeling 的 `.env` 里：`ONTO_WEB_EVIDENCE_MAX_ARTIFACT_MB`（默认 2048）、`ONTO_WEB_EVIDENCE_SNAPSHOT_GIT_MB`（默认 20）。
 - 网关停了不丢活：资料标「等待转换」，网关恢复后 30 秒内自动补转；升级后已有项目里还没有文本版的资料在后台补转一次。
 - 健康状态在运维中心「健康与依赖」的「连接器网关」一行和启动自检报告里。
 

@@ -1304,3 +1304,17 @@ Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`
    EV-04、EV-05 登记人也能调；这类登记只有本人和管理员看得到。要凭据的提供方仍然只有管理员登记。
 3. **错误码**：2.8 加 `artifact_not_found`、`upload_not_found`、`upload_incomplete`、`upload_hash_mismatch`、`upload_too_large`。
 4. 契约 3.19 其余接口按原文实现；EV-06、EV-07（凭据）本轮仍回 `501 evidence_not_available`，等数据库连接器。EV-28 ER 视图只给数据库类，其他回空表。
+6. **内核实现时补的（F13 内核；第 5 条在前端分支）**：
+   - EV-08 对旁路容器类（REA）不签票据，`ticket` 为 `null`；自助类数据源的登记人不带 `project_id` 也能测。
+   - EV-25、EV-29 多可选参数 `path`（引用锚点的产物）：按它 frontmatter 的 `evidence_snapshots` 解析；EV-29 的 `bin:` 锚点走证据索引。
+   - EV-26 每项多 `anchor`（命中的锚点），`location` 是 `<文件>:L<行号>`。
+   - 快照「被引用」只算 `ontology/` 里的已确认产物（EV-18/19 的 `referenced`、EV-20 的 `snapshot_referenced`、EV-21 的
+     `touching_confirmed`）；`reports/` 里是候选和检查报告，不挡清理。
+   - EV-22 先做最小可用：每份受影响的已确认产物写一份 `reports/evidence-revise-*.md`（每个变了的锚点一条 `- [ ]`），
+     `inbox_item_ids` 是待处理里对应的 `report:<文件名>`。
+   - EV-01 普通用户看别人登记的数据源时，`connection`、`egress`、`cred_ref` 给空；`EvidenceSource` 多 `self_service`。
+   - EV-02、EV-04 带 `secret` 回 `501 evidence_not_available`（凭据接口这一轮不开放）。
+   - `CollectionJob.result` 多 `commit`；任务错误码另有 `backend_restarted`、`gateway_restarted`、`gateway_unavailable`、`bundle_invalid`、
+     `bundle_incomplete`、`snapshot_too_large`、`timeout`、`artifact_not_found`、`source_not_found`，其余透传网关的码。
+   - EV-09 的 `statement_digest` 对上传类是 `artifact:<sha256 前 12 位>`，`rows`、`bytes` 取快照清单的 `budget_used`。
+   - 新增 **EV-34** `DELETE /api/v1/evidence/uploads/{upload_id}`（上传人）：取消没完成的上传、释放每人 2 个的名额；已完成的回 `upload_not_found`。

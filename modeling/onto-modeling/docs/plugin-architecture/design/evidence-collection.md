@@ -96,6 +96,8 @@ blobs/<sha256>            # REA 原始结果，可选
 - 锚点都以 `bin:<源ID>/` 开头且同一快照内不重复，`type` 在 `RECORD_TYPES` 里；
 - 进 git 的部分（除 `blobs/` 外）合计不超过 `ONTO_WEB_EVIDENCE_SNAPSHOT_GIT_MB`（默认 20）；
 - 文本文件过一遍密钥扫描，命中的值替换成 `«已遮蔽»` 并在清单 `masked_hits` 里记条数（REA 结果里常有程序内嵌的密钥，遮蔽而不是整个失败）。
+  规则复用遥测脱敏和包检查的两组；记录只遮蔽 `label` 和 `attrs`（锚点、名字是身份，改了对不上），遮蔽过的记录重算 `hash`，
+  清单的 `files` 按遮蔽后的内容重算。
 
 ## 4. 网关接口（内核 → 网关）
 
@@ -185,7 +187,8 @@ artifact_size}`，换版本就 PATCH 成新上传的程序。
 `evidence.job.updated` → 成功就取快照包到 `DATA_DIR/evidence/tmp/`、校验、入库 → 调网关清理。后端重启时还在 `queued`、`running` 的任务
 标 `failed`（`backend_restarted`）。
 
-**快照入库**：快照 ID `YYYYMMDD-HHMMSS-xxxx`（UTC）；`blobs/` 移进 blob 仓；其余文件经 `ChangeTx`（`Origin("plugin", "多源连接器")`）
+**快照入库**：快照 ID `YYYYMMDD-HHMMSS-xxxx`（UTC），按字典序就是先后：同一秒里项目已有快照时后缀在最大的那个上加一（持项目锁定号），
+项目内不重号；`blobs/` 移进 blob 仓；其余文件经 `ChangeTx`（`Origin("plugin", "多源连接器")`）
 写到 `resource/systems/<源>/<快照>/`，提交信息 `evidence: 采集 <源> 快照 <快照ID>`；清单补全后一起写；再建索引。
 
 **检索**：EV-18～EV-28 按契约实现，数据来自索引；EV-28 ER 视图只给 `db` 类，其他回空表。EV-29 解析 `bin:` 锚点：产物

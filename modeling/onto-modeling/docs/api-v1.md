@@ -2816,6 +2816,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 请求：`{project_id?: string}`。
 - 响应：`{ok: bool, checks: [{name: "connectivity"|"readonly_account"|"statement_allowlist", ok, detail, latency_ms?}], ticket: {id_prefix, expires_in_s: 600, consumed: true}}`。
 - 错误：`source_not_authorized`、`gateway_unavailable`、`connection_test_failed`（`ok=false` 时也可以直接返回 200，前端按 `ok` 判断；返回 422 只在网关报错时）。
+- 旁路容器类（REA，F13）：只查提供方装没装、目标程序在不在 blob 仓，`checks` 只有 `connectivity`，不签票据，`ticket` 为 `null`；自助类数据源的登记人不带 `project_id` 也能测。
 
 #### EV-09 访问审计
 
@@ -2914,6 +2915,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `DELETE /api/v1/projects/{id}/evidence/snapshots/{snapshot_id}` · 所有者 · 旧：— · 审计：是 · 依据：5.8.4（被已确认产物引用的快照不能清理） · 页面：snapshots（「清理」）
 
 - 响应：`{removed: true, blob_retention_days: 90}`。
+- 「引用」只算已确认产物（`ontology/`）：frontmatter `evidence_snapshots` 声明了这份快照的；它是这个源最新的完整快照时，再加上引用这个源的锚点却没声明快照的（F13）。`SnapshotSummary.referenced`、`EV-21` 的 `touching_confirmed` 同一口径。
 - 错误：`snapshot_referenced`。
 
 #### EV-21 快照对比
@@ -2950,7 +2952,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `GET /api/v1/projects/{id}/evidence/record` · 所有者 · 旧：— · 审计：专项 `evidence.query` · 依据：5.8.5 规则 4 · 页面：schema（右栏）、studio（证据卡「查看原文」）
 
-- 查询参数：`anchor`、`snapshot?`（缺省用产物声明的快照，没有则取最新完整快照）。
+- 查询参数：`anchor`、`snapshot?`（缺省用产物声明的快照，没有则取最新完整快照）、`path?`（引用这个锚点的产物路径，按它 frontmatter 的 `evidence_snapshots` 取快照，F13）。
 - 响应：`EvidenceRecord`，即记录本身，加原始上下文：字段、DDL、脱敏样本（每表最多 20 行）、数据画像（低基数 top-k、数值统计量）。
 - 错误：`anchor_invalid`、`anchor_not_found`。
 
@@ -2959,7 +2961,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `GET /api/v1/projects/{id}/evidence/where-used` · 所有者 · 旧：— · 审计：专项 `evidence.query` · 依据：5.8.7 · 页面：schema（「被引用」）、studio（证据卡「被谁引用」）、snapshots（被引用数）
 
 - 查询参数：`anchor`、`prefix?: bool`（true 时匹配锚点前缀，如整张表）。
-- 响应：`{items: [{target: EntryRef|ArtifactRef, location}], total}`，不分页，上限 500。
+- 响应：`{items: [{target: EntryRef|ArtifactRef, location, anchor}], total}`，不分页，上限 500。`location` 是 `<文件>:L<行号>`，`anchor` 是命中的锚点（`prefix=true` 时有用，F13）。
 
 #### EV-27 相邻记录（evidence.lineage）
 
@@ -2979,8 +2981,11 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `GET /api/v1/projects/{id}/anchors/resolve`、`POST /api/v1/projects/{id}/anchors/resolve` · 所有者 · 旧：— · 审计：`db`、`code` 等系统锚点记专项 `evidence.query`；`file` 锚点不记 · 依据：5.8.5 · 页面：全部出现出处角标的页面（wb-l2、wb-materials、inbox、l4-run、studio、studio-table、reports、incremental、scenarios、knowledge 等，悬停看原文）
 
-- GET 查询参数：`anchor`。
-- POST 请求：`{anchors: string[]}`，最多 100 个。
+- GET 查询参数：`anchor`、`path?`。
+- POST 请求：`{anchors: string[], path?: string}`，最多 100 个。
+- `path`（F13）：引用这些锚点的产物；`bin:` 锚点先按它 frontmatter 声明的快照解析，没声明取这个源最新的完整快照。
+  `bin:` 锚点的 `source_label` 是数据源显示名，`location_label` 是记录的 `attrs.loc`（`文件:行号`），`text` 是记录摘要，`page="schema"`；
+  快照里没有时 `reason=not_in_snapshot`。其余系统锚点（`db`、`code` 等）仍回 `not_available`。
 - 响应：`{items: AnchorResolution[]}`。
   - 每项含：来源名、位置、原文（带高亮区间）、置信度、快照、是否可解析。
   - 解析失败的锚点 `resolved=false`，并带 `reason`。
@@ -3018,6 +3023,14 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 请求：`{sha256: string}`。
 - 响应：`{artifact: {sha256, size, filename}}`；同一内容已经在 blob 仓里就直接用。
 - 错误：`upload_not_found`、`upload_incomplete`（409，`details.missing: int[]`）、`upload_hash_mismatch`（422）。
+
+#### EV-34 取消上传
+
+`DELETE /api/v1/evidence/uploads/{upload_id}` · 上传人 · 旧：— · 审计：否 · 依据：ADR-0082 · 页面：sources（上传中「取消」）
+
+- 删掉没完成的上传的临时目录，释放「每人同时最多 2 个」的名额。
+- 响应 `204`。
+- 错误：`upload_not_found`（不存在、已过期、不是本人的，或已经完成）。
 
 ---
 
