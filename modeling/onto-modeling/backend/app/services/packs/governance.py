@@ -128,7 +128,7 @@ def ops_items(manager) -> list[dict]:
         for entry in (lock.enabled() if lock else []):
             used.setdefault(entry.name, set()).add(entry.version)
     items = []
-    for name in repository.names():
+    for name in repository.names(private=True):  # 私有包也列：管理员要能禁用（ADR-0079）
         if _is_provider(repository, name):
             continue
         entry = repository.channel_entry(name)

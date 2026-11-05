@@ -407,6 +407,15 @@ def _require_version(repository, name: str, version: str | None) -> str:
     return version
 
 
+def require_visible(manager, name: str, viewer: str, project_id: str = "") -> None:
+    """别人的私有包按不存在处理（ADR-0079）；项目转给别人后，已经锁在项目里的照常能用。"""
+    if manager.packs.repository.visible(name, viewer):
+        return
+    lock = lockfile.read(manager.project_root(project_id)) if project_id else None
+    if lock is None or lock.get(name) is None:
+        raise PackError("pack_not_found", f"包 {name} 不存在", 404)
+
+
 def enable(manager, project_id: str, name: str, version: str | None = None, actor: str = "") -> dict:
     """PL-06：启用到本项目。停用过的包重新启用回到原锁定版本（没指定版本时）。"""
     repository = manager.packs.repository

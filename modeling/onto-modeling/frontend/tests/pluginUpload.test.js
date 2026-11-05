@@ -6,7 +6,7 @@ import { failedChecks, passedChecks, reportMarkdown, seedRequests, seedUploads, 
 import { addAdminRequest, finishCheck, register } from '../src/api/mock/routes-pack-uploads.js';
 import {
   PACK_MAX_BYTES, approveHint, canReject, checkView, contributesText, defaultPublishForm, effectText, eligibleProjects, filterRequests,
-  fmtClock, isPublishable, kindText, orderUploads, packLimit, pickUpload, publishBlock, publishBody, publishToast, reasonProblem,
+  fmtClock, installBlock, isPublishable, kindText, orderUploads, packLimit, pickUpload, publishBlock, publishBody, publishToast, reasonProblem,
   rejectDraft, requestCounts, requestMeta, requestReason, rolloutEstimate, rolloutProblem, segUploads, summaryText, timelineRows,
   uploadErrorText, uploadMeta, uploadStatus, uploadTitle, validatePackFile,
 } from '../src/pages/plugins/uploadModel.js';
@@ -367,4 +367,28 @@ test('mock：通过 / 退回申请；处理过的再处理 409；别的分组能
   assert.equal(pushed.state, 'pending');
   assert.equal(h.events.at(-1).data.kind, 'request_pending');
   assert.equal((await h.call('GET', '/api/v1/admin/requests?state=pending')).body.items.length, 2);
+});
+
+// ---------- 普通用户装自己的包（PL-22～PL-26） ----------
+
+test('普通用户：上限 20 MiB，检查通过才能安装，装好后不再出待安装', () => {
+  assert.equal(packLimit(null, true), 20 * MB);
+  assert.equal(packLimit({ limits: { pack_private_upload_bytes: 5 * MB } }, true), 5 * MB);
+  assert.equal(installBlock(up({ state: 'passed' })), null);
+  assert.equal(installBlock(up({ state: 'checking' })), '检查完成后才能安装');
+  assert.equal(installBlock(up({ state: 'failed', summary: { pass: 3, warn: 0, fail: 2 } })), '2 项失败，不能安装');
+  assert.equal(installBlock(up({ state: 'installed' })), '已安装');
+  assert.equal(uploadStatus(up({ state: 'installed' })).text, '已安装');
+  const titles = (u) => timelineRows({ ...u, timeline: [] }, { mine: true }).map((r) => r.title);
+  assert.deepEqual(titles(up({ state: 'passed' })), ['待安装']);
+  assert.deepEqual(titles(up({ state: 'installed' })), []);
+  assert.deepEqual(titles(up({ state: 'failed', summary: { pass: 3, warn: 0, fail: 2 } })), []);
+});
+
+test('管理员看普通用户的上传：写是谁的，能转成公开发布，但不再提示待发布', () => {
+  const u = up({ scope: 'private', uploaded_by: 'operator_a', state: 'installed' });
+  assert.match(uploadMeta(u), /私有 · operator_a$/);
+  assert.doesNotMatch(uploadMeta(u, Date.now(), true), /私有/);
+  assert.equal(isPublishable(u), true);
+  assert.deepEqual(timelineRows({ ...u, timeline: [] }), []);
 });

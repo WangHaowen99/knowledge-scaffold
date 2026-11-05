@@ -41,7 +41,7 @@ export function clientConfig({ authEnabled = true, registration = true, maintena
     maintenance,
     limits: {
       json_body_bytes: 1048576, file_write_bytes: 4194304, material_upload_bytes: 20971520, attachment_bytes: 20971520,
-      attachments_per_message: 10, project_import_bytes: 209715200, pack_upload_bytes: 209715200, page_size_max: 200,
+      attachments_per_message: 10, project_import_bytes: 209715200, pack_upload_bytes: 209715200, pack_private_upload_bytes: 20971520, page_size_max: 200,
     },
     material_types: ['.md', '.markdown', '.txt', '.doc', '.docx', '.xls', '.xlsx', '.xlsm', '.csv', '.pdf', '.drawio', '.html', '.htm', '.png', '.jpg', '.jpeg'],
     features: { drawio: true },

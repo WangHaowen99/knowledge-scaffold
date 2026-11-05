@@ -41,11 +41,12 @@ export async function createServices({ onAuthRequired, onMaintenance }) {
     },
 
     // PL-13 插件包上传（≤ 200 MiB，带进度）
-    async uploadPack(file, { onProgress } = {}) {
+    async uploadPack(file, { onProgress, mine = false } = {}) {
       const form = new FormData();
       form.append('file', file);
       const headers = tokens.access ? { Authorization: `Bearer ${tokens.access}` } : {};
-      const res = await transport.upload(`${API_PREFIX}/admin/packs/uploads`, form, headers, onProgress);
+      const path = mine ? '/me/pack-uploads' : '/admin/packs/uploads';
+      const res = await transport.upload(`${API_PREFIX}${path}`, form, headers, onProgress);
       if (!res.ok) throw await errorFromResponse(res);
       return res.json();
     },

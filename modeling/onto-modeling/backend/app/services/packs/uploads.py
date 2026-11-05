@@ -8,6 +8,9 @@
 状态：checking →（静态检查）→ passed | failed →（管理员）→ published | rejected；「暂不发布」
 不调接口，保持 passed。发布才入包仓库：包仓库里的版本目录不可修改，退回的上传不留下任何版本。
 
+普通用户上传的是私有包（scope=private，ADR-0079）：多一项白名单检查，passed →（本人）→ installed，入库后只有
+本人看得见、启用得了。管理员可以把它发布出去，发布后变成公开的包。
+
 旧的资产包上传（`POST /api/settings/assets/upload`，契约 PL-13 的去向）走同一条路：没有清单的
 资产包当作 core 的新版本，补上镜像里的工作区规则、说明与流程定义，检查通过直接发布到 stable，
 跟随通道的项目下一条消息前升级（方案 2.3 第 4 步，效果同原来，但能按项目回滚）。
@@ -27,10 +30,16 @@ from pathlib import Path
 
 from . import builtin, checks
 from . import manifest as mf
-from .repository import PackRepository, RepositoryError, _atomic_write_json, pack_files
+from .repository import OWNER_FIELD, PackRepository, RepositoryError, _atomic_write_json, pack_files
 
-STATES = ("checking", "passed", "failed", "published", "rejected", "held")
+STATES = ("checking", "passed", "failed", "published", "rejected", "held", "installed")
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+SCOPE_PRIVATE = "private"
+# 普通用户的上传不可信：压缩包的大小不说明解压后的大小；老上传超出数量就清掉，一个人占不满磁盘
+PRIVATE_MAX_EXTRACTED_BYTES = 64 * 1024 * 1024
+PRIVATE_MAX_FILES = 2000
+PRIVATE_KEEP_UPLOADS = 20
+PRIVATE_MAX_VERSIONS = 50
 # 旧资产包里属于内核的东西：守卫与 hooks 基线现在由内核注入，带着会被静态检查当成冒名
 _LEGACY_KERNEL_FILES = (
     "settings.json",
@@ -75,7 +84,7 @@ class UploadStore:
         _atomic_write_json(self._dir(record["id"]) / "record.json", record)
         return record
 
-    def list(self, state: str = "") -> list[dict]:
+    def list(self, state: str = "", *, uploaded_by: str = "") -> list[dict]:
         if not self.root.is_dir():
             return []
         records = []
@@ -84,7 +93,9 @@ class UploadStore:
                 record = json.loads((entry / "record.json").read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            if not state or record.get("state") in state.split(","):
+            if (not state or record.get("state") in state.split(",")) \
+                    and (not uploaded_by or (record.get("uploaded_by") == uploaded_by
+                                             and record.get("scope") == SCOPE_PRIVATE)):
                 records.append(record)
         return sorted(records, key=lambda record: record.get("uploaded_at", 0), reverse=True)
 
@@ -97,32 +108,43 @@ class UploadStore:
 
     # ---- 上传与检查 ----
 
-    def create(self, archive: Path, filename: str, *, by: str, tenant_label: str = "", legacy: bool = False) -> dict:
+    def create(self, archive: Path, filename: str, *, by: str, tenant_label: str = "", legacy: bool = False,
+               private: bool = False) -> dict:
         """收下上传：解压到上传目录，记录状态 checking；格式不对直接拒（pack_upload_invalid）。"""
+        if private:
+            self._prune_private(by)
         upload_id = f"up-{uuid.uuid4().hex[:10]}"
         directory = self._dir(upload_id)
         directory.mkdir(parents=True)
         try:
-            pack = self._extract(archive, directory / "pack", legacy=legacy)
+            pack = self._extract(archive, directory / "pack", legacy=legacy, private=private)
         except UploadError:
             shutil.rmtree(directory, ignore_errors=True)
             raise
         record = {
             "id": upload_id, "filename": filename, "size": Path(archive).stat().st_size,
             "uploaded_at": time.time(), "uploaded_by": by, "tenant_label": tenant_label or None,
-            "state": "checking", "summary": {"pass": 0, "warn": 0, "fail": 0},
+            "scope": SCOPE_PRIVATE if private else None, "state": "checking", "summary": {"pass": 0, "warn": 0, "fail": 0},
             "manifest_ok": False, "checksums_ok": False, "legacy_assets": legacy,
             "pack_dir": str(pack.relative_to(directory)),
             "timeline": [{"at": time.time(), "actor": by, "text": "上传", "state": "checking"}],
         }
         return self._save(record)
 
-    def _extract(self, archive: Path, dest: Path, *, legacy: bool) -> Path:
+    def _prune_private(self, by: str) -> None:
+        for record in self.list(uploaded_by=by)[PRIVATE_KEEP_UPLOADS - 1:]:
+            if record.get("state") != "checking":
+                shutil.rmtree(self._dir(record["id"]), ignore_errors=True)
+
+    def _extract(self, archive: Path, dest: Path, *, legacy: bool, private: bool = False) -> Path:
         try:
             zf = zipfile.ZipFile(archive)
         except (zipfile.BadZipFile, OSError):
             raise UploadError("pack_upload_invalid", "不是有效的 zip 包", 400, {"reason": "not_zip"}) from None
+        budget = PRIVATE_MAX_EXTRACTED_BYTES
         with zf:
+            if private and len(zf.infolist()) > PRIVATE_MAX_FILES:
+                raise UploadError("pack_upload_invalid", f"包里超过 {PRIVATE_MAX_FILES} 个文件", 400, {"reason": "too_large"})
             for info in zf.infolist():
                 parts = Path(info.filename).parts
                 if info.filename.startswith("/") or ".." in parts:
@@ -136,7 +158,11 @@ class UploadStore:
                 target = dest / info.filename
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(info) as source, open(target, "wb") as out:
-                    shutil.copyfileobj(source, out)
+                    while chunk := source.read(1 << 20):
+                        budget -= len(chunk)
+                        if private and budget < 0:
+                            raise UploadError("pack_upload_invalid", "解压后超过 64 MiB", 400, {"reason": "too_large"})
+                        out.write(chunk)
         root = dest
         # 兼容两种打包：zip 根就是包，或包一层目录（旧资产包还可能包一层 .claude/）
         if not (root / mf.MANIFEST_FILE).is_file():
@@ -180,19 +206,22 @@ class UploadStore:
         record = self.get(upload_id)
         directory = self._dir(upload_id)
         pack = directory / record["pack_dir"]
+        private = record.get("scope") == SCOPE_PRIVATE
         core_names = None
         stable = self.repository.latest(builtin.CORE, "stable")
         if stable:
             core_dir = self.repository.version_dir(builtin.CORE, stable)
             core_names = checks.declared_names(self.repository.manifest(builtin.CORE, stable), core_dir)
         try:
-            manifest, items = checks.run(pack, self.repository, tenant=bool(record.get("tenant_label")),
-                                         core_names=core_names)
+            manifest, items = checks.run(pack, self.repository, tenant=private or bool(record.get("tenant_label")),
+                                         private=private, core_names=core_names)
         except Exception as exc:  # noqa: BLE001 - 检查本身出错也要落成「失败」，不能一直停在 checking
             _log.exception("静态检查出错：%s", upload_id)
             manifest, items = None, [checks.item("internal", "静态检查", "fail", f"检查过程出错：{type(exc).__name__}")]
         if manifest is not None and manifest.name == builtin.CORE and record.get("tenant_label"):
             items.append(checks.item("tenant_core", "租户包不能替换基础建模能力", "fail", ""))
+        if private and manifest is not None and not self.repository.name_free(manifest.name, record["uploaded_by"]):
+            items.append(checks.item("private_name", "包名没被占用", "fail", f"{manifest.name} 已被占用，请换一个名字"))
         summary = checks.summary(items)
         size = sum((pack / rel).stat().st_size for rel in pack_files(pack)) if pack.is_dir() else 0
         record.update({
@@ -220,6 +249,9 @@ class UploadStore:
             record = self.get(upload_id)
             if record["state"] in ("published", "rejected"):
                 raise UploadError("pack_upload_state", "这个上传已经发布或退回", 409, {"state": record["state"]})
+            owner = self.repository.owner(record.get("name") or "")
+            if owner and owner != record["uploaded_by"]:
+                raise UploadError("pack_name_taken", f"包名 {record['name']} 是 {owner} 的私有包", 409)
             if record["state"] in ("failed", "checking"):
                 failed = [item["label"] for item in record.get("checks") or [] if item["result"] == "fail"]
                 raise UploadError("static_check_failed", "静态检查有失败项，不能发布", 422, {"failed": failed})
@@ -230,6 +262,8 @@ class UploadStore:
                 self.repository.install(pack, origin="upload", by=by, note=record["filename"])
                 self.repository.set_channel(record["name"], channel, record["version"], by=by,
                                             rollout={**(rollout or {}), "auto_breaker": bool(auto_breaker)})
+                if owner:
+                    self.repository.set_field(record["name"], OWNER_FIELD, None)  # 管理员把私有包转成公开的
             except RepositoryError as exc:
                 raise UploadError(exc.code, str(exc), exc.status, exc.details) from exc
             record["state"] = "published"
@@ -238,10 +272,38 @@ class UploadStore:
             record["timeline"].append({"at": time.time(), "actor": by, "text": f"发布到 {channel}", "state": "published"})
             return self._save(record)
 
+    def install_private(self, upload_id: str, *, by: str) -> dict:
+        """普通用户装自己的包：入库、占下包名。别人看不见，只有本人能启用到项目。"""
+        with _LOCK:
+            record = self.get(upload_id)
+            if record["state"] == "installed":
+                return record
+            if record["state"] in ("failed", "checking"):
+                failed = [item["label"] for item in record.get("checks") or [] if item["result"] == "fail"]
+                raise UploadError("static_check_failed", "静态检查有失败项，不能安装", 422, {"failed": failed})
+            if record["state"] != "passed":
+                raise UploadError("pack_upload_state", "这个上传已经发布或退回", 409, {"state": record["state"]})
+            name = record["name"]
+            used = sum(len(self.repository.versions(item)) for item in self.repository.private_names(by))
+            if used >= PRIVATE_MAX_VERSIONS:
+                raise UploadError("pack_quota_exceeded", f"私有包最多 {PRIVATE_MAX_VERSIONS} 个版本，请联系管理员清理", 409,
+                                  {"limit": PRIVATE_MAX_VERSIONS})
+            try:
+                self.repository.claim(name, by)
+                self.repository.install(self._dir(upload_id) / record["pack_dir"], origin="private", by=by,
+                                        note=record["filename"])
+            except RepositoryError as exc:
+                if not self.repository.versions(name) and self.repository.owner(name) == by:
+                    self.repository.set_field(name, OWNER_FIELD, None)
+                raise UploadError(exc.code, str(exc), exc.status, exc.details) from exc
+            record["state"] = "installed"
+            record["timeline"].append({"at": time.time(), "actor": by, "text": "安装", "state": "installed"})
+            return self._save(record)
+
     def reject(self, upload_id: str, *, reason: str, by: str) -> dict:
         with _LOCK:
             record = self.get(upload_id)
-            if record["state"] in ("published", "rejected"):
+            if record["state"] in ("published", "rejected", "installed"):
                 raise UploadError("pack_upload_state", "这个上传已经发布或退回", 409, {"state": record["state"]})
             record["state"] = "rejected"
             record["reject_reason"] = reason

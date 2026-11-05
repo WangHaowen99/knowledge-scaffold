@@ -8,6 +8,7 @@ import {
   Area, Button, Card, Chip, Empty, Field, Icon, Inp, KV, Menu, Modal, Note, Prog, Seg, St, Toggle, cx, useOutside,
 } from '../../ui/index.jsx';
 import {
+  installBlock,
   CHANNELS, checkView, contributesText, defaultPublishForm, effectText, kindText, orderUploads, publishBlock, reasonProblem,
   rejectDraft, rolloutEstimate, rolloutProblem, segUploads, timelineRows, uploadMeta, uploadStatus, uploadTitle,
 } from './uploadModel.js';
@@ -36,13 +37,13 @@ export function useActorNames(actors) {
 
 // ---------- 上传区与上传列表（PL-13、PL-14） ----------
 
-function UploadRow({ u, on, onSelect }) {
+function UploadRow({ u, on, mine, onSelect }) {
   const st = uploadStatus(u);
   return (
     <div className={cx('pl-file plu-row', on && 'on')} role="button" tabIndex={0} onClick={() => onSelect(u.id)}
       onKeyDown={(e) => { if (e.key === 'Enter') onSelect(u.id); }}>
       <Icon name="pkg" size={18} />
-      <div className="grow"><div className="b sm ell">{u.filename}</div><div className="xs muted">{uploadMeta(u)}</div></div>
+      <div className="grow"><div className="b sm ell">{u.filename}</div><div className="xs muted">{uploadMeta(u, Date.now(), mine)}</div></div>
       {st.running ? <St k="running" sm label={st.text} /> : <Chip tone={st.tone} icon={st.icon} sm>{st.text}</Chip>}
     </div>
   );
@@ -68,7 +69,7 @@ function SendingRow({ s, onDismiss }) {
   );
 }
 
-export function UploadCard({ list, sending, selectedId, limit, onFiles, onSelect, onDismiss }) {
+export function UploadCard({ list, sending, selectedId, limit, mine, onFiles, onSelect, onDismiss }) {
   const input = useRef(null);
   const [drag, setDrag] = useState(false);
   const [all, setAll] = useState(false);
@@ -97,7 +98,7 @@ export function UploadCard({ list, sending, selectedId, limit, onFiles, onSelect
       {sending.length || rows.length ? (
         <div className="col mt12" style={{ gap: 8 }}>
           {sending.map((s) => <SendingRow key={s.key} s={s} onDismiss={onDismiss} />)}
-          {shown.map((u) => <UploadRow key={u.id} u={u} on={u.id === selectedId} onSelect={onSelect} />)}
+          {shown.map((u) => <UploadRow key={u.id} u={u} on={u.id === selectedId} mine={mine} onSelect={onSelect} />)}
           {rows.length > SHOW_ROWS ? (
             <a className="link plu-more" onClick={() => setAll((v) => !v)}>{all ? '收起' : `更多（${rows.length - SHOW_ROWS}）`}</a>
           ) : null}
@@ -150,7 +151,7 @@ export function CheckCard({ list, selectedId, detail, onSelect, onDownload, onRe
           <div className="row mt12">
             <span className="sp" />
             <Button size="sm" icon="download" onClick={() => onDownload(u)}>下载检查报告</Button>
-            {u.state === 'failed' ? <Button size="sm" kind="danger" onClick={() => onReject(u)}>退回</Button> : null}
+            {u.state === 'failed' && onReject ? <Button size="sm" kind="danger" onClick={() => onReject(u)}>退回</Button> : null}
           </div>
         ) : null}
       </>
@@ -303,10 +304,28 @@ export function PublishCard({ upload, rollout, busy, error, onPublish, onHold })
 
 // ---------- 审核记录（PL-15 timeline） ----------
 
-export function TimelineCard({ upload, nameOf }) {
-  const rows = timelineRows(upload, { nameOf });
+// 普通用户：装到自己名下，再去详情页启用到项目
+export function InstallCard({ upload, busy, error, onInstall }) {
+  if (!upload) return <Card title="安装" icon="upload"><div className="muted sm">没有可安装的包</div></Card>;
+  const block = installBlock(upload);
+  const installed = upload.state === 'installed';
   return (
-    <Card title="审核记录" icon="history">
+    <Card title={`安装 ${uploadTitle(upload)}`} icon="upload">
+      {block ? <Note tone={installed ? 'teal' : 'gray'} icon={installed ? 'check' : undefined}>{block}</Note> : <div className="muted sm">只在你自己的项目里可用</div>}
+      {error ? <Note tone="red" className="mt8">{error}</Note> : null}
+      <div className="row mt12">
+        {installed ? (
+          <Button size="sm" kind="primary" onClick={() => navigate(pagePath('plugin-detail'), { pack: upload.name })}>去启用</Button>
+        ) : <Button size="sm" kind="primary" icon="download" disabled={busy || !!block} onClick={() => onInstall(upload)}>安装</Button>}
+      </div>
+    </Card>
+  );
+}
+
+export function TimelineCard({ upload, nameOf, mine }) {
+  const rows = timelineRows(upload, { nameOf, mine });
+  return (
+    <Card title={mine ? '记录' : '审核记录'} icon="history">
       {rows.length ? (
         <div className="tl">
           {rows.map((r, i) => (

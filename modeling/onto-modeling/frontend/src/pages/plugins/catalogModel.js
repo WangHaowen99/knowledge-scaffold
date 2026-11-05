@@ -70,9 +70,10 @@ export function catOf(query) {
 }
 
 // ---------- 卡片 ----------
-// 只给租户包打标；官方包不标（几乎所有包都是官方）
+// 只给租户包、私有包打标；官方包不标（几乎所有包都是官方）
 export function publisherChip(p) {
   const pub = p.publisher || { kind: 'official', label: '官方' };
+  if (pub.kind === 'private') return { text: pub.label || '仅自己可见', tone: 'gray' };
   if (pub.kind !== 'tenant') return null;
   const label = pub.label || '';
   return { text: !label ? '租户' : /^租户/.test(label) ? label : `租户 · ${label}`, tone: 'indigo' };

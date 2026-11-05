@@ -168,6 +168,7 @@
 | 对话附件（`U-01` `purpose=attachment`） | 单个 20 MiB，一条消息最多 10 个 | `413` / `400 invalid_argument` |
 | 项目导入包（`U-01` `purpose=project_import`） | 200 MiB | `413` |
 | 插件离线包（`PL-13`） | 200 MiB | `413` |
+| 普通用户的插件包（`PL-22`） | 20 MiB | `413` |
 | MCP 请求体 | 1 MiB | `413 REQUEST_TOO_LARGE`（MCP 码） |
 | 证据锚点批量解析 | 一次 100 个 | `400 invalid_argument` |
 
@@ -432,6 +433,8 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `pack_upload_invalid` | 400 | 不是 zip，或缺清单、校验和 | `reason` |
 | `static_check_failed` | 422 | 有失败项，不能发布 | `failed[]` |
 | `pack_upload_state` | 409 | 上传已发布或已退回 | `state` |
+| `pack_name_taken` | 409 | 包名是公开的包或别人的私有包 | — |
+| `pack_quota_exceeded` | 409 | 私有包版本数到上限 | `limit` |
 | `artifact_type_unknown` | 404 | 产物类型没有登记，或登记它的包没启用 | — |
 | `artifact_not_found` | 404 | 产物不存在 | — |
 | `artifact_schema_invalid` | 422 | 不符合登记的格式定义 | `errors[]: {field, message}` |
@@ -587,7 +590,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 | `auth.local_user` | string \| null | 本地模式下的用户名，固定 `local` |
 | `ops_base_url` | string | 运维管理面地址，空串表示同源 |
 | `maintenance` | `MaintenanceState` \| null | 维护模式状态，供横幅使用 |
-| `limits` | object | `{json_body_bytes, file_write_bytes, material_upload_bytes, attachment_bytes, attachments_per_message, project_import_bytes, pack_upload_bytes, page_size_max}`，数值同 1.8 |
+| `limits` | object | `{json_body_bytes, file_write_bytes, material_upload_bytes, attachment_bytes, attachments_per_message, project_import_bytes, pack_upload_bytes, pack_private_upload_bytes, page_size_max}`，数值同 1.8 |
 | `material_types` | string[] | 允许的资料扩展名 |
 | `features.drawio` | bool | drawio 静态页是否可用 |
 | `billing.currency` | string | 金额币种 |
@@ -2286,6 +2289,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `GET /api/v1/packs` · 登录 · 旧：`GET /api/settings/assets`（全局单版本，删除） · 审计：否 · 依据：5.3、5.7、8.1 · 页面：plugins、create（第 3 步行业包、系统知识包、能力包）
 
+- 列出公开的包和看的人自己的私有包（`publisher.kind="private"`）。别人的私有包在 PL-01、PL-02、PL-03、PL-06 和新建向导里都按不存在处理，已经锁在项目里的除外（项目转给别人后照常能用）。
+
 - 查询参数：
   - `category?`：`capability|industry|system|provider|node|exporter`，多值；
   - `q?`：名称、ID、描述子串；
@@ -2473,6 +2478,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `POST /api/v1/admin/packs/uploads/{upload_id}/publish` · admin · 旧：— · 审计：专项 `pack.publish` · 依据：8.1#2（灰度通道） · 页面：plugin-upload
 
 - 请求：`{channel: "beta"|"stable", rollout: {by: "project"|"tenant", percent: 0–100, targets?: string[]}, auto_breaker: bool}`。
+- 普通用户的上传（`scope="private"`）也能发布，`installed` 状态同样可以：发布后这个包变成公开的。包名是别人的私有包时回 `pack_name_taken`。
   - `auto_breaker`：失败率超过 5% 或连续 5 次失败时，回退到上一版本。
 - 包进入只读的包仓库目录。
 - 响应：`{pack: PackRef, channel, rollout}`。
@@ -2511,6 +2517,42 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 错误：`invalid_argument`（这种文件没有这个转换器）。
 
 ---
+
+#### PL-22 上传自己用的插件包
+
+`POST /api/v1/me/pack-uploads`（multipart） · 登录即可 · 旧：— · 审计：专项 `pack.upload` · 依据：ADR-0079 · 页面：plugin-upload
+
+- 请求：`file`（zip，≤20 MiB，解压后 ≤64 MiB、≤2000 个文件）。
+- 静态检查比 PL-15 多一项 `private_scope`（只带提示词和资料，白名单见 ADR-0079）和 `private_name`（包名没被占用），按租户包的严格程度查。
+- 每人保留最近 20 个上传，更早的自动清掉。
+- 响应 `202`：`PackUpload`（`state="checking"`，`scope="private"`）。
+- 错误：`pack_upload_invalid`（`reason` 多一种 `too_large`）、`payload_too_large`。
+
+#### PL-23 自己的上传
+
+`GET /api/v1/me/pack-uploads` · 登录即可 · 旧：— · 审计：否 · 依据：ADR-0079 · 页面：plugin-upload
+
+- 查询参数、响应同 PL-14，只有本人的上传。
+
+#### PL-24 自己的上传详情
+
+`GET /api/v1/me/pack-uploads/{upload_id}` · 登录即可 · 旧：— · 审计：否 · 依据：ADR-0079 · 页面：plugin-upload
+
+- 响应同 PL-15。别人的上传回 `404`。
+
+#### PL-25 下载自己的检查报告
+
+`GET /api/v1/me/pack-uploads/{upload_id}/report` · 登录即可（可用 `?token=`） · 旧：— · 审计：否 · 依据：ADR-0079 · 页面：plugin-upload
+
+- 响应同 PL-16。
+
+#### PL-26 安装到自己名下
+
+`POST /api/v1/me/pack-uploads/{upload_id}/install` · 登录即可 · 旧：— · 审计：专项 `pack.private_install` · 依据：ADR-0079 · 页面：plugin-upload
+
+- 包入库，占下包名，之后在插件中心启用到自己的项目（PL-06）。重复调用幂等。
+- 响应 `200`：`PackUpload`（`state="installed"`）。
+- 错误：`static_check_failed`、`pack_upload_state`、`pack_name_taken`、`pack_quota_exceeded`（每人最多 50 个版本）。
 
 ### 3.17 插件产物与通用视图
 
@@ -3798,6 +3840,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `GET /api/v1/ops/packs` · ops、admin · 旧：— · 审计：否 · 依据：4.10.3、㉙ · 页面：ops-ctl（插件运维）
 
+- 普通用户的私有包也列出来，能禁用（ADR-0079）。
 - 响应：`{items: [{name, kind, version, channel: "stable"|"beta"|"retired", rollout_pct, rollout_by, error_rate_pct, breaker: "closed"|"half_open"|"open", projects_using: int}]}`。
 
 #### O-26 调整灰度
@@ -5107,7 +5150,7 @@ type PackUi =
 type PackCard = {
   name: string; version: string; label: string; description: string;
   category: PackCategory;
-  publisher: { kind: "official" | "tenant"; label: string };
+  publisher: { kind: "official" | "tenant" | "private"; label: string };   // private = 自己的私有包
   ui: PackUi | null;              // 只有能力包有
   batch: "first" | "second" | "third" | null;
   badges: ("new" | "recommended")[];
@@ -5150,7 +5193,8 @@ type StaticCheck = { id: string; label: string; detail: string; result: "pass" |
 type PackUpload = {
   id: string; filename: string; size: number; uploaded_at: time; uploaded_by: string;
   tenant_label: string | null;
-  state: "checking" | "passed" | "failed" | "published" | "rejected" | "held";
+  scope: "private" | null;   // private = 普通用户上传（PL-22），只归上传者
+  state: "checking" | "passed" | "failed" | "published" | "rejected" | "held" | "installed";
   summary: { pass: number; warn: number; fail: number };
   manifest_ok: boolean; checksums_ok: boolean;
 };

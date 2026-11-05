@@ -1,5 +1,5 @@
-// mock：插件上传与审核（PL-13～PL-18），以及没挂界面的管理员审核申请（AD-08～AD-10）。页面：plugin-upload
-// 只有 admin 能调（ctx.forbid）。状态放在 db.packUploads、db.packRepo、db.adminRequests 上。
+// mock：插件上传与审核（PL-13～PL-18）、普通用户装自己的包（PL-22～PL-26），以及没挂界面的管理员审核申请（AD-08～AD-10）。
+// 页面：plugin-upload。PL-13～PL-18 只有 admin 能调（ctx.forbid）。状态放在 db.packUploads、db.packRepo、db.adminRequests 上。
 // 地址参数 ?mock=upload:<状态>，几个状态用 + 连起来（如 upload:checking+exists）：
 // - 缺省            两个上传：industry-retail-1.1.0.zip 检查通过（13 通过 · 1 警告），demo-trace-ext-0.1.0.zip 是租户包、4 项失败
 // - upload:checking 再加一个正在检查的 sys-wms-generic-0.5.0.zip（一直停在检查中，不会跑完）
@@ -16,12 +16,13 @@ import {
 const ADMIN = ['admin'];
 const CHECK_MS = 2400;
 const LIMIT = 200 * 1024 * 1024;
+const PRIVATE_LIMIT = 20 * 1024 * 1024;
 
 // PL-14 的一项（PackUpload）；full 时加 manifest、checks、timeline（PL-15）。同后端 _upload_view
 export function uploadView(rec, full = false) {
   const view = {
     id: rec.id, filename: rec.filename, size: rec.size, uploaded_at: rec.uploaded_at, uploaded_by: rec.uploaded_by,
-    tenant_label: rec.tenant_label, state: rec.state, summary: rec.summary, manifest_ok: rec.manifest_ok, checksums_ok: rec.checksums_ok,
+    tenant_label: rec.tenant_label, scope: rec.scope || null, state: rec.state, summary: rec.summary, manifest_ok: rec.manifest_ok, checksums_ok: rec.checksums_ok,
     name: rec.name, version: rec.version,
   };
   return full ? { ...view, manifest: rec.manifest, checks: rec.checks, timeline: rec.timeline } : view;
@@ -30,7 +31,7 @@ export function uploadView(rec, full = false) {
 /** 静态检查跑完：按文件名判结果（mock 不解包） */
 export function finishCheck(rec, now = Date.now()) {
   const { name, version } = parseFilename(rec.filename);
-  const checks = rec.tenant_label ? failedChecks(name) : passedChecks(name, version, { files: Math.max(12, Math.round(rec.size / 2048)) });
+  const checks = rec.tenant_label || (rec.scope === 'private' && /^demo-/i.test(rec.filename)) ? failedChecks(name) : passedChecks(name, version, { files: Math.max(12, Math.round(rec.size / 2048)) });
   const summary = summaryOf(checks);
   const kind = name.startsWith('industry-') || name.startsWith('sys-') ? 'knowledge' : 'capability';
   Object.assign(rec, {
@@ -70,23 +71,32 @@ export function register(ctx) {
   const find = (id) => db.packUploads.find((u) => u.id === decodeURIComponent(id));
   const notFound = () => err(404, 'not_found', '上传不存在');
 
-  // PL-13 上传（multipart：file、tenant_label?）；静态检查在响应之后跑
-  on('POST', '/admin/packs/uploads', ({ user, form }) => forbid(user, ADMIN) || (() => {
+  const receive = (user, form, { limit, scope = null }) => {
     const file = form?.get('file');
     if (!file || typeof file === 'string') return err(400, 'invalid_argument', '缺少文件', { fields: { file: 'required' } });
-    if (file.size > LIMIT) return err(413, 'payload_too_large', '插件包超过 200 MiB', { limit_bytes: LIMIT });
+    if (file.size > limit) return err(413, 'payload_too_large', `插件包超过 ${limit / 1024 / 1024} MiB`, { limit_bytes: limit });
     if (!/\.zip$/i.test(file.name)) return err(400, 'pack_upload_invalid', '不是有效的 zip 包', { reason: 'not_zip' });
     if (/nomanifest/i.test(file.name)) return err(400, 'pack_upload_invalid', '包里缺少 manifest.yaml', { reason: 'manifest_missing' });
     const at = new Date().toISOString();
     const rec = {
       id: `up-${uid()}${Date.now().toString(16).slice(-7)}`, filename: file.name, size: file.size, uploaded_at: at, uploaded_by: user.username,
-      tenant_label: form.get('tenant_label') || (/^demo-/i.test(file.name) ? '示例租户' : null), state: 'checking', summary: { pass: 0, warn: 0, fail: 0 }, manifest_ok: false, checksums_ok: false,
+      tenant_label: scope ? null : form.get('tenant_label') || (/^demo-/i.test(file.name) ? '示例租户' : null), scope, state: 'checking', summary: { pass: 0, warn: 0, fail: 0 }, manifest_ok: false, checksums_ok: false,
       name: null, version: null, manifest: null, checks: [], timeline: [{ at, actor: user.username, text: '上传', state: 'checking' }],
     };
     db.packUploads.unshift(rec);
     setTimeout(() => finishCheck(rec), CHECK_MS)?.unref?.(); // 单测里不拖住进程
     return json(202, uploadView(rec));
-  })());
+  };
+
+  const reportResponse = (rec) => {
+    if (rec.state === 'checking') return err(404, 'not_found', '检查报告还没生成');
+    return new Response(reportMarkdown(rec), {
+      status: 200, headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Disposition': `attachment; filename="${rec.id}-report.md"` },
+    });
+  };
+
+  // PL-13 上传（multipart：file、tenant_label?）；静态检查在响应之后跑
+  on('POST', '/admin/packs/uploads', ({ user, form }) => forbid(user, ADMIN) || receive(user, form, { limit: LIMIT }));
 
   // PL-14 上传列表（state 可逗号分隔；mock 不分页）
   on('GET', '/admin/packs/uploads', ({ user, query }) => forbid(user, ADMIN) || (() => {
@@ -104,11 +114,7 @@ export function register(ctx) {
   // PL-16 检查报告（text/markdown 附件）
   on('GET', '/admin/packs/uploads/([^/]+)/report', ({ user, m }) => forbid(user, ADMIN) || (() => {
     const rec = find(m[1]);
-    if (!rec) return notFound();
-    if (rec.state === 'checking') return err(404, 'not_found', '检查报告还没生成');
-    return new Response(reportMarkdown(rec), {
-      status: 200, headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Disposition': `attachment; filename="${rec.id}-report.md"` },
-    });
+    return rec ? reportResponse(rec) : notFound();
   })());
 
   // PL-17 发布到通道：rollout、auto_breaker 原样存进通道记录（B3a 第 12 条）
@@ -146,6 +152,36 @@ export function register(ctx) {
     rec.timeline.push({ at: new Date().toISOString(), actor: user.username, text: `退回：${reason}`, state: 'rejected' });
     return json(200, uploadView(rec));
   })());
+
+  // ---------- PL-22～PL-26 自己的插件包（登录即可，只看得到自己的） ----------
+  const mine = (user, id) => {
+    const rec = find(id);
+    return rec && rec.scope === 'private' && rec.uploaded_by === user.username ? rec : null;
+  };
+  on('POST', '/me/pack-uploads', ({ user, form }) => receive(user, form, { limit: PRIVATE_LIMIT, scope: 'private' }));
+  on('GET', '/me/pack-uploads', ({ user }) => json(200, {
+    items: db.packUploads.filter((u) => u.scope === 'private' && u.uploaded_by === user.username).map((u) => uploadView(u)),
+    next_cursor: null,
+  }));
+  on('GET', '/me/pack-uploads/([^/]+)', ({ user, m }) => (mine(user, m[1]) ? json(200, uploadView(mine(user, m[1]), true)) : notFound()));
+  on('GET', '/me/pack-uploads/([^/]+)/report', ({ user, m }) => (mine(user, m[1]) ? reportResponse(mine(user, m[1])) : notFound()));
+  on('POST', '/me/pack-uploads/([^/]+)/install', ({ user, m }) => {
+    const rec = mine(user, m[1]);
+    if (!rec) return notFound();
+    if (rec.state === 'failed' || rec.state === 'checking') {
+      return err(422, 'static_check_failed', '静态检查有失败项，不能安装', { failed: rec.checks.filter((c) => c.result === 'fail').map((c) => c.label) });
+    }
+    if (rec.state === 'passed') {
+      if (F.packs().some((p) => p.name === rec.name)) return err(409, 'pack_name_taken', `包名 ${rec.name} 已被占用，请换一个名字`);
+      rec.state = 'installed';
+      rec.timeline.push({ at: new Date().toISOString(), actor: user.username, text: '安装', state: 'installed' });
+      const base = F.packs().find((p) => p.category === 'capability');
+      db.privateCards = [...(db.privateCards || []), {
+        ...base, name: rec.name, label: rec.name, latest: rec.version, version: rec.version, description: '', publisher: { kind: 'private', label: '仅自己可见' },
+      }];
+    }
+    return json(200, uploadView(rec));
+  });
 
   // ---------- AD-08～AD-10 管理员审核申请（设计稿没画入口，组件 AdminRequests 暂不挂载） ----------
   const findReq = (id) => requestsOf(db).find((r) => r.id === decodeURIComponent(id));

@@ -98,7 +98,9 @@ export function PluginsNav({ active, counts: given, onCat, projectId }) {
             item('upd', '可更新', 'refresh', counts.updatable ? <Chip tone="amber" sm>{counts.updatable}</Chip> : null),
           ],
         },
-        { title: '管理员', items: [{ key: 'up', title: '上传与审核', icon: 'upload', go: 'plugin-upload', hidden: !can(user, 'admin') }] },
+        can(user, 'admin')
+          ? { title: '管理员', items: [{ key: 'up', title: '上传与审核', icon: 'upload', go: 'plugin-upload' }] }
+          : { title: '我的', items: [{ key: 'up', title: '我的上传', icon: 'upload', go: 'plugin-upload' }] },
       ]}
     />
   );
