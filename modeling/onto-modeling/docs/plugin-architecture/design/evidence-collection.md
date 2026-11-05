@@ -234,3 +234,104 @@ frontmatter 声明了快照就用它，否则用这个源最新的完整快照�
   | `diff <源> <旧快照> <新快照> [--change]` | 按锚点 + 哈希比较，新增、删除、修改（分页） |
 
   输出都是 JSON，顶层带 `"untrusted_content": true` 和分页信息（`next_offset`）。快照默认取这个源最新的完整快照。
+
+## 8. 连接型提供方（ADR-0084）
+
+数据库、代码仓库这类要凭据、要连业务网络的提供方跑在**网关的子进程**里，对网关的任务表实现和旁路容器提供方同一套方法
+（submit / status / cancel / result / records / raw / delete），所以 §3 的快照包、§4 的任务接口、内核入库都不变。
+
+**任务说明 `JobSpec` 多的字段**（都进票据的范围哈希，智能体改不了）：
+
+```json
+{"cred_ref": "cred://erp-prod/3", "egress": [{"host": "db.example.invalid", "port": 3306}],
+ "rate_limit": {"concurrency": 1, "qps": 20, "query_timeout_s": 30},
+ "masking": {"policy": "mask-v1", "salt": "<项目盐，hex>"},
+ "selector": null, "limit": null}
+```
+
+`scope` 是本次范围（登记白名单的子集，内核核对过）；`operation` 取 `discover`、`snapshot`、`sample`（`selector` 是一个对象，`limit` ≤ 20）。
+
+**子进程协议**（`app/connector_gateway/conn/`）：stdin 第一行是 JSON 头（`provider`、`operation` 和上面的任务说明字段，不含凭据），
+第二行是凭据 JSON（`{"password": "…"}`），然后关闭。stdout 一行一个事件：
+
+| 事件 | 字段 |
+|---|---|
+| `progress` | `phase`、`done`、`total`、`unit` |
+| `record` | `record`（已带 `hash`） |
+| `inventory` | `items: [{object, kind, estimate_rows?, estimate_bytes?}]`、`skipped: [{object, reason}]` |
+| `access` | `statement_digest`（语句的 sha256 前 16 位 + 语句类型，如 `select:3f2a…`）、`rows`、`bytes`、`duration_ms` |
+| `limitation` | `text` |
+| `result` | `complete`、`coverage_pct`、`checks`（只 `test` 有） |
+| `error` | `code`、`message`（不带连接串和密码） |
+
+子进程启动时：设资源上限；装审计钩子，`socket.connect` 和 `socket.getaddrinfo` 只放行出口白名单里的主机和端口（`localhost` 以外的
+都要在白名单里）；凭据只在内存里。提供方模块 `app/connector_gateway/conn/<提供方 ID 的下划线写法>.py` 导出 `INFO`（`ProviderInfo` 的字段，
+`input: "connection"`、`self_service: false`）和 `test(ctx)`、`discover(ctx)`、`snapshot(ctx)`、`sample(ctx)`；只用 `ctx`（`conn.context.Context`）
+往外发东西，不直接写 stdout。
+
+**快照包里多的**：清单的 `access_log`（`access` 事件逐条，最多 1000 条，超出的合并成一条汇总）；内核据此出 EV-09。
+
+**凭据**：
+
+| 接口 | 票据 `op` | `scope` 哈希的内容 | 说明 |
+|---|---|---|---|
+| `PUT /v1/secrets/{源}` | `secret` | `{"source": 源, "fields": [字段名，排序]}` | 请求体 `{"fields": {…}}`；回 `{"cred_ref": "cred://源/版本", "written_at"}`，版本递增 |
+| `DELETE /v1/secrets/{源}` | `secret` | `{"source": 源, "delete": true}` | 删这个源的所有版本 |
+| `POST /v1/sources/{源}/test` | `test` | `TestSpec` | 请求体 `TestSpec`：`{source: {id, provider, connection}, cred_ref, egress, rate_limit}`；回 `{ok, checks}` |
+
+存放：`ONTO_CONNECTOR_SECRETS_DIR`（卷 `connector-secrets`，只网关挂）下 `<源>/<版本>.bin`，AES-256-GCM，主密钥来自
+`ONTO_CONNECTOR_MASTER_KEY_FILE`（32 字节，base64），文件 0600。新任务用最新版本；每个源保留最近 2 个版本，更旧的在没有任务用时删除。
+
+## 9. 数据库（db-mysql、db-postgres）
+
+**锚点**（详设 5.8.5）：`<库>` 在 MySQL 是数据库名，在 PostgreSQL 是 schema 名；名字里的保留字符按规则 2 编码。
+
+| 记录 | 锚点 | 说明 |
+|---|---|---|
+| 表 `entity` | `db:<源>/<库>.<表>` | `attrs`：`kind=table`、`comment`、`rows_estimate`、`ddl`（生成的，不含数据） |
+| 视图 `entity` | `db:<源>/<库>.view:<视图>` | `attrs.definition` |
+| 列 `field` | `db:<源>/<库>.<表>.<列>` | `data_type`、`nullable`、`attrs`：`comment`、`default`、`pk`、`masked`、`sensitivity` |
+| 外键 `relation` | `db:<源>/<库>.<表>.fk:<名>` | `from`、`to` 是表锚点，`attrs.columns: [[本表列, 对方列]]`，`declared` |
+| 推断关系 `relation` | `db:<源>/<库>.<表>.ref:<列>` | 命名（`customer_id` → `customer`）或取值重合推断，`inferred`，`attrs.basis` |
+| 主键、唯一、检查 `constraint` | `db:<源>/<库>.<表>.pk`、`.uk:<名>`、`.check:<名>` | `attrs.columns`、`attrs.expression` |
+| 存储过程 `operation` | `db:<源>/<库>.proc:<名>` | `attrs.definition`（截到 4000 字） |
+| 触发器 `rule` | `db:<源>/<库>.<表>.trigger:<名>` | `attrs.timing`、`attrs.event`、`attrs.definition` |
+| 画像 `profile` | `db:<源>/<库>.<表>#profile` | `attrs.rows`、`attrs.columns: [{column, null_pct, distinct, top_k?, stats?}]`，百分比用整数千分比（无浮点） |
+| 样本 `sample` | `db:<源>/<库>.<表>#sample` | `attrs.columns`、`attrs.rows`（已脱敏，最多 20 行）、`attrs.masked_columns` |
+
+范围写法：`crm.*`、`crm.customer`、`erp.store*`（`*` 只在末尾）。画像和样本对每表只读前 `ONTO_CONNECTOR_DB_PROFILE_ROWS`（默认 10000）行。
+
+**脱敏 `mask-v1`**（网关 `conn/masking.py`）：
+
+| 类别 | 识别（列名，中英文；或取值正则） | 处置 |
+|---|---|---|
+| 口令、令牌、密钥 | `password`、`pwd`、`secret`、`token`、`salt`、`密码` | 丢弃（样本里不出这一列） |
+| 手机、电话 | 列名或取值 `1[3-9]\d{9}` | 掩码，留前 3 后 4 |
+| 证件号 | `id_card`、`身份证`、`证件`；取值 18 位 | 掩码，留前 2 后 2 |
+| 姓名 | `*_name` 里前缀是人（customer、contact、user、employee、receiver…）、`姓名`、`联系人` | 掩码，留首字 |
+| 地址、邮箱、银行卡 | 列名或取值正则 | 掩码 |
+| 金额、余额、工资 | `amount`、`price`、`balance`、`salary`、`金额`、`余额` | 分桶（数量级） |
+| 需要跨表关联的标识 | 外键列、被外键引用的列 | 加盐哈希（盐按项目），前 12 位 |
+| 判断不了的文本 | 文本类型且不在以上、也不是低基数代码列 | 掩码 |
+
+画像：敏感列只给 `null_pct`、`distinct`；低基数（≤ 20 个取值）且不敏感的列给 top-k；数值不敏感列给最小、最大值。
+
+## 10. 代码仓库（code-repo）
+
+连接参数 `repo_url`、`ref`（分支、标签或提交），凭据 `token`；出口白名单是仓库主机的 443 端口。克隆按 ADR-0084 加固，
+单文件超过 1 MiB 不读，总量受预算 `max_bytes` 限制；清单的 `artifact` 记 `{"repo_url", "ref", "commit"}`（`repo_url` 去掉用户信息）。
+
+**锚点**：优先符号形式，Java 包名的点拆成段：`code:<源>/sym:com::example::order::OrderService::submit`；Python 模块同理
+（`code:<源>/sym:app::orders::models::Order`）；TS 用文件路径段加符号（`code:<源>/sym:src%2Forders%2Forder%2Eentity%2Ets::Order`）。
+没有符号的才用文件加行号：`code:<源>/file:<编码后的路径>#L120-L180`。
+
+| 记录 | 来源 | 置信度 |
+|---|---|---|
+| `entity`（`kind=class`，`attrs.orm`、`attrs.table`） | JPA `@Entity`、SQLAlchemy / Django 模型、TypeORM `@Entity`；枚举 `kind=enum`、`attrs.values` | ORM 声明的是 `declared`，其余 `observed` |
+| `field` | 实体的字段，`data_type`、`attrs.column`、`attrs.nullable`、`attrs.validations` | 同上 |
+| `relation` | `@ManyToOne` 等关联、外键字段（`declared`）；服务之间的调用（`inferred`） | |
+| `operation` | 路由（`route:<方法> <路径>`，`attrs.handler` 指向方法锚点）、服务类的公开方法 | `observed` |
+| `rule` | 校验注解与约束（`@NotNull`、`@Size`、`@Pattern`、pydantic 校验器、Django 字段约束），`code:<源>/rule:<符号段>::<规则名>` | `declared` |
+
+每条记录 `attrs.loc: {file, line, end_line}`；实体和操作带 `attrs.snippet`（最多 30 行，过内核的密钥扫描）。内嵌 SQL 记在操作的
+`attrs.sql`（最多 2000 字）和 `attrs.tables`。识别不了的框架写法记进快照局限。

@@ -1322,3 +1322,11 @@ Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`
      `bundle_incomplete`、`snapshot_too_large`、`timeout`、`artifact_not_found`、`source_not_found`，其余透传网关的码。
    - EV-09 的 `statement_digest` 对上传类是 `artifact:<sha256 前 12 位>`，`rows`、`bytes` 取快照清单的 `budget_used`。
    - 新增 **EV-34** `DELETE /api/v1/evidence/uploads/{upload_id}`（上传人）：取消没完成的上传、释放每人 2 个的名额；已完成的回 `upload_not_found`。
+
+## 2026-11-05 · F14（数据库与代码仓库连接器）
+
+用户 11-05 定：REA 合进 PR 555 并部署后，接着做数据库和代码仓库连接器。决策见 ADR-0084，接口与格式见 `design/evidence-collection.md` §8～§10。
+
+1. **EV-06、EV-07 开放**：内核把凭据立即转交网关 `PUT /v1/secrets/{源}`，只存 `cred_ref` 和字段的写入时间；EV-02、EV-04 带 `secret` 时同样转交。
+2. **提供方**：`db-mysql`、`db-postgres`（discover、snapshot、sample）、`code-repo`（snapshot）。都要管理员登记（`self_service=false`）。
+3. EV-08 对这几类走网关 `POST /v1/sources/{源}/test`，回连通、只读账号、语句白名单三项；EV-09 来自快照包清单的 `access_log`。
