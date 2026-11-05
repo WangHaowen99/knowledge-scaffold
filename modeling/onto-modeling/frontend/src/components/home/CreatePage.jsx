@@ -4,6 +4,9 @@ import { api } from '../../lib/api.js';
 import { MAX_NAME_LENGTH, useNameConflict } from '../NameConflictDialog.jsx';
 import './modeling-home.css';
 
+// 与 modeling 创建页一致；后端不再截断，长度只在输入阶段控制。
+const GOAL_MAX_LENGTH = 2000;
+
 /* 全屏新建项目页 —— 结构与样式复刻 modeling workbench/pages/CreatePage.jsx。
    资料用途不在这里选：上传时平台按结构识别数据表、术语表，其余由助手按内容判断；
    识别结果在资料区可见可改。阅读方式由平台按资料类型决定。无数据源选择（onto-web 不区分）。 */
@@ -91,14 +94,19 @@ export default function CreatePage({ onBack, onCreated }) {
 
           <div className="wb-field">
             <label htmlFor="pg">一句话说明这个知识包要解决什么问题（可以先粗略写，助手会带你确认）</label>
-            <textarea
-              id="pg"
-              className="input"
-              rows={2}
-              value={goal}
-              onChange={(event) => setGoal(event.target.value)}
-              placeholder="先写一个粗略目标，助手会结合资料带你确认"
-            />
+            <div className="wb-count-input">
+              <textarea
+                id="pg"
+                className="input"
+                rows={2}
+                value={goal}
+                maxLength={GOAL_MAX_LENGTH}
+                aria-describedby="pg-count"
+                onChange={(event) => setGoal(event.target.value)}
+                placeholder="先写一个粗略目标，助手会结合资料带你确认"
+              />
+              <span id="pg-count" className="wb-count">{goal.length} / {GOAL_MAX_LENGTH}</span>
+            </div>
           </div>
 
           <div

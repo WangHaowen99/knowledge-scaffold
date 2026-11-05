@@ -11,8 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .. import config
 from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets, package_mapping
-from ..services import modeling_cleanup, modeling_mcp, package_archive, solver_contract
-from ..services.workspace import WorkspaceError, WorkspaceManager, remove_tree
+from ..services import modeling_cleanup, modeling_mcp, package_archive, solver_contract, knowledge_hub
+from ..services.workspace import GOAL_PENDING, WorkspaceError, WorkspaceManager, remove_tree
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 workspaces = WorkspaceManager(config.DATA_DIR, config.ASSETS_DIR)
@@ -29,6 +29,10 @@ class CreateProjectBody(BaseModel):
 
 class RenameBody(BaseModel):
     name: str
+
+
+class GoalBody(BaseModel):
+    background: str | None = None  # 留空 = 按创建时的目标确认；给出 = 用户改写后的新目标
 
 
 class CloneBody(BaseModel):
@@ -313,6 +317,19 @@ def rename_project(project_id: str, body: RenameBody, request: Request):
         return workspaces.rename_project(project_id, body.name)
 
 
+@router.put("/{project_id}/goal")
+def confirm_project_goal(project_id: str, body: GoalBody, request: Request):
+    """开始建模前的目标确认卡：确认原目标或提交改写后的目标，之后才允许发起对话。"""
+    ensure_access(project_id, request, write=True)
+    return workspaces.confirm_goal(project_id, body.background)
+
+
+def ensure_goal_confirmed(project_id: str) -> None:
+    """创建时填了目标的项目，须先在确认卡上确认，助手才拿着确认后的目标开始建模。"""
+    if workspaces.get_project(project_id).get("goal_status") == GOAL_PENDING:
+        raise WorkspaceError("请先确认建模目标", 409, "goal_confirmation_required")
+
+
 @router.delete("/{project_id}")
 async def delete_project(project_id: str, request: Request, background: BackgroundTasks):
     """永久删除项目（不进回收站）。不看项目状态，二次确认由前端弹窗完成。
@@ -328,7 +345,7 @@ async def delete_project(project_id: str, request: Request, background: Backgrou
     meta = workspaces.get_project(project_id)  # 删除后读不到，级联清理要用，先取
     eval_round = modeling_eval.abort_for_delete(project_id, root, _modeling_token(request))
     await manager.discard(project_id)
-    staged = await asyncio.to_thread(workspaces.stage_delete, project_id)
+    staged = await asyncio.to_thread(knowledge_hub.stage_delete, workspaces, project_id)
     await manager.discard(project_id)  # 移走期间并发发消息新建的会话一并清掉
     eval_data_sources.purge_project(project_id)
     studio.purge_project(project_id)
@@ -427,15 +444,97 @@ def export_project(
     ensure_access(project_id, request)
     if scope not in ("ontology", "workspace", "package"):
         raise WorkspaceError("scope 必须是 ontology、workspace 或 package")
+    if scope == "package":
+        raise WorkspaceError('请先发布，再从已发布版本列表下载指定版本', 400)
     meta = workspaces.get_project(project_id)
     dest = Path(tempfile.mkdtemp()) / f"{meta['name']}-{scope}.zip"
-    if scope == "package":
-        workspaces.publish_package(
-            project_id, dest, allow_unbound=allow_unbound, author=_request_user(request)
-        )
-    else:
-        workspaces.export_zip(project_id, scope, dest)
-    return FileResponse(dest, filename=dest.name, media_type="application/zip")
+    workspaces.export_zip(project_id, scope, dest)
+    import shutil
+    from starlette.background import BackgroundTask
+    return FileResponse(dest, filename=dest.name, media_type="application/zip",
+                        background=BackgroundTask(shutil.rmtree, dest.parent))
+
+
+class ReleaseBody(BaseModel):
+    model_config = {"extra": "forbid"}
+    request_id: str = Field(min_length=1, max_length=128)
+    allow_unbound: bool = False
+
+
+@router.post("/{project_id}/package/releases")
+def publish_release(project_id: str, body: ReleaseBody, request: Request):
+    from .hub_packages import identity
+    from ..services import hub_packages
+    token, subject, _ = identity(request)
+    ensure_access(project_id, request, write=True)
+    return hub_packages.publish(workspaces, project_id, body.request_id, token, subject, body.allow_unbound)
+
+
+@router.get("/{project_id}/package/releases")
+def package_releases(project_id: str, request: Request, offset: int = 0, limit: int = 20):
+    from .hub_packages import identity
+    from ..services import hub_packages
+    token, subject, _ = identity(request)
+    ensure_access(project_id, request)
+    if offset < 0 or not 1 <= limit <= 100:
+        raise WorkspaceError('分页参数无效')
+    return hub_packages.releases(project_id, subject, token, offset, limit)
+
+
+@router.get("/{project_id}/package/releases/{release_id}/download")
+def download_release(project_id: str, release_id: str, request: Request):
+    from .hub_packages import identity, download
+    from ..services import hub_packages
+    _, subject, _ = identity(request)
+    ensure_access(project_id, request)
+    linked = hub_packages.association(project_id, subject)
+    if not linked:
+        raise WorkspaceError('尚未关联个人 Hub 包', 404)
+    return download(linked['ontology_id'], release_id, request)
+
+
+@router.get("/{project_id}/package/resources/status")
+def hub_resource_status(project_id: str, request: Request):
+    ensure_access(project_id, request)
+    return knowledge_hub.resource_status(project_id, workspaces)
+
+
+class SharedResourcesBody(BaseModel):
+    model_config = {"extra": "forbid"}
+    paths: list[str] = Field(max_length=10000)
+    confirm_shared: bool
+
+
+@router.put("/{project_id}/package/resources")
+def share_hub_resources(project_id: str, body: SharedResourcesBody, request: Request):
+    ensure_access(project_id, request, write=True)
+    if not body.confirm_shared:
+        raise WorkspaceError('请确认所选资料可向全部 Hub 授权用户共享', 422)
+    return knowledge_hub.sync_resources(workspaces, project_id, knowledge_hub.token_of(request), body.paths)
+
+
+@router.get("/{project_id}/package/resources")
+def hub_resources(project_id: str, request: Request, offset: int = 0, limit: int = 20):
+    ensure_access(project_id, request)
+    return knowledge_hub.call('GET', f'/api/packages/{hub_ontology_id(project_id)}/resources/current?offset={offset}&limit={limit}',
+                              knowledge_hub.token_of(request))
+
+
+@router.get("/{project_id}/package/resources/{file_id}/download")
+def hub_resource_download(project_id: str, file_id: str, request: Request):
+    import shutil
+    from starlette.background import BackgroundTask
+    ensure_access(project_id, request)
+    knowledge_hub.identifier(file_id)
+    directory = Path(tempfile.mkdtemp(prefix='onto-hub-resource-'))
+    dest = directory / 'resource'
+    try:
+        knowledge_hub.call('GET', f'/api/packages/{hub_ontology_id(project_id)}/resources/current/{file_id}',
+                           knowledge_hub.token_of(request), download=dest)
+    except Exception:
+        shutil.rmtree(directory)
+        raise
+    return FileResponse(dest, filename=file_id, background=BackgroundTask(shutil.rmtree, directory))
 
 
 @router.get("/{project_id}/package/check")
@@ -652,6 +751,7 @@ def metrics(project_id: str, request: Request):
 async def upload_resource(
     project_id: str,
     request: Request,
+    background: BackgroundTasks,
     subdir: str = Form(...),
     file: UploadFile = File(...),
     purpose: str = Form("auto"),
@@ -660,7 +760,7 @@ async def upload_resource(
     ensure_access(project_id, request, write=True)
     data = await file.read()
     # 大文件同步写盘会卡住事件循环（SSE 全体停摆），挪到线程执行
-    return await asyncio.to_thread(
+    result = await asyncio.to_thread(
         workspaces.save_resource,
         project_id,
         subdir,
@@ -669,6 +769,7 @@ async def upload_resource(
         purpose,
         reading_mode,
     )
+    return result
 
 
 @router.get("/{project_id}/resource-meta")
@@ -688,17 +789,19 @@ class ResourceDirectiveBody(BaseModel):
 
 
 @router.patch("/{project_id}/resource-meta")
-def set_resource_meta(project_id: str, body: ResourceDirectiveBody, request: Request):
+def set_resource_meta(project_id: str, body: ResourceDirectiveBody, request: Request, background: BackgroundTasks):
     ensure_access(project_id, request, write=True)
-    return workspaces.set_resource_directive(
+    result = workspaces.set_resource_directive(
         project_id, body.path, body.purpose, body.reading_mode
     )
+    return result
 
 
 @router.delete("/{project_id}/resources")
-def delete_resource(project_id: str, path: str, request: Request):
+def delete_resource(project_id: str, path: str, request: Request, background: BackgroundTasks):
     ensure_access(project_id, request, write=True)
-    return workspaces.delete_resource(project_id, path)
+    result = workspaces.delete_resource(project_id, path)
+    return result
 
 
 class ProjectMcpBody(BaseModel):
@@ -940,6 +1043,25 @@ def eval_status(project_id: str, request: Request):
     }
 
 
+@router.get("/{project_id}/eval/model-profiles")
+def eval_model_profiles(project_id: str, request: Request):
+    """List enabled global Consumer model profiles for the evaluation wizard."""
+    from ..services import modeling_eval
+
+    ensure_access(project_id, request)
+    if not modeling_eval.enabled():
+        return JSONResponse(status_code=400, content={"error": "未配置 modeling 评测服务（ONTO_WEB_MODELING_URL）"})
+    token = _modeling_token(request)
+    if not token:
+        return JSONResponse(status_code=400, content={"error": "缺少可用于 modeling 的令牌"})
+    try:
+        return modeling_eval.model_profiles(token)
+    except urllib.error.HTTPError as exc:
+        return JSONResponse(status_code=exc.code, content={"error": str(getattr(exc, "detail", "") or exc)})
+    except Exception as exc:
+        return JSONResponse(status_code=502, content={"error": str(exc)})
+
+
 @router.get("/{project_id}/eval/answers/{result_id}")
 def eval_full_answer(project_id: str, result_id: str, request: Request):
     """按需读取评测结果的完整 finalAnswer；列表状态中的 answer 仅是摘要。"""
@@ -1025,6 +1147,8 @@ class EvalRunBody(BaseModel):
     eval_set_id: str = ""
     # 用户已确认降级：数据绑定对不上的对象不阻断评测，按未绑定处理
     allow_unbound: bool = False
+    model_profile_id: str = ""
+    case_concurrency: int | None = Field(default=None, ge=1, le=16)
     # 当前登录的 refresh token：转交 modeling 侧为本轮评测续期 access token（轮次常超
     # access token 有效期）。只在内存里透传一次，不落状态、不进日志（repr=False）
     refresh_token: str = Field(default="", repr=False)
@@ -1033,7 +1157,7 @@ class EvalRunBody(BaseModel):
 @router.post("/{project_id}/eval/run")
 async def eval_run(project_id: str, body: EvalRunBody, request: Request):
     """启动数据评测（后台编排，状态经 /eval/status 轮询）。"""
-    from ..services import modeling_eval
+    from ..services import eval_judge_config, modeling_eval, personal_model_settings
 
     root = ensure_access(project_id, request, write=True)
     try:
@@ -1099,6 +1223,18 @@ async def eval_run(project_id: str, body: EvalRunBody, request: Request):
                 },
             )
 
+    judge_model = None
+    if any(case["groundTruth"] for case in cases):
+        meta = workspaces.get_project(project_id)
+        try:
+            judge_model = eval_judge_config.resolve(
+                _request_user(request), meta.get("engine") or "claude"
+            )
+        except eval_judge_config.JudgeConfigError as exc:
+            return JSONResponse(status_code=400, content={"error": str(exc)})
+        except personal_model_settings.PersonalConfigError as exc:
+            return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+
     eval_set_name = ""
     if body.eval_set_id:
         item = eval_sets.get_set(root, body.eval_set_id)
@@ -1111,12 +1247,31 @@ async def eval_run(project_id: str, body: EvalRunBody, request: Request):
     if body.data_source_id:
         eval_data_sources.mark_used(project_id, body.data_source_id)
 
+    if body.model_profile_id:
+        if not body.model_profile_id.startswith("global:"):
+            return JSONResponse(status_code=400, content={"error": "评测模型必须来自 Consumer 全局模型池"})
+        try:
+            available = modeling_eval.model_profiles(token).get("profiles") or []
+        except Exception as exc:
+            return JSONResponse(status_code=502, content={"error": f"读取 Consumer 模型池失败：{exc}"})
+        if body.model_profile_id not in {str(item.get("id") or "") for item in available}:
+            return JSONResponse(status_code=409, content={"error": "所选模型配置不存在或已停用，请刷新后重新选择"})
+
     # 部署级兜底令牌不属于当前用户：此时不转交用户的 refresh token，避免身份错配
     refresh_token = "" if config.MODELING_TOKEN else body.refresh_token.strip()
+    run_options = {
+        "allow_unbound": body.allow_unbound,
+        "refresh_token": refresh_token,
+    }
+    if judge_model is not None:
+        run_options["judge_model"] = judge_model
+    if body.model_profile_id:
+        run_options["model_profile_id"] = body.model_profile_id
+    if body.case_concurrency is not None:
+        run_options["case_concurrency"] = body.case_concurrency
     _asyncio.create_task(
         modeling_eval.run(
-            project_id, root, token, cases, data_source, eval_set_name,
-            allow_unbound=body.allow_unbound, refresh_token=refresh_token,
+            project_id, root, token, cases, data_source, eval_set_name, **run_options
         )
     )
     return {"started": True, "cases": len(cases)}
@@ -1451,6 +1606,19 @@ def versions(project_id: str, request: Request):
     return {"versions": workspaces.versions(project_id)}
 
 
+@router.get("/{project_id}/history")
+def history(project_id: str, request: Request, limit: int = 50, cursor: str = ""):
+    """历史时间线：迭代与发布版本按时间倒序合并分页，游标由后端生成。"""
+    from .hub_packages import identity
+    from ..services import auth, version_history
+    # 未启用统一账号时没有个人 Hub 包，时间线只含迭代
+    token, subject = identity(request)[:2] if auth.ENABLED else ("", "")
+    ensure_access(project_id, request)
+    if not 1 <= limit <= 50:
+        raise WorkspaceError("分页参数无效")
+    return version_history.page(workspaces, project_id, subject, token, limit, cursor)
+
+
 @router.post("/{project_id}/versions/revert")
 def revert(project_id: str, body: RevertBody, request: Request):
     ensure_access(project_id, request, write=True)
@@ -1467,3 +1635,11 @@ def tag_version(project_id: str, body: TagBody, request: Request):
 def delete_tag(project_id: str, tag_name: str, request: Request):
     ensure_access(project_id, request, write=True)
     return workspaces.delete_tag(project_id, tag_name)
+
+
+def hub_ontology_id(project_id):
+    from ..services.hub_packages import association
+    linked = association(project_id)
+    if not linked:
+        raise WorkspaceError('项目尚未发布到 Hub', 404)
+    return linked['ontology_id']

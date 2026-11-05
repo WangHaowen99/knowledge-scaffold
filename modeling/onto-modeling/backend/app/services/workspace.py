@@ -46,6 +46,17 @@ RESOURCE_SUBDIRS = {"diagrams", "excel", "others"}
 # 已发布知识包导入时的原包留底区：随 git 版本化（跨环境迁移要带走），
 # 但不是用户可编辑内容（隐藏目录，不进文件树）。
 IMPORTED_PACKAGE_DIR = ".imported-package"
+# 创建时填写的建模目标：pending 待用户在开始建模前确认，confirmed 已确认；
+# 未填目标或存量项目无此字段，不出确认卡也不注入提示词。
+GOAL_PENDING = "pending"
+GOAL_CONFIRMED = "confirmed"
+
+
+def confirmed_goal(meta: dict) -> str:
+    """已确认的创建目标原文；未确认或存量项目返回空串（不注入助手提示词）。"""
+    if meta.get("goal_status") != GOAL_CONFIRMED:
+        return ""
+    return str(meta.get("background") or "").strip()
 
 DEFAULT_GITIGNORE = """.ontology-state/
 .claude
@@ -187,14 +198,18 @@ class WorkspaceManager:
             (root / rel).mkdir(parents=True, exist_ok=True)
         self._refresh_indexes(root)
 
+        background = (background or "").strip()
         meta = {
             "id": project_id,
             "name": name,
             "created_at": int(time.time()),
             "owner": owner or "",
-            "background": (background or "").strip()[:200],
+            "background": background,
             "engine": _default_engine(),
         }
+        if background:
+            # 创建时填了目标：开始建模前须经确认卡确认，确认后才注入助手提示词
+            meta["goal_status"] = GOAL_PENDING
         self._atomic_write_text(
             root / META_FILE, json.dumps(meta, ensure_ascii=False, indent=2)
         )
@@ -423,15 +438,19 @@ class WorkspaceManager:
 
     def get_project(self, project_id: str) -> dict:
         with self._project_lock(project_id):
-            root = self.project_root(project_id)
-            try:
-                return json.loads((root / META_FILE).read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise WorkspaceError(
-                    "项目元数据暂时不可用，请稍后重试",
-                    503,
-                    "project_metadata_unavailable",
-                ) from exc
+            return self._read_meta_unlocked(self.project_root(project_id))
+
+    @staticmethod
+    def _read_meta_unlocked(root: Path) -> dict:
+        # 已持有项目锁时用它读元数据：再进 get_project 会在同一锁文件上二次 flock 而自锁
+        try:
+            return json.loads((root / META_FILE).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise WorkspaceError(
+                "项目元数据暂时不可用，请稍后重试",
+                503,
+                "project_metadata_unavailable",
+            ) from exc
 
     def project_root(self, project_id: str) -> Path:
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", project_id):
@@ -754,6 +773,23 @@ class WorkspaceManager:
             raise WorkspaceError("项目名称不能为空")
         return self._update_meta(project_id, name=name)
 
+    def confirm_goal(self, project_id: str, background: str | None = None) -> dict:
+        """开始建模前确认创建时填写的目标；传入 background 表示用户改写后再确认。"""
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            meta = self._read_meta_unlocked(root)
+            if meta.get("goal_status") != GOAL_PENDING:
+                raise WorkspaceError(
+                    "建模目标已确认，如需调整请在对话中告诉助手", 409, "goal_not_pending"
+                )
+            fields = {"goal_status": GOAL_CONFIRMED}
+            if background is not None:
+                text = background.strip()
+                if not text:
+                    raise WorkspaceError("请填写建模目标")
+                fields["background"] = text
+            return self._update_meta_unlocked(root, **fields)
+
     def set_archived(self, project_id: str, archived: bool) -> dict:
         return self._update_meta(project_id, archived=bool(archived))
 
@@ -922,6 +958,8 @@ class WorkspaceManager:
         relation_report: dict | None = None,
         allow_unbound: bool = False,
         object_texts: dict[str, str] | None = None,
+        version: str | None = None,
+        ontology_id: str | None = None,
     ) -> Path:
         """发布为知识包（consumer 可导入的 ontology-package v0.1）。
 
@@ -943,8 +981,10 @@ class WorkspaceManager:
         """
         root = self.project_root(project_id)
         meta = self.get_project(project_id)
-        version = f"0.1.{len(self.versions(project_id))}"
-        pkg = meta["id"]
+        version = version or f"0.1.{len(self.versions(project_id))}"
+        pkg = ontology_id or meta["id"]
+        if not re.fullmatch(r'[a-zA-Z0-9_][a-zA-Z0-9_-]{0,127}', pkg):
+            raise WorkspaceError('知识包标识无效')
 
         report_names: dict[tuple[str, str], str] = {}
 
@@ -1894,9 +1934,12 @@ class WorkspaceManager:
 
     # ---- 版本 ----
 
-    def versions(self, project_id: str, limit: int = 50) -> list[dict]:
+    def versions(self, project_id: str, limit: int = 50, offset: int = 0) -> list[dict]:
         root = self.project_root(project_id)
-        out = _git(root, "log", f"--max-count={limit}", "--pretty=format:%H%x1f%ct%x1f%s")
+        total = int(_git(root, "rev-list", "--count", "HEAD").strip())
+        out = _git(
+            root, "log", f"--skip={offset}", f"--max-count={limit}", "--pretty=format:%H%x1f%ct%x1f%s"
+        )
         tags = self._tags_by_commit(root)
         entries = []
         for line in out.splitlines():
@@ -1910,10 +1953,9 @@ class WorkspaceManager:
                         "tags": tags.get(parts[0], []),
                     }
                 )
-        # "已保存版本 N"：N = 距基线的序号，最早的提交是版本 1
-        total = len(entries)
+        # 「迭代 N」：N = 第几次提交，最早的提交是 1；不随分页和新保存变化
         for index, entry in enumerate(entries):
-            entry["version"] = total - index
+            entry["version"] = total - offset - index
         return entries
 
     @staticmethod

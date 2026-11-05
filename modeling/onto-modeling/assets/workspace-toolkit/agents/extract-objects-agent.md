@@ -15,6 +15,7 @@ dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自
 - `PAIRED_EXCEL_PATHS` (optional): same-name Excel supplements in `ontology/excel/`; these are provenance paths for `EXCEL_CONTEXT`.
 - `EXCEL_CONTEXT` (optional): markdown exported from the paired Excel 补充表. Treat it as detail for the same-name flowchart, not as a standalone global source.
 - `TABLE_HEADERS` (optional): JSON `{Sheet 名: [表头列]}` from schema materials and uploaded evaluation data tables. When present, it is the only source of table names and column names — do not take them from data-dictionary documents or reports.
+- `TABLE_PROFILE` (optional): JSON from `check_eval_data.py --profile`, giving each column's value-kind counts (`kinds`: integer / decimal / zero_padded / boolean / boolean_short / date / text), `empty`, `long_integers`, `short_booleans`, `binary01`, `source_type` (the table's own type-description row, if any) and `inferred`. It contains counts only, never cell values. When present, it is the evidence for the 类型 column (see the type rules in Step 2).
 - `REPORT_PATHS` (optional): paths to research report files. When `SUMMARY_PATHS` is empty, these become the **primary source** instead of supplementary context.
 - `OBJECTS_DIR`: target directory for object docs (e.g. `ontology/object/`)
 - `TEMPLATES_DIR`: path to templates directory (e.g. `.claude/templates/`)
@@ -85,7 +86,23 @@ Rules:
   否则整句会被当成表名），说明另起一行以 `> ` 开头；一个对象只声明一张表。
 - **英文名称 = 真实列名**（`TABLE_HEADERS` 非空时为硬约束）：对象声明了「数据来源」表时，从库里直接读取的属性，英文名称必须逐字等于该表在 `TABLE_HEADERS` 里的某一列；不得另起一个英文名、再把真实列名放进「属性别名」。表里没有的属性只允许两种：operation 计算得到的按下方派生标记写；取自规程、文档的常量在「属性规则」里注明 `非库字段`。数据字典类文档与 `TABLE_HEADERS` 冲突时以 `TABLE_HEADERS` 为准，并在返回摘要的注意事项里列出冲突。
 - **英文名称的字符集**：只用字母、数字、下划线、汉字，不以数字开头（不含空格、短横线、点号等），不超过 80 字符——它是图节点的属性名与知识包的字段 key，已声明数据表的对象不合规会拦下整轮图评测。真实列名本身不合规时照写，并在返回摘要的注意事项里列出。
-- Types: 字符串/数字/布尔/枚举/日期/对象引用
+- **类型**：每个属性只填一个，取自 `字符串 / 整数 / 小数 / 布尔 / 日期 / 枚举 / 对象引用`；不要把候选列表
+  （如 `字符串/整型/布尔`）原样抄进单元格，也不要留空或填占位——规则检查报「类型非法」，整份对象不通过。
+  类型要有依据，**不能因为拿不准就填字符串**：
+  1. `TABLE_PROFILE` 里有该列时按取值定类型：`kinds` 只有 integer → 整数；integer + decimal → 小数；
+     日期形态 → 日期；与源材料的枚举取值一致 → 枚举。显式的 0 是数值，不是空值。
+  2. 下列情况保持字符串，并在「属性规则」写明原因：主键 / 编码 / 编号类标识（哪怕全是数字）；有前导零的取值
+     （`zero_padded`）；超过 15 位的长整数（`long_integers`，按数值导入会丢精度）；表的类型说明行（`source_type`）
+     本来就是字符串。取值全是数值却仍要按文本保存的非标识字段，写 `文本保留：原因`，否则报「类型待确认」。
+  3. 布尔：取值是 true/false、是/否 时直接用；是 `t/f`、`y/n`（`short_booleans`）或 `0/1`（`binary01`）时，
+     在「属性规则」写明取值含义（如 `取值：1=是 / 0=否`），否则导入时不会被当作布尔，报「类型待确认」。
+  4. 整列为空或只有表头的列**无从证明是什么类型**：按源材料定类型，在返回摘要的注意事项里列为「类型未验证」，
+     不要因为没有取值就填字符串。
+  5. 标识列里数字与文本混用、前导零与无前导零并存、只差大小写的取值（如 `00123` 与 `123`）：**不要自行补零、
+     去零或改大小写**；在注意事项里列出，经业务确认后在「属性规则」注明 `混合标识：归一化规则`。
+  6. 源材料对类型的说法与 `TABLE_PROFILE` 矛盾时（如资料说金额、取值里有文本），照源材料写类型，并在注意事项里
+     列出冲突，由主调命令交用户裁决，不要改成字符串来回避冲突。
+- 已确认对象里存量的 `数字`、`字符串` 类型不要自动改写：修正已确认文档走主调命令的候选修订流程。
 - Use `[[]]` only for related objects that will also be extracted (or in EXISTING_FILES)
 - If no relationships, omit 关联对象 section
 - **「关联对象」每条关系都要写出关联字段**：括注按关系方向写「源对象字段 → 目标对象字段」，
@@ -146,4 +163,7 @@ Rules:
 
 注意事项：
 - {any incomplete items or assumptions made}
+- 类型未验证 / 类型与资料冲突 / 标识混合：{对象.字段：原因}（没有则写「无」）
 ```
+
+不要在摘要里写「字段完整度 100%」这类合并结论：字段覆盖、类型验收、导入验证由主调命令用脚本分别核对后展示。

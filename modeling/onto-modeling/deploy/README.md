@@ -87,6 +87,38 @@ MODELING_MCP_CLEANUP_TOKEN=<与 Onto 相同的值>
 - 空闲会话默认 10 分钟回收（`ONTO_WEB_SESSION_IDLE_TTL`），回收后靠 resume
   续接模型上下文，用户无感；会话 transcript 持久化在数据卷 `/data/home/.claude/`。
 
+## 子代理同步执行（CLI 后台任务开关）
+
+平台在每个 Claude 引擎会话的 CLI 子进程中注入环境变量
+`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`，子代理和 Shell 命令一律同步执行。原因：CLI
+默认把子代理放到后台运行，而平台以主轮结束判定会话空闲，后台运行的子代理会被误示为完成，
+还可能随空闲回收被静默终止。
+
+- 该变量由平台自动注入，无需手工配置。不要在容器内 `/data/home/.claude/settings.json`
+  的 `env` 中设置它：CLI 启动后会读取那里的值，覆盖平台注入的值。
+- 平台还会注入 `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1` 与
+  `CLAUDE_CODE_BG_TASKS_REPORT_RUNNING=1`，让 CLI 上报自身的会话状态：后台工作未结束时，
+  会话保持"运行中"，不会被误判为空闲、提前通知或被回收。这两个变量同样不要在上述
+  `settings.json` 中覆盖。
+- 命令超过本次调用的超时（默认 2 分钟，模型可以延长，最长 10 分钟）会直接失败，
+  不再转入后台。
+- 镜像内的 `claude-agent-sdk` 没有锁定版本，打包的 CLI 随构建时间变化。每次部署和升级后
+  执行以下两项检查：
+
+  1. 打包的 CLI 仍识别该变量，输出大于 0 即正常：
+
+     ```bash
+     docker exec onto-modeling python3 -c "import claude_agent_sdk, pathlib; cli = pathlib.Path(claude_agent_sdk.__file__).parent / '_bundled' / 'claude'; print(cli.read_bytes().count(b'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'))"
+     ```
+
+     输出为 0 说明该版本 CLI 已不识别此变量，应暂停升级并反馈研发。使用降级兼容包
+     （`ONTO_WEB_CLI_PATH`）时本项不适用，按下文降级包的关键路径实测。
+  2. 用户级配置没有覆盖该变量，没有输出即正常：
+
+     ```bash
+     docker exec onto-modeling sh -c 'grep -n CLAUDE_CODE_DISABLE_BACKGROUND_TASKS /data/home/.claude/settings.json 2>/dev/null'
+     ```
+
 ## AVX 指令集要求（x86_64）
 
 捆绑的 Claude Code CLI 是 Bun 编译的原生二进制，要求 CPU 暴露 AVX，否则子进程
@@ -97,7 +129,7 @@ SIGILL 崩溃。`preflight.sh` 会检查；未通过时按优先级整改：
 3. **降级兼容包（最后手段）**：在目标机准备 Node ≥18 运行时和旧版 JS 交付的
    CLI（2.0.76，纯 JS 无 Bun/AVX 依赖），将其挂载进容器并设
    `ONTO_WEB_CLI_PATH=/path/to/cli.js`。注意：降级组合功能落后且冻结维护，
-   必须在目标虚机实测关键路径（确认卡、hooks、子代理、会话恢复）后才能放行，
+   必须在目标虚机实测关键路径（确认卡、hooks、子代理（含同步执行）、会话恢复）后才能放行，
    界面无"兼容模式"标识前不建议长期使用。
 4. 以上均不可行则明确不支持该环境。
 
@@ -111,6 +143,7 @@ SIGILL 崩溃。`preflight.sh` 会检查；未通过时按优先级整改：
 
 - 升级：解包新版本交付包，重复部署步骤；`docker compose up -d` 滚动替换容器，
   数据卷保留。
+- 升级后按「子代理同步执行（CLI 后台任务开关）」一节执行两项检查。
 - 回滚：用旧版本交付包重复部署步骤即可（镜像 tag 随版本走，互不覆盖）。
 
 ## 接入既有账号中心（单点账号）
@@ -151,3 +184,5 @@ deploy.sh 部署完成后会自动检测 `mw-modeling` 容器（可用
 `ONTO_MODELING_MIGRATE_FROM=<容器名>` 覆盖），存在即执行
 `migrate-from-modeling.sh` 把项目/资料/知识包迁入本服务；迁移幂等，
 已迁移的项目自动跳过，也可随时手动重跑该脚本。
+Workbench 数据库处于 WAL 模式，脚本在 `mw-modeling` 容器内用 `VACUUM INTO` 导出一致性快照再迁移，
+因此需要该容器在运行中。迁移失败不影响 Onto Modeling 本身，deploy.sh 会打印 `[WARN]` 和重跑命令。

@@ -7,7 +7,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config
-from .routers import admin, auth_routes, projects, sessions, settings, onto_mcp
+from .routers import admin, auth_routes, projects, sessions, settings, onto_mcp, hub_packages
+from .routers import package_evaluations
 from .services import auth
 from .services.agent_sessions import SDK_AVAILABLE, SessionError
 from .services.auth import AuthError
@@ -32,16 +33,19 @@ async def _lifespan(app: FastAPI):
     sweep_solver_validations()
     backup_task = asyncio.create_task(backup_scheduler_loop())  # workspace 定期备份
     modeling_cleanup_task = asyncio.create_task(scheduler_loop())
+    from .services import knowledge_hub
+    hub_task = asyncio.create_task(knowledge_hub.scheduler_loop(projects.workspaces))
     # 上次删除项目时没删净的目录（文件被占用、删到一半停机）在后台清扫掉
     purge_task = asyncio.create_task(asyncio.to_thread(projects.workspaces.purge_leftovers))
     try:
         yield
     finally:
+        hub_task.cancel()
         backup_task.cancel()
         modeling_cleanup_task.cancel()
         purge_task.cancel()
         await asyncio.gather(
-            backup_task, modeling_cleanup_task, purge_task, return_exceptions=True
+            backup_task, modeling_cleanup_task, purge_task, hub_task, return_exceptions=True
         )
         await manager.shutdown()
 
@@ -54,6 +58,20 @@ app.include_router(projects.router)
 app.include_router(sessions.router)
 app.include_router(settings.router)
 app.include_router(admin.router)
+app.include_router(hub_packages.router)
+app.include_router(package_evaluations.router)
+
+@app.middleware("http")
+async def retired_evaluation_mutations(request: Request, call_next):
+    path = request.url.path
+    eval_path = path.startswith("/api/projects/") and "/eval/" in path
+    mutation = request.method in {"POST", "PUT", "PATCH", "DELETE"}
+    if eval_path and mutation and not path.endswith(("/eval/stop", "/eval/resume")):
+        return JSONResponse({"code": "evaluation_moved",
+                             "message": "请在独立评测页面管理数据源和新评测", "url": "/evaluation/"},
+                            status_code=410)
+    return await call_next(request)
+
 
 # 白名单外的 /api 路由要求有效 access token；token 可来自
 # Authorization 头或 ?token=（EventSource / 导出下载链接无法带头）
@@ -64,7 +82,8 @@ AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/onto-mcp/")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
     is_non_api = not path.startswith("/api")
-    is_exempt = path.startswith(AUTH_EXEMPT_PREFIXES) or path == "/api/health"
+    is_exempt = (path.startswith(AUTH_EXEMPT_PREFIXES) or path == "/api/health"
+                 or path == "/api/internal/evaluation/notifications")
     if (
         not auth.ENABLED
         or is_non_api

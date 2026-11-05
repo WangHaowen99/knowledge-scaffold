@@ -1,0 +1,57 @@
+name: knowledge-evaluation
+services:
+  evaluation:
+    image: ${EVAL_IMAGE:-knowledge-evaluation:local}
+    # 固定容器名，同时让 Compose 拒绝扩容：服务只支持单实例（SQLite 与文件锁）
+    container_name: knowledge-evaluation
+    build:
+      context: ..
+      # 镜像源默认见 Dockerfile；仅在环境中设置时传入（deploy.sh 由 EVAL_PIP_INDEX_URL、EVAL_NPM_REGISTRY 设置）
+      args:
+        - PIP_INDEX_URL
+        - NPM_REGISTRY
+    restart: unless-stopped
+    env_file: ${EVAL_ENV_FILE:?Set EVAL_ENV_FILE to the protected runtime configuration}
+    environment:
+      EVAL_DATA_DIR: /var/lib/evaluation
+      EVAL_PORT: '8090'
+      # 整栈默认地址。deploy.sh 以 --env-file 传入运行配置，配置中的同名值优先；凭据只在运行配置中
+      EVAL_AUTH_URL: ${EVAL_AUTH_URL:-http://auth-server:5056}
+      EVAL_HUB_URL: ${EVAL_HUB_URL:-http://knowledge-hub:8200}
+      EVAL_CONSUMER_API_URL: ${EVAL_CONSUMER_API_URL:-http://backend:5055}
+      # 任务中心按当前用户登录查询 onto-modeling 显示项目名称，不可达时只隐藏名称，评测不受影响；
+      # 评测完成通知也发往此地址，完成通知使用运行配置中的建模通知凭据，留空不发通知
+      EVAL_MODELING_URL: ${EVAL_MODELING_URL:-http://onto-modeling:8100}
+      # Judge 判分模型，部署默认值：OpenAI 兼容 /chat/completions，需支持工具调用；管理员在评测页面保存的配置优先。
+      # 值写在运行配置（deploy/.env 或 EVAL_ENV_FILE）中，本文件只声明不写值；两处都未配置时无法开始评测
+      EVAL_JUDGE_BASE_URL: ${EVAL_JUDGE_BASE_URL:-}
+      EVAL_JUDGE_API_KEY: ${EVAL_JUDGE_API_KEY:-}
+      EVAL_JUDGE_MODEL: ${EVAL_JUDGE_MODEL:-}
+      EVAL_JUDGE_CONFIG_REVISION: ${EVAL_JUDGE_CONFIG_REVISION:-}
+      # 可把登录交接给评测页面的建模来源（逗号分隔，如 https://modeling.example.com）；
+      # 留空时只信任与评测页面同一主机名的建模页面（localhost 与 127.0.0.1 视为同一台本机）
+      EVAL_TRUSTED_ORIGINS: ${EVAL_TRUSTED_ORIGINS:-}
+    volumes:
+      - evaluation-data:/var/lib/evaluation
+    ports:
+      # 供用户浏览器直接打开评测页面（建模默认跳转同主机 8090），默认开放所有网卡；
+      # 只允许本机访问时设 EVAL_BIND_ADDRESS=127.0.0.1
+      - '${EVAL_BIND_ADDRESS:-0.0.0.0}:${EVAL_PORT:-8090}:8090'
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/evaluation/api/health',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+    # 与账号服务、知识包 Hub、consumer 共享的 Docker 网络（整栈即 consumer 网络），按服务名访问依赖
+    networks:
+      - consumer-net
+
+networks:
+  consumer-net:
+    external: true
+    name: ${CONSUMER_NETWORK:?Set CONSUMER_NETWORK to the Docker network shared with auth-server, knowledge-hub and consumer}
+
+volumes:
+  evaluation-data:

@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from app.services import auth
 
 ISSUER = "https://auth.example.com"
-AUDIENCE = "meta-wise"
+AUDIENCE = "knowledge-scaffold"
 
 
 @pytest.fixture()
@@ -18,7 +18,7 @@ def signing(monkeypatch):
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     monkeypatch.setattr(auth, "ENABLED", True)
     monkeypatch.setattr(auth, "ISSUER", ISSUER)
-    monkeypatch.setattr(auth, "AUDIENCE", AUDIENCE)
+    monkeypatch.setattr(auth, "ACCEPTED_AUDIENCES", [AUDIENCE])
     monkeypatch.setattr(
         auth,
         "_jwks_client",

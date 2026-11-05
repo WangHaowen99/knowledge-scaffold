@@ -337,6 +337,8 @@ export interface ProjectWorkflowProfile {
   externalResearch: boolean;
 }
 
+export type ProjectGoalStatus = '' | 'pending' | 'confirmed';
+
 export interface Project {
   id: string;
   owner: string;
@@ -346,6 +348,8 @@ export interface Project {
   name: string;
   domain: string;
   background: string; // 场景背景（节点 1 一次性表单）
+  // 创建时填写的目标是否已在开始建模前确认；缺省或 '' = 未填目标、未要求确认或存量项目
+  goalStatus?: ProjectGoalStatus;
   targetUsers?: string;
   glossaryPrefs?: string;
   sensitivityLevel: ProjectSensitivity;

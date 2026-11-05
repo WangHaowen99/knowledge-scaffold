@@ -200,7 +200,7 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
       await api.studioSaveDraft(project.id, entry.path, serialize(sections), baseRevisionRef.current);
       const result = await api.studioSubmit(project.id, entry.path);
       if (result.result === 'committed') {
-        message.success('检查通过，已直接保存为新版本');
+        message.success('检查通过，已直接保存为新的迭代');
         onCommitted?.();
         onExit?.();
       } else if (result.result === 'needs_review') {
@@ -258,7 +258,7 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
           {draftState === 'saving' ? '草稿保存中…' : draftState === 'dirty' ? '草稿已暂存' : '未修改'}
         </Tag>
         <Button type="primary" size="small" loading={submitting} disabled={readOnly} onClick={submit}>
-          提交（检查并保存版本）
+          提交（检查并保存为迭代）
         </Button>
         <Button size="small" onClick={discard} disabled={readOnly}>
           放弃草稿
@@ -311,7 +311,7 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
         </div>
       ))}
       <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 8 }}>
-        提交时先跑结构检查：通过直接落版本；涉及新链接/新章节等超范围改动会转助手复核。
+        提交时先跑结构检查：通过直接保存为迭代；涉及新链接/新章节等超范围改动会转助手复核。
         {onCommand && (
           <>
             {' '}

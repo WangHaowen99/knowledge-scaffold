@@ -25,6 +25,7 @@ from . import conversation_store, error_log, personal_model_settings
 from .conversation_store import DEFAULT_ID as DEFAULT_CONVERSATION
 from .engines import EngineContext, get_engine_class
 from .engines.base import CONFIG_ERROR, FRIENDLY_ERROR, safe_json as _safe_json
+from .workspace import confirmed_goal
 
 # 兼容重导出：既有测试与调用方从本模块取这些符号（引擎实现已移至 engines/claude.py）
 from .engines.claude import (  # noqa: F401
@@ -234,6 +235,12 @@ class Session:
     sending: int = 0  # 处理中的 send() 数；期间不可回收或换绑，否则消息会落到已丢弃的会话上
     # 引擎使用谁的模型配置：用户名 = 该用户的个人 Key；"" = 管理员配置（原行为）
     model_owner: str = ""
+    # Claude CLI 自报的会话状态（running / idle / requires_action）；None = 该引擎不上报
+    cli_state: str | None = None
+    # 主轮已结束但 CLI 仍在运行（后台子代理未结束、接续轮次未处理）：等它报 idle 再置空闲
+    awaiting_cli_idle: bool = False
+    # 用户点了停止：之后的 result 直接置空闲，不再等 CLI
+    interrupt_requested: bool = False
 
     @property
     def client(self) -> Any:
@@ -263,6 +270,26 @@ class Session:
         if self.state != state:
             self.state = state
             self.broadcast({"type": "session_state", "state": state})
+
+    def on_turn_result(self) -> None:
+        """主轮结束。CLI 不上报状态、已报 idle 或用户点了停止时置空闲；
+        CLI 仍在运行时等它报 idle：主轮结束不代表任务结束（后台子代理、接续轮次）。"""
+        if self.interrupt_requested or self.cli_state in (None, "idle"):
+            self.interrupt_requested = False
+            self.awaiting_cli_idle = False
+            self.set_state("idle")
+        else:
+            self.awaiting_cli_idle = True
+
+    def on_cli_state(self, state: str | None) -> None:
+        self.cli_state = state
+        if state == "idle":
+            if self.awaiting_cli_idle:
+                self.awaiting_cli_idle = False
+                self.set_state("idle")
+        elif self.state == "idle" and self.engine is not None:
+            # CLI 自行开始了接续轮次（如用户停止后，后台子代理结束触发接续）
+            self.set_state("running")
 
     def is_connecting(self) -> bool:
         return self.connect_task is not None and not self.connect_task.done()
@@ -555,6 +582,7 @@ class SessionManager:
             conversation_store.note_message(
                 session.project_id, session.conversation_id, text
             )
+        session.interrupt_requested = False  # 新一轮开始，上一轮的停止不再生效
         if session.engine is not None:
             await session.engine.send(text)
             session.set_state("running")
@@ -592,23 +620,27 @@ class SessionManager:
 
     # ---- 引擎装配 ----
 
-    def _engine_class_for(self, project_id: str):
-        """按项目 meta 的 engine 字段路由（无字段回落 claude；灰度开关）。"""
+    @staticmethod
+    def _project_meta(project_id: str) -> dict:
         meta_path = (
             Path(config.DATA_DIR) / "workspaces" / project_id / ".onto-web.json"
         )
-        name = ""
         try:
-            name = json.loads(meta_path.read_text(encoding="utf-8")).get("engine") or ""
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            pass
-        return get_engine_class(name)
+            return {}
+        return meta if isinstance(meta, dict) else {}
+
+    def _engine_class_for(self, project_id: str):
+        """按项目 meta 的 engine 字段路由（无字段回落 claude；灰度开关）。"""
+        return get_engine_class(self._project_meta(project_id).get("engine") or "")
 
     def _make_engine(self, session: Session):
         project_id = session.project_id
         # 构造时定住会话 id：续接 token 的存取必须跟着这个引擎实例绑定的会话走
         conversation_id = session.conversation_id
-        engine_cls = self._engine_class_for(project_id)
+        meta = self._project_meta(project_id)
+        engine_cls = get_engine_class(meta.get("engine") or "")
         engine_name = engine_cls.name
 
         def save_token(token: str) -> None:
@@ -637,6 +669,7 @@ class SessionManager:
             load_history=lambda: list(session.events),
             conversation_id=conversation_id,
             model_owner=session.model_owner,
+            project_goal=confirmed_goal(meta),
         )
         return engine_cls(ctx)
 
@@ -652,6 +685,10 @@ class SessionManager:
                 return
             session.resume_attempted = resumed
             session.engine = engine
+            # 新的 CLI 进程：上一个进程报告的状态作废
+            session.cli_state = None
+            session.awaiting_cli_idle = False
+            session.interrupt_requested = False
             session.reader_task = asyncio.create_task(self._read_loop(session))
             started = {
                 "type": "session_started",
@@ -896,6 +933,7 @@ class SessionManager:
                 session.set_state("idle")
             return False
         engine = session.engine
+        session.interrupt_requested = True
         try:
             await asyncio.wait_for(engine.interrupt(), timeout=INTERRUPT_TIMEOUT_SECONDS)
         except Exception:  # 含 wait_for 的 TimeoutError
@@ -989,7 +1027,8 @@ class SessionManager:
         # 不加 try：本任务只被 cancel 结束，引擎侧的错误走 _engine_end 事件
         async for event in engine.events():
             session.last_activity = time.time()
-            if event.get("type") == "_engine_end":
+            kind = event.get("type")
+            if kind == "_engine_end":
                 # 引擎终止：closed（重启/终止）静默收尾，error 给用户横幅
                 if event.get("reason") == "closed":
                     session.set_state("closed")
@@ -1005,12 +1044,13 @@ class SessionManager:
                 session.engine = None
                 await self._drain_waiters()
                 return
-            session.broadcast(
-                event, transient=event.get("type") == "stream_delta"
-            )
-            if event.get("type") == "result":
+            if kind == "_cli_state":
+                session.on_cli_state(event.get("state"))
+                continue
+            session.broadcast(event, transient=kind == "stream_delta")
+            if kind == "result":
                 await self._emit_workspace_changes(session)
-                session.set_state("idle")
+                session.on_turn_result()
 
 
 def usage_summary(project_id: str) -> dict:

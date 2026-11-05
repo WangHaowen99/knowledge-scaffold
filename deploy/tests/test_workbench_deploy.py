@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tarfile
@@ -13,6 +14,7 @@ from deploy_synthetic_credentials import (
     BOOTSTRAP_ADMIN_SECRET,
     MODELING_SERVICE_TOKEN,
 )
+from test_knowledge_hub_deploy import _run as _run_script
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_ROOT = REPO_ROOT / "deploy"
@@ -33,7 +35,16 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
-def test_root_deploy_dispatches_source_checkout_to_full_stack(tmp_path: Path) -> None:
+@pytest.fixture
+def evaluation_runtime(tmp_path: Path, monkeypatch) -> None:
+    """Synthetic config and a no-op evaluation deployer for existing stack tests."""
+    config = tmp_path / "evaluation.config"
+    config.write_text("# Synthetic configuration; no credentials.\n", encoding="utf-8")
+    monkeypatch.setenv("EVAL_ENV_FILE", str(config))
+    _write_executable(tmp_path / "eval-service" / "deploy" / "deploy.sh", "exit 0")
+
+
+def test_root_deploy_dispatches_source_checkout_to_full_stack(tmp_path: Path, evaluation_runtime) -> None:
     deploy_dir = tmp_path / "deploy"
     deploy_dir.mkdir()
     shutil.copy2(DEPLOY_ROOT / "deploy.sh", deploy_dir / "deploy.sh")
@@ -80,7 +91,7 @@ def test_root_deploy_forwards_modeling_only_in_source_checkout(tmp_path: Path) -
     ]
 
 
-def test_root_release_dispatches_consumer_before_workbench(tmp_path: Path) -> None:
+def test_root_release_dispatches_consumer_before_workbench(tmp_path: Path, evaluation_runtime) -> None:
     deploy_dir = tmp_path / "deploy"
     deploy_dir.mkdir()
     shutil.copy2(DEPLOY_ROOT / "deploy.sh", deploy_dir / "deploy.sh")
@@ -351,6 +362,44 @@ def test_source_deploy_generates_modeling_service_token_without_printing_it(
     assert env_file.stat().st_mode & 0o777 == 0o600
 
 
+def test_source_deploy_generates_a_distinct_evaluation_service_token(tmp_path: Path) -> None:
+    consumer_root = tmp_path / "consumer"
+    backend_root = consumer_root / "backend"
+    backend_root.mkdir(parents=True)
+    env_file = backend_root / ".env"
+    modeling = "m" * 64
+    env_file.write_text(f"MODELING_SERVICE_TOKEN={modeling}\nEVALUATION_SERVICE_TOKEN=\n", encoding="utf-8")
+    inherited = {key: value for key, value in os.environ.items() if key != "EVALUATION_SERVICE_TOKEN"}
+
+    def ensure(extra: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        return _run_script(
+            [
+                "-c",
+                'source "$DEPLOY_STACK" >/dev/null; CONSUMER_DIR="$TEST_CONSUMER_DIR"; ensure_evaluation_service_token',
+            ],
+            {
+                **inherited,
+                "DEPLOY_STACK": str(DEPLOY_ROOT / "deploy-stack.sh"),
+                "TEST_CONSUMER_DIR": str(consumer_root),
+                **extra,
+            },
+        )
+
+    result = ensure({})
+    assert result.returncode == 0, result.stdout + result.stderr
+    match = re.search(r"^EVALUATION_SERVICE_TOKEN=([0-9a-f]{64})$", env_file.read_text(), re.MULTILINE)
+    assert match is not None and match.group(1) != modeling
+    assert match.group(1) not in result.stdout + result.stderr
+    assert env_file.stat().st_mode & 0o777 == 0o600
+    assert f"MODELING_SERVICE_TOKEN={modeling}" in env_file.read_text()
+    # 重跑沿用已有值；与 Modeling 凭据相同的值被拒绝
+    assert ensure({}).returncode == 0
+    assert f"EVALUATION_SERVICE_TOKEN={match.group(1)}" in env_file.read_text()
+    same = ensure({"EVALUATION_SERVICE_TOKEN": modeling})
+    assert same.returncode == 2
+    assert "不能与 MODELING_SERVICE_TOKEN 相同" in same.stderr
+
+
 def test_source_deploy_only_blocks_missing_auth_config_before_docker(
     tmp_path: Path,
 ) -> None:
@@ -515,7 +564,7 @@ def test_source_deploy_generates_eval_mysql_password_without_printing_it(
     assert env_file.stat().st_mode & 0o777 == 0o600
 
 
-def test_root_deploy_source_writes_onto_modeling_stack_override(tmp_path: Path) -> None:
+def test_root_deploy_source_writes_onto_modeling_stack_override(tmp_path: Path, evaluation_runtime) -> None:
     """根源码部署为 onto-modeling 生成整栈 override（共享 auth + 网络 + 评测地址）。"""
     deploy_dir = tmp_path / "deploy"
     deploy_dir.mkdir()
@@ -554,13 +603,16 @@ def test_root_deploy_source_writes_onto_modeling_stack_override(tmp_path: Path) 
     assert "name: onto-agent_default" in content
     assert "consumer_onto-agent-network" not in content
     assert 'profiles: ["disabled"]' in content  # 自带 dev auth 停用，共享账号中心
+    # 知识包 Hub 是独立 compose 项目，不再出现在 onto-modeling 的 override 里
+    assert "knowledge-hub:" not in content
     assert "docker-compose.stack.yml" in calls_file.read_text(encoding="utf-8")
+    assert "--remove-orphans" in calls_file.read_text(encoding="utf-8")
     # consumer 没有 jiuwenbox socket 卷时不挂载，脚本运行验证改在 onto-modeling 容器内
     assert "jiuwenbox-sock" not in content
     assert "未探测到 consumer 的 jiuwenbox socket 卷" in result.stderr
 
 
-def test_root_deploy_source_mounts_consumer_jiuwenbox_socket(tmp_path: Path) -> None:
+def test_root_deploy_source_mounts_consumer_jiuwenbox_socket(tmp_path: Path, evaluation_runtime) -> None:
     """整栈部署默认把 consumer 的 jiuwenbox socket 只读挂给脚本验证网关，不挂进跑 agent 的 onto-modeling。"""
     deploy_dir = tmp_path / "deploy"
     deploy_dir.mkdir()
@@ -647,6 +699,48 @@ def test_onto_modeling_deploy_mounts_jiuwenbox_socket_only_when_volume_exists(
     assert not (bundle / "docker-compose.jiuwenbox.yml").exists()
     assert "docker-compose.jiuwenbox.yml" not in calls.read_text(encoding="utf-8")
     assert "未挂载 jiuwenbox 沙箱" in result.stdout
+
+
+def test_onto_modeling_deploy_generates_the_evaluation_notification_token_once(tmp_path: Path) -> None:
+    """发布包 deploy.sh：缺少评测完成通知的入站凭据时生成，已有值原样保留，值不输出。"""
+    bundle = tmp_path / "onto-modeling"
+    bundle.mkdir()
+    shutil.copy2(ONTO_MODELING_DEPLOY, bundle / "deploy.sh")
+    _write_executable(bundle / "preflight.sh", "exit 0")
+    bin_dir = tmp_path / "bin"
+    _write_executable(bin_dir / "docker", _ONTO_DEPLOY_DOCKER_STUB)
+    env = {
+        **{key: value for key, value in os.environ.items() if key != "ONTO_EVALUATION_SERVICE_TOKEN"},
+        "DOCKER_CALLS_FILE": str(tmp_path / "docker-calls.txt"),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "STUB_EXISTING_VOLUME": "",
+    }
+    hub_token = secrets.token_hex(32)
+    # 末行没有换行符：追加的凭据不能拼到上一行
+    (bundle / ".env").write_text(f"ONTO_WEB_PORT=5100\nONTO_HUB_SERVICE_TOKEN={hub_token}", encoding="utf-8")
+
+    def deploy() -> subprocess.CompletedProcess:
+        # 安全审查：argv 是解析出的 bash 路径加复制到 tmp_path 的发布包 deploy.sh，以序列传入、
+        # 不经 shell 解析；它调用的 docker 是本测试写入的替身。
+        return subprocess.run(  # NOSONAR(S4721)
+            [_bash_executable(), str(bundle / "deploy.sh")],
+            env=env, text=True, capture_output=True, check=False, shell=False, timeout=60,
+        )
+
+    result = deploy()
+    assert result.returncode == 0, result.stdout + result.stderr
+    content = (bundle / ".env").read_text(encoding="utf-8")
+    assert f"ONTO_HUB_SERVICE_TOKEN={hub_token}\n" in content
+    tokens = re.findall(r"^ONTO_EVALUATION_SERVICE_TOKEN=([0-9a-f]{64})$", content, re.MULTILINE)
+    assert len(tokens) == 1 and tokens[0] != hub_token
+    assert tokens[0] not in result.stdout + result.stderr
+    assert (bundle / ".env").stat().st_mode & 0o777 == 0o600
+
+    result = deploy()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert re.findall(
+        r"^ONTO_EVALUATION_SERVICE_TOKEN=([0-9a-f]{64})$", (bundle / ".env").read_text(encoding="utf-8"), re.MULTILINE
+    ) == tokens
 
 
 def _compose_service_block(compose_text: str, service: str) -> str:
@@ -760,7 +854,7 @@ printf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"\
 """
 
 
-def test_root_deploy_fails_loudly_when_consumer_network_undetectable(tmp_path: Path) -> None:
+def test_root_deploy_fails_loudly_when_consumer_network_undetectable(tmp_path: Path, evaluation_runtime) -> None:
     """探测不到 consumer 网络时直接报错。
 
     回归：旧实现只匹配 'onto-agent-network$'，匹配不到就回退到写死的
@@ -841,32 +935,64 @@ def test_interactive_installer_never_guesses_consumer_network() -> None:
 
 
 # 安装器升级路径共用的 docker stub：mw-modeling* 归属 STUB_MODELING_OWNER，Consumer
-# 容器归属 STUB_CONSUMER_DIR 且在 onto-agent_default 网络上；设置 STUB_ONTO_MODELING_DIR
-# 时模拟已有 onto-modeling 容器，设置 STUB_LEGACY_MODELING_PORT 时模拟旧 Modeling 的宿主端口。
+# 容器归属 STUB_CONSUMER_DIR 且在 onto-agent_default 网络上；设置 STUB_ONTO_MODELING_DIR /
+# STUB_KNOWLEDGE_HUB_DIR 时模拟已有 onto-modeling / knowledge-hub 容器，设置
+# STUB_LEGACY_MODELING_PORT 时模拟旧 Modeling 的宿主端口。
+# STUB_RUNNING=1 时容器在 docker stop 之前处于运行状态；与真实 docker 一样，docker port
+# 只对运行中的容器有结果，端口绑定配置停止后仍可读。STUB_NO_LEGACY_AGENT=1 模拟只有
+# Workbench 的旧版，mw-modeling-agent 直到新 Modeling 安装后才存在。docker run 记录到
+# $CALLS_FILE.docker-run，不混入步骤记录。STUB_CONSUMER_RUNNING 单独指定 onto-agent-backend
+# 是否在运行（接入已运行 Consumer 的路径），未设置时同样按 STUB_RUNNING 判断。
 _UPGRADE_DOCKER_STUB = """\
+stopped_file="${CALLS_FILE}.stopped"
+is_stopped() { [ -z "${STUB_RUNNING:-}" ] || grep -qx "$1" "${stopped_file}" 2>/dev/null; }
 case "$1" in
     container) ;;
     image) [ "${4:-}" != --format ] || printf 'sha256:%064d\\n' 0; exit 0 ;;
+    exec)
+        [ "$2 $3" != "-i onto-agent-backend" ] || printf '%s\\n' "${STUB_EVALUATION_ROUTE_STATUS:-401}"
+        exit 0 ;;
+    ps)
+        case "$*" in *"publish=${STUB_BUSY_PORT:-none}"*) printf 'synthetic-other-service\\n' ;; esac
+        exit 0 ;;
     port)
+        is_stopped "$2" && exit 0
         [ "$2 $3" != "mw-modeling 5100/tcp" ] || [ -z "${STUB_LEGACY_MODELING_PORT:-}" ] \\
             || printf '0.0.0.0:%s\\n' "${STUB_LEGACY_MODELING_PORT}"
         exit 0 ;;
+    stop) printf '%s\\n' "$2" >> "${stopped_file}"; exit 0 ;;
+    run) printf '%s\\n' "$*" >> "${CALLS_FILE}.docker-run"; exit 0 ;;
     *) exit 0 ;;
 esac
 [ "$2" = inspect ] || exit 1
 name="$3"
 format="${5:-}"
 case "${name}" in
-    mw-modeling|mw-modeling-agent) owner="${STUB_MODELING_OWNER}" ;;
+    mw-modeling) owner="${STUB_MODELING_OWNER}" ;;
+    mw-modeling-agent)
+        owner="${STUB_MODELING_OWNER}"
+        [ -z "${STUB_NO_LEGACY_AGENT:-}" ] \\
+            || grep -qx modeling-install "${CALLS_FILE}" 2>/dev/null || exit 1 ;;
     onto-agent-*) owner="${STUB_CONSUMER_DIR}" ;;
     onto-modeling) owner="${STUB_ONTO_MODELING_DIR:-}"; [ -n "${owner}" ] || exit 1 ;;
+    knowledge-hub) owner="${STUB_KNOWLEDGE_HUB_DIR:-}"; [ -n "${owner}" ] || exit 1 ;;
     *) exit 1 ;;
 esac
 case "${format}" in
+    *PortBindings*)
+        case "${name} ${format}" in
+            'mw-modeling '*'"5100/tcp"'*)
+                [ -z "${STUB_LEGACY_MODELING_PORT:-}" ] \\
+                    || printf '%s\\n' "${STUB_LEGACY_MODELING_PORT}" ;;
+        esac ;;
     *working_dir*) printf '%s\\n' "${owner}" ;;
     *Mounts*) printf 'mw-modeling_%s-data\\n' "${name#mw-}" ;;
     *Config.Image*) printf '%s:previous\\n' "${name}" ;;
-    *State.Running*) printf 'false\\n' ;;
+    *State.Running*)
+        if [ "${name}" = onto-agent-backend ] && [ -n "${STUB_CONSUMER_RUNNING:-}" ]; then
+            printf '%s\\n' "${STUB_CONSUMER_RUNNING}"
+        elif is_stopped "${name}"; then printf 'false\\n'
+        else printf 'true\\n'; fi ;;
     *Networks*) printf 'onto-agent_default\\n' ;;
 esac\
 """
@@ -955,6 +1081,20 @@ def _prepare_separated_upgrade(tmp_path: Path, *, modeling_port: str) -> dict:
             "deploy.sh": record("onto-deploy") + '\ncd "$(dirname "$0")"\ncp .env "$ONTO_ENV_SNAPSHOT"',
         },
     )
+    # Hub 部署替身：凭据按 注入 > .env > 生成 的顺序落到自身 .env，并记录收到的网络与凭据
+    hub_package = _write_release_package(
+        packages / "knowledge-hub-v-test.tar.gz",
+        "knowledge-hub",
+        {
+            "docker-compose.knowledge-hub.yml": "name: knowledge-hub\n",
+            "deploy.sh": record("hub-deploy")
+            + '\ncd "$(dirname "$0")"'
+            + '\nprintf "CONSUMER_NETWORK=%s\\nRECEIVED_TOKEN=%s\\n" "${CONSUMER_NETWORK:-}"'
+            + ' "${HUB_SERVICE_TOKEN:-}" > "$HUB_ENV_SNAPSHOT"'
+            + '\ntoken="${HUB_SERVICE_TOKEN:-$(sed -n "s/^HUB_SERVICE_TOKEN=//p" .env 2>/dev/null || true)}"'
+            + '\nprintf "HUB_SERVICE_TOKEN=%s\\n" "${token:-$STUB_HUB_TOKEN}" > .env',
+        },
+    )
 
     bin_dir = tmp_path / "bin"
     _write_executable(bin_dir / "docker", _UPGRADE_DOCKER_STUB)
@@ -971,6 +1111,8 @@ def _prepare_separated_upgrade(tmp_path: Path, *, modeling_port: str) -> dict:
         "CALLS_FILE": str(calls),
         "CURL_CALLS_FILE": str(tmp_path / "curl-calls.txt"),
         "ONTO_ENV_SNAPSHOT": str(tmp_path / "onto-modeling.env"),
+        "HUB_ENV_SNAPSHOT": str(tmp_path / "knowledge-hub.snapshot"),
+        "STUB_HUB_TOKEN": secrets.token_hex(32),
         "STUB_CONSUMER_DIR": str(consumer),
         "STUB_MODELING_OWNER": str(modeling),
     }
@@ -979,10 +1121,11 @@ def _prepare_separated_upgrade(tmp_path: Path, *, modeling_port: str) -> dict:
         "env": env,
         "calls": calls,
         "packages": (consumer_package, modeling_package, onto_package),
+        "hub_package": hub_package,
     }
 
 
-def _run_separated_upgrade(setup: dict, *, with_onto: bool = True, **env: str):
+def _run_separated_upgrade(setup: dict, *, with_onto: bool = True, with_hub: bool = False, **env: str):
     consumer_package, modeling_package, onto_package = setup["packages"]
     args = [
         _bash_executable(),
@@ -995,6 +1138,8 @@ def _run_separated_upgrade(setup: dict, *, with_onto: bool = True, **env: str):
     ]
     if with_onto:
         args += ["--onto-modeling-package", str(onto_package.parent / "onto-modeling-*.tar.gz")]
+    if with_hub:
+        args += ["--knowledge-hub-package", str(setup["hub_package"])]
     return subprocess.run(
         args, env={**setup["env"], **env}, text=True, capture_output=True, check=False
     )
@@ -1074,6 +1219,68 @@ def test_installer_upgrade_without_onto_modeling_package_says_so(tmp_path: Path)
     assert not (setup["root"] / "onto-modeling").exists()
 
 
+def test_installer_upgrade_deploys_hub_before_onto_modeling_with_one_token(tmp_path: Path) -> None:
+    """Hub 独立成包后，安装器先部署 Hub，再让 Onto Modeling 改用 Hub 实际生效的服务凭据。"""
+    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
+
+    result = _run_separated_upgrade(setup, with_hub=True)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _calls(setup) == [
+        "onto-preflight",
+        "consumer-upgrade",
+        "modeling-install",
+        "hub-deploy",
+        "onto-deploy",
+    ]
+    hub_snapshot = (tmp_path / "knowledge-hub.snapshot").read_text(encoding="utf-8")
+    # Hub 与 Onto Modeling 同在运行中 Consumer 容器的实际网络上
+    assert "CONSUMER_NETWORK=onto-agent_default" in hub_snapshot
+    hub_token = setup["env"]["STUB_HUB_TOKEN"]
+    onto_env = (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
+    assert f"ONTO_HUB_SERVICE_TOKEN={hub_token}" in onto_env
+    assert hub_token not in result.stdout + result.stderr
+    assert f"知识包 Hub：{setup['root'] / 'knowledge-hub'}" in result.stdout
+
+
+def test_installer_hub_reuses_the_existing_onto_modeling_token(tmp_path: Path) -> None:
+    """已部署的 Onto Modeling 有凭据时，首次独立部署的 Hub 沿用它，两侧无需重启对齐。"""
+    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
+    existing = secrets.token_hex(32)
+    onto_dir = setup["root"] / "onto-modeling"
+    onto_dir.mkdir()
+    (onto_dir / ".env").write_text(
+        f"ONTO_WEB_PORT=5100\nONTO_HUB_SERVICE_TOKEN={existing}\n", encoding="utf-8"
+    )
+
+    result = _run_separated_upgrade(setup, with_hub=True)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"RECEIVED_TOKEN={existing}" in (tmp_path / "knowledge-hub.snapshot").read_text(
+        encoding="utf-8"
+    )
+    assert (setup["root"] / "knowledge-hub" / ".env").read_text(encoding="utf-8") == (
+        f"HUB_SERVICE_TOKEN={existing}\n"
+    )
+    assert f"ONTO_HUB_SERVICE_TOKEN={existing}" in (tmp_path / "onto-modeling.env").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_installer_upgrade_refuses_foreign_knowledge_hub_container(tmp_path: Path) -> None:
+    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
+
+    result = _run_separated_upgrade(
+        setup, with_hub=True, STUB_KNOWLEDGE_HUB_DIR=str(tmp_path / "elsewhere" / "knowledge-hub")
+    )
+
+    assert result.returncode != 0
+    assert "容器 knowledge-hub 属于" in result.stderr
+    assert "拒绝接管" in result.stderr
+    # 只跑过无副作用的 Onto 预检，Consumer、Modeling 均未变更
+    assert _calls(setup) == ["onto-preflight"]
+
+
 def _drive_tty(
     script: Path, answers: list[tuple[str, str]], env: dict[str, str], timeout: float = 60
 ) -> tuple[int, str]:
@@ -1130,7 +1337,9 @@ def _drive_tty(
     return os.waitstatus_to_exitcode(status), output.decode("utf-8", "replace")
 
 
-def _interactive_upgrade_answers(setup: dict, *extra: tuple[str, str]) -> list[tuple[str, str]]:
+def _interactive_upgrade_answers(
+    setup: dict, *extra: tuple[str, str], hub: str = "", evaluation: str = ""
+) -> list[tuple[str, str]]:
     consumer_package, modeling_package, onto_package = setup["packages"]
     return [
         ("请选择模式", "2"),
@@ -1139,6 +1348,8 @@ def _interactive_upgrade_answers(setup: dict, *extra: tuple[str, str]) -> list[t
         ("请输入 Consumer 发布包路径", str(consumer_package)),
         ("请输入 Modeling 发布包路径", str(modeling_package)),
         ("请输入 Onto Modeling 发布包路径", str(onto_package.parent / "onto-modeling-*.tar.gz")),
+        ("请输入知识包 Hub 发布包路径", hub),
+        ("请输入独立评测服务发布包", evaluation),
         *extra,
     ]
 
@@ -1185,6 +1396,33 @@ def test_interactive_upgrade_refuses_foreign_onto_modeling_container(tmp_path: P
     assert _calls(setup) == []
 
 
+def test_interactive_upgrade_deploys_hub_before_onto_modeling(tmp_path: Path) -> None:
+    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
+
+    rc, output = _drive_tty(
+        DEPLOY_ROOT / "install-consumer-modeling-interactive.sh",
+        _interactive_upgrade_answers(setup, hub=str(setup["hub_package"])),
+        setup["env"],
+    )
+
+    assert rc == 0, output
+    assert _calls(setup) == [
+        "onto-preflight",
+        "consumer-upgrade",
+        "modeling-install",
+        "hub-deploy",
+        "onto-deploy",
+    ]
+    assert "CONSUMER_NETWORK=onto-agent_default" in (tmp_path / "knowledge-hub.snapshot").read_text(
+        encoding="utf-8"
+    )
+    hub_token = setup["env"]["STUB_HUB_TOKEN"]
+    assert f"ONTO_HUB_SERVICE_TOKEN={hub_token}" in (tmp_path / "onto-modeling.env").read_text(
+        encoding="utf-8"
+    )
+    assert hub_token not in output
+
+
 def test_interactive_install_rejects_custom_onto_port_equal_to_modeling(tmp_path: Path) -> None:
     setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
     consumer_package, modeling_package, onto_package = setup["packages"]
@@ -1206,6 +1444,8 @@ def test_interactive_install_rejects_custom_onto_port_equal_to_modeling(tmp_path
             ("请输入 Consumer 发布包路径", str(consumer_package)),
             ("请输入 Modeling 发布包路径", str(modeling_package)),
             ("请输入 Onto Modeling 发布包路径", str(onto_package)),
+            ("请输入知识包 Hub 发布包路径", ""),
+            ("请输入独立评测服务发布包", ""),
             ("请输入 Onto Modeling 宿主端口", "55110"),
         ],
         setup["env"],
@@ -1238,6 +1478,9 @@ def _prepare_legacy_upgrade(tmp_path: Path) -> dict:
     (legacy / "backend" / ".env").write_text(
         f"MODELING_SERVICE_TOKEN={MODELING_SERVICE_TOKEN}\n", encoding="utf-8"
     )
+    (legacy / "deploy" / "manifest.json").write_text(
+        '{\n  "modeling_image": "mw-modeling:v-previous"\n}\n', encoding="utf-8"
+    )
     setup["legacy"] = legacy
     setup["env"] = {
         **setup["env"],
@@ -1248,13 +1491,18 @@ def _prepare_legacy_upgrade(tmp_path: Path) -> dict:
     return setup
 
 
-def _legacy_answers(setup: dict, onto_answer: str, *extra: tuple[str, str]) -> list:
+def _legacy_answers(
+    setup: dict, onto_answer: str, *extra: tuple[str, str],
+    hub_answer: str = "", evaluation: str = ""
+) -> list:
     consumer_package, modeling_package, _ = setup["packages"]
     return [
         ("旧的合并部署根目录", str(setup["legacy"])),
         ("Consumer 镜像 tar 包路径", str(consumer_package)),
         ("Modeling 镜像 tar 包路径", str(modeling_package)),
         ("Onto Modeling 发布包路径", onto_answer),
+        ("知识包 Hub 发布包路径", hub_answer),
+        ("独立评测服务发布包", evaluation),
         *extra,
     ]
 
@@ -1296,6 +1544,145 @@ def test_legacy_migration_without_onto_modeling_package_is_unchanged(tmp_path: P
     assert rc == 0, output
     assert _calls(setup) == ["consumer-upgrade", "modeling-install"]
     assert not (setup["legacy"].parent / "onto-modeling").exists()
+
+
+def test_legacy_migration_deploys_hub_before_onto_modeling(tmp_path: Path) -> None:
+    setup = _prepare_legacy_upgrade(tmp_path)
+    onto_package = setup["packages"][2]
+
+    rc, output = _drive_tty(
+        DEPLOY_ROOT / "upgrade-consumer-modeling-legacy-interactive.sh",
+        _legacy_answers(
+            setup,
+            str(onto_package),
+            ("请输入 Onto Modeling 宿主端口", "5110"),
+            hub_answer=str(setup["hub_package"]),
+        ),
+        setup["env"],
+    )
+
+    assert rc == 0, output
+    assert _calls(setup) == [
+        "onto-preflight",
+        "consumer-upgrade",
+        "modeling-install",
+        "hub-deploy",
+        "onto-deploy",
+    ]
+    stack_root = setup["legacy"].parent
+    hub_token = setup["env"]["STUB_HUB_TOKEN"]
+    assert (stack_root / "knowledge-hub" / ".env").read_text(encoding="utf-8") == (
+        f"HUB_SERVICE_TOKEN={hub_token}\n"
+    )
+    assert f"ONTO_HUB_SERVICE_TOKEN={hub_token}" in (tmp_path / "onto-modeling.env").read_text(
+        encoding="utf-8"
+    )
+    assert hub_token not in output
+
+
+def _run_legacy_upgrade(setup: dict, **env: str):
+    consumer_package, modeling_package, _ = setup["packages"]
+    # 不显式指定 INSTALL_ROOT：独立 Modeling 默认落在旧合并部署旁
+    run_env = {key: value for key, value in setup["env"].items() if key != "INSTALL_ROOT"}
+    return subprocess.run(
+        [
+            _bash_executable(),
+            str(DEPLOY_ROOT / "install-consumer-modeling.sh"),
+            "--upgrade-from",
+            str(setup["legacy"]),
+            "--consumer-package",
+            str(consumer_package),
+            "--modeling-package",
+            str(modeling_package),
+        ],
+        env={**run_env, **env},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _volume_backups(setup: dict) -> str:
+    runs = Path(f"{setup['calls']}.docker-run")
+    return runs.read_text(encoding="utf-8") if runs.exists() else ""
+
+
+@pytest.mark.parametrize("legacy_has_agent", [False, True])
+def test_installer_legacy_upgrade_keeps_custom_workbench_port(
+    tmp_path: Path, legacy_has_agent: bool
+) -> None:
+    """回归：0.26.8.2 合并部署只有 mw-modeling，升级报“旧 Modeling 容器不存在：mw-modeling-agent”；
+    旧 Workbench 停止后才读端口，自定义的 48100 被新包默认 8100 覆盖。"""
+    setup = _prepare_legacy_upgrade(tmp_path)
+    env = {"STUB_RUNNING": "1", "STUB_LEGACY_MODELING_PORT": "48100"}
+    if not legacy_has_agent:
+        env["STUB_NO_LEGACY_AGENT"] = "1"
+
+    result = _run_legacy_upgrade(setup, **env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _calls(setup) == ["consumer-upgrade", "modeling-install"]
+    modeling_env = (setup["legacy"].parent / "modeling" / ".env").read_text(encoding="utf-8")
+    assert "MODELING_PORT=48100" in modeling_env
+    backups = _volume_backups(setup)
+    assert "mw-modeling_modeling-data:/source:ro" in backups
+    assert ("mw-modeling_modeling-agent-data:/source:ro" in backups) is legacy_has_agent
+    assert ("旧合并部署没有 Modeling Agent" in result.stdout) is not legacy_has_agent
+
+
+def test_installer_legacy_upgrade_refuses_declared_but_missing_agent(tmp_path: Path) -> None:
+    setup = _prepare_legacy_upgrade(tmp_path)
+    (setup["legacy"] / "deploy" / "manifest.json").write_text(
+        '{\n  "modeling_image": "mw-modeling:v-previous",\n'
+        '  "modeling_agent_image": "mw-modeling-agent:v-previous"\n}\n',
+        encoding="utf-8",
+    )
+
+    result = _run_legacy_upgrade(setup, STUB_NO_LEGACY_AGENT="1")
+
+    assert result.returncode != 0
+    assert "旧部署清单声明了 Modeling Agent" in result.stderr
+    assert _calls(setup) == []
+    assert _volume_backups(setup) == ""
+
+
+def test_installer_legacy_upgrade_refuses_unreadable_workbench_port(tmp_path: Path) -> None:
+    setup = _prepare_legacy_upgrade(tmp_path)
+
+    result = _run_legacy_upgrade(setup, STUB_LEGACY_MODELING_PORT="")
+
+    assert result.returncode != 0
+    assert "无法读取旧 Modeling Workbench 的宿主端口" in result.stderr
+    assert _calls(setup) == []
+
+    retried = _run_legacy_upgrade(setup, STUB_LEGACY_MODELING_PORT="", MODELING_PORT="55100")
+
+    assert retried.returncode == 0, retried.stdout + retried.stderr
+    modeling_env = (setup["legacy"].parent / "modeling" / ".env").read_text(encoding="utf-8")
+    assert "MODELING_PORT=55100" in modeling_env
+
+
+def test_legacy_migration_without_agent_keeps_custom_workbench_port(tmp_path: Path) -> None:
+    setup = _prepare_legacy_upgrade(tmp_path)
+    env = {
+        **setup["env"],
+        "STUB_RUNNING": "1",
+        "STUB_NO_LEGACY_AGENT": "1",
+        "STUB_LEGACY_MODELING_PORT": "48100",
+    }
+
+    rc, output = _drive_tty(
+        DEPLOY_ROOT / "upgrade-consumer-modeling-legacy-interactive.sh",
+        _legacy_answers(setup, ""),
+        env,
+    )
+
+    assert rc == 0, output
+    assert "旧合并部署没有 Modeling Agent" in output
+    assert _calls(setup) == ["consumer-upgrade", "modeling-install"]
+    modeling_env = (setup["legacy"].parent / "modeling" / ".env").read_text(encoding="utf-8")
+    assert "MODELING_PORT=48100" in modeling_env
+    assert "mw-modeling_modeling-agent-data" not in _volume_backups(setup)
 
 
 def _host_port_default(compose_text: str, var: str) -> str:

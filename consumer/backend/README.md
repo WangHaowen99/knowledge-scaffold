@@ -132,7 +132,7 @@ Important variables:
 | `AUTH_SERVER_URL` | Standalone auth-server base URL (required; startup fails when unset), e.g. `http://auth-server:5056` | empty |
 | `AUTH_SERVER_ADMIN_TOKEN` | Shared admin token for the auth-server Admin API (required for user management) | empty |
 | `AUTH_BOOTSTRAP_ADMIN_PASSWORD` | Strong initial admin password used only when auth-server first creates its user store | empty |
-| `AUTH_SERVER_AUDIENCE` | Expected JWT audience for local token verification | `meta-wise` |
+| `AUTH_SERVER_AUDIENCE` | Expected JWT audience for local token verification | `knowledge-scaffold` |
 | `AUTH_SERVER_ISSUER` | Expected JWT issuer; empty means `AUTH_SERVER_URL` is used | empty |
 | `AUTH_USERS_FILE` | User credential file | `<consumer>/.onto-runtime/users.json` |
 | `AUTH_SECRET` | JWT signing secret | `dev-secret-change` fallback if unset |

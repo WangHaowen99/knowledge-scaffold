@@ -14,11 +14,27 @@ shift $(( $# > 2 ? 2 : $# )) || true
 # WSL 下 docker 可能是 Windows 进程（interop），/tmp 之类的绝对路径无法解析，
 # staging 一律用当前目录下的相对路径
 STAGE=".migrate-stage-$$"
+SNAPSHOT="/tmp/onto-migrate-$$.db"
 mkdir -p "${STAGE}"
-trap 'rm -rf "${STAGE}"' EXIT
+trap 'rm -rf "${STAGE}"; docker exec "${MODELING_CONTAINER}" rm -f "${SNAPSHOT}" >/dev/null 2>&1 || true' EXIT
 
-echo "[1/3] 导出 ${MODELING_CONTAINER} 数据（modeling.db + artifacts）..."
-docker cp "${MODELING_CONTAINER}:/data/modeling.db" "${STAGE}/modeling.db"
+echo "[1/3] 导出 ${MODELING_CONTAINER} 数据（modeling.db 一致性快照 + artifacts）..."
+# Workbench 用 WAL 模式，已提交的数据可能还在 modeling.db-wal 里，单独复制主文件会读到空库。
+# 用 Workbench 自带的 SQLite 做 VACUUM INTO：在读事务里合并 WAL 写出单文件快照，不打断在线写入
+docker exec "${MODELING_CONTAINER}" node --no-warnings --experimental-sqlite -e '
+const fs = require("node:fs");
+const { DatabaseSync } = require("node:sqlite");
+const [source, target] = process.argv.slice(1);
+if (!fs.existsSync(source)) {
+    console.error(`${source} 不存在`);
+    process.exit(1);
+}
+fs.rmSync(target, { force: true });
+const db = new DatabaseSync(source);
+db.prepare("VACUUM INTO ?").run(target);
+db.close();
+' /data/modeling.db "${SNAPSHOT}"
+docker cp "${MODELING_CONTAINER}:${SNAPSHOT}" "${STAGE}/modeling.db"
 docker cp "${MODELING_CONTAINER}:/data/artifacts" "${STAGE}/artifacts" 2>/dev/null \
     || mkdir -p "${STAGE}/artifacts"
 

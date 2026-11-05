@@ -40,6 +40,7 @@ import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
 import { api } from '../lib/api.js';
 import { SOLVER_DIR, isManagedSolverPath } from '../lib/solver-contract-model.js';
+import { versionTitle } from '../lib/versionHistory.js';
 import CodeEditor from './cm/CodeEditor.jsx';
 import MergeDiff from './cm/MergeDiff.jsx';
 import ExcelView from './ExcelView.jsx';
@@ -930,7 +931,7 @@ export default function CenterPane({
     try {
       const result = await api.writeFile(project.id, file, text, content?.revision || '');
       setContent((prev) => (prev ? { ...prev, revision: result.revision } : prev));
-      message.success('已保存并记录版本');
+      message.success('已保存并记录迭代');
       onWorkspaceChanged?.();
       after?.();
     } catch (error) {
@@ -951,7 +952,7 @@ export default function CenterPane({
       const result = await api.writeFile(project.id, file, text, theirs.revision);
       setContent({ ...theirs, content: text, revision: result.revision });
       setDraft(text);
-      message.success('已保存并记录版本');
+      message.success('已保存并记录迭代');
       onWorkspaceChanged?.();
       after?.();
     } catch (error) {
@@ -1070,8 +1071,8 @@ export default function CenterPane({
                 </div>
                 <div className="stat-tile tone-amber">
                   <HistoryOutlined className="stat-icon" />
-                  <div className="stat-num">{versions.length}</div>
-                  <div className="stat-label">版本数</div>
+                  <div className="stat-num">{versions[0]?.version || 0}</div>
+                  <div className="stat-label">迭代数</div>
                 </div>
               </div>
               {coverage && coverage.pass_rate != null && (
@@ -1104,7 +1105,7 @@ export default function CenterPane({
                   </Space>
                 </Card>
               )}
-              <Card size="small" title="最近版本">
+              <Card size="small" title="最近迭代">
                 {versions.slice(0, 3).map((v) => (
                   <div
                     key={v.commit}
@@ -1117,7 +1118,7 @@ export default function CenterPane({
                       onFocus('diff');
                     }}
                   >
-                    <Typography.Text type="secondary">版本 {v.version}</Typography.Text>{' '}
+                    <Typography.Text type="secondary">{versionTitle('iteration', v.version)}</Typography.Text>{' '}
                     {v.message}
                   </div>
                 ))}
@@ -1273,12 +1274,12 @@ export default function CenterPane({
               <Select
                 size="small"
                 style={{ minWidth: 220 }}
-                placeholder="选择历史版本"
+                placeholder="选择迭代"
                 value={rev}
                 onChange={setPickRev}
                 options={versions.map((v) => ({
                   value: v.commit,
-                  label: `版本 ${v.version} · ${v.message.slice(0, 24)}`,
+                  label: `${versionTitle('iteration', v.version)} · ${v.message.slice(0, 24)}`,
                 }))}
               />
               {diffState && !isManagedSolverPath(file) && (
@@ -1303,7 +1304,7 @@ export default function CenterPane({
                 onModifiedChange={setDiffDraft}
               />
             ) : (
-              <Empty description="选择文件与历史版本后展示对比（左：历史，右：当前可编辑）" />
+              <Empty description="选择文件与迭代后展示对比（左：历史，右：当前可编辑）" />
             )}
           </div>
         )}
@@ -1466,7 +1467,7 @@ export default function CenterPane({
                   setKnowledgeDraft(null);
                   api.listKnowledge(project.id).then((d) => setKnowledge(d.entries));
                   onWorkspaceChanged?.();
-                  message.success('已入库并记录版本，后续建模会自动应用');
+                  message.success('已入库并记录迭代，后续建模会自动应用');
                 } catch (error) {
                   message.error(error.message);
                 }

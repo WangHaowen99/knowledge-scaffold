@@ -194,6 +194,11 @@ def reachable(timeout: float = 3.0) -> bool:
         return False
 
 
+def model_profiles(token: str) -> dict:
+    """Return the enabled global Consumer model pool through Modeling."""
+    return _http("GET", "/api/evaluation/model-profiles", token, timeout=15)
+
+
 def _http(
     method: str,
     path: str,
@@ -1404,7 +1409,8 @@ def _configure_connection(
 async def run(
     project_id: str, root: Path, token: str, cases: list[dict],
     data_source: dict | None = None, eval_set_name: str = "", allow_unbound: bool = False,
-    refresh_token: str = "",
+    refresh_token: str = "", model_profile_id: str = "", case_concurrency: int | None = None,
+    judge_model: dict | None = None,
 ) -> None:
     """后台评测编排；进度经 .ontology-state/eval.json 供前端轮询。"""
     if project_id in _running:
@@ -1416,7 +1422,7 @@ async def run(
         await _run_in_eval_pool(
             project_id, _run_sync,
             project_id, root, token, cases, data_source, eval_set_name, allow_unbound,
-            refresh_token,
+            refresh_token, model_profile_id, case_concurrency, judge_model,
         )
     finally:
         _running.discard(project_id)
@@ -1427,7 +1433,8 @@ async def run(
 def _run_sync(
     project_id: str, root: Path, token: str, cases: list[dict],
     data_source: dict | None = None, eval_set_name: str = "", allow_unbound: bool = False,
-    refresh_token: str = "",
+    refresh_token: str = "", model_profile_id: str = "", case_concurrency: int | None = None,
+    judge_model: dict | None = None,
 ) -> None:
     from .workspace import WorkspaceManager
 
@@ -1445,7 +1452,11 @@ def _run_sync(
             eval_import.prepare(root, data_source, graph=is_graph(data_source))
             if needs_import(data_source) else None
         )
-        if _try_resume(project_id, root, token, cases, object_fingerprint=object_fingerprint):
+        # Explicitly starting with a user's judge must not reuse a round launched
+        # with another user's credentials. The separate resume action still collects it.
+        if judge_model is None and _try_resume(
+            project_id, root, token, cases, object_fingerprint=object_fingerprint
+        ):
             return
         _check_stop(project_id)
         _write_state(
@@ -1455,8 +1466,10 @@ def _run_sync(
             modeling_project=None, round_id=None,
             error_code=None, error_details=None,
             object_fingerprint=object_fingerprint,
+            hub_snapshot_id=None, hub_snapshot_digest=None,
             data_source_name=data_source.get("name") or eval_data_sources.default_name(data_source),
             eval_set_name=eval_set_name,
+            judge_source="onto-modeling" if judge_model else "modeling",
         )
         manager = WorkspaceManager(config.DATA_DIR, config.ASSETS_DIR)
         import tempfile
@@ -1468,11 +1481,21 @@ def _run_sync(
         )
         relation_report: dict = {}
         try:
-            manager.export_package_zip(
-                project_id, zip_path, binding=binding, graph=is_graph(data_source),
-                relation_report=relation_report, allow_unbound=allow_unbound,
-                object_texts=object_texts,
+            from . import hub_packages, auth
+            from .workspace import WorkspaceError
+            claims = auth.verify_access_token(tok()) if auth.ENABLED else None
+            if not claims or not claims.get('sub'):
+                raise WorkspaceError('Hub 评测快照需要有效用户身份', 401)
+            subject = json.dumps([claims.get('iss', auth.ISSUER), claims['sub']], ensure_ascii=False)
+            snapshot = hub_packages.publish(
+                manager, project_id, uuid.uuid4().hex, tok(), subject, allow_unbound,
+                kind='evaluation_snapshot', binding=binding, graph=is_graph(data_source),
+                relation_report=relation_report, object_texts=object_texts,
             )
+            hub_packages.download(snapshot['ontology_id'], snapshot['release_id'], tok(), zip_path)
+            _write_state(root, hub_snapshot_id=snapshot['release_id'],
+                         ontology_id=snapshot['ontology_id'],
+                         hub_snapshot_digest=snapshot['package_digest'])
         finally:
             if is_graph(data_source):
                 _write_state(root, graph_import={
@@ -1492,6 +1515,8 @@ def _run_sync(
         _write_state(root, phase="import", message="导入 modeling 评测工作区")
         package_name = f"onto-eval-{project_id}"
         content = zip_path.read_bytes()
+        zip_path.unlink(missing_ok=True)
+        zip_path.parent.rmdir()
         try:
             body, ctype = _multipart_zip(
                 "file", "package.zip", content, {"package_name": package_name}
@@ -1557,7 +1582,13 @@ def _run_sync(
         # refresh token 只经此请求体转交，不落状态、不写日志
         started = _http(
             "POST", f"/api/projects/{mp_project}/evaluate", tok(),
-            body={"refresh_token": refresh_token} if refresh_token else {},
+            body={
+                **({"refresh_token": refresh_token} if refresh_token else {}),
+                **({"model_profile_id": model_profile_id} if model_profile_id else {}),
+                **({"case_concurrency": case_concurrency} if case_concurrency else {}),
+                # Resolved server-side for the initiating user; never persisted.
+                **({"judge_model": judge_model} if judge_model is not None else {}),
+            },
         )
         round_id = started["roundId"]
         _write_state(root, round_id=round_id)

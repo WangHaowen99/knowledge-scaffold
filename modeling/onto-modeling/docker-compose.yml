@@ -1,5 +1,6 @@
 # 本地从源码构建并拉起全栈（onto-modeling + auth-server），用于交付前验证。
 # 生产部署用 deploy/ 下的离线交付包流程。
+# 知识包 Hub 独立部署（仓库 knowledge-hub/deploy/docker-compose.knowledge-hub.yml），需加入本项目或整栈共享的网络。
 services:
   auth-server:
     build: ../../auth-server
@@ -26,6 +27,11 @@ services:
       - ONTO_WEB_AUTH_URL=http://auth-server:5056
       # .env 的 ONTO_WEB_PORT 只控制上面 ports 的宿主发布端口，容器内固定 8100
       - ONTO_WEB_PORT=8100
+      - ONTO_HUB_URL=http://knowledge-hub:8200
+      - ONTO_HUB_SERVICE_TOKEN=${ONTO_HUB_SERVICE_TOKEN:?Set ONTO_HUB_SERVICE_TOKEN}
+      # 独立评测服务：后端按容器名访问（须与评测同在 consumer 网络）；入站凭据校验评测完成通知，留空则拒绝通知
+      - ONTO_WEB_EVAL_URL=${ONTO_WEB_EVAL_URL:-http://knowledge-evaluation:8090}
+      - ONTO_EVALUATION_SERVICE_TOKEN=${ONTO_EVALUATION_SERVICE_TOKEN:-}
       # 代码生成脚本的运行验证经网关进 jiuwenbox 沙箱；本容器不挂 jiuwenbox socket
       - ONTO_WEB_SANDBOX_GATEWAY_URL=http://sandbox-gateway:8110
     volumes:

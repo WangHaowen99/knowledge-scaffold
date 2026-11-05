@@ -48,6 +48,60 @@ export function buildSubagentLifecycle(events) {
   return lifecycle;
 }
 
+// 后台派遣时 CLI 当即返回的启动回执：只说明子代理已开始，不是它的结果
+const BACKGROUND_RECEIPT_PREFIX = 'Async agent launched';
+// 引擎关闭（含空闲回收）或出错：此前没结束的子代理不会再有终态
+const SESSION_END_STATES = ['closed', 'error'];
+
+export function isBackgroundReceipt(result) {
+  return String(result?.excerpt || '').startsWith(BACKGROUND_RECEIPT_PREFIX);
+}
+
+/** 最后一个会话结束类事件（打断、引擎关闭或出错）在历史中的下标；没有则为 -1。 */
+export function lastSessionEndIndex(events) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (
+      event.type === 'session_interrupted' ||
+      event.type === 'session_error' ||
+      (event.type === 'session_state' && SESSION_END_STATES.includes(event.state))
+    ) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+/**
+ * 子任务卡状态，以生命周期终态和子代理的真实结果为准：后台派遣时的回执只是启动回执，不代表子代理已结束。
+ *
+ * - 有终态，或已有回执且不是后台启动回执（同步派遣返回的结果）→ 已结束，失败、停止按终态与回执判定；
+ * - 否则为运行中，回执是后台启动回执时标为后台运行；派遣之后会话已结束则为已中断。
+ *
+ * 同步结果不必等终态事件：生命周期事件可能缺失或匹配不上，卡片不能因此一直转圈。
+ *
+ * @param {{lifecycle?: object, result?: {isError: boolean, excerpt: string}, sessionEnded: boolean}} input
+ * @returns {{done: boolean, failed: boolean, stopped: boolean, interrupted: boolean, background: boolean}}
+ */
+export function resolveSubagentState({ lifecycle, result, sessionEnded }) {
+  const background = isBackgroundReceipt(result);
+  const finished = lifecycle?.done === true;
+  if (finished || (result !== undefined && !background)) {
+    const status = finished ? lifecycle.status : '';
+    return {
+      done: true,
+      failed: status === 'failed' || Boolean(result?.isError),
+      stopped: status === 'stopped' || status === 'killed',
+      interrupted: false,
+      background,
+    };
+  }
+  if (sessionEnded) {
+    return { done: true, failed: false, stopped: true, interrupted: true, background };
+  }
+  return { done: false, failed: false, stopped: false, interrupted: false, background };
+}
+
 /**
  * @returns {{cards: Set<string>, steps: Map<string, object[]>}}
  *   cards = 本次历史里存在卡片的派遣调用 id（卡片被历史截断时，子代理消息要退回

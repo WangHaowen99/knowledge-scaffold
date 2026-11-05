@@ -41,26 +41,26 @@ function authHeaders() {
 let refreshing = null;
 async function tryRefresh() {
   if (!authStore.refreshToken) return false;
-  refreshing =
-    refreshing ||
-    fetch('/api/auth/refresh', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: authStore.refreshToken }),
-    })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (data) {
-          authStore.save(data);
-          return true;
-        }
-        authStore.clear();
-        return false;
-      })
-      .catch(() => false)
-      .finally(() => {
-        refreshing = null;
+  const access = authStore.token;
+  const refresh = authStore.refreshToken;
+  const update = async () => {
+    if (authStore.token !== access) return false;
+    try {
+      const response = await fetch('/api/auth/refresh', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refresh }),
       });
+      if (authStore.token !== access || authStore.refreshToken !== refresh) return false;
+      if (!response.ok) { authStore.clear(); return false; }
+      const data = await response.json();
+      if (authStore.token !== access || authStore.refreshToken !== refresh) return false;
+      authStore.save(data);
+      return true;
+    } catch { return false; }
+  };
+  refreshing = refreshing || (globalThis.navigator?.locks
+    ? navigator.locks.request('onto-auth-refresh', update) : update())
+    .finally(() => { refreshing = null; });
   return refreshing;
 }
 
@@ -89,7 +89,7 @@ async function responseError(response) {
   let body = {};
   try {
     body = await response.json();
-    detail = body.error || body.detail || detail;
+    detail = body.error || body.message || body.detail || detail;
     // FastAPI 校验错误是对象数组，转成可读文本（否则 toast 渲染为空，表现为"无反应"）
     if (typeof detail !== 'string') detail = JSON.stringify(detail).slice(0, 200);
   } catch { /* keep status text */ }
@@ -103,7 +103,15 @@ async function responseError(response) {
 // 评测轮在 modeling 侧后台执行，常超 access token 有效期：带上 refresh token，
 // 由 modeling 为本轮续期凭据。未登录（无鉴权部署）时不带该字段。
 export function evalRunPayload(
-  { cases, dataSource, dataSourceId = '', evalSetId = '', allowUnbound = false },
+  {
+    cases,
+    dataSource,
+    dataSourceId = '',
+    evalSetId = '',
+    allowUnbound = false,
+    modelProfileId = '',
+    caseConcurrency,
+  },
   refreshToken = authStore.refreshToken,
 ) {
   const payload = {
@@ -113,6 +121,10 @@ export function evalRunPayload(
     eval_set_id: evalSetId,
     allow_unbound: allowUnbound,
   };
+  if (modelProfileId) payload.model_profile_id = modelProfileId;
+  if (Number.isSafeInteger(caseConcurrency) && caseConcurrency >= 1) {
+    payload.case_concurrency = caseConcurrency;
+  }
   if (refreshToken) payload.refresh_token = refreshToken;
   return payload;
 }
@@ -127,6 +139,27 @@ function filenameOf(response, fallback) {
   if (encoded) return decodeURIComponent(encoded[1]);
   const plain = header.match(/filename="?([^";]+)"?/i);
   return plain ? plain[1] : fallback;
+}
+
+function createRequestId() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function stableHubRequest(path, body) {
+  const key = `onto-hub:${authStore.username}:${path}:${JSON.stringify(body)}`;
+  let requestId = localStorage.getItem(key);
+  if (!requestId) {
+    requestId = createRequestId();
+    localStorage.setItem(key, requestId);
+  }
+  try {
+    const result = await request(path, { method: 'POST', body: JSON.stringify({ ...body, request_id: requestId }) });
+    localStorage.removeItem(key);
+    return result;
+  } catch (error) {
+    if (error.status === 410) localStorage.removeItem(key);
+    throw error;
+  }
 }
 
 export const api = {
@@ -173,6 +206,12 @@ export const api = {
   },
   renameProject: (pid, name) =>
     request(`/api/projects/${pid}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  // 开始建模前的目标确认卡：background 省略 = 确认原目标；给出 = 提交改写后的新目标
+  confirmProjectGoal: (pid, background) =>
+    request(`/api/projects/${pid}/goal`, {
+      method: 'PUT',
+      body: JSON.stringify(background === undefined ? {} : { background }),
+    }),
   // 显式确认体：request() 一律带 application/json，空体在严格服务端/网关会被判为非法 JSON；
   // 同时与 modeling 侧删除接口的 confirmed 契约保持一致
   deleteProject: (pid) =>
@@ -223,11 +262,24 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ table, base_revision: baseRevision }),
     }),
-  // 发布知识包：走 fetch 才能拿到阻断错误（window.open 只会打开一页 JSON）；allowUnbound 即降级发布
-  downloadPackage: async (pid, { allowUnbound = false } = {}) => {
-    const query = allowUnbound ? '&allow_unbound=true' : '';
-    const send = () =>
-      fetch(`/api/projects/${pid}/export?scope=package${query}`, { headers: authHeaders() });
+  packageReleases: (pid, { offset = 0, limit = 20 } = {}) =>
+    request(`/api/projects/${pid}/package/releases?offset=${offset}&limit=${limit}`),
+  packageResourcesStatus: (pid) => request(`/api/projects/${pid}/package/resources/status`),
+  // 独立评测的版本状态与产物：reconcile 时由后端向评测服务对账，否则只读通知索引
+  packageEvaluations: (pid, { reconcile = false } = {}) =>
+    request(`/api/projects/${pid}/package/evaluations?reconcile=${reconcile ? 1 : 0}`),
+  packageEvaluationReport: (pid, runId) =>
+    request(`/api/projects/${pid}/package/evaluations/${encodeURIComponent(runId)}/report`),
+  packageEvaluationAnswer: (pid, runId, resultId) =>
+    request(`/api/projects/${pid}/package/evaluations/${encodeURIComponent(runId)}/answers/${encodeURIComponent(resultId)}`),
+  packageEvaluationSuggestions: (pid, runId) =>
+    request(`/api/projects/${pid}/package/evaluations/${encodeURIComponent(runId)}/suggestions`),
+  regeneratePackageEvaluation: (pid, runId) =>
+    request(`/api/projects/${pid}/package/evaluations/${encodeURIComponent(runId)}/regenerate`, { method: 'POST', body: '{}' }),
+  optimizePackageEvaluation: (pid, runId) =>
+    request(`/api/projects/${pid}/package/evaluations/${encodeURIComponent(runId)}/optimization`, { method: 'POST', body: '{}' }),
+  downloadRelease: async (pid, releaseId) => {
+    const send = () => fetch(`/api/projects/${pid}/package/releases/${releaseId}/download`, { headers: authHeaders() });
     let response = await send();
     if (response.status === 401 && (await tryRefresh())) response = await send();
     if (!response.ok) throw await responseError(response);
@@ -240,6 +292,30 @@ export const api = {
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   },
+  publishPackage: async (pid, { allowUnbound = false } = {}) => {
+    const key = `onto-publish:${authStore.username || 'local-dev'}:${pid}:${allowUnbound}`;
+    let requestId = localStorage.getItem(key);
+    if (!requestId) {
+      requestId = createRequestId();
+      localStorage.setItem(key, requestId);
+    }
+    let receipt;
+    try {
+      receipt = await request(`/api/projects/${pid}/package/releases`, {
+        method: 'POST', body: JSON.stringify({ request_id: requestId, allow_unbound: allowUnbound }),
+      });
+    } catch (error) {
+      // Validation precedes reservation; a corrected workspace starts a new request.
+      if (error.code === 'binding_problems' || error.status === 410) localStorage.removeItem(key);
+      throw error;
+    }
+    localStorage.removeItem(key);
+    return receipt;
+  },
+  hubPackages: (offset = 0) => request(`/api/hub/packages?offset=${offset}&limit=20`),
+  hubPackageVersions: (packageId, offset = 0) =>
+    request(`/api/hub/packages/${encodeURIComponent(packageId)}/releases?offset=${offset}&limit=20`),
+  importHubPackage: (body) => stableHubRequest('/api/hub/imports', body),
   importProject: (name, file, dryRun = false) => {
     const form = new FormData();
     form.append('name', name);
@@ -362,6 +438,9 @@ export const api = {
       method: 'DELETE',
     }),
   versions: (pid) => request(`/api/projects/${pid}/versions`),
+  // 历史时间线：迭代与发布版本由后端合并分页，cursor 原样回传
+  history: (pid, { limit = 50, cursor = '' } = {}) =>
+    request(`/api/projects/${pid}/history?${new URLSearchParams({ limit: String(limit), cursor })}`),
   revert: (pid, commit) =>
     request(`/api/projects/${pid}/versions/revert`, {
       method: 'POST',
@@ -435,11 +514,28 @@ export const api = {
   },
   // {cases, dataSourceId, evalSetId}；dataSource 为不落库的内联配置（none / dataset）；
   // allowUnbound：用户已确认数据绑定对不上的对象按未绑定处理
-  evalRun: (pid, { cases, dataSource, dataSourceId = '', evalSetId = '', allowUnbound = false }) =>
+  evalRun: (pid, {
+    cases,
+    dataSource,
+    dataSourceId = '',
+    evalSetId = '',
+    allowUnbound = false,
+    modelProfileId = '',
+    caseConcurrency,
+  }) =>
     request(`/api/projects/${pid}/eval/run`, {
       method: 'POST',
-      body: JSON.stringify(evalRunPayload({ cases, dataSource, dataSourceId, evalSetId, allowUnbound })),
+      body: JSON.stringify(evalRunPayload({
+        cases,
+        dataSource,
+        dataSourceId,
+        evalSetId,
+        allowUnbound,
+        modelProfileId,
+        caseConcurrency,
+      })),
     }),
+  evalModelProfiles: (pid) => request(`/api/projects/${pid}/eval/model-profiles`),
   evalDataSources: (pid) => request(`/api/projects/${pid}/eval/data-sources`),
   // 数据源表单上传业务数据表（Excel）→ { file: { id, name, size } }
   uploadEvalDataFile: (pid, file, onProgress) => {
@@ -503,6 +599,7 @@ export const api = {
       body: JSON.stringify({ permission_mode }),
     }),
   getSandboxStatus: () => request('/api/settings/sandbox'),
+  getEvaluationEntry: () => request('/api/settings/evaluation/entry'),
   getAssets: () => request('/api/settings/assets'),
   uploadAssets: (file) => {
     const form = new FormData();

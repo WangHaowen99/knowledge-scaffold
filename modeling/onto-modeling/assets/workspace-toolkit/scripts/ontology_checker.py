@@ -29,7 +29,8 @@ from operation_relations import (
     stops_before_call,
     sub_operation_call_sites as _extract_sub_operation_refs,
 )
-from check_eval_data import table_headers as _read_table_headers
+from check_eval_data import table_headers as _read_table_headers, table_profiles as _read_table_profiles
+import field_semantics
 
 # =============================================================================
 # DATA MODELS
@@ -679,6 +680,11 @@ def load_table_headers(ontology_dir: Path) -> dict:
     return _read_table_headers(ontology_dir.resolve().parent)
 
 
+def load_table_profiles(ontology_dir: Path) -> dict:
+    """与 load_table_headers 同口径的各列取值画像 {表名: 画像}；读不到的表没有画像，类型核验记为未验证。"""
+    return _read_table_profiles(ontology_dir.resolve().parent)
+
+
 def _needs_column(row: dict, columns: dict) -> bool:
     """该属性应在表里有同名列：填了英文名、还没对上，且不是派生属性或非库字段。"""
     key = row.get('英文名称', '').strip()
@@ -772,6 +778,81 @@ def check_object_columns(doc: OntologyDoc, tables: dict) -> list:
                     '计算得到的按「派生：由 [[operation名]] 写入」标注；取自文档的常量在属性规则里注明「非库字段」',
             source='规则检查',
         ))
+    return issues
+
+
+# --- 属性类型：写法合法、与所绑数据表的取值一致（口径见 field_semantics）---
+
+TYPE_ISSUE_CATEGORIES = {'非法类型': '类型非法', '冲突': '类型冲突', '待确认': '类型待确认'}
+
+
+def object_table(doc: OntologyDoc, tables: dict) -> str:
+    """对象「# 数据来源」绑定到的现有表名；未声明或对不上现有表时为空。"""
+    return _source_declaration(doc, {name.lower(): name for name in tables})[1]
+
+
+def assess_object_types(doc: OntologyDoc, tables: dict, profiles: dict) -> list:
+    """逐属性的类型验收结论。先判类型写法，再用所绑表该列的取值画像核对；
+    没有取值可核对时是「未验证」，并写明原因——不能当作通过。
+    column 按表头对应，与类型结论无关：类型写错的属性仍算已映射到该列。"""
+    table = object_table(doc, tables)
+    headers = {name.lower(): name for name in tables.get(table, [])} if table else {}
+    profile = profiles.get(table) if table else None
+    columns = {name.lower(): stats for name, stats in (profile or {}).get('columns', {}).items()}
+    items = []
+    for row in doc.attribute_rows:
+        key = row.get('英文名称', '').strip()
+        if key in ('', '无', '-') or '类型' not in row:
+            continue  # 缺「类型」列由表格格式检查报
+        rule = row.get('属性规则', '')
+        identity = field_semantics.is_identity_field(row)
+        derived = any(marker in rule for marker in _NON_STORED_MARKERS)
+        column = headers.get(key.lower(), '')
+        _, verdict, reason = field_semantics.assess_type(row.get('类型'), rule, identity, None)
+        item = {'object': doc.path.stem, 'field': key, 'name': row.get('中文名称', '').strip(),
+                'table': table, 'column': column, 'declared': row.get('类型', '').strip()[:30],
+                'inferred': '', 'verdict': verdict, 'reason': reason, 'mixing': '',
+                'column_missing': bool(table) and not column and not derived}
+        if verdict == '未验证':
+            stats = columns.get(key.lower())
+            if derived:
+                item.update(verdict='不适用', reason='派生或非库字段，不在数据表里')
+            elif not table:
+                item['reason'] = '对象未绑定现有数据表，取值无从核对'
+            elif not column:
+                item['reason'] = f'表「{table}」没有 {key} 列'
+            elif profile is None:
+                item['reason'] = f'表「{table}」的取值未读取（缺解析依赖或文件读不了）'
+            elif not profile.get('rows'):
+                item['reason'] = f'表「{table}」只有表头、没有数据行，取值无从核对'
+            elif stats is None:
+                item['reason'] = f'表「{table}」带数据的文件里没有 {key} 列，取值无从核对'
+            else:
+                _, verdict, reason = field_semantics.assess_type(row.get('类型'), rule, identity, stats)
+                item.update(inferred=stats.get('inferred', ''), verdict=verdict, reason=reason,
+                            mixing=field_semantics.identity_mixing(stats, rule) if identity else '')
+        items.append(item)
+    return items
+
+
+def check_object_types(doc: OntologyDoc, tables: dict, profiles: dict) -> list:
+    """类型非法、与取值冲突是错误；无依据的「字符串」、需写明取值含义的布尔等待确认；
+    标识列里数字与文本混用等归一化口径需业务确认。逐字段结论用 field_semantics.py types 查看。"""
+    issues = []
+    for item in assess_object_types(doc, tables, profiles):
+        label = f'属性「{item["name"] or item["field"]}」（{item["field"]}'
+        label += f'，表「{item["table"]}」列 {item["column"]}）' if item['column'] else '）'
+        severity = field_semantics.VERDICT_SEVERITY.get(item['verdict'])
+        if severity:
+            issues.append(Issue(file=_rel(doc), severity=severity,
+                                category=TYPE_ISSUE_CATEGORIES[item['verdict']],
+                                message=f'{label}：{item["reason"]}', source='规则检查'))
+        if item['mixing']:
+            issues.append(Issue(
+                file=_rel(doc), severity='警告', category='标识混合',
+                message=f'{label}是标识字段，{item["mixing"]}：导入与关联时按哪种口径归一化需要业务确认，'
+                        f'不要自行补零、去零或改大小写；确认后在属性规则注明「{field_semantics.MIXED_ID_MARKER}：归一化规则」',
+                source='规则检查'))
     return issues
 
 
@@ -1085,6 +1166,90 @@ def check_relation_join_conflicts(all_docs: dict, tables: dict, check_docs: dict
             if path.stem in check_docs:
                 issues.append(Issue(file=_rel(check_docs[path.stem]), severity='警告', category='关联字段',
                                     message=message, source='规则检查'))
+    return issues
+
+
+# --- 跨对象字段等价：操作 / 规则里把两个不同名的标识字段当作同一个值 ---
+
+def declared_join_list(all_docs: dict, tables: dict) -> list:
+    """「# 关联对象」括注写出的有效关联字段对（去重），供操作抽取引用与等价检查。"""
+    by_lower = {name.lower(): name for name in tables}
+    found = set()
+    for doc in all_docs.values():
+        if doc.doc_type != 'object':
+            continue
+        for _, source, name, target, note in _object_relations(doc):
+            source_doc, target_doc = all_docs.get(source), all_docs.get(target)
+            if not note or any(end is None or end.doc_type != 'object' for end in (source_doc, target_doc)):
+                continue
+            source_join, target_join, error = _parse_join_note(
+                note, _field_keys(source_doc), _field_keys(target_doc),
+                _relation_names(source_doc, by_lower), _relation_names(target_doc, by_lower))
+            if source_join and target_join and not error:
+                found.add((source, name, target, source_join, target_join))
+    return [{'relation': name, 'source': source, 'source_field': source_join,
+             'target': target, 'target_field': target_join}
+            for source, name, target, source_join, target_join in sorted(found)]
+
+
+def declared_joins(all_docs: dict, tables: dict) -> set:
+    """{(对象, 字段小写, 对象, 字段小写)}，两个方向都在内。"""
+    joins = set()
+    for join in declared_join_list(all_docs, tables):
+        source_field, target_field = join['source_field'].lower(), join['target_field'].lower()
+        joins.add((join['source'], source_field, join['target'], target_field))
+        joins.add((join['target'], target_field, join['source'], source_field))
+    return joins
+
+
+def _field_index(all_docs: dict, tables: dict):
+    """字段引用索引：对象名、对象英文名与所绑表名都可作限定词。"""
+    by_lower = {name.lower(): name for name in tables}
+    objects = {}
+    for stem, doc in all_docs.items():
+        if doc.doc_type != 'object':
+            continue
+        english = doc.sections.get('英文名称', '').strip().split('\n')[0].strip()
+        qualifiers = [english] if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', english) else []
+        qualifiers += [_declared_table(doc), _source_declaration(doc, by_lower)[1]]
+        objects[stem] = {'qualifiers': [q for q in qualifiers if q], 'rows': doc.attribute_rows}
+    return field_semantics.build_field_index(objects)
+
+
+def _body_lines(doc: OntologyDoc):
+    """(文件行号, 文本)：跳过开头的 frontmatter 与标题行。"""
+    lines = doc.raw.split('\n')
+    start = 0
+    if lines and lines[0].strip() == '---':
+        start = next((i + 1 for i in range(1, len(lines)) if lines[i].strip() == '---'), 0)
+    for lineno in range(start, len(lines)):
+        if lines[lineno].strip() and not re.match(r'^#{1,6}\s', lines[lineno]):
+            yield lineno + 1, lines[lineno]
+
+
+def check_field_equivalence(doc: OntologyDoc, index, joins: set) -> list:
+    """把两个对象里不同名的标识字段当作同一个值核对、关联或据此拦截，必须有关联声明支撑。
+
+    对象之间按什么字段关联只看「# 关联对象」的括注（源字段 → 目标字段）和同名 / 别名字段；
+    资料没写的等价关系不能由抽取补出来，更不能写成「对不上就报错 / 拦截」的条件。
+    """
+    issues = []
+    for finding in field_semantics.find_unproven_equivalences(_body_lines(doc), index, joins):
+        pair = f'{finding["left"]} 与 {finding["right"]}'
+        if finding['pending']:
+            issues.append(Issue(
+                file=_rel(doc), severity='警告', category='字段关联',
+                message=f'第 {finding["line"]} 行把 {pair} 当作同一个值，已标待确认：「{finding["text"]}」。'
+                        '确认前不得作为拦截或报错条件；业务确认后在对象的「# 关联对象」声明关联字段（源字段 → 目标字段）',
+                source='规则检查'))
+            continue
+        issues.append(Issue(
+            file=_rel(doc), severity='错误', category='字段关联',
+            message=f'第 {finding["line"]} 行把 {pair} 当作同一个值核对或关联：「{finding["text"]}」，'
+                    '两者不同名、不是别名，也没有声明过关联字段。资料确有此关联时，先在对象的「# 关联对象」'
+                    '写明「关系名（源字段 → 目标字段）」；资料没有依据时删掉这句，或移到注意事项并标「待确认」，'
+                    '不得作为拦截或报错条件',
+            source='规则检查'))
     return issues
 
 
@@ -2069,7 +2234,9 @@ def generate_report(issues: list, ontology_dir: str) -> str:
 
 def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool = False,
                include_knowledge: bool = False, include_scripts: bool = False,
-               tables: dict = None, strict_targets: bool = False) -> list:
+               tables: dict = None, strict_targets: bool = False, profiles: dict = None) -> list:
+    """profiles：{表名: 取值画像}，属性类型按它核对。tables 与 profiles 都不传时从工作区读取；
+    只传 tables 时没有取值证据，类型只查写法、取值核对记为未验证。"""
     print(f"Loading ontology from {ontology_dir}...", file=sys.stderr)
     all_docs = load_ontology(ontology_dir)
     print(f"  {len(all_docs)} documents loaded", file=sys.stderr)
@@ -2091,13 +2258,22 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
     issues += check_unpackaged_knowledge(ontology_dir)
     issues += check_solver_bindings(ontology_dir)
     term_map = build_term_map(all_docs)
-    tables = load_table_headers(ontology_dir) if tables is None else tables
+    if tables is None:
+        tables = load_table_headers(ontology_dir)
+        profiles = load_table_profiles(ontology_dir) if profiles is None else profiles
+    elif profiles is None:
+        profiles = {}
     report_categories = load_report_categories(ontology_dir)
+    field_index = joins = None  # 只有操作 / 规则用到，按需建一次
 
     print("Running rule checks...", file=sys.stderr)
     for doc in check_docs.values():
         issues += check_todo_placeholders(doc)
         issues += check_entity_keys(doc)
+        if doc.doc_type in ('operation', 'rule'):
+            if field_index is None:
+                field_index, joins = _field_index(all_docs, tables), declared_joins(all_docs, tables)
+            issues += check_field_equivalence(doc, field_index, joins)
         if doc.doc_type == 'object':
             issues += check_object_structure(doc)
             issues += check_object_data_source(doc)
@@ -2111,6 +2287,7 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
             issues += check_object_self_relations(doc, tables)
             issues += check_graph_identifiers(doc, tables)
             issues += check_derived_attribute_markers(doc, all_docs)
+            issues += check_object_types(doc, tables, profiles)
         elif doc.doc_type == 'operation':
             issues += check_entity_placement(doc, report_categories)
             issues += check_operation_structure(doc)
