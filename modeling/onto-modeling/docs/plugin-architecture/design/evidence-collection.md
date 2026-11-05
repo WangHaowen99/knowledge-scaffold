@@ -160,6 +160,24 @@ blobs/<sha256>            # REA 原始结果，可选
 （`inventory`）→ 转记录 → 记录数超 `max_records` 时截断并标 `partial`。每个 REA 子进程用 `max_seconds` 的剩余时间做超时，
 环境变量只给 `PATH`、`HOME=/scratch/<id>/home`、`LANG`，不给代理。
 
+**实现时补的**（11-05，旁路容器与网关联调后）：
+
+- 错误一律 `{"error", "message"}`。收程序阶段的错误在 POST 上直接回、不建任务：413 `too_large`、422 `artifact_mismatch`、
+  503 `queue_full`；提前拒收时先回复，再丢弃最多 64 MiB 或 10 秒的请求体，免得对端收不到回复。
+- `cancel` 回 200 和 JobStatus，`DELETE` 回 200 `{job_id, deleted: true}`；任务结束后一直查得到，直到 DELETE 或 6 小时自动清
+  （网关把 404 当成旁路容器重启）。`max_seconds` 从收下任务开始算，含排队。
+- REA 子进程的环境变量多一个 `TMPDIR`（任务目录下）：`extract-artifact` 解到临时目录，不设会落进容器 /tmp，删任务时清不掉。
+- 类型判定读文件头（`inspect-artifact` 不收目录）；`detected` 取 `electron`、`javascript`、`dotnet`、`pyinstaller`、`python`，多个用 `+` 连，
+  认不出是 `unknown`。PyInstaller 除主模块外，还分析主脚本引用到的包内非标准库模块（最多 50 个）。
+- `result` 另有 `rea_version`、`provider`、`complete`、`truncated`、`coverage_pct`（截断时）；`analyzers` 每项带 `target`，失败的带 `error`。
+- 原始结果：一个命令跑一次是 `<命令>.json`，跑多次合成 `<命令>.jsonl`（一行一份），最多 32 份；`extract-artifact` 的输出也算。
+- `native`（P/Invoke 目标）记成 `entity`（`kind=native`），声明它的方法用 `invokes_native` 关系连过去；关系记录的 `parent` 为 `null`。
+  JS 构造函数里的 `this.x`、Python `__init__` 用到的属性推成字段，记 `inferred`；外部接口、路由、IPC 同名合并成一条。
+- 名字里的控制字符换成 `?`，名字最长 512 字，`attrs` 里的字符串最长 2048 字，非整数一律转成字符串。
+- 镜像入口用 tini 回收僵尸进程；目标程序和解包内容在分析结束就删，结果留到 DELETE。
+- 网关的 `ONTO_CONNECTOR_REA_MAX_ARTIFACT_MB` 与旁路容器的 `REA_SIDECAR_MAX_BYTES_MB` 要一致（默认都是 2048），内核的
+  `ONTO_WEB_EVIDENCE_MAX_ARTIFACT_MB` 也一样。
+
 ## 6. 内核
 
 **数据目录**（`DATA_DIR/evidence/`，不在工作区，智能体读不到）：
