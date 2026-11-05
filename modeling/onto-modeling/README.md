@@ -74,6 +74,8 @@ cd backend && ONTO_WEB_AUTH_URL=http://127.0.0.1:5056 ONTO_WEB_AUTH_ISSUER=http:
   本机单独起网关：`cd backend && pip install -r connector-requirements.txt && ONTO_CONNECTOR_CONVERTERS_DIR=../assets/packs
   ONTO_CONNECTOR_ISSUER_KEY_URL=http://127.0.0.1:8100/api/v1/connector/issuer-key python -m app.connector_gateway`，
   再给后端设 `ONTO_WEB_CONNECTOR_GATEWAY_URL=http://127.0.0.1:8120`。
+- 程序逆向采集（ADR-0082）还要旁路容器 `rea-sidecar`：网关设 `ONTO_CONNECTOR_REA_URL=http://<旁路容器>:8130` 才列出提供方
+  `rea-static`；旁路容器不健康时它在提供方清单里是 `installed: false`。
 
 模型接入通过环境变量注入（见 `.env.example`），不落盘、不进仓库。
 

@@ -102,6 +102,8 @@ services:
       - ONTO_CONNECTOR_GATEWAY_PORT=8120
       # 内核签票据的公钥从这里取（网关自己不存任何能签票据的东西）
       - ONTO_CONNECTOR_ISSUER_KEY_URL=http://onto-modeling:8100/api/v1/connector/issuer-key
+      # 证据采集的提供方 rea-static 经 rea 网络调旁路容器；不配就不列这个提供方
+      - ONTO_CONNECTOR_REA_URL=http://rea-sidecar:8130
     healthcheck:
       test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8120/health', timeout=3).status == 200 else 1)"]
       interval: 30s
@@ -110,11 +112,47 @@ services:
       retries: 3
     networks:
       - connector
+      - rea
+
+  # REA 旁路容器（ADR-0082）：只有它碰目标程序的字节，跑固定版本 REA 白名单里的静态分析命令，不运行目标程序。
+  # 只接 rea 内部网络（网络上只有连接器网关，主容器不在上面），没有出口；非 root、只读根文件系统、无 capability，
+  # 任务目录在命名卷 /scratch
+  rea-sidecar:
+    build:
+      context: ./connectors/rea-sidecar
+    image: onto-modeling-rea-sidecar-dev:latest
+    pull_policy: build
+    user: node
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - onto-modeling-rea-scratch-dev:/scratch
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 3g
+    pids_limit: 128
+    cpus: 2
+    expose:
+      - "8130"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8130/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - rea
 
 networks:
   connector:
+    internal: true
+  rea:
     internal: true
 
 volumes:
   onto-modeling-data-dev:
   onto-modeling-auth-data-dev:
+  onto-modeling-rea-scratch-dev:

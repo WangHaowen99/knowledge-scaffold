@@ -132,6 +132,10 @@ fi
     -t "onto-modeling-connector-gateway:${VERSION}" -f Dockerfile .)
 (cd "${IMAGES_DIR}" && docker save -o "onto-modeling-connector-gateway-${VERSION}.tar" \
     "onto-modeling-connector-gateway:${VERSION}")
+# REA 旁路容器（ADR-0082）：connectors/rea-sidecar 自带 Dockerfile，REA 版本在构建时装死，运行时不联网
+(cd "${PROJECT_ROOT}/connectors/rea-sidecar" && ${BUILD_CMD} -t "onto-modeling-rea-sidecar:${VERSION}" .)
+(cd "${IMAGES_DIR}" && docker save -o "onto-modeling-rea-sidecar-${VERSION}.tar" \
+    "onto-modeling-rea-sidecar:${VERSION}")
 
 AUTH_SERVER_SRC="${REPOSITORY_ROOT}/auth-server"
 [ -d "${AUTH_SERVER_SRC}" ] || {
@@ -154,6 +158,7 @@ cat > "${BUNDLE_DIR}/images.env" <<EOF
 ONTO_WEB_IMAGE=onto-modeling:${VERSION}
 AUTH_SERVER_IMAGE=onto-modeling-auth-server:${VERSION}
 CONNECTOR_GATEWAY_IMAGE=onto-modeling-connector-gateway:${VERSION}
+REA_SIDECAR_IMAGE=onto-modeling-rea-sidecar:${VERSION}
 RELEASE_VERSION=${VERSION}
 RELEASE_ARCH=${RELEASE_ARCH}
 EOF
