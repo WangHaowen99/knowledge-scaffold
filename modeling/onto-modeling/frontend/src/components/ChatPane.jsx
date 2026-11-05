@@ -51,8 +51,10 @@ import {
 import {
   buildSubagentFlow,
   buildSubagentLifecycle,
+  endedByStall,
   isSubagentCardMessage,
   lastSessionEndIndex,
+  lastTurnEndIndex,
   resolveSubagentState,
 } from '../lib/subagentEvents.js';
 import { FileChip, Markdown } from './CenterPane.jsx';
@@ -448,11 +450,13 @@ function SubagentCard({ item }) {
   const stateText = item.done
     ? item.failed
       ? '失败'
-      : item.interrupted
-        ? '已中断'
-        : stopped
-          ? '已停止'
-          : '完成'
+      : item.timedOut
+        ? '执行超时'
+        : item.interrupted
+          ? '已中断'
+          : stopped
+            ? '已停止'
+            : '完成'
     : item.background
       ? '后台运行中'
       : '运行中';
@@ -461,7 +465,13 @@ function SubagentCard({ item }) {
 
   let preview = '';
   if (item.done) {
-    preview = item.summary || (item.interrupted ? '已中断，没有收到子代理的结果' : '');
+    preview =
+      item.summary ||
+      (item.timedOut
+        ? '长时间没有响应，已判定执行超时'
+        : item.interrupted
+          ? '已中断，没有收到子代理的结果'
+          : '');
   } else {
     const latest = steps[steps.length - 1];
     if (!latest)
@@ -1446,6 +1456,7 @@ export default function ChatPane({
     const fingerprints = new Map(); // 相同确认要求跨轮重复计数（防挂卡死循环，方案风险#4）
     let traceCount = 0;
     const sessionEndAt = lastSessionEndIndex(events);
+    const turnEndAt = lastTurnEndIndex(events);
     const pushTool = (tool) => {
       const last = list[list.length - 1];
       if (last?.role === 'toolgroup') last.tools.push(tool);
@@ -1468,6 +1479,7 @@ export default function ChatPane({
                 lifecycle: progress,
                 result,
                 sessionEnded: sessionEndAt > position,
+                turnEnded: turnEndAt > position,
               });
               list.push({
                 key,
@@ -1475,6 +1487,7 @@ export default function ChatPane({
                 description: progress?.description || block.input?.description || '子任务',
                 agentType: block.input?.subagent_type || progress?.agentType || '',
                 ...state,
+                timedOut: state.interrupted && endedByStall(events, position),
                 // 后台启动回执是 CLI 内部元数据，不作为子任务结果展示
                 excerpt: state.background ? undefined : result?.excerpt,
                 summary: progress?.summary || '',

@@ -636,7 +636,10 @@ class ScriptedClient(FakeClient):
 
     async def receive_messages(self):
         while True:
-            yield await self.inbox.get()
+            message = await self.inbox.get()
+            if message is None:  # 放入 None 模拟 CLI 退出、消息流结束
+                return
+            yield message
 
 
 @pytest.fixture()
@@ -771,6 +774,200 @@ def test_stop_turns_idle_even_if_cli_still_running(scripted_env):
 
         await _feed(created[0], _cli_state("idle"), _cli_state("running"))
         assert session.state == "running"
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+# ---- 引擎不再有结果时收尾：CLI 退出、长时间无响应（两个引擎共用会话层） ----
+
+
+def _session_errors(session):
+    return [event for event in session.events if event["type"] == "session_error"]
+
+
+def test_cli_exit_while_running_reports_error(scripted_env):
+    """这一轮还在跑时 CLI 退出：要告诉用户并释放槽位，不能一直显示运行中。"""
+    manager, created, tmp_path = scripted_env
+
+    async def scenario():
+        session = await _running_session(manager, tmp_path)
+        await _feed(created[0], None)
+
+        assert session.state == "error"
+        assert session.engine is None
+        assert manager.active_count() == 0
+        assert len(_session_errors(session)) == 1
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_cli_exit_while_idle_closes_silently(scripted_env):
+    """一轮结束后 CLI 退出不算出错，不给用户留错误提示。"""
+    manager, created, tmp_path = scripted_env
+
+    async def scenario():
+        session = await _running_session(manager, tmp_path)
+        await _feed(created[0], _turn_result())
+        assert session.state == "idle"
+        await _feed(created[0], None)
+
+        assert session.state == "closed"
+        assert session.engine is None
+        assert _session_errors(session) == []
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_stalled_session_times_out_and_can_continue(scripted_env, monkeypatch):
+    """长时间没有引擎事件：判定执行超时并硬终止，下一条消息能重新连接。"""
+    manager, created, tmp_path = scripted_env
+    monkeypatch.setattr(config, "SESSION_STALL_TIMEOUT_SECONDS", 1800)
+
+    async def scenario():
+        session = await _running_session(manager, tmp_path)
+        session.last_activity = time.time() - 1801
+
+        assert await manager.reap_stalled() == 1
+
+        assert session.state == "error"
+        assert session.engine is None
+        assert created[0].terminated is True
+        assert manager.active_count() == 0
+        error = _session_errors(session)[-1]
+        assert error["reason"] == agent_sessions.STALL_TIMEOUT_REASON
+        assert "30 分钟" in error["error"]
+
+        await manager.send("p1", tmp_path / "w1", "继续")
+        session = await _settle(manager, "p1")
+        assert session.state == "running"
+        assert len(created) == 2
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_only_running_sessions_without_activity_are_stalled(scripted_env, monkeypatch):
+    manager, created, tmp_path = scripted_env
+    monkeypatch.setattr(config, "SESSION_STALL_TIMEOUT_SECONDS", 1800)
+
+    async def scenario():
+        session = await _running_session(manager, tmp_path)
+        # 刚有过活动
+        session.last_activity = time.time() - 1799
+        assert await manager.reap_stalled() == 0
+
+        # 在等用户确认：确认卡有自己的超时
+        session.last_activity = time.time() - 1801
+        session.pending_permissions["r1"] = object()
+        assert await manager.reap_stalled() == 0
+        session.pending_permissions.clear()
+
+        # 开关关闭
+        monkeypatch.setattr(config, "SESSION_STALL_TIMEOUT_SECONDS", 0)
+        assert await manager.reap_stalled() == 0
+        monkeypatch.setattr(config, "SESSION_STALL_TIMEOUT_SECONDS", 1800)
+
+        # 已经空闲：归空闲回收管，不算超时
+        await _feed(created[0], _turn_result())
+        session.last_activity = time.time() - 1801
+        assert await manager.reap_stalled() == 0
+
+        assert session.engine is not None
+        assert _session_errors(session) == []
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+# ---- 排队时间不算无响应；出错收尾时提示追加消息；运行时活动刷新计时 ----
+
+
+def test_queue_wait_does_not_count_as_stall(scripted_env, monkeypatch):
+    """排队等槽位的时间不算引擎无响应：接上引擎后从零开始计时。"""
+    manager, created, tmp_path = scripted_env
+    monkeypatch.setattr(config, "SESSION_STALL_TIMEOUT_SECONDS", 1800)
+
+    async def scenario():
+        await _running_session(manager, tmp_path)
+        await manager.send("p2", tmp_path / "w2", "排队的消息")
+        queued = manager.get("p2")
+        assert queued.state == "queued"
+        queued.last_activity = time.time() - 1801  # 排队了 30 分钟以上
+
+        await manager.close("p1")
+        queued = await _settle(manager, "p2")
+        assert queued.state == "running"
+        assert await manager.reap_stalled() == 0
+        assert queued.engine is not None
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_error_notice_mentions_followups_sent_during_turn(scripted_env):
+    """本轮进行中追加的消息随引擎拆除丢失：错误提示里说明，让用户重发。"""
+    manager, created, tmp_path = scripted_env
+
+    async def scenario():
+        session = await _running_session(manager, tmp_path)
+        await manager.send("p1", tmp_path / "w1", "追加一条")
+        await _feed(created[0], None)
+
+        error = _session_errors(session)[-1]["error"]
+        assert "追加的 1 条消息" in error
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_error_notice_has_no_followup_hint_without_followups(scripted_env):
+    manager, created, tmp_path = scripted_env
+
+    async def scenario():
+        session = await _running_session(manager, tmp_path)
+        await _feed(created[0], None)
+
+        assert "追加" not in _session_errors(session)[-1]["error"]
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_stall_notice_mentions_followups(scripted_env, monkeypatch):
+    manager, created, tmp_path = scripted_env
+    monkeypatch.setattr(config, "SESSION_STALL_TIMEOUT_SECONDS", 1800)
+
+    async def scenario():
+        session = await _running_session(manager, tmp_path)
+        await manager.send("p1", tmp_path / "w1", "追加一")
+        await manager.send("p1", tmp_path / "w1", "追加二")
+        session.last_activity = time.time() - 1801
+        assert await manager.reap_stalled() == 1
+
+        error = _session_errors(session)[-1]
+        assert error["reason"] == agent_sessions.STALL_TIMEOUT_REASON
+        assert "追加的 2 条消息" in error["error"]
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_runtime_activity_refreshes_stall_clock_without_broadcast(scripted_env, monkeypatch):
+    """不转发的运行时消息（如状态消息）刷新活动时间，但不进历史。"""
+    manager, created, tmp_path = scripted_env
+    monkeypatch.setattr(config, "SESSION_STALL_TIMEOUT_SECONDS", 1800)
+
+    async def scenario():
+        session = await _running_session(manager, tmp_path)
+        before = len(session.events)
+        session.last_activity = time.time() - 1801
+        await _feed(created[0], SystemMessage(subtype="status", data={}))
+
+        assert len(session.events) == before
+        assert await manager.reap_stalled() == 0
         await manager.shutdown()
 
     asyncio.run(scenario())

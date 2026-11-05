@@ -52,6 +52,8 @@ export function buildSubagentLifecycle(events) {
 const BACKGROUND_RECEIPT_PREFIX = 'Async agent launched';
 // 引擎关闭（含空闲回收）或出错：此前没结束的子代理不会再有终态
 const SESSION_END_STATES = ['closed', 'error'];
+// 判定执行超时时 session_error 带的 reason，与后端 agent_sessions.STALL_TIMEOUT_REASON 一致
+const STALL_TIMEOUT_REASON = 'stall_timeout';
 
 export function isBackgroundReceipt(result) {
   return String(result?.excerpt || '').startsWith(BACKGROUND_RECEIPT_PREFIX);
@@ -72,18 +74,45 @@ export function lastSessionEndIndex(events) {
   return -1;
 }
 
+/** 最后一次一轮收尾（会话回到空闲）在历史中的下标；没有则为 -1。 */
+export function lastTurnEndIndex(events) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type === 'session_state' && event.state === 'idle') return index;
+  }
+  return -1;
+}
+
+/** 派遣之后最先发生的收尾是不是“判定执行超时”：更早一轮遗留的卡片不算这次超时。 */
+export function endedByStall(events, position) {
+  for (let index = position + 1; index < events.length; index += 1) {
+    const event = events[index];
+    if (event.type === 'session_error') return event.reason === STALL_TIMEOUT_REASON;
+    if (event.type === 'session_interrupted') return false;
+    if (
+      event.type === 'session_state' &&
+      (event.state === 'idle' || SESSION_END_STATES.includes(event.state))
+    ) {
+      return false;
+    }
+  }
+  return false;
+}
+
 /**
  * 子任务卡状态，以生命周期终态和子代理的真实结果为准：后台派遣时的回执只是启动回执，不代表子代理已结束。
  *
  * - 有终态，或已有回执且不是后台启动回执（同步派遣返回的结果）→ 已结束，失败、停止按终态与回执判定；
  * - 否则为运行中，回执是后台启动回执时标为后台运行；派遣之后会话已结束则为已中断。
+ * - 同步派遣的子代理活不过它所在的一轮：一轮已收尾还没有结果，就不会再有了，同样算已中断。
+ *   后台派遣例外，主轮结束后它还在跑。
  *
  * 同步结果不必等终态事件：生命周期事件可能缺失或匹配不上，卡片不能因此一直转圈。
  *
- * @param {{lifecycle?: object, result?: {isError: boolean, excerpt: string}, sessionEnded: boolean}} input
+ * @param {{lifecycle?: object, result?: {isError: boolean, excerpt: string}, sessionEnded: boolean, turnEnded?: boolean}} input
  * @returns {{done: boolean, failed: boolean, stopped: boolean, interrupted: boolean, background: boolean}}
  */
-export function resolveSubagentState({ lifecycle, result, sessionEnded }) {
+export function resolveSubagentState({ lifecycle, result, sessionEnded, turnEnded = false }) {
   const background = isBackgroundReceipt(result);
   const finished = lifecycle?.done === true;
   if (finished || (result !== undefined && !background)) {
@@ -96,7 +125,7 @@ export function resolveSubagentState({ lifecycle, result, sessionEnded }) {
       background,
     };
   }
-  if (sessionEnded) {
+  if (sessionEnded || (turnEnded && !background)) {
     return { done: true, failed: false, stopped: true, interrupted: true, background };
   }
   return { done: false, failed: false, stopped: false, interrupted: false, background };

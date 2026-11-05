@@ -6,8 +6,10 @@ import { test } from 'node:test';
 import {
   buildSubagentFlow,
   buildSubagentLifecycle,
+  endedByStall,
   isSubagentCardMessage,
   lastSessionEndIndex,
+  lastTurnEndIndex,
   resolveSubagentState,
 } from '../src/lib/subagentEvents.js';
 
@@ -189,6 +191,7 @@ const cardState = (events, id, toolResults = new Map()) => {
     lifecycle: buildSubagentLifecycle(events).get(id),
     result: toolResults.get(id),
     sessionEnded: lastSessionEndIndex(events) > position,
+    turnEnded: lastTurnEndIndex(events) > position,
   });
 };
 const started = (seq, id) => ({ seq, type: 'subagent_started', task_id: `task-${id}`, tool_use_id: id });
@@ -300,4 +303,54 @@ test('只有打断、引擎关闭或出错算会话结束', () => {
   assert.equal(lastSessionEndIndex(states), -1);
   assert.equal(lastSessionEndIndex([...states, { type: 'session_state', state: 'error' }]), 3);
   assert.equal(lastSessionEndIndex([...states, { type: 'session_error', error: '出错' }]), 3);
+});
+
+test('一轮已收尾却没有结果：显示已中断，老版本遗留的卡片升级后也能恢复', () => {
+  // #387 的现场形态：派遣之后直接 result + idle，没有回执也没有生命周期事件
+  const events = [
+    dispatch(1, 'T1', '子任务'),
+    { seq: 2, type: 'result', subtype: 'success' },
+    { seq: 3, type: 'session_state', state: 'idle' },
+  ];
+
+  assert.deepEqual(cardState(events, 'T1'), {
+    done: true, failed: false, stopped: true, interrupted: true, background: false,
+  });
+});
+
+test('后台派遣在主轮结束后仍是后台运行中，不算已中断', () => {
+  const events = [
+    started(1, 'T1'),
+    dispatch(2, 'T1', '分析资料'),
+    { seq: 3, type: 'session_state', state: 'idle' },
+  ];
+  const results = new Map([['T1', backgroundReceipt]]);
+
+  const state = cardState(events, 'T1', results);
+  assert.equal(state.done, false);
+  assert.equal(state.background, true);
+});
+
+test('上一轮的收尾不影响这一轮新派遣的子任务', () => {
+  const events = [
+    { seq: 1, type: 'session_state', state: 'idle' },
+    { seq: 2, type: 'session_state', state: 'running' },
+    dispatch(3, 'T1', '分析资料'),
+  ];
+
+  assert.equal(cardState(events, 'T1').done, false);
+});
+
+test('只有派遣之后最先发生的收尾是判定超时，才算执行超时', () => {
+  const stall = { seq: 2, type: 'session_error', reason: 'stall_timeout', error: '超时' };
+  const idle = { seq: 3, type: 'session_state', state: 'idle' };
+  const card = dispatch(1, 'T1', '分析资料');
+
+  assert.equal(endedByStall([card, stall], 0), true);
+  // 普通出错、打断、一轮收尾都不是超时
+  assert.equal(endedByStall([card, { seq: 2, type: 'session_error', error: '出错' }], 0), false);
+  assert.equal(endedByStall([card, { seq: 2, type: 'session_interrupted' }, stall], 0), false);
+  // 上一轮遗留的卡片不算下一轮的超时
+  assert.equal(endedByStall([card, idle, stall], 0), false);
+  assert.equal(endedByStall([card], 0), false);
 });

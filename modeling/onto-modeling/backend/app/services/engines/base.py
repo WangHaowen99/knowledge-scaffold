@@ -15,8 +15,11 @@
   逐次计入项目用量；不是对话行
 - ``result``              一轮终态（成本 / usage / 时长）；``usage_per_call`` 为真表示
   本轮用量已由 model_usage 逐次计入，usage 只供单轮展示，统计时不再累加
-- ``_engine_end``         引擎内部终止信号（reason: closed | error），由
-  SessionManager 消化为 session_error / 状态迁移，不落历史、不发给前端
+- ``_engine_end``         引擎内部终止信号（reason: closed | error | exited），由
+  SessionManager 消化为 session_error / 状态迁移，不落历史、不发给前端。exited 表示
+  运行时自行退出：这一轮还在跑时按出错处理，否则静默关闭
+- ``_activity``           运行时还在动但没有可展示的内容（如状态、任务进度消息），
+  SessionManager 只据此刷新活动时间，不落历史、不发给前端
 
 以下事件由 SessionManager 产出（引擎不产）：``user_message`` /
 ``session_started`` / ``session_state`` / ``session_error`` /
