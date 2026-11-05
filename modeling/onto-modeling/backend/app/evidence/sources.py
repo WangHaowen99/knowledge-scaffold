@@ -13,7 +13,9 @@ from __future__ import annotations
 import re
 import threading
 import time
+import urllib.parse
 import uuid
+from datetime import datetime
 
 from ..api.errors import ApiError
 from . import grants, storage
@@ -23,6 +25,10 @@ _lock = threading.Lock()
 SOURCE_ID = re.compile(SOURCE_ID_PATTERN)
 NAME_MAX = 80
 NOTE_MAX = 2000
+SECRET_MAX = 8192
+MASK = "«已遮蔽»"
+# 网关拒绝写凭据时原样带回的状态；其余（鉴权、5xx）算上游不可用
+PASS_THROUGH = (400, 404, 409, 413, 422)
 ENVIRONMENTS = ("production", "test")
 # 自助类（REA）的缺省：任务说明里的预算按 spec §4 的例子
 SELF_SERVICE_BUDGET = {"max_rows": 200000, "max_bytes": 268435456, "max_duration_s": 1800}
@@ -150,6 +156,191 @@ def _connection(value) -> dict:
     return out
 
 
+# ---------------------------------------------------------------------------
+# 连接型提供方（数据库、代码仓库；spec §8～§10）
+# ---------------------------------------------------------------------------
+
+
+def connection_type(info: dict) -> bool:
+    """要凭据、按连接参数采集的提供方（不是自助类、不收目标程序）。"""
+    return info.get("input") == "connection" and not info.get("self_service")
+
+
+def _cred_fields(info: dict) -> list[dict]:
+    return [field for field in info.get("cred_fields") or [] if isinstance(field, dict) and field.get("name")]
+
+
+def secret_names(info: dict) -> list[str]:
+    return [str(field["name"]) for field in _cred_fields(info) if field.get("secret")]
+
+
+def _typed_connection(value, info: dict) -> dict:
+    """`connection` 只收提供方 `cred_fields` 里的非密钥字段；密钥字段放进来直接拒绝（不回显值）。"""
+    if not isinstance(value, dict):
+        raise _invalid("connection", "object")
+    plain = [field for field in _cred_fields(info) if not field.get("secret")]
+    allowed = {str(field["name"]) for field in plain}
+    secret = set(secret_names(info))
+    out: dict = {}
+    for key, item in value.items():
+        key = str(key)
+        if key in secret:
+            raise _invalid(f"connection.{key}", "secret_field", "密钥不能写进连接参数")
+        if key not in allowed:
+            raise _invalid(f"connection.{key}", "unknown")
+        if isinstance(item, bool) or not isinstance(item, (str, int)):
+            raise _invalid(f"connection.{key}", "scalar")
+        item = item.strip()[:500] if isinstance(item, str) else item
+        if item != "":
+            out[key] = item
+    for field in plain:
+        if field.get("required", True) and str(field["name"]) not in out:
+            raise _invalid(f"connection.{field['name']}", "required")
+    if "port" in out:
+        port = out["port"]
+        port = int(port) if isinstance(port, str) and port.isdigit() else port
+        if not isinstance(port, int) or not 0 < port < 65536:
+            raise _invalid("connection.port", "port")
+        out["port"] = port
+    if "repo_url" in out:
+        _repo_endpoint(str(out["repo_url"]))
+    return out
+
+
+def _repo_endpoint(url: str) -> tuple[str, int]:
+    """仓库地址只认 https，不能带用户名和令牌（令牌走凭据）。"""
+    parsed = urllib.parse.urlsplit(url)
+    try:
+        port = parsed.port
+    except ValueError:
+        raise _invalid("connection.repo_url", "url") from None
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise _invalid("connection.repo_url", "https", "仓库地址要用 https")
+    if parsed.username or parsed.password:
+        raise _invalid("connection.repo_url", "userinfo", "仓库地址里不能带用户名和令牌")
+    return parsed.hostname.lower(), port or 443
+
+
+def connection_endpoint(kind: str, connection: dict) -> tuple[str, int] | None:
+    """采集要连的主机和端口：数据库是 host:port，代码仓库是仓库主机的 443（地址里写了端口就用它）。"""
+    if kind == "db" and connection.get("host") and isinstance(connection.get("port"), int):
+        return str(connection["host"]).lower(), int(connection["port"])
+    if kind == "code" and connection.get("repo_url"):
+        return _repo_endpoint(str(connection["repo_url"]))
+    return None
+
+
+def scope_pattern(item: str) -> bool:
+    """范围写法 `crm.*`、`crm.customer`、`erp.store*`：`*` 只能在末尾。"""
+    return bool(item) and "*" not in item[:-1] and not any(char.isspace() for char in item)
+
+
+def scope_within(item: str, patterns: list[str]) -> bool:
+    """范围项（或一个对象名）落在某条白名单写法里：`crm.customer`、`crm.c*` 都在 `crm.*` 里。"""
+    for pattern in patterns:
+        if pattern.endswith("*"):
+            if item.startswith(pattern[:-1]):
+                return True
+        elif item == pattern:
+            return True
+    return False
+
+
+def _check_connection_type(registration: dict, kind: str) -> None:
+    """登记（新建或合并修改后）的整体约束：出口白名单要覆盖连接目标，数据库要写范围白名单，预算和限流都是正数。"""
+    egress = registration.get("egress") or []
+    if not egress:
+        raise _invalid("egress", "required", "出口白名单必填")
+    endpoint = connection_endpoint(kind, registration.get("connection") or {})
+    if endpoint and endpoint not in {(str(item["host"]).lower(), int(item["port"])) for item in egress}:
+        raise _invalid("egress", "missing_target", f"出口白名单里要有 {endpoint[0]}:{endpoint[1]}")
+    scope = registration.get("scope_allowlist") or []
+    if kind == "db" and not scope:
+        raise _invalid("scope_allowlist", "required", "数据库要写范围白名单")
+    for item in scope:
+        if not scope_pattern(item):
+            raise _invalid("scope_allowlist", "pattern", "范围写法如 crm.*、crm.customer，* 只能在末尾")
+    for key in ("budget", "rate_limit"):
+        if any(value <= 0 for value in (registration.get(key) or {}).values()):
+            raise _invalid(key, "positive")
+
+
+def secret_fields(value, info: dict) -> dict[str, str]:
+    """EV-06 的 `fields`、EV-02/04 的 `secret`：只收提供方声明的密钥字段，值是非空文字。报错不带值。"""
+    if not isinstance(value, dict) or not value:
+        raise _invalid("fields", "object")
+    allowed = set(secret_names(info))
+    out = {}
+    for key, item in value.items():
+        if str(key) not in allowed:
+            raise _invalid(f"fields.{key}", "unknown")
+        if not isinstance(item, str) or not item or len(item) > SECRET_MAX:
+            raise _invalid(f"fields.{key}", "non_empty_string")
+        out[str(key)] = item
+    return out
+
+
+def _gateway_failure(exc, secrets) -> ApiError:
+    """网关拒绝写凭据：把网关的错误码带回去；消息里万一回显了明文也遮掉。鉴权类和 5xx 一律算上游不可用。"""
+    def scrub(text: str) -> str:
+        for value in secrets:
+            if value:
+                text = text.replace(value, MASK)
+        return text
+
+    code, message = scrub(exc.code), scrub(exc.message)
+    if exc.status in PASS_THROUGH:
+        return ApiError(code, message, exc.status)
+    return ApiError("upstream_unavailable", "连接器网关拒绝了请求", 502, {"gateway_error": code,
+                                                                     "gateway_status": exc.status})
+
+
+def _store(source_id: str, **changes) -> dict:
+    with _lock:
+        items = _load()
+        for index, item in enumerate(items):
+            if item["id"] == source_id:
+                items[index] = {**item, **changes, "updated_at": time.time()}
+                _save(items)
+                return items[index]
+    raise ApiError("source_not_found", "数据源不存在", 404)
+
+
+def write_secret(source_id: str, fields: dict[str, str]) -> dict:
+    """转交网关 `PUT /v1/secrets/{源}`，登记里只存新的 `cred_ref` 和这一版各字段的写入时间。"""
+    from . import collector
+
+    try:
+        result = collector.put_secret(source_id, fields)
+    except collector.GatewayUnavailable:
+        raise ApiError("gateway_unavailable", "连接器网关不可达", 503) from None
+    except collector.GatewayError as exc:
+        raise _gateway_failure(exc, list(fields.values())) from None
+    cred_ref = str(result.get("cred_ref") or "")
+    if not cred_ref.startswith(f"cred://{source_id}/"):
+        raise ApiError("upstream_unavailable", "连接器网关回的凭据引用不对", 502)
+    try:
+        written = datetime.fromisoformat(str(result.get("written_at") or "").replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        written = time.time()
+    # 新版本只含这次写的字段：没写的字段在新版本里就没有了
+    return _store(source_id, cred_ref=cred_ref, secret_written_at={name: written for name in fields})
+
+
+def delete_secret(source_id: str) -> dict:
+    """网关 `DELETE /v1/secrets/{源}`（删所有版本），`cred_ref` 置空。网关里本来就没有也算删掉了。"""
+    from . import collector
+
+    try:
+        collector.delete_secret(source_id)
+    except collector.GatewayUnavailable:
+        raise ApiError("gateway_unavailable", "连接器网关不可达", 503) from None
+    except collector.GatewayError as exc:
+        if exc.status != 404:
+            raise _gateway_failure(exc, ()) from None
+    return _store(source_id, cred_ref=None, secret_written_at={})
+
+
 def _clean(body: dict, info: dict, *, creating: bool, current: dict | None = None) -> dict:
     """按提供方校验登记字段；更新时只校验带上的字段。"""
     self_service = bool(info.get("self_service"))
@@ -170,8 +361,13 @@ def _clean(body: dict, info: dict, *, creating: bool, current: dict | None = Non
             raise _invalid("environment", "enum")
         out["environment"] = environment
     if creating or given("connection"):
-        out["connection"] = _artifact_connection(body.get("connection")) if artifact_input \
-            else _connection(body.get("connection") if body.get("connection") is not None else {})
+        raw = body.get("connection") if body.get("connection") is not None else {}
+        if artifact_input:
+            out["connection"] = _artifact_connection(body.get("connection"))
+        elif connection_type(info) and "cred_fields" in info:
+            out["connection"] = _typed_connection(raw, info)
+        else:
+            out["connection"] = _connection(raw)
     for key, parse, default in (
         ("scope_allowlist", lambda value: _strings(value, "scope_allowlist"), []),
         ("egress", _egress, []),
@@ -228,18 +424,24 @@ def register(body: dict, *, user: str, admin: bool) -> dict:
     provider_id = str(body.get("provider") or "").strip()
     if not provider_id:
         raise _invalid("provider", "required")
-    if body.get("secret"):
-        raise ApiError("evidence_not_available", "这一版还不能写入凭据", 501, {"api": "EV-06"})
     info = _provider_info(provider_id)
     self_service = bool(info.get("self_service"))
     if not admin and not self_service:
         raise ApiError("forbidden", "这类数据源要管理员登记", 403, {"required_role": "admin"})
+    secret = None
+    if body.get("secret"):
+        if not connection_type(info):
+            raise _invalid("secret", "not_supported", "这类数据源不用凭据")
+        secret = secret_fields(body["secret"], info)
     fields = _clean(body, info, creating=True)
+    if connection_type(info):
+        _check_connection_type(fields, str(info.get("kind") or ""))
     owner = user if self_service or not admin else str(body.get("owner") or "").strip() or user
     now = time.time()
     registration = {
         "id": source_id, "provider": provider_id, "provider_version": str(info.get("version") or ""),
         "provider_label": str(info.get("label") or provider_id), "kind": str(info.get("kind") or ""),
+        "input": "artifact" if info.get("input") == "artifact" else "connection",
         **fields, "cred_ref": None, "owner": owner, "self_service": self_service,
         "registered_by_admin": admin and not self_service, "created_at": now, "updated_at": now,
         "secret_written_at": {},
@@ -250,29 +452,61 @@ def register(body: dict, *, user: str, admin: bool) -> dict:
             raise ApiError("source_id_taken", "数据源 ID 已被占用", 409)
         items.append(registration)
         _save(items)
+    if secret:
+        # 先登记、再写凭据；写不进去就撤掉登记，回网关的错误
+        try:
+            return write_secret(source_id, secret)
+        except ApiError:
+            with _lock:
+                _save([item for item in _load() if item["id"] != source_id])
+            raise
     return registration
 
 
+def _input_of(registration: dict) -> str:
+    if registration.get("input") in ("artifact", "connection"):
+        return registration["input"]
+    return "artifact" if "artifact_sha256" in (registration.get("connection") or {}) else "connection"
+
+
+def provider_of(registration: dict) -> dict:
+    """登记对应的提供方信息：网关通就取网关的（含 `cred_fields`），不通就用登记里记下的几项。"""
+    from . import collector
+
+    base = {"self_service": registration.get("self_service"), "kind": registration.get("kind"),
+            "input": _input_of(registration)}
+    info = collector.provider(registration["provider"]) if base["input"] == "connection" else None
+    return {**info, **base} if info else base
+
+
 def update(source_id: str, body: dict, *, user: str, admin: bool) -> dict:
-    if body.get("secret"):
-        raise ApiError("evidence_not_available", "这一版还不能写入凭据", 501, {"api": "EV-06"})
     current = require_visible(source_id, user, admin)
     if not can_manage(current, user, admin):
         raise ApiError("forbidden", "只有登记人和管理员能改", 403, {"required_role": "admin"})
-    info = {"self_service": current.get("self_service"), "kind": current.get("kind"),
-            "input": "artifact" if "artifact_sha256" in (current.get("connection") or {}) else "connection"}
+    info = provider_of(current)
+    if connection_type(info) and body.get("connection") is not None and "cred_fields" not in info:
+        raise ApiError("gateway_unavailable", "连接器网关不可达，改不了连接参数", 503)
+    secret = None
+    if body.get("secret"):
+        if not connection_type(info) or not admin:
+            raise _invalid("secret", "not_supported", "这类数据源不用凭据")
+        if "cred_fields" not in info:
+            raise ApiError("gateway_unavailable", "连接器网关不可达", 503)
+        secret = secret_fields(body["secret"], info)
     changes = _clean({key: value for key, value in body.items() if key not in FIXED}, info, creating=False,
                      current=current)
     if admin and not current.get("self_service") and str(body.get("owner") or "").strip():
         changes["owner"] = str(body["owner"]).strip()
-    with _lock:
-        items = _load()
-        for index, item in enumerate(items):
-            if item["id"] == source_id:
-                items[index] = {**item, **changes, "updated_at": time.time()}
-                _save(items)
-                return items[index]
-    raise ApiError("source_not_found", "数据源不存在", 404)
+    if connection_type(info):
+        _check_connection_type({**current, **changes}, str(current.get("kind") or ""))
+    updated = _store(source_id, **changes)
+    if secret:
+        try:
+            return write_secret(source_id, secret)
+        except ApiError:
+            _store(source_id, **{key: current.get(key) for key in changes})
+            raise
+    return updated
 
 
 def delete(source_id: str, *, user: str, admin: bool) -> dict:
@@ -284,6 +518,8 @@ def delete(source_id: str, *, user: str, admin: bool) -> dict:
     active = jobs.active_for_source(source_id)
     if active:
         raise ApiError("job_state_invalid", "这个数据源有正在跑的采集任务", 409, {"state": active[0]["state"]})
+    if current.get("cred_ref"):
+        delete_secret(source_id)  # 登记删了凭据不能留在网关里；网关不通就先不删登记
     with _lock:
         _save([item for item in _load() if item["id"] != source_id])
     grants.drop_source(source_id)

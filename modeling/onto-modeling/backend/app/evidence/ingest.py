@@ -255,19 +255,84 @@ def snapshot_dir(source_id: str, snapshot_id: str) -> str:
     return f"{SYSTEMS_DIR}/{source_id}/{snapshot_id}"
 
 
+ACCESS_LOG_MAX = 1000
+# 内核再扫一遍个人信息的记录类型（数据库的样本、画像）
+PII_TYPES = ("sample", "profile")
+
+
+def access_log(manifest: dict) -> list[dict]:
+    """清单的 `access_log`（spec §8）：只留规定的字段，最多 1000 条。"""
+    out = []
+    for item in manifest.get("access_log") or [] if isinstance(manifest.get("access_log"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        entry = {"statement_digest": str(item.get("statement_digest") or "")[:80]}
+        for key in ("rows", "bytes", "duration_ms"):
+            value = item.get(key)
+            entry[key] = value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+        if isinstance(item.get("at"), str):
+            entry["at"] = item["at"][:40]
+        out.append(entry)
+        if len(out) >= ACCESS_LOG_MAX:
+            break
+    return out
+
+
+def _open_bundle(bundle: Path, work: Path, source_id: str, job_id: str) -> tuple[dict[str, bytes], dict[str, Path], dict]:
+    texts, blobs = _unpack(bundle, work, git_limit_bytes())
+    return texts, blobs, _manifest(texts, blobs, source_id, job_id)
+
+
+def _inventory(texts: dict[str, bytes]) -> tuple[dict | None, int]:
+    if "inventory.json" not in texts:
+        return None, 0
+    try:
+        inventory = json.loads(texts["inventory.json"].decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise _invalid("inventory.json 不是 JSON") from None
+    counter = [0]
+    inventory = _mask_value(inventory, counter)
+    return inventory, counter[0]
+
+
+def inventory_only(project_id: str, registration: dict, job: dict, bundle: Path) -> dict:
+    """`discover`：快照包只有清单，不提交快照，存到 `inventories/<项目>/<源>.json`；返回 {manifest, items, skipped}。"""
+    work = storage.tmp_dir() / f"{job['id']}-{uuid.uuid4().hex[:6]}"
+    work.mkdir(parents=True)
+    try:
+        texts, _blobs, manifest = _open_bundle(bundle, work, registration["id"], job["id"])
+        inventory, _hits = _inventory(texts)
+        if not isinstance(inventory, dict):
+            raise _invalid("缺 inventory.json")
+        items = [item for item in inventory.get("items") or [] if isinstance(item, dict)]
+        skipped = [item for item in inventory.get("skipped") or [] if isinstance(item, dict)]
+        storage.write_json(storage.inventory_path(project_id, registration["id"]), {
+            "job_id": job["id"], "at": time.time(), "scope": list(job.get("scope") or []),
+            "items": items, "skipped": skipped})
+        return {"manifest": manifest, "items": len(items), "skipped": len(skipped)}
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def ingest(manager, project_id: str, registration: dict, job: dict, bundle: Path) -> dict:
-    """校验、遮蔽、收 blob、提交、建索引；返回 {snapshot_id, commit, manifest}。不通过抛 IngestError。"""
+    """校验、遮蔽、收 blob、提交、建索引；返回 {snapshot_id, commit, manifest}。不通过抛 IngestError。
+
+    `sample` 入库成补充快照：清单 `operation=sample`、`complete=false`、`scope=[selector]`（不管网关怎么写）。"""
     from ..kernel.writepath import ChangeTx, Origin
-    from . import index, query
+    from . import index, pii, query
 
     source_id = registration["id"]
     prefix = f"{scheme_for(registration.get('kind', ''))}:{source_id}/"
     work = storage.tmp_dir() / f"{job['id']}-{uuid.uuid4().hex[:6]}"
     work.mkdir(parents=True)
     try:
-        texts, blobs = _unpack(bundle, work, git_limit_bytes())
-        manifest = _manifest(texts, blobs, source_id, job["id"])
+        texts, blobs, manifest = _open_bundle(bundle, work, source_id, job["id"])
         records = _records(texts, prefix)
+        manifest["operation"] = job.get("operation") or "snapshot"
+        if manifest["operation"] == "sample":
+            manifest.update(complete=False, scope=[job["selector"]] if job.get("selector") else [])
+        if "access_log" in manifest:
+            manifest["access_log"] = access_log(manifest)
 
         masked_hits = 0
         files: dict[str, bytes] = {}
@@ -275,17 +340,15 @@ def ingest(manager, project_id: str, registration: dict, job: dict, bundle: Path
             lines = []
             for record in rows:
                 masked, hits = _mask_record(record)
+                if kind in PII_TYPES:
+                    masked, more = pii.mask_record(masked)
+                    hits += more
                 masked_hits += hits
                 lines.append(json.dumps(masked, ensure_ascii=False))
             files[f"records/{kind}.jsonl"] = ("\n".join(lines) + "\n").encode("utf-8") if lines else b""
-        if "inventory.json" in texts:
-            try:
-                inventory = json.loads(texts["inventory.json"].decode("utf-8"))
-            except (UnicodeDecodeError, ValueError):
-                raise _invalid("inventory.json 不是 JSON") from None
-            counter = [0]
-            inventory = _mask_value(inventory, counter)
-            masked_hits += counter[0]
+        inventory, hits = _inventory(texts)
+        if inventory is not None:
+            masked_hits += hits
             files["inventory.json"] = json.dumps(inventory, ensure_ascii=False).encode("utf-8")
         if "summary.md" in texts:
             summary, hits = mask_text(texts["summary.md"].decode("utf-8", errors="replace"))

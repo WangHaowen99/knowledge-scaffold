@@ -5,8 +5,9 @@
 
 - 数据源是平台级的；项目侧接口（EV-11～EV-28）要项目所有者，且项目启用了系统逆向建模包（`rev`），否则 409 `pack_not_enabled`；
 - 采集、检索只认本项目授权了的数据源（EV-11），没授权 403 `source_not_authorized`；
-- EV-06、EV-07（凭据）和 PL-04、PL-19（提供方安装）这一轮仍回 501 `evidence_not_available`；
-- EV-29 解析 `bin:` 锚点走证据索引；`file:` 锚点照旧走资料文本，其余系统锚点回 `resolved=false`（`not_available`）。
+- EV-06、EV-07（凭据，F14）：明文立即转交网关，内核只存 `cred_ref` 和写入时间；PL-04、PL-19（提供方安装）仍回 501；
+- EV-29 解析 `bin:` 锚点走证据索引；`db:`、`code:` 锚点项目里有这个源的快照时也走索引；`file:` 锚点照旧走资料文本，
+  其余系统锚点回 `resolved=false`（`not_available`）。
 
 同一前缀下固定段（`snapshots/diff`）先于路径参数（`snapshots/{snapshot_id}`）登记。
 """
@@ -23,7 +24,7 @@ from fastapi.responses import JSONResponse, Response
 
 from ..api import deps, errors
 from ..api.errors import ApiError
-from ..evidence import RECORD_TYPES, collector, grants, index, ingest, jobs, query, sources, storage, uploads
+from ..evidence import RECORD_TYPES, collector, dbview, grants, index, ingest, jobs, query, sources, storage, uploads
 from ..services import audit, material_text, research_view
 
 router = APIRouter(tags=["evidence"])
@@ -35,12 +36,12 @@ PACK = "rev"
 CONFIRM_TTL_S = 600
 BLOB_RETENTION_DAYS = 90
 ANCHORS_MAX = 100
+SAMPLE_LIMIT_MAX = 20
+ER_DEPTH_MAX = 3
 
 _P = "/api/v1/projects/{project_id}"
 # 本轮仍不开放的接口：(接口编号, 方法, 路径)
 ROUTES = (
-    ("EV-06", "PUT", "/api/v1/admin/evidence/sources/{source_id}/secret"),
-    ("EV-07", "DELETE", "/api/v1/admin/evidence/sources/{source_id}/secret"),
     # 提供方由管理员装进网关或旁路容器（H2），随证据源一起留接口
     ("PL-04", "POST", "/api/v1/packs/{name}/install-requests"),
     ("PL-19", "POST", "/api/v1/admin/packs/{name}/install"),
@@ -198,7 +199,7 @@ async def register_source(request: Request):
     _audit(request, "evidence.source.register", project_id=grant_project or None, status=201,
            summary=f"登记数据源 {registration['id']}",
            detail={"source_id": registration["id"], "provider": registration["provider"],
-                   "self_service": registration["self_service"],
+                   "self_service": registration["self_service"], "cred_ref": registration.get("cred_ref"),
                    "artifact_sha256": (registration.get("connection") or {}).get("artifact_sha256")})
     return JSONResponse(_source_view(request, registration, project_id=grant_project or None), status_code=201)
 
@@ -225,8 +226,51 @@ async def update_source(source_id: str, request: Request):
     body = await deps.json_body(request)
     registration = sources.update(source_id, body, user=_user(request), admin=_admin(request))
     _audit(request, "evidence.source.update", summary=f"修改数据源 {source_id}",
-           detail={"source_id": source_id, "fields": sorted(body)[:20]})
+           detail={"source_id": source_id, "fields": sorted(body)[:20], "cred_ref": registration.get("cred_ref")})
     return _source_view(request, registration)
+
+
+def _require_admin(request: Request) -> None:
+    if not _admin(request):
+        raise ApiError("forbidden", "要管理员", 403, {"required_role": "admin"})
+
+
+def _secret_source(source_id: str) -> tuple[dict, dict]:
+    registration = sources.get(source_id)
+    if registration is None:
+        raise ApiError("source_not_found", "数据源不存在", 404)
+    info = sources.provider_of(registration)
+    if not sources.connection_type(info):
+        raise ApiError("invalid_argument", "这类数据源不用凭据", 400, {"fields": {"fields": "not_supported"}})
+    return registration, info
+
+
+async def write_secret(source_id: str, request: Request):
+    """EV-06：明文立即转交网关 `PUT /v1/secrets/{源}`，内核只存新的 `cred_ref` 和写入时间；审计只记引用和字段名。"""
+    _require_admin(request)
+    body = await deps.json_body(request)
+    _registration, info = _secret_source(source_id)
+    if "cred_fields" not in info:
+        raise ApiError("gateway_unavailable", "连接器网关不可达", 503)
+    fields = sources.secret_fields(body.get("fields"), info)
+    del body
+    registration = sources.write_secret(source_id, fields)
+    names = sorted(fields)
+    del fields
+    _audit(request, "evidence.secret.write", summary=f"写入 {source_id} 的凭据",
+           detail={"source_id": source_id, "cred_ref": registration["cred_ref"], "fields": names})
+    written = (registration.get("secret_written_at") or {}).get(names[0])
+    return {"cred_ref": registration["cred_ref"], "written_at": deps.iso(written)}
+
+
+def delete_secret(source_id: str, request: Request):
+    """EV-07：网关删这个源的所有版本，`cred_ref` 置空。"""
+    _require_admin(request)
+    registration, _info = _secret_source(source_id)
+    sources.delete_secret(source_id)
+    _audit(request, "evidence.secret.delete", status=204, summary=f"删除 {source_id} 的凭据",
+           detail={"source_id": source_id, "cred_ref": registration.get("cred_ref")})
+    return Response(status_code=204)
 
 
 def delete_source(source_id: str, request: Request):
@@ -257,11 +301,46 @@ def _require_source_access(request: Request, source_id: str, project_id: str) ->
     raise ApiError("forbidden", "要管理员，或带上已获授权的项目", 403, {"required_role": "admin"})
 
 
+def _test_connection(request: Request, registration: dict, project_id: str) -> dict:
+    """连接型（数据库、代码仓库）：网关 `POST /v1/sources/{源}/test`，回连通、只读账号、语句白名单三项。"""
+    source_id = registration["id"]
+    if not registration.get("cred_ref"):
+        result = {"ok": False, "checks": [{"name": "connectivity", "ok": False, "detail": "还没写入凭据"}],
+                  "ticket": None}
+    else:
+        test_spec = {"source": {"id": source_id, "provider": registration["provider"],
+                                "connection": dict(registration.get("connection") or {})},
+                     "cred_ref": registration["cred_ref"], "egress": list(registration.get("egress") or []),
+                     "rate_limit": dict(registration.get("rate_limit") or {})}
+        try:
+            answer, prefix = collector.test_source(test_spec)
+        except collector.GatewayUnavailable:
+            raise ApiError("gateway_unavailable", "连接器网关不可达", 503) from None
+        except collector.GatewayError as exc:
+            raise ApiError("connection_test_failed", exc.message, 422,
+                           {"checks": [], "gateway_error": exc.code}) from None
+        checks = []
+        for item in answer.get("checks") or []:
+            if isinstance(item, dict) and item.get("name"):
+                check = {"name": str(item["name"]), "ok": bool(item.get("ok")), "detail": str(item.get("detail") or "")}
+                if isinstance(item.get("latency_ms"), int):
+                    check["latency_ms"] = item["latency_ms"]
+                checks.append(check)
+        result = {"ok": bool(answer.get("ok")) and all(check["ok"] for check in checks), "checks": checks,
+                  "ticket": {"id_prefix": prefix, "expires_in_s": 600, "consumed": True}}
+    _audit(request, "evidence.test", project_id=project_id or None, summary=f"测试数据源 {source_id}",
+           detail={"source_id": source_id, "ok": result["ok"], "cred_ref": registration.get("cred_ref"),
+                   "ticket": (result["ticket"] or {}).get("id_prefix")})
+    return result
+
+
 async def test_source(source_id: str, request: Request):
-    """EV-08：旁路容器类（REA）只查提供方装没装、目标程序在不在。"""
+    """EV-08：连接型走网关测试；旁路容器类（REA）只查提供方装没装、目标程序在不在。"""
     body = await deps.json_body(request)
     project_id = str(body.get("project_id") or "")
     registration = _require_source_access(request, source_id, project_id)
+    if sources.connection_type(sources.provider_of(registration)):
+        return _test_connection(request, registration, project_id)
     started = time.time()
     info = collector.provider(registration["provider"], force=True)
     if collector.catalog() is None:
@@ -286,6 +365,14 @@ def access_log(source_id: str, request: Request, project_id: str = "", cursor: s
     items = []
     for job in jobs.list_jobs(project_id) if project_id else jobs.all_jobs():
         if job["source"]["id"] != source_id or not job.get("started_at"):
+            continue
+        if job.get("access_log"):
+            # 连接型：快照包清单的逐条访问审计（spec §8），没有时间的按任务开始时间
+            for entry in job["access_log"]:
+                items.append({"at": deps.iso(entry.get("at") or job["started_at"]), "job_id": job["id"],
+                              "project_id": job["project_id"], "operation": job["operation"],
+                              "statement_digest": entry.get("statement_digest") or None, "rows": entry.get("rows", 0),
+                              "bytes": entry.get("bytes", 0), "duration_ms": entry.get("duration_ms", 0)})
             continue
         access = job.get("access") or {}
         artifact = (job.get("artifact") or {}).get("sha256")
@@ -446,13 +533,48 @@ def _collect_request(project_id: str, body: dict) -> tuple[dict, dict, str, list
     scope = body.get("scope")
     if scope is None:
         scope = allow
-    if not isinstance(scope, list) or not all(isinstance(item, str) for item in scope) \
-            or (allow and not set(scope) <= set(allow)):
+    # 逐条核对：`crm.customer`、`crm.c*` 都落在 `crm.*` 里；登记没写白名单（REA、代码仓库）时不限
+    if not isinstance(scope, list) or not all(isinstance(item, str) and sources.scope_pattern(item) for item in scope) \
+            or (allow and not all(sources.scope_within(item, allow) for item in scope)):
         raise ApiError("invalid_argument", "范围只能在登记的白名单里", 400, {"fields": {"scope": "outside_allowlist"}})
     return registration, info, operation, scope
 
 
-def _preview(project_id: str, user: str, registration: dict, info: dict, operation: str, scope: list[str]) -> dict:
+def _sample_args(body: dict, operation: str, scope: list[str], registration: dict) -> tuple[str | None, int | None]:
+    """sample 的 `{selector, limit ≤ 20}`：selector 是一个对象（表），要落在白名单和本次范围里。"""
+    if operation != "sample":
+        return None, None
+    sample = body.get("sample") if isinstance(body.get("sample"), dict) else {}
+    selector = sample.get("selector")
+    limit = sample.get("limit", SAMPLE_LIMIT_MAX)
+    if not isinstance(selector, str) or not selector.strip() or "*" in selector \
+            or not sources.scope_pattern(selector.strip()):
+        raise ApiError("invalid_argument", "取样要指定一张表", 400, {"fields": {"sample.selector": "required"}})
+    selector = selector.strip()
+    allow = list(registration.get("scope_allowlist") or [])
+    if (allow and not sources.scope_within(selector, allow)) or (scope and not sources.scope_within(selector, scope)):
+        raise ApiError("invalid_argument", "取样的表不在范围里", 400, {"fields": {"sample.selector": "outside_allowlist"}})
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 0 < limit <= SAMPLE_LIMIT_MAX:
+        raise ApiError("invalid_argument", f"取样行数 1～{SAMPLE_LIMIT_MAX}", 400, {"fields": {"sample.limit": "range"}})
+    return selector, limit
+
+
+def _estimate(project_id: str, registration: dict, scope: list[str]) -> tuple[int | None, dict | None]:
+    """EV-13 的表数和估算：用这个源最近一次 discover 的清单；没有就 null。"""
+    inventory = storage.read_json(storage.inventory_path(project_id, registration["id"]), None)
+    if not isinstance(inventory, dict):
+        return None, None
+    items = [item for item in inventory.get("items") or []
+             if isinstance(item, dict) and (not scope or sources.scope_within(str(item.get("object") or ""), scope))]
+
+    def total(key: str) -> int:
+        return sum(item[key] for item in items if isinstance(item.get(key), int) and not isinstance(item[key], bool))
+
+    return len(items), {"rows": total("estimate_rows"), "bytes": total("estimate_bytes")}
+
+
+def _preview(project_id: str, user: str, registration: dict, info: dict, operation: str, scope: list[str],
+             selector: str | None = None, limit: int | None = None) -> dict:
     production = registration.get("environment") == "production"
     token = None
     if production:
@@ -464,14 +586,16 @@ def _preview(project_id: str, user: str, registration: dict, info: dict, operati
             _confirmations[token] = {"project_id": project_id, "source_id": registration["id"], "operation": operation,
                                      "user": user, "expires": now + CONFIRM_TTL_S}
     window = registration.get("access_window")
+    tables, estimate = _estimate(project_id, registration, [selector] if selector else scope)
+    sample_rows = (limit or SAMPLE_LIMIT_MAX) if registration.get("kind") == "db" else 0
     return {
         "requires_confirmation": production, "confirmation_token": token,
         "summary": {
-            "scope_text": "、".join(scope[:5]) or sources.scope_summary(registration), "tables": None,
+            "scope_text": selector or "、".join(scope[:5]) or sources.scope_summary(registration), "tables": tables,
             "window": window, "in_window_now": jobs.in_window(window),
-            "rate_limit": registration.get("rate_limit"), "estimate": None,
+            "rate_limit": registration.get("rate_limit"), "estimate": estimate,
             "readonly_methods": [str(info.get("readonly_method") or "")] if info.get("readonly_method") else [],
-            "masking": {"policy": registration.get("masking_policy") or "none", "sample_rows": 0},
+            "masking": {"policy": registration.get("masking_policy") or "none", "sample_rows": sample_rows},
             "ticket": {"ttl_s": CONFIRM_TTL_S, "single_use": True},
         },
     }
@@ -497,18 +621,21 @@ async def preview_job(project_id: str, request: Request):
     _project(project_id, request)
     body = await deps.json_body(request)
     registration, info, operation, scope = _collect_request(project_id, body)
-    return _preview(project_id, _user(request), registration, info, operation, scope)
+    selector, limit = _sample_args(body, operation, scope, registration)
+    return _preview(project_id, _user(request), registration, info, operation, scope, selector, limit)
 
 
 def _start(request: Request, project_id: str, registration: dict, operation: str, scope: list[str], body: dict,
-           consent: dict | None, *, resumed_from: str | None = None, budget=None) -> JSONResponse:
+           consent: dict | None, *, resumed_from: str | None = None, budget=None,
+           sample: tuple[str | None, int | None] = (None, None)) -> JSONResponse:
     job = jobs.create(project_id, registration, operation=operation, scope=scope,
                       budget=budget if budget is not None else body.get("budget"), by=_user(request), consent=consent,
-                      incremental_base=body.get("incremental_base") or None, resumed_from=resumed_from)
+                      incremental_base=body.get("incremental_base") or None, resumed_from=resumed_from,
+                      selector=sample[0], limit=sample[1])
     _audit(request, "evidence.collect", project_id=project_id, status=202,
            summary=f"采集 {registration['id']}（{operation}）",
            detail={"job_id": job["id"], "source_id": registration["id"], "operation": operation,
-                   "consent": job.get("consent"), "resumed_from": resumed_from,
+                   "consent": job.get("consent"), "resumed_from": resumed_from, "selector": job.get("selector"),
                    "artifact_sha256": (job.get("artifact") or {}).get("sha256"),
                    "authorization_note": bool(registration.get("authorization_note"))})
     return JSONResponse(jobs.view(job), status_code=202)
@@ -519,8 +646,9 @@ async def create_job(project_id: str, request: Request):
     _project(project_id, request, write=True)
     body = await deps.json_body(request)
     registration, info, operation, scope = _collect_request(project_id, body)
+    sample = _sample_args(body, operation, scope, registration)
     consent = _consent(project_id, _user(request), registration, info, operation, scope, body.get("confirmation_token"))
-    return _start(request, project_id, registration, operation, scope, body, consent)
+    return _start(request, project_id, registration, operation, scope, body, consent, sample=sample)
 
 
 def list_job_items(project_id: str, request: Request, state: str = "", cursor: str = "", limit: int = 0):
@@ -558,11 +686,13 @@ async def _again(project_id: str, job_id: str, request: Request, *, resume: bool
         raise ApiError("job_state_invalid", "任务当前状态不能这样操作", 409, {"state": old["state"]})
     registration, info, operation, scope = _collect_request(
         project_id, {"source_id": old["source"]["id"], "operation": old["operation"], "scope": old.get("scope")})
+    sample = _sample_args({"sample": {"selector": old.get("selector"), "limit": old.get("limit") or SAMPLE_LIMIT_MAX}},
+                          operation, scope, registration)
     consent = _consent(project_id, _user(request), registration, info, operation, scope, body.get("confirmation_token"))
-    # REA 没有断点：续采等同重试，只是记下从哪个任务来
+    # 没有断点：续采等同重试，只是记下从哪个任务来
     return _start(request, project_id, registration, operation, scope,
                   {"incremental_base": old.get("incremental_base")}, consent,
-                  resumed_from=job_id if resume else None, budget=old.get("budget"))
+                  resumed_from=job_id if resume else None, budget=old.get("budget"), sample=sample)
 
 
 async def resume_job(project_id: str, job_id: str, request: Request):
@@ -800,13 +930,23 @@ def lineage(project_id: str, request: Request, anchor: str = "", snapshot: str =
     return {"items": items, "untrusted_content": flagged}
 
 
-def er_view(project_id: str, request: Request, snapshot: str = ""):
-    """EV-28：只给数据库类；其他（REA）回空表。"""
+def er_view(project_id: str, request: Request, snapshot: str = "", focus: str = "", depth: int = 1,
+            domain: str = ""):
+    """EV-28：数据库快照给表、列（主键、外键、遮蔽）和关系，表数上限 60；其他快照（REA、代码）回空表。"""
     root = _project(project_id, request)
+    if not 1 <= depth <= ER_DEPTH_MAX:
+        raise ApiError("invalid_argument", f"depth 取 1～{ER_DEPTH_MAX}", 400, {"fields": {"depth": "range"}})
+    if focus and dbview.parse(focus) is None:
+        raise ApiError("anchor_invalid", "锚点格式不合法", 400)
     with index.connect(project_id, root) as connection:
-        _snapshot(connection, snapshot)
-    _query_audit(request, project_id, "EV-28", snapshot=snapshot)
-    return {"tables": [], "relations": []}
+        row = _snapshot(connection, snapshot)
+        result = {"tables": [], "relations": []}
+        if dbview.is_db_snapshot(connection, row["id"]):
+            result = dbview.er(connection, row["id"], focus=focus, depth=depth, domain=domain)
+            if result is None:
+                raise ApiError("anchor_not_found", "锚点在快照里不存在", 404)
+    _query_audit(request, project_id, "EV-28", snapshot=snapshot, anchor=focus[:200])
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -815,8 +955,11 @@ def er_view(project_id: str, request: Request, snapshot: str = ""):
 
 
 def _resolve(project_id: str, request: Request, root, anchors: list[str], path: str = "") -> list[dict]:
-    """`bin:` 走证据索引（spec §6）；其余交给资料文本（file 锚点；db、code 等回 not_available）。"""
-    system = [anchor for anchor in anchors if str(anchor).startswith("bin:")]
+    """`bin:` 走证据索引（spec §6）；`db:`、`code:` 在项目里有这个源的快照时也走索引；其余交给资料文本
+    （file 锚点；没有快照的 db、code 等回 not_available）。"""
+    collected = {source for source, _directory in index.workspace_snapshots(root).values()}
+    system = [anchor for anchor in anchors if str(anchor).startswith("bin:") or (
+        str(anchor).startswith(("db:", "code:")) and (query.parse_anchor(anchor) or {}).get("source_id") in collected)]
     resolved: dict[str, dict] = {}
     if system:
         declared = _declared(root, path)
@@ -860,6 +1003,8 @@ IMPLEMENTED = (
     ("EV-03", "POST", "/api/v1/evidence/source-requests", request_source),
     ("EV-04", "PATCH", "/api/v1/admin/evidence/sources/{source_id}", update_source),
     ("EV-05", "DELETE", "/api/v1/admin/evidence/sources/{source_id}", delete_source),
+    ("EV-06", "PUT", "/api/v1/admin/evidence/sources/{source_id}/secret", write_secret),
+    ("EV-07", "DELETE", "/api/v1/admin/evidence/sources/{source_id}/secret", delete_secret),
     ("EV-08", "POST", "/api/v1/evidence/sources/{source_id}/test", test_source),
     ("EV-09", "GET", "/api/v1/evidence/sources/{source_id}/access-log", access_log),
     ("EV-10", "GET", "/api/v1/evidence/providers", list_providers),

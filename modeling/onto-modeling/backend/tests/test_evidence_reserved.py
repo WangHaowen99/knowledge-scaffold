@@ -1,4 +1,4 @@
-"""证据源的接口占位（ADR-0056，F13 起大部分已实现，ADR-0082）：凭据（EV-06、EV-07）与 PL-04、PL-19 仍回 501；
+"""证据源的接口占位（ADR-0056，F13 起大部分已实现，ADR-0082；凭据 EV-06、EV-07 在 F14 开放，ADR-0084）：PL-04、PL-19 仍回 501；
 契约 3.19 的每个接口都登记了路由；助手拿不到 evidence.* MCP 工具；内核 SPI 只有协议。"""
 
 from __future__ import annotations
@@ -48,9 +48,9 @@ def test_every_reserved_route_returns_501_with_contract_envelope(env):
         assert set(body) == {"code", "message", "details", "trace_id"}
         assert body["trace_id"] == response.headers["x-trace-id"]
         seen.add(api)
-    # F13 起只剩凭据两个接口没开放（等数据库连接器），其余见 test_f13_*
-    assert seen == {"EV-06", "EV-07", "PL-04", "PL-19"}
-    assert {item[0] for item in evidence.IMPLEMENTED} == {f"EV-{n:02d}" for n in range(1, 35)} - {"EV-06", "EV-07"}
+    # F14 起证据源接口全部开放（见 test_f13_*、test_f14_kernel_*），只剩提供方安装
+    assert seen == {"PL-04", "PL-19"}
+    assert {item[0] for item in evidence.IMPLEMENTED} == {f"EV-{n:02d}" for n in range(1, 35)}
 
 
 def test_fixed_segment_wins_over_path_parameter(env, monkeypatch):
