@@ -970,7 +970,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
   | `warnings` | `{code, message}`[] | 不阻断导入的提醒 |
   | `suggested_name` | string | 默认取包里的名称 |
   | `name_check` | object | 同 `P-03` 的响应 |
-  | `after_import` | object | `{capabilities: {name, version}[]（按包里记录自动匹配）, start_node: "core.research", mark_needs_review: bool}` |
+  | `after_import` | object | `{capabilities: {name, version}[]（按包里记录自动匹配）, start_node: string \| null, start_title: string \| null, mark_needs_review: bool}`；起点按包里的交付物套主流程的完成判定推算，越过的上游节点不算（ADR-0084），迁移包为 `null` |
   | `evidence_sources` | `{id, display_name, needs_reauth: true}`[] | 包里登记的数据源 |
 
 - 错误：`upload_not_found`、`upload_expired`、`upload_purpose_mismatch`、`archive_invalid`。
@@ -2470,6 +2470,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - 不含凭据；
   - hooks 只追加拒绝型；
   - 页面只选用平台内置、没有前端代码；
+  - 流程声明了范围限定（`confine`）时：只有一个范围文件，在本包节点的 `produces` 里，不在 `ontology/` 和受保护目录下（检查项 `confine`，ADR-0085）；
   - 提示词体积预算。
 
 #### PL-16 下载检查报告

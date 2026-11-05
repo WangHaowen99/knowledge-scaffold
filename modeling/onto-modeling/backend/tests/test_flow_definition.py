@@ -143,7 +143,10 @@ def test_backend_state_helper_and_api_agree(manager: WorkspaceManager, scenario:
     root = make_project(manager, files)
     # ① 后端项目进度
     progress = manager._project_progress(root)
-    assert (progress["stages_done"], progress["stages_total"]) == (done, len(flow_state.progress_nodes(DEFAULT_FLOW)))
+    # 建模完成而资料分析没做：资料分析算越过，不计入分母（ADR-0084）
+    hits = flow_state.node_hits(DEFAULT_FLOW, root)
+    total = len(flow_state.progress_nodes(DEFAULT_FLOW)) - int(hits["core.model"] and not hits["core.research"])
+    assert (progress["stages_done"], progress["stages_total"]) == (done, total)
     # ② state_helper（工作区里实际跑的那份）
     assert state_helper(root, "detect-stage") == stage
     # ③ 会话开始的阶段提示（宿主注入与 session_start_hook 都经 detect-stage）
@@ -158,7 +161,6 @@ def test_backend_state_helper_and_api_agree(manager: WorkspaceManager, scenario:
     assert body["progress"] == {"done": done, "total": progress["stages_total"]}
     assert [node["id"] for node in body["nodes"]] == [node["id"] for node in DEFAULT_FLOW["nodes"]]
     confirmed = {node["id"] for node in body["nodes"] if node["state"] == "confirmed"}
-    hits = flow_state.node_hits(DEFAULT_FLOW, root)
     assert confirmed == {node_id for node_id, hit in hits.items() if hit}
 
 

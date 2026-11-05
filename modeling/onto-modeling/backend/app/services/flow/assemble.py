@@ -14,6 +14,9 @@
 分段里加步骤（`[{node, step}]`，如 F8 之前场景模拟的「场景」），用 `node_titles` 改主线节点的显示名（`{节点: 名称}`，如
 F8 之前的「校验与走查」）。这两项和节点钩子（`hooks`）分开声明，各管各的。
 core 的 `aliases` 把旧版节点编号映射到现在的节点：没升级的包写的锚点、钩子宿主、命令归属照样认。
+范围限定（ADR-0085）：包在 flow.yaml 顶层写 `confine: {scope_file: <路径>}`，范围文件里 status 是 active 时，
+基线里有、editable 里没有的本体条目助手不能写也不能删（内核守卫按组装结果执行）。最多一个包声明，
+路径要落在这个包某个节点的 produces 里；组装结果记下声明它的包、节点和入口命令，守卫的提示不用认识具体的包。
 """
 
 from __future__ import annotations
@@ -234,6 +237,7 @@ def assemble(contributions: list[tuple[str, str, dict]], available_commands: set
         target = (spec or {}).get("node") if isinstance(spec, dict) else None
         if target and target not in known:
             problems.append(f"命令 {command} 指向的节点 {target} 不存在")
+    _confine(contributions, nodes, flow, problems)
     if problems:
         raise FlowAssemblyError(problems)
     if available_commands is not None:
@@ -250,6 +254,39 @@ def assemble(contributions: list[tuple[str, str, dict]], available_commands: set
     flow["sources"] = sources
     flow["flow_hash"] = flow_hash(flow)
     return flow
+
+
+# 范围文件不能放在这些目录下：本体条目归范围管，其余是工具、资料或内核的目录
+_CONFINE_FORBIDDEN = ("ontology", "resource", ".claude", ".onto", ".git", ".ontology-state")
+
+
+def _confine(contributions: list[tuple[str, str, dict]], nodes: list[dict], flow: dict, problems: list[str]) -> None:
+    """包声明的范围限定（ADR-0085）：校验后写进组装结果的 `confine`；没有包声明时去掉（core 不带这一项）。"""
+    flow.pop("confine", None)
+    declared = [(pack, item.get("confine")) for pack, _, item in contributions if item.get("confine") not in (None, {})]
+    if not declared:
+        return
+    if len(declared) > 1:
+        problems.append("只能有一个包声明 confine：" + "、".join(pack for pack, _ in declared))
+        return
+    pack, spec = declared[0]
+    text = str(spec.get("scope_file") or "") if isinstance(spec, dict) else ""
+    if not isinstance(spec, dict) or set(spec) != {"scope_file"}:
+        problems.append(f"{pack} 的 confine 只能写 scope_file")
+        return
+    parts = text.split("/")
+    if (not text or text.startswith("/") or "\\" in text or any(ch in text for ch in "*?[")
+            or any(part in ("", ".", "..") for part in parts) or parts[0] in _CONFINE_FORBIDDEN):
+        problems.append(f"{pack} 的 confine.scope_file 要是工作区里的具体文件，不能在 ontology/ 或受保护目录下：{text or '（空）'}")
+        return
+    owner = next((node for node in nodes if node.get("pack") == pack and any(
+        fnmatch.fnmatchcase(text, str(item.get("path") if isinstance(item, dict) else item))
+        for item in node.get("produces") or [])), None)
+    if owner is None:
+        problems.append(f"{pack} 的 confine.scope_file {text} 不在本包任何节点的 produces 里")
+        return
+    flow["confine"] = {"scope_file": text, "pack": pack, "node": owner["id"],
+                       "entry": str((owner.get("entry") or {}).get("command") or "").strip()}
 
 
 def _apply_aliases(nodes: list[dict], flow: dict, aliases: dict[str, str]) -> None:

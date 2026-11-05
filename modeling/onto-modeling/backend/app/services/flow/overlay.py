@@ -5,8 +5,8 @@
 
 - **熔断**：运维把某个包的某个版本熔断（O-29）后，它的节点暂时跳过，它挡住的关卡解除——算状态前把这些节点的
   `blocks` 拿掉，算完标成已跳过；
-- **可补做**：项目已经越过插入位置（插件节点后面的主线节点已经在主线上完成），新串入的节点标 `backfill`，
-  不计入进度的分母，主线状态不往回退；
+- **可补做**：项目已经越过了还没做的节点（插件节点后面的主线节点已经完成，或主线节点的产出已被后面完成的节点
+  用上，比如导入知识包后的资料分析），标 `backfill`，不计入进度的分母，下一步建议不推它；
 - **已停用**：锁文件里停用了的包（enabled=false），它的节点不在组装后的流程里、挡不住任何节点；产物保留，
   节点以「已停用」列出（不进进度、没有动作）。
 """
@@ -60,19 +60,43 @@ def mark_broken(states: dict, broken: set[str]) -> None:
         item["broken"] = True
 
 
-def backfill_ids(flow: dict, hits: dict) -> set[str]:
-    """串入、关卡这类插件节点后面的主线节点已经在主线上完成、它自己还没完成：越过了插入位置。
+def _kinds(node: dict) -> set[str]:
+    """节点产出落在哪些产物类别里（produces 的目录对 `state.KIND_DIRS`）。"""
+    from .state import KIND_DIRS
 
-    主线位置（spine）的节点不算：它们随 core 或从 core 拆出的包（场景模拟）本来就在流程里，没做就是没做，不是「新插进来的」。"""
+    patterns = [str(item.get("path") if isinstance(item, dict) else item) for item in node.get("produces") or []]
+    return {kind for kind, dirs in KIND_DIRS.items()
+            for directory in dirs if any(pattern.startswith(f"{directory}/") for pattern in patterns)}
+
+
+def backfill_ids(flow: dict, hits: dict) -> set[str]:
+    """节点自己还没完成、项目已经越过了它（可补做）。两种越过：
+
+    - 串入、关卡这类插件节点：后面的主线节点已经在主线上完成，越过了插入位置；
+    - 主线位置（spine）的节点：后面已完成的节点用的正是它的产出（`stale_on` 里有它产出的类别）。导入知识包后建模已经
+      完成，资料分析就是这样被越过的（ADR-0084）。后面完成的节点不用它的产出时不算（场景模拟做了、校验没做），没做就是没做。"""
     order = [node for node in flow.get("nodes") or []
              if node.get("placement", "spine") in MAINLINE and not node.get("optional")]
     out = set()
     for index, node in enumerate(order):
-        if node.get("pack", "core") == "core" or node.get("placement", "spine") == "spine" or hits.get(node["id"]):
+        later = [item for item in order[index + 1:] if hits.get(item["id"])]
+        if hits.get(node["id"]) or not later:
             continue
-        if any(hits.get(later["id"]) for later in order[index + 1:]):
+        if node.get("placement", "spine") == "spine":
+            kinds = _kinds(node)
+            if any(kinds & set(item.get("stale_on") or []) for item in later):
+                out.add(node["id"])
+        elif node.get("pack", "core") != "core":
             out.add(node["id"])
     return out
+
+
+def first_open(flow: dict, hits: dict) -> dict | None:
+    """主线上第一个要做的必经节点：没完成、也没被越过（导入预览的起点，与下一步建议第 9 条同一口径）。"""
+    passed = backfill_ids(flow, hits)
+    return next((node for node in flow.get("nodes") or []
+                 if node.get("section", "required") == "required" and not node.get("optional")
+                 and not hits.get(node["id"]) and node["id"] not in passed), None)
 
 
 def mark_backfill(flow: dict, states: dict, hits: dict) -> None:

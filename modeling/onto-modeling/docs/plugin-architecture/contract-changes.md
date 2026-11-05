@@ -1323,6 +1323,30 @@ Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`
    - EV-09 的 `statement_digest` 对上传类是 `artifact:<sha256 前 12 位>`，`rows`、`bytes` 取快照清单的 `budget_used`。
    - 新增 **EV-34** `DELETE /api/v1/evidence/uploads/{upload_id}`（上传人）：取消没完成的上传、释放每人 2 个的名额；已完成的回 `upload_not_found`。
 
+## 2026-11-05 · F14（导入后从实际进度开始）
+
+用户 11-05 定，决策见 ADR-0084。
+
+1. **FL-01 节点状态**：spine 节点的产出已经被后面完成的节点用上（对方 `stale_on` 里有它产出的类别）时标 `flags.backfill`，
+   `display_state` 为 `backfill`，不计入进度分母，下一步建议不推它。导入已发布知识包后的资料分析就是这样。插件串入节点的规则不变。
+2. **P-10**：`after_import.start_node` 按包里的交付物推算，不再固定为 `core.research`；迁移包为 `null`。新增 `start_title`。
+3. **导入页**：「导入后」一栏按 `start_title` 显示从哪一步开始。
+
+## 2026-11-05 · F15（增量构建包与范围限定 confine，ADR-0085）
+
+决策见 ADR-0085。
+
+1. **新官方能力包 `incremental`（增量构建）**：默认不开，插件中心能力包分类里多一张卡片。启用后主线是资料分析 → 建模 → 圈定范围 → 范围内修改
+   → 传播核对 → 校验 → 场景模拟 → 发布；传播核对没完成时 PB-01 多一条 `flow:incremental.check` 门禁挡发布。产物在工作区 `incremental/` 下，不进 `reports/`。范围外改动在核对报告里是待处理项，不能标记跳过。
+2. **flow.yaml 顶层 `confine: {scope_file}`（新增）**：只能有一个包声明；`scope_file` 是工作区里的具体文件，不在 `ontology/` 和受保护目录下，
+   在本包节点的 `produces` 里，不满足时组装失败。组装出的 flow.yaml 里是 `confine: {scope_file, pack, node, entry}`。
+   范围文件（主线上的，或副本里刚确认的；放宽只认主线）`status` 为 `active` 时，`baseline.commit` 里有、`editable` 里没有的本体条目对助手只读（写、删都拒），新增条目不受限；
+   范围文件只在声明它的节点的命令运行时可写。网页编辑不受影响；包停用后限制一起去掉。
+3. **节点 `autobuild: false`（新增）**：自主构建排计划时跳过这个节点。
+4. **PL-15**：流程声明了 `confine` 时，静态检查多一项 `confine`（范围限定声明正确）；没声明时没有这一项。开发 skill 的协议文档和离线检查同步。
+5. **core 0.4.0**：表示内核支持 `confine`；用到它的包声明 `depends: {core: ">=0.4"}`。
+6. 其他接口不变，FL-01 的响应里没有 `confine`。
+
 ## 2026-11-05 · F16（数据库与代码仓库连接器）
 
 用户 11-05 定：REA 合进 PR 555 并部署后，接着做数据库和代码仓库连接器。决策见 ADR-0086，接口与格式见 `design/evidence-collection.md` §8～§10。

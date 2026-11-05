@@ -92,6 +92,7 @@ _CHECK_NOTES = (
     ("node_pack", "只有 `kind: node` 有这一项：只带允许的组成，节点编号、挂法、四类节点各自的声明都对"),
     ("write_scope", "节点写入范围不碰受保护目录，脚本节点的输出、人工节点的记录落在写入范围里"),
     ("node_entry", "节点入口命令、节点钩子的命令是本包的"),
+    ("confine", "`flow.yaml` 声明了 `confine` 时才有这一项：只写 `scope_file`，是具体文件，不在 `ontology/` 和受保护目录下，落在本包节点的 `produces` 里"),
     ("hooks", "不带 `settings.json`，只能追加 `PreToolUse` 守卫，守卫引用的脚本要存在"),
     ("frontend", "页面只从平台内置里选，前端代码只放 `ui/` 下"),
     ("ui", "`ui/` 只能是构建好的静态资源，编辑器入口是 `ui/<id>/index.html`"),
@@ -225,7 +226,9 @@ def protocol_markdown(snapshot: dict) -> str:
 
 ## 节点
 
-- 节点挂法 `placement`：{_code(checks.NODE_PLACEMENTS)}，主线节点只能随基础建模能力发布。除 `on_demand` 外要写锚点 `after` 或 `before`。
+- 节点挂法 `placement`：{_code(checks.NODE_PLACEMENTS)}；节点包不能挂主线 `spine`，能力包可以。除 `on_demand` 外要写锚点 `after` 或 `before`。
+- 范围限定 `confine`（`flow.yaml` 顶层，可选）：`{{scope_file: <路径>}}`。范围文件合入主线、`status` 是 `active` 时，基线提交里有、`editable` 里没有的本体条目助手不能写也不能删，新增条目不限；范围文件只能在它所属节点的命令运行时写。一次装配最多一个包声明。
+- `autobuild: false`：自主构建跳过这个节点（要用户给输入才能做的节点）。
 - 节点类型 `kind`：`agent`（缺省）、`script`、`human`、`external`。
 - 面板分组 `section`：{_code(SECTIONS)}。
 - `stale_on`、`requires` 里的产物类别：{_code(KIND_DIRS)}。

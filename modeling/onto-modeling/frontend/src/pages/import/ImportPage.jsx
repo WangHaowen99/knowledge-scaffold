@@ -186,7 +186,7 @@ export default function ImportPage() {
               </div>
               <div className="col" style={{ gap: 10 }}>
                 {inspect.kind === 'published_package' ? (
-                  <Note tone="blue" icon="pkg">已发布知识包只含交付物：资料和报告为空，进度从头开始。</Note>
+                  <Note tone="blue" icon="pkg">已发布知识包只含交付物，不带资料和报告。</Note>
                 ) : inspect.kind === 'transfer' ? (
                   <Note tone="blue" icon="archive">迁移包会原样恢复，含版本历史。</Note>
                 ) : null}
@@ -194,7 +194,7 @@ export default function ImportPage() {
                   <div className="sm b">导入后</div>
                   <div className="xs muted mt4" style={{ lineHeight: 1.8 }}>
                     {caps ? <>能力：{caps}<br /></> : null}
-                    流程：从「资料分析」开始{inspect.after_import?.mark_needs_review ? '，已有产物标「需复核」' : ''}
+                    流程：{inspect.after_import?.start_title ? `从「${inspect.after_import.start_title}」开始` : '沿用原项目的进度'}{inspect.after_import?.mark_needs_review ? '，已有产物标「需复核」' : ''}
                   </div>
                 </div>
               </div>

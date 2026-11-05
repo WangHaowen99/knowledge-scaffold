@@ -206,6 +206,7 @@ export function packs({ offline = true } = {}) {
     pack({ name: 'websearch', label: '联网调研', category: 'capability', latest: '0.2.0', description: '离线部署已禁用', ui: ui.none('无独立页面，在对话里生效'), batch: 'second', project_status: offline ? 'offline' : null }),
     pack({ name: 'migrate', label: '迁移复用', category: 'capability', latest: '0.2.0', description: '复用旧项目里的对象', ui: ui.none('无独立页面，在对话里生效'), batch: 'second' }),
     pack({ name: 'evo', label: '反馈演进', category: 'capability', latest: '0.3.0', description: '按外部反馈修订本体', ui: ui.none('无独立页面，在对话里生效'), batch: 'second' }),
+    pack({ name: 'incremental', label: '增量构建', category: 'capability', latest: '0.1.0', description: '每轮圈定范围，范围外只读，改完核对传播', ui: ui.none('无独立页面，在对话里生效'), batch: 'second' }),
   ];
 }
 
@@ -708,7 +709,7 @@ export function importInspection(kind = 'published', name = '门店补货单编�
     warnings: [],
     suggested_name: name,
     name_check: { available: true, normalized: name, package_name: 'retail-restock', conflict: null, reason: null },
-    after_import: { capabilities: [{ name: 'core', label: '基础建模', version: '1.4.2' }, { name: 'industry-retail', label: '零售连锁行业包', version: '1.0.3' }], start_node: 'core.research', mark_needs_review: true },
+    after_import: { capabilities: [{ name: 'core', label: '基础建模', version: '1.4.2' }, { name: 'industry-retail', label: '零售连锁行业包', version: '1.0.3' }], start_node: 'core.validate', start_title: '校验', mark_needs_review: true },
     evidence_sources: [{ id: 'erp-prod', display_name: 'ERP 生产库', needs_reauth: true }],
   };
   if (kind === 'conflict') {

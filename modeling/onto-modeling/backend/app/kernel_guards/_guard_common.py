@@ -18,11 +18,17 @@ Bash 命令的写入目标按常见写法解析（D10），补上实测能绕过
 - 路径里带变量：同一条命令里赋过值的先代入，代不出来且命令里出现受保护目录名就拒；
 - `bash -c` / `sh -c` / `eval` 里的命令串递归解析。
 这些只防误改和常见写法，防不住有意绕过；真正改不了要靠进程隔离（受保护目录第 4 层）。
+
+范围限定（ADR-0085）：组装结果（.claude/flow.yaml）带 `confine` 时，范围守卫另外挡两类写：
+- 主线上的范围文件 status 是 active：基线提交里有、editable 里没有的本体条目不能写也不能删，新增条目不限；
+- 范围文件本身只能在它所属节点的命令运行时写。
+放宽只认已经合入主线的版本（读主线 HEAD）；副本里确认的范围只收紧，和主线的取并集。读不出、不是 active 就不收窄。
 """
 
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -62,6 +68,10 @@ ALLOWED_ONTOLOGY_DIRS = {
 ACTIVE_REL = (".onto", "run", "active.json")
 # 求解契约受管目录：只能经求解模型面板 / 后端接口写入
 MANAGED_ONTOLOGY_DIRS = {"solver"}
+# 范围限定管的本体条目（ADR-0085）：会进知识包或跟着条目走的目录，每个文件一个条目；index.md 不算
+CONFINED_ONTOLOGY_DIRS = ("object", "operation", "logic", "rule", "metric", "action", "data-mock", "testcase", "scripts")
+CONFINE_CACHE_REL = (".onto", "run", "confine-cache.json")
+_ONTOLOGY_MENTION_RE = re.compile(r"(?<![\w.-])ontology(?:/[^\s'\"`;|&()<>,\]}]*)?")
 
 
 def deny(reason: str) -> None:
@@ -797,7 +807,7 @@ def guard_scope(call: Call) -> str | None:
     ):
         found.append(("ontology/solver", "managed"))
     if not found:
-        return None
+        return _guard_confine(call)
     reasons = "; ".join(dict.fromkeys(raw for raw, _ in found))
     kinds = {kind for _, kind in found}
     if "managed" in kinds:
@@ -818,6 +828,165 @@ def guard_scope(call: Call) -> str | None:
         "案例/方案类知识请建模为 ontology/rule/ 下的场景规则（触发特征 → 方案要点），并 wikilink 关联涉事对象。"
     )
     return f"ontology/ 下不允许自创目录：{reasons}。允许的子目录以 ontology_checker 白名单为准；{packaged_hint}"
+
+
+# ---- 范围限定（ADR-0085） ----
+
+
+def _confine_spec(call: Call) -> tuple[dict, list[str]] | None:
+    """组装结果里的 confine，和归范围文件所属节点的命令（这些命令运行时才能写范围文件）。"""
+    try:
+        flow = json.loads((call.root / ".claude" / "flow.yaml").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    spec = flow.get("confine") if isinstance(flow, dict) else None
+    if not isinstance(spec, dict) or not isinstance(spec.get("scope_file"), str) or not spec["scope_file"]:
+        return None
+    commands = flow.get("commands") if isinstance(flow.get("commands"), dict) else {}
+    owners = [str(name) for name, item in commands.items() if isinstance(item, dict) and item.get("node") == spec.get("node")]
+    return spec, owners
+
+
+def _git_out(root: Path, *args: str) -> str:
+    out = subprocess.run(["git", "-c", "safe.directory=*", *args], cwd=root, capture_output=True, timeout=10)
+    if out.returncode != 0:
+        raise LookupError(args[0])
+    return out.stdout.decode("utf-8", "replace")
+
+
+def _mainline_head(root: Path) -> tuple[Path, str]:
+    """助手副本是 git worktree：主线是公共目录的 HEAD（不是副本自己的分支）。"""
+    common = Path(_git_out(root, "rev-parse", "--git-common-dir").strip())
+    common = common if common.is_absolute() else (root / common).resolve()
+    return common, _git_out(root, "--git-dir", str(common), "rev-parse", "HEAD").strip()
+
+
+def _confined_entries(common: Path, head: str, scope_file: str, local: str) -> list[str]:
+    """只读的条目：主线上的范围加上副本里的范围，取并集。放宽要等合入主线；副本里确认的收紧立刻算，确认的这一轮
+    接着改也受限。"""
+    out = []
+    try:
+        out += _entries_outside(common, json.loads(_git_out(common, "--git-dir", str(common), "show", f"{head}:{scope_file}")))
+    except (LookupError, ValueError):
+        pass
+    try:
+        out += _entries_outside(common, json.loads(local))
+    except ValueError:
+        pass
+    return sorted(set(out))
+
+
+def _entries_outside(common: Path, scope) -> list[str]:
+    """范围文档 → 只读的条目（基线里有、editable 里没有）；读不出、不是 active 返回空。"""
+    if not isinstance(scope, dict) or scope.get("status") != "active":
+        return []
+    baseline = scope.get("baseline") if isinstance(scope.get("baseline"), dict) else {}
+    commit = str(baseline.get("commit") or "")
+    editable = scope.get("editable")
+    if not re.fullmatch(r"[0-9a-f]{7,64}", commit) or not isinstance(editable, list):
+        return []
+    try:
+        listed = _git_out(common, "--git-dir", str(common), "ls-tree", "-r", "-z", "--name-only", commit, "--", "ontology")
+    except LookupError:
+        return []
+    allowed = {str(item) for item in editable}
+    out = []
+    for rel in listed.split("\0"):
+        parts = rel.split("/")
+        if (len(parts) >= 3 and parts[1] in CONFINED_ONTOLOGY_DIRS and parts[-1].lower() != "index.md"
+                and not parts[-1].startswith(".") and rel not in allowed):
+            out.append(rel)
+    return out
+
+
+def _confine_protected(call: Call, scope_file: str) -> set[str] | None:
+    """只读条目，按主线 HEAD 和副本里范围文件的内容缓存在副本的 .onto/run/ 下（助手写不了 .onto）。git 出错返回 None，不收窄也不缓存。"""
+    try:
+        common, head = _mainline_head(call.root)
+    except (OSError, subprocess.SubprocessError, LookupError):
+        return None
+    try:
+        local = (call.root / scope_file).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        local = ""
+    key = [head, scope_file, hashlib.sha256(local.encode("utf-8")).hexdigest()]
+    cache = call.root.joinpath(*CONFINE_CACHE_REL)
+    try:
+        cached = json.loads(cache.read_text(encoding="utf-8"))
+        if isinstance(cached, dict) and cached.get("key") == key and isinstance(cached.get("protected"), list):
+            return {str(item) for item in cached["protected"]}
+    except (OSError, ValueError):
+        pass
+    try:
+        protected = _confined_entries(common, head, scope_file, local)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        temp = cache.with_name(f"{cache.name}.{os.getpid()}.tmp")
+        temp.write_text(json.dumps({"key": key, "protected": protected}, ensure_ascii=False), encoding="utf-8")
+        os.replace(temp, cache)
+    except OSError:
+        pass  # 缓存写不进去只是下次再算
+    return set(protected)
+
+
+def _confine_target_hit(call: Call, target: Target, protected: set[str]) -> bool:
+    if target.path is None:
+        return False
+    for path in dict.fromkeys((target.path, Path(os.path.realpath(target.path)))):
+        if not _under(path, call.root):
+            if target.destructive and _under(call.root, path):
+                return True
+            continue
+        rel = path.relative_to(call.root).as_posix()
+        if rel in protected:
+            return True
+        if target.destructive and (rel == "." or any(item.startswith(rel + "/") for item in protected)):
+            return True
+        if any(ch in rel for ch in "*?[") and any(
+                fnmatch.fnmatchcase(item, rel) or fnmatch.fnmatchcase(item, rel + "/*") for item in protected):
+            return True
+    return False
+
+
+def _confine_code_hit(call: Call, protected: set[str]) -> bool:
+    """内联代码有写操作，且提到的 ontology 路径落在只读条目上或是它们的上级目录（只写 ontology 也算）。"""
+    code = "\n".join(call.code)
+    if not code or not _CODE_WRITE_RE.search(code):
+        return False
+    for match in _ONTOLOGY_MENTION_RE.finditer(code):
+        mention = re.split(r"[{$%*?\[]", match.group(0), maxsplit=1)[0].rstrip("/")
+        if any(item == mention or item.startswith(mention + "/") for item in protected):
+            return True
+    return False
+
+
+def _guard_confine(call: Call) -> str | None:
+    if not call.targets and not call.code:
+        return None
+    declared = _confine_spec(call)
+    if declared is None:
+        return None
+    spec, owner_commands = declared
+    scope_file = spec["scope_file"]
+    entry = str(spec.get("entry") or "圈定范围的命令")
+    if _hits(call, [call.root / scope_file], (scope_file,)) and not any(
+            _command_alive(call.root, name) for name in owner_commands):
+        return (f"范围文件 {scope_file} 只能在 {entry} 里写；直接改它也扩大不了范围（放宽只认合入主线的版本），"
+                f"要调整范围请运行 {entry}。")
+    protected = _confine_protected(call, scope_file)
+    if not protected:
+        return None
+    found = [target.raw for target in call.targets if _confine_target_hit(call, target, protected)]
+    if _confine_code_hit(call, protected):
+        found.append("内联代码")
+    if _variable_hit(call, ("ontology",)):
+        found.append("含变量的路径")
+    if not found:
+        return None
+    shown = "、".join(list(dict.fromkeys(found))[:5])
+    return f"本轮增量范围外的条目只读：{shown}；要扩大范围请重新圈定（{entry}），不再需要限制就说「结束本轮」。新增条目不受限。"
 
 
 GUARDS = {

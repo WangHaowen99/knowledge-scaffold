@@ -1,0 +1,63 @@
+# 增量构建（ADR-0085）：建模之后多三步主线，传播核对没做完挡发布。
+# confine：范围文件 status 是 active 时，基线里有、editable 里没有的本体条目助手不能写也不能删（内核守卫执行）。
+# 三个节点都要用户先给出这一轮要改什么，自主构建不做（autobuild: false）。
+confine: {scope_file: incremental/scope.json}
+probes:
+  incremental_scoped: {files: [incremental], glob: "scope.json"}
+  incremental_applied: {files: [incremental], glob: "applied.json"}
+  incremental_checked: {files: [incremental], glob: "check.md"}
+  incremental_pending: {pending: [incremental], glob: "check.md"}
+nodes:
+  - id: incremental.scope
+    title: 圈定范围
+    kind: agent
+    placement: spine
+    section: required
+    autobuild: false
+    after: core.model
+    display_after: [core.model]
+    done: [incremental_scoped]
+    # 草稿在确认前不算范围（只有 scope.json 进了主线才生效）；每一轮的旧文件归档到 history/<轮次>/
+    produces:
+      - incremental/scope.json
+      - incremental/scope.md
+      - incremental/scope.draft.json
+      - incremental/scope.draft.md
+      - incremental/history/*
+    entry: {command: /incremental-scope}
+    actions:
+      - {label: 圈定范围, command: "/incremental-scope "}
+  - id: incremental.apply
+    title: 范围内修改
+    kind: agent
+    placement: spine
+    section: required
+    autobuild: false
+    after: incremental.scope
+    display_after: [incremental.scope]
+    done: [incremental_applied]
+    produces: [incremental/applied.json]
+    writes: ["ontology/object/*", "ontology/operation/*", "ontology/logic/*", "ontology/rule/*", "ontology/metric/*", "ontology/action/*", "ontology/scripts/*", "ontology/testcase/*", "ontology/data-mock/*", "ontology/knowledge/*"]
+    entry: {command: /incremental-apply}
+    actions:
+      - {label: 范围内修改, command: /incremental-apply}
+  - id: incremental.check
+    title: 传播核对
+    kind: agent
+    placement: spine
+    section: required
+    autobuild: false
+    after: incremental.apply
+    display_after: [incremental.apply]
+    done: [incremental_checked, "!incremental_pending"]
+    stale_on: [object, operation, rule, metric]
+    blocks: [core.publish]
+    produces: [incremental/check.md, incremental/check.json]
+    writes: ["ontology/object/*", "ontology/operation/*", "ontology/logic/*", "ontology/rule/*", "ontology/metric/*", "ontology/action/*", "ontology/scripts/*", "ontology/testcase/*", "ontology/data-mock/*", "ontology/knowledge/*"]
+    entry: {command: /incremental-check}
+    actions:
+      - {label: 传播核对, command: /incremental-check}
+commands:
+  incremental-scope: {node: incremental.scope, requires: [对象已提取], lock_waits: [confirm]}
+  incremental-apply: {node: incremental.apply, requires: [对象已提取], lock_waits: [confirm]}
+  incremental-check: {node: incremental.check, requires: [对象已提取], lock_waits: [confirm]}

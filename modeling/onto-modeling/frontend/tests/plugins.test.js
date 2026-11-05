@@ -347,7 +347,7 @@ test('mock PL-01 带项目：状态按项目设置的能力表算，计数、推
   assert.equal(st['rea-binary'], 'platform_available');
   assert.equal(st['convert-pdf'], 'platform_installed');
   assert.equal(r.body.items.find((p) => p.name === 'convert-pdf').usage_note, null);
-  assert.deepEqual(r.body.counts, { all: 27, capability: 9, industry: 4, system: 3, provider: 11, node: 0, exporter: 0, enabled: 9, updatable: 1 });
+  assert.deepEqual(r.body.counts, { all: 28, capability: 10, industry: 4, system: 3, provider: 11, node: 0, exporter: 0, enabled: 9, updatable: 1 });
   assert.deepEqual(r.body.recommendations.map((x) => [x.pack.name, x.action]), [['migrate', 'enable'], ['diagram', 'upgrade']]);
   const inst = await api('GET', `/api/v1/packs?project_id=${P}&installed_only=true&q=模拟`);
   assert.deepEqual(inst.body.items.map((p) => p.name), ['trace']);
@@ -446,7 +446,7 @@ test('mock PL-02：详情、在用 / 需要先升级的标记、统计只给主�
   const core = await api('GET', `/api/v1/packs/core?project_id=${P}`);
   assert.equal(core.body.ui.kind, 'kernel');
   assert.match(core.body.project_stats.produced.note, /^对象 15/);
-  for (const name of ['knowledge', 'codegen', 'diagram', 'rev', 'evo', 'migrate', 'websearch', 'sys-wms-generic', 'code-repo']) {
+  for (const name of ['knowledge', 'codegen', 'diagram', 'rev', 'evo', 'incremental', 'migrate', 'websearch', 'sys-wms-generic', 'code-repo']) {
     assert.equal((await api('GET', `/api/v1/packs/${name}?project_id=${P}`)).status, 200, name);
   }
   assert.equal((await api('GET', '/api/v1/packs/nope')).body.code, 'pack_not_found');

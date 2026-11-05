@@ -1,0 +1,26 @@
+# 增量构建（ADR-0085）：建模完成后一轮一轮地改。启用后主线多三步：圈定范围 → 范围内修改 → 传播核对，
+# 核对没做完挡发布。范围外的条目由内核按 flow.yaml 的 confine 挡写，没启用这个包的项目不受影响。
+name: incremental
+version: 0.1.0
+kind: capability
+category: capability
+label: 增量构建
+description: 每轮先圈定要改的条目和它们的传播链，范围外的条目只读，改完核对传播有没有处理干净。
+publisher: {kind: official, label: 平台}
+default_on: false
+batch: second
+kernel_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+depends: {core: ">=0.4"}  # 0.4.0 起内核认 confine
+changelog: 第一版。
+contributes:
+  commands: [incremental-scope, incremental-apply, incremental-check]
+  scripts: [incremental_chain.py, incremental_scope.py, incremental_check.py]
+  prompts:
+    - id: incremental-close-round
+      match: ["结束本轮"]
+      text: >-
+        用户要结束这一轮增量构建。运行 /incremental-scope 结束本轮，把范围改成已结束；结束后范围外的条目恢复可写。
+  flow: flow.yaml
+  nodes: [incremental.scope, incremental.apply, incremental.check]
+checksums: checksums.sha256
