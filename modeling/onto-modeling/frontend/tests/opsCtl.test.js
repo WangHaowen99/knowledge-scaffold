@@ -440,8 +440,8 @@ test('mock 插件运维：灰度、熔断 → 半开、重复熔断 409、禁用
   const synthetic = new Set([...F.packs().map((p) => p.name), 'db-mysql', 'exporter-otel']);
   assert.deepEqual(packs.filter((x) => !synthetic.has(x.name)).map((x) => x.name), []);
   assert.ok(packs.find((x) => x.name === 'industry-retail' && x.breaker === 'open'));
-  assert.equal((await call('PUT', `${O}/packs/rev/0.3.0/rollout`, { percent: 101 })).status, 400);
-  assert.equal((await call('PUT', `${O}/packs/rev/0.3.0/rollout`, { percent: 50, by: 'tenant' })).body.rollout_pct, 50);
+  assert.equal((await call('PUT', `${O}/packs/rev/0.2.0/rollout`, { percent: 101 })).status, 400);
+  assert.equal((await call('PUT', `${O}/packs/rev/0.2.0/rollout`, { percent: 50, by: 'tenant' })).body.rollout_pct, 50);
   assert.equal((await call('POST', `${O}/packs/industry-retail/1.0.3/breaker`, { action: 'open' })).body.code, 'breaker_state_invalid');
   assert.equal((await call('POST', `${O}/packs/industry-retail/1.0.3/breaker`, { action: 'close' })).body.breaker, 'half_open');
   assert.equal((await call('POST', `${O}/packs/trace/0.9.1/breaker`, { action: 'open', reason: '失败率高' })).body.breaker, 'open');

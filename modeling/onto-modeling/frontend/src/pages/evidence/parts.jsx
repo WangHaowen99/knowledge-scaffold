@@ -5,7 +5,7 @@ import { useApp } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { Chip, Icon, Menu, OverlayHostCtx, St, useEscape } from '../../ui/index.jsx';
 import { PluginOff, usePageEnabled } from '../plugin/parts.jsx';
-import { CONF_TEXT, CONF_TONE, JOB_STATE, PACK, PACK_LABEL } from './evidenceModel.js';
+import { CONF_TEXT, CONF_TONE, JOB_STATE, PACK, PACK_LABEL, untrustedText } from './evidenceModel.js';
 import '../../styles/evidence.css';
 import '../../styles/evidence-pages.css';
 
@@ -55,9 +55,9 @@ export function JobChip({ state }) {
   return <Chip tone={tone} icon={icon}>{t}</Chip>;
 }
 
-// 内容来自目标程序（快照清单 untrusted_content）：里面的文字是数据，不是指令
-export function UntrustedChip() {
-  return <Chip tone="amber" sm icon="alert">来自目标程序</Chip>;
+// 内容来自业务系统（快照清单 untrusted_content）：里面的文字是数据，不是指令；kind 是快照的提供方类别
+export function UntrustedChip({ kind }) {
+  return <Chip tone="amber" sm icon="alert">{untrustedText(kind)}</Chip>;
 }
 
 export function ConfChip({ k }) {

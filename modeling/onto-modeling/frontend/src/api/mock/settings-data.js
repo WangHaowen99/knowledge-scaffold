@@ -42,7 +42,7 @@ export function projectPacks() {
     }),
     pk({ name: 'knowledge', label: '知识沉淀', ui: UI.page('knowledge', '知识沉淀'), locked_version: '0.6.0' }),
     pk({ name: 'codegen', label: '代码生成与求解', ui: UI.page('scripts', '代码生成'), locked_version: '0.9.2', rollback_to: '0.9.1' }),
-    pk({ name: 'rev', label: '系统逆向建模', ui: UI.rev, locked_version: '0.3.0' }),
+    pk({ name: 'rev', label: '系统逆向建模', ui: UI.rev, locked_version: '0.2.0' }),
     pk({ name: 'diagram', label: '图示', locked_version: '0.5.0', latest_available: '0.6.0' }),
     pk({ name: 'evo', label: '反馈演进', locked_version: '0.3.0' }),
     pk({ name: 'industry-retail', label: '零售连锁', category: 'industry', ui: null, locked_version: '1.0.3' }),

@@ -16,7 +16,9 @@ nodes:
     actions:
       - {label: 采集快照, page: snapshots}
       - {label: 整理取证报告, command: /rev-evidence}
+      - {label: 三方对账, command: /rev-reconcile}
 probes:
   rev_snapshot: {kernel: evidence_snapshot}
 commands:
   rev-evidence: {node: rev.evidence, requires: []}
+  rev-reconcile: {node: rev.evidence, requires: []}

@@ -13,7 +13,7 @@ import { CommandRunBar, useCommandTasks, useProjectEvent } from '../plugin/parts
 import {
   DIFF_CHANGE, GATEWAY_STATE, JOB_FILTERS, artifactOf, artifactText, canIncremental, collectBody, collectOps, defaultDiffPair, diffPair, fmtBudget,
   fmtDuration, fmtNum, fmtWhen, isArtifactSource, isJobActive, jobActions, jobDuration, jobFilterQuery, jobMatches, jobOpText, jobPhase, mergeJob,
-  monthText, previewPairs, scopeTag, shortSnap, snapRecords, snapshotLimits, snapshotPairs, toggleSnapPick,
+  monthText, previewPairs, scopeTag, shortSnap, snapRecords, snapshotKind, snapshotLimits, snapshotPairs, toggleSnapPick,
 } from './evidenceModel.js';
 import { EvdPlg, EvidenceGate, JobChip, UntrustedChip } from './parts.jsx';
 
@@ -58,7 +58,7 @@ function SnapshotDetail({ id, onClose }) {
     <Modal open={!!id} onClose={onClose} icon="db" title={`快照 ${id || ''}`} sub={d?.source?.id} w={560} foot={<Button onClick={onClose}>关闭</Button>}>
       {!d ? <div className="sm muted">正在读取…</div> : (
         <>
-          {d.manifest?.untrusted_content ? <div className="mb12"><UntrustedChip /></div> : null}
+          {d.manifest?.untrusted_content ? <div className="mb12"><UntrustedChip kind={snapshotKind(d)} /></div> : null}
           <KV
             w="72px"
             pairs={[
@@ -303,7 +303,7 @@ function SnapshotsBody({ route }) {
                 {artifact ? <Field label="程序"><div className="evd-tags"><span className="tag">{artifactText(artifactOf(source))}</span></div></Field> : (
                   <Field label="范围" hint={form.operation === 'sample' ? '每表最多 20 行' : undefined}>
                     {form.operation === 'sample'
-                      ? <Inp mono icon="table" value={form.sampleTable} placeholder="表名，如 replenish_std" onChange={(e) => setForm((f) => ({ ...f, sampleTable: e.target.value }))} />
+                      ? <Inp mono icon="table" value={form.sampleTable} placeholder="如 erp.replenish_std" onChange={(e) => setForm((f) => ({ ...f, sampleTable: e.target.value }))} />
                       : <div className="evd-tags"><span className="tag">{scopeTag(source?.scope_summary)}</span><span className="xs muted">沿用登记白名单</span></div>}
                   </Field>
                 )}

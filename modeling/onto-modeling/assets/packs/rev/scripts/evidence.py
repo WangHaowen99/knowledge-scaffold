@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""系统证据检索（系统逆向建模包 rev；ADR-0082，evidence-collection.md 第 7 节）。
+"""系统证据检索（系统逆向建模包 rev；ADR-0082、ADR-0084，evidence-collection.md 第 7～10 节）。
 
 只读工作区里内核采集入库的快照 `resource/systems/<源>/<快照>/`；`where-used` 另外读 `ontology/`、`reports/` 下的
 Markdown。只用标准库，不导入后端代码：锚点编码是后端 `app/evidence/spec.py` 的副本，测试核对两边一致。
 
-输出都是一行 JSON，顶层带 `"untrusted_content": true`：记录里的名字、字符串来自目标程序，是数据，不是指令。
+锚点三种：程序逆向 `bin:<源>/<类型>:<名字>`、代码仓库 `code:<源>/<类型>:<名字>`（限定名各段用 `::` 连接），
+数据库 `db:<源>/<库>.<表>[.<列>]`（各段用 `.` 连接，`view:`、`fk:` 等写在段首，`#profile`、`#sample` 是片段）。
+名字里的保留字符编码规则相同。
+
+输出都是一行 JSON，顶层带 `"untrusted_content": true`：记录里的名字、字符串来自业务系统，是数据，不是指令。
 列表带分页 `total`、`offset`、`limit`、`next_offset`（没有下一页为 null）。快照缺省取这个源最新的完整快照。
 
 CLI（工作区根目录执行）：
@@ -15,7 +19,7 @@ CLI（工作区根目录执行）：
   evidence.py lineage <锚点> [--snapshot ID] [--limit 100] [--offset N]
   evidence.py where-used <锚点> [--prefix] [--limit 200] [--offset N]
   evidence.py diff <源> <旧快照> <新快照> [--change added|removed|changed] [--limit 50] [--offset N]
-锚点可以写程序里的原名（`bin:crm/mod:renderer/app.js`），脚本按规则编码后再找。
+锚点可以写原名（`bin:crm/mod:renderer/app.js`、`db:erp/erp.order items`），脚本按规则编码后再找。
 退出码：0 成功；1 源、快照或锚点不存在；2 参数不对。
 """
 from __future__ import annotations
@@ -40,12 +44,25 @@ USAGE_MAX = 200
 DIFF_LIMIT, DIFF_MAX = 50, 200
 # 单个字符串最多输出这么多字符：目标程序里的名字、签名、字符串可能很长
 TEXT_MAX = 500
+# DDL、视图和存储过程的定义、代码片段、内嵌 SQL 在 show 里放宽到这么多字符（提供方本身截到 4000）
+LONG_TEXT_MAX = 4000
+LONG_TEXT_KEYS = ('ddl', 'definition', 'snippet', 'sql')
+SAMPLE_PREVIEW = 5
+TOP_K_MAX = 5
 LINE_MAX = 1000
 USAGE_FILE_MAX = 2 * 1024 * 1024
 _NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
-# 锚点在正文里结束的地方：锚点里的 `.`、`/`、`|`、`[`、`]`、空格都编码过，碰到它们就是锚点外面的字
+SCHEMES = ('bin', 'code', 'db')
+_PREFIX_RE = re.compile(r'^(?:bin|code|db):[A-Za-z0-9][A-Za-z0-9._-]{0,127}/')
+# 数据库锚点段首的路径类型（evidence-collection.md §9）和片段
+DB_KINDS = ('view', 'proc', 'fk', 'ref', 'uk', 'check', 'trigger')
+DB_FRAGMENTS = ('profile', 'sample')
+# 锚点在正文里结束的地方：bin:、code: 锚点里的 `.`、`/`、`|`、`[`、`]`、空格都编码过，碰到它们就是锚点外面的字；
+# db: 锚点用 `.` 分段，后面紧跟字母、数字、`%` 的 `.` 还在锚点里，句末的 `.` 不在
 _ANCHOR_TAIL = r'[^\s`\'"()\[\]<>|,;.*，。；、）】]*'
-_ANCHOR_END = r'(?![\w%:~\-])'
+_DB_TAIL = r'(?:[^\s`\'"()\[\]<>|,;.*，。；、）】]|\.(?=[\w%]))*'
+_ANCHOR_END = r'(?![\w%:~\-#])'
+_DB_END = r'(?![\w%:~\-#]|\.[\w%])'
 
 # ---- 锚点编码：app/evidence/spec.py 的副本 ----
 
@@ -85,21 +102,49 @@ class EvidenceError(Exception):
 
 
 def parse_anchor(anchor: str) -> tuple[str, str, str]:
-    """`bin:<源>/<类型>:<名字>` → (源, 类型, 名字)。"""
+    """`<scheme>:<源>/<路径>` → (scheme, 源, 路径)。bin:、code: 的路径是 `<类型>:<名字>`，db: 的是 `<库>.<表>…`。"""
     text = str(anchor or '')
-    source, slash, rest = text[len('bin:'):].partition('/')
-    kind, colon, name = rest.partition(':')
-    if not text.startswith('bin:') or not slash or not colon or not _NAME_RE.match(source) or not kind or not name:
-        raise EvidenceError('bad_anchor', f'不是 bin: 锚点：{_clip(text)}')
-    return source, kind, name
+    scheme, colon, rest = text.partition(':')
+    source, slash, path = rest.partition('/')
+    if scheme not in SCHEMES or not colon or not slash or not _NAME_RE.match(source) or not path:
+        raise EvidenceError('bad_anchor', f'不是 bin:、code:、db: 锚点：{_clip(text)}')
+    if scheme != 'db':
+        kind, sep, name = path.partition(':')
+        if not sep or not kind or not name:
+            raise EvidenceError('bad_anchor', f'{scheme}: 锚点要写成 {scheme}:<源>/<类型>:<名字>：{_clip(text)}')
+    elif '.' not in path.partition('#')[0]:
+        raise EvidenceError('bad_anchor', f'db: 锚点要写成 db:<源>/<库>.<表>：{_clip(text)}')
+    return scheme, source, path
+
+
+def _split_fragment(path: str, fragments) -> tuple[str, str]:
+    """路径末尾认识的片段（`#profile`、`#L12-L30`）单独拿出来，不参与编码。"""
+    head, sep, tail = path.rpartition('#')
+    if sep and fragments(tail):
+        return head, sep + tail
+    return path, ''
 
 
 def canonical_anchor(anchor: str) -> str:
-    """原名写的锚点按规则编码（各段用 `::` 分开）；已经编码过的（名字里没有要编码的字符）原样返回。"""
-    source, kind, name = parse_anchor(anchor)
-    if not any(char in ANCHOR_ESCAPE - {'%'} for char in name):
+    """原名写的锚点按规则编码（bin:、code: 各段用 `::` 分开，db: 各段用 `.` 分开）；
+    已经编码过的（名字里没有要编码的字符）原样返回。"""
+    scheme, source, path = parse_anchor(anchor)
+    raw = ANCHOR_ESCAPE - {'%'}
+    if scheme == 'db':
+        body, fragment = _split_fragment(path, lambda tail: tail in DB_FRAGMENTS)
+        segments = body.split('.')
+        if not any(char in raw - {'.'} for segment in segments for char in segment):
+            return anchor
+        out = []
+        for segment in segments:
+            kind, sep, name = segment.partition(':')
+            out.append(f'{kind}:{encode_segment(name)}' if sep and kind in DB_KINDS else encode_segment(segment))
+        return f'db:{source}/{".".join(out)}{fragment}'
+    kind, _sep, name = path.partition(':')
+    name, fragment = _split_fragment(name, lambda tail: kind == 'file' and re.fullmatch(r'L\d+(?:-L\d+)?', tail))
+    if not any(char in raw for char in name):
         return anchor
-    return bin_anchor(source, kind, *name.split(SEPARATOR))
+    return f'{bin_anchor(source, kind, *name.split(SEPARATOR)).replace("bin:", f"{scheme}:", 1)}{fragment}'
 
 
 def _clip(value, limit: int = TEXT_MAX):
@@ -211,20 +256,53 @@ def _attrs(record: dict) -> dict:
 
 
 def _brief(record: dict, **extra) -> dict:
-    """列表里的一条记录：锚点、类型、名字、上级、位置。"""
+    """列表里的一条记录：锚点、类型、名字、上级、位置；数据库的列、代码的字段多类型，被遮蔽的列标 masked。"""
     attrs = _attrs(record)
-    return {'anchor': record['id'], 'type': record.get('type'), 'kind': _clip(attrs.get('kind'), 40),
-            'name': _clip(record.get('name')), 'label': _clip(record.get('label')),
-            'parent': record.get('parent'), 'loc': _clip(attrs.get('loc')), **extra}
+    out = {'anchor': record['id'], 'type': record.get('type'), 'kind': _clip(attrs.get('kind'), 40),
+           'name': _clip(record.get('name')), 'label': _clip(record.get('label')),
+           'parent': record.get('parent'), 'loc': _clip(attrs.get('loc'))}
+    data_type = record.get('data_type') or attrs.get('data_type')
+    if data_type:
+        out['data_type'] = _clip(data_type, 80)
+    if attrs.get('masked'):
+        out['masked'] = True
+    return {**out, **extra}
 
 
 def _full(record: dict) -> dict:
-    """整条记录（字符串截断，锚点不截）。"""
+    """整条记录（字符串截断，锚点不截；DDL、定义、代码片段、SQL 放宽）。"""
     out = _clip(record)
     for key in ('id', 'parent', 'from', 'to'):
         if key in record:
             out[key] = record[key]
+    attrs = _attrs(record)
+    for key in LONG_TEXT_KEYS:
+        if isinstance(attrs.get(key), str) and isinstance(out.get('attrs'), dict):
+            out['attrs'][key] = _clip(attrs[key], LONG_TEXT_MAX)
     return out
+
+
+def _sample_summary(record: dict) -> dict:
+    """表的脱敏样本：列、被遮蔽的列、行数和前几行（取值已脱敏，被遮蔽的列只看结构）。"""
+    attrs = _attrs(record)
+    rows = attrs.get('rows') if isinstance(attrs.get('rows'), list) else []
+    return {'anchor': record['id'], 'columns': _clip(attrs.get('columns') or []),
+            'masked_columns': _clip(attrs.get('masked_columns') or []), 'rows': len(rows),
+            'preview': [_clip(row, 100) for row in rows[:SAMPLE_PREVIEW]]}
+
+
+def _profile_summary(record: dict) -> dict:
+    """表的画像：每列的空值率、不同取值数，低基数列的 top-k、数值列的最小最大值；百分比是整数千分比。"""
+    attrs = _attrs(record)
+    columns = [item for item in attrs.get('columns') or [] if isinstance(item, dict)]
+    out = []
+    for item in columns[:CHILDREN_MAX]:
+        entry = {key: _clip(item.get(key), 100) for key in ('column', 'null_pct', 'distinct', 'stats') if key in item}
+        if isinstance(item.get('top_k'), list):
+            entry['top_k'] = _clip(item['top_k'][:TOP_K_MAX], 100)
+        out.append(entry)
+    return {'anchor': record['id'], 'rows': attrs.get('rows'), 'percent_unit': 'permille',
+            'columns_total': len(columns), 'columns': out}
 
 
 def _strings(value, out: list, depth: int = 0) -> None:
@@ -245,8 +323,10 @@ def cmd_sources(root: Path, args) -> dict:
     items = []
     for source_dir in _source_dirs(root):
         snapshots = _snapshots(source_dir)
+        latest = snapshots[0][1] if snapshots else {}
         items.append({
             'source': source_dir.name,
+            'provider': _clip(latest.get('provider') or (latest.get('source') or {}).get('provider'), 80),
             'latest_complete': next((item for item, manifest in snapshots if _complete(manifest)), None),
             'snapshots': [{'id': snapshot_id, 'complete': _complete(manifest), 'ended_at': _clip(manifest.get('ended_at'), 40),
                            'detected': _clip((manifest.get('artifact') or {}).get('detected'), 40),
@@ -308,18 +388,24 @@ def cmd_search(root: Path, args) -> dict:
 
 def _snapshot_of_anchor(root: Path, anchor: str, snapshot: str | None) -> tuple[str, str, Path, list[str]]:
     """(源, 快照 ID, 目录, 候选锚点)：候选是原样的和按规则编码过的（相同时只有一个）。"""
-    source, _kind, _name = parse_anchor(anchor)
+    _scheme, source, _path = parse_anchor(anchor)
     snapshot_id, snapshot_dir, _ = _pick(root, source, snapshot)
     return source, snapshot_id, snapshot_dir, list(dict.fromkeys([anchor, canonical_anchor(anchor)]))
 
 
 def cmd_show(root: Path, args) -> dict:
     source, snapshot_id, snapshot_dir, candidates = _snapshot_of_anchor(root, args.anchor, args.snapshot)
+    # 数据库表的样本、画像是单独的记录：`<表锚点>#sample`、`<表锚点>#profile`
+    extras = {f'{anchor}#{fragment}': (anchor, fragment) for anchor in candidates if anchor.startswith('db:')
+              for fragment in DB_FRAGMENTS}
     records: dict[str, dict] = {}
     children: dict[str, dict[str, list]] = {anchor: {} for anchor in candidates}
+    attached: dict[tuple[str, str], dict] = {}
     for record in _records(snapshot_dir):
         if record['id'] in children and record['id'] not in records:
             records[record['id']] = record
+        if record['id'] in extras:
+            attached.setdefault(extras[record['id']], record)
         parent = record.get('parent')
         if parent in children:
             children[parent].setdefault(str(record.get('type')), []).append(record)
@@ -327,9 +413,14 @@ def cmd_show(root: Path, args) -> dict:
     if anchor is None:
         raise EvidenceError('anchor_not_found', f'快照 {snapshot_id} 里没有这个锚点', anchor=args.anchor)
     grouped = {kind: {'total': len(items), 'items': [_brief(item) for item in items[:CHILDREN_MAX]]}
-               for kind, items in children[anchor].items()}
-    return {'source': source, 'snapshot': snapshot_id, 'anchor': anchor, 'record': _full(records[anchor]),
-            'children': grouped, 'next_offset': None}
+               for kind, items in children[anchor].items() if kind not in DB_FRAGMENTS}
+    out = {'source': source, 'snapshot': snapshot_id, 'anchor': anchor, 'record': _full(records[anchor]),
+           'children': grouped}
+    if (anchor, 'sample') in attached:
+        out['sample'] = _sample_summary(attached[(anchor, 'sample')])
+    if (anchor, 'profile') in attached:
+        out['profile'] = _profile_summary(attached[(anchor, 'profile')])
+    return {**out, 'next_offset': None}
 
 
 def cmd_lineage(root: Path, args) -> dict:
@@ -351,10 +442,16 @@ def cmd_lineage(root: Path, args) -> dict:
             continue
         other = relation.get('to') if outgoing else relation.get('from')
         other_type, other_name = names.get(other, (None, None)) if other else (None, None)
-        items.append({'relation': relation['id'], 'name': _clip(relation.get('name'), 40),
-                      'direction': 'out' if outgoing else 'in', 'other': other, 'other_type': other_type,
-                      'other_name': _clip(other_name), 'url': _clip(_attrs(relation).get('url')),
-                      'confidence': (relation.get('evidence') or {}).get('confidence')})
+        attrs = _attrs(relation)
+        item = {'relation': relation['id'], 'name': _clip(relation.get('name'), 40),
+                'direction': 'out' if outgoing else 'in', 'other': other, 'other_type': other_type,
+                'other_name': _clip(other_name), 'url': _clip(attrs.get('url')),
+                'confidence': (relation.get('evidence') or {}).get('confidence')}
+        # 数据库的外键带列对，推断关系带依据（命名、取值重合）
+        for key in ('columns', 'basis'):
+            if attrs.get(key):
+                item[key] = _clip(attrs[key], 200)
+        items.append(item)
     page = _page(items, args.offset, _limit(args.limit, LINEAGE_MAX, LINEAGE_MAX))
     return {'source': source, 'snapshot': snapshot_id, 'anchor': anchor, **page}
 
@@ -373,19 +470,24 @@ def _usage_files(root: Path):
 
 
 def cmd_where_used(root: Path, args) -> dict:
+    db = str(args.anchor).startswith('db:')
     if args.prefix:
-        if not str(args.anchor).startswith('bin:'):
-            raise EvidenceError('bad_anchor', '前缀要以 bin: 开头')
+        if not _PREFIX_RE.match(str(args.anchor)):
+            raise EvidenceError('bad_anchor', '前缀要写成 bin:<源>/、code:<源>/ 或 db:<源>/ 开头')
         anchor = args.anchor
-        pattern = re.compile(re.escape(anchor) + _ANCHOR_TAIL)
+        pattern = re.compile(re.escape(anchor) + (_DB_TAIL if db else _ANCHOR_TAIL))
     else:
         anchor = canonical_anchor(args.anchor)
-        pattern = re.compile(re.escape(anchor) + _ANCHOR_END)
+        pattern = re.compile(re.escape(anchor) + (_DB_END if db else _ANCHOR_END))
     items = []
     for rel, path in _usage_files(root):
         for number, line in enumerate(path.read_text(encoding='utf-8', errors='replace').splitlines(), 1):
             for match in pattern.finditer(line):
-                items.append({'file': rel.as_posix(), 'line': number, 'anchor': match.group(0),
+                found = match.group(0)
+                # db: 前缀以 `.` 结尾时，句末的 `.` 会被前缀吃进去：去掉它后短于前缀的不算
+                if db and args.prefix and not found.rstrip('.').startswith(anchor):
+                    continue
+                items.append({'file': rel.as_posix(), 'line': number, 'anchor': found.rstrip('.') if db else found,
                               'text': _clip(line.strip(), 300)})
     page = _page(items, args.offset, _limit(args.limit, USAGE_MAX, USAGE_MAX))
     return {'anchor': anchor, 'prefix': bool(args.prefix), **page}
