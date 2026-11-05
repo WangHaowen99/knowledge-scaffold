@@ -379,7 +379,10 @@ class SubprocessProvider:
         directory = self.root / job_id
         shutil.rmtree(directory, ignore_errors=True)
         work = directory / "work"
-        work.mkdir(parents=True, mode=0o700)
+        try:
+            work.mkdir(parents=True, mode=0o700)
+        except OSError:
+            raise GatewayError(503, "provider_unavailable", "建不了任务目录") from None
         run = _Run(job_id, self.id, directory, secret, keep_records=keep_records,
                    timeout_s=kill_after_s or budget["max_duration_s"] + self.kill_grace_s)
         self.secrets.acquire(cred_ref)
