@@ -1353,3 +1353,13 @@ merge c8bc4631（`--no-ff`，交付分支 0dab01f0 之上）；衔接 0a501f45�
 | 密钥遮蔽的范围 | 记录只遮蔽 `label`、`attrs`，遮蔽后重算 `hash`；`summary.md`、`inventory.json`、清单 `limitations` 整体扫 | 锚点和名字是记录的身份，改了对不上；规则复用遥测脱敏和包检查两组，不另写 |
 | EV-22 落到哪 | 每份受影响的产物写一份 `reports/evidence-revise-*.md`，经「报告待处理」进待处理 | 待处理是从来源汇总的（不另存），专门的 `evidence_conflict` 来源在 `services/flow/`，归 rev 包子任务；先做最小可用 |
 | 管理员通知 | 本地模式发给本地用户；登录模式经认证服务列出管理员逐个发 `request_pending`，取不到账号列表时只存 `requests/` 不发 | 没有现成的「通知全体管理员」服务 |
+
+## 2026-11-05 · F14 代码仓库提供方 code-repo
+
+| 问题 | 选择 | 理由 |
+|---|---|---|
+| 浅取之后要不要 checkout | 不 checkout：`ls-tree` 列文件，`cat-file --batch` 只读要分析的 blob | 符号链接、子模块、超大文件、大小写冲突的路径都不落盘；单文件和总量上限在读之前就能卡住 |
+| `{repo_url, ref, commit}` 怎么交给网关 | 新增 `artifact` 事件（`Context.artifact`），网关写进清单 `artifact` | 原有事件里只有 `limitation` 能带文字，拿它传结构化信息会混进局限 |
+| 测试连接的只读自检 | 只出 `connectivity`，`detail` 写「令牌是否只读验证不了」 | 不推送就验证不了令牌权限；出一个 `ok: true` 的 `readonly_account` 会误导 |
+| 同一对实体的多条关联撞锚点 | 关系锚点哈希里加 `via`（声明它的字段或方法） | 订单可以有收货地址、账单地址两条到地址的关联 |
+| 内网仓库的自签证书 | git 子进程只透传 `GIT_SSL_CAINFO`、`SSL_CERT_FILE`、`SSL_CERT_DIR` | 其余环境变量（代理、全局配置）一概不给；测试床就是自签证书 |

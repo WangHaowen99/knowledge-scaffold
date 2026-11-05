@@ -263,6 +263,7 @@ frontmatter 声明了快照就用它，否则用这个源最新的完整快照�
 | `limitation` | `text` |
 | `result` | `complete`、`coverage_pct`、`checks`（只 `test` 有） |
 | `error` | `code`、`message`（不带连接串和密码） |
+| `artifact` | `artifact`：采集对象的标识，网关原样写进清单的 `artifact`（代码仓库是 `{repo_url, ref, commit}`，见 §10） |
 
 子进程启动时：设资源上限；装审计钩子，`socket.connect` 和 `socket.getaddrinfo` 只放行出口白名单里的主机和端口（`localhost` 以外的
 都要在白名单里）；凭据只在内存里。提供方模块 `app/connector_gateway/conn/<提供方 ID 的下划线写法>.py` 导出 `INFO`（`ProviderInfo` 的字段，
@@ -335,3 +336,29 @@ frontmatter 声明了快照就用它，否则用这个源最新的完整快照�
 
 每条记录 `attrs.loc: {file, line, end_line}`；实体和操作带 `attrs.snippet`（最多 30 行，过内核的密钥扫描）。内嵌 SQL 记在操作的
 `attrs.sql`（最多 2000 字）和 `attrs.tables`。识别不了的框架写法记进快照局限。
+
+**补充的锚点规则**（F14 实现时定）：
+
+| 记录 | 锚点 | 说明 |
+|---|---|---|
+| 字段、方法 | 所属类的锚点 + `::<名字>` | Python 模块段去掉开头的 `src/` 和结尾的 `__init__` |
+| 路由 | `code:<源>/route:<方法> <路径>`（整体一段编码） | 路径参数照框架原样：Spring `{id}`、Nest `:id`、Flask `<int:id>`；常量拼的段写成 `{类.常量}`，记 `inferred` |
+| 规则 | `code:<源>/rule:<目标的符号段>::<规则名>` | 规则名是注解名（`NotNull`）、约束键（pydantic `ge`、Django `max_length`）、校验器函数名、约束名（`ck_order_amount`）；`unique` 也算规则 |
+| 关系 | `code:<源>/rel:<sha256(from \| name \| to \| via)[:16]>` | `via` 是声明它的字段或方法锚点（同一对实体可以有多条关联）；`to` 解析不到时为 `null`，`attrs.target` 写类名或表名 |
+
+关系名：`many_to_one`、`one_to_many`、`one_to_one`、`many_to_many`、`references`（外键列，`attrs.columns`）、`inherits`
+（只发解析得到的）、`calls`（`inferred`，只发目标是已记录方法的）。同一快照撞名的锚点第二个起加 `~2`。
+
+**克隆与读取**：`git init` + `fetch --depth 1 --no-tags --no-recurse-submodules origin <ref>`，不 checkout；`ls-tree` 列文件，
+`cat-file --batch` 按 8 MiB 一批只读要分析的 blob，符号链接、子模块、超大文件都不落盘。取的时候量 `.git` 大小，超过 `max_bytes`
+杀掉、报 `repo_too_large`；源码按顺序累计，超过 `max_bytes` 的不分析（清单 `skipped` 记 `budget`，结果不完整）。`ref` 是分支、标签或
+完整提交号（短提交号取不到）。git 子进程自己发起的连接不经过 Python 审计钩子，所以先核对主机端口、禁止重定向和 https 以外的协议；
+网关的工作进程要保留 `GIT_SSL_CAINFO`、`SSL_CERT_FILE`、`SSL_CERT_DIR`（内网仓库的自签 CA），其余环境变量不传给 git。
+
+**清单**：`items` 是全部文件（`kind` 为 `java` / `python` / `typescript` / `file`），`skipped.reason` 取 `submodule`、`symlink`、
+`scope`（`scope` 按文件路径匹配）、`vendored`（`node_modules/`、`target/` 等）、`test`、`too_large`、`budget`。
+
+**测试连接**：只有 `connectivity` 一项（`git ls-remote`），`detail` 如实写「令牌是否只读验证不了」，不出 `readonly_account`。
+
+**错误码**：`invalid_connection`、`egress_denied`、`auth_failed`、`ref_not_found`、`redirect_refused`、`unreachable`、
+`repo_too_large`、`timeout`、`git_failed`、`provider_unavailable`（镜像里没有 git）；`message` 去掉令牌和地址里的用户信息。
