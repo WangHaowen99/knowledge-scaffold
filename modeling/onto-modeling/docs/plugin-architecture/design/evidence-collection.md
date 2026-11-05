@@ -366,4 +366,5 @@ Java 文件）峰值 RSS 约 36 MB，192 MB 上限也能跑完；不加这些参
 **测试连接**：只有 `connectivity` 一项（`git ls-remote`），`detail` 如实写「令牌是否只读验证不了」，不出 `readonly_account`。
 
 **错误码**：`invalid_connection`、`egress_denied`、`auth_failed`、`ref_not_found`、`redirect_refused`、`unreachable`、
-`repo_too_large`、`timeout`、`git_failed`、`provider_unavailable`（镜像里没有 git）；`message` 去掉令牌和地址里的用户信息。
+`repo_too_large`（含包文件超过网关单文件上限、git 被 SIGXFSZ 杀掉）、`memory`（git 报内存不够）、`timeout`、`git_failed`、
+`provider_unavailable`（镜像里没有 git）；`message` 去掉令牌和地址里的用户信息。
