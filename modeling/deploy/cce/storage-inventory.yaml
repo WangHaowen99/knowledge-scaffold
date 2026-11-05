@@ -27,3 +27,21 @@ volumes:
     backupProcedure: stop-onto-and-snapshot-pvc
     restoreProcedure: restore-snapshot-to-new-pvc-before-start
     requirements: {accessModes: [ReadWriteOnce], volumeMode: Filesystem, minimumCapacity: 10Gi}
+  - owner: modeling
+    workload: hub
+    backend: pvc
+    mountPath: /data
+    valuesKey: hub.persistence.existingClaim
+    dataVersion: application-managed
+    backupProcedure: stop-hub-and-snapshot-pvc
+    restoreProcedure: restore-snapshot-to-new-pvc-before-start
+    requirements: {accessModes: [ReadWriteOnce], volumeMode: Filesystem, minimumCapacity: 10Gi}
+  - owner: modeling
+    workload: evaluation
+    backend: pvc
+    mountPath: /var/lib/evaluation
+    valuesKey: evaluation.persistence.existingClaim
+    dataVersion: application-managed
+    backupProcedure: stop-evaluation-and-snapshot-pvc
+    restoreProcedure: restore-snapshot-to-new-pvc-before-start
+    requirements: {accessModes: [ReadWriteOnce], volumeMode: Filesystem, minimumCapacity: 10Gi}

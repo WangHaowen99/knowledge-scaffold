@@ -9,6 +9,8 @@ global:
     modeling: ""
     modelingAgent: ""
     ontoModeling: ""
+    knowledgeHub: ""
+    evaluation: ""
     jiuwenbox: ""
   auth:
     issuer: ""
@@ -31,6 +33,7 @@ global:
       - {id: core, protocol: HTTP, listenerPort: 8100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-core}
       - {id: onto, protocol: HTTP, listenerPort: 5100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: onto-modeling}
       - {id: mcp, protocol: HTTP, listenerPort: 5188, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-mcp}
+      - {id: evaluation, protocol: HTTP, listenerPort: 8090, tlsSecretName: "", host: "", path: /evaluation/, pathType: Prefix, endpointId: evaluation}
 externalAuth:
   serviceName: ""
   namespace: ""
@@ -49,6 +52,7 @@ modeling:
     ontoJiuwenBaseUrl: ""
     ontoJiuwenModel: ""
     ontoAnthropicBaseUrl: ""
+    evalPublicUrl: ""
   workloads:
     core:
       replicas: 1
@@ -87,3 +91,22 @@ modeling:
     anthropicAuthToken:
       name: ""
       key: ""
+hub:
+  replicas: 1
+  persistence: {existingClaim: ""}
+  resources: {}
+  secrets:
+    internal: {name: "", modelingTokenKey: modeling-token, evaluationTokenKey: evaluation-token}
+    consumerToken: {name: "", key: ""}
+evaluation:
+  replicas: 1
+  persistence: {existingClaim: ""}
+  resources: {}
+  trustedOrigins: []
+  judge: {baseUrl: "", model: "", configRevision: ""}
+  secrets:
+    encryptionKey: {name: "", key: encryption-key}
+    notificationToken: {name: "", key: service-token}
+    consumerToken: {name: "", key: ""}
+    judgeApiKey: {name: "", key: ""}
+    sqlConfig: {name: "", key: ""}

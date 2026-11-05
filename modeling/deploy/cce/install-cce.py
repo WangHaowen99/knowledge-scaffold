@@ -4,13 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -19,8 +23,9 @@ import jsonschema
 
 from common import (CompatibilityError, ConfigError, checksum, emit_stdout, endpoint_results, read_yaml,
                     release_chart_from_list, run_program, validate_images, validate_name, validate_release)
-from upgrade import (DATA_COUNTS, assert_same_bindings, bindings, transition,
-                     verified_snapshots, verify_persisted_data)
+from upgrade import (DATA_COUNTS, WORKLOADS, EXPANDED_WORKLOADS, assert_same_bindings, bindings,
+                     installed_workloads, mount_path, target_claim, transition, verified_snapshots,
+                     verify_persisted_data)
 
 
 SNAPSHOT_RETRY_LIMIT = 5
@@ -255,7 +260,47 @@ def load_inputs(args, root: Path):
             raise ConfigError(f"incomplete {key} Secret reference")
     if merged["modeling"].get("nl2sql", {}).get("enabled", False) and not merged["modeling"]["secrets"]["evalDbUrl"]["name"]:
         raise ConfigError("NL2SQL requires the evalDbUrl Secret reference")
-    if args.action != "upgrade" and any(merged["modeling"]["workloads"][name]["replicas"] != 1
+    claims = [target_claim(merged, name) for name in EXPANDED_WORKLOADS]
+    if len(set(claims)) != len(claims):
+        raise ConfigError("stateful workloads require distinct PVCs")
+    for section, keys in (("hub", ("consumerToken",)), ("evaluation", ("consumerToken", "judgeApiKey", "sqlConfig"))):
+        for key in keys:
+            ref = merged[section]["secrets"][key]
+            if bool(ref["name"]) != bool(ref["key"]):
+                raise ConfigError(f"incomplete {section}.{key} Secret reference")
+            source = ref.get("sourceRef")
+            if source and any(bool(source.get(field)) for field in ("namespace", "name", "key")):
+                if not ref["name"] or not all(source.get(field) for field in ("namespace", "name", "key")):
+                    raise ConfigError(f"incomplete {section}.{key} sourceRef")
+    internal = merged["hub"]["secrets"]["internal"]
+    if internal["modelingTokenKey"] == internal["evaluationTokenKey"]:
+        raise ConfigError("Hub internal token keys must be distinct")
+    internal_names = set(_internal_secret_specs(merged))
+    external_names = {merged["global"]["integration"]["serviceTokenSecret"]["name"]}
+    for section in ("hub", "evaluation"):
+        for key, ref in merged[section]["secrets"].items():
+            if key not in ("internal", "encryptionKey", "notificationToken") and ref["name"]:
+                external_names.add(ref["name"])
+    if len(internal_names) != 2 or internal_names & external_names:
+        raise ConfigError("internal Secrets must use distinct objects from external credentials")
+    notification_name, notification_key = _notification_secret_ref(args, merged)
+    if notification_name in internal_names | external_names:
+        raise ConfigError("notification Secret must use a distinct object")
+    if not notification_key:
+        raise ConfigError("notification Secret key is required")
+    integration_source = merged["global"]["integration"]["serviceTokenSecret"].get("sourceRef") or {}
+    if integration_source and any(bool(integration_source.get(field)) for field in ("namespace", "name", "key")):
+        if not all(integration_source.get(field) for field in ("namespace", "name", "key")):
+            raise ConfigError("incomplete Modeling integration sourceRef")
+    if any(merged[name]["replicas"] != 1 for name in ("hub", "evaluation")):
+        raise ConfigError("Hub and Evaluation must run at one replica")
+    routes = access["listeners"] if access["mode"] == "port" else access["routes"]
+    evaluation_routes = [item for item in routes if item["endpointId"] == "evaluation"]
+    if len(evaluation_routes) != 1 or evaluation_routes[0]["path"] != "/evaluation/":
+        raise ConfigError("Evaluation Ingress route is required")
+    if access["mode"] == "port" and evaluation_routes[0]["listenerPort"] != 8090:
+        raise ConfigError("Evaluation listener must use port 8090")
+    if any(merged["modeling"]["workloads"][name]["replicas"] != 1
             for name in ("core", "agent", "onto")):
         raise ConfigError("stateful workloads must run at one replica")
     if not images["jiuwenbox"]:
@@ -267,25 +312,59 @@ def preflight(args, merged: dict, *, check_external_services: bool = True) -> No
     namespace = kube(args, "get", "namespace", args.namespace)
     if namespace["status"]["phase"] != "Active":
         raise ConfigError("namespace is not Active")
-    for workload in ("core", "agent", "onto"):
-        name = merged["modeling"]["workloads"][workload]["persistence"]["existingClaim"]
+    for workload in EXPANDED_WORKLOADS:
+        name = target_claim(merged, workload)
         pvc = kube(args, "get", "pvc", name, "-n", args.namespace)
         spec = pvc["spec"]
         if pvc["status"]["phase"] != "Bound" or spec.get("volumeMode", "Filesystem") != "Filesystem":
             raise ConfigError(f"PVC for {workload} is not Bound Filesystem")
         if "ReadWriteOnce" not in spec.get("accessModes", []):
             raise ConfigError(f"PVC for {workload} lacks ReadWriteOnce")
+        if workload == "evaluation":
+            existing_key = _read_secret(args, merged["evaluation"]["secrets"]["encryptionKey"]["name"])
+            if existing_key is None and _evaluation_has_data(args, name):
+                raise ConfigError("Evaluation PVC contains data but its encryption Secret is missing")
     refs = [merged["global"]["integration"]["serviceTokenSecret"]]
     refs.extend(merged["modeling"]["secrets"].values())
+    refs.extend(ref for key, ref in merged["hub"]["secrets"].items() if key != "internal")
+    refs.extend(ref for key, ref in merged["evaluation"]["secrets"].items()
+                if key not in ("encryptionKey", "notificationToken"))
     for item in refs:
-        if item["name"]:
-            secret = kube(args, "get", "secret", item["name"], "-n", args.namespace)
-            if item["key"] not in secret.get("data", {}):
-                raise ConfigError(f"Secret key missing in {item['name']}")
+        if not item["name"]:
+            continue
+        source = item.get("sourceRef") or {}
+        secret = _read_secret(args, item["name"])
+        if secret is None:
+            if not all(source.get(field) for field in ("namespace", "name", "key")):
+                raise ConfigError(f"Secret {item['name']} is missing without a sourceRef")
+            if source["namespace"] == args.namespace and source["name"] == item["name"]:
+                raise ConfigError(f"Secret {item['name']} sourceRef points to its missing target")
+            origin = _read_secret(args, source["name"], source["namespace"])
+            if origin is None or not origin.get("data", {}).get(source["key"]):
+                raise ConfigError(f"source Secret key missing in {source['name']}")
+        elif secret.get("type") != "Opaque" or not secret.get("data", {}).get(item["key"]):
+            raise ConfigError(f"Secret key missing in {item['name']}")
+        elif all(source.get(field) for field in ("namespace", "name", "key")):
+            origin = _read_secret(args, source["name"], source["namespace"])
+            if origin is None or origin.get("data", {}).get(source["key"]) != secret["data"][item["key"]]:
+                raise ConfigError(f"source and target Secret differ for {item['name']}")
+    for secret_name, keys in _internal_secret_specs(merged).items():
+        secret = _read_secret(args, secret_name)
+        if secret is not None and (secret.get("type") != "Opaque" or
+                                   any(not secret.get("data", {}).get(key) for key in keys)):
+            raise ConfigError(f"internal Secret {secret_name} is incomplete")
+    notification_name, notification_key = _notification_secret_ref(args, merged)
+    notification = _read_secret(args, notification_name)
+    if notification is not None and (notification.get("type") != "Opaque" or
+                                     not notification.get("data", {}).get(notification_key)):
+        raise ConfigError(f"internal Secret {notification_name} is incomplete")
     for secret_name in merged["global"]["imageDelivery"]["pullSecretNames"]:
         kube(args, "get", "secret", secret_name, "-n", args.namespace)
     if merged["global"]["access"]["protocol"] == "HTTPS":
         kube(args, "get", "secret", merged["global"]["access"]["tlsSecretName"], "-n", args.namespace)
+    for listener in merged["global"]["access"]["listeners"]:
+        if listener["protocol"] == "HTTPS":
+            kube(args, "get", "secret", listener["tlsSecretName"], "-n", args.namespace)
     if check_external_services:
         for field in ("externalAuth", "externalConsumer"):
             target = merged[field]
@@ -311,7 +390,7 @@ def render(args, root: Path, release: dict) -> Path:
 
 
 def verify(args, root: Path):
-    for component in ("agent", "core", "onto"):
+    for component in ("agent", "core", "onto", "hub", "evaluation"):
         run("kubectl", "--context", args.context, "-n", args.namespace, "rollout", "status",
             f"deployment/{args.release}-{component}", f"--timeout={args.timeout_seconds}s")
     run("kubectl", "--context", args.context, "-n", args.namespace, "rollout", "status",
@@ -322,6 +401,12 @@ def verify(args, root: Path):
     run("kubectl", "--context", args.context, "-n", args.namespace, "exec",
         f"deployment/{args.release}-core", "-c", "core", "--", "node", "-e",
         "const http=require('http');const q=http.request({socketPath:'/run/jiuwenbox/jiuwenbox.sock',path:'/health'},r=>process.exit(r.statusCode===200?0:1));q.on('error',()=>process.exit(1));q.end()")
+    for component, port, path in (("hub", 8200, "/api/health"),
+                                  ("evaluation", 8090, "/evaluation/api/health")):
+        run("kubectl", "--context", args.context, "-n", args.namespace, "exec",
+            f"deployment/{args.release}-{component}", "-c", component, "--",
+            "python", "-c",
+            f"import urllib.request; r=urllib.request.urlopen('http://127.0.0.1:{port}{path}', timeout=5); raise SystemExit(0 if r.status == 200 else 1)")
     if read_yaml(args.values).get("modeling", {}).get("nl2sql", {}).get("enabled"):
         run("kubectl", "--context", args.context, "-n", args.namespace, "rollout", "status",
             f"deployment/{args.release}-nl2sql", f"--timeout={args.timeout_seconds}s")
@@ -378,12 +463,35 @@ def upgrade_precheck(args, root: Path, release: dict, merged: dict) -> dict:
     if any(old_values.get("modeling", {}).get("workloads", {}).get(name, {}).get("replicas", 1) != 1
            for name in ("core", "agent", "onto")):
         raise ConfigError("installed Modeling release must request one replica per stateful workload")
+    workloads = installed_workloads(old_values)
+    args.backup_workloads = workloads
+    if len(workloads) == len(EXPANDED_WORKLOADS):
+        if any(old_values[name].get("replicas", 1) != 1 for name in ("hub", "evaluation")):
+            raise ConfigError("installed Hub and Evaluation must request one replica")
+        if _installed_internal_secret_specs(old_values, args) != _internal_secret_specs(merged):
+            raise ConfigError("internal Secret names and keys cannot change during upgrade")
+        old_notification = _notification_secret_ref(args, old_values)
+        if old_values.get("evaluation", {}).get("secrets", {}).get("notificationToken") and \
+                old_notification != _notification_secret_ref(args, merged):
+            raise ConfigError("notification Secret name and key cannot change during upgrade")
     for component in ("core", "agent", "onto"):
         old_claim = old_values.get("modeling", {}).get("workloads", {}).get(component, {}).get("persistence", {}).get("existingClaim")
         target_claim = merged["modeling"]["workloads"][component]["persistence"]["existingClaim"]
         if old_claim != target_claim:
             raise ConfigError(f"{component} target PVC differs from installed values")
-    before = bindings(kube, args, merged, stopped=True)
+    if len(workloads) == len(EXPANDED_WORKLOADS):
+        for component in ("hub", "evaluation"):
+            if old_values[component]["persistence"]["existingClaim"] != merged[component]["persistence"]["existingClaim"]:
+                raise ConfigError(f"{component} target PVC differs from installed values")
+    try:
+        backup_record = json.loads(args.backup_record.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ConfigError("cannot read backup record") from exc
+    recorded_uids = backup_record.get("secretUids")
+    if recorded_uids:
+        if not isinstance(recorded_uids, dict) or recorded_uids != _identity_record(args, merged):
+            raise ConfigError("backup record Secret identities changed")
+    before = bindings(kube, args, merged, stopped=True, workloads=workloads)
     verified_snapshots(kube, args, args.backup_record, before)
     return before
 
@@ -440,9 +548,198 @@ def _optional_json(args, *rest: str) -> dict | None:
     return json.loads(result.stdout)
 
 
+def _internal_secret_specs(merged: dict) -> dict[str, tuple[str, ...]]:
+    hub = merged["hub"]["secrets"]["internal"]
+    evaluation = merged["evaluation"]["secrets"]["encryptionKey"]
+    return {
+        hub["name"]: (hub["modelingTokenKey"], hub["evaluationTokenKey"]),
+        evaluation["name"]: (evaluation["key"],),
+    }
+
+
+def _notification_secret_ref(args, merged: dict) -> tuple[str, str]:
+    ref = merged.get("evaluation", {}).get("secrets", {}).get("notificationToken") or {}
+    return ref.get("name") or f"{args.release}-notify", ref.get("key") or "service-token"
+
+
+def _assert_unchanged_internal_secrets(args, merged: dict) -> None:
+    old_values = installed_values(args)
+    if "hub" in old_values and "evaluation" in old_values:
+        if _installed_internal_secret_specs(old_values, args) != _internal_secret_specs(merged):
+            raise ConfigError("internal Secret names and keys cannot change during upgrade")
+        if old_values.get("evaluation", {}).get("secrets", {}).get("notificationToken") and \
+                _notification_secret_ref(args, old_values) != _notification_secret_ref(args, merged):
+            raise ConfigError("notification Secret name and key cannot change during upgrade")
+
+
+def _installed_internal_secret_specs(values: dict, args) -> dict[str, tuple[str, ...]]:
+    """Recognize names and keys used by releases installed before these fields existed."""
+    hub = values.get("hub", {}).get("secrets", {}).get("internal")
+    evaluation = values.get("evaluation", {}).get("secrets", {}).get("encryptionKey")
+    if hub is None and evaluation is None:
+        return {f"{args.release}-hub-internal": ("modeling-token", "evaluation-token"),
+                f"{args.release}-evaluation-internal": ("encryption-key",)}
+    if not isinstance(hub, dict) or not isinstance(evaluation, dict):
+        raise ConfigError("installed internal Secret references are incomplete")
+    return _internal_secret_specs(values)
+
+
+def _read_secret(args, name: str, namespace: str | None = None) -> dict | None:
+    return _optional_json(args, "-n", namespace or args.namespace, "get", "secret", name)
+
+
+def _secret_identity(args, name: str) -> str:
+    item = _read_secret(args, name)
+    uid = item.get("metadata", {}).get("uid") if item else None
+    if not uid:
+        raise ConfigError(f"Secret {name} has no stable UID")
+    return uid
+
+
+def _identity_record(args, merged: dict) -> dict[str, str]:
+    names = [*list(_internal_secret_specs(merged)), _notification_secret_ref(args, merged)[0]]
+    integration = merged.get("global", {}).get("integration", {}).get("serviceTokenSecret", {})
+    if integration.get("name"):
+        names.append(integration["name"])
+    for section in ("hub", "evaluation"):
+        names.extend(ref["name"] for key, ref in merged.get(section, {}).get("secrets", {}).items()
+                     if key not in ("internal", "encryptionKey") and ref["name"])
+    return {name: _secret_identity(args, name) for name in sorted(set(names))}
+
+
+def _evaluation_has_data(args, claim_name: str) -> bool:
+    """Detect a prior Evaluation deployment using this claim; never regenerate its key."""
+    deployment = _optional_json(args, "-n", args.namespace, "get", "deployment",
+                                f"{args.release}-evaluation")
+    if deployment is None:
+        return False
+    volumes = deployment.get("spec", {}).get("template", {}).get("spec", {}).get("volumes", [])
+    return any(item.get("persistentVolumeClaim", {}).get("claimName") == claim_name for item in volumes)
+
+
+def _assert_distinct_internal_tokens(args, merged: dict) -> None:
+    internal = merged["hub"]["secrets"]["internal"]
+    hub = _read_secret(args, internal["name"])
+    integration = _read_secret(args, merged["global"]["integration"]["serviceTokenSecret"]["name"])
+    if not hub or not integration:
+        raise ConfigError("internal service tokens are unavailable")
+    values = [hub.get("data", {}).get(internal["modelingTokenKey"]),
+              hub.get("data", {}).get(internal["evaluationTokenKey"]),
+              integration.get("data", {}).get(
+                  merged["global"]["integration"]["serviceTokenSecret"]["key"])]
+    if any(not value for value in values) or len(set(values)) != len(values):
+        raise ConfigError("Hub and Modeling service tokens must be distinct")
+
+
+def _create_secret(args, name: str, values: dict[str, str]) -> None:
+    document = {
+        "apiVersion": "v1", "kind": "Secret",
+        "metadata": {"name": name, "namespace": args.namespace},
+        "type": "Opaque",
+        "data": {key: base64.b64encode(value.encode()).decode() for key, value in values.items()},
+    }
+    result = run_program(
+        ("kubectl", "--context", args.context, "-n", args.namespace, "create", "-f", "-"),
+        input=json.dumps(document), text=True, capture_output=True,
+    )
+    if result.returncode:
+        # A concurrent creator may have won. Reuse only a complete existing object.
+        current = _read_secret(args, name)
+        if current is None or current.get("type") != "Opaque" or any(
+            not current.get("data", {}).get(key) for key in values
+        ):
+            raise ConfigError(f"unable to create Secret {name}; pre-create it with the configured keys and retry")
+
+
+def ensure_application_secrets(args, merged: dict) -> None:
+    """Create internal keys once and import only explicitly referenced external keys."""
+    encryption = merged["evaluation"]["secrets"]["encryptionKey"]
+    notification_name, notification_key = _notification_secret_ref(args, merged)
+    notification = _read_secret(args, notification_name)
+    if notification is None:
+        _create_secret(args, notification_name, {notification_key: secrets.token_urlsafe(48)})
+    elif notification.get("type") != "Opaque" or not notification.get("data", {}).get(notification_key):
+        raise ConfigError(f"internal Secret {notification_name} is incomplete")
+    for name, keys in _internal_secret_specs(merged).items():
+        current = _read_secret(args, name)
+        if current is not None:
+            if current.get("type") != "Opaque" or any(not current.get("data", {}).get(key) for key in keys):
+                raise ConfigError(f"internal Secret {name} is incomplete")
+            continue
+        values = {}
+        for key in keys:
+            values[key] = (base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()
+                           if name == encryption["name"] else secrets.token_urlsafe(48))
+        _create_secret(args, name, values)
+    for section, refs in (("hub", merged["hub"]["secrets"]),
+                          ("evaluation", merged["evaluation"]["secrets"])):
+        for key, ref in refs.items():
+            if key in ("internal", "encryptionKey", "notificationToken"):
+                continue
+            if not ref["name"]:
+                continue
+            target = _read_secret(args, ref["name"])
+            if target is not None:
+                if target.get("type") != "Opaque" or not target.get("data", {}).get(ref["key"]):
+                    raise ConfigError(f"Secret key missing in {ref['name']}")
+                source = ref.get("sourceRef") or {}
+                if all(source.get(field) for field in ("namespace", "name", "key")):
+                    origin = _read_secret(args, source["name"], source["namespace"])
+                    if origin is None or origin.get("data", {}).get(source["key"]) != target["data"][ref["key"]]:
+                        raise ConfigError(f"source and target Secret differ for {ref['name']}")
+                continue
+            source = ref.get("sourceRef") or {}
+            if not all(source.get(field) for field in ("namespace", "name", "key")):
+                raise ConfigError(f"{section}.{key} target Secret is missing")
+            origin = _read_secret(args, source["name"], source["namespace"])
+            encoded = origin.get("data", {}).get(source["key"]) if origin else None
+            if not encoded:
+                raise ConfigError(f"{section}.{key} source Secret key is missing")
+            if source["namespace"] == args.namespace and source["name"] == ref["name"]:
+                raise ConfigError(f"{section}.{key} source and target Secret cannot be the same missing object")
+            # Import the exact encoded value; no credential reaches values, argv, or the journal.
+            document = {
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": {"name": ref["name"], "namespace": args.namespace},
+                "type": "Opaque", "data": {ref["key"]: encoded},
+            }
+            result = run_program(
+                ("kubectl", "--context", args.context, "-n", args.namespace, "create", "-f", "-"),
+                input=json.dumps(document), text=True, capture_output=True,
+            )
+            if result.returncode:
+                current = _read_secret(args, ref["name"])
+                if current is None or current.get("type") != "Opaque" or ref["key"] not in current.get("data", {}):
+                    raise ConfigError(f"unable to import {section}.{key} Secret")
+    integration = merged["global"]["integration"]["serviceTokenSecret"]
+    target = _read_secret(args, integration["name"])
+    if target is None:
+        source = integration.get("sourceRef") or {}
+        if not all(source.get(field) for field in ("namespace", "name", "key")):
+            raise ConfigError("Modeling integration Secret is missing")
+        origin = _read_secret(args, source["name"], source["namespace"])
+        encoded = origin.get("data", {}).get(source["key"]) if origin else None
+        if not encoded:
+            raise ConfigError("Modeling integration source Secret key is missing")
+        document = {
+            "apiVersion": "v1", "kind": "Secret",
+            "metadata": {"name": integration["name"], "namespace": args.namespace},
+            "type": "Opaque", "data": {integration["key"]: encoded},
+        }
+        result = run_program(
+            ("kubectl", "--context", args.context, "-n", args.namespace, "create", "-f", "-"),
+            input=json.dumps(document), text=True, capture_output=True,
+        )
+        if result.returncode:
+            current = _read_secret(args, integration["name"])
+            if current is None or current.get("type") != "Opaque" or current.get("data", {}).get(integration["key"]) != encoded:
+                raise ConfigError("unable to import Modeling integration Secret")
+    _assert_distinct_internal_tokens(args, merged)
+
+
 def _count_persisted_data(args) -> dict:
     counts = {}
-    for workload in ("core", "agent", "onto"):
+    for workload in getattr(args, "backup_workloads", WORKLOADS):
         output = run(
             "kubectl", "--context", args.context, "-n", args.namespace,
             "exec", f"deployment/{args.release}-{workload}", "-c", workload,
@@ -455,6 +752,171 @@ def _count_persisted_data(args) -> dict:
     return counts
 
 
+def _pvc_bindings(args, merged: dict) -> dict:
+    result = {}
+    for workload in ("core", "agent", "onto"):
+        claim = merged["modeling"]["workloads"][workload]["persistence"]["existingClaim"]
+        pvc = kube(args, "get", "pvc", claim, "-n", args.namespace)
+        uid = pvc.get("metadata", {}).get("uid")
+        pv = pvc.get("spec", {}).get("volumeName")
+        if pvc.get("status", {}).get("phase") != "Bound" or not uid or not pv:
+            raise ConfigError(f"{workload} PVC identity is incomplete")
+        result[workload] = {"claimName": claim, "claimUid": uid, "volumeName": pv}
+    return result
+
+
+def _write_private_json(path: Path, document: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=f".{path.name}.", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(document, stream, ensure_ascii=False, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _operation_state_path(args) -> Path:
+    return args.state_dir / f"{args.release}-{_operation_slug(args.operation_id)}-operation.json"
+
+
+def _cluster_operation_state(args) -> dict | None:
+    resource = _optional_json(args, "-n", args.namespace, "get", "configmap", f"{args.release}-cce-state")
+    if resource is None:
+        return None
+    try:
+        return json.loads(resource.get("data", {})["state.json"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigError("Modeling cluster operation state is invalid") from exc
+
+
+def _write_cluster_state(args, document: dict) -> None:
+    manifest = {"apiVersion": "v1", "kind": "ConfigMap",
+                "metadata": {"name": f"{args.release}-cce-state", "namespace": args.namespace,
+                             "labels": {"app.kubernetes.io/instance": args.release}},
+                "data": {"state.json": json.dumps(document, sort_keys=True)}}
+    _run_with_input(("kubectl", "--context", args.context, "-n", args.namespace,
+                     "apply", "-f", "-"), json.dumps(manifest))
+
+
+def _record_upgrade_stage(args, stage: str, **details) -> None:
+    if getattr(args, "state_dir", None):
+        path = _operation_state_path(args)
+        document = {}
+        try:
+            if path.is_file():
+                document = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(document, dict):
+                    raise ConfigError("existing Modeling operation state is invalid")
+                if document.get("operationId") != args.operation_id:
+                    raise ConfigError("existing Modeling operation belongs to another operation")
+        except (OSError, ValueError, TypeError, ConfigError):
+            args.stage_warnings = getattr(args, "stage_warnings", []) + ["local operation state could not be read"]
+            return
+        document.update({"schemaVersion": "cce-modeling-operation/v1", "operationId": args.operation_id,
+                         "context": args.context, "namespace": args.namespace, "releaseName": args.release,
+                         "action": "upgrade", "stage": stage, **details})
+        try:
+            _write_cluster_state(args, document)
+        except (OSError, RuntimeError, ConfigError):
+            args.stage_warnings = getattr(args, "stage_warnings", []) + ["cluster operation state could not be written"]
+        try:
+            _write_private_json(path, document)
+        except (OSError, RuntimeError, ConfigError):
+            args.stage_warnings = getattr(args, "stage_warnings", []) + ["local operation state could not be written"]
+    args.upgrade_stage = stage
+
+
+def _diagnose(args, release: dict, merged: dict) -> dict:
+    current = release_status(args)
+    state = _cluster_operation_state(args)
+    claims = _pvc_bindings(args, merged)
+    issues = []
+    if current is None:
+        issues.append("Helm release is absent")
+    elif current.get("info", {}).get("status") != "deployed":
+        issues.append("Helm release is not deployed")
+    else:
+        installed = installed_release(args)
+        if (installed["releaseVersion"], installed["chartVersion"]) != (
+                release["releaseVersion"], release["chartVersion"]):
+            issues.append("installed release differs from target")
+    if state and state.get("stage") not in ("complete", "old-service-restored", "preparing-backup"):
+        issues.append(f"unfinished Modeling operation at stage {state.get('stage', 'unknown')}")
+    return {"ready": not issues, "issues": issues, "claims": claims,
+            "installed": current is not None,
+            "operationState": {"operationId": state.get("operationId"), "stage": state.get("stage")}
+            if state else None}
+
+
+def _uninstall(args, root: Path) -> dict:
+    """Remove only the Modeling Helm release; retain external storage and credentials."""
+    release = validate_release(root, "modeling")
+    record = args.state_dir / f"{args.release}-{_operation_slug(args.operation_id)}-uninstall.json"
+    expected = {"operationId": args.operation_id, "namespace": args.namespace,
+                "releaseName": args.release, "releaseVersion": release["releaseVersion"],
+                "chartVersion": release["chartVersion"]}
+    if args.resume:
+        if not record.is_file() or json.loads(record.read_text()) != expected:
+            raise ConfigError("Modeling uninstall record is missing or differs from this operation")
+    elif record.exists():
+        raise ConfigError("Modeling uninstall record already exists; use --resume")
+    current = release_status(args)
+    if current is None:
+        if not args.resume:
+            raise ConfigError("Modeling release is absent")
+        return release
+    installed = installed_release(args)
+    if installed != {"releaseVersion": release["releaseVersion"], "chartVersion": release["chartVersion"]}:
+        raise ConfigError("installed Modeling release differs from uninstall package")
+    state = _cluster_operation_state(args)
+    if state and state.get("stage") not in ("complete", "old-service-restored"):
+        raise ConfigError("finish or inspect the active Modeling operation before uninstall")
+    if not args.resume:
+        _write_private_json(record, expected)
+    if args.lock_holder:
+        check_delegated_lease(args)
+    run(*helm_base(args), "uninstall", args.release, "--wait", f"--timeout={args.timeout_seconds}s")
+    if release_status(args) is not None:
+        raise RuntimeError("Modeling Helm release remains after uninstall")
+    return release
+
+
+def _require_upgrade_state_ready(args) -> None:
+    state = _cluster_operation_state(args)
+    if not state or state.get("stage") in ("complete", "old-service-restored"):
+        return
+    matching_resume = (getattr(args, "resume", None), state.get("action"), state.get("operationId")) == (
+        args.operation_id, "upgrade", args.operation_id)
+    if matching_resume and state.get("stage") in ("preparing-backup", "backup-ready"):
+        path = _operation_state_path(args)
+        try:
+            local = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError) as exc:
+            raise ConfigError("local upgrade operation state is unavailable; inspect before resuming") from exc
+        if not isinstance(local, dict):
+            raise ConfigError("cluster and local upgrade stages differ; inspect before resuming")
+        local_identity = (local.get("action"), local.get("operationId"), local.get("stage"))
+        if local_identity != ("upgrade", args.operation_id, state["stage"]):
+            raise ConfigError("cluster and local upgrade stages differ; inspect before resuming")
+        # A Helm revision created by this operation means its outcome needs
+        # inspection, even when a state write left an older stage behind.
+        if installed_values(args).get("global", {}).get("operationId") == args.operation_id:
+            raise ConfigError("upgrade outcome is uncertain; inspect the Helm release before resuming")
+        if state["stage"] == "backup-ready":
+            backup = args.state_dir / f"{args.release}-{_operation_slug(args.operation_id)}-modeling-backup.json"
+            if not backup.is_file():
+                raise ConfigError("completed backup record is missing; inspect before resuming")
+        return
+    raise ConfigError(f"unfinished Modeling operation at stage {state.get('stage', 'unknown')}; inspect before upgrading")
+
+
 def _check_capacity(args) -> None:
     """Require enough free space in each Modeling data filesystem.
 
@@ -465,11 +927,11 @@ def _check_capacity(args) -> None:
     minimum = args.min_free_percent
     if minimum < 0 or minimum > 100:
         raise ConfigError("min-free-percent must be between 0 and 100")
-    for workload in ("core", "agent", "onto"):
+    for workload in getattr(args, "backup_workloads", WORKLOADS):
         output = run(
             "kubectl", "--context", args.context, "-n", args.namespace,
             "exec", f"deployment/{args.release}-{workload}", "-c", workload,
-            "--", "df", "-Pk", "/data",
+            "--", "df", "-Pk", mount_path(workload),
         )
         rows = [line.split() for line in output.splitlines() if line.strip()]
         if len(rows) < 2 or len(rows[-1]) < 5:
@@ -493,7 +955,7 @@ def _stop_for_backup(args) -> None:
     # Arm recovery before the first scale: even a partial stop must be undone
     # if a later scale, snapshot or backup-record check fails.
     args.restore_workloads_on_failure = True
-    for workload in ("core", "agent", "onto"):
+    for workload in getattr(args, "backup_workloads", WORKLOADS):
         run(
             "kubectl", "--context", args.context, "-n", args.namespace,
             "scale", "deployment", f"{args.release}-{workload}", "--replicas=0",
@@ -606,7 +1068,7 @@ def _ensure_volume_snapshot(args, workload: str, claim_name: str, volume_name: s
 
 
 def _label_snapshot_group(args, status: str) -> None:
-    for workload in ("core", "agent", "onto"):
+    for workload in getattr(args, "backup_workloads", WORKLOADS):
         name = _snapshot_name(args, workload)
         run(
             "kubectl", "--context", args.context, "-n", args.namespace,
@@ -643,7 +1105,7 @@ def _cleanup_old_successful_snapshots(args) -> list[str]:
             item.get("metadata", {}).get("labels", {}).get("modeling.cce/workload")
             for item in items
         }
-        if len(items) != 3 or workloads != {"core", "agent", "onto"}:
+        if len(items) not in (3, 5) or workloads not in (set(WORKLOADS), set(EXPANDED_WORKLOADS)):
             # Never delete a partial or externally modified snapshot group.
             continue
         for item in items:
@@ -675,6 +1137,18 @@ def prepare_auto_backup(args, root: Path, release: dict, merged: dict) -> Path:
         }
         if any(record.get(key) != value for key, value in expected_identity.items()):
             raise ConfigError("automatic backup record belongs to another operation or release")
+        claims = record.get("claims")
+        if not isinstance(claims, dict) or set(claims) not in (set(WORKLOADS), set(EXPANDED_WORKLOADS)):
+            raise ConfigError("automatic backup record has an invalid workload set")
+        current_workloads = installed_workloads(installed_values(args))
+        if set(claims) != set(current_workloads):
+            raise ConfigError("automatic backup record workload set differs from installed release")
+        if record.get("secretUids") and record["secretUids"] != _identity_record(args, merged):
+            raise ConfigError("automatic backup record Secret identities changed")
+        args.backup_workloads = tuple(name for name in EXPANDED_WORKLOADS if name in claims)
+        args.snapshot_claims = {name: {key: value for key, value in claims[name].items()
+                                       if key in ("claimName", "claimUid", "volumeName")}
+                                for name in args.backup_workloads}
         args.snapshot_group = _snapshot_group(args)
         args.backup_record = backup_path
         return backup_path
@@ -684,7 +1158,15 @@ def prepare_auto_backup(args, root: Path, release: dict, merged: dict) -> Path:
         raise CompatibilityError("target architecture differs from the installed release")
     if old_values.get("global", {}).get("auth", {}) != merged["global"]["auth"]:
         raise CompatibilityError("shared auth settings changed during Modeling upgrade")
-    before = bindings(kube, args, merged, stopped=False)
+    args.backup_workloads = installed_workloads(old_values)
+    if args.backup_workloads == WORKLOADS and all(name in merged for name in ("hub", "evaluation")):
+        for component in ("hub", "evaluation"):
+            claim_name = merged[component]["persistence"]["existingClaim"]
+            pods = kube(args, "get", "pods", "-n", args.namespace)
+            if any(volume.get("persistentVolumeClaim", {}).get("claimName") == claim_name
+                   for item in pods.get("items", []) for volume in item.get("spec", {}).get("volumes", [])):
+                raise ConfigError(f"new {component} PVC is already mounted by a Pod")
+    before = bindings(kube, args, merged, stopped=False, workloads=args.backup_workloads)
     _check_capacity(args)
     args.snapshot_group = _snapshot_group(args)
     snapshot_classes = _optional_json(args, "get", "volumesnapshotclass")
@@ -705,14 +1187,19 @@ def prepare_auto_backup(args, root: Path, release: dict, merged: dict) -> Path:
     if not args.snapshot_class:
         raise ConfigError("VolumeSnapshotClass name is missing")
     evidence = _count_persisted_data(args)
+    _record_upgrade_stage(args, "preparing-backup", source=installed_release(args),
+                          target={"releaseVersion": release["releaseVersion"],
+                                  "chartVersion": release.get("chartVersion")}, claims=before)
     stopped_at = datetime.now(timezone.utc)
+    _record_upgrade_stage(args, "stopping-writers", claims=before, dataEvidence=evidence)
     _stop_for_backup(args)
-    stopped = bindings(kube, args, merged, stopped=True)
+    _record_upgrade_stage(args, "writers-stopped", claims=before, dataEvidence=evidence)
+    stopped = bindings(kube, args, merged, stopped=True, workloads=args.backup_workloads)
     if stopped != before:
         raise ConfigError("stopping Modeling changed a PVC or its bound PV")
     deadline = time.monotonic() + args.timeout_seconds
     claims = {}
-    for workload in ("core", "agent", "onto"):
+    for workload in args.backup_workloads:
         claims[workload] = {
             **stopped[workload],
             **_ensure_volume_snapshot(
@@ -727,15 +1214,18 @@ def prepare_auto_backup(args, root: Path, release: dict, merged: dict) -> Path:
         "stoppedAt": stopped_at.isoformat().replace("+00:00", "Z"),
         "dataEvidence": evidence,
         "claims": claims,
+        "secretUids": _identity_record(args, merged) if "hub" in merged and "evaluation" in merged else {},
     }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     backup_path.chmod(0o600)
     args.backup_record = backup_path
+    _record_upgrade_stage(args, "backup-ready", backupRecord=str(backup_path))
+    args.snapshot_claims = stopped
     return backup_path
 
 
 def wait_old_pods_gone(args) -> None:
     deadline = time.monotonic() + args.timeout_seconds
-    for component in ("core", "agent", "onto"):
+    for component in getattr(args, "backup_workloads", WORKLOADS):
         while True:
             pods = kube(args, "get", "pods", "-n", args.namespace,
                         "-l", f"app.kubernetes.io/instance={args.release},app.kubernetes.io/component={component}")
@@ -752,17 +1242,23 @@ def apply_upgrade(args, root: Path, release: dict, merged: dict, before: dict) -
                  "--set-string", f"global.releaseVersion={release['releaseVersion']}",
                  "--set-string", f"global.operationId={args.operation_id}")
     args.restore_workloads_on_failure = True
+    if getattr(args, "snapshot_claims", None) and args.snapshot_claims != before:
+        raise ConfigError("backup snapshot PVC identities differ from upgrade precheck")
     args.helm_update_started = True
+    _record_upgrade_stage(args, "helm-staging", backupRecord=str(args.backup_record))
     run(*helm_args, "--set", "modeling.workloads.core.replicas=0",
         "--set", "modeling.workloads.agent.replicas=0",
         "--set", "modeling.workloads.onto.replicas=0",
+        "--set", "hub.replicas=0", "--set", "evaluation.replicas=0",
         f"--timeout={args.timeout_seconds}s")
     wait_old_pods_gone(args)
-    assert_same_bindings(before, bindings(kube, args, merged, stopped=True))
+    assert_same_bindings(before, bindings(kube, args, merged, stopped=True, workloads=tuple(before)))
+    _record_upgrade_stage(args, "target-may-start", backupRecord=str(args.backup_record))
     run(*helm_args, "--wait", f"--timeout={args.timeout_seconds}s")
     verify(args, root)
-    assert_same_bindings(before, bindings(kube, args, merged, stopped=False))
+    assert_same_bindings(before, bindings(kube, args, merged, stopped=False, workloads=tuple(before)))
     verify_persisted_data(run, args, args.backup_record)
+    _record_upgrade_stage(args, "target-verified", backupRecord=str(args.backup_record))
 
 
 def restore_workloads_after_failed_upgrade(args) -> dict:
@@ -788,7 +1284,7 @@ def restore_workloads_after_failed_upgrade(args) -> dict:
         if issues:
             return {"status": "degraded", "issues": issues}
 
-    for workload in ("core", "agent", "onto"):
+    for workload in getattr(args, "backup_workloads", WORKLOADS):
         try:
             deployment = kube(args, "get", "deployment", f"{args.release}-{workload}", "-n", args.namespace)
             if deployment.get("spec", {}).get("replicas", 1) == 0:
@@ -797,7 +1293,7 @@ def restore_workloads_after_failed_upgrade(args) -> dict:
         except (RuntimeError, subprocess.SubprocessError, KeyError, ValueError) as exc:
             issues.append(f"{workload} replica restore failed: {exc}")
 
-    for workload in ("core", "agent", "onto"):
+    for workload in getattr(args, "backup_workloads", WORKLOADS):
         try:
             run("kubectl", "--context", args.context, "-n", args.namespace,
                 "rollout", "status", f"deployment/{args.release}-{workload}",
@@ -809,7 +1305,7 @@ def restore_workloads_after_failed_upgrade(args) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("plan", "preflight", "install", "upgrade", "status", "verify"))
+    parser.add_argument("action", choices=("plan", "preflight", "diagnose", "install", "upgrade", "uninstall", "status", "verify"))
     for option in ("context", "namespace", "release", "operation-id", "state-dir", "values", "resolved-images", "resume", "backup-record", "lock-holder", "transition-record"):
         parser.add_argument(f"--{option}")
     parser.add_argument("--transition-id")
@@ -831,7 +1327,7 @@ def main():
     args.transition_record = Path(args.transition_record).resolve() if args.transition_record else None
     if args.resume and not args.operation_id:
         parser.error("resume requires operation-id")
-    if args.action != "status" and not args.operation_id:
+    if args.action not in ("status", "diagnose") and not args.operation_id:
         args.operation_id = str(uuid.uuid4())
     if args.action == "upgrade" and args.lock_holder and not args.transition_id:
         parser.error("delegated upgrade requires --transition-id")
@@ -849,6 +1345,8 @@ def main():
         parser.error("--defer-external-services is only supported for preflight")
     if args.defer_external_services and args.transition_id:
         parser.error("--defer-external-services cannot be used for upgrade preflight")
+    if args.resume and args.action not in ("install", "upgrade", "uninstall"):
+        parser.error("--resume applies only to install, upgrade or uninstall")
     root = args.package_root or Path(__file__).resolve().parent.parent
     result = dict(schemaVersion="cce-operation/v1", operationId=args.operation_id, side="modeling",
                   action=args.action, status="failed", releaseName=args.release, namespace=args.namespace,
@@ -868,9 +1366,22 @@ def main():
             result["releaseVersion"] = installed_values(args).get("global", {}).get("releaseVersion")
             result["chartVersion"] = release_chart(args).removeprefix("modeling-")
             result["message"] = current.get("info", {}).get("status", "unknown")
+        elif args.action == "uninstall":
+            if not args.state_dir:
+                raise ConfigError("state-dir required")
+            result["phase"] = "uninstall"
+            if not args.lock_holder:
+                args.lock_holder = args.operation_id
+                operation_lease = OperationLease(args, args.operation_id)
+                operation_lease.acquire()
+            release = _uninstall(args, root)
+            result.update(releaseVersion=release["releaseVersion"], chartVersion=release["chartVersion"],
+                          phase="uninstalled", message="Modeling release removed; PVCs and Secrets retained")
         else:
             if not args.state_dir:
                 raise ConfigError("state-dir required")
+            if args.action == "diagnose" and not args.state_dir.is_dir():
+                raise ConfigError("diagnose requires an existing state-dir and does not create one")
             release, merged = load_inputs(args, root)
             result["releaseVersion"] = release["releaseVersion"]
             result["chartVersion"] = release["chartVersion"]
@@ -878,12 +1389,16 @@ def main():
             if args.action == "plan":
                 result["phase"] = "render"
                 result["artifacts"] = [str(render(args, root, release))]
+            elif args.action == "diagnose":
+                result["phase"] = "diagnose"
+                result["diagnosis"] = _diagnose(args, release, merged)
+                result["message"] = "completed"
             else:
                 result["phase"] = "preflight"
                 # A standalone Modeling upgrade owns the same Lease used by
                 # joint-cce.py.  The joint entry passes --lock-holder and
                 # therefore keeps ownership outside this process.
-                if args.action == "upgrade" and not args.lock_holder:
+                if args.action in ("install", "upgrade") and not args.lock_holder:
                     args.lock_holder = args.operation_id
                     args.standalone_upgrade = True
                     operation_lease = OperationLease(args, args.operation_id)
@@ -894,16 +1409,21 @@ def main():
                 current = release_status(args)
                 if args.action == "upgrade" and current is not None:
                     args.previous_helm_revision = current.get("version")
+                if args.action == "upgrade":
+                    _require_upgrade_state_ready(args)
                 if args.action == "preflight" and args.transition_id:
                     upgrade_precheck(args, root, release, merged)
                 if args.action == "install":
                     if current and not args.resume:
                         raise ConfigError("release already exists; use explicit resume or upgrade")
+                    if current and "hub" in merged and "evaluation" in merged:
+                        _assert_unchanged_internal_secrets(args, merged)
                     if current and args.resume != args.operation_id:
                         raise ConfigError("resume operation ID mismatch")
                     if current and installed_values(args).get("global", {}).get("operationId") != args.operation_id:
                         raise ConfigError("existing release belongs to another operation")
                     result["phase"] = "install"
+                    ensure_application_secrets(args, merged)
                     command = "upgrade" if current else "install"
                     run(*helm_base(args), command, args.release, str(root / "deploy/chart"),
                         "-f", str(args.values), "-f", str(args.resolved_images),
@@ -912,6 +1432,9 @@ def main():
                         "--wait", f"--timeout={args.timeout_seconds}s")
                     verify(args, root)
                 elif args.action == "upgrade":
+                    if "hub" in merged and "evaluation" in merged:
+                        _assert_unchanged_internal_secrets(args, merged)
+                    ensure_application_secrets(args, merged)
                     if args.auto_backup or (operation_lease and not args.backup_record):
                         result["phase"] = "automatic-backup"
                         backup_path = prepare_auto_backup(args, root, release, merged)
@@ -934,6 +1457,8 @@ def main():
                     if getattr(args, "snapshot_group", None):
                         _label_snapshot_group(args, "successful")
                         result["warnings"] = _cleanup_old_successful_snapshots(args)
+                    if getattr(args, "upgrade_stage", None):
+                        _record_upgrade_stage(args, "complete", backupRecord=str(args.backup_record))
                 elif args.action == "verify":
                     if not current:
                         raise ConfigError("release absent")
@@ -958,8 +1483,15 @@ def main():
                 result["recovery"] = restore_workloads_after_failed_upgrade(args)
             except Exception as exc:  # preserve the original upgrade error
                 result["recovery"] = {"status": "failed", "issues": [str(exc)]}
+            try:
+                _record_upgrade_stage(args, "old-service-restored" if result["recovery"]["status"] == "ready"
+                                      else "recovery-degraded")
+            except Exception as exc:  # preserve the original upgrade error
+                result.setdefault("warnings", []).append(f"operation state could not be recorded: {exc}")
         if operation_lease:
             operation_lease.release()
+        if getattr(args, "stage_warnings", None):
+            result.setdefault("warnings", []).extend(args.stage_warnings)
     emit_stdout(json.dumps(result, ensure_ascii=False))
     return 0 if result["status"] == "succeeded" else 1
 
