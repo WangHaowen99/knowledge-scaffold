@@ -1,0 +1,20 @@
+name: sample-system
+version: 0.1.0
+kind: knowledge
+category: system
+label: 示例订单系统
+description: 示例订单系统的表字段字典、表到对象映射、状态码和典型规则（合成内容）。概念 3 · 知识 2 · 检查规则 4。
+publisher: {kind: tenant, label: ""}
+default_on: false
+kernel_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+depends: {core: ">=0.2"}
+changelog: 首个版本：覆盖销售订单、订单明细、客户档案三张表。
+contributes:
+  knowledge_dir: knowledge
+  concepts: concepts.yaml
+  checks: rules.yaml
+  standards: standards.yaml
+  reference_dir: reference
+  library_dir: library
+checksums: checksums.sha256

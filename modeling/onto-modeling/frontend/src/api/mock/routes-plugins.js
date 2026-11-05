@@ -17,6 +17,7 @@ import { scripts } from './scripts-data.js';
 
 const CATEGORIES = ['capability', 'industry', 'system', 'provider', 'node', 'exporter'];
 const DATA_CATEGORIES = ['industry', 'system'];
+const DEV_SKILL_CATEGORIES = ['capability', 'industry', 'system', 'provider'];
 const KIND_LABEL = { object: '对象', operation: '操作', rule: '规则', metric: '指标', script: '脚本' };
 
 // 生效中（不算待生效的停用）
@@ -121,6 +122,15 @@ export function register(ctx) {
   }
 
   const knownVersion = (card, d, version) => version === card.latest || d.changelog.some((c) => c.version === version);
+
+  // ---------- PL-27 开发 skill ----------
+  on('GET', '/packs/dev-skills/([^/]+)', ({ m }) => {
+    const category = decodeURIComponent(m[1]);
+    if (!DEV_SKILL_CATEGORIES.includes(category)) return err(404, 'not_found', '这个分类没有开发 skill');
+    return new Response(new Blob(['PK'.padEnd(22, ' ')]), {
+      status: 200, headers: { 'Content-Type': 'application/zip', 'Content-Disposition': `attachment; filename="onto-plugin-dev-${category}.zip"` },
+    });
+  });
 
   // ---------- PL-01 插件目录 ----------
   on('GET', '/packs', async ({ query, init }) => {

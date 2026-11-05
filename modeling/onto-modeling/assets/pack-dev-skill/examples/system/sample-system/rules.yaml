@@ -1,0 +1,29 @@
+rules_api: 1
+rules:
+  - id: order-keeps-key-fields
+    title: 销售订单要保留单号和状态字段
+    applies_to: object
+    match: {concept: 销售订单}
+    require_fields: [order_no, order_status]
+    level: warning
+    message: 这两个字段是示例订单系统的主键和状态字段，缺失时无法对接系统数据。
+  - id: line-needs-order
+    title: 订单明细要关联销售订单
+    applies_to: object
+    match: {concept: 订单明细}
+    require_relations_to: [销售订单]
+    level: warning
+    message: demo_order_line 通过 order_no 关联 demo_order_head，建模时要保留这条关系。
+  - id: order-op-sections
+    title: 订单操作要写清输入和输出
+    applies_to: operation
+    match: {concept: 销售订单}
+    require_sections: [输入, 输出]
+    level: warning
+    message: 写清输入和输出，才能对应到系统的状态变更。
+  - id: term-sales-order
+    title: 统一销售订单的称谓
+    applies_to: any
+    prefer_terms: {销货单: 销售订单}
+    level: suggestion
+    message: 示例订单系统界面上叫销货单，建模产物统一叫销售订单，销货单放在别名小节里。

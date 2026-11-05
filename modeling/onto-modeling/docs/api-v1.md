@@ -60,7 +60,7 @@
 - 携带方式：`Authorization: Bearer <access_token>`。
 - 只有下面这些接口允许用查询参数 `?token=` 携带（浏览器的 EventSource 和下载链接带不了头）：
   - 全部 SSE 接口（第 4 章列出的 4 条流）；
-  - 文件下载：`F-04`、`P-09`、`PB-07`、`V-03` 的 `download=1`、`PL-16`、`O-47`、`O-49`。
+  - 文件下载：`F-04`、`P-09`、`PB-07`、`V-03` 的 `download=1`、`PL-16`、`PL-27`、`O-47`、`O-49`。
 - 其余接口带 `?token=` 一律忽略。
 - 令牌过期返回 `401 token_expired`，无效返回 `401 unauthenticated`。前端用 `A-04` 无感刷新后重试一次。
 
@@ -2553,6 +2553,15 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 包入库，占下包名，之后在插件中心启用到自己的项目（PL-06）。重复调用幂等。
 - 响应 `200`：`PackUpload`（`state="installed"`）。
 - 错误：`static_check_failed`、`pack_upload_state`、`pack_name_taken`、`pack_quota_exceeded`（每人最多 50 个版本）。
+
+#### PL-27 下载开发 Skill
+
+`GET /api/v1/packs/dev-skills/{category}` · 登录即可（可用 `?token=`） · 旧：— · 审计：否 · 依据：ADR-0081 · 页面：plugins
+
+- `category`：`capability`、`industry`、`system`、`provider`。
+- 响应 `200`：`application/zip`，`Content-Disposition` 带文件名 `onto-plugin-dev-<category>.zip`。下载时现打包，顶层目录同名，含 `SKILL.md`、`references/`、`platform.json`、`scripts/pack_tool.py`、`scripts/checker/`。`platform.json` 只有公开包。
+- 大小：现在约 70 KiB，最坏约 6 MiB（最多记 500 个公开包，每个包 50 个版本、每类 100 个名字，名字按 80 字符算）。
+- 错误：`404 not_found`（`exporter` 和不认识的分类）。
 
 ### 3.17 插件产物与通用视图
 

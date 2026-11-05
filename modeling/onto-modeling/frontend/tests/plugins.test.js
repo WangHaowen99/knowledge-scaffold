@@ -7,7 +7,7 @@ import { compareVersions, satisfies } from '../src/api/mock/plugins-data.js';
 import { compatibilityOf, register as registerPlugins } from '../src/api/mock/routes-plugins.js';
 import { register as registerSettings } from '../src/api/mock/routes-settings.js';
 import {
-  blockedView, bringsView, cardFoot, cardTags, catOf, categoryOf, compatRows, compatView, effectiveNote, enableToast, impactText, matchCard, recView,
+  blockedView, bringsView, cardFoot, cardTags, catOf, categoryOf, compatRows, compatView, devSkillOf, effectiveNote, enableToast, impactText, matchCard, recView,
   PACK_CATEGORIES, sectionsOf, uiChip, uiEffectText, updateRoute, updateToast, versionOf, visibleCatalog,
 } from '../src/pages/plugins/catalogModel.js';
 import {
@@ -485,4 +485,25 @@ test('publisherChip：上传时没填租户名的包只标「租户」（V 阶�
   assert.equal(publisherChip({ publisher: { kind: 'tenant', label: '' } }).text, '租户');
   assert.equal(publisherChip({ publisher: { kind: 'tenant', label: '示例租户' } }).text, '租户 · 示例租户');
   assert.equal(publisherChip({ publisher: { kind: 'tenant', label: '租户 A' } }).text, '租户 A');
+});
+
+// ---------- 开发 skill（PL-27）----------
+test('开发 skill：四个分类有下载，全部、已启用、可更新、导出器没有', () => {
+  for (const cat of ['capability', 'industry', 'system', 'provider']) {
+    assert.deepEqual(devSkillOf(cat), { path: `/packs/dev-skills/${cat}`, filename: `onto-plugin-dev-${cat}.zip` });
+  }
+  for (const cat of ['all', 'inst', 'upd', 'exporter', undefined]) assert.equal(devSkillOf(cat), null);
+  assert.equal(devSkillOf(catOf({ cat: 'system' })).path, '/packs/dev-skills/system');
+  assert.equal(devSkillOf(catOf({})), null);
+});
+
+test('mock PL-27：四个分类给 zip 和文件名，导出器和不认识的分类 404', async () => {
+  const { ctx } = harness();
+  const res = await ctx.self('/api/v1/packs/dev-skills/provider');
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('Content-Type'), 'application/zip');
+  assert.match(res.headers.get('Content-Disposition'), /filename="onto-plugin-dev-provider\.zip"/);
+  assert.ok((await res.arrayBuffer()).byteLength > 0);
+  assert.equal((await ctx.self('/api/v1/packs/dev-skills/exporter')).status, 404);
+  assert.equal((await ctx.self('/api/v1/packs/dev-skills/nope')).status, 404);
 });

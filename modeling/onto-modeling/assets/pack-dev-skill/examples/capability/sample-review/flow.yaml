@@ -1,0 +1,35 @@
+requires_flow: core>=0.3
+probes:
+  sample_review_check: {files: [reports], glob: sample-review-check.md}
+  sample_review_stats: {files: [reports], glob: sample-review-stats.md}
+commands:
+  sample-review-run: {node: sample-review.check, requires: []}
+nodes:
+  - id: sample-review.check
+    title: 复核对象命名
+    kind: agent
+    placement: step
+    section: required
+    after: core.validate
+    done: [sample_review_check]
+    stale_on: [object]
+    produces:
+      - {path: reports/sample-review-check.md, kind: report}
+    entry: {command: /sample-review-run}
+    actions:
+      - {label: 运行命名复核, command: /sample-review-run}
+  - id: sample-review.stats
+    title: 统计对象文件
+    kind: script
+    placement: branch
+    section: optional
+    optional: true
+    after: sample-review.check
+    done: [sample_review_stats]
+    stale_on: [object]
+    produces:
+      - {path: reports/sample-review-stats.md, kind: report}
+    script:
+      name: sample_review_stats.py
+      inputs: ["ontology/object/**/*.md"]
+      output: reports/sample-review-stats.md

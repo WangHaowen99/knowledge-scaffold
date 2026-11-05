@@ -1,0 +1,16 @@
+# 节点包样例：校验之后复核对象命名，再用脚本统计对象文件。
+name: sample-review
+version: 0.1.0
+kind: node
+category: capability
+label: 命名复核
+description: 校验之后复核对象命名，并统计对象文件数量。
+publisher: {kind: tenant, label: ""}
+kernel_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+changelog: 首个版本。
+contributes:
+  commands: [sample-review-run]
+  scripts: [sample_review_stats.py]
+  flow: flow.yaml
+  nodes: [sample-review.check, sample-review.stats]

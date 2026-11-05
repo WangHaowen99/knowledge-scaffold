@@ -1280,3 +1280,13 @@ Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`
 1. **PL-22**：去掉 `private_scope` 检查项，能带的内容和管理员上传一样（脚本、节点、hooks、界面，各种 `kind`），静态检查按租户包的严格程度查，
    多一项 `private_name`。PL-23～PL-26 不变。
 2. 可见范围、包名规则、资源上限不变；发布到全平台（PL-17）还是只有管理员。
+
+## 2026-11-05 · F11（插件中心下载开发 Skill）
+
+决策见 ADR-0081。
+
+1. **PL-27（新增）**：`GET /api/v1/packs/dev-skills/{category}`，登录即可，可用 `?token=`。`capability`、`industry`、`system`、`provider` 给 zip，
+   `exporter` 和不认识的分类回 `404 not_found`。其他接口不变。
+2. **插件中心**：分类视图的页头多一个「下载开发 Skill」按钮，在「安装插件」左边；全部、已启用、可更新视图没有这个按钮。
+3. **检查器进 zip**：`services/packs/` 的 `manifest.py`、`repository.py`、`checks.py`、`extensions.py` 和 `kernel/artifacts/registry.py` 原样打进去。
+   改这几个文件时注意它们也在离线跑：不能新增对后端其他模块的依赖，要依赖就同步 `dev_skill.py`，`test_dev_skill.py` 会查。

@@ -1,0 +1,29 @@
+rules_api: 1
+rules:
+  - id: inspection-needs-device
+    title: 巡检记录要关联设备
+    applies_to: object
+    match: {concept: 巡检记录}
+    require_relations_to: [设备]
+    level: warning
+    message: 巡检记录必须能追溯到被巡检的设备，否则逾期和缺陷都统计不到设备上。
+  - id: defect-needs-level
+    title: 缺陷要有等级和发现时间
+    applies_to: object
+    match: {concept: 缺陷}
+    require_fields: [等级, 发现时间]
+    level: warning
+    message: 处理时限按等级和发现时间计算，缺任一字段都算不出时限。
+  - id: inspection-op-sections
+    title: 巡检操作要写清输入和输出
+    applies_to: operation
+    match: {concept: 巡检记录}
+    require_sections: [输入, 输出]
+    level: warning
+    message: 写清输入和输出，测试用例才有依据。
+  - id: term-inspection-record
+    title: 统一巡检记录的称谓
+    applies_to: any
+    prefer_terms: {点检单: 巡检记录}
+    level: suggestion
+    message: 建模产物统一叫巡检记录，点检单只放在别名小节里。

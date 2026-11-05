@@ -1,0 +1,22 @@
+# 能力包样例：把会议纪要里的术语整理成术语表。
+name: sample-notes
+version: 0.1.0
+kind: capability
+category: capability
+label: 纪要术语整理
+description: 从会议纪要提取术语，按模板写成术语表。
+publisher: {kind: tenant, label: ""}
+kernel_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+changelog: 首个版本。
+contributes:
+  commands: [sample-notes-run]
+  agents: [sample-notes-agent]
+  skills: [sample-notes-terms]
+  scripts: [sample_notes_terms.py]
+  templates: [sample-notes-glossary.md]
+  prompts:
+    - id: sample-notes-hint
+      match: ["会议纪要"]
+      text: >-
+        用户提到了会议纪要。需要整理术语时，用 /sample-notes-run 加纪要路径。

@@ -34,6 +34,7 @@ QUERY_TOKEN_PATHS = tuple(
         rf"^{_P}/events$",
         r"^/api/v1/me/events$",
         r"^/api/v1/me/pack-uploads/[^/]+/report$",
+        r"^/api/v1/packs/dev-skills/[^/]+$",
         r"^/api/v1/ops/logs/stream$",
         rf"^{_P}/files/raw$",
         rf"^{_P}/transfer-package$",

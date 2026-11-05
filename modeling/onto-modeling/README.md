@@ -17,6 +17,8 @@ onto-modeling/
 
 插件化改造的现状、分支与接手方式见 [docs/plugin-architecture/handoff.md](docs/plugin-architecture/handoff.md)。
 
+开发插件不用读这个仓库：插件中心的分类视图有「下载开发 Skill」，把 zip 放进编码助手，一句需求就能做出能上传的插件包（ADR-0081），静态部分在 `assets/pack-dev-skill/`。
+
 ## 启动（开发）
 
 后端（默认 127.0.0.1:8100）：

@@ -69,6 +69,12 @@ export function catOf(query) {
   return c && (PACK_CATEGORIES[c] || c === 'inst' || c === 'upd') ? c : 'all';
 }
 
+// 开发 skill（PL-27）按分类下载；全部、已启用、可更新不是分类，导出器没有 skill
+const DEV_SKILL_CATEGORIES = ['capability', 'industry', 'system', 'provider'];
+export const devSkillOf = (cat) => (DEV_SKILL_CATEGORIES.includes(cat)
+  ? { path: `/packs/dev-skills/${cat}`, filename: `onto-plugin-dev-${cat}.zip` }
+  : null);
+
 // ---------- 卡片 ----------
 // 只给租户包、私有包打标；官方包不标（几乎所有包都是官方）
 export function publisherChip(p) {

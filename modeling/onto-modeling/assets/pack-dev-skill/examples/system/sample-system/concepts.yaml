@@ -1,0 +1,11 @@
+concepts_api: 1
+concepts:
+  - name: 销售订单
+    aliases: [销货单, demo_order_head]
+    description: 客户下达的订单抬头，存放在 demo_order_head 表。
+  - name: 订单明细
+    aliases: [订单行, demo_order_line]
+    description: 订单里的每一行商品，存放在 demo_order_line 表。
+  - name: 客户档案
+    aliases: [客商档案, demo_customer]
+    description: 下单客户的主数据，存放在 demo_customer 表。

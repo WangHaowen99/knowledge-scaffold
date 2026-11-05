@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from ..api import deps
 from ..api.errors import ApiError
 from ..services import audit
-from ..services.packs import catalog, registry, service
+from ..services.packs import catalog, dev_skill, registry, service
 from ..services.packs import ui as pack_ui
 from ..services.packs.assembler import AssemblyError
 from ..services.packs.repository import RepositoryError
@@ -60,6 +60,15 @@ def _audit(request: Request, action: str, detail: dict) -> None:
 
 
 # ---- 目录（登录即可） ----
+
+
+@router.get("/api/v1/packs/dev-skills/{category}")
+async def download_dev_skill(category: str):
+    """PL-27：按分类下载插件开发 skill（ADR-0081）。现打包，zip 最坏约 6 MiB；exporter 和不认识的分类回 404。"""
+    with _errors():
+        filename, data = await asyncio.to_thread(dev_skill.build, deps.workspaces, category)
+    return Response(content=data, media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @router.get("/api/v1/packs")

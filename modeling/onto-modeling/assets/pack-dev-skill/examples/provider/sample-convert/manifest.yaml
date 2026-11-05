@@ -1,0 +1,16 @@
+# 数据接入：文件转换器。上传导入后只在插件目录里显示，不会运行；转换器要打进连接器网关镜像才运行（见 references/provider.md）。
+name: sample-convert
+version: 0.1.0
+kind: provider
+category: provider
+label: 键值文本转换
+description: 把每行「键=值」的 .kvtxt 文件转成一张两列表格。
+publisher: {kind: tenant, label: ""}
+kernel_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+depends: {}
+converter:
+  entry: converter.py
+  types: [".kvtxt"]
+  license: 只用 Python 标准库
+changelog: 首版。

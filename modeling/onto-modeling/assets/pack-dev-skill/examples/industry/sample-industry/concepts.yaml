@@ -1,0 +1,11 @@
+concepts_api: 1
+concepts:
+  - name: 设备
+    aliases: [生产设备, 机台]
+    description: 被定期巡检的生产设备，以设备编号唯一识别。
+  - name: 巡检记录
+    aliases: [巡检单, 点检单]
+    description: 一次巡检的结果，记录被巡检设备、巡检时间和判定结论。
+  - name: 缺陷
+    aliases: [隐患]
+    description: 巡检发现的异常，按等级决定处理时限。

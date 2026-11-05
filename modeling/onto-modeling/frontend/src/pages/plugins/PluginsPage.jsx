@@ -2,6 +2,7 @@
 // 启用（PL-03 → PL-06）、更新（PL-03 → 更新弹窗或直接 PL-07）、提供方安装（管理员 PL-19，其他人 PL-04）。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from '../../app/context.js';
+import { toast } from '../../app/toast.jsx';
 import { navigate, pagePath } from '../../app/router.js';
 import { errorText } from '../../api/errors.js';
 import { PageHead, ShellG } from '../../shell/Shell.jsx';
@@ -10,13 +11,14 @@ import {
 } from '../../ui/index.jsx';
 import { PackCard, RecBar } from './catalogCards.jsx';
 import { usePackActions } from './catalogDialogs.jsx';
-import { catOf, sectionsOf, visibleCatalog } from './catalogModel.js';
+import { catOf, devSkillOf, sectionsOf, visibleCatalog } from './catalogModel.js';
 import { PluginsNav, useEvidenceOn, usePluginProject } from './parts.jsx';
 
 export default function PluginsPage({ route }) {
-  const { api } = useApp();
+  const { api, services } = useApp();
   const { projectId, setProjectId, projects, ready } = usePluginProject(route);
   const cat = catOf(route.query);
+  const devSkill = devSkillOf(cat);
   // ?pack= 来自助手推荐卡：搜索框先填上这个包
   const [q, setQ] = useState(route.query?.pack || '');
   const [raw, setData] = useState(null);
@@ -63,7 +65,16 @@ export default function PluginsPage({ route }) {
       {/* 管理员装进平台给所有人用，普通用户装给自己用（ADR-0079）；都从这里进 */}
       <PageHead
         title="插件中心"
-        actions={<Button kind="primary" icon="upload" onClick={() => navigate(pagePath('plugin-upload'))}>安装插件</Button>}
+        actions={(
+          <>
+            {devSkill ? (
+              <Button icon="download" onClick={() => services.download(devSkill.path, devSkill.filename).catch((e) => toast(errorText(e), 'alert'))}>
+                下载开发 Skill
+              </Button>
+            ) : null}
+            <Button kind="primary" icon="upload" onClick={() => navigate(pagePath('plugin-upload'))}>安装插件</Button>
+          </>
+        )}
       />
       <div className="pl-bar">
         <Inp w={300} icon="search" placeholder="搜索插件名称、ID 或用途…" value={q} onChange={(e) => setQ(e.target.value)} />

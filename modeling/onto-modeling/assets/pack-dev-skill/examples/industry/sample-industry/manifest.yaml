@@ -1,0 +1,21 @@
+name: sample-industry
+version: 0.1.0
+kind: knowledge
+category: industry
+label: 设备巡检
+description: 设备巡检领域的术语、业务规则、缺口清单和候选建模片段（合成内容）。概念 3 · 知识 2 · 检查规则 4。
+publisher: {kind: tenant, label: ""}
+default_on: false
+kernel_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+depends: {core: ">=0.2"}
+changelog: 首个版本：覆盖设备、巡检记录、缺陷三个概念。
+contributes:
+  knowledge_dir: knowledge
+  concepts: concepts.yaml
+  checks: rules.yaml
+  standards: standards.yaml
+  reference_dir: reference
+  library_dir: library
+  examples: [inspection-mini]
+checksums: checksums.sha256
