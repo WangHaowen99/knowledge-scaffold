@@ -69,7 +69,9 @@ function fallbackPositions(diagram) {
 }
 
 function displayEdgeLabel(edge) {
-  if (edge.label && edge.conditionText) return `${edge.label} · ${edge.conditionText}`;
+  if (edge.label && edge.conditionText && edge.label !== edge.conditionText) {
+    return `${edge.label} · ${edge.conditionText}`;
+  }
   return edge.label || edge.conditionText || '';
 }
 
