@@ -91,10 +91,10 @@ function SourcesBody() {
   useEffect(() => { load(); }, [load]);
   useEffect(() => { api.evidenceProviders().then(setProviders).catch(() => {}); }, [api]);
 
-  const artifactOf = (s) => isArtifactSource(s, providers?.items);
+  const isArtifact = (s) => isArtifactSource(s, providers?.items);
   const authorizedList = (all?.items || []).filter((s) => s.authorized_for_project);
   // 上传程序的数据源没有连接可测
-  const testable = authorizedList.filter((s) => !artifactOf(s));
+  const testable = authorizedList.filter((s) => !isArtifact(s));
   const selfServiceOn = (providers?.items || []).some((p) => p.self_service && p.installed);
 
   const grant = async (s, on) => {
@@ -133,7 +133,7 @@ function SourcesBody() {
   const menu = (s) => {
     const on = !!s.authorized_for_project;
     const ownerOnly = !admin && !on;
-    const artifact = artifactOf(s);
+    const artifact = isArtifact(s);
     const items = [
       on ? { label: '取消授权', icon: 'ban', onClick: () => grant(s, false) } : { label: '授权本项目使用', icon: 'check', onClick: () => grant(s, true) },
       artifact ? null : { label: '测试连接', icon: 'activity', disabled: ownerOnly, title: ownerOnly ? '只能测试已授权给本项目的数据源' : undefined, onClick: () => testOne(s) },
