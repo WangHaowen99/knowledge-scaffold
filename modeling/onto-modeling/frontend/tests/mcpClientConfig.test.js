@@ -42,7 +42,7 @@ test('SSE read-only token never exposes change config', () => {
 
 test('change scopes expose only change config for either protocol', () => {
   for (const transport of ['streamable-http', 'sse']) {
-    for (const scope of ['ontology.change.validate', 'ontology.change.apply']) {
+    for (const scope of ['ontology.change.validate', 'ontology.change.apply', 'package.publish']) {
       const configs = buildClientConfigs(runtime([transport]), '<MCP_TOKEN>', [scope]);
       assert.equal(configs.read, '');
       assert.deepEqual(Object.keys(JSON.parse(configs.combined).mcpServers), ['modeling-change']);

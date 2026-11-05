@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import fcntl
 import hashlib
+import hmac
 import http.client
 import json
 import logging
@@ -115,7 +116,11 @@ def call(method, path, token='', body=None, upload=None, headers=None, download=
             messages = {'version_conflict': '包版本冲突：相同版本对应不同内容',
                         'package_deleted': 'Hub 知识包已删除',
                         'not_found': 'Hub 包不存在或当前用户无权访问',
-                        'last_authorized_user': '不能撤销最后一名授权用户'}
+                        'last_authorized_user': '不能撤销最后一名授权用户',
+                        'delegation_revoked': '知识包发布授权已失效',
+                        'delegation_target_mismatch': '知识包发布授权与目标不匹配',
+                        'invalid_delegation': '知识包发布授权签名无效或已过期',
+                        'delegation_replayed': '知识包发布授权请求已被使用'}
             raise WorkspaceError(messages.get(code, f'知识包 Hub 请求失败（{response.status}）'),
                                  response.status, code if code in messages else 'hub_error')
         if download is not None:
@@ -145,6 +150,24 @@ def call(method, path, token='', body=None, upload=None, headers=None, download=
         raise WorkspaceError('知识包 Hub 不可用，请稍后重试', 503, 'hub_unavailable') from exc
     finally:
         conn.close()
+
+
+def delegation_header(method, path, delegation_id, ontology_id, issuer, sub):
+    """Five-minute, request-bound user delegation; generated anew for every Hub request."""
+    import base64
+    import secrets
+    import time
+    secret = os.environ.get('ONTO_HUB_SERVICE_TOKEN', '')
+    if not secret:
+        raise WorkspaceError('知识包 Hub 服务身份未配置', 503, 'hub_unavailable')
+    issued = time.time()
+    base_path = urllib.parse.urlsplit(os.environ.get('ONTO_HUB_URL', '')).path.rstrip('/')
+    payload = dict(v=1, method=method, path=base_path + path, delegation_id=identifier(delegation_id),
+                   ontology_id=identifier(ontology_id), issuer=issuer, sub=sub,
+                   nonce=secrets.token_urlsafe(24), iat=issued, exp=issued + 300)
+    encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(',', ':'), ensure_ascii=False).encode()).decode().rstrip('=')
+    signature = hmac.new(secret.encode(), b'hub-delegation-v1.' + encoded.encode(), hashlib.sha256).hexdigest()
+    return encoded + '.' + signature
 
 
 def package_inputs(root):
@@ -235,7 +258,9 @@ def resource_status(pid, manager=None):
 
 def retry_tasks(manager):
     from . import hub_packages
+    from .onto_mcp import package_publish
     hub_packages.maintain(manager)
+    package_publish.maintain(manager)
 
 
 async def scheduler_loop(manager):

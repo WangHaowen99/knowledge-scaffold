@@ -57,13 +57,21 @@ def test_publish_list_download_and_revocation_over_http(tmp_path, monkeypatch):
                 break
             time.sleep(.02)
         assert server.started
-        first = hub_packages.publish(manager, pid, 'request-a', 'synthetic', 'operator_a')
-        second = hub_packages.publish(manager, pid, 'request-a', 'synthetic', 'operator_a')
+        issuer = f'http://127.0.0.1:{authority.server_port}'
+        subject = json.dumps([issuer, 'operator_a'])
+        first = hub_packages.publish(manager, pid, 'request-a', 'synthetic', subject)
+        second = hub_packages.publish(manager, pid, 'request-a', 'synthetic', subject)
         assert first == second
+        token_id = '1' * 32
+        hub_packages.register_delegation(pid, token_id, 'synthetic', issuer, 'operator_a')
+        delegated = hub_packages.publish(
+            manager, pid, 'request-mcp', '', subject,
+            delegated={'token_id': token_id, 'issuer': issuer, 'sub': 'operator_a'})
+        assert delegated['version'] == '0.1.2' and delegated['status'] == 'committed'
         resources = knowledge_hub.sync_resources(manager, pid, 'synthetic', [])
         assert resources['ontology_id'] == first['ontology_id']
         listing = hub_packages.call('GET', f"/api/packages/{first['ontology_id']}/releases", 'synthetic')
-        assert listing['total'] == 1
+        assert listing['total'] == 2
         destination = tmp_path / 'download.zip'
         hub_packages.download(first['ontology_id'], first['release_id'], 'synthetic', destination)
         assert knowledge_hub.file_digest(destination) == first['package_digest']

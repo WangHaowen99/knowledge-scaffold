@@ -60,3 +60,17 @@ class AuthorizedUser(BaseModel):
 class GrantBody(BaseModel):
     model_config = ConfigDict(extra='forbid')
     users: Annotated[list[AuthorizedUser], Field(min_length=1, max_length=100)]
+
+
+class DelegationBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    delegation_id: Identifier
+    ontology_id: Identifier
+    expires_at: float | None = None
+
+    @model_validator(mode='after')
+    def check_expiry(self):
+        import math
+        if self.expires_at is not None and not math.isfinite(self.expires_at):
+            raise ValueError('Delegation expiry must be finite')
+        return self

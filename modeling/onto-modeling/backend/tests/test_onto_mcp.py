@@ -1,15 +1,18 @@
 """Synthetic project-local MCP contract, permission and persistence regressions."""
 import json
+from concurrent.futures import ThreadPoolExecutor
+import time
 from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from app.services.workspace import WorkspaceManager, _git
+from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 from app.services.onto_mcp import tokens
 from app.services.onto_mcp import workspace as mcp
 from app.services.onto_mcp import documents as doc
 from app.services.onto_mcp.errors import McpError
+from app.services.onto_mcp import package_publish
 from app.routers import onto_mcp as routes
 
 
@@ -172,6 +175,124 @@ def test_token_expiry_boundaries(env, ttl):
                           {"sub": "operator_a"})
     assert (result["token_summary"]["expiresAt"] is None) == (ttl is None)
     assert tokens.verify(manager, meta["id"], result["token"], "read")["username"] == "operator_a"
+
+
+def test_publish_scope_requires_login_and_registers_revocable_delegation(env, monkeypatch):
+    manager, meta, _ = env
+    calls = []
+    from app.services import hub_packages
+    monkeypatch.setattr(hub_packages, "register_delegation", lambda *args: calls.append(("register", args)))
+    monkeypatch.setattr(hub_packages, "revoke_delegation", lambda *args: calls.append(("revoke", args)))
+    with pytest.raises(McpError) as exc:
+        tokens.issue(manager, meta, {"name": "synthetic", "scopes": ["package.publish"]},
+                     {"sub": "operator_a"})
+    assert exc.value.code == "MCP_HUB_IDENTITY_REQUIRED"
+    issued = tokens.issue(manager, meta, {"name": "synthetic", "scopes": ["package.publish"]},
+                          {"sub": "operator_a"}, "synthetic-access", "https://example.com", "operator_a")
+    principal = tokens.verify(manager, meta["id"], issued["token"], "change")
+    assert principal["hub_issuer"] == "https://example.com" and principal["hub_sub"] == "operator_a"
+    tokens.revoke(manager, meta["id"], issued["token_summary"]["id"], "synthetic-access")
+    assert [call[0] for call in calls] == ["register", "revoke"]
+
+
+def test_publish_token_is_not_exposed_when_hub_delegation_registration_fails(env, monkeypatch):
+    manager, meta, _ = env
+    from app.services import hub_packages
+    def unavailable(*args):
+        raise WorkspaceError("synthetic Hub outage", 503)
+    monkeypatch.setattr(hub_packages, "register_delegation", unavailable)
+    with pytest.raises(WorkspaceError):
+        tokens.issue(manager, meta, {"name": "synthetic", "scopes": ["package.publish"]},
+                     {"sub": "operator_a"}, "synthetic-access", "https://example.com", "operator_a")
+    assert tokens.listing(manager, meta["id"])["tokens"] == []
+
+
+def test_admin_cannot_issue_publish_token_without_project_write_membership(env, monkeypatch):
+    manager, meta, _ = env
+    from app.services import hub_packages
+    calls = []
+    monkeypatch.setattr(hub_packages, "register_delegation", lambda *args: calls.append(args))
+    with pytest.raises(McpError) as exc:
+        tokens.issue(manager, meta, {"name": "synthetic", "scopes": ["package.publish"]},
+                     {"sub": "platform_admin", "role": "admin"},
+                     "synthetic-access", "https://example.com", "platform_admin")
+    assert exc.value.code == "MCP_PROJECT_FORBIDDEN" and exc.value.status == 403
+    assert calls == [] and tokens.listing(manager, meta["id"])["tokens"] == []
+
+
+def test_package_publish_preview_confirm_status_and_stale_guard(env, monkeypatch):
+    manager, meta, _ = env
+    principal = {"project_id": meta["id"], "token_id": "1" * 32, "username": "operator_a",
+                 "scopes": ["package.publish"], "hub_issuer": "https://example.com", "hub_sub": "operator_a"}
+    monkeypatch.setattr(package_publish.knowledge_hub, "configured", lambda: True)
+    monkeypatch.setattr(manager, "_ensure_solver_publishable", lambda pid: None)
+    monkeypatch.setattr(package_publish.knowledge_hub, "source_state",
+                        lambda *args: ({}, "a" * 64))
+    monkeypatch.setattr(package_publish.hub_packages, "check_delegation", lambda *args: {"active": True})
+    monkeypatch.setattr(package_publish.hub_packages, "association", lambda *args: None)
+    receipt = {"status": "committed", "version": "0.1.1", "release_id": "release_demo"}
+    monkeypatch.setattr(package_publish.hub_packages, "publish", lambda *args, **kwargs: receipt)
+    monkeypatch.setattr(package_publish.tokens, "verify_id", lambda *args: principal)
+    preview = package_publish.preview(manager, principal, {"request_id": "request_demo"})
+    assert preview["ready"] and preview["first_publish"] and preview["expires_at"] > time.time()
+    started = package_publish.start(manager, principal, {
+        "request_id": "request_demo", "confirmation_token": preview["confirmation_token"]})
+    for _ in range(100):
+        result = package_publish.status(manager, principal, {"job_id": started["job_id"]})
+        if result["status"] != "queued":
+            break
+        time.sleep(.01)
+    assert result["status"] == "committed" and result["receipt"] == receipt
+    stale = package_publish._decode(manager, preview["confirmation_token"])
+    stale["input_digest"] = "b" * 64
+    with pytest.raises(McpError) as exc:
+        package_publish.start(manager, principal, {
+            "request_id": "request_demo", "confirmation_token": package_publish._encode(manager, stale)})
+    assert exc.value.code == "PUBLISH_REQUEST_CONFLICT"
+
+
+def test_package_publish_confirmation_is_bound_to_token_and_expiry(env):
+    manager, meta, _ = env
+    payload = {"project_id": meta["id"], "token_id": "1" * 32, "request_id": "request_demo",
+               "allow_unbound": False, "input_digest": "a" * 64,
+               "base_release_id": None, "base_digest": None, "exp": time.time() - 1}
+    expired = package_publish._encode(manager, payload)
+    with pytest.raises(McpError) as exc:
+        package_publish._decode(manager, expired)
+    assert exc.value.code == "PUBLISH_CONFIRMATION_EXPIRED"
+    payload["exp"] = time.time() + 300
+    token = package_publish._encode(manager, payload)
+    principal = {"project_id": meta["id"], "token_id": "2" * 32}
+    with pytest.raises(McpError) as exc:
+        package_publish.start(manager, principal, {"request_id": "request_demo", "confirmation_token": token})
+    assert exc.value.code == "PUBLISH_CONFIRMATION_MISMATCH"
+
+
+def test_package_publish_confirmation_secret_is_stable_during_first_use_concurrency(env):
+    manager, _, _ = env
+    path = manager.workspaces_dir.parent / "onto-mcp-confirmation.key"
+    path.unlink(missing_ok=True)
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        values = list(pool.map(lambda _: package_publish._secret(manager), range(64)))
+    assert len(set(values)) == 1 and len(values[0]) == 32
+    token = package_publish._encode(manager, {"exp": time.time() + 300, "marker": "synthetic"})
+    assert package_publish._decode(manager, token)["marker"] == "synthetic"
+
+
+def test_package_publish_queue_limits_are_checked_atomically(env, monkeypatch):
+    manager, meta, _ = env
+    principal = {"project_id": meta["id"], "token_id": "3" * 32}
+    monkeypatch.setattr(package_publish._executor, "submit", lambda *args: None)
+    monkeypatch.setattr(package_publish, "MAX_ACTIVE_JOBS_PER_TOKEN", 1)
+    def token(request_id):
+        return package_publish._encode(manager, {
+            "project_id": meta["id"], "token_id": principal["token_id"], "request_id": request_id,
+            "allow_unbound": False, "input_digest": "a" * 64, "base_release_id": None,
+            "base_digest": None, "exp": time.time() + 300})
+    package_publish.start(manager, principal, {"request_id": "request_one", "confirmation_token": token("request_one")})
+    with pytest.raises(McpError) as exc:
+        package_publish.start(manager, principal, {"request_id": "request_two", "confirmation_token": token("request_two")})
+    assert exc.value.code == "PUBLISH_QUEUE_LIMIT" and exc.value.status == 429
 
 
 @pytest.mark.parametrize("value,schema,valid", [

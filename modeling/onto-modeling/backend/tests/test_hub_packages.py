@@ -15,9 +15,8 @@ from app import config
 from app.routers import projects, hub_packages as routes
 from app.services import auth, hub_packages, knowledge_hub
 from app.services.workspace import WorkspaceError, WorkspaceManager
-
-pytest.importorskip('hub')
-from hub.package_store import PackageStore
+from hub.package_contract import PackageError
+from hub.package_store import PackageStore, public
 from hub.storage import Store
 from hub.user_auth import Identity
 
@@ -38,6 +37,11 @@ def setup(tmp_path, monkeypatch):
         with store.io.lock():
             if path == '/api/package-publish-requests':
                 return store.reserve(body, actor)[0]
+            if method == 'GET' and path.startswith('/api/package-publish-requests/'):
+                try:
+                    return public(store.get_request(path.rsplit('/', 1)[-1], actor))
+                except PackageError as exc:
+                    raise WorkspaceError(str(exc), exc.status, exc.code) from exc
             if path.endswith('/content'):
                 with Path(upload).open('rb') as handle:
                     return store.upload(path.split('/')[-2], actor, handle, headers['X-Package-Digest'])
@@ -115,8 +119,63 @@ def test_hub_committed_local_receipt_failure_is_recoverable(setup, monkeypatch):
     assert result['local_record_pending']
     restored = hub_packages.publish(manager, pid, 'request_demo', 'actor_a', 'scope_a')
     assert restored['release_id'] == result['release_id']
+
+
+def test_delegated_retry_returns_saved_receipt_after_local_association_advanced(setup, monkeypatch):
+    manager, pid, store, _, _ = setup
+    result = hub_packages.publish(manager, pid, 'request_demo', 'actor_a', 'scope_a')
+    restored = hub_packages.publish(
+        manager, pid, 'request_demo', '', 'scope_a', delegated={
+            'token_id': '1' * 32, 'issuer': 'https://example.com', 'sub': 'operator_a'},
+        expected_input_digest=hub_packages.transport.load(
+            hub_packages.directory(pid, 'scope_a') / 'requests/request_demo/task.json')['payload']['input_digest'],
+        expected_base=(None, None))
+    assert restored == result
     assert store.packages('actor_a')['total'] == 1
     assert hub_packages.association(pid, 'scope_a')['release_id'] == result['release_id']
+
+
+def test_saved_receipt_rejects_reused_request_id_for_changed_publish_intent(setup):
+    manager, pid, store, _, _ = setup
+    result = hub_packages.publish(manager, pid, 'request_demo', 'actor_a', 'scope_a')
+    (manager.project_root(pid) / 'ontology/object/object_demo.md').write_text('# Changed synthetic object\n')
+    _, changed_digest = hub_packages.transport.source_state(manager, pid, False)
+    with pytest.raises(WorkspaceError) as exc:
+        hub_packages.publish(
+            manager, pid, 'request_demo', '', 'scope_a', delegated={
+                'token_id': '2' * 32, 'issuer': 'https://example.com', 'sub': 'operator_a'},
+            expected_input_digest=changed_digest,
+            expected_base=(result['release_id'], result['package_digest']))
+    assert exc.value.status == 409 and exc.value.code == 'publish_preview_stale'
+    assert store.packages('actor_a')['total'] == 1
+
+
+def test_lost_commit_response_recovers_after_a_newer_version_was_published(setup, monkeypatch):
+    manager, pid, store, _, actual = setup
+    committed = []
+    def lose_first_commit(method, path, token, **kwargs):
+        result = actual(method, path, token, **kwargs)
+        if path.endswith('/commit') and not committed:
+            committed.append(result)
+            raise WorkspaceError('Synthetic lost commit response', 503)
+        return result
+    monkeypatch.setattr(hub_packages, 'call', lose_first_commit)
+    with pytest.raises(WorkspaceError):
+        hub_packages.publish(manager, pid, 'request_a', 'actor_a', 'scope_a')
+    task = hub_packages.transport.load(
+        hub_packages.directory(pid, 'scope_a') / 'requests/request_a/task.json')
+    hub_packages.record(manager, pid, 'scope_a', committed[0])
+    (manager.project_root(pid) / 'ontology/object/object_demo.md').write_text('# Newer synthetic object\n')
+    newer = hub_packages.publish(manager, pid, 'request_b', 'actor_a', 'scope_a')
+    assert newer['version'] == '0.1.2'
+
+    recovered = hub_packages.publish(
+        manager, pid, 'request_a', 'actor_a', 'scope_a',
+        expected_input_digest=task['payload']['input_digest'], expected_base=(None, None))
+    assert recovered['release_id'] == committed[0]['release_id']
+    assert store.packages('actor_a')['total'] == 1
+    assert store.listing(recovered['ontology_id'], 'actor_a')['total'] == 2
+    assert hub_packages.association(pid, 'scope_a')['release_id'] == newer['release_id']
 
 
 def test_import_external_then_publish_preserves_manifest_and_package_identity(setup, tmp_path):
