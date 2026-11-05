@@ -5,10 +5,10 @@ from pathlib import Path
 from fastapi import APIRouter, File, Header, Query, Request, UploadFile
 from fastapi.responses import JSONResponse
 
-from .package_contract import Kind, PackageError, PublishBody, GrantBody
+from .package_contract import DelegationBody, Kind, PackageError, PublishBody, GrantBody
 from .package_store import PackageStore, public
 from .storage import HubError, read_json, digest
-from .user_auth import authenticate, validate_targets
+from .user_auth import authenticate, require_direct, validate_targets
 
 
 def create_router(get_store, stream_file):
@@ -16,10 +16,13 @@ def create_router(get_store, stream_file):
 
     @contextmanager
     def operation(request):
+        # Online user validation may involve the account service; keep that network wait
+        # outside the Hub's storage lock. Delegation nonce consumption remains serialized.
         identity = authenticate(request)
         store = get_store()
         try:
             with store.lock():
+                PackageStore(store).authorize_delegation(identity)
                 store.recover_all()
                 yield PackageStore(store), identity
         except PackageError:
@@ -34,6 +37,21 @@ def create_router(get_store, stream_file):
         with operation(request) as (store, actor):
             result, created = store.reserve(body.model_dump(), actor)
             return JSONResponse(result, status_code=201 if created else 200)
+
+    @router.post('/api/package-delegations')
+    def create_delegation(body: DelegationBody, request: Request):
+        with operation(request) as (store, actor):
+            return store.register_delegation(body.model_dump(), actor)
+
+    @router.get('/api/package-delegations/{delegation_id}')
+    def get_delegation(delegation_id: str, request: Request):
+        with operation(request) as (store, actor):
+            return store.delegation(delegation_id, actor)
+
+    @router.delete('/api/package-delegations/{delegation_id}')
+    def delete_delegation(delegation_id: str, request: Request):
+        with operation(request) as (store, actor):
+            return store.revoke_delegation(delegation_id, actor)
 
     @router.put('/api/package-publish-requests/{request_id}/content')
     def upload(request_id: str, request: Request, file: UploadFile = File(...),
@@ -54,22 +72,26 @@ def create_router(get_store, stream_file):
     @router.get('/api/packages')
     def packages(request: Request, offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=100)):
         with operation(request) as (store, actor):
+            require_direct(actor)
             return store.packages(actor.subject, offset, limit)
 
     @router.get('/api/packages/{ontology_id}/releases')
     def releases(ontology_id: str, request: Request, kind: Kind = 'release',
                  offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=100)):
         with operation(request) as (store, actor):
+            require_direct(actor)
             return store.listing(ontology_id, actor.subject, kind, offset, limit)
 
     @router.get('/api/packages/{ontology_id}/releases/{release_id}')
     def release(ontology_id: str, release_id: str, request: Request):
         with operation(request) as (store, actor):
+            require_direct(actor)
             return store.release(ontology_id, release_id, actor.subject)[0]
 
     @router.get('/api/packages/{ontology_id}/releases/{release_id}/package')
     def download(ontology_id: str, release_id: str, request: Request):
         with operation(request) as (store, actor):
+            require_direct(actor)
             receipt, path = store.release(ontology_id, release_id, actor.subject)
             response = stream_file(path, receipt['filename'], receipt['package_digest'], 'application/zip')
             response.headers['Content-Length'] = str(receipt['size'])
@@ -78,22 +100,26 @@ def create_router(get_store, stream_file):
     @router.get('/api/packages/{ontology_id}')
     def summary(ontology_id: str, request: Request):
         with operation(request) as (store, actor):
+            require_direct(actor)
             return store.summary(ontology_id, actor.subject)
 
     @router.delete('/api/packages/{ontology_id}')
     def delete(ontology_id: str, request: Request):
         with operation(request) as (store, actor):
+            require_direct(actor)
             return store.delete(ontology_id, actor.subject)
 
     @router.get('/api/packages/{ontology_id}/authorized-users')
     def users(ontology_id: str, request: Request,
               offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=100)):
         with operation(request) as (store, actor):
+            require_direct(actor)
             return store.authorized_users(ontology_id, actor.subject, offset, limit)
 
     @router.put('/api/packages/{ontology_id}/authorized-users')
     def grant(ontology_id: str, body: GrantBody, request: Request):
         with operation(request) as (store, actor):
+            require_direct(actor)
             store.owned(ontology_id, actor.subject)
             targets = validate_targets([user.model_dump() for user in body.users])
             return store.grant(ontology_id, actor.subject, targets)

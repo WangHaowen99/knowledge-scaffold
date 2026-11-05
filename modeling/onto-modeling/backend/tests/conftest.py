@@ -45,6 +45,8 @@ def evaluation_hub_archive(request, tmp_path, monkeypatch):
                     body, status='pending', release_id=uuid.uuid4().hex,
                     version=f'0.1.0-eval.{len(requests) + 1}'))
                 return dict(row)
+            if method == 'GET' and len(parts) == 3 and parts[:2] == ['api', 'package-publish-requests']:
+                return dict(publish_request(parts[-1]))
             if parts[-1] == 'content':
                 row = publish_request(parts[-2])
                 shutil.copyfile(upload, archives / row['release_id'])

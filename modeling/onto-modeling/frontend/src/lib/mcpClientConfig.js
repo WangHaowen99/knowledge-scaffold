@@ -18,7 +18,7 @@ export function buildClientConfigs(runtime, token, scopes) {
   const read = selected.includes('ontology.read')
     ? serverConfig(runtime, 'read', auth)
     : null;
-  const change = selected.some((scope) => scope.startsWith('ontology.change.'))
+  const change = selected.some((scope) => scope.startsWith('ontology.change.') || scope === 'package.publish')
     ? serverConfig(runtime, 'change', auth)
     : null;
   const json = (servers) => Object.keys(servers).length

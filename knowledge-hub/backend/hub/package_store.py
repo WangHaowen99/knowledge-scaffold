@@ -10,7 +10,7 @@ import os
 import re
 import uuid
 
-from .package_contract import PackageError, PublishBody, check_capability
+from .package_contract import DelegationBody, PackageError, PublishBody, check_capability
 from .package_validation import inspect_package, validate_derivation
 from .storage import digest, identifier, read_json, sync_dir, write_json
 
@@ -84,6 +84,71 @@ class PackageStore:
     def save(self, row):
         write_json(self.journal(row), row)
 
+    def delegation_path(self, delegation_id):
+        return self.root / 'delegations' / (identifier(delegation_id) + '.json')
+
+    def register_delegation(self, body, identity):
+        from .user_auth import require_direct
+        require_direct(identity)
+        if identity.service != 'modeling':
+            raise PackageError('service_forbidden', 'Only modeling can register publication delegations', 403, 'authorization')
+        value = DelegationBody.model_validate(body).model_dump()
+        if value['expires_at'] is not None and value['expires_at'] <= now().timestamp():
+            raise PackageError('invalid_delegation', 'Delegation expiry must be in the future', 422, 'authorization')
+        path = self.delegation_path(value['delegation_id'])
+        existing = read_json(path)
+        record = {**value, 'subject': identity.subject, 'issuer': identity.issuer, 'sub': identity.sub,
+                  'service': identity.service,
+                  'created_at': (existing or {}).get('created_at', now().isoformat()),
+                  'used_nonces': (existing or {}).get('used_nonces', {})}
+        if (self.root_of(value['ontology_id']) / 'metadata.json').exists():
+            self.owned(value['ontology_id'], identity.subject)
+        if existing and any(existing.get(key) != record.get(key) for key in
+                            ('subject', 'issuer', 'sub', 'service', 'ontology_id')):
+            raise PackageError('delegation_conflict', 'Delegation identity or target changed', 409, 'authorization')
+        write_json(path, record)
+        return {'delegation_id': value['delegation_id'], 'ontology_id': value['ontology_id'],
+                'expires_at': value['expires_at'], 'active': True}
+
+    def revoke_delegation(self, delegation_id, identity):
+        from .user_auth import require_direct
+        require_direct(identity)
+        path = self.delegation_path(delegation_id)
+        record = read_json(path)
+        if record and (record['subject'] != identity.subject or record['service'] != identity.service):
+            raise PackageError('not_found', 'Delegation not found', 404, 'authorization')
+        path.unlink(missing_ok=True)
+        return {'delegation_id': delegation_id, 'revoked': True}
+
+    def delegation(self, delegation_id, identity):
+        if not identity.delegation_id or identity.delegation_id != delegation_id:
+            raise PackageError('not_found', 'Delegation not found', 404, 'authorization')
+        if (self.root_of(identity.delegation_ontology_id) / 'metadata.json').exists():
+            self.owned(identity.delegation_ontology_id, identity.subject)
+        return {'delegation_id': delegation_id, 'ontology_id': identity.delegation_ontology_id,
+                'active': True}
+
+    def authorize_delegation(self, identity):
+        if not identity.delegation_id:
+            return None
+        path = self.delegation_path(identity.delegation_id)
+        record = read_json(path)
+        timestamp = now().timestamp()
+        if (not record or record.get('subject') != identity.subject
+                or record.get('service') != identity.service
+                or record.get('ontology_id') != identity.delegation_ontology_id
+                or record.get('expires_at') is not None and record['expires_at'] <= timestamp):
+            raise PackageError('delegation_revoked', 'Publication delegation is unavailable', 401, 'authorization')
+        used = {nonce: expiry for nonce, expiry in record.get('used_nonces', {}).items() if expiry >= timestamp - 60}
+        if identity.delegation_nonce in used:
+            raise PackageError('delegation_replayed', 'Delegated authorization was already used', 409, 'authorization')
+        used[identity.delegation_nonce] = identity.delegation_expires_at
+        if len(used) > 1000:
+            raise PackageError('delegation_busy', 'Delegation replay cache is full', 429, 'authorization')
+        record['used_nonces'] = used
+        write_json(path, record)
+        return record
+
     def pending(self, row):
         return self.root_of(row['ontology_id']) / 'pending' / row['internal_request_id']
 
@@ -111,6 +176,8 @@ class PackageStore:
         return meta
 
     def authorize_request(self, row, identity):
+        if identity.delegation_id and row['ontology_id'] != identity.delegation_ontology_id:
+            raise PackageError('delegation_target_mismatch', 'Delegation does not allow this package', 403, 'authorization')
         if (self.root_of(row['ontology_id']) / 'metadata.json').exists():
             self.owned(row['ontology_id'], identity.subject)
 
@@ -156,6 +223,8 @@ class PackageStore:
     def reserve(self, body, identity):
         payload = PublishBody.model_validate(body).model_dump()
         check_capability(identity.service, payload)
+        if identity.delegation_id and payload['ontology_id'] != identity.delegation_ontology_id:
+            raise PackageError('delegation_target_mismatch', 'Delegation does not allow this package', 403, 'authorization')
         key = request_key(identity.subject, identity.service, payload['request_id'])
         existing = read_json(self.root / 'publish-requests' / (key + '.json'))
         if existing:
