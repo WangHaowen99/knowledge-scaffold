@@ -83,6 +83,7 @@ class Context:
         self._last_query = 0.0
         self.records = 0
         self.bytes = 0
+        self.last_progress = (0, 0)
         self._ids: set[str] = set()
 
     # ---- 发事件 ----
@@ -115,6 +116,7 @@ class Context:
         self._emit("record", record=record)
 
     def progress(self, phase: str, done: int = 0, total: int = 0, unit: str = "") -> None:
+        self.last_progress = (int(done), int(total))
         self._emit("progress", phase=phase, done=int(done), total=int(total), unit=unit)
 
     def inventory(self, items: list[dict], skipped: Iterable[dict] = ()) -> None:
@@ -130,15 +132,16 @@ class Context:
     def limitation(self, text: str) -> None:
         self._emit("limitation", text=str(text)[:500])
 
-    def artifact(self, info: dict) -> None:
-        """采集对象本身的标识（代码仓库：`repo_url`、`ref`、`commit`），网关写进快照清单的 `artifact`。"""
-        _reject_floats(info, "artifact")
-        self._emit("artifact", artifact=dict(info))
-
-    def result(self, *, complete: bool = True, coverage_pct: float = 100.0, checks: list[dict] | None = None) -> None:
+    def result(self, *, complete: bool = True, coverage_pct: float = 100.0, checks: list[dict] | None = None,
+               artifact: dict | None = None, tool: dict | None = None) -> None:
+        """`artifact` 进清单（code-repo 给 `{repo_url, ref, commit}`）；`tool` 覆盖运行器按驱动给的 `{name, version}`。"""
         fields: dict = {"complete": bool(complete), "coverage_pct": round(float(coverage_pct), 1)}
         if checks is not None:
             fields["checks"] = checks
+        if artifact is not None:
+            fields["artifact"] = artifact
+        if tool is not None:
+            fields["tool"] = tool
         self._emit("result", **fields)
 
     def error(self, code: str, message: str = "") -> None:

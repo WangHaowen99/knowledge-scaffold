@@ -263,7 +263,6 @@ frontmatter 声明了快照就用它，否则用这个源最新的完整快照�
 | `limitation` | `text` |
 | `result` | `complete`、`coverage_pct`、`checks`（只 `test` 有） |
 | `error` | `code`、`message`（不带连接串和密码） |
-| `artifact` | `artifact`：采集对象的标识，网关原样写进清单的 `artifact`（代码仓库是 `{repo_url, ref, commit}`，见 §10） |
 
 子进程启动时：设资源上限；装审计钩子，`socket.connect` 和 `socket.getaddrinfo` 只放行出口白名单里的主机和端口（`localhost` 以外的
 都要在白名单里）；凭据只在内存里。提供方模块 `app/connector_gateway/conn/<提供方 ID 的下划线写法>.py` 导出 `INFO`（`ProviderInfo` 的字段，
@@ -349,11 +348,17 @@ frontmatter 声明了快照就用它，否则用这个源最新的完整快照�
 关系名：`many_to_one`、`one_to_many`、`one_to_one`、`many_to_many`、`references`（外键列，`attrs.columns`）、`inherits`
 （只发解析得到的）、`calls`（`inferred`，只发目标是已记录方法的）。同一快照撞名的锚点第二个起加 `~2`。
 
+`{repo_url, ref, commit}` 经 `result` 的 `artifact` 交出；`tool` 在分析了 Java 时是 `javalang` 及版本，否则是 `git` 及版本。
+连接参数另可带 `username`（askpass 回给 git 的用户名，默认 `x-access-token`；GitLab 的 OAuth 令牌要 `oauth2`），`repo_url` 不带用户信息。
+
 **克隆与读取**：`git init` + `fetch --depth 1 --no-tags --no-recurse-submodules origin <ref>`，不 checkout；`ls-tree` 列文件，
 `cat-file --batch` 按 8 MiB 一批只读要分析的 blob，符号链接、子模块、超大文件都不落盘。取的时候量 `.git` 大小，超过 `max_bytes`
 杀掉、报 `repo_too_large`；源码按顺序累计，超过 `max_bytes` 的不分析（清单 `skipped` 记 `budget`，结果不完整）。`ref` 是分支、标签或
 完整提交号（短提交号取不到）。git 子进程自己发起的连接不经过 Python 审计钩子，所以先核对主机端口、禁止重定向和 https 以外的协议；
-网关的工作进程要保留 `GIT_SSL_CAINFO`、`SSL_CERT_FILE`、`SSL_CERT_DIR`（内网仓库的自签 CA），其余环境变量不传给 git。
+git 的环境变量只给 `PATH`、`HOME`（任务目录下的空目录）、`GIT_CONFIG_NOSYSTEM`、`GIT_CONFIG_GLOBAL=/dev/null`、`GIT_TERMINAL_PROMPT=0`、
+`GIT_ASKPASS`；内网仓库的自签 CA 用 `ONTO_CONNECTOR_CODE_CA_FILE`（网关容器里的证书文件路径）指定，转成 `GIT_SSL_CAINFO`。
+git 和提供方同受 `RLIMIT_AS`：单线程解包、mmap 窗口 32 MiB、`MALLOC_ARENA_MAX=2`，实测 213 MB 的仓库（200 MB 二进制 + 3000 个
+Java 文件）峰值 RSS 约 36 MB，192 MB 上限也能跑完；不加这些参数时峰值约 200 MB（git 把整个包 mmap 进来）。
 
 **清单**：`items` 是全部文件（`kind` 为 `java` / `python` / `typescript` / `file`），`skipped.reason` 取 `submodule`、`symlink`、
 `scope`（`scope` 按文件路径匹配）、`vendored`（`node_modules/`、`target/` 等）、`test`、`too_large`、`budget`。

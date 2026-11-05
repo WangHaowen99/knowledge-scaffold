@@ -378,11 +378,13 @@ def git_server(tmp_path_factory):
     server.shutdown()
 
 
-def _ctx(server, repo: str, *, token=None, ref="main", egress=None, budget=None, url=None):
+def _ctx(server, repo: str, *, token=None, ref="main", egress=None, budget=None, url=None, username=None):
     out = io.StringIO()
+    connection = {"repo_url": url or f"http://127.0.0.1:{server['port']}/{repo}.git", "ref": ref}
+    if username is not None:
+        connection["username"] = username
     head = {"provider": "code-repo", "operation": "snapshot",
-            "source": {"id": SOURCE, "provider": "code-repo",
-                       "connection": {"repo_url": url or f"http://127.0.0.1:{server['port']}/{repo}.git", "ref": ref}},
+            "source": {"id": SOURCE, "provider": "code-repo", "connection": connection},
             "egress": egress if egress is not None else [{"host": "127.0.0.1", "port": server["port"]}],
             "budget": budget or {"max_rows": 200000, "max_bytes": 64 * 1024 * 1024, "max_duration_s": 120},
             "scope": []}
@@ -412,11 +414,11 @@ def test_snapshot_end_to_end(git_server, private_tmp, project):
     _check_records(records)
     for record in records:
         assert record["hash"] == record_hash({key: value for key, value in record.items() if key != "hash"})
-    artifact = next(item["artifact"] for item in events if item["event"] == "artifact")
-    assert artifact == {"repo_url": f"http://127.0.0.1:{git_server['port']}/{project}.git", "ref": "main",
-                        "commit": git_server["commits"][project]}
     result = events[-1]
-    assert result == {"event": "result", "complete": True, "coverage_pct": 100.0}
+    assert result["event"] == "result" and result["complete"] is True and result["coverage_pct"] == 100.0
+    assert result["artifact"] == {"repo_url": f"http://127.0.0.1:{git_server['port']}/{project}.git", "ref": "main",
+                                  "commit": git_server["commits"][project]}
+    assert result["tool"]["name"] == ("javalang" if project == "orders-java" else "git") and result["tool"]["version"]
     inventory = next(item for item in events if item["event"] == "inventory")
     assert inventory["items"] and all(item["estimate_bytes"] >= 0 for item in inventory["items"])
     assert git_server["token"] not in out.getvalue()
@@ -424,13 +426,19 @@ def test_snapshot_end_to_end(git_server, private_tmp, project):
 
 
 @needs_git
-def test_oauth2_username_in_url(git_server, private_tmp):
-    url = f"http://oauth2@127.0.0.1:{git_server['port']}/orders-python.git"
-    ctx, out = _ctx(git_server, "orders-python", url=url)
+def test_oauth2_username(git_server, private_tmp):
+    ctx, out = _ctx(git_server, "orders-python", username="oauth2")
     code_repo.snapshot(ctx, allow_http=True)
-    events = _events(out)
-    artifact = next(item["artifact"] for item in events if item["event"] == "artifact")
-    assert "oauth2" not in artifact["repo_url"] and events[-1]["complete"] is True
+    result = _events(out)[-1]
+    assert "oauth2" not in result["artifact"]["repo_url"] and result["complete"] is True
+    # 测试服务只认 x-access-token 和 oauth2
+    ctx, _ = _ctx(git_server, "orders-python", username="someone")
+    with pytest.raises(ConnError) as caught:
+        code_repo.snapshot(ctx, allow_http=True)
+    assert caught.value.code == "auth_failed"
+    for bad in ("a b", "x;rm", "$(id)", "-c"):
+        with pytest.raises(ConnError):
+            code_git.check_username(bad)
 
 
 @needs_git
@@ -474,6 +482,8 @@ def test_host_and_scheme_checks(git_server, private_tmp):
     with pytest.raises(ConnError) as caught:
         code_git.parse_url(f"https://user:{secret}@git.example.invalid/a.git")
     assert secret not in caught.value.message
+    with pytest.raises(ConnError):
+        code_git.parse_url("https://oauth2@git.example.invalid/a.git")
     for ref in ("-c", "--upload-pack=x", "a..b", "main:refs/x", "a b", "/x"):
         with pytest.raises(ConnError):
             code_git.check_ref(ref)
@@ -528,7 +538,7 @@ def test_fetch_by_commit(git_server, private_tmp):
     ctx, out = _ctx(git_server, "history", ref=git_server["first"])
     code_repo.snapshot(ctx, allow_http=True)
     events = _events(out)
-    artifact = next(item["artifact"] for item in events if item["event"] == "artifact")
+    artifact = events[-1]["artifact"]
     assert artifact["commit"] == git_server["first"] and artifact["ref"] == git_server["first"]
     names = {item["record"]["name"] for item in events if item["event"] == "record"}
     assert "FirstService" in names and "SecondService" not in names
@@ -585,13 +595,16 @@ def test_connection_test(git_server, private_tmp):
 def test_git_environment_is_minimal(git_server, private_tmp, monkeypatch):
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.invalid:3128")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/nonexistent")
+    monkeypatch.setenv("GIT_SSL_NO_VERIFY", "1")
+    monkeypatch.setenv(code_git.CA_FILE_ENV, "/certs/git.crt")
     token = secrets.token_hex(16)
     target = code_git.parse_url("https://git.example.invalid/team/repo.git")
     with code_git.Workspace(target, token) as workspace:
         env = workspace.env()
         assert "HTTPS_PROXY" not in env and env["HOME"].startswith(str(private_tmp))
         assert env["GIT_CONFIG_NOSYSTEM"] == "1" and env["GIT_TERMINAL_PROMPT"] == "0"
-        assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+        assert env["GIT_CONFIG_GLOBAL"] == os.devnull and "GIT_SSL_NO_VERIFY" not in env
+        assert env["GIT_SSL_CAINFO"] == "/certs/git.crt"
         assert all(token not in value for value in env.values())
         command = workspace.command("fetch")
         for item in ("protocol.allow=never", "protocol.https.allow=always", "http.followRedirects=false",

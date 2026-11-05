@@ -4,7 +4,8 @@
 `ls-tree` 列文件，`cat-file --batch` 只读要分析的 blob，符号链接、子模块、超大文件都不落盘。
 git 子进程只拿到必要的环境变量（没有代理、没有用户和系统的 git 配置，`HOME` 指任务临时目录）；
 令牌经 askpass 读 0600 临时文件，取完就删。git 自己发起的连接不经过子进程里的 Python 审计钩子，
-所以这里先核对主机和端口、禁止重定向和 https 以外的协议。
+所以这里先核对主机和端口、禁止重定向和 https 以外的协议——这些参数是 git 这一侧唯一的防线。
+git 和 worker 同在一个进程组、同受 RLIMIT_AS 限制：单线程解包、限制 mmap 窗口和 malloc arena，省虚拟内存。
 """
 
 from __future__ import annotations
@@ -28,14 +29,19 @@ HARDEN = (
     "-c", "core.hooksPath=/dev/null", "-c", "core.symlinks=false", "-c", "submodule.recurse=false",
     "-c", "credential.helper=", "-c", "core.fsmonitor=false",
 )
+# 省内存：RLIMIT_AS 按虚拟地址算，git 默认 1 GiB 的 mmap 窗口、每个线程的 malloc arena 都会撞上限
+LEAN = (
+    "-c", "pack.threads=1", "-c", "core.packedGitWindowSize=32m", "-c", "core.packedGitLimit=128m",
+    "-c", "core.deltaBaseCacheLimit=32m", "-c", "core.bigFileThreshold=16m",
+)
 FILE_MAX_BYTES = 1024 * 1024
 DEFAULT_USERNAME = "x-access-token"
-# 证书相关的变量原样传给 git（内网仓库常用自签 CA），其余一概不给
-PASS_ENV = ("SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_SSL_CAINFO")
+# 内网仓库的自签 CA：网关只把 ONTO_CONNECTOR_CODE_* 传进子进程，这里转成 git 认的 GIT_SSL_CAINFO
+CA_FILE_ENV = "ONTO_CONNECTOR_CODE_CA_FILE"
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 _HOST = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$|^[0-9a-f:]+$")
 _PATH = re.compile(r"^/[A-Za-z0-9._~%+/-]*$")
-_USER = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_USER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _REF = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
 _SIZE_POLL_S = 0.2
 
@@ -46,18 +52,11 @@ class Target:
     host: str
     port: int
     path: str
-    username: str
     explicit_port: bool
 
     @property
     def url(self) -> str:
-        """交给 git 的地址：只有用户名，没有口令。"""
-        user = f"{self.username}@" if self.username else ""
-        return f"{self.scheme}://{user}{self._netloc()}{self.path}"
-
-    @property
-    def public_url(self) -> str:
-        """进清单的地址：去掉用户信息。"""
+        """交给 git、进清单的地址：不带用户信息（用户名经 askpass 给）。"""
         return f"{self.scheme}://{self._netloc()}{self.path}"
 
     def _netloc(self) -> str:
@@ -83,7 +82,7 @@ class Entry:
 
 
 def parse_url(raw: str, *, allow_http: bool = False) -> Target:
-    """仓库地址：`https://主机[:端口]/路径`，可带用户名（不能带口令）。`allow_http` 只给测试放开本机的 http。"""
+    """仓库地址：`https://主机[:端口]/路径`，不带用户信息（和网关建任务时的核对一致）。`allow_http` 只给测试放开本机的 http。"""
     raw = str(raw or "").strip()
     if not raw or any(ord(char) < 0x21 or char in "\\\"'`" for char in raw):
         raise ConnError("invalid_connection", "仓库地址不对")
@@ -96,16 +95,21 @@ def parse_url(raw: str, *, allow_http: bool = False) -> Target:
     host = (parts.hostname or "").lower()
     if scheme != "https" and not (allow_http and scheme == "http" and host in LOCAL_HOSTS):
         raise ConnError("invalid_connection", "仓库地址只支持 https")
-    if parts.password is not None:
-        raise ConnError("invalid_connection", "仓库地址里不能带口令，令牌填到访问令牌")
-    username = parts.username or ""
-    if username and not _USER.match(username):
-        raise ConnError("invalid_connection", "仓库地址里的用户名不对")
+    if parts.username is not None or parts.password is not None:
+        raise ConnError("invalid_connection", "仓库地址里不能带用户信息，令牌填到访问令牌")
     path = parts.path or "/"
     if parts.query or parts.fragment or not _HOST.match(host) or not _PATH.match(path) or "/../" in f"{path}/":
         raise ConnError("invalid_connection", "仓库地址不对")
     default = 443 if scheme == "https" else 80
-    return Target(scheme, host, port or default, path, username, port is not None)
+    return Target(scheme, host, port or default, path, port is not None)
+
+
+def check_username(value) -> str:
+    """askpass 回给 git 的用户名：默认 `x-access-token`；GitLab 的 OAuth 令牌要 `oauth2` 等，由连接参数 `username` 给。"""
+    username = str(value or "").strip() or DEFAULT_USERNAME
+    if not _USER.match(username):
+        raise ConnError("invalid_connection", "用户名的写法不对")
+    return username
 
 
 def check_ref(ref: str) -> str:
@@ -134,8 +138,9 @@ def check_egress(target: Target, egress: list[dict]) -> None:
 class Workspace:
     """一次克隆的临时目录：`home/`（空的 HOME）、`repo/`（裸取的仓库）、askpass 脚本和令牌文件。"""
 
-    def __init__(self, target: Target, token: str, *, allow_http: bool = False):
+    def __init__(self, target: Target, token: str, *, username: str = DEFAULT_USERNAME, allow_http: bool = False):
         self.target = target
+        self.username = username
         self.allow_http = allow_http
         self.git = shutil.which("git")
         if not self.git:
@@ -157,8 +162,7 @@ class Workspace:
             handle.write(token + "\n")
         # git 先问用户名（地址里没有时）再问口令；回答都从文件里来，令牌不进命令行和环境变量
         self._askpass = os.path.join(self.root, "askpass.sh")
-        username = self.target.username or DEFAULT_USERNAME
-        script = (f"#!/bin/sh\ncase \"$1\" in\n  Username*) echo {shlex.quote(username)} ;;\n"
+        script = (f"#!/bin/sh\ncase \"$1\" in\n  Username*) printf '%s\\n' {shlex.quote(self.username)} ;;\n"
                   f"  *) cat {shlex.quote(self._token_file)} ;;\nesac\n")
         fd = os.open(self._askpass, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o700)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -185,17 +189,16 @@ class Workspace:
     def env(self) -> dict:
         env = {"PATH": os.environ.get("PATH") or "/usr/bin:/bin", "HOME": self.home, "XDG_CONFIG_HOME": self.home,
                "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_ATTR_NOSYSTEM": "1",
-               "GIT_TERMINAL_PROMPT": "0", "LANG": "C", "LC_ALL": "C"}
+               "GIT_TERMINAL_PROMPT": "0", "LANG": "C", "LC_ALL": "C", "MALLOC_ARENA_MAX": "2"}
         if self._askpass:
             env["GIT_ASKPASS"] = self._askpass
-        for name in PASS_ENV:
-            if os.environ.get(name):
-                env[name] = os.environ[name]
+        if os.environ.get(CA_FILE_ENV):
+            env["GIT_SSL_CAINFO"] = os.environ[CA_FILE_ENV]
         return env
 
     def command(self, *args: str) -> list[str]:
         extra = ("-c", "protocol.http.allow=always") if self.allow_http else ()
-        return [self.git, *HARDEN, *extra, *args]
+        return [self.git, *HARDEN, *LEAN, *extra, *args]
 
     def clean(self, text: str) -> str:
         """git 的报错去掉令牌和地址里的用户信息，只留最后几行。"""
@@ -215,19 +218,18 @@ class Workspace:
         except subprocess.TimeoutExpired:
             raise ConnError("timeout", f"git {args[0]} 超过任务时限") from None
         if done.returncode != 0:
-            raise _classify(self.clean(done.stderr.decode("utf-8", "replace")), args[0])
+            raise _classify(self.clean(done.stderr.decode("utf-8", "replace")), args[0], done.returncode)
         return done.stdout
 
     def fetch(self, ref: str, *, timeout: float, max_bytes: int) -> None:
-        """浅取一个提交；边取边量 `.git` 的大小，超了预算杀掉整组进程。"""
+        """浅取一个提交；边取边量 `.git` 的大小，超了预算就杀掉。git 留在 worker 的进程组里，运行器杀组时一起杀掉。"""
         stderr_path = os.path.join(self.root, "fetch.err")
         deadline = time.monotonic() + timeout
         with open(stderr_path, "wb") as stderr:
             proc = subprocess.Popen(
                 self.command("-C", self.repo, "fetch", "-q", "--depth", "1", "--no-tags", "--no-recurse-submodules",
                              "origin", ref),
-                cwd=self.root, env=self.env(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr,
-                start_new_session=True)
+                cwd=self.root, env=self.env(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr)
             failure: ConnError | None = None
             while proc.poll() is None:
                 if time.monotonic() > deadline:
@@ -235,7 +237,8 @@ class Workspace:
                 elif dir_size(self.repo) > max_bytes:
                     failure = ConnError("repo_too_large", "仓库超过采集预算")
                 if failure:
-                    _kill_group(proc)
+                    proc.kill()
+                    proc.wait()
                     raise failure
                 try:
                     proc.wait(timeout=_SIZE_POLL_S)
@@ -244,21 +247,17 @@ class Workspace:
         with open(stderr_path, "rb") as handle:
             message = self.clean(handle.read().decode("utf-8", "replace"))
         if proc.returncode != 0:
-            raise _classify(message, "fetch")
+            raise _classify(message, "fetch", proc.returncode)
         if dir_size(self.repo) > max_bytes:
             raise ConnError("repo_too_large", "仓库超过采集预算")
 
 
-def _kill_group(proc: subprocess.Popen) -> None:
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except OSError:
-        proc.kill()
-    proc.wait()
-
-
-def _classify(message: str, step: str) -> ConnError:
+def _classify(message: str, step: str, returncode: int = 1) -> ConnError:
     lowered = message.lower()
+    if returncode == -signal.SIGXFSZ:
+        return ConnError("repo_too_large", "仓库的包文件超过网关的单文件上限")
+    if any(key in lowered for key in ("out of memory", "cannot allocate memory", "mmap failed")):
+        return ConnError("memory", f"git 超出内存上限：{message}")
     if any(key in lowered for key in ("authentication failed", "could not read username", "could not read password",
                                       "terminal prompts disabled", "returned error: 401", "returned error: 403")):
         return ConnError("auth_failed", f"仓库拒绝了访问令牌：{message}")
@@ -296,10 +295,11 @@ def dir_size(path: str) -> int:
 class Clone:
     """取下来的一个提交：`commit`、`entries`（全部文件）、`read`（按需读 blob 内容）。"""
 
-    def __init__(self, workspace: Workspace, commit: str, entries: list[Entry]):
+    def __init__(self, workspace: Workspace, commit: str, entries: list[Entry], git_version: str = ""):
         self.workspace = workspace
         self.commit = commit
         self.entries = entries
+        self.git_version = git_version
 
     def read(self, entries: list[Entry], *, timeout: float) -> dict[str, bytes]:
         """`cat-file --batch` 一次读完；调用方保证 `entries` 都是普通文件、不超单文件上限、总量在预算内。"""
@@ -344,8 +344,9 @@ def clone(connection: dict, token: str, egress: list[dict], *, remaining_s, max_
     """按 ref 浅取一个提交。`remaining_s` 是取剩余时限的函数（`ctx.remaining_s`）；出错时临时目录已经删掉。"""
     target = parse_url(connection.get("repo_url"), allow_http=allow_http)
     ref = check_ref(connection.get("ref"))
+    username = check_username(connection.get("username"))
     check_egress(target, egress)
-    workspace = Workspace(target, str(token or "").strip(), allow_http=allow_http)
+    workspace = Workspace(target, str(token or "").strip(), username=username, allow_http=allow_http)
     try:
         workspace.run("init", "-q", "--template=", workspace.repo, timeout=remaining_s())
         workspace.run("-C", workspace.repo, "remote", "add", "origin", target.url, timeout=remaining_s())
@@ -355,7 +356,8 @@ def clone(connection: dict, token: str, egress: list[dict], *, remaining_s, max_
                                timeout=remaining_s()).decode("ascii", "replace").strip()
         tree = workspace.run("-C", workspace.repo, "ls-tree", "-r", "-l", "-z", "--full-tree", commit,
                              timeout=remaining_s())
-        return Clone(workspace, commit, _parse_tree(tree))
+        version = workspace.run("--version", timeout=remaining_s()).decode("ascii", "replace").split()
+        return Clone(workspace, commit, _parse_tree(tree), version[-1] if version else "")
     except BaseException:
         workspace.close()
         raise
@@ -366,8 +368,9 @@ def ls_remote(connection: dict, token: str, egress: list[dict], *, timeout: floa
     """`git ls-remote`：验证能访问、令牌能读；回 [(提交号, 引用名)]。"""
     target = parse_url(connection.get("repo_url"), allow_http=allow_http)
     ref = check_ref(connection.get("ref"))
+    username = check_username(connection.get("username"))
     check_egress(target, egress)
-    with Workspace(target, str(token or "").strip(), allow_http=allow_http) as workspace:
+    with Workspace(target, str(token or "").strip(), username=username, allow_http=allow_http) as workspace:
         out = workspace.run("ls-remote", target.url, *(["HEAD"] if ref == "HEAD" else ["HEAD", ref]),
                             timeout=timeout)
     refs = []

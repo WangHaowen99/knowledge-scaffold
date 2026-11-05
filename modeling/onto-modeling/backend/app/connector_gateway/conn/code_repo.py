@@ -1,12 +1,13 @@
 """代码仓库提供方 `code-repo`（ADR-0084；证据采集接口 §8、§10）。
 
 `test`：`git ls-remote` 验证能访问、令牌能读。`snapshot`：加固浅取一个提交 → 文件清单 → 按语言分析 → 发记录。
-`artifact` 事件交出 `{repo_url（去掉用户信息）, ref, commit}`，网关写进快照清单的 `artifact`。
+`ctx.result(artifact=…)` 交出 `{repo_url（去掉用户信息）, ref, commit}`，网关写进快照清单的 `artifact`。
 只读源码，不执行、不装依赖；识别不了的写法和解析失败的文件汇总成局限。
 """
 
 from __future__ import annotations
 
+import importlib.metadata
 import re
 import time
 from dataclasses import dataclass, field
@@ -138,8 +139,8 @@ def snapshot(ctx: Context, *, allow_http: bool = False) -> None:
     ref = code_git.check_ref(ctx.connection.get("ref"))
     repo = code_git.clone(ctx.connection, ctx.secret.get("token", ""), ctx.egress, remaining_s=ctx.remaining_s,
                           max_bytes=max_bytes, allow_http=allow_http)
+    artifact = {"repo_url": target.url, "ref": ref, "commit": repo.commit}
     try:
-        ctx.artifact({"repo_url": target.public_url, "ref": ref, "commit": repo.commit})
         ctx.progress("clone", 1, 1, "repo")
         files = plan(ctx, repo.entries, max_bytes)
         ctx.inventory(files.items[:INVENTORY_MAX], files.skipped[:SKIPPED_MAX])
@@ -158,7 +159,18 @@ def snapshot(ctx: Context, *, allow_http: bool = False) -> None:
         ctx.limitation(f"{language} 文件 {count} 个，这一版不分析")
     total = sum(entry.size for entry, _ in files.to_read) + files.budget_bytes
     coverage = 100.0 if not total else min(100.0, done * 100.0 / total)
-    ctx.result(complete=complete and not files.budget_bytes, coverage_pct=coverage)
+    ctx.result(complete=complete and not files.budget_bytes, coverage_pct=coverage, artifact=artifact,
+               tool=_tool(files, repo))
+
+
+def _tool(files: Plan, repo: code_git.Clone) -> dict:
+    """分析了 Java 就报 javalang 的版本（记录内容随它变），否则报取代码用的 git。"""
+    if any(language == "java" for _, language in files.to_read):
+        try:
+            return {"name": "javalang", "version": importlib.metadata.version("javalang")}
+        except importlib.metadata.PackageNotFoundError:
+            pass
+    return {"name": "git", "version": repo.git_version}
 
 
 def _analyze(ctx: Context, repo: code_git.Clone, to_read: list[tuple[code_git.Entry, str]]) -> tuple[bool, int]:
