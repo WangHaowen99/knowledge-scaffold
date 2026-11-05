@@ -108,7 +108,8 @@ class RecordWriter:
         """关文件，回 `{"records/<type>.jsonl": sha256}`，按标准类型的顺序。"""
         for handle in self._files.values():
             handle.close()
-        return {f"records/{kind}.jsonl": self._hashes[kind].hexdigest() for kind in RECORD_TYPES if kind in self._hashes}
+        return {f"records/{kind}.jsonl": self._hashes[kind].hexdigest()
+                for kind in RECORD_TYPES if kind in self._hashes}
 
 
 # ---- 摘要 ----

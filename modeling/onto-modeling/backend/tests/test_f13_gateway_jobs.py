@@ -292,7 +292,8 @@ def test_job_end_to_end_bundle(env, tmp_path):
     assert manifest["budget_used"]["records"] == 7 and manifest["unknowns"] == 3
     assert re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$", manifest["started_at"])
     # files 是 manifest 以外每个文件的 sha256
-    assert set(manifest["files"]) == {name for name in files if name != "manifest.json" and not name.startswith("blobs/")}
+    assert set(manifest["files"]) == {name for name in files
+                                      if name != "manifest.json" and not name.startswith("blobs/")}
     for name, digest in manifest["files"].items():
         assert hashlib.sha256(files[name]).hexdigest() == digest
     assert hashlib.sha256(files[blob_name]).hexdigest() == sha256_hex(RAW)
@@ -578,7 +579,8 @@ def test_providers_list_installed_flag(env):
     (info,) = payload["providers"]
     assert info["id"] == "rea-static" and info["installed"] is True and info["kind"] == "rea"
     assert info["self_service"] is True and info["input"] == "artifact" and info["runtime"] == "sidecar"
-    assert info["evidence_types"] == ["entity", "field", "operation", "relation"] and info["capabilities"] == ["snapshot"]
+    assert info["evidence_types"] == ["entity", "field", "operation", "relation"]
+    assert info["capabilities"] == ["snapshot"]
     assert info["cred_fields"] == [] and info["readonly_method"] == "静态分析，不运行目标程序，旁路容器断网"
     assert info["license_note"] == "逆向分析前要确认软件授权范围" and info["max_artifact_bytes"] > 0
     env.sidecar.healthy = False
@@ -603,4 +605,5 @@ def test_rea_static_listed_only_when_configured(monkeypatch):
     assert server.Gateway({}).providers() == {"items": [], "providers": []}
     monkeypatch.setenv(REA_URL_ENV, "http://rea-sidecar:8130")
     loaded = providers.load()
-    assert list(loaded) == ["rea-static"] and (loaded["rea-static"].host, loaded["rea-static"].port) == ("rea-sidecar", 8130)
+    rea = loaded["rea-static"]
+    assert list(loaded) == ["rea-static"] and (rea.host, rea.port) == ("rea-sidecar", 8130)

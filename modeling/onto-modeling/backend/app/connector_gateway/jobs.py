@@ -102,13 +102,15 @@ class Jobs:
             if artifact and digest != artifact["sha256"]:
                 _quietly(provider.delete, job_id)
                 raise GatewayError(400, "artifact_mismatch", "收到的程序和说明里的 sha256 对不上")
-        except GatewayError:
+        except Exception:
+            # 任何原因没提交成功都要让出名额
             with self._lock:
                 self._jobs.pop(job_id, None)
             shutil.rmtree(directory, ignore_errors=True)
             raise
         job.phase = "排队"
-        _log.info("采集任务 %s 已提交 source=%s provider=%s bytes=%d", job_id, spec["source"]["id"], provider.id, length)
+        _log.info("采集任务 %s 已提交 source=%s provider=%s bytes=%d", job_id, spec["source"]["id"], provider.id,
+                  length)
         threading.Thread(target=self._run, args=(job,), name=f"job-{job_id}", daemon=True).start()
         return job.status()
 
@@ -281,7 +283,7 @@ class Jobs:
             writer.close()
             self._finish(job, "failed", "invalid_record", str(exc))
             return
-        except (GatewayError, OSError, http.client.HTTPException):
+        except (GatewayError, ConnectionError, TimeoutError, http.client.HTTPException):
             writer.close()
             self._finish(job, "failed", "provider_unavailable", "取记录时旁路容器断开")
             return
