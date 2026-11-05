@@ -1,7 +1,7 @@
 // 系统逆向建模的三个资料子页（sources、snapshots、schema）共用的纯逻辑：
 // 状态文字、时间与时长、登记表单的解析与校验、采集确认的展示、锚点拆解、ER 视图排版。
 
-export const PACK = 'reverse';
+export const PACK = 'rev';
 export const PACK_LABEL = '系统逆向建模';
 
 // ---------- 采集任务（设计稿 EVD_JOB） ----------

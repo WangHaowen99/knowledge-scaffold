@@ -43,12 +43,12 @@ test('证据源不可用时：提供方和系统逆向建模不出现，计数�
   const data = {
     items: [
       card({ name: 'trace', project_status: 'update' }),
-      card({ name: 'reverse', project_status: 'enabled' }),
+      card({ name: 'rev', project_status: 'enabled' }),
       card({ name: 'industry-retail', category: 'industry', project_status: 'enabled' }),
       card({ name: 'db-mysql', category: 'provider', project_status: 'platform_installed' }),
     ],
     counts: { all: 4, capability: 2, industry: 1, provider: 1, enabled: 3, updatable: 1 },
-    recommendations: [{ pack: { name: 'reverse' } }, { pack: { name: 'migrate' } }],
+    recommendations: [{ pack: { name: 'rev' } }, { pack: { name: 'migrate' } }],
   };
   const off = visibleCatalog(data, false);
   assert.deepEqual(off.items.map((p) => p.name), ['trace', 'industry-retail']);
@@ -446,7 +446,7 @@ test('mock PL-02：详情、在用 / 需要先升级的标记、统计只给主�
   const core = await api('GET', `/api/v1/packs/core?project_id=${P}`);
   assert.equal(core.body.ui.kind, 'kernel');
   assert.match(core.body.project_stats.produced.note, /^对象 15/);
-  for (const name of ['knowledge', 'codegen', 'diagram', 'reverse', 'evo', 'migrate', 'websearch', 'sys-wms-generic', 'code-repo']) {
+  for (const name of ['knowledge', 'codegen', 'diagram', 'rev', 'evo', 'migrate', 'websearch', 'sys-wms-generic', 'code-repo']) {
     assert.equal((await api('GET', `/api/v1/packs/${name}?project_id=${P}`)).status, 200, name);
   }
   assert.equal((await api('GET', '/api/v1/packs/nope')).body.code, 'pack_not_found');

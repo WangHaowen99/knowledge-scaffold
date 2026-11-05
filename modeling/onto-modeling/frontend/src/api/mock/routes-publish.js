@@ -93,7 +93,7 @@ export function register(ctx) {
         action: ran ? null : { type: 'start_node', node_id: 'retail.compliance' },
       });
       g({
-        id: 'reverse.anchor_coverage', title: '证据出处检查', source: { kind: 'pack', label: '系统逆向建模能力', pack: 'reverse' },
+        id: 'rev.anchor_coverage', title: '证据出处检查', source: { kind: 'pack', label: '系统逆向建模能力', pack: 'rev' },
         status: 'warn', summary: '出处都能找到 · 2 个提醒',
         findings: [
           { code: 'property_unevidenced', level: 'warning', message: '属性「生效日期」没有出处', target: entryRef('display_qty_std') },

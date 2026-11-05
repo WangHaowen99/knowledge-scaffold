@@ -2,13 +2,13 @@
 // PL-12 扩展项由 index.js 那条路由调这里登记的 db.extensionsOf（启用、停用后左栏跟着变）。
 // 自主构建策略（AB-01～AB-04、AB-18）在 routes-autobuild.js。
 // ?mock=assembly:failed：装配失败（PL-11 state=failed，带 last_error）
-// ?mock=off:reverse、off:trace+knowledge：一开始就停用这些能力（左栏、资料子页跟着消失，直接打开地址看到「本项目没有启用」）
+// ?mock=off:rev、off:trace+knowledge：一开始就停用这些能力（左栏、资料子页跟着消失，直接打开地址看到「本项目没有启用」）
 import {
   DATA_CATEGORIES, OFFLINE_PACKS, SCOPES, clientConfigs, mcpOverview, mcpServers, mcpTokens, projectPacks, remainingText,
 } from './settings-data.js';
 
 // 带左栏页面、资料子页或产物类型的包，决定扩展项
-const EXT_PACKS = ['trace', 'knowledge', 'codegen', 'reverse', 'diagram'];
+const EXT_PACKS = ['trace', 'knowledge', 'codegen', 'rev', 'diagram'];
 const PAGE_OF = { trace: ['scenarios', '场景模拟'], knowledge: ['knowledge', '知识沉淀'], solver: ['scripts', '代码生成'] };
 
 export function actionsOf(p) {
@@ -45,7 +45,7 @@ export function register(ctx) {
     if (!db.settings.has(pid)) {
       // ?mock=off:<包名>[+<包名>]：一开始就停用这些能力（插件页的「本项目没有启用」空状态用）
       const off = (sc.off || '').split(/[+\s]+/).filter(Boolean); // 地址里的 + 会解码成空格
-      if (sc.evidence === 'off') off.push('reverse'); // ?mock=evidence:off：系统逆向建模包不在（本期后端没有这个包）
+      if (sc.evidence === 'off') off.push('rev'); // ?mock=evidence:off：系统逆向建模包不在（本期后端没有这个包）
       const packs = projectPacks().map((p) => (off.includes(p.name) && p.status !== 'required' ? { ...p, status: 'disabled', locked_version: p.locked_version } : p));
       db.seedProjectPacks?.(pid, packs); // 插件中心的 mock 状态（routes-plugins.js 的 ?mock=plugins:…）在这里改初始能力表
       db.settings.set(pid, { packs, servers: mcpServers(), tokens: mcpTokens(), rev: 1 });

@@ -201,7 +201,7 @@ export function packs({ offline = true } = {}) {
     pack({ name: 'trace', label: '场景模拟', category: 'capability', latest: '0.9.1', description: '校验之后多出「场景模拟」一步：生成验收场景，逐条推演操作', ui: ui.page('scenarios', '场景模拟'), badges: ['recommended'], default_on: true }),
     pack({ name: 'knowledge', label: '知识沉淀', category: 'capability', latest: '0.6.0', description: '把对话里的纠错、惯例沉淀成条目，可提名进行业包；已有知识不装也会加载', ui: ui.page('knowledge', '知识沉淀'), default_on: true }),
     pack({ name: 'codegen', label: '代码生成与求解', category: 'capability', latest: '0.9.2', description: '脚本生成、沙箱验证、求解契约', ui: ui.page('scripts', '代码生成'), default_on: true }),
-    pack({ name: 'reverse', label: '系统逆向建模', category: 'capability', latest: '0.3.0', description: '连接数据源、采集快照、三方对账', ui: ui.subpages, default_on: true }),
+    pack({ name: 'rev', label: '系统逆向建模', category: 'capability', latest: '0.3.0', description: '连接数据源、采集快照、三方对账', ui: ui.subpages, default_on: true }),
     pack({ name: 'diagram', label: '图示', category: 'capability', latest: '0.5.0', description: '流程图生成与校验；不启用就没有流程图卡和流程图条目', ui: ui.none('无独立页面 · 对话里出现流程图卡，Studio 多出「流程图」类型'), default_on: true }),
     pack({ name: 'websearch', label: '联网调研', category: 'capability', latest: '0.2.0', description: '离线部署已禁用', ui: ui.none('无独立页面，在对话里生效'), batch: 'second', project_status: offline ? 'offline' : null }),
     pack({ name: 'migrate', label: '迁移复用', category: 'capability', latest: '0.2.0', description: '复用旧项目里的对象', ui: ui.none('无独立页面，在对话里生效'), batch: 'second' }),
@@ -215,7 +215,7 @@ export function projectMeta(cardItem) {
   return meta;
 }
 
-export function extensions(enabled = ['trace', 'knowledge', 'codegen', 'reverse', 'diagram']) {
+export function extensions(enabled = ['trace', 'knowledge', 'codegen', 'rev', 'diagram']) {
   const nav = [
     { id: 'wb-l2', title: '工作台', icon: 'layout', kind: 'kernel', badge: { source: 'inbox', count: 18 }, order: 0, overflow: false },
     { id: 'studio', title: 'Studio', icon: 'graph', kind: 'kernel', order: 1, overflow: false },
@@ -233,10 +233,10 @@ export function extensions(enabled = ['trace', 'knowledge', 'codegen', 'reverse'
     pending_hash: null,
     page_api: '1.0',
     nav,
-    subpages: enabled.includes('reverse') ? [
-      { parent: 'resources', id: 'sources', title: '业务系统数据源', pack: 'reverse' },
-      { parent: 'resources', id: 'snapshots', title: '采集与快照', pack: 'reverse' },
-      { parent: 'resources', id: 'schema', title: '证据浏览器', pack: 'reverse' },
+    subpages: enabled.includes('rev') ? [
+      { parent: 'resources', id: 'sources', title: '业务系统数据源', pack: 'rev' },
+      { parent: 'resources', id: 'snapshots', title: '采集与快照', pack: 'rev' },
+      { parent: 'resources', id: 'schema', title: '证据浏览器', pack: 'rev' },
     ] : [],
     pages: plug.map(([p, id]) => ({ id, pack: p, page_api: '>=1.0 <2.0', data: { artifacts: [], reports: [], nodes: [] }, actions: [], pending: false })),
     // 包声明的界面入口（B5c）：快捷项放输入框「全部命令」旁，附加操作放对应插件页的操作区（R22）
@@ -254,7 +254,7 @@ export function extensions(enabled = ['trace', 'knowledge', 'codegen', 'reverse'
   };
 }
 
-export const PACK_LABEL = { trace: '场景模拟', knowledge: '知识沉淀', solver: '代码生成与求解', reverse: '系统逆向建模', diagram: '图示' };
+export const PACK_LABEL = { trace: '场景模拟', knowledge: '知识沉淀', solver: '代码生成与求解', rev: '系统逆向建模', diagram: '图示' };
 
 export function inboxCounts() {
   return {
@@ -279,7 +279,7 @@ const node = (o) => ({
 export function flow({ trace = true } = {}) {
   const nodes = [
     node({ id: 'core.research', title: '资料分析', state: 'confirmed', display_state: 'confirmed' }),
-    node({ id: 'rev.evidence', title: '系统取证', placement: 'step', state: 'confirmed', display_state: 'confirmed', version: 'rev@0.3.0', note: '登记了业务系统数据源才有这一步', plugin: { name: 'reverse', label: '系统逆向建模' } }),
+    node({ id: 'rev.evidence', title: '系统取证', placement: 'step', state: 'confirmed', display_state: 'confirmed', version: 'rev@0.3.0', note: '登记了业务系统数据源才有这一步', plugin: { name: 'rev', label: '系统逆向建模' } }),
     node({ id: 'core.model', title: '建模', state: 'running', display_state: 'running', progress: null, per_slice: true }),
     node({ id: 'core.validate', title: '校验' }),
     // 场景模拟随 core 拆出、串在校验之后（spine，contract-changes B4d 合并第 4 条）

@@ -249,11 +249,11 @@ test('数据保留：快照按份数说，表单只送改过的可编辑项，�
 test('证据源不可用时运维管控不列证据相关的行：提供方与系统逆向建模包、证据采集任务；可用时原样', () => {
   const packs = D.opsPacks();
   const off = visiblePacks(packs);
-  assert.equal(off.some((p) => p.kind === 'provider' || p.name === 'reverse'), false);
-  assert.equal(off.length, packs.filter((p) => p.kind !== 'provider' && p.name !== 'reverse').length);
+  assert.equal(off.some((p) => p.kind === 'provider' || p.name === 'rev'), false);
+  assert.equal(off.length, packs.filter((p) => p.kind !== 'provider' && p.name !== 'rev').length);
   assert.deepEqual(visiblePacks(packs, { evidenceOn: true }), packs);
   const inv = D.versions();
-  assert.equal(visibleInventory(inv).some((r) => r.category === 'provider' || r.component === 'reverse' || r.component.startsWith('evidence')), false);
+  assert.equal(visibleInventory(inv).some((r) => r.category === 'provider' || r.component === 'rev' || r.component.startsWith('evidence')), false);
   assert.deepEqual(visibleInventory(inv, { evidenceOn: true }), inv);
   // 多源连接器里的转换器照常列（ADR-0073）
   const conv = { category: 'provider', component: 'convert-pdf', version: '1.0.0', note: 'PDF 转换', converter: true };
@@ -440,8 +440,8 @@ test('mock 插件运维：灰度、熔断 → 半开、重复熔断 409、禁用
   const synthetic = new Set([...F.packs().map((p) => p.name), 'db-mysql', 'exporter-otel']);
   assert.deepEqual(packs.filter((x) => !synthetic.has(x.name)).map((x) => x.name), []);
   assert.ok(packs.find((x) => x.name === 'industry-retail' && x.breaker === 'open'));
-  assert.equal((await call('PUT', `${O}/packs/reverse/0.3.0/rollout`, { percent: 101 })).status, 400);
-  assert.equal((await call('PUT', `${O}/packs/reverse/0.3.0/rollout`, { percent: 50, by: 'tenant' })).body.rollout_pct, 50);
+  assert.equal((await call('PUT', `${O}/packs/rev/0.3.0/rollout`, { percent: 101 })).status, 400);
+  assert.equal((await call('PUT', `${O}/packs/rev/0.3.0/rollout`, { percent: 50, by: 'tenant' })).body.rollout_pct, 50);
   assert.equal((await call('POST', `${O}/packs/industry-retail/1.0.3/breaker`, { action: 'open' })).body.code, 'breaker_state_invalid');
   assert.equal((await call('POST', `${O}/packs/industry-retail/1.0.3/breaker`, { action: 'close' })).body.breaker, 'half_open');
   assert.equal((await call('POST', `${O}/packs/trace/0.9.1/breaker`, { action: 'open', reason: '失败率高' })).body.breaker, 'open');

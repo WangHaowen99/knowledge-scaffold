@@ -20,8 +20,8 @@ test('门禁卡片：不通过 / 还没运行 / 通过（含有提醒）三种�
   assert.equal(c.icon, 'gate');
   assert.deepEqual(c.chip, { k: 'blocked', label: '未通过' });
   assert.equal(c.action.label, '去运行');
-  assert.equal(gateView({ id: 'reverse.anchor_coverage', status: 'warn', source: { kind: 'pack' } }).cls, 'ok');
-  assert.equal(gateView({ id: 'reverse.anchor_coverage', status: 'warn', source: { kind: 'pack' } }).icon, 'quote');
+  assert.equal(gateView({ id: 'rev.anchor_coverage', status: 'warn', source: { kind: 'pack' } }).cls, 'ok');
+  assert.equal(gateView({ id: 'rev.anchor_coverage', status: 'warn', source: { kind: 'pack' } }).icon, 'quote');
   assert.equal(gateView({ id: 'solver_receipt', status: 'pass' }).icon, 'badge');
   assert.equal(gateView({ id: 'retail.compliance', status: 'pass', source: { kind: 'flow' } }).icon, 'check');
   assert.deepEqual(blockingSummary({ blocking_count: 2 }), { text: '2 项挡住发布', tone: 'red' });
@@ -46,7 +46,7 @@ test('门禁链：证据源不可用时不出依赖证据源的包带来的门�
   const check = { gates: [
     { id: 'data_binding', source: { kind: 'platform' } },
     { id: 'retail.compliance', source: { kind: 'pack', pack: 'industry-retail' } },
-    { id: 'reverse.anchor_coverage', source: { kind: 'pack', pack: 'reverse' } },
+    { id: 'rev.anchor_coverage', source: { kind: 'pack', pack: 'rev' } },
   ] };
   assert.deepEqual(visibleGates(check, false).map((g) => g.id), ['data_binding', 'retail.compliance']);
   assert.equal(visibleGates(check, true).length, 3);
