@@ -970,7 +970,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
   | `warnings` | `{code, message}`[] | 不阻断导入的提醒 |
   | `suggested_name` | string | 默认取包里的名称 |
   | `name_check` | object | 同 `P-03` 的响应 |
-  | `after_import` | object | `{capabilities: {name, version}[]（按包里记录自动匹配）, start_node: "core.research", mark_needs_review: bool}` |
+  | `after_import` | object | `{capabilities: {name, version}[]（按包里记录自动匹配）, start_node: string \| null, start_title: string \| null, mark_needs_review: bool}`；起点按包里的交付物套主流程的完成判定推算，越过的上游节点不算（ADR-0084），迁移包为 `null` |
   | `evidence_sources` | `{id, display_name, needs_reauth: true}`[] | 包里登记的数据源 |
 
 - 错误：`upload_not_found`、`upload_expired`、`upload_purpose_mismatch`、`archive_invalid`。

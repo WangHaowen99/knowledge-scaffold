@@ -1322,3 +1322,12 @@ Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`
      `bundle_incomplete`、`snapshot_too_large`、`timeout`、`artifact_not_found`、`source_not_found`，其余透传网关的码。
    - EV-09 的 `statement_digest` 对上传类是 `artifact:<sha256 前 12 位>`，`rows`、`bytes` 取快照清单的 `budget_used`。
    - 新增 **EV-34** `DELETE /api/v1/evidence/uploads/{upload_id}`（上传人）：取消没完成的上传、释放每人 2 个的名额；已完成的回 `upload_not_found`。
+
+## 2026-11-05 · F14（导入后从实际进度开始）
+
+用户 11-05 定，决策见 ADR-0084。
+
+1. **FL-01 节点状态**：spine 节点的产出已经被后面完成的节点用上（对方 `stale_on` 里有它产出的类别）时标 `flags.backfill`，
+   `display_state` 为 `backfill`，不计入进度分母，下一步建议不推它。导入已发布知识包后的资料分析就是这样。插件串入节点的规则不变。
+2. **P-10**：`after_import.start_node` 按包里的交付物推算，不再固定为 `core.research`；迁移包为 `null`。新增 `start_title`。
+3. **导入页**：「导入后」一栏按 `start_title` 显示从哪一步开始。

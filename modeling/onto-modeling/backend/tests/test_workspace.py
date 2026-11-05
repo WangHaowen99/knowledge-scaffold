@@ -80,7 +80,8 @@ def test_project_progress_counts_stages_after_missing_required(manager: Workspac
 
     overview = next(p for p in manager.list_projects() if p["id"] == meta["id"])
     assert overview["stages_done"] == 3  # 建模、校验、场景模拟
-    assert overview["stages_total"] == 9
+    # 建模已经用上资料分析该给的东西，资料分析算越过、不计入分母（ADR-0084）
+    assert overview["stages_total"] == 8
 
 
 def test_project_progress_counts_solver_stage(manager: WorkspaceManager):

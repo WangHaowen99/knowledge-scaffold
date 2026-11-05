@@ -708,7 +708,7 @@ export function importInspection(kind = 'published', name = '门店补货单编�
     warnings: [],
     suggested_name: name,
     name_check: { available: true, normalized: name, package_name: 'retail-restock', conflict: null, reason: null },
-    after_import: { capabilities: [{ name: 'core', label: '基础建模', version: '1.4.2' }, { name: 'industry-retail', label: '零售连锁行业包', version: '1.0.3' }], start_node: 'core.research', mark_needs_review: true },
+    after_import: { capabilities: [{ name: 'core', label: '基础建模', version: '1.4.2' }, { name: 'industry-retail', label: '零售连锁行业包', version: '1.0.3' }], start_node: 'core.validate', start_title: '校验', mark_needs_review: true },
     evidence_sources: [{ id: 'erp-prod', display_name: 'ERP 生产库', needs_reauth: true }],
   };
   if (kind === 'conflict') {

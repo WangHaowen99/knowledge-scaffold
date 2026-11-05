@@ -323,6 +323,26 @@ def _inspection(archive: Path, filename: str) -> dict:
     }
 
 
+# 导入预览：包里的交付物落到哪些目录（P-10 counts 的键 → 工作区目录）
+_COUNT_DIRS = {"objects": "ontology/object", "operations": "ontology/operation", "rules": "ontology/rule",
+               "metrics": "ontology/metric", "scripts": "ontology/scripts", "solver_operations": "ontology/solver"}
+
+
+def _start_node(counts: dict) -> dict | None:
+    """导入后从哪个节点开始：把包里有交付物的目录当成主线上已有的文件，套一遍镜像主流程的完成判定与可补做
+    （ADR-0084）。只看目录有没有文件，资料、报告这些包里不带的都算没有。"""
+    from ..services.flow import model as flow_model
+    from ..services.flow import overlay
+    from ..services.packs import contracts
+
+    flow = flow_model.image_flow()
+    present = {directory for key, directory in _COUNT_DIRS.items() if counts.get(key)}
+    probes = {name: "files" in spec and any(str(item) in present for item in spec["files"])
+              for name, spec in (flow.get("probes") or {}).items()}
+    hits = contracts.default().load("flow_state").node_hits(flow, Path("."), probes)
+    return overlay.first_open(flow, hits)
+
+
 def _staged_archive(upload_id: str, owner: str) -> tuple[dict, Path]:
     meta = uploads.get(upload_id, owner, "project_import")
     return meta, uploads.path(upload_id)
@@ -335,9 +355,12 @@ def inspect_import(request: Request, body: dict = Body(...)):
     name = (body.get("name") or "").strip() or result["suggested_name"]
     result.pop("summary")
     result["name_check"] = name_check(name, request)
+    # 迁移包原样恢复进度，没有要推算的起点
+    start = None if result["kind"] == "transfer" else _start_node(result["counts"])
     result["after_import"] = {
         "capabilities": [],
-        "start_node": "core.research",
+        "start_node": start["id"] if start else None,
+        "start_title": start["title"] if start else None,
         "mark_needs_review": result["kind"] == "published_package",
     }
     result["evidence_sources"] = []
