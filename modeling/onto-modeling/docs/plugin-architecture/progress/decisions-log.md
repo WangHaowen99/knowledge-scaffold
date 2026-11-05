@@ -1391,3 +1391,13 @@ merge c8bc4631（`--no-ff`，交付分支 0dab01f0 之上）；衔接 0a501f45�
 | sample 任务的结束状态 | 网关成功就是 `succeeded` | 补充快照本来就标不完整；按完整与否判会一律成 `partial`，还出「续采」动作 |
 | 个人信息扫描命中后遮多少 | 整个值换成「«已遮蔽»」 | 只遮命中的一段，剩下的部分（姓名、前后缀）还可能拼出原值；ADR-0084 写明宁可多遮 |
 
+## 2026-11-05 · F14 代码仓库提供方 code-repo
+
+| 问题 | 选择 | 理由 |
+|---|---|---|
+| 浅取之后要不要 checkout | 不 checkout：`ls-tree` 列文件，`cat-file --batch` 只读要分析的 blob | 符号链接、子模块、超大文件、大小写冲突的路径都不落盘；单文件和总量上限在读之前就能卡住 |
+| git 用户名 | 连接参数 `username`（可选，默认 `x-access-token`），askpass 回给 git；`repo_url` 不收用户信息 | 网关建任务时只收不带用户信息的地址；GitLab 的 OAuth 令牌要 `oauth2`，各家要求不同 |
+| 测试连接的只读自检 | 只出 `connectivity`，`detail` 写「令牌是否只读验证不了」 | 不推送就验证不了令牌权限；出一个 `ok: true` 的 `readonly_account` 会误导 |
+| 同一对实体的多条关联撞锚点 | 关系锚点哈希里加 `via`（声明它的字段或方法） | 订单可以有收货地址、账单地址两条到地址的关联 |
+| 内网仓库的自签证书 | `ONTO_CONNECTOR_CODE_CA_FILE` 转成 git 的 `GIT_SSL_CAINFO` | 网关只把 `ONTO_CONNECTOR_CODE_*` 传进子进程；其余环境变量（代理、全局配置）一概不给 git |
+| git 撞 `RLIMIT_AS` | 单线程解包、限 mmap 窗口和 malloc arena | 默认参数下 git 把整个包 mmap 进来，几百 MB 的仓库就会撞 768 MB 上限 |

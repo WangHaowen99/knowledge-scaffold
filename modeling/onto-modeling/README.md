@@ -629,6 +629,7 @@ Onto 工作区，新建、导入和克隆项目无需创建 Modeling 关联。�
   - `ONTO_CONNECTOR_SECRETS_DIR`（默认 `/secrets`，卷 `connector-secrets`）：凭据密文 `<源>/<版本>.bin`。
   - `ONTO_CONNECTOR_CONN_DIR`（默认 `/tmp/connector-conn`）：采集子进程的运行目录（记录、克隆的代码），任务清理时删。
   - `ONTO_CONNECTOR_CONN_MEMORY_MB`（默认 768）、`ONTO_CONNECTOR_CONN_FILE_MB`（默认 256）：每个采集子进程的内存、单文件上限。
+  - `ONTO_CONNECTOR_CODE_CA_FILE`：代码仓库用自签证书时，网关容器里 CA 证书的路径（要另外把证书挂进网关）。
   - `ONTO_CONNECTOR_DB_*`、`ONTO_CONNECTOR_CODE_*`：提供方自己的配置（如 `ONTO_CONNECTOR_DB_PROFILE_ROWS`），原样传给子进程；
     子进程拿不到其他环境变量。
 - 数据库、代码仓库（ADR-0084）：凭据只在网关，内核收到就转交、只存引用（`cred://<源>/<版本>`）；每个项目的脱敏盐在
