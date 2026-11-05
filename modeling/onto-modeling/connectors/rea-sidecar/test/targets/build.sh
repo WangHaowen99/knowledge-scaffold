@@ -24,6 +24,12 @@ docker run --rm -v "$HERE:/src:ro" -v "$OUT:/out" -e HOME=/tmp "$NODE_IMAGE" sh 
   npx --yes --registry $NPM_REGISTRY @electron/asar@3.2.17 pack /src/js-app /out/js-app.asar &&
   chown $UID_GID /out/js-app.asar"
 
+# 安装目录形态：resources/app.asar 加一个占位的可执行文件
+rm -rf "$OUT/js-packaged" && mkdir -p "$OUT/js-packaged/resources"
+cp "$OUT/js-app.asar" "$OUT/js-packaged/resources/app.asar" && printf 'MZplaceholder' > "$OUT/js-packaged/sample.exe"
+docker run --rm -v "$OUT:/out" "$PY_IMAGE" sh -c "
+  cd /out/js-packaged && python -m zipfile -c /out/js-packaged.zip . && chown $UID_GID /out/js-packaged.zip"
+
 docker run --rm -v "$HERE:/src:ro" -v "$OUT:/out" "$DEBIAN_IMAGE" sh -c "
   apt-get update -qq >/dev/null && apt-get install -y -qq mono-mcs >/dev/null &&
   mcs -target:library -out:/out/Sample.Orders.dll /src/dotnet/Orders.cs &&
