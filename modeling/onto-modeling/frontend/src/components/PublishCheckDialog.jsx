@@ -16,6 +16,7 @@ import {
 } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { validateResourceFile } from '../lib/resourceUpload.js';
 import {
   FINDING_TITLES,
   VALIDATION_STATES,
@@ -298,6 +299,11 @@ export default function PublishCheckDialog({
     );
 
   const uploadSchema = (file) => {
+    const validation = validateResourceFile(file);
+    if (!validation.valid) {
+      message.error(validation.message);
+      return false;
+    }
     const subdir = file.name.toLowerCase().endsWith('.csv') ? 'others' : 'excel';
     act('upload', () => api.uploadResource(projectId, subdir, file, undefined, 'schema'), `已上传 ${file.name} 并标为数据 Schema`);
     return false;

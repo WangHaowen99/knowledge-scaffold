@@ -35,6 +35,12 @@ import {
   requestPermissionOnFirstBuild,
 } from '../lib/buildNotifier.js';
 import { orderResearchActions } from '../lib/researchGate.js';
+import {
+  RESOURCE_FILE_ACCEPT,
+  rejectedResourceMessage,
+  validateResourceFile,
+  validateResourceFiles,
+} from '../lib/resourceUpload.js';
 import { STATUS_LABELS, changeHeadline, groupChanges } from '../lib/changeSummary.js';
 import {
   EMPTY_CONTEXT,
@@ -125,7 +131,7 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
     });
     out.push({ key: 'revalidate', label: '重新校验', tooltip: '重新运行完整校验', command: '/ontology-validate' });
   } else if (
-    (meta?.resource_updated_at || 0) > (versions?.[0]?.time || 0) &&
+    meta?.resource_stale &&
     // 需存在真实派生产物才谈"刷新"：目录占位 index.md 不算（新项目误报修复）
     paths.some(
       (p) =>
@@ -927,7 +933,9 @@ export default function ChatPane({
   };
 
   const addFiles = (files) => {
-    const next = [...files].map((file) => ({
+    const { accepted, rejected } = validateResourceFiles(files);
+    if (rejected.length) message.error(rejectedResourceMessage(rejected));
+    const next = accepted.map((file) => ({
       uid: `att-${(uidRef.current += 1)}`,
       name: file.name,
       file,
@@ -1243,6 +1251,13 @@ export default function ChatPane({
       return;
     }
     const toUpload = explicitAttachments ?? attachments;
+    const invalid = toUpload
+      .map((attachment) => validateResourceFile(attachment.file))
+      .filter((validation) => !validation.valid);
+    if (invalid.length) {
+      message.error(invalid.map((validation) => validation.message).join('；'));
+      return;
+    }
     if (!trimmed && toUpload.length === 0) return;
     requestPermissionOnFirstBuild(); // 须在用户发送这一操作中申请，浏览器才弹申请框
     // 上传可能持续数秒：消息发往点发送时所在的会话
@@ -2079,6 +2094,7 @@ export default function ChatPane({
           prefix={
             <Upload
               multiple
+              accept={RESOURCE_FILE_ACCEPT}
               showUploadList={false}
               beforeUpload={(file) => {
                 addFiles([file]);
@@ -2088,7 +2104,7 @@ export default function ChatPane({
               <Button type="text" icon={<PaperClipOutlined />} />
             </Upload>
           }
-          placeholder="输入消息，可拖入文件或直接粘贴截图作为资料附件"
+          placeholder="输入消息，可拖入资料或直接粘贴截图（单个文件不超过 20 MB）"
           onCancel={() => {
             // 上传阶段还没有会话消息可打断，忽略停止按钮
             if (!uploading)

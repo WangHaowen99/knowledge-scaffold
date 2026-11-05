@@ -39,6 +39,7 @@ import { hideCoverageMetrics } from '../lib/coveragePresentation.js';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
 import { api } from '../lib/api.js';
+import { setWorkspaceDirty } from '../lib/workspaceDirty.js';
 import { SOLVER_DIR, isManagedSolverPath } from '../lib/solver-contract-model.js';
 import { versionTitle } from '../lib/versionHistory.js';
 import CodeEditor from './cm/CodeEditor.jsx';
@@ -667,6 +668,7 @@ export default function CenterPane({
   project,
   tree,
   versions,
+  versionTotal,
   usage,
   file,
   focus,
@@ -682,6 +684,7 @@ export default function CenterPane({
   onPickFile,
   recentFiles,
   workspaceRevision,
+  studioResetRevision,
   drawioAvailable,
   onWorkspaceChanged,
 }) {
@@ -844,6 +847,18 @@ export default function CenterPane({
   }, [project.id, file]);
 
   const dirty = editing && content?.content != null && draft !== content.content;
+  const diffDirty =
+    focus === 'diff' && diffState?.modified != null && diffDraft !== diffState.modified;
+
+  useEffect(() => {
+    setWorkspaceDirty('plain-editor', dirty || draftsRef.current.size > 0);
+    return () => setWorkspaceDirty('plain-editor', false);
+  }, [dirty]);
+
+  useEffect(() => {
+    setWorkspaceDirty('diff-editor', diffDirty);
+    return () => setWorkspaceDirty('diff-editor', false);
+  }, [diffDirty]);
 
   const changeDraft = (text) => {
     setDraft(text);
@@ -1009,6 +1024,7 @@ export default function CenterPane({
           >
             <Suspense fallback={<Spin style={{ marginTop: 48 }} />}>
               <StudioView
+                key={`${project.id}:${studioResetRevision}`}
                 project={project}
                 onOpenFile={onOpenFile}
                 onCommand={onCommand}
@@ -1071,8 +1087,8 @@ export default function CenterPane({
                 </div>
                 <div className="stat-tile tone-amber">
                   <HistoryOutlined className="stat-icon" />
-                  <div className="stat-num">{versions[0]?.version || 0}</div>
-                  <div className="stat-label">迭代数</div>
+                  <div className="stat-num">{versionTotal ?? versions.length}</div>
+                  <div className="stat-label">版本数</div>
                 </div>
               </div>
               {coverage && coverage.pass_rate != null && (

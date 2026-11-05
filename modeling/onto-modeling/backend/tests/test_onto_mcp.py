@@ -1,11 +1,13 @@
 """Synthetic project-local MCP contract, permission and persistence regressions."""
+import asyncio
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from app.services.workspace import WorkspaceManager, _git
+from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 from app.services.onto_mcp import tokens
 from app.services.onto_mcp import workspace as mcp
 from app.services.onto_mcp import documents as doc
@@ -136,6 +138,102 @@ def test_invalid_preview_and_write_do_not_mutate(env):
         call(env, "create_ontology_rule", expected_revision=rev, key="../escape", title="synthetic", content="text")
 
 
+def test_version_tools_preview_apply_are_owner_bound_and_idempotent(env):
+    manager, meta, root = env
+    from app.services import version_revert
+
+    first = call(env, "list_project_versions", limit=1)
+    assert first["current_version"] >= 2
+    assert first["items"][0]["current"] is True
+    assert first["next_cursor"] is not None
+    second = call(env, "list_project_versions", limit=1, cursor=first["next_cursor"])
+    assert second["items"][0]["version"] == first["items"][0]["version"] - 1
+
+    target_version = second["items"][0]["version"]
+    preview = call(env, "preview_project_version_revert", target_version=target_version)
+    assert preview["ready"] and preview["preview_id"]
+    result = asyncio.run(version_revert.apply_preview(
+        manager, meta["id"], preview["preview_id"], "", "operator_a"
+    ))
+    assert result["reverted_to_version"] == target_version
+    replay = asyncio.run(version_revert.apply_preview(
+        manager, meta["id"], preview["preview_id"], "", "operator_a"
+    ))
+    assert replay["commit"] == result["commit"]
+    assert manager.versions(meta["id"], limit=1)[0]["version"] == result["created_version"]
+
+
+def test_applied_version_preview_expires_after_replay_window(env, monkeypatch):
+    manager, meta, _root = env
+    from app.services import version_revert
+
+    current = manager.versions(meta["id"], limit=1)[0]["version"]
+    preview = call(
+        env,
+        "preview_project_version_revert",
+        target_version=current - 1,
+    )
+    asyncio.run(
+        version_revert.apply_preview(
+            manager, meta["id"], preview["preview_id"], "", "operator_a"
+        )
+    )
+    expires = version_revert._previews[preview["preview_id"]]["expires"]
+
+    with version_revert._previews_lock:
+        version_revert._purge_locked(expires + 1)
+
+    assert preview["preview_id"] not in version_revert._previews
+
+
+def test_version_preview_cache_enforces_capacity(env, monkeypatch):
+    _manager, meta, _root = env
+    from app.services import version_revert
+
+    monkeypatch.setattr(version_revert, "MAX_PREVIEW_RECORDS", 2)
+    version_revert._previews.clear()
+    current = call(env, "list_project_versions", limit=1)["current_version"]
+    first = call(env, "preview_project_version_revert", target_version=current - 1)
+    second = call(env, "preview_project_version_revert", target_version=current - 1)
+    call(env, "preview_project_version_revert", target_version=current - 1)
+
+    assert len(version_revert._previews) == 2
+    assert first["preview_id"] not in version_revert._previews
+    assert second["preview_id"] in version_revert._previews
+
+
+def test_version_preview_rejects_wrong_token_and_stale_head(env):
+    manager, meta, root = env
+    from app.services import version_revert
+
+    current = manager.versions(meta["id"], limit=1)[0]["version"]
+    preview = call(env, "preview_project_version_revert", target_version=current - 1)
+    with pytest.raises(WorkspaceError) as exc:
+        asyncio.run(version_revert.apply_preview(
+            manager, meta["id"], preview["preview_id"], "other-token", "operator_a"
+        ))
+    assert exc.value.code == "REVERT_PREVIEW_FORBIDDEN"
+    path = root / "ontology/object/synthetic_c.md"
+    path.write_text("synthetic change", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-m", "test: advance version")
+    with pytest.raises(WorkspaceError) as exc:
+        asyncio.run(version_revert.apply_preview(
+            manager, meta["id"], preview["preview_id"], "", "operator_a"
+        ))
+    assert exc.value.code == "REVISION_CONFLICT"
+
+
+def test_version_tools_require_dedicated_scopes(env):
+    manager, meta, _ = env
+    issued = tokens.issue(manager, meta, {"name": "read-only", "scopes": ["ontology.read"]}, {"sub": "operator_a"})
+    with pytest.raises(McpError) as exc:
+        tokens.verify(manager, meta["id"], issued["token"], "change")
+    assert exc.value.code == "MCP_SCOPE_FORBIDDEN"
+    issued = tokens.issue(manager, meta, {"name": "version-read", "scopes": ["project.version.revert"]}, {"sub": "operator_a"})
+    assert tokens.verify(manager, meta["id"], issued["token"], "read")["scopes"] == ["project.version.revert"]
+
+
 def test_management_status_is_onto_local_without_modeling(env, monkeypatch):
     manager, meta, _ = env
     monkeypatch.setattr(routes, "manager", lambda: manager)
@@ -172,6 +270,39 @@ def test_token_expiry_boundaries(env, ttl):
                           {"sub": "operator_a"})
     assert (result["token_summary"]["expiresAt"] is None) == (ttl is None)
     assert tokens.verify(manager, meta["id"], result["token"], "read")["username"] == "operator_a"
+
+
+def test_token_issue_uses_native_schema(env):
+    manager, meta, _ = env
+    result = tokens.issue(manager, meta, {"name": "native-schema"}, {"sub": "operator_a"})
+    database_path = manager.workspaces_dir.parent / "onto-mcp.sqlite"
+    with sqlite3.connect(database_path) as conn:
+        columns = conn.execute("PRAGMA table_info(tokens)").fetchall()
+    assert len(columns) == 11
+    principal = tokens.verify(manager, meta["id"], result["token"], "read")
+    assert principal["token_id"] == result["token_summary"]["id"]
+
+
+def test_token_issue_supports_forward_extended_schema(env):
+    manager, meta, _ = env
+    existing = tokens.issue(manager, meta, {"name": "existing-token"}, {"sub": "operator_a"})
+    database_path = manager.workspaces_dir.parent / "onto-mcp.sqlite"
+    with sqlite3.connect(database_path) as conn:
+        conn.execute("ALTER TABLE tokens ADD COLUMN hub_issuer TEXT NOT NULL DEFAULT ''")
+        conn.execute("ALTER TABLE tokens ADD COLUMN hub_sub TEXT NOT NULL DEFAULT ''")
+
+    created = tokens.issue(manager, meta, {"name": "extended-schema"}, {"sub": "operator_a"})
+
+    with sqlite3.connect(database_path) as conn:
+        row = conn.execute(
+            "SELECT hub_issuer, hub_sub FROM tokens WHERE id = ?",
+            (created["token_summary"]["id"],),
+        ).fetchone()
+    assert row == ("", "")
+    assert len(tokens.listing(manager, meta["id"])["tokens"]) == 2
+    assert tokens.verify(manager, meta["id"], existing["token"], "read")["username"] == "operator_a"
+    created_principal = tokens.verify(manager, meta["id"], created["token"], "read")
+    assert created_principal["username"] == "operator_a"
 
 
 @pytest.mark.parametrize("value,schema,valid", [

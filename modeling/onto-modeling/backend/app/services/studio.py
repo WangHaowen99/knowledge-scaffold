@@ -643,6 +643,27 @@ def purge_project(project_id: str) -> None:
             pass
 
 
+def project_editing_status(project_id: str) -> dict | None:
+    """Return one active lease/draft without exposing draft content."""
+    now = time.time()
+    leases = _load(project_id, "leases")
+    active = {
+        path: lease
+        for path, lease in leases.items()
+        if isinstance(lease, dict) and lease.get("expires", 0) > now
+    }
+    if active != leases:
+        _save(project_id, "leases", active)
+    if active:
+        path, lease = next(iter(active.items()))
+        return {"kind": "lease", "path": path, "owner": lease.get("owner", "")}
+    drafts = _load(project_id, "drafts")
+    if drafts:
+        path, draft = next(iter(drafts.items()))
+        return {"kind": "draft", "path": path, "owner": draft.get("author", "")}
+    return None
+
+
 def lease_status(project_id: str, rel_path: str) -> dict | None:
     leases = _load(project_id, "leases")
     lease = leases.get(rel_path)

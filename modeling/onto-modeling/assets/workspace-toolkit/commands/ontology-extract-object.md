@@ -140,12 +140,12 @@ Set `EXCEL_CONTEXT` = 脚本 stdout。若 stdout 为空，置为 `（无同名 E
 读取 `resource/materials.json`（不存在则跳过本步）：
 
 - 存在 `purpose=schema` 的表格时，这些表是对象与属性的**事实来源**：
-  - 每个 Sheet 对应一个候选对象，属性英文名称必须逐列取自真实表头，不得虚构、改名或合并列；
+  - 仅 Sheet 范围内的数据表（以本步 TABLE_HEADERS 为准）对应候选对象，属性英文名称必须逐列取自真实表头，不得虚构、改名或合并列；未选中的 Sheet 仅作参考资料阅读，不能作为物理表或字段来源；
   - 类型与主键候选只能标注为"推断"；样例行只用于类型判断，不得据此编造业务含义或必填性；
   - 空表头、重名列、主键歧义 → 用业务化的选项询问用户，不自行决断。
 - 存在 `purpose=term` 的术语表时，对象命名、别名、属性中文名必须与术语表对齐；冲突时以术语表为准并在文档"来源"处标注。
 - 需要全文读取的资料（`reading_mode=full`，或没有写 `reading_mode` 的文档类资料，规则见 CLAUDE.md 8.1）在提取前必须已全文读取。
-- 运行 `python3 .claude/scripts/check_eval_data.py --headers`，stdout（JSON：`{Sheet 名: [表头列]}`，来自 schema 资料与评测数据源上传的数据表）记为 `TABLE_HEADERS`；为空（`{}`）时记为 `（无）`。
+- 运行 `python3 .claude/scripts/check_eval_data.py --headers`，stdout（JSON：`{Sheet 名: [表头列]}`，来自 schema 资料与评测数据源上传的数据表）记为 `TABLE_HEADERS`；命令失败时停止提取，提示在资料区确认 Sheet 范围，不能退回遍历全部 Sheet；为空（`{}`）时记为 `（无）`。
   `TABLE_HEADERS` 非空时，它是表名与列名的**唯一依据**：对象「# 数据来源」取其中的 Sheet 名，对不上任何 Sheet 的对象填「无」；从库里读取的属性英文名称逐字取自该 Sheet 的表头；数据字典类文档、资料分析报告里的字段名与之冲突时以 `TABLE_HEADERS` 为准，冲突清单写进返回摘要的注意事项。提取后的规则检查会按对象逐列对账：声明的表不存在、一列都对不上、或属性别名里才是真实列名，均判为错误并阻止提交（发布时同样会被阻断）。
   `TABLE_HEADERS` 为 `（无）` 时，先看 `resource/` 下有没有像数据库表的表格资料（首行是英文列名）：有的话按 CLAUDE.md 8.1 请用户在资料列表把它标为「数据 Schema」，标好后重跑上面的命令；用户确认没有数据表时，所有对象的「# 数据来源」填「无」，不得臆造表名；规则检查会对声明了表名的对象给出警告。
 - `TABLE_HEADERS` 非空时再运行 `python3 .claude/scripts/check_eval_data.py --profile`，stdout 记为 `TABLE_PROFILE`（每列取值形态的计数与推断类型，不含单元格原值，每表最多读 2000 行）。`omitted_tables` 非空时用 `--profile --tables {这些表名}` 分批补读，合并后再传给 agent。`TABLE_HEADERS` 为 `（无）` 时 `TABLE_PROFILE` 也记为 `（无）`。它是属性「类型」的取值证据：类型与取值矛盾、数值列无依据地写成字符串，提取后的规则检查会报「类型冲突」「类型待确认」。

@@ -12,6 +12,12 @@ from .errors import McpError
 
 SERVER = {"name": "knowledge-scaffold-onto-mcp", "version": "0.1.0"}
 VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18"]
+SCOPE_DESCRIPTIONS = {
+    "ontology.read": "读取本体",
+    "ontology.change.validate": "校验修改",
+    "ontology.change.apply": "保存修改",
+    "project.version.revert": "读取项目版本与执行版本回退",
+}
 
 
 @contextmanager
@@ -59,7 +65,10 @@ def issue(manager, meta, body, user):
     subject = meta.get("owner") if user.get("role") == "admin" and meta.get("owner") else user.get("sub", "")
     raw, tid, now = secrets.token_urlsafe(48), secrets.token_hex(16), time.time()
     with database(manager) as conn:
-        conn.execute("INSERT INTO tokens VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
+        conn.execute("""INSERT INTO tokens (
+            id, project_id, digest, name, subject, issued_by,
+            scopes, created, expires, used, revoked
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)""",
                      (tid, meta["id"], hashlib.sha256(raw.encode()).hexdigest(), name, subject,
                       user.get("sub", ""), json.dumps(sorted(set(scopes))), now, now + ttl if ttl else None))
         row = conn.execute("SELECT * FROM tokens WHERE id=?", (tid,)).fetchone()
@@ -96,7 +105,12 @@ def verify(manager, project_id, token, toolset):
         if not allowed or meta.get("archived") and toolset == "change":
             raise McpError("MCP_PROJECT_FORBIDDEN", "Token 所属用户已无权执行此项目操作", 403)
         scopes = json.loads(row["scopes"])
-        if not set(scopes).intersection(SCOPES[:1] if toolset == "read" else SCOPES[1:]):
+        allowed = {
+            "read": {"ontology.read", "project.version.revert"},
+            "change": {"ontology.change.validate", "ontology.change.apply",
+                       "project.version.revert"},
+        }[toolset]
+        if not set(scopes).intersection(allowed):
             raise McpError("MCP_SCOPE_FORBIDDEN", "Token 不具备当前工具集权限", 403)
         conn.execute("UPDATE tokens SET used=? WHERE id=?", (time.time(), row["id"]))
     return {"token_id": row["id"], "username": row["subject"], "scopes": scopes, "project_id": project_id}
@@ -108,11 +122,17 @@ def status(project_id, base):
             "project_id": project_id, "endpoint_id": project_id, "transport": "both",
             "server_name": SERVER["name"], "server_version": SERVER["version"], "protocol_versions": VERSIONS,
             "protocol_compatibility": True, "base_url": base,
-            "scope_catalog": [{"scope": scope, "description": label} for scope, label in zip(SCOPES, ("读取本体", "校验修改", "保存修改"))],
+            "scope_catalog": [
+                {"scope": scope, "description": SCOPE_DESCRIPTIONS[scope]} for scope in SCOPES
+            ],
             "token_policy": {"min_ttl_seconds": 300, "default_ttl_seconds": 86400, "max_ttl_seconds": 2592000, "supports_non_expiring": True},
             "urls": [{"toolset": group, "transport": transport, "url": f"{base}/api/onto-mcp/{project_id}/{group}/{suffix}"}
                      for group in ("read", "change") for transport, suffix in (("streamable-http", "mcp"), ("sse", "sse"))],
             "toolsets": [{"name": group, "scope_requirement": "all" if group == "read" else "any",
-                          "accepted_scopes": list(SCOPES[:1] if group == "read" else SCOPES[1:]),
-                          "required_scopes": list(SCOPES[:1] if group == "read" else SCOPES[1:]),
+                          "accepted_scopes": list(("ontology.read", "project.version.revert") if group == "read" else (
+                              "ontology.change.validate", "ontology.change.apply",
+                              "project.version.revert")),
+                          "required_scopes": list(("ontology.read", "project.version.revert") if group == "read" else (
+                              "ontology.change.validate", "ontology.change.apply",
+                              "project.version.revert")),
                           "tools": [name for name, tool in TOOLS.items() if tool["toolset"] == group]} for group in ("read", "change")]}

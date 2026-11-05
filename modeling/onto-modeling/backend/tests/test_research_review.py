@@ -417,7 +417,7 @@ def test_same_source_ids_across_formats(workspace, toolkit, suffix):
     assert checker.check_exit_code(checker.run_check(workspace)) == 0
     evidence = review.load_review(workspace)['source_evidence'][location]
     assert len(evidence['source_sha256']) == 64
-    assert evidence['extractor_version'] == 1
+    assert evidence['extractor_version'] == 2
     assert evidence['anchors']
 
 

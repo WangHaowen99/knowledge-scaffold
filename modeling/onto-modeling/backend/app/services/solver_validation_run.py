@@ -100,6 +100,21 @@ _tasks: set[asyncio.Task] = set()  # 持有后台任务引用，避免被回收
 _lock = threading.Lock()
 
 
+def release_reservation(project_id: str) -> None:
+    """Undo start() reservation if the caller cannot launch its background task."""
+    with _lock:
+        _running.discard(project_id)
+
+
+def is_active(project_id: str, root: Path) -> bool:
+    """Whether this process or the persisted record has an active validation."""
+    with _lock:
+        if project_id in _running:
+            return True
+    current = solver_validation.latest(root)
+    return bool(current and current.get("status") in solver_validation.ACTIVE_STATUSES)
+
+
 def safe_message(message: object) -> str:
     """modeling/Consumer 的报错可能带地址；落记录前统一脱敏截断。"""
     text = re.sub(r"[a-z][a-z0-9+.-]*://\S+", "[地址已隐藏]", str(message or ""), flags=re.I)
@@ -351,7 +366,11 @@ def start(
 
 def launch(plan: ValidationPlan) -> None:
     """在当前事件循环里后台执行；状态经 latest 接口轮询。"""
-    task = asyncio.get_running_loop().create_task(_run(plan))
+    try:
+        task = asyncio.get_running_loop().create_task(_run(plan))
+    except Exception:
+        release_reservation(plan.project_id)
+        raise
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
 
