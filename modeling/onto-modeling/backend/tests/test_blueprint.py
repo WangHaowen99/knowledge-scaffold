@@ -1,10 +1,12 @@
 """建模蓝图（详设第 9 章建议 2、6.8；契约 BP-01～BP-03、4.7 blueprint 卡、7.8 Blueprint；ADR-0050）。
 
-- 蓝图文件由 core 的 blueprint.py 写入与校验：草稿编号、依赖解析、全量模式（只有一段）；
-- 调整（BP-02）：合并、排除、改名、调序、新增都是整份分段列表；草案 / 调整两种保存、revision 冲突；
+F8 起不分段：草稿里的段合成一段「全部」，`mode()` 恒为 full（老的多段蓝图照样读，按全量走）；蓝图只记统一叫法与
+待定问题，不用确认（卡片上没有确认按钮；BP-03 仍可调）。
+- 蓝图文件由 core 的 blueprint.py 写入与校验：草稿合成一段、依赖照样校验、统一叫法进段说明；
+- 调整（BP-02）：统一叫法、回答问题、改名；草案 / 调整两种保存、revision 冲突；
 - 蓝图在资料分析那一轮的修改里（助手在跑）时：读、调整都对副本；F3 起那一轮结束就合入，确认蓝图只标已确认；
-- 确认（BP-03）：L2 往对话发「开始第一段」，L4 在自主构建（B5b）登记前 409、蓝图不动；
-- 一轮写出蓝图时对话里出蓝图卡，调整后卡片跟着更新；没答的问题进待处理。
+- 确认（BP-03）：L2 往对话发建模第一步（不带分段），L4 在自主构建（B5b）登记前 409、蓝图不动；
+- 一轮写出蓝图时对话里出蓝图卡（没有确认按钮），调整后卡片跟着更新；没答的问题进待处理。
 
 测试数据全部为合成内容；假引擎不起真实 CLI。
 """
@@ -59,25 +61,28 @@ def bp():
 # ---------------------------------------------------------------------------
 
 
-def test_draft_gets_ids_dependencies_and_full_mode_for_one_slice():
+def test_draft_merges_into_one_full_slice():
     module = bp()
     doc = module.from_draft(DRAFT)
-    assert [item["id"] for item in doc["slices"]] == ["s1", "s2", "s3", "s4"]
-    assert doc["slices"][3]["depends_on"] == ["s2", "s3"] and doc["version_no"] == 1 and doc["state"] == "draft"
+    # 草稿里的四段合成一段「全部」：条目取并集（按出现顺序去重），依据也并进来
+    assert [item["id"] for item in doc["slices"]] == ["all"] and doc["slices"][0]["name"] == "全部"
+    full = doc["slices"][0]
+    assert full["objects"] == ["门店", "商品品类", "安全库存标准", "陈列标准"]
+    assert full["operations"] == ["受理补货申请", "测算安全库存", "核定陈列量", "生成审批提示"]
+    assert full["rules"] == ["取严规则", "超量规则"] and full["depends_on"] == []
+    assert doc["version_no"] == 1 and doc["state"] == "draft" and doc["next_ids"]["slice"] == 1
     assert doc["terms"]["ambiguous"][0]["id"] == "t1" and doc["questions"][0]["options"][1] == {"id": "B", "label": "不要"}
-    assert module.mode(doc) == "sliced"
+    assert module.mode(doc) == "full" and module.mode(None) == "full"
     view = module.view(doc)
-    assert view["version_label"] == "草案 v1"
-    assert [item["order_label"] for item in view["slices"]] == ["推荐先做", "第 2 个", "第 3 个", "建议最后做"]
-    assert view["slices"][0]["scale"] == {"objects": 2, "rules": 0}
-    # 重新规划：草案号加 1，同名分段沿用旧编号
-    again = module.from_draft({**DRAFT, "slices": DRAFT["slices"][:2] + [{"name": "新的一段", "depends_on": ["s1"]}]},
-                              doc)
-    assert again["version_no"] == 2 and [item["id"] for item in again["slices"]] == ["s1", "s2", "s5"]
-    # 只有一段就是全量模式
-    single = module.from_draft({"goal_md": "小项目", "slices": [{"name": "全部"}]})
-    assert single["slices"][0]["id"] == "all" and module.mode(single) == "full"
-    assert module.mode(None) == "full"
+    assert view["version_label"] == "草案 v1" and view["mode"] == "full"
+    assert [item["order_label"] for item in view["slices"]] == [""]
+    assert view["slices"][0]["scale"] == {"objects": 4, "rules": 2}
+    # 排除的段不并进来；重新资料分析：草案号加 1，仍是一段「全部」
+    again = module.from_draft({**DRAFT, "slices": [DRAFT["slices"][0], {**DRAFT["slices"][2], "excluded": True,
+                                                                      "depends_on": []}]}, doc)
+    assert again["version_no"] == 2 and [item["id"] for item in again["slices"]] == ["all"]
+    assert again["slices"][0]["objects"] == ["门店", "商品品类"]
+    # 草稿照样校验：依赖写错、条目名不合法都拒绝
     with pytest.raises(module.BlueprintError) as caught:
         module.from_draft({"slices": [{"name": "甲", "depends_on": ["不存在"]}, {"name": "乙"}]})
     assert caught.value.reason == "unknown_dependency"
@@ -86,81 +91,65 @@ def test_draft_gets_ids_dependencies_and_full_mode_for_one_slice():
     assert caught.value.reason == "member_invalid"
 
 
-def _inputs(doc):
-    return [{"id": item["id"], "name": item["name"], "core_flow": item["core_flow"],
-             "depends_on": list(item["depends_on"]), "excluded": item["excluded"]} for item in doc["slices"]]
+def test_old_multi_slice_blueprint_is_read_as_full_mode():
+    """F8 之前写下的多段蓝图：照样读、校验，但按全量走（段说明是全量模式，不按段收窄）。"""
+    module = bp()
+    old = module.from_draft(DRAFT)
+    first, second = dict(old["slices"][0]), dict(old["slices"][0])
+    old["slices"] = [{**first, "id": "s1", "name": "补货申请", "objects": ["门店"], "operations": [], "rules": []},
+                     {**second, "id": "s2", "name": "安全库存", "objects": ["安全库存标准"], "depends_on": ["s1"],
+                      "operations": [], "rules": []}]
+    assert module.validate(old) == []
+    assert len(module.live_slices(old)) == 2 and module.mode(old) == "full"
+    assert module.brief(old, "s2").startswith("全量模式：按全部资料建模。")
+    assert module.view(old)["mode"] == "full"
 
 
-def test_slice_edits_merge_exclude_rename_reorder_and_add():
+def test_terms_and_answers_go_into_the_brief():
+    """调整（BP-02）在全量模式下主要是统一叫法、回答问题；定下的叫法进段说明（terms_line），确认后版本号不带「草案」。"""
     module = bp()
     doc = module.from_draft(DRAFT)
-    # 合并「安全库存」「陈列量」：条目取并集，依赖它们的段改指新段，被合并的段去掉
-    items = _inputs(doc)
-    merged = {"id": "new-1", "name": "库存与陈列", "core_flow": "", "depends_on": ["s1"], "excluded": False,
-              "merged_from": ["s2", "s3"]}
-    items = [items[0], merged, {**items[3], "depends_on": ["new-1"]}]
-    result = module.apply_edit(doc, {"mode": "adjust", "slices": items})
-    ids = [item["id"] for item in result["slices"]]
-    assert ids == ["s1", "s5", "s4"] and result["version_no"] == 2
-    combined = result["slices"][1]
-    assert combined["objects"] == ["安全库存标准", "陈列标准"] and combined["rules"] == ["取严规则"]
-    assert combined["merged_from"] == ["s2", "s3"] and result["slices"][2]["depends_on"] == ["s5"]
-    # 排除、改名、新增；草案保存草案号不变
-    items = _inputs(result)
-    items[2] = {**items[2], "excluded": True}
-    items[1] = {**items[1], "name": "库存陈列"}
-    items.append({"id": "new-2", "name": "补充一段", "core_flow": "", "depends_on": ["s1"], "excluded": False})
-    edited = module.apply_edit(result, {"mode": "draft", "slices": items})
-    assert edited["version_no"] == 2 and edited["slices"][1]["name"] == "库存陈列"
-    assert edited["slices"][2]["excluded"] and edited["slices"][3]["id"] == "s6"
-    assert module.view(edited)["slices"][2]["order_label"] == ""
-    # 调序：依赖的段排到后面就拒绝
-    swapped = _inputs(edited)
-    swapped[0], swapped[1] = swapped[1], swapped[0]
-    with pytest.raises(module.BlueprintError) as caught:
-        module.apply_edit(edited, {"mode": "draft", "slices": swapped})
-    assert caught.value.reason == "dependency_order"
-    reordered = _inputs(edited)
-    reordered[1], reordered[3] = reordered[3], reordered[1]
-    assert [item["id"] for item in module.apply_edit(edited, {"mode": "draft", "slices": reordered})["slices"]] == \
-        ["s1", "s6", "s4", "s5"]
-    bad_cases = [
-        ([{**item, "excluded": True} for item in _inputs(edited)], "empty"),
-        (_inputs(edited)[:2], "missing"),
-        (_inputs(edited) + [{"id": "new-3", "name": "x", "merged_from": ["s1"]}], "merge_too_few"),
-        ([{**item, "name": "同名"} if index < 2 else item for index, item in enumerate(_inputs(edited))],
-         "duplicate_name"),
-        ([{**item, "depends_on": ["s4"]} if item["id"] == "s5" else item for item in _inputs(edited)],
-         "dependency_excluded"),
-    ]
-    for slices, reason in bad_cases:
-        with pytest.raises(module.BlueprintError) as caught:
-            module.apply_edit(edited, {"mode": "draft", "slices": slices})
-        assert caught.value.reason == reason, (reason, caught.value.reason)
-    answered = module.apply_edit(edited, {"mode": "draft", "term_choices": [{"term_id": "t1", "chosen": "临期"}],
-                                          "answers": [{"question_id": "q1", "option_id": "A"}]})
+    assert module.terms_line(doc) == "" and module.terms_line(None) == ""
+    assert module.brief(doc, None) == "全量模式：按全部资料建模。"
+    answered = module.apply_edit(doc, {"mode": "draft", "term_choices": [{"term_id": "t1", "chosen": "临期"}],
+                                       "answers": [{"question_id": "q1", "option_id": "A"}]})
+    assert answered["version_no"] == 1
     assert answered["terms"]["ambiguous"][0]["chosen"] == "临期" and answered["questions"][0]["answer"] == {"option_id": "A"}
-    assert module.view(module.confirm(answered))["version_label"] == "v2"
+    assert module.terms_line(answered) == "统一叫法：临期（不用 近效期）"
+    assert module.brief(answered, "all") == "全量模式：按全部资料建模。\n统一叫法：临期（不用 近效期）"
+    adjusted = module.apply_edit(answered, {"mode": "adjust", "term_choices": [{"term_id": "t1", "chosen": "近效期"}]})
+    assert adjusted["version_no"] == 2 and module.terms_line(adjusted) == "统一叫法：近效期（不用 临期）"
+    assert module.view(module.confirm(adjusted))["version_label"] == "v2"
+    with pytest.raises(module.BlueprintError) as caught:
+        module.apply_edit(doc, {"mode": "draft", "term_choices": [{"term_id": "t9", "chosen": "x"}]})
+    assert caught.value.reason == "term_invalid"
+    # 注入给模型的叫法有上限（最坏情况约 3000 字）
+    many = module.from_draft({"slices": [{"name": "甲"}], "terms": {"ambiguous": [
+        {"variants": [f"叫法{n}甲", f"叫法{n}乙"]} for n in range(1, 41)]}})
+    many = module.apply_edit(many, {"mode": "draft", "term_choices": [
+        {"term_id": f"t{n}", "chosen": f"叫法{n}甲"} for n in range(1, 41)]})
+    assert module.terms_line(many).count("（不用") == module.TERMS_LINE_MAX
 
 
-def test_cli_writes_checks_and_briefs_a_slice(tmp_path):
-    (tmp_path / "draft.json").write_text(json.dumps(DRAFT, ensure_ascii=False), encoding="utf-8")
+def test_cli_writes_checks_and_briefs_full_mode(tmp_path):
+    draft = {**DRAFT, "terms": {"aligned": ["门店"], "ambiguous": [{"variants": ["临期", "近效期"], "chosen": "临期"}]}}
+    (tmp_path / "draft.json").write_text(json.dumps(draft, ensure_ascii=False), encoding="utf-8")
     cli = [sys.executable, str(SCRIPTS / "blueprint.py")]
 
     def run(*args):
         return subprocess.run([*cli, *args], cwd=tmp_path, capture_output=True, text=True)
 
     written = run("write", "draft.json")
-    assert written.returncode == 0 and written.stdout.startswith("ok:research/blueprint.json:草案 v1:4 段")
+    assert written.returncode == 0 and written.stdout.startswith("ok:research/blueprint.json:草案 v1:1 段")
     assert run("check").returncode == 0
     (tmp_path / ".onto" / "run").mkdir(parents=True)
+    # F8 之前的执行记录带着分段：段说明照样是全量模式
     (tmp_path / ".onto" / "run" / "exec.json").write_text(json.dumps({"slice": {"id": "s2", "name": "安全库存"}}))
     brief = run("brief").stdout
-    assert "分段：安全库存（s2）" in brief and "依赖：补货申请" in brief and "门店、商品品类" in brief
-    assert run("assign", "s2", "object:补货台账", "object:门店").stdout.strip() == "ok:1"
-    doc = json.loads((tmp_path / "research" / "blueprint.json").read_text(encoding="utf-8"))
-    assert doc["slices"][1]["objects"] == ["安全库存标准", "补货台账"]
-    assert json.loads(run("slices", "--json").stdout)["mode"] == "sliced"
+    assert brief.strip() == "全量模式：按全部资料建模。\n统一叫法：临期（不用 近效期）"
+    assert json.loads(run("slices", "--json").stdout) == {"mode": "full",
+                                                         "slices": [{"id": "all", "name": "全部", "depends_on": []}]}
+    assert run("assign", "s2", "object:补货台账").returncode == 1
     assert run("write", "missing.json").returncode == 1
 
 
@@ -211,25 +200,28 @@ def test_blueprint_read_save_and_revision_conflict_on_mainline(env):
     stale = client.put(base, json={"base_revision": "0" * 16, "mode": "draft"})
     assert stale.status_code == 409 and stale.json()["code"] == "revision_conflict"
     assert stale.json()["details"]["actual"] == got["revision"]
-    slices = [{"id": item["id"], "name": item["name"], "core_flow": item["core_flow"],
-               "depends_on": item["depends_on"], "excluded": item["excluded"]} for item in got["slices"]]
-    slices[0]["name"] = "补货申请受理"
-    saved = client.put(base, json={"base_revision": got["revision"], "mode": "draft", "slices": slices})
+    assert [item["id"] for item in got["slices"]] == ["all"]
+    saved = client.put(base, json={"base_revision": got["revision"], "mode": "draft",
+                                   "term_choices": [{"term_id": "t1", "chosen": "临期"}]})
     assert saved.status_code == 200, saved.text
-    assert saved.json()["slices"][0]["name"] == "补货申请受理" and saved.json()["version_label"] == "草案 v1"
+    assert saved.json()["terms"]["ambiguous"][0]["chosen"] == "临期" and saved.json()["version_label"] == "草案 v1"
     assert "web: 调整建模蓝图" in git(root, "log", "-1", "--format=%s")
     adjusted = client.put(base, json={"base_revision": saved.json()["revision"], "mode": "adjust",
-                                      "slices": [{**slices[0], "excluded": True}, *[{**item, "depends_on": []}
-                                                                                     for item in slices[1:]]]})
+                                      "answers": [{"question_id": "q1", "option_id": "A"}]})
     assert adjusted.status_code == 200 and adjusted.json()["version_label"] == "草案 v2", adjusted.text
-    invalid = client.put(base, json={"base_revision": adjusted.json()["revision"], "mode": "draft",
-                                     "slices": slices[:1]})
+    # 唯一的一段「全部」不能排除
+    only = [{"id": "all", "name": "全部", "core_flow": "", "depends_on": [], "excluded": True}]
+    invalid = client.put(base, json={"base_revision": adjusted.json()["revision"], "mode": "draft", "slices": only})
     assert invalid.status_code == 400 and invalid.json()["code"] == "slice_invalid"
-    assert invalid.json()["details"]["reason"] == "missing"
+    assert invalid.json()["details"]["reason"] == "empty"
+    bad_term = client.put(base, json={"base_revision": adjusted.json()["revision"], "mode": "draft",
+                                      "term_choices": [{"term_id": "t9", "chosen": "x"}]})
+    assert bad_term.status_code == 400 and bad_term.json()["details"]["fields"] == {"term_choices": "invalid"}
     assert client.put(base, json={"base_revision": "", "mode": "bogus"}).json()["code"] == "invalid_argument"
 
 
-def test_confirm_l4_is_409_until_autobuild_registers_and_l2_starts_the_first_slice(env, monkeypatch):
+def test_confirm_l4_is_409_until_autobuild_registers_and_l2_starts_modeling(env, monkeypatch):
+    """BP-03 仍可调（F8 之前的界面与脚本）：L2 发建模第一步，全量模式不带分段。"""
     client, _workspaces, manager, project_id, root = env
     base = f"/api/v1/projects/{project_id}/blueprint"
     _write_mainline(root, bp().from_draft(DRAFT))
@@ -247,7 +239,8 @@ def test_confirm_l4_is_409_until_autobuild_registers_and_l2_starts_the_first_sli
         if FakeEngine.sent:
             break
         time.sleep(0.01)
-    assert FakeEngine.sent and FakeEngine.sent[0].startswith("/ontology-extract-object slice=s1")
+    assert FakeEngine.sent and FakeEngine.sent[0].startswith("/ontology-extract-object")
+    assert "slice=" not in FakeEngine.sent[0]
     assert "web: 确认建模蓝图" in git(root, "log", "--format=%s", "-3")
     # B5b 登记之后 L4 返回开始前预览
     seen = {}
@@ -291,26 +284,23 @@ def test_blueprint_from_the_research_turn_is_on_mainline_and_confirm_only_marks_
     cards = [event["payload"] for event in history if event.get("type") == "card"]
     kinds = [card["card_type"] for card in cards]
     assert "round_changes" in kinds and "blueprint" in kinds
-    assert "build_choice" not in kinds  # 设计调整 R3：确认按钮放在蓝图卡底部，不再单出一张卡
+    assert "build_choice" not in kinds
     card = next(card for card in cards if card["card_type"] == "blueprint")
     assert card["title"] == "建模蓝图 · 草案 v1" and card["open"] == {"kind": "dialog", "target": "blueprint"}
     assert card["questions_pending"] == 1 and card["terms"] == {"aligned": 1, "ambiguous": 1}
-    assert card["confirm_options"] == [{"mode": "L2", "label": "确认，一段一段来"}]  # 一路建完等 B5b
+    assert card["confirm_options"] == []  # F8：蓝图不用确认，卡片上没有确认按钮
     rc = next(card for card in cards if card["card_type"] == "round_changes")
     assert rc["groups"][0]["items"][0]["target"]["title"] == "建模蓝图"
     base = f"/api/v1/projects/{project_id}/blueprint"
     got = client.get(base).json()
-    assert got["state"] == "draft" and len(got["slices"]) == 4
+    assert got["state"] == "draft" and [item["id"] for item in got["slices"]] == ["all"]
     # 待处理：蓝图里没答的问题
     items = client.get(f"/api/v1/projects/{project_id}/inbox").json()["items"]
     question = next(item for item in items if item["id"] == "decision:bq-q1")
     assert question["kind"] == "decision"
-    # 调整写主线；蓝图卡跟着更新
-    slices = [{"id": item["id"], "name": item["name"], "core_flow": item["core_flow"],
-               "depends_on": item["depends_on"], "excluded": item["excluded"]} for item in got["slices"]]
-    slices[2]["excluded"] = True
-    slices[3]["depends_on"] = ["s2"]
-    saved = client.put(base, json={"base_revision": got["revision"], "mode": "adjust", "slices": slices})
+    # 调整（统一叫法）写主线；蓝图卡跟着更新
+    saved = client.put(base, json={"base_revision": got["revision"], "mode": "adjust",
+                                   "term_choices": [{"term_id": "t1", "chosen": "临期"}]})
     assert saved.status_code == 200, saved.text
     assert saved.json()["version_label"] == "草案 v2"
     assert json.loads((root / "research" / "blueprint.json").read_text(encoding="utf-8"))["version_no"] == 2
@@ -327,7 +317,8 @@ def test_blueprint_from_the_research_turn_is_on_mainline_and_confirm_only_marks_
                                                      "next": "L2"})
     assert confirmed.status_code == 200, confirmed.text
     on_main = json.loads((root / "research" / "blueprint.json").read_text(encoding="utf-8"))
-    assert on_main["state"] == "confirmed" and on_main["version_no"] == 2 and on_main["slices"][2]["excluded"]
+    assert on_main["state"] == "confirmed" and on_main["version_no"] == 2
+    assert on_main["terms"]["ambiguous"][0]["chosen"] == "临期"
     assert changesets.current(workspaces, project_id) is None
     assert "Onto-Changeset: cs-1" in git(root, "log", "--format=%B", "-6")
     # I1 合并：确认之后蓝图卡所在对话的建议条跟着换，不再停在「确认蓝图」
@@ -353,14 +344,14 @@ def test_saving_while_the_assistant_runs_is_423(env, monkeypatch):
     assert locked.status_code == 423 and locked.json()["code"] == "write_scope_locked"
 
 
-def test_blueprint_card_offers_build_all_once_autobuild_registers(env, monkeypatch):
+def test_blueprint_card_has_no_confirm_buttons_even_with_autobuild(env, monkeypatch):
+    """F8：蓝图不用确认，草案、已确认、自主构建登记与否，卡片底部都没有确认按钮。"""
     _client, workspaces, _manager, project_id, root = env
     _write_mainline(root, bp().from_draft(DRAFT))
     monkeypatch.setattr(blueprint_service, "_autobuild_preview", lambda *args, **kwargs: {})
     cards = blueprint_service.round_cards(workspaces, project_id, {"added": ["research/blueprint.json"]}, "seed")
     assert [card["card_type"] for card in cards] == ["blueprint"]
-    assert cards[0]["confirm_options"] == [{"mode": "L2", "label": "确认，一段一段来"},
-                                           {"mode": "L4", "label": "确认，一路建完…"}]
+    assert cards[0]["confirm_options"] == []
     confirmed = blueprint_service.blueprint_card(bp(), bp().confirm(bp().from_draft(DRAFT)), "c", research_verified=True)
     assert confirmed["confirm_options"] == []
     assert blueprint_service.round_cards(workspaces, project_id, {"modified": ["ontology/object/x.md"]}, "s") == []

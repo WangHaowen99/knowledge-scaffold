@@ -1,12 +1,15 @@
-// 上传与审核（plugin-upload，PL-13～PL-18）与管理员审核申请（AD-08～AD-10）的纯逻辑。
+// 上传与审核（plugin-upload，PL-13～PL-18）、普通用户装自己的包（PL-22～PL-26）与管理员审核申请（AD-08～AD-10）的纯逻辑。
 // 检查项、状态、错误码按后端 B3a 的实现口径（contract-changes B3a 第 10～13 条）。
 import { errorText, formatBytes } from '../../api/errors.js';
 
 // ---------- 上传 ----------
 
 export const PACK_MAX_BYTES = 200 * 1024 * 1024;
-// C-01 limits.pack_upload_bytes，没给时按契约 1.8 的 200 MiB
-export const packLimit = (config) => config?.limits?.pack_upload_bytes || PACK_MAX_BYTES;
+export const PACK_PRIVATE_MAX_BYTES = 20 * 1024 * 1024;
+// C-01 limits.pack_upload_bytes、pack_private_upload_bytes，没给时按契约 1.8
+export const packLimit = (config, mine = false) => (mine
+  ? config?.limits?.pack_private_upload_bytes || PACK_PRIVATE_MAX_BYTES
+  : config?.limits?.pack_upload_bytes || PACK_MAX_BYTES);
 
 /** 选中的文件能不能传：只收 .zip，不能是空文件，不超过上限。返回提示或 null */
 export function validatePackFile(file, max = PACK_MAX_BYTES) {
@@ -51,7 +54,7 @@ export const uploadTitle = (u) => (u?.name ? `${u.name} ${u.version || ''}`.trim
 
 const PENDING = ['checking', 'passed', 'failed', 'held'];
 export const isPending = (u) => PENDING.includes(u?.state);
-export const isPublishable = (u) => !!u && (u.state === 'passed' || u.state === 'held') && !(u.summary?.fail > 0);
+export const isPublishable = (u) => !!u && ['passed', 'held', 'installed'].includes(u.state) && !(u.summary?.fail > 0);
 
 /** 上传列表一行的状态：chip 文案与色调（清单、校验和的结果在静态检查里逐项列出，行上不再单标） */
 export function uploadStatus(u) {
@@ -62,15 +65,17 @@ export function uploadStatus(u) {
     case 'held': return { tone: 'gray', text: '暂不发布' };
     case 'failed': return { tone: 'red', icon: 'x', text: `${fail} 项失败` };
     case 'published': return { tone: 'teal', icon: 'check', text: '已发布' };
+    case 'installed': return { tone: 'teal', icon: 'check', text: '已安装' };
     case 'rejected': return { tone: 'gray', icon: 'undo', text: '已退回' };
     default: return { tone: 'gray', text: u?.state || '' };
   }
 }
 
-/** 一行下面的说明：「412 KB · 上传于 21:36 · 租户 · 示例租户」 */
-export function uploadMeta(u, now = Date.now()) {
+/** 一行下面的说明：「412 KB · 上传于 21:36 · 租户 · 示例租户」；管理员看普通用户的上传时写是谁的 */
+export function uploadMeta(u, now = Date.now(), mine = false) {
   const parts = [formatBytes(u.size), `上传于 ${fmtClock(u.uploaded_at, now)}`];
   if (u.tenant_label) parts.push(`租户 · ${u.tenant_label}`);
+  if (!mine && u.scope === 'private') parts.push(`私有 · ${u.uploaded_by}`);
   return parts.join(' · ');
 }
 
@@ -143,6 +148,20 @@ export function publishBlock(u) {
   }
 }
 export const canReject = (u) => !!u && ['passed', 'failed', 'held'].includes(u.state);
+
+/** 普通用户不能安装时的状态（能安装返回 null） */
+export function installBlock(u) {
+  if (!u) return null;
+  switch (u.state) {
+    case 'passed': return null;
+    case 'checking': return '检查完成后才能安装';
+    case 'failed': return `${u.summary?.fail || 0} 项失败，不能安装`;
+    case 'installed': return '已安装';
+    case 'published': return '已由管理员发布';
+    case 'rejected': return '已退回';
+    default: return '这个上传现在不能安装。';
+  }
+}
 
 export const CHANNELS = [
   ['beta', 'β', '先给部分项目试用'],
@@ -225,7 +244,7 @@ export function uploadErrorText(e, u) {
  * 后端只记「上传」「静态检查通过 / 未通过」「发布到 x」「退回：原因」，这里按 state 拼成设计稿的说法，
  * 末尾补一行当前在等什么（检查中 / 待发布 / 待退回）。nameOf(actor) 给出「管理员 张工」这样的称呼。
  */
-export function timelineRows(u, { nameOf = (x) => x, now = Date.now() } = {}) {
+export function timelineRows(u, { nameOf = (x) => x, now = Date.now(), mine = false } = {}) {
   if (!u) return [];
   const items = u.timeline || [];
   const who = (actor) => (actor && actor !== 'system' ? nameOf(actor) : '');
@@ -246,8 +265,9 @@ export function timelineRows(u, { nameOf = (x) => x, now = Date.now() } = {}) {
     return { icon: 'dot', title: it.text || it.state, meta: meta(who(it.actor), clock) };
   });
   if (u.state === 'checking') rows.push({ spin: true, dot: 'wait', title: '静态检查中', meta: '' });
-  else if (isPublishable(u)) rows.push({ icon: 'hand', dot: 'wait', title: '待发布', meta: '' });
-  else if (u.state === 'failed') rows.push({ icon: 'hand', dot: 'wait', title: '待退回', meta: '' });
+  else if (mine ? u.state === 'passed' : isPublishable(u) && u.state !== 'installed') {
+    rows.push({ icon: 'hand', dot: 'wait', title: mine ? '待安装' : '待发布', meta: '' });
+  } else if (u.state === 'failed' && !mine) rows.push({ icon: 'hand', dot: 'wait', title: '待退回', meta: '' });
   return rows;
 }
 

@@ -120,15 +120,24 @@ def test_writing_a_new_goal_as_the_answer_sets_the_project_goal_and_unblocks_con
     blueprint_service.prepare_confirm(workspaces, project_id, {"base_revision": saved.json()["revision"], "next": "L2"})
 
 
-def test_suggestion_points_to_the_goal_question_instead_of_confirm(monkeypatch):
-    monkeypatch.syspath_prepend(str(SCRIPTS))
-    import flow_state
+def test_goal_question_goes_first_without_blocking_the_next_step(env):
+    """F8：蓝图不用确认；目标问题没答时主推「回答目标问题」，后面跟主线下一步（没回答按原目标建，不拦着）。"""
+    _client, _workspaces, _manager, _project_id, root = env
+    from app.services.flow import model
 
-    pending = flow_state._blueprint_candidates({"blueprint": {"state": "draft", "goal_pending": True}})
-    assert pending[0]["id"] == "answer_goal" and pending[0]["action"]["params"] == {"dialog": "blueprint"}
-    assert all(item["id"] != "confirm_blueprint" for item in pending)
-    normal = flow_state._blueprint_candidates({"blueprint": {"state": "draft", "next": "L2"}})
-    assert normal[0]["id"] == "confirm_blueprint"
+    flow, module = model.load_for(root), model.flow_state(root)
+    states = {node["id"]: {"state": "confirmed", "flags": {}} for node in flow["nodes"]}
+    states["core.model"] = {"state": "not_ready", "flags": {}}
+    following = {"slice_id": "all", "slice_name": "全部", "step": "object", "label": "提取对象",
+                 "command": "/ontology-extract-object", "sliced": False}
+    pending = module.suggest(flow, states, {"blueprint": {"state": "draft", "goal_pending": True},
+                                            "slice_next": following})
+    assert pending["primary"]["id"] == "answer_goal" and pending["primary"]["action"]["params"] == {"dialog": "blueprint"}
+    assert pending["secondary"][0]["action"]["command"] == "/ontology-extract-object"
+    answered = module.suggest(flow, states, {"blueprint": {"state": "draft"}, "slice_next": following})
+    assert answered["primary"]["action"]["command"] == "/ontology-extract-object"
+    every = [pending["primary"], *pending["secondary"], answered["primary"], *answered["secondary"]]
+    assert not {"confirm_blueprint", "adjust_blueprint", "replan", "plan_slices"} & {item["id"] for item in every}
 
 
 def test_keeping_the_goal_leaves_it_unchanged(env):

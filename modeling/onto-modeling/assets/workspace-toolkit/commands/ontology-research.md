@@ -18,7 +18,7 @@ Conduct domain research for an ontology modeling project. The domain is: $ARGUME
 
 命令结束前执行 `release research` 与 `update-progress`。
 
-5. **只做分段规划**：`$ARGUMENTS` 里有 `phase=blueprint`（或 `phase=slices`）时，不重做资料分析：先跑一次
+5. **只记叫法与待定问题**：`$ARGUMENTS` 里有 `phase=blueprint`（或 `phase=slices`）时，不重做资料分析：先跑一次
    Step 4.5 的内容验收（只核验，不改报告），通过后直接到 Step 6；没通过按 Step 4.5 的未通过话术处理并停下。
 
 ## 业务知识识别（贯穿整个命令）
@@ -164,40 +164,34 @@ For append mode use: `git commit -m "research: append {FOCUS_DIRECTIONS}"`
 
 commit 前置 hook 会再跑一次同一检查；未通过时提交会被阻止，这是预期行为。
 
-**Step 4.5 已验收（退出码 0）时：** 直接进 Step 6 做分段规划。
+**Step 4.5 已验收（退出码 0）时：** 直接进 Step 6 记下统一叫法与待定问题。
 
 
 **Step 4.5 修正两轮仍未通过时**（不要提议提取对象）：先 `python3 .claude/scripts/state_helper.py acquire research confirm`，
 用业务话说明报告还差什么（哪些出处对不上、哪些字段在表头里找不到），只把需要用户给业务结论的条目问出来，
 不列「修正 / 人工确认」这类菜单——怎么改报告是你的事。用户回复后 `acquire research start`，回到 Step 4.5，通过后进 Step 6。
 
-## Step 6: 分段规划（建模蓝图）
+## Step 6: 统一叫法与待定问题（建模蓝图）
 
-资料分析含分段规划（详设第 9 章建议 2）：把业务拆成几段，之后按段建模，每段单独走完「对象 → 操作 → 规则 → 写入即查」，
-每一轮结束自动存成版本。蓝图文件 `research/blueprint.json` **只由脚本写**：你先写一份草稿 JSON，再让脚本校验、编号后落盘。
+建模不分段，资料分析之后一次提取整个项目（F8）。蓝图文件 `research/blueprint.json` 只记两样东西：资料里同一个东西的
+几种叫法定用哪个、需要用户给业务结论的问题。它**只由脚本写**：你先写一份草稿 JSON，再让脚本校验、编号后落盘。
 
-1. 读已验收的资料分析报告（业务项清单、候选段、缺口与待决）和资料用途清单，按下面的规则分段：
-   - 一段是一条能单独讲清楚、单独验证的业务链路：通常 1 个主操作、3～8 个对象、几条规则；
-   - 被几段共用的对象（如基础档案）放在最先做的那一段，别的段依赖它、只引用不改；
-   - 按依赖排顺序：被依赖的在前；
-   - 资料少、业务链路只有一条时只划一段（全量模式），不要硬拆。
+1. 读已验收的资料分析报告和资料用途清单，找出：
+   - 同一个业务概念在资料里有几种叫法的（如「客户 / 顾客」），定一个用资料里最常用、最正式的叫法；
+   - 需要用户给业务结论的取舍（以哪个为准、要不要建），编号、文件名、格式这些你自己定，不问。
 2. 写草稿 `.ontology-state/blueprint-draft.json`（字段名照写，名称用资料里的业务叫法，不编造）：
 
    ```json
-   {"slices": [{"name": "段名（≤20 字）", "core_flow": "核心链路（≤30 字）", "depends_on": ["依赖的段名"],
-                "objects": ["对象名"], "operations": ["操作名"], "rules": ["规则名"],
-                "sources": [{"anchor": "出处锚点", "label": "出处短标签"}]}],
-    "terms": {"aligned": ["已经统一的叫法"], "ambiguous": [{"variants": ["叫法一", "叫法二"]}]},
+   {"slices": [{"name": "全部"}],
+    "terms": {"aligned": ["已经统一的叫法"], "ambiguous": [{"variants": ["叫法一", "叫法二"], "chosen": "叫法一"}]},
     "questions": [{"title": "需要用户回答的业务问题", "background": "为什么要问（一句）", "options": ["选项一", "选项二"]}]}
    ```
 
-   对象、操作、规则的名字就是之后条目的文件名，不能带 `/ \ # ? & | [ ]`。资料里没有规则的段，`rules` 留空。
-   要解决的问题就是平台注入的「建模目标」，草稿里不写目标；读不了的资料由资料区显示，草稿里也不写「不在范围」。
+   `slices` 固定只写一段「全部」，不要拆。要解决的问题就是平台注入的「建模目标」，草稿里不写目标；读不了的资料由资料区显示，草稿里也不写「不在范围」。
    **资料和建模目标对不上、或目标太笼统**（比如目标说补货单，资料讲的是盘点）时，在 `questions` 里加一个目标问题，
    不要用 AskUserQuestion 问（自主构建时那会被策略代答）：
    `{"kind": "goal", "title": "资料讲的是…，和目标里的…对不上，以哪个为准？", "background": "一句依据",
-   "suggested_goal": "按资料改写的一句目标（必写：用户选它，项目目标就改成这句）"}`。选项由脚本生成；用户在蓝图上回答，选了改写或自己改了目标才改项目目标。
-   这类业务取舍（以哪个为准、要不要建）放进 `questions`；编号、文件名、格式这些你自己定，不问。
+   "suggested_goal": "按资料改写的一句目标（必写：用户选它，项目目标就改成这句）"}`。选项由脚本生成；用户回答了改写或自己改了目标才改项目目标，没回答之前按原目标建模。
 3. 落盘：
 
    ```bash
@@ -205,13 +199,8 @@ commit 前置 hook 会再跑一次同一检查；未通过时提交会被阻止�
    ```
 
    输出 `ok:…` 才算写好；输出 `error:…` 时按提示改草稿再写，不要手工改 `research/blueprint.json`。
-   已有蓝图时（重新划分）草案号会加 1，同名的段沿用原来的编号。
-4. 提交：`git add research/blueprint.json && git commit -m "research: 建模蓝图"`。
+4. 提交：`git add research/blueprint.json && git commit -m "research: 统一叫法与待定问题"`。
 
-界面会出建模蓝图卡和「确认后怎么建」，回复里不要重复整份蓝图。先 `python3 .claude/scripts/state_helper.py release research`，
-再用一两句说明划了几段、哪一段推荐先做、有几个问题等用户回答；不列下一步菜单（界面的建议条会给出），
-也**不要用提问（AskUserQuestion / ask_user）问「接下来怎么建」「先做哪一段」**——说完就 Stop，不开始建模。
-蓝图在界面上确认，用户在对话里说「确认」时提醒他点「确认蓝图」。
-
-用户要调整分段（合并、排除、改名、调顺序）时，请他在建模蓝图里直接改；要「把某一段按章节拆分」时，重读那一段的
-资料，按上面的规则重写草稿并再跑一次 `blueprint.py write`。
+先 `python3 .claude/scripts/state_helper.py release research`，再用一两句说明资料分析的结论、定了几个统一叫法、有几个问题等用户回答；
+不列下一步菜单（界面的建议条会给出），也**不要用提问（AskUserQuestion / ask_user）问「接下来怎么建」**——说完就 Stop，
+不在这一轮开始建模。下一步是提取对象，用户点建议条或发 `/ontology-extract-object` 开始，不用先确认什么。

@@ -13,6 +13,7 @@
   （`register_prompt_hint_provider`，启动时在 `app/wiring.py` 登记；Jiuwen worker 进程自己登记一份）。
 
 - 自主构建（方案 B12）：运行中给这条对话注入段说明、台账摘要与用户补充，每条都带（`register_autobuild_hint_provider`）。
+- 资料文本版：建模命令开始时仍没有文本版的资料（`material_wait.note`），点名按未读处理，每条建模命令都带。
 
 宿主给每个引擎实例建一个 `Injector`（经 EngineContext 交给引擎）：引擎在消息真正送到模型的那一刻
 调 `context_for(原文)`——Claude 在 send() 时，Jiuwen 在轮内积压的消息开始跑时——阶段与下一步按
@@ -107,6 +108,21 @@ def goal_hint(project_root: Path) -> str:
     return f"建模目标（建项目时用户写的，以它为准；不要改写，也不要另拟一份）：{goal}"
 
 
+def terms_hint(project_root: Path) -> str:
+    """资料分析定下的统一叫法（F8：不分段以后由这里带给建模命令，原来在段说明里）。读助手所在的工作区
+    （副本里刚写的蓝图也算）；没有蓝图、没有定下的叫法、项目锁定的旧 core 没有这个函数时返回空串。"""
+    from ...kernel.changesets import worktree
+    from ..flow import blueprint
+
+    root = Path(project_root)
+    try:
+        module = blueprint.script(worktree.main_root(root))
+        line = module.terms_line(module.load(root)) if hasattr(module, "terms_line") else ""
+    except Exception:  # noqa: BLE001 - 蓝图读不出来不挡消息，本条不带
+        return ""
+    return f"{line}（资料分析定的，条目命名和正文照用）" if line else ""
+
+
 def build_context(
     project_root: Path,
     *,
@@ -122,7 +138,7 @@ def build_context(
     脚本超时）时本条不带阶段提示，digest 原样传回。
     """
     hint = stage_hint(project_root)
-    goal = goal_hint(project_root)
+    goal = "\n".join(part for part in (goal_hint(project_root), terms_hint(project_root)) if part)
     digest = last_injected
     stage_part = ""
     if hint is not None or goal:
@@ -139,7 +155,8 @@ def build_context(
             stage_part = hint
     rules = prompt_hint(project_root, user_text)
     autobuild = autobuild_hint(project_root, conversation_id)
-    text = "\n\n".join(part for part in (stage_part, autobuild, rules) if part)
+    materials = material_hint(project_root, user_text)
+    text = "\n\n".join(part for part in (stage_part, autobuild, materials, rules) if part)
     return InjectionResult(text=text, digest=digest, stage_hint=stage_part, prompt_hint=rules)
 
 
@@ -307,4 +324,17 @@ def autobuild_hint(project_root: Path, conversation_id: str | None) -> str:
         return provider(Path(project_root), conversation_id) or ""
     except Exception:  # noqa: BLE001 - 注入是增强信息
         _log.warning("项目 %s 的自主构建注入算不出来，本条不带", Path(project_root).name, exc_info=True)
+        return ""
+
+
+# ---- 资料文本版（数据 schema 自动处理）----
+
+
+def material_hint(project_root: Path, user_text: str) -> str:
+    from . import material_wait
+
+    try:
+        return material_wait.note(Path(project_root), user_text)
+    except Exception:  # noqa: BLE001 - 注入是增强信息
+        _log.warning("项目 %s 的资料文本版说明算不出来，本条不带", Path(project_root).name, exc_info=True)
         return ""

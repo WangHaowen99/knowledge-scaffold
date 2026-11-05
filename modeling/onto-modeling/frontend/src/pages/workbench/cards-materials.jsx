@@ -12,7 +12,7 @@ import {
   MatIcon, pageCommand, useMaterialUpload, useOpenDialog,
 } from './materials/parts.jsx';
 import {
-  acceptLabel, confirmOptions, depLabel, goalPending, miniStatus, orderLabel, purposeLabel, readState,
+  acceptLabel, goalPending, miniStatus, purposeLabel, readState,
 } from './materials/model.js';
 import '../../styles/materials.css';
 
@@ -137,78 +137,39 @@ function ResearchSummaryCard({ card }) {
   );
 }
 
-// ---------- 建模蓝图卡 ----------
-function OrderTag({ slice, index }) {
-  const o = orderLabel({ ...slice, origin: index }, index);
-  if (o.tone === 'blue') return <span className="chip blue sm">{o.text}</span>;
-  if (o.tone === 'amber') return <span className="chip amber sm">{o.text}</span>;
-  return <span className="xs faint">{o.text}</span>;
-}
-
+// ---------- 建模蓝图卡：要解决的问题、术语口径、待你回答（F8 起不分段、不用确认；双击或点链接打开蓝图去答） ----------
 function BlueprintCard({ card }) {
   const open = useOpenDialog();
   const project = useProject();
-  const slices = card.slices || [];
-  const confirmed = card.state === 'confirmed';
   const terms = card.terms || {};
-  const options = confirmOptions(card);
-  const l4 = options.find((o) => o.mode === 'L4');
-  const l2 = options.find((o) => o.mode === 'L2');
   // 要解决的问题只有一份：项目的建模目标（改了目标，卡片跟着变）；旧卡片退回卡上的文字
   const goal = project?.meta?.goal || card.goal_md;
   const asking = goalPending(card);
-  const blocked = asking ? '先回答关于建模目标的问题' : undefined;
+  // 目标问题在「要解决的问题」下面答，不再算进「待你回答」
+  const others = Math.max(0, (card.questions_pending || 0) - (asking ? 1 : 0));
+  const toDialog = () => open('blueprint');
   return (
-    <CC
-      icon="layers" title={card.title || `建模蓝图 · ${card.version_label}`}
-      chip={card.research_verified ? <Chip tone="teal" sm icon="shieldok">资料分析报告 · 已核验</Chip> : <Chip tone="amber" sm icon="alert">资料分析报告 · 待核验</Chip>}
-      dbl onDoubleClick={() => open('blueprint')}
-      foot={(
-        <>
-          <Button size="sm" icon="layers" onClick={() => open('blueprint')}>调整分段…</Button>
-          <span className="sp" />
-          {confirmed ? <span className="wx-ok"><Icon name="check" size={14} />蓝图已确认 · {card.version_label}</span> : (
-            <>
-              {l4 ? <Button size="sm" icon="rocket" disabled={asking} title={blocked} onClick={() => open({ kind: 'build', next: 'L4' })}>{l4.label || '确认，一路建完…'}</Button> : null}
-              {l2 ? <Button size="sm" kind="primary" icon="hand" disabled={asking} title={blocked} onClick={() => open({ kind: 'build', next: 'L2' })}>{l2.label || '确认，一段一段来'}</Button> : null}
-            </>
-          )}
-        </>
-      )}
-    >
+    <CC icon="layers" title={card.title || `建模蓝图 · ${card.version_label}`} dbl onDoubleClick={toDialog}>
       <div className="en-kv">
         <span>要解决的问题</span>
         <div>
           {goal}
-          {asking ? <div className="xs mt4" style={{ color: 'var(--amber)' }}>{card.goal_question.title} <a className="link" onClick={() => open('blueprint')}>去回答</a></div> : null}
+          {asking ? <div className="xs mt4" style={{ color: 'var(--amber)' }}>{card.goal_question.title} <a className="link" onClick={toDialog}>去回答</a></div> : null}
         </div>
-      </div>
-      <div className="mt12">
-        <div className="en-bps hd"><span /><span>分段</span><span>中心流程</span><span>规模</span><span>依赖 · 顺序</span></div>
-        {slices.map((s, i) => {
-          const dep = depLabel(s, slices);
-          return (
-            <div className={cx('en-bps', s.excluded && 'ex')} key={s.id}>
-              <span className="ix">{i + 1}</span>
-              <b className="ell" style={{ fontWeight: 600 }}>{s.name}</b>
-              <span className="muted ell">{s.core_flow}</span>
-              <span className="xs num muted">对象 ≈{s.scale?.objects ?? '—'} · 规则 ≈{s.scale?.rules ?? '—'}</span>
-              <span className="row g8">
-                {dep === '无' ? <span className="xs faint">不依赖其他段</span> : <span className="xs muted">依赖 {dep}</span>}
-                <OrderTag slice={s} index={i} />
-              </span>
-            </div>
-          );
-        })}
       </div>
       <div className="en-kv mt12">
         <span>术语与口径</span>
         <div>
           {terms.aligned ?? 0} 条已对齐
-          {terms.ambiguous ? <>，<a className="link" onClick={() => open('blueprint')}>{terms.ambiguous} 条有歧义待你统一</a></> : null}
-          {card.questions_pending ? <>；另有 <a className="link" onClick={() => open('blueprint')}>{card.questions_pending} 个问题待回答</a></> : null}
+          {terms.ambiguous ? <>，<a className="link" onClick={toDialog}>{terms.ambiguous} 条有歧义待你统一</a></> : null}
         </div>
       </div>
+      {others ? (
+        <div className="en-kv mt12">
+          <span>待你回答</span>
+          <div><a className="link" onClick={toDialog}>{others} 个问题</a></div>
+        </div>
+      ) : null}
     </CC>
   );
 }

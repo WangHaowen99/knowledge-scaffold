@@ -457,19 +457,13 @@ def blueprint_card(module, doc: dict, card_id: str, *, research_verified: bool, 
         "terms": {"aligned": len(data["terms"]["aligned"]), "ambiguous": len(data["terms"]["ambiguous"])},
         "questions_pending": sum(1 for item in data["questions"] if not item.get("answer")),
         "research_verified": research_verified,
-        # 卡片底部的两个按钮（设计调整 R3，取代「确认后怎么建」卡）：草案时给，一路建完要等自主构建可用
         "confirm_options": confirm_options(data["state"]),
     }
 
 
 def confirm_options(state: str) -> list[dict]:
-    """蓝图卡底部的确认按钮（BP-03 的 next）：草案时「确认，一段一段来」，自主构建可用时再加「确认，一路建完…」。"""
-    if state == "confirmed":
-        return []
-    options = [{"mode": "L2", "label": "确认，一段一段来"}]
-    if autobuild_available():
-        options.append({"mode": "L4", "label": "确认，一路建完…"})
-    return options
+    """蓝图卡底部的确认按钮：F8 起不分段、蓝图不用确认，恒为空（BP-03 仍可调，给 F8 之前的界面与脚本）。"""
+    return []
 
 
 def research_card(root: Path, card_id: str) -> dict | None:

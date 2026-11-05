@@ -121,7 +121,7 @@ export const ERROR_MESSAGES = {
   write_scope_locked: (d) => (d?.state === 'pending_confirm'
     ? '这些条目和助手这一轮的修改有冲突，在待处理里选好保留哪边后才能编辑'
     : d?.state === 'autobuild_slice'
-      ? '自主构建正在改这一段，完成后才能编辑'
+      ? '自主构建正在改这些条目，完成后才能编辑'
       : '助手正在改这些条目，这一轮结束后才能编辑'),
   check_rejected: '检查发现硬伤，没有保存',
   gate_failed: '门禁检查没有通过',
@@ -158,7 +158,6 @@ export const ERROR_MESSAGES = {
   node_not_skipped: '这一步没有被跳过',
   flow_assembly_failed: '流程组装没有通过',
   blueprint_not_found: '还没有建模蓝图',
-  blueprint_not_confirmed: '建模蓝图还没确认',
   blueprint_question_pending: '先回答蓝图里关于建模目标的问题',
   slice_invalid: '分段调整不合法',
   low_confidence_batch: '把握低的变更点不能批量接受，请单独确认',

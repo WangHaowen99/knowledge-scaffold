@@ -131,12 +131,13 @@ def normalize(policy: dict, *, slice_ids: list[str], node_ids: list[str]) -> dic
     if out_scope["mode"] not in SCOPE_MODES:
         fields["scope.mode"] = "enum"
     picked = scope.get("slice_ids") or []
-    if not isinstance(picked, list) or any(item not in slice_ids for item in picked):
+    if not isinstance(picked, list):
         fields["scope.slice_ids"] = "unknown"
     else:
         out_scope["slice_ids"] = [item for item in slice_ids if item in picked]
     if out_scope["mode"] == "selected" and not out_scope["slice_ids"] and "scope.slice_ids" not in fields:
-        fields["scope.slice_ids"] = "required"
+        # F8 不再分段：老策略里存的段（s1…）都不在了，按「全部没做完的」跑，不报错
+        out_scope["mode"] = "all_pending"
     for key in ("refresh_stale_first", "generate_scenarios", "include_optional"):
         if not isinstance(out_scope[key], bool):
             fields[f"scope.{key}"] = "bool"

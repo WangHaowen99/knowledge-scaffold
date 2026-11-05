@@ -52,9 +52,10 @@ class ConvertLimits:
     """单次转换的上限：网关按票据预算与自身上限取小的，交给子进程。"""
 
     max_pages: int = 1000            # PDF 只转前这么多页
-    max_rows: int = 2000             # Excel 每个工作表只转前这么多行
-    max_columns: int = 50
-    max_sheets: int = 50
+    # Excel 的表头总是全部工作表、全部列（对象抽取按表头取表名、列名）；每个工作表连表头最多转这么多行、这么多格，
+    # 宽表少转几行数据（50 列的表照旧 2000 行）；全文仍不超过 max_output_chars
+    max_rows: int = 2000
+    max_sheet_cells: int = 100_000
     max_output_chars: int = 4_000_000
     max_expanded_bytes: int = 100 * 1024 * 1024   # OOXML 解压后的总大小
     max_zip_members: int = 5000

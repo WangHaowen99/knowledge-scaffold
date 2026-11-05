@@ -308,11 +308,7 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     from . import node_kinds
 
     script_runs = node_kinds.last_runs(root)
-    research = states.get("core.research")
-    if research and blueprint_context["state"] == "draft" and research["state"] in ("confirmed", "stale"):
-        # 资料分析含分段规划：蓝图草案没确认之前，这一步等你确认（详设 6.8）
-        research["state"] = "pending_confirm"
-        research["display_state"] = node_state.display("pending_confirm", research["flags"])
+    # F8 不再分段：蓝图草案不用确认，资料分析做完就是做完，不再停在「等你确认」
     nodes = []
     for node in flow.get("nodes") or []:
         item = states[node["id"]]

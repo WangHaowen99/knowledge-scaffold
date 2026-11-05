@@ -46,10 +46,14 @@ def test_policy_validation(env):
     for bad, field in (({"advanced": {"confidence_threshold": 0.3}}, "advanced.confidence_threshold"),
                        ({"advanced": {"max_fix_rounds": 5}}, "advanced.max_fix_rounds"),
                        ({"scope": {"until_node": "core.publish"}}, "scope.until_node"),
-                       ({"scope": {"mode": "selected", "slice_ids": []}}, "scope.slice_ids"),
-                       ({"scope": {"mode": "selected", "slice_ids": ["s9"]}}, "scope.slice_ids")):
+                       ({"scope": {"slice_ids": "s1"}}, "scope.slice_ids")):
         response = client.put(_url(project_id), json=bad)
         assert response.status_code == 400 and field in response.json()["details"]["fields"], bad
+    # F8 不再分段：老策略里存的段（s1…）都不在了，「选定的段」按「全部没做完的」存，不报错
+    for scope in ({"mode": "selected", "slice_ids": []}, {"mode": "selected", "slice_ids": ["s9"]}):
+        saved = client.put(_url(project_id), json={"scope": scope})
+        assert saved.status_code == 200 and saved.json()["scope"]["mode"] == "all_pending", scope
+        assert saved.json()["scope"]["slice_ids"] == []
     ok = client.put(_url(project_id), json={"scope": {"until_node": "core.validate"}})
     assert ok.status_code == 200 and ok.json()["scope"]["until_node"] == "core.validate"
 

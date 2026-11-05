@@ -14,7 +14,7 @@ const FILTERS = {
 };
 const RESOLVED_TEXT = {
   answer: '已回答', arbitrate: '已裁决', execute: '清单已确认，开始修改', accept: '已接受', rejudge: '已改判，助手会重做受影响的部分',
-  revert_slice: '已回退这一段', use_generic: '先按通用要求处理', refresh: '已刷新', keep_stale: '保持过期', resume: '已续跑', abandon: '已放弃',
+  revert_slice: '已回退到运行前', use_generic: '先按通用要求处理', refresh: '已刷新', keep_stale: '保持过期', resume: '已续跑', abandon: '已放弃',
   send_to_evolution: '已交给反馈演进处理', dismiss: '已忽略',
 };
 

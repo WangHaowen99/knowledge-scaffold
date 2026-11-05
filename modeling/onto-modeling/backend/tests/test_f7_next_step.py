@@ -215,6 +215,11 @@ def _suggest(root, states: dict, context: dict, check=None) -> dict:
     return module.suggest(flow, states, context, check)
 
 
+# 建模的下一步（F8 起只有「全部」一段，不带分段）
+FULL_NEXT = {"slice_id": "all", "slice_name": "全部", "step": "object", "label": "提取对象",
+             "command": "/ontology-extract-object", "sliced": False}
+
+
 def _states(root, **overrides) -> dict:
     flow = model.load_for(root)
     out = {node["id"]: {"state": "confirmed", "flags": {}} for node in flow["nodes"]}
@@ -234,10 +239,13 @@ def test_flow_rules_in_order(api):
     conflict = _suggest(root, fresh, {"blueprint": {"state": "none"}, "changeset": {"id": "cs-1", "state": "conflict"}})
     assert conflict["primary"]["label"] == "处理冲突"
     assert [item["id"] for item in conflict["secondary"]] == [item["id"] for item in items(mainline)][:2]
-    # 6：蓝图草案待确认
+    # 6：目标问题没答：主推去回答，后面跟主线下一步（F8：蓝图草案不用确认，不拦着往下建）
+    goal = _suggest(root, _states(root, core_research="confirmed", core_model="not_ready"),
+                    {"blueprint": {"state": "draft", "goal_pending": True}, "slice_next": FULL_NEXT})
+    assert [item["label"] for item in items(goal)][:2] == ["回答目标问题", "提取对象"]
     draft = _suggest(root, _states(root, core_research="confirmed", core_model="not_ready"),
-                     {"blueprint": {"state": "draft", "next": "L2"}})
-    assert [item["label"] for item in items(draft)] == ["确认蓝图", "调整分段", "重新规划分段"]
+                     {"blueprint": {"state": "draft"}, "slice_next": FULL_NEXT})
+    assert draft["primary"]["label"] == "提取对象"
     # 7：过期的步骤，按钮写清哪一段哪一步，说明行写上游
     stale_step = {"slice_id": "s1", "slice_name": "补货", "step": "rule", "step_label": "规则", "label": "提取规则",
                   "command": "/ontology-extract-rule-metric", "sliced": True, "upstream": "对象、操作"}
@@ -283,7 +291,7 @@ def test_flow_rule_commands_are_accepted_by_the_api(api):
     produced = [
         _suggest(root, fresh, {"blueprint": {"state": "none"}, "changeset": {"id": "cs-1", "state": "conflict"}}),
         _suggest(root, _states(root, core_research="confirmed", core_model="not_ready"),
-                 {"blueprint": {"state": "draft", "next": "L2"}}),
+                 {"blueprint": {"state": "draft", "goal_pending": True}, "slice_next": FULL_NEXT}),
         _suggest(root, _states(root, core_model="stale"), {"slice_stale": [stale_step]}),
         _suggest(root, _states(root), {"stage": "校验待审阅"}),
         _suggest(root, fresh, {"blueprint": {"state": "none"}}),

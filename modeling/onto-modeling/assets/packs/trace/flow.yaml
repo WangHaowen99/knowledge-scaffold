@@ -1,10 +1,6 @@
-# 场景走查包往主流程上挂的（详设 6.8，0.10.0 起按段）：
-# - 段内「场景」一步（`slice_steps`，挂在建模节点的分段里）：示例数据按场景需要生成，不单独占一步；
-# - 全量回归 trace.trace 串在校验之后，这时主线上的「校验」显示为「校验与走查」（`node_titles`）。
+# 场景走查包往主流程上挂的（详设 6.8）：全量回归 trace.trace 串在校验之后，这时主线上的「校验」显示为「校验与走查」
+# （`node_titles`）。F8 起不分段，建模里不再有按段的「场景」一步（与插件化之前一致：走查在校验之后做）。
 # 完成判定用 core 的探针（testcase）。
-slice_steps:
-  - node: core.model
-    step: {id: scenario, label: 场景, title: 场景走查, command: /ontology-trace, action: 场景走查, kinds: [testcase], done: [testcase], stale_on: [object, operation], after: check}
 node_titles:
   core.validate: 校验与走查
 nodes:

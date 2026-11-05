@@ -1,6 +1,6 @@
 // 流程（契约 FL-01 / EP-01）的前端视图计算。
 // 阶段定义只有一处：core 包的 flow.yaml，前端不自带阶段表，节点、分组、命令归属都从 GET /flow 读（ADR 0025）。
-// P1 的 /flow 只给 4 种状态、命令文本形式的 actions、顶层 sections 与 commands；P2 起给全量的 8 种状态与分段。
+// P1 的 /flow 只给 4 种状态、命令文本形式的 actions、顶层 sections 与 commands；P2 起给全量的 8 种状态与建模的步骤。
 // normalizeFlow 把两种形状收成同一份视图数据，页面只认归一后的字段。
 
 import { isEvidenceNode } from './evidence.js';
@@ -146,11 +146,6 @@ export function suggestionCommand(action) {
   return { command: action.command, ...(action.args ? { args: action.args } : {}), text };
 }
 
-// 没有蓝图时（FL-01 blueprint.state = none）「调整分段」改为发分段规划（contract-changes B4d 合并第 2 条）
-export const planSlicesCommand = (flow) => (flow?.blueprint?.state === 'none'
-  ? { command: '/ontology-research', args: { phase: 'blueprint' }, text: '' }
-  : null);
-
 // 命令文本 → 命令名：去掉斜杠与 `ontology-` 前缀，只取第一个词（`/ontology-trace 全部` → `trace`）
 export function commandName(text) {
   const m = /^\/(\S+)/.exec((text || '').trim());
@@ -195,15 +190,13 @@ export function withoutEvidence(flow, evidenceOn) {
   };
 }
 
-// 分段小进度条每一格的悬停：「规则 · 已跳过」
-const SLICE_STAGE_TEXT = {
-  not_ready: '未开始', ready: '可开始', running: '进行中', pending_confirm: '待确认', confirmed: '已确认',
-  stale: '已过期', skipped: '已跳过', blocked: '被挡住', draft: '草稿', auto: '自主完成',
-};
-export function sliceStageTitle(stage, state) {
-  const text = SLICE_STAGE_TEXT[state];
-  return text ? `${stage.label} · ${text}` : stage.label;
-}
+// F8 起不分段：建模只有一段「全部」（id all），界面上不提它，要有个叫法时叫「建模」。
+// F8 之前按段跑的运行记录、锁里还带着分段名，照原名显示
+export const FULL_SLICE_ID = 'all';
+export const sliceName = (id, name) => (id === FULL_SLICE_ID ? '' : name || '');
+export const unitTitle = (id, name) => (id === FULL_SLICE_ID ? '建模' : name || '');
+// 一组行里有两段以上真的分段（老运行）时才出「分段」的列和说法
+export const multiSlice = (ids) => (ids || []).filter((id) => id && id !== FULL_SLICE_ID).length > 1;
 
 // 脚本节点的运行结果（FL-05 同步返回的 run，或 node_run_failed 错误）→ 通过 / 失败 + 一行摘要
 const firstLine = (t) => String(t || '').split('\n').map((x) => x.trim()).find(Boolean) || '';

@@ -1,4 +1,5 @@
 // Studio 图谱与表格页的纯逻辑：条目类型、写入范围锁的说法、草稿改动摘要、提交结果文案、证据标签
+import { sliceName } from '../../state/flow.js';
 import { isLocked, lockState } from '../../state/readonly.js';
 
 // 条目类型：界面叫法、标签色、图谱里的形状与颜色（同设计稿 SD_COL、表格 T）
@@ -62,17 +63,18 @@ const SHORT = { assistant_running: '运行中', pending_confirm: '有冲突', au
 export function lockCopy(lock, target, name, { affected = [] } = {}) {
   if (!target || !isLocked(lock, target)) return null;
   const state = lockState(lock);
-  const scope = lock.slice?.name ? `「${lock.slice.name}」` : '这一段';
+  // F8 之前按段跑的自主构建锁带分段名；不分段（「全部」）时不提段
+  const unit = sliceName(lock.slice?.id, lock.slice?.name);
   const decided = !!target.id && affected.includes(target.id);
-  const until = state === 'assistant_running' ? '这一轮结束前只读' : state === 'pending_confirm' ? '选好保留哪边前只读' : '这一段完成前只读';
-  const pop = decided ? '等你决定的口径会改到它，决定前只读' : `在${scope}的写入范围里，${until}`;
+  const until = state === 'assistant_running' ? '这一轮结束前只读' : state === 'pending_confirm' ? '选好保留哪边前只读' : '自主构建做完这部分前只读';
+  const pop = decided ? '等你决定的口径会改到它，决定前只读' : `在${unit ? `「${unit}」的` : ''}写入范围里，${until}`;
   if (state === 'assistant_running') {
-    return { state, chip: SHORT[state], pop, title: '助手正在改这一段，这一轮结束前只读', sub: '', action: { kind: 'conversation', label: '回到对话' } };
+    return { state, chip: SHORT[state], pop, title: '助手正在改这部分内容，这一轮结束前只读', sub: '', action: { kind: 'conversation', label: '回到对话' } };
   }
   if (state === 'pending_confirm') {
-    return { state, chip: SHORT[state], pop, title: '这一段和助手这一轮的修改有冲突，选好保留哪边前只读', sub: '', action: { kind: 'confirm', label: '去处理' } };
+    return { state, chip: SHORT[state], pop, title: '这部分内容和助手这一轮的修改有冲突，选好保留哪边前只读', sub: '', action: { kind: 'confirm', label: '去处理' } };
   }
-  return { state, chip: SHORT[state] || '只读', pop, title: '自主构建正在做这一段，完成前只读', sub: '', action: { kind: 'run', label: '查看运行' } };
+  return { state, chip: SHORT[state] || '只读', pop, title: unit ? `自主构建正在做「${unit}」，完成前只读` : '自主构建正在改这部分内容，完成前只读', sub: '', action: { kind: 'run', label: '查看运行' } };
 }
 
 // 锁定条按钮去哪：运行中回到对话；合入冲突去待处理选保留哪边（F3）；自主构建去运行页

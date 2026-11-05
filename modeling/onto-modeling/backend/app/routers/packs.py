@@ -23,7 +23,8 @@ from ..services.packs import catalog, registry, service
 from ..services.packs import ui as pack_ui
 from ..services.packs.assembler import AssemblyError
 from ..services.packs.repository import RepositoryError
-from ..services.packs.uploads import MAX_UPLOAD_BYTES, UploadError, UploadStore
+from ..services.packs.uploads import MAX_UPLOAD_BYTES, SCOPE_PRIVATE, UploadError, UploadStore
+from ..services.uploads import LIMITS
 
 router = APIRouter(tags=["packs"])
 LEGACY_UPLOAD_PATH = "/api/settings/assets/upload"
@@ -70,7 +71,7 @@ async def list_packs(request: Request, category: str = "", q: str = "", project_
     with _errors():
         return await asyncio.to_thread(
             catalog.catalog, deps.workspaces, category=category, q=q, project_id=project_id,
-            installed_only=installed_only, updatable_only=updatable_only,
+            viewer=deps.actor(request), installed_only=installed_only, updatable_only=updatable_only,
         )
 
 
@@ -80,6 +81,7 @@ async def get_pack(name: str, request: Request, project_id: str = "", version: s
     if project_id:
         deps.require_owner(project_id, request)
     with _errors():
+        service.require_visible(deps.workspaces, name, deps.actor(request), project_id)
         detail = await asyncio.to_thread(catalog.detail, deps.workspaces, name, project_id=project_id, version=version)
     detail["released_at"] = deps.iso(detail.get("released_at"))
     detail["enabled_at"] = deps.iso(detail.get("enabled_at"))
@@ -94,6 +96,7 @@ async def compatibility(name: str, version: str, request: Request, project_id: s
         raise ApiError("invalid_argument", "project_id 必填", 400, {"fields": {"project_id": "required"}})
     deps.require_owner(project_id, request)
     with _errors():
+        service.require_visible(deps.workspaces, name, deps.actor(request), project_id)
         return await asyncio.to_thread(service.compatibility, deps.workspaces, name, version, project_id)
 
 
@@ -120,6 +123,7 @@ async def enable_pack(project_id: str, request: Request):
     if not name:
         raise ApiError("invalid_argument", "name 必填", 400, {"fields": {"name": "required"}})
     with _errors():
+        service.require_visible(deps.workspaces, name, deps.actor(request), project_id)
         result = await asyncio.to_thread(service.enable, deps.workspaces, project_id, name,
                                          body.get("version") or None, deps.actor(request))
     _audit(request, "pack.enable", {"name": name, "version": (result["pack"] or {}).get("locked_version"),
@@ -229,7 +233,8 @@ def _upload_view(record: dict, *, full: bool = False) -> dict:
     view = {
         "id": record["id"], "filename": record["filename"], "size": record["size"],
         "uploaded_at": deps.iso(record["uploaded_at"]), "uploaded_by": record["uploaded_by"],
-        "tenant_label": record.get("tenant_label"), "state": record["state"], "summary": record["summary"],
+        "tenant_label": record.get("tenant_label"), "scope": record.get("scope"), "state": record["state"],
+        "summary": record["summary"],
         "manifest_ok": record["manifest_ok"], "checksums_ok": record["checksums_ok"],
         "name": record.get("name"), "version": record.get("version"),
     }
@@ -247,21 +252,26 @@ def _check_and_maybe_publish(store: UploadStore, upload_id: str, legacy: bool, a
         store.publish(upload_id, channel="stable", rollout=None, by=actor)
 
 
+async def _receive(file: UploadFile, limit: int) -> Path:
+    """上传的 zip 落到临时文件，超过上限直接拒。"""
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        size = 0
+        while chunk := await file.read(1 << 20):
+            size += len(chunk)
+            if size > limit:
+                Path(tmp.name).unlink(missing_ok=True)
+                raise ApiError("payload_too_large", f"插件包超过 {limit // (1 << 20)} MiB", 413, {"limit_bytes": limit})
+            tmp.write(chunk)
+        return Path(tmp.name)
+
+
 @router.post("/api/v1/admin/packs/uploads")
 async def upload_pack(request: Request, background: BackgroundTasks, file: UploadFile = File(...),
                       tenant_label: str = Form("")):
     """PL-13：上传插件包，静态检查在后台跑（响应 state=checking）。"""
     deps.require_role(request, "admin")
     legacy = getattr(request.state, "legacy_path", "") == LEGACY_UPLOAD_PATH
-    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-        size = 0
-        while chunk := await file.read(1 << 20):
-            size += len(chunk)
-            if size > MAX_UPLOAD_BYTES:
-                Path(tmp.name).unlink(missing_ok=True)
-                raise ApiError("payload_too_large", "插件包超过 200 MiB", 413, {"limit_bytes": MAX_UPLOAD_BYTES})
-            tmp.write(chunk)
-        archive = Path(tmp.name)
+    archive = await _receive(file, MAX_UPLOAD_BYTES)
     store = _uploads()
     try:
         with _errors():
@@ -337,4 +347,67 @@ async def reject_upload(upload_id: str, request: Request):
         notifications.notify(uploader, "upload_rejected", "插件包被退回",
                              f"{record.get('name') or ''} {record.get('version') or ''}：{reason}".strip(),
                              action={"label": "查看", "page": "plugin-upload", "params": {"upload": upload_id}})
+    return _upload_view(record)
+
+
+# ---- 自己的插件包（登录即可，ADR-0079）：只看得到自己的上传，装好后只有自己能启用 ----
+
+
+def _own_upload(store: UploadStore, upload_id: str, request: Request) -> dict:
+    record = store.get(upload_id)
+    if record.get("scope") != SCOPE_PRIVATE or record.get("uploaded_by") != deps.actor(request):
+        raise UploadError("not_found", "上传不存在", 404)
+    return record
+
+
+@router.post("/api/v1/me/pack-uploads")
+async def upload_own_pack(request: Request, background: BackgroundTasks, file: UploadFile = File(...)):
+    """PL-22：上传自己用的插件包，静态检查在后台跑。"""
+    archive = await _receive(file, LIMITS["pack_private_upload_bytes"])
+    store = _uploads()
+    try:
+        with _errors():
+            record = await asyncio.to_thread(store.create, archive, file.filename or "pack.zip",
+                                             by=deps.actor(request), private=True)
+    finally:
+        archive.unlink(missing_ok=True)
+    background.add_task(_check_and_maybe_publish, store, record["id"], False, deps.actor(request))
+    _audit(request, "pack.upload", {"name": record["id"], "filename": record["filename"], "scope": SCOPE_PRIVATE})
+    return JSONResponse(status_code=202, content=_upload_view(record))
+
+
+@router.get("/api/v1/me/pack-uploads")
+async def list_own_uploads(request: Request, state: str = "", cursor: str = "", limit: int = 0):
+    """PL-23：自己的上传。"""
+    records = await asyncio.to_thread(_uploads().list, state, uploaded_by=deps.actor(request))
+    page = deps.page([_upload_view(record) for record in records], cursor, limit, {"state": state})
+    return {"items": page["items"], "next_cursor": page["next_cursor"]}
+
+
+@router.get("/api/v1/me/pack-uploads/{upload_id}")
+async def get_own_upload(upload_id: str, request: Request):
+    """PL-24：自己的上传详情与静态检查。"""
+    with _errors():
+        return _upload_view(_own_upload(_uploads(), upload_id, request), full=True)
+
+
+@router.get("/api/v1/me/pack-uploads/{upload_id}/report")
+async def own_upload_report(upload_id: str, request: Request):
+    """PL-25：下载自己的检查报告。"""
+    store = _uploads()
+    with _errors():
+        _own_upload(store, upload_id, request)
+        text = store.report(upload_id)
+    return Response(content=text, media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{upload_id}-report.md"'})
+
+
+@router.post("/api/v1/me/pack-uploads/{upload_id}/install")
+async def install_own_upload(upload_id: str, request: Request):
+    """PL-26：安装到自己名下，之后在插件中心启用到项目。"""
+    store = _uploads()
+    with _errors():
+        _own_upload(store, upload_id, request)
+        record = await asyncio.to_thread(store.install_private, upload_id, by=deps.actor(request))
+    _audit(request, "pack.private_install", {"name": record["name"], "version": record["version"]})
     return _upload_view(record)

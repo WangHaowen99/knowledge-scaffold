@@ -7,6 +7,7 @@ import {
   canInterrupt, fmtDur, fmtEst, fmtTok, matrixTone, miniMetrics, reportMetrics, reportSub, runFlags, sliceSegments, stripMetrics, stripShown,
   stripTitle,
 } from '../src/pages/workbench/autobuildModel.js';
+import { previewScope } from '../src/pages/workbench/autobuildModel.js';
 import { composerState, readonlyInfo } from '../src/state/readonly.js';
 
 const at = (h, m) => new Date(2026, 10, 1, h, m).toISOString();
@@ -39,7 +40,7 @@ test('运行条：运行中显示已用时 / 预计，结束后只给用时；to
   assert.deepEqual(stripMetrics(done), [['用时', '1 小时 52 分', null, null], ['token', '5.1M', null, null]]);
   assert.equal(stripTitle(run).title, '自主构建中 · 运行 #3');
   assert.equal(stripTitle(run).sub, '当前：临期与损耗检查 › 提取规则');
-  assert.equal(stripTitle({ ...done, started_at: at(15, 10), ended_at: at(17, 2) }).sub, '15:10 – 17:02 · 全部分段完成');
+  assert.equal(stripTitle({ ...done, started_at: at(15, 10), ended_at: at(17, 2) }).sub, '15:10 – 17:02 · 全部完成');
   assert.equal(stripTitle({ ...run, state: 'paused' }).title, '已暂停 · 运行 #3');
   // 暂停在两步之间（真实运行：当前步骤为空）不留「›」
   assert.equal(stripTitle({ ...run, state: 'paused', current: { ...run.current, step_label: '' } }).sub, '停在：临期与损耗检查');
@@ -91,9 +92,10 @@ test('运行详情六格与报告卡八格', () => {
   assert.deepEqual(m[1], ['分段', '5 / 5', '临期与损耗检查部分完成']);
   assert.deepEqual(m[5], ['自动决策', '17 项', '高置信 13 · 需看 4']);
   assert.ok(!m.some(([label]) => label === '费用')); // 工作区不显示金额
-  // 没有场景（真实运行没装或没生成）时不写「全部通过」
+  // F8 起建模里没有场景这一步：没有数据时不占格
   const none = reportMetrics({ ...r, metrics: { ...r.metrics, scenarios: { passed: 0, total: 0, suspended_failures: 0 } } });
-  assert.deepEqual(none[4], ['场景推演', '0 / 0', '']);
+  assert.ok(!none.some(([label]) => label === '场景推演'));
+  assert.ok(!miniMetrics({ ...runOf('running'), scenarios: { passed: 0, total: 0 } }).some(([, label]) => label === '场景推演通过'));
   assert.match(reportSub({ ...r, started_at: at(15, 10), ended_at: at(17, 2) }), /^15:10 – 17:02 · 服务重启 1 次，已自动续跑$/);
 });
 
@@ -140,4 +142,13 @@ test('运行对话在自主构建运行中不给「打断」（S-08 回 409 auto
   assert.equal(canInterrupt(true, { running: false }), true);
   assert.equal(canInterrupt(true, null), true);
   assert.equal(canInterrupt(false, { running: false }), false);
+});
+
+test('F8 起不分段：运行条把「全部」叫「建模」；开始前预览的范围只说做到哪', () => {
+  const run = { ...runOf('running'), current: { slice_id: 'all', slice_name: '全部', step_label: '提取操作' } };
+  assert.equal(stripTitle(run).sub, '当前：建模 › 提取操作');
+  assert.match(stripTitle({ ...run, state: 'stopping' }).sub, /「建模」做完后停下/);
+  assert.equal(stripTitle({ ...run, state: 'converting', current: null }).sub, '到下一个安全点转为逐个确认');
+  assert.equal(previewScope({ slices: [{ id: 'all', name: '全部', current: '未完成', included: true }] }), '全部没做完的步骤 · 建模未完成');
+  assert.equal(previewScope({ slices: [] }), '全部没做完的步骤');
 });

@@ -108,7 +108,7 @@ export function register(ctx) {
 
   // 目录（带不带项目视角）。不带项目时不列只对某些项目适用的租户包：新建向导（不带项目）沿用 packs() 的结果
   async function cardsFor(pid, init) {
-    const all = catalogCards(flags);
+    const all = [...catalogCards(flags), ...(db.privateCards || [])]; // 普通用户装的私有包（PL-26）
     if (!pid) {
       const o = { project: false, installed: db.plugins.installed, enabledNames: [] };
       return { cards: all.filter((c) => !APPLIES_TO[c.name]).map((c) => projectCard(c, null, o)), items: null };

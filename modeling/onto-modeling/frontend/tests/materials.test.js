@@ -6,7 +6,6 @@ import { applyEvents, initialConversation, timelineBlocks } from '../src/state/c
 import { trackNodes } from '../src/state/flow.js';
 import { composerState } from '../src/state/readonly.js';
 import {
-  confirmOptions,
   MATERIAL_DIALOGS, acceptLabel, anchorLabel, anchorTokens, countPairs, miniStatus, parseAnchor, purposeLabel, readState,
   shortPosition, unreadText, verificationNote, verificationRows,
 } from '../src/pages/workbench/materials/model.js';
@@ -70,10 +69,9 @@ test('核验：有问题的排前面，通过的默认只露两条；说明里�
   assert.equal(verificationNote(mockData.verificationItems(false)), '');
 });
 
-test('输入框占位：读资料和分段规划不同；运行中是插话（助手接着做时看到）', () => {
+test('输入框占位：读资料时可以继续拖入资料；运行中是插话（助手接着做时看到）', () => {
   assert.equal(composerState({ sessionState: 'idle', researching: 'materials' }).placeholder, '给助手补充说明，或者继续拖入资料…');
   assert.equal(composerState({ sessionState: 'idle', researching: true }).placeholder, '给助手补充说明，或者继续拖入资料…');
-  assert.match(composerState({ sessionState: 'idle', researching: 'blueprint' }).placeholder, /^对蓝图有意见直接说/);
   // 运行中不再是读资料的占位，补充说明插进这一轮（文案由外壳的只读口径定）
   const running = composerState({ sessionState: 'running', researching: 'materials' });
   assert.match(running.placeholder, /补充说明/);
@@ -112,20 +110,22 @@ test('mock 阶段 materials-empty / estate-empty / blueprint', () => {
   assert.match(timelineBlocks(estate)[0].item.text, /物业报修工单处理/);
   const bp = applyEvents(initialConversation(), stages.blueprint.history());
   const types = timelineBlocks(bp).filter((b) => b.type === 'assistant').flatMap((b) => b.items).filter((x) => x.kind === 'card').map((x) => x.card.card_type);
-  // R3：不再发「确认后怎么建」卡，蓝图卡底部按 confirm_options 出按钮（contract-changes B4d 合并第 1 条）
+  // F8：蓝图不用确认，蓝图卡没有确认按钮（confirm_options 恒为空），只有一段「全部」
   assert.deepEqual(types, ['research_summary', 'blueprint']);
   const bpCard = timelineBlocks(bp).flatMap((b) => b.items || []).find((x) => x.kind === 'card' && x.card.card_type === 'blueprint').card;
-  assert.deepEqual(bpCard.confirm_options.map((o) => o.mode), ['L2', 'L4']);
+  assert.deepEqual(bpCard.confirm_options, []);
+  assert.deepEqual(bpCard.slices.map((x) => x.id), ['all']);
   assert.equal(bpCard.subtitle, '');
   assert.equal(stages.blueprint.flow(F.flow()).blueprint.state, 'draft');
   assert.equal(stages['materials-empty'].flow(F.flow()).blueprint.state, 'none');
   assert.deepEqual(stages['materials-empty'].flow(F.flow()).slices.map((x) => x.id), ['all']);
-  assert.equal(bp.suggestions.secondary.length, 2);
-  assert.equal(bp.suggestions.primary.action.type, 'confirm_blueprint');
+  // 资料分析之后不停：主推提取对象，蓝图里的问题在次选里去答
+  assert.equal(bp.suggestions.secondary.length, 1);
+  assert.equal(bp.suggestions.primary.action.command, '/ontology-extract-object');
   const node = trackNodes(stages.blueprint.flow(F.flow()))[0];
-  assert.equal(node.state, 'pending_confirm');
-  assert.equal(node.progress.label, '蓝图待确认');
-  assert.equal(stages.blueprint.flow(F.flow()).slices.length, 5);
+  assert.equal(node.state, 'confirmed');
+  assert.equal(stages.blueprint.flow(F.flow()).nodes.find((n) => n.id === 'core.model').state, 'ready');
+  assert.deepEqual(stages.blueprint.flow(F.flow()).slices.map((x) => x.id), ['all']);
   assert.ok(MATERIAL_DIALOGS.includes('blueprint'));
 });
 
@@ -185,10 +185,3 @@ test('还没传资料的项目：资料地图为空，没有蓝图', () => {
   assert.equal(s.call('GET', `${PID}/blueprint`).body.code, 'blueprint_not_found');
 });
 
-test('蓝图卡底部的确认按钮按 confirm_options：草案给两项或一项，已确认没有，旧卡没有字段只给一段一段来', () => {
-  assert.deepEqual(confirmOptions({ state: 'draft', confirm_options: [{ mode: 'L2', label: '确认，一段一段来' }] }).map((o) => o.mode), ['L2']);
-  assert.deepEqual(confirmOptions({ state: 'draft', confirm_options: [{ mode: 'L2' }, { mode: 'L4' }] }).map((o) => o.mode), ['L2', 'L4']);
-  assert.deepEqual(confirmOptions({ state: 'confirmed', confirm_options: [{ mode: 'L2' }] }), []);
-  assert.deepEqual(confirmOptions({ state: 'draft' }).map((o) => o.mode), ['L2']);
-  assert.deepEqual(confirmOptions({ state: 'draft', confirm_options: [] }), []);
-});

@@ -28,6 +28,7 @@ LIMITS = {
     "attachments_per_message": 10,
     "project_import_bytes": 200 * MIB,
     "pack_upload_bytes": 200 * MIB,
+    "pack_private_upload_bytes": 20 * MIB,
     "page_size_max": 200,
 }
 PURPOSE_LIMITS = {

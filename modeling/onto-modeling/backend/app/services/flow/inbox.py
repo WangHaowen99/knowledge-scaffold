@@ -34,7 +34,7 @@ KIND_LABELS = {
     "decision": "决策", "evidence_conflict": "证据冲突", "change_list": "变更清单", "review": "需复核",
     "suspension": "挂起", "stale": "过期", "resumable": "续跑", "feedback": "外部反馈", "report": "报告待处理",
     "changeset_conflict": "冲突", "format_migration": "格式待迁移",
-    "notification": "通知",
+    "notification": "通知", "check_findings": "检查未过",
 }
 ACTIONS = {
     "decision": ["answer"], "evidence_conflict": ["arbitrate"],
@@ -42,6 +42,7 @@ ACTIONS = {
     "suspension": ["answer", "use_generic"], "stale": ["refresh", "keep_stale"], "resumable": ["resume", "abandon"],
     "feedback": ["send_to_evolution"], "report": ["send_to_assistant"],
     "changeset_conflict": ["resolve", "discard"], "format_migration": ["migrate"], "notification": [],
+    "check_findings": ["send_to_assistant"],
 }
 FILTERS = {
     "all": None, "autobuild_review": ("review", "suspension"), "decision": ("decision",),
@@ -244,6 +245,22 @@ def _changesets(root: Path) -> list[dict]:
                   fingerprint=f"{record['id']}:{conflict.get('at')}")]
 
 
+def _check_findings(root: Path) -> list[dict]:
+    """平台代存的那一轮（助手没提交完）检查没过的错误（F8）：只看最近一个合入的变更集，最多列 20 条。"""
+    from ...kernel.changesets import store
+
+    record = next(iter(store.all_records(root)), None)
+    checks = (record or {}).get("checks") or {}
+    if not record or record.get("state") != "merged" or not record.get("collected") or not int(checks.get("errors") or 0):
+        return []
+    errors = [item for item in checks.get("findings") or [] if item.get("level") == "error"]
+    messages = [str(item.get("message") or item.get("label") or "")[:200] for item in errors][:20]
+    impact = [{"label": "问题", "items": [text for text in messages if text]}] if messages else []
+    return [_item("check_findings", record["id"], f"平台代存的这一轮有 {int(checks['errors'])} 处检查没过",
+                  source="assistant", created_at=record.get("closed_at"), impact=impact, batchable=False,
+                  extra={"messages": messages}, fingerprint=f"{record['id']}:{checks.get('errors')}")]
+
+
 def _node_items(root: Path, flow: dict) -> list[dict]:
     from . import model
     from . import state as node_state
@@ -285,6 +302,11 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
     return items
 
 
+def _unit_name(slice_ref: dict) -> str:
+    """不分段时那一段的名字是「全部」，给人看的时候叫建模（同前端 unitTitle）。"""
+    return "建模" if slice_ref.get("id") == "all" else slice_ref.get("name") or ""
+
+
 def _autobuild(project_id: str) -> list[dict]:
     """自主构建复核（详设 4.7、8.5；契约 F2 补充第 12 条）：低于阈值的自动决定一条一项；同一次运行里高置信的
     合成一项（`review:<运行>:high`）；挂起的问题一个一项。撤回了的段上的不列。"""
@@ -298,6 +320,8 @@ def _autobuild(project_id: str) -> list[dict]:
         ended = run.get("state") in runs.ENDED
         slices = run.get("slices") or {}
         pending = [entry for entry in views.live_ledger(run) if entry.get("review_state") == "pending"]
+        sliced = sum(1 for unit in run.get("units") or [] if unit.get("kind") == "slice") > 1
+        impact_label = "分段" if sliced else "步骤"
         high = [entry for entry in pending if float(entry.get("confidence") or 0) >= threshold]
         for entry in pending:
             if entry in high:
@@ -307,17 +331,18 @@ def _autobuild(project_id: str) -> list[dict]:
             items.append(_item("review", entry["id"], entry.get("summary") or entry.get("question") or "",
                                source="autobuild", created_at=entry.get("at"), slice_=slice_ref,
                                run={**ref, "at": _iso(entry.get("at"))}, confidence=entry.get("confidence"),
-                               batchable=False, impact=[{"label": "分段", "items": [slice_ref.get("name") or ""]}],
+                               batchable=False, impact=[{"label": impact_label, "items": [_unit_name(slice_ref)]}],
                                extra={"entry": entry, "run": run},
                                actions=["accept", "rejudge", "revert_slice"] if revertible else ["accept", "rejudge"]))
             items[-1]["high_confidence"] = False  # 低于这次运行的阈值
         if high:
-            names = list(dict.fromkeys((entry.get("slice") or {}).get("name") or "" for entry in high))
+            names = list(dict.fromkeys(_unit_name(entry.get("slice") or {}) for entry in high))
             item = _item("review", f"{run['run_id']}:high", f"高置信的 {len(high)} 个自动决定",
                          source="autobuild", created_at=high[-1].get("at"),
-                         slice_={"id": None, "name": f"{len(names)} 段"}, run={**ref, "at": None},
+                         slice_={"id": None, "name": f"{len(names)} 段" if sliced else "、".join(names)},
+                         run={**ref, "at": None},
                          confidence=min(float(entry.get("confidence") or 0) for entry in high),
-                         impact=[{"label": "分段", "items": names}], extra={"group": high, "run": run},
+                         impact=[{"label": impact_label, "items": names}], extra={"group": high, "run": run},
                          fingerprint=f"high:{','.join(entry['id'] for entry in high)}", actions=["accept"])
             item["high_confidence"] = True
             items.append(item)
@@ -462,6 +487,7 @@ def collect(manager, project_id: str) -> list[dict]:
         lambda: _human_nodes(root, flow),
         lambda: _blueprint_questions(manager, project_id),
         lambda: _changesets(root),
+        lambda: _check_findings(root),
         lambda: _resumables(project_id, root, flow),
         lambda: _node_items(root, flow),
         lambda: _reports(root),

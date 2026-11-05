@@ -1,4 +1,5 @@
 // 知识沉淀页的纯逻辑：条目的显示文字、筛选参数、表单校验、冲突与删除说明、提名检查项、只读判定（契约 K-01～K-08、7.5）
+import { sliceName } from '../../state/flow.js';
 import { isLocked, lockState } from '../../state/readonly.js';
 
 // 类型：界面名与 chip 色（设计稿 MR_KN 的 tone）
@@ -93,13 +94,13 @@ export function entryLocked(lock, entry) {
 export function lockCopy(lock) {
   const st = lockState(lock);
   if (st === 'none') return null;
-  const slice = lock.slice?.name ? `「${lock.slice.name}」这一段` : '这部分内容';
+  const name = sliceName(lock.slice?.id, lock.slice?.name);
+  const slice = name ? `「${name}」这一段` : '这部分内容';
   if (st === 'pending_confirm') {
     return { pop: '有冲突，暂不能编辑', text: { pending: ['这条知识和助手这一轮的修改有冲突：选好保留哪边前只读'] } };
   }
   if (st === 'autobuild_slice') {
-    const name = lock.slice?.name ? `「${lock.slice.name}」` : '这一段';
-    return { pop: '自主构建在改，暂不能编辑', text: { running: [`自主构建正在做${name}，这条知识暂时只读`] } };
+    return { pop: '自主构建在改，暂不能编辑', text: { running: [`自主构建正在${name ? `做「${name}」` : '改这部分内容'}，这条知识暂时只读`] } };
   }
   return { pop: '助手在改，暂不能编辑', text: { running: [`助手正在改${slice}：这条知识这一轮结束前只读`] } };
 }

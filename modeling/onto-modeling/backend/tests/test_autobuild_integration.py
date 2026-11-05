@@ -2,9 +2,9 @@
 
 - 项目卡片带运行进度、落地页是运行对话；运维总览、会话池标出自主构建；
 - 同时运行数上限：超出的排队，前一个结束后接着开始；
-- 维护模式：在跑的做完这一段就暂停；
+- 维护模式：在跑的做完这一段就暂停（F8 起只有一段「全部」，暂停在校验之前）；
 - 运行中改引擎、回退版本、删项目、手动确认这一段的修改都 409；
-- 蓝图卡出现「一路建完」，BP-03 `next=L4` 返回开始前预览；
+- 蓝图卡不再有确认按钮（F8），BP-03 `next=L4` 仍返回开始前预览（只有一段「全部」）；
 - 删项目清掉运行记录；启动自检报告有「自主构建」一项；/metrics 有运行数与复核改判比例。
 
 测试数据全部为合成内容。
@@ -22,7 +22,7 @@ from tests.autobuild_helpers import (DRAFT, AutoEngine, ab, gate, run_of, start,
                                      wait_until)
 from tests.test_changesets import main_write
 
-ONE = {"scope": {"mode": "selected", "slice_ids": ["s1"], "until_node": "core.model"}}
+ONE = {"scope": {"until_node": "core.model"}}
 
 
 def test_cards_ops_views_and_guards_while_running(ab, monkeypatch):
@@ -32,7 +32,7 @@ def test_cards_ops_views_and_guards_while_running(ab, monkeypatch):
     client, workspaces, project_id, root = ab
     monkeypatch.setattr(config, "OPS_ON_MAIN", True)
     monkeypatch.setattr(ops_routes, "manager", agent_sessions.manager)
-    release = gate("/ontology-extract-object:s1")
+    release = gate("/ontology-extract-object:all")
     run = start(client, project_id, **ONE)
     wait_until(lambda: store.get(project_id, run["run_id"])["cursor"].get("exec_id"))
     card = next(item for item in client.get("/api/v1/projects").json()["items"] if item["id"] == project_id)
@@ -76,7 +76,7 @@ def test_concurrency_limit_queues_and_maintenance_pauses_at_the_safe_point(ab):
 
     blueprint(workspaces.project_root(second))
     assert client.put("/api/v1/admin/autobuild-limits", json={"max_concurrent_runs": 1}).status_code == 200
-    release = gate("/ontology-extract-object:s1")
+    release = gate("/ontology-extract-object:all")
     first = start(client, project_id, **ONE)
     wait_until(lambda: store.get(project_id, first["run_id"])["state"] == "running")
     preview = client.post(f"/api/v1/projects/{second}/autobuild/runs/preview", json={"policy_overrides": ONE}).json()
@@ -86,22 +86,25 @@ def test_concurrency_limit_queues_and_maintenance_pauses_at_the_safe_point(ab):
     release.set()
     wait_state(client, project_id, first["run_id"], "completed")
     wait_state(client, second, queued.json()["run_id"], "completed")
-    # 维护模式：在跑的做完这一段就暂停（O-21 autobuild=pause_at_safe_point）
+    # 维护模式：在跑的做完这一段就暂停（O-21 autobuild=pause_at_safe_point）；第三个项目做「全部」与校验
     assert client.put("/api/v1/admin/autobuild-limits", json={"max_concurrent_runs": 2}).status_code == 200
-    release2 = gate("/ontology-extract-object:s2")
-    run = start(client, project_id, scope={"mode": "selected", "slice_ids": ["s2", "s3"], "until_node": "core.model"})
-    wait_until(lambda: store.get(project_id, run["run_id"])["cursor"].get("exec_id"))
+    third = workspaces.create_project("自主构建三", owner="employee_0001")["id"]
+    blueprint(workspaces.project_root(third))
+    release2 = gate("/ontology-extract-object:all")
+    run = start(client, third, scope={"until_node": "core.validate"})
+    wait_until(lambda: store.get(third, run["run_id"])["cursor"].get("exec_id"))
     ops_state.enter_maintenance("reject_new_sessions", "合成维护", "ops")
     from app.services.autobuild.runner import runner
 
     assert runner.pause_all_at_safe_point() == 1
     release2.set()
-    paused = wait_state(client, project_id, run["run_id"], "paused")
-    assert paused["slices"] == {"done": 1, "total": 2}
+    paused = wait_state(client, third, run["run_id"], "paused")
+    assert paused["slices"] == {"done": 1, "total": 1} and "/ontology-validate" not in AutoEngine.sent
     ops_state.exit_maintenance("ops")
-    resumed = client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/resume").json()
+    resumed = client.post(f"/api/v1/projects/{third}/autobuild/runs/{run['run_id']}/resume").json()
     assert resumed["state"] in ("queued", "running")
-    wait_state(client, project_id, run["run_id"], "completed")
+    wait_state(client, third, run["run_id"], "completed")
+    assert "/ontology-validate" in AutoEngine.sent
 
 
 def test_blueprint_l4_preview_and_project_delete_purges_runs(ab):
@@ -110,13 +113,14 @@ def test_blueprint_l4_preview_and_project_delete_purges_runs(ab):
     other = workspaces.create_project("蓝图预览", owner="employee_0001")["id"]
     other_root = workspaces.project_root(other)
     main_write(other_root, "research/blueprint.json", module.dumps(module.from_draft(DRAFT)), "research: 合成蓝图草案")
-    assert blueprint_service.confirm_options("draft")[-1] == {"mode": "L4", "label": "确认，一路建完…"}
+    # F8：蓝图不用确认，卡片上没有确认按钮；BP-03 给 F8 之前的界面与脚本仍可调
+    assert blueprint_service.confirm_options("draft") == [] and blueprint_service.confirm_options("confirmed") == []
     base = f"/api/v1/projects/{other}/blueprint"
     revision = client.get(base).json()["revision"]
     confirmed = client.post(f"{base}/confirm", json={"base_revision": revision, "next": "L4"})
     assert confirmed.status_code == 200, confirmed.text
     preview = confirmed.json()["autobuild_preview"]
-    assert preview["preview_token"].startswith("pv-") and len(preview["slices"]) == 5
+    assert preview["preview_token"].startswith("pv-") and [item["id"] for item in preview["slices"]] == ["all"]
     assert all(item["included"] for item in preview["slices"]) and "production" not in preview
     # 删项目：运行记录一起清掉
     run = start(client, project_id, **ONE)

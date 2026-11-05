@@ -108,18 +108,6 @@ export function policyBody(form, revision) {
   return { ...policyForm(form), base_revision: revision };
 }
 
-// 范围里的分段：BP-01 给清单，FL-01 给现状；group 取 flow 的 done | wait | now | todo
-export function sliceRows(blueprintSlices, flowSlices) {
-  const fl = new Map((flowSlices || []).map((s) => [s.id, s]));
-  const base = (blueprintSlices && blueprintSlices.length ? blueprintSlices : flowSlices || []);
-  return base.map((s) => {
-    const f = fl.get(s.id) || {};
-    const group = f.group || s.group || 'todo';
-    return { id: s.id, name: s.name || f.name, group, done: group === 'done', note: f.note || '' };
-  });
-}
-export const pendingSliceIds = (rows) => rows.filter((r) => !r.done).map((r) => r.id);
-
 // 生产库授权的时间窗口：「22:00 – 06:00」
 const HM = /^([01]\d|2[0-3]):[0-5]\d$/;
 export const windowText = (w) => (w ? `${w.start} – ${w.end}` : '');
@@ -175,18 +163,16 @@ export function lastRunText(last) {
 const RUN_STATE = { queued: '排队中', running: '运行中', pausing: '正在暂停', paused: '已暂停', stopping: '正在停下', converting: '正在转为陪伴' };
 export const runStateText = (run) => (run ? `运行 #${run.run_no} ${RUN_STATE[run.state] || '运行中'}` : '');
 
-// 开始前的检查：返回不能开始的原因（null 表示可以）
-export function startBlocker({ archived, active, rows }) {
+// 开始前的检查：返回不能开始的原因（null 表示可以）；还有没有要做的由开始前预览（AB-03）判定
+export function startBlocker({ archived, active }) {
   if (archived) return '项目已归档，不能开始自主构建';
   if (active) return `${runStateText(active)}，结束后才能开始下一次`;
-  if (rows && !rows.some((r) => !r.done)) return '没有未完成的分段';
   return null;
 }
 
 // 保存前：把生产库授权里正在编辑的时间窗口、采集范围文字并进表单；返回 { form, problems }
 export function finalizePolicy(form, drafts = {}) {
   const problems = {};
-  if (form?.scope?.mode === 'selected' && !(form.scope.slice_ids || []).length) problems.scope = '至少选一段';
   const rows = (form?.production_collection || []).map((row) => {
     const d = drafts[row.source_id];
     if (!d) return row;

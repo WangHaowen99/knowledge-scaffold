@@ -52,12 +52,6 @@
 .en-doc-b mark{background:#FDE68A;color:inherit;border-radius:3px;padding:0 1px}
 
 /* 建模蓝图卡 */
-.en-bps{display:grid;grid-template-columns:24px minmax(0,1.15fr) minmax(0,1fr) 92px 170px;gap:10px;align-items:center;padding:8px 2px;border-bottom:1px dashed var(--line);font-size:13px}
-.en-bps:last-child{border-bottom:0}
-.en-bps.hd{font-size:11px;color:var(--ink3);font-weight:600;padding:0 2px 4px;border-bottom:1px solid var(--line)}
-.en-bps .ix{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;background:var(--b50);color:var(--blue2);font-weight:700;font-size:11px}
-.en-bps.ex{opacity:.5}
-.en-bps.ex b{text-decoration:line-through}
 .en-kv{display:flex;gap:12px;align-items:flex-start;font-size:13px;line-height:1.7}
 .en-kv>span:first-child{flex:none;width:72px;color:var(--ink3);font-size:12px;padding-top:1px}
 .en-l4s{border:1px solid #D7E5FD;border-radius:14px;padding:12px 14px;background:linear-gradient(110deg,#EEF4FF,#F2FBFE);margin-top:8px}
@@ -68,20 +62,10 @@
 .en-rs .cc-h{border-bottom:0}
 .en-rs .cc-h .ik{background:var(--t50);color:var(--teal)}
 
-/* 调整建模蓝图弹窗 */
+/* 建模蓝图弹窗 */
 .en-bp-sec{margin-top:20px}
 .en-bp-sec>h4{font-size:13px;font-weight:700;display:flex;align-items:center;gap:8px;margin-bottom:8px}
 .en-bp-sec>h4 .n{font-size:11px;font-weight:600;color:var(--ink3)}
-.en-sl{display:grid;grid-template-columns:18px 24px minmax(0,1.2fr) minmax(0,1fr) 70px 112px 18px;gap:8px;align-items:center;padding:9px 10px;border:1px solid var(--line);border-radius:12px;background:#fff;margin-bottom:6px;font-size:12.6px;position:relative}
-.en-sl.hd{background:transparent;border:0;padding:0 10px 2px;font-size:11px;color:var(--ink3);font-weight:600;margin-bottom:2px}
-.en-sl .ix{width:24px;height:24px;border-radius:8px;display:grid;place-items:center;background:var(--b50);color:var(--blue2);font-weight:700;font-size:11.5px}
-.en-sl.sel{border-color:var(--b200);background:#F8FBFF}
-.en-sl.ex{opacity:.45}
-.en-sl.ex .nm{text-decoration:line-through}
-.en-sl .grip{color:var(--muted);cursor:grab}
-.en-sl.drag{opacity:.4}
-.en-sl.over{box-shadow:0 -2px 0 0 var(--blue3)}
-.en-sl .gmenu{position:absolute;right:8px;top:36px;z-index:10;min-width:150px}
 .chip.en-chip-x{height:28px;cursor:default}
 .en-chip-x svg{cursor:pointer}
 .en-term{display:inline-flex;align-items:center;gap:6px;padding:6px 8px 6px 10px;border-radius:11px;border:1px solid var(--a100);background:var(--a50);font-size:12.5px}

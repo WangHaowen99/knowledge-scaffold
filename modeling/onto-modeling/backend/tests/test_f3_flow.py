@@ -5,7 +5,7 @@
 
 - 每一轮结束（成功、出错、被打断）自动合入成一个版本；对话里一轮一张卡，只说改了什么，按钮只留「撤回这一轮」；
 - 「撤回这一轮」= 撤掉这一轮带来的修改、回到上一个版本，之后别处的修改保留，冲突时说明原因不硬撤；
-- 检查只提示不拦：指向蓝图里已规划、还没建的内容的链接记「待建」，不算问题；发布门禁不变；
+- 检查只提示不拦：指向蓝图里已规划、还没建的内容的链接记「待建」，不算问题（F8 不分段后不再有「待建」）；发布门禁不变；
 - 待处理没有「修改待确认」、建议条没有「确认生效」，确认蓝图不再依赖合入；升级后遗留的待确认变更集自动合入。
 
 资料分析停在蓝图确认见 test_f3_research_stop.py。
@@ -238,19 +238,26 @@ def test_new_check_errors_do_not_block_and_the_card_says_what_to_look_at(project
     assert not any("新错误" in text or "没通过" in text for text in [card["title"], *texts])
 
 
-def test_links_to_planned_content_are_marked_to_be_built(project):
+def test_links_to_planned_content_are_problems_without_slicing(project):
+    """F8 不分段：蓝图里规划了、还没建的内容不再算「待建」（F8 之前写下的两段蓝图也一样），链接找不到照常算问题。"""
     workspaces, project_id, root = project
-    main_write(root, "research/blueprint.json", _blueprint_text(root), "web: 蓝图")
+    from app.services.flow import blueprint
+
+    module = blueprint.script(root)
+    doc = module.from_draft(BLUEPRINT_DRAFT)
+    base = doc["slices"][0]
+    doc["slices"] = [{**base, "id": f"s{n}", "name": item["name"], "objects": item["objects"],
+                      "operations": item["operations"], "rules": [], "depends_on": []}
+                     for n, item in enumerate(BLUEPRINT_DRAFT["slices"], start=1)]
+    doc["next_ids"]["slice"] = 3
+    main_write(root, "research/blueprint.json", module.dumps(doc), "web: 蓝图")
     store_text = obj("门店", "合成门店，向 [[供应商]] 进货，按 [[补货下单]] 补货，另见 [[不存在的东西]]")
     _copy, record = _pending(workspaces, project_id, root, text=store_text)
     service.settle(workspaces, project_id, actor=OWNER)
     checks = store.get(root, record["id"])["checks"]
-    pending = {item["target"]: item["slice_no"] for item in checks["pending_links"]}
-    assert pending == {"供应商": 2, "补货下单": 1}
+    assert checks["pending"] == 0 and checks["pending_links"] == []
     card = service.round_card(workspaces, project_id, store.get(root, record["id"]), "rc-x")
-    hints = {hint["text"]: hint["tone"] for hint in card["hints"]}
-    assert hints == {"2 处指向第 1、2 段待建的内容": "info", "1 处链接找不到对象": "warn"}
-    assert card["checks"]["pending"] == 2
+    assert {hint["text"]: hint["tone"] for hint in card["hints"]} == {"3 处链接找不到对象": "warn"}
 
 
 def test_pending_classification_without_a_blueprint_counts_as_problems(project):

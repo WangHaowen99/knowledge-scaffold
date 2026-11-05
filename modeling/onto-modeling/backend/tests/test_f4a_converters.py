@@ -111,6 +111,29 @@ def test_xlsx_sheet_per_table_with_truncation():
     assert result.note == "工作表 流水 只转了前 10 行，共 50 行"
 
 
+def test_xlsx_keeps_every_sheet_and_column_header_and_bounds_data_rows():
+    """宽表、多工作表：表头一列不少、一个工作表不少（对象抽取按表头取列名）；数据行按格数少转几行。"""
+    header = [f"COL_{n:03d}" for n in range(120)]
+    sheets = {f"表{n:02d}": [header, *[[f"v{n}-{r}"] * 120 for r in range(5)]] for n in range(60)}
+    result = XLSX.convert(samples.xlsx(sheets), "宽表.xlsx", ConvertLimits(max_sheet_cells=360))
+    assert [item.label for item in result.locations] == [f"工作表 表{n:02d}" for n in range(60)]
+    assert result.markdown.count("| " + " | ".join(header) + " |") == 60
+    # 120 列、360 格：连表头每表只放 3 行，说明里写明
+    assert "| v0-1 |" in result.markdown and "| v0-2 |" not in result.markdown
+    assert "（只转了前 3 行，共 6 行）" in result.markdown
+
+
+def test_xlsx_output_cap_drops_data_rows_before_headers():
+    """全文到上限时后面的工作表只留表头，不截掉表头。"""
+    header = [f"FIELD_{n:02d}" for n in range(30)]
+    sheets = {f"S{n}": [header, *[[f"x{r}"] * 30 for r in range(40)]] for n in range(4)}
+    one_head = len("| " + " | ".join(header) + " |")
+    result = XLSX.convert(samples.xlsx(sheets), "多表.xlsx", ConvertLimits(max_output_chars=one_head * 12))
+    assert result.markdown.count("| " + " | ".join(header) + " |") == 4
+    assert "（只转了表头，共 41 行）" in result.markdown
+    assert len(result.markdown) <= one_head * 12 and "内容太长" not in (result.note or "")
+
+
 def test_xlsx_zip_bomb_and_corrupt():
     with pytest.raises(ConvertError) as caught:
         XLSX.convert(samples.zip_bomb("xl/worksheets/sheet1.xml", 120), "bomb.xlsx", LIMITS)

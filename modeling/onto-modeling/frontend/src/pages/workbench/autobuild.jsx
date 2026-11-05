@@ -5,6 +5,7 @@ import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import { Button, Chip, Drawer, Ev, Icon, St, cx } from '../../ui/index.jsx';
+import { multiSlice, unitTitle } from '../../state/flow.js';
 import {
   CELL, confidenceColor, hhmm, matrixTone, miniMetrics, runFlags, stripMetrics, stripShown, stripTitle,
 } from './autobuildModel.js';
@@ -16,8 +17,8 @@ export const useAutobuildCtx = () => useContext(AutobuildCtx);
 
 const OP = {
   pause: ['pauseAutobuild', '当前步骤做完后暂停', 'pause'],
-  stop_at_safe_point: ['stopAutobuildAtSafePoint', '会在当前分段的安全点停下', 'stop'],
-  convert_to_l2: ['convertAutobuildToL2', '这一段做完后转为陪伴', 'hand'],
+  stop_at_safe_point: ['stopAutobuildAtSafePoint', '会在下一个安全点停下', 'stop'],
+  convert_to_l2: ['convertAutobuildToL2', '到下一个安全点转为陪伴', 'hand'],
   resume: ['resumeAutobuild', '继续运行', 'play'],
   acknowledge: ['acknowledgeAutobuild', '已回到陪伴建模', 'check'],
 };
@@ -201,7 +202,9 @@ export function RunDrawer({ ab }) {
     api.autobuildSuspensions(pid, runId).then((r) => setSus((r.items || []).filter((x) => x.state === 'open'))).catch(() => setSus([]));
   }, [api, pid, runId, drawer]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!run) return null;
-  // 分段步骤的列由 FL-01 的 slice_stages 决定（场景走查未启用时没有「场景」列）；流程还没给分段步骤时按矩阵里出现的步骤排
+  // 步骤的列由 FL-01 的 slice_stages 决定（场景走查未启用时没有「场景」列）；流程还没给时按矩阵里出现的步骤排。
+  // F8 起只有一行「全部」，叫「建模」；F8 之前按段跑的老运行才是「分段流水线」
+  const multi = multiSlice((run.matrix || []).map((row) => row.slice_id));
   const stageDefs = flow?.slice_stages?.length ? flow.slice_stages : Object.keys(run.matrix?.[0]?.cells || {}).map((id) => ({ id, label: id }));
   const keys = stageDefs.map((s) => [s.id, s.label]);
   const [tail1, tail2] = (run.tail_text || '').split(' → ');
@@ -216,14 +219,14 @@ export function RunDrawer({ ab }) {
         {miniMetrics(run).map(([b, t]) => <div key={t}><b>{b}</b><span>{t}</span></div>)}
       </div>
       <div className="sec-t mt16">
-        <Icon name="layers" size={14} />分段流水线
+        <Icon name="layers" size={14} />{multi ? '分段流水线' : '流水线'}
       </div>
       <div className="g2-pipe" style={{ gridTemplateColumns: `150px repeat(${keys.length},1fr) 128px` }}>
         <span />
         {keys.map(([k, t]) => <span key={k} className="h">{t}</span>)}
         <span className="h">结果</span>
         {(run.matrix || []).map((row) => [
-          <span key={`${row.slice_id}-n`} className="nm ell">{row.slice_name}</span>,
+          <span key={`${row.slice_id}-n`} className="nm ell">{unitTitle(row.slice_id, row.slice_name)}</span>,
           ...keys.map(([k]) => <Cell key={`${row.slice_id}-${k}`} k={row.cells?.[k]} />),
           <span key={`${row.slice_id}-r`}><ResultChip row={row} /></span>,
         ])}

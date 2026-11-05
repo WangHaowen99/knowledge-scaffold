@@ -13,7 +13,7 @@ export function openPalette() { listeners.forEach((fn) => fn()); }
 export const PAGE_TITLES = {
   'wb-l2': '工作台', inbox: '待处理', studio: 'Studio 图谱', 'studio-table': 'Studio 表格', 'studio-er': 'ER 视图', reports: 'Studio 报告',
   resources: '资料区', sources: '业务系统数据源', snapshots: '采集与快照', schema: '证据浏览器', publish: '发布', versions: '版本历史',
-  incremental: '增量更新', 'wb-materials': '资料分析', 'wb-blueprint': '分段规划', flowchart: '流程图', 'plugin-detail': '插件详情', 'plugin-upload': '上传与审核插件', sys: '系统设置',
+  incremental: '增量更新', 'wb-materials': '资料分析', 'wb-blueprint': '建模蓝图', flowchart: '流程图', 'plugin-detail': '插件详情', 'plugin-upload': '上传与审核插件', sys: '系统设置',
   'ops-obs': '可观测', 'ops-ctl': '运维管控与健康', 'ops-users': '用户、审计与回收站', 'l4-run': '自主构建', 'proj-settings': '项目设置', scenarios: '场景走查',
   knowledge: '知识沉淀', scripts: '代码生成', plugins: '插件中心', me: '个人设置', ops: '运维中心', projects: '我的项目',
   create: '新建项目', import: '导入项目',

@@ -61,7 +61,7 @@ test('写入范围路径按 Python fnmatch 判断：* 跨目录、[seq] 字符�
 test('这一轮卡片的锁定说明随状态变', () => {
   assert.match(roundLockNote(lock('pending_confirm')), /选好保留哪边前/);
   assert.match(roundLockNote(lock('assistant_running')), /助手运行中/);
-  assert.match(roundLockNote(lock('autobuild_slice')), /这一段完成前/);
+  assert.match(roundLockNote(lock('autobuild_slice')), /自主构建做完这部分前/);
   assert.notEqual(roundLockNote(lock('pending_confirm')), roundLockNote(lock('autobuild_slice')));
 });
 

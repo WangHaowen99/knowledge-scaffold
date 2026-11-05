@@ -158,13 +158,20 @@ export function checkPolicy(p, sourceIds) {
   if (t != null && !(t >= 0.5 && t <= 1)) return [400, 'invalid_argument', '阈值在 0.5～1.0 之间', { fields: { 'advanced.confidence_threshold': 'out_of_range' } }];
   const bad = (p.production_collection || []).find((x) => !sourceIds.includes(x.source_id));
   if (bad) return [422, 'source_not_authorized', '本项目没有获授权使用这个数据源', { source_id: bad.source_id }];
-  if (p.scope?.mode === 'selected' && !(p.scope.slice_ids || []).length) return [400, 'invalid_argument', '至少选一段', { fields: { 'scope.slice_ids': 'required' } }];
   return null;
 }
 
 const BELOW = { conservative_assumption: '先按最稳妥的做法往下做，做完列出来给你复核', suspend: '先跳过这一项，留给你来定' };
 
-// AB-03：按策略算这次的范围（flow 里没完成的分段）、生产库、警告
+// F8 起不分段：策略里不认识的分段编号丢掉，「只跑选中的」一个不剩时按全部没做完的（同后端 autobuild/policy normalize）
+export function normalizeScope(scope, sliceIds) {
+  const s = { ...(scope || {}) };
+  const kept = (s.slice_ids || []).filter((id) => sliceIds.includes(id));
+  if (s.mode === 'selected' && !kept.length) return { ...s, mode: 'all_pending', slice_ids: [] };
+  return { ...s, slice_ids: kept };
+}
+
+// AB-03：按策略算这次的范围（flow 里没完成的；F8 起只有「全部」）、生产库、警告
 export function previewOf(policy, flowSlices, sourceName = (id) => id) {
   const scope = policy.scope || {};
   const slices = (flowSlices || []).map((s) => {

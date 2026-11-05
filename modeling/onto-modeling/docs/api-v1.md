@@ -168,6 +168,7 @@
 | 对话附件（`U-01` `purpose=attachment`） | 单个 20 MiB，一条消息最多 10 个 | `413` / `400 invalid_argument` |
 | 项目导入包（`U-01` `purpose=project_import`） | 200 MiB | `413` |
 | 插件离线包（`PL-13`） | 200 MiB | `413` |
+| 普通用户的插件包（`PL-22`） | 20 MiB | `413` |
 | MCP 请求体 | 1 MiB | `413 REQUEST_TOO_LARGE`（MCP 码） |
 | 证据锚点批量解析 | 一次 100 个 | `400 invalid_argument` |
 
@@ -410,7 +411,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `node_not_skipped` | 409 | 节点没有被跳过，无法恢复 | — |
 | `flow_assembly_failed` | 422 | 流程组装不通过（锚点、环、输出冲突、版本） | `problems[]` |
 | `blueprint_not_found` | 404 | 还没有建模蓝图 | — |
-| `blueprint_not_confirmed` | 409 | 蓝图还没确认（启动自主构建等操作需要） | — |
+| `blueprint_not_confirmed` | 409 | 蓝图还没确认（F8 起不再返回：自主构建不要求先确认蓝图） | — |
 | `blueprint_question_pending` | 409 | 资料和建模目标对不上的那个问题还没答，不能确认蓝图（F4b） | `question_id` |
 | `slice_invalid` | 400 | 分段编辑不合法（合并少于 2 段、依赖成环、名称重复等） | `reason` |
 | `low_confidence_batch` | 422 | 把握低的变更点不能批量接受，必须单独确认 | `point_ids` |
@@ -432,6 +433,8 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `pack_upload_invalid` | 400 | 不是 zip，或缺清单、校验和 | `reason` |
 | `static_check_failed` | 422 | 有失败项，不能发布 | `failed[]` |
 | `pack_upload_state` | 409 | 上传已发布或已退回 | `state` |
+| `pack_name_taken` | 409 | 包名是公开的包或别人的私有包 | — |
+| `pack_quota_exceeded` | 409 | 私有包版本数到上限 | `limit` |
 | `artifact_type_unknown` | 404 | 产物类型没有登记，或登记它的包没启用 | — |
 | `artifact_not_found` | 404 | 产物不存在 | — |
 | `artifact_schema_invalid` | 422 | 不符合登记的格式定义 | `errors[]: {field, message}` |
@@ -587,7 +590,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 | `auth.local_user` | string \| null | 本地模式下的用户名，固定 `local` |
 | `ops_base_url` | string | 运维管理面地址，空串表示同源 |
 | `maintenance` | `MaintenanceState` \| null | 维护模式状态，供横幅使用 |
-| `limits` | object | `{json_body_bytes, file_write_bytes, material_upload_bytes, attachment_bytes, attachments_per_message, project_import_bytes, pack_upload_bytes, page_size_max}`，数值同 1.8 |
+| `limits` | object | `{json_body_bytes, file_write_bytes, material_upload_bytes, attachment_bytes, attachments_per_message, project_import_bytes, pack_upload_bytes, pack_private_upload_bytes, page_size_max}`，数值同 1.8 |
 | `material_types` | string[] | 允许的资料扩展名 |
 | `features.drawio` | bool | drawio 静态页是否可用 |
 | `billing.currency` | string | 金额币种 |
@@ -1955,7 +1958,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   4. 刚被打断且有执行记录：`mode="interrupted"`，主推「继续「命令名」」（`resume_exec`，能力升级时按新版重新做），次选「放弃这一步」（`abandon_exec`）；
      这一轮结束了、命令没收尾时同样两项（主推发「继续」）；
   5. 合入冲突：主推「处理冲突」，其余按 6～10 补齐；
-  6. 建模蓝图草案待确认：确认蓝图或回答目标问题，次选调整分段、重新规划分段；
+  6. 目标问题没答（F8）：主推「回答目标问题」，次选是主线下一步，不拦着开始建模（蓝图草案不用确认）；
   7. 过期的步骤：「刷新「段名 · 步骤名」」，说明行写上游哪里改过；
   8. 报告里有待处理问题、挡住发布的关卡没过：继续校验或关卡的操作；
   9. 主线下一个必经步骤（按段时按钮带段名）；
@@ -2052,6 +2055,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `feedback` | 外部反馈 | 评测服务回传（㉔） | `send_to_evolution`、`dismiss` |
 | `report` | 报告待处理 | 某份报告里还没处理的条目，一份报告合成一项 | `send_to_assistant` |
 | `changeset_conflict` | 合入冲突 | 这一轮合入时和你的修改改到同一条（F3 起唯一会出现的变更集事项；没有「修改待确认」） | `resolve`、`discard`（撤回这一轮） |
+| `check_findings` | 检查未过 | 助手这一轮没提交完、平台代存了版本，合入检查有错误（F8；最近一个合入的变更集才出，`impact` 列错误，最多 20 条） | `send_to_assistant`（发 `/ontology-validate` 修正，发出后算处理过） |
 | `format_migration` | 格式待迁移 | 插件升级改了产物格式（5.9.4） | `migrate` |
 | `notification` | 通知 | 提名审核结果等 | `dismiss` |
 
@@ -2285,6 +2289,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `GET /api/v1/packs` · 登录 · 旧：`GET /api/settings/assets`（全局单版本，删除） · 审计：否 · 依据：5.3、5.7、8.1 · 页面：plugins、create（第 3 步行业包、系统知识包、能力包）
 
+- 列出公开的包和看的人自己的私有包（`publisher.kind="private"`）。别人的私有包在 PL-01、PL-02、PL-03、PL-06 和新建向导里都按不存在处理，已经锁在项目里的除外（项目转给别人后照常能用）。
+
 - 查询参数：
   - `category?`：`capability|industry|system|provider|node|exporter`，多值；
   - `q?`：名称、ID、描述子串；
@@ -2472,6 +2478,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `POST /api/v1/admin/packs/uploads/{upload_id}/publish` · admin · 旧：— · 审计：专项 `pack.publish` · 依据：8.1#2（灰度通道） · 页面：plugin-upload
 
 - 请求：`{channel: "beta"|"stable", rollout: {by: "project"|"tenant", percent: 0–100, targets?: string[]}, auto_breaker: bool}`。
+- 普通用户的上传（`scope="private"`）也能发布，`installed` 状态同样可以：发布后这个包变成公开的。包名是别人的私有包时回 `pack_name_taken`。
   - `auto_breaker`：失败率超过 5% 或连续 5 次失败时，回退到上一版本。
 - 包进入只读的包仓库目录。
 - 响应：`{pack: PackRef, channel, rollout}`。
@@ -2510,6 +2517,42 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 错误：`invalid_argument`（这种文件没有这个转换器）。
 
 ---
+
+#### PL-22 上传自己用的插件包
+
+`POST /api/v1/me/pack-uploads`（multipart） · 登录即可 · 旧：— · 审计：专项 `pack.upload` · 依据：ADR-0079 · 页面：plugin-upload
+
+- 请求：`file`（zip，≤20 MiB，解压后 ≤64 MiB、≤2000 个文件）。
+- 静态检查比 PL-15 多一项 `private_scope`（只带提示词和资料，白名单见 ADR-0079）和 `private_name`（包名没被占用），按租户包的严格程度查。
+- 每人保留最近 20 个上传，更早的自动清掉。
+- 响应 `202`：`PackUpload`（`state="checking"`，`scope="private"`）。
+- 错误：`pack_upload_invalid`（`reason` 多一种 `too_large`）、`payload_too_large`。
+
+#### PL-23 自己的上传
+
+`GET /api/v1/me/pack-uploads` · 登录即可 · 旧：— · 审计：否 · 依据：ADR-0079 · 页面：plugin-upload
+
+- 查询参数、响应同 PL-14，只有本人的上传。
+
+#### PL-24 自己的上传详情
+
+`GET /api/v1/me/pack-uploads/{upload_id}` · 登录即可 · 旧：— · 审计：否 · 依据：ADR-0079 · 页面：plugin-upload
+
+- 响应同 PL-15。别人的上传回 `404`。
+
+#### PL-25 下载自己的检查报告
+
+`GET /api/v1/me/pack-uploads/{upload_id}/report` · 登录即可（可用 `?token=`） · 旧：— · 审计：否 · 依据：ADR-0079 · 页面：plugin-upload
+
+- 响应同 PL-16。
+
+#### PL-26 安装到自己名下
+
+`POST /api/v1/me/pack-uploads/{upload_id}/install` · 登录即可 · 旧：— · 审计：专项 `pack.private_install` · 依据：ADR-0079 · 页面：plugin-upload
+
+- 包入库，占下包名，之后在插件中心启用到自己的项目（PL-06）。重复调用幂等。
+- 响应 `200`：`PackUpload`（`state="installed"`）。
+- 错误：`static_check_failed`、`pack_upload_state`、`pack_name_taken`、`pack_quota_exceeded`（每人最多 50 个版本）。
 
 ### 3.17 插件产物与通用视图
 
@@ -3131,7 +3174,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - `warnings`，如「有 1 个未决决策会被按策略决定」；
   - `queued`：平台同时运行数满了时为 true；
   - `busy`：别的对话正占着助手时为 `{conversation_id, waiting}`（`waiting` 为 true 表示它停在没回答的问题上），否则为 null。前端据此在开始前说明，并在 AB-04 带 `take_over`。
-- 错误：`blueprint_not_confirmed`、`budget_exceeds_quota`、`autobuild_running`。
+- 错误：`autobuild_running`（F8 起不再回 `blueprint_not_confirmed`；`budget_exceeds_quota` F6 已删）。
 
 #### AB-04 开始自主构建
 
@@ -3797,6 +3840,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `GET /api/v1/ops/packs` · ops、admin · 旧：— · 审计：否 · 依据：4.10.3、㉙ · 页面：ops-ctl（插件运维）
 
+- 普通用户的私有包也列出来，能禁用（ADR-0079）。
 - 响应：`{items: [{name, kind, version, channel: "stable"|"beta"|"retired", rollout_pct, rollout_by, error_rate_pct, breaker: "closed"|"half_open"|"open", projects_using: int}]}`。
 
 #### O-26 调整灰度
@@ -4029,7 +4073,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 | 编号 | type | 持久 | 载荷 | 用在哪 |
 |---|---|---|---|---|
-| EC-01 | `session.state` | 是 | `{state: "idle"\|"connecting"\|"running"\|"waiting_user"\|"queued"\|"error"\|"closed", since: time, turn_started_at: time\|null, reason: string\|null}` | 顶栏状态 chip、运行计时（chat-states 第 3 项「2:14」）、运行中禁止切换会话（第 1 项） |
+| EC-01 | `session.state` | 是 | `{state: "idle"\|"connecting"\|"running"\|"waiting_user"\|"queued"\|"error"\|"closed", since: time, turn_started_at: time\|null, reason: string\|null}` | 顶栏状态 chip、运行计时（chat-states 第 3 项「2:14」）、运行中禁止切换会话（第 1 项） ；`running` 且 `reason: "waiting_materials"`：建模命令在等资料转成文本，还没交给助手（F8） |
 | EC-02 | `session.queued` | 是 | `{position: int, ahead: int, pool: {active, max}, progress_pct: number}` | chat-states 第 9 项排队卡 |
 | EC-03 | `session.started` | 是 | `{engine_label, resumed: bool, context_kept: bool}` | — |
 | EC-04 | `session.error` | 是 | `{error_id: "err-7f3a", message: string（友好提示）, retries: int, retryable: bool, actions: ("retry"\|"redirect")[]}` | chat-states 第 15 项出错卡 |
@@ -5005,7 +5049,8 @@ type Blueprint = {
 type InboxItem = {
   id: string;                     // "<kind>:<来源ID>"
   kind: "decision" | "evidence_conflict" | "change_list" | "review" | "suspension" | "stale" | "resumable"
-      | "feedback" | "report" | "changeset_conflict" | "format_migration" | "notification";
+      | "feedback" | "report" | "changeset_conflict" | "format_migration" | "notification"
+      | "check_findings";             // F8：平台代存的那一轮检查没过（最近一个合入的变更集 collected 且有错误）
   kind_label: string;
   title: string; meta: string;    // 「4 个选项 · 推荐 A」「置信度 0.72 · 记为假设」
   slice: { id: string; name: string } | null;
@@ -5105,7 +5150,7 @@ type PackUi =
 type PackCard = {
   name: string; version: string; label: string; description: string;
   category: PackCategory;
-  publisher: { kind: "official" | "tenant"; label: string };
+  publisher: { kind: "official" | "tenant" | "private"; label: string };   // private = 自己的私有包
   ui: PackUi | null;              // 只有能力包有
   batch: "first" | "second" | "third" | null;
   badges: ("new" | "recommended")[];
@@ -5148,7 +5193,8 @@ type StaticCheck = { id: string; label: string; detail: string; result: "pass" |
 type PackUpload = {
   id: string; filename: string; size: number; uploaded_at: time; uploaded_by: string;
   tenant_label: string | null;
-  state: "checking" | "passed" | "failed" | "published" | "rejected" | "held";
+  scope: "private" | null;   // private = 普通用户上传（PL-22），只归上传者
+  state: "checking" | "passed" | "failed" | "published" | "rejected" | "held" | "installed";
   summary: { pass: number; warn: number; fail: number };
   manifest_ok: boolean; checksums_ok: boolean;
 };

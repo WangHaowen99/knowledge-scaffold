@@ -11,16 +11,16 @@ from tests.autobuild_helpers import (AutoEngine, ab, gate, run_of, start, wait_s
                                      wait_until)
 from tests.test_changesets import git, main_write
 
-ONE = {"scope": {"mode": "selected", "slice_ids": ["s1"], "until_node": "core.model"}}
+ONE = {"scope": {"until_node": "core.model"}}
 OWNER = "employee_0001"
 
 
 def test_i1_command_entries_are_blocked_during_a_run(ab):
     client, _workspaces, project_id, root = ab
     main_write(root, "reports/20261102-120000-all-rule.md", "# 规则检查报告\n\n## 错误\n\n- [ ] E-01 合成问题\n", "web: 报告")
-    release = gate("/ontology-extract-object:s1")
+    release = gate("/ontology-extract-object:all")
     run = start(client, project_id, **ONE)
-    wait_until(lambda: "/ontology-extract-object slice=s1" in AutoEngine.sent)
+    wait_until(lambda: "/ontology-extract-object" in AutoEngine.sent)
     sent = len(AutoEngine.sent)
     base = f"/api/v1/projects/{project_id}"
     for resp in (client.post(f"{base}/reports/20261102-120000-all-rule/fix", json={}),
@@ -56,7 +56,7 @@ def test_autobuild_writes_and_symlink_guards_coexist(ab, tmp_path):
     assert f"reports/autobuild/{run_no}/report.json" in report_files and f"reports/autobuild/{run_no}/ledger.json" in report_files
     assert all(info.get("commit") for info in record["slices"].values() if info.get("state") == "merged")
     # 按段撤回写反向提交：不被提交检查当成链接拦下
-    reverted = client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/s2/revert")
+    reverted = client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/all/revert")
     assert reverted.status_code == 200, reverted.text
     assert git(root, "log", "-1", "--format=%s").startswith("revert: 撤回")
     assert run_of(client, project_id, run["run_id"])["state"] == "completed"
@@ -89,9 +89,9 @@ def test_pause_and_resume_refresh_the_run_suggestions(ab):
     from tests.autobuild_helpers import history
 
     client, _workspaces, project_id, _root = ab
-    release = gate("/ontology-extract-object:s1")
+    release = gate("/ontology-extract-object:all")
     run = start(client, project_id, **ONE)
-    wait_until(lambda: "/ontology-extract-object slice=s1" in AutoEngine.sent)
+    wait_until(lambda: "/ontology-extract-object" in AutoEngine.sent)
     base = f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}"
     assert client.post(f"{base}/pause").status_code == 200
     release.set()

@@ -1,4 +1,5 @@
-// 自主构建（l4-run）的纯函数：运行状态分类、运行条文案与指标、流水线格子、按段进展块的分段
+// 自主构建（l4-run）的纯函数：运行状态分类、运行条文案与指标、流水线格子、进展块的分组、开始前预览的范围
+import { unitTitle } from '../../state/flow.js';
 
 export const RUNNING_STATES = ['queued', 'running', 'pausing', 'stopping', 'converting'];
 // budget_exhausted 只出现在老运行记录里（F6 起预算不再判停）
@@ -67,7 +68,7 @@ export function stripMetrics(run) {
 }
 
 const ENDED_TEXT = {
-  completed: ['已完成', '全部分段完成'],
+  completed: ['已完成', '全部完成'],
   stopped: ['已停下', '在安全点停下'],
   converted: ['已转为陪伴', '剩下的逐个确认'],
   budget_exhausted: ['预算用完', '在安全点停下'], // 老运行记录
@@ -78,13 +79,14 @@ const ENDED_TEXT = {
 export function stripTitle(run) {
   if (!run) return { title: '', sub: '' };
   const n = `运行 #${run.run_no}`;
-  const cur = run.current ? [run.current.slice_name, run.current.step_label].filter(Boolean).join(' › ') : '';
+  const unit = run.current ? unitTitle(run.current.slice_id, run.current.slice_name) : '';
+  const cur = run.current ? [unit, run.current.step_label].filter(Boolean).join(' › ') : '';
   switch (run.state) {
     case 'queued': return { title: `排队中 · ${n}`, sub: '' };
     case 'running': return { title: `自主构建中 · ${n}`, sub: cur ? `当前：${cur}` : '' };
     case 'pausing': return { title: `正在暂停 · ${n}`, sub: '当前步骤做完后暂停' };
-    case 'stopping': return { title: `停在安全点 · ${n}`, sub: run.current ? `「${run.current.slice_name}」做完后停下` : '这一段做完后停下' };
-    case 'converting': return { title: `转为陪伴 · ${n}`, sub: run.current ? `「${run.current.slice_name}」做完后转为逐个确认` : '这一段做完后转为逐个确认' };
+    case 'stopping': return { title: `停在安全点 · ${n}`, sub: unit ? `「${unit}」做完后停下` : '到下一个安全点停下' };
+    case 'converting': return { title: `转为陪伴 · ${n}`, sub: unit ? `「${unit}」做完后转为逐个确认` : '到下一个安全点转为逐个确认' };
     case 'paused': return { title: `已暂停 · ${n}`, sub: run.pause_reason === 'quota' ? '配额用完，补足后点续跑' : cur ? `停在：${cur}` : '' };
     case 'interrupted': return { title: `${n} 中断了`, sub: '服务重启' };
     default: {
@@ -113,7 +115,7 @@ export function matrixTone(row) {
   return 'indigo';
 }
 
-// 按段的进展块：把时间线拆成「连续的步骤 / 自动决定 / 挂起」几段，按原顺序渲染
+// 进展块（slice_progress）：把时间线拆成「连续的步骤 / 自动决定 / 挂起」几组，按原顺序渲染
 export function sliceSegments(timeline) {
   const out = [];
   (timeline || []).forEach((x, i) => {
@@ -138,26 +140,35 @@ export function miniMetrics(run) {
     [fmtDur(run.elapsed_ms), ended ? '用时' : `已用时 · 预计${fmtEst(run.est_total_ms)}`],
     [fmtTok(run.tokens?.used), 'token'],
     [`${run.checks?.errors ?? 0} / ${run.checks?.warnings ?? 0}`, '写入即查：错误 / 提醒'],
-    [`${run.scenarios?.passed ?? 0} / ${run.scenarios?.total ?? 0}`, '场景推演通过'],
+    ...(run.scenarios?.total ? [[`${run.scenarios.passed} / ${run.scenarios.total}`, '场景推演通过']] : []),
     [`${run.fix_rounds?.used ?? 0} / ${run.fix_rounds?.limit ?? 0}`, '修复轮次 / 上限'],
   ];
 }
 
-// 运行报告卡的八格指标（不显示金额）
+// 运行报告卡的指标（不显示金额）；F8 起建模里没有场景推演这一步，没有数据时不占格
 export function reportMetrics(r) {
   const m = r?.metrics;
   if (!m) return [];
-  const partial = m.slices?.partial?.length ? `${m.slices.partial.join('、')}部分完成` : '全部完成';
   return [
     ['用时', fmtDur(m.duration_ms), ''],
-    ['分段', `${m.slices.done} / ${m.slices.total}`, partial],
+    buildMetric(m.slices || {}),
     ['产出', `+${m.produced.objects} / +${m.produced.operations} / +${m.produced.rules}`, '对象 / 操作 / 规则'],
     ['检查', `${m.checks.errors} 错误`, `${m.checks.warnings} 个提醒`],
-    ['场景推演', `${m.scenarios.passed} / ${m.scenarios.total}`, m.scenarios.suspended_failures ? `${m.scenarios.suspended_failures} 个未通过已挂起` : m.scenarios.total ? '全部通过' : ''],
+    ...(m.scenarios?.total ? [['场景推演', `${m.scenarios.passed} / ${m.scenarios.total}`, m.scenarios.suspended_failures ? `${m.scenarios.suspended_failures} 个未通过已挂起` : m.scenarios.total ? '全部通过' : '']] : []),
     ['自动决策', `${m.decisions.total} 项`, `高置信 ${m.decisions.high_confidence} · 需看 ${m.decisions.needs_look}`],
     ['挂起', `${m.suspended} 项`, m.suspended ? '已放进待处理' : '没有挂起'],
     ['token', fmtTok(m.tokens), ''],
   ];
+}
+
+// 建模这一格：F8 起不分段（只有「全部」）时说做完没有；F8 之前按段跑的老报告照旧写几段做完
+function buildMetric(slices) {
+  const partial = slices.partial || [];
+  if ((slices.total || 0) <= 1) {
+    const text = partial.length ? '部分完成' : slices.done ? '完成' : '未做';
+    return ['建模', text, ''];
+  }
+  return ['分段', `${slices.done} / ${slices.total}`, partial.length ? `${partial.join('、')}部分完成` : '全部完成'];
 }
 
 // 报告卡副标题：起止时间 + 崩溃续跑说明
@@ -168,7 +179,7 @@ export function reportSub(r) {
   return [span, rec].filter(Boolean).join(' · ');
 }
 
-export const REPORT_CHIP = { completed: ['全部分段完成', 'blue'], stopped: ['在安全点停下', 'amber'], converted: ['已转为陪伴', 'indigo'], budget_exhausted: ['预算用完', 'amber'], failed: ['出错停下', 'red'] };
+export const REPORT_CHIP = { completed: ['全部完成', 'blue'], stopped: ['在安全点停下', 'amber'], converted: ['已转为陪伴', 'indigo'], budget_exhausted: ['预算用完', 'amber'], failed: ['出错停下', 'red'] };
 
 // AB-04 开始自主构建失败的说法：有没确认的助手修改（changeset_in_progress）时说清是哪件事，其余按通用错误文案
 export function startErrorText(e, fallback) {
@@ -182,6 +193,12 @@ export function takeOverText(busy) {
   return busy.waiting
     ? '助手还在等你回答一个问题。开始后这个问题不用再答，交给自主构建按「拿不准时」的做法处理。'
     : '助手正在另一条对话里干活。开始会先打断它，已经保存的修改不受影响。';
+}
+
+// 开始前预览（AB-03）的「范围」：F8 起不分段，预览只有「全部」一行，说它现在做到哪（未开始、做了一部分…）
+export function previewScope(preview) {
+  const row = (preview?.slices || [])[0];
+  return row?.current ? `全部没做完的步骤 · 建模${row.current}` : '全部没做完的步骤';
 }
 
 export function startLabel(preview) {

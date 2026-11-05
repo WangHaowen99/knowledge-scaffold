@@ -16,7 +16,7 @@ import {
   CommandRunBar, ExtraActions, PluginEyebrow, PluginOff, ScopeLockBar, SendButton, useCommandTasks, usePageEnabled, useProjectEvent,
 } from '../plugin/parts.jsx';
 import {
-  INPUT_KIND, MOCK, SCENARIO, STATUS_SEG, batchCommand, countRows, enumLabel, enumOptions, failDesc, failHint, filterRows,
+  INPUT_KIND, MOCK, SCENARIO, STATUS_SEG, batchCommand, countRows, enumLabel, enumOptions, failDesc, failHint, filterRows, showSlice,
   lastRun, lockBarText, mockCommand, mockDesc, passRate, refreshCommand, rowLocked, rowLockPop, rowState,
   skippedNote, sparkPaths, staleDesc, walkCommand, walkTarget,
 } from './scenariosModel.js';
@@ -127,6 +127,7 @@ function Scenarios({ route }) {
   const refresh = refreshCommand(stale);
   const skip = skippedNote(mocks.skipped);
   const mockType = types[MOCK];
+  const bySlice = showSlice(sType);
   const sliceOptions = [{ value: '', label: '全部分段' }, ...enumOptions(sType, 'slice')];
   const openRow = all.find((r) => r.key === openKey) || null;
 
@@ -173,19 +174,19 @@ function Scenarios({ route }) {
           <div className="card-b">
             <div className="row mb12">
               <span><Seg items={STATUS_SEG} value={status} onChange={setStatus} /></span>
-              <Select w="150px" icon="layers" options={sliceOptions} value={slice} onChange={setSlice} />
+              {bySlice ? <Select w="150px" icon="layers" options={sliceOptions} value={slice} onChange={setSlice} /> : null}
             </div>
             <div className="tbl-wrap">
               <table className="tbl compact sc-tbl">
                 <thead>
                   <tr>
-                    <th>场景</th><th style={{ width: 150 }}>分段</th><th style={{ width: 150 }}>来源</th><th style={{ width: 110 }}>输入</th>
+                    <th>场景</th>{bySlice ? <th style={{ width: 150 }}>分段</th> : null}<th style={{ width: 150 }}>来源</th><th style={{ width: 110 }}>输入</th>
                     <th style={{ width: 100 }}>上次推演</th><th style={{ width: 90 }}>状态</th><th style={{ width: 70 }} />
                   </tr>
                 </thead>
                 <tbody>
                   {list.map((r) => (
-                    <Row key={r.key} row={r} type={sType} lock={scope} tasks={tasks} on={r.key === selected} hit={r.key === hit} onOpen={() => { setSelected(r.key); setOpenKey(r.key); }} />
+                    <Row key={r.key} row={r} type={sType} bySlice={bySlice} lock={scope} tasks={tasks} on={r.key === selected} hit={r.key === hit} onOpen={() => { setSelected(r.key); setOpenKey(r.key); }} />
                   ))}
                 </tbody>
               </table>
@@ -235,7 +236,7 @@ function Scenarios({ route }) {
   );
 }
 
-function Row({ row, type, lock, tasks, on, hit, onOpen }) {
+function Row({ row, type, bySlice, lock, tasks, on, hit, onOpen }) {
   const f = row.fields || {};
   const st = rowState(row);
   const [inputLabel, tone] = INPUT_KIND[f.input_kind] || [f.input_kind, 'line'];
@@ -247,7 +248,7 @@ function Row({ row, type, lock, tasks, on, hit, onOpen }) {
         <span className="b">{row.title}</span>
         {locked ? <span className="sc-lk" data-pop={rowLockPop(lock)}><Icon name="lock" size={12} /></span> : null}
       </td>
-      <td><span className="sm">{enumLabel(type, 'slice', f.slice)}</span></td>
+      {bySlice ? <td><span className="sm">{enumLabel(type, 'slice', f.slice)}</span></td> : null}
       <td>{f.source ? <Ev anchor={f.source} label={f.source_label} /> : <span className="muted sm">—</span>}</td>
       <td><Chip tone={tone} sm>{inputLabel}</Chip></td>
       <td><span className="muted sm num">{lastRun(f.last_run_at)}</span></td>

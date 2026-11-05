@@ -148,8 +148,14 @@ def _settle_beta(entry: dict, stable: str, previous: str | None) -> dict:
     return entry
 
 
+OWNER_FIELD = "owner"
+
+
 class PackRepository:
-    """<数据目录>/packs 下的包仓库。"""
+    """<数据目录>/packs 下的包仓库。
+
+    用户私有包（ADR-0079）和别的包放在一起，通道记录上多一个 owner：只归上传者，别人看不见也启用不了。
+    """
 
     def __init__(self, data_dir: Path):
         self.root = Path(data_dir) / "packs"
@@ -168,13 +174,40 @@ class PackRepository:
         except RepositoryError:
             return False
 
-    def names(self) -> list[str]:
+    def names(self, *, private: bool = False) -> list[str]:
+        """公开的包。私有包默认不算：缺省能力、配置注册、指标告警这些遍历全部包的地方都碰不到它，
+        要看的地方（插件运维）显式带 private=True，目录按看的人取 private_names。"""
         if not self.root.is_dir():
             return []
+        hidden = set() if private else {name for name, entry in self.channels().items() if entry.get(OWNER_FIELD)}
         return sorted(
             entry.name for entry in self.root.iterdir()
-            if entry.is_dir() and mf.NAME_RE.match(entry.name) and self.versions(entry.name)
+            if entry.is_dir() and mf.NAME_RE.match(entry.name) and entry.name not in hidden and self.versions(entry.name)
         )
+
+    def private_names(self, owner: str) -> list[str]:
+        return sorted(name for name, entry in self.channels().items()
+                      if owner and entry.get(OWNER_FIELD) == owner and self.versions(name))
+
+    def owner(self, name: str) -> str:
+        """私有包的所有者；公开的包是空串。"""
+        return str(self.channel_entry(name).get(OWNER_FIELD) or "")
+
+    def visible(self, name: str, viewer: str) -> bool:
+        owner = self.owner(name)
+        return not owner or owner == viewer
+
+    def name_free(self, name: str, owner: str) -> bool:
+        """owner 能不能用这个包名：没人用过，或本来就是他的私有包。"""
+        taken = self.owner(name)
+        return taken == owner if taken else not self.versions(name)
+
+    def claim(self, name: str, owner: str) -> None:
+        """占下包名再入库：入库之后才标 owner 的话，这个包有一瞬间是公开的。"""
+        with _LOCK:
+            if not self.name_free(name, owner):
+                raise RepositoryError("pack_name_taken", f"包名 {name} 已被占用，请换一个名字", 409)
+            self.set_field(name, OWNER_FIELD, owner)
 
     def versions(self, name: str) -> list[str]:
         """一个包的全部版本：新的在前（semver 优先级，同级按入库时间）。"""

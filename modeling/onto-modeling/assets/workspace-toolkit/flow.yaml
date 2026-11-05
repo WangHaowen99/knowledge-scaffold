@@ -9,9 +9,9 @@
 # 探针怎么算在 scripts/flow_state.py（只用标准库），后端与 state_helper 共用同一份实现。
 # 装配时组装成装配目录里的 flow.yaml（JSON 写法，也是合法 YAML）。
 #
-# 主线（详设 6.8，0.3.0 起）：资料分析（含分段规划）→ 建模（按段：对象、操作、规则、写入即查，装了场景走查
-# 再加「场景」）→ 校验（与走查）→ 全局一致性 → 发布；指标、流程图是旁支，增量更新按需。
-# 分段来自建模蓝图（research/blueprint.json，scripts/blueprint.py）；没有蓝图或只有一段时是全量模式。
+# 主线（详设 6.8；F8 起不分段，与插件化之前一致）：资料分析 → 建模（对象、操作，规则与指标随操作一起抽）→ 校验（与走查）
+# → 发布；规则补抽、指标、流程图、全局一致性是旁支，增量更新按需。建模蓝图（research/blueprint.json）只记统一叫法与
+# 待定问题，只有一段「全部」（全量模式）。
 #
 # 节点状态由后端按执行记录、变更集、产物指纹算（详设 6.6；方案 D13）。节点上与之相关的声明：
 # - produces：本节点的输出（组装时检查两节点不能声明同一路径）；writes：运行期间还会改、但不归它产出的路径；
@@ -74,11 +74,10 @@ nodes:
       - {label: 联网资料分析, command: "/ontology-research ", pack: websearch}
       - {label: 仅本地资料, command: "/ontology-research 仅基于本地文档 "}
       - {label: 追加分析, command: "/ontology-research 追加"}
-      - {label: 分段规划, command: "/ontology-research phase=blueprint"}
       # 报告挡着后续阶段时，这个入口排到最前
       - {label: 核验报告, verify: true, command: "运行 python3 .claude/scripts/research_checker.py 核验资料分析报告，逐条列出错误项与来源位置"}
-  # 建模按段走（详设 6.6、6.8）：每段依次是对象、操作、规则、写入即查；规则按资料出现，没有就跳过、不挡这一段。
-  # 写入即查由每轮合入时的检查完成（ADR-0046；F3 起只提示不拦），不单独跑命令。全量模式（没有蓝图或只有一段）就是原来的对象、操作提取。
+  # 建模（详设 6.6）：对象、操作两步，规则与指标随操作提取一起抽；「规则」一步是可选的补抽，没过期不推荐、自主构建不排。
+  # 写入即查由每轮合入时的检查完成（ADR-0046；F3 起只提示不拦），不单独跑命令。F8 起只有全量模式（一段「全部」）。
   - id: core.model
     title: 建模
     kind: agent
@@ -128,19 +127,18 @@ nodes:
     entry: {command: /ontology-validate}
     actions:
       - {label: 运行质量检查, command: /ontology-validate}
-  # 全局一致性（详设 6.8 新增）：关系、口径、跨分段衔接；按段建模时挡住发布，全量模式下只提醒
+  # 全局一致性（详设 6.8 新增）：关系与口径；F8 起是旁支，不在主线上、不挡发布（插件化之前没有这一步）
   - id: core.consistency
     title: 全局一致性
     kind: agent
-    placement: spine
-    section: required
+    placement: branch
+    section: optional
+    optional: true
     after: [trace.trace, core.validate]
     done: [consistency_report, "!consistency_pending"]
     stale_on: [object, operation, rule, metric]
     produces: ["reports/consistency/*"]
     writes: ["ontology/*"]
-    blocks: [core.publish]
-    blocks_in: sliced
     entry: {command: /ontology-consistency}
     actions:
       - {label: 全局一致性检查, command: /ontology-consistency}
@@ -181,7 +179,7 @@ stages:
   - {name: 完成, when: [operation, validation_report, "!reports_pending"]}
 
 # 命令 → 所属节点与前置阶段（check-prereq：每个前置阶段都要已到达，输出 ok 或 missing:…）
-# 带 slice=<分段> 的命令按节点的 steps 归到按段的节点（extract-rule-metric 带分段是「规则」一步，不带是指标旁支）。
+# 带 slice=<分段> 的命令（F8 之前按段建的执行记录）按节点的 steps 归到建模节点（extract-rule-metric 带分段是「规则」一步，不带是指标旁支）。
 # lock_waits：命令停下来等用户在对话里回复时锁切到的阶段（STEP0_TEMPLATE 第 4 步）。声明了表示命令遵守
 # 「等回复切 confirm、收尾先释放锁」的约定：一轮正常结束、这次保存过、没有没提交的改动、锁却不在这些阶段时，
 # 平台代为释放锁（助手做完了忘了放）；没声明的命令只在建议条上主推「继续」
@@ -209,7 +207,6 @@ next_steps:
     - {reply: 重新做资料分析, command: /ontology-research, text: 重做本轮资料分析}
     - {after: 验收通过前不建议提取对象：错误的字段或 ID 会被后续映射、规则与追溯继续沿用。}
   资料分析完成:
-    - {reply: 分段规划, command: /ontology-research, text: 把业务切成几段、出建模蓝图（资料多、业务链路多时推荐）}
     - {reply: 流程图, command: /ontology-flowchart, text: 创建业务流程图（流程复杂或多子流程交叉时推荐）}
     - {reply: 提取对象, command: /ontology-extract-object, text: 跳过流程图，直接从资料分析报告提取对象（概念清晰、流程线性时推荐）}
     - {reply: 追加资料分析, command: /ontology-research, text: 补充分析方向}
@@ -226,7 +223,7 @@ next_steps:
   校验待审阅:
     - {reply: 继续校验, command: /ontology-validate, text: 继续处理问题清单}
   完成:
-    - {reply: 全局一致性, command: /ontology-consistency, text: 检查关系、口径与分段之间的衔接（发布前做）}
+    - {reply: 全局一致性, command: /ontology-consistency, text: 检查关系与口径（可选）}
     - {reply: 测试数据, command: /ontology-mock, text: 生成测试数据}
     - {reply: 追踪, command: /ontology-trace, text: 场景追踪验证}
     - {reply: 交互走查, command: /ontology-trace 交互, text: 逐个分支由你选方向，AI 辅助构造 testcase 和正常 mock 数据}

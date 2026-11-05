@@ -1,4 +1,4 @@
-// 项目设置 · 构建方式（P-13）与自主构建策略（AB-01、AB-02，范围取 BP-01 + FL-01，生产库授权行取 EV-01），
+// 项目设置 · 构建方式（P-13）与自主构建策略（AB-01、AB-02；F8 起不分段，范围是全部没做完的步骤；生产库授权行取 EV-01），
 // 一个「保存」同时存构建方式和策略；「保存并开始自主构建」只在策略分区底部 = 保存 → AB-03 预览 → 确认 → AB-04 → 去 l4-run（契约 8.1 #41）
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
@@ -6,13 +6,15 @@ import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import {
-  Button, Card, Check, Chip, Field, Icon, Inp, KV, Modal, Note, Radio, Seg, St, Toggle, cx,
+  Button, Card, Field, Icon, Inp, KV, Modal, Note, Seg, Toggle, cx,
 } from '../../ui/index.jsx';
 import { evidenceFromSources } from '../../state/evidence.js';
-import { startErrorText, startLabel, takeOverText } from '../workbench/autobuildModel.js';
 import {
-  advancedSummary, finalizePolicy, isRecommended, lastRunText, moveItem, pendingSliceIds, policyBody, policyDirty, policyForm,
-  runStateText, scopeText, sliceRows, startBlocker, thresholdAt, thresholdPos, windowText,
+  previewScope, startErrorText, startLabel, takeOverText,
+} from '../workbench/autobuildModel.js';
+import {
+  advancedSummary, finalizePolicy, isRecommended, lastRunText, moveItem, policyBody, policyDirty, policyForm,
+  runStateText, scopeText, startBlocker, thresholdAt, thresholdPos, windowText,
 } from './settingsModel.js';
 
 const ENV_LABEL = { production: '生产环境', staging: '预发环境', test: '测试环境', dev: '开发环境' };
@@ -81,21 +83,12 @@ function PriorityChain({ items, onChange, disabled }) {
   );
 }
 
-function sliceChip(r) {
-  if (r.group === 'done') return <St k="confirmed" sm />;
-  if (r.group === 'wait') return <Chip tone="amber" sm>{r.note || '待确认'}</Chip>;
-  if (r.group === 'now') return <St k="pending" sm label={r.note || '进行中'} />;
-  return <St k="ready" sm />;
-}
-
-// 开始前预览（AB-03 的结果）：样子同建模蓝图「一路建完」的预览弹窗
+// 开始前预览（AB-03 的结果）：样子同工作台里切到自主构建时的预览弹窗
 export function StartDialog({ preview: initial, evidenceOn, onClose }) {
   const { api } = useApp();
   const { pid } = useProject();
   const [preview, setPreview] = useState(initial);
   const [busy, setBusy] = useState(false);
-  const all = preview.slices || [];
-  const included = all.filter((s) => s.included);
   const start = async () => {
     setBusy(true);
     try {
@@ -124,14 +117,7 @@ export function StartDialog({ preview: initial, evidenceOn, onClose }) {
       <KV
         w="72px"
         pairs={[
-          ['范围', (
-            <div>
-              <div>{included.length} 段{included.length < all.length ? `（另有 ${all.length - included.length} 段不在范围）` : ''}</div>
-              <div className="row wrap mt4" style={{ gap: 6 }}>
-                {all.map((s) => <Chip key={s.id} tone={s.included ? 'line' : 'gray'} sm>{s.name}{s.current ? ` · ${s.current}` : ''}</Chip>)}
-              </div>
-            </div>
-          )],
+          ['范围', previewScope(preview)],
           ...(evidenceOn ? [['生产库', preview.production || '—']] : []),
           ['拿不准时', preview.below_threshold_text || '—'],
         ]}
@@ -145,7 +131,7 @@ export function StartDialog({ preview: initial, evidenceOn, onClose }) {
 
 export function BuildSection({ d, put, reload, archived, active, autoStart, onAutoStarted }) {
   const { api } = useApp();
-  const { pid, meta, setMeta, flow, hasPlugin } = useProject();
+  const { pid, meta, setMeta } = useProject();
   const bm = d.buildMode || { build_mode: meta.build_mode };
   const policy = d.policy;
   const [mode, setMode] = useState(bm.build_mode);
@@ -159,14 +145,12 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
   useEffect(() => { setMode(bm.build_mode); }, [bm.build_mode]);
   useEffect(() => { setForm(policyForm(policy)); setDrafts({}); setErrors({}); }, [policy]);
 
-  const rows = sliceRows(d.blueprint?.slices, flow?.slices);
-  const pendingIds = pendingSliceIds(rows);
   const final = finalizePolicy(form, drafts);
   const modeDirty = mode !== bm.build_mode;
   const pDirty = !!policy && policyDirty(policy, final.form);
   const locked = archived;
   const modeLocked = archived || !!active;
-  const blocker = startBlocker({ archived, active, rows });
+  const blocker = startBlocker({ archived, active });
   const limits = policy?.platform_limits || {};
   const sources = d.sources?.items || [];
   // 证据源本期只留接口（EV-01 回 501）：读不到数据源登记时不出生产库采集授权（策略里的字段保留，ADR-0056）
@@ -242,9 +226,6 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
   };
 
   const scope = form.scope || {};
-  const all = scope.mode !== 'selected';
-  const picked = (id) => (all ? true : (scope.slice_ids || []).includes(id));
-  const toggleSlice = (id) => setScope({ slice_ids: picked(id) ? scope.slice_ids.filter((x) => x !== id) : [...(scope.slice_ids || []), id] });
   const a = form.advanced || {};
   const last = policy?.last_run;
 
@@ -283,26 +264,11 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
         <div className="ps-sech"><Icon name="sliders" size={15} /><h3>自主构建策略</h3></div>
         {!policy ? <Note tone="red">自主构建策略没有读出来，刷新页面再试。</Note> : (
           <div className="g2s">
+            {/* F8 起不分段：范围就是全部没做完的步骤，这里只选带不带过期、可选步骤（老策略里选的分段由服务端按全部处理） */}
             <Card title="范围" icon="layers">
-              <div className="row g16 mb12">
-                <span className="g2s-r"><Radio on={all} label={`全部未完成的分段（${pendingIds.length} 段）`} onChange={() => !locked && setScope({ mode: 'all_pending', slice_ids: pendingIds })} /></span>
-                <span className="g2s-r"><Radio on={!all} label="只跑选中的分段" onChange={() => !locked && setScope({ mode: 'selected', slice_ids: all ? pendingIds : scope.slice_ids })} /></span>
-              </div>
-              {rows.length ? (
-                <div className={cx('g2s-sl', (all || locked) && 'g2-off')}>
-                  {rows.map((r) => (
-                    <div key={r.id} className="row" style={{ padding: '7px 10px', border: '1px solid var(--line)', borderRadius: 10, ...(r.done ? { opacity: 0.55 } : null) }}>
-                      <Check on={!r.done && picked(r.id)} disabled={r.done} onChange={() => toggleSlice(r.id)} />
-                      <span className="grow">{r.name}</span>
-                      {sliceChip(r)}
-                    </div>
-                  ))}
-                </div>
-              ) : <div className="sm muted">分段还没规划</div>}
-              {errors.scope ? <div className="xs mt8" style={{ color: 'var(--red)' }}>{errors.scope}</div> : null}
+              <div className="sm">全部没做完的步骤</div>
               <div className="row wrap mt12" style={{ gap: 18 }}>
                 <span className="row sm"><Toggle on={scope.refresh_stale_first} disabled={locked} onChange={(v) => setScope({ refresh_stale_first: v })} />先处理过期的内容</span>
-                {hasPlugin('scenarios') ? <span className="row sm"><Toggle on={scope.generate_scenarios} disabled={locked} onChange={(v) => setScope({ generate_scenarios: v })} />生成场景并推演</span> : null}
                 <span className="row sm"><Toggle on={scope.include_optional} disabled={locked} onChange={(v) => setScope({ include_optional: v })} />包括可选步骤：规则与指标、流程图</span>
               </div>
             </Card>

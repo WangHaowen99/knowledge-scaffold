@@ -26,6 +26,8 @@ def _latest(repository, name: str) -> tuple[str | None, str]:
 
 def _publisher(repository, name: str, version: str, manifest) -> dict:
     """发布方：官方只认镜像内置的包；上传的包清单里写了 official 也按租户显示。"""
+    if repository.owner(name):
+        return {"kind": "private", "label": "仅自己可见"}
     if repository.is_builtin(name, version):
         return {"kind": "official", "label": manifest.publisher.get("label") or "平台"}
     return {"kind": "tenant", "label": manifest.publisher.get("label") if manifest.publisher.get("kind") == "tenant" else ""}
@@ -81,9 +83,9 @@ def _converter(name: str, manifest) -> dict | None:
     return {"types": types, "default_for": default_for, "license": str(spec.get("license") or "")}
 
 
-def catalog(manager, *, category: str = "", q: str = "", project_id: str = "",
+def catalog(manager, *, category: str = "", q: str = "", project_id: str = "", viewer: str = "",
             installed_only: bool = False, updatable_only: bool = False) -> dict:
-    """PL-01：插件目录，不分页（平台包总数上限 500）。"""
+    """PL-01：插件目录，不分页（平台包总数上限 500）。viewer 自己的私有包排在公开包后面。"""
     repository = manager.packs.repository
     manager.packs.core_version()
     project = project_packs(manager, project_id) if project_id else None
@@ -92,7 +94,8 @@ def catalog(manager, *, category: str = "", q: str = "", project_id: str = "",
         raise PackError("invalid_argument", f"category 只能取 {'|'.join(CATEGORY_KEYS)}", 400,
                         {"fields": {"category": "enum"}})
     # 数据接入里只列转换器（ADR-0073）；数据库采集这类证据源本期不开放（ADR-0056），目录和计数里都没有
-    cards = [item for item in (card(manager, name, project) for name in repository.names()[:500])
+    names = [*repository.names()[:500], *repository.private_names(viewer)]
+    cards = [item for item in (card(manager, name, project) for name in names)
              if item and (item["category"] != "provider" or item["converter"] is not None)]
     counts = {key: sum(1 for item in cards if item["category"] == key) for key in CATEGORY_KEYS}
     counts.update(all=len(cards),

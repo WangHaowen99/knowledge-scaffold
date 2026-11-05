@@ -213,6 +213,10 @@ export function createApi(client) {
     publishPackUpload: (uploadId, body) => client.post(`/admin/packs/uploads/${enc(uploadId)}/publish`, body), // PL-17
     rejectPackUpload: (uploadId, body) => client.post(`/admin/packs/uploads/${enc(uploadId)}/reject`, body || {}), // PL-18
     installPack: (name, body) => client.post(`/admin/packs/${enc(name)}/install`, body || {}), // PL-19
+    // PL-22 上传自己用的包走 services.uploadPack（mine）
+    myPackUploads: (query) => client.get('/me/pack-uploads', { query }), // PL-23
+    myPackUpload: (uploadId) => client.get(`/me/pack-uploads/${enc(uploadId)}`), // PL-24
+    installMyPackUpload: (uploadId) => client.post(`/me/pack-uploads/${enc(uploadId)}/install`, {}), // PL-26
     converters: () => client.get('/converters'), // PL-20
     setConverterDefault: (body) => client.put('/admin/converters/defaults', body), // PL-21
 

@@ -348,6 +348,8 @@ export function runStatus(state) {
     }
     if (!title && it.kind === 'progress' && it.title) title = it.title;
   }
+  // 建模命令开始前平台在等资料转成文本（会话状态 reason=waiting_materials），还没交给助手
+  if (!doing && state.session.reason === 'waiting_materials') doing = '等资料转成文本';
   if (!doing) doing = state.session.state === 'connecting' ? '正在连接' : '思考中';
   return { title, doing, since: state.session.turn_started_at || state.session.since || null, thinking: state.thinking || '' };
 }

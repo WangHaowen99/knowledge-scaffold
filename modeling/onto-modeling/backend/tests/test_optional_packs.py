@@ -149,11 +149,10 @@ def test_core_only_project_assembles_and_filters_suggestions(env):
     (root / "reports").mkdir(exist_ok=True)
     (root / "reports" / "20260101-000000-all-rule.md").write_text("- [x] 已修\n", encoding="utf-8")
     body = client.get(f"/api/v1/projects/{root.name}/flow").json()
-    assert body["suggestions"]["primary"]["action"]["command"] == "/ontology-consistency"  # 主线下一步
+    # 主线下一步是发布（F8：全局一致性是旁支，不挡发布）
+    assert body["suggestions"]["primary"]["action"] == {"type": "navigate", "page": "publish"}
     assert next(node for node in body["nodes"] if node["id"] == "core.validate")["title"] == "校验"
-    # 全局一致性、发布都做完：整体视图，不推荐扫描脚本候选
-    (root / "reports" / "consistency").mkdir()
-    (root / "reports" / "consistency" / "consistency.md").write_text("没有发现问题。\n", encoding="utf-8")
+    # 发布做完：整体视图，不推荐扫描脚本候选
     subprocess.run(["git", "tag", "release/0.1.0"], cwd=root, check=True, capture_output=True)
     body = client.get(f"/api/v1/projects/{root.name}/flow").json()
     assert body["suggestions"]["primary"]["action"]["command"] == "/ontology-overview"
@@ -258,7 +257,8 @@ def test_create_project_with_capabilities_and_industry(env):
 def test_catalog_marks_default_on_and_categories(env):
     manager, client = env
     items = {item["name"]: item for item in client.get("/api/v1/packs", params={"category": "capability,industry"}).json()["items"]}
-    assert items["industry-retail"]["category"] == "industry" and items["industry-retail"]["default_on"] is True
+    # F8：零售行业包默认关（新建项目不再默认带上）
+    assert items["industry-retail"]["category"] == "industry" and items["industry-retail"]["default_on"] is False
     assert items["industry-retail"]["label"] == "零售连锁"
     assert {name for name, item in items.items() if item["category"] == "capability" and item["default_on"]} == {
         "core", *DEFAULT_ON}

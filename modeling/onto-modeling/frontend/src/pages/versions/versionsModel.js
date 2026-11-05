@@ -151,7 +151,7 @@ export function pickLanding(items, query = {}) {
   if (byLabel && (!run || !byLabel.run || sameRun(byLabel))) return { commit: byLabel.commit, note: '' };
   const bySlice = run ? list.find(sameRun) : null;
   if (bySlice) return { commit: bySlice.commit, note: '' };
-  if (byLabel) return { commit: byLabel.commit, note: `${byLabel.version_label} 不是这一段生成的，这一段可能还没完成` };
+  if (byLabel) return { commit: byLabel.commit, note: `${byLabel.version_label} 不是这次运行生成的，这部分可能还没做完` };
   return { commit: head.commit, note: `没有找到版本 ${v || ''}，可能已被回退或还没有生成` };
 }
 

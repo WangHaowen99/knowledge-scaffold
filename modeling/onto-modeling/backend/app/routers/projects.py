@@ -169,7 +169,7 @@ def _engine_or_default(engine: str | None) -> str | None:
     return engine
 
 
-def _selected_packs(body: dict) -> list[str] | None:
+def _selected_packs(body: dict, viewer: str) -> list[str] | None:
     """新建向导选的包（契约 P-02）：行业包、系统知识包按名字启用（不存在 404 pack_not_found）；
     能力包 `capabilities: {包名: bool}` 没写到的取推荐值（清单 default_on），包仓库里没有的能力名忽略
     （前端目录可能比本部署多）。都没传时返回 None：锁文件按缺省能力包写。"""
@@ -185,7 +185,7 @@ def _selected_packs(body: dict) -> list[str] | None:
         for item in items:
             name = str(item.get("name") if isinstance(item, dict) else item or "")
             version = repository.latest(name, "stable") if repository.versions(name) else None
-            if not version or repository.manifest(name, version).category != category:
+            if not version or not repository.visible(name, viewer) or repository.manifest(name, version).category != category:
                 raise ApiError("pack_not_found", f"包「{name}」不存在", 404, {"pack": name})
             selected.append(name)
     capabilities = body.get("capabilities")
@@ -196,7 +196,8 @@ def _selected_packs(body: dict) -> list[str] | None:
     chosen = set(runtime.default_capabilities())
     for name, on in (capabilities or {}).items():
         version = repository.latest(str(name), "stable") if repository.versions(str(name)) else None
-        if not version or repository.manifest(str(name), version).category != "capability":
+        if not version or not repository.visible(str(name), viewer) \
+                or repository.manifest(str(name), version).category != "capability":
             continue
         (chosen.add if on else chosen.discard)(str(name))
     return sorted(chosen - {"core"}) + selected
@@ -241,7 +242,7 @@ def create_project(request: Request, body: dict = Body(...)):
     build_mode = body.get("build_mode") or "L2"
     if build_mode not in BUILD_MODES:
         raise ApiError("invalid_argument", "build_mode 取值不合法", 400, {"fields": {"build_mode": "enum"}})
-    packs = _selected_packs(body)
+    packs = _selected_packs(body, deps.actor(request))
     engine = _engine_or_default(body.get("engine"))
     owner = deps.actor(request) if deps.user(request) is not None else ""
     materials = _materials(body, deps.actor(request))

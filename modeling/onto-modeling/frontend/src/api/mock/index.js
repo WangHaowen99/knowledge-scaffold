@@ -376,7 +376,7 @@ export function createMockServer() {
     const c = cardOf(m[1]);
     if (!c) return err(404, 'project_not_found', '项目不存在');
     if (sc.owner === 'other' && user.role !== 'user') {
-      return json(200, { id: c.id, name: c.name, owner: 'modeler01', stage_label: '建模 3/5 段', build_mode: c.build_mode, archived: c.archived, created_at: c.created_at, last_activity_at: c.last_activity_at });
+      return json(200, { id: c.id, name: c.name, owner: 'modeler01', stage_label: '建模', build_mode: c.build_mode, archived: c.archived, created_at: c.created_at, last_activity_at: c.last_activity_at });
     }
     return json(200, F.projectMeta(c));
   });

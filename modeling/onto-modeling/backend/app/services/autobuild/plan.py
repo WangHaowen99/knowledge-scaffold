@@ -67,6 +67,9 @@ def _slice_steps(row: dict, node: dict, policy: dict, carried: list[dict] = ()) 
                 continue
             if state == "skipped" and not (step.get("optional") and scope.get("include_optional")):
                 continue
+            # 可选的一步（规则补抽）和手动建议一样：没过期、没要「含可选」时不排（F8：规则随操作提取一起抽）
+            if step.get("optional") and state != "stale" and not scope.get("include_optional"):
+                continue
             if step["id"] == "scenario" and not scope.get("generate_scenarios", True):
                 continue
         out.append(_step(row, step))

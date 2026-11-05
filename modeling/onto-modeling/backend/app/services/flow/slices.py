@@ -371,7 +371,8 @@ def compute(root: Path, flow: dict, *, doc: dict | None, project_id: str | None 
         "node_id": node["id"], "sliced": inputs.sliced, "stages": stage_defs(node),
         "slices": [{key: value for key, value in item.items() if not key.startswith("_")} for item in summaries],
         "state": state, "hit": bool(total) and done == total, "running_exec": bool(inputs.running),
-        "progress": {"done": done, "total": total, "label": f"{done}/{total} 段"},
+        # 不分段（F8）时节点上不写「0/1 段」：只有「全部」一段，节点状态已经说明进度
+        "progress": {"done": done, "total": total, "label": f"{done}/{total} 段" if inputs.sliced else None},
         "slice_next": _next_step(inputs, summaries),
         "slice_stale": _stale_steps(inputs, summaries),
         # 过期的那几段那几步与上游现在的指纹：待处理「过期」一项的来源指纹（又一次过期就重新出现）

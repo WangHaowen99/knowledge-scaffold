@@ -15,10 +15,6 @@
    否则提示先运行 `/ontology-extract-operation`，stop。
 3. `python3 .claude/scripts/state_helper.py acquire extract-rule-metric rule-metric`
 
-## 分段建模
-
-Step 0 之后读 `.claude/SLICE_MODE.md` 并照做：`python3 .claude/scripts/blueprint.py brief` 不是「全量模式」时，这一次只做 brief 里的那一段（派子代理时把 brief 原样放进 prompt），做完这一步就停下（这一轮结束自动存成版本）。
-
 ## 业务知识识别（贯穿整个命令）
 
 请阅读并遵循 `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md` 的「业务知识识别守则」。

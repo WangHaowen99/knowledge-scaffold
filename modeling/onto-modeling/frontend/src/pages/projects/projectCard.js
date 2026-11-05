@@ -18,13 +18,6 @@ export function projectLook(p) {
   return { icon, color };
 }
 
-// DisplayState → 分段小进度条的格子样式（设计稿 segbar）
-const CELL = {
-  confirmed: 'ok', pending: 'pending', pending_confirm: 'pending', stale: 'stale', running: 'run', draft: 'draft',
-  skipped: 'skip', conflict: 'conflict', needs_review: 'review', auto: 'review',
-};
-export const cellClass = (s) => CELL[s] || '';
-
 const pad = (n) => String(n).padStart(2, '0');
 
 // 卡片右下角的时间：运行中 / 归档于 10-12 / 5 分钟前 / 昨天 18:20 / 3 天前

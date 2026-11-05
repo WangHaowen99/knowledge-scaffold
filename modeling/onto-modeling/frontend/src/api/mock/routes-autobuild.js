@@ -30,7 +30,7 @@ function l4Flow(base, state) {
   return {
     ...base,
     nodes: base.nodes.map((n) => (n.id === 'core.model' && state === 'completed'
-      ? { ...n, state: 'confirmed', display_state: 'confirmed', flags: { ...n.flags, needs_review: true }, progress: { done: 5, total: 5, label: '5/5 段' } }
+      ? { ...n, state: 'confirmed', display_state: 'confirmed', flags: { ...n.flags, needs_review: true }, progress: null }
       : n)),
     slices: base.slices.map((s) => {
       const x = map[s.id];
@@ -88,7 +88,7 @@ export function register(ctx) {
       if (run.state === 'running') {
         Object.assign(c, {
           status: ['active', 'autobuild'], landing_page: 'l4-run',
-          autobuild: { run_id: run.run_id, run_no: run.run_no, state: 'running', slice_done: 2, slice_total: 4, progress_pct: 45, eta_ms: 46 * 60000, decisions: run.decisions, suspended: run.suspended, needs_review: 0, duration_ms: run.elapsed_ms },
+          autobuild: { run_id: run.run_id, run_no: run.run_no, state: 'running', slice_done: 0, slice_total: 1, progress_pct: 45, eta_ms: 46 * 60000, decisions: run.decisions, suspended: run.suspended, needs_review: 0, duration_ms: run.elapsed_ms },
         });
       }
     }
@@ -157,6 +157,7 @@ export function register(ctx) {
     const cur = policyOf(m[1]);
     if (body.base_revision && body.base_revision !== cur.revision) return err(409, 'revision_conflict', '策略已被修改', { current_revision: cur.revision });
     const next = S.mergePolicy(cur, body);
+    next.scope = S.normalizeScope(next.scope, ctx.flowOf(m[1]).slices.map((s) => s.id));
     const bad = S.checkPolicy(next, sourceIds());
     if (bad) return err(...bad);
     next.revision = `p${uid()}`;
@@ -168,10 +169,11 @@ export function register(ctx) {
     const active = db.autobuildActiveOf(pid);
     if (active) return err(409, 'autobuild_running', '自主构建运行中', { run_id: active.run_id });
     const policy = S.mergePolicy(policyOf(pid), body.policy_overrides);
+    policy.scope = S.normalizeScope(policy.scope, ctx.flowOf(pid).slices.map((s) => s.id));
     const bad = S.checkPolicy(policy, sourceIds());
     if (bad) return err(...bad);
     const pv = S.previewOf(policy, ctx.flowOf(pid).slices, sourceName);
-    if (!pv.slices.some((s) => s.included)) return err(422, 'invalid_argument', '范围里没有要跑的分段', { fields: { scope: 'empty' } });
+    if (!pv.slices.some((s) => s.included)) return err(422, 'invalid_argument', '没有要做的步骤', { fields: { scope: 'empty' } });
     const token = `pv-${uid()}`;
     db.abPreview = { token, pid, policy };
     return json(200, { preview_token: token, expires_at: new Date(Date.now() + 10 * 60000).toISOString(), ...pv });
@@ -198,7 +200,7 @@ export function register(ctx) {
       ev(2, 'card', {
         ...R.startCard(), card_id: `ab${n}-start`, title: `自主构建 · 运行 #${n}`, run_id: run.run_id, run_no: n,
         chips: [
-          { label: '范围', value: `${policy.scope.mode === 'selected' ? '选中的' : '未完成的'} ${included.length} 段` },
+          { label: '范围', value: '全部没做完的步骤' },
           { label: '生产库', value: pv.production }, { label: '拿不准时', value: pv.below_threshold_text },
         ],
       }),

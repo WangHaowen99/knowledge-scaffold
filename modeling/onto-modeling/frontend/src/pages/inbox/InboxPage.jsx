@@ -1,8 +1,9 @@
 // 待处理与复核（设计稿 inbox）：左栏列表与筛选，中间按类型的详情，右栏影响范围、今天的进度。
-// 接口：IN-01～IN-04；高置信合并项里单独改判走 AB-11 / AB-12；「按段结果」读 AB-16、回退走 AB-17。
+// 接口：IN-01～IN-04；高置信合并项里单独改判走 AB-11 / AB-12；「运行结果」读 AB-16、回退走 AB-17。
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { evidenceInProject } from '../../state/evidence.js';
+import { multiSlice, sliceName, unitTitle } from '../../state/flow.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
@@ -206,9 +207,9 @@ function ReviewBody({ d, item, act, sub, busy, ...p }) {
         <Button size="sm" kind="primary" icon="check" disabled={busy} onClick={() => act('accept')}>接受这个决定</Button>
         <Button size="sm" icon="edit" disabled={busy} onClick={rejudge}>改判为选中的选项</Button>
         <span className="sp" />
-        <Button size="sm" kind="ghost" icon="eye" onClick={() => navigate(pagePath('versions', pid), { v: d.slice_version_label || '', run: d.run_id, slice: d.slice?.id })}>查看这一段的改动</Button>
+        <Button size="sm" kind="ghost" icon="eye" onClick={() => navigate(pagePath('versions', pid), { v: d.slice_version_label || '', run: d.run_id, slice: d.slice?.id })}>{sliceName(d.slice?.id, d.slice?.name) ? '查看这一段的改动' : '查看改动'}</Button>
         {!sub && item.actions?.includes('revert_slice') ? (
-          <Button size="sm" kind="ghost" icon="undo" disabled={busy} onClick={() => act('revert_slice')}>回退「{d.slice?.name}」到运行前{d.base_version_label ? ` · ${d.base_version_label}` : ''}</Button>
+          <Button size="sm" kind="ghost" icon="undo" disabled={busy} onClick={() => act('revert_slice')}>回退{sliceName(d.slice?.id, d.slice?.name) ? `「${d.slice.name}」` : ''}到运行前{d.base_version_label ? ` · ${d.base_version_label}` : ''}</Button>
         ) : null}
       </div>
     </>
@@ -335,7 +336,8 @@ function Detail({ view, sub, ...p }) {
   const { item, detail: d } = view;
   const [cls, icon] = M.kindStyle(item.kind);
   const title = sub ? sub.summary || sub.question : item.title;
-  const sliceName = sub ? sub.slice?.name : item.slice?.name;
+  const scope = sub ? sub.slice : item.slice;
+  const scopeName = sliceName(scope?.id, scope?.name);
   const age = sub ? M.ageText({ run: { ...item.run, at: sub.at } }) : M.ageText(item);
   let body = null;
   if (sub) body = <ReviewBody d={sub} item={item} sub {...p} />;
@@ -354,7 +356,7 @@ function Detail({ view, sub, ...p }) {
       {sub ? <a className="link sm row g4" style={{ marginBottom: 8 }} onClick={p.closeSub}><Icon name="arrowl" size={12} />返回{item.title.replace(/，.*$/, '')}</a> : null}
       <div className="row">
         <span className={cx('chip', `k-${cls}`)} style={{ border: 0 }}><Icon name={icon} />{item.kind_label}</span>
-        <span className="muted sm">{[sliceName, age].filter(Boolean).join(' · ')}</span>
+        <span className="muted sm">{[scopeName, age].filter(Boolean).join(' · ')}</span>
       </div>
       <h1>{title}</h1>
       {body}
@@ -372,13 +374,13 @@ function RunBanner({ s, onSlices, onAcceptHigh, busy }) {
       <div style={{ minWidth: 0 }}><div className="b">自主构建 · 运行 #{s.run_no}</div><div className="xs muted">{M.summarySub(s)}</div></div>
       <div className="nums">{nums.map(([b, t]) => <div key={t}><b>{b ?? '—'}</b><span>{t}</span></div>)}</div>
       <span className="sp" />
-      <Button size="sm" icon="layers" onClick={onSlices}>按段结果</Button>
+      <Button size="sm" icon="layers" onClick={onSlices}>运行结果</Button>
       <Button size="sm" kind="primary" icon="check" disabled={busy || !pending} onClick={onAcceptHigh}>{pending ? `一键接受高置信 ${pending} 项` : '高置信已全部接受'}</Button>
     </div>
   );
 }
 
-// 按段结果（AB-16）：查看改动、回退到运行前（AB-17）
+// 运行结果（AB-16）：查看改动、回退到运行前（AB-17）；F8 之前按段跑的运行每段一行
 function SliceResults({ open, onClose, runId, onReverted }) {
   const { api } = useApp();
   const { pid } = useProject();
@@ -400,20 +402,22 @@ function SliceResults({ open, onClose, runId, onReverted }) {
     }
   };
   const span = r ? `${M.hhmm(r.started_at)} – ${M.hhmm(r.ended_at)}` : '';
+  const multi = multiSlice((r?.slices || []).map((row) => row.slice_id));
+  const scenarios = (r?.slices || []).some((row) => row.scenarios?.total);
   return (
-    <Modal open={open} onClose={onClose} icon="layers" w={860} title={`运行 #${r?.run_no ?? ''} · 按段结果`} sub={r ? M.summarySub({ ...r, cost: null }) : ''}>
+    <Modal open={open} onClose={onClose} icon="layers" w={860} title={`运行 #${r?.run_no ?? ''} · 运行结果`} sub={r ? M.summarySub({ ...r, cost: null }) : ''}>
       {r ? (
         <>
           <div className="tbl-wrap">
             <table className="tbl compact">
-              <thead><tr><th>分段</th><th>结果</th><th>产出</th><th>场景</th><th>运行后</th><th /></tr></thead>
+              <thead><tr><th>{multi ? '分段' : ''}</th><th>结果</th><th>产出</th>{scenarios ? <th>场景</th> : null}<th>运行后</th><th /></tr></thead>
               <tbody>
                 {r.slices.map((row) => (
                   <tr key={row.slice_id}>
-                    <td><b style={{ fontWeight: 600 }}>{row.name}</b></td>
+                    <td><b style={{ fontWeight: 600 }}>{unitTitle(row.slice_id, row.name)}</b></td>
                     <td><Chip tone={row.reverted || row.result === 'skipped' ? 'gray' : /部分/.test(row.result_text) ? 'amber' : 'indigo'} sm>{row.result_text}</Chip></td>
                     <td className="muted">{row.produced_text}</td>
-                    <td className="num">{row.scenarios?.total ? `${row.scenarios.passed} / ${row.scenarios.total}` : '—'}</td>
+                    {scenarios ? <td className="num">{row.scenarios?.total ? `${row.scenarios.passed} / ${row.scenarios.total}` : '—'}</td> : null}
                     <td><span className="tag">{row.version_label}</span></td>
                     <td>
                       <span className="row g4">
@@ -426,7 +430,7 @@ function SliceResults({ open, onClose, runId, onReverted }) {
               </tbody>
             </table>
           </div>
-          <div className="mt12"><Note tone="gray" icon="undo">回退只影响这一段，另存为新版本</Note></div>
+          <div className="mt12"><Note tone="gray" icon="undo">{multi ? '回退只影响这一段，另存为新版本' : '回退这次运行的修改，另存为新版本'}</Note></div>
         </>
       ) : <div className="sm muted">{span || '正在读取…'}</div>}
     </Modal>
@@ -552,7 +556,7 @@ export default function InboxPage({ route }) {
       }
       const r = await api.inboxAction(pid, cur, { action, ...body });
       if (!silent) {
-        if (action === 'revert_slice') toast(`已把这一段回退到运行前（${r.result?.reverted_to_version_label || ''}），并保存为新版本 ${r.result?.version_label || ''}`, 'undo');
+        if (action === 'revert_slice') toast(`已回退到运行前（${r.result?.reverted_to_version_label || ''}），并保存为新版本 ${r.result?.version_label || ''}`, 'undo');
         else if (DONE_TOAST[action]) toast(...DONE_TOAST[action]);
         else toast(`已处理：${view.item.title.slice(0, 16)}…`, 'check');
       }
@@ -633,7 +637,7 @@ export default function InboxPage({ route }) {
   const counts = M.countsWithoutEvidence(data?.counts, evidenceOn);
   const today = data?.today;
   const summary = filter === 'autobuild_review' ? data?.autobuild_summary : null;
-  const impact = sub ? [{ label: '分段', items: [sub.slice?.name] }, ...(sub.affected?.length ? [{ label: '条目', items: sub.affected.map((x) => x.name || x.title) }] : [])] : view?.item.impact || [];
+  const impact = sub ? [...(sliceName(sub.slice?.id, sub.slice?.name) ? [{ label: '分段', items: [sub.slice.name] }] : []), ...(sub.affected?.length ? [{ label: '条目', items: sub.affected.map((x) => x.name || x.title) }] : [])] : view?.item.impact || [];
   const doneTotal = today ? today.total : 0;
   const pctDone = doneTotal ? Math.round((today.handled / doneTotal) * 100) : 0;
 

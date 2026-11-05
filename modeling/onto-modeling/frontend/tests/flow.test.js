@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
 import {
-  commandFromTarget, commandName, commandNode, mergeFlow, nodeActionKind, normalizeFlow, planSlicesCommand, suggestionCommand, overlayRunning, scriptRunView, sectionGroups, sliceStageTitle,
-  trackNodes, withoutEvidence,
+  commandFromTarget, commandName, commandNode, mergeFlow, multiSlice, nodeActionKind, normalizeFlow, suggestionCommand, overlayRunning, scriptRunView, sectionGroups, sliceName,
+  trackNodes, unitTitle, withoutEvidence,
 } from '../src/state/flow.js';
 
 test('P1 形状：主线按 after 连线排出 6 个必经步骤，分支与按需节点不进进度条', () => {
@@ -55,7 +55,7 @@ test('缺 display_state 时按 state 补；待确认显示为 pending', () => {
 
 test('P2 形状原样保留分段与节点分组', () => {
   const flow = normalizeFlow(F.flow({ trace: true }));
-  assert.equal(flow.slices.length, 5);
+  assert.deepEqual(flow.slices.map((s) => s.id), ['all']);
   assert.equal(flow.slice_stages.at(-1).id, 'scenario');
   assert.equal(trackNodes(flow)[0].id, 'core.research');
   assert.ok(sectionGroups(flow).some((g) => g.id === 'pre_publish'));
@@ -114,11 +114,16 @@ test('证据源不可用：系统取证节点从进度条与抽屉分组里去�
   assert.ok(!sectionGroups(withoutEvidence(normalizeFlow(raw), false)).flatMap((g) => g.nodes).some((n) => n.id === 'x.ext'));
 });
 
-test('分段小进度条每格的悬停：步骤名 · 状态', () => {
-  assert.equal(sliceStageTitle({ id: 'rule', label: '规则' }, 'skipped'), '规则 · 已跳过');
-  assert.equal(sliceStageTitle({ id: 'scenario', label: '场景' }, 'stale'), '场景 · 已过期');
-  assert.equal(sliceStageTitle({ id: 'object', label: '对象' }, 'pending_confirm'), '对象 · 待确认');
-  assert.equal(sliceStageTitle({ id: 'object', label: '对象' }, undefined), '对象');
+test('F8 起不分段：「全部」不显示名字、要有叫法时叫「建模」；老运行的分段照原名，两段以上才算分段', () => {
+  assert.equal(sliceName('all', '全部'), '');
+  assert.equal(sliceName('s2', '安全库存测算'), '安全库存测算');
+  assert.equal(sliceName(undefined, undefined), '');
+  assert.equal(unitTitle('all', '全部'), '建模');
+  assert.equal(unitTitle('s2', '安全库存测算'), '安全库存测算');
+  assert.equal(multiSlice(['all']), false);
+  assert.equal(multiSlice(['s1']), false);
+  assert.equal(multiSlice(['s1', 's2']), true);
+  assert.equal(multiSlice(null), false);
 });
 
 test('脚本节点的运行结果：通过 / 失败 + 一行摘要（FL-05 的 run 或 node_run_failed）', () => {
@@ -136,13 +141,6 @@ test('节点动作的命令文本拆成 S-20 的 command / args / text；不以�
   assert.deepEqual(commandFromTarget('/ontology-research 仅基于本地文档 '), { command: '/ontology-research', text: '仅基于本地文档' });
   assert.deepEqual(commandFromTarget('/ontology-extract-object'), { command: '/ontology-extract-object', text: '' });
   assert.deepEqual(commandFromTarget('运行 python3 .claude/scripts/research_checker.py 核验'), { text: '运行 python3 .claude/scripts/research_checker.py 核验' });
-});
-
-test('没有蓝图时「调整分段」改发分段规划；有蓝图时打开蓝图弹窗（返回 null）', () => {
-  assert.deepEqual(planSlicesCommand({ blueprint: { state: 'none' } }), { command: '/ontology-research', args: { phase: 'blueprint' }, text: '' });
-  assert.equal(planSlicesCommand({ blueprint: { state: 'draft' } }), null);
-  assert.equal(planSlicesCommand({ blueprint: { state: 'confirmed' } }), null);
-  assert.equal(planSlicesCommand({}), null);
 });
 
 test('B4d 新流程的页面动作：发布去发布页、资料分析「去确认」去蓝图页', () => {
