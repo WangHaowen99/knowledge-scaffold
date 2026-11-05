@@ -35,6 +35,18 @@ test('非 2xx 统一转成 ApiError，带 code、details、trace_id', async () =
   });
 });
 
+test('字节请求体原样发，Content-Type 是 octet-stream（EV-32 分块上传）', async () => {
+  let seen;
+  const client = createClient({ tokens: createTokenStore(memoryStorage()), fetchImpl: async (url, init) => { seen = init; return json(200, { received_chunks: 1 }); } });
+  const bytes = new Uint8Array([1, 2, 3]);
+  await client.put('/evidence/uploads/u1/chunks/0', bytes);
+  assert.equal(seen.body, bytes);
+  assert.equal(seen.headers['Content-Type'], 'application/octet-stream');
+  await client.put('/x', { a: 1 });
+  assert.equal(seen.body, '{"a":1}');
+  assert.equal(seen.headers['Content-Type'], 'application/json');
+});
+
 test('响应体不是统一错误体时按状态码兜底', async () => {
   const client = createClient({ tokens: createTokenStore(memoryStorage()), fetchImpl: async () => new Response('<html>bad gateway</html>', { status: 502 }) });
   await assert.rejects(client.get('/projects'), (e) => e.code === 'upstream_unavailable' && errorText(e).includes('连不上'));

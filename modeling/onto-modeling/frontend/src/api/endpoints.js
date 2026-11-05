@@ -276,6 +276,9 @@ export function createApi(client) {
     evidenceEr: (id, query) => client.get(`${P(id)}/evidence/er`, { query }), // EV-28
     resolveAnchors: (id, anchors) => client.post(`${P(id)}/anchors/resolve`, { anchors }), // EV-29
     notifyEvidenceAdmin: (sid, body) => client.post(`/evidence/sources/${enc(sid)}/notify-admin`, body || {}), // EV-30
+    startEvidenceUpload: (body) => client.post('/evidence/uploads', body), // EV-31
+    putEvidenceUploadChunk: (uploadId, index, bytes, o) => client.put(`/evidence/uploads/${enc(uploadId)}/chunks/${index}`, bytes, o), // EV-32：请求体是这一块的字节
+    completeEvidenceUpload: (uploadId, body) => client.post(`/evidence/uploads/${enc(uploadId)}/complete`, body), // EV-33
 
     // 3.20 发布
     publishCheck: (id, query) => client.get(`${P(id)}/publish/check`, { query }), // PB-01

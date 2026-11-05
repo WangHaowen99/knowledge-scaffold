@@ -155,9 +155,26 @@ export const KIND_ICON = { file: 'filetext', db: 'db', code: 'code', api: 'globe
 export const providerKind = (provider, providers = []) => providers.find((p) => p.id === provider?.id)?.kind
   || (/^db-/.test(provider?.id || '') ? 'db' : /^code-/.test(provider?.id || '') ? 'code' : /^api-/.test(provider?.id || '') ? 'api' : 'db');
 
+// ---------- 上传程序的自助类提供方（F13，如程序逆向 rea-static） ----------
+export const isArtifactProvider = (p) => p?.input === 'artifact';
+// 数据源是不是上传程序的：有提供方信息看提供方，没有就看连接参数
+export function isArtifactSource(source, providers = []) {
+  const p = providers.find((x) => x.id === source?.provider?.id);
+  return p ? isArtifactProvider(p) : !!source?.connection?.artifact_sha256;
+}
+export function artifactOf(source) {
+  const c = source?.connection || {};
+  return c.artifact_sha256 ? { sha256: c.artifact_sha256, filename: c.artifact_filename, size: c.artifact_size } : null;
+}
+export const artifactText = (a) => (a ? [a.filename, a.size != null ? fmtBytes(a.size) : null].filter(Boolean).join(' · ') : '');
+const artifactConnection = (a) => ({ artifact_sha256: a.sha256, artifact_filename: a.filename, artifact_size: a.size });
+// 登记人和管理员能换版本、改、删（EV-04、EV-05）
+export const canManageSource = (source, user, admin) => !!admin || (!!user?.username && source?.owner === user.username);
+
 // 连接参数（不含密钥）的一行写法
 export function connText(source) {
   const c = source?.connection || {};
+  if (c.artifact_sha256) return artifactText(artifactOf(source));
   if (c.host) {
     const hp = c.port ? `${c.host}:${c.port}` : c.host;
     const db = c.database ? ` / ${c.database}` : '';
@@ -178,7 +195,7 @@ export function scopeTag(summary) {
   const m = String(summary || '').match(/^(.*?)\s+(\d+)\s*表$/);
   return m ? `${m[1]}（${m[2]} 表）` : String(summary || '');
 }
-export const scopeWindowText = (s) =>`${s.scope_summary || s.scope_allowlist?.join(' ') || '—'} · ${windowText(s.access_window)}`;
+export const scopeWindowText = (s) => (s.connection?.artifact_sha256 ? '—' : `${s.scope_summary || s.scope_allowlist?.join(' ') || '—'} · ${windowText(s.access_window)}`);
 
 // 当前时刻是否在访问时间窗口内（窗口可以跨午夜）
 export function inWindow(w, now = Date.now()) {
@@ -260,7 +277,7 @@ export function emptyForm(user) {
   return {
     provider: '', display_name: '', id: '', conn: {}, port_db: '', environment: 'production', password: '',
     scope: [], egress: '', window: '每天 22:00 – 06:00', budget: fmtBudget({ max_rows: 2000000, max_bytes: 2 * GB, max_duration_s: 1800 }),
-    rate: fmtRate({ concurrency: 2, qps: 20, query_timeout_s: 30 }), masking: 'mask-v3', note: '', owner: user?.username || '',
+    rate: fmtRate({ concurrency: 2, qps: 20, query_timeout_s: 30 }), masking: 'mask-v3', note: '', owner: user?.username || '', artifact: null,
   };
 }
 export function formFromSource(s) {
@@ -271,6 +288,7 @@ export function formFromSource(s) {
     port_db: port || database ? `${port ?? ''} / ${database ?? ''}` : '', environment: s.environment, password: '',
     scope: [...(s.scope_allowlist || [])], egress: fmtEgress(s.egress), window: s.access_window ? windowText(s.access_window, { long: true }) : '全天',
     budget: fmtBudget(s.budget), rate: fmtRate(s.rate_limit), masking: s.masking_policy || 'mask-v3', note: s.authorization_note || '', owner: s.owner || '',
+    artifact: artifactOf(s),
   };
 }
 
@@ -283,14 +301,27 @@ export function connFields(provider) {
 }
 export const secretField = (provider) => (provider?.cred_fields || []).find((f) => f.secret) || null;
 
+// 登记抽屉的步骤：上传程序的提供方只有三步，没有凭据、范围与限制、测试连接
+export const STEP_TITLES = ['选择类型', '连接参数', '凭据', '范围与限制', '授权说明与负责人', '测试连接'];
+export const ARTIFACT_STEP_TITLES = ['选择类型', '上传程序', '授权说明'];
+export const wizardSteps = (provider) => (isArtifactProvider(provider) ? ARTIFACT_STEP_TITLES : STEP_TITLES);
+const NOTE_REQUIRED = 'REA 逆向类数据源要写明软件授权范围';
+
 /**
- * 逐步检查登记表单。返回 { errors: {字段: 说明}, done: bool[6], current: 第一步没完成的下标 }。
+ * 逐步检查登记表单。返回 { errors: {字段: 说明}, done: bool[步数], current: 第一步没完成的下标 }。
  * admin=false 时凭据一步算跳过（申请里不能带密钥）；tested 表示测试连接已通过。
+ * 上传程序的提供方：三步，要上传完的程序（form.artifact）和授权说明。
  */
 export function validateForm(form, { provider, admin = true, editing = false, hasCred = false, tested = false } = {}) {
   const errors = {};
   if (!form.display_name.trim()) errors.display_name = '写个显示名';
   if (!SOURCE_ID_RE.test(form.id)) errors.id = '小写字母、数字和连字符，2～41 位，字母或数字开头';
+  if (isArtifactProvider(provider)) {
+    if (!form.artifact) errors.artifact = '先上传程序';
+    if (!form.note.trim()) errors.note = NOTE_REQUIRED;
+    const done = [true, !errors.display_name && !errors.id && !errors.artifact, !errors.note];
+    return { errors, done, current: done.findIndex((x) => !x) };
+  }
   const { fields, portDb } = connFields(provider);
   fields.forEach((f) => { if (!String(form.conn[f.name] ?? '').trim()) errors[`conn.${f.name}`] = `写上${f.label}`; });
   if (portDb && !parsePortDb(form.port_db)) errors.port_db = '写成「端口 / 库名」，如 3306 / erp';
@@ -299,7 +330,7 @@ export function validateForm(form, { provider, admin = true, editing = false, ha
   if (!parseWindow(form.window).ok) errors.window = '写成「每天 22:00 – 06:00」，不限时写「全天」';
   if (!parseBudget(form.budget)) errors.budget = '写成「≤ 200 万行 · 2 GB · 30 分钟」';
   if (!parseRate(form.rate)) errors.rate = '写成「并发 2 · 每秒 20 查询 · 单查询 30 秒」';
-  if (provider?.kind === 'rea' && !form.note.trim()) errors.note = 'REA 逆向类数据源要写明软件授权范围';
+  if (provider?.kind === 'rea' && !form.note.trim()) errors.note = NOTE_REQUIRED;
   if (!form.owner) errors.owner = '选一位负责人';
   const has = (...keys) => !keys.some((k) => Object.keys(errors).some((e) => e === k || e.startsWith(`${k}.`)));
   const done = [
@@ -314,8 +345,16 @@ export function validateForm(form, { provider, admin = true, editing = false, ha
   return { errors, done, current };
 }
 
-// EV-02 / EV-03 的请求体（申请不带 secret）
+// EV-02 / EV-03 的请求体（申请不带 secret）。
+// 上传程序的提供方（自助登记）：connection 是上传完的程序，出口、窗口、限流、预算、脱敏都按提供方缺省，环境固定测试
 export function registerBody(form, provider, { grantProjectId, withSecret = true } = {}) {
+  if (isArtifactProvider(provider)) {
+    return {
+      id: form.id, display_name: form.display_name.trim(), provider: provider.id, environment: 'test',
+      connection: form.artifact ? artifactConnection(form.artifact) : {}, authorization_note: form.note.trim() || null, owner: form.owner,
+      ...(grantProjectId ? { grant_project_id: grantProjectId } : {}),
+    };
+  }
   const { fields, portDb } = connFields(provider);
   const connection = {};
   fields.forEach((f) => { connection[f.name] = String(form.conn[f.name] ?? '').trim(); });
@@ -331,6 +370,11 @@ export function registerBody(form, provider, { grantProjectId, withSecret = true
   };
 }
 
+// 自助类数据源的修改（EV-04）：显示名、程序、授权说明；换版本就是换 connection
+export const artifactPatch = (form) => ({
+  display_name: form.display_name.trim(), connection: artifactConnection(form.artifact), authorization_note: form.note.trim() || null,
+});
+
 // 测试连接的三项（契约 EV-08 checks[].name）
 export const CHECK_LABEL = { connectivity: '连通', readonly_account: '账号只读自检', statement_allowlist: '语句白名单' };
 export function checkDetail(c) {
@@ -339,7 +383,7 @@ export function checkDetail(c) {
 }
 
 // ---------- 采集确认（EV-13 summary → 弹窗的键值） ----------
-const fmtBytes = (n) => (n >= GB ? `${+(n / GB).toFixed(1)} GB` : n >= MB ? `${Math.round(n / MB)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+export const fmtBytes = (n) => (n >= GB ? `${+(n / GB).toFixed(1)} GB` : n >= MB ? `${Math.round(n / MB)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 const fmtRows = (n) => (n >= 10000 ? `约 ${+(n / 10000).toFixed(1)} 万行` : `约 ${n} 行`);
 export function previewPairs(summary, now = Date.now()) {
   if (!summary) return [];
@@ -356,6 +400,11 @@ export function previewPairs(summary, now = Date.now()) {
     ['脱敏', summary.masking ? `${summary.masking.policy} · 样本每表最多 ${summary.masking.sample_rows} 行` : '—'],
   ];
 }
+
+// 发起采集的操作：只列提供方支持的（EV-10 capabilities；程序逆向只有快照）
+export const OPS = [['discover', '发现'], ['snapshot', '快照'], ['sample', '补采样本']];
+export const collectOps = (provider) => (provider?.capabilities ? OPS.filter(([k]) => provider.capabilities.includes(k)) : OPS);
+export const canIncremental = (provider) => !provider?.capabilities || provider.capabilities.includes('incremental');
 
 // 发起采集表单 → EV-13 / EV-14 请求体
 export function collectBody({ sourceId, operation, incremental, base, budget, sampleTable }) {
@@ -511,3 +560,74 @@ export function domainIndex(tree) {
   (tree?.domains || []).forEach((d) => (d.entities || []).forEach((e) => m.set(e.anchor, d.name)));
   return m;
 }
+
+// ---------- 快照详情（EV-19 的 manifest） ----------
+const DETECTED = { electron: 'Electron', javascript: 'JavaScript', dotnet: '.NET', managed: '.NET', pyinstaller: 'PyInstaller', installer: '安装目录', other: '安装目录' };
+const shortHash = (h) => (h ? `${String(h).slice(0, 12)}…` : '');
+/** 详情弹窗的键值：有什么写什么；程序逆向的快照多「程序」「类型」「SHA-256」「工具」 */
+export function snapshotPairs(detail) {
+  const m = detail?.manifest || {};
+  const a = m.artifact;
+  const skipped = detail?.inventory?.skipped || [];
+  return [
+    a ? ['程序', artifactText(a)] : null,
+    a?.detected ? ['类型', DETECTED[a.detected] || a.detected] : null,
+    a?.sha256 ? ['SHA-256', shortHash(a.sha256)] : null,
+    m.tool ? ['工具', `${m.tool.name} ${m.tool.version}`] : ['连接器', detail?.provider || m.provider || '—'],
+    m.scope?.length ? ['范围', m.scope.join(' ')] : null,
+    detail ? ['覆盖率', `${detail.coverage_pct}%`] : null,
+    m.masking_policy && m.masking_policy !== 'none' ? ['脱敏', m.masking_policy] : null,
+    skipped.length ? ['跳过', skipped.map((x) => `${x.object}（${x.reason}）`).join('；')] : null,
+  ].filter(Boolean);
+}
+// 局限：REA 给的原样列出，再加「未识别 N 处」
+export const snapshotLimits = (detail) => [
+  ...(detail?.manifest?.limitations || []),
+  ...(detail?.manifest?.unknowns ? [`未识别 ${detail.manifest.unknowns} 处`] : []),
+];
+
+// ---------- 证据浏览器：非数据库快照（程序逆向等） ----------
+// 快照属于哪类提供方：先查 EV-10，查不到按提供方 ID 前缀猜
+export function snapshotKind(snap, providers = []) {
+  const id = String(snap?.provider || '').split('@')[0];
+  const p = providers.find((x) => x.id === id);
+  if (p) return p.kind;
+  const m = id.match(/^(db|code|api|rea|log)-/);
+  return m ? m[1] : 'db';
+}
+export const isDbKind = (kind) => kind === 'db';
+
+// 证据浏览器能打开的锚点：数据库表和字段、系统证据（bin:）
+export function browseTarget(anchor) {
+  const db = parseDbAnchor(anchor);
+  if (db) return { source: db.source, table: db.tableAnchor, field: db.field };
+  const a = parseAnchor(anchor);
+  return a && a.scheme === 'bin' ? { source: a.source, table: anchor, field: null } : null;
+}
+
+// bin 锚点的路径类型（mod、sym、ipc、bridge、route、ext、native…）
+export const binPathType = (anchor) => parseAnchor(anchor)?.path.split(':')[0] || null;
+const BIN_ICON = { mod: 'filetext', ipc: 'send', bridge: 'link', route: 'branch', ext: 'cloud', native: 'cpu', addr: 'cpu' };
+// 左栏和检索结果的图标：类和字段按记录类型，其余按路径类型
+export function recordIcon({ anchor, type }) {
+  if (type === 'operation' && binPathType(anchor) === 'sym') return 'code';
+  if (type === 'field') return 'list';
+  return BIN_ICON[binPathType(anchor)] || (type === 'operation' ? 'zap' : 'cube');
+}
+const KIND_TEXT = { module: '模块', class: '类', method: '方法', function: '函数', property: '属性', ipc: 'IPC 通道', bridge: '预加载接口', route: '路由', endpoint: '外部接口', native: '本地调用' };
+export const recordKindText = (r) => KIND_TEXT[r?.attrs?.kind] || r?.attrs?.kind || r?.type || '';
+// 记录详情的键值：位置、模块、签名、通道、地址、来源
+export function recordPairs(r) {
+  const a = r?.attrs || {};
+  const loc = a.loc?.file ? `${a.loc.file}${a.loc.line ? `:${a.loc.line}` : ''}` : null;
+  return [
+    loc ? ['位置', loc] : null,
+    a.module && a.module !== a.loc?.file ? ['模块', a.module] : null,
+    a.signature ? ['签名', a.signature] : null,
+    a.channel ? ['通道', a.channel] : null,
+    a.url ? ['地址', [a.method, a.url].filter(Boolean).join(' ')] : null,
+    r?.evidence?.method ? ['来源', r.evidence.method] : null,
+  ].filter(Boolean);
+}
+// 没指定锚点时默认选中左栏第一条
+export const firstTreeAnchor = (tree) => (tree?.domains || []).find((d) => d.entities?.length)?.entities[0].anchor || null;

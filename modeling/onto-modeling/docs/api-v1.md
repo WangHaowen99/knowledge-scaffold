@@ -2768,7 +2768,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   | `grant_project_id` | string | 否 | 登记后立即授权给这个项目 |
 
 - 自助类提供方（F13，ADR-0082）：`owner` 固定为本人；`connection` 是 `{artifact_sha256, artifact_filename, artifact_size}`（先用 `EV-31`～`EV-33`
-  上传目标程序）；`scope_allowlist`、`egress`、`access_window`、`rate_limit` 可省略，按提供方缺省；`environment` 缺省 `test`；登记只有本人和管理员看得到。
+  上传目标程序）；`scope_allowlist`、`egress`、`access_window`、`rate_limit`、`budget`、`masking_policy` 可省略，按提供方缺省；`environment` 缺省 `test`；登记只有本人和管理员看得到。
 - 响应 `201`：`EvidenceSource`（`cred_ref` 如 `cred://mes-prod/1`）。
 - 错误：`source_id_taken`、`provider_not_installed`、`gateway_unavailable`、`invalid_argument`、`artifact_not_found`（自助类，程序没上传完）、`forbidden`（非管理员登记要凭据的提供方）。
 
@@ -2938,6 +2938,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 查询参数：`snapshot`（必填）。
 - 响应：`{snapshot: SnapshotRef, domains: [{name, count, entities: [{anchor, name, label, mapped_to: EntryRef|null}]}]}`。
+- 非数据库快照（如 REA，F13）：`domains` 按记录的 `attrs.module` 分组，`entities` 列这一组的实体和操作记录（模块记录本身就是组，不再列），每项多 `type`（`entity|operation`）。
 
 #### EV-24 证据检索（evidence.search）
 
@@ -2952,6 +2953,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 查询参数：`anchor`、`snapshot?`（缺省用产物声明的快照，没有则取最新完整快照）。
 - 响应：`EvidenceRecord`，即记录本身，加原始上下文：字段、DDL、脱敏样本（每表最多 20 行）、数据画像（低基数 top-k、数值统计量）。
+- 非数据库记录（F13）：`attrs` 带 `loc`、`module` 等（`design/evidence-collection.md` §1）；`fields` 列它的成员（类的字段和方法，最多 50 条，`type` 填签名或 `attrs.kind`）。
+  快照清单标了 `untrusted_content` 时，响应顶层带 `untrusted_content: true`（`EV-23`、`EV-24`、`EV-27` 同）。
 - 错误：`anchor_invalid`、`anchor_not_found`。
 
 #### EV-26 被谁引用（evidence.where-used）
@@ -5415,6 +5418,7 @@ type EvidenceRecord = {
   profile?: { column: string; top_k?: { value: string; pct: number }[]; stats?: { min: number; max: number; null_pct: number } }[];
   rows?: number;
   snapshot: SnapshotRef;
+  untrusted_content?: boolean;    // 快照内容来自目标程序（F13）
 };
 ```
 

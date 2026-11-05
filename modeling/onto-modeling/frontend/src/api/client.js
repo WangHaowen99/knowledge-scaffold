@@ -3,6 +3,9 @@ import { ApiError, errorFromResponse } from './errors.js';
 
 export const API_PREFIX = '/api/v1';
 
+// 字节请求体（分块上传 EV-32）原样发，不转 JSON
+const isBinary = (body) => body instanceof ArrayBuffer || ArrayBuffer.isView(body) || (typeof Blob !== 'undefined' && body instanceof Blob);
+
 // 令牌存放：access / refresh 两个键；本地模式不带令牌
 export function createTokenStore(storage) {
   const ACCESS = 'onto.access_token';
@@ -80,7 +83,8 @@ export function createClient({ fetchImpl, tokens, opsBaseUrl = () => '', onAuthR
 
   function headersFor(body, extra) {
     const h = {};
-    if (body !== undefined && !(body instanceof FormData)) h['Content-Type'] = 'application/json';
+    if (isBinary(body)) h['Content-Type'] = 'application/octet-stream';
+    else if (body !== undefined && !(body instanceof FormData)) h['Content-Type'] = 'application/json';
     if (tokens.access) h.Authorization = `Bearer ${tokens.access}`;
     return { ...h, ...(extra || {}) };
   }
@@ -91,7 +95,7 @@ export function createClient({ fetchImpl, tokens, opsBaseUrl = () => '', onAuthR
       res = await fetchImpl(url(path, query, { ops }), {
         method,
         headers: headersFor(body, headers),
-        body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
+        body: body === undefined ? undefined : body instanceof FormData || isBinary(body) ? body : JSON.stringify(body),
         signal,
       });
     } catch (e) {

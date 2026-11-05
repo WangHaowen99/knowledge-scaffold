@@ -57,6 +57,9 @@ export function normalizeFlow(raw) {
   };
 }
 
+// 节点集合变了（如项目授权了数据源，多出「系统取证」）时 flow_hash 跟着变；增量只能合已有节点，这时要重取整份流程（FL-01）
+export const flowNeedsReload = (flow, patch) => !!flow && !!patch?.flow_hash && patch.flow_hash !== flow.flow_hash;
+
 // 项目流里流程增量合进快照
 export function mergeFlow(flow, patch) {
   if (!flow) return flow;

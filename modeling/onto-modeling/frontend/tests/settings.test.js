@@ -112,7 +112,7 @@ test('能力表：界面列、状态 chip、行内按钮与设计稿一致', () 
   const by = (n) => items.find((p) => p.name === n);
   assert.deepEqual(uiCell(by('core').ui), { kind: 'kernel', text: '内核：工作台 · Studio · 资料 · 发布' });
   assert.deepEqual(uiCell(by('trace').ui), { kind: 'page', text: '左栏页面：场景模拟' });
-  assert.deepEqual(uiCell(by('rev').ui), { kind: 'subpages', text: '资料页 3 个子页', pop: '业务系统数据源、采集与快照、证据浏览器' });
+  assert.deepEqual(uiCell(by('rev').ui), { kind: 'subpages', text: '资料页 3 个子页', pop: '数据源、采集与快照、证据浏览器' });
   assert.deepEqual(uiCell(by('industry-retail').ui), { kind: 'none', text: '—' });
   assert.deepEqual(statusChip(by('core')), { tone: 'blue', icon: 'lock', text: '必装' });
   assert.equal(statusChip(by('trace')).text, '0.10.0 下一条消息生效');

@@ -1,6 +1,7 @@
 // 业务系统数据源（系统逆向建模插件的资料子页，设计稿 sources）：
 // 登记的数据源（EV-01）、授权本项目（EV-11）、测试连接（EV-08）、访问审计（EV-09）、本项目在用（EV-12）、
 // 登记抽屉（管理员 EV-02 / EV-04～EV-07，普通用户 EV-03）、删除登记（EV-05）；缺提供方去插件中心（PL-01）。
+// 上传程序的自助类数据源（F13）：列表里显示程序文件名和大小；登记人和管理员的 ⋯ 里有「上传新版本」、编辑、删除，没有测试连接和凭据。
 import { useCallback, useEffect, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
@@ -9,7 +10,7 @@ import { errorText, formatBytes } from '../../api/errors.js';
 import { PageHead, ShellP } from '../../shell/Shell.jsx';
 import { Button, Card, Chip, Icon, Modal, Note, Seg, Table, Toggle, cx } from '../../ui/index.jsx';
 import {
-  ENV, JOB_STATE, KIND_ICON, connText, fmtDuration, fmtWhen, monthText, providerKind, scopeWindowText,
+  ENV, JOB_STATE, KIND_ICON, canManageSource, connText, fmtDuration, fmtWhen, isArtifactSource, monthText, providerKind, scopeWindowText,
 } from './evidenceModel.js';
 import { EvdPlg, EvidenceGate, RowMenu, useIsAdmin } from './parts.jsx';
 import { SourceWizard } from './SourceWizard.jsx';
@@ -66,7 +67,7 @@ function AuditModal({ source, onClose }) {
 }
 
 function SourcesBody() {
-  const { api } = useApp();
+  const { api, user } = useApp();
   const { pid } = useProject();
   const admin = useIsAdmin();
   const [filter, setFilter] = useState('all');
@@ -90,7 +91,11 @@ function SourcesBody() {
   useEffect(() => { load(); }, [load]);
   useEffect(() => { api.evidenceProviders().then(setProviders).catch(() => {}); }, [api]);
 
+  const isArtifact = (s) => isArtifactSource(s, providers?.items);
   const authorizedList = (all?.items || []).filter((s) => s.authorized_for_project);
+  // 上传程序的数据源没有连接可测
+  const testable = authorizedList.filter((s) => !isArtifact(s));
+  const selfServiceOn = (providers?.items || []).some((p) => p.self_service && p.installed);
 
   const grant = async (s, on) => {
     try {
@@ -109,7 +114,7 @@ function SourcesBody() {
   const testAuthorized = async () => {
     setTesting(true);
     try {
-      const res = await Promise.all(authorizedList.map((s) => api.testEvidenceSource(s.id, { project_id: pid }).then((r) => [s, r]).catch(() => [s, null])));
+      const res = await Promise.all(testable.map((s) => api.testEvidenceSource(s.id, { project_id: pid }).then((r) => [s, r]).catch(() => [s, null])));
       const bad = res.filter(([, r]) => !r?.ok);
       toast(bad.length ? `${bad.map(([s]) => s.display_name).join('、')} 连接没通过` : `已授权的 ${res.length} 个数据源连接正常`, bad.length ? 'alert' : 'activity');
     } finally {
@@ -128,12 +133,20 @@ function SourcesBody() {
   const menu = (s) => {
     const on = !!s.authorized_for_project;
     const ownerOnly = !admin && !on;
+    const artifact = isArtifact(s);
     const items = [
       on ? { label: '取消授权', icon: 'ban', onClick: () => grant(s, false) } : { label: '授权本项目使用', icon: 'check', onClick: () => grant(s, true) },
-      { label: '测试连接', icon: 'activity', disabled: ownerOnly, title: ownerOnly ? '只能测试已授权给本项目的数据源' : undefined, onClick: () => testOne(s) },
+      artifact ? null : { label: '测试连接', icon: 'activity', disabled: ownerOnly, title: ownerOnly ? '只能测试已授权给本项目的数据源' : undefined, onClick: () => testOne(s) },
       { label: '查看访问审计', icon: 'list', disabled: ownerOnly, title: ownerOnly ? '授权给本项目后能看本项目的访问记录' : undefined, onClick: () => setAudit(s) },
-    ];
-    if (admin) {
+    ].filter(Boolean);
+    if (artifact) {
+      if (canManageSource(s, user, admin)) {
+        items.push('-',
+          { label: '上传新版本', icon: 'upload', onClick: () => setWizard({ mode: 'edit', source: s, focus: 'artifact' }) },
+          { label: '编辑登记', icon: 'edit', onClick: () => setWizard({ mode: 'edit', source: s }) },
+          { label: '删除登记', icon: 'trash', danger: true, onClick: () => setDel(s) });
+      }
+    } else if (admin) {
       items.push('-',
         { label: '编辑登记', icon: 'edit', onClick: () => setWizard({ mode: 'edit', source: s }) },
         { label: '轮换凭据', icon: 'key', onClick: () => setWizard({ mode: 'edit', source: s, focus: 'cred' }) },
@@ -172,11 +185,11 @@ function SourcesBody() {
   return (
     <>
       <PageHead
-        title={<>业务系统数据源 <EvdPlg /></>}
+        title={<>数据源 <EvdPlg /></>}
         actions={(
           <>
-            <Button icon="activity" disabled={testing || !authorizedList.length} title={authorizedList.length ? undefined : '本项目还没有授权的数据源'} onClick={testAuthorized}>测试已授权的连接</Button>
-            <Button kind="primary" icon="plug" onClick={() => setWizard({ mode: 'new' })}>{admin ? '登记新数据源' : '申请登记新数据源'}</Button>
+            <Button icon="activity" disabled={testing || !testable.length} title={authorizedList.length ? undefined : '本项目还没有授权的数据源'} onClick={testAuthorized}>测试已授权的连接</Button>
+            <Button kind="primary" icon="plug" onClick={() => setWizard({ mode: 'new' })}>{admin || selfServiceOn ? '登记新数据源' : '申请登记新数据源'}</Button>
           </>
         )}
       />

@@ -1,7 +1,8 @@
 // 证据浏览器（系统逆向建模插件的资料子页，设计稿 schema）：按快照只读检索。
 // 快照下拉（EV-18）、左栏分层摘要（EV-23）与检索（EV-24）、中栏 ER 视图（EV-28）、
 // 右栏记录详情（EV-25）、被引用（EV-26）、相邻记录（EV-27）。
-// 接住 Studio 证据卡「查看原文」：?anchor=db:<源>/<库.表[.字段]>，按锚点解析（EV-29）出的快照打开，定位到表和字段。
+// 接住 Studio 证据卡「查看原文」：?anchor=db:<源>/<库.表[.字段]> 或 bin:<源>/…，按锚点解析（EV-29）出的快照打开，定位到记录。
+// 非数据库快照（程序逆向等，F13）：左栏按模块分组列实体和操作，没有 ER 视图，右栏是记录详情（位置、成员、关系、被引用）。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
@@ -9,18 +10,21 @@ import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import { ShellP } from '../../shell/Shell.jsx';
 import { Button, Chip, Empty, Icon, Inp, Seg, Select, Table, cx } from '../../ui/index.jsx';
-import { backlinkView } from '../studio/studioModel.js';
 import {
-  domainIndex, fieldAnchor, fieldDesc, fmtNum, hubTable, parseDbAnchor, pickSnapshot, shortName, treeTotal,
+  browseTarget, domainIndex, fieldAnchor, fieldDesc, firstTreeAnchor, fmtNum, hubTable, isDbKind, parseDbAnchor, pickSnapshot, recordIcon,
+  shortName, snapshotKind, treeTotal,
 } from './evidenceModel.js';
 import { ErView } from './ErView.jsx';
+import { RecordDetail, WhereUsed } from './RecordDetail.jsx';
 import { ConfChip, EvdPlg, EvidenceGate, copyText } from './parts.jsx';
 
 const SEARCH_TYPES = [['all', '全部'], ['entity', '实体'], ['field', '字段']];
+const RECORD_SEARCH_TYPES = [['all', '全部'], ['entity', '实体'], ['operation', '操作']];
 const JUMPS = [['fields', '字段'], ['ddl', 'DDL'], ['samples', '样本'], ['profile', '画像'], ['used', '被引用'], ['lineage', '相邻']];
 const ZOOMS = [0.6, 0.8, 1, 1.25, 1.5, 2];
 
-function Tree({ tree, sel, collapsed, onToggle, onPick }) {
+// generic：非数据库快照，按记录类型和锚点出图标，名字原样显示
+function Tree({ tree, sel, collapsed, onToggle, onPick, generic }) {
   return (
     <>
       {(tree?.domains || []).map((d) => {
@@ -32,8 +36,8 @@ function Tree({ tree, sel, collapsed, onToggle, onPick }) {
             </div>
             {off ? null : d.entities.map((e) => (
               <div key={e.anchor} className={cx('en', e.anchor === sel?.table && 'on')} onClick={() => onPick(e.anchor)}>
-                <Icon name="table" size={14} />
-                <span className="mono" style={{ fontSize: 11.5 }}>{shortName(e.name)}</span>
+                <Icon name={generic ? recordIcon(e) : 'table'} size={14} />
+                <span className={cx('mono', generic && 'ell')} style={{ fontSize: 11.5 }}>{generic ? e.name : shortName(e.name)}</span>
                 <span className="muted xs ell">{e.label}</span>
                 <span className="m" data-pop={e.mapped_to ? `已映射到本体对象「${e.mapped_to.name}」` : '还没有映射'}>
                   {e.mapped_to ? <span style={{ color: 'var(--blue)' }}><Icon name="check" size={12} /></span> : <span className="faint"><Icon name="dot" size={12} /></span>}
@@ -47,21 +51,21 @@ function Tree({ tree, sel, collapsed, onToggle, onPick }) {
   );
 }
 
-function Hits({ hits, sel, onPick }) {
+function Hits({ hits, sel, onPick, generic }) {
   if (!hits) return <div className="sm muted" style={{ padding: 6 }}>正在检索…</div>;
-  if (!hits.items.length) return <div className="sm muted" style={{ padding: 6 }}>没有匹配的表或字段</div>;
+  if (!hits.items.length) return <div className="sm muted" style={{ padding: 6 }}>{generic ? '没有匹配的记录' : '没有匹配的表或字段'}</div>;
   return (
     <>
       <div className="xs muted" style={{ padding: '2px 6px 6px' }}>共 {hits.total} 条</div>
       {hits.items.map((h) => {
-        const table = h.type === 'field' ? h.parent_anchor : h.anchor;
-        const field = h.type === 'field' ? h.name : null;
+        const table = h.type === 'field' && !generic ? h.parent_anchor : h.anchor;
+        const field = h.type === 'field' && !generic ? h.name : null;
         const on = sel?.table === table && (sel?.field || null) === field;
         return (
           <div key={h.anchor} className={cx('evp-hit', on && 'on')} onClick={() => onPick(table, field)}>
-            <Icon name={h.type === 'entity' ? 'table' : 'list'} size={14} style={{ marginTop: 2 }} />
+            <Icon name={generic ? recordIcon(h) : h.type === 'entity' ? 'table' : 'list'} size={14} style={{ marginTop: 2 }} />
             <div className="t">
-              <div className="row g4"><span className="mono b" style={{ fontSize: 11.5 }}>{h.type === 'entity' ? shortName(h.name) : h.name}</span><span className="muted xs ell">{h.label}</span></div>
+              <div className="row g4"><span className="mono b ell" style={{ fontSize: 11.5 }}>{h.type === 'entity' && !generic ? shortName(h.name) : h.name}</span><span className="muted xs ell">{h.label}</span></div>
               <div className="xs faint ell">{h.snippet}</div>
             </div>
             <ConfChip k={h.confidence} />
@@ -146,19 +150,7 @@ function Detail({ record, sel, used, lineage, onField, onPick, pid }) {
         ))}
         {!topk.length && !stats.length ? <div className="xs muted">还没有画像。</div> : null}
         <div className="sh" ref={mark('used')}><Icon name="link" size={12} />被引用 <span className="faint" style={{ fontWeight: 500 }}>{used ? used.total : ''}</span>{sel?.field ? <span className="faint" style={{ fontWeight: 500 }}>· 只看 {sel.field}</span> : null}</div>
-        {used === null ? <div className="xs muted">正在查…</div> : used.items.length ? used.items.map((u, i) => {
-          const v = backlinkView(u.target);
-          const go = () => (v.artifact
-            ? navigate(pagePath(u.target.type === 'trace.scenario' ? 'scenarios' : 'studio-table', pid), u.target.key ? { key: u.target.key } : undefined)
-            : navigate(pagePath('studio-table', pid), { entry: u.target.id }));
-          return (
-            <div className="evd-wu" key={i}>
-              <Icon name={v.icon} size={14} />
-              <div className="grow"><b>{v.name}</b><div className="xs muted">{v.kind} · {u.location}</div></div>
-              <Button size="xs" kind="ghost" icon="arrow" title="去看这条" onClick={go} />
-            </div>
-          );
-        }) : <div className="xs muted">{sel?.field ? '还没有产物引用这个字段。' : '还没有产物引用这张表。'}</div>}
+        <WhereUsed used={used} pid={pid} emptyText={sel?.field ? '还没有产物引用这个字段。' : '还没有产物引用这张表。'} />
         <div className="sh" ref={mark('lineage')}><Icon name="graph" size={12} />相邻记录</div>
         {lineage === null ? <div className="xs muted">正在查…</div> : lineage.length ? lineage.map((l) => {
           const db = /^db:/.test(l.anchor);
@@ -196,13 +188,17 @@ function SchemaBody({ route }) {
   const [collapsed, setCollapsed] = useState(() => new Set());
   const [zoom, setZoom] = useState(1);
   const [maxed, setMaxed] = useState(false);
+  const [providers, setProviders] = useState([]);
+  useEffect(() => { api.evidenceProviders().then((r) => setProviders(r.items || [])).catch(() => {}); }, [api]);
+  const snapRow = (snaps || []).find((s) => s.id === snapshot) || null;
+  const isDb = isDbKind(snapshotKind(snapRow, providers));
 
   // 进页面：快照列表 → 定快照（地址里的、锚点解析出的、或最新完整的）→ 定选中的表
   useEffect(() => {
     let alive = true;
     (async () => {
       const list = (await api.evidenceSnapshots(pid)).items || [];
-      const target = parseDbAnchor(anchorQ);
+      const target = browseTarget(anchorQ);
       let wanted = snapQ;
       if (!wanted && anchorQ) {
         try { wanted = (await api.resolveAnchors(pid, [anchorQ])).items?.[0]?.snapshot_id || ''; } catch { wanted = ''; }
@@ -210,8 +206,8 @@ function SchemaBody({ route }) {
       if (!alive) return;
       setSnaps(list);
       setSnapshot(pickSnapshot(list, { wanted, sourceId: target?.source }));
-      setSel(target ? { table: target.tableAnchor, field: target.field } : null);
-      if (anchorQ && !target) toast('这个出处不是数据库锚点，证据浏览器打不开', 'alert');
+      setSel(target ? { table: target.table, field: target.field } : null);
+      if (anchorQ && !target) toast('证据浏览器打不开这个出处', 'alert');
     })().catch((e) => { if (alive) { setSnaps([]); toast(errorText(e), 'alert'); } });
     return () => { alive = false; };
   }, [api, pid, anchorQ, snapQ]);
@@ -226,7 +222,7 @@ function SchemaBody({ route }) {
 
   // ER：快照变了、或选中的表不在当前这张图里时重取；没指定表时选关系最多的那张
   const selTable = sel?.table || null;
-  const needEr = !!snapshot && (!er || er.snapshot !== snapshot || (selTable && !er.tables.some((t) => t.anchor === selTable)));
+  const needEr = isDb && !!snapshot && (!er || er.snapshot !== snapshot || (selTable && !er.tables.some((t) => t.anchor === selTable)));
   useEffect(() => {
     if (!needEr) return undefined;
     let alive = true;
@@ -238,6 +234,14 @@ function SchemaBody({ route }) {
     }).catch((e) => toast(errorText(e), 'alert'));
     return () => { alive = false; };
   }, [api, pid, needEr, snapshot, selTable]);
+
+  // 非数据库快照没指定记录时选左栏第一条
+  useEffect(() => {
+    if (!isDb && tree && tree.snapshot?.id === snapshot && !selTable) {
+      const a = firstTreeAnchor(tree);
+      if (a) setSel({ table: a, field: null });
+    }
+  }, [isDb, tree, snapshot, selTable]);
 
   useEffect(() => {
     if (!snapshot || !selTable) return undefined;
@@ -256,10 +260,10 @@ function SchemaBody({ route }) {
     let alive = true;
     setUsed(null);
     const anchor = selField ? fieldAnchor(selTable, selField) : selTable;
-    api.evidenceWhereUsed(pid, anchor, !selField).then((r) => alive && setUsed({ items: r.items || [], total: r.total ?? (r.items || []).length }))
+    api.evidenceWhereUsed(pid, anchor, isDb && !selField).then((r) => alive && setUsed({ items: r.items || [], total: r.total ?? (r.items || []).length }))
       .catch(() => alive && setUsed({ items: [], total: 0 }));
     return () => { alive = false; };
-  }, [api, pid, selTable, selField]);
+  }, [api, pid, selTable, selField, isDb]);
 
   // 检索（evidence.search）：停手 250 毫秒再查
   useEffect(() => {
@@ -278,6 +282,12 @@ function SchemaBody({ route }) {
   const domainOf = useCallback((a) => domains.get(a) || null, [domains]);
   const pick = useCallback((table, field = null) => setSel({ table, field }), []);
   const toggleDomain = (name) => setCollapsed((s) => { const n = new Set(s); if (n.has(name)) n.delete(name); else n.add(name); return n; });
+  // 换到别的数据源的快照时，原来选中的记录不在里面，重新选
+  const changeSnapshot = (id) => {
+    const next = (snaps || []).find((s) => s.id === id);
+    if (selTable && browseTarget(selTable)?.source !== next?.source?.id) setSel(null);
+    setSnapshot(id);
+  };
   const snapOptions = (snaps || []).map((s) => ({ value: s.id, label: `${s.source?.id} · ${s.id}（${s.complete ? '完整' : '不完整'}）` }));
   const focusTable = er?.tables.find((t) => t.anchor === er.focus);
   const zi = ZOOMS.indexOf(zoom);
@@ -298,47 +308,50 @@ function SchemaBody({ route }) {
       <div className="row">
         <b className="lg">证据浏览器</b><EvdPlg />
         <span className="sp" />
-        <Select icon="db" w="356px" value={snapshot} options={snapOptions} onChange={(id) => setSnapshot(id)} />
+        <Select icon="db" w="356px" value={snapshot} options={snapOptions} onChange={changeSnapshot} />
         <Button size="sm" icon="split" disabled={!snapshot} onClick={() => navigate(pagePath('snapshots', pid), { to: snapshot })}>对比快照</Button>
       </div>
-      <div className="evd-sg" style={maxed ? { gridTemplateColumns: 'minmax(0,1fr)' } : undefined}>
-        {maxed ? null : (
+      <div className="evd-sg" style={maxed && isDb ? { gridTemplateColumns: 'minmax(0,1fr)' } : !isDb ? { gridTemplateColumns: '262px minmax(0,1fr)' } : undefined}>
+        {maxed && isDb ? null : (
           <div className="card">
             <div style={{ padding: '12px 12px 8px' }}>
-              <Inp icon="search" value={q} placeholder="搜索表、字段、注释" onChange={(e) => setQ(e.target.value)} after={q ? <span style={{ cursor: 'pointer', display: 'inline-flex', color: 'var(--muted)' }} title="清空" onClick={() => setQ('')}><Icon name="x" size={12} /></span> : null} />
-              <div className="row mt8"><Seg items={SEARCH_TYPES} value={qType} onChange={setQType} /><span className="sp" /><span className="xs faint">{treeTotal(tree)} 实体</span></div>
+              <Inp icon="search" value={q} placeholder={isDb ? '搜索表、字段、注释' : '搜索实体、操作'} onChange={(e) => setQ(e.target.value)} after={q ? <span style={{ cursor: 'pointer', display: 'inline-flex', color: 'var(--muted)' }} title="清空" onClick={() => setQ('')}><Icon name="x" size={12} /></span> : null} />
+              <div className="row mt8"><Seg items={isDb ? SEARCH_TYPES : RECORD_SEARCH_TYPES} value={qType} onChange={setQType} /><span className="sp" /><span className="xs faint">{treeTotal(tree)} {isDb ? '实体' : '条'}</span></div>
             </div>
             <div className="scroll evd-tree" style={{ flex: 1, padding: '0 8px 10px' }}>
-              {q.trim() ? <Hits hits={hits} sel={sel} onPick={pick} /> : tree ? <Tree tree={tree} sel={sel} collapsed={collapsed} onToggle={toggleDomain} onPick={(a) => pick(a)} /> : <div className="sm muted" style={{ padding: 6 }}>正在读取分层摘要…</div>}
+              {q.trim() ? <Hits hits={hits} sel={sel} onPick={pick} generic={!isDb} /> : tree ? <Tree tree={tree} sel={sel} collapsed={collapsed} onToggle={toggleDomain} onPick={(a) => pick(a)} generic={!isDb} /> : <div className="sm muted" style={{ padding: 6 }}>正在读取分层摘要…</div>}
             </div>
           </div>
         )}
-        <div className="card">
-          <div className="row" style={{ padding: '12px 14px', borderBottom: '1px solid var(--line)' }}>
-            <b>ER 视图</b><span className="muted sm">{focusTable ? `${focusTable.label || focusTable.name}相关 ${er.tables.length} 张表` : ''}</span><span className="sp" />
-            <span className="row g4 xs muted"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#64748B" strokeWidth="1.6" /></svg>外键</span>
-            <span className="row g4 xs muted"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#64748B" strokeWidth="1.8" strokeDasharray="1.5 4" strokeLinecap="round" /></svg>取值重合</span>
-            <span className="row g4 xs muted"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#64748B" strokeWidth="1.6" strokeDasharray="6 4" /></svg>命名推断</span>
-          </div>
-          <div style={{ flex: 1, minHeight: 0, padding: 12, position: 'relative' }}>
-            <div className="evp-er-cv">
-              {er ? <ErView er={er} focus={er.focus} selected={selTable} selField={selField} domainOf={domainOf} zoom={zoom} onPick={(a) => pick(a)} /> : <div className="sm muted" style={{ padding: 20 }}>正在排版…</div>}
-            </div>
-            <div className="row g4" style={{ position: 'absolute', right: 14, top: 12 }}>
-              <Button size="sm" icon="zoomout" title="缩小" disabled={zi <= 0} onClick={() => setZoom(ZOOMS[Math.max(0, zi - 1)])} />
-              <Button size="sm" icon="zoomin" title="放大" disabled={zi >= ZOOMS.length - 1} onClick={() => setZoom(ZOOMS[Math.min(ZOOMS.length - 1, zi + 1)])} />
-              <Button size="sm" icon="maximize" title={maxed ? '还原三栏' : '只看 ER 视图'} onClick={() => setMaxed((v) => !v)} />
-            </div>
-          </div>
-        </div>
-        {maxed ? null : (
+        {isDb ? (
           <div className="card">
-            {record ? <Detail record={record} sel={sel} used={used} lineage={lineage} pid={pid} onField={(f) => setSel((s) => ({ ...s, field: f }))} onPick={(a) => pick(a)} />
+            <div className="row" style={{ padding: '12px 14px', borderBottom: '1px solid var(--line)' }}>
+              <b>ER 视图</b><span className="muted sm">{focusTable ? `${focusTable.label || focusTable.name}相关 ${er.tables.length} 张表` : ''}</span><span className="sp" />
+              <span className="row g4 xs muted"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#64748B" strokeWidth="1.6" /></svg>外键</span>
+              <span className="row g4 xs muted"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#64748B" strokeWidth="1.8" strokeDasharray="1.5 4" strokeLinecap="round" /></svg>取值重合</span>
+              <span className="row g4 xs muted"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#64748B" strokeWidth="1.6" strokeDasharray="6 4" /></svg>命名推断</span>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, padding: 12, position: 'relative' }}>
+              <div className="evp-er-cv">
+                {er ? <ErView er={er} focus={er.focus} selected={selTable} selField={selField} domainOf={domainOf} zoom={zoom} onPick={(a) => pick(a)} /> : <div className="sm muted" style={{ padding: 20 }}>正在排版…</div>}
+              </div>
+              <div className="row g4" style={{ position: 'absolute', right: 14, top: 12 }}>
+                <Button size="sm" icon="zoomout" title="缩小" disabled={zi <= 0} onClick={() => setZoom(ZOOMS[Math.max(0, zi - 1)])} />
+                <Button size="sm" icon="zoomin" title="放大" disabled={zi >= ZOOMS.length - 1} onClick={() => setZoom(ZOOMS[Math.min(ZOOMS.length - 1, zi + 1)])} />
+                <Button size="sm" icon="maximize" title={maxed ? '还原三栏' : '只看 ER 视图'} onClick={() => setMaxed((v) => !v)} />
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {maxed && isDb ? null : (
+          <div className="card">
+            {record && !isDb ? <RecordDetail record={record} used={used} lineage={lineage} pid={pid} onPick={(a) => pick(a)} />
+              : record ? <Detail record={record} sel={sel} used={used} lineage={lineage} pid={pid} onField={(f) => setSel((s) => ({ ...s, field: f }))} onPick={(a) => pick(a)} />
               : recErr ? (
                 <Empty icon="alert" title={recErr.code === 'anchor_not_found' ? '这份快照里没有这条记录' : '读不出记录详情'}>
                   {recErr.code === 'anchor_not_found' ? `${anchorQ || selTable} 不在快照 ${snapshot} 里，换一份快照看看。` : errorText(recErr)}
                 </Empty>
-              ) : <div className="sm muted" style={{ padding: 16 }}>{selTable ? '正在读取记录…' : '在左栏或 ER 视图里选一张表。'}</div>}
+              ) : <div className="sm muted" style={{ padding: 16 }}>{selTable ? '正在读取记录…' : isDb ? '在左栏或 ER 视图里选一张表。' : '在左栏选一条记录。'}</div>}
           </div>
         )}
       </div>

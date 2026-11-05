@@ -1,6 +1,7 @@
 // 采集任务与证据快照（系统逆向建模插件的资料子页，设计稿 snapshots）：
 // 统计（EV-12）、发起采集（EV-13 预览 → 生产库确认弹窗 → EV-14，缺 token 时 428 也弹）、采集任务（EV-15、EV-17，项目流 EP-13）、
-// 失败任务联系管理员（EV-30）、快照列表与清理（EV-18、EV-20）、快照对比（EV-21）、推送建议修订（EV-22）、在对话里分析影响（S-20）。
+// 失败任务联系管理员（EV-30）、快照列表与清理（EV-18、EV-20）、快照详情（EV-19）、快照对比（EV-21）、推送建议修订（EV-22）、在对话里分析影响（S-20）。
+// 操作只列提供方支持的（EV-10）；上传程序的数据源（程序逆向）只能快照，范围就是登记的程序，没有增量和预算。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
@@ -10,13 +11,11 @@ import { PageHead, ShellP } from '../../shell/Shell.jsx';
 import { Button, Card, Chip, Field, Icon, Inp, KV, Modal, Prog, Seg, Select, Stat, Table, Toggle, cx } from '../../ui/index.jsx';
 import { CommandRunBar, useCommandTasks, useProjectEvent } from '../plugin/parts.jsx';
 import {
-  DIFF_CHANGE, GATEWAY_STATE, JOB_FILTERS, collectBody, defaultDiffPair, diffPair, fmtBudget, fmtDuration, fmtNum, fmtWhen,
-  isJobActive, jobActions, jobDuration, jobFilterQuery, jobMatches, jobOpText, jobPhase, mergeJob, monthText, previewPairs,
-  scopeTag, shortSnap, snapRecords, toggleSnapPick,
+  DIFF_CHANGE, GATEWAY_STATE, JOB_FILTERS, artifactOf, artifactText, canIncremental, collectBody, collectOps, defaultDiffPair, diffPair, fmtBudget,
+  fmtDuration, fmtNum, fmtWhen, isArtifactSource, isJobActive, jobActions, jobDuration, jobFilterQuery, jobMatches, jobOpText, jobPhase, mergeJob,
+  monthText, previewPairs, scopeTag, shortSnap, snapRecords, snapshotLimits, snapshotPairs, toggleSnapPick,
 } from './evidenceModel.js';
-import { EvdPlg, EvidenceGate, JobChip } from './parts.jsx';
-
-const OPS = [['discover', '发现'], ['snapshot', '快照'], ['sample', '补采样本']];
+import { EvdPlg, EvidenceGate, JobChip, UntrustedChip } from './parts.jsx';
 
 function PhaseCell({ job }) {
   const ph = jobPhase(job);
@@ -42,6 +41,38 @@ function ConfirmModal({ confirm, onClose, onAgree, busy }) {
   );
 }
 
+// 快照详情（EV-19）：manifest 展开成键值、记录条数、局限；内容来自目标程序时标出来
+function SnapshotDetail({ id, onClose }) {
+  const { api } = useApp();
+  const { pid } = useProject();
+  const [d, setD] = useState(null);
+  useEffect(() => {
+    if (!id) return undefined;
+    let alive = true;
+    setD(null);
+    api.evidenceSnapshot(pid, id).then((r) => alive && setD(r)).catch((e) => { if (alive) { toast(errorText(e), 'alert'); onClose(); } });
+    return () => { alive = false; };
+  }, [api, pid, id, onClose]);
+  const limits = snapshotLimits(d);
+  return (
+    <Modal open={!!id} onClose={onClose} icon="db" title={`快照 ${id || ''}`} sub={d?.source?.id} w={560} foot={<Button onClick={onClose}>关闭</Button>}>
+      {!d ? <div className="sm muted">正在读取…</div> : (
+        <>
+          {d.manifest?.untrusted_content ? <div className="mb12"><UntrustedChip /></div> : null}
+          <KV
+            w="72px"
+            pairs={[
+              ...snapshotPairs(d).map(([k, v]) => [k, k === 'SHA-256' ? <span className="mono" title={d.manifest.artifact.sha256}>{v}</span> : v]),
+              ['记录', <div className="evd-rec">{snapRecords(d.records).map(([k, n]) => <span key={k}>{k} {fmtNum(n)}</span>)}</div>],
+              ...(limits.length ? [['局限', <div>{limits.map((x) => <div key={x}>{x}</div>)}</div>]] : []),
+            ]}
+          />
+        </>
+      )}
+    </Modal>
+  );
+}
+
 function SnapshotsBody({ route }) {
   const { api } = useApp();
   const { pid } = useProject();
@@ -57,6 +88,9 @@ function SnapshotsBody({ route }) {
   const [form, setForm] = useState({ sourceId: '', operation: 'snapshot', incremental: true, budget: '', sampleTable: '' });
   const [confirm, setConfirm] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [providers, setProviders] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const closeDetail = useCallback(() => setDetail(null), []);
   const [now, setNow] = useState(Date.now());
   const jobsRef = useRef([]);
   jobsRef.current = jobs || [];
@@ -67,6 +101,7 @@ function SnapshotsBody({ route }) {
   const loadJobs = useCallback(() => api.evidenceJobs(pid, { state: jobFilterQuery(jobFilter) }).then((r) => setJobs(r.items || [])).catch((e) => toast(errorText(e), 'alert')), [api, pid, jobFilter]);
   useEffect(() => { loadSummary(); loadSnaps(); }, [loadSummary, loadSnaps]);
   useEffect(() => { loadJobs(); }, [loadJobs]);
+  useEffect(() => { api.evidenceProviders().then((r) => setProviders(r.items || [])).catch(() => setProviders([])); }, [api]);
   useEffect(() => {
     api.evidenceSources({ project_id: pid, filter: 'authorized' }).then((r) => {
       const list = (r.items || []).filter((s) => s.authorized_for_project);
@@ -115,7 +150,14 @@ function SnapshotsBody({ route }) {
   const source = (sources || []).find((s) => s.id === form.sourceId) || null;
   const base = useMemo(() => (snaps || []).filter((s) => s.complete && s.source?.id === form.sourceId)
     .sort((a, b) => String(b.started_at).localeCompare(String(a.started_at)))[0]?.id || null, [snaps, form.sourceId]);
-  const production = source?.environment === 'production';
+  const prov = (providers || []).find((p) => p.id === source?.provider?.id) || null;
+  const artifact = !!source && isArtifactSource(source, providers || []);
+  const ops = useMemo(() => collectOps(prov), [prov]);
+  const incrementalOk = canIncremental(prov);
+  // 换了数据源，原来选的操作它不支持时换成它支持的第一个
+  useEffect(() => {
+    if (ops.length && !ops.some(([k]) => k === form.operation)) setForm((f) => ({ ...f, operation: ops[0][0] }));
+  }, [ops, form.operation]);
 
   const started = (j, msg) => {
     setJobs((list) => mergeJob(list || [], j).filter((x) => jobMatches(x, jobFilter)));
@@ -136,7 +178,7 @@ function SnapshotsBody({ route }) {
   const collect = async () => {
     if (!source) return;
     if (form.operation === 'sample' && !form.sampleTable.trim()) { toast('补采样本要写表名', 'alert'); return; }
-    const body = collectBody({ ...form, base });
+    const body = collectBody({ ...form, base: incrementalOk ? base : null, budget: artifact ? '' : form.budget });
     setBusy(true);
     try {
       const pv = await api.previewEvidenceJob(pid, body);
@@ -237,7 +279,7 @@ function SnapshotsBody({ route }) {
         <Card title="发起采集" icon="scan">
           {sources === null ? <div className="sm muted">正在读取…</div> : !sources.length ? (
             <div className="sm muted" style={{ lineHeight: 1.7 }}>
-              还没有授权的数据源。去<a className="link" onClick={() => navigate(pagePath('sources', pid))}>「业务系统数据源」</a>授权
+              还没有授权的数据源。去<a className="link" onClick={() => navigate(pagePath('sources', pid))}>「数据源」</a>授权
             </div>
           ) : (
             <>
@@ -245,24 +287,28 @@ function SnapshotsBody({ route }) {
                 <Select icon="db" value={form.sourceId} options={sources.map((x) => ({ value: x.id, label: `${x.id} · ${x.display_name}` }))} onChange={(id) => { const x = sources.find((y) => y.id === id); setForm((f) => ({ ...f, sourceId: id, budget: fmtBudget(x?.budget) })); }} />
               </Field>
               <div className="row mt8 g12">
-                <div className="grow"><Field label="操作"><Seg items={OPS} value={form.operation} onChange={(operation) => setForm((f) => ({ ...f, operation }))} /></Field></div>
-                <div>
-                  <Field label="增量采集">
-                    <div className="row" style={{ height: 30 }}>
-                      <Toggle on={form.operation === 'snapshot' && form.incremental && !!base} disabled={form.operation !== 'snapshot' || !base} onChange={(incremental) => setForm((f) => ({ ...f, incremental }))} title={form.operation !== 'snapshot' ? '只有快照能增量采集' : undefined} />
-                      <span className="sm muted">{base ? `基于 ${shortSnap(base)}` : '还没有基线'}</span>
-                    </div>
-                  </Field>
-                </div>
+                <div className="grow"><Field label="操作"><Seg items={ops} value={form.operation} onChange={(operation) => setForm((f) => ({ ...f, operation }))} /></Field></div>
+                {incrementalOk ? (
+                  <div>
+                    <Field label="增量采集">
+                      <div className="row" style={{ height: 30 }}>
+                        <Toggle on={form.operation === 'snapshot' && form.incremental && !!base} disabled={form.operation !== 'snapshot' || !base} onChange={(incremental) => setForm((f) => ({ ...f, incremental }))} title={form.operation !== 'snapshot' ? '只有快照能增量采集' : undefined} />
+                        <span className="sm muted">{base ? `基于 ${shortSnap(base)}` : '还没有基线'}</span>
+                      </div>
+                    </Field>
+                  </div>
+                ) : null}
               </div>
               <div className="mt8">
-                <Field label="范围" hint={form.operation === 'sample' ? '每表最多 20 行' : undefined}>
-                  {form.operation === 'sample'
-                    ? <Inp mono icon="table" value={form.sampleTable} placeholder="表名，如 replenish_std" onChange={(e) => setForm((f) => ({ ...f, sampleTable: e.target.value }))} />
-                    : <div className="evd-tags"><span className="tag">{scopeTag(source?.scope_summary)}</span><span className="xs muted">沿用登记白名单</span></div>}
-                </Field>
+                {artifact ? <Field label="程序"><div className="evd-tags"><span className="tag">{artifactText(artifactOf(source))}</span></div></Field> : (
+                  <Field label="范围" hint={form.operation === 'sample' ? '每表最多 20 行' : undefined}>
+                    {form.operation === 'sample'
+                      ? <Inp mono icon="table" value={form.sampleTable} placeholder="表名，如 replenish_std" onChange={(e) => setForm((f) => ({ ...f, sampleTable: e.target.value }))} />
+                      : <div className="evd-tags"><span className="tag">{scopeTag(source?.scope_summary)}</span><span className="xs muted">沿用登记白名单</span></div>}
+                  </Field>
+                )}
               </div>
-              {form.operation !== 'sample' ? <div className="mt8"><Field label="预算"><Inp value={form.budget} onChange={(e) => setForm((f) => ({ ...f, budget: e.target.value }))} /></Field></div> : null}
+              {form.operation !== 'sample' && !artifact ? <div className="mt8"><Field label="预算"><Inp value={form.budget} onChange={(e) => setForm((f) => ({ ...f, budget: e.target.value }))} /></Field></div> : null}
               <div className="row mt12"><span className="sp" /><Button kind="primary" icon="play" disabled={busy} onClick={collect}>发起采集</Button></div>
             </>
           )}
@@ -323,6 +369,7 @@ function SnapshotsBody({ route }) {
                     </td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <div className="row g4">
+                        <Button size="xs" kind="ghost" icon="info" title="详情" onClick={() => setDetail(x.id)} />
                         <Button size="xs" kind="ghost" icon="search" title="浏览" onClick={() => navigate(pagePath('schema', pid), { snapshot: x.id })} />
                         {x.referenced ? <Button size="xs" disabled title="被引用，不能清理">清理</Button> : <Button size="xs" onClick={() => clean(x)}>清理</Button>}
                       </div>
@@ -380,6 +427,7 @@ function SnapshotsBody({ route }) {
       ) : null}
 
       <ConfirmModal confirm={confirm} busy={busy} onClose={() => setConfirm(null)} onAgree={agree} />
+      <SnapshotDetail id={detail} onClose={closeDetail} />
     </>
   );
 }

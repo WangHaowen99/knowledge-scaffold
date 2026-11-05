@@ -1,5 +1,6 @@
 // mock · 证据源的合成数据（主示例「门店补货单编制」）：登记的业务系统数据源、提供方、采集任务、快照与对比、
-// ERP 补货相关的表结构（分层摘要、ER、记录详情、相邻记录）。全部合成；主机只用保留网段 192.0.2.x。
+// ERP 补货相关的表结构（分层摘要、ER、记录详情、相邻记录）；程序逆向的合成 Electron 订货客户端（模块、类、IPC、外部接口）。
+// 全部合成；主机只用保留网段 192.0.2.x，外部接口只用 example.com。
 //
 // 数值口径同 scenario.js：品类标准上限 120 箱；09 修订通知把乳制品区域配额上限改为 150 箱，
 // 10-30 的 ERP 快照（9c1d，产物出处都指向它）里还是 140；10-31 的快照（5e2b）里 ERP 已改成 150。
@@ -10,11 +11,85 @@ export const SNAP = {
   s9c: '20261030-221500-9c1d',
   s41: '20261024-223000-41aa',
   s77: '20261018-230200-77b0',
+  rea: '20261029-101500-a3f0',
 };
 // 10-31 及以后的快照里 ERP 已按修订通知改过（新约束、字段注释、配额 150）
 export const isNewGen = (snapshotId) => String(snapshotId || '') >= '20261031';
 
 const GB = 1024 ** 3;
+const MB = 1024 ** 2;
+
+// ---------- 程序逆向（REA，F13）：合成的 Electron 门店订货客户端 ----------
+// 锚点按 evidence-collection.md §2：bin:<源>/<路径类型>:<名字>，名字里 % / . # @ | [ ] 和空格百分号编码，限定名各段用 :: 连接
+export const REA = { id: 'sample-orders', display_name: '门店订货客户端', environment: 'test' };
+export const REA_ARTIFACT = { sha256: '6b523daca442c454df04281f8018381b8b8d32049b0e458af69ffa3b710db5bf', size: 48 * MB + 211000, filename: 'sample-orders-1.4.2.zip' };
+const binSeg = (s) => String(s).replace(/[%/.#@|[\] ]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`);
+export const binAnchor = (source, ptype, ...segs) => `bin:${source}/${ptype}:${segs.map(binSeg).join('::')}`;
+
+// [路径类型, 名字各段, 记录类型, kind, 模块, 行号, 置信度, 其他 attrs, 显示名, 上级（同表里的下标）]
+const REA_ROWS = [
+  ['mod', ['main.js'], 'entity', 'module', 'main.js', 1],
+  ['mod', ['preload.js'], 'entity', 'module', 'preload.js', 1],
+  ['mod', ['orders.js'], 'entity', 'module', 'orders.js', 1],
+  ['mod', ['customers.js'], 'entity', 'module', 'customers.js', 1],
+  ['mod', ['erp-client.js'], 'entity', 'module', 'erp-client.js', 1],
+  ['ipc', ['order:create'], 'operation', 'ipc', 'main.js', 24, 'observed', { channel: 'order:create' }],
+  ['ipc', ['order:cancel'], 'operation', 'ipc', 'main.js', 31, 'observed', { channel: 'order:cancel' }],
+  ['ipc', ['customer:lookup'], 'operation', 'ipc', 'main.js', 38, 'observed', { channel: 'customer:lookup' }],
+  ['bridge', ['api', 'createOrder'], 'operation', 'bridge', 'preload.js', 6, 'observed', { signature: 'createOrder(draft)' }, 'api.createOrder'],
+  ['bridge', ['api', 'cancelOrder'], 'operation', 'bridge', 'preload.js', 7, 'observed', { signature: 'cancelOrder(orderNo, reason)' }, 'api.cancelOrder'],
+  ['sym', ['orders.js', 'Order'], 'entity', 'class', 'orders.js', 8, 'observed', {}, 'Order'],
+  ['sym', ['orders.js', 'Order', 'orderNo'], 'field', 'property', 'orders.js', 10, 'observed', {}, 'orderNo', 10],
+  ['sym', ['orders.js', 'Order', 'qty'], 'field', 'property', 'orders.js', 11, 'observed', {}, 'qty', 10],
+  ['sym', ['orders.js', 'Order', 'create'], 'operation', 'method', 'orders.js', 21, 'observed', { signature: 'create(draft)' }, 'Order.create', 10],
+  ['sym', ['orders.js', 'Order', 'cancel'], 'operation', 'method', 'orders.js', 47, 'observed', { signature: 'cancel(reason)' }, 'Order.cancel', 10],
+  ['sym', ['customers.js', 'Customer'], 'entity', 'class', 'customers.js', 5, 'observed', {}, 'Customer'],
+  ['sym', ['customers.js', 'Customer', 'lookup'], 'operation', 'method', 'customers.js', 14, 'observed', { signature: 'lookup(storeCode)' }, 'Customer.lookup', 15],
+  ['sym', ['erp-client.js', 'submitOrder'], 'operation', 'function', 'erp-client.js', 18, 'observed', { signature: 'submitOrder(order)' }, 'submitOrder'],
+  ['sym', ['erp-client.js', 'fetchCustomer'], 'operation', 'function', 'erp-client.js', 33, 'inferred', { signature: 'fetchCustomer(code)' }, 'fetchCustomer'],
+  ['ext', ['POST https://erp.example.com/api/orders'], 'entity', 'endpoint', 'erp-client.js', 20, 'observed', { method: 'POST', url: 'https://erp.example.com/api/orders' }],
+  // URL 由变量拼出来，REA 标成推断
+  ['ext', ['GET https://erp.example.com/api/customers'], 'entity', 'endpoint', 'erp-client.js', 35, 'inferred', { method: 'GET', url: 'https://erp.example.com/api/customers' }],
+];
+// 关系：[来源下标, 关系名, 目标下标, 置信度]
+const REA_RELS = [
+  [1, 'exposes', 8], [1, 'exposes', 9], [8, 'calls', 5], [9, 'calls', 6],
+  [13, 'handles', 5], [14, 'handles', 6], [16, 'handles', 7],
+  [13, 'calls', 17], [16, 'calls', 18], [17, 'requests', 19], [18, 'requests', 20, 'inferred'],
+];
+
+/** 一个 REA 数据源的全部记录（锚点带源 ID，新登记的自助源也能用同一份合成结果） */
+export function reaRecords(source = REA.id) {
+  const anchors = REA_ROWS.map(([pt, segs]) => binAnchor(source, pt, ...segs));
+  const recs = REA_ROWS.map(([, segs, type, kind, module, line, confidence = 'observed', attrs = {}, name, parent], i) => ({
+    id: anchors[i], type, parent: parent == null ? null : anchors[parent], name: name || segs.at(-1), label: null,
+    attrs: { kind, module, loc: { file: module, line }, ...attrs },
+    evidence: { provider: 'rea-static@0.1.0', method: 'rea analyze-javascript-application', confidence },
+  }));
+  // 关系锚点本来是 sha256(from|name|to) 的前 16 位；mock 用序号凑 16 位
+  REA_RELS.forEach(([from, name, to, confidence = 'observed'], i) => {
+    recs.push({
+      id: binAnchor(source, 'rel', `${String(i).padStart(4, '0')}a3f0c2d1e5b7`), type: 'relation', parent: null, name, label: null,
+      attrs: { from: anchors[from], to: anchors[to], module: recs[from].attrs.module, loc: recs[from].attrs.loc },
+      evidence: { provider: 'rea-static@0.1.0', method: 'rea analyze-javascript-application', confidence },
+    });
+  });
+  return recs;
+}
+const countBy = (recs) => recs.reduce((m, r) => ({ ...m, [r.type]: (m[r.type] || 0) + 1 }), {});
+export const REA_COUNTS = countBy(reaRecords());
+
+// EV-19 的 manifest（去掉哈希和凭据引用）：artifact、工具、局限、不可信标记
+export function reaManifest(source = REA.id, artifact = REA_ARTIFACT, jobId = 'job-0128') {
+  return {
+    format: 'evidence-snapshot/1', source: { id: source, provider: 'rea-static' }, provider: 'rea-static@0.1.0', tool: { name: 'rea', version: '6.8.0' },
+    job_id: jobId, scope: [], complete: true, coverage_pct: 100, untrusted_content: true, masking_policy: 'none',
+    artifact: { ...artifact, detected: 'electron' },
+    analyzers: [{ command: 'analyze-javascript-application', provider: 'rea-javascript-application@1', ms: 4578 }],
+    records: countBy(reaRecords(source)), budget_used: { records: reaRecords(source).length, bytes: 18000, duration_s: 5 },
+    limitations: ['渲染进程里动态拼接的 IPC 通道名没有展开（2 处）', '压缩过的第三方库没有逐个分析'], unknowns: 7, masked_hits: 0,
+  };
+}
 
 // ---------- 提供方（EV-10） ----------
 const DB_FIELDS = [
@@ -30,7 +105,7 @@ const provider = (id, version, label, kind, o = {}) => ({
   capabilities: kind === 'db' ? ['discover', 'snapshot', 'sample', 'incremental'] : ['discover', 'snapshot', 'incremental'],
   cred_fields: kind === 'db' ? DB_FIELDS : [],
   readonly_method: kind === 'db' ? '只读账号 · 只读会话 · 语句白名单' : '只读令牌',
-  runtime: 'subprocess', installed: true, license_note: null, ...o,
+  runtime: 'subprocess', installed: true, license_note: null, self_service: false, input: 'connection', max_artifact_bytes: null, ...o,
 });
 export function providers() {
   return {
@@ -43,7 +118,10 @@ export function providers() {
       provider('db-dm', '0.8.0', '达梦', 'db'),
       provider('code-repo', '0.2.1', '代码仓库', 'code', { cred_fields: [{ name: 'repo_url', label: '仓库地址', secret: false }, { name: 'ref', label: '分支或提交', secret: false }, { name: 'token', label: '访问令牌', secret: true }] }),
       provider('api-openapi', '0.4.0', 'OpenAPI', 'api', { cred_fields: [{ name: 'spec_url', label: '接口文档地址', secret: false }, { name: 'token', label: '访问令牌', secret: true }] }),
-      provider('rea-binary', '0.1.0', 'REA 逆向', 'rea', { installed: false, runtime: 'sidecar', license_note: '逆向分析前要确认软件授权范围' }),
+      provider('rea-static', '0.1.0', '程序逆向', 'rea', {
+        evidence_types: ['entity', 'field', 'operation', 'relation'], capabilities: ['snapshot'], readonly_method: '静态分析，不运行目标程序，旁路容器断网',
+        runtime: 'sidecar', license_note: '逆向分析前要确认软件授权范围', self_service: true, input: 'artifact', max_artifact_bytes: 2048 * MB,
+      }),
       provider('log-file', '0.1.0', '日志', 'log', { installed: false }),
     ],
   };
@@ -81,10 +159,22 @@ export function sources() {
       // 别的项目采集过（登记是全局的）
       last_job: { at: '2026-10-24T09:30:00+08:00', state: 'succeeded' }, authorized_for_project: null,
     },
+    // 自助登记的程序逆向数据源（F13）：只有登记人和管理员看得到
+    {
+      id: REA.id, display_name: '门店订货客户端', environment: 'test',
+      provider: { id: 'rea-static', version: '0.1.0', label: '程序逆向' },
+      connection: { artifact_sha256: REA_ARTIFACT.sha256, artifact_filename: REA_ARTIFACT.filename, artifact_size: REA_ARTIFACT.size },
+      cred_ref: null, secret_fields: [], scope_allowlist: [], scope_summary: '', egress: [], access_window: null,
+      budget: { max_rows: 200000, max_bytes: 256 * MB, max_duration_s: 1800 }, rate_limit: null, masking_policy: 'none',
+      authorization_note: '合成示例程序，供应商许可允许为对接做静态分析。', owner: 'zhangsan', last_job: null, authorized_for_project: null,
+    },
   ];
 }
 
-export const GRANTS = { 'erp-prod': { authorized: true, granted_at: '2026-10-20T10:00:00+08:00', granted_by: 'zhangsan' } };
+export const GRANTS = {
+  'erp-prod': { authorized: true, granted_at: '2026-10-20T10:00:00+08:00', granted_by: 'zhangsan' },
+  [REA.id]: { authorized: true, granted_at: '2026-10-29T10:10:00+08:00', granted_by: 'zhangsan' },
+};
 
 const ref = (s) => ({ id: s.id, display_name: s.display_name, environment: s.environment });
 const ERP = { id: 'erp-prod', display_name: 'ERP 生产库', environment: 'production' };
@@ -125,6 +215,10 @@ export function seedJobs(pid, now = Date.now()) {
       id: 'job-0122', project_id: pid, operation: 'sample', scope_text: 'store 20 行', state: 'cancelled', started_at: '2026-10-21T22:30:00+08:00', ended_at: '2026-10-21T22:31:40+08:00', duration_ms: 100000,
       result: { message: '你在 10-21 取消' }, consent: consent('2026-10-21T22:29:50+08:00'), actions: ['retry'],
     }),
+    job({
+      id: 'job-0128', project_id: pid, source: REA, scope_text: REA_ARTIFACT.filename, started_at: '2026-10-29T10:15:00+08:00', ended_at: '2026-10-29T10:15:05+08:00', duration_ms: 4600,
+      result: { snapshot_id: SNAP.rea, message: `生成快照 ${SNAP.rea}` }, actions: ['browse'],
+    }),
   ];
 }
 
@@ -142,6 +236,10 @@ export function seedSnapshots() {
     snap(SNAP.s9c, {
       records: { entity: 42, field: 618, relation: 57, constraint: 88, profile: 512, sample: 840 }, referenced: 17,
       started_at: '2026-10-30T22:15:00+08:00', ended_at: '2026-10-30T22:29:03+08:00', previous: SNAP.s41, job_id: 'job-0129', git_bytes: 408000,
+    }),
+    snap(SNAP.rea, {
+      source: REA, provider: 'rea-static@0.1.0', masking_policy: 'none', records: { ...REA_COUNTS },
+      started_at: '2026-10-29T10:15:00+08:00', ended_at: '2026-10-29T10:15:05+08:00', job_id: 'job-0128', git_bytes: 18000,
     }),
     snap(SNAP.s41, {
       records: { entity: 40, field: 597, relation: 55, constraint: 84, profile: 498, sample: 800 }, referenced: 6,
@@ -262,6 +360,9 @@ export function replenishStdExtras(snapshotId) {
 
 // ---------- 访问审计（EV-09） ----------
 export function accessLog(sourceId, pid) {
+  if (sourceId === REA.id) {
+    return [{ at: '2026-10-29T10:15:01+08:00', job_id: 'job-0128', project_id: pid, operation: 'snapshot', statement_digest: 'rea analyze-javascript-application', rows: 25, bytes: 446300, duration_ms: 4578 }];
+  }
   if (sourceId !== 'erp-prod') {
     return [{ at: '2026-10-24T09:30:12+08:00', job_id: 'job-0071', project_id: 'library-desk-1e8f6a07', operation: 'snapshot', statement_digest: 'SELECT … FROM crm.member', rows: 1200, bytes: 180000, duration_ms: 2100 }];
   }

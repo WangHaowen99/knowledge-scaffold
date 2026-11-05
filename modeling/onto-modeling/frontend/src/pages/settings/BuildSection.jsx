@@ -298,7 +298,7 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
                     </div>
                   </div>
                 );
-              }) : <div className="sm muted">本项目还没有授权的生产库数据源；在「资料 › 业务系统数据源」里登记并授权后会出现在这里。</div>}
+              }) : <div className="sm muted">本项目还没有授权的生产库数据源；在「资料 › 数据源」里登记并授权后会出现在这里。</div>}
             </Card> : null}
 
             <div className="card">
