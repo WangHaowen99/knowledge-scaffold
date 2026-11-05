@@ -17,22 +17,55 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-VERSION = 1
-MAX_BYTES = 8 * 1024 * 1024
+VERSION = 2
+# Match the material-upload UI contract; this is not an unbounded file reader.
+MAX_BYTES = 20 * 1024 * 1024
 MAX_EXPANDED_BYTES = 32 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 10000
 MAX_SEGMENTS = 50000
 TEXT_SUFFIXES = {'.md', '.txt', '.csv', '.json', '.yaml', '.yml'}
 SUPPORTED = TEXT_SUFFIXES | {'.docx', '.xlsx'}
 W = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
 
 
+def _source_bytes(path: Path) -> bytes:
+    if path.stat().st_size > MAX_BYTES:
+        raise ValueError(f'原文件超出抽取上限（{MAX_BYTES} 字节）')
+    # The file may grow after stat: bound the actual read as well.
+    with path.open('rb') as stream:
+        data = stream.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        raise ValueError(f'原文件超出抽取上限（{MAX_BYTES} 字节）')
+    return data
+
+
+def _archive_members(archive: zipfile.ZipFile) -> list:
+    members = archive.infolist()
+    if len(members) > MAX_ARCHIVE_MEMBERS:
+        raise ValueError('Office 归档成员数超限')
+    if len({member.filename for member in members}) != len(members):
+        raise ValueError('Office 归档包含重复成员，无法唯一定位来源')
+    return members
+
+
+def _docx_body(archive: zipfile.ZipFile):
+    # Only this member is parsed. Do not inflate images or charge their expanded
+    # bytes against the text budget; the original container is still hashed.
+    member = archive.getinfo('word/document.xml')
+    if member.file_size > MAX_EXPANDED_BYTES:
+        raise ValueError('DOCX 正文解压内容超限')
+    with archive.open(member) as stream:
+        data = stream.read(MAX_EXPANDED_BYTES + 1)
+    if len(data) > MAX_EXPANDED_BYTES:
+        raise ValueError('DOCX 正文解压内容超限')
+    return ET.fromstring(data)
+
+
 def extract(path: Path) -> dict:
     result = {'status': 'unverifiable', 'extractor_version': VERSION,
               'source_sha256': '', 'segments': []}
     try:
-        if path.stat().st_size > MAX_BYTES:
-            raise ValueError('原文件超出抽取上限')
-        data = path.read_bytes()
+        data = _source_bytes(path)
         result['source_sha256'] = hashlib.sha256(data).hexdigest()
         suffix = path.suffix.lower()
         if suffix not in SUPPORTED:
@@ -53,10 +86,9 @@ def extract(path: Path) -> dict:
                 add(f'L{n}', line)
         else:
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                if sum(i.file_size for i in archive.infolist()) > MAX_EXPANDED_BYTES:
-                    raise ValueError('Office 解压内容超限')
+                members = _archive_members(archive)
                 if suffix == '.docx':
-                    document = ET.fromstring(archive.read('word/document.xml'))
+                    document = _docx_body(archive)
                     body = document.find(f'{W}body')
                     if body is None:
                         raise ValueError('DOCX 缺少正文')
@@ -83,6 +115,10 @@ def extract(path: Path) -> dict:
                                 for c, cell in enumerate(row.findall(W + 'tc'), 1):
                                     add(f'table:{table}/row:{r}/cell:{c}', word_text(cell))
                 else:
+                    # openpyxl may read multiple parts, so retain its whole-package
+                    # expansion budget rather than applying the DOCX-only rule.
+                    if sum(i.file_size for i in members) > MAX_EXPANDED_BYTES:
+                        raise ValueError('Office 解压内容超限')
                     import openpyxl
                     workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=False)
                     try:
@@ -98,7 +134,8 @@ def extract(path: Path) -> dict:
         if not segments:
             raise ValueError('未抽取到正文，无法核验来源')
         result.update(status='ok', segments=segments)
-    except (OSError, ValueError, KeyError, ImportError, ET.ParseError, zipfile.BadZipFile) as exc:
+    except (OSError, ValueError, KeyError, ImportError, RuntimeError, NotImplementedError,
+            EOFError, ET.ParseError, zipfile.BadZipFile) as exc:
         result['reason'] = f'无法核验：{type(exc).__name__}：{str(exc)[:160]}'
     return result
 
