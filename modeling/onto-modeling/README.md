@@ -350,7 +350,8 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
   拆出去的全部包（能力不变）。联网调研没启用时，项目不能切到联网调研模式。
 - **系统逆向建模**（ADR-0082、0083）：`assets/packs/rev/`，不默认启用。资料页多数据源、采集与快照、证据浏览器三个子页；
   项目授权了数据源时，资料分析和建模之间多一步「系统取证」（授权的源有完整快照就算完成），`/rev-evidence` 把快照整理成
-  `reports/evidence/<源>.md`，工作区脚本 `evidence.py` 检索快照（输出都标 `untrusted_content`）。节点按项目条件出现的写法是
+  `reports/evidence/<源>.md`，`/rev-reconcile` 对照资料、数据库、代码快照写三方对账 `reports/evidence/reconcile.md`（0.2.0，
+  ADR-0084），工作区脚本 `evidence.py` 检索快照（认 `bin:`、`db:`、`code:` 锚点，输出都标 `untrusted_content`）。节点按项目条件出现的写法是
   通用的（`visible_if`、内核探针 `{kernel: 条件}`，条件表在 `services/flow/conditions.py`）。
 - **行业包**（ADR-0044）：`assets/packs/industry-retail/`（零售连锁，合成内容）是第一个行业包，新建项目时在向导里选。
   它的知识条目作为只读的行业层加载（项目里同名条目覆盖），`ontology_checker` 按它的声明式规则给警告；在装配目录的

@@ -195,7 +195,7 @@ const ATTR = {
     ['trace', '0.10.0', 1102, 1.1, 52000, 2, 3, 76],
     ['codegen', '0.9.2', 214, 2.8, 106000, 0, 9, 61],
     ['diagram', '0.6.0', 186, 0.5, 24000, 1, null, 88],
-    ['rev', '0.3.0', 96, 3.1, 130000, 5, 4, 58],
+    ['rev', '0.2.0', 96, 3.1, 130000, 5, 4, 58],
     ['industry-retail', '1.0.3', 312, 12.0, 11000, 0, 27, null],
   ],
   node: [
@@ -374,7 +374,7 @@ export function alertRules() {
     },
     {
       id: 'collect-fail', name: '采集任务失败', condition: 'evidence.job.failed ≥ 2', window: '1 小时', level: 'warning', state: 'ok', enabled: true,
-      source: 'rev@0.3.0', auto_action: null, runbook_md: '查看连接器网关日志。\n\n多数是凭据过期或不在访问时间窗口内。',
+      source: 'rev@0.2.0', auto_action: null, runbook_md: '查看连接器网关日志。\n\n多数是凭据过期或不在访问时间窗口内。',
     },
     {
       id: 'reconnect-fail', name: '热更新重连失败', condition: 'assembly.reconnect.error > 0', window: '', level: 'critical', state: 'ok', enabled: true,

@@ -1,5 +1,6 @@
-"""系统逆向建模包 rev（F13；ADR-0082、ADR-0083）：包检查与安装、取证节点按授权出现、完整快照算完成、
-有快照时的提示规则、工作区脚本 evidence.py 的七个子命令。快照全是测试里现造的合成数据，锚点用 spec.py 生成。"""
+"""系统逆向建模包 rev（F13、F14；ADR-0082、ADR-0083、ADR-0084）：包检查与安装、取证节点按授权出现、完整快照算完成、
+有快照时的提示规则、工作区脚本 evidence.py 的七个子命令（程序 bin:、数据库 db:、代码仓库 code: 三种锚点）、
+三方对账命令。快照全是测试里现造的合成数据，锚点用 spec.py 生成。"""
 
 from __future__ import annotations
 
@@ -103,7 +104,7 @@ def _records(*, approve_signature="approve(id)", extra_fields=0, with_ipc=True) 
 
 
 def _snapshot(root: Path, snapshot_id: str, records: list[dict], *, complete=True, source=SOURCE,
-              summary_lines=5) -> Path:
+              summary_lines=5, manifest_extra: dict | None = None) -> Path:
     directory = root / "resource" / "systems" / source / snapshot_id
     (directory / "records").mkdir(parents=True, exist_ok=True)
     counts: dict[str, int] = {}
@@ -118,7 +119,7 @@ def _snapshot(root: Path, snapshot_id: str, records: list[dict], *, complete=Tru
     manifest = {"format": "evidence-snapshot/1", "source": {"id": source, "provider": "rea-static"},
                 "complete": complete, "untrusted_content": True, "records": counts,
                 "artifact": {"sha256": "0" * 64, "size": 1, "filename": "crm-client.zip", "detected": "electron"},
-                "ended_at": f"{snapshot_id[:4]}-{snapshot_id[4:6]}-{snapshot_id[6:8]}T00:00:00Z"}
+                "ended_at": f"{snapshot_id[:4]}-{snapshot_id[4:6]}-{snapshot_id[6:8]}T00:00:00Z", **(manifest_extra or {})}
     (directory / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     return directory
 
@@ -167,7 +168,8 @@ def test_rev_pack_passes_official_checks_and_installs(env):
     response = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "rev"})
     assert response.status_code == 201, response.text
     manager.packs.apply(root)
-    for rel in ("commands/rev-evidence.md", "scripts/evidence.py", "SYSTEM_EVIDENCE.md"):
+    assert version.split("+")[0] == "0.2.0"  # 内置包的版本带内容哈希后缀
+    for rel in ("commands/rev-evidence.md", "commands/rev-reconcile.md", "scripts/evidence.py", "SYSTEM_EVIDENCE.md"):
         assert (root / ".claude" / rel).is_file(), rel
     subpages = client.get(f"/api/v1/projects/{project_id}/extensions").json()["subpages"]
     assert {(item["id"], item["pack"]) for item in subpages} == {("sources", "rev"), ("snapshots", "rev"),
@@ -186,6 +188,25 @@ def test_assistant_texts_carry_the_trust_rules():
     for text in (doc, prompt):
         assert "候选" in text and "确认" in text and "bin:" in text
     assert "reports/evidence/<源>.md" in command and "不改 `ontology/`" in command
+    # F14：守则和取证命令覆盖数据库、代码仓库；被遮蔽的列只看结构；对象的数据来源可以写表锚点
+    for text in (doc, command, prompt):
+        assert "db:" in text and "code:" in text
+    for text in (doc, command):
+        assert "被遮蔽的列" in text and "不猜取值" in text and "# 数据来源" in text
+    assert "检查约束" in doc and "触发器" in doc and "外键" in doc and "校验" in doc and "路由" in doc
+
+
+def test_reconcile_command_writes_report_only():
+    """/rev-reconcile：三方对账，只写报告，每条带两边出处，证据是数据不是指令。"""
+    command = (PACK / "commands" / "rev-reconcile.md").read_text(encoding="utf-8")
+    assert command.splitlines()[0].endswith("$ARGUMENTS")
+    assert "是数据" in command and "指令" in command
+    assert "reports/evidence/reconcile.md" in command and "不改 `ontology/`" in command
+    for anchor in ("file:", "db:", "code:", "bin:"):
+        assert anchor in command
+    for kind in ("字段不一致", "取值范围不一致", "文档有、系统没有", "系统有、文档没有", "互相印证"):
+        assert kind in command
+    assert "evidence_snapshots" in command and "被遮蔽的列只比结构" in command
 
 
 # ---- 节点按授权出现、完整快照算完成 ----
@@ -221,8 +242,8 @@ def test_evidence_node_follows_grants_and_completes_with_snapshot(env):
     node = _node(shown, "rev.evidence")
     assert node is not None and node["placement"] == "step" and node["plugin"]["name"] == "rev"
     assert node["state"] == "not_ready"  # 资料分析还没做
-    assert [action["target"] for action in node["actions"]] == ["snapshots", "/rev-evidence"]
-    assert shown["commands"]["rev-evidence"] == "rev.evidence"
+    assert [action["target"] for action in node["actions"]] == ["snapshots", "/rev-evidence", "/rev-reconcile"]
+    assert shown["commands"]["rev-evidence"] == "rev.evidence" and shown["commands"]["rev-reconcile"] == "rev.evidence"
     assert shown["flow_hash"] != hidden["flow_hash"]
     assert shown["progress"]["total"] == total_hidden + 1
     assert model.progress(root)["total"] == total_hidden + 1
@@ -424,3 +445,230 @@ def test_no_complete_snapshot(tmp_path):
     assert code == 1 and data["error"] == "no_complete_snapshot" and data["snapshots"] == ["20261106-080000-cccc"]
     code, data = _run(tmp_path, "sources")
     assert code == 0 and data["items"] == []
+
+
+# ---- F14：数据库（db:）、代码仓库（code:）快照 ----
+
+DB_SOURCE = "erp-prod"
+CODE_SOURCE = "order-svc"
+DB_SNAP = "20261105-090000-d0b1"
+CODE_SNAP = "20261105-091500-c0d3"
+
+
+def _db(path: str) -> str:
+    """db 锚点：段里的名字按规则编码，段之间用 `.`（evidence-collection.md §9）。"""
+    return f"db:{DB_SOURCE}/{path}"
+
+
+def _code(kind: str, *segments: str) -> str:
+    return f"code:{spec.bin_anchor(CODE_SOURCE, kind, *segments)[len('bin:'):]}"
+
+
+def _db_records() -> list[dict]:
+    table = _db("erp.replenish_std")
+    category = _db("erp.goods_category")
+    ddl = "CREATE TABLE replenish_std (\n" + ",\n".join(f"  c{index} decimal(8,2) COMMENT '列 {index}'"
+                                                          for index in range(40)) + "\n);"
+    out = [
+        _record("entity", table, "replenish_std", attrs={"kind": "table", "comment": "补货标准", "rows_estimate": 1862,
+                                                         "ddl": ddl, "module": "erp"}, confidence="declared"),
+        _record("field", f"{table}.id", "id", parent=table, attrs={"pk": True, "data_type": "bigint"},
+                confidence="declared"),
+        _record("field", f"{table}.max_qty", "max_qty", parent=table,
+                attrs={"data_type": "decimal(8,2)", "comment": "标准上限"}, confidence="declared"),
+        _record("field", f"{table}.updated_by", "updated_by", parent=table,
+                attrs={"data_type": "varchar(32)", "masked": True, "sensitivity": "identifier"}, confidence="declared"),
+        *[_record("field", f"{table}.c{index}", f"c{index}", parent=table, attrs={"data_type": "decimal(8,2)"},
+                  confidence="declared") for index in range(55)],
+        _record("constraint", f"{table}.check:chk_qty", "chk_qty", parent=table,
+                attrs={"columns": ["min_qty", "max_qty"], "expression": "min_qty <= max_qty"}, confidence="declared"),
+        _record("rule", f"{table}.trigger:trg_audit", "trg_audit", parent=table,
+                attrs={"timing": "AFTER", "event": "UPDATE", "definition": "INSERT INTO audit_log …"},
+                confidence="declared"),
+        _record("relation", f"{table}.fk:fk_category", "fk_category", attrs={"columns": [["category_code", "category_code"]]},
+                confidence="declared", **{"from": table, "to": category}),
+        _record("relation", f"{table}.ref:std_ref", "std_ref", attrs={"basis": "命名 + 取值重合 96%"},
+                confidence="inferred", **{"from": table, "to": _db("erp.std_catalog")}),
+        _record("entity", category, "goods_category", attrs={"kind": "table", "module": "erp"}, confidence="declared"),
+        _record("entity", _db("erp.std_catalog"), "std_catalog", attrs={"kind": "table", "module": "erp"},
+                confidence="declared"),
+        # 名字里有空格的表：锚点里编码成 %20
+        _record("entity", _db(f"erp.{spec.encode_segment('order items')}"), "order items",
+                attrs={"kind": "table", "module": "erp"}, confidence="declared"),
+        _record("entity", _db("erp.view:v_std"), "v_std", attrs={"kind": "view", "definition": "SELECT …"},
+                confidence="declared"),
+        _record("operation", _db("erp.proc:calc_quota"), "calc_quota", attrs={"kind": "procedure"}, confidence="declared"),
+        _record("profile", f"{table}#profile", "replenish_std", parent=table, attrs={"rows": 1862, "columns": [
+            {"column": "delivery_cycle", "null_pct": 0, "distinct": 7,
+             "top_k": [{"value": f"v{index}", "pct": 140 - index * 10} for index in range(7)]},
+            {"column": "max_qty", "null_pct": 0, "distinct": 300, "stats": {"min": 1, "max": 600}},
+            {"column": "updated_by", "null_pct": 100, "distinct": 12},
+        ]}, confidence="observed"),
+        _record("sample", f"{table}#sample", "replenish_std", parent=table, attrs={
+            "columns": ["id", "max_qty", "updated_by"], "masked_columns": ["updated_by"],
+            "rows": [[str(index), "120.00", f"h:{index:012x}"] for index in range(8)]}, confidence="observed"),
+    ]
+    return out
+
+
+def _code_records() -> list[dict]:
+    pkg = ("com", "example", "order")
+    order = _code("sym", *pkg, "Order")
+    order_no = _code("sym", *pkg, "Order", "orderNo")
+    submit = _code("sym", *pkg, "OrderService", "submit")
+    create = _code("sym", *pkg, "web", "OrderController", "create")
+    snippet = "\n".join(f"line {index}" for index in range(30)) + "\n" + "x" * 600
+    return [
+        _record("entity", order, "Order", attrs={"kind": "class", "orm": "jpa", "table": "orders", "module": "com.example.order",
+                                                 "loc": {"file": "src/Order.java", "line": 12, "end_line": 40},
+                                                 "snippet": snippet}, confidence="declared"),
+        _record("field", order_no, "orderNo", parent=order, attrs={"data_type": "String", "column": "order_no",
+                                                                   "validations": ["@NotNull", "@Size(max = 20)"]},
+                confidence="declared"),
+        _record("rule", _code("rule", *pkg, "Order", "orderNo", "NotNull"), "NotNull", parent=order_no,
+                attrs={"kind": "validation", "annotation": "@NotNull"}, confidence="declared"),
+        _record("operation", _code("route", "POST /api/orders"), "POST /api/orders",
+                attrs={"kind": "route", "method": "POST", "path": "/api/orders", "handler": create}),
+        _record("operation", create, "create", attrs={"kind": "method", "module": "com.example.order.web"}),
+        _record("operation", submit, "submit", attrs={"kind": "method", "sql": "SELECT o FROM Order o", "tables": ["orders"]}),
+        _record("relation", spec.relation_anchor(CODE_SOURCE, create, "calls", submit).replace("bin:", "code:", 1), "calls",
+                confidence="inferred", **{"from": create, "to": submit}),
+    ]
+
+
+@pytest.fixture()
+def systems(tmp_path: Path) -> Path:
+    root = tmp_path / "ws"
+    _snapshot(root, DB_SNAP, _db_records(), source=DB_SOURCE,
+              manifest_extra={"source": {"id": DB_SOURCE, "provider": "db-mysql"}, "provider": "db-mysql@0.1.0",
+                              "artifact": None, "masking_policy": "mask-v1"})
+    _snapshot(root, CODE_SNAP, _code_records(), source=CODE_SOURCE,
+              manifest_extra={"source": {"id": CODE_SOURCE, "provider": "code-repo"}, "provider": "code-repo@0.1.0",
+                              "artifact": {"repo_url": "https://git.example.com/demo/order.git", "ref": "main",
+                                           "commit": "3f9a1c2"}})
+    return root
+
+
+def test_db_and_code_anchor_rules(monkeypatch):
+    script = _load_script(monkeypatch)
+    # db: 各段用 `.`，名字里的保留字符编码；段首的类型和片段不编码；编码过的原样
+    assert script.canonical_anchor(_db("erp.order items")) == _db("erp.order%20items")
+    assert script.canonical_anchor(_db("erp.order items.qty")) == _db("erp.order%20items.qty")
+    assert script.canonical_anchor(_db("erp.t.fk:fk a")) == _db("erp.t.fk:fk%20a")
+    assert script.canonical_anchor(_db("erp.order items#profile")) == _db("erp.order%20items#profile")
+    for anchor in (_db("erp.replenish_std"), _db("erp.order%20items.qty"), _db("erp.view:v_std"), _db("erp.t#sample")):
+        assert script.canonical_anchor(anchor) == anchor
+    # code: 同 bin: 的规则，file: 的行号片段保留
+    assert script.canonical_anchor(f"code:{CODE_SOURCE}/route:POST /api/orders") == _code("route", "POST /api/orders")
+    assert script.canonical_anchor(f"code:{CODE_SOURCE}/file:src/a.java#L3-L9") == \
+        f"code:{CODE_SOURCE}/file:src%2Fa%2Ejava#L3-L9"
+    assert script.canonical_anchor(_code("sym", "com", "example", "Order")) == _code("sym", "com", "example", "Order")
+    for bad in (f"db:{DB_SOURCE}/erp", f"code:{CODE_SOURCE}/Order", "ftp:x/y", f"db:{DB_SOURCE}/"):
+        with pytest.raises(script.EvidenceError):
+            script.canonical_anchor(bad)
+
+
+def test_sources_lists_provider(systems):
+    code, data = _run(systems, "sources")
+    by_source = {item["source"]: item for item in data["items"]}
+    assert by_source[DB_SOURCE]["provider"] == "db-mysql@0.1.0" and by_source[DB_SOURCE]["latest_complete"] == DB_SNAP
+    assert by_source[CODE_SOURCE]["provider"] == "code-repo@0.1.0"
+
+
+def test_show_db_table_brings_columns_sample_and_profile(systems):
+    table = _db("erp.replenish_std")
+    code, data = _run(systems, "show", table)
+    assert code == 0 and data["anchor"] == table and data["source"] == DB_SOURCE and data["snapshot"] == DB_SNAP
+    # DDL 放宽到 4000 字，不按 500 截
+    assert data["record"]["attrs"]["ddl"].endswith(");") and len(data["record"]["attrs"]["ddl"]) > 500
+    columns = data["children"]["field"]
+    assert columns["total"] == 58 and len(columns["items"]) == 50
+    by_name = {item["name"]: item for item in columns["items"]}
+    assert by_name["id"]["data_type"] == "bigint" and "masked" not in by_name["id"]
+    assert by_name["updated_by"]["masked"] is True
+    assert [item["anchor"] for item in data["children"]["constraint"]["items"]] == [f"{table}.check:chk_qty"]
+    assert [item["anchor"] for item in data["children"]["rule"]["items"]] == [f"{table}.trigger:trg_audit"]
+    assert "sample" not in data["children"] and "profile" not in data["children"]
+    sample = data["sample"]
+    assert sample["anchor"] == f"{table}#sample" and sample["rows"] == 8 and len(sample["preview"]) == 5
+    assert sample["masked_columns"] == ["updated_by"] and sample["columns"] == ["id", "max_qty", "updated_by"]
+    profile = data["profile"]
+    assert profile["percent_unit"] == "permille" and profile["rows"] == 1862 and profile["columns_total"] == 3
+    assert len(profile["columns"][0]["top_k"]) == 5 and profile["columns"][1]["stats"] == {"min": 1, "max": 600}
+    assert profile["columns"][2] == {"column": "updated_by", "null_pct": 100, "distinct": 12}
+
+    # 列：没有样本和画像；原名写的表名能找到
+    code, data = _run(systems, "show", f"{table}.updated_by")
+    assert code == 0 and data["record"]["attrs"]["masked"] is True and "sample" not in data and "profile" not in data
+    code, data = _run(systems, "show", _db("erp.order items"))
+    assert code == 0 and data["anchor"] == _db("erp.order%20items")
+    code, data = _run(systems, "show", _db("erp.nope"))
+    assert code == 1 and data["error"] == "anchor_not_found"
+
+
+def test_lineage_and_search_on_db(systems):
+    table = _db("erp.replenish_std")
+    code, data = _run(systems, "lineage", table)
+    assert code == 0 and data["total"] == 2
+    by_name = {item["name"]: item for item in data["items"]}
+    assert by_name["fk_category"]["other"] == _db("erp.goods_category") and by_name["fk_category"]["confidence"] == "declared"
+    assert by_name["fk_category"]["columns"] == [["category_code", "category_code"]]
+    assert by_name["std_ref"]["basis"] == "命名 + 取值重合 96%" and by_name["std_ref"]["confidence"] == "inferred"
+    code, data = _run(systems, "lineage", _db("erp.goods_category"))
+    assert [(item["direction"], item["other"]) for item in data["items"]] == [("in", table)]
+
+    code, data = _run(systems, "search", "max_qty", "--source", DB_SOURCE, "--type", "field")
+    assert [item["anchor"] for item in data["items"]] == [f"{table}.max_qty"]
+    code, data = _run(systems, "search", "calc", "--type", "operation")
+    assert [item["anchor"] for item in data["items"]] == [_db("erp.proc:calc_quota")]
+
+
+def test_where_used_db_anchor_boundaries(systems):
+    table = _db("erp.replenish_std")
+    (systems / "ontology" / "object").mkdir(parents=True)
+    (systems / "ontology" / "object" / "补货标准.md").write_text(
+        f"# 数据来源\n{table}\n\n上限：{table}.max_qty。\n另见 {table}.\n外键 {table}.fk:fk_category\n"
+        f"别的表 {_db('erp.replenish_std_log')}\n", encoding="utf-8")
+    # 精确：表锚点不算它的列、约束，也不算名字更长的表；句末的点不算进锚点
+    code, data = _run(systems, "where-used", table)
+    assert code == 0 and [(item["line"], item["anchor"]) for item in data["items"]] == [(2, table), (5, table)]
+    # 前缀：整张表的列、约束都算，句末的点不算进锚点
+    code, data = _run(systems, "where-used", f"{table}.", "--prefix")
+    assert [(item["line"], item["anchor"]) for item in data["items"]] == [
+        (4, f"{table}.max_qty"), (6, f"{table}.fk:fk_category")]
+    code, data = _run(systems, "where-used", f"db:{DB_SOURCE}/", "--prefix")
+    assert [item["anchor"] for item in data["items"]] == [
+        table, f"{table}.max_qty", table, f"{table}.fk:fk_category", _db("erp.replenish_std_log")]
+    code, data = _run(systems, "where-used", "ftp:x/", "--prefix")
+    assert code == 2 and data["error"] == "bad_anchor"
+
+
+def test_code_snapshot_show_lineage_where_used(systems):
+    order = _code("sym", "com", "example", "order", "Order")
+    order_no = _code("sym", "com", "example", "order", "Order", "orderNo")
+    code, data = _run(systems, "show", order)
+    assert code == 0 and data["source"] == CODE_SOURCE and data["record"]["attrs"]["table"] == "orders"
+    assert [item["anchor"] for item in data["children"]["field"]["items"]] == [order_no]
+    assert data["children"]["field"]["items"][0]["data_type"] == "String"
+    assert len(data["record"]["attrs"]["snippet"]) > 500  # 代码片段放宽，不按 500 截
+    # 字段的下级是校验规则
+    code, data = _run(systems, "show", order_no)
+    assert [item["anchor"] for item in data["children"]["rule"]["items"]] == [
+        _code("rule", "com", "example", "order", "Order", "orderNo", "NotNull")]
+    assert data["record"]["attrs"]["validations"] == ["@NotNull", "@Size(max = 20)"]
+    # 路由写原名也能找到，handler 指向方法锚点
+    code, data = _run(systems, "show", f"code:{CODE_SOURCE}/route:POST /api/orders")
+    create = _code("sym", "com", "example", "order", "web", "OrderController", "create")
+    assert code == 0 and data["anchor"] == _code("route", "POST /api/orders") and data["record"]["attrs"]["handler"] == create
+    code, data = _run(systems, "lineage", create)
+    assert [(item["name"], item["direction"], item["confidence"]) for item in data["items"]] == [("calls", "out", "inferred")]
+
+    (systems / "reports" / "evidence").mkdir(parents=True)
+    (systems / "reports" / "evidence" / "reconcile.md").write_text(
+        f"| 订单 | `{order}` |\n| 订单号 | {order_no} |\n", encoding="utf-8")
+    code, data = _run(systems, "where-used", order)
+    assert [item["line"] for item in data["items"]] == [1]  # Order::orderNo 不算引用了 Order
+    code, data = _run(systems, "where-used", f"code:{CODE_SOURCE}/", "--prefix")
+    assert [item["anchor"] for item in data["items"]] == [order, order_no]
+    code, data = _run(systems, "search", "orders", "--source", CODE_SOURCE, "--type", "operation")
+    assert {item["anchor"] for item in data["items"]} >= {_code("route", "POST /api/orders")}
