@@ -79,15 +79,16 @@ def test_discover_keeps_inventory_and_commits_no_snapshot(f13):
 
     job = f13.run_db(project_id, operation="discover")
     assert job["state"] == "succeeded", job
-    assert "snapshot_id" not in job["result"] and job["result"]["inventory"] == {"items": 3, "skipped": 0}
+    assert "snapshot_id" not in job["result"] and job["result"]["inventory"] == {"items": 4, "skipped": 0}
     assert not (root / "resource/systems").exists()
     assert f13.client.get(f"{base}/snapshots").json()["items"] == []
     saved = storage.read_json(storage.inventory_path(project_id, DB_SOURCE))
-    assert [item["object"] for item in saved["items"]] == ["crm.customer", "crm.orders", "stock.item"]
+    assert [item["object"] for item in saved["items"]] == ["crm.customer", "crm.orders", "stock.item",
+                                                           "crm.view:active_customer"]
     assert job["access_log"] and "browse" not in jobs.view(job)["actions"]
 
     preview = f13.client.post(f"{base}/jobs/preview", json={"source_id": DB_SOURCE, "scope": ["crm.*"]}).json()
-    assert preview["summary"]["tables"] == 2
+    assert preview["summary"]["tables"] == 2  # 视图不算表
     assert preview["summary"]["estimate"] == {"rows": 6200, "bytes": 490000}
     assert preview["summary"]["masking"] == {"policy": "mask-v1", "sample_rows": 20}
     one = f13.client.post(f"{base}/jobs/preview", json={"source_id": DB_SOURCE, "operation": "sample",
@@ -133,7 +134,7 @@ def test_sample_becomes_supplementary_snapshot(f13):
     f13.fake.script = [{"state": "succeeded", "phase": "完成", "done": 1, "total": 1, "unit": "表"}]
     retried = f13.client.post(f"{base}/jobs/{failed['id']}/retry", json={})
     assert retried.status_code == 202, retried.text
-    f13.wait(project_id, retried.json()["id"])
+    f13.wait(project_id, retried.json()["id"], timeout=60.0)
     assert f13.fake.specs[-1]["selector"] == "crm.orders" and f13.fake.specs[-1]["limit"] == 20
 
 

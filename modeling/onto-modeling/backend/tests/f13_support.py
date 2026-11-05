@@ -215,16 +215,22 @@ def db_records(*, source: str = DB_SOURCE, sample_rows: list[list] | None = None
                      comment="订单", rows=5000, source=source)
     rows += db_table("stock", "item", [("code", "varchar(20)", "货品编码", True, False),
                                        ("title", "varchar(80)", "品名", False, False)], comment="货品", source=source)
-    rows.append(db_record("relation", f"{orders}.fk:fk_orders_customer", "fk_orders_customer", parent=orders,
-                          attrs={"columns": [["customer_id", "id"]], "declared": True},
+    # 外键和推断关系的 name 都是 references（数据库提供方的写法）
+    rows.append(db_record("relation", f"{orders}.fk:fk_orders_customer", "references", parent=orders,
+                          attrs={"constraint": "fk_orders_customer", "columns": [["customer_id", "id"]],
+                                 "on_update": "NO ACTION", "on_delete": "RESTRICT"},
                           **{"from": orders, "to": customer}))
-    rows.append(db_record("relation", f"{orders}.ref:item_code", "item_code", parent=orders, confidence="inferred",
-                          attrs={"columns": [["item_code", "code"]], "basis": "取值重合 98%"},
+    rows.append(db_record("relation", f"{orders}.ref:item_code", "references", parent=orders, confidence="inferred",
+                          attrs={"columns": [["item_code", "code"]], "basis": "naming+values", "overlap_permille": 980},
                           **{"from": orders, "to": item}))
+    rows.append(db_record("entity", db_anchor("crm", "view:active_customer", source=source), "active_customer",
+                          attrs={"kind": "view", "definition": "select id, level from customer",
+                                 "columns": [{"name": "id", "data_type": "bigint"},
+                                             {"name": "level", "data_type": "varchar(8)"}]}))
     rows.append(db_record("profile", f"{customer}#profile", "customer#profile", parent=customer, attrs={
-        "rows": 1200, "columns": [
+        "rows": 1200, "row_limit": 10000, "pct_scale": 1000, "policy": "mask-v1", "columns": [
             {"column": "level", "null_pct": 0, "distinct": 3,
-             "top_k": [{"value": "A", "permille": 500}, {"value": FAKE_EMAIL, "permille": 300}]},
+             "top_k": [{"value": "A", "count": 600}, {"value": FAKE_EMAIL, "count": 360}]},
             {"column": "id", "null_pct": 0, "distinct": 1200, "stats": {"min": 1, "max": 1200}},
             {"column": "phone", "null_pct": 125, "distinct": 1100}]}))
     rows.append(db_record("sample", f"{customer}#sample", "customer#sample", parent=customer, attrs={
@@ -250,7 +256,8 @@ def make_db_bundle(job_id: str, *, records: list[dict] | None = None, source: st
                                       "estimate_bytes": 90000},
                                      {"object": "crm.orders", "kind": "table", "estimate_rows": 5000,
                                       "estimate_bytes": 400000},
-                                     {"object": "stock.item", "kind": "table", "estimate_rows": 300}],
+                                     {"object": "stock.item", "kind": "table", "estimate_rows": 300},
+                                     {"object": "crm.view:active_customer", "kind": "view"}],
                            "skipped": []},
                        manifest_extra={"source": {"id": source, "provider": "db-mysql"}, "provider": "db-mysql@1.0.0",
                                        "tool": {"name": "db-mysql", "version": "1.0.0"}, "artifact": None,
@@ -541,8 +548,8 @@ class Env:
         return response.json()
 
     def run_db(self, project_id: str, headers: dict | None = None, **body) -> dict:
-        job = self.collect(project_id, source_id=DB_SOURCE, headers=headers, **body)
-        return self.wait(project_id, job["id"])
+        job = self.collect(project_id, source_id=body.pop("source_id", DB_SOURCE), headers=headers, **body)
+        return self.wait(project_id, job["id"], timeout=60.0)  # 入库要提交 git，机器忙时会慢
 
 
 @pytest.fixture()

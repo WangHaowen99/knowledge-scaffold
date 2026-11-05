@@ -314,8 +314,8 @@ frontmatter 声明了快照就用它，否则用这个源最新的完整快照�
 
 范围写法：`crm.*`、`crm.customer`、`erp.store*`（`*` 只在末尾）。内核核对本次范围时按写法判断包含（`crm.c*` 落在 `crm.*` 里）。
 
-内核读画像时 `top_k` 认 `{value, permille}`、`{value, pct}`（都是千分比）、`{value, count}`，给前端时换成百分比；表记录的
-`attrs.kind` 缺省按 `table`；列的 `data_type`、`nullable` 在记录顶层。画像和样本对每表只读前 `ONTO_CONNECTOR_DB_PROFILE_ROWS`（默认 10000）行。
+内核读画像时比例按 `attrs.pct_scale`（缺省 1000）换成百分比，`top_k` 的 `{value, count}` 按画像行数算；推断关系的 EV-27 依据用
+`overlap_permille`（「取值重合 98%」）或 `basis`；视图的列取 `attrs.columns`；表记录的 `attrs.kind` 缺省按 `table`。画像和样本对每表只读前 `ONTO_CONNECTOR_DB_PROFILE_ROWS`（默认 10000）行。
 
 **脱敏 `mask-v1`**（网关 `conn/masking.py`）：
 

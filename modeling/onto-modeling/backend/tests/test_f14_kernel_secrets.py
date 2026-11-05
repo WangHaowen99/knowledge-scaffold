@@ -124,11 +124,15 @@ def test_connection_registration_rules(f13):
     assert rejected(scope_allowlist=["crm.*x"]) == {"scope_allowlist": "pattern"}
     assert rejected(rate_limit={"concurrency": 1, "qps": 0, "query_timeout_s": 30}) == {"rate_limit": "positive"}
     assert rejected(secret={"token": "x"}) == {"fields.token": "unknown"}
+    assert rejected(masking_policy="mask-v3") == {"masking_policy": "unsupported"}
+    assert rejected(masking_policy="none") == {"masking_policy": "unsupported"}
     # 端口写成文字也认；主机大小写不敏感
     ok = f13.client.post(ADMIN_BASE, json={**body, "connection": {**body["connection"], "port": "3306",
                                                                    "host": "DB.example.com"}}, headers=admin)
     assert ok.status_code == 201, ok.text
     assert ok.json()["connection"]["port"] == 3306 and ok.json()["cred_ref"] is None
+    defaulted = f13.client.post(ADMIN_BASE, json={**body, "id": "dflt-db", "masking_policy": None}, headers=admin)
+    assert defaulted.status_code == 201 and defaulted.json()["masking_policy"] == "mask-v1"
     # 修改后整体再核一遍：换了主机，出口白名单也要跟着
     moved = f13.client.patch(f"{ADMIN_BASE}/{DB_SOURCE}", json={"connection": {**body["connection"],
                                                                                 "host": "db2.example.com"}},
@@ -146,7 +150,7 @@ def test_code_repo_registration(f13):
             "connection": {"repo_url": "https://git.example.com/demo/shop.git", "ref": "main"},
             "scope_allowlist": [], "egress": [{"host": "git.example.com", "port": 443}],
             "budget": {"max_rows": 100000, "max_bytes": 10000000, "max_duration_s": 600},
-            "rate_limit": {"concurrency": 1, "qps": 5, "query_timeout_s": 30}, "masking_policy": "mask-v1"}
+            "rate_limit": {"concurrency": 1, "qps": 5, "query_timeout_s": 30}}
     for url, reason in (("http://git.example.com/demo/shop.git", "https"),
                         ("https://bot:abc@git.example.com/demo/shop.git", "userinfo")):
         response = f13.client.post(ADMIN_BASE, json={**body, "connection": {"repo_url": url, "ref": "main"}})
@@ -158,6 +162,8 @@ def test_code_repo_registration(f13):
     created = f13.client.post(ADMIN_BASE, json={**body, "secret": {"token": token}})
     assert created.status_code == 201, created.text
     assert created.json()["cred_ref"] == "cred://shop-code/1" and created.json()["scope_allowlist"] == []
+    assert created.json()["masking_policy"] == "none"  # 缺省按提供方
+    assert f13.client.patch(f"{ADMIN_BASE}/shop-code", json={"masking_policy": "mask-v1"}).status_code == 400
     assert f13.fake.secrets["shop-code"] == [{"token": token}]
     # 删登记时凭据一起删掉
     assert f13.client.delete(f"{ADMIN_BASE}/shop-code").status_code == 204
@@ -187,9 +193,11 @@ def test_connection_test_goes_through_gateway(f13):
                                               "username": "reader"}},
                     "cred_ref": f"cred://{DB_SOURCE}/1", "egress": [{"host": "db.example.com", "port": 3306}],
                     "rate_limit": {"concurrency": 1, "qps": 5, "query_timeout_s": 30}}
-    # 只读自检不过：照样 200，前端按 ok 判断
-    f13.fake.test_result = {"ok": True, "checks": [{"name": "readonly_account", "ok": False, "detail": "账号能写"}]}
-    assert f13.client.post(url, json={"project_id": project_id}).json()["ok"] is False
+    # 只读自检不过：照样 200，前端按 ok 判断；checks 原样转（不一定三项都有）
+    failing = {"name": "readonly_account", "ok": False, "detail": "账号能写", "code": "account_not_readonly"}
+    f13.fake.test_result = {"ok": False, "checks": [failing]}
+    answer = f13.client.post(url, json={"project_id": project_id}).json()
+    assert answer["ok"] is False and answer["checks"] == [failing]
 
     f13.fake.down = True
     collector.reset()

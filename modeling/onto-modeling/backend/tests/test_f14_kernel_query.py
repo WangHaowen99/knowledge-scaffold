@@ -25,10 +25,16 @@ def test_summary_tree_groups_by_database(f13):
         tx.write("ontology/object/客户.md", f"# 数据来源\n{db_anchor('crm', 'customer')}\n")
         tx.commit("web: 写对象")
     tree = f13.client.get(f"{base}/summary-tree", params={"snapshot": snapshot_id}).json()
-    assert [(domain["name"], domain["count"]) for domain in tree["domains"]] == [("crm", 2), ("stock", 1)]
-    customer = tree["domains"][0]["entities"][0]
-    assert customer["name"] == "customer" and customer["label"] == "客户" and customer["type"] == "entity"
-    assert customer["mapped_to"] is not None and tree["domains"][0]["entities"][1]["mapped_to"] is None
+    assert [(domain["name"], domain["count"]) for domain in tree["domains"]] == [("crm", 3), ("stock", 1)]
+    names = [(entity["name"], entity["kind"]) for entity in tree["domains"][0]["entities"]]
+    assert names == [("active_customer", "view"), ("customer", "table"), ("orders", "table")]
+    customer = tree["domains"][0]["entities"][1]
+    assert customer["label"] == "客户" and customer["type"] == "entity"
+    assert customer["mapped_to"] is not None and tree["domains"][0]["entities"][2]["mapped_to"] is None
+    # 被引用：最新完整快照被 ontology/ 里的数据库锚点引用（引用计数、清理保护对数据库锚点也生效）
+    listed = f13.client.get(f"{base}/snapshots").json()["items"]
+    assert listed[0]["referenced"] == 1
+    assert f13.client.delete(f"{base}/snapshots/{snapshot_id}").json()["code"] == "snapshot_referenced"
 
 
 def test_record_detail_for_table_and_column(f13):
@@ -39,7 +45,9 @@ def test_record_detail_for_table_and_column(f13):
     body = shown.json()
     assert [field["name"] for field in body["fields"]] == ["id", "name", "phone", "level"]
     assert body["fields"][1] == {"name": "name", "type": "varchar(40)", "note": "名称", "confidence": "declared",
-                                 "masked": True, "anchor": db_anchor("crm", "customer", "name")}
+                                 "masked": True, "anchor": db_anchor("crm", "customer", "name"), "pk": False,
+                                 "fk": False, "nullable": True}
+    assert body["fields"][0]["pk"] is True and body["fields"][0]["nullable"] is False
     assert body["ddl"].startswith("CREATE TABLE customer (")
     assert body["samples"]["columns"] == ["id", "name", "phone", "level"] and body["samples"]["max"] == 20
     assert body["samples"]["shown"] == 2 and body["samples"]["rows"][0] == ["1", "王*", "130****0000", "A"]
@@ -55,6 +63,13 @@ def test_record_detail_for_table_and_column(f13):
 
     column = f13.client.get(f"{base}/record", params={"anchor": db_anchor("crm", "customer", "phone")}).json()
     assert column["type"] == "field" and column["masked"] is True and column["parent_anchor"] == customer
+    assert column["data_type"] == "varchar(20)" and column["nullable"] is True
+    orders = f13.client.get(f"{base}/record", params={"anchor": db_anchor("crm", "orders")}).json()
+    assert [(field["name"], field["pk"], field["fk"]) for field in orders["fields"]] == [
+        ("id", True, False), ("customer_id", False, True), ("item_code", False, False), ("amount", False, False)]
+    view = f13.client.get(f"{base}/record", params={"anchor": db_anchor("crm", "view:active_customer")}).json()
+    assert [(field["name"], field["type"]) for field in view["fields"]] == [("id", "bigint"), ("level", "varchar(8)")]
+    assert view["ddl"] == "select id, level from customer"
     item = f13.client.get(f"{base}/record", params={"anchor": db_anchor("stock", "item")}).json()
     assert "samples" not in item and "profile" not in item and item["rows"] == 100
     missing = f13.client.get(f"{base}/record", params={"anchor": db_anchor("crm", "nope")})
@@ -69,6 +84,7 @@ def test_lineage_fk_and_inferred(f13):
     assert by_anchor[customer]["basis"] == "外键邻居" and by_anchor[customer]["confidence"] == "declared"
     assert by_anchor[customer]["label"] == "客户" and by_anchor[customer]["columns"] == [["customer_id", "id"]]
     assert by_anchor[item]["basis"] == "取值重合 98%" and by_anchor[item]["confidence"] == "inferred"
+    assert by_anchor[item]["relation"] == f"{orders}.ref:item_code"
     back = f13.client.get(f"{base}/lineage", params={"anchor": customer}).json()["items"]
     assert [(entry["anchor"], entry["basis"]) for entry in back] == [(orders, "外键邻居（被引用）")]
     column = f13.client.get(f"{base}/lineage", params={"anchor": db_anchor("crm", "orders", "customer_id")}).json()
@@ -91,7 +107,9 @@ def test_er_view(f13):
     assert relations[(orders, customer)]["confidence"] == "declared"
     assert relations[(orders, customer)]["basis"] == "外键邻居"
     assert relations[(orders, item)] == {"from_anchor": orders, "to_anchor": item, "confidence": "inferred",
-                                         "basis": "取值重合 98%", "anchor": f"{orders}.ref:item_code"}
+                                         "basis": "取值重合 98%", "anchor": f"{orders}.ref:item_code",
+                                         "columns": [["item_code", "code"]]}
+    assert relations[(orders, customer)]["columns"] == [["customer_id", "id"]]
 
     crm = f13.client.get(f"{base}/er", params={"snapshot": snapshot_id, "domain": "crm"}).json()
     assert [table["name"] for table in crm["tables"]] == ["customer", "orders"] and len(crm["relations"]) == 1
@@ -135,7 +153,11 @@ def test_anchor_resolution_and_where_used_for_db(f13):
     assert sorted(item["anchor"] for item in used["items"]) == [db_anchor("crm", "customer"), phone]
     assert query.parse_anchor(phone) == {"scheme": "db", "source_id": DB_SOURCE, "kind": "db",
                                          "name": "crm.customer.phone"}
-    assert query.ANCHOR.findall(f"见 {phone}。") == [phone]
+    code = "code:shop-code/sym:com::example::order::OrderService::submit"
+    assert query.ANCHOR.findall(f"见 {phone}。也见 `{code}`，以及 {db_anchor('crm', 'customer')}.") == [
+        phone, code, db_anchor("crm", "customer") + "."]
+    refs = query.references(_root)
+    assert phone in refs.anchors and db_anchor("crm", "customer") in refs.anchors
 
 
 def test_code_snapshot_keeps_generic_views(f13):
@@ -148,7 +170,7 @@ def test_code_snapshot_keeps_generic_views(f13):
             "connection": {"repo_url": "https://git.example.com/demo/shop.git", "ref": "main"},
             "scope_allowlist": [], "egress": [{"host": "git.example.com", "port": 443}],
             "budget": {"max_rows": 1000, "max_bytes": 1000000, "max_duration_s": 60},
-            "rate_limit": {"concurrency": 1, "qps": 1, "query_timeout_s": 30}, "masking_policy": "mask-v1",
+            "rate_limit": {"concurrency": 1, "qps": 1, "query_timeout_s": 30},
             "secret": {"token": secrets.token_urlsafe(18)}, "grant_project_id": project_id}
     assert f13.client.post("/api/v1/admin/evidence/sources", json=body).status_code == 201
 
@@ -164,16 +186,21 @@ def test_code_snapshot_keeps_generic_views(f13):
                                                    "loc": {"file": "src/Order.java", "line": 12, "end_line": 40},
                                                    "snippet": "@Entity\nclass Order {}"}),
             code("field", f"{entity}::amount", "amount", parent=entity, data_type="BigDecimal",
-                 attrs={"column": "amount", "loc": {"file": "src/Order.java", "line": 20, "end_line": 20}})]
+                 attrs={"column": "amount", "signature": "BigDecimal amount",
+                        "loc": {"file": "src/Order.java", "line": 20, "end_line": 20}}),
+            code("rule", "code:shop-code/rule:com::example::order::Order::NotNull", "NotNull", parent=entity,
+                 attrs={"kind": "not_null", "loc": {"file": "src/Order.java", "line": 19, "end_line": 19}})]
     f13.fake.bundle_for = lambda job_id, job: make_db_bundle(job_id, records=rows, source="shop-code")
-    job = f13.collect(project_id, source_id="shop-code")
-    done = f13.wait(project_id, job["id"])
+    done = f13.run_db(project_id, source_id="shop-code")
     assert done["state"] == "succeeded", done
     base = f"/api/v1/projects/{project_id}/evidence"
     shown = f13.client.get(f"{base}/record", params={"anchor": entity}).json()
     assert shown["attrs"]["snippet"] == "@Entity\nclass Order {}" and shown["attrs"]["loc"]["line"] == 12
-    assert shown["fields"] == [{"name": "amount", "type": "BigDecimal", "note": "", "confidence": "declared",
-                                "masked": False, "anchor": f"{entity}::amount"}]
+    assert shown["fields"] == [
+        {"name": "amount", "type": "BigDecimal", "note": "", "confidence": "declared", "masked": False,
+         "anchor": f"{entity}::amount"},
+        {"name": "NotNull", "type": "not_null", "note": "", "confidence": "declared", "masked": False,
+         "anchor": "code:shop-code/rule:com::example::order::Order::NotNull"}]
     er = f13.client.get(f"{base}/er", params={"snapshot": done["result"]["snapshot_id"]}).json()
     assert er == {"tables": [], "relations": []}
     tree = f13.client.get(f"{base}/summary-tree", params={"snapshot": done["result"]["snapshot_id"]}).json()

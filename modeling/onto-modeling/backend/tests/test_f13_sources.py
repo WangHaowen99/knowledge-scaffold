@@ -74,7 +74,7 @@ def test_credential_providers_need_admin(f13):
             "connection": {"host": "db.example.com", "port": 3306, "database": "orders", "username": "reader"},
             "scope_allowlist": ["orders.*"], "egress": [{"host": "db.example.com", "port": 3306}],
             "budget": {"max_rows": 1000, "max_bytes": 1000000, "max_duration_s": 60},
-            "rate_limit": {"concurrency": 1, "qps": 2, "query_timeout_s": 30}, "masking_policy": "mask-v3",
+            "rate_limit": {"concurrency": 1, "qps": 2, "query_timeout_s": 30}, "masking_policy": "mask-v1",
             "owner": "bob"}
     denied = f13.client.post(ADMIN_BASE, json=body, headers=bob)
     assert denied.status_code == 403 and denied.json()["code"] == "forbidden"

@@ -19,6 +19,8 @@ ER_TABLES_MAX = 60
 COLUMNS_MAX = 1000
 SAMPLE_ROWS_MAX = 20
 FK_BASIS = "外键邻居"
+# 推断关系的 `attrs.basis`（数据库提供方）：只看命名，或命名加取值重合（另给 `overlap_permille`）
+INFERRED_BASIS = {"naming": "命名推断", "naming+values": "命名推断、取值重合"}
 _DB_ANCHOR = re.compile(r"^db:([a-z0-9][a-z0-9-]{1,40})/([^\s/#]+)(?:#([a-z]+))?$")
 # 表下面的非列段：外键、推断关系、触发器、唯一约束、检查约束
 _SUB_KINDS = ("fk:", "ref:", "trigger:", "uk:", "check:")
@@ -118,13 +120,48 @@ def summary_domains(connection: sqlite3.Connection, snapshot_id: str, mapped) ->
 # ---------------------------------------------------------------------------
 
 
-def _column_view(row: sqlite3.Row) -> dict:
+def _data_type(body: dict) -> str:
+    """列类型在记录顶层（§9、详设 5.8.4 的例子），旧写法放在 attrs 里也认。"""
+    return str(body.get("data_type") or _attrs(body).get("data_type") or "")
+
+
+def _nullable(body: dict) -> bool | None:
+    value = body.get("nullable", _attrs(body).get("nullable"))
+    return value if isinstance(value, bool) else None
+
+
+def _is_fk(row: sqlite3.Row) -> bool:
+    return ".fk:" in row["anchor"] or row["confidence"] == "declared"
+
+
+def keys(connection: sqlite3.Connection, snapshot_id: str, table: str) -> tuple[set[str], set[str]]:
+    """表的主键列（主键约束的 `attrs.columns`）和外键列（本表出发的声明外键 `attrs.columns` 的本表一侧）。"""
+    pk_row = _row(connection, snapshot_id, f"{table}.pk")
+    pk = {str(name) for name in _attrs(_body(pk_row)).get("columns") or []} if pk_row else set()
+    fk: set[str] = set()
+    for row in connection.execute(
+            "SELECT * FROM records WHERE snapshot_id = ? AND type = 'relation' AND from_anchor = ?", (snapshot_id, table)):
+        if _is_fk(row):
+            fk |= {str(pair[0]) for pair in _pairs(_body(row))}
+    return pk, fk
+
+
+def _pairs(body: dict) -> list[list[str]]:
+    """关系的 `attrs.columns`：`[[本表列, 对方列]]`。"""
+    return [[str(pair[0]), str(pair[1])] for pair in _attrs(body).get("columns") or []
+            if isinstance(pair, list) and len(pair) == 2]
+
+
+def _column_view(row: sqlite3.Row, pk: set[str], fk: set[str]) -> dict:
     body = _body(row)
     attrs = _attrs(body)
-    return {"name": row["name"], "type": str(body.get("data_type") or attrs.get("data_type") or ""),
-            "note": str(attrs.get("comment") or row["label"] or ""),
-            "confidence": row["confidence"] or "declared", "masked": bool(attrs.get("masked")),
-            "anchor": row["anchor"]}
+    out = {"name": row["name"], "type": _data_type(body), "note": str(attrs.get("comment") or row["label"] or ""),
+           "confidence": row["confidence"] or "declared", "masked": bool(attrs.get("masked")),
+           "anchor": row["anchor"], "pk": bool(attrs.get("pk")) or row["name"] in pk, "fk": row["name"] in fk}
+    nullable = _nullable(body)
+    if nullable is not None:
+        out["nullable"] = nullable
+    return out
 
 
 def columns(connection: sqlite3.Connection, snapshot_id: str, table_anchor: str) -> list[sqlite3.Row]:
@@ -161,19 +198,22 @@ def _sample(connection: sqlite3.Connection, source_id: str, snapshot_id: str, ta
             "snapshot_id": chosen["snapshot_id"]}
 
 
-def _permille(value) -> float | None:
-    return round(value / 10, 1) if isinstance(value, int) and not isinstance(value, bool) else None
+def _percent(value, scale: int) -> float | None:
+    """记录里的比例是整数（`pct_scale` 分之几，缺省千分比），给前端换成百分比，一位小数。"""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return round(value * 100 / scale, 1)
 
 
-def _top_k(items, rows: int) -> list[dict]:
-    """画像的 top-k：提供方给 `{value, permille}`、`{value, pct}`（千分比）或 `{value, count}`，都换成百分比。"""
+def _top_k(items, rows: int, scale: int) -> list[dict]:
+    """画像的 top-k：提供方给 `{value, count}`（按画像行数算比例）；`{value, pct}`、`{value, permille}`（整数比例）也认。"""
     out = []
     for item in items if isinstance(items, list) else []:
         if isinstance(item, (list, tuple)) and len(item) == 2:
             item = {"value": item[0], "count": item[1]}
         if not isinstance(item, dict):
             continue
-        pct = _permille(item.get("permille", item.get("pct")))
+        pct = _percent(item.get("pct"), scale) if "pct" in item else _percent(item.get("permille"), 1000)
         if pct is None and isinstance(item.get("count"), int) and rows:
             pct = round(100 * item["count"] / rows, 1)
         out.append({"value": _cell(item.get("value")), "pct": pct if pct is not None else 0.0})
@@ -186,15 +226,16 @@ def _profile(connection: sqlite3.Connection, snapshot_id: str, table_anchor: str
         return None, 0
     attrs = _attrs(_body(row))
     rows = attrs.get("rows") if isinstance(attrs.get("rows"), int) else 0
+    scale = attrs.get("pct_scale") if isinstance(attrs.get("pct_scale"), int) and attrs["pct_scale"] > 0 else 1000
     out = []
     for item in attrs.get("columns") or []:
         if not isinstance(item, dict) or not item.get("column"):
             continue
-        null_pct = _permille(item.get("null_pct"))
+        null_pct = _percent(item.get("null_pct"), scale)
         entry = {"column": str(item["column"]), "null_pct": null_pct,
                  "distinct": item.get("distinct") if isinstance(item.get("distinct"), int) else None}
         if item.get("top_k"):
-            entry["top_k"] = _top_k(item["top_k"], rows)
+            entry["top_k"] = _top_k(item["top_k"], rows, scale)
         stats = item.get("stats") if isinstance(item.get("stats"), dict) else None
         if stats:
             entry["stats"] = {"min": stats.get("min"), "max": stats.get("max"), "null_pct": null_pct}
@@ -209,11 +250,21 @@ def enrich_record(connection: sqlite3.Connection, view: dict, snapshot_id: str, 
         return view
     attrs = view.get("attrs") or {}
     if view["type"] == "field":
-        return {**view, "masked": bool(attrs.get("masked"))}
+        record = _body(_row(connection, snapshot_id, view["anchor"]))
+        out = {**view, "masked": bool(attrs.get("masked")), "data_type": _data_type(record)}
+        if _nullable(record) is not None:
+            out["nullable"] = _nullable(record)
+        return out
     if view["type"] != "entity" or not parsed["table_anchor"] or parsed["column"] or parsed["suffix"]:
         return view
     table = view["anchor"]
-    out = {**view, "fields": [_column_view(row) for row in columns(connection, snapshot_id, table)]}
+    pk, fk = keys(connection, snapshot_id, table)
+    out = {**view, "fields": [_column_view(row, pk, fk) for row in columns(connection, snapshot_id, table)]}
+    if attrs.get("kind") == "view" and not out["fields"]:
+        # 视图不出字段记录，列在 attrs.columns: [{name, data_type}]
+        out["fields"] = [{"name": str(item.get("name") or ""), "type": str(item.get("data_type") or ""), "note": "",
+                          "confidence": view["confidence"], "masked": False, "anchor": "", "pk": False, "fk": False}
+                         for item in attrs.get("columns") or [] if isinstance(item, dict) and item.get("name")]
     ddl = attrs.get("ddl") or attrs.get("definition")
     if ddl:
         out["ddl"] = str(ddl)
@@ -235,9 +286,15 @@ def enrich_record(connection: sqlite3.Connection, view: dict, snapshot_id: str, 
 
 
 def _relation_basis(row: sqlite3.Row, body: dict) -> str:
-    if ".fk:" in row["anchor"] or row["confidence"] == "declared":
+    """外键是「外键邻居」；推断关系按 `attrs.basis` 说清依据，有取值重合的写上比例（「取值重合 98%」）。"""
+    if _is_fk(row):
         return FK_BASIS
-    return str(_attrs(body).get("basis") or "推断关系")
+    attrs = _attrs(body)
+    overlap = _percent(attrs.get("overlap_permille"), 1000)
+    if overlap is not None:
+        return f"取值重合 {overlap:g}%"
+    basis = str(attrs.get("basis") or "")
+    return INFERRED_BASIS.get(basis, basis) or "推断关系"
 
 
 def _table_relations(connection: sqlite3.Connection, snapshot_id: str, table: str) -> list[sqlite3.Row]:
@@ -262,7 +319,7 @@ def lineage(connection: sqlite3.Connection, snapshot_id: str, anchor: str, limit
         items.append({"anchor": table, "label": label_of(table), "basis": "上级", "confidence": "declared"})
     for row in _table_relations(connection, snapshot_id, table):
         body = _body(row)
-        pairs = [pair for pair in _attrs(body).get("columns") or [] if isinstance(pair, list) and len(pair) == 2]
+        pairs = _pairs(body)
         outgoing = row["from_anchor"] == table
         if parsed["column"]:
             side = 0 if outgoing else 1
@@ -273,8 +330,7 @@ def lineage(connection: sqlite3.Connection, snapshot_id: str, anchor: str, limit
             continue
         basis = _relation_basis(row, body)
         items.append({"anchor": other, "label": label_of(other), "basis": basis if outgoing else f"{basis}（被引用）",
-                      "confidence": row["confidence"] or "declared", "relation": row["anchor"],
-                      "columns": [[str(pair[0]), str(pair[1])] for pair in pairs]})
+                      "confidence": row["confidence"] or "declared", "relation": row["anchor"], "columns": pairs})
         if len(items) >= limit:
             break
     return items[:limit]
@@ -326,28 +382,17 @@ def er(connection: sqlite3.Connection, snapshot_id: str, *, focus: str = "", dep
     chosen = chosen[:ER_TABLES_MAX]
     included = set(chosen)
 
-    fk_columns: dict[str, set[str]] = {}
-    for row in relations:
-        if ".fk:" in row["anchor"] or row["confidence"] == "declared":
-            for pair in _attrs(_body(row)).get("columns") or []:
-                if isinstance(pair, list) and len(pair) == 2:
-                    fk_columns.setdefault(row["from_anchor"], set()).add(str(pair[0]))
     out_tables = []
     for anchor in chosen:
         row, body = tables[anchor]
-        pk_row = _row(connection, snapshot_id, f"{anchor}.pk")
-        pk = {str(name) for name in _attrs(_body(pk_row)).get("columns") or []} if pk_row else set()
-        fields = []
-        for column in columns(connection, snapshot_id, anchor):
-            attrs = _attrs(_body(column))
-            fields.append({"name": column["name"], "type": str(_body(column).get("data_type") or
-                                                                attrs.get("data_type") or ""),
-                           "pk": bool(attrs.get("pk")) or column["name"] in pk,
-                           "fk": column["name"] in fk_columns.get(anchor, set()), "masked": bool(attrs.get("masked"))})
+        pk, fk = keys(connection, snapshot_id, anchor)
+        fields = [{key: value for key, value in _column_view(column, pk, fk).items()
+                   if key in ("name", "type", "pk", "fk", "masked")}
+                  for column in columns(connection, snapshot_id, anchor)]
         out_tables.append({"anchor": anchor, "name": row["name"], "label": _label(row, body), "fields": fields})
     out_relations = [{"from_anchor": row["from_anchor"], "to_anchor": row["to_anchor"],
                       "confidence": row["confidence"] or "declared", "basis": _relation_basis(row, _body(row)),
-                      "anchor": row["anchor"]}
+                      "anchor": row["anchor"], "columns": _pairs(_body(row))}
                      for row in relations if row["from_anchor"] in included and row["to_anchor"] in included]
     return {"tables": out_tables, "relations": out_relations, "total": total, "truncated": total > len(chosen)}
 

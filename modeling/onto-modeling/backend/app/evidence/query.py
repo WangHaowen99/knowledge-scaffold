@@ -31,7 +31,7 @@ ANCHOR = re.compile(r"\b(?:(?:bin|code|ui|api|cli|log):[a-z0-9][a-z0-9-]{1,40}/[
 ANCHOR_PREFIX = re.compile(r"^(?:bin|db|code|ui|api|cli|log):[a-z0-9][a-z0-9-]{1,40}/")
 _ANCHOR_PARTS = re.compile(r"^(bin|db|code|ui|api|cli|log):([a-z0-9][a-z0-9-]{1,40})/([A-Za-z]+):(.+)$")
 RELATION_VERBS = {"calls": "调用", "handles": "处理", "exposes": "暴露", "requests": "请求", "inherits": "继承",
-                  "imports": "导入", "invokes_native": "原生调用"}
+                  "imports": "导入", "invokes_native": "原生调用", "references": "引用"}
 
 
 def parse_anchor(anchor: str) -> dict | None:
@@ -297,26 +297,30 @@ def untrusted(connection: sqlite3.Connection, snapshot_ids) -> bool:
 
 
 def _member_type(child: sqlite3.Row, body: dict, attrs: dict) -> str:
-    return str(attrs.get("signature") or body.get("data_type") or attrs.get("type") or attrs.get("kind")
-               or child["type"])
+    """成员的类型：字段类型在记录顶层（`data_type`，§9、§10），方法取签名，都没有取 attrs 里的类型或种类。"""
+    return str(body.get("data_type") or attrs.get("data_type") or attrs.get("signature") or attrs.get("type")
+               or attrs.get("kind") or child["type"])
 
 
 def record_view(connection: sqlite3.Connection, row: sqlite3.Row, snapshot: sqlite3.Row) -> dict:
-    """EvidenceRecord：记录本身，`fields` 列它的成员（类的字段和方法，最多 50 条，`type` 填签名或类型）。"""
+    """EvidenceRecord：记录本身，`fields` 列它的下级（类的字段、方法，代码快照还有校验规则；最多 50 条，`type` 填类型或签名）。"""
     record = _record(row)
     evidence = record.get("evidence") if isinstance(record.get("evidence"), dict) else {}
     if row["anchor"].startswith("db:"):
         view = _base_view(connection, row, snapshot, record, evidence, [])
         return dbview.enrich_record(connection, view, row["snapshot_id"], snapshot["source_id"])
     children = connection.execute(
-        "SELECT * FROM records WHERE snapshot_id = ? AND parent = ? AND type IN ('field', 'operation') "
+        "SELECT * FROM records WHERE snapshot_id = ? AND parent = ? AND type IN ('field', 'operation', 'rule') "
         "ORDER BY type, name LIMIT ?", (row["snapshot_id"], row["anchor"], CHILDREN_MAX)).fetchall()
     fields = []
     for child in children:
         body = _record(child)
         attrs = body.get("attrs") if isinstance(body.get("attrs"), dict) else {}
-        fields.append({"name": child["name"], "type": _member_type(child, body, attrs), "note": child["label"] or "",
-                       "confidence": child["confidence"] or "observed", "masked": False, "anchor": child["anchor"]})
+        member = {"name": child["name"], "type": _member_type(child, body, attrs), "note": child["label"] or "",
+                  "confidence": child["confidence"] or "observed", "masked": False, "anchor": child["anchor"]}
+        if isinstance(body.get("nullable"), bool):
+            member["nullable"] = body["nullable"]
+        fields.append(member)
     return _base_view(connection, row, snapshot, record, evidence, fields)
 
 

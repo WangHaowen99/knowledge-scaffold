@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 import threading
 import time
@@ -37,6 +38,8 @@ CONFIRM_TTL_S = 600
 BLOB_RETENTION_DAYS = 90
 ANCHORS_MAX = 100
 SAMPLE_LIMIT_MAX = 20
+# sample 的 selector：范围写法里的单个对象名 `库.表`
+SELECTOR = re.compile(r"^[^\s.*]+\.[^\s.*]+$")
 ER_DEPTH_MAX = 3
 
 _P = "/api/v1/projects/{project_id}"
@@ -319,14 +322,9 @@ def _test_connection(request: Request, registration: dict, project_id: str) -> d
         except collector.GatewayError as exc:
             raise ApiError("connection_test_failed", exc.message, 422,
                            {"checks": [], "gateway_error": exc.code}) from None
-        checks = []
-        for item in answer.get("checks") or []:
-            if isinstance(item, dict) and item.get("name"):
-                check = {"name": str(item["name"]), "ok": bool(item.get("ok")), "detail": str(item.get("detail") or "")}
-                if isinstance(item.get("latency_ms"), int):
-                    check["latency_ms"] = item["latency_ms"]
-                checks.append(check)
-        result = {"ok": bool(answer.get("ok")) and all(check["ok"] for check in checks), "checks": checks,
+        # checks 原样转网关的（代码仓库不一定三项都有）
+        checks = [dict(item) for item in answer.get("checks") or [] if isinstance(item, dict)]
+        result = {"ok": bool(answer.get("ok")), "checks": checks,
                   "ticket": {"id_prefix": prefix, "expires_in_s": 600, "consumed": True}}
     _audit(request, "evidence.test", project_id=project_id or None, summary=f"测试数据源 {source_id}",
            detail={"source_id": source_id, "ok": result["ok"], "cred_ref": registration.get("cred_ref"),
@@ -547,10 +545,9 @@ def _sample_args(body: dict, operation: str, scope: list[str], registration: dic
     sample = body.get("sample") if isinstance(body.get("sample"), dict) else {}
     selector = sample.get("selector")
     limit = sample.get("limit", SAMPLE_LIMIT_MAX)
-    if not isinstance(selector, str) or not selector.strip() or "*" in selector \
-            or not sources.scope_pattern(selector.strip()):
-        raise ApiError("invalid_argument", "取样要指定一张表", 400, {"fields": {"sample.selector": "required"}})
-    selector = selector.strip()
+    selector = selector.strip() if isinstance(selector, str) else ""
+    if not SELECTOR.match(selector):
+        raise ApiError("invalid_argument", "取样要指定一张表（库.表）", 400, {"fields": {"sample.selector": "required"}})
     allow = list(registration.get("scope_allowlist") or [])
     if (allow and not sources.scope_within(selector, allow)) or (scope and not sources.scope_within(selector, scope)):
         raise ApiError("invalid_argument", "取样的表不在范围里", 400, {"fields": {"sample.selector": "outside_allowlist"}})
@@ -570,7 +567,9 @@ def _estimate(project_id: str, registration: dict, scope: list[str]) -> tuple[in
     def total(key: str) -> int:
         return sum(item[key] for item in items if isinstance(item.get(key), int) and not isinstance(item[key], bool))
 
-    return len(items), {"rows": total("estimate_rows"), "bytes": total("estimate_bytes")}
+    # 清单里还有视图、存储过程（kind=view、proc），表数只算表
+    tables = sum(1 for item in items if item.get("kind", "table") == "table")
+    return tables, {"rows": total("estimate_rows"), "bytes": total("estimate_bytes")}
 
 
 def _preview(project_id: str, user: str, registration: dict, info: dict, operation: str, scope: list[str],

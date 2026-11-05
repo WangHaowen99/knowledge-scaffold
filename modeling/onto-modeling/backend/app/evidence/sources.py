@@ -161,6 +161,14 @@ def _connection(value) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def masking_policies(info: dict) -> list[str]:
+    """提供方支持的脱敏策略，第一个是缺省：提供方声明了 `masking_policies` 就用它；否则数据库是 `mask-v1`，其他（REA、代码）是 `none`。"""
+    declared = [str(item) for item in info.get("masking_policies") or [] if str(item).strip()]
+    if declared:
+        return declared
+    return ["mask-v1"] if info.get("kind") == "db" else ["none"]
+
+
 def connection_type(info: dict) -> bool:
     """要凭据、按连接参数采集的提供方（不是自助类、不收目标程序）。"""
     return info.get("input") == "connection" and not info.get("self_service")
@@ -387,10 +395,11 @@ def _clean(body: dict, info: dict, *, creating: bool, current: dict | None = Non
     elif creating:
         out["access_window"] = None
     if given("masking_policy") or creating:
-        policy = str(body.get("masking_policy") or ("none" if self_service else "")).strip()
-        if not policy:
-            raise _invalid("masking_policy", "required")
-        out["masking_policy"] = policy[:40]
+        allowed = masking_policies(info)
+        policy = str(body.get("masking_policy") or "").strip() or allowed[0]
+        if policy not in allowed:
+            raise _invalid("masking_policy", "unsupported", f"脱敏策略只能是 {'、'.join(allowed)}")
+        out["masking_policy"] = policy
     if given("authorization_note") or creating:
         note = str(body.get("authorization_note") or "").strip()[:NOTE_MAX] or None
         out["authorization_note"] = note

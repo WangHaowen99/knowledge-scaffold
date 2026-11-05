@@ -1337,14 +1337,23 @@ Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`
    - EV-05 删有凭据的登记时先删网关里的凭据，网关不通就不删登记（503）——登记没了凭据不能留在网关里。
    - EV-06 的错误：网关回 400、404、409、413、422 时原样带回它的错误码（消息里回显的明文遮掉）；鉴权失败、5xx 一律 502
      `upstream_unavailable`（`details.gateway_error`），免得前端把网关的 401 当成登录过期。EV-07 网关回 404 也算删掉。
-   - EV-08 连接型还没写凭据时不调网关，回 `ok=false`、`ticket=null`；网关拒绝回 422 `connection_test_failed`。
+   - EV-02/04 的 `masking_policy` 改成可省略、只收提供方支持的（数据库 `mask-v1`，REA、代码仓库 `none`），缺省按提供方；契约例子
+     `mask-v3` 改成 `mask-v1`（前端子任务对照契约提出）。
+   - EV-08 连接型 `ok`、`checks` 原样转网关的（代码仓库不一定三项都有）；还没写凭据时不调网关，回 `ok=false`、`ticket=null`；网关拒绝回
+     422 `connection_test_failed`。
    - EV-09 连接型按快照包清单的 `access_log` 一条一行；`at` 没给时取任务开始时间。
-   - EV-13/14：`scope` 按写法核对是否落在白名单里（原来是逐字相等）；`sample.selector` 是一张表，`limit` 1～20、缺省 20；
-     `summary.tables`、`estimate` 来自最近一次 discover 的清单。任务错误码多 `credential_missing`（登记没写凭据）。
+   - EV-13/14：`scope` 按写法核对是否落在白名单里（原来是逐字相等）；`sample.selector` 是单个对象名 `库.表`，要落在白名单和本次范围里，
+     `limit` 1～20、缺省 20；`summary.tables`（只算表）、`estimate` 来自最近一次 discover 的清单；`summary.window` 是 AccessWindow 或 null；
+     `masking.sample_rows` 数据库是 20（sample 时是 `limit`），其他 0。任务错误码多 `credential_missing`（登记没写凭据）。
      `CollectionJob.result` 多 `inventory`（discover）；discover 不提交快照；sample 是补充快照，网关成功就是 `succeeded`（不是 `partial`）。
-   - EV-23 数据库快照按 `<库>` 分组，每项多 `kind`（`table|view`）；EV-25 `samples` 多 `masked_columns`、`snapshot_id`，`profile` 每项多
-     `null_pct`、`distinct`，列记录顶层多 `masked`；EV-27 每项多 `relation`、`columns`；EV-28 多 `total`、`truncated`，关系多 `anchor`，
-     只列表不列视图，`focus` 可以是列锚点。
+   - EV-23 数据库快照按 `<库>` 分组，每项多 `kind`（`table|view`）。
+   - EV-25：`fields[].type` 取记录顶层的 `data_type`（§9 列记录和代码字段都放顶层），多可选 `pk`、`fk`、`nullable`；视图按 `attrs.columns`
+     列字段；代码记录的下级把 `rule` 也列进来。`samples` 多 `masked_columns`、`snapshot_id`；`profile` 单位是百分比（记录里的整数比例按
+     `pct_scale` 换算，`top_k` 的 `{value, count}` 按画像行数算），每项多 `null_pct`、`distinct`；列记录顶层多 `masked`、`data_type`、`nullable`。
+   - EV-27 每项多 `relation`、`columns`；推断关系的 `basis` 用 `overlap_permille`（「取值重合 98%」）或 `basis=naming`（「命名推断」）；
+     关系名 `references` 显示「引用」。EV-28 多 `total`、`truncated`，关系多 `anchor`、`columns`，只列表不列视图，`focus` 可以是列锚点。
+   - 引用扫描（EV-18/19 的 `referenced`、EV-20、EV-21 的 `touching_confirmed`、EV-23 的 `mapped_to`、EV-26）认 `db:<源>/<库>.<表>[.<列>]`
+     （原来的正则要求源后面跟 `<类型>:`，数据库锚点一个也认不出）。
    - EV-29：`db:`、`code:` 锚点在工作区有这个源的快照时走证据索引（原来一律 `not_available`）。
    - 对象文档「# 数据来源」首行可以写 `db:<源>/<库>.<表>`（可带反引号）：按这个源最新的完整快照绑定，发布包的来源Sheet 和 mapping 的
      `resource` 只写表名（不带库名；下游 modeling 把它当一个标识符加引号，`库.表` 会被当成一个名字）；快照里没有这张表是
