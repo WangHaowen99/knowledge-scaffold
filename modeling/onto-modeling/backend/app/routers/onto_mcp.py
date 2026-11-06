@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from .. import config
 from ..services.onto_mcp import tokens
 from ..services.onto_mcp import workspace as tools
+from ..services.onto_mcp import package_publish
 from ..services.onto_mcp.definitions import TOOLS
 from ..services.onto_mcp.errors import McpError
 from ..services.workspace import WorkspaceError
@@ -62,7 +63,10 @@ async def create_token(project_id: str, request: Request):
         if not isinstance(body, dict):
             raise McpError("INVALID_INPUT", "请求必须是对象")
         user = getattr(request.state, "user", None) or {"sub": meta.get("owner", "")}
-        return JSONResponse(status_code=201, content=tokens.issue(manager(), meta, body, user))
+        login_token = bearer(request)
+        issuer = user.get("iss", "")
+        return JSONResponse(status_code=201, content=tokens.issue(
+            manager(), meta, body, user, login_token, issuer, user.get("sub", "")))
     except (McpError, WorkspaceError) as exc:
         return management_error(exc)
 
@@ -71,7 +75,7 @@ async def create_token(project_id: str, request: Request):
 def delete_token(project_id: str, token_id: str, request: Request):
     try:
         access(project_id, request, write=True)
-        return tokens.revoke(manager(), project_id, token_id)
+        return tokens.revoke(manager(), project_id, token_id, bearer(request))
     except (McpError, WorkspaceError) as exc:
         return management_error(exc)
 
@@ -129,9 +133,16 @@ async def dispatch(rpc, group, principal, protocol):
                 "_meta": {"io.modelcontextprotocol/serverInfo": tokens.SERVER}}
     if method == "tools/list":
         available = [{**{k: tool[k] for k in ("name", "title", "description", "inputSchema")},
-                      "annotations": {"readOnlyHint": tool["scope"] not in {
-                          "ontology.change.apply", "project.version.revert"
-                      }}}
+                      "annotations": {
+                          "readOnlyHint": tool.get("readOnly", tool["name"] != "revert_project_version"
+                                                   and tool["scope"] != "ontology.change.apply"),
+                          "destructiveHint": tool["name"] in {
+                              "revert_project_version", "publish_package_version"
+                          },
+                          "idempotentHint": tool["name"] in {
+                              "revert_project_version", "publish_package_version"
+                          },
+                      }}
                      for tool in TOOLS.values() if tool["toolset"] == group and tool["scope"] in principal["scopes"]]
         return {"tools": available, **({"resultType": "complete", "ttlMs": 300000, "cacheScope": "private"}
                                       if protocol == "2026-07-28" else {})}
@@ -143,8 +154,14 @@ async def dispatch(rpc, group, principal, protocol):
     if tool["scope"] not in principal["scopes"]:
         raise McpError("MCP_SCOPE_FORBIDDEN", "Token 缺少工具所需 scope", 403)
     try:
-        result = await tools.execute_async(manager(), principal["project_id"], tool["name"],
-                                           params.get("arguments", {}), principal["username"], principal["token_id"])
+        arguments = params.get("arguments", {})
+        if tool["scope"] == "package.publish":
+            from ..services.onto_mcp.definitions import validate_input
+            validate_input(arguments, tool["inputSchema"])
+            result = await asyncio.to_thread(package_publish.execute, manager(), principal, tool["name"], arguments)
+        else:
+            result = await tools.execute_async(manager(), principal["project_id"], tool["name"],
+                                               arguments, principal["username"], principal["token_id"])
         return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
                 "structuredContent": result, "isError": False}
     except (McpError, WorkspaceError) as exc:

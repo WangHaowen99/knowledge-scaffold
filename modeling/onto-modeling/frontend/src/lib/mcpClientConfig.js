@@ -18,7 +18,8 @@ export function buildClientConfigs(runtime, token, scopes) {
   const read = selected.some((scope) => ['ontology.read', 'project.version.revert'].includes(scope))
     ? serverConfig(runtime, 'read', auth)
     : null;
-  const change = selected.some((scope) => scope.startsWith('ontology.change.') || scope === 'project.version.revert')
+  const change = selected.some((scope) => scope.startsWith('ontology.change.')
+    || ['project.version.revert', 'package.publish'].includes(scope))
     ? serverConfig(runtime, 'change', auth)
     : null;
   const json = (servers) => Object.keys(servers).length

@@ -1,4 +1,4 @@
-import { missingPublishStages } from '../lib/packagePublish';
+import { isDirectoryIndex, missingPublishStages } from '../lib/packagePublish';
 import {
   DeleteOutlined,
   InboxOutlined,
@@ -47,7 +47,7 @@ const hasEntry = (paths, ...prefixes) =>
     (p) =>
       prefixes.some((prefix) => p.startsWith(prefix)) &&
       !p.endsWith('/') &&
-      !p.endsWith('/index.md'),
+      !isDirectoryIndex(p),
   );
 
 export const STAGES = [

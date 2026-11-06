@@ -1,5 +1,7 @@
 """Hub contracts exercised with synthetic users, packages and ephemeral credentials."""
 import hashlib
+import base64
+import hmac
 import io
 import json
 import secrets
@@ -236,6 +238,43 @@ def api(tmp_path, monkeypatch):
 
 def userinfo(subject='operator_a'):
     return io.BytesIO(json.dumps({'sub': subject}).encode())
+
+
+def delegated(secret, method, path, delegation_id='mcp-synthetic', ontology_id='ontology_demo',
+              subject='operator_a', nonce='synthetic-nonce'):
+    import time
+    now_value = time.time()
+    value = dict(v=1, method=method, path=path, delegation_id=delegation_id,
+                 ontology_id=ontology_id, issuer='https://service.example.net', sub=subject,
+                 nonce=nonce, iat=now_value, exp=now_value + 300)
+    encoded = base64.urlsafe_b64encode(json.dumps(value, separators=(',', ':')).encode()).decode().rstrip('=')
+    signature = hmac.new(secret.encode(), b'hub-delegation-v1.' + encoded.encode(), hashlib.sha256).hexdigest()
+    return encoded + '.' + signature
+
+
+def test_modeling_publication_delegation_is_targeted_revocable_and_single_use(api):
+    client, headers = api
+    secret = headers['modeling']['X-Hub-Service-Token']
+    direct = headers['modeling']
+    body = {'delegation_id': 'mcp-synthetic', 'ontology_id': 'ontology_demo'}
+    with patch('hub.user_auth.urllib.request.OpenerDirector.open', side_effect=lambda *a, **k: userinfo()):
+        assert client.post('/api/package-delegations', headers=direct, json=body).status_code == 200
+    path = '/api/package-publish-requests'
+    payload = dict(request_id='delegated_demo', ontology_id='ontology_demo',
+                   change_type='modeling_content', input_digest='a' * 64)
+    value = delegated(secret, 'POST', path)
+    delegated_headers = {'X-Hub-Service-Token': secret, 'X-Hub-Delegation': value}
+    response = client.post(path, headers=delegated_headers, json=payload)
+    assert response.status_code == 201, response.text
+    assert client.post(path, headers=delegated_headers, json=payload).status_code == 409
+    wrong = delegated(secret, 'POST', path, ontology_id='ontology_other', nonce='other-nonce')
+    assert client.post(path, headers={'X-Hub-Service-Token': secret, 'X-Hub-Delegation': wrong},
+                       json=payload).status_code == 401
+    with patch('hub.user_auth.urllib.request.OpenerDirector.open', side_effect=lambda *a, **k: userinfo()):
+        assert client.delete('/api/package-delegations/mcp-synthetic', headers=direct).status_code == 200
+    after = delegated(secret, 'POST', path, nonce='after-revoke')
+    assert client.post(path, headers={'X-Hub-Service-Token': secret, 'X-Hub-Delegation': after},
+                       json=payload).status_code == 401
 
 
 def test_service_identity_separation_with_shared_modeling_credential(api, monkeypatch):
