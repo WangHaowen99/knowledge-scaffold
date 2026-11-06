@@ -854,8 +854,12 @@ def test_run_turn_round_limit_ends_normally(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Runner, "run_agent_streaming", staticmethod(limited_stream))
     logged = []
+
+    def log_error(kind, text):
+        logged.append((kind, text))
+
     ctx = make_ctx(tmp_path)
-    ctx.log_error = lambda kind, text: logged.append((kind, text))
+    ctx.log_error = log_error
     engine = JiuwenEngine(ctx)
     engine.client = object()
 
