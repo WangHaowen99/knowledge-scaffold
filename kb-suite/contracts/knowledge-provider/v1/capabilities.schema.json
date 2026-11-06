@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "knowledge-provider/v1/capabilities.schema.json",
+  "title": "knowledge-provider/v1 capabilities",
+  "type": "object",
+  "required": ["contract", "role", "provider", "features"],
+  "properties": {
+    "contract": {"const": "knowledge-provider/v1"},
+    "role": {"enum": ["base", "enhancement"]},
+    "provider": {
+      "type": "object",
+      "required": ["type", "version"],
+      "properties": {
+        "type": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+        "version": {"type": "string"},
+        "label": {"type": "string"}
+      }
+    },
+    "features": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "kbs.write", "kbs.reprocess",
+          "ingest.file", "ingest.text", "ingest.url",
+          "documents.delete", "documents.reprocess", "documents.cancel", "documents.file",
+          "content.L2", "content.structure", "grep", "uploads",
+          "wiki.read", "wiki.write",
+          "questions", "profile", "config.meta", "tools.da",
+          "chunks.questions.write", "documents.summary.write"
+        ]
+      }
+    },
+    "file_types": {"type": "array", "items": {"type": "string"}},
+    "limits": {
+      "type": "object",
+      "properties": {
+        "max_upload_mb": {"type": "integer", "minimum": 1},
+        "max_top_k": {"type": "integer", "minimum": 1}
+      }
+    },
+    "config_schema": {
+      "description": "JSON Schema of the provider-private knowledge-base config. Supported keywords: type object/string/integer/number/boolean, enum, title, description, default, minimum, maximum, properties. x-enum-labels gives display text per enum value.",
+      "type": ["object", "null"]
+    },
+    "provides": {"type": "array", "items": {"type": "string"}},
+    "hooks": {
+      "type": "array",
+      "items": {"enum": ["search.pre", "search.post", "document.completed", "document.deleted", "kb.deleted"]}
+    },
+    "requires": {"type": "array", "items": {"type": "string"}},
+    "capability_groups": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+    "ui": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["slot", "title", "entry"],
+        "properties": {"slot": {"type": "string"}, "title": {"type": "string"}, "entry": {"type": "string"}}
+      }
+    }
+  }
+}
