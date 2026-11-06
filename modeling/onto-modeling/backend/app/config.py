@@ -27,6 +27,10 @@ MAX_ACTIVE_SESSIONS = int(os.environ.get("ONTO_WEB_MAX_SESSIONS", "12"))
 # 临时缓解长步骤期间的空闲回收；不改变池满驱逐或会话换绑策略。
 SESSION_IDLE_TTL_SECONDS = int(os.environ.get("ONTO_WEB_SESSION_IDLE_TTL", "600"))
 SESSION_REAPER_INTERVAL = int(os.environ.get("ONTO_WEB_SESSION_REAPER_INTERVAL", "30"))
+# 一轮在跑却这么久（秒）没有任何引擎事件，判定执行超时并终止引擎；0 = 不判定。
+# 模型调用失败重试期间也没有事件：Jiuwen 单次调用最长 300 秒，实测连续重试可超过 25 分钟。
+# 到 30 分钟仍没有任何进展就按超时收尾，用户可以直接发消息继续
+SESSION_STALL_TIMEOUT_SECONDS = int(os.environ.get("ONTO_WEB_SESSION_STALL_TIMEOUT", "1800"))
 
 # 降级兼容包（无 AVX 环境的最后手段）：指向外部 JS 版 CLI 的路径，空 = 用捆绑 CLI
 CLI_PATH = os.environ.get("ONTO_WEB_CLI_PATH", "")

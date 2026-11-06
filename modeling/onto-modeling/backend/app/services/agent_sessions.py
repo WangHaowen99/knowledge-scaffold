@@ -194,6 +194,8 @@ def purge_history(project_id: str) -> None:
 # 超时即硬终止引擎（续接点保留，下一条消息 resume）——保证"停止"按钮总能停
 INTERRUPT_TIMEOUT_SECONDS = 10
 KILL_TIMEOUT_SECONDS = 5
+# 判定执行超时时 session_error 带的 reason，前端据此把子任务卡显示成“执行超时”
+STALL_TIMEOUT_REASON = "stall_timeout"
 
 
 class SessionError(Exception):
@@ -304,6 +306,34 @@ def _recyclable(session: "Session") -> bool:
         and not session.pending_prompts
         and not session.sending
     )
+
+
+def _stalled(session: "Session", now: float, limit: int) -> bool:
+    """这一轮在跑，却很久没有任何引擎事件。等用户确认不算：确认卡有自己的超时。"""
+    return (
+        session.engine is not None
+        and session.state == "running"
+        and not session.pending_permissions
+        and now - session.last_activity > limit
+    )
+
+
+def _with_followup_notice(error: str, session: "Session") -> str:
+    """一轮出错或超时收尾时，这一轮进行中追加的消息可能还没处理，引擎一拆就丢了，提示用户重发。
+
+    追加的消息在本轮开始（最后一次进入 running）之后；本轮第一条消息在它之前，不算。
+    """
+    count = 0
+    for event in reversed(session.events):
+        if event.get("type") == "session_state" and event.get("state") == "running":
+            break
+        if event.get("type") == "user_message":
+            count += 1
+    else:
+        return error
+    if not count:
+        return error
+    return f"{error}本轮进行中追加的 {count} 条消息可能没有处理，没有收到回复的请重新发送。"
 
 
 def _bound_to(session: "Session | None", conversation_id: str) -> bool:
@@ -690,6 +720,9 @@ class SessionManager:
                 return
             session.resume_attempted = resumed
             session.engine = engine
+            # 排队、连接的时间不算引擎无响应：Jiuwen 接上后到模型首次响应前没有任何事件，
+            # 排队久了一接上就会被判执行超时
+            session.last_activity = time.time()
             # 新的 CLI 进程：上一个进程报告的状态作废
             session.cli_state = None
             session.awaiting_cli_idle = False
@@ -791,11 +824,46 @@ class SessionManager:
             await self._drain_waiters()
         return len(victims)
 
+    async def reap_stalled(self) -> int:
+        """把长时间没有引擎事件的运行中会话判定为执行超时，返回判定数量。"""
+        limit = config.SESSION_STALL_TIMEOUT_SECONDS
+        if limit <= 0:
+            return 0
+        now = time.time()
+        async with self._lock:
+            victims = [s for s in self._sessions.values() if _stalled(s, now, limit)]
+            for victim in victims:
+                await self._abort_stalled(victim, limit)
+        if victims:
+            await self._drain_waiters()
+        return len(victims)
+
+    async def _abort_stalled(self, session: Session, limit: int) -> None:
+        """不等应答直接硬终止：走到这里时引擎多半已经不响应。对话保留，下一条消息重新连接。"""
+        error_log.log(session.project_id, "stall_timeout", f"{limit} 秒没有引擎事件，已判定执行超时")
+        if session.reader_task:
+            session.reader_task.cancel()
+        engine, session.engine = session.engine, None
+        await _kill_engine(engine)
+        session.broadcast(
+            {
+                "type": "session_error",
+                "reason": STALL_TIMEOUT_REASON,
+                "error": _with_followup_notice(
+                    f"超过 {max(1, limit // 60)} 分钟没有收到模型或工具的响应，已判定本轮执行超时。"
+                    "可以直接发消息继续。",
+                    session,
+                ),
+            }
+        )
+        session.set_state("error")
+
     async def _reaper_loop(self) -> None:
         while True:
             await asyncio.sleep(config.SESSION_REAPER_INTERVAL)
             try:
                 await self.reap_idle()
+                await self.reap_stalled()
             except Exception:  # 回收失败不终止后台任务
                 pass
 
@@ -992,6 +1060,8 @@ class SessionManager:
             decision = {"behavior": "deny", "message": "等待确认超时，已自动拒绝"}
         finally:
             session.pending_permissions.pop(request.id, None)
+            # 等确认的时间不算引擎无响应
+            session.last_activity = time.time()
         session.broadcast(
             {
                 "type": "permission_resolved",
@@ -1034,14 +1104,18 @@ class SessionManager:
             session.last_activity = time.time()
             kind = event.get("type")
             if kind == "_engine_end":
-                # 引擎终止：closed（重启/终止）静默收尾，error 给用户横幅
-                if event.get("reason") == "closed":
+                # 引擎终止：closed（重启/终止）静默收尾，error 给用户横幅；
+                # exited（运行时自行退出）只有这一轮还在跑时才算出错
+                reason = event.get("reason")
+                if reason == "closed" or (reason == "exited" and session.state != "running"):
                     session.set_state("closed")
                 else:
                     session.broadcast(
                         {
                             "type": "session_error",
-                            "error": event.get("error") or FRIENDLY_ERROR,
+                            "error": _with_followup_notice(
+                                event.get("error") or FRIENDLY_ERROR, session
+                            ),
                         }
                     )
                     session.set_state("error")
@@ -1049,6 +1123,8 @@ class SessionManager:
                 session.engine = None
                 await self._drain_waiters()
                 return
+            if kind == "_activity":  # 运行时还在动（如状态、任务进度消息），只刷新活动时间
+                continue
             if kind == "_cli_state":
                 session.on_cli_state(event.get("state"))
                 continue
