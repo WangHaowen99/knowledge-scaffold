@@ -6,6 +6,7 @@ import hmac
 import os
 
 from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel, Field
 
 from . import projects
 from .hub_packages import identity
@@ -64,6 +65,18 @@ def suggestions(project_id: str, run_id: str, request: Request):
 def regenerate(project_id: str, run_id: str, request: Request):
     token, subject = caller(project_id, request)
     return package_evaluations.regenerate(project_id, subject, token, run_id)
+
+
+class FailureBody(BaseModel):
+    model_config = {'extra': 'forbid'}
+    note: str = Field(min_length=1, max_length=package_evaluations.WRITEBACK_NOTE)
+
+
+@router.post('/api/projects/{project_id}/package/evaluations/{run_id}/modeling-result')
+def modeling_result(project_id: str, run_id: str, body: FailureBody, request: Request):
+    """告诉评测服务这一轮的优化建议处理失败；处理成功由发布新版本自动回写。"""
+    token, subject = caller(project_id, request, write=True)
+    return {'optimization': package_evaluations.report_failure(project_id, subject, token, run_id, body.note)}
 
 
 @router.post('/api/projects/{project_id}/package/evaluations/{run_id}/optimization')

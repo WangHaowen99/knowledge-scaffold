@@ -2,7 +2,11 @@
 
 Field limits are those consumer truncates to before sending. A signal that still breaks them, or misses a field
 its type requires, is rejected on its own; the rest of the batch is kept.
+
+The shared contract contracts/flywheel/feedback-signal.v1.schema.json is generated from these models:
+    cd eval-service && python -m evaluation.feedback.models > ../contracts/flywheel/feedback-signal.v1.schema.json
 """
+import json
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -109,7 +113,28 @@ class Evidence(Part):
     tool_events: list[ToolEvent] = Field(default_factory=list, max_length=40)
 
 
+def _present(*names):
+    return {'required': list(names), 'properties': {name: {'type': 'object'} for name in names}}
+
+
+def _kind(value, **extra):
+    return {'required': ['signal_type', *extra.pop('required', [])],
+            'properties': {'signal_type': {'const': value}, **extra.pop('properties', {})}}
+
+
+# The parts each signal type carries, the same rules as FeedbackSignalV1._required_parts, for JSON Schema users.
+TYPE_RULES = [
+    {'if': _kind('turn_feedback'), 'then': _present('qa', 'feedback')},
+    {'if': _kind('error_qa'), 'then': _present('qa', 'error_detection')},
+    {'if': _kind('error_qa', required=['error_detection'], properties={'error_detection': {
+        'type': 'object', 'required': ['detected_by'], 'properties': {'detected_by': {'const': 'user_correction'}}}}),
+     'then': _present('correction')},
+    {'if': _kind('user_suggestion'), 'then': _present('suggestion', 'package')},
+]
+
+
 class FeedbackSignalV1(Part):
+    model_config = ConfigDict(extra='ignore', json_schema_extra={'allOf': TYPE_RULES})
     schema_: Literal[SIGNAL_SCHEMA] = Field(alias='schema')
     signal_id: str = Field(pattern=r'^sig_[0-9a-f]{32}$')
     signal_type: Literal['turn_feedback', 'error_qa', 'user_suggestion']
@@ -137,3 +162,21 @@ class FeedbackSignalV1(Part):
         if self.signal_type == 'user_suggestion' and not (self.suggestion and self.package):
             raise ValueError('a suggestion needs its content and the package it concerns')
         return self
+
+
+def contract():
+    """The shared JSON Schema of FeedbackSignal v1, as the evaluation service accepts it."""
+    schema = FeedbackSignalV1.model_json_schema(by_alias=True)
+    schema.pop('title', None)
+    return {'$schema': 'https://json-schema.org/draft/2020-12/schema',
+            '$id': 'https://example.com/contracts/flywheel/feedback-signal.v1.schema.json',
+            'title': SIGNAL_SCHEMA,
+            '$comment': (f'Generated from eval-service/evaluation/feedback/models.py; do not edit by hand. '
+                         f'Consumer posts batches {{"schema": "{BATCH_SCHEMA}", "signals": [...]}} of 1-{BATCH_LIMIT} signals '
+                         f'from one user to POST /evaluation/api/internal/feedback-signals; each signal at most {SIGNAL_BYTES // 1024} KB. '
+                         'Receivers ignore unknown fields; removing a field or changing its meaning needs v2.'),
+            **schema}
+
+
+if __name__ == '__main__':
+    print(json.dumps(contract(), ensure_ascii=False, indent=2))

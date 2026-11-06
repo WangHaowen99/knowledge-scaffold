@@ -1,7 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://example.com/contracts/flywheel/feedback-signal.v1.schema.json",
-  "$comment": "FeedbackSignal v1 as the evaluation service accepts it (eval-service/evaluation/feedback/models.py). Receivers ignore unknown fields; removing or changing a field needs v2.",
+  "title": "consumer-feedback-signal.v1",
+  "$comment": "Generated from eval-service/evaluation/feedback/models.py; do not edit by hand. Consumer posts batches {\"schema\": \"consumer-feedback-signal-batch.v1\", \"signals\": [...]} of 1-50 signals from one user to POST /evaluation/api/internal/feedback-signals; each signal at most 256 KB. Receivers ignore unknown fields; removing a field or changing its meaning needs v2.",
   "$defs": {
     "Actor": {
       "properties": {
@@ -455,6 +456,120 @@
       "type": "object"
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "signal_type": {
+            "const": "turn_feedback"
+          }
+        },
+        "required": [
+          "signal_type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "qa": {
+            "type": "object"
+          },
+          "feedback": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "qa",
+          "feedback"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "signal_type": {
+            "const": "error_qa"
+          }
+        },
+        "required": [
+          "signal_type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "qa": {
+            "type": "object"
+          },
+          "error_detection": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "qa",
+          "error_detection"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "signal_type": {
+            "const": "error_qa"
+          },
+          "error_detection": {
+            "properties": {
+              "detected_by": {
+                "const": "user_correction"
+              }
+            },
+            "required": [
+              "detected_by"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "signal_type",
+          "error_detection"
+        ]
+      },
+      "then": {
+        "properties": {
+          "correction": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "correction"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "signal_type": {
+            "const": "user_suggestion"
+          }
+        },
+        "required": [
+          "signal_type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "suggestion": {
+            "type": "object"
+          },
+          "package": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "suggestion",
+          "package"
+        ]
+      }
+    }
+  ],
   "properties": {
     "schema": {
       "const": "consumer-feedback-signal.v1",
@@ -578,6 +693,5 @@
     "signal_type",
     "actor"
   ],
-  "type": "object",
-  "title": "consumer-feedback-signal.v1"
+  "type": "object"
 }

@@ -58,6 +58,7 @@ class EvaluationStub:
         self.run = {'id': RUN, 'status': 'completed', 'artifacts': artifacts(),
                     'base_ref': {'ontology_id': PACKAGE, 'release_id': 'release_one', 'version': '0.1.1'},
                     'package_ref': {'ontology_id': PACKAGE, 'release_id': 'snapshot_one', 'version': '0.1.1-eval.1'}}
+        self.writebacks, self.writeback_failure, self.optimization = [], None, None
         self.files = {
             'report.md': '# 数据评测报告\n\n- **问题**：合成问题一\n'.encode(),
             'answers.json': json.dumps({'answers': []}).encode(),
@@ -72,9 +73,22 @@ class EvaluationStub:
         if self.failure:
             raise self.failure
         if path.startswith('/package-evaluations?'):
-            return json.dumps(self.listing).encode(), {}
+            # Like the evaluation service: what modeling wrote back is part of the listing.
+            listing = {**self.listing, 'releases': [{**item, 'optimization': self.optimization}
+                                                    if self.optimization and item['run_id'] == RUN else item
+                                                    for item in self.listing['releases']]}
+            return json.dumps(listing).encode(), {}
         if path == f'/runs/{RUN}':
             return json.dumps(self.run).encode(), {}
+        if path == f'/runs/{RUN}/modeling-result':
+            self.writebacks.append(body)
+            if self.writeback_failure:
+                raise self.writeback_failure
+            result = {key: body.get(key) for key in ('outcome', 'release_id', 'note')}
+            status = 'modeling_done' if body['outcome'] == 'done' else 'modeling_failed'
+            self.optimization = {'status': status, 'updated_at': 2000.0, 'history': [],
+                                 'result': {**result, 'version': '0.1.2' if body.get('release_id') else None, 'reported_at': 2000.0}}
+            return json.dumps({'run_id': RUN, 'optimization': self.optimization}).encode(), {}
         if path == f'/runs/{RUN}/artifacts/regenerate':
             return json.dumps(artifacts(revision=2, status='generating', report='pending',
                                         suggestions='pending')).encode(), {}
@@ -405,3 +419,127 @@ def test_client_requires_address_and_login(monkeypatch):
     with pytest.raises(WorkspaceError) as anonymous:
         eval_client.call('GET', '/ok', '')
     assert anonymous.value.status == 401
+
+
+# ---- 建模回写与两种来源 ----
+
+
+def optimize(client, pid):
+    response = client.post(f'/api/projects/{pid}/package/evaluations/{RUN}/optimization', json={})
+    assert response.status_code == 200, response.text
+
+
+def publish_next(manager, pid, release='release_two', version='0.1.2'):
+    """A newer Hub release becomes the project's base, as after a publication."""
+    hub_packages.record(manager, pid, SUBJECT, {'ontology_id': PACKAGE, 'release_id': release, 'package_digest': 'e' * 64,
+                                               'version': version, 'committed_at': '2026-11-05T00:00:00+00:00'})
+
+
+def overview(client, pid):
+    response = client.get(f'/api/projects/{pid}/package/evaluations?reconcile=1')
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_a_release_published_after_optimization_is_written_back_once(env):
+    manager, pid, stub, client = env
+    stub.listing['releases'] = [entry()]
+    optimize(client, pid)
+    assert overview(client, pid)['writeback']['status'] == 'waiting' and not stub.writebacks
+    publish_next(manager, pid)
+    value = overview(client, pid)
+    sent, = stub.writebacks
+    assert sent['outcome'] == 'done' and sent['release_id'] == 'release_two' and sent['request_id'].startswith('mr-')
+    assert '0.1.1' in sent['note'] and '0.1.2' in sent['note']
+    assert value['writeback'] == {**value['writeback'], 'status': 'done', 'release_id': 'release_two', 'version': '0.1.2', 'mine': True}
+    # Shown at once, before the evaluation service's next notification or reconciliation.
+    assert index()['releases']['release_one']['optimization']['status'] == 'modeling_done'
+    overview(client, pid)
+    publish_next(manager, pid, 'release_three', '0.1.3')
+    overview(client, pid)
+    assert len(stub.writebacks) == 1  # 同一次优化只回写第一个新版本
+
+
+def test_right_after_publishing_the_write_back_is_immediate(env):
+    manager, pid, stub, client = env
+    optimize(client, pid)
+    publish_next(manager, pid)
+    receipt = {'status': 'committed', 'release_id': 'release_two', 'version': '0.1.2'}
+    value = package_evaluations.after_publish(pid, SUBJECT, 'user-token', receipt)
+    assert value['status'] == 'done' and len(stub.writebacks) == 1
+    assert package_evaluations.after_publish(pid, SUBJECT, 'user-token', {'status': 'pending'}) is None
+
+
+def test_an_unreachable_evaluation_service_is_retried_and_a_refusal_is_not(env):
+    manager, pid, stub, client = env
+    optimize(client, pid)
+    publish_next(manager, pid)
+    stub.writeback_failure = WorkspaceError('评测服务不可用，请稍后重试', 503, 'eval_unavailable')
+    assert overview(client, pid)['writeback']['status'] == 'pending'
+    stub.writeback_failure = None
+    assert overview(client, pid)['writeback']['status'] == 'done' and len(stub.writebacks) == 2
+    # A refused write-back for a later optimization is not sent again for the same release.
+    stub.run['base_ref'] = {'ontology_id': PACKAGE, 'release_id': 'release_two', 'version': '0.1.2'}
+    optimize(client, pid)
+    publish_next(manager, pid, 'release_three', '0.1.3')
+    stub.writeback_failure = WorkspaceError('这一轮的优化建议还未交给建模', 409, 'invalid_state')
+    assert overview(client, pid)['writeback']['status'] == 'refused'
+    overview(client, pid)
+    assert len(stub.writebacks) == 3
+
+
+def test_only_the_optimizing_user_writes_back(env):
+    manager, pid, stub, client = env
+    optimize(client, pid)
+    publish_next(manager, pid)
+    other = json.dumps(['https://example.com', 'operator_b'])
+    state = package_evaluations.settle(pid, other, 'other-token')
+    assert not stub.writebacks and state['result'] is None
+    assert package_evaluations.writeback_view(pid, other)['mine'] is False
+
+
+def test_nothing_is_written_back_without_a_new_release_or_an_optimization(env):
+    manager, pid, stub, client = env
+    overview(client, pid)
+    optimize(client, pid)
+    overview(client, pid)
+    assert not stub.writebacks
+
+
+def test_a_failure_is_reported_with_its_reason(env):
+    _, pid, stub, client = env
+    stub.listing['releases'] = [entry()]
+    overview(client, pid)
+    url = f'/api/projects/{pid}/package/evaluations/{RUN}/modeling-result'
+    assert client.post(url, json={'note': ''}).status_code == 422
+    response = client.post(url, json={'note': '合成：建议需要的数据表不存在'})
+    assert response.status_code == 200 and response.json()['optimization']['status'] == 'modeling_failed'
+    assert stub.writebacks[-1]['outcome'] == 'failed' and stub.writebacks[-1]['note'] == '合成：建议需要的数据表不存在'
+    assert index()['releases']['release_one']['optimization']['status'] == 'modeling_failed'
+    stub.run['base_ref'] = {'ontology_id': 'pkg_other', 'release_id': 'release_x', 'version': '9.9.9'}
+    assert client.post(url, json={'note': '合成'}).status_code == 404
+
+
+def test_feedback_runs_are_kept_apart_from_evaluation_runs(env):
+    _, pid, stub, client = env
+    feedback = entry(run=OTHER_RUN, origin='consumer_feedback', summary={**SUMMARY, 'score': None},
+                     optimization={'status': 'notified', 'updated_at': 1500.0})
+    stub.listing['releases'] = [entry(), feedback, entry(release='release_x', origin='future_origin')]
+    value = overview(client, pid)
+    assert stub.calls[0][1].endswith('origin=all') or any('origin=all' in call[1] for call in stub.calls)
+    assert value['releases']['release_one']['run_id'] == RUN and value['releases']['release_one']['origin'] == 'evaluation'
+    assert value['feedback']['release_one']['run_id'] == OTHER_RUN
+    assert 'release_x' not in value['releases'] and 'release_x' not in value['feedback']
+    # A feedback notification goes to the feedback section and leaves the evaluation entry alone.
+    assert notify(client, notification(sequence=3, run=OTHER_RUN, origin='consumer_feedback', finished=2000.0,
+                                       optimization={'status': 'modeling_done', 'updated_at': 2100.0,
+                                                     'result': {'outcome': 'done', 'release_id': 'release_two', 'version': '0.1.2'},
+                                                     'history': []})).status_code == 200
+    assert index()['feedback']['release_one']['optimization']['result']['version'] == '0.1.2'
+    assert index()['releases']['release_one']['run_id'] == RUN
+
+
+def test_notifications_with_new_optimization_statuses_are_accepted(env):
+    _, _, _, client = env
+    response = notify(client, notification(optimization={'status': 'future_status', 'history': [{'outcome': 'done'}]}))
+    assert response.status_code == 200 and index()['releases']['release_one']['optimization']['status'] == 'future_status'

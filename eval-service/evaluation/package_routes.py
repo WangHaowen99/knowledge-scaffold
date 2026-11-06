@@ -30,7 +30,7 @@ def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_vi
         items = []
         for package, count in visible[offset:offset + PAGE]:
             latest = feedback['store'].feedback_runs(package)[0]
-            items.append(dict(ontology_id=package, run_count=count, executing=False,
+            items.append(dict(ontology_id=package, name=access.names.get(package), run_count=count, executing=False,
                               collecting=latest['status'] == 'collecting', latest=run_view(run_owner(package), latest)))
         return {'items': items, 'total': len(visible), 'offset': offset,
                 'next_offset': offset + PAGE if offset + PAGE < len(visible) else None}

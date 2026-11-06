@@ -278,6 +278,11 @@ export const api = {
     request(`/api/projects/${pid}/package/evaluations/${encodeURIComponent(runId)}/regenerate`, { method: 'POST', body: '{}' }),
   optimizePackageEvaluation: (pid, runId) =>
     request(`/api/projects/${pid}/package/evaluations/${encodeURIComponent(runId)}/optimization`, { method: 'POST', body: '{}' }),
+  // 处理成功由发布新版本自动回写评测服务；处理失败由用户填写原因后回写
+  reportPackageEvaluationFailure: (pid, runId, note) =>
+    request(`/api/projects/${pid}/package/evaluations/${encodeURIComponent(runId)}/modeling-result`, {
+      method: 'POST', body: JSON.stringify({ note }),
+    }),
   downloadRelease: async (pid, releaseId) => {
     const send = () => fetch(`/api/projects/${pid}/package/releases/${releaseId}/download`, { headers: authHeaders() });
     let response = await send();

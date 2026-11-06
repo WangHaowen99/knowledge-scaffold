@@ -62,7 +62,7 @@ export function FeedbackList({ navigate }) {
                     aria-pressed={selected === item.ontology_id}
                     onClick={() => setSelected(item.ontology_id)}
                   >
-                    <b>{item.ontology_id}</b>
+                    <b title={item.ontology_id}>{item.name || item.ontology_id}</b>
                     <small>
                       {item.run_count} 个反馈轮次{item.collecting ? ' · 收集中' : ''}
                     </small>
@@ -191,12 +191,13 @@ export function FeedbackRun({ id, navigate }) {
           </>
         }
       >
-        知识包 {run.package_ref?.ontology_id} · 版本 {run.package_ref?.version || '—'}
+        知识包 {run.package_ref?.name || run.package_ref?.ontology_id} · 版本 {run.package_ref?.version || '—'}
       </Heading>
       {error && <Alert tone="red">{error}</Alert>}
       <section className="panel feedback-summary">
         <div className="run-outputs-state">
-          <Badge tone={state.tone}>{state.label}</Badge>
+          {/* Once with modeling, the row below says where it stands. */}
+          {(!handled || reviewing) && <Badge tone={state.tone}>{state.label}</Badge>}
           <small>
             {run.status === 'collecting'
               ? `收集中：已有 ${run.feedback?.clusters?.length || 0} 个问题簇，达到条件后自动生成报告`
@@ -210,9 +211,11 @@ export function FeedbackRun({ id, navigate }) {
             {handled.hint && <small>{handled.hint}</small>}
           </div>
         )}
-        {reviewing && a.suggestions !== 'ready' && (
+        {reviewing && a.suggestions !== 'generating' && (a.suggestions !== 'ready' || a.suggestions_stale) && (
           <Alert tone="amber">
-            确认前请先生成优化建议：补充标准答案或标记误判后，可重新生成，建议会按修正后的内容归因。
+            {a.suggestions === 'ready'
+              ? '判分已修改，当前优化建议基于修改前的内容。建议重新生成后再确认，否则建模拿到的仍是旧建议。'
+              : '确认前请先生成优化建议：补充标准答案或标记误判后，可重新生成，建议会按修正后的内容归因。'}
           </Alert>
         )}
         <div className="context-links">

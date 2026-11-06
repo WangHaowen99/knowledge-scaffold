@@ -2,7 +2,9 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
 import { api } from '../src/lib/api.js';
-import { mergeStatus, needsPolling, optimizationBlock, releaseEvaluation } from '../src/lib/packageEvaluation.js';
+import {
+  canReportFailure, hasFeedback, mergeStatus, needsPolling, optimizationBlock, processingState, releaseEvaluation, releaseFeedback, writebackNotice,
+} from '../src/lib/packageEvaluation.js';
 
 const originals = { fetch: globalThis.fetch, localStorage: globalThis.localStorage };
 beforeEach(() => {
@@ -99,4 +101,71 @@ test('a version mismatch surfaces the backend message and code', async () => {
     assert.equal(error.code, 'version_mismatch');
     return true;
   });
+});
+
+// 建模回写与消费反馈来源；版本和说明都是合成值
+test('feedback runs are read from their own section and do not wait for an active evaluation', () => {
+  const feedback = { 'release-a': entry({}) };
+  const active = { release_id: 'release-a', run_id: 'b'.repeat(32) };
+  assert.equal(releaseFeedback(status({ feedback }), 'release-a').report.disabled, false);
+  assert.equal(releaseFeedback(status({ feedback, active }), 'release-a').entry, feedback['release-a']);
+  assert.equal(releaseFeedback(status(), 'release-a').entry, null);
+  assert.equal(releaseFeedback(status({ configured: false, message: '未配置评测服务地址' }), 'release-a').report.reason, '未配置评测服务地址');
+  assert.equal(needsPolling(status({ feedback: { 'release-a': entry({ suggestions: 'generating' }) } })), true);
+});
+
+test('processing state shows what modeling did with the suggestions', () => {
+  assert.equal(processingState(entry({})), null);
+  assert.equal(processingState({ optimization: { status: 'future_status' } }), null);
+  assert.equal(processingState({ optimization: { status: 'notified' } }).label, '待处理');
+  assert.match(processingState({ optimization: { status: 'notified' } }).hint, /发布新版本后自动变为已处理/);
+  assert.equal(processingState(entry({ status: 'generating', suggestions: 'generating' })).label, '生成中');
+  assert.equal(processingState({ ...entry({ status: 'generating' }), optimization: { status: 'notified' } }).label, '待处理');
+  const done = processingState({ optimization: { status: 'modeling_done', result: { version: '0.1.2', note: '合成说明' } } });
+  assert.deepEqual(done, { label: '已处理 → 0.1.2', color: 'green', hint: '合成说明' });
+  assert.equal(processingState({ optimization: { status: 'modeling_failed', result: { note: '合成原因' } } }).color, 'red');
+});
+
+test('a version without a run says why its cell is empty', () => {
+  assert.equal(releaseEvaluation(null, 'release-a').idle, '读取中');
+  assert.equal(releaseEvaluation(status({ configured: false }), 'release-a').idle, '评测服务未配置');
+  assert.equal(releaseEvaluation(status({ active: { release_id: 'release-a' } }), 'release-a').idle, '评测中');
+  assert.equal(releaseEvaluation(status(), 'release-b').idle, '未评测');
+});
+
+test('the feedback column appears once the project has a feedback run', () => {
+  assert.equal(hasFeedback(null), false);
+  assert.equal(hasFeedback(status()), false);
+  assert.equal(hasFeedback(status({ feedback: { 'release-a': entry() } })), true);
+});
+
+test('only the current version can be reported as failed, until it is handled', () => {
+  const notified = { optimization: { status: 'notified' } };
+  assert.equal(canReportFailure(status(), 'release-a', notified), true);
+  assert.equal(canReportFailure(status(), 'release-old', notified), false);
+  assert.equal(canReportFailure(status(), 'release-a', { optimization: { status: 'modeling_done' } }), false);
+  assert.equal(canReportFailure(status(), 'release-a', null), false);
+});
+
+test('the write-back notice tells the optimizing user what happened', () => {
+  const writeback = (extra) => ({ run_id: 'a'.repeat(32), mine: true, base_release_id: 'release-a', base_version: '0.1.0', ...extra });
+  assert.equal(writebackNotice(status()), null);
+  assert.equal(writebackNotice(status({ writeback: writeback({ status: 'done', version: '0.1.1', mine: false }) })), null);
+  assert.equal(writebackNotice(status({ writeback: writeback({ status: 'waiting' }) })).type, 'info');
+  assert.equal(writebackNotice(status({ writeback: writeback({ status: 'waiting' }), current_release_id: 'release-b' })), null);
+  assert.equal(writebackNotice(status({ writeback: writeback({ status: 'done', version: '0.1.1' }) })), null);
+  assert.equal(writebackNotice(status({ writeback: writeback({ status: 'pending', version: '0.1.1', message: '评测服务不可用' }) })).type, 'warning');
+  assert.match(writebackNotice(status({ writeback: writeback({ status: 'refused', version: '0.1.1', message: '已驳回' }) })).text, /未接受/);
+});
+
+test('a failure is reported with its reason', async () => {
+  const sent = [];
+  globalThis.fetch = async (url, init) => {
+    sent.push([url, init.method, init.body]);
+    return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({ optimization: {} }), text: async () => '{}' };
+  };
+  await api.reportPackageEvaluationFailure('project_demo', 'a'.repeat(32), '合成原因');
+  assert.equal(sent[0][1], 'POST');
+  assert.match(sent[0][0], /\/package\/evaluations\/a{32}\/modeling-result$/);
+  assert.deepEqual(JSON.parse(sent[0][2]), { note: '合成原因' });
 });

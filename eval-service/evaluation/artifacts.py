@@ -198,7 +198,7 @@ def render_report(run, stem, now):
     version = base.get('version') or ran.get('version') or ''
     lines = [f"# 数据评测报告 — {datetime.fromtimestamp(now, CHINA).strftime('%Y-%m-%d %H:%M')}", '',
              '> 评测方式：独立评测服务从 Hub 固定版本取包，由 consumer 智能体逐用例问答，LLM Judge 判分',
-             f"> 轮次：{run['id']}（评测服务任务，可在评测任务中心追溯）"]
+             f"> 轮次：{run['id']}（评测服务的评测轮次，可在评测页「评测任务」中追溯）"]
     if version:
         lines.append(f'> 知识包版本：{version}' + (f"；实际运行评测快照 {ran['version']}（mapping 由评测数据源生成）"
                                                 if ran.get('version') and ran['version'] != version else ''))

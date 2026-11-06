@@ -124,7 +124,7 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
       setCopyMessage('复制不可用，请复制浏览器地址栏的任务链接');
     }
   }
-  const breadcrumb = <Breadcrumb parent="任务中心" current="执行详情" onBack={() => navigate('/')} />;
+  const breadcrumb = <Breadcrumb parent="评测任务" current="执行详情" onBack={() => navigate('/')} />;
   if (loading && !run)
     return (
       <>
@@ -209,7 +209,7 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
         <span>
           每 5 秒同步{lastSync && ` · 最近同步 ${lastSync.toLocaleTimeString('zh-CN', { hour12: false })}`}
         </span>
-        <span className="push-right">离开页面后，可从任务中心回来查看</span>
+        <span className="push-right">离开页面后，可从「评测任务」回来查看</span>
       </div>
       {syncError && (
         <Alert

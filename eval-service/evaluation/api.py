@@ -665,6 +665,11 @@ def create_app(config=None,transport=None):
         return dict(run,base_ref=release_ref(base)) if isinstance(base,dict) else run
 
     def run_view(owner,run):
+        ref=run.get('package_ref') or {}
+        if run.get('origin')=='consumer_feedback' and not ref.get('name') and package_access.names.get(ref.get('ontology_id')):
+            # Feedback names its package by ID only; show the name Hub gave the caller who passed the access check.
+            name=package_access.names[ref['ontology_id']]
+            run=dict(run,package_ref=dict(ref,name=name),base_ref=dict(run.get('base_ref') or ref,name=name))
         return dict(public(with_base(owner,run)),origin=run.get('origin') or 'evaluation',summary=report(run),
                     artifacts=jobs.view(owner,run['id']),notification=notifier.status(run['id']),
                     optimization=modeling_result.public(modeling_result.state(store,jobs,owner,run)))
@@ -834,6 +839,12 @@ def create_app(config=None,transport=None):
                 task=store.save(owner,task['id'],task)
             store.delete(owner,rid)
             return {'deleted':True}
+
+    @app.get(f'{prefix}/internal/feedback-signals/health')
+    def feedback_health(request:Request):
+        """Consumer checks its address, its service token and a user's login before pushing feedback."""
+        header=request.headers.get('authorization','')
+        return intake.health(header[7:] if header.startswith('Bearer ') else '',request.headers.get('x-eval-service-token',''))
 
     @app.post(f'{prefix}/internal/feedback-signals',status_code=202)
     def feedback_signals(body:dict,request:Request):

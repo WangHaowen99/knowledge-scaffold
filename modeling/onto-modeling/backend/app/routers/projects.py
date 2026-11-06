@@ -465,9 +465,13 @@ class ReleaseBody(BaseModel):
 def publish_release(project_id: str, body: ReleaseBody, request: Request):
     from .hub_packages import identity
     from ..services import hub_packages
+    from ..services import package_evaluations
     token, subject, _ = identity(request)
     ensure_access(project_id, request, write=True)
-    return hub_packages.publish(workspaces, project_id, body.request_id, token, subject, body.allow_unbound)
+    receipt = hub_packages.publish(workspaces, project_id, body.request_id, token, subject, body.allow_unbound)
+    # 评测优化之后发布的新版本，随即告诉评测服务；失败时下次打开已发布版本再补，不影响发布结果
+    writeback = package_evaluations.after_publish(project_id, subject, token, receipt)
+    return {**receipt, 'evaluation_writeback': writeback} if writeback else receipt
 
 
 @router.get("/{project_id}/package/releases")

@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from evaluation.api import create_app
-from evaluation.core import Config, digest
+from evaluation.core import Config, Failure, digest
 from evaluation.feedback.store import run_owner
 from test_evaluation import Dependencies
 from test_run_artifacts import Modeling, until
@@ -314,6 +314,11 @@ def test_feedback_tasks_list_packages_the_caller_may_read(flywheel):
     env.app.state.feedback.process()
     tasks = env.client.get('/evaluation/api/package-tasks', params={'origin': 'consumer_feedback'}).json()
     assert tasks['total'] == 1 and tasks['items'][0]['ontology_id'] == PACKAGE and tasks['items'][0]['collecting'] is True
+    # Feedback names the package by ID only; pages show the name Hub gave the caller.
+    assert tasks['items'][0]['name'] == 'Synthetic package'
+    assert tasks['items'][0]['latest']['package_ref']['name'] == 'Synthetic package'
+    listed = env.client.get('/evaluation/api/runs', params={'origin': 'consumer_feedback', 'ontology_id': PACKAGE}).json()['items']
+    assert listed[0]['package_ref']['name'] == 'Synthetic package'
     other = env.client.get('/evaluation/api/package-tasks', params={'origin': 'consumer_feedback'},
                            headers={'Authorization': 'Bearer synthetic-user-b'}).json()
     assert other['total'] == 0
@@ -328,18 +333,39 @@ def test_signal_bodies_are_cleared_when_retention_ends(flywheel):
     assert env.app.state.store.db.execute('SELECT body FROM feedback_signals').fetchone()[0] is None
 
 
-def test_the_shared_contract_matches_what_the_service_accepts():
-    """contracts/flywheel holds FeedbackSignal v1 for consumer and evaluation; it is generated from the model."""
-    from pathlib import Path
-    from evaluation.feedback.models import FeedbackSignalV1
-    path = Path(__file__).resolve().parents[2] / 'contracts' / 'flywheel' / 'feedback-signal.v1.schema.json'
-    if not path.is_file():
+CONTRACT = __import__('pathlib').Path(__file__).resolve().parents[2] / 'contracts' / 'flywheel' / 'feedback-signal.v1.schema.json'
+
+
+def test_the_shared_contract_is_generated_from_what_the_service_accepts():
+    """contracts/flywheel holds FeedbackSignal v1 for consumer and evaluation; regenerate it when the model changes."""
+    from evaluation.feedback.models import contract
+    if not CONTRACT.is_file():
         pytest.skip('the shared contracts are not beside eval-service, as in a standalone evaluation package')
-    contract = json.loads(path.read_text(encoding='utf-8'))
-    generated = FeedbackSignalV1.model_json_schema(by_alias=True)
-    described = ('$schema', '$id', '$comment', 'title')
-    assert {key: value for key, value in contract.items() if key not in described} == \
-        {key: value for key, value in generated.items() if key != 'title'}
+    assert json.loads(CONTRACT.read_text(encoding='utf-8')) == contract()
+
+
+def test_a_json_schema_validator_and_the_service_agree_on_signals():
+    """Consumer validates outgoing signals with the contract; it must accept and refuse what the service does."""
+    jsonschema = pytest.importorskip('jsonschema')
+    from pydantic import ValidationError
+    from evaluation.feedback.models import FeedbackSignalV1, contract
+    validator = jsonschema.Draft202012Validator(contract())
+    correction = {'text': 'Synthetic: no, by calendar month', 'next_answer': 'Synthetic'}
+    valid = [signal(), signal(vote='up'), signal('error_qa', seq=0, detected_by='system_rule', rules=['tool_failure:execute_sql']),
+             signal('error_qa', seq=0, detected_by='user_correction', correction=correction),
+             {key: value for key, value in signal('user_suggestion', seq=0).items() if key != 'qa'}]
+    invalid = [{key: value for key, value in signal().items() if key != 'feedback'},
+               signal('error_qa', seq=0, detected_by='user_correction'),
+               {key: value for key, value in signal('user_suggestion', seq=0).items() if key not in ('qa', 'package')},
+               dict(signal(), signal_type='unknown'), dict(signal(), signal_id='not-an-id'),
+               dict(signal(), qa={'question': 'x' * 4001, 'answer': ''})]
+    for item in valid:
+        assert not list(validator.iter_errors(item)), item['signal_type']
+        FeedbackSignalV1.model_validate(item)
+    for item in invalid:
+        assert list(validator.iter_errors(item)), item.get('signal_type')
+        with pytest.raises(ValidationError):
+            FeedbackSignalV1.model_validate(item)
 
 
 def test_feedback_run_content_is_encrypted_at_rest(flywheel):
@@ -351,3 +377,90 @@ def test_feedback_run_content_is_encrypted_at_rest(flywheel):
     assert 'Synthetic question one' not in raw and 'Synthetic answer' not in raw and 'Synthetic private comment' not in raw
     assert json.loads(raw)['status'] == 'completed'
     assert env.client.get(f"/evaluation/api/runs/{run['id']}/results/0/answer").json()['answer'] == 'Synthetic answer'
+
+
+HEALTH = '/evaluation/api/internal/feedback-signals/health'
+
+
+def checking_identity(env, answer=None):
+    """Count account service lookups; ``answer`` replaces the account service's reply, or 'unavailable' makes it fail."""
+    calls, original = [], env.deps.json
+
+    def transport(method, base, path, **kwargs):
+        if path == '/userinfo':
+            calls.append(kwargs.get('token'))
+            if answer == 'unavailable':
+                raise Failure('dependency_unavailable', '依赖服务不可用，请重试或恢复任务', 503, 'dependency')
+            if answer is not None:
+                return answer(kwargs.get('token'))
+        return original(method, base, path, **kwargs)
+
+    env.deps.json = transport
+    return calls
+
+
+def health(env, token='synthetic-user-a', service=SERVICE):
+    return env.client.get(HEALTH, headers={'Authorization': f'Bearer {token}' if token else '', 'X-Eval-Service-Token': service})
+
+
+def test_the_connectivity_check_reports_what_consumer_needs(flywheel):
+    env = flywheel
+    response = health(env)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['status'] == 'ok' and body['feedback_enabled'] is True
+    assert body['accepted_schemas'] == ['consumer-feedback-signal.v1', 'consumer-feedback-signal-batch.v1']
+    assert __import__('re').fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ', body['server_time'])
+    # Nothing about the caller, tokens or addresses; not for browsers; never cached.
+    assert 'synthetic-user-a' not in response.text and SERVICE not in response.text and 'example.com' not in response.text
+    assert response.headers['cache-control'] == 'no-store' and 'access-control-allow-origin' not in response.headers
+    # Read only: nothing stored.
+    assert env.app.state.store.db.execute('SELECT count(*) FROM feedback_signals').fetchone()[0] == 0
+
+
+def test_the_connectivity_check_answers_while_receiving_is_off(flywheel):
+    env = flywheel
+    env.cfg.feedback_enabled = 'false'
+    response = health(env)
+    assert response.status_code == 200 and response.json()['feedback_enabled'] is False
+    assert push(env, [signal()]).status_code == 503
+
+
+@pytest.mark.parametrize('configured', ['', 'short-token', 'synthetic-service', None])
+def test_a_wrong_or_unusable_service_token_is_refused_before_the_account_service(flywheel, configured):
+    env = flywheel
+    calls = checking_identity(env)
+    supplied = SERVICE
+    if configured is None:
+        supplied = 'synthetic-wrong-service-token-0123456789abcdef'
+    else:
+        # Unset, too short, or equal to another service's token (here the Hub token).
+        env.cfg.flywheel_token = configured
+        supplied = configured or SERVICE
+    response = health(env, service=supplied)
+    assert response.status_code == 403
+    assert response.json() == {'code': 'service_forbidden', 'message': '服务凭据无效', 'phase': 'authorization', 'retryable': False}
+    assert calls == []
+
+
+@pytest.mark.parametrize('token,answer,status,code,retryable', [
+    ('', None, 401, 'invalid_identity', False),
+    ('synthetic-expired', None, 401, 'invalid_identity', False),
+    ('synthetic-user-a', 'unavailable', 503, 'dependency_unavailable', True),
+    ('synthetic-user-a', lambda token: {'sub': token, 'role': 'user', 'password_change_required': True}, 403,
+     'account_action_required', False),
+])
+def test_user_login_problems_are_told_apart_from_the_service_token(flywheel, token, answer, status, code, retryable):
+    env = flywheel
+    checking_identity(env, answer)
+    response = health(env, token=token)
+    assert response.status_code == status
+    body = response.json()
+    assert body['code'] == code and body['retryable'] is retryable and code != 'service_forbidden'
+    assert 'synthetic-user' not in response.text and SERVICE not in response.text
+
+
+def test_the_public_health_check_is_unchanged(flywheel):
+    response = flywheel.client.get('/evaluation/api/health', headers={'Authorization': ''})
+    assert response.status_code == 200 and response.json() == {'status': 'ok', 'service': 'evaluation'}
+    assert response.headers['access-control-allow-origin'] == '*'

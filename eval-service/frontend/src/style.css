@@ -3303,6 +3303,8 @@ code {
   margin-bottom: 20px;
 }
 .feedback-packages b {
+  font-size: 13px;
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
 .feedback-cases li {

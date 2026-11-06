@@ -202,7 +202,7 @@ export default function App() {
   }
   const active = runs.filter((r) => ACTIVE.has(r.status)).length,
     nav = [
-      ['tasks', '/', 'task', '任务中心'],
+      ['tasks', '/', 'task', '评测任务'],
       ['sets', '/eval-sets', 'set', '评测集'],
       ['sources', '/data-sources', 'db', '数据源'],
       // Consumer feedback, when the deployment enabled it.
@@ -229,7 +229,7 @@ export default function App() {
           <div className="login-journey">
             <span>统一账号登录</span>
             <Icon name="arrow" />
-            <span>任务中心</span>
+            <span>评测任务</span>
             <Icon name="arrow" />
             <span>执行详情</span>
           </div>
@@ -307,7 +307,7 @@ export default function App() {
           <div className="sidebar-help">
             <b>回到任务，继续查看</b>
             <p>
-              关闭页面后，可从任务中心
+              关闭页面后，可从「评测任务」
               <br />
               找回运行记录和执行详情。
             </p>

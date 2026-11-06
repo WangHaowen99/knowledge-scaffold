@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pydantic import ValidationError
 
 from ..core import Failure, canonical, digest
-from .models import BATCH_LIMIT, BATCH_SCHEMA, SIGNAL_BYTES, FeedbackSignalV1
+from .models import BATCH_LIMIT, BATCH_SCHEMA, SIGNAL_BYTES, SIGNAL_SCHEMA, FeedbackSignalV1
 from .store import FeedbackStore
 
 DAY = 86400
@@ -47,6 +47,18 @@ class Intake:
             if exc.status == 403:
                 raise
             raise Failure('dependency_unavailable', '暂时无法校验用户登录，请稍后重试', 503, 'authorization') from exc
+
+    def health(self, token, service_token):
+        """Consumer's connectivity check: its address, its service token and a user's login, before it pushes feedback.
+
+        The service token is checked first, so a caller without it cannot use this to reach the account service.
+        It answers while receiving is off too, with feedback_enabled false, so consumer can say so."""
+        if not self.authorized(service_token):
+            raise Failure('service_forbidden', '服务凭据无效', 403, 'authorization')
+        self.caller(token)
+        return {'status': 'ok', 'feedback_enabled': self.config.flag('feedback_enabled'),
+                'accepted_schemas': [SIGNAL_SCHEMA, BATCH_SCHEMA],
+                'server_time': datetime.fromtimestamp(self.clock(), timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
 
     def receive(self, body, token, service_token):
         if not self.config.flag('feedback_enabled'):

@@ -85,6 +85,9 @@ class Dependencies:
         if path=='/token': return {'access_token':'synthetic-user-a','refresh_token':'synthetic-refresh'}
         if path.startswith('/api/packages'):
             if token!='synthetic-user-a': raise Failure('not_found','Not found',404)
+            if path.count('/')==3:
+                # Package summary: its newest release, which carries the package name.
+                return dict(self.receipt,name='Synthetic package')
             if '/releases/' in path:
                 if path.split('/')[-1] not in self.releases:
                     raise Failure('dependency_rejected','Not found',404,'dependency',upstream_status=404)

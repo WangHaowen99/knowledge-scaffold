@@ -314,7 +314,7 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
         breadcrumb={
           <>
             <button className="text-link" onClick={() => navigate('/')}>
-              任务中心
+              评测任务
             </button>
             <span>/</span>
             <span>新建评测</span>
@@ -694,7 +694,7 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
               </>
             )}
             <hr />
-            <p className="help-text">创建成功后进入执行详情。离开页面后，可从任务中心找回本轮任务。</p>
+            <p className="help-text">创建成功后进入执行详情。离开页面后，可从「评测任务」找回本轮评测。</p>
           </aside>
         </div>
       )}
