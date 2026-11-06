@@ -25,12 +25,14 @@ async def _lifespan(app: FastAPI):
     from .services.modeling_eval import sweep_interrupted
     from .services.modeling_cleanup import retry_due, scheduler_loop
     from .services.solver_validation_run import sweep_interrupted as sweep_solver_validations
+    from .services.onto_mcp.package_publish import recover as recover_mcp_publishes
 
     manager.start_background()  # 空闲会话回收（方案 4.1.1）
     write_example()  # 内置推荐表副本，供管理员复制成自定义表
     # 评测编排只活在进程内：重启后仍标 running 的工作区改判中断，否则前端永久锁死
     sweep_interrupted()
     sweep_solver_validations()
+    recover_mcp_publishes(projects.workspaces)
     backup_task = asyncio.create_task(backup_scheduler_loop())  # workspace 定期备份
     modeling_cleanup_task = asyncio.create_task(scheduler_loop())
     from .services import knowledge_hub

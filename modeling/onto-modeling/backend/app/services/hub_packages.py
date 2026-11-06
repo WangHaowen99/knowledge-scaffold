@@ -2,10 +2,10 @@
 import hashlib
 import json
 import os
-from pathlib import Path
+import posixpath
 import shutil
 import uuid
-import zipfile
+from pathlib import Path
 
 from . import knowledge_hub as transport
 from .workspace import META_FILE, WorkspaceError, WorkspaceManager
@@ -66,6 +66,34 @@ def call(method, path, token, **kwargs):
     return transport.call(method, path, token, **kwargs)
 
 
+def delegation_id(token_id):
+    return 'mcp-' + transport.identifier(token_id)
+
+
+def register_delegation(pid, token_id, token, issuer, sub, expires_at=None):
+    return call('POST', '/api/package-delegations', token, body={
+        'delegation_id': delegation_id(token_id), 'ontology_id': ontology_id(pid),
+        'expires_at': expires_at,
+    })
+
+
+def revoke_delegation(token_id, token):
+    path = posixpath.join('/api/package-delegations', delegation_id(token_id))
+    return call('DELETE', path, token)
+
+
+def delegated_call(method, path, token_id, ontology, issuer, sub, **kwargs):
+    header = transport.delegation_header(method, path, delegation_id(token_id), ontology, issuer, sub)
+    headers = {'X-Hub-Delegation': header, **(kwargs.pop('headers', None) or {})}
+    return transport.call(method, path, headers=headers, **kwargs)
+
+
+def check_delegation(token_id, pid, issuer, sub):
+    ontology = ontology_id(pid)
+    path = posixpath.join('/api/package-delegations', delegation_id(token_id))
+    return delegated_call('GET', path, token_id, ontology, issuer, sub)
+
+
 def reference_path(package_id, release_id=''):
     base = f'/api/packages/{transport.identifier(package_id)}/releases'
     return base + ('/' + transport.identifier(release_id) if release_id else '')
@@ -111,10 +139,22 @@ def freeze(manager, pid, folder, allow_unbound, binding=None, graph=False):
     return value, source_digest
 
 
+def validate_publish_intent(task, expected_input_digest, expected_base):
+    """Only replay a durable request when it represents the confirmed publication intent."""
+    payload = (task or {}).get('payload', {})
+    if expected_input_digest is not None and payload.get('input_digest') != expected_input_digest:
+        raise WorkspaceError('发布请求与当前预览不一致，请重新预览并使用新的 request_id',
+                             409, 'publish_preview_stale')
+    if expected_base is not None and (payload.get('base_release_id'), payload.get('base_digest')) != expected_base:
+        raise WorkspaceError('发布基础版本与当前预览不一致，请重新预览并使用新的 request_id',
+                             409, 'publish_preview_stale')
+
+
 def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
-            kind="release", binding=None, graph=False, relation_report=None, object_texts=None):
+            kind="release", binding=None, graph=False, relation_report=None, object_texts=None,
+            delegated=None, expected_input_digest=None, expected_base=None, before_external=None):
     transport.identifier(request_id)
-    if not token:
+    if not token and not delegated:
         raise WorkspaceError('Hub 需要登录用户身份', 401)
     with transport.lock(pid):
         manager.project_root(pid)
@@ -123,11 +163,24 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
         task = transport.load(task_file)
         if task and (task['allow_unbound'] != allow_unbound or task['payload']['kind'] != kind):
             raise WorkspaceError('发布请求参数发生变化', 409)
+        saved_receipt = transport.load(folder / 'receipt.json')
+        if saved_receipt:
+            validate_publish_intent(task, expected_input_digest, expected_base)
+            try:
+                record(manager, pid, subject, saved_receipt)
+            except (OSError, WorkspaceError):
+                return {**saved_receipt, 'local_record_pending': True}
+            shutil.rmtree(folder / 'input', ignore_errors=True)
+            (folder / 'package.zip').unlink(missing_ok=True)
+            return saved_receipt
         if not task:
             if kind == 'release':
+                manager._ensure_package_publish_stages(pid)
                 manager._ensure_solver_publishable(pid)
             shutil.rmtree(folder / 'input', ignore_errors=True)
             value, input_digest = freeze(manager, pid, folder, allow_unbound, binding, graph)
+            if expected_input_digest is not None and input_digest != expected_input_digest:
+                raise WorkspaceError('建模内容发生变化，请重新预览发布', 409, 'publish_preview_stale')
             if object_texts is not None:
                 frozen = WorkspaceManager(folder / 'input', manager.assets_dir)
                 if transport.package_mapping.read_object_texts(frozen.project_root(pid), strict=True) != object_texts:
@@ -135,17 +188,56 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
             if kind == 'release':
                 manager._ensure_solver_publishable(pid)
             base = association(pid, subject)
+            if expected_base is not None:
+                actual = ((base or {}).get('release_id'), (base or {}).get('package_digest'))
+                if actual != expected_base:
+                    raise WorkspaceError('Hub 基础版本发生变化，请重新预览发布', 409, 'publish_preview_stale')
             wire_id = hashlib.sha256(json.dumps([pid, subject, request_id]).encode()).hexdigest()
             payload = dict(request_id=wire_id, ontology_id=ontology_id(pid),
                            change_type='modeling_content', kind=kind, input_digest=input_digest)
             if base:
                 payload.update(base_release_id=base['release_id'],
                                base_digest=base['package_digest'])
-            task = dict(name=value['name'], allow_unbound=allow_unbound, payload=payload, binding=value['binding'], files=value['files'], graph=graph)
+            task = dict(name=value['name'], allow_unbound=allow_unbound, payload=payload,
+                        binding=value['binding'], files=value['files'], graph=graph)
             transport.save(task_file, task)
         payload = task['payload']
-        receipt = call('POST', '/api/package-publish-requests', token, body=payload)
-        base_path = f"/api/package-publish-requests/{payload['request_id']}"
+        validate_publish_intent(task, expected_input_digest, expected_base)
+        if delegated:
+            def hub_call(method, path, **kwargs):
+                return delegated_call(method, path, delegated['token_id'], payload['ontology_id'],
+                                      delegated['issuer'], delegated['sub'], **kwargs)
+        else:
+            def hub_call(method, path, **kwargs):
+                return call(method, path, token, **kwargs)
+        base_path = posixpath.join('/api/package-publish-requests', payload['request_id'])
+        # A commit response may be lost after Hub has made the version durable. Reconcile the
+        # original request before comparing the now-advanced local base; only a committed result
+        # is authoritative enough to bypass the stale-preview guard.
+        if before_external:
+            before_external()
+        try:
+            receipt = hub_call('GET', base_path)
+        except WorkspaceError as exc:
+            if exc.status != 404:
+                raise
+            receipt = None
+        if receipt and receipt.get('status') == 'committed':
+            transport.save(folder / 'receipt.json', receipt)
+            try:
+                record(manager, pid, subject, receipt)
+            except (OSError, WorkspaceError):
+                return {**receipt, 'local_record_pending': True}
+            shutil.rmtree(folder / 'input', ignore_errors=True)
+            (folder / 'package.zip').unlink(missing_ok=True)
+            return receipt
+        if expected_base is not None:
+            base = association(pid, subject)
+            if ((base or {}).get('release_id'), (base or {}).get('package_digest')) != expected_base:
+                raise WorkspaceError('Hub 基础版本发生变化，请重新预览发布', 409, 'publish_preview_stale')
+        if before_external:
+            before_external()
+        receipt = hub_call('POST', '/api/package-publish-requests', body=payload)
         archive = folder / 'package.zip'
         if receipt['status'] == 'pending':
             if not archive.exists():
@@ -161,11 +253,15 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
                 with temporary.open('rb') as handle:
                     os.fsync(handle.fileno())
                 os.replace(temporary, archive)
-            call('PUT', f'{base_path}/content', token, upload=archive,
-                 headers={'X-Package-Digest': transport.file_digest(archive)},
-                 upload_name=transport.package_filename(payload['ontology_id'], task['name'], receipt['version']))
+            if before_external:
+                before_external()
+            hub_call('PUT', posixpath.join(base_path, 'content'), upload=archive,
+                     headers={'X-Package-Digest': transport.file_digest(archive)},
+                     upload_name=transport.package_filename(payload['ontology_id'], task['name'], receipt['version']))
         if receipt['status'] != 'committed':
-            receipt = call('POST', f'{base_path}/commit', token)
+            if before_external:
+                before_external()
+            receipt = hub_call('POST', posixpath.join(base_path, 'commit'))
         transport.save(folder / 'receipt.json', receipt)
         try:
             record(manager, pid, subject, receipt)

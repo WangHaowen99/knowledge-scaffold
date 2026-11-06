@@ -6,6 +6,7 @@ SCOPES = (
     "ontology.change.validate",
     "ontology.change.apply",
     "project.version.revert",
+    "package.publish",
 )
 KEY_PATTERN = r"^[^/\\#?&|\r\n\t]{1,80}$"
 TEXT = {"type": "string"}
@@ -76,6 +77,30 @@ def definitions():
         "expected_revision": TEXT, "resource_type": {"enum": ["operation", "rule"]},
         "action": {"enum": ["create", "update", "delete"]}, "resource_id": TEXT, "payload": {"type": "object"}},
         ["expected_revision", "resource_type", "action", "resource_id"], "validate"))
+    package_tools = (
+        ("preview_package_publish", "预览知识包版本发布", {
+            "request_id": {"type": "string", "pattern": r"^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,127}$"},
+            "allow_unbound": {"type": "boolean"},
+        }, (), True),
+        ("publish_package_version", "确认发布知识包新版本", {
+            "request_id": {"type": "string", "pattern": r"^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,127}$"},
+            "confirmation_token": {"type": "string", "pattern": r"^[A-Za-z0-9_-]+\.[a-f0-9]{64}$"},
+        }, ("request_id", "confirmation_token"), False),
+        ("get_package_publish_status", "查询知识包版本发布状态", {
+            "job_id": {"type": "string", "pattern": r"^[a-f0-9]{32}$"},
+        }, ("job_id",), True),
+    )
+    for name, title, props, required, read_only in package_tools:
+        result.append({
+            "name": name,
+            "title": title,
+            "description": title + "（发布当前 MCP 端点绑定的项目）",
+            "scope": "package.publish",
+            "toolset": "change",
+            "readOnly": read_only,
+            "inputSchema": {"type": "object", "properties": props, "required": list(required),
+                            "additionalProperties": False},
+        })
     return result
 
 
@@ -97,7 +122,9 @@ def validate_input(value, schema, path="arguments"):
     kind = schema.get("type")
     if kind in types and not isinstance(value, types[kind]):
         raise McpError("INVALID_INPUT", f"{path} 必须是 {kind}")
-    if kind == "integer" and isinstance(value, bool):
+    invalid_integer = kind == "integer" and isinstance(value, bool)
+    invalid_boolean = kind == "boolean" and not isinstance(value, bool)
+    if invalid_integer or invalid_boolean:
         raise McpError("INVALID_INPUT", f"{path} 必须是 {kind}")
     if "enum" in schema and value not in schema["enum"]:
         raise McpError("INVALID_INPUT", f"{path} 不在允许值中")

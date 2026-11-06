@@ -69,7 +69,7 @@ app.include_router(create_router(lambda: store, stream_file))
 
 @app.exception_handler(RequestValidationError)
 async def validation_error(request, exc):
-    if request.url.path.startswith(('/api/packages', '/api/package-publish-requests')):
+    if request.url.path.startswith(('/api/packages', '/api/package-publish-requests', '/api/package-delegations')):
         return JSONResponse(status_code=422, content=PackageError(
             'invalid_request', 'Invalid package request', 422).payload())
     from fastapi.exception_handlers import request_validation_exception_handler

@@ -286,6 +286,14 @@ class WorkspaceManager:
     STAGE_TOTAL = len(STAGES)
     # 资料分析在 STAGES 中的位置：它不按目录探针判完成，改读验收回执（issue #362）
     RESEARCH_STAGE_INDEX = 0
+    # 与前端 packagePublish.js 的发布必选阶段保持一致。这里是服务端最终裁决，
+    # 前端仍可用同一规则即时提示，但 API 与 MCP 均不能绕过。
+    PUBLISH_REQUIRED_STAGES = (
+        ("research", "资料分析", ("research",)),
+        ("object", "对象提取", ("ontology/object",)),
+        ("operation", "操作提取", ("ontology/operation", "ontology/logic")),
+        ("validate", "质量检查", ("reports",)),
+    )
 
     @staticmethod
     def _dir_has_entries(directory: Path) -> bool:
@@ -297,6 +305,61 @@ class WorkspaceManager:
             if not entry.name.startswith(".") and entry.name.lower() != "index.md"
         )
 
+    @staticmethod
+    def _stage_has_visible_file(root: Path, rel_paths: tuple[str, ...]) -> bool:
+        """Match the frontend file-tree probe: visible files except directory indexes count."""
+        for rel_path in rel_paths:
+            directory = root / rel_path
+            if not directory.is_dir() or directory.is_symlink():
+                continue
+            for current, dirs, files in os.walk(directory, followlinks=False):
+                current_path = Path(current)
+                visible_dirs = []
+                for name in dirs:
+                    if not name.startswith(".") and not (current_path / name).is_symlink():
+                        visible_dirs.append(name)
+                dirs[:] = visible_dirs
+                for name in files:
+                    path = current_path / name
+                    if not name.startswith(".") and name.lower() != "index.md" and not path.is_symlink():
+                        return True
+        return False
+
+    @classmethod
+    def _research_stage_blocking(cls, root: Path, review: dict) -> bool:
+        return (
+            review["status"] in (_research_review.PENDING, _research_review.FAILED, _research_review.UNVERIFIABLE)
+            and not cls._dir_has_entries(root / "ontology" / "object")
+        )
+
+    def package_publish_readiness(self, project_id: str) -> dict:
+        """Return the same four required-stage decisions used by the current project page."""
+        root = self.project_root(project_id)
+        review = _research_review.review_status(root)
+        research_blocking = self._research_stage_blocking(root, review)
+        stages = []
+        for key, title, rel_paths in self.PUBLISH_REQUIRED_STAGES:
+            finished = self._stage_has_visible_file(root, rel_paths)
+            if key == "research" and research_blocking:
+                finished = False
+            stages.append({"key": key, "title": title, "finished": finished})
+        missing = []
+        for item in stages:
+            if not item["finished"]:
+                missing.append({"key": item["key"], "title": item["title"]})
+        return {"ready": not missing, "stages": stages, "missing_stages": missing}
+
+    def _ensure_package_publish_stages(self, project_id: str) -> None:
+        readiness = self.package_publish_readiness(project_id)
+        if readiness["ready"]:
+            return
+        titles = "、".join(item["title"] for item in readiness["missing_stages"])
+        raise WorkspaceError(
+            f"建模未完成，请先完成：{titles}",
+            409,
+            "modeling_stages_incomplete",
+        )
+
     @classmethod
     def _project_progress(cls, root: Path) -> dict:
         review = _research_review.review_status(root)
@@ -304,10 +367,7 @@ class WorkspaceManager:
         # 对象一旦提取，资料分析按已越过处理，只留待核验的提醒——与 state_helper
         # 的"已到达的最高阶段优先"同口径。否则旧项目升级后进度会整体归零，回执
         # 因打标签、换评测表而失效时也一样。
-        research_blocking = (
-            review["status"] in (_research_review.PENDING, _research_review.FAILED, _research_review.UNVERIFIABLE)
-            and not cls._dir_has_entries(root / "ontology" / "object")
-        )
+        research_blocking = cls._research_stage_blocking(root, review)
         done = 0
         for index, (dirs, _optional) in enumerate(cls.STAGES):
             hit = any(
