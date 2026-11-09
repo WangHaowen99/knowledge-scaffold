@@ -134,6 +134,16 @@ cd frontend && npm test && npm run build
 
 ## 构建与部署
 
+知识包发布、版本列表和下载依赖独立的 Knowledge Package Hub；本目录的 Compose 只启动建模和账号服务。
+源码整栈请在仓库根执行 `bash deploy/deploy.sh`；已有 Consumer 时可用
+`bash deploy/deploy.sh --knowledge-hub-only` 补部署 Hub。离线安装必须使用与发布包同版本的安装入口，
+同时提供 `--knowledge-hub-package <配套Hub发布包>`，或复用已经就绪的 Hub；不要继续使用旧目录中遗留的安装脚本。
+Hub 与建模须共享网络，`ONTO_HUB_URL` 须从建模容器可达，`ONTO_HUB_SERVICE_TOKEN` 须与 Hub 的建模凭据一致。
+
+`GET /api/health` 保持进程活性检查；`GET /api/health/dependencies` 分别返回 `package_publication` 和
+`evaluation` 的就绪状态，不返回依赖地址或凭据。发布依赖失败返回 503，评测状态单独列出（Hub 先于评测部署）。
+独立 `deploy.sh` 在 Hub 不可用时明确告警“建模服务已启动，但知识包发布不可用”；完整安装和升级不能据此报告全部就绪。
+
 ```bash
 ./build.sh <version> [amd|arm]     # 产出 dist/onto-modeling-<version>-linux-<arch>.tar.gz
 docker compose up --build          # 本地从源码起全栈（onto-modeling + auth-server）验证

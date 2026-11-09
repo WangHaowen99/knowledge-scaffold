@@ -35,6 +35,7 @@ def _prepare(tmp_path, mode='upgrade'):
                CONSUMER_TOKEN_SNAPSHOT=str(tmp_path / 'consumer-token.snapshot'),
                EVALUATION_DOCKER_CALLS=str(tmp_path / 'evaluation-docker-calls.txt'),
                STUB_HUB_EVALUATION_TOKEN=secrets.token_hex(32), STUB_CONSUMER_DIR=str(consumer),
+               STUB_KNOWLEDGE_HUB_DIR='' if mode == 'install' else str(root / 'knowledge-hub'),
                STUB_ONTO_EVALUATION_TOKEN=secrets.token_hex(32))
     package = tmp_path / 'evaluation-v-test'
     (package / 'deploy').mkdir(parents=True)

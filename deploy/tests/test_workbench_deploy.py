@@ -42,6 +42,7 @@ def evaluation_runtime(tmp_path: Path, monkeypatch) -> None:
     config.write_text("# Synthetic configuration; no credentials.\n", encoding="utf-8")
     monkeypatch.setenv("EVAL_ENV_FILE", str(config))
     _write_executable(tmp_path / "eval-service" / "deploy" / "deploy.sh", "exit 0")
+    _write_executable(tmp_path / "knowledge-hub" / "deploy" / "deploy.sh", "exit 0")
 
 
 def test_root_deploy_dispatches_source_checkout_to_full_stack(tmp_path: Path, evaluation_runtime) -> None:
@@ -56,7 +57,7 @@ def test_root_deploy_dispatches_source_checkout_to_full_stack(tmp_path: Path, ev
 
     result = subprocess.run(
         [str(deploy_dir / "deploy.sh")],
-        env={**os.environ, "DEPLOY_ARGS_FILE": str(args_file)},
+        env={**os.environ, "DEPLOY_ARGS_FILE": str(args_file), "CONSUMER_NETWORK": "synthetic-network"},
         text=True,
         capture_output=True,
         check=False,
@@ -950,6 +951,7 @@ case "$1" in
     container) ;;
     image) [ "${4:-}" != --format ] || printf 'sha256:%064d\\n' 0; exit 0 ;;
     exec)
+        if [ "$2" = knowledge-hub ]; then exit "${STUB_HUB_HEALTH_EXIT:-0}"; fi
         [ "$2 $3" != "-i onto-agent-backend" ] || printf '%s\\n' "${STUB_EVALUATION_ROUTE_STATUS:-401}"
         exit 0 ;;
     ps)
@@ -1115,6 +1117,7 @@ def _prepare_separated_upgrade(tmp_path: Path, *, modeling_port: str) -> dict:
         "STUB_HUB_TOKEN": secrets.token_hex(32),
         "STUB_CONSUMER_DIR": str(consumer),
         "STUB_MODELING_OWNER": str(modeling),
+        "STUB_KNOWLEDGE_HUB_DIR": str(root / "knowledge-hub"),
     }
     return {
         "root": root,
@@ -1487,6 +1490,7 @@ def _prepare_legacy_upgrade(tmp_path: Path) -> dict:
         "STUB_CONSUMER_DIR": str(legacy),
         "STUB_MODELING_OWNER": str(legacy),
         "STUB_LEGACY_MODELING_PORT": "5100",
+        "STUB_KNOWLEDGE_HUB_DIR": str(legacy.parent / "knowledge-hub"),
     }
     return setup
 

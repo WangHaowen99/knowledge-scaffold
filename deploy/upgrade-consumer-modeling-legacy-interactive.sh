@@ -218,11 +218,22 @@ deploy_onto_modeling() {
         sleep 2
         elapsed=$((elapsed + 2))
     done
+    curl -fsS --noproxy '*' --max-time 15 \
+        "http://127.0.0.1:${onto_web_port}/api/health/dependencies" >/dev/null \
+        || die 'Onto Modeling 已启动，但知识包发布不可用：检查 Hub 部署、共享网络和 ONTO_HUB_* 配置'
     log "Onto Modeling deployment finished: http://localhost:${onto_web_port}"
 }
 
 # Hub 容器名固定：已有容器不属于迁移目标目录时，在任何变更之前拒绝接管
 precheck_knowledge_hub() {
+    if [ -z "${hub_package}" ]; then
+        [ -n "${onto_package}" ] || return 0
+        docker container inspect knowledge-hub >/dev/null 2>&1 && docker exec knowledge-hub python -c \
+            "import urllib.request; urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://127.0.0.1:8200/api/health', timeout=3)" \
+            >/dev/null 2>&1 || die \
+            '知识包发布不可用：请提供配套知识包 Hub 发布包，或先恢复已有 Hub'
+        return 0
+    fi
     if docker container inspect knowledge-hub >/dev/null 2>&1; then
         owner="$(docker container inspect knowledge-hub --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null || true)"
         [ "${owner}" = "${hub_dir}" ] \
@@ -382,7 +393,7 @@ manifest="${staged_root}/deploy/manifest.json"
 [ -x "${opsctl}" ] || die "Consumer 发布包缺少 deploy/opsctl"
 [ -f "${manifest}" ] || die "Consumer 发布包缺少 deploy/manifest.json"
 [ -z "${onto_package}" ] || precheck_onto_modeling
-[ -z "${hub_package}" ] || precheck_knowledge_hub
+precheck_knowledge_hub
 [ -z "${evaluation_package}" ] || precheck_evaluation
 
 # opsctl preflight reads the staged bundle's backend/.env for published ports.

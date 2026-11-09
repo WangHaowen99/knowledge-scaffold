@@ -140,6 +140,14 @@ def health():
     return {"ok": True, "agent_sdk": SDK_AVAILABLE, "drawio": _drawio_available}
 
 
+@app.get("/api/health/dependencies")
+def deployment_dependencies():
+    from .services.deployment_readiness import dependencies
+
+    result = dependencies()
+    return JSONResponse(result, status_code=200 if result['ok'] else 503)
+
+
 # drawio 编辑器（官方 webapp 静态部署，iframe embed 协议接入；缺席时前端只读降级）
 _drawio_dir = Path(
     os.environ.get(

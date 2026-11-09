@@ -238,6 +238,12 @@ docker exec -e MYSQL_PWD="${EVAL_MYSQL_ROOT_PASSWORD:?请先设置评测库密�
 
 ## 知识包 Hub（独立部署）
 
+完整包只要包含 Onto Modeling 就必须同时包含 Hub，缺失时在变更服务前停止。分离安装/升级选择 Onto Modeling
+但未提供 `--knowledge-hub-package` 时，先检查已有 Hub 是否就绪；否则提示提供同版本 Hub 包。
+使用与发布包匹配的安装脚本，避免实际执行旧目录里不支持 Hub 参数的入口。
+建模部署后还检查 `/api/health/dependencies` 的发布依赖，覆盖容器间网络和服务凭据；
+`--onto-modeling-only` 保留独立建模用途，发布不可用时明确告警并提示 `--knowledge-hub-only` 补部署。
+
 Hub 不再写在 onto-modeling 的 compose 里，而是独立 compose 项目 `knowledge-hub/deploy/docker-compose.knowledge-hub.yml`（项目名、容器名 `knowledge-hub`，数据卷 `knowledge-hub_knowledge-hub-data`），由 `knowledge-hub/deploy/deploy.sh` 部署：加入 consumer 网络，onto-modeling 经 `http://knowledge-hub:8200` 访问，Hub 经 `auth-server` 校验令牌、经 `onto-modeling` 回调资料授权；不发布宿主端口，部署后在容器内做健康检查。
 
 - `bash deploy/deploy.sh --knowledge-hub-only` 只部署 Hub，与其他 only 参数互斥，不包含评测；源码树从 `knowledge-hub/` 构建镜像，发布包使用包内 `knowledge-hub/` 子包。默认整栈在 Onto Modeling 之前部署 Hub；`--onto-modeling-only` 不再连带部署 Hub。
@@ -246,6 +252,9 @@ Hub 不再写在 onto-modeling 的 compose 里，而是独立 compose 项目 `kn
 - 从 Hub 随 onto-modeling 部署的旧版本切换：重新部署 onto-modeling 时 `--remove-orphans` 会清理旧 Hub 容器；旧卷不自动迁移。
 
 ## 独立评测服务
+
+评测部署要求 Hub、Consumer 凭据与加密密钥齐全，并在容器启动后通过 `/evaluation/api/ready` 检查
+账号、Hub、Consumer 依赖；失败时不报告部署完成。`/evaluation/api/health` 仍只表示进程存活，Judge 可在部署后配置。
 
 `bash deploy/deploy.sh --eval-only` 只部署 `eval-service/`，与其他 only 参数互斥；默认全栈 `bash deploy/deploy.sh` 包含评测服务，源码、离线首次安装和升级均在其他服务之后部署评测；`--onto-modeling-only`、`--knowledge-hub-only` 不包含评测服务。
 

@@ -76,6 +76,8 @@ usage() {
                            不指定则不部署 Hub；指定后在 Consumer、Modeling 之后、
                            Onto Modeling 之前部署到 INSTALL_ROOT/knowledge-hub，
                            加入 Consumer 网络并与 Onto Modeling 同步服务凭据
+                           选择 Onto Modeling 时，未提供此参数则要求已有 Hub 就绪；
+                           否则预检停止并提示补齐同版本 Hub 发布包
   --onto-modeling-package FILE
                            Onto Modeling 发布包路径；支持通配符，但必须唯一匹配。
                            不指定则不部署 Onto Modeling；指定后在 Consumer、Modeling
@@ -570,6 +572,12 @@ precheck_onto_modeling() {
 # Hub 容器名固定：已有容器不属于本安装根目录时，在任何变更之前拒绝接管
 precheck_knowledge_hub() {
     if [ -z "${KNOWLEDGE_HUB_PACKAGE}" ]; then
+        if [ -n "${ONTO_MODELING_PACKAGE}" ]; then
+            docker container inspect knowledge-hub >/dev/null 2>&1 && docker exec knowledge-hub python -c \
+                "import urllib.request; urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://127.0.0.1:8200/api/health', timeout=3)" \
+                >/dev/null 2>&1 || die \
+                "知识包发布不可用：未提供 --knowledge-hub-package，且已有知识包 Hub 未就绪；请使用本版本安装脚本并提供配套 Hub 发布包"
+        fi
         log "未指定 --knowledge-hub-package，本次不部署知识包 Hub"
         return 0
     fi
@@ -796,6 +804,9 @@ deploy_onto_modeling() {
         sleep 2
         elapsed=$((elapsed + 2))
     done
+    curl -fsS --noproxy '*' --max-time 15 \
+        "http://127.0.0.1:${ONTO_WEB_PORT}/api/health/dependencies" >/dev/null \
+        || die 'Onto Modeling 已启动，但知识包发布不可用：检查 Hub 部署、共享网络和 ONTO_HUB_* 配置'
     log "Onto Modeling deployment finished: http://localhost:${ONTO_WEB_PORT}"
 }
 

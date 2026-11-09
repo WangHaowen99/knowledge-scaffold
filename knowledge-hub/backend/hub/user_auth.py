@@ -29,8 +29,7 @@ class Identity:
     delegation_expires_at: float = 0.0
 
 
-def authenticate(request):
-    supplied = request.headers.get('x-hub-service-token', '')
+def service_identity(supplied):
     # The existing Hub credential identifies the modeling service for all APIs.
     configured = {
         'modeling': os.environ.get('HUB_SERVICE_TOKEN', ''),
@@ -42,12 +41,17 @@ def authenticate(request):
         raise PackageError('auth_configuration', 'Service credentials must be distinct', 503, 'authorization')
     service = next((name for name, value in configured.items()
                     if value and hmac.compare_digest(value.encode(), supplied.encode())), None)
-    header = request.headers.get('authorization', '')
-    delegated = request.headers.get('x-hub-delegation', '')
     if not service:
         raise PackageError('unauthenticated', 'User and service authentication required', 401, 'authorization')
+    return service, configured[service]
+
+
+def authenticate(request):
+    service, secret = service_identity(request.headers.get('x-hub-service-token', ''))
+    header = request.headers.get('authorization', '')
+    delegated = request.headers.get('x-hub-delegation', '')
     if delegated:
-        return authenticate_delegation(request, delegated, service, configured.get(service, ''))
+        return authenticate_delegation(request, delegated, service, secret)
     if not header.lower().startswith('bearer ') or not header[7:].strip():
         raise PackageError('unauthenticated', 'User and service authentication required', 401, 'authorization')
     base = os.environ.get('HUB_AUTH_URL', '').rstrip('/')

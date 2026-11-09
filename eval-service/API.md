@@ -1,10 +1,11 @@
 # Evaluation API
 
-前缀 `/evaluation/api`。除 health、client-config、账号登录/刷新及受 scene 凭据保护的 NL2SQL 外，均要求 `Authorization: Bearer <access-token>`；`/internal/feedback-signals` 另须消费服务凭据。身份在线验证并按 issuer/subject 隔离；不接受建模项目归属或请求体 owner。
+前缀 `/evaluation/api`。除 health、ready、client-config、账号登录/刷新及受 scene 凭据保护的 NL2SQL 外，均要求 `Authorization: Bearer <access-token>`；`/internal/feedback-signals` 另须消费服务凭据。身份在线验证并按 issuer/subject 隔离；不接受建模项目归属或请求体 owner。
 
 | 接口 | 行为 |
 | --- | --- |
 | `GET /health` | 活性，不代表依赖就绪；允许任意来源读取 |
+| `GET /ready` | 部署依赖就绪：检查账号服务、Hub 服务身份、Consumer 运行状态、必需凭据及加密配置；失败返回 503，仅返回各项 ready/code，不返回地址或凭据。Judge 和当前用户权限仍由开始评测时的预检验证 |
 | `GET /client-config` | 可向评测页面交接登录的建模来源列表 |
 | `GET /session` | 当前主体键、user（从已验证 userinfo 取得的 username / role）、当前用户生效的非敏感 Judge 配置（含 source：personal / settings / deployment / disabled）、独立的 judge_configured 标记，以及是否开启消费反馈 feedback_enabled；用户名仅供当前会话展示，不写入任务归属或存储 |
 | `GET /judge-settings` | 默认 Judge 配置的来源（页面配置或部署配置）、模型、配置版本及 enabled（默认配置是否对用户启用）；管理员额外可见网关地址和是否已配置 Key，从不返回 Key |

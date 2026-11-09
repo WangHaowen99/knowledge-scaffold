@@ -309,6 +309,14 @@ deploy_knowledge_hub() {
 # Hub 容器名固定：已有容器不属于本安装根目录时，在任何变更之前拒绝接管
 precheck_knowledge_hub() {
     local dir="${INSTALL_ROOT}/knowledge-hub" expected owner
+    if [ -z "${KNOWLEDGE_HUB_PACKAGE}" ]; then
+        [ -n "${ONTO_MODELING_PACKAGE}" ] || return 0
+        docker container inspect knowledge-hub >/dev/null 2>&1 && docker exec knowledge-hub python -c \
+            "import urllib.request; urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://127.0.0.1:8200/api/health', timeout=3)" \
+            >/dev/null 2>&1 || die \
+            '知识包发布不可用：请提供配套知识包 Hub 发布包，或先恢复已有 Hub'
+        return 0
+    fi
     expected="$(cd "${dir}" 2>/dev/null && pwd || printf '%s' "${dir}")"
     if docker container inspect knowledge-hub >/dev/null 2>&1; then
         owner="$(container_working_dir knowledge-hub)"
@@ -324,6 +332,9 @@ wait_for_onto_modeling() {
         sleep 2
         elapsed=$((elapsed + 2))
     done
+    curl -fsS --noproxy '*' --max-time 15 \
+        "http://127.0.0.1:${ONTO_WEB_PORT}/api/health/dependencies" >/dev/null \
+        || die 'Onto Modeling 已启动，但知识包发布不可用：检查 Hub 部署、共享网络和 ONTO_HUB_* 配置'
     log "Onto Modeling deployment finished: http://localhost:${ONTO_WEB_PORT}"
 }
 
@@ -720,7 +731,7 @@ fi
 
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/separated-interactive.XXXXXX")"
 [ -z "${ONTO_MODELING_PACKAGE}" ] || precheck_onto_modeling
-[ -z "${KNOWLEDGE_HUB_PACKAGE}" ] || precheck_knowledge_hub
+precheck_knowledge_hub
 [ -z "${EVALUATION_PACKAGE}" ] || precheck_evaluation
 [ "${MODE}" != attach ] || precheck_attached_evaluation
 if [ "${MODE}" = install ]; then
