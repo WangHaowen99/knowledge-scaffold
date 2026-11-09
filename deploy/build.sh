@@ -84,7 +84,6 @@ bash "${REPO_ROOT}/consumer/build.sh" "${VERSION}" "${ARCH}"
 }
 
 tar -C "${STAGE_ROOT}" -xzf "${CONSUMER_PACKAGE}"
-rm -f "${CONSUMER_PACKAGE}"
 cp "${BUNDLE_DIR}/deploy/deploy.sh" "${BUNDLE_DIR}/deploy/deploy-consumer.sh"
 
 RELEASE_BUNDLE_DIR="${BUNDLE_DIR}" \
@@ -110,8 +109,16 @@ KNOWLEDGE_HUB_PACKAGE="${REPO_ROOT}/knowledge-hub/dist/knowledge-hub-${VERSION}-
 }
 tar -C "${BUNDLE_DIR}" -xzf "${KNOWLEDGE_HUB_PACKAGE}"
 
-RELEASE_BUNDLE_DIR="${BUNDLE_DIR}" \
-    bash "${REPO_ROOT}/eval-service/build.sh" "${VERSION}" "${ARCH}"
+# 独立评测服务：同 Hub，独立子包留在 eval-service/dist 并并入 bundle
+EVALUATION_PACKAGE="${REPO_ROOT}/eval-service/dist/evaluation-${VERSION}-linux-${RELEASE_ARCH}.tar.gz"
+# eval-service/build.sh 拒绝覆盖已有产物；完整构建与其他子包一样覆盖同版本旧包
+rm -f "${EVALUATION_PACKAGE}"
+bash "${REPO_ROOT}/eval-service/build.sh" "${VERSION}" "${ARCH}"
+[ -f "${EVALUATION_PACKAGE}" ] || {
+    echo "Error: evaluation package not found: ${EVALUATION_PACKAGE}" >&2
+    exit 1
+}
+tar -C "${BUNDLE_DIR}" -xzf "${EVALUATION_PACKAGE}"
 
 cp "${SCRIPT_DIR}/deploy.sh" "${BUNDLE_DIR}/deploy/deploy.sh"
 

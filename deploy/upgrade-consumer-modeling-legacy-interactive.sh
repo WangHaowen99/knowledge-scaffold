@@ -261,7 +261,6 @@ ensure_evaluation_service_token() {
 }
 
 stage_evaluation_package() {
-    [ -n "${evaluation_package}" ] || return 0
     local dir="$(dirname "${old_install_dir}")/eval-service" relative
     [ ! -L "${dir}" ] && [ ! -L "${dir}/deploy" ] || die '评测安装目录不能是符号链接'
     mkdir -p "${dir}/deploy" || die '无法创建评测安装目录'
@@ -283,7 +282,6 @@ stage_evaluation_package() {
 }
 
 precheck_evaluation() {
-    [ -n "${evaluation_package}" ] || return 0
     local dir="$(dirname "${old_install_dir}")/eval-service" expected owner
     [ ! -L "${dir}" ] && [ ! -L "${dir}/deploy" ] || die '评测安装目录不能是符号链接'
     expected="$(cd "${dir}/deploy" 2>/dev/null && pwd || printf '%s' "${dir}/deploy")"
@@ -296,14 +294,10 @@ precheck_evaluation() {
         [ -f "${EVAL_ENV_FILE}" ] && [ -r "${EVAL_ENV_FILE}" ] || die 'EVAL_ENV_FILE 不存在或不可读'
         EVAL_ENV_FILE="$(cd "$(dirname "${EVAL_ENV_FILE}")" && pwd)/$(basename "${EVAL_ENV_FILE}")"
         export EVAL_ENV_FILE
-    elif [ -z "${hub_package}" ]; then
-        [ -n "$(env_get "${hub_dir}/.env" HUB_EVALUATION_SERVICE_TOKEN)" ] \
-            || die '独立评测服务需要知识包 Hub：请提供 Hub 发布包或先部署含评测凭据的 Hub'
     fi
 }
 
 deploy_evaluation() {
-    [ -n "${evaluation_package}" ] || return 0
     local dir="$(dirname "${old_install_dir}")/eval-service" network hub_token consumer_token modeling_token
     [ -f "${dir}/deploy/deploy.sh" ] || die "评测服务发布目录缺少 deploy/deploy.sh：${dir}"
     network="$(docker container inspect onto-agent-backend \
@@ -338,22 +332,22 @@ deploy_evaluation() {
 
 old_install_dir="$(prompt_value '请输入旧的合并部署根目录，例如 /opt/onto-agent：')"
 consumer_package="$(prompt_value '请输入新的 Consumer 镜像 tar 包路径：')"
-modeling_package="$(prompt_value '请输入新的 Modeling 镜像 tar 包路径：')"
-onto_package="$(prompt_optional '请输入新的 Onto Modeling 发布包路径（留空跳过）：')"
-hub_package="$(prompt_optional '请输入新的知识包 Hub 发布包路径（留空跳过）：')"
-evaluation_package="$(prompt_optional '请输入新的独立评测服务发布包路径（留空跳过）：')"
+modeling_package="$(prompt_optional '请输入新的 Modeling 镜像 tar 包路径（留空不升级）：')"
+onto_package="$(prompt_value '请输入新的 Onto Modeling 发布包路径：')"
+hub_package="$(prompt_value '请输入新的知识包 Hub 发布包路径：')"
+evaluation_package="$(prompt_value '请输入新的独立评测服务发布包路径：')"
 
 case "${old_install_dir}" in /*) ;; *) old_install_dir="$(pwd)/${old_install_dir}" ;; esac
 case "${consumer_package}" in /*) ;; *) consumer_package="$(pwd)/${consumer_package}" ;; esac
-case "${modeling_package}" in /*) ;; *) modeling_package="$(pwd)/${modeling_package}" ;; esac
+case "${modeling_package}" in ''|/*) ;; *) modeling_package="$(pwd)/${modeling_package}" ;; esac
 case "${onto_package}" in ''|/*) ;; *) onto_package="$(pwd)/${onto_package}" ;; esac
 case "${hub_package}" in ''|/*) ;; *) hub_package="$(pwd)/${hub_package}" ;; esac
 case "${evaluation_package}" in ''|/*) ;; *) evaluation_package="$(pwd)/${evaluation_package}" ;; esac
 
 consumer_package="$(resolve_package_path "${consumer_package}" 'Consumer 发布包')"
-modeling_package="$(resolve_package_path "${modeling_package}" 'Modeling 发布包')"
-[ -z "${onto_package}" ] || onto_package="$(resolve_package_path "${onto_package}" 'Onto Modeling 发布包')"
-[ -z "${hub_package}" ] || hub_package="$(resolve_package_path "${hub_package}" '知识包 Hub 发布包')"
+[ -z "${modeling_package}" ] || modeling_package="$(resolve_package_path "${modeling_package}" 'Modeling 发布包')"
+onto_package="$(resolve_package_path "${onto_package}" 'Onto Modeling 发布包')"
+hub_package="$(resolve_package_path "${hub_package}" '知识包 Hub 发布包')"
 onto_modeling_dir="$(dirname "${old_install_dir}")/onto-modeling"
 hub_dir="$(dirname "${old_install_dir}")/knowledge-hub"
 
@@ -364,15 +358,12 @@ hub_dir="$(dirname "${old_install_dir}")/knowledge-hub"
 for command_name in docker tar gzip sha256sum flock awk sed mktemp tee od tr; do check_command "${command_name}"; done
 docker info >/dev/null 2>&1 || die "Docker daemon 不可用"
 validate_package "${consumer_package}" onto-agent 'Consumer 发布包'
-validate_package "${modeling_package}" modeling 'Modeling 发布包'
-if [ -n "${onto_package}" ]; then
-    validate_package "${onto_package}" onto-modeling 'Onto Modeling 发布包'
-    check_command curl
-fi
-[ -z "${hub_package}" ] || validate_package "${hub_package}" knowledge-hub '知识包 Hub 发布包'
-[ -z "${evaluation_package}" ] \
-    || evaluation_package="$(resolve_package_path "${evaluation_package}" '独立评测服务发布包')"
-[ -z "${evaluation_package}" ] || validate_evaluation_package "${evaluation_package}" '独立评测服务发布包'
+[ -z "${modeling_package}" ] || validate_package "${modeling_package}" modeling 'Modeling 发布包'
+validate_package "${onto_package}" onto-modeling 'Onto Modeling 发布包'
+check_command curl
+validate_package "${hub_package}" knowledge-hub '知识包 Hub 发布包'
+evaluation_package="$(resolve_package_path "${evaluation_package}" '独立评测服务发布包')"
+validate_evaluation_package "${evaluation_package}" '独立评测服务发布包'
 
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/consumer-preflight.XXXXXX")" || die "无法创建预检暂存目录"
 tar -xzf "${consumer_package}" -C "${TMP_ROOT}"
@@ -381,9 +372,9 @@ opsctl="${staged_root}/deploy/opsctl"
 manifest="${staged_root}/deploy/manifest.json"
 [ -x "${opsctl}" ] || die "Consumer 发布包缺少 deploy/opsctl"
 [ -f "${manifest}" ] || die "Consumer 发布包缺少 deploy/manifest.json"
-[ -z "${onto_package}" ] || precheck_onto_modeling
-[ -z "${hub_package}" ] || precheck_knowledge_hub
-[ -z "${evaluation_package}" ] || precheck_evaluation
+precheck_onto_modeling
+precheck_knowledge_hub
+precheck_evaluation
 
 # opsctl preflight reads the staged bundle's backend/.env for published ports.
 # Reuse the old deployment's resolved configuration so custom ports are checked
@@ -486,7 +477,8 @@ backup_volume() {
 }
 run_consumer_upgrade() {
     release_root="$1"; install_dir="$2"
-    if bash "${release_root}/deploy/upgrade.sh" "${install_dir}"; then rc=0; else rc=$?; fi
+    shift 2
+    if bash "${release_root}/deploy/upgrade.sh" "${install_dir}" "$@"; then rc=0; else rc=$?; fi
     case "${rc}" in 0) return 0 ;; 10) log 'Consumer 升级完成但存在 WARN，继续升级 Modeling'; return 0 ;; *) return "${rc}" ;; esac
 }
 
@@ -520,7 +512,7 @@ upgrade_legacy_deployment() {
     tar -xzf "${consumer_package}" -C "${stage_dir}"
     tar -xzf "${modeling_package}" -C "${stage_dir}"
     cp "${consumer_dir}/backend/.env" "${backup_dir}/consumer.env"; chmod 600 "${backup_dir}/consumer.env"
-    [ -z "${evaluation_package}" ] || ensure_evaluation_service_token "${consumer_dir}/backend/.env"
+    ensure_evaluation_service_token "${consumer_dir}/backend/.env"
 
     stop_owned_containers "${consumer_dir}" STOPPED_CONSUMER_CONTAINERS \
         'onto-agent-frontend onto-agent-mcp onto-agent-backend onto-agent-jiuwenbox onto-agent-auth-server'
@@ -556,14 +548,28 @@ upgrade_legacy_deployment() {
     [ "$(container_mount_volume mw-modeling /data)" = "${modeling_volume}" ] || die 'Modeling 未复用原数据卷'
     [ "$(container_mount_volume mw-modeling-agent /data)" = "${agent_volume:-mw-modeling_modeling-agent-data}" ] \
         || die 'Agent 未挂载预期数据卷'
-    [ -z "${hub_package}" ] || deploy_knowledge_hub
-    [ -z "${onto_package}" ] || deploy_onto_modeling
-    if [ -n "${evaluation_package}" ]; then
-        stage_evaluation_package
-        deploy_evaluation
-    fi
+    deploy_knowledge_hub
+    deploy_onto_modeling
+    stage_evaluation_package
+    deploy_evaluation
     log "旧合并部署迁移完成，备份位于 ${backup_dir}"
 }
+
+if [ -z "${modeling_package}" ]; then
+    stage_dir="${TMP_ROOT}/packages"
+    mkdir -p "${stage_dir}"
+    tar -xzf "${consumer_package}" -C "${stage_dir}"
+    ensure_evaluation_service_token "${consumer_dir}/backend/.env"
+    stop_owned_containers "${consumer_dir}" STOPPED_CONSUMER_CONTAINERS \
+        'onto-agent-frontend onto-agent-mcp onto-agent-backend onto-agent-jiuwenbox onto-agent-auth-server'
+    run_consumer_upgrade "${stage_dir}/onto-agent" "${consumer_dir}" --consumer-only || die 'Consumer 升级失败'
+    deploy_knowledge_hub
+    deploy_onto_modeling
+    stage_evaluation_package
+    deploy_evaluation
+    log '旧版部署升级完成；未改动 Modeling Workbench'
+    exit 0
+fi
 
 consumer_token="$(env_get "${consumer_dir}/backend/.env" MODELING_SERVICE_TOKEN)"
 [ ! -d "${modeling_dir}" ] || die \

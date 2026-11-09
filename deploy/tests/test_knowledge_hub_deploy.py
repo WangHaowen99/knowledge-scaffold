@@ -525,14 +525,14 @@ def test_release_knowledge_hub_only_requires_the_hub_bundle(tmp_path: Path) -> N
     assert _lines(tmp_path / "calls.txt") == []
 
 
-def test_release_without_hub_bundle_still_deploys_onto_modeling(tmp_path: Path) -> None:
+def test_full_release_without_hub_fails_before_changing_services(tmp_path: Path) -> None:
     deploy_dir, env = _release_bundle(tmp_path, with_hub=False)
 
     result = _run([str(deploy_dir / "deploy.sh")], env)
 
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "Knowledge Hub bundle not present; skipping" in result.stdout
-    assert _lines(tmp_path / "calls.txt") == ["consumer", "modeling", "onto", "evaluation"]
+    assert result.returncode != 0
+    assert '完整发布包缺少知识包 Hub' in result.stderr
+    assert _lines(tmp_path / "calls.txt") == []
 
 
 # ---------- 离线打包 ----------

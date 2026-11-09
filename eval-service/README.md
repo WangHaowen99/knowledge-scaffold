@@ -80,6 +80,11 @@ Neo4j 按 Provider 展开 URL、Database、User、Password 与 Workspace / Ontol
 
 ## 独立部署
 
+完整安装、升级及旧版迁移必须同时提供 Consumer、Onto Modeling、Hub、评测四个发布包：
+`--consumer-package`、`--onto-modeling-package`、`--knowledge-hub-package`、`--evaluation-package`。
+`--modeling-package` 可选；未提供时保留现有 Modeling Workbench，不部署也不重启。
+交互入口同样要求四个必需包，不允许留空，也不以复用运行服务替代提供发布包。
+
 ```bash
 # 从仓库根执行；consumer 与知识包 Hub 需已部署
 bash deploy/deploy.sh --eval-only
@@ -98,7 +103,7 @@ bash deploy/deploy.sh --eval-only
 
 独立 Compose 不启动账号、Hub、consumer 或建模依赖。默认全栈 `bash deploy/deploy.sh` 会在其他服务之后部署评测；`--onto-modeling-only` 不包含评测。默认宿主端口 8090（所有网卡），网关按实际网络配置访问；直连方式见“配置与权限”。`/evaluation/api/health` 只报告进程活性，不能替代依赖与模型协议验证。
 
-离线包：`bash eval-service/build.sh <version> [amd|arm]`，产物为 `eval-service/dist/evaluation-<version>-linux-<arch>.tar.gz`（顶层目录 `eval-service/`），包含镜像、Compose、部署脚本和说明。目标机解压后执行包内 `deploy/deploy.sh`（自动加载镜像），或交给分离部署脚本的 `--evaluation-package`；运行配置规则同上。不包含运行配置和数据。根目录 `bash deploy/build.sh <version> [amd|arm]` 生成的完整离线包也包含评测镜像、部署脚本及网关配置示例。
+离线包：`bash eval-service/build.sh <version> [amd|arm]`，产物为 `eval-service/dist/evaluation-<version>-linux-<arch>.tar.gz`（顶层目录 `eval-service/`），包含镜像、Compose、部署脚本和说明。目标机解压后执行包内 `deploy/deploy.sh`（自动加载镜像），或交给分离部署脚本的 `--evaluation-package`；运行配置规则同上。不包含运行配置和数据。根目录 `bash deploy/build.sh <version> [amd|arm]` 生成的完整离线包也包含评测镜像、部署脚本及网关配置示例，并同时在 `eval-service/dist/` 生成上述独立发布包（同版本旧包会被覆盖）。
 
 ## 恢复与清理
 

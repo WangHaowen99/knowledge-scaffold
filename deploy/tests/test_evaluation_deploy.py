@@ -60,6 +60,12 @@ def deployment():
             'MODELING_MCP_TOKEN_SECRET': 'synthetic-invalid-mcp-placeholder-0000',
         }
         script(root / 'eval-service/deploy/deploy.sh', EVAL_STUB)
+        script(root / 'knowledge-hub/deploy.sh', 'exit 0')
+        script(root / 'knowledge-hub/deploy/deploy.sh', 'exit 0')
+        script(root / 'onto-modeling/deploy.sh', 'exit 0')
+        (root / 'modeling/onto-modeling').mkdir(parents=True)
+        script(root / 'bin/docker', 'exit 0')
+        env['PATH'] = str(root / 'bin') + os.pathsep + os.environ['PATH']
         yield root, calls, env
 
 
@@ -133,7 +139,7 @@ def check_stack_hands_dependency_credentials_to_evaluation(deployment):
     env.pop('EVAL_ENV_FILE')
     script(root / 'deploy/deploy-stack.sh', 'exit 0')
     hub, consumer = secrets.token_hex(32), secrets.token_hex(32)
-    (root / 'knowledge-hub/deploy').mkdir(parents=True)
+    (root / 'knowledge-hub/deploy').mkdir(parents=True, exist_ok=True)
     (root / 'knowledge-hub/deploy/.env').write_text(f'HUB_EVALUATION_SERVICE_TOKEN={hub}\n')
     (root / 'consumer/backend').mkdir(parents=True)
     (root / 'consumer/backend/.env').write_text(f'EVALUATION_SERVICE_TOKEN={consumer}\n')
@@ -147,7 +153,7 @@ def check_stack_hands_dependency_credentials_to_evaluation(deployment):
 
     # Once Onto Modeling holds its inbound credential, evaluation reuses the same value.
     modeling = secrets.token_hex(32)
-    (root / 'modeling/onto-modeling').mkdir(parents=True)
+    (root / 'modeling/onto-modeling').mkdir(parents=True, exist_ok=True)
     (root / 'modeling/onto-modeling/.env').write_text(f'ONTO_EVALUATION_SERVICE_TOKEN={modeling}\n')
     result = run(root, env, '--eval-only')
     assert result.returncode == 0, result.stdout + result.stderr

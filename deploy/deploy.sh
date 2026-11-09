@@ -370,6 +370,19 @@ if [ "$(( ONLY_FLAGS + EVAL_ONLY ))" -gt 1 ]; then
 fi
 
 INSTALL_DIR="${ONTO_AGENT_INSTALL_DIR:-/opt/onto-agent}"
+if [ "${ONLY_FLAGS}" = 0 ] && [ "${EVAL_ONLY}" = 0 ]; then
+    if [ -f "${SCRIPT_DIR}/deploy-consumer.sh" ]; then
+        [ -f "${SCRIPT_DIR}/../knowledge-hub/deploy.sh" ] \
+            || die '完整发布包缺少知识包 Hub：请使用包含 Hub 和评测服务的完整发布包'
+        [ -f "${SCRIPT_DIR}/../onto-modeling/deploy.sh" ] \
+            || die '完整发布包缺少 Onto Modeling'
+    else
+        [ -f "${SCRIPT_DIR}/../knowledge-hub/deploy/deploy.sh" ] \
+            || die '源码缺少知识包 Hub 部署入口'
+        [ -d "${SCRIPT_DIR}/../modeling/onto-modeling" ] \
+            || die '源码缺少 Onto Modeling'
+    fi
+fi
 DEPLOY_EVALUATION=0
 if [ "${ONLY_FLAGS}" = "0" ]; then
     DEPLOY_EVALUATION=1
@@ -547,9 +560,12 @@ if [ "${MODELING_ONLY}" = "0" ] && [ "${ONTO_MODELING_ONLY}" = "0" ] && [ "${KNO
 fi
 
 if [ "${CONSUMER_ONLY}" = "0" ] && [ "${ONTO_MODELING_ONLY}" = "0" ] && [ "${KNOWLEDGE_HUB_ONLY}" = "0" ]; then
-    [ -f "${MODELING_DEPLOY}" ] || die "Modeling deploy script not found: ${MODELING_DEPLOY}"
-    log "Deploying Modeling Workbench (core + Agent)"
-    bash "${MODELING_DEPLOY}"
+    if [ -f "${MODELING_DEPLOY}" ]; then
+        log "Deploying Modeling Workbench (core + Agent)"
+        bash "${MODELING_DEPLOY}"
+    elif [ "${MODELING_ONLY}" = 1 ]; then
+        die "Modeling deploy script not found: ${MODELING_DEPLOY}"
+    fi
 fi
 
 if [ "${CONSUMER_ONLY}" = "0" ] && [ "${MODELING_ONLY}" = "0" ]; then
