@@ -19,6 +19,9 @@ import {
   taskRows,
   artifactState,
   notificationState,
+  optimizationState,
+  optimizationTag,
+  feedbackStatus,
 } from '../src/domain.js';
 
 // Package identifiers and project names are synthetic.
@@ -194,6 +197,14 @@ test('artifact state follows the run and generation status', () => {
   assert.equal(waiting({ batch: 1, batches: 1, started_at: 1793499990 }), '评测报告已生成，优化建议生成中 · 已等待不到 1 分钟');
   assert.equal(waiting({ batch: 2, batches: 3, started_at: 1793499790 }), '评测报告已生成，优化建议生成中 · 第 2/3 批 · 已等待 3 分钟');
   assert.equal(waiting({ batch: 3, batches: 3, merging: true, started_at: 1793499400 }), '评测报告已生成，优化建议生成中 · 合并各批结果 · 已等待 10 分钟');
+  const queued = artifactState({ status: 'completed', artifacts: { status: 'generating', report: 'ready', suggestions: 'generating', queue: 2 } });
+  assert.equal(queued.hint, '评测报告已生成，优化建议排队中，前面还有 2 个');
+  // A changed verdict rebuilds the report only: kept suggestions stay readable, missing ones wait for regeneration.
+  const stale = (suggestions) =>
+    artifactState({ status: 'completed', artifacts: { status: 'ready', report: 'ready', suggestions, suggestions_stale: true, revision: 2, generated_at: 1793500000 } });
+  assert.deepEqual([stale('ready').label, stale('ready').suggestions, stale('ready').canRegenerate], ['判分已修改', true, true]);
+  assert.match(stale('ready').hint, /优化建议基于修改前的判分/);
+  assert.deepEqual([stale('pending').suggestions, /点击“重新生成”生成优化建议/.test(stale('pending').hint)], [false, true]);
 });
 
 test('notification state explains delivery and when it can be resent', () => {
@@ -206,4 +217,41 @@ test('notification state explains delivery and when it can be resent', () => {
   assert.match(retrying.hint, /已尝试 2 次（建模服务返回 503）/);
   assert.equal(notificationState({ status: 'rejected', last_error: '建模服务返回 422' }).canRetry, true);
   assert.equal(notificationState({ status: 'delivered', delivered_at: 1793500000 }).label, '已送达');
+  const failed = notificationState({ status: 'failed', attempts: 3, last_error: '建模服务返回 404，请检查评测的建模服务地址和通知凭据' });
+  assert.deepEqual([failed.label, failed.canRetry], ['通知失败', true]);
+  assert.match(failed.hint, /已尝试 3 次（建模服务返回 404/);
+});
+
+// How modeling handled a run's suggestions; versions and notes are synthetic.
+test('optimization state shows what modeling did with the suggestions', () => {
+  assert.equal(optimizationState({}), null);
+  assert.equal(optimizationState({ optimization: { status: 'notified' } }).label, '待建模处理');
+  assert.equal(optimizationState({ optimization: { status: 'awaiting_review' } }).label, '待负责人确认');
+  const done = optimizationState({
+    optimization: {
+      status: 'modeling_done',
+      result: { outcome: 'done', release_id: 'release_next', version: '0.1.2', note: 'Synthetic note', reported_at: 1793500000 },
+      history: [{ outcome: 'failed', note: 'Synthetic failure', reported_at: 1793490000 }],
+    },
+  });
+  assert.deepEqual([done.label, done.tone, done.releaseId], ['已处理', 'green', 'release_next']);
+  assert.match(done.hint, /^新版本 0\.1\.2 · \S+ \S+ · Synthetic note · 共 2 次回写$/);
+  const failed = optimizationState({ optimization: { status: 'modeling_failed', result: { outcome: 'failed', note: 'Synthetic failure' } } });
+  assert.deepEqual([failed.label, failed.tone, failed.releaseId], ['处理失败', 'red', undefined]);
+  assert.deepEqual(optimizationTag({ optimization: { status: 'modeling_done', result: { version: '0.1.2' } } }), {
+    label: '建模已处理 → 0.1.2',
+    tone: 'green',
+  });
+  assert.equal(optimizationTag({ optimization: { status: 'notified' } }), null);
+});
+
+test('routes and states of consumer feedback runs', () => {
+  assert.deepEqual(parseRoute('#/feedback'), { page: 'feedback' });
+  assert.deepEqual(parseRoute('#/feedback/run_demo'), { page: 'feedback', id: 'run_demo' });
+  assert.deepEqual(parseRoute('#/new?from=run_demo&release_id=release_next'), { page: 'new', from: 'run_demo', release: 'release_next' });
+  assert.equal(feedbackStatus({ status: 'collecting' }).label, '收集中');
+  assert.equal(feedbackStatus({ status: 'completed' }).label, '生成报告中');
+  const review = { status: 'completed', artifacts: { report: 'ready' }, optimization: { status: 'awaiting_review' } };
+  assert.equal(feedbackStatus(review).label, '待负责人确认');
+  assert.equal(feedbackStatus({ ...review, optimization: { status: 'dismissed', reason: 'Synthetic' } }).hint, 'Synthetic');
 });

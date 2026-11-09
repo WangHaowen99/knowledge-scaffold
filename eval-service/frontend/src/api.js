@@ -2,8 +2,9 @@ export const TOKEN = 'onto-access-token';
 export const REFRESH = 'onto-refresh-token';
 const prefix = '/evaluation/api';
 // Starting, resuming or stopping a run hands over the refresh token, so a run longer than one access token
-// keeps its login; the service keeps it in memory only.
-const DELEGATED = /^\/runs(\/[^/]+\/(resume|credentials|cancel))?$/;
+// keeps its login; so do changing a verdict and regenerating, whose suggestions may wait in a queue. The service
+// keeps it in memory only.
+const DELEGATED = /^\/runs(\/[^/]+\/(resume|credentials|cancel|results\/\d+\/override|artifacts\/regenerate))?$/;
 export function saveLogin(data) {
   localStorage.setItem(TOKEN, data.access_token);
   if (data.refresh_token) localStorage.setItem(REFRESH, data.refresh_token);
@@ -59,6 +60,7 @@ export async function api(path, body, method = body === undefined ? 'GET' : 'POS
       status: response.status,
       phase: data.phase,
       retryable: data.retryable,
+      details: data.details,
     });
   if (!path.startsWith('/auth/') && token && localStorage.getItem(TOKEN) !== token)
     throw new Error('登录身份已变化，请刷新');

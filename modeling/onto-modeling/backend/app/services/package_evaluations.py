@@ -8,6 +8,11 @@ service when reconciling, rather than derived locally from an issuer the two ser
 differently. Reports, optimization suggestions and the full answers they link to are read with the user's own
 login when viewed, and copied into the workspace only when the user starts an evaluation optimization of the
 version the project is currently on.
+
+Runs come from two origins: evaluation runs and runs built from consumer feedback; the index keeps them apart, one
+entry per release and origin. After an evaluation optimization, publishing a new version is written back to the
+evaluation service as the result of that run, with the optimizing user's login: at once when the publication had
+that login, otherwise the next time the user opens the published versions.
 """
 import hashlib
 import json
@@ -15,6 +20,7 @@ import re
 import time
 from typing import Literal
 import urllib.parse
+import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -64,6 +70,29 @@ class Summary(_Model):
     result_status: Literal['complete', 'partial', 'unavailable']
 
 
+class Outcome(_Model):
+    outcome: str = Field(pattern=STATUS_PATTERN)
+    release_id: str | None = Field(default=None, pattern=ID_PATTERN)
+    version: str | None = Field(default=None, max_length=64)
+    note: str | None = Field(default=None, max_length=2000)
+    reported_at: float | None = None
+
+
+class Optimization(_Model):
+    """How modeling handled a run's suggestions, as the evaluation service records it.
+
+    Statuses are kept as text, so a new status of the service never makes a notification rejected.
+    """
+    status: str = Field(pattern=STATUS_PATTERN)
+    updated_at: float | None = None
+    reason: str | None = Field(default=None, max_length=2000)
+    result: Outcome | None = None
+    history: list[Outcome] = Field(default_factory=list, max_length=50)
+
+
+ORIGINS = {'evaluation': 'releases', 'consumer_feedback': 'feedback'}
+
+
 class Entry(_Model):
     release_id: str = Field(pattern=ID_PATTERN)
     version: str = Field(min_length=1, max_length=64)
@@ -73,6 +102,14 @@ class Entry(_Model):
     finished_at: float | None = None
     artifacts: Artifacts
     summary: Summary
+    # Runs of evaluation services before data-flywheel support carry neither.
+    origin: str = Field(default='evaluation', pattern=STATUS_PATTERN)
+    optimization: Optimization | None = None
+
+
+def bucket(origin):
+    """The index section of an origin; unknown origins of newer evaluation services are not shown."""
+    return ORIGINS.get(origin)
 
 
 class Notification(Entry):
@@ -119,8 +156,8 @@ def _index_lock(ontology_id, owner):
 
 def _read_index(ontology_id, owner):
     value = knowledge_hub.load(_index_path(ontology_id, owner), {}) if owner else {}
-    return {'ontology_id': ontology_id, 'active': value.get('active'),
-            'releases': value.get('releases', {}), 'reconciled_at': value.get('reconciled_at')}
+    return {'ontology_id': ontology_id, 'active': value.get('active'), 'releases': value.get('releases', {}),
+            'feedback': value.get('feedback', {}), 'reconciled_at': value.get('reconciled_at')}
 
 
 def _owner_path(subject):
@@ -159,14 +196,17 @@ def receive(notification):
     """Apply one notification durably to its owner's index; duplicates and late deliveries change nothing."""
     entry = {**_entry(notification), 'sequence': notification.sequence, 'received_at': time.time()}
     package_id, owner = notification.ontology_id, notification.owner
+    section = bucket(notification.origin)
+    if not section:
+        return
     with _index_lock(package_id, owner):
         index = _read_index(package_id, owner)
-        stored = index['releases'].get(notification.release_id)
+        stored = index[section].get(notification.release_id)
         if stored and _stale(stored, entry):
             return
         # 与评测服务的口径一致：版本条目只记录报告已生成的最近一次评测
         if notification.artifacts.report == 'ready':
-            index['releases'][notification.release_id] = entry
+            index[section][notification.release_id] = entry
         if (index['active'] or {}).get('run_id') == notification.run_id:
             index['active'] = None
         knowledge_hub.save(_index_path(package_id, owner), index)
@@ -175,7 +215,8 @@ def receive(notification):
 def reconcile(package_id, subject, token):
     """Replace the caller's index with the evaluation service's view, so deleted runs disappear from it."""
     started = time.time()
-    query = urllib.parse.urlencode({'ontology_id': package_id})
+    # 两种来源都要：评测轮次，以及包负责人确认过的消费反馈轮次；旧版评测服务忽略 origin，只返回评测轮次
+    query = urllib.parse.urlencode({'ontology_id': package_id, 'origin': 'all'})
     value = eval_client.call('GET', f'/package-evaluations?{query}', token)
     if not isinstance(value, dict) or not isinstance(value.get('releases'), list):
         raise _invalid_response()
@@ -191,19 +232,23 @@ def reconcile(package_id, subject, token):
         knowledge_hub.save(_owner_path(subject), {'owner': owner})
     with _index_lock(package_id, owner):
         index = _read_index(package_id, owner)
-        releases = {}
+        sections = {section: {} for section in ORIGINS.values()}
         for entry in fetched:
-            stored = index['releases'].get(entry['release_id'])
+            section = bucket(entry['origin'])
+            if not section:
+                continue
+            stored = index[section].get(entry['release_id'])
             same = bool(stored) and stored['run_id'] == entry['run_id']
-            releases[entry['release_id']] = {**entry, 'sequence': stored['sequence'] if same else 0,
-                                             'received_at': stored['received_at'] if same else 0}
+            sections[section][entry['release_id']] = {**entry, 'sequence': stored['sequence'] if same else 0,
+                                                      'received_at': stored['received_at'] if same else 0}
         # 查询期间到达的通知比查询结果新：保留它，否则已结束的任务会一直显示评测中
-        for release_id, stored in index['releases'].items():
-            if stored['received_at'] >= started:
-                releases[release_id] = stored
-                if active and active['run_id'] == stored['run_id']:
-                    active = None
-        index.update(releases=releases, active=active, reconciled_at=time.time())
+        for section, entries in sections.items():
+            for release_id, stored in index[section].items():
+                if stored['received_at'] >= started:
+                    entries[release_id] = stored
+                    if active and active['run_id'] == stored['run_id']:
+                        active = None
+        index.update(**sections, active=active, reconciled_at=time.time())
         knowledge_hub.save(_index_path(package_id, owner), index)
         return index
 
@@ -215,11 +260,17 @@ def overview(pid, subject, token, refresh=False):
     linked = hub_packages.association(pid, subject) or {}
     result = dict(configured=eval_client.configured(), reachable=None, message=None,
                   ontology_id=linked.get('ontology_id'), current_release_id=linked.get('release_id'),
-                  current_version=linked.get('version'), active=None, releases={})
+                  current_version=linked.get('version'), active=None, releases={}, feedback={}, writeback=None)
     if not result['configured']:
         return {**result, 'message': '未配置评测服务地址'}
     if not linked:
         return result
+    if refresh:
+        # 先补上未完成的回写，随后的对账就能看到评测服务记下的处理结果；回写失败不影响查看
+        try:
+            settle(pid, subject, token)
+        except (OSError, ValueError, WorkspaceError):
+            pass
     # 还没对账过的用户不知道自己在评测服务的所有者标识，只能等对账，不能借用别人的索引
     index = _read_index(linked['ontology_id'], _owner_of(subject))
     if refresh:
@@ -228,9 +279,12 @@ def overview(pid, subject, token, refresh=False):
             result['reachable'] = True
         except WorkspaceError:
             result.update(reachable=False, message='评测服务暂不可用，显示的是最近一次同步的评测状态')
-    releases = {release_id: {key: value for key, value in entry.items() if key not in ('sequence', 'received_at')}
-                for release_id, entry in index['releases'].items()}
-    return {**result, 'active': index['active'], 'releases': releases}
+
+    def shown(section):
+        return {release_id: {key: value for key, value in entry.items() if key not in ('sequence', 'received_at')}
+                for release_id, entry in index[section].items()}
+    return {**result, 'active': index['active'], 'releases': shown('releases'), 'feedback': shown('feedback'),
+            'writeback': writeback_view(pid, subject)}
 
 
 def _reference(run, key):
@@ -449,5 +503,135 @@ def optimize(manager, pid, subject, token, run_id):
         revision, stem, files, context = _fetch_import(run_id, artifacts, token)
         with manager._project_lock(pid):
             record = _store_import(root, run_id, base, revision, stem, files, context)
+    remember(pid, subject, run, base, record['stem'])
     report = f'{record["stem"]}.md'
     return {'report': report, 'suggestions': record['suggestions'], 'command': f'/ontology-evolution {report}'}
+
+
+# ---- 建模回写：评测优化后发布的新版本，告诉评测服务是哪一轮建议的处理结果 ----
+
+WRITEBACK_NOTE = 1000
+
+
+def _optimization_path(pid):
+    # 与项目的 Hub 关联放在一起：项目删除时随之清理
+    return knowledge_hub.state_dir() / 'packages' / knowledge_hub.identifier(pid) / 'evaluation-optimization.json'
+
+
+def _optimization_lock(pid):
+    return knowledge_hub.lock('evaluation-optimization-' + hashlib.sha256(pid.encode()).hexdigest()[:32])
+
+
+def _save_optimization(pid, value):
+    path = _optimization_path(pid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    knowledge_hub.save(path, value)
+
+
+def remember(pid, subject, run, base, stem):
+    """The run whose suggestions the project's latest evaluation optimization imported; a new one replaces it."""
+    with _optimization_lock(pid):
+        _save_optimization(pid, dict(run_id=run['id'] if isinstance(run.get('id'), str) else '', stem=stem,
+                                     origin=run.get('origin') or 'evaluation', base_release_id=base.get('release_id'),
+                                     base_version=base.get('version'), optimizer=hub_packages.scope(subject),
+                                     optimized_at=time.time(), result=None))
+
+
+def _update_entry(package_id, subject, run_id, optimization):
+    """Show what the evaluation service recorded at once, without waiting for the next reconciliation."""
+    owner = _owner_of(subject)
+    if not owner:
+        return
+    with _index_lock(package_id, owner):
+        index = _read_index(package_id, owner)
+        changed = False
+        for section in ORIGINS.values():
+            for item in index[section].values():
+                if item['run_id'] == run_id:
+                    item['optimization'] = optimization
+                    changed = True
+        if changed:
+            knowledge_hub.save(_index_path(package_id, owner), index)
+
+
+def _report(run_id, token, body):
+    value = eval_client.call('POST', f'/runs/{run_id}/modeling-result', token, body=body)
+    try:
+        return Optimization.model_validate((value or {}).get('optimization')).model_dump()
+    except ValidationError as exc:
+        raise _invalid_response() from exc
+
+
+def settle(pid, subject, token):
+    """Write back the release published after the project's latest evaluation optimization, once.
+
+    Only the user who optimized may: the evaluation service lets only a run's owner, or for feedback runs a package
+    owner, record its result. A release the evaluation service cannot be reached for stays pending and is retried;
+    one it refuses is not retried. Returns the local write-back state."""
+    linked = hub_packages.association(pid, subject) or {}
+    with _optimization_lock(pid):
+        state = knowledge_hub.load(_optimization_path(pid))
+        mine = state and state.get('run_id') and state.get('optimizer') == hub_packages.scope(subject)
+        if not mine or not token:
+            return state
+        release_id = linked.get('release_id')
+        result = state.get('result') or {}
+        if not release_id or release_id == state.get('base_release_id'):
+            return state
+        if result.get('status') in ('done', 'refused') and result.get('release_id') == release_id:
+            return state
+        if result.get('status') == 'done':
+            return state  # 同一次优化只回写第一个新版本；之后的发布要先重新评测、再评测优化
+        version = linked.get('version') or ''
+        body = dict(request_id='mr-' + hashlib.sha256(f"{state['run_id']}|{release_id}".encode()).hexdigest()[:32],
+                    outcome='done', release_id=release_id,
+                    note=f"建模按 {state.get('base_version') or '原版本'} 的优化建议修改后，发布新版本 {version}"[:WRITEBACK_NOTE])
+        try:
+            optimization = _report(state['run_id'], token, body)
+        except WorkspaceError as exc:
+            refused = exc.status in (404, 409)
+            state['result'] = dict(status='refused' if refused else 'pending', release_id=release_id, version=version,
+                                   message=str(exc)[:300], at=time.time())
+            _save_optimization(pid, state)
+            return state
+        state['result'] = dict(status='done', release_id=release_id, version=version, message='', at=time.time())
+        _save_optimization(pid, state)
+    _update_entry(linked['ontology_id'], subject, state['run_id'], optimization)
+    return state
+
+
+def after_publish(pid, subject, token, receipt):
+    """Best effort right after a publication with the user's login; never fails the publication."""
+    if not isinstance(receipt, dict) or receipt.get('status') != 'committed' or not eval_client.configured():
+        return None
+    try:
+        settle(pid, subject, token)
+    except (OSError, WorkspaceError):
+        pass
+    return writeback_view(pid, subject)
+
+
+def writeback_view(pid, subject):
+    """What the published versions dialog shows of the latest optimization and its write-back."""
+    try:
+        state = knowledge_hub.load(_optimization_path(pid))
+    except (OSError, ValueError):
+        return None
+    if not state or not state.get('run_id'):
+        return None
+    result = state.get('result') or {}
+    return dict(run_id=state['run_id'], origin=state.get('origin') or 'evaluation', base_release_id=state.get('base_release_id'),
+                base_version=state.get('base_version'), optimized_at=state.get('optimized_at'),
+                mine=state.get('optimizer') == hub_packages.scope(subject), status=result.get('status') or 'waiting',
+                release_id=result.get('release_id'), version=result.get('version'), message=result.get('message') or '')
+
+
+def report_failure(pid, subject, token, run_id, note):
+    """The user tells the evaluation service the suggestions of this run could not be applied."""
+    note = (note or '').strip()
+    if not 0 < len(note) <= WRITEBACK_NOTE:
+        raise WorkspaceError(f'请填写处理失败的原因（不超过 {WRITEBACK_NOTE} 字）', 422, 'note_required')
+    _, linked = _linked_run(pid, subject, token, run_id)
+    optimization = _report(run_id, token, dict(request_id='mr-' + uuid.uuid4().hex, outcome='failed', note=note))
+    _update_entry(linked['ontology_id'], subject, run_id, optimization)
+    return optimization

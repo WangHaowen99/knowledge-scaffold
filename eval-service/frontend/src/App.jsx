@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { api, allPages, TOKEN, REFRESH, clearLogin, saveLogin } from './api.js';
 import { receiveHandoff } from './handoff.js';
 import { ACTIVE, parseRoute, shortId, sourceSummary, taskRows } from './domain.js';
@@ -10,6 +10,10 @@ import { CaseEditor } from './CaseEditor.jsx';
 import { SourceEditor } from './SourceEditor.jsx';
 import { JudgeSettings } from './JudgeSettings.jsx';
 import { UserMenu } from './UserMenu.jsx';
+
+// Loaded on first use: the page only exists where the deployment enabled consumer feedback.
+const FeedbackList = lazy(() => import('./FeedbackPage.jsx').then((module) => ({ default: module.FeedbackList })));
+const FeedbackRun = lazy(() => import('./FeedbackPage.jsx').then((module) => ({ default: module.FeedbackRun })));
 
 const brandIconUrl = `${import.meta.env.BASE_URL}favicon.svg`;
 
@@ -198,9 +202,11 @@ export default function App() {
   }
   const active = runs.filter((r) => ACTIVE.has(r.status)).length,
     nav = [
-      ['tasks', '/', 'task', '任务中心'],
+      ['tasks', '/', 'task', '评测任务'],
       ['sets', '/eval-sets', 'set', '评测集'],
       ['sources', '/data-sources', 'db', '数据源'],
+      // Consumer feedback, when the deployment enabled it.
+      ...(session?.feedback_enabled ? [['feedback', '/feedback', 'message', '用户反馈']] : []),
     ];
   if (!session)
     return (
@@ -223,7 +229,7 @@ export default function App() {
           <div className="login-journey">
             <span>统一账号登录</span>
             <Icon name="arrow" />
-            <span>任务中心</span>
+            <span>评测任务</span>
             <Icon name="arrow" />
             <span>执行详情</span>
           </div>
@@ -301,7 +307,7 @@ export default function App() {
           <div className="sidebar-help">
             <b>回到任务，继续查看</b>
             <p>
-              关闭页面后，可从任务中心
+              关闭页面后，可从「评测任务」
               <br />
               找回运行记录和执行详情。
             </p>
@@ -340,7 +346,7 @@ export default function App() {
         )}
         {route.page === 'new' && (
           <Wizard
-            key={`${session.subject}-${route.from || ''}`}
+            key={`${session.subject}-${route.from || ''}-${route.release || ''}`}
             sets={sets}
             sources={sources}
             runs={runs}
@@ -348,6 +354,7 @@ export default function App() {
             refreshDefinitions={() => refreshDefinitions().catch((e) => setSyncError(e.message))}
             navigate={navigate}
             from={route.from}
+            release={route.release}
             registerDirty={(value) => {
               dirty.current = value;
             }}
@@ -374,6 +381,15 @@ export default function App() {
               dirty.current = value;
             }}
           />
+        )}
+        {route.page === 'feedback' && (
+          <Suspense fallback={<Skeleton />}>
+            {route.id ? (
+              <FeedbackRun key={`${session.subject}-${route.id}`} id={route.id} navigate={navigate} />
+            ) : (
+              <FeedbackList key={session.subject} navigate={navigate} />
+            )}
+          </Suspense>
         )}
         {route.page === 'settings' && (
           <>

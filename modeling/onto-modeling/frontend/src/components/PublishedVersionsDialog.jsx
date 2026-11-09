@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Alert, Button, Empty, Modal, Space, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Empty, Input, Modal, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { api } from '../lib/api';
 import { openEvaluation, prefetchEvaluationEntry } from '../lib/evaluation.js';
-import { EVALUATION_HINT, optimizationBlock, releaseEvaluation } from '../lib/packageEvaluation.js';
+import {
+  EVALUATION_HINT, canReportFailure, hasFeedback, optimizationBlock, processingState, releaseEvaluation, releaseFeedback, writebackNotice,
+} from '../lib/packageEvaluation.js';
 import { EvaluationReportModal, EvaluationSuggestionsModal, ReasonButton, usePackageEvaluations } from './PackageEvaluationModals.jsx';
 
-// 置灰原因放在按钮正右方，不遮挡上一行的操作按钮；链接按钮自带约 15px 内边距，左移 5px 让提示离文字近一些、仍留间隔
-const REASON_TOOLTIP = { placement: 'right', align: { offset: [-5, 0] } };
+const LINK = { type: 'link', size: 'small', style: { padding: 0 } };
 
 export default function PublishedVersionsDialog({ projectId, onClose, onCommand }) {
   const [page, setPage] = useState(1);
@@ -18,11 +19,13 @@ export default function PublishedVersionsDialog({ projectId, onClose, onCommand 
   const [resources, setResources] = useState(null);
   const [reportTarget, setReportTarget] = useState(null);
   const [suggestionsTarget, setSuggestionsTarget] = useState(null);
+  const [failureTarget, setFailureTarget] = useState(null);
   const evaluations = usePackageEvaluations(projectId, revision);
+  const notice = writebackNotice(evaluations.status);
 
   useEffect(() => {
     setPage(1); setData({ releases: [], total: 0 }); setResources(null);
-    setReportTarget(null); setSuggestionsTarget(null);
+    setReportTarget(null); setSuggestionsTarget(null); setFailureTarget(null);
   }, [projectId]);
   // 失败不阻断：点击“评测”时会重新读取并给出原因
   useEffect(() => { if (projectId) prefetchEvaluationEntry().catch(() => {}); }, [projectId]);
@@ -47,15 +50,23 @@ export default function PublishedVersionsDialog({ projectId, onClose, onCommand 
     catch (e) { message.error(e.message); }
     finally { setDownloading(''); }
   };
-  const evaluationActions = (row) => {
-    const { entry, report, suggestions } = releaseEvaluation(evaluations.status, row.release_id);
-    const target = entry && { runId: entry.run_id, version: row.version, releaseId: row.release_id };
+  // 版本的一种来源（评测 / 用户反馈）占一格：处理状态加上报告和优化建议两个链接
+  const sourceCell = (row, source, feedback, empty) => {
+    const target = source.entry && { runId: source.entry.run_id, version: row.version, releaseId: row.release_id, entry: source.entry, feedback };
+    if (!target) return <Typography.Text type="secondary">{empty}</Typography.Text>;
+    const state = processingState(source.entry);
     return (
-      <>
-        <ReasonButton type="link" reason={report.reason} tooltip={REASON_TOOLTIP} onClick={() => setReportTarget(target)}>评测报告</ReasonButton>
-        <ReasonButton type="link" reason={suggestions.reason} tooltip={REASON_TOOLTIP} onClick={() => setSuggestionsTarget(target)}>优化建议</ReasonButton>
-      </>
+      <Space size={10}>
+        {state && <Tooltip title={state.hint}><Tag color={state.color} style={{ margin: 0 }}>{state.label}</Tag></Tooltip>}
+        <ReasonButton {...LINK} reason={source.report.reason} onClick={() => setReportTarget(target)}>报告</ReasonButton>
+        <ReasonButton {...LINK} reason={source.suggestions.reason} onClick={() => setSuggestionsTarget(target)}>优化建议</ReasonButton>
+      </Space>
     );
+  };
+  const evaluationCell = (row) => {
+    const source = releaseEvaluation(evaluations.status, row.release_id);
+    const idle = <Tooltip title={source.report.reason}>{source.idle}</Tooltip>;
+    return sourceCell(row, source, false, idle);
   };
   const optimized = (command) => {
     setSuggestionsTarget(null);
@@ -64,24 +75,37 @@ export default function PublishedVersionsDialog({ projectId, onClose, onCommand 
     onCommand(command);
   };
   return (
-    <Modal title="已发布版本" open={!!projectId} onCancel={onClose} width={900}
+    <Modal title={data.releases[0]?.name ? `已发布版本 — ${data.releases[0].name}` : '已发布版本'} open={!!projectId} onCancel={onClose} width={980}
       footer={<Button onClick={onClose}>关闭</Button>} destroyOnHidden>
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        <Typography.Text type="secondary">当前账号拥有 {data.total} 个已发布版本。下载所选版本不会生成新版本。{EVALUATION_HINT}</Typography.Text>
+        <Typography.Text type="secondary">共 {data.total} 个版本。{EVALUATION_HINT}</Typography.Text>
         {resources?.pending && <Alert type="warning" showIcon message="共享资料状态暂不可用" />}
         {evaluations.status?.reachable === false && <Alert type="warning" showIcon message="评测服务暂不可用，评测状态可能不是最新" />}
+        {notice && <Alert type={notice.type} showIcon message={notice.text}
+          action={notice.type === 'warning' ? <Button size="small" onClick={evaluations.refresh}>重试</Button> : null} />}
         {error ? <Alert type="error" showIcon message={error}
           action={<Button size="small" onClick={() => setRevision((n) => n + 1)}>重试</Button>} /> : (
           <Table rowKey="release_id" loading={loading} dataSource={data.releases}
             locale={{ emptyText: <Empty description="暂无已发布版本" /> }}
             pagination={{ current: page, total: data.total, pageSize: 10, showSizeChanger: false, onChange: setPage }}
             columns={[
-              { title: '包名称', dataIndex: 'name', ellipsis: true },
-              { title: '版本', dataIndex: 'version', render: (v, row, i) => <Space><strong>{v}</strong>{page === 1 && i === 0 && <Tag color="blue">最新</Tag>}</Space> },
-              { title: '发布时间', dataIndex: 'created_at', render: (v) => new Date(v).toLocaleString() },
-              { title: '来源', dataIndex: 'source_service' },
-              { title: '操作', render: (_, row) => <Space size={0} wrap><Button type="link" loading={downloading === row.release_id}
-                onClick={() => download(row.release_id)}>下载知识包</Button><Button type="link" onClick={() => openEvaluation(row).catch((e) => message.error(e.message))}>评测</Button>{evaluationActions(row)}</Space> },
+              { title: '版本', dataIndex: 'version', width: 270, render: (v, row, i) => (
+                <>
+                  <Space size={6}><strong>{v}</strong>{page === 1 && i === 0 && <Tag color="blue" style={{ margin: 0 }}>最新</Tag>}</Space>
+                  <div style={{ whiteSpace: 'nowrap' }}><Typography.Text type="secondary" style={{ fontSize: 12 }}>{new Date(row.created_at).toLocaleString()} · {row.source_service}</Typography.Text></div>
+                </>
+              ) },
+              { title: '评测', render: (_, row) => evaluationCell(row) },
+              ...(hasFeedback(evaluations.status) ? [{ title: '用户反馈',
+                render: (_, row) => sourceCell(row, releaseFeedback(evaluations.status, row.release_id), true, '—') }] : []),
+              { title: '操作', width: 130, render: (_, row) => (
+                <Space size={10}>
+                  <Button {...LINK} onClick={() => openEvaluation(row).catch((e) => message.error(e.message))}>发起评测</Button>
+                  <Tooltip title="下载这个版本的知识包，不会生成新版本">
+                    <Button {...LINK} loading={downloading === row.release_id} onClick={() => download(row.release_id)}>下载</Button>
+                  </Tooltip>
+                </Space>
+              ) },
             ]} />
         )}
         <Typography.Text type="secondary">Hub 仅保存明确共享的最新资料集，不与历史包版本绑定；本地资料不会自动上传。</Typography.Text>
@@ -91,7 +115,35 @@ export default function PublishedVersionsDialog({ projectId, onClose, onCommand 
         blockReason={suggestionsTarget ? optimizationBlock(evaluations.status, suggestionsTarget.releaseId, !!onCommand) : ''}
         onClose={() => setSuggestionsTarget(null)}
         onRegenerated={() => { setSuggestionsTarget(null); evaluations.refresh(); }}
-        onOptimized={optimized} />
+        onOptimized={optimized}
+        onReportFailure={suggestionsTarget && canReportFailure(evaluations.status, suggestionsTarget.releaseId, suggestionsTarget.entry)
+          ? () => setFailureTarget(suggestionsTarget) : null} />
+      <FailureDialog projectId={projectId} target={failureTarget} onClose={() => setFailureTarget(null)}
+        onReported={() => { setFailureTarget(null); setSuggestionsTarget(null); evaluations.refresh(); }} />
+    </Modal>
+  );
+}
+
+// 按建议修改后无法发布新版本时，告诉评测服务这一轮处理失败及原因；成功的处理由发布新版本自动回写
+function FailureDialog({ projectId, target, onClose, onReported }) {
+  const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setNote(''); }, [target]);
+  const submit = async () => {
+    setSaving(true);
+    try {
+      await api.reportPackageEvaluationFailure(projectId, target.runId, note.trim());
+      message.success('已回写评测服务：这一轮优化建议处理失败');
+      onReported();
+    } catch (e) { message.error(e.message); }
+    finally { setSaving(false); }
+  };
+  return (
+    <Modal title={`标记处理失败 — 版本 ${target?.version || ''}`} open={!!target} onCancel={onClose} destroyOnHidden
+      okText="提交" okButtonProps={{ disabled: !note.trim(), loading: saving }} onOk={submit}>
+      <Typography.Paragraph type="secondary">建议无法落实、发布不了新版本时使用。评测服务会记录“处理失败”和原因；之后修改并发布新版本，仍会自动变为“已处理”。</Typography.Paragraph>
+      <Input.TextArea rows={4} maxLength={1000} showCount value={note} onChange={(e) => setNote(e.target.value)}
+        placeholder="例如：建议要求的数据表在业务库中不存在" />
     </Modal>
   );
 }

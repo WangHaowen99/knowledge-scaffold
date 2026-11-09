@@ -11,7 +11,7 @@ import {
 } from './domain.js';
 import { Alert, Badge, Button, Confirm, Empty, Field, Heading, Icon, Skeleton, useAction } from './ui.jsx';
 import { CaseEditor } from './CaseEditor.jsx';
-import { GraphScopeStatus, MappingPreview, SourceEditor } from './SourceEditor.jsx';
+import { GraphScopeStatus, MappingConflicts, MappingPreview, SourceEditor } from './SourceEditor.jsx';
 
 const steps = [
   ['知识包版本', '固定本轮版本'],
@@ -19,7 +19,7 @@ const steps = [
   ['选择评测集', '可编辑后执行'],
   ['准备与确认', '预览映射并启动'],
 ];
-export function Wizard({ sets, sources, runs, session, refreshDefinitions, navigate, from, registerDirty }) {
+export function Wizard({ sets, sources, runs, session, refreshDefinitions, navigate, from, release: chosen, registerDirty }) {
   const query = new URLSearchParams(location.search);
   const [step, setStep] = useState(0),
     [packages, setPackages] = useState([]),
@@ -44,7 +44,7 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
     [modelId, setModelId] = useState(''),
     [models, setModels] = useState(null),
     [judgeMissing, setJudgeMissing] = useState(false);
-  const { busy, error, setError, act } = useAction(),
+  const { busy, error, setError, details, act } = useAction(),
     generation = useRef(0),
     sourceGeneration = useRef(0),
     pendingRun = useRef(null),
@@ -73,7 +73,8 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
           const run = await api(`/runs/${encodeURIComponent(from)}`);
           if (!live) return;
           setPackageId(run.package_ref.ontology_id);
-          setReleaseId(run.package_ref.release_id);
+          // Re-evaluating on the version modeling published from this run's suggestions keeps the run's other settings.
+          setReleaseId(chosen || run.package_ref.release_id);
           setSourceId(
             sources.some((s) => s.id === run.summary.inputs.data_source_id)
               ? run.summary.inputs.data_source_id
@@ -313,7 +314,7 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
         breadcrumb={
           <>
             <button className="text-link" onClick={() => navigate('/')}>
-              任务中心
+              评测任务
             </button>
             <span>/</span>
             <span>新建评测</span>
@@ -342,6 +343,7 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
         ))}
       </div>
       {error && <Alert tone="red">{error}</Alert>}
+      <MappingConflicts details={details} />
       {currentRun && (
         <Alert tone="amber" title="当前有一个活动评测">
           可先配置本轮输入，已有任务结束或停止后再启动。
@@ -692,7 +694,7 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
               </>
             )}
             <hr />
-            <p className="help-text">创建成功后进入执行详情。离开页面后，可从任务中心找回本轮任务。</p>
+            <p className="help-text">创建成功后进入执行详情。离开页面后，可从「评测任务」找回本轮评测。</p>
           </aside>
         </div>
       )}

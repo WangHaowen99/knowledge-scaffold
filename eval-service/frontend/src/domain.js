@@ -91,13 +91,23 @@ export function artifactState(run, now = Date.now() / 1000) {
   const report = a.report === 'ready',
     base = { report, suggestions: a.suggestions === 'ready', canRegenerate: a.status !== 'generating' };
   if (a.status === 'generating') {
-    const hint = report ? ['评测报告已生成，优化建议生成中', generationProgress(a.progress, now)].filter(Boolean).join(' · ') : '';
+    // Suggestions not started yet wait behind other runs' suggestions; reports never wait for them.
+    const waiting = a.queue != null ? `评测报告已生成，优化建议排队中，前面还有 ${a.queue} 个` : '评测报告已生成，优化建议生成中';
+    const hint = report ? [waiting, generationProgress(a.progress, now)].filter(Boolean).join(' · ') : '';
     return { ...base, label: '生成中', tone: 'blue', hint };
   }
   if (a.status === 'failed') return { ...base, label: '优化建议生成失败', tone: 'amber', hint: report ? '评测报告可查看' : '' };
   // revision counts generations of this run's outputs, not knowledge package versions.
   const at = clock(a.generated_at),
     hint = [at && `生成于 ${at}`, a.revision > 1 && `第 ${a.revision} 次生成`].filter(Boolean).join(' · ');
+  // A changed verdict rebuilt the report only; suggestions are regenerated when the user asks.
+  if (a.suggestions_stale)
+    return {
+      ...base,
+      label: '判分已修改',
+      tone: 'amber',
+      hint: [hint, base.suggestions ? '优化建议基于修改前的判分，可点击“重新生成”' : '点击“重新生成”生成优化建议'].join(' · '),
+    };
   return { ...base, label: '已生成', tone: 'green', hint };
 }
 // Delivery of the completion notification to onto-modeling.
@@ -106,6 +116,8 @@ export function notificationState(n) {
   if (n.status === 'disabled') return { label: '未配置', tone: 'neutral', hint: '未配置建模通知凭据，建模服务打开页面时自行同步' };
   if (n.status === 'delivered') return { label: '已送达', tone: 'green', hint: clock(n.delivered_at) };
   if (n.status === 'rejected') return { label: '被拒绝', tone: 'red', hint: n.last_error || '', canRetry: true };
+  if (n.status === 'failed')
+    return { label: '通知失败', tone: 'red', hint: `已尝试 ${n.attempts} 次（${n.last_error || '未送达'}）`, canRetry: true };
   if (!n.attempts) return { label: '发送中', tone: 'blue', hint: '' };
   return {
     label: '重试中',
@@ -113,6 +125,42 @@ export function notificationState(n) {
     hint: `已尝试 ${n.attempts} 次（${n.last_error || '未送达'}）${n.next_attempt ? `，下次 ${clock(n.next_attempt)}` : ''}`,
     canRetry: true,
   };
+}
+// How modeling handled a run's suggestions: written back after it changed the package and published a new version.
+export function optimizationState(run) {
+  const o = run?.optimization;
+  if (!o) return null;
+  const result = o.result || {},
+    times = (o.history?.length || 0) + (o.result ? 1 : 0),
+    when = clock(result.reported_at || o.updated_at),
+    count = times > 1 ? `共 ${times} 次回写` : '';
+  if (o.status === 'awaiting_review') return { label: '待负责人确认', tone: 'blue', hint: '确认后通知建模' };
+  if (o.status === 'notified')
+    return { label: '待建模处理', tone: 'neutral', hint: '建模按建议修改并发布新版本后，这里显示新版本' };
+  if (o.status === 'modeling_done')
+    return {
+      label: '已处理',
+      tone: 'green',
+      hint: [`新版本 ${result.version || result.release_id}`, when, result.note, count].filter(Boolean).join(' · '),
+      releaseId: result.release_id,
+    };
+  if (o.status === 'modeling_failed')
+    return { label: '处理失败', tone: 'red', hint: [result.note || '建模处理失败', when, count].filter(Boolean).join(' · ') };
+  if (o.status === 'dismissed') return { label: '已驳回', tone: 'neutral', hint: o.reason || '负责人驳回，不交给建模' };
+  return null;
+}
+// Where a feedback run stands: collecting, waiting for an owner, handed to modeling, or dismissed.
+export function feedbackStatus(run) {
+  if (run.status === 'collecting') return { label: '收集中', tone: 'blue' };
+  if (!run.artifacts) return { label: '生成报告中', tone: 'blue' };
+  return optimizationState(run) || { label: '已生成', tone: 'green' };
+}
+// Short mark in run lists: the new version modeling published from this run's suggestions, or that it failed.
+export function optimizationTag(run) {
+  const o = run?.optimization;
+  if (o?.status === 'modeling_done') return { label: `建模已处理 → ${o.result?.version || '新版本'}`, tone: 'green' };
+  if (o?.status === 'modeling_failed') return { label: '建模处理失败', tone: 'red' };
+  return null;
 }
 export function runStartTime(run) {
   const seconds = run?.started_at || run?.created_at;
@@ -147,7 +195,7 @@ export function modelingProjectLabel(entry) {
 }
 // Questions of one run sent to consumer at the same time; the service accepts 1 to 8.
 export const DEFAULT_CONCURRENCY = 4;
-export const MAX_CONCURRENCY = 8;
+export const MAX_CONCURRENCY = 16;
 export function modelOptionLabel(item) {
   const name = item.name || item.id;
   return `${name}${item.model && item.model !== name ? ` · ${item.model}` : ''}${item.is_default ? '（默认）' : ''}`;
@@ -162,13 +210,21 @@ export function parseRoute(hash = '') {
   const [path, search = ''] = hash.replace(/^#/, '').split('?');
   const match = /^\/runs\/([a-zA-Z0-9_-]+)$/.exec(path);
   if (match) return { page: 'run', id: match[1] };
-  if (path === '/new') return { page: 'new', from: new URLSearchParams(search).get('from') || '' };
+  if (path === '/new') {
+    const query = new URLSearchParams(search),
+      release = query.get('release_id');
+    // A release with "from": re-evaluate that run's settings on another version of its package.
+    return { page: 'new', from: query.get('from') || '', ...(release ? { release } : {}) };
+  }
   if (path === '/eval-sets') return { page: 'sets' };
   if (path === '/data-sources') return { page: 'sources' };
   const definition = /^\/(eval-sets|data-sources)\/([a-zA-Z0-9_-]+)$/.exec(path);
   if (definition)
     return { page: definition[1] === 'eval-sets' ? 'sets' : 'sources', id: definition[2] };
   if (path === '/settings') return { page: 'settings' };
+  if (path === '/feedback') return { page: 'feedback' };
+  const feedback = /^\/feedback\/([a-zA-Z0-9_-]+)$/.exec(path);
+  if (feedback) return { page: 'feedback', id: feedback[1] };
   return { page: 'tasks' };
 }
 export function parseCases(text) {

@@ -457,6 +457,13 @@ export function usePackagePublish(dialogExtras = {}) {
     const receipt = await api.publishPackage(pid, { allowUnbound });
     if (receipt.local_record_pending) message.warning('知识包已发布，本地发布记录待恢复');
     else message.success(allowUnbound ? '已降级发布，未通过检查的对象不绑定数据表' : '知识包已发布');
+    // 评测优化之后发布：回写评测服务这是哪一轮优化建议的处理结果
+    const writeback = receipt.evaluation_writeback;
+    if (writeback?.status === 'done' && writeback.release_id === receipt.release_id) {
+      message.success(`已回写评测服务：新版本 ${writeback.version} 处理了 ${writeback.base_version} 的优化建议`);
+    } else if (writeback?.status === 'pending') {
+      message.warning('新版本的处理结果暂未回写评测服务，打开已发布版本时会自动重试');
+    }
     setProjectId('');
     setVersionsProject(pid);
   };

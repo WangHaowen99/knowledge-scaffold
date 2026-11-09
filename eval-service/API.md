@@ -1,19 +1,19 @@
 # Evaluation API
 
-前缀 `/evaluation/api`。除 health、client-config、账号登录/刷新及受 scene 凭据保护的 NL2SQL 外，均要求 `Authorization: Bearer <access-token>`。身份在线验证并按 issuer/subject 隔离；不接受建模项目归属或请求体 owner。
+前缀 `/evaluation/api`。除 health、client-config、账号登录/刷新及受 scene 凭据保护的 NL2SQL 外，均要求 `Authorization: Bearer <access-token>`；`/internal/feedback-signals` 另须消费服务凭据。身份在线验证并按 issuer/subject 隔离；不接受建模项目归属或请求体 owner。
 
 | 接口 | 行为 |
 | --- | --- |
 | `GET /health` | 活性，不代表依赖就绪；允许任意来源读取 |
 | `GET /client-config` | 可向评测页面交接登录的建模来源列表 |
-| `GET /session` | 当前主体键、user（从已验证 userinfo 取得的 username / role）、当前用户生效的非敏感 Judge 配置（含 source：personal / settings / deployment / disabled）及独立的 judge_configured 标记；用户名仅供当前会话展示，不写入任务归属或存储 |
+| `GET /session` | 当前主体键、user（从已验证 userinfo 取得的 username / role）、当前用户生效的非敏感 Judge 配置（含 source：personal / settings / deployment / disabled）、独立的 judge_configured 标记，以及是否开启消费反馈 feedback_enabled；用户名仅供当前会话展示，不写入任务归属或存储 |
 | `GET /judge-settings` | 默认 Judge 配置的来源（页面配置或部署配置）、模型、配置版本及 enabled（默认配置是否对用户启用）；管理员额外可见网关地址和是否已配置 Key，从不返回 Key |
 | `PUT /judge-settings/enabled` | 仅管理员；`{"enabled": bool}` 启用或停用默认配置，不改变配置版本。停用后没有个人配置的用户生效来源为 `disabled`，新建轮次返回 judge_default_disabled（409），其排队及进行中的轮次停止判分；重新启用后可恢复。NL2SQL 不受影响 |
-| `PUT /judge-settings` | 仅管理员；base_url、model、可选 api_key。保存后替换部署配置，Key 加密存储；网关不变时 api_key 留空沿用原 Key，更换网关须重填。值不变时保留配置版本，否则生成新版本，排队及进行中的轮次随之停止判分 |
+| `PUT /judge-settings` | 仅管理员；base_url、model、可选 api_key。默认配置由管理员维护，网关可以是内网地址。保存后替换部署配置，Key 加密存储；网关不变时 api_key 留空沿用原 Key，更换网关须重填。值不变时保留配置版本，否则生成新版本，排队及进行中的轮次随之停止判分 |
 | `DELETE /judge-settings` | 仅管理员；删除页面配置，恢复部署配置 |
 | `POST /judge-settings/test` | 仅管理员；用提交的值执行与轮次预检相同的结构化判分检查，不保存。网关认证、权限、接口、限流、超时、协议错误返回对应安全提示；模型 Key 的 401/403 映射为 422，避免误触发用户登录失效 |
 | `GET /judge-settings/me` | 任意登录用户；返回 `personal`（本人个人配置的网关、模型、配置版本、是否已配置 Key，未配置为 null）与 `active`（本人新轮次将使用的配置来源、模型、版本、是否完整），从不返回 Key |
-| `PUT /judge-settings/me` | 保存本人个人配置，覆盖默认配置，只影响本人新创建的轮次；api_key 留空仅沿用本人同一网关的已存 Key，不借用默认配置的 Key；值不变时保留配置版本 |
+| `PUT /judge-settings/me` | 保存本人个人配置，覆盖默认配置，只影响本人新创建的轮次；api_key 留空仅沿用本人同一网关的已存 Key，不借用默认配置的 Key；值不变时保留配置版本。网关指向本机或内网地址时返回 judge_gateway_internal（422），`EVAL_JUDGE_ALLOWED_HOSTS` 中的主机和部署配置的判分主机除外；测试和每次调用前同样校验 |
 | `DELETE /judge-settings/me` | 删除本人个人配置，恢复使用默认配置 |
 | `POST /judge-settings/me/test` | 任意登录用户；测试提交的个人配置，不保存，错误映射同上 |
 | `POST /auth/login`、`/auth/refresh` | 直连统一账号，响应不缓存；不保存用户令牌 |
@@ -31,24 +31,33 @@
 | `POST /package-publications` | request_id、preparation_id；创建正式 mapping 派生版本，返回 Hub 回执 |
 | `GET /package-publications` | 分页查询本地发布任务及 Hub 回执 |
 | `GET /package-publications/{id}` | 本地持久发布任务状态；任务 ID 可由发布查询列表获得 |
-| `POST /runs` | request_id、preparation_id、eval_set_id、可选 eval_set_revision；Neo4j 导入还需 graph_check_id，存在旧数据时必须显式传 replace_existing_graph=true。可选 concurrency（1 到 8，默认 4，同时发送给 consumer 的问题数）与 model_profile_id（`global:<id>`，consumer 全局模型池中已启用的模型，留空用 consumer 默认模型）。活动任务冲突、版本冲突和缺少确认在创建前拒绝，持久化后返回 202；所选模型在执行时已停用则轮次中断并提示 model_unavailable |
+| `POST /runs` | request_id、preparation_id、eval_set_id、可选 eval_set_revision；Neo4j 导入还需 graph_check_id，存在旧数据时必须显式传 replace_existing_graph=true。可选 concurrency（1 到 16，默认 4，同时发送给 consumer 的问题数）与 model_profile_id（`global:<id>`，consumer 全局模型池中已启用的模型，留空用 consumer 默认模型）。活动任务冲突、版本冲突和缺少确认在创建前拒绝，持久化后返回 202；所选模型在执行时已停用则轮次中断并提示 model_unavailable |
 | `GET /consumer-models` | consumer 全局模型池中已启用的模型（最多 100 个），字段 id、name、model、provider、is_default；consumer 不可用时返回 `available: false`，新轮次使用 consumer 默认模型 |
-| `GET /runs`、`/runs/{id}` | 摘要、进度和统计；列表按 offset 分页，可选 limit（1 到 20，默认 20），可选 ontology_id 只列该知识包的执行记录。新任务保留 eval_set_id、eval_set_name、data_source_name、created_at、started_at、updated_at、finished_at。`base_ref` 为用户选择的发布版本，`package_ref` 为实际运行的包（mapping 变化时为评测快照）；本字段之前创建的任务由其准备记录补出 `base_ref`，仅用于返回，不改写已存记录 |
+| `GET /runs`、`/runs/{id}` | 摘要、进度和统计；列表按 offset 分页，可选 limit（1 到 20，默认 20），可选 ontology_id 只列该知识包的执行记录；`origin=consumer_feedback` 加 ontology_id 列出该包的消费反馈轮次（须在 Hub 上能看到该包）。每项带 `origin`（evaluation / consumer_feedback）和 `optimization`（建模处理进展，见下文）；反馈轮次另带 `feedback`（统计、问题簇、用户建议）。新任务保留 eval_set_id、eval_set_name、data_source_name、created_at、started_at、updated_at、finished_at。`base_ref` 为用户选择的发布版本，`package_ref` 为实际运行的包（mapping 变化时为评测快照）；本字段之前创建的任务由其准备记录补出 `base_ref`，仅用于返回，不改写已存记录 |
 | `GET /modeling-projects` | 重复的 ontology_id，每次 1 到 20 个；以当前用户登录向建模服务查询关联项目名称，仅供展示、不落盘。返回 `available` 与 `items[{ontology_id,projects,total}]`，每包最多 5 个名称；建模不可用或拒绝时返回 `available: false`，不报错 |
 | `GET /runs/{id}/results` | 有界分页用例摘要；执行异常、判分异常的用例带 `error`（code、message，message 截断到 256 字符）。执行异常的原因取自 consumer 运行状态与错误码，如 `consumer 执行失败（错误码）：说明`、等待用户补充信息、完成但未返回回答；`SESSION_PREPARE_FAILED` 会换新会话重试，最终仍失败时说明末尾注明“已换新会话重试 N 次” |
 | `GET /runs/{id}/results/{case_id}/answer` | 单用例完整答案、判分、改判历史及未获得答案时的完整原因（不超过 1000 字符） |
-| `GET /runs/{id}/results/{case_id}/evidence` | 从 consumer 按需读取有界执行事件索引，不复制完整工具报文 |
+| `GET /runs/{id}/results/{case_id}/evidence` | 从 consumer 按需读取有界执行事件索引，不复制完整工具报文；反馈轮次没有 consumer 运行，返回 unavailable |
 | `GET /runs/{id}/report` | 可重建的统计投影、包与模型引用 |
-| `POST /runs/{id}/cancel`、`/resume`、`/credentials` | 取消意图、对账恢复或更新内存授权；恢复后立即返回准备中的轮次。与 `POST /runs` 一样可带请求头 `X-Refresh-Token`（不超过 8 KiB），执行引擎只在内存中保存，用于 access token 到期前自动续期；登录失效时轮次以 `login_expired`（401）进入待授权 |
-| `POST /runs/{id}/results/{case_id}/override` | verdict、reason、revision；保留审计，不允许无答案或活动任务改判 |
-| `DELETE /runs/{id}` | 删除评测记录并清理自有资源，清理任务可重试。已结束（completed / cancelled / failed）可删除；interrupted / waiting_auth 在没有 executing / unknown 用例时可删除；执行中或仍有未对账提交返回 run_active（409），须先停止评测 |
-| `GET /package-tasks` | 按知识包合并的任务列表：每个知识包的最新一次执行、执行次数及是否有执行中的评测，按 offset 分页 |
-| `GET /package-evaluations` | ontology_id；每个发布版本最近一次已生成报告的评测（最多 100 个版本）及该知识包执行中的评测，供建模服务对账；`owner` 为调用者的所有者标识，与完成通知中的 owner 相同，建模服务据此按用户存放评测状态 |
+| `POST /runs/{id}/cancel`、`/resume`、`/credentials` | 取消意图、对账恢复或更新内存授权；反馈轮次返回 not_applicable（409）。恢复后立即返回准备中的轮次。与 `POST /runs` 一样可带请求头 `X-Refresh-Token`（不超过 8 KiB），执行引擎只在内存中保存，用于 access token 到期前自动续期；登录失效时轮次以 `login_expired`（401）进入待授权 |
+| `POST /runs/{id}/results/{case_id}/override` | verdict、reason、revision；保留审计，不允许无答案或活动任务改判。改判只重建报告，优化建议标 `suggestions_stale`，用户点“重新生成”时才重跑。反馈轮次在待负责人确认时可改判，可带 reference（≤4000 字）补标准答案，判为 pass 即“用户误判”，不进入优化建议 |
+| `DELETE /runs/{id}` | 删除评测记录并清理自有资源，清理任务可重试。反馈轮次封板后可删除，其问题簇回到就绪并进入下一个反馈轮次。已结束（completed / cancelled / failed）可删除；interrupted / waiting_auth 在没有 executing / unknown 用例时可删除；执行中或仍有未对账提交返回 run_active（409），须先停止评测 |
+| `GET /package-tasks` | 按知识包合并的任务列表：每个知识包的最新一次执行、执行次数及是否有执行中的评测，按 offset 分页；`origin=consumer_feedback` 列出调用者在 Hub 上能看到、且有反馈轮次的知识包 |
+| `GET /package-evaluations` | ontology_id；每个发布版本最近一次已生成报告的评测（最多 100 个版本）及该知识包执行中的评测，供建模服务对账；`owner` 为调用者的所有者标识，与完成通知中的 owner 相同，建模服务据此按用户存放评测状态。每条带 `origin`、`optimization`；`origin=all` 时另返回每个版本最近一个已确认的消费反馈轮次 |
 | `GET /runs/{id}/artifacts`、`/runs/{id}/artifacts/{name}` | 报告与优化建议的状态、建模通知投递状态；name 为 report.md、answers.json、context.json、suggestions.md，只返回当前修订，响应头带 `X-Artifact-Revision` 与 `X-Artifact-Stem` |
-| `POST /runs/{id}/artifacts/regenerate` | 已停止且有用例结果的任务重新生成报告与优化建议，修订号加一；执行中返回 run_active（409） |
-| `POST /runs/{id}/notifications/retry` | 立即重发该任务最新一条完成通知（含已被拒收的）；未配置通知凭据返回 notification_disabled（409） |
+| `POST /runs/{id}/artifacts/regenerate` | 已停止且有用例结果的任务重新生成报告与优化建议，修订号加一；执行中返回 run_active（409）。可带 `X-Refresh-Token`，排队中的优化建议到期前自动续期。反馈轮次收集中时先封板；用调用者登录读取知识包生成建议，版本未发布到 Hub 时返回 release_unpublished（409） |
+| `POST /runs/{id}/notifications/retry` | 立即重发该任务最新一条完成通知（含已被拒收和已失败的），重新计数；已送达的只返回状态；未配置通知凭据返回 notification_disabled（409）。反馈轮次待负责人确认时，请求体 `{"decision":"confirm"}` 确认并通知建模（向 Hub 查出该版本的 release_id），`{"decision":"dismiss","reason":"…"}` 驳回 |
+| `POST /runs/{id}/modeling-result` | 建模回写处理结果：request_id、outcome（done / failed）、done 时 release_id、可选 note（≤2000 字）。done 时用调用者登录向 Hub 核对版本存在且不是被评测的版本（release_not_found / same_release，422）；轮次须已交给建模（invalid_state，409）；同一 request_id 重试返回原结果。只记录，不触发评测 |
+| `GET /internal/feedback-signals/health` | 消费侧连通性检查：令牌要求同 `/internal/feedback-signals`；先校验服务令牌（不符 403 `service_forbidden`，此时不调用账号服务），再校验用户令牌（无效 401 `invalid_identity`，需先改密码 403 `account_action_required`，账号服务不可用 503 `dependency_unavailable`）；反馈接收关闭时也返回 200，`feedback_enabled=false`；返回 `status`、`feedback_enabled`、认得的信号格式 `accepted_schemas` 和 `server_time`（UTC）；不加跨域头 |
+| `POST /internal/feedback-signals` | 消费推送反馈：`Authorization` 为提交者的用户令牌，`X-Eval-Service-Token` 为消费服务凭据（`EVAL_FLYWHEEL_SERVICE_TOKEN`，错误返回 service_forbidden 403）。请求体 `{"schema":"consumer-feedback-signal-batch.v1","signals":[…]}`，每批 1–50 条 FeedbackSignal v1（未知字段忽略，单条 ≤256 KB）。返回 202 与逐条 `accepted` / `duplicate` / `rejected`（schema_invalid、actor_mismatch、signal_too_large）/ `conflict`（payload_mismatch）。`EVAL_FEEDBACK_ENABLED` 未开启时 feedback_disabled（503）；用户令牌无效 invalid_identity（401） |
 
-评测停止、人工改判或重新生成后，评测服务按修订号生成报告与优化建议（只保留最新修订），并向建模服务 `POST /api/internal/evaluation/notifications` 发送完成通知，服务凭据放在 `X-Evaluation-Service-Token` 头。通知先写入本地发件箱再投递，失败按指数退避重试（最长 1 小时），400/413/422 视为拒收不再自动重试；建模服务按 run_id 与 sequence 去重。通知只含版本、状态与得分汇总，不含报告正文，建模服务查看时以用户自己的登录读取。
+评测停止、人工改判或重新生成后，评测服务按修订号生成报告与优化建议（只保留最新修订）：报告、回答和上下文立即生成，优化建议在单独的队列排队（`artifacts.queue` 为前面还有几个），不会挡住其他轮次的报告。完成后向建模服务 `POST /api/internal/evaluation/notifications` 发送完成通知，服务凭据放在 `X-Evaluation-Service-Token` 头。通知先写入本地发件箱再投递，失败按指数退避重试（最长 1 小时），400/413/422 视为拒收不再自动重试；401/403/404 重试 3 次、其他错误累计 `EVAL_NOTIFICATION_MAX_ATTEMPTS`（默认 30）次后置为 failed，页面提示检查建模地址和通知凭据；建模服务按 run_id 与 sequence 去重。通知只含版本、状态、得分汇总、`origin` 与 `optimization`，不含报告正文，建模服务查看时以用户自己的登录读取。反馈轮次在负责人确认后才通知，`owner` 为确认人，且须开启 `EVAL_NOTIFY_FEEDBACK_RUNS`。
+
+`optimization.status`：`awaiting_review`（反馈轮次待负责人确认）、`notified`（已交给建模，评测轮次生成报告后即为此状态）、`modeling_done` / `modeling_failed`（建模回写结果，再次回写时上一次进入 `history`，最多 10 条）、`dismissed`（负责人驳回）。
+
+映射冲突（mapping_conflict，422）的错误带 `details.issues`：最多 20 个与数据表不一致的对象，每项 object、kind（declared_missing / no_columns）、table、candidates、message。
+
+调用 consumer 提问时遇到 429、503、连接超时或失败，按 Retry-After（没有则 5 秒起翻倍，最长 60 秒）重发同一幂等键，最多 6 次；仍失败的用例保留原状态和原因，连续 3 条同类失败才停止提交（dependency_circuit_open）。单题在 consumer 侧 15 分钟未结束时不再等待，结束时仍有未完成用例则轮次中断（cases_unsettled），恢复只处理这些用例。提问和取消请求带 `X-Evaluation-Service-Token`，标记为评测流量。
 
 Hub 查询默认每页 20、最多 100；本地列表每页 20，按 next_offset 翻页。用例列表截短问题/理由，完整答案单独读取。映射预览最多 20 个对象，有 truncated 标志。consumer 单次响应最多 2 MiB、事件索引源最多 1 MiB/输出最多 100 项；超限明确失败，不伪装成完整结果。
 

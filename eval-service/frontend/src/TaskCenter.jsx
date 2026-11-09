@@ -3,6 +3,7 @@ import {
   ACTIVE,
   STATUS,
   needsAttention,
+  optimizationTag,
   packageName,
   packageVersions,
   phaseName,
@@ -119,7 +120,7 @@ export function TaskCenter({
   return (
     <>
       <Heading
-        title="任务中心"
+        title="评测任务"
         actions={
           <>
             <Button icon="refresh" busy={loading} onClick={onRefresh}>
@@ -131,7 +132,7 @@ export function TaskCenter({
           </>
         }
       >
-        同一知识包的评测合并为一项，执行详情中可查看历史执行记录。
+        你发起的知识包评测，同一知识包的多次评测合并为一项，执行详情中可查看历史执行记录。消费用户提交的问题在「用户反馈」中查看。
       </Heading>
       {active && (
         <div className="active-task">
@@ -272,6 +273,9 @@ export function TaskCenter({
                     <StartTimeCell run={run} />
                     <td data-label="状态">
                       <Badge tone={STATUS[run.status]?.[1]}>{STATUS[run.status]?.[0] || run.status}</Badge>
+                      {optimizationTag(run) && (
+                        <Badge tone={optimizationTag(run).tone}>{optimizationTag(run).label}</Badge>
+                      )}
                     </td>
                     <td data-label="判分进度">
                       <b className="tabular">

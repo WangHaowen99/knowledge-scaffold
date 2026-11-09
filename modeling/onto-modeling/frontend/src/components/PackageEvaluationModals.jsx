@@ -50,10 +50,10 @@ export function usePackageEvaluations(projectId, revision) {
   return { status, refresh: () => setRefreshes((n) => n + 1) };
 }
 
-// 禁用的按钮不触发悬停事件：外包 span 才能显示置灰原因；tooltip 传给提示框（位置、偏移等）
-export function ReasonButton({ reason, tooltip, children, ...props }) {
+// 禁用的按钮不触发悬停事件：外包 span 才能显示置灰原因
+export function ReasonButton({ reason, children, ...props }) {
   const button = <Button disabled={!!reason} {...props}>{children}</Button>;
-  return reason ? <Tooltip title={reason} {...tooltip}><span>{button}</span></Tooltip> : button;
+  return reason ? <Tooltip title={reason}><span>{button}</span></Tooltip> : button;
 }
 
 function useArtifact(load, target) {
@@ -111,12 +111,12 @@ function useAnswerPreview(projectId, runId) {
   return { open, modal };
 }
 
-// target: { runId, version }
+// target: { runId, version, feedback }；feedback 表示消费反馈来源
 export function EvaluationReportModal({ projectId, target, onClose }) {
   const artifact = useArtifact((t) => api.packageEvaluationReport(projectId, t.runId), target);
   const preview = useAnswerPreview(projectId, target?.runId);
   return (
-    <Modal title={`评测报告 — 版本 ${target?.version || ''}`} open={!!target} onCancel={onClose} width={MODAL_WIDTH} centered
+    <Modal title={`${target?.feedback ? '用户反馈报告' : '评测报告'} — 版本 ${target?.version || ''}`} open={!!target} onCancel={onClose} width={MODAL_WIDTH} centered
       footer={(
         <Space>
           <Typography.Text type="secondary">{REPORT_OPTIMIZE_HINT}</Typography.Text>
@@ -132,8 +132,8 @@ export function EvaluationReportModal({ projectId, target, onClose }) {
   );
 }
 
-// target: { runId, version }；blockReason 非空时评测优化置灰
-export function EvaluationSuggestionsModal({ projectId, target, blockReason, onClose, onRegenerated, onOptimized }) {
+// target: { runId, version, feedback }；blockReason 非空时评测优化置灰；onReportFailure 为空时不能标记处理失败
+export function EvaluationSuggestionsModal({ projectId, target, blockReason, onClose, onRegenerated, onOptimized, onReportFailure }) {
   const artifact = useArtifact((t) => api.packageEvaluationSuggestions(projectId, t.runId), target);
   const preview = useAnswerPreview(projectId, target?.runId);
   const [regenerating, setRegenerating] = useState(false);
@@ -167,12 +167,15 @@ export function EvaluationSuggestionsModal({ projectId, target, blockReason, onC
   };
 
   return (
-    <Modal title={`优化建议 — 版本 ${target?.version || ''}`} open={!!target} onCancel={onClose} width={MODAL_WIDTH} centered
+    <Modal title={`${target?.feedback ? '用户反馈优化建议' : '优化建议'} — 版本 ${target?.version || ''}`} open={!!target} onCancel={onClose} width={MODAL_WIDTH} centered
       destroyOnHidden
       footer={(
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
           <Button onClick={onClose}>关闭</Button>
-          <ReasonButton type="primary" reason={blockReason} loading={optimizing} onClick={optimize}>评测优化</ReasonButton>
+          <Space>
+            {onReportFailure && <Button onClick={onReportFailure}>标记处理失败</Button>}
+            <ReasonButton type="primary" reason={blockReason} loading={optimizing} onClick={optimize}>评测优化</ReasonButton>
+          </Space>
         </div>
       )}>
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>

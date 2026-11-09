@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
 from .artifacts import clip, failed_first, redact
-from .core import Failure, digest
+from .core import Failure, digest, transient
 from .judge_settings import connection_test_failure
 
 TERMINAL={'completed','failed','cancelled','awaiting_input'}
@@ -18,7 +18,18 @@ SETTLED={'settled','execution_error','cancelled','manual'}
 EVAL_WORKSPACE=re.compile(r'eval-[0-9a-f]{32}')
 # Questions of one run sent to consumer at the same time; chosen per run when it is created.
 DEFAULT_CONCURRENCY=4
-MAX_CONCURRENCY=8
+MAX_CONCURRENCY=16
+# A consumer request of one case that hits a rate limit, an unavailable service or a timeout is sent again after
+# Retry-After, or 5s doubling up to 60s, at most this many times in all; the same failure in this many cases in a
+# row stops the run instead of letting every remaining case wait out its retries.
+REMOTE_ATTEMPTS=6
+REMOTE_DELAY=5
+REMOTE_MAX_DELAY=60
+BREAKER_CASES=3
+# A question still running on consumer's side after this long is left for reconciliation instead of waited for.
+REMOTE_SECONDS=900
+# Failures that concern the whole run rather than one question: it waits for the user instead of going on.
+RUN_FAILURES={'configuration_changed','identity_changed','login_expired','draining','model_unavailable','model_unconfigured'}
 # Tool failures kept per case; each message is at most 1 KiB, as in the consumer's own traces.
 TRACE_FAILURES=20
 # Tool calls kept per case as evidence for optimization suggestions: at most 12 calls, each preview
@@ -97,6 +108,12 @@ class Consumer:
 
     def call(self,method,path,token,workspace='',**kwargs):
         return self.http.json(method,self.config.consumer_url,f'/agentic{path}',token=token,workspace=workspace,**kwargs)
+
+    def traffic(self):
+        """Marks questions and cancellations as evaluation traffic, which consumer does not collect as user feedback.
+
+        Connection sources run in an ordinary workspace the user named, so consumer cannot tell them apart by workspace."""
+        return {'X-Evaluation-Service-Token':self.config.consumer_token} if self.config.consumer_token else {}
 
     def ensure(self,token,run_id):
         if not self.config.consumer_token:
@@ -284,6 +301,35 @@ def retry_delay(attempt):
     return min(2*2**(attempt-1),30)*random.uniform(.8,1.2)
 
 
+def remote_delay(attempt,hint=None):
+    """Seconds before resending a consumer request: the dependency's Retry-After, else doubling from 5 up to 60."""
+    if hint is not None: return min(hint,REMOTE_MAX_DELAY)
+    return min(REMOTE_DELAY*2**(attempt-1),REMOTE_MAX_DELAY)*random.uniform(.8,1.2)
+
+
+class Paused(Exception):
+    """A case stopped waiting because the run is being cancelled or the service stops; it stays as it was."""
+
+
+class Breaker:
+    """Counts cases in a row that failed with the same dependency error; any case that settles resets it."""
+
+    def __init__(self,limit):
+        self.limit,self.lock,self.key,self.count=limit,threading.Lock(),None,0
+
+    def failed(self,exc):
+        if not transient(exc): return False
+        key=(exc.code,exc.upstream_status)
+        with self.lock:
+            self.count=self.count+1 if key==self.key else 1
+            self.key=key
+            return self.count>=self.limit
+
+    def passed(self):
+        with self.lock:
+            self.key,self.count=None,0
+
+
 def report(run):
     counts={k:0 for k in ('pass','partial','fail','execution_error','judge_error','manual','cancelled','pending')}
     executed=0
@@ -381,6 +427,26 @@ class Engine:
                 credential.checked=now
             return credential.access
 
+    def token_source(self,credential):
+        """A login for work after the run, such as optimization suggestions: renewed shortly before it expires."""
+        def access():
+            with credential.lock:
+                if credential.due(time.time()):
+                    self.renew(credential)
+                return credential.access
+        return access
+
+    def remote(self,owner,rid,call):
+        """One consumer request of a case with the run's current token; transient failures are retried with backoff."""
+        attempt=0
+        while True:
+            try:
+                return call(self.token(owner,rid))
+            except Failure as exc:
+                attempt+=1
+                if not transient(exc) or attempt>=REMOTE_ATTEMPTS: raise
+                if not self.backoff(owner,rid,remote_delay(attempt,exc.retry_after)): raise Paused() from exc
+
     def renew(self,credential):
         """Best effort: on failure the current access token is used until it expires."""
         try:
@@ -446,12 +512,8 @@ class Engine:
             with self.guard:
                 self.active.discard((owner,rid))
                 credential=self.tokens.pop((owner,rid),None)
-            if credential:
-                # Report generation reads the package right after this; hand it a token that is still valid.
-                with credential.lock:
-                    if credential.due(time.time()):
-                        self.renew(credential)
-            if self.on_stop and credential: self.on_stop(owner,rid,credential.access)
+            # Report and suggestion generation outlive the run; they keep its login and renew it when due.
+            if self.on_stop and credential: self.on_stop(owner,rid,self.token_source(credential))
 
     def _execute(self,owner,rid):
         run=self.store.get(owner,rid,'runs')
@@ -504,13 +566,27 @@ class Engine:
             self.data.graph.ensure_current(rid,run['source'],run['package_ref']['ontology_id'])
         self.update(owner,rid,status='running',phase='cases',error=None)
         halt=threading.Event()
+        breaker=Breaker(BREAKER_CASES)
         def work(index):
             if halt.is_set() or self.stopping: return
             try:
                 self._case(owner,rid,ws,index,halt)
+            except Paused:
+                return
+            except Failure as exc:
+                if exc.status in (401,403) or exc.code in RUN_FAILURES:
+                    halt.set()  # The whole run waits for the user; cases already in flight still settle.
+                    raise
+                self.case_failed(owner,rid,index,exc)
+                if breaker.failed(exc):
+                    halt.set()
+                    raise Failure('dependency_circuit_open',f'连续 {BREAKER_CASES} 条用例因依赖服务暂不可用而失败，已暂停提交其余用例；'
+                                  '依赖服务恢复后点击“恢复”继续，已完成的用例会保留',503,'cases') from exc
+                return
             except BaseException:
                 halt.set()  # Queued cases are skipped; cases already in flight still settle.
                 raise
+            breaker.passed()
         width=max(1,min(MAX_CONCURRENCY,int(run.get('concurrency') or DEFAULT_CONCURRENCY)))
         with ThreadPoolExecutor(max_workers=width,thread_name_prefix='evaluation-case') as pool:
             futures=[pool.submit(work,index) for index in range(len(run['cases']))]
@@ -521,8 +597,29 @@ class Engine:
         if run.get('cancel_requested'):
             self._cancel(owner,rid,run)
             return
+        unsettled=sum(1 for c in run['cases'] if c['status'] not in SETTLED and c['status']!='judge_error')
+        if unsettled:
+            # Their questions may still be running on consumer's side, or consumer was unavailable: resume reconciles them.
+            self.update(owner,rid,status='interrupted',phase='finished',error={'code':'cases_unsettled','phase':'cases','retryable':True,
+                        'message':f'有 {unsettled} 条用例未完成（依赖服务暂不可用或消费仍在执行），请稍后点击“恢复”，只会处理这些用例'})
+            return
         self.update(owner,rid,status='interrupted' if any(c['status']=='judge_error' for c in run['cases']) else 'completed',
                     phase='finished')
+
+    def case_failed(self,owner,rid,index,exc):
+        """Record why one case did not settle and go on with the others.
+
+        A request consumer refused cannot succeed by asking again, so the case is an execution error. After a rate
+        limit, an outage or a time-out the question may still be running remotely: the case keeps its state and the
+        reason, and resume reconciles it under the same idempotency key without asking twice."""
+        with self.guard:
+            run=self.store.get(owner,rid,'runs')
+            case=run['cases'][index]
+            if case['status'] in SETTLED: return
+            case['error']=exc.payload()
+            if not transient(exc) and exc.code!='remote_timeout':
+                case['status']='execution_error'
+            self.save_case(owner,rid,index,case)
 
     def _case(self,owner,rid,ws,index,halt):
         run=self.store.get(owner,rid,'runs')
@@ -535,24 +632,25 @@ class Engine:
         if not case.get('answer'):
             while True:
                 if not case.get('remote_id'):
-                    if self.consumer.profile(token,ws,run.get('model_profile_id',''))!=run['model']:
+                    profile=self.remote(owner,rid,lambda t: self.consumer.profile(t,ws,run.get('model_profile_id','')))
+                    if profile!=run['model']:
                         raise Failure('configuration_changed','问答模型发生变化',409)
                     case['status']='unknown'
                     self.save_case(owner,rid,index,case)
-                    case['remote_id']=self.submit(token,rid,run,index,case)
+                    case['remote_id']=self.remote(owner,rid,lambda t: self.submit(t,rid,run,index,case))
                     case['status']='executing'
+                    case.pop('error',None)
                     self.save_case(owner,rid,index,case)
-                deadline=time.monotonic()+900
+                deadline=time.monotonic()+REMOTE_SECONDS
+                remote_path=f"/runs/{quote(case['remote_id'],safe='')}"
                 while True:
                     if self.stopping: return
                     if time.monotonic()>deadline:
-                        raise Failure('remote_timeout','消费运行尚未结束，请对账恢复',504,'cases')
-                    token=self.token(owner,rid)
+                        raise Failure('remote_timeout','消费运行 15 分钟仍未结束，请稍后恢复对账',504,'cases')
                     cancelling=self.store.get(owner,rid,'runs').get('cancel_requested',False)
-                    remote_path=f"/runs/{quote(case['remote_id'],safe='')}"
                     if cancelling:
-                        self.consumer.call('POST',f'{remote_path}/cancel',token,ws,json={})
-                    response=self.consumer.call('GET',remote_path,token,ws)
+                        self.remote(owner,rid,lambda t: self.consumer.call('POST',f'{remote_path}/cancel',t,ws,json={},headers=self.consumer.traffic()))
+                    response=self.remote(owner,rid,lambda t: self.consumer.call('GET',remote_path,t,ws))
                     if response['status'] in TERMINAL: break
                     time.sleep(1)
                 attempt=case.get('attempt',0)+1
@@ -563,6 +661,7 @@ class Engine:
                 self.save_case(owner,rid,index,case)
                 if not self.backoff(owner,rid,retry_delay(attempt)): return
                 token=self.token(owner,rid)
+            token=self.token(owner,rid)
             trace=self.consumer.trace(token,ws,case['remote_id'])
             calls,omitted=trace.pop('calls',None),trace.pop('omitted_calls',0)
             if calls is not None:
@@ -580,6 +679,7 @@ class Engine:
                 return
             case['answer']=answer
             case['status']='answer_ready'
+            case.pop('error',None)
             self.save_case(owner,rid,index,case)
         if not case.get('reference'):
             case['status']='manual'
@@ -597,7 +697,7 @@ class Engine:
         request of one attempt; only a retry after a failed session preparation starts a new session."""
         suffix=str(index)+(f'-{case["attempt"]}' if case.get('attempt') else '')
         response=self.consumer.call('POST','/runs',token,run['workspace'],
-            headers={'Idempotency-Key':rid+'-'+suffix},json={
+            headers={'Idempotency-Key':rid+'-'+suffix,**self.consumer.traffic()},json={
                 'request':case['question'],'session_id':'eval-'+rid+'-'+suffix,
                 'model_profile_id':run['model']['id'],'include_trace':True})
         return response['run_id']
@@ -622,7 +722,7 @@ class Engine:
                 self.update(owner,rid,cases=run['cases'])
             if case.get('remote_id'):
                 path=f"/runs/{quote(case['remote_id'],safe='')}"
-                self.consumer.call('POST',f'{path}/cancel',token,run['workspace'],json={})
+                self.consumer.call('POST',f'{path}/cancel',token,run['workspace'],json={},headers=self.consumer.traffic())
                 deadline=time.monotonic()+30
                 while True:
                     if self.stopping: return

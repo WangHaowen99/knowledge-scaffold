@@ -6,7 +6,15 @@ personal configuration that overrides the default for their own runs only, and r
 return to the default. API keys are stored encrypted and never returned.
 
 Disabling the default only withdraws it from users' judging; the built-in NL2SQL service still uses it.
+
+Any signed-in user may save a personal gateway the service then sends requests to, so a personal gateway that is
+or resolves to a loopback, link-local or private address is refused unless the deployment allows that host
+(EVAL_JUDGE_ALLOWED_HOSTS); this is checked when saving, testing and before every call. The shared default is
+set by administrators or the deployment, whose own gateways are often internal, and is not restricted.
 """
+import ipaddress
+import socket
+import threading
 import time
 import uuid
 from urllib.parse import urlsplit
@@ -59,9 +67,46 @@ def gateway(value):
     return value
 
 
+# Host lookups are cached briefly: every judged case checks the gateway it is about to call.
+RESOLVED_SECONDS = 60
+_resolved, _resolved_lock = {}, threading.Lock()
+
+
+def internal(host):
+    """Whether a host is, or resolves to, an address of this machine or a private network.
+
+    A host that does not resolve here is not refused: a request to it fails the same way."""
+    now = time.monotonic()
+    with _resolved_lock:
+        found = _resolved.get(host)
+        if found and now - found[0] < RESOLVED_SECONDS:
+            return found[1]
+    try:
+        addresses = {info[4][0].split('%')[0] for info in socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)}
+        result = any(not ipaddress.ip_address(address).is_global for address in addresses)
+    except (OSError, ValueError):  # UnicodeError of an unencodable host name is a ValueError
+        result = False
+    with _resolved_lock:
+        _resolved[host] = (now, result)
+    return result
+
+
+GATEWAY_INTERNAL = '判分模型网关指向本机或内网地址，未被允许使用；请改用可访问的公网网关，或请管理员在部署配置 EVAL_JUDGE_ALLOWED_HOSTS 中允许该主机'
+
+
 class JudgeSettings:
     def __init__(self, config, store):
         self.config, self.store = config, store
+
+    def reachable(self, url):
+        """The gateway URL when the service may call it; saving, testing and every call check it."""
+        host = (urlsplit(url).hostname or '').lower()
+        allowed = {item.strip().lower() for item in self.config.judge_allowed_hosts.split(',') if item.strip()}
+        # The deployment's own judge host is always allowed, like the hosts an administrator listed.
+        allowed.add((urlsplit(self.config.judge_url).hostname or '').lower())
+        if host and host not in allowed and internal(host):
+            raise Failure('judge_gateway_internal', GATEWAY_INTERNAL, 422, 'judging')
+        return url
 
     def _saved(self, key, source):
         saved = self.store.setting(key)
@@ -95,6 +140,8 @@ class JudgeSettings:
 
     def _decrypt(self, current):
         if current['source'] in ('settings', 'personal'):
+            if current['source'] == 'personal':
+                self.reachable(current['url'])
             try:
                 current['key'] = self.store.decrypt(current['key'])
             except InvalidToken as exc:
@@ -115,6 +162,8 @@ class JudgeSettings:
         A personal configuration never falls back to the shared key, so users cannot spend it on models they choose.
         """
         url, model = gateway(base_url), (model or '').strip()
+        if owner:
+            self.reachable(url)
         if not 0 < len(model) <= 200:
             raise Failure('judge_settings_invalid', '请填写判分模型名称', 422)
         if not api_key:

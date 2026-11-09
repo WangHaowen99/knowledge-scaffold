@@ -70,7 +70,7 @@ test('paginated task loading includes activity beyond the first page and rejects
   globalThis.fetch = async () => ({ ok: true, json: async () => ({ items: [], next_offset: 0 }) });
   await assert.rejects(allPages('/runs'), /分页响应重复/);
 });
-test('only starting, resuming or stopping a run hands over the refresh token', async () => {
+test('only work that outlives the request hands over the refresh token', async () => {
   globalThis.localStorage = storage();
   localStorage.setItem(TOKEN, 'synthetic-access');
   localStorage.setItem(REFRESH, 'synthetic-refresh');
@@ -82,13 +82,18 @@ test('only starting, resuming or stopping a run hands over the refresh token', a
   await api('/runs', { request_id: 'synthetic-request' });
   await api('/runs/run_demo/resume', {});
   await api('/runs/run_demo/cancel', {});
+  // A changed verdict and a regeneration queue suggestions that read the package after the request.
   await api('/runs/run_demo/results/1/override', { verdict: 'pass' });
+  await api('/runs/run_demo/artifacts/regenerate', {});
+  await api('/runs/run_demo/notifications/retry', {});
   await api('/runs/run_demo');
   assert.deepEqual(sent, [
     ['/runs', 'POST', 'synthetic-refresh'],
     ['/runs/run_demo/resume', 'POST', 'synthetic-refresh'],
     ['/runs/run_demo/cancel', 'POST', 'synthetic-refresh'],
-    ['/runs/run_demo/results/1/override', 'POST', ''],
+    ['/runs/run_demo/results/1/override', 'POST', 'synthetic-refresh'],
+    ['/runs/run_demo/artifacts/regenerate', 'POST', 'synthetic-refresh'],
+    ['/runs/run_demo/notifications/retry', 'POST', ''],
     ['/runs/run_demo', 'GET', ''],
   ]);
 });

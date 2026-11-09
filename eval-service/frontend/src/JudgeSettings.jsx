@@ -182,6 +182,9 @@ export function JudgeSettings({ onClose, onChanged }) {
         </div>
         <Feedback value={feedback} part="mine" />
         <p>{activeText(mine.active)}</p>
+        <Alert tone="blue">
+          判分和生成优化建议时，问题、参考答案、智能体回答、工具调用记录和知识包文档会发送给生效的判分模型网关；处理用户反馈时还包括消费用户的问答。个人网关不能指向本机或内网地址，除非管理员已在部署配置中允许。
+        </Alert>
         <label className="use-default">
           <input
             type="checkbox"

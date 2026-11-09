@@ -146,7 +146,8 @@ class DataSources:
             'url':self.config.nl2sql_url,'scene':schema,'token':scene_token(self.config,schema)})
 
     def cleanup(self, run_id, source):
-        if source['mode'] != 'dataset' or source.get('provider') == 'neo4j':
+        # Without an evaluation MySQL no run can have created its database, so there is nothing to drop.
+        if source.get('mode') != 'dataset' or source.get('provider') == 'neo4j' or not self.config.sql_config:
             return
         if not re.fullmatch(r'[a-f0-9]{32}',run_id):
             raise Failure('invalid_run','运行标识无效',422)

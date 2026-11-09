@@ -659,6 +659,14 @@ ensure_evaluation_service_token() {
     [ "${secret}" != "${modeling_token}" ] \
         || die 'EVALUATION_SERVICE_TOKEN 不能与 MODELING_SERVICE_TOKEN 相同'
     write_env_value "${env_file}" EVALUATION_SERVICE_TOKEN "${secret}"
+    # Consumer 向评测推送用户反馈（数据飞轮）的服务凭据：已有值保留，缺失时生成
+    local flywheel
+    flywheel="$(env_get "${env_file}" FLYWHEEL_SERVICE_TOKEN)"
+    [ -n "${flywheel}" ] || flywheel="$(generate_hex_secret 32)"
+    [ "${#flywheel}" -ge 32 ] || die 'FLYWHEEL_SERVICE_TOKEN 至少需要 32 个字符'
+    [ "${flywheel}" != "${secret}" ] && [ "${flywheel}" != "${modeling_token}" ] \
+        || die 'FLYWHEEL_SERVICE_TOKEN 不能与其他服务凭据相同'
+    write_env_value "${env_file}" FLYWHEEL_SERVICE_TOKEN "${flywheel}"
 }
 
 precheck_evaluation() {
@@ -685,7 +693,7 @@ precheck_evaluation() {
 
 deploy_evaluation() {
     [ -n "${EVALUATION_PACKAGE}" ] || return 0
-    local relative network hub_token consumer_token modeling_token elapsed=0 members
+    local relative network hub_token consumer_token modeling_token flywheel_token elapsed=0 members
     [ ! -L "${EVALUATION_DIR}" ] && [ ! -L "${EVALUATION_DIR}/deploy" ] \
         || die '评测安装目录不能是符号链接'
     mkdir -p "${EVALUATION_DIR}/deploy" || die '无法创建评测安装目录'
@@ -710,15 +718,16 @@ deploy_evaluation() {
     consumer_token="$(env_get "${CONSUMER_DIR}/backend/.env" EVALUATION_SERVICE_TOKEN)"
     # Onto Modeling 的 deploy.sh 生成入站凭据；未部署时留空，评测只告警、不发完成通知
     modeling_token="$(env_get "${ONTO_MODELING_DIR}/.env" ONTO_EVALUATION_SERVICE_TOKEN)"
+    flywheel_token="$(env_get "${CONSUMER_DIR}/backend/.env" FLYWHEEL_SERVICE_TOKEN)"
     [ -n "${hub_token}" ] || [ -n "${EVAL_ENV_FILE:-}" ] || die 'Hub 缺少评测凭据，请先更新知识包 Hub'
     log "部署独立评测服务：${EVALUATION_DIR}（网络 ${network}）"
     (cd "${EVALUATION_DIR}" \
         && CONSUMER_NETWORK="${network}" \
         HUB_EVALUATION_SERVICE_TOKEN="${hub_token}" EVALUATION_SERVICE_TOKEN="${consumer_token}" \
-        EVAL_MODELING_SERVICE_TOKEN="${modeling_token}" \
+        EVAL_MODELING_SERVICE_TOKEN="${modeling_token}" EVAL_FLYWHEEL_SERVICE_TOKEN="${flywheel_token}" \
         bash ./deploy/deploy.sh) \
         || die "独立评测服务部署失败；修复后可单独执行 bash ${EVALUATION_DIR}/deploy/deploy.sh"
-    unset hub_token consumer_token modeling_token
+    unset hub_token consumer_token modeling_token flywheel_token
     until docker exec knowledge-evaluation python -c \
         "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/evaluation/api/health', timeout=3)" \
         >/dev/null 2>&1; do
