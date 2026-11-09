@@ -66,10 +66,10 @@ export function MDay({ label, className }) {
   return <div className={cx('wx-day', className)}>{label}</div>;
 }
 
-export function MSys({ children, left, className }) {
+export function MSys({ children, left, className, icon = 'check' }) {
   return (
     <div className={cx('m-sys', className)} style={left ? { justifyContent: 'flex-start', margin: '6px 0' } : undefined}>
-      <span><span className="ck"><Icon name="check" /></span>{children}</span>
+      <span><span className="ck"><Icon name={icon} /></span>{children}</span>
     </div>
   );
 }
@@ -103,10 +103,16 @@ export function Orb() {
   );
 }
 
+// 插件对话里的插件助手（ADR-0087）：靛蓝底的拼图
+export function PluginOrb() {
+  return <span className="wx-orb pm"><Icon name="puzzle" /></span>;
+}
+
 export function MA({ time, children, className }) {
+  const { plugin } = useContext(WbCtx);
   return (
     <div className={cx('m-a', className)}>
-      <div className="wx-who"><Orb /><b>建模助手</b>{time ? <span>{time}</span> : null}</div>
+      <div className="wx-who">{plugin ? <PluginOrb /> : <Orb />}<b>{plugin ? '插件助手' : '建模助手'}</b>{time ? <span>{time}</span> : null}</div>
       <div className="bd">{children}</div>
     </div>
   );

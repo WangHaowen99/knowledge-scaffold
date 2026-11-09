@@ -462,17 +462,19 @@ export function Drawer(all) {
   const ghostRef = useLeaveGhost();
   if (!shown) return null;
   const {
-    onClose, icon, title, sub, w, children, foot, className,
+    onClose, icon, title, sub, w, children, foot, className, acts,
   } = props;
   return (
     <OverlayPortal>
       <div ref={ghostRef} className={cx('drawer', className, leaving && 'mo-leave')} style={w ? { width: w } : undefined} role="dialog">
         <div className="drawer-h">
-          {icon ? <Icon name={icon} size={18} /> : null}
+          {/* icon 可以是图标名，也可以是画好的元素（如插件草稿抽屉的方形图标） */}
+          {icon ? (typeof icon === 'string' ? <Icon name={icon} size={18} /> : icon) : null}
           <div className="grow">
             <div className="b lg">{title}</div>
             {sub ? <div className="muted sm">{sub}</div> : null}
           </div>
+          {acts}
           <button type="button" className="icon-btn" onClick={onClose} aria-label="关闭"><Icon name="x" /></button>
         </div>
         <div className="drawer-b">{children}</div>

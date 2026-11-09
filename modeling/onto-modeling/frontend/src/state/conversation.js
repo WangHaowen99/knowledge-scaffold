@@ -188,7 +188,8 @@ export function applyEvent(state, env) {
 
     case 'card':
     case 'card.updated': {
-      const key = `card:${d.card_id}`;
+      // 插件草稿卡（F17）的 payload 没写 card_id：按这一轮的变更集算一张
+      const key = `card:${d.card_id ?? (d.changeset_id ? `cs:${d.changeset_id}` : seq ?? ts)}`;
       // 一轮一张「这一轮改了什么」卡（F3）：升级前同一个变更集出过两张的，只留最新那张，旧的不再画、更新也不画
       if (d.card_type === 'round_changes' && d.changeset_id) {
         const other = state.order.find((k) => k !== key && state.items[k]?.kind === 'card'

@@ -84,7 +84,7 @@ export function AssistantItem({ it, ctx }) {
   switch (it.kind) {
     case 'assistant': return <AssistantText item={it} />;
     case 'progress': return <ProgressItem item={it} />;
-    case 'card': return <CardItem card={it.card} scope={ctx.scope} />;
+    case 'card': return <CardItem card={it.card} scope={ctx.scope} cardKey={it.key} />;
     case 'permission': return <div data-qid={it.request_id}><PermissionCard item={it} /></div>;
     case 'error': return <ErrorItem item={it} />;
     case 'interrupted': return <InterruptedItem item={it} />;
@@ -150,8 +150,11 @@ export function EarlierHistory({ older, onLoad, rootRef }) {
   );
 }
 
-// 在做什么、停止按钮在输入框那里（RunLine、Composer），时间线末尾不再放「思考中」和打断
-export function Timeline({ state, scope }) {
+const NOTICE_ICON = { plugin_installed: 'puzzle' };
+
+// 在做什么、停止按钮在输入框那里（RunLine、Composer），时间线末尾不再放「思考中」和打断。
+// lead：放在时间线最前面（开头的日期之后）的一块，如插件对话的「已切到插件开发」
+export function Timeline({ state, scope, lead }) {
   const blocks = timelineBlocks(state);
   const fresh = useFreshKeys(state);
   const running = ['running', 'connecting'].includes(state.session.state);
@@ -160,7 +163,7 @@ export function Timeline({ state, scope }) {
     const enter = (cls) => (fresh(b.key) ? cls : undefined);
     switch (b.type) {
       case 'day': return <MDay key={b.key} label={b.item.label} className={enter('mo-fade')} />;
-      case 'notice': return <MSys key={b.key} left={b.item.align === 'left'} className={enter('mo-fade')}>{b.item.text}</MSys>;
+      case 'notice': return <MSys key={b.key} left={b.item.align === 'left'} icon={NOTICE_ICON[b.item.notice_kind]} className={enter('mo-fade')}>{b.item.text}</MSys>;
       case 'user': return <UserMessage key={b.item.local_key || b.key} item={b.item} enter={fresh(b.key)} />;
       case 'decided': return <DecidedRow key={b.key} item={b.item} />;
       case 'withdrawn': return <MSys key={b.key} left className={enter('mo-fade')}>这个问题已失效：{b.item.withdrawn_reason || b.item.question.title}</MSys>;
@@ -185,6 +188,7 @@ export function Timeline({ state, scope }) {
       default: return null;
     }
   });
+  if (lead) rendered.splice(blocks[0]?.type === 'day' ? 1 : 0, 0, <Fragment key="lead">{lead}</Fragment>);
   return rendered;
 }
 
