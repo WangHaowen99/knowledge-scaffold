@@ -1,5 +1,6 @@
 """Issue 389 deployment regressions with synthetic packages and local command stubs."""
 import os
+import secrets
 
 import pytest
 
@@ -71,9 +72,12 @@ def test_standalone_modeling_deployment_warns_when_publication_is_unavailable(tm
     package = tmp_path / 'onto-modeling'
     package.mkdir()
     (package / 'deploy.sh').write_bytes(source.read_bytes())
-    (package / '.env').write_text('ONTO_HUB_SERVICE_TOKEN=synthetic-invalid-placeholder-0000\n'
-                                'ONTO_EVALUATION_SERVICE_TOKEN=synthetic-invalid-evaluation-placeholder\n'
-                                'AUTH_BOOTSTRAP_ADMIN_PASSWORD=synthetic-invalid-placeholder\n')
+    configuration = {
+        'ONTO_HUB_SERVICE_TOKEN': secrets.token_hex(32),
+        'ONTO_EVALUATION_SERVICE_TOKEN': secrets.token_hex(32),
+        'AUTH_BOOTSTRAP_ADMIN_PASSWORD': secrets.token_urlsafe(24),
+    }
+    (package / '.env').write_text(''.join(f'{key}={value}\n' for key, value in configuration.items()))
     _write_executable(package / 'preflight.sh', 'exit 0')
     _write_executable(tmp_path / 'bin/docker',
         'if [ "$1" = exec ]; then case "$*" in *health/dependencies*) exit 1 ;; esac; fi\nexit 0')

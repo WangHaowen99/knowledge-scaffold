@@ -43,7 +43,7 @@ def service_identity(supplied):
                     if value and hmac.compare_digest(value.encode(), supplied.encode())), None)
     if not service:
         raise PackageError('unauthenticated', 'User and service authentication required', 401, 'authorization')
-    return service, configured[service]
+    return service, configured.get(service, '')
 
 
 def authenticate(request):

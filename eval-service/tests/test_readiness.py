@@ -30,8 +30,8 @@ class Dependencies:
 
 
 def configuration(root):
-    return Config(root, auth_url='http://auth.example.com', hub_url='http://hub.example.com',
-                  hub_token=secrets.token_hex(32), consumer_url='http://consumer.example.com',
+    return Config(root, auth_url='https://auth.example.com', hub_url='https://hub.example.com',
+                  hub_token=secrets.token_hex(32), consumer_url='https://consumer.example.com',
                   consumer_token=secrets.token_hex(32), encryption_key=Fernet.generate_key().decode())
 
 
