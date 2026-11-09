@@ -278,7 +278,7 @@ test('EV-01：新建向导、资料分析用的 total / authorized_count 形状�
 test('EV-02 / EV-03 / EV-08：管理员登记并授权，普通用户只能申请、只能测已授权的源', async () => {
   const body = {
     id: 'pos-test', display_name: 'POS 测试库', provider: 'db-mysql', environment: 'test', connection: { host: '192.0.2.30', port: 3306, database: 'pos', username: 'ro' },
-    secret: { password: 'pw' }, scope_allowlist: ['pos.*'], egress: [{ host: '192.0.2.30', port: 3306 }], budget: {}, rate_limit: {}, masking_policy: 'mask-v3', owner: 'zhangsan', grant_project_id: F.MAIN_PID,
+    secret: { password: 'pw' }, scope_allowlist: ['pos.*'], egress: [{ host: '192.0.2.30', port: 3306 }], budget: {}, rate_limit: {}, masking_policy: 'mask-v1', owner: 'zhangsan', grant_project_id: F.MAIN_PID,
   };
   const admin = server();
   const made = await admin.call('POST', '/api/v1/admin/evidence/sources', body);
@@ -667,6 +667,8 @@ test('代码仓库登记：只认 https，出口缺省是仓库主机的 443，�
   assert.equal(repoHost('git@git.example.com:x.git'), null);
   assert.equal(defaultEgress(CODE_PROVIDER, { conn: { repo_url: 'https://git.example.com/demo/x.git' } }), 'git.example.com:443');
   assert.equal(defaultEgress(CODE_PROVIDER, { conn: { repo_url: 'git.example.com/x' } }), '');
+  // 仓库地址写了端口，出口地址跟着用这个端口（登记时内核要求白名单里有连接目标）
+  assert.equal(defaultEgress(CODE_PROVIDER, { conn: { repo_url: 'https://ci@git.example.com:8443/x.git' } }), 'git.example.com:8443');
   assert.equal(defaultEgress(MYSQL, { conn: { host: '192.0.2.30' }, port_db: '3306 / pos' }), '192.0.2.30:3306');
   const form = {
     ...emptyForm({ username: 'zhangsan' }), provider: 'code-repo', display_name: '补货单服务代码', id: 'restock-svc',
@@ -682,7 +684,8 @@ test('代码仓库登记：只认 https，出口缺省是仓库主机的 443，�
   assert.deepEqual(body.secret, { token: 'tok' });
   assert.deepEqual(body.egress, [{ host: 'git.example.com', port: 443 }]);
   assert.deepEqual(body.scope_allowlist, []);
-  assert.equal(body.masking_policy, 'mask-v1');
+  // 代码仓库只支持 none（内核按提供方取缺省）；带上 mask-v1 会被 EV-02 拒绝
+  assert.equal(body.masking_policy, null);
 });
 
 test('采集确认：内核给的窗口是对象，样本行数为 0 时不写；代码仓库快照详情展开成仓库和提交', () => {

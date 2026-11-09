@@ -63,6 +63,8 @@ def card(manager, name: str, project: dict | None) -> dict | None:
         "latest": latest, "channel": channel,
         "project_status": status, "locked_version": locked, "usage_note": None,
         "default_on": bool(manifest.raw.get("default_on") or manifest.required),
+        # 必装（core）：不带项目时 project_status 为空，新建向导靠它锁住开关
+        "required": bool(manifest.required),
         "converter": converter,
     }
 

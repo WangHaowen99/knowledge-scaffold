@@ -319,15 +319,21 @@ export function credState(source) {
 export const credText = (c, now) => (c?.at ? `已设置 · ${fmtWhen(c.at, now)}` : '已设置');
 
 // 代码仓库只认 https（ADR-0086 克隆加固）；出口白名单是仓库主机的 443（§10）
+const REPO_URL = /^https:\/\/(?:[^@/]+@)?([A-Za-z0-9.-]+)(?::(\d+))?(?:[/?#]|$)/i;
 export function repoHost(url) {
-  const m = String(url || '').trim().match(/^https:\/\/(?:[^@/]+@)?([A-Za-z0-9.-]+)(?::\d+)?(?:[/?#]|$)/i);
+  const m = String(url || '').trim().match(REPO_URL);
   return m ? m[1].toLowerCase() : null;
 }
-// 出口地址的缺省：数据库是主机和端口，代码仓库是仓库主机的 443
+// 仓库地址里的主机和端口，没写端口是 443
+export function repoEndpoint(url) {
+  const m = String(url || '').trim().match(REPO_URL);
+  return m ? { host: m[1].toLowerCase(), port: m[2] ? Number(m[2]) : 443 } : null;
+}
+// 出口地址的缺省：数据库是主机和端口，代码仓库是仓库地址的主机和端口
 export function defaultEgress(provider, form) {
   if (provider?.kind === 'code') {
-    const host = repoHost(form.conn?.repo_url);
-    return host ? fmtEgress([{ host, port: 443 }]) : '';
+    const endpoint = repoEndpoint(form.conn?.repo_url);
+    return endpoint ? fmtEgress([endpoint]) : '';
   }
   const port = parsePortDb(form.port_db)?.port;
   return form.conn?.host && port ? fmtEgress([{ host: form.conn.host, port }]) : '';
@@ -398,7 +404,8 @@ export function registerBody(form, provider, { grantProjectId, withSecret = true
     id: form.id, display_name: form.display_name.trim(), provider: provider.id, environment: form.environment, connection,
     ...(withSecret && sf && form.password ? { secret: { [sf.name]: form.password } } : {}),
     scope_allowlist: form.scope, egress: parseEgress(form.egress), access_window: parseWindow(form.window).value,
-    budget: parseBudget(form.budget), rate_limit: parseRate(form.rate), masking_policy: form.masking,
+    // 代码仓库不采样本、表单里没有脱敏策略，交给内核按提供方取缺省（none）
+    budget: parseBudget(form.budget), rate_limit: parseRate(form.rate), masking_policy: provider?.kind === 'code' ? null : form.masking,
     authorization_note: form.note.trim() || null, owner: form.owner,
     ...(grantProjectId ? { grant_project_id: grantProjectId } : {}),
   };

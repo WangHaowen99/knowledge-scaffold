@@ -264,7 +264,8 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
     } catch (e) {
       if (e.code === 'source_id_taken') { setServerErr({ id: '这个 ID 已被占用' }); setShowErr(true); }
       if (e.code === 'artifact_not_found') { up.reset(); set({ artifact: null }); toast('程序已失效，重新上传', 'alert'); return; }
-      toast(errorText(e), 'alert');
+      // 登记的校验错误带具体原因（如「出口白名单里要有 host:port」），比通用的「不符合要求」好改
+      toast(e.code === 'invalid_argument' && e.serverMessage ? e.serverMessage : errorText(e), 'alert');
     } finally {
       setBusy(false);
     }

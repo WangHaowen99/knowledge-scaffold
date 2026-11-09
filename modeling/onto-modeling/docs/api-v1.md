@@ -5262,6 +5262,7 @@ type PackCard = {
   meta: string | null;            // 「22 命令 · 18 子代理」
   latest: string; channel: "stable" | "beta";
   project_status: string | null;  // 见 PL-01
+  required: boolean;              // 必装包（core），不带项目也是 true
   locked_version: string | null;
   usage_note: string | null;      // 「mes-prod 在用」
   converter: { types: string[]; default_for: string[]; license: string } | null;   // 多源连接器里的文档转换器（ADR-0073）

@@ -23,6 +23,7 @@ from .. import config
 from ..api import deps
 from ..api.errors import ApiError
 from ..services import audit, auth, uploads
+from ..services.material_conversion import gateway
 from ..services.auth import AuthError
 
 _log = logging.getLogger(__name__)
@@ -143,8 +144,8 @@ def client_config(request: Request):
         "maintenance": _maintenance_state(),
         "limits": dict(LIMITS),
         "material_types": list(MATERIAL_TYPES),
-        # evidence：证据源本期不开放（ADR-0056），前端据此不再调 EV-01 探测
-        "features": {"drawio": drawio_available(), "evidence": False},
+        # evidence：证据层靠连接器网关（ADR-0082、0084），没部署网关时为 false，前端据此不调 EV-01、不出数据接入的入口
+        "features": {"drawio": drawio_available(), "evidence": bool(gateway.base_url())},
         "billing": {"currency": BILLING_CURRENCY},
     }
 

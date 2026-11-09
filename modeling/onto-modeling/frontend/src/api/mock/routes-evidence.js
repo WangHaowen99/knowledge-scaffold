@@ -97,7 +97,10 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     const fields = {};
     if (creating && !/^[a-z0-9][a-z0-9-]{1,40}$/.test(body.id || '')) fields.id = 'pattern';
     if (creating && !body.display_name) fields.display_name = 'required';
-    if (creating && !self && !(body.scope_allowlist || []).length) fields.scope_allowlist = 'required';
+    const kind = provOf(body.provider)?.kind;
+    // 同内核（evidence/sources.py）：只有数据库要写范围白名单；脱敏策略数据库只认 mask-v1，其他只认 none
+    if (creating && !self && kind === 'db' && !(body.scope_allowlist || []).length) fields.scope_allowlist = 'required';
+    if (!self && kind && body.masking_policy && body.masking_policy !== (kind === 'db' ? 'mask-v1' : 'none')) fields.masking_policy = 'unsupported';
     if (self && provOf(body.provider)?.kind === 'rea' && !String(body.authorization_note || '').trim()) fields.authorization_note = 'required';
     return Object.keys(fields).length ? err(400, 'invalid_argument', '登记信息不完整', { fields }) : null;
   };
@@ -125,7 +128,7 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
       secret_fields: (p.cred_fields || []).filter((x) => x.secret).map((x) => ({ name: x.name, set: !!body.secret?.[x.name], written_at: body.secret?.[x.name] ? new Date().toISOString() : null })),
       scope_allowlist: body.scope_allowlist || [], scope_summary: D.scopeSummary(body.scope_allowlist || []),
       egress: body.egress || [], access_window: body.access_window || null, budget: body.budget, rate_limit: body.rate_limit,
-      masking_policy: body.masking_policy || 'mask-v1', authorization_note: body.authorization_note || null, owner: body.owner || user.username,
+      masking_policy: body.masking_policy || (p.kind === 'db' ? 'mask-v1' : 'none'), authorization_note: body.authorization_note || null, owner: body.owner || user.username,
       last_job: null, authorized_for_project: null,
     };
   };

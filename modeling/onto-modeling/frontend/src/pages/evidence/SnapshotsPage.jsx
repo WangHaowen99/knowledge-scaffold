@@ -162,7 +162,8 @@ function SnapshotsBody({ route }) {
   const started = (j, msg) => {
     setJobs((list) => mergeJob(list || [], j).filter((x) => jobMatches(x, jobFilter)));
     loadSummary();
-    toast(j.state === 'queued' ? `任务 ${j.id} 已排队：${j.queue_reason || '等访问时间窗口'}` : msg || `任务 ${j.id} 已开始`, 'play');
+    // 只有内核给了排队原因（等访问窗口）才说排队；没原因的 queued 是刚提交、马上开始
+    toast(j.state === 'queued' && j.queue_reason ? `任务 ${j.id} 已排队：${j.queue_reason}` : msg || `任务 ${j.id} 已开始`, 'play');
   };
   // 生产库缺 token（428）或过期（410）都回到确认弹窗
   const handleConsentError = async (e, ctx) => {

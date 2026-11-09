@@ -15,6 +15,7 @@ const STEPS = ['目标', '起点与资料', '行业与能力', '引擎与构建�
 const EXAMPLES = ['店长一句话说明需求，按规则自动生成补货单', '根据业主报修判断故障紧急程度并派维修工单', '按订单预测和站点约束求解骑手排班方案'];
 const PURPOSES = [['auto', '由助手判断'], ['goal', '建模目标依据'], ['evidence', '通用业务依据'], ['schema', '数据 Schema'], ['term', '术语表']];
 const PURPOSE_LABEL = Object.fromEntries(PURPOSES);
+const isRequired = (p) => p.required || p.project_status === 'required';
 const CAP_ICON = { core: 'cube', trace: 'flask', knowledge: 'book', codegen: 'code', rev: 'db', diagram: 'branch', websearch: 'globe', migrate: 'recycle', evo: 'refresh' };
 
 function useNameCheck(api, name) {
@@ -66,6 +67,7 @@ export default function CreatePage() {
   const fileRef = useRef(null);
   const [step, setStep] = useState(1);
   const [name, setName] = useState('');
+  const [nameTouched, setNameTouched] = useState(false);
   const [goal, setGoal] = useState('');
   const [starts, setStarts] = useState(() => (route.query.start === 'example' ? ['example'] : ['upload']));
   const [files, setFiles] = useState([]);
@@ -87,7 +89,7 @@ export default function CreatePage() {
       setPacks(items);
       setIndustries(items.filter((p) => p.category === 'industry' && p.default_on).map((p) => p.name));
       setSystems(items.filter((p) => p.category === 'system' && p.default_on).map((p) => p.name));
-      setCaps(Object.fromEntries(items.filter((p) => p.category === 'capability' && p.project_status !== 'required')
+      setCaps(Object.fromEntries(items.filter((p) => p.category === 'capability' && !isRequired(p))
         .map((p) => [p.name, !!p.default_on && p.project_status !== 'offline'])));
     }).catch((e) => toast(errorText(e), 'alert'));
     api.engines().then((r) => { setEngines(r); setEngine(r.default || 'claude'); }).catch(() => {});
@@ -113,6 +115,7 @@ export default function CreatePage() {
   const conflict = chk?.reason === 'conflict';
   // 证据源本期只留接口（EV-01 回 501）：读不到数据源登记时不出「连接业务系统」和依赖证据源的能力包（ADR-0056）
   const evidenceOn = evidenceFromSources(sources);
+  const sysPacks = packs.filter((p) => p.category === 'system');
   const capPacks = packs.filter((p) => p.category === 'capability' && (evidenceOn || !isEvidencePack(p.name)));
   const selectedPages = capPacks.filter((p) => p.ui?.kind === 'page' && caps[p.name]).flatMap((p) => p.ui.pages.map((x) => x.title));
   const srcCount = sources?.total ?? 0;
@@ -121,7 +124,7 @@ export default function CreatePage() {
   const uploading = files.some((f) => f.progress != null && f.progress < 100);
 
   const create = async () => {
-    if (!name.trim()) { setStep(1); toast('请输入项目名称', 'alert'); return; }
+    if (!name.trim()) { setStep(1); setNameTouched(true); toast('请输入项目名称', 'alert'); return; }
     if (!goal.trim()) { setStep(1); toast('请写一句话目标', 'alert'); return; }
     setBusy(true);
     try {
@@ -138,7 +141,7 @@ export default function CreatePage() {
     }
   };
 
-  const nameHint = !chk ? null : chk.reason === 'empty'
+  const nameHint = !chk || (chk.reason === 'empty' && !nameTouched) ? null : chk.reason === 'empty'
     ? <span className="row g4" style={{ color: 'var(--red)' }}>请输入项目名称</span>
     : conflict
       ? <span className="row g4" style={{ color: 'var(--red)' }}><Icon name="alert" size={12} />你已经有一个叫「{name.trim()}」的项目</span>
@@ -187,7 +190,7 @@ export default function CreatePage() {
                 <h2>先说说这个知识包要解决什么问题</h2>
                 <div className="mt20">
                   <Field label="项目名称" req hint={nameHint}>
-                    <div className={cx('inp', (conflict || chk?.reason === 'too_long') && 'err')}><Icon name="edit" size={14} /><input value={name} onChange={(e) => setName(e.target.value)} placeholder="给项目起个名字" autoFocus /></div>
+                    <div className={cx('inp', (conflict || chk?.reason === 'too_long') && 'err')}><Icon name="edit" size={14} /><input value={name} onChange={(e) => { setName(e.target.value); setNameTouched(true); }} placeholder="给项目起个名字" autoFocus /></div>
                   </Field>
                 </div>
                 <div className="mt16">
@@ -255,21 +258,25 @@ export default function CreatePage() {
                     );
                   })}
                 </div>
-                <div className="sec-t" style={{ marginTop: 16 }}><Icon name="server" size={14} />系统知识包</div>
-                <div className="row wrap" style={{ gap: 8 }}>
-                  {packs.filter((p) => p.category === 'system').map((p) => {
-                    const on = systems.includes(p.name);
-                    return (
-                      <span key={p.name} className={cx('chip', on ? 'blue' : 'line')} style={{ height: 30, padding: '0 11px', cursor: 'pointer' }} onClick={() => setSystems((s) => (on ? s.filter((x) => x !== p.name) : [...s, p.name]))}>
-                        <Icon name={on ? 'check' : 'plus'} />{p.label}
-                      </span>
-                    );
-                  })}
-                </div>
+                {sysPacks.length ? (
+                  <>
+                    <div className="sec-t" style={{ marginTop: 16 }}><Icon name="server" size={14} />系统知识包</div>
+                    <div className="row wrap" style={{ gap: 8 }}>
+                      {sysPacks.map((p) => {
+                        const on = systems.includes(p.name);
+                        return (
+                          <span key={p.name} className={cx('chip', on ? 'blue' : 'line')} style={{ height: 30, padding: '0 11px', cursor: 'pointer' }} onClick={() => setSystems((s) => (on ? s.filter((x) => x !== p.name) : [...s, p.name]))}>
+                            <Icon name={on ? 'check' : 'plus'} />{p.label}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </>
+                ) : null}
                 <div className="sec-t" style={{ marginTop: 16 }}><Icon name="puzzle" size={14} />能力包</div>
                 <div className="grid2" style={{ gap: 8 }}>
                   {capPacks.map((p) => {
-                    const required = p.project_status === 'required';
+                    const required = isRequired(p);
                     const offline = p.project_status === 'offline';
                     const on = required || !!caps[p.name];
                     return (
