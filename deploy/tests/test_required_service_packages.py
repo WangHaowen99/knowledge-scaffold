@@ -48,7 +48,6 @@ def test_interactive_deployment_rejects_empty_required_package(tmp_path, mode, m
         answers = [('请选择模式', '1'), ('安装根目录（', '2'),
                    ('请输入自定义安装根目录', str(setup['target'])), ('端口配置', '1'),
                    ('请输入 Consumer 发布包路径', str(setup['packages'][0])),
-                   ('请输入 Modeling 发布包路径', ''),
                    ('请输入 Onto Modeling 发布包路径', str(setup['packages'][2])),
                    ('请输入知识包 Hub 发布包路径', str(setup['hub_package'])),
                    ('请输入独立评测服务发布包', str(setup['evaluation_package']))]
@@ -61,29 +60,41 @@ def test_interactive_deployment_rejects_empty_required_package(tmp_path, mode, m
 
 @pytest.mark.parametrize('interactive', [True, False], ids=['interactive', 'noninteractive'])
 @pytest.mark.parametrize('mode', ['install', 'upgrade', 'legacy'])
-@pytest.mark.parametrize('modeling', [True, False], ids=['with-workbench', 'without-workbench'])
-def test_all_four_services_are_deployed_with_optional_workbench(tmp_path, mode, interactive, modeling):
+def test_all_four_services_are_deployed_without_touching_workbench(tmp_path, mode, interactive):
     setup = _prepare(tmp_path, mode)
     workbench_env = setup['target'] / 'modeling/.env'
     before = workbench_env.read_bytes() if workbench_env.is_file() else None
-    status, output = _run(setup, interactive=interactive, modeling=modeling)
+    status, output = _run(setup, interactive=interactive)
     assert status == 0, output
     calls = _calls(setup)
     consumer = 'consumer-install' if mode == 'install' else 'consumer-upgrade'
     assert calls.index(consumer) < calls.index('hub-deploy') < calls.index('onto-deploy')
     assert calls[-1] == 'evaluation-compose'
-    assert ('modeling-install' in calls) is modeling
+    assert 'modeling-install' not in calls
     assert (setup['target'] / 'knowledge-hub/deploy.sh').is_file()
     assert (setup['target'] / 'onto-modeling/deploy.sh').is_file()
     assert (setup['target'] / 'eval-service/deploy/deploy.sh').is_file()
-    if not modeling:
-        assert (workbench_env.read_bytes() if workbench_env.is_file() else None) == before
-        stopped = tmp_path / 'calls.txt.stopped'
-        if stopped.exists():
-            assert 'mw-modeling' not in stopped.read_text()
-        if mode != 'install':
-            arguments = tmp_path / 'calls.txt.consumer-upgrade-args'
-            assert '--consumer-only' in arguments.read_text().splitlines()
+    assert (workbench_env.read_bytes() if workbench_env.is_file() else None) == before
+    stopped = tmp_path / 'calls.txt.stopped'
+    if stopped.exists():
+        assert 'mw-modeling' not in stopped.read_text()
+    if mode != 'install':
+        arguments = tmp_path / 'calls.txt.consumer-upgrade-args'
+        assert '--consumer-only' in arguments.read_text().splitlines()
+
+
+def test_modeling_package_option_is_rejected_before_any_change(tmp_path):
+    setup = _prepare(tmp_path, 'install')
+    args = [str(DEPLOY_ROOT / 'install-consumer-modeling.sh'),
+            '--consumer-package', str(setup['packages'][0]),
+            '--modeling-package', str(setup['packages'][1]),
+            '--onto-modeling-package', str(setup['packages'][2]),
+            '--knowledge-hub-package', str(setup['hub_package']),
+            '--evaluation-package', str(setup['evaluation_package'])]
+    result = run_script(args, setup['env'])
+    assert result.returncode != 0
+    assert '未知参数：--modeling-package' in result.stderr
+    assert _calls(setup) == []
 
 
 def _stub_package_build(script, top, package, files):
@@ -108,7 +119,8 @@ def test_full_build_keeps_standalone_packages_of_the_four_required_services(tmp_
         (repo / 'eval-service' / name).write_text('# Synthetic build fixture\n')
     _stub_package_build(repo / 'consumer/build.sh', 'onto-agent', 'onto-agent-$1-linux-amd64.tar.gz',
                         ('deploy/deploy.sh', 'images/onto-agent-backend-$1.tar'))
-    _write_executable(repo / 'modeling/build.sh', 'exit 0')
+    # The full build must not call the Workbench build.
+    _write_executable(repo / 'modeling/build.sh', 'exit 1')
     _stub_package_build(repo / 'modeling/onto-modeling/build.sh', 'onto-modeling',
                         'onto-modeling-$1-linux-amd64.tar.gz', ('deploy.sh',))
     _stub_package_build(repo / 'knowledge-hub/build.sh', 'knowledge-hub', 'knowledge-hub-$1-linux-amd64.tar.gz',
@@ -137,5 +149,7 @@ def test_full_build_keeps_standalone_packages_of_the_four_required_services(tmp_
     assert {f'eval-service/{relative}' for relative in EVAL_FILES} <= names
     with tarfile.open(repo / 'dist/onto-agent-v-test-linux-amd64.tar.gz') as archive:  # NOSONAR(S5042)
         bundled = set(archive.getnames())
+        manifest = archive.extractfile('onto-agent/deploy/manifest.json').read().decode()
     assert {f'onto-agent/eval-service/{relative}' for relative in EVAL_FILES} <= bundled
+    assert '"modeling_image"' not in manifest and '"modeling_agent_image"' not in manifest
     assert not (repo / 'eval-service/dist/release-v-test-amd64').exists()

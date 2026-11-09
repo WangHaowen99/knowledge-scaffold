@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Meta Wise 全栈编排脚本：consumer + 必备 auth/JiuwenBox + Modeling Workbench + 可选评测库。
+# Consumer 源码编排脚本：构建并启动 consumer 及必备 auth/JiuwenBox；Hub、Onto Modeling、评测由 deploy.sh 继续部署。
 # 面向自动化执行设计：每步输出机器可判读的 [OK]/[FAIL]/[WARN]，失败即退出并给出修复指令。
 # 用法见 deploy/README.md；快速参考：./deploy-stack.sh help
 set -euo pipefail
@@ -7,7 +7,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONSUMER_DIR="$ROOT/consumer"
 DEPLOY_DIR="$ROOT/deploy"
-MODELING_PROJECT="mw-modeling"          # modeling compose 的项目名（卷名前缀）
 TAG="${TAG:-latest}"
 
 log()  { echo "[deploy-stack] $*"; }
@@ -28,60 +27,6 @@ compose() {
 
 consumer_compose() {
   compose -f "$CONSUMER_DIR/docker-compose.yml" --project-directory "$CONSUMER_DIR" "$@"
-}
-
-consumer_container() {
-  # 同名镜像也会被 docker inspect 命中，必须限定 --type container，
-  # 否则探测到的是镜像而不是在跑的 consumer 容器。
-  if docker inspect --type container onto-agent-backend >/dev/null 2>&1; then
-    printf 'onto-agent-backend\n'
-    return 0
-  fi
-  docker ps --format '{{.Names}}' | grep -E '^onto-agent-backend($|-)|^backend$' | head -1 || true
-}
-
-container_network() {
-  docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$1" \
-    2>/dev/null | head -1 || true
-}
-
-container_mount_volume() {
-  local container="$1" destination="$2"
-  docker inspect --format '{{range .Mounts}}{{if eq .Destination "'"${destination}"'"}}{{println .Name}}{{end}}{{end}}' \
-    "$container" 2>/dev/null | head -1 || true
-}
-
-detect_consumer_network() {
-  local container network
-  container="$(consumer_container)"
-  if [ -n "$container" ]; then
-    network="$(container_network "$container")"
-    [ -z "$network" ] || { printf '%s\n' "$network"; return 0; }
-  fi
-  docker network ls --format '{{.Name}}' | grep -E '(^|_|-)onto-agent-network$|^onto-agent_default$' | head -1 || true
-}
-
-detect_jiuwenbox_socket_volume() {
-  local container volume
-  container="$(consumer_container)"
-  if [ -n "$container" ]; then
-    volume="$(container_mount_volume "$container" /run/jiuwenbox)"
-    [ -z "$volume" ] || { printf '%s\n' "$volume"; return 0; }
-  fi
-  if docker inspect mw-modeling >/dev/null 2>&1; then
-    volume="$(container_mount_volume mw-modeling /run/jiuwenbox)"
-    [ -z "$volume" ] || { printf '%s\n' "$volume"; return 0; }
-  fi
-  docker volume ls --format '{{.Name}}' | grep -E '(^|_)onto-jiuwenbox-sock$' | head -1 || true
-}
-
-modeling_compose() {
-  local socket_volume
-  # logs/down 也必须先通过 Compose 插值；启动路径会单独校验该卷真实存在。
-  socket_volume="${JIUWENBOX_SOCKET_VOLUME:-$(detect_jiuwenbox_socket_volume)}"
-  socket_volume="${socket_volume:-unavailable-jiuwenbox-socket}"
-  JIUWENBOX_SOCKET_VOLUME="$socket_volume" compose -p "$MODELING_PROJECT" \
-    -f "$DEPLOY_DIR/docker-compose.modeling.yml" --project-directory "$DEPLOY_DIR" "$@"
 }
 
 # ---- HTTP 健康等待：wait_http <名称> <url> <超时秒> <logs服务名> ----
@@ -111,82 +56,6 @@ env_get() { # env_get <file> <key> → 值（无则空）；按 compose env_file
   v="$([ -f "$1" ] && grep -E "^${2}=" "$1" | tail -1 | cut -d= -f2- || true)"
   v="${v%$'\r'}"
   printf '%s' "$v" | sed -E "s/[[:space:]]+#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//; s/^\"(.*)\"$/\1/; s/^'(.*)'$/\1/"
-}
-
-load_env_if_unset() {
-  local file="$1" key="$2" value
-  [ -z "${!key:-}" ] || return 0
-  value="$(env_get "$file" "$key")"
-  [ -z "$value" ] || { printf -v "$key" '%s' "$value"; export "$key"; }
-}
-
-is_public_ipv4() {
-  local ip="$1"
-  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
-  [[ "$ip" != 127.* && "$ip" != 10.* && "$ip" != 192.168.* \
-      && "$ip" != 169.254.* && "$ip" != 0.* ]] || return 1
-  if [[ "$ip" =~ ^172\.([0-9]+)\. ]]; then
-    [ "${BASH_REMATCH[1]}" -lt 16 ] || [ "${BASH_REMATCH[1]}" -gt 31 ] || return 1
-  fi
-  return 0
-}
-
-detect_public_ipv4() {
-  local candidate service
-  command -v curl >/dev/null 2>&1 || return 1
-  for service in https://api.ipify.org https://ifconfig.me/ip https://icanhazip.com; do
-    candidate="$(curl -fsS --max-time 2 --connect-timeout 1 "$service" 2>/dev/null | tr -d '[:space:]')" || continue
-    is_public_ipv4 "$candidate" && { printf '%s\n' "$candidate"; return 0; }
-  done
-  return 1
-}
-
-detect_lan_ipv4() {
-  local candidate
-  if command -v ip >/dev/null 2>&1; then
-    candidate="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1)"
-    if [[ "$candidate" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] \
-       && [[ "$candidate" != 127.* && "$candidate" != 169.254.* ]]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  fi
-  hostname -I 2>/dev/null | tr ' ' '\n' | while read -r candidate; do
-    [[ "$candidate" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || continue
-    [[ "$candidate" != 127.* && "$candidate" != 169.254.* ]] || continue
-    printf '%s\n' "$candidate"
-    break
-  done
-}
-
-resolve_modeling_mcp_public_base_url() {
-  local port="${MODELING_MCP_PORT:-5188}" public_ip lan_ip
-  if [ -n "${MODELING_MCP_PUBLIC_BASE_URL:-}" ]; then
-    MODELING_MCP_PUBLIC_BASE_URL="${MODELING_MCP_PUBLIC_BASE_URL%/}"
-    export MODELING_MCP_PUBLIC_BASE_URL
-    ok "使用显式 MCP 对外地址：${MODELING_MCP_PUBLIC_BASE_URL}"
-    return 0
-  fi
-  public_ip="$(detect_public_ipv4 || true)"
-  if [ -n "$public_ip" ]; then
-    MODELING_MCP_PUBLIC_BASE_URL="http://${public_ip}:${port}"
-    export MODELING_MCP_PUBLIC_BASE_URL
-    warn "未配置 MCP 公网基础地址，已启用探测到的公网 IP：${MODELING_MCP_PUBLIC_BASE_URL}"
-    warn "当前使用 HTTP，公网 Token 可能被明文传输；正式环境建议改为 HTTPS 域名或带有效证书的 HTTPS IP"
-    return 0
-  fi
-  lan_ip="$(detect_lan_ipv4 | head -n 1 || true)"
-  if [ -n "$lan_ip" ]; then
-    MODELING_MCP_PUBLIC_BASE_URL="http://${lan_ip}:${port}"
-    export MODELING_MCP_PUBLIC_BASE_URL
-    warn "未探测到公网 IP，已启用局域网 MCP 地址：${MODELING_MCP_PUBLIC_BASE_URL}"
-    warn "该地址仅适用于网络互通的客户端；如需公网接入，请显式配置 MODELING_MCP_PUBLIC_BASE_URL"
-    return 0
-  fi
-  MODELING_MCP_PUBLIC_BASE_URL="http://127.0.0.1:${port}"
-  export MODELING_MCP_PUBLIC_BASE_URL
-  warn "未探测到可用公网或局域网 IP，MCP 回退为本机地址：${MODELING_MCP_PUBLIC_BASE_URL}"
-  warn "建模部署继续执行，但 MCP 当前仅限本机访问"
 }
 
 ensure_mcp_token_secret() {
@@ -289,73 +158,6 @@ ensure_evaluation_service_token() {
   ok "评测服务令牌已配置（值不写入日志）"
 }
 
-ensure_eval_mysql_password() {
-  # 评测库 root 密码：显式 env > backend/.env 留存值 > 首次自动生成（开箱即用，
-  # 与 MCP_TOKEN_SECRET 同款持久化——不打印、0600 落盘、幂等复用）
-  local env_file="$CONSUMER_DIR/backend/.env" secret temp_file
-  secret="${EVAL_MYSQL_ROOT_PASSWORD:-$(env_get "$env_file" EVAL_MYSQL_ROOT_PASSWORD)}"
-  if [ -z "$secret" ]; then
-    if command -v openssl >/dev/null 2>&1; then
-      secret="$(openssl rand -hex 16)"
-    elif command -v python3 >/dev/null 2>&1; then
-      secret="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
-    else
-      fail "无法生成 EVAL_MYSQL_ROOT_PASSWORD：需要 openssl 或 Python 3" 2
-    fi
-  fi
-  [ "${#secret}" -ge 16 ] || fail     "EVAL_MYSQL_ROOT_PASSWORD 少于 16 个字符；请改为独立强随机值" 2
-  temp_file="$(mktemp "${env_file}.tmp.XXXXXX")" || fail "无法更新 $env_file" 2
-  chmod 600 "$temp_file"
-  if ! awk -v secret="$secret" '
-    BEGIN { updated = 0 }
-    /^EVAL_MYSQL_ROOT_PASSWORD=/ {
-      if (!updated) { print "EVAL_MYSQL_ROOT_PASSWORD=" secret; updated = 1 }
-      next
-    }
-    { print }
-    END { if (!updated) print "EVAL_MYSQL_ROOT_PASSWORD=" secret }
-  ' "$env_file" > "$temp_file"; then
-    command rm -f -- "$temp_file"
-    fail "无法更新 $env_file" 2
-  fi
-  mv "$temp_file" "$env_file"
-  chmod 600 "$env_file"
-  EVAL_MYSQL_ROOT_PASSWORD="$secret"
-  export EVAL_MYSQL_ROOT_PASSWORD
-  ok "评测库 root 密码已配置（值不写入日志）"
-}
-
-ensure_modeling_mcp_token_secret() {
-  local env_file="$CONSUMER_DIR/backend/.env" secret temp_file
-  secret="${MODELING_MCP_TOKEN_SECRET:-$(env_get "$env_file" MODELING_MCP_TOKEN_SECRET)}"
-  if [ -z "$secret" ]; then
-    if command -v openssl >/dev/null 2>&1; then
-      secret="$(openssl rand -hex 32)"
-    elif command -v python3 >/dev/null 2>&1; then
-      secret="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
-    else
-      fail "无法生成 MODELING_MCP_TOKEN_SECRET：需要 openssl 或 Python 3" 2
-    fi
-  fi
-  [ "${#secret}" -ge 32 ] || fail "MODELING_MCP_TOKEN_SECRET 少于 32 个字符" 2
-  temp_file="$(mktemp "${env_file}.tmp.XXXXXX")" || fail "无法更新 $env_file" 2
-  chmod 600 "$temp_file"
-  awk -v secret="$secret" '
-    BEGIN { updated = 0 }
-    /^MODELING_MCP_TOKEN_SECRET=/ {
-      if (!updated) { print "MODELING_MCP_TOKEN_SECRET=" secret; updated = 1 }
-      next
-    }
-    { print }
-    END { if (!updated) print "MODELING_MCP_TOKEN_SECRET=" secret }
-  ' "$env_file" > "$temp_file" || { command rm -f -- "$temp_file"; fail "无法更新 $env_file" 2; }
-  mv "$temp_file" "$env_file"
-  chmod 600 "$env_file"
-  MODELING_MCP_TOKEN_SECRET="$secret"
-  export MODELING_MCP_TOKEN_SECRET
-  ok "Modeling MCP Token 密钥已配置（值不写入日志）"
-}
-
 ensure_jiuwenbox_image() {
   local image="onto-agent-jiuwenbox:${TAG}"
   if docker image inspect "$image" >/dev/null 2>&1; then
@@ -405,7 +207,7 @@ cmd_preflight() {
   else
     echo "[deploy-stack] [FAIL] 缺少 docker compose"; rc=2
   fi
-  for p in "${BACKEND_PORT:-5055}" "${FRONTEND_PORT:-8888}" "${MODELING_PORT:-8100}"; do
+  for p in "${BACKEND_PORT:-5055}" "${FRONTEND_PORT:-8888}"; do
     if port_free "$p"; then ok "端口 $p 空闲"; else
       if curl -fsS --max-time 3 "http://127.0.0.1:$p/health" >/dev/null 2>&1; then
         warn "端口 $p 已被占用，且像是本系统已在运行（/health 可达）——重复 up 是安全的"
@@ -414,19 +216,8 @@ cmd_preflight() {
       fi
     fi
   done
-  port_free "${EVAL_MYSQL_PORT:-3306}" && ok "端口 ${EVAL_MYSQL_PORT:-3306} 空闲（--with-eval 需要）" \
-    || warn "端口 ${EVAL_MYSQL_PORT:-3306} 被占用；仅在使用 --with-eval 时需要处理"
   if [ -f "$CONSUMER_DIR/backend/.env" ]; then
     ok "consumer/backend/.env 已存在"
-    local modeling_base_url modeling_model
-    modeling_base_url="${MODELING_LLM_BASE_URL:-$(env_get "$CONSUMER_DIR/backend/.env" MODELING_LLM_BASE_URL)}"
-    modeling_model="${MODELING_LLM_MODEL:-$(env_get "$CONSUMER_DIR/backend/.env" MODELING_LLM_MODEL)}"
-    if { [[ "$modeling_base_url" == http://* ]] || [[ "$modeling_base_url" == https://* ]]; } && \
-       [ -n "$modeling_model" ]; then
-      ok "Modeling Workbench Agent 模型已配置"
-    else
-      warn "Modeling LLM 尚未配置；部署后请使用 admin 登录 Workbench，在配置中心设置平台默认模型"
-    fi
   else
     warn "consumer/backend/.env 不存在（up 时会从 .env.example 自动创建）"
   fi
@@ -435,24 +226,19 @@ cmd_preflight() {
 }
 
 cmd_up() {
-  local with_eval=1 consumer_only=0 modeling_only=0 no_build=0
-  local modeling_tag="${MODELING_TAG:-latest}"
+  local no_build=0
   command -v curl >/dev/null 2>&1 || fail "缺少 curl，无法执行部署健康检查" 2
   while [ $# -gt 0 ]; do
     case "$1" in
       --with-auth) ;; # 兼容旧命令；auth-server 现在是必备组件并始终部署。
-      --with-eval) with_eval=1 ;; # 兼容旧命令；评测库现在默认启用
-      --no-eval) with_eval=0 ;;
-      --consumer-only) consumer_only=1 ;;
-      --modeling-only) modeling_only=1 ;;
+      --consumer-only) ;; # 兼容旧命令；本脚本现在只部署 consumer。
       --no-build) no_build=1 ;;
       --tag) [ $# -ge 2 ] && [ "${2#--}" = "$2" ] || fail "--tag 需要一个值（例：--tag latest）" 2; TAG="$2"; shift ;;
-      --modeling-tag) [ $# -ge 2 ] && [ "${2#--}" = "$2" ] || fail "--modeling-tag 需要一个值（例：--modeling-tag d3bfa079）" 2; modeling_tag="$2"; shift ;;
-      *) fail "未知参数：$1（可用：--with-auth --with-eval --no-eval --consumer-only --modeling-only --no-build --tag <tag> --modeling-tag <tag>）" 2 ;;
+      *) fail "未知参数：$1（可用：--with-auth --consumer-only --no-build --tag <tag>）" 2 ;;
     esac
     shift
   done
-  export TAG MODELING_TAG="$modeling_tag"
+  export TAG
 
   local build_args=(--build)
   [ "$no_build" -eq 0 ] || build_args=(--no-build)
@@ -462,126 +248,50 @@ cmd_up() {
     chmod 600 "$CONSUMER_DIR/backend/.env"
     ok "已从 .env.example 创建 consumer/backend/.env，请按报错提示补齐必填配置后重跑"
   fi
-  if [ "$consumer_only" -eq 0 ]; then
-    ensure_modeling_service_token
-    ensure_modeling_mcp_token_secret
-  fi
-  [ "$modeling_only" -eq 1 ] || ensure_evaluation_service_token
-  local url="" token="" bootstrap_password="" config_errors=0
-  if [ "$modeling_only" -eq 0 ]; then
-    url="$(env_get "$CONSUMER_DIR/backend/.env" AUTH_SERVER_URL)"
-    token="$(env_get "$CONSUMER_DIR/backend/.env" AUTH_SERVER_ADMIN_TOKEN)"
-    bootstrap_password="$(env_get "$CONSUMER_DIR/backend/.env" AUTH_BOOTSTRAP_ADMIN_PASSWORD)"
-    if [ -z "$url" ] || [ "${#token}" -lt 16 ] || \
-       { [ ! -f "$CONSUMER_DIR/.onto-auth/users.json" ] && [ -z "$bootstrap_password" ]; }; then
-      echo "[deploy-stack] [FAIL] auth-server 配置不完整：AUTH_SERVER_URL、至少 16 字符的 AUTH_SERVER_ADMIN_TOKEN，以及首次部署的 AUTH_BOOTSTRAP_ADMIN_PASSWORD" >&2
-      config_errors=1
-    fi
-  fi
-  if [ "$consumer_only" -eq 0 ]; then
-    for key in MODELING_LLM_BASE_URL MODELING_LLM_MODEL MODELING_LLM_API_KEY \
-               MODELING_LLM_MAX_TOKENS MODELING_LLM_CONTEXT_WINDOW \
-               MODELING_AGENT_LLM_MAX_TOKENS MODELING_AGENT_MAX_ITERATIONS \
-               MODELING_LLM_THINKING_MODE MODELING_REASONING_HEADROOM_TOKENS \
-               MODELING_LEADER_OUTPUT_TOKENS \
-               MODELING_AGENT_PIP_INDEX_URL MODELING_AGENT_PIP_TIMEOUT \
-               MODELING_AGENT_PIP_RETRIES MODELING_SERVICE_TOKEN \
-               MODELING_CONTEXT_WINDOW_MESSAGES MODELING_CONTEXT_MAX_MESSAGES \
-               MODELING_CONTEXT_WINDOW_ROUNDS MODELING_CONTEXT_PROCESSOR_PRESET \
-               MODELING_CONTEXT_WINDOW_TOKENS MODELING_CONTEXT_PROTECTED_TOOLS \
-               MODELING_MCP_PUBLIC_BASE_URL \
-               MODELING_MCP_SUPPORTED_PROTOCOL_VERSIONS MODELING_MCP_PROTOCOL_COMPATIBILITY \
-               MODELING_MCP_OPERATION_RULE_ENABLED MODELING_MCP_TOKEN_SECRET \
-               MODELING_MCP_TRANSPORT \
-               MODELING_ACCEPTANCE_MODE; do
-      load_env_if_unset "$CONSUMER_DIR/backend/.env" "$key"
-      load_env_if_unset "$DEPLOY_DIR/.env" "$key"
-    done
-    resolve_modeling_mcp_public_base_url
-  fi
-  [ "$config_errors" -eq 0 ] || fail "请补齐 consumer/backend/.env 后重新执行 ./deploy/deploy.sh" 2
-
-  # ---- consumer ----
-  if [ "$modeling_only" -eq 0 ]; then
-    mkdir -p "$CONSUMER_DIR/backend/config" "$CONSUMER_DIR/.onto-runtime/config" \
-             "$CONSUMER_DIR/backend/logs" "$CONSUMER_DIR/frontend/logs/nginx"
-
-    export AUTH_SERVER_ADMIN_TOKEN="$token"
-    ok "auth-server 已启用（敏感配置从 backend/.env 注入，值不写入日志）"
-
-    ensure_mcp_token_secret
-    ensure_jiuwenbox_image
-    log "启动 consumer（TAG=$TAG）…"
-    consumer_compose up -d "${build_args[@]}"
-    wait_for_container "onto-agent-auth-server-${TAG}" 180 auth-server
-    wait_for_container "onto-agent-jiuwenbox-${TAG}" 180 jiuwenbox
-    wait_for_container "onto-agent-backend-${TAG}" 180 backend
-    wait_for_container "onto-agent-mcp-${TAG}" 180 mcp
-    wait_for_container "onto-agent-frontend-${TAG}" 180 frontend
-    wait_http "consumer-backend" "http://127.0.0.1:${BACKEND_PORT:-5055}/health" 180 backend
-    wait_http "consumer-frontend" "http://127.0.0.1:${FRONTEND_PORT:-8888}/" 120 frontend
+  # consumer 的入站凭据；独立部署的 Modeling Workbench 须使用相同的值
+  ensure_modeling_service_token
+  ensure_evaluation_service_token
+  local url token bootstrap_password
+  url="$(env_get "$CONSUMER_DIR/backend/.env" AUTH_SERVER_URL)"
+  token="$(env_get "$CONSUMER_DIR/backend/.env" AUTH_SERVER_ADMIN_TOKEN)"
+  bootstrap_password="$(env_get "$CONSUMER_DIR/backend/.env" AUTH_BOOTSTRAP_ADMIN_PASSWORD)"
+  if [ -z "$url" ] || [ "${#token}" -lt 16 ] || \
+     { [ ! -f "$CONSUMER_DIR/.onto-auth/users.json" ] && [ -z "$bootstrap_password" ]; }; then
+    echo "[deploy-stack] [FAIL] auth-server 配置不完整：AUTH_SERVER_URL、至少 16 字符的 AUTH_SERVER_ADMIN_TOKEN，以及首次部署的 AUTH_BOOTSTRAP_ADMIN_PASSWORD" >&2
+    fail "请补齐 consumer/backend/.env 后重新执行 ./deploy/deploy.sh" 2
   fi
 
-  # ---- modeling ----
-  if [ "$consumer_only" -eq 0 ]; then
-    if [ -n "${CONSUMER_NETWORK:-}" ]; then
-      ok "使用用户指定的 consumer 网络：$CONSUMER_NETWORK"
-    else
-      local net; net="$(detect_consumer_network)"
-      [ -n "$net" ] || fail "未找到 consumer 网络（*onto-agent-network）。请先启动 consumer：./deploy-stack.sh up --consumer-only；或 export CONSUMER_NETWORK=<实际网络名> 后重跑"
-      export CONSUMER_NETWORK="$net"
-      ok "使用 consumer 网络：$net"
-    fi
+  mkdir -p "$CONSUMER_DIR/backend/config" "$CONSUMER_DIR/.onto-runtime/config" \
+           "$CONSUMER_DIR/backend/logs" "$CONSUMER_DIR/frontend/logs/nginx"
 
-    local socket_volume
-    socket_volume="${JIUWENBOX_SOCKET_VOLUME:-$(detect_jiuwenbox_socket_volume)}"
-    [ -n "$socket_volume" ] || fail \
-      "未找到 JiuwenBox socket 卷。请先部署 consumer，或设置 JIUWENBOX_SOCKET_VOLUME=<卷名>" 2
-    export JIUWENBOX_SOCKET_VOLUME="$socket_volume"
-    ok "使用 JiuwenBox socket 卷：$socket_volume"
+  export AUTH_SERVER_ADMIN_TOKEN="$token"
+  ok "auth-server 已启用（敏感配置从 backend/.env 注入，值不写入日志）"
 
-    local eval_args=()
-    if [ "$with_eval" -eq 1 ]; then
-      ensure_eval_mysql_password
-      # 宿主 3306 常被本机已有 MySQL 占用：未显式指定发布端口时自动回退 13306
-      # （评测链路走容器网络内部端口，宿主发布端口只影响外部直连排查）
-      if [ -z "${EVAL_MYSQL_PORT:-}" ] && ! port_free 3306; then
-        export EVAL_MYSQL_PORT=13306
-        warn "宿主端口 3306 被占用，评测库改为发布在 13306（EVAL_MYSQL_PORT 可显式指定）"
-      fi
-      eval_args=(--profile eval)
-      export EVAL_DB_URL="${EVAL_DB_URL:-mysql://root:${EVAL_MYSQL_ROOT_PASSWORD}@eval-mysql:3306}"
-      export MODELING_EVAL_BINDING_URL="${MODELING_EVAL_BINDING_URL:-http://modeling-nl2sql:5600}"
-      # 打印时掩码密码段，避免凭据进入终端/CI 日志
-      ok "评测库已启用：EVAL_DB_URL=$(printf '%s' "$EVAL_DB_URL" | sed -E 's#://([^:/@]+):[^@]*@#://\1:***@#')"
-    fi
-
-    log "启动 Modeling Workbench（core + MCP + Agent，tag=$MODELING_TAG）…"
-    modeling_compose "${eval_args[@]+"${eval_args[@]}"}" up -d "${build_args[@]}" --remove-orphans
-    wait_for_container "mw-modeling-agent" 180
-    wait_http "modeling" "http://127.0.0.1:${MODELING_PORT:-8100}/health" 120 modeling
-    wait_http "modeling-mcp" "http://127.0.0.1:${MODELING_MCP_PORT:-5188}/health" 120 modeling
-    wait_http "modeling-workbench" "http://127.0.0.1:${MODELING_PORT:-8100}/workbench.html" 60 modeling
-  fi
+  ensure_mcp_token_secret
+  ensure_jiuwenbox_image
+  log "启动 consumer（TAG=$TAG）…"
+  consumer_compose up -d "${build_args[@]}"
+  wait_for_container "onto-agent-auth-server-${TAG}" 180 auth-server
+  wait_for_container "onto-agent-jiuwenbox-${TAG}" 180 jiuwenbox
+  wait_for_container "onto-agent-backend-${TAG}" 180 backend
+  wait_for_container "onto-agent-mcp-${TAG}" 180 mcp
+  wait_for_container "onto-agent-frontend-${TAG}" 180 frontend
+  wait_http "consumer-backend" "http://127.0.0.1:${BACKEND_PORT:-5055}/health" 180 backend
+  wait_http "consumer-frontend" "http://127.0.0.1:${FRONTEND_PORT:-8888}/" 120 frontend
 
   echo
   ok "部署完成。访问入口："
-  [ "$modeling_only" -eq 0 ] && log "  控制台（consumer）  http://localhost:${FRONTEND_PORT:-8888}   初始账号 admin（密码取 AUTH_BOOTSTRAP_ADMIN_PASSWORD）"
-  [ "$consumer_only" -eq 0 ] && log "  建模工作台          http://localhost:${MODELING_PORT:-8100}/workbench.html#/create   用 consumer 账号登录"
-  [ "$consumer_only" -eq 0 ] && log "  建模 MCP            ${MODELING_MCP_PUBLIC_BASE_URL}"
+  log "  控制台（consumer）  http://localhost:${FRONTEND_PORT:-8888}   初始账号 admin（密码取 AUTH_BOOTSTRAP_ADMIN_PASSWORD）"
   log "后续初始化步骤见 deploy/README.md 第 4 节。"
 }
 
 cmd_status() {
   log "容器状态："
-  docker ps -a --filter name=onto-agent --filter name=mw-modeling --filter name=mw-eval-mysql \
+  docker ps -a --filter name=onto-agent \
     --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
   echo
   for pair in "consumer-backend|http://127.0.0.1:${BACKEND_PORT:-5055}/health" \
-              "consumer-frontend|http://127.0.0.1:${FRONTEND_PORT:-8888}/" \
-              "modeling|http://127.0.0.1:${MODELING_PORT:-8100}/health" \
-              "modeling-mcp|http://127.0.0.1:${MODELING_MCP_PORT:-5188}/health" \
-              "modeling-workbench|http://127.0.0.1:${MODELING_PORT:-8100}/workbench.html"; do
+              "consumer-frontend|http://127.0.0.1:${FRONTEND_PORT:-8888}/"; do
     local_name="${pair%%|*}"; local_url="${pair##*|}"
     if curl -fsS --max-time 5 "$local_url" >/dev/null 2>&1; then
       ok "$local_name 可达：$local_url"
@@ -593,8 +303,7 @@ cmd_status() {
 
 cmd_down() {
   local vol_args=()
-  [ "${1:-}" = "--volumes" ] && vol_args=(--volumes) && warn "将同时删除数据卷（建模项目数据、评测库数据不可恢复）"
-  modeling_compose --profile eval down "${vol_args[@]+"${vol_args[@]}"}" 2>/dev/null || true
+  [ "${1:-}" = "--volumes" ] && vol_args=(--volumes) && warn "将同时删除 consumer 数据卷（数据不可恢复）"
   consumer_compose --profile auth down "${vol_args[@]+"${vol_args[@]}"}"
   ok "已停止"
 }
@@ -603,8 +312,7 @@ cmd_logs() {
   local svc="${1:-}"
   case "$svc" in
     backend|frontend|mcp|auth-server|jiuwenbox) consumer_compose logs -f --tail 200 "$svc" ;;
-    modeling|modeling-agent|modeling-nl2sql|eval-mysql) modeling_compose logs -f --tail 200 "$svc" ;;
-    *) fail "用法：./deploy-stack.sh logs <backend|frontend|mcp|auth-server|jiuwenbox|modeling|modeling-agent|modeling-nl2sql|eval-mysql>" 2 ;;
+    *) fail "用法：./deploy-stack.sh logs <backend|frontend|mcp|auth-server|jiuwenbox>" 2 ;;
   esac
 }
 
@@ -613,23 +321,16 @@ cmd_help() {
 用法：./deploy-stack.sh <command> [options]
 
   preflight                     环境检查（docker/compose/端口），全部 [OK] 才继续
-  up [options]                  构建并启动全栈（幂等，可重复执行）
+  up [options]                  构建并启动 consumer（幂等，可重复执行）
       --with-auth               兼容旧命令；auth-server 现在默认且始终启用
-      --with-eval               兼容旧命令；评测库（MySQL + NL2SQL）现在默认启用
-      --no-eval                 不部署评测库（数据评测阶段将降级为无数据库模式）
-      --consumer-only           只部署运行期 consumer
-      --modeling-only           只部署建模工作台（要求 consumer 已在运行）
+      --consumer-only           兼容旧命令；本脚本现在只部署 consumer
       --no-build               禁止在部署机构建，只使用已加载的镜像
       --tag <tag>               consumer 镜像 tag（默认 latest）
-      --modeling-tag <tag>      Modeling Core/Agent 镜像 tag（默认 latest）
   status                        容器状态 + 健康检查
   down [--volumes]              停止（--volumes 同时删数据卷，慎用）
-  logs <service>                跟踪日志：backend|frontend|mcp|auth-server|jiuwenbox|modeling|modeling-agent|eval-mysql
+  logs <service>                跟踪日志：backend|frontend|mcp|auth-server|jiuwenbox
 
-环境变量（可选覆盖）：BACKEND_PORT=5055 FRONTEND_PORT=8888 MODELING_PORT=8100 MODELING_MCP_PORT=5188
-  MODELING_MCP_PUBLIC_BASE_URL=https://mcp.example.com（显式配置优先；缺失时自动按公网 IP、局域网 IP、本机地址降级）
-  EVAL_MYSQL_PORT=3306 EVAL_MYSQL_ROOT_PASSWORD=<启用评测库时必填的强随机值>
-  MODELING_LLM_BASE_URL/MODEL/API_KEY（可选部署兜底；推荐由 admin 登录后统一配置）
+环境变量（可选覆盖）：BACKEND_PORT=5055 FRONTEND_PORT=8888
 完整手册：deploy/README.md
 EOF
 }

@@ -6,9 +6,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--consumer-only|--modeling-only|--onto-modeling-only|--knowledge-hub-only|--eval-only]
+Usage: $(basename "$0") [--consumer-only|--onto-modeling-only|--knowledge-hub-only|--eval-only]
 
-Deploy the full stack — consumer, Modeling Workbench, Knowledge Package Hub,
+Deploy the full stack — consumer, Knowledge Package Hub,
 Onto Modeling and evaluation — from either a source checkout or an extracted
 release package. Knowledge Package Hub and Onto Modeling are independent
 compose projects; --onto-modeling-only does not touch the Hub.
@@ -89,43 +89,6 @@ ensure_release_modeling_service_token() {
     MODELING_SERVICE_TOKEN="${secret}"
     export MODELING_SERVICE_TOKEN
     log "Modeling service token is ready (value is not printed)"
-}
-
-ensure_release_modeling_mcp_token_secret() {
-    local bundle_root="$1" env_file="${1}/backend/.env" example_file="${1}/backend/.env.example"
-    local secret temp_file
-    if [ ! -f "${env_file}" ]; then
-        [ -f "${example_file}" ] || die "Consumer environment template not found: ${example_file}"
-        cp "${example_file}" "${env_file}"
-        chmod 600 "${env_file}"
-    fi
-    secret="${MODELING_MCP_TOKEN_SECRET:-$(env_get "${env_file}" MODELING_MCP_TOKEN_SECRET)}"
-    if [ -z "${secret}" ]; then
-        if command -v openssl >/dev/null 2>&1; then
-            secret="$(openssl rand -hex 32)"
-        elif command -v python3 >/dev/null 2>&1; then
-            secret="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
-        else
-            die "Cannot generate MODELING_MCP_TOKEN_SECRET: openssl or Python 3 is required"
-        fi
-    fi
-    [ "${#secret}" -ge 32 ] || die "MODELING_MCP_TOKEN_SECRET must contain at least 32 characters"
-    temp_file="$(mktemp "${env_file}.tmp.XXXXXX")" || die "Cannot update ${env_file}"
-    chmod 600 "${temp_file}"
-    awk -v secret="${secret}" '
-        BEGIN { updated = 0 }
-        /^MODELING_MCP_TOKEN_SECRET=/ {
-            if (!updated) { print "MODELING_MCP_TOKEN_SECRET=" secret; updated = 1 }
-            next
-        }
-        { print }
-        END { if (!updated) print "MODELING_MCP_TOKEN_SECRET=" secret }
-    ' "${env_file}" > "${temp_file}" || { rm -f "${temp_file}"; die "Cannot update ${env_file}"; }
-    mv "${temp_file}" "${env_file}"
-    chmod 600 "${env_file}"
-    MODELING_MCP_TOKEN_SECRET="${secret}"
-    export MODELING_MCP_TOKEN_SECRET
-    log "Modeling MCP token secret is ready (value is not printed)"
 }
 
 # onto-modeling 接入整栈（开箱即用）：共享 consumer 账号中心 + 同网络 +
@@ -330,7 +293,6 @@ first_env_value() { # <键> <文件>...：返回第一个非空值，用于在�
 }
 
 CONSUMER_ONLY=0
-MODELING_ONLY=0
 ONTO_MODELING_ONLY=0
 KNOWLEDGE_HUB_ONLY=0
 EVAL_ONLY=0
@@ -342,9 +304,6 @@ while [ "$#" -gt 0 ]; do
             ;;
         --consumer-only)
             CONSUMER_ONLY=1
-            ;;
-        --modeling-only)
-            MODELING_ONLY=1
             ;;
         --onto-modeling-only)
             ONTO_MODELING_ONLY=1
@@ -364,9 +323,9 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
-ONLY_FLAGS="$(( CONSUMER_ONLY + MODELING_ONLY + ONTO_MODELING_ONLY + KNOWLEDGE_HUB_ONLY ))"
+ONLY_FLAGS="$(( CONSUMER_ONLY + ONTO_MODELING_ONLY + KNOWLEDGE_HUB_ONLY ))"
 if [ "$(( ONLY_FLAGS + EVAL_ONLY ))" -gt 1 ]; then
-    die "--consumer-only / --modeling-only / --onto-modeling-only / --knowledge-hub-only / --eval-only cannot be combined"
+    die "--consumer-only / --onto-modeling-only / --knowledge-hub-only / --eval-only cannot be combined"
 fi
 
 INSTALL_DIR="${ONTO_AGENT_INSTALL_DIR:-/opt/onto-agent}"
@@ -480,16 +439,14 @@ if [ -f "${SCRIPT_DIR}/manifest.json" ] && [ "${BUNDLE_ROOT}" != "${INSTALL_DIR}
         UPGRADE_ARGS=("${INSTALL_DIR}")
         if [ "${CONSUMER_ONLY}" = "1" ]; then
             UPGRADE_ARGS+=(--consumer-only)
-        elif [ "${MODELING_ONLY}" = "1" ]; then
-            UPGRADE_ARGS+=(--modeling-only)
         fi
         # upgrade.sh 沿用安装目录的 consumer 配置：先补齐评测凭据，consumer 升级重启后生效
-        if [ "${MODELING_ONLY}" = "0" ] && [ -f "${INSTALL_DIR}/backend/.env" ]; then
+        if [ -f "${INSTALL_DIR}/backend/.env" ]; then
             ensure_evaluation_service_token "${INSTALL_DIR}/backend/.env"
         fi
         bash "${SCRIPT_DIR}/upgrade.sh" "${UPGRADE_ARGS[@]}"
-        # upgrade.sh 只覆盖 consumer 与 modeling；Hub 与 onto-modeling 升级后继续拉起
-        if [ "${CONSUMER_ONLY}" = "0" ] && [ "${MODELING_ONLY}" = "0" ]; then
+        # upgrade.sh 只覆盖 consumer；Hub 与 onto-modeling 升级后继续拉起
+        if [ "${CONSUMER_ONLY}" = "0" ]; then
             deploy_bundle_hub_and_onto_modeling
         fi
         # 评测配置含数据加密密钥：沿用安装目录中的配置，不在暂存目录生成新密钥
@@ -503,22 +460,14 @@ if [ -f "${SCRIPT_DIR}/manifest.json" ] && [ "${BUNDLE_ROOT}" != "${INSTALL_DIR}
     fi
 fi
 
-DEPLOY_ARGS=()
-if [ "${CONSUMER_ONLY}" = "1" ]; then
-    DEPLOY_ARGS+=(--consumer-only)
-elif [ "${MODELING_ONLY}" = "1" ]; then
-    DEPLOY_ARGS+=(--modeling-only)
-fi
-
 if [ -f "${SCRIPT_DIR}/deploy-consumer.sh" ]; then
     CONSUMER_DEPLOY="${SCRIPT_DIR}/deploy-consumer.sh"
-    MODELING_DEPLOY="${SCRIPT_DIR}/modeling/deploy.sh"
 elif [ -f "${SCRIPT_DIR}/deploy-stack.sh" ]; then
     log "Detected source checkout; deploying with deploy-stack.sh"
     if [ "${ONTO_MODELING_ONLY}" = "0" ] && [ "${KNOWLEDGE_HUB_ONLY}" = "0" ]; then
-        bash "${SCRIPT_DIR}/deploy-stack.sh" up "${DEPLOY_ARGS[@]}"
+        bash "${SCRIPT_DIR}/deploy-stack.sh" up
     fi
-    if [ "${CONSUMER_ONLY}" = "0" ] && [ "${MODELING_ONLY}" = "0" ]; then
+    if [ "${CONSUMER_ONLY}" = "0" ]; then
         ONTO_MODELING_SOURCE="${SCRIPT_DIR}/../modeling/onto-modeling"
         if [ "${ONTO_MODELING_ONLY}" = "0" ]; then
             if [ -f "${SCRIPT_DIR}/../knowledge-hub/deploy/deploy.sh" ]; then
@@ -550,25 +499,15 @@ fi
 
 BUNDLE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ensure_release_modeling_service_token "${BUNDLE_ROOT}"
-ensure_release_modeling_mcp_token_secret "${BUNDLE_ROOT}"
 
-if [ "${MODELING_ONLY}" = "0" ] && [ "${ONTO_MODELING_ONLY}" = "0" ] && [ "${KNOWLEDGE_HUB_ONLY}" = "0" ]; then
+if [ "${ONTO_MODELING_ONLY}" = "0" ] && [ "${KNOWLEDGE_HUB_ONLY}" = "0" ]; then
     [ -f "${CONSUMER_DEPLOY}" ] || die "Consumer deploy script not found: ${CONSUMER_DEPLOY}"
     ensure_evaluation_service_token "${BUNDLE_ROOT}/backend/.env"
     log "Deploying consumer services"
     bash "${CONSUMER_DEPLOY}"
 fi
 
-if [ "${CONSUMER_ONLY}" = "0" ] && [ "${ONTO_MODELING_ONLY}" = "0" ] && [ "${KNOWLEDGE_HUB_ONLY}" = "0" ]; then
-    if [ -f "${MODELING_DEPLOY}" ]; then
-        log "Deploying Modeling Workbench (core + Agent)"
-        bash "${MODELING_DEPLOY}"
-    elif [ "${MODELING_ONLY}" = 1 ]; then
-        die "Modeling deploy script not found: ${MODELING_DEPLOY}"
-    fi
-fi
-
-if [ "${CONSUMER_ONLY}" = "0" ] && [ "${MODELING_ONLY}" = "0" ]; then
+if [ "${CONSUMER_ONLY}" = "0" ]; then
     deploy_bundle_hub_and_onto_modeling
 fi
 

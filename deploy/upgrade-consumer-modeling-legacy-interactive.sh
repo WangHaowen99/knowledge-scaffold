@@ -24,13 +24,6 @@ prompt_value() {
     printf '%s' "${value}"
 }
 
-prompt_optional() {
-    prompt_text="$1"
-    printf '%s' "${prompt_text}" >/dev/tty || die "需要交互式终端"
-    IFS= read -r value </dev/tty || die "读取输入失败"
-    printf '%s' "${value}"
-}
-
 prompt_port() {
     while :; do
         value="$(prompt_value "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
@@ -126,13 +119,6 @@ env_get() {
     printf '%s' "${value}"
 }
 
-copy_env_key() {
-    source_file="$1"; target_file="$2"; key="$3"
-    line="$(sed -n "/^[[:space:]]*${key}[[:space:]]*=/p" "${source_file}" | tail -n 1)"
-    [ -n "${line}" ] || return 0
-    write_env_value "${target_file}" "${key}" "${line#*=}"
-}
-
 # 先读容器配置里的端口绑定：容器停止后仍然有效；docker port 只对运行中的容器有结果
 legacy_host_port() {
     host_port="$(docker container inspect "$1" \
@@ -148,14 +134,14 @@ package_env_value() {
         | sed -n "s/^[[:space:]]*$3[[:space:]]*=[[:space:]]*//p" | tail -n 1 || true
 }
 
-# Onto Modeling 排在迁移最后部署。端口、容器归属和预检都在动手前完成，
-# 避免 Consumer、Modeling 已经迁移、Onto Modeling 才失败的半完成状态。
+# Onto Modeling 排在 Consumer、Hub 之后部署。端口、容器归属和预检都在动手前完成，
+# 避免 Consumer 已经升级、Onto Modeling 才失败的半完成状态。
 precheck_onto_modeling() {
-    modeling_port="${MODELING_PORT:-$(legacy_host_port mw-modeling 5100 || true)}"
+    # Modeling Workbench 不在本次升级范围内，但旧实例仍占用宿主端口
+    modeling_port="$(legacy_host_port mw-modeling 5100 || true)"
     modeling_port="${modeling_port:-$(env_get "${old_install_dir}/backend/.env" MODELING_PORT)}"
-    modeling_port="${modeling_port:-$(package_env_value "${modeling_package}" modeling/.env.example MODELING_PORT)}"
     # 旧合并部署的 Modeling 通常仍在 5100，与 Onto Modeling 默认端口相同
-    used_ports=" ${modeling_port} ${MODELING_MCP_PORT:-$(legacy_host_port mw-modeling 5188 || true)}"
+    used_ports=" ${modeling_port} $(legacy_host_port mw-modeling 5188 || true)"
     used_ports="${used_ports} $(legacy_host_port onto-agent-backend 5055 || true)"
     used_ports="${used_ports} $(legacy_host_port onto-agent-mcp 7488 || true)"
     used_ports="${used_ports} $(legacy_host_port onto-agent-frontend 80 || true) "
@@ -210,7 +196,7 @@ deploy_onto_modeling() {
     unset hub_token
     log "Onto Modeling 共享 Consumer 账号中心：网络 ${network}"
     (cd "${onto_modeling_dir}" && bash ./deploy.sh) || die \
-        "Onto Modeling 部署失败；Consumer 与 Modeling 已迁移完成，修复后可单独执行 bash ${onto_modeling_dir}/deploy.sh"
+        "Onto Modeling 部署失败；Consumer 与知识包 Hub 已完成，修复后可单独执行 bash ${onto_modeling_dir}/deploy.sh"
     health_url="http://127.0.0.1:${onto_web_port}/api/health"
     elapsed=0
     until curl -fsS --noproxy '*' --max-time 5 "${health_url}" >/dev/null 2>&1; do
@@ -243,7 +229,7 @@ deploy_knowledge_hub() {
     [ -n "${network}" ] || die '无法探测 Consumer 容器网络，请确认 onto-agent-backend 已在运行'
     onto_token="$(env_get "${onto_modeling_dir}/.env" ONTO_HUB_SERVICE_TOKEN)"
     (cd "${hub_dir}" && CONSUMER_NETWORK="${network}" HUB_SERVICE_TOKEN="${onto_token}" bash ./deploy.sh) || die \
-        "知识包 Hub 部署失败；Consumer 与 Modeling 已迁移完成，修复后可单独执行 bash ${hub_dir}/deploy.sh"
+        "知识包 Hub 部署失败；Consumer 已完成，修复后可单独执行 bash ${hub_dir}/deploy.sh"
     unset onto_token
     log "Knowledge Hub deployment finished: ${hub_dir}"
 }
@@ -332,20 +318,17 @@ deploy_evaluation() {
 
 old_install_dir="$(prompt_value '请输入旧的合并部署根目录，例如 /opt/onto-agent：')"
 consumer_package="$(prompt_value '请输入新的 Consumer 镜像 tar 包路径：')"
-modeling_package="$(prompt_optional '请输入新的 Modeling 镜像 tar 包路径（留空不升级）：')"
 onto_package="$(prompt_value '请输入新的 Onto Modeling 发布包路径：')"
 hub_package="$(prompt_value '请输入新的知识包 Hub 发布包路径：')"
 evaluation_package="$(prompt_value '请输入新的独立评测服务发布包路径：')"
 
 case "${old_install_dir}" in /*) ;; *) old_install_dir="$(pwd)/${old_install_dir}" ;; esac
 case "${consumer_package}" in /*) ;; *) consumer_package="$(pwd)/${consumer_package}" ;; esac
-case "${modeling_package}" in ''|/*) ;; *) modeling_package="$(pwd)/${modeling_package}" ;; esac
 case "${onto_package}" in ''|/*) ;; *) onto_package="$(pwd)/${onto_package}" ;; esac
 case "${hub_package}" in ''|/*) ;; *) hub_package="$(pwd)/${hub_package}" ;; esac
 case "${evaluation_package}" in ''|/*) ;; *) evaluation_package="$(pwd)/${evaluation_package}" ;; esac
 
 consumer_package="$(resolve_package_path "${consumer_package}" 'Consumer 发布包')"
-[ -z "${modeling_package}" ] || modeling_package="$(resolve_package_path "${modeling_package}" 'Modeling 发布包')"
 onto_package="$(resolve_package_path "${onto_package}" 'Onto Modeling 发布包')"
 hub_package="$(resolve_package_path "${hub_package}" '知识包 Hub 发布包')"
 onto_modeling_dir="$(dirname "${old_install_dir}")/onto-modeling"
@@ -358,7 +341,6 @@ hub_dir="$(dirname "${old_install_dir}")/knowledge-hub"
 for command_name in docker tar gzip sha256sum flock awk sed mktemp tee od tr; do check_command "${command_name}"; done
 docker info >/dev/null 2>&1 || die "Docker daemon 不可用"
 validate_package "${consumer_package}" onto-agent 'Consumer 发布包'
-[ -z "${modeling_package}" ] || validate_package "${modeling_package}" modeling 'Modeling 发布包'
 validate_package "${onto_package}" onto-modeling 'Onto Modeling 发布包'
 check_command curl
 validate_package "${hub_package}" knowledge-hub '知识包 Hub 发布包'
@@ -445,9 +427,7 @@ if [ "${preflight_status}" -eq 10 ]; then
     log '预检存在 WARN，按要求继续升级'
 fi
 
-install_root="$(dirname "${old_install_dir}")"
 consumer_dir="${old_install_dir}"
-modeling_dir="${install_root}/modeling"
 
 container_mount_volume() {
     docker container inspect "$1" --format '{{range .Mounts}}{{if eq .Destination "'"$2"'"}}{{println .Name}}{{end}}{{end}}' 2>/dev/null | head -n 1
@@ -467,112 +447,22 @@ stop_owned_containers() {
         fi
     done
 }
-backup_volume() {
-    volume="$1"; image="$2"; archive="$3"; backup_dir="$4"
-    docker image inspect "${image}" >/dev/null 2>&1 || die "旧镜像不存在：${image}"
-    docker run --rm --network=none --user 0:0 --entrypoint /bin/sh \
-        -v "${volume}:/source:ro" -v "${backup_dir}:/backup:rw" "${image}" -c \
-        'tar -C /source -czf "/backup/$1" . && chmod 600 "/backup/$1"' \
-        backup-volume "${archive}" || die "备份数据卷失败：${volume}"
-}
 run_consumer_upgrade() {
     release_root="$1"; install_dir="$2"
     shift 2
     if bash "${release_root}/deploy/upgrade.sh" "${install_dir}" "$@"; then rc=0; else rc=$?; fi
-    case "${rc}" in 0) return 0 ;; 10) log 'Consumer 升级完成但存在 WARN，继续升级 Modeling'; return 0 ;; *) return "${rc}" ;; esac
+    case "${rc}" in 0) return 0 ;; 10) log 'Consumer 升级完成但存在 WARN，继续部署后续服务'; return 0 ;; *) return "${rc}" ;; esac
 }
 
-upgrade_legacy_deployment() {
-    legacy_modeling_dir="${consumer_dir}/deploy/modeling"
-    [ -d "${legacy_modeling_dir}" ] || die "旧合并部署缺少 deploy/modeling"
-    container_owner_matches mw-modeling "${consumer_dir}" || die "容器 mw-modeling 不属于旧合并部署目录"
-    modeling_volume="$(container_mount_volume mw-modeling /data)"
-    [ "${modeling_volume}" = mw-modeling_modeling-data ] || die "旧 Modeling 数据卷不符合预期"
-    modeling_image="$(docker container inspect mw-modeling --format '{{.Config.Image}}')"
-    # 0.26.9.0 起合并部署才带 mw-modeling-agent；更早的旧版只有 Workbench，Agent 由新包首次创建
-    agent_volume=""
-    agent_image=""
-    if docker container inspect mw-modeling-agent >/dev/null 2>&1; then
-        container_owner_matches mw-modeling-agent "${consumer_dir}" || die "容器 mw-modeling-agent 不属于旧合并部署目录"
-        agent_volume="$(container_mount_volume mw-modeling-agent /data)"
-        [ "${agent_volume}" = mw-modeling_modeling-agent-data ] || die "旧 Agent 数据卷不符合预期"
-        agent_image="$(docker container inspect mw-modeling-agent --format '{{.Config.Image}}')"
-    elif grep -q '"modeling_agent_image"' "${consumer_dir}/deploy/manifest.json" 2>/dev/null; then
-        die "旧部署清单声明了 Modeling Agent，但容器 mw-modeling-agent 不存在；请确认 Agent 数据去向后再升级"
-    else
-        log "旧合并部署没有 Modeling Agent，升级后由新发布包首次创建"
-    fi
-    legacy_modeling_port="${MODELING_PORT:-$(legacy_host_port mw-modeling 5100 || true)}"
-    legacy_modeling_mcp_port="${MODELING_MCP_PORT:-$(legacy_host_port mw-modeling 5188 || true)}"
-    [ -n "${legacy_modeling_port}" ] || die "无法读取旧 Modeling Workbench 的宿主端口；请用 MODELING_PORT 显式指定后重试"
-
-    backup_dir="${install_root}/backups/interactive-legacy-upgrade-$(date +%Y%m%d-%H%M%S)"
-    mkdir -p "${backup_dir}"; chmod 700 "${backup_dir}"
-    stage_dir="${TMP_ROOT}/packages"; mkdir -p "${stage_dir}"
-    tar -xzf "${consumer_package}" -C "${stage_dir}"
-    tar -xzf "${modeling_package}" -C "${stage_dir}"
-    cp "${consumer_dir}/backend/.env" "${backup_dir}/consumer.env"; chmod 600 "${backup_dir}/consumer.env"
-    ensure_evaluation_service_token "${consumer_dir}/backend/.env"
-
-    stop_owned_containers "${consumer_dir}" STOPPED_CONSUMER_CONTAINERS \
-        'onto-agent-frontend onto-agent-mcp onto-agent-backend onto-agent-jiuwenbox onto-agent-auth-server'
-    stop_owned_containers "${consumer_dir}" STOPPED_MODELING_CONTAINERS \
-        'mw-modeling mw-modeling-agent mw-modeling-nl2sql'
-    backup_volume "${modeling_volume}" "${modeling_image}" modeling-data.tar.gz "${backup_dir}"
-    [ -z "${agent_volume}" ] || backup_volume "${agent_volume}" "${agent_image}" modeling-agent-data.tar.gz "${backup_dir}"
-
-    run_consumer_upgrade "${stage_dir}/onto-agent" "${consumer_dir}" \
-        || die "Consumer 升级失败，备份位于 ${backup_dir}"
-    upgraded_token="$(env_get "${consumer_dir}/backend/.env" MODELING_SERVICE_TOKEN)"
-    [ "${upgraded_token}" = "${consumer_token}" ] || die 'Consumer 升级后服务令牌变化'
-
-    [ ! -e "${modeling_dir}" ] || die "独立 Modeling 目录已存在：${modeling_dir}"
-    mv "${stage_dir}/modeling" "${modeling_dir}"
-    cp "${modeling_dir}/.env.example" "${modeling_dir}/.env"
-    chmod 600 "${modeling_dir}/.env"
-    for key in MODELING_LLM_BASE_URL MODELING_LLM_MODEL MODELING_LLM_API_KEY \
-               MODELING_TASK_LLM_BASE_URL MODELING_TASK_LLM_MODEL MODELING_TASK_LLM_API_KEY \
-               MODELING_MCP_TOKEN_SECRET MODELING_PORT MODELING_MCP_PORT \
-               AUTH_ISSUER_URL AUTH_JWT_ISSUER AUTH_JWT_AUDIENCE CONSUMER_API_URL; do
-        copy_env_key "${consumer_dir}/backend/.env" "${modeling_dir}/.env" "${key}"
-    done
-    write_env_value "${modeling_dir}/.env" MODELING_SERVICE_TOKEN "${consumer_token}"
-    write_env_value "${modeling_dir}/.env" MODELING_PORT "${legacy_modeling_port}"
-    [ -z "${legacy_modeling_mcp_port}" ] \
-        || write_env_value "${modeling_dir}/.env" MODELING_MCP_PORT "${legacy_modeling_mcp_port}"
-    for name in mw-modeling-nl2sql mw-modeling mw-modeling-agent; do
-        docker container inspect "${name}" >/dev/null 2>&1 && docker rm "${name}" >/dev/null || true
-    done
-    HANDOFF_STARTED=true
-    (cd "${modeling_dir}" && bash deploy/install.sh) || die "Modeling 部署失败，备份位于 ${backup_dir}"
-    [ "$(container_mount_volume mw-modeling /data)" = "${modeling_volume}" ] || die 'Modeling 未复用原数据卷'
-    [ "$(container_mount_volume mw-modeling-agent /data)" = "${agent_volume:-mw-modeling_modeling-agent-data}" ] \
-        || die 'Agent 未挂载预期数据卷'
-    deploy_knowledge_hub
-    deploy_onto_modeling
-    stage_evaluation_package
-    deploy_evaluation
-    log "旧合并部署迁移完成，备份位于 ${backup_dir}"
-}
-
-if [ -z "${modeling_package}" ]; then
-    stage_dir="${TMP_ROOT}/packages"
-    mkdir -p "${stage_dir}"
-    tar -xzf "${consumer_package}" -C "${stage_dir}"
-    ensure_evaluation_service_token "${consumer_dir}/backend/.env"
-    stop_owned_containers "${consumer_dir}" STOPPED_CONSUMER_CONTAINERS \
-        'onto-agent-frontend onto-agent-mcp onto-agent-backend onto-agent-jiuwenbox onto-agent-auth-server'
-    run_consumer_upgrade "${stage_dir}/onto-agent" "${consumer_dir}" --consumer-only || die 'Consumer 升级失败'
-    deploy_knowledge_hub
-    deploy_onto_modeling
-    stage_evaluation_package
-    deploy_evaluation
-    log '旧版部署升级完成；未改动 Modeling Workbench'
-    exit 0
-fi
-
-consumer_token="$(env_get "${consumer_dir}/backend/.env" MODELING_SERVICE_TOKEN)"
-[ ! -d "${modeling_dir}" ] || die \
-    "检测到已分离 Modeling 目录：${modeling_dir}；请使用独立部署升级脚本"
-log "检测到旧合并部署，执行迁移到独立 Modeling"
-upgrade_legacy_deployment
+stage_dir="${TMP_ROOT}/packages"
+mkdir -p "${stage_dir}"
+tar -xzf "${consumer_package}" -C "${stage_dir}"
+ensure_evaluation_service_token "${consumer_dir}/backend/.env"
+stop_owned_containers "${consumer_dir}" STOPPED_CONSUMER_CONTAINERS \
+    'onto-agent-frontend onto-agent-mcp onto-agent-backend onto-agent-jiuwenbox onto-agent-auth-server'
+run_consumer_upgrade "${stage_dir}/onto-agent" "${consumer_dir}" --consumer-only || die 'Consumer 升级失败'
+deploy_knowledge_hub
+deploy_onto_modeling
+stage_evaluation_package
+deploy_evaluation
+log '旧版部署升级完成；未改动 Modeling Workbench'
