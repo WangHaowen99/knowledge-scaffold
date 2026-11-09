@@ -122,6 +122,8 @@ def located_text(result: dict, anchor: str = '') -> str:
 
 TEXT_DIR = 'resource/text'
 SKIP = {'resource/materials.json'}
+# 系统快照（ADR-0082）的标准记录是给 evidence.py 检索的机读数据，不是资料：列成「没有文本版」会让助手以为它们还没转换
+SYSTEMS_DIR = 'resource/systems'
 
 
 def text_version(rel: str) -> str:
@@ -140,6 +142,8 @@ def sources(root: Path) -> list[dict]:
         rel = path.relative_to(root).as_posix()
         if not path.is_file() or rel in SKIP or rel.startswith(f'{TEXT_DIR}/') \
                 or any(part.startswith('.') for part in path.relative_to(resource).parts):
+            continue
+        if rel.startswith(f'{SYSTEMS_DIR}/') and '/records/' in rel:
             continue
         if path.suffix.lower() in TEXT_SUFFIXES:
             items.append({'material': rel, 'read': rel, 'kind': 'native'})

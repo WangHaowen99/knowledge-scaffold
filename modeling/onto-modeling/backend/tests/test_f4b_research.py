@@ -287,3 +287,19 @@ def test_no_toolkit_text_asks_to_confirm_ids():
     toolkit_dir = Path(config.ASSETS_DIR) / "workspace-toolkit"
     for rel in ("agents/research-agent.md", "commands/ontology-research.md", "scripts/research_checker.py"):
         assert "新增ID确认" not in (toolkit_dir / rel).read_text(encoding="utf-8"), rel
+
+
+def test_source_list_leaves_system_snapshot_records_to_evidence_tool(workspace):
+    """系统快照的标准记录不是资料：不列（原来按「没有文本版」列出，助手据此说要等记录转成文本）；摘要、清单照常列。"""
+    snap = workspace / "resource" / "systems" / "shop-db" / "20261101-000000-0001"
+    (snap / "records").mkdir(parents=True)
+    (snap / "records" / "entity.jsonl").write_text('{"type": "entity"}\n', encoding="utf-8")
+    (snap / "summary.md").write_text("# 合成快照摘要\n", encoding="utf-8")
+    (snap / "manifest.json").write_text("{}\n", encoding="utf-8")
+    listed = _cli(workspace, "--sources")
+    assert listed.returncode == 0, listed.stderr
+    sources = {item["material"]: item for item in json.loads(listed.stdout)["materials"]}
+    prefix = "resource/systems/shop-db/20261101-000000-0001"
+    assert f"{prefix}/records/entity.jsonl" not in sources
+    assert sources[f"{prefix}/summary.md"]["kind"] == "native"
+    assert not [item for item in sources.values() if item["kind"] == "missing" and item["material"].startswith(prefix)]
