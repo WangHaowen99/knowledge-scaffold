@@ -1382,3 +1382,57 @@ Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`
    - 对象文档「# 数据来源」首行可以写 `db:<源>/<库>.<表>`（可带反引号）：按这个源最新的完整快照绑定，发布包的来源Sheet 和 mapping 的
      `resource` 只写表名（不带库名；下游 modeling 把它当一个标识符加引号，`库.表` 会被当成一个名字）；快照里没有这张表是
      `declared_missing`，列一个都对不上是 `no_columns`。没有快照时照旧当表名处理。
+
+## 2026-11-09 · F17（工作台插件开发模式，ADR-0087）
+
+决策见 ADR-0087。路径都在 `/api/v1/projects/{project_id}` 下，都要项目所有者；写操作要项目可写（`require_writable`）。
+
+1. **对话（S-01～S-04 扩展）**：对话视图多 `kind`（`modeling` | `plugin`，旧对话缺省 `modeling`）、`plugin`（绑定的包名，还没写出草稿时为 null）。
+   S-02 `POST /conversations` 收 `{kind: "plugin"}`，标题缺省「新插件」。插件对话第一次写出 `plugins/<包名>/` 时绑定这个包名，没手工改过标题的
+   改成草稿的 `label`（没有 label 用包名）。一条对话只绑一个包。
+2. **PD-01** `GET /plugin-drafts` → `{items: DraftView[]}`：主线上 `plugins/*/manifest.yaml` 能读出的草稿（读不出清单的也列，`manifest_ok=false`），
+   按最近修改排。**PD-02** `GET /plugin-drafts/{name}` → `DraftView`（带 `files`、`precheck.items` 全量）。
+3. `DraftView`：
+
+   ```
+   {
+     name, label, description, kind, category, version,            // 来自清单；读不出时只有 name
+     manifest_ok: bool,
+     file_count, files: [{path, size}],                            // path 相对草稿目录；PD-01 不带 files
+     updated_at,                                                   // 主线上最后一次改这个目录的提交时间（ISO）
+     conversation_id,                                              // 绑定这份草稿的插件对话，没有为 null
+     contents: {
+       nodes: [{id, title, kind, placement, section, after, after_title, before, before_title, blocks_publish: bool}],
+       commands: [{name, label}], agents: [name], skills: [name], scripts: [name],
+       knowledge: {concepts, checks, standards, files} | null      // 行业包、系统知识包的数据条数
+     },
+     precheck: {state: "passed"|"failed", summary: {pass, warn, fail}, items: [{id, label, result, detail}]},
+                                                                    // PD-01 只带 state、summary 和失败项
+     install: {
+       state: "not_installed"|"installed"|"outdated",              // outdated：草稿内容和项目里启用的版本不同
+       enabled_version,                                             // 本项目锁定的版本，没启用为 null
+       installed_versions: [..],                                    // 包仓库里本人这个包的版本
+       next_version,                                                // 现在点安装会用的版本号（已在仓库里就升补丁号）
+       changes: [{path, status: "added"|"modified"|"deleted"}],    // outdated 时：草稿相对启用版本
+       diff: {path, lines: [{op: " "|"-"|"+", text}]} | null        // outdated 时：第一个改动的文本文件，最多 40 行
+     }
+   }
+   ```
+
+   `after_title`、`before_title` 是锚点节点在本项目流程里的标题（找不到时为 null）；`blocks_publish` 是节点 `blocks` 含 `core.publish`。
+   预检：主线上的草稿复制到临时目录、写校验和，跑上传同一份 `checks.run(tenant=True)`，加 `private_name`（包名没被别人占），加 `dir_name`
+   （目录名和包名一致）。不建上传记录。
+4. **PD-03** `GET /plugin-drafts/{name}/files?path=<相对路径>` → `{path, content, size, binary: bool}`；文本最多 256 KiB，超出或二进制时 `content` 为 null。
+5. **PD-04** `PUT /plugin-drafts/{name}/files` 收 `{path, content}`：网页改草稿里的一个文本文件，作为一次用户提交合入主线（同 Studio 保存，可以撤回）。
+   插件对话正在跑时回 409 `session_busy`。路径越界、改 `checksums.sha256` 回 400。
+6. **PD-05** `POST /plugin-drafts/{name}/install` → `{draft: DraftView, version, upload_id, enabled: {version, effective}}`：
+   从主线取草稿；版本号在包仓库里已有时升补丁号并写回草稿（平台提交）；然后私有上传、静态检查、安装（PL-22、PL-26 同一份逻辑），
+   本项目没启用就启用（PL-06），启用了别的版本就升级（PL-07）。静态检查没过回 422 `static_check_failed`（`details.items` 失败项），
+   包名被占回 409 `pack_name_taken`，版本到上限回 409 `pack_quota_exceeded`。安装成功在绑定的插件对话里留一条通知
+   （`{"type": "notice", "payload": {"kind": "plugin_installed", "text": "「<label>」<版本> 已装好，启用到本项目"}}`）。
+   审计 `pack.upload`、`pack.private_install`、`pack.enable`。停用用 PL-09。
+7. **项目流事件**：`plugin_drafts.changed`（`data: {names}`）：草稿在主线上变了（一轮合入、PD-04、PD-05 写回版本号）、装了、停用了。
+8. **对话卡片**：插件对话一轮结束、这一轮改到了 `plugins/<包名>/` 时，出卡 `{"type": "card", "payload": {"kind": "plugin_draft", "name", "version",
+   "changed_files": [..], "changeset_id"}}`，不出通用的「这一轮改了什么」卡；卡片的实时状态按 PD-02 取。
+9. **插件对话里不同的地方**：FL-02 建议条为空（`primary=null`、`secondary=[]`、`all_commands=false`）；命令目录不适用；注入只有草稿状态；
+   会话指纹不含 `assembly`、`flow`，改含 `plugin_dev`（插件开发说明更新了）。
