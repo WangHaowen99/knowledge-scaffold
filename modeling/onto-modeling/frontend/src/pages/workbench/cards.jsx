@@ -9,6 +9,8 @@ import {
   CC, DiffBlock, FlowThumb, Inline, Md, SrcRow, Tli, WbCtx, Wl, fmtDuration, hhmm,
 } from './parts.jsx';
 import { EXTRA_CARDS } from './extraCards.js';
+import { PluginDraftCard } from './pluginMode.jsx';
+import { isDraftCard } from './pluginModeModel.js';
 import { cardComponent, cardLocked, cardOpen, declaredCardView } from './artifactCard.js';
 
 // 卡片按钮要调的动作，由工作台页注入
@@ -282,7 +284,8 @@ export function GenericCard({ card, locked }) {
 // 插件产物卡可以按 card.component 选的平台专用组件（契约 4.7 flowchart 卡保留兼容）
 const ARTIFACT_CARDS = { flowchart: FlowchartCard };
 
-export function CardItem({ card, scope }) {
+export function CardItem({ card, scope, cardKey }) {
+  if (isDraftCard(card)) return <PluginDraftCard card={card} cardKey={cardKey} />;
   switch (card.card_type) {
     case 'step_output': return <StepOutputCard card={card} />;
     case 'flowchart': return <FlowchartCard card={card} locked={cardLocked(card, scope)} />;

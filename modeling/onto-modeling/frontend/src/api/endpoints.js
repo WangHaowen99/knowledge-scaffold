@@ -133,7 +133,8 @@ export function createApi(client) {
 
     // 3.11 会话
     conversations: (id) => client.get(`${P(id)}/conversations`), // S-01
-    createConversation: (id, title) => client.post(`${P(id)}/conversations`, title ? { title } : {}), // S-02
+    // kind 只在建插件对话时传（'plugin'，F17）
+    createConversation: (id, title, kind) => client.post(`${P(id)}/conversations`, { ...(title ? { title } : {}), ...(kind ? { kind } : {}) }), // S-02
     renameConversation: (id, cid, title) => client.patch(C(id, cid), { title }), // S-03
     deleteConversation: (id, cid) => client.del(C(id, cid)), // S-04
     conversationState: (id, cid) => client.get(C(id, cid)), // S-05
@@ -198,6 +199,12 @@ export function createApi(client) {
     upgradePack: (id, name, body) => client.post(`${P(id)}/packs/${enc(name)}/upgrade`, body), // PL-07
     rollbackPack: (id, name, body) => client.post(`${P(id)}/packs/${enc(name)}/rollback`, body), // PL-08
     disablePack: (id, name, body) => client.post(`${P(id)}/packs/${enc(name)}/disable`, body || {}), // PL-09
+    // F17 插件草稿（工作台插件开发模式，ADR-0087）
+    pluginDrafts: (id) => client.get(`${P(id)}/plugin-drafts`), // PD-01
+    pluginDraft: (id, name) => client.get(`${P(id)}/plugin-drafts/${enc(name)}`), // PD-02
+    pluginDraftFile: (id, name, path) => client.get(`${P(id)}/plugin-drafts/${enc(name)}/files`, { query: { path } }), // PD-03
+    savePluginDraftFile: (id, name, body) => client.put(`${P(id)}/plugin-drafts/${enc(name)}/files`, body), // PD-04
+    installPluginDraft: (id, name) => client.post(`${P(id)}/plugin-drafts/${enc(name)}/install`, {}), // PD-05
     cancelPackPending: (id, name) => client.post(`${P(id)}/packs/${enc(name)}/cancel-pending`, {}), // PL-10
     assembly: (id) => client.get(`${P(id)}/assembly`), // PL-11
     extensions: (id) => client.get(`${P(id)}/extensions`), // PL-12
