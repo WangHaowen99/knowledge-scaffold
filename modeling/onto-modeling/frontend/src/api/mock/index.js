@@ -30,11 +30,13 @@ import * as pluginRoutes from './routes-plugins.js';
 import * as packUploadRoutes from './routes-pack-uploads.js';
 import * as meRoutes from './routes-me.js';
 import * as systemRoutes from './routes-system.js';
+import * as pluginDevRoutes from './routes-plugin-dev.js';
 
 // F3 的分组在后面：同一路径先登记的先匹配，F3 文件只补新接口
 // F4：运维（可观测、管控、用户与审计）、插件目录与上传、个人设置、系统设置；/me、/packs 已从本文件移到 routes-me、routes-plugins
+// 插件开发（F17）排最前：PL-09 停用先看是不是草稿装的包，不是再交给项目设置那一组
 const MODULES = [
-  studioRoutes, reportRoutes, artifactRoutes, inboxRoutes, autobuildRoutes, materialRoutes,
+  pluginDevRoutes, studioRoutes, reportRoutes, artifactRoutes, inboxRoutes, autobuildRoutes, materialRoutes,
   knowledgeRoutes, scenarioRoutes, scriptRoutes, incrementalRoutes, versionRoutes, publishRoutes, resourceRoutes, evidenceRoutes, settingsRoutes,
   opsObsRoutes, opsCtlRoutes, adminRoutes, pluginRoutes, packUploadRoutes, meRoutes, systemRoutes,
 ];
@@ -155,7 +157,10 @@ export function createMockServer() {
       const stage = STAGES[stageOf(pid)];
       const list = stage?.conversations ? stage.conversations() : [{ ...F.conversations()[3], id: `c${pid.slice(0, 11)}`, title: '默认会话', live: true, state: 'idle' }];
       db.convs.set(pid, list);
+      // routes-*.js 往 convSeeders 里放 (pid, list) => void：补进对话（如插件对话）并预置它们的历史
+      convSeeders.forEach((fn) => fn(pid, list));
       list.forEach((c, i) => {
+        if (hub.history(convKey(pid, c.id)).length) return;
         if (stage?.history && i === 0) hub.seed(convKey(pid, c.id), 'conversation', stage.history());
         else {
           const card = cardOf(pid);
@@ -263,6 +268,9 @@ export function createMockServer() {
   }
 
   function runReply(pid, cid, text) {
+    // routes-*.js 登记的对话回复（如插件对话的插件助手）：match(pid, cid) 为真时由它回
+    const hook = replyHooks.find((h) => h.match(pid, cid));
+    if (hook) { hook.run(pid, cid, text); return; }
     setSession(pid, cid, 'running');
     const gid = `pg-${uid()}`;
     emitConv(pid, cid, 'progress', { group_id: gid, title: '', desc: '', state: 'running', started_at: new Date().toISOString(), duration_ms: null, collapsed: false, steps: [{ id: 's1', text: '理解你的补充说明', meta: '进行中', state: 'running', duration_ms: null }] });
@@ -275,6 +283,8 @@ export function createMockServer() {
 
   const routes = [];
   const commandHooks = [];
+  const replyHooks = [];
+  const convSeeders = [];
   // AR-01 的产物类型：图示包的流程图之外，F3 各页的 mock 往这里登记（如场景模拟的 trace.scenario、trace.mock）
   const artifactTypeDefs = [];
   const on = (method, pattern, handler) => routes.push({ method, re: new RegExp(`^/api/v1${pattern}$`), handler });
@@ -527,7 +537,9 @@ export function createMockServer() {
   on('POST', '/projects/([^/]+)/conversations', ({ m, body }) => {
     const list = convsOf(m[1]);
     if (list.some((c) => c.state === 'running')) return err(409, 'session_busy', '另一条对话正在运行', { running_conversation_id: list.find((c) => c.state === 'running').id });
-    const c = { id: uid().padStart(12, '0').slice(-12), title: body.title || '新会话', title_manual: !!body.title, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), live: false, state: 'idle', kind: 'chat', run_id: null };
+    // F17：{kind: "plugin"} 建插件对话，标题缺省「新插件」，第一次写出草稿时绑定包名
+    const kind = body.kind === 'plugin' ? 'plugin' : 'chat';
+    const c = { id: uid().padStart(12, '0').slice(-12), title: body.title || (kind === 'plugin' ? '新插件' : '新会话'), title_manual: !!body.title, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), live: false, state: 'idle', kind, ...(kind === 'plugin' ? { plugin: null } : {}), run_id: null };
     list.unshift(c);
     hub.seed(convKey(m[1], c.id), 'conversation', []);
     emitProj(m[1], 'conversation.updated', { conversation: c, deleted: false });
@@ -749,7 +761,7 @@ export function createMockServer() {
   const ctx = {
     on, json, err, wait, db, hub, sc, uid, F, cardOf, convKey, projKey, convsOf, flowOf, stageOf,
     emitConv, emitConvTransient, emitProj, emitUser, setSession, scopeOf, setScope, scopeLock, later, runReply,
-    commandHooks, putTask, seedTask, tasksOf, artifactTypeDefs, forbid, authEnabled, maintenance,
+    commandHooks, replyHooks, convSeeders, putTask, seedTask, tasksOf, artifactTypeDefs, forbid, authEnabled, maintenance,
     // 本服务端自己的入口：分组之间转调（如版本对比读 Studio 分组的 F-02）。不要用 window.__ontoMock，StrictMode 下会建两个服务端
     self: (url, init) => handle(url, init),
   };
