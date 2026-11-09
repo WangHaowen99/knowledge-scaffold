@@ -287,8 +287,8 @@ def _checker_files() -> dict[str, bytes]:
     return out
 
 
-def build(manager, category: str) -> tuple[str, bytes]:
-    """打包一个分类的 skill，返回（文件名, zip 内容）。没有 skill 的分类（exporter、不认识的）回 404。"""
+def skill_files(manager, category: str) -> dict[str, bytes]:
+    """一个分类的 skill 目录内容（相对路径 → 内容）：下载的 zip 和工作台插件开发的装配目录（ADR-0087）共用。"""
     if category not in _SKILLS:
         raise PackError("not_found", "这个分类没有开发 skill", 404)
     static = Path(manager.assets_dir) / ASSET_DIR
@@ -306,6 +306,12 @@ def build(manager, category: str) -> tuple[str, bytes]:
         rel = path.relative_to(examples).as_posix()
         if path.is_file() and "__pycache__" not in rel and path.name != ".DS_Store":
             files[f"references/examples/{rel}"] = path.read_bytes()
+    return files
+
+
+def build(manager, category: str) -> tuple[str, bytes]:
+    """打包一个分类的 skill，返回（文件名, zip 内容）。没有 skill 的分类（exporter、不认识的）回 404。"""
+    files = skill_files(manager, category)
     top = f"onto-plugin-dev-{category}"
     now = time.localtime()[:6]
     buffer = io.BytesIO()

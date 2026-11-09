@@ -20,6 +20,9 @@ from pathlib import Path
 from .. import config
 
 DEFAULT_ID = "default"
+# 对话类型（契约 7.7 Conversation.kind）：陪伴建模、自主构建的运行、插件开发（ADR-0087）
+KINDS = ("chat", "autobuild", "plugin")
+PLUGIN_TITLE = "新插件"
 TITLE_MAX = 60
 AUTO_TITLE_MAX = 30
 
@@ -155,6 +158,8 @@ def _view(project_id: str, conversation_id: str, entry: dict) -> dict:
         # 自主构建的对话（契约 7.7 Conversation.kind、run_id）：标题固定「自主构建 · 运行 #n」
         "kind": entry.get("kind") or "chat",
         "run_id": entry.get("run_id"),
+        # 插件对话绑定的草稿（plugins/<包名>/），还没写出草稿时为 None（ADR-0087）
+        "plugin": entry.get("plugin"),
     }
 
 
@@ -184,16 +189,55 @@ def exists(project_id: str, conversation_id: str) -> bool:
 
 
 def create(project_id: str, *, kind: str = "chat", run_id: str | None = None, title: str = "") -> dict:
+    if kind not in KINDS:
+        raise ConversationError("对话类型不对")
     with _lock:
         conversations = _load(project_id)
         conversation_id = uuid.uuid4().hex[:12]
         conversations[conversation_id] = _new_entry()
-        if kind != "chat":
+        if kind == "plugin":
+            conversations[conversation_id].update(kind=kind, plugin=None)
+        elif kind != "chat":
             conversations[conversation_id].update(kind=kind, run_id=run_id)
+        title = title or (PLUGIN_TITLE if kind == "plugin" else "")
         if title:
             conversations[conversation_id]["title"] = title
         _write(project_id, conversations)
         return _view(project_id, conversation_id, conversations[conversation_id])
+
+
+def entry(project_id: str, conversation_id: str | None) -> dict | None:
+    """索引里这条对话的条目（副本）；不存在时 None。"""
+    if not isinstance(conversation_id, str) or not _ID_PATTERN.match(conversation_id):
+        return None
+    with _lock:
+        found = _load(project_id).get(conversation_id)
+        return dict(found) if found is not None else None
+
+
+def kind_of(project_id: str, conversation_id: str | None) -> str:
+    return ((entry(project_id, conversation_id) or {}).get("kind")) or "chat"
+
+
+def bind_plugin(project_id: str, conversation_id: str, name: str, label: str = "") -> dict | None:
+    """插件对话第一次写出草稿时绑定包名；没手工改过标题的改成草稿的 label。已绑定的不换，返回 None。"""
+    with _lock:
+        conversations = _load(project_id)
+        found = conversations.get(conversation_id)
+        if found is None or found.get("kind") != "plugin" or found.get("plugin"):
+            return None
+        found["plugin"] = name
+        if not found.get("title_manual"):
+            found["title"] = (label or name)[:TITLE_MAX]
+        _write(project_id, conversations)
+        return _view(project_id, conversation_id, found)
+
+
+def plugin_conversation(project_id: str, name: str) -> str | None:
+    """绑定这份草稿的插件对话（最近更新的那条）；没有时 None。"""
+    with _lock:
+        views = _sorted_views(project_id, _load(project_id))
+    return next((view["id"] for view in views if view["kind"] == "plugin" and view["plugin"] == name), None)
 
 
 def rename(project_id: str, conversation_id: str, title: str) -> dict:

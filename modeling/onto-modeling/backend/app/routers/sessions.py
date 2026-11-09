@@ -90,7 +90,12 @@ async def create_conversation(project_id: str, request: Request):
     deps.require_writable(project_id, request)
     body = await deps.json_body(request)
     _ensure_not_busy(project_id)
-    view = conversation_store.create(project_id)
+    kind = str(body.get("kind") or "chat")
+    if kind not in ("chat", "plugin"):  # 自主构建的对话由运行器建
+        raise ApiError("invalid_argument", "kind 只能是 chat 或 plugin", 400, {"fields": {"kind": "enum"}})
+    if kind == "plugin":
+        autobuild_store.ensure_no_run(project_id)
+    view = conversation_store.create(project_id, kind=kind)
     if body.get("title"):
         view = conversation_store.rename(project_id, view["id"], str(body["title"]))
     project_events.conversation_changed(project_id, view["id"])
