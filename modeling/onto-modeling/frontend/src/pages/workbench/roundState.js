@@ -18,3 +18,9 @@ export function roundDiffLines(items = []) {
     ...(rest.length ? [{ kind: 'header', text: `另有 ${rest.length} 处改动` }, ...body(rest)] : []),
   ];
 }
+
+// 中断卡的「已保存」：没存下文件时说「没有」，没有版本号时不写版本（原来会显示「0 个文件，版本 null」）
+export function savedText(saved) {
+  if (!saved?.files) return '没有';
+  return saved.version_label ? `${saved.files} 个文件，版本 ${saved.version_label}` : `${saved.files} 个文件`;
+}

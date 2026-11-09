@@ -3,7 +3,7 @@ import { createContext, Fragment, useContext, useEffect, useRef, useState } from
 import { useApp } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { roundLockNote } from '../../state/readonly.js';
-import { roundDiffLines, roundState } from './roundState.js';
+import { roundDiffLines, roundState, savedText } from './roundState.js';
 import { Button, Chip, Field, Icon, KV, Note, Ring, Seg, St, cx } from '../../ui/index.jsx';
 import {
   CC, DiffBlock, FlowThumb, Inline, Md, SrcRow, Tli, WbCtx, Wl, fmtDuration, hhmm,
@@ -221,7 +221,7 @@ export function ResumeCard({ card }) {
           <KV w="72px" pairs={[
             ['原因', card.reason],
             ['中断位置', card.position?.label],
-            ['已保存', card.saved ? `${card.saved.files} 个文件，版本 ${card.saved.version_label}` : '—'],
+            ['已保存', savedText(card.saved)],
             ['怎么继续', card.resumable ? '从中断处接着做' : `${card.not_resumable_reason || '输入已经变了'}，按新版从头做`],
           ]} />
         </div>

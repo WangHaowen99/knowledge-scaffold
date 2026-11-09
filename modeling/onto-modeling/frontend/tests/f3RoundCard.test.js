@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { applyEvents, initialConversation } from '../src/state/conversation.js';
-import { roundState } from '../src/pages/workbench/roundState.js';
+import { roundState, savedText } from '../src/pages/workbench/roundState.js';
 
 let n = 0;
 const ev = (type, data) => ({ id: String(++n), type, ts: '2026-11-03T07:21:00.000Z', data });
@@ -61,4 +61,11 @@ test('mock：回答决策卡后这一轮直接存成版本，建议条没有确�
   assert.equal(undone.body.version_label, 'v0.14');
   const after = s.hub.history(`conv:${PID}:${cid}`).filter((e) => e.type === 'card.updated' && e.data.card_type === 'round_changes').at(-1).data;
   assert.equal(roundState(after), 'reverted');
+});
+
+test('中断卡的「已保存」：没存下文件说「没有」，没版本号不写版本', () => {
+  assert.equal(savedText({ files: 0, version_label: null }), '没有');
+  assert.equal(savedText(null), '没有');
+  assert.equal(savedText({ files: 2, version_label: null }), '2 个文件');
+  assert.equal(savedText({ files: 2, version_label: 'v0.7' }), '2 个文件，版本 v0.7');
 });

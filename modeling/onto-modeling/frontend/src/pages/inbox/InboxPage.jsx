@@ -12,6 +12,7 @@ import {
   Button, Card, Chip, Empty, Ev, Icon, KV, Kbd, Menu, Modal, Note, Prog, cx, useOutside,
 } from '../../ui/index.jsx';
 import { Conf } from '../workbench/autobuild.jsx';
+import { savedText } from '../workbench/roundState.js';
 import { inlineTokens } from '../workbench/md.js';
 import * as M from './inboxModel.js';
 import '../../styles/inbox.css';
@@ -294,7 +295,7 @@ function ResumableBody({ d, act, busy }) {
   return (
     <div className="card pad mt16" style={AMBER_CARD}>
       <KV w="72px" pairs={[
-        ['原因', why || '—'], ['中断位置', d.phase?.label || '—'], ['已保存', d.saved ? `${d.saved.files} 个文件，版本 ${d.saved.version_label || '—'}` : '—'],
+        ['原因', why || '—'], ['中断位置', d.phase?.label || '—'], ['已保存', savedText(d.saved)],
         ['怎么继续', d.resumable ? '从中断处接着做' : NOT_RESUMABLE[d.not_resumable_reason] || '按新版从头做'], ['所在会话', conv || '—'],
       ]} />
       <div className="row mt16">
