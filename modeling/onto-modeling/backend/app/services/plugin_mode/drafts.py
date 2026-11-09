@@ -290,6 +290,14 @@ def _diff(draft: Path, installed: Path, change: dict) -> dict | None:
     return {"path": rel, "lines": lines}
 
 
+def installed_twin(repository, name: str, owner: str, manifest, draft: Path) -> str | None:
+    """草稿和本人包仓库里同版本号的那份一模一样（停用后再启用、撤回到装过的版本）：直接用那个版本，不再上传、不占新版本号。"""
+    if manifest is None or not owner or repository.owner(name) != owner or not repository.has(name, manifest.version):
+        return None
+    same = _digests(draft) == _digests(repository.version_dir(name, manifest.version))
+    return manifest.version if same else None
+
+
 def _install_state(repository, name: str, owner: str, enabled: str | None, draft: Path, next_: str | None) -> dict:
     view = {"state": "not_installed", "enabled_version": enabled,
             "installed_versions": repository.versions(name) if owner and repository.owner(name) == owner else [],
@@ -375,11 +383,13 @@ def _analyze(manager, project_id: str, name: str, owner: str) -> dict:
         except mf.ManifestError:
             manifest = None
         version = next_version(repository, name, manifest.version if manifest else None)
+        twin = installed_twin(repository, name, owner, manifest, directory)
         result = {
             "tree": tree, "manifest": manifest,
             "contents": contents(root, directory, manifest) if manifest else
             {"nodes": [], "commands": [], "agents": [], "skills": [], "scripts": [], "knowledge": None},
-            "install": _install_state(repository, name, owner, enabled, directory, version),
+            "install": {**_install_state(repository, name, owner, enabled, directory, twin or version),
+                        "reuse": bool(twin)},
         }
         items = _precheck(repository, directory, manifest, owner, name, files, version)
     summary = checks.summary(items)
@@ -591,39 +601,48 @@ def install(manager, project_id: str, name: str, actor: str) -> dict:
         if manifest is None or failed:
             raise DraftError("static_check_failed", "平台预检没过", 422, _failed_details(failed))
         version = analysis["install"]["next_version"]
-        if version != manifest.version:
-            _write_version(manager, project_id, name, version, actor)
         root = manager.project_root(project_id)
-        store = UploadStore(repository, manager.assets_dir)
-        with tempfile.TemporaryDirectory(prefix="onto-draft-install-") as tmp:
-            directory = Path(tmp) / name
-            export(root, name, directory)
-            write_checksums(directory)
-            archive = Path(tmp) / f"{name}-{version}.zip"
-            _zip(directory, archive)
-            try:
-                record = store.create(archive, archive.name, by=actor, private=True)
-            except UploadError as exc:
-                raise DraftError(exc.code, str(exc), exc.status, exc.details) from exc
-        record = store.run_checks(record["id"])
-        if record["state"] != "passed":
-            items = [item for item in record.get("checks") or [] if item["result"] == "fail"]
-            raise DraftError("static_check_failed", "静态检查没过", 422,
-                             {**_failed_details(items), "upload_id": record["id"]})
-        try:
-            record = store.install_private(record["id"], by=actor)
-        except UploadError as exc:
-            raise DraftError(exc.code, str(exc), exc.status, exc.details) from exc
+        record = None if analysis["install"].get("reuse") else _upload_and_install(manager, project_id, name, version,
+                                                                                  manifest, actor)
         entry = (lockfile.read(root) or PackLock()).get(name)
         if entry is not None and entry.enabled:
-            action = "upgrade"
-            result = service.change_version(manager, project_id, name, version, kind="upgrade", actor=actor)
+            # 草稿退回到装过的旧版本（撤回了这几轮）时是回滚
+            action = "rollback" if mf.version_key(version) < mf.version_key(entry.version) else "upgrade"
+            result = service.change_version(manager, project_id, name, version, kind=action, actor=actor)
         else:
             action = "enable"
             result = service.enable(manager, project_id, name, version, actor)
-    return {"version": version, "upload_id": record["id"], "label": manifest.label or name, "action": action,
-            "enabled": {"version": (result.get("pack") or {}).get("locked_version") or version,
-                        "effective": result.get("effective")}}
+    return {"version": version, "upload_id": record["id"] if record else None, "label": manifest.label or name,
+            "action": action, "enabled": {"version": (result.get("pack") or {}).get("locked_version") or version,
+                                          "effective": result.get("effective")}}
+
+
+def _upload_and_install(manager, project_id: str, name: str, version: str, manifest, actor: str) -> dict:
+    """版本号写回草稿（要升号时），打包，走普通用户上传同一条路：静态检查、装到本人名下。"""
+    repository = manager.packs.repository
+    if version != manifest.version:
+        _write_version(manager, project_id, name, version, actor)
+    root = manager.project_root(project_id)
+    store = UploadStore(repository, manager.assets_dir)
+    with tempfile.TemporaryDirectory(prefix="onto-draft-install-") as tmp:
+        directory = Path(tmp) / name
+        export(root, name, directory)
+        write_checksums(directory)
+        archive = Path(tmp) / f"{name}-{version}.zip"
+        _zip(directory, archive)
+        try:
+            record = store.create(archive, archive.name, by=actor, private=True)
+        except UploadError as exc:
+            raise DraftError(exc.code, str(exc), exc.status, exc.details) from exc
+    record = store.run_checks(record["id"])
+    if record["state"] != "passed":
+        items = [item for item in record.get("checks") or [] if item["result"] == "fail"]
+        raise DraftError("static_check_failed", "静态检查没过", 422,
+                         {**_failed_details(items), "upload_id": record["id"]})
+    try:
+        return store.install_private(record["id"], by=actor)
+    except UploadError as exc:
+        raise DraftError(exc.code, str(exc), exc.status, exc.details) from exc
 
 
 def clear_cache() -> None:

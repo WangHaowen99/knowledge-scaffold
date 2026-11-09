@@ -477,7 +477,7 @@ def test_draft_list_detail_and_files(env, tmp_path):
     naming = items["naming"]
     assert "files" not in naming and naming["precheck"]["state"] == "passed", naming["precheck"]
     assert naming["install"] == {"state": "not_installed", "enabled_version": None, "installed_versions": [],
-                                 "next_version": "0.1.0", "changes": [], "diff": None}
+                                 "next_version": "0.1.0", "changes": [], "diff": None, "reuse": False}
     node = naming["contents"]["nodes"][0]
     assert node["id"] == "naming.check" and node["after"] == "core.validate" and node["after_title"]
     assert node["blocks_publish"] is False
@@ -539,7 +539,8 @@ def test_install_enables_then_upgrades_with_an_automatic_patch_version(env, tmp_
     body = first.json()
     assert body["version"] == "0.1.0" and body["upload_id"].startswith("up-")
     assert body["enabled"]["version"] == "0.1.0" and body["enabled"]["effective"]
-    assert body["draft"]["install"]["state"] == "installed" and body["draft"]["install"]["next_version"] == "0.1.1"
+    # 装好且没改：再点安装用的就是装好的这个版本
+    assert body["draft"]["install"]["state"] == "installed" and body["draft"]["install"]["next_version"] == "0.1.0"
     assert body["draft"]["conversation_id"] == conversation
     repository = manager.packs.repository
     assert repository.owner("naming") == OWNER and repository.has("naming", "0.1.0")
@@ -578,10 +579,44 @@ def test_install_enables_then_upgrades_with_an_automatic_patch_version(env, tmp_
     disabled = client.post(f"/api/v1/projects/{project_id}/packs/naming/disable", json={}, headers=AS_OWNER)
     assert disabled.status_code == 200, disabled.text
     assert len(buffered(project_id, "plugin_drafts.changed")) >= 4
-    assert client.get(url, headers=AS_OWNER).json()["install"]["state"] == "not_installed"
+    after = client.get(url, headers=AS_OWNER).json()["install"]
+    assert after["state"] == "not_installed"
+    # 草稿和装过的 0.1.1 一模一样：再装直接启用 0.1.1，不再上传、不占新版本号（实测停用后再装白占了一个版本）
+    assert after["next_version"] == "0.1.1" and after["reuse"] is True
+    uploads_before = len(client.get(MINE, headers=AS_OWNER).json()["items"])
     third = client.post(f"{url}/install", json={}, headers=AS_OWNER)
-    assert third.status_code == 200 and third.json()["version"] == "0.1.2"
-    assert lockfile.read(root).get("naming").enabled
+    assert third.status_code == 200, third.text
+    assert third.json()["version"] == "0.1.1" and third.json()["upload_id"] is None
+    assert len(client.get(MINE, headers=AS_OWNER).json()["items"]) == uploads_before
+    assert repository.versions("naming") == ["0.1.1", "0.1.0"]
+    entry = lockfile.read(root).get("naming")
+    assert entry.enabled and entry.version == "0.1.1"
+    assert third.json()["draft"]["install"]["state"] == "installed"
+
+
+def test_reverting_the_draft_to_an_installed_version_rolls_back_without_a_new_upload(env, tmp_path):
+    client, manager, _tmp = env
+    project_id = project(client)
+    root = manager.project_root(project_id)
+    put_draft(root, make_node_pack(tmp_path / "src", tenant=True))
+    url = f"{_drafts(project_id)}/naming"
+    original = (root / "plugins/naming/commands/naming-check.md").read_text(encoding="utf-8")
+    assert client.post(f"{url}/install", json={}, headers=AS_OWNER).json()["version"] == "0.1.0"
+    client.put(f"{url}/files", json={"path": "commands/naming-check.md", "content": "按新约定检查 $ARGUMENTS\n"},
+               headers=AS_OWNER)
+    assert client.post(f"{url}/install", json={}, headers=AS_OWNER).json()["version"] == "0.1.1"
+    uploads = len(client.get(MINE, headers=AS_OWNER).json()["items"])
+    # 撤回到 0.1.0 的内容：清单号和内容都和装过的 0.1.0 一样
+    manifest = (root / "plugins/naming/manifest.yaml").read_text(encoding="utf-8").replace("version: 0.1.1", "version: 0.1.0")
+    client.put(f"{url}/files", json={"path": "manifest.yaml", "content": manifest}, headers=AS_OWNER)
+    client.put(f"{url}/files", json={"path": "commands/naming-check.md", "content": original}, headers=AS_OWNER)
+    draft = client.get(url, headers=AS_OWNER).json()["install"]
+    assert draft["state"] == "outdated" and draft["reuse"] is True and draft["next_version"] == "0.1.0"
+    back = client.post(f"{url}/install", json={}, headers=AS_OWNER)
+    assert back.status_code == 200, back.text
+    assert back.json()["version"] == "0.1.0" and back.json()["upload_id"] is None
+    assert lockfile.read(root).get("naming").version == "0.1.0"
+    assert len(client.get(MINE, headers=AS_OWNER).json()["items"]) == uploads
 
 
 def test_install_refuses_failed_prechecks_and_taken_names(env, tmp_path):

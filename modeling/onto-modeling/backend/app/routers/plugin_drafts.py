@@ -95,10 +95,11 @@ async def install_draft(project_id: str, name: str, request: Request):
     with _errors():
         outcome = await asyncio.to_thread(drafts.install, deps.workspaces, project_id, name, actor)
     version = outcome["version"]
-    _audit(request, "pack.upload", {"name": outcome["upload_id"], "filename": f"{name}-{version}.zip",
-                                    "scope": "private", "source": "plugin_draft"})
-    _audit(request, "pack.private_install", {"name": name, "version": version})
-    _audit(request, "pack.enable" if outcome["action"] == "enable" else "pack.upgrade",
+    if outcome["upload_id"]:  # 草稿和装过的版本一样时直接启用那个版本，没有上传
+        _audit(request, "pack.upload", {"name": outcome["upload_id"], "filename": f"{name}-{version}.zip",
+                                        "scope": "private", "source": "plugin_draft"})
+        _audit(request, "pack.private_install", {"name": name, "version": version})
+    _audit(request, f"pack.{outcome['action']}",
            {"name": name, "version": version, "project_id": project_id})
     from ..services.agent_sessions import manager
 
