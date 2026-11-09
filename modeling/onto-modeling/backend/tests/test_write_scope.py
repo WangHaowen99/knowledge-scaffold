@@ -197,3 +197,18 @@ def test_state_helper_records_the_running_nodes_scope(env):
     run("release", "overview")
     run("release", "extract-object")
     assert not (copy / ".onto" / "run" / "active.json").exists()
+
+
+def test_round_card_names_knowledge_by_its_title_and_skips_the_index(env):
+    """端到端验证发现：一轮改动里的业务知识按文件名显示（「业务知识『INDEX』」「业务知识『convention-…』」）。
+    条目用文件头里的标题，知识库的 INDEX.md 是索引、不算产物。"""
+    _client, workspaces, _project_id, root = env
+    main_write(root, "ontology/knowledge/convention-restock-relation.md",
+               "---\nname: 补货对象关联口径\ntype: convention\n---\n\n合成口径说明。\n")
+    main_write(root, "ontology/knowledge/INDEX.md", "# 业务知识索引\n")
+    info = service.describe(workspaces, root, [("A", "ontology/knowledge/convention-restock-relation.md"),
+                                               ("A", "ontology/knowledge/INDEX.md")])
+    labels = [item["target"]["label"] for item in info["items"]]
+    assert "业务知识「补货对象关联口径」" in labels
+    assert not any("INDEX" in label for label in labels)
+    assert [ref["key"] for ref in info["artifacts"]] == ["convention-restock-relation"]

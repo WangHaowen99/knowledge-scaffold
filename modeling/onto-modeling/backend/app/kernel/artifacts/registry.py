@@ -102,6 +102,9 @@ class ArtifactType:
         if not (rel.startswith(prefix) and rel.endswith(suffix)) or len(rel) <= len(prefix) + len(suffix):
             return None
         middle = rel[len(prefix):len(rel) - len(suffix)]
+        # 目录索引（index.md、知识库的 INDEX.md）不是产物
+        if suffix.lower() == ".md" and middle.lower() == "index":
+            return None
         return middle if "/" not in middle and not middle.startswith(".") else None
 
     def glob_root(self) -> str:

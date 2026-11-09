@@ -222,6 +222,26 @@ def _unfinished_step(project_id: str, conversation_id: str | None, roots: list[P
     return {"id": record["id"], "label": record.get("command_label") or ""}
 
 
+def _awaiting_reply(project_id: str, conversation_id: str | None, roots: list[Path], flow: dict) -> dict | None:
+    """这条对话里的命令停下来等你在对话里回复：执行记录「等待」，锁在命令声明的等回复阶段（没有确认卡、靠打字回复的
+    那种）。返回 {id, label}。"""
+    if not conversation_id:
+        return None
+    from ..session_host import exec_records
+
+    record = exec_records.open_record(project_id, conversation_id)
+    if record is None or record.get("state") != "waiting":
+        return None
+    command = record.get("command_name") or ""
+    for root in roots:
+        if not Path(root).is_dir():
+            continue
+        phase = exec_records.lock_phase(root, command)
+        if phase is not None and exec_records.waiting_for_reply(phase, flow, command):
+            return {"id": record["id"], "label": record.get("command_label") or ""}
+    return None
+
+
 def _confine_active(flow: dict, root: Path) -> bool:
     """范围限定生效：组装结果带 confine，主线上的范围文件 status 是 active（ADR-0085；读不出算没生效，同守卫）。"""
     spec = flow.get("confine")
@@ -388,6 +408,9 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     unfinished = _unfinished_step(root.name, conversation_id, [copy, root], flow)
     if unfinished is not None:
         suggest_context.setdefault("unfinished", unfinished)
+    awaiting = _awaiting_reply(root.name, conversation_id, [copy, root], flow)
+    if awaiting is not None:
+        suggest_context.setdefault("awaiting_reply", awaiting)
     check = None
     if conversation_id:
         # 按对话算的（建议条、FL-02）：只给此刻能执行的，和接口收到建议条的请求时同一份检查（next_step）

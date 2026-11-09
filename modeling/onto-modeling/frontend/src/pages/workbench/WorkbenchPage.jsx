@@ -460,7 +460,7 @@ function SuggestionBar({ sug, quick = [], onAction, onAll, onQuick }) {
       {!inline ? <span className="sp" /> : null}
       {!inline ? quickEls : null}
       {sug?.all_commands !== false && !inline ? <span className="s" style={{ border: 0 }} onClick={onAll}><Icon name="cmd" size={12} />全部命令<Icon name="chevd" size={12} /></span> : null}
-      {sug?.note && sug.primary ? <div className="wb-sug-note">{sug.note}</div> : null}
+      {sug?.note ? <div className="wb-sug-note">{sug.note}</div> : null}
     </div>
   );
 }

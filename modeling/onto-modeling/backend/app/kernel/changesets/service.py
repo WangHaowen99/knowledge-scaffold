@@ -154,6 +154,23 @@ def _artifact_types(manager, root: Path) -> list:
         return []
 
 
+def _titled(root: Path, rel: str, ref: dict, types: list) -> None:
+    """产物的业务名用文件里的标题（知识条目的 name 等），原来是文件键（如英文的文件名）；读不出（已删、解析不了）时不变。"""
+    from ..artifacts import parsers
+
+    atype = next((item for item in types if item.type == ref.get("type")), None)
+    if atype is None or not (root / rel).is_file():
+        return
+    try:
+        parsed = parsers.parse_file(atype, root, rel)
+    except Exception:  # noqa: BLE001 - 标题只是展示信息，读不出照用文件键
+        return
+    title = next((item.title for item in parsed if item.key == ref.get("key") and item.title), "")
+    if title and title != ref.get("key"):
+        ref["title"] = title
+        ref["label"] = f"{atype.title}「{title}」" if atype.title else f"「{title}」"
+
+
 def describe(manager, root: Path, changes: list[tuple[str, str]]) -> dict:
     """改动的路径 → {entries, artifacts, paths, items}；items 是 [{group, change, target, path}]。"""
     model = _model(root)
@@ -173,6 +190,7 @@ def describe(manager, root: Path, changes: list[tuple[str, str]]) -> dict:
             seen_entries.add(ref["id"])
             entries.append(ref)
         elif ref.get("type") != "file" and "kind" not in ref and (ref["type"], ref["key"]) not in seen_artifacts:
+            _titled(root, rel, ref, types)
             seen_artifacts.add((ref["type"], ref["key"]))
             artifacts.append(ref)
         items.append({"group": group, "change": change, "target": ref, "path": rel})

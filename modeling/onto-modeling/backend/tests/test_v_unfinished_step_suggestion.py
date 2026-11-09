@@ -50,3 +50,21 @@ def test_waiting_step_with_lock_still_held_suggests_continue(env):
     # 别的对话不受影响
     other = client.get(f"/api/v1/projects/{project_id}/flow/suggestions", params={"conversation_id": "c2"}).json()
     assert (other["primary"] or {}).get("action") != {"type": "send", "text": "继续"}
+
+
+def test_step_waiting_for_a_typed_reply_does_not_push_other_commands(env):
+    """端到端验证发现：校验停下来让用户打字回复（锁在 confirm），建议条却主推「刷新『操作』」，点了会把校验丢在半路。"""
+    client, project_id, root = env
+    record = exec_records.start(project_id, "default", root=root, flow=model.load_for(root),
+                                command="/ontology-validate", command_name="validate")
+    _hold_lock(root, "validate")
+    lock = root / ".ontology-state" / "lock-validate.json"
+    lock.write_text(json.dumps({**json.loads(lock.read_text(encoding="utf-8")), "phase": "confirm"}), encoding="utf-8")
+    assert exec_records.finish_turn(project_id, record["id"], root)["state"] == "waiting"
+
+    got = client.get(f"/api/v1/projects/{project_id}/flow/suggestions", params={"conversation_id": "default"}).json()
+    assert got["primary"] is None and got["secondary"] == []
+    assert got["note"].endswith("在等你回复上面的问题")
+    # 别的对话照常给下一步
+    other = client.get(f"/api/v1/projects/{project_id}/flow/suggestions", params={"conversation_id": "c2"}).json()
+    assert other["note"] is None or "在等你回复" not in other["note"]

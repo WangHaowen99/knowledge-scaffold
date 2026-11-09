@@ -263,6 +263,14 @@ def test_flow_rules_in_order(api):
                         {"slice_stale": [stale_step], "confine_active": True})
     assert not any(item["id"].startswith("refresh:") for item in items(confined))
     assert confined["primary"]["id"].startswith("core.validate")
+    # 命令停下来等你在对话里打字回复：不推别的命令（点了会把命令丢在半路），只留说明；有确认卡时照旧主推去回答
+    waiting = _suggest(root, _states(root, core_model="stale"),
+                       {"slice_stale": [stale_step], "awaiting_reply": {"id": "ex-1", "label": "校验"}})
+    assert waiting["primary"] is None and waiting["secondary"] == []
+    assert waiting["note"] == "「校验」在等你回复上面的问题"
+    asked = _suggest(root, _states(root, core_model="stale"),
+                     {"awaiting_reply": {"id": "ex-1", "label": "校验"}, "question": {"id": "q1", "kind": "question"}})
+    assert asked["mode"] == "waiting_decision"
     # 8：报告里还有待处理的问题
     report = _suggest(root, _states(root), {"stage": "校验待审阅"})
     assert report["primary"]["label"] == "继续校验"
