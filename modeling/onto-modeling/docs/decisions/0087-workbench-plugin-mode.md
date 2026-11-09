@@ -52,7 +52,7 @@
 **做法**
 
 1. 对话：S-01～S-04 的对话视图 `kind` 多一个值 `plugin`，加 `plugin`（绑定的包名，没绑为 null）；S-02 收 `{kind: "plugin"}`。
-2. 新接口 PD-01～PD-06（契约 contract-changes「F17」）：草稿列表与详情（含平台预检、和已装版本的差异）、读文件、写文件、安装并启用。
+2. 新接口 PD-01～PD-05（契约 contract-changes「F17」）：草稿列表与详情（含平台预检、和已装版本的差异）、读文件、写文件、安装并启用。
    停用沿用 PL-09。
 3. 插件开发装配目录 `<数据目录>/plugin-dev/<哈希>/`：`CLAUDE.md`（插件助手规则，`assets/plugin-mode/CLAUDE.md`）、`plugin-dev/<分类>/`（能力包、行业包、
    系统知识包三个分类各一份开发 Skill：`SKILL.md`、`platform.json`、`references/`、`scripts/pack_tool.py`、`scripts/checker/`，生成代码同 PL-27）、
@@ -60,6 +60,26 @@
 4. 宿主：一轮开始时按对话类型指副本的 `.claude`；插件对话的注入只带草稿状态（包名、版本、启用情况、上一次预检没过的项），不带阶段、下一步、包提示规则；
    插件对话不出建议条、不出通用的「这一轮改了什么」卡，改到草稿时出一张 `plugin_draft` 卡（带这一轮的变更集，可以撤回这一轮）。
 5. 安装成功在插件对话里留一行通知；草稿变了、装了、停用了，项目流发 `plugin_drafts.changed`。
+
+**实现（2026-11-09）**
+
+- 代码：`app/services/plugin_mode/`（`assembly.py` 装配目录、`drafts.py` 草稿服务）、`app/routers/plugin_drafts.py`、
+  `app/kernel_guards/_guard_common.py` 的 `plugin_scope` 与 `plugin_scope_guard.sh`、`assets/plugin-mode/CLAUDE.md`。
+- 改指标记：`changesets/<项目>/claude-override` 存装配目录的绝对路径。`copy_for_turn(claude_override=…)` 在项目锁里写或清标记再 `ensure`；
+  不传这个参数的调用方（Studio 复核暂存、待处理里借副本）不动标记。插件对话一轮出 result、置空闲之前链回；出错、引擎关了在后台链回，
+  持锁后再看一眼这条对话有没有已经开始下一轮。服务重启留下的标记由下一轮建模清掉。
+- 装配目录：开发 Skill 的文件由 `dev_skill.skill_files` 生成（PL-27 下载打 zip 用同一个函数）；内容（含哈希）在进程里缓存 30 秒，
+  公开包变了最多晚 30 秒换目录。`MANIFEST.json` 写 `kind: plugin-dev`：Jiuwen 读到它时 system prompt 只拼插件助手规则和一段通用的
+  运行时说明（提问用 ask_user、没有联网、中文），不拼建模的命令索引、`state_helper`、锁、资料角标那几条。只留最近 4 份，正被标记指着的不删。
+- 守卫：项目根（副本根）内只放行 `plugins/<包名>/` 下；数据目录下（主线工作区、别的项目、包仓库、装配目录）一律拒；别处放行。
+  目标路径按不跟链接和跟链接各判一次；内联代码有写操作且把项目根下的条目当路径开头提到、或写了数据目录下的绝对路径就拒；
+  不能建指向工作区外的链接，不能动 git 内部设置和发布标签。`scripts()` 照常把它注入建模装配目录，但建模的 `settings.base.json` 不引用它。
+- 预检：草稿按主线 HEAD 用 `git archive` 导出，版本号先换成这次安装会用的号（不然装过的版本永远报「已在包仓库里」），再写校验和、
+  跑 `checks.run(tenant=True)`，加 `private_name`、`dir_name`，文件数或大小超私有包上限时加一项 `limits`。缓存键：草稿树哈希、本人、
+  本项目启用的版本、包仓库 `channels.json` 的修改时间与这个包的版本列表。
+- 宿主：`Session.kind` 在绑定对话时取自对话索引。插件对话 `turns.begin` 直接返回（不建执行记录、不取锁，斜杠命令按原文交给引擎）、
+  建议条一律为空、不等资料转文本、不收增量清单、不出通用卡与产物卡（遗留到下一轮才合入的插件对话变更集也不出），
+  一轮合入后 `drafts.after_round` 按这一轮副本的树差异找改到的草稿，没绑定的绑上、出 `plugin_draft` 卡。
 
 ## Alternatives considered
 
