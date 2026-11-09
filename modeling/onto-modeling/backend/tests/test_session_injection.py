@@ -416,3 +416,33 @@ def test_jiuwen_injection_failure_does_not_block_message(tmp_path, monkeypatch):
     assert queries == ["其实可以先做对象"]
     assert errors == [("injection", "模拟注入失败")]
     assert drain(engine)[-1]["subtype"] == "success"
+
+
+# ---- 装配换了版本后续接：旧版命令说明作废的提醒 ----
+
+
+def test_assembly_changed_note_is_sent_once_and_rearmed_after_interrupt(tmp_path, monkeypatch):
+    monkeypatch.setattr(injection, "build_context", lambda *a, **k: injection.InjectionResult(text="阶段", digest="d"))
+    fresh = injection.Injector(tmp_path, "c1")
+    assert fresh.context_for("合成") == "阶段"
+    changed = injection.Injector(tmp_path, "c1", assembly_changed=True)
+    first = changed.context_for("再跑一下复核")
+    assert first.startswith(injection.ASSEMBLY_CHANGED_NOTE) and first.endswith("阶段")
+    assert injection.ASSEMBLY_CHANGED_NOTE not in changed.context_for("合成")
+    # 带着提醒的那一轮被打断：模型不一定看到了，下一条重新带
+    again = injection.Injector(tmp_path, "c1", assembly_changed=True)
+    again.context_for("合成")
+    again.forget()
+    assert injection.ASSEMBLY_CHANGED_NOTE in again.context_for("合成")
+
+
+def test_assembly_moved_compares_with_the_last_connect_of_the_conversation(tmp_path, monkeypatch):
+    from app.services import agent_sessions
+
+    monkeypatch.setattr(config, "DATA_DIR", str(tmp_path))
+    keys = iter(["a1:f1", "a1:f1", "a2:f1", "a2:f1"])
+    monkeypatch.setattr(agent_sessions, "_assembly_key", lambda project_id: next(keys))
+    assert agent_sessions.assembly_moved("p-demo", "default") is False  # 第一次连：没有旧上下文
+    assert agent_sessions.assembly_moved("p-demo", "default") is False  # 没变
+    assert agent_sessions.assembly_moved("p-demo", "default") is True   # 装了新版本插件后续接
+    assert agent_sessions.assembly_moved("p-demo", "default") is False  # 提醒过一次，记下新版本

@@ -231,8 +231,41 @@ def save_resume_id(
 def clear_resume_id(project_id: str, conversation_id: str = DEFAULT_CONVERSATION) -> None:
     try:
         _meta_path(project_id, conversation_id).unlink(missing_ok=True)
+        _assembly_path(project_id, conversation_id).unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def _assembly_path(project_id: str, conversation_id: str) -> Path:
+    return _meta_path(project_id, conversation_id).with_suffix(".assembly")
+
+
+def _assembly_key(project_id: str) -> str:
+    """这个项目应当生效的装配与流程（指纹里的两项）；算不出为空串。"""
+    from .packs import service as packs_service
+    from ..api import deps
+
+    try:
+        parts = packs_service.desired_parts(deps.workspaces, project_id)
+    except Exception:  # noqa: BLE001 - 算不出就不提醒
+        return ""
+    return f"{parts.get('assembly', '')}:{parts.get('flow', '')}"
+
+
+def assembly_moved(project_id: str, conversation_id: str) -> bool:
+    """这条对话上次连引擎以后装配换过版本（续接的模型上下文里还留着旧版命令说明），并记下现在的版本。"""
+    current = _assembly_key(project_id)
+    path = _assembly_path(project_id, conversation_id)
+    try:
+        last = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        last = ""
+    if current and current != last:
+        try:
+            path.write_text(current, encoding="utf-8")
+        except OSError:
+            pass
+    return bool(last and current and last != current)
 
 
 def purge_history(project_id: str) -> None:
@@ -354,6 +387,8 @@ class Session:
     finishing: bool = False
     # 建模命令在等资料转成文本（session_host/material_wait）：消息已收下、记在 pending_prompts 里，等完再交给引擎
     material_wait: Any = field(default=None, repr=False)
+    # 这次连上的引擎续接了旧上下文、而装配在这期间换过版本：第一条消息提醒模型旧版命令说明作废
+    assembly_changed: bool = False
 
     @property
     def client(self) -> Any:
@@ -1398,7 +1433,10 @@ class SessionManager:
             model_owner=session.model_owner,
             assembly_dir=_assembly_dir(session.cwd),
             # 宿主注入（方案 B4）：每个引擎实例一份注入状态，两个引擎同一份内容
-            injector=injection.Injector(session.cwd, conversation_id) if session.cwd is not None else None,
+            injector=injection.Injector(
+                session.cwd, conversation_id,
+                assembly_changed=session.assembly_changed,
+            ) if session.cwd is not None else None,
             engine_instance=session.engine_instance,
         )
         return engine_cls(ctx)
@@ -1419,6 +1457,9 @@ class SessionManager:
             await asyncio.to_thread(_fingerprint.prepare, project_id)
             # agent 提交收口（方案 C11）：这个项目的 git 指向内核提交钩子（新建、导入的项目在这里补上）
             await asyncio.to_thread(_install_commit_hooks, session.cwd)
+            session.assembly_changed = session.kind != "plugin" and (
+                await asyncio.to_thread(assembly_moved, project_id, session.conversation_id)
+                or bool({"assembly", "flow"} & set(session.pending_changes)))
             session.engine_instance = uuid.uuid4().hex
             engine = self._make_engine(session)
             session.engine_cwd = session.cwd

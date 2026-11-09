@@ -187,14 +187,23 @@ def _plugin_hint(project_root: Path, conversation_id: str | None) -> str | None:
         return f"插件开发：只改 {plugin_mode.DRAFTS_DIR}/ 下这条对话的草稿，本体只读。"
 
 
+ASSEMBLY_CHANGED_NOTE = (
+    "建模能力有更新（插件或流程换了版本）：这条对话里之前读过的命令说明、子代理说明、流程说明都作废，"
+    "执行命令前重新读 `.claude/` 下现在的文件，不按记忆里的旧版本做。"
+)
+
+
 class Injector:
     """一个引擎实例的注入状态（宿主建、交给引擎）：第一条必带，之后内容不变不重复。"""
 
-    def __init__(self, project_root: Path, conversation_id: str | None = None):
+    def __init__(self, project_root: Path, conversation_id: str | None = None, *, assembly_changed: bool = False):
         self.project_root = Path(project_root)
         self.conversation_id = conversation_id
         self.started = False
         self.digest: str | None = None
+        # 装配（插件、流程）换了版本后续接的实例：模型上下文里还留着旧版命令说明，第一条消息提醒它作废
+        self.assembly_changed = assembly_changed
+        self._noted = False
 
     def context_for(self, user_text: str) -> str:
         """消息送到模型前调一次（同步，会起子进程）；返回要放在消息前面的注入文本。"""
@@ -202,11 +211,14 @@ class Injector:
                                last_injected=self.digest, conversation_id=self.conversation_id)
         self.started = True
         self.digest = result.digest
-        return result.text
+        self._noted = self.assembly_changed
+        self.assembly_changed = False
+        return "\n\n".join(part for part in (ASSEMBLY_CHANGED_NOTE if self._noted else "", result.text) if part)
 
     def forget(self) -> None:
         """这一轮被打断，模型不一定看到了这次的注入：下一条重新带上。"""
         self.digest = None
+        self.assembly_changed = self.assembly_changed or self._noted
 
 
 def compose_query(user_text: str, context: str) -> str:
