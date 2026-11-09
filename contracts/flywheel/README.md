@@ -30,5 +30,5 @@ errors = [error.message for error in validator.iter_errors(signal)]  # 空列表
 字段变化先改 `eval-service/evaluation/feedback/models.py`，再重新生成，消费侧同步更新：
 
 ```bash
-cd eval-service && python -m evaluation.feedback.models > ../contracts/flywheel/feedback-signal.v1.schema.json
+cd eval-service && python -m evaluation.feedback.models
 ```

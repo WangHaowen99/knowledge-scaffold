@@ -339,12 +339,13 @@ def test_signal_bodies_are_cleared_when_retention_ends(flywheel):
 CONTRACT = Path(__file__).resolve().parents[2] / 'contracts' / 'flywheel' / 'feedback-signal.v1.schema.json'
 
 
-def test_the_shared_contract_is_generated_from_what_the_service_accepts():
+def test_the_shared_contract_is_generated_from_what_the_service_accepts(tmp_path):
     """contracts/flywheel holds FeedbackSignal v1 for consumer and evaluation; regenerate it when the model changes."""
-    from evaluation.feedback.models import contract
+    from evaluation.feedback.models import write_contract
     if not CONTRACT.is_file():
         pytest.skip('the shared contracts are not beside eval-service, as in a standalone evaluation package')
-    assert json.loads(CONTRACT.read_text(encoding='utf-8')) == contract()
+    write_contract(tmp_path / 'contract.json')
+    assert (tmp_path / 'contract.json').read_bytes() == CONTRACT.read_bytes()
 
 
 def test_a_json_schema_validator_and_the_service_agree_on_signals():

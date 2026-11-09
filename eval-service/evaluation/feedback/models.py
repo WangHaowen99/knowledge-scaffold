@@ -3,11 +3,12 @@
 Field limits are those consumer truncates to before sending. A signal that still breaks them, or misses a field
 its type requires, is rejected on its own; the rest of the batch is kept.
 
-The shared contract contracts/flywheel/feedback-signal.v1.schema.json is generated from these models:
-    cd eval-service && python -m evaluation.feedback.models > ../contracts/flywheel/feedback-signal.v1.schema.json
+The shared contract contracts/flywheel/feedback-signal.v1.schema.json is generated from these models; in a source
+checkout, where contracts/ sits beside eval-service, this rewrites it:
+    cd eval-service && python -m evaluation.feedback.models
 """
 import json
-import sys
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -179,5 +180,12 @@ def contract():
             **schema}
 
 
+CONTRACT = Path(__file__).resolve().parents[3] / 'contracts' / 'flywheel' / 'feedback-signal.v1.schema.json'
+
+
+def write_contract(path=CONTRACT):
+    Path(path).write_text(json.dumps(contract(), ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+
 if __name__ == '__main__':
-    sys.stdout.write(json.dumps(contract(), ensure_ascii=False, indent=2) + '\n')
+    write_contract()
