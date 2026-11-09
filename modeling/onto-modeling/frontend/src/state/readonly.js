@@ -136,3 +136,10 @@ export function composerState({ sessionState, archived, maintenance, autobuildRu
   if (researching) return { disabled: false, placeholder: '给助手补充说明，或者继续拖入资料…' };
   return { disabled: false, placeholder: '给助手补充说明，可拖入文件或粘贴截图…' };
 }
+
+// 顶栏锁图标的说明：有具体条目时说几个条目只读；写入范围只按路径给（如运行中整个本体，entries 为空）时说原因，
+// 原来写成「范围内 0 个条目只读」
+export function lockPop(info, scope) {
+  const count = (scope?.entries || []).length + (scope?.artifacts || []).length;
+  return count ? `${info.label}：范围内 ${count} 个条目只读` : info.text;
+}

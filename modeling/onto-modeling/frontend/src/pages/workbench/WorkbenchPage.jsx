@@ -8,7 +8,7 @@ import { toast } from '../../app/toast.jsx';
 import { errorText, relativeTime } from '../../api/errors.js';
 import { commandFromTarget, commandNode, nodeActionKind, suggestionCommand, overlayRunning, scriptRunView, sectionGroups, trackClass, trackNodes, withoutEvidence } from '../../state/flow.js';
 import { evidenceInProject, withoutEvidenceSuggestions } from '../../state/evidence.js';
-import { composerState, readonlyInfo } from '../../state/readonly.js';
+import { composerState, lockPop, readonlyInfo } from '../../state/readonly.js';
 import { runStatus } from '../../state/conversation.js';
 import { ShellP } from '../../shell/Shell.jsx';
 import {
@@ -773,7 +773,7 @@ export default function WorkbenchPage({ route }) {
         {lockInfo ? (
           <span
             className="wx-ib nt"
-            data-pop={`${lockInfo.label}：范围内 ${(scope.entries || []).length + (scope.artifacts || []).length} 个条目只读`}
+            data-pop={lockPop(lockInfo, scope)}
             onClick={() => { if (scope.state === 'pending_confirm' && scope.changeset_id) rounds.current.get(scope.changeset_id)?.(); }}
           >
             <Icon name="lock" size={14} />

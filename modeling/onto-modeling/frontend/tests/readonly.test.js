@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { composerState, fnmatchToRegExp, isLocked, lockState, readonlyInfo, roundLockNote } from '../src/state/readonly.js';
+import { composerState, fnmatchToRegExp, isLocked, lockPop, lockState, readonlyInfo, roundLockNote } from '../src/state/readonly.js';
 
 const lock = (state, extra = {}) => ({
   state, changeset_id: 'cs-31', conversation_id: 'c1', run_id: null, slice: { id: 's5', name: '超量与审批提示' }, node: null,
@@ -73,4 +73,11 @@ test('输入框：运行中可插话（steer），自主构建运行中下一步
   assert.equal(composerState({ sessionState: 'idle', maintenance: { active: true, mode: 'read_only', message: '升级中' } }).placeholder, '升级中');
   assert.equal(composerState({ sessionState: 'idle', maintenance: { active: true, mode: 'reject_new_sessions', message: 'm' } }).warn, true);
   assert.equal(composerState({ sessionState: 'idle' }).disabled, false);
+});
+
+test('顶栏锁图标：有条目说几个只读；写入范围只按路径给时说原因（原来是「范围内 0 个条目只读」）', () => {
+  const running = lock('assistant_running', { entries: [], artifacts: [], paths: ['ontology/*'], reason_text: '助手正在执行「校验」，这一轮结束后才能编辑' });
+  assert.equal(lockPop(readonlyInfo(running), running), '助手正在执行「校验」，这一轮结束后才能编辑');
+  const named = lock('assistant_running');
+  assert.match(lockPop(readonlyInfo(named), named), /范围内 2 个条目只读$/);
 });
