@@ -120,22 +120,7 @@ ${COMPOSE} --env-file .env --env-file images.env "${COMPOSE_FILES[@]}" up -d --r
 
 PORT="$(sed -n 's/^ONTO_WEB_PORT=//p' .env | head -1)"
 echo
-elapsed=0
-until docker exec onto-modeling python -c \
-    "import urllib.request; urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://127.0.0.1:8100/api/health', timeout=3)" \
-    >/dev/null 2>&1; do
-    [ "${elapsed}" -lt 120 ] || { echo '[失败] Onto Modeling 120 秒内未就绪，请查看 docker logs onto-modeling' >&2; exit 1; }
-    sleep 2
-    elapsed=$((elapsed + 2))
-done
-if docker exec onto-modeling python -c \
-    "import urllib.request; urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://127.0.0.1:8100/api/health/dependencies', timeout=15)" \
-    >/dev/null 2>&1; then
-    echo "建模服务与知识包发布依赖已就绪。访问 http://<部署机地址>:${PORT:-5100}"
-else
-    echo '[警告] 建模服务已启动，但知识包发布不可用：请先部署独立知识包 Hub，并检查共享网络和 ONTO_HUB_* 配置。' >&2
-    echo '[警告] 源码补部署：bash deploy/deploy.sh --knowledge-hub-only；离线安装：使用本版本 install-consumer-modeling.sh --knowledge-hub-package <配套Hub发布包>。' >&2
-fi
+echo "部署完成。访问 http://<部署机地址>:${PORT:-5100}"
 if [ -n "${BOOTSTRAP_GENERATED}" ]; then
     echo "初始管理员账号：admin / ${BOOTSTRAP_GENERATED}（已写入本目录 .env，仅首次部署生效，登录后请尽快修改）"
 fi

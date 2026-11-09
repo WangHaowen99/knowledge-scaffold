@@ -48,14 +48,6 @@ def health():
     return {'ok': True, 'service': 'knowledge-hub', 'free_bytes': free}
 
 
-@app.get('/api/internal/ready')
-def readiness(request: Request):
-    from .user_auth import service_identity
-
-    service, _ = service_identity(request.headers.get('x-hub-service-token', ''))
-    return {'ok': True, 'service': 'knowledge-hub', 'identity': service}
-
-
 def stream_file(path, filename, digest, media_type='application/octet-stream'):
     from urllib.parse import quote
     handle = path.open('rb')

@@ -238,11 +238,11 @@ docker exec -e MYSQL_PWD="${EVAL_MYSQL_ROOT_PASSWORD:?请先设置评测库密�
 
 ## 知识包 Hub（独立部署）
 
-完整包只要包含 Onto Modeling 就必须同时包含 Hub，缺失时在变更服务前停止。分离安装/升级选择 Onto Modeling
-但未提供 `--knowledge-hub-package` 时，先检查已有 Hub 是否就绪；否则提示提供同版本 Hub 包。
-使用与发布包匹配的安装脚本，避免实际执行旧目录里不支持 Hub 参数的入口。
-建模部署后还检查 `/api/health/dependencies` 的发布依赖，覆盖容器间网络和服务凭据；
-`--onto-modeling-only` 保留独立建模用途，发布不可用时明确告警并提示 `--knowledge-hub-only` 补部署。
+分离安装、升级及旧版迁移统一部署四个必需服务：Consumer、Onto Modeling、知识包 Hub、独立评测服务。
+必须提供 `--consumer-package`、`--onto-modeling-package`、`--knowledge-hub-package`、`--evaluation-package`，
+缺少任一参数即退出；交互入口同样不能留空。`--modeling-package` 可选，未提供时不部署、不升级、不重启 Modeling Workbench。
+部署顺序为 Consumer → Modeling Workbench（提供包时）→ Hub → Onto Modeling → 评测。
+使用与发布包同版本的安装脚本；完整离线包必须包含四项交付物，不以服务已经运行为由跳过。
 
 Hub 不再写在 onto-modeling 的 compose 里，而是独立 compose 项目 `knowledge-hub/deploy/docker-compose.knowledge-hub.yml`（项目名、容器名 `knowledge-hub`，数据卷 `knowledge-hub_knowledge-hub-data`），由 `knowledge-hub/deploy/deploy.sh` 部署：加入 consumer 网络，onto-modeling 经 `http://knowledge-hub:8200` 访问，Hub 经 `auth-server` 校验令牌、经 `onto-modeling` 回调资料授权；不发布宿主端口，部署后在容器内做健康检查。
 
@@ -253,12 +253,13 @@ Hub 不再写在 onto-modeling 的 compose 里，而是独立 compose 项目 `kn
 
 ## 独立评测服务
 
-评测部署要求 Hub、Consumer 凭据与加密密钥齐全，并在容器启动后通过 `/evaluation/api/ready` 检查
-账号、Hub、Consumer 依赖；失败时不报告部署完成。`/evaluation/api/health` 仍只表示进程存活，Judge 可在部署后配置。
+`install-consumer-modeling.sh` 的 `--evaluation-package` 是必填参数；交互安装和旧版迁移同样必填。
+升级统一更新四个必需服务；可选更新 Modeling Workbench，保留已有运行配置、数据卷及评测加密密钥。
+保留原有容器健康检查；本次不增加依赖就绪 API 或逐层网络探测。
 
 `bash deploy/deploy.sh --eval-only` 只部署 `eval-service/`，与其他 only 参数互斥；默认全栈 `bash deploy/deploy.sh` 包含评测服务，源码、离线首次安装和升级均在其他服务之后部署评测；`--onto-modeling-only`、`--knowledge-hub-only` 不包含评测服务。
 
-- 交互式与非交互式分离安装、分离升级及旧版迁移均支持独立评测服务：交互式按提示输入发布包路径；非交互式使用 `--evaluation-package <发布包>`。发布包由 `eval-service/build.sh` 生成（`evaluation-<version>-linux-<arch>.tar.gz`），也接受完整离线包中的 `eval-service/` 目录，不提供则跳过；评测在 Hub、Onto Modeling 之后部署并检查就绪。Consumer 已在运行时，可以只部署或升级 Hub、Onto Modeling 和评测：交互式选择模式 3，非交互式不传 `--consumer-package`、`--modeling-package`。发布包格式、凭据和升级配置保留规则见[部署与升级脚本说明](交互式部署与升级脚本说明.md)。
+- 交互式与非交互式分离安装、分离升级及旧版迁移均支持独立评测服务：交互式按提示输入发布包路径；非交互式使用 `--evaluation-package <发布包>`。发布包由 `eval-service/build.sh` 生成（`evaluation-<version>-linux-<arch>.tar.gz`），也接受完整离线包中的 `eval-service/` 目录，必须提供；评测在 Hub、Onto Modeling 之后部署并检查就绪。Consumer 已运行时仍须提供 Consumer 发布包，使用升级流程；不再提供省略 Consumer 的附加部署模式。发布包格式、凭据和升级配置保留规则见[部署与升级脚本说明](交互式部署与升级脚本说明.md)。
 - 运行配置：默认由 `eval-service/deploy/deploy.sh` 维护本目录 `.env`（权限 600，不入库），只保存凭据和显式配置的值。首次部署生成数据加密密钥 `EVAL_ENCRYPTION_KEY`；账号、Hub、consumer 地址的整栈默认值写在 `docker-compose.eval-service.yml`，`.env` 中的同名值优先；评测凭据沿用 Hub 的 `HUB_EVALUATION_SERVICE_TOKEN` 和 consumer 的 `EVALUATION_SERVICE_TOKEN`，两者分别由 Hub 部署脚本和 consumer 部署生成。评测完成通知发往 onto-modeling，凭据 `EVAL_MODELING_SERVICE_TOKEN` 沿用 onto-modeling `.env` 的 `ONTO_EVALUATION_SERVICE_TOKEN`（部署 onto-modeling 时缺失则生成）；找不到时只告警、不发通知，部署 onto-modeling 后重新部署评测即可。onto-modeling 经 `ONTO_WEB_EVAL_URL`（默认 `http://knowledge-evaluation:8090`）读取评测报告，须与评测同在 consumer 网络。评测容器与 Hub 一样必须加入 consumer 网络（`CONSUMER_NETWORK`，由根目录部署脚本探测注入并记入该 `.env`），探测不到时在生成配置前报错。
 - Judge 模型配置 `EVAL_JUDGE_BASE_URL`、`EVAL_JUDGE_API_KEY`、`EVAL_JUDGE_MODEL`、`EVAL_JUDGE_CONFIG_REVISION` 四项必填、无法自动生成，已在 `docker-compose.eval-service.yml` 中声明（不含值）：部署时缺失只告警，写入该 `.env` 或进程环境后重新部署评测即可；未配置时无法开始评测。
 - 加密密钥必须与数据卷一同保留：已有评测数据卷而 `.env` 缺少密钥时部署直接失败，不会生成新密钥；升级时若暂存目录没有评测配置，会沿用安装目录中的 `.env`。

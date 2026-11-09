@@ -281,27 +281,6 @@ adopt_hub_service_token() { # <Hub .env> <onto-modeling .env>
     [ -z "${token}" ] || env_set "$2" ONTO_HUB_SERVICE_TOKEN "${token}"
 }
 
-check_onto_publication() {
-    local elapsed=0
-    until docker exec onto-modeling python -c \
-        "import urllib.request; urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://127.0.0.1:8100/api/health', timeout=3)" \
-        >/dev/null 2>&1; do
-        [ "${elapsed}" -lt 120 ] || die 'Onto Modeling 120 秒内未就绪，请查看 docker logs onto-modeling'
-        sleep 2
-        elapsed=$((elapsed + 2))
-    done
-    if ! docker exec onto-modeling python -c \
-        "import urllib.request; urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://127.0.0.1:8100/api/health/dependencies', timeout=15)" \
-        >/dev/null 2>&1; then
-        if [ "${ONTO_MODELING_ONLY}" = 1 ]; then
-            PUBLICATION_READY=0
-            warn '建模服务已启动，但知识包发布不可用；请执行 bash deploy/deploy.sh --knowledge-hub-only，并检查共享网络和 ONTO_HUB_* 配置'
-        else
-            die '建模服务已启动，但知识包发布不可用：检查 Hub 部署、共享网络和 ONTO_HUB_* 配置'
-        fi
-    fi
-}
-
 # onto-modeling 接收评测完成通知的入站凭据：已有值保留（发布包解压到暂存目录时沿用安装目录的值，否则
 # 单独升级 onto-modeling 会与评测侧失配），缺失时生成；评测部署时沿用它作为 EVAL_MODELING_SERVICE_TOKEN。
 # 不得与 Hub 服务凭据相同，值不输出。
@@ -355,7 +334,6 @@ MODELING_ONLY=0
 ONTO_MODELING_ONLY=0
 KNOWLEDGE_HUB_ONLY=0
 EVAL_ONLY=0
-PUBLICATION_READY=1
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -392,6 +370,19 @@ if [ "$(( ONLY_FLAGS + EVAL_ONLY ))" -gt 1 ]; then
 fi
 
 INSTALL_DIR="${ONTO_AGENT_INSTALL_DIR:-/opt/onto-agent}"
+if [ "${ONLY_FLAGS}" = 0 ] && [ "${EVAL_ONLY}" = 0 ]; then
+    if [ -f "${SCRIPT_DIR}/deploy-consumer.sh" ]; then
+        [ -f "${SCRIPT_DIR}/../knowledge-hub/deploy.sh" ] \
+            || die '完整发布包缺少知识包 Hub：请使用包含 Hub 和评测服务的完整发布包'
+        [ -f "${SCRIPT_DIR}/../onto-modeling/deploy.sh" ] \
+            || die '完整发布包缺少 Onto Modeling'
+    else
+        [ -f "${SCRIPT_DIR}/../knowledge-hub/deploy/deploy.sh" ] \
+            || die '源码缺少知识包 Hub 部署入口'
+        [ -d "${SCRIPT_DIR}/../modeling/onto-modeling" ] \
+            || die '源码缺少 Onto Modeling'
+    fi
+fi
 DEPLOY_EVALUATION=0
 if [ "${ONLY_FLAGS}" = "0" ]; then
     DEPLOY_EVALUATION=1
@@ -446,7 +437,6 @@ deploy_bundle_hub_and_onto_modeling() {
         adopt_hub_service_token "${hub_dir}/.env" "${onto_dir}/.env"
         ensure_onto_evaluation_service_token "${onto_dir}/.env"
         bash "${onto_dir}/deploy.sh"
-        check_onto_publication
     elif [ "${ONTO_MODELING_ONLY}" = "1" ]; then
         die "Onto Modeling deploy script not found: ${onto_dir}/deploy.sh"
     else
@@ -464,15 +454,6 @@ fi
 # dispatch through its upgrade flow so BUNDLE_ROOT and persistent data stay
 # bound to the real installation directory.
 BUNDLE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-if [ "${CONSUMER_ONLY}${MODELING_ONLY}${ONTO_MODELING_ONLY}${KNOWLEDGE_HUB_ONLY}" = 0000 ]; then
-    if [ -f "${BUNDLE_ROOT}/onto-modeling/deploy.sh" ] && [ ! -f "${BUNDLE_ROOT}/knowledge-hub/deploy.sh" ]; then
-        die '完整发布包缺少知识包 Hub：请使用包含 knowledge-hub 的同版本完整包，或使用本版本 install-consumer-modeling.sh --knowledge-hub-package 补齐 Hub'
-    fi
-    if [ -d "${BUNDLE_ROOT}/modeling/onto-modeling" ] \
-            && [ ! -f "${BUNDLE_ROOT}/knowledge-hub/deploy/deploy.sh" ]; then
-        die '源码不完整：缺少知识包 Hub 部署入口，无法完成知识包发布部署'
-    fi
-fi
 if [ -f "${SCRIPT_DIR}/manifest.json" ] && [ "${BUNDLE_ROOT}" != "${INSTALL_DIR}" ]; then
     EXISTING_INSTALL=false
     for marker in \
@@ -555,18 +536,13 @@ elif [ -f "${SCRIPT_DIR}/deploy-stack.sh" ]; then
                 # --remove-orphans 清掉旧版本随 onto-modeling 部署的 Hub 容器，避免与独立 Hub 抢同一服务名
                 (cd "${ONTO_MODELING_SOURCE}" \
                     && docker compose -f docker-compose.yml -f docker-compose.stack.yml up -d --build --remove-orphans)
-                check_onto_publication
             else
                 log "Onto Modeling source directory not present; skipping"
             fi
         fi
     fi
     deploy_evaluation
-    if [ "${PUBLICATION_READY}" = 1 ]; then
-        log "Deployment finished successfully"
-    else
-        log '建模服务已启动；知识包发布未就绪，请按上方提示补部署 Hub'
-    fi
+    log "Deployment finished successfully"
     exit 0
 else
     die "Could not find source or release deployment scripts under ${SCRIPT_DIR}"
@@ -584,9 +560,12 @@ if [ "${MODELING_ONLY}" = "0" ] && [ "${ONTO_MODELING_ONLY}" = "0" ] && [ "${KNO
 fi
 
 if [ "${CONSUMER_ONLY}" = "0" ] && [ "${ONTO_MODELING_ONLY}" = "0" ] && [ "${KNOWLEDGE_HUB_ONLY}" = "0" ]; then
-    [ -f "${MODELING_DEPLOY}" ] || die "Modeling deploy script not found: ${MODELING_DEPLOY}"
-    log "Deploying Modeling Workbench (core + Agent)"
-    bash "${MODELING_DEPLOY}"
+    if [ -f "${MODELING_DEPLOY}" ]; then
+        log "Deploying Modeling Workbench (core + Agent)"
+        bash "${MODELING_DEPLOY}"
+    elif [ "${MODELING_ONLY}" = 1 ]; then
+        die "Modeling deploy script not found: ${MODELING_DEPLOY}"
+    fi
 fi
 
 if [ "${CONSUMER_ONLY}" = "0" ] && [ "${MODELING_ONLY}" = "0" ]; then
@@ -594,8 +573,4 @@ if [ "${CONSUMER_ONLY}" = "0" ] && [ "${MODELING_ONLY}" = "0" ]; then
 fi
 
 deploy_evaluation
-if [ "${PUBLICATION_READY}" = 1 ]; then
-    log "Deployment finished successfully"
-else
-    log '建模服务已启动；知识包发布未就绪，请按上方提示补部署 Hub'
-fi
+log "Deployment finished successfully"

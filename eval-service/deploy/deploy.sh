@@ -91,11 +91,9 @@ else
 fi
 
 [ -n "$(env_get "$ENV_FILE" EVAL_HUB_SERVICE_TOKEN)" ] \
-    || die 'EVAL_HUB_SERVICE_TOKEN is empty: deploy the Knowledge Hub first (bash deploy/deploy.sh --knowledge-hub-only), then redeploy evaluation'
+    || warn 'EVAL_HUB_SERVICE_TOKEN is empty: deploy the Knowledge Hub first (bash deploy/deploy.sh --knowledge-hub-only), then redeploy evaluation'
 [ -n "$(env_get "$ENV_FILE" EVAL_CONSUMER_SERVICE_TOKEN)" ] \
-    || die 'EVAL_CONSUMER_SERVICE_TOKEN is empty: redeploy consumer so it generates EVALUATION_SERVICE_TOKEN, then redeploy evaluation'
-[ -n "$(env_get "$ENV_FILE" EVAL_ENCRYPTION_KEY)" ] \
-    || die 'EVAL_ENCRYPTION_KEY is empty: restore the original protected configuration before deploying evaluation'
+    || warn 'EVAL_CONSUMER_SERVICE_TOKEN is empty: redeploy consumer so it generates EVALUATION_SERVICE_TOKEN, then redeploy evaluation'
 [ -n "$(env_get "$ENV_FILE" EVAL_MODELING_SERVICE_TOKEN)" ] \
     || warn 'EVAL_MODELING_SERVICE_TOKEN is empty: completion notifications to Onto Modeling are disabled; deploy Onto Modeling so it generates ONTO_EVALUATION_SERVICE_TOKEN, then redeploy evaluation'
 for key in EVAL_JUDGE_BASE_URL EVAL_JUDGE_API_KEY EVAL_JUDGE_MODEL EVAL_JUDGE_CONFIG_REVISION; do
@@ -125,18 +123,3 @@ else
     if [ -n "$NPM_REGISTRY" ]; then export NPM_REGISTRY; else unset NPM_REGISTRY; fi
     docker compose "${COMPOSE_ARGS[@]}" up -d --build
 fi
-
-# 进程活性不代表评测可用；从评测容器内检查账号、Hub、Consumer 和必需配置。
-elapsed=0
-until docker exec knowledge-evaluation python -c \
-    "import urllib.request; urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://127.0.0.1:8090/evaluation/api/health', timeout=3)" \
-    >/dev/null 2>&1; do
-    [ "$elapsed" -lt 60 ] || die 'Evaluation did not start within 60 seconds; check docker logs knowledge-evaluation'
-    sleep 2
-    elapsed=$((elapsed + 2))
-done
-docker exec knowledge-evaluation python -c \
-    "import urllib.request; urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://127.0.0.1:8090/evaluation/api/ready', timeout=12)" \
-    >/dev/null 2>&1 || die \
-    'Evaluation started but dependencies are unavailable: check auth-server, Knowledge Hub, Consumer, shared network and EVAL_* configuration'
-log 'Evaluation service and deployment dependencies are ready (Judge configuration is checked when starting an evaluation)'

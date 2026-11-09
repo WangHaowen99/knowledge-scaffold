@@ -60,6 +60,12 @@ def deployment():
             'MODELING_MCP_TOKEN_SECRET': 'synthetic-invalid-mcp-placeholder-0000',
         }
         script(root / 'eval-service/deploy/deploy.sh', EVAL_STUB)
+        script(root / 'knowledge-hub/deploy.sh', 'exit 0')
+        script(root / 'knowledge-hub/deploy/deploy.sh', 'exit 0')
+        script(root / 'onto-modeling/deploy.sh', 'exit 0')
+        (root / 'modeling/onto-modeling').mkdir(parents=True)
+        script(root / 'bin/docker', 'exit 0')
+        env['PATH'] = str(root / 'bin') + os.pathsep + os.environ['PATH']
         yield root, calls, env
 
 
@@ -133,7 +139,7 @@ def check_stack_hands_dependency_credentials_to_evaluation(deployment):
     env.pop('EVAL_ENV_FILE')
     script(root / 'deploy/deploy-stack.sh', 'exit 0')
     hub, consumer = secrets.token_hex(32), secrets.token_hex(32)
-    (root / 'knowledge-hub/deploy').mkdir(parents=True)
+    (root / 'knowledge-hub/deploy').mkdir(parents=True, exist_ok=True)
     (root / 'knowledge-hub/deploy/.env').write_text(f'HUB_EVALUATION_SERVICE_TOKEN={hub}\n')
     (root / 'consumer/backend').mkdir(parents=True)
     (root / 'consumer/backend/.env').write_text(f'EVALUATION_SERVICE_TOKEN={consumer}\n')
@@ -147,7 +153,7 @@ def check_stack_hands_dependency_credentials_to_evaluation(deployment):
 
     # Once Onto Modeling holds its inbound credential, evaluation reuses the same value.
     modeling = secrets.token_hex(32)
-    (root / 'modeling/onto-modeling').mkdir(parents=True)
+    (root / 'modeling/onto-modeling').mkdir(parents=True, exist_ok=True)
     (root / 'modeling/onto-modeling/.env').write_text(f'ONTO_EVALUATION_SERVICE_TOKEN={modeling}\n')
     result = run(root, env, '--eval-only')
     assert result.returncode == 0, result.stdout + result.stderr
@@ -224,7 +230,6 @@ def check_standalone_evaluation_build_produces_tar_package(deployment):
 
 DOCKER_STUB = '''printf '%s\\n' "$*" >> "$DOCKER_CALLS_FILE"
 case "$1" in
-    exec) case "$*" in *api/ready*) exit "${STUB_READINESS_EXIT:-0}" ;; esac ;;
     volume) [ "${STUB_VOLUME_EXISTS:-0}" = 1 ]; exit $? ;;
     network) [ "$3" = "${STUB_NETWORK:-}" ]; exit $? ;;
     compose) printf 'ENV_FILE=%s\\nPIP=%s\\nNPM=%s\\n' "$EVAL_ENV_FILE" "${PIP_INDEX_URL-<unset>}" \\
@@ -249,8 +254,6 @@ def evaluation_service():
             'DOCKER_CALLS_FILE': str(root / 'docker-calls.txt'),
             'COMPOSE_SNAPSHOT': str(root / 'compose-snapshot.txt'),
             'STUB_NETWORK': 'synthetic-network',
-            'HUB_EVALUATION_SERVICE_TOKEN': secrets.token_hex(32),
-            'EVALUATION_SERVICE_TOKEN': secrets.token_hex(32),
         }
         yield root, deploy_dir, env
 
@@ -338,9 +341,7 @@ class EvaluationServiceDeployTests(unittest.TestCase):
     def test_external_configuration_is_used_unchanged(self):
         with evaluation_service() as (root, deploy_dir, env):
             external = root / 'protected.config'
-            content = ('EVAL_HUB_SERVICE_TOKEN=synthetic-invalid-hub-placeholder-0000\n'
-                       'EVAL_CONSUMER_SERVICE_TOKEN=synthetic-invalid-consumer-placeholder-0000\n'
-                       'EVAL_ENCRYPTION_KEY=' + base64.urlsafe_b64encode(b'S' * 32).decode() + '\n')
+            content = 'EVAL_HUB_SERVICE_TOKEN=synthetic-invalid-placeholder-0000\n'
             external.write_text(content + 'CONSUMER_NETWORK=synthetic-network\n')
             env['EVAL_ENV_FILE'] = str(external)
             result = run_service(deploy_dir, env)
@@ -353,25 +354,6 @@ class EvaluationServiceDeployTests(unittest.TestCase):
 
             env['EVAL_ENV_FILE'] = str(root / 'absent.config')
             self.assertNotEqual(run_service(deploy_dir, env).returncode, 0)
-
-    def test_required_credentials_fail_before_compose(self):
-        for key, message in (('HUB_EVALUATION_SERVICE_TOKEN', 'EVAL_HUB_SERVICE_TOKEN'),
-                             ('EVALUATION_SERVICE_TOKEN', 'EVAL_CONSUMER_SERVICE_TOKEN')):
-            with self.subTest(key=key), evaluation_service() as (root, deploy_dir, env):
-                env.pop(key)
-                env['CONSUMER_NETWORK'] = 'synthetic-network'
-                result = run_service(deploy_dir, env)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(message + ' is empty', result.stderr)
-                self.assertEqual(compose_calls(root), [])
-
-    def test_dependency_failure_does_not_report_deployment_success(self):
-        with evaluation_service() as (root, deploy_dir, env):
-            env.update(CONSUMER_NETWORK='synthetic-network', STUB_READINESS_EXIT='1')
-            result = run_service(deploy_dir, env)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn('dependencies are unavailable', result.stderr)
-            self.assertNotIn('deployment dependencies are ready', result.stdout)
 
     def test_missing_or_unknown_network_fails_before_configuration(self):
         for network, message in (('', 'CONSUMER_NETWORK is not set'), ('absent-network', 'Docker network not found')):

@@ -66,8 +66,4 @@ mapping 仅允许修改 mapping 和清单 version。
 旧项目资料路径、项目删除清理接口和建模权限回调均删除。
 
 GET /api/health 保持原契约：ok、service、free_bytes。
-
-`GET /api/internal/ready` 供部署方检查服务凭据，要求 `X-Hub-Service-Token`，无需用户令牌。
-成功返回 `{"ok": true, "service": "knowledge-hub", "identity": "modeling"}`；identity 也可为 evaluation 或 consumer。
-未知凭据返回 401，服务凭据重复返回 503。该接口不读写知识包，不验证用户授权或账号服务的可达性。
 常见错误为401身份无效、404不存在或无权、410已删除、409冲突、422请求错误、503依赖不可用。

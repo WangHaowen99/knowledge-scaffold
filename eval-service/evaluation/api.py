@@ -273,13 +273,6 @@ def create_app(config=None,transport=None):
         response.headers['Access-Control-Allow-Origin']='*'
         return {'status':'ok','service':'evaluation'}
 
-    @app.get(f'{prefix}/ready')
-    def readiness():
-        from .readiness import dependencies
-
-        result = dependencies(config, http)
-        return JSONResponse(result, status_code=200 if result['ok'] else 503)
-
     @app.get(f'{prefix}/client-config')
     def client_config():
         # An empty list means only pages on this host name (loopback names count as one) may hand over a login.
