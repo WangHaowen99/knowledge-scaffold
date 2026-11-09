@@ -3,6 +3,7 @@
 // 演示状态用地址参数切换：?mock=login:fail,projects:empty,auth:local,maint:readonly,engine:missing,import:conflict,role:user,scope:running|pending
 // ?mock=evidence:off：证据源按本期后端不可用（EV-01 回 501、没有系统逆向建模包）
 // ?mock=flow:p1：/flow 按 P1 后端（B3a）的形状返回（4 种状态、命令文本 actions、没有分段），核对前端归一处理
+// ?mock=pm:draft|fail|installed|outdated：主示例项目带一条插件对话（工作台插件开发模式，F17），见 routes-plugin-dev.js
 // 项目所处阶段（工作台显示什么）：?mock=stage:materials 等，见 stageOf；各阶段的对话、流程由 routes-*.js 的 stages 提供。
 // F2、F3 各页的接口按分组放在 routes-*.js，每个文件导出 register(ctx)、可选的 stages、projectStages、lockScope、taskSeeds。
 import * as F from './fixtures.js';

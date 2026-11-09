@@ -208,7 +208,7 @@ export function PluginDraftCard({ card, cardKey }) {
     setCsState(r?.state || null);
   });
   const fixItems = installFailed || splitPrecheck(draft?.precheck?.items).failed;
-  const spin = (key, icon) => (busy === key ? null : icon);
+  // 进行中：按钮的图标换成转圈
   const spinner = (key) => (busy === key ? <span className="spin" style={{ width: 12, height: 12 }} /> : null);
 
   let foot = null;
@@ -216,7 +216,7 @@ export function PluginDraftCard({ card, cardKey }) {
     const undoBtn = card.changeset_id && csState === 'merged'
       ? <Button size="xs" kind="ghost" icon="undo" disabled={!!busy} onClick={undo}>撤回这一轮</Button> : null;
     const btns = {
-      install: <Button size="sm" kind="primary" icon={spin('install', 'download')} disabled={!!busy} onClick={install}>{spinner('install')}安装并启用到本项目</Button>,
+      install: <Button size="sm" kind="primary" icon={busy === 'install' ? null : 'download'} disabled={!!busy} onClick={install}>{spinner('install')}安装并启用到本项目</Button>,
       fix: (
         <>
           <Button size="sm" icon="download" disabled>安装并启用到本项目</Button>
@@ -225,11 +225,11 @@ export function PluginDraftCard({ card, cardKey }) {
       ),
       installed: (
         <>
-          <Button size="sm" kind="ghost" icon={spin('disable', null)} disabled={!!busy} onClick={disable}>{spinner('disable')}停用</Button>
+          <Button size="sm" kind="ghost" disabled={!!busy} onClick={disable}>{spinner('disable')}停用</Button>
           <Button size="sm" kind="primary" icon="arrowl" disabled={!!busy} onClick={() => pm.backToModel()}>切回建模试用</Button>
         </>
       ),
-      update: <Button size="sm" kind="primary" icon={spin('install', 'refresh')} disabled={!!busy} onClick={install}>{spinner('install')}更新到本项目</Button>,
+      update: <Button size="sm" kind="primary" icon={busy === 'install' ? null : 'refresh'} disabled={!!busy} onClick={install}>{spinner('install')}更新到本项目</Button>,
     }[mode];
     foot = <>{undoBtn}<span className="sp" />{btns}</>;
   }
