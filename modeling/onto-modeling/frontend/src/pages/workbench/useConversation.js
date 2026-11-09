@@ -7,6 +7,7 @@ import { take } from '../../app/earlyData.js';
 import {
   ackLocalUser, addLocalUser, applyEvent, applyEvents, applySnapshot, dropLocalUser, initialConversation, prependHistory,
 } from '../../state/conversation.js';
+import { pickConversation } from './pluginModeModel.js';
 
 function reducer(state, action) {
   switch (action.type) {
@@ -51,15 +52,12 @@ export function useConversation(preferredId, { preferAutobuild = false } = {}) {
     return r;
   }, [api, pid]);
 
-  // 选对话：地址里指定的 > 引擎在线的 > 最近更新的
+  // 选对话：地址里指定的 > （l4-run 页）运行对话 > 引擎在线的 > 最近更新的；不指定时不进插件对话（ADR-0087）
   useEffect(() => {
     let alive = true;
     loadList().then((r) => {
       if (!alive) return;
-      const items = r.items || [];
-      // l4-run 页没指定对话时，取最近的运行对话
-      const runConv = preferAutobuild ? items.find((c) => c.kind === 'autobuild') : null;
-      const pick = items.find((c) => c.id === preferredId) || runConv || items.find((c) => c.id === r.live?.conversation_id) || items[0];
+      const pick = pickConversation(r.items, { preferredId, liveId: r.live?.conversation_id, preferAutobuild });
       setCid(pick?.id || null);
     }).catch((e) => alive && setLoadError(e));
     return () => { alive = false; };

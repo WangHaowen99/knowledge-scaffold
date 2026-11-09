@@ -89,9 +89,15 @@ def _notify(project_id: str, event: str, data: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def copy_for_turn(manager, project_id: str, root: Path) -> Path:
+_KEEP_OVERRIDE = object()
+
+
+def copy_for_turn(manager, project_id: str, root: Path, *, claude_override=_KEEP_OVERRIDE) -> Path:
     """一轮开始前：上一轮没走到收尾的修改先合入（引擎被硬杀、会话被回收），建或修副本、让它跟上主线，
     返回助手的工作目录。
+
+    claude_override：这一轮副本的 .claude 指向哪（ADR-0087）：插件开发装配目录，或 None 回到建模的装配；
+    不给时不动（Studio 复核等别处借用副本时，不能把插件对话那一轮的链接改回去）。
 
     建不了副本（不是 git 仓库、git 出错）时退回主线工作区并记日志：助手照旧能用，只是没有隔离。
     """
@@ -102,6 +108,8 @@ def copy_for_turn(manager, project_id: str, root: Path) -> Path:
         _log.warning("项目 %s 上一轮遗留的修改没合入", project_id, exc_info=True)
     try:
         with manager._project_lock(project_id):
+            if claude_override is not _KEEP_OVERRIDE:
+                worktree.set_override(root, claude_override)
             copy = worktree.ensure(root)
             worktree.sync(root, copy)
         return copy

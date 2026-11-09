@@ -52,6 +52,24 @@ _WRITE_LIKE_TOOL = re.compile(r"write|edit|patch|delete|remove|move|rename|creat
 _DENY_ON_ERROR = "工作区守卫执行失败，按拒绝处理。请换一种写法；持续出现请反馈给维护者。"
 
 
+_PLUGIN_RUNTIME_NOTE = (
+    "# 运行时适配说明\n\n"
+    "- 上述规则中提到的 `.claude/` 目录在当前工作区内可读，其中的脚本用 bash 执行（如 "
+    "`python3 .claude/plugin-dev/capability/scripts/pack_tool.py check plugins/<包名>`）。\n"
+    "- 需要用户选择或确认的问题必须调用 ask_user 工具提出，不在正文里列出选项等待回复。\n"
+    "- 当前会话不提供联网检索工具。\n"
+    "- 全程使用中文。"
+)
+
+
+def _is_plugin_dev(directory: Path) -> bool:
+    try:
+        data = json.loads((Path(directory) / "MANIFEST.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("kind") == "plugin-dev"
+
+
 class JiuwenAssetLoader:
     """按 Claude Code 目录约定装载能力包资产。
 
@@ -70,6 +88,8 @@ class JiuwenAssetLoader:
         self.assets_dir = Path(os.path.realpath(self.toolkit)) if dotclaude is not None else Path(assets_dir)
         self.commands_dir = self.toolkit / "commands"
         self.settings_file = self.toolkit / "settings.json"
+        # 插件开发装配目录（ADR-0087）：system prompt 只有插件助手规则，不拼建模命令与建模专用的运行时说明
+        self.plugin_dev = _is_plugin_dev(self.toolkit)
 
     @classmethod
     def for_workspace(cls, cwd: Path, fallback_assets: Path | None = None) -> "JiuwenAssetLoader":
@@ -106,6 +126,9 @@ class JiuwenAssetLoader:
             parts.append(self.rules_file.read_text(encoding="utf-8").strip())
         except OSError:
             parts.append("你是本体建模助手，在专家的项目工作区内工作（当前目录即项目根）。")
+        if self.plugin_dev:
+            parts.append(_PLUGIN_RUNTIME_NOTE)
+            return "\n\n".join(parts)
         commands = self.command_index()
         if commands:
             lines = "\n".join(f"- /{name}：{desc}" for name, desc in commands)

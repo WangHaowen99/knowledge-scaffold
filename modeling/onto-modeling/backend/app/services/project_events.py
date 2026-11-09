@@ -6,6 +6,7 @@
   消息前切换，或只动纯数据包时插件运行时当场切换）；
 - `artifacts.updated`（EP-06）：内核产物索引经 `kernel/event_port` 发出，启动时（`app/wiring.py`）接到这里；
 - `knowledge.updated`（EP-23）：知识接口写入后；
+- `plugin_drafts.changed`（F17）：主线上 `plugins/` 下的草稿变了（跟着 `workspace.changed`）、装了、启用状态变了；
 - `scope.updated`（EP-03）：写入范围锁由变更集一侧算（ADR-0047），这里只留数据源登记点，默认「没有锁」；
 - `inbox.updated`（EP-02）：每次重算流程时顺带重算待处理，变了才发（ADR-0049）；
 - `conversation.updated`（EP-21）、`project.updated`（EP-20）、`maintenance.updated`（EP-24 / EU-04）、
@@ -179,6 +180,9 @@ def workspace_changed(project_id: str, *, commit: str, source: str, by: str, pat
     if lockfile.LOCK_REL in paths:
         assembly_changed(project_id)
     schedule_flow_refresh(project_id)
+    drafts = sorted({path.split("/")[1] for path in paths if path.startswith("plugins/") and path.count("/") >= 2})
+    if drafts:
+        plugin_drafts_changed(project_id, drafts)
     if any(path.startswith(("resource/", "research/")) for path in paths):
         # 资料地图要抽取资料原文，放后台线程，不拖慢提交
         threading.Thread(target=_guard, args=("materials.updated", materials_changed, project_id), daemon=True).start()
@@ -392,6 +396,12 @@ def assembly_switched(project_id: str, before: str | None, after: str | None) ->
         return
     _guard("assembly.updated", assembly_changed, project_id)
     schedule_flow_refresh(project_id, delay=0)
+
+
+def plugin_drafts_changed(project_id: str, names: list[str]) -> None:
+    """F17 第 7 条：插件草稿在主线上变了（一轮合入、网页改、安装写回版本号）、装了、停用了。"""
+    _guard("plugin_drafts.changed", streams.publish_project, project_id, "plugin_drafts.changed",
+           {"names": list(names)})
 
 
 def knowledge_changed(project_id: str, ids: list[str], change: str) -> None:

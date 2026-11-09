@@ -26,6 +26,12 @@ import { EarlierHistory, Timeline } from './Timeline.jsx';
 import { NextBar, RunLine } from './RunLine.jsx';
 import { restoreText, sendButtonMode } from './composerModel.js';
 import { useConversation } from './useConversation.js';
+import {
+  BUSY_TEXT, isPluginConv, latestDraftCards, menuConversations, pickConversation, planEnterPlugin, planLeavePlugin, pluginReturn, returnTarget,
+} from './pluginModeModel.js';
+import {
+  DraftFilesDrawer, PluginCtx, PluginModeNote, PluginStart, PluginTrack, usePluginDrafts,
+} from './pluginMode.jsx';
 import { MATERIAL_DIALOGS } from './materials/model.js';
 import { useIncremental, useIncrementalTarget } from './incremental/useIncremental.jsx';
 import '../../styles/workbench-extra.css';
@@ -160,7 +166,7 @@ const SECTION_ICON = { required: 'flow', pre_publish: 'lock', optional: 'branch'
 
 // 会话切换菜单（chat-states 第 1 项）：新建、续聊、重命名、删除；运行中禁止
 export function ConversationMenu({
-  items, cid, running, ops, onClose, className = 'wb-pop wb-conv-menu', style, initialRenaming = null, initialDeleting = null, demoTitle, showOpsFor,
+  items, cid, running, ops, onClose, className = 'wb-pop wb-conv-menu', style, initialRenaming = null, initialDeleting = null, demoTitle, showOpsFor, plugin,
 }) {
   const [renaming, setRenaming] = useState(initialRenaming);
   const [title, setTitle] = useState(demoTitle || '');
@@ -173,12 +179,12 @@ export function ConversationMenu({
     <div className={className} style={style} onClick={(e) => e.stopPropagation()}>
     <div className="g2-cmd" style={{ padding: 6 }}>
       <div className="row" style={{ padding: '2px 4px 6px' }}>
-        <b className="sm">本项目的会话 · {items.length}</b><span className="sp" />
-        <Button size="xs" icon="plus" kind="soft" disabled={running} onClick={() => act(async () => { await ops.create(); onClose?.(); })}>新建会话</Button>
+        <b className="sm">{plugin ? '本项目的插件' : '本项目的会话'} · {items.length}</b><span className="sp" />
+        <Button size="xs" icon="plus" kind="soft" disabled={running} onClick={() => act(async () => { await ops.create(); onClose?.(); })}>{plugin ? '新建插件' : '新建会话'}</Button>
       </div>
       {items.map((c) => (
         <div key={c.id} className={cx('g2-conv', c.id === cid && 'on')} style={{ cursor: running || c.id === cid ? 'default' : 'pointer' }} onClick={() => { if (!running && c.id !== cid && renaming !== c.id) { ops.switch(c.id); onClose?.(); } }}>
-          <Icon name={renaming === c.id ? 'edit' : 'msg'} size={14} />
+          <Icon name={renaming === c.id ? 'edit' : plugin ? 'puzzle' : 'msg'} size={14} />
           {renaming === c.id ? (
             <>
               <div className="grow"><div className="inp focus" style={{ height: 28, width: '100%' }}><input autoFocus={!demoTitle} value={title} maxLength={60} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') rename(c); }} /></div></div>
@@ -214,15 +220,20 @@ export function ConversationMenu({
   );
 }
 
-function useConversationOps(conv) {
+// plugin：在插件对话里，新建的是插件对话；删掉当前这条时回同类的下一条（ADR-0087）
+function useConversationOps(conv, plugin, go) {
   const { api } = useApp();
   const { pid } = useProject();
-  const { cid, setCid, reloadList } = conv;
+  const { cid, reloadList } = conv;
   return {
-    create: async () => { const c = await api.createConversation(pid); await reloadList(); setCid(c.id); },
+    create: async () => { const c = await api.createConversation(pid, undefined, plugin ? 'plugin' : undefined); await reloadList(); go(c.id, c.kind); },
     rename: async (id, title) => { await api.renameConversation(pid, id, title); await reloadList(); },
-    remove: async (id) => { const r = await api.deleteConversation(pid, id); await reloadList(); if (id === cid) setCid(r.items[0]?.id); },
-    switch: (id) => setCid(id),
+    remove: async (id) => {
+      const r = await api.deleteConversation(pid, id);
+      await reloadList();
+      if (id === cid) go((menuConversations(r.items, plugin)[0] || pickConversation(r.items))?.id);
+    },
+    switch: (id) => go(id),
   };
 }
 
@@ -287,7 +298,8 @@ function KnowledgeDialog({ item, onClose }) {
 }
 
 const MODES = [['L2', 'users', '陪伴建模'], ['L4', 'rocket', '自主构建']];
-function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCommand, onStop, catalog }) {
+// plugin：插件对话（ADR-0087）——模式胶囊显示「插件开发」，没有命令弹层
+function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCommand, onStop, catalog, plugin }) {
   const { api, services } = useApp();
   const [text, setText] = useState('');
   const [atts, setAtts] = useState([]);
@@ -314,12 +326,12 @@ function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCom
     apiRef.current = {
       addFiles,
       clear: () => { setText(''); taRef.current?.focus(); },
-      setText: (t) => { setText(t); if (t === '/') setPop('cmd'); taRef.current?.focus(); },
+      setText: (t) => { setText(t); if (t === '/' && !plugin) setPop('cmd'); taRef.current?.focus(); },
       // 打断时撤回的话放回来，接在已经敲了的字后面
       restore: (texts) => { setText((t) => restoreText(t, texts)); taRef.current?.focus(); },
       addRef: (r) => { setRefs((x) => (x.some((y) => y.id === r.id) ? x : [...x, r])); taRef.current?.focus(); },
     };
-  }, [addFiles, apiRef]);
+  }, [addFiles, apiRef, plugin]);
 
   useEffect(() => {
     if (pop !== 'ref' || !refQ.trim()) { setRefHits([]); return undefined; }
@@ -375,7 +387,7 @@ function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCom
         placeholder={st.placeholder}
         disabled={st.disabled}
         value={text}
-        onChange={(e) => { setText(e.target.value); if (e.target.value === '/') setPop('cmd'); }}
+        onChange={(e) => { setText(e.target.value); if (e.target.value === '/' && !plugin) setPop('cmd'); }}
         onPaste={(e) => { const fs = [...(e.clipboardData?.files || [])]; if (fs.length) { e.preventDefault(); addFiles(fs); } }}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
@@ -385,9 +397,9 @@ function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCom
       <div className="wx-cb">
         <span className="wx-tb" title="附件" onClick={() => fileRef.current?.click()}><Icon name="clip" size={16} /></span>
         <span className="wx-tb" title="引用知识包里的条目" onClick={() => setPop(pop === 'ref' ? null : 'ref')}><Icon name="at" size={16} /></span>
-        <span className="wx-tb" title="命令" onClick={() => setPop(pop === 'cmd' ? null : 'cmd')}><Icon name="cmd" size={16} /></span>
+        {plugin ? null : <span className="wx-tb" title="命令" onClick={() => setPop(pop === 'cmd' ? null : 'cmd')}><Icon name="cmd" size={16} /></span>}
         <span className="sp" />
-        <span className={cx('wx-mode', buildMode === 'L4' && 'l4')} onClick={() => !st.disabled && setPop(pop === 'mode' ? null : 'mode')}>
+        <span className={cx('wx-mode', plugin ? 'pm' : buildMode === 'L4' && 'l4')} onClick={() => !st.disabled && setPop(pop === 'mode' ? null : 'mode')}>
           <i />{modeLabel}
         </span>
         {mode === 'stop' ? (
@@ -415,9 +427,13 @@ function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCom
         <div className="menu wb-pop wb-mode-pop">
           {MODES.map(([k, icon, label]) => (
             <div key={k} className="mi" onClick={() => { setPop(null); onMode(k); }}>
-              <Icon name={icon} size={14} /><span>{label}</span>{buildMode === k ? <Icon name="check" size={14} className="k" /> : null}
+              <Icon name={icon} size={14} /><span>{label}</span>{!plugin && buildMode === k ? <Icon name="check" size={14} className="k" /> : null}
             </div>
           ))}
+          <hr />
+          <div className="mi" onClick={() => { setPop(null); onMode('plugin'); }}>
+            <Icon name="puzzle" size={14} /><span>插件开发</span>{plugin ? <Icon name="check" size={14} className="k" /> : null}
+          </div>
         </div>
       ) : null}
       {pop === 'ref' ? (
@@ -436,8 +452,9 @@ function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCom
 
 const INLINE_ALL = ['waiting_decision'];
 // 包声明的快捷项（PL-12 entries，kind=quick_action）放在「全部命令」旁，点了发它的命令（R22）
-function SuggestionBar({ sug, quick = [], onAction, onAll, onQuick }) {
-  if (!sug && !quick.length) return null;
+// lead：排在最前的芯片（从插件开发切回来时的「回到插件开发」）
+function SuggestionBar({ sug, quick = [], onAction, onAll, onQuick, lead }) {
+  if (!sug && !quick.length && !lead) return null;
   const items = [];
   // 升级前留在历史里的建议条可能还带「确认生效」（F3 起一轮结束就合入）：不画
   const live = (s) => s && s.action?.type !== 'merge_changeset';
@@ -447,6 +464,7 @@ function SuggestionBar({ sug, quick = [], onAction, onAll, onQuick }) {
   const quickEls = quick.map((q) => <span key={q.id} className="s" onClick={() => onQuick(q)}><Icon name="zap" size={12} />{q.label}</span>);
   return (
     <div className="wb-sug">
+      {lead}
       {items.map((s) => {
         const dis = s.disabled;
         return (
@@ -472,8 +490,24 @@ export default function WorkbenchPage({ route }) {
   // 增量更新（incremental）落到进行中的变更清单所在的对话
   const incTarget = useIncrementalTarget(route);
   const conv = useConversation(route.query?.c || incTarget.cid, { preferAutobuild: route.page === 'l4-run' });
-  const convOps = useConversationOps(conv);
   const { cid, state, list } = conv;
+  // 插件开发（ADR-0087）：插件对话是另一类对话，切模式就是换对话；进插件对话、或地址里已经指定了对话时，换对话也写进地址（?c=）
+  const convItem = list?.items?.find((c) => c.id === cid) || null;
+  const plugin = isPluginConv(convItem);
+  const goConversation = useCallback((id, kind) => {
+    if (!id) return;
+    conv.setCid(id);
+    const toPlugin = kind ? kind === 'plugin' : isPluginConv(list?.items?.find((c) => c.id === id));
+    if (toPlugin || route.query?.c) navigate(pagePath(toPlugin ? 'wb-l2' : route.page, pid), { c: id });
+  }, [conv.setCid, list, route.page, route.query?.c, pid]); // eslint-disable-line react-hooks/exhaustive-deps
+  const convOps = useConversationOps(conv, plugin, goConversation);
+  const drafts = usePluginDrafts();
+  const draftName = plugin ? convItem.plugin : null;
+  useEffect(() => { if (draftName) drafts.ensure(draftName); }, [draftName, drafts.ensure]); // eslint-disable-line react-hooks/exhaustive-deps
+  const boundDraft = draftName && drafts.drafts[draftName]?.name ? drafts.drafts[draftName] : null;
+  const [filesDrawer, setFilesDrawer] = useState(null);
+  // 进了插件开发，「回到插件开发」的记录就用过了
+  useEffect(() => { if (plugin) pluginReturn.clear(window.sessionStorage, pid); }, [plugin, pid]);
   const [drawer, setDrawer] = useState(false);
   const [menu, setMenu] = useState(null);
   const [restart, setRestart] = useState(false);
@@ -488,6 +522,36 @@ export default function WorkbenchPage({ route }) {
   const ab = useAutobuild({ pid, cid, list });
   const [mDialog, setMDialog] = useState(null);
   const modeSw = useModeSwitch({ ab, openDialog: (d) => setMDialog(typeof d === 'string' ? { kind: d } : d) });
+  // 模式菜单（ADR-0087）：选「插件开发」进最近的插件对话（没有就新建）；在插件对话里选陪伴建模、自主构建，先回最近的建模对话再按原来的逻辑切
+  const enterPlugin = async (id) => {
+    const plan = planEnterPlugin({ items: list?.items, sessionState: state.session.state, autobuildRunning: !!state.session.autobuild || ab.running });
+    if (plan.action === 'busy') { toast(BUSY_TEXT[plan.reason], 'clock'); return; }
+    try {
+      if (id || plan.action === 'open') goConversation(id || plan.id, 'plugin');
+      else { const c = await api.createConversation(pid, undefined, 'plugin'); await conv.reloadList(); goConversation(c.id, 'plugin'); }
+    } catch (e) { toast(errorText(e), 'alert'); }
+  };
+  const leavePlugin = async (target) => {
+    const plan = planLeavePlugin({ items: list?.items, sessionState: state.session.state });
+    if (plan.action === 'busy') { toast(BUSY_TEXT[plan.reason], 'clock'); return false; }
+    try {
+      if (plan.action === 'open') goConversation(plan.id, 'chat');
+      else { const c = await api.createConversation(pid); await conv.reloadList(); goConversation(c.id, 'chat'); }
+    } catch (e) { toast(errorText(e), 'alert'); return false; }
+    if (target) modeSw.switchTo(target);
+    return true;
+  };
+  const onMode = (k) => {
+    if (k === 'plugin') { if (!plugin) enterPlugin(); return; }
+    if (plugin) leavePlugin(k); else modeSw.switchTo(k);
+  };
+  // 草稿卡上的「切回建模试用」：记下从哪条插件对话来，建模对话的建议条多一个「回到插件开发」
+  const backRef = useRef(null);
+  backRef.current = async () => {
+    const from = cid;
+    if (await leavePlugin(null)) pluginReturn.set(window.sessionStorage, pid, from);
+  };
+  const returnId = plugin ? null : returnTarget(list?.items, pluginReturn.get(window.sessionStorage, pid));
   const mainRef = useRef(null);
   const inc = useIncremental({ route, target: incTarget, conv, state, flow, mainRef });
   const headRef = useRef(null);
@@ -559,7 +623,8 @@ export default function WorkbenchPage({ route }) {
       if (m && stick.current) m.scrollTo({ top: m.scrollHeight, behavior: 'instant' });
     });
     return undefined;
-  }, [state.order.length, state.items, state.thinking]);
+    // 草稿卡的实时状态（PD-02）比历史晚到、卡片会变高：到了也跟一次
+  }, [state.order.length, state.items, state.thinking, drafts.drafts]);
   useEffect(() => () => cancelAnimationFrame(stickFrame.current), []);
   const onScroll = () => {
     const m = mainRef.current;
@@ -640,7 +705,8 @@ export default function WorkbenchPage({ route }) {
     retry: async () => { try { await api.retryTurn(pid, cid); } catch (e) { fail(e); } },
     clearInput: () => comp.current.clear?.(),
     registerRound: (cs, fn) => { rounds.current.set(cs, fn); },
-    canSaveKnowledge: hasPlugin('knowledge'),
+    // 插件对话里的回复说的是插件草稿，不是业务知识
+    canSaveKnowledge: hasPlugin('knowledge') && !plugin,
     saveKnowledge: (item) => setKnItem({ ...item, conversation_id: cid }),
     // 卡上的变更集还待确认时，带上它读这一轮的版本（AR-03 ?changeset=）
     openArtifact: (artifact, changesetId) => {
@@ -653,7 +719,22 @@ export default function WorkbenchPage({ route }) {
     executeChangeList: inc.execute,
     conversationId: cid,
     stopAndSend,
-  }), [api, pid, cid, hasPlugin, stopAndSend]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [api, pid, cid, hasPlugin, plugin, stopAndSend]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 插件对话的草稿卡、文件抽屉共用：草稿状态缓存、每份草稿最新的一张卡、发话、切回建模
+  const sendRef = useRef(null);
+  const latestCards = useMemo(() => latestDraftCards(state), [state.order, state.items]); // eslint-disable-line react-hooks/exhaustive-deps
+  const pluginCtx = useMemo(() => ({
+    drafts: drafts.drafts,
+    ensure: drafts.ensure,
+    reload: drafts.reload,
+    put: drafts.put,
+    latestCards,
+    openFiles: (name, changes) => setFilesDrawer({ name, changes: !!changes, open: true }),
+    sendText: (text) => sendRef.current?.({ text }),
+    backToModel: () => backRef.current?.(),
+    discard: (cs) => actions.discard(cs),
+  }), [drafts.drafts, drafts.ensure, drafts.reload, drafts.put, latestCards, actions]);
 
   // 等你回答：滚到那张卡并闪一下；找不到这一问时去最后一张没答的
   const focusQuestion = (id) => {
@@ -726,6 +807,7 @@ export default function WorkbenchPage({ route }) {
       return false;
     }
   };
+  sendRef.current = send;
 
   const evidenceOn = evidenceInProject(project);
   const picked = pickSuggestions(state.suggestions, suggestions);
@@ -747,11 +829,14 @@ export default function WorkbenchPage({ route }) {
   const ctx = state.context;
   const ctxPct = Math.round(ctx?.pct ?? 0);
   const notice = (flow?.notices || []).find((n) => n.kind === 'new_materials');
-  const convTitle = list?.items?.find((c) => c.id === cid)?.title || '对话';
+  const convTitle = convItem?.title || (plugin ? '新插件' : '对话');
+  // 插件对话还没有消息时画起步卡片；有了消息，模式说明放在时间线最前面
+  const hasMessages = state.order.some((k) => !['day', 'notice'].includes(state.items[k]?.kind));
   // 资料分析节点没确认：还在读资料（含还没传资料）
   const research = (flow?.nodes || []).find((n) => n.id === 'core.research');
   const researching = !!research && !['confirmed', 'skipped'].includes(research.state);
-  const st = composerState({ sessionState: state.session.state, archived: meta?.archived, maintenance, autobuildRunning: !!state.session.autobuild || ab.running, researching });
+  const st0 = composerState({ sessionState: state.session.state, archived: meta?.archived, maintenance, autobuildRunning: !!state.session.autobuild || ab.running, researching: !plugin && researching });
+  const st = plugin && !st0.disabled && !st0.delivery && !st0.warn ? { ...st0, placeholder: '描述要做的插件…' } : st0;
   const wbCtx = useMemo(() => {
     const entries = {};
     state.order.forEach((k) => {
@@ -759,18 +844,19 @@ export default function WorkbenchPage({ route }) {
       (it.entry_links || it.card?.entry_links || []).forEach((r) => { entries[r.name] = r; });
       if (it.card?.entry) entries[it.card.entry.name] = it.card.entry;
     });
-    return { pid, cid, entries };
-  }, [pid, cid, state.order, state.items]);
+    return { pid, cid, entries, plugin };
+  }, [pid, cid, plugin, state.order, state.items]);
 
   const head = (
     <div className="wx-head" ref={headRef}>
-      <div className="wx-sess" title="切换会话" onClick={() => setMenu(menu === 'conv' ? null : 'conv')}>
-        <Icon name="msg" size={14} /><span className="nm ell">{convTitle}</span><Icon name="chevd" size={12} />
+      <div className="wx-sess" title={plugin ? '切换插件' : '切换会话'} onClick={() => setMenu(menu === 'conv' ? null : 'conv')}>
+        <Icon name={plugin ? 'puzzle' : 'msg'} size={14} /><span className="nm ell">{convTitle}</span><Icon name="chevd" size={12} />
       </div>
-      {viewFlow ? <Track flow={viewFlow} onOpen={() => setDrawer(true)} /> : <span />}
+      {plugin ? <PluginTrack draft={boundDraft} /> : viewFlow ? <Track flow={viewFlow} onOpen={() => setDrawer(true)} /> : <span />}
       <div className="wx-acts">
         {ab.active ? null : <StateChip session={state.session} queue={state.queue} />}
-        {lockInfo ? (
+        {/* 插件对话的顶栏只留上下文和更多：新资料、待处理、建模步骤属于建模 */}
+        {plugin ? null : lockInfo ? (
           <span
             className="wx-ib nt"
             data-pop={lockPop(lockInfo, scope)}
@@ -779,20 +865,24 @@ export default function WorkbenchPage({ route }) {
             <Icon name="lock" size={14} />
           </span>
         ) : null}
-        {notice && !busyHead ? (
+        {notice && !busyHead && !plugin ? (
           <span className="wx-ib nt" data-pop={notice.text} onClick={() => (notice.action?.type === 'navigate' ? navigate(pagePath(notice.action.page, pid)) : navigate(pagePath('incremental', pid)))}>
             <i />{notice.count} 份新资料
           </span>
         ) : null}
-        <span className="wx-ib" onClick={() => navigate(pagePath('inbox', pid))}><Icon name="inbox" size={14} />待处理{inboxCount ? <span className="n">{inboxCount}</span> : null}</span>
-        <span className="wx-sep" />
-        <span className="wx-ib" title="建模步骤" onClick={() => setDrawer(true)}><Icon name="branch" size={16} /></span>
+        {plugin ? null : (
+          <>
+            <span className="wx-ib" onClick={() => navigate(pagePath('inbox', pid))}><Icon name="inbox" size={14} />待处理{inboxCount ? <span className="n">{inboxCount}</span> : null}</span>
+            <span className="wx-sep" />
+            <span className="wx-ib" title="建模步骤" onClick={() => setDrawer(true)}><Icon name="branch" size={16} /></span>
+          </>
+        )}
         <span className="wx-ib" data-pop={ctx ? `上下文 ${Math.round(ctx.used / 1000)}k / ${Math.round(ctx.window / 1000)}k` : '上下文占用'} onClick={() => setMenu(menu === 'ctx' ? null : 'ctx')}>
           <Ring p={ctxPct} r={7} color={ctxPct >= 75 ? '#F59E0B' : '#2563EB'} /><span className="num">{ctxPct}%</span>
         </span>
         <span className="wx-ib" title="更多" onClick={() => setMenu(menu === 'more' ? null : 'more')}><Icon name="more" size={16} /></span>
       </div>
-      {menu === 'conv' ? <ConversationMenu items={list?.items || []} cid={cid} running={['running', 'connecting', 'queued'].includes(state.session.state)} ops={convOps} onClose={() => setMenu(null)} /> : null}
+      {menu === 'conv' ? <ConversationMenu items={menuConversations(list?.items, plugin)} plugin={plugin} cid={cid} running={['running', 'connecting', 'queued'].includes(state.session.state)} ops={convOps} onClose={() => setMenu(null)} /> : null}
       {menu === 'ctx' ? <div className="wb-pop wb-ctx-pop"><ContextPanel context={ctx} usage={usage} /></div> : null}
       {menu === 'more' ? (
         <div className="menu wb-pop wb-more-menu">
@@ -806,6 +896,7 @@ export default function WorkbenchPage({ route }) {
   return (
     <ShellP active="wb-l2" flush nosub>
       <ActionsCtx.Provider value={actions}>
+        <PluginCtx.Provider value={pluginCtx}>
         <AutobuildCtx.Provider value={ab}>
         <WbCtx.Provider value={wbCtx}>
           <div
@@ -821,7 +912,8 @@ export default function WorkbenchPage({ route }) {
               <div className="wbc-col">
                 {conv.loadError ? <div className="note red mt16"><Icon name="alert" /><div className="grow">{errorText(conv.loadError)}</div></div> : null}
                 {inc.hideTimeline ? null : <EarlierHistory older={conv.older} onLoad={onLoadEarlier} rootRef={mainRef} />}
-                {inc.hideTimeline ? null : <Timeline state={state} scope={scope} />}
+                {plugin && state.loaded && !hasMessages ? <PluginStart onPick={(t) => comp.current.setText?.(t)} /> : null}
+                {inc.hideTimeline ? null : <Timeline state={state} scope={scope} lead={plugin && hasMessages && !conv.older?.hasMore ? <PluginModeNote /> : null} />}
                 {state.session.state === 'queued' && state.queue ? <QueueCard queue={state.queue} onCancel={() => api.cancelQueue(pid, cid).catch(fail)} /> : null}
               </div>
             </div>
@@ -830,8 +922,14 @@ export default function WorkbenchPage({ route }) {
                 {/* 自主构建的运行对话由运行条说明在做什么、控制暂停停下 */}
                 {ab.running ? null : <RunLine info={runStatus(state)} />}
                 <NextBar next={state.next} running={running} onStart={() => nextOp('start')} onCancel={() => nextOp('cancel')} />
-                {sugHidden ? null : <SuggestionBar sug={sug} quick={quickActions} onAction={onSuggestion} onQuick={runQuick} onAll={() => comp.current.setText?.('/')} />}
-                <Composer pid={pid} apiRef={comp} st={st} buildMode={modeSw.mode} modeLabel={modeSw.label} onMode={modeSw.switchTo} onSend={send} onCommand={sendCommand} onStop={canInterrupt(running, ab) ? interrupt : null} catalog={catalog} />
+                {/* 插件对话里没有建议条（F17 第 9 条） */}
+                {sugHidden || plugin ? null : (
+                  <SuggestionBar
+                    sug={sug} quick={quickActions} onAction={onSuggestion} onQuick={runQuick} onAll={() => comp.current.setText?.('/')}
+                    lead={returnId ? <span className="s" onClick={() => enterPlugin(returnId)}><Icon name="puzzle" size={12} />回到插件开发</span> : null}
+                  />
+                )}
+                <Composer pid={pid} apiRef={comp} st={st} buildMode={modeSw.mode} modeLabel={plugin ? '插件开发' : modeSw.label} onMode={onMode} onSend={send} onCommand={sendCommand} onStop={canInterrupt(running, ab) ? interrupt : null} catalog={catalog} plugin={plugin} />
               </div>
             </div>
             {drag ? <div className="wb-dropmask"><Icon name="upload" size={24} /><b>松开以添加附件</b><span className="xs muted">Markdown、Word、Excel、PDF、Drawio、TXT · 单个不超过 20 MB</span></div> : null}
@@ -850,6 +948,7 @@ export default function WorkbenchPage({ route }) {
             <div className="sm muted">这一轮结束后改做「{replaceAsk?.body?.text || replaceAsk?.body?.command}」</div>
           </Modal>
           <KnowledgeDialog item={knItem} onClose={() => setKnItem(null)} />
+          <DraftFilesDrawer open={!!filesDrawer?.open} name={filesDrawer?.name} changes={filesDrawer?.changes} onClose={() => setFilesDrawer((f) => (f ? { ...f, open: false } : f))} />
           {opened ? (
             <Suspense fallback={null}>
               <ArtifactOpener artifact={opened} onClose={closeOpened} />
@@ -859,6 +958,7 @@ export default function WorkbenchPage({ route }) {
           {inc.element}
         </WbCtx.Provider>
         </AutobuildCtx.Provider>
+        </PluginCtx.Provider>
       </ActionsCtx.Provider>
     </ShellP>
   );
