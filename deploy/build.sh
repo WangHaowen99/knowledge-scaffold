@@ -86,9 +86,6 @@ bash "${REPO_ROOT}/consumer/build.sh" "${VERSION}" "${ARCH}"
 tar -C "${STAGE_ROOT}" -xzf "${CONSUMER_PACKAGE}"
 cp "${BUNDLE_DIR}/deploy/deploy.sh" "${BUNDLE_DIR}/deploy/deploy-consumer.sh"
 
-RELEASE_BUNDLE_DIR="${BUNDLE_DIR}" \
-    bash "${REPO_ROOT}/modeling/build.sh" "${VERSION}" "${ARCH}"
-
 # Onto Modeling（引导式建模工作台）：独立子包并入 bundle，部署脚本自带零配置 auth
 chmod +x "${REPO_ROOT}/modeling/onto-modeling/build.sh" "${REPO_ROOT}/modeling/onto-modeling/deploy/"*.sh
 bash "${REPO_ROOT}/modeling/onto-modeling/build.sh" "${VERSION}" "${ARCH}"
@@ -131,14 +128,10 @@ cat > "${BUNDLE_DIR}/deploy/manifest.json" <<EOF
   "frontend_image": "onto-agent-frontend:${VERSION}",
   "auth_server_image": "onto-agent-auth-server:${VERSION}",
   "jiuwenbox_image": "onto-agent-jiuwenbox:${VERSION}",
-  "modeling_image": "mw-modeling:${VERSION}",
-  "modeling_agent_image": "mw-modeling-agent:${VERSION}",
   "backend_image_tar": "images/onto-agent-backend-${VERSION}.tar",
   "frontend_image_tar": "images/onto-agent-frontend-${VERSION}.tar",
   "auth_server_image_tar": "images/onto-agent-auth-server-${VERSION}.tar",
   "jiuwenbox_image_tar": "images/onto-agent-jiuwenbox-${VERSION}.tar",
-  "modeling_image_tar": "images/mw-modeling-${VERSION}.tar",
-  "modeling_agent_image_tar": "images/mw-modeling-agent-${VERSION}.tar",
   "onto_modeling_image": "onto-modeling:${VERSION}",
   "onto_modeling_auth_server_image": "onto-modeling-auth-server:${VERSION}",
   "onto_modeling_bundle_dir": "onto-modeling",

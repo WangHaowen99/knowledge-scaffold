@@ -100,7 +100,7 @@ fi
     return setup
 
 
-def _run(setup, *, package=None, hub=True, modeling=True, interactive=True, **overrides):
+def _run(setup, *, package=None, hub=True, interactive=True, **overrides):
     package = setup['evaluation_package'] if package is None else package
     mode = setup['mode']
     if not interactive:
@@ -111,8 +111,6 @@ def _run(setup, *, package=None, hub=True, modeling=True, interactive=True, **ov
             args.extend(['--upgrade-from', str(setup['legacy'])])
         args.extend(['--consumer-package', str(setup['packages'][0]),
                      '--onto-modeling-package', str(setup['packages'][2])])
-        if modeling:
-            args.extend(['--modeling-package', str(setup['packages'][1])])
         if hub:
             args.extend(['--knowledge-hub-package', str(setup['hub_package'])])
         if package:
@@ -130,7 +128,6 @@ def _run(setup, *, package=None, hub=True, modeling=True, interactive=True, **ov
             ('请选择模式', '1'), ('安装根目录（', '2'),
             ('请输入自定义安装根目录', str(setup['target'])), ('端口配置', '1'),
             ('请输入 Consumer 发布包路径', str(setup['packages'][0])),
-            ('请输入 Modeling 发布包路径', str(setup['packages'][1])),
             ('请输入 Onto Modeling 发布包路径', str(setup['packages'][2])),
             ('请输入知识包 Hub 发布包路径', str(setup['hub_package']) if hub else ''),
             ('请输入独立评测服务发布包', str(package)),
@@ -139,9 +136,6 @@ def _run(setup, *, package=None, hub=True, modeling=True, interactive=True, **ov
         script = DEPLOY_ROOT / 'install-consumer-modeling-interactive.sh'
         answers = _interactive_upgrade_answers(
             setup, hub=str(setup['hub_package']) if hub else '', evaluation=str(package))
-    if not modeling:
-        answers = [(prompt, '' if 'Modeling' in prompt and 'Onto' not in prompt else reply)
-                   for prompt, reply in answers]
     if mode == 'legacy':
         answers.append(('请输入 Onto Modeling 宿主端口', '5110'))
     return _drive_tty(script, answers, {**setup['env'], **overrides})
@@ -225,14 +219,14 @@ def test_evaluation_prechecks_before_changing_services(tmp_path, problem, intera
 
 def test_upgrading_four_services_generates_consumer_evaluation_credential(tmp_path):
     setup = _prepare(tmp_path)
-    rc, output = _run(setup, modeling=False)
+    rc, output = _run(setup)
     assert rc == 0, output
     assert 'consumer-upgrade' in _calls(setup)
     assert 'modeling-install' not in _calls(setup)
     assert _configuration(tmp_path)['EVAL_CONSUMER_SERVICE_TOKEN']
 
 
-def test_modeling_only_upgrade_keeps_consumer_credential_and_deploys_hub(tmp_path):
+def test_upgrade_keeps_consumer_credential_and_deploys_hub(tmp_path):
     setup = _prepare(tmp_path)
     token = secrets.token_hex(32)
     consumer_config = setup['target'] / 'onto-agent/backend/.env'
@@ -242,7 +236,7 @@ def test_modeling_only_upgrade_keeps_consumer_credential_and_deploys_hub(tmp_pat
     hub.mkdir()
     (hub / '.env').write_text('HUB_EVALUATION_SERVICE_TOKEN=' + setup['env']['STUB_HUB_EVALUATION_TOKEN'] + '\n')
     before = consumer_config.read_bytes()
-    rc, output = _run(setup, modeling=False)
+    rc, output = _run(setup)
     assert rc == 0, output
     assert 'consumer-upgrade' in _calls(setup)
     assert _calls(setup)[-3:] == ['hub-deploy', 'onto-deploy', 'evaluation-compose']

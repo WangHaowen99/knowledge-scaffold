@@ -136,8 +136,8 @@ cd frontend && npm test && npm run build
 
 完整安装和升级统一部署 Consumer、Onto Modeling、知识包 Hub、独立评测四个必需服务。
 分离安装脚本的 `--consumer-package`、`--onto-modeling-package`、`--knowledge-hub-package`、`--evaluation-package`
-四项必填；`--modeling-package`（Modeling Workbench）可选，不提供时不部署、不升级该组件。
-部署顺序：Consumer → Modeling Workbench（提供包时）→ Hub → Onto Modeling → 评测。安装入口须与发布包版本一致。
+四项必填。安装脚本不部署、不升级 Modeling Workbench。
+部署顺序：Consumer → Hub → Onto Modeling → 评测。安装入口须与发布包版本一致。
 
 ```bash
 ./build.sh <version> [amd|arm]     # 产出 dist/onto-modeling-<version>-linux-<arch>.tar.gz

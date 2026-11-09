@@ -82,7 +82,6 @@ Neo4j 按 Provider 展开 URL、Database、User、Password 与 Workspace / Ontol
 
 完整安装、升级及旧版迁移必须同时提供 Consumer、Onto Modeling、Hub、评测四个发布包：
 `--consumer-package`、`--onto-modeling-package`、`--knowledge-hub-package`、`--evaluation-package`。
-`--modeling-package` 可选；未提供时保留现有 Modeling Workbench，不部署也不重启。
 交互入口同样要求四个必需包，不允许留空，也不以复用运行服务替代提供发布包。
 
 ```bash
