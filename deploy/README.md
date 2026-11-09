@@ -243,6 +243,10 @@ docker exec -e MYSQL_PWD="${EVAL_MYSQL_ROOT_PASSWORD:?请先设置评测库密�
 缺少任一参数即退出；交互入口同样不能留空。`--modeling-package` 可选，未提供时不部署、不升级、不重启 Modeling Workbench。
 部署顺序为 Consumer → Modeling Workbench（提供包时）→ Hub → Onto Modeling → 评测。
 使用与发布包同版本的安装脚本；完整离线包必须包含四项交付物，不以服务已经运行为由跳过。
+`./deploy/build.sh` 生成完整离线包的同时，保留四个必需服务的独立发布包：`consumer/dist/onto-agent-*`、
+`modeling/onto-modeling/dist/onto-modeling-*`、`knowledge-hub/dist/knowledge-hub-*`、`eval-service/dist/evaluation-*`
+（同版本旧包会被覆盖）。Consumer 独立包与根目录 `dist/` 下的完整包同名，传给 `--consumer-package` 时应使用
+`consumer/dist/` 下的文件；Modeling Workbench 独立包需另行执行 `bash modeling/build.sh <version> [amd|arm]`。
 
 Hub 不再写在 onto-modeling 的 compose 里，而是独立 compose 项目 `knowledge-hub/deploy/docker-compose.knowledge-hub.yml`（项目名、容器名 `knowledge-hub`，数据卷 `knowledge-hub_knowledge-hub-data`），由 `knowledge-hub/deploy/deploy.sh` 部署：加入 consumer 网络，onto-modeling 经 `http://knowledge-hub:8200` 访问，Hub 经 `auth-server` 校验令牌、经 `onto-modeling` 回调资料授权；不发布宿主端口，部署后在容器内做健康检查。
 
