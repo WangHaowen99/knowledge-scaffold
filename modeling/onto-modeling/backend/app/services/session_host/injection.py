@@ -189,7 +189,8 @@ def _plugin_hint(project_root: Path, conversation_id: str | None) -> str | None:
 
 ASSEMBLY_CHANGED_NOTE = (
     "建模能力有更新（插件或流程换了版本）：这条对话里之前读过的命令说明、子代理说明、流程说明都作废，"
-    "执行命令前重新读 `.claude/` 下现在的文件，不按记忆里的旧版本做。"
+    "执行命令前重新读 `.claude/commands/`、`.claude/agents/` 下现在的文件，不按记忆里的旧版本做；"
+    "`plugins/` 下是还在开发的插件草稿，不是生效的版本，不要照它做。"
 )
 
 

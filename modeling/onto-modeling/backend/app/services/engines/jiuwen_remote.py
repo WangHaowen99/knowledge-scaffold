@@ -196,6 +196,8 @@ class RemoteJiuwenEngine(ObservableEngine):
             "model_owner": ctx.model_owner, "assembly_dir": str(ctx.assembly_dir) if ctx.assembly_dir else None,
             "engine_instance": ctx.engine_instance, "resume_token": ctx.load_resume_token(),
             "history": ctx.load_history() if ctx.load_history else [],
+            # 宿主的注入状态不跨进程：worker 按这几项重建，装配换过版本的提醒要带过去
+            "assembly_changed": bool(getattr(ctx.injector, "assembly_changed", False)),
         }
         await worker.write({"op": "connect", "sid": self.sid, "ctx": payload})
         message = await asyncio.wait_for(self._connected, OP_TIMEOUT_SECONDS * 4)
