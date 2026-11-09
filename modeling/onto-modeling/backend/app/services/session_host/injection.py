@@ -136,7 +136,14 @@ def build_context(
     session_start 为真表示这是引擎实例（新建或续接）收到的第一条消息，阶段提示必带；
     last_injected 是上一条消息结果里的 digest。阶段读不出来（不是本体项目工作区、
     脚本超时）时本条不带阶段提示，digest 原样传回。
+
+    插件对话（ADR-0087）只带草稿状态一段，不带阶段、下一步、目标、包提示、自主构建、资料。
     """
+    plugin = _plugin_hint(project_root, conversation_id)
+    if plugin is not None:
+        digest = _digest(plugin)
+        text = plugin if session_start or digest != last_injected else ""
+        return InjectionResult(text=text, digest=digest, stage_hint=text)
     hint = stage_hint(project_root)
     goal = "\n".join(part for part in (goal_hint(project_root), terms_hint(project_root)) if part)
     digest = last_injected
@@ -160,14 +167,44 @@ def build_context(
     return InjectionResult(text=text, digest=digest, stage_hint=stage_part, prompt_hint=rules)
 
 
+def _plugin_hint(project_root: Path, conversation_id: str | None) -> str | None:
+    """插件对话的草稿状态；不是插件对话时 None。读不出时给一句兜底，不退回建模的注入。"""
+    if not conversation_id or conversation_id == "default":  # 缺省对话总是建模对话
+        return None
+    from ...kernel.changesets import worktree
+    from .. import plugin_mode
+
+    project_id = worktree.project_id_of(Path(project_root))
+    try:
+        if not plugin_mode.is_plugin(project_id, conversation_id):
+            return None
+    except Exception:  # noqa: BLE001 - 对话索引读不出按建模对话处理
+        return None
+    try:
+        return plugin_mode.injection_text(project_id, conversation_id)
+    except Exception:  # noqa: BLE001 - 算不出草稿状态不挡消息
+        _log.warning("项目 %s 插件草稿状态算不出", project_id, exc_info=True)
+        return f"插件开发：只改 {plugin_mode.DRAFTS_DIR}/ 下这条对话的草稿，本体只读。"
+
+
+ASSEMBLY_CHANGED_NOTE = (
+    "建模能力有更新（插件或流程换了版本）：这条对话里之前读过的命令说明、子代理说明、流程说明都作废，"
+    "执行命令前重新读 `.claude/commands/`、`.claude/agents/` 下现在的文件，不按记忆里的旧版本做；"
+    "`plugins/` 下是还在开发的插件草稿，不是生效的版本，不要照它做。"
+)
+
+
 class Injector:
     """一个引擎实例的注入状态（宿主建、交给引擎）：第一条必带，之后内容不变不重复。"""
 
-    def __init__(self, project_root: Path, conversation_id: str | None = None):
+    def __init__(self, project_root: Path, conversation_id: str | None = None, *, assembly_changed: bool = False):
         self.project_root = Path(project_root)
         self.conversation_id = conversation_id
         self.started = False
         self.digest: str | None = None
+        # 装配（插件、流程）换了版本后续接的实例：模型上下文里还留着旧版命令说明，第一条消息提醒它作废
+        self.assembly_changed = assembly_changed
+        self._noted = False
 
     def context_for(self, user_text: str) -> str:
         """消息送到模型前调一次（同步，会起子进程）；返回要放在消息前面的注入文本。"""
@@ -175,11 +212,14 @@ class Injector:
                                last_injected=self.digest, conversation_id=self.conversation_id)
         self.started = True
         self.digest = result.digest
-        return result.text
+        self._noted = self.assembly_changed
+        self.assembly_changed = False
+        return "\n\n".join(part for part in (ASSEMBLY_CHANGED_NOTE if self._noted else "", result.text) if part)
 
     def forget(self) -> None:
         """这一轮被打断，模型不一定看到了这次的注入：下一条重新带上。"""
         self.digest = None
+        self.assembly_changed = self.assembly_changed or self._noted
 
 
 def compose_query(user_text: str, context: str) -> str:

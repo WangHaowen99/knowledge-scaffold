@@ -168,6 +168,10 @@ export const ERROR_MESSAGES = {
   pack_required: '必装的能力不能停用',
   pack_not_enabled: (d) => (d?.effective === 'next_message' ? '下一条消息生效' : '本项目没有启用这个能力'),
   pack_already_enabled: '已经启用了',
+  // 私有上传与插件草稿安装（PL-22、PD-05）
+  static_check_failed: '静态检查有失败项',
+  pack_name_taken: '包名已被占用',
+  pack_quota_exceeded: (d) => `私有包版本数到上限${d?.limit ? `（${d.limit} 个）` : ''}，找管理员清理`,
   pack_unavailable: (d) => ({
     offline: '离线部署不可用', not_applicable: '本项目不适用', not_installed: '平台还没有安装',
   }[d?.reason] || '这个能力暂时不可用'),

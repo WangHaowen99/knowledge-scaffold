@@ -50,6 +50,7 @@ class Worker:
             self.out.flush()
 
     def _context(self, sid: str, data: dict):
+        from ..session_host import injection
         from .base import EngineContext
 
         history = list(data.get("history") or [])
@@ -89,6 +90,8 @@ class Worker:
             model_owner=data.get("model_owner") or "",
             assembly_dir=Path(assembly) if assembly else None,
             engine_instance=data.get("engine_instance") or "",
+            injector=injection.Injector(Path(data["cwd"]), data.get("conversation_id") or "default",
+                                        assembly_changed=bool(data.get("assembly_changed"))),
         )
 
     async def handle(self, message: dict) -> None:

@@ -154,3 +154,15 @@ test('子任务行状态以终态为准：工作过程或会话结束后，没�
   assert.equal(subagentStatus({ status: 'done' }, true), 'done');
   assert.equal(subagentStatus({ status: 'failed' }, false), 'failed');
 });
+
+test('插件草稿卡（F17）没有 card_id：按这一轮的变更集各占一张，同一轮再推只换内容', () => {
+  n = 0;
+  const s = applyEvents(initialConversation(), [
+    ev('card', { kind: 'plugin_draft', name: 'naming-check', version: '0.1.0', changed_files: ['a'], changeset_id: 'cs1' }),
+    ev('card', { kind: 'plugin_draft', name: 'naming-check', version: '0.1.0', changed_files: ['b'], changeset_id: 'cs2' }),
+    ev('card.updated', { kind: 'plugin_draft', name: 'naming-check', version: '0.1.1', changed_files: ['b'], changeset_id: 'cs2' }),
+  ]);
+  const cards = s.order.filter((k) => s.items[k].kind === 'card');
+  assert.deepEqual(cards, ['card:cs:cs1', 'card:cs:cs2']);
+  assert.equal(s.items['card:cs:cs2'].card.version, '0.1.1');
+});

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Request
 
 from ..api import deps
 from ..api.errors import ApiError
+from ..services import plugin_mode
 from ..services.flow import model, node_kinds, overlay, view
 from ..services.flow import state as node_state
 
@@ -21,15 +22,20 @@ router = APIRouter(prefix="/api/v1/projects/{project_id}/flow", tags=["flow"])
 
 @router.get("")
 async def get_flow(project_id: str, request: Request, conversation_id: str = ""):
-    """FL-01：流程。带 conversation_id 时建议按这条对话的打断状态算。"""
+    """FL-01：流程。带 conversation_id 时建议按这条对话的打断状态算；插件对话的建议为空（ADR-0087）。"""
     root = deps.require_owner(project_id, request)
-    return await asyncio.to_thread(view.build, root, conversation_id=conversation_id or None)
+    flow = await asyncio.to_thread(view.build, root, conversation_id=conversation_id or None)
+    if conversation_id and await asyncio.to_thread(plugin_mode.is_plugin, project_id, conversation_id):
+        flow = {**flow, "suggestions": plugin_mode.empty_suggestions()}
+    return flow
 
 
 @router.get("/suggestions")
 async def get_suggestions(project_id: str, request: Request, conversation_id: str = ""):
     """FL-02：统一下一步（与 FL-01 的 suggestions 同一份）。"""
     root = deps.require_owner(project_id, request)
+    if conversation_id and await asyncio.to_thread(plugin_mode.is_plugin, project_id, conversation_id):
+        return plugin_mode.empty_suggestions()  # 插件对话没有建议条（ADR-0087）
     flow = await asyncio.to_thread(view.build, root, conversation_id=conversation_id or None)
     return flow["suggestions"]
 

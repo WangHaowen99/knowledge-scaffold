@@ -151,3 +151,15 @@ def test_engine_selection_follows_worker_switch(monkeypatch):
     assert get_engine_class("jiuwen") is RemoteJiuwenEngine
     monkeypatch.setattr(config, "JIUWEN_WORKER", False)
     assert get_engine_class("jiuwen") is JiuwenEngine
+
+
+def test_worker_context_carries_the_assembly_changed_note(tmp_path):
+    """宿主的注入对象不跨进程：装配换过版本的提醒经 connect 的 ctx 带进 worker（实测内测引擎丢过）。"""
+    import io
+
+    from app.services.engines.jiuwen_worker import Worker
+
+    worker = Worker(engine_class=None, out=io.StringIO())
+    base = {"project_id": "p-demo", "cwd": str(tmp_path), "conversation_id": "c1"}
+    assert worker._context("s1", {**base, "assembly_changed": True}).injector.assembly_changed is True
+    assert worker._context("s2", base).injector.assembly_changed is False

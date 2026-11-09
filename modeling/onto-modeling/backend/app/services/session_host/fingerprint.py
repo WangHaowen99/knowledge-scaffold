@@ -11,6 +11,7 @@
 | flow | 组装后的流程 | 节点声明变化 |
 | mcp | 本项目启用的 MCP 服务器 | 只对 Claude（Jiuwen 不接 MCP） |
 | permission_mode | 运行时权限模式 | 只对 Claude |
+| plugin_dev | 插件开发装配目录的哈希 | 只对插件对话，它不算 assembly、flow（ADR-0087） |
 
 装配目录的切换（`.claude` 原子换指向）也在这里：引擎连上之前（没有正在跑的一轮）调 prepare。
 """
@@ -25,12 +26,13 @@ from typing import Any
 
 _log = logging.getLogger(__name__)
 
-KINDS = ("model", "owner", "assembly", "flow", "mcp", "permission_mode")
+KINDS = ("model", "owner", "assembly", "flow", "plugin_dev", "mcp", "permission_mode")
 SUMMARIES = {
     "model": "模型配置有变化",
     "owner": "改用另一份模型配置",
     "assembly": "建模能力有更新",
     "flow": "建模流程有更新",
+    "plugin_dev": "插件开发说明有更新",
     "mcp": "MCP 服务器配置有变化",
     "permission_mode": "操作确认方式有变化",
 }
@@ -84,8 +86,10 @@ def prepare(project_id: str) -> dict:
     return result
 
 
-def compute(engine: Any, project_id: str, owner: str) -> Fingerprint:
-    """当前应当生效的指纹（锁文件要求的装配，不是 `.claude` 现在指的那个）。"""
+def compute(engine: Any, project_id: str, owner: str, kind: str = "chat") -> Fingerprint:
+    """当前应当生效的指纹（锁文件要求的装配，不是 `.claude` 现在指的那个）。
+
+    插件对话（kind=plugin）不算项目的装配和流程（项目装了新插件不该让插件助手重连），改算插件开发装配目录。"""
     from ..packs import service as packs_service
 
     parts: dict[str, str] = {"owner": owner or ""}
@@ -95,10 +99,18 @@ def compute(engine: Any, project_id: str, owner: str) -> Fingerprint:
             parts["model"] = str(model())
         except Exception as exc:  # noqa: BLE001 - 配置读不出：按变化处理交给重连去报错
             parts["model"] = f"error:{type(exc).__name__}"
-    try:
-        parts.update(packs_service.desired_parts(_workspaces(), project_id))
-    except Exception as exc:  # noqa: BLE001 - 指纹的装配部分算不出：不参与比较
-        _log.warning("项目 %s 的装配指纹算不出：%s", project_id, exc)
+    if kind == "plugin":
+        from ..plugin_mode import assembly
+
+        try:
+            parts["plugin_dev"] = assembly.digest(_workspaces())
+        except Exception as exc:  # noqa: BLE001 - 算不出不参与比较
+            _log.warning("插件开发装配的指纹算不出：%s", exc)
+    else:
+        try:
+            parts.update(packs_service.desired_parts(_workspaces(), project_id))
+        except Exception as exc:  # noqa: BLE001 - 指纹的装配部分算不出：不参与比较
+            _log.warning("项目 %s 的装配指纹算不出：%s", project_id, exc)
     if getattr(engine, "name", "") == "claude":
         from ..engines import claude
 
@@ -107,12 +119,12 @@ def compute(engine: Any, project_id: str, owner: str) -> Fingerprint:
     return Fingerprint(parts)
 
 
-def changes(engine: Any, project_id: str, owner: str, connected: Fingerprint | None) -> list[str]:
+def changes(engine: Any, project_id: str, owner: str, connected: Fingerprint | None, kind: str = "chat") -> list[str]:
     """连上以来变了的部分；连上时没留指纹（旧实例）时退回引擎自己的 config_stale()。"""
     if connected is None:
         stale = getattr(engine, "config_stale", None)
         return ["model"] if callable(stale) and stale() else []
-    current = compute(engine, project_id, owner)
+    current = compute(engine, project_id, owner, kind)
     found = current.diff(connected)
     stale = getattr(engine, "config_stale", None)
     if "model" not in found and callable(stale) and not callable(getattr(engine, "model_fingerprint", None)) and stale():

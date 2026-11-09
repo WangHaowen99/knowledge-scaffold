@@ -30,7 +30,7 @@ def conversation_view(view: dict, live: dict | None) -> dict:
         "id": view["id"], "title": view["title"], "title_manual": view["title_manual"],
         "created_at": iso(view["created_at"]), "updated_at": iso(view["updated_at"]),
         "live": is_live, "state": STATE.get(live["state"], live["state"]) if is_live else "idle",
-        "kind": view.get("kind") or "chat", "run_id": view.get("run_id"),
+        "kind": view.get("kind") or "chat", "run_id": view.get("run_id"), "plugin": view.get("plugin"),
     }
 
 
