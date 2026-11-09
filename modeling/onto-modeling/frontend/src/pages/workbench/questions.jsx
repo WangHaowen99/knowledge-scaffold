@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button, Chip, Icon, Ring, cx } from '../../ui/index.jsx';
 import { useActions } from './cards.jsx';
 import { DiffBlock, Inline, MSys, Tli } from './parts.jsx';
+import { decisionAnswer } from './questionModel.js';
 
 function useAnswer(q) {
   const actions = useActions();
@@ -14,16 +15,18 @@ function useAnswer(q) {
   return [busy, submit];
 }
 
-// 结构化决策卡（wb-l2）：没选不能确认；键盘 1–4 选择、↵ 确认
+// 结构化决策卡（wb-l2）：没选不能确认；键盘 1–4 选择、↵ 确认。多选题（q.multi）点选项是勾选 / 取消，答复传 option_ids
 export function DecisionCard({ q, active }) {
   const actions = useActions();
-  const [pick, setPick] = useState(null);
+  const [picks, setPicks] = useState([]);
   const [custom, setCustom] = useState('');
   const [busy, submit] = useAnswer(q);
-  const opt = q.options.find((o) => o.id === pick);
-  const ready = !!opt && (!opt.custom || custom.trim());
+  const toggle = (id) => setPicks((cur) => (q.multi ? (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]) : [id]));
+  const chosen = q.options.filter((o) => picks.includes(o.id));
+  const opt = q.multi ? null : chosen[0];
+  const body = decisionAnswer(q, picks, custom);
   const ref = useRef({});
-  ref.current = { pick, ready, opt, custom };
+  ref.current = { body };
 
   useEffect(() => {
     if (!active) return undefined;
@@ -31,16 +34,19 @@ export function DecisionCard({ q, active }) {
       const tag = (document.activeElement?.tagName || '');
       if (/TEXTAREA|INPUT/.test(tag) || e.metaKey || e.ctrlKey) return;
       const i = Number(e.key);
-      if (i >= 1 && i <= q.options.length) { setPick(q.options[i - 1].id); e.preventDefault(); return; }
-      if (e.key === 'Enter' && ref.current.ready && !busy) {
+      if (i >= 1 && i <= q.options.length) { toggle(q.options[i - 1].id); e.preventDefault(); return; }
+      if (e.key === 'Enter' && ref.current.body && !busy) {
         e.preventDefault();
-        submit({ option_id: ref.current.pick, custom_text: ref.current.opt?.custom ? ref.current.custom.trim() : undefined });
+        submit(ref.current.body);
       }
     };
     document.addEventListener('keydown', h);
     return () => document.removeEventListener('keydown', h);
-  }, [active, q.options, busy]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [active, q.options, q.multi, busy]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const label = q.multi
+    ? (chosen.length ? `确认 ${chosen.map((o) => o.key).join('、')}` : '确认所选')
+    : (opt ? `确认方向 ${opt.key}` : '确认这个方向');
   return (
     <div className="wb-dc">
       <div className="wx-eb"><Icon name="hand" />{q.eyebrow || `需要你决定 · ${q.step_label}`}</div>
@@ -48,12 +54,12 @@ export function DecisionCard({ q, active }) {
       {q.background_md ? <div className="wx-ctx"><Inline text={q.background_md} anchors={q.anchors} /></div> : null}
       <div className="opts">
         {q.options.map((o, i) => (
-          <div key={o.id} className={cx('opt', pick === o.id && 'on')} onClick={() => setPick(o.id)} data-i={i + 1}>
+          <div key={o.id} className={cx('opt', picks.includes(o.id) && 'on')} onClick={() => toggle(o.id)} data-i={i + 1}>
             <span className="k">{o.key}</span>
             <div className="grow">
               <div className="t row g8"><span>{o.label}</span>{o.recommended ? <span className="chip blue sm">推荐</span> : null}</div>
               {o.consequence ? <div className="c">{o.consequence}</div> : null}
-              {o.custom && pick === o.id ? (
+              {o.custom && picks.includes(o.id) ? (
                 <div className="mt8" onClick={(e) => e.stopPropagation()}>
                   <div className="inp area" style={{ minHeight: 60 }}><textarea style={{ height: 44 }} autoFocus placeholder={q.custom_placeholder || '说说你的方向…'} value={custom} onChange={(e) => setCustom(e.target.value)} /></div>
                 </div>
@@ -71,8 +77,8 @@ export function DecisionCard({ q, active }) {
       <div className="wx-dcf">
         <span className="sp" />
         <Button size="sm" kind="ghost" onClick={() => actions.later?.(q)}>稍后决定</Button>
-        <Button kind="primary" size="sm" title={`1–${q.options.length} 选择 · ↵ 确认`} disabled={!ready || busy} onClick={() => submit({ option_id: pick, custom_text: opt?.custom ? custom.trim() : undefined })}>
-          {opt ? `确认方向 ${opt.key}` : '确认这个方向'}
+        <Button kind="primary" size="sm" title={`1–${q.options.length} 选择 · ↵ 确认`} disabled={!body || busy} onClick={() => submit(body)}>
+          {label}
         </Button>
       </div>
     </div>
