@@ -1461,3 +1461,14 @@ Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`
 - `plugin_drafts.changed` 跟着 `workspace.changed` 发（提交改到 `plugins/<包名>/` 就带上这些包名），另外 PD-05 装好、PL-06～PL-09 改了
   同名草稿的启用状态时也发。
 - 会话指纹的部分（EC-07 `changes[].kind`）多一个值 `plugin_dev`，摘要「插件开发说明有更新」。
+
+**端到端验证后的修正（2026-11-10，真实模型）**：
+
+- DraftView 的 `install` 多 `reuse`（bool）：草稿和本人包仓库里同版本号的那份内容一样（停用后再装、撤回到装过的版本）时为 true，
+  `next_version` 就是那个版本。PD-05 这时不上传、不建上传记录，直接启用（没启用时）、升级或回滚（草稿版本比启用的低时）到那个版本，
+  `upload_id` 为 null，审计只记 `pack.enable` / `pack.upgrade` / `pack.rollback`；插件对话的通知写「「<label>」<版本> 已启用到本项目」。
+  装好且没改时 `next_version` 等于启用的版本（原来是下一个补丁号）。
+- 装配换过版本后续接的建模对话：每条对话记下上次连引擎时的装配与流程版本（续接点旁的 `.assembly` 文件），续接时版本变了，
+  第一条消息的注入多一句提醒（旧版命令说明作废、执行前重读 `.claude/commands/`，`plugins/` 下是草稿）。两个引擎都带，内测引擎经 worker 的
+  connect 参数 `assembly_changed` 带进去。不只插件开发，插件中心升级、启用也同样生效。
+- 内核守卫解析 Bash 时，紧挨重定向符的数字（`2>/dev/null`、`2>&1`）按文件描述符处理，`>&`、`<&` 后面是数字或 `-` 时不算写文件。
