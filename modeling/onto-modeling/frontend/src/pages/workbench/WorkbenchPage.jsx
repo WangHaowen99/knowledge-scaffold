@@ -706,7 +706,8 @@ export default function WorkbenchPage({ route }) {
     retry: async () => { try { await api.retryTurn(pid, cid); } catch (e) { fail(e); } },
     clearInput: () => comp.current.clear?.(),
     registerRound: (cs, fn) => { rounds.current.set(cs, fn); },
-    canSaveKnowledge: hasPlugin('knowledge'),
+    // 插件对话里的回复说的是插件草稿，不是业务知识
+    canSaveKnowledge: hasPlugin('knowledge') && !plugin,
     saveKnowledge: (item) => setKnItem({ ...item, conversation_id: cid }),
     // 卡上的变更集还待确认时，带上它读这一轮的版本（AR-03 ?changeset=）
     openArtifact: (artifact, changesetId) => {
@@ -719,7 +720,7 @@ export default function WorkbenchPage({ route }) {
     executeChangeList: inc.execute,
     conversationId: cid,
     stopAndSend,
-  }), [api, pid, cid, hasPlugin, stopAndSend]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [api, pid, cid, hasPlugin, plugin, stopAndSend]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 插件对话的草稿卡、文件抽屉共用：草稿状态缓存、每份草稿最新的一张卡、发话、切回建模
   const sendRef = useRef(null);

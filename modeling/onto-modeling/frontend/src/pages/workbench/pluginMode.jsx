@@ -172,7 +172,7 @@ export function PluginDraftCard({ card, cardKey }) {
   const [csState, setCsState] = useState(null);
   // 草稿又变了（新的一轮、网页上改、装了）：上次安装的失败项作废
   useEffect(() => setInstallFailed(null), [draft?.updated_at]);
-  // 撤回这一轮：只在最新卡、这一轮的变更集还是合入状态时出现
+  // 撤回这一轮：只在最新卡、这一轮的变更集还是合入状态、草稿和装上的版本不一样时出现（装好以后撤回只会让草稿和插件对不上）
   useEffect(() => {
     if (!latest || !card.changeset_id) return undefined;
     let alive = true;
@@ -213,7 +213,7 @@ export function PluginDraftCard({ card, cardKey }) {
 
   let foot = null;
   if (mode !== 'snapshot') {
-    const undoBtn = card.changeset_id && csState === 'merged'
+    const undoBtn = card.changeset_id && csState === 'merged' && draft?.install?.state !== 'installed'
       ? <Button size="xs" kind="ghost" icon="undo" disabled={!!busy} onClick={undo}>撤回这一轮</Button> : null;
     const btns = {
       install: <Button size="sm" kind="primary" icon={busy === 'install' ? null : 'download'} disabled={!!busy} onClick={install}>{spinner('install')}安装并启用到本项目</Button>,

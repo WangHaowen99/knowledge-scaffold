@@ -19,7 +19,8 @@
 .pm-chk .more:hover{color:var(--ink2)}
 
 .pm-code{font-family:var(--mono);font-size:12px;line-height:1.75;color:var(--ink2);background:#FAFBFE;border:1px solid var(--line);border-radius:10px;padding:8px 0;overflow:auto}
-.pm-code .l{display:flex;white-space:pre;padding-right:14px}
+.pm-code .l{display:flex;white-space:pre-wrap;overflow-wrap:anywhere;padding-right:14px}
+.pm-code .l span{min-width:0;flex:1}
 .pm-code .l i{font-style:normal;width:36px;flex:0 0 36px;text-align:right;padding-right:12px;color:var(--muted);user-select:none}
 .pm-code .l.add{background:rgba(15,118,110,.07)}.pm-code .l.add i{color:var(--teal)}
 .pm-code .l.del{background:rgba(220,38,38,.06)}.pm-code .l.del i{color:var(--red)}
