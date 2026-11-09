@@ -163,6 +163,8 @@ def test_enabled_project_walks_the_mainline_and_publish_waits_for_the_check(env)
 
     main_write(root, SCOPE_FILE, json.dumps({"status": "active"}))
     assert _next_command(client, project_id) == "/incremental-apply"
+    # 范围内修改改了对象：建模的操作一步因此过期，但这一轮的传播交给核对，不推整段重新提取
+    main_write(root, "ontology/object/订单.md", obj("订单", "合成订单加了期望送达时间"))
     main_write(root, "incremental/applied.json", "{}\n")
     assert _next_command(client, project_id) == "/incremental-check"
     assert _gate(client, project_id)["blocking"]

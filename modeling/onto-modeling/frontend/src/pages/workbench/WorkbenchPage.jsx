@@ -6,7 +6,7 @@ import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, relativeTime } from '../../api/errors.js';
-import { commandFromTarget, commandNode, nodeActionKind, suggestionCommand, overlayRunning, scriptRunView, sectionGroups, trackNodes, withoutEvidence } from '../../state/flow.js';
+import { commandFromTarget, commandNode, nodeActionKind, suggestionCommand, overlayRunning, scriptRunView, sectionGroups, trackClass, trackNodes, withoutEvidence } from '../../state/flow.js';
 import { evidenceInProject, withoutEvidenceSuggestions } from '../../state/evidence.js';
 import { composerState, readonlyInfo } from '../../state/readonly.js';
 import { runStatus } from '../../state/conversation.js';
@@ -34,15 +34,14 @@ import '../../styles/workbench-extra.css';
 const ArtifactOpener = lazy(() => import('../../components/packs/ArtifactOpener.jsx'));
 const MaterialsDialogs = lazy(() => import('./materials/MaterialsDialogs.jsx'));
 
-const TRACK_CLASS = { confirmed: 'ok', running: 'running', pending: 'pending', blocked: 'blocked' };
 
 function Track({ flow, onOpen }) {
   const nodes = trackNodes(flow);
   return (
     <div className="wx-track" onClick={onOpen}>
       {nodes.map((n, i) => {
-        const k = TRACK_CLASS[n.display_state] || '';
-        const prevOk = i > 0 && TRACK_CLASS[nodes[i - 1].display_state] === 'ok';
+        const k = trackClass(n.display_state);
+        const prevOk = i > 0 && trackClass(nodes[i - 1].display_state) === 'ok';
         return (
           <span key={n.id} style={{ display: 'contents' }}>
             {i ? <span className={cx('wx-ln', prevOk && 'ok')} /> : null}

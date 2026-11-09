@@ -4,7 +4,7 @@ import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
 import {
   commandFromTarget, commandName, commandNode, flowNeedsReload, mergeFlow, multiSlice, nodeActionKind, normalizeFlow, suggestionCommand, overlayRunning, scriptRunView, sectionGroups, sliceName,
-  trackNodes, unitTitle, withoutEvidence,
+  trackClass, trackNodes, unitTitle, withoutEvidence,
 } from '../src/state/flow.js';
 
 test('P1 形状：主线按 after 连线排出 6 个必经步骤，分支与按需节点不进进度条', () => {
@@ -166,4 +166,13 @@ test('flow.updated 带来新的 flow_hash（节点集合变了，如授权数据
   assert.deepEqual(merged.nodes.map((n) => n.id), ['core.research', 'core.model']);
   assert.equal(merged.flow_hash, 'h2');
   assert.equal(flowNeedsReload(merged, added), false, '同一批事件只重取一次');
+});
+
+test('顶栏轨迹：需复核、自主完成、通过都算完成，可补做淡显（导入知识包后建模已有、资料分析越过）', () => {
+  assert.equal(trackClass('confirmed'), 'ok');
+  assert.equal(trackClass('needs_review'), 'ok');
+  assert.equal(trackClass('auto'), 'ok');
+  assert.equal(trackClass('backfill'), 'skip');
+  assert.equal(trackClass('ready'), '');
+  assert.equal(trackClass(undefined), '');
 });

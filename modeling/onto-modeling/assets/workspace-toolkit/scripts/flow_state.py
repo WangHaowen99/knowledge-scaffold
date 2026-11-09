@@ -226,7 +226,7 @@ def next_step_lines(flow: dict, stage: str) -> list:
 
 SUGGESTIONS_MAX = 3
 # 建议条判定的版本（F7 起按规则表从上往下判、带 check 与 note）：后端只用支持这一版的 flow_state
-SUGGEST_RULES = 2
+SUGGEST_RULES = 3
 
 
 def _item(sid: str, label: str, action: dict, *, reason: str, priority: int, primary: bool = False,
@@ -279,7 +279,12 @@ def _goal_items(flow: dict, nodes: list, states: dict, context: dict) -> list:
 
 
 def _stale_items(nodes: list, state_of: dict, context: dict) -> list:
-    """7. 过期的步骤：刷新。按段的节点一段一步地列（按钮写清哪一段哪一步），其余节点整个刷新。"""
+    """7. 过期的步骤：刷新。按段的节点一段一步地列（按钮写清哪一段哪一步），其余节点整个刷新。
+
+    范围限定生效时（增量构建的一轮进行中，ADR-0085）不出：改动的传播由那一轮的核对节点处理，整段重新提取
+    会去写范围外的条目、被守卫拦下。"""
+    if context.get('confine_active'):
+        return []
     out = []
     upstream = context.get('stale_upstream') or {}
     for node in nodes:
@@ -448,7 +453,8 @@ def suggest(flow: dict, states: dict, context: dict | None = None, check=None) -
     - blueprint：建模蓝图 {state: none|draft|confirmed, where: mainline|changeset, next, goal_pending}，目标问题没答时主推「回答目标问题」（F8 起草案不用确认）；
     - slice_next：按段的节点这一段的下一步 {slice_id, slice_name, step, label, command, sliced}；
     - slice_stale：按段的节点过期的那几段那几步 [{slice_id, slice_name, step, step_label, command, sliced, upstream}]；
-    - stale_upstream：其余过期节点 → 上游的说法（「对象、操作」）。
+    - stale_upstream：其余过期节点 → 上游的说法（「对象、操作」）；
+    - confine_active：范围限定生效（增量构建一轮进行中），这时第 7 条不出。
     """
     context = context or {}
     allowed = check or (lambda action: True)

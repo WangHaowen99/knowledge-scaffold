@@ -20,6 +20,7 @@
 .wx-st.pending .dt::after{content:"";width:6px;height:6px;border-radius:50%;background:#F59E0B}
 .wx-st.blocked .dt{background:transparent;box-shadow:none;color:#A8B2C2}
 .wx-st.blocked .dt svg{width:11px;height:11px}
+.wx-st.skip{opacity:.5}
 .wx-st .x{font-size:11px;font-weight:650;color:var(--blue2);background:rgba(37,99,235,.08);padding:1px 6px;border-radius:6px;font-variant-numeric:tabular-nums}
 .wx-st.pending .x{color:#B45309;background:rgba(245,158,11,.13)}
 .wx-ln{width:12px;height:1px;background:#D7DEE8;margin:0 6px;flex:none}

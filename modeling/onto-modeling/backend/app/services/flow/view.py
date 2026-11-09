@@ -64,7 +64,7 @@ def _lock_alive(root: Path, command: str) -> bool:
 def _suggest_module(root: Path, state):
     """本项目锁定版本的 flow_state 支持这一版建议条判定（SUGGEST_RULES）就用它，旧 core 版本用镜像版本：
     规则表、能否执行的检查与说明行（F7）三处要同一份，升级前的项目不能还按旧的判。"""
-    if getattr(state, "SUGGEST_RULES", 0) >= 2:
+    if getattr(state, "SUGGEST_RULES", 0) >= 3:
         return state
     from ..packs import contracts
 
@@ -222,6 +222,18 @@ def _unfinished_step(project_id: str, conversation_id: str | None, roots: list[P
     return {"id": record["id"], "label": record.get("command_label") or ""}
 
 
+def _confine_active(flow: dict, root: Path) -> bool:
+    """范围限定生效：组装结果带 confine，主线上的范围文件 status 是 active（ADR-0085；读不出算没生效，同守卫）。"""
+    spec = flow.get("confine")
+    if not isinstance(spec, dict) or not isinstance(spec.get("scope_file"), str) or not spec["scope_file"]:
+        return False
+    try:
+        scope = json.loads((root / spec["scope_file"]).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(scope, dict) and scope.get("status") == "active"
+
+
 def _stale_upstream(flow: dict, states: dict) -> dict:
     """过期的节点（按段的除外）→ 上游的说法：「对象、操作」。"""
     from .. import workspace_labels
@@ -370,6 +382,7 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
                        "slice_next": (sliced or {}).get("slice_next"),
                        "slice_stale": (sliced or {}).get("slice_stale") or [],
                        "stale_upstream": _stale_upstream(flow, simple_states),
+                       "confine_active": _confine_active(flow, root),
                        **_session_context(root.name, conversation_id, root, flow, interrupted_exec),
                        **_run_context(root.name), **extra}
     unfinished = _unfinished_step(root.name, conversation_id, [copy, root], flow)
@@ -508,7 +521,7 @@ def _write_flow_state(root: Path, copy: Path, flow: dict, states: dict, context:
                   **states},
         "context": {key: value for key, value in context.items()
                     if key in ("stage", "changeset", "autobuild", "blueprint", "slice_next", "slice_stale",
-                               "stale_upstream")},
+                               "stale_upstream", "confine_active")},
         "suggestions": suggestions,
     }
     for target in ([copy] if (copy / ".git").is_file() else [root]):

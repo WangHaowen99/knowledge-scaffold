@@ -211,7 +211,7 @@ def test_stale_click_returns_fresh_suggestions(api):
 def _suggest(root, states: dict, context: dict, check=None) -> dict:
     flow = model.load_for(root)
     module = model.flow_state(root)
-    assert getattr(module, "SUGGEST_RULES", 0) >= 2
+    assert getattr(module, "SUGGEST_RULES", 0) >= 3
     return module.suggest(flow, states, context, check)
 
 
@@ -258,6 +258,11 @@ def test_flow_rules_in_order(api):
     assert stale["note"] == "上游「对象、操作」改过"
     whole = _suggest(root, _states(root, core_validate="stale"), {"stale_upstream": {"core.validate": "对象、操作"}})
     assert whole["primary"]["label"].startswith("刷新「") and whole["note"] == "上游「对象、操作」改过"
+    # 7 不出：增量构建一轮进行中（范围限定生效），传播交给那一轮的核对，不推整段重新提取（会写范围外的条目）
+    confined = _suggest(root, _states(root, core_model="stale", core_validate="ready", core_publish="not_ready"),
+                        {"slice_stale": [stale_step], "confine_active": True})
+    assert not any(item["id"].startswith("refresh:") for item in items(confined))
+    assert confined["primary"]["id"].startswith("core.validate")
     # 8：报告里还有待处理的问题
     report = _suggest(root, _states(root), {"stage": "校验待审阅"})
     assert report["primary"]["label"] == "继续校验"

@@ -37,6 +37,8 @@ python3 .claude/scripts/incremental_scope.py draft --goal "<一句话目标>" \
 
 先 `python3 .claude/scripts/state_helper.py acquire incremental-scope confirm`，再给用户看
 `incremental/scope.draft.md` 的要点：种子、传播链条数、链上每一条为什么在（如「订单 → 下单（引用对象）」）。
+要点写在正文里，然后用确认卡问（`.claude/INTERACTION_CONVENTIONS.md` 第 2 条），选项是「确认」「调整」；去掉传播链上的
+某条让用户在对话里说「去掉 <条目>」。用户在对话里直接打下面的关键词也照样推进：
 
 - 回复 **确认** → 按草稿生效；
 - 回复 **去掉 <条目>** → 这些传播链上的条目不放进范围（种子去不掉，要去掉种子回 Step 1 重新起草）；
