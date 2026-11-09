@@ -1,8 +1,11 @@
 """Consumer feedback in the data flywheel: intake, processing into feedback runs, report, review and delivery.
 
-All users, packages, questions, answers and dependency responses are synthetic."""
+All users, packages, questions, answers and dependency responses are synthetic.
+"""
 import hashlib
 import json
+from pathlib import Path
+import re
 from types import SimpleNamespace
 
 from cryptography.fernet import Fernet
@@ -333,7 +336,7 @@ def test_signal_bodies_are_cleared_when_retention_ends(flywheel):
     assert env.app.state.store.db.execute('SELECT body FROM feedback_signals').fetchone()[0] is None
 
 
-CONTRACT = __import__('pathlib').Path(__file__).resolve().parents[2] / 'contracts' / 'flywheel' / 'feedback-signal.v1.schema.json'
+CONTRACT = Path(__file__).resolve().parents[2] / 'contracts' / 'flywheel' / 'feedback-signal.v1.schema.json'
 
 
 def test_the_shared_contract_is_generated_from_what_the_service_accepts():
@@ -410,7 +413,7 @@ def test_the_connectivity_check_reports_what_consumer_needs(flywheel):
     body = response.json()
     assert body['status'] == 'ok' and body['feedback_enabled'] is True
     assert body['accepted_schemas'] == ['consumer-feedback-signal.v1', 'consumer-feedback-signal-batch.v1']
-    assert __import__('re').fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ', body['server_time'])
+    assert re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ', body['server_time'])
     # Nothing about the caller, tokens or addresses; not for browsers; never cached.
     assert 'synthetic-user-a' not in response.text and SERVICE not in response.text and 'example.com' not in response.text
     assert response.headers['cache-control'] == 'no-store' and 'access-control-allow-origin' not in response.headers

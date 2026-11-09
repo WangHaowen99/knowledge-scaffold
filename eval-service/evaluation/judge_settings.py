@@ -84,7 +84,7 @@ def internal(host):
     try:
         addresses = {info[4][0].split('%')[0] for info in socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)}
         result = any(not ipaddress.ip_address(address).is_global for address in addresses)
-    except (OSError, UnicodeError, ValueError):
+    except (OSError, ValueError):  # UnicodeError of an unencodable host name is a ValueError
         result = False
     with _resolved_lock:
         _resolved[host] = (now, result)
@@ -102,8 +102,9 @@ class JudgeSettings:
         """The gateway URL when the service may call it; saving, testing and every call check it."""
         host = (urlsplit(url).hostname or '').lower()
         allowed = {item.strip().lower() for item in self.config.judge_allowed_hosts.split(',') if item.strip()}
-        deployment = (urlsplit(self.config.judge_url).hostname or '').lower()
-        if host and host not in allowed and host != deployment and internal(host):
+        # The deployment's own judge host is always allowed, like the hosts an administrator listed.
+        allowed.add((urlsplit(self.config.judge_url).hostname or '').lower())
+        if host and host not in allowed and internal(host):
             raise Failure('judge_gateway_internal', GATEWAY_INTERNAL, 422, 'judging')
         return url
 

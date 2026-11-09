@@ -7,6 +7,7 @@ The shared contract contracts/flywheel/feedback-signal.v1.schema.json is generat
     cd eval-service && python -m evaluation.feedback.models > ../contracts/flywheel/feedback-signal.v1.schema.json
 """
 import json
+import sys
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -179,4 +180,4 @@ def contract():
 
 
 if __name__ == '__main__':
-    print(json.dumps(contract(), ensure_ascii=False, indent=2))
+    sys.stdout.write(json.dumps(contract(), ensure_ascii=False, indent=2) + '\n')

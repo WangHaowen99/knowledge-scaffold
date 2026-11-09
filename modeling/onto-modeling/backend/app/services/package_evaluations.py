@@ -79,8 +79,10 @@ class Outcome(_Model):
 
 
 class Optimization(_Model):
-    """How modeling handled a run's suggestions, as the evaluation service records it; statuses are kept as text so a
-    new status of the service never makes a notification rejected."""
+    """How modeling handled a run's suggestions, as the evaluation service records it.
+
+    Statuses are kept as text, so a new status of the service never makes a notification rejected.
+    """
     status: str = Field(pattern=STATUS_PATTERN)
     updated_at: float | None = None
     reason: str | None = Field(default=None, max_length=2000)
@@ -569,7 +571,8 @@ def settle(pid, subject, token):
     linked = hub_packages.association(pid, subject) or {}
     with _optimization_lock(pid):
         state = knowledge_hub.load(_optimization_path(pid))
-        if not state or not state.get('run_id') or state.get('optimizer') != hub_packages.scope(subject) or not token:
+        mine = state and state.get('run_id') and state.get('optimizer') == hub_packages.scope(subject)
+        if not mine or not token:
             return state
         release_id = linked.get('release_id')
         result = state.get('result') or {}

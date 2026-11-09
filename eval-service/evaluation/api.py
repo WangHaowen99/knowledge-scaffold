@@ -789,7 +789,8 @@ def create_app(config=None,transport=None):
             if feedback and (store.optimization(rid) or {}).get('status')!='awaiting_review':
                 raise Failure('invalid_state','这一轮消费反馈已确认或驳回，不能再修改',409)
             reference=body.get('reference')
-            if reference is not None and (not feedback or not isinstance(reference,str) or len(reference)>4000):
+            reference_ok=feedback and isinstance(reference,str) and len(reference)<=4000
+            if reference is not None and not reference_ok:
                 raise Failure('override_invalid','只有消费反馈轮次可以补充标准答案，且不超过 4000 字',422)
             if (owner,rid) in engine.active: raise Failure('run_active','运行中不能改判',409)
             reason=body.get('reason')

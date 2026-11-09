@@ -66,9 +66,8 @@ class Intake:
         if not self.authorized(service_token):
             raise Failure('service_forbidden', '服务凭据无效', 403, 'authorization')
         profile = self.caller(token)
-        signals = body.get('signals') if isinstance(body, dict) else None
-        if not isinstance(body, dict) or body.get('schema') != BATCH_SCHEMA or not isinstance(signals, list) \
-                or not 0 < len(signals) <= BATCH_LIMIT:
+        signals = body.get('signals') if isinstance(body, dict) and body.get('schema') == BATCH_SCHEMA else None
+        if not isinstance(signals, list) or not 0 < len(signals) <= BATCH_LIMIT:
             raise Failure('invalid_input', f'需要 {BATCH_SCHEMA}，每批 1–{BATCH_LIMIT} 条信号', 422)
         now = self.clock()
         purge_after = now + self.config.number('feedback_retention_days', RETENTION_DAYS) * DAY

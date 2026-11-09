@@ -1,7 +1,9 @@
 """Consumer outages, rate limits, slow questions, mapping conflicts, notification limits and judge gateways.
 
-All identities, packages, data and dependency responses are synthetic."""
+All identities, packages, data and dependency responses are synthetic.
+"""
 import io
+import socket
 import time
 import zipfile
 
@@ -179,13 +181,29 @@ def test_a_dataset_run_is_deletable_without_an_evaluation_database(environment):
     sources.cleanup('b' * 32, {'mode': 'dataset', 'provider': 'nl2sql_http'})
 
 
+INTERNAL_HOST = 'judge.internal.example'
+
+
+@pytest.fixture
+def internal_gateway(monkeypatch):
+    """A synthetic gateway host name that resolves to this machine, as a private network host would."""
+    resolve = socket.getaddrinfo
+
+    def lookup(host, *args, **kwargs):
+        if host == INTERNAL_HOST:
+            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, '', ('127.0.0.1', 0))]
+        return resolve(host, *args, **kwargs)
+    monkeypatch.setattr(judge_settings.socket, 'getaddrinfo', lookup)
+    return INTERNAL_HOST
+
+
 @pytest.mark.parametrize('base_url,allowed,refused', [
     ('http://127.0.0.1:8000/v1', '', True),
-    ('http://10.0.0.8/v1', '', True),
-    ('http://10.0.0.8/v1', '10.0.0.8', False),
+    (f'https://{INTERNAL_HOST}/v1', '', True),
+    (f'https://{INTERNAL_HOST}/v1', INTERNAL_HOST, False),
     ('https://judge.example.com/v1', '', False),
 ])
-def test_personal_gateways_on_internal_addresses_are_refused(environment, base_url, allowed, refused):
+def test_personal_gateways_on_internal_addresses_are_refused(environment, internal_gateway, base_url, allowed, refused):
     client, app, deps, cfg = environment
     cfg.judge_allowed_hosts = allowed
     response = client.put('/evaluation/api/judge-settings/me', json={'base_url': base_url, 'model': 'synthetic',
@@ -196,11 +214,12 @@ def test_personal_gateways_on_internal_addresses_are_refused(environment, base_u
         assert response.status_code == 200, response.text
 
 
-def test_a_saved_gateway_is_checked_again_before_each_call(environment):
+def test_a_saved_gateway_is_checked_again_before_each_call(environment, internal_gateway):
     client, app, deps, cfg = environment
-    cfg.judge_allowed_hosts = '10.0.0.8'
-    assert client.put('/evaluation/api/judge-settings/me', json={'base_url': 'http://10.0.0.8/v1', 'model': 'synthetic',
-                                                                   'api_key': 'synthetic-judge-key'}).status_code == 200
+    cfg.judge_allowed_hosts = internal_gateway
+    saved = client.put('/evaluation/api/judge-settings/me', json={
+        'base_url': f'https://{internal_gateway}/v1', 'model': 'synthetic', 'api_key': 'synthetic-judge-key'})
+    assert saved.status_code == 200, saved.text
     cfg.judge_allowed_hosts = ''
     owner = client.get('/evaluation/api/session').json()['subject']
     with pytest.raises(Failure) as raised:

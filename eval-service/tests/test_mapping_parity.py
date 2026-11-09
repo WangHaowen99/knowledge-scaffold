@@ -1,6 +1,7 @@
 """The evaluation copy of the mapping rules derives the same relations as onto-modeling. Synthetic objects only.
 
-Skipped when the modeling source is not beside eval-service, as in a standalone evaluation package."""
+Skipped when the modeling source is not beside eval-service, as in a standalone evaluation package.
+"""
 import importlib.util
 from pathlib import Path
 import sys

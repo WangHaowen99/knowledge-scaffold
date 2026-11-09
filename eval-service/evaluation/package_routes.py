@@ -78,7 +78,9 @@ def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_vi
                 state = modeling_result.state(store, jobs, run_owner(ontology_id), run)
                 release_id, version = release_of(run)
                 meta = jobs.meta(run_owner(ontology_id), run['id'])
-                if not state or state.get('status') not in CONFIRMED or not release_id or release_id in seen or not meta:
+                if not (state and state.get('status') in CONFIRMED and meta):
+                    continue
+                if not release_id or release_id in seen:
                     continue
                 seen.add(release_id)
                 listed.append(dict(release_id=release_id, version=version, run_id=run['id'], status=run['status'],
