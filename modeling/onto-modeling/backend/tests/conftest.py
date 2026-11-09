@@ -24,6 +24,7 @@ def evaluation_hub_archive(request, tmp_path, monkeypatch):
     ):
         return
     from app.services import hub_packages, auth, knowledge_hub
+    from app.services.workspace import WorkspaceError
     archives = tmp_path / 'synthetic-hub'
     archives.mkdir()
     requests = {}
@@ -34,7 +35,7 @@ def evaluation_hub_archive(request, tmp_path, monkeypatch):
     def publish_request(request_id):
         row = requests.get(request_id)
         if row is None:
-            raise AssertionError(f'Unknown synthetic Hub request: {request_id}')
+            raise WorkspaceError('Synthetic Hub request not found', 404)
         return row
 
     def call(method, path, token='', body=None, upload=None, headers=None, download=None, upload_name=None):

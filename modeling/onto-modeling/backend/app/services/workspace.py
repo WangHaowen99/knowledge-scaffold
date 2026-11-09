@@ -43,6 +43,33 @@ _DELETE_RETRIES = 5
 _DELETE_RETRY_SECONDS = 0.2
 SKIP_DIRS = {".git", ".ontology-state", ".obsidian"}
 RESOURCE_SUBDIRS = {"diagrams", "excel", "others"}
+# 领域资料的所有页面入口最终都调用 save_resource；这里是不可绕过的服务层契约。
+MAX_RESOURCE_FILE_SIZE = 20 * 1024 * 1024
+RESOURCE_FILE_SUFFIXES = {
+    ".csv",
+    ".doc",
+    ".docx",
+    ".drawio",
+    ".jpeg",
+    ".jpg",
+    ".md",
+    ".pdf",
+    ".png",
+    ".txt",
+    ".webp",
+    ".xls",
+    ".xlsm",
+    ".xlsx",
+}
+
+
+def _literal_pathspec(path: str) -> str:
+    """Return a Git pathspec that never treats user-controlled names as globs."""
+    return f":(literal){path}"
+
+
+def _literal_pathspecs(paths) -> list[str]:
+    return [_literal_pathspec(str(path)) for path in paths]
 # 已发布知识包导入时的原包留底区：随 git 版本化（跨环境迁移要带走），
 # 但不是用户可编辑内容（隐藏目录，不进文件树）。
 IMPORTED_PACKAGE_DIR = ".imported-package"
@@ -64,6 +91,21 @@ CLAUDE.md
 README.md
 tmp/
 """
+
+# Version rollback restores only project content. Repository plumbing, project
+# metadata and runtime state are intentionally kept at their current values.
+ROLLBACK_EXCLUDED_TOP = {
+    ".git",
+    ".gitignore",
+    ".gitattributes",
+    ".gitmodules",
+    ".claude",
+    ".ontology-state",
+    "tmp",
+    META_FILE,
+    "CLAUDE.md",
+    "README.md",
+}
 
 
 _PROJECT_LOCKS: dict[str, threading.RLock] = {}
@@ -244,6 +286,14 @@ class WorkspaceManager:
     STAGE_TOTAL = len(STAGES)
     # 资料分析在 STAGES 中的位置：它不按目录探针判完成，改读验收回执（issue #362）
     RESEARCH_STAGE_INDEX = 0
+    # 与前端 packagePublish.js 的发布必选阶段保持一致。这里是服务端最终裁决，
+    # 前端仍可用同一规则即时提示，但 API 与 MCP 均不能绕过。
+    PUBLISH_REQUIRED_STAGES = (
+        ("research", "资料分析", ("research",)),
+        ("object", "对象提取", ("ontology/object",)),
+        ("operation", "操作提取", ("ontology/operation", "ontology/logic")),
+        ("validate", "质量检查", ("reports",)),
+    )
 
     @staticmethod
     def _dir_has_entries(directory: Path) -> bool:
@@ -255,6 +305,61 @@ class WorkspaceManager:
             if not entry.name.startswith(".") and entry.name.lower() != "index.md"
         )
 
+    @staticmethod
+    def _stage_has_visible_file(root: Path, rel_paths: tuple[str, ...]) -> bool:
+        """Match the frontend file-tree probe: visible files except directory indexes count."""
+        for rel_path in rel_paths:
+            directory = root / rel_path
+            if not directory.is_dir() or directory.is_symlink():
+                continue
+            for current, dirs, files in os.walk(directory, followlinks=False):
+                current_path = Path(current)
+                visible_dirs = []
+                for name in dirs:
+                    if not name.startswith(".") and not (current_path / name).is_symlink():
+                        visible_dirs.append(name)
+                dirs[:] = visible_dirs
+                for name in files:
+                    path = current_path / name
+                    if not name.startswith(".") and name.lower() != "index.md" and not path.is_symlink():
+                        return True
+        return False
+
+    @classmethod
+    def _research_stage_blocking(cls, root: Path, review: dict) -> bool:
+        return (
+            review["status"] in (_research_review.PENDING, _research_review.FAILED, _research_review.UNVERIFIABLE)
+            and not cls._dir_has_entries(root / "ontology" / "object")
+        )
+
+    def package_publish_readiness(self, project_id: str) -> dict:
+        """Return the same four required-stage decisions used by the current project page."""
+        root = self.project_root(project_id)
+        review = _research_review.review_status(root)
+        research_blocking = self._research_stage_blocking(root, review)
+        stages = []
+        for key, title, rel_paths in self.PUBLISH_REQUIRED_STAGES:
+            finished = self._stage_has_visible_file(root, rel_paths)
+            if key == "research" and research_blocking:
+                finished = False
+            stages.append({"key": key, "title": title, "finished": finished})
+        missing = []
+        for item in stages:
+            if not item["finished"]:
+                missing.append({"key": item["key"], "title": item["title"]})
+        return {"ready": not missing, "stages": stages, "missing_stages": missing}
+
+    def _ensure_package_publish_stages(self, project_id: str) -> None:
+        readiness = self.package_publish_readiness(project_id)
+        if readiness["ready"]:
+            return
+        titles = "、".join(item["title"] for item in readiness["missing_stages"])
+        raise WorkspaceError(
+            f"建模未完成，请先完成：{titles}",
+            409,
+            "modeling_stages_incomplete",
+        )
+
     @classmethod
     def _project_progress(cls, root: Path) -> dict:
         review = _research_review.review_status(root)
@@ -262,10 +367,7 @@ class WorkspaceManager:
         # 对象一旦提取，资料分析按已越过处理，只留待核验的提醒——与 state_helper
         # 的"已到达的最高阶段优先"同口径。否则旧项目升级后进度会整体归零，回执
         # 因打标签、换评测表而失效时也一样。
-        research_blocking = (
-            review["status"] in (_research_review.PENDING, _research_review.FAILED, _research_review.UNVERIFIABLE)
-            and not cls._dir_has_entries(root / "ontology" / "object")
-        )
+        research_blocking = cls._research_stage_blocking(root, review)
         done = 0
         for index, (dirs, _optional) in enumerate(cls.STAGES):
             hit = any(
@@ -316,9 +418,68 @@ class WorkspaceManager:
                 "manual_pending": len(review["manual_pending"]),
                 "hint": _research_review.hint(review),
             },
+            "resource_stale": cls._resource_stale(root),
             "objects": count_md("ontology/object"),
             "operations": count_md("ontology/operation") + count_md("ontology/logic"),
         }
+
+    @classmethod
+    def _resource_stale(cls, root: Path) -> bool:
+        """Whether resources differ from those consumed by the latest research analysis."""
+        try:
+            review = _research_review.load_review(root)
+            inputs = review.get("inputs") if isinstance(review, dict) else None
+            if isinstance(inputs, dict):
+                resource_inputs = {
+                    rel: revision
+                    for rel, revision in inputs.items()
+                    if rel == "resource/materials.json" or rel.startswith("resource/")
+                }
+                if resource_inputs:
+                    return any(
+                        _research_review.file_revision(root / rel) != revision
+                        for rel, revision in resource_inputs.items()
+                    )
+
+            # 兼容没有分析回执的旧项目：只认真正的资料分析报告提交。
+            # ontology、评测报告和派生 index.md 都不能证明新资料已被分析。
+            resource_commit = _git(
+                root, "log", "-1", "--format=%H", "--", "resource"
+            ).strip()
+            research_commit = cls._latest_research_content_commit(root)
+            if not resource_commit or not research_commit:
+                return False
+            return int(
+                _git(
+                    root,
+                    "rev-list",
+                    "--count",
+                    f"{research_commit}..{resource_commit}",
+                ).strip()
+                or "0"
+            ) > 0
+        except (ValueError, WorkspaceError):
+            return False
+
+    @staticmethod
+    def _latest_research_content_commit(root: Path) -> str:
+        """Latest commit touching a research artifact other than generated indexes."""
+        history = _git(
+            root,
+            "log",
+            "--format=%x1e%H",
+            "--name-only",
+            "--",
+            "research",
+        )
+        for record in history.split("\x1e"):
+            lines = [line.strip() for line in record.splitlines() if line.strip()]
+            if not lines:
+                continue
+            commit, paths = lines[0], lines[1:]
+            if any(Path(path).name.lower() != "index.md" for path in paths):
+                return commit
+        return ""
 
     def list_projects(self) -> list[dict]:
         projects = []
@@ -485,15 +646,33 @@ class WorkspaceManager:
         仅当工作区原本干净时才提交版本；agent 会话中途的改动留给
         agent 自己的提交收编，避免交叉提交打断其暂存状态。
         """
-        root = self.project_root(project_id)
-        was_clean = not _git(root, "status", "--porcelain").strip()
-        changed = self._migrate_legacy_logic(root)
-        changed = bool(_script_descriptor.sync_workspace_descriptors(root / "ontology")) or changed
-        changed = self._refresh_indexes(root) or changed
-        if changed and was_clean:
-            _git(root, "add", "-A")
-            _git(root, "commit", "-m", "chore: 知识包目录规范化（operation 目录、脚本描述符与索引）")
-        return changed
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            managed_was_clean = not self._managed_dirty_paths(root)
+            changed = self._migrate_legacy_logic(root)
+            changed = bool(
+                _script_descriptor.sync_workspace_descriptors(root / "ontology")
+            ) or changed
+            changed = self._refresh_indexes(root) or changed
+            if changed and managed_was_clean:
+                generated = sorted(
+                    set(self._managed_dirty_paths(root))
+                    | set(self._generated_index_dirty_paths(root))
+                )
+                if generated:
+                    pathspecs = _literal_pathspecs(
+                        self._minimal_pathspecs(generated)
+                    )
+                    _git(root, "add", "-A", "--", *pathspecs)
+                    _git(
+                        root,
+                        "commit",
+                        "-m",
+                        "chore: 知识包目录规范化（operation 目录、脚本描述符与索引）",
+                        "--",
+                        *pathspecs,
+                    )
+            return changed
 
     @staticmethod
     def _migrate_legacy_logic(root: Path) -> bool:
@@ -626,8 +805,34 @@ class WorkspaceManager:
                 directive["purpose"] = "auto"
         return data
 
+    def preview_schema(self, project_id: str, rel_path: str, *, force: bool = False) -> dict:
+        """Inspect a proposed schema tag without changing project metadata."""
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            target = self._resolve_inside(root, rel_path)
+            rel = target.relative_to(root.resolve()).as_posix()
+            if not rel.startswith("resource/") or not target.is_file():
+                raise WorkspaceError("只能检查资料区中存在的文件", 400)
+            if target.suffix.lower() not in (".xlsx", ".xlsm", ".csv"):
+                raise WorkspaceError("数据 Schema 支持 xlsx、xlsm 和 UTF-8 CSV。请将文件另存为这些格式；说明文档可设为通用业务依据。", 400)
+            previous = self.resource_directives(project_id).get(rel, {})
+            try:
+                scope = material_detect.resolve_selection(target, previous, force=force)
+            except material_detect.SheetSelectionError as exc:
+                try:
+                    scope = material_detect.resolve_selection(target)
+                except material_detect.SheetSelectionError:
+                    raise WorkspaceError("文件无法解析为数据表：可能已损坏、加密或编码不正确。请用表格软件确认可打开，取消密码保护并另存为 xlsx/xlsm；CSV 请使用 UTF-8 编码后重新上传。", 400) from exc
+                scope["error"] = str(exc)
+            scope["included_sheets"] = [s["name"] for s in scope["sheets"]
+                if s["name"] in scope["included_sheets"] and s["schema_selectable"]]
+            scope["reference_sheets"] = [s["name"] for s in scope["sheets"]
+                if s["name"] not in scope["included_sheets"]]
+            return scope
+
     def set_resource_directive(
-        self, project_id: str, rel_path: str, purpose: str, reading_mode: str = "on_demand"
+        self, project_id: str, rel_path: str, purpose: str, reading_mode: str = "on_demand",
+        schema_selection: dict | None = None, author: str = "",
     ) -> dict:
         if purpose not in self.MATERIAL_PURPOSES:
             raise WorkspaceError(f"资料用途必须是 {list(self.MATERIAL_PURPOSES)} 之一")
@@ -640,17 +845,121 @@ class WorkspaceManager:
             if not rel.startswith("resource/") or not target.is_file():
                 raise WorkspaceError("只能为 resource/ 下的资料设置用途", 400)
             directives_path = root / "resource" / "materials.json"
-            snapshot = self._snapshot(directives_path)
+            directives_snapshot = self._snapshot(directives_path)
+            meta_path = root / META_FILE
+            meta_snapshot = self._snapshot(meta_path)
+            directives_rel = directives_path.relative_to(root).as_posix()
+            added_intent = False
+            commit = ""
+            old_head = _git(root, "rev-parse", "HEAD").strip()
+            rel_spec = _literal_pathspec(rel)
+            directives_spec = _literal_pathspec(directives_rel)
+            if not _git(root, "ls-files", "--", rel_spec).strip():
+                raise WorkspaceError(
+                    "该资料尚未纳入项目版本，请重新上传资料后再保存用途或 Sheet 范围",
+                    409,
+                    "resource_source_unversioned",
+                )
+            if _git(root, "status", "--porcelain", "--", rel_spec).strip():
+                raise WorkspaceError(
+                    "该资料存在尚未保存为项目版本的内容，请重新上传或恢复资料后再修改设置",
+                    409,
+                    "resource_source_modified",
+                )
+            if _git(
+                root, "diff", "--cached", "--name-only", "--", directives_spec
+            ).strip():
+                raise WorkspaceError(
+                    "资料设置已被其他编辑暂存，请完成或放弃该编辑后重试",
+                    409,
+                    "resource_directive_conflict",
+                )
             try:
                 directives = self.resource_directives(project_id)
-                directives[rel] = {"purpose": purpose, "reading_mode": reading_mode}
-                self._write_resource_directives(root, directives)
-                # 用途变化会影响派生产物的口径，视同资料更新
-                self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
+                previous = directives.get(rel, {})
+                directive = {"purpose": purpose, "reading_mode": reading_mode}
+                if purpose == "schema" and target.suffix.lower() in package_mapping.TABLE_SUFFIXES:
+                    if schema_selection is not None:
+                        if schema_selection.get("file_sha256") != material_detect.resolve_selection(target)["file_sha256"]:
+                            raise WorkspaceError("文件已变化，请刷新 Sheet 范围后重试", 409)
+                        directive["schema_selection"] = {**schema_selection, "version": 1}
+                    elif previous.get("schema_selection") is not None:
+                        directive["schema_selection"] = previous["schema_selection"]
+                    scope = material_detect.resolve_selection(target, directive)
+                    if schema_selection is not None:
+                        problems = []
+                        included_sheets = set(scope["included_sheets"])
+                        for sheet in scope["sheets"]:
+                            if sheet["name"] not in included_sheets:
+                                continue
+                            for issue in sheet.get("issues", []):
+                                if issue["severity"] == "error":
+                                    problems.append(
+                                        f"Sheet「{sheet['name']}」：{issue['message']}"
+                                    )
+                        if problems:
+                            raise WorkspaceError("\n".join(problems), 400)
+                    directive["schema_selection"] = material_detect.selection_metadata(scope)
+                elif schema_selection is not None:
+                    raise WorkspaceError("仅数据 Schema 表格支持设置 Sheet 范围", 400)
+                changed = previous != directive
+                committed_directives = self._resource_directives_at_head(root, directives_rel)
+                version_changed = committed_directives.get(rel, {}) != directive
+                if changed:
+                    directives[rel] = directive
+                    self._write_resource_directives(root, directives)
+                    # 用途变化会影响派生产物的口径，视同资料更新
+                    self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
+                if version_changed:
+                    committed_directives[rel] = directive
+                    self._write_resource_directives(root, committed_directives)
+                if version_changed and _git(
+                    root, "status", "--porcelain", "--", directives_spec
+                ).strip():
+                    # --only creates the version from this managed settings file without
+                    # including unrelated staged or working-tree edits. A new file needs
+                    # an intent-to-add entry before git commit --only can address it.
+                    if not _git(root, "ls-files", "--", directives_spec).strip():
+                        _git(root, "add", "-N", "--", directives_spec)
+                        added_intent = True
+                    who = f" by {author}" if author else ""
+                    _git(root, "commit", "--only", "-m", f"web: 保存资料设置 {rel}{who}",
+                         "--", directives_spec)
+                    commit = _git(root, "rev-parse", "HEAD").strip()
+                if version_changed:
+                    self._write_resource_directives(root, directives)
             except Exception:
-                self._restore_snapshot(directives_path, snapshot)
+                if commit and _git(root, "rev-parse", "HEAD").strip() == commit:
+                    _git(root, "reset", "--soft", old_head)
+                    _git(root, "reset", "--", directives_spec)
+                self._restore_snapshot(directives_path, directives_snapshot)
+                self._restore_snapshot(meta_path, meta_snapshot)
+                if added_intent:
+                    _git(root, "reset", "--", directives_spec)
                 raise
-            return {"path": rel, **directives[rel]}
+            return {"path": rel, **directives[rel], "commit": commit}
+
+    @staticmethod
+    def _resource_directives_at_head(root: Path, rel: str) -> dict:
+        if not _git(
+            root, "ls-tree", "--name-only", "HEAD", "--", _literal_pathspec(rel)
+        ).strip():
+            return {}
+        try:
+            data = json.loads(_git(root, "show", f"HEAD:{rel}"))
+        except json.JSONDecodeError as exc:
+            raise WorkspaceError(
+                "已保存版本中的资料用途元数据不可用，请修复后重试",
+                503,
+                "resource_metadata_unavailable",
+            ) from exc
+        if not isinstance(data, dict):
+            raise WorkspaceError(
+                "已保存版本中的资料用途元数据不可用，请修复后重试",
+                503,
+                "resource_metadata_unavailable",
+            )
+        return data
 
     def _write_resource_directives(self, root: Path, directives: dict) -> None:
         self._atomic_write_text(
@@ -666,12 +975,26 @@ class WorkspaceManager:
         data: bytes,
         purpose: str = "auto",
         reading_mode: str = "on_demand",
+        author: str = "",
     ) -> dict:
         if subdir not in RESOURCE_SUBDIRS:
             raise WorkspaceError(f"资料分类必须是 {sorted(RESOURCE_SUBDIRS)} 之一")
         safe_name = Path(filename).name
         if not safe_name or safe_name.startswith(".") or safe_name != filename:
             raise WorkspaceError("无效的文件名")
+        suffix = Path(safe_name).suffix.lower()
+        if suffix not in RESOURCE_FILE_SUFFIXES:
+            raise WorkspaceError(
+                f"不支持文件“{safe_name}”的类型",
+                400,
+                "unsupported_resource_file_type",
+            )
+        if len(data) > MAX_RESOURCE_FILE_SIZE:
+            raise WorkspaceError(
+                f"文件“{safe_name}”超过 20 MB，无法上传",
+                413,
+                "resource_file_too_large",
+            )
         with self._project_lock(project_id):
             root = self.project_root(project_id)
             dest_dir = root / "resource" / subdir
@@ -681,17 +1004,97 @@ class WorkspaceManager:
             file_snapshot = self._snapshot(dest)
             directives_path = root / "resource" / "materials.json"
             directives_snapshot = self._snapshot(directives_path)
+            meta_path = root / META_FILE
+            meta_snapshot = self._snapshot(meta_path)
+            rel = f"resource/{subdir}/{safe_name}"
+            directives_rel = directives_path.relative_to(root).as_posix()
+            managed_paths = [rel, directives_rel]
+            managed_specs = _literal_pathspecs(managed_paths)
+            old_head = _git(root, "rev-parse", "HEAD").strip()
+            commit = ""
+            intent_paths = []
+            staged = _git(
+                root, "diff", "--cached", "--name-only", "--", *managed_specs
+            ).splitlines()
+            if staged:
+                raise WorkspaceError(
+                    "该资料或资料设置已被其他编辑暂存，请完成或放弃该编辑后重试",
+                    409,
+                    "resource_upload_conflict",
+                )
             try:
                 self._atomic_write(dest, data)
-                rel = f"resource/{subdir}/{safe_name}"
                 detected = self._update_upload_directive(project_id, rel, purpose, reading_mode)
-                # 变更提醒依据：前端对比该时间与派生产物版本，提示"资料已更新，可让助手增量刷新"
-                self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
+                upload_changed = file_snapshot != (True, data) or (
+                    directives_snapshot != self._snapshot(directives_path)
+                )
+                if upload_changed:
+                    # 变更提醒依据：前端对比该时间与派生产物版本，提示"资料已更新，可让助手增量刷新"
+                    self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
+                working_directives = self.resource_directives(project_id)
+                committed_directives = self._resource_directives_at_head(
+                    root, directives_rel
+                )
+                current_directive = working_directives.get(rel)
+                if current_directive is None:
+                    committed_directives.pop(rel, None)
+                else:
+                    committed_directives[rel] = current_directive
+
+                directives_changed = (
+                    self._resource_directives_at_head(root, directives_rel)
+                    != committed_directives
+                )
+                if directives_changed:
+                    self._write_resource_directives(root, committed_directives)
+
+                commit_paths = [rel]
+                if directives_changed:
+                    commit_paths.append(directives_rel)
+                commit_specs = _literal_pathspecs(commit_paths)
+                changed_paths = _git(
+                    root, "status", "--porcelain", "--", *commit_specs
+                ).strip()
+                if changed_paths:
+                    for path, pathspec in zip(commit_paths, commit_specs):
+                        if not _git(root, "ls-files", "--", pathspec).strip():
+                            _git(root, "add", "-N", "--", pathspec)
+                            intent_paths.append(path)
+                    who = f" by {author}" if author else ""
+                    action = "替换" if replaced else "上传"
+                    _git(
+                        root,
+                        "commit",
+                        "--only",
+                        "-m",
+                        f"web: {action}资料 {rel}{who}",
+                        "--",
+                        *commit_specs,
+                    )
+                    commit = _git(root, "rev-parse", "HEAD").strip()
+                if directives_changed:
+                    self._write_resource_directives(root, working_directives)
             except Exception:
+                if commit and _git(root, "rev-parse", "HEAD").strip() == commit:
+                    _git(root, "reset", "--soft", old_head)
+                    _git(root, "reset", "--", *managed_specs)
                 self._restore_snapshot(dest, file_snapshot)
                 self._restore_snapshot(directives_path, directives_snapshot)
+                self._restore_snapshot(meta_path, meta_snapshot)
+                if intent_paths:
+                    _git(
+                        root,
+                        "reset",
+                        "--",
+                        *_literal_pathspecs(intent_paths),
+                    )
                 raise
-            result = {"path": rel, "size": len(data), "replaced": replaced}
+            result = {
+                "path": rel,
+                "size": len(data),
+                "replaced": replaced,
+                "commit": commit,
+            }
             if detected:
                 result["detected"] = detected
             return result
@@ -727,9 +1130,40 @@ class WorkspaceManager:
         elif _is_auto_detected(directives.get(rel)):
             # 替换后不再像数据表或术语表：撤掉之前的自动标注
             directives.pop(rel)
+        directive = directives.get(rel, {})
+        if directive.get("purpose") == "schema" and Path(rel).suffix.lower() in package_mapping.TABLE_SUFFIXES:
+            previous_scope = (existing or {}).get("schema_selection")
+            if isinstance(previous_scope, dict) and previous_scope.get("mode") == "manual":
+                directive["schema_selection"] = previous_scope
+            stored = directive.get("schema_selection")
+            # Replacements invalidate manual scope; preserve it so readers demand confirmation.
+            if not isinstance(stored, dict) or stored.get("mode") != "manual":
+                scope = material_detect.resolve_selection(root / rel, directive)
+                directive["schema_selection"] = material_detect.selection_metadata(scope)
         if json.dumps(directives, sort_keys=True) != before:
             self._write_resource_directives(root, directives)
         return detected
+
+    def schema_scopes(self, project_id: str) -> dict:
+        root = self.project_root(project_id)
+        scopes = {}
+        for rel, directive in self.resource_directives(project_id).items():
+            if not isinstance(directive, dict) or directive.get("purpose") != "schema":
+                continue
+            if Path(rel).suffix.lower() not in package_mapping.TABLE_SUFFIXES:
+                continue
+            try:
+                target = self._resolve_inside(root, rel)
+                if not rel.startswith("resource/") or not target.is_file():
+                    continue
+                try:
+                    scopes[rel] = material_detect.resolve_selection(target, directive)
+                except material_detect.SheetSelectionError as exc:
+                    # Show fresh candidates but never silently apply them to manual selections.
+                    scopes[rel] = {**material_detect.resolve_selection(target), "error": str(exc)}
+            except (material_detect.SheetSelectionError, WorkspaceError) as exc:
+                scopes[rel] = {"error": str(exc), "sheets": [], "included_sheets": []}
+        return scopes
 
     def schema_candidates(self, project_id: str) -> dict:
         """资料区「疑似数据表」：用途仍为「由助手判断」、结构上判为数据表的表格资料。"""
@@ -1823,23 +2257,297 @@ class WorkspaceManager:
         out = _git(root, "show", f"{rev}:{rel_path}")
         return {"path": rel_path, "rev": rev, "content": out}
 
-    def revert_to(self, project_id: str, commit: str) -> dict:
-        """把工作区恢复为指定版本的内容并生成新提交（历史保留，可再回退）。
+    @classmethod
+    def _rollback_path_allowed(cls, rel_path: str) -> bool:
+        path = Path(rel_path)
+        if not path.parts or path.parts[0] in ROLLBACK_EXCLUDED_TOP:
+            return False
+        # Directory indexes are deterministic projections of the files beside
+        # them. Roll back their source files and regenerate the indexes instead
+        # of treating an old projection as an independent business change.
+        return rel_path not in {f"{directory}/index.md" for directory, _title in cls.INDEX_DIRS}
 
-        已知限制：该版本之后新增的文件不会被删除。
-        """
+    @classmethod
+    def _rollback_manifest(cls, root: Path, revision: str) -> dict[str, str]:
+        """Return the rollback-managed files and their git modes at revision."""
+        manifest = {}
+        for line in _git(root, "ls-tree", "-r", "-z", "--full-tree", revision).split("\0"):
+            if not line:
+                continue
+            try:
+                meta, rel_path = line.split("\t", 1)
+                mode, kind, _object_id = meta.split(" ", 2)
+            except ValueError:
+                continue
+            if kind == "blob" and cls._rollback_path_allowed(rel_path):
+                manifest[rel_path] = f"{mode} {_object_id}"
+        return manifest
+
+    @classmethod
+    def _managed_dirty_paths(cls, root: Path) -> list[str]:
+        """List changed managed paths while ignoring metadata and runtime state."""
+        raw = _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+        records = raw.split("\0")
+        paths = []
+        index = 0
+        while index < len(records):
+            record = records[index]
+            index += 1
+            if not record:
+                continue
+            if len(record) < 4:
+                continue
+            status, rel_path = record[:2], record[3:]
+            if cls._rollback_path_allowed(rel_path):
+                paths.append(rel_path)
+            if "R" in status or "C" in status:
+                if index < len(records):
+                    previous = records[index]
+                    index += 1
+                    if previous and cls._rollback_path_allowed(previous):
+                        paths.append(previous)
+        return sorted(set(paths))
+
+    @classmethod
+    def _generated_index_dirty_paths(cls, root: Path) -> list[str]:
+        """Return changed deterministic indexes without adding them to rollback snapshots."""
+        paths = []
+        for directory, _title in cls.INDEX_DIRS:
+            rel_path = f"{directory}/index.md"
+            if _git(root, "status", "--porcelain", "--", rel_path).strip():
+                paths.append(rel_path)
+        return paths
+
+    @classmethod
+    def _rollback_changes(cls, root: Path, commit: str) -> dict:
+        current = cls._rollback_manifest(root, "HEAD")
+        target = cls._rollback_manifest(root, commit)
+        current_paths, target_paths = set(current), set(target)
+        added = sorted(target_paths - current_paths)
+        deleted = sorted(current_paths - target_paths)
+        modified = sorted(
+            path
+            for path in current_paths & target_paths
+            if current[path] != target[path]
+        )
+        return {
+            "added": added,
+            "modified": modified,
+            "deleted": deleted,
+            "total": len(added) + len(modified) + len(deleted),
+        }
+
+    @staticmethod
+    def _minimal_pathspecs(paths: list[str]) -> list[str]:
+        """Collapse descendants when an affected parent path already covers them."""
+        result = []
+        for path in sorted(set(paths), key=lambda item: (item.count("/"), item)):
+            if not any(path.startswith(f"{parent}/") for parent in result):
+                result.append(path)
+        return result
+
+    @staticmethod
+    def _validate_revert_target(root: Path, commit: str) -> str:
         if not re.fullmatch(r"[0-9a-fA-F]{6,40}", commit):
             raise WorkspaceError("无效的版本号")
-        root = self.project_root(project_id)
-        _git(root, "checkout", commit, "--", ".")
-        status = _git(root, "status", "--porcelain")
-        if not status.strip():
-            raise WorkspaceError("当前内容与该版本一致，无需回退")
-        _git(root, "add", "-A")
-        _git(root, "commit", "-m", f"revert: 回退到 {commit[:8]}")
-        return {"reverted_to": commit}
+        try:
+            resolved = _git(root, "rev-parse", "--verify", f"{commit}^{{commit}}").strip()
+        except WorkspaceError as exc:
+            raise WorkspaceError("版本不存在或已不可用", 404) from exc
+        head = _git(root, "rev-parse", "HEAD").strip()
+        if resolved == head:
+            raise WorkspaceError("当前已是该版本，无需回退")
+        try:
+            ancestry_count = int(
+                _git(
+                    root,
+                    "rev-list",
+                    "--ancestry-path",
+                    "--count",
+                    f"{resolved}..{head}",
+                ).strip()
+                or "0"
+            )
+        except WorkspaceError as exc:
+            raise WorkspaceError("无法校验目标版本", 500) from exc
+        if ancestry_count == 0:
+            raise WorkspaceError("只能回退到当前版本历史中的提交", 409)
+        return resolved
 
-    def delete_resource(self, project_id: str, rel_path: str) -> dict:
+    def preview_revert(self, project_id: str, commit: str) -> dict:
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            resolved = self._validate_revert_target(root, commit)
+            changes = self._rollback_changes(root, resolved)
+            if not changes["total"]:
+                raise WorkspaceError("当前业务内容与该版本一致，无需回退")
+            return {
+                "reverted_to": resolved,
+                "expected_head": _git(root, "rev-parse", "HEAD").strip(),
+                "changes": changes,
+            }
+
+    @staticmethod
+    def _invalidate_revert_state(root: Path) -> list[str]:
+        """Remove conclusions derived from content that has just been replaced."""
+        state = root / ".ontology-state"
+        failed = []
+        for name in (
+            "eval.json",
+            "progress.json",
+            "research-review.json",
+            "research-inventory.json",
+            "research-baseline.json",
+            "script-verifications.json",
+            "solver-validations.json",
+        ):
+            try:
+                (state / name).unlink(missing_ok=True)
+            except OSError:
+                failed.append(name)
+        for name in ("artifact-reviews", "studio-review"):
+            path = state / name
+            try:
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path)
+            except OSError:
+                failed.append(name)
+        return failed
+
+    def revert_to(
+        self,
+        project_id: str,
+        commit: str,
+        expected_head: str = "",
+        busy_check=None,
+    ) -> dict:
+        """Restore managed content as a complete snapshot and create a new version."""
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            if busy_check is not None:
+                busy_check(root)
+            head = _git(root, "rev-parse", "HEAD").strip()
+            if expected_head and expected_head != head:
+                raise WorkspaceError("项目已产生新版本，请重新预览后再回退", 409)
+            resolved = self._validate_revert_target(root, commit)
+            if self._managed_dirty_paths(root):
+                raise WorkspaceError("项目存在未提交或暂存的修改，请先完成当前编辑", 409)
+            try:
+                staged_paths = _git(root, "diff", "--cached", "--name-only", "--")
+            except WorkspaceError as exc:
+                raise WorkspaceError("无法检查项目暂存状态", 500) from exc
+            if staged_paths.strip():
+                # Managed staged files were handled above. A staged excluded file
+                # must not be swept into the rollback commit either.
+                raise WorkspaceError("项目存在已暂存的元数据修改，请先完成当前编辑", 409)
+            changes = self._rollback_changes(root, resolved)
+            if not changes["total"]:
+                raise WorkspaceError("当前业务内容与该版本一致，无需回退")
+            target_version = int(
+                _git(root, "rev-list", "--count", resolved).strip() or "0"
+            )
+
+            affected = changes["added"] + changes["modified"] + changes["deleted"]
+            try:
+                # Restore files present in the target and remove managed files that
+                # were introduced later. Excluded metadata/runtime paths are untouched.
+                root_resolved = root.resolve()
+                # Remove current-only paths before restoring the target snapshot.
+                # This order is required when a path changed between a file and a
+                # directory: checkout can otherwise create the target directory and
+                # the later delete pass would remove it again (or hit a pathspec error).
+                for rel_path in changes["deleted"]:
+                    target = root / rel_path
+                    # A later symlink may now point outside the project. Delete the
+                    # link itself; never resolve and follow it during snapshot restore.
+                    if not target.absolute().is_relative_to(root_resolved):
+                        raise WorkspaceError("路径越界", 403)
+                    if target.is_dir() and not target.is_symlink():
+                        shutil.rmtree(target)
+                    else:
+                        target.unlink(missing_ok=True)
+                restore = changes["added"] + changes["modified"]
+                if restore:
+                    _git(root, "checkout", resolved, "--", *restore)
+                # A historical snapshot may use legacy layout. Normalize it before
+                # committing so the first file-tree refresh cannot create a second,
+                # surprising migration version.
+                self._migrate_legacy_logic(root)
+                _script_descriptor.sync_workspace_descriptors(root / "ontology")
+                self._refresh_indexes(root)
+                affected = sorted(
+                    set(self._managed_dirty_paths(root))
+                    | set(self._generated_index_dirty_paths(root))
+                )
+                if not affected:
+                    raise WorkspaceError("当前业务内容与该版本一致，无需回退")
+                pathspecs = self._minimal_pathspecs(affected)
+                _git(root, "add", "-A", "--", *pathspecs)
+                _git(
+                    root,
+                    "commit",
+                    "-m",
+                    f"revert: 回退到版本 {target_version}（{resolved[:8]}）",
+                )
+            except Exception:
+                # Restore only managed files. Project metadata is deliberately
+                # allowed to be dirty and must survive a failed rollback attempt.
+                dirty = sorted(
+                    set(self._managed_dirty_paths(root))
+                    | set(self._generated_index_dirty_paths(root))
+                )
+                if dirty:
+                    pathspecs = self._minimal_pathspecs(dirty)
+                    try:
+                        _git(root, "reset", "HEAD", "--", *pathspecs)
+                    except WorkspaceError:
+                        pass
+                    tracked = [
+                        path
+                        for path in dirty
+                        if _git(root, "ls-files", "--", path).strip()
+                    ]
+                    untracked = sorted(
+                        set(dirty) - set(tracked),
+                        key=lambda item: (item.count("/"), item),
+                        reverse=True,
+                    )
+                    for rel_path in untracked:
+                        target = root / rel_path
+                        if not target.absolute().is_relative_to(root.resolve()):
+                            continue
+                        try:
+                            if target.is_dir() and not target.is_symlink():
+                                shutil.rmtree(target)
+                            else:
+                                target.unlink(missing_ok=True)
+                        except (FileNotFoundError, NotADirectoryError):
+                            pass
+                    if tracked:
+                        try:
+                            _git(
+                                root,
+                                "checkout",
+                                "HEAD",
+                                "--",
+                                *self._minimal_pathspecs(tracked),
+                            )
+                        except WorkspaceError:
+                            pass
+                raise
+            invalidation_failed = self._invalidate_revert_state(root)
+            result = {
+                "reverted_to": resolved,
+                "commit": _git(root, "rev-parse", "HEAD").strip(),
+                "changes": changes,
+            }
+            if invalidation_failed:
+                result["warning"] = "部分派生状态未能清理，请重新运行相关检查"
+            return result
+
+    def delete_resource(
+        self, project_id: str, rel_path: str, author: str = ""
+    ) -> dict:
         root = self.project_root(project_id)
         target = self._resolve_inside(root, rel_path)
         rel = target.relative_to(root.resolve())
@@ -1853,17 +2561,69 @@ class WorkspaceManager:
             file_snapshot = self._snapshot(target)
             directives_path = root / "resource" / "materials.json"
             directives_snapshot = self._snapshot(directives_path)
+            meta_path = root / META_FILE
+            meta_snapshot = self._snapshot(meta_path)
+            rel_posix = rel.as_posix()
+            directives_rel = directives_path.relative_to(root).as_posix()
+            managed_paths = [rel_posix, directives_rel]
+            managed_specs = _literal_pathspecs(managed_paths)
+            old_head = _git(root, "rev-parse", "HEAD").strip()
+            commit = ""
+            staged = _git(
+                root, "diff", "--cached", "--name-only", "--", *managed_specs
+            ).splitlines()
+            if staged:
+                raise WorkspaceError(
+                    "该资料或资料设置已被其他编辑暂存，请完成或放弃该编辑后重试",
+                    409,
+                    "resource_delete_conflict",
+                )
             try:
                 target.unlink()
-                directives = self.resource_directives(project_id)
-                if directives.pop(rel.as_posix(), None) is not None:
-                    self._write_resource_directives(root, directives)
+                working_directives = self.resource_directives(project_id)
+                working_changed = working_directives.pop(rel_posix, None) is not None
+                committed_directives = self._resource_directives_at_head(
+                    root, directives_rel
+                )
+                committed_before = dict(committed_directives)
+                committed_directives.pop(rel_posix, None)
+                directives_changed = committed_directives != committed_before
+                if directives_changed:
+                    self._write_resource_directives(root, committed_directives)
                 self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
+                commit_paths = []
+                if _git(
+                    root, "ls-files", "--", _literal_pathspec(rel_posix)
+                ).strip():
+                    commit_paths.append(rel_posix)
+                if directives_changed:
+                    commit_paths.append(directives_rel)
+                commit_specs = _literal_pathspecs(commit_paths)
+                if commit_paths and _git(
+                    root, "status", "--porcelain", "--", *commit_specs
+                ).strip():
+                    who = f" by {author}" if author else ""
+                    _git(
+                        root,
+                        "commit",
+                        "--only",
+                        "-m",
+                        f"web: 删除资料 {rel_posix}{who}",
+                        "--",
+                        *commit_specs,
+                    )
+                    commit = _git(root, "rev-parse", "HEAD").strip()
+                if directives_changed or working_changed:
+                    self._write_resource_directives(root, working_directives)
             except Exception:
+                if commit and _git(root, "rev-parse", "HEAD").strip() == commit:
+                    _git(root, "reset", "--soft", old_head)
+                    _git(root, "reset", "--", *managed_specs)
                 self._restore_snapshot(target, file_snapshot)
                 self._restore_snapshot(directives_path, directives_snapshot)
+                self._restore_snapshot(meta_path, meta_snapshot)
                 raise
-            return {"deleted": rel_path}
+            return {"deleted": rel_path, "commit": commit}
 
     def delete_file(self, project_id: str, rel_path: str, author: str = "") -> dict:
         """删除知识条目（限 knowledge/ 下）并记录版本。"""
@@ -1956,6 +2716,7 @@ class WorkspaceManager:
         # 「迭代 N」：N = 第几次提交，最早的提交是 1；不随分页和新保存变化
         for index, entry in enumerate(entries):
             entry["version"] = total - offset - index
+            entry["current"] = offset + index == 0
         return entries
 
     @staticmethod
@@ -2184,7 +2945,8 @@ def _git(cwd: Path, *args: str) -> str:
         ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=60
     )
     if result.returncode != 0:
-        raise WorkspaceError(f"git {args[0]} 失败: {result.stderr.strip()}", 500)
+        detail = result.stderr.strip() or result.stdout.strip() or f"退出码 {result.returncode}"
+        raise WorkspaceError(f"git {args[0]} 失败: {detail}", 500)
     return result.stdout
 
 

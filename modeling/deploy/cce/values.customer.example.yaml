@@ -2,7 +2,7 @@ global:
   clusterFlavor: standard
   targetArch: amd64
   imageDelivery:
-    pullSecretNames: [modeling-registry]
+    pullSecretNames: [default-secret]
   auth:
     issuer: http://consumer-auth:5056
     audience: knowledge-scaffold
@@ -21,6 +21,7 @@ global:
       - {id: core, protocol: HTTP, listenerPort: 8100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-core}
       - {id: onto, protocol: HTTP, listenerPort: 5100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: onto-modeling}
       - {id: mcp, protocol: HTTP, listenerPort: 5188, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-mcp}
+      - {id: evaluation, protocol: HTTP, listenerPort: 8090, tlsSecretName: "", host: "", path: /evaluation/, pathType: Prefix, endpointId: evaluation}
 externalAuth:
   serviceName: consumer-auth
   namespace: onto-consumer
@@ -48,3 +49,18 @@ modeling:
       resources: {requests: {cpu: 500m, memory: 1Gi}}
     sandboxGateway:
       resources: {requests: {cpu: 100m, memory: 256Mi}}
+hub:
+  persistence: {existingClaim: modeling-hub-data}
+  resources: {requests: {cpu: 250m, memory: 512Mi}}
+  secrets:
+    internal: {name: modeling-hub-internal, modelingTokenKey: modeling-token, evaluationTokenKey: evaluation-token}
+    consumerToken: {name: "", key: ""}
+evaluation:
+  persistence: {existingClaim: modeling-evaluation-data}
+  resources: {requests: {cpu: 250m, memory: 512Mi}}
+  secrets:
+    encryptionKey: {name: modeling-evaluation-internal, key: encryption-key}
+    # Evaluation sends completion notices to Onto Modeling with this shared token.
+    # Pre-create this Secret if the installer can read Secrets but cannot create them.
+    notificationToken: {name: modeling-notify, key: service-token}
+    consumerToken: {name: "", key: ""}

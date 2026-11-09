@@ -4,6 +4,7 @@ import re
 import tempfile
 import urllib.error
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
@@ -11,8 +12,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .. import config
 from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets, package_mapping
-from ..services import modeling_cleanup, modeling_mcp, package_archive, solver_contract, knowledge_hub
-from ..services.workspace import GOAL_PENDING, WorkspaceError, WorkspaceManager, remove_tree
+from ..services import knowledge_hub, modeling_cleanup, modeling_mcp, package_archive
+from ..services import solver_contract, version_revert
+from ..services.workspace import (
+    GOAL_PENDING,
+    MAX_RESOURCE_FILE_SIZE,
+    WorkspaceError,
+    WorkspaceManager,
+    remove_tree,
+)
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 workspaces = WorkspaceManager(config.DATA_DIR, config.ASSETS_DIR)
@@ -52,6 +60,7 @@ class ObjectDataSourceBody(BaseModel):
 
 class RevertBody(BaseModel):
     commit: str
+    expected_head: str = ""
 
 
 class TagBody(BaseModel):
@@ -624,17 +633,25 @@ async def start_solver_validation(
     from ..services import solver_validation_run
 
     ensure_access(project_id, request, write=True)
-    record, plan = await asyncio.to_thread(
-        solver_validation_run.start,
-        workspaces, project_id,
-        revision=body.revision,
-        case_ids=body.case_ids,
-        token=_modeling_token(request),
-        data_source_id=body.data_source_id,
-        allow_unbound=body.allow_unbound,
-        by=_request_user(request),
-    )
-    solver_validation_run.launch(plan)
+    def reserve_validation():
+        with workspaces._project_lock(project_id):
+            return solver_validation_run.start(
+                workspaces,
+                project_id,
+                revision=body.revision,
+                case_ids=body.case_ids,
+                token=_modeling_token(request),
+                data_source_id=body.data_source_id,
+                allow_unbound=body.allow_unbound,
+                by=_request_user(request),
+            )
+
+    record, plan = await asyncio.to_thread(reserve_validation)
+    try:
+        solver_validation_run.launch(plan)
+    except Exception:
+        solver_validation_run.release_reservation(project_id)
+        raise
     return {"validation": record}
 
 
@@ -762,7 +779,15 @@ async def upload_resource(
     reading_mode: str = Form("on_demand"),
 ):
     ensure_access(project_id, request, write=True)
-    data = await file.read()
+    # 多读一个字节即可判断越界，避免把任意大的请求文件完整加载进应用内存。
+    data = await file.read(MAX_RESOURCE_FILE_SIZE + 1)
+    if len(data) > MAX_RESOURCE_FILE_SIZE:
+        filename = file.filename or ""
+        raise WorkspaceError(
+            f"文件“{filename}”超过 20 MB，无法上传",
+            413,
+            "resource_file_too_large",
+        )
     # 大文件同步写盘会卡住事件循环（SSE 全体停摆），挪到线程执行
     result = await asyncio.to_thread(
         workspaces.save_resource,
@@ -772,6 +797,7 @@ async def upload_resource(
         data,
         purpose,
         reading_mode,
+        _request_user(request),
     )
     return result
 
@@ -783,20 +809,41 @@ def resource_meta(project_id: str, request: Request):
         "directives": workspaces.resource_directives(project_id),
         "purposes": list(workspaces.MATERIAL_PURPOSES),
         "schema_candidates": workspaces.schema_candidates(project_id),
+        "schema_scopes": workspaces.schema_scopes(project_id),
     }
+
+
+class SchemaPreviewBody(BaseModel):
+    path: str
+    force: bool = False
+
+
+@router.post("/{project_id}/resource-meta/schema-preview")
+def preview_resource_schema(project_id: str, body: SchemaPreviewBody, request: Request):
+    ensure_access(project_id, request, write=True)
+    return workspaces.preview_schema(project_id, body.path, force=body.force)
+
+
+class SchemaSelectionBody(BaseModel):
+    mode: Literal["auto", "manual"]
+    included_sheets: list[str]
+    file_sha256: str
 
 
 class ResourceDirectiveBody(BaseModel):
     path: str
     purpose: str
     reading_mode: str = "on_demand"
+    schema_selection: SchemaSelectionBody | None = None
 
 
 @router.patch("/{project_id}/resource-meta")
 def set_resource_meta(project_id: str, body: ResourceDirectiveBody, request: Request, background: BackgroundTasks):
     ensure_access(project_id, request, write=True)
     result = workspaces.set_resource_directive(
-        project_id, body.path, body.purpose, body.reading_mode
+        project_id, body.path, body.purpose, body.reading_mode,
+        body.schema_selection.model_dump() if body.schema_selection is not None else None,
+        author=_request_user(request),
     )
     return result
 
@@ -804,7 +851,9 @@ def set_resource_meta(project_id: str, body: ResourceDirectiveBody, request: Req
 @router.delete("/{project_id}/resources")
 def delete_resource(project_id: str, path: str, request: Request, background: BackgroundTasks):
     ensure_access(project_id, request, write=True)
-    result = workspaces.delete_resource(project_id, path)
+    result = workspaces.delete_resource(
+        project_id, path, author=_request_user(request)
+    )
     return result
 
 
@@ -1191,8 +1240,6 @@ async def eval_run(project_id: str, body: EvalRunBody, request: Request):
     token = config.MODELING_TOKEN or (auth[7:] if auth.lower().startswith("bearer ") else "")
     if not token:
         return JSONResponse(status_code=400, content={"error": "缺少可用于 modeling 的令牌"})
-    import asyncio as _asyncio
-
     if body.data_source_id:
         data_source = eval_data_sources.get_source(project_id, body.data_source_id, root)
         if not data_source:
@@ -1273,11 +1320,12 @@ async def eval_run(project_id: str, body: EvalRunBody, request: Request):
         run_options["model_profile_id"] = body.model_profile_id
     if body.case_concurrency is not None:
         run_options["case_concurrency"] = body.case_concurrency
-    _asyncio.create_task(
-        modeling_eval.run(
+    try:
+        modeling_eval.launch(
             project_id, root, token, cases, data_source, eval_set_name, **run_options
         )
-    )
+    except ValueError as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
     return {"started": True, "cases": len(cases)}
 
 
@@ -1316,9 +1364,10 @@ async def eval_resume(project_id: str, request: Request):
     token = _modeling_token(request)
     if not token:
         return JSONResponse(status_code=400, content={"error": "缺少可用于 modeling 的令牌"})
-    import asyncio as _asyncio
-
-    _asyncio.create_task(modeling_eval.resume(project_id, root, token))
+    try:
+        modeling_eval.resume(project_id, root, token)
+    except ValueError as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
     return {"resuming": True}
 
 
@@ -1417,7 +1466,10 @@ def studio_acquire_lease(project_id: str, body: StudioLeaseBody, request: Reques
 
     ensure_access(project_id, request, write=True)
     try:
-        return studio.acquire_lease(project_id, body.path, _request_user(request) or "本机用户")
+        with workspaces._project_lock(project_id):
+            return studio.acquire_lease(
+                project_id, body.path, _request_user(request) or "本机用户"
+            )
     except studio.StudioError as exc:
         raise WorkspaceError(str(exc), exc.status)
 
@@ -1427,7 +1479,8 @@ def studio_release_lease(project_id: str, path: str, request: Request):
     from ..services import studio
 
     ensure_access(project_id, request, write=True)
-    studio.release_lease(project_id, path, _request_user(request) or "本机用户")
+    with workspaces._project_lock(project_id):
+        studio.release_lease(project_id, path, _request_user(request) or "本机用户")
     return {"ok": True}
 
 
@@ -1445,13 +1498,14 @@ def studio_save_draft(project_id: str, body: StudioDraftBody, request: Request):
 
     ensure_access(project_id, request, write=True)
     try:
-        return studio.save_draft(
-            project_id,
-            body.path,
-            body.content,
-            body.base_revision,
-            _request_user(request) or "本机用户",
-        )
+        with workspaces._project_lock(project_id):
+            return studio.save_draft(
+                project_id,
+                body.path,
+                body.content,
+                body.base_revision,
+                _request_user(request) or "本机用户",
+            )
     except studio.StudioError as exc:
         raise WorkspaceError(str(exc), exc.status)
 
@@ -1461,7 +1515,8 @@ def studio_discard_draft(project_id: str, path: str, request: Request):
     from ..services import studio
 
     ensure_access(project_id, request, write=True)
-    studio.discard_draft(project_id, path, _request_user(request) or "本机用户")
+    with workspaces._project_lock(project_id):
+        studio.discard_draft(project_id, path, _request_user(request) or "本机用户")
     return {"ok": True}
 
 
@@ -1495,14 +1550,19 @@ async def studio_submit(project_id: str, body: StudioLeaseBody, request: Request
             f"有问题则说明原因；缺失的关联文档如确有必要可一并创建。",
         )
         return {"result": "needs_review", "review": checks["review"], "staged": staged}
-    saved = workspaces.write_file(
-        project_id,
-        body.path,
-        draft["content"],
-        base_revision=draft.get("base_revision", ""),
-        author=user,
-    )
-    studio.discard_draft(project_id, body.path, user)
+    with workspaces._project_lock(project_id):
+        # Re-read under the project lock shared with rollback/MCP writes.
+        draft = studio.get_draft(project_id, body.path)
+        if not draft:
+            raise WorkspaceError("没有待提交的草稿", 404)
+        saved = workspaces._write_file_unlocked(
+            project_id,
+            body.path,
+            draft["content"],
+            base_revision=draft.get("base_revision", ""),
+            author=user,
+        )
+        studio.discard_draft(project_id, body.path, user)
     return {"result": "committed", **saved}
 
 
@@ -1605,9 +1665,28 @@ def delete_knowledge(project_id: str, path: str, request: Request):
 
 
 @router.get("/{project_id}/versions")
-def versions(project_id: str, request: Request):
+def versions(project_id: str, request: Request, offset: int = 0, limit: int = 50):
     ensure_access(project_id, request)
-    return {"versions": workspaces.versions(project_id)}
+    can_revert = _can_revert(project_id, request)
+    entries = workspaces.versions(project_id, limit=limit, offset=offset)
+    latest = workspaces.versions(project_id, limit=1)
+    total = latest[0]["version"] if latest else 0
+    return {
+        "versions": [{**entry, "can_revert": can_revert} for entry in entries],
+        "total": total,
+        "next_offset": offset + len(entries) if offset + len(entries) < total else None,
+    }
+
+
+def _can_revert(project_id: str, request: Request) -> bool:
+    user = getattr(request.state, "user", None)
+    if user is None:
+        return True
+    meta = workspaces.get_project(project_id)
+    role = workspaces.role_of(
+        meta, user.get("sub", ""), user.get("role") == "admin"
+    )
+    return role in ("owner", "admin") or not meta.get("owner")
 
 
 @router.get("/{project_id}/history")
@@ -1620,13 +1699,30 @@ def history(project_id: str, request: Request, limit: int = 50, cursor: str = ""
     ensure_access(project_id, request)
     if not 1 <= limit <= 50:
         raise WorkspaceError("分页参数无效")
-    return version_history.page(workspaces, project_id, subject, token, limit, cursor)
+    return version_history.page(
+        workspaces,
+        project_id,
+        subject,
+        token,
+        limit,
+        cursor,
+        can_revert=_can_revert(project_id, request),
+    )
 
 
 @router.post("/{project_id}/versions/revert")
-def revert(project_id: str, body: RevertBody, request: Request):
-    ensure_access(project_id, request, write=True)
-    return workspaces.revert_to(project_id, body.commit)
+async def revert(project_id: str, body: RevertBody, request: Request):
+    ensure_owner(project_id, request)
+    result = await version_revert.apply_direct(
+        workspaces, project_id, body.commit, body.expected_head
+    )
+    return result
+
+
+@router.get("/{project_id}/versions/revert-preview")
+def revert_preview(project_id: str, commit: str, request: Request):
+    ensure_owner(project_id, request)
+    return version_revert.preview_by_commit(workspaces, project_id, commit)
 
 
 @router.post("/{project_id}/versions/tag")

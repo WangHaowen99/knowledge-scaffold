@@ -52,9 +52,12 @@ def merge(iterations, iterations_more, releases, releases_more, limit):
     return items, i, r
 
 
-def page(manager, pid, subject, token, limit=50, cursor=''):
+def page(manager, pid, subject, token, limit=50, cursor='', can_revert=True):
     iteration_offset, release_offset = parse_cursor(cursor)
-    iterations = [{**entry, 'kind': 'iteration'} for entry in manager.versions(pid, limit, iteration_offset)]
+    iterations = [
+        {**entry, 'kind': 'iteration', 'can_revert': can_revert}
+        for entry in manager.versions(pid, limit, iteration_offset)
+    ]
     # Numbers count commits, so the newest one on a page reveals how many exist in total.
     iteration_total = iterations[0]['version'] + iteration_offset if iterations else iteration_offset
     iterations_more = iteration_offset + len(iterations) < iteration_total

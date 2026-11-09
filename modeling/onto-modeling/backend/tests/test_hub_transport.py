@@ -27,6 +27,12 @@ def test_publish_list_download_and_revocation_over_http(tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'DATA_DIR', tmp_path / 'onto')
     manager = WorkspaceManager(tmp_path / 'onto', tmp_path / 'assets')
     pid = manager.create_project('project_alpha', owner='operator_a')['id']
+    root = manager.project_root(pid)
+    for rel in ('research/report.md', 'ontology/object/object_demo.md',
+                'ontology/operation/operation_demo.md', 'reports/validation.md'):
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('# Synthetic stage artifact\n')
     allowed = True
 
     class Authority(BaseHTTPRequestHandler):

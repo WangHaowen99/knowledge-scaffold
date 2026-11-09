@@ -1,8 +1,10 @@
 """Studio 写路径（草稿/租约/确定性分流）、报告条目解析与回收站的测试。"""
 
+import asyncio
 import shutil
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -64,6 +66,40 @@ def test_deterministic_check_pass(env):
     checks = studio.deterministic_check(env, "ontology/object/订单.md", OBJECT_OK)
     assert checks["errors"] == []
     assert checks["review"] == []
+
+
+def test_studio_submit_reuses_held_project_lock(tmp_path, monkeypatch):
+    """A normal Studio submit must not acquire the non-reentrant file lock twice."""
+    from app import config
+    from app.routers import projects
+
+    assets = tmp_path / "assets"
+    (assets / "workspace-toolkit/templates").mkdir(parents=True)
+    (assets / "workspace-rules.md").write_text("# synthetic rules", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    manager = WorkspaceManager(data_dir, assets)
+    meta = manager.create_project("workspace_demo")
+    root = manager.project_root(meta["id"])
+    (root / "ontology/object/用户.md").write_text(
+        "# 对象描述\n\nsynthetic user\n", encoding="utf-8"
+    )
+    path = "ontology/object/订单.md"
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(projects, "workspaces", manager)
+    studio.save_draft(meta["id"], path, OBJECT_OK, "", "本机用户")
+
+    def reject_nested_lock(*_args, **_kwargs):
+        raise AssertionError("studio_submit must reuse its already-held project lock")
+
+    monkeypatch.setattr(manager, "write_file", reject_nested_lock)
+    request = SimpleNamespace(state=SimpleNamespace(user=None))
+    body = projects.StudioLeaseBody(path=path)
+
+    result = asyncio.run(projects.studio_submit(meta["id"], body, request))
+
+    assert result["result"] == "committed"
+    assert (root / path).read_text(encoding="utf-8") == OBJECT_OK
+    assert studio.get_draft(meta["id"], path) is None
 
 
 def test_deterministic_check_rejects_missing_section(env):

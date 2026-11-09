@@ -2,10 +2,10 @@
 import hashlib
 import json
 import os
-from pathlib import Path
+import posixpath
 import shutil
 import uuid
-import zipfile
+from pathlib import Path
 
 from . import knowledge_hub as transport
 from .workspace import META_FILE, WorkspaceError, WorkspaceManager
@@ -78,7 +78,8 @@ def register_delegation(pid, token_id, token, issuer, sub, expires_at=None):
 
 
 def revoke_delegation(token_id, token):
-    return call('DELETE', '/api/package-delegations/' + delegation_id(token_id), token)
+    path = posixpath.join('/api/package-delegations', delegation_id(token_id))
+    return call('DELETE', path, token)
 
 
 def delegated_call(method, path, token_id, ontology, issuer, sub, **kwargs):
@@ -89,8 +90,8 @@ def delegated_call(method, path, token_id, ontology, issuer, sub, **kwargs):
 
 def check_delegation(token_id, pid, issuer, sub):
     ontology = ontology_id(pid)
-    return delegated_call('GET', '/api/package-delegations/' + delegation_id(token_id),
-                          token_id, ontology, issuer, sub)
+    path = posixpath.join('/api/package-delegations', delegation_id(token_id))
+    return delegated_call('GET', path, token_id, ontology, issuer, sub)
 
 
 def reference_path(package_id, release_id=''):
@@ -174,6 +175,7 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
             return saved_receipt
         if not task:
             if kind == 'release':
+                manager._ensure_package_publish_stages(pid)
                 manager._ensure_solver_publishable(pid)
             shutil.rmtree(folder / 'input', ignore_errors=True)
             value, input_digest = freeze(manager, pid, folder, allow_unbound, binding, graph)
@@ -196,7 +198,8 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
             if base:
                 payload.update(base_release_id=base['release_id'],
                                base_digest=base['package_digest'])
-            task = dict(name=value['name'], allow_unbound=allow_unbound, payload=payload, binding=value['binding'], files=value['files'], graph=graph)
+            task = dict(name=value['name'], allow_unbound=allow_unbound, payload=payload,
+                        binding=value['binding'], files=value['files'], graph=graph)
             transport.save(task_file, task)
         payload = task['payload']
         validate_publish_intent(task, expected_input_digest, expected_base)
@@ -207,7 +210,7 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
         else:
             def hub_call(method, path, **kwargs):
                 return call(method, path, token, **kwargs)
-        base_path = '/api/package-publish-requests/' + payload['request_id']
+        base_path = posixpath.join('/api/package-publish-requests', payload['request_id'])
         # A commit response may be lost after Hub has made the version durable. Reconcile the
         # original request before comparing the now-advanced local base; only a committed result
         # is authoritative enough to bypass the stale-preview guard.
@@ -252,13 +255,13 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
                 os.replace(temporary, archive)
             if before_external:
                 before_external()
-            hub_call('PUT', base_path + '/content', upload=archive,
+            hub_call('PUT', posixpath.join(base_path, 'content'), upload=archive,
                      headers={'X-Package-Digest': transport.file_digest(archive)},
                      upload_name=transport.package_filename(payload['ontology_id'], task['name'], receipt['version']))
         if receipt['status'] != 'committed':
             if before_external:
                 before_external()
-            receipt = hub_call('POST', base_path + '/commit')
+            receipt = hub_call('POST', posixpath.join(base_path, 'commit'))
         transport.save(folder / 'receipt.json', receipt)
         try:
             record(manager, pid, subject, receipt)

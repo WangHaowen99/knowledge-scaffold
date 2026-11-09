@@ -7,6 +7,7 @@ import {
 import { Button, Empty, Spin, Table, Tag, Typography, message } from 'antd';
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import { workspaceDirtySources } from '../lib/workspaceDirty.js';
 import { Markdown } from './CenterPane.jsx';
 import StudioEntryEditor from './StudioEntryEditor.jsx';
 
@@ -32,7 +33,7 @@ export default function StudioView({
   const [loading, setLoading] = useState(false);
   const previousProjectId = useRef(project.id);
 
-  const refresh = useCallback(() => {
+  const refreshGraph = useCallback(() => {
     setLoading(true);
     api
       .studioGraph(project.id)
@@ -50,8 +51,8 @@ export default function StudioView({
       setQuery('');
       setSelectedElementId('');
     }
-    if (active) refresh();
-  }, [active, project.id, refresh, workspaceRevision]);
+    if (active) refreshGraph();
+  }, [active, project.id, refreshGraph, workspaceRevision]);
 
   const openEntry = useCallback(
     (path, elementId = '') => {
@@ -67,6 +68,19 @@ export default function StudioView({
     },
     [graph.nodes, project.id],
   );
+
+  const refresh = useCallback(() => {
+    refreshGraph();
+    if (!entry?.path) return;
+    if (view === 'edit' && workspaceDirtySources().includes('studio-editor')) {
+      message.warning('当前编辑表单有未保存修改，已刷新图数据但保留表单内容');
+      return;
+    }
+    const path = entry.path;
+    const elementId = selectedElementId;
+    setEntry(null);
+    openEntry(path, elementId);
+  }, [entry, openEntry, refreshGraph, selectedElementId, view]);
 
   const pathByName = useMemo(() => {
     const map = new Map();

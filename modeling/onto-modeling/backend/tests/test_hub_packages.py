@@ -15,6 +15,10 @@ from app import config
 from app.routers import projects, hub_packages as routes
 from app.services import auth, hub_packages, knowledge_hub
 from app.services.workspace import WorkspaceError, WorkspaceManager
+
+# Standalone modeling test bundles do not include the sibling Hub source tree.
+pytest.importorskip('hub', reason='Hub source is not included in standalone modeling tests')
+
 from hub.package_contract import PackageError
 from hub.package_store import PackageStore, public
 from hub.storage import Store
@@ -27,7 +31,14 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'DATA_DIR', tmp_path / 'modeling')
     monkeypatch.setattr(projects, 'workspaces', manager)
     meta = manager.create_project('project_alpha', owner='operator_a')
-    (manager.project_root(meta['id']) / 'ontology/object/object_demo.md').write_text('# Synthetic object\n')
+    root = manager.project_root(meta['id'])
+    (root / 'research').mkdir(exist_ok=True)
+    (root / 'research/report.md').write_text('# Synthetic research\n')
+    (root / 'ontology/object/object_demo.md').write_text('# Synthetic object\n')
+    (root / 'ontology/operation').mkdir(exist_ok=True)
+    (root / 'ontology/operation/operation_demo.md').write_text('# Synthetic operation\n')
+    (root / 'reports').mkdir(exist_ok=True)
+    (root / 'reports/validation.md').write_text('# Synthetic validation\n')
     store = PackageStore(Store(tmp_path / 'hub'))
     captured = []
 
@@ -193,6 +204,11 @@ def test_import_external_then_publish_preserves_manifest_and_package_identity(se
                 package_digest=receipt['package_digest'], name='project_beta')
     imported = hub_packages.import_package(manager, body, 'actor_a', 'scope_a', 'operator_a')
     assert hub_packages.import_package(manager, body, 'actor_a', 'scope_a', 'operator_a')['id'] == imported['id']
+    imported_root = manager.project_root(imported['id'])
+    for rel in ('research/report.md', 'reports/validation.md'):
+        path = imported_root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('# Synthetic stage artifact\n')
     result = hub_packages.publish(manager, imported['id'], 'next_demo', 'actor_a', 'scope_a', True)
     assert result['ontology_id'] == hub_packages.ontology_id(imported['id'])
     assert result['ontology_id'] != receipt['ontology_id'] and result['version'] == '0.1.1'
@@ -275,6 +291,28 @@ def test_solver_publish_gate_precedes_hub_reservation(setup, monkeypatch):
     with pytest.raises(WorkspaceError, match='solver gate'):
         hub_packages.publish(manager, pid, 'solver_gate_demo', 'actor_a', 'scope_a', True)
     assert calls == []
+
+
+def test_modeling_stage_gate_matches_page_required_stages(setup):
+    manager, pid, _, calls, _ = setup
+    root = manager.project_root(pid)
+    (root / 'ontology/operation/operation_demo.md').unlink()
+    readiness = manager.package_publish_readiness(pid)
+    assert not readiness['ready']
+    assert readiness['missing_stages'] == [{'key': 'operation', 'title': '操作提取'}]
+    with pytest.raises(WorkspaceError) as exc:
+        hub_packages.publish(manager, pid, 'stage_gate_demo', 'actor_a', 'scope_a', True)
+    assert exc.value.status == 409 and exc.value.code == 'modeling_stages_incomplete'
+    assert calls == []
+
+
+def test_legacy_logic_directory_satisfies_operation_stage(setup):
+    manager, pid, _, _, _ = setup
+    root = manager.project_root(pid)
+    (root / 'ontology/operation/operation_demo.md').unlink()
+    (root / 'ontology/logic').mkdir(exist_ok=True)
+    (root / 'ontology/logic/logic_demo.md').write_text('# Synthetic legacy operation\n')
+    assert manager.package_publish_readiness(pid)['ready']
 
 
 def test_evaluation_rejects_changed_validated_objects_before_hub_reservation(setup):

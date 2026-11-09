@@ -1,0 +1,15 @@
+# Spring additional config for DA-java (SPRING_CONFIG_ADDITIONAL_LOCATION).
+# Replaces deepanalyze.tool-services with kb-gateway as the knowledge service
+# (it serves the DA tools for every knowledge backend); no tool platform is
+# deployed alongside kb-suite. The key comes from the environment.
+deepanalyze:
+  tool-services:
+    - server-id: knowledge-service
+      server-name: knowledge-service
+      server-path: /app/config/knowledge-service.json
+      client-type: openapi-da
+      call-timeout-seconds: 120
+      params:
+        "[base_url]": http://kb-gateway:8080
+      auth-headers:
+        "[Authorization]": "Bearer ${KBS_DA_KEY}"

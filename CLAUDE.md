@@ -226,6 +226,15 @@ Commands for the Onto Modeling application (`modeling/onto-modeling/`):
 - Build onto-modeling release package: `cd modeling/onto-modeling && ./build.sh <version> [amd|arm]`
 - Run onto-modeling full stack from source: `cd modeling/onto-modeling && docker compose up --build`
 
+Commands for kb-suite (`kb-suite/`, Python 3.11+):
+
+- Run kb-service tests: `cd kb-suite/service/kb-service && pip install -e '.[dev]' && python -m pytest -q`
+- Run kb-gateway tests: `cd kb-suite/service/kb-gateway && pip install -e '.[dev]' && python -m pytest -q`
+- Run knowledge backend adapter tests: `cd kb-suite/service && pip install --no-deps ./kb-service && pip install -e ./provider-kit -e './weknora-adapter[dev]' -e './da-kb-adapter[dev]'`, then `python -m pytest -q` in `weknora-adapter/` and `da-kb-adapter/`
+- Run harness provider tests: `cd kb-suite/harness/da-harness && python -m pytest -q tests`, `cd kb-suite/harness/lf-harness && python -m pytest -q tests`
+- Build and run the stack: `cd kb-suite/deploy/compose && ./kbsuite.sh build && ./kbsuite.sh up` (see `kb-suite/deploy/compose/README.md` for secrets and required `*_REPO` variables)
+- Knowledge backends behind kb-gateway: WeKnora is the default backend and `./kbsuite.sh up` starts it (needs `WEKNORA_REPO=<path> ./kbsuite.sh build-weknora-config` first, included in `build`); add the DA knowledge pipeline with `./kbsuite.sh up-da-kb` (after `DA_TS_SRC=<path> ./kbsuite.sh build-da-kb`); the provider contract is `kb-suite/contracts/knowledge-provider/v1/`
+
 Commands for the Knowledge Package Hub (`knowledge-hub/`):
 
 - Install runtime and test dependencies: `cd knowledge-hub/backend && python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt`

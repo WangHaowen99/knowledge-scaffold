@@ -442,14 +442,19 @@ export const api = {
     request(`/api/projects/${pid}/resources?path=${encodeURIComponent(path)}`, {
       method: 'DELETE',
     }),
-  versions: (pid) => request(`/api/projects/${pid}/versions`),
+  versions: (pid, offset = 0) =>
+    request(`/api/projects/${pid}/versions?offset=${encodeURIComponent(offset)}`),
   // 历史时间线：迭代与发布版本由后端合并分页，cursor 原样回传
   history: (pid, { limit = 50, cursor = '' } = {}) =>
     request(`/api/projects/${pid}/history?${new URLSearchParams({ limit: String(limit), cursor })}`),
-  revert: (pid, commit) =>
+  revertPreview: (pid, commit) =>
+    request(
+      `/api/projects/${pid}/versions/revert-preview?commit=${encodeURIComponent(commit)}`,
+    ),
+  revert: (pid, commit, expectedHead) =>
     request(`/api/projects/${pid}/versions/revert`, {
       method: 'POST',
-      body: JSON.stringify({ commit }),
+      body: JSON.stringify({ commit, expected_head: expectedHead }),
     }),
   // conversationId 省略 = 引擎当前绑定的会话，没有在线引擎则取最近更新的一条
   sessionState: (pid, conversationId) =>
@@ -656,10 +661,13 @@ export const api = {
     return xhrUpload(`/api/projects/${pid}/resources`, form, onProgress);
   },
   resourceDirectives: (pid) => request(`/api/projects/${pid}/resource-meta`),
-  setResourceDirective: (pid, path, purpose, readingMode = 'on_demand') =>
+  previewResourceSchema: (pid, path, force = false) => request(`/api/projects/${pid}/resource-meta/schema-preview`, {
+    method: 'POST', body: JSON.stringify({ path, force }),
+  }),
+  setResourceDirective: (pid, path, purpose, readingMode = 'on_demand', schemaSelection = undefined) =>
     request(`/api/projects/${pid}/resource-meta`, {
       method: 'PATCH',
-      body: JSON.stringify({ path, purpose, reading_mode: readingMode }),
+      body: JSON.stringify({ path, purpose, reading_mode: readingMode, schema_selection: schemaSelection }),
     }),
 };
 

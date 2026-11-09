@@ -86,6 +86,10 @@ MODELING_MCP_CLEANUP_TOKEN=<与 Onto 相同的值>
   consumer，调高上限前先确认 consumer 与模型网关的承载。
 - 空闲会话默认 10 分钟回收（`ONTO_WEB_SESSION_IDLE_TTL`），回收后靠 resume
   续接模型上下文，用户无感；会话 transcript 持久化在数据卷 `/data/home/.claude/`。
+- 运行中的会话连续 30 分钟没有任何模型或工具响应（`ONTO_WEB_SESSION_STALL_TIMEOUT`，
+  单位秒，0 关闭）即判定执行超时：终止引擎、释放槽位，对话里给出提示，用户可以直接发消息
+  继续。等待确认卡的时间不计入。模型调用失败重试期间也没有响应，调小阈值前先确认模型网关
+  的单次超时与重试次数。
 
 ## 子代理同步执行（CLI 后台任务开关）
 

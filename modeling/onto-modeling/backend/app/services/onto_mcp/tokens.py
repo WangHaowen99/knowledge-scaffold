@@ -13,6 +13,13 @@ from ..workspace import WorkspaceError
 
 SERVER = {"name": "knowledge-scaffold-onto-mcp", "version": "0.1.0"}
 VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18"]
+SCOPE_DESCRIPTIONS = {
+    "ontology.read": "读取本体",
+    "ontology.change.validate": "校验修改",
+    "ontology.change.apply": "保存修改",
+    "project.version.revert": "读取项目版本与执行版本回退",
+    "package.publish": "发布知识包版本",
+}
 
 
 @contextmanager
@@ -67,7 +74,8 @@ def issue(manager, meta, body, user, hub_token="", hub_issuer="", hub_sub=""):
     subject = (user.get("sub", "") if publish else
                meta.get("owner") if user.get("role") == "admin" and meta.get("owner") else user.get("sub", ""))
     raw, tid, now = secrets.token_urlsafe(48), secrets.token_hex(16), time.time()
-    if publish and (not hub_token or not hub_issuer or not hub_sub):
+    missing_hub_identity = not hub_token or not hub_issuer or not hub_sub
+    if publish and missing_hub_identity:
         raise McpError("MCP_HUB_IDENTITY_REQUIRED", "发布知识包版本需要统一账号登录", 401)
     if publish and subject != hub_sub:
         raise McpError("MCP_HUB_IDENTITY_MISMATCH", "只能为当前登录用户创建知识包发布 Token", 403)
@@ -154,7 +162,12 @@ def _principal(manager, row, toolset):
     if not allowed or meta.get("archived") and toolset == "change":
         raise McpError("MCP_PROJECT_FORBIDDEN", "Token 所属用户已无权执行此项目操作", 403)
     scopes = json.loads(row["scopes"])
-    if not set(scopes).intersection(SCOPES[:1] if toolset == "read" else SCOPES[1:]):
+    allowed_scopes = {
+        "read": {"ontology.read", "project.version.revert"},
+        "change": {"ontology.change.validate", "ontology.change.apply",
+                   "project.version.revert", "package.publish"},
+    }[toolset]
+    if not set(scopes).intersection(allowed_scopes):
         raise McpError("MCP_SCOPE_FORBIDDEN", "Token 不具备当前工具集权限", 403)
     return {"token_id": row["id"], "username": row["subject"], "scopes": scopes,
             "project_id": row["project_id"], "hub_issuer": row["hub_issuer"], "hub_sub": row["hub_sub"]}
@@ -166,12 +179,17 @@ def status(project_id, base):
             "project_id": project_id, "endpoint_id": project_id, "transport": "both",
             "server_name": SERVER["name"], "server_version": SERVER["version"], "protocol_versions": VERSIONS,
             "protocol_compatibility": True, "base_url": base,
-            "scope_catalog": [{"scope": scope, "description": label} for scope, label in zip(
-                SCOPES, ("读取本体", "校验修改", "保存修改", "发布知识包版本"))],
+            "scope_catalog": [
+                {"scope": scope, "description": SCOPE_DESCRIPTIONS[scope]} for scope in SCOPES
+            ],
             "token_policy": {"min_ttl_seconds": 300, "default_ttl_seconds": 86400, "max_ttl_seconds": 2592000, "supports_non_expiring": True},
             "urls": [{"toolset": group, "transport": transport, "url": f"{base}/api/onto-mcp/{project_id}/{group}/{suffix}"}
                      for group in ("read", "change") for transport, suffix in (("streamable-http", "mcp"), ("sse", "sse"))],
             "toolsets": [{"name": group, "scope_requirement": "all" if group == "read" else "any",
-                          "accepted_scopes": list(SCOPES[:1] if group == "read" else SCOPES[1:]),
-                          "required_scopes": list(SCOPES[:1] if group == "read" else SCOPES[1:]),
+                          "accepted_scopes": list(("ontology.read", "project.version.revert") if group == "read" else (
+                              "ontology.change.validate", "ontology.change.apply",
+                              "project.version.revert", "package.publish")),
+                          "required_scopes": list(("ontology.read", "project.version.revert") if group == "read" else (
+                              "ontology.change.validate", "ontology.change.apply",
+                              "project.version.revert", "package.publish")),
                           "tools": [name for name, tool in TOOLS.items() if tool["toolset"] == group]} for group in ("read", "change")]}

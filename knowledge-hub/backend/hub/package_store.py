@@ -3,12 +3,12 @@
 All entry points run under the shared Store's global cross-process lock. A
 request is the recovery journal; only a durable committing intent can publish.
 """
-from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
 import re
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from .package_contract import DelegationBody, PackageError, PublishBody, check_capability
 from .package_validation import inspect_package, validate_derivation
@@ -87,6 +87,13 @@ class PackageStore:
     def delegation_path(self, delegation_id):
         return self.root / 'delegations' / (identifier(delegation_id) + '.json')
 
+    @staticmethod
+    def delegation_changed(existing, record):
+        for key in ('subject', 'issuer', 'sub', 'service', 'ontology_id'):
+            if existing.get(key) != record.get(key):
+                return True
+        return False
+
     def register_delegation(self, body, identity):
         from .user_auth import require_direct
         require_direct(identity)
@@ -103,8 +110,7 @@ class PackageStore:
                   'used_nonces': (existing or {}).get('used_nonces', {})}
         if (self.root_of(value['ontology_id']) / 'metadata.json').exists():
             self.owned(value['ontology_id'], identity.subject)
-        if existing and any(existing.get(key) != record.get(key) for key in
-                            ('subject', 'issuer', 'sub', 'service', 'ontology_id')):
+        if existing and self.delegation_changed(existing, record):
             raise PackageError('delegation_conflict', 'Delegation identity or target changed', 409, 'authorization')
         write_json(path, record)
         return {'delegation_id': value['delegation_id'], 'ontology_id': value['ontology_id'],
@@ -134,10 +140,16 @@ class PackageStore:
         path = self.delegation_path(identity.delegation_id)
         record = read_json(path)
         timestamp = now().timestamp()
-        if (not record or record.get('subject') != identity.subject
-                or record.get('service') != identity.service
-                or record.get('ontology_id') != identity.delegation_ontology_id
-                or record.get('expires_at') is not None and record['expires_at'] <= timestamp):
+        unavailable = not record
+        if record:
+            wrong_subject = record.get('subject') != identity.subject
+            wrong_service = record.get('service') != identity.service
+            wrong_identity = wrong_subject or wrong_service
+            wrong_package = record.get('ontology_id') != identity.delegation_ontology_id
+            expiry = record.get('expires_at')
+            expired = expiry is not None and expiry <= timestamp
+            unavailable = wrong_identity or wrong_package or expired
+        if unavailable:
             raise PackageError('delegation_revoked', 'Publication delegation is unavailable', 401, 'authorization')
         used = {nonce: expiry for nonce, expiry in record.get('used_nonces', {}).items() if expiry >= timestamp - 60}
         if identity.delegation_nonce in used:

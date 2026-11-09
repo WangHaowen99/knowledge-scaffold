@@ -1,0 +1,28 @@
+[project]
+name = "deepanalyze-harness"
+version = "0.2.0"
+description = "openJiuwen harness provider (HarnessProtocol 1.0) for a remote DeepAnalyze-Java engine"
+requires-python = ">=3.11"
+dependencies = [
+  "openjiuwen>=0.1.19",
+  "httpx>=0.27,<1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+# Third-party provider discovery: newer openJiuwen hosts resolve providers by
+# this entry point group (custom agents in JiuwenSwarm).
+[project.entry-points."openjiuwen.harness_providers"]
+deepanalyze = "deepanalyze_harness.provider:DeepAnalyzeHarnessProvider"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["deepanalyze_harness*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

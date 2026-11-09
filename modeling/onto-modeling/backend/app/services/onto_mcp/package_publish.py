@@ -1,12 +1,12 @@
 """Recoverable, project-bound package publication for Onto MCP."""
 import base64
-from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
 import hmac
 import json
 import secrets
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from .. import hub_packages, knowledge_hub
 from ..workspace import WorkspaceError
@@ -51,13 +51,13 @@ def _decode(manager, value):
         if not hmac.compare_digest(expected, supplied):
             raise ValueError
         payload = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
-        if payload.get("exp", 0) < time.time():
-            raise McpError("PUBLISH_CONFIRMATION_EXPIRED", "发布确认已过期，请重新预览", 409)
-        return payload
-    except McpError:
-        raise
-    except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+        if not isinstance(payload, dict):
+            raise ValueError
+    except (ValueError, TypeError, KeyError):
         raise McpError("PUBLISH_CONFIRMATION_INVALID", "发布确认无效，请重新预览", 400) from None
+    if payload.get("exp", 0) < time.time():
+        raise McpError("PUBLISH_CONFIRMATION_EXPIRED", "发布确认已过期，请重新预览", 409)
+    return payload
 
 
 def _jobs(manager):
@@ -90,6 +90,14 @@ def preview(manager, principal, args):
         raise McpError("MCP_HUB_IDENTITY_REQUIRED", "发布委托缺少 Hub 用户身份", 401)
     if not knowledge_hub.configured():
         raise McpError("HUB_UNAVAILABLE", "知识包 Hub 未配置", 503)
+    readiness = manager.package_publish_readiness(principal["project_id"])
+    if not readiness["ready"]:
+        titles = "、".join(item["title"] for item in readiness["missing_stages"])
+        message = f"建模未完成，请先完成：{titles}"
+        return {"ready": False, "request_id": request_id,
+                "blockers": [{"code": "modeling_stages_incomplete", "message": message,
+                              "missing_stages": readiness["missing_stages"]}],
+                "display": {"text": message}}
     try:
         manager._ensure_solver_publishable(principal["project_id"])
         _, digest = knowledge_hub.source_state(manager, principal["project_id"], allow_unbound)
@@ -132,7 +140,8 @@ def start(manager, principal, args):
         if existing:
             intent_fields = ("project_id", "token_id", "request_id", "allow_unbound", "input_digest",
                              "base_release_id", "base_digest")
-            if any(existing.get("preview", {}).get(key) != payload.get(key) for key in intent_fields):
+            preview = existing.get("preview", {})
+            if any(preview.get(key) != payload.get(key) for key in intent_fields):
                 raise McpError("PUBLISH_REQUEST_CONFLICT", "相同 request_id 的发布内容发生变化，请使用新的 request_id", 409)
             if existing.get("status") != "failed":
                 return public(existing)
@@ -142,8 +151,14 @@ def start(manager, principal, args):
                 active.append(knowledge_hub.load(job_path))
             except (OSError, ValueError):
                 continue
-        active = [item for item in active if item and item.get("status") in ("queued", "running")
-                  and (not existing or item.get("job_id") != existing.get("job_id"))]
+        queued_or_running = []
+        for item in active:
+            if not item or item.get("status") not in ("queued", "running"):
+                continue
+            if existing and item.get("job_id") == existing.get("job_id"):
+                continue
+            queued_or_running.append(item)
+        active = queued_or_running
         if len(active) >= MAX_ACTIVE_JOBS or sum(
                 item.get("token_id") == principal["token_id"] for item in active) >= MAX_ACTIVE_JOBS_PER_TOKEN:
             raise McpError("PUBLISH_QUEUE_LIMIT", "知识包发布任务较多，请等待已有任务完成后重试", 429)

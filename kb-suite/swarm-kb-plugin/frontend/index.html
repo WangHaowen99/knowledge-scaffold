@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>知识库</title>
+    <script>
+      // theme.ts copies Swarm's tokens once the bundle runs; until then take the
+      // host page's background so switching pages does not flash white.
+      try { document.documentElement.style.background = getComputedStyle(parent.document.body).backgroundColor; } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>

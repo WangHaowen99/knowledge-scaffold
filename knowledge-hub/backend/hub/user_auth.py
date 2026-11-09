@@ -1,7 +1,5 @@
 """Online identity validation against the trusted account service, never Onto."""
-from dataclasses import dataclass
 import base64
-import binascii
 import hashlib
 import hmac
 import json
@@ -9,6 +7,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 
 from .package_contract import PackageError
 
@@ -27,7 +26,7 @@ class Identity:
     delegation_id: str = ""
     delegation_ontology_id: str = ""
     delegation_nonce: str = ""
-    delegation_expires_at: float = 0
+    delegation_expires_at: float = 0.0
 
 
 def authenticate(request):
@@ -48,7 +47,7 @@ def authenticate(request):
     if not service:
         raise PackageError('unauthenticated', 'User and service authentication required', 401, 'authorization')
     if delegated:
-        return authenticate_delegation(request, delegated, service, configured[service])
+        return authenticate_delegation(request, delegated, service, configured.get(service, ''))
     if not header.lower().startswith('bearer ') or not header[7:].strip():
         raise PackageError('unauthenticated', 'User and service authentication required', 401, 'authorization')
     base = os.environ.get('HUB_AUTH_URL', '').rstrip('/')
@@ -79,6 +78,22 @@ def authenticate(request):
     return Identity(subject_id(issuer, data['sub']), service, issuer, data['sub'])
 
 
+def _valid_delegation_payload(payload, request, timestamp):
+    if not isinstance(payload, dict) or payload.get('v') != 1:
+        return False
+    if payload.get('method') != request.method or payload.get('path') != request.url.path:
+        return False
+    issued_at = payload.get('iat')
+    expires_at = payload.get('exp')
+    if not isinstance(issued_at, (int, float)) or not isinstance(expires_at, (int, float)):
+        return False
+    outside_time_window = issued_at > timestamp + 60 or expires_at < timestamp - 60
+    if expires_at - issued_at > 300 or outside_time_window:
+        return False
+    identity_fields = ('delegation_id', 'ontology_id', 'issuer', 'sub', 'nonce')
+    return all(isinstance(payload.get(field), str) for field in identity_fields)
+
+
 def authenticate_delegation(request, supplied, service, secret):
     import time
     if service != 'modeling':
@@ -90,21 +105,9 @@ def authenticate_delegation(request, supplied, service, secret):
             raise ValueError
         raw = base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4))
         payload = json.loads(raw)
-        now = time.time()
-        if (not isinstance(payload, dict) or payload.get('v') != 1
-                or payload.get('method') != request.method
-                or payload.get('path') != request.url.path
-                or not isinstance(payload.get('iat'), (int, float))
-                or not isinstance(payload.get('exp'), (int, float))
-                or payload['exp'] - payload['iat'] > 300
-                or payload['iat'] > now + 60 or payload['exp'] < now - 60
-                or not isinstance(payload.get('delegation_id'), str)
-                or not isinstance(payload.get('ontology_id'), str)
-                or not isinstance(payload.get('issuer'), str)
-                or not isinstance(payload.get('sub'), str)
-                or not isinstance(payload.get('nonce'), str)):
+        if not _valid_delegation_payload(payload, request, time.time()):
             raise ValueError
-    except (ValueError, TypeError, KeyError, json.JSONDecodeError, binascii.Error):
+    except (ValueError, TypeError, KeyError):
         raise PackageError('invalid_delegation', 'Delegated authorization is invalid or expired', 401, 'authorization') from None
     return Identity(subject_id(payload['issuer'], payload['sub']), service, payload['issuer'], payload['sub'],
                     payload['delegation_id'], payload['ontology_id'], payload['nonce'], payload['exp'])

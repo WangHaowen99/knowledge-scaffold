@@ -1,0 +1,47 @@
+# JiuwenSwarm 开发版运行镜像：从 develop 源码构建（参照仓库自带的 docker/Dockerfile.claw），不改源码。
+# 构建上下文：
+#   swarm-src   git archive 导出的 jiuwenswarm 源码
+#   da-harness  本仓库的 DeepAnalyze harness provider，打成 wheel 供 Swarm「自定义 agent」安装
+#   lf-harness  Loop Forest 的 provider（复用 da-harness 的实现），同样打成 wheel
+ARG NODE_IMAGE=docker.1ms.run/library/node:22-slim
+ARG PYTHON_IMAGE=docker.1ms.run/library/python:3.11-slim
+
+FROM ${NODE_IMAGE} AS web
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+COPY --from=swarm-src . /src
+WORKDIR /src/jiuwenswarm/channels/web/frontend
+RUN npm ci --registry=${NPM_REGISTRY} --no-audit --no-fund --loglevel=error && npm run build
+
+FROM ${PYTHON_IMAGE}
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONUNBUFFERED=1
+
+# openjiuwen 等依赖是 gitcode 上的 git 地址，安装时需要 git。
+RUN sed -i 's#deb.debian.org#mirrors.tuna.tsinghua.edu.cn#g' /etc/apt/sources.list.d/debian.sources \
+ && apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=swarm-src . /opt/src/jiuwenswarm
+COPY --from=web /src/jiuwenswarm/channels/web/frontend/dist /opt/src/jiuwenswarm/jiuwenswarm/channels/web/frontend/dist
+RUN pip install --no-cache-dir /opt/src/jiuwenswarm && rm -rf /opt/src/jiuwenswarm
+
+COPY --from=da-harness pyproject.toml /opt/src/da-harness/pyproject.toml
+COPY --from=da-harness deepanalyze_harness /opt/src/da-harness/deepanalyze_harness
+RUN pip wheel --no-cache-dir --no-deps -w /opt/kb-suite/wheels /opt/src/da-harness \
+ && rm -rf /opt/src/da-harness
+
+# 第二个引擎的 provider（loopforest）：自带一份同版本的 deepanalyze_harness 共用实现
+COPY --from=lf-harness pyproject.toml /opt/src/lf-harness/pyproject.toml
+COPY --from=lf-harness loopforest_harness /opt/src/lf-harness/loopforest_harness
+COPY --from=da-harness deepanalyze_harness /opt/src/lf-harness/deepanalyze_harness
+RUN pip wheel --no-cache-dir --no-deps -w /opt/kb-suite/wheels /opt/src/lf-harness \
+ && rm -rf /opt/src/lf-harness
+
+COPY entrypoint.sh /usr/local/bin/swarm-entrypoint.sh
+COPY configure_swarm.py /usr/local/bin/configure_swarm.py
+RUN chmod +x /usr/local/bin/swarm-entrypoint.sh
+
+ENV FRONTEND_HOST=0.0.0.0
+ENTRYPOINT ["/usr/local/bin/swarm-entrypoint.sh"]

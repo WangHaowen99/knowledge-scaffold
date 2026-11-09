@@ -635,9 +635,17 @@ class ClaudeEngine:
                     if usage_event:
                         yield usage_event
                     yield event
+                else:
+                    # 不转发的消息（状态、任务进度、后台任务心跳等）也说明运行时还在动，
+                    # 会话层据此判断有没有长时间无响应
+                    yield {"type": "_activity"}
             if self._pending_assistant is not None:
                 yield self._pending_assistant
                 self._pending_assistant = None
+            # 消息流正常结束说明 CLI 已退出（退出码 0 不抛异常）。不收尾的话，
+            # 这一轮会永远停在运行中，子任务卡也等不到结果
+            await self.disconnect()
+            yield {"type": "_engine_end", "reason": "exited", "error": FRIENDLY_ERROR}
         except asyncio.CancelledError:
             raise
         except Exception as exc:

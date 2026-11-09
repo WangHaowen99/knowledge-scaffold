@@ -1,7 +1,13 @@
 """Public tool contract compatible with Modeling; persistence belongs to Onto."""
 from .errors import McpError
 
-SCOPES = ("ontology.read", "ontology.change.validate", "ontology.change.apply", "package.publish")
+SCOPES = (
+    "ontology.read",
+    "ontology.change.validate",
+    "ontology.change.apply",
+    "project.version.revert",
+    "package.publish",
+)
 KEY_PATTERN = r"^[^/\\#?&|\r\n\t]{1,80}$"
 TEXT = {"type": "string"}
 STRINGS = {"type": "array", "items": TEXT}
@@ -23,6 +29,20 @@ def definition(name, title, props, required=(), access="read"):
 
 def definitions():
     result = []
+    result.append(definition("list_project_versions", "列出项目版本", {
+        "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        "cursor": TEXT,
+    }))
+    result[-1]["scope"] = "project.version.revert"
+    result.append(definition("preview_project_version_revert", "预览项目版本回退", {
+        "target_version": {"type": "integer", "minimum": 1},
+    }, ["target_version"], "validate"))
+    result[-1]["scope"] = "project.version.revert"
+    result.append(definition("revert_project_version", "确认项目版本回退", {
+        "preview_id": {"type": "string", "pattern": r"^[0-9a-f]{32}$"},
+        "confirm": {"type": "boolean"},
+    }, ["preview_id", "confirm"], "apply"))
+    result[-1]["scope"] = "project.version.revert"
     for kind, label in (("object", "对象"), ("operation", "操作"), ("rule", "规则")):
         identity = {"type": "string", "pattern": "^" + kind + ":" + KEY_PATTERN[1:]}
         listing = {"revision": TEXT, "query": TEXT, "cursor": TEXT,
@@ -102,8 +122,9 @@ def validate_input(value, schema, path="arguments"):
     kind = schema.get("type")
     if kind in types and not isinstance(value, types[kind]):
         raise McpError("INVALID_INPUT", f"{path} 必须是 {kind}")
-    if ((kind == "integer" and isinstance(value, bool))
-            or (kind == "boolean" and type(value) is not bool)):
+    invalid_integer = kind == "integer" and isinstance(value, bool)
+    invalid_boolean = kind == "boolean" and not isinstance(value, bool)
+    if invalid_integer or invalid_boolean:
         raise McpError("INVALID_INPUT", f"{path} 必须是 {kind}")
     if "enum" in schema and value not in schema["enum"]:
         raise McpError("INVALID_INPUT", f"{path} 不在允许值中")

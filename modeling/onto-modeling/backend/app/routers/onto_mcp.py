@@ -134,9 +134,14 @@ async def dispatch(rpc, group, principal, protocol):
     if method == "tools/list":
         available = [{**{k: tool[k] for k in ("name", "title", "description", "inputSchema")},
                       "annotations": {
-                          "readOnlyHint": tool.get("readOnly", tool["scope"] != "ontology.change.apply"),
-                          "destructiveHint": tool["name"] == "publish_package_version",
-                          "idempotentHint": tool["name"] == "publish_package_version",
+                          "readOnlyHint": tool.get("readOnly", tool["name"] != "revert_project_version"
+                                                   and tool["scope"] != "ontology.change.apply"),
+                          "destructiveHint": tool["name"] in {
+                              "revert_project_version", "publish_package_version"
+                          },
+                          "idempotentHint": tool["name"] in {
+                              "revert_project_version", "publish_package_version"
+                          },
                       }}
                      for tool in TOOLS.values() if tool["toolset"] == group and tool["scope"] in principal["scopes"]]
         return {"tools": available, **({"resultType": "complete", "ttlMs": 300000, "cacheScope": "private"}
@@ -150,13 +155,13 @@ async def dispatch(rpc, group, principal, protocol):
         raise McpError("MCP_SCOPE_FORBIDDEN", "Token 缺少工具所需 scope", 403)
     try:
         arguments = params.get("arguments", {})
-        from ..services.onto_mcp.definitions import validate_input
-        validate_input(arguments, tool["inputSchema"])
         if tool["scope"] == "package.publish":
+            from ..services.onto_mcp.definitions import validate_input
+            validate_input(arguments, tool["inputSchema"])
             result = await asyncio.to_thread(package_publish.execute, manager(), principal, tool["name"], arguments)
         else:
-            result = await asyncio.to_thread(tools.execute, manager(), principal["project_id"], tool["name"],
-                                             arguments, principal["username"])
+            result = await tools.execute_async(manager(), principal["project_id"], tool["name"],
+                                               arguments, principal["username"], principal["token_id"])
         return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
                 "structuredContent": result, "isError": False}
     except (McpError, WorkspaceError) as exc:

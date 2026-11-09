@@ -35,6 +35,12 @@ import {
   requestPermissionOnFirstBuild,
 } from '../lib/buildNotifier.js';
 import { orderResearchActions } from '../lib/researchGate.js';
+import {
+  RESOURCE_FILE_ACCEPT,
+  rejectedResourceMessage,
+  validateResourceFile,
+  validateResourceFiles,
+} from '../lib/resourceUpload.js';
 import { STATUS_LABELS, changeHeadline, groupChanges } from '../lib/changeSummary.js';
 import {
   EMPTY_CONTEXT,
@@ -45,8 +51,10 @@ import {
 import {
   buildSubagentFlow,
   buildSubagentLifecycle,
+  endedByStall,
   isSubagentCardMessage,
   lastSessionEndIndex,
+  lastTurnEndIndex,
   resolveSubagentState,
 } from '../lib/subagentEvents.js';
 import { FileChip, Markdown } from './CenterPane.jsx';
@@ -125,7 +133,7 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
     });
     out.push({ key: 'revalidate', label: '重新校验', tooltip: '重新运行完整校验', command: '/ontology-validate' });
   } else if (
-    (meta?.resource_updated_at || 0) > (versions?.[0]?.time || 0) &&
+    meta?.resource_stale &&
     // 需存在真实派生产物才谈"刷新"：目录占位 index.md 不算（新项目误报修复）
     paths.some(
       (p) =>
@@ -442,11 +450,13 @@ function SubagentCard({ item }) {
   const stateText = item.done
     ? item.failed
       ? '失败'
-      : item.interrupted
-        ? '已中断'
-        : stopped
-          ? '已停止'
-          : '完成'
+      : item.timedOut
+        ? '执行超时'
+        : item.interrupted
+          ? '已中断'
+          : stopped
+            ? '已停止'
+            : '完成'
     : item.background
       ? '后台运行中'
       : '运行中';
@@ -455,7 +465,13 @@ function SubagentCard({ item }) {
 
   let preview = '';
   if (item.done) {
-    preview = item.summary || (item.interrupted ? '已中断，没有收到子代理的结果' : '');
+    preview =
+      item.summary ||
+      (item.timedOut
+        ? '长时间没有响应，已判定执行超时'
+        : item.interrupted
+          ? '已中断，没有收到子代理的结果'
+          : '');
   } else {
     const latest = steps[steps.length - 1];
     if (!latest)
@@ -927,7 +943,9 @@ export default function ChatPane({
   };
 
   const addFiles = (files) => {
-    const next = [...files].map((file) => ({
+    const { accepted, rejected } = validateResourceFiles(files);
+    if (rejected.length) message.error(rejectedResourceMessage(rejected));
+    const next = accepted.map((file) => ({
       uid: `att-${(uidRef.current += 1)}`,
       name: file.name,
       file,
@@ -1243,6 +1261,13 @@ export default function ChatPane({
       return;
     }
     const toUpload = explicitAttachments ?? attachments;
+    const invalid = toUpload
+      .map((attachment) => validateResourceFile(attachment.file))
+      .filter((validation) => !validation.valid);
+    if (invalid.length) {
+      message.error(invalid.map((validation) => validation.message).join('；'));
+      return;
+    }
     if (!trimmed && toUpload.length === 0) return;
     requestPermissionOnFirstBuild(); // 须在用户发送这一操作中申请，浏览器才弹申请框
     // 上传可能持续数秒：消息发往点发送时所在的会话
@@ -1431,6 +1456,7 @@ export default function ChatPane({
     const fingerprints = new Map(); // 相同确认要求跨轮重复计数（防挂卡死循环，方案风险#4）
     let traceCount = 0;
     const sessionEndAt = lastSessionEndIndex(events);
+    const turnEndAt = lastTurnEndIndex(events);
     const pushTool = (tool) => {
       const last = list[list.length - 1];
       if (last?.role === 'toolgroup') last.tools.push(tool);
@@ -1453,6 +1479,7 @@ export default function ChatPane({
                 lifecycle: progress,
                 result,
                 sessionEnded: sessionEndAt > position,
+                turnEnded: turnEndAt > position,
               });
               list.push({
                 key,
@@ -1460,6 +1487,7 @@ export default function ChatPane({
                 description: progress?.description || block.input?.description || '子任务',
                 agentType: block.input?.subagent_type || progress?.agentType || '',
                 ...state,
+                timedOut: state.interrupted && endedByStall(events, position),
                 // 后台启动回执是 CLI 内部元数据，不作为子任务结果展示
                 excerpt: state.background ? undefined : result?.excerpt,
                 summary: progress?.summary || '',
@@ -2079,6 +2107,7 @@ export default function ChatPane({
           prefix={
             <Upload
               multiple
+              accept={RESOURCE_FILE_ACCEPT}
               showUploadList={false}
               beforeUpload={(file) => {
                 addFiles([file]);
@@ -2088,7 +2117,7 @@ export default function ChatPane({
               <Button type="text" icon={<PaperClipOutlined />} />
             </Upload>
           }
-          placeholder="输入消息，可拖入文件或直接粘贴截图作为资料附件"
+          placeholder="输入消息，可拖入资料或直接粘贴截图（单个文件不超过 20 MB）"
           onCancel={() => {
             // 上传阶段还没有会话消息可打断，忽略停止按钮
             if (!uploading)

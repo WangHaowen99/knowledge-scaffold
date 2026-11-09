@@ -18,18 +18,20 @@ const KIND_STYLE = {
 };
 
 const EDGE_STYLE = 'edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;';
-
-function decodeEntities(text) {
-  const el = document.createElement('textarea');
-  el.innerHTML = text || '';
-  return el.value;
-}
+const DESCRIPTION_ATTR = 'data-flowchart-description';
+const PROCESS_META_ATTR = 'data-flowchart-process-meta';
+const CONDITION_ATTR = 'data-flowchart-condition';
+const LABEL_ATTR = 'data-flowchart-label';
+const DETAIL_ATTR = 'data-flowchart-detail';
+const NODE_KIND_ATTR = 'data-flowchart-node-kind';
+const EDGE_KIND_ATTR = 'data-flowchart-edge-kind';
 
 function styleToKind(style) {
   const s = style || '';
   if (s.includes('mxgraph.flowchart.terminator')) return 'terminator';
   if (s.includes('rhombus')) return 'decision';
   if (s.includes('shape=card')) return 'data';
+  if (s.includes('backgroundOutline=1')) return 'object';
   return 'action';
 }
 
@@ -37,14 +39,17 @@ export function parseDrawioToDocument(xml, fileName = '流程图') {
   const dom = new DOMParser().parseFromString(xml, 'text/xml');
   if (dom.querySelector('parsererror')) throw new Error('drawio XML 解析失败');
   const diagramNodes = [...dom.querySelectorAll('diagram')];
+  if (!diagramNodes.length) return { diagrams: [] };
   const models = diagramNodes.length
     ? diagramNodes.map((d) => ({
         name: d.getAttribute('name') || '',
+        description: d.getAttribute(DESCRIPTION_ATTR) || '',
+        processMeta: d.getAttribute(PROCESS_META_ATTR) || '',
         model: d.querySelector('mxGraphModel'),
       }))
-    : [{ name: '', model: dom.querySelector('mxGraphModel') }];
+    : [];
 
-  const diagrams = models.map(({ name, model }, index) => {
+  const diagrams = models.map(({ name, description, processMeta, model }, index) => {
     if (!model) throw new Error('compressed'); // 压缩存储：交给 drawio 编辑器
     const cells = [...model.querySelectorAll('mxCell')];
     const nodes = [];
@@ -65,14 +70,11 @@ export function parseDrawioToDocument(xml, fileName = '流程图') {
 
     for (const cell of cells) {
       const id = cell.getAttribute('id');
-      const value = decodeEntities(cell.getAttribute('value') || '').trim();
+      const value = cell.getAttribute('value') || '';
       if (cell.getAttribute('vertex') === '1') {
         const style = cell.getAttribute('style') || '';
-        let kind = styleToKind(style);
-        if (kind === 'terminator') {
-          kind =
-            (inDegree.get(id) || 0) === 0 || /开始|start/i.test(value) ? 'start' : 'end';
-        }
+        let kind = cell.getAttribute(NODE_KIND_ATTR) || styleToKind(style);
+        if (kind === 'terminator') kind = (inDegree.get(id) || 0) === 0 ? 'start' : 'end';
         const geo = cell.querySelector('mxGeometry');
         if (geo) {
           positions[id] = {
@@ -80,7 +82,15 @@ export function parseDrawioToDocument(xml, fileName = '流程图') {
             y: Number(geo.getAttribute('y')) || 0,
           };
         }
-        nodes.push({ id, kind, label: value || '未命名节点', meta: { style } });
+        nodes.push({
+          id, kind, label: value,
+          meta: {
+            style, kind,
+            width: Number(geo.getAttribute('width')),
+            height: Number(geo.getAttribute('height')),
+          },
+          ...(cell.hasAttribute(DETAIL_ATTR) ? { detail: cell.getAttribute(DETAIL_ATTR) } : {}),
+        });
       } else if (cell.getAttribute('edge') === '1') {
         const from = cell.getAttribute('source');
         const to = cell.getAttribute('target');
@@ -89,16 +99,19 @@ export function parseDrawioToDocument(xml, fileName = '流程图') {
           id: id || `edge-${edges.length + 1}`,
           from,
           to,
-          kind: /^(是|否|Y|N|yes|no)$/i.test(value) ? 'condition' : 'sequence',
-          label: value,
-          conditionText: value,
+          kind: cell.getAttribute(EDGE_KIND_ATTR)
+            || (/^(是|否|Y|N|yes|no)$/i.test(value) ? 'condition' : 'sequence'),
+          label: cell.hasAttribute(LABEL_ATTR) ? cell.getAttribute(LABEL_ATTR) : value,
+          conditionText: cell.getAttribute(CONDITION_ATTR) || '',
+          meta: { style: cell.getAttribute('style') || EDGE_STYLE },
         });
       }
     }
-    if (!nodes.length) throw new Error('empty');
     return {
       id: `diagram-${index + 1}`,
       title: name || fileName.replace(/\.(drawio|dio)$/i, ''),
+      ...(description ? { description } : {}),
+      ...(processMeta ? { processMeta: JSON.parse(processMeta) } : {}),
       nodes,
       edges,
       layout: { direction: 'TB', positions },
@@ -112,7 +125,10 @@ function escapeXml(text) {
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;');
+    .replaceAll('"', '&quot;')
+    .replaceAll('\r', '&#13;')
+    .replaceAll('\n', '&#10;')
+    .replaceAll('\t', '&#9;');
 }
 
 export function serializeDocumentToDrawio(doc) {
@@ -120,24 +136,28 @@ export function serializeDocumentToDrawio(doc) {
     const positions = diagram.layout?.positions || {};
     const cells = [];
     for (const node of diagram.nodes) {
-      const style = node.meta?.style || KIND_STYLE[node.kind] || KIND_STYLE.action;
+      const style = node.meta?.kind === node.kind && node.meta?.style
+        ? node.meta.style : KIND_STYLE[node.kind] || KIND_STYLE.action;
       const pos = positions[node.id] || { x: 40, y: 40 };
+      const width = node.meta?.width ?? 160;
+      const height = node.meta?.height ?? 60;
       cells.push(
-        `        <mxCell id="${escapeXml(node.id)}" value="${escapeXml(node.label)}" style="${escapeXml(style)}" vertex="1" parent="1">\n` +
-          `          <mxGeometry x="${Math.round(pos.x)}" y="${Math.round(pos.y)}" width="160" height="60" as="geometry" />\n` +
+        `        <mxCell id="${escapeXml(node.id)}" value="${escapeXml(node.label)}" style="${escapeXml(style)}" vertex="1" parent="1" ${NODE_KIND_ATTR}="${escapeXml(node.kind)}"${node.detail ? ` ${DETAIL_ATTR}="${escapeXml(node.detail)}"` : ''}>\n` +
+          `          <mxGeometry x="${Math.round(pos.x)}" y="${Math.round(pos.y)}" width="${escapeXml(width)}" height="${escapeXml(height)}" as="geometry" />\n` +
           '        </mxCell>',
       );
     }
     for (const edge of diagram.edges) {
-      const label = edge.conditionText || edge.label || '';
+      const label = edge.label || edge.conditionText || '';
+      const style = edge.meta?.style || EDGE_STYLE;
       cells.push(
-        `        <mxCell id="${escapeXml(edge.id)}" value="${escapeXml(label)}" style="${EDGE_STYLE}" edge="1" parent="1" source="${escapeXml(edge.from)}" target="${escapeXml(edge.to)}">\n` +
+        `        <mxCell id="${escapeXml(edge.id)}" value="${escapeXml(label)}" style="${escapeXml(style)}" edge="1" parent="1" source="${escapeXml(edge.from)}" target="${escapeXml(edge.to)}" ${LABEL_ATTR}="${escapeXml(edge.label || '')}"${edge.conditionText ? ` ${CONDITION_ATTR}="${escapeXml(edge.conditionText)}"` : ''}${edge.kind ? ` ${EDGE_KIND_ATTR}="${escapeXml(edge.kind)}"` : ''}>\n` +
           '          <mxGeometry relative="1" as="geometry" />\n' +
           '        </mxCell>',
       );
     }
     return (
-      `  <diagram name="${escapeXml(diagram.title)}">\n` +
+      `  <diagram name="${escapeXml(diagram.title)}"${diagram.description ? ` ${DESCRIPTION_ATTR}="${escapeXml(diagram.description)}"` : ''}${diagram.processMeta ? ` ${PROCESS_META_ATTR}="${escapeXml(JSON.stringify(diagram.processMeta))}"` : ''}>\n` +
       '    <mxGraphModel dx="800" dy="600" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="826" math="0" shadow="0">\n' +
       '      <root>\n' +
       '        <mxCell id="0" />\n' +

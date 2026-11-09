@@ -15,10 +15,11 @@ export function buildClientConfigs(runtime, token, scopes) {
     'ontology.read', 'ontology.change.validate', 'ontology.change.apply',
   ];
   const auth = { Authorization: `Bearer ${token || '<MCP_TOKEN>'}` };
-  const read = selected.includes('ontology.read')
+  const read = selected.some((scope) => ['ontology.read', 'project.version.revert'].includes(scope))
     ? serverConfig(runtime, 'read', auth)
     : null;
-  const change = selected.some((scope) => scope.startsWith('ontology.change.') || scope === 'package.publish')
+  const change = selected.some((scope) => scope.startsWith('ontology.change.')
+    || ['project.version.revert', 'package.publish'].includes(scope))
     ? serverConfig(runtime, 'change', auth)
     : null;
   const json = (servers) => Object.keys(servers).length

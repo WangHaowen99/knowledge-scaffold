@@ -121,6 +121,22 @@ def test_without_a_hub_identity_only_iterations_are_listed(hub):
     assert hub['calls'] == 0 and pages[-1]['release_error'] == ''
 
 
+def test_iteration_entries_expose_revert_permission(hub):
+    manager = FakeManager([iteration(2, 200), iteration(1, 100)])
+
+    result = version_history.page(
+        manager,
+        'project-demo',
+        '',
+        '',
+        5,
+        can_revert=False,
+    )
+
+    assert result['items']
+    assert all(item['can_revert'] is False for item in result['items'])
+
+
 @pytest.mark.parametrize('cursor', ['x', '1', '1:', '-1:0', '1:2:3', '1:on'])
 def test_invalid_cursor_is_rejected(cursor):
     with pytest.raises(WorkspaceError) as exc:
