@@ -209,6 +209,15 @@ const DIFF_KIND = { '+': 'add', '-': 'del' };
 /** install.diff 的行 → 代码区的行：kind 取 add / del / ''，mark 是行号位置的符号 */
 export const diffRows = (diff) => (diff?.lines || []).map((l) => ({ kind: DIFF_KIND[l.op] || '', mark: l.op === '+' ? '+' : l.op === '-' ? '−' : '', text: l.text }));
 
+// 草稿卡上只放改动开头的一小段（从第一处改动前两行起），全文在「看改动」里；截掉的部分用一行省略号
+export function cardDiffRows(diff, limit = 12) {
+  const rows = diffRows(diff);
+  if (rows.length <= limit) return rows;
+  const first = Math.max(0, rows.findIndex((r) => r.kind) - 2);
+  const start = Math.min(first, rows.length - limit);
+  return [...rows.slice(start, start + limit), { kind: 'more', mark: '', text: '…' }];
+}
+
 export const CHANGE_LABEL = { added: '新增', modified: '改动', deleted: '删除' };
 
 // ---------- 从插件开发切回建模试用 ----------

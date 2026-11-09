@@ -8,7 +8,7 @@ import { errorText } from '../../api/errors.js';
 import { Button, Chip, Drawer, Icon, cx } from '../../ui/index.jsx';
 import { CC, MSys } from './parts.jsx';
 import {
-  CHANGE_LABEL, START_OPTIONS, canEditFile, defaultFile, diffRows, draftCardHead, draftCardMode, fixMessage, groupFiles,
+  CHANGE_LABEL, START_OPTIONS, canEditFile, cardDiffRows, defaultFile, diffRows, draftCardHead, draftCardMode, fixMessage, groupFiles,
   knowledgeTags, nodePlacementText, pluginSteps, precheckChip, splitPrecheck,
 } from './pluginModeModel.js';
 import '../../styles/plugins.css';
@@ -91,11 +91,11 @@ function Chk({ state, title, sub, tag }) {
   );
 }
 
-function DiffBlock({ diff }) {
+function DiffBlock({ diff, brief = false }) {
   return (
     <div className="pm-code">
       <div className="l h"><i /><span>{diff.path}</span></div>
-      {diffRows(diff).map((r, i) => <div key={i} className={cx('l', r.kind)}><i>{r.mark}</i><span>{r.text || ' '}</span></div>)}
+      {(brief ? cardDiffRows(diff) : diffRows(diff)).map((r, i) => <div key={i} className={cx('l', r.kind)}><i>{r.mark}</i><span>{r.text || ' '}</span></div>)}
     </div>
   );
 }
@@ -117,7 +117,7 @@ function DraftBody({ draft, mode, failedOverride }) {
   const some = (xs) => (xs?.length ? xs : null);
   return (
     <>
-      {outdated && ins.diff ? <DiffBlock diff={ins.diff} /> : null}
+      {outdated && ins.diff ? <DiffBlock diff={ins.diff} brief /> : null}
       <dl className="wx-def" style={{ margin: outdated && ins.diff ? '12px 0 0' : 0 }}>
         {outdated ? row('改动', !ins.diff && some(ins.changes) ? tags(ins.changes.map((x) => x.path), true) : null) : (
           <>

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  canEditFile, defaultFile, diffRows, draftCardHead, draftCardMode, fixMessage, groupFiles, isDraftCard, knowledgeTags,
+  canEditFile, cardDiffRows, defaultFile, diffRows, draftCardHead, draftCardMode, fixMessage, groupFiles, isDraftCard, knowledgeTags,
   latestDraftCards, menuConversations, nodePlacementText, pickConversation, planEnterPlugin, planLeavePlugin,
   pluginReturn, pluginSteps, precheckChip, returnTarget, splitPrecheck,
 } from '../src/pages/workbench/pluginModeModel.js';
@@ -200,4 +200,14 @@ test('切回建模试用的记录：还在、还是插件对话才回得去', ()
   assert.equal(pluginReturn.get(ss, 'p0'), null);
   // 没有 sessionStorage 时不报错
   assert.equal(pluginReturn.get(undefined, 'p0'), null);
+});
+
+test('草稿卡上的改动只放第一处改动附近的一小段', () => {
+  const lines = Array.from({ length: 30 }, (_, i) => ({ op: i === 10 ? '+' : ' ', text: `第 ${i} 行` }));
+  const rows = cardDiffRows({ path: 'commands/a.md', lines });
+  assert.equal(rows.length, 13);
+  assert.equal(rows[0].text, '第 8 行');
+  assert.equal(rows[2].kind, 'add');
+  assert.deepEqual(rows[12], { kind: 'more', mark: '', text: '…' });
+  assert.equal(cardDiffRows({ path: 'a', lines: lines.slice(0, 5) }).length, 5);
 });
