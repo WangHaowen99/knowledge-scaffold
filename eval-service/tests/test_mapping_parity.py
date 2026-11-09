@@ -3,6 +3,8 @@
 Skipped when the modeling source is not beside eval-service, as in a standalone evaluation package."""
 import importlib.util
 from pathlib import Path
+import sys
+import types
 
 import pytest
 
@@ -15,9 +17,16 @@ MODELING = Path(__file__).resolve().parents[2] / 'modeling' / 'onto-modeling' / 
 def modeling():
     if not MODELING.is_file():
         pytest.skip('onto-modeling source is not available beside eval-service')
-    spec = importlib.util.spec_from_file_location('modeling_package_mapping', MODELING)
+    # The relation rules use nothing the module imports relatively; those services need the whole modeling app.
+    package = types.ModuleType('modeling_services')
+    package.__path__ = []
+    package.material_detect = types.ModuleType('modeling_services.material_detect')
+    spec = importlib.util.spec_from_file_location('modeling_services.package_mapping', MODELING)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(sys.modules, 'modeling_services', package)
+        patch.setitem(sys.modules, 'modeling_services.material_detect', package.material_detect)
+        spec.loader.exec_module(module)
     return module
 
 
