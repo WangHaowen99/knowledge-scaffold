@@ -1006,7 +1006,8 @@ def _prepare_separated_upgrade(tmp_path: Path, *, modeling_port: str) -> dict:
             "backend/.env.example": "BACKEND_PORT=5055\n",
             "deploy/manifest.json": "{}\n",
             "deploy/opsctl": 'printf "preflight PASS\\n"',
-            "deploy/upgrade.sh": record("consumer-upgrade"),
+            # 与独立 Consumer 发布包一致：upgrade.sh 只接受安装目录，多余参数直接失败
+            "deploy/upgrade.sh": '[ "$#" -le 1 ] || exit 1; ' + record("consumer-upgrade"),
             "deploy/install.sh": (
                 'if [ "${1:-}" = --preflight-only ]; then '
                 + record("consumer-preflight")
@@ -1529,7 +1530,7 @@ def _volume_backups(setup: dict) -> str:
 
 
 def test_installer_legacy_upgrade_leaves_workbench_untouched(tmp_path: Path) -> None:
-    """旧合并部署里的 Workbench 不迁移、不停止、不备份，Consumer 只做 --consumer-only 升级。"""
+    """旧合并部署里的 Workbench 不迁移、不停止、不备份，只升级 Consumer 自身。"""
     setup = _prepare_legacy_upgrade(tmp_path)
 
     result = _run_legacy_upgrade(setup, STUB_RUNNING="1", STUB_LEGACY_MODELING_PORT="48100")

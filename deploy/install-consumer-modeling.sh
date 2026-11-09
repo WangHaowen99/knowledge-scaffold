@@ -297,12 +297,12 @@ env_get() {
     printf '%s' "${value}"
 }
 
+# 独立 Consumer 发布包的 upgrade.sh 只接受安装目录，传入其他参数会直接失败
 run_consumer_upgrade() {
     release_dir="$1"
     install_dir="$2"
-    shift 2
     log "开始 Consumer 升级；预检中受管旧容器占用自身端口显示 WARN 时不会阻断升级"
-    if bash "${release_dir}/deploy/upgrade.sh" "${install_dir}" "$@"; then
+    if bash "${release_dir}/deploy/upgrade.sh" "${install_dir}"; then
         upgrade_status=0
     else
         upgrade_status=$?
@@ -587,7 +587,7 @@ upgrade_core_services() {
     tar -xzf "${CONSUMER_PACKAGE}" -C "${stage_dir}"
     ensure_evaluation_service_token
     stop_consumer_containers_for_upgrade "${CONSUMER_DIR}"
-    if ! run_consumer_upgrade "${stage_dir}/onto-agent" "${CONSUMER_DIR}" --consumer-only; then
+    if ! run_consumer_upgrade "${stage_dir}/onto-agent" "${CONSUMER_DIR}"; then
         restore_consumer_containers_after_failure
         die "Consumer 升级失败"
     fi
