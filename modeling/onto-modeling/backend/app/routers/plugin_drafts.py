@@ -106,7 +106,9 @@ async def install_draft(project_id: str, name: str, request: Request):
     conversation_id = await asyncio.to_thread(conversation_store.plugin_conversation, project_id, name)
     if conversation_id:
         manager.append_record(project_id, conversation_id, {"type": "notice", "payload": {
-            "kind": "plugin_installed", "text": f"「{outcome['label']}」{version} 已装好，启用到本项目",
+            "kind": "plugin_installed",
+            # 草稿和装过的版本一样时没有新装，只是重新启用
+            "text": f"「{outcome['label']}」{version} " + ("已装好，启用到本项目" if outcome["upload_id"] else "已启用到本项目"),
             "name": name, "version": version, "align": "center"}})
     # 「切回建模试用」进的是最近一条建模对话：那里也留一行
     chats = [item for item in await asyncio.to_thread(conversation_store.list_conversations, project_id)

@@ -592,6 +592,9 @@ def test_install_enables_then_upgrades_with_an_automatic_patch_version(env, tmp_
     entry = lockfile.read(root).get("naming")
     assert entry.enabled and entry.version == "0.1.1"
     assert third.json()["draft"]["install"]["state"] == "installed"
+    notices = [event["payload"] for event in agent_sessions.manager.get_history(project_id, conversation)
+               if event.get("type") == "notice"]
+    assert notices[-1]["text"] == "「naming 包」0.1.1 已启用到本项目"
 
 
 def test_reverting_the_draft_to_an_installed_version_rolls_back_without_a_new_upload(env, tmp_path):

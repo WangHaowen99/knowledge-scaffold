@@ -191,7 +191,7 @@ export function PluginDraftCard({ card, cardKey }) {
       const r = await api.installPluginDraft(pid, name);
       pm.put(r.draft);
       setInstallFailed(null);
-      toast(mode === 'update' ? `已更新到 ${r.version}` : `已装好 ${r.version}`, 'check');
+      toast(mode === 'update' ? `已更新到 ${r.version}` : r.upload_id ? `已装好 ${r.version}` : `已启用 ${r.version}`, 'check');
     } catch (e) {
       if (e.code !== 'static_check_failed') throw e;
       setInstallFailed(installFailures(e));
