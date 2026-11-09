@@ -40,6 +40,9 @@ PROTECTED = ("resource", ".onto")
 STATE_DIR = ".ontology-state"
 # 建副本、撤回时从主线带过来，合入时带回主线的派生回执（锁、Studio 复核草稿、后端自己管的求解回执不带）
 RECEIPTS = ("research-review.json", "research-inventory.json", "research-baseline.json", "script-verifications.json")
+# 副本旁的标记（ADR-0087）：内容是插件开发装配目录的绝对路径。有它、目标还在时副本的 .claude 指过去，
+# 这一轮里别处调 ensure 也不会改回建模的装配
+OVERRIDE_FILE = "claude-override"
 
 
 # ---------------------------------------------------------------------------
@@ -271,8 +274,50 @@ def _link(path: Path, target: str) -> None:
     os.replace(tmp, path)
 
 
+def override_path(root: Path) -> Path:
+    return copy_path(root).parent / OVERRIDE_FILE
+
+
+def override_target(root: Path) -> Path | None:
+    """标记指着的、还在的目录；没有标记、目标没了、不在数据目录的 plugin-dev/ 下时 None（按建模的装配链）。"""
+    try:
+        target = Path(override_path(root).read_text(encoding="utf-8").strip())
+    except OSError:
+        return None
+    allowed = Path(os.path.realpath(data_dir_of(root) / "plugin-dev"))
+    if not target.is_absolute() or Path(os.path.realpath(target)).parent != allowed:
+        return None
+    return target if target.is_dir() else None
+
+
+def set_override(root: Path, target: Path | None) -> None:
+    """写或清 .claude 的改指标记，并把副本（在的话）的链接跟着修好。调用方持项目锁。"""
+    root = Path(root)
+    marker = override_path(root)
+    if target is None:
+        if not os.path.lexists(marker):
+            return
+        marker.unlink()
+    else:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        tmp = marker.with_name(f".{OVERRIDE_FILE}.tmp")
+        tmp.write_text(str(Path(target).resolve()), encoding="utf-8")
+        os.replace(tmp, marker)
+    copy = copy_path(root)
+    if os.path.lexists(copy / ".claude") or (copy / ".git").is_file():
+        _ensure_links(root, copy)
+
+
 def _ensure_links(root: Path, copy: Path) -> None:
+    override = override_target(root)
+    if override is not None:
+        _link(copy / ".claude", str(override))
     for name in (".claude", "resource"):
+        if name == ".claude" and override is not None:
+            continue
+        if name == ".claude" and not os.path.lexists(root / name) and (copy / name).is_symlink():
+            (copy / name).unlink()  # 主线没有装配（旧工作区）：插件开发留下的链接不留着
+            continue
         if os.path.lexists(root / name):
             _link(copy / name, os.path.relpath(root / name, copy))
     for name in ("CLAUDE.md", "README.md"):

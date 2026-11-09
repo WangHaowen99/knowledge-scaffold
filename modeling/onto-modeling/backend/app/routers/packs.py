@@ -55,6 +55,15 @@ def _iso_result(result: dict) -> dict:
     return {**result, "pack": _iso_pack(result.get("pack"))}
 
 
+def _draft_changed(project_id: str, name: str) -> None:
+    """本项目有同名的插件草稿：它的安装状态跟着变了（F17 第 7 条）。"""
+    from ..services import project_events
+    from ..services.plugin_mode import DRAFTS_DIR
+
+    if (deps.workspaces.project_root(project_id) / DRAFTS_DIR / name).is_dir():
+        project_events.plugin_drafts_changed(project_id, [name])
+
+
 def _audit(request: Request, action: str, detail: dict) -> None:
     audit.log(deps.actor(request), request.method, request.url.path, {action: detail.pop("name", ""), **detail})
 
@@ -137,6 +146,7 @@ async def enable_pack(project_id: str, request: Request):
                                          body.get("version") or None, deps.actor(request))
     _audit(request, "pack.enable", {"name": name, "version": (result["pack"] or {}).get("locked_version"),
                                     "project_id": project_id})
+    _draft_changed(project_id, name)
     return JSONResponse(status_code=201, content=_iso_result(result))
 
 
@@ -152,6 +162,7 @@ async def upgrade_pack(project_id: str, name: str, request: Request):
         result = await asyncio.to_thread(service.change_version, deps.workspaces, project_id, name, to_version,
                                          kind="upgrade", actor=deps.actor(request))
     _audit(request, "pack.upgrade", {"name": name, "version": to_version, "project_id": project_id})
+    _draft_changed(project_id, name)
     return _iso_result(result)
 
 
@@ -167,6 +178,7 @@ async def rollback_pack(project_id: str, name: str, request: Request):
         result = await asyncio.to_thread(service.change_version, deps.workspaces, project_id, name, to_version,
                                          kind="rollback", actor=deps.actor(request))
     _audit(request, "pack.rollback", {"name": name, "version": to_version, "project_id": project_id})
+    _draft_changed(project_id, name)
     return _iso_result(result)
 
 
@@ -177,6 +189,7 @@ async def disable_pack(project_id: str, name: str, request: Request):
     with _errors():
         result = await asyncio.to_thread(service.disable, deps.workspaces, project_id, name, deps.actor(request))
     _audit(request, "pack.disable", {"name": name, "project_id": project_id})
+    _draft_changed(project_id, name)
     return _iso_result(result)
 
 

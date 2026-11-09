@@ -81,6 +81,11 @@ def publish_exec(project_id: str, record: dict, root: Path | None, flow: dict | 
 def begin(session, text: str, *, task_id: str | None = None, resume_exec: str | None = None) -> None:
     """消息开始交给引擎时：斜杠命令开一份执行记录；普通消息接着这条对话里等待中的执行；
     续跑（S-16）接着原来那份记录。"""
+    if getattr(session, "kind", "chat") == "plugin":
+        # 插件对话（ADR-0087）不跑建模命令：不建执行记录、不取命令锁，斜杠命令按普通消息交给引擎
+        session.exec_id = None
+        session.turn_title = ""
+        return
     if resume_exec:
         _safe("续跑执行记录", _resume, session, resume_exec)
     else:
@@ -237,6 +242,11 @@ def running_suggestions_record() -> dict:
 
 def suggestions(session, *, interrupted: dict | None = None, failed: str | None = None) -> dict | None:
     from ...kernel.changesets import worktree
+
+    if getattr(session, "kind", "chat") == "plugin":
+        from .. import plugin_mode
+
+        return plugin_mode.empty_suggestions()
 
     root = worktree.main_root(session.cwd)
     if root is None or not (Path(root) / ".claude").exists():

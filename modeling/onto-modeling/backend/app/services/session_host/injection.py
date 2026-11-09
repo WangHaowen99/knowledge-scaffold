@@ -136,7 +136,14 @@ def build_context(
     session_start 为真表示这是引擎实例（新建或续接）收到的第一条消息，阶段提示必带；
     last_injected 是上一条消息结果里的 digest。阶段读不出来（不是本体项目工作区、
     脚本超时）时本条不带阶段提示，digest 原样传回。
+
+    插件对话（ADR-0087）只带草稿状态一段，不带阶段、下一步、目标、包提示、自主构建、资料。
     """
+    plugin = _plugin_hint(project_root, conversation_id)
+    if plugin is not None:
+        digest = _digest(plugin)
+        text = plugin if session_start or digest != last_injected else ""
+        return InjectionResult(text=text, digest=digest, stage_hint=text)
     hint = stage_hint(project_root)
     goal = "\n".join(part for part in (goal_hint(project_root), terms_hint(project_root)) if part)
     digest = last_injected
@@ -158,6 +165,26 @@ def build_context(
     materials = material_hint(project_root, user_text)
     text = "\n\n".join(part for part in (stage_part, autobuild, materials, rules) if part)
     return InjectionResult(text=text, digest=digest, stage_hint=stage_part, prompt_hint=rules)
+
+
+def _plugin_hint(project_root: Path, conversation_id: str | None) -> str | None:
+    """插件对话的草稿状态；不是插件对话时 None。读不出时给一句兜底，不退回建模的注入。"""
+    if not conversation_id or conversation_id == "default":  # 缺省对话总是建模对话
+        return None
+    from ...kernel.changesets import worktree
+    from .. import plugin_mode
+
+    project_id = worktree.project_id_of(Path(project_root))
+    try:
+        if not plugin_mode.is_plugin(project_id, conversation_id):
+            return None
+    except Exception:  # noqa: BLE001 - 对话索引读不出按建模对话处理
+        return None
+    try:
+        return plugin_mode.injection_text(project_id, conversation_id)
+    except Exception:  # noqa: BLE001 - 算不出草稿状态不挡消息
+        _log.warning("项目 %s 插件草稿状态算不出", project_id, exc_info=True)
+        return f"插件开发：只改 {plugin_mode.DRAFTS_DIR}/ 下这条对话的草稿，本体只读。"
 
 
 class Injector:

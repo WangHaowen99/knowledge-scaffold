@@ -306,6 +306,8 @@ class Session:
     discarded: bool = False  # 项目已删除：事件不再落盘，也不再申请槽位
     # 引擎绑定的会话：决定事件历史写到哪份文件、续接哪个 token
     conversation_id: str = DEFAULT_CONVERSATION
+    # 绑定对话的类型（chat、autobuild、plugin）：插件对话换装配目录、注入、指纹、收尾（ADR-0087）
+    kind: str = "chat"
     sending: int = 0  # 处理中的 send() 数；期间不可回收或换绑，否则消息会落到已丢弃的会话上
     # 引擎使用谁的模型配置：用户名 = 该用户的个人 Key；"" = 管理员配置（原行为）
     model_owner: str = ""
@@ -850,6 +852,7 @@ class SessionManager:
                 id=uuid.uuid4().hex[:12],
                 project_id=project_id,
                 conversation_id=conversation_id,
+                kind=conversation_store.kind_of(project_id, conversation_id),
                 run_id=self._runs.get(project_id),
                 on_change=lambda: self._wake(project_id),
             )
@@ -895,7 +898,7 @@ class SessionManager:
         # 建不了时退回主线工作区
         if not session.run_id:
             await self._settle_leftover(session)
-        session.cwd = await asyncio.to_thread(_agent_cwd, session.project_id, cwd)
+        session.cwd = await asyncio.to_thread(_agent_cwd, session.project_id, cwd, plugin=_is_plugin(session))
         session.round_base_commit, session.round_base_tree = await asyncio.to_thread(_round_start, session.cwd)
         if session.engine is not None and session.engine_cwd != session.cwd:
             # 这一轮的工作目录换了（建副本失败退回主线、或副本恢复了）：引擎还在旧目录里改，改动就进不了
@@ -910,7 +913,8 @@ class SessionManager:
             # 没有正在跑的一轮：先跟随通道、按锁文件装配并切换 .claude（只动纯数据包时不必重连）
             await asyncio.to_thread(_fingerprint.prepare, session.project_id)
             changes = await asyncio.to_thread(
-                _fingerprint.changes, session.engine, session.project_id, session.model_owner, session.fingerprint
+                _fingerprint.changes, session.engine, session.project_id, session.model_owner, session.fingerprint,
+                session.kind,
             )
             if changes:
                 telemetry.count("onto_reconnects_total", project=session.project_id)
@@ -951,7 +955,7 @@ class SessionManager:
     async def _hold_for_materials(self, session: Session, text: str) -> bool:
         """建模命令开始时还有资料在转文本：消息先收下（记在 pending_prompts，插话照常排着、会话不被回收），
         状态显示在等资料，后台等转完再交给引擎。返回是否在等。"""
-        if session.discarded or not material_wait.applies(text):
+        if session.discarded or _is_plugin(session) or not material_wait.applies(text):
             return False
         try:
             paths = await asyncio.to_thread(material_wait.converting, session.project_id)
@@ -1061,7 +1065,8 @@ class SessionManager:
         if session.engine is None:
             return
         changes = await asyncio.to_thread(
-            _fingerprint.changes, session.engine, session.project_id, session.model_owner, session.fingerprint
+            _fingerprint.changes, session.engine, session.project_id, session.model_owner, session.fingerprint,
+            session.kind,
         )
         if not changes:
             return
@@ -1437,7 +1442,7 @@ class SessionManager:
             session.awaiting_cli_idle = False
             session.interrupt_requested = False
             session.fingerprint = await asyncio.to_thread(
-                _fingerprint.compute, engine, project_id, session.model_owner
+                _fingerprint.compute, engine, project_id, session.model_owner, session.kind
             )
             session.reader_task = asyncio.create_task(self._read_loop(session))
             if session.pending_changes:
@@ -1982,7 +1987,7 @@ class SessionManager:
             # 审计：agent 这一轮的提交（不经 HTTP 的专项审计，方案 E4）
             await asyncio.to_thread(audit.record_agent_commits, session.project_id, session.cwd,
                                     session.round_base_commit, head, changes)
-            if any(changes.values()):
+            if any(changes.values()) and not _is_plugin(session):
                 from . import mainline
 
                 version_label = await asyncio.to_thread(
@@ -2037,7 +2042,8 @@ class SessionManager:
                 session.round_base_commit = head
                 session.round_base_tree = (record or {}).get("tree") or ""
                 # 只做了影响分析（只写了不进版本的 update-plan.json）的一轮也收清单，变更集编号之后补上（审查第 8 条）
-                record = await asyncio.to_thread(_capture_change_list, session, record) or record
+                if not _is_plugin(session):
+                    record = await asyncio.to_thread(_capture_change_list, session, record) or record
             if running or record is None or session.run_id:
                 # 自主构建的一段不出「这一轮改了什么」卡：运行器按段合入，进展在段进展块里
                 return
@@ -2046,6 +2052,10 @@ class SessionManager:
             settled = await asyncio.to_thread(changesets.settle, deps.workspaces, session.project_id,
                                               actor=project_owner(session.project_id), turn_over=True)
             record = (settled or {}).get("record") or record
+            if _is_plugin(session):
+                # 插件对话（ADR-0087）：不出通用的「这一轮」卡和产物卡，改到草稿时出一张草稿卡
+                await self._post_plugin_card(session, record, start_tree)
+                return
             if record.get("cards") and record.get("card_tree") == record.get("tree"):
                 return  # 冲突没解决、这一轮又没改东西：卡片不动
             await self._post_round_card(session, record)
@@ -2058,11 +2068,24 @@ class SessionManager:
         except Exception:  # noqa: BLE001 - 变更卡是增强信息，失败不影响会话
             _log.warning("项目 %s 观察助手副本失败", session.project_id, exc_info=True)
 
+    async def _post_plugin_card(self, session: Session, record: dict, start_tree: str) -> None:
+        from .plugin_mode import drafts
+
+        card = await asyncio.to_thread(drafts.after_round, session.project_id, session.conversation_id,
+                                       Path(session.cwd), start_tree or record.get("base") or "",
+                                       record.get("tree") or "", record.get("id"))
+        if card is not None:
+            session.broadcast({"type": "card", "payload": card})
+
     async def _post_round_card(self, session: Session, record: dict) -> None:
         """这一轮的卡：一个变更集一张，没有就放一张，有了原地更新。"""
         from ..api import deps
         from ..kernel.changesets import service as changesets
+        from . import plugin_mode
 
+        target = record.get("conversation_id") or session.conversation_id
+        if await asyncio.to_thread(plugin_mode.is_plugin, session.project_id, target):
+            return  # 插件对话（含遗留到下一轮才合入的）不出通用的「这一轮」卡（ADR-0087）
         records = await asyncio.to_thread(changesets.card_records, deps.workspaces, session.project_id,
                                           {**record, "conversation_id": record.get("conversation_id")
                                            or session.conversation_id}, new_card=True)
@@ -2114,6 +2137,8 @@ class SessionManager:
                     if card is not None:
                         session.broadcast(card)
                     session.set_state("closed")
+                    if _is_plugin(session):
+                        await asyncio.to_thread(_restore_claude, session.project_id, lambda: _settled(session))
                 else:
                     error_id = session.last_error_id or self._log_error(
                         session, "session", event.get("error") or FRIENDLY_ERROR)
@@ -2185,6 +2210,9 @@ class SessionManager:
         engine_continues = bool(handed) and not stopping
         chain = (not engine_continues and not failed and not stopping and self._startable_next(session) is not None)
         if not (engine_continues or chain):
+            if _is_plugin(session) and not session.turns_in_flight:
+                # 置空闲之前链回：之后才到的消息走新一轮的 _agent_cwd，不会被这里清掉
+                await asyncio.to_thread(_restore_claude, session.project_id)
             session.on_turn_result()
         # 待重载的会话先断开旧引擎（手头的轮次都出了 result），收尾的记账放在后面
         reload = session.reload_pending and session.turns_in_flight == 0 and not engine_continues
@@ -2217,6 +2245,8 @@ class SessionManager:
         self._return_steers(session, None)
         self._pause_next(session.project_id, session.conversation_id)
         self._settle_after_failure(session)
+        if _is_plugin(session):
+            self._spawn(asyncio.to_thread(_restore_claude, session.project_id, lambda: _settled(session)))
         record, card = turns.interrupt_exec(session, "engine_exit", card=not session.run_id)
         if card is not None:
             session.broadcast(card)
@@ -2335,14 +2365,39 @@ ENGINE_MARKER = Path(".onto") / "run" / "engine.json"
 
 
 def _assembly_dir(cwd: Path | None) -> Path | None:
-    """项目 .claude 指向的装配目录（<数据目录>/assembled/<哈希>）；不是装配目录返回 None。"""
+    """项目 .claude 指向的装配目录（<数据目录>/assembled/<哈希>，插件对话是 <数据目录>/plugin-dev/<哈希>）；
+    不是装配目录返回 None。"""
     if cwd is None:
         return None
     link = Path(cwd) / ".claude"
     if not os.path.lexists(link):
         return None
     real = Path(os.path.realpath(link))
-    return real if real.parent.name == "assembled" and (real / "MANIFEST.json").is_file() else None
+    return real if real.parent.name in ("assembled", "plugin-dev") and (real / "MANIFEST.json").is_file() else None
+
+
+def _is_plugin(session: Session) -> bool:
+    return getattr(session, "kind", "chat") == "plugin"
+
+
+def _settled(session: Session) -> bool:
+    """出错后后台链回时，这条对话还没开始下一轮（重试时新一轮已经把 .claude 指好了，不能清）。"""
+    return not session.sending and session.state != "running"
+
+
+def _restore_claude(project_id: str, still_idle=None) -> None:
+    """插件对话这一轮结束（空闲、出错、引擎关了）：清掉 .claude 的改指标记，副本链回建模的装配（ADR-0087）。
+    still_idle：持项目锁后再判一次，返回假就不动（下一轮已经开始）。"""
+    from ..api import deps
+    from ..kernel.changesets import worktree
+
+    try:
+        with deps.workspaces._project_lock(project_id):
+            if still_idle is not None and not still_idle():
+                return
+            worktree.set_override(deps.workspaces.project_root(project_id), None)
+    except Exception:  # noqa: BLE001 - 下一轮建模开始时还会再清一次
+        _log.warning("项目 %s 插件对话结束后没能把 .claude 链回建模装配", project_id, exc_info=True)
 
 
 def _write_engine_marker(cwd: Path | None, engine: str, conversation_id: str, *, engine_id: str = "",
@@ -2352,8 +2407,10 @@ def _write_engine_marker(cwd: Path | None, engine: str, conversation_id: str, *,
                                 conversation_id=conversation_id, owner=owner)
 
 
-def _agent_cwd(project_id: str, root: Path) -> Path:
-    """这一轮助手的工作目录：变更集副本（方案 C7）；不是本体项目工作区（没有 git）时原样返回。"""
+def _agent_cwd(project_id: str, root: Path, plugin: bool = False) -> Path:
+    """这一轮助手的工作目录：变更集副本（方案 C7）；不是本体项目工作区（没有 git）时原样返回。
+
+    插件对话（ADR-0087）：副本的 .claude 这一轮指向插件开发装配目录；建模对话把它指回建模的装配。"""
     root = Path(root)
     if not (root / ".git").is_dir():
         return root
@@ -2361,7 +2418,23 @@ def _agent_cwd(project_id: str, root: Path) -> Path:
     from ..kernel.changesets import service as changesets
     from .flow import view
 
-    copy = changesets.copy_for_turn(deps.workspaces, project_id, root)
+    override = None
+    if plugin:
+        from .plugin_mode import assembly
+
+        try:
+            override = assembly.ensure(deps.workspaces)
+        except Exception as exc:  # 装不出插件开发说明就不能当插件助手跑：按建模装配跑会乱改本体
+            _log.exception("项目 %s 插件开发装配目录生成失败", project_id)
+            raise SessionError("插件开发环境没准备好，请稍后再试", 503) from exc
+    copy = changesets.copy_for_turn(deps.workspaces, project_id, root, claude_override=override)
+    if plugin:
+        from ..kernel.changesets import worktree
+
+        if not worktree.is_copy(copy):  # 退回主线工作区就是按建模装配、直接改主线：插件对话不这样跑
+            _restore_claude(project_id)
+            raise SessionError("助手副本现在不可用，插件开发稍后再试", 503)
+        return copy
     try:
         # 节点状态与下一步写进副本的 flow-state.json：这一轮的宿主注入、助手收尾的 suggest 都读它（方案 D15）
         view.build(root)

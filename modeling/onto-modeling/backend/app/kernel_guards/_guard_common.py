@@ -989,7 +989,78 @@ def _guard_confine(call: Call) -> str | None:
     return f"本轮增量范围外的条目只读：{shown}；要扩大范围请重新圈定（{entry}），不再需要限制就说「结束本轮」。新增条目不受限。"
 
 
+# ---- 插件开发（ADR-0087） ----
+
+PLUGINS_DIR = "plugins"
+# 项目根下一定要拦的名字（目录里还没有的也算）；其余按根目录下实际有的条目补
+_PROJECT_TOP = ("ontology", "resource", "reports", ".claude", "CLAUDE.md", "README.md", ".onto", ".ontology-state",
+                "tmp")
+_ABS_PATH_RE = re.compile(r"(?:(?<=[\s'\"`(=,\[])|^)(~?/[^\s'\"`;|&()<>,\]}]+)")
+PLUGIN_SCOPE_REASON = "插件开发模式只能改 plugins/ 下的草稿，本体、资料和项目里别的文件只读"
+
+
+def _data_dir(root: Path) -> Path | None:
+    """项目根（主线工作区或助手副本）所在的数据目录；认不出来时 None。"""
+    if root.name == "assistant" and root.parent.parent.name == "changesets":
+        return root.parent.parent.parent
+    if root.parent.name == "workspaces":
+        return root.parent.parent
+    return None
+
+
+def _plugin_allowed(root: Path, data: Path | None, path: Path) -> bool:
+    """项目根内只放行 plugins/ 下；数据目录下（别的项目、主线工作区、包仓库、装配目录）一律不放行；别处放行。"""
+    plugins = root / PLUGINS_DIR
+    for candidate in dict.fromkeys((path, Path(os.path.realpath(path)))):
+        if _under(candidate, plugins) and candidate != plugins:
+            continue
+        if _under(candidate, root) or (data is not None and _under(candidate, data)):
+            return False
+    return True
+
+
+def _project_names(root: Path) -> tuple[str, ...]:
+    try:
+        present = [name for name in os.listdir(root) if name not in (PLUGINS_DIR, ".git")]
+    except OSError:
+        present = []
+    return tuple(dict.fromkeys([*_PROJECT_TOP, *present]))
+
+
+def _mentions_top(text: str, names: tuple[str, ...]) -> bool:
+    """命令或代码里把项目根下的某个条目当路径开头提到（`ontology/x`、`./reports`、`"CLAUDE.md"`）；
+    `plugins/x/ontology/` 这类草稿里的同名子目录不算。"""
+    for name in names:
+        if re.search(rf"(?:^|[\s'\"`(=,\[])(?:\./)?{re.escape(name)}(?:/|(?=['\"`\s)\]}};|&,]|$))", text):
+            return True
+    return False
+
+
+def guard_plugin_scope(call: Call) -> str | None:
+    root = call.root
+    data = _data_dir(root)
+    if call.git_release or call.git_internal:
+        return f"{PLUGIN_SCOPE_REASON}：不能改版本库的设置或打发布标签。"
+    escaping = _escaping_links(call)
+    if escaping:
+        return f"{PLUGIN_SCOPE_REASON}：不能建指向工作区外的符号链接（{'; '.join(dict.fromkeys(escaping))}）。"
+    found = [target.raw for target in call.targets
+             if target.path is not None and not _plugin_allowed(root, data, target.path)]
+    names = _project_names(root)
+    if any(target.unresolved for target in call.targets) and _mentions_top(call.command, names):
+        found.append("含变量的路径")
+    code = "\n".join(call.code)
+    if code and _CODE_WRITE_RE.search(code):
+        absolute = [Path(os.path.expanduser(raw)) for raw in _ABS_PATH_RE.findall(code)]
+        if _mentions_top(code, names) or any(not _plugin_allowed(root, data, path) for path in absolute):
+            found.append("内联代码")
+    if not found:
+        return None
+    return f"{PLUGIN_SCOPE_REASON}，这次写入越界：{'; '.join(list(dict.fromkeys(found))[:5])}。"
+
+
 GUARDS = {
+    "plugin_scope": guard_plugin_scope,
     "resource": guard_resource,
     "resource_read": guard_resource_read,
     "toolset": guard_toolset,
