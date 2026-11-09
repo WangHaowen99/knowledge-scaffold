@@ -1387,7 +1387,7 @@ Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`
 
 决策见 ADR-0087。路径都在 `/api/v1/projects/{project_id}` 下，都要项目所有者；写操作要项目可写（`require_writable`）。
 
-1. **对话（S-01～S-04 扩展）**：对话视图多 `kind`（`modeling` | `plugin`，旧对话缺省 `modeling`）、`plugin`（绑定的包名，还没写出草稿时为 null）。
+1. **对话（S-01～S-04 扩展）**：对话视图已有的 `kind`（`chat` | `autobuild`）多一个值 `plugin`；多一个字段 `plugin`（绑定的包名，还没写出草稿时为 null）。
    S-02 `POST /conversations` 收 `{kind: "plugin"}`，标题缺省「新插件」。插件对话第一次写出 `plugins/<包名>/` 时绑定这个包名，没手工改过标题的
    改成草稿的 `label`（没有 label 用包名）。一条对话只绑一个包。
 2. **PD-01** `GET /plugin-drafts` → `{items: DraftView[]}`：主线上 `plugins/*/manifest.yaml` 能读出的草稿（读不出清单的也列，`manifest_ok=false`），
