@@ -298,6 +298,18 @@ class _Parser:
         index = 0
         while index < len(words):
             word = words[index]
+            # `2>/dev/null`、`2>&1` 切出来是 2、>、…：紧挨重定向符的数字是文件描述符，不是路径
+            if word.isdigit() and index + 1 < len(words) and (words[index + 1] in REDIRECTS
+                                                              or words[index + 1] in ("<", ">&", "<&")):
+                index += 1
+                continue
+            if word in (">&", "<&"):
+                # `>&2`、`2>&1`、`>&-` 是复制或关闭描述符；`>& 文件` 才写文件
+                if word == ">&" and index + 1 < len(words) and not words[index + 1].isdigit() \
+                        and words[index + 1] != "-":
+                    self.add(cwd, words[index + 1])
+                index += 2
+                continue
             if word in REDIRECTS or word == "<":
                 if word != "<" and index + 1 < len(words):
                     self.add(cwd, words[index + 1])

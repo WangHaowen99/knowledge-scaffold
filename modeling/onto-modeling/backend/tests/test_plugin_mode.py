@@ -107,6 +107,10 @@ def test_guard_allows_only_drafts_under_plugins(guarded):
     assert check("Bash", command="python3 .claude/plugin-dev/capability/scripts/pack_tool.py check plugins/demo") is None
     assert check("Bash", command="cat ontology/object/订单.md && echo 合成 > /tmp/onto-scratch.txt") is None
     assert check("Bash", command="python3 -c \"open('plugins/demo/ontology/x.md','w').write('1')\"") is None
+    # 文件描述符重定向不是写入路径（实测助手常写 `2>/dev/null`、`2>&1`）
+    assert check("Bash", command="rm -f plugins/demo/a.py && rmdir plugins/demo/scripts 2>/dev/null; ls -R plugins/demo") is None
+    assert check("Bash", command="rmdir plugins/demo/scripts 2>&1; ls plugins/demo >&2") is None
+    assert check("Bash", command="pack_tool check plugins/demo > plugins/demo/out.txt 2>&1") is None
 
 
 @pytest.mark.parametrize("tool, tool_input", [
@@ -124,6 +128,8 @@ def test_guard_allows_only_drafts_under_plugins(guarded):
     ("Bash", {"command": "echo 合成 | tee ontology/object/a.md"}),
     ("Bash", {"command": "cat plugins/demo/a.md > \"$DEST\" && ls ontology"}),
     ("Bash", {"command": "ln -s /etc plugins/demo/etc"}),
+    ("Bash", {"command": "ls plugins 2>&1 >& reports/x.md"}),
+    ("Bash", {"command": "ls plugins 2> reports/err.txt"}),
 ])
 def test_guard_denies_ontology_materials_and_project_files(guarded, tool, tool_input):
     check, _copy, _data = guarded
