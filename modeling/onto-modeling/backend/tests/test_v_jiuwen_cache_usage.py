@@ -1,6 +1,6 @@
 """内测引擎的用量带上缓存命中数，口径同稳定引擎（Anthropic）：input_tokens 不含命中部分，命中记在
 cache_read_input_tokens。OpenAI 口径的 prompt_tokens 本来就含命中部分，要拆开、不能重复计；
-拆开后配额、计费、项目用量、时间线里「输入 + 缓存读」的总数不变。"""
+拆开后计费、项目用量、时间线里「输入 + 缓存读」的总数不变；配额按成本口径把缓存读折成 1/10（ADR-0088）。"""
 from __future__ import annotations
 
 import asyncio
@@ -36,9 +36,9 @@ def test_model_usage_splits_cached_part_out_of_input(tmp_path):
     engine._record_call_usage(1200, 80, 1000)
     event = engine._queue.get_nowait()
     assert event["usage"] == {"input_tokens": 200, "cache_read_input_tokens": 1000, "output_tokens": 80}
-    # 输入 + 缓存读 + 输出的总数和拆开之前一样
-    assert model_pricing.tokens_of(event["usage"]) == 1280
-    assert quota._usage_of({"type": "model_usage", "usage": event["usage"]})[0] == 1280
+    # 拆开后缓存读单独计：配额按成本口径折算（ADR-0088），200 + 80 + 1000 // 10
+    assert model_pricing.tokens_of(event["usage"]) == 380
+    assert quota._usage_of({"type": "model_usage", "usage": event["usage"]})[0] == 380
     assert timeline._usage(event["usage"]) == {"input_tokens": 200, "output_tokens": 80, "cache_read_tokens": 1000}
 
 

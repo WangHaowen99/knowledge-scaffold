@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Body, Request
 from pydantic import BaseModel, Field
 
 from .. import config
@@ -388,6 +388,44 @@ def set_project_owner(project_id: str, body: OwnerBody, request: Request):
         detail={"action": "project.set_owner", "project": project_id, "from": previous, "to": owner},
     )
     return project_meta_view(meta, deps.workspaces.project_root(project_id))
+
+
+# ---- AD-08～AD-10 审核申请 ----
+
+
+@router.get("/requests")
+def list_admin_requests(request: Request, kind: str = "", state: str = "", limit: int = 50, cursor: str = ""):
+    """AD-08：待管理员处理的申请（数据源登记、知识提名）。"""
+    from ..services import admin_requests
+
+    deps.require_role(request, "admin")
+    return admin_requests.list_requests(kind, state, limit, cursor)
+
+
+@router.post("/requests/{request_id}/approve")
+def approve_admin_request(request_id: str, request: Request, body: dict = Body(default={})):
+    """AD-09：通过。数据源申请要带凭据（`secret`），按申请登记并授权给申请人的项目。同步路由：登记会调连接器网关。"""
+    from ..services import admin_requests
+
+    deps.require_role(request, "admin")
+    view = admin_requests.approve(request_id, body, deps.actor(request))
+    audit.log(deps.actor(request), "POST", request.url.path,
+              detail={"action": "admin.request.approve", "request_id": request_id, "kind": view["kind"],
+                      "source_id": view.get("source_id"), "requested_by": view["requested_by"]})
+    return view
+
+
+@router.post("/requests/{request_id}/reject")
+def reject_admin_request(request_id: str, request: Request, body: dict = Body(default={})):
+    """AD-10：退回，要写原因。"""
+    from ..services import admin_requests
+
+    deps.require_role(request, "admin")
+    view = admin_requests.reject(request_id, body, deps.actor(request))
+    audit.log(deps.actor(request), "POST", request.url.path,
+              detail={"action": "admin.request.reject", "request_id": request_id, "kind": view["kind"],
+                      "requested_by": view["requested_by"]})
+    return view
 
 
 @router.get("/config-registry")

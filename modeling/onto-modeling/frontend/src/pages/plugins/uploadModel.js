@@ -321,12 +321,21 @@ export function requestMeta(r, { nameOf = (x) => x, now = Date.now() } = {}) {
   return [nameOf(r.requested_by), project, fmtClock(r.requested_at, now)].filter(Boolean).join(' · ');
 }
 
-/** 通过前要提醒的话（数据源要先写凭据；知识提名进行业包下一个版本） */
+/** 通过前要提醒的话。数据源申请在弹窗里直接写凭据，知识提名通过只记结论，都不另加说明 */
 export function approveHint(r) {
-  if (r?.kind === 'source_registration') return '通过前先在数据源登记里写入凭据并测试连接；申请里不带密钥。';
-  if (r?.kind === 'knowledge_nomination') return `通过后进入${r.payload?.industry_pack_label ? `「${r.payload.industry_pack_label}」` : '对应行业包'}下一个版本的待发布内容，原文已脱敏。`;
   if (r?.kind === 'pack_install') return '通过后在插件中心把这个连接器安装到平台，装好后申请人就能启用。';
   return '';
+}
+
+/**
+ * 通过的请求体（AD-09）：数据源申请要带凭据（提供方的密钥字段 sf，如密码、访问令牌），没填返回 problem。
+ * @returns {{ body: object|null, problem: string|null }}
+ */
+export function approveBody(r, { note = '', secret = '', sf = null } = {}) {
+  const body = note.trim() ? { note: note.trim() } : {};
+  if (r?.kind !== 'source_registration' || !sf) return { body, problem: null };
+  if (!secret.trim()) return { body: null, problem: `请填写${sf.label || '凭据'}` };
+  return { body: { ...body, secret: { [sf.name]: secret } }, problem: null };
 }
 
 export function requestToast(r, action) {

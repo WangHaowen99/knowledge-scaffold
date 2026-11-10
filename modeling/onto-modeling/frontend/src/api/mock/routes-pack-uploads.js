@@ -183,7 +183,7 @@ export function register(ctx) {
     return json(200, uploadView(rec));
   });
 
-  // ---------- AD-08～AD-10 管理员审核申请（设计稿没画入口，组件 AdminRequests 暂不挂载） ----------
+  // ---------- AD-08～AD-10 管理员审核申请（插件安装页的「申请」页签） ----------
   const findReq = (id) => requestsOf(db).find((r) => r.id === decodeURIComponent(id));
 
   on('GET', '/admin/requests', ({ user, query }) => forbid(user, ADMIN) || (() => {
@@ -200,6 +200,8 @@ export function register(ctx) {
     if (!r) return err(404, 'request_not_found', '申请不存在');
     if (r.state !== 'pending') return err(409, 'request_state', '这条申请已经处理过了', { state: r.state });
     if (action === 'reject' && !String(body.reason || '').trim()) return err(400, 'invalid_argument', '请写明退回原因', { fields: { reason: 'required' } });
+    // 同内核：数据源申请通过要带凭据
+    if (action === 'approve' && r.kind === 'source_registration' && !body.secret) return err(400, 'invalid_argument', '通过前要写入凭据', { fields: { secret: 'required' } });
     Object.assign(r, {
       state: action === 'approve' ? 'approved' : 'rejected', reviewed_by: user.username, reviewed_at: new Date().toISOString(),
       note: action === 'approve' ? String(body.note || '').trim() || null : String(body.reason).trim(),

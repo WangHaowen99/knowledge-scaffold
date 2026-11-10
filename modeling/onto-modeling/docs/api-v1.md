@@ -2741,7 +2741,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `GET /api/v1/evidence/sources` · 登录 · 旧：— · 审计：否 · 依据：5.8.7 · 页面：sources、wb-materials（「已登记 2 个数据源可用」）、create（第 2 步）、proj-settings（自主构建生产库授权）
 
 - 查询参数：`project_id?`（带上时返回 `authorized_for_project`）、`filter?`（`all|authorized|production`）。
-- 响应：`{items: EvidenceSource[], total, authorized_count}`。
+- 响应：`{items: EvidenceSource[], total, authorized_count, my_requests?}`。带 `project_id` 时多 `my_requests`：本人在这个项目提交、还没通过的登记申请 `[{id, source_id, display_name, provider, state: "pending"|"rejected", requested_at, note}]`（`note` 是退回原因）。
 - 普通用户只看到不敏感的登记字段；`secret_fields` 只有是否已设置的标记。
 
 #### EV-02 登记数据源
@@ -2782,8 +2782,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `POST /api/v1/evidence/source-requests` · 登录 · 旧：— · 审计：是 · 依据：5.8.7 · 页面：sources（非管理员「提交给管理员」）
 
-- 请求：同 `EV-02`，但不能带 `secret`。
-- 响应 `202`：`{request_id}`。管理员收到通知，写入凭据、测试后登记。
+- 请求：同 `EV-02`，但不能带 `secret`；`project_id?` 是申请人的项目（要是所有者），管理员通过时登记并授权给它。
+- 响应 `202`：`{request_id}`。管理员收到 `request_pending` 通知（`action` 指向插件安装页的「申请」页签），在 `AD-09` 写入凭据后登记。
 
 #### EV-04 修改登记
 
@@ -3625,6 +3625,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 对象：`{per_user: {concurrent_sessions: int, daily_tokens: int, collections_per_source_per_hour: int}, per_project: {online_engines: 1（只读）, monthly_tokens: int, snapshot_git_mb: int}, overrides: QuotaOverride[]}`。
 - PUT 只改 `per_user`、`per_project`，立即生效。
+- token 按成本口径计：输入 + 缓存写 + 输出 + 缓存读 // 10（ADR-0088）。默认每人每天 10,000,000、每项目每月 100,000,000。
 
 #### SY-16 配额单独设置
 
@@ -3704,7 +3705,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### AD-08 待管理员处理的申请
 
-`GET /api/v1/admin/requests` · admin · 旧：— · 审计：否 · 依据：5.5（提名审核）、5.8.7、5.8.3 · 页面：—（经通知进入，见 8.2）
+`GET /api/v1/admin/requests` · admin · 旧：— · 审计：否 · 依据：5.5（提名审核）、5.8.7、5.8.3 · 页面：plugin-upload（「申请」页签，经通知进入）
 
 - 查询参数：`kind?`（`pack_install|source_registration|knowledge_nomination`）、`state?`；分页。
 - 响应：`{items: [{id, kind, state: "pending"|"approved"|"rejected", requested_by, requested_at, project_id?, summary, payload}], next_cursor}`。
@@ -3713,9 +3714,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `POST /api/v1/admin/requests/{request_id}/approve` · admin · 旧：— · 审计：是 · 依据：同上 · 页面：—
 
-- 请求：`{note?: string, edits?: object}`。
-  - 知识提名通过后，进入对应行业包下一个版本的待发布内容；
-  - 数据源申请通过需要先写凭据。
+- 请求：`{note?: string, edits?: object, secret?: object}`。
+  - 知识提名通过后记下结论、通知提名人；进行业包下一个版本由行业包维护人做；
+  - 数据源申请：`secret` 是凭据（字段同 `EV-06`，提供方要凭据时必填，没带回 `400`，`fields.secret=required`）；按申请（叠加 `edits`）走 `EV-02` 的校验登记，授权给申请人的项目。登记没通过时原样回错，申请仍待处理。
 - 响应：申请对象。申请人收到通知。
 
 #### AD-10 退回申请
@@ -4293,6 +4294,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `evidence_conflict` | 需要你处理：证据冲突 |
 | `publish_done` | 发布完成 |
 | `nomination_reviewed` | 提名审核结果 |
+| `request_reviewed` | 数据源登记申请通过或退回 |
 | `request_pending` | 给管理员：待处理的申请 |
 | `upload_rejected` | 插件包被退回 |
 

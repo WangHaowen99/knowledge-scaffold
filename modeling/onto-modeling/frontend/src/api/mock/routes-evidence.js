@@ -5,6 +5,7 @@
 // 新发起的采集按 0.9 秒一步推进，经项目流 evidence.job.updated 推送；种子里那条运行中的任务静止不动（方便和设计稿对照）。
 import * as D from './evidence-data.js';
 import { entryRef } from './scenario.js';
+import { addAdminRequest } from './routes-pack-uploads.js';
 
 const TOKEN_TTL = 10 * 60 * 1000;
 const pad = (n) => String(n).padStart(2, '0');
@@ -32,7 +33,8 @@ function splitAnchor(anchor) {
 }
 
 // setTimer、now 只有单测会传（手动推进、固定时刻），开发服务器用真时钟
-export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, setTimer, now: nowFn, sc = {} }) {
+export function register(ctx) {
+  const { on, json, err, wait, uid, F, emitProj, commandHooks, setTimer, now: nowFn, sc = {} } = ctx;
   const later = setTimer || ((fn, ms) => setTimeout(fn, ms));
   const clock = nowFn || (() => Date.now());
   const srcs = D.sources();
@@ -90,7 +92,13 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     let items = srcs.filter((s) => visible(s, user)).map((s) => view(s, pid, user));
     if (filter === 'authorized') items = items.filter((s) => s.authorized_for_project);
     if (filter === 'production') items = items.filter((s) => s.environment === 'production');
-    return json(200, { items, total: items.length, authorized_count: pid ? srcs.filter((s) => visible(s, user) && authorized(pid, s.id)).length : 0 });
+    // 同内核：带项目时列出本人在这个项目提交、还没通过的登记申请（AD-08 的申请里取）
+    const mine = pid ? (ctx.db?.adminRequests || []).filter((r) => r.kind === 'source_registration' && r.requested_by === user.username
+      && r.project_id === pid && r.state !== 'approved').map((r) => ({
+      id: r.id, source_id: r.payload?.id || null, display_name: r.payload?.display_name || r.summary, provider: r.payload?.provider || '',
+      state: r.state, requested_at: r.requested_at, note: r.note || null,
+    })) : undefined;
+    return json(200, { items, total: items.length, authorized_count: pid ? srcs.filter((s) => visible(s, user) && authorized(pid, s.id)).length : 0, ...(mine ? { my_requests: mine } : {}) });
   });
 
   const validate = (body, { creating, self = false }) => {
@@ -147,12 +155,18 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
     if (body.grant_project_id) proj(body.grant_project_id).grants[s.id] = { authorized: true, granted_at: new Date().toISOString(), granted_by: user.username };
     return json(201, view(s, body.grant_project_id, user));
   });
-  on('POST', '/evidence/source-requests', async ({ body }) => {
+  on('POST', '/evidence/source-requests', async ({ body, user }) => {
     if (body.secret) return err(400, 'invalid_argument', '申请里不能带密钥', { fields: { secret: 'forbidden' } });
     const bad = validate(body, { creating: true });
     if (bad) return bad;
     await wait(200);
-    return json(202, { request_id: `req-${uid()}` });
+    // 同内核：记下申请人的项目，进管理员的审核列表（AD-08）
+    const { project_id: projectId = null, ...form } = body;
+    const item = ctx.db ? addAdminRequest(ctx, {
+      kind: 'source_registration', requested_by: user.username, project_id: projectId, summary: form.display_name,
+      payload: { id: form.id, display_name: form.display_name, provider: form.provider, environment: form.environment, connection: form.connection },
+    }) : null;
+    return json(202, { request_id: item?.id || `req-${uid()}` });
   });
   on('PATCH', '/admin/evidence/sources/([^/]+)', ({ m, body, user }) => {
     const s = srcOf(m[1]);

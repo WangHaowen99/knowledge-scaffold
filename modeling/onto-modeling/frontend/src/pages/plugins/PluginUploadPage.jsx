@@ -9,8 +9,9 @@ import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import { PageHead, ShellG } from '../../shell/Shell.jsx';
 import { can } from '../../state/roles.js';
-import { Note } from '../../ui/index.jsx';
+import { Note, Tabs } from '../../ui/index.jsx';
 import '../../styles/plugins-upload.css';
+import AdminRequests from './AdminRequests.jsx';
 import { PluginsNav } from './parts.jsx';
 import {
   eligibleProjects, isPublishable, packLimit, pickUpload, publishBody, publishToast, uploadErrorText, uploadTitle, validatePackFile,
@@ -23,7 +24,21 @@ const POLL_MS = 2500;
 
 export default function PluginUploadPage({ route }) {
   const { user } = useApp();
-  return <UploadReview route={route} mine={!can(user, 'admin')} />;
+  const admin = can(user, 'admin');
+  // 管理员多一个「申请」页签（AD-08～AD-10，契约 8.2）；通知「有新申请」跳到 ?tab=req
+  const [tab, setTab] = useState(route.query?.tab === 'req' ? 'req' : 'up');
+  useEffect(() => { if (route.query?.tab === 'req') setTab('req'); }, [route.query?.tab]);
+  const tabs = admin ? <Tabs items={[['up', '上传', null, 'upload'], ['req', '申请', null, 'inbox']]} value={tab} onChange={setTab} /> : null;
+  if (admin && tab === 'req') {
+    return (
+      <ShellG active="plugins" side={<PluginsNav active="up" />}>
+        <PageHead title="上传与审核" />
+        {tabs}
+        <AdminRequests />
+      </ShellG>
+    );
+  }
+  return <UploadReview route={route} mine={!admin} tabs={tabs} />;
 }
 
 // 灰度范围的项目数与可指定的项目：O-01 的项目元数据（admin 只读运维面）；取不到时只写百分比
@@ -44,7 +59,7 @@ function useRolloutProjects(active) {
   return data;
 }
 
-function UploadReview({ route, mine }) {
+function UploadReview({ route, mine, tabs = null }) {
   const { api, services, config } = useApp();
   const [list, setList] = useState(null);
   const [loadError, setLoadError] = useState(null);
@@ -165,6 +180,7 @@ function UploadReview({ route, mine }) {
   return (
     <ShellG active="plugins" side={<PluginsNav active="up" />}>
       <PageHead title={mine ? '安装插件' : '上传与审核'} />
+      {tabs}
       {loadError ? (
         <Note tone="red" className="mb12">上传列表没读到：{loadError} <a className="link" onClick={loadList}>重试</a></Note>
       ) : null}

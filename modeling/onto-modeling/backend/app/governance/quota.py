@@ -1,6 +1,8 @@
 """配额（详设 4.10.1、方案 E9、契约 SY-15、SY-16）：按用户和项目限制并发、token 预算、采集频率。
 
 - 用量台账：SQLite（DATA_DIR/governance/quota.sqlite），按（项目、所有者、UTC 日、来源）聚合 token 与成本。
+  token 按成本口径计（ADR-0088）：输入 + 缓存写 + 输出 + 缓存读 // 10；台账记着口径版本，口径变了从会话历史重建
+  （本月和上月，已删除项目的用量随之丢掉）。
   主路径是增量扫会话历史（含已删除会话留存的用量文件）：按文件记读到的字节位置，只读新增的完整行；
   每条用量事件按指纹去重，所以文件被截断或改写后从头重扫、会话删除后用量搬进留存文件，都不会重复计数；
   已入账的用量也不因文件截断、会话或项目删除而减少（删项目不能绕开当日上限）；
@@ -39,8 +41,9 @@ from ..services import conversation_store
 _log = logging.getLogger(__name__)
 
 LOCAL_USER = "local"  # 与 deps.LOCAL_USER 一致：本地模式的用户与无主项目的用量归属
-PER_USER_DEFAULTS = {"concurrent_sessions": 3, "daily_tokens": 2_000_000, "collections_per_source_per_hour": 6}
-PER_PROJECT_DEFAULTS = {"online_engines": 1, "monthly_tokens": 20_000_000, "snapshot_git_mb": 20}
+# 默认值按成本口径定（ADR-0088）：实测一整轮建模（资料分析到发布）折算后约 215 万
+PER_USER_DEFAULTS = {"concurrent_sessions": 3, "daily_tokens": 10_000_000, "collections_per_source_per_hour": 6}
+PER_PROJECT_DEFAULTS = {"online_engines": 1, "monthly_tokens": 100_000_000, "snapshot_git_mb": 20}
 READ_ONLY_ITEMS = frozenset({"online_engines"})  # 一个项目只有一个在线引擎，由会话池保证，不可改
 # 证据源本期只留接口（ADR-0056）：这两项保留、能设，但没有地方检查（SY-15 的 not_enforced）
 NOT_ENFORCED = ("collections_per_source_per_hour", "snapshot_git_mb")
@@ -53,6 +56,8 @@ SYNC_INTERVAL_S = 1.0
 COLLECTION_WINDOW_S = 3600
 HEAD_BYTES = 4096
 DELETED_USAGE_FILE = "deleted-usage.jsonl"
+# 台账的计数口径：和库里记的不一样时清掉用量、去重指纹和读取位置，从会话历史重新入账
+COUNTING = "cost-v1"
 
 _MESSAGES = {
     "concurrent_sessions": "同时在线的建模会话已到上限（{limit} 个），请等其他项目的会话结束后再试，或请管理员调整配额",
@@ -75,6 +80,7 @@ CREATE TABLE IF NOT EXISTS files (
     head_len INTEGER NOT NULL, head TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS collections (source_id TEXT NOT NULL, owner TEXT NOT NULL, ts REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS collections_lookup ON collections(owner, source_id, ts);
 """
 
@@ -144,12 +150,25 @@ def _event_time(event: dict, fallback: float) -> float:
     return fallback
 
 
+def _ensure_counting(conn) -> None:
+    """台账的口径版本对不上（升级前按「输入 + 缓存读 + 输出」入账的）：清掉用量、去重指纹和读取位置，下次同步重建。"""
+    row = conn.execute("SELECT value FROM meta WHERE key = 'counting'").fetchone()
+    if row is not None and row[0] == COUNTING:
+        return
+    conn.execute("DELETE FROM usage")
+    conn.execute("DELETE FROM seen")
+    conn.execute("DELETE FROM files")
+    conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('counting', ?)", (COUNTING,))
+
+
 def _usage_of(event: dict) -> tuple[int, float] | None:
-    """用量事件的 (token, 成本)；口径同 agent_sessions.usage_summary：输入 + 缓存读 + 输出。"""
+    """用量事件的 (token, 成本)；token 按成本口径计（model_pricing.tokens_of，ADR-0088）。"""
+    from ..services import model_pricing
+
     usage = conversation_store.counted_usage(event)
     if usage is None:
         return None
-    tokens = sum(_count(usage.get(key)) for key in ("input_tokens", "cache_read_input_tokens", "output_tokens"))
+    tokens = model_pricing.tokens_of(usage)
     cost = 0.0
     if event.get("type") == "result":
         try:
@@ -227,6 +246,7 @@ class QuotaService:
         try:
             conn.executescript(_SCHEMA)
             with conn:
+                _ensure_counting(conn)
                 yield conn
         finally:
             conn.close()

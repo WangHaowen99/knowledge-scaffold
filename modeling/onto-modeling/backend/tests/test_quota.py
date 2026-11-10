@@ -82,7 +82,8 @@ def _session(state: str = "idle", engine=True, connecting: bool = False):
 # ---- 台账 ----
 
 
-def test_sync_counts_usage_events_like_usage_summary(env):
+def test_sync_counts_usage_events_at_cost(env):
+    """配额按成本口径计（ADR-0088）：缓存读按 1/10 入账；项目用量（usage_summary）仍是原始数，不跟着折算。"""
     pid = _project(env, "replenish-0001", "alice")
     _append(
         pid,
@@ -97,11 +98,12 @@ def test_sync_counts_usage_events_like_usage_summary(env):
     _append(pid, _result(1000, 200, cost=0.25), conversation_id=other)
 
     assert env.svc.sync() == 4
-    assert env.svc.used_today("alice") == 150 + 60 + 1200
-    assert env.svc.used_month(pid) == 1410
+    # 100 输入 + 20 输出 + 30 缓存读（计 3）、50 + 10、逐次记账的 result 不再累加、另一会话 1000 + 200
+    assert env.svc.used_today("alice") == 123 + 60 + 1200
+    assert env.svc.used_month(pid) == 1383
     view = env.svc.usage_view(username="alice")
-    assert view["today_tokens"] == 1410 and view["today_cost_usd"] == 0.75
-    assert view["by_project_month"] == {pid: 1410}
+    assert view["today_tokens"] == 1383 and view["today_cost_usd"] == 0.75
+    assert view["by_project_month"] == {pid: 1383}
     summary = agent_sessions.usage_summary(pid)
     assert summary["input_tokens"] + summary["output_tokens"] == 1410
 
@@ -188,12 +190,12 @@ def test_old_events_and_direct_records(env):
 
 def test_limits_defaults_and_corrupt_config(env):
     limits = env.svc.limits()
-    assert limits["per_user"] == {"concurrent_sessions": 3, "daily_tokens": 2_000_000,
+    assert limits["per_user"] == {"concurrent_sessions": 3, "daily_tokens": 10_000_000,
                                   "collections_per_source_per_hour": 6}
-    assert limits["per_project"] == {"online_engines": 1, "monthly_tokens": 20_000_000, "snapshot_git_mb": 20}
+    assert limits["per_project"] == {"online_engines": 1, "monthly_tokens": 100_000_000, "snapshot_git_mb": 20}
     env.svc.limits_path.parent.mkdir(parents=True, exist_ok=True)
     env.svc.limits_path.write_text("{坏的", encoding="utf-8")
-    assert env.svc.limits()["per_user"]["daily_tokens"] == 2_000_000
+    assert env.svc.limits()["per_user"]["daily_tokens"] == 10_000_000
     saved = env.svc.set_limits({"daily_tokens": 10}, {"online_engines": 9, "monthly_tokens": 0})
     assert saved["per_user"]["daily_tokens"] == 10 and saved["per_project"]["online_engines"] == 1
     assert env.svc.limit("monthly_tokens", "project", "any-project") == 0
@@ -354,8 +356,8 @@ def test_get_and_put_quotas(env):
     client = _app()
     body = client.get("/api/v1/admin/quotas").json()
     assert body == {
-        "per_user": {"concurrent_sessions": 3, "daily_tokens": 2_000_000, "collections_per_source_per_hour": 6},
-        "per_project": {"online_engines": 1, "monthly_tokens": 20_000_000, "snapshot_git_mb": 20},
+        "per_user": {"concurrent_sessions": 3, "daily_tokens": 10_000_000, "collections_per_source_per_hour": 6},
+        "per_project": {"online_engines": 1, "monthly_tokens": 100_000_000, "snapshot_git_mb": 20},
         "overrides": [],
         "not_enforced": ["collections_per_source_per_hour", "snapshot_git_mb"],  # 证据源本期只留接口
     }
@@ -365,7 +367,7 @@ def test_get_and_put_quotas(env):
     })
     assert saved.status_code == 200, saved.text
     assert saved.json()["per_user"]["daily_tokens"] == 5000
-    assert saved.json()["per_project"] == {"online_engines": 1, "monthly_tokens": 20_000_000, "snapshot_git_mb": 50}
+    assert saved.json()["per_project"] == {"online_engines": 1, "monthly_tokens": 100_000_000, "snapshot_git_mb": 50}
     assert env.svc.limit("daily_tokens", "user", "alice") == 5000  # 立即生效
     entry = next(item for item in audit.read(20) if (item.get("detail") or {}).get("action") == "quota.update")
     assert entry["actor"] == "local" and entry["detail"]["per_user.daily_tokens"] == 5000
@@ -498,3 +500,18 @@ def test_real_app_gate_blocks_sending_over_quota(env):
         assert body["code"] == "quota_exceeded" and body["details"]["limit"] == 100 and body["details"]["used"] == 150
     # 读接口不受影响
     assert client.get("/api/v1/projects/retail-p1/conversations").status_code != 429
+
+
+
+def test_ledger_built_with_the_old_counting_is_rebuilt(env):
+    """升级前按「输入 + 缓存读 + 输出」入账的台账：口径版本对不上时清掉重建，今天的用量按新口径重新算。"""
+    pid = _project(env, "replenish-0009", "alice")
+    _append(pid, _usage(100, 0, 9000))
+    assert env.svc.sync() == 1 and env.svc.used_today("alice") == 100 + 900
+    import sqlite3
+
+    with sqlite3.connect(env.svc.db_path) as conn:  # 模拟旧台账：没有口径版本、按旧口径记了 9100
+        conn.execute("DELETE FROM meta")
+        conn.execute("UPDATE usage SET tokens = 9100")
+    assert env.svc.sync() == 1
+    assert env.svc.used_today("alice") == 1000

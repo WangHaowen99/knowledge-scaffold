@@ -12,7 +12,7 @@ import {
   pickSnapshot, previewPairs, registerBody, artifactPatch, wizardSteps, artifactText, isArtifactSource, canManageSource, collectOps, canIncremental,
   snapshotPairs, snapshotLimits, snapshotKind, isDbKind, browseTarget, binPathType, recordIcon, recordKindText, recordPairs, firstTreeAnchor, scopeTag, scopeWindowText, shortSnap, snapRecords, toggleSnapPick, validateForm, windowText,
   credState, credText, defaultEgress, repoHost, secretInputLabel, portDbPlaceholder, scopePlaceholder, snippetLines, validationText, recordValidations, splitMembers,
-  withKeys, maskedColumns, profileColumns, erLegend, dbRecordIcon, untrustedText, MASKING,
+  withKeys, maskedColumns, profileColumns, erLegend, dbRecordIcon, untrustedText, MASKING, myRequestState,
 } from '../src/pages/evidence/evidenceModel.js';
 
 // ---------- 纯逻辑 ----------
@@ -227,7 +227,7 @@ test('ER 排版：同域放左栏、直接相连的放中栏、其余右栏；�
 
 // ---------- mock ----------
 
-function server({ role = 'admin', now = new Date(2026, 10, 1, 22, 41).getTime() } = {}) {
+function server({ role = 'admin', now = new Date(2026, 10, 1, 22, 41).getTime(), requests = false } = {}) {
   const routes = [];
   const events = [];
   const timers = [];
@@ -244,6 +244,8 @@ function server({ role = 'admin', now = new Date(2026, 10, 1, 22, 41).getTime() 
     commandHooks: hooks,
     setTimer: (fn) => { timers.push(fn); return timers.length; },
     now: () => now,
+    // requests：带上审核申请的存储（EV-03 进 AD-08 列表、EV-01 列本人的申请）
+    ...(requests ? { db: {}, emitUser: (type, data) => events.push({ type, data }) } : {}),
   };
   register(ctx);
   const user = { username: 'zhangsan', role };
@@ -827,4 +829,21 @@ test('证据浏览器读代码仓库快照：按包分组、记录详情带片�
   const last = events.filter((e) => e.data.id === j.id).at(-1).data;
   const detail = (await call('GET', `${P}/evidence/snapshots/${last.result.snapshot_id}`)).body;
   assert.deepEqual([detail.provider, detail.previous, detail.manifest.artifact.commit], ['code-repo@0.1.0', SNAP.code, CODE_REPO.commit]);
+});
+
+test('EV-03 申请带上项目，进管理员的审核列表；申请人在这个项目的数据源页看得到（同内核）', async () => {
+  const { call } = server({ role: 'user', requests: true });
+  const body = {
+    id: 'pos-test', display_name: 'POS 测试库', provider: 'db-mysql', environment: 'test', connection: { host: '192.0.2.30', port: 3306, database: 'pos', username: 'ro' },
+    scope_allowlist: ['pos.*'], egress: [{ host: '192.0.2.30', port: 3306 }], project_id: F.MAIN_PID,
+  };
+  assert.equal((await call('POST', '/api/v1/evidence/source-requests', body)).status, 202);
+  const mine = (await call('GET', `/api/v1/evidence/sources?project_id=${F.MAIN_PID}`)).body.my_requests;
+  assert.deepEqual(mine.map((r) => [r.display_name, r.state, r.source_id]), [['POS 测试库', 'pending', 'pos-test']]);
+  assert.equal((await call('GET', '/api/v1/evidence/sources')).body.my_requests, undefined);
+});
+
+test('数据源页「我的申请」：待处理说等管理员处理，退回的标已退回', () => {
+  assert.deepEqual(myRequestState({ state: 'pending' }), { text: '等管理员处理', tone: 'amber' });
+  assert.deepEqual(myRequestState({ state: 'rejected', note: '改用测试库' }), { text: '已退回', tone: 'gray' });
 });

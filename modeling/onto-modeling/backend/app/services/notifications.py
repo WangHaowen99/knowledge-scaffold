@@ -29,7 +29,7 @@ BODY_MAX = 300
 KINDS = (
     "autobuild_finished", "autobuild_progress", "autobuild_suspension", "autobuild_stopped", "needs_input",
     "step_done", "session_error", "evidence_conflict", "publish_done", "nomination_reviewed", "request_pending",
-    "upload_rejected",
+    "upload_rejected", "request_reviewed",
 )
 DEFAULT_PREFERENCES = {
     "theme": "light",

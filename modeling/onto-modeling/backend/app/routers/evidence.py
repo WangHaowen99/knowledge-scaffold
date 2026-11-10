@@ -206,8 +206,24 @@ def list_sources(request: Request, project_id: str = "", filter: str = "all"):  
         if filter == "production" and registration.get("environment") != "production":
             continue
         items.append(_source_view(request, registration, project_id=project_id or None, providers=providers))
-    return {"items": items, "total": len(items),
-            "authorized_count": sum(1 for item in items if item["id"] in authorized)}
+    out = {"items": items, "total": len(items),
+           "authorized_count": sum(1 for item in items if item["id"] in authorized)}
+    if project_id:
+        out["my_requests"] = _my_requests(user, project_id)
+    return out
+
+
+def _my_requests(user: str, project_id: str) -> list[dict]:
+    """本人在这个项目提交、还没通过的登记申请（待处理、已退回），提交后马上看得到；通过的已经是数据源了。"""
+    out = []
+    for record in sources.all_requests("register"):
+        if record.get("by") != user or record.get("project_id") != project_id or record.get("state") == "approved":
+            continue
+        form = record.get("body") or {}
+        out.append({"id": record["id"], "source_id": form.get("id"), "display_name": form.get("display_name") or "",
+                    "provider": form.get("provider") or "", "state": record.get("state"),
+                    "requested_at": deps.iso(record.get("at")), "note": record.get("note")})
+    return out[:50]
 
 
 @_json_in_thread
@@ -238,9 +254,16 @@ def request_source(request: Request, body: dict):
         raise ApiError("invalid_argument", "要写 ID、提供方和显示名", 400,
                        {"fields": {"id": "pattern", "provider": "required", "display_name": "required"}})
     user = _user(request)
-    request_id = sources.save_request("register", user, {"body": body})
-    sent = sources.notify_admins("数据源登记申请", f"{user or '本地用户'} 申请登记 {body['display_name']}")
-    _audit(request, "evidence.source.request", status=202, summary=f"申请登记数据源 {body['id']}",
+    # 申请人的项目：管理员通过时登记并授权给它（AD-09）；申请人在这个项目的数据源页看得到申请（EV-01 my_requests）
+    project_id = str(body.get("project_id") or "")
+    if project_id:
+        deps.require_owner(project_id, request)
+    form = {key: value for key, value in body.items() if key not in ("project_id", "grant_project_id")}
+    request_id = sources.save_request("register", user, {"body": form, "project_id": project_id or None})
+    sent = sources.notify_admins("数据源登记申请", f"{user or '本地用户'} 申请登记 {body['display_name']}",
+                                 project_id=project_id or None, action=sources.REVIEW_ACTION)
+    _audit(request, "evidence.source.request", project_id=project_id or None, status=202,
+           summary=f"申请登记数据源 {body['id']}",
            detail={"request_id": request_id, "source_id": body["id"], "notified": sent})
     return JSONResponse({"request_id": request_id}, status_code=202)
 
