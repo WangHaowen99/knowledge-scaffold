@@ -447,10 +447,10 @@ stop_owned_containers() {
         fi
     done
 }
+# 独立 Consumer 发布包的 upgrade.sh 只接受安装目录，传入其他参数会直接失败
 run_consumer_upgrade() {
     release_root="$1"; install_dir="$2"
-    shift 2
-    if bash "${release_root}/deploy/upgrade.sh" "${install_dir}" "$@"; then rc=0; else rc=$?; fi
+    if bash "${release_root}/deploy/upgrade.sh" "${install_dir}"; then rc=0; else rc=$?; fi
     case "${rc}" in 0) return 0 ;; 10) log 'Consumer 升级完成但存在 WARN，继续部署后续服务'; return 0 ;; *) return "${rc}" ;; esac
 }
 
@@ -460,7 +460,7 @@ tar -xzf "${consumer_package}" -C "${stage_dir}"
 ensure_evaluation_service_token "${consumer_dir}/backend/.env"
 stop_owned_containers "${consumer_dir}" STOPPED_CONSUMER_CONTAINERS \
     'onto-agent-frontend onto-agent-mcp onto-agent-backend onto-agent-jiuwenbox onto-agent-auth-server'
-run_consumer_upgrade "${stage_dir}/onto-agent" "${consumer_dir}" --consumer-only || die 'Consumer 升级失败'
+run_consumer_upgrade "${stage_dir}/onto-agent" "${consumer_dir}" || die 'Consumer 升级失败'
 deploy_knowledge_hub
 deploy_onto_modeling
 stage_evaluation_package

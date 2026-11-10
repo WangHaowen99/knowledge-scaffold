@@ -460,8 +460,18 @@ else
     mkdir -p "${TMP_ROOT}/consumer"
     ensure_evaluation_service_token "${INSTALL_ROOT}/onto-agent/backend/.env"
     tar -xzf "${CONSUMER_PACKAGE}" -C "${TMP_ROOT}/consumer"
-    BACKEND_PORT="${BACKEND_PORT}" MCP_SERVER_PORT="${MCP_SERVER_PORT}" FRONTEND_PORT="${FRONTEND_PORT}" \
-        bash "${TMP_ROOT}/consumer/onto-agent/deploy/upgrade.sh" "${INSTALL_ROOT}/onto-agent" --consumer-only
+    # 独立 Consumer 发布包的 upgrade.sh 只接受安装目录；退出码 10 表示升级完成但验收有 WARN
+    if BACKEND_PORT="${BACKEND_PORT}" MCP_SERVER_PORT="${MCP_SERVER_PORT}" FRONTEND_PORT="${FRONTEND_PORT}" \
+        bash "${TMP_ROOT}/consumer/onto-agent/deploy/upgrade.sh" "${INSTALL_ROOT}/onto-agent"; then
+        upgrade_rc=0
+    else
+        upgrade_rc=$?
+    fi
+    case "${upgrade_rc}" in
+        0) ;;
+        10) log 'Consumer 升级完成，存在需要关注的警告，继续部署后续服务' ;;
+        *) die "Consumer 升级失败（退出码 ${upgrade_rc}）" ;;
+    esac
     stage_evaluation_package
 fi
 tar -xzf "${KNOWLEDGE_HUB_PACKAGE}" -C "${INSTALL_ROOT}"

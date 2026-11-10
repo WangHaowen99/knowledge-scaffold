@@ -50,6 +50,7 @@ def _prepare(tmp_path, mode='upgrade'):
 printf 'consumer-upgrade\\n' >> "$CALLS_FILE"
 printf '%s\\n' "$@" > "${CALLS_FILE}.consumer-upgrade-args"
 sed -n 's/^EVALUATION_SERVICE_TOKEN=//p' "$1/backend/.env" > "$CONSUMER_TOKEN_SNAPSHOT"
+exit "${STUB_CONSUMER_UPGRADE_RC:-0}"
 ''')
     _write_executable(stage / 'deploy/install.sh', '''
 if [ "${1:-}" = --preflight-only ]; then
