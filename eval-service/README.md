@@ -37,7 +37,7 @@ cd ..
 - `EVAL_CONSUMER_API_URL`、`EVAL_CONSUMER_SERVICE_TOKEN`：后者对应 consumer 的 `EVALUATION_SERVICE_TOKEN`，与其 modeling 密钥不同；用户身份仍必需。
 - `EVAL_DATA_DIR`：独立卷。默认 `.runtime/` 仅用于合成数据本地开发，部署必须使用外部运行卷。
 - `EVAL_ENCRYPTION_KEY`：Fernet 密钥，用于连接配置、页面保存的 Judge API Key、上传数据和执行数据快照。部署脚本首次部署时生成并保存在 `deploy/.env`，不在数据卷内；备份时须与数据卷分开、同样受控保管。变更或丢失密钥会导致已有加密数据无法解密：已有数据卷而缺少密钥时部署脚本拒绝生成新密钥。
-- `EVAL_JUDGE_BASE_URL`、`EVAL_JUDGE_API_KEY`、`EVAL_JUDGE_MODEL`、`EVAL_JUDGE_CONFIG_REVISION`：临时 Judge 部署配置。问答模型在发起评测时选择：consumer 全局模型池中已启用的模型，或 consumer 默认模型；记录其非敏感配置摘要。此方案标记 **MODEL-CONFIG-01，待 eval2 整改**。
+- `EVAL_JUDGE_BASE_URL`、`EVAL_JUDGE_API_KEY`、`EVAL_JUDGE_MODEL`、`EVAL_JUDGE_CONFIG_REVISION`：临时 Judge 部署配置。问答模型在发起评测时选择：consumer 全局模型池或当前用户个人模型池中已启用的模型，或 consumer 默认模型；记录其非敏感配置摘要。此方案标记 **MODEL-CONFIG-01，待 eval2 整改**。
 - 页面配置 Judge：登录后进入侧边“评测判分模型配置”。所有用户可查看生效来源、模型和配置版本，只有管理员（账号服务中 role 为 admin）可修改，因为该配置对所有用户的评测生效，并会收到题目、参考答案和回答。
   - 管理员填写网关地址、模型和 API Key，可先“测试连接”（与轮次预检相同的结构化判分检查）再保存。保存的配置整体替换部署配置，“恢复部署配置”删除它。
   - API Key 用 `EVAL_ENCRYPTION_KEY` 加密存入数据卷，接口和页面从不返回。网关不变时 Key 可留空沿用；更换网关必须重填，部署 Key 不会被发往新地址。

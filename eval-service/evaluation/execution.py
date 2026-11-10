@@ -30,6 +30,9 @@ BREAKER_CASES=3
 REMOTE_SECONDS=900
 # Failures that concern the whole run rather than one question: it waits for the user instead of going on.
 RUN_FAILURES={'configuration_changed','identity_changed','login_expired','draining','model_unavailable','model_unconfigured'}
+# Answering models a run may choose: the consumer global pool and the user's own personal pool. Workspace models are
+# left out because the listing workspace is not the workspace the run executes in.
+SELECTABLE_MODEL_SCOPES=('global','user')
 # Tool failures kept per case; each message is at most 1 KiB, as in the consumer's own traces.
 TRACE_FAILURES=20
 # Tool calls kept per case as evidence for optimization suggestions: at most 12 calls, each preview
@@ -101,6 +104,18 @@ def preview(value):
 
 def error_text(error):
     return str((error.get('message') or '') if isinstance(error,dict) else (error or '')).strip()
+
+
+def selectable_model(item):
+    """Whether a consumer model profile is one a run may choose as its answering model."""
+    return isinstance(item,dict) and item.get('scope') in SELECTABLE_MODEL_SCOPES and isinstance(item.get('id'),str)
+
+
+def model_choice(item):
+    """The bounded, non-secret fields of a selectable model shown when creating a run."""
+    return {'id':item['id'],'name':str(item.get('name') or '')[:200],'model':str(item.get('model') or '')[:200],
+            'provider':str(item.get('provider') or '')[:100],'is_default':bool(item.get('is_default')),
+            'scope':item['scope']}
 
 
 class Consumer:
@@ -216,24 +231,23 @@ class Consumer:
         except ValueError:  # also UnicodeDecodeError
             return {'status':'unavailable','error':'执行事件格式无法解析'}
 
-    def global_models(self,token):
-        """Enabled models of the consumer global pool, at most 100. Listing needs any workspace the user can open."""
+    def selectable_models(self,token):
+        """Enabled models of the consumer global pool and the user's personal pool, at most 100. Listing needs any
+        workspace the user can open; personal models belong to the user, not to that workspace."""
         listing=self.call('GET','/workspaces',token)
         ids=[item.get('id') for item in listing.get('workspaces') or [] if isinstance(item,dict)]
         workspace=listing.get('preferred_workspace_id') or (ids[0] if ids else '')
         if not workspace:
             raise Failure('workspace_missing','当前账号在 consumer 中没有可用的工作空间',409)
         value=self.call('GET','/model-profiles',token,workspace)
-        return [{'id':item['id'],'name':str(item.get('name') or '')[:200],'model':str(item.get('model') or '')[:200],
-                 'provider':str(item.get('provider') or '')[:100],'is_default':bool(item.get('is_default'))}
-                for item in value.get('profiles') or []
-                if isinstance(item,dict) and item.get('scope')=='global' and isinstance(item.get('id'),str)][:100]
+        return [model_choice(item) for item in value.get('profiles') or [] if selectable_model(item)][:100]
 
     def profile(self,token,ws,requested=''):
         value=self.call('GET','/model-profiles',token,ws)
-        if requested and not any(isinstance(item,dict) and item.get('id')==requested and item.get('scope')=='global'
-                                 for item in value.get('profiles') or []):
-            raise Failure('model_unavailable','所选问答模型已不在 consumer 全局模型池或已停用，请重新选择后创建新轮次',409,'preparing')
+        profiles=value.get('profiles') or []
+        if requested and not any(selectable_model(item) and item['id']==requested for item in profiles):
+            raise Failure('model_unavailable','所选问答模型已不在 consumer 全局模型池或个人模型池，或已停用，请重新选择后创建新轮次',
+                          409,'preparing')
         selected=requested or value.get('default_profile_id')
         if not selected:
             raise Failure('model_unconfigured','consumer 默认问答模型未配置',503,'preparing')
