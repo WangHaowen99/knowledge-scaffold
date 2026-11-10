@@ -114,7 +114,12 @@ export function artifactState(run, now = Date.now() / 1000) {
 export function notificationState(n) {
   if (!n || n.status === 'none') return null;
   if (n.status === 'disabled') return { label: '未配置', tone: 'neutral', hint: '未配置建模通知凭据，建模服务打开页面时自行同步' };
-  if (n.status === 'delivered') return { label: '已送达', tone: 'green', hint: clock(n.delivered_at) };
+  if (n.status === 'delivered')
+    return {
+      label: '已送达',
+      tone: 'green',
+      hint: [clock(n.delivered_at), '已完成评测并通知了建模服务，前往建模服务“已发布版本（知识包评测）”中“优化建议”弹框中可点击知识包优化。'].filter(Boolean).join(' · '),
+    };
   if (n.status === 'rejected') return { label: '被拒绝', tone: 'red', hint: n.last_error || '', canRetry: true };
   if (n.status === 'failed')
     return { label: '通知失败', tone: 'red', hint: `已尝试 ${n.attempts} 次（${n.last_error || '未送达'}）`, canRetry: true };
