@@ -398,3 +398,46 @@ def test_project_card_and_run_slices_for_autobuild(env):
     items = blueprint.run_slices(workspaces, project_id)
     assert [item["id"] for item in items] == ["all"] and items[0]["depends_on"] == []
     assert items[0]["brief"].startswith("全量模式") and items[0]["stages"]["object"] == "confirmed"
+
+
+# ---------------------------------------------------------------------------
+# 规则与指标提取补回链（端到端实测）：建模不往回退，不推刚跑完的同一条命令
+# ---------------------------------------------------------------------------
+
+
+def _modeled_with_rules(root: Path) -> dict:
+    main_write(root, "research/20260101-合成.md", "# 合成资料分析\n")
+    main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))
+    main_write(root, "ontology/operation/受理申请.md", op("受理申请", "[[门店]]"))
+    main_write(root, "ontology/rule/取严规则.md", "# 取严规则\n\n约束[[受理申请]]\n")
+    flow = flow_model.load_for(root)
+    node_state.confirm(root, flow, ["core.research", "core.model", "core.metric", "core.validate"])
+    slices.confirm(root, flow, [["all", "object"], ["all", "operation"], ["all", "rule"]], doc=None)
+    return flow
+
+
+def test_optional_rule_step_going_stale_does_not_roll_back_modeling(env):
+    """规则与指标提取在操作里补了一处回链：「规则」一步（可选补抽）过期，但建模的必经步骤都在，不算过期；
+    后面的校验能核对这批改动，建议条不推「刷新『规则』」（那是刚跑完的同一条命令）。"""
+    _client, _workspaces, _manager, _project_id, root = env
+    _modeled_with_rules(root)
+    main_write(root, "ontology/operation/受理申请.md", op("受理申请", "[[门店]]，按[[取严规则]]校验"))
+    rows, built = _slices(root)
+    assert rows["all"]["stages"]["rule"] == "stale"
+    assert _node(built, "core.model")["state"] == "confirmed"
+    labels = [item["label"] for item in [built["suggestions"]["primary"], *built["suggestions"]["secondary"]] if item]
+    assert not any("规则" in label and label.startswith("刷新") for label in labels)
+
+
+def test_rule_metric_run_also_confirms_the_rule_step(env):
+    """全量模式下合入「规则与指标提取」（记在指标旁支）时，建模里用同一条命令的「规则」一步一并确认。"""
+    _client, _workspaces, _manager, project_id, root = env
+    flow = _modeled_with_rules(root)
+    main_write(root, "ontology/operation/受理申请.md", op("受理申请", "[[门店]]，按[[取严规则]]校验"))
+    assert _slices(root)[0]["all"]["stages"]["rule"] == "stale"
+    assert slices.steps_done_by(root, flow, ["core.metric"], None) == [["all", "rule"]]
+    assert slices.steps_done_by(root, flow, ["core.validate"], None) == []
+    from app import wiring
+
+    wiring._confirm_nodes(project_id, ["core.metric"], {"slice_steps": []})
+    assert _slices(root)[0]["all"]["stages"]["rule"] == "confirmed"

@@ -64,7 +64,7 @@ def _lock_alive(root: Path, command: str) -> bool:
 def _suggest_module(root: Path, state):
     """本项目锁定版本的 flow_state 支持这一版建议条判定（SUGGEST_RULES）就用它，旧 core 版本用镜像版本：
     规则表、能否执行的检查与说明行（F7）三处要同一份，升级前的项目不能还按旧的判。"""
-    if getattr(state, "SUGGEST_RULES", 0) >= 4:
+    if getattr(state, "SUGGEST_RULES", 0) >= 5:
         return state
     from ..packs import contracts
 

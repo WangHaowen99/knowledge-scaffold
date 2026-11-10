@@ -81,9 +81,11 @@ export function mergeFlow(flow, patch) {
 // 主线节点按边的顺序排（只放 spine / step / gate；已停用的包的节点只在建模步骤抽屉里列出）。
 // 同一锚点后面挂了两个以上主线节点（节点包串入的一步和场景模拟都挂在质量检查之后）时连线排不出唯一顺序，
 // 按后端给的节点顺序（组装时已按锚点与包顺序排好）
-// 顶栏轨迹的样式：已完成的几种显示态（需复核、自主完成、通过）都打勾；可补做（导入后越过的资料分析等，ADR-0084）不算待办，淡显
+// 顶栏轨迹的样式：已完成的几种显示态（需复核、自主完成、通过）都打勾；可补做（导入后越过的资料分析等，ADR-0084）不算待办，淡显；
+// 过期是做过、上游改了要重跑，和没做过的空圈分开（原来画成空圈，看着像流程往回退）
 const TRACK_CLASS = {
   confirmed: 'ok', needs_review: 'ok', auto: 'ok', pass: 'ok', running: 'running', pending: 'pending', blocked: 'blocked', backfill: 'skip',
+  stale: 'stale',
 };
 export const trackClass = (displayState) => TRACK_CLASS[displayState] || '';
 

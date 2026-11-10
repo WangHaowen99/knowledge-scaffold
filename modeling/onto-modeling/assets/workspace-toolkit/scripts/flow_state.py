@@ -226,7 +226,7 @@ def next_step_lines(flow: dict, stage: str) -> list:
 
 SUGGESTIONS_MAX = 3
 # 建议条判定的版本（F7 起按规则表从上往下判、带 check 与 note）：后端只用支持这一版的 flow_state
-SUGGEST_RULES = 4
+SUGGEST_RULES = 5
 
 
 def _item(sid: str, label: str, action: dict, *, reason: str, priority: int, primary: bool = False,
@@ -304,7 +304,11 @@ def _outputs(node: dict) -> list:
             [*(node.get('produces') or []), *(node.get('writes') or [])]]
 
 
-def _checked_downstream(node: dict, stale_on: list, nodes: list, state_of: dict) -> bool:
+# 可选的补抽（规则）过期时，后面的核对节点只要跑过或能跑就交给它：补抽不是正确性必需的，核对会查出缺的
+LENIENT_STATES = ('confirmed', 'stale', 'ready', 'running', 'pending_confirm')
+
+
+def _checked_downstream(node: dict, stale_on: list, nodes: list, state_of: dict, states=('confirmed',)) -> bool:
     """过期的 node（或它的某一步，stale_on 是那一步的）后面有已确认的必经节点 M 能核对并修复同一批改动：M.stale_on 盖住
     这些类别、M 的写入范围盖住 node 的产出。M 已确认说明它是在这批改动之后跑的、核对过了（典型：校验自己的修复改了对象），
     上游不再推刷新。M 没跑过或也过期时照旧推上游刷新——改动可能要补提取，M 核对不出来（ADR-0090）。"""
@@ -315,7 +319,7 @@ def _checked_downstream(node: dict, stale_on: list, nodes: list, state_of: dict)
         if other is node:
             after = True
             continue
-        if not after or state_of.get(other['id']) != 'confirmed' or other.get('optional') \
+        if not after or state_of.get(other['id']) not in states or other.get('optional') \
                 or other.get('placement', 'spine') not in MAINLINE_PLACEMENTS or other.get('section', 'required') != 'required':
             continue
         if set(stale_on) <= set(other.get('stale_on') or []) and _covers(_outputs(other), _outputs(node)):
@@ -325,6 +329,10 @@ def _checked_downstream(node: dict, stale_on: list, nodes: list, state_of: dict)
 
 def _step_stale_on(node: dict, step_id) -> list:
     return next((list(step.get('stale_on') or []) for step in node.get('steps') or [] if step.get('id') == step_id), [])
+
+
+def _step_optional(node: dict, step_id) -> bool:
+    return any(step.get('optional') for step in node.get('steps') or [] if step.get('id') == step_id)
 
 
 def _stale_items(nodes: list, state_of: dict, context: dict) -> list:
@@ -341,7 +349,8 @@ def _stale_items(nodes: list, state_of: dict, context: dict) -> list:
             continue
         if node.get('per_slice'):
             for step in context.get('slice_stale') or []:
-                if _checked_downstream(node, _step_stale_on(node, step.get('step')), nodes, state_of):
+                states = LENIENT_STATES if _step_optional(node, step.get('step')) else ('confirmed',)
+                if _checked_downstream(node, _step_stale_on(node, step.get('step')), nodes, state_of, states):
                     continue
                 where = f"{step['slice_name']} · {step['step_label']}" if step.get('sliced') else step['step_label']
                 reason = f"上游「{step['upstream']}」改过" if step.get('upstream') else '上游改过，这一步要刷新'

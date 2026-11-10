@@ -149,9 +149,11 @@ def _confirm_nodes(project_id: str, node_ids: list[str], record: dict | None = N
                   "slice_id": record.get("slice_id")}
         node_state.mark_needs_review(root, node_ids, "autobuild", run_id=record.get("run_id"),
                                      slice_id=record.get("slice_id"), note=record.get("purpose") or "")
-    # 按段的节点：这个变更集做过的那几段那几步记为确认过（B4d）
-    slices.confirm(root, flow, (record or {}).get("slice_steps") or [], doc=blueprint.load_doc(root),
-                   needs_review=review)
+    # 按段的节点：这个变更集做过的那几段那几步记为确认过（B4d）；同一条命令做的建模步骤一并记上
+    doc = blueprint.load_doc(root)
+    pairs = [list(pair) for pair in (record or {}).get("slice_steps") or []]
+    pairs += [pair for pair in slices.steps_done_by(root, flow, node_ids, doc) if pair not in pairs]
+    slices.confirm(root, flow, pairs, doc=doc, needs_review=review)
 
 
 def _sync_change_lists(project_id: str, record: dict) -> None:

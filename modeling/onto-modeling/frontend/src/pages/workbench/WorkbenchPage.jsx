@@ -52,7 +52,7 @@ function Track({ flow, onOpen }) {
           <span key={n.id} style={{ display: 'contents' }}>
             {i ? <span className={cx('wx-ln', prevOk && 'ok')} /> : null}
             <span className={cx('wx-st', k)}>
-              <span className="dt">{k === 'ok' ? <Icon name="check" /> : k === 'blocked' ? <Icon name="lock" /> : null}</span>
+              <span className="dt">{k === 'ok' ? <Icon name="check" /> : k === 'blocked' ? <Icon name="lock" /> : k === 'stale' ? <Icon name="refresh" /> : null}</span>
               {n.title.replace('（按段）', '')}
               {n.progress?.label ? <span className="x">{n.progress.label}</span> : null}
             </span>

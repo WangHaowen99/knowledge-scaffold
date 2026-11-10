@@ -255,13 +255,16 @@ def _summary(inputs: _Inputs, item: dict, cells: dict) -> dict:
     running = next((sid for sid, value in cells.items() if value == "running"), None)
     pending = any(value in ("pending_confirm", "draft") for value in cells.values())
     stale = [sid for sid, value in cells.items() if value == "stale"]
+    # 可选的补抽（规则）过期不算这一段过期：必经步骤都在就还是做完了，顶栏的「建模」不往回退
+    required_ids = {step["id"] for step in required}
+    stale_required = [sid for sid in stale if sid in required_ids]
     done = all(cells.get(step["id"]) in DONE for step in required)
     started = any(value not in ("ready", "not_ready", "skipped") for value in cells.values())
     if running:
         group, note = "now", f"正在做「{labels[running]}」"
-    elif pending or stale:
+    elif pending or stale_required:
         group = "wait"
-        note = "检查没通过" if "draft" in cells.values() else "待确认" if pending else f"{len(stale)} 步过期"
+        note = "检查没通过" if "draft" in cells.values() else "待确认" if pending else f"{len(stale_required)} 步过期"
     elif done:
         group, note = "done", ""
     elif started:
@@ -272,7 +275,7 @@ def _summary(inputs: _Inputs, item: dict, cells: dict) -> dict:
     no_rules = inputs.sliced and cells.get("rule") == "skipped" and not inputs.planned(
         item, next((step for step in steps if step["id"] == "rule"), {}))
     return {"id": item["id"], "name": item["name"], "core_flow": item.get("core_flow") or "", "group": group,
-            "stages": dict(cells), "note": note, "no_rules": bool(no_rules), "_done": done, "_stale": bool(stale),
+            "stages": dict(cells), "note": note, "no_rules": bool(no_rules), "_done": done, "_stale": bool(stale_required),
             "_running": bool(running), "_pending": pending, "_started": started}
 
 
@@ -455,6 +458,23 @@ def restore(root: Path, slice_id: str, step_id: str) -> bool:
         skips.pop(step_id)
         node_state.save(root, stored)
         return True
+
+
+def steps_done_by(root: Path, flow: dict, node_ids: list, doc: dict | None) -> list[list[str]]:
+    """全量模式下，合入的节点的入口命令也是建模某一步的命令时，那一步在「全部」这一段也记为做过。
+
+    规则与指标提取就是这样：带分段是建模的「规则」一步，不带是指标旁支，做的是同一件事。原来只确认指标，它顺手补的
+    回链改了操作，「规则」一步因此过期、建模整个往回退，建议条又推刚跑完的同一条命令。按段模式不算：按段的规则要带分段跑。"""
+    from . import blueprint
+
+    node = per_slice_node(flow)
+    if node is None or not node_ids or blueprint.script(Path(root)).mode(doc) == "sliced":
+        return []
+    wanted = set(node_ids) - {node["id"]}
+    entries = {(item.get("entry") or {}).get("command") for item in flow.get("nodes") or [] if item.get("id") in wanted}
+    entries.discard(None)
+    return [[FULL_SLICE["id"], step["id"]] for step in node.get("steps") or []
+            if step.get("command") and step["command"] in entries]
 
 
 def slice_for_command(root: Path, flow: dict, step_id: str, explicit: str | None) -> dict | None:

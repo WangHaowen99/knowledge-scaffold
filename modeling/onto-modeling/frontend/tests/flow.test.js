@@ -173,6 +173,7 @@ test('顶栏轨迹：需复核、自主完成、通过都算完成，可补做�
   assert.equal(trackClass('needs_review'), 'ok');
   assert.equal(trackClass('auto'), 'ok');
   assert.equal(trackClass('backfill'), 'skip');
+  assert.equal(trackClass('stale'), 'stale'); // 过期：做过、要重跑，和没做过的空圈分开
   assert.equal(trackClass('ready'), '');
   assert.equal(trackClass(undefined), '');
 });
