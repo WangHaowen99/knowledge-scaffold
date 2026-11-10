@@ -1874,7 +1874,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `command` | string | 与 `action` 二选一 | 内核或包的命令名，如 `/ontology-trace-batch` |
 | `args` | object | 否 | 命令参数，如 `{scenario: "s-03"}`、`{report_item: "RI-12"}` |
 | `text` | string | 否 | 附带的自然语言说明 |
-| `display_text` | string | 否 | 对话里显示的说明（F4b-paths）；不给时用 `text`。对话里只显示「命令 + 说明」，不带 `args`，说明里的工作区路径换成业务名；发给助手的仍是命令、参数和 `text` 原文 |
+| `display_label` | string | 否 | 页面上按钮的叫法（建议条、建模步骤、命令面板、快捷项）。给了时 `text` 当作动作自带的参数、不在对话里显示 |
+| `display_text` | string | 否 | 对话里显示的说明（F4b-paths）；不给时用 `text`（给了 `display_label` 时不用）。对话里显示「业务名 + 说明」：业务名是命令所属节点的标题加按钮叫法（叫法里已有节点标题时只写叫法），不出命令原文和 `args`，说明里的工作区路径换成业务名；自动标题也用它。发给助手的仍是命令、参数和 `text` 原文 |
 | `origin` | `{page, label}` | 是 | 对话里显示「来自「场景模拟」页」用 |
 | `conversation_id` | string | 否 | 缺省：引擎当前绑定的对话，没有就取最近更新的一条 |
 | `replace` | bool | 否 | 同 S-07（F7） |

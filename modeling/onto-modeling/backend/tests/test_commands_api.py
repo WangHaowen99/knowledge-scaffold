@@ -93,8 +93,8 @@ def test_page_command_returns_task_and_tracks_exec_until_done(api):
     assert user["data"]["origin"] == {"kind": "page", "page": "reports", "label": "报告", "task_id": task_id}
     assert user["data"]["command"] == "/ontology-validate"
     assert user["data"]["message_id"] == body["message_id"]
-    # 对话里显示的那条不带参数（F4b-paths）：只有命令和说明文字
-    assert user["data"]["text"] == "/ontology-validate\n\n只看规则"
+    # 对话里显示的那条不带命令原文和参数（F4b-paths、端到端验证）：业务名和说明文字
+    assert user["data"]["text"] == "校验 · 运行质量检查\n\n只看规则"
 
 
 def test_page_command_display_text_has_no_workspace_paths(api):
@@ -108,7 +108,36 @@ def test_page_command_display_text_has_no_workspace_paths(api):
     assert "resource/" in wait(lambda: FakeEngine.sent)[0]  # 发给助手的照旧带路径
     messages = client.get(f"/api/v1/projects/{project_id}/conversations/{response.json()['conversation_id']}/messages")
     user = next(item for item in messages.json()["items"] if item["type"] == "message.user")
-    assert user["data"]["text"] == "/ontology-validate\n\n修复报告 检查报告 里的条目，出处 资料「合成说明」"
+    assert user["data"]["text"] == "校验 · 运行质量检查\n\n修复报告 检查报告 里的条目，出处 资料「合成说明」"
+
+
+def test_suggestion_command_shows_its_business_name_and_titles_the_conversation(api):
+    """点建议条发的命令：气泡和自动标题是「节点 · 按钮叫法」，不是命令原文；动作自带的参数照旧发给助手、不显示。"""
+    client, _manager, project_id, _ = api
+    FakeEngine.scripts = [[result()]]
+    response = client.post(f"/api/v1/projects/{project_id}/commands", json={
+        "command": "/ontology-research", "text": "仅基于本地文档", "display_label": "仅本地资料",
+        "origin": {"page": "wb-l2", "label": "下一步建议"}})
+    assert response.status_code == 202, response.text
+    sent = wait(lambda: FakeEngine.sent)[0]
+    assert sent.startswith("/ontology-research") and "仅基于本地文档" in sent
+    cid = response.json()["conversation_id"]
+    messages = client.get(f"/api/v1/projects/{project_id}/conversations/{cid}/messages").json()
+    user = next(item for item in messages["items"] if item["type"] == "message.user")
+    assert user["data"]["text"] == "资料分析 · 仅本地资料" and user["data"]["command"] == "/ontology-research"
+    listed = client.get(f"/api/v1/projects/{project_id}/conversations").json()["items"]
+    assert next(item for item in listed if item["id"] == cid)["title"] == "资料分析 · 仅本地资料"
+
+
+def test_command_display_name_writes_one_name_when_they_coincide():
+    from app.routers.sessions import command_display_name
+
+    item = {"description": "资料分析", "label": "资料分析", "command": "/ontology-research"}
+    assert command_display_name(item) == "资料分析"
+    assert command_display_name(item, "联网资料分析") == "联网资料分析"
+    assert command_display_name(item, "追加分析") == "资料分析 · 追加分析"
+    assert command_display_name({"description": "传播核对", "label": "传播核对"}) == "传播核对"
+    assert command_display_name({"description": "", "label": "整体视图", "command": "/ontology-overview"}) == "整体视图"
 
 
 @pytest.mark.parametrize("body,code", [

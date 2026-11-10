@@ -98,12 +98,10 @@ export function SubagentPanel({
   const now = useNow(open && running);
   const head = panelHead(sub, fetched.task, ended, now);
   const steps = useMemo(() => panelSteps(fetched.items, sub.steps), [fetched.items, sub.steps]);
-  const brief = sub.brief || fetched.task?.brief;
   const end = outcome(head.status, sub.summary || fetched.task?.summary);
   const thinking = running ? thinkingText(sub.thinking, now) : '';
   return (
     <Drawer open={open} onClose={onClose} icon="bot" title={sub.title} sub={head.text} w={460} className="sub-panel">
-      {brief ? <Brief text={brief} /> : null}
       <div className="sp-sec">过程</div>
       {fetched.error ? <div className="note red"><Icon name="alert" /><div className="grow">{errorText(fetched.error)}</div></div> : null}
       {!steps.length && !thinking ? (
@@ -125,18 +123,6 @@ export function SubagentPanel({
         </div>
       ) : null}
     </Drawer>
-  );
-}
-
-function Brief({ text }) {
-  const [more, setMore] = useState(false);
-  const long = text.length > 120 || text.split('\n').length > 3;
-  return (
-    <div className="sp-brief">
-      <div className="sp-sec">任务说明</div>
-      <div className={cx('sp-brief-t', !more && long && 'clamp')}>{text}</div>
-      {long ? <button type="button" className="sp-more" onClick={() => setMore(!more)}>{more ? '收起' : '展开'}</button> : null}
-    </div>
   );
 }
 

@@ -82,7 +82,7 @@ function StepsDrawer({ open, onClose, flow, cid }) {
     try {
       if (kind === 'command') {
         const c = commandFromTarget(a.target);
-        if (c.command) await api.sendCommand(pid, { ...c, origin: { page: 'wb-l2', label: '建模步骤' }, conversation_id: cid || undefined });
+        if (c.command) await api.sendCommand(pid, { ...c, display_label: a.label, origin: { page: 'wb-l2', label: '建模步骤' }, conversation_id: cid || undefined });
         else await api.sendMessage(pid, cid || 'default', { text: c.text, client_message_id: `cm-${Date.now()}` });
         onClose();
       } else if (kind === 'skip') await api.skipNode(pid, n.id, {});
@@ -468,7 +468,7 @@ function SuggestionBar({ sug, quick = [], onAction, onAll, onQuick, lead }) {
       {items.map((s) => {
         const dis = s.disabled;
         return (
-          <span key={s.id} className={cx('s', s.isPrimary && !dis && 'p', dis && 'dis')} title={s.reason || undefined} onClick={() => !dis && onAction(s.action)}>
+          <span key={s.id} className={cx('s', s.isPrimary && !dis && 'p', dis && 'dis')} title={s.reason || undefined} onClick={() => !dis && onAction(s.action, s.label)}>
             {s.icon ? <Icon name={s.icon} size={12} /> : null}{s.label}
           </span>
         );
@@ -749,12 +749,12 @@ export default function WorkbenchPage({ route }) {
   };
 
   // 建议条发起的请求都带 from_suggestion：点下去之前情况变了，接口回 suggestion_stale 并带回新的一份，直接换上
-  const onSuggestion = async (a) => {
+  const onSuggestion = async (a, label) => {
     const flag = { from_suggestion: true };
     try {
       switch (a.type) {
         case 'send':
-          if (a.command) await api.sendCommand(pid, { ...suggestionCommand(a), origin: { page: 'wb-l2', label: '下一步建议' }, conversation_id: cid, ...flag });
+          if (a.command) await api.sendCommand(pid, { ...suggestionCommand(a), display_label: label, origin: { page: 'wb-l2', label: '下一步建议' }, conversation_id: cid, ...flag });
           else await api.sendMessage(pid, cid, { text: a.text, client_message_id: `cm-${Date.now()}`, ...flag });
           break;
         case 'resume_exec': await api.resumeExec(pid, a.exec_id, cid, flag); break;
@@ -789,7 +789,7 @@ export default function WorkbenchPage({ route }) {
   };
 
   const quickActions = useMemo(() => (extensions?.entries || []).filter((e) => e.kind === 'quick_action' && e.command), [extensions]);
-  const runQuick = (q) => sendCommand({ command: q.command, text: q.label, origin: { page: 'wb-l2', label: q.label, pack: q.pack } });
+  const runQuick = (q) => sendCommand({ command: q.command, display_label: q.label, origin: { page: 'wb-l2', label: q.label, pack: q.pack } });
 
   const send = async (body) => {
     const localId = `cm-${Date.now()}`;

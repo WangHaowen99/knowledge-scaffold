@@ -196,7 +196,9 @@ def test_subagent_title_falls_back_to_brief_first_line_then_type():
     assert len(line) > 40
     assert timeline.subagent_title("", f"\n## {line}\n第二行") == line[:40] + "…"
     assert timeline.subagent_title("", "- 列出问题\n第二行") == "列出问题"
-    assert timeline.subagent_title("", "", "rule-check-agent") == "rule-check-agent"
+    # 子代理类型认得出时给中文名，不出英文名（端到端验证）
+    assert timeline.subagent_title("", "", "rule-check-agent") == "规则检查"
+    assert timeline.subagent_title("", "", "custom-agent") == "子任务"
     assert timeline.subagent_title("", None, "general-purpose") == "子任务"
 
 

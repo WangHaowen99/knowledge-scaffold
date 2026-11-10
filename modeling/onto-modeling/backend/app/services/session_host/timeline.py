@@ -54,17 +54,41 @@ _SUBAGENT_INPUT_KEYS = ("file_path", "path", "pattern", "command", "description"
 _GENERIC_AGENT_TYPES = frozenset({"", "general-purpose"})
 
 
+# 平台派给子代理的说明里写着读哪个子代理文档（.claude/agents/<名>.md）：按它给中文名
+_AGENT_LABELS = {
+    "research-agent": "资料分析", "composition-analysis-agent": "规则组合分析",
+    "question-extraction-agent": "业务问题梳理", "extract-objects-agent": "对象提取",
+    "extract-operation-agent": "操作提取", "rule-metric-extraction-agent": "规则与指标提取",
+    "coverage-check-agent": "覆盖检查", "rule-check-agent": "规则检查", "rule-fix-agent": "规则修复",
+    "semantic-check-agent": "语义检查", "semantic-fix-agent": "语义修复", "update-impact-agent": "影响分析",
+    "update-apply-agent": "按清单修改", "codegen-review-agent": "脚本复核", "script-candidate-agent": "脚本候选扫描",
+    "knowledge-conflict-agent": "知识冲突检查", "mock-data-agent": "生成测试数据", "trace-agent": "场景推演",
+}
+_AGENT_DOC = re.compile(r"\.claude/agents/([A-Za-z0-9_-]+)\.md")
+_CJK = re.compile(r"[\u4e00-\u9fff]")
+
+
+def has_cjk(text) -> bool:
+    return bool(_CJK.search(str(text or "")))
+
+
 def subagent_title(description, brief=None, agent_type=None) -> str:
-    """子任务的名称：简短描述 → 任务说明第一行 → 子代理类型（通用的不算）；都没有时叫「子任务」。"""
+    """子任务的名称：中文的简短描述 → 说明里点名的子代理文档的中文名 → 中文的任务说明第一行 → 子代理类型（中文、
+    不是通用类型时）；都没有时叫「子任务」。模型写的英文描述不直接给用户看（端到端验证）。"""
     text = " ".join(str(description or "").split())
-    if text:
+    if text and has_cjk(text):
         return text[:60]
+    for name in _AGENT_DOC.findall(str(brief or "")) or [str(agent_type or "").strip()]:
+        if name in _AGENT_LABELS:
+            return _AGENT_LABELS[name]
     for line in str(brief or "").splitlines():
         line = line.strip().lstrip("#>*-·•").strip()
         if line:
-            return line[:40] + ("…" if len(line) > 40 else "")
+            if has_cjk(line) and not _AGENT_DOC.search(line):
+                return line[:40] + ("…" if len(line) > 40 else "")
+            break
     kind = str(agent_type or "").strip()
-    return kind[:60] if kind not in _GENERIC_AGENT_TYPES else "子任务"
+    return kind[:60] if kind not in _GENERIC_AGENT_TYPES and has_cjk(kind) else "子任务"
 
 
 def external_id(record: dict) -> int | None:
@@ -96,6 +120,57 @@ def _target_label(path) -> str:
     return ""
 
 
+# 平台内部的状态维护（命令锁、进度、阶段）和助手读自己的说明、平台运行目录：不进给用户看的工作过程（端到端验证）
+_INTERNAL_SCRIPTS = ("state_helper.py",)
+_INTERNAL_DIRS = (".ontology-state", ".onto", ".claude")
+# 工作区脚本 → 步骤说法（模型给 Bash 写的描述常是英文、说内部机制，按脚本说）
+_SCRIPT_LABELS = {
+    "knowledge_helper": "加载业务知识", "source_extract": "读取资料", "research_checker": "核验资料分析报告",
+    "research_review": "复核资料分析", "ontology_checker": "检查知识包", "impact_analysis": "分析影响范围",
+    "script_verify": "验证脚本", "script_descriptor": "生成脚本说明", "script_contract": "检查脚本契约",
+    "script_argument_shape": "检查脚本入参", "candidate_revision": "整理修订", "report_reconcile": "核对检查报告",
+    "evidence": "检索系统证据", "incremental_scope": "整理增量范围", "incremental_chain": "分析传播链",
+    "incremental_check": "核对传播", "table_profile": "分析数据表", "excel_context": "读取表格",
+    "blueprint": "整理建模蓝图", "verify_artifacts": "核验产物", "query": "查询知识包", "field_semantics": "核对字段口径",
+    "operation_relations": "整理操作关系", "industry_rules": "检查行业规则", "check_diagrams": "检查流程图",
+    "check_diagram_excel_alignment": "核对流程图与表格", "summarize_diagram": "读取流程图", "batch_summarize": "汇总资料",
+    "trace_index": "整理场景", "trace_inputs": "准备推演输入", "seed_example": "准备示例", "onto_metamodel": "解析知识包",
+    "solver_evaluator_contract": "检查求解契约", "check_eval_data": "检查评测数据",
+    "check_eval_generalization": "检查评测泛化", "init_flowchart_resources": "准备流程图",
+}
+_SCRIPT_RE = re.compile(r"\.claude/scripts/([A-Za-z0-9_]+)\.py")
+
+
+def _path_parts(value) -> list[str]:
+    return [part for part in str(value or "").replace("\\", "/").split("/") if part]
+
+
+def internal_step(tool: str, data) -> bool:
+    """平台内部的一步：用户看不懂、也不用知道（命令锁、进度快照、读助手自己的命令说明）。"""
+    data = data if isinstance(data, dict) else {}
+    if tool == "Bash":
+        command = str(data.get("command") or "")
+        return any(name in command for name in _INTERNAL_SCRIPTS) or ".ontology-state" in command \
+            or ".onto/run" in command
+    if tool in ("Read", "Glob", "Grep", "LS"):
+        target = data.get("file_path") or data.get("path") or data.get("pattern") or ""
+        return any(part in _INTERNAL_DIRS for part in _path_parts(target))
+    return False
+
+
+def _bash_text(data: dict) -> str:
+    """命令行的一步：认得出的工作区脚本按脚本说；模型写的中文描述照用；英文描述不给用户看。"""
+    command = str(data.get("command") or "")
+    scripts = _SCRIPT_RE.findall(command)
+    label = next((_SCRIPT_LABELS[name] for name in scripts if name in _SCRIPT_LABELS), "")
+    if label:
+        return label
+    description = str(data.get("description") or "").strip()
+    if description and has_cjk(description):
+        return description[:60]
+    return "运行脚本"
+
+
 def step_text(tool: str, data) -> str:
     """一次工具调用在「工作过程」里的说法：按业务名说（读取对象「门店」、读取资料分析报告），不出路径、文件名和命令原文。"""
     data = data if isinstance(data, dict) else {}
@@ -108,13 +183,12 @@ def step_text(tool: str, data) -> str:
     if tool in ("Edit", "MultiEdit", "NotebookEdit"):
         return f"修改{target}" if target else "修改文件"
     if tool == "Bash":
-        description = str(data.get("description") or "").strip()
-        return description[:60] if description else "运行脚本"
+        return _bash_text(data)
     if tool in ("Glob", "Grep", "LS"):
         return "查找相关文件"
     if tool in ("Task", "Agent"):
         description = str(data.get("description") or "").strip()
-        return f"派出子任务「{description[:40]}」" if description else "派出子任务"
+        return f"派出子任务「{description[:40]}」" if description and has_cjk(description) else "派出子任务"
     if tool == "TodoWrite":
         return "整理待办"
     if tool == "WebSearch":
@@ -165,6 +239,7 @@ class Turn:
     sub_briefs: dict = field(default_factory=dict)  # 派发调用 ID → 稳定引擎 Task 调用的 {description, brief}
     sub_tasks: dict = field(default_factory=dict)  # 派发调用 ID → 稳定引擎的子任务（子代理消息按派发调用归卡）
     sub_tool_steps: dict = field(default_factory=dict)  # 稳定引擎子代理的工具调用 ID → 派发调用 ID
+    internal_tools: set = field(default_factory=set)  # 不进工作过程的平台内部步骤（工具调用 ID、子任务步骤 ID）
 
     def sub_group(self, event: dict, attach: bool = False) -> str:
         task_id = str(event.get("task_id") or "")
@@ -318,10 +393,18 @@ def _sub_fields(turn: Turn, event: dict) -> dict:
 
 
 def _subagent_activity(turn: Turn, event: dict) -> list[tuple[dict, bool]]:
-    """子代理的一步。「思考中」是瞬时事件：只刷新界面上想了多久，不进历史。"""
+    """子代理的一步。「思考中」是瞬时事件：只刷新界面上想了多久，不进历史。平台内部的步骤不记。"""
     group = turn.sub_group(event)
     if event.get("kind") == "thinking":
         return [({**event, **_sub_fields(turn, event), "group_id": group}, True)]
+    if event.get("kind") == "tool":
+        step_key = f"{event.get('task_id') or ''}:{event.get('step_id') or ''}"
+        if not event.get("status") and internal_step(str(event.get("tool") or ""), event.get("input")):
+            turn.internal_tools.add(step_key)
+            return []
+        if event.get("status") and step_key in turn.internal_tools:
+            turn.internal_tools.discard(step_key)
+            return []
     if event.get("kind") == "tool" and not event.get("status"):
         task_id = str(event.get("task_id") or "")
         turn.sub_counts[task_id] = turn.sub_counts.get(task_id, 0) + 1
@@ -435,7 +518,9 @@ def _assistant(turn: Turn, event: dict) -> list[tuple[dict, bool]]:
         text = step_text(tool, block.get("input"))
         records.append(({"type": "tool_activity", "tool_use_id": tool_use_id, "tool": tool, "summary": text,
                          "state": "started"}, False))
-        if tool not in _SUBAGENT_TOOLS:
+        if internal_step(tool, block.get("input")):
+            turn.internal_tools.add(str(tool_use_id or ""))
+        elif tool not in _SUBAGENT_TOOLS:
             turn.add_step(f"tool:{tool_use_id}", text)
             stepped = True
     if stepped:
