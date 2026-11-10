@@ -13,17 +13,14 @@ List `.md` files in `ontology/operation/`. Let `OPERATION_FILES` = this list.
 
 If empty: "未找到任何逻辑文档。" 然后 `python3 .claude/scripts/state_helper.py release trace`，Stop.
 
-`python3 .claude/scripts/state_helper.py acquire trace confirm`，then show: "将对 {N} 个逻辑文档进行批量追踪：{逻辑名}。
+不问用户（点了「批量验证」就是要做），说一句: "对 {N} 个逻辑做批量追踪：{逻辑名}。
 
 💡 可选参考：现有批量追踪默认更适合 SOP 流程型；若本批 Operation 包含规则引擎、红线拦截、连续阈值、多判定器组合或审计链，可先对照 Operation 范式。
-可参阅 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §三 / §四核对范式；若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §三 / §八，补充规则覆盖、约束边界、退化逻辑和跳过审计的负面 Case。无需中断当前流程。
-
-- 回复 **确认** → 开始批量追踪
-"
+可参阅 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §三 / §四核对范式；若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §三 / §八，补充规则覆盖、约束边界、退化逻辑和跳过审计的负面 Case。无需中断当前流程。"
 
 上述参考提醒按 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §七与 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §十一执行；若用户本会话已表达"不需要 / 知道了 / 已判别 / 已按断言型补充"，本次不再提示。本命令本次执行只触发一次。
 
-Wait for confirmation（确认后 `acquire trace start`）. On **取消**, `python3 .claude/scripts/state_helper.py release trace`，stop.
+然后直接进入 Step B2。
 
 ### Step B2: Pre-check mock data (once)
 
@@ -47,16 +44,8 @@ If `KNOWLEDGE_BLOCK` equals `（暂无相关业务知识）`, set it to an empty
 
 List `ontology/data-mock/`. Compute `MISSING_MOCK` = objects in `ALL_REF_OBJECTS` without corresponding mock files.
 
-If `MISSING_MOCK` not empty, `acquire trace confirm` 后（回复后 `acquire trace start`）:
-
-"以下对象尚无测试数据，批量追踪需要它们：
-{list}
-
-- 回复 **生成**（/ontology-mock）→ 批量生成缺失数据后继续
-- 回复 **跳过** → 不使用 mock 数据，仅用自动生成的场景值追踪
-"
-
-Handle accordingly. On **生成**, call `ontology-mock.md` to generate only missing objects. On **跳过**, set `MOCK_DATA_DIR = empty`. On **取消**, `python3 .claude/scripts/state_helper.py release trace`，stop.
+If `MISSING_MOCK` not empty: 不问用户，说一句「{list} 还没有测试数据，先补上」，按 `.claude/commands/ontology-mock.md` 的「由追踪带起」方式只给这些对象生成，
+然后继续。用户在 `$ARGUMENTS` 或这条消息里说了不要测试数据时才跳过：set `MOCK_DATA_DIR = empty`。
 
 ### Step B2.5: Ask about saved testcase reuse
 

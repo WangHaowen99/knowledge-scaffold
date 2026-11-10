@@ -164,11 +164,10 @@ python3 .claude/scripts/impact_analysis.py "{ontology-relative-path}" --json
 
 ### 风险提示
 {若有删除操作：警告该文件被以下 N 个文档引用，删除前请确认}
-
-**下一步：**
-- 回复 **确认** → 按清单执行更新
-- 回复 **编辑** → 让你逐条调整清单（增删条目或改变更说明）
 ```
+
+清单写在正文里，`python3 .claude/scripts/state_helper.py acquire update confirm` 后用确认卡问「按这份清单更新吗？」，选项 **确认** / **编辑** / **取消**（`.claude/INTERACTION_CONVENTIONS.md` 第 2 条）；
+用户在对话里直接打这些关键词也照样推进。
 
 Handle reply:
 - **确认** → `acquire update apply`，进入 Step 4。

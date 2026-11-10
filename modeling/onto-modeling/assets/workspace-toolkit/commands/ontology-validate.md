@@ -196,11 +196,10 @@ Wait for it to return a JSON array `APPLY_RESULTS`，按 `issue_id` 索引。
 其他已应用的机械修复也直接保留；未应用条目自动并入 A5 的复杂问题列表。
 ```
 
-#### A4c: Handle the reply
+#### A4c: 处理结果（不等回复）
 
-- **确认**：`applied: true` 条目保留，报告里保留 🔧 标记；字段名称冲突修复不等待确认，直接进入 A5.5 回归检查。
-- **逐条复审**：仅对非字段名称冲突的已应用条目查看 diff 并选择保留/撤销。
-- **全部撤销**：仅撤销非字段名称冲突的已应用条目；字段名称冲突修复不撤销。
+- `applied: true` 条目直接保留，报告里保留 🔧 标记，进入 A5.5 回归检查。不问「确认 / 逐条复审 / 全部撤销」：每轮结束自动存成版本，
+  用户要撤销可以「撤回这一轮」或在对话里说要撤哪条。
 - `applied: false` 条目：合并到 A5 的复杂问题列表（带 `proposed_change` 作为起点）。
 
 ### A5: Handle complex issues via terminal
@@ -215,9 +214,9 @@ If no complex issues, skip to A5.5.
 1. ❌ [逻辑缺陷] operation/X.md → {message}
 2. ⚠️ [参数未使用] operation/Y.md → {message}
 3. 💡 [关联不合理] operation/Z.md → {message}
-
-要处理哪些？[全部 / 输入编号如 1,3 / 跳过]
 ```
+
+然后用确认卡问「要处理哪些？」，选项 **全部** / **跳过**（只处理其中几条让用户在对话里说编号）；用户在对话里直接打「全部」「1,3」「跳过」也照样推进。
 
 - **全部**: handle each one sequentially with fix proposals:
   ```
@@ -275,10 +274,7 @@ git add ontology/ reports/
 git commit -m "fix: address rule check issues"
 ```
 
-`python3 .claude/scripts/state_helper.py acquire validate confirm`，then display:
-"**下一步：进行语义检查。** 是否现在开始？"
-
-Wait for confirmation (好/可以/继续/是 etc.) before proceeding to Phase B；确认后 `acquire validate start`。
+不问用户，直接进入 Phase B（工作过程里说一句「规则检查做完了，接着做语义检查」）。
 
 ---
 
@@ -335,7 +331,7 @@ Write the report:
 （共 {N} 个问题：{E} 错误 / {W} 警告 / {S} 建议；置信度 {H} 高 / {M} 中 / {L} 低）
 
 ---
-处理说明：请直接在终端回复 `全部`、`高置信`、`1,3` 或 `跳过` 选择要处理的问题。
+处理说明：在对话里选要处理的问题（全部、高置信、编号或跳过）。
 高置信 = 只处理 🔴 high 档问题（规则性强的明确问题）；低置信 🔵 通常需人工判断，默认折叠。
 ---
 
@@ -380,14 +376,10 @@ Example (low-confidence group is default-collapsed — show only header + count,
 
 🔵 低置信（{L}）— 默认折叠，回复 **展开低置信** 查看
 （已保存至报告文件）
-
-要处理哪些？[全部 / 高置信 / 展开低置信 / 输入编号如 1,3 / 跳过]
 ```
 
-Tell the user:
-"语义检查完成，共 {N} 个问题，已记入语义检查报告。
-
-我已按置信度分组列出。建议先处理 🔴 高置信档。请回复 **全部**、**高置信**、**展开低置信** 或具体编号如 **1,3**，或回复 **跳过**。"
+Then ask with a confirm card（INTERACTION_CONVENTIONS 第 2 条）「语义检查的 {N} 个问题要处理哪些？」，选项 **全部** / **高置信** / **跳过**；
+展开低置信、只处理几条编号让用户在对话里说。用户在对话里直接打这些关键词也照样推进。
 
 **只查改动模式**：终端只列 `change` 问题（仍按置信度分组）；原有问题只写一行「另有 {K} 个原有问题与本次改动无关，已记入报告；需要一并处理请回复编号」。
 
@@ -444,20 +436,16 @@ Wait for it to return a JSON array of apply results。把返回结果按 `issue_
 | 2 | 7    | operation/支付流程.md | {message 摘要} | ⏸ 未应用（{reason}）：{proposed_change} |
 | 3 | ...  | ... | ... | ... |
 
-- 回复 **确认** → 保留全部已应用修复，进入回归检查
-- 回复 **逐条复审** → 逐条查看已应用修复的改动，选择 保留/撤销/改写
-- 回复 **全部撤销** → 撤销全部已应用修复，改为逐条人工处理
-- 未应用条目会进入「逐条人工处理」环节，无需在此选择
 ```
 
-展示这张表前先 `python3 .claude/scripts/state_helper.py acquire validate confirm`；用户回复后 `acquire validate start`。
+展示这张表后不等回复，按 B4c 往下走（用户已经选过要修哪些；每轮结束自动存成版本，要撤销可以「撤回这一轮」，或在对话里说要撤哪条）。
 
-#### B4c: Handle the reply
+#### B4c: 处理结果
 
-- **确认**:
+- 默认（不等回复）:
   - 对 `APPLY_RESULTS` 中 `applied: true` 的每条，把 `issue_id` 加入 `B4_FIXED`，把 `files_changed` 的 stems 加入 `B4_MODIFIED`。
   - 对 `applied: false` 的条目（agent 主动放弃的）→ 进入 B4d 逐条人工处理。
-- **逐条复审**:
+- 用户之后在对话里主动要求 **逐条复审**:
   - 对每条 `applied: true` 走子流程：
     ```
     [复审 {n}/{APPLIED_COUNT}]
@@ -470,7 +458,7 @@ Wait for it to return a JSON array of apply results。把返回结果按 `issue_
     - 撤销: 用 `git checkout -- {files_changed}` 还原；`issue_id` 进 `B4_SKIPPED`。
     - 我来重写: 撤销 agent 的改动，进入 B4d 让用户为该条提供方案。
   - 复审结束后，未 applied 的条目同样进入 B4d。
-- **全部撤销**:
+- 用户主动要求 **全部撤销**:
   - 收集所有 `applied: true` 条目的 `files_changed`，`git checkout -- {files...}` 还原。
   - 把 `APPLY_RESULTS` 标记为全部未处理，转入 B4d 让用户对全部 `B4_SELECTED` 逐条人工处理。
 
@@ -528,7 +516,7 @@ Append them to `reports/{semantic-filename}` under a new section:
 先 `python3 .claude/scripts/state_helper.py acquire validate confirm`，再 tell the user（用户回复后 `acquire validate start`）:
 "语义修复后发现 {N} 个新问题（可能由本次修改引入），已追加至报告。
 
-我已在下面列出新增问题编号。请直接回复 **全部**、**{id1},{id2}** 这样的编号列表，或回复 **跳过** 直接提交。"
+下面列出了新增问题编号。"，再用确认卡问「新增的 {N} 个问题要处理哪些？」，选项 **全部** / **跳过**（只处理几条让用户在对话里说编号）。
 
 - Show the regression issues in the terminal using the same numbered summary format as B3, and ensure the numbers match the appended report entries exactly.
 - If user selects issues: set `B4_SELECTED` to those regression issue IDs, go back to B4（重新进入 B4a 批量修复路径，未应用的会经 B4d 逐条处理），then repeat B5.
@@ -589,10 +577,10 @@ Tell user:
 
 **If user replies 代码生成:** release validate，然后 read `.claude/commands/ontology-codegen.md`（代码生成与求解能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions.
 
-**If user replies 增量对象:** release validate，然后 Read `.claude/commands/ontology-extract-object.md` and follow its instructions with these overrides: MODE = incremental; collect EXISTING_FILES from current `ontology/object/` contents before dispatching the agent. After the agent returns its summary, ask: "增量对象完成。是否重新校验？回复 **是** 或 **否**。" — if yes, restart from Step 1 of this command.
+**If user replies 增量对象:** release validate，然后 Read `.claude/commands/ontology-extract-object.md` and follow its instructions with these overrides: MODE = incremental; collect EXISTING_FILES from current `ontology/object/` contents before dispatching the agent. After the agent returns its summary, say "增量对象完成，要再校验可以说「再校验」。" — 用户说再校验时 restart from Step 1 of this command.
 
-**If user replies 增量逻辑:** release validate，然后 Read `.claude/commands/ontology-extract-operation.md` and follow its instructions with these overrides: MODE = incremental; collect EXISTING_FILES from current `ontology/operation/` contents before dispatching the agent. After the agent returns its summary, ask: "增量逻辑完成。是否重新校验？回复 **是** 或 **否**。" — if yes, restart from Step 1 of this command.
+**If user replies 增量逻辑:** release validate，然后 Read `.claude/commands/ontology-extract-operation.md` and follow its instructions with these overrides: MODE = incremental; collect EXISTING_FILES from current `ontology/operation/` contents before dispatching the agent. After the agent returns its summary, say "增量逻辑完成，要再校验可以说「再校验」。" — 用户说再校验时 restart from Step 1 of this command.
 
-**If user replies 补充资料分析:** Ask: "请描述要补充的分析方向（例如：「XX子流程的逻辑细节」「YY对象的状态转换」「某个引用断裂的缺失实体」）：". Then release validate 并 read `.claude/commands/ontology-research.md` and follow it using **追加资料分析（append）mode** with the user's direction as FOCUS_DIRECTIONS; **skip research's Step 5 next-step prompt** (do not ask about running flowchart). After research completes, ask: "资料分析完成。要增量提取哪一类？回复 **对象**、**逻辑** 或 **否**。" — if object, follow `/ontology-extract-object` incremental; if operation, follow `/ontology-extract-operation` incremental; then ask: "增量提取完成。是否重新校验？回复 **是** 或 **否**。" — if yes, restart from Step 1.
+**If user replies 补充资料分析:** Ask: "请描述要补充的分析方向（例如：「XX子流程的逻辑细节」「YY对象的状态转换」「某个引用断裂的缺失实体」）：". Then release validate 并 read `.claude/commands/ontology-research.md` and follow it using **追加资料分析（append）mode** with the user's direction as FOCUS_DIRECTIONS; **skip research's Step 5 next-step prompt** (do not ask about running flowchart). After research completes, ask: "资料分析完成。要增量提取哪一类？回复 **对象**、**逻辑** 或 **否**。" — if object, follow `/ontology-extract-object` incremental; if operation, follow `/ontology-extract-operation` incremental; then say "增量提取完成，要再校验可以说「再校验」。" — 用户说再校验时 restart from Step 1.
 
 **If user replies 完成:** `python3 .claude/scripts/state_helper.py release validate`，Stop.

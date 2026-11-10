@@ -80,26 +80,13 @@ python3 .claude/scripts/state_helper.py release extract-operation
 Set `SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = empty`。Proceed to Step 2。
 
 **模式 C — 仅有资料分析报告（`SUMMARIES` 空，`REPORTS` 非空）：**
-`python3 .claude/scripts/state_helper.py acquire extract-operation confirm`，then tell user:
-"未找到流程图摘要，将仅基于资料分析报告「{报告名}」提取逻辑。流程图是可选步骤，概念明确时可跳过。
-- 回复 **继续** → 仅基于资料分析报告提取逻辑
-- 回复 **先做流程图** → 转入 /ontology-flowchart 创建流程图后再回来
-"
-- **继续**: `acquire extract-operation source`；set `SUMMARY_PATHS = empty`, `REPORT_PATHS = REPORTS`，进入 Step 2。
-- **先做流程图**: 先 `python3 .claude/scripts/state_helper.py release extract-operation`；再读取 `.claude/commands/ontology-flowchart.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） 并执行；完成后 Claude 重新运行本命令。
-- **取消**: `python3 .claude/scripts/state_helper.py release extract-operation`，stop。
+不问用户（流程图是可选步骤）：set `SUMMARY_PATHS = empty`, `REPORT_PATHS = REPORTS`，工作过程里说一句
+"没有流程图，这次按资料分析报告「{报告名}」提取逻辑。"，进入 Step 2。
 
 **模式 D — 两者都有：**
-`python3 .claude/scripts/state_helper.py acquire extract-operation confirm`，then tell user（回复后 `acquire extract-operation source`）:
-"已发现流程图摘要 {N} 份和资料分析报告 {M} 份。
-- 回复 **两者结合**（推荐）→ 报告里的操作、规则、指标全部生成，流程图提供步骤与数据流；报告没收录的流程图作为补充单独成文，提取后对账标明来源
-- 回复 **跳过资料分析** → 只用流程图摘要
-- 回复 **跳过流程图** → 只用资料分析报告（适合流程图过时或不完整时）
-"
-- **两者结合**（或默认）: `SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = REPORTS`。
-- **跳过资料分析**: `SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = empty`。
-- **跳过流程图**: `SUMMARY_PATHS = empty`, `REPORT_PATHS = REPORTS`。
-- **取消**: `python3 .claude/scripts/state_helper.py release extract-operation`，stop。
+不问用户，按两者结合：`SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = REPORTS`（报告里的操作、规则、指标全部生成，流程图提供步骤与数据流；
+报告没收录的流程图作为补充单独成文，提取后对账标明来源）。
+用户在 `$ARGUMENTS` 或这条消息里明确说了只用流程图（`REPORT_PATHS = empty`）或只用资料分析报告（`SUMMARY_PATHS = empty`）时照他说的。
 
 ## Step 1.5: Bind Excel supplements to selected flowcharts
 
@@ -348,7 +335,7 @@ python3 .claude/scripts/report_reconcile.py check --reports {REPORT_PATHS，空�
 1. `python3 .claude/scripts/candidate_revision.py start --plan {要改的文档路径，逐项加引号} --note "{修正说明}"`，只修改输出里的 `candidate` 路径。
 2. `python3 .claude/scripts/candidate_revision.py diff`，把每个文件的增删行数与关键改动展示给用户。
 3. `python3 .claude/scripts/candidate_revision.py check`：叠加候选后跑整计划规则检查（含字段关联）。退出码 0 通过；1 候选引入新错误（展示 `new_errors`，继续改候选后重新 check）或确认版本已被改动（`stale`，reject 后重新 start）；2 无法核验（展示 reason，不得接受）。
-4. 问用户是否接受前 `acquire extract-operation confirm`，回复后切回 `operation`。用户同意后 `python3 .claude/scripts/candidate_revision.py accept` 写回；不同意时 `python3 .claude/scripts/candidate_revision.py reject --reason "{原因}"`，工作区文件不动。
+4. 用户已经在确认卡里选了修订方向、或在对话里说清了要怎么改时，check 通过就直接 `python3 .claude/scripts/candidate_revision.py accept` 写回，正文说明改了哪些（不再问「是否接受这份候选修订」；每轮结束自动存成版本，用户可以撤回这一轮）。只有用户说要先看差异再定时，问之前 `acquire extract-operation confirm`，回复后切回 `operation`，同意后 accept；不同意时 `python3 .claude/scripts/candidate_revision.py reject --reason "{原因}"`，工作区文件不动。
 5. accept 后重新运行上面的 `verify_artifacts.py`，不复用旧回执。
 
 When user confirms（回复 **确认** 或等价的肯定词，如"好的"、"可以"、"没问题"、"继续"、"是"）: `acquire extract-operation operation`，then
