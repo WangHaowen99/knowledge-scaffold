@@ -2286,7 +2286,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 依据详设 4.6、5.2、5.3、5.6、5.9、8.1、方案 D1～D7、D17。
 
 - 包有 6 类：能力包、行业包、系统知识包、多源连接器（`category=provider`，旧称证据源提供方）、节点包、导出器。
-- 多源连接器里本期只列文档转换器（`PackCard.converter` 不为空，ADR-0073）；采集类仍按 ADR-0056 不出现。
+- 多源连接器里列文档转换器（`PackCard.converter` 不为空，ADR-0073）；部署了连接器网关时还列网关里的采集类连接器（数据库、代码仓库、REA，`PackCard.collector` 不为空），它们不是包仓库里的包、不按项目启用，网关不通时不列。
 - 包仓库里每个版本的目录不可修改。项目用 `.onto/packs.lock` 锁定版本。
 - 切换从下一条消息开始生效；正在进行的一轮按旧版本跑完；自主构建运行中时，在下一个安全点之后生效。
 
@@ -2321,8 +2321,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   | `available` | — | 启用到本项目 |
   | `offline` | 离线部署不可用 | 启用（禁用） |
   | `not_applicable` | 本项目不适用 | 详情 |
-  | `platform_installed` | 平台已安装（多源连接器；转换器不论带不带项目都是这个） | 详情 |
-  | `platform_available` | 未安装（多源连接器） | 安装到平台 |
+  | `platform_installed` | 平台已安装（多源连接器；转换器、装好的采集类连接器不论带不带项目都是这个） | 详情 |
+  | `platform_available` | 未安装（多源连接器；采集类连接器没装时也是这个，只能管理员部署，不出安装按钮） | 安装到平台（采集类：详情） |
   | `pending` | 已启用 · 下一条消息生效 | 详情 |
 
 #### PL-02 插件详情
@@ -5266,6 +5266,8 @@ type PackCard = {
   locked_version: string | null;
   usage_note: string | null;      // 「mes-prod 在用」
   converter: { types: string[]; default_for: string[]; license: string } | null;   // 多源连接器里的文档转换器（ADR-0073）
+  collector: { kind: string; evidence_types: string[]; input: "connection" | "artifact"; self_service: boolean;
+               installed: boolean; readonly_method: string; license_note: string } | null;   // 网关里的采集类连接器，包仓库里的包为 null
 };
 
 type CompatCheck = { id: "kernel_api" | "engines" | "depends" | "names" | "flow" | "page_api";
