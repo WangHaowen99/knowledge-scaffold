@@ -597,19 +597,63 @@ def view(registration: dict, *, user: str, admin: bool, project_id: str | None =
 # ---------------------------------------------------------------------------
 
 
+REQUEST_ID = re.compile(r"^esr-[0-9a-f]{12}$")
+_requests_lock = threading.Lock()
+
+
+def _request_path(request_id: str):
+    return storage.root() / "requests" / f"{request_id}.json"
+
+
 def save_request(kind: str, by: str, payload: dict) -> str:
     request_id = f"esr-{uuid.uuid4().hex[:12]}"
-    storage.write_json(storage.root() / "requests" / f"{request_id}.json",
+    storage.write_json(_request_path(request_id),
                        {"id": request_id, "kind": kind, "by": by, "at": time.time(), "state": "pending", **payload})
     return request_id
 
 
-def notify_admins(title: str, body: str, *, project_id: str | None = None) -> int:
+def get_request(request_id: str) -> dict | None:
+    if not REQUEST_ID.match(str(request_id or "")):
+        return None
+    record = storage.read_json(_request_path(request_id))
+    return record if isinstance(record, dict) else None
+
+
+def all_requests(kind: str | None = None) -> list[dict]:
+    """存下的申请（EV-03 登记申请 kind=register、EV-30 通知管理员 kind=notify_admin），按提交时间倒序。"""
+    directory = storage.root() / "requests"
+    out = []
+    for path in sorted(directory.glob("esr-*.json")) if directory.is_dir() else []:
+        record = storage.read_json(path)
+        if isinstance(record, dict) and (kind is None or record.get("kind") == kind):
+            out.append(record)
+    return sorted(out, key=lambda item: item.get("at") or 0, reverse=True)
+
+
+def decide_request(request_id: str, state: str, by: str, note: str | None, **extra) -> dict:
+    """把待处理的申请记成通过或退回；已经处理过的回 409 request_state（AD-09、AD-10）。"""
+    with _requests_lock:
+        record = get_request(request_id)
+        if record is None:
+            raise ApiError("request_not_found", "申请不存在", 404)
+        if record.get("state") != "pending":
+            raise ApiError("request_state", "这条申请已经处理过了", 409, {"state": record.get("state")})
+        record.update(state=state, reviewed_by=by, reviewed_at=time.time(), note=note or None, **extra)
+        storage.write_json(_request_path(request_id), record)
+        return record
+
+
+# 管理员的「有新申请」通知点进插件安装页的「申请」页签（契约 8.2）
+REVIEW_ACTION = {"label": "去处理", "page": "plugin-upload", "params": {"tab": "req"}}
+
+
+def notify_admins(title: str, body: str, *, project_id: str | None = None, action: dict | None = None) -> int:
     """给管理员发 `request_pending` 通知，返回发出的条数。本地模式发给本地用户；取不到账号列表时只存不发。"""
     from ..services import auth, notifications
 
     if not auth.ENABLED:
-        return 1 if notifications.notify("local", "request_pending", title, body, project_id=project_id) else 0
+        return 1 if notifications.notify("local", "request_pending", title, body, project_id=project_id,
+                                         action=action) else 0
     try:
         from ..routers.admin import auth_admin_available, list_auth_users
 
@@ -619,6 +663,6 @@ def notify_admins(title: str, body: str, *, project_id: str | None = None) -> in
         admins = []
     sent = 0
     for name in admins:
-        if notifications.notify(name, "request_pending", title, body, project_id=project_id):
+        if notifications.notify(name, "request_pending", title, body, project_id=project_id, action=action):
             sent += 1
     return sent
