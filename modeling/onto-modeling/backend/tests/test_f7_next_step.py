@@ -235,6 +235,11 @@ def test_flow_rules_in_order(api):
     mainline = _suggest(root, fresh, {"blueprint": {"state": "none"}})
     assert mainline["mode"] == "normal" and mainline["primary"]["id"].startswith("core.research#")
     assert mainline["note"] is None
+    # 动作的条件 when：还没有资料分析报告时不出「追加分析」，有了才出
+    no_report = _suggest(root, fresh, {"blueprint": {"state": "none"}, "probes": {"research_report": False}})
+    assert [item["label"] for item in items(no_report)] == ["资料分析"]
+    with_report = _suggest(root, fresh, {"blueprint": {"state": "none"}, "probes": {"research_report": True}})
+    assert [item["label"] for item in items(with_report)] == ["资料分析", "追加分析"]
     # 5：合入冲突，其余按 6～10 补齐
     conflict = _suggest(root, fresh, {"blueprint": {"state": "none"}, "changeset": {"id": "cs-1", "state": "conflict"}})
     assert conflict["primary"]["label"] == "处理冲突"

@@ -653,6 +653,9 @@ def suggest_payload() -> dict:
     probes = flow_state.evaluate(flow, root)
     hits = flow_state.node_hits(flow, root, probes)
     context['stage'] = flow_state.legacy_stage(flow, root, probes)
+    # 内核探针（{kernel: …}）工作区里算不了，恒为否：不交给动作条件，按不知道处理
+    context['probes'] = {name: hit for name, hit in probes.items()
+                         if not (isinstance((flow.get('probes') or {}).get(name), dict) and flow['probes'][name].get('kernel'))}
     changed = _local_changes(str(data.get('mainline_head') or ''))
     flow_state.overlay_pending(flow, states, hits if changed else {}, _locked_nodes(flow))
     if changed:

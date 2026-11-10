@@ -168,7 +168,7 @@ def test_rev_pack_passes_official_checks_and_installs(env):
     response = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "rev"})
     assert response.status_code == 201, response.text
     manager.packs.apply(root)
-    assert version.split("+")[0] == "0.2.0"  # 内置包的版本带内容哈希后缀
+    assert version.split("+")[0] == "0.2.1"  # 内置包的版本带内容哈希后缀
     for rel in ("commands/rev-evidence.md", "commands/rev-reconcile.md", "scripts/evidence.py", "SYSTEM_EVIDENCE.md"):
         assert (root / ".claude" / rel).is_file(), rel
     subpages = client.get(f"/api/v1/projects/{project_id}/extensions").json()["subpages"]
@@ -242,7 +242,8 @@ def test_evidence_node_follows_grants_and_completes_with_snapshot(env):
     node = _node(shown, "rev.evidence")
     assert node is not None and node["placement"] == "step" and node["plugin"]["name"] == "rev"
     assert node["state"] == "not_ready"  # 资料分析还没做
-    assert [action["target"] for action in node["actions"]] == ["snapshots", "/rev-evidence", "/rev-reconcile"]
+    # 动作按条件出：还没有快照时只有「采集快照」
+    assert [action["target"] for action in node["actions"]] == ["snapshots"]
     assert shown["commands"]["rev-evidence"] == "rev.evidence" and shown["commands"]["rev-reconcile"] == "rev.evidence"
     assert shown["flow_hash"] != hidden["flow_hash"]
     assert shown["progress"]["total"] == total_hidden + 1
@@ -256,9 +257,17 @@ def test_evidence_node_follows_grants_and_completes_with_snapshot(env):
     assert _node(_flow(client, project_id), "rev.evidence")["state"] == "not_ready"
     assert model.progress(root)["hits"]["rev.evidence"] is False
 
+    # 有完整快照：主推整理取证报告，还没完成（端到端验证发现只看快照就算完成，从不提示整理取证报告）
     _snapshot(root, "20261105-100000-dddd", _records())
+    snapped = _node(_flow(client, project_id), "rev.evidence")
+    assert snapped["state"] != "confirmed" and [action["target"] for action in snapped["actions"]] == ["/rev-evidence"]
+    assert model.progress(root)["hits"]["rev.evidence"] is False
+
+    (root / "reports" / "evidence").mkdir(parents=True, exist_ok=True)
+    (root / "reports" / "evidence" / "20261105-合成取证.md").write_text("# 合成取证报告\n", encoding="utf-8")
     done = _node(_flow(client, project_id), "rev.evidence")
     assert done["state"] == "confirmed"
+    assert [action["target"] for action in done["actions"]] == ["/rev-evidence", "/rev-reconcile"]
     assert model.progress(root)["hits"]["rev.evidence"] is True
 
     # 撤销授权：节点不再出现

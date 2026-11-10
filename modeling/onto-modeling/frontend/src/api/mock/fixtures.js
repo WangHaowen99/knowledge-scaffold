@@ -343,7 +343,7 @@ export function flowP1() {
     optional: section === 'optional', panel: false, counts_in_progress: true, ...extra,
   });
   const nodes = [
-    n('core.research', '资料分析', 'spine', 'required', 'confirmed', [['联网资料分析', '/ontology-research '], ['仅本地资料', '/ontology-research 仅基于本地文档 '], ['追加分析', '/ontology-research 追加']]),
+    n('core.research', '资料分析', 'spine', 'required', 'confirmed', [['联网资料分析', '/ontology-research '], ['资料分析', '/ontology-research 仅基于本地文档 '], ['追加分析', '/ontology-research 追加']]),
     n('core.flowchart', '流程图', 'branch', 'optional', 'confirmed', [['创建/打磨流程图', '/ontology-flowchart'], ['全量刷新', '/ontology-flowchart 全量刷新'], ['校验流程图', '/ontology-validate-diagrams']]),
     n('core.object', '对象提取', 'spine', 'required', 'confirmed', [['提取对象', '/ontology-extract-object']]),
     n('core.operation', '操作提取', 'spine', 'required', 'confirmed', [['提取操作', '/ontology-extract-operation']]),

@@ -2,7 +2,7 @@
 # 取证节点 rev.evidence（项目有授权的数据源才出现，ADR-0083），命令 /rev-evidence、/rev-reconcile 与工作区脚本 evidence.py。
 # 登记、上传、采集、入库、检索接口在内核与连接器网关里，包里只有给助手用的部分。
 name: rev
-version: 0.2.0
+version: 0.2.1
 kind: capability
 category: capability
 label: 系统逆向建模
@@ -14,7 +14,7 @@ kernel_api: ">=1.0 <2.0"
 page_api: ">=1.0 <2.0"
 engines: [claude, jiuwen]
 depends: {core: ">=0.3"}  # 0.3.0 起的主流程节点（core.research、core.model）
-changelog: "0.2.0：取证覆盖数据库和代码仓库（db:、code: 锚点）；新增 /rev-reconcile 三方对账；evidence.py 认 db:、code: 锚点，show 带表的列、样本和画像摘要。"
+changelog: "0.2.1：有快照还要整理出取证报告才算取证完成，有快照时主推「整理取证报告」。0.2.0：取证覆盖数据库和代码仓库（db:、code: 锚点）；新增 /rev-reconcile 三方对账；evidence.py 认 db:、code: 锚点，show 带表的列、样本和画像摘要。"
 contributes:
   commands: [rev-evidence, rev-reconcile]
   scripts: [evidence.py]

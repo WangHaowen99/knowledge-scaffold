@@ -346,6 +346,11 @@ def _node_pack_problems(directory: Path, manifest: Manifest, files: list[str],
             probe = str(name).lstrip("!")
             if probe not in probes and (core_probes is not None and probe not in core_probes):
                 problems.append(f"{where}: 完成判定用到的探针 {probe} 没有声明")
+        for action in node.get("actions") or []:
+            for name in (action.get("when") or []) if isinstance(action, dict) else []:
+                probe = str(name).lstrip("!")
+                if probe not in probes and (core_probes is not None and probe not in core_probes):
+                    problems.append(f"{where}: 动作的条件用到的探针 {probe} 没有声明")
         kind = node.get("kind", "agent")
         entry = str((node.get("entry") or {}).get("command") or "").split(" ")[0]
         if kind == "agent":

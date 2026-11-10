@@ -249,8 +249,21 @@ def _action(action: dict) -> dict:
     return _send(action['command'])
 
 
-def _node_actions(node: dict, *, verify_first: bool = False) -> list:
-    actions = [action for action in node.get('actions') or [] if action.get('command') or action.get('page')]
+def action_shown(action: dict, probes: dict | None) -> bool:
+    """动作的 `when`（探针名列表，`!名字` 取反）都成立才出现，如「追加分析」要已有资料分析报告。
+    不知道结果的探针（没给 probes，或工作区里算不了的内核探针）不过滤。"""
+    for name in action.get('when') or []:
+        probe = str(name).lstrip('!')
+        if probes is None or probe not in probes:
+            continue
+        if bool(probes[probe]) == str(name).startswith('!'):
+            return False
+    return True
+
+
+def _node_actions(node: dict, *, verify_first: bool = False, probes: dict | None = None) -> list:
+    actions = [action for action in node.get('actions') or []
+               if (action.get('command') or action.get('page')) and action_shown(action, probes)]
     if verify_first:
         actions = sorted(actions, key=lambda action: not action.get('verify'))
     else:
@@ -338,7 +351,7 @@ def _stale_items(nodes: list, state_of: dict, context: dict) -> list:
         if _checked_downstream(node, list(node.get('stale_on') or []), nodes, state_of):
             continue
         entry = (node.get('entry') or {}).get('command') or next(
-            (action['command'] for action in _node_actions(node) if action.get('command')), None)
+            (action['command'] for action in _node_actions(node, probes=context.get('probes')) if action.get('command')), None)
         if entry:
             reason = f"上游「{upstream[node['id']]}」改过" if upstream.get(node['id']) else '上游改过，这一步要刷新'
             out.append(_item(f"refresh:{node['id']}", f"刷新「{node['title']}」", _send(entry),
@@ -354,7 +367,7 @@ def _check_items(nodes: list, state_of: dict, context: dict) -> list:
                          reason='报告里还有待处理的问题', priority=3))
     for node in nodes:
         if node.get('placement') == 'gate' and state_of.get(node['id']) in ('ready', 'not_ready') and node.get('blocks'):
-            for action in _node_actions(node)[:1]:
+            for action in _node_actions(node, probes=context.get('probes'))[:1]:
                 out.append(_item(f"gate:{node['id']}", action['label'], _action(action),
                                  reason='挡住发布的关卡还没通过', priority=3))
     return out
@@ -380,7 +393,7 @@ def _mainline_items(flow: dict, nodes: list, states: dict, context: dict) -> lis
             out.append(_item(f"{current['id']}:{slice_next.get('slice_id')}:{slice_next.get('step')}", label,
                              _slice_step(slice_next), reason='下一步', priority=4))
         elif state_of.get(current['id']) not in ('running', 'pending_confirm') and not current.get('per_slice'):
-            actions = _node_actions(current, verify_first=stage == '资料分析待核验')
+            actions = _node_actions(current, verify_first=stage == '资料分析待核验', probes=context.get('probes'))
             for index, action in enumerate(actions[:SUGGESTIONS_MAX]):
                 out.append(_item(f"{current['id']}#{index}", action['label'], _action(action),
                                  reason='下一步', priority=4))
@@ -392,7 +405,7 @@ def _mainline_items(flow: dict, nodes: list, states: dict, context: dict) -> lis
                          reason='可选步骤', priority=5))
     for node in nodes:
         if flags_of.get(node['id'], {}).get('backfill'):
-            for action in _node_actions(node)[:1]:
+            for action in _node_actions(node, probes=context.get('probes'))[:1]:
                 out.append(_item(f"backfill:{node['id']}", f"补做「{node['title']}」", _action(action),
                                  reason='可补做', priority=5))
     return out
@@ -494,6 +507,7 @@ def suggest(flow: dict, states: dict, context: dict | None = None, check=None) -
     - slice_next：按段的节点这一段的下一步 {slice_id, slice_name, step, label, command, sliced}；
     - slice_stale：按段的节点过期的那几段那几步 [{slice_id, slice_name, step, step_label, command, sliced, upstream}]；
     - stale_upstream：其余过期节点 → 上游的说法（「对象、操作」）；
+    - probes：探针结果 {名字: bool}，按动作的 `when` 筛动作（不给时不筛）；
     - confine_active：范围限定生效（增量构建一轮进行中），这时第 7 条不出；
     - awaiting_reply：这条对话里的命令停下来等你在对话里回复（锁在命令声明的等回复阶段）{id, label}：这时不推别的命令
       （点了会把命令丢在半路），只留一行说明。
