@@ -226,7 +226,7 @@ def next_step_lines(flow: dict, stage: str) -> list:
 
 SUGGESTIONS_MAX = 3
 # 建议条判定的版本（F7 起按规则表从上往下判、带 check 与 note）：后端只用支持这一版的 flow_state
-SUGGEST_RULES = 3
+SUGGEST_RULES = 4
 
 
 def _item(sid: str, label: str, action: dict, *, reason: str, priority: int, primary: bool = False,
@@ -278,6 +278,42 @@ def _goal_items(flow: dict, nodes: list, states: dict, context: dict) -> list:
     return [answer, *_mainline_items(flow, nodes, states, context)]
 
 
+MAINLINE_PLACEMENTS = ('spine', 'step', 'gate')
+
+
+def _covers(patterns: list, wanted: list) -> bool:
+    """写入范围 patterns 盖得住 wanted 里每一个产出（ontology/* 盖得住 ontology/operation/*）。"""
+    return bool(wanted) and all(any(fnmatch.fnmatch(item, pattern) for pattern in patterns) for item in wanted)
+
+
+def _outputs(node: dict) -> list:
+    return [str(item.get('path') if isinstance(item, dict) else item) for item in
+            [*(node.get('produces') or []), *(node.get('writes') or [])]]
+
+
+def _checked_downstream(node: dict, stale_on: list, nodes: list, state_of: dict) -> bool:
+    """过期的 node（或它的某一步，stale_on 是那一步的）后面有已确认的必经节点 M 能核对并修复同一批改动：M.stale_on 盖住
+    这些类别、M 的写入范围盖住 node 的产出。M 已确认说明它是在这批改动之后跑的、核对过了（典型：校验自己的修复改了对象），
+    上游不再推刷新。M 没跑过或也过期时照旧推上游刷新——改动可能要补提取，M 核对不出来（ADR-0088）。"""
+    if not stale_on:
+        return False
+    after = False
+    for other in nodes:
+        if other is node:
+            after = True
+            continue
+        if not after or state_of.get(other['id']) != 'confirmed' or other.get('optional') \
+                or other.get('placement', 'spine') not in MAINLINE_PLACEMENTS or other.get('section', 'required') != 'required':
+            continue
+        if set(stale_on) <= set(other.get('stale_on') or []) and _covers(_outputs(other), _outputs(node)):
+            return True
+    return False
+
+
+def _step_stale_on(node: dict, step_id) -> list:
+    return next((list(step.get('stale_on') or []) for step in node.get('steps') or [] if step.get('id') == step_id), [])
+
+
 def _stale_items(nodes: list, state_of: dict, context: dict) -> list:
     """7. 过期的步骤：刷新。按段的节点一段一步地列（按钮写清哪一段哪一步），其余节点整个刷新。
 
@@ -292,10 +328,14 @@ def _stale_items(nodes: list, state_of: dict, context: dict) -> list:
             continue
         if node.get('per_slice'):
             for step in context.get('slice_stale') or []:
+                if _checked_downstream(node, _step_stale_on(node, step.get('step')), nodes, state_of):
+                    continue
                 where = f"{step['slice_name']} · {step['step_label']}" if step.get('sliced') else step['step_label']
                 reason = f"上游「{step['upstream']}」改过" if step.get('upstream') else '上游改过，这一步要刷新'
                 out.append(_item(f"refresh:{node['id']}:{step.get('slice_id')}:{step['step']}", f"刷新「{where}」",
                                  _slice_step(step), reason=reason, priority=2, icon='refresh'))
+            continue
+        if _checked_downstream(node, list(node.get('stale_on') or []), nodes, state_of):
             continue
         entry = (node.get('entry') or {}).get('command') or next(
             (action['command'] for action in _node_actions(node) if action.get('command')), None)

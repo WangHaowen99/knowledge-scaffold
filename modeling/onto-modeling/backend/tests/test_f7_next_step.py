@@ -211,7 +211,7 @@ def test_stale_click_returns_fresh_suggestions(api):
 def _suggest(root, states: dict, context: dict, check=None) -> dict:
     flow = model.load_for(root)
     module = model.flow_state(root)
-    assert getattr(module, "SUGGEST_RULES", 0) >= 3
+    assert getattr(module, "SUGGEST_RULES", 0) >= 4
     return module.suggest(flow, states, context, check)
 
 
@@ -250,14 +250,28 @@ def test_flow_rules_in_order(api):
     stale_step = {"slice_id": "s1", "slice_name": "补货", "step": "rule", "step_label": "规则", "label": "提取规则",
                   "command": "/ontology-extract-rule-metric", "sliced": True, "upstream": "对象、操作"}
     second = {**stale_step, "slice_id": "s2", "slice_name": "退货"}
-    stale = _suggest(root, _states(root, core_model="stale"), {"blueprint": {"state": "confirmed"},
-                                                               "slice_stale": [stale_step, second]})
+    stale = _suggest(root, _states(root, core_model="stale", core_validate="ready"),
+                     {"blueprint": {"state": "confirmed"}, "slice_stale": [stale_step, second]})
     assert [item["label"] for item in items(stale)] == ["刷新「补货 · 规则」", "刷新「退货 · 规则」"]
     assert stale["primary"]["action"] == {"type": "send", "text": "", "command": "/ontology-extract-rule-metric",
                                           "args": {"slice": "s1"}}
     assert stale["note"] == "上游「对象、操作」改过"
     whole = _suggest(root, _states(root, core_validate="stale"), {"stale_upstream": {"core.validate": "对象、操作"}})
     assert whole["primary"]["label"].startswith("刷新「") and whole["note"] == "上游「对象、操作」改过"
+    # 7 不推上游：后面已确认的校验能核对并修复同一批改动（stale_on 盖住、写入范围盖住）。校验的修复改了对象、校验已确认 →
+    # 不推重新提取操作，主线往下走；资料变了（校验不看资料）照旧推刷新建模；校验也过期（改动在校验之后）时两个都推
+    op_step = {"slice_id": "all", "slice_name": "全部", "step": "operation", "step_label": "操作",
+               "command": "/ontology-extract-operation", "sliced": False, "upstream": "对象"}
+    checked = _suggest(root, _states(root, core_model="stale", trace_trace="ready", core_publish="not_ready"),
+                       {"slice_stale": [op_step], "stale_upstream": {"core.metric": "对象、操作"}})
+    assert not any(item["id"].startswith("refresh:") for item in items(checked))
+    assert checked["primary"]["id"].startswith("trace.trace")
+    obj_step = {**op_step, "step": "object", "step_label": "对象", "command": "/ontology-extract-object", "upstream": "资料"}
+    research = _suggest(root, _states(root, core_model="stale"), {"slice_stale": [obj_step]})
+    assert research["primary"]["id"] == "refresh:core.model:all:object"
+    both = _suggest(root, _states(root, core_model="stale", core_validate="stale"),
+                    {"slice_stale": [op_step], "stale_upstream": {"core.validate": "对象、操作"}})
+    assert [item["id"] for item in items(both)] == ["refresh:core.model:all:operation", "refresh:core.validate"]
     # 7 不出：增量构建一轮进行中（范围限定生效），传播交给那一轮的核对，不推整段重新提取（会写范围外的条目）
     confined = _suggest(root, _states(root, core_model="stale", core_validate="ready", core_publish="not_ready"),
                         {"slice_stale": [stale_step], "confine_active": True})
