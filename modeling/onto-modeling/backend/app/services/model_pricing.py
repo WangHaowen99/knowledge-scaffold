@@ -143,7 +143,20 @@ def cost(usage: dict, *, engine: str, model: str, reported: float | None = None,
     return 0.0, True
 
 
+# 缓存读按 1/10 计入（ADR-0088）：缓存命中的单价约是输入的十分之一
+CACHE_READ_DIVISOR = 10
+
+
+def _tokens(usage: dict, key: str) -> int:
+    try:
+        return max(0, int(usage.get(key) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def tokens_of(usage: dict) -> int:
-    """计入用量的 token：输入 + 缓存读 + 输出（与配额台账同一口径）。"""
+    """计入配额的 token（成本口径，ADR-0088）：输入 + 缓存写 + 输出 + 缓存读 // 10。配额台账和自主构建的用量都用它；
+    项目用量、运维用量图里的 token 仍是原始数（输入含缓存读），不按这个折算。"""
     usage = usage or {}
-    return sum(max(0, int(usage.get(key) or 0)) for key in ("input_tokens", "cache_read_input_tokens", "output_tokens"))
+    return (_tokens(usage, "input_tokens") + _tokens(usage, "cache_creation_input_tokens") + _tokens(usage, "output_tokens")
+            + _tokens(usage, "cache_read_input_tokens") // CACHE_READ_DIVISOR)

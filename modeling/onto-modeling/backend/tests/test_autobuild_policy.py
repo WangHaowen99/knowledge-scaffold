@@ -108,4 +108,6 @@ def test_pricing_table_and_cost(env):
     assert model_pricing.cost(usage, engine="claude", model="x", reported=0.5) == (0.0, True)
     client.put("/api/v1/admin/settings/pricing", json={"currency": "USD", "items": []})
     assert model_pricing.cost(usage, engine="claude", model="x", reported=0.5) == (0.5, False)
-    assert model_pricing.tokens_of({"input_tokens": 3, "output_tokens": 2, "cache_read_input_tokens": 1}) == 6
+    # 成本口径（ADR-0088）：缓存读按 1/10 计，缓存写按输入计
+    assert model_pricing.tokens_of({"input_tokens": 3, "output_tokens": 2, "cache_read_input_tokens": 20,
+                                    "cache_creation_input_tokens": 4}) == 3 + 2 + 2 + 4

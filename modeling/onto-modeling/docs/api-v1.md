@@ -3625,6 +3625,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 对象：`{per_user: {concurrent_sessions: int, daily_tokens: int, collections_per_source_per_hour: int}, per_project: {online_engines: 1（只读）, monthly_tokens: int, snapshot_git_mb: int}, overrides: QuotaOverride[]}`。
 - PUT 只改 `per_user`、`per_project`，立即生效。
+- token 按成本口径计：输入 + 缓存写 + 输出 + 缓存读 // 10（ADR-0088）。默认每人每天 10,000,000、每项目每月 100,000,000。
 
 #### SY-16 配额单独设置
 

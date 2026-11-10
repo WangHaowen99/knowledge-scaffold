@@ -153,7 +153,7 @@ export function QuotaSection() {
                 <Field label="同时在线会话" hint={err(qp, 'concurrent_sessions', null)}>
                   <Inp mono value={qForm.concurrent_sessions} error={!!qp.concurrent_sessions} onChange={setQ('concurrent_sessions')} />
                 </Field>
-                <Field label="每日 token 预算" hint={err(qp, 'daily_tokens', null)}>
+                <Field label="每日 token 预算" hint={err(qp, 'daily_tokens', '缓存命中按 1/10 计')}>
                   <Inp mono value={qForm.daily_tokens} error={!!qp.daily_tokens} onChange={setQ('daily_tokens')} />
                 </Field>
                 {hidden.has('collections_per_source_per_hour') ? null : (
