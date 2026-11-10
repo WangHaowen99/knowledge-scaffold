@@ -763,6 +763,18 @@ def command_catalog(root: Path) -> dict:
     return {"groups": result, "total": sum(len(group["items"]) for group in result)}
 
 
+def command_display_name(item: dict, page_label: str = "") -> str:
+    """命令在对话里的业务名：节点标题加按钮叫法，叫法里已经有节点标题（或两者相同）时只写叫法。
+    没有节点的命令（整体视图、影响分析等）用目录里的业务名。"""
+    base = str(item.get("description") or "").replace("（按段）", "").strip()
+    action = page_label or str(item.get("label") or "").strip()
+    if not base:
+        return action or str(item.get("command") or "")
+    if not action or action == base or base in action:
+        return action or base
+    return f"{base} · {action}"
+
+
 @router.get("/commands/catalog")
 def get_command_catalog(project_id: str, request: Request):
     root = deps.require_owner(project_id, request)
@@ -851,9 +863,13 @@ async def dispatch_command(project_id: str, root: Path, request: Request, body: 
     label = known[name]["label"]
     task = command_tasks.create(project_id, origin=origin, title=f"助手正在执行「{label}」",
                                 conversation_id=conversation_id, command=name)
-    # 对话里显示的那条不带参数、不出路径（F4b-paths）：页面可另给 display_text，没给时用说明文字
-    shown = str(body.get("display_text") or body.get("text") or "").strip()
-    display = f"{command}\n\n{workspace_labels.humanize(shown)}" if shown else command
+    # 对话里显示业务名、不出命令原文和参数（F4b-paths；端到端验证）：「节点 · 按钮叫法」，页面另给的说明另起一段。
+    # 页面给了 display_label（按钮叫法）时 text 是动作自带的参数，不当说明显示
+    head = command_display_name(known[name], str(body.get("display_label") or "").strip())
+    shown = str(body.get("display_text") or ("" if body.get("display_label") else body.get("text")) or "").strip()
+    if shown.startswith("/"):
+        shown = ""
+    display = f"{head}\n\n{workspace_labels.humanize(shown)}" if shown else head
     meta = {"display_text": display, "origin": {"kind": "page", "page": str(origin.get("page")),
                                              "label": str(origin.get("label") or ""), "task_id": task["task_id"]},
             "task_id": task["task_id"], "command": name, "command_label": label, "replace": bool(body.get("replace"))}

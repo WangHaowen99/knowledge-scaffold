@@ -716,7 +716,8 @@ export function createMockServer() {
   function runCommand(pid, cid, body) {
     const msgId = `m-${uid()}`;
     const text = body.text || body.command || '';
-    emitConv(pid, cid, 'message.user', { message_id: msgId, text, command: body.command || null, attachments: [], references: [], origin: { kind: 'page', ...body.origin, task_id: null }, delivery: 'immediate' });
+    // 气泡显示业务名（同真实后端 S-20：页面给了按钮叫法就用它，不出命令原文）
+    emitConv(pid, cid, 'message.user', { message_id: msgId, text: body.display_label || text, command: body.command || null, attachments: [], references: [], origin: { kind: 'page', ...body.origin, task_id: null }, delivery: 'immediate' });
     const hook = commandHooks.find((h) => h.match(body));
     const task = putTask(pid, {
       task_id: `task-${uid()}`, origin: body.origin, title: hook?.title ? hook.title(body) : `助手正在${text.replace(/^\//, '')}`, state: 'running', percent: 0,

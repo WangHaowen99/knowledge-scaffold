@@ -67,7 +67,7 @@ export function CommandPalette({ projectId, inboxCount, extensions, conversation
     setOpen(false);
     if (it.command) {
       try {
-        await api.sendCommand(projectId, { command: it.command.command, text: it.command.label, origin: { page: 'palette', label: '命令面板' }, conversation_id: conversationId || undefined });
+        await api.sendCommand(projectId, { command: it.command.command, display_label: it.command.label, origin: { page: 'palette', label: '命令面板' }, conversation_id: conversationId || undefined });
         navigate(pagePath('wb-l2', projectId));
       } catch (e) {
         toast(errorText(e), 'alert');
