@@ -71,8 +71,9 @@ nodes:
     entry: {command: /ontology-research}
     actions:
       - {label: 联网资料分析, command: "/ontology-research ", pack: websearch}
-      - {label: 仅本地资料, command: "/ontology-research 仅基于本地文档 "}
-      - {label: 追加分析, command: "/ontology-research 追加"}
+      # 联网调研包启用时另有「联网资料分析」；「追加分析」要已有资料分析报告
+      - {label: 资料分析, command: "/ontology-research 仅基于本地文档 "}
+      - {label: 追加分析, command: "/ontology-research 追加", when: [research_report]}
       # 报告挡着后续阶段时，这个入口排到最前
       - {label: 核验报告, verify: true, command: "运行 python3 .claude/scripts/research_checker.py 核验资料分析报告，逐条列出错误项与来源位置"}
   # 建模（详设 6.6）：对象、操作两步，规则与指标随操作提取一起抽；「规则」一步是可选的补抽，没过期不推荐、自主构建不排。

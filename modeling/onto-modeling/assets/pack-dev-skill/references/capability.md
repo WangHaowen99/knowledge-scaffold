@@ -343,6 +343,8 @@ probes:
 
 **`autobuild: false`** 让自主构建跳过这个节点，用于要用户先给输入才能做的节点。
 
+**动作的条件 `when`**（`actions` 里每一项可选）：探针名列表，`!名字` 取反，都成立时这个动作才出现在建议条和面板上，如 `{label: 追加分析, command: …, when: [research_report]}`。用到的探针要在本包或 core 的 `probes` 里声明。
+
 **`section: required` 不挡发布。** 上面的 `sample-review.check` 挂在 `core.validate` 之后，和场景模拟并列；没做完时发布照样可以进行。要挡发布必须写 `blocks`。
 
 锚点用主线节点 `core.research`、`core.model`、`core.validate`、`core.publish`，或别的包的节点 id。`core.consistency` 这类旧名字不写进新包。

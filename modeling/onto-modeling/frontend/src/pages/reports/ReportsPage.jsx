@@ -34,7 +34,8 @@ function ItemStatus({ item }) {
 }
 
 function ItemRow({ item, link, onLocate, onFix }) {
-  const done = item.status === 'fixed';
+  // 跳过的也算处理过（淡显），但还能再发给助手修
+  const done = item.status === 'fixed' || item.status === 'skipped';
   const [k, tone] = link ? linkKind(item) : item.level === 'error' ? ['错误', 'red'] : ['警告', 'amber'];
   return (
     <div className={cx('rp-row', link ? 'warn' : item.level === 'error' ? 'err' : 'warn', done && 'done')}>
@@ -49,7 +50,7 @@ function ItemRow({ item, link, onLocate, onFix }) {
       </div>
       <div className="row g4" style={{ justifyContent: 'flex-end' }}>
         <Button size="xs" icon="target" disabled={!item.location?.target} onClick={() => onLocate(item)}>定位</Button>
-        {done ? null : <Button size="xs" kind="soft" icon="sparkle" disabled={item.status === 'fixing'} onClick={() => onFix(item)}>发给助手</Button>}
+        {item.status === 'fixed' ? null : <Button size="xs" kind="soft" icon="sparkle" disabled={item.status === 'fixing'} onClick={() => onFix(item)}>发给助手</Button>}
       </div>
     </div>
   );

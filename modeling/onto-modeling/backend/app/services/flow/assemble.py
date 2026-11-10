@@ -208,6 +208,12 @@ def assemble(contributions: list[tuple[str, str, dict]], available_commands: set
         if node.get("actions"):
             node["actions"] = [action for action in node["actions"]
                                if not (isinstance(action, dict) and action.get("pack") and action["pack"] not in sources)]
+    # 动作的条件 `when`（探针名，`!` 取反）：用到的探针要在这次装配的流程里声明
+    for node in nodes:
+        for action in node.get("actions") or []:
+            for name in (action.get("when") or []) if isinstance(action, dict) else []:
+                if str(name).lstrip("!") not in flow["probes"]:
+                    problems.append(f"节点 {node['id']} 的动作「{action.get('label', '')}」条件用到的探针 {str(name).lstrip('!')} 没有声明")
     ids = [node["id"] for node in nodes]
     cycle = _cycle(ids, edges)
     if cycle:

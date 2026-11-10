@@ -2255,8 +2255,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `GET /api/v1/projects/{id}/reports/{report_id}/items` · 所有者 · 旧：`GET /api/projects/{id}/report-items` · 审计：否 · 依据：5.9.4 · 页面：reports
 
-- 查询参数：`status?`（`expert|fixing|pending|fixed`）、`level?`；分页（默认 100）。
-- 响应：`{items: ReportItem[], next_cursor, counts: {error, warning, fixed}}`。
+- 查询参数：`status?`（`expert|fixing|pending|fixed|skipped`）、`level?`；分页（默认 100）。
+- 响应：`{items: ReportItem[], next_cursor, counts: {error, warning, fixed, skipped}}`。
 
 #### RP-04 报告原文
 
@@ -5228,7 +5228,7 @@ type ReportItem = {
   level: "error" | "warning";
   text: string;
   location: { label: string; target: EntryRef | ArtifactRef | null; page: "studio-table" | "studio" | null };
-  status: "expert" | "fixing" | "pending" | "fixed";
+  status: "expert" | "fixing" | "pending" | "fixed" | "skipped";   // skipped：用户明确跳过（报告里记 ⏭️），算已处理
   status_note: string;            // 「第 2 轮仍未收敛」
 };
 

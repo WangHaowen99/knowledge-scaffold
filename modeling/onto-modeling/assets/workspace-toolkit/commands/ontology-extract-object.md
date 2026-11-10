@@ -246,7 +246,7 @@ Display coverage results. Handle gaps（全部补充 / 选择性补充 / 跳过�
 1. `python3 .claude/scripts/candidate_revision.py start --plan {要改的文档路径，逐项加引号} --note "{修正说明}"`，只修改输出里的 `candidate` 路径（新文档在该路径新建）。
 2. `python3 .claude/scripts/candidate_revision.py diff`，把每个文件的增删行数与关键改动展示给用户。
 3. `python3 .claude/scripts/candidate_revision.py check`：在临时副本里叠加候选跑整计划规则检查。退出码 0 通过；1 候选引入新错误（展示 `new_errors`，继续改候选后重新 check）或确认版本已被改动（`stale`，reject 后重新 start）；2 无法核验（展示 reason，不得接受）。
-4. 问用户是否接受前 `acquire extract-object confirm`，回复后切回 `objects`。用户同意后 `python3 .claude/scripts/candidate_revision.py accept` 写回；不同意时 `python3 .claude/scripts/candidate_revision.py reject --reason "{原因}"`，工作区文件不动。校验后候选又改过、确认版本被改动或资料与数据表有变化时 accept 会拒绝，按提示重新 check。
+4. 用户已经在确认卡里选了修订方向、或在对话里说清了要怎么改时，check 通过就直接 `python3 .claude/scripts/candidate_revision.py accept` 写回，正文说明改了哪些（不再问「是否接受这份候选修订」；每轮结束自动存成版本，用户可以撤回这一轮）。只有用户说要先看差异再定时，问之前 `acquire extract-object confirm`，回复后切回 `objects`，同意后 accept；不同意时 `python3 .claude/scripts/candidate_revision.py reject --reason "{原因}"`，工作区文件不动。校验后候选又改过、确认版本被改动或资料与数据表有变化时 accept 会拒绝，按提示重新 check。
 5. accept 后重新运行上面的 `verify_artifacts.py` 与 `field_semantics.py types`，不复用旧回执与旧结论。
 6. 存量对象里的 `字符串`、`数字` 类型不自动改写；要改时同样走本流程，由用户确认差异后接受。
 

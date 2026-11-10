@@ -226,7 +226,7 @@ def next_step_lines(flow: dict, stage: str) -> list:
 
 SUGGESTIONS_MAX = 3
 # 建议条判定的版本（F7 起按规则表从上往下判、带 check 与 note）：后端只用支持这一版的 flow_state
-SUGGEST_RULES = 3
+SUGGEST_RULES = 4
 
 
 def _item(sid: str, label: str, action: dict, *, reason: str, priority: int, primary: bool = False,
@@ -249,8 +249,21 @@ def _action(action: dict) -> dict:
     return _send(action['command'])
 
 
-def _node_actions(node: dict, *, verify_first: bool = False) -> list:
-    actions = [action for action in node.get('actions') or [] if action.get('command') or action.get('page')]
+def action_shown(action: dict, probes: dict | None) -> bool:
+    """动作的 `when`（探针名列表，`!名字` 取反）都成立才出现，如「追加分析」要已有资料分析报告。
+    不知道结果的探针（没给 probes，或工作区里算不了的内核探针）不过滤。"""
+    for name in action.get('when') or []:
+        probe = str(name).lstrip('!')
+        if probes is None or probe not in probes:
+            continue
+        if bool(probes[probe]) == str(name).startswith('!'):
+            return False
+    return True
+
+
+def _node_actions(node: dict, *, verify_first: bool = False, probes: dict | None = None) -> list:
+    actions = [action for action in node.get('actions') or []
+               if (action.get('command') or action.get('page')) and action_shown(action, probes)]
     if verify_first:
         actions = sorted(actions, key=lambda action: not action.get('verify'))
     else:
@@ -278,6 +291,42 @@ def _goal_items(flow: dict, nodes: list, states: dict, context: dict) -> list:
     return [answer, *_mainline_items(flow, nodes, states, context)]
 
 
+MAINLINE_PLACEMENTS = ('spine', 'step', 'gate')
+
+
+def _covers(patterns: list, wanted: list) -> bool:
+    """写入范围 patterns 盖得住 wanted 里每一个产出（ontology/* 盖得住 ontology/operation/*）。"""
+    return bool(wanted) and all(any(fnmatch.fnmatch(item, pattern) for pattern in patterns) for item in wanted)
+
+
+def _outputs(node: dict) -> list:
+    return [str(item.get('path') if isinstance(item, dict) else item) for item in
+            [*(node.get('produces') or []), *(node.get('writes') or [])]]
+
+
+def _checked_downstream(node: dict, stale_on: list, nodes: list, state_of: dict) -> bool:
+    """过期的 node（或它的某一步，stale_on 是那一步的）后面有已确认的必经节点 M 能核对并修复同一批改动：M.stale_on 盖住
+    这些类别、M 的写入范围盖住 node 的产出。M 已确认说明它是在这批改动之后跑的、核对过了（典型：校验自己的修复改了对象），
+    上游不再推刷新。M 没跑过或也过期时照旧推上游刷新——改动可能要补提取，M 核对不出来（ADR-0090）。"""
+    if not stale_on:
+        return False
+    after = False
+    for other in nodes:
+        if other is node:
+            after = True
+            continue
+        if not after or state_of.get(other['id']) != 'confirmed' or other.get('optional') \
+                or other.get('placement', 'spine') not in MAINLINE_PLACEMENTS or other.get('section', 'required') != 'required':
+            continue
+        if set(stale_on) <= set(other.get('stale_on') or []) and _covers(_outputs(other), _outputs(node)):
+            return True
+    return False
+
+
+def _step_stale_on(node: dict, step_id) -> list:
+    return next((list(step.get('stale_on') or []) for step in node.get('steps') or [] if step.get('id') == step_id), [])
+
+
 def _stale_items(nodes: list, state_of: dict, context: dict) -> list:
     """7. 过期的步骤：刷新。按段的节点一段一步地列（按钮写清哪一段哪一步），其余节点整个刷新。
 
@@ -292,13 +341,17 @@ def _stale_items(nodes: list, state_of: dict, context: dict) -> list:
             continue
         if node.get('per_slice'):
             for step in context.get('slice_stale') or []:
+                if _checked_downstream(node, _step_stale_on(node, step.get('step')), nodes, state_of):
+                    continue
                 where = f"{step['slice_name']} · {step['step_label']}" if step.get('sliced') else step['step_label']
                 reason = f"上游「{step['upstream']}」改过" if step.get('upstream') else '上游改过，这一步要刷新'
                 out.append(_item(f"refresh:{node['id']}:{step.get('slice_id')}:{step['step']}", f"刷新「{where}」",
                                  _slice_step(step), reason=reason, priority=2, icon='refresh'))
             continue
+        if _checked_downstream(node, list(node.get('stale_on') or []), nodes, state_of):
+            continue
         entry = (node.get('entry') or {}).get('command') or next(
-            (action['command'] for action in _node_actions(node) if action.get('command')), None)
+            (action['command'] for action in _node_actions(node, probes=context.get('probes')) if action.get('command')), None)
         if entry:
             reason = f"上游「{upstream[node['id']]}」改过" if upstream.get(node['id']) else '上游改过，这一步要刷新'
             out.append(_item(f"refresh:{node['id']}", f"刷新「{node['title']}」", _send(entry),
@@ -314,7 +367,7 @@ def _check_items(nodes: list, state_of: dict, context: dict) -> list:
                          reason='报告里还有待处理的问题', priority=3))
     for node in nodes:
         if node.get('placement') == 'gate' and state_of.get(node['id']) in ('ready', 'not_ready') and node.get('blocks'):
-            for action in _node_actions(node)[:1]:
+            for action in _node_actions(node, probes=context.get('probes'))[:1]:
                 out.append(_item(f"gate:{node['id']}", action['label'], _action(action),
                                  reason='挡住发布的关卡还没通过', priority=3))
     return out
@@ -340,7 +393,7 @@ def _mainline_items(flow: dict, nodes: list, states: dict, context: dict) -> lis
             out.append(_item(f"{current['id']}:{slice_next.get('slice_id')}:{slice_next.get('step')}", label,
                              _slice_step(slice_next), reason='下一步', priority=4))
         elif state_of.get(current['id']) not in ('running', 'pending_confirm') and not current.get('per_slice'):
-            actions = _node_actions(current, verify_first=stage == '资料分析待核验')
+            actions = _node_actions(current, verify_first=stage == '资料分析待核验', probes=context.get('probes'))
             for index, action in enumerate(actions[:SUGGESTIONS_MAX]):
                 out.append(_item(f"{current['id']}#{index}", action['label'], _action(action),
                                  reason='下一步', priority=4))
@@ -352,7 +405,7 @@ def _mainline_items(flow: dict, nodes: list, states: dict, context: dict) -> lis
                          reason='可选步骤', priority=5))
     for node in nodes:
         if flags_of.get(node['id'], {}).get('backfill'):
-            for action in _node_actions(node)[:1]:
+            for action in _node_actions(node, probes=context.get('probes'))[:1]:
                 out.append(_item(f"backfill:{node['id']}", f"补做「{node['title']}」", _action(action),
                                  reason='可补做', priority=5))
     return out
@@ -454,6 +507,7 @@ def suggest(flow: dict, states: dict, context: dict | None = None, check=None) -
     - slice_next：按段的节点这一段的下一步 {slice_id, slice_name, step, label, command, sliced}；
     - slice_stale：按段的节点过期的那几段那几步 [{slice_id, slice_name, step, step_label, command, sliced, upstream}]；
     - stale_upstream：其余过期节点 → 上游的说法（「对象、操作」）；
+    - probes：探针结果 {名字: bool}，按动作的 `when` 筛动作（不给时不筛）；
     - confine_active：范围限定生效（增量构建一轮进行中），这时第 7 条不出；
     - awaiting_reply：这条对话里的命令停下来等你在对话里回复（锁在命令声明的等回复阶段）{id, label}：这时不推别的命令
       （点了会把命令丢在半路），只留一行说明。

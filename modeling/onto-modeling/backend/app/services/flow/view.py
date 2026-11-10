@@ -64,7 +64,7 @@ def _lock_alive(root: Path, command: str) -> bool:
 def _suggest_module(root: Path, state):
     """本项目锁定版本的 flow_state 支持这一版建议条判定（SUGGEST_RULES）就用它，旧 core 版本用镜像版本：
     规则表、能否执行的检查与说明行（F7）三处要同一份，升级前的项目不能还按旧的判。"""
-    if getattr(state, "SUGGEST_RULES", 0) >= 3:
+    if getattr(state, "SUGGEST_RULES", 0) >= 4:
         return state
     from ..packs import contracts
 
@@ -358,7 +358,8 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
             "per_slice": bool(node.get("per_slice")),
             "blocks": list(node.get("blocks") or []),
             "actions": [] if item.get("broken") else _actions(node, item["state"], hooks.get(node["id"], []),
-                                                              blueprint_draft=blueprint_context["state"] == "draft"),
+                                                              blueprint_draft=blueprint_context["state"] == "draft",
+                                                              probes=probes, shown=getattr(state, "action_shown", None)),
             "hooks": [{key: hook[key] for key in ("id", "title", "when", "command", "pack")}
                       for hook in hooks.get(node["id"], [])],
             "plugin": None if node.get("pack", "core") == "core" else _plugin_ref(node),
@@ -384,10 +385,12 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     simple_states = {node_id: {"state": item["state"], "flags": item["flags"]} for node_id, item in states.items()}
     suggester = _suggest_module(root, state)
     suggest_stage = stage
+    suggest_probes = probes
     if changeset and (copy / ".git").is_file():
         # 有没确认的变更集：下一步按助手副本里的样子算（和助手收尾时 state_helper suggest 看到的一样）
         copy_probes = state.evaluate(flow, copy)
         suggest_stage = state.legacy_stage(flow, copy, copy_probes)
+        suggest_probes = copy_probes
         suggester.overlay_pending(flow, simple_states, state.node_hits(flow, copy, copy_probes))
         for node in nodes:
             if node["id"] not in simple_states:
@@ -398,7 +401,7 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
                 node["display_state"] = node_state.display(changed, node["flags"])
     extra = dict(context or {})
     interrupted_exec = extra.pop("interrupted_exec", None)
-    suggest_context = {"stage": suggest_stage, "changeset": changeset, "blueprint": blueprint_context,
+    suggest_context = {"stage": suggest_stage, "probes": suggest_probes, "changeset": changeset, "blueprint": blueprint_context,
                        "slice_next": (sliced or {}).get("slice_next"),
                        "slice_stale": (sliced or {}).get("slice_stale") or [],
                        "stale_upstream": _stale_upstream(flow, simple_states),
@@ -486,11 +489,13 @@ def _hooks_by_node(flow: dict) -> dict[str, list[dict]]:
     return out
 
 
-def _actions(node: dict, state: str, hooks: list[dict] | None = None, *, blueprint_draft: bool = False) -> list[dict]:
+def _actions(node: dict, state: str, hooks: list[dict] | None = None, *, blueprint_draft: bool = False,
+             probes: dict | None = None, shown=None) -> list[dict]:
     actions = [
         {"kind": "start", "label": action["label"], "target": action.get("command") or action["page"],
          **({"verify": True} if action.get("verify") else {})}
-        for action in node.get("actions") or [] if action.get("command") or action.get("page")
+        for action in node.get("actions") or [] if (action.get("command") or action.get("page"))
+        and (shown is None or shown(action, probes))
     ]
     # 节点钩子（详设 6.4）：之前的排在节点自己的动作前面，之后的排在后面
     before = [{"kind": "start", "label": hook["title"], "target": hook["command"], "hook": hook["id"]}

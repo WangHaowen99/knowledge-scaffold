@@ -37,17 +37,8 @@ If `KNOWLEDGE_BLOCK` equals `（暂无相关业务知识）`, set it to an empty
 List `ontology/data-mock/`. Extract the object names referenced by this operation from the `与object的关联` section.
 
 **If mock data is missing for any referenced object:**
-`python3 .claude/scripts/state_helper.py acquire trace confirm`，then show（回复后 `acquire trace start`）: "该逻辑引用了以下对象，但尚无对应测试数据：
-{list of objects without mock data}
-
-- 回复 **生成**（/ontology-mock）→ 现在生成缺失的测试数据
-- 回复 **跳过** → 不使用 mock 数据，仅用场景测试"
-
-If user chooses "生成":
-- Read `.claude/commands/ontology-mock.md` and follow it, but only generate data for the missing objects (not all objects).
-- After mock data generation completes, continue to Step 3.
-
-If user chooses "跳过": set MOCK_DATA_DIR = empty, proceed to Step 3.
+不问用户，说一句「{对象} 还没有测试数据，先补上」，按 `.claude/commands/ontology-mock.md` 的「由追踪带起」方式只给缺的对象生成，完成后进入 Step 3。
+用户在 `$ARGUMENTS` 或这条消息里说了不要测试数据时才跳过：set MOCK_DATA_DIR = empty, proceed to Step 3.
 
 **If all referenced objects have mock data:** set MOCK_DATA_DIR = `ontology/data-mock/`
 

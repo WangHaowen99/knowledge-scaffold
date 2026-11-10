@@ -95,7 +95,7 @@ def test_list_detail_items_and_raw(env):
                            "arbitration", "extras"}
     items = client.get(f"{base}/reports/20261102-120000-all-rule/items", params={"level": "error"}).json()
     assert [item["code"] for item in items["items"]] == ["E-ROUTE-01", "E-SRC-02"]
-    assert items["counts"] == {"error": 2, "warning": 1, "fixed": 1}
+    assert items["counts"] == {"error": 2, "warning": 1, "fixed": 1, "skipped": 0}
     assert client.get(f"{base}/reports/20261102-120000-all-rule/items", params={"status": "x"}).status_code == 400
     raw = client.get(f"{base}/reports/20261102-120000-all-rule/raw").json()
     assert raw == {"path": "reports/20261102-120000-all-rule.md", "content_md": RULE_REPORT, "truncated": False}
@@ -145,3 +145,28 @@ def test_fix_and_recheck(env):
     assert again["previous"] == {"at": report["at"], "summary": report["summary"]}
     bad = client.post(f"{base}/reports/recheck", json={"kind": "bogus"})
     assert bad.status_code == 400 and bad.json()["code"] == "invalid_argument"
+
+
+def test_skipped_items_count_as_handled_and_validation_completes(env):
+    """端到端验证发现：用户明确选「跳过」的问题原来留 `[ ]`，校验完成不了、发布一直挡着。跳过记 ⏭️，修好的记 ✅ / 🔧：
+    报告页算已处理，流程探针（只认 `[ ]`）算校验完成。"""
+    from app.services.flow import view
+
+    client, _workspaces, _pid, root, base = env
+    main_write(root, "ontology/object/补货单.md", "# 补货单\n\n合成。\n", "web: 合成对象")
+    main_write(root, "reports/20261102-130000-all-rule.md", """## 规则检查结果 2026-11-02 13:00 Asia/Shanghai
+
+### operation/受理补货申请.md
+- 🔧 ⚠️ [链接失效] [[补货]] 没有对应文件 → 已自动修复
+- ✅ ❌ [逻辑缺陷] 输出没有交接对象
+- ⏭️ ❌ [结构缺失] 缺少「输入」章节
+""", "validate: 合成报告")
+    main_write(root, "reports/20261102-120000-all-rule.md", RULE_REPORT.replace("- [ ]", "- ⏭️"), "validate: 跳过")
+    detail = client.get(f"{base}/reports/20261102-130000-all-rule").json()
+    assert [item["status"] for item in detail["items"]] == ["fixed", "fixed", "skipped"]
+    assert detail["progress"] == {"handled": 3, "total": 3}
+    assert detail["summary"] == "没有问题"
+    counts = client.get(f"{base}/reports/20261102-130000-all-rule/items").json()["counts"]
+    assert counts["skipped"] == 1 and counts["fixed"] == 2
+    nodes = {node["id"]: node for node in view.build(root)["nodes"]}
+    assert nodes["core.validate"]["state"] == "confirmed"

@@ -28,6 +28,9 @@ Generate mock test data for all business objects. Topic (if any): $ARGUMENTS
 整个 mock 命令期间始终遵循 `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md`。
 mock-data-agent 的 prompt 需 transclude 该文件全文。
 
+**由追踪带起**（场景模拟缺测试数据时补生成）：只给缺数据的对象生成——Step 2 不问（按「补充」），Step 3.5 有引用问题按「自动修复」，
+Step 4 不等确认、直接进 Step 5 保存（用户点的是追踪，测试数据是中间产物；要改可以之后说或撤回这一轮）。
+
 ## Step 1: Check prerequisites
 
 List files in `ontology/object/`. If empty: "未找到业务对象文档，请先运行 `/ontology-extract-object` 提取对象。" Stop.
