@@ -1510,3 +1510,16 @@ Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`
    （待处理、已退回带原因），提交后马上看得到。
 4. **通知**：管理员的 `request_pending` 带 `action: {label: "去处理", page: "plugin-upload", params: {tab: "req"}}`，前端跳转带上 `params`；
    新增类型 `request_reviewed`（数据源申请通过或退回，`action` 指向申请人项目的数据源页）。知识提名的结果仍用 `nomination_reviewed`。
+
+## 2026-11-10 · 端到端验证待定事项：插件中心的连接器
+
+用户 11-10 定：插件中心「多源连接器」把数据库、代码仓库、REA 这些采集类连接器也列出来（原来只有文档转换器，用户不知道平台能接什么）。
+
+1. **PL-01**：部署了连接器网关时，在包仓库的卡片之外合成网关里的采集类连接器卡片（取网关提供方清单，内核已缓存 30 秒）：`category="provider"`、
+   `converter=null`、新字段 `collector={kind, evidence_types, input, self_service, installed, readonly_method, license_note}`，`description`
+   是「采集实体、字段、……」。装好的 `project_status="platform_installed"`，没装的（如没部署 REA 旁路容器）是 `platform_available`；平台安装（PL-19）
+   仍不开放，前端对采集类不出安装按钮，写「需要管理员部署」。和包仓库里同名的以包为准。没部署网关、网关不通时不列，目录照常出。
+   包仓库里的包卡片 `collector=null`。
+2. **PL-02**：采集类连接器的名字也能打开详情，`contents`、`flow_insertions`、`changelog` 为空，`released_at` 为 null，`requires` 为空；前端详情页
+   只列能采什么、只读方式、许可、登记方式（自助登记或要管理员），不出「包含什么」「更新记录」页签和「启用到本项目」。
+

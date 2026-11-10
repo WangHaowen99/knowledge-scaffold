@@ -9,13 +9,13 @@ import { errorText } from '../../api/errors.js';
 import { ShellG } from '../../shell/Shell.jsx';
 import { can } from '../../state/roles.js';
 import {
-  Button, Chip, Empty, Icon, Menu, Modal, Note, Stat, Tabs, useOutside,
+  Button, Chip, Empty, Icon, KV, Menu, Modal, Note, Stat, Tabs, useOutside,
 } from '../../ui/index.jsx';
 import { UiChip } from './catalogCards.jsx';
 import { usePackActions } from './catalogDialogs.jsx';
 import { PACK_CATEGORIES, packIcon, publisherChip, versionOf } from './catalogModel.js';
 import {
-  contentGroups, contentTotal, converterDefaults, disableConfirm, flowCaption, flowLayout, heroActions, heroFacts, heroMenu, statCards,
+  collectorFacts, contentGroups, contentTotal, converterDefaults, disableConfirm, flowCaption, flowLayout, heroActions, heroFacts, heroMenu, statCards,
 } from './detailModel.js';
 import { Changelog, ContentsGrid, FlowMap } from './detailParts.jsx';
 import { usePluginProject } from './parts.jsx';
@@ -195,6 +195,10 @@ export default function PluginDetailPage({ route }) {
           </div>
         </div>
 
+        {d.collector ? (
+          // 采集类连接器：装在网关或旁路容器里，没有包内容、流程节点和版本记录
+          <div className="card mt16"><div className="card-b" style={{ padding: 18 }}><KV pairs={collectorFacts(d)} w="72px" /></div></div>
+        ) : (
         <div className="card mt16">
           <div style={{ padding: '0 16px' }}>
             <Tabs items={[['ov', '概览'], ['ct', '包含什么', contentTotal(groups)], ['ver', '更新记录', d.changelog?.length || 0]]} value={tab} onChange={setTab} />
@@ -211,6 +215,7 @@ export default function PluginDetailPage({ route }) {
           {tab === 'ct' ? <div className="card-b" style={{ padding: 18 }}><ContentsGrid groups={groups} /></div> : null}
           {tab === 'ver' ? <div className="card-b" style={{ padding: '8px 18px 14px' }}><Changelog changelog={d.changelog} /></div> : null}
         </div>
+        )}
 
         <Modal
           open={confirmOff}

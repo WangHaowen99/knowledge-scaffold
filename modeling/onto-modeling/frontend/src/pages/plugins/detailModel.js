@@ -166,6 +166,13 @@ export function heroFacts(d) {
  */
 export function heroActions(d, o = {}) {
   const st = d?.project_status;
+  if (d?.collector) {
+    if (!d.collector.installed) return { primary: { label: '未安装', disabled: true, kind: '' }, hint: '需要管理员部署。' };
+    return {
+      primary: { label: '平台已安装', icon: 'check', disabled: true, kind: 'soft' },
+      hint: d.collector.self_service ? '在项目的「资料 → 数据源」里自己登记。' : '在项目的「资料 → 数据源」里登记，需要管理员。',
+    };
+  }
   if (!o.hasProject && d?.category !== 'provider') return { hint: '先在「我的项目」里建一个项目，才能启用到项目。' };
   switch (st) {
     case 'required': return { menu: { label: '必装 · 已启用', icon: 'lock' } };
@@ -253,4 +260,22 @@ export function changelogView(changelog) {
       ? { text: '本项目在用', tone: 'blue', icon: 'check' }
       : t === 'needs_core_upgrade' ? { text: '需要先升级基础建模能力', tone: 'amber', icon: 'alert' } : { text: t, tone: 'gray', icon: null })),
   }));
+}
+
+// ---------- 采集类连接器 ----------
+const EVIDENCE_TYPE_LABELS = {
+  entity: '实体', field: '字段', relation: '关系', constraint: '约束', operation: '操作', rule: '规则', flow: '流程', profile: '数据画像', sample: '脱敏样本', term: '术语',
+};
+
+/** 采集类连接器详情的几行（没有包内容、流程节点和版本记录）：能采什么、只读方式、许可、怎么登记 */
+export function collectorFacts(d) {
+  const c = d?.collector;
+  if (!c) return [];
+  const types = (c.evidence_types || []).map((x) => EVIDENCE_TYPE_LABELS[x] || x).join('、');
+  return [
+    ['能采', types],
+    ['只读方式', c.readonly_method],
+    ['许可', c.license_note],
+    ['登记', c.self_service ? '可自己登记' : '需管理员登记'],
+  ].filter(([, v]) => v);
 }

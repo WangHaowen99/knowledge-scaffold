@@ -73,16 +73,30 @@ function providerUsage(name) {
   return ids.length ? `${ids.join('、')} 在用` : '未登记数据源';
 }
 
+const EVIDENCE_TYPE_LABELS = { entity: '实体', field: '字段', relation: '关系', constraint: '约束', operation: '操作', rule: '规则', flow: '流程', profile: '数据画像', sample: '脱敏样本', term: '术语' };
+// 网关里真有的采集类连接器带 collector（同 PL-01 的合成卡片）；PROVIDER_INFO 里其余的是设计稿里还没做的提供方，走「安装到平台」
+const collectorOf = (p) => ({
+  kind: p.kind, evidence_types: p.evidence_types || [], input: p.input || 'connection', self_service: !!p.self_service,
+  installed: p.installed !== false, readonly_method: p.readonly_method || '', license_note: p.license_note || '',
+});
 function providerCards() {
-  const byId = Object.fromEntries(evidenceProviders().items.map((p) => [p.id, p]));
-  return PROVIDER_NAMES.map((name) => {
+  const real = evidenceProviders().items;
+  const byId = Object.fromEntries(real.map((p) => [p.id, p]));
+  const designed = PROVIDER_NAMES.map((name) => {
     const [label, description, batch] = PROVIDER_INFO[name];
     const v = byId[name]?.version || '0.1.0';
     return {
       name, label, description, category: 'provider', version: v, latest: v, channel: 'stable', publisher: { kind: 'official', label: '官方' },
       ui: null, batch, badges: [], meta: null, project_status: null, locked_version: null, usage_note: null, default_on: false,
+      ...(byId[name] ? { collector: collectorOf(byId[name]) } : null),
     };
   });
+  const extra = real.filter((p) => !PROVIDER_INFO[p.id]).map((p) => ({
+    name: p.id, label: p.label, description: `采集${(p.evidence_types || []).map((t) => EVIDENCE_TYPE_LABELS[t] || t).join('、')}`, category: 'provider', version: p.version, latest: p.version, channel: 'stable',
+    publisher: { kind: 'official', label: '平台' }, ui: null, batch: null, badges: [], meta: null, project_status: null, locked_version: null,
+    usage_note: null, default_on: false, collector: collectorOf(p),
+  }));
+  return [...designed, ...extra];
 }
 
 // 多源连接器里的转换器（ADR-0073）：随连接器网关交付，平台已安装，不按项目启用

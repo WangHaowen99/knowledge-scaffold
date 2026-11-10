@@ -166,6 +166,14 @@ export function register(ctx) {
     if (r.error) return r.error;
     const card = r.cards.find((c) => c.name === name);
     if (!card) return err(404, 'pack_not_found', `包 ${name} 不存在`);
+    // 采集类连接器：同真实后端，没有包内容、流程节点和版本记录
+    if (card.collector) {
+      return json(200, {
+        ...card, size: 0, files: 0, released_at: null, released_by: null, enabled_at: null,
+        requires: { depends: {}, kernel_api: '', page_api: null }, flow_insertions: [], project_stats: null,
+        contents: [], config: [], changelog: [], hot_level: 'H2', effective: 'immediate',
+      });
+    }
     const d = detailOf(card, flags);
     const pp = r.items?.find((p) => p.name === name && p.status !== 'disabled');
     const version = query.get('version') || pp?.locked_version || card.latest;
