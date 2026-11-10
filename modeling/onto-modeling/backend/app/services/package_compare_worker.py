@@ -1,0 +1,100 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
+"""Isolated ZIP index worker for knowledge package comparisons."""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - Windows development environments
+    resource = None
+
+from . import package_compare
+from .workspace import WorkspaceError, WorkspaceManager
+
+
+def _virtual_memory_bytes() -> int:
+    """Return the address space already occupied by the imported worker."""
+    try:
+        for line in Path("/proc/self/status").read_text(encoding="utf-8").splitlines():
+            if line.startswith("VmSize:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def _apply_limits(raw: str) -> None:
+    limits = json.loads(raw)
+    memory_bytes = int(limits["worker_memory_bytes"])
+    cpu_seconds = int(limits["worker_cpu_seconds"])
+    if resource is not None:
+        # RLIMIT_AS is an absolute virtual-address-space ceiling.  The full
+        # application dependency graph is imported before this point, so a
+        # fixed 512 MiB ceiling can already be below the worker's baseline.
+        # Treat the configured value as the additional parsing budget.
+        baseline = _virtual_memory_bytes()
+        address_space_limit = baseline + memory_bytes if baseline else memory_bytes
+        _soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        if hard != resource.RLIM_INFINITY:
+            address_space_limit = min(address_space_limit, hard)
+        resource.setrlimit(
+            resource.RLIMIT_AS,
+            (address_space_limit, address_space_limit),
+        )
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
+    package_compare.MAX_UNCOMPRESSED_BYTES = int(limits["max_uncompressed_bytes"])
+    package_compare.MAX_FILE_BYTES = int(limits["max_file_bytes"])
+    package_compare.MAX_MANIFEST_BYTES = int(limits["max_manifest_bytes"])
+    package_compare.MAX_FILES = int(limits["max_files"])
+    package_compare.MAX_ENTRIES = int(limits["max_entries"])
+    package_compare.MAX_PATH_BYTES = int(limits["max_path_bytes"])
+
+
+def main() -> int:
+    if len(sys.argv) != 4:
+        return 2
+    archive_path = Path(sys.argv[1])
+    output_path = Path(sys.argv[2])
+    try:
+        _apply_limits(sys.argv[3])
+        response = {"ok": True, "index": package_compare._archive_index_core(archive_path)}
+    except WorkspaceError as error:
+        response = {
+            "ok": False,
+            "error": {
+                "message": str(error),
+                "status": error.status,
+                "code": error.code,
+            },
+        }
+    except MemoryError:
+        response = {
+            "ok": False,
+            "error": {
+                "message": "知识包解析所需内存超过限制，请缩小知识包后重试",
+                "status": 413,
+                "code": "compare_archive_memory_limit",
+            },
+        }
+    except Exception:
+        response = {
+            "ok": False,
+            "error": {
+                "message": "知识包解析失败，请检查 ZIP 文件",
+                "status": 400,
+                "code": "compare_archive_invalid",
+            },
+        }
+    WorkspaceManager._atomic_write(
+        output_path,
+        json.dumps(response, ensure_ascii=False).encode("utf-8"),
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
