@@ -716,6 +716,21 @@ def excel_preview(project_id: str, path: str, request: Request):
         raise WorkspaceError(str(exc), exc.status)
 
 
+@router.get("/{project_id}/source-preview")
+def source_preview(project_id: str, path: str, request: Request, anchor: str = ""):
+    """原始资料分段预览（文本、docx），返回锚点附近的分段与是否命中。"""
+    from ..services import source_preview as source_service
+
+    root = ensure_access(project_id, request)
+    target = workspaces._resolve_inside(root, path)
+    if not target.is_file():
+        raise WorkspaceError("文件不存在", 404)
+    try:
+        return source_service.preview(target, anchor)
+    except source_service.SourcePreviewError as exc:
+        raise WorkspaceError(str(exc), exc.status)
+
+
 @router.get("/{project_id}/file-at")
 def file_at_revision(project_id: str, rev: str, path: str, request: Request):
     ensure_access(project_id, request)
@@ -1417,6 +1432,14 @@ def studio_graph(project_id: str, request: Request):
 
     root = ensure_access(project_id, request)
     return studio.graph(root)
+
+
+@router.get("/{project_id}/studio/updates")
+def studio_updates(project_id: str, request: Request):
+    from ..services import studio
+
+    root = ensure_access(project_id, request)
+    return {"updates": studio.updates(root)}
 
 
 @router.get("/{project_id}/studio/elements/{element_id}/flow")

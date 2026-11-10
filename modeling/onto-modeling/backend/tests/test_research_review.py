@@ -220,7 +220,48 @@ def test_deterministic_errors_block_acceptance(workspace, toolkit, report, expec
 
 
 # ---------------------------------------------------------------------------
-# research_checker：分类分流（规则/指标不得混进逻辑候选）
+# research_checker：「详细信息」的资料出处（规则「原始资料来源」取自这里）
+# ---------------------------------------------------------------------------
+
+def with_detail_source(source: str) -> str:
+    return make_report(GOOD_ROWS).replace("合成属性说明。", f"- 来源：{source}")
+
+
+@pytest.mark.parametrize("source", [
+    pytest.param("resource/others/说明.md#L1", id="完整路径和锚点"),
+    pytest.param("resource/others/说明.md#L1；同条规则另见 resource/others/说明.md#L5（说明）",
+                 id="多处出处"),
+    pytest.param("resource/others/说明.md", id="不带锚点"),
+    pytest.param("领域知识整理", id="不是资料路径"),
+])
+def test_detail_sources_that_resolve_pass(workspace, toolkit, source):
+    checker, review = toolkit
+    write_report(workspace, with_detail_source(source))
+
+    result = checker.run_check(workspace)
+
+    assert result["status"] == review.PASSED, result["issues"]
+
+
+@pytest.mark.parametrize("source,expected,fragment,status", [
+    pytest.param("resource/others/不存在.docx#p:3", "来源缺失", "不存在.docx", "failed",
+                 id="文件不存在"),
+    # 与清单锚点读不到一致：判「无法核验」，同样不放行
+    pytest.param("resource/others/说明.md#L999", "来源无法核验", "#L999", "unverifiable",
+                 id="锚点不存在"),
+    pytest.param("resource/others/说明.md#L1、#L5", "来源缺失", "#L5", "failed", id="省略路径"),
+])
+def test_detail_sources_that_do_not_resolve_block_acceptance(
+    workspace, toolkit, source, expected, fragment, status
+):
+    checker, review = toolkit
+    write_report(workspace, with_detail_source(source))
+
+    result = checker.run_check(workspace)
+
+    assert result["status"] == status
+    assert categories(result) == {expected}
+    assert any(fragment in issue["message"] for issue in result["issues"])
 # ---------------------------------------------------------------------------
 
 def test_mixed_categories_report_passes(workspace, toolkit):

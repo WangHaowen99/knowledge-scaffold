@@ -686,3 +686,86 @@ def test_invalid_name_metadata_does_not_break_studio(tmp_path, raw):
     target.write_text(raw + "# 业务描述\n\nsynthetic description\n", encoding="utf-8")
     assert studio.graph(tmp_path)["nodes"][0]["label"] == "synthetic_plain"
     assert studio.element(tmp_path, "ontology/operation/synthetic_plain.md")["label"] == "synthetic_plain"
+
+
+def _commit_at(root: Path, timestamp: int, message: str) -> None:
+    import os
+    import subprocess
+
+    env = {**os.environ, "GIT_AUTHOR_DATE": f"{timestamp} +0000", "GIT_COMMITTER_DATE": f"{timestamp} +0000"}
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", message], cwd=root, check=True, env=env)
+
+
+def test_studio_updates_use_commit_time_and_worktree_mtime(tmp_path: Path):
+    import os
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "synthetic"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "synthetic@example.com"], cwd=tmp_path, check=True)
+    object_dir = tmp_path / "ontology" / "object"
+    rule_dir = tmp_path / "ontology" / "rule"
+    object_dir.mkdir(parents=True)
+    rule_dir.mkdir(parents=True)
+    (object_dir / "订单.md").write_text("# 订单\n", encoding="utf-8")
+    (object_dir / "synthetic_stable.md").write_text("# stable\n", encoding="utf-8")
+    (rule_dir / "synthetic_rule.md").write_text("# rule v1\n", encoding="utf-8")
+    _commit_at(tmp_path, 1_700_000_000, "first")
+    (rule_dir / "synthetic_rule.md").write_text("# rule v2\n", encoding="utf-8")
+    (object_dir / "订单.md").write_text("# 订单 v2\n", encoding="utf-8")
+    _commit_at(tmp_path, 1_700_000_100, "second")
+
+    # 已写入工作区、未提交：改动的文档和新建文档都取文件修改时间
+    (rule_dir / "synthetic_rule.md").write_text("# rule v3\n", encoding="utf-8")
+    os.utime(rule_dir / "synthetic_rule.md", (1_700_000_500, 1_700_000_500))
+    (rule_dir / "synthetic_new.md").write_text("# new\n", encoding="utf-8")
+    os.utime(rule_dir / "synthetic_new.md", (1_700_000_600, 1_700_000_600))
+
+    assert studio.updates(tmp_path) == {
+        "ontology/object/订单.md": 1_700_000_100,
+        "ontology/object/synthetic_stable.md": 1_700_000_000,
+        "ontology/rule/synthetic_rule.md": 1_700_000_500,
+        "ontology/rule/synthetic_new.md": 1_700_000_600,
+    }
+
+
+def test_studio_updates_ignore_pure_renames(tmp_path: Path):
+    """纯改名（内容不变）沿用改名前的时间，改名同时改了内容才算更新。"""
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "synthetic"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "synthetic@example.com"], cwd=tmp_path, check=True)
+    rule_dir = tmp_path / "ontology" / "rule"
+    rule_dir.mkdir(parents=True)
+    body = "# 规则描述\n合成规则，内容足够长以便识别重命名。\n"
+    (rule_dir / "规则甲.md").write_text(body, encoding="utf-8")
+    (rule_dir / "规则乙.md").write_text(body + "乙\n", encoding="utf-8")
+    _commit_at(tmp_path, 1_700_000_000, "first")
+
+    (rule_dir / "规则甲.md").rename(rule_dir / "规则丙.md")
+    (rule_dir / "规则乙.md").rename(rule_dir / "规则丁.md")
+    (rule_dir / "规则丁.md").write_text(body + "乙，改名时改了内容\n", encoding="utf-8")
+    _commit_at(tmp_path, 1_700_000_100, "rename")
+
+    # 再改名一次：连续两次纯改名也要追回最初的时间
+    (rule_dir / "规则丙.md").rename(rule_dir / "规则戊.md")
+    _commit_at(tmp_path, 1_700_000_200, "rename again")
+
+    assert studio.updates(tmp_path) == {
+        "ontology/rule/规则戊.md": 1_700_000_000,
+        "ontology/rule/规则丁.md": 1_700_000_100,
+    }
+
+
+def test_studio_updates_empty_without_git(ontology_root: Path, monkeypatch):
+    assert studio.updates(ontology_root) == {}
+
+    (ontology_root / ".git").mkdir()
+
+    def broken_git(*args, **kwargs):
+        raise OSError("git unavailable")
+
+    monkeypatch.setattr(studio.subprocess, "run", broken_git)
+    assert studio.updates(ontology_root) == {}

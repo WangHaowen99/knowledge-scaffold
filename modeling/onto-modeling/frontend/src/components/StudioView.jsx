@@ -8,6 +8,7 @@ import { Button, Empty, Spin, Table, Tag, Typography, message } from 'antd';
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { workspaceDirtySources } from '../lib/workspaceDirty.js';
+import { compareUpdatedAt, formatUpdatedAt, withUpdatedAt } from '../lib/studioUpdates.js';
 import { Markdown } from './CenterPane.jsx';
 import StudioEntryEditor from './StudioEntryEditor.jsx';
 
@@ -20,6 +21,7 @@ const KIND_LABEL = { object: '对象', operation: '操作', logic: '操作', rul
 export default function StudioView({
   project,
   onOpenFile,
+  knownPaths,
   onCommand,
   onWorkspaceChanged,
   active = false,
@@ -31,6 +33,8 @@ export default function StudioView({
   const [selectedElementId, setSelectedElementId] = useState('');
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
+  const [updates, setUpdates] = useState({});
+  const [updatesRequest, setUpdatesRequest] = useState(0);
   const previousProjectId = useRef(project.id);
 
   const refreshGraph = useCallback(() => {
@@ -50,9 +54,31 @@ export default function StudioView({
       setView('graph');
       setQuery('');
       setSelectedElementId('');
+      setUpdates({});
     }
     if (active) refreshGraph();
   }, [active, project.id, refreshGraph, workspaceRevision]);
+
+  // 最后更新时间要查 git 历史，只在表视图读取，图视图不发这个请求
+  useEffect(() => {
+    if (!active || view !== 'table') return undefined;
+    let cancelled = false;
+    api
+      .studioUpdates(project.id)
+      .then((data) => !cancelled && setUpdates(data.updates || {}))
+      .catch(() => !cancelled && setUpdates({}));
+    return () => {
+      cancelled = true;
+    };
+  }, [active, view, project.id, workspaceRevision, updatesRequest]);
+
+  const tableRows = useMemo(() => {
+    const keyword = query.trim();
+    const nodes = keyword
+      ? graph.nodes.filter((n) => `${n.id} ${n.label || ''} ${n.description || ''}`.includes(keyword))
+      : graph.nodes;
+    return withUpdatedAt(nodes, updates);
+  }, [graph, query, updates]);
 
   const openEntry = useCallback(
     (path, elementId = '') => {
@@ -71,6 +97,7 @@ export default function StudioView({
 
   const refresh = useCallback(() => {
     refreshGraph();
+    setUpdatesRequest((count) => count + 1);
     if (!entry?.path) return;
     if (view === 'edit' && workspaceDirtySources().includes('studio-editor')) {
       message.warning('当前编辑表单有未保存修改，已刷新图数据但保留表单内容');
@@ -81,6 +108,12 @@ export default function StudioView({
     setEntry(null);
     openEntry(path, elementId);
   }, [entry, openEntry, refreshGraph, selectedElementId, view]);
+
+  // 详情里的资料芯片：打开原文时记下当前条目，预览上方的「返回」回到这里
+  const openFromEntry = useCallback(
+    (path, options) => onOpenFile?.(path, { ...options, origin: { path: entry?.path, focus: 'studio' } }),
+    [entry?.path, onOpenFile],
+  );
 
   const pathByName = useMemo(() => {
     const map = new Map();
@@ -175,11 +208,7 @@ export default function StudioView({
             size="small"
             rowKey="id"
             pagination={{ pageSize: 15, hideOnSinglePage: true }}
-            dataSource={
-              query.trim()
-                ? graph.nodes.filter((n) => `${n.id} ${n.label || ''} ${n.description || ''}`.includes(query.trim()))
-                : graph.nodes
-            }
+            dataSource={tableRows}
             onRow={(row) => ({ onClick: () => openEntry(row.path), style: { cursor: 'pointer' } })}
             columns={[
               {
@@ -203,6 +232,14 @@ export default function StudioView({
                 ),
               },
               { title: '名称', dataIndex: 'label', render: (label, row) => label || row.id },
+              {
+                title: '最后更新时间',
+                dataIndex: 'updatedAt',
+                width: 170,
+                sorter: compareUpdatedAt,
+                sortDirections: ['descend', 'ascend'],
+                render: formatUpdatedAt,
+              },
               { title: '引用', dataIndex: 'out', width: 70, sorter: (a, b) => a.out - b.out },
               { title: '被引', dataIndex: 'in', width: 70, sorter: (a, b) => a.in - b.in },
             ]}
@@ -274,11 +311,13 @@ export default function StudioView({
               ))}
             </div>
           )}
-          {entry.intro && <Markdown content={entry.intro} />}
+          {entry.intro && (
+            <Markdown content={entry.intro} onOpenFile={openFromEntry} knownPaths={knownPaths} />
+          )}
           {entry.sections.map((section) => (
             <div key={section.title} className="studio-section msg-soft">
               <div className="studio-section-title">{section.title}</div>
-              <Markdown content={section.content} />
+              <Markdown content={section.content} onOpenFile={openFromEntry} knownPaths={knownPaths} />
             </div>
           ))}
         </div>
