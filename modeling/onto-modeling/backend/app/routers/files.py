@@ -326,7 +326,7 @@ def reverse_query(project_id: str, request: Request, kind: str = "", term: str =
 
 # ---- 报告（RP-01～RP-06）：reports/ 下的检查报告、research/ 下的资料分析报告、内核算的链接检查 ----
 
-ITEM_STATUSES = ("expert", "fixing", "pending", "fixed")
+ITEM_STATUSES = ("expert", "fixing", "pending", "fixed", "skipped")
 
 
 def _report_call(func, *args, **kwargs):
@@ -389,6 +389,7 @@ def report_items(project_id: str, report_id: str, request: Request, status: str 
         "error": sum(1 for item in items if item["level"] == "error"),
         "warning": sum(1 for item in items if item["level"] == "warning"),
         "fixed": sum(1 for item in items if item["status"] == "fixed"),
+        "skipped": sum(1 for item in items if item["status"] == "skipped"),
     }
     picked = [item for item in items if (not status or item["status"] == status) and (not level or item["level"] == level)]
     page = deps.page(picked, cursor, limit, {"report": report_id, "status": status, "level": level}, default=100)

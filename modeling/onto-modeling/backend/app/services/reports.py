@@ -40,6 +40,11 @@ _TYPE_PATTERNS = (
 )
 _CODE = re.compile(r"^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\s+")
 _CHECKBOX = re.compile(r"^\[([ xX])\]\s*")
+# 处理过的条目：修好的和用户明确跳过的
+HANDLED = ("fixed", "skipped")
+# 校验命令收尾时把处理过的条目换成标记：✅ 修好、🔧 自动修复、⏭️ 用户明确跳过（只有 `[ ]` 算没处理，同流程探针）
+_DONE_MARK = re.compile(r"^(?:✅|🔧)\s*")
+_SKIP_MARK = re.compile(r"^⏭\ufe0f?\s*")
 _LINK = re.compile(r"\[\[([^\]|#]+)")
 RECHECK_COMMANDS = {"rule": "/ontology-validate", "semantic": "/ontology-validate", "coverage": "/ontology-validate",
                     "diagram": "/ontology-validate-diagrams"}
@@ -165,6 +170,10 @@ def items_of(root: Path, text: str) -> list[dict]:
         if match := _CHECKBOX.match(content):
             status = "fixed" if match.group(1) != " " else "pending"
             content = content[match.end():]
+        elif match := _DONE_MARK.match(content):
+            status, content = "fixed", content[match.end():]
+        elif match := _SKIP_MARK.match(content):
+            status, content = "skipped", content[match.end():]
         code = None
         if match := _CODE.match(content):
             code, content = match.group(1), content[match.end():]
@@ -187,8 +196,8 @@ def items_of(root: Path, text: str) -> list[dict]:
 
 
 def _summary(items: list[dict]) -> str:
-    errors = sum(1 for item in items if item["level"] == "error" and item["status"] != "fixed")
-    warnings = sum(1 for item in items if item["level"] == "warning" and item["status"] != "fixed")
+    errors = sum(1 for item in items if item["level"] == "error" and item["status"] not in HANDLED)
+    warnings = sum(1 for item in items if item["level"] == "warning" and item["status"] not in HANDLED)
     parts = [f"错误 {errors}" if errors else "", f"警告 {warnings}" if warnings else ""]
     return " · ".join(part for part in parts if part) or "没有问题"
 
@@ -263,7 +272,7 @@ def detail(manager, project_id: str, report_id: str) -> dict:
     parsed = report_items.parse(text)
     extras = {key: value for key, value in parsed.items() if key not in ("items", "summary")} or None
     return {**summary, "scope_text": "", "mode": "full", "duration_ms": None, "previous": None,
-            "progress": {"handled": sum(1 for item in items if item["status"] == "fixed"), "total": len(items)},
+            "progress": {"handled": sum(1 for item in items if item["status"] in HANDLED), "total": len(items)},
             "items": items[:ITEMS_PAGE], "items_next_cursor": None, "repair": None, "arbitration": None,
             "extras": extras}
 

@@ -230,8 +230,8 @@ If no complex issues, skip to A5.5.
 
   [确认修改] [我来提供方案] [跳过]
   ```
-- **输入编号**: handle only the selected items, same per-item flow as above.
-- **跳过**: skip all complex issues, proceed to A5.5.
+- **输入编号**: handle only the selected items, same per-item flow as above；没选中的留 `[ ]`，以后还能处理或跳过。
+- **跳过**: skip all complex issues listed this round（A6 记 `⏭️`，不再算待处理）, proceed to A5.5.
 
 ### A5.5: 回归规则检查
 
@@ -254,7 +254,7 @@ Tell the user:
 
 Then handle these regression issues using the same A3→A4→A5 flow (auto-classify, auto-fix simple with summary, handle complex via terminal). After fixes, repeat A5.5.
 
-If user chooses "跳过" at any point during regression handling: proceed to A6.
+If user chooses "跳过" at any point during regression handling: the regression issues listed this round count as skipped (`⏭️` in A6); proceed to A6.
 
 **If no regressions:** Tell user "回归检查通过，未发现新问题。" and proceed to A6.
 
@@ -264,9 +264,11 @@ If user chooses "跳过" at any point during regression handling: proceed to A6.
 
 Update `reports/{rule-filename}`:
 - `🔧` items (auto-fixed simple): keep as-is (already marked as auto-fixed)
-- `[x]` items that were fixed → `✅`
-- `[x]` items that were skipped → `⏭️`
-- `[ ]` items that were not selected → keep as `[ ]`
+- items that were fixed → `✅`
+- items the user explicitly skipped（选「跳过」那一批里没修的、逐条处理时选「跳过」的）→ `⏭️`
+- items not selected when the user picked only some numbers → keep as `[ ]`
+
+写法是把行首的 `[ ]` 换掉，如 `- [ ] ❌ [逻辑缺陷] …` → `- ⏭️ ❌ [逻辑缺陷] …`。只有 `[ ]` 算待处理（挡住校验完成和发布）；`⏭️` 是用户明确不处理，不挡。
 
 ```bash
 git add ontology/ reports/
@@ -394,7 +396,7 @@ Parse the user's selection:
 - **高置信**: set `B4_SELECTED` = IDs whose `confidence == "high"`; if none, tell user "本轮无高置信问题，请改用其他选项。"
 - **展开低置信**: expand and re-print the low-confidence block, then ask again for a selection
 - **输入编号如 1,3**: parse comma-separated IDs; ignore spaces; if any ID does not exist, warn the user and only keep valid IDs
-- **跳过**: set `B4_SELECTED` = empty and proceed to B6
+- **跳过**: set `B4_SELECTED` = empty, add the issue IDs listed this round to `B4_SKIPPED`, and proceed to B6
 
 Initialize session-local state for Phase B:
 - `B4_MODIFIED`: stems of files actually modified during semantic fixes; start empty when Phase B begins and append on each actual file change
@@ -530,7 +532,7 @@ Append them to `reports/{semantic-filename}` under a new section:
 
 - Show the regression issues in the terminal using the same numbered summary format as B3, and ensure the numbers match the appended report entries exactly.
 - If user selects issues: set `B4_SELECTED` to those regression issue IDs, go back to B4（重新进入 B4a 批量修复路径，未应用的会经 B4d 逐条处理），then repeat B5.
-- If user replies "跳过": proceed to B6.
+- If user replies "跳过": add the regression issue IDs to `B4_SKIPPED`, proceed to B6.
 
 **If no regressions:** Tell user "回归检查通过，未发现新问题。" and proceed to B6.
 

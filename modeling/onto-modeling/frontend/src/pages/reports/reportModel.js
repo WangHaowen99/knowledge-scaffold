@@ -77,6 +77,7 @@ export const ITEM_STATUS = {
   fixing: { running: '修复中' },
   pending: { chip: ['待处理', 'gray', null] },
   fixed: { chip: ['已修复', 'teal', 'check'] },
+  skipped: { chip: ['已跳过', 'gray', null] },
 };
 
 // 链接检查的问题分类（按检查器规则码）
