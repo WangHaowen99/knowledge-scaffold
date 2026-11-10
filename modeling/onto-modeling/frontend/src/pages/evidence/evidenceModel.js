@@ -745,3 +745,8 @@ const UNTRUSTED_TEXT = { rea: '来自目标程序', code: '来自代码仓库', 
 export const untrustedText = (kind) => UNTRUSTED_TEXT[kind] || UNTRUSTED_TEXT.rea;
 // 没指定锚点时默认选中左栏第一条
 export const firstTreeAnchor = (tree) => (tree?.domains || []).find((d) => d.entities?.length)?.entities[0].anchor || null;
+
+// 本人提交、还没通过的登记申请（EV-01 my_requests）：状态说法与色调；退回带原因
+export function myRequestState(r) {
+  return r?.state === 'rejected' ? { text: '已退回', tone: 'gray' } : { text: '等管理员处理', tone: 'amber' };
+}

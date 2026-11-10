@@ -241,7 +241,7 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
         return;
       }
       if (!admin) {
-        await api.requestEvidenceSource(registerBody(form, provider, { withSecret: false }));
+        await api.requestEvidenceSource({ ...registerBody(form, provider, { withSecret: false }), project_id: pid });
         toast('已提交登记申请', 'send');
         onSaved?.();
         return;

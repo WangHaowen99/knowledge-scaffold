@@ -1,21 +1,20 @@
-// 管理员审核申请（AD-08～AD-10）：插件安装（PL-04）、数据源登记（EV-03）、知识提名（K-08）。
-// 设计稿没画入口，暂不挂载（见 gaps.md F4）。契约 8.2 建议入口：通知进入；plugin-upload 加「申请」页签。
-// 挂载方法：PluginUploadPage.jsx 的 UploadReview 里加 const [tab, setTab] = useState(route.query?.tab === 'req' ? 'req' : 'up')，
-// PageHead 下面放 <Tabs items={[['up', '上传', null, 'upload'], ['req', '申请', null, 'inbox']]} value={tab} onChange={setTab} />，
-// tab === 'req' 时把 .plu-grid 换成 <AdminRequests />；通知 request_pending 的跳转写 plugin-upload?tab=req。
+// 管理员审核申请（AD-08～AD-10）：数据源登记（EV-03）、知识提名（K-08）；插件安装（PL-04）还没有。
+// 挂在插件安装页的「申请」页签（契约 8.2），管理员的 request_pending 通知跳到 plugin-upload?tab=req。
+// 数据源申请通过时在弹窗里写凭据（提供方的密钥字段），后端按申请登记并授权给申请人的项目。
 // 版式与上传页的卡片一致（.card、.pl-file 行、.pl-ico 图标底色）。只有管理员能调这组接口。
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import {
-  Area, Button, Chip, Empty, Field, Icon, KV, Modal, Note, Seg, cx,
+  Area, Button, Chip, Empty, Field, Icon, Inp, KV, Modal, Note, Seg, cx,
 } from '../../ui/index.jsx';
 import '../../styles/plugins-upload.css';
 import {
-  REQUEST_KINDS, REQUEST_STATES, approveHint, filterRequests, reasonProblem, requestCounts, requestMeta, requestReason, requestToast,
+  REQUEST_KINDS, REQUEST_STATES, approveBody, approveHint, filterRequests, reasonProblem, requestCounts, requestMeta, requestReason, requestToast,
 } from './uploadModel.js';
 import { useActorNames } from './uploadParts.jsx';
+import { secretField } from '../evidence/evidenceModel.js';
 
 const ENV_LABEL = { production: '生产环境', test: '测试环境', staging: '预发环境' };
 
@@ -39,10 +38,13 @@ function RequestDetail({ r }) {
   return null;
 }
 
-function DecideModal({ r, action, busy, nameOf, onClose, onSubmit }) {
+function DecideModal({ r, action, busy, nameOf, sf, onClose, onSubmit }) {
   const [text, setText] = useState('');
+  const [secret, setSecret] = useState('');
   const approve = action === 'approve';
-  const problem = approve ? null : reasonProblem(text);
+  const approval = approveBody(r, { note: text, secret, sf });
+  const problem = approve ? approval.problem : reasonProblem(text);
+  const needSecret = approve && r.kind === 'source_registration' && !!sf;
   const kind = REQUEST_KINDS[r.kind];
   return (
     <Modal
@@ -52,7 +54,7 @@ function DecideModal({ r, action, busy, nameOf, onClose, onSubmit }) {
         <>
           <Button onClick={onClose}>取消</Button>
           <Button kind={approve ? 'primary' : 'danger'} icon={approve ? 'check' : 'undo'} disabled={busy || !!problem} title={problem || undefined}
-            onClick={() => onSubmit(text.trim())}>{approve ? '通过' : '退回'}</Button>
+            onClick={() => onSubmit(approve ? approval.body : { reason: text.trim() })}>{approve ? '通过' : '退回'}</Button>
         </>
       )}
     >
@@ -63,7 +65,12 @@ function DecideModal({ r, action, busy, nameOf, onClose, onSubmit }) {
       ]} />
       <RequestDetail r={r} />
       {approve && approveHint(r) ? <Note tone="amber" className="mt12">{approveHint(r)}</Note> : null}
-      <Field className="mt12" label={approve ? '备注（可选）' : '退回原因'} req={!approve} hint="写进审核记录。">
+      {needSecret ? (
+        <Field className="mt12" label={sf.label || '凭据'} req>
+          <Inp icon="lock" type="password" autoComplete="new-password" value={secret} onChange={(e) => setSecret(e.target.value)} />
+        </Field>
+      ) : null}
+      <Field className="mt12" label={approve ? '备注（可选）' : '退回原因'} req={!approve}>
         <Area value={text} onChange={(e) => setText(e.target.value)} minHeight={approve ? 64 : 88} />
       </Field>
     </Modal>
@@ -109,13 +116,20 @@ export default function AdminRequests() {
   const counts = useMemo(() => requestCounts(items), [items]);
   const shown = useMemo(() => filterRequests(items, { kind, state }), [items, kind, state]);
   const nameOf = useActorNames((items || []).map((r) => r.requested_by));
+  // 数据源申请通过时要写的凭据字段（密码、访问令牌）按提供方来
+  const [providers, setProviders] = useState(null);
+  useEffect(() => {
+    if (!(items || []).some((r) => r.kind === 'source_registration') || providers) return;
+    api.evidenceProviders().then(setProviders).catch(() => setProviders({ items: [] }));
+  }, [api, items, providers]);
+  const secretOf = (r) => secretField((providers?.items || []).find((p) => p.id === r.payload?.provider));
 
-  const submit = async (text) => {
+  const submit = async (body) => {
     const { r, action } = deciding;
     setBusy(true);
     try {
-      if (action === 'approve') await api.approveRequest(r.id, text ? { note: text } : {});
-      else await api.rejectRequest(r.id, { reason: text });
+      if (action === 'approve') await api.approveRequest(r.id, body);
+      else await api.rejectRequest(r.id, body);
       toast(requestToast(r, action), action === 'approve' ? 'check' : 'undo');
       setDeciding(null);
     } catch (e) {
@@ -131,7 +145,6 @@ export default function AdminRequests() {
     <div className="card">
       <div className="card-h">
         <h3>审核申请</h3>
-        <span className="sub">建模者提交，管理员通过后生效</span>
         <span className="sp" />
         <Seg items={[['pending', `待处理${n('all')}`], ['done', '已处理']]} value={state} onChange={setState} />
       </div>
@@ -145,13 +158,11 @@ export default function AdminRequests() {
             {shown.map((r) => <RequestRow key={r.id} r={r} nameOf={nameOf} onDecide={(x, action) => setDeciding({ r: x, action })} />)}
           </div>
         ) : (
-          <Empty icon="inbox" title={state === 'pending' ? '没有待处理的申请' : '还没有处理过的申请'}>
-            插件安装、数据源登记和知识提名的申请会出现在这里，有新申请时铃铛里也会提醒。
-          </Empty>
+          <Empty icon="inbox" title={state === 'pending' ? '没有待处理的申请' : '还没有处理过的申请'} />
         )}
       </div>
       {deciding ? (
-        <DecideModal r={deciding.r} action={deciding.action} busy={busy} nameOf={nameOf} onClose={() => setDeciding(null)} onSubmit={submit} />
+        <DecideModal r={deciding.r} action={deciding.action} busy={busy} nameOf={nameOf} sf={secretOf(deciding.r)} onClose={() => setDeciding(null)} onSubmit={submit} />
       ) : null}
     </div>
   );

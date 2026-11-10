@@ -27,6 +27,7 @@ const NTF_STYLE = {
   publish_done: ['upload', 'var(--t50)', 'var(--teal)'],
   nomination_reviewed: ['book', 'var(--b50)', 'var(--blue)'],
   request_pending: ['inbox', 'var(--a50)', 'var(--amber2)'],
+  request_reviewed: ['db', 'var(--b50)', 'var(--blue)'],
   upload_rejected: ['ban', 'var(--r50)', 'var(--red)'],
 };
 
@@ -51,7 +52,7 @@ function NotificationDrawer({ open, onClose, items, onReadAll }) {
               <div className="sm muted mt4">{n.body}</div>
               {n.action ? (
                 <div className="mt8">
-                  <Button size="xs" kind="soft" onClick={() => { onClose(); navigate(pagePath(n.action.page, n.project_id)); }}>{n.action.label}</Button>
+                  <Button size="xs" kind="soft" onClick={() => { onClose(); navigate(pagePath(n.action.page, n.project_id), n.action.params); }}>{n.action.label}</Button>
                 </div>
               ) : null}
             </div>

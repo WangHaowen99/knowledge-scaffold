@@ -10,7 +10,7 @@ import { errorText, formatBytes } from '../../api/errors.js';
 import { PageHead, ShellP } from '../../shell/Shell.jsx';
 import { Button, Card, Chip, Icon, Modal, Note, Seg, Table, Toggle, cx } from '../../ui/index.jsx';
 import {
-  ENV, JOB_STATE, KIND_ICON, canManageSource, connText, credState, fmtDuration, fmtNum, fmtWhen, isArtifactSource, monthText, providerKind, scopeWindowText,
+  ENV, JOB_STATE, KIND_ICON, canManageSource, connText, credState, fmtDuration, fmtNum, fmtWhen, isArtifactSource, monthText, myRequestState, providerKind, scopeWindowText,
 } from './evidenceModel.js';
 import { EvdPlg, EvidenceGate, RowMenu, useIsAdmin } from './parts.jsx';
 import { SourceWizard } from './SourceWizard.jsx';
@@ -224,6 +224,15 @@ function SourcesBody() {
         {rows === null ? <div className="sm muted">正在读取…</div> : rows.length ? (
           <Table compact cols={['数据源', '连接器', '环境', '连接参数', '凭据引用', '范围与访问窗口', '最近采集', '授权本项目使用', '']} rows={tableRows} />
         ) : <div className="sm muted" style={{ padding: '18px 4px' }}>{filter === 'all' ? '还没有登记的数据源。' : '没有符合筛选的数据源。'}</div>}
+        {(all?.my_requests || []).map((r) => {
+          const st = myRequestState(r);
+          return (
+            <div key={r.id} className="row g8 sm mt8">
+              <Icon name="send" size={13} /><b>{r.display_name}</b><Chip tone={st.tone} sm>{st.text}</Chip>
+              {r.state === 'rejected' && r.note ? <span className="muted ell">{r.note}</span> : null}
+            </div>
+          );
+        })}
       </Card>
       <div className="mt16">
         <Card

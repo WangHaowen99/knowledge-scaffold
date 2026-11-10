@@ -5,7 +5,7 @@ import * as F from '../src/api/mock/fixtures.js';
 import { failedChecks, passedChecks, reportMarkdown, seedRequests, seedUploads, summaryOf } from '../src/api/mock/pack-uploads-data.js';
 import { addAdminRequest, finishCheck, register } from '../src/api/mock/routes-pack-uploads.js';
 import {
-  PACK_MAX_BYTES, approveHint, canReject, checkView, contributesText, defaultPublishForm, effectText, eligibleProjects, filterRequests,
+  PACK_MAX_BYTES, approveBody, approveHint, canReject, checkView, contributesText, defaultPublishForm, effectText, eligibleProjects, filterRequests,
   fmtClock, installBlock, isPublishable, kindText, orderUploads, packLimit, pickUpload, publishBlock, publishBody, publishToast, reasonProblem,
   rejectDraft, requestCounts, requestMeta, requestReason, rolloutEstimate, rolloutProblem, segUploads, summaryText, timelineRows,
   uploadErrorText, uploadMeta, uploadStatus, uploadTitle, validatePackFile,
@@ -342,9 +342,16 @@ test('审核申请：筛选、计数、理由、说明', () => {
   assert.match(requestReason(items[0]), /平台上还没有装这个连接器/);
   assert.equal(requestReason({ payload: {} }), '');
   assert.equal(requestMeta(items[1], { nameOf: (x) => (x === 'liming' ? '李明' : x), now }), '李明 · 社区诊所排队分诊 · 20:00');
-  assert.match(approveHint(items[1]), /先在数据源登记里写入凭据/);
-  assert.match(approveHint(items[2]), /「物业服务」下一个版本/);
+  // 数据源申请在弹窗里直接写凭据、知识提名通过只记结论：都不另加说明
+  assert.equal(approveHint(items[1]), '');
+  assert.equal(approveHint(items[2]), '');
   assert.match(approveHint(items[0]), /安装到平台/);
+  // 数据源申请通过要带提供方的密钥字段；别的申请只带备注
+  const sf = { name: 'password', label: '密码', secret: true };
+  assert.deepEqual(approveBody(items[1], { sf }), { body: null, problem: '请填写密码' });
+  assert.deepEqual(approveBody(items[1], { sf, secret: 's3cret', note: ' 已开只读 ' }),
+    { body: { note: '已开只读', secret: { password: 's3cret' } }, problem: null });
+  assert.deepEqual(approveBody(items[2], { note: '' }), { body: {}, problem: null });
   // 申请里只有保留网段的地址
   assert.match(items[1].payload.connection.host, /^198\.51\.100\./);
 });
@@ -363,6 +370,8 @@ test('mock：通过 / 退回申请；处理过的再处理 409；别的分组能
   const rej = await h.call('POST', `/api/v1/admin/requests/${second.id}/reject`, { reason: '请先用测试库' });
   assert.deepEqual([rej.body.state, rej.body.note], ['rejected', '请先用测试库']);
   assert.equal((await h.call('POST', '/api/v1/admin/requests/req-none/approve', {})).body.code, 'request_not_found');
+  const source = (await h.call('GET', '/api/v1/admin/requests?kind=source_registration&state=pending')).body.items;
+  assert.equal(source.length, 0);
   const pushed = addAdminRequest(h.ctx, { kind: 'pack_install', requested_by: 'wanggong', summary: 'HTTP 接口提供方 0.3.0' });
   assert.equal(pushed.state, 'pending');
   assert.equal(h.events.at(-1).data.kind, 'request_pending');
