@@ -11,7 +11,7 @@ export const PACK_CATEGORIES = {
   provider: ['多源连接器', 'db', '连接器网关里运行，管理员安装'],
   exporter: ['导出器', 'download', '把知识包导出成其他格式'],
 };
-// 有包时才出现在左栏的分类：导出器设计稿没画；多源连接器现在只有转换器（ADR-0073），采集类本期只留接口（ADR-0056）
+// 有包时才出现在左栏的分类：导出器设计稿没画；多源连接器在部署了连接器网关时才有（转换器、采集类连接器）
 export const OPTIONAL_CATEGORIES = ['exporter', 'provider'];
 // 卡片图标底色（设计稿 .pl-ico.cap / .ind / .sys / .prov / .exp）
 export const PACK_ICON_CLASS = { capability: 'cap', industry: 'ind', system: 'sys', provider: 'prov', exporter: 'exp' };
@@ -130,6 +130,12 @@ export const versionOf = (p) => (isInstalled(p) && p.locked_version ? p.locked_v
 export function cardFoot(p, o = {}) {
   const chip = (text, tone, icon) => ({ type: 'chip', text, tone, icon: icon || null });
   const detail = { type: 'detail' };
+  // 采集类连接器（数据库、代码仓库、REA）装在网关或旁路容器里，平台级；没装的只能管理员部署，不出安装按钮
+  if (p.collector) {
+    return p.collector.installed
+      ? { left: chip('平台已安装', 'teal', 'check'), note: p.usage_note || null, noteClass: 'xs muted ell grow', right: detail }
+      : { left: chip('未安装', 'gray'), note: '需要管理员部署', noteClass: 'xs faint ell grow', right: detail };
+  }
   switch (p.project_status) {
     case 'required': return { left: chip('必装 · 已启用', 'blue', 'lock'), right: detail };
     case 'enabled': return { left: chip('已启用', 'blue', 'check'), right: detail };
