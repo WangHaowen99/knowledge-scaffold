@@ -38,15 +38,17 @@ export function panelSteps(fetched, live) {
   return out;
 }
 
-// 一步的耗时：做完的按开始到结束；在做的按开始到现在；说的话没有耗时
+// 一步的耗时：做完的按开始到结束；在做的按开始到现在；说的话没有耗时。
+// 工具本身多在几十到几百毫秒（时间花在步骤之间的模型思考上），不满 1 秒不写，免得满屏「0 秒」
+const atLeastSecond = (value) => (value != null && value >= 1000 ? fmtElapsed(value) : '');
 export function stepTime(step, now) {
   if (step.kind !== 'tool') return '';
   const start = ms(step.started_at);
   if (start == null) return '';
-  if (step.state === 'running') return fmtElapsed(now - start);
+  if (step.state === 'running') return atLeastSecond(now - start);
   const end = ms(step.ended_at);
-  if (step.duration_ms != null) return fmtElapsed(step.duration_ms);
-  return end == null ? '' : fmtElapsed(end - start);
+  if (step.duration_ms != null) return atLeastSecond(step.duration_ms);
+  return end == null ? '' : atLeastSecond(end - start);
 }
 
 // 面板顶部：状态、已运行多久、做了几步

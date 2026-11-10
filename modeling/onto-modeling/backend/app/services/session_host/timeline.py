@@ -203,9 +203,12 @@ def step_text(tool: str, data) -> str:
 
 
 def _duration_text(ms: int | None) -> str:
+    """做完的一步的耗时。工具本身多在几十到几百毫秒（时间花在步骤之间的模型思考上），不满 1 秒不写，免得满屏「0 秒」。"""
     if ms is None:
         return "进行中"
-    seconds = max(0, int(round(ms / 1000)))
+    if ms < 1000:
+        return ""
+    seconds = int(round(ms / 1000))
     if seconds < 60:
         return f"{seconds} 秒"
     return f"{seconds // 60} 分 {seconds % 60} 秒"

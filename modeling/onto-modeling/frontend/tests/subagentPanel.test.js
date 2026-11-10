@@ -76,6 +76,9 @@ test('面板：接口明细在前，实时到的同一步只改状态，新的�
   assert.equal(stepTime(steps[1], T0), '5 秒');
   assert.equal(stepTime(steps[2], T0 + 70 * 1000), '1 分 0 秒');
   assert.equal(stepTime({ id: 'say', kind: 'text', text: '说一句' }, T0), '');
+  // 工具本身不满 1 秒（实测几十到几百毫秒）不写耗时，免得满屏「0 秒」；在做的也要满 1 秒才走秒
+  assert.equal(stepTime({ id: 'r', kind: 'tool', state: 'done', started_at: iso(1), ended_at: iso(1), duration_ms: 120 }, T0), '');
+  assert.equal(stepTime({ id: 'q', kind: 'tool', state: 'running', started_at: iso(10), ended_at: null }, Date.parse(iso(10)) + 400), '');
 });
 
 test('面板顶部：状态、已运行多久、做了几步；结束后是用时和结果', () => {

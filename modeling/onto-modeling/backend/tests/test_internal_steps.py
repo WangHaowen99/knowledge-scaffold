@@ -73,3 +73,12 @@ def test_subagent_title_keeps_chinese_descriptions():
     assert timeline.subagent_title("Check object coverage", "Read .claude/agents/coverage-check-agent.md") == "覆盖检查"
     assert timeline.subagent_title("Do things", "Some english brief") == "子任务"
     assert timeline.subagent_title("", "检查三个操作的口径") == "检查三个操作的口径"
+
+
+def test_step_duration_left_blank_under_a_second():
+    """工具本身多在几十到几百毫秒，时间花在步骤之间的模型思考上：不满 1 秒不写耗时，免得满屏「0 秒」。"""
+    assert timeline._duration_text(120) == ""
+    assert timeline._duration_text(999) == ""
+    assert timeline._duration_text(1000) == "1 秒"
+    assert timeline._duration_text(75_000) == "1 分 15 秒"
+    assert timeline._duration_text(None) == "进行中"
