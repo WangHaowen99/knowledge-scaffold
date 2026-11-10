@@ -200,6 +200,14 @@ def end_turn(session, *, failed: bool, waiting_user: bool = False) -> list[dict]
     return [record] if record is not None else []
 
 
+def exec_waiting(session) -> bool:
+    """这条对话里的执行一轮已经结束、停着等你下一句（执行记录「等待」）。"""
+    if not session.exec_id:
+        return False
+    record = _safe("读执行记录", exec_records.get, session.project_id, session.exec_id)
+    return bool(record) and record.get("state") == "waiting"
+
+
 def interrupt_exec(session, reason: str, *, card: bool) -> tuple[dict | None, dict | None]:
     """打断、引擎结束、回收、停机：执行记为在某阶段中断。返回 (执行记录, 续跑卡记录)；card=False 时不出卡。"""
     if not session.exec_id:

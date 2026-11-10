@@ -1557,16 +1557,20 @@ class SessionManager:
 
     # ---- 回收与关闭 ----
 
-    async def _recycle(self, session: Session, reason: str = "recycled") -> None:
+    async def _recycle(self, session: Session, reason: str = "recycled", *, keep_waiting: bool = True) -> None:
         """回收引擎但保留续接点：resume token 已随消息流落盘，下次消息重连恢复上下文。
 
-        这条对话里还在等的执行（命令跨几轮问答，正等你的下一句）记为中断，对话里放续跑卡。
+        回收对用户应当看不出来（ADR-0088）：这一轮已经结束、命令停着等你下一句的执行（执行记录「等待」）不动，
+        下一条消息照常接着它（`turns.begin`），新引擎拿命令锁时旧持有者已不在、直接接过。其余还开着的执行
+        记为中断、放续跑卡。删除对话（keep_waiting=False）时一律中断。开着确认卡的会话不会走到这里
+        （`_recyclable`、`_busy` 都排除有待确认的会话），运维手动回收除外。
         """
         self._sessions.pop(session.project_id, None)
         if session.exec_id and not session.discarded:
-            _, card = turns.interrupt_exec(session, reason, card=not session.run_id)
-            if card is not None:
-                session.broadcast(card)
+            if not (keep_waiting and reason == "recycled" and turns.exec_waiting(session)):
+                _, card = turns.interrupt_exec(session, reason, card=not session.run_id)
+                if card is not None:
+                    session.broadcast(card)
         session.set_state("closed")
         if session.reader_task:
             session.reader_task.cancel()
@@ -1730,7 +1734,7 @@ class SessionManager:
             if session is not None and session.conversation_id == conversation_id:
                 if _busy(session):
                     raise SessionError("会话正在运行，请等它结束或先打断后再删除", 409)
-                await self._recycle(session)
+                await self._recycle(session, keep_waiting=False)
             self._next.pop((project_id, conversation_id), None)
             remaining = conversation_store.delete(project_id, conversation_id)
         await self._drain_waiters()
