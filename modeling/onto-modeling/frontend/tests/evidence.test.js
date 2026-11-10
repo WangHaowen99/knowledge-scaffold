@@ -11,7 +11,7 @@ import {
   layoutEr, mergeJob, monthText, parseAnchor, parseBudget, parseDbAnchor, parseEgress, parsePortDb, parseRate, parseWindow,
   pickSnapshot, previewPairs, registerBody, artifactPatch, wizardSteps, artifactText, isArtifactSource, canManageSource, collectOps, canIncremental,
   snapshotPairs, snapshotLimits, snapshotKind, isDbKind, browseTarget, binPathType, recordIcon, recordKindText, recordPairs, firstTreeAnchor, scopeTag, scopeWindowText, shortSnap, snapRecords, toggleSnapPick, validateForm, windowText,
-  credState, credText, defaultEgress, repoHost, secretInputLabel, portDbPlaceholder, scopePlaceholder, snippetLines, validationText, recordValidations, splitMembers,
+  credState, credText, defaultEgress, repoHost, testOneByOne, testSummary, secretInputLabel, portDbPlaceholder, scopePlaceholder, snippetLines, validationText, recordValidations, splitMembers,
   withKeys, maskedColumns, profileColumns, erLegend, dbRecordIcon, untrustedText, MASKING, myRequestState,
 } from '../src/pages/evidence/evidenceModel.js';
 
@@ -846,4 +846,14 @@ test('EV-03 申请带上项目，进管理员的审核列表；申请人在这�
 test('数据源页「我的申请」：待处理说等管理员处理，退回的标已退回', () => {
   assert.deepEqual(myRequestState({ state: 'pending' }), { text: '等管理员处理', tone: 'amber' });
   assert.deepEqual(myRequestState({ state: 'rejected', note: '改用测试库' }), { text: '已退回', tone: 'gray' });
+});
+
+test('测试已授权的连接：一个一个测（网关有并发上限，一起发会被回「繁忙」误报成没通过）', async () => {
+  let inFlight = 0; let peak = 0;
+  const test = async (s) => { inFlight += 1; peak = Math.max(peak, inFlight); await new Promise((r) => setTimeout(r, 5)); inFlight -= 1;
+    if (s.id === 'bad') throw new Error('x'); return { ok: true }; };
+  const res = await testOneByOne([{ id: 'a', display_name: '甲' }, { id: 'bad', display_name: '乙' }, { id: 'c', display_name: '丙' }], test);
+  assert.equal(peak, 1);
+  assert.deepEqual(testSummary(res), { text: '乙 连接没通过', ok: false });
+  assert.deepEqual(testSummary(res.filter(([s]) => s.id !== 'bad')), { text: '已授权的 2 个数据源连接正常', ok: true });
 });

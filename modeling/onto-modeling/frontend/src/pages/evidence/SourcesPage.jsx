@@ -10,7 +10,7 @@ import { errorText, formatBytes } from '../../api/errors.js';
 import { PageHead, ShellP } from '../../shell/Shell.jsx';
 import { Button, Card, Chip, Icon, Modal, Note, Seg, Table, Toggle, cx } from '../../ui/index.jsx';
 import {
-  ENV, JOB_STATE, KIND_ICON, canManageSource, connText, credState, fmtDuration, fmtNum, fmtWhen, isArtifactSource, monthText, myRequestState, providerKind, scopeWindowText,
+  ENV, JOB_STATE, KIND_ICON, canManageSource, connText, credState, fmtDuration, fmtNum, fmtWhen, isArtifactSource, monthText, myRequestState, providerKind, scopeWindowText, testOneByOne, testSummary,
 } from './evidenceModel.js';
 import { EvdPlg, EvidenceGate, RowMenu, useIsAdmin } from './parts.jsx';
 import { SourceWizard } from './SourceWizard.jsx';
@@ -136,9 +136,9 @@ function SourcesBody() {
   const testAuthorized = async () => {
     setTesting(true);
     try {
-      const res = await Promise.all(testable.map((s) => api.testEvidenceSource(s.id, { project_id: pid }).then((r) => [s, r]).catch(() => [s, null])));
-      const bad = res.filter(([, r]) => !r?.ok);
-      toast(bad.length ? `${bad.map(([s]) => s.display_name).join('、')} 连接没通过` : `已授权的 ${res.length} 个数据源连接正常`, bad.length ? 'alert' : 'activity');
+      const res = await testOneByOne(testable, (s) => api.testEvidenceSource(s.id, { project_id: pid }));
+      const sum = testSummary(res);
+      toast(sum.text, sum.ok ? 'activity' : 'alert');
     } finally {
       setTesting(false);
     }

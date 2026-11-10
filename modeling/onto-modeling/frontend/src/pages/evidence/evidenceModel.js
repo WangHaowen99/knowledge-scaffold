@@ -750,3 +750,18 @@ export const firstTreeAnchor = (tree) => (tree?.domains || []).find((d) => d.ent
 export function myRequestState(r) {
   return r?.state === 'rejected' ? { text: '已退回', tone: 'gray' } : { text: '等管理员处理', tone: 'amber' };
 }
+
+// 「测试已授权的连接」：一个一个测。网关有并发上限，一起发会有几个被回「繁忙」，原来被当成连接没通过
+export async function testOneByOne(sources, test) {
+  const out = [];
+  for (const source of sources) {
+    out.push([source, await test(source).catch(() => null)]);
+  }
+  return out;
+}
+export function testSummary(results) {
+  const bad = results.filter(([, r]) => !r?.ok);
+  return bad.length
+    ? { text: `${bad.map(([s]) => s.display_name).join('、')} 连接没通过`, ok: false }
+    : { text: `已授权的 ${results.length} 个数据源连接正常`, ok: true };
+}
