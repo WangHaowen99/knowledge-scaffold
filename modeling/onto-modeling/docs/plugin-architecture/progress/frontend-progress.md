@@ -169,7 +169,7 @@ mock 状态（地址参数 `?mock=`，逗号分隔；同一组的多个标记用
 - me：账号（三格按设计稿填）0.81%；外观 0.00%；通知 0.13%；我的模型配置（存过个人 Key）3.65%；管理员关闭个人 Key 1.89%。
 - sys：模型接入 0.77%；推荐表 3.03%、编辑卡 2.46%、有误 3.14%；会话与权限 0.15%（保存后）；沙箱 1.01%；MCP 2.01%；配置注册表 2.06%；配额 2.72% / 4.26%。
 
-### 设计稿没画入口的 5 个组件（写好、不挂载，等用户决定）
+### 设计稿没画入口的组件（写好、不挂载，等用户决定；管理员审核申请 2026-11-10 已挂上）
 
 组件、mock、单测都在；页面里没有挂载点、注释或开关。挂载只改下面几行：
 
@@ -177,7 +177,6 @@ mock 状态（地址参数 `?mock=`，逗号分隔；同一组的多个标记用
 |---|---|---|---|
 | 链路检索 O-05 | `src/pages/ops/TraceSearch.jsx` | `routes-ops-obs.js` 的 `GET /ops/traces`；`tests/opsObs.test.js` | `OpsObsPage.jsx`：加 `import TraceSearch from './TraceSearch.jsx'`；在 `<TraceCard …/>` 上一行加 `<TraceSearch range={range} labels={labels} onOpen={openTrace} />` |
 | 无主项目与指定所有者 AD-06/07 | `src/pages/ops/UnownedProjects.jsx` | `routes-admin.js`（AD-06 两个合成项目、AD-07 校验并写审计）；`tests/opsUsers.test.js` | `usersAccounts.jsx` 的 `AccountsPane`：import `UnownedProjects`、`Seg`；加 `const [view, setView] = useState('all')`；角色说明行 `<span className="sp" />` 后放 `<Seg items={[['all','全部账号'],['unowned','无主项目']]} value={view} onChange={setView} />`（可只对 admin 显示）；`view === 'unowned'` 时渲染 `<UnownedProjects users={items} />` 代替账号表与统计卡 |
-| 管理员审核申请 AD-08～10 | `src/pages/plugins/AdminRequests.jsx` | `routes-pack-uploads.js`（另导出 `addAdminRequest`，PL-04 已用它推申请）；`tests/pluginUpload.test.js` | `PluginUploadPage.jsx` 的 `UploadReview`：import `AdminRequests`、`Tabs`；加 `const [tab, setTab] = useState(route.query?.tab === 'req' ? 'req' : 'up')`；`PageHead` 下放 `<Tabs items={[['up','上传',null,'upload'],['req','申请',null,'inbox']]} value={tab} onChange={setTab} />`；`tab === 'req'` 时把 `.plu-grid` 换成 `<AdminRequests />`；通知 `request_pending` 跳 `plugin-upload?tab=req` |
 | 模型单价 SY-18 | `src/pages/sys/PricingCard.jsx` | `routes-system.js`；`tests/sys.test.js` | `ModelSection.jsx`：加 import；在末尾「默认引擎 / 个人 API Key」那个 `grid2` 之后加 `<PricingCard className="mt16" />` |
 | 服务令牌 X-06 | `src/pages/sys/ServiceTokensSection.jsx` | `routes-system.js`（明文是 `onto_svc_mock-placeholder-0001` 这类占位）；`tests/sys.test.js` | `SysPage.jsx`：import 并在 `PANES` 加 `contract: ServiceTokensSection`；`sysModel.js` 的 `SYS_SECTIONS` 末尾加 `{ key: 'contract', title: '对外契约', icon: 'key' }` |
 
