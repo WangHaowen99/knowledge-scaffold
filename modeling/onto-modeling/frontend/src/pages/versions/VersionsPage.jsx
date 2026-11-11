@@ -11,13 +11,15 @@ import { ScopeLockBar, useProjectEvent } from '../plugin/parts.jsx';
 import {
   Button, Card, Chip, Icon, Menu, Note, Select, St, cx,
 } from '../../ui/index.jsx';
+import { createLatestRequest } from '../../lib/latestRequest.js';
+import { setWorkspaceDirty } from '../../lib/workspaceDirty.js';
 import CompareEditor from './CompareEditor.jsx';
 import { usePopMenu } from './popMenu.js';
 import {
   DeleteTagModal, FilesDrawer, RevertModal, TagModal,
 } from './dialogs.jsx';
 import {
-  SOURCES, SOURCE_FILTERS, byNewest, changeText, compareFromOf, compareOptions, defaultCompare, diffLines, editBlocks, entryPath,
+  EMPTY_HISTORY, SOURCES, SOURCE_FILTERS, appendPage, byNewest, changeText, compareFromOf, compareOptions, defaultCompare, diffLines, editBlocks, entryPath,
   fmtStamp, pathLocked, syncMeta, pickLanding, rangeOptions, reviewView, srcClass, srcLabel, targetLabel, versionMenu, changeRows, pathLabel, versionSub,
 } from './versionsModel.js';
 import '../../styles/more.css';
@@ -112,8 +114,10 @@ export default function VersionsPage({ route }) {
   const { api } = useApp();
   const { pid, scope, setMeta } = useProject();
   const q = route?.query || {};
-  const [items, setItems] = useState(null);
-  const [more, setMore] = useState(null);
+  const [hist, setHist] = useState(null);
+  const items = useMemo(() => (hist ? byNewest(hist.items) : null), [hist]);
+  const more = hist?.next || null;
+  const diffReq = useMemo(() => createLatestRequest(), []);
   const [filter, setFilter] = useState('');
   const [filtered, setFiltered] = useState(null);
   const [selected, setSelected] = useState(null);
@@ -138,8 +142,7 @@ export default function VersionsPage({ route }) {
   const loadItems = useCallback(async () => {
     try {
       const r = await api.versions(pid, { limit: 200 });
-      setItems(byNewest(r.items));
-      setMore(r.next_cursor);
+      setHist(appendPage(EMPTY_HISTORY, r));
       setMeta((m) => syncMeta(m, r));
       return r.items;
     } catch (e) {
@@ -147,7 +150,15 @@ export default function VersionsPage({ route }) {
       return null;
     }
   }, [api, pid, setMeta]);
-  useEffect(() => { setItems(null); loadItems(); }, [loadItems]);
+  useEffect(() => { setHist(null); loadItems(); }, [loadItems]);
+  const loadMore = async () => {
+    try {
+      const r = await api.versions(pid, { limit: 200, cursor: more });
+      setHist((h) => appendPage(h || EMPTY_HISTORY, r));
+    } catch (e) {
+      toast(errorText(e), 'alert');
+    }
+  };
   useEffect(() => {
     if (!filter) { setFiltered(null); return undefined; }
     let alive = true;
@@ -197,32 +208,36 @@ export default function VersionsPage({ route }) {
   }, [detail, selected, options, cmp.path]);
 
   const loadDiff = useCallback(async (c = cmp) => {
-    if (!c.path || !c.from) { setDiff(null); return; }
+    if (!c.path || !c.from) { diffReq.invalidate(); setDiff(null); return; }
     setDiffErr('');
-    try {
-      const d = await api.versionDiff(pid, { from: c.from, to: c.to || 'WORKTREE', path: c.path });
-      // 从原文编辑器跳来：from 往往就是这个文件最近一次改动的版本，和当前一样时改比它的上一个版本，才看得出改了什么
-      if (stepBack.current && d.left === d.right) {
-        stepBack.current = false;
-        const fromV = byCommit.get(c.from);
-        const prev = fromV && byNewest(items).find((x) => x.n < fromV.n);
-        if (prev) {
-          setNote(`${fromV.version_label} 与当前相同，已改为对比 ${prev.version_label}`);
-          setCmp({ ...c, from: prev.commit });
-          return;
+    // 连着换对象或版本时，先发的请求晚回来也不覆盖后选的
+    await diffReq.run(() => api.versionDiff(pid, { from: c.from, to: c.to || 'WORKTREE', path: c.path }), {
+      success: (d) => {
+        // 从原文编辑器跳来：from 往往就是这个文件最近一次改动的版本，和当前一样时改比它的上一个版本，才看得出改了什么
+        if (stepBack.current && d.left === d.right) {
+          stepBack.current = false;
+          const fromV = byCommit.get(c.from);
+          const prev = fromV && byNewest(items).find((x) => x.n < fromV.n);
+          if (prev) {
+            setNote(`${fromV.version_label} 与当前相同，已改为对比 ${prev.version_label}`);
+            setCmp({ ...c, from: prev.commit });
+            return;
+          }
         }
-      }
-      stepBack.current = false;
-      setDiff(d);
-      setText(d.right);
-      setConflict(null);
-      setOutside(null);
-      setGen((g) => g + 1);
-    } catch (e) {
-      setDiff(null);
-      setDiffErr(e.code === 'file_not_found' ? '这个版本和当前都没有这个文件' : errorText(e));
-    }
-  }, [api, pid, cmp, byCommit, items]);
+        stepBack.current = false;
+        setDiff(d);
+        setText(d.right);
+        setConflict(null);
+        setOutside(null);
+        setGen((g) => g + 1);
+      },
+      failure: (e) => {
+        setDiff(null);
+        setDiffErr(e.code === 'file_not_found' ? '这个版本和当前都没有这个文件' : errorText(e));
+      },
+      settled: () => {},
+    });
+  }, [api, pid, cmp, byCommit, items, diffReq]);
   useEffect(() => { loadDiff(cmp); }, [cmp.path, cmp.from, cmp.to]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectVersion = (v, scroll) => {
@@ -253,6 +268,11 @@ export default function VersionsPage({ route }) {
   const readOnly = !diff || !toWorktree || locked || !diff.right_revision;
   const dirty = !!diff && text !== diff.right;
   const blocks = dirty ? editBlocks(diff.right, text) : 0;
+  // 对比里没保存的修改：回退前要先保存或放弃
+  useEffect(() => {
+    setWorkspaceDirty('diff-editor', dirty);
+    return () => setWorkspaceDirty('diff-editor', false);
+  }, [dirty]);
   const view = useMemo(() => (diff ? diffLines(diff.left, text) : null), [diff, text]);
 
   const save = async () => {
@@ -301,7 +321,8 @@ export default function VersionsPage({ route }) {
             ))}
             {items && !timeline.length ? <div className="sm muted" style={{ padding: 14 }}>没有这个来源的版本。</div> : null}
           </div>
-          {more && !filter ? <div className="vr-more"><Button size="sm" kind="ghost" onClick={loadItems}>加载更早的版本</Button></div> : null}
+          {more && !filter ? <div className="vr-more"><Button size="sm" kind="ghost" onClick={loadMore}>加载更早的版本</Button></div> : null}
+          {hist?.releaseError ? <div className="xs muted" style={{ padding: '0 14px' }}>发布记录读取失败</div> : null}
           <div className="row xs muted" style={{ padding: '10px 14px' }}>
             {SOURCES.map(([k, t, c]) => <span key={k} className={cx('mr-src', c)}>{t}</span>)}
           </div>
