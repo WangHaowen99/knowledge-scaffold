@@ -406,7 +406,7 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
 def releases(pid, subject, token, offset=0, limit=20):
     base = association(pid, subject)
     if not base:
-        return {'releases': [], 'total': 0}
+        return {'items': [], 'releases': [], 'total': 0}
     value = call('GET', reference_path(base['ontology_id']) + f'?offset={offset}&limit={limit}', token)
     return {**value, 'releases': value['items']}
 
@@ -443,8 +443,15 @@ def import_package(manager, body, token, subject, username):
             staging = type(manager)(folder / 'stage', manager.assets_dir)
             with manager.name_claim(body['name'], (username, False), importing=True):
                 meta = staging.import_package_zip(body['name'], archive, owner=username)
+                # 与 P-03 导入知识包同口径：标为导入；带进来的产物没经本项目确认，已满足完成判定的节点标「需复核」
+                # （详设 6.6）。节点状态存在数据目录，要等项目搬到正式位置后再标
+                staging._update_meta(meta['id'], created_from='import')
+                meta = staging.get_project(meta['id'])
                 transport.save(task_path, {'input': body, 'project_id': meta['id']})
                 os.replace(staging.project_root(meta['id']), manager.workspaces_dir / meta['id'])
+                from .flow import state as node_state
+
+                node_state.mark_imported(manager.project_root(meta['id']))
             shutil.rmtree(folder / 'stage', ignore_errors=True)
             return meta
         finally:

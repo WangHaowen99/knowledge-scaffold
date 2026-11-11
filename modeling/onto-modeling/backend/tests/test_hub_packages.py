@@ -227,6 +227,10 @@ def test_import_external_then_publish_preserves_manifest_and_package_identity(se
     imported = hub_packages.import_package(manager, body, 'actor_a', 'scope_a', 'operator_a')
     assert hub_packages.import_package(manager, body, 'actor_a', 'scope_a', 'operator_a')['id'] == imported['id']
     imported_root = manager.project_root(imported['id'])
+    # 同原生导入：标为导入，带进来的产物标「需复核」而不是直接算已确认
+    from app.services.flow import state as node_state
+    assert imported['created_from'] == 'import'
+    assert {item['source'] for item in node_state.reviews(imported_root)} == {'import'}
     for rel in ('research/report.md', 'reports/validation.md'):
         path = imported_root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -235,6 +239,14 @@ def test_import_external_then_publish_preserves_manifest_and_package_identity(se
     assert result['ontology_id'] == hub_packages.ontology_id(imported['id'])
     assert result['ontology_id'] != receipt['ontology_id'] and result['version'] == '0.1.1'
     assert 'base_digest' not in result
+
+
+def test_project_without_hub_package_lists_empty_items(setup, monkeypatch):
+    _manager, pid, _, _, _ = setup
+    login(monkeypatch)
+    listed = client_for().get(f'/api/v1/projects/{pid}/hub/releases')
+    assert listed.status_code == 200, listed.text
+    assert listed.json()['items'] == [] and listed.json()['total'] == 0
 
 
 def test_modeling_routes_require_login_and_project_permissions(setup, monkeypatch):
