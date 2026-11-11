@@ -1659,3 +1659,8 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
    - 403、409、410 补上具体错误码；非工作区错误不把原文给界面（`error_code="compare_failed"`）。
 3. 旧路径 `/api/projects/{id}/package-comparisons/*` 不做兼容映射，调用方只有 develop 的旧前端。
 
+## 2026-11-11 · 集成：发布检查的求解验证豁免、发布后回写评测
+
+1. **PB-01**：求解契约关的 `requires_acknowledgement` 按评测服务的求解验证结果判定（同 PB-03 的豁免口径）：当前修订最近一次验证通过时为 false，带 `verified_revision`；没登录统一账号不判定。此前只有 PB-03 免确认，界面仍要求勾选。
+2. **PB-03**：发布成功后调评测对接的回写（ADR-0092），响应可带 `evaluation_writeback`。
+

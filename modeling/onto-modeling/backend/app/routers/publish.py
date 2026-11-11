@@ -15,7 +15,9 @@ from fastapi.responses import FileResponse, JSONResponse
 from ..api import deps, views
 from ..api.errors import ApiError
 from ..governance import telemetry
-from ..services import audit, feedback_inbox, knowledge_hub, mainline, ownership, publish, release_store, service_tokens, streams
+from ..services import (
+    audit, feedback_inbox, knowledge_hub, mainline, ownership, package_evaluations, publish, release_store, service_tokens, streams,
+)
 from ..services.service_tokens import SCOPE_RELEASES_READ
 from ..services.workspace import WorkspaceError
 
@@ -169,7 +171,7 @@ def _last_release(project_id: str, root, last: dict | None) -> dict | None:
 @router.get("/publish/check")
 def publish_check(project_id: str, request: Request, commit: str = "", refresh: bool = False):
     deps.require_owner(project_id, request)
-    return check_view(project_id, commit or None)
+    return _mark_verified(project_id, request, check_view(project_id, commit or None))
 
 
 @router.put("/objects/{key}/data-source")
@@ -204,13 +206,25 @@ async def set_data_source(project_id: str, key: str, request: Request):
 
 
 def _verified_revision(project_id: str, subject: str, revision: str) -> str:
-    """该求解契约修订是否已在早先版本通过评测服务的求解验证（评测对接提供）；通过则发布免确认。"""
+    """该求解契约修订是否已在早先版本通过评测服务的求解验证（ADR-0092）；通过则发布免确认。"""
+    return revision if revision and package_evaluations.verified_solver_release(project_id, subject, revision) else ""
+
+
+def _mark_verified(project_id: str, request: Request, view: dict) -> dict:
+    """检查视图：求解契约当前修订已验证过的，不再要求勾选确认（同发布接口的口径）。没登录统一账号就不查。"""
+    gate = next((gate for gate in view["gates"] if gate["id"] == "solver_contract"), None)
+    if not gate or not gate.get("requires_acknowledgement"):
+        return view
+    from .hub_packages import identity
+
     try:
-        from ..services import package_evaluations
-    except ImportError:
-        return ""
-    verified = getattr(package_evaluations, "verified_solver_release", None)
-    return revision if verified and verified(project_id, subject, revision) else ""
+        _, subject, _ = identity(request)
+    except WorkspaceError:
+        return view
+    verified = _verified_revision(project_id, subject, view["solver_revision"])
+    if verified:
+        gate.update(requires_acknowledgement=False, verified_revision=verified)
+    return view
 
 
 # 发布过程中由 Hub 或本地记录报出、要原样回给调用方的错误（不是门禁问题）
@@ -265,6 +279,10 @@ async def create_release(project_id: str, request: Request):
         # Hub 已提交、本地标签没写成：照样算发布成功，带上 Hub 回执，后台恢复
         view = {"project_id": project_id, "version": record["version"], "local_record_pending": True}
     view["hub"] = {key: record.get(key) for key in publish.HUB_FIELDS}
+    # 评测服务那边可能在等这次发布（评测优化后的回写），带着用户登录尽力回写一次，失败不影响发布
+    writeback = package_evaluations.after_publish(project_id, subject, token, {**record, "status": "committed"})
+    if writeback:
+        view["evaluation_writeback"] = writeback
     streams.publish_project(project_id, "release.updated", {"release": view})  # EP-19
     return JSONResponse(status_code=201, content=view)
 

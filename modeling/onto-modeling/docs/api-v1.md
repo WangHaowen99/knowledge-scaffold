@@ -3170,7 +3170,7 @@ ADR-0091：端到端验证在发布后的独立评测里做，onto 不再收回�
   | `version_label` | string | — |
   | `package_name` | string | — |
   | `format` | string | `ontology\|solver`：自动判定 |
-  | `gates` | `GateResult[]` | 按顺序：数据绑定、求解契约（静态检查；`requires_acknowledgement` 为 true 时发布要确认未验证）、知识包结构（含 consumer 导入规则）、包声明的门禁（如合规检查）、证据出处检查、流程关卡 |
+  | `gates` | `GateResult[]` | 按顺序：数据绑定、求解契约（静态检查；`requires_acknowledgement` 为 true 时发布要确认未验证；当前修订已在评测服务通过求解验证的为 false 并带 `verified_revision`，要统一账号登录才判定）、知识包结构（含 consumer 导入规则）、包声明的门禁（如合规检查）、证据出处检查、流程关卡 |
   | `solver_revision` | string | 求解契约修订（没有求解契约时为空） |
   | `blocking_count` | int | — |
   | `binding` | object | `{issues: BindingIssue[], warnings: string[], tables: string[], table_count, objects, bound_objects, table_resources: string[]（没标 Schema 的表格资料）, truncated}` |
@@ -3202,6 +3202,7 @@ ADR-0091：端到端验证在发布后的独立评测里做，onto 不再收回�
 - 流程：门禁 → 冻结只读树 → Hub 预留版本号 → 渲染 → 上传、提交到 Hub → 本地留存、打 `release/<版本>` 标签 → 写发布记录。
 - 响应 `201`：`ReleaseRecord`，另带 `hub: {ontology_id, release_id, package_digest, committed_at}`；Hub 已提交而本地标签没写成时
   为 `{project_id, version, local_record_pending: true, hub}`，后台恢复。
+  评测服务配好时，发布后带着用户登录回写一次评测优化的结果，成功拿到状态的在响应里带 `evaluation_writeback`（ES-02 同结构），失败不影响发布。
 - 错误：
   - `gate_blocked`（`details.gates` 列出不通过的项；consumer 导入规则不通过时 `details.reason=package_structure_invalid`）；
   - `solver_validation_acknowledgement_required`（409）；

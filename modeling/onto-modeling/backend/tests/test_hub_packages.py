@@ -308,6 +308,97 @@ def test_every_publish_entry_needs_the_solver_acknowledgement(setup, monkeypatch
     assert verified['status'] == 'committed'
 
 
+def record_solver_validation(pid, release_id, version, failed=0, earlier=None):
+    """按评测服务完成通知的口径写入合成的求解验证结果；earlier 是更早结束的另一个发布 (release_id, version, failed)。"""
+    from app.services import package_evaluations
+    subject = json.dumps(['https://example.com', 'operator_a'], ensure_ascii=False)
+    owner = 'e' * 64
+    knowledge_hub.save(package_evaluations._owner_path(subject), {'owner': owner})
+
+    def entry(release, label, failures, finished):
+        return {'release_id': release, 'version': label, 'run_id': 'f' * 32, 'status': 'completed', 'run_type': 'solver',
+                'finished_at': finished, 'artifacts': {'generated_at': finished},
+                'solver_summary': {'total': 1, 'passed': 1 - failures, 'failed': failures}}
+    releases = {release_id: entry(release_id, version, failed, 2000.0)}
+    if earlier:
+        releases[earlier[0]] = entry(*earlier, 1000.0)
+    knowledge_hub.save(package_evaluations._index_path(hub_packages.ontology_id(pid), owner),
+                       {'active': None, 'releases': {}, 'solver_releases': releases})
+
+
+def solver_gate(client, pid):
+    check = client.get(f'/api/v1/projects/{pid}/publish/check').json()
+    return next(gate for gate in check['gates'] if gate['id'] == 'solver_contract')
+
+
+@pytest.mark.parametrize('failed', [0, 1])
+def test_verified_solver_revision_publishes_without_acknowledgement(setup, monkeypatch, failed):
+    manager, pid, _root, _app = solver_publish_client(setup, monkeypatch)
+    client = client_for()
+    url = f'/api/v1/projects/{pid}/releases'
+    first = client.post(url, json={'request_id': 'solver_first', 'solver_unverified_acknowledged': True})
+    assert first.status_code == 201, first.text
+    record_solver_validation(pid, first.json()['hub']['release_id'], first.json()['version'], failed)
+    gate = solver_gate(client, pid)
+    again = client.post(url, json={'request_id': 'solver_second'})
+    if failed:
+        assert gate['requires_acknowledgement'] is True and 'verified_revision' not in gate
+        assert again.status_code == 409 and again.json()['code'] == 'solver_validation_acknowledgement_required'
+        return
+    revision = solver_service.solver_check(manager, pid).revision
+    assert gate['requires_acknowledgement'] is False and gate['verified_revision'] == revision
+    assert again.status_code == 201, again.text
+    stored = knowledge_hub.load(hub_packages._solver_releases_path(pid))[again.json()['hub']['release_id']]
+    assert stored['acknowledged_by'] == '' and stored['revision'] == revision
+
+
+@pytest.mark.parametrize(('older_failed', 'newer_failed', 'exempt'), [(0, 1, False), (1, 0, True)])
+def test_latest_validation_of_the_revision_decides_the_exemption(setup, monkeypatch, older_failed, newer_failed, exempt):
+    _manager, pid, _root, _app = solver_publish_client(setup, monkeypatch)
+    client = client_for()
+    url = f'/api/v1/projects/{pid}/releases'
+    older = client.post(url, json={'request_id': 'solver_older', 'solver_unverified_acknowledged': True}).json()
+    newer = client.post(url, json={'request_id': 'solver_newer', 'solver_unverified_acknowledged': True}).json()
+    record_solver_validation(pid, newer['hub']['release_id'], newer['version'], newer_failed,
+                             earlier=(older['hub']['release_id'], older['version'], older_failed))
+    gate = solver_gate(client, pid)
+    again = client.post(url, json={'request_id': 'solver_third'})
+    assert gate['requires_acknowledgement'] is (not exempt)
+    assert again.status_code == (201 if exempt else 409), again.text
+
+
+def test_changed_solver_revision_needs_acknowledgement_again(setup, monkeypatch):
+    _manager, pid, root, _app = solver_publish_client(setup, monkeypatch)
+    client = client_for()
+    url = f'/api/v1/projects/{pid}/releases'
+    first = client.post(url, json={'request_id': 'solver_first', 'solver_unverified_acknowledged': True}).json()
+    record_solver_validation(pid, first['hub']['release_id'], first['version'])
+    assert solver_gate(client, pid)['requires_acknowledgement'] is False
+    model = next((root / 'ontology' / 'solver').glob('*/presentation.yaml'))
+    model.write_text(model.read_text(encoding='utf-8') + '# synthetic edit\n', encoding='utf-8')
+    commit(root, 'test: synthetic solver edit')
+    assert solver_gate(client, pid)['requires_acknowledgement'] is True
+    refused = client.post(url, json={'request_id': 'solver_second'})
+    assert refused.status_code == 409 and refused.json()['code'] == 'solver_validation_acknowledgement_required'
+
+
+def test_publish_writes_back_to_the_evaluation_service_right_away(setup, monkeypatch):
+    from app.services import package_evaluations
+    _manager, plain, _, _, _ = setup
+    login(monkeypatch)
+    calls = []
+
+    def after_publish(pid, subject, token, receipt):
+        calls.append((pid, json.loads(subject), token, receipt['status'], receipt['release_id']))
+        return {'run_id': 'f' * 32, 'status': 'published'}
+    monkeypatch.setattr(package_evaluations, 'after_publish', after_publish)
+    published = client_for().post(f'/api/v1/projects/{plain}/releases', json={'request_id': 'writeback_demo'})
+    assert published.status_code == 201, published.text
+    assert calls == [(plain, ['https://example.com', 'operator_a'], 'synthetic-access', 'committed',
+                      published.json()['hub']['release_id'])]
+    assert published.json()['evaluation_writeback']['status'] == 'published'
+
+
 def test_publish_rechecks_the_verified_revision_when_freezing(setup, monkeypatch):
     manager, pid, _root, _app = solver_publish_client(setup, monkeypatch)
     subject = json.dumps(['https://example.com', 'operator_a'], ensure_ascii=False)
