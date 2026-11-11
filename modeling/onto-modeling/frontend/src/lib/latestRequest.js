@@ -1,4 +1,4 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
+// 只认最后一次请求：迟到的响应不覆盖新结果（知识包版本对比的切换来源、选文件、轮询、上传取消）
 export function createLatestRequest() {
   let current = 0;
 

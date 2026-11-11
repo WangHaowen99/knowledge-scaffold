@@ -1,0 +1,25 @@
+/* 知识包版本对比（发布页「发布记录」打开的抽屉）：设计稿没有这一屏，沿用 mr-cmp 的配色与 vr-file 的列表样式 */
+.pc .drawer-b{display:flex;flex-direction:column;min-height:0}
+.pc-pick{flex:1;min-width:0}
+.pc-pick.inp{gap:8px}
+.pc-body{display:grid;grid-template-columns:300px minmax(0,1fr);gap:16px;margin-top:12px;flex:1;min-height:0}
+.pc-side{display:flex;flex-direction:column;min-height:0;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.pc-filters{padding:10px;border-bottom:1px solid var(--line)}
+.pc-list{overflow:auto;padding:6px;flex:1}
+.pc-file{display:flex;align-items:center;gap:8px;width:100%;padding:7px 8px;border:0;border-radius:8px;background:none;cursor:pointer;font-size:13px;color:var(--ink2);text-align:left}
+.pc-file:hover{background:var(--panel2)}
+.pc-file.on{background:var(--b50)}
+.pc-none{padding:12px 8px}
+.pc-more{width:100%;margin-top:4px}
+.pc-main{display:flex;flex-direction:column;min-width:0;min-height:0;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.pc-head{padding:8px 12px;background:var(--panel2);border-bottom:1px solid var(--line)}
+.pc-diff{display:flex;flex-direction:column;min-height:0;flex:1}
+.pc-diff .note{margin:10px 12px 0}
+.pc-nav{justify-content:flex-end;padding:6px 10px;border-bottom:1px solid var(--line)}
+.pc-merge{flex:1;overflow:auto}
+.pc-merge .cm-mergeView{min-height:100%}
+.pc-merge .cm-changedLine{background:#ECFDF3}
+.pc-merge .cm-merge-a .cm-changedLine{background:#FEF2F2}
+.pc-panes{display:grid;grid-template-columns:1fr 1fr;flex:1;min-height:0}
+.pc-pane{min-width:0;overflow:auto;padding:12px}
+.pc-pane+.pc-pane{border-left:1px solid var(--line)}

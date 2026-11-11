@@ -301,6 +301,19 @@ export function createApi(client) {
     release: (id, version) => client.get(`${P(id)}/releases/${enc(version)}`), // PB-05
     releaseManifest: (id, version) => client.get(`${P(id)}/releases/${enc(version)}/manifest`), // PB-06
     releaseDownloadUrl: (id, version, variant) => client.withToken(client.url(`${P(id)}/releases/${enc(version)}/download`, variant ? { variant } : undefined)), // PB-07
+    // 3.20 知识包版本对比（PC 组）；上传带 X-Compare-Upload-Id，取消可以先于上传请求到达
+    uploadCompareInput(id, file, { signal, requestId } = {}) { // PC-01
+      const fd = new FormData();
+      fd.append('file', file);
+      return client.post(`${P(id)}/package-comparisons/inputs`, fd, { signal, headers: requestId ? { 'X-Compare-Upload-Id': requestId } : undefined });
+    },
+    cancelCompareUpload: (id, requestId) => client.del(`${P(id)}/package-comparisons/uploads/${enc(requestId)}`), // PC-02
+    deleteCompareInput: (id, inputId) => client.del(`${P(id)}/package-comparisons/inputs/${enc(inputId)}`), // PC-03
+    startComparison: (id, body) => client.post(`${P(id)}/package-comparisons`, body), // PC-04
+    comparison: (id, cid) => client.get(`${P(id)}/package-comparisons/${enc(cid)}`), // PC-05
+    comparisonFiles: (id, cid, query) => client.get(`${P(id)}/package-comparisons/${enc(cid)}/files`, { query }), // PC-06
+    comparisonFileDiff: (id, cid, path) => client.get(`${P(id)}/package-comparisons/${enc(cid)}/file-diff`, { query: { path } }), // PC-07
+    deleteComparison: (id, cid) => client.del(`${P(id)}/package-comparisons/${enc(cid)}`), // PC-08
 
     // 知识包 Hub（ADR-0091，HB-01～HB-09）：都要统一账号登录
     hubPackages: (offset = 0, limit = 20) => client.get('/hub/packages', { query: { offset, limit } }), // HB-01

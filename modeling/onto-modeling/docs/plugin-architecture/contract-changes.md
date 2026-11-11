@@ -1644,3 +1644,18 @@ develop 的评测服务（eval-service）独立部署后，评测结果以用户
 3. **旧评测接口**：`GET /api/projects/{id}/eval/*` 仍是 410，`details.successor` 指向 `ES-09`。
 4. **错误码**：2.9 节新增 `login_required`、`eval_*`、`artifacts_not_ready`、`artifacts_changed`、`version_mismatch`、
    `optimization_not_supported`、`answer_not_found`、`note_required`。
+
+## 2026-11-11 · 知识包版本对比（PC 组，吸收 develop !585）
+
+develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引用、每次读结果回 Hub 核对读权限。本分支的发布记录按项目版本号，改为
+按版本号引用（ADR-0095）。
+
+1. **新增 PC-01～PC-08**：`/api/v1/projects/{id}/package-comparisons` 下的上传输入、取消上传、删除输入、发起对比、结果、差异文件、
+   单文件差异、删除对比；3.0 分组表加 `PC-`，1.8 上传上限加一行，2.9 加 `compare_*` 错误码。
+2. **与 develop 的差别**：
+   - 发布来源 `{kind: "release", version}`（develop 是 `{ontology_id?, release_id}`）；鉴权只看项目所有者，不再回 Hub 核对；
+   - 文件列表游标分页（develop 是 `offset`），单文件差异的参数叫 `path`（develop 是 `file_id`）；
+   - 删除返回 `204`；时间是 RFC 3339；
+   - 403、409、410 补上具体错误码；非工作区错误不把原文给界面（`error_code="compare_failed"`）。
+3. 旧路径 `/api/projects/{id}/package-comparisons/*` 不做兼容映射，调用方只有 develop 的旧前端。
+
