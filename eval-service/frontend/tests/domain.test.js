@@ -20,8 +20,14 @@ import {
   artifactState,
   notificationState,
   optimizationState,
-  optimizationTag,
   feedbackStatus,
+  resultCounts,
+  scoreText,
+  passRate,
+  sourceWorkspace,
+  duration,
+  carriedState,
+  carryoverCounts,
 } from '../src/domain.js';
 
 // Package identifiers and project names are synthetic.
@@ -238,20 +244,59 @@ test('optimization state shows what modeling did with the suggestions', () => {
   assert.match(done.hint, /^新版本 0\.1\.2 · \S+ \S+ · Synthetic note · 共 2 次回写$/);
   const failed = optimizationState({ optimization: { status: 'modeling_failed', result: { outcome: 'failed', note: 'Synthetic failure' } } });
   assert.deepEqual([failed.label, failed.tone, failed.releaseId], ['处理失败', 'red', undefined]);
-  assert.deepEqual(optimizationTag({ optimization: { status: 'modeling_done', result: { version: '0.1.2' } } }), {
-    label: '建模已处理 → 0.1.2',
-    tone: 'green',
-  });
-  assert.equal(optimizationTag({ optimization: { status: 'notified' } }), null);
 });
 
 test('routes and states of consumer feedback runs', () => {
   assert.deepEqual(parseRoute('#/feedback'), { page: 'feedback' });
   assert.deepEqual(parseRoute('#/feedback/run_demo'), { page: 'feedback', id: 'run_demo' });
+  assert.deepEqual(parseRoute('#/feedback/package/package_demo-1'), { page: 'feedback', package: 'package_demo-1' });
   assert.deepEqual(parseRoute('#/new?from=run_demo&release_id=release_next'), { page: 'new', from: 'run_demo', release: 'release_next' });
   assert.equal(feedbackStatus({ status: 'collecting' }).label, '收集中');
   assert.equal(feedbackStatus({ status: 'completed' }).label, '生成报告中');
   const review = { status: 'completed', artifacts: { report: 'ready' }, optimization: { status: 'awaiting_review' } };
   assert.equal(feedbackStatus(review).label, '待负责人确认');
   assert.equal(feedbackStatus({ ...review, optimization: { status: 'dismissed', reason: 'Synthetic' } }).hint, 'Synthetic');
+});
+
+test('a run shows its score and pass rate, and its cases by verdict', () => {
+  const summary = {
+    score: 77,
+    strict_pass_rate: 8 / 12,
+    counts: { pass: 8, partial: 1, fail: 2, execution_error: 1, judge_error: 0, manual: 1, pending: 0, cancelled: 1 },
+  };
+  assert.deepEqual(resultCounts(summary), { pass: 8, partial: 1, fail: 2, error: 1, manual: 1, todo: 1 });
+  assert.equal(scoreText(summary), '77');
+  assert.equal(passRate(summary), '67%');
+  // Feedback runs and runs without any case have neither number.
+  assert.equal(scoreText({ score: null }), '—');
+  assert.equal(passRate({ strict_pass_rate: null }), '—');
+  assert.deepEqual(resultCounts(undefined), { pass: 0, partial: 0, fail: 0, error: 0, manual: 0, todo: 0 });
+});
+
+test('the wizard says which workspace a data source runs in', () => {
+  assert.equal(sourceWorkspace(undefined), '使用评测专用空间');
+  assert.equal(sourceWorkspace({ mode: 'dataset' }), '使用评测专用空间');
+  assert.equal(sourceWorkspace({ mode: 'connection', provider: 'nl2sql_http' }), '使用你填写的评测工作空间');
+  assert.equal(sourceWorkspace({ mode: 'connection', provider: 'neo4j' }), '使用 Workspace 对应的空间');
+});
+
+test('a stopped run tells how long it took', () => {
+  assert.equal(duration({ started_at: 100, finished_at: 472 }), '6 分 12 秒');
+  assert.equal(duration({ created_at: 100, finished_at: 140 }), '40 秒');
+  assert.equal(duration({ started_at: 100 }), '');
+});
+
+test('a waiting run tells whether a newer push carries it', () => {
+  const into = { optimization: { status: 'notified', carried_into: { run_id: 'run_newer_demo_0001', at: 1793500000 } } };
+  assert.match(carriedState(into).label, /^已合并到 \d{4}-\d{2}-\d{2} \d{2}:\d{2} 的交付$/);
+  assert.equal(carriedState(into).runId, 'run_newer_demo_0001');
+  assert.match(optimizationState(into).hint, /^已合并到 .* 的交付：建模还没处理/);
+  const out = { optimization: { status: 'notified', slid_out: { run_id: 'run_newest_demo', at: 1 } } };
+  assert.equal(carriedState(out).label, '未能一起带上');
+  assert.equal(carriedState({ optimization: { status: 'modeling_done', carried_into: { run_id: 'x' } } }), null);
+  assert.deepEqual(
+    carryoverCounts({ rounds: [{ cases: 2, items: 1 }, { cases: 1, items: 0 }], slid_out: [{ run_id: 'old' }] }),
+    { rounds: 2, cases: 3, items: 1, slidOut: 1 },
+  );
+  assert.deepEqual(carryoverCounts(null), { rounds: 0, cases: 0, items: 0, slidOut: 0 });
 });

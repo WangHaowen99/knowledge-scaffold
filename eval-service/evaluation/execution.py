@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
-from .artifacts import clip, failed_first, redact
+from .artifacts import clip, failed_first, redact, summarize
 from .core import Failure, digest, transient
 from .judge_settings import connection_test_failure
 
@@ -342,7 +342,8 @@ def report(run):
             counts[case['status'] if case['status'] in counts else 'pending']+=1
     valid=counts['pass']+counts['partial']+counts['fail']
     planned=len(run['cases'])
-    return dict(planned=planned,executed=executed,judged=valid,counts=counts,
+    # score is the report's: pass 1, partial 0.5, over valid cases; feedback runs have none.
+    return dict(planned=planned,executed=executed,judged=valid,counts=counts,score=summarize(run)['score'],
                 strict_pass_rate=counts['pass']/planned if planned else None,
                 judged_pass_rate=counts['pass']/valid if valid else None,
                 package_ref=run.get('package_ref'),model={k:v for k,v in (run.get('model') or {}).items() if k!='profiles'},judge=run.get('judge'),status=run['status'],

@@ -85,7 +85,10 @@ test('only work that outlives the request hands over the refresh token', async (
   // A changed verdict and a regeneration queue suggestions that read the package after the request.
   await api('/runs/run_demo/results/1/override', { verdict: 'pass' });
   await api('/runs/run_demo/artifacts/regenerate', {});
+  // Delivering feedback waits for its suggestions; listing feedback drafts the suggestions of feedback waiting for an owner.
   await api('/runs/run_demo/notifications/retry', {});
+  await api('/package-tasks?origin=consumer_feedback');
+  await api('/package-tasks');
   await api('/runs/run_demo');
   assert.deepEqual(sent, [
     ['/runs', 'POST', 'synthetic-refresh'],
@@ -93,7 +96,9 @@ test('only work that outlives the request hands over the refresh token', async (
     ['/runs/run_demo/cancel', 'POST', 'synthetic-refresh'],
     ['/runs/run_demo/results/1/override', 'POST', 'synthetic-refresh'],
     ['/runs/run_demo/artifacts/regenerate', 'POST', 'synthetic-refresh'],
-    ['/runs/run_demo/notifications/retry', 'POST', ''],
+    ['/runs/run_demo/notifications/retry', 'POST', 'synthetic-refresh'],
+    ['/package-tasks?origin=consumer_feedback', 'GET', 'synthetic-refresh'],
+    ['/package-tasks', 'GET', ''],
     ['/runs/run_demo', 'GET', ''],
   ]);
 });

@@ -4,7 +4,9 @@ const prefix = '/evaluation/api';
 // Starting, resuming or stopping a run hands over the refresh token, so a run longer than one access token
 // keeps its login; so do changing a verdict and regenerating, whose suggestions may wait in a queue. The service
 // keeps it in memory only.
-const DELEGATED = /^\/runs(\/[^/]+\/(resume|credentials|cancel|results\/\d+\/override|artifacts\/regenerate))?$/;
+const DELEGATED = /^\/runs(\/[^/]+\/(resume|credentials|cancel|results\/\d+\/override|artifacts\/regenerate|notifications\/retry))?$/;
+// Listing feedback drafts the suggestions of feedback waiting for an owner with the caller's login, in the background.
+const DELEGATED_READS = /^\/package-tasks\?origin=consumer_feedback/;
 export function saveLogin(data) {
   localStorage.setItem(TOKEN, data.access_token);
   if (data.refresh_token) localStorage.setItem(REFRESH, data.refresh_token);
@@ -36,7 +38,10 @@ async function refresh(original) {
 // read 'text' returns the body as text, for markdown artifacts; errors are still JSON.
 export async function api(path, body, method = body === undefined ? 'GET' : 'POST', retry = true, read = 'json') {
   const token = localStorage.getItem(TOKEN) || '';
-  const delegated = method === 'POST' && DELEGATED.test(path) ? localStorage.getItem(REFRESH) : '';
+  const delegated =
+    (method === 'POST' && DELEGATED.test(path)) || (method === 'GET' && DELEGATED_READS.test(path))
+      ? localStorage.getItem(REFRESH)
+      : '';
   const upload = body instanceof FormData;
   const response = await fetch(prefix + path, {
     method,

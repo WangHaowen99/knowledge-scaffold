@@ -5,16 +5,19 @@ import { api } from './api.js';
 import {
   STATUS,
   artifactState,
+  carriedState,
+  carryoverCounts,
   notificationState,
   optimizationState,
-  optimizationTag,
   packageVersions,
+  passRate,
   runStartTime,
+  scoreText,
   shortId,
 } from './domain.js';
-import { Alert, Badge, Button, Modal, Skeleton, useAction } from './ui.jsx';
+import { Alert, Badge, Button, Empty, Icon, Modal, Skeleton, Steps, useAction } from './ui.jsx';
 
-const HISTORY_PAGE = 3;
+const HISTORY_PAGE = 10;
 const MARKDOWN_PLUGINS = [remarkGfm];
 // The report links each long answer to its entry in this run's answers attachment.
 const ANSWER_LINK = /^reports\/[^\s#]+\.answers\.json#(case-\d+)$/;
@@ -43,14 +46,48 @@ function markdownComponents(onOpenAnswer) {
   };
 }
 
-// Report and suggestions of a stopped run, whether onto-modeling has been told about them, and what it did with them.
-export function RunArtifacts({ run, onChanged, navigate }) {
-  const [viewing, setViewing] = useState(null),
-    { busy, error, act } = useAction();
+// Earlier runs of the same source still waiting for modeling that this push carries, or would carry once confirmed.
+export function CarryoverNote({ carryover, feedback, navigate, preview = false }) {
+  const counts = carryoverCounts(carryover);
+  if (!counts.rounds && !counts.slidOut) return null;
+  // Feedback arrives in batches the page never asks the owner to tell apart; evaluation runs are runs.
+  const some = (n) => (feedback ? `${n} 批` : `${n} 个`),
+    kind = feedback ? '反馈' : '评测轮次',
+    path = feedback ? '/feedback/' : '/runs/';
+  return (
+    <p className="carryover-note">
+      <Icon name="link" />
+      <span>
+        {counts.rounds > 0 && (
+          <>
+            {preview ? '确认后会一起带上' : '这次一起带上'} {some(counts.rounds)}建模还没处理的{kind}（版本{' '}
+            {carryover.rounds.map((r, i) => (
+              <React.Fragment key={r.run_id}>
+                {i > 0 && '、'}
+                <button type="button" className="text-link" onClick={() => navigate?.(path + r.run_id)}>
+                  {r.version}
+                </button>
+              </React.Fragment>
+            ))}
+            ）：问题 {counts.cases} 条、建议 {counts.items} 条，建模的处理结果会一起回写。
+          </>
+        )}
+        {counts.slidOut > 0 && `另有 ${some(counts.slidOut)}更早的${kind}因文件超过大小上限没有带上，仍待建模处理。`}
+      </span>
+    </p>
+  );
+}
+
+// Where a stopped run's report and suggestions stand on their way to modeling: generated, delivered, handled,
+// and verified on the version modeling published.
+export function DeliveryCard({ run, onChanged, navigate }) {
+  const { busy, error, act } = useAction();
   const state = artifactState(run),
     notice = notificationState(run.notification),
     handled = optimizationState(run),
-    earlier = run.optimization?.history || [];
+    earlier = run.optimization?.history || [],
+    feedback = run.origin === 'consumer_feedback',
+    carried = carriedState(run);
   const regenerate = () =>
     act(async () => {
       await api(`/runs/${run.id}/artifacts/regenerate`, {});
@@ -61,107 +98,154 @@ export function RunArtifacts({ run, onChanged, navigate }) {
       await api(`/runs/${run.id}/notifications/retry`, {});
       await onChanged();
     });
+  const generated = state.report && state.suggestions;
+  const delivered = notice?.label === '已送达';
+  const done = run.optimization?.status === 'modeling_done',
+    failed = run.optimization?.status === 'modeling_failed';
+  const items = [
+    {
+      label: state.report && state.suggestions ? '报告和建议已生成' : state.label,
+      hint: state.hint,
+      state: state.report && state.suggestions ? 'done' : state.tone === 'amber' ? 'failed' : 'current',
+    },
+    {
+      label: notice ? `建模通知${notice.label}` : '通知建模',
+      hint: notice?.hint || '报告和建议生成后发送',
+      state: delivered ? 'done' : notice?.canRetry ? 'failed' : generated ? 'current' : '',
+    },
+    {
+      label: done ? '建模已处理' : failed ? '建模处理失败' : handled?.label || '等待建模处理',
+      hint: handled?.hint || '建模执行评测优化并发布新版本后，这里自动更新',
+      state: done ? 'done' : failed ? 'failed' : delivered ? 'current' : '',
+    },
+    {
+      label: '在新版本上验证',
+      hint: done ? `可在新版本 ${run.optimization.result?.version || ''} 上再次评测` : '建模发布新版本后可用',
+      state: done ? 'current' : '',
+    },
+  ];
   return (
-    <section className="panel run-outputs">
-      <h3>评测报告与优化建议</h3>
-      <div className="run-outputs-body">
-        <p className="run-outputs-state">
-          <Badge tone={state.tone}>{state.label}</Badge>
-          {state.hint && <small>{state.hint}</small>}
+    <section className="panel delivery-card">
+      <div className="section-title">
+        <h3>交付建模</h3>
+        <div className="actions">
+          {notice?.canRetry && (
+            <Button variant="text" busy={busy} onClick={resend}>
+              重新通知
+            </Button>
+          )}
+          {state.canRegenerate && (
+            <Button variant="text" icon="refresh" busy={busy} onClick={regenerate}>
+              重新生成报告和建议
+            </Button>
+          )}
+          {done && navigate && !feedback && (
+            // The existing re-evaluation, on the version modeling published from these suggestions.
+            <Button
+              variant="primary"
+              onClick={() =>
+                navigate(`/new?from=${run.id}&release_id=${encodeURIComponent(run.optimization.result.release_id)}`)
+              }
+            >
+              在新版本上再次评测
+            </Button>
+          )}
+        </div>
+      </div>
+      <Steps items={feedback ? items.slice(0, 3) : items} />
+      <CarryoverNote carryover={run.artifacts?.carryover} feedback={feedback} navigate={navigate} />
+      {carried && (
+        <p className="carryover-note">
+          <Icon name="link" />
+          <span>
+            {carried.label}：{carried.hint}。
+            <button
+              type="button"
+              className="text-link"
+              onClick={() => navigate?.(`${feedback ? '/feedback/' : '/runs/'}${carried.runId}`)}
+            >
+              查看那一轮
+            </button>
+          </span>
         </p>
-        {run.artifacts?.suggestions_error && <Alert tone="amber">{run.artifacts.suggestions_error}</Alert>}
-        {error && <Alert tone="red">{error}</Alert>}
-        {notice && (
-          <p className="run-outputs-state">
-            <span className="run-outputs-label">建模通知</span>
-            <Badge tone={notice.tone}>{notice.label}</Badge>
-            {notice.hint && <small>{notice.hint}</small>}
-            {notice.canRetry && (
-              <Button variant="text" busy={busy} onClick={resend}>
-                重新通知
-              </Button>
-            )}
-          </p>
-        )}
-        {handled && (
-          <div className="run-outputs-state">
-            <span className="run-outputs-label">建模处理</span>
-            <Badge tone={handled.tone}>{handled.label}</Badge>
-            {handled.hint && <small>{handled.hint}</small>}
-            {earlier.length > 0 && (
-              <details className="optimization-history">
-                <summary>历次回写</summary>
-                <ul>
-                  {earlier.map((item) => (
-                    <li key={item.reported_at}>
-                      {item.outcome === 'done' ? `新版本 ${item.version || item.release_id}` : '处理失败'}
-                      {item.note && ` · ${item.note}`}
-                      <small>{runStartTime({ created_at: item.reported_at })?.date}</small>
-                    </li>
-                  ))}
-                </ul>
-              </details>
-            )}
-          </div>
-        )}
-      </div>
-      <div className="context-links">
-        <Button variant="text" disabled={!state.report} onClick={() => setViewing('report')}>
-          查看评测报告
-        </Button>
-        <Button variant="text" disabled={!state.suggestions} onClick={() => setViewing('suggestions')}>
-          查看优化建议
-        </Button>
-        {state.canRegenerate && (
-          <Button variant="text" busy={busy} onClick={regenerate}>
-            重新生成
-          </Button>
-        )}
-        {handled?.releaseId && navigate && run.origin !== 'consumer_feedback' && (
-          // The existing re-evaluation, on the version modeling published from these suggestions.
-          <Button
-            variant="text"
-            onClick={() => navigate(`/new?from=${run.id}&release_id=${encodeURIComponent(handled.releaseId)}`)}
-          >
-            在新版本上再次评测
-          </Button>
-        )}
-      </div>
-      {viewing && <ArtifactViewer run={run} kind={viewing} onClose={() => setViewing(null)} />}
+      )}
+      {run.artifacts?.suggestions_error && <Alert tone="amber">{run.artifacts.suggestions_error}</Alert>}
+      {error && <Alert tone="red">{error}</Alert>}
+      {earlier.length > 0 && (
+        <details className="optimization-history">
+          <summary>历次回写（{earlier.length + 1}）</summary>
+          <ul>
+            {earlier.map((item) => (
+              <li key={item.reported_at}>
+                {item.outcome === 'done' ? `新版本 ${item.version || item.release_id}` : '处理失败'}
+                {item.note && ` · ${item.note}`}
+                <small>{runStartTime({ created_at: item.reported_at })?.date}</small>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </section>
   );
 }
 
-export function ArtifactViewer({ run, kind, onClose }) {
+// The report or suggestions shown in place; long answers open from the attachment.
+export function ArtifactPanel({ run, kind, ready, waiting, note }) {
   const [text, setText] = useState(null),
     [error, setError] = useState(''),
     [answerId, setAnswerId] = useState(null);
   const components = useMemo(() => markdownComponents(setAnswerId), []);
+  const name = kind === 'report' ? 'report.md' : 'suggestions.md';
   useEffect(() => {
+    if (!ready) return undefined;
     let live = true;
-    api(`/runs/${run.id}/artifacts/${kind === 'report' ? 'report.md' : 'suggestions.md'}`, undefined, 'GET', true, 'text')
+    setText(null);
+    setError('');
+    api(`/runs/${run.id}/artifacts/${name}`, undefined, 'GET', true, 'text')
       .then((value) => live && setText(value))
       .catch((e) => live && setError(e.message));
     return () => {
       live = false;
     };
-  }, [run.id, kind, run.artifacts?.revision]);
+  }, [run.id, name, ready, run.artifacts?.revision]);
+  function download() {
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
+    link.download = `${run.artifacts?.stem || shortId(run.id)}${kind === 'report' ? '' : '-suggestions'}.md`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+  if (!ready)
+    return (
+      <section className="panel">
+        <Empty title={kind === 'report' ? '评测报告还没有生成' : '优化建议还没有生成'} icon="set">
+          {waiting}
+        </Empty>
+      </section>
+    );
   return (
     <>
-      <Modal title={kind === 'report' ? '评测报告' : '优化建议'} onClose={onClose} drawer>
+      {note}
+      <section className="panel artifact-panel">
         {error ? (
           <Alert tone="red">{error}</Alert>
         ) : text === null ? (
           <Skeleton />
         ) : (
-          <article className="markdown-body artifact-markdown">
-            <Markdown remarkPlugins={MARKDOWN_PLUGINS} components={components}>
-              {text}
-            </Markdown>
-          </article>
+          <>
+            <div className="artifact-tools">
+              <Button icon="download" onClick={download}>
+                下载
+              </Button>
+            </div>
+            <article className="markdown-body artifact-markdown">
+              <Markdown remarkPlugins={MARKDOWN_PLUGINS} components={components}>
+                {text}
+              </Markdown>
+            </article>
+          </>
         )}
-      </Modal>
-      {/* A sibling, not a child: Escape and backdrop clicks close only the preview. */}
+      </section>
       {answerId && <AnswerPreview run={run} resultId={answerId} onClose={() => setAnswerId(null)} />}
     </>
   );
@@ -207,8 +291,8 @@ function AnswerPreview({ run, resultId, onClose }) {
   );
 }
 
-// Every run of the same knowledge package, newest first, a few per page; the current one is marked.
-export function RunHistory({ run, navigate }) {
+// Every run of the same knowledge package, newest first, a page at a time; the current one is marked.
+export function RunHistory({ run, navigate, onTotal }) {
   const packageId = run.package_ref?.ontology_id,
     [offset, setOffset] = useState(0),
     [page, setPage] = useState({ items: [], total: 0 }),
@@ -222,6 +306,7 @@ export function RunHistory({ run, navigate }) {
       .then((value) => {
         if (!live) return;
         setPage({ items: value.items, total: value.total });
+        onTotal?.(value.total);
         setError('');
       })
       .catch((e) => live && setError(e.message))
@@ -234,52 +319,84 @@ export function RunHistory({ run, navigate }) {
   const pages = Math.max(1, Math.ceil(page.total / HISTORY_PAGE)),
     pageNumber = Math.floor(offset / HISTORY_PAGE) + 1;
   return (
-    <section className="panel run-history">
-      <h3>历史执行记录 <small>共 {page.total} 次</small></h3>
+    <section className="panel table-panel">
       {error && <Alert tone="red">{error}</Alert>}
-      <ul>
-        {page.items.map((item) => {
-          const start = runStartTime(item),
-            current = item.id === run.id,
-            tag = optimizationTag(item);
-          return (
-            <li key={item.id} className={current ? 'selected' : ''}>
-              <b className="tabular">{shortId(item.id)}</b>
-              {current && <span className="current-tag">当前</span>}
-              <span className="version-tag">{packageVersions(item).base || '—'}</span>
-              <small className="tabular">{start ? `${start.date} ${start.time}` : '—'}</small>
-              <Badge tone={STATUS[item.status]?.[1]}>{STATUS[item.status]?.[0] || item.status}</Badge>
-              {tag && <Badge tone={tag.tone}>{tag.label}</Badge>}
-              {!current && (
-                <span className="history-open">
-                  <Button variant="text" onClick={() => navigate(`/runs/${item.id}`)}>
-                    查看执行详情
-                  </Button>
-                </span>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-      {page.total > 0 && (
-        <footer className="context-links history-pager">
-          <Button
-            variant="text"
-            disabled={loading || pageNumber <= 1}
-            onClick={() => setOffset(offset - HISTORY_PAGE)}
-          >
-            上一页
-          </Button>
-          <span className="tabular">
-            {pageNumber} / {pages}
+      <div className="table-scroll">
+        <table className="history-table">
+          <thead>
+            <tr>
+              <th>版本</th>
+              <th>开始时间</th>
+              <th>状态</th>
+              <th>得分 · 通过率</th>
+              <th>建模处理</th>
+              <th className="align-right">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {page.items.map((item) => {
+              const start = runStartTime(item),
+                current = item.id === run.id,
+                handled = optimizationState(item),
+                carried = carriedState(item);
+              return (
+                <tr
+                  key={item.id}
+                  className={current ? 'selected' : 'clickable'}
+                  onClick={current ? undefined : () => navigate(`/runs/${item.id}`)}
+                >
+                  <td>
+                    <span className="version-tag">{packageVersions(item).base || '—'}</span>
+                    {current && <Badge tone="blue">当前</Badge>}
+                  </td>
+                  <td className="tabular">{start ? `${start.date} ${start.time}` : '—'}</td>
+                  <td>
+                    <Badge tone={STATUS[item.status]?.[1]}>{STATUS[item.status]?.[0] || item.status}</Badge>
+                  </td>
+                  <td className="tabular">
+                    {item.summary?.score == null ? (
+                      <span className="muted">未形成有效评测</span>
+                    ) : (
+                      <>
+                        <b>{scoreText(item.summary)}</b> 分 · {passRate(item.summary)}
+                      </>
+                    )}
+                  </td>
+                  <td>
+                    {handled ? <Badge tone={handled.tone}>{handled.label}</Badge> : <span className="muted">—</span>}
+                    {carried && <small>{carried.label}</small>}
+                  </td>
+                  <td className="align-right">
+                    {!current && (
+                      <Button variant="text" onClick={() => navigate(`/runs/${item.id}`)}>
+                        查看
+                      </Button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {pages > 1 && (
+        <footer className="table-footer">
+          <span>共 {page.total} 次评测</span>
+          <span className="pager">
+            <Button variant="text" disabled={loading || pageNumber <= 1} onClick={() => setOffset(offset - HISTORY_PAGE)}>
+              上一页
+            </Button>
+            <span className="tabular">
+              {pageNumber} / {pages}
+            </span>
+            <Button
+              variant="text"
+              disabled={loading || pageNumber >= pages}
+              onClick={() => setOffset(offset + HISTORY_PAGE)}
+            >
+              下一页
+            </Button>
           </span>
-          <Button
-            variant="text"
-            disabled={loading || pageNumber >= pages}
-            onClick={() => setOffset(offset + HISTORY_PAGE)}
-          >
-            下一页
-          </Button>
         </footer>
       )}
     </section>

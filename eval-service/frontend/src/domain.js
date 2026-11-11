@@ -73,6 +73,11 @@ function clock(seconds) {
   const at = runStartTime({ created_at: seconds });
   return at ? `${at.date} ${at.time}` : '';
 }
+// Date and time to the minute, as delivery records name each other instead of by ID.
+export function minute(seconds) {
+  const at = runStartTime({ created_at: seconds });
+  return at ? `${at.date} ${at.time.slice(0, 5)}` : '';
+}
 // Which batch the judge model is working on and how long this generation has waited, for a page refreshed every few seconds.
 function generationProgress(progress, now) {
   if (!progress) return '';
@@ -135,8 +140,14 @@ export function optimizationState(run) {
     when = clock(result.reported_at || o.updated_at),
     count = times > 1 ? `共 ${times} 次回写` : '';
   if (o.status === 'awaiting_review') return { label: '待负责人确认', tone: 'blue', hint: '确认后通知建模' };
-  if (o.status === 'notified')
-    return { label: '待建模处理', tone: 'neutral', hint: '建模按建议修改并发布新版本后，这里显示新版本' };
+  if (o.status === 'notified') {
+    const carried = carriedState(run);
+    return {
+      label: '待建模处理',
+      tone: 'neutral',
+      hint: carried ? `${carried.label}：${carried.hint}` : '建模按建议修改并发布新版本后，这里显示新版本',
+    };
+  }
   if (o.status === 'modeling_done')
     return {
       label: '已处理',
@@ -149,18 +160,41 @@ export function optimizationState(run) {
   if (o.status === 'dismissed') return { label: '已驳回', tone: 'neutral', hint: o.reason || '负责人驳回，不交给建模' };
   return null;
 }
+// A run still waiting for modeling rides along with a newer push of the same source, or was left out of its window.
+export function carriedState(run) {
+  const o = run?.optimization;
+  if (o?.status !== 'notified') return null;
+  if (o.carried_into)
+    return {
+      label: `已合并到 ${minute(o.carried_into.at)} 的交付`,
+      tone: 'blue',
+      runId: o.carried_into.run_id,
+      hint: '建模还没处理，随较新的一次交付一起交给建模，处理结果会一起回写',
+    };
+  if (o.slid_out)
+    return {
+      label: '未能一起带上',
+      tone: 'amber',
+      runId: o.slid_out.run_id,
+      hint: `${minute(o.slid_out.at)} 的交付文件超过大小上限，没有带上这一轮，仍待建模处理`,
+    };
+  return null;
+}
+// What a push carries from earlier runs still waiting for modeling: runs, questions and suggestions, and runs left out.
+export function carryoverCounts(carryover) {
+  const rounds = carryover?.rounds || [];
+  return {
+    rounds: rounds.length,
+    cases: rounds.reduce((sum, r) => sum + (r.cases || 0), 0),
+    items: rounds.reduce((sum, r) => sum + (r.items || 0), 0),
+    slidOut: (carryover?.slid_out || []).length,
+  };
+}
 // Where a feedback run stands: collecting, waiting for an owner, handed to modeling, or dismissed.
 export function feedbackStatus(run) {
   if (run.status === 'collecting') return { label: '收集中', tone: 'blue' };
   if (!run.artifacts) return { label: '生成报告中', tone: 'blue' };
   return optimizationState(run) || { label: '已生成', tone: 'green' };
-}
-// Short mark in run lists: the new version modeling published from this run's suggestions, or that it failed.
-export function optimizationTag(run) {
-  const o = run?.optimization;
-  if (o?.status === 'modeling_done') return { label: `建模已处理 → ${o.result?.version || '新版本'}`, tone: 'green' };
-  if (o?.status === 'modeling_failed') return { label: '建模处理失败', tone: 'red' };
-  return null;
 }
 export function runStartTime(run) {
   const seconds = run?.started_at || run?.created_at;
@@ -203,8 +237,39 @@ export function modelOptionLabel(item) {
 export function shortId(id = '') {
   return id.length > 12 ? id.slice(0, 12) : id;
 }
-export function percent(value) {
-  return value == null ? '—' : `${(value * 100).toFixed(1)}%`;
+// A run's cases by verdict for the result bar: execution and judge errors count as errors, unrun cases as todo.
+export function resultCounts(summary) {
+  const c = summary?.counts || {};
+  return {
+    pass: c.pass || 0,
+    partial: c.partial || 0,
+    fail: c.fail || 0,
+    error: (c.execution_error || 0) + (c.judge_error || 0),
+    manual: c.manual || 0,
+    todo: (c.pending || 0) + (c.cancelled || 0),
+  };
+}
+// The two numbers shown for a run: the report's score (pass 1, partial 0.5, over valid cases) and the pass rate
+// (passed over all cases; partial, failed, error and manual cases do not pass). Feedback runs have neither.
+export function scoreText(summary) {
+  return summary?.score == null ? '—' : String(summary.score);
+}
+export function passRate(summary) {
+  return summary?.strict_pass_rate == null ? '—' : `${Math.round(summary.strict_pass_rate * 100)}%`;
+}
+// Which consumer workspace a data source's run uses, as the wizard explains it.
+export function sourceWorkspace(source) {
+  if (!source || source.mode !== 'connection') return '使用评测专用空间';
+  return source.provider === 'neo4j' ? '使用 Workspace 对应的空间' : '使用你填写的评测工作空间';
+}
+// How long a stopped run took, from start to finish.
+export function duration(run) {
+  const start = run?.started_at || run?.created_at,
+    end = run?.finished_at;
+  if (!start || !end || end < start) return '';
+  const minutes = Math.floor((end - start) / 60),
+    seconds = Math.round(end - start - minutes * 60);
+  return minutes ? `${minutes} 分 ${seconds} 秒` : `${seconds} 秒`;
 }
 export function parseRoute(hash = '') {
   const [path, search = ''] = hash.replace(/^#/, '').split('?');
@@ -223,6 +288,8 @@ export function parseRoute(hash = '') {
     return { page: definition[1] === 'eval-sets' ? 'sets' : 'sources', id: definition[2] };
   if (path === '/settings') return { page: 'settings' };
   if (path === '/feedback') return { page: 'feedback' };
+  const feedbackPackage = /^\/feedback\/package\/([A-Za-z0-9_-]+)$/.exec(path);
+  if (feedbackPackage) return { page: 'feedback', package: feedbackPackage[1] };
   const feedback = /^\/feedback\/([a-zA-Z0-9_-]+)$/.exec(path);
   if (feedback) return { page: 'feedback', id: feedback[1] };
   return { page: 'tasks' };

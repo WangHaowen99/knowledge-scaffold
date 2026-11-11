@@ -109,7 +109,7 @@ def run_of(count, answer_chars=600):
 
 def generate(gateway, run, request_chars=suggestions.REQUEST_CHARS, evidence=None, docs=None, progress=None):
     service = Suggestions(Judge(), Packages(package(DOCS if docs is None else docs)), gateway, request_chars, gateway.clock)
-    text, profile = service.generate('owner_a', run, 'synthetic-user-a', STEM, 1793500000, {}, evidence, progress)
+    text, profile, _ = service.generate('owner_a', run, 'synthetic-user-a', STEM, 1793500000, {}, evidence, progress)
     assert profile['model'] == 'synthetic-model'
     return text
 
