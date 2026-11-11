@@ -1572,3 +1572,11 @@ Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`
    必经的排在可选的前面；可选节点和可选步骤在后面的核对节点还会跑时不出。`SUGGEST_RULES` 升到 6。
 2. **FL-01 节点动作**：过期节点的刷新动作同一个说法。
 3. **节点与步骤的确认记录**多存按类别的指纹 `kinds`；没有它的老记录按确认时刻（`at`）主线上的提交比到现在、看哪几类目录有改动，还说不清时按钮只写「刷新X」。
+
+## 2026-11-11 · 版本回退只恢复业务内容、加并发保护；版本列表带发布记录（吸收 develop !567、!570，ADR-0094）
+
+1. **V-05**：响应加 `expected_head`、`ready`、`blockers: [{code, message, details}]`；`files` 只列业务内容（不含 `.gitignore` 等仓库配置、助手装配、目录 `index.md`）；不在当前版本历史里的提交回 `invalid_commit`。
+2. **V-06**：请求加可选的 `expected_head`，不符回 `409 head_moved`；新增错误 `session_busy`、`studio_draft_pending`、`workspace_dirty`（与 V-05 的 blockers 同一组判断，取第一条）。主线有没提交的业务改动时由「不带进提交、照常回退」改为拒绝。回退之后助手会话回收、全部对话续接点作废。资料随回退恢复（不变）。
+3. **V-01**：响应加 `release_error`；`Version.release` 改取发布记录（版本号来自 Hub），读不到时退回本地标签，版本照列。
+4. **错误码**：新增 `studio_draft_pending`、`workspace_dirty`（第 2 章）。
+5. 为什么：develop 的回退语义（只恢复业务内容、有人在改时挡住、预览后主线前进不执行）落到本分支已有的 V-05/V-06；develop 的 `/history` 合并时间线不另起，发布标在版本行上（设计稿第五版）。

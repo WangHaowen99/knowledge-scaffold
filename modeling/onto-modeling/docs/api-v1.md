@@ -376,6 +376,8 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `changeset_closed` | 409 | 变更集已经合入或撤回 | `state` |
 | `merge_conflict` | 409 | 合入时检测到实体冲突，已进待处理 | `entities[]: EntryRef, inbox_item_id` |
 | `head_moved` | 409 | 主线已前进，`expected_head` 不符 | `head` |
+| `studio_draft_pending` | 409 | Studio 有暂存草稿，版本回退前要先保存或放弃 | `path, entry_id, count` |
+| `workspace_dirty` | 409 | 主线工作区有没提交的业务改动，不能回退 | `paths[]`（最多 20 个） |
 | `invalid_commit` | 400 | 版本号不合法，或不在主线上 | — |
 | `nothing_to_revert` | 400 | 当前内容与目标版本一致 | — |
 | `tag_not_found` | 404 | 标记不存在，或不是用户标记 | — |
@@ -1521,7 +1523,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `GET /api/v1/projects/{id}/versions` · 所有者 · 旧：`GET /api/projects/{id}/versions`（旧接口固定 50 条） · 审计：否 · 依据：4.3 trailer、4.9 · 页面：versions、publish（版本下拉）
 
 - 查询参数：`source?`（`assistant|web|studio|mcp|autobuild|import|plugin|revert`，多值）、分页（默认 50）。
-- 响应：`{items: Version[], next_cursor, total, head, current_version_label}`。
+- 响应：`{items: Version[], next_cursor, total, head, current_version_label, release_error: string}`。
+  - `Version.release` 取发布记录（`publish.releases`，版本号来自知识包 Hub）：同一提交发布过几次取最新的；记录没带提交时按发布时间归到当时的最新版本。没有发布记录时退回本地 `release/*` 标签。
+  - 发布记录读不到（Hub 不可用等）时版本照列，`release_error` 是原因，否则为空串。
 
 #### V-02 版本详情
 
@@ -1550,18 +1554,22 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `GET /api/v1/projects/{id}/versions/revert-preview` · 所有者 · 旧：— · 审计：否 · 依据：4.9 · 页面：versions（回退确认弹窗）
 
 - 查询参数：`commit`。
-- 响应：`{target: {commit, version_label}, next_version_label, files: [{path, change: "restore"|"delete"}], undone_versions: string[], packs_lock_changes: [{pack, from, to}]}`。
+- 响应：`{target: {commit, version_label}, next_version_label, expected_head, files: [{path, change: "restore"|"delete"}], undone_versions: string[], packs_lock_changes: [{pack, from, to}], ready: bool, blockers: [{code, message, details}]}`。
   - 回退会把启用的能力和版本也一起恢复到当时状态，所以要列出 `packs_lock_changes`。
+  - 只列业务内容（ADR-0094）：仓库配置（`.gitignore` 等）、项目元数据、运行状态、助手装配（`.claude`、`CLAUDE.md`、`README.md`）不随回退；目录 `index.md` 是派生文件，不单独列，回退时重新生成。资料（`resource/`）随回退恢复。
+  - `expected_head` 是预览时的主线版本，回退时原样带回 `V-06`。
+  - `blockers` 是现在不能回退的原因，`ready=false` 时确认按钮不可用；`code` 取 `write_scope_locked`（`details` 是 ScopeLock）、`session_busy`、`autobuild_running`（`details.run_id`）、`studio_draft_pending`（`details: {path, entry_id, count}`）、`workspace_dirty`（`details.paths`，最多 20 个）。
+- 错误：`invalid_commit`（含不在当前版本历史里的提交）、`nothing_to_revert`。
 
 #### V-06 回退
 
 `POST /api/v1/projects/{id}/versions/revert` · 所有者 · 旧：`POST /api/projects/{id}/versions/revert` · 审计：是 · 依据：4.9、方案 C1 · 页面：versions
 
-- 请求：`{commit}`。
-- 整树恢复，之后新增的文件也会删掉（方案 C1）。生成新版本，历史保留。
-- 能力切换下一条消息生效。
+- 请求：`{commit, expected_head?}`。`expected_head` 取 `V-05` 的同名字段，预览之后主线前进了就 `409 head_moved`。
+- 业务内容整份恢复，之后新增的文件也会删掉（方案 C1）；不随回退的内容同 `V-05`。生成新版本，历史保留。
+- 能力切换下一条消息生效。回退之后助手会话回收、全部对话的续接点作废（ADR-0094）：对话历史保留，下一条消息全新开始。
 - 响应：`{commit, version_label, reverted_to: {commit, version_label}}`。
-- 错误：`invalid_commit`、`nothing_to_revert`、`write_scope_locked`（有未确认的助手变更集时，要先确认或撤回）、`autobuild_running`。
+- 错误：`invalid_commit`、`nothing_to_revert`、`head_moved`，以及 `V-05` 的各种 `blockers`（取第一条）：`write_scope_locked`（423）、`session_busy`、`autobuild_running`、`studio_draft_pending`、`workspace_dirty`（均 409）。
 
 #### V-07 标记版本
 
