@@ -548,9 +548,6 @@ deploy_onto_modeling() {
     # 现场探测为准，探测不到写空值，验证改在 onto-modeling 容器内执行
     write_env_value "${env_file}" ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME \
         "$(container_mount_volume onto-agent-backend /run/jiuwenbox || true)"
-    # 评测调用 Modeling Workbench 走容器网络，与宿主端口无关
-    [ -n "$(env_get "${env_file}" ONTO_WEB_MODELING_URL)" ] \
-        || write_env_value "${env_file}" ONTO_WEB_MODELING_URL 'http://mw-modeling:5100'
     # 与独立部署的知识包 Hub 使用同一服务凭据；未部署 Hub 时保留原值（缺失由 Onto 部署脚本生成）
     hub_token="$(env_get "${KNOWLEDGE_HUB_DIR}/.env" HUB_SERVICE_TOKEN)"
     [ -z "${hub_token}" ] || write_env_value "${env_file}" ONTO_HUB_SERVICE_TOKEN "${hub_token}"

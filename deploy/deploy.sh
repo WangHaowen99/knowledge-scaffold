@@ -91,8 +91,7 @@ ensure_release_modeling_service_token() {
     log "Modeling service token is ready (value is not printed)"
 }
 
-# onto-modeling 接入整栈（开箱即用）：共享 consumer 账号中心 + 同网络 +
-# 指向 Modeling Workbench 的评测服务地址。数据评测阶段依赖这三项接线。
+# onto-modeling 接入整栈（开箱即用）：共享 consumer 账号中心，与 Hub、评测服务同在 consumer 网络。
 consumer_container() {
     # 限定 --type container：同名镜像也会被 docker inspect 命中
     if docker inspect --type container onto-agent-backend >/dev/null 2>&1; then
@@ -154,8 +153,28 @@ detect_jiuwenbox_socket_volume() {
         | grep -E '(^|_)onto-jiuwenbox-sock$' | head -n 1 || true
 }
 
-write_onto_modeling_stack_override() { # <onto-modeling 目录> <mw-modeling 地址>
-    local dir="$1" modeling_url="$2" network socket_volume sandbox_service="" sandbox_volume=""
+# 连接器网关的主密钥（ADR-0086）：compose secrets 只挂给网关，文件不存在时网关容器建不起来。与发布包
+# deploy.sh 同规则：不存在时生成一次（丢了只能重新录入数据源凭据，和凭据卷分开备份），root 部署时属主改成网关的 uid 65534
+ensure_onto_connector_master_key() { # <onto-modeling 目录>
+    local key_file
+    key_file="$(env_get "$1/.env" ONTO_CONNECTOR_MASTER_KEY_FILE)"
+    key_file="${key_file:-./secrets/connector-master.key}"
+    case "${key_file}" in
+        /*) ;;
+        *) key_file="$1/${key_file#./}" ;;
+    esac
+    if [ ! -f "${key_file}" ]; then
+        mkdir -p "$(dirname "${key_file}")"
+        chmod 700 "$(dirname "${key_file}")"
+        (umask 077 && { openssl rand -base64 32 2>/dev/null || head -c 32 /dev/urandom | base64; } > "${key_file}")
+        chmod 600 "${key_file}"
+        log "Generated Onto Modeling connector master key ${key_file}; back it up apart from the connector-secrets volume"
+    fi
+    [ "$(id -u)" -ne 0 ] || chown 65534:65534 "${key_file}"
+}
+
+write_onto_modeling_stack_override() { # <onto-modeling 目录>
+    local dir="$1" network socket_volume sandbox_service="" sandbox_volume=""
     local hub_env="${dir}/.env" hub_secret
     # Hub 未部署过时补一个凭据，onto-modeling 才能启动；部署过 Hub 时调用方已对齐为 Hub 的值
     if ! grep -q '^ONTO_HUB_SERVICE_TOKEN=..*' "${hub_env}" 2>/dev/null; then
@@ -175,8 +194,8 @@ write_onto_modeling_stack_override() { # <onto-modeling 目录> <mw-modeling 地
     fi
     cat > "${dir}/docker-compose.stack.yml" <<EOF2
 # 由 deploy.sh 生成（整栈部署形态，勿手改；单独部署 onto-modeling 时删除即可）：
-# 停用自带 dev auth-server，共享 consumer 账号中心；接入 consumer 网络（独立部署的知识包 Hub 也在此网络）；
-# 配置数据评测所需的 Modeling Workbench 地址；把 consumer 的 jiuwenbox socket 只读挂给脚本验证网关。
+# 停用自带 dev auth-server，共享 consumer 账号中心；接入 consumer 网络（独立部署的知识包 Hub、评测服务也在此网络）；
+# 把 consumer 的 jiuwenbox socket 只读挂给脚本验证网关。
 services:
   auth-server:
     profiles: ["disabled"]
@@ -184,7 +203,6 @@ services:
     depends_on: !override []
     environment:
       - ONTO_WEB_AUTH_URL=http://auth-server:5056
-      - ONTO_WEB_MODELING_URL=${modeling_url}
     networks:
       - default
       - consumer-net
@@ -202,8 +220,6 @@ seed_onto_modeling_bundle_env() { # <bundle 的 onto-modeling 目录>
     [ -f "${env_file}" ] || touch "${env_file}"
     chmod 600 "${env_file}"
     network="$(require_consumer_network)"
-    grep -q '^ONTO_WEB_MODELING_URL=..*' "${env_file}"         || printf 'ONTO_WEB_MODELING_URL=%s
-' 'http://mw-modeling:5100' >> "${env_file}"
     # 存量 .env 可能记着一个已不存在的网络（旧版探测失败时写入了固定猜测名），
     # 那样重跑部署也不会自愈——就地删掉失效值，让下面重新写入探测结果。
     current_network="$(sed -n 's/^ONTO_MODELING_EXTERNAL_AUTH_NETWORK=//p' "${env_file}" | head -n 1)"
@@ -481,7 +497,8 @@ elif [ -f "${SCRIPT_DIR}/deploy-stack.sh" ]; then
                 log "Deploying Onto Modeling (source, docker compose, joined to consumer stack)"
                 adopt_hub_service_token "${SCRIPT_DIR}/../knowledge-hub/deploy/.env" "${ONTO_MODELING_SOURCE}/.env"
                 ensure_onto_evaluation_service_token "${ONTO_MODELING_SOURCE}/.env"
-                write_onto_modeling_stack_override "${ONTO_MODELING_SOURCE}" "http://mw-modeling:5100"
+                write_onto_modeling_stack_override "${ONTO_MODELING_SOURCE}"
+                ensure_onto_connector_master_key "${ONTO_MODELING_SOURCE}"
                 # --remove-orphans 清掉旧版本随 onto-modeling 部署的 Hub 容器，避免与独立 Hub 抢同一服务名
                 (cd "${ONTO_MODELING_SOURCE}" \
                     && docker compose -f docker-compose.yml -f docker-compose.stack.yml up -d --build --remove-orphans)
