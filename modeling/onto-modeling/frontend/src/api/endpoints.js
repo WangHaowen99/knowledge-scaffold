@@ -335,6 +335,7 @@ export function createApi(client) {
     legacyEvaluations: (id) => client.get(`${P(id)}/legacy-evaluations`), // ES-09
     legacyEvaluation: (id, stem) => client.get(`${P(id)}/legacy-evaluations/${enc(stem)}`), // ES-10
     legacyEvaluationAnswer: (id, stem, resultId) => client.get(`${P(id)}/legacy-evaluations/${enc(stem)}/answers/${enc(resultId)}`), // ES-11
+    optimizeLegacyEvaluation: (id, stem) => client.post(`${P(id)}/legacy-evaluations/${enc(stem)}/optimization`, {}), // ES-12
 
     // 3.21 三份契约：服务令牌（X-06，设计稿没画入口，见 gaps F4）
     serviceTokens: () => client.get('/admin/service-tokens'), // X-06
