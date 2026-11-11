@@ -8,6 +8,7 @@ import { errorText, relativeTime } from '../../api/errors.js';
 import {
   Area, Button, Chip, Field, Icon, Inp, Modal, Note, cx, useOutside,
 } from '../../ui/index.jsx';
+import { reportRefs, researchReportId } from '../reports/reportModel.js';
 import EvidencePicker from './EvidencePicker.jsx';
 import { KindChip, KindDot, LockBar, askAssistant, useLockCopy } from './parts.jsx';
 import {
@@ -365,9 +366,14 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
               Object.entries(form.sections || {}).map(([title, text]) => (
                 <div className="mt12" key={title}>
                   <Field label={title}><Area minHeight={96} textareaStyle={{ height: 78 }} value={text} onChange={(e) => change({ sections: { ...form.sections, [title]: e.target.value } })} /></Field>
-                  {sectionRefs[title]?.length ? (
+                  {sectionRefs[title]?.length || reportRefs(text).length ? (
                     <div className="row wrap mt4" style={{ gap: 6 }}>
-                      {sectionRefs[title].map((a) => (
+                      {reportRefs(text).map((r) => (
+                        <Chip key={`${r.path}#${r.section}`} tone="line" sm icon="filetext" className="stt-src" title="打开资料分析报告" onClick={() => navigate(pagePath('reports', pid), { report: researchReportId(r.path), section: r.section })}>
+                          {r.section}
+                        </Chip>
+                      ))}
+                      {(sectionRefs[title] || []).map((a) => (
                         <Chip key={a} tone="line" sm icon="filetext" className="stt-src" title="查看原文" onClick={() => navigate(pagePath('resources', pid), { anchor: a })}>
                           {anchorLabels[a] || anchorChipLabel(a)}
                         </Chip>

@@ -102,3 +102,15 @@ test('流程图行的最后更新时间取产物的修改时间', () => {
   const row = artifactToRow({ key: 'f1', title: '合成流程', status: { value: 'confirmed' }, updated_at: '2026-01-02T03:04:05.000Z' });
   assert.equal(row.updated_at, '2026-01-02T03:04:05.000Z');
 });
+
+test('规则「来源」里的报告小节：小节名自带的括号保留，外层多出的右括号去掉；报告 id 同后端', async () => {
+  const { headingLine, reportRefs, researchReportId } = await import('../src/pages/reports/reportModel.js');
+  assert.deepEqual(reportRefs('`research/20260101-订单.md#退款时限`（规则ID R-02）'), [{ path: 'research/20260101-订单.md', section: '退款时限' }]);
+  assert.deepEqual(reportRefs('（见 research/报告.md#退款时限（R-02））'), [{ path: 'research/报告.md', section: '退款时限（R-02）' }]);
+  assert.deepEqual(reportRefs('resource/others/说明.md#L3 与 research/报告.md'), []);
+  assert.equal(researchReportId('research/20260101-订单.md'), 'research:20260101-订单');
+  const lines = ['# 详细信息', '## 退款时限（R-02）', '正文', '## 退款时限'];
+  assert.equal(headingLine(lines, '退款时限'), 3);
+  assert.equal(headingLine(lines, 'R-02'), 1);
+  assert.equal(headingLine(lines, '不存在'), -1);
+});
