@@ -29,10 +29,12 @@
   `{kind: "release", version}`，经 `publish.release_package` 取包，每个接口先过 `require_owner`。去掉 develop 的
   `ensure_sources_readable`，也不再带用户令牌。
 - 约束 5：发起对比时把发布包复制成比较目录下的 `left.zip`、`right.zip`（冻结），之后的解析、正文差异只读这一份。
+  取包时把发起人的登录令牌交给 `release_package`：本地留存缺失时它从 Hub 下回原包（与 PB-07 同口径）；令牌只在这次请求里用。
 - 约束 3、6：上传输入、结果、请求记录都在 `DATA_DIR/package-comparisons/<用户摘要>/`，24 小时过期；配额与并发上限沿用 develop
   （环境变量 `ONTO_COMPARE_*`）。多 worker 部署时只有抢到服务锁的进程提供对比和定时清理。
 - 跨包：两侧 manifest `id` 不同时要确认。任务在后台判定，失败码 `compare_cross_package`，前端给「仍要对比」，带
   `allow_cross_package` 重新发起；前端不必事先知道两侧的包标识。
+  经 Hub 发布的包 `id` 是 Hub 包标识（ADR-0091），没走 Hub 的本地导出是项目 ID，比这两种也会先要确认。
 
 **做法**
 
@@ -55,6 +57,6 @@
 ## Consequences
 
 - 不能直接选 Hub 上别的包的发布版本做对比，要先下载再上传。
-- 本地模式也能用（develop 要求统一账号登录）。
+- 不依赖统一账号：本地模式没有发布版本（发布要走 Hub），但两个上传的包照样能比（develop 整个对比都要求统一账号登录）。
 - 旧路径 `/api/projects/{id}/package-comparisons/*` 不做兼容映射：调用方只有 develop 的旧前端，本分支不带它。
 - 一次对比最多复制两份发布包（各不超过 `ONTO_COMPARE_MAX_ARCHIVE_BYTES`，默认 50 MiB），计入用户临时空间。

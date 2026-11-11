@@ -49,6 +49,11 @@ def _subject(project_id: str, request: Request) -> str:
     return deps.actor(request)
 
 
+def _token(request: Request) -> str:
+    header = request.headers.get("authorization", "")
+    return header[7:].strip() if header.lower().startswith("bearer ") else ""
+
+
 def _times(value: dict) -> dict:
     return {**value, **{key: deps.iso(value[key]) for key in ("created_at", "expires_at") if key in value}}
 
@@ -84,7 +89,7 @@ def start(project_id: str, body: PackageCompareBody, request: Request):
     value = package_compare.start_comparison(
         deps.workspaces, project_id, subject,
         body.left.model_dump(), body.right.model_dump(),
-        body.allow_cross_package, body.request_id,
+        body.allow_cross_package, body.request_id, token=_token(request),
     )
     return JSONResponse(status_code=202, content=_times(value))
 

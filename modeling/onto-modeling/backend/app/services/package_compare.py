@@ -759,12 +759,15 @@ def _validate_upload_refs(
             _load_input(subject, ref["input_id"], project_id)
 
 
-def _release_source(manager, project_id: str, subject: str, ref: dict) -> tuple[Path, dict, Path]:
-    """本项目某个发布版本的包：经 publish.release_package 取（留存或 Hub 缓存），复制到比较目录的临时目录再解析。"""
+def _release_source(manager, project_id: str, subject: str, ref: dict, token: str = "") -> tuple[Path, dict, Path]:
+    """本项目某个发布版本的包：经 publish.release_package 取，复制到比较目录的临时目录再解析。
+
+    token 是发起人的登录令牌，本地留存缺失时 release_package 用它从 Hub 下回原包；只在这次请求里用，不落盘。
+    """
     from . import publish  # 延迟导入：解析子进程只导入本模块，不带上发布链
 
     version = _safe_version(ref.get("version"))
-    package, _record = publish.release_package(manager, project_id, version)
+    package, _record = publish.release_package(manager, project_id, version, token=token)
     _checkpoint()
     if package.stat().st_size > MAX_ARCHIVE_BYTES:
         raise WorkspaceError("发布知识包超过版本对比大小限制", 413)
@@ -917,7 +920,7 @@ def create_comparison(
 
 
 def _freeze_ref(manager, project_id: str, subject: str, comparison_id: str,
-                side: str, ref: dict) -> dict:
+                side: str, ref: dict, token: str = "") -> dict:
     """发布版本复制成比较目录下的 <side>.zip：结果和正文差异读这一份，不受发布留存或缓存变化影响。"""
     if ref.get("kind") != "release":
         return ref
@@ -928,7 +931,7 @@ def _freeze_ref(manager, project_id: str, subject: str, comparison_id: str,
     try:
         _reserve_upload(subject)
         reserved = True
-        path, meta, temporary = _release_source(manager, project_id, subject, ref)
+        path, meta, temporary = _release_source(manager, project_id, subject, ref, token)
         destination = _comparison_folder(subject, comparison_id) / f"{side}.zip"
         meta_path = destination.with_suffix(".json")
         shutil.move(str(path), destination)
@@ -1061,6 +1064,8 @@ def start_comparison(
     right_ref: dict,
     allow_cross_package: bool = False,
     request_id: str = "",
+    *,
+    token: str = "",
 ) -> dict:
     """PC-04：校验来源、占任务名额、冻结发布版本，再交给后台线程比较；同一 request_id 重放返回同一任务。"""
     _ensure_service_available()
@@ -1145,8 +1150,8 @@ def start_comparison(
     _ACTIVE_TASK.key = key
     _ACTIVE_TASK.deadline = time.monotonic() + TASK_TIMEOUT_SECONDS
     try:
-        left_ref = _freeze_ref(manager, project_id, subject, comparison_id, "left", left_ref)
-        right_ref = _freeze_ref(manager, project_id, subject, comparison_id, "right", right_ref)
+        left_ref = _freeze_ref(manager, project_id, subject, comparison_id, "left", left_ref, token)
+        right_ref = _freeze_ref(manager, project_id, subject, comparison_id, "right", right_ref, token)
     except Exception:
         with _TASK_LOCK:
             _release_task_slot(key)

@@ -73,9 +73,10 @@ def drain_tasks():
 
 def fake_release(monkeypatch, tmp_path, payload: bytes, calls=None, before=None):
     """publish.release_package 的替身：按版本返回一份留存包。"""
-    def release_package(manager, project_id, version, *rest):
+    def release_package(manager, project_id, version, *rest, token=""):
         if calls is not None:
             calls.append((manager, project_id, version))
+        tokens.append(token)
         if before:
             before()
         stored = tmp_path / "release-store" / f"{project_id}-{version}.zip"
@@ -84,6 +85,8 @@ def fake_release(monkeypatch, tmp_path, payload: bytes, calls=None, before=None)
         return stored, {"version": version, "sha256": "0" * 64}
 
     monkeypatch.setattr(publish, "release_package", release_package)
+    tokens = []
+    return tokens
 
 
 def test_modeling_export_is_accepted_as_comparison_input(
@@ -960,7 +963,7 @@ def test_async_job_crossing_input_ttl_still_completes(comparison_root, monkeypat
 
 def test_worker_and_diff_use_frozen_release_without_reading_it_again(comparison_root, tmp_path, monkeypatch):
     calls = []
-    fake_release(monkeypatch, tmp_path, archive(**{"objects/a.md": "release"}).getvalue(), calls)
+    tokens = fake_release(monkeypatch, tmp_path, archive(**{"objects/a.md": "release"}).getvalue(), calls)
     local = package_compare.create_input(
         comparison_root,
         archive(**{"objects/a.md": "local"}),
@@ -970,9 +973,10 @@ def test_worker_and_diff_use_frozen_release_without_reading_it_again(comparison_
         "manager", "project_alpha", comparison_root,
         {"kind": "release", "version": "0.1.0"},
         {"kind": "upload", "input_id": local["input_id"]},
+        token="login-token",
     )
 
-    def unavailable(*_args):
+    def unavailable(*_args, **_kwargs):
         raise WorkspaceError("发布包已不可用", 409, "release_package_unavailable")
 
     monkeypatch.setattr(publish, "release_package", unavailable)
@@ -995,7 +999,8 @@ def test_worker_and_diff_use_frozen_release_without_reading_it_again(comparison_
         "objects/a.md",
     )
     assert diff["left"]["text"] == "release" and diff["right"]["text"] == "local"
-    assert calls == [("manager", "project_alpha", "0.1.0")]
+    # 发起人的令牌只交给 release_package（留存缺失时从 Hub 取原包），之后不再回源
+    assert calls == [("manager", "project_alpha", "0.1.0")] and tokens == ["login-token"]
 
 
 def test_frozen_release_metadata_cannot_exceed_storage_quota(
@@ -1571,7 +1576,7 @@ OWNER, OTHER = {"Authorization": "Bearer owner-token"}, {"Authorization": "Beare
 
 
 @pytest.fixture
-def api(tmp_path, monkeypatch):
+def api(tmp_path, monkeypatch, synthetic_hub):
     data = tmp_path / "data"
     monkeypatch.setattr(config, "DATA_DIR", data)
     monkeypatch.setattr(package_compare, "_SERVICE_OWNER", True)
@@ -1599,7 +1604,10 @@ def _release(manager, project_id, files: dict[str, str]) -> str:
         (root / name).write_text(text, encoding="utf-8")
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "test: synthetic release content")
-    return publish.publish_package(manager, project_id, allow_unbound=True)["version"]
+    # 发布走 Hub（ADR-0091），这里接 conftest 的内存 Hub
+    return publish.publish_package(
+        manager, project_id, allow_unbound=True, token="synthetic-access", subject="scope_a",
+    )["version"]
 
 
 def _ready(client, base, comparison_id):
@@ -1661,32 +1669,60 @@ def test_api_compares_two_project_releases_and_guards_owner(api):
     assert gone.status_code == 410 and gone.json()["code"] == "compare_expired"
 
 
+def _edited_copy(source: Path, target: Path, member_suffix: str, text: str) -> Path:
+    """发布包改一个文件另存：manifest 不动，仍是同一个知识包（像别人下载后改过再传回来）。"""
+    with zipfile.ZipFile(source) as src, zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as out:
+        for info in src.infolist():
+            data = src.read(info)
+            out.writestr(info, text.encode("utf-8") if info.filename.endswith(member_suffix) else data)
+    return target
+
+
+def _upload(client, base, path: Path, request_id: str) -> dict:
+    with path.open("rb") as handle:
+        uploaded = client.post(f"{base}/inputs", files={"file": (path.name, handle, "application/zip")},
+                               headers={**OWNER, "X-Compare-Upload-Id": request_id})
+    assert uploaded.status_code == 201, uploaded.text
+    return uploaded.json()
+
+
 def test_api_upload_input_against_release(api, tmp_path):
     manager, project_id, client = api
     version = _release(manager, project_id, {"ontology/object/order.md": "# Order\n\nA synthetic order.\n"})
-    (manager.project_root(project_id) / "ontology/object/order.md").write_text(
-        "# Order\n\nA synthetic order, edited locally.\n", encoding="utf-8",
-    )
-    exported = publish.export_package_zip(manager, project_id, tmp_path / "local.zip", allow_unbound=True)
+    released, _record = publish.release_package(manager, project_id, version)
+    edited = _edited_copy(released, tmp_path / "edited.zip", "objects/order.md", "# Order\n\nA synthetic order, edited.\n")
     base = f"/api/v1/projects/{project_id}/package-comparisons"
-    with exported.open("rb") as handle:
-        uploaded = client.post(f"{base}/inputs", files={"file": ("local.zip", handle, "application/zip")},
-                               headers={**OWNER, "X-Compare-Upload-Id": "upload_demo"})
-    assert uploaded.status_code == 201, uploaded.text
-    item = uploaded.json()
-    assert item["package_id"] == project_id and item["expires_at"].endswith("Z")
+    item = _upload(client, base, edited, "upload_demo")
+    assert item["package_version"] == version and item["expires_at"].endswith("Z")
 
     started = client.post(base, json={"left": {"kind": "release", "version": version},
                                       "right": {"kind": "upload", "input_id": item["input_id"]}}, headers=OWNER)
     assert started.status_code == 202
     result = _ready(client, base, started.json()["comparison_id"])
-    assert result["status"] == "ready" and result["summary"]["files"]["modified"] >= 1
+    assert result["status"] == "ready", result
+    assert result["summary"]["files"] == {"added": 0, "deleted": 0, "modified": 1,
+                                          "unchanged": result["summary"]["left_file_count"] - 1}
 
     busy = client.delete(f"{base}/inputs/{item['input_id']}", headers=OWNER)
     assert busy.status_code == 409 and busy.json()["code"] == "compare_input_in_use"
     assert client.delete(f"{base}/{result['comparison_id']}", headers=OWNER).status_code == 204
     assert client.delete(f"{base}/inputs/{item['input_id']}", headers=OWNER).status_code == 204
     assert client.delete(f"{base}/uploads/upload_demo", headers=OWNER).status_code == 204
+
+
+def test_api_cross_package_upload_needs_confirmation(api, tmp_path):
+    manager, project_id, client = api
+    version = _release(manager, project_id, {"ontology/object/order.md": "# Order\n\nA synthetic order.\n"})
+    # 没走 Hub 的本地导出，manifest id 是项目 ID，和发布包（Hub 包标识）不是同一个知识包
+    exported = publish.export_package_zip(manager, project_id, tmp_path / "local.zip", allow_unbound=True)
+    base = f"/api/v1/projects/{project_id}/package-comparisons"
+    item = _upload(client, base, exported, "upload_cross")
+    body = {"left": {"kind": "release", "version": version}, "right": {"kind": "upload", "input_id": item["input_id"]}}
+    first = _ready(client, base, client.post(base, json=body, headers=OWNER).json()["comparison_id"])
+    assert first["status"] == "failed" and first["error_code"] == "compare_cross_package"
+    confirmed = client.post(base, json={**body, "allow_cross_package": True}, headers=OWNER)
+    assert confirmed.status_code == 202
+    assert _ready(client, base, confirmed.json()["comparison_id"])["status"] == "ready"
 
 
 def test_api_rejects_unknown_release_and_invalid_sources(api):
