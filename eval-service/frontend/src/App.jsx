@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
-import { api, allPages, TOKEN, REFRESH, clearLogin, saveLogin } from './api.js';
+import { api, allPages, TOKEN, SESSION, clearLogin, loginSession, saveLogin, tokenSubject } from './api.js';
 import { receiveHandoff } from './handoff.js';
 import { ACTIVE, parseRoute, shortId, sourceSummary, taskRows } from './domain.js';
 import { Alert, Badge, Breadcrumb, Button, Confirm, Empty, Heading, Icon, Skeleton, useAction } from './ui.jsx';
@@ -121,12 +121,16 @@ export default function App() {
   useEffect(() => {
     authenticate(true);
     const changed = (e) => {
-      if (e.key == null || [TOKEN, REFRESH].includes(e.key)) {
+      if (e.key == null || e.key === SESSION || (e.key === TOKEN && (
+        !localStorage.getItem(TOKEN) || (tokenSubject(e.oldValue || '') && tokenSubject(e.newValue || '') &&
+          tokenSubject(e.oldValue) !== tokenSubject(e.newValue))
+      ))) {
         reset();
         authenticate();
       }
     };
-    const expired = () => {
+    const expired = (event) => {
+      if (event.detail?.session !== loginSession() || event.detail?.token !== localStorage.getItem(TOKEN)) return;
       reset();
       setAuthLoading(false);
       setAuthError('登录已过期，请重新认证后继续查看');

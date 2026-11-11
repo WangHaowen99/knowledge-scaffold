@@ -361,7 +361,12 @@ def create_app(config=None,transport=None):
         elif operation=='login':
             payload={'grant_type':'password','username':body.get('username',''),'password':body.get('password','')}
         else: raise Failure('not_found','操作不存在',404)
-        result=http.json('POST',config.auth_url,'/token',json=payload,limit=16384)
+        try:
+            result=http.json('POST',config.auth_url,'/token',json=payload,limit=16384)
+        except Failure as exc:
+            if operation=='refresh' and exc.upstream_status==400:
+                raise Failure('refresh_invalid','登录已过期，请重新认证后继续查看',400,'authorization') from exc
+            raise
         return {k:result[k] for k in ('access_token','refresh_token','expires_in','token_type') if k in result}
 
     @app.get(f'{prefix}/packages')
