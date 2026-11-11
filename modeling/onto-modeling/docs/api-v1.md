@@ -169,6 +169,7 @@
 | 项目导入包（`U-01` `purpose=project_import`） | 200 MiB | `413` |
 | 插件离线包（`PL-13`） | 200 MiB | `413` |
 | 普通用户的插件包（`PL-22`） | 20 MiB | `413` |
+| 知识包对比输入（`PC-01`） | 50 MiB，解压后 200 MiB、2000 个文件 | `413` |
 | MCP 请求体 | 1 MiB | `413 REQUEST_TOO_LARGE`（MCP 码） |
 | 证据锚点批量解析 | 一次 100 个 | `400 invalid_argument` |
 
@@ -477,6 +478,17 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `release_not_found` | 404 | 发布记录不存在 | — |
 | `receipt_revision_unknown` | 422 | 回执里的契约修订号在本项目不存在 | `revision` |
 | `feedback_invalid` | 422 | 反馈载荷不符合反馈契约 | `errors[]` |
+| `compare_cross_package` | 409 | 两侧是不同的知识包（manifest `id` 不同），没带 `allow_cross_package`；PC-05 失败任务的 `error_code` | — |
+| `compare_not_ready` | 409 | 对比还没完成 | — |
+| `compare_input_in_use` | 409 | 对比输入还被对比任务用着 | — |
+| `compare_request_conflict` | 409 | 同一 `request_id` 已绑定别的来源 | — |
+| `compare_upload_in_progress` | 409 | 同一上传标识还在处理 | — |
+| `compare_expired` | 410 | 对比结果、输入或冻结的来源已过期或被删 | — |
+| `compare_cancelled` / `compare_upload_cancelled` | 410 | 对比任务、上传已取消 | — |
+| `compare_timeout` / `compare_archive_timeout` | 408 | 处理或解析超时 | — |
+| `compare_user_busy` / `compare_busy` / `compare_upload_busy` | 429 | 本人进行中的任务、全局队列、同时上传数满 | — |
+| `compare_user_storage_full` / `compare_storage_full` | 429 / 507 | 本人、全局临时空间满 | — |
+| `compare_service_unavailable` | 503 | 多进程部署时本进程没拿到对比服务锁 | — |
 
 门禁链里各项的 `Finding.code`（不作为 HTTP 错误码出现）：
 
@@ -564,6 +576,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 | `SC-`、`SV-` | 脚本、求解契约 | 3.18 |
 | `EV-` | 证据源 | 3.19 |
 | `PB-` | 发布 | 3.20 |
+| `PC-` | 知识包版本对比 | 3.20 |
 | `X-` | 三份契约（服务令牌） | 3.21 |
 | `AB-` | 自主构建 | 3.22 |
 | `M-` | MCP | 3.23 |
@@ -3170,6 +3183,92 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 响应：`application/zip`。响应头带 `X-Package-Version`、`X-Package-Commit`、`X-Package-Format`、`X-Package-Variant`。
 - 服务令牌下载时，在发布记录上记「已拉取」。
 - 错误：`release_not_found`、`invalid_argument`（变体不支持）。
+
+#### 知识包版本对比（PC 组）
+
+依据 ADR-0095。比较两份知识包 ZIP：本项目的发布版本 `{kind: "release", version}`，或这次上传的包 `{kind: "upload", input_id}`。
+
+- 只读，不改项目内容，已归档项目也能比。只有所有者能调；比较数据按登录用户隔离（本地模式记 `local`）。
+- 发起对比时发布版本当场复制冻结，之后的解析与正文差异都读这一份。
+- 上传输入、对比结果 24 小时过期（最近一次读取起算）。上限与 TTL 见环境变量 `ONTO_COMPARE_*`。
+- ZIP 在子进程里解析，拒绝路径穿越、符号链接、加密条目、异常压缩比、包根外的文件、重复或非字符串的 manifest 键；manifest 必须是
+  `kind: ontology-package`，`schema_version` 0.1 或 0.2。
+- `ComparisonSide`：`{source, package_name, package_version, package_digest, file_count, uncompressed_size, version}`；
+  `version` 只有发布版本才有。
+- `CompareFile`：`{path, category, status: added|deleted|modified|unchanged, display_name, left: FileInfo|null, right: FileInfo|null}`，
+  `FileInfo` 是 `{path, size, digest, category, display_name}`。
+  - `category` 取 `objects|operations|rules|metrics|scripts|mappings|indexes|metadata|other`；
+  - `display_name` 是 Markdown 头部的 `report_name` 或 `title`，没有时取文件名。
+
+#### PC-01 上传对比输入
+
+`POST /api/v1/projects/{id}/package-comparisons/inputs` · 所有者 · 旧：— · 审计：是 · 依据：ADR-0095 · 页面：publish（版本对比「上传 ZIP」）
+
+- 请求：`multipart/form-data`，字段 `file`。请求头 `X-Compare-Upload-Id?`（`[A-Za-z0-9_-]{1,128}`）用于取消（PC-02）和防重复提交。
+- 响应 `201`：`{input_id, package_id, package_name, package_version, package_digest, content_digest, file_count, uncompressed_size, created_at, expires_at, warnings: []}`。
+- 错误：`invalid_argument`（不是 ZIP、路径不安全、manifest 不合规、没有可比内容）、`payload_too_large`、`compare_upload_in_progress`、
+  `compare_upload_cancelled`、`compare_upload_busy`、`compare_user_storage_full`、`compare_storage_full`、`compare_timeout`。
+
+#### PC-02 取消上传
+
+`DELETE /api/v1/projects/{id}/package-comparisons/uploads/{request_id}` · 所有者 · 旧：— · 审计：是 · 依据：ADR-0095 · 页面：publish
+
+- `request_id` 是 PC-01 的 `X-Compare-Upload-Id`；取消可以先于上传请求到达。
+- 响应 `204`。
+
+#### PC-03 删除对比输入
+
+`DELETE /api/v1/projects/{id}/package-comparisons/inputs/{input_id}` · 所有者 · 旧：— · 审计：是 · 依据：ADR-0095 · 页面：publish
+
+- 响应 `204`。
+- 错误：`compare_input_in_use`（先删用到它的对比）、`forbidden`、`compare_expired`。
+
+#### PC-04 发起对比
+
+`POST /api/v1/projects/{id}/package-comparisons` · 所有者 · 旧：— · 审计：是 · 依据：ADR-0095 · 页面：publish
+
+- 请求：`{left: Source, right: Source, allow_cross_package?: bool, request_id?: string}`。
+  - `Source` 是 `{kind: "release", version}` 或 `{kind: "upload", input_id}`，多余字段 400；
+  - 同一 `request_id` 带同样的来源重放，返回同一个任务（PC-05 的视图），来源不同返回 `compare_request_conflict`。
+- 响应 `202`：`{comparison_id, status: "queued", phase, poll_after_ms}`。
+- 错误：`invalid_argument`（两侧相同、来源不合法）、`release_not_found`、`release_package_unavailable`、`payload_too_large`（发布包超过对比上限）、
+  `compare_user_busy`、`compare_busy`、`compare_request_conflict`、`compare_user_storage_full`、`compare_storage_full`、`compare_service_unavailable`。
+
+#### PC-05 对比结果
+
+`GET /api/v1/projects/{id}/package-comparisons/{comparison_id}` · 所有者 · 旧：— · 审计：否 · 依据：ADR-0095 · 页面：publish
+
+- 进行中、失败：`{comparison_id, status: queued|running|failed, phase, error?, error_code?}`。
+  - 两侧不是同一个知识包且没带 `allow_cross_package` 时 `error_code="compare_cross_package"`；
+  - 服务重启时没跑完的任务改判失败，`error_code="PROCESS_RESTARTED"`。
+- 完成：`{comparison_id, status: "ready", created_at, left: ComparisonSide, right: ComparisonSide, summary}`。
+  - `summary`：`{files: {added, deleted, modified, unchanged}, categories: {<category>: 同上}, affected_categories[], evidence[≤4], left_file_count, right_file_count}`。
+- 错误：`compare_expired`、`forbidden`。
+
+#### PC-06 差异文件
+
+`GET /api/v1/projects/{id}/package-comparisons/{comparison_id}/files` · 所有者 · 旧：— · 审计：否 · 依据：ADR-0095 · 页面：publish
+
+- 查询参数：`status?`（`changed` = 新增、删除、修改，或四种状态之一；缺省全部）、`category?`、`q?`（路径或业务名称，≤200 字）、分页。
+- 响应：`{items: CompareFile[], next_cursor, total}`，`total` 是筛选后的数量。
+- 错误：`compare_not_ready`、`compare_expired`、`invalid_argument`。
+
+#### PC-07 单文件差异
+
+`GET /api/v1/projects/{id}/package-comparisons/{comparison_id}/file-diff` · 所有者 · 旧：— · 审计：否 · 依据：ADR-0095 · 页面：publish
+
+- 查询参数：`path`（`CompareFile.path`）。
+- 响应：`{path, status, category, left: FileText|null, right: FileText|null}`，`null` 表示这一侧没有该文件。
+  - `FileText` 是 `{text, encoding, bytes, reason?}`；
+  - `encoding` 取 `utf-8|utf-8-sig|utf-16`，或不给正文的 `binary`、`too_large`（超过 1 MiB）、`complex_text`（超过 2 万行或单行 2 万字）。
+- 错误：`not_found`、`compare_not_ready`、`compare_expired`。
+
+#### PC-08 删除对比
+
+`DELETE /api/v1/projects/{id}/package-comparisons/{comparison_id}` · 所有者 · 旧：— · 审计：是 · 依据：ADR-0095 · 页面：publish
+
+- 还在跑的一并取消。响应 `204`。
+- 错误：`compare_expired`、`forbidden`。
 
 ---
 

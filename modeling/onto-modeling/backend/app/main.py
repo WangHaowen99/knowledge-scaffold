@@ -47,6 +47,13 @@ async def _lifespan(app: FastAPI):
 
     await autobuild_runner.resume_after_restart()  # 停机时在跑的自主构建从检查点接着跑（AB-09）
     write_example()  # 内置推荐表副本，供管理员复制成自定义表
+    from .services import package_compare
+
+    # 知识包版本对比（ADR-0095）：抢到服务锁的进程先把上次没跑完的任务改判失败，再定时清理过期数据
+    compare_task = None
+    if package_compare.start():
+        await asyncio.to_thread(package_compare.maintain)
+        compare_task = asyncio.create_task(package_compare.maintenance_loop())
     # 定期备份：距上次已超过间隔时启动即补跑
     backup_task = asyncio.create_task(backup.scheduler_loop(deps.workspaces))
     # 耗时、不挡就绪的恢复步骤（清扫删到一半的目录、探测外部依赖）放后台，做完补进报告
@@ -66,6 +73,10 @@ async def _lifespan(app: FastAPI):
         from .services.engines import jiuwen_remote
 
         await jiuwen_remote.stop()  # Jiuwen worker（方案 B11）：会话都断开之后再停
+        if compare_task:
+            compare_task.cancel()
+            await asyncio.gather(compare_task, return_exceptions=True)
+        package_compare.shutdown()
         governance_startup.stopped()
 
 

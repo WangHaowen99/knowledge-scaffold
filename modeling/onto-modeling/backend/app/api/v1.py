@@ -87,6 +87,7 @@ def _routers():
         uploads,
         versions,
     )
+    from ..routers import package_compare
 
     return (
         auth_routes.router,
@@ -129,6 +130,7 @@ def _routers():
         ops.router,
         ops_control.router,
         health.router,
+        package_compare.router,
     )
 
 
