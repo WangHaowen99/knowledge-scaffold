@@ -80,3 +80,8 @@ OPS_BASE_URL = _env("ONTO_WEB_OPS_BASE_URL").rstrip("/")
 SECRETS_DIR = _env("ONTO_WEB_SECRETS_DIR")
 AGENT_USER = _env("ONTO_WEB_AGENT_USER")
 LOG_LEVEL = _env("ONTO_WEB_LOG_LEVEL")
+
+# 独立评测服务（ADR-0092）。浏览器入口由用户浏览器访问，不接受相对路径；留空时浏览器按建模页面同主机的 8090 端口打开
+EVAL_PUBLIC_URL = _env("ONTO_WEB_EVAL_PUBLIC_URL").strip()
+# 容器网络里的地址（如 http://knowledge-evaluation:8090），后端以当前用户登录读评测结果与产物；留空时不显示报告与建议
+EVAL_URL = _env("ONTO_WEB_EVAL_URL").rstrip("/")

@@ -45,7 +45,7 @@ def _h(token: str) -> dict:
 
 def test_issue_returns_plaintext_once_and_stores_only_digest(data_dir):
     issued = service_tokens.issue(
-        {"name": "合成服务", "scopes": ["releases.read", "feedback.write"], "project_ids": ["p1"]}, ADMIN
+        {"name": "合成服务", "scopes": ["releases.read"], "project_ids": ["p1"]}, ADMIN
     )
     raw = issued["token"]
     assert raw.startswith(service_tokens.TOKEN_PREFIX)
@@ -54,7 +54,7 @@ def test_issue_returns_plaintext_once_and_stores_only_digest(data_dir):
     if os.name != "nt":
         assert stat.S_IMODE(service_tokens.store_path().stat().st_mode) == 0o600
     summary = issued["summary"]
-    assert summary["scopes"] == ["feedback.write", "releases.read"] and summary["project_ids"] == ["p1"]
+    assert summary["scopes"] == ["releases.read"] and summary["project_ids"] == ["p1"]
     assert "digest" not in summary and "token" not in summary
     assert summary["created_at"].endswith("Z") and summary["expires_at"] is None
     assert service_tokens.listing() == [summary]
@@ -74,6 +74,7 @@ def test_store_is_separate_from_mcp_tokens(data_dir):
     {"name": "x" * 81, "scopes": ["releases.read"]},
     {"name": "合成服务", "scopes": []},
     {"name": "合成服务", "scopes": ["ontology.read"]},
+    {"name": "合成服务", "scopes": ["releases.read", "feedback.write"]},  # 随 X-05 退役（ADR-0092）
     {"name": "合成服务", "scopes": "releases.read"},
     {"name": "合成服务", "scopes": ["releases.read"], "project_ids": ["../p1"]},
     {"name": "合成服务", "scopes": ["releases.read"], "project_ids": "p1"},
@@ -136,7 +137,7 @@ def test_last_used_is_recorded(data_dir):
 def test_admin_routes_issue_list_revoke(client):
     created = client.post(
         "/api/v1/admin/service-tokens", headers=_h("admin-token"),
-        json={"name": "合成服务", "scopes": ["feedback.write"], "expires_in_s": 30 * 86400},
+        json={"name": "合成服务", "scopes": ["releases.read"], "expires_in_s": 30 * 86400},
     )
     assert created.status_code == 201
     body = created.json()

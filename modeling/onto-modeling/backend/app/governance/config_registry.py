@@ -387,3 +387,13 @@ declare(
     C("ONTO_WEB_SECRETS_DIR", "", "path", description="密钥目录（agent 读不到），空为数据目录下的 secrets/"),
     C("ONTO_WEB_AGENT_USER", "", description="agent 及其工具子进程使用的系统用户，空为不切换（开发机）"),
 )
+
+# 独立评测服务（ADR-0092）：评测在评测服务里跑，onto 只给入口、收完成通知、以当前用户登录读回结果
+declare(
+    C("ONTO_WEB_EVAL_PUBLIC_URL", "", "url", effect="immediate",
+      description="评测服务的浏览器入口，空为建模页面同主机的 8090 端口"),
+    C("ONTO_WEB_EVAL_URL", "", "url", effect="immediate",
+      description="评测服务的容器网络地址，空时已发布版本不显示评测报告与优化建议"),
+    C("ONTO_EVALUATION_SERVICE_TOKEN", "", secret=True, effect="immediate",
+      description="评测服务发完成通知用的服务凭据，空时拒收通知"),
+)
