@@ -162,9 +162,15 @@ def test_management_status_is_onto_local_without_modeling(env, monkeypatch):
     }
     assert body["token_policy"] == {"min_ttl_s": 300, "default_ttl_s": 86400, "max_ttl_s": 2592000, "supports_non_expiring": True}
     assert [toolset["name"] for toolset in body["toolsets"]] == ["read", "change"]
-    # 读工具集：6 个本体读工具 + 插件产物的 artifact_list、artifact_get（契约 M-08）
-    assert len(body["toolsets"][0]["tools"]) == 8
-    assert {"artifact_list", "artifact_get"} <= set(body["toolsets"][0]["tools"])
+    # 读工具集：6 个本体读工具 + 插件产物的 artifact_list、artifact_get + 版本列表（契约 M-08）
+    assert len(body["toolsets"][0]["tools"]) == 9
+    assert {"artifact_list", "artifact_get", "list_project_versions"} <= set(body["toolsets"][0]["tools"])
+    assert {"preview_project_version_revert", "revert_project_version"} <= set(body["toolsets"][1]["tools"])
+    # 版本回退 scope 两个工具集都认，目录里有它的说明（M-03 新建 Token 时可选）
+    catalog = {item["scope"]: item["description"] for item in body["scope_catalog"]}
+    assert catalog["project.version.revert"] and catalog["ontology.change.apply"] == "保存修改"
+    accepted = {toolset["name"]: toolset["accepted_scopes"] for toolset in body["toolsets"]}
+    assert "project.version.revert" in accepted["read"] and "project.version.revert" in accepted["change"]
     templates = body["client_config_templates"]
     assert "<READ_TOKEN>" in templates["read"] and "<CHANGE_TOKEN>" in templates["change"]
     assert json.loads(templates["full"])["mcpServers"].keys() == {"modeling-read", "modeling-change"}

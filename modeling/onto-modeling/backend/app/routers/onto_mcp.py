@@ -28,8 +28,9 @@ _sessions = {}
 MAX_BODY = 1024 * 1024
 MAX_LISTED_TOKENS = 100
 TOKEN_POLICY = {"min_ttl_s": 300, "default_ttl_s": 86400, "max_ttl_s": 2592000, "supports_non_expiring": True}
-SCOPE_LABELS = dict(zip(SCOPES, ("读取本体", "校验修改", "保存修改")))
-TOOLSET_SCOPES = {"read": SCOPES[:1], "change": SCOPES[1:]}
+# 签发、校验与这里的目录同一份口径（tokens）：版本回退 scope 两个工具集都认，发布只在改
+SCOPE_LABELS = {scope: tokens.SCOPE_DESCRIPTIONS[scope] for scope in SCOPES}
+TOOLSET_SCOPES = tokens.TOOLSET_SCOPES
 # 客户端配置里的服务器名沿用旧版，已配好的客户端不用改名
 CLIENT_SERVER_NAMES = {"read": "modeling-read", "change": "modeling-change"}
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
