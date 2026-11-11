@@ -1,5 +1,5 @@
 // 对外契约 · 服务令牌（X-06）：外部系统用它拉发布包（releases.read）、
-// 交外部反馈（feedback.write），可限定项目。明文只在创建响应里出现一次，弹窗里只留「我已保存，关闭」（同项目设置的 Token 弹窗）。
+// 可限定项目。明文只在创建响应里出现一次，弹窗里只留「我已保存，关闭」（同项目设置的 Token 弹窗）。
 // 设计稿没画入口，暂不挂载（见 gaps.md F4）。
 // 挂载方法：SysPage.jsx 的 PANES 加 contract: ServiceTokensSection，sysModel.js 的 SYS_SECTIONS 末尾加
 // { key: 'contract', title: '对外契约', icon: 'key' }（契约 8.2「sys 页新增『对外契约』一节」）。
@@ -15,7 +15,7 @@ import {
   SERVICE_SCOPES, SERVICE_TTL, expiryText, fmtShort, projectScopeText, scopeShort, serviceTokenBody, serviceTokenProblems,
 } from './sysModel.js';
 
-const SCOPE_TONE = { 'releases.read': 'blue', 'feedback.write': 'teal' };
+const SCOPE_TONE = { 'releases.read': 'blue' };
 const EMPTY = { name: '', scopes: ['releases.read'], limit: 'all', project_ids: [], ttl: '90' };
 
 async function copy(text) {

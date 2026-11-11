@@ -248,3 +248,50 @@ def test_package_publish_queue_limits_are_checked_atomically(env, monkeypatch):
     with pytest.raises(McpError) as exc:
         package_publish.start(manager, principal, {"request_id": "request_two", "confirmation_token": token("request_two")})
     assert exc.value.code == "PUBLISH_QUEUE_LIMIT" and exc.value.status == 429
+
+
+def test_issue_route_registers_hub_delegation_for_publish_scope(env, monkeypatch):
+    """M-03：选了 package.publish 时，用这次请求的登录令牌与统一账号身份在 Hub 登记委托，签发成功。"""
+    from fastapi.testclient import TestClient
+
+    from app.api import deps
+    from app.main import app
+
+    manager, meta, _ = env
+    monkeypatch.setattr(deps, "workspaces", manager)
+    monkeypatch.setattr(auth, "ENABLED", True)
+    monkeypatch.setattr(auth, "verify_access_token",
+                        lambda token: {"sub": "operator_a", "iss": "https://example.com"} if token == "synthetic-access" else None)
+    registered = []
+    monkeypatch.setattr(hub_packages, "register_delegation", lambda *args: registered.append(args))
+    client = TestClient(app, headers={"Authorization": "Bearer synthetic-access"})
+    url = f"/api/v1/projects/{meta['id']}/mcp/tokens"
+    created = client.post(url, json={"name": "synthetic", "scopes": ["package.publish"]})
+    assert created.status_code == 201, created.text
+    assert created.json()["summary"]["scopes"] == ["package.publish"]
+    [(project_id, token_id, hub_token, issuer, sub, _expires)] = registered
+    assert (project_id, hub_token, issuer, sub) == (meta["id"], "synthetic-access", "https://example.com", "operator_a")
+    principal = tokens.verify(manager, meta["id"], created.json()["token"], "change")
+    assert principal["token_id"] == token_id and principal["hub_sub"] == "operator_a"
+    catalog = client.get(f"/api/v1/projects/{meta['id']}/mcp").json()
+    assert "package.publish" in {item["scope"] for item in catalog["scope_catalog"]}
+
+
+def test_issue_route_falls_back_to_configured_issuer(env, monkeypatch):
+    """登录令牌里没有 iss 时取本服务配置的统一账号地址，与网页发布的 Hub 主体同一口径。"""
+    from fastapi.testclient import TestClient
+
+    from app.api import deps
+    from app.main import app
+
+    manager, meta, _ = env
+    monkeypatch.setattr(deps, "workspaces", manager)
+    monkeypatch.setattr(auth, "ENABLED", True)
+    monkeypatch.setattr(auth, "ISSUER", "https://auth.example.com")
+    monkeypatch.setattr(auth, "verify_access_token", lambda token: {"sub": "operator_a"} if token else None)
+    registered = []
+    monkeypatch.setattr(hub_packages, "register_delegation", lambda *args: registered.append(args))
+    client = TestClient(app, headers={"Authorization": "Bearer synthetic-access"})
+    response = client.post(f"/api/v1/projects/{meta['id']}/mcp/tokens", json={"name": "synthetic", "scopes": ["package.publish"]})
+    assert response.status_code == 201, response.text
+    assert registered[0][3] == "https://auth.example.com"

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .. import config
+from ..services import auth
 from ..api import deps
 from ..services.onto_mcp import package_publish, tokens
 from ..services.onto_mcp import workspace as tools
@@ -152,7 +153,9 @@ async def create_token(project_id: str, request: Request):
     # 鉴权关闭时没有登录用户，以项目所有者的名义签发
     user = deps.user(request) or {"sub": meta.get("owner", "")}
     # 含 package.publish 时要登录：用这次的登录令牌在 Hub 登记委托（只用这一次，不落盘）
-    issued = tokens.issue(manager(), meta, issue_body, user, bearer(request), user.get("iss", ""), user.get("sub", ""))
+    # 签发方缺省取本服务配置的统一账号地址，与网页发布的 Hub 主体同一口径
+    issuer = user.get("iss") or (auth.ISSUER if deps.user(request) else "")
+    issued = tokens.issue(manager(), meta, issue_body, user, bearer(request), issuer, user.get("sub", ""))
     summary = token_summary(issued["token_summary"])
     scopes = set(summary["scopes"])
     token = issued["token"]

@@ -176,7 +176,6 @@ export function serviceTokens() {
   const now = Date.now();
   return [
     { id: 'svc-1a2b', name: '评测服务 · 拉包', scopes: ['releases.read'], project_ids: null, created_at: iso(now - 30 * DAY), created_by: 'zhangsan', expires_at: iso(now + 60 * DAY), last_used_at: iso(now - 2 * HOUR) },
-    { id: 'svc-3c4d', name: '外部反馈回传 · 门店补货', scopes: ['feedback.write'], project_ids: [MAIN_PID], created_at: iso(now - 9 * DAY), created_by: 'zhangsan', expires_at: null, last_used_at: null },
   ];
 }
 /** mock 生成的明文：明显的占位串（格式 onto_svc_<urlsafe>） */

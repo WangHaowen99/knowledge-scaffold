@@ -369,11 +369,11 @@ test('单价表：模型必填、同一引擎下不重名、单价非负、缓�
 });
 
 test('服务令牌表单：用途、权限范围必填；限定项目时至少选一个；有效期与项目范围的说法', () => {
-  const f = { name: '评测服务', scopes: ['feedback.write', 'releases.read'], limit: 'all', project_ids: [], ttl: '90' };
+  const f = { name: '评测服务', scopes: ['releases.read'], limit: 'all', project_ids: [], ttl: '90' };
   assert.deepEqual(serviceTokenProblems(f), {});
-  assert.deepEqual(serviceTokenBody(f), { name: '评测服务', scopes: ['releases.read', 'feedback.write'], expires_in_s: 90 * 86400 });
-  // 验证回执 receipts.write 随 X-04 退役（ADR-0091），表单里不再有这一项
-  assert.deepEqual(serviceTokenBody({ ...f, scopes: ['receipts.write'] }).scopes, []);
+  assert.deepEqual(serviceTokenBody(f), { name: '评测服务', scopes: ['releases.read'], expires_in_s: 90 * 86400 });
+  // 验证回执 receipts.write、外部反馈 feedback.write 都已退役，表单里只剩拉取发布包
+  assert.deepEqual(serviceTokenBody({ ...f, scopes: ['receipts.write', 'feedback.write'] }).scopes, []);
   assert.deepEqual(serviceTokenBody({ ...f, limit: 'projects', project_ids: ['p1'], ttl: '0' }).project_ids, ['p1']);
   assert.equal(serviceTokenBody({ ...f, ttl: '0' }).expires_in_s, null);
   assert.equal(serviceTokenProblems({ ...f, limit: 'projects' }).project_ids, '至少选一个项目，或改成全部项目');
