@@ -486,3 +486,52 @@ def test_check_output_is_capped(tmp_path):
     md = read_text(root, "incremental/check.md")
     assert len(re.findall(r"^- \[ \] ", md, re.M)) == 50 and "还有 20 条没列出" in md
     assert len(read_json(root, "incremental/check.json")["pending"]) == 70
+
+
+# ---- 按上传触发（ADR-0091）----
+
+
+def test_closing_is_refused_until_the_changes_are_checked(repo):
+    start_round(repo, ("modify", STOCK))
+    lock(repo, CHECK)
+    write(repo, STOCK, ENTRIES[STOCK] + "\n补充说明\n")
+    refused = scope_tool(repo, "close")
+    assert refused.returncode == 2 and "/incremental-check" in refused.stdout
+    assert check_tool(repo, "run").returncode == 0
+    assert scope_tool(repo, "close").returncode == 2  # 还有待确认项
+    pending = [item["path"] for item in read_json(repo, "incremental/check.json")["pending"]]
+    assert check_tool(repo, "mark", *pending, "--reason", "合成").returncode == 0
+    # 核对之后又改了：报告对不上，还是不能结束
+    write(repo, STOCK, ENTRIES[STOCK] + "\n再补充\n")
+    write(repo, "ontology/rule/新规则.md", "# 新规则\n\n合成\n")
+    assert scope_tool(repo, "close").returncode == 2
+    assert check_tool(repo, "run").returncode == 0
+    assert scope_tool(repo, "close").returncode == 0
+    assert read_json(repo, SCOPE_FILE)["status"] == "closed"
+
+
+def test_confirming_records_what_the_round_covers(repo):
+    head = git(repo, "rev-parse", "HEAD").strip()
+    assert start_round(repo, ("modify", STOCK))["covers"] == head
+
+
+def test_a_release_ends_the_round_so_the_next_confirm_starts_a_new_one(repo):
+    first = start_round(repo, ("modify", STOCK))
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "合成提交")
+    released = git(repo, "rev-parse", "HEAD").strip()
+    git(repo, "tag", "release/0.1.0")
+    assert "已经结束了" in scope_tool(repo, "close").stdout
+    second = start_round(repo, ("modify", WAREHOUSE))
+    assert second["round"] == first["round"] + 1
+    # 新的一轮：基线换成发布之后的主线，上一轮的种子不并进来
+    assert second["baseline"]["commit"] == released and [seed["path"] for seed in second["seeds"]] == [WAREHOUSE]
+
+
+def test_materials_lists_what_triggered_the_round(repo):
+    lock(repo, SCOPE)
+    assert "没有记录到" in scope_tool(repo, "materials").stdout
+    state = repo / ".onto" / "run" / "activation.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({"incremental": {"commit": "abc", "files": ["resource/others/新资料.md"]}}), encoding="utf-8")
+    assert "resource/others/新资料.md" in scope_tool(repo, "materials").stdout

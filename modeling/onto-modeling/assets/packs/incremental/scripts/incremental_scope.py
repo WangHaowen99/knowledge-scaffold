@@ -3,7 +3,8 @@
 
     draft   算传播链，写 incremental/scope.draft.{json,md}，等用户确认（/incremental-scope）
     confirm 把草稿变成这一轮的范围：归档上一轮，写 incremental/scope.{json,md}（/incremental-scope）
-    close   结束本轮，status 改成 closed，范围外恢复可写（/incremental-scope）
+    close   结束本轮，status 改成 closed，范围外恢复可写；有改动没核对干净时拒绝（/incremental-scope）
+    materials 列出触发这一轮的新资料
     applied 核对每个种子都处理了，写 incremental/applied.json（/incremental-apply）
 
 范围要等 scope.json 合入主线才生效，所以确认前只写草稿：等用户回复时这一轮的改动也会合入主线，
@@ -33,6 +34,8 @@ from incremental_chain import (
     clean,
     is_entry,
     mainline_head,
+    round_open,
+    uploaded_materials,
     read_scope,
     require_lock,
     write_json,
@@ -161,7 +164,7 @@ def cmd_confirm(args, root: Path) -> int:
     chain = [{**item, "include": item["path"] not in excluded} for item in draft["chain"]]
     seeds = draft["seeds"]
     previous = read_scope(root)
-    enlarging = bool(previous) and previous.get("status") == "active" and isinstance(previous.get("baseline"), dict)
+    enlarging = round_open(root, previous) and isinstance(previous.get("baseline"), dict)
     if enlarging:
         baseline = previous["baseline"]
         seeds, chain = _merge_previous(previous, seeds, chain)
@@ -172,7 +175,9 @@ def cmd_confirm(args, root: Path) -> int:
         editable = _editable(seeds, chain)
     scope = {"round": int((previous or {}).get("round") or 0) + 1, "goal": draft["goal"], "baseline": baseline,
              "seeds": seeds, "chain": chain, "editable": editable, "status": "active",
-             "max_depth": draft["max_depth"], "confirmed_at": _now()}
+             "max_depth": draft["max_depth"], "confirmed_at": _now(),
+             # 确认时的主线提交：它之前上传的资料算这一轮处理过（ADR-0091）
+             "covers": mainline_head(root)}
     if previous:
         _archive(root, previous)
     write_json(root / SCOPE_FILE, scope)
@@ -184,14 +189,33 @@ def cmd_confirm(args, root: Path) -> int:
     return 0
 
 
+def _check_clean(root: Path, changes: dict[str, str]) -> bool:
+    """核对报告对得上现在的改动，而且没有待处理项。"""
+    try:
+        report = json.loads((root / STATE_DIR / "check.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    reported = {path: status for status, paths in (report.get("changes") or {}).items() for path in paths}
+    return reported == changes and not report.get("pending") and not report.get("outside")
+
+
+def cmd_materials(_args, root: Path) -> int:
+    files = uploaded_materials(root)
+    print("\n".join(files) if files else "没有记录到新上传的资料，问用户这次依据什么改。")
+    return 0
+
+
 def cmd_close(_args, root: Path) -> int:
     require_lock(root, COMMAND)
     scope = read_scope(root)
     if scope is None:
         raise ChainError("还没有范围文件，不用结束。")
-    if scope.get("status") != "active":
+    if not round_open(root, scope):
         print(f"第 {scope.get('round')} 轮已经结束了。")
         return 0
+    changes = changes_since(root, scope["baseline"]["commit"]) if isinstance(scope.get("baseline"), dict) else {}
+    if changes and not _check_clean(root, changes):
+        raise ChainError(f"这一轮改了 {len(changes)} 个条目还没核对干净，不能结束：先 /incremental-check。")
     scope["status"] = "closed"
     scope["closed_at"] = _now()
     write_json(root / SCOPE_FILE, scope)
@@ -255,6 +279,7 @@ def main(argv: list[str] | None = None) -> int:
     confirm.add_argument("--exclude", action="append", help="传播链里不放进范围的条目，可写多次")
     confirm.set_defaults(run=cmd_confirm)
     commands.add_parser("close", help="结束本轮").set_defaults(run=cmd_close)
+    commands.add_parser("materials", help="列出触发这一轮的新资料").set_defaults(run=cmd_materials)
     applied = commands.add_parser("applied", help="核对种子都处理了，写修改记录")
     applied.add_argument("--skip", action="append", nargs=2, metavar=("条目", "理由"))
     applied.set_defaults(run=cmd_applied)

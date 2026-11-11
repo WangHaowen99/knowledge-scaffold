@@ -37,7 +37,7 @@ def _flow(*packs: str) -> str:
     def load(rel: str) -> dict:
         return yaml.safe_load((ASSETS / rel).read_text(encoding="utf-8"))
 
-    contributions = [("core", "0.4.0", load("workspace-toolkit/flow.yaml"))]
+    contributions = [("core", "0.5.0", load("workspace-toolkit/flow.yaml"))]
     contributions += [(name, "0.1.0", load(f"packs/{name}/flow.yaml")) for name in packs]
     return assemble.render(assemble.assemble(contributions))
 

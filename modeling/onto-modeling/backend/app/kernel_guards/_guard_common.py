@@ -23,6 +23,7 @@ Bash 命令的写入目标按常见写法解析（D10），补上实测能绕过
 - 主线上的范围文件 status 是 active：基线提交里有、editable 里没有的本体条目不能写也不能删，新增条目不限；
 - 范围文件本身只能在它所属节点的命令运行时写。
 放宽只认已经合入主线的版本（读主线 HEAD）；副本里确认的范围只收紧，和主线的取并集。读不出、不是 active 就不收窄。
+基线之后发布过，这一轮就算结束。声明了 `lock_on_activation` 时，触发了（ADR-0091）而范围还没确认，已有条目先全部只读。
 """
 
 from __future__ import annotations
@@ -71,6 +72,7 @@ MANAGED_ONTOLOGY_DIRS = {"solver"}
 # 范围限定管的本体条目（ADR-0085）：会进知识包或跟着条目走的目录，每个文件一个条目；index.md 不算
 CONFINED_ONTOLOGY_DIRS = ("object", "operation", "logic", "rule", "metric", "action", "data-mock", "testcase", "scripts")
 CONFINE_CACHE_REL = (".onto", "run", "confine-cache.json")
+ACTIVATION_REL = (".onto", "run", "activation.json")
 _ONTOLOGY_MENTION_RE = re.compile(r"(?<![\w.-])ontology(?:/[^\s'\"`;|&()<>,\]}]*)?")
 
 
@@ -873,24 +875,66 @@ def _mainline_head(root: Path) -> tuple[Path, str]:
     return common, _git_out(root, "--git-dir", str(common), "rev-parse", "HEAD").strip()
 
 
-def _confined_entries(common: Path, head: str, scope_file: str, local: str) -> list[str]:
-    """只读的条目：主线上的范围加上副本里的范围，取并集。放宽要等合入主线；副本里确认的收紧立刻算，确认的这一轮
-    接着改也受限。"""
-    out = []
+def _latest_release(common: Path) -> str:
+    """最新的 release/* 标签指向的提交。"""
     try:
-        out += _entries_outside(common, json.loads(_git_out(common, "--git-dir", str(common), "show", f"{head}:{scope_file}")))
+        line = _git_out(common, "--git-dir", str(common), "for-each-ref", "--sort=-creatordate", "--count=1",
+                        "--format=%(*objectname) %(objectname)", "refs/tags/release").split()
+    except LookupError:
+        return ""
+    return line[0] if line else ""
+
+
+def _is_ancestor(common: Path, ancestor: str, commit: str) -> bool:
+    try:
+        _git_out(common, "--git-dir", str(common), "merge-base", "--is-ancestor", ancestor, commit)
+    except LookupError:
+        return False
+    return True
+
+
+def round_open(common: Path, scope) -> bool:
+    """范围文档这一轮还开着：status 是 active，基线之后没发布过（发布就算这一轮结束，ADR-0091）。"""
+    if not isinstance(scope, dict) or scope.get("status") != "active":
+        return False
+    baseline = scope.get("baseline") if isinstance(scope.get("baseline"), dict) else {}
+    commit = str(baseline.get("commit") or "")
+    if not re.fullmatch(r"[0-9a-f]{7,64}", commit):
+        return True
+    release = _latest_release(common)
+    return not (release and not release.startswith(commit) and _is_ancestor(common, commit, release))
+
+
+def activation_pending(common: Path, latch, scope) -> bool:
+    """这次触发还没处理：范围确认时的主线提交（`covers`）不包含触发时的提交（ADR-0091）。"""
+    commit = str(latch.get("commit") or "") if isinstance(latch, dict) else ""
+    if not commit:
+        return False
+    covers = str(scope.get("covers") or "") if isinstance(scope, dict) else ""
+    return not (covers and _is_ancestor(common, commit, covers))
+
+
+def _confined_entries(common: Path, head: str, scope_file: str, local: str, latch) -> tuple[list[str], bool]:
+    """(只读的条目, 是不是触发后范围确认前的锁定)。主线上的范围加上副本里的范围取并集：放宽要等合入主线；副本里确认的
+    收紧立刻算，确认的这一轮接着改也受限。"""
+    docs = []
+    try:
+        docs.append(json.loads(_git_out(common, "--git-dir", str(common), "show", f"{head}:{scope_file}")))
     except (LookupError, ValueError):
         pass
     try:
-        out += _entries_outside(common, json.loads(local))
+        docs.append(json.loads(local))
     except ValueError:
         pass
-    return sorted(set(out))
+    if latch and not any(round_open(common, doc) for doc in docs) and all(
+            activation_pending(common, latch, doc) for doc in docs):
+        return _entries_outside(common, {"status": "active", "baseline": {"commit": head}, "editable": []}), True
+    return sorted({rel for doc in docs for rel in _entries_outside(common, doc)}), False
 
 
 def _entries_outside(common: Path, scope) -> list[str]:
     """范围文档 → 只读的条目（基线里有、editable 里没有）；读不出、不是 active 返回空。"""
-    if not isinstance(scope, dict) or scope.get("status") != "active":
+    if not round_open(common, scope):
         return []
     baseline = scope.get("baseline") if isinstance(scope.get("baseline"), dict) else {}
     commit = str(baseline.get("commit") or "")
@@ -911,36 +955,52 @@ def _entries_outside(common: Path, scope) -> list[str]:
     return out
 
 
-def _confine_protected(call: Call, scope_file: str) -> set[str] | None:
-    """只读条目，按主线 HEAD 和副本里范围文件的内容缓存在副本的 .onto/run/ 下（助手写不了 .onto）。git 出错返回 None，不收窄也不缓存。"""
+def _activation_latch(common: Path, spec: dict):
+    """包声明了 lock_on_activation 时这个包的触发记录（主线工作区的 .onto/run/，助手写不了）。"""
+    if not spec.get("lock_on_activation"):
+        return None
+    try:
+        data = json.loads(common.parent.joinpath(*ACTIVATION_REL).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data.get(str(spec.get("pack"))) if isinstance(data, dict) else None
+
+
+def _confine_protected(call: Call, spec: dict) -> tuple[set[str], bool] | None:
+    """(只读条目, 是不是触发后的锁定)，按主线 HEAD、最新发布、副本里的范围文件和触发记录缓存在副本的 .onto/run/ 下
+    （助手写不了 .onto）。git 出错返回 None，不收窄也不缓存。"""
+    scope_file = spec["scope_file"]
     try:
         common, head = _mainline_head(call.root)
+        release = _latest_release(common)
     except (OSError, subprocess.SubprocessError, LookupError):
         return None
     try:
         local = (call.root / scope_file).read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         local = ""
-    key = [head, scope_file, hashlib.sha256(local.encode("utf-8")).hexdigest()]
+    latch = _activation_latch(common, spec)
+    digest = hashlib.sha256(json.dumps([local, latch], ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    key = [head, scope_file, release, digest]
     cache = call.root.joinpath(*CONFINE_CACHE_REL)
     try:
         cached = json.loads(cache.read_text(encoding="utf-8"))
         if isinstance(cached, dict) and cached.get("key") == key and isinstance(cached.get("protected"), list):
-            return {str(item) for item in cached["protected"]}
+            return {str(item) for item in cached["protected"]}, bool(cached.get("locked"))
     except (OSError, ValueError):
         pass
     try:
-        protected = _confined_entries(common, head, scope_file, local)
+        protected, locked = _confined_entries(common, head, scope_file, local, latch)
     except (OSError, subprocess.SubprocessError):
         return None
     try:
         cache.parent.mkdir(parents=True, exist_ok=True)
         temp = cache.with_name(f"{cache.name}.{os.getpid()}.tmp")
-        temp.write_text(json.dumps({"key": key, "protected": protected}, ensure_ascii=False), encoding="utf-8")
+        temp.write_text(json.dumps({"key": key, "protected": protected, "locked": locked}, ensure_ascii=False), encoding="utf-8")
         os.replace(temp, cache)
     except OSError:
         pass  # 缓存写不进去只是下次再算
-    return set(protected)
+    return set(protected), locked
 
 
 def _confine_target_hit(call: Call, target: Target, protected: set[str]) -> bool:
@@ -987,9 +1047,10 @@ def _guard_confine(call: Call) -> str | None:
             _command_alive(call.root, name) for name in owner_commands):
         return (f"范围文件 {scope_file} 只能在 {entry} 里写；直接改它也扩大不了范围（放宽只认合入主线的版本），"
                 f"要调整范围请运行 {entry}。")
-    protected = _confine_protected(call, scope_file)
-    if not protected:
+    confined = _confine_protected(call, spec)
+    if not confined or not confined[0]:
         return None
+    protected, locked = confined
     found = [target.raw for target in call.targets if _confine_target_hit(call, target, protected)]
     if _confine_code_hit(call, protected):
         found.append("内联代码")
@@ -998,6 +1059,8 @@ def _guard_confine(call: Call) -> str | None:
     if not found:
         return None
     shown = "、".join(list(dict.fromkeys(found))[:5])
+    if locked:
+        return f"上传了新资料，这一轮的范围还没确认，已有条目只读：{shown}；先运行 {entry} 确认这次要改什么。新增条目不受限。"
     return f"本轮增量范围外的条目只读：{shown}；要扩大范围请重新圈定（{entry}），不再需要限制就说「结束本轮」。新增条目不受限。"
 
 

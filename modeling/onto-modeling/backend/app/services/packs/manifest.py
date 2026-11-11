@@ -116,6 +116,9 @@ class Version:
         return text
 
 
+# 包的触发声明（flow.yaml 的 activation.event，ADR-0091）能用的平台事件，由内核发出
+ACTIVATION_EVENTS = ("materials_added",)
+
 def is_version(text: str) -> bool:
     return bool(_SEMVER_RE.match(str(text or "").strip()))
 

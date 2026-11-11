@@ -93,6 +93,7 @@ _CHECK_NOTES = (
     ("write_scope", "节点写入范围不碰受保护目录，脚本节点的输出、人工节点的记录落在写入范围里"),
     ("node_entry", "节点入口命令、节点钩子的命令是本包的"),
     ("confine", "`flow.yaml` 声明了 `confine` 时才有这一项：只写 `scope_file`，是具体文件，不在 `ontology/` 和受保护目录下，落在本包节点的 `produces` 里"),
+    ("activation", "`flow.yaml` 声明了 `activation` 或节点写了 `visible_if: activated` 时才有这一项：`event` 是内核给的事件（现在只有 `materials_added`），`requires` 是本包声明的探针，`session` 是本包节点 produces 里的具体文件；`preempt` 只能用在 `visible_if: activated` 的节点上"),
     ("hooks", "不带 `settings.json`，只能追加 `PreToolUse` 守卫，守卫引用的脚本要存在"),
     ("frontend", "页面只从平台内置里选，前端代码只放 `ui/` 下"),
     ("ui", "`ui/` 只能是构建好的静态资源，编辑器入口是 `ui/<id>/index.html`"),
@@ -228,6 +229,7 @@ def protocol_markdown(snapshot: dict) -> str:
 
 - 节点挂法 `placement`：{_code(checks.NODE_PLACEMENTS)}；节点包不能挂主线 `spine`，能力包可以。除 `on_demand` 外要写锚点 `after` 或 `before`。
 - 范围限定 `confine`（`flow.yaml` 顶层，可选）：`{{scope_file: <路径>}}`。范围文件合入主线、`status` 是 `active` 时，基线提交里有、`editable` 里没有的本体条目助手不能写也不能删，新增条目不限；范围文件只能在它所属节点的命令运行时写。一次装配最多一个包声明。
+- 触发 `activation`（`flow.yaml` 顶层，可选）：`{{event: materials_added, requires: [<本包探针>], session: <这一轮的状态文件>}}`。用户上传资料时前提成立就算触发，节点写 `visible_if: activated` 只在触发后、这一轮开着时出现，写 `preempt` 时下一步先推它；`session` 文件的 `status` 是 active 算这一轮开着，`covers`（确认时的主线提交）包含触发时的提交算处理过，基线（`baseline.commit`）之后发布过算这一轮结束。`confine` 加 `lock_on_activation: true`：触发后、范围确认前已有条目全部只读。
 - `autobuild: false`：自主构建跳过这个节点（要用户给输入才能做的节点）。
 - 节点类型 `kind`：`agent`（缺省）、`script`、`human`、`external`。
 - 面板分组 `section`：{_code(SECTIONS)}。

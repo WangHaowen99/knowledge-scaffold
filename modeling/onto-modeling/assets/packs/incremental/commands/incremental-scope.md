@@ -14,7 +14,8 @@
 
 ## Step 1: 列种子
 
-先看 `incremental/scope.md`（有的话）了解当前一轮。按用户的要求定种子，每个种子三样：
+先看 `incremental/scope.md`（有的话）了解当前一轮。再运行 `python3 .claude/scripts/incremental_scope.py materials` 看新上传了哪些资料，
+读它们（转好的文本在 `resource/text/` 下，如 `resource/others/合同.pdf` → `resource/text/others/合同.pdf.md`）。按资料和用户的要求定种子，每个种子三样：
 
 - 动作：`add` 新增、`modify` 修改、`delete` 删除；
 - 条目：`ontology/` 下 object、operation、logic、rule、metric、action、data-mock、testcase、scripts 里的单个文件；
@@ -58,6 +59,7 @@ python3 .claude/scripts/state_helper.py release incremental-scope
 
 ## 说明
 
+- 这一轮发布之后自动结束；「结束本轮」时如果还有改动没核对干净，脚本会拒绝，先 /incremental-check。
 - 上一轮没结束时再圈定是扩大范围：基线沿用，种子和可改条目并进来，前面改过的照样要核对。要换一个目标另起一轮，先「结束本轮」。
 - 每次确认，上一次的范围、修改记录和核对报告归档到 `incremental/history/<轮次>/`，范围内修改和传播核对要重新做。
 - `incremental/` 下的文件一律经脚本写，不直接编辑；范围文件只有本命令运行时能写。
