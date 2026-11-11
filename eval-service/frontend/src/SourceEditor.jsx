@@ -5,16 +5,19 @@ import { Alert, Badge, Breadcrumb, Button, Confirm, Field, Heading, Icon, useAct
 
 export function GraphScopeStatus({ check }) {
   if (!check) return null;
-  const blocked = check.boundary_relationship_count > 0;
+  const reused = check.import_state === 'unchanged';
+  const blocked = !reused && check.boundary_relationship_count > 0;
   return (
     <Alert
-      tone={blocked ? 'red' : check.node_count ? 'amber' : 'green'}
-      title={blocked ? '发现跨范围关系，暂不能替换' : check.node_count ? '检测到旧图数据' : '当前范围没有旧图数据'}
+      tone={blocked ? 'red' : check.node_count && !reused ? 'amber' : 'green'}
+      title={reused ? '图数据与数据源一致' : blocked ? '发现跨范围关系，暂不能替换' : check.node_count ? '检测到旧图数据' : '当前范围没有旧图数据'}
     >
       {check.scope.workspace_property} = {check.scope.workspace_value}，
       {check.scope.ontology_property} = {check.scope.ontology_value}（同时匹配）。
       共 {check.node_count} 个节点、{check.relationship_count} 条范围内关系。
-      {blocked
+      {reused
+        ? '开始评测时直接使用这份数据，不删除也不重新导入。'
+        : blocked
         ? `另有 ${check.boundary_relationship_count} 条跨范围关系，请先处理这些关系或调整范围。`
         : check.node_count
           ? '开始评测时将再次检查，并询问是否删除旧数据后导入新数据。'

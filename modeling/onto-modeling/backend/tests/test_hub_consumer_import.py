@@ -1,13 +1,15 @@
-"""Actual Hub ZIP through the existing consumer normalizer, using synthetic content."""
+"""Actual Hub ZIP through the consumer import rules (modeling's synced copy), using synthetic content."""
 import zipfile
 from pathlib import Path
 
 import pytest
 
-consumer_import = pytest.importorskip('ontology.package_import')
+pytest.importorskip('hub')
 from hub.storage import Store, digest
 from hub.package_store import PackageStore
 from hub.user_auth import Identity
+from app.services import consumer_package_rules
+from app.services.consumer_package_rules.package_import import inspect_importable_package
 from app.services.workspace import WorkspaceManager
 
 
@@ -33,7 +35,7 @@ def test_hub_archive_is_accepted_by_consumer(tmp_path):
     extracted = tmp_path / 'extracted'
     with zipfile.ZipFile(archived) as archive:
         archive.extractall(extracted)
-    info = consumer_import.inspect_importable_package(extracted / pid)
+    info = inspect_importable_package(extracted / pid)
     assert info is not None and info.version == committed['version']
-    consumer_import.normalize_imported_package(extracted / pid, tmp_path / 'normalized')
-    assert (tmp_path / 'normalized' / 'objects' / 'Item.md').is_file()
+    assert consumer_package_rules.check_package_zip(archived) == []
+    assert (extracted / pid / 'objects' / 'Item.md').is_file()

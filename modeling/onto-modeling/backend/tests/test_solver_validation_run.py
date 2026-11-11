@@ -416,18 +416,18 @@ def test_concurrent_start_is_rejected(manager: WorkspaceManager, stub):
         assert (exc.value.status, exc.value.code) == (409, solver_validation_run.CODE_BUSY)
     finally:
         solver_validation_run._running.discard(pid)
-    # 进程重启后没有编排在跑：遗留的 queued 记录收敛为失败，门禁给出原因
+    # 进程重启后没有编排在跑：遗留的 queued 记录收敛为失败
     assert solver_validation_run.sweep_interrupted(config.DATA_DIR) == [pid]
     current = solver_validation.latest(root, revision)
     assert current["id"] == record["id"]
     assert current["error_code"] == solver_validation_run.CODE_INTERRUPTED
-    assert manager.solver_release_status(pid)["gate"][0]["code"] == solver_contract.CODE_VALIDATION_FAILED
+    assert not solver_validation.is_accepted(current)
 
 
 # ---- 执行与判定 ----
 
 
-def test_two_n_candidates_pass_and_unlock_publish(manager: WorkspaceManager, stub, tmp_path: Path):
+def test_two_n_candidates_pass(manager: WorkspaceManager, stub, tmp_path: Path):
     server = stub()
     pid, root, revision = _project(manager)
     cases = [_case(f"n{count}", count) for count in (1, 7, 9, 64)]
@@ -455,7 +455,7 @@ def test_two_n_candidates_pass_and_unlock_publish(manager: WorkspaceManager, stu
     assert evidence["package_digest"].startswith("sha256:")
     assert evidence["cases"][1]["input_digest"] == solver_validation_run._digest(_batches(7))
     assert evidence["cases"][1]["problem_digest"] == "sha256:synthetic-problem-n7"
-    assert manager.solver_release_status(pid)["gate"] == []
+    assert solver_validation.is_accepted(record)
 
     # 同一修订再验证一次：导出包逐字节相同，契约摘要不变
     again = _run(manager, pid, revision)
@@ -538,8 +538,7 @@ def test_candidate_count_mismatch_fails(manager: WorkspaceManager, stub):
     assert "候选数 16，预期 18" in record["message"]
     assertion = record["evidence"]["cases"][1]["assertions"][-1]
     assert assertion == {"name": "candidate_count", "expected": 18, "actual": 16, "passed": False}
-    gate = manager.solver_release_status(pid)["gate"]
-    assert gate[0]["code"] == solver_contract.CODE_VALIDATION_FAILED
+    assert not solver_validation.is_accepted(record)
 
 
 def test_all_infeasible_is_a_valid_authoritative_result(manager: WorkspaceManager, stub):
@@ -569,9 +568,7 @@ def test_all_infeasible_is_a_valid_authoritative_result(manager: WorkspaceManage
         "detail": "没有收到该求解调用的权威结果事件",
     },
 ])
-def test_non_authoritative_result_cannot_pass(
-    manager: WorkspaceManager, stub, tmp_path: Path, extra: dict,
-):
+def test_non_authoritative_result_cannot_pass(manager: WorkspaceManager, stub, extra: dict):
     stub(lambda cases: (200, {"validation": {"package": {}, "cases": [
         _authoritative(case, **extra) for case in cases
     ]}}))
@@ -584,14 +581,10 @@ def test_non_authoritative_result_cannot_pass(
     assert record["authoritative"] is False
     assert record["error_code"] == solver_validation_run.CODE_NOT_AUTHORITATIVE
     assert extra.get("detail", "") in record["message"]
-    assert manager.solver_release_status(pid)["gate"][0]["code"] == solver_contract.CODE_VALIDATION_FAILED
-    with pytest.raises(WorkspaceError):
-        manager.publish_package(pid, tmp_path / "blocked.zip")
+    assert not solver_validation.is_accepted(record)
 
 
-def test_authoritative_result_without_evidence_refs_cannot_pass(
-    manager: WorkspaceManager, stub, tmp_path: Path,
-):
+def test_authoritative_result_without_evidence_refs_cannot_pass(manager: WorkspaceManager, stub):
     stub(lambda cases: (200, {"validation": {"package": {}, "cases": [
         _authoritative(case, verification_evidence_ref=None) for case in cases
     ]}}))
@@ -606,8 +599,6 @@ def test_authoritative_result_without_evidence_refs_cannot_pass(
     assertion = record["evidence"]["cases"][0]["assertions"][-1]
     assert assertion == {"name": "evidence", "missing": ["verification_evidence_ref"], "passed": False}
     assert not solver_validation.is_accepted(record)
-    with pytest.raises(WorkspaceError):
-        manager.publish_package(pid, tmp_path / "blocked.zip")
 
 
 def _completed(**extra) -> dict:
@@ -747,7 +738,8 @@ def test_contract_edit_while_queued_fails_the_run(manager: WorkspaceManager, stu
 # ---- 路由 ----
 
 
-def test_routes_store_cases_start_and_report_latest(manager: WorkspaceManager, stub, monkeypatch):
+def test_modeling_side_validation_entry_is_retired(manager: WorkspaceManager, stub, monkeypatch):
+    """发起入口改到独立评测：保存用例与发起验证返回 410，已有用例与历史记录仍可读取导出。"""
     from app.main import workspace_error_handler
     from app.routers import projects
 
@@ -756,35 +748,22 @@ def test_routes_store_cases_start_and_report_latest(manager: WorkspaceManager, s
     monkeypatch.setattr(projects, "ensure_access", lambda pid, *args, **kwargs: manager.project_root(pid))
     launched = []
     monkeypatch.setattr(solver_validation_run, "launch", launched.append)
-    pid, _root, revision = _project(manager)
+    pid, root, revision = _project(manager)
+    solver_validation_run.save_cases(root, [_case("n9", 9)])
     request = SimpleNamespace(
         state=SimpleNamespace(user={"sub": "alice"}), headers={"authorization": f"Bearer {TOKEN}"}
     )
 
-    saved = projects.save_solver_validation_cases(
-        pid, projects.SolverValidationCasesBody(cases=[_case("n9", 9)]), request
-    )
-    assert saved["cases"][0]["id"] == "n9"
-    assert projects.get_solver_validation_cases(pid, request) == saved
+    for call in (
+        lambda: projects.save_solver_validation_cases(
+            pid, projects.SolverValidationCasesBody(cases=[_case("n7", 7)]), request),
+        lambda: asyncio.run(projects.start_solver_validation(
+            pid, projects.SolverValidationStartBody(revision=revision), request)),
+    ):
+        with pytest.raises(WorkspaceError) as exc:
+            call()
+        response = asyncio.run(workspace_error_handler(request, exc.value))
+        assert response.status_code == 410 and exc.value.code == "solver_validation_moved"
+    assert launched == []
+    assert [case["id"] for case in projects.get_solver_validation_cases(pid, request)["cases"]] == ["n9"]
     assert projects.latest_solver_validation(pid, request) == {"revision": revision, "validation": None}
-
-    body = projects.SolverValidationStartBody(revision="sha256:old")
-    with pytest.raises(WorkspaceError) as exc:
-        asyncio.run(projects.start_solver_validation(pid, body, request))
-    conflict = asyncio.run(workspace_error_handler(request, exc.value))
-    assert conflict.status_code == 409
-
-    started = asyncio.run(projects.start_solver_validation(
-        pid, projects.SolverValidationStartBody(revision=revision), request
-    ))
-    assert started["validation"]["status"] == solver_validation.STATUS_QUEUED
-    assert started["validation"]["by"] == "alice"
-    (plan,) = launched
-    assert plan.token == TOKEN
-    try:
-        solver_validation_run.execute(plan, manager)
-    finally:
-        solver_validation_run._running.discard(pid)
-    latest = projects.latest_solver_validation(pid, request)
-    assert latest["validation"]["status"] == solver_validation.STATUS_PASSED
-    assert latest["validation"]["evidence"]["cases"][0]["candidate_count"] == 18

@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - Windows development fallback
     fcntl = None
 
 from .. import config
-from . import material_detect, package_mapping, package_operations, solver_contract, solver_validation
+from . import consumer_package_rules, material_detect, package_mapping, package_operations, solver_contract
 from .document_metadata import report_name
 from .name_conflict import MAX_DISPLAY_NAME_LENGTH, detect_name_conflict
 from .toolkit import script_argument_shape as _script_argument_shape
@@ -1915,6 +1915,7 @@ class WorkspaceManager:
             revision = _content_revision(doc.read_bytes()) if doc.is_file() else ""
             shown.append({**item, "path": rel, "revision": revision})
         objects = binding["objects"]
+        solver = self.solver_release_status(project_id)
         return {
             "blocking": sum(1 for item in issues if item["blocking"]),
             "issues": shown,
@@ -1929,7 +1930,58 @@ class WorkspaceManager:
             "last_publish": self.get_project(project_id).get("last_package_publish"),
             "table_resources": self._unmarked_table_resources(project_id, root),
             # 求解契约体检单列：blocking 仍只计数据绑定，普通包这里只有 enabled=False
-            "solver": self.solver_release_status(project_id),
+            "solver": solver,
+            # 结构自检单列，同样不计入数据绑定的 blocking，且不能降级发布
+            "structure": self.package_structure_check(project_id, solver),
+        }
+
+    # ---- 发布前结构自检：consumer 导入时会拒绝的包不能发布 ----
+
+    STRUCTURE_CHECK_VERSION = "0.1.0"  # 只影响 manifest 版本号；正式版本号由 Hub 发布时分配
+
+    def package_structure_findings(
+        self,
+        project_id: str,
+        *,
+        binding: dict,
+        allow_unbound: bool,
+        graph: bool = False,
+        ontology_id: str | None = None,
+    ) -> list[dict]:
+        """按 consumer 的导入规则检查本项目的导出包；除占位版本号外，参数须与正式导出一致。"""
+        with tempfile.TemporaryDirectory(prefix="onto-structure-check-") as directory:
+            archive = Path(directory) / "package.zip"
+            self.export_package_zip(
+                project_id, archive, binding=binding, allow_unbound=allow_unbound, graph=graph,
+                version=self.STRUCTURE_CHECK_VERSION, ontology_id=ontology_id,
+            )
+            return consumer_package_rules.check_package_zip(archive)
+
+    def package_structure_check(self, project_id: str, solver: dict | None = None) -> dict:
+        """发布检查展示用：按降级口径导出（数据绑定问题另有一栏），导出失败也作为结构问题列出。"""
+        solver = solver if solver is not None else self.solver_release_status(project_id)
+        if solver.get("findings"):
+            # 求解契约问题会让导出直接失败，那一栏已经列出，不重复报
+            return {"blocking": 0, "findings": [], "truncated": False, "skipped": "solver_findings"}
+        from . import hub_packages  # hub_packages 依赖本模块
+
+        root = self.project_root(project_id)
+        try:
+            findings = self.package_structure_findings(
+                project_id,
+                binding=package_mapping.resolve_object_tables(root, strict_declared=False),
+                allow_unbound=True,
+                ontology_id=hub_packages.ontology_id(project_id),
+            )
+        except WorkspaceError as exc:
+            code = exc.code if exc.code != "workspace_error" else "package_export_failed"
+            findings = [{"code": code, "message": str(exc)}]
+        limit = self.PACKAGE_CHECK_LIMIT
+        return {
+            "blocking": len(findings),
+            "findings": findings[:limit],
+            "truncated": len(findings) > limit,
+            "skipped": None,
         }
 
     # ---- 求解契约静态检查与发布门禁 ----
@@ -1965,12 +2017,14 @@ class WorkspaceManager:
         )
 
     def solver_release_status(self, project_id: str) -> dict:
-        """求解契约的静态检查结论与当前修订的验证门禁；普通包返回 enabled=False。"""
-        root = self.project_root(project_id)
+        """求解契约的静态检查结论；普通包返回 enabled=False。
+
+        端到端验证改在发布后的独立评测中进行（ADR solver-validation-unified-entry），不再拦截发布：
+        requires_validation_after_publish 提示发布时须确认求解能力尚未验证。
+        """
         check = self.solver_check(project_id)
         if not check.enabled:
             return {"enabled": False}
-        gate = solver_validation.gate(root, check.revision) if check.needs_validation else []
         limit = self.PACKAGE_CHECK_LIMIT
         return {
             "enabled": True,
@@ -1987,9 +2041,8 @@ class WorkspaceManager:
                 for item in check.contracts
             ],
             "findings": check.findings[:limit],
-            "gate": gate,
-            "blocking": len(check.findings) + len(gate),
-            "validation": solver_validation.latest(root, check.revision),
+            "blocking": len(check.findings),
+            "requires_validation_after_publish": check.needs_validation,
             "truncated": len(check.findings) > limit,
         }
 
@@ -1997,7 +2050,6 @@ class WorkspaceManager:
         """求解模型面板读取：当前修订、全部契约（binding 全量 + sidecar 原文）与检查结论。"""
         root = self.project_root(project_id)
         check = self.solver_check(project_id)
-        status = self.solver_release_status(project_id)
         # 可选评估器与自动查找同一规则（旧式或声明式），辅助模块、Operation 脚本不列出
         scripts = {
             package_path: path
@@ -2022,8 +2074,7 @@ class WorkspaceManager:
                 ],
             },
             "findings": check.findings,
-            "gate": status.get("gate") or [],
-            "validation": status.get("validation"),
+            "requires_validation_after_publish": check.needs_validation,
             "available_operations": self._operation_stems(root),
             "evaluators": sorted(str(path.relative_to(root)) for path in scripts.values()),
             # 模板参数 evaluator_path 填包内路径（scripts/…），面板按工作区文件名展示
@@ -2103,8 +2154,8 @@ class WorkspaceManager:
         return {**self.solver_contract_view(project_id), "commit": commit}
 
     def _ensure_solver_publishable(self, project_id: str) -> None:
-        status = self.solver_release_status(project_id)
-        blocking = (status.get("findings") or []) + (status.get("gate") or [])
+        """发布只受求解契约静态检查约束；端到端验证在发布后的独立评测中进行。"""
+        blocking = self.solver_release_status(project_id).get("findings") or []
         if blocking:
             raise WorkspaceError(
                 "求解契约未通过发布检查：" + "；".join(item["message"] for item in blocking[:3]),
@@ -2168,8 +2219,7 @@ class WorkspaceManager:
     ) -> Path:
         """用户发布知识包。降级发布须可追溯：记录谁、何时发布，以及哪些对象因此未绑定数据表。
 
-        求解知识包另有门禁：静态检查无错误，且当前求解契约修订有通过的权威端到端验证。
-        allow_unbound 只放宽数据绑定，不放宽求解门禁。
+        求解知识包另须通过求解契约静态检查；allow_unbound 只放宽数据绑定，不放宽求解静态检查。
         """
         root = self.project_root(project_id)
         self._ensure_solver_publishable(project_id)

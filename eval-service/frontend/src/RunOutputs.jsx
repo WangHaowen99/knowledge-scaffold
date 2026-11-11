@@ -5,6 +5,7 @@ import { api } from './api.js';
 import {
   STATUS,
   artifactState,
+  isSolverRun,
   notificationState,
   optimizationState,
   optimizationTag,
@@ -63,7 +64,7 @@ export function RunArtifacts({ run, onChanged, navigate }) {
     });
   return (
     <section className="panel run-outputs">
-      <h3>评测报告与优化建议</h3>
+      <h3>{isSolverRun(run) ? '验证报告与修复指引' : '评测报告与优化建议'}</h3>
       <div className="run-outputs-body">
         <p className="run-outputs-state">
           <Badge tone={state.tone}>{state.label}</Badge>

@@ -237,25 +237,9 @@ export const api = {
       body: JSON.stringify({ contract: { operations } }),
       signal,
     }),
-  // 求解端到端验证：用例存于工作区状态（不进知识包）；发起后由后台经 modeling → Consumer 执行，
-  // 按 latest 轮询当前修订的记录。revision 不一致 409，allowUnbound 即数据绑定降级
+  // 旧的建模侧验证用例（存于工作区状态）：只读，供导出后导入独立评测的求解验证集。
+  // 求解验证改在发布后的独立评测中进行，保存用例与发起验证的接口已停用（410）
   solverValidationCases: (pid) => request(`/api/projects/${pid}/package/solver-validations/cases`),
-  saveSolverValidationCases: (pid, cases) =>
-    request(`/api/projects/${pid}/package/solver-validations/cases`, {
-      method: 'PUT',
-      body: JSON.stringify({ cases }),
-    }),
-  startSolverValidation: (pid, { revision, caseIds = [], dataSourceId = '', allowUnbound = false }) =>
-    request(`/api/projects/${pid}/package/solver-validations`, {
-      method: 'POST',
-      body: JSON.stringify({
-        revision,
-        case_ids: caseIds,
-        data_source_id: dataSourceId,
-        allow_unbound: allowUnbound,
-      }),
-    }),
-  solverValidationLatest: (pid) => request(`/api/projects/${pid}/package/solver-validations/latest`),
   // 修复入口：对象「# 数据来源」改成现有表；table 为空表示不落库（「无」）
   setObjectDataSource: (pid, key, table, baseRevision = '') =>
     request(`/api/projects/${pid}/objects/${encodeURIComponent(key)}/data-source`, {
@@ -328,7 +312,8 @@ export const api = {
     request(`/api/projects/${pid}/package-comparisons/${encodeURIComponent(comparisonId)}/file-diff?file_id=${encodeURIComponent(fileId)}`),
   deletePackageCompare: (pid, comparisonId) =>
     request(`/api/projects/${pid}/package-comparisons/${encodeURIComponent(comparisonId)}`, { method: 'DELETE' }),
-  publishPackage: async (pid, { allowUnbound = false } = {}) => {
+  // solverAcknowledged：求解知识包确认求解能力尚未经端到端验证，后端未确认时返回 409
+  publishPackage: async (pid, { allowUnbound = false, solverAcknowledged = false } = {}) => {
     const key = `onto-publish:${authStore.username || 'local-dev'}:${pid}:${allowUnbound}`;
     let requestId = localStorage.getItem(key);
     if (!requestId) {
@@ -338,11 +323,18 @@ export const api = {
     let receipt;
     try {
       receipt = await request(`/api/projects/${pid}/package/releases`, {
-        method: 'POST', body: JSON.stringify({ request_id: requestId, allow_unbound: allowUnbound }),
+        method: 'POST',
+        body: JSON.stringify({
+          request_id: requestId,
+          allow_unbound: allowUnbound,
+          ...(solverAcknowledged ? { solver_unverified_acknowledged: true } : {}),
+        }),
       });
     } catch (error) {
       // Validation precedes reservation; a corrected workspace starts a new request.
-      if (error.code === 'binding_problems' || error.status === 410) localStorage.removeItem(key);
+      if (['binding_problems', 'package_structure_invalid'].includes(error.code) || error.status === 410) {
+        localStorage.removeItem(key);
+      }
       throw error;
     }
     localStorage.removeItem(key);

@@ -17,6 +17,7 @@
   - `findings`：保存后发布检查仍会拦截的问题，与 `check_workspace_solver` 同源（共用 `_check_contracts`）；
     能读出的契约照常检查，一条契约的结构错误不掩盖其他契约的问题。
   - 端到端验证门禁跟随已保存修订，草稿检查不给出。
+  - 修订（2026-11）：端到端验证改在发布后的独立评测中进行，不再作为发布门禁，见仓库 `docs/decisions/solver-validation-unified-entry.md`。发布只受本节的静态检查约束；求解知识包发布时须确认求解能力尚未验证。
 - 面板在草稿有改动时停顿 500 ms 后调用该接口，新请求中止旧请求，只采用与当前草稿一致的结果；
   草稿与已保存一致时直接展示已保存修订的发布检查。
 - 结果按 finding 的 path/field 定位到表单字段与附属文件页签（model.yaml → Decision Model 页签，

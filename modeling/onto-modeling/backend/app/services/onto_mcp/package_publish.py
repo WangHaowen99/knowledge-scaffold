@@ -8,7 +8,7 @@ import secrets
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from .. import hub_packages, knowledge_hub
+from .. import hub_packages, knowledge_hub, package_evaluations
 from ..workspace import WorkspaceError
 from . import tokens
 from .errors import McpError
@@ -105,8 +105,9 @@ def preview(manager, principal, args):
         return {"ready": False, "request_id": request_id,
                 "blockers": [{"code": exc.code, "message": str(exc)}],
                 "display": {"text": "当前项目尚不能发布知识包版本"}}
-    base = hub_packages.association(principal["project_id"], json.dumps(
-        [principal["hub_issuer"], principal["hub_sub"]], ensure_ascii=False))
+    subject = json.dumps([principal["hub_issuer"], principal["hub_sub"]], ensure_ascii=False)
+    base = hub_packages.association(principal["project_id"], subject)
+    solver = _solver_gate(manager, principal["project_id"], subject)
     try:
         hub_packages.check_delegation(principal["token_id"], principal["project_id"],
                                       principal["hub_issuer"], principal["hub_sub"])
@@ -118,13 +119,30 @@ def preview(manager, principal, args):
     payload = {"v": 1, "project_id": principal["project_id"], "token_id": principal["token_id"],
                "request_id": request_id, "allow_unbound": allow_unbound, "input_digest": digest,
                "base_release_id": (base or {}).get("release_id"),
-               "base_digest": (base or {}).get("package_digest"), "iat": issued, "exp": issued + CONFIRM_TTL}
+               "base_digest": (base or {}).get("package_digest"), "iat": issued, "exp": issued + CONFIRM_TTL,
+               "solver_revision": solver["revision"] if solver else None,
+               "solver_verified": bool(solver and solver["verified_release"])}
+    text = "发布检查通过，请确认后发布知识包新版本"
+    if solver and solver["requires_acknowledgement"]:
+        text = ("发布检查通过。求解能力尚未经端到端验证：确认发布时须传 solver_unverified_acknowledged=true，"
+                "发布后在「已发布版本（知识包评测）」中对新版本发起求解验证")
+    elif solver:
+        text = f"发布检查通过，求解契约与已通过求解验证的 {solver['verified_release']['version']} 一致，请确认后发布知识包新版本"
     return {"ready": True, "request_id": request_id, "source_digest": digest,
             "ontology_id": hub_packages.ontology_id(principal["project_id"]),
             "first_publish": not bool(base), "base_release_id": payload["base_release_id"],
             "base_digest": payload["base_digest"], "change_type": "modeling_content",
             "confirmation_token": _encode(manager, payload), "expires_at": payload["exp"],
-            "display": {"text": "发布检查通过，请确认后发布知识包新版本"}}
+            **({"solver": solver} if solver else {}), "display": {"text": text}}
+
+
+def _solver_gate(manager, project_id, subject):
+    """Whether publishing needs the unverified acknowledgement; the same rule as the web publish check."""
+    check = manager.solver_check(project_id)
+    if not check.needs_validation:
+        return None
+    verified = package_evaluations.verified_solver_release(project_id, subject, check.revision)
+    return {"revision": check.revision, "requires_acknowledgement": not verified, "verified_release": verified}
 
 
 def start(manager, principal, args):
@@ -145,6 +163,12 @@ def start(manager, principal, args):
                 raise McpError("PUBLISH_REQUEST_CONFLICT", "相同 request_id 的发布内容发生变化，请使用新的 request_id", 409)
             if existing.get("status") != "failed":
                 return public(existing)
+        # 与网页发布同一规则：求解能力未验证时须明确确认；重查已有任务不必重复确认
+        acknowledged = args.get("solver_unverified_acknowledged") is True
+        if payload.get("solver_revision") and not payload.get("solver_verified") and not acknowledged:
+            raise McpError("SOLVER_VALIDATION_ACKNOWLEDGEMENT_REQUIRED",
+                           "求解能力尚未经端到端验证：请传 solver_unverified_acknowledged=true 确认后再发布，"
+                           "发布后在「已发布版本（知识包评测）」中发起求解验证", 409)
         active = []
         for job_path in _jobs(manager).glob("*.json"):
             try:
@@ -165,7 +189,7 @@ def start(manager, principal, args):
         job = existing or {"job_id": job_id, "project_id": principal["project_id"],
                            "token_id": principal["token_id"], "request_id": args["request_id"],
                            "created_at": time.time()}
-        job.update(status="queued", updated_at=time.time(), preview=payload)
+        job.update(status="queued", updated_at=time.time(), preview=payload, solver_acknowledged=acknowledged)
         job.pop("error", None)
         _save_job(manager, job)
     _executor.submit(_run, manager, job_id)
@@ -188,6 +212,7 @@ def _run(manager, job_id):
             subject = json.dumps([principal["hub_issuer"], principal["hub_sub"]], ensure_ascii=False)
             def recheck():
                 tokens.verify_id(manager, job["project_id"], job["token_id"], "package.publish")
+            acknowledged = job.get("solver_acknowledged") is True
             receipt = hub_packages.publish(
                 manager, job["project_id"], job["request_id"], "", subject,
                 preview["allow_unbound"], delegated={"token_id": job["token_id"],
@@ -195,7 +220,9 @@ def _run(manager, job_id):
                                                        "sub": principal["hub_sub"]},
                 expected_input_digest=preview["input_digest"],
                 expected_base=(preview.get("base_release_id"), preview.get("base_digest")),
-                before_external=recheck)
+                before_external=recheck,
+                acknowledged_by=(principal.get("username") or principal["hub_sub"]) if acknowledged else "",
+                verified_revision=(preview.get("solver_revision") or "") if preview.get("solver_verified") else "")
             job.update(status="committed", receipt=receipt, updated_at=time.time())
         except (McpError, WorkspaceError) as exc:
             job.update(status="failed", error={"code": exc.code, "message": str(exc),

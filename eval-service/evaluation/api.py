@@ -6,6 +6,8 @@ from pathlib import Path
 import time
 import uuid
 
+from typing import Literal
+
 from fastapi import Body as Payload, FastAPI, Request, Response, UploadFile, File, Query
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.exceptions import RequestValidationError
@@ -30,7 +32,7 @@ from .feedback.access import PackageAccess
 from .feedback.intake import Intake
 from .feedback.pipeline import Assistant, Pipeline
 from .feedback.store import FeedbackStore, run_owner
-from . import modeling_result, package_routes
+from . import modeling_result, package_routes, solver_validation
 
 
 class Body(BaseModel):
@@ -52,11 +54,16 @@ class Prepare(Body):
 class Start(Body):
     request_id: str = Field(min_length=1,max_length=100,pattern=r'^[a-zA-Z0-9_-]+$')
     preparation_id: str
-    eval_set_id: str
+    # data: questions judged by the Judge; solver: solver contract validation with deterministic assertions.
+    run_type: Literal['data','solver'] = 'data'
+    eval_set_id: str = ''
     eval_set_revision: int | None = Field(default=None,ge=1)
+    solver_set_id: str = ''
+    solver_set_revision: int | None = Field(default=None,ge=1)
     graph_check_id: str = Field(default='',max_length=128)
     replace_existing_graph: StrictBool = False
-    concurrency: int = Field(default=DEFAULT_CONCURRENCY,ge=1,le=MAX_CONCURRENCY)
+    # Empty uses the run type's default: 4 questions at a time for data, 1 for solver validation (at most 4).
+    concurrency: int | None = Field(default=None,ge=1,le=MAX_CONCURRENCY)
     # Empty uses the consumer default; otherwise an enabled model of the consumer global pool or the user's personal pool.
     model_profile_id: str = Field(default='',max_length=200,pattern=r'^(|(global|user):\S{1,192})$')
 
@@ -160,9 +167,10 @@ def create_app(config=None,transport=None):
         finally:
             pipeline.stop()
             engine.close()
-            jobs.close()
+            settled=jobs.close()
             notifier.stop()
-            store.close()
+            # A report worker still waiting on the judge would crash on a closed database; process exit closes it.
+            if settled: store.close()
             lock.close()
 
     app=FastAPI(title='Evaluation service',lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
@@ -380,6 +388,13 @@ def create_app(config=None,transport=None):
         _,token=actor(request)
         return packages.call('GET',f"/api/packages/{quote(pid,safe='')}/releases?offset={offset}&limit=20",token)
 
+    @app.get(f'{prefix}/packages/{{pid}}/releases/{{rid}}/solver-operations')
+    def solver_operations(pid:str,rid:str,request:Request):
+        """Enabled solver operations of one release, for editing solver validation sets; at most 64."""
+        _,token=actor(request)
+        raw,receipt=packages.fetch({'ontology_id':pid,'release_id':rid},token)
+        return {'release_id':receipt['release_id'],'version':receipt['version'],'operations':solver_validation.operations(raw)}
+
     @app.get(f'{prefix}/packages/{{pid}}/releases/{{rid}}')
     def release_receipt(pid:str,rid:str,request:Request):
         from urllib.parse import quote
@@ -389,6 +404,8 @@ def create_app(config=None,transport=None):
     def definition(kind,body,owner,existing=None):
         if not isinstance(body,dict) or not isinstance(body.get('name'),str) or not 0<len(body['name'])<=128:
             raise Failure('definition_invalid','需要有效名称',422)
+        if kind=='solver-sets':
+            return solver_validation.definition(body)
         if kind=='eval-sets':
             if set(body)-{'name','cases','revision'}: raise Failure('definition_invalid','未知评测集字段',422)
             cases=body.get('cases',[])
@@ -462,7 +479,7 @@ def create_app(config=None,transport=None):
             if prep['status']!='ready' or source.get('id')!=body.data_source_id or package_changed:
                 raise Failure('graph_check_stale','准备结果与当前数据源或知识包不一致，请重新准备',409,'data_import')
         _,receipt=packages.fetch(body.package_ref.model_dump(),token)
-        return sources.graph.inspect(owner,source,receipt['ontology_id'],body.preparation_id)
+        return sources.graph.inspect(owner,source,receipt['ontology_id'],body.preparation_id,prep)
 
     @app.get(f'{prefix}/inputs/{{rid}}')
     def input_metadata(rid:str,request:Request):
@@ -552,7 +569,7 @@ def create_app(config=None,transport=None):
         app.add_api_route(prefix+'/'+kind+'/{rid}',get,methods=['GET'])
         app.add_api_route(prefix+'/'+kind+'/{rid}',update,methods=['PUT'])
         app.add_api_route(prefix+'/'+kind+'/{rid}',delete,methods=['DELETE'])
-    for kind in ('eval-sets','data-sources'): register_definitions(kind)
+    for kind in ('eval-sets','data-sources','solver-sets'): register_definitions(kind)
 
     @app.post(f'{prefix}/inputs')
     async def upload(request:Request,file:UploadFile=File(...)):
@@ -610,17 +627,29 @@ def create_app(config=None,transport=None):
     @app.post(f'{prefix}/runs',status_code=202)
     def start(body:Start,request:Request):
         owner,token=actor(request)
-        intent=body.model_dump(exclude={'graph_check_id','replace_existing_graph'})
+        solver=body.run_type=='solver'
+        limit,default=(solver_validation.MAX_CONCURRENCY,solver_validation.DEFAULT_CONCURRENCY) if solver else (MAX_CONCURRENCY,DEFAULT_CONCURRENCY)
+        concurrency=body.concurrency or default
+        if concurrency>limit: raise Failure('concurrency_invalid',f'并发数须为 1–{limit}',422)
+        # Data evaluation keeps its earlier request identity, so a retry across an upgrade still matches.
+        extra=set() if solver else {'run_type','solver_set_id','solver_set_revision'}
+        intent=body.model_dump(exclude={'graph_check_id','replace_existing_graph'}|extra)
+        intent['concurrency']=concurrency
         if body.graph_check_id or body.replace_existing_graph:
             intent.update(graph_check_id=body.graph_check_id,replace_existing_graph=body.replace_existing_graph)
         previous=store.lookup_request(owner,'runs',body.request_id,intent)
         if previous:
             return public(previous)
         prep=store.get(owner,body.preparation_id,'preparations')
-        cases=store.get(owner,body.eval_set_id,'eval-sets')
-        if body.eval_set_revision is not None and cases['revision']!=body.eval_set_revision:
-            raise Failure('revision_conflict','评测集已变更，请返回上一步重新加载并确认',409)
         if prep['status']!='ready': raise Failure('not_ready','包准备尚未完成',409)
+        if solver:
+            definition_set,cases=solver_cases(owner,body,prep,token)
+        else:
+            if not body.eval_set_id: raise Failure('eval_set_required','请选择评测集',422)
+            definition_set=store.get(owner,body.eval_set_id,'eval-sets')
+            if body.eval_set_revision is not None and definition_set['revision']!=body.eval_set_revision:
+                raise Failure('revision_conflict','评测集已变更，请返回上一步重新加载并确认',409)
+            cases=[dict(**c,status='pending') for c in definition_set['cases']]
         with engine.guard:
             package_idle(owner,prep['package_ref']['ontology_id'])
             if any(key[0]==owner for key in engine.active): raise Failure('evaluation_busy','已有活动评测，请先查看或停止当前任务',409)
@@ -631,16 +660,34 @@ def create_app(config=None,transport=None):
                 source['graph_confirmation']=sources.graph.authorize(owner,prep,body.graph_check_id,body.replace_existing_graph)
             elif body.graph_check_id or body.replace_existing_graph:
                 raise Failure('graph_import_required','当前评测未启用 Neo4j 图导入',422,'data_import')
-            run=store.create(owner,'runs',dict(status='queued',phase='preparing',preparation_id=prep['id'],
-                package_ref=prep['package_ref'],source=source,mapping=prep['mapping'],relations=prep['preview'].get('relations',{}),judge=judge.profile(owner=owner),
+            names=dict(solver_set_id=definition_set['id'],solver_set_name=definition_set['name']) if solver else \
+                dict(eval_set_id=definition_set['id'],eval_set_name=definition_set['name'])
+            run=store.create(owner,'runs',dict(status='queued',phase='preparing',preparation_id=prep['id'],run_type=body.run_type,
+                package_ref=prep['package_ref'],source=source,mapping=prep['mapping'],relations=prep['preview'].get('relations',{}),
+                judge=None if solver else judge.profile(owner=owner),
                 # The release the user chose; package_ref is what runs, an evaluation snapshot when the mapping changed.
-                base_ref=release_ref(prep['base']),
-                eval_set_id=cases['id'],eval_set_name=cases['name'],data_source_name=prep['source'].get('name','不使用数据源'),
-                concurrency=body.concurrency,model_profile_id=body.model_profile_id,
-                created_at=time.time(),case_revision=cases['revision'],cases=[dict(**c,status='pending') for c in cases['cases']]),
+                base_ref=release_ref(prep['base']),**names,data_source_name=prep['source'].get('name','不使用数据源'),
+                concurrency=concurrency,model_profile_id=body.model_profile_id,
+                created_at=time.time(),case_revision=definition_set['revision'],cases=cases),
                 body.request_id,identity=intent)
             engine.start(owner,run['id'],token,refresh_of(request))
         return public(run)
+
+    def solver_cases(owner,body,prep,token):
+        """Cases of a solver validation run, checked against the operations the package actually declares."""
+        if not body.solver_set_id: raise Failure('solver_set_required','请选择求解验证集',422)
+        definition_set=store.get(owner,body.solver_set_id,'solver-sets')
+        if body.solver_set_revision is not None and definition_set['revision']!=body.solver_set_revision:
+            raise Failure('revision_conflict','求解验证集已变更，请返回上一步重新加载并确认',409)
+        source=prep['source']
+        # consumer's solver evaluator reads facts only from a Neo4j business data source.
+        if source.get('provider')!='neo4j':
+            raise Failure('solver_data_source_unsupported','求解验证需要 Neo4j 业务数据源：consumer 的求解评估器只从 Neo4j 取数',422,'data_import')
+        raw,_=packages.fetch(prep['package_ref'],token)
+        cases=solver_validation.plan_cases(definition_set['cases'],solver_validation.operations(raw))
+        if not source.get('import_data') and sources.graph.existing_nodes(source,prep['package_ref']['ontology_id'])==0:
+            raise Failure('solver_graph_data_empty','所选数据源在图中的范围内还没有数据：请开启图数据导入，或换用已有数据的范围',422,'data_import')
+        return definition_set,cases
 
     def package_idle(owner, package, current_run=''):
         # Only an executing run blocks its package; completed, stopped, interrupted or waiting runs do not.
@@ -719,7 +766,7 @@ def create_app(config=None,transport=None):
         cases=load_run(request,rid)[3]['cases']
         items=[]
         for c in cases[offset:offset+20]:
-            item={k:v for k,v in c.items() if k not in ('answer','reference','overrides','judgement','override','trace')}
+            item={k:v for k,v in c.items() if k not in ('answer','reference','overrides','judgement','override','trace','arguments')}
             item['question']=c['question'][:256]
             for key in ('judgement','override'):
                 if c.get(key): item[key]={**c[key],'reason':c[key]['reason'][:256]}
@@ -790,6 +837,8 @@ def create_app(config=None,transport=None):
         owner,caller,token,_=load_run(request,rid)
         with engine.guard:
             run=store.get(owner,rid,'runs')
+            if run.get('run_type')=='solver':
+                raise Failure('override_unsupported','求解验证的结论来自确定性断言，不能人工改判',409)
             feedback=run.get('origin')=='consumer_feedback'
             if feedback and (store.optimization(rid) or {}).get('status')!='awaiting_review':
                 raise Failure('invalid_state','这一轮消费反馈已确认或驳回，不能再修改',409)

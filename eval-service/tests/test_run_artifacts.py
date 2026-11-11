@@ -450,3 +450,43 @@ def test_case_input_trims_tool_calls_to_fit_its_share():
     # Recorded without calls: an empty list; nothing recorded: no field at all.
     assert item({'calls': [], 'omitted': 0}, 10 ** 6)['tool_calls'] == []
     assert 'tool_calls' not in item(None, 10 ** 6) and 'tool_calls_omitted' not in item(None, 10 ** 6)
+
+
+def test_artifact_shutdown_stops_taking_jobs_and_waits_a_bounded_time():
+    from evaluation.artifact_jobs import ArtifactJobs
+    jobs = ArtifactJobs(None, None, None)
+    assert jobs.close(timeout=.1) is True
+    jobs.schedule('synthetic-owner', 'run_demo', 'synthetic-token')
+    assert 'run_demo' not in jobs.running and jobs.pending['run_demo']['owner'] == 'synthetic-owner'
+    jobs._drain('run_demo')
+    assert jobs.pending['run_demo']  # A stopping service leaves queued jobs untouched.
+    busy = ArtifactJobs(None, None, None)
+    busy.running.add('run_active')  # A worker still waiting on the judge.
+    started = time.monotonic()
+    assert busy.close(timeout=.2) is False
+    assert time.monotonic() - started < 2
+    drafting = ArtifactJobs(None, None, None)
+    drafting.drafting.add('run_drafting')  # Suggestions still being drafted in their own pool.
+    assert drafting.close(timeout=.2) is False
+    drafting._queue('synthetic-owner', 'run_next', 'synthetic-token', 1)
+    assert list(drafting.queue) == []  # A stopping service takes no new drafts.
+
+
+def test_solver_run_notifications_carry_no_optimization_state():
+    from evaluation.artifact_jobs import ArtifactJobs
+    sent, read = [], []
+    class Store:
+        def optimization(self, run_id):
+            read.append(run_id)
+            return {'status': 'notified'}
+    class Notifier:
+        def enqueue(self, owner, run_id, body, recipient=None):
+            sent.append(body)
+    jobs = ArtifactJobs(Store(), None, Notifier())
+    meta = {'summary': {'total': 1}, 'solver_summary': {'total': 1, 'passed': 1, 'failed': 0}}
+    reference = {'ontology_id': 'knowledge_package_demo', 'release_id': 'release_demo', 'version': '0.1.0'}
+    jobs.announce('synthetic-owner', {'id': 'run_solver', 'run_type': 'solver', 'status': 'completed', 'base_ref': reference}, meta)
+    jobs.announce('synthetic-owner', {'id': 'run_data', 'status': 'completed', 'base_ref': reference}, meta)
+    assert sent[0]['run_type'] == 'solver' and sent[0]['optimization'] is None
+    assert sent[1]['optimization']['status'] == 'notified' and read == ['run_data']
+

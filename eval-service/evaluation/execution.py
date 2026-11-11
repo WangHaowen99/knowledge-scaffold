@@ -8,6 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
+from . import solver_validation
 from .artifacts import clip, failed_first, redact
 from .core import Failure, digest, transient
 from .judge_settings import connection_test_failure
@@ -254,9 +255,10 @@ class Consumer:
         return dict(id=selected,revision=digest(value),profiles=value)
 
     def install(self,token,ws,raw,receipt):
+        """Import and activate the exact Hub bytes; returns consumer's import response, which lists unusable operations."""
         def upload(**extra):
             try:
-                self.call('POST','/ontologies/import-zip',token,ws,files={'file':('package.zip',raw,'application/zip')},**extra)
+                return self.call('POST','/ontologies/import-zip',token,ws,files={'file':('package.zip',raw,'application/zip')},**extra)
             except Failure as exc:
                 # Overwriting cannot help: consumer keeps one package per name and an ID other than this one holds it.
                 if exc.upstream_code=='ontology_name_conflict':
@@ -265,15 +267,34 @@ class Consumer:
                                   409,'package_install') from exc
                 raise
         try:
-            upload()
+            imported=upload()
         except Failure as exc:
             if exc.status!=409 or exc.code=='package_name_conflict': raise
             # Retry the exact immutable Hub bytes of this version, also in a reused graph workspace.
-            upload(data={'action':'overwrite_version'})
+            imported=upload(data={'action':'overwrite_version'})
         result=self.call('PUT',f"/ontologies/{quote(receipt['ontology_id'],safe='')}/active-version",token,ws,
                          json={'version':receipt['version']})
         if result.get('active_version')!=receipt['version']:
             raise Failure('activation_mismatch','消费激活版本不一致',409,'package_activate')
+        return imported
+
+    def events(self,token,ws,remote_id,limit):
+        """The replayed public events of one finished consumer run."""
+        return self.http.request('GET',self.config.consumer_url,f"/agentic/runs/{quote(remote_id,safe='')}/events?after_seq=0",
+                                 token=token,workspace=ws,limit=limit,timeout=15)
+
+    def candidate_count(self,token,ws,job_id):
+        """How many candidates an authoritative solver job produced; an unreadable result is reported, not raised."""
+        try:
+            value=self.http.json('GET',self.config.consumer_url,f"/api/solver/history/{quote(job_id,safe='')}/candidate-results",
+                                 token=token,workspace=ws,limit=8*1024*1024,timeout=30)
+        except Failure as exc:
+            code=exc.upstream_code or f'http_{exc.upstream_status or exc.status}'
+            return {'candidate_count':None,'candidate_results_error':code[:120]}
+        count=value.get('candidate_count') if isinstance(value,dict) else None
+        if isinstance(count,int) and not isinstance(count,bool):
+            return {'candidate_count':count}
+        return {'candidate_count':None,'candidate_results_error':'candidate_count_missing'}
 
 
 def final_answer(remote):
@@ -537,14 +558,17 @@ class Engine:
             self._cancel(owner,rid,run)
             return
         if not run.get('started_at'): run=self.update(owner,rid,started_at=time.time(),error=None)
-        if run['judge']!=self.judge.profile(owner=owner):
-            raise Failure('configuration_changed','Judge 配置已变化，请创建新轮次',409)
-        try:
-            self.judge.preflight(owner=owner)
-        except Failure as exc:
-            # A model gateway rejecting its API Key must not read as an expired user login.
-            if exc.code=='dependency_rejected': raise connection_test_failure(exc) from exc
-            raise
+        solver=run.get('run_type')=='solver'
+        # Solver validation is judged by deterministic assertions; only data evaluation needs the Judge.
+        if not solver:
+            if run['judge']!=self.judge.profile(owner=owner):
+                raise Failure('configuration_changed','Judge 配置已变化，请创建新轮次',409)
+            try:
+                self.judge.preflight(owner=owner)
+            except Failure as exc:
+                # A model gateway rejecting its API Key must not read as an expired user login.
+                if exc.code=='dependency_rejected': raise connection_test_failure(exc) from exc
+                raise
         if not run.get('workspace'):
             scope=self.configured_workspace(run)
             if scope:
@@ -560,8 +584,9 @@ class Engine:
         if not run.get('installed'):
             self.update(owner,rid,phase='package_fetch')
             raw,receipt=self.packages.fetch(run['package_ref'],token)
-            self.consumer.install(token,ws,raw,receipt)
-            run=self.update(owner,rid,installed=True,package_ref=receipt)
+            imported=self.consumer.install(token,ws,raw,receipt)
+            unusable=solver_validation.unavailable(imported) if solver else {}
+            run=self.update(owner,rid,installed=True,package_ref=receipt,unavailable_operations=unusable)
         if not run.get('data_ready'):
             self.update(owner,rid,phase='data_import')
             source_definition=dict(run['source'])
@@ -601,7 +626,8 @@ class Engine:
                 halt.set()  # Queued cases are skipped; cases already in flight still settle.
                 raise
             breaker.passed()
-        width=max(1,min(MAX_CONCURRENCY,int(run.get('concurrency') or DEFAULT_CONCURRENCY)))
+        limit=solver_validation.MAX_CONCURRENCY if solver else MAX_CONCURRENCY
+        width=max(1,min(limit,int(run.get('concurrency') or DEFAULT_CONCURRENCY)))
         with ThreadPoolExecutor(max_workers=width,thread_name_prefix='evaluation-case') as pool:
             futures=[pool.submit(work,index) for index in range(len(run['cases']))]
         for future in futures:
@@ -643,6 +669,13 @@ class Engine:
             halt.set()  # Unsettled cases are cancelled once, after every worker has stopped.
             return
         token=self.token(owner,rid)
+        solver=run.get('run_type')=='solver'
+        unusable=run.get('unavailable_operations') or {}
+        blocked=(unusable.get(case.get('solver_key')) or unusable.get('*')) if solver else None
+        if blocked:
+            # consumer reported the operation unusable at install time: asking the agent cannot pass.
+            self.save_case(owner,rid,index,solver_validation.settle(case,solver_validation.unavailable_result(blocked),''))
+            return
         if not case.get('answer'):
             while True:
                 if not case.get('remote_id'):
@@ -676,6 +709,9 @@ class Engine:
                 if not self.backoff(owner,rid,retry_delay(attempt)): return
                 token=self.token(owner,rid)
             token=self.token(owner,rid)
+            if solver:
+                self.settle_solver(owner,rid,ws,index,case,response,token)
+                return
             trace=self.consumer.trace(token,ws,case['remote_id'])
             calls,omitted=trace.pop('calls',None),trace.pop('omitted_calls',0)
             if calls is not None:
@@ -710,11 +746,31 @@ class Engine:
         """Consumer /runs persists the session fingerprint and idempotency key, so reconciliation resubmits the exact same
         request of one attempt; only a retry after a failed session preparation starts a new session."""
         suffix=str(index)+(f'-{case["attempt"]}' if case.get('attempt') else '')
+        body={'request':case['question'],'session_id':'eval-'+rid+'-'+suffix,
+              'model_profile_id':run['model']['id'],'include_trace':True}
+        if run.get('run_type')=='solver':
+            # Pin the exact activated version so the agent cannot pick another package in the workspace.
+            body['arguments']={'selected_ontology_id':run['package_ref']['ontology_id'],
+                               'selected_ontology_version':run['package_ref']['version']}
         response=self.consumer.call('POST','/runs',token,run['workspace'],
-            headers={'Idempotency-Key':rid+'-'+suffix,**self.consumer.traffic()},json={
-                'request':case['question'],'session_id':'eval-'+rid+'-'+suffix,
-                'model_profile_id':run['model']['id'],'include_trace':True})
+            headers={'Idempotency-Key':rid+'-'+suffix,**self.consumer.traffic()},json=body)
         return response['run_id']
+
+    def settle_solver(self,owner,rid,ws,index,case,remote,token):
+        """Judge one solver validation case from its run's public events; consumer keeps the full trace."""
+        try:
+            calls=solver_validation.observe(self.consumer.events(token,ws,case['remote_id'],solver_validation.EVENT_LIMIT))
+        except Failure as exc:
+            case.update(status='execution_error',error={'code':'solver_events_unavailable','phase':'cases',
+                        'message':f'无法读取 consumer 运行事件，未能取证：{exc.message}'})
+            self.save_case(owner,rid,index,case)
+            return
+        result=solver_validation.case_result(case,calls,remote)
+        if solver_validation.has_candidate_results(result):
+            result.update(self.consumer.candidate_count(token,ws,result['job_id']))
+        solver_validation.settle(case,result,final_answer(remote))
+        case['evidence']={'remote_run_id':case['remote_id'],'status':remote['status'],'trace_status':'collected'}
+        self.save_case(owner,rid,index,case)
 
     def backoff(self,owner,rid,seconds):
         """Wait before a retry; False as soon as the service stops or the run is being cancelled."""
@@ -746,6 +802,10 @@ class Engine:
                     if time.monotonic()>deadline:
                         raise Failure('cancel_pending','远端尚未确认取消，请恢复对账',504,'cancelling')
                     time.sleep(1)
+                if remote['status']=='completed' and run.get('run_type')=='solver':
+                    # Settles this same case object, so the cases saved below include it.
+                    self.settle_solver(owner,rid,run['workspace'],index,case,remote,token)
+                    continue
                 if remote['status']=='completed':
                     case['answer']=final_answer(remote)
                     case['status']='manual'
