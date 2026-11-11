@@ -1677,3 +1677,13 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
 6. **增量构建包**：启用后没传新资料时节点不出现，不挡发布，也不限范围；已有条目时上传资料才触发。这一轮发布后自动结束；有改动没核对干净时「结束本轮」被拒。
 7. 触发记录在主线工作区的 `.onto/run/activation.json`，不进 git。FL-01 的响应形状不变，节点集合变化时 `flow_hash` 跟着变。
 8. **core 0.5.0、增量构建 0.2.0**：core 0.5.0 表示内核支持上面 1～4；用到它们的包声明 `depends: {core: ">=0.5"}`。建议条规则版本 `SUGGEST_RULES` 升到 7（多一条 6.5「触发后抢先的步骤」）。
+
+## 2026-11-12 · 评测对接与 develop 对齐（ADR-0092 第二轮）
+
+用户要求除评测优化外行为和界面元素与 develop 一致。
+
+1. **未登录统一账号**：`ES-02`～`ES-08` 改回 develop 的 401「个人 Hub 包需要统一账号登录」（码 `login_required`）；`ES-02` 不再返回 `configured=false`。
+2. **`ES-09` 改为旧版评测的执行详情**：响应 `{state, evolution, evolution_enabled}`（develop `GET /eval/status` 的 `state`、`evolution`），不再列旧报告；
+   启动迁移（eval_retirement）不再删 `.ontology-state/eval.json`。`ES-10` 响应多 `path`。
+3. **新增 `ES-12`** `POST /api/v1/projects/{id}/legacy-evaluations/{id}/optimization`：旧报告的评测优化，与 `ES-07` 一样成一批外部反馈。
+

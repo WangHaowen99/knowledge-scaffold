@@ -484,7 +484,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `release_not_found` | 404 | 发布记录不存在 | — |
 | `receipt_revision_unknown` | 422 | 回执里的契约修订号在本项目不存在 | `revision` |
 | `feedback_invalid` | 422 | 反馈载荷不符合反馈契约 | `errors[]` |
-| `login_required` | 409 | 评测要统一账号登录（本地模式没有） | — |
+| `login_required` | 401 | 评测要统一账号登录（本地模式没有），文案「个人 Hub 包需要统一账号登录」；不是 `unauthenticated`，前端不当成登录过期 | — |
 | `eval_unconfigured` | 503 | 没配评测服务地址或地址无效 | — |
 | `eval_unauthorized` | 401 | 评测服务没接受当前登录 | — |
 | `eval_not_found` | 404 | 评测记录不存在、无权访问，或评测的不是本项目的 Hub 包 | — |
@@ -3393,7 +3393,7 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 
 评测在独立的评测服务里跑。onto 只做四件事：给浏览器入口（`ES-01`）、收完成通知（`ES-00`）、以当前用户自己的登录读回结果（`ES-02`～`ES-06`）、
 把一轮的结果整理成一批外部反馈交给反馈演进（`ES-07`）。评测记录按发起人私有：同一个 Hub 包由多人评测时，各人只看见自己的轮次。
-本地模式（没有统一账号）不能用评测：`ES-02` 返回 `configured=false`，其余返回 `login_required`。
+本地模式（没有统一账号）不能用评测：`ES-02`～`ES-08` 与 develop 一样返回 401（码 `login_required`），页面按「评测状态读取失败」显示为评测服务未配置。
 
 #### ES-00 完成通知（评测服务调用）
 
@@ -3473,19 +3473,28 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 
 `GET /api/v1/projects/{id}/legacy-evaluations` · 所有者 · 旧：`GET /api/projects/{id}/eval/status`（410，successor 指这里） · 审计：否 · 页面：publish
 
-- 评测移出 onto 之前留在工作区的报告 `reports/eval-<日期>-<时间>.md`，只读。响应：`{items: [{id, at, title, score}]}`，新的在前。
+- 评测移出 onto 之前最近一轮的「评测执行详情」（develop 的 `GET /eval/status` 里的 `state`、`evolution`），只读；状态读 `.ontology-state/eval.json`，启动迁移不再删它。
+- 响应：`{state, evolution, evolution_enabled}`。`state` 没有旧记录时是 `{}`；仍是 `running` 的显示为 `interrupted`（旧运行器已删，不改盘上记录），`resumable` 恒为 false。
+  `evolution` 与 develop 的提示条件相同（得分低于 90 或有异常用例、报告出自最近一轮），`evolution_enabled` 是反馈演进包启用与否。
 
 #### ES-10 旧版评测报告
 
 `GET /api/v1/projects/{id}/legacy-evaluations/{id}` · 所有者 · 审计：否 · 页面：publish
 
-- 响应：`{id, content, truncated}`，最多 2 MiB。
+- `{id}` 是报告文件名去掉 `.md`（`eval-<日期>-<时间>`）。响应：`{id, path, content, truncated}`，最多 2 MiB。
 
 #### ES-11 旧版报告的完整回答
 
 `GET /api/v1/projects/{id}/legacy-evaluations/{id}/answers/{result_id}` · 所有者 · 审计：否 · 页面：publish
 
-- 读同名 `.answers.json` 附件。响应：同 `ES-05`。错误：`answer_not_found`、`not_found`。
+- 读同名 `.answers.json` 附件（develop 报告预览的首选来源）。响应：同 `ES-05`。错误：`answer_not_found`（「完整回答证据不可用」或「完整回答证据不存在或不属于当前评测轮次」）、`not_found`。
+
+#### ES-12 旧版报告的评测优化
+
+`POST /api/v1/projects/{id}/legacy-evaluations/{id}/optimization` · 所有者（项目没有归档） · 审计：是 · 页面：publish
+
+- 与 `ES-07` 同一做法：把旧报告和它的 `.answers.json` 整理成一批外部反馈 `legacy-{id}`（报告最近一轮时带上状态里的得分汇总），只提交这批；同一份报告只成一批。
+- 响应：同 `ES-07`（`suggestions` 为 null）。错误：`pack_not_enabled`、`answer_not_found`、`not_found`。
 
 ---
 

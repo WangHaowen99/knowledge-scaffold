@@ -754,10 +754,12 @@ def test_evaluations_are_owner_only(env, monkeypatch):
 def test_local_mode_has_no_evaluation(env, monkeypatch):
     _, pid, stub, client = env
     monkeypatch.setattr(auth, 'ENABLED', False)
-    view = client.get(f'/api/v1/projects/{pid}/evaluations?reconcile=1').json()
-    assert view['configured'] is False and view['releases'] == {} and stub.calls == []
-    response = client.get(f'/api/v1/projects/{pid}/evaluations/{RUN}/report')
-    assert response.status_code == 409 and response.json()['code'] == 'login_required'
+    # 与 develop 一样要统一账号登录；码不是 unauthenticated，前端不会当成登录过期
+    for url in (f'/api/v1/projects/{pid}/evaluations?reconcile=1', f'/api/v1/projects/{pid}/evaluations/{RUN}/report'):
+        response = client.get(url)
+        assert response.status_code == 401 and response.json()['code'] == 'login_required'
+        assert response.json()['message'] == '个人 Hub 包需要统一账号登录'
+    assert stub.calls == []
 
 
 # ---- 评测入口（ES-01） ----
@@ -802,54 +804,95 @@ def test_evaluation_entry_comes_only_from_deployment(env, monkeypatch):
     assert writable == set()
 
 
-# ---- 旧版评测记录（只读，ES-09～ES-11） ----
+# ---- 旧版评测记录（只读，ES-09～ES-12） ----
 
 LEGACY = 'eval-20261001-090000'
+LEGACY_REPORT = '\n'.join([
+    '# 数据评测报告 — 2026-10-01 09:00', '', '## 逐用例明细', '',
+    '### 1. ✅ pass', '', '- **问题**：合成旧问题一', '', '- **标准答案**：', '', '  > 旧答案一', '',
+    '### 2. ❌ fail', '', '- **问题**：合成旧问题二', '', '- **标准答案**：', '', '  > 旧答案二', '',
+    '- **智能体回答**：', '', '  > 合成旧回答二', '  >', f'  > - **完整回答**：[按结果 ID 查看附件](reports/{LEGACY}.answers.json#r-2)', '',
+])
+LEGACY_STATE = {
+    'status': 'done', 'phase': 'evaluate', 'message': '评测完成（有效 2/2 条）', 'report': f'reports/{LEGACY}.md',
+    'report_round': 'round-1', 'round_id': 'round-1', 'data_source_name': '合成数据源', 'eval_set_name': '合成评测集',
+    'summary': {'total': 2, 'pass': 1, 'partial': 0, 'fail': 1, 'error': 0, 'score': 50, 'valid': 2, 'result_status': 'complete'},
+    'cases': [{'question': '合成旧问题一', 'verdict': 'pass', 'result_id': 'r-1'},
+              {'question': '合成旧问题二', 'verdict': 'fail', 'result_id': 'r-2', 'answer': '合成旧回答二', 'is_truncated': True,
+               'original_length': 900}],
+}
 
 
-def legacy_project(manager, pid):
+def legacy_project(manager, pid, state=None):
     root = manager.project_root(pid)
     reports = root / 'reports'
     reports.mkdir(exist_ok=True)
-    (reports / f'{LEGACY}.md').write_text(
-        '# 数据评测报告 — 2026-10-01 09:00\n\n## 总览\n\n- 综合得分：**75**（仅 2 条有效用例）\n\n'
-        f'- **完整回答**：[按结果 ID 查看附件](reports/{LEGACY}.answers.json#r-1)\n', encoding='utf-8')
+    (reports / f'{LEGACY}.md').write_text(LEGACY_REPORT, encoding='utf-8')
     (reports / f'{LEGACY}.answers.json').write_text(json.dumps({'answers': [
-        {'resultId': 'r-1', 'question': '合成旧问题', 'finalAnswer': '乙' * 900, 'originalLength': 900}]},
-        ensure_ascii=False), encoding='utf-8')
-    (reports / 'eval-20261002-090000.md').write_text('# 数据评测报告 — 2026-10-02 09:00\n\n- 得分：未形成有效评测\n', encoding='utf-8')
-    # 独立评测导入的报告、别的报告都不算旧版评测记录
-    (reports / f'{STEM}.md').write_text('# 数据评测报告\n', encoding='utf-8')
-    (reports / 'eval-notes.md').write_text('# 其他\n', encoding='utf-8')
+        {'resultId': 'r-1', 'question': '合成旧问题一', 'finalAnswer': '旧回答一', 'verdict': 'pass', 'reason': '一致'},
+        {'resultId': 'r-2', 'question': '合成旧问题二', 'finalAnswer': '乙' * 900, 'verdict': 'fail', 'reason': '合成旧理由'},
+    ]}, ensure_ascii=False), encoding='utf-8')
+    _git(root, 'add', 'reports')
+    _git(root, 'commit', '-qm', 'chore: 合成旧版评测报告')
+    (root / '.ontology-state').mkdir(exist_ok=True)
+    (root / '.ontology-state' / 'eval.json').write_text(json.dumps(state or LEGACY_STATE, ensure_ascii=False), encoding='utf-8')
     return root
 
 
-def test_legacy_records_are_listed_read_only(env):
+def test_legacy_record_shows_the_last_run_like_develop(env):
     manager, pid, stub, client = env
-    root = legacy_project(manager, pid)
     base = f'/api/v1/projects/{pid}/legacy-evaluations'
-    items = client.get(base).json()['items']
-    assert [item['id'] for item in items] == ['eval-20261002-090000', LEGACY]
-    assert items[1] == {'id': LEGACY, 'at': '2026-10-01T09:00:00', 'title': '数据评测报告 — 2026-10-01 09:00', 'score': 75}
-    assert items[0]['score'] is None
+    assert client.get(base).json() == {'state': {}, 'evolution': None, 'evolution_enabled': True}
+    legacy_project(manager, pid)
+    value = client.get(base).json()
+    assert value['state']['status'] == 'done' and value['state']['cases'][1]['result_id'] == 'r-2'
+    assert value['evolution'] == {'report': f'reports/{LEGACY}.md', 'score': 50, 'errors': 0, 'fails': 1, 'round_failed': False}
     report = client.get(f'{base}/{LEGACY}').json()
-    assert report['content'].startswith('# 数据评测报告') and report['truncated'] is False
-    answer = client.get(f'{base}/{LEGACY}/answers/r-1').json()
-    assert answer == {'resultId': 'r-1', 'question': '合成旧问题', 'fullAnswer': '乙' * 900, 'originalLength': 900,
+    assert report['content'].startswith('# 数据评测报告') and report['path'] == f'reports/{LEGACY}.md'
+    answer = client.get(f'{base}/{LEGACY}/answers/r-2').json()
+    assert answer == {'resultId': 'r-2', 'question': '合成旧问题二', 'fullAnswer': '乙' * 900, 'originalLength': 900,
                       'truncated': False}
-    assert client.get(f'{base}/{LEGACY}/answers/r-2').status_code == 404
-    assert client.get(f'{base}/eval-20261002-090000/answers/r-1').status_code == 404
-    for stem in (STEM, 'eval-notes', '..%2Fsecret', 'eval-20261001-090000.answers'):
+    assert client.get(f'{base}/{LEGACY}/answers/r-9').json()['code'] == 'answer_not_found'
+    for stem in (STEM, 'eval-notes', '..%2Fsecret', f'{LEGACY}.answers'):
         assert client.get(f'{base}/{stem}').status_code == 404
     assert stub.calls == []  # 只读工作区，不找评测服务
 
 
-def test_legacy_records_do_not_follow_links(env, tmp_path):
+def test_legacy_running_state_shows_as_interrupted_without_rewriting(env):
+    manager, pid, _, client = env
+    root = legacy_project(manager, pid, {**LEGACY_STATE, 'status': 'running', 'message': '执行中'})
+    state = client.get(f'/api/v1/projects/{pid}/legacy-evaluations').json()['state']
+    assert state['status'] == 'interrupted' and state['message'] == '上一轮评测被服务重启中断' and state['resumable'] is False
+    assert json.loads((root / '.ontology-state' / 'eval.json').read_text(encoding='utf-8'))['status'] == 'running'
+
+
+def test_legacy_report_optimization_is_a_feedback_batch(env):
     manager, pid, _, client = env
     root = legacy_project(manager, pid)
-    outside = tmp_path / 'outside.md'
-    outside.write_text('# 合成机密\n', encoding='utf-8')
-    (root / 'reports' / 'eval-20261003-090000.md').symlink_to(outside)
+    url = f'/api/v1/projects/{pid}/legacy-evaluations/{LEGACY}/optimization'
+    value = client.post(url, json={}).json()
+    assert value == {'feedback_id': f'legacy-{LEGACY}', 'report': f'reports/{LEGACY}.md', 'suggestions': None,
+                     'command': '/ontology-evolution', 'args': {'feedback_id': f'legacy-{LEGACY}'}}
+    batch = json.loads((root / feedback_inbox.batch_path(root, f'legacy-{LEGACY}')).read_text(encoding='utf-8'))
+    assert [item['case_id'] for item in batch['items']] == ['r-2']
+    assert batch['items'][0]['expected'] == '旧答案二' and batch['items'][0]['loss_reason'] == '合成旧理由'
+    assert batch['summary']['score'] == 50 and batch['source'] == {'service': '评测服务', 'run': 'round-1'}
+    assert batch['attachments'] == {'report': f'reports/{LEGACY}.md', 'answers': f'reports/{LEGACY}.answers.json'}
+    head = _git(root, 'rev-parse', 'HEAD')
+    assert client.post(url, json={}).json() == value and _git(root, 'rev-parse', 'HEAD') == head
+    assert client.post(f'/api/v1/projects/{pid}/packs/evo/disable', json={}).status_code == 200
+    assert client.post(url, json={}).json()['code'] == 'pack_not_enabled'
+
+
+def test_legacy_records_do_not_follow_links(env, tmp_path):
+    manager, pid, _, client = env
+    root = manager.project_root(pid)
+    outside = tmp_path / 'outside.json'
+    outside.write_text(json.dumps(LEGACY_STATE), encoding='utf-8')
+    (root / '.ontology-state').mkdir(exist_ok=True)
+    (root / '.ontology-state' / 'eval.json').symlink_to(outside)
+    (root / 'reports').mkdir(exist_ok=True)
+    (root / 'reports' / f'{LEGACY}.md').symlink_to(outside)
     base = f'/api/v1/projects/{pid}/legacy-evaluations'
-    assert 'eval-20261003-090000' not in [item['id'] for item in client.get(base).json()['items']]
-    assert client.get(f'{base}/eval-20261003-090000').status_code == 404
+    assert client.get(base).json()['state'] == {}
+    assert client.get(f'{base}/{LEGACY}').status_code == 404
