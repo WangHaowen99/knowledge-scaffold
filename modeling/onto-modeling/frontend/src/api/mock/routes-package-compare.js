@@ -1,5 +1,5 @@
-// mock · 3.20 知识包版本对比（PC-01～PC-08）：任意两侧都给同一份合成差异（新增、删除、修改、未变化各有），
-// 发起后约 0.8 秒出结果。?mock=compare:cross 时上传的包算另一个知识包，PC-05 返回失败码 compare_cross_package（没确认跨包时）。
+// mock · 3.20 知识包版本对比（PC-01～PC-08，参数与 develop 一致）与 HB-05：任意两侧都给同一份合成差异（新增、删除、修改、
+// 未变化各有），发起后约 0.8 秒出结果。?mock=compare:cross 时上传的包算另一个知识包，没确认跨包就发起会失败。
 const OLD = {
   'manifest.yaml': 'kind: ontology-package\nschema_version: \'0.1\'\nid: retail-restock\nversion: 0.12.0\nname: 门店补货\n',
   'objects/门店.md': '# 门店\n\n## 属性\n\n| 名称 | 英文名 | 类型 |\n|---|---|---|\n| 门店编码 | store_code | 文本 |\n| 面积 | area | 数值 |\n\n按区域分组管理。\n',
@@ -35,55 +35,76 @@ function summary(list) {
     categories[r.category] ||= { added: 0, deleted: 0, modified: 0, unchanged: 0 };
     categories[r.category][r.status] += 1;
   });
-  return { files, categories, left_file_count: Object.keys(OLD).length, right_file_count: Object.keys(NEW).length };
+  const affected = Object.keys(categories).filter((k) => categories[k].added || categories[k].deleted || categories[k].modified);
+  const evidence = list.filter((r) => r.status !== 'unchanged').slice(0, 4).map((r) => ({ path: r.path, display_name: r.display_name, status: r.status }));
+  return {
+    files, categories, affected_categories: affected, evidence,
+    left_file_count: Object.keys(OLD).length, right_file_count: Object.keys(NEW).length,
+  };
 }
 
-export function register({ on, json, err, sc, uid }) {
+export function register({ on, json, err, sc, uid, self }) {
   const comparisons = new Map();
   const inputs = new Map();
   const base = '/projects/([^/]+)/package-comparisons';
+  const ONTOLOGY = 'retail-restock-hub';
 
+  // HB-05 项目关联 Hub 包的版本：由 PB-04 的发布记录换算（Hub 版本号即发布版本号）
+  on('GET', '/projects/([^/]+)/hub/releases', async ({ m, query, init }) => {
+    const res = await self(`/api/v1/projects/${m[1]}/releases`, { headers: init.headers });
+    const records = res.ok ? (await res.json()).items || [] : [];
+    const all = records.map((r) => ({
+      release_id: `rel-${r.version.replaceAll('.', '-')}`, ontology_id: ONTOLOGY, version: r.version,
+      committed_at: r.at, package_name: '门店补货', name: '门店补货',
+    }));
+    const offset = Number(query.get('offset') || 0);
+    const limit = Number(query.get('limit') || 20);
+    const items = all.slice(offset, offset + limit);
+    return json(200, { items, releases: items, total: all.length, offset, limit });
+  });
   on('POST', `${base}/inputs`, ({ form }) => {
     const file = form?.get('file');
     if (!file) return err(400, 'invalid_argument', '缺少文件', { fields: { file: 'required' } });
     const id = `cmpin_${uid()}`;
+    const now = Date.now() / 1000;
     const item = {
-      input_id: id, package_id: sc.compare === 'cross' ? 'another-package' : 'retail-restock', package_name: '门店补货',
-      package_version: '0.13.0', file_count: Object.keys(NEW).length, uncompressed_size: 8192,
-      created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 86400000).toISOString(), warnings: [],
+      input_id: id, package_id: sc.compare === 'cross' ? 'another-package' : ONTOLOGY, package_name: '门店补货',
+      package_version: '0.13.0', package_digest: 'f'.repeat(64), content_digest: 'f'.repeat(64),
+      file_count: Object.keys(NEW).length, uncompressed_size: 8192, created_at: now, expires_at: now + 86400, warnings: [],
     };
     inputs.set(id, item);
     return json(201, item);
   });
-  on('DELETE', `${base}/uploads/([^/]+)`, () => json(204, null));
+  on('DELETE', `${base}/uploads/([^/]+)`, () => json(200, { cancelled: true }));
   on('DELETE', `${base}/inputs/([^/]+)`, ({ m }) => {
     if ([...comparisons.values()].some((c) => [c.left, c.right].some((s) => s.input_id === m[2]))) {
       return err(409, 'compare_input_in_use', '比较输入仍被任务使用，请先删除比较任务');
     }
     inputs.delete(m[2]);
-    return json(204, null);
+    return json(200, { deleted: true });
   });
   on('POST', base, ({ body }) => {
     const id = `cmp_${uid()}`;
-    const cross = [body.left, body.right].some((s) => s.kind === 'upload' && inputs.get(s.input_id)?.package_id === 'another-package');
+    const packageOf = (s) => (s.kind === 'upload' ? inputs.get(s.input_id)?.package_id : s.ontology_id);
+    const cross = packageOf(body.left) !== packageOf(body.right);
     comparisons.set(id, { ...body, at: Date.now(), failed: cross && !body.allow_cross_package });
     return json(202, { comparison_id: id, status: 'queued', phase: 'queued', poll_after_ms: 500 });
   });
   const ready = (id) => {
     const c = comparisons.get(id);
-    if (!c) return { gone: err(410, 'compare_expired', '比较结果已过期') };
+    if (!c) return { gone: err(410, 'compare_expired', '比较结果已损坏或已过期') };
     if (Date.now() - c.at < 800) return { pending: { comparison_id: id, status: 'running', phase: 'reading' } };
-    if (c.failed) return { pending: { comparison_id: id, status: 'failed', phase: 'failed', error: '两侧属于不同知识包，请确认跨包对比', error_code: 'compare_cross_package' } };
+    if (c.failed) return { pending: { comparison_id: id, status: 'failed', phase: 'failed', error: '两侧属于不同 Hub 知识包，请确认跨包对比' } };
     return { c };
   };
   const sideView = (s) => (s.kind === 'upload'
-    ? { source: s, package_name: '门店补货', package_version: '0.13.0', file_count: Object.keys(NEW).length, version: '' }
-    : { source: s, package_name: '门店补货', package_version: s.version, file_count: Object.keys(OLD).length, version: s.version });
+    ? { source: s, package_name: '门店补货', package_version: '0.13.0', package_digest: 'f'.repeat(64), file_count: Object.keys(NEW).length, uncompressed_size: 8192, version: '' }
+    : { source: s, package_name: '门店补货', package_version: s.release_id, package_digest: 'e'.repeat(64), file_count: Object.keys(OLD).length, uncompressed_size: 8192, version: s.release_id.replace(/^rel-/, '').replaceAll('-', '.') });
   on('GET', `${base}/([^/]+)`, ({ m }) => {
     const { gone, pending, c } = ready(m[2]);
     if (gone || pending) return gone || json(200, pending);
     return json(200, {
-      comparison_id: m[2], status: 'ready', created_at: new Date(c.at).toISOString(), summary: summary(rows()),
+      comparison_id: m[2], status: 'ready', created_at: c.at / 1000, summary: summary(rows()),
       left: sideView(c.left), right: sideView(c.right),
     });
   });
@@ -94,12 +115,15 @@ export function register({ on, json, err, sc, uid }) {
     const status = query.get('status') || '';
     const category = query.get('category') || '';
     const q = (query.get('q') || '').toLowerCase();
-    const items = rows().filter((r) => (!status || (status === 'changed' ? r.status !== 'unchanged' : r.status === status))
-      && (!category || r.category === category) && (!q || r.path.toLowerCase().includes(q)));
-    return json(200, { items, next_cursor: null, total: items.length });
+    const offset = Number(query.get('offset') || 0);
+    const limit = Number(query.get('limit') || 50);
+    const all = rows();
+    const matched = all.filter((r) => (!status || (status === 'changed' ? r.status !== 'unchanged' : r.status === status))
+      && (!category || r.category === category) && (!q || r.path.toLowerCase().includes(q) || r.display_name.toLowerCase().includes(q)));
+    return json(200, { items: matched.slice(offset, offset + limit), total: matched.length, filtered_total: matched.length, overall_total: all.length, offset, limit });
   });
-  on('GET', `${base}/([^/]+)/file-diff`, ({ m, query }) => {
-    const path = query.get('path');
+  on('GET', `${base}/([^/]+)/file-diff`, ({ query }) => {
+    const path = query.get('file_id');
     const row = rows().find((r) => r.path === path);
     if (!row) return err(404, 'not_found', '比较文件不存在');
     const text = (value) => (value === undefined ? null : value === null
@@ -108,6 +132,6 @@ export function register({ on, json, err, sc, uid }) {
   });
   on('DELETE', `${base}/([^/]+)`, ({ m }) => {
     comparisons.delete(m[2]);
-    return json(204, null);
+    return json(200, { deleted: true });
   });
 }
