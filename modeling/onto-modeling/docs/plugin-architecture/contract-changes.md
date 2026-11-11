@@ -1572,3 +1572,16 @@ Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`
    必经的排在可选的前面；可选节点和可选步骤在后面的核对节点还会跑时不出。`SUGGEST_RULES` 升到 6。
 2. **FL-01 节点动作**：过期节点的刷新动作同一个说法。
 3. **节点与步骤的确认记录**多存按类别的指纹 `kinds`；没有它的老记录按确认时刻（`at`）主线上的提交比到现在、看哪几类目录有改动，还说不清时按钮只写「刷新X」。
+
+## 2026-11-11 · P5b：规则原始资料出处、Studio 最后更新时间（吸收 develop !589）
+
+develop 新增的 `GET /api/projects/{pid}/studio/updates`、`GET /api/projects/{pid}/source-preview` 不进本分支（本分支没有调用方，不补旧路径映射），
+功能并进现有契约（ADR-0093）：
+
+1. **ST-03**：`EntryRow` 加 `updated_at: time | null`（最后更新时间：提交时间，未提交的取文件修改时间，纯改名不算，git 不可用为 null）；
+   `sort=updated` 实现为新的在前、取不到的排最后。
+2. **R-06**：`around` 认行号范围 `L12-L15`（按第一行定位）；`path` 可以是文本版 `resource/text/…`，此时文件头不出块，页、工作表标记
+   记在后面每一块的可选字段 `location` 上。主容器仍不解析原件（ADR-0076）。
+3. **元模型**：规则多一节「原始资料来源」（选填，在「来源」之后）；ST-04 的 `sections`、模板、提取说明随之变化。
+4. **工具箱**：`source_extract` 抽取器版本 1 → 2（稳定快照、Office 解压上限 256 MiB、单个正文 32 MiB、原文件 20 MiB），`located_text` 认行号范围；
+   `research_checker` 核对「详细信息」里的出处（文件不存在、锚点找不到、省略路径都不放行）。core 包内容摘要随之变化，跟随通道的项目下一条消息前升级。

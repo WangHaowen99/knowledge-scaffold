@@ -1197,8 +1197,10 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 
 `GET /api/v1/projects/{id}/resources/preview` · 所有者 · 旧：— · 审计：否 · 依据：5.8.3（文件提供方）、5.8.5 · 页面：resources（文档预览）、全部页面（锚点悬停的「看原文」）
 
-- 查询参数：`path`、`around?: string`（锚点片段，如 `p:9.2`，定位到该段前后）、`limit?: int`（块数，默认 200，最大 1000）、`cursor?`。
+- 查询参数：`path`、`around?: string`（锚点片段，如 `p:9.2`，定位到该段前后；行号范围 `L12-L15` 按第一行定位）、`limit?: int`（块数，默认 200，最大 1000）、`cursor?`。
 - 文档类资料（docx、md、txt）经 `source_extract` 抽取成带锚点的块（PDF 的文字看文本版，R-13），片段格式沿用 `source_extract`：`L12`、`p:3`、`table:1/row:2/cell:3`。
+- `path` 也可以是文本版（`resource/text/<分组>/<原文件名>.md`，规则出处与证据「查看原文」按它定位，ADR-0093）：块按行，锚点 `L<n>` 和 EV-29、R-15 同一套行号；
+  第一行文件头不出块，页、工作表标记不单独成块，记在它后面每一块的 `location` 上（「第 3 页」「工作表 客户」）。
 - 表格和 drawio 分别用 `F-05` 和 `F-04`。
 - 响应：
 
@@ -1207,7 +1209,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
   | `path` | string | — |
   | `format` | string | — |
   | `coverage` | object | `{read_sections: string（如「第 1–14 章」）, read_pct, complete: bool}`：资料分析读到哪 |
-  | `blocks` | `[{anchor, kind: "heading"\|"paragraph"\|"table"\|"list", level?, text, highlights?: [{start, end}]}]` | 带锚点的块 |
+  | `blocks` | `[{anchor, kind: "heading"\|"paragraph"\|"table"\|"list", level?, text, highlights?: [{start, end}], location?: string}]` | 带锚点的块；`location` 只在读文本版时有 |
   | `next_cursor` | string \| null | — |
 
 #### R-07 资料地图
@@ -1341,10 +1343,12 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - `kind?`：`object|operation|rule|metric|script|flowchart`，多值逗号分隔；
   - `q?`：名称、Key 子串；
   - `status?`；
-  - `sort?`：`name|refs_in|refs_out|updated`；
+  - `sort?`：`name|refs_in|refs_out|updated`（`updated` 新的在前，取不到时间的排最后）；
   - 分页。
 - 响应：`{items: EntryRow[], next_cursor, counts: {all, object, operation, rule, metric, script, flowchart|null}, kinds: [{kind, label, plugin: {name, label}|null}]}`。
   - `kinds` 里 `flowchart` 带插件标记（图示）。
+  - `EntryRow.updated_at`（最后更新时间）：已提交的条目取最后一次改动它的提交时间，已写入工作区、未提交的取文件修改时间；纯移动或改名不算更新，
+    Studio 草稿不算。git 不可用时为 null（ADR-0093）。
 
 #### ST-04 条目详情
 
@@ -4887,6 +4891,7 @@ type EntryRow = {
   status: "confirmed" | "pending" | "stale" | "draft" | "editing";   // editing = 本人有未提交草稿
   needs_review: boolean; locked: boolean;
   plugin: { name: string; label: string } | null;
+  updated_at: time | null;                     // 最后更新时间（ST-03）
 };
 
 type EvidenceCell = {
