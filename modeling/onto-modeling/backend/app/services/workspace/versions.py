@@ -48,6 +48,15 @@ def rollback_changes(root: Path, target: str, head: str = "HEAD") -> dict[str, l
     return out
 
 
+def rollback_counts(changes: dict[str, list[str]]) -> dict:
+    """develop 的口径：{added, modified, deleted, total}（回退确认框「将新增 a、修改 m、删除 d 个业务文件」）。"""
+    created = set(changes["create"])
+    out = {"added": list(changes["create"]), "modified": [rel for rel in changes["restore"] if rel not in created],
+           "deleted": list(changes["delete"])}
+    out["total"] = sum(len(value) for value in out.values())
+    return out
+
+
 def managed_dirty_paths(root: Path) -> list[str]:
     """主线工作区里没提交、或已暂存的业务路径（回退前必须为空）。"""
     records = _git(root, "-c", "core.quotePath=false", "status", "--porcelain=v1", "-z",
@@ -66,6 +75,35 @@ def managed_dirty_paths(root: Path) -> list[str]:
             if rollback_managed(previous):
                 paths.add(previous)
     return sorted(paths)
+
+
+# 回退后作废的派生状态：由被替换的内容得出的结论（验收回执、核验记录、进度、复核草稿）
+DERIVED_STATE_FILES = (
+    "eval.json", "progress.json", "research-review.json", "research-inventory.json", "research-baseline.json",
+    "script-verifications.json", "solver-validations.json",
+)
+DERIVED_STATE_DIRS = ("artifact-reviews", "studio-review")
+DIRTY_MESSAGE = "项目存在未提交或暂存的修改，请先完成当前编辑"
+NOTHING_MESSAGE = "当前业务内容与该版本一致，无需回退"
+
+
+def invalidate_derived_state(root: Path) -> list[str]:
+    """删掉 .ontology-state 里由回退前内容得出的结论，返回没删掉的名字。"""
+    state = root / ".ontology-state"
+    failed = []
+    for name in DERIVED_STATE_FILES:
+        try:
+            (state / name).unlink(missing_ok=True)
+        except OSError:
+            failed.append(name)
+    for name in DERIVED_STATE_DIRS:
+        path = state / name
+        try:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+        except OSError:
+            failed.append(name)
+    return failed
 
 
 def _remove_entry(path: Path) -> None:
@@ -145,12 +183,12 @@ class VersionsMixin:
         if not re.fullmatch(r"[0-9a-fA-F]{6,40}", commit or ""):
             raise WorkspaceError("无效的版本号", 400, "invalid_commit")
         if _run_git(root, ("cat-file", "-e", f"{commit}^{{commit}}")).returncode != 0:
-            raise WorkspaceError("版本不存在", 400, "invalid_commit")
+            raise WorkspaceError("版本不存在或已不可用", 400, "invalid_commit")
         target = _git(root, "rev-parse", f"{commit}^{{commit}}").strip()
         if target == _git(root, "rev-parse", "HEAD").strip():
             raise WorkspaceError("当前已是该版本，无需回退", 400, "nothing_to_revert")
         if _run_git(root, ("merge-base", "--is-ancestor", target, "HEAD")).returncode != 0:
-            raise WorkspaceError("只能回退到当前版本历史里的版本", 400, "invalid_commit")
+            raise WorkspaceError("只能回退到当前版本历史中的提交", 400, "invalid_commit")
         return target
 
     def revert_to(self, project_id: str, commit: str, author: str = "", expected_head: str = "",
@@ -159,7 +197,8 @@ class VersionsMixin:
 
         经写入事务：只动、只提交该版本与 HEAD 之间不同的业务路径（之后新增的一并删除）。仓库配置、元数据、
         运行状态不随回退恢复（rollback_managed）。持项目锁后依次挡：busy_check（调用方的并发检查）、
-        expected_head 不符（head_moved）、主线工作区有没提交的业务改动（workspace_dirty）。
+        expected_head 不符（head_moved）、主线工作区有没提交或暂存的改动（workspace_dirty）。提交后作废派生状态，
+        删不掉的在结果里带 warning。
         """
         from ...kernel.writepath import ChangeTx, Origin
 
@@ -169,15 +208,17 @@ class VersionsMixin:
             if busy_check is not None:
                 busy_check(root)
             if expected_head and tx.base_head != expected_head:
-                raise WorkspaceError("预览之后有了新版本，请重新预览", 409, "head_moved", {"head": tx.base_head})
+                raise WorkspaceError("项目已产生新版本，请重新预览后再回退", 409, "head_moved", {"head": tx.base_head})
             target = self.revert_target(root, commit)
             dirty = managed_dirty_paths(root)
             if dirty:
-                raise WorkspaceError("项目里有没保存成版本的修改，先保存或放弃", 409, "workspace_dirty",
-                                     {"paths": dirty[:20]})
+                raise WorkspaceError(DIRTY_MESSAGE, 409, "workspace_dirty", {"paths": dirty[:20]})
+            if _git(root, "diff", "--cached", "--name-only", "--").strip():
+                # 暂存的业务改动上面已挡；暂存的是不随回退的路径（元数据等）时也不能被带进回退提交
+                raise WorkspaceError("项目存在已暂存的元数据修改，请先完成当前编辑", 409, "workspace_dirty")
             changes = rollback_changes(root, target)
             if not changes["restore"] and not changes["delete"]:
-                raise WorkspaceError("当前内容与该版本一致，无需回退", 400, "nothing_to_revert")
+                raise WorkspaceError(NOTHING_MESSAGE, 400, "nothing_to_revert")
             tx.touch_tracked(*changes["delete"], *changes["restore"])
             try:
                 # 先删后写：同一路径在两个版本里一个是文件一个是目录时，顺序反了会写进去又删掉
@@ -189,13 +230,17 @@ class VersionsMixin:
                          "--pathspec-from-file=-", "--pathspec-file-nul", input="\0".join(changes["restore"]))
                 from .. import mainline
 
-                result = tx.commit(f"revert: 回退到 {mainline.label(mainline.count(root, target))}")
+                result = tx.commit(f"revert: 回退到版本 {mainline.count(root, target)}（{target[:8]}）")
             except BaseException:
                 self._undo_revert(root, changes)
                 raise
             if not result.commit:
-                raise WorkspaceError("当前内容与该版本一致，无需回退", 400, "nothing_to_revert")
-        return {"commit": result.commit, "reverted_to": target, "changes": changes}
+                raise WorkspaceError(NOTHING_MESSAGE, 400, "nothing_to_revert")
+            failed = invalidate_derived_state(root)
+        out = {"commit": result.commit, "reverted_to": target, "changes": rollback_counts(changes)}
+        if failed:
+            out["warning"] = "部分派生状态未能清理，请重新运行相关检查"
+        return out
 
     @staticmethod
     def _undo_revert(root: Path, changes: dict[str, list[str]]) -> None:
@@ -216,10 +261,11 @@ class VersionsMixin:
 
     # ---- 版本 ----
 
-    def versions(self, project_id: str) -> list[dict]:
-        """主线版本（只计合入主线的提交，--first-parent，契约 3.9），从新到旧。
+    def versions(self, project_id: str, limit: int | None = None, offset: int = 0) -> list[dict]:
+        """主线版本（只计合入主线的提交，--first-parent，契约 3.9），从新到旧；limit、offset 分页（历史时间线）。
 
-        版本号 n 从 1 开始（建项目的基线提交是 v0.1）；来源优先取提交 trailer Onto-Source，
+        版本号 n 从 1 开始（建项目的基线提交是 v0.1，历史里叫「迭代 1」），分页和之后的保存都不改变已有版本的号；
+        version 与 n 相同、current 标出当前版本（develop 的迭代条目字段）。来源优先取提交 trailer Onto-Source，
         没有 trailer 的存量提交按提交说明的前缀推断（版本列表据此筛选）。时间为 epoch 秒。
         """
         root = self.project_root(project_id)
@@ -230,7 +276,8 @@ class VersionsMixin:
         records = [record.strip("\n") for record in out.split("\x1e") if record.strip("\n")]
         total = len(records)
         entries = []
-        for index, record in enumerate(records):
+        end = len(records) if limit is None else offset + max(limit, 0)
+        for index, record in enumerate(records[offset:end], start=offset):
             parts = record.split("\x1f")
             if len(parts) != 5:
                 continue
@@ -241,6 +288,8 @@ class VersionsMixin:
             entries.append({
                 "commit": commit,
                 "n": total - index,
+                "version": total - index,
+                "current": index == 0,
                 "time": int(ts) if ts.isdigit() else None,
                 "author": trailers.get("Onto-Author") or _subject_author(subject) or author,
                 "message": subject,

@@ -20,6 +20,7 @@ from ..services.workspace.errors import WorkspaceError
 from ..services.workspace.layout import _content_revision
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/versions", tags=["versions"])
+history_router = APIRouter(prefix="/api/v1/projects/{project_id}", tags=["versions"])
 
 SOURCES = ("assistant", "web", "studio", "mcp", "autobuild", "import", "plugin", "revert")
 SOURCE_LABELS = {
@@ -124,6 +125,32 @@ def list_versions(project_id: str, request: Request, source: str = "", cursor: s
     }
 
 
+@history_router.get("/history")
+def history(project_id: str, request: Request, limit: int = 50, cursor: str = ""):
+    """V-09 历史时间线（ADR-0094，develop /history）：迭代与 Hub 发布版本按时间从新到旧合并分页，游标由后端生成。
+
+    迭代条目另带 V-01 的版本字段（来源、说明、标记、所属运行），给版本页左栏用。"""
+    from ..services import auth, version_history
+    from .hub_packages import identity
+
+    root = deps.require_owner(project_id, request)
+    # 未启用统一账号时没有个人 Hub 包，时间线只含迭代
+    token, subject = identity(request)[:2] if auth.ENABLED else ("", "")
+    if not 1 <= limit <= 50:
+        raise ApiError("invalid_argument", "分页参数无效", 400, {"fields": {"limit": "range"}})
+    try:
+        result = version_history.page(deps.workspaces, project_id, subject, token, limit, cursor, can_revert=True)
+    except WorkspaceError as exc:
+        if exc.status == 400:
+            raise ApiError("invalid_cursor", str(exc), 400) from exc
+        raise
+    head = mainline.state(root)["head"]
+    autobuild = _autobuild_slices(project_id)
+    result["items"] = [{**item, **_version(item, head, autobuild)} if item["kind"] == "iteration" else item
+                       for item in result["items"]]
+    return result
+
+
 def _on_mainline(project_id: str, commit: str) -> dict:
     """主线上的这个版本（V-01 的一项）；不在主线上（如副本分支的提交）时 invalid_commit。"""
     entry = next((item for item in deps.workspaces.versions(project_id) if item["commit"] == commit), None)
@@ -182,7 +209,7 @@ def revert_preview(project_id: str, request: Request, commit: str = ""):
     target = _resolve(root, commit)
     head = mainline.state(root)["head"]
     if target == head:
-        raise ApiError("nothing_to_revert", "当前内容与该版本一致，无需回退", 400)
+        raise ApiError("nothing_to_revert", "当前已是该版本，无需回退", 400)
     try:
         deps.workspaces.revert_target(root, target)
         view = version_views.revert_preview(root, target, head)
@@ -250,6 +277,8 @@ async def revert(project_id: str, request: Request):
         "commit": result["commit"],
         "version_label": mainline.state(root)["version_label"],
         "reverted_to": {"commit": target, "version_label": mainline.label(mainline.count(root, target))},
+        "changes": result["changes"],
+        **({"warning": result["warning"]} if result.get("warning") else {}),
     }
 
 

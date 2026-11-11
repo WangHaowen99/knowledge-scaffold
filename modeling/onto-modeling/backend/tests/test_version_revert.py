@@ -1,7 +1,6 @@
 """版本回退的业务口径与并发保护（ADR-0094；移植 develop !567、!570 的回退测试）。数据全部合成。"""
 
 import asyncio
-import importlib
 import json
 import subprocess
 from pathlib import Path
@@ -18,7 +17,6 @@ from app.services.onto_mcp.errors import McpError
 from app.services.workspace import WorkspaceError, WorkspaceManager
 from app.services.workspace.versions import managed_dirty_paths
 
-SCRIPTS = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts"
 
 
 def _git(root: Path, *args: str) -> str:
@@ -83,9 +81,9 @@ def test_revert_message_names_the_target_version(manager, project):
 
     result = manager.revert_to(project_id, first)
     assert (root / "ontology/object/item.md").read_text(encoding="utf-8") == "v1"
-    label = f"v0.{_git(root, 'rev-list', '--first-parent', '--count', first).strip()}"
-    assert manager.versions(project_id)[0]["message"] == f"revert: 回退到 {label}"
-    assert result["changes"]["restore"] == ["ontology/object/item.md"]
+    number = int(_git(root, "rev-list", "--first-parent", "--count", first).strip())
+    assert manager.versions(project_id)[0]["message"] == f"revert: 回退到版本 {number}（{first[:8]}）"
+    assert result["changes"] == {"added": [], "modified": ["ontology/object/item.md"], "deleted": [], "total": 1}
 
 
 def test_revert_restores_complete_business_snapshot_and_keeps_metadata(manager, project):
@@ -102,11 +100,13 @@ def test_revert_restores_complete_business_snapshot_and_keeps_metadata(manager, 
     _commit(root, "later")
     manager._update_meta(project_id, name="current name")
 
-    result = manager.revert_to(project_id, target)
+    from app.services import version_views
 
-    assert result["changes"] == {"restore": ["ontology/object/kept.md", "ontology/object/restored.md"],
-                                 "delete": ["ontology/object/later.md"],
-                                 "create": ["ontology/object/restored.md"]}
+    preview = version_views.revert_preview(root, target, _git(root, "rev-parse", "HEAD").strip())
+    assert preview["changes"]["total"] == 3
+    result = manager.revert_to(project_id, target, expected_head=preview["expected_head"])
+
+    assert result["changes"] == preview["changes"]
     assert (root / "ontology/object/kept.md").read_text(encoding="utf-8") == "old"
     assert (root / "ontology/object/restored.md").read_text(encoding="utf-8") == "restore me"
     assert not (root / "ontology/object/later.md").exists()
@@ -123,7 +123,7 @@ def test_revert_ignores_generated_index_only_difference(manager, project):
     manager._refresh_indexes(root)
     _commit(root, "refresh generated index")
 
-    with pytest.raises(WorkspaceError) as caught:
+    with pytest.raises(WorkspaceError, match="业务内容.*一致") as caught:
         manager.revert_to(project_id, target)
     assert caught.value.code == "nothing_to_revert"
 
@@ -142,9 +142,11 @@ def test_revert_commits_regenerated_indexes_and_allows_another_revert(manager, p
 
     assert _git(root, "status", "--porcelain").strip() == ""
     assert "old.md" in (root / "ontology/object/index.md").read_text(encoding="utf-8")
-    again = manager.revert_to(project_id, current)
-    assert sorted(again["changes"]["restore"] + again["changes"]["delete"]) == [
-        "ontology/object/new.md", "ontology/object/old.md"]
+    from app.services import version_views
+
+    preview = version_views.revert_preview(root, current, _git(root, "rev-parse", "HEAD").strip())
+    assert version_revert.blockers(manager, project_id) == []
+    assert preview["changes"]["total"] == 2
 
 
 @pytest.mark.parametrize("dirty_kind", ["modified", "staged", "untracked"])
@@ -161,7 +163,7 @@ def test_revert_rejects_dirty_workspace(manager, project, dirty_kind):
         if dirty_kind == "staged":
             _git(root, "add", "ontology/object/item.md")
 
-    with pytest.raises(WorkspaceError) as caught:
+    with pytest.raises(WorkspaceError, match="未提交或暂存") as caught:
         manager.revert_to(project_id, target)
     assert caught.value.code == "workspace_dirty" and caught.value.status == 409
     assert version_revert.blockers(manager, project_id)[-1]["code"] == "workspace_dirty"
@@ -178,8 +180,9 @@ def test_metadata_and_runtime_state_do_not_count_as_dirty(manager, project):
 def test_revert_rejects_current_missing_and_non_ancestor(manager, project):
     project_id, root = project
     current = _git(root, "rev-parse", "HEAD").strip()
-    for commit, code in ((current, "nothing_to_revert"), ("f" * 40, "invalid_commit"), ("HEAD", "invalid_commit")):
-        with pytest.raises(WorkspaceError) as caught:
+    for commit, code, text in ((current, "nothing_to_revert", "当前已是"), ("f" * 40, "invalid_commit", "不存在"),
+                               ("HEAD", "invalid_commit", "无效的版本号")):
+        with pytest.raises(WorkspaceError, match=text) as caught:
             manager.revert_to(project_id, commit)
         assert caught.value.code == code
 
@@ -188,7 +191,7 @@ def test_revert_rejects_current_missing_and_non_ancestor(manager, project):
     _write(root, "side.md", "side")
     side = _commit(root, "side")
     _git(root, "checkout", "-q", "-f", branch)
-    with pytest.raises(WorkspaceError, match="版本历史") as caught:
+    with pytest.raises(WorkspaceError, match="当前版本历史") as caught:
         manager.revert_to(project_id, side)
     assert caught.value.code == "invalid_commit"
 
@@ -310,27 +313,50 @@ def test_revert_handles_file_directory_type_changes(manager, project, target_is_
     assert managed_dirty_paths(root) == []
 
 
-def test_revert_keeps_receipts_which_invalidate_by_fingerprint(manager, project, monkeypatch):
-    """develop 回退后删掉派生回执；本分支的回执绑定内容指纹（research_review），内容一变自己失效，
-    没被回退动到的仍然有效，所以不删。"""
-    monkeypatch.syspath_prepend(str(SCRIPTS))
-    review = importlib.import_module("research_review")
+def test_revert_invalidates_derived_state(manager, project):
     project_id, root = project
-    _write(root, "research/资料分析.md", "# 第一版\n")
-    target = _commit(root, "research v1")
-    _write(root, "research/资料分析.md", "# 第二版\n")
     _write(root, "ontology/object/item.md", "v1")
-    _commit(root, "research v2")
-    inputs = review.file_revisions(root, ["research/资料分析.md"])
-    review.write_review(root, review.PASSED, inputs, [], [])
-    assert review.accepted(root)
+    target = _commit(root, "v1")
+    _write(root, "ontology/object/item.md", "v2")
+    _commit(root, "v2")
+    for rel in (
+        ".ontology-state/research-review.json",
+        ".ontology-state/script-verifications.json",
+        ".ontology-state/solver-validations.json",
+        ".ontology-state/artifact-reviews/review.json",
+    ):
+        _write(root, rel, "{}")
+    _write(root, ".ontology-state/eval-sets.json", "keep")
 
     manager.revert_to(project_id, target)
+    assert not (root / ".ontology-state/research-review.json").exists()
+    assert not (root / ".ontology-state/artifact-reviews").exists()
+    assert (root / ".ontology-state/eval-sets.json").read_text(encoding="utf-8") == "keep"
 
-    assert (root / ".ontology-state" / "research-review.json").exists()
-    assert not review.accepted(root)
-    manager.revert_to(project_id, manager.versions(project_id)[1]["commit"])
-    assert review.accepted(root)
+
+def test_revert_reports_derived_state_it_could_not_clear(manager, project, monkeypatch):
+    from app.services.workspace import versions
+
+    project_id, root = project
+    _write(root, "ontology/object/item.md", "v1")
+    target = _commit(root, "v1")
+    _write(root, "ontology/object/item.md", "v2")
+    _commit(root, "v2")
+    monkeypatch.setattr(versions, "invalidate_derived_state", lambda _root: ["progress.json"])
+    assert manager.revert_to(project_id, target)["warning"] == "部分派生状态未能清理，请重新运行相关检查"
+
+
+def test_revert_rejects_staged_metadata(manager, project):
+    project_id, root = project
+    _write(root, "ontology/object/item.md", "v1")
+    target = _commit(root, "v1")
+    _write(root, "ontology/object/item.md", "v2")
+    _commit(root, "v2")
+    (root / ".gitattributes").write_text("*.md text\n", encoding="utf-8")
+    _git(root, "add", ".gitattributes")
+    with pytest.raises(WorkspaceError, match="已暂存的元数据修改") as caught:
+        manager.revert_to(project_id, target)
+    assert caught.value.code == "workspace_dirty"
 
 
 # ---- 资料随回退恢复（develop !567 同口径） ----
@@ -422,7 +448,7 @@ def test_busy_assistant_blocks_and_idle_session_is_recycled(manager, project, id
     session.pending_prompts = []
     result = asyncio.run(version_revert.apply(manager, project_id, target, author="operator_a"))
     assert result["reverted_to"] == target
-    assert idle["recycled"] == [(session, "user")] and idle["cleared"] == [project_id]
+    assert idle["recycled"] == [(session, "recycled")] and idle["cleared"] == [project_id]
 
 
 # ---- 接口：V-05 预览、V-06 回退、V-01 并入发布记录 ----

@@ -22,7 +22,7 @@ import uuid
 
 from .onto_mcp.errors import McpError
 from .workspace.errors import WorkspaceError
-from .workspace.versions import managed_dirty_paths, rollback_changes
+from .workspace.versions import DIRTY_MESSAGE, managed_dirty_paths
 
 PREVIEW_TTL_SECONDS = 600
 APPLIED_TTL_SECONDS = 3600
@@ -68,18 +68,18 @@ def blockers(manager, project_id: str) -> list[dict]:
         out.append({"code": "write_scope_locked", "message": lock.get("reason_text") or "助手这一轮还没结束",
                     "details": lock})
     elif _session_busy(project_id):
-        out.append({"code": "session_busy", "message": "助手还有没跑完的消息", "details": {}})
+        out.append({"code": "session_busy", "message": "助手正在修改该项目，请等待当前任务结束", "details": {}})
     run = autobuild_store.active(project_id)
     if run is not None:
         out.append({"code": "autobuild_running", "message": "自主构建运行中", "details": {"run_id": run["run_id"]}})
     drafts = studio.draft_paths(project_id)
     if drafts:
-        out.append({"code": "studio_draft_pending", "message": "Studio 里有没保存的草稿", "details": {
+        out.append({"code": "studio_draft_pending", "message": "Studio 存在租约或未提交草稿，请先完成或放弃编辑", "details": {
             "path": drafts[0], "entry_id": metamodel.for_project(root).entry_key(drafts[0]) or None,
             "count": len(drafts)}})
     dirty = managed_dirty_paths(root)
     if dirty:
-        out.append({"code": "workspace_dirty", "message": "项目里有没保存成版本的修改",
+        out.append({"code": "workspace_dirty", "message": DIRTY_MESSAGE,
                     "details": {"paths": dirty[:20]}})
     return out
 
@@ -107,7 +107,7 @@ async def apply(manager, project_id: str, commit: str, *, expected_head: str = "
         session = sessions.get(project_id)
         if session is not None:
             session.pending_prompts.clear()
-            await sessions._recycle(session, reason="user")
+            await sessions._recycle(session)
     conversation_store.clear_all_resume_tokens(project_id)
     await sessions._drain_waiters()
     return result
@@ -202,17 +202,13 @@ def preview_by_version(manager, project_id: str, version: int, token_id: str, us
     found = blockers(manager, project_id)
     if found:
         return {"ready": False, "target": target, "current": now, "blockers": _mcp_blockers(found),
-                "display": {"text": "当前项目有挡住回退的情况，暂不能回退"}}
+                "display": {"text": "当前项目存在阻断项，暂不能回退"}}
     root = manager.project_root(project_id)
     try:
         view = version_views.revert_preview(root, entry["commit"], current["commit"])
     except WorkspaceError as exc:
         raise _mcp_error(exc) from exc
-    paths = rollback_changes(root, entry["commit"], current["commit"])
-    created = set(paths["create"])
-    changes = {"added": paths["create"], "modified": [rel for rel in paths["restore"] if rel not in created],
-               "deleted": paths["delete"]}
-    changes["total"] = sum(len(value) for value in changes.values())
+    changes = view["changes"]
     stamp = time.time()
     preview_id = _remember({
         "project_id": project_id, "token_id": token_id, "username": username, "target_version": version,
@@ -223,7 +219,7 @@ def preview_by_version(manager, project_id: str, version: int, token_id: str, us
         "ready": True, "preview_id": preview_id, "expires_at": stamp + PREVIEW_TTL_SECONDS,
         "target": target, "current": now, "expected_head": current["commit"], "changes": changes,
         "undone_versions": view["undone_versions"], "packs_lock_changes": view["packs_lock_changes"],
-        "display": {"text": f"将回退到 {entry['version_label']}，并生成新版本 {view['next_version_label']}"},
+        "display": {"text": f"将回退到版本 {version}，并创建新的版本 {current['version'] + 1}"},
     }
 
 
@@ -267,10 +263,10 @@ async def apply_preview(manager, project_id: str, preview_id: str, token_id: str
         raise
     latest = _mainline(manager, project_id)[0]
     result = {
-        "commit": done["commit"], "reverted_to_version": record["target_version"],
+        **done, "reverted_to_version": record["target_version"],
         "created_version": latest["version"], "version_label": latest["version_label"],
         "previous_head": record["expected_head"],
-        "display": {"text": f"已回退到 v0.{record['target_version']}，生成新版本 {latest['version_label']}"},
+        "display": {"text": f"已恢复版本 {record['target_version']} 的业务内容，并创建新版本"},
     }
     _settle(preview_id, "applied", result)
     return result
