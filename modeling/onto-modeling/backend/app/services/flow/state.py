@@ -132,6 +132,19 @@ def fingerprint(root: Path, kinds: list[str]) -> str:
     return hashlib.sha256(_ls_tree(root, dirs).encode("utf-8")).hexdigest()[:16]
 
 
+def kind_fingerprints(root: Path, kinds: list[str]) -> dict[str, str]:
+    """按类别分开的输入指纹：过期时据此说出是哪几类变了（「对象有变化」），不是把 stale_on 整个列出来。"""
+    return {str(kind): fingerprint(root, [kind]) for kind in kinds}
+
+
+def changed_kinds(root: Path, record: dict, kinds: list[str]) -> list[str]:
+    """确认之后变了的类别；老记录没存分类指纹时说不清，按 stale_on 全列。"""
+    saved = record.get("kinds")
+    if not isinstance(saved, dict):
+        return [str(kind) for kind in kinds]
+    return [str(kind) for kind in kinds if saved.get(str(kind)) != fingerprint(root, [kind])]
+
+
 def done_signature(flow: dict, node: dict) -> str:
     """完成判定签名：节点的 done 与它用到的探针定义。节点升级后判定变了，旧的「已确认」要复核（详设 6.9 第 6 条）。"""
     probes = flow.get("probes") or {}
@@ -208,7 +221,8 @@ def compute(root: Path, flow: dict, hits: dict[str, bool], *, project_id: str | 
                     changed = True
                 signature = done_signature(flow, node)
                 if record is None:
-                    record = {"fp": fp(node), "sig": signature, "at": time.time()}
+                    record = {"fp": fp(node), "kinds": kind_fingerprints(root, list(node.get("stale_on") or [])),
+                              "sig": signature, "at": time.time()}
                     stored["nodes"][node_id] = record
                     changed = True
                 elif record.get("sig") and record["sig"] != signature and not record.get("needs_review"):
@@ -217,6 +231,10 @@ def compute(root: Path, flow: dict, hits: dict[str, bool], *, project_id: str | 
                     flags.update(needs_review=True, review_source="upgrade")
                     changed = True
                 state = "stale" if record.get("fp", "") != fp(node) else "confirmed"
+                if state == "stale":
+                    result[node_id] = {"state": state, "flags": flags,
+                                       "changed": changed_kinds(root, record, list(node.get("stale_on") or []))}
+                    continue
             else:
                 if record is not None and not record.get("needs_review"):
                     # 主线上不再满足完成判定（回退、删了产物）：这次确认作废，之后重新满足时重记基线
@@ -273,7 +291,8 @@ def confirm(root: Path, flow: dict, node_ids: list[str]) -> None:
             if node is None:
                 continue
             # 人确认过（重做后确认生效）：需复核标记去掉（审查第 21 条）；补做完的可选节点不再算跳过
-            stored["nodes"][node_id] = {"fp": fingerprint(root, list(node.get("stale_on") or [])),
+            kinds = list(node.get("stale_on") or [])
+            stored["nodes"][node_id] = {"fp": fingerprint(root, kinds), "kinds": kind_fingerprints(root, kinds),
                                         "sig": done_signature(flow, node), "at": time.time()}
             stored["skipped"].pop(node_id, None)
         save(root, stored)

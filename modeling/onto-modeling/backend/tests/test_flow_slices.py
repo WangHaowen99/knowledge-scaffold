@@ -441,3 +441,41 @@ def test_rule_metric_run_also_confirms_the_rule_step(env):
 
     wiring._confirm_nodes(project_id, ["core.metric"], {"slice_steps": []})
     assert _slices(root)[0]["all"]["stages"]["rule"] == "confirmed"
+
+
+def _labels(built: dict) -> list[str]:
+    return [item["label"] for item in [built["suggestions"]["primary"], *built["suggestions"]["secondary"]] if item]
+
+
+def _validated(root: Path) -> None:
+    """建模、指标、校验都做完：在 _modeled_with_rules 上补指标和校验报告，重记基线。"""
+    flow = _modeled_with_rules(root)
+    main_write(root, "ontology/metric/达标率.md", "# 达标率\n\n合成指标\n")
+    main_write(root, "reports/20260101-rule.md", "# 合成检查报告\n\n- [x] 已处理\n")
+    node_state.confirm(root, flow, ["core.metric", "core.validate"])
+
+
+def test_stale_label_names_what_changed_not_every_input(env):
+    """过期的按钮写确认之后真变了的那几类：只改了指标，校验写「指标有变化」，不把对象、操作、规则、指标全列出来；
+    建模步骤抽屉里的刷新按钮同一个说法。"""
+    _client, _workspaces, _manager, _project_id, root = env
+    _validated(root)
+    main_write(root, "ontology/metric/达标率.md", "# 达标率\n\n合成指标，改了口径\n")
+    built = view.build(root)
+    assert _node(built, "core.validate")["state"] == "stale"
+    assert "指标有变化，刷新校验" in _labels(built)
+    assert _node(built, "core.validate")["actions"][0]["label"] == "指标有变化，刷新校验"
+    assert built["suggestions"]["note"] is None
+
+
+def test_optional_metric_going_stale_is_left_to_validation(env):
+    """指标（可选旁支）过期时交给后面的校验，不单独推：单独推会和建模来回兜圈子——指标补对象的关联让「操作」过期，
+    重抽操作又让指标过期。必经的刷新排在前面。"""
+    _client, _workspaces, _manager, _project_id, root = env
+    _validated(root)
+    main_write(root, "ontology/operation/受理申请.md", op("受理申请", "[[门店]]，补一句"))
+    built = view.build(root)
+    assert _node(built, "core.metric")["state"] == "stale"
+    labels = _labels(built)
+    assert labels[0] == "操作有变化，刷新校验"
+    assert not any(label.endswith("刷新指标") for label in labels)

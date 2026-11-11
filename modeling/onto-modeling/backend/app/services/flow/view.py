@@ -64,7 +64,7 @@ def _lock_alive(root: Path, command: str) -> bool:
 def _suggest_module(root: Path, state):
     """本项目锁定版本的 flow_state 支持这一版建议条判定（SUGGEST_RULES）就用它，旧 core 版本用镜像版本：
     规则表、能否执行的检查与说明行（F7）三处要同一份，升级前的项目不能还按旧的判。"""
-    if getattr(state, "SUGGEST_RULES", 0) >= 5:
+    if getattr(state, "SUGGEST_RULES", 0) >= 6:
         return state
     from ..packs import contracts
 
@@ -254,17 +254,19 @@ def _confine_active(flow: dict, root: Path) -> bool:
     return isinstance(scope, dict) and scope.get("status") == "active"
 
 
-def _stale_upstream(flow: dict, states: dict) -> dict:
-    """过期的节点（按段的除外）→ 上游的说法：「对象、操作」。"""
+def _stale_upstream(flow: dict, states: dict, computed: dict | None = None) -> dict:
+    """过期的节点（按段的除外）→ 确认之后变了的那几类的说法：「对象、操作」（computed 是 node_state.compute 的结果，
+    带 changed；没有时按 stale_on 全列）。"""
     from .. import workspace_labels
 
     out = {}
     for node in flow.get("nodes") or []:
         if node.get("per_slice") or (states.get(node["id"]) or {}).get("state") != "stale":
             continue
-        kinds = [workspace_labels.KIND_LABELS.get(str(kind), str(kind)) for kind in node.get("stale_on") or []]
-        if kinds:
-            out[node["id"]] = "、".join(dict.fromkeys(kinds))
+        kinds = ((computed or {}).get(node["id"]) or {}).get("changed")
+        text = workspace_labels.kinds_text(node.get("stale_on") or [] if kinds is None else kinds)
+        if text:
+            out[node["id"]] = text
     return out
 
 
@@ -340,6 +342,7 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     from . import node_kinds
 
     script_runs = node_kinds.last_runs(root)
+    stale_upstream = _stale_upstream(flow, states, states)
     # F8 不再分段：蓝图草案不用确认，资料分析做完就是做完，不再停在「等你确认」
     nodes = []
     for node in flow.get("nodes") or []:
@@ -359,7 +362,8 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
             "blocks": list(node.get("blocks") or []),
             "actions": [] if item.get("broken") else _actions(node, item["state"], hooks.get(node["id"], []),
                                                               blueprint_draft=blueprint_context["state"] == "draft",
-                                                              probes=probes, shown=getattr(state, "action_shown", None)),
+                                                              probes=probes, shown=getattr(state, "action_shown", None),
+                                                              cause=stale_upstream.get(node["id"], "")),
             "hooks": [{key: hook[key] for key in ("id", "title", "when", "command", "pack")}
                       for hook in hooks.get(node["id"], [])],
             "plugin": None if node.get("pack", "core") == "core" else _plugin_ref(node),
@@ -404,7 +408,7 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     suggest_context = {"stage": suggest_stage, "probes": suggest_probes, "changeset": changeset, "blueprint": blueprint_context,
                        "slice_next": (sliced or {}).get("slice_next"),
                        "slice_stale": (sliced or {}).get("slice_stale") or [],
-                       "stale_upstream": _stale_upstream(flow, simple_states),
+                       "stale_upstream": _stale_upstream(flow, simple_states, states),
                        "confine_active": _confine_active(flow, root),
                        **_session_context(root.name, conversation_id, root, flow, interrupted_exec),
                        **_run_context(root.name), **extra}
@@ -490,7 +494,7 @@ def _hooks_by_node(flow: dict) -> dict[str, list[dict]]:
 
 
 def _actions(node: dict, state: str, hooks: list[dict] | None = None, *, blueprint_draft: bool = False,
-             probes: dict | None = None, shown=None) -> list[dict]:
+             probes: dict | None = None, shown=None, cause: str = "") -> list[dict]:
     actions = [
         {"kind": "start", "label": action["label"], "target": action.get("command") or action["page"],
          **({"verify": True} if action.get("verify") else {})}
@@ -504,7 +508,9 @@ def _actions(node: dict, state: str, hooks: list[dict] | None = None, *, bluepri
              for hook in hooks or [] if hook.get("when") != "before"]
     actions = before + actions + after
     if state == "stale" and actions and actions[0]["target"].startswith("/"):
-        actions = [{**actions[0], "kind": "refresh", "label": f"刷新「{node['title']}」"}, *actions]
+        # 和建议条同一个说法：「对象有变化，刷新校验」
+        actions = [{**actions[0], "kind": "refresh",
+                    "label": f"{cause}有变化，刷新{node['title']}" if cause else f"刷新{node['title']}"}, *actions]
     if node["id"] == "core.research" and blueprint_draft:
         actions = [{"kind": "confirm", "label": "去确认", "target": "wb-blueprint"}, *actions]
     if node.get("optional"):

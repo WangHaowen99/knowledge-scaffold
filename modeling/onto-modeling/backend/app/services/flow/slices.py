@@ -147,6 +147,20 @@ class _Inputs:
         return hashlib.sha256("".join(f"{line}\n" for line in selected).encode("utf-8")).hexdigest()[:16]
 
 
+def _kind_fps(inputs: "_Inputs", item: dict, step: dict) -> dict[str, str]:
+    """这一步上游按类别分开的指纹：过期时说得出是哪几类变了。"""
+    return {str(kind): inputs.fingerprint(item, {**step, "stale_on": [kind]}) for kind in step.get("stale_on") or []}
+
+
+def _changed(inputs: "_Inputs", item: dict, step: dict, record: dict | None) -> list[str]:
+    saved = (record or {}).get("kinds")
+    kinds = [str(kind) for kind in step.get("stale_on") or []]
+    if not isinstance(saved, dict):
+        return kinds
+    now = _kind_fps(inputs, item, step)
+    return [kind for kind in kinds if saved.get(kind) != now.get(kind)]
+
+
 def _running(project_id: str, node_id: str) -> set[tuple[str, str]]:
     from ..session_host import exec_records
 
@@ -210,7 +224,7 @@ def _step_state(inputs: _Inputs, item: dict, step: dict, stored: dict, cells: di
     if inputs.present(item, step) or (record and record.get("merged")):
         fingerprint = inputs.fingerprint(item, step)
         if record is None:
-            records[step["id"]] = {"fp": fingerprint, "at": now}
+            records[step["id"]] = {"fp": fingerprint, "kinds": _kind_fps(inputs, item, step), "at": now}
             return "confirmed", True
         if record.get("fp") is not None and record.get("fp") != fingerprint:
             return "stale", False
@@ -302,7 +316,7 @@ def _next_step(inputs: _Inputs, summaries: list[dict]) -> dict | None:
 
 
 def _stale_steps(inputs: _Inputs, summaries: list[dict]) -> list[dict]:
-    """过期的那几段那几步（建议条「刷新「段名 · 步骤名」」）：按段、按步骤的顺序；upstream 是这一步上游的说法。"""
+    """过期的那几段那几步（建议条「对象有变化，刷新操作」）：按段、按步骤的顺序；upstream 是确认之后变了的那几类的说法。"""
     from .. import workspace_labels
 
     by_id = {item["id"]: item for item in inputs.slices}
@@ -311,15 +325,14 @@ def _stale_steps(inputs: _Inputs, summaries: list[dict]) -> list[dict]:
         for step in inputs.steps:
             if summary["stages"].get(step["id"]) != "stale" or not step.get("command"):
                 continue
-            upstream = []
-            for kind in step.get("stale_on") or []:
-                owner = next((other for other in inputs.steps if kind in (other.get("kinds") or [])), None)
-                upstream.append(owner["label"] if owner else workspace_labels.KIND_LABELS.get(str(kind), str(kind)))
+            names = {str(kind): other["label"] for other in inputs.steps for kind in other.get("kinds") or []}
+            kinds = (summary.get("_changed") or {}).get(step["id"])
+            upstream = workspace_labels.kinds_text(step.get("stale_on") or [] if kinds is None else kinds, names)
             item = by_id[summary["id"]]
             out.append({"slice_id": item["id"], "slice_name": item["name"], "step": step["id"],
                         "step_label": step["label"], "label": step.get("action") or step["label"],
                         "command": step["command"], "sliced": inputs.sliced,
-                        "upstream": "、".join(dict.fromkeys(upstream))})
+                        "upstream": upstream})
     return out
 
 
@@ -351,6 +364,9 @@ def compute(root: Path, flow: dict, *, doc: dict | None, project_id: str | None 
             summary = _summary(inputs, item, ordered)
             summary["_fps"] = {step["id"]: inputs.fingerprint(item, step) for step in inputs.steps
                                if ordered.get(step["id"]) == "stale"}
+            records = (stored.get("slices") or {}).get(item["id"]) or {}
+            summary["_changed"] = {step["id"]: _changed(inputs, item, step, records.get(step["id"]))
+                                   for step in inputs.steps if ordered.get(step["id"]) == "stale"}
             summaries.append(summary)
         if changed and persist:
             node_state.save(root, stored)
@@ -405,7 +421,8 @@ def confirm(root: Path, flow: dict, pairs: list, *, doc: dict | None, needs_revi
             step = steps.get(step_id)
             if item is None or step is None:
                 continue
-            record = {"fp": inputs.fingerprint(item, step), "at": time.time(), "merged": True}
+            record = {"fp": inputs.fingerprint(item, step), "kinds": _kind_fps(inputs, item, step), "at": time.time(),
+                      "merged": True}
             if needs_review:
                 record["needs_review"] = needs_review
             stored.setdefault("slices", {}).setdefault(slice_id, {})[step_id] = record

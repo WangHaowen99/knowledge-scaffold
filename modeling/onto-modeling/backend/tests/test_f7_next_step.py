@@ -251,29 +251,32 @@ def test_flow_rules_in_order(api):
     draft = _suggest(root, _states(root, core_research="confirmed", core_model="not_ready"),
                      {"blueprint": {"state": "draft"}, "slice_next": FULL_NEXT})
     assert draft["primary"]["label"] == "提取对象"
-    # 7：过期的步骤，按钮写清哪一段哪一步，说明行写上游
+    # 7：过期的步骤，按钮写清哪类变了、刷新哪一段哪一步（不再另起说明行）
     stale_step = {"slice_id": "s1", "slice_name": "补货", "step": "rule", "step_label": "规则", "label": "提取规则",
                   "command": "/ontology-extract-rule-metric", "sliced": True, "upstream": "对象、操作"}
     second = {**stale_step, "slice_id": "s2", "slice_name": "退货"}
-    # 规则是可选的补抽：后面的校验跑过或能跑（这里还没跑过）就交给校验，不推补抽（端到端实测：规则与指标提取补了回链，
-    # 「规则」过期后建议条推的正是刚跑完的同一条命令）；校验还不能跑时照旧推刷新
-    deferred = _suggest(root, _states(root, core_model="stale", core_validate="ready"),
-                        {"blueprint": {"state": "confirmed"}, "slice_stale": [stale_step, second]})
-    assert not any(item["id"].startswith("refresh:") for item in items(deferred))
-    stale = _suggest(root, _states(root, core_model="stale", core_validate="not_ready"),
+    # 规则是可选的补抽：后面的校验还会跑（跑过、能跑、建模没做完还不能跑）就交给校验，不推补抽（端到端实测：规则与指标
+    # 提取补了回链，「规则」过期后建议条推的正是刚跑完的同一条命令）；没有能接手的核对节点时照旧推刷新
+    for later in ("ready", "not_ready"):
+        deferred = _suggest(root, _states(root, core_model="stale", core_validate=later),
+                            {"blueprint": {"state": "confirmed"}, "slice_stale": [stale_step, second]})
+        assert not any(item["id"].startswith("refresh:") for item in items(deferred))
+    stale = _suggest(root, _states(root, core_model="stale", core_validate="skipped"),
                      {"blueprint": {"state": "confirmed"}, "slice_stale": [stale_step, second]})
-    assert [item["label"] for item in items(stale)] == ["刷新「补货 · 规则」", "刷新「退货 · 规则」"]
+    assert [item["label"] for item in items(stale)] == ["对象、操作有变化，刷新「补货 · 规则」", "对象、操作有变化，刷新「退货 · 规则」"]
     assert stale["primary"]["action"] == {"type": "send", "text": "", "command": "/ontology-extract-rule-metric",
                                           "args": {"slice": "s1"}}
-    assert stale["note"] == "上游「对象、操作」改过"
+    assert stale["note"] is None
     # 必经的步骤（操作）过期、校验没跑过：照旧推刷新（新增对象可能要补提取操作，校验补不出来）
     op_step = {**stale_step, "step": "operation", "step_label": "操作", "label": "提取操作",
                "command": "/ontology-extract-operation", "upstream": "对象"}
     required = _suggest(root, _states(root, core_model="stale", core_validate="ready"),
                         {"blueprint": {"state": "confirmed"}, "slice_stale": [op_step]})
-    assert items(required)[0]["label"] == "刷新「补货 · 操作」"
+    assert items(required)[0]["label"] == "对象有变化，刷新「补货 · 操作」"
     whole = _suggest(root, _states(root, core_validate="stale"), {"stale_upstream": {"core.validate": "对象、操作"}})
-    assert whole["primary"]["label"].startswith("刷新「") and whole["note"] == "上游「对象、操作」改过"
+    assert whole["primary"]["label"] == "对象、操作有变化，刷新校验" and whole["note"] is None
+    unknown = _suggest(root, _states(root, core_validate="stale"), {})
+    assert unknown["primary"]["label"] == "刷新校验"  # 说不清哪类变了（老记录）时只写刷新什么
     # 7 不推上游：后面已确认的校验能核对并修复同一批改动（stale_on 盖住、写入范围盖住）。校验的修复改了对象、校验已确认 →
     # 不推重新提取操作，主线往下走；资料变了（校验不看资料）照旧推刷新建模；校验也过期（改动在校验之后）时两个都推
     op_step = {"slice_id": "all", "slice_name": "全部", "step": "operation", "step_label": "操作",

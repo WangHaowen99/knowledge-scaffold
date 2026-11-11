@@ -109,7 +109,7 @@ def test_stale_when_upstream_fingerprint_changes(env):
              if item["id"].startswith("refresh:core.model")]
     assert stale and stale[0]["priority"] == 2
     assert stale[0]["action"]["command"] == "/ontology-extract-operation"  # 刷新过期的那一步
-    assert stale[0]["label"] == "刷新「操作」" and built["suggestions"]["note"] == "上游「对象」改过"  # F7：写清哪一步
+    assert stale[0]["label"] == "对象有变化，刷新操作" and built["suggestions"]["note"] is None  # 写清哪类变了、刷新哪一步
     # 重新跑过（这一步的变更集确认生效）：按新的上游重记基线
     from app.services.flow import slices
 

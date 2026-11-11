@@ -226,7 +226,7 @@ def next_step_lines(flow: dict, stage: str) -> list:
 
 SUGGESTIONS_MAX = 3
 # 建议条判定的版本（F7 起按规则表从上往下判、带 check 与 note）：后端只用支持这一版的 flow_state
-SUGGEST_RULES = 5
+SUGGEST_RULES = 6
 
 
 def _item(sid: str, label: str, action: dict, *, reason: str, priority: int, primary: bool = False,
@@ -304,8 +304,9 @@ def _outputs(node: dict) -> list:
             [*(node.get('produces') or []), *(node.get('writes') or [])]]
 
 
-# 可选的补抽（规则）过期时，后面的核对节点只要跑过或能跑就交给它：补抽不是正确性必需的，核对会查出缺的
-LENIENT_STATES = ('confirmed', 'stale', 'ready', 'running', 'pending_confirm')
+# 可选的步骤（规则补抽、指标）过期时，后面的核对节点只要还会跑（没跳过）就交给它：可选步骤不是正确性必需的，
+# 核对会查出缺的；建模还没做完（核对节点 not_ready）时也不插到主线前面
+LENIENT_STATES = ('confirmed', 'stale', 'ready', 'running', 'pending_confirm', 'not_ready', 'blocked')
 
 
 def _checked_downstream(node: dict, stale_on: list, nodes: list, state_of: dict, states=('confirmed',)) -> bool:
@@ -335,37 +336,53 @@ def _step_optional(node: dict, step_id) -> bool:
     return any(step.get('optional') for step in node.get('steps') or [] if step.get('id') == step_id)
 
 
+def refresh_label(cause: str, title: str) -> str:
+    """过期步骤的按钮：「对象有变化，刷新校验」（cause 是确认之后变了的那几类）；说不清哪类变了时只写「刷新校验」。"""
+    return f"{cause}有变化，刷新{title}" if cause else f"刷新{title}"
+
+
+REFRESH_REASON = '按改动后的内容重新做这一步'
+
+
 def _stale_items(nodes: list, state_of: dict, context: dict) -> list:
-    """7. 过期的步骤：刷新。按段的节点一段一步地列（按钮写清哪一段哪一步），其余节点整个刷新。
+    """7. 过期的步骤：刷新。按段的节点一段一步地列（按钮写清哪一段哪一步），其余节点整个刷新；必经的排在可选的前面。
+
+    可选的（规则补抽、指标这类旁支）过期时，后面的核对节点（校验）还会跑就交给它，不单独推：可选步骤不是
+    正确性必需的，校验会查出缺的；单独推还会和建模来回兜圈子——指标补对象的关联让「操作」过期，重抽操作又让
+    指标过期（ADR-0090）。
 
     范围限定生效时（增量构建的一轮进行中，ADR-0085）不出：改动的传播由那一轮的核对节点处理，整段重新提取
     会去写范围外的条目、被守卫拦下。"""
     if context.get('confine_active'):
         return []
-    out = []
+    required, optional = [], []
     upstream = context.get('stale_upstream') or {}
     for node in nodes:
         if state_of.get(node['id']) != 'stale':
             continue
         if node.get('per_slice'):
             for step in context.get('slice_stale') or []:
-                states = LENIENT_STATES if _step_optional(node, step.get('step')) else ('confirmed',)
+                lenient = _step_optional(node, step.get('step'))
+                states = LENIENT_STATES if lenient else ('confirmed',)
                 if _checked_downstream(node, _step_stale_on(node, step.get('step')), nodes, state_of, states):
                     continue
-                where = f"{step['slice_name']} · {step['step_label']}" if step.get('sliced') else step['step_label']
-                reason = f"上游「{step['upstream']}」改过" if step.get('upstream') else '上游改过，这一步要刷新'
-                out.append(_item(f"refresh:{node['id']}:{step.get('slice_id')}:{step['step']}", f"刷新「{where}」",
-                                 _slice_step(step), reason=reason, priority=2, icon='refresh'))
+                where = f"「{step['slice_name']} · {step['step_label']}」" if step.get('sliced') else step['step_label']
+                (optional if lenient else required).append(
+                    _item(f"refresh:{node['id']}:{step.get('slice_id')}:{step['step']}",
+                          refresh_label(step.get('upstream') or '', where), _slice_step(step),
+                          reason=REFRESH_REASON, priority=2, icon='refresh'))
             continue
-        if _checked_downstream(node, list(node.get('stale_on') or []), nodes, state_of):
+        lenient = bool(node.get('optional'))
+        states = LENIENT_STATES if lenient else ('confirmed',)
+        if _checked_downstream(node, list(node.get('stale_on') or []), nodes, state_of, states):
             continue
         entry = (node.get('entry') or {}).get('command') or next(
             (action['command'] for action in _node_actions(node, probes=context.get('probes')) if action.get('command')), None)
         if entry:
-            reason = f"上游「{upstream[node['id']]}」改过" if upstream.get(node['id']) else '上游改过，这一步要刷新'
-            out.append(_item(f"refresh:{node['id']}", f"刷新「{node['title']}」", _send(entry),
-                             reason=reason, priority=2, icon='refresh'))
-    return out
+            (optional if lenient else required).append(
+                _item(f"refresh:{node['id']}", refresh_label(upstream.get(node['id']) or '', node['title']),
+                      _send(entry), reason=REFRESH_REASON, priority=2, icon='refresh'))
+    return required + optional
 
 
 def _check_items(nodes: list, state_of: dict, context: dict) -> list:
@@ -554,7 +571,8 @@ def suggest(flow: dict, states: dict, context: dict | None = None, check=None) -
                 'note': f"「{label}」在等你回复上面的问题" if label else '助手在等你回复上面的问题'}
     for rule, found in rules:
         if found:
-            return _shaped('normal', found, rule == 7)
+            # 过期那条按钮上已经写了哪类变了，不再另起一行说明
+            return _shaped('normal', found, False)
     return _shaped('normal', [], False)
 
 

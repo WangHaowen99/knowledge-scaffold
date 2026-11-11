@@ -27,6 +27,13 @@ KIND_LABELS = {**ENTRY_LABELS, "research": "资料分析", "mock": "模拟数据
                "solver": "求解契约", "knowledge": "知识"}
 
 
+def kinds_text(kinds, names: dict | None = None) -> str:
+    """变了的产物类别 → 「对象、操作」；多于两类写「对象、操作等」，建议条的按钮放得下。names 优先（建模步骤的叫法）。"""
+    labels = list(dict.fromkeys((names or {}).get(str(kind)) or KIND_LABELS.get(str(kind), str(kind))
+                                for kind in kinds))
+    return "、".join(labels[:2]) + ("等" if len(labels) > 2 else "")
+
+
 def material_source(rel: str) -> str:
     """文本版 → 原资料路径（resource/text/others/合同.pdf.md → resource/others/合同.pdf）；其余原样。"""
     rel = str(rel or "").strip("/")
