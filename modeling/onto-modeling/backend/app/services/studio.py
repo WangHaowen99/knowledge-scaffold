@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -31,6 +33,11 @@ KIND_DIRS = (
     ("metric", "ontology/metric", "*.md"),
     ("script", "ontology/scripts", "*.py"),
 )
+
+_UPDATE_GIT_COMMANDS = {
+    ("log", "--format=%x00%ct", "--name-status", "-M100%", "--", "ontology/"),
+    ("status", "--porcelain", "-z", "--untracked-files=all", "--", "ontology/"),
+}
 
 
 def _docs(root: Path) -> list[dict]:
@@ -296,12 +303,45 @@ def updates(root: Path) -> dict[str, int]:
 
 
 def _git_output(root: Path, *args: str) -> str:
-    completed = subprocess.run(
-        ["git", "-c", "core.quotepath=false", *args],
+    if args not in _UPDATE_GIT_COMMANDS:
+        raise ValueError("Only Studio update history and status queries are allowed")
+    executable = shutil.which("git")
+    if executable is None:
+        raise FileNotFoundError("Git executable is unavailable")
+    executable = Path(executable).resolve(strict=True)
+    if executable.is_relative_to(root.resolve()):
+        raise OSError("Git executable must be outside the project workspace")
+    # 不继承宿主 GIT_DIR、GIT_WORK_TREE 或命令配置注入；保留配置目录发现，
+    # 避免丢失 core.autocrlf 等文本转换设置，把已提交文件误判为工作区修改。
+    config_keys = ("SYSTEMROOT", "WINDIR", "HOME", "USERPROFILE", "XDG_CONFIG_HOME")
+    env = {key: os.environ[key] for key in config_keys if key in os.environ}
+    env.update(
+        {
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+        }
+    )
+    # 安全审查：Git 绝对路径位于工作区外；参数必须完整匹配上述两条只读命令，
+    # 不接收文档/请求内容；argv 不经 shell，关闭 pager、fsmonitor 与签名查询并限制超时。
+    completed = subprocess.run(  # NOSONAR(S4721)
+        [
+            str(executable),
+            "--no-pager",
+            "-c",
+            "core.quotepath=false",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "log.showSignature=false",
+            *args,
+        ],
         cwd=root,
+        env=env,
         capture_output=True,
         encoding="utf-8",
         errors="replace",
+        shell=False,
         timeout=30,
         check=True,
     )

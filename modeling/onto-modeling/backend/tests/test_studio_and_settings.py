@@ -1,9 +1,13 @@
 """Studio 解析、MCP 配置校验与错误脱敏的单元测试。"""
 
+import os
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 
+from artifact_process_policy import child_environment
 from app.services import studio
 from app.services.agent_sessions import _looks_like_raw_error
 from app.services.mcp_settings import McpConfigError, validate
@@ -688,22 +692,77 @@ def test_invalid_name_metadata_does_not_break_studio(tmp_path, raw):
     assert studio.element(tmp_path, "ontology/operation/synthetic_plain.md")["label"] == "synthetic_plain"
 
 
+def _studio_fixture_git(root: Path) -> tuple[str, dict[str, str]]:
+    executable = shutil.which("git")
+    if executable is None:
+        raise RuntimeError("Git is required for Studio integration tests")
+    executable = Path(executable).resolve(strict=True)
+    if executable.is_relative_to(root.resolve()):
+        raise ValueError("Fixture Git must be installed outside the temporary workspace")
+    return str(executable), child_environment(root)
+
+
+@pytest.fixture()
+def studio_git_root(tmp_path: Path) -> Path:
+    executable, env = _studio_fixture_git(tmp_path)
+    commands = (
+        ("init", "-q"),
+        ("config", "user.name", "operator_a"),
+        ("config", "user.email", "user@example.com"),
+    )
+    for command in commands:
+        # 安全审查：固定初始化/合成身份参数、工作区外的 Git 绝对路径；仅操作
+        # tmp_path，使用隔离环境，不经 shell，禁用宿主 Git hooks/配置并限制超时。
+        subprocess.run(  # NOSONAR(S4721)
+            [executable, *command],
+            cwd=tmp_path,
+            env=env,
+            check=True,
+            capture_output=True,
+            shell=False,
+            timeout=30,
+        )
+    return tmp_path
+
+
 def _commit_at(root: Path, timestamp: int, message: str) -> None:
-    import os
-    import subprocess
+    if message not in {"first", "second", "rename", "rename again"}:
+        raise ValueError("Commit message is outside the synthetic fixture allowlist")
+    if not isinstance(timestamp, int) or timestamp <= 0:
+        raise ValueError("Fixture timestamp must be a positive integer")
+    executable, env = _studio_fixture_git(root)
+    env.update(
+        {
+            "GIT_AUTHOR_DATE": f"{timestamp} +0000",
+            "GIT_COMMITTER_DATE": f"{timestamp} +0000",
+        }
+    )
+    # 安全审查：固定 add 参数只暂存临时合成仓库；隔离宿主配置与 hooks，
+    # Git 使用工作区外绝对路径，argv 不经 shell，限制 30 秒超时。
+    subprocess.run(  # NOSONAR(S4721)
+        [executable, "add", "-A"],
+        cwd=root,
+        env=env,
+        check=True,
+        capture_output=True,
+        shell=False,
+        timeout=30,
+    )
+    # 安全审查：提交消息是上述合成白名单，时间为已校验整数；其余参数固定，
+    # 仅作用于临时仓库，隔离环境并关闭 shell，限制 30 秒超时。
+    subprocess.run(  # NOSONAR(S4721)
+        [executable, "commit", "-q", "-m", message],
+        cwd=root,
+        env=env,
+        check=True,
+        capture_output=True,
+        shell=False,
+        timeout=30,
+    )
 
-    env = {**os.environ, "GIT_AUTHOR_DATE": f"{timestamp} +0000", "GIT_COMMITTER_DATE": f"{timestamp} +0000"}
-    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", message], cwd=root, check=True, env=env)
 
-
-def test_studio_updates_use_commit_time_and_worktree_mtime(tmp_path: Path):
-    import os
-    import subprocess
-
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "synthetic"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "synthetic@example.com"], cwd=tmp_path, check=True)
+def test_studio_updates_use_commit_time_and_worktree_mtime(studio_git_root: Path):
+    tmp_path = studio_git_root
     object_dir = tmp_path / "ontology" / "object"
     rule_dir = tmp_path / "ontology" / "rule"
     object_dir.mkdir(parents=True)
@@ -730,13 +789,9 @@ def test_studio_updates_use_commit_time_and_worktree_mtime(tmp_path: Path):
     }
 
 
-def test_studio_updates_ignore_pure_renames(tmp_path: Path):
+def test_studio_updates_ignore_pure_renames(studio_git_root: Path):
     """纯改名（内容不变）沿用改名前的时间，改名同时改了内容才算更新。"""
-    import subprocess
-
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "synthetic"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "synthetic@example.com"], cwd=tmp_path, check=True)
+    tmp_path = studio_git_root
     rule_dir = tmp_path / "ontology" / "rule"
     rule_dir.mkdir(parents=True)
     body = "# 规则描述\n合成规则，内容足够长以便识别重命名。\n"

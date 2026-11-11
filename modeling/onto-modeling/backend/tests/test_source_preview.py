@@ -10,9 +10,11 @@ from app import config
 from app.main import app
 from app.routers import projects
 from app.services import auth, source_preview, studio
+from app.services.toolkit import source_extract
 from app.services.workspace import WorkspaceManager
 
-W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+# OOXML 命名空间是格式标识符，不是网络请求；复用抽取器常量，保持测试与标准一致。
+W = source_extract.W.removeprefix("{").removesuffix("}")
 
 
 def _paragraph(text: str) -> str:
