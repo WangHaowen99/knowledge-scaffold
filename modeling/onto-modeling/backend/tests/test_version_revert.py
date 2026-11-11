@@ -365,6 +365,23 @@ def test_resource_delete_can_be_reverted(manager, project):
     assert manager.resource_directives(project_id)["resource/others/source.md"]["purpose"] == "goal"
 
 
+def test_resource_directive_version_can_be_previewed_and_reverted(manager, project, idle):
+    project_id, root = project
+    _write(root, "resource/others/source.md", "source")
+    _commit(root, "test: add source")
+    target = manager.versions(project_id)[0]["n"]
+    manager.set_resource_directive(project_id, "resource/others/source.md", "goal")
+    assert version_revert.blockers(manager, project_id) == []
+
+    preview = version_revert.preview_by_version(manager, project_id, target, "synthetic-token", "operator_a")
+    assert preview["ready"] is True and preview["changes"]["deleted"] == ["resource/materials.json"]
+    asyncio.run(version_revert.apply_preview(manager, project_id, preview["preview_id"], "synthetic-token",
+                                             "operator_a"))
+    assert not (root / "resource/materials.json").exists()
+    assert (root / "resource/others/source.md").exists()
+    assert manager.resource_directives(project_id) == {}
+
+
 # ---- 挡住回退的情况与会话处理 ----
 
 
