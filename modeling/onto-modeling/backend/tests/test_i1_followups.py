@@ -51,7 +51,7 @@ def test_assistant_citations_become_anchors():
     assert timeline.split_citations("没有出处") == ("没有出处", [])
 
 
-def test_release_updated_on_publish(manager, monkeypatch):
+def test_release_updated_on_publish(manager, monkeypatch, hub_login):
     """EP-19：发布之后项目流发 release.updated（发布页按它实时合并记录）。"""
     from fastapi.testclient import TestClient
 
@@ -62,10 +62,10 @@ def test_release_updated_on_publish(manager, monkeypatch):
     from tests.test_release_publish import rich_project
 
     monkeypatch.setattr(deps, "workspaces", manager)
-    monkeypatch.setattr(auth, "ENABLED", False)
     streams.reset_all()
     pid, _root = rich_project(manager)
-    response = TestClient(app).post(f"/api/v1/projects/{pid}/releases", json={})
+    manager._update_meta(pid, owner="operator_a")
+    response = TestClient(app, headers=hub_login).post(f"/api/v1/projects/{pid}/releases", json={})
     assert response.status_code == 201
     events = buffered(pid, "release.updated")
     assert events and events[-1]["data"]["release"]["version"] == response.json()["version"]

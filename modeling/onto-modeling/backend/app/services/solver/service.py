@@ -7,10 +7,9 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from .. import solver_contract, solver_validation
+from .. import solver_contract
 from ..publish.layout import operation_stems, package_scripts
 from ..workspace.errors import WorkspaceError
-from ..workspace.gitops import _head_commit
 
 CHECK_LIMIT = 50
 
@@ -26,14 +25,15 @@ def solver_release_status(manager, project_id: str) -> dict:
     root = manager.project_root(project_id)
     return release_status_at(root, root)
 
-def release_status_at(source_root: Path, state_root: Path) -> dict:
-    """source_root 是契约所在的树（发布时为提交导出的只读树），修订号从它算；
-    验证回执在项目工作区的 .ontology-state（不进 git），按这个修订号到 state_root 里找。"""
+def release_status_at(source_root: Path, state_root: Path | None = None) -> dict:
+    """source_root 是契约所在的树（发布时为提交导出的只读树），修订号从它算。
+
+    端到端验证在发布后的独立评测里做（ADR-0091），不拦发布：requires_validation_after_publish
+    提示发布时要确认求解能力尚未验证。state_root 只为旧调用方保留，不再使用。
+    """
     check = solver_check_at(source_root)
     if not check.enabled:
         return {"enabled": False}
-    root = state_root
-    gate = solver_validation.gate(root, check.revision) if check.needs_validation else []
     limit = CHECK_LIMIT
     return {
         "enabled": True,
@@ -50,9 +50,8 @@ def release_status_at(source_root: Path, state_root: Path) -> dict:
             for item in check.contracts
         ],
         "findings": check.findings[:limit],
-        "gate": gate,
-        "blocking": len(check.findings) + len(gate),
-        "validation": solver_validation.latest(root, check.revision),
+        "blocking": len(check.findings),
+        "requires_validation_after_publish": check.needs_validation,
         "truncated": len(check.findings) > limit,
     }
 
@@ -85,8 +84,7 @@ def solver_contract_view(manager, project_id: str) -> dict:
             ],
         },
         "findings": check.findings,
-        "gate": status.get("gate") or [],
-        "validation": status.get("validation"),
+        "requires_validation_after_publish": bool(status.get("requires_validation_after_publish")),
         "available_operations": operation_stems(root),
         "evaluators": sorted(str(path.relative_to(root)) for path in scripts.values()),
         # 模板参数 evaluator_path 填包内路径（scripts/…），面板按工作区文件名展示
@@ -166,22 +164,11 @@ def save_solver_contract(
         commit = tx.commit(f"web: 保存求解契约{note}{who}").commit
     return {**solver_contract_view(manager, project_id), "commit": commit}
 
-def ensure_publishable(source_root: Path, state_root: Path) -> None:
-    status = release_status_at(source_root, state_root)
-    blocking = (status.get("findings") or []) + (status.get("gate") or [])
+def ensure_publishable(source_root: Path, state_root: Path | None = None) -> None:
+    """发布只受求解契约静态检查约束；端到端验证在发布后的独立评测里做。"""
+    blocking = release_status_at(source_root).get("findings") or []
     if blocking:
         raise WorkspaceError(
             "求解契约未通过发布检查：" + "；".join(item["message"] for item in blocking[:3]),
             code=blocking[0]["code"],
         )
-
-def solver_receipt_targets(manager, project_id: str) -> dict[str, solver_contract.SolverCheck]:
-    """回执可以绑定的求解契约修订：HEAD 提交的（发布读它）与工作区当前的（面板读它），
-    只收需要端到端验证的；两者通常相同，工作区有未提交的契约改动时才不同。"""
-    from ..publish.tree import release_tree
-
-    root = manager.project_root(project_id)
-    checks = [solver_check_at(root)]
-    with release_tree(root, _head_commit(root)) as tree:
-        checks.append(solver_check_at(tree))
-    return {check.revision: check for check in checks if check.needs_validation and check.revision}

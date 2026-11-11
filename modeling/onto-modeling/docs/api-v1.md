@@ -50,7 +50,7 @@
    - `/api/onto-mcp/{project_id}/{toolset}/{mcp|sse|sse/messages}`：外部 MCP 客户端已经配好的地址，行为与 `/api/v1/onto-mcp/...` 完全相同，不加 Sunset 头；
    - `/drawio/*`：drawio 静态页，不属于 API。
 6. 免鉴权前缀同步更新为：`/api/v1/auth/`、`/api/v1/client-config`、`/api/health`、`/api/v1/onto-mcp/`、`/api/onto-mcp/`。
-   - 带 `onto_svc_` 前缀令牌的请求，鉴权中间件只放行到服务令牌接口：`X-01`、`PB-05`、`PB-06`、`PB-07`、`X-04`、`X-05`，由处理器校验权限范围；用在其他接口返回 `401 unauthenticated`。
+   - 带 `onto_svc_` 前缀令牌的请求，鉴权中间件只放行到服务令牌接口：`PB-05`、`PB-06`、`PB-07`、`X-05`，由处理器校验权限范围；用在其他接口返回 `401 unauthenticated`（`X-01`、`X-04` 已随 ADR-0091 退役）。
 
 ### 1.3 鉴权
 
@@ -85,15 +85,16 @@
 **MCP token。** 只用于 `/api/v1/onto-mcp/*` 传输接口（M-05～M-07）。
 
 - 格式 `onto_pat_<urlsafe>`，只存 SHA-256 摘要，明文只在签发响应里出现一次。
-- 权限范围 `ontology.read`、`ontology.change.validate`、`ontology.change.apply`，新增 `evidence.read`（方案 E13）。
+- 权限范围 `ontology.read`、`ontology.change.validate`、`ontology.change.apply`，新增 `evidence.read`（方案 E13）、`project.version.revert`（版本列表、回退预览与回退）、`package.publish`（发布知识包版本，ADR-0091）。
+- 含 `package.publish` 的 token 要统一账号登录签发，只能给登录用户本人签：签发时在 Hub 登记委托（不保存登录令牌），吊销时一并撤销；Hub 登记失败则不签发（`401 MCP_HUB_IDENTITY_REQUIRED`、`403 MCP_HUB_IDENTITY_MISMATCH`）。
 - token 绑定项目和签发人；签发人不再是项目所有者时立即失效。
 
 **服务令牌**（三份契约用，方案第 6 章 #6）。
 
 - 格式 `onto_svc_<urlsafe>`，由管理员签发（X-06），与 MCP token 分开存放。
 - 携带方式：`Authorization: Bearer onto_svc_...`。
-- 权限范围：`releases.read`、`receipts.write`、`feedback.write`。可以限定到项目列表，也可以不限。
-- 只能调用 `X-01`、`PB-05`、`PB-06`、`PB-07`、`X-04`、`X-05`；用在别处返回 `401 unauthenticated`。
+- 权限范围：`releases.read`、`feedback.write`（`receipts.write` 随 X-04 退役）。可以限定到项目列表，也可以不限。
+- 只能调用 `PB-05`、`PB-06`、`PB-07`、`X-05`；用在别处返回 `401 unauthenticated`。
 
 ### 1.4 项目所有权
 
@@ -2717,13 +2718,11 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 请求：同 `SV-02`，忽略 `base_revision`。
 - 响应：`{rejected: Finding[], findings: Finding[], rendered: [{role: text}|null], evaluator: {kind: "declarative"|"script", constraints: int}|null}`。
 
-#### SV-04 验证回执
+#### SV-04 验证回执（已退役）
 
-`GET /api/v1/projects/{id}/solver/receipts` · 所有者 · 旧：`GET /api/projects/{id}/package/solver-validations/latest` · 审计：否 · 依据：㉕、第 11 章 · 页面：publish（门禁「求解契约回执」）、scripts
-
-- 查询参数：`revision?`（缺省当前修订）；分页。
-- 响应：`{revision, revision_no, latest: Receipt|null, items: Receipt[], gate: {status: "pass"|"required"|"stale"|"failed", finding: Finding|null}}`。
-- 写入回执的接口是 `X-04`（服务令牌）。
+ADR-0091：端到端验证在发布后的独立评测里做，onto 不再收回执。`GET /api/v1/projects/{id}/solver/receipts` 已删除，
+旧路径 `GET /api/projects/{id}/package/solver-validations/latest` 回 `410 endpoint_removed`。`SV-01` 的响应去掉
+`gate`、`receipt`，改带 `requires_validation_after_publish: bool`（启用了需要验证的求解契约时为 true，发布时要确认）。
 
 ---
 
@@ -3089,10 +3088,10 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 依据详设 5.6（门禁链）、⑱、第 11 章、方案 A8、A9。
 
-- 发布从主线版本标签出，变更集永远不发布。
+- 发布从主线提交出（只读树），变更集永远不发布。
 - 发布格式自动判定：启用了求解契约就发求解知识包（schema 0.2），否则发普通知识包（ontology-package v0.1），不再手选。
-- 发布版本号 `0.{n}.0`，`n` 是主线版本号，所以界面显示的 `v0.13` 与包版本一一对应（见 8.4）。
-- 同一提交重复发布得到逐字节相同的包。
+- 版本号由知识包 Hub 分配（`0.1.N`，ADR-0091），不再按主线计数；包根目录与 manifest `id` 是 Hub 包身份。
+  Hub 不可用时发布失败（`503 hub_unavailable`）。同一 `request_id` 重试得到同一个版本与同一份字节。
 
 #### PB-01 发布检查（门禁链）
 
@@ -3107,7 +3106,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   | `version_label` | string | — |
   | `package_name` | string | — |
   | `format` | string | `ontology\|solver`：自动判定 |
-  | `gates` | `GateResult[]` | 按顺序：数据绑定、求解契约回执、包声明的门禁（如合规检查）、证据出处检查、流程关卡 |
+  | `gates` | `GateResult[]` | 按顺序：数据绑定、求解契约（静态检查；`requires_acknowledgement` 为 true 时发布要确认未验证）、知识包结构（含 consumer 导入规则）、包声明的门禁（如合规检查）、证据出处检查、流程关卡 |
+  | `solver_revision` | string | 求解契约修订（没有求解契约时为空） |
   | `blocking_count` | int | — |
   | `binding` | object | `{issues: BindingIssue[], warnings: string[], tables: string[], table_count, objects, bound_objects, table_resources: string[]（没标 Schema 的表格资料）, truncated}` |
   | `degradable` | bool | 只有数据绑定不通过时为 true |
@@ -3131,12 +3131,18 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `POST /api/v1/projects/{id}/releases` · 所有者 · 旧：`GET /api/projects/{id}/export?scope=package`（旧接口用 GET 发布，改为 POST） · 审计：专项 `publish.release` · 依据：⑱、㉒、㉓、方案 A8 · 页面：publish（「发布为知识包」「发布」「降级发布」）
 
-- 请求：`{commit?: string（缺省主线最新）, degrade?: bool}`。
-  - `degrade=true` 表示忽略数据绑定、降级发布，其他门禁不放宽。
-- 流程：门禁 → 渲染 → 打 `release/0.{n}.0` 标签 → 写发布记录 → 附包清单。
-- 响应 `201`：`ReleaseRecord`。
+- 要统一账号登录（Hub 按登录用户授权）；鉴权关闭的本地模式返回 `401`。
+- 请求：`{commit?: string（缺省主线最新）, degrade?: bool, request_id?: string（幂等键，缺省每次新请求）, solver_unverified_acknowledged?: bool}`。
+  - `degrade=true` 表示忽略数据绑定、降级发布，其他门禁不放宽；
+  - 求解契约需要验证时要 `solver_unverified_acknowledged=true`，当前修订已在早先版本通过求解验证的除外。
+- 流程：门禁 → 冻结只读树 → Hub 预留版本号 → 渲染 → 上传、提交到 Hub → 本地留存、打 `release/<版本>` 标签 → 写发布记录。
+- 响应 `201`：`ReleaseRecord`，另带 `hub: {ontology_id, release_id, package_digest, committed_at}`；Hub 已提交而本地标签没写成时
+  为 `{project_id, version, local_record_pending: true, hub}`，后台恢复。
 - 错误：
-  - `gate_blocked`（`details.gates` 列出不通过的项）；
+  - `gate_blocked`（`details.gates` 列出不通过的项；consumer 导入规则不通过时 `details.reason=package_structure_invalid`）；
+  - `solver_validation_acknowledgement_required`（409）；
+  - `publish_preview_stale`（409，同一 `request_id` 的内容变了）；
+  - `hub_unavailable`（503）、`version_conflict`、`package_deleted`；
   - `invalid_commit`；
   - `project_archived`；
   - `maintenance_read_only`。
@@ -3145,8 +3151,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `GET /api/v1/projects/{id}/releases` · 所有者 · 旧：— · 审计：否 · 依据：第 11 章 ㉓ · 页面：publish（发布记录）
 
-- 分页。
-- 响应：`{items: ReleaseRecord[], next_cursor}`。
+- 分页。按发布时间从新到旧。
+- 响应：`{items: ReleaseRecord[], next_cursor}`。`ReleaseRecord.hub` 是 Hub 包身份 `{ontology_id, release_id, package_digest?}`，
+  旧版本地发布的记录为 null。
 
 #### PB-05 发布记录详情
 
@@ -3168,22 +3175,38 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 查询参数：`variant?`：`standard`（默认）或 `graph`。
   - `graph` 是图模式，给评测服务导入 Neo4j 用，由发布适配器按同一提交渲染，不另打标签。
 - 响应：`application/zip`。响应头带 `X-Package-Version`、`X-Package-Commit`、`X-Package-Format`、`X-Package-Variant`。
+- 读发布时留存的那份（与 Hub 上的字节相同）；留存缺失时，带登录令牌的请求从 Hub 下回缓存，服务令牌的请求按标签提交重新渲染（记 `backfilled`）。
 - 服务令牌下载时，在发布记录上记「已拉取」。
 - 错误：`release_not_found`、`invalid_argument`（变体不支持）。
+
+#### HB-01～HB-09 知识包 Hub
+
+ADR-0091。都要统一账号登录（`401 unauthenticated`），Hub 的错误原样透出（`hub_unavailable` 503、`not_found` 404 等）。
+
+| 编号 | 方法与路径 | 说明 |
+|---|---|---|
+| HB-01 | `GET /api/v1/hub/packages?offset&limit` | 本人可见的 Hub 包，每个包带最新版本 |
+| HB-02 | `GET /api/v1/hub/packages/{package_id}/releases?offset&limit` | 包的版本列表 |
+| HB-03 | `GET /api/v1/hub/packages/{package_id}/releases/{release_id}/download` | 下载，核对 Hub 给的摘要 |
+| HB-04 | `POST /api/v1/hub/imports` | 从 Hub 导入成新项目，请求 `{request_id, ontology_id, release_id, package_digest, name}`，同一 `request_id` 重试得到同一个项目；响应 `201` 项目元数据 |
+| HB-05 | `GET /api/v1/projects/{id}/hub/releases?offset&limit` | 项目关联的 Hub 包的全部版本（含别人发布的）；响应 `{items, releases, total, …}` |
+| HB-06 | `GET /api/v1/projects/{id}/hub/releases/{release_id}/download` | 下载项目关联包的某个版本 |
+| HB-07 | `GET /api/v1/projects/{id}/hub/resources/status`、`GET …/hub/resources?offset&limit` | 共享资料同步状态与 Hub 上的当前集合 |
+| HB-08 | `PUT /api/v1/projects/{id}/hub/resources` | 请求 `{paths: string[], confirm_shared: true}`：把选中的资料同步成 Hub 包的共享资料（整个集合替换），要先发布过 |
+| HB-09 | `GET /api/v1/projects/{id}/hub/resources/{file_id}/download` | 下载一份共享资料 |
+
+外部路径（评测服务调用，不进 `/api/v1`、不改名）：`GET /api/hub/package-projects?ontology_id=…`（1～20 个），用户令牌，
+返回 `{items: [{ontology_id, projects: string[≤5], total}]}`：当前用户可见、且关联到这些 Hub 包的建模项目名称。
 
 ---
 
 ### 3.21 三份契约（服务令牌）
 
-依据详设第 11 章、方案 A2、A7、第 6 章 #6。onto 不主动调用评测服务，评测服务用服务令牌来拉包、交回执、交反馈。
+依据详设第 11 章、方案 A2、A7、第 6 章 #6；ADR-0091 起正式版本由知识包 Hub 分发、求解验证在评测服务里做。
 
-#### X-01 发布列表（跨项目）
+#### X-01 发布列表（跨项目，已退役）
 
-`GET /api/v1/contract/releases` · 服务令牌 `releases.read` · 旧：—（现在是 onto 主动推包） · 审计：否 · 依据：㉓ · 页面：—
-
-- 查询参数：`since?: time`、`project_id?`；分页（默认 100，上限 200）。
-- 只返回令牌授权范围内的项目。
-- 响应：`{items: [{project_id, package_name, version, commit, format, released_at, degraded, manifest_url, download_url}], next_cursor}`。
+ADR-0091：评测服务、consumer 从 Hub 取正式版本。`GET /api/v1/contract/releases` 已删除。
 
 #### X-02 包清单（服务令牌）
 
@@ -3193,31 +3216,10 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 即 `PB-07`。服务令牌可调；每次下载在发布记录上写 `pulls`。
 
-#### X-04 提交验证回执
+#### X-04 提交验证回执（已退役）
 
-`POST /api/v1/projects/{id}/solver/receipts` · 服务令牌 `receipts.write` · 旧：`POST /api/projects/{id}/package/solver-validations`（旧接口由 onto 发起端到端验证，删除） · 审计：专项 `contract.receipt` · 依据：㉕、方案 A2 · 页面：—（结果显示在 publish、scripts）
-
-- 请求：
-
-  | 字段 | 类型 | 必填 | 说明 |
-  |---|---|---|---|
-  | `revision` | string | 是 | 求解契约修订号（`SV-01` 的 `revision`），修订号一变就要重新验证 |
-  | `release_version` | string | 否 | 所验证的发布版本 |
-  | `solver_keys` | string[] | 是 | — |
-  | `status` | string | 是 | `passed\|failed` |
-  | `authoritative` | bool | 是 | false 时不放行门禁 |
-  | `contract_digest` | string | 是 | — |
-  | `request_digest` | string | 是 | — |
-  | `result_digest` | string | 是 | — |
-  | `candidate_count` | int | 否 | — |
-  | `evidence` | object | 否 | `{package: {id, version}, cases: [...]}` |
-  | `error_code` | string | 否 | — |
-  | `message` | string | 否 | — |
-  | `completed_at` | time | 是 | — |
-  | `receipt_id` | string | 是 | 回执方的唯一 ID，用作幂等键 |
-
-- 响应 `201`：`Receipt`。门禁规则：当前修订最新回执 `passed` 且 `authoritative=true` 才放行。
-- 错误：`receipt_revision_unknown`、`invalid_argument`、`scope_forbidden`。
+ADR-0091：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包 `GET /api/v1/projects/{id}/solver/candidate` 已删除，
+服务令牌权限 `receipts.write` 不再签发。
 
 #### X-05 提交外部反馈
 
@@ -3232,7 +3234,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `GET /api/v1/admin/service-tokens`、`POST /api/v1/admin/service-tokens`、`DELETE /api/v1/admin/service-tokens/{token_id}` · admin · 旧：— · 审计：POST、DELETE 记 · 依据：方案第 6 章 #6 · 页面：—（设计稿没有画，见 8.2）
 
 - GET 响应：`{items: [{id, name, scopes, project_ids: string[]|null, created_at, created_by, expires_at, last_used_at}]}`。
-- POST 请求：`{name, scopes: ("releases.read"|"receipts.write"|"feedback.write")[], project_ids?: string[], expires_in_s?: int|null}`。
+- POST 请求：`{name, scopes: ("releases.read"|"feedback.write")[], project_ids?: string[], expires_in_s?: int|null}`。
   - 响应 `201`：`{token: "onto_svc_...", summary}`，明文只出现一次。
 - DELETE 响应 `204`。
 
@@ -3438,7 +3440,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `POST /api/v1/projects/{id}/mcp/tokens` · 所有者 · 旧：`POST /api/projects/{id}/modeling-mcp/tokens` · 审计：专项 `mcp.token.issue` · 依据：② · 页面：proj-settings（新建 Token 弹窗）
 
-- 请求：`{name: string 1–120, scopes: string[]（至少一个，取 ontology.read|ontology.change.validate|ontology.change.apply|evidence.read）, expires_in_s: int 300–2592000 | null（永不过期）}`。
+- 请求：`{name: string 1–120, scopes: string[]（至少一个，取 ontology.read|ontology.change.validate|ontology.change.apply|evidence.read|project.version.revert|package.publish）, expires_in_s: int 300–2592000 | null（永不过期）}`。
 - 响应 `201`：`{token: "onto_pat_...", summary: McpTokenSummary, client_config: {read, change, full}}`。`client_config` 已填入本次 token。明文只出现一次。
 - 管理员不能代所有者签发（方案 A11）。
 
@@ -4464,11 +4466,11 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `sources` | 业务系统数据源 | `EV-01`～`EV-12`、`PL-01`（去插件中心安装提供方） | — |
 | `snapshots` | 采集与快照 | `EV-12`、`EV-13`～`EV-22`、`EV-30`（联系管理员）、`S-20`（在对话里分析影响） | EP-13 |
 | `schema` | 证据浏览器 | `EV-18`（快照下拉）、`EV-23`～`EV-28` | — |
-| `publish` | 发布知识包 | `PB-01`～`PB-07`、`P-09`、`SV-04`、`FL-05`（合规检查「去运行」）、`RP-06`（修完重新检查）、`V-01`（版本下拉） | EP-19、EP-01 |
+| `publish` | 发布知识包 | `PB-01`～`PB-07`、`HB-05`～`HB-09`、`P-09`、`FL-05`（合规检查「去运行」）、`RP-06`（修完重新检查）、`V-01`（版本下拉） | EP-19、EP-01 |
 | `versions` | 版本历史与对比 | `V-01`～`V-08`、`F-06`、`F-03` | EP-05 |
 | `scenarios` | 场景模拟（插件） | `AR-01`、`AR-02`、`AR-03`、`AR-04`、`AR-05`、`AR-06`、`AR-07`、`AR-09`（类型 `trace.scenario`、`trace.mock`）、`S-20`（批量验证、交互模拟、补齐过期场景、按场景补生成、行内 ▶）、`S-19`、`CS-06`、`IN-01`（`pack=trace` 角标）、`PL-12` | EP-03、EP-06、EP-10 |
 | `knowledge` | 知识沉淀（插件） | `K-01`～`K-08`、`S-20`（在对话里复核）、`CS-06` | EP-23、EP-03 |
-| `scripts` | 代码生成与求解（插件） | `SC-01`、`SC-02`、`SC-03`、`SV-01`～`SV-04`、`ST-04`（脚本只读预览）、`S-20`（扫描、生成脚本、修复、重新生成、按模板重新生成）、`S-19`、`CS-06` | EP-03、EP-06、EP-10 |
+| `scripts` | 代码生成与求解（插件） | `SC-01`、`SC-02`、`SC-03`、`SV-01`～`SV-03`、`ST-04`（脚本只读预览）、`S-20`（扫描、生成脚本、修复、重新生成、按模板重新生成）、`S-19`、`CS-06` | EP-03、EP-06、EP-10 |
 | `proj-settings` | 项目设置 | `P-04`、`P-05`、`P-06`、`P-07`、`P-12`、`P-13`、`P-14`、`C-06`、`A-09`、`AB-01`、`AB-02`、`AB-03`、`AB-18`、`BP-01`（范围里的分段清单）、`EV-01`（生产库授权行）、`PL-05`～`PL-11`、`M-01`～`M-04` | EP-08、EP-20 |
 | `plugins` | 插件中心 | `PL-01`、`PL-03`、`PL-04`、`PL-06`、`PL-07`、`PL-19`（管理员） | EU-01 |
 | `plugin-detail` | 插件详情 | `PL-02`、`PL-03`、`PL-07`、`PL-09`、`PL-05` | — |
@@ -4523,9 +4525,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `GET /api/projects/{id}/package/solver-contract` | `SV-01` | 改写 |
 | `PUT /api/projects/{id}/package/solver-contract` | `SV-02` | 改写；`baseRevision` 改为 `base_revision` |
 | `POST /api/projects/{id}/package/solver-contract/check` | `SV-03` | 改写 |
-| `GET /api/projects/{id}/package/solver-validations/latest` | `SV-04` | 改写 |
+| `GET /api/projects/{id}/package/solver-validations/latest` | —（SV-04 退役，ADR-0091） | 删除 |
 | `GET/PUT /api/projects/{id}/package/solver-validations/cases` | — | 删除（第 11 章、14#2） |
-| `POST /api/projects/{id}/package/solver-validations` | `X-04`（回执由评测服务写入） | 删除 |
+| `POST /api/projects/{id}/package/solver-validations` | —（求解验证在评测服务里做，ADR-0091） | 删除 |
 | `POST /api/projects/{id}/objects/{key}/data-source` | `PB-02` | 改写；方法改 PUT |
 | `GET /api/projects/{id}/files` | `F-01` | 改写；去掉写副作用 |
 | `GET /api/projects/{id}/file` | `F-02` | 改写 |

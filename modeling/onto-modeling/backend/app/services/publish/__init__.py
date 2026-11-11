@@ -8,6 +8,7 @@ from .service import (  # noqa: F401
     release_package,
     releases,
     resolve_commit,
+    HUB_FIELDS,
+    record_hub_release,
     set_object_data_source,
-    solver_candidate_package,
 )

@@ -20,6 +20,11 @@ FIELDS_HEADER = (
 )
 
 
+def _publish(manager, pid, *args, **kwargs):
+    """发布走 conftest 的内存 Hub，带合成的登录身份。"""
+    return publish_service.publish_package(manager, pid, *args, token="synthetic-access", subject="scope_a", **kwargs)
+
+
 def object_doc(source: str | None, columns: list[str]) -> str:
     rows = "".join(f"| 字段{i} | {name} | 合成字段 | 否 | 字符串 | 无 | 无 |\n" for i, name in enumerate(columns))
     head = "# 对象描述\n合成对象。\n\n# 英文名称\nOrder\n\n"
@@ -161,12 +166,12 @@ def test_binding_check_returns_fix_handles(manager):
 def test_strict_publish_blocks_and_degraded_publish_is_audited(manager, tmp_path):
     pid, _ = gated_project(manager)
     with pytest.raises(WorkspaceError) as blocked:
-        publish_service.publish_package(manager, pid, tmp_path / "strict.zip", author="alice")
+        _publish(manager, pid, tmp_path / "strict.zip", author="alice")
     assert blocked.value.code == "binding_problems" and "T_CLIENT" in str(blocked.value)
     assert manager.get_project(pid).get("last_package_publish") is None
 
     dest = tmp_path / "degraded.zip"
-    publish_service.publish_package(manager, pid, dest, allow_unbound=True, author="alice")
+    _publish(manager, pid, dest, allow_unbound=True, author="alice")
     with zipfile.ZipFile(dest) as zf:
         mapping_name = next(n for n in zf.namelist() if n.endswith("object-data-mappings.json"))
         mappings = json.loads(zf.read(mapping_name))
@@ -190,7 +195,7 @@ def test_degraded_publish_still_enforces_script_contract(manager, tmp_path):
     )
     commit_all(root)
     with pytest.raises(WorkspaceError, match="契约无效"):
-        publish_service.publish_package(manager, pid, tmp_path / "pkg.zip", allow_unbound=True)
+        _publish(manager, pid, tmp_path / "pkg.zip", allow_unbound=True)
     assert manager.get_project(pid).get("last_package_publish") is None
 
 
@@ -198,7 +203,7 @@ def test_publish_without_any_table_is_not_degraded(manager, tmp_path):
     pid = manager.create_project("纯概念")["id"]
     write_object(manager.project_root(pid), "订单", "T_ORDER", ["ORDER_ID"])
     commit_all(manager.project_root(pid))
-    publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
+    _publish(manager, pid, tmp_path / "pkg.zip")
     audit = manager.get_project(pid)["last_package_publish"]
     assert audit["degraded"] is False and audit["unbound_count"] == 0
 
@@ -209,7 +214,7 @@ def test_set_object_data_source_fixes_the_gate(manager, tmp_path):
     publish_service.set_object_data_source(manager, pid, "客户", "t_customer", base_revision=issue["revision"], author="alice")
     assert "# 数据来源\nT_CUSTOMER\n" in (root / "ontology" / "object" / "客户.md").read_text(encoding="utf-8")
     assert publish_service.package_binding_check(manager, pid)["blocking"] == 0
-    publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
+    _publish(manager, pid, tmp_path / "pkg.zip")
     assert manager.get_project(pid)["last_package_publish"]["degraded"] is False
 
 
