@@ -1,4 +1,4 @@
-// 从知识包 Hub 导入（ADR-0091，HB-01 / HB-02 / HB-04）：选本人可见的包、选一个版本、起名，导入成新项目。
+// 从知识包 Hub 导入（ADR-0098，HB-01 / HB-02 / HB-04）：选本人可见的包、选一个版本、起名，导入成新项目。
 // 导入的项目之后发布会成为新的 Hub 包（包身份按项目定）。设计稿第五版没有这一入口，放在导入页（见 develop-sync P1 报告）。
 import { useEffect, useState } from 'react';
 import { useApp } from '../../app/context.js';

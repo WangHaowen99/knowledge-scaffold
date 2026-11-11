@@ -236,7 +236,7 @@ test('检查卡：已保存、草稿、检查中、回执几种情况', async ()
   const key = draftKey(items);
   const live = { key, rejected: [], findings: [], evaluator: { kind: 'declarative', constraints: 3 } };
   const texts = (o) => checkLines({ view, item: items[0], draftKey: key, live, ...o }).map((l) => l.text);
-  // 验证回执退役（ADR-0091）：检查卡只讲契约问题与评估器，验证在发布后的独立评测里做
+  // 验证回执退役（ADR-0098）：检查卡只讲契约问题与评估器，验证在发布后的独立评测里做
   assert.deepEqual(texts({ dirty: false }), ['r7 未发现契约问题', '评估器已解析：声明式 · 3 条约束']);
   assert.deepEqual(texts({ dirty: true }), ['草稿未发现契约问题', '评估器已解析：声明式 · 3 条约束']);
   assert.equal(texts({ dirty: true, live: { ...live, key: 'old' } })[0], '正在检查草稿…');

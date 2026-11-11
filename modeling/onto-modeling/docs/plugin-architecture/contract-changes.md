@@ -1615,7 +1615,7 @@ develop 新增的 `GET /api/projects/{pid}/studio/updates`、`GET /api/projects/
 5. 为什么：develop 的回退语义（只恢复业务内容、有人在改时挡住、预览后主线前进不执行）落到本分支已有的 V-05/V-06；develop 的 `/history` 合并时间线不另起，发布标在版本行上（设计稿第五版）。
 6. **MCP（M-03、M-08）**：新增 scope `project.version.revert`（read、change 两个工具集都认）与三个版本工具 `list_project_versions`、`preview_project_version_revert`、`revert_project_version`（先预览拿 `preview_id`，再 `confirm: true` 执行；凭据只在进程内存）；`revert_project_version` 在 `tools/list` 里标 `destructiveHint`、`idempotentHint`。输入输出与错误码沿用 develop 的同名工具。
 
-## 2026-11-11 · 正式版本以知识包 Hub 为准，求解验证移到评测服务（ADR-0091）
+## 2026-11-11 · 正式版本以知识包 Hub 为准，求解验证移到评测服务（ADR-0098）
 
 吸收 develop 的 Hub 发布与求解验证迁移（develop-sync P1）。
 

@@ -155,7 +155,7 @@ export function register(ctx) {
       enabled: s.operations.length > 0,
       operations: s.operations.map((op) => opView(pid, op)),
       findings: [],
-      // 端到端验证在发布后的独立评测里做（ADR-0091）：启用了求解操作时发布要确认
+      // 端到端验证在发布后的独立评测里做（ADR-0098）：启用了求解操作时发布要确认
       requires_validation_after_publish: s.operations.some((o) => isEnabled(o.binding)),
       available_operations: operationRefs(pid),
       evaluators: s.operations.filter((o) => o.evaluator).map((o) => ({ path: o.evaluator, file: o.evaluator.split('/').pop() })),

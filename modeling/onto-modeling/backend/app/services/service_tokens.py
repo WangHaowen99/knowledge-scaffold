@@ -4,7 +4,7 @@
 管理员签发，代表一个外部服务（如评测服务），只能调用三份契约的接口，读不到项目内容。
 
 - 明文只在签发时返回一次，盘上只存 SHA-256 摘要（数据目录 service-tokens.json，0600）；
-- 权限范围：发布读取 releases.read（验证回执 receipts.write 随 X-04 退役，ADR-0091；反馈 feedback.write 随 X-05 退役，ADR-0092）；
+- 权限范围：发布读取 releases.read（验证回执 receipts.write 随 X-04 退役，ADR-0098；反馈 feedback.write 随 X-05 退役，ADR-0092）；
   可限定项目（project_ids），不限时为 null；可设有效期（expires_in_s，null 表示不过期）；
 - 吊销后记录保留在库里供追溯，令牌立即失效；
 - 令牌带固定前缀 onto_svc_，鉴权中间件据此区分登录 JWT 与服务令牌。

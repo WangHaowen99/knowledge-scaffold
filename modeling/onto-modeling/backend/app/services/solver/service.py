@@ -28,7 +28,7 @@ def solver_release_status(manager, project_id: str) -> dict:
 def release_status_at(source_root: Path, state_root: Path | None = None) -> dict:
     """source_root 是契约所在的树（发布时为提交导出的只读树），修订号从它算。
 
-    端到端验证在发布后的独立评测里做（ADR-0091），不拦发布：requires_validation_after_publish
+    端到端验证在发布后的独立评测里做（ADR-0098），不拦发布：requires_validation_after_publish
     提示发布时要确认求解能力尚未验证。state_root 只为旧调用方保留，不再使用。
     """
     check = solver_check_at(source_root)

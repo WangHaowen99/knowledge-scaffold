@@ -51,7 +51,7 @@
    - `/drawio/*`：drawio 静态页，不属于 API。
 6. 免鉴权前缀同步更新为：`/api/v1/auth/`、`/api/v1/client-config`、`/api/health`、`/api/v1/onto-mcp/`、`/api/onto-mcp/`。
    - 评测服务的完成通知 `POST /api/internal/evaluation/notifications`（`ES-00`）也免登录，由处理器校验服务凭据；路径是评测服务调用的外部路径，不进 v1、不改。
-   - 带 `onto_svc_` 前缀令牌的请求，鉴权中间件只放行到服务令牌接口：`PB-05`、`PB-06`、`PB-07`，由处理器校验权限范围；用在其他接口返回 `401 unauthenticated`（`X-01`、`X-04` 已随 ADR-0091 退役，`X-05` 随 ADR-0092 退役）。
+   - 带 `onto_svc_` 前缀令牌的请求，鉴权中间件只放行到服务令牌接口：`PB-05`、`PB-06`、`PB-07`，由处理器校验权限范围；用在其他接口返回 `401 unauthenticated`（`X-01`、`X-04` 已随 ADR-0098 退役，`X-05` 随 ADR-0092 退役）。
 
 ### 1.3 鉴权
 
@@ -86,7 +86,7 @@
 **MCP token。** 只用于 `/api/v1/onto-mcp/*` 传输接口（M-05～M-07）。
 
 - 格式 `onto_pat_<urlsafe>`，只存 SHA-256 摘要，明文只在签发响应里出现一次。
-- 权限范围 `ontology.read`、`ontology.change.validate`、`ontology.change.apply`，新增 `evidence.read`（方案 E13）、`project.version.revert`（版本列表、回退预览与回退，read 和 change 两个工具集都认，ADR-0094）、`package.publish`（发布知识包版本，ADR-0091）。
+- 权限范围 `ontology.read`、`ontology.change.validate`、`ontology.change.apply`，新增 `evidence.read`（方案 E13）、`project.version.revert`（版本列表、回退预览与回退，read 和 change 两个工具集都认，ADR-0094）、`package.publish`（发布知识包版本，ADR-0098）。
 - 含 `package.publish` 的 token 要统一账号登录签发，只能给登录用户本人签：签发时在 Hub 登记委托（不保存登录令牌），吊销时一并撤销；Hub 登记失败则不签发（`401 MCP_HUB_IDENTITY_REQUIRED`、`403 MCP_HUB_IDENTITY_MISMATCH`）。
 - token 绑定项目和签发人；签发人不再是项目所有者时立即失效。
 
@@ -2784,7 +2784,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### SV-04 验证回执（已退役）
 
-ADR-0091：端到端验证在发布后的独立评测里做，onto 不再收回执。`GET /api/v1/projects/{id}/solver/receipts` 已删除，
+ADR-0098：端到端验证在发布后的独立评测里做，onto 不再收回执。`GET /api/v1/projects/{id}/solver/receipts` 已删除，
 旧路径 `GET /api/projects/{id}/package/solver-validations/latest` 回 `410 endpoint_removed`。`SV-01` 的响应去掉
 `gate`、`receipt`，改带 `requires_validation_after_publish: bool`（启用了需要验证的求解契约时为 true，发布时要确认）。
 
@@ -3154,7 +3154,7 @@ ADR-0091：端到端验证在发布后的独立评测里做，onto 不再收回�
 
 - 发布从主线提交出（只读树），变更集永远不发布。
 - 发布格式自动判定：启用了求解契约就发求解知识包（schema 0.2），否则发普通知识包（ontology-package v0.1），不再手选。
-- 版本号由知识包 Hub 分配（`0.1.N`，ADR-0091），不再按主线计数；包根目录与 manifest `id` 是 Hub 包身份。
+- 版本号由知识包 Hub 分配（`0.1.N`，ADR-0098），不再按主线计数；包根目录与 manifest `id` 是 Hub 包身份。
   Hub 不可用时发布失败（`503 hub_unavailable`）。同一 `request_id` 重试得到同一个版本与同一份字节。
 
 #### PB-01 发布检查（门禁链）
@@ -3246,7 +3246,7 @@ ADR-0091：端到端验证在发布后的独立评测里做，onto 不再收回�
 
 #### HB-01～HB-09 知识包 Hub
 
-ADR-0091。都要统一账号登录（`401 unauthenticated`），Hub 的错误原样透出（`hub_unavailable` 503、`not_found` 404 等）。
+ADR-0098。都要统一账号登录（`401 unauthenticated`），Hub 的错误原样透出（`hub_unavailable` 503、`not_found` 404 等）。
 
 | 编号 | 方法与路径 | 说明 |
 |---|---|---|
@@ -3354,11 +3354,11 @@ ADR-0091。都要统一账号登录（`401 unauthenticated`），Hub 的错误�
 
 ### 3.21 三份契约（服务令牌）
 
-依据详设第 11 章、方案 A2、A7、第 6 章 #6；ADR-0091 起正式版本由知识包 Hub 分发、求解验证在评测服务里做。
+依据详设第 11 章、方案 A2、A7、第 6 章 #6；ADR-0098 起正式版本由知识包 Hub 分发、求解验证在评测服务里做。
 
 #### X-01 发布列表（跨项目，已退役）
 
-ADR-0091：评测服务、consumer 从 Hub 取正式版本。`GET /api/v1/contract/releases` 已删除。
+ADR-0098：评测服务、consumer 从 Hub 取正式版本。`GET /api/v1/contract/releases` 已删除。
 
 #### X-02 包清单（服务令牌）
 
@@ -3370,7 +3370,7 @@ ADR-0091：评测服务、consumer 从 Hub 取正式版本。`GET /api/v1/contra
 
 #### X-04 提交验证回执（已退役）
 
-ADR-0091：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包 `GET /api/v1/projects/{id}/solver/candidate` 已删除，
+ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包 `GET /api/v1/projects/{id}/solver/candidate` 已删除，
 服务令牌权限 `receipts.write` 不再签发。
 
 #### X-05 提交外部反馈（已退役，ADR-0092）
@@ -4786,9 +4786,9 @@ ADR-0091：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 | `GET /api/projects/{id}/package/solver-contract` | `SV-01` | 改写 |
 | `PUT /api/projects/{id}/package/solver-contract` | `SV-02` | 改写；`baseRevision` 改为 `base_revision` |
 | `POST /api/projects/{id}/package/solver-contract/check` | `SV-03` | 改写 |
-| `GET /api/projects/{id}/package/solver-validations/latest` | —（SV-04 退役，ADR-0091） | 删除 |
+| `GET /api/projects/{id}/package/solver-validations/latest` | —（SV-04 退役，ADR-0098） | 删除 |
 | `GET/PUT /api/projects/{id}/package/solver-validations/cases` | — | 删除（第 11 章、14#2） |
-| `POST /api/projects/{id}/package/solver-validations` | —（求解验证在评测服务里做，ADR-0091） | 删除 |
+| `POST /api/projects/{id}/package/solver-validations` | —（求解验证在评测服务里做，ADR-0098） | 删除 |
 | `POST /api/projects/{id}/objects/{key}/data-source` | `PB-02` | 改写；方法改 PUT |
 | `GET /api/projects/{id}/files` | `F-01` | 改写；去掉写副作用 |
 | `GET /api/projects/{id}/file` | `F-02` | 改写 |

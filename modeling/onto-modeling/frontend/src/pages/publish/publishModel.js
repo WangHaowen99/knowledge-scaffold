@@ -26,7 +26,7 @@ export function blockingSummary(check) {
 // 「发布为知识包」按钮置灰时的说明
 export const publishBlockedTitle = (check) => (check?.blocking_count ? `${check.blocking_count} 项未通过` : '');
 
-// 求解契约要端到端验证的包：发布时要确认「尚未验证」（验证在发布后的独立评测里做，ADR-0091）
+// 求解契约要端到端验证的包：发布时要确认「尚未验证」（验证在发布后的独立评测里做，ADR-0098）
 export const needsSolverAck = (check) => Boolean((check?.gates || []).find((g) => g.id === 'solver_contract')?.requires_acknowledgement);
 
 // 门禁链里显示哪些关：证据源不可用时，依赖证据源的包带来的门禁（如证据出处检查）不出现

@@ -34,7 +34,7 @@ def test_publish_list_download_and_revocation_over_http(tmp_path, monkeypatch):
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('# Synthetic stage artifact\n')
-    # 发布读提交导出的只读树（ADR-0091），合成文件先提交
+    # 发布读提交导出的只读树（ADR-0098），合成文件先提交
     _git(root, 'add', '-A')
     _git(root, 'commit', '-qm', 'test: synthetic stage')
     allowed = True

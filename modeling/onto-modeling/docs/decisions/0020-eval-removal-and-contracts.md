@@ -1,6 +1,6 @@
 # 0020 评测移出 onto-modeling，改由三份契约对接评测服务
 
-> 包出的 X-01 与本地版本号、验证回执入整节已由 [ADR-0091](0091-hub-release-authority.md) 取代（正式版本以知识包 Hub 为准，求解验证移到评测服务）。
+> 包出的 X-01 与本地版本号、验证回执入整节已由 [ADR-0098](0098-hub-release-authority.md) 取代（正式版本以知识包 Hub 为准，求解验证移到评测服务）。
 > 反馈入 X-05 与「onto 不主动调用评测服务」已由 [ADR-0092](0092-eval-service-integration.md) 取代（以用户登录读回评测结果，评测优化成批反馈）。
 
 ## Context

@@ -2,7 +2,7 @@
 PB-05 记录详情、PB-06 包清单、PB-07 下载。PB-05～PB-07 也接受服务令牌 releases.read（X-02、X-03）。
 
 发布从主线提交出（缺省最新），变更集永远不发布；格式自动判定（启用求解契约即求解知识包）；
-版本号由知识包 Hub 分配（ADR-0091），Hub 不可用时发布失败；同一 request_id 重试得到同一个版本。
+版本号由知识包 Hub 分配（ADR-0098），Hub 不可用时发布失败；同一 request_id 重试得到同一个版本。
 """
 
 from __future__ import annotations

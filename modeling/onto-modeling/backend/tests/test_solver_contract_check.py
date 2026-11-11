@@ -689,7 +689,7 @@ def test_referenced_object_edit_changes_declarative_revision(
     assert (_revision(manager, pid) != before) is changed
 
 
-# ---- 发布：只受静态检查约束，未验证要确认（ADR-0091） ----
+# ---- 发布：只受静态检查约束，未验证要确认（ADR-0098） ----
 
 
 def test_publish_needs_only_static_checks(manager: WorkspaceManager, tmp_path: Path):

@@ -87,7 +87,7 @@ def definitions():
 
 
 def package_publish_definitions():
-    """发布知识包版本的三个工具（ADR-0091）：预览拿确认令牌 → 确认发布（后台）→ 查状态。"""
+    """发布知识包版本的三个工具（ADR-0098）：预览拿确认令牌 → 确认发布（后台）→ 查状态。"""
     request_id = {"type": "string", "pattern": r"^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,127}$"}
     package_tools = (
         ("preview_package_publish", "预览知识包版本发布", {

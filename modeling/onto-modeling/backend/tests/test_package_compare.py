@@ -1604,7 +1604,7 @@ def _release(manager, project_id, files: dict[str, str]) -> str:
         (root / name).write_text(text, encoding="utf-8")
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "test: synthetic release content")
-    # 发布走 Hub（ADR-0091），这里接 conftest 的内存 Hub
+    # 发布走 Hub（ADR-0098），这里接 conftest 的内存 Hub
     return publish.publish_package(
         manager, project_id, allow_unbound=True, token="synthetic-access", subject="scope_a",
     )["version"]

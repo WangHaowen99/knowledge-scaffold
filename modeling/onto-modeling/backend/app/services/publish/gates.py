@@ -60,7 +60,7 @@ def _binding_gate(issues: list[dict]) -> dict:
 
 
 def _solver_gate(solver: dict) -> dict | None:
-    """求解契约静态检查；端到端验证在发布后的独立评测里做，发布时只要确认（ADR-0091）。"""
+    """求解契约静态检查；端到端验证在发布后的独立评测里做，发布时只要确认（ADR-0098）。"""
     if not solver.get("enabled"):
         return None
     findings = [{"level": "error", **item} for item in solver.get("findings") or []]

@@ -1,4 +1,4 @@
-"""服务令牌接口（API 契约 3.20、3.21，ADR-0020、ADR-0091、ADR-0092）：发布记录、包清单与按版本下载、
+"""服务令牌接口（API 契约 3.20、3.21，ADR-0020、ADR-0098、ADR-0092）：发布记录、包清单与按版本下载、
 服务令牌鉴权，以及退役的 X-01、求解验证候选包、X-04、X-05 不再提供（外部反馈的写入见 test_feedback_inbox）。
 发布走 conftest 的内存 Hub。
 
@@ -225,7 +225,7 @@ def test_missing_stored_package_is_fetched_from_hub_with_login(client, manager, 
 
 
 def test_retired_contract_routes_are_gone(client, manager):
-    """X-01、求解验证候选包、X-04、SV-04 随 ADR-0091 退役：正式版本到 Hub 取，求解验证在评测服务里做。"""
+    """X-01、求解验证候选包、X-04、SV-04 随 ADR-0098 退役：正式版本到 Hub 取，求解验证在评测服务里做。"""
     pid, _ = owned_project(manager)
     service = token("releases.read")
     assert client.get("/api/v1/contract/releases", headers=service).status_code in (401, 404)

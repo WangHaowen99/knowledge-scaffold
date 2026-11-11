@@ -1,4 +1,4 @@
-"""发布按提交打包（A8；ADR-0091 版本号由 Hub 分配）：只读树导出、Hub 版本与发布标签、未提交改动不进包、
+"""发布按提交打包（A8；ADR-0098 版本号由 Hub 分配）：只读树导出、Hub 版本与发布标签、未提交改动不进包、
 预检与发布同口径、版本列表编号，以及网页上传资料即提交。Hub 是 conftest 的内存替身，fixture 全部为合成数据。
 """
 
@@ -105,7 +105,7 @@ def test_publish_packs_head_and_tags_release(manager, tmp_path, synthetic_hub):
 
     record = _publish(manager, pid, tmp_path / "pkg.zip", author="operator_a")
 
-    version = "0.1.1"  # Hub 分配（ADR-0091），不再按主线计数
+    version = "0.1.1"  # Hub 分配（ADR-0098），不再按主线计数
     assert (record["version"], record["commit"], record["tag"]) == (version, head, f"release/{version}")
     assert record["ontology_id"] == hub_packages.ontology_id(pid) and record["release_id"]
     assert record["uncommitted"] == [] and record["uncommitted_count"] == 0

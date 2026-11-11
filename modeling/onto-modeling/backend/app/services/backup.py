@@ -185,7 +185,7 @@ def _clean_leftovers(directory: Path) -> None:
 
 
 def _add_hub_tasks(tar: tarfile.TarFile, data_dir: Path, staging: Path) -> None:
-    """知识包 Hub 的发布与导入请求（ADR-0091）：逐个持 Hub 请求锁打包，避开写到一半的请求。"""
+    """知识包 Hub 的发布与导入请求（ADR-0098）：逐个持 Hub 请求锁打包，避开写到一半的请求。"""
     from . import knowledge_hub
 
     tasks = data_dir / "hub-tasks"

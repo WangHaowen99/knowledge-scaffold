@@ -292,7 +292,7 @@ export function createApi(client) {
     // 3.20 发布
     publishCheck: (id, query) => client.get(`${P(id)}/publish/check`, { query }), // PB-01
     setObjectDataSource: (id, key, body) => client.put(`${P(id)}/objects/${enc(key)}/data-source`, body), // PB-02
-    // PB-03：经 Hub 发布（ADR-0091）；同一提交、同一选项在拿到结果前重试用同一个 request_id
+    // PB-03：经 Hub 发布（ADR-0098）；同一提交、同一选项在拿到结果前重试用同一个 request_id
     publishRelease: (id, body = {}) => withRequestId(
       `publish:${id}:${body.commit || ''}:${body.degrade ? 1 : 0}:${body.solver_unverified_acknowledged ? 1 : 0}`,
       (request_id) => client.post(`${P(id)}/releases`, { ...body, request_id }),
@@ -315,7 +315,7 @@ export function createApi(client) {
     comparisonFileDiff: (id, cid, path) => client.get(`${P(id)}/package-comparisons/${enc(cid)}/file-diff`, { query: { path } }), // PC-07
     deleteComparison: (id, cid) => client.del(`${P(id)}/package-comparisons/${enc(cid)}`), // PC-08
 
-    // 知识包 Hub（ADR-0091，HB-01～HB-09）：都要统一账号登录
+    // 知识包 Hub（ADR-0098，HB-01～HB-09）：都要统一账号登录
     hubPackages: (offset = 0, limit = 20) => client.get('/hub/packages', { query: { offset, limit } }), // HB-01
     hubPackageReleases: (packageId, offset = 0, limit = 20) => client.get(`/hub/packages/${enc(packageId)}/releases`, { query: { offset, limit } }), // HB-02
     importHubPackage: (body) => withRequestId( // HB-04：同一版本、同一名称在拿到结果前重试得到同一个项目

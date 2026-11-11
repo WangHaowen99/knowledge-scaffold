@@ -1,4 +1,4 @@
-// mock · 3.20 发布（PB-01～PB-07），版本号按知识包 Hub 的规则分配（ADR-0091）
+// mock · 3.20 发布（PB-01～PB-07），版本号按知识包 Hub 的规则分配（ADR-0098）
 //
 // 门禁链（主示例项目）：数据绑定（3 个对象对不上，可降级）→ 求解契约（静态检查通过，发布时要确认未验证）→ 包结构 → 合规检查（零售行业包，
 // 还没运行，挡住发布；点「去运行」经 FL-05 在对话里开始后视为已运行）→ 证据出处检查（通过，2 个提醒）。
@@ -11,7 +11,7 @@ import { entryRef } from './scenario.js';
 
 const zip = () => new Blob(['PK\u0005\u0006'.padEnd(22, '\u0000')]);
 
-// 发布版本号由知识包 Hub 分配（ADR-0091）：0.1.N 按包递增，旧版本地发布的 0.{n}.0 不参与编号
+// 发布版本号由知识包 Hub 分配（ADR-0098）：0.1.N 按包递增，旧版本地发布的 0.{n}.0 不参与编号
 export function nextReleaseVersion(existing) {
   const used = existing.map((v) => /^0\.1\.(\d+)$/.exec(v)).filter(Boolean).map((m) => Number(m[1]));
   return `0.1.${Math.max(0, ...used) + 1}`;

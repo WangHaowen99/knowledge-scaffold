@@ -1,4 +1,4 @@
-"""发布流程（方案 A8；详设 ⑱；API 契约 3.20、3.21；ADR-0091）。
+"""发布流程（方案 A8；详设 ⑱；API 契约 3.20、3.21；ADR-0098）。
 
 确定提交 → git archive 只读树（tree.release_tree）冻结 → 门禁 → Hub 分配版本号 → 适配器渲染 →
 上传并提交到 Hub（hub_packages.publish）→ 本地留存包、打 release/<版本> 注释标签、写发布记录

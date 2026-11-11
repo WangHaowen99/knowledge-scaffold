@@ -34,7 +34,7 @@
   （环境变量 `ONTO_COMPARE_*`）。多 worker 部署时只有抢到服务锁的进程提供对比和定时清理。
 - 跨包：两侧 manifest `id` 不同时要确认。任务在后台判定，失败码 `compare_cross_package`，前端给「仍要对比」，带
   `allow_cross_package` 重新发起；前端不必事先知道两侧的包标识。
-  经 Hub 发布的包 `id` 是 Hub 包标识（ADR-0091），没走 Hub 的本地导出是项目 ID，比这两种也会先要确认。
+  经 Hub 发布的包 `id` 是 Hub 包标识（ADR-0098），没走 Hub 的本地导出是项目 ID，比这两种也会先要确认。
 
 **做法**
 

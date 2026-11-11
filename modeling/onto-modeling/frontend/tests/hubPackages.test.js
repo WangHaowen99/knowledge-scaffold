@@ -1,4 +1,4 @@
-// 知识包 Hub 的接口（ADR-0091，从 develop 的 hubPackages 测试移植）：发布与导入的 request_id 在拿到结果前重试不变，
+// 知识包 Hub 的接口（ADR-0098，从 develop 的 hubPackages 测试移植）：发布与导入的 request_id 在拿到结果前重试不变，
 // 不依赖 randomUUID；浏览 Hub 包不带项目身份。包身份、名称全部为合成数据。
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';

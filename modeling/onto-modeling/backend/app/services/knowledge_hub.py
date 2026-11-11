@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
-"""知识包 Hub 客户端（ADR-0091）：服务身份 + 用户令牌调用 Hub，流式上传下载；不落盘用户凭据。"""
+"""知识包 Hub 客户端（ADR-0098）：服务身份 + 用户令牌调用 Hub，流式上传下载；不落盘用户凭据。"""
 from contextlib import contextmanager
 from pathlib import Path
 import fcntl

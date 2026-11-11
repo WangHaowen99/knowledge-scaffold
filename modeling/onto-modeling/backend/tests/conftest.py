@@ -1,4 +1,4 @@
-"""测试共用：内存里的知识包 Hub 替身（发布走 Hub，ADR-0091），以及跨项目测试导入同级 knowledge-hub 源码。"""
+"""测试共用：内存里的知识包 Hub 替身（发布走 Hub，ADR-0098），以及跨项目测试导入同级 knowledge-hub 源码。"""
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil

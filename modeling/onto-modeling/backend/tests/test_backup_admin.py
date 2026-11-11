@@ -80,7 +80,7 @@ def seed(manager: WorkspaceManager, home: Path) -> dict:
     for directory in ("changeset-state", "flow-state", "change-lists"):
         (data / directory).mkdir(parents=True, exist_ok=True)
         (data / directory / f"{meta['id']}.json").write_text('{"synthetic": true}')
-    # 知识包 Hub 的发布请求与项目关联（ADR-0091）
+    # 知识包 Hub 的发布请求与项目关联（ADR-0098）
     hub = data / "hub-tasks" / "packages" / meta["id"]
     hub.mkdir(parents=True)
     (hub / "association.json").write_text('{"synthetic": true}')

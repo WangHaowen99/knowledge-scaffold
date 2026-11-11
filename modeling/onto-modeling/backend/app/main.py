@@ -54,7 +54,7 @@ async def _lifespan(app: FastAPI):
     backup_task = asyncio.create_task(backup.scheduler_loop(deps.workspaces))
     from .services import knowledge_hub
 
-    # 知识包 Hub（ADR-0091）：定期恢复已提交但本地没记上的发布、清理过期的请求输入
+    # 知识包 Hub（ADR-0098）：定期恢复已提交但本地没记上的发布、清理过期的请求输入
     hub_task = asyncio.create_task(knowledge_hub.scheduler_loop(deps.workspaces))
     from .services.onto_mcp import package_publish
 

@@ -1,4 +1,4 @@
-// 发布到 Hub、从 Hub 导入的幂等键（ADR-0091）：同一意图在拿到明确结果前重试都用同一个 request_id，
+// 发布到 Hub、从 Hub 导入的幂等键（ADR-0098）：同一意图在拿到明确结果前重试都用同一个 request_id，
 // 响应丢了再点一次也只得到同一个版本、同一个项目。键存 localStorage，刷新页面后照样接上。
 import { ApiError } from './errors.js';
 

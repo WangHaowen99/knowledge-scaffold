@@ -1,4 +1,4 @@
-// 发布知识包：页面纯逻辑（publishModel）与 mock（PB-01～PB-07；版本号按 Hub 规则，ADR-0091）
+// 发布知识包：页面纯逻辑（publishModel）与 mock（PB-01～PB-07；版本号按 Hub 规则，ADR-0098）
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
@@ -23,7 +23,7 @@ test('门禁卡片：不通过 / 还没运行 / 通过（含有提醒）三种�
   assert.equal(gateView({ id: 'rev.anchor_coverage', status: 'warn', source: { kind: 'pack' } }).cls, 'ok');
   assert.equal(gateView({ id: 'rev.anchor_coverage', status: 'warn', source: { kind: 'pack' } }).icon, 'quote');
   assert.equal(gateView({ id: 'solver_contract', status: 'pass' }).icon, 'badge');
-  // 求解契约要验证时发布前要确认未验证（ADR-0091）
+  // 求解契约要验证时发布前要确认未验证（ADR-0098）
   assert.equal(needsSolverAck({ gates: [{ id: 'solver_contract', requires_acknowledgement: true }] }), true);
   assert.equal(needsSolverAck({ gates: [{ id: 'solver_contract', requires_acknowledgement: false }] }), false);
   assert.equal(needsSolverAck({ gates: [{ id: 'data_binding' }] }), false);
