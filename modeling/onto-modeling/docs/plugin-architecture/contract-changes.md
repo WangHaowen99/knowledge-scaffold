@@ -1619,3 +1619,19 @@ develop 新增的 `GET /api/projects/{pid}/studio/updates`、`GET /api/projects/
 4. **退役**：X-01、求解验证候选包、X-04、SV-04、服务令牌权限 `receipts.write`。
 5. **新增** HB-01～HB-09（`/api/v1/hub/...`、`/api/v1/projects/{id}/hub/...`）；外部路径 `GET /api/hub/package-projects` 原样提供。
 6. **MCP token** 权限加 `project.version.revert`、`package.publish`；含发布权限的 token 签发时在 Hub 登记委托。
+
+## 2026-11-11 · 评测对接改为独立评测服务（ADR-0092）
+
+develop 的评测服务（eval-service）独立部署后，评测结果以用户登录读回，评测优化要接到反馈演进。
+
+1. **新增 3.21a 独立评测 ES-00～ES-11**：`ES-00` 完成通知沿用评测服务调用的外部路径 `POST /api/internal/evaluation/notifications`（免登录，
+   只认请求头 `X-Evaluation-Service-Token`）；`ES-01` 评测入口 `GET /api/v1/evaluation/entry`；`ES-02`～`ES-08` 在
+   `/api/v1/projects/{id}/evaluations` 下（状态与对账、报告、优化建议、完整回答、重新生成、评测优化、标记处理失败）；
+   `ES-09`～`ES-11` 旧版评测记录只读（`/api/v1/projects/{id}/legacy-evaluations`）。develop 的 `/api/projects/{id}/package/evaluations*`
+   与 `/api/settings/evaluation/entry` 只有 develop 旧前端在调，不进兼容表。
+2. **X-05 退役**：`POST /api/v1/projects/{id}/feedback` 删除（没有调用方）。反馈批次改由 `ES-07` 写入，格式仍是 `onto-feedback/v1`，
+   新增可选字段 `attachments: {report, answers, suggestions, tables}`（工作区相对路径，只认 `reports/` 与 `.ontology-state/eval-service/`），
+   评测优化写的批次可以没有条目（全部通过）。
+3. **旧评测接口**：`GET /api/projects/{id}/eval/*` 仍是 410，`details.successor` 指向 `ES-09`。
+4. **错误码**：2.9 节新增 `login_required`、`eval_*`、`artifacts_not_ready`、`artifacts_changed`、`version_mismatch`、
+   `optimization_not_supported`、`answer_not_found`、`note_required`。

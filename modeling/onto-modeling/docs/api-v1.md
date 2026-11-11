@@ -50,7 +50,8 @@
    - `/api/onto-mcp/{project_id}/{toolset}/{mcp|sse|sse/messages}`：外部 MCP 客户端已经配好的地址，行为与 `/api/v1/onto-mcp/...` 完全相同，不加 Sunset 头；
    - `/drawio/*`：drawio 静态页，不属于 API。
 6. 免鉴权前缀同步更新为：`/api/v1/auth/`、`/api/v1/client-config`、`/api/health`、`/api/v1/onto-mcp/`、`/api/onto-mcp/`。
-   - 带 `onto_svc_` 前缀令牌的请求，鉴权中间件只放行到服务令牌接口：`PB-05`、`PB-06`、`PB-07`、`X-05`，由处理器校验权限范围；用在其他接口返回 `401 unauthenticated`（`X-01`、`X-04` 已随 ADR-0091 退役）。
+   - 评测服务的完成通知 `POST /api/internal/evaluation/notifications`（`ES-00`）也免登录，由处理器校验服务凭据；路径是评测服务调用的外部路径，不进 v1、不改。
+   - 带 `onto_svc_` 前缀令牌的请求，鉴权中间件只放行到服务令牌接口：`PB-05`、`PB-06`、`PB-07`，由处理器校验权限范围；用在其他接口返回 `401 unauthenticated`（`X-01`、`X-04` 已随 ADR-0091 退役，`X-05` 随 ADR-0092 退役）。
 
 ### 1.3 鉴权
 
@@ -93,8 +94,8 @@
 
 - 格式 `onto_svc_<urlsafe>`，由管理员签发（X-06），与 MCP token 分开存放。
 - 携带方式：`Authorization: Bearer onto_svc_...`。
-- 权限范围：`releases.read`、`feedback.write`（`receipts.write` 随 X-04 退役）。可以限定到项目列表，也可以不限。
-- 只能调用 `PB-05`、`PB-06`、`PB-07`、`X-05`；用在别处返回 `401 unauthenticated`。
+- 权限范围：`releases.read`（`receipts.write` 随 X-04 退役，`feedback.write` 随 X-05 退役）。可以限定到项目列表，也可以不限。
+- 只能调用 `PB-05`、`PB-06`、`PB-07`；用在别处返回 `401 unauthenticated`。
 
 ### 1.4 项目所有权
 
@@ -480,6 +481,19 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `release_not_found` | 404 | 发布记录不存在 | — |
 | `receipt_revision_unknown` | 422 | 回执里的契约修订号在本项目不存在 | `revision` |
 | `feedback_invalid` | 422 | 反馈载荷不符合反馈契约 | `errors[]` |
+| `login_required` | 409 | 评测要统一账号登录（本地模式没有） | — |
+| `eval_unconfigured` | 503 | 没配评测服务地址或地址无效 | — |
+| `eval_unauthorized` | 401 | 评测服务没接受当前登录 | — |
+| `eval_not_found` | 404 | 评测记录不存在、无权访问，或评测的不是本项目的 Hub 包 | — |
+| `eval_unavailable` | 503 | 评测服务连不上或出错 | — |
+| `eval_invalid_response`、`eval_response_limit` | 502 | 评测服务响应格式错误或超过上限 | — |
+| `eval_conflict` 与评测服务自己的 409 码（如 `run_active`） | 409 | 评测服务拒绝了请求；评测服务给的说明原样作 `message` | — |
+| `artifacts_not_ready` | 409 | 评测报告还没生成 | — |
+| `artifacts_changed` | 409 | 读产物期间评测服务开始重新生成 | — |
+| `version_mismatch` | 409 | 评测的版本不是项目当前版本，不能评测优化 | — |
+| `optimization_not_supported` | 409 | 求解验证的轮次不能评测优化 | — |
+| `answer_not_found` | 404 | 报告附件里没有这条完整回答 | — |
+| `note_required` | 422 | 标记处理失败没写原因 | — |
 
 门禁链里各项的 `Finding.code`（不作为 HTTP 错误码出现）：
 
@@ -3250,22 +3264,119 @@ ADR-0091：评测服务、consumer 从 Hub 取正式版本。`GET /api/v1/contra
 ADR-0091：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包 `GET /api/v1/projects/{id}/solver/candidate` 已删除，
 服务令牌权限 `receipts.write` 不再签发。
 
-#### X-05 提交外部反馈
+#### X-05 提交外部反馈（已退役，ADR-0092）
 
-`POST /api/v1/projects/{id}/feedback` · 服务令牌 `feedback.write` · 旧：—（现在反馈演进读 `.ontology-state/eval.json`） · 审计：专项 `contract.feedback` · 依据：㉔、14#3 · 页面：—（结果显示在 resources 外部反馈分组、inbox、incremental）
-
-- 请求：`{feedback_id: string（幂等键）, source: {service: string, run: string}, release_version?: string, items: [{case_id, question, expected, actual, loss_reason?, suspected_artifacts?: string[]}], received_at?}`，`items` 最多 200 条。
-- 响应 `201`：`Feedback`。进待处理（kind `feedback`），反馈演进包启用时对话里出外部反馈卡。
-- 错误：`feedback_invalid`、`scope_forbidden`。
+原 `POST /api/v1/projects/{id}/feedback`（服务令牌 `feedback.write`）没有调用方，已删除，`feedback.write` 不再签发。外部反馈批次改由 `ES-07` 评测优化写入，
+落盘格式仍是 `onto-feedback/v1`（见 `ES-07`），资料区外部反馈分组、待处理、增量更新的外部反馈卡照旧读它。
 
 #### X-06 服务令牌管理
 
 `GET /api/v1/admin/service-tokens`、`POST /api/v1/admin/service-tokens`、`DELETE /api/v1/admin/service-tokens/{token_id}` · admin · 旧：— · 审计：POST、DELETE 记 · 依据：方案第 6 章 #6 · 页面：—（设计稿没有画，见 8.2）
 
 - GET 响应：`{items: [{id, name, scopes, project_ids: string[]|null, created_at, created_by, expires_at, last_used_at}]}`。
-- POST 请求：`{name, scopes: ("releases.read"|"feedback.write")[], project_ids?: string[], expires_in_s?: int|null}`。
+- POST 请求：`{name, scopes: "releases.read"[], project_ids?: string[], expires_in_s?: int|null}`。
   - 响应 `201`：`{token: "onto_svc_...", summary}`，明文只出现一次。
 - DELETE 响应 `204`。
+
+---
+
+### 3.21a 独立评测（ADR-0092）
+
+评测在独立的评测服务里跑。onto 只做四件事：给浏览器入口（`ES-01`）、收完成通知（`ES-00`）、以当前用户自己的登录读回结果（`ES-02`～`ES-06`）、
+把一轮的结果整理成一批外部反馈交给反馈演进（`ES-07`）。评测记录按发起人私有：同一个 Hub 包由多人评测时，各人只看见自己的轮次。
+本地模式（没有统一账号）不能用评测：`ES-02` 返回 `configured=false`，其余返回 `login_required`。
+
+#### ES-00 完成通知（评测服务调用）
+
+`POST /api/internal/evaluation/notifications` · 服务凭据（请求头 `X-Evaluation-Service-Token`，值为 `ONTO_EVALUATION_SERVICE_TOKEN`），不经登录 · 旧：同路径 · 审计：否 · 页面：—
+
+- 路径是评测服务调用的外部路径，一字不改。评测服务重试到收到 2xx 为止：先落盘再应答，重复、迟到的通知同样应答。
+- 请求：评测服务的 `Notification`（`event_id = run_id:sequence`、`sequence`、`owner`、`ontology_id`、`release_id`、`version`、`run_id`、`status`、
+  `run_type`、`artifacts`、`summary`、`origin`、`optimization`、`solver_summary`），未知字段忽略。
+- 响应 `200`：`{accepted: true}`。凭据不对 `401`；请求体不合格 `400 invalid_argument`（评测服务把 400、413、422 都当拒收，不再重试）。
+
+#### ES-01 评测入口
+
+`GET /api/v1/evaluation/entry` · 登录用户 · 旧：`GET /api/settings/evaluation/entry` · 审计：否 · 页面：publish
+
+- 响应：`{url}`，取自部署配置 `ONTO_WEB_EVAL_PUBLIC_URL`；空串表示浏览器按建模页面同主机的 8090 端口打开。没有页面修改入口：这个地址会收到用户登录。
+- 浏览器打开 `{url}?ontology_id=&release_id=&package_digest=[&run_type=solver]`，登录经窗口消息交给评测页面的来源，不进地址。
+- 错误：配置无效 `500 internal_error`。
+
+#### ES-02 评测状态
+
+`GET /api/v1/projects/{id}/evaluations` · 所有者 · 旧：`GET /api/projects/{id}/package/evaluations` · 审计：否 · 页面：publish
+
+- 查询参数：`reconcile?: 0|1`，1 时先补写未完成的建模回写，再向评测服务对账（评测服务连不上时 `reachable=false`，返回上次同步的状态）。
+- 响应：`{configured, reachable: bool|null, message, ontology_id, current_release_id, current_version, active, releases, feedback, solver_releases,
+  solver_revisions, writeback, evolution}`。`evolution` 表示反馈演进包启用与否，没启用时页面不出评测优化。`releases`、`feedback`、`solver_releases` 按 `release_id` 给每个版本最近一次已生成报告的评测、用户反馈、求解验证轮次；
+  `writeback` 是最近一次评测优化与它的回写状态（`waiting|pending|done|refused`，`mine` 表示是不是当前用户做的）。
+
+#### ES-03 评测报告
+
+`GET /api/v1/projects/{id}/evaluations/{run_id}/report` · 所有者 · 旧：`…/package/evaluations/{run_id}/report` · 审计：否 · 页面：publish
+
+- 响应：`{run_id, release_id, version, revision, content, truncated}`，最多 2 MiB，在行边界截断。只给评测本项目 Hub 包的轮次。
+- 错误：`eval_not_found`、`artifacts_not_ready`，以及 `eval_*`。
+
+#### ES-04 优化建议
+
+`GET /api/v1/projects/{id}/evaluations/{run_id}/suggestions` · 所有者 · 旧：`…/suggestions` · 审计：否 · 页面：publish
+
+- 响应：同 `ES-03`，另有 `status: pending|generating|ready|failed`、`error`；不是 `ready` 时 `content` 为空。
+
+#### ES-05 完整回答
+
+`GET /api/v1/projects/{id}/evaluations/{run_id}/answers/{result_id}` · 所有者 · 旧：`…/answers/{result_id}` · 审计：否 · 页面：publish
+
+- `result_id` 是 `case-N`。响应：`{resultId, question, fullAnswer, originalLength, truncated}`。不写工作区。
+- 错误：`answer_not_found`、`artifacts_not_ready`。
+
+#### ES-06 重新生成报告与建议
+
+`POST /api/v1/projects/{id}/evaluations/{run_id}/regenerate` · 所有者 · 旧：`…/regenerate` · 审计：是 · 页面：publish
+
+- 响应：评测服务的 `artifacts`（修订号加一、生成中）；本地索引同时标为生成中，结果随通知写入。
+
+#### ES-07 评测优化
+
+`POST /api/v1/projects/{id}/evaluations/{run_id}/optimization` · 所有者（项目没有归档） · 旧：`…/optimization` · 审计：是 · 页面：publish
+
+- 要求反馈演进包已启用，只对项目当前版本的数据评测或用户反馈轮次。以用户登录取同一修订的报告、完整回答、上下文与优化建议，写进工作区并整理成一批外部反馈：
+  - `reports/{stem}.md`、`reports/{stem}.answers.json`、`reports/optimization-{…}.md`（有建议时），和反馈批次 `feedback/{接收时间}-eval-{run_id}-r{修订}.json`
+    一起提交（只提交这几个文件）；
+  - 评测数据源的表头写成只有表头行的 csv，放 `.ontology-state/eval-service/tables/{stem}/`，上下文放 `.ontology-state/eval-service/{stem}.json`（都不进 git）；
+  - 批次格式 `onto-feedback/v1`：`source = {service: "评测服务"|"用户反馈", run: run_id}`，`release_version` 是被评测的版本，`summary` 取自评测汇总，
+    `items` 是失分（fail、partial、error）用例（标准答案、工具失败取自报告的逐用例明细），另带 `attachments: {report, answers, suggestions?, tables?}`（工作区相对路径）。
+  - 同一修订再点不重复下载、不重复成批；人工改判后修订号加一，再点成一批新的。
+- 响应：`{feedback_id, report, suggestions, command: "/ontology-evolution", args: {feedback_id}}`；页面拿 `command`、`args` 经 `S-20` 发到工作台对话。
+- 之后发布的第一个新版本，以做优化的用户登录回写给评测服务，作为这一轮的处理结果（发布时带登录就立即写，否则下次 `ES-02 reconcile=1` 时补写）。
+- 错误：`pack_not_enabled`（反馈演进包没启用）、`version_mismatch`、`artifacts_not_ready`、`artifacts_changed`、`optimization_not_supported`、`login_required`、`eval_*`。
+
+#### ES-08 标记处理失败
+
+`POST /api/v1/projects/{id}/evaluations/{run_id}/modeling-result` · 所有者（项目没有归档） · 旧：`…/modeling-result` · 审计：是 · 页面：publish
+
+- 请求：`{note: string（1～1000 字）}`。告诉评测服务这一轮的建议没能落实；处理成功不用调，发布新版本自动回写。
+- 响应：`{optimization}`（评测服务记下的处理状态）。
+
+#### ES-09 旧版评测记录
+
+`GET /api/v1/projects/{id}/legacy-evaluations` · 所有者 · 旧：`GET /api/projects/{id}/eval/status`（410，successor 指这里） · 审计：否 · 页面：publish
+
+- 评测移出 onto 之前留在工作区的报告 `reports/eval-<日期>-<时间>.md`，只读。响应：`{items: [{id, at, title, score}]}`，新的在前。
+
+#### ES-10 旧版评测报告
+
+`GET /api/v1/projects/{id}/legacy-evaluations/{id}` · 所有者 · 审计：否 · 页面：publish
+
+- 响应：`{id, content, truncated}`，最多 2 MiB。
+
+#### ES-11 旧版报告的完整回答
+
+`GET /api/v1/projects/{id}/legacy-evaluations/{id}/answers/{result_id}` · 所有者 · 审计：否 · 页面：publish
+
+- 读同名 `.answers.json` 附件。响应：同 `ES-05`。错误：`answer_not_found`、`not_found`。
 
 ---
 
@@ -4571,7 +4682,7 @@ ADR-0091：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 | `PATCH /api/projects/{id}/resource-meta` | `R-03` | 改写 |
 | `DELETE /api/projects/{id}/resources` | `R-04` | 改写 |
 | `GET/PUT /api/projects/{id}/mcp` | `P-14` | 改写 |
-| `GET/POST/PUT/DELETE /api/projects/{id}/eval/*`（18 个） | — | 删除（第 11 章） |
+| `GET/POST/PUT/DELETE /api/projects/{id}/eval/*`（18 个） | GET 的替代是 `ES-09`（旧版评测记录只读） | 删除（第 11 章、ADR-0092） |
 | `GET/PUT /api/projects/{id}/engine` | `P-12` | 改写 |
 | `GET /api/projects/{id}/studio/graph` | `ST-02` | 改写 |
 | `GET /api/projects/{id}/studio/elements/{eid}/flow` | `ST-05` | 改写 |

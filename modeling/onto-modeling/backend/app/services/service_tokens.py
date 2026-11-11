@@ -4,7 +4,7 @@
 管理员签发，代表一个外部服务（如评测服务），只能调用三份契约的接口，读不到项目内容。
 
 - 明文只在签发时返回一次，盘上只存 SHA-256 摘要（数据目录 service-tokens.json，0600）；
-- 权限范围：发布读取 releases.read、反馈 feedback.write（验证回执 receipts.write 随 X-04 退役，ADR-0091）；
+- 权限范围：发布读取 releases.read（验证回执 receipts.write 随 X-04 退役，ADR-0091；反馈 feedback.write 随 X-05 退役，ADR-0092）；
   可限定项目（project_ids），不限时为 null；可设有效期（expires_in_s，null 表示不过期）；
 - 吊销后记录保留在库里供追溯，令牌立即失效；
 - 令牌带固定前缀 onto_svc_，鉴权中间件据此区分登录 JWT 与服务令牌。
@@ -24,10 +24,8 @@ from .credential_store import SecretStore
 
 TOKEN_PREFIX = "onto_svc_"
 SCOPE_RELEASES_READ = "releases.read"
-SCOPE_FEEDBACK_WRITE = "feedback.write"
 SCOPES = {
     SCOPE_RELEASES_READ: "读取发布列表、发布记录与包清单，按版本下载知识包",
-    SCOPE_FEEDBACK_WRITE: "写入外部反馈（失分用例、线上反馈）",
 }
 MAX_NAME_LENGTH = 80
 MAX_PROJECTS = 200

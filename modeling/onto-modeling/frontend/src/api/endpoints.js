@@ -310,6 +310,18 @@ export function createApi(client) {
       (request_id) => client.post('/hub/imports', { ...body, request_id }),
     ),
     projectHubReleases: (id, offset = 0, limit = 20) => client.get(`${P(id)}/hub/releases`, { query: { offset, limit } }), // HB-05
+    // 3.21a 独立评测（ADR-0092）
+    evaluationEntry: () => client.get('/evaluation/entry'), // ES-01
+    evaluations: (id, { reconcile = false } = {}) => client.get(`${P(id)}/evaluations`, { query: { reconcile: reconcile ? 1 : 0 } }), // ES-02
+    evaluationReport: (id, runId) => client.get(`${P(id)}/evaluations/${enc(runId)}/report`), // ES-03
+    evaluationSuggestions: (id, runId) => client.get(`${P(id)}/evaluations/${enc(runId)}/suggestions`), // ES-04
+    evaluationAnswer: (id, runId, resultId) => client.get(`${P(id)}/evaluations/${enc(runId)}/answers/${enc(resultId)}`), // ES-05
+    regenerateEvaluation: (id, runId) => client.post(`${P(id)}/evaluations/${enc(runId)}/regenerate`, {}), // ES-06
+    optimizeEvaluation: (id, runId) => client.post(`${P(id)}/evaluations/${enc(runId)}/optimization`, {}), // ES-07
+    reportEvaluationFailure: (id, runId, note) => client.post(`${P(id)}/evaluations/${enc(runId)}/modeling-result`, { note }), // ES-08
+    legacyEvaluations: (id) => client.get(`${P(id)}/legacy-evaluations`), // ES-09
+    legacyEvaluation: (id, stem) => client.get(`${P(id)}/legacy-evaluations/${enc(stem)}`), // ES-10
+    legacyEvaluationAnswer: (id, stem, resultId) => client.get(`${P(id)}/legacy-evaluations/${enc(stem)}/answers/${enc(resultId)}`), // ES-11
 
     // 3.21 三份契约：服务令牌（X-06，设计稿没画入口，见 gaps F4）
     serviceTokens: () => client.get('/admin/service-tokens'), // X-06

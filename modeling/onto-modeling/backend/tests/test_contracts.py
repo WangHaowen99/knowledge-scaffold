@@ -1,5 +1,6 @@
-"""服务令牌接口（API 契约 3.20、3.21，ADR-0020、ADR-0091）：发布记录、包清单与按版本下载，外部反馈，
-服务令牌鉴权，以及退役的 X-01、求解验证候选包与 X-04 不再提供。发布走 conftest 的内存 Hub。
+"""服务令牌接口（API 契约 3.20、3.21，ADR-0020、ADR-0091、ADR-0092）：发布记录、包清单与按版本下载、
+服务令牌鉴权，以及退役的 X-01、求解验证候选包、X-04、X-05 不再提供（外部反馈的写入见 test_feedback_inbox）。
+发布走 conftest 的内存 Hub。
 
 经 HTTP 调真实路由；工作区、令牌、用户名与反馈内容全部为合成数据。
 """
@@ -19,7 +20,7 @@ from app import config
 from app.services import publish as publish_service
 from app.main import app
 from app.api import deps
-from app.services import auth, feedback_inbox, hub_packages, release_store, service_tokens
+from app.services import auth, hub_packages, release_store, service_tokens
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 from tests.test_release_publish import commit_all, rich_project
 
@@ -79,14 +80,9 @@ def release_url(pid: str, version: str, suffix: str = "") -> str:
 
 def test_service_routes_require_service_token(client, manager):
     pid, _ = owned_project(manager)
-    missing = client.post(f"/api/v1/projects/{pid}/feedback", json={})
+    missing = client.get(release_url(pid, "0.1.1"))
     assert missing.status_code == 401 and missing.json()["code"] == "unauthenticated"
-    # 登录 token 不能代替服务令牌写反馈
-    assert client.post(f"/api/v1/projects/{pid}/feedback", headers=OWNER_HEADERS, json={}).status_code == 401
-    # 权限范围不够、项目不在限定范围
-    wrong_scope = client.post(f"/api/v1/projects/{pid}/feedback", headers=token("releases.read"), json={})
-    assert wrong_scope.status_code == 403 and wrong_scope.json()["code"] == "scope_forbidden"
-    assert wrong_scope.json()["details"]["required_scope"] == "feedback.write"
+    # 项目不在限定范围
     other_project = client.get(release_url(pid, "0.1.1"), headers=token("releases.read", project_ids=["p-other"]))
     assert other_project.status_code == 403 and other_project.json()["code"] == "scope_forbidden"
 
@@ -231,7 +227,7 @@ def test_missing_stored_package_is_fetched_from_hub_with_login(client, manager, 
 def test_retired_contract_routes_are_gone(client, manager):
     """X-01、求解验证候选包、X-04、SV-04 随 ADR-0091 退役：正式版本到 Hub 取，求解验证在评测服务里做。"""
     pid, _ = owned_project(manager)
-    service = token("releases.read", "feedback.write")
+    service = token("releases.read")
     assert client.get("/api/v1/contract/releases", headers=service).status_code in (401, 404)
     assert client.get(f"/api/v1/projects/{pid}/solver/candidate", headers=service).status_code in (401, 404)
     assert client.post(f"/api/v1/projects/{pid}/solver/receipts", headers=service, json={}).status_code in (401, 404)
@@ -240,90 +236,12 @@ def test_retired_contract_routes_are_gone(client, manager):
         service_tokens.issue({"name": "合成服务", "scopes": ["receipts.write"]})
 
 
-# ---- 反馈入 ----
-
-
-def feedback_body(**fields) -> dict:
-    return {
-        "feedback_id": "round-001",
-        "source": {"service": "合成服务", "run": "run-7"},
-        "summary": {"score": 72.5, "total": 2, "fail": 1, "error": 1},
-        "items": [
-            {"case_id": "c1", "question": "合成问题一？", "expected": "合成答案一", "actual": "合成回答一",
-             "loss_reason": "缺少合成概念", "suspected_artifacts": ["ontology/object/订单.md"],
-             "tool_failures": ["query · TABLE_NOT_FOUND"]},
-            {"case_id": "c2", "question": "合成问题二？", "verdict": "error"},
-        ],
-        **fields,
-    }
-
-
-def test_feedback_lands_in_workspace_and_commits_only_its_file(client, manager):
-    pid, root = owned_project(manager)
-    (root / "ontology" / "rule" / "未提交.md").write_text("# 未提交\n", encoding="utf-8")
-    response = client.post(f"/api/v1/projects/{pid}/feedback", headers=token("feedback.write"), json=feedback_body())
-    assert response.status_code == 201, response.text
-    result = response.json()
-    assert result["path"].startswith("feedback/") and result["path"].endswith("-round-001.json")
-    assert result["item_count"] == 2 and result["verdicts"] == {"fail": 1, "partial": 0, "error": 1}
-    assert result["received_at"].endswith("Z") and result["source"] == {"service": "合成服务", "run": "run-7"}
-
-    stored = json.loads((root / result["path"]).read_text(encoding="utf-8"))
-    assert stored["format"] == feedback_inbox.FORMAT and stored["received_by"] == "service:合成服务"
-    assert stored["items"][0]["tool_failures"] == ["query · TABLE_NOT_FOUND"]
-    assert stored["items"][0]["verdict"] == "fail"  # 缺省按失分处理
-    changed = _git(root, "-c", "core.quotePath=false", "show", "--name-only", "--pretty=format:", "HEAD").split()
-    assert changed == [result["path"]]
-    assert "ontology/rule/未提交.md" in _git(root, "-c", "core.quotePath=false", "status", "--porcelain")
-    assert feedback_inbox.latest_batch(root) == result["path"]
-
-
-def test_feedback_id_takes_effect_once(client, manager):
+def test_feedback_contract_is_retired(client, manager):
+    """X-05 随 ADR-0092 退役：没有调用方，外部反馈改由评测优化（ES-07）写入；服务令牌、登录令牌都写不进来。"""
     pid, root = owned_project(manager)
     url = f"/api/v1/projects/{pid}/feedback"
-    first = client.post(url, headers=token("feedback.write"), json=feedback_body())
-    head = _git(root, "rev-parse", "HEAD")
-    repeat = client.post(url, headers=token("feedback.write"), json=feedback_body(summary={"score": 1}))
-    assert repeat.status_code == 200 and repeat.json()["path"] == first.json()["path"]
-    assert _git(root, "rev-parse", "HEAD") == head
-    assert len(list((root / "feedback").glob("*.json"))) == 1
-
-
-def test_feedback_release_version_must_exist(client, manager, tmp_path):
-    pid, _ = owned_project(manager)
-    url = f"/api/v1/projects/{pid}/feedback"
-    missing = client.post(url, headers=token("feedback.write"), json=feedback_body(release_version="0.1.99"))
-    assert missing.status_code == 422 and missing.json()["code"] == "feedback_invalid"
-    record = _publish(manager, pid, tmp_path / "pkg.zip")
-    ok = client.post(url, headers=token("feedback.write"), json=feedback_body(release_version=record["version"]))
-    assert ok.status_code == 201 and ok.json()["release_version"] == record["version"]
-
-
-@pytest.mark.parametrize("body", [
-    [],
-    {"source": {"service": "s"}, "items": [{"case_id": "c", "question": "q"}]},
-    {"feedback_id": "f", "items": [{"case_id": "c", "question": "q"}]},
-    {"feedback_id": "f", "source": {"service": "s"}, "items": []},
-    {"feedback_id": "f", "source": {"service": "s"}, "items": [{"case_id": "c", "question": ""}]},
-    {"feedback_id": "f", "source": {"service": "s"}, "items": [{"question": "q"}]},
-    {"feedback_id": "f", "source": {"service": "s"}, "items": [{"case_id": "c", "question": "q", "verdict": "pass"}]},
-    {"feedback_id": "../escape", "source": {"service": "s"}, "items": [{"case_id": "c", "question": "q"}]},
-    {"feedback_id": "f", "source": {"service": "s"}, "release_version": "latest", "items": [{"case_id": "c", "question": "q"}]},
-    {"feedback_id": "f", "source": {"service": "s"}, "items": [{"case_id": "c", "question": "q"}] * 201},
-])
-def test_invalid_feedback_is_422(client, manager, body):
-    pid, root = owned_project(manager)
-    response = client.post(f"/api/v1/projects/{pid}/feedback", headers=token("feedback.write"), json=body)
-    assert response.status_code == 422 and response.json()["code"] == "feedback_invalid"
-    assert response.json()["details"]["errors"]
+    assert client.post(url, headers=token("releases.read"), json={"feedback_id": "round-001"}).status_code == 401
+    assert client.post(url, headers=OWNER_HEADERS, json={"feedback_id": "round-001"}).status_code in (404, 405)
     assert not (root / "feedback").exists()
-
-
-def test_feedback_body_size_is_capped(client, manager, monkeypatch):
-    pid, _ = owned_project(manager)
-    monkeypatch.setattr(feedback_inbox, "MAX_BODY_BYTES", 1024)
-    response = client.post(
-        f"/api/v1/projects/{pid}/feedback", headers=token("feedback.write"),
-        json=feedback_body(source={"service": "x" * 2000}),
-    )
-    assert response.status_code == 413
+    with pytest.raises(service_tokens.ServiceTokenError):
+        service_tokens.issue({"name": "合成服务", "scopes": ["feedback.write"]})
