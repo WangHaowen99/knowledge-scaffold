@@ -479,3 +479,21 @@ def test_optional_metric_going_stale_is_left_to_validation(env):
     labels = _labels(built)
     assert labels[0] == "操作有变化，刷新校验"
     assert not any(label.endswith("刷新指标") for label in labels)
+
+
+def test_old_records_find_what_changed_from_git(env):
+    """改动前留下的确认记录没存分类指纹：按确认那一刻主线上的提交比到现在，只改了操作就写「操作有变化」，不把四类全列出来。"""
+    import subprocess
+    import time
+
+    _client, _workspaces, _manager, _project_id, root = env
+    _validated(root)
+    head_time = int(subprocess.run(["git", "log", "-1", "--format=%ct"], cwd=root, capture_output=True, text=True).stdout)
+    stored = node_state.load(root)
+    for record in [*stored["nodes"].values(), *stored.get("slices", {}).get("all", {}).values()]:
+        record.pop("kinds", None)
+        record["at"] = head_time
+    node_state.save(root, stored)
+    time.sleep(1.1)  # 下一个提交落在确认之后的那一秒
+    main_write(root, "ontology/operation/受理申请.md", op("受理申请", "[[门店]]，补一句"))
+    assert _labels(view.build(root))[0] == "操作有变化，刷新校验"

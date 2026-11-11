@@ -153,10 +153,11 @@ def _kind_fps(inputs: "_Inputs", item: dict, step: dict) -> dict[str, str]:
 
 
 def _changed(inputs: "_Inputs", item: dict, step: dict, record: dict | None) -> list[str]:
+    """确认之后变了的类别；老记录没存分类指纹时按主线提交反查（node_state.changed_since），还说不清时为空。"""
     saved = (record or {}).get("kinds")
     kinds = [str(kind) for kind in step.get("stale_on") or []]
     if not isinstance(saved, dict):
-        return kinds
+        return node_state.changed_since(inputs.root, (record or {}).get("at"), kinds) or []
     now = _kind_fps(inputs, item, step)
     return [kind for kind in kinds if saved.get(kind) != now.get(kind)]
 

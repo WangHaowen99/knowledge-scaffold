@@ -138,11 +138,40 @@ def kind_fingerprints(root: Path, kinds: list[str]) -> dict[str, str]:
 
 
 def changed_kinds(root: Path, record: dict, kinds: list[str]) -> list[str]:
-    """确认之后变了的类别；老记录没存分类指纹时说不清，按 stale_on 全列。"""
+    """确认之后变了的类别。老记录没存分类指纹：按确认那一刻主线上的提交比到现在；还说不清时返回空（按钮只写「刷新X」）。"""
     saved = record.get("kinds")
-    if not isinstance(saved, dict):
-        return [str(kind) for kind in kinds]
-    return [str(kind) for kind in kinds if saved.get(str(kind)) != fingerprint(root, [kind])]
+    if isinstance(saved, dict):
+        return [str(kind) for kind in kinds if saved.get(str(kind)) != fingerprint(root, [kind])]
+    return changed_since(root, record.get("at"), kinds) or []
+
+
+def _git(root: Path, *args: str) -> str | None:
+    try:
+        result = subprocess.run(["git", "-c", "core.quotepath=false", *args], cwd=root, capture_output=True, text=True,
+                                timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def changed_since(root: Path, at, kinds: list[str]) -> list[str] | None:
+    """主线上从 at（确认时刻）那个提交到现在，哪几类的目录有改动；只沿主线走（不看合入进来的助手副本提交的时间）。"""
+    if not isinstance(at, (int, float)):
+        return None
+    base = (_git(root, "rev-list", "-1", "--first-parent", f"--before=@{int(at)}", "HEAD") or "").strip()
+    if not base:
+        return None
+    out = []
+    for kind in kinds:
+        dirs = KIND_DIRS.get(str(kind), ())
+        if not dirs:
+            continue
+        names = _git(root, "diff", "--name-only", base, "HEAD", "--", *dirs)
+        if names is None:
+            return None
+        if any(name not in FINGERPRINT_EXCLUDE for name in names.splitlines()):
+            out.append(str(kind))
+    return out
 
 
 def done_signature(flow: dict, node: dict) -> str:
