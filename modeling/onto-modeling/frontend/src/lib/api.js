@@ -367,6 +367,10 @@ export const api = {
     }),
   excelPreview: (pid, path) =>
     request(`/api/projects/${pid}/excel?path=${encodeURIComponent(path)}`),
+  sourcePreview: (pid, path, anchor = '') =>
+    request(
+      `/api/projects/${pid}/source-preview?path=${encodeURIComponent(path)}&anchor=${encodeURIComponent(anchor)}`,
+    ),
   tagVersion: (pid, commit, label) =>
     request(`/api/projects/${pid}/versions/tag`, {
       method: 'POST',
@@ -659,6 +663,7 @@ export const api = {
   adminDeleteUser: (username) =>
     request(`/api/admin/users/${encodeURIComponent(username)}`, { method: 'DELETE' }),
   studioGraph: (pid) => request(`/api/projects/${pid}/studio/graph`),
+  studioUpdates: (pid) => request(`/api/projects/${pid}/studio/updates`),
   studioElement: (pid, path) =>
     request(`/api/projects/${pid}/studio/element?path=${encodeURIComponent(path)}`),
   sendMessage: (pid, text, conversationId) =>

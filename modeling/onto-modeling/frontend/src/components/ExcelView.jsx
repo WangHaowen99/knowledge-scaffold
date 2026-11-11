@@ -1,7 +1,8 @@
 import { DownloadOutlined } from '@ant-design/icons';
 import { Alert, Button, Empty, Space, Spin, Tabs, Typography } from 'antd';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import { locateSheetCell } from '../lib/sourceLocation.js';
 
 function columnLetter(index) {
   let label = '';
@@ -13,7 +14,8 @@ function columnLetter(index) {
   return label;
 }
 
-function SheetTable({ sheet }) {
+function SheetTable({ sheet, target, nonce }) {
+  const scrollRef = useRef(null);
   // 合并单元格：起点渲染 rowSpan/colSpan，被覆盖的格子跳过
   const { anchors, covered } = useMemo(() => {
     const anchorMap = new Map();
@@ -29,13 +31,32 @@ function SheetTable({ sheet }) {
     return { anchors: anchorMap, covered: coveredSet };
   }, [sheet]);
 
+  // 定位格落在合并区内时高亮整个合并区（即合并区左上角那个格子）
+  const hitKey = useMemo(() => {
+    if (!target) return '';
+    const merge = (sheet.merges || []).find(
+      (m) =>
+        target.row >= m.row && target.row < m.row + m.rowspan &&
+        target.col >= m.col && target.col < m.col + m.colspan,
+    );
+    return merge ? `${merge.row}:${merge.col}` : `${target.row}:${target.col}`;
+  }, [sheet, target]);
+
+  useEffect(() => {
+    if (!hitKey || !scrollRef.current) return;
+    const cell = [...scrollRef.current.querySelectorAll('[data-cell]')].find(
+      (node) => node.dataset.cell === hitKey,
+    );
+    cell?.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+  }, [hitKey, nonce]);
+
   const colCount = Math.max(0, ...sheet.rows.map((r) => r.length));
   if (sheet.rows.length === 0) {
     return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="空工作表" />;
   }
 
   return (
-    <div className="excel-scroll">
+    <div className="excel-scroll" ref={scrollRef}>
       <table className="excel-table">
         <thead>
           <tr>
@@ -57,9 +78,13 @@ function SheetTable({ sheet }) {
                 return (
                   <td
                     key={c}
+                    data-cell={`${r}:${c}`}
                     rowSpan={merge?.rowspan}
                     colSpan={merge?.colspan}
-                    className={numeric ? 'num' : undefined}
+                    className={
+                      [numeric && 'num', hitKey === `${r}:${c}` && 'source-hit'].filter(Boolean).join(' ') ||
+                      undefined
+                    }
                   >
                     {value}
                   </td>
@@ -73,8 +98,9 @@ function SheetTable({ sheet }) {
   );
 }
 
-export default function ExcelView({ project, path }) {
+export default function ExcelView({ project, path, anchor = '', nonce = 0 }) {
   const [data, setData] = useState(null);
+  const [activeKey, setActiveKey] = useState('0');
 
   useEffect(() => {
     setData(null);
@@ -83,6 +109,13 @@ export default function ExcelView({ project, path }) {
       .then(setData)
       .catch((error) => setData({ error: error.message }));
   }, [project.id, path]);
+
+  const located = useMemo(() => (data?.sheets ? locateSheetCell(data, anchor) : null), [data, anchor]);
+
+  // 打开或再次点击定位芯片时切到目标工作表
+  useEffect(() => {
+    setActiveKey(located?.index != null ? `${located.index}` : '0');
+  }, [located, nonce]);
 
   if (!data) return <Spin style={{ marginTop: 48 }} />;
   if (data.error) {
@@ -115,12 +148,28 @@ export default function ExcelView({ project, path }) {
           message="表格较大，仅预览前 500 行 × 60 列；完整内容请下载原文件"
         />
       )}
+      {located?.problem && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 8 }}
+          message={located.problem === 'range' ? `${located.message}，完整内容请下载原文件` : located.message}
+        />
+      )}
       <Tabs
         size="small"
+        activeKey={activeKey}
+        onChange={setActiveKey}
         items={data.sheets.map((sheet, index) => ({
           key: `${index}`,
           label: sheet.name,
-          children: <SheetTable sheet={sheet} />,
+          children: (
+            <SheetTable
+              sheet={sheet}
+              target={located?.index === index ? located.cell : null}
+              nonce={nonce}
+            />
+          ),
         }))}
       />
     </div>

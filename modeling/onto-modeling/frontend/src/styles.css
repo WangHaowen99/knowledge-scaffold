@@ -749,6 +749,34 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .excel-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .excel-table tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--surface-subtle) 45%, var(--surface-card)); }
 
+/* ---- 原始资料预览与定位高亮 ---- */
+.excel-table tbody tr td.source-hit,
+.source-hit {
+  background: color-mix(in srgb, var(--status-warning, #b77909) 20%, var(--surface-card));
+  outline: 2px solid color-mix(in srgb, var(--status-warning, #b77909) 65%, transparent);
+  outline-offset: -2px;
+}
+.source-preview {
+  overflow: auto; max-height: calc(100vh - 260px); padding: 4px 0;
+  border: 1px solid var(--border-default); border-radius: 10px; background: var(--surface-card);
+}
+.source-seg { display: flex; gap: 12px; padding: 4px 12px; border-radius: 6px; }
+.source-seg-no {
+  flex: 0 0 40px; text-align: right; color: var(--text-tertiary);
+  font-size: 12px; font-variant-numeric: tabular-nums; user-select: none; padding-top: 2px;
+}
+.source-seg-text { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; color: var(--text-primary); }
+.source-table-wrap { padding: 6px 12px; }
+.source-table-title { color: var(--text-tertiary); font-size: 12px; margin-bottom: 4px; }
+.source-table { border-collapse: collapse; font-size: 13px; }
+.source-table td {
+  border: 1px solid var(--border-subtle); padding: 4px 10px; vertical-align: top;
+  white-space: pre-wrap; color: var(--text-primary); min-width: 48px;
+}
+.source-frame { width: 100%; height: calc(100vh - 260px); border: 1px solid var(--border-default); border-radius: 10px; }
+.source-image { overflow: auto; max-height: calc(100vh - 260px); }
+.source-image img { max-width: 100%; border: 1px solid var(--border-subtle); border-radius: 6px; }
+
 /* ---- HTML 预览 ---- */
 .html-preview-root .html-preview { border-radius: 12px; }
 .html-preview { width: 100%; height: calc(100vh - 220px); border: 1px solid var(--border-default); background: #fff; }
@@ -1020,6 +1048,7 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .file-chip.modified { border-color: color-mix(in srgb, var(--status-warning, #b77909) 45%, transparent); }
 .file-chip.deleted { text-decoration: line-through; opacity: .55; }
 .file-chip-icon { font-size: 11px; }
+.file-chip.source { max-width: 360px; }
 
 /* 每轮文件改动卡：纯文字排版，直角、细线分隔，不用胶囊与图标 */
 .changes-card {
