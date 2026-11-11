@@ -68,6 +68,12 @@ class TagBody(BaseModel):
     label: str
 
 
+class DeleteProjectBody(BaseModel):
+    confirmed: bool = False
+    delete_hub_package: bool = False
+    hub_usage_confirmed: bool = False
+
+
 class MembersBody(BaseModel):
     members: dict[str, str]  # username -> editor(建模者) | viewer(只读评审)
 
@@ -349,10 +355,11 @@ def ensure_goal_confirmed(project_id: str) -> None:
 
 
 @router.delete("/{project_id}")
-async def delete_project(project_id: str, request: Request, background: BackgroundTasks):
+async def delete_project(project_id: str, request: Request, background: BackgroundTasks, body: DeleteProjectBody = DeleteProjectBody()):
     """永久删除项目（不进回收站）。不看项目状态，二次确认由前端弹窗完成。
 
-    响应前只做快的：硬杀会话（含排队）、给评测编排置取消标记、把工作区移出列表、
+    选择同时删除 Hub 包时，先同步完成远端物理清理；失败保留项目。
+    本地清理响应前执行：硬杀会话（含排队）、给评测编排置取消标记、把工作区移出列表、
     清掉存着凭据的配置。远端评测轮次取消、modeling 侧级联删除与目录递归删除都要等
     网络或磁盘，放到响应之后（_finish_delete）。
     """
@@ -360,6 +367,16 @@ async def delete_project(project_id: str, request: Request, background: Backgrou
     from ..services.agent_sessions import manager
 
     root = ensure_owner(project_id, request)
+    if body.delete_hub_package:
+        if not body.confirmed or not body.hub_usage_confirmed:
+            raise WorkspaceError("请确认消费和评测不再使用这些知识包", 422)
+        from ..services import hub_members
+        from .hub_packages import identity
+        token, _, _ = identity(request)
+        def delete_remote():
+            with knowledge_hub.lock(project_id):
+                hub_members.delete_package(workspaces, project_id, token)
+        await asyncio.to_thread(delete_remote)
     meta = workspaces.get_project(project_id)  # 删除后读不到，级联清理要用，先取
     eval_round = modeling_eval.abort_for_delete(project_id, root, _modeling_token(request))
     await manager.discard(project_id)
@@ -435,24 +452,48 @@ def clone_project(project_id: str, request: Request, body: CloneBody | None = No
     return meta
 
 
+@router.get("/{project_id}/hub-delete-preview")
+def hub_delete_preview(project_id: str, request: Request):
+    from ..services import hub_members
+    ensure_owner(project_id, request)
+    with knowledge_hub.lock(project_id):
+        return hub_members.delete_preview(workspaces, project_id, knowledge_hub.token_of(request))
+
+
 @router.get("/{project_id}/members")
 def get_members(project_id: str, request: Request):
+    from ..services import hub_members
     ensure_access(project_id, request)
     meta = workspaces.get_project(project_id)
-    return {"owner": meta.get("owner", ""), "members": meta.get("members") or {}}
+    return {"owner": meta.get("owner", ""), "members": meta.get("members") or {},
+            "hub_sync": hub_members.status(project_id)}
+
+
+@router.post("/{project_id}/members/hub-retry")
+def retry_member_sharing(project_id: str, request: Request, username: str | None = None):
+    from ..services import hub_members
+    ensure_owner(project_id, request)
+    with knowledge_hub.lock(project_id):
+        return hub_members.sync(workspaces, project_id, knowledge_hub.token_of(request), username=username)
 
 
 @router.put("/{project_id}/members")
 def put_members(project_id: str, body: MembersBody, request: Request):
+    from ..services import hub_members, hub_packages
     ensure_owner(project_id, request)
-    previous = workspaces.get_project(project_id)
-    meta = workspaces.set_members(project_id, body.members)
-    try:
-        modeling_mcp.sync_members(meta, request)
-    except modeling_mcp.ModelingMcpError as exc:
-        workspaces._update_meta(project_id, members=previous.get("members") or {})
-        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
-    return {"owner": meta.get("owner", ""), "members": meta.get("members") or {}}
+    with knowledge_hub.lock(project_id):
+        hub_members.writable(project_id)
+        previous = workspaces.get_project(project_id)
+        meta = workspaces.set_members(project_id, body.members)
+        try:
+            modeling_mcp.sync_members(meta, request)
+        except modeling_mcp.ModelingMcpError as exc:
+            workspaces._update_meta(project_id, members=previous.get("members") or {})
+            return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+        if hub_packages.association(project_id):
+            hub_members.queue(project_id, previous, meta)
+        sharing = hub_members.sync(workspaces, project_id, knowledge_hub.token_of(request))
+        return {"owner": meta.get("owner", ""), "members": meta.get("members") or {}, "hub_sync": sharing}
 
 
 @router.get("/{project_id}/export")

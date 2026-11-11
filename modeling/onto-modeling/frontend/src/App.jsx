@@ -1,6 +1,7 @@
 import {
   ArrowLeftOutlined,
   FileTextOutlined,
+  ExclamationCircleOutlined,
   InboxOutlined,
   LogoutOutlined,
   MessageOutlined,
@@ -15,6 +16,7 @@ import {
   Badge,
   Button,
   Collapse,
+  Checkbox,
   Descriptions,
   Dropdown,
   Empty,
@@ -364,26 +366,54 @@ export default function App() {
     }
   };
 
-  const removeProject = (item) => {
-    modal.confirm({
-      title: `删除任务「${item.name}」？`,
-      content:
-        '无论任务当前状态如何都会直接删除：进行中的建模会话、排队中的消息和数据评测立即强制终止。'
-        + '删除后不可恢复，工作区文件、对话记录与迭代历史将被永久清除。',
-      okText: '确认删除',
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        try {
-          await api.deleteProject(item.id);
-        } catch (error) {
-          // antd 只把 onOk 的 rejection 打到 console，不提示用户；不接这一下，
-          // 403/404/500 都表现为"点了删除没反应"。提示后继续抛出，让弹窗留着可重试
-          messageApi.error(error.message || '删除失败');
-          throw error;
-        }
+  const removeProject = async (item) => {
+    let preview;
+    try {
+      preview = await api.hubDeletePreview(item.id);
+    } catch (error) {
+      preview = { published: false, error: error.message };
+    }
+    let deleteHub = false;
+    const perform = async (withHub) => {
+      try {
+        await api.deleteProject(item.id, withHub);
         messageApi.success(`已删除「${item.name}」`);
         refreshProjects();
         if (projectId === item.id) nav('#/');
+      } catch (error) {
+        messageApi.error(error.message || '删除失败');
+        throw error;
+      }
+    };
+    modal.confirm({
+      title: `删除任务「${item.name}」？`,
+      content: <div>
+        <p>进行中的建模会话和评测将终止。工作区文件、对话和迭代历史将永久删除，无法恢复。</p>
+        <Checkbox disabled={!preview.published} onChange={(e) => { deleteHub = e.target.checked; }}>
+          同时删除本项目发布的知识包
+        </Checkbox>
+        {!preview.published && <p>{preview.error || '本项目尚未发布知识包'}</p>}
+        {preview.state && <p>Hub 删除进度：{preview.state === 'deleted' ? '知识包已删除，待完成项目删除' : '结果待确认，请勾选后重试'}</p>}
+      </div>,
+      okText: '确认删除',
+      okButtonProps: { danger: true },
+      onOk: () => {
+        if (!deleteHub) return perform(false);
+        let acknowledged = false;
+        const confirmation = modal.confirm({
+          title: '确认删除项目及知识包',
+          content: <div>
+            <p>{preview.name}（{preview.ontology_id}）</p>
+            <p>请确保消费和评测不再使用这些知识包。将物理删除全部正式版本、评测快照及共享资料，使全部用户授权失效，包括其他服务发布到同一本体的版本。可能导致依赖任务失败，无法恢复。已安装或下载的副本不会删除；系统未自动核实下游使用情况。</p>
+            <Checkbox onChange={(e) => {
+              acknowledged = e.target.checked;
+              confirmation.update({ okButtonProps: { danger: true, disabled: !acknowledged } });
+            }}>已确认消费和评测不再使用这些知识包</Checkbox>
+          </div>,
+          okText: '删除项目及知识包',
+          okButtonProps: { danger: true, disabled: true },
+          onOk: () => acknowledged ? perform(true) : Promise.reject(new Error('请先确认使用情况')),
+        });
       },
     });
   };
@@ -420,7 +450,7 @@ export default function App() {
       if (key === 'members') {
         try {
           const data = await api.getMembers(item.id);
-          setMemberWiz({ project: item, members: data.members, newUser: '', newRole: 'editor' });
+          setMemberWiz({ project: item, members: data.members, hubSync: data.hub_sync, newUser: '', newRole: 'editor' });
         } catch (error) {
           message.error(error.message);
         }
@@ -536,7 +566,7 @@ export default function App() {
             event.stopPropagation();
             try {
               const data = await api.getMembers(item.id);
-              setMemberWiz({ project: item, members: data.members, newUser: '', newRole: 'editor' });
+              setMemberWiz({ project: item, members: data.members, hubSync: data.hub_sync, newUser: '', newRole: 'editor' });
             } catch (error) {
               message.error(error.message);
             }
@@ -791,7 +821,12 @@ export default function App() {
           okText="保存"
           onOk={async () => {
             try {
-              await api.saveMembers(memberWiz.project.id, memberWiz.members);
+              const result = await api.saveMembers(memberWiz.project.id, memberWiz.members);
+              if (result.hub_sync?.status === 'failed') {
+                setMemberWiz({ ...memberWiz, hubSync: result.hub_sync });
+                message.warning('项目成员已更新，Hub 授权同步失败；移除的成员可能仍可访问知识包');
+                return;
+              }
               setMemberWiz(null);
               message.success('成员已更新');
             } catch (error) {
@@ -801,6 +836,7 @@ export default function App() {
         >
           {memberWiz && (
             <>
+              <Alert type="info" message="建模者将获得 Hub 全部版本读写、授权管理和整包删除权限。移除或降级会撤销该本体的整体授权，包括其他渠道授予的权限。" />
               {Object.keys(memberWiz.members).length === 0 && (
                 <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未共享给其他成员" />
               )}
@@ -810,10 +846,30 @@ export default function App() {
                   <Tag color={role === 'editor' ? 'processing' : 'default'}>
                     {role === 'editor' ? '建模者（可编辑）' : '只读评审'}
                   </Tag>
+                  {memberWiz.hubSync?.pending?.[user] && <>
+                    <Tooltip trigger={['hover', 'focus', 'click']} title={memberWiz.hubSync.results?.[user]?.error || '授权变更尚未同步，请重试'}>
+                      <Button type="text" size="small" danger aria-label="查看授权失败原因" icon={<ExclamationCircleOutlined />} />
+                    </Tooltip>
+                    <Button size="small" loading={memberWiz.retrying === user} disabled={!!memberWiz.retrying && memberWiz.retrying !== user}
+                      onClick={async () => {
+                        const pid = memberWiz.project.id;
+                        setMemberWiz((current) => ({ ...current, retrying: user }));
+                        try {
+                          const hubSync = await api.retryHubMembers(pid, user);
+                          setMemberWiz((current) => current?.project.id === pid ? { ...current, hubSync, retrying: null } : current);
+                        } catch (error) {
+                          message.error(error.message);
+                          setMemberWiz((current) => current?.project.id === pid ? { ...current, retrying: null } : current);
+                        }
+                      }}>
+                      {memberWiz.hubSync.pending[user] === 'revoke' ? '重试撤权' : '重试授权'}
+                    </Button>
+                  </>}
                   <Button
                     size="small"
                     type="text"
                     danger
+                    disabled={!!memberWiz.retrying}
                     onClick={() => {
                       const next = { ...memberWiz.members };
                       delete next[user];

@@ -52,7 +52,7 @@ publish-requests/<internal_request_id>.json
 
 发布先保存预留请求，再上传校验。只有重新授权并持久化的 committing 意图能在恢复时完成归档；Git 成功后才公开 committed。仅 uploaded 的内容不会自动发布。ZIP 不变，下载校验原摘要；mapping 派生必须保留基础版本引用。当前支持 schema 0.1 / 0.2（operation-centric.v1），包根与 ontology_id（manifest.yaml.id） 一致。
 
-本体授权用户可读、写、授权、撤权和删除；禁止撤销最后一人。删除保留 metadata 墓碑。共享资料按 generation 全量替换或清空，仅建模可写、全部服务可按用户权限读，不保留历史资料。建模只同步显式选择的资料，不后台自动上传。
+本体授权用户可读、写、授权、撤权和删除；禁止撤销最后一人。删除保留 metadata 墓碑和幂等鉴权记录，物理清理该本体的包、资料、Git 归档历史、暂存、发布请求和委托记录；清理失败可再次调用原 DELETE 接口继续，完成后才返回成功。共享资料按 generation 全量替换或清空，仅建模可写、全部服务可按用户权限读，不保留历史资料。建模只同步显式选择的资料，不后台自动上传。
 
 ## 备份
 
