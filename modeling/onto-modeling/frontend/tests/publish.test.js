@@ -6,7 +6,7 @@ import { nextReleaseVersion, register as registerPublish } from '../src/api/mock
 import { register as registerVersions } from '../src/api/mock/routes-versions.js';
 import {
   blockingSummary, degradeNote, fixOptions, formatLabel, gateBlockedText, gateView, issueView, mergeRelease, needsSolverAck,
-  publishBlockedTitle, pullView, releaseGate, releasedText, visibleGates,
+  publishBlockedTitle, releaseGate, releasedText, visibleGates,
 } from '../src/pages/publish/publishModel.js';
 
 // ---------- 纯逻辑 ----------
@@ -70,12 +70,9 @@ test('能不能降级：其余挡住的门禁照样挡（按钮置灰、悬停�
   assert.equal(gateBlockedText(null), '门禁链有未通过的项，仍不能发布');
 });
 
-test('发布记录：门禁一列、评测服务一列、按包版本号合并', () => {
+test('发布记录：门禁一列、按包版本号合并', () => {
   assert.deepEqual(releaseGate({ gates: { degraded: true, unbound_objects: ['超量清单', '审批提示'] } }), { chip: ['降级发布', 'amber'], note: '2 个对象不绑定数据表' });
   assert.deepEqual(releaseGate({ gates: { degraded: false } }).chip, ['全部通过', 'blue']);
-  assert.equal(pullView({ pulls: [] }).text, '还没拉取');
-  assert.equal(pullView({ pulls: [{}], feedback_count: 0 }).text, '已拉取');
-  assert.equal(pullView({ pulls: [{}, {}], feedback_count: 1 }).text, '已拉取 2 次 · 回传反馈 1');
   const list = [{ version: '0.11.0', at: '2026-10-31T03:20:00Z' }, { version: '0.7.0', at: '2026-10-29T08:30:00Z' }];
   const merged = mergeRelease(list, { version: '0.19.0', at: '2026-11-01T14:44:00Z' });
   assert.deepEqual(merged.map((r) => r.version), ['0.19.0', '0.11.0', '0.7.0']);

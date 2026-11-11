@@ -1,6 +1,7 @@
 // 发布知识包（设计稿 publish）：门禁链（PB-01；合规检查「去运行」走 FL-05）、
 // 数据绑定修正（PB-02）、发布与降级发布（PB-03，经知识包 Hub，求解包要确认未验证）、导出迁移包（P-09）、发布记录（PB-04）与包清单（PB-06）、下载标准包 / 图模式变体（PB-07）。
-// 版本下拉取当前分支上的版本（V-01）；项目流 release.updated（EP-19，评测服务拉取）、flow.updated（EP-01）、workspace.changed 实时刷新。
+// 版本下拉取当前分支上的版本（V-01）；项目流 release.updated（EP-19）、flow.updated（EP-01）、workspace.changed 实时刷新。
+// 发布记录带评测（ES-02，ADR-0092）与版本对比（PC 组，ADR-0095）。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
@@ -9,7 +10,11 @@ import { errorText, formatBytes } from '../../api/errors.js';
 import { PageHead, ShellP } from '../../shell/Shell.jsx';
 import { evidenceInProject } from '../../state/evidence.js';
 import { isLocked } from '../../state/readonly.js';
-import { ScopeLockBar, useProjectEvent } from '../plugin/parts.jsx';
+import { ScopeLockBar, useCommandTasks, useProjectEvent } from '../plugin/parts.jsx';
+import {
+  EvaluationCell, EvaluationDialogs, EvaluationNotices, FeedbackCell, LegacyEvaluations, SolverValidationCell, useReleaseEvaluations,
+} from '../evaluation/ReleaseEvaluation.jsx';
+import PackageCompare from './PackageCompare.jsx';
 import { fileGroups } from '../versions/versionsModel.js';
 
 const listed = (groups) => groups.reduce((n, g) => n + g.items.length, 0);
@@ -20,7 +25,7 @@ import { usePopMenu } from '../versions/popMenu.js';
 import { byNewest, fmtStamp, syncMeta } from '../versions/versionsModel.js';
 import {
   blockingSummary, canFix, degradeNote, fixOptions, formatLabel, gateBlockedText, gateView, issueView, mergeRelease,
-  needsSolverAck, publishBlockedTitle, pullTitle, pullView, releaseGate, releasedText, unboundObjects, versionOptions, visibleGates,
+  needsSolverAck, publishBlockedTitle, releaseGate, releasedText, unboundObjects, versionOptions, visibleGates,
 } from './publishModel.js';
 import '../../styles/more.css';
 import '../../styles/publish.css';
@@ -140,19 +145,30 @@ function BindingCard({ check, scope, fixing, onFix, onDegrade, onRecheck, checki
   );
 }
 
-function ReleaseRecords({ records, onManifest, onDownload }) {
+function ReleaseRecords({ records, ev, onManifest, onDownload, onCompare }) {
+  // 评测看 Hub 版本：行上带 release_id、ontology_id、package_digest
+  const rows = (records || []).map((r) => ({ ...(r.hub || {}), ...r }));
+  const solver = ev.hasSolver(rows);
   return (
     <Card className="mt16" title="发布记录" icon="history">
+      <EvaluationNotices ev={ev} />
       {records && !records.length ? (
         <div className="sm muted">还没有发布过</div>
       ) : (
         <div className="tbl-wrap">
           <table className="tbl compact">
-            <thead><tr><th>版本</th><th>时间</th><th>格式</th><th>门禁</th><th>包清单</th><th>评测服务</th><th style={{ width: 130 }} /></tr></thead>
+            <thead>
+              <tr>
+                <th>版本</th><th>时间</th><th>格式</th><th>门禁</th><th>包清单</th>
+                {ev.enabled ? <th>评测</th> : null}
+                {solver ? <th>求解验证</th> : null}
+                {ev.hasFeedback ? <th>用户反馈</th> : null}
+                <th style={{ width: 170 }} />
+              </tr>
+            </thead>
             <tbody>
-              {(records || []).map((r) => {
+              {rows.map((r) => {
                 const g = releaseGate(r);
-                const p = pullView(r);
                 return (
                   <tr key={r.version}>
                     <td><b title={`包版本 ${r.version}`}>{r.version_label}</b></td>
@@ -160,9 +176,12 @@ function ReleaseRecords({ records, onManifest, onDownload }) {
                     <td>{r.format_label}</td>
                     <td><Chip tone={g.chip[1]} sm>{g.chip[0]}</Chip>{g.note ? <> <span className="xs muted">{g.note}</span></> : null}</td>
                     <td><span className="xs pb-link" onClick={() => onManifest(r)} title="查看包清单">{r.manifest_attached ? '已附包清单' : '没有留存包'}</span></td>
-                    <td><Chip tone={p.tone} sm icon={p.icon} title={pullTitle(r) || undefined}>{p.text}</Chip></td>
+                    {ev.enabled ? <td><EvaluationCell ev={ev} release={r} /></td> : null}
+                    {solver ? <td><SolverValidationCell ev={ev} release={r} /></td> : null}
+                    {ev.hasFeedback ? <td><FeedbackCell ev={ev} release={r} /></td> : null}
                     <td>
                       <span className="row" style={{ justifyContent: 'flex-end', gap: 12 }}>
+                        <span className="xs pb-link" onClick={() => onCompare(r.version)}>对比</span>
                         <span className="xs pb-link row g4" title="下载标准包" onClick={() => onDownload(r, 'standard')}><Icon name="download" size={12} />标准包</span>
                         <span className="xs pb-link" title="下载图模式包" onClick={() => onDownload(r, 'graph')}>图模式</span>
                       </span>
@@ -279,6 +298,10 @@ export default function PublishPage() {
   const [ack, setAck] = useState(false); // 求解能力未验证，仍发布
   const [manifestFor, setManifestFor] = useState(null);
   const [starting, setStarting] = useState(false);
+  const [compareFor, setCompareFor] = useState(null);
+  const tasks = useCommandTasks('publish');
+  // 发布或回退后记录数变了就重读评测状态
+  const ev = useReleaseEvaluations(pid, records ? records.length : 0);
   const commitRef = useRef(commit);
   commitRef.current = commit;
 
@@ -392,7 +415,7 @@ export default function PublishPage() {
       <PageHead
         title="发布知识包"
         desc={`${pkg} · 当前版本 ${mainLabel}`}
-        actions={<Button icon="refresh" disabled={checking} onClick={() => runCheck({ refresh: true })}>重新检查</Button>}
+        actions={<><LegacyEvaluations pid={pid} /><Button icon="refresh" disabled={checking} onClick={() => runCheck({ refresh: true })}>重新检查</Button></>}
       />
       <GateChain check={check} onAction={gateAction} busy={starting} />
       {check?.uncommitted?.count ? (
@@ -434,7 +457,9 @@ export default function PublishPage() {
           </div>
         </div>
       </div>
-      <ReleaseRecords records={records} onManifest={setManifestFor} onDownload={download} />
+      <ReleaseRecords records={records} ev={ev} onManifest={setManifestFor} onDownload={download} onCompare={setCompareFor} />
+      <EvaluationDialogs ev={ev} tasks={tasks} />
+      <PackageCompare open={!!compareFor} projectId={pid} initialVersion={compareFor || ''} onClose={() => setCompareFor(null)} />
       <DegradeModal open={degOpen} check={check} busy={publishing} onClose={() => setDegOpen(false)} onConfirm={() => publish(true)} />
       <ManifestDrawer rec={manifestFor} onClose={() => setManifestFor(null)} onDownload={download} />
     </ShellP>

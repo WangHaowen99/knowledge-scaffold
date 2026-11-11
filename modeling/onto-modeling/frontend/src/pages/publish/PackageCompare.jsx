@@ -1,6 +1,6 @@
 // 知识包版本对比（契约 PC-01～PC-08，ADR-0095）：两个发布版本、或一个版本和上传的 ZIP，逐文件看差异。只读。
 // 挂载：<PackageCompare open projectId initialVersion onClose />，从发布页「发布记录」打开；发布记录自己取（PB-04）。
-// 关闭时删掉这次建的对比和上传（服务端 24 小时后也会清）；迟到的响应一律丢弃（api/latestRequest）。
+// 关闭时删掉这次建的对比和上传（服务端 24 小时后也会清）；迟到的响应一律丢弃（lib/latestRequest）。
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';

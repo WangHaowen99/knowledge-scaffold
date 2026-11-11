@@ -77,13 +77,6 @@ export function releaseGate(rec) {
   }
   return { chip: ['全部通过', 'blue'], note: '' };
 }
-export function pullView(rec) {
-  const n = rec.pulls?.length || 0;
-  if (!n) return { text: '还没拉取', tone: 'gray', icon: null };
-  const fb = rec.feedback_count ? ` · 回传反馈 ${rec.feedback_count}` : '';
-  return { text: `已拉取${n > 1 ? ` ${n} 次` : ''}${fb}`, tone: 'teal', icon: 'check' };
-}
-export const pullTitle = (rec) => (rec.pulls || []).map((p) => `${p.by_token} · ${p.variant === 'graph' ? '图模式' : '标准包'}`).join('\n');
 
 // EP-19 release.updated：按包版本号合并，新的在前
 export function mergeRelease(list, rec) {
