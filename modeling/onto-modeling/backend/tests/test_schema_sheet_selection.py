@@ -20,6 +20,7 @@ from app.api import deps
 from app.main import app
 from app.services import auth, package_mapping, table_sources
 from app.services.workspace import WorkspaceError, WorkspaceManager
+from tests.test_artifact_verification import verifier  # noqa: F401  产物核验的夹具
 from tests.text_versions import write_text_versions
 
 OWNER, OTHER = "operator_a", "operator_b"
@@ -469,3 +470,45 @@ def test_same_size_same_mtime_replacement_is_detected(manager):
     assert after["sheets"][0]["headers"] == ["id", "code"]
     with pytest.raises(WorkspaceError, match="文件已变化"):
         manager.set_resource_directive(pid, rel, "schema", schema_selection=manual(before, ["sample"]))
+
+
+# ---- 产物轻量核验（verify_artifacts 经 table_profile 读登记表）也只认 Sheet 范围 ----
+
+
+def _verify_workspace(root, included, *, stale=False):
+    from tests.test_artifact_verification import object_doc, put
+
+    def build(wb):
+        wb.active.title = "table_a"
+        wb.active.append(["id_a", "name_a"])
+        wb.create_sheet("table_b").append(["id_b", "name_b"])
+    data = xlsx(build)
+    table = root / "resource" / "table.xlsx"
+    table.parent.mkdir(parents=True)
+    table.write_bytes(data)
+    write_text_versions(root)
+    revision = "0" * 16 if stale else table_sources.rules.file_revision(table)
+    put(root, "resource/materials.json", json.dumps({"resource/table.xlsx": {
+        "purpose": "schema", "schema_selection": table_sources.manual_selection(included, revision)}}))
+    return object_doc, put
+
+
+def test_sheet_scope_limits_lightweight_verification(tmp_path, verifier):
+    object_doc, put = _verify_workspace(tmp_path, ["table_b"])
+    put(tmp_path, "ontology/object/EntityA.md", object_doc().replace("# 数据来源\n无", "# 数据来源\ntable_a"))
+    result = verifier.verify(tmp_path, "objects")
+    assert result["status"] == "failed"
+    assert any(issue["category"] == "列名对账" and "table_a" in issue["message"] for issue in result["issues"])
+
+
+def test_stale_manual_sheet_scope_cannot_pass_lightweight_verification(tmp_path, verifier):
+    object_doc, put = _verify_workspace(tmp_path, ["table_b"], stale=True)
+    put(tmp_path, "ontology/object/EntityA.md", object_doc().replace("# 数据来源\n无", "# 数据来源\ntable_b"))
+    with pytest.raises(ValueError, match="重新确认"):
+        verifier.verify(tmp_path, "objects")
+
+
+def test_explicit_empty_sheet_scope_can_pass_lightweight_verification(tmp_path, verifier):
+    object_doc, put = _verify_workspace(tmp_path, [])
+    put(tmp_path, "ontology/object/EntityA.md", object_doc())
+    assert verifier.verify(tmp_path, "objects")["status"] == "passed"

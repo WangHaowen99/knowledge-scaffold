@@ -82,10 +82,21 @@ def test_unsupported_types_are_rejected_everywhere(api, filename):
 
 def test_service_layer_cannot_be_bypassed(api):
     _, manager, pid = api
+    others = manager.project_root(pid) / "resource" / "others"
     assert manager.save_resource(pid, "others", "资料.TXT", b"x" * LIMIT)["size"] == LIMIT
     with pytest.raises(ApiError) as error:
-        manager.save_resource(pid, "others", "资料.txt", b"x" * (LIMIT + 1))
+        manager.save_resource(pid, "others", "超限.txt", b"x" * (LIMIT + 1))
     assert (error.value.status, error.value.code) == (413, "payload_too_large")
+    assert not (others / "超限.txt").exists()
+    with pytest.raises(ApiError) as unsupported:
+        manager.save_resource(pid, "others", "程序.exe", b"x")
+    assert unsupported.value.code == "unsupported_media_type"
+    assert not (others / "程序.exe").exists()
+    # 被拒的替换不覆盖原文件
+    manager.save_resource(pid, "others", "原件.md", b"original")
+    with pytest.raises(ApiError):
+        manager.save_resource(pid, "others", "原件.md", b"x" * (LIMIT + 1))
+    assert (others / "原件.md").read_bytes() == b"original"
 
 
 def test_frontend_fallback_rules_match_backend():
