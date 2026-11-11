@@ -1664,3 +1664,16 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
 1. **PB-01**：求解契约关的 `requires_acknowledgement` 按评测服务的求解验证结果判定（同 PB-03 的豁免口径）：当前修订最近一次验证通过时为 false，带 `verified_revision`；没登录统一账号不判定。此前只有 PB-03 免确认，界面仍要求勾选。
 2. **PB-03**：发布成功后调评测对接的回写（ADR-0092），响应可带 `evaluation_writeback`。
 
+
+## 2026-11-11 · F18（增量构建按上传资料触发，ADR-0091）
+
+用户 11-05 定，决策见 ADR-0091（原定 F16、ADR-0086，号被数据库与代码仓库连接器占用后改号）。
+
+1. **flow.yaml 顶层 `activation: {event, requires, session}`（新增）**：`event` 现在只有 `materials_added`；`requires` 只能写本包声明的探针；`session` 在本包节点的 `produces` 里。组装结果多 `activations`（包 → 声明）。
+2. **节点 `visible_if: activated`（新增条件）**：包的触发发生过且没处理，或这一轮开着时才出现。**节点 `preempt`（新增）**：节点出现且没做完时，下一步建议先推它。
+3. **探针 `{kernel: session_open, session: <路径>}`（新增）**：这一轮开着。
+4. **`confine.lock_on_activation`（新增）**：触发后、范围确认前，已有本体条目对助手全部只读。
+5. **PL-15**：声明了 `activation` 或用了 `visible_if: activated` 时，静态检查多一项 `activation`。
+6. **增量构建包**：启用后没传新资料时节点不出现，不挡发布，也不限范围；已有条目时上传资料才触发。这一轮发布后自动结束；有改动没核对干净时「结束本轮」被拒。
+7. 触发记录在主线工作区的 `.onto/run/activation.json`，不进 git。FL-01 的响应形状不变，节点集合变化时 `flow_hash` 跟着变。
+8. **core 0.5.0、增量构建 0.2.0**：core 0.5.0 表示内核支持上面 1～4；用到它们的包声明 `depends: {core: ">=0.5"}`。建议条规则版本 `SUGGEST_RULES` 升到 7（多一条 6.5「触发后抢先的步骤」）。

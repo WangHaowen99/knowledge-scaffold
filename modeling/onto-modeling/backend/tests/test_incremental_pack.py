@@ -43,7 +43,7 @@ def _yaml(rel: str) -> dict:
 
 
 def _core() -> tuple[str, str, dict]:
-    return ("core", "0.4.0", _yaml("workspace-toolkit/flow.yaml"))
+    return ("core", "0.5.0", _yaml("workspace-toolkit/flow.yaml"))
 
 
 def _incremental() -> tuple[str, str, dict]:
@@ -93,9 +93,9 @@ def test_pack_is_official_optional_and_passes_static_checks(env):
     assert repository.is_builtin("incremental", version)
     manifest = repository.manifest("incremental", version)
     assert manifest.raw["default_on"] is False and manifest.category == "capability"
-    assert manifest.raw["depends"] == {"core": ">=0.4"}
+    assert manifest.raw["depends"] == {"core": ">=0.5"}
     core_version = repository.latest("core", "stable")
-    assert core_version.startswith("0.4.0")
+    assert core_version.startswith("0.5.0")
     core_names = checks.declared_names(repository.manifest("core", core_version),
                                        repository.version_dir("core", core_version))
     _, items = checks.run(repository.version_dir("incremental", version), core_names=core_names, official=True)
@@ -135,7 +135,7 @@ def test_assembly_puts_the_nodes_between_modeling_and_validation():
     assert nodes["incremental.check"]["stale_on"] == ["object", "operation", "rule", "metric"]
     assert flow["commands"]["incremental-scope"]["node"] == "incremental.scope"
     assert flow["confine"] == {"scope_file": SCOPE_FILE, "pack": "incremental", "node": "incremental.scope",
-                               "entry": "/incremental-scope"}
+                               "entry": "/incremental-scope", "lock_on_activation": True}
     assert "confine" not in assemble.assemble([_core()])
 
 
@@ -156,7 +156,11 @@ def test_enabled_project_walks_the_mainline_and_publish_waits_for_the_check(env)
         path.stem for path in (root / ".claude" / "commands").glob("*.md")}
     assert (root / ".claude" / "scripts" / "incremental_scope.py").is_file()
 
-    # 建模做完，下一步是圈定范围；发布被传播核对挡着
+    # 没传新资料：节点不出现，不挡发布
+    assert _next_command(client, project_id) != "/incremental-scope" and _gate(client, project_id) is None
+    manager.save_resource(project_id, "others", "新资料.md", "# 合成资料\n".encode("utf-8"), author="tester")
+
+    # 建了一部分又传了新资料：下一步是圈定范围；发布被传播核对挡着
     assert _next_command(client, project_id) == "/incremental-scope"
     gate = _gate(client, project_id)
     assert gate["blocking"] and gate["status"] == "not_run" and gate["source"]["pack"] == "incremental"
@@ -195,7 +199,7 @@ def test_enabled_project_walks_the_mainline_and_publish_waits_for_the_check(env)
 
 
 def test_imported_package_goes_straight_to_scoping(env, tmp_path):
-    """导入知识包后建模已完成、资料分析算越过（ADR-0084），启用增量构建后下一步就是圈定范围。"""
+    """导入知识包后建模已完成、资料分析算越过（ADR-0084）；启用增量构建后上传新资料，下一步就是圈定范围（ADR-0091）。"""
     manager, client = env
     source = manager.create_project("来源")["id"]
     _modeled(manager.project_root(source))
@@ -208,6 +212,8 @@ def test_imported_package_goes_straight_to_scoping(env, tmp_path):
     project_id = created.json()["id"]
     assert client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "incremental"}).status_code == 201
     pack_service.prepare_for_message(manager, project_id)
+    assert _next_command(client, project_id) == "/ontology-validate"
+    manager.save_resource(project_id, "others", "新资料.md", "# 合成资料\n".encode("utf-8"), author="tester")
     built = view.build(manager.project_root(project_id))
     nodes = {node["id"]: node for node in built["nodes"]}
     assert nodes["core.research"]["flags"]["backfill"] is True

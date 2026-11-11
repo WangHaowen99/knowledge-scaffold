@@ -226,7 +226,7 @@ def next_step_lines(flow: dict, stage: str) -> list:
 
 SUGGESTIONS_MAX = 3
 # 建议条判定的版本（F7 起按规则表从上往下判、带 check 与 note）：后端只用支持这一版的 flow_state
-SUGGEST_RULES = 6
+SUGGEST_RULES = 7
 
 
 def _item(sid: str, label: str, action: dict, *, reason: str, priority: int, primary: bool = False,
@@ -490,10 +490,21 @@ def _flow_rules(flow: dict, states: dict, context: dict) -> list:
     state_of = {node_id: (item or {}).get('state') for node_id, item in states.items()}
     return [
         (6, _goal_items(flow, nodes, states, context)),
+        (6.5, _preempt_items(nodes, state_of)),
         (7, _stale_items(nodes, state_of, context)),
         (8, _check_items(nodes, state_of, context)),
         (9, _mainline_items(flow, nodes, states, context)),
     ]
+
+
+def _preempt_items(nodes: list, state_of: dict) -> list:
+    """触发后抢先的步骤（`preempt`，ADR-0091）：排在主线前面，没做完不推别的。`preempt` 是字符串时当说明行。"""
+    for node in nodes:
+        if node.get('preempt') and state_of.get(node['id']) in ('ready', 'not_ready', 'blocked'):
+            reason = node['preempt'] if isinstance(node['preempt'], str) else '下一步'
+            return [_item(f"{node['id']}#{index}", action['label'], _action(action), reason=reason, priority=4)
+                    for index, action in enumerate(_node_actions(node)[:SUGGESTIONS_MAX])]
+    return []
 
 
 def overlay_pending(flow: dict, states: dict, local_hits: dict, locked: set | None = None) -> dict:
@@ -516,7 +527,7 @@ def suggest(flow: dict, states: dict, context: dict | None = None, check=None) -
     """统一下一步（详设 6.10）：从上往下判，命中第一条就停；1 个主推、最多 2 个次选（契约 7.8 Suggestions）。
 
     1 运行中不显示；2 有等你回答的问题；3 这一轮出错；4 刚被打断（或没收尾）的那一步；5 合入冲突（其余按 6～10
-    补齐）；6 建模蓝图草案待确认；7 过期的步骤；8 报告待处理、关卡没过；9 主线下一个必经步骤；10 必经都做完。
+    补齐）；6 建模蓝图草案待确认；6.5 包触发后抢先的步骤（preempt）；7 过期的步骤；8 报告待处理、关卡没过；9 主线下一个必经步骤；10 必经都做完。
 
     check(action) → bool：这个动作此刻能不能执行（后端给，和接口校验同一份）；不能的条目不出现，整条规则没有
     能执行的条目时往下一条判。不给时都算能执行（state_helper 在助手副本里算）。
@@ -571,8 +582,8 @@ def suggest(flow: dict, states: dict, context: dict | None = None, check=None) -
                 'note': f"「{label}」在等你回复上面的问题" if label else '助手在等你回复上面的问题'}
     for rule, found in rules:
         if found:
-            # 过期那条按钮上已经写了哪类变了，不再另起一行说明
-            return _shaped('normal', found, False)
+            # 过期那条按钮上已经写了哪类变了，不再另起一行说明；抢先的步骤用包写的 preempt 当说明行
+            return _shaped('normal', found, rule == 6.5 and found[0]['reason'] != '下一步')
     return _shaped('normal', [], False)
 
 

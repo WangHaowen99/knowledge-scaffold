@@ -7,12 +7,12 @@
 # （如 0.1.0+3f9a1c2d）：内容变了就是新版本，包仓库里的版本目录永不改写。
 # 新增命令、子代理、脚本时同步下面的清单（静态检查核对「声明的都存在、存在的都声明」）。
 name: core
-version: 0.4.0
+version: 0.5.0
 kind: capability
 category: capability
 label: 基础建模能力
 description: 资料分析、建模、指标、校验、发布、增量更新、影响分析、业务知识的存放与加载、共享契约库。
-changelog: 流程声明支持范围限定 confine（增量构建包要 0.4 以上）。
+changelog: 流程声明支持按事件触发（activation、visible_if activated、preempt、confine.lock_on_activation），增量构建包要 0.5 以上。
 publisher:
   kind: official
   label: 平台

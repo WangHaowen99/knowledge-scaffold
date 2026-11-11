@@ -389,8 +389,11 @@ def _node_pack_problems(directory: Path, manifest: Manifest, files: list[str],
 def _confine_problems(directory: Path, manifest: Manifest, spec) -> list[str]:
     """flow.yaml 顶层的 confine（ADR-0085）：只写 scope_file；是工作区里的具体文件，不在 ontology/ 和受保护目录下，
     落在本包某个节点的 produces 里。只能有一个包声明这一条在启用组装时查。"""
-    if not isinstance(spec, dict) or set(spec) != {"scope_file"}:
-        return ["confine 只能写 scope_file"]
+    if not isinstance(spec, dict) or "scope_file" not in spec or set(spec) - {"scope_file", "lock_on_activation"}:
+        return ["confine 只能写 scope_file、lock_on_activation"]
+    if not isinstance(spec.get("lock_on_activation", False), bool) or (
+            spec.get("lock_on_activation") and not (_flow_data(directory, manifest) or {}).get("activation")):
+        return ["confine.lock_on_activation 要是布尔值，为 true 时要声明 activation"]
     text = spec.get("scope_file")
     rel = mf.workspace_rel(text)
     if rel is None or rel != text or mf.protected_path(rel) or rel.split("/", 1)[0] == "ontology" or any(
@@ -402,6 +405,35 @@ def _confine_problems(directory: Path, manifest: Manifest, spec) -> list[str]:
     if not any(fnmatch.fnmatchcase(rel, pattern) for pattern in produces):
         return [f"confine.scope_file {rel} 不在本包任何节点的 produces 里"]
     return []
+
+
+def _activation_problems(directory: Path, manifest: Manifest, flow_data: dict) -> list[str]:
+    """flow.yaml 顶层的 activation 和节点的 visible_if: activated、preempt（ADR-0091）。"""
+    nodes, _ = _declared_nodes(directory, manifest)
+    spec = flow_data.get("activation")
+    problems = []
+    if spec in (None, {}):
+        problems += [f"节点 {node.get('id')} 写了 visible_if: activated，但没有声明 activation"
+                     for _, node in nodes if node.get("visible_if") == "activated"]
+    elif not isinstance(spec, dict) or set(spec) != {"event", "requires", "session"}:
+        return ["activation 要写 event、requires、session，不能有别的"]
+    else:
+        if spec["event"] not in mf.ACTIVATION_EVENTS:
+            problems.append(f"activation.event 不认识：{spec['event']}（可用：{'、'.join(mf.ACTIVATION_EVENTS)}）")
+        probes = flow_data.get("probes") or {}
+        requires = spec["requires"] if isinstance(spec["requires"], list) else None
+        missing = [str(name) for name in requires or [] if str(name).lstrip("!") not in probes]
+        if requires is None or missing:
+            problems.append(f"activation.requires 要写本包声明的探针：{'、'.join(missing) or '不是列表'}")
+        rel = mf.workspace_rel(spec["session"])
+        produces = [str(item.get("path") if isinstance(item, dict) else item)
+                    for _, node in nodes for item in node.get("produces") or []]
+        if rel is None or rel != spec["session"] or any(ch in rel for ch in "*?[") or not any(
+                fnmatch.fnmatchcase(rel, pattern) for pattern in produces):
+            problems.append(f"activation.session 要是本包节点 produces 里的具体文件：{spec['session']}")
+    problems += [f"节点 {node.get('id')} 的 preempt 只能用在 visible_if: activated 的节点上"
+                 for _, node in nodes if node.get("preempt") and node.get("visible_if") != "activated"]
+    return problems
 
 
 def _flow_data(directory: Path, manifest: Manifest) -> dict | None:
@@ -510,6 +542,9 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
     if "confine" in flow_data:
         confine = _confine_problems(directory, manifest, flow_data["confine"])
         checks.append(_check("confine", "范围限定声明正确", "fail" if confine else "pass", "；".join(confine)))
+    activation = _activation_problems(directory, manifest, flow_data)
+    if "activation" in flow_data or activation:
+        checks.append(_check("activation", "触发声明正确", "fail" if activation else "pass", "；".join(activation[:10])))
 
     # 守卫：只能追加拒绝型（PreToolUse），不能带自己的 settings.json
     hooks = []

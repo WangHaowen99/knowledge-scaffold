@@ -12,6 +12,8 @@
 - 探针 `{kernel: <条件>}`：完成判定用。工作区里的 flow_state 不认识，恒为否；后端经 `with_kernel_probes`
   包一层补上（`model.flow_state` 调）。探针定义不变，完成判定签名就不会随结果变；
 - 提示规则 `visible_if: <条件>`：不满足时不注入（`packs/registry.prompt_rules`）。
+
+`visible_if: activated` 和探针 `{kernel: session_open, session: <路径>}` 按包声明的触发算（ADR-0091，`flow/activation.py`）。
 """
 
 from __future__ import annotations
@@ -75,6 +77,19 @@ def holds(name: str, root: Path) -> bool:
         return False
 
 
+def _node_visible(node: dict, flow: dict, root: Path) -> bool:
+    condition = node["visible_if"]
+    if condition != "activated":
+        return holds(condition, root)
+    from . import activation
+
+    try:
+        return activation.active(Path(root), node.get("pack"), flow)
+    except Exception:  # noqa: BLE001 - 同 holds：算不出来按不成立
+        _log.warning("节点 %s 的触发状态算不出来", node.get("id"), exc_info=True)
+        return False
+
+
 def apply(flow: dict, root: Path) -> dict:
     """去掉本项目不出现的节点；没有要去掉的原样返回（不复制）。
 
@@ -82,7 +97,7 @@ def apply(flow: dict, root: Path) -> dict:
     nodes = flow.get("nodes") or []
     if not any(node.get("visible_if") for node in nodes):
         return flow
-    hidden = {node["id"] for node in nodes if node.get("visible_if") and not holds(node["visible_if"], root)}
+    hidden = {node["id"] for node in nodes if node.get("visible_if") and not _node_visible(node, flow, root)}
     if not hidden:
         return flow
     from .assemble import flow_hash
@@ -113,8 +128,20 @@ def apply(flow: dict, root: Path) -> dict:
 
 def kernel_probes(flow: dict, root: Path) -> dict[str, bool]:
     """流程里 `{kernel: <条件>}` 探针的结果。"""
-    return {name: holds(spec["kernel"], root) for name, spec in (flow.get("probes") or {}).items()
+    return {name: _kernel_probe(spec, root) for name, spec in (flow.get("probes") or {}).items()
             if isinstance(spec, dict) and spec.get("kernel")}
+
+
+def _kernel_probe(spec: dict, root: Path) -> bool:
+    if spec["kernel"] != "session_open":
+        return holds(spec["kernel"], root)
+    from . import activation
+
+    try:
+        return activation.session_open(Path(root), spec.get("session"))
+    except Exception:  # noqa: BLE001 - 同 holds：算不出来按不成立
+        _log.warning("探针 session_open 算不出来", exc_info=True)
+        return False
 
 
 class _WithKernelProbes:

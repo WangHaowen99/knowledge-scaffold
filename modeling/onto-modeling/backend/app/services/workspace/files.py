@@ -347,7 +347,12 @@ class FilesMixin:
             result = {"path": rel, "size": len(data), "replaced": replaced, "commit": commit_id}
             if detected:
                 result["detected"] = detected
-            return result
+        if commit_id:
+            # 传了新资料：按包声明的触发算一次（ADR-0091）。一批资料的 import_resources 只用于新建项目，没有已建内容
+            from ..flow import activation
+
+            activation.fire(root, "materials_added", commit=commit_id, files=[rel])
+        return result
 
     def import_resources(self, project_id: str, items: list[dict], message: str, author: str = "") -> dict:
         """一批资料落到 resource/ 并合成一个提交（新建项目时的资料，契约 P-02）。

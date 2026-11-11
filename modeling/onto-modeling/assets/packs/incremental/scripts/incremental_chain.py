@@ -222,6 +222,33 @@ def read_scope(root: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def round_open(root: Path, scope: dict | None) -> bool:
+    """这一轮还开着：status 是 active，基线之后没发布过（和内核守卫同一口径，ADR-0091）。"""
+    if not scope or scope.get("status") != "active":
+        return False
+    commit = str((scope.get("baseline") or {}).get("commit") or "")
+    line = _git(root, "for-each-ref", "--sort=-creatordate", "--count=1", "--format=%(*objectname) %(objectname)",
+                "refs/tags/release").split()
+    if not commit or not line or line[0].startswith(commit):
+        return True
+    try:
+        _git(root, "merge-base", "--is-ancestor", commit, line[0])
+    except ChainError:
+        return True
+    return False
+
+
+def uploaded_materials(root: Path) -> list[str]:
+    """触发这一轮的新资料（内核记在主线工作区的 .onto/run/activation.json）；读不到返回空。"""
+    common = (root / _git(root, "rev-parse", "--git-common-dir").strip()).resolve()
+    try:
+        data = json.loads((common.parent / ".onto" / "run" / "activation.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    latch = data.get("incremental") if isinstance(data, dict) else None
+    return [str(item) for item in latch.get("files") or []] if isinstance(latch, dict) else []
+
+
 def require_lock(root: Path, command: str) -> None:
     """这些脚本只在对应命令里跑：范围文件能不能写，靠这把锁和内核守卫一起管。"""
     if not (root / ".ontology-state" / f"lock-{command}.json").is_file():

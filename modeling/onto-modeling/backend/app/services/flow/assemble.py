@@ -243,6 +243,7 @@ def assemble(contributions: list[tuple[str, str, dict]], available_commands: set
         target = (spec or {}).get("node") if isinstance(spec, dict) else None
         if target and target not in known:
             problems.append(f"命令 {command} 指向的节点 {target} 不存在")
+    _activations(contributions, nodes, flow, problems)
     _confine(contributions, nodes, flow, problems)
     if problems:
         raise FlowAssemblyError(problems)
@@ -266,6 +267,51 @@ def assemble(contributions: list[tuple[str, str, dict]], available_commands: set
 _CONFINE_FORBIDDEN = ("ontology", "resource", ".claude", ".onto", ".git", ".ontology-state")
 
 
+def _bad_state_file(text: str) -> bool:
+    parts = text.split("/")
+    return (not text or text.startswith("/") or "\\" in text or any(ch in text for ch in "*?[")
+            or any(part in ("", ".", "..") for part in parts) or parts[0] in _CONFINE_FORBIDDEN)
+
+
+def _in_produces(nodes: list[dict], pack: str, text: str) -> dict | None:
+    return next((node for node in nodes if node.get("pack") == pack and any(
+        fnmatch.fnmatchcase(text, str(item.get("path") if isinstance(item, dict) else item))
+        for item in node.get("produces") or [])), None)
+
+
+def _activations(contributions: list[tuple[str, str, dict]], nodes: list[dict], flow: dict, problems: list[str]) -> None:
+    """包声明的触发（ADR-0091）：校验后写进组装结果的 `activations`（包 → 声明）；没有包声明时去掉。"""
+    from ..packs.manifest import ACTIVATION_EVENTS
+
+    flow.pop("activations", None)
+    out = {}
+    for pack, _, item in contributions:
+        spec = item.get("activation")
+        if spec in (None, {}):
+            continue
+        if not isinstance(spec, dict) or set(spec) != {"event", "requires", "session"}:
+            problems.append(f"{pack} 的 activation 要写 event、requires、session，不能有别的")
+            continue
+        if spec["event"] not in ACTIVATION_EVENTS:
+            problems.append(f"{pack} 的 activation.event 不认识：{spec['event']}（可用：{'、'.join(ACTIVATION_EVENTS)}）")
+        own = item.get("probes") or {}
+        requires = spec["requires"] if isinstance(spec["requires"], list) else None
+        missing = [name for name in requires or [] if str(name).lstrip("!") not in own]
+        if requires is None or missing:
+            problems.append(f"{pack} 的 activation.requires 要写本包声明的探针：{'、'.join(map(str, missing)) or '不是列表'}")
+        session = str(spec["session"] or "")
+        if _bad_state_file(session) or _in_produces(nodes, pack, session) is None:
+            problems.append(f"{pack} 的 activation.session 要是本包节点 produces 里的具体文件：{session or '（空）'}")
+        out[pack] = {"event": spec["event"], "requires": requires or [], "session": session}
+    for node in nodes:
+        if node.get("visible_if") == "activated" and node.get("pack") not in out:
+            problems.append(f"节点 {node['id']} 写了 visible_if: activated，它的包没有声明 activation")
+        if node.get("preempt") and node.get("visible_if") != "activated":
+            problems.append(f"节点 {node['id']} 的 preempt 只能用在 visible_if: activated 的节点上")
+    if out:
+        flow["activations"] = out
+
+
 def _confine(contributions: list[tuple[str, str, dict]], nodes: list[dict], flow: dict, problems: list[str]) -> None:
     """包声明的范围限定（ADR-0085）：校验后写进组装结果的 `confine`；没有包声明时去掉（core 不带这一项）。"""
     flow.pop("confine", None)
@@ -277,22 +323,23 @@ def _confine(contributions: list[tuple[str, str, dict]], nodes: list[dict], flow
         return
     pack, spec = declared[0]
     text = str(spec.get("scope_file") or "") if isinstance(spec, dict) else ""
-    if not isinstance(spec, dict) or set(spec) != {"scope_file"}:
-        problems.append(f"{pack} 的 confine 只能写 scope_file")
+    if not isinstance(spec, dict) or "scope_file" not in spec or set(spec) - {"scope_file", "lock_on_activation"}:
+        problems.append(f"{pack} 的 confine 只能写 scope_file、lock_on_activation")
         return
-    parts = text.split("/")
-    if (not text or text.startswith("/") or "\\" in text or any(ch in text for ch in "*?[")
-            or any(part in ("", ".", "..") for part in parts) or parts[0] in _CONFINE_FORBIDDEN):
+    lock = spec.get("lock_on_activation", False)
+    if not isinstance(lock, bool) or (lock and pack not in (flow.get("activations") or {})):
+        problems.append(f"{pack} 的 confine.lock_on_activation 要是布尔值，为 true 时本包要声明 activation")
+        return
+    if _bad_state_file(text):
         problems.append(f"{pack} 的 confine.scope_file 要是工作区里的具体文件，不能在 ontology/ 或受保护目录下：{text or '（空）'}")
         return
-    owner = next((node for node in nodes if node.get("pack") == pack and any(
-        fnmatch.fnmatchcase(text, str(item.get("path") if isinstance(item, dict) else item))
-        for item in node.get("produces") or [])), None)
+    owner = _in_produces(nodes, pack, text)
     if owner is None:
         problems.append(f"{pack} 的 confine.scope_file {text} 不在本包任何节点的 produces 里")
         return
     flow["confine"] = {"scope_file": text, "pack": pack, "node": owner["id"],
-                       "entry": str((owner.get("entry") or {}).get("command") or "").strip()}
+                       "entry": str((owner.get("entry") or {}).get("command") or "").strip(),
+                       **({"lock_on_activation": True} if lock else {})}
 
 
 def _apply_aliases(nodes: list[dict], flow: dict, aliases: dict[str, str]) -> None:

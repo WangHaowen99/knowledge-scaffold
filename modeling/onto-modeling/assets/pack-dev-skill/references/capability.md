@@ -282,7 +282,8 @@ probes:
 | `writes` | 节点会改但不算产出的路径 |
 | `optional` | `true` 表示可以不做，下游不等它 |
 | `progress` | `false` 表示不计入进度 |
-| `visible_if` | 内核条件名，不成立时节点不在这个项目的流程里：`evidence_sources`（项目有授权的数据源）、`evidence_snapshot`（授权的源有完整快照）。提示规则也能写；探针写 `{kernel: <条件名>}` |
+| `visible_if` | 内核条件名，不成立时节点不在这个项目的流程里：`evidence_sources`（项目有授权的数据源）、`evidence_snapshot`（授权的源有完整快照）。提示规则也能写；探针写 `{kernel: <条件名>}`；`activated`（本包声明的 `activation` 触发了，或这一轮开着） |
+| `preempt` | 只能和 `visible_if: activated` 一起用：节点出现且没做完时，下一步建议先推它。写字符串时当说明行 |
 
 ## 11. 节点包：四类节点
 
@@ -341,6 +342,23 @@ probes:
 
 **范围限定 `confine`（`flow.yaml` 顶层，可选）。** 写 `confine: {scope_file: <包的状态目录>/scope.json}`：范围文件合入主线、`status` 是 `active` 时，基线提交（`baseline.commit`）里有、`editable` 里没有的本体条目助手不能写也不能删，没有命令在跑时也一样；新增条目不限，网页上人工编辑不限。只认主线上的范围文件，副本里改它扩大不了范围；范围文件只能在它所属节点的命令运行时写。停用包就解除。一次装配只能有一个包声明，范围文件要落在本包某个节点的 `produces` 里。增量构建包（`incremental`）是现成的例子。
 
+**触发 `activation`（`flow.yaml` 顶层，可选）。** 节点不该一直在流程里、要等某件事发生才出现时用：
+
+```yaml
+activation:
+  event: materials_added         # 内核给的事件，现在只有这一个：用户在平台上传了资料
+  requires: [my_has_entries]     # 事件发生时要满足的探针，只能写本包声明的
+  session: my-pack/scope.json    # 这一轮的状态文件，要在本包节点的 produces 里
+confine: {scope_file: my-pack/scope.json, lock_on_activation: true}  # 可选：触发后、范围确认前已有条目全部只读
+nodes:
+  - id: my-pack.scope
+    visible_if: activated        # 只在触发后、这一轮开着时出现
+    preempt: 上传了新资料，先圈定范围   # 可选：下一步先推它
+```
+
+状态文件是 JSON：`status` 是 `active` 算这一轮开着；`covers`（确认时的主线提交）包含触发时的提交算这次触发处理过；`baseline.commit` 之后发布过算这一轮结束。
+探针写 `{kernel: session_open, session: <路径>}` 判断这一轮开没开着，节点完成判定带上它，上一轮留下的文件才不会让新一轮的节点直接算完成。启用插件之前上传的资料不触发。
+
 **`autobuild: false`** 让自主构建跳过这个节点，用于要用户先给输入才能做的节点。
 
 **动作的条件 `when`**（`actions` 里每一项可选）：探针名列表，`!名字` 取反，都成立时这个动作才出现在建议条和面板上，如 `{label: 追加分析, command: …, when: [research_report]}`。用到的探针要在本包或 core 的 `probes` 里声明。
@@ -393,6 +411,7 @@ probes:
 | `requires_flow` 不满足 | `node_pack` | 版本要求超过仓库里的 core | 放宽范围 |
 | 写入范围不对 | `write_scope` | `produces`、`writes` 碰受保护目录，或 `script.output`、`decision.record` 没写进 `produces` | 改到 `reports/` 或 `ext/<包名>/`，补进 `produces` |
 | 范围限定写错 | `confine` | 写了 `scope_file` 以外的键、路径带通配或在 `ontology/`、受保护目录下、不在本包节点的 `produces` 里 | 改成本包状态目录下的具体文件，并写进范围节点的 `produces` |
+| 触发写错 | `activation` | 事件不认识、`requires` 不是本包声明的探针、`session` 不在本包节点的 `produces` 里、写了 `visible_if: activated` 没声明 `activation`、`preempt` 用在别的节点上 |
 | 入口命令不属于本包 | `node_pack`、`node_entry` | `entry.command` 或钩子命令写了别的包 | 改成本包命令 |
 | 启用返回 409，提示路径同时来自两个包 | `pack_incompatible` | 两个包落到同一路径 | 文件名带包名前缀 |
 | 启用返回 422，提示同时声明输出 | `flow_assembly_failed` | `produces` 通配太宽 | 改成精确路径 |
