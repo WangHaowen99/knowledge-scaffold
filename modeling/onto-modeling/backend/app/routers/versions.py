@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..api import deps
 from ..api.errors import ApiError
-from ..services import mainline, version_views, workspace_labels
+from ..services import mainline, version_revert, version_views, workspace_labels
 from ..services.workspace.errors import WorkspaceError
 from ..services.workspace.layout import _content_revision
 
@@ -57,7 +57,27 @@ def _summary(message: str) -> str:
     return workspace_labels.humanize(text) or message
 
 
-def _version(entry: dict, head: str, autobuild: dict | None = None) -> dict:
+def _releases(project_id: str, entries: list[dict]) -> tuple[dict[str, str], str]:
+    """发布记录归到版本上（ADR-0094）：{提交: 版本号}，同一提交发过几次取最新的。记录没带提交时按发布时间
+    归到当时的最新版本。读不到（知识包 Hub 不可用等）时版本照列，第二项是给界面的原因。"""
+    from ..services import publish
+
+    try:
+        rows = publish.releases(deps.workspaces, project_id)
+    except Exception as exc:  # noqa: BLE001 - 发布记录读不到不挡版本列表
+        return {}, str(exc) if isinstance(exc, (WorkspaceError, ApiError)) else "发布记录读取失败"
+    out: dict[str, str] = {}
+    for row in rows:  # 从新到旧
+        commit = row.get("commit")
+        if not commit and isinstance(row.get("released_at"), (int, float)):
+            commit = next((entry["commit"] for entry in entries  # entries 从新到旧
+                           if entry["time"] is not None and entry["time"] <= row["released_at"]), None)
+        if commit:
+            out.setdefault(commit, row["version"])
+    return out, ""
+
+
+def _version(entry: dict, head: str, autobuild: dict | None = None, releases: dict | None = None) -> dict:
     trailer = entry["trailer"]
     slice_run = (autobuild or {}).get(trailer.get("Onto-Changeset") or "") if entry["source"] == "autobuild" else None
     return {
@@ -70,7 +90,7 @@ def _version(entry: dict, head: str, autobuild: dict | None = None) -> dict:
         "author": entry["author"],
         "summary": _summary(entry["message"]),
         "tags": entry["tags"],
-        "release": entry["release"],
+        "release": (releases or {}).get(entry["commit"]) or entry["release"],
         "current": entry["commit"] == head,
         "changeset_id": trailer.get("Onto-Changeset"),
         "run": (slice_run or {}).get("run"),
@@ -94,11 +114,13 @@ def list_versions(project_id: str, request: Request, source: str = "", cursor: s
     state = mainline.state(root)
     entries = deps.workspaces.versions(project_id)
     autobuild = _autobuild_slices(project_id)
-    items = [_version(entry, state["head"], autobuild) for entry in entries if not wanted or entry["source"] in wanted]
+    releases, release_error = _releases(project_id, entries)
+    items = [_version(entry, state["head"], autobuild, releases)
+             for entry in entries if not wanted or entry["source"] in wanted]
     page = deps.page(items, cursor, limit, {"source": sorted(wanted)})
     return {
         "items": page["items"], "next_cursor": page["next_cursor"], "total": page["total"],
-        "head": state["head"], "current_version_label": state["version_label"],
+        "head": state["head"], "current_version_label": state["version_label"], "release_error": release_error,
     }
 
 
@@ -162,9 +184,12 @@ def revert_preview(project_id: str, request: Request, commit: str = ""):
     if target == head:
         raise ApiError("nothing_to_revert", "当前内容与该版本一致，无需回退", 400)
     try:
-        return version_views.revert_preview(root, target, head)
+        deps.workspaces.revert_target(root, target)
+        view = version_views.revert_preview(root, target, head)
     except WorkspaceError as exc:
         raise ApiError(exc.code or "invalid_argument", str(exc), exc.status) from exc
+    found = version_revert.blockers(deps.workspaces, project_id)
+    return {**view, "ready": not found, "blockers": found}
 
 
 @router.get("/{commit}/files")
@@ -202,19 +227,24 @@ def version_detail(project_id: str, commit: str, request: Request):
     root = deps.require_owner(project_id, request)
     target = _resolve(root, commit)
     entry = _on_mainline(project_id, target)
-    view = _version(entry, mainline.state(root)["head"])
+    view = _version(entry, mainline.state(root)["head"],
+                    releases=_releases(project_id, deps.workspaces.versions(project_id))[0])
     return {**view, "changes": version_views.changes(deps.workspaces, root, target), "run": None}
 
 
 @router.post("/revert")
 async def revert(project_id: str, request: Request):
-    """整树恢复到目标版本，之后新增的文件一并删除；生成新版本，历史保留。"""
+    """业务内容整份恢复到目标版本，之后新增的文件一并删除；生成新版本，历史保留。
+
+    带 expected_head（V-05 给的）时，预览之后主线前进了就 409 head_moved；挡住回退的情况同 V-05 的 blockers。"""
     from ..services.autobuild import store as autobuild_store
 
     root = deps.require_writable(project_id, request)
     autobuild_store.ensure_no_run(project_id)
     body = await deps.json_body(request)
-    result = deps.workspaces.revert_to(project_id, str(body.get("commit") or ""), author=deps.actor(request))
+    result = await version_revert.apply(deps.workspaces, project_id, str(body.get("commit") or ""),
+                                        expected_head=str(body.get("expected_head") or ""),
+                                        author=deps.actor(request))
     target = result["reverted_to"]
     return {
         "commit": result["commit"],

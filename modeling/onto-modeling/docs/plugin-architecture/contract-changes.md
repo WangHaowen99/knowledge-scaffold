@@ -1606,6 +1606,15 @@ develop 新增的 `GET /api/projects/{pid}/studio/updates`、`GET /api/projects/
 1. **EC-04 `session.error`** 多一个字段 `reason`：`"stall_timeout"` 表示判定执行超时，其余出错为 `null`。
 2. **子任务卡**：这一轮收尾时还没终态的子任务显示「已中断」，`reason` 为 `stall_timeout` 时显示「执行超时」；下一轮开始后不再转圈。
 
+## 2026-11-11 · 版本回退只恢复业务内容、加并发保护；版本列表带发布记录（吸收 develop !567、!570，ADR-0094）
+
+1. **V-05**：响应加 `expected_head`、`ready`、`blockers: [{code, message, details}]`；`files` 只列业务内容（不含 `.gitignore` 等仓库配置、助手装配、目录 `index.md`）；不在当前版本历史里的提交回 `invalid_commit`。
+2. **V-06**：请求加可选的 `expected_head`，不符回 `409 head_moved`；新增错误 `session_busy`、`studio_draft_pending`、`workspace_dirty`（与 V-05 的 blockers 同一组判断，取第一条）。主线有没提交的业务改动时由「不带进提交、照常回退」改为拒绝。回退之后助手会话回收、全部对话续接点作废。资料随回退恢复（不变）。
+3. **V-01**：响应加 `release_error`；`Version.release` 改取发布记录（版本号来自 Hub），读不到时退回本地标签，版本照列。
+4. **错误码**：新增 `studio_draft_pending`、`workspace_dirty`（第 2 章）。
+5. 为什么：develop 的回退语义（只恢复业务内容、有人在改时挡住、预览后主线前进不执行）落到本分支已有的 V-05/V-06；develop 的 `/history` 合并时间线不另起，发布标在版本行上（设计稿第五版）。
+6. **MCP（M-03、M-08）**：新增 scope `project.version.revert`（read、change 两个工具集都认）与三个版本工具 `list_project_versions`、`preview_project_version_revert`、`revert_project_version`（先预览拿 `preview_id`，再 `confirm: true` 执行；凭据只在进程内存）；`revert_project_version` 在 `tools/list` 里标 `destructiveHint`、`idempotentHint`。输入输出与错误码沿用 develop 的同名工具。
+
 ## 2026-11-11 · 正式版本以知识包 Hub 为准，求解验证移到评测服务（ADR-0091）
 
 吸收 develop 的 Hub 发布与求解验证迁移（develop-sync P1）。

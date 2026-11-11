@@ -97,8 +97,8 @@ export function mcpOverview(pid, { archived = false } = {}) {
     local_only: true,
     endpoints: mcpEndpoints(pid),
     toolsets: [
-      { name: 'read', scope_requirement: 'ontology.read', accepted_scopes: ['ontology.read'], tools: READ_TOOLS },
-      { name: 'change', scope_requirement: 'ontology.change.validate', accepted_scopes: ['ontology.change.validate', 'ontology.change.apply'], tools: archived ? [] : CHANGE_TOOLS },
+      { name: 'read', scope_requirement: 'ontology.read', accepted_scopes: ['ontology.read', 'project.version.revert'], tools: READ_TOOLS },
+      { name: 'change', scope_requirement: 'ontology.change.validate', accepted_scopes: ['ontology.change.validate', 'ontology.change.apply', 'project.version.revert'], tools: archived ? [] : CHANGE_TOOLS },
     ],
     pack_tools: [
       { name: 'flow.get', scope: 'ontology.read', read_only: true, pack: 'core' },
@@ -108,6 +108,7 @@ export function mcpOverview(pid, { archived = false } = {}) {
       { scope: 'ontology.read', description: '列出、读取对象 / 操作 / 规则' },
       { scope: 'ontology.change.validate', description: '提交改动前先校验' },
       { scope: 'ontology.change.apply', description: '真正写入，走写入路径并保存版本' },
+      { scope: 'project.version.revert', description: '读取项目版本与执行版本回退' },
     ],
     token_policy: { min_ttl_s: 300, default_ttl_s: 86400, max_ttl_s: 2592000, supports_non_expiring: true },
     protocol_versions: ['2025-06-18', '2025-03-26'],

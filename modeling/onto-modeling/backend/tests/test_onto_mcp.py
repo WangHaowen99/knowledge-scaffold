@@ -162,9 +162,15 @@ def test_management_status_is_onto_local_without_modeling(env, monkeypatch):
     }
     assert body["token_policy"] == {"min_ttl_s": 300, "default_ttl_s": 86400, "max_ttl_s": 2592000, "supports_non_expiring": True}
     assert [toolset["name"] for toolset in body["toolsets"]] == ["read", "change"]
-    # 读工具集：6 个本体读工具 + 插件产物的 artifact_list、artifact_get（契约 M-08）
-    assert len(body["toolsets"][0]["tools"]) == 8
-    assert {"artifact_list", "artifact_get"} <= set(body["toolsets"][0]["tools"])
+    # 读工具集：6 个本体读工具 + 插件产物的 artifact_list、artifact_get + 版本列表（契约 M-08）
+    assert len(body["toolsets"][0]["tools"]) == 9
+    assert {"artifact_list", "artifact_get", "list_project_versions"} <= set(body["toolsets"][0]["tools"])
+    assert {"preview_project_version_revert", "revert_project_version"} <= set(body["toolsets"][1]["tools"])
+    # 版本回退 scope 两个工具集都认，目录里有它的说明（M-03 新建 Token 时可选）
+    catalog = {item["scope"]: item["description"] for item in body["scope_catalog"]}
+    assert catalog["project.version.revert"] and catalog["ontology.change.apply"] == "保存修改"
+    accepted = {toolset["name"]: toolset["accepted_scopes"] for toolset in body["toolsets"]}
+    assert "project.version.revert" in accepted["read"] and "project.version.revert" in accepted["change"]
     templates = body["client_config_templates"]
     assert "<READ_TOKEN>" in templates["read"] and "<CHANGE_TOKEN>" in templates["change"]
     assert json.loads(templates["full"])["mcpServers"].keys() == {"modeling-read", "modeling-change"}
@@ -462,3 +468,135 @@ def test_real_sse_transport_delivers_rpc_and_rejects_wrong_principal(env, monkey
         server.should_exit = True
         thread.join(timeout=5)
         sock.close()
+
+
+# ---- 版本回退工具（ADR-0094；移植 develop !570 的版本工具测试） ----
+
+
+@pytest.fixture
+def version_env(env, tmp_path, monkeypatch):
+    from app import config
+    from app.services import version_revert
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "state")
+    version_revert._previews.clear()
+    return env
+
+
+def run(coro):
+    import asyncio
+
+    return asyncio.run(coro)
+
+
+def test_version_tools_preview_apply_are_owner_bound_and_idempotent(version_env):
+    from app.services import version_revert
+
+    manager, meta, _root = version_env
+    first = call(version_env, "list_project_versions", limit=1)
+    assert first["current_version"] >= 2 and first["items"][0]["current"] is True
+    assert first["next_cursor"] is not None
+    second = call(version_env, "list_project_versions", limit=1, cursor=first["next_cursor"])
+    assert second["items"][0]["version"] == first["items"][0]["version"] - 1
+
+    target = second["items"][0]["version"]
+    preview = call(version_env, "preview_project_version_revert", target_version=target)
+    assert preview["ready"] and preview["preview_id"]
+    assert sorted(preview["changes"]["deleted"]) == ["ontology/object/synthetic_a.md", "ontology/object/synthetic_b.md"]
+    result = run(version_revert.apply_preview(manager, meta["id"], preview["preview_id"], "", "operator_a"))
+    assert result["reverted_to_version"] == target
+    replay = run(version_revert.apply_preview(manager, meta["id"], preview["preview_id"], "", "operator_a"))
+    assert replay["commit"] == result["commit"]
+    assert manager.versions(meta["id"])[0]["n"] == result["created_version"]
+
+
+def test_applied_version_preview_expires_after_replay_window(version_env):
+    from app.services import version_revert
+
+    manager, meta, _root = version_env
+    current = manager.versions(meta["id"])[0]["n"]
+    preview = call(version_env, "preview_project_version_revert", target_version=current - 1)
+    run(version_revert.apply_preview(manager, meta["id"], preview["preview_id"], "", "operator_a"))
+    expires = version_revert._previews[preview["preview_id"]]["expires"]
+    assert expires > preview["expires_at"]  # 执行过的留一小时供重放
+    with version_revert._previews_lock:
+        version_revert._purge(expires + 1)
+    assert preview["preview_id"] not in version_revert._previews
+
+
+def test_version_preview_cache_enforces_capacity(version_env, monkeypatch):
+    from app.services import version_revert
+
+    monkeypatch.setattr(version_revert, "MAX_PREVIEWS", 2)
+    current = call(version_env, "list_project_versions", limit=1)["current_version"]
+    first = call(version_env, "preview_project_version_revert", target_version=current - 1)
+    second = call(version_env, "preview_project_version_revert", target_version=current - 1)
+    call(version_env, "preview_project_version_revert", target_version=current - 1)
+    assert len(version_revert._previews) == 2
+    assert first["preview_id"] not in version_revert._previews
+    assert second["preview_id"] in version_revert._previews
+
+
+def test_version_preview_rejects_wrong_token_and_stale_head(version_env):
+    from app.services import version_revert
+
+    manager, meta, root = version_env
+    current = manager.versions(meta["id"])[0]["n"]
+    preview = call(version_env, "preview_project_version_revert", target_version=current - 1)
+    with pytest.raises(McpError) as exc:
+        run(version_revert.apply_preview(manager, meta["id"], preview["preview_id"], "other-token", "operator_a"))
+    assert exc.value.code == "REVERT_PREVIEW_FORBIDDEN"
+    (root / "ontology/object/synthetic_c.md").write_text("synthetic change", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-m", "test: advance version")
+    with pytest.raises(McpError) as exc:
+        run(version_revert.apply_preview(manager, meta["id"], preview["preview_id"], "", "operator_a"))
+    assert exc.value.code == "REVISION_CONFLICT"
+    with pytest.raises(McpError) as exc:
+        call(version_env, "revert_project_version", preview_id=preview["preview_id"], confirm=True)
+    assert exc.value.code == "ASYNC_TOOL_REQUIRED"
+
+
+def test_version_tools_require_dedicated_scopes(version_env):
+    manager, meta, _ = version_env
+    issued = tokens.issue(manager, meta, {"name": "read-only", "scopes": ["ontology.read"]}, {"sub": "operator_a"})
+    with pytest.raises(McpError) as exc:
+        tokens.verify(manager, meta["id"], issued["token"], "change")
+    assert exc.value.code == "MCP_SCOPE_FORBIDDEN"
+    issued = tokens.issue(manager, meta, {"name": "version", "scopes": ["project.version.revert"]}, {"sub": "operator_a"})
+    for toolset in ("read", "change"):
+        assert tokens.verify(manager, meta["id"], issued["token"], toolset)["scopes"] == ["project.version.revert"]
+
+
+def test_version_tools_over_http_need_confirmation_and_report_destructive(version_env, monkeypatch):
+    manager, meta, _root = version_env
+    monkeypatch.setattr(routes, "manager", lambda: manager)
+    app = FastAPI()
+    app.include_router(routes.transport_router)
+    client = TestClient(app)
+    raw = tokens.issue(manager, meta, {"name": "version", "scopes": ["project.version.revert"]},
+                       {"sub": "operator_a"})["token"]
+    headers = {"Authorization": "Bearer " + raw}
+
+    def rpc(group, method, params=None):
+        body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}
+        return client.post(f"/api/v1/onto-mcp/{meta['id']}/{group}/mcp", headers=headers, json=body).json()["result"]
+
+    assert [tool["name"] for tool in rpc("read", "tools/list")["tools"]] == ["list_project_versions"]
+    change = {tool["name"]: tool for tool in rpc("change", "tools/list")["tools"]}
+    assert set(change) == {"preview_project_version_revert", "revert_project_version"}
+    assert change["revert_project_version"]["annotations"] == {
+        "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True}
+    assert change["preview_project_version_revert"]["annotations"]["readOnlyHint"] is True
+
+    current = rpc("read", "tools/call", {"name": "list_project_versions", "arguments": {"limit": 1}})
+    target = current["structuredContent"]["current_version"] - 1
+    preview = rpc("change", "tools/call", {"name": "preview_project_version_revert",
+                                           "arguments": {"target_version": target}})["structuredContent"]
+    unconfirmed = rpc("change", "tools/call", {"name": "revert_project_version",
+                                               "arguments": {"preview_id": preview["preview_id"], "confirm": False}})
+    assert unconfirmed["isError"] and unconfirmed["structuredContent"]["code"] == "CONFIRMATION_REQUIRED"
+    done = rpc("change", "tools/call", {"name": "revert_project_version",
+                                        "arguments": {"preview_id": preview["preview_id"], "confirm": True}})
+    assert not done["isError"] and done["structuredContent"]["reverted_to_version"] == target
+    assert manager.versions(meta["id"])[0]["source"] == "revert"

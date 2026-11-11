@@ -121,7 +121,7 @@ export function createApi(client) {
     versionFilesUrl: (id, commit, query) => client.withToken(client.url(`${P(id)}/versions/${enc(commit)}/files`, { ...query, download: 1 })), // V-03
     versionDiff: (id, query) => client.get(`${P(id)}/versions/diff`, { query }), // V-04
     revertPreview: (id, commit) => client.get(`${P(id)}/versions/revert-preview`, { query: { commit } }), // V-05
-    revertVersion: (id, commit) => client.post(`${P(id)}/versions/revert`, { commit }), // V-06
+    revertVersion: (id, commit, expectedHead) => client.post(`${P(id)}/versions/revert`, { commit, ...(expectedHead ? { expected_head: expectedHead } : {}) }), // V-06
     tagVersion: (id, commit, label) => client.post(`${P(id)}/versions/tags`, { commit, label }), // V-07
     deleteVersionTag: (id, name) => client.del(`${P(id)}/versions/tags/${enc(name)}`), // V-08
 

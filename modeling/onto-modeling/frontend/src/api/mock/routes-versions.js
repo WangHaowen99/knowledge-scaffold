@@ -25,6 +25,14 @@ export function register(ctx) {
   });
   const isMain = (pid) => pid === F.MAIN_PID;
   const running = (pid) => isMain(pid) && stageOf?.(pid) === 'l4' && sc.run !== 'ended';
+  // 挡住回退的情况（V-05 blockers，V-06 取第一条报错）
+  const revertBlockers = (pid) => {
+    const lock = scopeOf(pid);
+    const out = [];
+    if (lock.state === 'assistant_running' || lock.state === 'pending_confirm') out.push({ status: 423, code: 'write_scope_locked', message: lock.reason_text || '助手这一轮还没结束', details: lock });
+    if (running(pid) || lock.state === 'autobuild_slice') out.push({ status: 409, code: 'autobuild_running', message: '自主构建运行中', details: { run_id: 'run-3' } });
+    return out;
+  };
 
   // ---------- 当前文件：Studio 分组的 F-02（null = 没有这个文件，undefined = 读不到） ----------
   async function studioFile(pid, path, init) {
@@ -164,6 +172,7 @@ export function register(ctx) {
     return {
       target: { commit: target.commit, version_label: target.version_label },
       next_version_label: `v${majorOf(head.version_label)}.${head.n + 1}`,
+      expected_head: head.commit,
       files,
       undone_versions: after.map((v) => v.version_label),
       packs_lock_changes: after.filter((v) => v.source === 'plugin' && v.trailer?.packs).map((v) => {
@@ -204,7 +213,7 @@ export function register(ctx) {
     return json(200, {
       items: items.slice(offset, offset + limit).map(publicVersion),
       next_cursor: offset + limit < items.length ? String(offset + limit) : null,
-      total: items.length, head: head.commit, current_version_label: head.version_label,
+      total: items.length, head: head.commit, current_version_label: head.version_label, release_error: '',
     });
   });
 
@@ -246,15 +255,17 @@ export function register(ctx) {
     const target = resolve(list, query.get('commit'));
     if (!target) return err(400, 'invalid_commit', '版本号不合法', null);
     if (target.current) return err(400, 'nothing_to_revert', '当前内容与目标版本一致', null);
-    return json(200, await revertPreview(m[1], list, target, init));
+    const blockers = revertBlockers(m[1]).map(({ status, ...b }) => b);
+    return json(200, { ...(await revertPreview(m[1], list, target, init)), ready: !blockers.length, blockers });
   });
   on('POST', '/projects/([^/]+)/versions/revert', async ({ m, body, user, init }) => {
     const pid = m[1];
-    const lock = scopeOf(pid);
-    if (lock.state === 'assistant_running' || lock.state === 'pending_confirm') return err(423, 'write_scope_locked', '有未确认的助手修改', lock);
-    if (running(pid) || lock.state === 'autobuild_slice') return err(409, 'autobuild_running', '自主构建运行中', { run_id: 'run-3' });
+    const [block] = revertBlockers(pid);
+    if (block) return err(block.status, block.code, block.message, block.details);
     const list = await history(pid, init);
     if (!list) return err(404, 'project_not_found', '项目不存在');
+    const head = list[list.length - 1];
+    if (body.expected_head && body.expected_head !== head.commit) return err(409, 'head_moved', '预览之后有了新版本，请重新预览', { head: head.commit });
     const target = resolve(list, body.commit);
     if (!target) return err(400, 'invalid_commit', '版本号不合法', null);
     if (target.current) return err(400, 'nothing_to_revert', '当前内容与目标版本一致', null);

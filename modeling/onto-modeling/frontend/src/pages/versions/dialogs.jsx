@@ -7,8 +7,10 @@ import { errorText, formatBytes } from '../../api/errors.js';
 import {
   Button, Chip, Drawer, Field, Icon, Inp, Modal, Note, Select,
 } from '../../ui/index.jsx';
+import { hasWorkspaceDirty } from '../../lib/workspaceDirty.js';
 import {
-  fileGroups, fmtStamp, pathLabel, revertBlock, revertChips, revertCountText, revertErrorText, tagLabelError, undoneText,
+  blockerView, fileGroups, fmtStamp, pathLabel, revertBlock, revertChips, revertCountText, revertErrorText, tagLabelError,
+  undoneText,
 } from './versionsModel.js';
 
 const PACK_LABEL = { 'industry-retail': '零售行业包', core: '内核' };
@@ -109,13 +111,15 @@ export function DeleteTagModal({ tag, onClose, onDone }) {
   );
 }
 
-// 回退被挡住时（合入冲突、助手在跑、自主构建中）的去处
-function BlockAction({ action, lock }) {
+// 回退被挡住时（合入冲突、助手在跑、自主构建中、Studio 草稿）的去处；没有去处的只给说明
+function BlockAction({ action, lock, entry }) {
   const { pid } = useProject();
   const conv = lock?.conversation_id ? { c: lock.conversation_id } : undefined;
   if (action === 'confirm') return <Button size="xs" kind="primary" icon="merge" onClick={() => navigate(pagePath('inbox', pid))}>去处理</Button>;
   if (action === 'run') return <Button size="xs" onClick={() => navigate(pagePath('l4-run', pid))}>查看运行</Button>;
-  return <Button size="xs" onClick={() => navigate(pagePath('wb-l2', pid), conv)}>回到对话</Button>;
+  if (action === 'studio') return <Button size="xs" onClick={() => navigate(pagePath('studio-table', pid), entry ? { entry } : undefined)}>去处理</Button>;
+  if (action === 'chat') return <Button size="xs" onClick={() => navigate(pagePath('wb-l2', pid), conv)}>回到对话</Button>;
+  return null;
 }
 
 export function RevertModal({ version, onClose, onDone }) {
@@ -124,31 +128,38 @@ export function RevertModal({ version, onClose, onDone }) {
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [round, setRound] = useState(0);
+  useEffect(() => { setError(null); }, [version]);
   useEffect(() => {
     setPreview(null);
-    setError(null);
     if (!version) return undefined;
     let alive = true;
     api.revertPreview(pid, version.commit).then((p) => alive && setPreview(p)).catch((e) => alive && setError({ text: errorText(e) }));
     return () => { alive = false; };
-  }, [api, pid, version]);
-  const block = revertBlock(scope);
+  }, [api, pid, version, round]);
   const submit = async () => {
     setBusy(true);
     try {
-      const r = await api.revertVersion(pid, version.commit);
+      const r = await api.revertVersion(pid, version.commit, preview.expected_head);
       toast(`已回退并生成版本 ${r.version_label}`, 'undo');
       onDone?.(r);
     } catch (e) {
-      const lockBlock = e.code === 'write_scope_locked' ? revertBlock(e.details) : e.code === 'autobuild_running' ? revertBlock({ state: 'autobuild_slice' }) : null;
-      setError({ text: revertErrorText(e, errorText(e)), block: lockBlock, lock: e.details });
+      // 预览之后有了新版本：重新预览，要再确认一次
+      if (e.code === 'head_moved') setRound((n) => n + 1);
+      const block = e.code === 'head_moved' || e.code === 'nothing_to_revert' ? null : blockerView(e);
+      setError({ text: revertErrorText(e, errorText(e)), block, lock: e.details, soft: e.code === 'head_moved' });
     } finally {
       setBusy(false);
     }
   };
   const label = version?.version_label || '';
   const chips = revertChips(preview?.files);
-  const shownBlock = block || error?.block;
+  const first = preview?.blockers?.[0];
+  const liveLock = revertBlock(scope);
+  const shownBlock = (liveLock && { ...liveLock, lock: scope })
+    || (hasWorkspaceDirty() && blockerView({ code: 'unsaved_editor' }))
+    || (first && { ...(blockerView(first) || { text: first.message, action: null }), lock: first.details })
+    || (error?.block && { ...error.block, lock: error.lock });
   return (
     <Modal
       open={!!version}
@@ -168,10 +179,10 @@ export function RevertModal({ version, onClose, onDone }) {
           <div className="note amber">
             <Icon name="lock" />
             <div className="grow">{shownBlock.text}</div>
-            <BlockAction action={shownBlock.action} lock={error?.lock || scope} />
+            <BlockAction action={shownBlock.action} lock={shownBlock.lock || scope} entry={shownBlock.entry} />
           </div>
         ) : null}
-        {error && !error.block ? <Note tone="red">{error.text}</Note> : null}
+        {error && !error.block ? <Note tone={error.soft ? 'gray' : 'red'}>{error.text}</Note> : null}
         {!preview && !error ? <div className="muted">正在计算要恢复的文件…</div> : null}
         {preview ? (
           <>

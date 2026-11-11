@@ -296,12 +296,37 @@ export function revertBlock(lock) {
   return null;
 }
 
+// V-05 blockers / V-06 错误的一条 → 弹窗里的说明与去处（action：confirm、chat、run、studio，没有去处时为 null）
+export function blockerView(b) {
+  const code = b?.code;
+  if (code === 'write_scope_locked') return revertBlock(b.details || { state: 'pending_confirm' }) || { text: b.message, action: null };
+  if (code === 'session_busy') return { text: '助手还有没跑完的消息', action: 'chat' };
+  if (code === 'autobuild_running') return { text: '自主构建正在运行', action: 'run' };
+  if (code === 'studio_draft_pending') return { text: 'Studio 里有没保存的草稿', action: 'studio', entry: b.details?.entry_id || null };
+  if (code === 'workspace_dirty') return { text: '项目里有没保存成版本的修改', action: null };
+  if (code === 'unsaved_editor') return { text: '对比里的修改还没保存', action: null };
+  return null;
+}
+
 // 回退失败的提示（按契约错误码）
 export function revertErrorText(e, fallback) {
-  if (e?.code === 'write_scope_locked') return revertBlock(e.details || { state: 'pending_confirm' })?.text || fallback;
-  if (e?.code === 'autobuild_running') return '自主构建正在运行';
   if (e?.code === 'nothing_to_revert') return '当前内容和这个版本一致，不用回退。';
-  return fallback;
+  if (e?.code === 'head_moved') return '有了新版本，已重新计算，请再确认一次';
+  return blockerView(e)?.text || fallback;
+}
+
+// ---------- 历史分页（V-01 按游标往下读） ----------
+export const EMPTY_HISTORY = { items: [], next: null, releaseError: '' };
+
+// 把一页接到已读的列表后面（首页传 EMPTY_HISTORY）；读页之间有了新版本时同一版本不重复列，
+// 发布记录读不到的原因保留第一次的
+export function appendPage(prev, page) {
+  const seen = new Set(prev.items.map((v) => v.commit));
+  return {
+    items: [...prev.items, ...(page?.items || []).filter((v) => !seen.has(v.commit))],
+    next: page?.next_cursor || null,
+    releaseError: prev.releaseError || page?.release_error || '',
+  };
 }
 
 // ---------- 标记 ----------

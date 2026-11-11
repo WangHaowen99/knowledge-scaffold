@@ -29,7 +29,8 @@ _sessions = {}
 MAX_BODY = 1024 * 1024
 MAX_LISTED_TOKENS = 100
 TOKEN_POLICY = {"min_ttl_s": 300, "default_ttl_s": 86400, "max_ttl_s": 2592000, "supports_non_expiring": True}
-SCOPE_LABELS = tokens.SCOPE_DESCRIPTIONS
+# 签发、校验与这里的目录同一份口径（tokens）：版本回退 scope 两个工具集都认，发布只在改
+SCOPE_LABELS = {scope: tokens.SCOPE_DESCRIPTIONS[scope] for scope in SCOPES}
 TOOLSET_SCOPES = tokens.TOOLSET_SCOPES
 # 客户端配置里的服务器名沿用旧版，已配好的客户端不用改名
 CLIENT_SERVER_NAMES = {"read": "modeling-read", "change": "modeling-change"}
@@ -247,10 +248,12 @@ async def dispatch(rpc, group, principal, protocol):
                 "_meta": {"io.modelcontextprotocol/serverInfo": tokens.SERVER}}
     if method == "tools/list":
         listed = [*TOOLS.values(), *(await asyncio.to_thread(_pack_tools, principal["project_id"]))]
+        # 确认发布与确认回退会改主线或 Hub（破坏性），同一请求重放拿同一结果（幂等）
         available = [{**{k: tool[k] for k in ("name", "title", "description", "inputSchema")},
-                      "annotations": {"readOnlyHint": tool.get("readOnly", tool["scope"] != "ontology.change.apply"),
-                                      "destructiveHint": tool["name"] == "publish_package_version",
-                                      "idempotentHint": tool["name"] == "publish_package_version"}}
+                      "annotations": {"readOnlyHint": tool.get("readOnly", tool["scope"] != "ontology.change.apply"
+                                                               and tool["name"] != "revert_project_version"),
+                                      **({"destructiveHint": True, "idempotentHint": True}
+                                         if tool["name"] in ("publish_package_version", "revert_project_version") else {})}}
                      for tool in listed if tool["toolset"] == group and tool["scope"] in principal["scopes"]]
         return {"tools": available, **({"resultType": "complete", "ttlMs": 300000, "cacheScope": "private"}
                                       if protocol == "2026-07-28" else {})}
@@ -275,8 +278,9 @@ async def dispatch(rpc, group, principal, protocol):
             result = await asyncio.to_thread(tools.execute_pack_tool, manager(), principal["project_id"], tool,
                                              params.get("arguments", {}))
         else:
-            result = await asyncio.to_thread(tools.execute, manager(), principal["project_id"], tool["name"],
-                                             params.get("arguments", {}), principal["username"])
+            result = await tools.execute_async(manager(), principal["project_id"], tool["name"],
+                                               params.get("arguments", {}), principal["username"],
+                                               principal["token_id"])
         return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
                 "structuredContent": result, "isError": False}
     except (McpError, WorkspaceError) as exc:

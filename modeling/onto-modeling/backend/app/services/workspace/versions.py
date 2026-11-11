@@ -7,11 +7,73 @@ import time
 import uuid
 from pathlib import Path
 
+import shutil
+
 from .errors import WorkspaceError
+from .gitops import _git, _run_git
+from .layout import META_FILE
+
 # 发布标签 release/<主.次.补丁>（publish/versioning 打的标签，版本列表据此标出发布过的提交）
 _RELEASE_TAG_RE = re.compile(r"release/(\d+\.\d+\.\d+)")
 
-from .gitops import _EXCLUDE_STATE_PATHSPECS, _git, _run_git, _untrack_state_in_index
+# 回退只恢复业务内容（ADR-0094）：仓库配置、项目元数据、运行状态、助手装配保持当前；
+# 目录 index.md 是派生文件，由写入事务按恢复后的文件重新生成，不单独算改动
+ROLLBACK_EXCLUDED_TOP = frozenset({
+    ".git", ".gitignore", ".gitattributes", ".gitmodules", ".claude", ".ontology-state", "tmp",
+    META_FILE, "CLAUDE.md", "README.md",
+})
+ROLLBACK_EXCLUDED_PREFIXES = (".onto/run/",)
+
+
+def rollback_managed(rel: str) -> bool:
+    """这个路径随回退恢复吗：预览、执行、未提交改动检查同一口径。"""
+    from .files import FilesMixin
+
+    if not rel or rel.split("/", 1)[0] in ROLLBACK_EXCLUDED_TOP or rel.startswith(ROLLBACK_EXCLUDED_PREFIXES):
+        return False
+    return rel not in {f"{directory}/index.md" for directory, _title in FilesMixin.INDEX_DIRS}
+
+
+def rollback_changes(root: Path, target: str, head: str = "HEAD") -> dict[str, list[str]]:
+    """回退到 target 要动的路径：restore 写回目标版本里的内容（其中 create 是现在没有的），
+    delete 删掉目标版本之后才有的。"""
+    records = _git(root, "-c", "core.quotePath=false", "diff", "--name-status", "--no-renames", "-z",
+                   target, head, "--").split("\0")
+    out: dict[str, list[str]] = {"restore": [], "delete": [], "create": []}
+    for status, rel in zip(records[0::2], records[1::2]):
+        if rollback_managed(rel):
+            out["delete" if status == "A" else "restore"].append(rel)
+            if status == "D":
+                out["create"].append(rel)
+    return out
+
+
+def managed_dirty_paths(root: Path) -> list[str]:
+    """主线工作区里没提交、或已暂存的业务路径（回退前必须为空）。"""
+    records = _git(root, "-c", "core.quotePath=false", "status", "--porcelain=v1", "-z",
+                   "--untracked-files=all").split("\0")
+    paths, index = set(), 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        if len(record) < 4:
+            continue
+        if rollback_managed(record[3:]):
+            paths.add(record[3:])
+        if record[0] in "RC" or record[1] in "RC":  # 改名、复制：下一条是原路径
+            previous = records[index] if index < len(records) else ""
+            index += 1
+            if rollback_managed(previous):
+                paths.add(previous)
+    return sorted(paths)
+
+
+def _remove_entry(path: Path) -> None:
+    """删掉路径本身：符号链接不跟随，目录整棵删。"""
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
 
 # 提交说明前缀 → 版本来源（契约 7.6 VersionSource）；没有 Onto-Source trailer 的存量提交用它推断
 _SOURCE_PREFIXES = (
@@ -77,45 +139,80 @@ class VersionsMixin:
         commit = _git(root, "rev-parse", f"{rev}^{{commit}}").strip()
         return {"path": rel, "rev": rev, "commit": commit, "content": content, "truncated": truncated}
 
-    def revert_to(self, project_id: str, commit: str, author: str = "") -> dict:
-        """把工作区整树恢复为指定版本并生成新提交（历史保留，可再回退；契约 V-06、方案 C1）。
+    def revert_target(self, root: Path, commit: str) -> str:
+        """回退目标 → 完整提交号：版本号不合法、不存在、不在主线历史上都是 invalid_commit，就是当前版本时
+        nothing_to_revert。"""
+        if not re.fullmatch(r"[0-9a-fA-F]{6,40}", commit or ""):
+            raise WorkspaceError("无效的版本号", 400, "invalid_commit")
+        if _run_git(root, ("cat-file", "-e", f"{commit}^{{commit}}")).returncode != 0:
+            raise WorkspaceError("版本不存在", 400, "invalid_commit")
+        target = _git(root, "rev-parse", f"{commit}^{{commit}}").strip()
+        if target == _git(root, "rev-parse", "HEAD").strip():
+            raise WorkspaceError("当前已是该版本，无需回退", 400, "nothing_to_revert")
+        if _run_git(root, ("merge-base", "--is-ancestor", target, "HEAD")).returncode != 0:
+            raise WorkspaceError("只能回退到当前版本历史里的版本", 400, "invalid_commit")
+        return target
 
-        经写入事务：只动、只提交该版本与 HEAD 之间不同的路径（该版本之后新增的文件一并删除），
-        agent 还没提交的其他改动不带进回退提交。元数据与工具状态不随回退恢复：存量历史里它们还在
-        git 中，取旧版会把所有者、项目名一起回滚。返回新提交与回退目标。
+    def revert_to(self, project_id: str, commit: str, author: str = "", expected_head: str = "",
+                  busy_check=None) -> dict:
+        """把业务内容整份恢复为指定版本并生成新提交（历史保留，可再回退；契约 V-06、方案 C1、ADR-0094）。
+
+        经写入事务：只动、只提交该版本与 HEAD 之间不同的业务路径（之后新增的一并删除）。仓库配置、元数据、
+        运行状态不随回退恢复（rollback_managed）。持项目锁后依次挡：busy_check（调用方的并发检查）、
+        expected_head 不符（head_moved）、主线工作区有没提交的业务改动（workspace_dirty）。
         """
         from ...kernel.writepath import ChangeTx, Origin
 
-        if not re.fullmatch(r"[0-9a-fA-F]{6,40}", commit):
-            raise WorkspaceError("无效的版本号", 400, "invalid_commit")
-        with ChangeTx(self, project_id, Origin("revert", author), summary=f"回退到 {commit[:8]}") as tx:
+        with ChangeTx(self, project_id, Origin("revert", author), summary=f"回退到 {(commit or '')[:8]}",
+                      expected_head=expected_head or None) as tx:
             root = tx.root
-            if _run_git(root, ("cat-file", "-e", f"{commit}^{{commit}}")).returncode != 0:
-                raise WorkspaceError("版本不存在", 400, "invalid_commit")
-            target = _git(root, "rev-parse", f"{commit}^{{commit}}").strip()
-            records = _git(
-                root, "-c", "core.quotePath=false", "diff", "--name-status", "--no-renames", "-z",
-                target, "HEAD", "--", ".", *_EXCLUDE_STATE_PATHSPECS,
-            ).split("\0")
-            restore, added = [], []
-            for status, rel in zip(records[0::2], records[1::2]):
-                (added if status == "A" else restore).append(rel)
-            if not restore and not added:
+            if busy_check is not None:
+                busy_check(root)
+            if expected_head and tx.base_head != expected_head:
+                raise WorkspaceError("预览之后有了新版本，请重新预览", 409, "head_moved", {"head": tx.base_head})
+            target = self.revert_target(root, commit)
+            dirty = managed_dirty_paths(root)
+            if dirty:
+                raise WorkspaceError("项目里有没保存成版本的修改，先保存或放弃", 409, "workspace_dirty",
+                                     {"paths": dirty[:20]})
+            changes = rollback_changes(root, target)
+            if not changes["restore"] and not changes["delete"]:
                 raise WorkspaceError("当前内容与该版本一致，无需回退", 400, "nothing_to_revert")
-            tx.touch(*restore, *added)
-            if restore:
-                _git(root, "--literal-pathspecs", "checkout", target, "--", *restore)
-            for rel in added:  # 目标版本之后新增的文件：整树恢复要删掉
-                path = root / rel
-                if path.is_file() or path.is_symlink():
-                    path.unlink()
-            if ".gitignore" in restore:
-                # 旧版本的 .gitignore 可能没有元数据与工具状态的排除项：补齐，否则之后会被重新跟踪
-                _untrack_state_in_index(root)
-            result = tx.commit(f"revert: 回退到 {target[:8]}")
+            tx.touch_tracked(*changes["delete"], *changes["restore"])
+            try:
+                # 先删后写：同一路径在两个版本里一个是文件一个是目录时，顺序反了会写进去又删掉
+                for rel in changes["delete"]:
+                    _remove_entry(root / rel)
+                if changes["restore"]:
+                    # 只写工作区、不动真实索引：提交由写入事务用临时索引做，失败时索引里不留目标版本
+                    _git(root, "--literal-pathspecs", "restore", f"--source={target}", "--worktree",
+                         "--pathspec-from-file=-", "--pathspec-file-nul", input="\0".join(changes["restore"]))
+                from .. import mainline
+
+                result = tx.commit(f"revert: 回退到 {mainline.label(mainline.count(root, target))}")
+            except BaseException:
+                self._undo_revert(root, changes)
+                raise
             if not result.commit:
                 raise WorkspaceError("当前内容与该版本一致，无需回退", 400, "nothing_to_revert")
-        return {"commit": result.commit, "reverted_to": target}
+        return {"commit": result.commit, "reverted_to": target, "changes": changes}
+
+    @staticmethod
+    def _undo_revert(root: Path, changes: dict[str, list[str]]) -> None:
+        """回退没提交成：业务路径回到 HEAD（回退前工作区是干净的，HEAD 就是原样）。写入事务随后按快照再恢复一遍。"""
+        created = set(changes["create"])
+        heads = [rel for rel in changes["delete"] + changes["restore"] if rel not in created]
+        for rel in changes["create"] + heads:
+            path = root / rel
+            # 目标版本里才有的删掉；HEAD 里是文件、现在成了目录的（文件和目录互换过）也删掉，再从 HEAD 写回
+            if rel in created or (path.is_dir() and not path.is_symlink()):
+                try:
+                    _remove_entry(path)
+                except OSError:
+                    pass
+        if heads:
+            _run_git(root, ("--literal-pathspecs", "restore", "--source=HEAD", "--worktree",
+                            "--pathspec-from-file=-", "--pathspec-file-nul"), input="\0".join(heads))
 
     # ---- 版本 ----
 

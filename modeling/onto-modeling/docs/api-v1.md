@@ -86,7 +86,7 @@
 **MCP token。** 只用于 `/api/v1/onto-mcp/*` 传输接口（M-05～M-07）。
 
 - 格式 `onto_pat_<urlsafe>`，只存 SHA-256 摘要，明文只在签发响应里出现一次。
-- 权限范围 `ontology.read`、`ontology.change.validate`、`ontology.change.apply`，新增 `evidence.read`（方案 E13）、`project.version.revert`（版本列表、回退预览与回退）、`package.publish`（发布知识包版本，ADR-0091）。
+- 权限范围 `ontology.read`、`ontology.change.validate`、`ontology.change.apply`，新增 `evidence.read`（方案 E13）、`project.version.revert`（版本列表、回退预览与回退，read 和 change 两个工具集都认，ADR-0094）、`package.publish`（发布知识包版本，ADR-0091）。
 - 含 `package.publish` 的 token 要统一账号登录签发，只能给登录用户本人签：签发时在 Hub 登记委托（不保存登录令牌），吊销时一并撤销；Hub 登记失败则不签发（`401 MCP_HUB_IDENTITY_REQUIRED`、`403 MCP_HUB_IDENTITY_MISMATCH`）。
 - token 绑定项目和签发人；签发人不再是项目所有者时立即失效。
 
@@ -380,6 +380,8 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `changeset_closed` | 409 | 变更集已经合入或撤回 | `state` |
 | `merge_conflict` | 409 | 合入时检测到实体冲突，已进待处理 | `entities[]: EntryRef, inbox_item_id` |
 | `head_moved` | 409 | 主线已前进，`expected_head` 不符 | `head` |
+| `studio_draft_pending` | 409 | Studio 有暂存草稿，版本回退前要先保存或放弃 | `path, entry_id, count` |
+| `workspace_dirty` | 409 | 主线工作区有没提交的业务改动，不能回退 | `paths[]`（最多 20 个） |
 | `invalid_commit` | 400 | 版本号不合法，或不在主线上 | — |
 | `nothing_to_revert` | 400 | 当前内容与目标版本一致 | — |
 | `tag_not_found` | 404 | 标记不存在，或不是用户标记 | — |
@@ -1565,7 +1567,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `GET /api/v1/projects/{id}/versions` · 所有者 · 旧：`GET /api/projects/{id}/versions`（旧接口固定 50 条） · 审计：否 · 依据：4.3 trailer、4.9 · 页面：versions、publish（版本下拉）
 
 - 查询参数：`source?`（`assistant|web|studio|mcp|autobuild|import|plugin|revert`，多值）、分页（默认 50）。
-- 响应：`{items: Version[], next_cursor, total, head, current_version_label}`。
+- 响应：`{items: Version[], next_cursor, total, head, current_version_label, release_error: string}`。
+  - `Version.release` 取发布记录（`publish.releases`，版本号来自知识包 Hub）：同一提交发布过几次取最新的；记录没带提交时按发布时间归到当时的最新版本。没有发布记录时退回本地 `release/*` 标签。
+  - 发布记录读不到（Hub 不可用等）时版本照列，`release_error` 是原因，否则为空串。
 
 #### V-02 版本详情
 
@@ -1594,18 +1598,22 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `GET /api/v1/projects/{id}/versions/revert-preview` · 所有者 · 旧：— · 审计：否 · 依据：4.9 · 页面：versions（回退确认弹窗）
 
 - 查询参数：`commit`。
-- 响应：`{target: {commit, version_label}, next_version_label, files: [{path, change: "restore"|"delete"}], undone_versions: string[], packs_lock_changes: [{pack, from, to}]}`。
+- 响应：`{target: {commit, version_label}, next_version_label, expected_head, files: [{path, change: "restore"|"delete"}], undone_versions: string[], packs_lock_changes: [{pack, from, to}], ready: bool, blockers: [{code, message, details}]}`。
   - 回退会把启用的能力和版本也一起恢复到当时状态，所以要列出 `packs_lock_changes`。
+  - 只列业务内容（ADR-0094）：仓库配置（`.gitignore` 等）、项目元数据、运行状态、助手装配（`.claude`、`CLAUDE.md`、`README.md`）不随回退；目录 `index.md` 是派生文件，不单独列，回退时重新生成。资料（`resource/`）随回退恢复。
+  - `expected_head` 是预览时的主线版本，回退时原样带回 `V-06`。
+  - `blockers` 是现在不能回退的原因，`ready=false` 时确认按钮不可用；`code` 取 `write_scope_locked`（`details` 是 ScopeLock）、`session_busy`、`autobuild_running`（`details.run_id`）、`studio_draft_pending`（`details: {path, entry_id, count}`）、`workspace_dirty`（`details.paths`，最多 20 个）。
+- 错误：`invalid_commit`（含不在当前版本历史里的提交）、`nothing_to_revert`。
 
 #### V-06 回退
 
 `POST /api/v1/projects/{id}/versions/revert` · 所有者 · 旧：`POST /api/projects/{id}/versions/revert` · 审计：是 · 依据：4.9、方案 C1 · 页面：versions
 
-- 请求：`{commit}`。
-- 整树恢复，之后新增的文件也会删掉（方案 C1）。生成新版本，历史保留。
-- 能力切换下一条消息生效。
+- 请求：`{commit, expected_head?}`。`expected_head` 取 `V-05` 的同名字段，预览之后主线前进了就 `409 head_moved`。
+- 业务内容整份恢复，之后新增的文件也会删掉（方案 C1）；不随回退的内容同 `V-05`。生成新版本，历史保留。
+- 能力切换下一条消息生效。回退之后助手会话回收、全部对话的续接点作废（ADR-0094）：对话历史保留，下一条消息全新开始。
 - 响应：`{commit, version_label, reverted_to: {commit, version_label}}`。
-- 错误：`invalid_commit`、`nothing_to_revert`、`write_scope_locked`（有未确认的助手变更集时，要先确认或撤回）、`autobuild_running`。
+- 错误：`invalid_commit`、`nothing_to_revert`、`head_moved`，以及 `V-05` 的各种 `blockers`（取第一条）：`write_scope_locked`（423）、`session_busy`、`autobuild_running`、`studio_draft_pending`、`workspace_dirty`（均 409）。
 
 #### V-07 标记版本
 
@@ -3649,6 +3657,18 @@ ADR-0091：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 
 - 工具名用下划线，因为 MCP 客户端普遍不接受点号；文档和界面上写作 `flow.get`、`evidence.*`。
 - 包贡献的只读工具按 `<包>_<名>` 命名，只读，写操作一律走写入路径。
+
+**版本回退工具（ADR-0094，scope 都是 `project.version.revert`）：**
+
+| 工具 | 工具集 | 等价 REST | 说明 |
+|---|---|---|---|
+| `list_project_versions` | read | `V-01` | `{limit?: 1–100, cursor?}` → `{revision, current_head, current_version, items: [{version, version_label, commit, time, source, author, message, release, current}], total, next_cursor, display}`；`version` 就是界面 `v0.N` 的 N；游标绑定主线版本，主线前进后回 `CURSOR_REVISION_MISMATCH` |
+| `preview_project_version_revert` | change（只读） | `V-05` | `{target_version}` → 能回退时 `{ready: true, preview_id, expires_at, target, current, expected_head, changes: {added, modified, deleted, total}, undone_versions, packs_lock_changes, display}`；有挡住的情况时 `{ready: false, target, current, blockers: [{code, message}]}`，不给 `preview_id` |
+| `revert_project_version` | change（破坏性、幂等） | `V-06` | `{preview_id, confirm: true}` → `{commit, reverted_to_version, created_version, version_label, previous_head, display}` |
+
+- `preview_id` 绑定项目、Token、用户、目标版本与预览时的主线版本，只在服务进程内存里，十分钟过期，重启作废；执行过的一小时内用同一 `preview_id` 重放返回同一结果。
+- 挡住回退的情况与 `V-05` 同一组判断，MCP 码：`PROJECT_EDITING_BUSY`（助手这一轮没结束、有没跑完的消息、Studio 草稿）、`AUTOBUILD_ACTIVE`、`WORKSPACE_DIRTY`。
+- 错误码：`VERSION_NOT_FOUND`、`NOTHING_TO_REVERT`、`REVERT_PREVIEW_EXPIRED`、`REVERT_PREVIEW_FORBIDDEN`、`REVERT_IN_PROGRESS`、`REVERT_PREVIEW_CAPACITY_REACHED`（503）、`REVISION_CONFLICT`（预览之后主线前进了，要重新预览）、`CONFIRMATION_REQUIRED`（`confirm` 不是 true）、`INVALID_CURSOR`。
 
 ---
 
