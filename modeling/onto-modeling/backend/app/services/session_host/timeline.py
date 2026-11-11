@@ -780,6 +780,8 @@ def payload(record: dict) -> tuple[str | None, dict | None]:
             "error_id": _error_id(record), "message": record.get("error") or FRIENDLY_ERROR,
             "retries": int(record.get("retries") or 0), "retryable": bool(record.get("retryable", True)),
             "actions": list(record.get("actions") or ["retry"]),
+            # stall_timeout：长时间没有引擎事件、判定执行超时（ADR-0097）；其余出错为 null
+            "reason": record.get("reason"),
         }
     if kind == "session_interrupted":
         reason = str(record.get("reason") or "user")

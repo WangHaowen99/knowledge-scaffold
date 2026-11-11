@@ -36,6 +36,9 @@ MAX_ACTIVE_SESSIONS = _env("ONTO_WEB_MAX_SESSIONS")
 # 且该场景通常已过 API prompt cache 的 5 分钟 TTL，感知很弱）。0 关闭
 SESSION_IDLE_TTL_SECONDS = _env("ONTO_WEB_SESSION_IDLE_TTL")
 SESSION_REAPER_INTERVAL = _env("ONTO_WEB_SESSION_REAPER_INTERVAL")
+# 一轮在跑却这么久（秒）没有任何引擎事件，判定执行超时并终止引擎；0 = 不判定（ADR-0097）。
+# 模型调用失败重试期间也没有事件：Jiuwen 单次调用最长 300 秒，实测连续重试可超过 25 分钟，取 30 分钟
+SESSION_STALL_TIMEOUT_SECONDS = _env("ONTO_WEB_SESSION_STALL_TIMEOUT")
 # 池满时的处理：先驱逐空闲会话再排队（evict_idle_then_queue），或只排队（queue_only）
 SESSION_OVERFLOW_POLICY = "evict_idle_then_queue"
 

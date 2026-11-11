@@ -88,6 +88,11 @@ test('面板顶部：状态、已运行多久、做了几步；结束后是用�
   assert.deepEqual(panelHead(sub, task, false, T0 + 999 * 1000), { status: 'done', text: '已完成 · 用时 11 分 15 秒 · 12 步' });
   // 会话已停下、没收到终态：已中断
   assert.equal(panelHead({ status: 'running', started_at: iso(0) }, null, true, T0).status, 'interrupted');
+  // 那一轮判定执行超时：用时停在结束时刻，结果处写明
+  const timedOut = panelHead({ status: 'running', started_at: iso(0), ended_by: 'timeout' }, null, false, T0 + 60 * 1000);
+  assert.equal(timedOut.status, 'timeout');
+  assert.ok(timedOut.text.startsWith('执行超时'));
+  assert.deepEqual(outcome('timeout', null), { tone: 'gray', label: '执行超时', text: '长时间没有响应，没有交回结果' });
   assert.deepEqual(outcome('failed', ''), { tone: 'red', label: '失败原因', text: '子任务出错，没有交回结果' });
   assert.equal(outcome('done', '0 个错误').text, '0 个错误');
   assert.equal(outcome('running', null), null);

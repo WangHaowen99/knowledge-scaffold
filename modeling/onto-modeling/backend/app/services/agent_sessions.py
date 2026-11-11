@@ -5,6 +5,7 @@
   ONTO_WEB_MAX_SESSIONS；超限先驱逐最久空闲的会话，全部在跑则排队并广播位次
 - 空闲超过 ONTO_WEB_SESSION_IDLE_TTL 的会话被后台回收；事件历史落盘可回放，
   模型上下文靠引擎的 resume token 恢复
+- 运行中连续 ONTO_WEB_SESSION_STALL_TIMEOUT 没有引擎事件判定执行超时：硬终止引擎、按出错收尾
 - 引擎产出归一化平台事件，进入事件历史 + 广播给所有 SSE 订阅者
 - 引擎的权限回调转换成"待确认卡"事件，等待前端答复（超时按拒绝处理）
 - 引擎不可用时（如 SDK 未安装）后端其余功能可用，会话接口返回明确错误
@@ -287,6 +288,8 @@ def purge_history(project_id: str) -> None:
 # 超时即硬终止引擎（续接点保留，下一条消息 resume）——保证"停止"按钮总能停
 INTERRUPT_TIMEOUT_SECONDS = 10
 KILL_TIMEOUT_SECONDS = 5
+# 判定执行超时时 session_error 带的 reason，前端据此把这一轮没收尾的子任务卡显示成「执行超时」
+STALL_TIMEOUT_REASON = "stall_timeout"
 # 停机时回收全部引擎的总时长上限。docker 停机宽限期 30 秒，uvicorn 先等连接关闭最多
 # 3 秒（run.py），这里再留 20 秒，合计控制在 25 秒内，不被宽限期后的 SIGKILL 截断
 SHUTDOWN_BUDGET_SECONDS = 20
@@ -499,6 +502,17 @@ def _recyclable(session: "Session") -> bool:
         and not session.run_id
         and not session.steers
         and not session.chaining
+    )
+
+
+def _stalled(session: "Session", now: float, limit: int) -> bool:
+    """这一轮在跑，却很久没有任何引擎事件。等确认卡、等资料不算：它们各有自己的时限（ADR-0097）。"""
+    return (
+        session.engine is not None
+        and session.state == "running"
+        and not session.pending_permissions
+        and session.material_wait is None
+        and now - session.last_activity > limit
     )
 
 
@@ -1369,6 +1383,7 @@ class SessionManager:
         # 先计数再发送：发送期间读循环可能收到上一轮的 result，计数为零就会触发待重载断开
         session.turns_in_flight += 1
         session.interrupt_requested = False  # 新一轮开始，上一轮的停止不再生效
+        session.last_activity = time.time()  # 交给引擎起算无响应：等资料、排队的时间不计入
         try:
             await engine.send(text)
         except BaseException:
@@ -1476,6 +1491,8 @@ class SessionManager:
                 return
             session.resume_attempted = resumed
             session.engine = engine
+            # 排队、连接的时间不算引擎无响应：接上后到模型首次响应前没有任何事件
+            session.last_activity = time.time()
             session.turns_in_flight = 0
             session.reload_pending = False
             # 新的 CLI 进程：上一个进程报告的状态作废
@@ -1607,11 +1624,36 @@ class SessionManager:
             await self._drain_waiters()
         return len(victims)
 
+    async def reap_stalled(self) -> int:
+        """运行中却长时间没有引擎事件的会话判定为执行超时，返回判定数量。"""
+        limit = config.SESSION_STALL_TIMEOUT_SECONDS
+        if limit <= 0:
+            return 0
+        now = time.time()
+        async with self._lock:
+            victims = [s for s in self._sessions.values() if _stalled(s, now, limit)]
+            for victim in victims:
+                await self._abort_stalled(victim, limit)
+        if victims:
+            await self._drain_waiters()
+        return len(victims)
+
+    async def _abort_stalled(self, session: Session, limit: int) -> None:
+        """不等应答直接硬终止（引擎多半已不响应），按这一轮出错收尾；对话保留，下一条消息重新连接、续接。"""
+        if session.reader_task:
+            session.reader_task.cancel()
+        engine, session.engine = session.engine, None
+        await _kill_engine(engine)
+        error_id = self._log_error(session, "stall_timeout", f"{limit} 秒没有引擎事件，判定执行超时")
+        self._turn_failed(session, error_id, f"超过 {max(1, limit // 60)} 分钟没有响应，本轮已按超时结束",
+                          reason=STALL_TIMEOUT_REASON)
+
     async def _reaper_loop(self) -> None:
         while True:
             await asyncio.sleep(config.SESSION_REAPER_INTERVAL)
             try:
                 await self.reap_idle()
+                await self.reap_stalled()
             except Exception:  # 回收失败不终止后台任务
                 pass
 
@@ -1934,6 +1976,7 @@ class SessionManager:
             by = "timeout"
         finally:
             session.pending_permissions.pop(request.id, None)
+            session.last_activity = time.time()  # 等确认的时间不算引擎无响应
         if request.questions:
             answered = {item.get("question_id") for item in request.answers.values()}
             for question in request.questions:
@@ -2171,16 +2214,23 @@ class SessionManager:
         context.set_label("session", session.conversation_id)
         # 不加 try：本任务只被 cancel 结束，引擎侧的错误走 _engine_end 事件
         async for event in engine.events():
-            session.last_activity = time.time()
             kind = event.get("type")
+            # 子代理「思考中」是引擎按时补的节拍，只说明还在等模型、不算有动静：网关不响应时照样判执行超时
+            if not (kind == "subagent_activity" and event.get("kind") == "thinking"):
+                session.last_activity = time.time()
             if kind == "_engine_end":
-                # 引擎终止：closed（重启/终止）静默收尾，error 给用户出错卡
-                if event.get("reason") == "closed":
-                    self._settle_after_failure(session)
-                    _, card = await asyncio.to_thread(turns.interrupt_exec, session, "engine_exit",
-                                                      card=not session.run_id)
-                    if card is not None:
-                        session.broadcast(card)
+                # 引擎终止：closed（重启/终止）静默收尾，error 给用户出错卡；exited（运行时自行退出）在这一轮
+                # 还在跑时算出错，空闲时同空闲回收（ADR-0089）：停着等下一句的执行不动，下一条消息重新连接
+                reason = event.get("reason")
+                quiet = reason == "exited" and session.state != "running"
+                if reason == "closed" or quiet:
+                    if not quiet:
+                        self._settle_after_failure(session)
+                    if not (quiet and await asyncio.to_thread(turns.exec_waiting, session)):
+                        _, card = await asyncio.to_thread(turns.interrupt_exec, session, "engine_exit",
+                                                          card=not session.run_id)
+                        if card is not None:
+                            session.broadcast(card)
                     session.set_state("closed")
                     if _is_plugin(session):
                         await asyncio.to_thread(_restore_claude, session.project_id, lambda: _settled(session))
@@ -2192,6 +2242,8 @@ class SessionManager:
                 session.engine = None
                 await self._drain_waiters()
                 return
+            if kind == "_activity":  # 运行时还在动（状态、任务进度等不转发的消息），只刷新活动时间
+                continue
             if kind == "_cli_state":
                 session.on_cli_state(event.get("state"))
                 handed = any(entry.get("sent") for entry in session.steers.values())
@@ -2280,7 +2332,7 @@ class SessionManager:
         """线程里做的收尾：执行记录、任务、下一步建议。"""
         return turns.end_turn(session, failed=failed, waiting_user=bool(session.pending_permissions))
 
-    def _turn_failed(self, session: Session, error_id: str, message: str) -> None:
+    def _turn_failed(self, session: Session, error_id: str, message: str, reason: str | None = None) -> None:
         """这一轮出错（引擎异常结束、连不上）：工作过程收成出错，执行记为中断并放续跑卡，出错卡带错误编号。"""
         if session.turn is not None and session.turn.steps:
             session.turn.finish("failed")
@@ -2304,6 +2356,7 @@ class SessionManager:
         session.broadcast({
             "type": "session_error", "error": message, "error_id": error_id, "retries": session.retries,
             "retryable": bool(session.last_prompt), "actions": ["retry", "redirect"] if session.last_prompt else ["redirect"],
+            **({"reason": reason} if reason else {}),
         })
         session.set_state("error", reason=message)
         if not session.run_id:

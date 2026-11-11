@@ -81,6 +81,10 @@ _PREFIX_COMPRESSORS = frozenset({"DialogueCompressor", "RoundLevelCompressor"})
 _COMPRESSORS = _PREFIX_COMPRESSORS | {"CurrentRoundCompressor"}
 _RUNNER_STARTED = False
 _RUNNER_LOCK: asyncio.Lock | None = None
+# 硬终止时等 agent 停下的上限：调用方整体只给 KILL_TIMEOUT_SECONDS，还要留时间取消轮任务
+_ABORT_TIMEOUT_SECONDS = 2.0
+# SDK 在步数用完、外层轮数用完或连续没有进展时收口：不是故障，但这一轮可能没做完
+ROUND_LIMIT_NOTICE = "这一轮已达到执行上限，任务可能还没做完。发送“继续”接着做。"
 
 
 def shadow_dir(project_id: str) -> Path:
@@ -188,6 +192,10 @@ class _ChunkBridge:
         self._open_calls: deque[str] = deque()
         # 最近一次模型调用占用的上下文，随下一条 assistant_message 带出
         self._context_tokens: int | None = None
+        # SDK 判定这一轮失败时给的原因；空 = 没有失败
+        self.failure = ""
+        # SDK 在执行上限处收口时给的原因；空 = 没有触顶
+        self.round_limit = ""
 
     @staticmethod
     def _payload_text(payload: Any) -> str:
@@ -345,6 +353,21 @@ class _ChunkBridge:
             # 截断前流出的残片（如只有一个字）不留
             self._text[:] = [TRUNCATION_USER_TEXT]
             return self._flush_blocks(), None
+
+        if ctype == "answer" and isinstance(payload, dict):
+            # SDK 把失败和执行上限都收成一条 answer，流照常结束、不抛异常，靠字段区分：
+            # - 模型调用失败、轮次超时：error 有值（模型失败时 result_type 是空串）；
+            # - 用户停止：error 为 aborted，由取消路径收尾，这里不管；
+            # - 步数、外层轮数用完或连续没有进展：result_type 为 error 但没有 error 字段
+            error = str(payload.get("error") or "")
+            if error and error != "aborted":
+                self.failure = str(payload.get("output") or error)
+            elif not error and payload.get("result_type") == "error":
+                self.round_limit = str(payload.get("stop_reason") or payload.get("output") or "")
+                events = self._flush_blocks()
+                self._text.append(ROUND_LIMIT_NOTICE)
+                return events + self._flush_blocks(), None
+            return [], None
 
         # answer 是 llm_output 的汇总（避免重复）；其余运行时噪音一律忽略
         return [], None
@@ -948,7 +971,8 @@ class JiuwenEngine(ObservableEngine):
             subagents=[gp_spec],
             max_iterations=config.JIUWEN_MAX_ITERATIONS,
             # 框架默认一轮最多等 600 秒，到点取消却按正常结束上报（做了一半的修改照样出卡、命令锁不放）；
-            # 真实模型下资料分析、对象提取常超过 10 分钟。一轮的长短由最大迭代数与用户打断兜底
+            # 也比 task_tool 自己的 720 秒短，到点时子任务的工具结果发不出来、卡片停在运行中。
+            # 真实模型下资料分析、对象提取常超过 10 分钟。一轮的长短由最大迭代数、用户打断与无响应判定兜底
             completion_timeout=None,
             language="cn",
             # tool_call chunk 无调用 id，串行执行保证桥接层 FIFO 配对正确
@@ -1046,7 +1070,19 @@ class JiuwenEngine(ObservableEngine):
                 pass
 
     async def kill(self) -> None:
-        """硬终止：取消轮任务并释放实例（阻塞在 interaction 等待中的轮也能停）。"""
+        """硬终止：先让 agent 停下，再取消轮任务并释放实例（阻塞在 interaction 等待中的轮也能停）。
+
+        只取消轮任务不够：SDK 的 task loop 在自己起的后台任务里跑，一轮刚开始时被取消，
+        它还会接着请求模型、执行工具，和用户随后新开的一轮同时动工作区。
+        """
+        agent = self.client
+        if agent is not None:
+            try:
+                result = agent.abort()
+                if asyncio.iscoroutine(result):
+                    await asyncio.wait_for(result, timeout=_ABORT_TIMEOUT_SECONDS)
+            except Exception:  # noqa: BLE001 - 含 wait_for 的 TimeoutError；停不掉也照样释放
+                pass
         await self.disconnect()
 
     def model_fingerprint(self) -> str:
@@ -1206,6 +1242,12 @@ class JiuwenEngine(ObservableEngine):
                             if interaction:
                                 pending.append(interaction)
                     await self._put_turn_events(bridge.finish())
+                    if bridge.failure:
+                        # 走下面的出错收尾：子任务卡收成失败，用户看到错误，不再记成成功
+                        raise RuntimeError(bridge.failure)
+                    if bridge.round_limit:
+                        # 已给用户提示，照常收轮；留档便于运维判断是否要调大最大迭代数
+                        self._ctx.log_error("round_limit", bridge.round_limit)
                     if not pending:
                         # 一轮真正走完：仍挂着的子任务卡收成"已停止"。
                         # 有待确认 interaction 时流只是被挂起，下一轮会接着跑，

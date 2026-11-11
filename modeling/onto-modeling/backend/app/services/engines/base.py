@@ -21,8 +21,11 @@
 - ``_delivery``           插话（steer）送到了哪儿（message_id / state: seen | new_turn）：
   seen = 插进这一轮、模型已看到；new_turn = 这一轮结束时还没插进去，引擎拿它开了下一轮
   （紧接着的事件都属于新的一轮）。会话层消化，不落历史
-- ``_engine_end``         引擎内部终止信号（reason: closed | error），由
-  SessionManager 消化为 session_error / 状态迁移，不落历史、不发给前端
+- ``_engine_end``         引擎内部终止信号（reason: closed | error | exited），由
+  SessionManager 消化为 session_error / 状态迁移，不落历史、不发给前端。exited 表示
+  运行时自行退出：这一轮还在跑时按出错处理，否则静默关闭
+- ``_activity``           运行时还在动但没有可展示的内容（如状态、任务进度消息），
+  SessionManager 只据此刷新活动时间，不落历史、不发给前端
 
 以下事件由 SessionManager 产出（引擎不产）：``user_message`` /
 ``session_started`` / ``session_state`` / ``session_error`` /

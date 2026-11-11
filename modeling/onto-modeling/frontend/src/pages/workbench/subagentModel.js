@@ -57,9 +57,9 @@ export function panelHead(sub, task, ended, now) {
   const terminal = (x) => x?.status === 'done' || x?.status === 'failed';
   const status = subagentStatus(terminal(sub) || !terminal(task) ? sub : task, ended);
   const start = ms(task?.started_at) ?? ms(sub.started_at);
-  const over = ['done', 'failed', 'interrupted'].includes(status);
+  const over = ['done', 'failed', 'interrupted', 'timeout'].includes(status);
   const end = over ? (ms(task?.ended_at) ?? ms(sub.ended_at)) : now;
-  const label = { done: '已完成', failed: '失败', interrupted: '已中断' }[status] || '运行中';
+  const label = { done: '已完成', failed: '失败', interrupted: '已中断', timeout: '执行超时' }[status] || '运行中';
   const steps = Math.max(task?.step_count || 0, sub.step_count || 0);
   const parts = [label];
   if (start != null && end != null) parts.push(`${over ? '用时' : '已运行'} ${fmtElapsed(end - start)}`);
@@ -81,5 +81,6 @@ export function outcome(status, summary) {
   if (status === 'done') return { tone: 'green', label: '结果', text: summary || '已完成，结果交回给助手' };
   if (status === 'failed') return { tone: 'red', label: '失败原因', text: summary || '子任务出错，没有交回结果' };
   if (status === 'interrupted') return { tone: 'gray', label: '已中断', text: '会话已停下，这个子任务没有交回结果' };
+  if (status === 'timeout') return { tone: 'gray', label: '执行超时', text: '长时间没有响应，没有交回结果' };
   return null;
 }

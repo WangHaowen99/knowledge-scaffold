@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   applyEvent, applyEvents, applySnapshot, initialConversation, isBusy, openQuestions, timelineBlocks,
-  subagentStatus,
+  runStatus, subagentStatus,
 } from '../src/state/conversation.js';
 
 let n = 0;
@@ -153,6 +153,44 @@ test('子任务行状态以终态为准：工作过程或会话结束后，没�
   assert.equal(subagentStatus({ status: 'started' }, true), 'interrupted');
   assert.equal(subagentStatus({ status: 'done' }, true), 'done');
   assert.equal(subagentStatus({ status: 'failed' }, false), 'failed');
+});
+
+// develop !568 的前端判定移到状态层：一轮收尾时记下没终态的子任务怎么结束的（ADR-0097）
+const sub = (taskId, status = 'started') => ev('subagent.updated', { task_id: taskId, group_id: 'g1', title: '分析资料', status, progress_text: '' });
+const state = (value) => ev('session.state', { state: value });
+const cardOf = (s, taskId) => subagentStatus(s.items[`sub:${taskId}`], false);
+
+test('一轮已收尾却没有结果：显示已中断，下一轮开始后也不再转圈，历史回放同样恢复', () => {
+  n = 0;
+  const events = [state('running'), sub('t1'), ev('turn.completed', { turn_id: 't', duration_ms: 1, is_error: false }), state('idle')];
+  let s = applyEvents(initialConversation(), events);
+  assert.equal(cardOf(s, 't1'), 'interrupted');
+  s = applyEvents(s, [ev('message.user', { message_id: 'm2', text: '继续' }), state('running')]);
+  assert.equal(cardOf(s, 't1'), 'interrupted');
+  assert.equal(runStatus(s).doing, '思考中');
+});
+
+test('上一轮的收尾不影响这一轮新派遣的子任务；终态后到的以终态为准', () => {
+  n = 0;
+  let s = applyEvents(initialConversation(), [state('idle'), state('running'), sub('t1', 'running')]);
+  assert.equal(cardOf(s, 't1'), 'running');
+  assert.equal(runStatus(s).doing, '等子任务「分析资料」');
+  s = applyEvents(s, [state('idle'), sub('t1', 'done')]);
+  assert.equal(cardOf(s, 't1'), 'done');
+});
+
+test('只有这一轮按判定执行超时收尾，没收尾的子任务才算执行超时', () => {
+  const stall = () => ev('session.error', { error_id: `e${n}`, message: '超时', retries: 0, retryable: true, actions: ['retry'], reason: 'stall_timeout' });
+  const failed = () => ev('session.error', { error_id: `e${n}`, message: '出错', retries: 0, retryable: true, actions: ['retry'], reason: null });
+  const run = (...tail) => { n = 0; return cardOf(applyEvents(initialConversation(), [state('running'), sub('t1'), ...tail]), 't1'); };
+
+  assert.equal(run(stall(), state('error')), 'timeout');
+  // 普通出错、打断、一轮收尾都不是超时
+  assert.equal(run(failed(), state('error')), 'interrupted');
+  assert.equal(run(ev('session.interrupted', { by: 'user', at: null, exec_id: null, position_label: 'x', saved: null }), stall()), 'interrupted');
+  // 上一轮遗留的卡片不算下一轮的超时
+  assert.equal(run(state('idle'), state('running'), stall()), 'interrupted');
+  assert.equal(run(), 'started');
 });
 
 test('插件草稿卡（F17）没有 card_id：按这一轮的变更集各占一张，同一轮再推只换内容', () => {

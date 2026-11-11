@@ -4183,7 +4183,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | EC-01 | `session.state` | 是 | `{state: "idle"\|"connecting"\|"running"\|"waiting_user"\|"queued"\|"error"\|"closed", since: time, turn_started_at: time\|null, reason: string\|null}` | 顶栏状态 chip、运行计时（chat-states 第 3 项「2:14」）、运行中禁止切换会话（第 1 项） ；`running` 且 `reason: "waiting_materials"`：建模命令在等资料转成文本，还没交给助手（F8） |
 | EC-02 | `session.queued` | 是 | `{position: int, ahead: int, pool: {active, max}, progress_pct: number}` | chat-states 第 9 项排队卡 |
 | EC-03 | `session.started` | 是 | `{engine_label, resumed: bool, context_kept: bool}` | — |
-| EC-04 | `session.error` | 是 | `{error_id: "err-7f3a", message: string（友好提示）, retries: int, retryable: bool, actions: ("retry"\|"redirect")[]}` | chat-states 第 15 项出错卡 |
+| EC-04 | `session.error` | 是 | `{error_id: "err-7f3a", message: string（友好提示）, retries: int, retryable: bool, actions: ("retry"\|"redirect")[], reason: "stall_timeout"\|null（运行中长时间没有引擎事件、判定执行超时；ADR-0097）}`。这一轮还没收尾的子任务卡随出错收尾显示「已中断」，`reason` 为 `stall_timeout` 时显示「执行超时」 | chat-states 第 15 项出错卡 |
 | EC-05 | `session.interrupted` | 是 | `{by: "user"\|"ops"\|"restart"\|"engine_exit"\|"shutdown", at, exec_id: string\|null, position_label: string（如「你在生成第 3 个场景时打断了」）, saved: {files: int, version_label}\|null}` | chat-states 第 4 项 |
 | EC-06 | `session.config_pending` | 是 | `{changes: [{kind: "assembly"\|"model"\|"flow"\|"mcp"\|"permission_mode"\|"engine", summary: string}], effective: "next_message"\|"next_safe_point", detail_link: {page: "plugin-detail", pack: string}\|null}` | chat-states 第 14 项「建模能力有更新」提示条 |
 | EC-07 | `session.reconnected` | 是 | `{reason: "config_changed"\|"restart"\|"recycled", changes: string[], context_kept: bool, duration_ms: int}` | chat-states 第 14 项时间线「已切换到新版本并重新连接，上下文保留」 |
