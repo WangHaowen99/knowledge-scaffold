@@ -516,6 +516,13 @@ def _stalled(session: "Session", now: float, limit: int) -> bool:
     )
 
 
+def _with_followup_notice(error: str, count: int) -> str:
+    """一轮出错或超时收尾时，这一轮进行中追加的消息可能还没处理：已退回输入框，提示用户重新发送（develop !568）。"""
+    if not count:
+        return error
+    return f"{error}本轮进行中追加的 {count} 条消息可能没有处理，已放回输入框，请重新发送。"
+
+
 def _is_command(text: str, meta: dict) -> bool:
     """运行中发来的是命令（排到这一轮之后）还是文字（插进这一轮）：页面命令带 command，手打的以 / 开头。"""
     return bool(meta.get("command")) or str(text or "").lstrip().startswith("/")
@@ -1644,8 +1651,9 @@ class SessionManager:
             session.reader_task.cancel()
         engine, session.engine = session.engine, None
         await _kill_engine(engine)
-        error_id = self._log_error(session, "stall_timeout", f"{limit} 秒没有引擎事件，判定执行超时")
-        self._turn_failed(session, error_id, f"超过 {max(1, limit // 60)} 分钟没有响应，本轮已按超时结束",
+        error_id = self._log_error(session, "stall_timeout", f"{limit} 秒没有引擎事件，已判定执行超时")
+        self._turn_failed(session, error_id,
+                          f"超过 {max(1, limit // 60)} 分钟没有收到模型或工具的响应，已判定本轮执行超时。可以直接发消息继续。",
                           reason=STALL_TIMEOUT_REASON)
 
     async def _reaper_loop(self) -> None:
@@ -2339,7 +2347,7 @@ class SessionManager:
             session.broadcast(session.turn.progress_record())
         session.turn = None
         session.open_subagents.clear()
-        self._return_steers(session, None)
+        message = _with_followup_notice(message, len(self._return_steers(session, None)))
         self._pause_next(session.project_id, session.conversation_id)
         self._settle_after_failure(session)
         if _is_plugin(session):
