@@ -1343,11 +1343,11 @@ def _operation_doc(root: Path, contract: WorkspaceSolverContract) -> Path | None
 
 
 def _revision(root: Path, contracts: list[WorkspaceSolverContract], evaluators: Iterable[str]) -> str:
-    """求解契约修订摘要：契约目录全部文件、被绑定的 Operation 文档与评估器源码。
+    """求解契约修订摘要：契约目录全部文件、被绑定的 Operation 文档、评估器源码与对象的数据绑定。
 
-    只覆盖会改变求解行为的内容：改模型、Schema、绑定或评估器立即使已有验证失效；
-    对象文档只有被声明式评估器的 TABLE_SOURCES 引用时才计入，旧式评估器下改对象
-    文档不使验证失效。
+    只覆盖会改变求解行为的内容：改模型、Schema、绑定、评估器或数据绑定都会改变修订，据此提示
+    「当前修改尚未发布并验证」（不拦截发布）。对象文档的其余内容只有被声明式评估器的
+    TABLE_SOURCES 引用时才计入。
     """
     paths: set[str] = set()
     base = root / SOLVER_DIR
@@ -1376,7 +1376,26 @@ def _revision(root: Path, contracts: list[WorkspaceSolverContract], evaluators: 
     for rel in sorted(paths):
         data = (root / rel).read_bytes()
         digest.update(rel.encode("utf-8") + b"\0" + str(len(data)).encode() + b"\0" + data)
+    binding = json.dumps(_data_binding(root), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest.update(b"data-binding\0" + binding.encode("utf-8"))
     return "sha256:" + digest.hexdigest()
+
+
+def _data_binding(root: Path) -> dict:
+    """声明了来源表或绑定了数据表的对象：声明的表、实际绑定的表与字段对应的列；对象描述等不计入。
+
+    声明在没有数据表可核对时不进导出映射，但改了声明同样会改变求解取数，因此一并计入。
+    """
+    resolved = package_mapping.resolve_object_tables(root, strict_declared=False)
+    return {
+        key: {
+            "declared_table": item.get("declared_table") or "",
+            "table": item.get("table") or "",
+            "columns": {field["key"]: field.get("column") or "" for field in item.get("fields") or []},
+        }
+        for key, item in resolved["objects"].items()
+        if item.get("declared_table") or item.get("table")
+    }
 
 
 # 规范化契约摘要的逐项名称；sidecar 按角色映射，entry 即 Decision Model

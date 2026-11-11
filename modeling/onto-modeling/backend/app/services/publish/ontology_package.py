@@ -208,7 +208,7 @@ class OntologyPackageAdapter:
         draft = src.draft
         binding = src.binding
         dest_path = out
-        pkg = meta["id"]
+        pkg = src.package_id or meta["id"]
 
         report_names: dict[tuple[str, str], str] = {}
 

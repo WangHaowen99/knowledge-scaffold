@@ -112,6 +112,11 @@ def save(
         return stored
 
 
+def digest(path: Path) -> str:
+    with Path(path).open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
 def record_pull(data_dir: Path, project_id: str, version: str, by: str, variant: str) -> None:
     """服务令牌下载时在发布记录上记「已拉取」（只留最近 MAX_PULLS 次）。"""
     with _lock:

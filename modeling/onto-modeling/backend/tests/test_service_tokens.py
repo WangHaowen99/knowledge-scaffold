@@ -136,7 +136,7 @@ def test_last_used_is_recorded(data_dir):
 def test_admin_routes_issue_list_revoke(client):
     created = client.post(
         "/api/v1/admin/service-tokens", headers=_h("admin-token"),
-        json={"name": "合成服务", "scopes": ["receipts.write"], "expires_in_s": 30 * 86400},
+        json={"name": "合成服务", "scopes": ["feedback.write"], "expires_in_s": 30 * 86400},
     )
     assert created.status_code == 201
     body = created.json()

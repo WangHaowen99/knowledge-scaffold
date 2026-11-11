@@ -2,7 +2,7 @@
 PB-05 记录详情、PB-06 包清单、PB-07 下载。PB-05～PB-07 也接受服务令牌 releases.read（X-02、X-03）。
 
 发布从主线提交出（缺省最新），变更集永远不发布；格式自动判定（启用求解契约即求解知识包）；
-版本号 0.{n}.0，n 是主线版本号；同一提交重复发布得到逐字节相同的包。
+版本号由知识包 Hub 分配（ADR-0091），Hub 不可用时发布失败；同一 request_id 重试得到同一个版本。
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from ..api import deps, views
 from ..api.errors import ApiError
 from ..governance import telemetry
-from ..services import audit, feedback_inbox, mainline, ownership, publish, release_store, service_tokens, streams
+from ..services import audit, feedback_inbox, knowledge_hub, mainline, ownership, publish, release_store, service_tokens, streams
 from ..services.service_tokens import SCOPE_RELEASES_READ
 from ..services.workspace import WorkspaceError
 
@@ -85,6 +85,7 @@ def record_view(project_id: str, entry: dict, root, feedback: dict[str, int] | N
         "feedback_count": (feedback or {}).get(entry["version"], 0),
         "size": package.get("size"),
         "sha256": package.get("sha256"),
+        "hub": entry.get("hub"),
         **urls(project_id, entry["version"]),
     }
 
@@ -135,6 +136,7 @@ def check_view(project_id: str, commit: str | None = None) -> dict:
         "version_label": mainline.label(mainline.count(root, data["commit"])),
         "package_name": meta.get("package_name") or project_id,
         "format": data["format"],
+        "solver_revision": (data.get("solver") or {}).get("revision", ""),
         "gates": gates,
         "blocking_count": len(blocking),
         "binding": {
@@ -201,29 +203,68 @@ async def set_data_source(project_id: str, key: str, request: Request):
 # ---- PB-03 发布 ----
 
 
+def _verified_revision(project_id: str, subject: str, revision: str) -> str:
+    """该求解契约修订是否已在早先版本通过评测服务的求解验证（评测对接提供）；通过则发布免确认。"""
+    try:
+        from ..services import package_evaluations
+    except ImportError:
+        return ""
+    verified = getattr(package_evaluations, "verified_solver_release", None)
+    return revision if verified and verified(project_id, subject, revision) else ""
+
+
+# 发布过程中由 Hub 或本地记录报出、要原样回给调用方的错误（不是门禁问题）
+PASS_THROUGH = ("invalid_commit", "hub_unavailable", "hub_error", "version_conflict", "package_deleted", "not_found",
+                "publish_preview_stale", "solver_validation_acknowledgement_required", "unauthenticated")
+
+
 @router.post("/releases")
 async def create_release(project_id: str, request: Request):
-    """门禁 → 渲染 → 留存 → 打 release/0.{n}.0 标签 → 写发布记录。降级发布只放宽数据绑定。"""
+    """门禁 → 冻结 → Hub 分配版本号、上传、提交 → 本地留存、打 release/<版本> 标签、写发布记录。
+
+    降级发布只放宽数据绑定；启用求解契约的包要勾选「求解能力尚未经端到端验证」
+    （solver_unverified_acknowledged），当前修订已验证过的除外。
+    """
+    from .hub_packages import identity
+
+    token, subject, username = identity(request)
     root = deps.require_writable(project_id, request)
     body = await deps.json_body(request)
     commit = body.get("commit") or None
     degrade = bool(body.get("degrade"))
+    request_id = str(body.get("request_id") or "")
+    if request_id:
+        knowledge_hub.identifier(request_id)
+    acknowledged = body.get("solver_unverified_acknowledged") is True
     check = check_view(project_id, commit)
     failing = [gate for gate in check["gates"] if gate["blocking"] and not (degrade and gate["degradable"])]
     if failing:
         telemetry.count("onto_check_failures_total", check="publish_gate")
         raise ApiError("gate_blocked", "门禁链有未通过项，不能发布", 422, {"gates": failing})
+    verified = ""
+    solver_gate = next((gate for gate in check["gates"] if gate["id"] == "solver_contract"), None)
+    if solver_gate and solver_gate.get("requires_acknowledgement") and not acknowledged:
+        verified = _verified_revision(project_id, subject, check["solver_revision"])
+        if not verified:
+            raise ApiError("solver_validation_acknowledgement_required", "求解能力尚未经端到端验证，要确认后再发布", 409)
     try:
         record = publish.publish_package(
-            deps.workspaces, project_id, allow_unbound=degrade, author=deps.actor(request), commit=commit,
+            deps.workspaces, project_id, allow_unbound=degrade, author=deps.actor(request), commit=check["commit"],
+            token=token, subject=subject, request_id=request_id,
+            acknowledged_by=username if acknowledged else "", verified_revision=verified,
         )
     except WorkspaceError as exc:
-        if exc.code in ("invalid_commit",):
+        if exc.code in PASS_THROUGH or exc.status in (401, 403, 404, 503):
             raise
-        # 门禁之后渲染才发现的问题（与门禁同口径，正常不会走到这里）
+        # 门禁之后才发现的问题（consumer 导入规则、渲染失败；与门禁同口径，正常不会走到这里）
         raise ApiError("gate_blocked", str(exc), 422, {"gates": [], "reason": exc.code}) from exc
-    audit.log(deps.actor(request), "POST", request.url.path, {"publish.release": record["version"], "commit": record["commit"]})
-    view = record_view(project_id, find_release(project_id, record["version"]), root)
+    audit.log(deps.actor(request), "POST", request.url.path, {"publish.release": record["version"], "commit": record.get("commit")})
+    try:
+        view = record_view(project_id, find_release(project_id, record["version"]), root)
+    except ApiError:
+        # Hub 已提交、本地标签没写成：照样算发布成功，带上 Hub 回执，后台恢复
+        view = {"project_id": project_id, "version": record["version"], "local_record_pending": True}
+    view["hub"] = {key: record.get(key) for key in publish.HUB_FIELDS}
     streams.publish_project(project_id, "release.updated", {"release": view})  # EP-19
     return JSONResponse(status_code=201, content=view)
 
@@ -282,7 +323,9 @@ def get_release_manifest(project_id: str, version: str, request: Request):
 def download_release(project_id: str, version: str, request: Request, variant: str = "standard"):
     """PB-07：读发布时留存的包，同一版本同一变体永远是同一份字节；graph 是图模式变体。"""
     token = _reader(request, project_id)
-    path, record = publish.release_package(deps.workspaces, project_id, version, variant)
+    path, record = publish.release_package(
+        deps.workspaces, project_id, version, variant, token="" if token else _bearer(request),
+    )
     if token:
         actor = f"service:{token['name']}"
         release_store.record_pull(deps.workspaces.data_dir, project_id, version, actor, variant)
