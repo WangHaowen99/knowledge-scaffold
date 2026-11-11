@@ -96,6 +96,7 @@ ENTITY_TYPES: tuple[EntityType, ...] = (
             _text("约束表达"),
             _text("违反处置", False),
             _text("来源", False),
+            _text("原始资料来源", False),
             _text("例外情况", False),
         ),
     ),

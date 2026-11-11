@@ -1,4 +1,5 @@
 """Synthetic regression cases for input and source integrity."""
+import hashlib
 import importlib
 import io
 import json
@@ -101,6 +102,86 @@ def test_office_extraction_has_original_hash_and_positions(tmp_path, scripts):
     path = tmp_path / 'source.xlsx'
     book.save(path)
     assert source.located_text(source.extract(path), 'sheet:合成规则!B1') == 'RULE-01'
+
+
+def test_docx_over_eight_mib_with_bounded_text_is_verifiable(tmp_path, scripts):
+    _, source = scripts
+    path = tmp_path / 'large-source.docx'
+    docx(path)
+    with zipfile.ZipFile(path, 'a', zipfile.ZIP_STORED) as archive:
+        archive.writestr('word/media/large-image.bin', b'x' * (9 * 1024 * 1024))
+
+    result = source.extract(path)
+    assert path.stat().st_size > 8 * 1024 * 1024
+    assert result['status'] == 'ok'
+    assert result['source_size'] == path.stat().st_size
+    assert result['binary_assets'] == 1
+    assert result['binary_assets_extracted'] is False
+    assert source.located_text(result, 'p:1') == '合成规则 RULE-01'
+
+
+def test_docx_over_upload_limit_is_unverifiable(tmp_path, scripts):
+    _, source = scripts
+    path = tmp_path / 'too-large.docx'
+    docx(path)
+    with zipfile.ZipFile(path, 'a', zipfile.ZIP_STORED) as archive:
+        archive.writestr('word/media/too-large.bin', b'x' * (21 * 1024 * 1024))
+
+    result = source.extract(path)
+    assert result['status'] == 'unverifiable'
+    assert '原文件超出抽取上限' in result['reason']
+
+
+def test_source_hash_and_content_use_same_snapshot_when_path_is_replaced(
+        tmp_path, scripts, monkeypatch):
+    _, source = scripts
+    path = tmp_path / 'source.docx'
+    replacement = tmp_path / 'replacement.docx'
+    docx(path, '<w:p><w:r><w:t>OLD-ITEM</w:t></w:r></w:p>')
+    docx(replacement, '<w:p><w:r><w:t>NEW-ITEM</w:t></w:r></w:p>')
+    original_bytes = path.read_bytes()
+    original_extract_docx = source._extract_docx
+
+    def replace_before_extract(snapshot, add):
+        replacement.replace(path)
+        return original_extract_docx(snapshot, add)
+
+    monkeypatch.setattr(source, '_extract_docx', replace_before_extract)
+    result = source.extract(path)
+
+    assert result['status'] == 'ok'
+    assert result['source_sha256'] == hashlib.sha256(original_bytes).hexdigest()
+    assert source.located_text(result, 'table:1/row:1/cell:1') == 'OLD-ITEM'
+    with zipfile.ZipFile(path) as archive:
+        assert b'NEW-ITEM' in archive.read('word/document.xml')
+
+
+@pytest.mark.parametrize('error_type', [RuntimeError, NotImplementedError])
+def test_archive_runtime_errors_are_unverifiable(tmp_path, scripts, monkeypatch, error_type):
+    _, source = scripts
+    path = tmp_path / 'source.docx'
+    docx(path)
+
+    def fail_extract(*args, **kwargs):
+        raise error_type('Synthetic unreadable archive member')
+
+    monkeypatch.setattr(source, '_extract_docx', fail_extract)
+    result = source.extract(path)
+
+    assert result['status'] == 'unverifiable'
+    assert result['segments'] == []
+    assert error_type.__name__ in result['reason']
+
+
+def test_line_range_anchor_joins_lines_in_range(tmp_path, scripts):
+    _, source = scripts
+    path = tmp_path / 'notes.md'
+    path.write_text('第一行\n\n第三行 RULE-01\n第四行\n第五行\n', encoding='utf-8')
+    result = source.extract(path)
+    assert source.located_text(result, 'L2-L4') == '第三行 RULE-01\n第四行'
+    assert source.located_text(result, 'L3-4') == '第三行 RULE-01\n第四行'
+    with pytest.raises(ValueError, match='锚点不存在'):
+        source.located_text(result, 'L7-L9')
 
 
 @pytest.mark.parametrize('name,data', [('bad.docx', b'not a zip'), ('bad.txt', b'\xff'),
