@@ -1,0 +1,16 @@
+/* 已发布版本的独立评测（ADR-0092）：版本行里的评测格、报告与优化建议、旧版评测记录 */
+.ev-cell{display:inline-flex;align-items:center;gap:10px;white-space:nowrap}
+.ev-link{color:var(--blue2);cursor:pointer;font-size:12px}
+.ev-link:hover{text-decoration:underline}
+.ev-doc{background:#fff;border:1px solid var(--line);border-radius:10px;padding:18px 22px;max-height:calc(100vh - 260px);overflow:auto;font-size:13px;line-height:1.75;color:var(--ink2)}
+.ev-doc h1,.ev-doc h2,.ev-doc h3,.ev-doc h4{color:var(--ink);margin:14px 0 6px;font-size:14px}
+.ev-doc h1{font-size:16px;margin-top:0}
+.ev-doc p{margin:0 0 8px}
+.ev-doc ul,.ev-doc ol{margin:0 0 8px;padding-left:20px}
+.ev-doc blockquote{margin:4px 0 8px;padding:2px 12px;border-left:3px solid var(--line);color:var(--ink3)}
+.ev-doc table{border-collapse:collapse;margin:4px 0 10px;font-size:12px}
+.ev-doc th,.ev-doc td{border:1px solid var(--line);padding:3px 8px;text-align:left;vertical-align:top}
+.ev-doc pre{background:var(--panel3);border-radius:8px;padding:8px 10px;overflow:auto;font-size:12px}
+.ev-doc a{color:var(--blue2)}
+.ev-legacy-row{display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--line);cursor:pointer}
+.ev-legacy-row:hover{background:var(--panel3)}
