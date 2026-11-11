@@ -22,7 +22,7 @@ from ..workspace.errors import WorkspaceError
 from ..workspace.files import unmarked_table_resources
 from ..workspace.gitops import _git, _head_commit, _run_git
 from ..workspace.layout import _content_revision
-from . import gates, versioning
+from . import gates, stages as publish_stages, versioning
 from .ontology_package import ADAPTER, VARIANT_GRAPH, VARIANT_STANDARD, resolve_binding
 from .spi import ReleaseSource
 from .tree import release_tree, uncommitted_package_changes
@@ -136,7 +136,8 @@ def package_binding_check(manager, project_id: str, commit: str | None = None) -
         shown.append({**item, "path": rel, "revision": revision})
     objects = binding["objects"]
     uncommitted = uncommitted_package_changes(root)
-    gate_list = gates.gate_chain(issues, solver, script_findings + structure["findings"], tree_error, pack_gates)
+    stages = publish_stages.readiness(manager, project_id)
+    gate_list = gates.gate_chain(issues, solver, script_findings + structure["findings"], tree_error, pack_gates, stages)
     return {
         "commit": commit,
         "blocking": sum(1 for item in issues if item["blocking"]),
@@ -153,6 +154,8 @@ def package_binding_check(manager, project_id: str, commit: str | None = None) -
         "solver": solver,
         # consumer 导入规则的结构自检单列：不计入数据绑定的 blocking，进「知识包结构」门禁
         "structure": structure,
+        # 发布前必须完成的建模阶段（与 develop 同规则）
+        "stages": stages,
         "gates": gate_list,
         "format": "solver" if solver.get("enabled") else "ontology",
         "uncommitted": uncommitted[:CHECK_LIMIT],

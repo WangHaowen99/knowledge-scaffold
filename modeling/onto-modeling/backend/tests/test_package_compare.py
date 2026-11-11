@@ -24,6 +24,7 @@ from app.main import app
 from app.routers.package_compare import PackageCompareBody
 from app.services import auth, package_compare, publish
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
+from tests.publish_fixtures import complete_publish_stages
 
 
 def archive(root="", package_id="synthetic", schema_version="0.1", **files):
@@ -1602,6 +1603,7 @@ def _release(manager, project_id, files: dict[str, str]) -> str:
     for name, text in files.items():
         (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_text(text, encoding="utf-8")
+    complete_publish_stages(root, commit=False)  # 发布前必经的建模阶段（ADR-0098）
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "test: synthetic release content")
     # 发布走 Hub（ADR-0098），这里接 conftest 的内存 Hub

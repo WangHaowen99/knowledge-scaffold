@@ -139,6 +139,10 @@ def check_view(project_id: str, commit: str | None = None) -> dict:
         "package_name": meta.get("package_name") or project_id,
         "format": data["format"],
         "solver_revision": (data.get("solver") or {}).get("revision", ""),
+        # develop 发布检查的同名字段：求解契约静态检查、consumer 导入规则的结构自检、必经的建模阶段
+        "solver": _solver_view(data.get("solver") or {"enabled": False}),
+        "structure": data["structure"],
+        "stages": data["stages"],
         "gates": gates,
         "blocking_count": len(blocking),
         "binding": {
@@ -154,9 +158,20 @@ def check_view(project_id: str, commit: str | None = None) -> dict:
         "degradable": bool(blocking) and all(gate["degradable"] for gate in blocking),
         "uncommitted": {"count": data["uncommitted_count"], "paths": data["uncommitted"]},
         "last_release": _last_release(project_id, root, last),
+        # 上次发布（develop 的 last_publish）：时间、发布人、是否降级与未绑定的对象数
+        "last_publish": {"at": deps.iso(last.get("at")), "by": last.get("by") or "", "degraded": bool(last.get("degraded")),
+                         "unbound_count": last.get("unbound_count") or 0, "version": last.get("version")} if last else None,
         "checked_at": deps.iso(data["checked_at"]),
         "duration_ms": data["duration_ms"],
     }
+
+
+def _solver_view(solver: dict) -> dict:
+    """求解契约（develop 发布检查同名字段）：静态检查问题与发布时是否要确认未验证。"""
+    if not solver.get("enabled"):
+        return {"enabled": False}
+    keys = ("enabled", "revision", "operations", "findings", "blocking", "requires_validation_after_publish", "truncated")
+    return {key: solver.get(key) for key in keys}
 
 
 def _last_release(project_id: str, root, last: dict | None) -> dict | None:
@@ -221,14 +236,16 @@ def _mark_verified(project_id: str, request: Request, view: dict) -> dict:
         _, subject, _ = identity(request)
     except WorkspaceError:
         return view
-    verified = _verified_revision(project_id, subject, view["solver_revision"])
-    if verified:
-        gate.update(requires_acknowledgement=False, verified_revision=verified)
+    revision = view["solver_revision"]
+    release = package_evaluations.verified_solver_release(project_id, subject, revision) if revision else None
+    if release:
+        gate.update(requires_acknowledgement=False, verified_revision=revision)
+        view["solver"] = {**view["solver"], "requires_validation_after_publish": False, "verified_release": release}
     return view
 
 
 # 发布过程中由 Hub 或本地记录报出、要原样回给调用方的错误（不是门禁问题）
-PASS_THROUGH = ("invalid_commit", "hub_unavailable", "hub_error", "version_conflict", "package_deleted", "not_found",
+PASS_THROUGH = ("invalid_commit", "modeling_stages_incomplete", "hub_unavailable", "hub_error", "version_conflict", "package_deleted", "not_found",
                 "publish_preview_stale", "solver_validation_acknowledgement_required", "unauthenticated")
 
 
@@ -250,6 +267,8 @@ async def create_release(project_id: str, request: Request):
     if request_id:
         knowledge_hub.identifier(request_id)
     acknowledged = body.get("solver_unverified_acknowledged") is True
+    # 建模没做完（四个必经阶段）先回 409，与 develop 同码同文案
+    publish.stages.ensure(deps.workspaces, project_id)
     check = check_view(project_id, commit)
     failing = [gate for gate in check["gates"] if gate["blocking"] and not (degrade and gate["degradable"])]
     if failing:

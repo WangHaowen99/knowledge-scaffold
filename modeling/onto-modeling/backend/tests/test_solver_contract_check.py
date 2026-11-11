@@ -20,6 +20,7 @@ from app.services import publish as publish_service
 from app.services import solver as solver_service
 from app.services import solver_contract
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
+from tests.publish_fixtures import complete_publish_stages
 from tests.test_solver_evaluator_contract import (
     FACTORS,
     LOOKUP_OBJECT,
@@ -194,12 +195,13 @@ def _publish(manager, pid, *args, **kwargs):
 
 
 def test_ordinary_package_has_no_solver_gate(manager: WorkspaceManager, tmp_path: Path):
-    pid, _root = _project(manager, evaluator=None)
+    pid, root = _project(manager, evaluator=None)
     check = publish_service.package_binding_check(manager, pid)
     assert check["solver"] == {"enabled": False}
     view = solver_service.solver_contract_view(manager, pid)
     assert view["enabled"] is False and view["revision"] == ""
     assert view["available_operations"] == ["查询站点", "规划路线"]
+    complete_publish_stages(root)
     _publish(manager, pid, tmp_path / "plain.zip")  # 普通包不用确认求解能力
 
 
@@ -694,6 +696,7 @@ def test_referenced_object_edit_changes_declarative_revision(
 
 def test_publish_needs_only_static_checks(manager: WorkspaceManager, tmp_path: Path):
     pid, root = _with_contract(manager)
+    complete_publish_stages(root)
     # 没有任何端到端验证记录也能发布：确认求解能力尚未验证即可
     with pytest.raises(WorkspaceError) as refused:
         _publish(manager, pid, tmp_path / "refused.zip")
@@ -1279,6 +1282,7 @@ def test_routes_return_findings_and_conflict(manager: WorkspaceManager, monkeypa
     legacy = client.put(f"/api/projects/{pid}/package/solver-contract",
                         json={"base_revision": "sha256:old", "contract": {"operations": [_item()]}})
     assert legacy.status_code == 409 and legacy.json()["error"] == legacy.json()["message"]
+    complete_publish_stages(root)  # 必经的建模阶段齐了，门禁链从数据绑定开始
     check = client.get(f"/api/v1/projects/{pid}/publish/check").json()
     assert check["format"] == "solver"
     assert [gate["id"] for gate in check["gates"]][:2] == ["data_binding", "solver_contract"]

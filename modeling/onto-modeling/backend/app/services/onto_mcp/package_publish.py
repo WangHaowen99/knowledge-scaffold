@@ -13,6 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from .. import hub_packages, knowledge_hub
+from ..publish import stages as publish_stages
 from ..workspace import WorkspaceError
 from . import tokens
 from .errors import McpError
@@ -116,6 +117,14 @@ def preview(manager, principal, args):
         raise McpError("MCP_HUB_IDENTITY_REQUIRED", "发布委托缺少 Hub 用户身份", 401)
     if not knowledge_hub.configured():
         raise McpError("HUB_UNAVAILABLE", "知识包 Hub 未配置", 503)
+    # 与网页同一规则：四个必经建模阶段没做完不能发布，告诉调用方缺哪几个
+    readiness = publish_stages.readiness(manager, project_id)
+    if not readiness["ready"]:
+        message = publish_stages.message(readiness["missing_stages"])
+        return {"ready": False, "request_id": request_id,
+                "blockers": [{"code": publish_stages.CODE, "message": message,
+                              "missing_stages": readiness["missing_stages"]}],
+                "display": {"text": message}}
     try:
         check, blockers = _blockers(manager, project_id, allow_unbound)
         if not blockers:

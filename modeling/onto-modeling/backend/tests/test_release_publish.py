@@ -20,6 +20,7 @@ from app.services import auth
 from app.services.publish.tree import release_tree
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 from tests.test_publish_binding_gate import object_doc, write_object, write_schema
+from tests.publish_fixtures import complete_publish_stages
 from tests.text_versions import write_text_versions
 
 openpyxl = pytest.importorskip("openpyxl")
@@ -74,6 +75,7 @@ def rich_project(manager: WorkspaceManager, name: str = "发布回归") -> tuple
     (root / "ontology" / "rule" / "限购规则.md").write_text("# 限购规则\n\n约束[[订单]]数量\n", encoding="utf-8")
     (root / "ontology" / "metric" / "客单价.md").write_text("# 客单价\n\n基于[[订单]]金额\n", encoding="utf-8")
     (root / "ontology" / "scripts" / "calc_price.py").write_text(SCRIPT, encoding="utf-8")
+    complete_publish_stages(root, commit=False)  # 发布前必经的建模阶段（资料分析、质量检查）
     commit_all(root)
     return pid, root
 
@@ -274,6 +276,7 @@ def test_solver_archive_export_matches_clean_workspace_export(manager, tmp_path)
     from tests.test_solver_contract_check import _with_contract
 
     pid, root = _with_contract(manager)
+    complete_publish_stages(root)
     record = _publish(manager, pid, tmp_path / "release.zip", allow_unbound=True, acknowledged_by="operator_a")
     publish_service.export_package_zip(manager, 
         pid, tmp_path / "workspace.zip", allow_unbound=True,

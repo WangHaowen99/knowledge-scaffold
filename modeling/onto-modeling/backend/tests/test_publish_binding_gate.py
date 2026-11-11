@@ -9,6 +9,7 @@ import pytest
 from app.services import publish as publish_service
 from app.services import package_mapping
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
+from tests.publish_fixtures import complete_publish_stages
 from tests.text_versions import write_text_versions
 
 openpyxl = pytest.importorskip("openpyxl")
@@ -147,6 +148,7 @@ def gated_project(manager: WorkspaceManager) -> tuple[str, Path]:
     (root / "resource" / "others" / "附表.csv").write_text("A,B\n", encoding="utf-8")
     write_object(root, "订单", "T_ORDER", ["ORDER_ID", "AMOUNT"])
     write_object(root, "客户", "T_CLIENT", ["CUSTOMER_ID", "NAME"])
+    complete_publish_stages(root, commit=False)  # 发布前必经的建模阶段
     commit_all(root)
     return pid, root
 
@@ -202,6 +204,7 @@ def test_degraded_publish_still_enforces_script_contract(manager, tmp_path):
 def test_publish_without_any_table_is_not_degraded(manager, tmp_path):
     pid = manager.create_project("纯概念")["id"]
     write_object(manager.project_root(pid), "订单", "T_ORDER", ["ORDER_ID"])
+    complete_publish_stages(manager.project_root(pid), commit=False)
     commit_all(manager.project_root(pid))
     _publish(manager, pid, tmp_path / "pkg.zip")
     audit = manager.get_project(pid)["last_package_publish"]
