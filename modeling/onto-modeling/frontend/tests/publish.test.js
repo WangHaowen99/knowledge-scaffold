@@ -256,3 +256,14 @@ test('PB-04～PB-07：记录详情、包清单、下载标准包与图模式变�
   const empty = mockServer({ sc: { publish: 'empty' } });
   assert.deepEqual((await empty.call('GET', `${P}/releases`)).body.items, []);
 });
+
+test('consumer 导入规则不通过（知识包结构）挡发布且不能降级（从 develop 的 packagePublish 测试移植）', () => {
+  const check = {
+    gates: [
+      { id: 'data_binding', title: '数据绑定', blocking: true, degradable: true },
+      { id: 'package_structure', title: '知识包结构', blocking: true, degradable: false },
+    ],
+  };
+  assert.deepEqual(degradeNote(check), { blocked: true, text: '知识包结构未通过' });
+  assert.equal(degradeNote({ gates: [check.gates[0]] }).blocked, false);
+});

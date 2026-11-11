@@ -22,13 +22,6 @@ from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 TOOLKIT_SCRIPTS = Path(__file__).resolve().parents[2] / "assets" / "workspace-toolkit" / "scripts"
 
 
-def _project_root():
-    source = Path(__file__).resolve()
-    for candidate in source.parents:
-        if (candidate / "consumer" / "backend").is_dir() and \
-                (candidate / "modeling" / "onto-modeling").is_dir():
-            return candidate
-    return source.parents[2]
 BASH = shutil.which("bash")
 
 MODEL_YAML = b"""id: route_plan
@@ -657,24 +650,18 @@ def test_workspace_rules_tell_agent_solver_directory_is_managed():
 # ---- consumer 导入边界 ----
 
 
-def _consumer_validators(monkeypatch):
-    consumer = _project_root() / "consumer" / "backend"
-    if not consumer.is_dir():
-        pytest.skip("consumer backend is not included in standalone onto-modeling tests")
-    monkeypatch.syspath_prepend(str(consumer))
-    try:
-        from ontology.package_import import validate_ontology_revision
-        from ontology.solver_package_layout import validate_solver_package_layout
-        from solver_coordination.capability_catalog import load_solver_capability_catalog
-    except Exception as exc:  # consumer 依赖未装在建模后端 venv 时跳过
-        pytest.skip(f"consumer 校验器不可用：{exc}")
-    return validate_ontology_revision, validate_solver_package_layout, load_solver_capability_catalog
+def _consumer_validators():
+    """consumer 导入规则的副本（app/services/consumer_package_rules），不依赖 consumer 源码。"""
+    from app.services.consumer_package_rules.package_validation import validate_ontology_revision
+    from app.services.consumer_package_rules.solver_layout import (
+        inspect_solver_package_layout,
+        validate_solver_package_layout,
+    )
+    return validate_ontology_revision, validate_solver_package_layout, inspect_solver_package_layout
 
 
-def test_exported_package_passes_consumer_import_contract(
-    manager: WorkspaceManager, tmp_path: Path, monkeypatch
-):
-    validate_revision, validate_layout, load_catalog = _consumer_validators(monkeypatch)
+def test_exported_package_passes_consumer_import_contract(manager: WorkspaceManager, tmp_path: Path):
+    validate_revision, validate_layout, inspect_layout = _consumer_validators()
     meta = manager.create_project("契约任务")
     root = manager.project_root(meta["id"])
     (root / "ontology" / "object" / "站点.md").write_text("# 站点\n", encoding="utf-8")
@@ -691,5 +678,6 @@ def test_exported_package_passes_consumer_import_contract(
 
     manifest = validate_revision(package_root)
     validate_layout(package_root, manifest)
-    records = load_catalog(package_root, manifest)
-    assert [record.operation_key for record in records] == ["plan_route"]
+    inspection = inspect_layout(package_root, manifest)
+    assert inspection.operation_keys == ("plan_route",)
+    assert not inspection.invalid and not inspection.package_issues
