@@ -18,7 +18,7 @@ import yaml
 
 from app.services import publish as publish_service
 from app.services import solver as solver_service
-from app.services import solver_contract, solver_validation
+from app.services import solver_contract
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 from tests.test_solver_evaluator_contract import (
     FACTORS,
@@ -178,14 +178,16 @@ def _with_contract(manager: WorkspaceManager, **kwargs) -> tuple[str, Path]:
 
 
 def _codes(status: dict) -> set[str]:
-    return {item["code"] for item in status.get("findings", []) + status.get("gate", [])}
+    return {item["code"] for item in status.get("findings", [])}
 
 
-def _accept(root: Path, revision: str, **fields) -> dict:
-    record = solver_validation.create(root, revision, ["plan_route"])
-    return solver_validation.update(root, record["id"], **{
-        "status": solver_validation.STATUS_PASSED, "authoritative": True, **fields,
-    })
+def _revision(manager: WorkspaceManager, pid: str) -> str:
+    return solver_service.solver_release_status(manager, pid)["revision"]
+
+
+def _publish(manager, pid, *args, **kwargs):
+    """发布走 conftest 的内存 Hub，带合成的登录身份。"""
+    return publish_service.publish_package(manager, pid, *args, token="synthetic-access", subject="scope_a", **kwargs)
 
 
 # ---- 普通包：无额外门禁 ----
@@ -198,13 +200,13 @@ def test_ordinary_package_has_no_solver_gate(manager: WorkspaceManager, tmp_path
     view = solver_service.solver_contract_view(manager, pid)
     assert view["enabled"] is False and view["revision"] == ""
     assert view["available_operations"] == ["查询站点", "规划路线"]
-    publish_service.publish_package(manager, pid, tmp_path / "plain.zip")
+    _publish(manager, pid, tmp_path / "plain.zip")  # 普通包不用确认求解能力
 
 
 # ---- 静态检查：五个稳定错误码 ----
 
 
-def test_valid_contract_only_waits_for_validation(manager: WorkspaceManager):
+def test_valid_contract_only_needs_validation_after_publish(manager: WorkspaceManager):
     pid, _root = _with_contract(manager)
     status = solver_service.solver_release_status(manager, pid)
     assert status["findings"] == []
@@ -213,8 +215,10 @@ def test_valid_contract_only_waits_for_validation(manager: WorkspaceManager):
         "solver_key": "plan_route", "operation": "规划路线", "decision_model": "route_plan",
         "enabled": True, "evaluator": "ontology/scripts/route_eval.py",
     }]
-    assert _codes(status) == {solver_contract.CODE_VALIDATION_REQUIRED}
-    assert publish_service.package_binding_check(manager, pid)["solver"]["blocking"] == 1
+    # 端到端验证改在发布后的独立评测中进行：不阻断发布，只要求发布时确认
+    assert status["blocking"] == 0 and status["requires_validation_after_publish"] is True
+    assert "gate" not in status and "validation" not in status
+    assert publish_service.package_binding_check(manager, pid)["solver"]["blocking"] == 0
 
 
 def test_unsupported_profile_is_version_incompatible(manager: WorkspaceManager):
@@ -465,7 +469,7 @@ def test_unsupported_capabilities_are_listed(manager: WorkspaceManager):
     assert finding["code"] == solver_contract.CODE_VERSION_INCOMPATIBLE
     assert finding["field"] == "declaration.engine_requirements.capabilities"
     assert "缺少能力：column_generation、time_windows" in finding["message"]
-    assert solver_service.solver_release_status(manager, pid)["blocking"] == 2  # 能力缺失与待验证同时阻断发布
+    assert solver_service.solver_release_status(manager, pid)["blocking"] == 1  # 只有能力缺失阻断发布
 
 
 def test_malformed_capabilities_are_invalid(manager: WorkspaceManager):
@@ -622,14 +626,14 @@ def _declarative_contract(
     return pid, root
 
 
-def test_declarative_evaluator_only_waits_for_validation(manager: WorkspaceManager):
+def test_declarative_evaluator_passes_static_checks(manager: WorkspaceManager):
     pid, root = _declarative_contract(manager)
     scripts = root / "ontology" / "scripts"
     (scripts / "helper.py").write_text('"""辅助脚本（合成示例）"""\nVALUE = 1\n', encoding="utf-8")
     status = solver_service.solver_release_status(manager, pid)
     assert status["findings"] == []  # 非评估器脚本不参与发现
     assert status["operations"][0]["evaluator"] == "ontology/scripts/route_eval.py"
-    assert _codes(status) == {solver_contract.CODE_VALIDATION_REQUIRED}
+    assert status["blocking"] == 0 and status["requires_validation_after_publish"] is True
     assert solver_contract.evaluator_unit_options(scripts / "route_eval.py") == ["UNIT_1", "UNIT_2"]
 
 
@@ -671,75 +675,81 @@ def test_legacy_and_declarative_evaluators_are_ambiguous(manager: WorkspaceManag
 
 
 @pytest.mark.parametrize(
-    "name, stale", [("StorageTank", True), ("StreamLink", True), ("OtherObject", False)]
+    "name, changed", [("StorageTank", True), ("StreamLink", True), ("OtherObject", False)]
 )
-def test_referenced_object_edit_makes_declarative_validation_stale(
-    manager: WorkspaceManager, name: str, stale: bool
+def test_referenced_object_edit_changes_declarative_revision(
+    manager: WorkspaceManager, name: str, changed: bool
 ):
     # StreamLink 只经 lookup 引用，同样计入修订
     pid, root = _declarative_contract(manager, lookup_source(), StreamLink=LOOKUP_OBJECT)
-    _accept(root, solver_service.solver_release_status(manager, pid)["revision"])
-    assert solver_service.solver_release_status(manager, pid)["blocking"] == 0
+    before = _revision(manager, pid)
     doc = root / "ontology" / "object" / f"{name}.md"
     text = doc.read_text(encoding="utf-8") if doc.exists() else f"# {name}\n"
     doc.write_text(text + "\n", encoding="utf-8")
-    expected = {solver_contract.CODE_VALIDATION_STALE} if stale else set()
-    assert _codes(solver_service.solver_release_status(manager, pid)) == expected
+    assert (_revision(manager, pid) != before) is changed
 
 
-# ---- 验证门禁与发布 ----
+# ---- 发布：只受静态检查约束，未验证要确认（ADR-0091） ----
 
 
-def test_publish_is_blocked_until_authoritative_validation(manager: WorkspaceManager, tmp_path: Path):
+def test_publish_needs_only_static_checks(manager: WorkspaceManager, tmp_path: Path):
     pid, root = _with_contract(manager)
-    with pytest.raises(WorkspaceError) as exc:
-        publish_service.publish_package(manager, pid, tmp_path / "blocked.zip", allow_unbound=True)
-    assert exc.value.code == solver_contract.CODE_VALIDATION_REQUIRED
-    assert not (tmp_path / "blocked.zip").exists()
-
-    revision = solver_service.solver_release_status(manager, pid)["revision"]
-    _accept(root, revision, authoritative=False)
-    assert _codes(solver_service.solver_release_status(manager, pid)) == {solver_contract.CODE_VALIDATION_FAILED}
-
-    _accept(root, revision, candidate_count=0)  # 全不可行也是有效的权威结果
-    status = solver_service.solver_release_status(manager, pid)
-    assert status["blocking"] == 0 and status["validation"]["status"] == "passed"
-    publish_service.publish_package(manager, pid, tmp_path / "ok.zip")
+    # 没有任何端到端验证记录也能发布：确认求解能力尚未验证即可
+    with pytest.raises(WorkspaceError) as refused:
+        _publish(manager, pid, tmp_path / "refused.zip")
+    assert refused.value.code == "solver_validation_acknowledgement_required"
+    _publish(manager, pid, tmp_path / "ok.zip", acknowledged_by="operator_a")
     assert (tmp_path / "ok.zip").is_file()
 
-
-def test_failed_validation_blocks_with_reason(manager: WorkspaceManager):
-    pid, root = _with_contract(manager)
-    revision = solver_service.solver_release_status(manager, pid)["revision"]
-    record = solver_validation.create(root, revision, ["plan_route"])
-    assert _codes(solver_service.solver_release_status(manager, pid)) == {solver_contract.CODE_VALIDATION_REQUIRED}
-    solver_validation.update(
-        root, record["id"], status=solver_validation.STATUS_FAILED, message="Consumer 不可用"
-    )
-    [gate] = solver_service.solver_release_status(manager, pid)["gate"]
-    assert gate["code"] == solver_contract.CODE_VALIDATION_FAILED and "Consumer 不可用" in gate["message"]
+    schema = root / solver_contract.SOLVER_DIR / "plan_route" / "input.schema.json"
+    schema.write_text('{"type": "string"}\n', encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "test: synthetic schema edit")
+    assert solver_service.solver_release_status(manager, pid)["blocking"] > 0
+    with pytest.raises(WorkspaceError) as exc:
+        _publish(manager, pid, tmp_path / "blocked.zip", allow_unbound=True, acknowledged_by="operator_a")
+    assert exc.value.code == solver_contract.CODE_INVALID
+    assert not (tmp_path / "blocked.zip").exists()
 
 
 @pytest.mark.parametrize("edit", ["model", "operation", "evaluator"])
-def test_contract_edit_makes_validation_stale(manager: WorkspaceManager, edit: str):
+def test_contract_edit_changes_revision(manager: WorkspaceManager, edit: str):
     pid, root = _with_contract(manager)
-    _accept(root, solver_service.solver_release_status(manager, pid)["revision"])
-    assert solver_service.solver_release_status(manager, pid)["blocking"] == 0
+    before = _revision(manager, pid)
     target = {
         "model": root / solver_contract.SOLVER_DIR / "plan_route" / "input.schema.json",
         "operation": root / "ontology" / "operation" / "规划路线.md",
         "evaluator": root / "ontology" / "scripts" / "route_eval.py",
     }[edit]
     target.write_text(target.read_text(encoding="utf-8") + "\n", encoding="utf-8")
-    assert _codes(solver_service.solver_release_status(manager, pid)) == {solver_contract.CODE_VALIDATION_STALE}
+    assert _revision(manager, pid) != before
 
 
-def test_unrelated_edit_keeps_validation(manager: WorkspaceManager):
+def test_unrelated_edit_keeps_revision(manager: WorkspaceManager):
     pid, root = _with_contract(manager)
-    _accept(root, solver_service.solver_release_status(manager, pid)["revision"])
+    before = _revision(manager, pid)
     (root / "ontology" / "operation" / "查询站点.md").write_text("# 查询站点\n改了\n", encoding="utf-8")
-    (root / "ontology" / "object" / "站点.md").write_text("# 站点\n", encoding="utf-8")
-    assert solver_service.solver_release_status(manager, pid)["blocking"] == 0
+    assert _revision(manager, pid) == before
+
+
+SITE_OBJECT = (
+    "# 对象描述\n{description}\n\n# 数据来源\n{table}\n\n# 对象属性清单\n"
+    "| 中文名称 | 英文名称 | 描述 | 主键 | 类型 |\n| --- | --- | --- | --- | --- |\n"
+    "| 编号 | site_id | 合成字段 | 是 | 字符串 |\n"
+)
+
+
+def test_data_binding_change_changes_revision(manager: WorkspaceManager):
+    pid, root = _with_contract(manager)
+    doc = root / "ontology" / "object" / "站点.md"
+    doc.write_text(SITE_OBJECT.format(description="合成站点。", table="sites"), encoding="utf-8")
+    before = _revision(manager, pid)
+    # 只改对象描述：数据绑定不变，修订不变
+    doc.write_text(SITE_OBJECT.format(description="改写后的合成站点。", table="sites"), encoding="utf-8")
+    assert _revision(manager, pid) == before
+    # 改声明的来源表：即使暂无数据表可核对，同样改变修订
+    doc.write_text(SITE_OBJECT.format(description="改写后的合成站点。", table="sites_v2"), encoding="utf-8")
+    assert _revision(manager, pid) != before
 
 
 def test_disabled_contract_needs_no_validation(manager: WorkspaceManager):
@@ -748,7 +758,8 @@ def test_disabled_contract_needs_no_validation(manager: WorkspaceManager):
         pid, [_item(operation_frontmatter={"execution": {"enabled": False}})], ""
     )
     status = solver_service.solver_release_status(manager, pid)
-    assert status["enabled"] is True and status["gate"] == [] and status["blocking"] == 0
+    assert status["enabled"] is True and status["blocking"] == 0
+    assert status["requires_validation_after_publish"] is False
 
 
 # ---- 面板结构化保存 ----
@@ -1270,7 +1281,7 @@ def test_routes_return_findings_and_conflict(manager: WorkspaceManager, monkeypa
     assert legacy.status_code == 409 and legacy.json()["error"] == legacy.json()["message"]
     check = client.get(f"/api/v1/projects/{pid}/publish/check").json()
     assert check["format"] == "solver"
-    assert [gate["id"] for gate in check["gates"]][:2] == ["data_binding", "solver_receipt"]
+    assert [gate["id"] for gate in check["gates"]][:2] == ["data_binding", "solver_contract"]
 
 
 def test_check_route_reports_draft_without_saving(manager: WorkspaceManager, monkeypatch):

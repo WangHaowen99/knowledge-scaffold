@@ -327,7 +327,7 @@ export function register(ctx) {
   });
 
   // ---------- X-06 服务令牌（设计稿没画入口；sys:p1 时还没有） ----------
-  const SCOPES = ['releases.read', 'receipts.write', 'feedback.write'];
+  const SCOPES = ['releases.read'];
   on('GET', '/admin/service-tokens', ({ user }) => admin(user) || (p1 ? gone() : json(200, { items: st.tokens })));
   on('POST', '/admin/service-tokens', ({ user, body }) => {
     const no = admin(user);

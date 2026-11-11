@@ -695,9 +695,7 @@ export const PRICING_FALLBACK = '服务端还没有模型单价表：费用按�
 
 // ---------- 服务令牌（X-06，设计稿没画入口） ----------
 export const SERVICE_SCOPES = [
-  ['releases.read', '拉取发布列表与发布包'],
-  ['receipts.write', '提交求解验证回执'],
-  ['feedback.write', '提交外部反馈'],
+  ['releases.read', '拉取发布包'],
 ];
 export const SERVICE_TTL = [['90', '90 天', 90 * 86400], ['365', '1 年', 365 * 86400], ['0', '永不过期', null]];
 export const SERVICE_TOKEN_RE = /^onto_svc_[A-Za-z0-9_-]+$/;

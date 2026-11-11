@@ -248,14 +248,3 @@ export function solverOperations() {
     },
   ];
 }
-
-// r7 的验证回执（评测服务经 X-04 写入）
-export function receipt(revision, revisionNo) {
-  return {
-    id: 'rcpt-0007', receipt_id: 'rcpt-0007', revision, revision_no: revisionNo,
-    release_version: null, solver_keys: [MAIN_KEY], status: 'passed', authoritative: true,
-    contract_digest: 'sha256:2b7d0c94e1a3f856', request_digest: 'sha256:91c4e07a3b2d5f18', result_digest: 'sha256:0e6a8c3d71f2b495',
-    candidate_count: 4, error_code: null, message: null,
-    completed_at: at(10, 31, 16, 2), received_at: at(10, 31, 16, 2), by_token: 'eval-service',
-  };
-}

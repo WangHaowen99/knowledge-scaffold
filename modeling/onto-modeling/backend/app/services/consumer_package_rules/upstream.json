@@ -1,0 +1,280 @@
+{
+  "upstream_commit": "6469d5e8e",
+  "files": {
+    "package_snapshot.py": {
+      "source": "consumer/backend/ontology/package_snapshot.py",
+      "source_sha256": "4ed06a29973097d61815a31ff58650e857d03db346da326242800b677b2666c5",
+      "entries": [
+        "PackageReadSession",
+        "PackageContentChangedError",
+        "read_package_bytes"
+      ],
+      "copied_definitions": [
+        "PackageContentChangedError",
+        "PackageReadSession",
+        "_REPARSE_POINT",
+        "freeze_package_value",
+        "materialize_package_value",
+        "read_package_bytes"
+      ],
+      "dropped_members": {
+        "PackageReadSession": [
+          "from_snapshot",
+          "snapshot"
+        ]
+      },
+      "overridden": []
+    },
+    "package_validation.py": {
+      "source": "consumer/backend/ontology/package_validation.py",
+      "source_sha256": "0b441459fc341cee0e4e58af6aa37c7d167f911f6223fb5be45eb1532d696805",
+      "entries": [
+        "SUPPORTED_ONTOLOGY_SCHEMA_VERSIONS",
+        "validate_no_runtime_binding_data",
+        "validate_ontology_revision",
+        "reject_package_links",
+        "validate_ontology_tree_limits",
+        "validate_imported_object_aliases",
+        "validate_imported_field_aliases"
+      ],
+      "copied_definitions": [
+        "SUPPORTED_ONTOLOGY_SCHEMA_VERSIONS",
+        "_FORBIDDEN_RUNTIME_BINDING_KEY_PARTS",
+        "_read_markdown_frontmatter",
+        "count_first_markdown_table_rows",
+        "count_markdown_candidates",
+        "count_markdown_files",
+        "exceeds_limit",
+        "reject_package_links",
+        "validate_imported_field_aliases",
+        "validate_imported_object_aliases",
+        "validate_md_limits",
+        "validate_no_runtime_binding_data",
+        "validate_object_attribute_limits",
+        "validate_ontology_revision",
+        "validate_ontology_tree_limits"
+      ],
+      "dropped_members": {},
+      "overridden": []
+    },
+    "package_import.py": {
+      "source": "consumer/backend/ontology/package_import.py",
+      "source_sha256": "d5622ac4fb777ef0d8e434e98abe3df442cdcf5a5202af0c586713eafc014fdc",
+      "entries": [
+        "SUPPORTED_IMPORT_MANIFEST_KINDS",
+        "ImportableOntologyPackage",
+        "inspect_importable_package",
+        "has_importable_package_layout"
+      ],
+      "copied_definitions": [
+        "ImportableOntologyPackage",
+        "SUPPORTED_IMPORT_MANIFEST_KINDS",
+        "has_importable_package_layout",
+        "inspect_importable_package"
+      ],
+      "dropped_members": {},
+      "overridden": []
+    },
+    "ontologies.py": {
+      "source": "consumer/backend/ontology/ontologies.py",
+      "source_sha256": "5f5f0254ca01f562fad39099a9d2647a9f6027a79d67687c955b8ead3ab9d49e",
+      "entries": [
+        "is_valid_ontology_version"
+      ],
+      "copied_definitions": [
+        "ONTOLOGY_VERSION_PATTERN",
+        "is_valid_ontology_version"
+      ],
+      "dropped_members": {},
+      "overridden": []
+    },
+    "ontology_catalog.py": {
+      "source": "consumer/backend/ontology/ontology_catalog.py",
+      "source_sha256": "195e2781189917c0ee85625af78258bedf01863f6d5473216213855bf02fd387",
+      "entries": [
+        "validate_object_aliases",
+        "validate_field_aliases",
+        "load_object_data_mappings",
+        "validate_object_data_mappings",
+        "validate_value_bindings",
+        "ObjectAliasValidationResult",
+        "FieldAliasValidationResult"
+      ],
+      "copied_definitions": [
+        "FieldAliasValidationResult",
+        "ObjectAliasValidationResult",
+        "ObjectDataMappingStatus",
+        "ValueBindingValidationResult",
+        "_FIELD_ALIAS_HEADERS",
+        "_FIELD_ALIAS_SPLIT_RE",
+        "_FIELD_FENCE_RE",
+        "_FIELD_KEY_HEADERS",
+        "_FIELD_SECTION_HEADING_RE",
+        "_FIELD_SECTION_TITLES",
+        "_FIELD_TITLE_HEADERS",
+        "_FieldDefinition",
+        "_MARKDOWN_TABLE_SEPARATOR_CELL_RE",
+        "_OBJECT_ALIAS_HEADERS",
+        "_OBJECT_ALIAS_SPLIT_RE",
+        "_OBJECT_CANONICAL_KEY_RE",
+        "_OBJECT_KEY_HEADERS",
+        "_OBJECT_TITLE_HEADERS",
+        "_ObjectCatalogEntry",
+        "_ObjectCatalogReadError",
+        "_ObjectDataMappingsLoadResult",
+        "_ObjectDefinition",
+        "_ObjectDefinitionLoadError",
+        "_contains_unescaped_field_table_pipe",
+        "_duplicate_alias_warnings",
+        "_duplicate_field_alias_warnings",
+        "_field_definition_sections",
+        "_first_markdown_table_headers",
+        "_has_table_header",
+        "_highest_priority_identity_claims",
+        "_is_escaped_field_table_char",
+        "_is_field_section_title",
+        "_is_field_table_data_row",
+        "_leading_markdown_indent",
+        "_load_field_definitions",
+        "_load_object_catalog",
+        "_load_object_definitions",
+        "_normalize_table_header",
+        "_object_row_value",
+        "_parse_field_definition_table",
+        "_parse_first_field_table",
+        "_read_object_definition_frontmatter",
+        "_read_source_text",
+        "_split_field_alias_tokens",
+        "_split_field_table_row",
+        "_split_object_alias_tokens",
+        "_validate_object_identifier_conflicts",
+        "load_object_data_mappings",
+        "normalize_object_identifier",
+        "parse_markdown_table",
+        "split_markdown_frontmatter",
+        "validate_field_aliases",
+        "validate_object_aliases",
+        "validate_object_data_mappings",
+        "validate_value_bindings"
+      ],
+      "dropped_members": {},
+      "overridden": []
+    },
+    "archive.py": {
+      "source": "consumer/backend/api/routes/ontologies.py",
+      "source_sha256": "f2952e5cb853aece8de0004bb38c55f7028c661bf3a7337f14b7ab84228d806e",
+      "entries": [
+        "ONTOLOGY_MAX_ZIP_BYTES",
+        "OntologyImportError",
+        "_safe_extract_zip",
+        "_find_converted_ontology_root",
+        "_is_valid_ontology_id"
+      ],
+      "copied_definitions": [
+        "ONTOLOGY_ID_PATTERN",
+        "ONTOLOGY_MAX_ZIP_BYTES",
+        "ONTOLOGY_MAX_ZIP_MEMBERS",
+        "ONTOLOGY_MAX_ZIP_PATH_DEPTH",
+        "ONTOLOGY_MAX_ZIP_PATH_LENGTH",
+        "ONTOLOGY_MAX_ZIP_UNCOMPRESSED_BYTES",
+        "OntologyImportError",
+        "_ConvertedOntologyRoot",
+        "_canonical_zip_path",
+        "_decode_zip_member_name",
+        "_find_converted_ontology_root",
+        "_has_converted_ontology_structure",
+        "_is_safe_path",
+        "_is_valid_ontology_id",
+        "_normalize_zip_member_path",
+        "_safe_extract_zip",
+        "_zip_member_parts"
+      ],
+      "dropped_members": {},
+      "overridden": [
+        "logger"
+      ]
+    },
+    "solver_layout.py": {
+      "source": "plugins/solver/backend/solver_coordination/package/layout.py",
+      "source_sha256": "dd42bfff2880e0a4db789119e0a27249b19b7eac80a032f9d67de0d88229e2c5",
+      "entries": [
+        "SolverPackageLayoutError",
+        "SolverLayoutInspection",
+        "inspect_solver_package_layout",
+        "validate_solver_package_layout"
+      ],
+      "copied_definitions": [
+        "FORBIDDEN_SOLVER_DIRECTORIES",
+        "LEGACY_LAYOUT",
+        "OPERATION_CENTRIC_LAYOUT",
+        "SolverLayoutInspection",
+        "SolverOperationLayout",
+        "SolverPackageLayoutError",
+        "SolverPackageLayoutResult",
+        "SolverPackageLayoutSecurityError",
+        "_EXECUTION_MODE_HEADERS",
+        "_FRONTMATTER_RE",
+        "_LayoutFindings",
+        "_MARKER_KEYS",
+        "_MARKER_VALUES",
+        "_ModelDeclaration",
+        "_OPERATION_KEY_HEADERS",
+        "_OPERATION_KEY_HEADERS_CASEFOLDED",
+        "_Operation",
+        "_SIDECAR_SUFFIX_RE",
+        "_SOLVER_INDEX_END",
+        "_SOLVER_INDEX_START",
+        "_SOLVER_MARKER_VALUES",
+        "_SOLVER_MARKER_VALUES_CASEFOLDED",
+        "_SOLVER_OPERATION_KEY_RE",
+        "_declared_value",
+        "_discover_model_declarations",
+        "_discover_operation_candidates",
+        "_enabled",
+        "_ensure_regular_root",
+        "_find_declaration_for_model",
+        "_has_nested_operation_markdown",
+        "_index_operation_keys",
+        "_is_link_like",
+        "_is_operation_key_header",
+        "_is_separator",
+        "_is_solver_marker_header",
+        "_layout_marker",
+        "_layout_sidecars",
+        "_markdown_tables",
+        "_model_entry_matches",
+        "_operation_layout",
+        "_path_escapes_package",
+        "_raise_index_mismatch",
+        "_read_frontmatter",
+        "_read_manifest",
+        "_reject_remote_schema_references",
+        "_reject_runtime_binding",
+        "_split_table_row",
+        "_validate_indexes",
+        "_validate_sidecar_document",
+        "inspect_solver_package_layout",
+        "resolve_solver_sidecar_path",
+        "validate_solver_package_layout"
+      ],
+      "dropped_members": {},
+      "overridden": []
+    },
+    "solver_capability_catalog.py": {
+      "source": "plugins/solver/backend/solver_coordination/capability_catalog.py",
+      "source_sha256": "fa4d9ac4388aeb5d791b9b8b49ed34468f236d036554e2b945a25446fffc07e9",
+      "entries": [
+        "declares_solver_layout",
+        "_is_enabled"
+      ],
+      "copied_definitions": [
+        "_LAYOUT_CONTAINERS",
+        "_LAYOUT_MARKERS",
+        "_is_enabled",
+        "declares_solver_layout"
+      ],
+      "dropped_members": {},
+      "overridden": []
+    }
+  }
+}

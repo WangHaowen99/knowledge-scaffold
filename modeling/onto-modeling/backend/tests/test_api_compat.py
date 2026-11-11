@@ -120,7 +120,8 @@ def test_legacy_error_body_carries_error_field(client):
         ("GET", "/api/projects/p1/export?scope=package", "/api/v1/projects/p1/releases"),
         ("GET", "/api/projects/p1/export", None),
         ("GET", "/api/settings/assets", "/api/v1/ops/core-default"),
-        ("POST", "/api/projects/p1/package/solver-validations", "/api/v1/projects/p1/solver/receipts"),
+        ("POST", "/api/projects/p1/package/solver-validations", None),
+        ("GET", "/api/projects/p1/package/solver-validations/latest", None),
         ("GET", "/api/admin/modeling-cleanups", None),
     ],
 )

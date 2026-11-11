@@ -605,7 +605,8 @@ def test_delete_user_transfers_projects_and_revokes_tokens(client, manager, fake
     second = manager.create_project("project_beta", owner=USER)
     with mcp_tokens.database(manager) as conn:
         conn.execute(
-            "INSERT INTO tokens VALUES ('t1', ?, 'digest', 'synthetic', ?, ?, '[]', 0, NULL, NULL, NULL)",
+            "INSERT INTO tokens (id, project_id, digest, name, subject, issued_by, scopes, created) "
+            "VALUES ('t1', ?, 'digest', 'synthetic', ?, ?, '[]', 0)",
             (first["id"], USER, USER),
         )
     personal_model_settings._write({"users": {USER: {"claude": {"api_key": "enc:v1:synthetic"}}}})

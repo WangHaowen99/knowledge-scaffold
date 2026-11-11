@@ -83,7 +83,7 @@ function Capabilities({ item, families, onChange }) {
   );
 }
 
-export default function SolverTab({ view, receipts, lock, tasks, onSaved, reload }) {
+export default function SolverTab({ view, lock, tasks, onSaved, reload }) {
   const { api } = useApp();
   const { pid, reloadScope } = useProject();
   const [base, setBase] = useState(null);
@@ -167,8 +167,7 @@ export default function SolverTab({ view, receipts, lock, tasks, onSaved, reload
   const ss = saveState({ dirty, locked: locked || touchedLocked, problems, live, draftKey: key, saving });
   const idx = items.indexOf(current);
   const rendered = live && live.key === key ? live.rendered?.[idx] || null : null;
-  const receipt = receipts ? { status: receipts.gate?.status, latest: receipts.latest } : base.receipt;
-  const lines = checkLines({ view: base, item: current, dirty, live, draftKey: key, problems, receipt });
+  const lines = checkLines({ view: base, item: current, dirty, live, draftKey: key, problems });
   const savedOp = baseOperations(base).find((op) => op.solver_key === current.origin);
   const params = current.params;
   const fp = (field) => fieldProblem(problems, current.uid, field);

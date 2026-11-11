@@ -61,7 +61,8 @@ def seed(manager: WorkspaceManager, home: Path) -> dict:
 
     with tokens.database(manager) as db:
         db.execute(
-            "INSERT INTO tokens VALUES ('t1', ?, 'digest', 'synthetic', 'operator_a', 'operator_a', '[]', 0, NULL, NULL, NULL)",
+            "INSERT INTO tokens (id, project_id, digest, name, subject, issued_by, scopes, created) "
+            "VALUES ('t1', ?, 'digest', 'synthetic', 'operator_a', 'operator_a', '[]', 0)",
             (meta["id"],),
         )
 
@@ -79,6 +80,10 @@ def seed(manager: WorkspaceManager, home: Path) -> dict:
     for directory in ("changeset-state", "flow-state", "change-lists"):
         (data / directory).mkdir(parents=True, exist_ok=True)
         (data / directory / f"{meta['id']}.json").write_text('{"synthetic": true}')
+    # 知识包 Hub 的发布请求与项目关联（ADR-0091）
+    hub = data / "hub-tasks" / "packages" / meta["id"]
+    hub.mkdir(parents=True)
+    (hub / "association.json").write_text('{"synthetic": true}')
     (data / "changesets" / meta["id"] / "assistant").mkdir(parents=True)
     (data / "changesets" / meta["id"] / "assistant" / "draft.md").write_text("synthetic")
 
@@ -124,6 +129,7 @@ def test_backup_covers_state_and_excludes_master_key(env, tmp_path):
         f"data/changeset-state/{project}.json",
         f"data/flow-state/{project}.json",
         f"data/change-lists/{project}.json",
+        f"data/hub-tasks/packages/{project}/association.json",
         "home/.claude/projects/workspace_demo/session.jsonl",
     }
     assert expected <= names

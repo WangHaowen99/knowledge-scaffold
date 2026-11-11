@@ -1,7 +1,13 @@
 """Public tool contract compatible with Modeling; persistence belongs to Onto."""
 from .errors import McpError
 
-SCOPES = ("ontology.read", "ontology.change.validate", "ontology.change.apply")
+SCOPES = (
+    "ontology.read",
+    "ontology.change.validate",
+    "ontology.change.apply",
+    "project.version.revert",
+    "package.publish",
+)
 KEY_PATTERN = r"^[^/\\#?&|\r\n\t]{1,80}$"
 TEXT = {"type": "string"}
 STRINGS = {"type": "array", "items": TEXT}
@@ -64,7 +70,33 @@ def definitions():
         "expected_revision": TEXT, "resource_type": {"enum": ["operation", "rule"]},
         "action": {"enum": ["create", "update", "delete"]}, "resource_id": TEXT, "payload": {"type": "object"}},
         ["expected_revision", "resource_type", "action", "resource_id"], "validate"))
+    result.extend(package_publish_definitions())
     return result
+
+
+def package_publish_definitions():
+    """发布知识包版本的三个工具（ADR-0091）：预览拿确认令牌 → 确认发布（后台）→ 查状态。"""
+    request_id = {"type": "string", "pattern": r"^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,127}$"}
+    package_tools = (
+        ("preview_package_publish", "预览知识包版本发布", {
+            "request_id": request_id, "allow_unbound": {"type": "boolean"},
+        }, (), True),
+        ("publish_package_version", "确认发布知识包新版本", {
+            "request_id": request_id,
+            "confirmation_token": {"type": "string", "pattern": r"^[A-Za-z0-9_-]+\.[a-f0-9]{64}$"},
+            # 预览返回 solver.requires_acknowledgement 时必填 true：确认求解能力尚未经端到端验证
+            "solver_unverified_acknowledged": {"type": "boolean"},
+        }, ("request_id", "confirmation_token"), False),
+        ("get_package_publish_status", "查询知识包版本发布状态", {
+            "job_id": {"type": "string", "pattern": r"^[a-f0-9]{32}$"},
+        }, ("job_id",), True),
+    )
+    return [{
+        "name": name, "title": title, "description": title + "（发布当前 MCP 端点绑定的项目）",
+        "scope": "package.publish", "toolset": "change", "readOnly": read_only,
+        "inputSchema": {"type": "object", "properties": props, "required": list(required),
+                        "additionalProperties": False},
+    } for name, title, props, required, read_only in package_tools]
 
 
 TOOLS = {tool["name"]: tool for tool in definitions()}

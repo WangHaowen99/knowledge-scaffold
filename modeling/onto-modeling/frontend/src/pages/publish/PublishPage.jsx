@@ -1,5 +1,5 @@
-// 发布知识包（设计稿 publish）：门禁链（PB-01；合规检查「去运行」走 FL-05，求解契约回执的结论来自 SV-04）、
-// 数据绑定修正（PB-02）、发布与降级发布（PB-03）、导出迁移包（P-09）、发布记录（PB-04）与包清单（PB-06）、下载标准包 / 图模式变体（PB-07）。
+// 发布知识包（设计稿 publish）：门禁链（PB-01；合规检查「去运行」走 FL-05）、
+// 数据绑定修正（PB-02）、发布与降级发布（PB-03，经知识包 Hub，求解包要确认未验证）、导出迁移包（P-09）、发布记录（PB-04）与包清单（PB-06）、下载标准包 / 图模式变体（PB-07）。
 // 版本下拉取当前分支上的版本（V-01）；项目流 release.updated（EP-19，评测服务拉取）、flow.updated（EP-01）、workspace.changed 实时刷新。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
@@ -14,13 +14,13 @@ import { fileGroups } from '../versions/versionsModel.js';
 
 const listed = (groups) => groups.reduce((n, g) => n + g.items.length, 0);
 import {
-  Button, Card, Chip, Drawer, Icon, KV, Modal, Note, Select, St, cx,
+  Button, Card, Check, Chip, Drawer, Icon, KV, Modal, Note, Select, St, cx,
 } from '../../ui/index.jsx';
 import { usePopMenu } from '../versions/popMenu.js';
 import { byNewest, fmtStamp, syncMeta } from '../versions/versionsModel.js';
 import {
   blockingSummary, canFix, degradeNote, fixOptions, formatLabel, gateBlockedText, gateView, issueView, mergeRelease,
-  publishBlockedTitle, pullTitle, pullView, releaseGate, releasedText, unboundObjects, versionOptions, visibleGates,
+  needsSolverAck, publishBlockedTitle, pullTitle, pullView, releaseGate, releasedText, unboundObjects, versionOptions, visibleGates,
 } from './publishModel.js';
 import '../../styles/more.css';
 import '../../styles/publish.css';
@@ -220,7 +220,7 @@ function ManifestDrawer({ rec, onClose, onDownload }) {
               ['源版本', rec.version_label],
               ['发布时间', fmtStamp(m.released_at)],
               ['能力版本', (m.packs || []).length ? m.packs.map((p) => `${p.name}@${p.version}`).join('、') : '—'],
-              ['求解契约', m.solver ? `${m.solver.revision}${m.solver.receipt ? ` · 回执${m.solver.receipt.status === 'passed' ? '已通过' : '未通过'}` : ' · 没有回执'}` : '没有启用'],
+              ['求解契约', m.solver ? m.solver.revision : '没有启用'],
               ['降级', m.degraded ? `${m.degraded.unbound_objects.join('、')} 不绑定数据表` : '没有降级'],
               ['大小', formatBytes(m.size)],
             ]}
@@ -276,6 +276,7 @@ export default function PublishPage() {
   const [fixing, setFixing] = useState(null);
   const [degOpen, setDegOpen] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  const [ack, setAck] = useState(false); // 求解能力未验证，仍发布
   const [manifestFor, setManifestFor] = useState(null);
   const [starting, setStarting] = useState(false);
   const commitRef = useRef(commit);
@@ -310,15 +311,19 @@ export default function PublishPage() {
   useProjectEvent('workspace.changed', () => { loadVersions(); later(() => runCheck()); });
 
   const head = (versions || []).find((v) => v.current) || null;
-  const blockedTitle = publishBlockedTitle(check);
+  const ackNeeded = needsSolverAck(check);
+  const blockedTitle = publishBlockedTitle(check) || (ackNeeded && !ack ? '先确认求解能力未验证' : '');
 
   const publish = async (degrade = false) => {
     setPublishing(true);
     try {
-      const r = await api.publishRelease(pid, { commit: check?.commit, ...(degrade ? { degrade: true } : {}) });
-      const fresh = !(records || []).some((x) => x.version === r.version);
-      toast(releasedText(r, fresh), 'upload');
-      setRecords((list) => mergeRelease(list, r));
+      const r = await api.publishRelease(pid, {
+        commit: check?.commit, ...(degrade ? { degrade: true } : {}), ...(ackNeeded && ack ? { solver_unverified_acknowledged: true } : {}),
+      });
+      toast(releasedText(r), 'upload');
+      if (r.local_record_pending) loadRecords();
+      else setRecords((list) => mergeRelease(list, r));
+      setAck(false);
       setDegOpen(false);
       loadVersions();
       runCheck();
@@ -416,6 +421,7 @@ export default function PublishPage() {
                 <span className="sp" />
                 <Button size="sm" kind="primary" disabled={!check || !!blockedTitle || publishing} title={blockedTitle || undefined} onClick={() => publish(false)}>发布</Button>
               </div>
+              {ackNeeded ? <div className="mt8"><Check on={ack} onChange={setAck} label="求解能力未经端到端验证，仍发布" disabled={publishing} /></div> : null}
             </div>
           </div>
           <div className="mr-exp">

@@ -1,4 +1,4 @@
-// mock · 3.18 脚本与求解契约（SC-01～SC-03、SV-01～SV-04）与代码生成页的页面命令（S-20 → commandHooks）
+// mock · 3.18 脚本与求解契约（SC-01～SC-03、SV-01～SV-03）与代码生成页的页面命令（S-20 → commandHooks）
 // 只有主示例项目「门店补货单编制」有脚本和求解契约，其余项目是空的。数据见 scripts-data.js。
 //
 // mock 参数（?mock=…，和其他参数用逗号拼）：
@@ -110,7 +110,6 @@ export function register(ctx) {
         solver: {
           revision, revision_no: main ? 7 : 0,
           operations: main ? D.solverOperations() : [],
-          receipts: main ? [D.receipt(revision, 7)] : [],
           conflicted: false, last_change: null,
         },
       });
@@ -148,26 +147,16 @@ export function register(ctx) {
       template_params: JSON.parse(JSON.stringify(p)),
     };
   }
-  function receiptGate(pid) {
-    const s = state(pid).solver;
-    const enabled = s.operations.some((o) => isEnabled(o.binding));
-    const latest = s.receipts.find((r) => r.revision === s.revision) || null;
-    if (!enabled) return { status: 'pass', finding: null, latest };
-    if (!latest) return { status: 'required', latest, finding: { code: 'solver_receipt_required', level: 'error', message: '当前修订还没有验证回执，发布前要由评测服务验证' } };
-    if (latest.status !== 'passed') return { status: 'failed', latest, finding: { code: 'solver_receipt_failed', level: 'error', message: latest.message || '验证没通过' } };
-    return { status: 'pass', finding: null, latest };
-  }
   function view(pid) {
     const s = state(pid).solver;
-    const gate = receiptGate(pid);
     return {
       revision: s.revision,
       revision_no: s.revision_no,
       enabled: s.operations.length > 0,
       operations: s.operations.map((op) => opView(pid, op)),
       findings: [],
-      gate: gate.finding ? [gate.finding] : [],
-      receipt: { status: gate.status, latest: gate.latest },
+      // 端到端验证在发布后的独立评测里做（ADR-0091）：启用了求解操作时发布要确认
+      requires_validation_after_publish: s.operations.some((o) => isEnabled(o.binding)),
       available_operations: operationRefs(pid),
       evaluators: s.operations.filter((o) => o.evaluator).map((o) => ({ path: o.evaluator, file: o.evaluator.split('/').pop() })),
       problem_families: D.FAMILIES.map((f) => ({ ...f, capabilities: [...f.capabilities] })),
@@ -197,7 +186,7 @@ export function register(ctx) {
     return json(200, v ? { script: row.script, ...v } : { script: row.script, ran_at: null, status: 'not_run', duration_ms: null, network_access: false, cases: [] });
   });
 
-  // ---------- SV-01 ～ SV-04 ----------
+  // ---------- SV-01 ～ SV-03 ----------
   on('GET', '/projects/([^/]+)/solver/contract', ({ m }) => json(200, view(m[1])));
 
   const operationsOf = (body) => (body && typeof body.contract === 'object' && body.contract ? body.contract.operations : undefined);
@@ -278,18 +267,6 @@ export function register(ctx) {
     emitProj(pid, 'workspace.changed', { commit, version_label: versionLabel, source: 'web', changeset_id: null, by: 'zhangsan', entries: [], artifacts: s.operations.map((o) => ({ type: SOLVER_TYPE, key: o.solver_key, title: o.binding.operation })), paths: ['ontology/solver/'] });
     emitProj(pid, 'artifacts.updated', { type: SOLVER_TYPE, change: 'updated', keys: s.operations.map((o) => o.solver_key) });
     return json(200, { ...view(pid), commit, version_label: versionLabel });
-  });
-
-  on('GET', '/projects/([^/]+)/solver/receipts', ({ m, query }) => {
-    const pid = m[1];
-    const s = state(pid).solver;
-    const revision = query.get('revision') || s.revision;
-    const items = s.receipts.filter((r) => r.revision === revision);
-    const gate = receiptGate(pid);
-    return json(200, {
-      revision, revision_no: s.revision_no, latest: items[0] || null, items, next_cursor: null,
-      gate: revision === s.revision ? { status: gate.status, finding: gate.finding } : { status: items.length ? 'pass' : 'stale', finding: null },
-    });
   });
 
   // ---------- 页面命令（S-20）：按 steps 推进，跑完改数据、发 artifacts.updated ----------

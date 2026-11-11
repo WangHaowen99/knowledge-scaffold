@@ -1,17 +1,13 @@
-"""发布版本号（API 契约 3.20、8.1#54；contract-changes 2026-11-01 主控条；方案 A9）。
+"""发布标签（ADR-0091 取代 ADR-0020 的版本号部分）。
 
-发布包版本 `0.{n}.0`，n 是发布提交的主线版本号（`--first-parent` 计数，界面上的 v0.{n}）。
-版本号必须严格大于项目已有的全部 release 标签（按 semver 比较，含旧版的 0.1.N）；
-不满足时取已有最大版本的补丁号 + 1。同一提交重复发布沿用原标签。
+版本号由知识包 Hub 分配（0.1.N），本地不再按主线计数自算。Hub 提交成功后在发布的提交上打
+release/<版本> 注释标签，历史页与发布记录靠它显示；标签说明记发布人、是否降级与 Hub 包身份。
+旧版本地发布留下的 release/0.{n}.0 标签照常列出，只是没有 Hub 身份。
 """
 
 from __future__ import annotations
 
 import re
-from pathlib import Path
-
-from .. import mainline
-from ..workspace.gitops import _git
 
 TAG_PREFIX = "release/"
 TAG_RE = re.compile(r"release/(\d+)\.(\d+)\.(\d+)")
@@ -33,38 +29,20 @@ def tag_name(version: str) -> str:
     return f"{TAG_PREFIX}{version}"
 
 
-def released(root: Path, commit: str = "") -> list[Version]:
-    """已有 release/* 标签的版本（升序）；给了 commit 只看指向它的标签。"""
-    args = ["tag", "--list", f"{TAG_PREFIX}*"]
-    if commit:
-        args += ["--points-at", commit]
-    return sorted(version for name in _git(root, *args).split() if (version := parse_tag(name)))
-
-
-def next_version(root: Path, commit: str) -> tuple[str, bool]:
-    """(发布版本号, 该提交是否已发布过)。"""
-    existing = released(root, commit)
-    if existing:
-        return text(existing[-1]), True
-    candidate: Version = (0, mainline.count(root, commit), 0)
-    everything = released(root)
-    if everything and candidate <= everything[-1]:
-        major, minor, patch = everything[-1]
-        candidate = (major, minor, patch + 1)
-    return text(candidate), False
-
-
-def release_message(version: str, author: str, degraded: list[str]) -> str:
+def release_message(version: str, author: str, degraded: list[str], hub: dict | None = None) -> str:
     lines = [f"发布 {version}", "", f"发布人：{author or '未登录用户'}"]
     if degraded:
         lines.append(f"降级发布：是（{len(degraded)} 个对象未绑定数据表）")
     else:
         lines.append("降级发布：否")
+    if hub:
+        lines.append(f"Hub：{hub['ontology_id']} {hub['release_id']}")
     return "\n".join(lines) + "\n"
 
 
 _BY_RE = re.compile(r"^发布人：(.*)$", re.M)
 _DEGRADED_RE = re.compile(r"^降级发布：是", re.M)
+_HUB_RE = re.compile(r"^Hub：([\w-]{1,128}) ([\w-]{1,128})$", re.M)
 
 
 def parse_release_message(message: str) -> tuple[str, bool]:
@@ -72,3 +50,9 @@ def parse_release_message(message: str) -> tuple[str, bool]:
     by = _BY_RE.search(message or "")
     author = by.group(1).strip() if by else ""
     return ("" if author == "未登录用户" else author), bool(_DEGRADED_RE.search(message or ""))
+
+
+def parse_hub(message: str) -> dict | None:
+    """标签说明里的 Hub 包身份 {ontology_id, release_id}；旧版本地发布没有，返回 None。"""
+    found = _HUB_RE.search(message or "")
+    return {"ontology_id": found.group(1), "release_id": found.group(2)} if found else None
