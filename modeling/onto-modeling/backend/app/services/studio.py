@@ -618,6 +618,11 @@ def get_draft(project_id: str, rel_path: str) -> dict | None:
     return _load(project_id, "drafts").get(rel_path)
 
 
+def draft_paths(project_id: str) -> list[str]:
+    """有暂存草稿的文件（版本回退前要先保存或放弃，ADR-0094）。"""
+    return sorted(_load(project_id, "drafts"))
+
+
 def discard_draft(project_id: str, rel_path: str, user: str) -> None:
     drafts = _load(project_id, "drafts")
     if rel_path in drafts:

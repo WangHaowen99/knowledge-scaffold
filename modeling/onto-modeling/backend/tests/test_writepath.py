@@ -289,10 +289,6 @@ def test_revert_only_touches_paths_that_differ(manager, project):
     base = _git(root, "rev-parse", "HEAD").strip()
     manager.write_file(project_id, "ontology/object/item_a.md", OBJECT + "\n改动\n")
     manager.write_file(project_id, "ontology/object/item_e.md", OBJECT)
-    agent_file = root / "research" / "agent-untracked.md"
-    agent_file.parent.mkdir(parents=True, exist_ok=True)
-    agent_file.write_text("agent\n", encoding="utf-8")
-    staged = _stage_agent_change(root)
 
     result = manager.revert_to(project_id, base, author="operator_a")
     assert result["reverted_to"] == base
@@ -300,11 +296,29 @@ def test_revert_only_touches_paths_that_differ(manager, project):
     assert not (root / "ontology/object/item_e.md").exists()  # 目标版本之后新增的文件删掉
     assert (root / "ontology/object/item_a.md").read_text(encoding="utf-8") == OBJECT
     assert _trailers(root) == _packs(root) | {"Onto-Source": "revert", "Onto-Author": "operator_a"}
-    assert agent_file.exists() and staged.exists()
-    assert "research/agent-note.md" in _git(root, "diff", "--cached", "--name-only")
     with pytest.raises(WorkspaceError) as caught:
         manager.revert_to(project_id, base)
     assert caught.value.code == "nothing_to_revert"
+
+
+def test_revert_refuses_uncommitted_work_and_keeps_it(manager, project):
+    """ADR-0094（develop 同口径）：主线上有没提交的业务改动时不回退，原样留着，不扫进回退提交也不被覆盖。"""
+    project_id, root = project
+    base = _git(root, "rev-parse", "HEAD").strip()
+    manager.write_file(project_id, "ontology/object/item_a.md", OBJECT + "\n改动\n")
+    head = _git(root, "rev-parse", "HEAD").strip()
+    agent_file = root / "research" / "agent-untracked.md"
+    agent_file.parent.mkdir(parents=True, exist_ok=True)
+    agent_file.write_text("agent\n", encoding="utf-8")
+    staged = _stage_agent_change(root)
+
+    with pytest.raises(WorkspaceError) as caught:
+        manager.revert_to(project_id, base, author="operator_a")
+    assert caught.value.code == "workspace_dirty" and caught.value.status == 409
+    assert set(caught.value.details["paths"]) == {"research/agent-note.md", "research/agent-untracked.md"}
+    assert _git(root, "rev-parse", "HEAD").strip() == head
+    assert agent_file.exists() and staged.exists()
+    assert "research/agent-note.md" in _git(root, "diff", "--cached", "--name-only")
 
 
 def test_seed_example_commits_only_what_the_script_wrote(tmp_path, monkeypatch):

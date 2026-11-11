@@ -488,6 +488,23 @@ class ChangeTx:
                 self._paths.append(rel)
                 self._record_intent()
 
+    def touch_tracked(self, *rel_paths: str) -> None:
+        """登记 git 里的路径本身（版本回退）：不跟随符号链接，只校验所在目录不越界；普通文件记快照。
+
+        touch 会解析链接：之后才有的、指向项目外的链接会被当成越界，删不掉。"""
+        base = self.root.resolve()
+        for rel in rel_paths:
+            path = self.root / rel
+            if rel == ".git" or rel.startswith(".git/") or not path.parent.resolve().is_relative_to(base):
+                raise WorkspaceError("该路径不允许写入", 403, "path_forbidden", {"path": rel})
+            if path.is_symlink() or path.is_dir():
+                if rel not in self._paths:
+                    self._check_scope(rel)
+                    self._paths.append(rel)
+                    self._record_intent()
+            else:
+                self._remember(rel, path)
+
     def keep(self) -> None:
         """不提交、也不回滚：文件留在盘上，由调用方随后在另一个事务里合成一个提交。"""
         self.result = TxResult("", self.base_head, [])

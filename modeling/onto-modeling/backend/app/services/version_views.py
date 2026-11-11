@@ -198,12 +198,14 @@ def _pack_label(name: str, version: str | None) -> str:
 def revert_preview(root: Path, target: str, head: str) -> dict:
     """回退到 target 会动哪些文件、撤回哪些版本、能力锁怎么变（与 V-06 的整树恢复同一口径）。"""
     from . import mainline
+    from .workspace.versions import rollback_changes
 
-    changed = name_status(root, target, head)
-    if not changed:
+    changed = rollback_changes(root, target, head)
+    if not changed["restore"] and not changed["delete"]:
         raise WorkspaceError("当前内容与该版本一致，无需回退", 400, "nothing_to_revert")
-    files_out = [{"path": rel, "change": "delete" if status == "A" else "restore"}
-                 for status, rel in changed if not rel.startswith(SYSTEM_PREFIXES)]
+    files_out = sorted(({"path": rel, "change": change} for change in ("restore", "delete")
+                        for rel in changed[change] if not rel.startswith(SYSTEM_PREFIXES)),
+                       key=lambda item: item["path"])
     target_n, head_n = mainline.count(root, target), mainline.count(root, head)
     before, now = _lock_versions(root, target), _lock_versions(root, head)
     packs = [{"pack": name, "label": _pack_label(name, now.get(name) or before.get(name)),
@@ -212,6 +214,7 @@ def revert_preview(root: Path, target: str, head: str) -> dict:
     return {
         "target": {"commit": target, "version_label": mainline.label(target_n)},
         "next_version_label": mainline.label(head_n + 1),
+        "expected_head": head,
         "files": files_out,
         "undone_versions": [mainline.label(n) for n in range(target_n + 1, head_n + 1)],
         "packs_lock_changes": packs,
