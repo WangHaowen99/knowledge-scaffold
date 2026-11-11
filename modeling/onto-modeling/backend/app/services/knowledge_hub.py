@@ -352,7 +352,9 @@ def resource_status(pid, manager=None):
 
 def retry_tasks(manager):
     from . import hub_packages
+    from .onto_mcp import package_publish
     hub_packages.maintain(manager)
+    package_publish.maintain(manager)
 
 
 async def scheduler_loop(manager):

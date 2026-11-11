@@ -90,8 +90,8 @@ def issue(manager, meta, body, user, hub_token="", hub_issuer="", hub_sub=""):
         raise McpError("MCP_HUB_IDENTITY_REQUIRED", "发布知识包版本需要统一账号登录", 401)
     if publish and subject != hub_sub:
         raise McpError("MCP_HUB_IDENTITY_MISMATCH", "只能为当前登录用户创建知识包发布 Token", 403)
-    if publish and meta.get("archived"):
-        raise McpError("MCP_PROJECT_FORBIDDEN", "项目已归档，不能创建知识包发布 Token", 403)
+    if publish and (meta.get("archived") or not ownership.token_subject_allowed(meta, subject)):
+        raise McpError("MCP_PROJECT_FORBIDDEN", "当前登录用户不是项目所有者，无法创建知识包发布 Token", 403)
     raw, tid, now = secrets.token_urlsafe(48), secrets.token_hex(16), time.time()
     with database(manager) as conn:
         conn.execute("""INSERT INTO tokens

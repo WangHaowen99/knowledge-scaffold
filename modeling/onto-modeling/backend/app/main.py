@@ -49,6 +49,9 @@ async def _lifespan(app: FastAPI):
 
     # 知识包 Hub（ADR-0091）：定期恢复已提交但本地没记上的发布、清理过期的请求输入
     hub_task = asyncio.create_task(knowledge_hub.scheduler_loop(deps.workspaces))
+    from .services.onto_mcp import package_publish
+
+    package_publish.recover(deps.workspaces)  # 停机时排队、在跑的 MCP 发布任务接着跑
     # 耗时、不挡就绪的恢复步骤（清扫删到一半的目录、探测外部依赖）放后台，做完补进报告
     recovery_task = asyncio.create_task(startup_recovery.run_background(deps.workspaces))
     # 启动恢复做完才就绪（C-04）；运维管理面在同一事件循环起第二个监听（E8）

@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .. import config
 from ..api import deps
-from ..services.onto_mcp import tokens
+from ..services.onto_mcp import package_publish, tokens
 from ..services.onto_mcp import workspace as tools
 from ..services.onto_mcp.definitions import SCOPES, TOOLS
 from ..services.onto_mcp.errors import McpError
@@ -28,8 +28,8 @@ _sessions = {}
 MAX_BODY = 1024 * 1024
 MAX_LISTED_TOKENS = 100
 TOKEN_POLICY = {"min_ttl_s": 300, "default_ttl_s": 86400, "max_ttl_s": 2592000, "supports_non_expiring": True}
-SCOPE_LABELS = dict(zip(SCOPES, ("读取本体", "校验修改", "保存修改")))
-TOOLSET_SCOPES = {"read": SCOPES[:1], "change": SCOPES[1:]}
+SCOPE_LABELS = tokens.SCOPE_DESCRIPTIONS
+TOOLSET_SCOPES = tokens.TOOLSET_SCOPES
 # 客户端配置里的服务器名沿用旧版，已配好的客户端不用改名
 CLIENT_SERVER_NAMES = {"read": "modeling-read", "change": "modeling-change"}
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
@@ -151,7 +151,8 @@ async def create_token(project_id: str, request: Request):
     issue_body["expires_in_seconds"] = body["expires_in_s"] if "expires_in_s" in body else TOKEN_POLICY["default_ttl_s"]
     # 鉴权关闭时没有登录用户，以项目所有者的名义签发
     user = deps.user(request) or {"sub": meta.get("owner", "")}
-    issued = tokens.issue(manager(), meta, issue_body, user)
+    # 含 package.publish 时要登录：用这次的登录令牌在 Hub 登记委托（只用这一次，不落盘）
+    issued = tokens.issue(manager(), meta, issue_body, user, bearer(request), user.get("iss", ""), user.get("sub", ""))
     summary = token_summary(issued["token_summary"])
     scopes = set(summary["scopes"])
     token = issued["token"]
@@ -168,7 +169,7 @@ def delete_token(project_id: str, token_id: str, request: Request):
     """M-04：吊销。"""
     access(project_id, request)
     try:
-        tokens.revoke(manager(), project_id, token_id)
+        tokens.revoke(manager(), project_id, token_id, bearer(request))
     except McpError as exc:
         if exc.status == 404:
             from ..api.errors import ApiError
@@ -244,7 +245,9 @@ async def dispatch(rpc, group, principal, protocol):
     if method == "tools/list":
         listed = [*TOOLS.values(), *(await asyncio.to_thread(_pack_tools, principal["project_id"]))]
         available = [{**{k: tool[k] for k in ("name", "title", "description", "inputSchema")},
-                      "annotations": {"readOnlyHint": tool["scope"] != "ontology.change.apply"}}
+                      "annotations": {"readOnlyHint": tool.get("readOnly", tool["scope"] != "ontology.change.apply"),
+                                      "destructiveHint": tool["name"] == "publish_package_version",
+                                      "idempotentHint": tool["name"] == "publish_package_version"}}
                      for tool in listed if tool["toolset"] == group and tool["scope"] in principal["scopes"]]
         return {"tools": available, **({"resultType": "complete", "ttlMs": 300000, "cacheScope": "private"}
                                       if protocol == "2026-07-28" else {})}
@@ -259,7 +262,13 @@ async def dispatch(rpc, group, principal, protocol):
     if tool["scope"] not in principal["scopes"]:
         raise McpError("MCP_SCOPE_FORBIDDEN", "Token 缺少工具所需 scope", 403)
     try:
-        if tool.get("pack"):
+        if tool["scope"] == "package.publish":
+            from ..services.onto_mcp.definitions import validate_input
+
+            arguments = params.get("arguments", {})
+            validate_input(arguments, tool["inputSchema"])
+            result = await asyncio.to_thread(package_publish.execute, manager(), principal, tool["name"], arguments)
+        elif tool.get("pack"):
             result = await asyncio.to_thread(tools.execute_pack_tool, manager(), principal["project_id"], tool,
                                              params.get("arguments", {}))
         else:
