@@ -297,18 +297,18 @@ export function createApi(client) {
     releaseManifest: (id, version) => client.get(`${P(id)}/releases/${enc(version)}/manifest`), // PB-06
     releaseDownloadUrl: (id, version, variant) => client.withToken(client.url(`${P(id)}/releases/${enc(version)}/download`, variant ? { variant } : undefined)), // PB-07
 
-    // 3.20a 独立评测（ADR-0092）
-    evaluationEntry: () => client.get('/evaluation/entry'), // EV-01
-    evaluations: (id, { reconcile = false } = {}) => client.get(`${P(id)}/evaluations`, { query: { reconcile: reconcile ? 1 : 0 } }), // EV-02
-    evaluationReport: (id, runId) => client.get(`${P(id)}/evaluations/${enc(runId)}/report`), // EV-03
-    evaluationSuggestions: (id, runId) => client.get(`${P(id)}/evaluations/${enc(runId)}/suggestions`), // EV-04
-    evaluationAnswer: (id, runId, resultId) => client.get(`${P(id)}/evaluations/${enc(runId)}/answers/${enc(resultId)}`), // EV-05
-    regenerateEvaluation: (id, runId) => client.post(`${P(id)}/evaluations/${enc(runId)}/regenerate`, {}), // EV-06
-    optimizeEvaluation: (id, runId) => client.post(`${P(id)}/evaluations/${enc(runId)}/optimization`, {}), // EV-07
-    reportEvaluationFailure: (id, runId, note) => client.post(`${P(id)}/evaluations/${enc(runId)}/modeling-result`, { note }), // EV-08
-    legacyEvaluations: (id) => client.get(`${P(id)}/legacy-evaluations`), // EV-09
-    legacyEvaluation: (id, stem) => client.get(`${P(id)}/legacy-evaluations/${enc(stem)}`), // EV-10
-    legacyEvaluationAnswer: (id, stem, resultId) => client.get(`${P(id)}/legacy-evaluations/${enc(stem)}/answers/${enc(resultId)}`), // EV-11
+    // 3.21a 独立评测（ADR-0092）
+    evaluationEntry: () => client.get('/evaluation/entry'), // ES-01
+    evaluations: (id, { reconcile = false } = {}) => client.get(`${P(id)}/evaluations`, { query: { reconcile: reconcile ? 1 : 0 } }), // ES-02
+    evaluationReport: (id, runId) => client.get(`${P(id)}/evaluations/${enc(runId)}/report`), // ES-03
+    evaluationSuggestions: (id, runId) => client.get(`${P(id)}/evaluations/${enc(runId)}/suggestions`), // ES-04
+    evaluationAnswer: (id, runId, resultId) => client.get(`${P(id)}/evaluations/${enc(runId)}/answers/${enc(resultId)}`), // ES-05
+    regenerateEvaluation: (id, runId) => client.post(`${P(id)}/evaluations/${enc(runId)}/regenerate`, {}), // ES-06
+    optimizeEvaluation: (id, runId) => client.post(`${P(id)}/evaluations/${enc(runId)}/optimization`, {}), // ES-07
+    reportEvaluationFailure: (id, runId, note) => client.post(`${P(id)}/evaluations/${enc(runId)}/modeling-result`, { note }), // ES-08
+    legacyEvaluations: (id) => client.get(`${P(id)}/legacy-evaluations`), // ES-09
+    legacyEvaluation: (id, stem) => client.get(`${P(id)}/legacy-evaluations/${enc(stem)}`), // ES-10
+    legacyEvaluationAnswer: (id, stem, resultId) => client.get(`${P(id)}/legacy-evaluations/${enc(stem)}/answers/${enc(resultId)}`), // ES-11
 
     // 3.21 三份契约：服务令牌（X-06，设计稿没画入口，见 gaps F4）
     serviceTokens: () => client.get('/admin/service-tokens'), // X-06

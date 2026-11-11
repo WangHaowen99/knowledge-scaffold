@@ -1,4 +1,4 @@
-// 已发布版本的独立评测（ADR-0092，EV-01～EV-11）：版本行里的评测、求解验证、用户反馈三格，表格上方的提示，
+// 已发布版本的独立评测（ADR-0092，ES-01～ES-11）：版本行里的评测、求解验证、用户反馈三格，表格上方的提示，
 // 报告、优化建议、完整回答、标记处理失败的弹窗，以及旧版评测记录（只读）。
 // 挂在发布页的已发布版本表上，用法：
 //   const ev = useReleaseEvaluations(pid, revision);  // revision 变了就重读（发布、回退后）
@@ -224,7 +224,8 @@ function SuggestionsModal({ ev, target, tasks, onClose, onFailure }) {
   const state = useLoad(() => api.evaluationSuggestions(ev.pid, target.runId), target.runId);
   const answer = useAnswer((resultId) => api.evaluationAnswer(ev.pid, target.runId, resultId));
   const [busy, setBusy] = useState(false);
-  const blocked = optimizationBlock(ev.status, target.releaseId, !!tasks);
+  // 评测优化交给反馈演进插件：插件没启用、不是当前版本时不出这个按钮
+  const blocked = !ev.status?.evolution || optimizationBlock(ev.status, target.releaseId, !!tasks);
   const act = async (fn) => {
     setBusy(true);
     try { await fn(); } catch (e) { toast(errorText(e), 'alert'); } finally { setBusy(false); }
