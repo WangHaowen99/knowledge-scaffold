@@ -17,17 +17,13 @@ async def _lifespan(app: FastAPI):
 
     from .governance import startup as governance_startup
     from .governance import startup_recovery
-    from .services import background_jobs, backup, solver_validation
+    from .services import background_jobs, backup
     from .services.agent_sessions import manager
     from .services.model_context_presets import write_example
 
     # 治理平面（方案 E5、E6、E10）：结构化日志、配置校验、会话池覆盖、密钥目录与告警，最先做
     await asyncio.to_thread(governance_startup.before_recovery)
     # 后台任务只活在进程内：重启后仍标 running 的记录改判中断（启动恢复的「中断的执行」一步统一跑）
-    background_jobs.register_startup_sweep(
-        "solver_validation",
-        lambda: solver_validation.sweep_interrupted(deps.workspaces.workspaces_dir),
-    )
     from .evidence import jobs as evidence_jobs
     from .evidence import uploads as evidence_uploads
 
@@ -49,6 +45,10 @@ async def _lifespan(app: FastAPI):
     write_example()  # 内置推荐表副本，供管理员复制成自定义表
     # 定期备份：距上次已超过间隔时启动即补跑
     backup_task = asyncio.create_task(backup.scheduler_loop(deps.workspaces))
+    from .services import knowledge_hub
+
+    # 知识包 Hub（ADR-0091）：定期恢复已提交但本地没记上的发布、清理过期的请求输入
+    hub_task = asyncio.create_task(knowledge_hub.scheduler_loop(deps.workspaces))
     # 耗时、不挡就绪的恢复步骤（清扫删到一半的目录、探测外部依赖）放后台，做完补进报告
     recovery_task = asyncio.create_task(startup_recovery.run_background(deps.workspaces))
     # 启动恢复做完才就绪（C-04）；运维管理面在同一事件循环起第二个监听（E8）
@@ -59,7 +59,8 @@ async def _lifespan(app: FastAPI):
         await governance_startup.shutdown(ops_listener)
         backup_task.cancel()
         recovery_task.cancel()
-        await asyncio.gather(backup_task, recovery_task, return_exceptions=True)
+        hub_task.cancel()
+        await asyncio.gather(backup_task, recovery_task, hub_task, return_exceptions=True)
         await autobuild_runner.shutdown()  # 运行停在检查点，下次启动接着跑
         await asyncio.to_thread(material_conversion.stop)
         await manager.shutdown()

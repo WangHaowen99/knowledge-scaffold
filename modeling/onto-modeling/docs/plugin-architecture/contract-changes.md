@@ -1581,3 +1581,17 @@ Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`
 4. **错误码**：新增 `studio_draft_pending`、`workspace_dirty`（第 2 章）。
 5. 为什么：develop 的回退语义（只恢复业务内容、有人在改时挡住、预览后主线前进不执行）落到本分支已有的 V-05/V-06；develop 的 `/history` 合并时间线不另起，发布标在版本行上（设计稿第五版）。
 6. **MCP（M-03、M-08）**：新增 scope `project.version.revert`（read、change 两个工具集都认）与三个版本工具 `list_project_versions`、`preview_project_version_revert`、`revert_project_version`（先预览拿 `preview_id`，再 `confirm: true` 执行；凭据只在进程内存）；`revert_project_version` 在 `tools/list` 里标 `destructiveHint`、`idempotentHint`。输入输出与错误码沿用 develop 的同名工具。
+
+## 2026-11-11 · 正式版本以知识包 Hub 为准，求解验证移到评测服务（ADR-0091）
+
+吸收 develop 的 Hub 发布与求解验证迁移（develop-sync P1）。
+
+1. **PB-03 发布**：要统一账号登录（本地模式 401）；请求加 `request_id`（幂等键）与 `solver_unverified_acknowledged`；版本号由 Hub
+   分配（`0.1.N`），不再按主线计数；包根目录与 manifest `id` 改为 Hub 包身份；响应多 `hub`。Hub 不可用 `503 hub_unavailable`。
+   同一提交再发布是新版本（同一 `request_id` 重试才是同一版本）。
+2. **PB-01**：门禁「求解契约回执」改为「求解契约」（只看静态检查，`requires_acknowledgement`）；知识包结构门禁加 consumer 导入规则；
+   响应多 `solver_revision`、`structure`。**SV-01** 去掉 `gate`、`receipt`，加 `requires_validation_after_publish`。
+3. **PB-04/05** 的 `ReleaseRecord` 多 `hub`；**PB-07** 留存缺失时带登录令牌从 Hub 下回缓存。
+4. **退役**：X-01、求解验证候选包、X-04、SV-04、服务令牌权限 `receipts.write`。
+5. **新增** HB-01～HB-09（`/api/v1/hub/...`、`/api/v1/projects/{id}/hub/...`）；外部路径 `GET /api/hub/package-projects` 原样提供。
+6. **MCP token** 权限加 `project.version.revert`、`package.publish`；含发布权限的 token 签发时在 Hub 登记委托。

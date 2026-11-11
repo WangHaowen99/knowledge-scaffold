@@ -1,7 +1,13 @@
 """Public tool contract compatible with Modeling; persistence belongs to Onto."""
 from .errors import McpError
 
-SCOPES = ("ontology.read", "ontology.change.validate", "ontology.change.apply")
+SCOPES = (
+    "ontology.read",
+    "ontology.change.validate",
+    "ontology.change.apply",
+    "project.version.revert",
+    "package.publish",
+)
 KEY_PATTERN = r"^[^/\\#?&|\r\n\t]{1,80}$"
 TEXT = {"type": "string"}
 STRINGS = {"type": "array", "items": TEXT}

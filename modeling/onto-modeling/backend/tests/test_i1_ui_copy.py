@@ -123,7 +123,7 @@ def test_attribution_omits_columns_without_a_source(tmp_path, monkeypatch):
 # ---- 插件目录、发布 ----
 
 
-def test_release_manifest_gives_source_version_label(manager, monkeypatch):
+def test_release_manifest_gives_source_version_label(manager, monkeypatch, hub_login):
     from fastapi.testclient import TestClient
 
     from app.api import deps
@@ -132,9 +132,9 @@ def test_release_manifest_gives_source_version_label(manager, monkeypatch):
     from tests.test_release_publish import rich_project
 
     monkeypatch.setattr(deps, "workspaces", manager)
-    monkeypatch.setattr(auth, "ENABLED", False)
     pid, _root = rich_project(manager)
-    client = TestClient(app)
+    manager._update_meta(pid, owner="operator_a")
+    client = TestClient(app, headers=hub_login)
     record = client.post(f"/api/v1/projects/{pid}/releases", json={}).json()
     body = client.get(f"/api/v1/projects/{pid}/releases/{record['version']}/manifest").json()
     assert body["source_version_label"] == record["version_label"] and body["source_commit"] == record["commit"]

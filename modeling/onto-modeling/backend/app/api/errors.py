@@ -157,13 +157,12 @@ def _known_exception_types() -> tuple[type, ...]:
     from ..services.onto_mcp.errors import McpError
     from ..services.personal_model_settings import PersonalConfigError
     from ..services.service_tokens import ServiceTokenError
-    from ..services.solver_validation import ReceiptRejected
     from ..services.studio import StudioError
     from ..services.workspace import WorkspaceError
 
     return (
         ApiError, WorkspaceError, SessionError, ConversationError, AuthError, McpError,
-        StudioError, PersonalConfigError, ServiceTokenError, ReceiptRejected, FeedbackRejected,
+        StudioError, PersonalConfigError, ServiceTokenError, FeedbackRejected,
     )
 
 
