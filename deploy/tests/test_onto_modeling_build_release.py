@@ -43,6 +43,8 @@ def _run_build_release(
     drawio_index.parent.mkdir(parents=True)
     drawio_index.write_text("<html></html>\n", encoding="utf-8")
     (tmp_path / "repo" / "auth-server").mkdir()
+    # REA 旁路容器在 connectors/rea-sidecar 下自带 Dockerfile，脚本 cd 进去构建
+    (project_root / "connectors" / "rea-sidecar").mkdir(parents=True)
 
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
@@ -172,6 +174,24 @@ def test_build_release_vendors_wheels_from_overridable_index(
     assert "--python-version 3.11" in pip_download
     assert "--abi cp311" in pip_download
     assert f"--build-arg PIP_INDEX_URL={index_url}" in _onto_modeling_build_command(log_dir)
+
+
+def test_build_release_bundles_the_gateway_and_sidecar_images(tmp_path: Path) -> None:
+    """离线包带齐 compose 里的四个镜像，images.env 给出各自的 tag，目标机 deploy.sh 才能全部加载并拉起。"""
+    _, log_dir = _run_build_release(tmp_path, "")
+
+    saved = [line for line in (log_dir / "docker.log").read_text(encoding="utf-8").splitlines()
+             if line.startswith("save ")]
+    for image in ("onto-modeling", "onto-modeling-auth-server", "onto-modeling-connector-gateway",
+                  "onto-modeling-rea-sidecar"):
+        assert any(line.endswith(f" {image}:v-test") for line in saved), image
+    with tarfile.open(tmp_path / "repo" / "modeling" / "onto-modeling" / "dist"
+                      / "onto-modeling-v-test-linux-amd64.tar.gz") as package:  # NOSONAR(S5042): 合成的桩包，只读清单
+        images_env = package.extractfile("onto-modeling/images.env").read().decode()
+        names = set(package.getnames())
+    assert "CONNECTOR_GATEWAY_IMAGE=onto-modeling-connector-gateway:v-test" in images_env
+    assert "REA_SIDECAR_IMAGE=onto-modeling-rea-sidecar:v-test" in images_env
+    assert "onto-modeling/images/onto-modeling-rea-sidecar-v-test.tar" in names
 
 
 def test_build_release_no_longer_bundles_the_knowledge_hub(tmp_path: Path) -> None:

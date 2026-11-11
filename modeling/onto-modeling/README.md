@@ -137,7 +137,8 @@ cd backend && ONTO_WEB_AUTH_URL=http://127.0.0.1:5056 ONTO_WEB_AUTH_ISSUER=http:
 `ONTO_WEB_MAX_SESSIONS`（默认 12，对应 8G 内存）限制并发：超限先驱逐最久
 空闲的会话，全部在跑则排队并在前端显示位次；空闲超过
 `ONTO_WEB_SESSION_IDLE_TTL`（默认 600 秒）的会话被回收，下次发消息用
-resume 续接模型上下文，界面无感。
+resume 续接模型上下文，界面无感。运行中的会话连续 `ONTO_WEB_SESSION_STALL_TIMEOUT`
+（默认 1800 秒，0 关闭）没有任何模型或工具响应时判定执行超时并终止引擎，用户可以直接发消息继续。
 
 每个项目可有多条会话（聊天面板顶部下拉：新建、切换续聊、重命名、删除），各自保存历史与模型
 上下文，但同一时刻只有一个在线引擎。往另一条会话发消息时，原会话空闲就换绑，忙则返回 409。
@@ -456,14 +457,10 @@ n 从 1 开始（建项目的基线提交是 v0.1），界面显示 `v0.{n}`；�
 在项目锁内确定提交，用 `git archive` 把发布要读的内容（对象、操作、规则、指标、脚本、求解契约目录，
 以及资料区的 `materials.json` 和表格文件）导出成只读树，门禁与渲染都只读这棵树，工作区里没提交的
 改动不进包。发布检查 `GET /api/v1/projects/{id}/publish/check` 同口径，给出门禁链（数据绑定、求解
-契约回执、知识包结构；降级发布只放宽数据绑定）并列出这些路径里未提交的改动（资料区的 PDF、图片等
-发布不读，不算在内）。求解验证回执在 `.ontology-state/`，不进 git，仍从工作区读取。
+契约静态检查、知识包结构；降级发布只放宽数据绑定）并列出这些路径里未提交的改动（资料区的 PDF、图片等
+发布不读，不算在内）。求解验证不再是门禁，见「知识包 Hub 与独立评测」。
 
-版本号为 `0.{n}.0`，n 是发布提交的主线版本号（与界面上的 v0.{n} 对应）；该提交已发布过就沿用原
-版本（同一提交重复发布，包逐字节相同）；`0.{n}.0` 不大于项目已有的全部发布标签（含旧版的 `0.1.N`）
-时，取已有最大版本的补丁号 + 1，保证单调递增。每次发布打注释标签 `release/<版本>`（注明发布人与
-是否降级发布），在版本列表里标出、不能删除；包清单写入 `source_commit`；包原样留存在数据目录
-`releases/<项目>/<版本>.zip`，按版本下载读的就是这一份（见下文「对接评测服务：三份契约」）。
+包提交到知识包 Hub 留存，版本号由 Hub 分配，见「知识包 Hub 与独立评测」。
 渲染由发布适配器完成（`backend/app/services/publish/`，见 ADR-0023），重构前后同一提交、同一版本
 参数渲染出的包逐字节相同，由 `tests/test_publish_render_regression.py` 守住。
 
@@ -479,7 +476,7 @@ n 从 1 开始（建项目的基线提交是 v0.1），界面显示 `v0.{n}`；�
 `packs/`、发布留存的知识包、变更集记录与节点状态（`changeset-state/`、`flow-state/`、`change-lists/`）、
 各类设置、审计与错误留档，以及存在时的 CLI transcript（`~/.claude/projects`）。助手副本（`changesets/`）不备，
 恢复后按副本分支重建，没提交的改动会丢。SQLite 库（Jiuwen 存档、MCP token 库）用 SQLite 的 backup API 拷贝，
-不直接打包正在使用的库文件。恢复时停服务，把 `data/` 解到 `ONTO_WEB_DATA_DIR`、`home/` 解到
+不直接打包正在使用的库文件。知识包的正式版本在 Hub 数据卷里，单独备份（见 Hub README）。恢复时停服务，把 `data/` 解到 `ONTO_WEB_DATA_DIR`、`home/` 解到
 `HOME`。
 
 个人 Key 的主密钥不在备份里：未设 `ONTO_WEB_MODEL_SECRET_KEY` 时它是密钥目录下自动生成的
@@ -496,51 +493,59 @@ n 从 1 开始（建项目的基线提交是 v0.1），界面显示 `v0.{n}`；�
 升级时需匹配工作区工具箱版本；旧回执保留但须重新核验。实现与兼容边界见
 [`modeling-review-integrity.md`](../../docs/decisions/modeling-review-integrity.md)。
 
-## 对接评测服务：三份契约
+## 知识包 Hub 与独立评测
 
-评测已移出 onto-modeling（[ADR-0020](docs/decisions/0020-eval-removal-and-contracts.md)）：
-「数据评测」阶段、评测数据源、评测集、评测编排、求解端到端验证编排和 Modeling 项目关联都已删除，
-阶段从 11 个变为 10 个。onto 不主动调用评测服务，评测服务持**服务令牌**调用下面三份契约的接口。
+发布存到知识包 Hub，评测在独立评测服务里做。评测已移出 onto-modeling
+（[ADR-0020](docs/decisions/0020-eval-removal-and-contracts.md)）：「数据评测」阶段、评测数据源、评测集、
+评测编排、求解端到端验证编排和 Modeling 项目关联都已删除，阶段从 11 个变为 10 个。部署与凭据见
+`deploy/README.md`「对接知识包 Hub 与评测服务」，Hub 的接口、限制与备份见 [Hub README](../../knowledge-hub/README.md)，
+评测服务见 [评测服务说明](../../eval-service/README.md)。接口以 `docs/api-v1.md` 为准。
+
+- **发布到 Hub**：发布存到当前用户在 Hub 的知识包，版本号由 Hub 分配；项目成员不自动继承个人包权限，
+  删除项目不删 Hub 包。包操作都要统一账号登录。Hub 不可用时发布失败；Hub 已收下、本地关联还没写入时提示
+  待恢复，由后台任务或原请求重试收敛。Hub 数据卷单独备份。
+- **已发布版本**：按当前用户列出项目的已发布版本，可下载指定版本、去评测；发布成功后自动打开这个列表。
+- **从 Hub 导入**：首页「导入已有知识包」可选自己在 Hub 上的包和固定版本，导入为本地项目继续修改，
+  之后发布沿用原包身份。
+- **版本对比**：两个已发布版本（或临时上传的知识包）只读对比，逐文件看差异；对比只引用 Hub 上的版本，
+  上传的包不导入工作区。
+- **发布前结构自检**：发布检查和提交 Hub 前，按正式发布的参数导出知识包，用 consumer 的导入规则检查
+  （规则副本在 `backend/app/services/consumer_package_rules/`，来源与同步步骤见其中的 `PROVENANCE.md`）。
+  consumer 会拒绝的包列在发布检查的「知识包结构」一栏，不能降级发布。consumer 调整了数量上限时，在本服务
+  设同名变量：`ONTOLOGY_OBJECT_MAX_COUNT`（默认 200）、`ONTOLOGY_OPERATION_MAX_COUNT`（100）、
+  `ENTITY_ATTRIBUTE_MAX_COUNT`（100）、`ONTOLOGY_OPERATION_MAX_CHARS`（15000）。
+- **求解验证**：迁到评测服务，发布只受求解契约静态检查与结构自检约束。当前求解契约修订没有通过的求解验证时，
+  发布要确认「求解能力尚未经端到端验证」（MCP 发布带 `solver_unverified_acknowledged: true`），否则返回 409。
+  发布后在评测页面以「求解验证」类型对该版本执行。
+- **评测入口**：已发布版本里的「评测」在新窗口打开评测页面，只带 Hub 包和版本引用，不自动执行，地址里没有
+  令牌和项目 ID；登录经 `postMessage` 只交给评测地址的来源。地址只由 `ONTO_WEB_EVAL_PUBLIC_URL` 决定，
+  空则用与工作台同主机的 `http://<主机>:8090/evaluation/`；填写时须为与工作台不同源的 http(s) 完整地址，
+  不含账号和查询参数，路径固定 `/evaluation/`，HTTPS 工作台必须配 HTTPS 评测地址。
+- **评测服务调用本服务**（路径固定，不随 `/api/v1` 改名）：
+  - `GET /api/hub/package-projects?ontology_id=…`，带用户令牌：每次 1 到 20 个包，返回本人可访问、关联到
+    这些包的项目名，每包最多 5 个并附总数；
+  - `POST /api/internal/evaluation/notifications`，请求头 `X-Evaluation-Service-Token` 等于
+    `ONTO_EVALUATION_SERVICE_TOKEN`：评测完成通知，先落盘再应答，评测侧重试到收到 2xx。
+- **旧版评测记录**：只读查看；新建旧评测、改用例和数据源的接口返回 410。
+
+ADR-0020 定下的三份契约里，包出（X-01 发布列表）和验证回执（X-04、求解候选包）随 Hub 与独立评测退役，
+下面保留服务令牌与外部反馈。
 
 **服务令牌**（API 契约 1.3、X-06）：管理员在 `/api/v1/admin/service-tokens` 签发（`POST`，请求
 `{name, scopes, project_ids?, expires_in_s?}`，明文只在响应里出现一次）、列出（`GET`）、吊销（`DELETE /{id}`）。
 令牌形如 `onto_svc_…`，只存 SHA-256 摘要（数据目录 `service-tokens.json`，0600），和项目的 MCP token 分开签发、
-分开存储。权限范围 `releases.read`、`receipts.write`、`feedback.write`；`project_ids` 限定项目（不传为全部），
+分开存储。外部反馈用权限范围 `feedback.write`（其余范围以 `docs/api-v1.md` 为准）；`project_ids` 限定项目（不传为全部），
 `expires_in_s` 设有效期（不传为不过期）。服务令牌只能调用下面的接口，用在别处一律 401。
 
-1. **包出**（`releases.read`）
-   - `GET /api/v1/contract/releases?since=&project_id=&cursor=&limit=`（X-01）：令牌授权范围内全部项目的发布，
-     按发布时间从新到旧，游标分页（默认 100、上限 200）；
-   - `GET /api/v1/projects/{id}/releases/{version}`（PB-05）：发布记录（版本、标签、提交、格式、发布时间、
-     发布人、是否降级、包摘要、拉取次数）；
-   - `GET /api/v1/projects/{id}/releases/{version}/manifest`（PB-06）：包清单（`manifest.yaml` 内容、包摘要、
-     文件清单）；
-   - `GET /api/v1/projects/{id}/releases/{version}/download?variant=standard|graph`（PB-07）：按版本下载。读发布时
-     留存的包，同一版本同一变体永远是同一份字节；响应头 `X-Package-Version`、`X-Package-Commit`、
-     `X-Package-Format`、`X-Package-Variant`、`X-Package-Sha256`。`graph` 是图模式变体（给评测服务导入图库），
-     第一次下载时按同一标签提交渲染并留存。标准包留存缺失（数据目录丢失、留存功能之前的旧标签）时按标签提交
-     重新渲染一次并补存。服务令牌下载时在发布记录上记「已拉取」。
-   - 以上三个接口也接受项目所有者的登录 token（下载可用 `?token=`）；`GET /api/v1/projects/{id}/releases`
-     （PB-04，发布记录列表）只给所有者。
-2. **验证回执入**（`receipts.write`）
-   - `GET /api/v1/projects/{id}/solver/candidate[?allow_unbound=true]`：求解验证候选包（API 契约之外的补充，
-     见 ADR）。按 HEAD 提交渲染、manifest 标 `status: draft`，不打标签；响应头带 `X-Solver-Revision`
-     （求解契约修订号）、`X-Solver-Contract-Digest` 与发布时会得到的 `X-Package-Version`；
-   - `POST /api/v1/projects/{id}/solver/receipts`（X-04）：必填 `revision`、`solver_keys`（必须正好是该修订启用的
-     求解操作）、`status`（`passed` / `failed`）、`authoritative`、`contract_digest`、`request_digest`、
-     `result_digest`、`completed_at`、`receipt_id`（幂等键），可选 `release_version`、`candidate_count`、
-     `evidence`（不超过 64 KB，只放引用）、`error_code`、`message`。修订号必须是当前修订（HEAD 提交或工作区的），
-     否则 `422 receipt_revision_unknown`；同一 `receipt_id` 只生效一次。发布门禁照旧只认当前修订的「权威通过」
-     回执，求解模型面板经 `GET /api/v1/projects/{id}/solver/receipts`（SV-04）读取。
-3. **反馈入**（`feedback.write`）
-   - `POST /api/v1/projects/{id}/feedback`（X-05）：一批反馈，请求 `{feedback_id（幂等键）, source: {service, run},
-     release_version?, items: [{case_id, question, expected, actual, loss_reason?, suspected_artifacts?}], received_at?}`，
-     最多 200 条、2 MB；另收两项补充字段：`summary`（score、total、pass、partial、fail、error）与条目的
-     `verdict`（fail / partial / error，缺省 fail）、`tool_failures`（工具失败行）。不合法返回
-     `422 feedback_invalid`（`details.errors`）。
-   - 落到工作区 `feedback/<接收时间>-<feedback_id>.json` 并单独提交（只提交这个文件，不进知识包），文件加
-     `format: onto-feedback/v1`、`received_at`、`received_by`，评测侧给的 `received_at` 记为 `reported_at`。
-   - `/ontology-evolution` 与 `check_eval_generalization.py`（反馈演进包，项目启用后才有）默认读最新一批反馈。
+**反馈入**（`feedback.write`）
+- `POST /api/v1/projects/{id}/feedback`（X-05）：一批反馈，请求 `{feedback_id（幂等键）, source: {service, run},
+  release_version?, items: [{case_id, question, expected, actual, loss_reason?, suspected_artifacts?}], received_at?}`，
+  最多 200 条、2 MB；另收两项补充字段：`summary`（score、total、pass、partial、fail、error）与条目的
+  `verdict`（fail / partial / error，缺省 fail）、`tool_failures`（工具失败行）。不合法返回
+  `422 feedback_invalid`（`details.errors`）。
+- 落到工作区 `feedback/<接收时间>-<feedback_id>.json` 并单独提交（只提交这个文件，不进知识包），文件加
+  `format: onto-feedback/v1`、`received_at`、`received_by`，评测侧给的 `received_at` 记为 `reported_at`。
+- `/ontology-evolution` 与 `check_eval_generalization.py`（反馈演进包，项目启用后才有）默认读最新一批反馈。
 
 **升级迁移**（启动时一次性、幂等）：各项目 `.ontology-state/eval-data/` 里评测上传的数据表，凡有 Sheet
 被对象的数据绑定用到（声明或推断），复制进 `resource/excel/` 并在 `materials.json` 标为 `schema`，
@@ -573,14 +578,25 @@ Linux 全量用装了它的测试镜像。
 
 ## 构建与部署
 
+完整安装和升级统一部署 Consumer、知识包 Hub、Onto Modeling、独立评测四个必需服务，顺序是
+Consumer → Hub → Onto Modeling → 评测：仓库根 `deploy/build.sh` 产出含四者的完整离线包，`deploy/deploy.sh`
+部署（源码树或解压后的发布包均可）；`--onto-modeling-only` 只部署本服务，不碰 Hub 和评测。分离安装脚本的
+`--consumer-package`、`--onto-modeling-package`、`--knowledge-hub-package`、`--evaluation-package` 四项必填。
+见仓库根 `deploy/README.md`。
+
 ```bash
 ./build.sh <version> [amd|arm]     # 产出 dist/onto-modeling-<version>-linux-<arch>.tar.gz
-mkdir -p secrets && (umask 077 && openssl rand -base64 32 > secrets/connector-master.key)  # 首次：连接器主密钥
-docker compose up --build          # 本地从源码起全栈（onto-modeling + auth-server + 两个网关）验证
+# 首次：连接器主密钥与 Hub 服务凭据（compose 缺了起不来）
+mkdir -p secrets && (umask 077 && openssl rand -base64 32 > secrets/connector-master.key)
+grep -q '^ONTO_HUB_SERVICE_TOKEN=..*' .env 2>/dev/null || printf 'ONTO_HUB_SERVICE_TOKEN=%s\n' "$(openssl rand -hex 32)" >> .env
+docker compose up --build          # 本地从源码起本服务（onto-modeling + auth-server + 两个网关 + REA 旁路容器）
 ```
 
-离线包里有三个镜像：onto-modeling、auth-server、连接器网关（`onto-modeling-connector-gateway`，同一个 Dockerfile 的
-`connector-gateway` 目标，只装 `backend/connector-requirements.txt` 里的转换库，见 ADR-0073）。
+本地单独起时连不到 Hub 与评测服务，发布和评测入口不可用；要联调就用仓库根 `deploy/deploy.sh` 起整栈。
+
+离线包里有四个镜像：onto-modeling、auth-server、连接器网关（`onto-modeling-connector-gateway`，同一个 Dockerfile 的
+`connector-gateway` 目标，只装 `backend/connector-requirements.txt` 里的转换库，见 ADR-0073）、REA 旁路容器
+（`onto-modeling-rea-sidecar`，见 ADR-0082）。Hub 与评测服务是各自独立的离线包，不在本包里。
 
 依赖复用（需 BuildKit，Docker Desktop / buildx 默认开启）：
 
@@ -615,10 +631,31 @@ Onto 工作区，新建、导入和克隆项目无需创建 Modeling 关联。�
 - Token 通过 `Authorization: Bearer <token>` 传递，按项目隔离；读、校验、保存
   分别要求 `ontology.read`、`ontology.change.validate`、`ontology.change.apply`。
 - 写操作必须提供最新 `expected_revision`；修改保存到本项目的 Git 工作区。
+- 版本：`list_project_versions` 列版本，`preview_project_version_revert` 预览回退，
+  `revert_project_version` 带预览给出的确认令牌回退（权限 `project.version.revert`）。
+- 发布：`preview_package_publish` 预览，`publish_package_version` 发布到 Hub（求解能力未验证时须带
+  `solver_unverified_acknowledged: true`），`get_package_publish_status` 查发布状态（权限 `package.publish`）。
 - 默认按访问工作台的地址生成 MCP 地址。反向代理部署可选用
   `ONTO_WEB_MCP_PUBLIC_BASE_URL` 指定公开地址，例如 `https://example.com`。
 
 设计与兼容边界见 [本地 MCP 设计说明](docs/decisions/onto-local-mcp.md)。
+
+## 规则的原始资料来源
+
+规则文档在「来源」之后有「原始资料来源」一节，逐条写资料的 `resource/` 路径和定位锚点（`#L12`、`#p:12`、
+`#table:1/row:2/cell:3`、`#sheet:规则!B3`），取自资料分析报告的来源位置和出处，合并去重。指标、对象、操作
+不加这一节，存量规则不自动补，重做提取后带上。
+
+- 知识包预览和 Studio 详情里这些路径显示为芯片，点开定位到资料原文的对应位置；文件已删除时芯片置灰，
+  锚点失效时提示并显示开头。
+- `research_checker.py` 同时核对出处：文件不存在、锚点找不到、省略文件路径都不放行。
+- 发布包里规则正文原样带出，consumer 按 Markdown 显示这一节，不提供跳转。
+
+## Studio 表格的最后更新时间
+
+Studio 表视图在「名称」后有「最后更新时间」列（精确到秒，可排序）。已提交的文档取最后一次改动它的提交时间，
+同内容重复保存不产生提交、时间不变；已写入工作区但未提交的取文件修改时间；纯移动或改名不算更新，Studio 草稿
+和编辑器里没保存的内容不算。git 不可用时整列显示 `—`。
 
 ## 证据层（多源连接器）
 
@@ -647,13 +684,13 @@ Onto 工作区，新建、导入和克隆项目无需创建 Modeling 关联。�
 ## 当前状态
 
 已有：项目生命周期（创建/导入向导（已发布知识包与工作区内容格式自动识别，识别不出
-或解析为空时拒绝导入）/导出（含按提交发布知识包与发布标签）/克隆/归档/永久删除，项目只归
+或解析为空时拒绝导入）/导出（含按提交发布知识包到 Hub）/克隆/归档/永久删除，项目只归
 所有者，管理员只看元数据并指定所有者；新建/导入/重命名/克隆时校验任务名称，重名给出候选名）、
 资料上传（分类/替换/变更提醒）、Agent 会话编排（会话池 +
 排队 + 空闲回收 + resume 续接、流式消息、确认卡、打断）、hash 路由与深链、文件树
 （树内搜索）/ markdown（语法高亮/代码复制/mermaid 主题联动）、drawio 预览与
 在线编辑（官方 drawio 离线 webapp）、Excel 预览、HTML 沙箱预览、`[[链接]]`跳转、
-文件编辑乐观并发（Web 保存即版本，冲突走合并对比）、版本时间线/回退/标记、
+文件编辑乐观并发（Web 保存即版本，冲突走合并对比）、「历史」时间线（迭代与发布版本合并）/回退/标记、
 Studio 三视图（图/表/条目 + **结构化编辑：schema 表单、草稿区、助手写入范围只读、
 确定性检查分流**）、助手变更集（每轮自动存成版本 / 撤回这一轮）与待处理汇总、报告逐条评审（编号勾选/逐条修复）、模拟分支卡、业务知识
 沉淀（对话一键入库 + 知识库管理页）、六种反查面板、挂卡重复计数与取消出口、

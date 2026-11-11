@@ -26,6 +26,19 @@ if [ ! -f .env ]; then
     echo "已从 .env.example 生成 .env（模型网关可稍后在「配置中心」里填写）。"
 fi
 
+# 服务凭据缺失时生成一次（64 位十六进制），已有值原样保留，值不输出
+ensure_env_secret() { # <键>
+    grep -q "^$1=..*" .env && return 0
+    sed -i "/^$1=/d" .env
+    [ -z "$(tail -c1 .env)" ] || echo >> .env
+    printf '%s=%s\n' "$1" "$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" >> .env
+    chmod 600 .env
+}
+# 知识包 Hub 独立部署：整栈 deploy.sh 与安装脚本会先把它对齐为 Hub 实际使用的值，这里只补缺失
+ensure_env_secret ONTO_HUB_SERVICE_TOKEN
+# 评测完成通知的入站凭据：整栈 deploy.sh 与安装脚本部署评测时沿用这里的值，这里只补缺失
+ensure_env_secret ONTO_EVALUATION_SERVICE_TOKEN
+
 # auth-server 零配置直连：首次部署自动生成初始管理员密码，写入 .env 并在结尾提示。
 # 已有用户数据的部署（卷非空）该变量不再生效，保留无害。
 BOOTSTRAP_GENERATED=""
@@ -69,7 +82,8 @@ COMPOSE="docker compose"
 docker compose version >/dev/null 2>&1 || COMPOSE="docker-compose"
 
 # 外接账号中心：.env 声明外部 auth 网络时，停用自带 auth-server 并加入该网络
-# （consumer 栈的服务名同为 auth-server，容器网络内地址无需变化）
+# （consumer 栈的服务名同为 auth-server，容器网络内地址无需变化）。独立部署的知识包 Hub、评测服务
+# 同样在该网络上，onto-modeling 经服务名 knowledge-hub、knowledge-evaluation 访问
 COMPOSE_FILES=(-f docker-compose.release.yml)
 EXTERNAL_AUTH_NETWORK="$(sed -n 's/^ONTO_MODELING_EXTERNAL_AUTH_NETWORK=//p' .env | head -1)"
 if [ -n "${EXTERNAL_AUTH_NETWORK}" ]; then
@@ -134,5 +148,6 @@ if [ -f "${SCRIPT_DIR}/migrate-from-modeling.sh" ] \
     echo
     echo "检测到 modeling 服务（${MODELING_CONTAINER}）正在运行，开始迁移其项目数据…"
     bash "${SCRIPT_DIR}/migrate-from-modeling.sh" "${MODELING_CONTAINER}" onto-modeling \
-        || echo "迁移未完成（不影响本次部署），可稍后手动执行 migrate-from-modeling.sh"
+        || echo "[WARN] 项目迁移失败：原项目仍在 ${MODELING_CONTAINER}，尚未迁入 Onto Modeling（Onto Modeling 本身已部署）。" \
+            "修复后执行：bash ${SCRIPT_DIR}/migrate-from-modeling.sh ${MODELING_CONTAINER} onto-modeling" >&2
 fi

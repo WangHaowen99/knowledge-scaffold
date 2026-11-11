@@ -320,7 +320,7 @@ declare(
     # 鉴权
     C("ONTO_WEB_AUTH_URL", "", "url", description="auth-server 地址，空为本地模式"),
     C("ONTO_WEB_AUTH_ISSUER", lambda: os.environ.get("ONTO_WEB_AUTH_URL", "").rstrip("/"), description="JWT 签发方"),
-    C("ONTO_WEB_AUTH_AUDIENCE", "meta-wise", description="JWT 受众"),
+    C("ONTO_WEB_AUTH_AUDIENCE", "knowledge-scaffold", description="JWT 受众"),
     C("ONTO_WEB_AUTH_ADMIN_TOKEN", "", secret=True, description="auth-server 管理令牌（用户管理）"),
     # 会话与权限
     C("ONTO_WEB_PERMISSION_TIMEOUT", "600", "int", minimum=30, maximum=86400, effect="new_session",

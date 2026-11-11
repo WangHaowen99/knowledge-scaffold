@@ -562,7 +562,8 @@ def test_root_deploy_source_writes_onto_modeling_stack_override(tmp_path: Path, 
     override = onto_dir / "docker-compose.stack.yml"
     assert override.is_file()
     content = override.read_text(encoding="utf-8")
-    assert "ONTO_WEB_MODELING_URL=http://mw-modeling:5100" in content
+    # 评测已移出 onto-modeling（ADR-0020），不再接线 Modeling Workbench 地址
+    assert "ONTO_WEB_MODELING_URL" not in content
     # 必须是运行中 consumer 容器的实际网络，不是按命名规律猜的名字
     assert "name: onto-agent_default" in content
     assert "consumer_onto-agent-network" not in content
@@ -751,7 +752,7 @@ def test_onto_modeling_compose_serves_ops_on_business_port_by_default(compose_pa
 
 
 def test_redeploy_app_replaces_gateway_and_keeps_socket_override(tmp_path: Path) -> None:
-    """快速重部署要连同网关一起替换，并沿用 deploy.sh 生成的 socket 挂载，否则挂载随容器重建丢失。"""
+    """快速重部署要连同两个网关、REA 旁路容器一起替换，并沿用 deploy.sh 生成的 socket 挂载，否则挂载随容器重建丢失。"""
     deploy_dir = tmp_path / "deploy-dir"
     deploy_dir.mkdir()
     shutil.copy2(
@@ -791,7 +792,10 @@ printf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"\
     assert result.returncode == 0, result.stdout + result.stderr
     arguments = calls.read_text(encoding="utf-8").split("\n")
     assert "docker-compose.jiuwenbox.yml" in arguments
-    assert arguments[-3:-1] == ["onto-modeling", "sandbox-gateway"]
+    assert arguments[-5:-1] == ["onto-modeling", "sandbox-gateway", "connector-gateway", "rea-sidecar"]
+    images = (deploy_dir / "images.env").read_text(encoding="utf-8")
+    assert "CONNECTOR_GATEWAY_IMAGE=onto-modeling-connector-gateway:v2" in images
+    assert "REA_SIDECAR_IMAGE=onto-modeling-rea-sidecar:v2" in images
     assert "ONTO_WEB_IMAGE=onto-modeling:v2" in (deploy_dir / "images.env").read_text(encoding="utf-8")
 
 
@@ -889,14 +893,14 @@ def test_interactive_installer_deploys_onto_modeling() -> None:
     assert "ask '请输入 Onto Modeling 发布包路径：'" in _INTERACTIVE_INSTALLER
     assert '[ -z "${ONTO_MODELING_PACKAGE}" ] || ' not in _INTERACTIVE_INSTALLER
 
-    # 接线：宿主端口 + 共享账号中心的网络 + 评测用的 Modeling 地址 + 脚本验证用的沙箱 socket 卷
+    # 接线：宿主端口 + 共享账号中心的网络 + 脚本验证用的沙箱 socket 卷；评测已移出（ADR-0020），不写 Modeling 地址
     for key in (
         "ONTO_WEB_PORT",
         "ONTO_MODELING_EXTERNAL_AUTH_NETWORK",
-        "ONTO_WEB_MODELING_URL",
         "ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME",
     ):
         assert f'write_env_value "${{env_file}}" {key}' in _INTERACTIVE_INSTALLER
+    assert "ONTO_WEB_MODELING_URL" not in _INTERACTIVE_INSTALLER
 
 
 def test_interactive_installer_never_guesses_consumer_network() -> None:
@@ -1143,7 +1147,7 @@ def test_installer_upgrade_deploys_onto_modeling_after_consumer(
     assert "ONTO_WEB_PORT=5100" in onto_env
     # 共享 Consumer 账号中心：网络取运行中容器的实际网络，不按命名规律猜
     assert "ONTO_MODELING_EXTERNAL_AUTH_NETWORK=onto-agent_default" in onto_env
-    assert "ONTO_WEB_MODELING_URL=http://mw-modeling:5100" in onto_env
+    assert "ONTO_WEB_MODELING_URL" not in onto_env
     # 沙箱 socket 卷同样取 consumer 容器的实际挂载（桩按容器名回卷名）
     assert "ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME=mw-modeling_onto-agent-backend-data" in onto_env
     assert (setup["root"] / "onto-modeling" / ".env").stat().st_mode & 0o777 == 0o600
@@ -1472,7 +1476,7 @@ def test_legacy_migration_deploys_onto_modeling_on_a_free_port(tmp_path: Path) -
     onto_env = (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
     assert "ONTO_WEB_PORT=5110" in onto_env
     assert "ONTO_MODELING_EXTERNAL_AUTH_NETWORK=onto-agent_default" in onto_env
-    assert "ONTO_WEB_MODELING_URL=http://mw-modeling:5100" in onto_env
+    assert "ONTO_WEB_MODELING_URL" not in onto_env
     assert "ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME=mw-modeling_onto-agent-backend-data" in onto_env
     assert (stack_root / "onto-modeling" / ".env").stat().st_mode & 0o777 == 0o600
     assert "Onto Modeling deployment finished" in output

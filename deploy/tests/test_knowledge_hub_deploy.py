@@ -3,6 +3,7 @@
 只使用合成凭据和本地命令替身，不调用真实 Docker。
 """
 
+import base64
 import os
 import re
 import secrets
@@ -403,6 +404,31 @@ def test_source_hub_reuses_the_existing_onto_modeling_token(tmp_path: Path) -> N
     assert f"HUB_SERVICE_TOKEN={existing}" in _lines(tmp_path / "knowledge-hub" / "deploy" / ".env")
     assert _lines(onto_env)[:2] == ["ONTO_WEB_PORT=5100", f"ONTO_HUB_SERVICE_TOKEN={existing}"]
     assert _evaluation_token(_lines(onto_env)[2:]) != existing
+
+
+def test_source_onto_modeling_generates_the_connector_master_key_once(tmp_path: Path) -> None:
+    """源码部署：compose 的 secrets 要连接器主密钥文件，缺了网关容器建不起来；compose 之前生成，重跑不换、不输出。"""
+    deploy_dir, env = _source_checkout(tmp_path)
+    _write_executable(
+        tmp_path / "bin" / "docker",
+        'if [ "$1" = "compose" ] && [ -f secrets/connector-master.key ]; then printf "key-ready\\n" >> "$CALLS_FILE"; fi\n'
+        + _STACK_DOCKER_STUB,
+    )
+    key = tmp_path / "modeling" / "onto-modeling" / "secrets" / "connector-master.key"
+
+    result = _run([str(deploy_dir / "deploy.sh"), "--onto-modeling-only"], env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = _lines(tmp_path / "calls.txt")
+    assert calls.index("key-ready") < calls.index(_ONTO_SOURCE_UP)
+    first = key.read_text(encoding="ascii").strip()
+    assert len(base64.b64decode(first)) == 32
+    assert key.stat().st_mode & 0o777 == 0o600
+    assert first not in result.stdout + result.stderr
+
+    rerun = _run([str(deploy_dir / "deploy.sh"), "--onto-modeling-only"], env)
+    assert rerun.returncode == 0, rerun.stdout + rerun.stderr
+    assert key.read_text(encoding="ascii").strip() == first
 
 
 def test_source_rejects_an_evaluation_token_equal_to_the_hub_token(tmp_path: Path) -> None:
