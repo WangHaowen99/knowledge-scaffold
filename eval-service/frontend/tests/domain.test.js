@@ -16,6 +16,7 @@ import {
   DEFAULT_CONCURRENCY,
   MAX_CONCURRENCY,
   modelOptionLabel,
+  modelOptionGroups,
   packageVersions,
   taskRows,
   artifactState,
@@ -145,6 +146,17 @@ test('model choices show name, model and the consumer default', () => {
     'Synthetic · synthetic-model（默认）',
   );
   assert.equal(modelOptionLabel({ id: 'global:synthetic_alt', name: '', model: '' }), 'global:synthetic_alt');
+});
+
+test('model choices are grouped by the global and personal consumer pools', () => {
+  const global = { id: 'global:synthetic', scope: 'global', name: 'Synthetic', model: 'synthetic-model' };
+  const personal = { id: 'user:synthetic_personal', scope: 'user', name: 'Personal', model: 'synthetic-personal' };
+  assert.deepEqual(modelOptionGroups([global, personal]), [
+    { label: '全局模型池', items: [global] },
+    { label: '个人模型池', items: [personal] },
+  ]);
+  assert.deepEqual(modelOptionGroups([global]).map((group) => group.label), ['全局模型池']);
+  assert.deepEqual(modelOptionGroups(undefined), []);
 });
 
 test('version column shows the chosen release and the snapshot that ran', () => {

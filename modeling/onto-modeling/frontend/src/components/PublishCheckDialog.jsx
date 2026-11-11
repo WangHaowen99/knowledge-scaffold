@@ -502,7 +502,7 @@ export default function PublishCheckDialog({
 export function usePackagePublish(dialogExtras = {}) {
   const [projectId, setProjectId] = useState('');
   const [publishing, setPublishing] = useState(false);
-  const [versionsProject, setVersionsProject] = useState('');
+  const [versionsProject, setVersionsProject] = useState(null);
 
   const submitRelease = async (pid, allowUnbound, solverAcknowledged = false) => {
     const receipt = await api.publishPackage(pid, { allowUnbound, solverAcknowledged });
@@ -534,7 +534,7 @@ export function usePackagePublish(dialogExtras = {}) {
       message.warning('新版本的处理结果暂未回写评测服务，打开已发布版本时会自动重试');
     }
     setProjectId('');
-    setVersionsProject(pid);
+    setVersionsProject({ id: pid });
   };
 
   const publish = async (pid) => {
@@ -555,7 +555,8 @@ export function usePackagePublish(dialogExtras = {}) {
 
   const dialog = (
     <>
-    <PublishedVersionsDialog projectId={versionsProject} onClose={() => setVersionsProject('')} onCommand={dialogExtras.onCommand} />
+    <PublishedVersionsDialog projectId={versionsProject?.id || ''} projectName={versionsProject?.name || ''}
+      onClose={() => setVersionsProject(null)} onCommand={dialogExtras.onCommand} />
     <PublishCheckDialog
       {...dialogExtras}
       open={!!projectId}
@@ -566,5 +567,5 @@ export function usePackagePublish(dialogExtras = {}) {
     />
     </>
   );
-  return { publish, publishing, dialog, showVersions: setVersionsProject };
+  return { publish, publishing, dialog, showVersions: (project) => setVersionsProject(typeof project === 'string' ? { id: project } : project) };
 }

@@ -200,6 +200,14 @@ export function modelOptionLabel(item) {
   const name = item.name || item.id;
   return `${name}${item.model && item.model !== name ? ` · ${item.model}` : ''}${item.is_default ? '（默认）' : ''}`;
 }
+// Answering model choices grouped by consumer pool; a pool without enabled models is not shown.
+export function modelOptionGroups(items = []) {
+  const personal = (item) => item.scope === 'user';
+  return [
+    { label: '全局模型池', items: items.filter((item) => !personal(item)) },
+    { label: '个人模型池', items: items.filter(personal) },
+  ].filter((group) => group.items.length);
+}
 export function shortId(id = '') {
   return id.length > 12 ? id.slice(0, 12) : id;
 }

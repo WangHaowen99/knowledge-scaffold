@@ -4,7 +4,7 @@ import re
 import tempfile
 import urllib.error
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .. import config
 from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets, package_mapping
-from ..services import knowledge_hub, modeling_cleanup, modeling_mcp, package_archive, package_evaluations
+from ..services import knowledge_hub, modeling_cleanup, modeling_mcp, package_archive, package_compare, package_evaluations
 from ..services import solver_contract, version_revert
 from ..services.workspace import (
     GOAL_PENDING,
@@ -479,6 +479,128 @@ class ReleaseBody(BaseModel):
     allow_unbound: bool = False
     # 启用了求解契约的知识包须确认求解能力尚未经端到端验证；验证在发布后的独立评测中进行
     solver_unverified_acknowledged: bool = False
+
+
+class PackageCompareUploadSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["upload"]
+    input_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class PackageCompareReleaseSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["release"]
+    ontology_id: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    hub_package_id: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    release_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+PackageCompareSource = Annotated[
+    PackageCompareUploadSource | PackageCompareReleaseSource,
+    Field(discriminator="kind"),
+]
+
+
+class PackageCompareBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    left: PackageCompareSource
+    right: PackageCompareSource
+    allow_cross_package: bool = False
+    request_id: str = Field(default="", max_length=128, pattern=r"^[A-Za-z0-9_-]*$")
+
+
+def _compare_subject(request: Request) -> tuple[str, str]:
+    from .hub_packages import identity
+    token, subject, _ = identity(request)
+    return token, subject
+
+
+@router.post("/{project_id}/package-comparisons/inputs", status_code=201)
+def package_compare_input(project_id: str, request: Request, file: UploadFile = File(...)):
+    token, subject = _compare_subject(request)
+    ensure_access(project_id, request)
+    # The archive is isolated from the project and remains private to this login subject.
+    request_id = request.headers.get("x-compare-upload-id", "")
+    return package_compare.create_input(
+        subject, file.file, file.filename or "package.zip", project_id, request_id,
+    )
+
+
+@router.delete("/{project_id}/package-comparisons/uploads/{request_id}")
+def package_compare_upload_cancel(project_id: str, request_id: str, request: Request):
+    _token, subject = _compare_subject(request)
+    ensure_access(project_id, request)
+    package_compare.cancel_upload(subject, request_id)
+    return {"cancelled": True}
+
+
+@router.delete("/{project_id}/package-comparisons/inputs/{input_id}")
+def package_compare_input_delete(project_id: str, input_id: str, request: Request):
+    _token, subject = _compare_subject(request)
+    ensure_access(project_id, request)
+    package_compare.delete_input(subject, project_id, input_id)
+    return {"deleted": True}
+
+
+@router.post("/{project_id}/package-comparisons", status_code=202)
+def package_compare_create(project_id: str, body: PackageCompareBody, request: Request):
+    token, subject = _compare_subject(request)
+    ensure_access(project_id, request)
+    return package_compare.start_comparison(
+        project_id, subject, token,
+        body.left.model_dump(exclude_none=True),
+        body.right.model_dump(exclude_none=True),
+        body.allow_cross_package, body.request_id,
+    )
+
+
+@router.get("/{project_id}/package-comparisons/{comparison_id}")
+def package_compare_get(project_id: str, comparison_id: str, request: Request):
+    token, subject = _compare_subject(request)
+    ensure_access(project_id, request)
+    package_compare.ensure_sources_readable(subject, project_id, token, comparison_id)
+    return package_compare.get_comparison(subject, project_id, comparison_id)
+
+
+@router.get("/{project_id}/package-comparisons/{comparison_id}/files")
+def package_compare_files(
+    project_id: str,
+    comparison_id: str,
+    request: Request,
+    status: str = "",
+    category: str = "",
+    q: str = "",
+    offset: int = 0,
+    limit: int = 50,
+):
+    token, subject = _compare_subject(request)
+    ensure_access(project_id, request)
+    if offset < 0 or not 1 <= limit <= 200 or len(q) > 200:
+        raise WorkspaceError("分页参数无效")
+    package_compare.ensure_sources_readable(subject, project_id, token, comparison_id)
+    return package_compare.list_files(
+        subject, project_id, comparison_id, status, category, q, offset, limit,
+    )
+
+
+@router.get("/{project_id}/package-comparisons/{comparison_id}/file-diff")
+def package_compare_file_diff(project_id: str, comparison_id: str, request: Request, file_id: str):
+    token, subject = _compare_subject(request)
+    ensure_access(project_id, request)
+    return package_compare.file_diff(project_id, subject, token, comparison_id, file_id)
+
+
+@router.delete("/{project_id}/package-comparisons/{comparison_id}")
+def package_compare_delete(project_id: str, comparison_id: str, request: Request):
+    _token, subject = _compare_subject(request)
+    ensure_access(project_id, request)
+    package_compare._owned_result(subject, project_id, comparison_id)
+    package_compare.delete(subject, comparison_id)
+    return {"deleted": True}
 
 
 @router.post("/{project_id}/package/releases")

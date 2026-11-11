@@ -296,17 +296,22 @@ def test_numeric_strings_match_and_redacted_values_are_skipped():
 # ---- 端到端：评测服务里的求解验证轮次 ----
 
 
-def test_solver_run_passes_without_judge(tmp_path):
+@pytest.mark.parametrize('model_profile_id', ['', 'user:synthetic_personal'], ids=['default_model', 'personal_model'])
+def test_solver_run_passes_without_judge(tmp_path, model_profile_id):
     deps, app = _client(tmp_path, judge=False)
+    if model_profile_id:
+        deps.profiles.append({'id': model_profile_id, 'scope': 'user', 'name': 'Synthetic personal',
+                              'model': 'synthetic-personal', 'provider': 'openai', 'enabled': True})
     with TestClient(app) as client:
         client.headers['Authorization'] = 'Bearer synthetic-user-a'
         app.state.engine.data.graph.existing_nodes = five_nodes
-        response = start(client, prepare(client, graph_source(client)), solver_set(client))
+        response = start(client, prepare(client, graph_source(client)), solver_set(client), model_profile_id=model_profile_id)
         assert response.status_code == 202, response.text
         record = response.json()
         assert record['run_type'] == 'solver' and record['concurrency'] == 1 and record['judge'] is None
         result = wait(client, record['id'])
         assert result['status'] == 'completed', result
+        assert deps.submitted_models == [model_profile_id or 'global:synthetic']
         case = settled_case(client, record['id'])
         assert case['judgement']['verdict'] == 'pass' and case['solver']['candidate_count'] == 4
         assert deps.judge_calls == []

@@ -79,8 +79,21 @@ def test_all_four_services_are_deployed_without_touching_workbench(tmp_path, mod
     if stopped.exists():
         assert 'mw-modeling' not in stopped.read_text()
     if mode != 'install':
+        # 独立 Consumer 发布包的 upgrade.sh 只接受安装目录，多传参数会被拒绝
         arguments = tmp_path / 'calls.txt.consumer-upgrade-args'
-        assert '--consumer-only' in arguments.read_text().splitlines()
+        assert arguments.read_text().splitlines() == [setup['env']['STUB_CONSUMER_DIR']]
+
+
+@pytest.mark.parametrize('interactive', [True, False], ids=['interactive', 'noninteractive'])
+@pytest.mark.parametrize('mode', ['upgrade', 'legacy'])
+def test_consumer_upgrade_warning_still_deploys_remaining_services(tmp_path, mode, interactive):
+    """Consumer upgrade.sh 返回 10 表示升级完成但验收有 WARN，Hub、Onto Modeling 和评测仍要部署。"""
+    setup = _prepare(tmp_path, mode)
+    status, output = _run(setup, interactive=interactive, STUB_CONSUMER_UPGRADE_RC='10')
+    assert status == 0, output
+    calls = _calls(setup)
+    assert calls.index('consumer-upgrade') < calls.index('hub-deploy') < calls.index('onto-deploy')
+    assert calls[-1] == 'evaluation-compose'
 
 
 def test_modeling_package_option_is_rejected_before_any_change(tmp_path):

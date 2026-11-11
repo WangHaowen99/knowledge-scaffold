@@ -86,13 +86,38 @@ def test_selected_global_model_answers_every_case_and_must_stay_enabled(environm
     assert result['status'] == 'interrupted' and result['error']['code'] == 'model_unavailable'
 
 
-def test_model_choices_list_only_the_enabled_global_pool(environment):
+PERSONAL_MODEL = {'id': 'user:synthetic_personal', 'scope': 'user', 'name': 'Synthetic personal',
+                  'model': 'synthetic-personal', 'provider': 'openai', 'enabled': True, 'is_default': False}
+
+
+def test_selected_personal_model_answers_every_case_and_must_stay_enabled(environment):
     client, app, deps, cfg = environment
+    deps.profiles = [*deps.profiles, PERSONAL_MODEL]
+    prep = preparation(client)
+    response = start(client, prep, eval_set(client, 3, 'Synthetic personal model'), 'run_personal_model',
+                     model_profile_id=PERSONAL_MODEL['id'])
+    result = wait(client, response.json()['id'])
+    assert result['status'] == 'completed', result
+    assert result['summary']['model']['id'] == PERSONAL_MODEL['id']
+    assert set(deps.submitted_models) == {PERSONAL_MODEL['id']}
+    deps.profiles = [item for item in deps.profiles if item['id'] != PERSONAL_MODEL['id']]
+    response = start(client, prep, eval_set(client, 1, 'Synthetic personal removed'), 'run_removed_personal_model',
+                     model_profile_id=PERSONAL_MODEL['id'])
+    result = wait(client, response.json()['id'])
+    assert result['status'] == 'interrupted' and result['error']['code'] == 'model_unavailable'
+
+
+def test_model_choices_list_the_enabled_global_and_personal_pools(environment):
+    client, app, deps, cfg = environment
+    deps.profiles = [*deps.profiles, PERSONAL_MODEL]
     listed = client.get('/evaluation/api/consumer-models').json()
     assert listed['available'] is True
-    assert [item['id'] for item in listed['items']] == ['global:synthetic', 'global:synthetic_alt']
+    # Workspace models stay out: the listing workspace is not the one the run executes in.
+    assert [item['id'] for item in listed['items']] == ['global:synthetic', 'global:synthetic_alt', PERSONAL_MODEL['id']]
     assert listed['items'][0] == {'id': 'global:synthetic', 'name': 'Synthetic', 'model': 'synthetic',
-                                  'provider': 'openai', 'is_default': True}
+                                  'provider': 'openai', 'is_default': True, 'scope': 'global'}
+    assert listed['items'][2] == {'id': PERSONAL_MODEL['id'], 'name': 'Synthetic personal', 'model': 'synthetic-personal',
+                                  'provider': 'openai', 'is_default': False, 'scope': 'user'}
 
     def unavailable(method, path, kwargs):
         if path == '/agentic/workspaces':

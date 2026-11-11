@@ -281,6 +281,37 @@ export const api = {
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   },
+  packageCompareUpload: async (pid, file, options = {}) => {
+    const form = new FormData();
+    form.append('file', file);
+    return request(`/api/projects/${pid}/package-comparisons/inputs`, {
+      method: 'POST', body: form, signal: options.signal,
+      headers: options.requestId ? { 'X-Compare-Upload-Id': options.requestId } : {},
+    });
+  },
+  cancelPackageCompareUpload: (pid, requestId) =>
+    request(`/api/projects/${pid}/package-comparisons/uploads/${encodeURIComponent(requestId)}`, { method: 'DELETE' }),
+  deletePackageCompareInput: (pid, inputId) =>
+    request(`/api/projects/${pid}/package-comparisons/inputs/${encodeURIComponent(inputId)}`, { method: 'DELETE' }),
+  packageCompare: (pid, left, right, options = {}) => request(`/api/projects/${pid}/package-comparisons`, {
+    method: 'POST', body: JSON.stringify({
+      left, right, allow_cross_package: Boolean(options.allow_cross_package),
+      request_id: options.request_id || createRequestId(),
+    }),
+  }),
+  packageCompareResult: (pid, comparisonId) =>
+    request(`/api/projects/${pid}/package-comparisons/${encodeURIComponent(comparisonId)}`),
+  packageCompareFiles: (pid, comparisonId, params = {}) => {
+    const query = new URLSearchParams({ offset: params.offset || 0, limit: params.limit || 50 });
+    if (params.status) query.set('status', params.status);
+    if (params.category) query.set('category', params.category);
+    if (params.q) query.set('q', params.q);
+    return request(`/api/projects/${pid}/package-comparisons/${encodeURIComponent(comparisonId)}/files?${query}`);
+  },
+  packageCompareFileDiff: (pid, comparisonId, fileId) =>
+    request(`/api/projects/${pid}/package-comparisons/${encodeURIComponent(comparisonId)}/file-diff?file_id=${encodeURIComponent(fileId)}`),
+  deletePackageCompare: (pid, comparisonId) =>
+    request(`/api/projects/${pid}/package-comparisons/${encodeURIComponent(comparisonId)}`, { method: 'DELETE' }),
   // solverAcknowledged：求解知识包确认求解能力尚未经端到端验证，后端未确认时返回 409
   publishPackage: async (pid, { allowUnbound = false, solverAcknowledged = false } = {}) => {
     const key = `onto-publish:${authStore.username || 'local-dev'}:${pid}:${allowUnbound}`;

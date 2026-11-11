@@ -7,10 +7,11 @@ import {
   releaseFeedback, releaseSolverValidation, writebackNotice,
 } from '../lib/packageEvaluation.js';
 import { EvaluationReportModal, EvaluationSuggestionsModal, ReasonButton, usePackageEvaluations } from './PackageEvaluationModals.jsx';
+import PackageCompareDialog from './PackageCompareDialog.jsx';
 
 const LINK = { type: 'link', size: 'small', style: { padding: 0 } };
 
-export default function PublishedVersionsDialog({ projectId, onClose, onCommand }) {
+export default function PublishedVersionsDialog({ projectId, projectName = '', onClose, onCommand }) {
   const [page, setPage] = useState(1);
   const [data, setData] = useState({ releases: [], total: 0 });
   const [loading, setLoading] = useState(false);
@@ -21,12 +22,15 @@ export default function PublishedVersionsDialog({ projectId, onClose, onCommand 
   const [reportTarget, setReportTarget] = useState(null);
   const [suggestionsTarget, setSuggestionsTarget] = useState(null);
   const [failureTarget, setFailureTarget] = useState(null);
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [compareReleaseId, setCompareReleaseId] = useState('');
   const evaluations = usePackageEvaluations(projectId, revision);
   const notice = writebackNotice(evaluations.status);
 
   useEffect(() => {
     setPage(1); setData({ releases: [], total: 0 }); setResources(null);
     setReportTarget(null); setSuggestionsTarget(null); setFailureTarget(null);
+    setCompareOpen(false); setCompareReleaseId('');
   }, [projectId]);
   // 失败不阻断：点击“评测”时会重新读取并给出原因
   useEffect(() => { if (projectId) prefetchEvaluationEntry().catch(() => {}); }, [projectId]);
@@ -99,10 +103,13 @@ export default function PublishedVersionsDialog({ projectId, onClose, onCommand 
     onCommand(command);
   };
   return (
-    <Modal title={data.releases[0]?.name ? `已发布版本 — ${data.releases[0].name}` : '已发布版本'} open={!!projectId} onCancel={onClose} width={980}
+    <Modal title={data.releases[0]?.name || projectName ? `已发布版本 — ${data.releases[0]?.name || projectName}` : '已发布版本'} open={!!projectId} onCancel={onClose} width={980}
       footer={<Button onClick={onClose}>关闭</Button>} destroyOnHidden>
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        <Typography.Text type="secondary">共 {data.total} 个版本。{EVALUATION_HINT}</Typography.Text>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+          <Typography.Text type="secondary">共 {data.total} 个版本。{EVALUATION_HINT}</Typography.Text>
+          <Button type="primary" onClick={() => { setCompareReleaseId(''); setCompareOpen(true); }}>知识包版本对比</Button>
+        </div>
         {resources?.pending && <Alert type="warning" showIcon message="共享资料状态暂不可用" />}
         {evaluations.status?.reachable === false && <Alert type="warning" showIcon message="评测服务暂不可用，评测状态可能不是最新" />}
         {notice && <Alert type={notice.type} showIcon message={notice.text}
@@ -123,8 +130,9 @@ export default function PublishedVersionsDialog({ projectId, onClose, onCommand 
               ...(hasSolver ? [{ title: '求解验证', render: (_, row) => solverValidation(row) }] : []),
               ...(hasFeedback(evaluations.status) ? [{ title: '用户反馈',
                 render: (_, row) => sourceCell(row, releaseFeedback(evaluations.status, row.release_id), true, '—') }] : []),
-              { title: '操作', width: 130, render: (_, row) => (
+              { title: '操作', width: 220, render: (_, row) => (
                 <Space size={10}>
+                  <Button {...LINK} onClick={() => { setCompareReleaseId(row.release_id); setCompareOpen(true); }}>与其他版本对比</Button>
                   <Button {...LINK} onClick={() => openEvaluation(row).catch((e) => message.error(e.message))}>发起评测</Button>
                   <Tooltip title="下载这个版本的知识包，不会生成新版本">
                     <Button {...LINK} loading={downloading === row.release_id} onClick={() => download(row.release_id)}>下载</Button>
@@ -134,6 +142,7 @@ export default function PublishedVersionsDialog({ projectId, onClose, onCommand 
             ]} />
         )}
         <Typography.Text type="secondary">Hub 仅保存明确共享的最新资料集，不与历史包版本绑定；本地资料不会自动上传。</Typography.Text>
+        <PackageCompareDialog projectId={projectId} projectName={projectName} releases={data.releases} initialReleaseId={compareReleaseId} open={compareOpen} onClose={() => { setCompareOpen(false); setCompareReleaseId(''); }} />
       </Space>
       <EvaluationReportModal projectId={projectId} target={reportTarget} onClose={() => setReportTarget(null)} />
       <EvaluationSuggestionsModal projectId={projectId} target={suggestionsTarget}

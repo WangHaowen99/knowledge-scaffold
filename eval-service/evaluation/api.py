@@ -64,8 +64,8 @@ class Start(Body):
     replace_existing_graph: StrictBool = False
     # Empty uses the run type's default: 4 questions at a time for data, 1 for solver validation (at most 4).
     concurrency: int | None = Field(default=None,ge=1,le=MAX_CONCURRENCY)
-    # Empty uses the consumer default; otherwise an enabled model of the consumer global pool.
-    model_profile_id: str = Field(default='',max_length=200,pattern=r'^(|global:\S{1,192})$')
+    # Empty uses the consumer default; otherwise an enabled model of the consumer global pool or the user's personal pool.
+    model_profile_id: str = Field(default='',max_length=200,pattern=r'^(|(global|user):\S{1,192})$')
 
 
 class Publication(Body):
@@ -747,7 +747,7 @@ def create_app(config=None,transport=None):
         # Choices for a new run's answering model; when unavailable the run uses the consumer default.
         _,token=actor(request)
         try:
-            return {'available':True,'items':consumer.global_models(token)}
+            return {'available':True,'items':consumer.selectable_models(token)}
         except Failure:
             return {'available':False,'items':[]}
 

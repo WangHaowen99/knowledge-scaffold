@@ -5,6 +5,7 @@ import {
   RUN_TYPES,
   concurrencyLimits,
   judgeMissingReason,
+  modelOptionGroups,
   modelOptionLabel,
   packageReference,
   sourceSummary,
@@ -794,13 +795,17 @@ export function Wizard({
                       ))}
                     </select>
                   </Field>
-                  <Field label="问答模型" hint="可选 consumer 全局模型池中已启用的模型">
+                  <Field label="问答模型" hint="可选 consumer 全局模型池或个人模型池中已启用的模型">
                     <select value={modelId} disabled={!models} onChange={(e) => setModelId(e.target.value)}>
                       <option value="">consumer 默认模型</option>
-                      {models?.items.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {modelOptionLabel(item)}
-                        </option>
+                      {modelOptionGroups(models?.items).map((group) => (
+                        <optgroup key={group.label} label={group.label}>
+                          {group.items.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {modelOptionLabel(item)}
+                            </option>
+                          ))}
+                        </optgroup>
                       ))}
                     </select>
                   </Field>
