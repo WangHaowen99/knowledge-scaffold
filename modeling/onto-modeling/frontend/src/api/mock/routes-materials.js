@@ -5,7 +5,7 @@
 //   blueprint        资料分析完成、建模蓝图草案 v2（F8 起不分段、不用确认，资料分析之后直接提取对象）
 //   estate-empty     「物业报修工单处理」的落地页：和 materials-empty 同一屏，换成它自己的名称和目标
 import { ANCHORS, ANCHOR_RESOLUTIONS, MAIN_PID, projectCards } from './fixtures.js';
-import { catalogFor, materialView, previewBlocks, previewCoverage, webCommit } from './resources-data.js';
+import { catalogFor, materialView, previewBlocks, previewCoverage, textBlocksOf, textVersionOf, webCommit } from './resources-data.js';
 import { DB_SOURCE, ENTRIES, MATERIALS } from './scenario.js';
 
 const MIN = 60 * 1000;
@@ -611,6 +611,8 @@ export function register(ctx) {
     const path = query.get('path') || '';
     const around = query.get('around') || null;
     const s = st(m[1]);
+    const tv = textVersionOf(s.files, path);
+    if (tv) return json(200, { path, format: 'md', coverage: null, blocks: textBlocksOf(tv, around), next_cursor: null });
     const f = s.files.find((x) => x.path === path);
     const it = s.map.items.find((x) => x.path === path);
     if (!f && !it) return err(404, 'file_not_found', '资料不存在', { path });

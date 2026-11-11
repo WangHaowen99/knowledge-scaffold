@@ -334,6 +334,36 @@ export function positionsOf(f) {
   return items;
 }
 
+// R-06 读文本版（规则出处、证据「查看原文」跳来定位）：逐行成块，文件头不出，页、工作表标记记在后面的块上；
+// around（L12、L12-L15）按第一行把窗口放在中间，和后端 material_text.blocks 一致
+export function textVersionOf(files, path) {
+  return (files || []).find((f) => textSourceOf(f)?.source === path && f.text?.state !== 'native') || null;
+}
+export function textBlocksOf(f, around, limit = 200) {
+  const src = textSourceOf(f);
+  const rows = [];
+  src.text.split('\n').forEach((raw, i) => { if (raw.trim()) rows.push({ n: i + 1, line: raw.trim() }); });
+  const first = /^L(\d+)/.exec(around || '');
+  const at = first ? rows.findIndex((r) => r.n === Number(first[1])) : -1;
+  const start = at < 0 ? 0 : Math.max(0, at - Math.floor(limit / 2));
+  let location = '';
+  rows.slice(0, start).forEach(({ line }) => {
+    const mk = /^<!-- (?:第 (\d+) 页|工作表：(.+)) -->$/.exec(line);
+    if (mk) location = mk[1] ? `第 ${mk[1]} 页` : `工作表 ${mk[2]}`;
+  });
+  const out = [];
+  rows.slice(start, start + limit).forEach(({ n, line }) => {
+    if (line.startsWith('<!-- onto:text ')) return;
+    const mk = /^<!-- (?:第 (\d+) 页|工作表：(.+)) -->$/.exec(line);
+    if (mk) { location = mk[1] ? `第 ${mk[1]} 页` : `工作表 ${mk[2]}`; return; }
+    const h = /^(#{1,6})\s+(.*)$/.exec(line);
+    const block = h ? { anchor: `L${n}`, kind: 'heading', level: h[1].length, text: h[2].trim() }
+      : { anchor: `L${n}`, kind: line.startsWith('|') ? 'table' : /^[-*+]\s/.test(line) ? 'list' : 'paragraph', text: line };
+    out.push(location ? { ...block, location } : block);
+  });
+  return out;
+}
+
 // ---------- 表格（F-05） ----------
 const sheet = (name, rows, total_rows) => ({ name, rows, merges: [], total_rows, truncated: total_rows > 500 });
 const TABLES = {

@@ -178,3 +178,31 @@ def test_references_from_entries_and_counts(env):
     assert client.get(f"{base}/resources/references", params={"path": "ontology/rule/超量规则.md"}).json()["code"] == "path_forbidden"
     deleted = client.delete(f"{base}/resources", params={"path": "resource/others/01-补货规则.md"}).json()
     assert deleted["broken_references"] == 2
+
+
+def test_preview_of_text_version_locates_line_ranges(env):
+    """资料芯片打开文本版的出处（P5b）：行号范围按第一行定位；文件头不出块，页标记记在后面的块上。"""
+    from app.evidence import convert
+
+    client, _workspaces, _pid, root, base = env
+    rel = "resource/text/others/03-扫描件.pdf.md"
+    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+    (root / rel).write_text("\n".join([
+        convert.header("03-扫描件.pdf", "0" * 64, "convert-pdf 1.0.0"),
+        convert.page_marker(1), "合成手册第一页。",
+        convert.page_marker(2), "| 品类 | 周期 |", "|---|---|", "| 牛奶 | 隔日 |", "冷链品单独配送。",
+    ]) + "\n", encoding="utf-8")
+
+    data = client.get(f"{base}/resources/preview", params={"path": rel, "around": "L6-L7", "limit": 3}).json()
+    assert [block["anchor"] for block in data["blocks"]] == ["L5", "L6", "L7"]
+    assert {block["location"] for block in data["blocks"]} == {"第 2 页"}
+
+    whole = client.get(f"{base}/resources/preview", params={"path": rel}).json()["blocks"]
+    assert [block["anchor"] for block in whole] == ["L3", "L5", "L6", "L7", "L8"]
+    assert [block.get("location") for block in whole] == ["第 1 页", "第 2 页", "第 2 页", "第 2 页", "第 2 页"]
+    assert whole[1]["kind"] == "table"
+
+    native = client.get(f"{base}/resources/preview",
+                        params={"path": "resource/others/01-补货规则.md", "around": "L5-L7", "limit": 2}).json()
+    assert [block["anchor"] for block in native["blocks"]] == ["L3", "L5"]
+    assert "location" not in native["blocks"][0]

@@ -15,7 +15,7 @@ import { useProjectEvent } from '../plugin/parts.jsx';
 import {
   PREVIEW_ICON, blockBody, isDocPreview, blockLabel, coverageChip, csvText, diamondPoints, drawioLayout, feedbackView, fmtSize,
   parseDrawio, parseFragment, purposeView, refRows, refTarget, scaleText, sheetView, splitHighlights, tableTruncated, cellPos,
-  hasTextTab, materialTitle, textSections,
+  hasTextTab, materialTitle, textSections, inRange, isTextFragment, lineRange, textPathOf, textView,
 } from './resourcesModel.js';
 
 const enc = encodeURIComponent;
@@ -72,7 +72,9 @@ function DocPane({ m, fragment, onCoverage, onUploadText, tasks }) {
       </Note>
     ) : <Note tone="gray">这份资料还没有可预览的文字。</Note>;
   }
-  const missing = around && !blocks.some((b) => b.anchor === around);
+  // 行号范围 L12-L15 高亮范围里的每一行
+  const isAt = (anchor) => anchor === around || inRange(anchor, lineRange(around));
+  const missing = around && !blocks.some((b) => isAt(b.anchor));
   const cov = data.coverage;
   const partial = cov && !cov.complete && cov.read_pct > 0;
   return (
@@ -84,7 +86,7 @@ function DocPane({ m, fragment, onCoverage, onUploadText, tasks }) {
           const label = blockLabel(b.anchor);
           const body = blockBody(b);
           return (
-            <p key={b.anchor} data-anchor={b.anchor} className={cx(b.anchor === around && 'rs-at')}>
+            <p key={b.anchor} data-anchor={b.anchor} className={cx(isAt(b.anchor) && 'rs-at')}>
               {label ? <span className="an">{label}</span> : null}
               {splitHighlights(body.text, body.highlights).map((s, i) => (s.hit ? <span key={i} className="hit">{s.t}</span> : s.t))}
             </p>
@@ -102,6 +104,68 @@ function DocPane({ m, fragment, onCoverage, onUploadText, tasks }) {
           </Button>
         </div>
       ) : null}
+    </>
+  );
+}
+
+// ---------- 文本版定位：出处写的是文本版的行（资料分析只读文本版，ADR-0074），在文本版里定位并高亮（R-06） ----------
+function TextAtPane({ m, fragment }) {
+  const { api } = useApp();
+  const { pid } = useProject();
+  const [data, setData] = useState(null);
+  const paperRef = useRef(null);
+  const range = lineRange(fragment);
+  const converted = m.text?.state === 'converted';
+
+  useEffect(() => {
+    if (!converted) return undefined;
+    let alive = true;
+    setData(null);
+    api.resourcePreview(pid, textPathOf(m.path), fragment)
+      .then((r) => alive && setData(r))
+      .catch((e) => alive && setData({ error: errorText(e) }));
+    return () => { alive = false; };
+  }, [api, pid, m.path, m.revision, fragment, converted, m.text?.updated_at]);
+
+  useLayoutEffect(() => {
+    const paper = paperRef.current;
+    const at = paper?.querySelector('.rs-at');
+    if (!paper || !at) return;
+    const p = paper.getBoundingClientRect();
+    const t = at.getBoundingClientRect();
+    paper.scrollTop += t.top - p.top - (p.height - t.height) / 2;
+  }, [data]);
+
+  // 还没有文本版（转换中、失败、暂不支持）：和「文本」页签一样说明状态
+  if (!converted) return <TextPane m={m} />;
+  if (!data) return <div className="evd-paper rs-loading"><span className="spin" />正在读取文本…</div>;
+  if (data.error) return <Note tone="red">{data.error}</Note>;
+  const blocks = data.blocks || [];
+  const hit = (anchor) => inRange(anchor, range);
+  return (
+    <>
+      {blocks.some((b) => hit(b.anchor)) ? null : <Note tone="amber" className="mb8">资料里找不到这个位置，资料可能已改过。</Note>}
+      <div className="evd-paper rs-text" ref={paperRef}>
+        {textView(blocks).map((v) => {
+          if (v.type === 'loc') return <div key={v.key} className="rs-loc">{v.label}</div>;
+          if (v.type === 'table') {
+            return (
+              <table key={v.key}>
+                <tbody>
+                  {v.rows.map((r) => (
+                    <tr key={r.anchor} data-anchor={r.anchor} className={cx(hit(r.anchor) && 'rs-at')}>
+                      {r.cells.map((c, i) => (r.head ? <th key={i}>{c}</th> : <td key={i}>{c}</td>))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            );
+          }
+          const b = v.block;
+          const Tag = b.kind === 'heading' ? 'h5' : 'p';
+          return <Tag key={v.key} data-anchor={b.anchor} className={cx(hit(b.anchor) && 'rs-at')}>{b.text}</Tag>;
+        })}
+      </div>
     </>
   );
 }
@@ -484,8 +548,9 @@ export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, 
   const scale = isDocPreview(m) || m.preview === 'drawio' || m.preview === 'html' ? fmtSize(m.size) : scaleText(m);
 
   let pane;
-  // PDF 没有原样预览，预览就是它的文本版；Word、Excel 另有「文本」页签
-  if (m.kind === 'pdf' && m.text) pane = <TextPane m={m} onUploadText={onUploadText} onCoverage={onCoverage} />;
+  // 出处指向文本版的行：在文本版里定位；PDF 没有原样预览，预览就是它的文本版；Word、Excel 另有「文本」页签
+  if (isTextFragment(m, focus)) pane = <TextAtPane m={m} fragment={focus} />;
+  else if (m.kind === 'pdf' && m.text) pane = <TextPane m={m} onUploadText={onUploadText} onCoverage={onCoverage} />;
   else if (isDocPreview(m)) pane = <DocPane m={m} fragment={focus} onCoverage={onCoverage} onUploadText={onUploadText} tasks={tasks} />;
   else if (m.preview === 'xls') pane = <SheetPane key={`${m.path}:${focus || ''}`} m={m} fragment={focus} />;
   else if (m.preview === 'csv') pane = <CsvPane m={m} />;

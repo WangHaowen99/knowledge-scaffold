@@ -372,6 +372,8 @@ export function register(ctx) {
       id: e.id, kind: e.kind, key: e.key, name: e.name,
       refs_out: v.counts.refs_out, refs_in: v.counts.refs_in,
       status: v.status, needs_review: false, locked: !!v.lock, plugin: null,
+      // 最后更新时间：按 id 摊开的合成时间（脚本取不到，写 null）
+      updated_at: e.kind === 'script' ? null : ago(([...e.id].reduce((n, c) => n + c.charCodeAt(0), 0) % 97) * 37 * MIN),
     };
   }
   function flowRows(pid) {
@@ -382,6 +384,7 @@ export function register(ctx) {
       refs_out: f.key === 'overage-flow' ? 5 : 7, refs_in: f.operation ? 1 : 0,
       status: f.state === 'draft' ? 'draft' : 'confirmed', needs_review: false,
       locked: isLocked(scope, { type: f.type, key: f.key }), plugin: { name: 'diagram', label: '图示' },
+      updated_at: ago(3 * 60 * MIN),
     }));
   }
   // 条目表的顺序：按类型，再按设计稿那一屏的先后
