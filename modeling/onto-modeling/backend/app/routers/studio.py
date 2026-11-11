@@ -159,12 +159,17 @@ def entries(
     drafts = studio_service._load(project_id, "drafts")
     scope = _scope(project_id)
     marks = _review_marks(project_id)
+    # 最后更新时间：提交时间或未提交文件的修改时间，git 不可用时整列为 null
+    updated = studio_service.updates(root)
+    times: dict[str, int] = {}
     rows = []
     for node in data["nodes"]:
         rel = node["path"]
+        if rel in updated:
+            times[f"{node['kind']}:{node['id']}"] = updated[rel]
         rows.append({
             "id": f"{node['kind']}:{node['id']}", "kind": node["kind"], "key": node["id"], "name": node["label"],
-            "refs_out": node["out"], "refs_in": node["in"],
+            "refs_out": node["out"], "refs_in": node["in"], "updated_at": deps.iso(updated.get(rel)),
             "status": "editing" if rel in drafts else "confirmed",
             "needs_review": f"{node['kind']}:{node['id']}" in marks,
             "locked": _locked(scope, f"{node['kind']}:{node['id']}", rel), "plugin": None,
@@ -179,7 +184,9 @@ def entries(
         and (not needle or needle in row["name"].lower() or needle in row["key"].lower())
         and (not statuses or row["status"] in statuses)
     ]
-    keys = {"name": lambda row: row["name"], "refs_in": lambda row: -row["refs_in"], "refs_out": lambda row: -row["refs_out"]}
+    keys = {"name": lambda row: row["name"], "refs_in": lambda row: -row["refs_in"], "refs_out": lambda row: -row["refs_out"],
+            # 新的在前，取不到时间的排最后
+            "updated": lambda row: (row["id"] not in times, -times.get(row["id"], 0), row["name"])}
     items.sort(key=keys.get(sort, keys["name"]))
     page = deps.page(items, cursor, limit, {"kind": kind, "q": needle, "status": status, "sort": sort})
     return {
