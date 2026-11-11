@@ -56,6 +56,20 @@ export default function FlowchartDialog({ artifact, onClose }) {
   sessionRef.current = session;
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  const dioAsk = useRef(0);
+  const dirtyRef = useRef(false);
+  dirtyRef.current = session.dirty || dio.dirty || session.saveInFlight;
+
+  // 有未保存修改时关页面、刷新先问一句
+  useEffect(() => {
+    const guard = (e) => {
+      if (!dirtyRef.current) return;
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', guard);
+    return () => window.removeEventListener('beforeunload', guard);
+  }, []);
 
   const compressed = session.model.storage === 'drawio_compressed';
   const ref = { type, key: key || artifact?.key || '' };
@@ -65,6 +79,19 @@ export default function FlowchartDialog({ artifact, onClose }) {
   const dirty = session.dirty || dio.dirty;
   const title = session.model.process.name || art?.title || artifact?.title || '流程图';
   const pluginOff = !!extensions && !hasArtifactType(type);
+
+  // drawio 高级编辑打开的 XML：没有未保存修改时用文件原文（尺寸、样式、泳道、批注、其他页都在，保存时照它保留）；
+  // 有未保存修改、或原文读不到时按当前模型生成（带内核属性，描述、条件等随保存一起交回）
+  const dioXml = useCallback(async (model, a, dirty) => {
+    if (model?.storage === 'drawio_compressed') return model.drawio_xml || '';
+    if (!dirty && a?.path) {
+      try {
+        const file = await api.fileContent(pid, a.path);
+        if (file?.content && !file.truncated) return file.content;
+      } catch { /* 按模型生成 */ }
+    }
+    return modelToDrawio(model, a?.title);
+  }, [api, pid]);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -83,7 +110,8 @@ export default function FlowchartDialog({ artifact, onClose }) {
       // 压缩存储只能用 drawio 高级编辑；已经在 drawio 里时（载入最新版本）编辑器也换成新内容
       const packed = a.content?.storage === 'drawio_compressed';
       if (packed || modeRef.current === 'dio') {
-        setDio((d) => ({ ...d, key: d.key + 1, xml: packed ? a.content.drawio_xml || '' : modelToDrawio(a.content, a.title), dirty: false }));
+        const xml = await dioXml(a.content, a, false);
+        setDio((d) => ({ ...d, key: d.key + 1, xml, dirty: false }));
         setMode('dio');
       }
     } catch (e) {
@@ -144,11 +172,16 @@ export default function FlowchartDialog({ artifact, onClose }) {
     if (m === 'std') {
       if (compressed) { toast('压缩格式只能在 drawio 里编辑', 'info'); return; }
       if (dio.dirty) { toast('先保存（Ctrl+S）再切回', 'alert'); return; }
+      dioAsk.current += 1;
       setMode('std');
       return;
     }
-    setDio((d) => ({ key: d.key + 1, xml: compressed ? session.model.drawio_xml || '' : modelToDrawio(session.model, title), dirty: false, state: 'loading' }));
-    setMode('dio');
+    const asked = ++dioAsk.current;
+    dioXml(session.model, { ...art, title }, session.dirty).then((xml) => {
+      if (asked !== dioAsk.current) return; // 等原文时又切走了
+      setDio((d) => ({ key: d.key + 1, xml, dirty: false, state: 'loading' }));
+      setMode('dio');
+    });
   };
 
   const validate = async () => {
