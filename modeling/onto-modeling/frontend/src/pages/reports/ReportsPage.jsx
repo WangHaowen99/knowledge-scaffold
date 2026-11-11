@@ -1,18 +1,18 @@
 // 报告（设计稿 reports）：报告列表（RP-01）、详情（RP-02）与逐条审阅（RP-03）、报告原文（RP-04）、
 // 发给助手修复（RP-05）、重新校验（RP-06）、交给你裁决（Question，S-11 回答）；资料分析报告带核验（R-09）
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import { ShellP } from '../../shell/Shell.jsx';
-import { Button, Card, Chip, Ev, Icon, KV, Prog, Ring, Seg, St, cx } from '../../ui/index.jsx';
+import { Button, Card, Chip, Ev, Icon, KV, Note, Prog, Ring, Seg, St, cx } from '../../ui/index.jsx';
 import { inlineTokens } from '../workbench/md.js';
 import { anchorChipLabel } from '../studio/studioModel.js';
 import '../../styles/reports.css';
 import {
   ITEM_STATUS, LINK_STATS, PURPOSE_LABEL, PURPOSE_TONE, RECHECK_KINDS, fmtStamp, infoPairs, linkKind,
-  locateTarget, materialCounts, progressView, repairView,
+  headingLine, locateTarget, materialCounts, progressView, repairView,
 } from './reportModel.js';
 
 const FIX_TOAST = '已发给助手';
@@ -123,14 +123,23 @@ function RepairCard({ repair, items, arbitration, onAnswered }) {
   );
 }
 
-function RawPane({ raw }) {
+function RawPane({ raw, section }) {
+  const bodyRef = useRef(null);
+  const lines = raw ? raw.content_md.split('\n') : [];
+  const at = section ? headingLine(lines, section) : -1;
+  useLayoutEffect(() => { bodyRef.current?.querySelector('.rp-at')?.scrollIntoView({ block: 'start' }); }, [raw, at]);
   return (
     <div className="bd">
+      {raw && section && at < 0 ? <Note tone="amber" className="mb8">报告里找不到小节「{section}」，可能已改名。</Note> : null}
       <div className="row mb12">
         <span className="sp" />
         <Button size="xs" icon="copy" disabled={!raw} onClick={async () => { try { await navigator.clipboard.writeText(raw.content_md); toast('已复制', 'copy'); } catch { toast('复制失败，请手动选择', 'alert'); } }}>复制</Button>
       </div>
-      {raw ? <div className="code">{raw.content_md}</div> : <div className="xs muted">正在读取…</div>}
+      {raw ? (
+        <div className="code" ref={bodyRef}>
+          {at < 0 ? raw.content_md : lines.map((line, i) => <div key={i} className={i === at ? 'rp-at' : undefined}>{line || '\u00a0'}</div>)}
+        </div>
+      ) : <div className="xs muted">正在读取…</div>}
       {raw?.truncated ? <div className="xs muted mt8">原文太长，只显示了前一部分。</div> : null}
     </div>
   );
@@ -210,7 +219,10 @@ export default function ReportsPage({ route }) {
       .catch((e) => { if (alive) fail(e); });
     return () => { alive = false; };
   }, [api, pid, selectedId, tick, fail]);
-  useEffect(() => { setPane('items'); setRaw(null); }, [selectedId]);
+  // 规则「来源」里的报告小节跳来（?section=）：直接看原文并定位到那一节
+  const section = route.query?.section || '';
+  useEffect(() => { setRaw(null); }, [selectedId]);
+  useEffect(() => { setPane(section ? 'raw' : 'items'); }, [selectedId, section]);
   useEffect(() => {
     if (pane !== 'raw' || !selectedId) return;
     api.reportRaw(pid, selectedId).then(setRaw).catch(fail);
@@ -278,8 +290,9 @@ export default function ReportsPage({ route }) {
         {actions}
       </div>
     );
-    if (isResearch) body = <ResearchBody report={current} />;
-    else if (pane === 'raw' && !isLink) body = <RawPane raw={raw} />;
+    // 资料分析报告平时是结构化视图；从规则「来源」的小节跳来时看原文并定位（再点列表里的报告回到结构化视图）
+    if (isResearch) body = section ? <RawPane raw={raw} section={section} /> : <ResearchBody report={current} />;
+    else if (pane === 'raw' && !isLink) body = <RawPane raw={raw} section={section} />;
     else {
       body = (
         <div className="bd">

@@ -18,3 +18,4 @@
 .rp-round .bar.cur i{background:var(--blue)}
 .rp-side{display:flex;flex-direction:column;gap:14px;min-height:0;overflow:auto}
 .rp-empty{flex:1;display:grid;place-items:center;color:var(--ink3);font-size:12.5px;padding:24px}
+.code .rp-at{background:var(--b50);border-radius:3px;scroll-margin:12px}

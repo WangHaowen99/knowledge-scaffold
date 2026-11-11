@@ -220,6 +220,66 @@ def test_deterministic_errors_block_acceptance(workspace, toolkit, report, expec
 
 
 # ---------------------------------------------------------------------------
+# research_checker：「详细信息」的资料出处（规则「原始资料来源」取自这里）
+# ---------------------------------------------------------------------------
+
+def with_detail_source(source: str) -> str:
+    return make_report(GOOD_ROWS).replace("合成属性说明。", f"- 来源：{source}")
+
+
+@pytest.mark.parametrize("source", [
+    pytest.param("resource/others/说明.md#L1", id="完整路径和锚点"),
+    pytest.param("resource/others/说明.md#L1；同条规则另见 resource/others/说明.md#L5（说明）",
+                 id="多处出处"),
+    pytest.param("resource/others/说明.md", id="不带锚点"),
+    pytest.param("领域知识整理", id="不是资料路径"),
+    pytest.param("resource/others/说明.md#L3-L5", id="行号范围"),
+])
+def test_detail_sources_that_resolve_pass(workspace, toolkit, source):
+    checker, review = toolkit
+    write_report(workspace, with_detail_source(source))
+
+    result = checker.run_check(workspace)
+
+    assert result["status"] == review.PASSED, result["issues"]
+
+
+def test_detail_source_on_text_version_passes(workspace, toolkit):
+    """PDF、Word、Excel 的出处写文本版的行号（F4b）。"""
+    checker, review = toolkit
+    text = workspace / "resource" / "text" / "others" / "合成手册.pdf.md"
+    text.parent.mkdir(parents=True)
+    text.write_text("<!-- 第 1 页 -->\n合成手册正文\n退款时限为七天\n", encoding="utf-8")
+    (workspace / "resource" / "others" / "合成手册.pdf").write_bytes(b"%PDF-1.4 synthetic")
+    write_report(workspace, with_detail_source("resource/text/others/合成手册.pdf.md#L2-L3"))
+
+    result = checker.run_check(workspace)
+
+    assert result["status"] == review.PASSED, result["issues"]
+
+
+@pytest.mark.parametrize("source,expected,fragment,status", [
+    pytest.param("resource/others/不存在.docx#p:3", "来源缺失", "不存在.docx", "failed",
+                 id="文件不存在"),
+    # 与清单锚点读不到一致：判「无法核验」，同样不放行
+    pytest.param("resource/others/说明.md#L999", "来源无法核验", "#L999", "unverifiable",
+                 id="锚点不存在"),
+    pytest.param("resource/others/说明.md#L1、#L5", "来源缺失", "#L5", "failed", id="省略路径"),
+])
+def test_detail_sources_that_do_not_resolve_block_acceptance(
+    workspace, toolkit, source, expected, fragment, status
+):
+    checker, review = toolkit
+    write_report(workspace, with_detail_source(source))
+
+    result = checker.run_check(workspace)
+
+    assert result["status"] == status
+    assert categories(result) == {expected}
+    assert any(fragment in issue["message"] for issue in result["issues"])
+
+
+# ---------------------------------------------------------------------------
 # research_checker：分类分流（规则/指标不得混进逻辑候选）
 # ---------------------------------------------------------------------------
 
@@ -408,7 +468,7 @@ def test_same_source_ids_across_formats(workspace, toolkit, suffix):
     assert checker.check_exit_code(checker.run_check(workspace)) == 0
     evidence = review.load_review(workspace)['source_evidence'][location]
     assert len(evidence['source_sha256']) == 64
-    assert evidence['extractor_version'] == 1
+    assert evidence['extractor_version'] == 2
     assert evidence['anchors']
 
 

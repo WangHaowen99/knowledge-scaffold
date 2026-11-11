@@ -10,7 +10,10 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+import subprocess
+import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 from .. import config
@@ -19,6 +22,7 @@ from ..kernel.artifacts import index as artifact_index
 from ..kernel.metamodel import mm
 from . import package_mapping
 from .document_metadata import name_frontmatter, report_name
+from .workspace import gitops
 
 SECTION = re.compile(r"^(#{1,2})\s+(.+)$", re.MULTILINE)
 NUMBERED_STEP = re.compile(r"^\s*\d+[.)、．]\s*(.+)$")
@@ -235,6 +239,86 @@ def operation_flow(root: Path, element_id: str) -> dict:
         "defaultView": "operation-steps" if steps else "empty",
         "issues": [],
     }
+
+
+# ---- 最后更新时间（ST-03 `updated_at`） ----
+
+_UPDATES_CACHE_MAX = 32
+_updates_cache: OrderedDict = OrderedDict()
+_updates_lock = threading.Lock()
+
+
+def updates(root: Path) -> dict[str, int]:
+    """{文档路径: Unix 秒}，取不到的文档不出现在结果里；git 不可用时返回空结果，不报错。
+
+    已提交的文档取最后一次改动它的提交时间（同内容重复保存不产生提交，时间不变）；已写入工作区、未提交的
+    取文件修改时间。纯移动或改名（内容不变）不算更新，沿用移动前的时间。Studio 草稿不在文件里，不算。
+    遍历历史的结果按 HEAD 和文档集合缓存，条目表每次只多跑一条 `git status`。
+    """
+    docs = {doc["path"]: doc["file"] for doc in _docs(root)}
+    if not docs or not (root / ".git").exists():
+        return {}
+    try:
+        head = _git_text(root, "rev-parse", "-q", "--verify", "HEAD").strip()
+        result = dict(_committed_times(root, head, tuple(sorted(docs)))) if head else {}
+        status = _git_text(root, "status", "--porcelain", "-z", "--untracked-files=all", "--", "ontology/")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+    entries = status.split("\0")
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if len(entry) < 4:
+            continue
+        if entry[0] in "RC":  # 暂存区里的重命名、复制：后面跟一个原路径
+            index += 1
+        path = entry[3:]
+        if path in docs:
+            try:
+                result[path] = int(docs[path].stat().st_mtime)
+            except OSError:
+                result.pop(path, None)
+    return result
+
+
+def _committed_times(root: Path, head: str, paths: tuple[str, ...]) -> dict[str, int]:
+    key = (str(root.resolve()), head, hashlib.sha256("\0".join(paths).encode("utf-8")).hexdigest())
+    with _updates_lock:
+        if key in _updates_cache:
+            _updates_cache.move_to_end(key)
+            return _updates_cache[key]
+    # -M100%：只把内容完全相同的移动认作重命名，移动同时改了内容的算更新
+    log = _git_text(root, "log", "--format=%x00%ct", "--name-status", "-M100%", "--", "ontology/")
+    result: dict[str, int] = {}
+    # 从新到旧：历史路径 → 现在的文档路径，遇到纯移动就沿旧路径继续往前找
+    pending = {path: path for path in paths}
+    timestamp = 0
+    for line in log.splitlines():
+        if line.startswith("\0"):
+            timestamp = int(line[1:])
+            continue
+        fields = line.split("\t")
+        if fields[0].startswith("R") and len(fields) == 3:
+            if fields[2] in pending:
+                pending[fields[1]] = pending.pop(fields[2])
+        elif len(fields) == 2 and fields[1] in pending:
+            result[pending.pop(fields[1])] = timestamp
+    with _updates_lock:
+        _updates_cache[key] = result
+        while len(_updates_cache) > _UPDATES_CACHE_MAX:
+            _updates_cache.popitem(last=False)
+    return result
+
+
+def _git_text(root: Path, *args: str) -> str:
+    # core.quotepath=false：否则中文文件名被转义成 "\346..."，对不上文档路径
+    proc = gitops._run_git(root, ("-c", "core.quotepath=false", "-c", "log.showSignature=false", *args))
+    if proc.returncode != 0:
+        if args[0] == "rev-parse":  # 还没有提交
+            return ""
+        raise subprocess.SubprocessError(proc.stderr.strip()[:200])
+    return proc.stdout
 
 
 def _working_revision(docs: list[dict], texts: dict[str, str]) -> str:

@@ -314,15 +314,43 @@ def blocks(root: Path, rel: str, *, around: str = "", limit: int = 0, cursor: st
             raise ValueError("cursor")
         start = offset
     elif around:
-        index = next((i for i, seg in enumerate(segments) if seg["anchor"] == around), None)
-        if index is not None:
-            start = max(0, index - limit // 2)
+        # 行号范围 L12-L15 按第一行定位
+        found = _span(segments, around, _LINES.fullmatch(around))
+        if found is not None:
+            start = max(0, found[0] - limit // 2)
     end = start + limit
+    window = _text_blocks(segments, start, end) if is_resource_text(rel) \
+        else [_block(seg, markdown) for seg in segments[start:end]]
     return {
-        "blocks": [_block(seg, markdown) for seg in segments[start:end]],
+        "blocks": window,
         "next_cursor": _encode_cursor(end, rel) if end < len(segments) else None,
         "readable": True,
     }
+
+
+def _text_blocks(segments: list[dict], start: int, end: int) -> list[dict]:
+    """文本版的块：文件头不出，页、工作表标记不单独成块，记在它后面每一块的 location 上（「第 3 页」「工作表 客户」）。"""
+    from ..evidence import convert
+
+    def marker(segment: dict) -> str | None:
+        found = convert.parse_locations(str(segment["text"]))
+        return found[0].label if found else None
+
+    location = ""
+    for segment in segments[:start]:
+        location = marker(segment) or location
+    out = []
+    for segment in segments[start:end]:
+        if convert.parse_header(str(segment["text"])) is not None:
+            continue
+        if label := marker(segment):
+            location = label
+            continue
+        block = _block(segment, True)
+        if location:
+            block["location"] = location
+        out.append(block)
+    return out
 
 
 # ---------------------------------------------------------------------------

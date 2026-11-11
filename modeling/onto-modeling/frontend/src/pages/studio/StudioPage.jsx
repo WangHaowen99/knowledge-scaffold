@@ -165,7 +165,9 @@ function EvidenceCard({ item, pid }) {
         <b className="sm grow">{item.title}</b>
         {conf ? <Chip tone={tone} sm>{conf}</Chip> : null}
       </div>
-      <div className="xs muted mt4">用于属性{(item.used_for || []).map((u) => `「${u}」`).join('、')}</div>
+      {/* 规则「原始资料来源」这类章节里的出处不属于哪个属性：写它在资料里的位置 */}
+      {item.used_for?.length ? <div className="xs muted mt4">用于属性{item.used_for.map((u) => `「${u}」`).join('、')}</div>
+        : item.resolved?.location_label ? <div className="xs muted mt4">{item.resolved.location_label}</div> : null}
       <div className="row mt8">
         {!db || evidenceOn ? <Button size="xs" onClick={() => navigate(pagePath(page, pid), { anchor: item.anchor })}>查看原文</Button> : null}
         {evidenceOn ? <Button size="xs" kind="ghost" onClick={whereUsed}>被谁引用</Button> : null}

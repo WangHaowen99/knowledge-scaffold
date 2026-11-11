@@ -115,3 +115,5 @@
 .sd-er .tb:hover rect:first-of-type{stroke:var(--blue)}
 .sd-er-zoom{position:absolute;right:14px;bottom:14px;background:rgba(255,255,255,.94);border:1px solid var(--line);border-radius:10px;padding:4px 6px;box-shadow:var(--sh-soft)}
 .sd-er-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+.stt-src{cursor:pointer}.stt-src:hover{border-color:var(--blue3);color:var(--blue2)}
+.stt-sort{cursor:pointer;white-space:nowrap;user-select:none}.stt-sort svg{vertical-align:-1px;margin-left:3px}.stt-time{white-space:nowrap}

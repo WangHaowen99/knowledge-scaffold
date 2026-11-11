@@ -135,12 +135,31 @@ export function parseFileAnchor(anchor) {
   return { path: dec(m[1]), fragment: m[2] ? dec(m[2]) : null };
 }
 
+// 文本版和原资料互换（ADR-0073）：resource/others/合同.pdf ↔ resource/text/others/合同.pdf.md
+const TEXT_DIR = 'resource/text/';
+export const textPathOf = (path) => `${TEXT_DIR}${String(path).slice('resource/'.length)}.md`;
+export function materialOfText(path) {
+  const p = String(path || '');
+  return p.startsWith(TEXT_DIR) && p.endsWith('.md') ? `resource/${p.slice(TEXT_DIR.length, -3)}` : null;
+}
+
+// 行号片段 L12、L12-L15 → {from, to}；别的片段 null
+export function lineRange(fragment) {
+  const m = /^L(\d+)(?:-L?(\d+))?$/.exec(String(fragment || ''));
+  return m ? { from: Number(m[1]), to: Number(m[2] || m[1]) } : null;
+}
+export const lineOf = (anchor) => lineRange(anchor)?.from ?? null;
+
+// 要转文本的资料（PDF、Word、Excel）上的行号片段指的是它的文本版：预览里按文本版定位
+export const isTextFragment = (m, fragment) => isConvertible(m) && !!lineRange(fragment);
+
 // 地址参数 → 要选中什么：?anchor=、?path=、?group=feedback&feedback=
 export function routeTarget(query = {}) {
   if (query.feedback || query.group === 'feedback') return { kind: 'feedback', id: query.feedback || null };
   if (query.anchor) {
     const a = parseFileAnchor(query.anchor);
-    if (a) return { kind: 'file', path: a.path, fragment: a.fragment };
+    // 出处写的是文本版（资料分析只读文本版）：选中原资料，片段照旧
+    if (a) return { kind: 'file', path: materialOfText(a.path) || a.path, fragment: a.fragment };
   }
   if (query.path) return { kind: 'file', path: query.path, fragment: query.fragment || null };
   return null;
@@ -445,3 +464,50 @@ export function drawioLayout(model, pad = 16) {
 
 // 菱形四个顶点
 export const diamondPoints = (n) => `${n.x + n.w / 2},${n.y} ${n.x + n.w},${n.y + n.h / 2} ${n.x + n.w / 2},${n.y + n.h} ${n.x},${n.y + n.h / 2}`;
+
+// ---------- 文本版定位（规则「原始资料来源」、证据「查看原文」跳来；R-06 读文本版的行） ----------
+
+// 一行 Markdown 表格 → 单元格（转换器写的 \| 是字面竖线，<br> 是格内换行）
+export function mdCells(line) {
+  const body = String(line || '').trim().replace(/^\|/, '');
+  const cells = [];
+  let cur = '';
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i];
+    if (ch === '\\' && i + 1 < body.length) { cur += body[i + 1]; i += 1; } else if (ch === '|') { cells.push(cur); cur = ''; } else cur += ch;
+  }
+  if (cur.trim()) cells.push(cur);
+  return cells.map((c) => c.trim().replace(/<br>/g, '\n'));
+}
+const isRuleRow = (cells) => cells.length > 0 && cells.every((c) => /^:?-{3,}:?$/.test(c));
+
+/**
+ * R-06 文本版的块 → 画法：位置变了先出一条分隔（第 3 页、工作表 客户），连续的表格行合成一张表
+ * （紧跟分隔行的那一行是表头，分隔行不画），其余逐块。
+ */
+export function textView(blocks = []) {
+  const out = [];
+  let loc = null;
+  blocks.forEach((b, i) => {
+    if ((b.location || null) !== loc) {
+      loc = b.location || null;
+      if (loc) out.push({ type: 'loc', label: loc, key: `loc-${b.anchor}` });
+    }
+    if (b.kind !== 'table') { out.push({ type: 'block', block: b, key: b.anchor }); return; }
+    const cells = mdCells(b.text);
+    if (isRuleRow(cells)) return;
+    const next = blocks[i + 1];
+    const head = next?.kind === 'table' && isRuleRow(mdCells(next.text));
+    const last = out[out.length - 1];
+    const row = { anchor: b.anchor, cells, head };
+    if (last?.type === 'table' && blocks[i - 1]?.kind === 'table' && (blocks[i - 1].location || null) === loc) last.rows.push(row);
+    else out.push({ type: 'table', rows: [row], key: `tbl-${b.anchor}` });
+  });
+  return out;
+}
+
+// 命中的行：片段是行号范围时范围里的每一行
+export function inRange(anchor, range) {
+  const n = lineOf(anchor);
+  return !!range && n !== null && n >= range.from && n <= range.to;
+}

@@ -102,3 +102,24 @@ def test_delete_entry(api):
     assert client.request("DELETE", f"{base}/{rule['id']}", json={}).status_code == 404
     flow = client.post(base, json={"kind": "flowchart", "name": "门店流程"}).json()
     assert client.request("DELETE", f"{base}/flowchart:{flow['key']}", json={}).status_code == 200
+
+
+def test_entries_carry_updated_at_and_sort_by_it(api):
+    """ST-03 最后更新时间：已提交的取提交时间，未提交的取文件修改时间；sort=updated 新的在前。"""
+    import os
+    import time
+
+    client, pid, root = api
+    base = f"/api/v1/projects/{pid}/studio/entries"
+    assert client.post(base, json={"kind": "rule", "name": "合成规则甲"}).status_code == 201
+    loose = root / "ontology/rule/合成规则乙.md"
+    loose.write_text("# 规则描述\n\n未提交的合成规则\n", encoding="utf-8")
+    future = int(time.time()) + 3600
+    os.utime(loose, (future, future))
+
+    rows = {row["id"]: row for row in client.get(base).json()["items"]}
+    assert rows["rule:合成规则甲"]["updated_at"]
+    assert rows["rule:合成规则乙"]["updated_at"] == deps.iso(future)
+
+    ordered = [row["id"] for row in client.get(base, params={"sort": "updated"}).json()["items"]]
+    assert ordered.index("rule:合成规则乙") < ordered.index("rule:合成规则甲")

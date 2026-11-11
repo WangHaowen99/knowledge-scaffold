@@ -6,12 +6,12 @@ import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import { ShellP } from '../../shell/Shell.jsx';
-import { Button, Field, Inp, Modal, Seg } from '../../ui/index.jsx';
+import { Button, Field, Icon, Inp, Modal, Seg } from '../../ui/index.jsx';
 import '../../styles/studio.css';
 import EntryEditor from './EntryEditor.jsx';
 import FlowchartPanel from './FlowchartPanel.jsx';
 import { KindChip, LockIcon, PlugMark, RowStatus, useLockCopy } from './parts.jsx';
-import { filterRows, kindSegments, mergeFlowchartRows, rowQuery } from './studioModel.js';
+import { filterRows, fmtUpdated, kindSegments, mergeFlowchartRows, nextUpdatedOrder, rowQuery, sortByUpdated } from './studioModel.js';
 
 const NEW_KINDS = [['object', '对象'], ['operation', '操作'], ['rule', '规则'], ['metric', '指标']];
 
@@ -99,7 +99,8 @@ export default function StudioTablePage({ route }) {
   }, [route.query?.entry, autoId, rows]);
   const selectedId = route.query?.entry || autoId;
   const selected = rows.find((r) => r.id === selectedId) || null;
-  const shown = useMemo(() => filterRows(rows, kind, q), [rows, kind, q]);
+  const [order, setOrder] = useState(null); // 最后更新时间列的排序：null 按名称（ST-03 默认）
+  const shown = useMemo(() => sortByUpdated(filterRows(rows, kind, q), order), [rows, kind, q, order]);
   const segs = kindSegments(data?.counts, { flowchartEnabled });
   const select = (id) => navigate(pagePath('studio-table', pid), rowQuery(route.query, id));
   // 从别处跳来（报告「定位」、对话里的条目链接）时，把选中的行滚进视野
@@ -137,7 +138,7 @@ export default function StudioTablePage({ route }) {
           <div className="tw" style={{ padding: '0 16px 16px' }}>
             <div className="tbl-wrap">
               <table className="tbl compact">
-                <thead><tr><th style={{ width: 74 }}>类型</th><th>名称</th><th style={{ width: 70 }}>引用</th><th style={{ width: 70 }}>被引</th><th style={{ width: 96 }}>状态</th></tr></thead>
+                <thead><tr><th style={{ width: 74 }}>类型</th><th>名称</th><th className="stt-sort" style={{ width: 150 }} aria-sort={order ? `${order}ending` : 'none'} onClick={() => setOrder(nextUpdatedOrder)}>最后更新时间{order ? <Icon name={order === 'desc' ? 'chevd' : 'chevu'} size={11} /> : null}</th><th style={{ width: 70 }}>引用</th><th style={{ width: 70 }}>被引</th><th style={{ width: 96 }}>状态</th></tr></thead>
                 <tbody ref={bodyRef}>
                   {shown.map((r) => {
                     const ref = r.kind === 'flowchart' ? { type: 'diagram.flowchart', key: r.key } : { id: r.id };
@@ -145,13 +146,14 @@ export default function StudioTablePage({ route }) {
                       <tr key={r.id} className={`stt-row${r.id === selectedId ? ' sel' : ''}`} onClick={() => select(r.id)}>
                         <td><KindChip kind={r.kind} /></td>
                         <td className="b">{r.name}<LockIcon info={lockFor(ref, r.name)} /></td>
+                        <td className="muted stt-time">{fmtUpdated(r.updated_at)}</td>
                         <td className="num">{r.refs_out}</td>
                         <td className="num">{r.refs_in}</td>
                         <td><RowStatus row={r} /></td>
                       </tr>
                     );
                   })}
-                  {data && !shown.length ? <tr><td colSpan={5} className="muted sm" style={{ textAlign: 'center', padding: 24 }}>{rows.length ? '没有匹配的条目' : '还没有条目'}</td></tr> : null}
+                  {data && !shown.length ? <tr><td colSpan={6} className="muted sm" style={{ textAlign: 'center', padding: 24 }}>{rows.length ? '没有匹配的条目' : '还没有条目'}</td></tr> : null}
                 </tbody>
               </table>
             </div>
