@@ -1,5 +1,6 @@
 """资料（API 契约 3.6）：R-01 列表、R-02 上传、R-03 改用途、R-04 删除、R-05 被谁引用、R-06 原文预览、
-R-11 / R-12 外部反馈；R-13 查看文本、R-14 重新转换（资料的文本版，ADR-0073）；R-15 选出处的位置。
+R-11 / R-12 外部反馈；R-13 查看文本、R-14 重新转换（资料的文本版，ADR-0073）；R-15 选出处的位置；
+R-16 数据 Schema 的 Sheet 范围预检（ADR-0096）。
 
 资料区对 agent 只读，只能由用户上传、替换、删除，每次都保存版本。资料分析（R-07～R-10）在 `materials.py`。
 """
@@ -13,7 +14,7 @@ from fastapi.responses import JSONResponse
 
 from ..api import deps
 from ..api.errors import ApiError
-from ..services import mainline, material_conversion, material_refs, material_text, research_view, uploads, workspace_labels
+from ..services import mainline, material_conversion, material_refs, material_text, research_view, table_sources, uploads, workspace_labels
 from ..services.workspace.layout import (
     RESOURCE_DIRECTIVES, RESOURCE_SUBDIRS, _content_revision, is_auto_detected, is_resource_text,
 )
@@ -61,7 +62,15 @@ def _material(project_id: str, root: Path, rel: str, directives: dict, reference
         "preview": preview,
         "revision": _content_revision(data),
         "text": material_conversion.view(project_id, root, rel, data),
+        "schema_scope": _schema_scope(path, purpose, directive),
     }
+
+
+def _schema_scope(path: Path, purpose: str, directive) -> dict | None:
+    """数据 Schema 表格的 Sheet 范围摘要；别的资料为 None。"""
+    if purpose != "schema" or path.suffix.lower() not in table_sources.TABLE_SUFFIXES:
+        return None
+    return table_sources.summary(path, directive if isinstance(directive, dict) else None)
 
 
 def _material_paths(root: Path) -> list[str]:
@@ -148,7 +157,7 @@ async def set_purpose(project_id: str, request: Request):
         raise ApiError("file_not_found", "文件不存在", 404, {"path": path})
     deps.workspaces.set_resource_directive(
         project_id, path, str(body.get("purpose") or ""), str(body.get("reading_mode") or "on_demand"),
-        author=deps.username(request),
+        author=deps.username(request), schema_selection=_selection_body(body.get("schema_selection")),
     )
     state = mainline.state(root)
     return {
@@ -158,6 +167,45 @@ async def set_purpose(project_id: str, request: Request):
         "version_label": state["version_label"],
         "reread_task": None,
     }
+
+
+def _selection_body(value) -> dict | None:
+    """R-03 的 schema_selection：{mode: auto|manual, included_sheets?: string[], revision?: string}。"""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or value.get("mode") not in ("auto", "manual"):
+        raise ApiError("invalid_argument", "Sheet 范围不合法", 400, {"fields": {"schema_selection.mode": "enum"}})
+    if value["mode"] == "auto":
+        return {"mode": "auto"}
+    included, revision = value.get("included_sheets"), value.get("revision")
+    if not isinstance(included, list) or not all(isinstance(name, str) for name in included):
+        raise ApiError("invalid_argument", "Sheet 范围不合法", 400,
+                       {"fields": {"schema_selection.included_sheets": "required"}})
+    if not isinstance(revision, str) or not revision:
+        raise ApiError("invalid_argument", "Sheet 范围不合法", 400, {"fields": {"schema_selection.revision": "required"}})
+    return {"mode": "manual", "included_sheets": included, "revision": revision}
+
+
+@router.get("/schema-preview")
+def schema_preview(project_id: str, request: Request, path: str = ""):
+    """R-16：按「数据 Schema」检查这份表格的每个 Sheet——表头问题、建议范围；只读，不改用途。"""
+    root = deps.require_owner(project_id, request)
+    rel = _material_target(root, path)
+    target = root / rel
+    suffix = target.suffix.lower()
+    if suffix not in table_sources.TABLE_SUFFIXES:
+        message = "旧版 .xls 要另存为 .xlsx" if suffix == ".xls" else "数据 Schema 只支持 xlsx、xlsm、csv"
+        raise ApiError("unsupported_media_type", message, 415, {"allowed": list(table_sources.TABLE_SUFFIXES)})
+    directive = deps.workspaces.resource_directives(project_id).get(rel)
+    try:
+        scope = table_sources.preview(target, directive if isinstance(directive, dict) else None)
+    except table_sources.SheetSelectionError as exc:
+        raise ApiError("invalid_argument", str(exc), 400, {"path": rel}) from exc
+    if scope["pending"]:
+        state = (material_conversion.view(project_id, root, rel, heal=False) or {}).get("state")
+        if state in ("failed", "unsupported"):
+            raise ApiError("not_convertible", "表格转不出文本，检查不了表头", 409, {"path": rel})
+    return scope
 
 
 @router.delete("")

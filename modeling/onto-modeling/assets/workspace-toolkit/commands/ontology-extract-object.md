@@ -130,7 +130,7 @@ Set `EXCEL_CONTEXT` = 脚本 stdout。若 stdout 为空，置为 `（无同名 E
   - 空表头、重名列、主键歧义 → 先 `acquire extract-object confirm`，用业务化的选项询问用户，不自行决断；回复后切回 `source`。
 - 存在 `purpose=term` 的术语表时，对象命名、别名、属性中文名必须与术语表对齐；冲突时以术语表为准并在文档"来源"处标注。
 - 需要全文读取的资料（`reading_mode=full`，或没有写 `reading_mode` 的文档类资料，规则见 CLAUDE.md 8.1）在提取前必须已全文读取。
-- 运行 `python3 .claude/scripts/table_profile.py --headers`：全部表头写进 `.ontology-state/table-headers.json`，stdout 是摘要 JSON（`status`、`file`、`tables` 表名 → 列数、`missing_text`）。表头不在对话里转述：要看时读这个文件，派子代理时只传路径。`tables` 非空时 `TABLE_HEADERS_FILE` 记为 `file`，否则记为 `（无）`。
+- 运行 `python3 .claude/scripts/table_profile.py --headers`：全部表头写进 `.ontology-state/table-headers.json`，stdout 是摘要 JSON（`status`、`file`、`tables` 表名 → 列数、`missing_text`）。表头不在对话里转述：要看时读这个文件，派子代理时只传路径。`tables` 非空时 `TABLE_HEADERS_FILE` 记为 `file`，否则记为 `（无）`。命令退出码为 2 且提示「Sheet 范围需要在资料区重新确认」时停止提取，请用户在资料页确认该表格的 Sheet 范围，不要退回遍历全部 Sheet；范围外的 Sheet 只作参考资料，不能当物理表或字段来源。
   `TABLE_HEADERS_FILE` 非空时，文件里的表头是表名与列名的**唯一依据**：对象「# 数据来源」取其中的 Sheet 名，对不上任何 Sheet 的对象填「无」；从库里读取的属性英文名称逐字取自该 Sheet 的表头；数据字典类文档、资料分析报告里的字段名与之冲突时以表头为准，冲突清单写进返回摘要的注意事项。提取后的规则检查会按对象逐列对账：声明的表不存在、一列都对不上、或属性别名里才是真实列名，均判为错误并阻止提交（发布时同样会被阻断）。
   `missing_text` 非空（`status` 为 `text_missing`）：这些资料已经标为数据 Schema，只是还没有文本版（转换中、暂不支持或转换失败），按未读处理——不读原件、不再请用户标 Schema，在本轮摘要里点名"「{文件名}」还没有文本版，这次没有用它的表头，转好后重新提取对象可补上"。其余表照常用；一张表都读不到时，对象「# 数据来源」段留空（不填「无」，转好后发布能按列名自动匹配）。
   只有 `status` 为 `no_schema`（项目里没有 schema 表格资料）时，才看 `resource/` 下有没有像数据库表的表格资料（首行是英文列名）：有的话按 CLAUDE.md 8.1 请用户在资料页把它的用途改为「数据 Schema」，改好后重跑上面的命令；用户确认没有数据表时，所有对象的「# 数据来源」填「无」，不得臆造表名；规则检查会对声明了表名的对象给出警告。

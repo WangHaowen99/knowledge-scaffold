@@ -221,22 +221,10 @@ export function coverageChip(cov) {
 }
 
 // ---------- 上传 ----------
-export const UPLOAD_EXTS = ['md', 'markdown', 'doc', 'docx', 'xls', 'xlsx', 'xlsm', 'csv', 'pdf', 'drawio', 'txt', 'html', 'htm'];
-export const UPLOAD_LIMIT = 20 * 1024 * 1024;
-export const UPLOAD_ACCEPT = UPLOAD_EXTS.map((x) => `.${x}`).join(',');
-const DRAWING_EXTS = ['dwg', 'dxf', 'vsd', 'vsdx', 'png', 'jpg', 'jpeg', 'svg', 'gif', 'bmp', 'webp'];
+// 选完文件先在本地挡掉格式不对、太大的（标注 resources-003）；规则与后端同一份（lib/resourceUpload.js，契约 1.8）
+export { checkResourceFile as checkUpload } from '../../lib/resourceUpload.js';
 
 export const extOf = (name) => (String(name).includes('.') ? String(name).split('.').pop().toLowerCase() : '');
-
-// 选完文件先在本地挡掉格式不对、超过 20 MB 的（标注 resources-003）
-export function checkUpload(name, size) {
-  const ext = extOf(name);
-  if (!UPLOAD_EXTS.includes(ext)) {
-    return DRAWING_EXTS.includes(ext) ? '不支持这种格式，请转成 PDF 或 drawio 后再上传' : '不支持这种格式，请转成 PDF、Word 或 Markdown 后再上传';
-  }
-  if (size > UPLOAD_LIMIT) return '超过 20 MB，请拆分或压缩后再上传';
-  return null;
-}
 
 // 替换：用户选的文件改成被替换那份的名字上传（同名即替换），扩展名要一样
 export function replaceName(target, picked) {

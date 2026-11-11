@@ -57,3 +57,5 @@
 .rs-loc::after{content:"";flex:1;border-top:1px dashed var(--line)}
 .evd-paper h5.rs-at,.evd-paper tr.rs-at>td,.evd-paper tr.rs-at>th{background:var(--b50)}
 .evd-paper tr{scroll-margin:40px}
+
+.card .chip.rs-go{cursor:pointer}

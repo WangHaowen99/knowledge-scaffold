@@ -57,7 +57,8 @@ TERM_ROWS = [["术语", "别名", "释义"], ["订单", "单据", "客户提交�
         ("清单", [["api", "service", "param"], ["", "", "name"]], True, "document"),
         ("dup", [["id", "id", "name"]], False, "document"),
         ("__说明__", [["本文件说明"]], False, "meta"),
-        ("总览", ORDER_ROWS, False, "meta"),
+        # 名字像说明页、表头却是数据表的，按数据表算（不能把真正的表当封面丢掉）
+        ("总览", ORDER_ROWS, False, "table"),
         ("blank", [[None, None]], False, "empty"),
     ],
 )

@@ -12,6 +12,7 @@ import DrawioPreview from '../../components/DrawioPreview.jsx';
 import { isLocked } from '../../state/readonly.js';
 import { Button, Chip, Icon, Modal, Note, Seg, cx, useEscape } from '../../ui/index.jsx';
 import { useProjectEvent } from '../plugin/parts.jsx';
+import { scopeChip } from './sheetScopeModel.js';
 import {
   PREVIEW_ICON, blockBody, isDocPreview, blockLabel, coverageChip, csvText, diamondPoints, drawioLayout, feedbackView, fmtSize,
   parseDrawio, parseFragment, purposeView, refRows, refTarget, scaleText, sheetView, splitHighlights, tableTruncated, cellPos,
@@ -535,7 +536,7 @@ function RefsPane({ m, onLocate }) {
 }
 
 // ---------- 预览卡 ----------
-export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, onUploadText, tasks }) {
+export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, onUploadText, tasks, onScope }) {
   const [tab, setTab] = useState('pv');
   const [focus, setFocus] = useState(fragment);
   const [coverage, setCoverage] = useState(null);
@@ -545,6 +546,7 @@ export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, 
   const onCoverage = useCallback((c) => setCoverage(c), []);
   const cov = isDocPreview(m) ? coverageChip(coverage) : null;
   const p = purposeView(m, purposes);
+  const scope = scopeChip(m.schema_scope);
   const scale = isDocPreview(m) || m.preview === 'drawio' || m.preview === 'html' ? fmtSize(m.size) : scaleText(m);
 
   let pane;
@@ -571,6 +573,7 @@ export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, 
         <div className="row mb12">
           <span className="row g4">
             <Chip tone="blue">{p.label}</Chip>
+            {scope && onScope ? <Chip tone={scope.tone} icon="table" className="rs-go" title="Sheet 范围" onClick={() => onScope(m)}>{scope.text}</Chip> : null}
             <Chip tone="line">{scale}</Chip>
             {cov ? <Chip tone={cov.tone} icon={cov.icon}>{cov.text}</Chip> : null}
           </span>

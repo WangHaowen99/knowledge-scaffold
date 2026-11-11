@@ -13,6 +13,8 @@ import {
   PURPOSES, countPairs, parseAnchor, purposeLabel, readState,
 } from './model.js';
 import { VerificationDrawer } from './VerificationDrawer.jsx';
+import { useSheetScope } from '../../resources/SheetScope.jsx';
+import { isSchemaTable } from '../../resources/sheetScopeModel.js';
 import '../../../styles/materials.css';
 
 const CAND_KIND = { object: ['对象', 'blue'], rule: ['规则', 'amber'], term: ['术语', 'teal'] };
@@ -187,9 +189,15 @@ export function MaterialMapDialog({ onClose, initialVerify = false }) {
     }
   }), [subscribe, load]);
 
+  // 表格改成数据 Schema 与资料区同一条路：先预检表头，有问题弹窗选 Sheet 范围
+  const sheetScope = useSheetScope(pid, (r) => {
+    setMap((m) => ({ ...m, items: m.items.map((x) => (x.path === r.material.path ? { ...x, purpose: 'schema', purpose_auto: false } : x)) }));
+    toast(`用途已改为：${purposeLabel('schema')}`, 'check');
+  });
   const setPurpose = async (item, purpose) => {
     setMenu(null);
     if (purpose === item.purpose) return;
+    if (purpose === 'schema' && isSchemaTable(item.name)) { sheetScope.choose({ path: item.path, name: item.name }); return; }
     try {
       await api.setResourcePurpose(pid, { path: item.path, purpose });
       setMap((m) => ({ ...m, items: m.items.map((x) => (x.path === item.path ? { ...x, purpose, purpose_auto: false } : x)) }));
@@ -306,6 +314,7 @@ export function MaterialMapDialog({ onClose, initialVerify = false }) {
       </Modal>
       {verify ? <VerificationDrawer onClose={() => setVerify(false)} /> : null}
       {side ? <SideBySide problem={side} onClose={() => setSide(null)} /> : null}
+      {sheetScope.dialog}
     </>
   );
 }

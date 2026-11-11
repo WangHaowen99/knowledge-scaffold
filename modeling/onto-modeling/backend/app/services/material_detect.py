@@ -6,100 +6,28 @@
 不是数据表；表头同时出现「术语」类列和「别名/英文/释义」类列的是术语表。
 全部有内容的 Sheet 都是数据表或疑似、且至少一张数据表，整份判为数据表；
 全部有内容的 Sheet 都是术语表，整份判为术语表。
+
+判定规则与 Sheet 范围共用 table_sources（ADR-0096）。上传那一刻还没有文本版，这里仍读原件判用途——
+这是 ADR-0076 记下的遗留点之一，不扩大：Sheet 范围、表头预检都只读文本版。
 """
 
 from __future__ import annotations
 
 import csv
 import functools
-import re
 from pathlib import Path
 
 import openpyxl
 
 from .package_mapping import TABLE_SUFFIXES
+from .table_sources import (  # noqa: F401  判定规则对外照旧从这里取
+    DICTIONARY, DOCUMENT, EMPTY, MAYBE, META, TABLE, TERM, classify_sheet,
+)
 
 SAMPLE_ROWS = 30
 MAX_SHEETS = 200
 # read_only 模式读不出合并单元格；与 Excel 预览同一阈值，超过时跳过合并检查
 FULL_LOAD_MAX_BYTES = 8 * 1024 * 1024
-IDENTIFIER_RATIO_TABLE = 0.8
-IDENTIFIER_RATIO_MAYBE = 0.5
-
-IDENTIFIER = re.compile(r"^(?=.*[A-Za-z])[A-Za-z0-9_]+$")
-META_SHEET = re.compile(r"^(__.*__|总览|说明|目录|封面|readme|填写说明|使用说明)$", re.IGNORECASE)
-DICTIONARY_NAME_WORDS = frozenset({
-    "字段名", "字段", "字段名称", "列名", "字段英文名", "英文名", "英文名称",
-    "field", "field_name", "column", "column_name",
-})
-DICTIONARY_ATTR_WORDS = frozenset({
-    "类型", "数据类型", "字段类型", "说明", "描述", "字段说明",
-    "type", "data_type", "description", "comment",
-})
-
-# 术语表：一列术语本身，另有别名、英文或释义列。单独的「名称」列不算——中文表头的
-# 数据表也常有，误标成术语表会把数据表当成命名依据
-TERM_NAME_WORDS = frozenset({"术语", "术语名称", "业务术语", "名词", "概念", "term"})
-TERM_ATTR_WORDS = frozenset({
-    "别名", "同义词", "近义词", "缩写", "英文", "英文名", "英文名称", "英文术语",
-    "释义", "定义", "含义", "解释", "alias", "synonym", "english", "definition", "meaning",
-})
-
-TABLE, MAYBE, DICTIONARY, TERM, DOCUMENT, META, EMPTY = (
-    "table", "maybe", "dictionary", "term", "document", "meta", "empty"
-)
-
-
-def _clean(value) -> str:
-    return "" if value is None else str(value).strip()
-
-
-def _identifier_ratio(cells: list[str]) -> float:
-    return sum(1 for cell in cells if IDENTIFIER.match(cell)) / len(cells)
-
-
-def _is_dictionary_header(header: list[str]) -> bool:
-    lowered = {cell.lower() for cell in header}
-    return bool(lowered & DICTIONARY_NAME_WORDS) and bool(lowered & DICTIONARY_ATTR_WORDS)
-
-
-def _is_term_header(header: list[str]) -> bool:
-    lowered = {cell.lower() for cell in header}
-    return bool(lowered & TERM_NAME_WORDS) and bool(lowered & TERM_ATTR_WORDS)
-
-
-def _first_row(rows: list) -> list[str] | None:
-    """首个非空行的非空单元格；整表为空时返回 None。"""
-    for row in rows:
-        cells = [_clean(cell) for cell in row]
-        if any(cells):
-            return [cell for cell in cells if cell]
-    return None
-
-
-def _classify_header(header: list[str], header_merged: bool) -> str:
-    if len(header) < 2 or header_merged:
-        return DOCUMENT
-    if len(set(header)) != len(header):  # 列名重复
-        return DOCUMENT
-    if _is_dictionary_header(header):
-        return DICTIONARY
-    if _is_term_header(header):
-        return TERM
-    ratio = _identifier_ratio(header)
-    if ratio >= IDENTIFIER_RATIO_TABLE:
-        return TABLE
-    return MAYBE if ratio >= IDENTIFIER_RATIO_MAYBE else DOCUMENT
-
-
-def classify_sheet(name: str, rows: list, header_merged: bool = False) -> str:
-    """单个 Sheet 的结构类别：table / maybe / dictionary / term / document / meta / empty。"""
-    if META_SHEET.match(name.strip()):
-        return META
-    header = _first_row(rows)
-    if header is None:
-        return EMPTY
-    return _classify_header(header, header_merged)
 
 
 def _csv_sheets(path: Path):

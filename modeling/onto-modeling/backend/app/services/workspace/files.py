@@ -6,7 +6,7 @@ import json
 import time
 from pathlib import Path
 
-from .. import material_detect, package_mapping, solver_contract
+from .. import material_detect, package_mapping, solver_contract, table_sources
 from ..packs import contracts as _contracts
 from .errors import WorkspaceError
 from .gitops import _by, _git
@@ -221,7 +221,9 @@ class FilesMixin:
         purpose: str,
         reading_mode: str = "on_demand",
         author: str = "",
+        schema_selection: dict | None = None,
     ) -> dict:
+        """改用途；数据 Schema 表格可一并定 Sheet 范围（schema_selection：{mode, included_sheets, revision}）。"""
         if purpose not in self.MATERIAL_PURPOSES:
             raise WorkspaceError(f"资料用途必须是 {list(self.MATERIAL_PURPOSES)} 之一")
         if reading_mode not in self.MATERIAL_READING_MODES:
@@ -234,9 +236,13 @@ class FilesMixin:
             rel = target.relative_to(root.resolve()).as_posix()
             if not rel.startswith("resource/") or not target.is_file():
                 raise WorkspaceError("只能为 resource/ 下的资料设置用途", 400)
-            tx.touch(RESOURCE_DIRECTIVES)
             directives = self.resource_directives(project_id)
-            directives[rel] = {"purpose": purpose, "reading_mode": reading_mode}
+            directive = {"purpose": purpose, "reading_mode": reading_mode}
+            kept = self._schema_selection(target, rel, purpose, directives.get(rel), schema_selection)
+            if kept is not None:
+                directive["schema_selection"] = kept
+            tx.touch(RESOURCE_DIRECTIVES)
+            directives[rel] = directive
             self._write_resource_directives(root, directives)
             # 用途变化会影响派生产物的口径，视同资料更新
             self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
@@ -244,6 +250,48 @@ class FilesMixin:
             tx.touch(rel, snapshot=False)
             tx.commit(f"web: 设置资料用途 {rel}{_by(author)}")
             return {"path": rel, **directives[rel]}
+
+    @staticmethod
+    def _schema_selection(target: Path, rel: str, purpose: str, previous, requested: dict | None) -> dict | None:
+        """要存的人工 Sheet 范围；None 表示按结构现算（ADR-0096）。
+
+        没带范围时沿用原来的人工范围（只改读法不丢勾选），但它对不上当前文件就报 409，先去确认范围；
+        mode=auto 撤掉人工范围；mode=manual 要带确认时的文件修订，勾的 Sheet 有表头错误不收。
+        """
+        is_table = target.suffix.lower() in table_sources.TABLE_SUFFIXES
+        if purpose != "schema" or not is_table:
+            if requested is not None:
+                raise WorkspaceError("只有数据 Schema 表格能设 Sheet 范围", 400, "invalid_argument",
+                                     {"fields": {"schema_selection": "not_allowed"}})
+            return None
+        if requested is None:
+            if not isinstance(previous, dict) or previous.get("purpose") != "schema":
+                return None
+            kept = previous.get("schema_selection")
+            if kept is not None:
+                table_sources.resolve(target, rel, {"purpose": "schema", "schema_selection": kept})
+            return kept
+        if requested.get("mode") == "auto":
+            return None
+        # 同一次检查里算修订和读表头：存下的修订就是检查过的那份文件
+        scope = table_sources.resolve(target, rel, {"purpose": "schema"})
+        if requested.get("revision") != scope["revision"]:
+            raise WorkspaceError("文件已变化，重新检查 Sheet 范围后再保存", 409, "schema_scope_stale", {"path": rel})
+        if scope["pending"]:
+            raise WorkspaceError("表格还没转出文本，稍后再选 Sheet 范围", 409, "material_text_pending", {"path": rel})
+        included = list(requested.get("included_sheets") or [])
+        by_name = {sheet["name"]: sheet for sheet in scope["sheets"]}
+        problems = [f"没有 Sheet「{name}」" for name in included if name not in by_name]
+        if len(set(included)) != len(included):
+            problems.append("Sheet 重复")
+        for name in included:
+            for issue in (by_name.get(name) or {}).get("issues", []):
+                if issue["severity"] == "error":
+                    problems.append(f"Sheet「{name}」：{issue['message']}")
+        if problems:
+            raise WorkspaceError("\n".join(problems), 400, "invalid_argument",
+                                 {"fields": {"schema_selection.included_sheets": "invalid"}})
+        return table_sources.manual_selection(included, scope["revision"])
 
     def _write_resource_directives(self, root: Path, directives: dict) -> None:
         self._atomic_write_text(
@@ -273,7 +321,11 @@ class FilesMixin:
         if not safe_name or safe_name.startswith(".") or safe_name != filename:
             raise WorkspaceError("无效的文件名")
         from ...kernel.writepath import ChangeTx, Origin
+        from .. import uploads
 
+        # 资料进资料区都经过这里：类型白名单与 20 MiB 上限在服务层再挡一次，接口层漏了也绕不过去
+        uploads.check_type(safe_name, "material")
+        uploads.check_size(len(data), "material")
         rel = f"resource/{subdir}/{safe_name}"
         with ChangeTx(self, project_id, Origin("web", author), summary=f"上传资料 {rel}") as tx:
             root = tx.root
@@ -349,6 +401,11 @@ class FilesMixin:
         elif _is_auto_detected(directives.get(rel)):
             # 替换后不再像数据表或术语表：撤掉之前的自动标注
             directives.pop(rel)
+        # 换文件不丢人工 Sheet 范围：留着它，读的地方发现对不上新文件会要求重新确认，不悄悄换成现算的范围
+        kept = existing.get("schema_selection") if isinstance(existing, dict) else None
+        current = directives.get(rel)
+        if kept is not None and isinstance(current, dict) and current.get("purpose") == "schema":
+            current.setdefault("schema_selection", kept)
         if json.dumps(directives, sort_keys=True) != before:
             self._write_resource_directives(root, directives)
         return detected

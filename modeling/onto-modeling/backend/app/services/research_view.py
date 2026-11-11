@@ -315,12 +315,16 @@ def pack_enabled(main: Path, name: str) -> bool:
     return bool(entry and entry.enabled)
 
 
-def _table_fields(main: Path, rel: str) -> int:
-    """schema / term 表格的列数（按表头）。"""
+def _table_fields(main: Path, rel: str, directive: dict | None = None) -> int:
+    """schema / term 表格的列数（按表头；schema 只数 Sheet 范围内的）。"""
     if not rel.lower().endswith((".csv", ".xlsx", ".xlsm")):
         return 0
     try:
-        tables = _script(main, "table_profile").read_tables(main / rel)
+        module = _script(main, "table_profile")
+        try:
+            tables = module.read_tables(main / rel, directive)
+        except TypeError:  # 项目锁定的旧版脚本还没有 Sheet 范围参数
+            tables = module.read_tables(main / rel)
     except Exception:  # noqa: BLE001 - 读不了的表格不计
         return 0
     return sum(len(columns) for columns in (tables or {}).values())
@@ -342,7 +346,7 @@ def map_items(manager, project_id: str, parsed: dict, found_problems: list[dict]
         if rules:
             counts["rules"] = rules
         if purpose in ("schema", "term"):
-            counts["fields"] = _table_fields(main, rel)
+            counts["fields"] = _table_fields(main, rel, directive)
         name = rel.rsplit("/", 1)[-1]
         contradictions = sum(1 for item in found_problems if item["kind"] == "contradiction" and item["state"] == "open"
                              and (rel in item["text_md"] or name in item["text_md"]))

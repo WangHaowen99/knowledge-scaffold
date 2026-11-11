@@ -76,6 +76,7 @@ contributes:
     - source_extract.py
     - state_helper.py
     - table_profile.py
+    - table_sources.py
     - verify_artifacts.py
   # 工作区规则（装配成 CLAUDE.md）与说明（装配成 README.md），镜像里放在资产目录根上
   rules: [workspace-rules.md]
