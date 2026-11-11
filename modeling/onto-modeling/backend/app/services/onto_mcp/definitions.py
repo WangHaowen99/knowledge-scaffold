@@ -23,6 +23,18 @@ def definition(name, title, props, required=(), access="read"):
 
 def definitions():
     result = []
+    # 版本回退（ADR-0094）：列版本在读工具集，预览与确认回退在改工具集，都只认 project.version.revert
+    version_tools = (
+        ("list_project_versions", "列出项目版本", {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100}, "cursor": TEXT}, (), "read"),
+        ("preview_project_version_revert", "预览项目版本回退", {
+            "target_version": {"type": "integer", "minimum": 1}}, ("target_version",), "validate"),
+        ("revert_project_version", "确认项目版本回退", {
+            "preview_id": {"type": "string", "pattern": r"^[0-9a-f]{32}$"}, "confirm": {"type": "boolean"}},
+         ("preview_id", "confirm"), "apply"),
+    )
+    for name, title, props, required, access in version_tools:
+        result.append({**definition(name, title, props, required, access), "scope": "project.version.revert"})
     for kind, label in (("object", "对象"), ("operation", "操作"), ("rule", "规则")):
         identity = {"type": "string", "pattern": "^" + kind + ":" + KEY_PATTERN[1:]}
         listing = {"revision": TEXT, "query": TEXT, "cursor": TEXT,

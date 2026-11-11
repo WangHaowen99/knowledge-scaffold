@@ -243,8 +243,12 @@ async def dispatch(rpc, group, principal, protocol):
                 "_meta": {"io.modelcontextprotocol/serverInfo": tokens.SERVER}}
     if method == "tools/list":
         listed = [*TOOLS.values(), *(await asyncio.to_thread(_pack_tools, principal["project_id"]))]
+        # 确认回退会改主线（破坏性），同一 preview_id 重放拿同一结果（幂等）
         available = [{**{k: tool[k] for k in ("name", "title", "description", "inputSchema")},
-                      "annotations": {"readOnlyHint": tool["scope"] != "ontology.change.apply"}}
+                      "annotations": {"readOnlyHint": tool["scope"] != "ontology.change.apply"
+                                      and tool["name"] != "revert_project_version",
+                                      **({"destructiveHint": True, "idempotentHint": True}
+                                         if tool["name"] == "revert_project_version" else {})}}
                      for tool in listed if tool["toolset"] == group and tool["scope"] in principal["scopes"]]
         return {"tools": available, **({"resultType": "complete", "ttlMs": 300000, "cacheScope": "private"}
                                       if protocol == "2026-07-28" else {})}
@@ -263,8 +267,9 @@ async def dispatch(rpc, group, principal, protocol):
             result = await asyncio.to_thread(tools.execute_pack_tool, manager(), principal["project_id"], tool,
                                              params.get("arguments", {}))
         else:
-            result = await asyncio.to_thread(tools.execute, manager(), principal["project_id"], tool["name"],
-                                             params.get("arguments", {}), principal["username"])
+            result = await tools.execute_async(manager(), principal["project_id"], tool["name"],
+                                               params.get("arguments", {}), principal["username"],
+                                               principal["token_id"])
         return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
                 "structuredContent": result, "isError": False}
     except (McpError, WorkspaceError) as exc:

@@ -1580,3 +1580,4 @@ Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`
 3. **V-01**：响应加 `release_error`；`Version.release` 改取发布记录（版本号来自 Hub），读不到时退回本地标签，版本照列。
 4. **错误码**：新增 `studio_draft_pending`、`workspace_dirty`（第 2 章）。
 5. 为什么：develop 的回退语义（只恢复业务内容、有人在改时挡住、预览后主线前进不执行）落到本分支已有的 V-05/V-06；develop 的 `/history` 合并时间线不另起，发布标在版本行上（设计稿第五版）。
+6. **MCP（M-03、M-08）**：新增 scope `project.version.revert`（read、change 两个工具集都认）与三个版本工具 `list_project_versions`、`preview_project_version_revert`、`revert_project_version`（先预览拿 `preview_id`，再 `confirm: true` 执行；凭据只在进程内存）；`revert_project_version` 在 `tools/list` 里标 `destructiveHint`、`idempotentHint`。输入输出与错误码沿用 develop 的同名工具。

@@ -85,7 +85,7 @@
 **MCP token。** 只用于 `/api/v1/onto-mcp/*` 传输接口（M-05～M-07）。
 
 - 格式 `onto_pat_<urlsafe>`，只存 SHA-256 摘要，明文只在签发响应里出现一次。
-- 权限范围 `ontology.read`、`ontology.change.validate`、`ontology.change.apply`，新增 `evidence.read`（方案 E13）。
+- 权限范围 `ontology.read`、`ontology.change.validate`、`ontology.change.apply`，新增 `evidence.read`（方案 E13）、`project.version.revert`（版本列表、回退预览与回退，read 和 change 两个工具集都认，ADR-0094）。
 - token 绑定项目和签发人；签发人不再是项目所有者时立即失效。
 
 **服务令牌**（三份契约用，方案第 6 章 #6）。
@@ -3446,7 +3446,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `POST /api/v1/projects/{id}/mcp/tokens` · 所有者 · 旧：`POST /api/projects/{id}/modeling-mcp/tokens` · 审计：专项 `mcp.token.issue` · 依据：② · 页面：proj-settings（新建 Token 弹窗）
 
-- 请求：`{name: string 1–120, scopes: string[]（至少一个，取 ontology.read|ontology.change.validate|ontology.change.apply|evidence.read）, expires_in_s: int 300–2592000 | null（永不过期）}`。
+- 请求：`{name: string 1–120, scopes: string[]（至少一个，取 ontology.read|ontology.change.validate|ontology.change.apply|evidence.read|project.version.revert）, expires_in_s: int 300–2592000 | null（永不过期）}`。
 - 响应 `201`：`{token: "onto_pat_...", summary: McpTokenSummary, client_config: {read, change, full}}`。`client_config` 已填入本次 token。明文只出现一次。
 - 管理员不能代所有者签发（方案 A11）。
 
@@ -3515,6 +3515,18 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 工具名用下划线，因为 MCP 客户端普遍不接受点号；文档和界面上写作 `flow.get`、`evidence.*`。
 - 包贡献的只读工具按 `<包>_<名>` 命名，只读，写操作一律走写入路径。
+
+**版本回退工具（ADR-0094，scope 都是 `project.version.revert`）：**
+
+| 工具 | 工具集 | 等价 REST | 说明 |
+|---|---|---|---|
+| `list_project_versions` | read | `V-01` | `{limit?: 1–100, cursor?}` → `{revision, current_head, current_version, items: [{version, version_label, commit, time, source, author, message, release, current}], total, next_cursor, display}`；`version` 就是界面 `v0.N` 的 N；游标绑定主线版本，主线前进后回 `CURSOR_REVISION_MISMATCH` |
+| `preview_project_version_revert` | change（只读） | `V-05` | `{target_version}` → 能回退时 `{ready: true, preview_id, expires_at, target, current, expected_head, changes: {added, modified, deleted, total}, undone_versions, packs_lock_changes, display}`；有挡住的情况时 `{ready: false, target, current, blockers: [{code, message}]}`，不给 `preview_id` |
+| `revert_project_version` | change（破坏性、幂等） | `V-06` | `{preview_id, confirm: true}` → `{commit, reverted_to_version, created_version, version_label, previous_head, display}` |
+
+- `preview_id` 绑定项目、Token、用户、目标版本与预览时的主线版本，只在服务进程内存里，十分钟过期，重启作废；执行过的一小时内用同一 `preview_id` 重放返回同一结果。
+- 挡住回退的情况与 `V-05` 同一组判断，MCP 码：`PROJECT_EDITING_BUSY`（助手这一轮没结束、有没跑完的消息、Studio 草稿）、`AUTOBUILD_ACTIVE`、`WORKSPACE_DIRTY`。
+- 错误码：`VERSION_NOT_FOUND`、`NOTHING_TO_REVERT`、`REVERT_PREVIEW_EXPIRED`、`REVERT_PREVIEW_FORBIDDEN`、`REVERT_IN_PROGRESS`、`REVERT_PREVIEW_CAPACITY_REACHED`（503）、`REVISION_CONFLICT`（预览之后主线前进了，要重新预览）、`CONFIRMATION_REQUIRED`（`confirm` 不是 true）、`INVALID_CURSOR`。
 
 ---
 

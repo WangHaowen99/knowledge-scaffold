@@ -128,8 +128,8 @@ def _mainline(manager, project_id: str) -> list[dict]:
     """主线版本，从新到旧（MCP 的版本号就是界面上 v0.N 的 N）。"""
     return [{"version": entry["n"], "version_label": f"v0.{entry['n']}", "commit": entry["commit"],
              "time": entry["time"], "source": entry["source"], "author": entry["author"],
-             "message": entry["message"], "release": entry["release"]}
-            for entry in manager.versions(project_id)]
+             "message": entry["message"], "release": entry["release"], "current": index == 0}
+            for index, entry in enumerate(manager.versions(project_id))]
 
 
 def _cursor(head: str, offset: int) -> str:
