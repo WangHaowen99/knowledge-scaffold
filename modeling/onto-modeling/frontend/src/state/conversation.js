@@ -91,6 +91,7 @@ export function applyEvent(state, env) {
   const at = { ts, seq };
   switch (env.type) {
     case 'session.state':
+      if (TURN_END_STATES.includes(d.state)) state = endOpenSubagents(state, 'interrupted');
       return {
         ...state,
         thinking: d.state === 'running' ? state.thinking : '',
@@ -111,9 +112,10 @@ export function applyEvent(state, env) {
     case 'session.started':
       return { ...state, engineLabel: d.engine_label || state.engineLabel };
     case 'session.error':
+      state = endOpenSubagents(state, d.reason === 'stall_timeout' ? 'timeout' : 'interrupted');
       return upsert(state, `err:${d.error_id || seq}`, { ...at, ...d, kind: 'error' });
     case 'session.interrupted':
-      return upsert(state, `int:${seq ?? ts}`, { ...at, ...d, kind: 'interrupted' });
+      return upsert(endOpenSubagents(state, 'interrupted'), `int:${seq ?? ts}`, { ...at, ...d, kind: 'interrupted' });
     case 'session.config_pending':
       return upsert({ ...state, configPending: d }, `cfg:${seq ?? ts}`, { ...at, ...d, kind: 'config_pending' });
     case 'session.reconnected':
@@ -341,7 +343,7 @@ export function runStatus(state) {
     if (!doing) {
       if (it.kind === 'question' && it.state === 'open') doing = '等你回答';
       else if (it.kind === 'permission' && !it.resolved) doing = '等你确认';
-      else if (it.kind === 'subagent' && !['done', 'failed'].includes(subagentStatus(it, false))) doing = `等子任务「${it.title || '子任务'}」`;
+      else if (it.kind === 'subagent' && ['started', 'running'].includes(subagentStatus(it, false))) doing = `等子任务「${it.title || '子任务'}」`;
       else if (it.kind === 'progress' && it.state === 'running') {
         const step = [...(it.steps || [])].reverse().find((x) => x.state === 'running');
         if (step?.text) doing = step.text;
@@ -361,10 +363,25 @@ export function openQuestions(state) {
 }
 
 // 子任务行的状态：以生命周期终态为准（ADR-0009）。所在的工作过程已结束、或会话已停下，
-// 还没收到终态的子任务不会再有结果，显示已中断，不再转圈
+// 还没收到终态的子任务不会再有结果，显示已中断，不再转圈；那一轮判定执行超时的显示执行超时（ADR-0097）
 export function subagentStatus(sub, ended) {
   if (sub.status === 'done' || sub.status === 'failed') return sub.status;
+  if (sub.ended_by) return sub.ended_by;
   return ended ? 'interrupted' : sub.status;
+}
+
+// 一轮收尾（回到空闲、出错、关闭、被打断）时还没终态的子任务记下怎么结束的：子代理活不过它所在的一轮，
+// 下一轮开始后这些卡也不再转圈；按历史回放同样成立，升级前留下的卡也能恢复
+const TURN_END_STATES = ['idle', 'error', 'closed'];
+function endOpenSubagents(state, how) {
+  let items = null;
+  state.order.forEach((k) => {
+    const it = state.items[k];
+    if (it?.kind !== 'subagent' || it.ended_by || ['done', 'failed'].includes(it.status)) return;
+    items = items || { ...state.items };
+    items[k] = { ...it, ended_by: how };
+  });
+  return items ? { ...state, items } : state;
 }
 
 export function isBusy(state) {

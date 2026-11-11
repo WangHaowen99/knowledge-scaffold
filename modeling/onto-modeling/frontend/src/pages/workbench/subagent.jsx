@@ -12,8 +12,8 @@ import {
   fmtElapsed, outcome, panelHead, panelSteps, stepTime, thinkingText,
 } from './subagentModel.js';
 
-const SUB_TITLE = { done: '子任务完成', failed: '子任务失败', interrupted: '子任务已中断' };
-const SUB_ICON = { done: 'check', failed: 'alert', interrupted: 'pause' };
+const SUB_TITLE = { done: '子任务完成', failed: '子任务失败', interrupted: '子任务已中断', timeout: '子任务执行超时' };
+const SUB_ICON = { done: 'check', failed: 'alert', interrupted: 'pause', timeout: 'clock' };
 const PAGE = 200;
 const PAGES_MAX = 5;
 
@@ -94,7 +94,7 @@ export function SubagentPanel({
 }) {
   const fetched = useSubagentSteps(open, sub.task_id);
   const status = subagentStatus(sub, ended);
-  const running = !['done', 'failed', 'interrupted'].includes(status);
+  const running = !SUB_ICON[status];
   const now = useNow(open && running);
   const head = panelHead(sub, fetched.task, ended, now);
   const steps = useMemo(() => panelSteps(fetched.items, sub.steps), [fetched.items, sub.steps]);

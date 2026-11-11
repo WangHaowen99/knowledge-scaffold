@@ -61,8 +61,8 @@ export function createFlowchartEditorSession(model, { savedRevision = null, sele
 export function reduceFlowchartEditorSession(session, action) {
   switch (action.type) {
     case 'replace-model': {
-      // 有未保存修改时不覆盖，除非明确要求（载入最新版本）
-      if (session.dirty && !action.force) return session;
+      // 有未保存修改或正在保存时不覆盖，除非明确要求（载入最新版本）：保存中被刷新换掉，保存回来的结果就对不上了
+      if ((session.dirty || session.saveInFlight) && !action.force) return session;
       const next = createFlowchartEditorSession(action.model, {
         savedRevision: action.savedRevision ?? session.savedRevision,
         selection: action.selection === undefined ? session.selection : action.selection,

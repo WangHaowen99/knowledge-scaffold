@@ -31,7 +31,7 @@ CONTRACT = {
     "session.state": {"state", "since", "turn_started_at", "reason"},
     "session.queued": {"position", "ahead", "pool", "progress_pct"},
     "session.started": {"engine_label", "resumed", "context_kept"},
-    "session.error": {"error_id", "message", "retries", "retryable", "actions"},
+    "session.error": {"error_id", "message", "retries", "retryable", "actions", "reason"},
     "session.interrupted": {"by", "at", "exec_id", "position_label", "saved"},
     "session.config_pending": {"changes", "effective", "detail_link"},
     "session.reconnected": {"reason", "changes", "context_kept", "duration_ms"},

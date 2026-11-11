@@ -69,9 +69,19 @@ def assistant(text):
     )
 
 
+def _without_exit(events):
+    """去掉引擎给会话层的内部信号：脚本消息放完流就结束，会多发一条 exited；
+    不转发的消息会产出 _activity。这些用例只看可展示的事件。"""
+    return [
+        event
+        for event in events
+        if event.get("reason") != "exited" and event.get("type") != "_activity"
+    ]
+
+
 def collect(engine):
     async def run():
-        return [event async for event in engine.events()]
+        return _without_exit([event async for event in engine.events()])
 
     return asyncio.run(run())
 
@@ -402,10 +412,43 @@ def _engine(tmp_path, client, monkeypatch, env=None):
 
 async def _collect(engine):
     await engine.connect()
-    events = [event async for event in engine.events()]
+    events = _without_exit([event async for event in engine.events()])
     if engine._limits_task is not None:
         await engine._limits_task
     return events
+
+
+def test_stream_end_reports_engine_exit(tmp_path):
+    """CLI 以退出码 0 结束时消息流正常结束、不抛异常：不发终止信号，这一轮会永远停在运行中。"""
+    engine = make_engine(tmp_path, [assistant("做到一半")], [])
+
+    async def run():
+        return [event async for event in engine.events()]
+
+    events = asyncio.run(run())
+
+    # 待定文字先放出来，不随退出丢失
+    assert events[0]["type"] == "assistant_message"
+    assert events[-1] == {"type": "_engine_end", "reason": "exited", "error": FRIENDLY_ERROR}
+    assert engine.client is None
+
+
+def test_dropped_messages_still_report_activity(tmp_path):
+    """不转发的消息（子代理增量、状态等）也说明运行时还在动：要报活动，免得被判长时间无响应。"""
+    sub_delta = StreamEvent(
+        uuid="u1",
+        session_id="synthetic-session",
+        event={"type": "content_block_delta", "delta": {"type": "text_delta", "text": "子"}},
+        parent_tool_use_id="tool-1",
+    )
+    engine = make_engine(tmp_path, [sub_delta, SystemMessage(subtype="status", data={})], [])
+
+    async def run():
+        return [event async for event in engine.events()]
+
+    events = asyncio.run(run())
+
+    assert [event["type"] for event in events] == ["_activity", "_activity", "_engine_end"]
 
 
 def test_turn_end_reports_last_call_usage_not_cumulative_result(tmp_path, monkeypatch):

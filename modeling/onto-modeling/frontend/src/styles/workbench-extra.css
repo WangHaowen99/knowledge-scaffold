@@ -34,8 +34,8 @@
 .subagent-card{display:flex;align-items:flex-start;gap:10px;margin:6px 0;padding:9px 12px;border:1px solid var(--line);border-left:3px solid var(--indigo);border-radius:10px;background:linear-gradient(90deg,var(--i50),#fff 55%)}
 .subagent-card.done{border-left-color:var(--teal);background:#fff}
 .subagent-card.failed{border-left-color:var(--red);background:#fff}
-.subagent-card.interrupted{border-left-color:var(--muted);background:#fff}
-.subagent-card.interrupted .subagent-icon{color:var(--muted)}
+.subagent-card.interrupted,.subagent-card.timeout{border-left-color:var(--muted);background:#fff}
+.subagent-card.interrupted .subagent-icon,.subagent-card.timeout .subagent-icon{color:var(--muted)}
 .subagent-icon{margin-top:2px;color:var(--indigo);flex:none;display:grid;place-items:center;width:14px;height:16px}
 .subagent-icon .spin{width:12px;height:12px;border-width:1.6px}
 .subagent-card.done .subagent-icon{color:var(--teal)}

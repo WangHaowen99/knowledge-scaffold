@@ -544,3 +544,75 @@ def test_parse_rejects_oversize_input():
 def test_summary():
     assert flowchart.summary(_replenish_model()) == "9 个节点 · 9 条连线"
     assert flowchart.summary({}) == "0 个节点 · 0 条连线"
+
+
+# ---- 工作台高级编辑交回的 XML（develop !547 的移植：drawio 编辑保留内核元数据） ----
+
+# 图示包 ui/flowchart/drawioConvert.js 的 modelToDrawio 对一张合成流程图的输出，原样摘录：
+# 标准编辑器里改了还没保存就切到高级编辑时，交给编辑器、保存时交回的就是这种 XML
+_EDITOR_XML = """<mxfile host="onto-modeling" agent="onto-modeling-flowchart">
+  <diagram name="合成流程">
+    <mxGraphModel grid="1" gridSize="10" guides="1" connect="1" arrows="1" page="0">
+      <root>
+        <object id="0" label="" process_name="合成流程" process_description="第一行&#10;第二行" process_roles="[&quot;专员&quot;]" process_inputs="[]" process_exceptions="[]" process_handoffs="[]" operation="{&quot;kind&quot;:&quot;operation&quot;,&quot;id&quot;:&quot;operation:op-a&quot;,&quot;key&quot;:&quot;op-a&quot;,&quot;name&quot;:&quot;操作甲&quot;}">
+          <mxCell />
+        </object>
+        <mxCell id="1" parent="0" />
+        <object id="n1" label="开始" onto_type="start" description="" refs="[]" pending="0">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;shape=mxgraph.flowchart.terminator;fillColor=#EFF5FF;strokeColor=#2563EB;" vertex="1" parent="1">
+            <mxGeometry x="48" y="21" width="104" height="38" as="geometry" />
+          </mxCell>
+        </object>
+        <object id="n2" label="A&amp;lt;B" onto_type="step" description="说明一&#10;说明二" refs="[{&quot;kind&quot;:&quot;object&quot;,&quot;id&quot;:&quot;object:obj-a&quot;,&quot;key&quot;:&quot;obj-a&quot;,&quot;name&quot;:&quot;对象甲&quot;}]" pending="1" pending_note="待定">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;arcSize=20;strokeColor=#9BBEFB;dashed=1;" vertex="1" parent="1">
+            <mxGeometry x="34" y="119" width="132" height="42" as="geometry" />
+          </mxCell>
+        </object>
+        <object id="n3" label="结束" onto_type="end" description="" refs="[]" pending="0">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;shape=mxgraph.flowchart.terminator;fillColor=#F1F0FF;strokeColor=#4F46E5;" vertex="1" parent="1">
+            <mxGeometry x="48" y="221" width="104" height="38" as="geometry" />
+          </mxCell>
+        </object>
+        <object id="e1" label="" onto_type="seq" condition="">
+          <mxCell style="endArrow=block;html=1;strokeColor=#7C8CA6;" edge="1" parent="1" source="n1" target="n2">
+            <mxGeometry relative="1" as="geometry" />
+          </mxCell>
+        </object>
+        <object id="e2" label="是" onto_type="cond" condition="条件一&#10;条件二">
+          <mxCell style="endArrow=block;html=1;strokeColor=#F59E0B;" edge="1" parent="1" source="n2" target="n3">
+            <mxGeometry relative="1" as="geometry" />
+          </mxCell>
+        </object>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
+"""
+
+
+def test_editor_xml_carries_unsaved_metadata_over_previous_version():
+    """交回的 XML 带着内核属性：描述、引用、待定、条件、流程元数据以它为准，不退回上一版；多行文字的换行不丢。"""
+    previous = flowchart.parse(_EDITOR_XML, key="k")
+    previous["process"]["description"] = "上一版"
+    previous["nodes"][1].update(description="上一版", refs=[], pending=False, pending_note=None)
+    previous["edges"][1]["condition"] = "上一版"
+    previous["operation"] = None
+
+    model = flowchart.from_drawio_edit(_EDITOR_XML, previous)
+
+    assert model["process"]["name"] == "合成流程"
+    assert model["process"]["description"] == "第一行\n第二行"
+    assert model["process"]["roles"] == ["专员"]
+    assert model["operation"] == {"kind": "operation", "id": "operation:op-a", "key": "op-a", "name": "操作甲"}
+    n2 = next(node for node in model["nodes"] if node["id"] == "n2")
+    assert n2["label"] == "A<B"
+    assert n2["description"] == "说明一\n说明二"
+    assert n2["refs"] == [{"kind": "object", "id": "object:obj-a", "key": "obj-a", "name": "对象甲"}]
+    assert (n2["pending"], n2["pending_note"]) == (True, "待定")
+    assert [node["type"] for node in model["nodes"]] == ["start", "step", "end"]
+    e2 = next(edge for edge in model["edges"] if edge["id"] == "e2")
+    assert (e2["type"], e2["label"], e2["condition"]) == ("cond", "是", "条件一\n条件二")
+
+    # 写回文件再读一遍，内容不变
+    again = flowchart.parse(flowchart.render(model, previous=_EDITOR_XML), key="k")
+    assert again["process"] == model["process"] and again["nodes"] == model["nodes"] and again["edges"] == model["edges"]

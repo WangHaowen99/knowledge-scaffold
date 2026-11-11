@@ -789,3 +789,182 @@ def test_jiuwen_model_config_carries_context_into_fingerprint(tmp_path, monkeypa
     assert cfg["context"]["trigger_ratio"] == 0.77
     # 改了上下文参数，空闲会话按新配置重建
     assert jiuwen._fingerprint(cfg) != before
+
+
+# ---- SDK 把失败收成 answer：流照常结束、不抛异常 ----
+
+
+def test_bridge_records_failure_from_answer():
+    # 模型调用失败：result_type 是空串，只有 error 字段有值（openjiuwen 0.1.19 实测）
+    model_failed = _ChunkBridge()
+    assert model_failed.feed(
+        chunk("answer", {"error": "model call failed", "output": "", "result_type": ""})
+    ) == ([], None)
+    assert model_failed.failure == "model call failed"
+
+    # 轮次超时：result_type 为 error，output 是可读原因
+    timed_out = _ChunkBridge()
+    timed_out.feed(
+        chunk(
+            "answer",
+            {"error": "completion_timeout", "output": "round timed out", "result_type": "error"},
+        )
+    )
+    assert timed_out.failure == "round timed out"
+
+    # 正常答复不算失败
+    normal = _ChunkBridge()
+    normal.feed(chunk("answer", {"output": "好了", "result_type": "answer"}))
+    assert normal.failure == ""
+
+    # 用户停止：由取消路径收尾，不算失败
+    aborted = _ChunkBridge()
+    assert aborted.feed(chunk("answer", {"error": "aborted"})) == ([], None)
+    assert aborted.failure == ""
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"output": "Max iterations reached without completion", "result_type": "error"},
+        {"output": "Task loop stopped", "result_type": "error", "stop_reason": "MaxOuterRounds"},
+        {"output": "no progress", "result_type": "error", "stop_reason": "NoProgressAnswerEvaluator"},
+    ],
+)
+def test_bridge_round_limit_is_a_notice_not_a_failure(payload):
+    """步数、外层轮数用完或连续没有进展是 SDK 的正常收口：提示用户可以继续，不报模型故障。"""
+    from app.services.engines.jiuwen import ROUND_LIMIT_NOTICE
+
+    bridge = _ChunkBridge()
+    bridge.feed(chunk("llm_output", {"content": "做到一半"}))
+    events, interaction = bridge.feed(chunk("answer", payload))
+
+    assert interaction is None
+    assert bridge.failure == ""
+    assert bridge.round_limit
+    # 已输出的文字和提示分成两条，不粘在一起
+    assert [e["blocks"][0]["text"] for e in events] == ["做到一半", ROUND_LIMIT_NOTICE]
+
+
+def test_run_turn_reports_failed_answer_as_error(tmp_path, monkeypatch):
+    """失败不能记成成功：用户要看到错误，还在跑的子任务卡要收成失败。"""
+    from openjiuwen.core.runner import Runner
+
+    from app.services.engines.base import FRIENDLY_ERROR
+    from app.services.engines.jiuwen_progress import JiuwenProgressTracker
+
+    def failing_stream(agent, inputs, session=None):
+        async def gen():
+            yield chunk("answer", {"error": "model call failed", "output": "", "result_type": ""})
+
+        return gen()
+
+    monkeypatch.setattr(Runner, "run_agent_streaming", staticmethod(failing_stream))
+    engine = JiuwenEngine(make_ctx(tmp_path))
+    engine.client = object()
+
+    async def scenario():
+        engine._progress_tracker = JiuwenProgressTracker(engine._queue.put)
+        await engine._progress_tracker.start("call-1", {"description": "合成子任务"})
+        await engine._run_turn("开始")
+        events = []
+        while not engine._queue.empty():
+            events.append(engine._queue.get_nowait())
+        return events
+
+    events = asyncio.run(scenario())
+    finished = [e for e in events if e["type"] == "subagent_finished"]
+    results = [e for e in events if e["type"] == "result"]
+    assert [e["status"] for e in finished] == ["failed"]
+    assert [e["subtype"] for e in results] == ["error_during_execution"]
+    assert events[-1] == {"type": "_engine_end", "reason": "error", "error": FRIENDLY_ERROR}
+
+
+def test_run_turn_round_limit_ends_normally(tmp_path, monkeypatch):
+    """触顶不拆引擎：照常收轮，提示用户继续，并留档给运维。"""
+    from openjiuwen.core.runner import Runner
+
+    from app.services.engines.jiuwen import ROUND_LIMIT_NOTICE
+
+    def limited_stream(agent, inputs, session=None):
+        async def gen():
+            yield chunk(
+                "answer",
+                {"output": "Max iterations reached without completion", "result_type": "error"},
+            )
+
+        return gen()
+
+    monkeypatch.setattr(Runner, "run_agent_streaming", staticmethod(limited_stream))
+    logged = []
+
+    def log_error(kind, text):
+        logged.append((kind, text))
+
+    ctx = make_ctx(tmp_path)
+    ctx.log_error = log_error
+    engine = JiuwenEngine(ctx)
+    engine.client = object()
+
+    async def scenario():
+        await engine._run_turn("开始")
+        events = []
+        while not engine._queue.empty():
+            events.append(engine._queue.get_nowait())
+        return events
+
+    events = asyncio.run(scenario())
+    texts = [e["blocks"][0]["text"] for e in events if e["type"] == "assistant_message"]
+    assert texts == [ROUND_LIMIT_NOTICE]
+    assert [e["subtype"] for e in events if e["type"] == "result"] == ["success"]
+    assert not any(e["type"] == "_engine_end" for e in events)
+    assert logged == [("round_limit", "Max iterations reached without completion")]
+
+
+def test_kill_stops_agent_before_cancelling_turn(tmp_path):
+    """只取消轮任务的话，SDK 自己起的后台任务还会接着跑：硬终止要先 abort。"""
+    order = []
+    engine = JiuwenEngine(make_ctx(tmp_path))
+
+    async def scenario():
+        turn = asyncio.create_task(asyncio.Event().wait())
+
+        async def abort():
+            order.append(("abort", turn.cancelling()))
+
+        async def cleanup_task_resources():
+            order.append(("cleanup", turn.cancelling()))
+
+        engine._turn_task = turn
+        engine.client = SimpleNamespace(abort=abort, cleanup_task_resources=cleanup_task_resources)
+        await engine.kill()
+        await asyncio.sleep(0)
+        return turn
+
+    turn = asyncio.run(scenario())
+    assert turn.cancelled()
+    # abort 时还没有取消请求，释放资源前已经发出：先停 agent 再取消轮任务
+    assert order == [("abort", 0), ("cleanup", 1)]
+    assert engine.client is None
+
+
+def test_kill_finishes_even_if_abort_hangs(tmp_path, monkeypatch):
+    from app.services.engines import jiuwen
+
+    monkeypatch.setattr(jiuwen, "_ABORT_TIMEOUT_SECONDS", 0.05)
+    engine = JiuwenEngine(make_ctx(tmp_path))
+
+    async def scenario():
+        turn = asyncio.create_task(asyncio.Event().wait())
+
+        async def abort():
+            await asyncio.Event().wait()
+
+        engine._turn_task = turn
+        engine.client = SimpleNamespace(abort=abort, cleanup_task_resources=lambda: None)
+        await asyncio.wait_for(engine.kill(), timeout=2)
+        await asyncio.sleep(0)
+        return turn
+
+    assert asyncio.run(scenario()).cancelled()
+    assert engine.client is None

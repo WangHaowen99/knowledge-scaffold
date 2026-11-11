@@ -1598,3 +1598,10 @@ develop 新增的 `GET /api/projects/{pid}/studio/updates`、`GET /api/projects/
    （要写权限），这里读接口用 GET、所有者可用；develop 的 `force` 参数不要了（文本版按修订缓存，换了就重读）。
 5. **范围的存法**：`materials.json` 只存人工范围 `{version: 1, mode: "manual", included_sheets, revision}`（`revision` 是 sha256 前 16 位）；
    develop 连现算的范围也存、字段名是 `file_sha256`，这里不存现算的，也不认 develop 存的 `mode: "auto"` 列表（按现算处理）。
+
+## 2026-11-11 · 吸收 develop !568：判定执行超时（ADR-0097）
+
+运行中长时间没有引擎事件时，会话层判定执行超时、按出错收尾，子任务卡不再一直转圈。
+
+1. **EC-04 `session.error`** 多一个字段 `reason`：`"stall_timeout"` 表示判定执行超时，其余出错为 `null`。
+2. **子任务卡**：这一轮收尾时还没终态的子任务显示「已中断」，`reason` 为 `stall_timeout` 时显示「执行超时」；下一轮开始后不再转圈。

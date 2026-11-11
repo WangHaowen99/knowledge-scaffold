@@ -137,6 +137,10 @@ test('编辑会话：同一字段连续输入只记一步撤销；保存中又�
   const forced = reduceFlowchartEditorSession(s, { type: 'replace-model', model: overage(), savedRevision: 'r3', force: true });
   assert.equal(forced.dirty, false);
   assert.equal(forced.savedRevision, 'r3');
+  // 正在保存（如高级编辑交 XML，标准编辑器这边没有未保存修改）时，刷新也不换掉内容
+  const saving = reduceFlowchartEditorSession(createFlowchartEditorSession(overage(), { savedRevision: 'r1' }), { type: 'mark-saving' });
+  assert.equal(saving.dirty, false);
+  assert.equal(reduceFlowchartEditorSession(saving, { type: 'replace-model', model: normalizeModel({ nodes: [] }), savedRevision: 'r0' }), saving);
 });
 
 test('编辑会话：连线不重复、不自连；拖到空白处新建相连节点', () => {
@@ -153,12 +157,36 @@ test('编辑会话：连线不重复、不自连；拖到空白处新建相连�
 test('drawio：模型转明文 XML，待定节点虚线；能认出压缩存储', () => {
   const xml = modelToDrawio(overage());
   assert.match(xml, /<diagram name="超量处理流程">/);
-  assert.match(xml, /id="n4" value="取标准上限" style="[^"]*dashed=1;"/);
+  assert.match(xml, /<object id="n4" label="取标准上限" onto_type="step"[^>]* pending="1">\s*<mxCell style="[^"]*dashed=1;"/);
   assert.match(xml, /<mxGeometry x="84" y="279" width="132" height="42"/);
   assert.match(xml, /source="n6" target="n7"/);
   assert.equal(isCompressedDrawio(xml), false);
   assert.equal(isCompressedDrawio('<mxfile><diagram name="a">7VnbbuIwEP0a</diagram></mxfile>'), true);
-  assert.match(modelToDrawio(normalizeModel({ nodes: [n('a', 'step', 'A<&>"', 0, 0)] })), /value="A&lt;&amp;&gt;&quot;"/);
+  // 样式带 html=1：文字先转 HTML 再转 XML 属性，和内核写出的一样
+  assert.match(modelToDrawio(normalizeModel({ nodes: [n('a', 'step', 'A<&>"', 0, 0)] })), /label="A&amp;lt;&amp;amp;&amp;gt;&quot;"/);
+});
+
+// develop !547：高级编辑保存时，描述、条件、流程元数据（含标准编辑器里还没保存的）随 XML 交回，不退回上一版
+test('drawio：内核属性随 XML 带上，多行文字的换行不丢', () => {
+  const ref = { kind: 'object', id: 'object:replenish', key: 'replenish', name: '补货单' };
+  const model = normalizeModel({
+    process: { name: '超量处理流程', description: '第一行\n第二行', roles: ['补货专员'], inputs: [], exceptions: ['超量'], handoffs: [] },
+    operation: { kind: 'operation', id: 'operation:overage', key: 'overage', name: '超量处理' },
+    nodes: [
+      n('n1', 'step', '读取申请量', 0, 0, { description: '读门店的\t申请量', refs: [ref], pending: true, pending_note: '口径待定' }),
+      n('n2', 'end', '结束', 0, 100),
+    ],
+    edges: [{ id: 'e1', type: 'cond', from: 'n1', to: 'n2', label: '是', condition: '申请量\n超过上限' }],
+  });
+  const xml = modelToDrawio(model);
+  assert.match(xml, /<object id="0" label="" process_name="超量处理流程" process_description="第一行&#10;第二行" process_roles="\[&quot;补货专员&quot;\]" process_inputs="\[\]" process_exceptions="\[&quot;超量&quot;\]" process_handoffs="\[\]" operation="\{&quot;kind&quot;:&quot;operation&quot;,&quot;id&quot;:&quot;operation:overage&quot;,&quot;key&quot;:&quot;overage&quot;,&quot;name&quot;:&quot;超量处理&quot;\}">/);
+  assert.match(xml, /<object id="n1" label="读取申请量" onto_type="step" description="读门店的&#9;申请量" refs="\[\{&quot;kind&quot;:&quot;object&quot;,&quot;id&quot;:&quot;object:replenish&quot;,&quot;key&quot;:&quot;replenish&quot;,&quot;name&quot;:&quot;补货单&quot;\}\]" pending="1" pending_note="口径待定">/);
+  assert.match(xml, /<object id="n2" label="结束" onto_type="end" description="" refs="\[\]" pending="0">/);
+  assert.match(xml, /<object id="e1" label="是" onto_type="cond" condition="申请量&#10;超过上限">\s*<mxCell style="[^"]*" edge="1" parent="1" source="n1" target="n2">/);
+  // 属性值里不留原样的换行、制表符（XML 解析会把它们规整成空格）
+  assert.doesNotMatch(xml.replace(/>\s*</g, '><'), /="[^"]*[\n\t][^"]*"/);
+  // 空白流程图也能交给高级编辑
+  assert.match(modelToDrawio(normalizeModel({ process: { name: '空白' } })), /<root>\s*<object id="0"[^>]*>\s*<mxCell \/>\s*<\/object>\s*<mxCell id="1" parent="0" \/>\s*<\/root>/);
 });
 
 test('自动布局：主流程自上而下，数据对象挂在它连着的步骤右边', () => {
