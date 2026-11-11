@@ -162,6 +162,65 @@ def location_at(markdown: str, line: int) -> Location | None:
     return current
 
 
+# ---------------------------------------------------------------------------
+# 原件锚点（ADR-0093）：文本版末尾一段注释，记哪一行对应原件的哪个位置，写法和工具箱 source_extract 一致——
+# Word 段落 p:3、表格行 table:1/row:2（第 n 列就是 cell:n），Excel 用「sheet:工作表名」开一个工作表、「row:5」
+# 记 Excel 行号（第 n 列就是第 n 个列字母），「merge 工作表名 A1:C1 …」记合并区；PDF 的页看页标记，不进这里。
+# 行号从正文第一行数起（不含内核加的文件头和空行）。渲染时整段注释不显示，表格、标记的解析都不受影响。
+# 工作区里的 source_extract.py 有同口径的一份：助手读文本版、主服务定位都只读这段，不解析原件（ADR-0076）。
+# ---------------------------------------------------------------------------
+
+ANCHORS_HEAD = "<!-- onto:anchors 1"
+ANCHORS_END = "-->"
+
+
+def _escape_anchor(text: str) -> str:
+    """工作表名里可能有 `-->`、换行：百分号编码 %、>、换行，其余原样（助手读得懂）。"""
+    return str(text).replace("%", "%25").replace(">", "%3E").replace("\n", "%0A").replace("\r", "%0D")
+
+
+def _unescape_anchor(text: str) -> str:
+    return text.replace("%0D", "\r").replace("%0A", "\n").replace("%3E", ">").replace("%25", "%")
+
+
+def anchor_index(lines: list[tuple[int, str]], merges: dict[str, list[str]] | None = None) -> str:
+    """[(正文行号, 锚点)] 与合并区 → 文本版末尾的锚点注释；没有锚点时空串。"""
+    if not lines and not merges:
+        return ""
+    out = [ANCHORS_HEAD]
+    out += [f"{number} {_escape_anchor(anchor)}" for number, anchor in lines]
+    for sheet, refs in (merges or {}).items():
+        if refs:
+            out.append(f"merge {_escape_anchor(sheet).replace(' ', '%20')} {' '.join(refs)}")
+    out.append(ANCHORS_END)
+    return "\n".join(out)
+
+
+def parse_anchor_index(markdown: str) -> dict | None:
+    """文本版 → {lines: {文件行号: 锚点}, merges: {工作表: [A1:C1]}, start: 注释开始的文件行号}；没有这段时 None。
+
+    文件第一行是内核写的文件头时，正文从第三行起（文件头 + 空行）。"""
+    lines = str(markdown or "").splitlines()
+    try:
+        start = next(i for i in range(len(lines) - 1, -1, -1) if lines[i].strip() == ANCHORS_HEAD)
+    except StopIteration:
+        return None
+    offset = 2 if lines and parse_header(lines[0]) is not None else 0
+    found: dict[int, str] = {}
+    merges: dict[str, list[str]] = {}
+    for raw in lines[start + 1:]:
+        line = raw.strip()
+        if line == ANCHORS_END:
+            break
+        number, _, anchor = line.partition(" ")
+        if number == "merge":
+            sheet, _, refs = anchor.partition(" ")
+            merges.setdefault(_unescape_anchor(sheet.replace("%20", " ")), []).extend(refs.split())
+        elif number.isdigit() and anchor:
+            found[int(number) + offset] = _unescape_anchor(anchor)
+    return {"lines": found, "merges": merges, "start": start + 1}
+
+
 def header(source: str, sha256: str, converter: str) -> str:
     """文本版第一行：原文件名、原文件修订、转换器与版本（内核写，转换器不写）。"""
     return f'{HEADER_PREFIX}source="{_clean(source)}" sha256="{sha256}" converter="{_clean(converter)}" -->'

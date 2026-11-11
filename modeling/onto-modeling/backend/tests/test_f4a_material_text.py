@@ -339,3 +339,22 @@ def test_kernel_never_imports_parsers():
     out = subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).resolve().parents[1],
                          capture_output=True, text=True, timeout=120)
     assert out.stdout.strip().splitlines()[-1] == "[]", out.stderr[-500:]
+
+
+def test_migration_reconverts_text_versions_without_anchors(env):
+    """ADR-0093：Word、Excel 的文本版没带原件锚点的，启动迁移重转一次；带上了就不再转，PDF 不需要。"""
+    from app.evidence.convert import anchor_index
+
+    client, _ws, pid, root, _gw = env
+    _upload(client, pid, "规则.docx", "合成规则".encode())
+    _upload(client, pid, "手册.pdf", "第一页".encode())
+    material_conversion.drain()
+    text = root / "resource/text/others/规则.docx.md"
+    assert material_conversion.lacks_anchors(root, "resource/others/规则.docx")
+    assert not material_conversion.lacks_anchors(root, "resource/others/手册.pdf")
+    report = material_conversion.migrate(_ws)
+    assert report["result"] == "queued" and report["detail"] == "1 份资料排队转成文本"
+    material_conversion.drain()
+    text.write_text(text.read_text(encoding="utf-8") + "\n" + anchor_index([(1, "p:1")]) + "\n", encoding="utf-8")
+    assert not material_conversion.lacks_anchors(root, "resource/others/规则.docx")
+    assert material_conversion.migrate(_ws)["result"] == "ok"

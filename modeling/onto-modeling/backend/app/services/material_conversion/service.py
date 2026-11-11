@@ -127,6 +127,21 @@ def unsupported_reason(suffix: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+# 文本版要带原件锚点的格式（ADR-0093）：老的文本版没有锚点时启动迁移补转一次
+ANCHORED_SUFFIXES = (".docx", ".xlsx", ".xlsm")
+
+
+def lacks_anchors(root: Path, rel: str) -> bool:
+    """Word、Excel 的文本版还没有原件锚点（ADR-0093 之前转的）。"""
+    if suffix_of(rel) not in ANCHORED_SUFFIXES:
+        return False
+    try:
+        text = (Path(root) / resource_text_path(rel)).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return convert.ANCHORS_HEAD not in text
+
+
 def text_header(root: Path, rel: str) -> dict | None:
     path = Path(root) / resource_text_path(rel)
     if not path.is_file() or path.is_symlink():
@@ -529,13 +544,17 @@ def migrate(manager) -> dict:
                     except OSError:
                         continue
                 head = text_header(root, rel)
+                stale = False
                 if head and entry.get("state") not in ACTIVE:
                     try:
                         if head["sha"] == _content_revision((root / rel).read_bytes()):
-                            continue
+                            # 文本版是最新的；没带原件锚点的（ADR-0093 之前转的）重转一次补上
+                            if not lacks_anchors(root, rel):
+                                continue
+                            stale = True
                     except OSError:
                         continue
-                if enqueue(project_id, rel, requested="migrate"):
+                if enqueue(project_id, rel, force=stale, requested="migrate"):
                     queued += 1
         except Exception:  # noqa: BLE001 - 一个项目读不了不挡别的
             _log.warning("补转资料文本版时跳过项目 %s", project_id, exc_info=True)

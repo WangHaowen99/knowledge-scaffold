@@ -1,6 +1,6 @@
 # 多源连接器：Word（docx）转文本（ADR-0073）。转换器随连接器网关镜像交付，跑在网关的子进程里，内核不导入它。
 name: convert-docx
-version: 1.0.0
+version: 1.1.0
 kind: provider
 category: provider
 label: Word 转换
@@ -13,5 +13,5 @@ converter:
   entry: converter.py
   types: [".docx"]
   license: python-docx（MIT）
-changelog: 首版。
+changelog: 文末带原件锚点（段落序号、表格行与单元格），资料出处能写回 Word 里的位置。
 checksums: checksums.sha256
