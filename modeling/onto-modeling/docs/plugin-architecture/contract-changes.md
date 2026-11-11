@@ -1677,3 +1677,14 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
 6. **增量构建包**：启用后没传新资料时节点不出现，不挡发布，也不限范围；已有条目时上传资料才触发。这一轮发布后自动结束；有改动没核对干净时「结束本轮」被拒。
 7. 触发记录在主线工作区的 `.onto/run/activation.json`，不进 git。FL-01 的响应形状不变，节点集合变化时 `flow_hash` 跟着变。
 8. **core 0.5.0、增量构建 0.2.0**：core 0.5.0 表示内核支持上面 1～4；用到它们的包声明 `depends: {core: ">=0.5"}`。建议条规则版本 `SUGGEST_RULES` 升到 7（多一条 6.5「触发后抢先的步骤」）。
+
+## 2026-11-12 · 知识包版本对比改回 develop 的语义（PC 组，ADR-0095 修订）
+
+第二轮对齐 develop：除路径挂在 `/api/v1` 下、错误体带契约码外，PC 组的参数、分页、响应与鉴权都照 develop。
+
+1. **来源**：发布版本改回 Hub 引用 `{ontology_id?|hub_package_id?, release_id}`，能选当前用户在 Hub 上可见的版本；`{version}` 留作本项目简写。
+2. **鉴权**：要统一账号（Hub 身份），本地模式 401；读结果、文件列表、正文差异、重放时回 Hub 复核读权限；比较数据按 Hub 主体隔离。
+3. **参数与响应**：PC-06 改回 `offset/limit`，响应 `{items, total, filtered_total, overall_total, offset, limit}`；PC-07 参数改回 `file_id`；
+   PC-02 返回 `{cancelled: true}`，PC-03、PC-08 返回 `{deleted: true}`；时间字段改回 epoch 秒；任务失败的 `error` 是异常原文。
+4. 跨包的任务失败不再带 `error_code`（develop 没有），前端照 develop 在发起前比较两侧包标识、确认后再带 `allow_cross_package`。
+
