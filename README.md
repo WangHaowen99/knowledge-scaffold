@@ -31,6 +31,7 @@
 | 知识消费与推理 | [`consumer/`](consumer/) | React 控制台、Flask API、openJiuwen Agent Runtime、MCP、SDK 和部署脚本 |
 | 知识包建模 | [`modeling/`](modeling/) | 从业务资料生成、检查、评测、优化和导出知识包，并支持 Neo4j 图数据导入 |
 | 统一鉴权 | [`auth-server/`](auth-server/) | 独立 OAuth2/OIDC 子集服务，供 consumer 与 modeling 共用账号体系 |
+| 知识服务与 Swarm 集成 | [`kb-suite/`](kb-suite/) | kb-gateway 统一知识接口（可接 kb-service、WeKnora、DA 知识管线等多个后端）、JiuwenSwarm 插件、DeepAnalyze / Loop Forest harness provider 和 Compose 部署 |
 
 ## 核心能力
 
@@ -211,6 +212,7 @@ MCP_TOKEN_SECRET=<至少32个字符、且与上项不同的随机值>
 │   └── sdk/                  # Python / TypeScript SDK
 ├── modeling/                 # Fastify + React + SQLite 知识包建模工作台
 ├── auth-server/              # 独立认证与用户服务
+├── kb-suite/                 # 知识服务、JiuwenSwarm 插件与 harness provider
 ├── common/                   # 跨模块轻量公共代码
 ├── deploy/                   # 全栈构建与发布入口
 └── docs/                     # 仓库级设计与说明文档
@@ -241,6 +243,10 @@ cd frontend && npm run build
 # auth-server
 cd auth-server
 python -m pytest tests -q
+
+# kb-suite（Python 3.11+，其余包见 kb-suite/README.md）
+cd kb-suite/service/kb-service
+python -m pytest -q
 ```
 
 模块的环境准备、本地启动和测试依赖以各自 README 为准。
@@ -260,6 +266,8 @@ python -m pytest tests -q
 | [modeling/README.md](modeling/README.md) | 建模工作台运行方式和接口 |
 | [modeling/docs/design.md](modeling/docs/design.md) | 建模工作流、数据模型和评测闭环 |
 | [auth-server/README.md](auth-server/README.md) | 鉴权端点、配置和数据目录 |
+| [kb-suite/README.md](kb-suite/README.md) | kb-suite 组成和测试 |
+| [kb-suite/deploy/compose/README.md](kb-suite/deploy/compose/README.md) | kb-suite 部署、构建和 DA / Loop Forest 接入 |
 
 ## 参与贡献
 

@@ -84,11 +84,7 @@ bash "${REPO_ROOT}/consumer/build.sh" "${VERSION}" "${ARCH}"
 }
 
 tar -C "${STAGE_ROOT}" -xzf "${CONSUMER_PACKAGE}"
-rm -f "${CONSUMER_PACKAGE}"
 cp "${BUNDLE_DIR}/deploy/deploy.sh" "${BUNDLE_DIR}/deploy/deploy-consumer.sh"
-
-RELEASE_BUNDLE_DIR="${BUNDLE_DIR}" \
-    bash "${REPO_ROOT}/modeling/build.sh" "${VERSION}" "${ARCH}"
 
 # Onto Modeling（引导式建模工作台）：独立子包并入 bundle，部署脚本自带零配置 auth
 chmod +x "${REPO_ROOT}/modeling/onto-modeling/build.sh" "${REPO_ROOT}/modeling/onto-modeling/deploy/"*.sh
@@ -99,6 +95,27 @@ ONTO_MODELING_PACKAGE="${REPO_ROOT}/modeling/onto-modeling/dist/onto-modeling-${
     exit 1
 }
 tar -C "${BUNDLE_DIR}" -xzf "${ONTO_MODELING_PACKAGE}"
+
+# 知识包 Hub：独立子包并入 bundle，与 Onto Modeling 分开部署
+chmod +x "${REPO_ROOT}/knowledge-hub/build.sh" "${REPO_ROOT}/knowledge-hub/deploy/deploy.sh"
+bash "${REPO_ROOT}/knowledge-hub/build.sh" "${VERSION}" "${ARCH}"
+KNOWLEDGE_HUB_PACKAGE="${REPO_ROOT}/knowledge-hub/dist/knowledge-hub-${VERSION}-linux-${RELEASE_ARCH}.tar.gz"
+[ -f "${KNOWLEDGE_HUB_PACKAGE}" ] || {
+    echo "Error: knowledge hub package not found: ${KNOWLEDGE_HUB_PACKAGE}" >&2
+    exit 1
+}
+tar -C "${BUNDLE_DIR}" -xzf "${KNOWLEDGE_HUB_PACKAGE}"
+
+# 独立评测服务：同 Hub，独立子包留在 eval-service/dist 并并入 bundle
+EVALUATION_PACKAGE="${REPO_ROOT}/eval-service/dist/evaluation-${VERSION}-linux-${RELEASE_ARCH}.tar.gz"
+# eval-service/build.sh 拒绝覆盖已有产物；完整构建与其他子包一样覆盖同版本旧包
+rm -f "${EVALUATION_PACKAGE}"
+bash "${REPO_ROOT}/eval-service/build.sh" "${VERSION}" "${ARCH}"
+[ -f "${EVALUATION_PACKAGE}" ] || {
+    echo "Error: evaluation package not found: ${EVALUATION_PACKAGE}" >&2
+    exit 1
+}
+tar -C "${BUNDLE_DIR}" -xzf "${EVALUATION_PACKAGE}"
 
 cp "${SCRIPT_DIR}/deploy.sh" "${BUNDLE_DIR}/deploy/deploy.sh"
 
@@ -111,17 +128,19 @@ cat > "${BUNDLE_DIR}/deploy/manifest.json" <<EOF
   "frontend_image": "onto-agent-frontend:${VERSION}",
   "auth_server_image": "onto-agent-auth-server:${VERSION}",
   "jiuwenbox_image": "onto-agent-jiuwenbox:${VERSION}",
-  "modeling_image": "mw-modeling:${VERSION}",
-  "modeling_agent_image": "mw-modeling-agent:${VERSION}",
   "backend_image_tar": "images/onto-agent-backend-${VERSION}.tar",
   "frontend_image_tar": "images/onto-agent-frontend-${VERSION}.tar",
   "auth_server_image_tar": "images/onto-agent-auth-server-${VERSION}.tar",
   "jiuwenbox_image_tar": "images/onto-agent-jiuwenbox-${VERSION}.tar",
-  "modeling_image_tar": "images/mw-modeling-${VERSION}.tar",
-  "modeling_agent_image_tar": "images/mw-modeling-agent-${VERSION}.tar",
   "onto_modeling_image": "onto-modeling:${VERSION}",
   "onto_modeling_auth_server_image": "onto-modeling-auth-server:${VERSION}",
   "onto_modeling_bundle_dir": "onto-modeling",
+  "knowledge_hub_image": "knowledge-hub:${VERSION}",
+  "knowledge_hub_image_tar": "knowledge-hub/images/knowledge-hub-${VERSION}.tar",
+  "knowledge_hub_bundle_dir": "knowledge-hub",
+  "evaluation_image": "knowledge-evaluation:${VERSION}",
+  "evaluation_image_tar": "eval-service/evaluation-image.tar",
+  "evaluation_bundle_dir": "eval-service",
   "jiuwenswarm_commit": "d7c2ab2f299cd2c73201afb41ebb8b9c00cc7015"
 }
 EOF
@@ -134,7 +153,8 @@ find "${BUNDLE_DIR}/deploy" -type f -name '*.sh' -exec chmod +x {} +
 if command -v sha256sum >/dev/null 2>&1; then
     (
         cd "${BUNDLE_DIR}"
-        sha256sum VERSION deploy/manifest.json images/*.tar > checksums.txt
+        sha256sum VERSION deploy/manifest.json images/*.tar knowledge-hub/images/*.tar \
+            eval-service/evaluation-image.tar > checksums.txt
     )
 fi
 

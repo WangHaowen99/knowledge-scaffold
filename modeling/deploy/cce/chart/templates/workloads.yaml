@@ -209,6 +209,15 @@ spec:
             - {name: ONTO_WEB_AUTH_ISSUER, value: {{ .Values.global.auth.issuer | quote }}}
             - {name: ONTO_WEB_AUTH_AUDIENCE, value: {{ .Values.global.auth.audience | quote }}}
             - {name: ONTO_WEB_MODELING_URL, value: "http://{{ include "modeling.name" . }}-core:5100"}
+            - {name: ONTO_HUB_URL, value: "http://{{ include "modeling.name" . }}-hub:8200"}
+            - name: ONTO_HUB_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.hub.secrets.internal.name | quote }}, key: {{ .Values.hub.secrets.internal.modelingTokenKey | quote }}}
+            - name: ONTO_EVALUATION_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ default (printf "%s-notify" .Release.Name) .Values.evaluation.secrets.notificationToken.name | quote }}, key: {{ default "service-token" .Values.evaluation.secrets.notificationToken.key | quote }}}
+            - {name: ONTO_WEB_EVAL_PUBLIC_URL, value: {{ .Values.modeling.config.evalPublicUrl | quote }}}
+            - {name: ONTO_WEB_EVAL_URL, value: "http://{{ include "modeling.name" . }}-evaluation:8090"}
             - {name: ONTO_WEB_SANDBOX_GATEWAY_URL, value: "http://{{ include "modeling.name" . }}-sandbox-gateway:8110"}
             - name: ONTO_WEB_MODELING_ASSOCIATION_URL
               value: "http://{{ include "modeling.name" . }}-core:5100"
@@ -371,3 +380,116 @@ spec:
             periodSeconds: 10
           resources: {{ toYaml $nl2sql.resources | nindent 12 }}
 {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "modeling.name" . }}-hub
+spec:
+  replicas: {{ .Values.hub.replicas }}
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: hub}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: hub}
+    spec:
+      {{- if .Values.global.imageDelivery.pullSecretNames }}
+      imagePullSecrets: {{ include "modeling.pullSecrets" . | nindent 8 }}
+      {{- end }}
+      nodeSelector: {{ include "modeling.arch" . | nindent 8 }}
+      containers:
+        - name: hub
+          image: {{ .Values.global.resolvedImages.knowledgeHub | quote }}
+          imagePullPolicy: IfNotPresent
+          ports: [{name: http, containerPort: 8200}]
+          env:
+            - {name: HUB_DATA_DIR, value: /data/knowledge-hub}
+            - {name: HUB_AUTH_URL, value: {{ include "modeling.authUrl" . | quote }}}
+            - {name: HUB_AUTH_ISSUER, value: {{ .Values.global.auth.issuer | quote }}}
+            - {name: ONTO_AUTHZ_URL, value: "http://{{ include "modeling.name" . }}-onto:8100/api/internal/hub/authorize"}
+            - name: HUB_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.hub.secrets.internal.name | quote }}, key: {{ .Values.hub.secrets.internal.modelingTokenKey | quote }}}
+            - name: HUB_EVALUATION_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.hub.secrets.internal.name | quote }}, key: {{ .Values.hub.secrets.internal.evaluationTokenKey | quote }}}
+            {{- if .Values.hub.secrets.consumerToken.name }}
+            - name: HUB_CONSUMER_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.hub.secrets.consumerToken.name | quote }}, key: {{ .Values.hub.secrets.consumerToken.key | quote }}}
+            {{- end }}
+          volumeMounts: [{name: data, mountPath: /data}]
+          startupProbe: {httpGet: {path: /api/health, port: http}, failureThreshold: 30, periodSeconds: 10}
+          readinessProbe: {httpGet: {path: /api/health, port: http}, periodSeconds: 10}
+          resources: {{ toYaml .Values.hub.resources | nindent 12 }}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: {{ .Values.hub.persistence.existingClaim | quote }}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "modeling.name" . }}-evaluation
+spec:
+  replicas: {{ .Values.evaluation.replicas }}
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: evaluation}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: evaluation}
+    spec:
+      securityContext: {fsGroup: 10001}
+      {{- if .Values.global.imageDelivery.pullSecretNames }}
+      imagePullSecrets: {{ include "modeling.pullSecrets" . | nindent 8 }}
+      {{- end }}
+      nodeSelector: {{ include "modeling.arch" . | nindent 8 }}
+      containers:
+        - name: evaluation
+          image: {{ .Values.global.resolvedImages.evaluation | quote }}
+          imagePullPolicy: IfNotPresent
+          ports: [{name: http, containerPort: 8090}]
+          env:
+            - {name: EVAL_DATA_DIR, value: /var/lib/evaluation}
+            - {name: EVAL_AUTH_URL, value: {{ include "modeling.authUrl" . | quote }}}
+            - {name: EVAL_AUTH_ISSUER, value: {{ .Values.global.auth.issuer | quote }}}
+            - {name: EVAL_HUB_URL, value: "http://{{ include "modeling.name" . }}-hub:8200"}
+            - {name: EVAL_CONSUMER_API_URL, value: {{ include "modeling.consumerUrl" . | quote }}}
+            - {name: EVAL_MODELING_URL, value: "http://{{ include "modeling.name" . }}-onto:8100"}
+            - name: EVAL_MODELING_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ default (printf "%s-notify" .Release.Name) .Values.evaluation.secrets.notificationToken.name | quote }}, key: {{ default "service-token" .Values.evaluation.secrets.notificationToken.key | quote }}}
+            - {name: EVAL_NL2SQL_URL, value: "http://{{ include "modeling.name" . }}-evaluation:8090/evaluation/api/nl2sql"}
+            - {name: EVAL_TRUSTED_ORIGINS, value: {{ join "," .Values.evaluation.trustedOrigins | quote }}}
+            - {name: EVAL_JUDGE_BASE_URL, value: {{ .Values.evaluation.judge.baseUrl | quote }}}
+            - {name: EVAL_JUDGE_MODEL, value: {{ .Values.evaluation.judge.model | quote }}}
+            - {name: EVAL_JUDGE_CONFIG_REVISION, value: {{ .Values.evaluation.judge.configRevision | quote }}}
+            - name: EVAL_HUB_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.hub.secrets.internal.name | quote }}, key: {{ .Values.hub.secrets.internal.evaluationTokenKey | quote }}}
+            - name: EVAL_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.evaluation.secrets.encryptionKey.name | quote }}, key: {{ .Values.evaluation.secrets.encryptionKey.key | quote }}}
+            {{- if .Values.evaluation.secrets.consumerToken.name }}
+            - name: EVAL_CONSUMER_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.evaluation.secrets.consumerToken.name | quote }}, key: {{ .Values.evaluation.secrets.consumerToken.key | quote }}}
+            {{- end }}
+            {{- if .Values.evaluation.secrets.judgeApiKey.name }}
+            - name: EVAL_JUDGE_API_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.evaluation.secrets.judgeApiKey.name | quote }}, key: {{ .Values.evaluation.secrets.judgeApiKey.key | quote }}}
+            {{- end }}
+            {{- if .Values.evaluation.secrets.sqlConfig.name }}
+            - name: EVAL_SQL_CONFIG
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.evaluation.secrets.sqlConfig.name | quote }}, key: {{ .Values.evaluation.secrets.sqlConfig.key | quote }}}
+            {{- end }}
+          volumeMounts: [{name: data, mountPath: /var/lib/evaluation}]
+          startupProbe: {httpGet: {path: /evaluation/api/health, port: http}, failureThreshold: 30, periodSeconds: 10}
+          readinessProbe: {httpGet: {path: /evaluation/api/health, port: http}, periodSeconds: 10}
+          resources: {{ toYaml .Values.evaluation.resources | nindent 12 }}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: {{ .Values.evaluation.persistence.existingClaim | quote }}}

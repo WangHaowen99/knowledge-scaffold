@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+dist/
+.env
+*.secrets.env
+.pytest_cache/
+deploy/compose/da/build/
+# openJiuwen 运行时在当前目录写的日志
+harness/da-harness/logs/
+deploy/compose/swarm/build/
+service/lf-service/target/
+deploy/compose/weknora/build/
+*.egg-info/
+service/*/build/
+harness/*/build/

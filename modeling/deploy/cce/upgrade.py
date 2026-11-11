@@ -10,6 +10,30 @@ from common import CompatibilityError, ConfigError, read_yaml, validate_compatib
 
 
 WORKLOADS = ("core", "agent", "onto")
+EXPANDED_WORKLOADS = (*WORKLOADS, "hub", "evaluation")
+
+
+def installed_workloads(values: dict) -> tuple[str, ...]:
+    """Only workloads present in the installed release need an old-data snapshot."""
+    hub = bool(values.get("hub", {}).get("persistence", {}).get("existingClaim"))
+    evaluation = bool(values.get("evaluation", {}).get("persistence", {}).get("existingClaim"))
+    if hub != evaluation:
+        raise ConfigError("installed Hub and Evaluation PVC configuration is incomplete")
+    if hub:
+        if values.get("hub", {}).get("replicas", 1) != 1 or values.get("evaluation", {}).get("replicas", 1) != 1:
+            raise ConfigError("installed Hub and Evaluation must run at one replica")
+        return EXPANDED_WORKLOADS
+    return WORKLOADS
+
+
+def target_claim(values: dict, workload: str) -> str:
+    if workload in WORKLOADS:
+        return values["modeling"]["workloads"][workload]["persistence"]["existingClaim"]
+    return values[workload]["persistence"]["existingClaim"]
+
+
+def mount_path(workload: str) -> str:
+    return "/var/lib/evaluation" if workload == "evaluation" else "/data"
 
 
 def transition(path: Path, transition_id: str, installed: dict, target: dict) -> dict:
@@ -50,9 +74,9 @@ def transition(path: Path, transition_id: str, installed: dict, target: dict) ->
     return item
 
 
-def bindings(kube, args, merged: dict, *, stopped: bool) -> dict:
+def bindings(kube, args, merged: dict, *, stopped: bool, workloads: tuple[str, ...] = WORKLOADS) -> dict:
     result = {}
-    for workload in WORKLOADS:
+    for workload in workloads:
         deployment = kube(args, "get", "deployment", f"{args.release}-{workload}", "-n", args.namespace)
         metadata = deployment.get("metadata", {})
         annotations = metadata.get("annotations", {})
@@ -67,13 +91,13 @@ def bindings(kube, args, merged: dict, *, stopped: bool) -> dict:
         if len(volumes) != 1:
             raise ConfigError(f"{workload} has no unique data volume")
         claim_name = volumes[0].get("persistentVolumeClaim", {}).get("claimName")
-        target_claim = merged["modeling"]["workloads"][workload]["persistence"]["existingClaim"]
-        if claim_name != target_claim:
+        expected_claim = target_claim(merged, workload)
+        if claim_name != expected_claim:
             raise ConfigError(f"{workload} would change its existing PVC")
         containers = template.get("containers", [])
-        if not any(mount.get("name") == "data" and mount.get("mountPath") == "/data"
+        if not any(mount.get("name") == "data" and mount.get("mountPath") == mount_path(workload)
                    for container in containers for mount in container.get("volumeMounts", [])):
-            raise ConfigError(f"{workload} no longer mounts its data at /data")
+            raise ConfigError(f"{workload} no longer mounts its data at {mount_path(workload)}")
         if stopped:
             if spec.get("replicas", 1) != 0 or deployment.get("status", {}).get("replicas", 0) != 0:
                 raise ConfigError(f"stop the old {workload} Deployment before taking snapshots")
@@ -112,16 +136,17 @@ def verified_snapshots(kube, args, path: Path, current_bindings: dict) -> None:
     except (KeyError, AttributeError, ValueError) as exc:
         raise ConfigError("backup record needs a timezone-aware stoppedAt") from exc
     claims = record.get("claims", {})
-    if not isinstance(claims, dict) or set(claims) != set(WORKLOADS):
-        raise ConfigError("backup record must cover all three Modeling PVCs")
+    workloads = tuple(current_bindings)
+    if not isinstance(claims, dict) or set(claims) != set(workloads):
+        raise ConfigError("backup record must cover all installed Modeling PVCs")
     evidence = record.get("dataEvidence", {})
-    if not isinstance(evidence, dict) or set(evidence) != set(WORKLOADS):
+    if not isinstance(evidence, dict) or set(evidence) != set(workloads):
         raise ConfigError("backup record must include pre-upgrade data evidence for all workloads")
-    for workload in WORKLOADS:
+    for workload in workloads:
         count = evidence.get(workload)
         if type(count) is not int or count < 0:
             raise ConfigError(f"{workload} data evidence must be a nonnegative count")
-    for workload in WORKLOADS:
+    for workload in workloads:
         saved = claims[workload]
         if not isinstance(saved, dict) or any(saved.get(key) != value
                 for key, value in current_bindings[workload].items()):
@@ -160,12 +185,19 @@ DATA_COUNTS = {
     "onto": ("python", "-c",
              "from pathlib import Path; p=Path('/data/onto-web/workspaces');"
              "assert p.is_dir();print(sum(d.is_dir() and (d/'.onto-web.json').is_file() for d in p.iterdir()))"),
+    "hub": ("python", "-c",
+            "from pathlib import Path; p=Path('/data/knowledge-hub/projects');"
+            "print(sum(x.is_dir() for x in p.iterdir()) if p.exists() else 0)"),
+    "evaluation": ("python", "-c",
+                   "import sqlite3; d=sqlite3.connect('file:/var/lib/evaluation/evaluation.sqlite?mode=ro',uri=True);"
+                   "assert d.execute('PRAGMA quick_check').fetchone()[0]=='ok';"
+                   "print(d.execute('SELECT COUNT(*) FROM records').fetchone()[0])"),
 }
 
 
 def verify_persisted_data(run, args, backup_record: Path) -> None:
     record = json.loads(backup_record.read_text(encoding="utf-8"))
-    for workload in WORKLOADS:
+    for workload in record["dataEvidence"]:
         output = run("kubectl", "--context", args.context, "-n", args.namespace,
                      "exec", f"deployment/{args.release}-{workload}", "-c", workload,
                      "--", *DATA_COUNTS[workload])

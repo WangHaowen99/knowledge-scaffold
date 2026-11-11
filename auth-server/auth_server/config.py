@@ -20,7 +20,7 @@ TTL_MIN_SECONDS = 60
 DEFAULT_ACCESS_TTL_SECONDS = 900
 DEFAULT_REFRESH_TTL_SECONDS = 259_200  # 72h
 DEFAULT_ISSUER = "http://auth-server:5056"
-DEFAULT_AUDIENCE = "meta-wise"
+DEFAULT_AUDIENCE = "knowledge-scaffold"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5056
 # 0 disables the user-count limit. Deployments may set a positive value.

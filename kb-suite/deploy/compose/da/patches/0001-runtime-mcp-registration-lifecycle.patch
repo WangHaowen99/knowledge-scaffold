@@ -1,0 +1,135 @@
+DaRuntimeMcpTools: reuse and reclaim the process-wide runtime MCP registration
+
+runtimeConfig.mcpServers are registered process-wide, keyed by fingerprint.
+
+1. Reuse. mountServer() called addMcpServer() for every task and treated the
+   core's "MCP server id already exists" as an unavailable server. DA builds a
+   new agent per task (the resume after an ask_user answer is a new task too),
+   so only the first task of a session could see the runtime MCP tools. When
+   the add fails but the id is registered, mount the existing registration.
+
+2. Reclaim. Registrations were never removed ("全局注册不随卸载回收"), so every
+   distinct snapshot (e.g. one MCP address per team-member session) kept a
+   registration and a live client until the process restarted. Count the agent
+   views per server id; the last unmount unregisters it (which also
+   disconnects the client).
+
+Applied by deploy/compose/da/build.sh until fixed upstream (agent-solution common).
+
+--- a/common/agents/deepanalyze-java/engine/src/main/java/com/openjiuwen/da/toolcontext/DaRuntimeMcpTools.java
++++ b/common/agents/deepanalyze-java/engine/src/main/java/com/openjiuwen/da/toolcontext/DaRuntimeMcpTools.java
+@@ -55,6 +55,13 @@
+     private static final Map<BaseAgent, MountedSnapshot> MOUNTED =
+             Collections.synchronizedMap(new WeakHashMap<>());
+ 
++    /**
++     * 全局注册的引用计数（有效 serverId → 挂着它的 Agent 视图数）。最后一个视图卸载时注销全局
++     * 注册并断开连接；否则每个不同指纹的快照（例如每个团队成员会话一个 MCP 地址）都会留下一份
++     * 注册和一条连接，直到进程重启。
++     */
++    private static final Map<String, Integer> REFS = new java.util.HashMap<>();
++
+     private DaRuntimeMcpTools() {
+     }
+ 
+@@ -81,7 +88,7 @@
+             return;
+         }
+         unmount(agent);
+-        List<String> mounted = new ArrayList<>();
++        List<Mounted> mounted = new ArrayList<>();
+         for (Map<String, Object> server : snapshot.mcpServers()) {
+             if (Boolean.FALSE.equals(server.get("enabled"))) {
+                 continue;
+@@ -108,12 +115,32 @@
+         if (old == null) {
+             return;
+         }
+-        for (String serverName : old.serverNames()) {
+-            agent.getAbilityManager().remove(serverName);
++        for (Mounted server : old.servers()) {
++            agent.getAbilityManager().remove(server.serverName());
++            release(server.serverId());
+         }
+     }
+ 
+-    private static Optional<String> mountServer(final BaseAgent agent, final Map<String, Object> server,
++    private static void release(final String serverId) {
++        synchronized (REFS) {
++            Integer count = REFS.get(serverId);
++            if (count == null) {
++                return;
++            }
++            if (count > 1) {
++                REFS.put(serverId, count - 1);
++                return;
++            }
++            REFS.remove(serverId);
++            try {
++                Runner.resourceMgr().removeMcpServer(List.of(serverId), null, null, null, true);
++            } catch (RuntimeException ex) {
++                LOGGER.warn("runtime mcp server {} not unregistered: {}", serverId, ex.getMessage());
++            }
++        }
++    }
++
++    private static Optional<Mounted> mountServer(final BaseAgent agent, final Map<String, Object> server,
+             final String fingerprint) {
+         McpServerConfig config = toServerConfig(server, fingerprint);
+         String serverName = config.getServerName();
+@@ -124,18 +151,25 @@
+         if (agent.getAbilityManager().getMcpServers().containsKey(serverName)) {
+             agent.getAbilityManager().remove(serverName);
+         }
+-        List<Result<String>> results =
+-                Runner.resourceMgr().addMcpServer(config, agent.getCard().getId(), null);
+-        if (results.stream().anyMatch(Result::isError)) {
+-            LOGGER.warn("runtime mcp server {} unavailable, its tools are skipped", serverName);
+-            return Optional.empty();
++        String serverId = config.getServerId();
++        synchronized (REFS) {
++            List<Result<String>> results =
++                    Runner.resourceMgr().addMcpServer(config, agent.getCard().getId(), null);
++            // 同指纹即同 serverId：在途的其他任务已注册过（core 回"id 已存在"），复用而不是跳过
++            if (results.stream().anyMatch(Result::isError)
++                    && Runner.resourceMgr().getMcpServerConfig(serverId) == null) {
++                LOGGER.warn("runtime mcp server {} unavailable, its tools are skipped", serverName);
++                return Optional.empty();
++            }
++            REFS.merge(serverId, 1, Integer::sum);
+         }
+         AddAbilityResult added = agent.getAbilityManager().add(config);
+         if (!added.isAdded()) {
+             LOGGER.warn("runtime mcp server {} not visible: {}", serverName, added.getReason());
++            release(serverId);
+             return Optional.empty();
+         }
+-        return Optional.of(serverName);
++        return Optional.of(new Mounted(serverName, serverId));
+     }
+ 
+     private static String tenantOf(final DaRuntimeConfig snapshot) {
+@@ -275,11 +309,20 @@
+     }
+ 
+     /**
+-     * 一次挂载的记录（指纹 + 挂载成功的服务名清单，卸载时按名摘 Agent 视图）。
++     * 一次挂载的记录（指纹 + 挂载成功的服务清单，卸载时按名摘 Agent 视图、按 id 释放全局注册）。
+      *
+      * @param cacheKey 租户+指纹键
+-     * @param serverNames 挂载成功的服务名
++     * @param servers 挂载成功的服务
++     */
++    private record MountedSnapshot(String cacheKey, List<Mounted> servers) {
++    }
++
++    /**
++     * 挂上的一个服务。
++     *
++     * @param serverName Agent 视图里的服务名
++     * @param serverId 全局注册的有效 serverId
+      */
+-    private record MountedSnapshot(String cacheKey, List<String> serverNames) {
++    private record Mounted(String serverName, String serverId) {
+     }
+ }

@@ -33,7 +33,7 @@ bash modeling/deploy/cce/build-offline.sh v2.0 amd64
 
 1. 调用 `modeling/deploy/cce/build-images.sh`；
 2. 准备 Python wheels 和 Drawio 资源；
-3. 构建三个 Modeling 镜像；
+3. 构建三张 Modeling 镜像、Knowledge Hub 镜像和 Evaluation 镜像，共五张镜像；
 4. 将镜像加载到本地 Docker；
 5. 调用 `package-cce.py --local` 生成离线包。
 
@@ -50,24 +50,30 @@ bash modeling/deploy/cce/build-offline.sh v2.0 amd64 \
   /path/to/modeling-cce-v2.0-amd64.tar.gz
 ```
 
-如果希望离线包成功生成后删除本次构建的三个本地镜像，可追加 `--cleanup-images`：
+如果希望离线包成功生成后删除本次构建的五个本地镜像，可追加 `--cleanup-images`：
 
 ```bash
 bash modeling/deploy/cce/build-offline.sh v2.0 amd64 \
   /path/to/modeling-cce-v2.0-amd64.tar.gz --cleanup-images
 ```
 
-该选项只执行以下三个精确标签的 `docker image rm`，不会执行 `docker prune`，也不会删除其他版本或其他仓库的镜像：
+该选项只执行以下五个精确标签的 `docker image rm`，不会执行 `docker prune`，也不会删除其他版本或其他仓库的镜像：
 
 ```text
 modeling-offline/modeling:v2.0
 modeling-offline/modeling-agent:v2.0
 modeling-offline/onto-modeling:v2.0
+modeling-offline/knowledge-hub:v2.0
+modeling-offline/evaluation:v2.0
 ```
 
 清理发生在组包成功之后；构建或组包失败时不会执行清理。
 
 ### 2.1 Python wheels 缓存
+
+Onto Modeling 的宿主 wheel 预下载与镜像内 `pip install` 使用同一个包源：优先使用
+`ONTO_MODELING_PIP_INDEX_URL`，其次使用 `PIP_INDEX_URL`，默认使用
+`https://repo.huaweicloud.com/repository/pypi/simple`，与虚拟机构建一致。
 
 缓存目录是：
 
@@ -79,10 +85,9 @@ modeling/onto-modeling/vendor/wheels/
 
 ```text
 vendor/wheels/.prepared-amd64
-vendor/wheels/.prepared-arm64
 ```
 
-标记内容必须等于以下文件的 SHA-256：
+标记内容由以下文件的 SHA-256 和当前包源 URL 的 SHA-256 组成：
 
 ```text
 modeling/onto-modeling/backend/requirements.txt
@@ -91,13 +96,14 @@ modeling/onto-modeling/backend/requirements.txt
 满足以下条件时复用 wheels：
 
 - 对应架构的 `.prepared-<架构>` 存在；
-- 标记内容与当前 `requirements.txt` SHA-256 一致；
+- 标记内容与当前 `requirements.txt` 和包源 URL 的 SHA-256 一致；
 - wheels 文件仍然存在且能满足 Dockerfile 的依赖解析。
 
 以下情况会重新执行 `pip3 download`：
 
 - 标记不存在；
 - `requirements.txt` 发生任何变化；
+- 包源 URL 发生变化；
 - 切换 `amd64` 和 `arm64`；
 - 清理或更换 `vendor/wheels` 目录。
 
@@ -121,19 +127,21 @@ modeling/onto-modeling/vendor/drawio/webapp/
 bash modeling/deploy/cce/build-images.sh <版本> <amd64|arm64>
 ```
 
-该命令把三个镜像加载为本地标签：
+该命令把五个镜像加载为本地标签：
 
 ```text
 modeling-offline/modeling:<版本>
 modeling-offline/modeling-agent:<版本>
 modeling-offline/onto-modeling:<版本>
+modeling-offline/knowledge-hub:<版本>
+modeling-offline/evaluation:<版本>
 ```
 
 本地标签不包含架构后缀。构建另一种架构时，同名标签会被覆盖，应在每次构建后立即组包。
 
 ## 3. 使用已推送镜像组包
 
-开发侧如果已经把三个镜像推送到镜像仓库，可以不使用 `--local`，改为按 digest 组包：
+开发侧如果已经把五个镜像推送到镜像仓库，可以不使用 `--local`，改为按 digest 组包：
 
 ```bash
 python3 modeling/deploy/cce/package-cce.py \
@@ -142,6 +150,8 @@ python3 modeling/deploy/cce/package-cce.py \
   --image 'modeling=<仓库>/modeling@sha256:<64位digest>' \
   --image 'modelingAgent=<仓库>/modeling-agent@sha256:<64位digest>' \
   --image 'ontoModeling=<仓库>/onto-modeling@sha256:<64位digest>' \
+  --image 'knowledgeHub=<仓库>/knowledge-hub@sha256:<64位digest>' \
+  --image 'evaluation=<仓库>/evaluation@sha256:<64位digest>' \
   --output modeling/dist/modeling-cce-<版本>-<架构>.tar.gz
 ```
 
@@ -215,9 +225,11 @@ global:
     modeling: <客户仓库>/modeling@sha256:<64位digest>
     modelingAgent: <客户仓库>/modeling-agent@sha256:<64位digest>
     ontoModeling: <客户仓库>/onto-modeling@sha256:<64位digest>
+    knowledgeHub: <客户仓库>/knowledge-hub@sha256:<64位digest>
+    evaluation: <客户仓库>/evaluation@sha256:<64位digest>
     jiuwenbox: <客户仓库>/jiuwenbox@sha256:<64位digest>
 ```
 
-单独 Modeling 部署必须填写四个镜像。联合部署时，Modeling 的 JiuwenBox 会由 Consumer 镜像清单提供，但 Modeling 自有三个镜像仍必须填写。
+当前离线包包含五个自有镜像；JiuwenBox 继续由 Consumer 镜像清单作为外部依赖提供。
 
 离线包不得包含 SWR 凭据、kubeconfig、Secret 值或真实环境地址。

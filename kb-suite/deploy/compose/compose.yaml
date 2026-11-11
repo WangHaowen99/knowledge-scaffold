@@ -1,0 +1,382 @@
+# kb-suite: kb-service + docreader + ParadeDB, kb-gateway in front of the
+# knowledge backends, and JiuwenSwarm (unmodified) with the plugins and MCP.
+# Optional knowledge backends behind the gateway: profile "weknora" (a WeKnora
+# instance of its own) and profile "da-kb" (the DeepAnalyze knowledge pipeline).
+#
+# Use ./kbsuite.sh rather than calling docker compose directly; it passes the
+# env files that live outside the repository. KBS_PROJECT and the *_PORT
+# variables let a second stack run next to the first one (e.g. for testing).
+
+name: ${KBS_PROJECT:-kb-suite}
+
+x-kbs-env: &kbs-env
+  KBS_DATABASE_URL: postgresql://kbs:${KBS_PG_PASSWORD}@kbs-postgres:5432/kbs
+  KBS_DOCREADER_ADDR: kbs-docreader:50051
+  KBS_FILES_DIR: /data/files
+  KBS_EMBED_MODEL: ${KBS_EMBED_MODEL:-text-embedding-v4}
+  KBS_EMBED_DIM: ${KBS_EMBED_DIM:-1024}
+  KBS_RERANK_MODEL: ${KBS_RERANK_MODEL:-qwen3-rerank}
+  KBS_SUMMARY_MODEL: ${KBS_SUMMARY_MODEL:-qwen-plus}
+  # Extra chat models offered in the knowledge-base settings (comma separated).
+  KBS_CHAT_MODELS: ${KBS_CHAT_MODELS:-qwen-plus,qwen-max,qwen-turbo}
+  # Summary, question and wiki jobs call the chat model; keep both small on a single host.
+  KBS_WORKER_CONCURRENCY: ${KBS_WORKER_CONCURRENCY:-3}
+  KBS_LLM_CONCURRENCY: ${KBS_LLM_CONCURRENCY:-4}
+  KBS_UPLOAD_PART_MB: "2"
+
+services:
+  kbs-postgres:
+    image: paradedb/paradedb:v0.25.11-pg17
+    environment:
+      POSTGRES_USER: kbs
+      POSTGRES_PASSWORD: ${KBS_PG_PASSWORD}
+      POSTGRES_DB: kbs
+    volumes:
+      - kbs-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kbs -d kbs"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  kbs-docreader:
+    image: kb-suite/docreader:${DOCREADER_TAG:-current}
+    environment:
+      DOCREADER_GRPC_MAX_WORKERS: "2"
+      DOCREADER_PDF_RENDER_MAX_WORKERS: "1"
+    restart: unless-stopped
+
+  kbs-api:
+    image: kb-suite/kb-service:${KBS_TAG:-dev}
+    env_file:
+      - ${KBS_SECRETS_DIR}/secrets.env
+    environment: *kbs-env
+    volumes:
+      - kbs-files:/data/files
+    ports:
+      - "127.0.0.1:${KBS_API_PORT:-5198}:8080"
+    depends_on:
+      kbs-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  kbs-worker:
+    image: kb-suite/kb-service:${KBS_TAG:-dev}
+    command: ["python", "-m", "kb_service.worker"]
+    env_file:
+      - ${KBS_SECRETS_DIR}/secrets.env
+    environment: *kbs-env
+    volumes:
+      - kbs-files:/data/files
+    depends_on:
+      kbs-postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  swarm:
+    # 默认用 develop 构建的 Swarm（./kbsuite.sh build-swarm-dev）；回到发布版：
+    #   SWARM_TAG=0.2.7 SWARM_HOME_SUFFIX= ./kbsuite.sh up
+    image: kb-suite/swarm:${SWARM_TAG:-dev}
+    env_file:
+      - ${KBS_SECRETS_DIR}/secrets.env
+      - ${KBS_SECRETS_DIR}/keys.env
+    environment:
+      FRONTEND_HOST: 0.0.0.0
+      # all knowledge access goes through kb-gateway (management API, MCP, DA tools)
+      KB_SERVICE_URL: http://kb-gateway:8080
+      KBS_MCP_URL: http://kb-gateway:8080/mcp/
+      KB_PLUGINS_DIR: /opt/kb-plugins
+      DA_BASE_URL: http://da-engine:8192
+      DA_TENANT_ID: ${DA_TENANT_ID:-default}
+      # DA 作为团队成员时：检索范围取租户下全部知识库；团队 MCP 经本容器桥接给 DA
+      DA_KB_CATALOG_URL: http://kb-gateway:8080/v1/kbs
+      DA_KB_CATALOG_KEY_ENV: KBS_MCP_KEY
+      DA_MCP_BRIDGE_HOST: swarm
+      # 第二个引擎 Loop Forest（lf-engine），provider 与 DA 共用实现，变量前缀 LF_
+      LF_BASE_URL: http://lf-engine:8193
+      LF_TENANT_ID: ${DA_TENANT_ID:-default}
+      LF_ENGINE_SECRET: ${DA_ENGINE_SECRET}
+      LF_KB_CATALOG_URL: http://kb-gateway:8080/v1/kbs
+      LF_KB_CATALOG_KEY_ENV: KBS_MCP_KEY
+      LF_MCP_BRIDGE_HOST: swarm
+      SWARM_MODEL_NAME: ${SWARM_MODEL_NAME:-qwen-plus}
+      SWARM_ENDPOINT_PROFILE: dashscope
+    volumes:
+      - swarm-home:/root/.jiuwenswarm
+      - ../../swarm-kb-plugin/plugin:/opt/kb-plugins:ro
+    depends_on:
+      kb-gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # 对外入口：给 Swarm 加 gzip，并让插件页带哈希的资源长缓存（见 edge/nginx.conf）
+  edge:
+    image: nginx:alpine
+    volumes:
+      - ./edge/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "${KBS_EDGE_PORT:-5199}:8080"
+    depends_on:
+      - swarm
+    restart: unless-stopped
+
+  kbs-redis:
+    image: redis:7
+    volumes:
+      - kbs-redis:/data
+    restart: unless-stopped
+
+  # DA-java built from the three development branches (da/build.sh). Its
+  # knowledge-service slot points at kb-service via da/kbs-tools.yml.
+  da-engine:
+    image: kb-suite/deepanalyze-java:${DA_TAG:-current}
+    env_file:
+      - ${KBS_SECRETS_DIR}/secrets.env
+      - ${KBS_SECRETS_DIR}/keys.env
+    environment:
+      LLM_API_KEY: ${KBS_LLM_API_KEY}
+      DA_MODEL_PROVIDER: openai
+      DA_MODEL_BASE_URL: ${KBS_LLM_BASE_URL}
+      DA_MODEL_NAME: ${DA_MODEL_NAME:-qwen-plus}
+      REDIS_HOST: kbs-redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ""
+      DEEPANALYZE_AUTH_ENABLED: "true"
+      DA_SKILLS_LOCAL_DIR: /app/data/skills/local
+      DA_WORKSPACE_ROOT: /app/data/sessions
+      SKILLHUB_RUNTIME_ACCESS_ENABLED: "false"
+      SPRING_CONFIG_ADDITIONAL_LOCATION: file:/app/config/kbs-tools.yml
+    volumes:
+      - da-data:/app/data
+      - ./da/kbs-tools.yml:/app/config/kbs-tools.yml:ro
+      - ./da/build/knowledge-service.json:/app/config/knowledge-service.json:ro
+    ports:
+      - "127.0.0.1:${DA_ENGINE_PORT:-5197}:8192"
+    depends_on:
+      kbs-redis:
+        condition: service_started
+      kb-gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Loop Forest service (lf/build.sh): agent-solution's loop-forest behind a DA-compatible
+  # /api/agents. Knowledge tools come from kb-service's MCP; secret, model and MCP key
+  # fall back to DA_ENGINE_SECRET / KBS_LLM_* / KBS_MCP_KEY from the env files.
+  lf-engine:
+    image: kb-suite/loop-forest:${LF_TAG:-current}
+    env_file:
+      - ${KBS_SECRETS_DIR}/secrets.env
+      - ${KBS_SECRETS_DIR}/keys.env
+    environment:
+      LF_MODEL_NAME: ${LF_MODEL_NAME:-qwen-plus}
+      LF_KB_MCP_URL: http://kb-gateway:8080/mcp/
+    ports:
+      - "127.0.0.1:${LF_ENGINE_PORT:-5196}:8193"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8193 && printf \"GET /ready HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q UP <&3'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      kb-gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # One knowledge API over several backends (gateway/backends.yaml). Callers keep
+  # their kb-service keys; backend credentials are env var names in backends.yaml.
+  kb-gateway:
+    image: kb-suite/kb-gateway:${KBGW_TAG:-dev}
+    env_file:
+      - ${KBS_SECRETS_DIR}/keys.env
+      - path: ${KBS_SECRETS_DIR}/gateway.env
+        required: false
+    environment:
+      KBGW_BACKENDS_FILE: /etc/kb-gateway/backends.yaml
+      KBGW_KEYS: plugin=KBS_PLUGIN_KEY:manage,ingest,retrieve;mcp=KBS_MCP_KEY:retrieve;da=KBS_DA_KEY:retrieve,reprocess
+      KBGW_TENANT: ${DA_TENANT_ID:-default}
+    volumes:
+      - ./gateway/backends.yaml:/etc/kb-gateway/backends.yaml:ro
+    ports:
+      - "127.0.0.1:${KBGW_PORT:-5195}:8080"
+    depends_on:
+      kbs-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  # ---- WeKnora backend (profile weknora): an instance of its own, never one already in use ----
+  weknora-postgres:
+    profiles: [weknora]
+    image: paradedb/paradedb:v0.25.11-pg17
+    environment:
+      POSTGRES_USER: weknora
+      POSTGRES_PASSWORD: ${WEKNORA_DB_PASSWORD:-}
+      POSTGRES_DB: weknora
+    volumes:
+      - weknora-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U weknora -d weknora"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  weknora-redis:
+    profiles: [weknora]
+    image: redis:7
+    command: ["redis-server", "--requirepass", "${WEKNORA_REDIS_PASSWORD:-}"]
+    restart: unless-stopped
+
+  weknora-docreader:
+    profiles: [weknora]
+    image: wechatopenai/weknora-docreader:${WEKNORA_VERSION:-latest}
+    environment:
+      DOCREADER_IMAGE_OUTPUT_DIR: /tmp/docreader
+      DOCREADER_GRPC_MAX_WORKERS: "2"
+    volumes:
+      - weknora-docreader-tmp:/tmp/docreader
+    restart: unless-stopped
+
+  weknora-app:
+    profiles: [weknora]
+    image: wechatopenai/weknora-app:${WEKNORA_VERSION:-latest}
+    environment:
+      GIN_MODE: release
+      TZ: Asia/Shanghai
+      AUTO_MIGRATE: "true"
+      DB_DRIVER: postgres
+      DB_HOST: weknora-postgres
+      DB_PORT: "5432"
+      DB_USER: weknora
+      DB_PASSWORD: ${WEKNORA_DB_PASSWORD:-}
+      DB_NAME: weknora
+      REDIS_ADDR: weknora-redis:6379
+      REDIS_PASSWORD: ${WEKNORA_REDIS_PASSWORD:-}
+      DOCREADER_ADDR: weknora-docreader:50051
+      DOCREADER_TRANSPORT: grpc
+      RETRIEVE_DRIVER: postgres
+      STORAGE_TYPE: local
+      LOCAL_STORAGE_BASE_DIR: /data/files
+      SYSTEM_AES_KEY: ${WEKNORA_AES_KEY:-}
+      JWT_SECRET: ${WEKNORA_JWT_SECRET:-}
+      MAX_FILE_SIZE_MB: "50"
+      # only the bootstrap registers an account; the adapter uses an API key
+      DISABLE_REGISTRATION: ${WEKNORA_DISABLE_REGISTRATION:-false}
+      LANGFUSE_PUBLIC_KEY: ""
+      LANGFUSE_SECRET_KEY: ""
+      NEO4J_ENABLE: ""
+    volumes:
+      - weknora-files:/data/files
+      - weknora-docreader-tmp:/tmp/docreader:ro
+      - ./weknora/build/config.yaml:/app/config/config.yaml:ro
+    depends_on:
+      weknora-postgres:
+        condition: service_healthy
+      weknora-redis:
+        condition: service_started
+      weknora-docreader:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
+  weknora-adapter:
+    profiles: [weknora]
+    image: kb-suite/weknora-adapter:${KBGW_TAG:-dev}
+    # only what the adapter needs from weknora.env, not the instance's DB/Redis/JWT secrets
+    environment:
+      WEKNORA_API_KEY: ${WEKNORA_API_KEY:-}
+      WEKNORA_EMBEDDING_MODEL_ID: ${WEKNORA_EMBEDDING_MODEL_ID:-}
+      WEKNORA_CHAT_MODEL_ID: ${WEKNORA_CHAT_MODEL_ID:-}
+      WEKNORA_API_BASE: http://weknora-app:8080/api/v1
+      WEKNORA_ADAPTER_KEY: ${KBGW_WEKNORA_ADAPTER_KEY:-}
+      WEKNORA_ID_PREFIX: wk_
+    depends_on:
+      weknora-app:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---- DA knowledge pipeline backend (profile da-kb) ----
+  # The DA backend runs without authentication (DA_AUTH_MODE=none), so it sits on
+  # its own network that only its database and the adapter join.
+  da-kb-postgres:
+    profiles: [da-kb]
+    image: paradedb/paradedb:v0.25.11-pg17
+    environment:
+      POSTGRES_USER: deepanalyze
+      POSTGRES_PASSWORD: ${DA_KB_DB_PASSWORD:-}
+      POSTGRES_DB: deepanalyze
+    volumes:
+      - da-kb-pg:/var/lib/postgresql/data
+    networks: [da-kb]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U deepanalyze -d deepanalyze"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  da-kb:
+    profiles: [da-kb]
+    image: kb-suite/da-kb:${DA_KB_TAG:-current}
+    environment:
+      PG_HOST: da-kb-postgres
+      PG_PORT: "5432"
+      PG_DATABASE: deepanalyze
+      PG_USER: deepanalyze
+      PG_PASSWORD: ${DA_KB_DB_PASSWORD:-}
+      DATA_DIR: /app/data
+      DA_AUTH_MODE: none
+      DA_SKIP_WIZARD: "true"
+    volumes:
+      - da-kb-data:/app/data
+    networks: [da-kb]
+    depends_on:
+      da-kb-postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  da-kb-adapter:
+    profiles: [da-kb]
+    image: kb-suite/da-kb-adapter:${KBGW_TAG:-dev}
+    environment:
+      DA_KB_BASE_URL: http://da-kb:21000
+      DA_KB_ADAPTER_KEY: ${KBGW_DA_ADAPTER_KEY:-}
+      DA_KB_ID_PREFIX: da_
+      DA_KB_EXTRA_FILE_TYPES: ${DA_KB_EXTRA_FILE_TYPES:-}
+    networks: [default, da-kb]
+    depends_on:
+      da-kb:
+        condition: service_started
+    restart: unless-stopped
+
+networks:
+  da-kb: {}
+
+volumes:
+  weknora-pg:
+  weknora-files:
+  weknora-docreader-tmp:
+  da-kb-pg:
+  da-kb-data:
+  kbs-redis:
+  da-data:
+  kbs-pg:
+  kbs-files:
+  swarm-home:
+    # 两个版本的工作区分开放，互不迁移
+    name: ${KBS_PROJECT:-kb-suite}_swarm-home${SWARM_HOME_SUFFIX--dev}

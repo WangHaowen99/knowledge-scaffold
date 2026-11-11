@@ -4,3 +4,5 @@ endpoints:
   - {id: modeling-mcp, serviceNameSuffix: core, port: 5188, protocol: HTTP, visibility: external, apiVersion: v1, healthPath: /health}
   - {id: modeling-agent, serviceNameSuffix: agent, port: 5110, protocol: HTTP, visibility: internal, apiVersion: v1, healthPath: /health}
   - {id: onto-modeling, serviceNameSuffix: onto, port: 8100, protocol: HTTP, visibility: external, apiVersion: v1, healthPath: /api/health}
+  - {id: knowledge-hub, serviceNameSuffix: hub, port: 8200, protocol: HTTP, visibility: internal, apiVersion: v1, healthPath: /api/health}
+  - {id: evaluation, serviceNameSuffix: evaluation, port: 8090, protocol: HTTP, visibility: external, apiVersion: v1, healthPath: /evaluation/api/health}

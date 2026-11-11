@@ -1,0 +1,45 @@
+# eval1 实施验证
+
+验证日期：2026-11-06（数据飞轮评测侧与评测独立收尾）。全部测试输入、身份、凭据占位值和依赖响应均为合成数据。
+
+| 范围 | 命令与结果 |
+| --- | --- |
+| 独立后端 | `cd eval-service && python -m pytest tests -q`：204 项通过（新增 test_pipeline_resilience、test_modeling_result、test_feedback、test_mapping_parity） |
+| 评测前端 | `cd eval-service/frontend && npm test && npm run build`：30 个用例通过，生产构建通过（主包约 501 kB，用户反馈页单独分包） |
+| 部署脚本 | `python -m pytest deploy/tests -q`：150 项通过；`test_onto_modeling_migrate.py::test_migration_exports_committed_rows_still_in_wal` 因本机 Node 不支持 `--experimental-sqlite` 失败，与本次改动无关 |
+
+| 模拟联调 | 实际打包的评测镜像（v0.9.10）对接模拟的认证、Hub、消费、建模和判分模型，走真实 HTTP：接口场景 79 项、真实浏览器页面操作 19 项通过；完成通知用建模自身的通知模型校验，没有被拒收 |
+| 真实镜像闭环 | Hub v0.9.12、评测 v0.9.12、建模 v0.9.13 的真实镜像，认证、消费和判分模型为模拟：建模发布 → 评测 → 通知 → 评测优化 → 再发布 → 自动回写；消费推送 → 确认 → 通知 → 标记处理失败 → 再发布 → 已处理，共 36 项通过；浏览器检查建模「已发布版本」、评测「评测任务」和「用户反馈」无页面报错 |
+
+新增覆盖：限流退避与熔断、单题超时对账、映射冲突明细、通知重试上限、判分网关内网地址校验、报告与建议分队列、登录过期提示、改判只重建报告、mapping 与建模一致；建模回写与优化进展；消费反馈接收、投票与纠错、分拣门槛、反馈轮次与报告、负责人确认与驳回、按 Hub 包权限可见、保留期清理。未与真实消费服务（反馈投递未开发）和建模（按来源存放通知未开发）联调。
+
+## 2026-10-23 验证记录
+
+## 已验证
+
+| 范围 | 命令与结果 |
+| --- | --- |
+| 独立后端 | `PYTHONPATH=eval-service python -m pytest eval-service/tests -q`：34 项通过 |
+| 提交前后端与部署回归 | `PYTHONPATH=eval-service python -m pytest eval-service/tests deploy/tests/test_evaluation_deploy.py deploy/tests/test_workbench_deploy.py -q`：77 项及 10 个子测试通过 |
+| 评测前端 | `cd eval-service/frontend && npm test && npm run build`：1 个测试文件（3 个用例）通过，生产构建通过 |
+| 建模前端 | `cd modeling/onto-modeling/frontend && npm test && npm run build`：15 个测试文件通过，生产构建通过 |
+| 脚本及源码 | 四个相关部署/打包脚本 `bash -n`、修改的 Python 文件语法检查、`git diff --check` 通过 |
+
+后端覆盖：独立账号隔离、Hub2 真实存储与派生校验、mapping 新增/覆盖、快照和正式发布、稳定请求重试、定义删除后的运行幂等、用例与上传校验、数据源连接失败阻断、问答未知提交对账、取消、Judge 重试、人工改判、恢复与删除记录重放。数据库适配测试覆盖隔离 SQL 和图节点/关系导入，使用合成连接替身。
+
+consumer 空间预置测试执行实际路由函数，验证用户与服务身份双重约束；未启动 consumer 完整应用。前端测试覆盖跳转参数、按账号隔离请求标识、拒绝旧登录响应及换账号后不重放请求。
+
+本地 FastAPI TestClient 在受限沙箱的线程启动处挂起，因此后端测试在允许本地线程运行的环境执行，并设置 90 秒上限。测试使用临时目录，无真实依赖调用。
+
+新增内容已检查文件类型、凭据模式、示例地址和合成测试数据；未新增运行凭据、真实业务数据或高风险附件。consumer 修改文件保留规定版权头。
+
+## 尚未验证的部署边界
+
+- 未启动容器、构建 Docker 镜像或制作真实离线包；部署脚本通过语法检查及命令替身测试，覆盖默认全栈、独立启动、前置检查和离线包目录结构。
+- 未连接真实 MySQL、Neo4j、模型或完整 consumer 服务；替身测试不能证明数据库兼容性和模型效果。
+- 未执行浏览器端到端联调。有效登录免重复认证依赖同源独立网关配置，需部署后验证跨页面续期，以及停止 Onto/Core 后的完整评测闭环。
+- 当前为单进程、单实例；不提供多副本调度。MODEL-CONFIG-01 留待 eval2 统一设计。
+
+已知非阻塞提示：Starlette TestClient 的 httpx 兼容弃用提示；建模前端已有大 chunk 构建提示。
+
+本记录描述本地验证结果，不表示已完成部署验收。
