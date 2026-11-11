@@ -10,10 +10,13 @@ import { errorText } from '../../api/errors.js';
 import { PageHead, ShellP } from '../../shell/Shell.jsx';
 import { finishedTasks, mergeTask, pageTask } from '../../state/commandTask.js';
 import { Button, Check, Chip, Empty, Icon, Modal, Note, Prog, cx } from '../../ui/index.jsx';
+import { legacyOfficeHint, uploadRules } from '../../lib/resourceUpload.js';
 import { CommandRunBar, useCommandTasks, useProjectEvent } from '../plugin/parts.jsx';
 import { FeedbackPreview, MaterialPreview, useFullscreen } from './ResourcePreview.jsx';
+import { useSheetScope } from './SheetScope.jsx';
+import { isSchemaTable } from './sheetScopeModel.js';
 import {
-  PURPOSE_FALLBACK, UPLOAD_ACCEPT, checkUpload, extOf, feedbackView, fileIcon, findMaterial, fmtSize, materialTitle, metaText, sortMaterials,
+  PURPOSE_FALLBACK, checkUpload, extOf, feedbackView, fileIcon, findMaterial, fmtSize, materialTitle, metaText, sortMaterials,
   pickDefault, purposeView, refSentence, replaceName, revisionBanner, routeTarget, targetKey, textChip,
 } from './resourcesModel.js';
 import '../../styles/evidence.css';
@@ -190,7 +193,8 @@ function DeleteDialog({ m, onClose, onDeleted }) {
 }
 
 export default function ResourcesPage({ route }) {
-  const { api, services } = useApp();
+  const { api, services, config } = useApp();
+  const rules = useMemo(() => uploadRules(config), [config]);
   const { pid } = useProject();
   const [data, setData] = useState(null);
   const [feedback, setFeedback] = useState([]);
@@ -291,7 +295,7 @@ export default function ResourcesPage({ route }) {
         if (r.error) { toast(r.error, 'alert'); return; }
         file = new File([raw], r.name, { type: raw.type });
       }
-      rows.push({ key: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, file, bad: checkUpload(file.name, file.size) });
+      rows.push({ key: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, file, bad: checkUpload(file.name, file.size, rules) });
     });
     setUps((u) => [...u, ...rows.map(({ key, file, bad }) => (bad
       ? { key, name: file.name, size: file.size, state: 'error', error: bad }
@@ -311,8 +315,11 @@ export default function ResourcesPage({ route }) {
     }
     if (!done.length) return;
     const last = done[done.length - 1];
-    if (replaceOf) toast(`已替换 ${materialTitle(replaceOf)}，保存为新版本 ${last.version_label}`, 'upload');
-    else toast(`已上传 ${done.length} 份资料（${last.version_label}）${revision ? '；已发起增量更新' : ''}`, 'upload');
+    // 旧版 .doc / .xls 传上去了但转不出文本：提示接在结果后面（只有一条轻提示，分开发会被后一条盖掉）
+    const hints = done.map((x) => legacyOfficeHint(x.material?.name)).filter(Boolean);
+    const tail = hints.length ? `；${hints.join('；')}` : '';
+    if (replaceOf) toast(`已替换 ${materialTitle(replaceOf)}，保存为新版本 ${last.version_label}${tail}`, hints.length ? 'alert' : 'upload');
+    else toast(`已上传 ${done.length} 份资料（${last.version_label}）${revision ? '；已发起增量更新' : ''}${tail}`, hints.length ? 'alert' : 'upload');
     if (revision) setRev(false);
     setSel({ kind: 'file', path: last.material.path, fragment: null });
     load();
@@ -321,7 +328,7 @@ export default function ResourcesPage({ route }) {
     pickMode.current = mode;
     const input = inputRef.current;
     if (!input) return;
-    input.accept = mode?.replaceOf ? `.${extOf(mode.replaceOf.name)}` : mode?.textOnly ? '.docx,.doc,.txt,.md' : UPLOAD_ACCEPT;
+    input.accept = mode?.replaceOf ? `.${extOf(mode.replaceOf.name)}` : mode?.textOnly ? '.docx,.doc,.txt,.md' : rules.accept;
     input.multiple = !mode?.replaceOf;
     input.value = '';
     input.click();
@@ -332,16 +339,26 @@ export default function ResourcesPage({ route }) {
   };
 
   // ---------- 改用途（R-03）：资料分析开始过时，服务端顺带发一条重读命令 ----------
+  const applyPurpose = (m, value, r) => {
+    setData((d) => ({
+      ...d,
+      groups: d.groups.map((g) => ({ ...g, items: g.items.map((x) => (x.path === m.path ? { ...x, ...r.material, purpose: value, purpose_auto: false } : x)) })),
+    }));
+    if (r.reread_task) tracked.track(r.reread_task);
+  };
+  // 表格改成数据 Schema 先预检表头（R-16）：没问题直接保存，有问题弹窗选 Sheet 范围
+  const sheetScope = useSheetScope(pid, (r) => {
+    const before = findMaterial(data?.groups, r.material.path);
+    applyPurpose(r.material, 'schema', r);
+    toast(before?.purpose === 'schema' && !before?.purpose_auto ? 'Sheet 范围已保存' : '用途已改为「数据 Schema」', 'check');
+  });
   const setPurpose = async (m, value) => {
     setMenu(null);
     if (value === m.purpose && !m.purpose_auto) return;
+    if (value === 'schema' && isSchemaTable(m.name)) { sheetScope.choose(m); return; }
     try {
       const r = await api.setResourcePurpose(pid, { path: m.path, purpose: value });
-      setData((d) => ({
-        ...d,
-        groups: d.groups.map((g) => ({ ...g, items: g.items.map((x) => (x.path === m.path ? { ...x, ...r.material, purpose: value, purpose_auto: false } : x)) })),
-      }));
-      if (r.reread_task) tracked.track(r.reread_task);
+      applyPurpose(m, value, r);
       const label = purposes.find((x) => x.value === value)?.label || value;
       toast(`用途已改为「${label}」`, 'check');
     } catch (e) {
@@ -373,6 +390,7 @@ export default function ResourcesPage({ route }) {
       <MaterialPreview
         key={`${selected.path}:${sel?.n || ''}`} m={selected} purposes={purposes} fragment={sel?.kind === 'file' ? sel.fragment : null}
         full={full} onFull={toggleFull} onSaved={load} onUploadText={() => choose({ textOnly: true })} tasks={tasks}
+        onScope={sheetScope.edit}
       />
     );
   } else if (data && !data.error && selPath) {
@@ -471,6 +489,7 @@ export default function ResourcesPage({ route }) {
         m={del} onClose={() => setDel(null)}
         onDeleted={(path) => { setDel(null); if (selPath === path) setSel(null); load(); }}
       />
+      {sheetScope.dialog}
     </ShellP>
   );
 }

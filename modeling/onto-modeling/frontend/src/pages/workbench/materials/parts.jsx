@@ -1,9 +1,10 @@
 // 资料分析 / 建模蓝图共用的小件：资料图标、带出处的文字、上传资料、打开弹窗、发命令
-import { Fragment, useCallback, useContext, useRef, useState } from 'react';
+import { Fragment, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { useApp } from '../../../app/context.js';
 import { navigate, pagePath } from '../../../app/router.js';
 import { toast } from '../../../app/toast.jsx';
 import { errorText } from '../../../api/errors.js';
+import { legacyOfficeHint, splitResourceFiles, uploadRules } from '../../../lib/resourceUpload.js';
 import { Ev, Icon } from '../../../ui/index.jsx';
 import { useActions } from '../cards.jsx';
 import { WbCtx } from '../parts.jsx';
@@ -54,12 +55,14 @@ export function useOpenDialog() {
 
 // 上传资料：先进暂存区（U-01），再落到资料区（R-02）；一次选多份
 export function useMaterialUpload(pid, accept) {
-  const { api, services } = useApp();
+  const { api, services, config } = useApp();
+  const rules = useMemo(() => uploadRules(config), [config]);
   const inputRef = useRef(null);
   const [busy, setBusy] = useState(0);
   const upload = useCallback(async (files) => {
-    const list = [...(files || [])];
-    if (!list.length) return;
+    // 格式不对、太大的先挡下（与资料区同一份规则），其余照常传
+    const { accepted: list, rejected } = splitResourceFiles(files, rules);
+    const notes = rejected.map((x) => `${x.file.name}：${x.error}`);
     setBusy((n) => n + list.length);
     let ok = 0;
     for (const file of list) {
@@ -67,17 +70,21 @@ export function useMaterialUpload(pid, accept) {
         const up = await services.upload(file, 'material', { projectId: pid });
         await api.addResources(pid, { upload_id: up.upload_id });
         ok += 1;
+        const hint = legacyOfficeHint(file.name);
+        if (hint) notes.push(hint);
       } catch (e) {
-        toast(`${file.name}：${errorText(e)}`, 'alert');
+        notes.push(`${file.name}：${errorText(e)}`);
       } finally {
         setBusy((n) => n - 1);
       }
     }
-    if (ok) toast(`已上传 ${ok} 份资料`, 'upload');
-  }, [api, services, pid]);
+    // 只有一条轻提示：结果和问题合成一条
+    if (notes.length) toast([...(ok ? [`已上传 ${ok} 份资料`] : []), ...notes].join('；'), 'alert');
+    else if (ok) toast(`已上传 ${ok} 份资料`, 'upload');
+  }, [api, services, pid, rules]);
   const input = (
     <input
-      ref={inputRef} type="file" multiple hidden accept={(accept || []).join(',') || undefined}
+      ref={inputRef} type="file" multiple hidden accept={(accept || []).join(',') || rules.accept}
       onChange={(e) => { upload(e.target.files); e.target.value = ''; }}
     />
   );

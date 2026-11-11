@@ -9,6 +9,7 @@ import { errorText, relativeTime } from '../../api/errors.js';
 import { commandFromTarget, commandNode, nodeActionKind, suggestionCommand, overlayRunning, scriptRunView, sectionGroups, trackClass, trackNodes, withoutEvidence } from '../../state/flow.js';
 import { evidenceInProject, withoutEvidenceSuggestions } from '../../state/evidence.js';
 import { composerState, lockPop, readonlyInfo } from '../../state/readonly.js';
+import { splitResourceFiles, uploadRules } from '../../lib/resourceUpload.js';
 import { runStatus } from '../../state/conversation.js';
 import { ShellP } from '../../shell/Shell.jsx';
 import {
@@ -300,7 +301,7 @@ function KnowledgeDialog({ item, onClose }) {
 const MODES = [['L2', 'users', '陪伴建模'], ['L4', 'rocket', '自主构建']];
 // plugin：插件对话（ADR-0087）——模式胶囊显示「插件开发」，没有命令弹层
 function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCommand, onStop, catalog, plugin }) {
-  const { api, services } = useApp();
+  const { api, services, config } = useApp();
   const [text, setText] = useState('');
   const [atts, setAtts] = useState([]);
   const [refs, setRefs] = useState([]);
@@ -312,15 +313,19 @@ function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCom
   const wrapRef = useRef(null);
   useOutside(wrapRef, () => setPop(null), !!pop);
 
+  const rules = useMemo(() => uploadRules(config), [config]);
   const addFiles = useCallback((files) => {
-    [...(files || [])].slice(0, 10).forEach((file) => {
+    // 附件落进资料区，与资料上传同一份规则：格式不对、太大的不传
+    const { accepted, rejected } = splitResourceFiles([...(files || [])].slice(0, 10), rules);
+    if (rejected.length) toast(rejected.map((x) => `${x.file.name}：${x.error}`).join('；'), 'alert');
+    accepted.forEach((file) => {
       const key = `${file.name}-${Math.random()}`;
       setAtts((a) => [...a, { key, name: file.name, image: /^image\//.test(file.type), progress: 0 }]);
       services.upload(file, 'attachment', { projectId: pid, onProgress: (p) => setAtts((a) => a.map((x) => (x.key === key ? { ...x, progress: p } : x))) })
         .then((up) => setAtts((a) => a.map((x) => (x.key === key ? { ...x, upload: up, progress: 100 } : x))))
         .catch((e) => { setAtts((a) => a.filter((x) => x.key !== key)); toast(errorText(e), 'alert'); });
     });
-  }, [services, pid]);
+  }, [services, pid, rules]);
 
   useEffect(() => {
     apiRef.current = {

@@ -152,6 +152,20 @@ export function register(ctx) {
     return json(200, { path, text: f.text, markdown, truncated: false });
   });
 
+  // R-16 Sheet 范围预检：mock 里每张 Sheet 都是表头干净的数据表（改用途为数据 Schema 时直接保存）
+  on('GET', '/projects/([^/]+)/resources/schema-preview', ({ m, query }) => {
+    const path = query.get('path') || '';
+    const f = state(m[1]).files.find((x) => x.path === path);
+    if (!f) return err(404, 'file_not_found', '资料不存在', { path });
+    if (!/\.(xlsx|xlsm|csv)$/i.test(path)) return err(415, 'unsupported_media_type', '数据 Schema 只支持 xlsx、xlsm、csv', { allowed: ['.xlsx', '.xlsm', '.csv'] });
+    const sheets = Array.from({ length: f.sheets || 1 }, (_, i) => ({
+      name: `Sheet${i + 1}`, kind: 'table', headers: ['id', 'name'], selectable: true, schema_selectable: true, issues: [],
+    }));
+    const names = sheets.map((s) => s.name);
+    return json(200, { version: 1, mode: 'auto', revision: 'mock000000000000', pending: false, error: null,
+      included_sheets: names, reference_sheets: [], sheets });
+  });
+
   // R-15 选出处的位置：逐行，q 按原文和位置筛，一页 limit 条（游标就是下标）；选中的锚点补进 EV-29 的解析表，悬停能看原文
   on('GET', '/projects/([^/]+)/resources/positions', ({ m, query }) => {
     const path = query.get('path') || '';
