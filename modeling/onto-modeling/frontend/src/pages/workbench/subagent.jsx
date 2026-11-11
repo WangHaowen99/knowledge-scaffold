@@ -14,6 +14,8 @@ import {
 
 const SUB_TITLE = { done: '子任务完成', failed: '子任务失败', interrupted: '子任务已中断', timeout: '子任务执行超时' };
 const SUB_ICON = { done: 'check', failed: 'alert', interrupted: 'pause', timeout: 'clock' };
+// 没有小结时第二行的说法（同 develop 的子任务卡）
+const END_HINT = { interrupted: '已中断，没有收到子代理的结果', timeout: '长时间没有响应，已判定执行超时' };
 const PAGE = 200;
 const PAGES_MAX = 5;
 
@@ -22,7 +24,7 @@ export function SubagentCard({ s, ended = false }) {
   const [open, setOpen] = useState(false);
   const status = subagentStatus(s, ended);
   const over = Boolean(SUB_ICON[status]);
-  const line = over ? s.summary
+  const line = over ? (s.summary || END_HINT[status] || '')
     : s.thinking ? `思考中 · ${fmtElapsed(s.thinking.elapsed_ms)}`
       : (s.progress_text || '独立子代理执行中，主对话稍后汇总结果');
   return (

@@ -81,6 +81,6 @@ export function outcome(status, summary) {
   if (status === 'done') return { tone: 'green', label: '结果', text: summary || '已完成，结果交回给助手' };
   if (status === 'failed') return { tone: 'red', label: '失败原因', text: summary || '子任务出错，没有交回结果' };
   if (status === 'interrupted') return { tone: 'gray', label: '已中断', text: '会话已停下，这个子任务没有交回结果' };
-  if (status === 'timeout') return { tone: 'gray', label: '执行超时', text: '长时间没有响应，没有交回结果' };
+  if (status === 'timeout') return { tone: 'gray', label: '执行超时', text: '长时间没有响应，已判定执行超时' };
   return null;
 }
