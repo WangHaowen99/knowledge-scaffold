@@ -1,14 +1,15 @@
-"""反馈入口（三份契约之「反馈入」，API 契约 X-05，ADR-0020）：接收评测侧的失分用例与线上反馈，
-落到项目工作区，供反馈演进读取。
+"""外部反馈批次（ADR-0020、ADR-0092）：评测侧的失分用例与线上反馈落到项目工作区，供反馈演进读取。
 
-onto 不主动调用评测服务；评测服务持服务令牌（feedback.write）把一批反馈推进来：
+批次来自「评测优化」（package_evaluations.optimize）：用户在已发布版本里对一轮独立评测点评测优化，
+onto 以用户自己的登录读回产物，整理成一批反馈。原先评测服务持服务令牌推进来的 X-05 已退役（没有调用方）。
 
-- 落在工作区 ``feedback/<接收时间>-<feedback_id>.json``，单独成一个提交（只提交这个文件）：
+- 落在工作区 ``feedback/<接收时间>-<feedback_id>.json``，和附带的报告一起提交：
   反馈随项目克隆、导出和回退，演进报告可以引用它；不在发布读取的目录里，不进知识包；
-- feedback_id 是幂等键：同一个 ID 只生效一次，重复提交返回第一次落盘的那一批；
-- 只收结构化字段，字符串截断、条数有上限；不收附件、不收地址与凭据类字段。
+- feedback_id 是幂等键：同一个 ID 只生效一次，重复写入返回第一次落盘的那一批；
+- 只收结构化字段，字符串截断、条数有上限；附件只记工作区相对路径（报告、完整回答、优化建议、数据表表头），
+  不收地址与凭据类字段。
 
-落盘格式（format = onto-feedback/v1）写在 ADR-0020 与 README，/ontology-evolution 与
+落盘格式（format = onto-feedback/v1）写在 ADR-0020、ADR-0092，/ontology-evolution 与
 check_eval_generalization.py 按它读取最新一批。
 """
 
@@ -30,7 +31,10 @@ MAX_LIST_ITEMS = 20
 MAX_BODY_BYTES = 2 * 1024 * 1024
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
-_SUMMARY_FIELDS = ("score", "total", "pass", "partial", "fail", "error")
+SUMMARY_FIELDS = ("score", "total", "pass", "partial", "fail", "error")
+# 附件（ADR-0092）：评测优化导入的报告与表头放在这两处，路径只认这两个前缀
+ATTACHMENT_KEYS = ("report", "answers", "suggestions", "tables")
+_ATTACHMENT_PREFIXES = ("reports/", ".ontology-state/eval-service/")
 
 CODE_INVALID = "feedback_invalid"
 
@@ -97,8 +101,29 @@ def _item(check: _Collector, raw, index: int) -> dict:
     }
 
 
-def normalize(payload) -> dict:
-    """请求体 → 落盘内容（不含接收方）。不合法时抛 FeedbackRejected（422，details.errors）。"""
+def _attachments(check: _Collector, raw) -> dict:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or set(raw) - set(ATTACHMENT_KEYS):
+        check.errors.append(f"attachments 只能包含 {'、'.join(ATTACHMENT_KEYS)}")
+        return {}
+    found = {}
+    for key in ATTACHMENT_KEYS:
+        rel = check.text(raw.get(key), f"attachments.{key}", MAX_SHORT_TEXT)
+        if not rel:
+            continue
+        if not rel.startswith(_ATTACHMENT_PREFIXES) or ".." in rel.split("/") or "\\" in rel:
+            check.errors.append(f"attachments.{key} 必须是工作区里的报告或评测状态路径")
+            continue
+        found[key] = rel
+    return found
+
+
+def normalize(payload, *, allow_empty: bool = False) -> dict:
+    """请求体 → 落盘内容（不含接收方）。不合法时抛 FeedbackRejected（422，details.errors）。
+
+    allow_empty：评测优化导入的全通过轮次也成批（反馈演进据此告知「无失分项」），外来批次必须有条目。
+    """
     if not isinstance(payload, dict):
         raise FeedbackRejected("请求体必须是 JSON 对象", details={"errors": ["请求体必须是 JSON 对象"]})
     check = _Collector()
@@ -113,7 +138,7 @@ def normalize(payload) -> dict:
     if version and not _VERSION_RE.match(version):
         check.errors.append("release_version 必须是发布版本号（如 0.1.12）")
     items = payload.get("items")
-    if not isinstance(items, list) or not items:
+    if not isinstance(items, list) or not (items or allow_empty):
         check.errors.append("items 必须是非空数组")
         items = []
     elif len(items) > MAX_ITEMS:
@@ -139,11 +164,14 @@ def normalize(payload) -> dict:
         "release_version": version,
         "summary": {
             key: check.number(summary_raw.get(key), f"summary.{key}")
-            for key in _SUMMARY_FIELDS if summary_raw.get(key) is not None
+            for key in SUMMARY_FIELDS if summary_raw.get(key) is not None
         },
         "items": [_item(check, raw, index) for index, raw in enumerate(items)],
         "reported_at": received_at,
     }
+    attachments = _attachments(check, payload.get("attachments"))
+    if attachments:
+        document["attachments"] = attachments
     if check.errors:
         raise FeedbackRejected("反馈不符合反馈契约：" + "；".join(check.errors[:3]), details={"errors": check.errors[:50]})
     return document
@@ -163,6 +191,12 @@ def _existing(root: Path, feedback_id: str) -> tuple[str, dict] | None:
     return None
 
 
+def batch_path(root: Path, feedback_id: str) -> str | None:
+    """这批反馈的工作区相对路径；还没有这批时为 None。"""
+    found = _existing(Path(root), feedback_id)
+    return found[0] if found else None
+
+
 def latest_batch(root: Path) -> str | None:
     """最新一批反馈的工作区相对路径（文件名以接收时间开头，按名排序即按时间）。"""
     folder = root / FEEDBACK_DIR
@@ -170,8 +204,24 @@ def latest_batch(root: Path) -> str | None:
     return f"{FEEDBACK_DIR}/{files[-1].name}" if files else None
 
 
+def place(manager, root: Path, document: dict, received_by: str) -> tuple[str, dict, bool]:
+    """调用方持项目锁：写下一批已校验的反馈，不提交；返回 (相对路径, 落盘文档, 是否新建)。
+
+    同一 feedback_id 已有批次时不再写，返回原批次。
+    """
+    existing = _existing(root, document["feedback_id"])
+    if existing is not None:
+        return existing[0], existing[1], False
+    stamp = datetime.fromtimestamp(time.time(), timezone.utc)
+    document = {**document, "received_at": stamp.strftime("%Y-%m-%dT%H:%M:%S.") + f"{stamp.microsecond // 1000:03d}Z",
+                "received_by": received_by}
+    rel = f"{FEEDBACK_DIR}/{stamp:%Y%m%d-%H%M%S}-{document['feedback_id']}.json"
+    manager._atomic_write_text(root / rel, json.dumps(document, ensure_ascii=False, indent=2) + "\n")
+    return rel, document, True
+
+
 def receive(manager, project_id: str, payload, received_by: str) -> tuple[dict, bool]:
-    """写入一批反馈并提交；返回 (Feedback 视图, 是否新建)。同一 feedback_id 只生效一次。"""
+    """写入一批外来反馈并提交；返回 (Feedback 视图, 是否新建)。同一 feedback_id 只生效一次。"""
     from . import publish
     from .workspace import _commit_paths
 
@@ -185,15 +235,9 @@ def receive(manager, project_id: str, payload, received_by: str) -> tuple[dict, 
         )
     with manager._project_lock(project_id):
         root = manager.project_root(project_id)
-        existing = _existing(root, document["feedback_id"])
-        if existing is not None:
-            return view(*existing, ""), False
-        now = time.time()
-        stamp = datetime.fromtimestamp(now, timezone.utc)
-        document["received_at"] = stamp.strftime("%Y-%m-%dT%H:%M:%S.") + f"{stamp.microsecond // 1000:03d}Z"
-        document["received_by"] = received_by
-        rel = f"{FEEDBACK_DIR}/{stamp:%Y%m%d-%H%M%S}-{document['feedback_id']}.json"
-        manager._atomic_write_text(root / rel, json.dumps(document, ensure_ascii=False, indent=2) + "\n")
+        rel, document, created = place(manager, root, document, received_by)
+        if not created:
+            return view(rel, document, ""), False
         commit = _commit_paths(
             root, [rel],
             f"feedback: 接收外部反馈 {document['feedback_id']}（{len(document['items'])} 条）by {received_by}",

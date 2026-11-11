@@ -14,22 +14,27 @@
 
 ## Step 1: 定位反馈批次与失分用例
 
-反馈由评测服务经反馈入口写进工作区（onto 不主动调用评测服务），每批一个文件
+反馈批次来自已发布版本里的「评测优化」：平台以用户登录从独立评测服务读回一轮评测的结果，写进工作区，每批一个文件
 `feedback/{接收时间}-{feedback_id}.json`，格式 `onto-feedback/v1`：顶层 `feedback_id`、`source`（`service`、`run`）、
-`release_version`（针对的发布版本，可为空）、`summary`（score、total、pass、partial、fail、error，可缺项）、`items`；
-每条 item 有 `case_id`、`question`、`expected`（标准答案）、`actual`（智能体回答）、`loss_reason`（失分原因 /
+`release_version`（针对的发布版本，可为空）、`summary`（score、total、pass、partial、fail、error，可缺项）、`items`、
+`attachments`（可缺）；每条 item 有 `case_id`、`question`、`expected`（标准答案）、`actual`（智能体回答）、`loss_reason`（失分原因 /
 判分理由）、`suspected_artifacts`（评测侧怀疑的产物）、`verdict`（fail / partial / error）、`tool_failures`（工具失败行）。
+`attachments` 是工作区相对路径：`report`（评测报告，「逐用例明细」里 `### N.` 对应 `case_id` 为 `case-N`）、`answers`
+（完整回答，按 `resultId` 取）、`suggestions`（评测服务预生成的归因与修订建议）、`tables`（评测数据源的表头，每表一个只有表头行的 csv）。
 
 1. 确定反馈批次：
    - `$ARGUMENTS` 非空 → 使用 `feedback/{$ARGUMENTS}`（容忍省略 `feedback/` 前缀与 `.json` 后缀）；
    - 页面发来的 `feedback_id=<id>` → 使用 `feedback/*-<id>.json`；同时带 `case_ids=[…]` 时第 2 步只收集这些用例；
    - 为空 → 取 `feedback/` 下文件名最新的一份（文件名以接收时间开头）。
-   - 一份都没有 → 终止并提示："还没有收到反馈——反馈由评测服务经反馈入口推送，收到后再演进。" 释放锁后结束。
+   - 一份都没有 → 终止并提示："还没有反馈——在已发布版本里对评测结果点「评测优化」后再演进。" 释放锁后结束。
 2. 收集全部条目（反馈里只有失分条目）：问题、标准答案、智能体回答、失分原因、怀疑的产物，以及
    `tool_failures`——每行是 `工具名 · 错误码 · 问题：问题码 字段路径 · 退出码 · 详情`，取自评测侧的执行轨迹，
    是判断运行异常根因的一手证据。`release_version` 非空时，归因以该版本的知识包为准（`git show release/{版本}:路径`
-   可对照当时的文档）。
-3. 若这批反馈没有条目（只有 summary）：先 `python3 .claude/scripts/state_helper.py acquire evolution confirm`，告知"这批反馈没有失分项，无需演进"，可选提议（不强制）："要不要我基于反馈
+   可对照当时的文档）。条目里的回答有截断时，到 `attachments.answers` 按 `case_id` 取完整回答；用例的上下文以
+   `attachments.report` 的对应小节为准。
+3. 有 `attachments.suggestions` 时作为 Step 2 的归因草稿读取：它由评测服务按评测时的知识包版本生成，**逐条对照当前
+   工作区复核**，不成立的条目在归因表中说明原因后舍弃；Step 2 的编号归因表与专家确认卡照常执行，不能跳过。
+4. 若这批反馈没有条目（只有 summary）：先 `python3 .claude/scripts/state_helper.py acquire evolution confirm`，告知"这批反馈没有失分项，无需演进"，可选提议（不强制）："要不要我基于反馈
    做一次预防性审视（别名覆盖、描述清晰度）？" 用户同意则 `acquire evolution start` 继续；拒绝则释放锁结束。
 
 ## Step 2: 失分归因（诊断矩阵）
@@ -104,6 +109,7 @@ stopped after a repeated failure."之类只说明运行被中止，真正原因�
   - 重写含混的描述——描述要能独立回答"这个字段/对象是什么、什么取值代表什么"。
 - **C 数据映射**：
   - 有相关数据表时先跑 `python3 .claude/scripts/table_profile.py {表名或数据表路径}`（csv 或 Excel 的文本版路径 `resource/text/…/x.xlsx.md`，不写 Excel 原件）拿三方对账差异（数据列 ↔ schema ↔ 属性英文名）；
+    批次带 `attachments.tables` 时，用其中的 csv（评测数据源的表头）作数据表；
   - 对象绑不到表时，在对象文档的 `# 数据来源` 段写**真实表名**（即数据表资料里的 Sheet 名，
     逐字相同）——该段是发布包「来源Sheet」列与 `mappings/object-data-mappings.json` 的唯一来源，
     留空或写对象名都会让这个对象在数据问答里查不到；纯概念、不落库的对象写 `无`；
