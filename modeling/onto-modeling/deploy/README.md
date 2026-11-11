@@ -6,7 +6,7 @@
 
 ```
 onto-modeling/
-  images/                     # onto-modeling 与 auth-server 镜像 tar
+  images/                     # 镜像 tar：onto-modeling、auth-server、连接器网关、REA 旁路容器
   images.env                  # 镜像 tag 清单（deploy.sh 自动读取）
   docker-compose.release.yml
   deploy.sh                   # 预检 → 加载镜像 → 拉起
@@ -27,23 +27,27 @@ vi .env              # 填 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN
 
 访问 `http://<部署机地址>:5100`（端口可用 `ONTO_WEB_PORT` 覆盖）。
 
-首次运行时 deploy.sh 在 `.env` 里生成两项：初始管理员密码 `AUTH_BOOTSTRAP_ADMIN_PASSWORD`（登录名 admin）和
-auth-server 管理令牌 `ONTO_WEB_AUTH_ADMIN_TOKEN`（auth-server 与后端读同一个值，运维中心「用户与审计」靠它）。
+首次运行时 deploy.sh 在 `.env` 里生成四项，已有的值不动：初始管理员密码 `AUTH_BOOTSTRAP_ADMIN_PASSWORD`（登录名 admin）、
+auth-server 管理令牌 `ONTO_WEB_AUTH_ADMIN_TOKEN`（auth-server 与后端读同一个值，运维中心「用户与审计」靠它），
+以及下一节的 `ONTO_HUB_SERVICE_TOKEN`、`ONTO_EVALUATION_SERVICE_TOKEN`。
 
-### 对接评测服务
+### 对接知识包 Hub 与评测服务
 
-评测已移出 onto-modeling（ADR-0020），onto 不主动调用评测服务，也不再关联 Modeling 项目；
-旧版的 `ONTO_WEB_MODELING_*` 与评测并发上限变量已不再读取（清单见项目 README），`.env` 里留着
-也无影响，可以删掉。评测服务改为调用 onto 的三个契约入口，凭据是管理员签发的服务令牌：
+发布存到知识包 Hub，版本号由 Hub 分配；评测由独立评测服务做。两者各自独立部署（仓库 `knowledge-hub/`、
+`eval-service/`），和本服务同在 consumer 网络上，按服务名 `knowledge-hub`、`knowledge-evaluation` 访问。
+整栈部署（仓库根 `deploy/deploy.sh` 或安装脚本）按 Consumer → Hub → Onto Modeling → 评测的顺序部署，
+凭据自动对齐。单独部署本包时连不到它们，发布、已发布版本和评测入口不可用。
 
-1. 管理员 `POST /api/v1/admin/service-tokens` 签发令牌（形如 `onto_svc_…`，只在响应里出现一次），按需选范围：
-   `releases.read`（发布列表、发布记录、包清单与按版本下载）、`receipts.write`（求解验证候选包与验证回执）、
-   `feedback.write`（外部反馈）；可用 `project_ids` 限定项目、`expires_in_s` 设有效期，用完 `DELETE` 吊销。
-2. 评测服务带 `Authorization: Bearer <服务令牌>` 调用 `/api/v1/contract/releases`、
-   `/api/v1/projects/{id}/releases/{version}`（及 `/manifest`、`/download`）、`/api/v1/projects/{id}/solver/candidate`、
-   `/api/v1/projects/{id}/solver/receipts`、`/api/v1/projects/{id}/feedback`。
+| 变量 | 作用 | 取值 |
+| --- | --- | --- |
+| `ONTO_HUB_SERVICE_TOKEN` | 访问 Hub 的服务凭据 | 等于 Hub 的 `HUB_SERVICE_TOKEN`。deploy.sh 缺省时生成；整栈部署先部署 Hub，再改成 Hub 实际使用的值 |
+| `ONTO_EVALUATION_SERVICE_TOKEN` | 校验评测完成通知 `POST /api/internal/evaluation/notifications` | deploy.sh 缺省时生成，评测部署沿用它；不能等于 Hub 凭据，留空则拒绝通知 |
+| `ONTO_WEB_EVAL_URL` | 后端访问评测服务 | compose 默认 `http://knowledge-evaluation:8090` |
+| `ONTO_WEB_EVAL_PUBLIC_URL` | 浏览器打开评测页面的地址 | 空 = 与工作台同主机的 `http://<主机>:8090/evaluation/`；评测在别的主机、端口或走 HTTPS 时填完整地址，改后重新部署 |
 
-令牌只存摘要（数据目录 `service-tokens.json`，0600），和项目的 MCP token 分开签发、分开存储。
+单独升级本包时保留原 `.env`：凭据换了值，Hub 调用返回 401，评测通知被拒。
+旧版的 `ONTO_WEB_MODELING_*` 与评测并发上限变量已不再读取（清单见项目 README），`.env` 里留着也无影响，可以删掉。
+
 升级到这一版首次启动时会做一次性迁移：被对象引用的评测上传表迁进各项目 `resource/excel/` 并提交，
 随后删除评测状态与数据目录下的评测数据源配置（含连接密码），详见项目 README。
 
@@ -65,6 +69,10 @@ auth-server 管理令牌 `ONTO_WEB_AUTH_ADMIN_TOKEN`（auth-server 与后端读�
 - 建议主机配置 2–4G swap 或 zram 吸收峰值。
 - 空闲会话默认 10 分钟回收（`ONTO_WEB_SESSION_IDLE_TTL`），回收后靠 resume
   续接模型上下文，用户无感；会话 transcript 持久化在数据卷 `/data/home/.claude/`。
+- 运行中的会话连续 30 分钟没有任何模型或工具响应（`ONTO_WEB_SESSION_STALL_TIMEOUT`，
+  单位秒，0 关闭）即判定执行超时：终止引擎、释放槽位，对话里给出提示，用户可以直接发消息
+  继续。等待确认卡的时间不计入。模型调用失败重试期间也没有响应，调小阈值前先确认模型网关
+  的单次超时与重试次数。
 
 ## 子代理同步执行（CLI 后台任务开关）
 
@@ -228,3 +236,5 @@ deploy.sh 部署完成后会自动检测 `mw-modeling` 容器（可用
 `ONTO_MODELING_MIGRATE_FROM=<容器名>` 覆盖），存在即执行
 `migrate-from-modeling.sh` 把项目/资料/知识包迁入本服务；迁移幂等，
 已迁移的项目自动跳过，也可随时手动重跑该脚本。
+Workbench 数据库处于 WAL 模式，脚本在 `mw-modeling` 容器内用 `VACUUM INTO` 导出一致性快照再迁移，
+因此需要该容器在运行中。迁移失败不影响 Onto Modeling 本身，deploy.sh 会打印 `[WARN]` 和重跑命令。
