@@ -1,12 +1,12 @@
-// 发布知识包：页面纯逻辑（publishModel）与 mock（PB-01～PB-07、SV-04 兜底）
+// 发布知识包：页面纯逻辑（publishModel）与 mock（PB-01～PB-07；版本号按 Hub 规则，ADR-0091）
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
 import { nextReleaseVersion, register as registerPublish } from '../src/api/mock/routes-publish.js';
 import { register as registerVersions } from '../src/api/mock/routes-versions.js';
 import {
-  blockingSummary, degradeNote, fixOptions, formatLabel, gateBlockedText, gateView, issueView, mergeRelease, publishBlockedTitle,
-  pullView, releaseGate, releasedText, visibleGates,
+  blockingSummary, degradeNote, fixOptions, formatLabel, gateBlockedText, gateView, issueView, mergeRelease, needsSolverAck,
+  publishBlockedTitle, pullView, releaseGate, releasedText, visibleGates,
 } from '../src/pages/publish/publishModel.js';
 
 // ---------- 纯逻辑 ----------
@@ -22,7 +22,11 @@ test('门禁卡片：不通过 / 还没运行 / 通过（含有提醒）三种�
   assert.equal(c.action.label, '去运行');
   assert.equal(gateView({ id: 'rev.anchor_coverage', status: 'warn', source: { kind: 'pack' } }).cls, 'ok');
   assert.equal(gateView({ id: 'rev.anchor_coverage', status: 'warn', source: { kind: 'pack' } }).icon, 'quote');
-  assert.equal(gateView({ id: 'solver_receipt', status: 'pass' }).icon, 'badge');
+  assert.equal(gateView({ id: 'solver_contract', status: 'pass' }).icon, 'badge');
+  // 求解契约要验证时发布前要确认未验证（ADR-0091）
+  assert.equal(needsSolverAck({ gates: [{ id: 'solver_contract', requires_acknowledgement: true }] }), true);
+  assert.equal(needsSolverAck({ gates: [{ id: 'solver_contract', requires_acknowledgement: false }] }), false);
+  assert.equal(needsSolverAck({ gates: [{ id: 'data_binding' }] }), false);
   assert.equal(gateView({ id: 'retail.compliance', status: 'pass', source: { kind: 'flow' } }).icon, 'check');
   assert.deepEqual(blockingSummary({ blocking_count: 2 }), { text: '2 项挡住发布', tone: 'red' });
   assert.deepEqual(blockingSummary({ blocking_count: 0 }), { text: '全部通过', tone: 'teal' });
@@ -76,14 +80,15 @@ test('发布记录：门禁一列、评测服务一列、按包版本号合并',
   const merged = mergeRelease(list, { version: '0.19.0', at: '2026-11-01T14:44:00Z' });
   assert.deepEqual(merged.map((r) => r.version), ['0.19.0', '0.11.0', '0.7.0']);
   assert.equal(mergeRelease(merged, { version: '0.19.0', at: '2026-11-01T14:44:00Z', pulls: [{}] })[0].pulls.length, 1);
-  assert.equal(releasedText({ version: '0.19.0', version_label: 'v0.19', gates: { degraded: true } }, true), '已发布 v0.19 · 包版本 0.19.0（降级发布）');
-  assert.match(releasedText({ version: '0.11.0' }, false), /已经发布过/);
+  assert.equal(releasedText({ version: '0.1.3', version_label: 'v0.19', gates: { degraded: true } }), '已发布 v0.19 · 包版本 0.1.3（降级发布）');
+  // Hub 已提交、本地标签没写成时只有包版本
+  assert.equal(releasedText({ version: '0.1.3', local_record_pending: true }), '已发布 包版本 0.1.3');
 });
 
-test('发布版本号：0.{n}.0 必须大于已有发布，否则取已有最大 minor 下的下一个 patch', () => {
-  assert.equal(nextReleaseVersion(19, ['0.11.0', '0.7.0']), '0.19.0');
-  assert.equal(nextReleaseVersion(1, ['0.1.57']), '0.1.58');
-  assert.equal(nextReleaseVersion(5, ['0.7.0', '0.7.2']), '0.7.3');
+test('发布版本号按 Hub 的规则：0.1.N 递增，旧版本地发布的 0.{n}.0 不参与编号', () => {
+  assert.equal(nextReleaseVersion(['0.11.0', '0.7.0']), '0.1.1');
+  assert.equal(nextReleaseVersion(['0.1.57', '0.11.0']), '0.1.58');
+  assert.equal(nextReleaseVersion([]), '0.1.1');
 });
 
 // ---------- mock ----------
@@ -144,25 +149,26 @@ test('PB-01：门禁链按顺序，数据绑定与合规检查挡住发布，只
   assert.equal(r.body.package_name, 'retail-restock');
   assert.equal(r.body.format, 'solver');
   assert.deepEqual(r.body.gates.map((g) => [g.title, g.status, g.blocking]), [
-    ['数据绑定检查', 'fail', true], ['求解契约回执', 'pass', false], ['包结构检查', 'pass', false],
+    ['数据绑定检查', 'fail', true], ['求解契约', 'pass', false], ['包结构检查', 'pass', false],
     ['合规检查', 'not_run', true], ['证据出处检查', 'warn', false],
   ]);
   assert.equal(r.body.gates[0].summary, '3 个对象和数据表对不上');
-  assert.equal(r.body.gates[1].summary, 'r7 已通过 · 评测服务回传');
+  assert.equal(r.body.gates[1].summary, '求解契约静态检查通过');
+  assert.equal(r.body.gates[1].requires_acknowledgement, true);
   assert.deepEqual(r.body.gates[3].action, { type: 'start_node', node_id: 'retail.compliance' });
   assert.equal(r.body.blocking_count, 2);
   assert.equal(r.body.degradable, true);
   assert.equal(r.body.binding.issues.length, 3);
   assert.equal(r.body.binding.bound_objects, 12);
   assert.equal(r.body.last_release.version, '0.11.0');
-  // v0.11 之前没启用求解契约：按普通知识包，没有回执这一关
+  // v0.11 之前没启用求解契约：按普通知识包，没有求解契约这一关
   const old = await call('GET', `${P}/publish/check?commit=f07c2d96`);
   assert.equal(old.body.format, 'ontology');
-  assert.ok(!old.body.gates.some((g) => g.id === 'solver_receipt'));
+  assert.ok(!old.body.gates.some((g) => g.id === 'solver_contract'));
   assert.equal((await call('GET', `${P}/publish/check?commit=zz`)).body.code, 'invalid_commit');
 });
 
-test('PB-03：门禁不过 422；降级只放宽数据绑定；合规检查跑过后降级发布成功，重复发布同一提交得到同一记录', async () => {
+test('PB-03：门禁不过 422；降级只放宽数据绑定；求解包要确认未验证；同一 request_id 重试得到同一个 Hub 版本', async () => {
   const { call, events, runCompliance } = mockServer();
   const r1 = await call('POST', `${P}/releases`, {});
   assert.equal(r1.status, 422);
@@ -174,20 +180,27 @@ test('PB-03：门禁不过 422；降级只放宽数据绑定；合规检查跑�
   const check = await call('GET', `${P}/publish/check`);
   assert.equal(check.body.gates[3].status, 'pass');
   assert.equal(check.body.blocking_count, 1);
-  const r3 = await call('POST', `${P}/releases`, { degrade: true });
+  const unconfirmed = await call('POST', `${P}/releases`, { degrade: true, request_id: 'r1' });
+  assert.equal(unconfirmed.status, 409);
+  assert.equal(unconfirmed.body.code, 'solver_validation_acknowledgement_required');
+  const r3 = await call('POST', `${P}/releases`, { degrade: true, request_id: 'r1', solver_unverified_acknowledged: true });
   assert.equal(r3.status, 201);
-  assert.equal(r3.body.version, '0.19.0');
-  assert.equal(r3.body.tag, 'release/0.19.0');
+  assert.equal(r3.body.version, '0.1.1');
+  assert.equal(r3.body.tag, 'release/0.1.1');
   assert.equal(r3.body.format_label, '求解知识包');
   assert.deepEqual(r3.body.gates, { all_passed: false, degraded: true, unbound_objects: ['补货台账', '门店特殊需求', '超量清单'] });
-  assert.ok(events.some((e) => e.type === 'release.updated' && e.data.release.version === '0.19.0'));
-  const again = await call('POST', `${P}/releases`, { degrade: true });
+  assert.ok(events.some((e) => e.type === 'release.updated' && e.data.release.version === '0.1.1'));
+  const again = await call('POST', `${P}/releases`, { degrade: true, request_id: 'r1', solver_unverified_acknowledged: true });
   assert.equal(again.body.sha256, r3.body.sha256);
+  assert.equal(again.body.version, '0.1.1');
   const list = await call('GET', `${P}/releases`);
-  assert.deepEqual(list.body.items.map((x) => x.version), ['0.19.0', '0.11.0', '0.7.0']);
+  assert.deepEqual(list.body.items.map((x) => x.version), ['0.1.1', '0.11.0', '0.7.0']);
+  // 新的请求是 Hub 的下一个版本
+  const next = await call('POST', `${P}/releases`, { degrade: true, request_id: 'r2', solver_unverified_acknowledged: true });
+  assert.equal(next.body.version, '0.1.2');
   // 版本列表上标出已发布
   const versions = await call('GET', `${P}/versions`);
-  assert.equal(versions.body.items[0].release, '0.19.0');
+  assert.equal(versions.body.items[0].release, '0.1.2');
 });
 
 test('PB-02：改数据来源提交新版本，问题消失；表名不存在 400、锚点 404、锁住 423', async () => {
@@ -232,13 +245,12 @@ test('PB-04～PB-07：记录详情、包清单、下载标准包与图模式变�
   assert.equal(g.headers.get('X-Package-Variant'), 'graph');
   assert.equal(g.headers.get('X-Package-Version'), '0.11.0');
   assert.equal((await call('GET', `${P}/releases/0.11.0/download?variant=xml`)).body.code, 'invalid_argument');
-  assert.equal((await call('GET', `${P}/solver/receipts`)).body.gate.status, 'pass');
 
   const ready = mockServer({ sc: { publish: 'ready' } });
   const c = await ready.call('GET', `${P}/publish/check`);
   assert.equal(c.body.blocking_count, 0);
   assert.equal(c.body.degradable, false);
-  const rec = await ready.call('POST', `${P}/releases`, {});
+  const rec = await ready.call('POST', `${P}/releases`, { solver_unverified_acknowledged: true });
   assert.equal(rec.status, 201);
   assert.equal(rec.body.gates.all_passed, true);
   const empty = mockServer({ sc: { publish: 'empty' } });

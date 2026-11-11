@@ -1,4 +1,5 @@
 import { ApiError } from './errors.js';
+import { withRequestId } from './requestIds.js';
 
 // 按契约编号组织的接口函数（F1～F4 用到的分组，后续阶段按同样写法补）
 const enc = encodeURIComponent;
@@ -247,7 +248,6 @@ export function createApi(client) {
     solverContract: (id) => client.get(`${P(id)}/solver/contract`), // SV-01
     saveSolverContract: (id, body) => client.put(`${P(id)}/solver/contract`, body), // SV-02
     checkSolverContract: (id, body) => client.post(`${P(id)}/solver/contract/check`, body), // SV-03
-    solverReceipts: (id, query) => client.get(`${P(id)}/solver/receipts`, { query }), // SV-04
 
     // 3.19 证据源
     evidenceSources: (query) => (client.features?.evidence === false
@@ -291,11 +291,24 @@ export function createApi(client) {
     // 3.20 发布
     publishCheck: (id, query) => client.get(`${P(id)}/publish/check`, { query }), // PB-01
     setObjectDataSource: (id, key, body) => client.put(`${P(id)}/objects/${enc(key)}/data-source`, body), // PB-02
-    publishRelease: (id, body) => client.post(`${P(id)}/releases`, body || {}), // PB-03
+    // PB-03：经 Hub 发布（ADR-0091）；同一提交、同一选项在拿到结果前重试用同一个 request_id
+    publishRelease: (id, body = {}) => withRequestId(
+      `publish:${id}:${body.commit || ''}:${body.degrade ? 1 : 0}:${body.solver_unverified_acknowledged ? 1 : 0}`,
+      (request_id) => client.post(`${P(id)}/releases`, { ...body, request_id }),
+    ),
     releases: (id, query) => client.get(`${P(id)}/releases`, { query }), // PB-04
     release: (id, version) => client.get(`${P(id)}/releases/${enc(version)}`), // PB-05
     releaseManifest: (id, version) => client.get(`${P(id)}/releases/${enc(version)}/manifest`), // PB-06
     releaseDownloadUrl: (id, version, variant) => client.withToken(client.url(`${P(id)}/releases/${enc(version)}/download`, variant ? { variant } : undefined)), // PB-07
+
+    // 知识包 Hub（ADR-0091，HB-01～HB-09）：都要统一账号登录
+    hubPackages: (offset = 0, limit = 20) => client.get('/hub/packages', { query: { offset, limit } }), // HB-01
+    hubPackageReleases: (packageId, offset = 0, limit = 20) => client.get(`/hub/packages/${enc(packageId)}/releases`, { query: { offset, limit } }), // HB-02
+    importHubPackage: (body) => withRequestId( // HB-04：同一版本、同一名称在拿到结果前重试得到同一个项目
+      `hub-import:${body.ontology_id}:${body.release_id}:${body.name}`,
+      (request_id) => client.post('/hub/imports', { ...body, request_id }),
+    ),
+    projectHubReleases: (id, offset = 0, limit = 20) => client.get(`${P(id)}/hub/releases`, { query: { offset, limit } }), // HB-05
 
     // 3.21 三份契约：服务令牌（X-06，设计稿没画入口，见 gaps F4）
     serviceTokens: () => client.get('/admin/service-tokens'), // X-06

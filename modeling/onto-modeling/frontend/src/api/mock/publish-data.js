@@ -91,7 +91,7 @@ export function manifestOf(pid, rec, history, packageName) {
     ? (history.length ? mainEntriesAt(n, added) : []).map((p, i) => ({ path: p, size: 420 + ((i * 137) % 900) }))
     : [];
   files.unshift({ path: 'manifest.yaml', size: 1260 }, { path: 'README.md', size: 2048 });
-  const solver = rec.format === 'solver' ? { revision: 'r7', receipt: { status: 'passed', receipt_id: 'rcp-0007' } } : null;
+  const solver = rec.format === 'solver' ? { revision: 'r7' } : null;
   const degraded = rec.gates.degraded ? { unbound_objects: rec.gates.unbound_objects } : null;
   const packs = [{ name: 'core', version: '1.4.2' }, { name: 'industry-retail', version: n >= 11 || pid !== MAIN_PID ? '1.0.3' : '1.0.2' }];
   const yaml = [

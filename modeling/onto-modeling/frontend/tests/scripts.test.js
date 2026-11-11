@@ -1,4 +1,4 @@
-// 代码生成与求解页：页面纯逻辑（scriptsModel）与 mock（routes-scripts：SC-01～SC-03、SV-01～SV-04、页面命令）
+// 代码生成与求解页：页面纯逻辑（scriptsModel）与 mock（routes-scripts：SC-01～SC-03、SV-01～SV-03、页面命令）
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
@@ -165,7 +165,8 @@ test('SV-01：合成场景的求解契约，参数都从响应里读', async () 
   assert.deepEqual(main.template_params.display_mapping, { OPTION_0: '门店直送', OPTION_1: '仓库中转' });
   assert.equal(main.evaluator.path, 'ontology/scripts/restock_route_evaluator.py');
   assert.deepEqual(main.field_units.map((u) => u.field), ['batch_qty', 'days', 'daily_sales', 'shelf_capacity']);
-  assert.equal(view.receipt.status, 'pass');
+  assert.equal(view.requires_validation_after_publish, true);
+  assert.ok(!('receipt' in view) && !('gate' in view));
   assert.equal(view.lock, null);
   // 模板参数只有这几项，表单的参数名、标题、选项都从响应里读
   view.operations.forEach((o) => assert.deepEqual(Object.keys(o.template_params).sort(), ['display_mapping', 'evaluator_path', 'process_name', 'stream_name', 'title']));
@@ -234,24 +235,20 @@ test('检查卡：已保存、草稿、检查中、回执几种情况', async ()
   const items = draftOf(view);
   const key = draftKey(items);
   const live = { key, rejected: [], findings: [], evaluator: { kind: 'declarative', constraints: 3 } };
-  const texts = (o) => checkLines({ view, item: items[0], draftKey: key, live, receipt: view.receipt, ...o }).map((l) => l.text);
-  assert.deepEqual(texts({ dirty: false }), ['r7 未发现契约问题', '评估器已解析：声明式 · 3 条约束', 'r7 已通过验证（评测服务回执 · 10-31 16:02）']);
-  assert.deepEqual(texts({ dirty: true }), ['草稿未发现契约问题', '评估器已解析：声明式 · 3 条约束', '保存后 r7 的验证回执失效']);
+  const texts = (o) => checkLines({ view, item: items[0], draftKey: key, live, ...o }).map((l) => l.text);
+  // 验证回执退役（ADR-0091）：检查卡只讲契约问题与评估器，验证在发布后的独立评测里做
+  assert.deepEqual(texts({ dirty: false }), ['r7 未发现契约问题', '评估器已解析：声明式 · 3 条约束']);
+  assert.deepEqual(texts({ dirty: true }), ['草稿未发现契约问题', '评估器已解析：声明式 · 3 条约束']);
   assert.equal(texts({ dirty: true, live: { ...live, key: 'old' } })[0], '正在检查草稿…');
   assert.equal(texts({ dirty: true, live: { key, failed: true } })[0], '暂时检查不了草稿');
   assert.equal(texts({ dirty: true, live: { ...live, rejected: [{ message: '被拒了' }] } })[0], '被拒了');
-  assert.equal(texts({ dirty: false, receipt: { status: 'required', latest: null } })[2], 'r7 还没有验证回执');
   // 新建的那份还没有评估器：不借用别的契约的解析结果
-  assert.equal(checkLines({ view, item: { ...items[0], evaluator: '' }, dirty: true, live, draftKey: key, receipt: view.receipt })[1].text, '还没有评估器');
-  assert.equal(texts({ dirty: true, receipt: { status: 'required', latest: null } })[2], '保存后需重新验证');
-  // 回执类门禁不当成契约问题
-  const gated = { ...view, gate: [{ code: 'solver_receipt_required', level: 'error', message: 'x' }] };
-  assert.equal(checkLines({ view: gated, item: items[0], dirty: false, live, draftKey: key, receipt: view.receipt })[0].text, 'r7 未发现契约问题');
+  assert.equal(checkLines({ view, item: { ...items[0], evaluator: '' }, dirty: true, live, draftKey: key })[1].text, '还没有评估器');
   // 本地预检的错误排在最前；不是当前这份的带上名字
   const bad = [items[0], setOptionLabel(items[1], 'OPTION_1', '打折促销')];
   const problems = contractProblems(bad, view, bad[0]);
   assert.deepEqual(problems.map((p) => p.message), ['「临期损耗编制」：两个选项的显示名称相同，结果无法区分']);
-  assert.equal(checkLines({ view, item: bad[0], dirty: true, live, draftKey: draftKey(bad), problems, receipt: view.receipt })[0].tone, 'err');
+  assert.equal(checkLines({ view, item: bad[0], dirty: true, live, draftKey: draftKey(bad), problems })[0].tone, 'err');
 });
 
 test('修订标签、保存按钮、保存后发评估器命令', async () => {
@@ -330,12 +327,9 @@ test('SV-02：保存修订号加 1、旧回执失效；手动编辑按原文写�
   assert.notEqual(saved.body.revision, view.revision);
   assert.equal(saved.body.version_label, 'v0.13');
   assert.equal(cards.find((c) => c.id === F.MAIN_PID).version_label, 'v0.13');
-  assert.equal(saved.body.receipt.status, 'required');
+  assert.equal(saved.body.requires_validation_after_publish, true);
   assert.equal(saved.body.operations[0].result_title, '补货调拨计划');
   assert.ok(events.some((e) => e.type === 'artifacts.updated' && e.data.type === SOLVER_TYPE));
-  const rc = (await call('GET', `${P}/solver/receipts`)).body;
-  assert.equal(rc.gate.status, 'required');
-  assert.equal(rc.latest, null);
   // 转为手动编辑后保存：mode=manual，附属文件按原文
   const again = draftOf(saved.body);
   const manual = toManual(again[0], { ...again[0].sidecars, presentation: 'title: 手写标题\n' });

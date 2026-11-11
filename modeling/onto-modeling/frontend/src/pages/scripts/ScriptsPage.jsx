@@ -31,7 +31,6 @@ export default function ScriptsPage({ route }) {
   const [sandbox, setSandbox] = useState(null);
   const [scriptsTick, setScriptsTick] = useState(0);
   const [solver, setSolver] = useState(null);
-  const [receipts, setReceipts] = useState(null);
 
   const loadScripts = useCallback(async () => {
     try {
@@ -45,9 +44,7 @@ export default function ScriptsPage({ route }) {
   }, [api, pid]);
   const loadSolver = useCallback(async () => {
     try {
-      const [v, rc] = await Promise.all([api.solverContract(pid), api.solverReceipts(pid).catch(() => null)]);
-      setSolver(v);
-      setReceipts(rc);
+      setSolver(await api.solverContract(pid));
     } catch (e) {
       toast(errorText(e), 'alert');
     }
@@ -79,8 +76,7 @@ export default function ScriptsPage({ route }) {
   // 保存成功：响应就是新的 SolverContractView
   const onSaved = useCallback((view) => {
     setSolver(view);
-    api.solverReceipts(pid).then(setReceipts).catch(() => {});
-  }, [api, pid]);
+  }, []);
 
   const lock = scope || solver?.lock || null;
 
@@ -122,7 +118,7 @@ export default function ScriptsPage({ route }) {
         <ScriptsTab data={scripts} sandbox={sandbox} tick={scriptsTick} tasks={tasks} />
       </div>
       <div className={tab === 'sv' ? 'mt16' : 'mt16 hide'}>
-        <SolverTab view={solver} receipts={receipts} lock={lock} tasks={tasks} onSaved={onSaved} reload={loadSolver} />
+        <SolverTab view={solver} lock={lock} tasks={tasks} onSaved={onSaved} reload={loadSolver} />
       </div>
     </ShellP>
   );

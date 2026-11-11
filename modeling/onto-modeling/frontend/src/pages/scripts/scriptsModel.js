@@ -229,14 +229,13 @@ export function revisionTag(view, dirty) {
   return n ? `r${n}` : '';
 }
 
-const RECEIPT_CODES = /^solver_(receipt|contract_validation)_/;
 const EVALUATOR_KIND = { declarative: '声明式', script: '脚本' };
 
 /**
  * 检查卡的几行：[{ icon, tone, text }]，tone 为 ok / warn / err / wait
  * live：SV-03 的结果 { key, rejected, findings, evaluator }（key 不是当前草稿时算「检查中」）
  */
-export function checkLines({ view, item, dirty, live, draftKey, problems = [], receipt }) {
+export function checkLines({ view, item, dirty, live, draftKey, problems = [] }) {
   const lines = [];
   const n = view?.revision_no ?? 0;
   const fresh = live && live.key === draftKey ? live : null;
@@ -247,8 +246,7 @@ export function checkLines({ view, item, dirty, live, draftKey, problems = [], r
   else if (dirty && fresh.failed) lines.push({ icon: 'info', tone: 'warn', text: '暂时检查不了草稿' });
   else {
     const rejected = dirty ? fresh.rejected || [] : [];
-    const findings = (dirty ? fresh.findings || [] : [...(view?.findings || []), ...(view?.gate || [])])
-      .filter((f) => !RECEIPT_CODES.test(f.code || ''));
+    const findings = dirty ? fresh.findings || [] : view?.findings || [];
     rejected.forEach((f) => lines.push({ icon: 'x', tone: 'err', text: f.message }));
     findings.forEach((f) => lines.push({ icon: 'alert', tone: f.level === 'error' ? 'err' : 'warn', text: f.message }));
     if (!rejected.length && !findings.length) lines.push({ icon: 'check', tone: 'ok', text: dirty ? '草稿未发现契约问题' : `r${n} 未发现契约问题` });
@@ -258,17 +256,6 @@ export function checkLines({ view, item, dirty, live, draftKey, problems = [], r
   if (ev) lines.push({ icon: 'check', tone: 'ok', text: `评估器已解析：${EVALUATOR_KIND[ev.kind] || ev.kind}${ev.constraints != null ? ` · ${ev.constraints} 条约束` : ''}` });
   else if (item?.evaluator) lines.push({ icon: 'check', tone: 'ok', text: `评估器：${String(item.evaluator).split('/').pop()}` });
   else if (item && isEnabled(item.binding)) lines.push({ icon: 'info', tone: 'warn', text: '还没有评估器' });
-  // 验证回执
-  const latest = receipt?.latest || null;
-  if (dirty) {
-    lines.push({ icon: 'alert', tone: 'warn', text: latest ? `保存后 r${n} 的验证回执失效` : '保存后需重新验证' });
-  } else if (view?.operations?.some((o) => o.enabled)) {
-    const st = receipt?.status || 'required';
-    if (st === 'pass') lines.push({ icon: 'check', tone: 'ok', text: `r${n} 已通过验证${latest?.completed_at ? `（评测服务回执 · ${fmtStamp(latest.completed_at)}）` : ''}` });
-    else if (st === 'stale') lines.push({ icon: 'alert', tone: 'warn', text: `r${n} 的验证回执已过期，发布前要重新验证` });
-    else if (st === 'failed') lines.push({ icon: 'x', tone: 'err', text: `r${n} 的验证没通过${latest?.message ? `：${latest.message}` : ''}，发布会被拦下` });
-    else lines.push({ icon: 'alert', tone: 'warn', text: `r${n} 还没有验证回执` });
-  }
   return lines;
 }
 

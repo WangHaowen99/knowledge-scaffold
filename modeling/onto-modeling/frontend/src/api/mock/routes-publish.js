@@ -1,6 +1,6 @@
-// mock · 3.20 发布（PB-01～PB-07），以及门禁「求解契约回执」用到的验证回执（SV-04，代码生成分组没登记时由这里兜底）
+// mock · 3.20 发布（PB-01～PB-07），版本号按知识包 Hub 的规则分配（ADR-0091）
 //
-// 门禁链（主示例项目）：数据绑定（3 个对象对不上，可降级）→ 求解契约回执（r7 通过）→ 包结构 → 合规检查（零售行业包，
+// 门禁链（主示例项目）：数据绑定（3 个对象对不上，可降级）→ 求解契约（静态检查通过，发布时要确认未验证）→ 包结构 → 合规检查（零售行业包，
 // 还没运行，挡住发布；点「去运行」经 FL-05 在对话里开始后视为已运行）→ 证据出处检查（通过，2 个提醒）。
 // 改数据来源（PB-02）会提交一个新版本（经 routes-versions 的 commitWrite）；发布成功 4 秒后模拟评测服务拉取一次（EP-19）。
 //
@@ -10,23 +10,12 @@ import * as P from './publish-data.js';
 import { entryRef } from './scenario.js';
 
 const zip = () => new Blob(['PK\u0005\u0006'.padEnd(22, '\u0000')]);
-const semver = (v) => String(v).split('.').map(Number);
-const newer = (a, b) => { const [x, y] = [semver(a), semver(b)]; for (let i = 0; i < 3; i += 1) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
 
-// 发布版本号 0.{n}.0 必须大于已有的全部发布（contract-changes 顶部主控那条）；不满足时取已有最大 minor 下的下一个 patch
-export function nextReleaseVersion(n, existing) {
-  const want = `0.${n}.0`;
-  if (existing.every((v) => newer(want, v))) return want;
-  const max = existing.reduce((m, v) => (newer(v, m) ? v : m), '0.0.0');
-  const [, minor, patch] = semver(max);
-  return `0.${minor}.${patch + 1}`;
+// 发布版本号由知识包 Hub 分配（ADR-0091）：0.1.N 按包递增，旧版本地发布的 0.{n}.0 不参与编号
+export function nextReleaseVersion(existing) {
+  const used = existing.map((v) => /^0\.1\.(\d+)$/.exec(v)).filter(Boolean).map((m) => Number(m[1]));
+  return `0.1.${Math.max(0, ...used) + 1}`;
 }
-
-const DEFAULT_RECEIPT = {
-  id: 'rcp-0007', receipt_id: 'rcp-0007', revision: 'r7', revision_no: 7, release_version: null, solver_keys: ['restock_plan'],
-  status: 'passed', authoritative: true, contract_digest: 'c7e1a90b', request_digest: '3f02d6aa', result_digest: '9b1c44e0',
-  candidate_count: 12, error_code: null, message: null, completed_at: null, received_at: null, by_token: '评测服务',
-};
 
 export function register(ctx) {
   const { on, json, err, db, sc, F, cardOf, emitProj, scopeOf, convsOf, hub, convKey, uid } = ctx;
@@ -43,22 +32,6 @@ export function register(ctx) {
   const complianceRan = (pid) => sc.publish === 'ready' || sc.publish === 'degrade' || ps.ran.has(pid)
     || convsOf(pid).some((c) => hub.history(convKey(pid, c.id)).some((e) => e.type === 'message.user' && /开始「合规检查」/.test(e.data?.text || '')));
 
-  function receipts() {
-    const at = new Date(Date.now() - 26 * 3600 * 1000).toISOString();
-    const r = { ...DEFAULT_RECEIPT, completed_at: at, received_at: at };
-    return { revision: 'r7', revision_no: 7, latest: r, items: [r], gate: { status: 'pass', finding: null } };
-  }
-  // 求解契约回执的结论：先问 SV-04（代码生成分组登记了就用它的），拿不到用本文件的
-  async function solverReceipts(pid, init) {
-    if (ctx.self) {
-      try {
-        const res = await ctx.self(`/api/v1/projects/${encodeURIComponent(pid)}/solver/receipts`, { method: 'GET', headers: init?.headers || {} });
-        if (res.ok) return res.json();
-      } catch { /* 用缺省 */ }
-    }
-    return receipts();
-  }
-
   async function check(pid, target, init) {
     const card = cardOf(pid);
     const issues = openIssues(pid);
@@ -72,16 +45,9 @@ export function register(ctx) {
       findings: issues.map((x) => ({ code: x.kind, level: 'error', message: x.message, target: x.object })),
     });
     if (fmt.format === 'solver') {
-      const sv = await solverReceipts(pid, init);
-      const s = sv.gate?.status || 'required';
       g({
-        id: 'solver_receipt', title: '求解契约回执', source: { kind: 'platform', label: '平台检查' },
-        status: s === 'pass' ? 'pass' : s === 'required' ? 'not_run' : 'fail', blocking: s !== 'pass',
-        summary: {
-          pass: `r${sv.revision_no ?? ''} 已通过 · 评测服务回传`, required: '还没有验证回执 · 挡住发布',
-          stale: '契约改过，回执过期 · 挡住发布', failed: `r${sv.revision_no ?? ''} 验证没通过`,
-        }[s] || '还没有验证回执',
-        findings: sv.gate?.finding ? [sv.gate.finding] : [],
+        id: 'solver_contract', title: '求解契约', source: { kind: 'platform', label: '平台检查' },
+        status: 'pass', summary: '求解契约静态检查通过', requires_acknowledgement: true,
       });
     }
     g({ id: 'package_structure', title: '包结构检查', source: { kind: 'platform', label: '平台检查' }, status: 'pass', summary: '脚本绑定、入参、文档元数据都通过' });
@@ -172,15 +138,19 @@ export function register(ctx) {
     const c = await check(pid, target, init);
     const failing = c.gates.filter((x) => x.blocking && !(body.degrade && x.degradable));
     if (failing.length) return err(422, 'gate_blocked', '门禁链有未通过项', { gates: failing });
+    if (c.gates.some((x) => x.requires_acknowledgement) && body.solver_unverified_acknowledged !== true) {
+      return err(409, 'solver_validation_acknowledgement_required', '求解能力尚未经端到端验证，要确认后再发布');
+    }
     const rel = P.releasesOf(db, pid, card);
-    const same = rel.find((r) => r.commit === target.commit);
+    // 同一 request_id 重试得到同一个 Hub 版本；新的请求总是下一个版本
+    const same = body.request_id && rel.find((r) => r.request_id === body.request_id);
     if (same) return json(201, same);
     const degraded = !!body.degrade && c.binding.issues.length > 0;
     const rec = P.releaseRecord(pid, target, {
       at: new Date().toISOString(), by: user?.username || 'zhangsan', degraded, unbound: degraded ? c.binding.issues.map((x) => x.object.name) : [],
     });
-    const version = nextReleaseVersion(target.n, rel.map((r) => r.version));
-    if (version !== rec.version) Object.assign(rec, { version, tag: `release/${version}` });
+    const version = nextReleaseVersion(rel.map((r) => r.version));
+    Object.assign(rec, { version, tag: `release/${version}`, request_id: body.request_id || null });
     rel.unshift(rec);
     emitProj(pid, 'release.updated', { release: rec });
     const pull = setTimeout(() => {
@@ -218,7 +188,4 @@ export function register(ctx) {
     const rec = findRelease(m[1], decodeURIComponent(m[2]));
     return rec ? json(200, rec) : err(404, 'release_not_found', '发布记录不存在');
   });
-
-  // ---------- SV-04 验证回执（兜底） ----------
-  on('GET', '/projects/([^/]+)/solver/receipts', () => json(200, receipts()));
 }

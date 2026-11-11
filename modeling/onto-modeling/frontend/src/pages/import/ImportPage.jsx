@@ -1,4 +1,4 @@
-// 导入项目（设计稿 import）：U-01 暂存上传、P-10 检查、P-03 名称检查、P-11 导入
+// 导入项目（设计稿 import）：U-01 暂存上传、P-10 检查、P-03 名称检查、P-11 导入；登录后可从知识包 Hub 导入（HB-04）
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
@@ -6,6 +6,7 @@ import { toast } from '../../app/toast.jsx';
 import { errorText, formatBytes } from '../../api/errors.js';
 import { PageHead, ShellG } from '../../shell/Shell.jsx';
 import { Button, Chip, Field, Icon, Note, Prog, Seg, Table, cx } from '../../ui/index.jsx';
+import HubImportModal from './HubImportModal.jsx';
 
 // 格式由后端自动识别，页面只显示识别结果（R2）
 const FORMATS = [
@@ -26,7 +27,10 @@ const BLOCKERS = {
 };
 
 export default function ImportPage() {
-  const { api, services } = useApp();
+  const { api, services, config } = useApp();
+  const [hubOpen, setHubOpen] = useState(false);
+  // Hub 按登录用户授权：本地模式（鉴权关闭）没有 Hub 身份，入口不出现
+  const hubOn = config?.auth?.enabled !== false;
   const fileRef = useRef(null);
   const [file, setFile] = useState(null);
   const [upload, setUpload] = useState(null);
@@ -119,7 +123,8 @@ export default function ImportPage() {
     <ShellG active="projects">
       <div className="en-im">
         <div className="row mb12"><a className="link row g4" href="#/projects"><Icon name="arrowl" size={14} />返回我的项目</a><span className="sp" /></div>
-        <PageHead title="导入项目" />
+        <PageHead title="导入项目" actions={hubOn ? <Button icon="pkg" onClick={() => setHubOpen(true)}>从 Hub 导入</Button> : null} />
+        <HubImportModal open={hubOpen} onClose={() => setHubOpen(false)} />
         <div className="en-im-steps">
           <div className={cx('s', step2 ? 'done' : 'on')}><i>{step2 ? <Icon name="check" size={12} /> : '1'}</i>选择与命名</div>
           <span className="ln" />
