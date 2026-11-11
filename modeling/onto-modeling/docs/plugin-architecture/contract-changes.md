@@ -1572,3 +1572,16 @@ Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`
    必经的排在可选的前面；可选节点和可选步骤在后面的核对节点还会跑时不出。`SUGGEST_RULES` 升到 6。
 2. **FL-01 节点动作**：过期节点的刷新动作同一个说法。
 3. **节点与步骤的确认记录**多存按类别的指纹 `kinds`；没有它的老记录按确认时刻（`at`）主线上的提交比到现在、看哪几类目录有改动，还说不清时按钮只写「刷新X」。
+
+## 2026-11-11 · P5a 资料上传与表格（吸收 develop !567 资料部分、!589 上传提示；ADR-0096）
+
+1. **上传白名单与上限**：类型清单与 20 MiB 上限不变（仍按 1.8，没收 develop 新加的 `.webp`，见 gaps）；资料进资料区的所有入口在服务层（`save_resource`）
+   再挡一次，前端改用 C-01 的 `material_types`、`limits.material_upload_bytes`，不再各页写一份（资料区原先不收图片、新建页不校验）。
+   上传 `.doc`、`.xls` 照收，传完提示另存为 `.docx`、`.xlsx`。
+2. **R-01 `Material.schema_scope`**：数据 Schema 表格的 Sheet 范围摘要 `{mode, pending, included_sheets, reference_sheets, error}`，别的资料为 `null`。
+3. **R-03 请求体加 `schema_selection`**：`{mode: "auto"}` 或 `{mode: "manual", included_sheets, revision}`；不带时沿用原来的人工范围，
+   对不上当前文件报 `409 schema_scope_stale`。新错误码 `schema_scope_stale`、`material_text_pending`。
+4. **新增 R-16 `GET …/resources/schema-preview?path=`**：逐 Sheet 的表头与问题、建议范围，只读。develop 是 `POST …/resource-meta/schema-preview`
+   （要写权限），这里读接口用 GET、所有者可用；develop 的 `force` 参数不要了（文本版按修订缓存，换了就重读）。
+5. **范围的存法**：`materials.json` 只存人工范围 `{version: 1, mode: "manual", included_sheets, revision}`（`revision` 是 sha256 前 16 位）；
+   develop 连现算的范围也存、字段名是 `file_sha256`，这里不存现算的，也不认 develop 存的 `mode: "auto"` 列表（按现算处理）。

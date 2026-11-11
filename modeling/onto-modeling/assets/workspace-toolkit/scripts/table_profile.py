@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """表登记：项目里登记过的数据表（schema 表格资料）的表头与取值画像，以及数据表三方对账。
 
-登记的数据表 = resource/materials.json 中 purpose=schema 的表格资料（一个 Sheet = 一张表，首行 = 列名）。
+登记的数据表 = resource/materials.json 中 purpose=schema 的表格资料里、Sheet 范围内的 Sheet（一个 Sheet = 一张表，
+首行 = 列名；范围外的 Sheet 只作参考）。范围的口径在 table_sources.py，与后端同一份（ADR-0096）。
 对象「# 数据来源」的表名、存储属性的英文名称以它为准；规则检查、产物核验、资料分析验收与
 候选修订都经这里读表，与后端发布包的数据绑定（package_mapping）同一口径。资料区的 Excel 只读
 多源连接器转出的文本版（resource/text/<分组>/<原文件名>.md），还没有文本版的单独列出，不当作「没有表」。
@@ -22,7 +23,7 @@
       # 供对象抽取按取值证据定类型；最多 400 列（约 50KB），其余表名列入 omitted_tables；
       # status、missing_text 同 --headers
 
-退出码：0=全部通过（或无可对账项）；1=存在差异；2=数据/依赖错误。
+退出码：0=全部通过（或无可对账项）；1=存在差异；2=数据/依赖错误，或 Sheet 范围要在资料区重新确认。
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ import sys
 from pathlib import Path
 
 import field_semantics
+import table_sources
 
 TABLE_SUFFIXES = (".xlsx", ".xlsm", ".xls", ".csv")
 PROFILE_ROW_LIMIT = field_semantics.PROFILE_ROW_LIMIT
@@ -56,7 +58,6 @@ def load_directives(root: Path) -> dict:
 
 
 NO_TEXT_MESSAGE = "Excel「{}」还没有文本版（转换中、暂不支持或转换失败），字段核验未完成"
-_SHEET_RE = re.compile(r"^<!-- 工作表：(.+) -->$")
 
 
 def resource_text(path: Path) -> Path | None:
@@ -71,26 +72,6 @@ def resource_text(path: Path) -> Path | None:
     return None
 
 
-def _md_row(line: str) -> list[str]:
-    body = line.strip()
-    body = body[1:] if body.startswith("|") else body
-    cells, current, escaped = [], [], False
-    for char in body:
-        if escaped:
-            current.append(char)
-            escaped = False
-        elif char == "\\":
-            escaped = True
-        elif char == "|":
-            cells.append("".join(current))
-            current = []
-        else:
-            current.append(char)
-    if current and "".join(current).strip():
-        cells.append("".join(current))
-    return [cell.strip().replace("<br>", "\n") for cell in cells]
-
-
 def text_sheets(text_path: Path) -> dict[str, list[list[str]]] | None:
     """文本版 → {工作表名: 行}（每个工作表标记后第一张表，表头在第一行）。没有文本版返回 None。
     与后端 app/evidence/convert.py 的 md_tables 同口径（那份在后端，这里只能用标准库另写一份）。"""
@@ -98,27 +79,17 @@ def text_sheets(text_path: Path) -> dict[str, list[list[str]]] | None:
         markdown = text_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
-    tables: dict[str, list[list[str]]] = {}
-    sheet, rows = None, []
-    for line in markdown.splitlines() + [""]:
-        stripped = line.strip()
-        marker = _SHEET_RE.match(stripped)
-        if marker or not stripped.startswith("|"):
-            if sheet is not None and rows and sheet not in tables:
-                tables[sheet] = rows
-            rows = []
-            if marker:
-                sheet = marker.group(1)
-            continue
-        cells = _md_row(stripped)
-        if cells and all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
-            continue
-        rows.append(cells)
-    return tables
+    return {name: rows for name, rows in table_sources.text_sheets(markdown) if rows}
 
 
-def read_tables(path: Path) -> dict[str, list[str]]:
-    """表格文件 → {表名: [表头列]}。csv 的表名取文件名（去扩展名）；资料区的 Excel 读文本版，没有文本版返回空。"""
+def read_tables(path: Path, directive: dict | None = None) -> dict[str, list[str]]:
+    """表格文件 → {表名: [表头列]}。csv 的表名取文件名（去扩展名）；资料区的 Excel 读文本版，没有文本版返回空。
+
+    资料区的表格只取 Sheet 范围内的 Sheet（directive 是它在 materials.json 里的条目，缺省按标了 schema 算；
+    别的用途如术语表整本读）；人工范围对不上当前文件抛 table_sources.SheetSelectionError，不退回整本读。"""
+    as_schema = not isinstance(directive, dict) or directive.get("purpose", "schema") == "schema"
+    if as_schema and in_resource(path) and path.suffix.lower() in table_sources.TABLE_SUFFIXES:
+        return table_sources.read_selected_headers(path, directive)
     text = resource_text(path)
     if text is not None:
         sheets = text_sheets(text) or {}
@@ -148,6 +119,14 @@ def read_tables(path: Path) -> dict[str, list[str]]:
         if headers:
             tables[ws.title] = headers
     return tables
+
+
+def in_resource(path: Path) -> bool:
+    """资料区里的原件（文本版本身不算）。"""
+    for parent in path.parents:
+        if parent.name == "resource":
+            return path.relative_to(parent).parts[:1] != ("text",)
+    return False
 
 
 def schema_files(root: Path) -> list[str]:
@@ -200,6 +179,7 @@ def table_headers(root: Path) -> dict[str, list[str]]:
     """
     # 作为库被 ontology_checker 调用时缺 openpyxl 只跳过 Excel，不能像命令行那样退出进程
     excel_ok = importlib.util.find_spec("openpyxl") is not None
+    directives = load_directives(root)
     tables: dict[str, list[str]] = {}
     for rel in schema_files(root):
         path = root / rel
@@ -207,7 +187,7 @@ def table_headers(root: Path) -> dict[str, list[str]]:
             continue
         if path.suffix.lower() != ".csv" and resource_text(path) is None and not excel_ok:
             continue
-        for name, headers in read_tables(path).items():
+        for name, headers in read_tables(path, directives.get(rel)).items():
             tables.setdefault(name, headers)
     return tables
 
@@ -281,6 +261,7 @@ def load_registered_tables(root: Path) -> tuple[dict, dict]:
     登记了却缺失、无法解析、缺解析依赖都抛 ValueError，字段核验不能按「没有表」通过。
     表头同名以先读到的为准（与 table_headers 一致）。
     """
+    directives = load_directives(root)
     tables: dict[str, list[str]] = {}
     profiles: dict[str, dict] = {}
     for rel in registered_table_files(root):
@@ -294,26 +275,32 @@ def load_registered_tables(root: Path) -> tuple[dict, dict]:
             raise ValueError(NO_TEXT_MESSAGE.format(path.name))
         if path.suffix.lower() != ".csv" and text is None and importlib.util.find_spec("openpyxl") is None:
             raise ValueError(EXCEL_DEPENDENCY_MESSAGE)
-        headers = read_tables(path)
-        if not headers:
+        try:
+            headers = read_tables(path, directives.get(rel))
+        except table_sources.SheetSelectionError as error:
+            raise ValueError(f"Sheet 范围需要在资料区重新确认（{path.name}：{error}），字段核验未完成") from error
+        if not headers and not table_sources.explicitly_empty(directives.get(rel)):
             raise ValueError("数据表无法解析或没有表头，字段核验未完成")
         for name, columns in headers.items():
             tables.setdefault(name, columns)
-        _merge_profiles(profiles, read_profiles(path))
+        # 取值画像也只看范围内的 Sheet：参考 Sheet 的取值不能当字段类型的证据
+        _merge_profiles(profiles, {name: profile for name, profile in read_profiles(path).items() if name in headers})
     return tables, profiles
 
 
 def table_profiles(root: Path) -> dict[str, dict]:
     """非严格读取取值画像：与 table_headers 同口径，缺 openpyxl 跳过 Excel，读不了的表跳过。"""
     excel_ok = importlib.util.find_spec("openpyxl") is not None
+    directives = load_directives(root)
     profiles: dict[str, dict] = {}
     for rel in registered_table_files(root):
         path = root / rel
         if not path.is_file() or (path.suffix.lower() != ".csv" and resource_text(path) is None and not excel_ok):
             continue
         try:
-            _merge_profiles(profiles, read_profiles(path))
-        except ValueError:
+            selected = read_tables(path, directives.get(rel))
+            _merge_profiles(profiles, {name: profile for name, profile in read_profiles(path).items() if name in selected})
+        except ValueError:  # SheetSelectionError 也是 ValueError：范围待确认的表跳过
             continue
     return profiles
 
@@ -382,6 +369,9 @@ def target_tables(root: Path, target: str) -> dict[str, list[str]] | None:
     或 schema 资料里的表名。原件路径照样按它的文本版读。找不到返回 None。"""
     path = root / target
     if path.is_file() and within_workspace(root, path):
+        original = _text_source(root, path)
+        if original is not None:
+            return read_tables(original, load_directives(root).get(original.relative_to(root).as_posix()))
         if path.suffix.lower() == ".md":
             sheets = text_sheets(path) or {}
             return {name: headers for name, rows in sheets.items()
@@ -390,6 +380,18 @@ def target_tables(root: Path, target: str) -> dict[str, list[str]] | None:
             return read_tables(path)
     headers = table_headers(root)
     return {target: headers[target]} if target in headers else None
+
+
+def _text_source(root: Path, path: Path) -> Path | None:
+    """资料区 Excel 的文本版 → 它的原件（按原件的 Sheet 范围对账）；不是文本版或原件不在返回 None。"""
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        return None
+    if parts[:2] != ("resource", "text") or path.suffix.lower() != ".md":
+        return None
+    original = root.joinpath("resource", *parts[2:]).with_suffix("")
+    return original if original.is_file() and original.suffix.lower() in table_sources.TABLE_SUFFIXES else None
 
 
 def check_file(root: Path, rel: str, schema_columns: set[str], attr_names: set[str]) -> dict:
@@ -447,9 +449,10 @@ def main() -> int:
     schema = schema_files(root)
     targets = args
 
+    directives = load_directives(root)
     schema_columns: set[str] = set()
     for rel in schema:
-        for headers in read_tables(root / rel).values():
+        for headers in read_tables(root / rel, directives.get(rel)).values():
             schema_columns.update(headers)
     attr_names = object_attribute_names(root)
 
@@ -495,5 +498,14 @@ def main() -> int:
     return 1 if result["status"] == "warn" else 0
 
 
+def run() -> int:
+    """命令行入口：Sheet 范围对不上当前文件时退出码 2，提示去资料区确认，不退回遍历全部 Sheet。"""
+    try:
+        return main()
+    except table_sources.SheetSelectionError as error:
+        print(f"Sheet 范围需要在资料区重新确认：{error}", file=sys.stderr)
+        return 2
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())

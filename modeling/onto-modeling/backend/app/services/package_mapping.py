@@ -204,28 +204,25 @@ def parse_object_doc(text: str) -> dict:
     }
 
 
-def _resource_text(path: Path) -> Path | None:
-    """资料区里的 Excel 原件 → 它的文本版（多源连接器转出，resource/text/<分组>/<原文件名>.md）；不在资料区返回 None。"""
+def _resource_rel(path: Path) -> str | None:
+    """资料区里的表格 → 工作区相对路径（resource/…）；文本版本身、资料区之外的文件返回 None。"""
     for parent in path.parents:
         if parent.name == "resource":
             rel = path.relative_to(parent)
-            return None if rel.parts[:1] == ("text",) else parent / "text" / f"{rel.as_posix()}.md"
+            return None if rel.parts[:1] == ("text",) else f"resource/{rel.as_posix()}"
     return None
 
 
-def read_table_headers(path: Path) -> dict[str, list[str]]:
-    """表格文件 → {Sheet 名: 表头列}。口径与工具箱 table_profile.py 一致：
-    一个 Sheet = 一张表，首行 = 字段名。资料区里的 Excel 读文本版，不解析原件（F4c，ADR-0076）。"""
-    text = _resource_text(path) if path.suffix.lower() != ".csv" else None
-    if text is not None:
-        from ..evidence.convert import md_tables
+def read_table_headers(path: Path, directive: dict | None = None) -> dict[str, list[str]]:
+    """表格文件 → {Sheet 名: 表头列}。口径与工具箱 table_profile.py 一致：一个 Sheet = 一张表，表头 = 第一个非空行。
 
-        try:
-            sheets = md_tables(text.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError):
-            return {}
-        return {name: headers for name, rows in sheets.items()
-                if (headers := [cell.strip() for cell in rows[0] if cell.strip()])}
+    资料区的表格按 Sheet 范围只取数据 Sheet（ADR-0096）；Excel 读文本版，不解析原件（ADR-0076），
+    还没有文本版时为空。人工范围对不上当前文件抛 409 schema_scope_stale。资料区之外的表格照旧整本读。"""
+    from . import table_sources
+
+    rel = _resource_rel(path)
+    if rel is not None and path.suffix.lower() in TABLE_SUFFIXES:
+        return table_sources.read_selected_headers(path, rel, directive)
     if path.suffix.lower() == ".csv":
         try:
             with open(path, encoding="utf-8-sig", newline="") as handle:
@@ -272,7 +269,7 @@ def read_source_tables(root: Path) -> dict[str, list[str]]:
         path = (root / str(rel)).resolve()
         if not str(path).startswith(str(root.resolve())) or not path.is_file():
             continue
-        for name, headers in read_table_headers(path).items():
+        for name, headers in read_table_headers(path, directive).items():
             tables.setdefault(name, headers)
     return tables
 
