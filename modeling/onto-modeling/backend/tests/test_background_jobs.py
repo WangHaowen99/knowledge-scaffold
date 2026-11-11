@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from app.services import background_jobs, solver_validation
+from app.services import background_jobs
 from app.services.background_jobs import JobBusy, JobRunner, JobStore
 
 
@@ -46,24 +46,6 @@ def test_sweep_marks_active_records_interrupted(tmp_path):
     assert statuses[running["id"]]["completed_at"]
     assert statuses[finished["id"]]["status"] == background_jobs.STATUS_SUCCEEDED
     assert store.sweep_interrupted() == []  # 幂等
-
-
-def test_solver_validation_records_keep_format_and_sweep(tmp_path):
-    """求解验证记录改走 JobStore 后文件格式不变，启动收敛把遗留的进行中记录改判失败。"""
-    workspaces = tmp_path / "workspaces"
-    root = workspaces / "p1"
-    root.mkdir(parents=True)
-    record = solver_validation.create(root, "rev-1", ["plan_route"], by="operator_a")
-    saved = json.loads((root / solver_validation.VALIDATIONS_FILE).read_text(encoding="utf-8"))
-    assert list(saved) == ["runs"] and saved["runs"][0]["id"] == record["id"]
-    other = workspaces / "p2"
-    other.mkdir()
-
-    assert solver_validation.sweep_interrupted(workspaces) == ["p1"]
-    latest = solver_validation.latest(root, "rev-1")
-    assert latest["status"] == solver_validation.STATUS_FAILED
-    assert latest["error_code"] == solver_validation.CODE_INTERRUPTED
-    assert solver_validation.sweep_interrupted(workspaces) == []
 
 
 def test_runner_dedupes_per_key_and_releases_after_finish():

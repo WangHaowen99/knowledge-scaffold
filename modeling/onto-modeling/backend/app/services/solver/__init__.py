@@ -1,5 +1,5 @@
-"""求解契约（方案 A10）：工作区侧的检查、视图与保存在 service；契约格式与回执仍在
-services/solver_contract.py、services/solver_validation.py（P1 随写入路径一起搬进本包）。"""
+"""求解契约（方案 A10）：工作区侧的检查、视图与保存在 service；契约格式在 services/solver_contract.py。
+端到端验证在发布后的独立评测里做（ADR-0091），本地不再收验证回执。"""
 
 from .service import (  # noqa: F401
     check_solver_contract_draft,
@@ -9,6 +9,5 @@ from .service import (  # noqa: F401
     solver_check,
     solver_check_at,
     solver_contract_view,
-    solver_receipt_targets,
     solver_release_status,
 )

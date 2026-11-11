@@ -23,8 +23,9 @@ class ReleaseSource:
     state_root: Path  # 项目工作区根目录：验证回执在它的 .ontology-state 下（不进 git），锁定版本的契约库与元模型按它取
     variant: str = "standard"  # standard | graph（图模式变体）
     allow_unbound: bool = False  # 降级发布：只放宽数据绑定
-    draft: bool = False  # 求解验证候选包：manifest 标 draft，不是发布
+    draft: bool = False  # 预检渲染：manifest 标 draft，不是发布
     binding: dict | None = None  # 调用方按同一棵树已算好的数据绑定，缺省由适配器现算
+    package_id: str = ""  # 包根目录与 manifest id：发布到 Hub 时是 Hub 包身份，缺省用项目 ID
 
 
 @dataclass(frozen=True)

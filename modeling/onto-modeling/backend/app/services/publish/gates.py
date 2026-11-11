@@ -1,6 +1,6 @@
 """发布门禁链（详设 5.6、㉖；API 契约 PB-01 的 gates、7.14 GateResult）。
 
-平台自带三道：数据绑定（可降级）、求解契约（静态检查与验证回执）、知识包结构（脚本绑定、入参形态、
+平台自带三道：数据绑定（可降级）、求解契约（静态检查）、知识包结构（脚本绑定、入参形态、
 文档元数据、发布树安全）；包声明的门禁（on 含 publish，`services/packs/extensions.publish_gates`）按包排在
 后面。证据出处与流程关卡随证据源、发布节点接进来。
 """
@@ -60,17 +60,19 @@ def _binding_gate(issues: list[dict]) -> dict:
 
 
 def _solver_gate(solver: dict) -> dict | None:
+    """求解契约静态检查；端到端验证在发布后的独立评测里做，发布时只要确认（ADR-0091）。"""
     if not solver.get("enabled"):
         return None
-    findings = [{"level": "error", **item} for item in (solver.get("findings") or []) + (solver.get("gate") or [])]
+    findings = [{"level": "error", **item} for item in solver.get("findings") or []]
     if findings:
         status, summary = "fail", findings[0]["message"]
     else:
-        status, summary = "pass", "求解契约静态检查通过，当前修订有通过的权威验证回执"
+        status, summary = "pass", "求解契约静态检查通过"
     return {
-        "id": "solver_receipt", "order": 2, "title": "求解契约回执", "source": _PLATFORM,
+        "id": "solver_contract", "order": 2, "title": "求解契约", "source": _PLATFORM,
         "status": status, "summary": summary, "blocking": bool(findings), "degradable": False,
         "findings": findings, "action": None,
+        "requires_acknowledgement": bool(solver.get("requires_validation_after_publish")),
     }
 
 
@@ -78,7 +80,7 @@ def _structure_gate(findings: list[dict], order: int) -> dict:
     return {
         "id": "package_structure", "order": order, "title": "知识包结构", "source": _PLATFORM,
         "status": "fail" if findings else "pass",
-        "summary": findings[0]["message"] if findings else "脚本绑定、入参形态与文档元数据都符合包契约",
+        "summary": findings[0]["message"] if findings else "脚本绑定、入参形态、文档元数据与 consumer 导入规则都通过",
         "blocking": bool(findings), "degradable": False, "findings": findings, "action": None,
     }
 

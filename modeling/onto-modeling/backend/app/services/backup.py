@@ -184,6 +184,23 @@ def _clean_leftovers(directory: Path) -> None:
             remove_tree(entry)
 
 
+def _add_hub_tasks(tar: tarfile.TarFile, data_dir: Path, staging: Path) -> None:
+    """知识包 Hub 的发布与导入请求（ADR-0091）：逐个持 Hub 请求锁打包，避开写到一半的请求。"""
+    from . import knowledge_hub
+
+    tasks = data_dir / "hub-tasks"
+    if not tasks.is_dir():
+        return
+    for entry in sorted(tasks.iterdir()):
+        if entry.is_dir() and entry.name == "packages":
+            for project in sorted(entry.iterdir()):
+                with knowledge_hub.lock(project.name):
+                    if project.exists():
+                        _add_path(tar, project, f"data/hub-tasks/packages/{project.name}", staging)
+        elif entry.is_dir() or entry.suffix == ".json":
+            _add_path(tar, entry, f"data/hub-tasks/{entry.name}", staging)
+
+
 def run_backup(manager) -> str:
     """打一份备份并清理多余的旧备份，返回备份文件名；手动按钮与定时调度共用。"""
     from .workspace import META_FILE
@@ -214,6 +231,7 @@ def run_backup(manager) -> str:
             for path in _data_entries(manager):
                 if path.exists():
                     _add_path(tar, path, _arcname(path, data_dir), staging)
+            _add_hub_tasks(tar, data_dir, staging)
             transcripts = Path.home() / ".claude" / "projects"
             if transcripts.is_dir():
                 _add_path(tar, transcripts, "home/.claude/projects", staging)

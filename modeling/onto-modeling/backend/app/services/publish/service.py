@@ -1,8 +1,8 @@
-"""发布流程（方案 A8、A9；详设 ⑱；API 契约 3.20、3.21）。
+"""发布流程（方案 A8；详设 ⑱；API 契约 3.20、3.21；ADR-0091）。
 
-确定提交 → git archive 只读树（tree.release_tree）→ 门禁（gates）→ 适配器渲染 →
-留存包（release_store，先留存再打标签，留存失败就不算发布）→ 打 release/<版本> 注释标签 →
-写发布记录（项目元数据 last_package_publish）。工作区里没提交的改动永远不进包。
+确定提交 → git archive 只读树（tree.release_tree）冻结 → 门禁 → Hub 分配版本号 → 适配器渲染 →
+上传并提交到 Hub（hub_packages.publish）→ 本地留存包、打 release/<版本> 注释标签、写发布记录
+（项目元数据 last_package_publish）。Hub 是版本权威，不可用时发布失败；工作区里没提交的改动永远不进包。
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import re
 import shutil
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 from .. import package_mapping, release_store
@@ -29,6 +30,8 @@ from .tree import release_tree, uncommitted_package_changes
 CHECK_LIMIT = 50
 CHECK_TABLE_LIMIT = 100
 VARIANTS = (VARIANT_STANDARD, VARIANT_GRAPH)
+# 预检渲染用的占位版本号：正式版本号要到 Hub 预留时才有
+PREVIEW_VERSION = "0.1.0"
 
 
 def resolve_commit(root: Path, commit: str | None) -> str:
@@ -69,11 +72,12 @@ def export_package_zip(
     version: str = "",
     source_commit: str = "",
     draft: bool = False,
+    package_id: str = "",
 ) -> Path:
     """按给定的树渲染一份包（不打标签、不留存）：source_root 缺省为工作区当前文件。
 
     发布与按版本补渲染走 publish_package / release_package；这里给预览、导出与测试用。
-    version 缺省按主线版本号取 0.{n}.0。
+    version 缺省按主线版本号取 0.{n}.0（只是预览用的占位，正式版本号由 Hub 分配）；package_id 缺省项目 ID。
     """
     root = manager.project_root(project_id)
     if not version:
@@ -83,7 +87,7 @@ def export_package_zip(
     src = _source(
         manager, project_id, root, source_root or root, source_commit, version,
         variant=VARIANT_GRAPH if graph else VARIANT_STANDARD,
-        allow_unbound=allow_unbound, draft=draft, binding=binding,
+        allow_unbound=allow_unbound, draft=draft, binding=binding, package_id=package_id,
     )
     ADAPTER.render(src, Path(dest_path))
     return Path(dest_path)
@@ -105,14 +109,16 @@ def package_binding_check(manager, project_id: str, commit: str | None = None) -
     binding = {"issues": [], "warnings": [], "tables": {}, "objects": {}, "problems": []}
     table_resources, solver = [], {"enabled": False}
     script_findings: list[dict] = []
+    structure = {"blocking": 0, "findings": [], "truncated": False, "skipped": None}
     pack_gates: list[dict] = []
     try:
         with release_tree(root, commit) as tree:
             binding = package_mapping.resolve_object_tables(tree, tables=package_mapping.read_source_tables(tree))
             table_resources = unmarked_table_resources(tree, CHECK_LIMIT)
             solver = solver_service.release_status_at(tree, root)
-            src = _source(manager, project_id, root, tree, commit, versioning.next_version(root, commit)[0])
+            src = _source(manager, project_id, root, tree, commit, PREVIEW_VERSION)
             script_findings = gates.render_findings(src)
+            structure = _structure_check(manager, project_id, tree, solver, bool(script_findings))
         pack_gates = _pack_gates(manager, root, commit)
     except WorkspaceError as exc:
         if exc.code not in ("release_tree_unsafe", "release_tree_mismatch"):
@@ -130,7 +136,7 @@ def package_binding_check(manager, project_id: str, commit: str | None = None) -
         shown.append({**item, "path": rel, "revision": revision})
     objects = binding["objects"]
     uncommitted = uncommitted_package_changes(root)
-    gate_list = gates.gate_chain(issues, solver, script_findings, tree_error, pack_gates)
+    gate_list = gates.gate_chain(issues, solver, script_findings + structure["findings"], tree_error, pack_gates)
     return {
         "commit": commit,
         "blocking": sum(1 for item in issues if item["blocking"]),
@@ -145,12 +151,42 @@ def package_binding_check(manager, project_id: str, commit: str | None = None) -
         "table_resources": table_resources,
         # 求解契约体检单列：blocking 仍只计数据绑定，普通包这里只有 enabled=False
         "solver": solver,
+        # consumer 导入规则的结构自检单列：不计入数据绑定的 blocking，进「知识包结构」门禁
+        "structure": structure,
         "gates": gate_list,
         "format": "solver" if solver.get("enabled") else "ontology",
         "uncommitted": uncommitted[:CHECK_LIMIT],
         "uncommitted_count": len(uncommitted),
         "checked_at": time.time(),
         "duration_ms": int((time.time() - started) * 1000),
+    }
+
+
+def _structure_check(manager, project_id: str, tree: Path, solver: dict, render_failed: bool) -> dict:
+    """按 consumer 的导入规则检查这棵树导出的包（降级口径，数据绑定另有一栏）。
+
+    求解契约有问题或渲染本身失败时导出不成包，那两处已经报过，这里跳过不重复。
+    """
+    from .. import hub_packages
+
+    skipped = "solver_findings" if solver.get("findings") else "render_failed" if render_failed else None
+    if skipped:
+        return {"blocking": 0, "findings": [], "truncated": False, "skipped": skipped}
+    binding = package_mapping.resolve_object_tables(
+        tree, tables=package_mapping.read_source_tables(tree), strict_declared=False,
+    )
+    try:
+        findings = hub_packages.package_structure_findings(
+            manager, project_id, binding=binding, allow_unbound=True,
+            ontology_id=hub_packages.ontology_id(project_id), tree=tree,
+        )
+    except WorkspaceError as exc:
+        code = exc.code if exc.code != "workspace_error" else "package_export_failed"
+        findings = [{"code": code, "message": str(exc)}]
+    findings = [{"level": "error", **item} for item in findings]
+    return {
+        "blocking": len(findings), "findings": findings[:CHECK_LIMIT],
+        "truncated": len(findings) > CHECK_LIMIT, "skipped": None,
     }
 
 
@@ -196,41 +232,99 @@ def publish_package(
     allow_unbound: bool = False,
     author: str = "",
     commit: str | None = None,
+    *,
+    token: str = "",
+    subject: str = "",
+    request_id: str = "",
+    acknowledged_by: str = "",
+    verified_revision: str = "",
+    delegated: dict | None = None,
 ) -> dict:
-    """用户发布知识包：按提交（缺省主线最新）打包、留存、打发布标签，返回发布记录（同时写进元数据）。
+    """用户发布知识包：按提交（缺省主线最新）冻结只读树，经 Hub 分配版本号、上传、提交，返回发布记录。
 
-    版本号见 versioning：该提交已有发布标签就沿用（同一提交重复发布，版本号与包字节都相同），
-    否则 0.{n}.0 且严格大于已有的全部发布标签。降级发布须可追溯：记录谁、何时发布，以及哪些
-    对象因此未绑定数据表。求解知识包另有门禁：静态检查无错误，且当前修订有通过的权威验证回执；
-    allow_unbound 只放宽数据绑定，不放宽求解门禁。dest_path 给定时把留存的包复制过去。
+    同一 request_id 重放得到同一个 Hub 版本；新的 request_id 总是新版本（同一提交也一样），版本号只认 Hub。
+    降级发布须可追溯：记录谁、何时发布，以及哪些对象因此未绑定数据表。启用求解契约的包要确认求解能力
+    尚未经端到端验证（acknowledged_by），或给出已验证过的同一修订（verified_revision）。
+    dest_path 给定时把这次发布的包复制过去。
     """
+    from .. import hub_packages
+
+    root = manager.project_root(project_id)
+    commit = resolve_commit(root, commit)
+    receipt = hub_packages.publish(
+        manager, project_id, request_id or uuid.uuid4().hex, token, subject, allow_unbound,
+        commit=commit, author=author, acknowledged_by=acknowledged_by,
+        verified_revision=verified_revision, delegated=delegated,
+    )
+    record = _release_record(manager, project_id, receipt)
+    if dest_path is not None:
+        shutil.copyfile(release_package(manager, project_id, receipt["version"], token=token)[0], dest_path)
+    return record
+
+
+def _release_record(manager, project_id: str, receipt: dict) -> dict:
+    """Hub 回执对应的本地发布记录；本地记录没写成（标签或留存失败）时只给 Hub 回执里的字段。"""
+    hub = {key: receipt.get(key) for key in HUB_FIELDS}
+    last = manager.get_project(project_id).get("last_package_publish") or {}
+    if last.get("release_id") == receipt.get("release_id"):
+        return {**last, **hub, "local_record_pending": bool(receipt.get("local_record_pending"))}
+    for entry in releases(manager, project_id):
+        if (entry.get("hub") or {}).get("release_id") == receipt.get("release_id"):
+            return {
+                "at": entry["released_at"], "by": entry["released_by"], "degraded": entry["degraded"],
+                "unbound_count": len(entry["unbound_objects"]), "unbound_objects": entry["unbound_objects"],
+                "version": entry["version"], "commit": entry["commit"], "tag": entry["tag"],
+                "format": entry["format"], "sha256": (entry["package"] or {}).get("sha256"),
+                "size": (entry["package"] or {}).get("size"), **hub,
+                "local_record_pending": bool(receipt.get("local_record_pending")),
+            }
+    return {"version": receipt.get("version"), **hub, "local_record_pending": True}
+
+
+HUB_FIELDS = ("ontology_id", "release_id", "package_digest", "committed_at")
+
+
+def _unbound_objects(binding: dict, allow_unbound: bool) -> list[str]:
+    """降级发布时未绑定数据表的对象，与适配器的 manifest 同口径。"""
+    if not allow_unbound:
+        return []
+    return sorted({item["object"] for item in binding.get("issues") or [] if item["kind"] != "declared_unverifiable"})
+
+
+def record_hub_release(manager, project_id: str, receipt: dict, task: dict, archive: Path) -> dict:
+    """Hub 提交后的本地记录（hub_packages 在请求锁内调用）：留存上传的那份包、打标签、写最近一次发布。
+
+    留存与标签都幂等，同一请求重放不重复写；更早的请求重放不覆盖更新的最近一次发布。
+    """
+    version = receipt["version"]
+    if not versioning.VERSION_RE.match(version or ""):
+        raise WorkspaceError(f"Hub 版本号不是正式版本：{version}", 502, "hub_error")
+    tag = versioning.tag_name(version)
+    commit = task["commit"]
+    author = task.get("author") or ""
+    degraded = _unbound_objects(task["binding"], task["allow_unbound"])
+    hub = {key: receipt.get(key) for key in HUB_FIELDS}
+    released_at = int(time.time())
     with manager._project_lock(project_id):
         root = manager.project_root(project_id)
-        commit = resolve_commit(root, commit)
-        version, existing = versioning.next_version(root, commit)
-        tag = versioning.tag_name(version)
-        with tempfile.TemporaryDirectory(prefix="onto-publish-") as scratch:
-            rendered = Path(scratch) / "package.zip"
-            with release_tree(root, commit) as tree:
-                solver_service.ensure_publishable(tree, root)
-                src = _source(manager, project_id, root, tree, commit, version, allow_unbound=allow_unbound)
-                src = dataclasses.replace(src, binding=resolve_binding(src))
-                manifest = ADAPTER.render(src, rendered)
-            degraded = manifest.unbound_objects
-            # 留存发布包，供按版本下载（ADR-0020）：先留存再打标签，留存失败就不算发布。
-            # 同一版本已有留存时以留存为准，这次拿到的也是那份字节
-            stored = release_store.save(manager.data_dir, project_id, version, rendered, {
-                "commit": commit, "tag": tag, "released_at": int(time.time()), "released_by": author,
+        stored = release_store.get(manager.data_dir, project_id, version, commit)
+        stored = stored[1] if stored else None
+        archive = Path(archive)
+        if stored is None and archive.is_file() and release_store.digest(archive) == receipt.get("package_digest"):
+            stored = release_store.save(manager.data_dir, project_id, version, archive, {
+                "commit": commit, "tag": tag, "released_at": released_at, "released_by": author,
                 "degraded": bool(degraded), "unbound_count": len(degraded),
-                "unbound_objects": degraded[:CHECK_LIMIT],
+                "unbound_objects": degraded[:CHECK_LIMIT], **hub,
             })
-        if dest_path is not None:
-            shutil.copyfile(release_store.get(manager.data_dir, project_id, version, commit)[0], dest_path)
+        existing = _run_git(root, ("rev-parse", "-q", "--verify", f"refs/tags/{tag}^{{commit}}")).stdout.strip()
         if not existing:
-            _git(root, "tag", "-a", tag, "-m", versioning.release_message(version, author, degraded), commit)
+            _git(root, "tag", "-a", tag, "-m", versioning.release_message(version, author, degraded, hub), commit)
+        elif existing != commit:
+            # 旧版本地发布留下的同名标签：Hub 版本照常有效，只是历史页上不另打标签
+            logging.getLogger(__name__).warning("发布标签 %s 已指向别的提交，未重打", tag)
         uncommitted = uncommitted_package_changes(root)
         record = {
-            "at": int(time.time()),
+            "at": released_at,
             "by": author,
             "degraded": bool(degraded),
             "unbound_count": len(degraded),
@@ -238,64 +332,79 @@ def publish_package(
             "version": version,
             "commit": commit,
             "tag": tag,
-            "format": stored.get("format"),
-            "sha256": stored.get("sha256"),
-            "size": stored.get("size"),
+            "format": (stored or {}).get("format"),
+            "sha256": receipt.get("package_digest"),
+            "size": (stored or {}).get("size"),
             "uncommitted": uncommitted[:CHECK_LIMIT],
             "uncommitted_count": len(uncommitted),
+            **hub,
         }
-        manager._update_meta_unlocked(root, last_package_publish=record)
+        last = manager._read_meta(root).get("last_package_publish") or {}
+        if str(last.get("committed_at") or "") <= str(receipt.get("committed_at") or ""):
+            manager._update_meta_unlocked(root, last_package_publish=record)
     return record
 
 
-# ---- 发布记录、按版本取包、求解验证候选（三份契约，ADR-0020） ----
+# ---- 发布记录、按版本取包 ----
 
 
-def releases(manager, project_id: str) -> list[dict]:
-    """发布记录：release/* 标签，版本号从新到旧。
-
-    标签给出版本、提交、发布时间、发布人与是否降级；留存记录补上格式、包摘要与拉取记录
-    （留存功能之前打的标签没有留存，格式与摘要为 None，第一次下载补存后才有）。
-    """
-    root = manager.project_root(project_id)
+def _tag_entries(root: Path) -> list[tuple[str, str, str, str]]:
     out = _git(
         root, "for-each-ref", f"refs/tags/{versioning.TAG_PREFIX}",
         "--format=%(refname:short)%1f%(*objectname)%(objectname)%1f%(taggerdate:unix)%1f%(contents)%1e",
     )
-    stored = release_store.records(manager.data_dir, project_id)
     entries = []
     for record in out.split("\x1e"):
         parts = record.strip("\n").split("\x1f")
-        if len(parts) != 4 or not (number := versioning.parse_tag(parts[0])):
-            continue
+        if len(parts) == 4 and versioning.parse_tag(parts[0]):
+            entries.append((parts[0], parts[1][:40], parts[2], parts[3]))
+    return entries
+
+
+def releases(manager, project_id: str) -> list[dict]:
+    """发布记录：release/* 标签，按发布时间从新到旧。
+
+    版本号来自 Hub（标签名），标签说明给出发布人、是否降级与 Hub 包身份；留存记录补上格式、包摘要与
+    拉取记录（留存缺失时为 None，第一次下载补存后才有）。旧版本地发布的标签没有 Hub 身份（hub 为 None）。
+    """
+    root = manager.project_root(project_id)
+    stored = release_store.records(manager.data_dir, project_id)
+    entries = []
+    for tag, commit, tagged_at, message in _tag_entries(root):
+        number = versioning.parse_tag(tag)
         version = versioning.text(number)
-        commit = parts[1][:40]
-        by, degraded = versioning.parse_release_message(parts[3])
+        by, degraded = versioning.parse_release_message(message)
         package = stored.get(version)
         if package and package.get("commit") != commit:
             package = None
+        hub = versioning.parse_hub(message)
+        if hub and package and package.get("package_digest"):
+            hub["package_digest"] = package["package_digest"]
         entries.append({
-            "number": number,
+            "sort": (int(tagged_at) if tagged_at.isdigit() else 0, number),
             "version": version,
-            "tag": parts[0],
+            "tag": tag,
             "commit": commit,
-            "released_at": int(parts[2]) if parts[2].isdigit() else None,
+            "released_at": int(tagged_at) if tagged_at.isdigit() else None,
             "released_by": by,
             "degraded": degraded,
             "unbound_objects": list((package or {}).get("unbound_objects") or []),
             "format": package.get("format") if package else None,
             "package": {"sha256": package["sha256"], "size": package["size"]} if package else None,
             "pulls": list((package or {}).get("pulls") or []),
+            "hub": hub,
         })
-    entries.sort(key=lambda item: item.pop("number"), reverse=True)
+    entries.sort(key=lambda item: item.pop("sort"), reverse=True)
     return entries
 
 
-def release_package(manager, project_id: str, version: str, variant: str = VARIANT_STANDARD) -> tuple[Path, dict]:
-    """按版本取发布包：读发布时留存的包。
+def release_package(
+    manager, project_id: str, version: str, variant: str = VARIANT_STANDARD, *, token: str = "",
+) -> tuple[Path, dict]:
+    """按版本取发布包：读发布时留存的那份（与 Hub 上的字节相同）。
 
-    标准包留存缺失（数据目录丢失、留存功能之前的旧标签）时，按标签提交重新渲染一次并补存，记录标
-    backfilled；图模式变体第一次下载时按同一提交渲染并留存。之后同一版本同一变体都读这一份。
+    标准包留存缺失（数据目录丢失）时：给了登录令牌就从 Hub 下回缓存；否则按标签提交重新渲染一次并补存，
+    记录标 backfilled（字节可能与 Hub 上的不同）。图模式变体只在本地按同一提交渲染并留存。
     """
     if not versioning.VERSION_RE.match(version or ""):
         raise WorkspaceError("版本号不合法", 400, "invalid_argument")
@@ -310,61 +419,35 @@ def release_package(manager, project_id: str, version: str, variant: str = VARIA
     stored = release_store.get(manager.data_dir, project_id, version, commit, variant)
     if stored is not None:
         return stored
+    message = _git(root, "for-each-ref", f"refs/tags/{tag}", "--format=%(contents)")
+    by, degraded = versioning.parse_release_message(message)
+    hub = versioning.parse_hub(message)
     with manager._project_lock(project_id):
         stored = release_store.get(manager.data_dir, project_id, version, commit, variant)
         if stored is not None:
             return stored
-        message = _git(root, "for-each-ref", f"refs/tags/{tag}", "--format=%(contents)")
-        by, degraded = versioning.parse_release_message(message)
         with tempfile.TemporaryDirectory(prefix="onto-release-render-") as scratch:
             dest = Path(scratch) / "package.zip"
-            try:
-                with release_tree(root, commit) as tree:
-                    src = _source(
-                        manager, project_id, root, tree, commit, version,
-                        variant=variant, allow_unbound=degraded,
-                    )
-                    ADAPTER.render(dataclasses.replace(src, binding=resolve_binding(src)), dest)
-            except WorkspaceError as exc:
-                raise WorkspaceError(
-                    f"版本 {version} 没有留存的包，按发布标签重新生成失败：{exc}",
-                    409, "release_package_unavailable",
-                ) from exc
-            release_store.save(manager.data_dir, project_id, version, dest, {
-                "commit": commit, "tag": tag, "released_by": by, "degraded": degraded,
-                "backfilled": variant == VARIANT_STANDARD,
-            }, variant)
+            record = {"commit": commit, "tag": tag, "released_by": by, "degraded": degraded, **(hub or {})}
+            if variant == VARIANT_STANDARD and hub and token:
+                from .. import hub_packages
+
+                receipt = hub_packages.download(hub["ontology_id"], hub["release_id"], token, dest)
+                record["package_digest"] = receipt.get("package_digest")
+            else:
+                try:
+                    with release_tree(root, commit) as tree:
+                        src = _source(
+                            manager, project_id, root, tree, commit, version,
+                            variant=variant, allow_unbound=degraded,
+                            package_id=(hub or {}).get("ontology_id", ""),
+                        )
+                        ADAPTER.render(dataclasses.replace(src, binding=resolve_binding(src)), dest)
+                except WorkspaceError as exc:
+                    raise WorkspaceError(
+                        f"版本 {version} 没有留存的包，按发布标签重新生成失败：{exc}",
+                        409, "release_package_unavailable",
+                    ) from exc
+                record["backfilled"] = variant == VARIANT_STANDARD
+            release_store.save(manager.data_dir, project_id, version, dest, record, variant)
     return release_store.get(manager.data_dir, project_id, version, commit, variant)
-
-
-def solver_candidate_package(manager, project_id: str, dest_path: Path, allow_unbound: bool = False) -> dict:
-    """求解验证候选包：按 HEAD 提交渲染，manifest 标 draft，不打标签、不算发布。
-
-    只跳过验证门禁本身（验证就是为了它），静态检查与数据绑定照发布同口径拦截。
-    返回提交、发布时会得到的版本号与求解契约修订号，验证方据此回写回执。
-    """
-    from .. import solver_contract
-
-    with manager._project_lock(project_id):
-        root = manager.project_root(project_id)
-        commit = _head_commit(root)
-        version, _ = versioning.next_version(root, commit)
-        with release_tree(root, commit) as tree:
-            check = solver_service.solver_check_at(tree)
-            if not check.needs_validation:
-                raise WorkspaceError(
-                    "当前版本没有启用的求解契约，无需端到端验证", 400, "solver_validation_not_required"
-                )
-            if check.findings:
-                raise WorkspaceError(
-                    "求解契约静态检查未通过：" + "；".join(item["message"] for item in check.findings[:3]),
-                    400, solver_contract.CODE_INVALID,
-                )
-            src = _source(manager, project_id, root, tree, commit, version, allow_unbound=allow_unbound, draft=True)
-            ADAPTER.render(dataclasses.replace(src, binding=resolve_binding(src)), Path(dest_path))
-    return {
-        "commit": commit,
-        "version": version,
-        "revision": check.revision,
-        "contract_digest": str(check.digests.get("total") or ""),
-    }
