@@ -34,7 +34,7 @@
 
 ### P3 版本历史与回退（!567 的版本部分、!570 的 MCP 回退）
 
-- 后端：`services/version_history.py`、`services/version_revert.py`（均 A）；`routers/projects.py` 的 `/history`、`/versions/revert-preview`；`workspace.py` 的回退部分（资料不随回退、并发保护）；MCP 的版本列表、回退预览、回退三个工具与确认令牌。
+- 后端：`services/version_history.py`、`services/version_revert.py`（均 A）；`routers/projects.py` 的 `/history`、`/versions/revert-preview`；`workspace.py` 的回退部分（资料随回退一起恢复、并发保护）；MCP 的版本列表、回退预览、回退三个工具与确认令牌。
 - 前端：`LeftPane` 的历史、`lib/versionHistory.js`、`lib/workspaceDirty.js`、`lib/latestRequest.js`、`lib/mcpClientConfig.js`。
 - 测试：`test_version_history`、`test_lifecycle_and_versions`、`test_onto_mcp`（版本部分）；前端 `versionHistory`、`workspaceDirty`、`latestRequest`、`studioRollbackRefresh`、`mcpClientConfig`。
 
