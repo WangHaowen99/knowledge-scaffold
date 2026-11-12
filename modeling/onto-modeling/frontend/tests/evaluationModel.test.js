@@ -11,7 +11,6 @@ import {
   needsPolling,
   notifyPackagePublished,
   optimizationBlock,
-  publishedNotices,
   processingState,
   releaseEvaluation,
   releaseFeedback,
@@ -291,17 +290,3 @@ test('publishing notifies open panels with the project id', () => {
   assert.deepEqual(events[0].detail, { projectId: 'project_alpha' });
 });
 
-// develop 的 usePackagePublish 发布成功后的提示
-test('publishing tells what was published and whether the optimization was written back', () => {
-  const receipt = { version: '0.1.2', release_id: 'release-b' };
-  assert.deepEqual(publishedNotices(receipt), [{ type: 'success', text: '知识包已发布' }]);
-  assert.equal(publishedNotices(receipt, { allowUnbound: true })[0].text, '已降级发布，未通过检查的对象不绑定数据表');
-  assert.deepEqual(publishedNotices(receipt, { solverAcknowledged: true })[0],
-    { type: 'success', text: '知识包 0.1.2 已发布，求解能力待验证', solver: true });
-  assert.equal(publishedNotices({ ...receipt, local_record_pending: true })[0].text, '知识包已发布，本地发布记录待恢复');
-  const done = { status: 'done', release_id: 'release-b', version: '0.1.2', base_version: '0.1.1' };
-  assert.equal(publishedNotices({ ...receipt, evaluation_writeback: done })[1].text, '已回写评测服务：新版本 0.1.2 处理了 0.1.1 的优化建议');
-  assert.equal(publishedNotices({ ...receipt, evaluation_writeback: { ...done, release_id: 'release-a' } }).length, 1);
-  assert.deepEqual(publishedNotices({ ...receipt, evaluation_writeback: { status: 'pending' } })[1],
-    { type: 'warning', text: '新版本的处理结果暂未回写评测服务，打开已发布版本时会自动重试' });
-});

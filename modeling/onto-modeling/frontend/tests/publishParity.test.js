@@ -6,7 +6,6 @@ import {
   EVALUATION_HINT, RESOURCES_NOTE, assistantPrompt, checkSummary, checkTitle, degradeState, fileTarget, hardBlockers, lastPublishText,
   needsSolverAcknowledgement, proceedState, publishedText, stageNote, tableGroups, versionMeta, versionsTitle, writebackText,
 } from '../src/pages/publish/publishCheckModel.js';
-import { needsValidation, validationText } from '../src/pages/scripts/solverValidationModel.js';
 
 const clean = {
   gates: [{ id: 'data_binding', blocking: false, degradable: true }],
@@ -74,19 +73,6 @@ test('已发布版本：标题、版本下面一行、提示与末行文字', ()
   assert.match(versionMeta({ created_at: '2026-11-01T08:00:00Z', source_service: 'modeling' }), / · modeling$/);
   assert.equal(EVALUATION_HINT, '打开优化建议执行评测优化，修改并发布新版本后状态自动变为“已处理”。');
   assert.equal(RESOURCES_NOTE, 'Hub 仅保存明确共享的最新资料集，不与历史包版本绑定；本地资料不会自动上传。');
-});
-
-test('求解验证卡：只在启用了求解操作时出现，五种状态文字照 develop', () => {
-  assert.equal(needsValidation({ enabled: false }), false);
-  assert.equal(needsValidation({ enabled: true, operations: [{ enabled: false }] }), false);
-  assert.equal(needsValidation({ enabled: true, operations: [{ enabled: true }] }), true);
-  const unpublished = { state: 'unpublished' };
-  assert.equal(validationText({ status: null, dirty: false, current: unpublished }), '正在读取求解验证状态。');
-  assert.equal(validationText({ status: {}, dirty: true, current: unpublished }), '有未保存的修改：保存并发布新版本后，再对新版本发起求解验证。');
-  assert.equal(validationText({ status: { configured: false }, dirty: false, current: unpublished }), '评测服务不可用或未配置，暂时读不到求解验证状态。');
-  assert.equal(validationText({ status: {}, dirty: false, current: { state: 'passed', version: '0.1.2' } }), '当前修订已在 0.1.2 通过求解验证。');
-  assert.equal(validationText({ status: {}, dirty: false, current: { state: 'published' } }), '当前修订已发布，尚未通过求解验证：在评测页面对该版本发起求解验证。');
-  assert.equal(validationText({ status: {}, dirty: false, current: unpublished }), '当前修改尚未发布和验证：发布新版本后，在「已发布版本（知识包评测）」中发起求解验证。');
 });
 
 test('评测优化后发布的回写提示（develop usePackagePublish）', () => {

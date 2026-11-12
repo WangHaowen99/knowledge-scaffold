@@ -7,7 +7,7 @@ import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import { Button, Chip, Modal, Note } from '../../ui/index.jsx';
 import {
-  EvaluationCell, EvaluationNotices, FeedbackCell, SolverValidationCell,
+  EvaluationCell, EvaluationNotices, FeedbackCell, SolverValidationCell, StartEvaluation,
 } from '../evaluation/ReleaseEvaluation.jsx';
 import { EVALUATION_HINT, RESOURCES_NOTE, VERSIONS_PAGE, versionMeta, versionsTitle } from './publishCheckModel.js';
 
@@ -110,7 +110,7 @@ export default function PublishedVersions({ open, projectId, projectName = '', e
                   <td>
                     <span className="row g12">
                       <span className="xs pb-link" role="button" onClick={() => onCompare({ releaseId: row.release_id, version: row.version })}>与其他版本对比</span>
-                      {ev ? <span className="xs pb-link" role="button" onClick={() => ev.evaluate(row)}>发起评测</span> : null}
+                      {ev ? <StartEvaluation ev={ev} release={row} /> : null}
                       <span className="xs pb-link" role="button" title="下载这个版本的知识包，不会生成新版本"
                         onClick={() => downloading !== row.release_id && download(row)}>{downloading === row.release_id ? '下载中…' : '下载'}</span>
                     </span>

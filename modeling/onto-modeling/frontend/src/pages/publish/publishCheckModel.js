@@ -125,7 +125,7 @@ export function publishedText(release, { degrade = false, acknowledged = false }
 
 // ---------- 已发布版本（HB-05） ----------
 export const VERSIONS_PAGE = 10;
-export const EVALUATION_HINT = '打开优化建议执行评测优化，修改并发布新版本后状态自动变为“已处理”。';
+export { EVALUATION_HINT } from '../evaluation/evaluationModel.js';
 export const versionsTitle = (data, projectName) => {
   const name = data?.releases?.[0]?.name || projectName;
   return name ? `已发布版本 — ${name}` : '已发布版本';

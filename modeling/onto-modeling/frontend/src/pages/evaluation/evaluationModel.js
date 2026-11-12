@@ -168,20 +168,6 @@ export function writebackNotice(status) {
 }
 
 // 发布成功后的提示（develop 的 usePackagePublish）：求解包带「去评测」，评测优化之后发布的新版本带回写结果。
-// 返回 [{type: success|warning, text, solver?}]，solver 为真时提示里放「去评测」按钮（对这个版本发起求解验证）
-export function publishedNotices(receipt, { allowUnbound = false, solverAcknowledged = false } = {}) {
-  const notices = [];
-  if (receipt?.local_record_pending) notices.push({ type: 'warning', text: '知识包已发布，本地发布记录待恢复' });
-  else if (solverAcknowledged) notices.push({ type: 'success', text: `知识包 ${receipt.version} 已发布，求解能力待验证`, solver: true });
-  else notices.push({ type: 'success', text: allowUnbound ? '已降级发布，未通过检查的对象不绑定数据表' : '知识包已发布' });
-  const writeback = receipt?.evaluation_writeback;
-  if (writeback?.status === 'done' && writeback.release_id === receipt.release_id) {
-    notices.push({ type: 'success', text: `已回写评测服务：新版本 ${writeback.version} 处理了 ${writeback.base_version} 的优化建议` });
-  } else if (writeback?.status === 'pending') {
-    notices.push({ type: 'warning', text: '新版本的处理结果暂未回写评测服务，打开已发布版本时会自动重试' });
-  }
-  return notices;
-}
 
 // 评测优化交给反馈演进插件（ADR-0092）：插件没启用时「评测优化」置灰并说明
 export const EVOLUTION_DISABLED = '评测优化由反馈演进插件处理，项目没有启用它';

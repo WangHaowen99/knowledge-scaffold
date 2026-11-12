@@ -9,6 +9,8 @@ import { ShellP } from '../../shell/Shell.jsx';
 import { Button, Card, Chip, Ev, Icon, KV, Note, Prog, Ring, Seg, St, cx } from '../../ui/index.jsx';
 import { inlineTokens } from '../workbench/md.js';
 import { anchorChipLabel } from '../studio/studioModel.js';
+import { Doc, useAttachmentAnswer } from '../evaluation/EvaluationDoc.jsx';
+import '../../styles/evaluation.css';
 import '../../styles/reports.css';
 import {
   ITEM_STATUS, LINK_STATS, PURPOSE_LABEL, PURPOSE_TONE, RECHECK_KINDS, fmtStamp, infoPairs, linkKind,
@@ -123,7 +125,10 @@ function RepairCard({ repair, items, arbitration, onAnswered }) {
   );
 }
 
-function RawPane({ raw, section }) {
+// 评测服务写回的报告：原文按 Markdown 渲染，「完整回答」链接弹出原始最终答复（develop 的报告预览）
+const EVAL_REPORT = /^reports\/eval-[^/]+\.md$/;
+
+function RawPane({ raw, section, answers }) {
   const bodyRef = useRef(null);
   const lines = raw ? raw.content_md.split('\n') : [];
   const at = section ? headingLine(lines, section) : -1;
@@ -135,7 +140,9 @@ function RawPane({ raw, section }) {
         <span className="sp" />
         <Button size="xs" icon="copy" disabled={!raw} onClick={async () => { try { await navigator.clipboard.writeText(raw.content_md); toast('已复制', 'copy'); } catch { toast('复制失败，请手动选择', 'alert'); } }}>复制</Button>
       </div>
-      {raw ? (
+      {raw && answers && at < 0 ? (
+        <Doc content={raw.content_md} onOpenAnswer={answers.open} />
+      ) : raw ? (
         <div className="code" ref={bodyRef}>
           {at < 0 ? raw.content_md : lines.map((line, i) => <div key={i} className={i === at ? 'rp-at' : undefined}>{line || '\u00a0'}</div>)}
         </div>
@@ -206,6 +213,7 @@ export default function ReportsPage({ route }) {
   const [verification, setVerification] = useState(null);
   const [tick, setTick] = useState(0);
   const fail = useCallback((e) => toast(errorText(e), 'alert'), []);
+  const attachment = useAttachmentAnswer(api, pid);
 
   useEffect(() => { api.reports(pid).then((r) => setList(r.items || [])).catch(fail); }, [api, pid, tick, fail]);
   const selectedId = route.query?.report || list?.[0]?.id || '';
@@ -292,7 +300,7 @@ export default function ReportsPage({ route }) {
     );
     // 资料分析报告平时是结构化视图；从规则「来源」的小节跳来时看原文并定位（再点列表里的报告回到结构化视图）
     if (isResearch) body = section ? <RawPane raw={raw} section={section} /> : <ResearchBody report={current} />;
-    else if (pane === 'raw' && !isLink) body = <RawPane raw={raw} section={section} />;
+    else if (pane === 'raw' && !isLink) body = <RawPane raw={raw} section={section} answers={EVAL_REPORT.test(current?.path || '') ? attachment : null} />;
     else {
       body = (
         <div className="bd">
@@ -354,6 +362,7 @@ export default function ReportsPage({ route }) {
           </Card>
         </aside>
       </div>
+      {attachment.modal}
     </ShellP>
   );
 }

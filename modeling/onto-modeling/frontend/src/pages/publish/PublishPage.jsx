@@ -12,6 +12,7 @@ import { PageHead, ShellP } from '../../shell/Shell.jsx';
 import { evidenceInProject } from '../../state/evidence.js';
 import { useCommandTasks, useProjectEvent } from '../plugin/parts.jsx';
 import { EvaluationDialogs, LegacyEvaluations, useReleaseEvaluations } from '../evaluation/ReleaseEvaluation.jsx';
+import { notifyPackagePublished } from '../evaluation/evaluationModel.js';
 import PackageCompare from './PackageCompare.jsx';
 import PublishCheck from './PublishCheck.jsx';
 import PublishedVersions from './PublishedVersions.jsx';
@@ -180,6 +181,7 @@ export default function PublishPage() {
   const [records, setRecords] = useState(null);
   const [publishing, setPublishing] = useState(false);
   const [ack, setAck] = useState(false); // 我已了解，发布后需完成求解验证
+  const [solverNotice, setSolverNotice] = useState(null); // 求解包发布后待验证：develop 成功提示里的「去评测」
   // 已发布版本（HB-05）：项目列表菜单带 ?versions=1 进来时直接打开；发布成功后自动打开
   const [versionsOpen, setVersionsOpen] = useState(() => route?.query?.versions === '1');
   const [manifestFor, setManifestFor] = useState(null);
@@ -233,6 +235,8 @@ export default function PublishPage() {
       });
       const done = publishedText(r, { degrade, acknowledged });
       toast(done.text, done.tone === 'warning' ? 'alert' : 'upload');
+      notifyPackagePublished(pid);
+      setSolverNotice(done.evaluate && r.hub?.release_id ? { text: done.text, release: { ...r.hub, version: r.version } } : null);
       const writeback = writebackText(r);
       if (writeback) setTimeout(() => toast(writeback.text, writeback.tone === 'warning' ? 'alert' : 'check'), 2500);
       if (r.local_record_pending) loadRecords();
@@ -291,9 +295,15 @@ export default function PublishPage() {
       <PageHead
         title="发布知识包"
         desc={`${pkg} · 当前版本 ${mainLabel}`}
-        actions={<><LegacyEvaluations pid={pid} /><Button kind="primary" icon="split" onClick={() => setCompareFor({})}>知识包版本对比</Button><Button icon="history" onClick={() => setVersionsOpen(true)}>已发布版本（知识包评测）</Button><Button icon="refresh" disabled={checking} onClick={() => runCheck({ refresh: true })}>重新检查</Button></>}
+        actions={<><LegacyEvaluations pid={pid} tasks={tasks} /><Button kind="primary" icon="split" onClick={() => setCompareFor({})}>知识包版本对比</Button><Button icon="history" onClick={() => setVersionsOpen(true)}>已发布版本（知识包评测）</Button><Button icon="refresh" disabled={checking} onClick={() => runCheck({ refresh: true })}>重新检查</Button></>}
       />
       <GateChain check={check} onAction={gateAction} busy={starting} />
+      {solverNotice ? (
+        <Note tone="amber" className="mb12">
+          <span className="row"><span className="grow">{solverNotice.text}</span>
+            <Button size="xs" onClick={() => { ev.evaluate(solverNotice.release, 'solver'); setSolverNotice(null); }}>去评测</Button></span>
+        </Note>
+      ) : null}
       {check?.uncommitted?.count ? (
         <Note tone="amber" className="mb12">{check.uncommitted.count} 处改动未确认，不会随这次发布</Note>
       ) : null}
