@@ -22,7 +22,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import BinaryIO, Iterator
+from typing import BinaryIO, ContextManager, Iterator
 from urllib.parse import urlsplit
 
 from ...evidence import RECORD_TYPES
@@ -96,14 +96,14 @@ class _Run:
             self.process.stdin.write(json.dumps(head, ensure_ascii=False).encode("utf-8") + b"\n")
             self.process.stdin.write(json.dumps(self._secret, ensure_ascii=False).encode("utf-8") + b"\n")
             self.process.stdin.close()
-        except (BrokenPipeError, OSError):
+        except OSError:
             pass
         threading.Thread(target=self._wait, name=f"conn-{self.job_id}", daemon=True).start()
 
     def _killpg(self) -> None:
         try:
             os.killpg(self.process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
+        except OSError:
             pass
 
     def _exited(self) -> bool:
@@ -161,7 +161,7 @@ class _Run:
                     return
                 try:
                     self._handle(line, handle)
-                except (UnicodeDecodeError, ValueError, TypeError, AttributeError):
+                except (ValueError, TypeError, AttributeError):
                     self._reject("事件不是合法的 JSON 对象")
                     return
         finally:
@@ -452,10 +452,9 @@ class SubprocessProvider:
             # 任务表已经按类型写进快照包目录了，这一份不再留在内存盘上
             run.records_path.unlink(missing_ok=True)
 
-    @contextmanager
-    def raw(self, job_id: str, name: str) -> Iterator[BinaryIO]:
+    def raw(self, job_id: str, name: str) -> ContextManager[BinaryIO]:
+        """连接型提供方没有原始结果：取的时候直接报 404（与 ReaStatic 的同名方法一样在 with 上抛出）。"""
         raise GatewayError(404, "provider_job_missing", "连接型提供方没有原始结果")
-        yield  # pragma: no cover
 
     def delete(self, job_id: str) -> None:
         with self._lock:

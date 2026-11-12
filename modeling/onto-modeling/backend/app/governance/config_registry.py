@@ -96,7 +96,7 @@ def _parse(item: ConfigItem, raw: str) -> Any:
         raise ConfigError(f"{item.key} 必须是 true 或 false")
     if item.kind == "enum" and raw not in item.choices:
         raise ConfigError(f"{item.key} 必须是 {'、'.join(item.choices)} 之一")
-    if item.kind == "url" and raw and not str(raw).startswith(("http://", "https://")):
+    if item.kind == "url" and raw and not _is_web_url(str(raw)):
         raise ConfigError(f"{item.key} 必须以 http(s):// 开头")
     if item.min_bytes and raw and len(str(raw).encode("utf-8")) < item.min_bytes:
         raise ConfigError(f"{item.key} 至少 {item.min_bytes} 字节")
@@ -137,11 +137,22 @@ def item(key: str) -> ConfigItem:
     return _items[key]
 
 
+def _is_web_url(text: str) -> bool:
+    return text.startswith(("http://", "https://"))  # NOSONAR(S5332) 只校验前缀：内网服务地址允许 http
+
+
+def _env_given(entry: ConfigItem, raw: str | None) -> bool:
+    """环境变量算不算给了值：全是空白只对 str、path 类型算数，空串不算。"""
+    if raw is None:
+        return False
+    return bool(raw.strip()) or (entry.kind in ("str", "path") and raw != "")
+
+
 def _candidates(entry: ConfigItem):
     for source in entry.precedence:
         if source == "env":
             raw = os.environ.get(entry.key)
-            if raw is not None and (raw.strip() or entry.kind in ("str", "path") and raw != ""):
+            if _env_given(entry, raw):
                 yield "env", raw
         elif source == "data_dir" and entry.data_dir is not None:
             try:
@@ -182,7 +193,7 @@ def env_value(key: str) -> Any:
     """只看环境变量与默认值：`app/config.py` 的门面属性用它（数据目录里的覆盖由各设置模块在运行时读）。"""
     entry = _items[key]
     raw = os.environ.get(key)
-    if raw is not None and (raw.strip() or entry.kind in ("str", "path") and raw != ""):
+    if _env_given(entry, raw):
         try:
             return _parse(entry, raw)
         except ConfigError as exc:

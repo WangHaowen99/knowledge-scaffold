@@ -18,6 +18,7 @@ import json
 import logging
 import logging.handlers
 import re
+import sys
 import threading
 import time
 import uuid
@@ -67,7 +68,7 @@ def redact_endpoints(text: str) -> str:
     return _ENDPOINT.sub("<地址>", redact(text))
 
 
-class RedactingFilter(logging.Filter):
+class RedactingFilter(logging.Filter):  # NOSONAR(S4792) 日志脱敏过滤器，只换掉地址和密钥
     """挂在第三方日志器上：消息里的地址、密钥换掉（不经我们根日志器、自己写 stdout 的也管得到）。"""
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -144,6 +145,13 @@ def set_log_keep_days(days: int) -> None:
         _file_handler.backupCount = days
 
 
+def _is_console(handler: logging.Handler) -> bool:
+    """已经往标准输出或标准错误写的处理器（文件处理器不算）。"""
+    if isinstance(handler, logging.FileHandler) or not isinstance(handler, logging.StreamHandler):
+        return False
+    return handler.stream in (sys.stdout, sys.stderr)
+
+
 def configure_logging(level: int = logging.INFO) -> None:
     """根 logger 输出 JSON（控制台 + 数据目录按日轮转的文件）；重复调用无副作用。"""
     global _configured, _file_handler
@@ -152,7 +160,7 @@ def configure_logging(level: int = logging.INFO) -> None:
     formatter = JsonFormatter()
     root = logging.getLogger()
     root.setLevel(min(root.level or level, level) if root.handlers else level)
-    if not any(type(handler) is logging.StreamHandler for handler in root.handlers):
+    if not any(_is_console(handler) for handler in root.handlers):
         console = logging.StreamHandler()
         console.setFormatter(formatter)
         root.addHandler(console)

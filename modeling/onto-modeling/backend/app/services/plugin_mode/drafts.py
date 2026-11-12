@@ -127,7 +127,7 @@ def export(root: Path, name: str, dest: Path) -> tuple[int, int]:
     prefix = f"{_draft_rel(name)}/"
     dest.mkdir(parents=True, exist_ok=True)
     count = size = 0
-    with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+    with tarfile.open(fileobj=io.BytesIO(data)) as archive:  # NOSONAR(S5042) 逐条校验路径，文件数和解压大小有上限
         for member in archive.getmembers():
             if not member.name.startswith(prefix):
                 continue

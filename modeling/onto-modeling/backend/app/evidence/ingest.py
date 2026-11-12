@@ -144,14 +144,19 @@ def _unpack(bundle: Path, work: Path, git_limit: int) -> tuple[dict[str, bytes],
     texts: dict[str, bytes] = {}
     blobs: dict[str, Path] = {}
     git_bytes = 0
+    # 不压缩的 tar：条目合计不会超过包本身，超了就是展开型的条目
+    unpacked, budget = 0, Path(bundle).stat().st_size
     try:
-        with tarfile.open(bundle, mode="r|") as archive:
+        with tarfile.open(bundle, mode="r|") as archive:  # NOSONAR(S5042) 逐条校验类型和名字，合计不超过包本身
             for member in archive:
                 name = member.name.removeprefix("./")
                 if member.isdir():
                     continue
                 if not member.isfile():
                     raise _invalid(f"不允许的条目类型 {name[:80]}")
+                unpacked += member.size
+                if unpacked > budget:
+                    raise _invalid(f"条目大小合计超过包本身 {name[:80]}")
                 if name in texts or name in blobs:
                     raise _invalid(f"重复的文件 {name[:80]}")
                 handle = archive.extractfile(member)
@@ -183,7 +188,7 @@ def _manifest(texts: dict[str, bytes], blobs: dict[str, Path], source_id: str, j
         manifest = json.loads(texts["manifest.json"].decode("utf-8"))
     except KeyError:
         raise _invalid("缺 manifest.json") from None
-    except (UnicodeDecodeError, ValueError):
+    except ValueError:
         raise _invalid("manifest.json 不是 JSON") from None
     if not isinstance(manifest, dict) or manifest.get("format") != SNAPSHOT_FORMAT:
         raise _invalid("format 不对")
@@ -291,7 +296,7 @@ def _inventory(texts: dict[str, bytes]) -> tuple[dict | None, int]:
         return None, 0
     try:
         inventory = json.loads(texts["inventory.json"].decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except ValueError:
         raise _invalid("inventory.json 不是 JSON") from None
     counter = [0]
     inventory = _mask_value(inventory, counter)

@@ -178,7 +178,7 @@ def _lock_versions(root: Path, rev: str) -> dict[str, str]:
         return {}
     try:
         lock = lockfile.PackLock.from_dict(json.loads(blob.decode("utf-8")))
-    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+    except ValueError:
         return {}
     return {entry.name: entry.version for entry in lock.enabled()}
 

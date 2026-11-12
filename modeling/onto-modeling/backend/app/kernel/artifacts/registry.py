@@ -137,13 +137,21 @@ _YAML_CACHE_MAX = 512
 _YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 
 
+def _safe_yaml(text: str):
+    loader = _YAML_LOADER(text)
+    try:
+        return loader.get_single_data()
+    finally:
+        loader.dispose()
+
+
 def _load_yaml(path: Path) -> dict:
     try:
         stat = path.stat()
         key = (str(path), stat.st_mtime_ns, stat.st_size)
         data = _YAML_CACHE.get(key)
         if data is None:
-            data = yaml.load(path.read_text(encoding="utf-8"), Loader=_YAML_LOADER) or {}
+            data = _safe_yaml(path.read_text(encoding="utf-8")) or {}
             if len(_YAML_CACHE) >= _YAML_CACHE_MAX:
                 _YAML_CACHE.clear()
             _YAML_CACHE[key] = data

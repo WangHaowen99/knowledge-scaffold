@@ -68,7 +68,7 @@ def _get(path: str, timeout: float = 5) -> dict:
     try:
         with _OPENER.open(f"{url}{path}", timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         raise GatewayUnavailable(type(exc).__name__) from None
 
 
@@ -141,5 +141,5 @@ def convert(data: bytes, filename: str, converter: str, job_id: str, *,
             return {"state": "failed", "error_code": "too_large"}
         _log.error("连接器网关拒绝了转换请求：%s %s", exc.code, code)
         return {"state": "failed", "error_code": "crashed"}
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         raise GatewayUnavailable(type(exc).__name__) from None

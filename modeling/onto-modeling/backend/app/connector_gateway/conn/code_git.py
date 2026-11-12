@@ -147,7 +147,8 @@ class Workspace:
         self.git = shutil.which("git")
         if not self.git:
             raise ConnError("provider_unavailable", "网关镜像里没有 git")
-        self.root = tempfile.mkdtemp(prefix="code-repo-")
+        self._scratch = tempfile.TemporaryDirectory(prefix="code-repo-", ignore_cleanup_errors=True)
+        self.root = self._scratch.name
         self.home = os.path.join(self.root, "home")
         self.repo = os.path.join(self.root, "repo")
         os.mkdir(self.home, 0o700)
@@ -173,7 +174,7 @@ class Workspace:
 
     def close(self) -> None:
         self.drop_token()
-        shutil.rmtree(self.root, ignore_errors=True)
+        self._scratch.cleanup()
 
     def __enter__(self) -> "Workspace":
         return self

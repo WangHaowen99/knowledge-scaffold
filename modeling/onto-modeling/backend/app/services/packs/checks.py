@@ -9,6 +9,7 @@ from __future__ import annotations
 import fnmatch
 import py_compile
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -177,6 +178,7 @@ def _secrets(directory: Path, files: list[str]) -> list[str]:
 
 def _syntax_errors(directory: Path, files: list[str]) -> list[str]:
     errors = []
+    bash = shutil.which("bash")
     with tempfile.TemporaryDirectory(prefix="onto-pack-check-") as scratch:
         for rel in files:
             path = directory / rel
@@ -186,8 +188,11 @@ def _syntax_errors(directory: Path, files: list[str]) -> list[str]:
                 except py_compile.PyCompileError as exc:
                     errors.append(f"{rel}: {str(exc).splitlines()[-1][:120]}")
             elif rel.endswith(".sh"):
+                if not bash:
+                    continue
                 try:
-                    proc = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True, timeout=10)
+                    proc = subprocess.run(  # NOSONAR(S4721) bash -n 只查语法不执行，固定参数列表
+                        [bash, "-n", str(path)], capture_output=True, text=True, timeout=10)
                 except (OSError, subprocess.TimeoutExpired):
                     continue
                 if proc.returncode != 0:

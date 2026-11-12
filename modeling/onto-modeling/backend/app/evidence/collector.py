@@ -101,11 +101,11 @@ def _call(request: urllib.request.Request, timeout: float) -> dict:
             raw = response.read()
     except urllib.error.HTTPError as exc:
         raise _error(exc) from None
-    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+    except (OSError, http.client.HTTPException) as exc:
         raise GatewayUnavailable(type(exc).__name__) from None
     try:
         data = json.loads(raw.decode("utf-8")) if raw else {}
-    except (UnicodeDecodeError, ValueError):
+    except ValueError:
         raise GatewayError(502, "bad_response", "网关回的不是 JSON") from None
     return data if isinstance(data, dict) else {}
 
@@ -149,7 +149,7 @@ def submit(job_spec: dict, artifact: Path | None) -> dict:
             raise GatewayUnavailable(type(exc).__name__) from None
         try:
             data = json.loads(raw.decode("utf-8")) if raw else {}
-        except (UnicodeDecodeError, ValueError):
+        except ValueError:
             data = {}
         data = data if isinstance(data, dict) else {}
         if response.status >= 400:
@@ -241,7 +241,7 @@ def bundle(job_id: str, budget: dict, target: Path, max_bytes: int) -> int:
     except http.client.IncompleteRead:
         # 网关发现原始结果不对会中途断开：按 Content-Length 读不满，入库失败、不留半份快照
         raise GatewayError(502, "bundle_incomplete", "快照包没收全") from None
-    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+    except (OSError, http.client.HTTPException) as exc:
         raise GatewayUnavailable(type(exc).__name__) from None
     return written
 

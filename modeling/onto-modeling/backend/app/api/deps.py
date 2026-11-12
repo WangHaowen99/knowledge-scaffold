@@ -119,7 +119,7 @@ async def json_body(request: Request, limit: int = 1024 * 1024) -> dict:
         return {}
     try:
         data = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except ValueError:
         raise ApiError("invalid_argument", "请求体必须是 UTF-8 JSON", 400) from None
     if not isinstance(data, dict):
         raise ApiError("invalid_argument", "请求体必须是 JSON 对象", 400)

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
@@ -96,7 +97,8 @@ def save(body: dict) -> dict:
                 json.dump(table, handle, ensure_ascii=False, indent=2)
             os.replace(temporary, path)
         finally:
-            Path(temporary).unlink(missing_ok=True)
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temporary)
     return load()
 
 

@@ -225,7 +225,8 @@ def run_drill(task_id: str, backup_name: str, sample: int) -> dict:
     problems: list[str] = []
     checked = 0
     try:
-        with tempfile.TemporaryDirectory(prefix="onto-drill-") as scratch, tarfile.open(path, "r:gz") as tar:
+        with tempfile.TemporaryDirectory(prefix="onto-drill-") as scratch, \
+                tarfile.open(path, "r:gz") as tar:  # NOSONAR(S5042) 系统自己生成的备份，只解抽中的项目，按 data 过滤器
             members = tar.getmembers()  # 读完整个包：包损坏在这里就会报错
             projects = sorted({parts[2] for parts in (member.name.split("/") for member in members)
                                if len(parts) > 2 and parts[0] == "data" and parts[1] == "workspaces"})
