@@ -1,9 +1,11 @@
 """Package-level views of runs and the artifacts onto-modeling reads back with the user's login."""
+import threading
+
 from fastapi import Body, Query, Request, Response
 
 from .artifacts import ACTIVE, LIMITS, has_results
 from .core import Failure
-from . import modeling_result
+from . import carryover, delivery, modeling_result
 from .feedback.store import run_owner
 
 RELEASES = 100
@@ -23,15 +25,95 @@ def release_of(row):
 def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_view, login, feedback):
     access, pipeline = feedback['access'], feedback['pipeline']
 
-    def feedback_tasks(owner, token, offset):
-        """Packages with feedback runs that the caller may read in Hub, newest first."""
+    drafting = threading.Lock()
+
+    def draft_waiting(package, runs, request, token):
+        """Draft the suggestions of feedback runs waiting for an owner, with the login of a caller who may read the
+        package: sealing runs in the background without any login, so their package cannot be read then.
+
+        The judge is the deployment's default configuration, as for the rest of feedback processing."""
+        owner = run_owner(package)
+        with drafting:
+            for run in runs:
+                meta = jobs.meta(owner, run['id']) or {}
+                due = meta.get('suggestions') == 'pending' or (meta.get('suggestions') == 'ready' and meta.get('suggestions_stale'))
+                if run['status'] != 'completed' or meta.get('status') == 'generating' or not due:
+                    continue
+                try:
+                    feedback['resolve'](owner, run, token)
+                except Failure:
+                    continue  # Version not published to Hub yet; tried again on the next visit.
+                jobs.regenerate(owner, run['id'], login(request, token))
+
+    def suggestion_state(owner, runs):
+        metas = [jobs.meta(owner, run['id']) or {} for run in runs]
+        if any(meta.get('suggestions') == 'failed' for meta in metas):
+            return 'failed'
+        return 'ready' if all(jobs.drafted(meta) for meta in metas) else 'generating'
+
+    def feedback_tasks(request, owner, token, offset):
+        """Packages with feedback runs that the caller may read in Hub, newest first, with what waits for an owner."""
         visible = [(package, count) for package, count in feedback['store'].packages()
                    if package and access.visible(owner, token, package)]
         items = []
         for package, count in visible[offset:offset + PAGE]:
-            latest = feedback['store'].feedback_runs(package)[0]
+            runs = feedback['store'].feedback_runs(package)
+            states = {run['id']: modeling_result.state(store, jobs, run_owner(package), run) or {} for run in runs}
+            status = {rid: state.get('status') for rid, state in states.items()}
+            # What the owner confirms for the package as a whole: every run waiting for review, whatever its age.
+            awaiting = [run for run in runs if status[run['id']] == 'awaiting_review']
+            draft_waiting(package, awaiting, request, token)
+            collecting = next((run for run in runs if run['status'] == 'collecting'), None)
+            handled = []
+            for state in states.values():
+                if state.get('status') not in ('modeling_done', 'modeling_failed'):
+                    continue
+                if not (state.get('result') or {}).get('via'):
+                    handled.append(state)
+            handled.sort(key=lambda state: (state.get('result') or {}).get('reported_at') or 0)
+            # Deliveries modeling has not handled: runs handed over that no later delivery carries.
+            handed = [states[run['id']] for run in runs if status[run['id']] == 'notified' and not states[run['id']].get('carried_into')]
+            transport = {'delivered': 0, 'pending': 0, 'failed': 0, 'none': 0}
+            for run in runs:
+                state = states[run['id']]
+                if state.get('status') != 'notified' or state.get('carried_into'):
+                    continue
+                if delivery.summary(store, jobs, run_owner(package), run)['state'] == 'none':
+                    transport['none'] += 1
+                    continue
+                notice = notifier.status(run['id']).get('status')
+                transport['delivered' if notice == 'delivered' else 'failed' if notice in ('failed', 'rejected') else 'pending'] += 1
+            latest_result = handled[-1] if handled else None
+            if awaiting:
+                overall = 'delivering' if any(states[run['id']].get('handover') for run in awaiting) else 'pending'
+            elif latest_result and latest_result['status'] == 'modeling_failed':
+                overall = 'failed'
+            elif handed:
+                overall = 'notified'
+            elif collecting:
+                overall = 'collecting'
+            elif latest_result:
+                overall = 'done'
+            else:
+                overall = 'idle'
+            done = [run for run in runs if run['status'] == 'completed']
+            received = [((run.get('feedback') or {}).get('window') or {}).get('to') or (run.get('feedback') or {}).get('last_included')
+                        or run.get('created_at') or 0 for run in runs]
             items.append(dict(ontology_id=package, name=access.names.get(package), run_count=count, executing=False,
-                              collecting=latest['status'] == 'collecting', latest=run_view(run_owner(package), latest)))
+                              status=overall, transport=transport, collecting=collecting is not None, awaiting_review=len(awaiting),
+                              awaiting_cases=sum(len(run['cases']) for run in awaiting),
+                              awaiting_suggestions=sum(len((run.get('feedback') or {}).get('suggestions') or [])
+                                                       for run in awaiting),
+                              awaiting_since=min((run.get('created_at') or 0 for run in awaiting), default=None),
+                              suggestions=suggestion_state(run_owner(package), awaiting) if awaiting else None,
+                              collecting_clusters=len(((collecting or {}).get('feedback') or {}).get('clusters') or []),
+                              handed=len(handed), handed_since=min((state.get('notified_at') or state.get('updated_at') or 0
+                                                                    for state in handed), default=None),
+                              latest_result=modeling_result.public(latest_result) if latest_result else None,
+                              total_cases=sum(len(run['cases']) for run in done),
+                              total_suggestions=sum(len((run.get('feedback') or {}).get('suggestions') or []) for run in done),
+                              last_received=max(received, default=None),
+                              latest=run_view(run_owner(package), runs[0])))
         return {'items': items, 'total': len(visible), 'offset': offset,
                 'next_offset': offset + PAGE if offset + PAGE < len(visible) else None}
 
@@ -40,11 +122,24 @@ def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_vi
         """One task per evaluated package: its newest run, how many runs it has and whether one is executing."""
         owner, token = actor(request)
         if origin == 'consumer_feedback':
-            return feedback_tasks(owner, token, offset)
+            return feedback_tasks(request, owner, token, offset)
         page = store.package_groups(owner, offset)
-        page['items'] = [dict(ontology_id=item['ontology_id'], run_count=item['run_count'],
-                              executing=store.package_run_in_status(owner, item['ontology_id'], ACTIVE) is not None,
-                              latest=run_view(owner, item['latest'])) for item in page['items']]
+        for item in page['items']:
+            rows = store.package_run_rows(owner, item['ontology_id'], SCANNED_RUNS)
+            pending, failed = 0, 0
+            for row in rows:
+                meta = jobs.meta(owner, row['id']) or {}
+                counts = meta.get('summary') or {}
+                has_failures = any((counts.get('fail'), counts.get('partial'), counts.get('error')))
+                if row['id'] != item['latest']['id'] and has_failures:
+                    failed += 1
+                state = modeling_result.state(store, jobs, owner, row) or {}
+                if state.get('status') in ('notified', 'modeling_failed') and not state.get('carried_into'):
+                    if delivery.summary(store, jobs, owner, row)['state'] in ('actionable', 'diagnose', 'unknown'):
+                        pending += 1
+            item.update(executing=store.package_run_in_status(owner, item['ontology_id'], ACTIVE) is not None,
+                        pending_deliveries=pending, historical_failures=failed,
+                        history_limited=item['run_count'] > len(rows), latest=run_view(owner, item['latest']))
         return page
 
     @app.get(f'{prefix}/package-evaluations')
@@ -99,6 +194,23 @@ def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_vi
         owner = load_run(request, rid)[0]
         return {'artifacts': jobs.view(owner, rid), 'notification': notifier.status(rid)}
 
+    @app.get(f'{prefix}/runs/{{rid}}/delivery')
+    def delivery_view(rid: str, request: Request, scope: str = Query('all', pattern=r'^(all|own|history)$'),
+                      offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=20)):
+        owner, _, _, run = load_run(request, rid)
+        return delivery.content(store, jobs, owner, run, scope, offset, limit)
+
+    @app.get(f'{prefix}/runs/{{rid}}/carryover')
+    def carryover_view(rid: str, request: Request):
+        """Earlier runs of the same source still waiting for modeling: those this run's files carry once handed over,
+        or, before a package owner confirmed a feedback run, those confirming it now would carry."""
+        owner, _, _, run = load_run(request, rid)
+        meta = jobs.meta(owner, rid) or {}
+        if 'carryover' in meta:
+            return {'carryover': meta['carryover'], 'preview': False}
+        window, outside = carryover.history(store, jobs, owner, run)
+        return {'carryover': carryover.public(carryover.plan(run, window, outside)), 'preview': True}
+
     @app.get(f'{prefix}/runs/{{rid}}/artifacts/{{name}}')
     def artifact(rid: str, name: str, request: Request):
         if name not in LIMITS:
@@ -126,8 +238,9 @@ def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_vi
                 raise Failure('run_active', '评测仍在执行，结束后才能生成报告', 409)
         if not has_results(run):
             raise Failure('artifacts_unavailable', '此任务没有可生成报告的用例结果', 409)
-        # Suggestions use the judge configuration of whoever asks: the run's owner, or a package owner for feedback.
-        return jobs.regenerate(owner, rid, login(request, token), caller)
+        # Evaluation suggestions use the judge configuration of the run's owner; feedback uses the default configuration,
+        # as all feedback processing does, whoever asks.
+        return jobs.regenerate(owner, rid, login(request, token), None if run.get('origin') == 'consumer_feedback' else caller)
 
     @app.post(f'{prefix}/runs/{{rid}}/notifications/retry')
     def retry_notification(rid: str, request: Request, body: dict | None = Body(default=None)):
@@ -135,7 +248,7 @@ def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_vi
         owner, caller, token, run = load_run(request, rid)
         state = modeling_result.state(store, jobs, owner, run) or {}
         if run.get('origin') == 'consumer_feedback' and state.get('status') == 'awaiting_review':
-            decided = feedback['decide'](owner, caller, token, run, body)
+            decided = feedback['decide'](owner, caller, token, run, body, login(request, token))
             return {'optimization': modeling_result.public(decided), 'notification': notifier.status(rid)}
         if (body or {}).get('decision'):
             raise Failure('invalid_state', '这一轮不需要确认或已经处理过', 409)

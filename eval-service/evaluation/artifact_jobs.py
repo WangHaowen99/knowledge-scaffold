@@ -4,7 +4,8 @@ Reports, answers and context are rendered within seconds and never wait behind o
 which may wait on a model for half an hour: each has its own small worker pool. Requests for the same run
 coalesce: while one is being generated, further requests only leave the newest state to redo. A suggestion
 result is written only while its report revision is still the newest, so a later report is never mixed with
-older suggestions.
+older suggestions. Runs handed to modeling also carry what earlier runs of the same source still wait for
+(carryover.py): the report and answers when they are written, the suggestions once drafted.
 """
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -12,7 +13,7 @@ import json
 import threading
 import time
 
-from . import artifacts as output, modeling_result
+from . import artifacts as output, carryover, modeling_result
 from . import solver_validation
 from .core import Failure, canonical
 from .execution import expiry
@@ -21,7 +22,7 @@ from .suggestions import failed_cases, passed
 
 META = 'meta'
 PUBLIC = ('revision', 'status', 'stem', 'generated_at', 'report', 'suggestions', 'suggestions_error', 'suggestions_model',
-          'progress', 'suggestions_stale')
+          'progress', 'suggestions_stale', 'carryover')
 LOGIN_EXPIRED = '登录已过期，请重新登录后点击“重新生成”'
 
 
@@ -50,6 +51,14 @@ class ArtifactJobs:
         # the deployment says modeling files notifications by source.
         self.notify_feedback = False
         self.stopping = threading.Event()
+        # Called with (owner, run) once a feedback run's suggestions are written, to hand over runs waiting for them.
+        self.drafted_hook = None
+
+    @staticmethod
+    def drafted(meta):
+        """Whether a run's suggestions are written and current: what handing a feedback run over waits for."""
+        meta = meta or {}
+        return meta.get('suggestions') == 'ready' and not meta.get('suggestions_stale') and meta.get('status') != 'generating'
 
     def meta(self, owner, run_id):
         _, body = self.store.artifact(owner, run_id, META)
@@ -106,6 +115,54 @@ class ArtifactJobs:
         self.schedule(owner, run_id, token, force=True, actor=actor)
         return self.view(owner, run_id)
 
+    def carries(self, owner, run):
+        """Whether the run is handed to modeling, so its files carry earlier runs still waiting."""
+        if not modeling_result.applies(run):
+            return False
+        state = modeling_result.state(self.store, self, owner, run) or {'status': modeling_result.initial(run)}
+        return state.get('status') == 'notified'
+
+    def own(self, owner, run_id):
+        """The run's own suggestions and rows as drafted, before anything was carried; older runs kept only the file."""
+        _, text = self.store.artifact(owner, run_id, carryover.OWN)
+        if text is None:
+            _, text = self.store.artifact(owner, run_id, 'suggestions.md')
+        return text, carryover.items(self.store, owner, run_id)
+
+    def splice(self, owner, run, meta, own, ids=None):
+        """The files to write: the run's own, or spliced with what earlier runs wait for. Records the plan in ``meta``."""
+        files, plan = carryover.files(self.store, self, owner, run, meta['stem'], meta['generated_at'], own, ids)
+        meta['carryover'] = carryover.public(plan)
+        values = {'report.md': output.fit('report.md', files['report.md']), 'answers.json': files['answers.json']}
+        if 'suggestions.md' in files:
+            values['suggestions.md'] = output.fit('suggestions.md', files['suggestions.md'])
+        return values, plan
+
+    def handover(self, owner, run):
+        """A feedback run a package owner just confirmed: write its files again as a new revision, carrying the earlier
+        confirmed runs still waiting. Returns the current artifact state."""
+        meta = self.meta(owner, run['id'])
+        if not meta or meta.get('report') != 'ready' or meta.get('status') == 'generating':
+            return meta  # Drafting suggestions hands over once they are written.
+        render = render_feedback if run.get('origin') == 'consumer_feedback' else output.render_report
+        own = {'report.md': render(run, meta['stem'], meta['generated_at']), 'answers.json': output.render_answers(run)}
+        text = None
+        if meta.get('suggestions') == 'ready':
+            text, _ = self.own(owner, run['id'])
+            if text is not None:
+                own['suggestions.md'] = text
+        meta = dict(meta, revision=meta['revision'] + 1)
+        values, plan = self.splice(owner, run, meta, own)
+        if not meta['carryover']:
+            return self.meta(owner, run['id'])  # Nothing waits: the files stay exactly as they are.
+        values['context.json'] = output.render_context(self.store, run, meta['stem'], meta['revision'], meta['summary'])
+        if text is not None:
+            values[carryover.OWN] = text
+        values[META] = canonical(meta)
+        self.store.put_artifacts(owner, run['id'], meta['revision'], values)
+        carryover.mark(self.store, self, owner, run, plan)
+        return meta
+
     def _abandon(self, owner, run_id, reason):
         meta = self.meta(owner, run_id)
         if not meta or meta['status'] != 'generating':
@@ -147,30 +204,39 @@ class ArtifactJobs:
         else:
             render = render_feedback if run.get('origin') == 'consumer_feedback' else output.render_report
             report = render(run, stem, now)
-        values = {'report.md': output.fit('report.md', report),
-                  'answers.json': output.render_answers(run),
-                  'context.json': output.render_context(self.store, run, stem, revision, summary)}
+        own = {'report.md': report, 'answers.json': output.render_answers(run)}
+        kept = {}
         draft = bool(cases)
         if draft and token is None:
             # A sealed feedback run has no user's login to read the package: a package owner asks for its suggestions.
             draft = False
             meta.update(status='ready', suggestions='pending')
         if solver:
-            values['suggestions.md'] = output.fit('suggestions.md', solver_validation.render_guidance(run, stem, now))
+            own['suggestions.md'] = output.fit('suggestions.md', solver_validation.render_guidance(run, stem, now))
         elif not cases:
-            values['suggestions.md'] = passed(run, stem, now, summary)
+            own['suggestions.md'] = passed(run, stem, now, summary)
+            kept = {carryover.OWN: own['suggestions.md'], carryover.ITEMS: '[]'}
         elif keep:
             draft = False
-            _, body = self.store.artifact(owner, run_id, 'suggestions.md')
+            body, _ = self.own(owner, run_id)
             had_failures = any((previous.get('summary') or {}).get(key) for key in ('fail', 'partial', 'error'))
             meta.update(status='ready', suggestions='pending', suggestions_model=previous.get('suggestions_model'),
                         suggestions_stale=True)
             if body and previous.get('suggestions') == 'ready' and had_failures:
-                values['suggestions.md'] = body
+                own['suggestions.md'] = body
+                kept = {carryover.OWN: body}
                 meta['suggestions'] = 'ready'
+        plan = None
+        if self.carries(owner, run):
+            values, plan = self.splice(owner, run, meta, own)
+        else:
+            values = dict(own, **{'report.md': output.fit('report.md', own['report.md'])})
+        values.update(kept)
+        values['context.json'] = output.render_context(self.store, run, stem, revision, summary)
         values[META] = canonical(meta)
         self.store.put_artifacts(owner, run_id, revision, values)
         modeling_result.started(self.store, owner, run, now)
+        carryover.mark(self.store, self, owner, run, plan, now)
         self.announce(owner, run, meta)
         if draft:
             self._queue(owner, run_id, token, revision, actor)
@@ -225,15 +291,31 @@ class ArtifactJobs:
             if current():
                 meta['progress'] = {**value, 'started_at': started}
                 self.store.put_artifacts(owner, run_id, revision, {META: canonical(meta)})
+        plan = None
         try:
             login = access(token)
             if not login or 0 < expiry(login) <= time.time() + 5:
                 raise Failure('login_required', LOGIN_EXPIRED, 401, 'suggestions')
             data_tables = output.tables(self.store, run)
-            text, profile = self.suggestions.generate(actor or owner, run, login, meta['stem'], meta['generated_at'], data_tables,
-                                                      self.store.evidence(owner, run_id), progress)
+            text, profile, rows = self.suggestions.generate(actor or owner, run, login, meta['stem'], meta['generated_at'],
+                                                            data_tables, self.store.evidence(owner, run_id), progress)
             meta.update(status='ready', suggestions='ready', suggestions_model=profile['model'], progress=None)
-            values = {'suggestions.md': output.fit('suggestions.md', text), META: canonical(meta)}
+            values = {'suggestions.md': output.fit('suggestions.md', text), carryover.OWN: text,
+                      carryover.ITEMS: json.dumps(rows, ensure_ascii=False)}
+            if 'carryover' in meta:
+                # The report carries the runs chosen when it was written; the suggestions carry the same runs.
+                render = render_feedback if run.get('origin') == 'consumer_feedback' else output.render_report
+                own = {'report.md': render(run, meta['stem'], meta['generated_at']), 'answers.json': output.render_answers(run),
+                       'suggestions.md': text}
+                before = meta['carryover']
+                spliced, plan = self.splice(owner, run, meta, own, [r['run_id'] for r in (before or {}).get('rounds') or []])
+                values['suggestions.md'] = spliced['suggestions.md']
+                if meta['carryover'] != before:
+                    # Fewer runs had to fit the size limits, or a carried run was handled meanwhile.
+                    values.update({key: spliced[key] for key in ('report.md', 'answers.json')})
+                else:
+                    plan = None
+            values[META] = canonical(meta)
         except Stopping:
             return
         except Failure as exc:
@@ -242,7 +324,13 @@ class ArtifactJobs:
         if not current():
             return
         self.store.put_artifacts(owner, run_id, revision, values)
+        carryover.mark(self.store, self, owner, run, plan)
+        if 'carryover' not in meta and run.get('origin') == 'consumer_feedback' and self.carries(owner, run):
+            # Confirmed while its suggestions were drafted: hand it over now that they are written.
+            meta = self.handover(owner, run)
         self.announce(owner, run, meta)
+        if run.get('origin') == 'consumer_feedback' and self.drafted_hook and self.drafted(meta):
+            self.drafted_hook(owner, run)
 
     def announce(self, owner, run, meta):
         state = self.store.optimization(run['id']) if modeling_result.applies(run) else None

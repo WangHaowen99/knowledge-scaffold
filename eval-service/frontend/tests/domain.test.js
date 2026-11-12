@@ -22,8 +22,14 @@ import {
   artifactState,
   notificationState,
   optimizationState,
-  optimizationTag,
   feedbackStatus,
+  resultCounts,
+  scoreText,
+  passRate,
+  sourceWorkspace,
+  duration,
+  carriedState,
+  carryoverCounts,
 } from '../src/domain.js';
 
 // Package identifiers and project names are synthetic.
@@ -188,7 +194,7 @@ test('starting without a judge explains why instead of only disabling the button
 // Package task rows and run outputs; identifiers are synthetic.
 test('package tasks become rows of their newest run', () => {
   const rows = taskRows([{ ontology_id: 'package_demo', run_count: 3, executing: true, latest: { id: 'run_c', status: 'running' } }]);
-  assert.deepEqual(rows, [{ id: 'run_c', status: 'running', run_count: 3, package_executing: true }]);
+  assert.deepEqual(rows, [{ id: 'run_c', status: 'running', run_count: 3, package_executing: true, pending_deliveries: undefined, historical_failures: undefined, history_limited: undefined }]);
 });
 
 test('artifact state follows the run and generation status', () => {
@@ -251,22 +257,62 @@ test('optimization state shows what modeling did with the suggestions', () => {
   assert.match(done.hint, /^新版本 0\.1\.2 · \S+ \S+ · Synthetic note · 共 2 次回写$/);
   const failed = optimizationState({ optimization: { status: 'modeling_failed', result: { outcome: 'failed', note: 'Synthetic failure' } } });
   assert.deepEqual([failed.label, failed.tone, failed.releaseId], ['处理失败', 'red', undefined]);
-  assert.deepEqual(optimizationTag({ optimization: { status: 'modeling_done', result: { version: '0.1.2' } } }), {
-    label: '建模已处理 → 0.1.2',
-    tone: 'green',
-  });
-  assert.equal(optimizationTag({ optimization: { status: 'notified' } }), null);
 });
 
 test('routes and states of consumer feedback runs', () => {
   assert.deepEqual(parseRoute('#/feedback'), { page: 'feedback' });
   assert.deepEqual(parseRoute('#/feedback/run_demo'), { page: 'feedback', id: 'run_demo' });
+  assert.deepEqual(parseRoute('#/feedback/package/package_demo-1'), { page: 'feedback', package: 'package_demo-1' });
   assert.deepEqual(parseRoute('#/new?from=run_demo&release_id=release_next'), { page: 'new', from: 'run_demo', release: 'release_next' });
   assert.equal(feedbackStatus({ status: 'collecting' }).label, '收集中');
   assert.equal(feedbackStatus({ status: 'completed' }).label, '生成报告中');
   const review = { status: 'completed', artifacts: { report: 'ready' }, optimization: { status: 'awaiting_review' } };
   assert.equal(feedbackStatus(review).label, '待负责人确认');
   assert.equal(feedbackStatus({ ...review, optimization: { status: 'dismissed', reason: 'Synthetic' } }).hint, 'Synthetic');
+});
+
+test('a run shows its score and pass rate, and its cases by verdict', () => {
+  const summary = {
+    score: 77,
+    strict_pass_rate: 8 / 12,
+    counts: { pass: 8, partial: 1, fail: 2, execution_error: 1, judge_error: 0, manual: 1, pending: 0, cancelled: 1 },
+  };
+  assert.deepEqual(resultCounts(summary), { pass: 8, partial: 1, fail: 2, error: 1, manual: 1, todo: 1 });
+  assert.equal(scoreText(summary), '77');
+  assert.equal(passRate(summary), '67%');
+  // Feedback runs and runs without any case have neither number.
+  assert.equal(scoreText({ score: null }), '—');
+  assert.equal(passRate({ strict_pass_rate: null }), '—');
+  assert.deepEqual(resultCounts(undefined), { pass: 0, partial: 0, fail: 0, error: 0, manual: 0, todo: 0 });
+});
+
+test('the wizard says which workspace a data source runs in', () => {
+  assert.equal(sourceWorkspace(undefined), '使用评测专用空间');
+  assert.equal(sourceWorkspace({ mode: 'dataset' }), '使用评测专用空间');
+  assert.equal(sourceWorkspace({ mode: 'connection', provider: 'nl2sql_http' }), '使用你填写的评测工作空间');
+  assert.equal(sourceWorkspace({ mode: 'connection', provider: 'neo4j' }), '使用 Workspace 对应的空间');
+});
+
+test('a stopped run tells how long it took', () => {
+  assert.equal(duration({ started_at: 100, finished_at: 472 }), '6 分 12 秒');
+  assert.equal(duration({ created_at: 100, finished_at: 140 }), '40 秒');
+  assert.equal(duration({ started_at: 100 }), '');
+});
+
+test('a waiting run tells whether a newer push carries it', () => {
+  const into = { optimization: { status: 'notified', carried_into: { run_id: 'run_newer_demo_0001', at: 1793500000 } } };
+  assert.equal(carriedState(into).label, '已合并到 run_newer_de 编号的交付');
+  assert.equal(carriedState(into).runId, 'run_newer_demo_0001');
+  assert.equal(optimizationState(into).runId, 'run_newer_demo_0001');
+  assert.match(optimizationState(into).hint, /建模还没处理/);
+  const out = { optimization: { status: 'notified', slid_out: { run_id: 'run_newest_demo', at: 1 } } };
+  assert.equal(carriedState(out).label, '未能一起带上');
+  assert.equal(carriedState({ optimization: { status: 'modeling_done', carried_into: { run_id: 'x' } } }), null);
+  assert.deepEqual(
+    carryoverCounts({ rounds: [{ cases: 2, items: 1 }, { cases: 1, items: 0 }], slid_out: [{ run_id: 'old' }] }),
+    { rounds: 2, cases: 3, items: 1, slidOut: 1 },
+  );
+  assert.deepEqual(carryoverCounts(null), { rounds: 0, cases: 0, items: 0, slidOut: 0 });
 });
 
 import {
@@ -319,4 +365,17 @@ test('assertion notes explain candidate counts and failing paths', () => {
   assert.equal(assertionNote({ name: 'candidate_count', expected: 4, actual: 3 }), '期望 4，实际 3');
   assert.equal(assertionNote({ name: 'arguments_match', diff: ['items[0].id'] }), 'items[0].id');
   assert.equal(assertionNote({ name: 'evidence', missing: ['job_id'] }), 'job_id');
+});
+
+test('delivery content and transport are distinct from modeling completion', () => {
+  const run = { optimization: { status: 'notified' }, delivery: { state: 'none' }, notification: { status: 'delivered' } };
+  assert.equal(optimizationState(run).label, '无需优化');
+  assert.equal(optimizationState({ ...run, delivery: { state: 'actionable' } }).label, '待建模处理');
+  assert.equal(optimizationState({ ...run, delivery: { state: 'actionable' }, notification: { status: 'failed' } }).label, '同步失败');
+  assert.equal(optimizationState({ ...run, delivery: { state: 'actionable' }, notification: undefined }).label, '待同步');
+  assert.equal(optimizationState({ ...run, delivery: { state: 'pending' } }).label, '交付内容生成中');
+  assert.equal(optimizationState({ ...run, delivery: { state: 'diagnose' } }).label, '需诊断');
+  assert.equal(optimizationState({ ...run, delivery: { state: 'unknown' } }).label, '待核实优化内容');
+  assert.equal(optimizationState({ ...run, optimization: { status: 'modeling_done', result: { version: '0.2.0' } } }).label, '已处理');
+  assert.deepEqual(parseRoute('#/new?run_type=solver'), { page: 'new', from: '', runType: 'solver' });
 });

@@ -58,6 +58,31 @@ const paths = {
   logout: <path d="M9 4H4v16h5m5-8h7m-4-4 4 4-4 4" />,
   box: <path d="m12 3 9 5-9 5-9-5zM3 8v10l9 4 9-4V8M12 13v9M7 6l9 5" />,
   message: <path d="M4 5h16v11H10l-5 4v-4H4zM8 9h8M8 12h5" />,
+  more: (
+    <>
+      <circle cx="5" cy="12" r="1.4" fill="currentColor" />
+      <circle cx="12" cy="12" r="1.4" fill="currentColor" />
+      <circle cx="19" cy="12" r="1.4" fill="currentColor" />
+    </>
+  ),
+  alert: <path d="M12 3 2 20h20zM12 10v4m0 3.5v.5" />,
+  copy: (
+    <>
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" />
+    </>
+  ),
+  left: <path d="m15 18-6-6 6-6" />,
+  right: <path d="m9 18 6-6-6-6" />,
+  download: <path d="M12 3v12m-5-4 5 5 5-5M4 20h16" />,
+  play: <path d="m7 4 13 8-13 8z" />,
+  trash: <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6m4-6v6" />,
+  users: (
+    <>
+      <circle cx="9" cy="8" r="4" />
+      <path d="M2 21c0-4 3-6 7-6s7 2 7 6M17 4a4 4 0 0 1 0 8m5 9c0-3-1.5-5-4-5.7" />
+    </>
+  ),
 };
 export function Icon({ name, ...props }) {
   return (
@@ -173,6 +198,83 @@ export function Progress({ value = 0, label }) {
     >
       <span style={{ width: `${Math.min(100, Math.max(0, value * 100))}%` }} />
     </div>
+  );
+}
+// Mutually exclusive filters shown as one segmented control: [value, label, count?].
+export function Segmented({ items, value, onChange, label }) {
+  return (
+    <div className="segmented-filter" role="group" aria-label={label}>
+      {items.map(([key, title, count]) => (
+        <button
+          key={key}
+          type="button"
+          className={value === key ? 'selected' : ''}
+          aria-pressed={value === key}
+          onClick={() => onChange(key)}
+        >
+          {title}
+          {count != null && <span>{count}</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+// Page sections switched in place: [value, label, count?].
+export function Tabs({ items, value, onChange, label }) {
+  return (
+    <div className="page-tabs" role="tablist" aria-label={label}>
+      {items.map(([key, title, count]) => (
+        <button
+          key={key}
+          type="button"
+          role="tab"
+          aria-selected={value === key}
+          className={value === key ? 'selected' : ''}
+          onClick={() => onChange(key)}
+        >
+          {title}
+          {count != null && <span>{count}</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+export const RESULT_PARTS = [
+  ['pass', '通过'],
+  ['partial', '部分通过'],
+  ['fail', '未通过'],
+  ['error', '异常'],
+  ['manual', '待人工'],
+  ['todo', '未执行'],
+];
+// How a run's cases split into verdicts, as one bar; parts without cases take no room.
+export function ResultBar({ counts, tall = false }) {
+  const total = RESULT_PARTS.reduce((sum, [key]) => sum + (counts[key] || 0), 0) || 1;
+  const label = RESULT_PARTS.filter(([key]) => counts[key])
+    .map(([key, title]) => `${title} ${counts[key]}`)
+    .join('，');
+  return (
+    <div className={`result-bar ${tall ? 'tall' : ''}`} role="img" aria-label={label || '暂无结果'}>
+      {RESULT_PARTS.map(([key]) =>
+        counts[key] ? <i key={key} className={key} style={{ width: `${(counts[key] / total) * 100}%` }} /> : null,
+      )}
+    </div>
+  );
+}
+// Progress through ordered stages: each item { label, hint, state: 'done' | 'current' | 'failed' | '' }.
+export function Steps({ items }) {
+  return (
+    <ol className="stage-steps">
+      {items.map((item, i) => (
+        <li key={item.label} className={item.state || ''} aria-current={item.state === 'current' ? 'step' : undefined}>
+          <span className="stage-node">
+            {item.state === 'done' ? <Icon name="check" /> : item.state === 'failed' ? <Icon name="close" /> : i + 1}
+          </span>
+          <b>{item.label}</b>
+          {item.hint && <small>{item.hint}</small>}
+        </li>
+      ))}
+    </ol>
   );
 }
 export function Skeleton() {

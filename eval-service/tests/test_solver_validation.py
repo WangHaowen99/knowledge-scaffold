@@ -348,6 +348,36 @@ def test_solver_run_reports_failure_and_guidance(solver_env):
     assert meta['suggestions'] == 'ready' and meta['suggestions_model'] is None
 
 
+def test_solver_reports_and_data_suggestions_stay_separate(solver_env):
+    """Synthetic runs of the same package/version must not cross the two result pipelines."""
+    from evaluation import carryover
+
+    client, app, _ = solver_env
+    record = start(client, prepare(client, graph_source(client)), solver_set(client)).json()
+    wait(client, record['id'])
+    store, jobs = app.state.store, app.state.jobs
+    owner, solver = store.find(record['id'], 'runs')
+    earlier = store.create(owner, 'runs', {
+        'status': 'completed', 'created_at': solver['created_at'] - 1,
+        'base_ref': solver['base_ref'], 'package_ref': solver['package_ref'],
+        'cases': [{'question': 'Synthetic earlier data question', 'reference': 'Synthetic reference',
+                   'answer': 'Synthetic answer', 'status': 'settled',
+                   'judgement': {'verdict': 'fail', 'reason': 'Synthetic mismatch'}}],
+    })
+    store.put_artifacts(owner, earlier['id'], 1, {'meta': json.dumps({'report': 'ready', 'generated_at': 1})})
+    # Even with older data failures waiting, a solver report remains deterministic and unspliced.
+    assert jobs.carries(owner, solver) is False
+    assert carryover.waiting(store, jobs, owner, solver) == []
+    jobs.generate(solver['id'], owner, None, force=True)
+    report = client.get(f"/evaluation/api/runs/{solver['id']}/artifacts/report.md").text
+    assert '求解验证报告' in report and 'Synthetic earlier data question' not in report
+    assert jobs.meta(owner, solver['id']).get('carryover') is None
+    assert client.get(f"/evaluation/api/runs/{solver['id']}/carryover").json()['carryover'] is None
+    # A later data run sees the earlier data failure, never the solver run's ready report.
+    newer = {**earlier, 'id': 'synthetic_newer_data', 'created_at': solver['created_at'] + 1}
+    assert [row['id'] for row, _ in carryover.waiting(store, jobs, owner, newer)] == [earlier['id']]
+
+
 def test_operation_unusable_in_consumer_fails_without_asking(solver_env):
     client, _, deps = solver_env
     deps.imported = {'success': True, 'warnings': {'operations': ['plan_route (solver_contract_invalid): input schema is not strict']}}

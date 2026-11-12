@@ -73,12 +73,27 @@ export function MappingPreview({ preview }) {
   const objects = Array.isArray(preview.objects)
     ? preview.objects
     : Object.entries(preview.objects || {}).map(([name, value]) => ({ name, ...value }));
+  // Objects the run cannot query fully, named above the table so they are not missed in a long list.
+  const missing = objects.filter((o) => o.table && o.missing_columns?.length),
+    unbound = objects.filter((o) => !o.table),
+    issues = missing.length + unbound.length;
   return (
     <div className="mapping-preview">
       <div className="section-title">
         <h3>{preview.graph ? '图导入预览' : '映射预览'}</h3>
-        <Badge tone="green">准备就绪</Badge>
+        {issues ? <Badge tone="amber">{issues} 项需要留意</Badge> : <Badge tone="green">准备就绪</Badge>}
       </div>
+      {issues > 0 && (
+        <Alert tone="amber">
+          {[
+            missing.length > 0 && missing.map((o) => `「${o.name}」缺字段 ${o.missing_columns.join('、')}`).join('；'),
+            unbound.length > 0 && `${unbound.map((o) => `「${o.name}」`).join('')}没有绑定数据表`,
+          ]
+            .filter(Boolean)
+            .join('；')}
+          。可以继续评测，相关问题可能因为查不到数据而失败。
+        </Alert>
+      )}
       {preview.graph && (
         <div className="graph-counts">
           <div>
@@ -106,12 +121,10 @@ export function MappingPreview({ preview }) {
             {objects.map((o) => (
               <tr key={o.name}>
                 <td>{o.name}</td>
-                <td>{o.table || '未绑定'}</td>
+                <td>{o.table ? <code>{o.table}</code> : <Badge tone="amber">未绑定</Badge>}</td>
                 <td>
                   {Array.isArray(o.matched_columns) ? o.matched_columns.length : o.matched_columns || 0} 列
-                  {o.missing_columns?.length > 0 && (
-                    <span className="danger"> · 缺少 {o.missing_columns.join('、')}</span>
-                  )}
+                  {o.missing_columns?.length > 0 && <Badge tone="red">缺 {o.missing_columns.join('、')}</Badge>}
                 </td>
                 {preview.graph && <td>{o.instances}</td>}
               </tr>

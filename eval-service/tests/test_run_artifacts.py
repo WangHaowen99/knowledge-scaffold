@@ -489,4 +489,3 @@ def test_solver_run_notifications_carry_no_optimization_state():
     jobs.announce('synthetic-owner', {'id': 'run_data', 'status': 'completed', 'base_ref': reference}, meta)
     assert sent[0]['run_type'] == 'solver' and sent[0]['optimization'] is None
     assert sent[1]['optimization']['status'] == 'notified' and read == ['run_data']
-

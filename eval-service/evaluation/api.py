@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 import fcntl
 import json
 from pathlib import Path
+import threading
 import time
 import uuid
 
@@ -24,7 +25,7 @@ from .modeling_projects import linked_projects
 from .nl2sql import QueryService
 from .source_config import SourceConfig
 from .graph_import import scope_target
-from .artifact_jobs import ArtifactJobs
+from .artifact_jobs import ArtifactJobs, PUBLIC as ARTIFACT_FIELDS
 from .notifications import Notifier
 from .suggestions import Suggestions
 from .artifacts import ACTIVE
@@ -32,7 +33,7 @@ from .feedback.access import PackageAccess
 from .feedback.intake import Intake
 from .feedback.pipeline import Assistant, Pipeline
 from .feedback.store import FeedbackStore, run_owner
-from . import modeling_result, package_routes, solver_validation
+from . import carryover, delivery, modeling_result, package_routes, solver_validation
 
 
 class Body(BaseModel):
@@ -722,13 +723,21 @@ def create_app(config=None,transport=None):
             # Feedback names its package by ID only; show the name Hub gave the caller who passed the access check.
             name=package_access.names[ref['ontology_id']]
             run=dict(run,package_ref=dict(ref,name=name),base_ref=dict(run.get('base_ref') or ref,name=name))
-        return dict(public(with_base(owner,run)),origin=run.get('origin') or 'evaluation',summary=report(run),
-                    artifacts=jobs.view(owner,run['id']),notification=notifier.status(run['id']),
-                    optimization=modeling_result.public(modeling_result.state(store,jobs,owner,run)))
+        artifact_view = jobs.view(owner,run['id'])
+        # Read related metadata under one lock; do not acquire the jobs lock inside the store lock.
+        with store.lock:
+            meta = jobs.meta(owner,run['id'])
+            if meta is not None:
+                artifact_view = {**(artifact_view or {}), **{key: meta.get(key) for key in ARTIFACT_FIELDS}}
+            return dict(public(with_base(owner,run)),origin=run.get('origin') or 'evaluation',summary=report(run),
+                        artifacts=artifact_view,notification=notifier.status(run['id']),
+                        delivery=delivery.summary(store,jobs,owner,run),
+                        optimization=modeling_result.public(modeling_result.state(store,jobs,owner,run)))
 
     @app.get(f'{prefix}/runs')
     def runs(request:Request,offset:int=Query(0,ge=0),limit:int=Query(20,ge=1,le=20),ontology_id:str=Query('',max_length=128),
-             origin:str=Query('evaluation',pattern=r'^(evaluation|consumer_feedback)$')):
+             origin:str=Query('evaluation',pattern=r'^(evaluation|consumer_feedback)$'),
+             run_type:str=Query('all',pattern=r'^(all|data|solver)$')):
         owner,token=actor(request)
         if origin=='consumer_feedback':
             # Feedback runs of one package, for whoever may read that package in Hub.
@@ -737,7 +746,7 @@ def create_app(config=None,transport=None):
             page=store.package_runs(run_owner(ontology_id),ontology_id,offset,limit)
             page['items']=[run_view(run_owner(ontology_id),r) for r in page['items']]
             return page
-        page=store.package_runs(owner,ontology_id,offset,limit) if ontology_id else store.list(owner,'runs',offset,limit)
+        page=store.package_runs(owner,ontology_id,offset,limit,run_type) if ontology_id else store.list(owner,'runs',offset,limit)
         page['items']=[run_view(owner,r) for r in page['items']]
         return page
 
@@ -854,11 +863,23 @@ def create_app(config=None,transport=None):
             if body.get('revision')!=run['revision']: raise Failure('revision_conflict','请刷新后重试',409)
             case=run['cases'][cid]
             if not case.get('answer'): raise Failure('answer_missing','未获得答案不能改判',409)
+            # Asked to deliver: the suggestions being drafted are what modeling gets. After a failed draft the owner
+            # may correct again; the next draft is delivered.
+            if feedback and (store.optimization(rid) or {}).get('handover') and (jobs.meta(owner,rid) or {}).get('status')=='generating':
+                raise Failure('invalid_state','已提交交付建模，正在生成优化建议，不能再修改',409)
             if reference is not None: case['reference']=reference.strip()
             value=dict(verdict=body['verdict'],reason=body['reason'],source='human',actor=caller,time=time.time())
             case.setdefault('overrides',[]).append(value)
             case['override']=value
             saved=public(store.save(owner,rid,run,body['revision']))
+        if feedback:
+            # An owner's correction changes what modeling is told: the suggestions are drafted again at once.
+            try:
+                resolve_release(owner,store.get(owner,rid,'runs'),token)
+                jobs.regenerate(owner,rid,login(request,token))
+                return saved
+            except Failure:
+                pass  # The version is not in Hub yet: rebuild the report; suggestions follow once it is published.
         # The verdict changed: rebuild the report and tell onto-modeling; suggestions are regenerated on request only.
         jobs.schedule(owner,rid,login(request,token),suggestions=False)
         return saved
@@ -912,10 +933,45 @@ def create_app(config=None,transport=None):
         """Modeling reports how it handled this run's suggestions: the new release it published, or why it failed."""
         owner,caller,token,run=load_run(request,rid)
         value=modeling_result.record(store,jobs,packages,owner,run,body,token,caller)
+        # The earlier runs this run's push carried were handled with it.
+        carryover.propagate(store,jobs,owner,run,value)
         return {'run_id':rid,'optimization':modeling_result.public(value)}
 
-    def decide(owner,caller,token,run,body):
-        """A package owner confirms a feedback run for modeling, or dismisses it with a reason."""
+    handing=threading.Lock()
+
+    def hand_over(owner,run,state):
+        """Hand a confirmed feedback run to modeling: its files carry earlier confirmed runs still waiting."""
+        now=time.time()
+        state=dict({k:v for k,v in state.items() if k!='handover'},status='notified',
+                   confirmed_by=(state.get('handover') or {}).get('requested_by'),notified_at=now,updated_at=now)
+        store.put_optimization(owner,run['id'],state)
+        meta=jobs.handover(owner,run)
+        if meta: jobs.announce(owner,run,meta)
+        return state
+
+    def deliver(owner,package):
+        """Hand over the package's feedback runs an owner asked to deliver, once every one of them has its suggestions.
+
+        Oldest first, so the newest run carries the others to modeling."""
+        with handing:
+            waiting=[]
+            for run in feedback_store.feedback_runs(package,('completed',)):
+                state=store.optimization(run['id']) or {}
+                if state.get('status')=='awaiting_review' and state.get('handover'): waiting.append((run,state))
+            if not waiting or not all(jobs.drafted(jobs.meta(owner,run['id'])) for run,_ in waiting): return
+            for run,state in sorted(waiting,key=lambda pair:pair[0].get('created_at') or 0):
+                hand_over(owner,run,state)
+
+    def on_suggestions_drafted(owner, run):
+        deliver(owner, (run.get('package_ref') or {}).get('ontology_id'))
+
+    jobs.drafted_hook = on_suggestions_drafted
+
+    def decide(owner,caller,token,run,body,credential=None):
+        """A package owner hands a feedback run to modeling, or dismisses it with a reason.
+
+        Handing over waits for the run's suggestions: they are drafted, or drafted again after corrections, first, and
+        the run is delivered with the package's other requested runs once all of them are written."""
         decision=(body or {}).get('decision')
         state=modeling_result.state(store,jobs,owner,run) or {}
         if state.get('status')!='awaiting_review':
@@ -929,11 +985,14 @@ def create_app(config=None,transport=None):
             return state
         if decision!='confirm': raise Failure('decision_required','请确认交给建模，或填写原因后驳回',422)
         run=resolve_release(owner,run,token)
-        state=dict(state,status='notified',confirmed_by=caller,notified_at=now,updated_at=now)
+        state=dict(state,handover={'requested_by':caller,'requested_at':now},updated_at=now)
         store.put_optimization(owner,run['id'],state)
-        meta=jobs.meta(owner,run['id'])
-        if meta: jobs.announce(owner,run,meta)
-        return state
+        meta=jobs.meta(owner,run['id']) or {}
+        if not jobs.drafted(meta) and meta.get('status')!='generating':
+            # Never drafted, failed, or out of date after a correction.
+            jobs.regenerate(owner,run['id'],credential or token)
+        deliver(owner,run['package_ref']['ontology_id'])
+        return store.optimization(run['id'])
 
     package_routes.register(app,prefix,actor,load_run,store,engine,jobs,notifier,run_view,login,
                             dict(access=package_access,store=feedback_store,pipeline=pipeline,decide=decide,resolve=resolve_release))
