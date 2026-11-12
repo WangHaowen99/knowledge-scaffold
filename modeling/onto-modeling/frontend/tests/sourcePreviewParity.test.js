@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  inRange, isTextFragment, lineRange, materialOfText, mdCells, routeTarget, sheetSpans, textPathOf, textView,
+  inRange, isTextFragment, lineRange, materialOfText, mdCells, routeTarget, textPathOf, textView,
 } from '../src/pages/resources/resourcesModel.js';
 import { reportIdOf } from '../src/pages/reports/reportModel.js';
 import { artifactToRow, sourceRefsIn } from '../src/pages/studio/studioModel.js';
@@ -53,16 +53,6 @@ test('章节里的出处芯片：行内代码与正文里的资料路径（带�
 test('报告路径换报告 id（同后端 reports.id_of）', () => {
   assert.equal(reportIdOf('research/20260101-订单.md'), 'research:20260101-订单');
   assert.equal(reportIdOf('reports/规则检查.md'), '规则检查');
-});
-
-test('Excel 合并区：起点格带跨行列、被覆盖的格跳过，定位格落在合并区里高亮起点；表头的合并只跨列', () => {
-  const spans = sheetSpans({ merges: [{ row: 3, col: 1, rowspan: 2, colspan: 2 }, { row: 0, col: 0, rowspan: 2, colspan: 3 }] });
-  assert.deepEqual(spans.anchors.get('3:1'), { row: 3, col: 1, rowspan: 2, colspan: 2 });
-  assert.ok(spans.covered.has('4:2') && !spans.covered.has('3:1'));
-  assert.equal(spans.hitOf(4, 2), '3:1');
-  assert.equal(spans.hitOf(5, 0), '5:0');
-  assert.equal(spans.anchors.get('0:0').rowspan, 1);
-  assert.ok(!spans.covered.has('1:0'));
 });
 
 test('流程图行的最后更新时间取产物的修改时间', () => {

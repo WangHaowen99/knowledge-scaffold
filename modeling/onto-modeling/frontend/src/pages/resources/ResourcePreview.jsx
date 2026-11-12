@@ -12,13 +12,13 @@ import DrawioPreview from '../../components/DrawioPreview.jsx';
 import { isLocked } from '../../state/readonly.js';
 import { Button, Chip, Icon, Modal, Note, Seg, cx, useEscape } from '../../ui/index.jsx';
 import { useProjectEvent } from '../plugin/parts.jsx';
-import { locateSheetCell, previewKind } from '../../lib/sourceLocation.js';
+import { previewKind } from '../../lib/sourceLocation.js';
 import SourcePreview from './SourcePreview.jsx';
 import { scopeChip } from './sheetScopeModel.js';
 import {
   PREVIEW_ICON, blockBody, isDocPreview, blockLabel, coverageChip, csvText, diamondPoints, drawioLayout, feedbackView, fmtSize,
   parseDrawio, parseFragment, purposeView, refRows, refTarget, scaleText, sheetView, splitHighlights, tableTruncated, cellPos,
-  hasTextTab, materialTitle, textSections, inRange, isTextFragment, lineRange, sheetSpans, textPathOf, textView,
+  hasTextTab, materialTitle, textSections, inRange, isTextFragment, lineRange, textPathOf, textView,
 } from './resourcesModel.js';
 
 const enc = encodeURIComponent;
@@ -268,49 +268,36 @@ function useTable(path, revision) {
 function SheetPane({ m, fragment }) {
   const data = useTable(m.path, m.revision);
   const focus = parseFragment(fragment);
-  // 定位（develop ExcelView）：切到锚点所在工作表；工作表或格子不在了、超出预览范围时说明
-  const located = useMemo(() => (data?.sheets && fragment ? locateSheetCell(data, fragment) : null), [data, fragment]);
   const cell = focus?.type === 'cell' ? cellPos(focus.cell) : null;
   const [pick, setPick] = useState(null);
   const sheets = data?.sheets || [];
-  const focusIndex = located?.index ?? (focus?.type === 'cell' ? sheets.findIndex((s) => s.name === focus.sheet) : -1);
+  const focusIndex = focus?.type === 'cell' ? sheets.findIndex((s) => s.name === focus.sheet) : -1;
   const index = pick ?? (focusIndex >= 0 ? focusIndex : 0);
   const sheet = sheets[index];
   const view = useMemo(() => sheetView(sheet), [sheet]);
-  const spans = useMemo(() => sheetSpans(sheet), [sheet]);
-  const hereFocus = cell && !located?.problem && (focusIndex < 0 || focusIndex === index);
-  // 定位格落在合并区内时高亮整个合并区（即合并区左上角那个格子）
-  const hit = hereFocus ? spans.hitOf(cell.row - 1, cell.col) : '';
+  const hereFocus = cell && (focusIndex < 0 || focusIndex === index);
   const scrollRef = useRef(null);
   useLayoutEffect(() => {
     scrollRef.current?.querySelector('.rs-cell')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  }, [view, hit]);
+  }, [view]);
   if (!data) return <div className="evd-sheet rs-loading"><span className="spin" />正在读取表格…</div>;
   if (data.error) return <Note tone="red">{data.error}</Note>;
-  const cellProps = (r, c) => {
-    const merge = spans.anchors.get(`${r}:${c}`);
-    return { rowSpan: merge?.rowspan, colSpan: merge?.colspan, className: cx(hit === `${r}:${c}` && 'rs-cell') };
-  };
   return (
     <>
-      {tableTruncated(data, sheet) ? <Note tone="blue" className="mb8">表格较大，仅预览前 500 行 × 60 列；完整内容请下载原文件</Note> : null}
-      {located?.problem ? (
-        <Note tone="amber" className="mb8">{located.problem === 'range' ? `${located.message}，完整内容请下载原文件` : located.message}</Note>
-      ) : null}
       <div className="evd-sheet">
         <div className="rs-sheet-scroll" ref={scrollRef}>
           <table>
             <thead>
               <tr>
                 <th className="rn" />
-                {view.header.map((h, c) => (spans.covered.has(`0:${c}`) ? null : <th key={c} {...cellProps(0, c)} rowSpan={undefined}>{h}</th>))}
+                {view.header.map((h, c) => <th key={c} className={cx(hereFocus && cell.row === 1 && cell.col === c && 'rs-cell')}>{h}</th>)}
               </tr>
             </thead>
             <tbody>
               {view.body.map((r) => (
                 <tr key={r.n}>
                   <td className="rn">{r.n}</td>
-                  {r.cells.map((v, c) => (spans.covered.has(`${r.n - 1}:${c}`) ? null : <td key={c} {...cellProps(r.n - 1, c)}>{v}</td>))}
+                  {r.cells.map((v, c) => <td key={c} className={cx(hereFocus && cell.row === r.n && cell.col === c && 'rs-cell')}>{v}</td>)}
                 </tr>
               ))}
             </tbody>
@@ -320,6 +307,7 @@ function SheetPane({ m, fragment }) {
           {sheets.map((s, i) => <span key={s.name} className={i === index ? 'on' : ''} onClick={() => setPick(i)}>{s.name}</span>)}
         </div>
       </div>
+      {tableTruncated(data, sheet) ? <div className="xs muted mt8 row g4"><Icon name="info" size={12} />仅预览前 500 行 × 60 列</div> : null}
     </>
   );
 }

@@ -124,13 +124,8 @@ export function groupSegments(segments) {
   return blocks;
 }
 
-// 旧版二进制 Office 格式：资料分析读不了、平台内也无法预览，上传后提示另存（不拦截上传）
-export function legacyOfficeHint(fileName) {
-  const ext = extensionOf(fileName);
-  if (ext !== 'doc' && ext !== 'xls') return '';
-  const target = ext === 'doc' ? '.docx' : '.xlsx';
-  return `${fileName} 是旧版格式，建议另存为 ${target} 后上传，否则无法分析和预览`;
-}
+// 旧版二进制 Office 格式的另存提示由资料上传那份负责（lib/resourceUpload.js，P5a），这里只转出去
+export { legacyOfficeHint } from './resourceUpload.js';
 
 // 行内代码里带小节的产物路径：research/报告.md#小节（规则「来源」节的写法）
 const HEADING_REF_RE = /^((?:ontology|research|reports)\/[^\s`#]+\.md)#(.+)$/i;

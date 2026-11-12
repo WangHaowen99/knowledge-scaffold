@@ -317,26 +317,6 @@ export function sheetView(sheet) {
   };
 }
 
-// 合并区（F-05 merges：{row, col, rowspan, colspan}，行列从 0 起）→ 起点格的跨行列、被覆盖的格，
-// 以及定位格落在哪个合并区（develop ExcelView：落在合并区里就高亮整块，即左上角那格）。第 1 行画在表头里，表头的合并只跨列
-export function sheetSpans(sheet) {
-  const anchors = new Map();
-  const covered = new Set();
-  const merges = sheet?.merges || [];
-  for (const merge of merges) {
-    const m = merge.row === 0 ? { ...merge, rowspan: 1 } : merge;
-    anchors.set(`${m.row}:${m.col}`, m);
-    for (let r = m.row; r < m.row + m.rowspan; r += 1) {
-      for (let c = m.col; c < m.col + m.colspan; c += 1) if (r !== m.row || c !== m.col) covered.add(`${r}:${c}`);
-    }
-  }
-  const hitOf = (row, col) => {
-    const m = merges.find((x) => row >= x.row && row < x.row + x.rowspan && col >= x.col && col < x.col + x.colspan);
-    return m ? `${m.row}:${m.col}` : `${row}:${col}`;
-  };
-  return { anchors, covered, hitOf };
-}
-
 // 单元格「D1」→ {row: 1, col: 3}（行从 1 起，列从 0 起）
 export function cellPos(ref) {
   const m = /^([A-Z]+)(\d+)$/.exec(String(ref || '').toUpperCase());
