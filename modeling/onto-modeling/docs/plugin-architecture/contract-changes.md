@@ -1677,3 +1677,11 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
 6. **增量构建包**：启用后没传新资料时节点不出现，不挡发布，也不限范围；已有条目时上传资料才触发。这一轮发布后自动结束；有改动没核对干净时「结束本轮」被拒。
 7. 触发记录在主线工作区的 `.onto/run/activation.json`，不进 git。FL-01 的响应形状不变，节点集合变化时 `flow_hash` 跟着变。
 8. **core 0.5.0、增量构建 0.2.0**：core 0.5.0 表示内核支持上面 1～4；用到它们的包声明 `depends: {core: ">=0.5"}`。建议条规则版本 `SUGGEST_RULES` 升到 7（多一条 6.5「触发后抢先的步骤」）。
+
+## 2026-11-12 · 版本历史与回退对齐 develop（develop-sync 第二轮 P3，ADR-0094）
+
+1. **V-09 新增** `GET /api/v1/projects/{id}/history`：develop 的历史时间线，迭代与 Hub 发布版本合并分页（`version_history.py` 原样移植）。版本页左栏改用它。
+2. **V-05** 加 `changes: {added, modified, deleted, total}`（develop 确认框的计数）；`blockers` 的 `message` 改为 develop 原文。
+3. **V-06** 响应加 `changes`、`warning`；回退后删掉 `.ontology-state` 派生状态（第一轮按指纹失效、不删，改回 develop）；暂存了元数据也拒绝；提交说明改为「revert: 回退到版本 N（短提交号）」。
+4. 错误提示文字照 develop（「项目已产生新版本，请重新预览后再回退」「当前业务内容与该版本一致，无需回退」「只能回退到当前版本历史中的提交」等），错误码沿用 v1。
+5. 会话池加 `workspace_busy`（develop 同名），回退的「助手在跑」按它判断。

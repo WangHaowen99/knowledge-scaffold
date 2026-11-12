@@ -1611,11 +1611,12 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `GET /api/v1/projects/{id}/versions/revert-preview` · 所有者 · 旧：— · 审计：否 · 依据：4.9 · 页面：versions（回退确认弹窗）
 
 - 查询参数：`commit`。
-- 响应：`{target: {commit, version_label}, next_version_label, expected_head, files: [{path, change: "restore"|"delete"}], undone_versions: string[], packs_lock_changes: [{pack, from, to}], ready: bool, blockers: [{code, message, details}]}`。
+- 响应：`{target: {commit, version_label}, next_version_label, expected_head, changes: {added: string[], modified: string[], deleted: string[], total}, files: [{path, change: "restore"|"delete"}], undone_versions: string[], packs_lock_changes: [{pack, from, to}], ready: bool, blockers: [{code, message, details}]}`。
+  - `changes` 是 develop 回退确认框用的计数口径：回退会新增（目标版本里有、现在没有）、修改、删除的业务文件。
   - 回退会把启用的能力和版本也一起恢复到当时状态，所以要列出 `packs_lock_changes`。
   - 只列业务内容（ADR-0094）：仓库配置（`.gitignore` 等）、项目元数据、运行状态、助手装配（`.claude`、`CLAUDE.md`、`README.md`）不随回退；目录 `index.md` 是派生文件，不单独列，回退时重新生成。资料（`resource/`）随回退恢复。
   - `expected_head` 是预览时的主线版本，回退时原样带回 `V-06`。
-  - `blockers` 是现在不能回退的原因，`ready=false` 时确认按钮不可用；`code` 取 `write_scope_locked`（`details` 是 ScopeLock）、`session_busy`、`autobuild_running`（`details.run_id`）、`studio_draft_pending`（`details: {path, entry_id, count}`）、`workspace_dirty`（`details.paths`，最多 20 个）。
+  - `blockers` 是现在不能回退的原因（`message` 照 develop 原文），`ready=false` 时不打开确认框，直接提示各原因；`code` 取 `write_scope_locked`（`details` 是 ScopeLock）、`session_busy`、`autobuild_running`（`details.run_id`）、`studio_draft_pending`（`details: {path, entry_id, count}`）、`workspace_dirty`（`details.paths`，最多 20 个）。
 - 错误：`invalid_commit`（含不在当前版本历史里的提交）、`nothing_to_revert`。
 
 #### V-06 回退
@@ -1625,7 +1626,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 请求：`{commit, expected_head?}`。`expected_head` 取 `V-05` 的同名字段，预览之后主线前进了就 `409 head_moved`。
 - 业务内容整份恢复，之后新增的文件也会删掉（方案 C1）；不随回退的内容同 `V-05`。生成新版本，历史保留。
 - 能力切换下一条消息生效。回退之后助手会话回收、全部对话的续接点作废（ADR-0094）：对话历史保留，下一条消息全新开始。
-- 响应：`{commit, version_label, reverted_to: {commit, version_label}}`。
+- 回退之后删掉 `.ontology-state` 里的派生状态（验收回执、核验记录、进度等）；删不掉时响应带 `warning`。
+- 主线工作区有没提交或暂存的业务改动、或暂存了不随回退的路径时拒绝（`workspace_dirty`）。
+- 响应：`{commit, version_label, reverted_to: {commit, version_label}, changes: {added, modified, deleted, total}, warning?}`。
 - 错误：`invalid_commit`、`nothing_to_revert`、`head_moved`，以及 `V-05` 的各种 `blockers`（取第一条）：`write_scope_locked`（423）、`session_busy`、`autobuild_running`、`studio_draft_pending`、`workspace_dirty`（均 409）。
 
 #### V-07 标记版本
@@ -1642,6 +1645,16 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 只能删用户标记（`mark-*`），发布标签 `release/*` 不能删。
 - 响应 `204`。
 - 错误：`tag_not_found`。
+
+#### V-09 历史时间线
+
+`GET /api/v1/projects/{id}/history` · 所有者 · 旧：`GET /api/projects/{id}/history`（develop，未映射） · 审计：否 · 依据：ADR-0094 · 页面：versions（左栏）
+
+- 查询参数：`limit`（1–50，默认 50，越界 `400 invalid_argument`）、`cursor`（后端给的原样带回，格式不对 `400 invalid_cursor`）。
+- 响应：`{items: HistoryEntry[], next_cursor: string|null, release_error: string}`。迭代与 Hub 发布版本按时间从新到旧合并，时间相同时发布版本在前；一页只覆盖两边都已读到的范围。
+  - 迭代：`{kind: "iteration", version, commit, time（epoch 秒）, message, tags, current, can_revert}`，另带 V-01 的 `Version` 字段（`n`、`version_label`、`source`、`summary`、`run` 等）。`version` 就是主线版本号 N，界面写「迭代 N」。
+  - 发布版本：`{kind: "release", release_id, ontology_id, version, package_digest, source_service, created_at, time}`，取自 Hub（HB-05 同源）。
+- 没有统一账号登录（本地模式）时只列迭代。Hub 读不到时这一页照列迭代，`release_error` 是原因，之后的页不再读 Hub（游标里记 `off`）。
 
 ---
 
