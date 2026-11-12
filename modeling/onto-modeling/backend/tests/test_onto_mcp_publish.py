@@ -11,6 +11,7 @@ from app.services import auth, hub_packages
 from app.services.onto_mcp import package_publish, tokens
 from app.services.onto_mcp.errors import McpError
 from app.services.workspace import WorkspaceError
+from tests.publish_fixtures import complete_publish_stages
 from tests.test_onto_mcp import env  # noqa: F401  共用合成项目 fixture
 
 PRINCIPAL = {"username": "operator_a", "scopes": ["package.publish"],
@@ -87,6 +88,7 @@ def publishable(monkeypatch, solver=None, blockers=()):
     """发布检查的结论（PB-01 同口径）由 _blockers 给出：提交号、求解契约状态与挡发布的门禁。"""
     check = {"commit": "c" * 40, "solver": solver or {"enabled": False}}
     monkeypatch.setattr(package_publish.knowledge_hub, "configured", lambda: True)
+    monkeypatch.setattr(package_publish.publish_stages, "readiness", lambda manager, pid: {"ready": True, "missing_stages": []})
     monkeypatch.setattr(package_publish, "_blockers", lambda *args: (check, list(blockers)))
     monkeypatch.setattr(package_publish.knowledge_hub, "source_state", lambda *args, **kwargs: ({}, "a" * 64))
     monkeypatch.setattr(package_publish.hub_packages, "check_delegation", lambda *args: {"active": True})
@@ -139,8 +141,39 @@ def test_package_publish_preview_reports_blocking_gates(env, monkeypatch):
     assert "confirmation_token" not in result
 
 
+def test_package_publish_preview_reports_page_required_stages(env, monkeypatch):
+    manager, meta, _ = env
+    principal = {"project_id": meta["id"], "token_id": "4" * 32, "username": "operator_a",
+                 "scopes": ["package.publish"], "hub_issuer": "https://example.com", "hub_sub": "operator_a"}
+    monkeypatch.setattr(package_publish.knowledge_hub, "configured", lambda: True)
+    monkeypatch.setattr(package_publish.publish_stages, "readiness", lambda manager, pid: {
+        "ready": False,
+        "missing_stages": [{"key": "operation", "title": "操作提取"},
+                           {"key": "validate", "title": "质量检查"}],
+    })
+    result = package_publish.preview(manager, principal, {"request_id": "stage_preview_demo"})
+    assert not result["ready"]
+    assert result["blockers"][0]["code"] == "modeling_stages_incomplete"
+    assert result["blockers"][0]["missing_stages"] == [
+        {"key": "operation", "title": "操作提取"},
+        {"key": "validate", "title": "质量检查"},
+    ]
+    assert "操作提取、质量检查" in result["display"]["text"]
+
+
+def test_package_publish_preview_checks_the_real_stages(env, monkeypatch):
+    """不打桩：合成项目只有对象，缺资料分析、操作提取、质量检查。"""
+    manager, meta, _ = env
+    principal = {**PRINCIPAL, "project_id": meta["id"], "token_id": "7" * 32}
+    monkeypatch.setattr(package_publish.knowledge_hub, "configured", lambda: True)
+    result = package_publish.preview(manager, principal, {"request_id": "stage_real_demo"})
+    assert [item["key"] for item in result["blockers"][0]["missing_stages"]] == ["research", "operation", "validate"]
+    assert result["display"]["text"] == "建模未完成，请先完成：资料分析、操作提取、质量检查"
+
+
 def test_package_publish_preview_uses_the_real_publish_check(env, monkeypatch):
     manager, meta, root = env
+    complete_publish_stages(root)
     principal = {**PRINCIPAL, "project_id": meta["id"], "token_id": "6" * 32}
     monkeypatch.setattr(package_publish.knowledge_hub, "configured", lambda: True)
     monkeypatch.setattr(package_publish.hub_packages, "check_delegation", lambda *args: {"active": True})

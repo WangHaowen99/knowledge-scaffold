@@ -1677,3 +1677,13 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
 6. **增量构建包**：启用后没传新资料时节点不出现，不挡发布，也不限范围；已有条目时上传资料才触发。这一轮发布后自动结束；有改动没核对干净时「结束本轮」被拒。
 7. 触发记录在主线工作区的 `.onto/run/activation.json`，不进 git。FL-01 的响应形状不变，节点集合变化时 `flow_hash` 跟着变。
 8. **core 0.5.0、增量构建 0.2.0**：core 0.5.0 表示内核支持上面 1～4；用到它们的包声明 `depends: {core: ">=0.5"}`。建议条规则版本 `SUGGEST_RULES` 升到 7（多一条 6.5「触发后抢先的步骤」）。
+
+## 2026-11-12 · 发布行为与界面对齐 develop（ADR-0098 第二轮）
+
+1. **发布前必须完成四个建模阶段**（与 develop 同规则）：资料分析、对象提取、操作提取（含旧 logic 目录）、质量检查，阶段目录里有可见文件才算，
+   index.md、隐藏文件、符号链接不算；资料分析验收没通过、对象也没提取时不算。PB-03 先回 `409 modeling_stages_incomplete`
+   「建模未完成，请先完成：…」（`details.missing_stages`）；Hub 发布、MCP 预览（`blockers[0].missing_stages`）同一规则。
+2. **PB-01** 加 develop 发布检查的同名字段：`solver`（含已验证免确认 `verified_release`）、`structure`、`stages`、`last_publish`；
+   门禁链在缺阶段时第一关出 `modeling_stages`。
+3. 前端：发布页的发布检查卡、「已发布版本（知识包评测）」弹窗（HB-05，发布成功后自动打开）、项目列表「导入已有知识包 ▾」与
+   「导入已发布知识包」弹窗、求解面板「求解验证」卡，元素与文字照 develop。

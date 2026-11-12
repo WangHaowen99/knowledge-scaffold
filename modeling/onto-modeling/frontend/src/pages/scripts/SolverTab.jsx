@@ -15,6 +15,7 @@ import {
   Area, Button, Card, Chip, Empty, Field, Icon, Inp, Modal, Note, Select, Toggle, cx,
 } from '../../ui/index.jsx';
 import { ScopeLockBar } from '../plugin/parts.jsx';
+import SolverValidationCard from './SolverValidationCard.jsx';
 import {
   SIDECAR_FILES, baseOperations, checkLines, contractLocked, contractProblems, contractTitle, draftOf, evaluatorCommand,
   evaluatorOptions, evaluatorTarget, familyOptions, fieldProblem, itemKey, lockText, removeUnit, revisionTag, saveErrorView,
@@ -346,6 +347,7 @@ export default function SolverTab({ view, lock, tasks, onSaved, reload }) {
               <Button size="sm" kind="primary" disabled={ss.disabled} title={ss.title || undefined} onClick={save}>保存求解契约</Button>
             </div>
           </Card>
+          <SolverValidationCard view={base} dirty={dirty} />
           <Card title="其他求解契约" icon="list">
             {others.map((it) => (
               <div key={it.uid} className="row sm scr-other" onClick={() => setSelUid(it.uid)}>

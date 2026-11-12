@@ -8,3 +8,10 @@
 .pb-files .row{padding:4px 0;border-bottom:1px dashed var(--line)}
 .pb-files .row:last-child{border-bottom:none}
 .pb-pre{font-family:var(--mono);font-size:12px;line-height:1.7;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px;margin:8px 0 0}
+
+/* 发布检查（develop PublishCheckDialog 的分段，ADR-0098） */
+.pcd .pcd-summary{gap:6px 12px}
+.pcd .pcd-section{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.pcd .pcd-issue{padding:10px 0;border-bottom:1px dashed var(--line)}
+.pcd .pcd-issue:last-child{border-bottom:none}
+.pcd .pcd-fold{padding-top:6px}

@@ -85,12 +85,29 @@ def _structure_gate(findings: list[dict], order: int) -> dict:
     }
 
 
+def _stages_gate(stages: dict | None) -> dict | None:
+    """建模阶段（ADR-0098，与 develop 同规则）：缺阶段时才出现，挡发布、不能降级。"""
+    if not stages or stages.get("ready", True):
+        return None
+    from .stages import CODE, message
+
+    text = message(stages["missing_stages"])
+    return {
+        "id": "modeling_stages", "order": 1, "title": "建模阶段", "source": _PLATFORM,
+        "status": "fail", "summary": text, "blocking": True, "degradable": False,
+        "findings": [{"code": CODE, "level": "error", "message": text}],
+        "action": None, "missing_stages": stages["missing_stages"],
+    }
+
+
 def gate_chain(issues: list[dict], solver: dict, structure: list[dict], tree_error: dict | None = None,
-               packs: list[dict] | None = None) -> list[dict]:
-    chain = [_binding_gate(issues)]
+               packs: list[dict] | None = None, stages: dict | None = None) -> list[dict]:
+    stage_gate = _stages_gate(stages)
+    chain = [stage_gate] if stage_gate else []
+    chain.append({**_binding_gate(issues), "order": len(chain) + 1})
     solver_gate = _solver_gate(solver)
     if solver_gate:
-        chain.append(solver_gate)
+        chain.append({**solver_gate, "order": len(chain) + 1})
     chain.append(_structure_gate([*([tree_error] if tree_error else []), *structure], len(chain) + 1))
     for gate in packs or []:
         chain.append({**gate, "order": len(chain) + 1})

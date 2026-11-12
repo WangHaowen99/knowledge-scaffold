@@ -3170,8 +3170,12 @@ ADR-0098：端到端验证在发布后的独立评测里做，onto 不再收回�
   | `version_label` | string | — |
   | `package_name` | string | — |
   | `format` | string | `ontology\|solver`：自动判定 |
-  | `gates` | `GateResult[]` | 按顺序：数据绑定、求解契约（静态检查；`requires_acknowledgement` 为 true 时发布要确认未验证；当前修订已在评测服务通过求解验证的为 false 并带 `verified_revision`，要统一账号登录才判定）、知识包结构（含 consumer 导入规则）、包声明的门禁（如合规检查）、证据出处检查、流程关卡 |
+  | `gates` | `GateResult[]` | 按顺序：建模阶段（四个必经阶段没做完时才出现，`id=modeling_stages`，挡发布、不能降级，带 `missing_stages`）、数据绑定、求解契约（静态检查；`requires_acknowledgement` 为 true 时发布要确认未验证；当前修订已在评测服务通过求解验证的为 false 并带 `verified_revision`，要统一账号登录才判定）、知识包结构（含 consumer 导入规则）、包声明的门禁（如合规检查）、证据出处检查、流程关卡 |
   | `solver_revision` | string | 求解契约修订（没有求解契约时为空） |
+  | `solver` | object | develop 发布检查同名字段：`{enabled, revision, operations, findings, blocking, requires_validation_after_publish, truncated, verified_release?}`；没有求解契约时 `{enabled: false}`；当前修订已通过求解验证时 `requires_validation_after_publish=false` 并带 `verified_release: {release_id, version}`（要统一账号登录才判定） |
+  | `structure` | object | consumer 导入规则的结构自检：`{blocking, findings: [{code, message, level}], truncated, skipped}`；求解契约有问题或渲染失败时 `skipped` 说明跳过的原因 |
+  | `stages` | object | 发布前必须完成的建模阶段（ADR-0098，与 develop 同规则）：`{ready, stages: [{key, title, finished}], missing_stages: [{key, title}]}`；四个阶段是资料分析 research、对象提取 object、操作提取 operation（含旧 logic 目录）、质量检查 validate |
+  | `last_publish` | object \| null | 上次发布：`{at, by, degraded, unbound_count, version}` |
   | `blocking_count` | int | — |
   | `binding` | object | `{issues: BindingIssue[], warnings: string[], tables: string[], table_count, objects, bound_objects, table_resources: string[]（没标 Schema 的表格资料）, truncated}` |
   | `degradable` | bool | 只有数据绑定不通过时为 true |
@@ -3196,6 +3200,7 @@ ADR-0098：端到端验证在发布后的独立评测里做，onto 不再收回�
 `POST /api/v1/projects/{id}/releases` · 所有者 · 旧：`GET /api/projects/{id}/export?scope=package`（旧接口用 GET 发布，改为 POST） · 审计：专项 `publish.release` · 依据：⑱、㉒、㉓、方案 A8 · 页面：publish（「发布为知识包」「发布」「降级发布」）
 
 - 要统一账号登录（Hub 按登录用户授权）；鉴权关闭的本地模式返回 `401`。
+- 建模没做完（PB-01 `stages.ready=false`）先回 `409 modeling_stages_incomplete`，`message` 为「建模未完成，请先完成：资料分析、质量检查」这样的句子，`details.missing_stages` 列出缺的阶段；MCP 发布与 Hub 发布同一规则，不能绕过。
 - 请求：`{commit?: string（缺省主线最新）, degrade?: bool, request_id?: string（幂等键，缺省每次新请求）, solver_unverified_acknowledged?: bool}`。
   - `degrade=true` 表示忽略数据绑定、降级发布，其他门禁不放宽；
   - 求解契约需要验证时要 `solver_unverified_acknowledged=true`，当前修订已在早先版本通过求解验证的除外。
@@ -3205,6 +3210,7 @@ ADR-0098：端到端验证在发布后的独立评测里做，onto 不再收回�
   评测服务配好时，发布后带着用户登录回写一次评测优化的结果，成功拿到状态的在响应里带 `evaluation_writeback`（ES-02 同结构），失败不影响发布。
 - 错误：
   - `gate_blocked`（`details.gates` 列出不通过的项；consumer 导入规则不通过时 `details.reason=package_structure_invalid`）；
+  - `modeling_stages_incomplete`（409）；
   - `solver_validation_acknowledgement_required`（409）；
   - `publish_preview_stale`（409，同一 `request_id` 的内容变了）；
   - `hub_unavailable`（503）、`version_conflict`、`package_deleted`；

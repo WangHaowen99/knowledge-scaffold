@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 import shutil
+from contextlib import nullcontext
 import zipfile
 
 import pytest
@@ -304,6 +305,136 @@ def solver_publish_client(setup, monkeypatch):
     manager._update_meta(pid, owner='operator_a')
     login(monkeypatch)
     return manager, pid, root, app
+
+
+def record_solver_validation(pid, release_id, version, failed=0, earlier=None):
+    """Stores synthetic solver-validation results as the evaluation notifications would.
+
+    ``earlier`` adds a result for another release, finished before this one: (release_id, version, failed).
+    """
+    from app.services import package_evaluations
+    subject = json.dumps(['https://example.com', 'operator_a'], ensure_ascii=False)
+    owner = 'e' * 64
+    knowledge_hub.save(package_evaluations._owner_path(subject), {'owner': owner})
+    def entry(release, label, failures, finished):
+        return {'release_id': release, 'version': label, 'run_id': 'f' * 32, 'status': 'completed', 'run_type': 'solver',
+                'finished_at': finished, 'artifacts': {'generated_at': finished},
+                'solver_summary': {'total': 1, 'passed': 1 - failures, 'failed': failures}}
+    releases = {release_id: entry(release_id, version, failed, 2000.0)}
+    if earlier:
+        releases[earlier[0]] = entry(*earlier, 1000.0)
+    knowledge_hub.save(package_evaluations._index_path(hub_packages.ontology_id(pid), owner),
+                       {'active': None, 'releases': {}, 'solver_releases': releases})
+
+
+def _released(response):
+    """发布接口的响应（ReleaseRecord + hub）：develop 回执里的 release_id 与 version。"""
+    body = response.json()
+    return {'release_id': body['hub']['release_id'], 'version': body['version']}
+
+
+@pytest.mark.parametrize('failed', [0, 1])
+def test_verified_solver_revision_publishes_without_acknowledgement(setup, monkeypatch, failed):
+    manager, pid, _root, app = solver_publish_client(setup, monkeypatch)
+    with nullcontext(client_for()) as client:
+        url = f'/api/v1/projects/{pid}/releases'
+        first = client.post(url, json={'request_id': 'solver_first', 'solver_unverified_acknowledged': True})
+        assert first.status_code == 201, first.text
+        record_solver_validation(pid, _released(first)['release_id'], _released(first)['version'], failed)
+        check = client.get(f'/api/v1/projects/{pid}/publish/check').json()['solver']
+        again = client.post(url, json={'request_id': 'solver_second'})
+    if failed:
+        assert check['requires_validation_after_publish'] is True and 'verified_release' not in check
+        assert again.status_code == 409 and again.json()['code'] == 'solver_validation_acknowledgement_required'
+        return
+    assert check['requires_validation_after_publish'] is False
+    assert check['verified_release'] == _released(first)
+    assert again.status_code == 201, again.text
+    stored = knowledge_hub.load(hub_packages._solver_releases_path(pid))[_released(again)['release_id']]
+    assert stored['acknowledged_by'] == '' and stored['revision'] == solver_service.solver_check(manager, pid).revision
+
+
+@pytest.mark.parametrize(('older_failed', 'newer_failed', 'exempt'), [(0, 1, False), (1, 0, True)])
+def test_latest_validation_of_the_revision_decides_the_exemption(setup, monkeypatch, older_failed, newer_failed, exempt):
+    manager, pid, _root, app = solver_publish_client(setup, monkeypatch)
+    with nullcontext(client_for()) as client:
+        url = f'/api/v1/projects/{pid}/releases'
+        older = _released(client.post(url, json={'request_id': 'solver_older', 'solver_unverified_acknowledged': True}))
+        newer = _released(client.post(url, json={'request_id': 'solver_newer', 'solver_unverified_acknowledged': True}))
+        record_solver_validation(pid, newer['release_id'], newer['version'], newer_failed,
+                                 earlier=(older['release_id'], older['version'], older_failed))
+        solver = client.get(f'/api/v1/projects/{pid}/publish/check').json()['solver']
+        again = client.post(url, json={'request_id': 'solver_third'})
+    assert solver['requires_validation_after_publish'] is (not exempt)
+    assert again.status_code == (201 if exempt else 409), again.text
+    if exempt:
+        assert solver['verified_release']['release_id'] == newer['release_id']
+
+
+def test_changed_solver_revision_needs_acknowledgement_again(setup, monkeypatch):
+    manager, pid, root, app = solver_publish_client(setup, monkeypatch)
+    with nullcontext(client_for()) as client:
+        url = f'/api/v1/projects/{pid}/releases'
+        first = _released(client.post(url, json={'request_id': 'solver_first', 'solver_unverified_acknowledged': True}))
+        record_solver_validation(pid, first['release_id'], first['version'])
+        model = next((root / 'ontology' / 'solver').glob('*/presentation.yaml'))
+        model.write_text(model.read_text(encoding='utf-8') + '# synthetic edit\n', encoding='utf-8')
+        _git(root, 'add', '-A')
+        _git(root, 'commit', '-qm', 'synthetic solver edit')
+        assert client.get(f'/api/v1/projects/{pid}/publish/check').json()['solver']['requires_validation_after_publish'] is True
+        refused = client.post(url, json={'request_id': 'solver_second'})
+    assert refused.status_code == 409 and refused.json()['code'] == 'solver_validation_acknowledgement_required'
+
+
+def test_modeling_stage_gate_matches_page_required_stages(setup):
+    manager, pid, _, calls, _ = setup
+    root = manager.project_root(pid)
+    (root / 'ontology/operation/operation_demo.md').unlink()
+    readiness = publish_service.stages.readiness(manager, pid)
+    assert not readiness['ready']
+    assert readiness['missing_stages'] == [{'key': 'operation', 'title': '操作提取'}]
+    with pytest.raises(WorkspaceError) as exc:
+        hub_packages.publish(manager, pid, 'stage_gate_demo', 'actor_a', 'scope_a', True)
+    assert exc.value.status == 409 and exc.value.code == 'modeling_stages_incomplete'
+    assert calls == []
+
+
+def test_legacy_logic_directory_satisfies_operation_stage(setup):
+    manager, pid, _, _, _ = setup
+    root = manager.project_root(pid)
+    (root / 'ontology/operation/operation_demo.md').unlink()
+    (root / 'ontology/logic').mkdir(exist_ok=True)
+    (root / 'ontology/logic/logic_demo.md').write_text('# Synthetic legacy operation\n')
+    assert publish_service.stages.readiness(manager, pid)['ready']
+
+
+def test_stage_gate_reaches_the_web_api_and_publish_check(setup, monkeypatch):
+    """网页发布与发布检查同一规则：PB-03 回 409 同码同文案，PB-01 的门禁链第一关列出缺的阶段。"""
+    manager, pid, _, calls, _ = setup
+    root = manager.project_root(pid)
+    (root / 'reports/validation.md').unlink()
+    (root / 'research/report.md').unlink()
+    login(monkeypatch)
+    with nullcontext(client_for()) as client:
+        refused = client.post(f'/api/v1/projects/{pid}/releases', json={'request_id': 'stage_web_demo'})
+        check = client.get(f'/api/v1/projects/{pid}/publish/check').json()
+    assert refused.status_code == 409 and refused.json()['code'] == 'modeling_stages_incomplete'
+    assert refused.json()['message'] == '建模未完成，请先完成：资料分析、质量检查'
+    assert calls == []
+    assert check['stages']['missing_stages'] == [{'key': 'research', 'title': '资料分析'}, {'key': 'validate', 'title': '质量检查'}]
+    gate = check['gates'][0]
+    assert gate['id'] == 'modeling_stages' and gate['blocking'] and not gate['degradable']
+    assert gate['summary'] == '建模未完成，请先完成：资料分析、质量检查'
+
+
+def test_hidden_index_and_linked_files_do_not_complete_a_stage(setup):
+    manager, pid, _, _, _ = setup
+    root = manager.project_root(pid)
+    (root / 'reports/validation.md').unlink()
+    (root / 'reports/index.md').write_text('# Index\n')
+    (root / 'reports/.hidden.md').write_text('# Hidden\n')
+    (root / 'reports/linked.md').symlink_to(root / 'research/report.md')
+    assert publish_service.stages.readiness(manager, pid)['missing_stages'] == [{'key': 'validate', 'title': '质量检查'}]
 
 
 def test_every_publish_entry_needs_the_solver_acknowledgement(setup, monkeypatch):

@@ -123,7 +123,7 @@ export default function ImportPage() {
     <ShellG active="projects">
       <div className="en-im">
         <div className="row mb12"><a className="link row g4" href="#/projects"><Icon name="arrowl" size={14} />返回我的项目</a><span className="sp" /></div>
-        <PageHead title="导入项目" actions={hubOn ? <Button icon="pkg" onClick={() => setHubOpen(true)}>从 Hub 导入</Button> : null} />
+        <PageHead title="导入项目" actions={hubOn ? <Button icon="pkg" onClick={() => setHubOpen(true)}>已发布知识包</Button> : null} />
         <HubImportModal open={hubOpen} onClose={() => setHubOpen(false)} />
         <div className="en-im-steps">
           <div className={cx('s', step2 ? 'done' : 'on')}><i>{step2 ? <Icon name="check" size={12} /> : '1'}</i>选择与命名</div>

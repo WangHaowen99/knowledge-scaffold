@@ -295,8 +295,11 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
             (folder / 'package.zip').unlink(missing_ok=True)
             return saved_receipt
         if not task:
+            from .publish import stages as publish_stages
             from .solver import service as solver_service
 
+            if kind == 'release':
+                publish_stages.ensure(manager, pid)
             value, input_digest = freeze(manager, pid, folder, allow_unbound, binding, graph, commit)
             if expected_input_digest is not None and input_digest != expected_input_digest:
                 raise WorkspaceError('建模内容发生变化，请重新预览发布', 409, 'publish_preview_stale')

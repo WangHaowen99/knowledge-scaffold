@@ -4,7 +4,9 @@
 // 还没运行，挡住发布；点「去运行」经 FL-05 在对话里开始后视为已运行）→ 证据出处检查（通过，2 个提醒）。
 // 改数据来源（PB-02）会提交一个新版本（经 routes-versions 的 commitWrite）；发布成功 4 秒后模拟评测服务拉取一次（EP-19）。
 //
-// mock 参数：publish:degrade（合规检查已运行，只剩数据绑定，可以降级发布）；publish:ready（全部通过）；publish:empty（还没有发布记录）
+// mock 参数：publish:degrade（合规检查已运行，只剩数据绑定，可以降级发布）；publish:ready（全部通过）；publish:empty（还没有发布记录）；
+// publish:stages（资料分析与质量检查没做完，门禁链第一关「建模阶段」挡住，ADR-0098）。
+// 知识包 Hub（HB-01～HB-07）：本人的包、版本、导入、项目所在包的版本（含别人发布的）与共享资料状态
 import { isLocked } from '../../state/readonly.js';
 import * as P from './publish-data.js';
 import { entryRef } from './scenario.js';
@@ -23,6 +25,54 @@ export function register(ctx) {
   const isMain = (pid) => pid === F.MAIN_PID;
   if (sc.publish === 'empty') { db.releases = db.releases || new Map(); db.releases.set(F.MAIN_PID, []); }
 
+  // 发布前必经的四个建模阶段（与后端 publish/stages.py 同规则）
+  const STAGES = [['research', '资料分析'], ['object', '对象提取'], ['operation', '操作提取'], ['validate', '质量检查']];
+  const stagesOf = () => {
+    const missing = sc.publish === 'stages' ? ['research', 'validate'] : [];
+    const stages = STAGES.map(([key, title]) => ({ key, title, finished: !missing.includes(key) }));
+    return { ready: !missing.length, stages, missing_stages: stages.filter((x) => !x.finished).map(({ key, title }) => ({ key, title })) };
+  };
+
+  // ---------- 知识包 Hub ----------
+  const hubOf = (pid) => `pkg-${String(pid).replace(/[^a-z0-9]/gi, '').slice(-8)}`;
+  // 项目所在包的版本：本项目发布的（发布记录里有 Hub 身份）加一条别人发布到同一个包的
+  const hubReleasesOf = (pid) => {
+    const own = P.releasesOf(db, pid, cardOf(pid)).map((r, i) => ({
+      ontology_id: hubOf(pid), release_id: r.release_id || `rel-${pid}-${r.version}`, name: cardOf(pid)?.name || pid,
+      version: r.version, source_service: 'modeling', created_at: r.at, committed_at: r.at, kind: 'release',
+      package_digest: r.sha256 || `${i}`.padStart(64, 'a'),
+    }));
+    if (!isMain(pid) || !own.length) return own;
+    const other = { ...own[own.length - 1], release_id: `rel-${pid}-peer`, version: '0.1.2', source_service: 'modeling',
+      created_at: new Date(Date.parse(own[0].created_at) + 3600000).toISOString() };
+    return [...own, other].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+  };
+  const page = (rows, query) => {
+    const offset = Number(query.get('offset') || 0);
+    const limit = Number(query.get('limit') || 20);
+    const items = rows.slice(offset, offset + limit);
+    return { items, releases: items, total: rows.length, offset, limit, next_offset: offset + items.length < rows.length ? offset + items.length : null };
+  };
+  on('GET', '/projects/([^/]+)/hub/releases', ({ m, query }) => json(200, page(hubReleasesOf(m[1]), query))); // HB-05
+  on('GET', '/projects/([^/]+)/hub/resources/status', () => json(200, { pending: false, generation: 0, selected: [], shared: false })); // HB-07
+  on('GET', '/projects/([^/]+)/hub/releases/([^/]+)/download', () => new Response(zip(), { status: 200, headers: { 'Content-Type': 'application/zip' } })); // HB-06
+  const hubPackages = () => (db.cards || []).filter((c) => P.releasesOf(db, c.id, c).length).map((c) => {
+    const [latest] = hubReleasesOf(c.id);
+    return { ...latest };
+  });
+  on('GET', '/hub/packages', ({ query }) => json(200, page(hubPackages(), query))); // HB-01
+  on('GET', '/hub/packages/([^/]+)/releases', ({ m, query }) => {
+    const owner = (db.cards || []).find((c) => hubOf(c.id) === m[1]);
+    return owner ? json(200, page(hubReleasesOf(owner.id), query)) : err(404, 'not_found', 'Hub 包不存在或当前用户无权访问');
+  }); // HB-02
+  on('POST', '/hub/imports', ({ body }) => {
+    const source = (db.cards || []).find((c) => hubOf(c.id) === body.ontology_id);
+    if (!source) return err(404, 'not_found', 'Hub 包不存在或当前用户无权访问');
+    const created = { ...source, id: `p-${uid()}`, name: body.name, last_release: null };
+    db.cards.unshift(created);
+    return json(201, created);
+  }); // HB-04
+
   const issuesOf = (pid) => {
     if (!ps.issues.has(pid)) ps.issues.set(pid, isMain(pid) && sc.publish !== 'ready' ? P.bindingIssues().map((x, i) => ({ ...x, revision: `rb${i + 1}` })) : []);
     return ps.issues.get(pid);
@@ -38,6 +88,14 @@ export function register(ctx) {
     const fmt = P.formatOf(pid, target.n);
     const gates = [];
     const g = (o) => gates.push({ order: gates.length + 1, findings: [], action: null, degradable: false, blocking: false, ...o });
+    const stages = stagesOf();
+    if (!stages.ready) {
+      const text = `建模未完成，请先完成：${stages.missing_stages.map((x) => x.title).join('、')}`;
+      g({
+        id: 'modeling_stages', title: '建模阶段', source: { kind: 'platform', label: '平台检查' }, status: 'fail', blocking: true,
+        summary: text, findings: [{ code: 'modeling_stages_incomplete', level: 'error', message: text }], missing_stages: stages.missing_stages,
+      });
+    }
     g({
       id: 'data_binding', title: '数据绑定检查', source: { kind: 'platform', label: '平台检查' },
       status: issues.length ? 'fail' : 'pass', blocking: issues.length > 0, degradable: true,
@@ -68,8 +126,17 @@ export function register(ctx) {
       });
     }
     const rel = P.releasesOf(db, pid, card);
+    const solver = fmt.format === 'solver'
+      ? { enabled: true, revision: 'sha256:7c1e90b4d2a8f3561e0c', operations: [{ solver_key: 'restock_plan', enabled: true }], findings: [], blocking: 0,
+        requires_validation_after_publish: true, truncated: false }
+      : { enabled: false };
     return {
       commit: target.commit, version_label: target.version_label, package_name: card?.package_name || '', ...fmt, gates,
+      solver_revision: solver.revision || '',
+      solver,
+      structure: { blocking: 0, findings: [], truncated: false, skipped: null },
+      stages,
+      last_publish: rel[0] ? { at: rel[0].at, by: rel[0].by, degraded: !!rel[0].gates?.degraded, unbound_count: rel[0].gates?.unbound_objects?.length || 0, version: rel[0].version } : null,
       blocking_count: gates.filter((x) => x.blocking).length,
       binding: {
         issues, warnings: [], tables: P.PACKAGE_TABLES, table_count: P.PACKAGE_TABLES.length,

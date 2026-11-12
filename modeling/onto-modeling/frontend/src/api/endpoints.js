@@ -323,6 +323,7 @@ export function createApi(client) {
       (request_id) => client.post('/hub/imports', { ...body, request_id }),
     ),
     projectHubReleases: (id, offset = 0, limit = 20) => client.get(`${P(id)}/hub/releases`, { query: { offset, limit } }), // HB-05
+    projectHubResourcesStatus: (id) => client.get(`${P(id)}/hub/resources/status`), // HB-07
     // 3.21a 独立评测（ADR-0092）
     evaluationEntry: () => client.get('/evaluation/entry'), // ES-01
     evaluations: (id, { reconcile = false } = {}) => client.get(`${P(id)}/evaluations`, { query: { reconcile: reconcile ? 1 : 0 } }), // ES-02
