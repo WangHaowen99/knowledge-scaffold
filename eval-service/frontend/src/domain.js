@@ -40,7 +40,8 @@ export function phaseName(run) {
     : PHASES.find(([key]) => key === run.phase)?.[1] || '等待执行';
 }
 export function needsAttention(run) {
-  return RECOVERABLE.has(run.status) || run.status === 'failed';
+  return RECOVERABLE.has(run.status) || run.status === 'failed' || !!run.pending_deliveries ||
+    !!run.historical_failures || !!(run.summary?.counts?.fail || run.summary?.counts?.partial || run.summary?.counts?.execution_error);
 }
 export function canResume(run) {
   return RECOVERABLE.has(run.status) && ![
@@ -67,7 +68,7 @@ export function packageVersions(run) {
 // Runs still queued have no started_at yet, so they show when they were created.
 // One row per knowledge package: its newest run, plus how many runs the package has.
 export function taskRows(items) {
-  return items.map((item) => ({ ...item.latest, run_count: item.run_count, package_executing: item.executing }));
+  return items.map((item) => ({ ...item.latest, run_count: item.run_count, package_executing: item.executing, pending_deliveries: item.pending_deliveries, historical_failures: item.historical_failures, history_limited: item.history_limited }));
 }
 function clock(seconds) {
   const at = runStartTime({ created_at: seconds });
@@ -137,7 +138,7 @@ export function notificationState(n) {
   };
 }
 // How modeling handled a run's suggestions: written back after it changed the package and published a new version.
-export function optimizationState(run) {
+export function optimizationState(run, peers = []) {
   const o = run?.optimization;
   if (!o) return null;
   const result = o.result || {},
@@ -146,11 +147,20 @@ export function optimizationState(run) {
     count = times > 1 ? `共 ${times} 次回写` : '';
   if (o.status === 'awaiting_review') return { label: '待负责人确认', tone: 'blue', hint: '确认后通知建模' };
   if (o.status === 'notified') {
-    const carried = carriedState(run);
+    const carried = carriedState(run, peers);
+    if (carried) return { ...carried, label: carried.label, hint: carried.hint };
+    const content = run.delivery?.state;
+    if (content === 'none') return { label: '无需优化', tone: 'green', hint: '本轮全部通过，未携带待处理历史内容' };
+    if (content === 'solver') return null;
+    if (content === 'pending') return { label: '交付内容生成中', tone: 'blue', hint: '报告或建议尚未就绪' };
+    if (content === 'diagnose') return { label: '需诊断', tone: 'amber', hint: '存在运行异常或待人工判断，不直接视为知识包错误' };
+    const notice = run.notification?.status;
+    if ((content || notice) && notice !== 'delivered') return { label: ['failed', 'rejected'].includes(notice) ? '同步失败' : notice === 'disabled' ? '待同步（未配置通知）' : '待同步', tone: 'amber', hint: '尚未确认建模收到通知，请查看交付详情' };
+    if (content === 'unknown') return { label: '待核实优化内容', tone: 'amber', hint: '历史记录缺少结构化建议，请查看报告' };
     return {
       label: '待建模处理',
       tone: 'neutral',
-      hint: carried ? `${carried.label}：${carried.hint}` : '建模按建议修改并发布新版本后，这里显示新版本',
+      hint: '建模按建议修改并发布新版本后，这里显示新版本',
     };
   }
   if (o.status === 'modeling_done')
@@ -166,12 +176,12 @@ export function optimizationState(run) {
   return null;
 }
 // A run still waiting for modeling rides along with a newer push of the same source, or was left out of its window.
-export function carriedState(run) {
+export function carriedState(run, peers = []) {
   const o = run?.optimization;
   if (o?.status !== 'notified') return null;
   if (o.carried_into)
     return {
-      label: `已合并到 ${minute(o.carried_into.at)} 的交付`,
+      label: `已合并到 ${shortId(o.carried_into.run_id, peers)} 编号的交付`,
       tone: 'blue',
       runId: o.carried_into.run_id,
       hint: '建模还没处理，随较新的一次交付一起交给建模，处理结果会一起回写',
@@ -181,7 +191,7 @@ export function carriedState(run) {
       label: '未能一起带上',
       tone: 'amber',
       runId: o.slid_out.run_id,
-      hint: `${minute(o.slid_out.at)} 的交付文件超过大小上限，没有带上这一轮，仍待建模处理`,
+      hint: `${shortId(o.slid_out.run_id, peers)} 编号的交付文件超过大小上限，没有带上这一轮，仍待建模处理`,
     };
   return null;
 }
@@ -247,8 +257,10 @@ export function modelOptionGroups(items = []) {
     { label: '个人模型池', items: items.filter(personal) },
   ].filter((group) => group.items.length);
 }
-export function shortId(id = '') {
-  return id.length > 12 ? id.slice(0, 12) : id;
+export function shortId(id = '', peers = []) {
+  let length = 12;
+  while (length < id.length && peers.some((other) => other !== id && other.slice(0, length) === id.slice(0, length))) length += 4;
+  return id.slice(0, length);
 }
 // A run's cases by verdict for the result bar: execution and judge errors count as errors, unrun cases as todo.
 export function resultCounts(summary) {
@@ -292,7 +304,7 @@ export function parseRoute(hash = '') {
     const query = new URLSearchParams(search),
       release = query.get('release_id');
     // A release with "from": re-evaluate that run's settings on another version of its package.
-    return { page: 'new', from: query.get('from') || '', ...(release ? { release } : {}) };
+    return { page: 'new', from: query.get('from') || '', ...(release ? { release } : {}), ...(query.get('run_type') === 'solver' ? { runType: 'solver' } : {}) };
   }
   if (path === '/eval-sets') return { page: 'sets' };
   if (path === '/solver-sets') return { page: 'solverSets' };

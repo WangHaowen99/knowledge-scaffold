@@ -95,3 +95,11 @@ Neo4j 导入使用配置的 Workspace 值与知识包 Ontology 值同时匹配�
 - 执行：提问时固定本轮激活的知识包版本；安装时 consumer 报告不可用的求解操作，用例直接判为未通过而不提问。每条用例读取一次运行事件（最多 4 MiB），按工具卡名识别求解调用，同一操作多次调用以最后一次为准；入参比对读取 `tool.started` 的入参预览，预览被截断或脱敏时判为 solver_arguments_unverifiable。权威结果且有候选结果引用时读取 consumer `/api/solver/history/{job_id}/candidate-results` 的候选数。
 - 断言顺序与失败码：solver_tool_not_called → solver_arguments_unverifiable / solver_arguments_mismatch → 求解未完成（consumer 返回的码、awaiting_input、solver_timeout）→ solver_authoritative_event_missing / solver_authoritative_event_mismatch → solver_result_not_authoritative → solver_evidence_incomplete → solver_candidate_count_mismatch（或候选结果读取错误码）。不可行结果没有候选时候选数断言视为通过。
 - 结果：用例 judgement 为 pass / fail，带 code；`solver` 字段为公开证据与断言列表，不含令牌与连接信息；`/results` 列表不返回 arguments。报告与修复指引按失败码确定性生成，`suggestions_model` 为空。
+
+### 交付内容与待办展示
+
+- `GET /runs/{id}/delivery?scope=all|own|history&offset=0&limit=20`：沿用轮次权限；返回当前报告修订的交付问题及来源 `source_run_id`，不改写原判分。每页最多 20 条，问题与理由各最多 1000 字符、回答预览最多 2000 字符；完整内容见报告附件。反馈待确认时使用后端拼接、去重和大小限制计算预览，`preview/provisional=true`，其他批次交付或内容更新后可能变化。正式交付内容从已保存附件读取。
+- 轮次增加 `delivery`：`state` 为 `none`（无需优化）、`actionable`（有待处理内容）、`diagnose`（需诊断）、`pending`（产物未就绪）、`unknown`（历史证据不足）或 `solver`；`own/history` 分列本轮及历史数量。此字段仅用于展示，不改变建模回写协议；通知状态仍单独读取 `notification`。
+- `GET /package-tasks` 增加 `pending_deliveries`、`historical_failures` 和 `history_limited`，汇总最近最多 1000 次评测，已并入其他交付的记录不重复计待办。
+- 按知识包查询 `GET /runs` 可指定 `run_type=all|data|solver`，按类型筛选后分页。
+- 用户反馈知识包汇总增加 `transport`：分别统计已送达、待同步、同步失败、无需优化的独立交付；`status` 原协议保持兼容，页面结合两者显示。

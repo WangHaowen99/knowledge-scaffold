@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useViewState } from './viewState.js';
 import { api } from './api.js';
 import {
   STATUS,
@@ -16,7 +17,7 @@ import {
   scoreText,
   shortId,
 } from './domain.js';
-import { Alert, Badge, Button, Empty, Icon, Modal, Skeleton, Steps, useAction } from './ui.jsx';
+import { Alert, Badge, Button, Empty, Icon, Modal, Segmented, Skeleton, Steps, useAction } from './ui.jsx';
 
 const HISTORY_PAGE = 10;
 const MARKDOWN_PLUGINS = [remarkGfm];
@@ -65,8 +66,8 @@ export function CarryoverNote({ carryover, feedback, navigate, preview = false }
             {carryover.rounds.map((r, i) => (
               <React.Fragment key={r.run_id}>
                 {i > 0 && '、'}
-                <button type="button" className="text-link" onClick={() => navigate?.(path + r.run_id)}>
-                  {r.version}
+                <button type="button" className="text-link" onClick={() => navigate?.(path + r.run_id + '?tab=delivery')}>
+                  #{shortId(r.run_id)} · {r.version}
                 </button>
               </React.Fragment>
             ))}
@@ -112,13 +113,13 @@ export function DeliveryCard({ run, onChanged, navigate }) {
     },
     {
       label: notice ? `建模通知${notice.label}` : '通知建模',
-      hint: solver && delivered ? '验证结果已同步到建模服务' : notice?.hint || '报告和建议生成后发送',
+      hint: solver && delivered ? '验证结果已同步到建模服务' : run.delivery?.state === 'none' && delivered ? '报告已同步，本轮无需优化' : notice?.hint || '报告和建议生成后发送',
       state: delivered ? 'done' : notice?.canRetry ? 'failed' : generated ? 'current' : '',
     },
     {
-      label: done ? '建模已处理' : failed ? '建模处理失败' : handled?.label || '等待建模处理',
+      label: done ? '建模已处理' : failed ? '建模处理失败' : handled?.label || '等待内容生成',
       hint: handled?.hint || '建模执行评测优化并发布新版本后，这里自动更新',
-      state: done ? 'done' : failed ? 'failed' : delivered ? 'current' : '',
+      state: done || run.delivery?.state === 'none' ? 'done' : failed ? 'failed' : delivered ? 'current' : '',
     },
     {
       label: '在新版本上验证',
@@ -154,7 +155,9 @@ export function DeliveryCard({ run, onChanged, navigate }) {
           )}
         </div>
       </div>
-      <Steps items={solver ? items.slice(0, 2) : feedback ? items.slice(0, 3) : items} />
+      <Steps items={solver ? items.slice(0, 2) : feedback || run.delivery?.state === 'none' ? items.slice(0, 3) : items} />
+      {run.delivery && <p className="muted">本轮待处理问题 {run.delivery.own.failed} 条 · 本轮建议 {run.delivery.own.items ?? '待核实'} 条 · 历史问题 {run.delivery.history.cases} 条 · 历史建议 {run.delivery.history.items} 条</p>}
+      {navigate && <Button variant="text" onClick={() => navigate(`${feedback ? '/feedback/' : '/runs/'}${run.id}?tab=delivery`)}>查看本轮与历史交付内容</Button>}
       <CarryoverNote carryover={run.artifacts?.carryover} feedback={feedback} navigate={navigate} />
       {carried && (
         <p className="carryover-note">
@@ -164,7 +167,7 @@ export function DeliveryCard({ run, onChanged, navigate }) {
             <button
               type="button"
               className="text-link"
-              onClick={() => navigate?.(`${feedback ? '/feedback/' : '/runs/'}${carried.runId}`)}
+              onClick={() => navigate?.(`${feedback ? '/feedback/' : '/runs/'}${carried.runId}?tab=delivery`)}
             >
               查看那一轮
             </button>
@@ -296,38 +299,43 @@ function AnswerPreview({ run, resultId, onClose }) {
 // Every run of the same knowledge package, newest first, a page at a time; the current one is marked.
 export function RunHistory({ run, navigate, onTotal }) {
   const packageId = run.package_ref?.ontology_id,
-    [offset, setOffset] = useState(0),
+    [offset, setOffset] = useViewState('history_offset', 0),
+    [kind, setKind] = useViewState('history_type', 'all'),
     [page, setPage] = useState({ items: [], total: 0 }),
     [loading, setLoading] = useState(false),
     [error, setError] = useState('');
   useEffect(() => {
     if (!packageId) return undefined;
     let live = true;
-    setLoading(true);
-    api(`/runs?ontology_id=${encodeURIComponent(packageId)}&offset=${offset}&limit=${HISTORY_PAGE}`)
-      .then((value) => {
-        if (!live) return;
-        setPage({ items: value.items, total: value.total });
-        onTotal?.(value.total);
-        setError('');
-      })
-      .catch((e) => live && setError(e.message))
-      .finally(() => live && setLoading(false));
-    return () => {
-      live = false;
+    const refresh = () => {
+      setLoading(true);
+      return api(`/runs?ontology_id=${encodeURIComponent(packageId)}&offset=${offset}&limit=${HISTORY_PAGE}&run_type=${encodeURIComponent(kind)}`)
+        .then((value) => {
+          if (!live) return;
+          setPage({ items: value.items, total: value.total });
+          if (kind === 'all') onTotal?.(value.total);
+          setError('');
+        })
+        .catch((e) => live && setError(e.message))
+        .finally(() => live && setLoading(false));
     };
-  }, [packageId, offset, run.status]);
+    refresh();
+    const timer = setInterval(() => { if (document.visibilityState === 'visible') refresh(); }, 5000);
+    return () => { live = false; clearInterval(timer); };
+  }, [packageId, offset, kind, run.revision, run.artifacts?.revision, run.optimization?.updated_at]);
   if (!packageId) return null;
   const pages = Math.max(1, Math.ceil(page.total / HISTORY_PAGE)),
     pageNumber = Math.floor(offset / HISTORY_PAGE) + 1;
   return (
     <section className="panel table-panel">
       {error && <Alert tone="red">{error}</Alert>}
+      <Segmented label="评测类型" value={kind} onChange={(value) => { setKind(value); setOffset(0); }} items={[["all", "全部类型"], ["data", "数据评测"], ["solver", "求解验证"]]} />
       <div className="table-scroll">
         <table className="history-table">
           <thead>
             <tr>
-              <th>版本</th>
+              <th>编号</th>
+              <th>类型 / 版本</th>
               <th>开始时间</th>
               <th>状态</th>
               <th>得分 · 通过率</th>
@@ -339,17 +347,19 @@ export function RunHistory({ run, navigate, onTotal }) {
             {page.items.map((item) => {
               const start = runStartTime(item),
                 current = item.id === run.id,
-                handled = optimizationState(item),
-                carried = carriedState(item);
+                handled = optimizationState(item, page.items.map((r) => r.id)),
+                carried = carriedState(item, page.items.map((r) => r.id));
               return (
                 <tr
                   key={item.id}
                   className={current ? 'selected' : 'clickable'}
                   onClick={current ? undefined : () => navigate(`/runs/${item.id}`)}
                 >
+                  <td><RecordNumber id={item.id} peers={page.items.map((r) => r.id)} /></td>
                   <td>
+                    <small>{isSolverRun(item) ? '求解验证' : '数据评测'}</small>
                     <span className="version-tag">{packageVersions(item).base || '—'}</span>
-                    {current && <Badge tone="blue">当前</Badge>}
+                    {current && <Badge tone="blue">正在查看</Badge>}
                   </td>
                   <td className="tabular">{start ? `${start.date} ${start.time}` : '—'}</td>
                   <td>
@@ -366,7 +376,8 @@ export function RunHistory({ run, navigate, onTotal }) {
                   </td>
                   <td>
                     {handled ? <Badge tone={handled.tone}>{handled.label}</Badge> : <span className="muted">—</span>}
-                    {carried && <small>{carried.label}</small>}
+                    {carried && <Button variant="text" onClick={(e) => { e.stopPropagation(); navigate(`/runs/${carried.runId}?tab=delivery`); }}>查看承接交付 #{shortId(carried.runId, page.items.map((r) => r.id))}</Button>}
+                    {!carried && item.notification && <small>同步：{notificationState(item.notification)?.label || '未同步'}</small>}
                   </td>
                   <td className="align-right">
                     {!current && (
@@ -403,4 +414,55 @@ export function RunHistory({ run, navigate, onTotal }) {
       )}
     </section>
   );
+}
+
+export function RecordNumber({ id, peers = [] }) {
+  const [copied, setCopied] = useState(false), [copyError, setCopyError] = useState(false);
+  return <span className="record-number"><code title={id}>#{shortId(id, peers)}</code> <Button variant="text" onClick={async (e) => {
+    e.stopPropagation();
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(id);
+      else {
+        const input = document.createElement('textarea');
+        input.value = id; input.style.position = 'fixed'; input.style.opacity = '0'; document.body.append(input); input.select();
+        try { if (!document.execCommand('copy')) throw new Error('copy'); } finally { input.remove(); }
+      }
+      setCopied(true); setCopyError(false);
+    } catch { setCopied(false); setCopyError(true); }
+  }}>{copied ? '已复制' : '复制'}</Button>{copyError && <small>复制失败，请选中编号复制：{id}</small>}</span>;
+}
+
+export function DeliveryContent({ run, navigate }) {
+  const [scope, setScope] = useViewState(`content_scope_${run.id}`, 'all'),
+    [offset, setOffset] = useViewState(`content_offset_${run.id}`, 0),
+    [page, setPage] = useState(null), [error, setError] = useState(''), [retry, setRetry] = useState(0);
+  useEffect(() => {
+    let live = true;
+    setError(''); setPage(null);
+    api(`/runs/${run.id}/delivery?scope=${encodeURIComponent(scope)}&offset=${offset}&limit=20`)
+      .then((value) => { if (live) setPage(value); })
+      .catch((e) => { if (live) { setError(e.message); setPage(null); } });
+    return () => { live = false; };
+  }, [run.id, run.revision, run.artifacts?.revision, scope, offset, retry]);
+  return <section className="panel">
+    <h3>交付内容 <RecordNumber id={run.id} /></h3>
+    {error ? <Alert tone="amber" action={<Button onClick={() => setRetry((n) => n + 1)}>重试</Button>}>{error}</Alert> : !page ? <Skeleton /> : <>
+      <p>本轮问题 {page.own_cases} 条 · 历史问题 {page.history_cases} 条。历史内容不计入本轮得分。</p>
+      {page.preview && <Alert>交付前预览：已按后端去重与文件大小限制计算。其他待确认批次交付或内容更新后，结果可能变化，以交付后的报告为准。{!page.suggestions_ready && '优化建议尚未就绪，预览仍可能调整。'}</Alert>}
+      <CarryoverNote carryover={page.carryover} feedback={run.origin === 'consumer_feedback'} navigate={navigate} preview={page.preview} />
+      <Segmented label="交付内容范围" value={scope} onChange={(value) => { setScope(value); setOffset(0); }} items={[["all", "全部交付内容"], ["own", "本轮"], ["history", "历史"]]} />
+      {!page.items.length && <Empty title="此范围没有问题" />}
+      {page.items.map((item) => <details className="answer-block" key={item.resultId}>
+        <summary><Badge tone={item.scope === 'history' ? 'blue' : 'neutral'}>{item.scope === 'history' ? '历史' : '本轮'}</Badge> {item.resultId} · {item.question}</summary>
+        {item.source_run_id && <Button variant="text" onClick={() => navigate?.(`${run.origin === 'consumer_feedback' ? '/feedback/' : '/runs/'}${item.source_run_id}?tab=report`)}>来源 #{shortId(item.source_run_id)}</Button>}
+        <p>{item.verdict} · {item.reason}</p><div className="answer-content">{item.finalAnswer}</div>
+        {item.truncated && <p className="muted">回答预览已截断，完整内容请查看报告中的回答附件。</p>}
+      </details>)}
+      <footer className="table-footer"><span>共 {page.total} 条</span><div className="actions">
+        <Button disabled={!offset} onClick={() => setOffset(Math.max(0, offset - 20))}>上一页</Button>
+        <Button disabled={offset + 20 >= page.total} onClick={() => setOffset(offset + 20)}>下一页</Button>
+      </div></footer>
+      <p className="muted">用户建议及完整优化条目请查看「报告」和「优化建议」。</p>
+    </>}
+  </section>;
 }

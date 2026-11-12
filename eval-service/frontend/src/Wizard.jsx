@@ -58,10 +58,11 @@ export function Wizard({
   navigate,
   from,
   release: chosen,
+  runType: initialRunType,
   registerDirty,
 }) {
   const query = new URLSearchParams(location.search);
-  const [runType, setRunType] = useState(query.get('run_type') === 'solver' ? 'solver' : 'data'),
+  const [runType, setRunType] = useState(initialRunType === 'solver' || query.get('run_type') === 'solver' ? 'solver' : 'data'),
     [solverSetId, setSolverSetId] = useState(''),
     [solverSet, setSolverSet] = useState(null),
     [operations, setOperations] = useState(null);

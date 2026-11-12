@@ -194,7 +194,7 @@ test('starting without a judge explains why instead of only disabling the button
 // Package task rows and run outputs; identifiers are synthetic.
 test('package tasks become rows of their newest run', () => {
   const rows = taskRows([{ ontology_id: 'package_demo', run_count: 3, executing: true, latest: { id: 'run_c', status: 'running' } }]);
-  assert.deepEqual(rows, [{ id: 'run_c', status: 'running', run_count: 3, package_executing: true }]);
+  assert.deepEqual(rows, [{ id: 'run_c', status: 'running', run_count: 3, package_executing: true, pending_deliveries: undefined, historical_failures: undefined, history_limited: undefined }]);
 });
 
 test('artifact state follows the run and generation status', () => {
@@ -301,9 +301,10 @@ test('a stopped run tells how long it took', () => {
 
 test('a waiting run tells whether a newer push carries it', () => {
   const into = { optimization: { status: 'notified', carried_into: { run_id: 'run_newer_demo_0001', at: 1793500000 } } };
-  assert.match(carriedState(into).label, /^已合并到 \d{4}-\d{2}-\d{2} \d{2}:\d{2} 的交付$/);
+  assert.equal(carriedState(into).label, '已合并到 run_newer_de 编号的交付');
   assert.equal(carriedState(into).runId, 'run_newer_demo_0001');
-  assert.match(optimizationState(into).hint, /^已合并到 .* 的交付：建模还没处理/);
+  assert.equal(optimizationState(into).runId, 'run_newer_demo_0001');
+  assert.match(optimizationState(into).hint, /建模还没处理/);
   const out = { optimization: { status: 'notified', slid_out: { run_id: 'run_newest_demo', at: 1 } } };
   assert.equal(carriedState(out).label, '未能一起带上');
   assert.equal(carriedState({ optimization: { status: 'modeling_done', carried_into: { run_id: 'x' } } }), null);
@@ -364,4 +365,17 @@ test('assertion notes explain candidate counts and failing paths', () => {
   assert.equal(assertionNote({ name: 'candidate_count', expected: 4, actual: 3 }), '期望 4，实际 3');
   assert.equal(assertionNote({ name: 'arguments_match', diff: ['items[0].id'] }), 'items[0].id');
   assert.equal(assertionNote({ name: 'evidence', missing: ['job_id'] }), 'job_id');
+});
+
+test('delivery content and transport are distinct from modeling completion', () => {
+  const run = { optimization: { status: 'notified' }, delivery: { state: 'none' }, notification: { status: 'delivered' } };
+  assert.equal(optimizationState(run).label, '无需优化');
+  assert.equal(optimizationState({ ...run, delivery: { state: 'actionable' } }).label, '待建模处理');
+  assert.equal(optimizationState({ ...run, delivery: { state: 'actionable' }, notification: { status: 'failed' } }).label, '同步失败');
+  assert.equal(optimizationState({ ...run, delivery: { state: 'actionable' }, notification: undefined }).label, '待同步');
+  assert.equal(optimizationState({ ...run, delivery: { state: 'pending' } }).label, '交付内容生成中');
+  assert.equal(optimizationState({ ...run, delivery: { state: 'diagnose' } }).label, '需诊断');
+  assert.equal(optimizationState({ ...run, delivery: { state: 'unknown' } }).label, '待核实优化内容');
+  assert.equal(optimizationState({ ...run, optimization: { status: 'modeling_done', result: { version: '0.2.0' } } }).label, '已处理');
+  assert.deepEqual(parseRoute('#/new?run_type=solver'), { page: 'new', from: '', runType: 'solver' });
 });

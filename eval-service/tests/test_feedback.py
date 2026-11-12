@@ -216,6 +216,7 @@ def test_an_owner_reviews_generates_and_confirms_for_modeling(flywheel):
     assert body['summary']['score'] is None
     tasks = env.client.get('/evaluation/api/package-tasks', params={'origin': 'consumer_feedback'}).json()['items']
     assert (tasks[0]['awaiting_review'], tasks[0]['awaiting_cases'], tasks[0]['handed']) == (0, 0, 1)
+    assert tasks[0]['transport'] == {'delivered': 1, 'pending': 0, 'failed': 0, 'none': 0}
     # Modeling sees it per release when it asks for all sources, and only then.
     listed = env.client.get('/evaluation/api/package-evaluations', params={'ontology_id': PACKAGE, 'origin': 'all'}).json()
     assert [entry['origin'] for entry in listed['releases']] == ['consumer_feedback']

@@ -241,12 +241,16 @@ class Store:
             return dict(items=items,total=total,offset=offset,
                         next_offset=offset+len(rows) if offset+len(rows)<total else None)
 
-    def package_runs(self, owner, package, offset=0, limit=20):
+    def package_runs(self, owner, package, offset=0, limit=20, run_type='all'):
         with self.lock:
             where=f"FROM records WHERE owner=? AND kind='runs' AND {self.PACKAGE}=?"
-            total=self.db.execute('SELECT count(*) '+where,(owner,package)).fetchone()[0]
+            args = [owner, package]
+            if run_type != 'all':
+                where += " AND COALESCE(json_extract(body,'$.run_type'),'data')=?"
+                args.append(run_type)
+            total=self.db.execute('SELECT count(*) '+where,args).fetchone()[0]
             rows=self.db.execute(f'SELECT id {where} ORDER BY {self.CREATED} DESC LIMIT ? OFFSET ?',
-                                 (owner,package,limit,offset)).fetchall()
+                                 (*args,limit,offset)).fetchall()
             return dict(items=[self.get(owner,r['id']) for r in rows],total=total,offset=offset,
                         next_offset=offset+len(rows) if offset+len(rows)<total else None)
 

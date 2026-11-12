@@ -3631,3 +3631,21 @@ td.col-actions .button + .button {
     margin-left: 27px;
   }
 }
+
+.record-number {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+}
+.history-table {
+  min-width: 960px;
+}
+.history-table td .record-number {
+  min-width: 155px;
+}
+.history-table td .text-link,
+.history-table td small {
+  overflow-wrap: anywhere;
+}

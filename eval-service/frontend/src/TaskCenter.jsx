@@ -1,3 +1,4 @@
+import { useViewState } from './viewState.js';
 import React, { useEffect, useState } from 'react';
 import {
   ACTIVE,
@@ -97,18 +98,20 @@ function ResultCell({ run }) {
 }
 
 export function TaskCenter({ runs, loading, navigate, lastSync, searchState, setSearchState, onAction }) {
-  const { tab, search } = searchState;
+  const [tab, setTab] = useViewState('task_tab', 'all'),
+    [search, setSearch] = useViewState('task_search', '');
   const active = runs.filter((r) => ACTIVE.has(r.status)),
-    [more, setMore] = useState(20);
+    [more, setMore] = useViewState('task_limit', 20);
   const visible = runs.filter(
     (r) =>
       (FILTERS[tab] || FILTERS.all)(r) &&
-      `${r.id} ${r.package_ref?.ontology_id || ''} ${packageName(r)} ${r.eval_set_name || ''}`
+      `${r.id} ${r.package_ref?.ontology_id || ''} ${packageName(r)} ${r.eval_set_name || r.solver_set_name || ''}`
         .toLowerCase()
         .includes(search.toLowerCase()),
   );
   const update = (value) => {
-    setSearchState({ ...searchState, ...value });
+    if (value.tab !== undefined) setTab(value.tab);
+    if (value.search !== undefined) setSearch(value.search);
     setMore(20);
   };
   const first = active[0];
@@ -117,9 +120,8 @@ export function TaskCenter({ runs, loading, navigate, lastSync, searchState, set
       <Heading
         title="评测任务"
         actions={
-          <Button icon="plus" variant="primary" onClick={() => navigate('/new')}>
-            新建评测
-          </Button>
+          <><Button icon="plus" variant="primary" onClick={() => navigate('/new')}>新建数据评测</Button>
+          <Button onClick={() => navigate('/new?run_type=solver')}>新建求解验证</Button></>
         }
       >
         你发起的知识包评测，同一知识包的多次评测合并为一行。用户提交的问题在「用户反馈」中查看。
@@ -220,6 +222,7 @@ export function TaskCenter({ runs, loading, navigate, lastSync, searchState, set
                       <ResultCell run={run} />
                       <td data-label="建模处理">
                         {handled ? <Badge tone={handled.tone}>{handled.label}</Badge> : <span className="muted">—</span>}
+                        {!!(run.pending_deliveries || run.historical_failures) && <Button variant="text" onClick={(e) => { e.stopPropagation(); navigate(`/runs/${run.id}?tab=history`); }}>待处理交付 {run.pending_deliveries || 0} 次 · 历史失败/异常 {run.historical_failures || 0} 次{run.history_limited ? '（最近 1000 次）' : ''}</Button>}
                       </td>
                       <td className="align-right">
                         <div className="row-actions">

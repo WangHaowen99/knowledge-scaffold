@@ -25,7 +25,7 @@ from .modeling_projects import linked_projects
 from .nl2sql import QueryService
 from .source_config import SourceConfig
 from .graph_import import scope_target
-from .artifact_jobs import ArtifactJobs
+from .artifact_jobs import ArtifactJobs, PUBLIC as ARTIFACT_FIELDS
 from .notifications import Notifier
 from .suggestions import Suggestions
 from .artifacts import ACTIVE
@@ -33,7 +33,7 @@ from .feedback.access import PackageAccess
 from .feedback.intake import Intake
 from .feedback.pipeline import Assistant, Pipeline
 from .feedback.store import FeedbackStore, run_owner
-from . import carryover, modeling_result, package_routes, solver_validation
+from . import carryover, delivery, modeling_result, package_routes, solver_validation
 
 
 class Body(BaseModel):
@@ -723,13 +723,21 @@ def create_app(config=None,transport=None):
             # Feedback names its package by ID only; show the name Hub gave the caller who passed the access check.
             name=package_access.names[ref['ontology_id']]
             run=dict(run,package_ref=dict(ref,name=name),base_ref=dict(run.get('base_ref') or ref,name=name))
-        return dict(public(with_base(owner,run)),origin=run.get('origin') or 'evaluation',summary=report(run),
-                    artifacts=jobs.view(owner,run['id']),notification=notifier.status(run['id']),
-                    optimization=modeling_result.public(modeling_result.state(store,jobs,owner,run)))
+        artifact_view = jobs.view(owner,run['id'])
+        # Read related metadata under one lock; do not acquire the jobs lock inside the store lock.
+        with store.lock:
+            meta = jobs.meta(owner,run['id'])
+            if meta is not None:
+                artifact_view = {**(artifact_view or {}), **{key: meta.get(key) for key in ARTIFACT_FIELDS}}
+            return dict(public(with_base(owner,run)),origin=run.get('origin') or 'evaluation',summary=report(run),
+                        artifacts=artifact_view,notification=notifier.status(run['id']),
+                        delivery=delivery.summary(store,jobs,owner,run),
+                        optimization=modeling_result.public(modeling_result.state(store,jobs,owner,run)))
 
     @app.get(f'{prefix}/runs')
     def runs(request:Request,offset:int=Query(0,ge=0),limit:int=Query(20,ge=1,le=20),ontology_id:str=Query('',max_length=128),
-             origin:str=Query('evaluation',pattern=r'^(evaluation|consumer_feedback)$')):
+             origin:str=Query('evaluation',pattern=r'^(evaluation|consumer_feedback)$'),
+             run_type:str=Query('all',pattern=r'^(all|data|solver)$')):
         owner,token=actor(request)
         if origin=='consumer_feedback':
             # Feedback runs of one package, for whoever may read that package in Hub.
@@ -738,7 +746,7 @@ def create_app(config=None,transport=None):
             page=store.package_runs(run_owner(ontology_id),ontology_id,offset,limit)
             page['items']=[run_view(run_owner(ontology_id),r) for r in page['items']]
             return page
-        page=store.package_runs(owner,ontology_id,offset,limit) if ontology_id else store.list(owner,'runs',offset,limit)
+        page=store.package_runs(owner,ontology_id,offset,limit,run_type) if ontology_id else store.list(owner,'runs',offset,limit)
         page['items']=[run_view(owner,r) for r in page['items']]
         return page
 

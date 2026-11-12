@@ -38,7 +38,8 @@ import {
   Tabs,
   useAction,
 } from './ui.jsx';
-import { ArtifactPanel, DeliveryCard, RunHistory } from './RunOutputs.jsx';
+import { ArtifactPanel, DeliveryCard, DeliveryContent, RunHistory } from './RunOutputs.jsx';
+import { useViewState } from './viewState.js';
 import { RowMenu } from './TaskCenter.jsx';
 
 const RUNNING_CASE = ['executing', 'unknown', 'answer_ready'];
@@ -61,10 +62,10 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
     [syncError, setSyncError] = useState(''),
     [fatal, setFatal] = useState(''),
     [lastSync, setLastSync] = useState(null);
-  const [tab, setTab] = useState('cases'),
-    [filter, setFilter] = useState('all'),
-    [search, setSearch] = useState(''),
-    [limit, setLimit] = useState(20),
+  const [tab, setTab] = useViewState('tab', 'cases'),
+    [filter, setFilter] = useViewState('filter', 'all'),
+    [search, setSearch] = useViewState('search', ''),
+    [limit, setLimit] = useViewState('limit', 20),
     [selected, setSelected] = useState(null),
     [publish, setPublish] = useState(false),
     [copyMessage, setCopyMessage] = useState(''),
@@ -184,6 +185,8 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
         ? [`${counts.fail + counts.partial} 条没有通过`, solver ? '看修复指引' : '看优化建议', () => setTab('suggestions')]
         : [`${counts.fail + counts.partial} 条没有通过`, '查看', () => showCases('fail')],
     );
+  if (run.delivery?.history?.cases || run.delivery?.history?.items)
+    next.push([`仍有历史问题 ${run.delivery.history.cases} 条、建议 ${run.delivery.history.items} 条`, '查看历史交付内容', () => setTab('delivery')]);
   if (done)
     next.push([
       `建模已发布 ${run.optimization.result?.version || '新版本'}`,
@@ -198,7 +201,7 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
       <Heading
         title={
           <>
-            {packageName(run)} <span className="version-tag">{versions.base || '—'}</span>
+            <span title={run.id}>#{shortId(run.id)}</span> {packageName(run)} <span className="version-tag">{versions.base || '—'}</span>
             <Badge tone={STATUS[run.status]?.[1]}>{STATUS[run.status]?.[0] || run.status}</Badge>
             {solver && <Badge tone="blue">{RUN_TYPES.solver}</Badge>}
           </>
@@ -390,7 +393,8 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
         value={tab}
         onChange={setTab}
         items={[
-          ['cases', '用例结果', summary.planned],
+          ['cases', '本轮用例结果', summary.planned],
+          ['delivery', '交付内容'],
           ['report', '评测报告'],
           ['suggestions', solver ? '修复指引' : '优化建议'],
           ['history', '历史记录', historyTotal ?? undefined],
@@ -516,6 +520,7 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
           </section>
         </>
       )}
+      {tab === 'delivery' && <DeliveryContent run={run} navigate={navigate} />}
       {tab === 'report' && (
         <ArtifactPanel
           run={run}

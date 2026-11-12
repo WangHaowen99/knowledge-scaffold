@@ -378,7 +378,7 @@ export default function App() {
         )}
         {route.page === 'new' && (
           <Wizard
-            key={`${session.subject}-${route.from || ''}-${route.release || ''}`}
+            key={`${session.subject}-${route.from || ''}-${route.release || ''}-${route.runType || ''}`}
             sets={sets}
             solverSets={solverSets}
             sources={sources}
@@ -388,6 +388,7 @@ export default function App() {
             navigate={navigate}
             from={route.from}
             release={route.release}
+            runType={route.runType}
             registerDirty={(value) => {
               dirty.current = value;
             }}

@@ -5,7 +5,7 @@ from fastapi import Body, Query, Request, Response
 
 from .artifacts import ACTIVE, LIMITS, has_results
 from .core import Failure
-from . import carryover, modeling_result
+from . import carryover, delivery, modeling_result
 from .feedback.store import run_owner
 
 RELEASES = 100
@@ -69,6 +69,16 @@ def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_vi
                              key=lambda state: (state.get('result') or {}).get('reported_at') or 0)
             # Deliveries modeling has not handled: runs handed over that no later delivery carries.
             handed = [states[run['id']] for run in runs if status[run['id']] == 'notified' and not states[run['id']].get('carried_into')]
+            transport = {'delivered': 0, 'pending': 0, 'failed': 0, 'none': 0}
+            for run in runs:
+                state = states[run['id']]
+                if state.get('status') != 'notified' or state.get('carried_into'):
+                    continue
+                if delivery.summary(store, jobs, run_owner(package), run)['state'] == 'none':
+                    transport['none'] += 1
+                    continue
+                notice = notifier.status(run['id']).get('status')
+                transport['delivered' if notice == 'delivered' else 'failed' if notice in ('failed', 'rejected') else 'pending'] += 1
             latest_result = handled[-1] if handled else None
             if awaiting:
                 overall = 'delivering' if any(states[run['id']].get('handover') for run in awaiting) else 'pending'
@@ -86,7 +96,7 @@ def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_vi
             received = [((run.get('feedback') or {}).get('window') or {}).get('to') or (run.get('feedback') or {}).get('last_included')
                         or run.get('created_at') or 0 for run in runs]
             items.append(dict(ontology_id=package, name=access.names.get(package), run_count=count, executing=False,
-                              status=overall, collecting=collecting is not None, awaiting_review=len(awaiting),
+                              status=overall, transport=transport, collecting=collecting is not None, awaiting_review=len(awaiting),
                               awaiting_cases=sum(len(run['cases']) for run in awaiting),
                               awaiting_suggestions=sum(len((run.get('feedback') or {}).get('suggestions') or [])
                                                        for run in awaiting),
@@ -110,9 +120,21 @@ def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_vi
         if origin == 'consumer_feedback':
             return feedback_tasks(request, owner, token, offset)
         page = store.package_groups(owner, offset)
-        page['items'] = [dict(ontology_id=item['ontology_id'], run_count=item['run_count'],
-                              executing=store.package_run_in_status(owner, item['ontology_id'], ACTIVE) is not None,
-                              latest=run_view(owner, item['latest'])) for item in page['items']]
+        for item in page['items']:
+            rows = store.package_run_rows(owner, item['ontology_id'], SCANNED_RUNS)
+            pending, failed = 0, 0
+            for row in rows:
+                meta = jobs.meta(owner, row['id']) or {}
+                counts = meta.get('summary') or {}
+                if row['id'] != item['latest']['id'] and (counts.get('fail') or counts.get('partial') or counts.get('error')):
+                    failed += 1
+                state = modeling_result.state(store, jobs, owner, row) or {}
+                if state.get('status') in ('notified', 'modeling_failed') and not state.get('carried_into'):
+                    if delivery.summary(store, jobs, owner, row)['state'] in ('actionable', 'diagnose', 'unknown'):
+                        pending += 1
+            item.update(executing=store.package_run_in_status(owner, item['ontology_id'], ACTIVE) is not None,
+                        pending_deliveries=pending, historical_failures=failed,
+                        history_limited=item['run_count'] > len(rows), latest=run_view(owner, item['latest']))
         return page
 
     @app.get(f'{prefix}/package-evaluations')
@@ -166,6 +188,12 @@ def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_vi
     def artifacts_status(rid: str, request: Request):
         owner = load_run(request, rid)[0]
         return {'artifacts': jobs.view(owner, rid), 'notification': notifier.status(rid)}
+
+    @app.get(f'{prefix}/runs/{{rid}}/delivery')
+    def delivery_view(rid: str, request: Request, scope: str = Query('all', pattern=r'^(all|own|history)$'),
+                      offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=20)):
+        owner, _, _, run = load_run(request, rid)
+        return delivery.content(store, jobs, owner, run, scope, offset, limit)
 
     @app.get(f'{prefix}/runs/{{rid}}/carryover')
     def carryover_view(rid: str, request: Request):

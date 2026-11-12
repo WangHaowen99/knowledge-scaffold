@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useViewState } from './viewState.js';
 import { allPages, api } from './api.js';
-import { VERDICTS, carriedState, feedbackStatus, minute, optimizationState, runStartTime, shortId } from './domain.js';
-import { ArtifactPanel, CarryoverNote } from './RunOutputs.jsx';
+import { VERDICTS, carriedState, feedbackStatus, minute, notificationState, optimizationState, runStartTime, shortId } from './domain.js';
+import { ArtifactPanel, CarryoverNote, DeliveryContent, RecordNumber } from './RunOutputs.jsx';
 import { Alert, Badge, Button, Empty, Field, Heading, Icon, Modal, Progress, Segmented, Skeleton, Steps, Tabs, useAction } from './ui.jsx';
 
 const EGRESS =
@@ -22,11 +23,14 @@ const PACKAGE_STATUS = {
   done: ['已处理', 'green'],
   collecting: ['收集中', 'neutral'],
   idle: ['无待办', 'neutral'],
+  sync_pending: ['待同步', 'amber'],
+  sync_failed: ['同步失败', 'red'],
+  no_action: ['无需优化', 'green'],
 };
 const FILTERS = {
   all: () => true,
   pending: (item) => ['pending', 'delivering'].includes(item.status),
-  notified: (item) => item.status === 'notified',
+  notified: (item) => ['notified', 'sync_pending', 'sync_failed'].includes(item.status),
   failed: (item) => item.status === 'failed',
   done: (item) => item.status === 'done',
 };
@@ -82,8 +86,8 @@ function resultText(result) {
 // Packages with consumer feedback that the user may read in Hub, one row each, with what waits and what was handled.
 export function FeedbackList({ navigate }) {
   const [packages, setPackages] = useState(null),
-    [filter, setFilter] = useState('all'),
-    [search, setSearch] = useState(''),
+    [filter, setFilter] = useViewState('feedback_filter', 'all'),
+    [search, setSearch] = useViewState('feedback_search', ''),
     [error, setError] = useState('');
   useEffect(() => {
     let live = true;
@@ -98,10 +102,15 @@ export function FeedbackList({ navigate }) {
       clearInterval(timer);
     };
   }, []);
-  const list = packages || [];
+  const list = (packages || []).map((item) => {
+    const t = item.transport;
+    const status = item.status !== 'notified' || !t ? item.status
+      : t.failed ? 'sync_failed' : t.pending ? 'sync_pending' : t.delivered ? 'notified' : 'no_action';
+    return { ...item, status };
+  });
   const visible = list.filter(
     (item) =>
-      FILTERS[filter](item) && `${item.name || ''} ${item.ontology_id}`.toLowerCase().includes(search.toLowerCase()),
+      (FILTERS[filter] || FILTERS.all)(item) && `${item.name || ''} ${item.ontology_id}`.toLowerCase().includes(search.toLowerCase()),
   );
   return (
     <>
@@ -163,7 +172,7 @@ export function FeedbackList({ navigate }) {
                       <th>知识包</th>
                       <th>状态</th>
                       <th>待确认</th>
-                      <th>待建模处理</th>
+                      <th>交付与同步</th>
                       <th>最近处理结果</th>
                       <th>累计反馈</th>
                       <th>最近反馈时间</th>
@@ -202,7 +211,7 @@ export function FeedbackList({ navigate }) {
                             {item.handed ? (
                               <>
                                 <span className="tabular">{item.handed} 次交付</span>
-                                <small>{day(item.handed_since)} 起</small>
+                                {item.transport ? <small>已送达 {item.transport.delivered} · 待同步 {item.transport.pending} · 同步失败 {item.transport.failed} · 无需优化 {item.transport.none}</small> : <small>{day(item.handed_since)} 起</small>}
                               </>
                             ) : (
                               <span className="muted">—</span>
@@ -291,15 +300,24 @@ function elapsedText(seconds) {
 export function FeedbackPackage({ ontologyId, navigate, onChanged }) {
   const [runs, setRuns] = useState(null),
     [cases, setCases] = useState({}),
-    [tab, setTab] = useState('pending'),
+    [tab, setTab] = useViewState('tab', 'pending'),
     [drawer, setDrawer] = useState(null),
-    [record, setRecord] = useState(null),
+    [recordId, setRecordId] = useViewState('record', ''),
     [editing, setEditing] = useState(null),
     [confirming, setConfirming] = useState(false),
     [delivered, setDelivered] = useState(null),
     [now, setNow] = useState(Date.now() / 1000),
     [fatal, setFatal] = useState(''),
     { busy, error, act } = useAction();
+  const record = runs?.find((r) => r.id === recordId) || null;
+  const setRecord = (value) => {
+    if (value?.id !== recordId) {
+      const [path, search = ''] = location.hash.split('?');
+      const query = new URLSearchParams(search); query.delete('detail_tab');
+      history.replaceState(history.state, '', `${path}${query.size ? `?${query}` : ''}`);
+    }
+    setRecordId(value?.id || '');
+  };
   const loaded = useRef({}),
     requested = useRef(false);
   async function refresh() {
@@ -355,9 +373,11 @@ export function FeedbackPackage({ ontologyId, navigate, onChanged }) {
     versions = [...new Set(pending.map(versionOf))],
     // Only earlier deliveries of the versions now delivered ride along.
     carriedRuns = handed.filter((run) => versions.includes(versionOf(run))),
-    carried = carriedRuns.reduce((sum, run) => sum + (run.case_count || 0), 0),
-    carriedProposals = carriedRuns.reduce((sum, run) => sum + proposalsOf(run).length, 0),
-    status = delivering ? 'delivering' : pending.length ? 'pending' : handed.length ? 'notified' : collecting ? 'collecting' : 'idle',
+    status = delivering ? 'delivering' : pending.length ? 'pending'
+      : handed.length ? handed.every((run) => run.delivery?.state === 'none') ? 'no_action'
+        : handed.some((run) => ['failed', 'rejected'].includes(run.notification?.status)) ? 'sync_failed'
+        : handed.some((run) => run.notification?.status !== 'delivered' && run.delivery?.state !== 'none') ? 'sync_pending' : 'notified'
+      : collecting ? 'collecting' : 'idle',
     totalCases = runs.filter((run) => run.status === 'completed').reduce((sum, run) => sum + (run.case_count || 0), 0),
     totalProposals = runs.reduce((sum, run) => sum + proposalsOf(run).length, 0);
   const deliver = () =>
@@ -445,7 +465,7 @@ export function FeedbackPackage({ ontologyId, navigate, onChanged }) {
                       ? `涉及版本 ${versions.join('、')}，按版本分别交付建模。`
                       : `知识包版本 ${versions[0] || '—'}。`}
                     {carriedRuns.length > 0 &&
-                      `交付时一并带上同一版本之前交付、建模尚未处理的问题 ${carried} 条、建议 ${carriedProposals} 条。`}
+                      `同版本有 ${carriedRuns.length} 次历史交付可能纳入，去重后的内容可在交付前预览。`}
                   </p>
                 </div>
                 <div className="actions">
@@ -604,20 +624,19 @@ export function FeedbackPackage({ ontologyId, navigate, onChanged }) {
                       <th>交付时间</th>
                       <th>内容</th>
                       <th>知识包版本</th>
+                      <th>同步状态</th>
                       <th>建模处理</th>
                       <th className="col-actions">操作</th>
                     </tr>
                   </thead>
                   <tbody>
                     {records.map((run) => {
-                      const handling = recordState(run),
+                      const handling = recordState(run, records.map((r) => r.id)),
                         carry = run.artifacts?.carryover?.rounds || [];
                       return (
                         <tr key={run.id} className="clickable" onClick={() => setRecord(run)}>
                           <td className="nowrap">
-                            <code className="record-id" title={run.id}>
-                              {shortId(run.id)}
-                            </code>
+                            <RecordNumber id={run.id} peers={records.map((r) => r.id)} />
                           </td>
                           <td className="nowrap tabular">{minute(deliveredAt(run))}</td>
                           <td>
@@ -632,9 +651,11 @@ export function FeedbackPackage({ ontologyId, navigate, onChanged }) {
                           <td>
                             <span className="version-tag">{run.package_ref?.version || '—'}</span>
                           </td>
+                          <td><Badge tone={notificationState(run.notification)?.tone || 'neutral'}>{notificationState(run.notification)?.label || '未同步'}</Badge></td>
                           <td>
                             <Badge tone={handling[1]}>{handling[0]}</Badge>
                             {handling[2] && <small>{handling[2]}</small>}
+                            {run.optimization?.carried_into && <Button variant="text" onClick={(e) => { e.stopPropagation(); navigate(`/feedback/${run.optimization.carried_into.run_id}?tab=delivery`); }}>查看承接交付</Button>}
                           </td>
                           <td className="col-actions">
                             <Button
@@ -669,7 +690,7 @@ export function FeedbackPackage({ ontologyId, navigate, onChanged }) {
       )}
       {record && (
         <Modal drawer title={`交付详情 · ${shortId(record.id)}`} onClose={() => setRecord(null)}>
-          <RunContent run={record} handling={recordState(record)} navigate={navigate} />
+          <RunContent key={record.id} run={record} handling={recordState(record)} navigate={navigate} />
         </Modal>
       )}
       {editing && (
@@ -708,14 +729,7 @@ export function FeedbackPackage({ ontologyId, navigate, onChanged }) {
             </dd>
             <dt>知识包版本</dt>
             <dd>{versions.length > 1 ? `${versions.join('、')}（按版本分别交付）` : versions[0] || '—'}</dd>
-            {carriedRuns.length > 0 && (
-              <>
-                <dt>一并带上</dt>
-                <dd>
-                  同一版本之前交付、建模尚未处理的问题 {carried} 条、建议 {carriedProposals} 条
-                </dd>
-              </>
-            )}
+            {carriedRuns.length > 0 && <><dt>历史交付</dt><dd>{carriedRuns.length} 次可能纳入，去重后的内容见下方预览。</dd></>}
             <dt>优化建议</dt>
             <dd>
               {gen.state === 'ready'
@@ -725,6 +739,7 @@ export function FeedbackPackage({ ontologyId, navigate, onChanged }) {
                   : '生成中：完成后自动交付，期间可以离开页面'}
             </dd>
           </dl>
+          {pending.map((run) => <DeliveryContent key={run.id} run={run} navigate={navigate} />)}
           {error && <Alert tone="red">{error}</Alert>}
         </Modal>
       )}
@@ -738,13 +753,12 @@ function deliveredAt(run) {
 }
 
 // What modeling did with one delivery, told by delivery times rather than IDs.
-function recordState(run) {
+function recordState(run, peers = []) {
   const o = run.optimization || {},
     result = o.result || {},
     via = result.via;
   if (o.status === 'dismissed') return ['已驳回', 'neutral', o.reason ? `原因：${o.reason}` : ''];
-  if (o.status === 'notified' && o.carried_into) return ['已合并', 'neutral', `已合并到 ${shortId(o.carried_into.run_id)}`];
-  if (o.status === 'notified') return ['待建模处理', 'blue', ''];
+  if (o.status === 'notified') { const state = optimizationState(run, peers); return [state.label, state.tone, state.hint]; }
   const together = result.via ? `随 ${shortId(result.via)} 一起处理 · ` : '';
   if (o.status === 'modeling_done')
     return ['已处理', 'green', `${together}新版本 ${result.version || result.release_id || ''} · ${day(result.reported_at)}`];
@@ -901,7 +915,7 @@ function QuestionDrawer({ entry, number, total, locked, onMove, onEdit, onClose 
 
 // What one delivery handed to modeling: its questions, user suggestions, report, suggestions and what was left out.
 function RunContent({ run, handling, navigate }) {
-  const [tab, setTab] = useState('cases'),
+  const [tab, setTab] = useViewState('detail_tab', ['delivery', 'report', 'advice'].includes(new URLSearchParams(location.hash.split('?')[1] || '').get('tab')) ? new URLSearchParams(location.hash.split('?')[1] || '').get('tab') : 'cases'),
     [items, setItems] = useState(null);
   useEffect(() => {
     let live = true;
@@ -926,8 +940,11 @@ function RunContent({ run, handling, navigate }) {
         </dd>
         <dt>交付时间</dt>
         <dd>{run.optimization?.notified_at ? minute(run.optimization.notified_at) : '—'}</dd>
-        <dt>内容</dt>
+        <dt>本轮内容</dt>
         <dd>{counts(run.case_count, proposals.length)}</dd>
+        <dt>同步状态</dt>
+        <dd>{notificationState(run.notification)?.label || '未同步'}</dd>
+        {run.delivery && <><dt>历史内容</dt><dd>问题 {run.delivery.history.cases} 条 · 优化建议 {run.delivery.history.items} 条</dd></>}
         <dt>收到时间</dt>
         <dd>
           {day(run.feedback?.window?.from || run.created_at)} 至 {day(run.feedback?.window?.to || run.finished_at)}
@@ -949,8 +966,9 @@ function RunContent({ run, handling, navigate }) {
         value={tab}
         onChange={setTab}
         items={[
-          ['cases', '问题', run.case_count || undefined],
+          ['cases', '本轮问题', run.case_count || undefined],
           ['suggestions', '用户建议', proposals.length || undefined],
+          ['delivery', '全部交付内容'],
           ['report', '报告'],
           ['advice', '优化建议'],
           ['excluded', '未纳入', excluded.reduce((sum, [, count]) => sum + count, 0) || undefined],
@@ -998,6 +1016,7 @@ function RunContent({ run, handling, navigate }) {
         ) : (
           <ProposalTable rows={proposals.map((item) => ({ run, item }))} />
         ))}
+      {tab === 'delivery' && <DeliveryContent run={run} navigate={navigate} />}
       {tab === 'report' && <ArtifactPanel run={run} kind="report" ready={a.report === 'ready'} waiting="报告生成中。" />}
       {tab === 'advice' && (
         <ArtifactPanel
