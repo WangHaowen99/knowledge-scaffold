@@ -43,25 +43,12 @@ function summary(list) {
   };
 }
 
-export function register({ on, json, err, sc, uid, self }) {
+export function register({ on, json, err, sc, uid }) {
   const comparisons = new Map();
   const inputs = new Map();
   const base = '/projects/([^/]+)/package-comparisons';
   const ONTOLOGY = 'retail-restock-hub';
 
-  // HB-05 项目关联 Hub 包的版本：由 PB-04 的发布记录换算（Hub 版本号即发布版本号）
-  on('GET', '/projects/([^/]+)/hub/releases', async ({ m, query, init }) => {
-    const res = await self(`/api/v1/projects/${m[1]}/releases`, { headers: init.headers });
-    const records = res.ok ? (await res.json()).items || [] : [];
-    const all = records.map((r) => ({
-      release_id: `rel-${r.version.replaceAll('.', '-')}`, ontology_id: ONTOLOGY, version: r.version,
-      committed_at: r.at, package_name: '门店补货', name: '门店补货',
-    }));
-    const offset = Number(query.get('offset') || 0);
-    const limit = Number(query.get('limit') || 20);
-    const items = all.slice(offset, offset + limit);
-    return json(200, { items, releases: items, total: all.length, offset, limit });
-  });
   on('POST', `${base}/inputs`, ({ form }) => {
     const file = form?.get('file');
     if (!file) return err(400, 'invalid_argument', '缺少文件', { fields: { file: 'required' } });
@@ -99,7 +86,7 @@ export function register({ on, json, err, sc, uid, self }) {
   };
   const sideView = (s) => (s.kind === 'upload'
     ? { source: s, package_name: '门店补货', package_version: '0.13.0', package_digest: 'f'.repeat(64), file_count: Object.keys(NEW).length, uncompressed_size: 8192, version: '' }
-    : { source: s, package_name: '门店补货', package_version: s.release_id, package_digest: 'e'.repeat(64), file_count: Object.keys(OLD).length, uncompressed_size: 8192, version: s.release_id.replace(/^rel-/, '').replaceAll('-', '.') });
+    : { source: s, package_name: '门店补货', package_version: s.release_id, package_digest: 'e'.repeat(64), file_count: Object.keys(OLD).length, uncompressed_size: 8192, version: s.version || s.release_id.split('-').pop() }); // HB-05 由发布路由的 mock 给出
   on('GET', `${base}/([^/]+)`, ({ m }) => {
     const { gone, pending, c } = ready(m[2]);
     if (gone || pending) return gone || json(200, pending);
