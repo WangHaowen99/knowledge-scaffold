@@ -1,5 +1,7 @@
-"""F 第一批第 11 条（V 增量更新）：按已确认的清单执行那一轮，助手又写了一次 update-plan.json，平台多收了一份
-内容相同的清单。这条对话里有清单正在执行（confirmed，还没 executed）时，执行时写的计划不另收。"""
+"""F 第一批第 11 条（V 增量更新）：按已确认的清单执行那一轮，助手又写了一次 update-plan.json。
+
+平台多收了一份内容相同的清单。这条对话里有清单正在执行（confirmed，还没 executed）时，执行时写的计划不另收。
+"""
 from __future__ import annotations
 
 import json

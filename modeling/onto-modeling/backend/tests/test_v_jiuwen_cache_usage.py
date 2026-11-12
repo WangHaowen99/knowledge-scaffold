@@ -1,6 +1,9 @@
-"""内测引擎的用量带上缓存命中数，口径同稳定引擎（Anthropic）：input_tokens 不含命中部分，命中记在
-cache_read_input_tokens。OpenAI 口径的 prompt_tokens 本来就含命中部分，要拆开、不能重复计；
-拆开后计费、项目用量、时间线里「输入 + 缓存读」的总数不变；配额按成本口径把缓存读折成 1/10（ADR-0088）。"""
+"""内测引擎的用量带上缓存命中数，口径同稳定引擎（Anthropic）。
+
+input_tokens 不含命中部分，命中记在 cache_read_input_tokens。OpenAI 口径的 prompt_tokens 本来就含命中部分，
+要拆开、不能重复计；拆开后计费、项目用量、时间线里「输入 + 缓存读」的总数不变；
+配额按成本口径把缓存读折成 1/10（ADR-0088）。
+"""
 from __future__ import annotations
 
 import asyncio

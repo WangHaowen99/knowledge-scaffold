@@ -1,5 +1,7 @@
-"""I1 审查修复第 11 条：V-03 `download=1` 只打 `ontology/` 下的文件；读不出文件（如 git 超时）时报错，不返回空 zip；
-超过上限回 413。"""
+"""I1 审查修复第 11 条：V-03 `download=1` 只打 `ontology/` 下的文件。
+
+读不出文件（如 git 超时）时报错，不返回空 zip；超过上限回 413。
+"""
 
 import io
 import zipfile
