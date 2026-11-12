@@ -1677,3 +1677,13 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
 6. **增量构建包**：启用后没传新资料时节点不出现，不挡发布，也不限范围；已有条目时上传资料才触发。这一轮发布后自动结束；有改动没核对干净时「结束本轮」被拒。
 7. 触发记录在主线工作区的 `.onto/run/activation.json`，不进 git。FL-01 的响应形状不变，节点集合变化时 `flow_hash` 跟着变。
 8. **core 0.5.0、增量构建 0.2.0**：core 0.5.0 表示内核支持上面 1～4；用到它们的包声明 `depends: {core: ">=0.5"}`。建议条规则版本 `SUGGEST_RULES` 升到 7（多一条 6.5「触发后抢先的步骤」）。
+
+## 2026-11-12 · P5a 第二轮：资料上传与 Sheet 范围对齐 develop（ADR-0096 改写）
+
+1. **上传白名单加 `.webp`**（同 develop），图片转换同 png；拒收消息改成 develop 的「不支持文件“X”的类型」「文件“X”超过 20 MB，无法上传」，码仍按 1.8。
+2. **R-01**：`Material.schema_scope` 从摘要改为 develop resource-meta 的完整范围（含逐 Sheet 的表头与问题、`file_sha256`、`warnings`、`error`），
+   Excel 还没文本版时是 `{pending: true, …}`；新增 `Material.schema_candidate`（疑似数据表）。
+3. **R-03 `schema_selection`** 改为 develop 的形状 `{mode, included_sheets, file_sha256}`（第一轮是 `revision`），存下的范围同 develop
+   （含现算的 `auto` 范围）；错误码 `schema_scope_stale` 改为 develop 的 `schema_selection_invalid`；新增 `resource_source_modified`（资料有没提交的改动）。
+4. **R-16** 加 `force`，权限改为能写（同 develop 的 write），响应字段同 develop（`file_sha256`、`warnings`，去掉 `revision`、`pending`），
+   错误文字同 develop；Excel 还在转文本版时 `409 material_text_pending`。

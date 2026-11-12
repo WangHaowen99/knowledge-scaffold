@@ -1,23 +1,32 @@
 """表格资料的数据表识别：Sheet 结构判定、上传预填 schema、资料区疑似数据表候选。"""
 
 import io
+import subprocess
 from pathlib import Path
 
 import openpyxl
 import pytest
 
+from app import config
+from app.api import deps
 from app.services import material_detect
 from app.services.material_detect import classify_sheet
 from app.services.workspace import WorkspaceManager
 
 
 @pytest.fixture()
-def manager(tmp_path: Path) -> WorkspaceManager:
+def manager(tmp_path: Path, monkeypatch) -> WorkspaceManager:
+    # 上传 Excel 后像多源连接器那样转出文本版（Sheet 范围在那个提交里存下，ADR-0096）
+    from tests.test_schema_sheet_selection import GatewayManager
+
     assets = tmp_path / "assets"
     (assets / "workspace-toolkit" / "templates").mkdir(parents=True)
     (assets / "workspace-rules.md").write_text("# rules", encoding="utf-8")
     (assets / "resource-template" / "others").mkdir(parents=True)
-    return WorkspaceManager(tmp_path / "data", assets)
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    instance = GatewayManager(tmp_path / "data", assets)
+    monkeypatch.setattr(deps, "workspaces", instance)
+    return instance
 
 
 def _xlsx(sheets: dict[str, list[list]], merge: str = "") -> bytes:
@@ -99,6 +108,8 @@ def test_upload_prefills_schema_for_data_table(manager: WorkspaceManager):
         "purpose": "schema",
         "reading_mode": "on_demand",
         "auto_detected": True,
+        "schema_selection": material_detect.selection_metadata(material_detect.resolve_selection(
+            manager.project_root(pid) / saved["path"], {"auto_detected": True})),
     }
 
     term = manager.save_resource(pid, "excel", "术语.xlsx", _xlsx({"术语表": TERM_ROWS}))
@@ -134,11 +145,11 @@ def test_upload_respects_explicit_purpose_and_manual_tags(manager: WorkspaceMana
 
     # 只勾了全文精读也照样识别
     full = manager.save_resource(pid, "excel", "b.xlsx", data, reading_mode="full")
-    assert manager.resource_directives(pid)[full["path"]] == {
-        "purpose": "schema",
-        "reading_mode": "full",
-        "auto_detected": True,
-    }
+    directive = manager.resource_directives(pid)[full["path"]]
+    assert directive["purpose"] == "schema"
+    assert directive["reading_mode"] == "full"
+    assert directive["auto_detected"] is True
+    assert directive["schema_selection"]["included_sheets"] == ["orders"]
 
 
 def test_replacing_auto_detected_file_redetects(manager: WorkspaceManager):
@@ -162,10 +173,28 @@ def test_schema_candidates_lists_untagged_data_tables(manager: WorkspaceManager)
     # 直接落盘模拟升级前已上传、未打标签的资料
     (excel / "orders.xlsx").write_bytes(_xlsx({"orders": ORDER_ROWS}))
     (excel / "terms.xlsx").write_bytes(_xlsx({"术语表": TERM_ROWS}))
-    (excel / "tagged.xlsx").write_bytes(_xlsx({"orders": ORDER_ROWS}))
-    manager.set_resource_directive(pid, "resource/excel/tagged.xlsx", "evidence")
+    manager.save_resource(
+        pid,
+        "excel",
+        "tagged.xlsx",
+        _xlsx({"orders": ORDER_ROWS}),
+        purpose="evidence",
+    )
 
     assert manager.schema_candidates(pid) == {"resource/excel/orders.xlsx": {"tables": ["orders"]}}
+
+    subprocess.run(  # NOSONAR(S4721)
+        ["git", "add", "--", "resource/excel/orders.xlsx", "resource/excel/terms.xlsx"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(  # NOSONAR(S4721)
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "test: add legacy resources"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
 
     manager.set_resource_directive(pid, "resource/excel/orders.xlsx", "schema")
     assert manager.schema_candidates(pid) == {}

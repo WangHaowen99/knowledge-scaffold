@@ -15,8 +15,6 @@ from fastapi.responses import JSONResponse
 from ..api import deps
 from ..api.errors import ApiError
 from ..services import mainline, material_conversion, material_refs, material_text, research_view, uploads, workspace_labels
-from ..services.workspace import WorkspaceError
-from ..services.workspace.files import UNREADABLE_TABLE
 from ..services.workspace.layout import (
     RESOURCE_DIRECTIVES, RESOURCE_SUBDIRS, _content_revision, is_auto_detected, is_resource_text,
 )
@@ -196,14 +194,7 @@ def schema_preview(project_id: str, request: Request, path: str = "", force: boo
     """R-16：按「数据 Schema」检查这份表格的每个 Sheet——表头问题、建议范围；不改用途。force 时不用缓存重扫。"""
     root = deps.require_writable(project_id, request)
     rel = _material_target(root, path)
-    try:
-        return deps.workspaces.preview_schema(project_id, rel, force=force)
-    except WorkspaceError as exc:
-        # 转换失败、暂不支持：文本版不会再有了，按 develop「文件无法解析为数据表」报
-        state = (material_conversion.view(project_id, root, rel, heal=False) or {}).get("state")
-        if exc.code == "material_text_pending" and state in ("failed", "unsupported"):
-            raise WorkspaceError(UNREADABLE_TABLE, 400) from exc
-        raise
+    return deps.workspaces.preview_schema(project_id, rel, force=force)
 
 
 @router.delete("")

@@ -89,8 +89,10 @@ def test_headers_summary_stays_small_for_many_wide_tables(scripts, tmp_path, mon
     """表头全部进文件；stdout 只有表名与列数，最多 200 张。"""
     table_profile, _, _ = scripts
     columns = " | ".join(f"C{n:03d}" for n in range(300))
-    body = "".join(f"<!-- 工作表：T{n:03d} -->\n## T{n:03d}\n\n| {columns} |\n|{'---|' * 300}\n" for n in range(250))
-    root = schema_workspace(tmp_path, texts={"宽表.xlsx": body})
+    def body(numbers):
+        return "".join(f"<!-- 工作表：T{n:03d} -->\n## T{n:03d}\n\n| {columns} |\n|{'---|' * 300}\n" for n in numbers)
+    # 一个工作簿最多 200 个 Sheet（与 develop 一致，多了要拆分）：250 张表放在两个工作簿里
+    root = schema_workspace(tmp_path, texts={"宽表一.xlsx": body(range(125)), "宽表二.xlsx": body(range(125, 250))})
     monkeypatch.chdir(root)
     monkeypatch.setattr("sys.argv", ["table_profile.py", "--headers"])
     assert table_profile.main() == 0

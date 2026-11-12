@@ -234,6 +234,12 @@ class FilesMixin:
             try:
                 scope = material_detect.resolve_selection(target, previous, force=force)
             except material_detect.TextPending as exc:
+                from .. import material_conversion
+
+                # 转换失败、暂不支持：文本版不会再有了，与 develop 解析失败同一句；还在转的稍后再查
+                state = (material_conversion.view(project_id, root, rel, heal=False) or {}).get("state")
+                if state in ("failed", "unsupported"):
+                    raise WorkspaceError(UNREADABLE_TABLE, 400) from exc
                 raise WorkspaceError(str(exc), 409, "material_text_pending", {"path": rel}) from exc
             except material_detect.SheetSelectionError as exc:
                 try:

@@ -170,8 +170,6 @@ def anchor_block(lines: list[str]) -> dict | None:
     start = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].strip() == ANCHORS_HEAD), None)
     if start is None:
         return None
-    # 文件第一行是内核写的文件头时，锚点里的行号从正文（文件头 + 空行之后）数起
-    offset = 2 if lines and lines[0].startswith("<!-- onto:text ") else 0
     found, merges, cols = {}, {}, {}
     for raw in lines[start + 1:]:
         line = raw.strip()
@@ -185,8 +183,13 @@ def anchor_block(lines: list[str]) -> dict | None:
             elif value.strip().isdigit():
                 cols[_unescape(sheet)] = int(value)
         elif head.isdigit() and rest:
-            found[int(head) + offset] = _unescape(rest)
-    return {"lines": found, "merges": merges, "cols": cols, "start": start + 1}
+            found[int(head)] = _unescape(rest)
+    # 锚点行号从转换器正文数起；文件里前面还有内核写的文件头（和空行），按第一个工作表标记对齐
+    first = min((n for n, anchor in found.items() if anchor.startswith("sheet:")), default=None)
+    marker = next((i + 1 for i, line in enumerate(lines[:start]) if _SHEET_RE.match(line.strip())), None)
+    offset = marker - first if first is not None and marker is not None else 0
+    return {"lines": {n + offset: anchor for n, anchor in found.items()}, "merges": merges, "cols": cols,
+            "start": start + 1}
 
 
 def _new_sheet(name: str, block: dict | None) -> dict:
