@@ -47,6 +47,7 @@ import copy
 import datetime as _dt
 import hashlib
 import json
+import logging
 import re
 import sys
 from pathlib import Path
@@ -68,6 +69,19 @@ LIST_MAX = 200
 SLICES_MAX = 50
 TERMS_LINE_MAX = 30  # 注入给模型的统一叫法最多几条（每条 ≤ 约 100 字，最坏约 3000 字）
 _SLICE_ID_RE = re.compile(r'^(s[1-9][0-9]{0,3}|all)$')
+
+
+# 命令行输出通道：独立 logger，不经根 logger，消息原样（无前缀）
+_console = logging.Logger('blueprint', logging.INFO)
+_console_handler = logging.StreamHandler()
+_console.addHandler(_console_handler)
+
+
+def _say(text: object = '', *, error: bool = False, end: str = '\n') -> None:
+    """输出：结果写标准输出（助手读它），error=True 写标准错误；每次取当前的流，测试替换了也跟着走。"""
+    _console_handler.setStream(sys.stderr if error else sys.stdout)
+    _console_handler.terminator = end
+    _console.info(text)
 
 
 class BlueprintError(ValueError):
@@ -396,7 +410,7 @@ def validate(doc: dict) -> list:
                 bad('dependency_order', f'「{item.get("name")}」依赖的分段排在它后面', slice_id=item.get('id'))
     for term in (doc.get('terms') or {}).get('ambiguous') or []:
         chosen = term.get('chosen')
-        if chosen is not None and (not isinstance(chosen, str) or not chosen.strip() or len(chosen) > NAME_MAX):
+        if chosen is not None and not _valid_term_name(chosen):
             bad('term_invalid', '统一叫法不合法', term_id=term.get('id'))
     return problems
 
@@ -426,6 +440,10 @@ def _input_slices(value) -> list:
                     'depends_on': list(dict.fromkeys(deps)), 'excluded': bool(item.get('excluded')),
                     'merged_from': list(dict.fromkeys(merged))})
     return out
+
+
+def _valid_term_name(value) -> bool:
+    return isinstance(value, str) and bool(value.strip()) and len(value) <= NAME_MAX
 
 
 def apply_slices(doc: dict, inputs: list) -> dict:
@@ -466,8 +484,11 @@ def apply_slices(doc: dict, inputs: list) -> dict:
     if missing:
         raise BlueprintError('missing', '分段不能直接删掉，要排除就标成排除', slice_ids=missing)
     for item in items:
+        new_id = remap.get(item['id'])
+        if new_id is None:
+            continue  # 已有的段（含早先合并出来的）编号不变，它的合并来源当时已经换过
         for ref in item['merged_from']:
-            remap.setdefault(ref, remap[item['id']])
+            remap.setdefault(ref, new_id)
     result = []
     for item in items:
         new_id = remap.get(item['id'], item['id'])
@@ -706,14 +727,14 @@ def current_slice(root: Path = Path('.')) -> str | None:
 
 
 def _fail(message: str) -> int:
-    print(f'error:{message}', file=sys.stderr)
+    _say(f'error:{message}', error=True)
     return 1
 
 
 def main(argv: list) -> int:
     root = Path('.')
     if len(argv) < 2:
-        print(__doc__)
+        _say(__doc__)
         return 1
     command, args = argv[1], argv[2:]
     try:
@@ -723,12 +744,12 @@ def main(argv: list) -> int:
             draft = json.loads(Path(args[0]).read_text(encoding='utf-8'))
             doc = from_draft(draft, load(root))
             save(root, doc)
-            print(f"ok:{BLUEPRINT_REL}:{version_label(doc)}:{len(live_slices(doc))} 段")
+            _say(f"ok:{BLUEPRINT_REL}:{version_label(doc)}:{len(live_slices(doc))} 段")
             return 0
         if command == 'full':
             doc = full(' '.join(args), load(root))
             save(root, doc)
-            print(f'ok:{BLUEPRINT_REL}:{version_label(doc)}:全量模式')
+            _say(f'ok:{BLUEPRINT_REL}:{version_label(doc)}:全量模式')
             return 0
         doc = load(root)
         if command == 'check':
@@ -736,28 +757,28 @@ def main(argv: list) -> int:
                 return _fail('没有建模蓝图')
             problems = validate(doc)
             for problem in problems:
-                print(f'- {problem}')
-            print('ok' if not problems else f'{len(problems)} 个问题')
+                _say(f'- {problem}')
+            _say('ok' if not problems else f'{len(problems)} 个问题')
             return 1 if problems else 0
         if command == 'show':
             if doc is None:
                 return _fail('没有建模蓝图')
             if '--json' in args:
-                print(json.dumps(view(doc), ensure_ascii=False, indent=2))
+                _say(json.dumps(view(doc), ensure_ascii=False, indent=2))
             else:
-                print(dumps(doc), end='')
+                _say(dumps(doc), end='')
             return 0
         if command == 'slices':
             items = [{'id': item['id'], 'name': item['name'], 'depends_on': item.get('depends_on') or []}
                      for item in live_slices(doc)]
             if '--json' in args:
-                print(json.dumps({'mode': mode(doc), 'slices': items}, ensure_ascii=False))
+                _say(json.dumps({'mode': mode(doc), 'slices': items}, ensure_ascii=False))
             else:
                 for item in items:
-                    print(f"{item['id']}\t{item['name']}")
+                    _say(f"{item['id']}\t{item['name']}")
             return 0
         if command == 'brief':
-            print(brief(doc, args[0] if args else current_slice(root)))
+            _say(brief(doc, args[0] if args else current_slice(root)))
             return 0
         if command == 'assign':
             if doc is None or len(args) < 2:
@@ -766,7 +787,7 @@ def main(argv: list) -> int:
             doc, added = assign(doc, args[0], entries)
             if added:
                 save(root, doc)
-            print(f'ok:{len(added)}')
+            _say(f'ok:{len(added)}')
             return 0
     except BlueprintError as exc:
         return _fail(str(exc))

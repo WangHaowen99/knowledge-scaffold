@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -41,6 +42,18 @@ except ImportError:  # 本地自测用同形状的替身；网关里不会走到
         max_output_chars: int = 4_000_000
         max_expanded_bytes: int = 100 * 1024 * 1024
         max_zip_members: int = 5000
+
+
+# 命令行输出通道：独立 logger，不经根 logger，消息原样（无前缀）
+_console = logging.Logger("converter", logging.INFO)
+_console_handler = logging.StreamHandler()
+_console.addHandler(_console_handler)
+
+
+def _say(text: object = "", *, error: bool = False) -> None:
+    """输出一行：结果写标准输出（助手读它），error=True 写标准错误；每次取当前的流，测试替换了也跟着走。"""
+    _console_handler.setStream(sys.stderr if error else sys.stdout)
+    _console.info(text)
 
 
 def _cell(text: str) -> str:
@@ -88,4 +101,4 @@ if __name__ == "__main__":
         reply = {"ok": True, "result": convert(source.read_bytes(), source.name, ConvertLimits()).to_dict()}
     except ConvertError as exc:
         reply = {"ok": False, "error": {"code": exc.code, "message": str(exc)}}
-    print(json.dumps(reply, ensure_ascii=False, indent=2))
+    _say(json.dumps(reply, ensure_ascii=False, indent=2))

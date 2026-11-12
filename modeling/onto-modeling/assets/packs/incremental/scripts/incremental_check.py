@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 import time
 from pathlib import Path, PurePosixPath
@@ -34,6 +35,18 @@ CHECK_MD = STATE_DIR / "check.md"
 CHECK_JSON = STATE_DIR / "check.json"
 DEFAULT_THRESHOLD = 0.3
 LABELS = {"added": "新增", "modified": "修改", "deleted": "删除"}
+
+
+# 命令行输出通道：独立 logger，不经根 logger，消息原样（无前缀）
+_console = logging.Logger("incremental_check", logging.INFO)
+_console_handler = logging.StreamHandler()
+_console.addHandler(_console_handler)
+
+
+def _say(text: object = "", *, error: bool = False) -> None:
+    """输出一行：结果写标准输出（助手读它），error=True 写标准错误；每次取当前的流，测试替换了也跟着走。"""
+    _console_handler.setStream(sys.stderr if error else sys.stdout)
+    _console.info(text)
 
 
 def _load_report(root: Path) -> dict:
@@ -124,14 +137,14 @@ def render(report: dict) -> str:
 def _write(root: Path, report: dict) -> None:
     write_json(root / CHECK_JSON, report)
     (root / CHECK_MD).write_text(render(report), encoding="utf-8")
-    print(_overview(report))
+    _say(_overview(report))
     if report["over_threshold"]:
-        print(_warning(report))
+        _say(_warning(report))
     for line in capped(report["outside"], _outside_line, cap=STDOUT_CAP, pointer=CHECK_JSON.as_posix()):
-        print(line)
+        _say(line)
     for line in capped(report["pending"], _pending_line, cap=STDOUT_CAP, pointer=CHECK_JSON.as_posix()):
-        print(line)
-    print(f"报告：{CHECK_MD.as_posix()}。" + ("" if report["pending"] or report["outside"] else "没有待确认项了。"))
+        _say(line)
+    _say(f"报告：{CHECK_MD.as_posix()}。" + ("" if report["pending"] or report["outside"] else "没有待确认项了。"))
 
 
 def _kept_marks(root: Path) -> dict[str, str]:
@@ -181,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.run(args, Path.cwd().resolve())
     except ChainError as exc:
-        print(str(exc))
+        _say(str(exc))
         return 2
 
 

@@ -1,8 +1,8 @@
 import json
+import logging
+import sys
 import urllib.request
-
 from orders_lib import Customer, format_amount
-
 BASE_URL = "https://erp.example.com/api"
 
 
@@ -21,7 +21,7 @@ class OrderService:
     def create(self, customer_id, amount):
         order = Order(customer_id, amount)
         body = json.dumps(order.__dict__).encode("utf-8")
-        request = urllib.request.Request(BASE_URL + "/orders", data=body, method="POST")
+        request = urllib.request.Request(f"{BASE_URL}/orders", data=body, method="POST")
         return order, request
 
     def approve(self, order_id):
@@ -31,7 +31,9 @@ class OrderService:
 def main():
     service = OrderService()
     order, _ = service.create(Customer(1, "sample").id, 2)
-    print(format_amount(order.amount))
+    output = logging.Logger("orders_app", logging.INFO)
+    output.addHandler(logging.StreamHandler(sys.stdout))
+    output.info(format_amount(order.amount))
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import shutil
 import sys
 import time
@@ -51,6 +52,18 @@ APPLIED_FILE = STATE_DIR / "applied.json"
 HISTORY_DIR = STATE_DIR / "history"
 # 新一轮要归档的文件：上一轮的修改记录和核对报告不能留到这一轮
 ROUND_FILES = ("scope.json", "scope.md", "applied.json", "check.md", "check.json")
+
+
+# 命令行输出通道：独立 logger，不经根 logger，消息原样（无前缀）
+_console = logging.Logger("incremental_scope", logging.INFO)
+_console_handler = logging.StreamHandler()
+_console.addHandler(_console_handler)
+
+
+def _say(text: object = "", *, error: bool = False) -> None:
+    """输出一行：结果写标准输出（助手读它），error=True 写标准错误；每次取当前的流，测试替换了也跟着走。"""
+    _console_handler.setStream(sys.stderr if error else sys.stdout)
+    _console.info(text)
 
 
 def _now() -> str:
@@ -128,9 +141,9 @@ def cmd_draft(args, root: Path) -> int:
     head = [f"目标：{clean(args.goal)}", f"传播 {depth} 层以内。确认后这些条目可改，基线里的其他条目这一轮只读。"]
     (root / DRAFT_MD).write_text(_render("增量范围草稿（等确认）", head, seeds, chain, DRAFT_FILE.as_posix()),
                                  encoding="utf-8")
-    print(f"草稿写好了：种子 {len(seeds)} 个，传播链 {len(chain)} 条（{depth} 层以内）。详情见 {DRAFT_MD.as_posix()}。")
+    _say(f"草稿写好了：种子 {len(seeds)} 个，传播链 {len(chain)} 条（{depth} 层以内）。详情见 {DRAFT_MD.as_posix()}。")
     for line in capped(chain, _chain_line, cap=STDOUT_CAP, pointer=DRAFT_FILE.as_posix()):
-        print(line)
+        _say(line)
     return 0
 
 
@@ -185,7 +198,7 @@ def cmd_confirm(args, root: Path) -> int:
     (root / DRAFT_FILE).unlink(missing_ok=True)
     (root / DRAFT_MD).unlink(missing_ok=True)
     note = "（上一轮没结束，这次是扩大范围：基线沿用）" if enlarging else ""
-    print(f"第 {scope['round']} 轮范围写好了{note}：可改条目 {len(editable)} 个。这一轮对话结束合入主线后生效。")
+    _say(f"第 {scope['round']} 轮范围写好了{note}：可改条目 {len(editable)} 个。这一轮对话结束合入主线后生效。")
     return 0
 
 
@@ -201,7 +214,7 @@ def _check_clean(root: Path, changes: dict[str, str]) -> bool:
 
 def cmd_materials(_args, root: Path) -> int:
     files = uploaded_materials(root)
-    print("\n".join(files) if files else "没有记录到新上传的资料，问用户这次依据什么改。")
+    _say("\n".join(files) if files else "没有记录到新上传的资料，问用户这次依据什么改。")
     return 0
 
 
@@ -211,7 +224,7 @@ def cmd_close(_args, root: Path) -> int:
     if scope is None:
         raise ChainError("还没有范围文件，不用结束。")
     if not round_open(root, scope):
-        print(f"第 {scope.get('round')} 轮已经结束了。")
+        _say(f"第 {scope.get('round')} 轮已经结束了。")
         return 0
     changes = changes_since(root, scope["baseline"]["commit"]) if isinstance(scope.get("baseline"), dict) else {}
     if changes and not _check_clean(root, changes):
@@ -220,7 +233,7 @@ def cmd_close(_args, root: Path) -> int:
     scope["closed_at"] = _now()
     write_json(root / SCOPE_FILE, scope)
     _render_scope(root, scope)
-    print(f"第 {scope['round']} 轮结束了：这一轮对话合入主线后，范围外的条目恢复可写。")
+    _say(f"第 {scope['round']} 轮结束了：这一轮对话合入主线后，范围外的条目恢复可写。")
     return 0
 
 
@@ -256,14 +269,14 @@ def cmd_applied(args, root: Path) -> int:
         else:
             missing.append(f"{ACTIONS[seed['action']]} {path}")
     if missing:
-        print(f"还有 {len(missing)} 个种子没处理（处理掉，或用 --skip <条目> <理由> 说明为什么不改）：")
+        _say(f"还有 {len(missing)} 个种子没处理（处理掉，或用 --skip <条目> <理由> 说明为什么不改）：")
         for line in missing[:STDOUT_CAP]:
-            print(f"- {line}")
+            _say(f"- {line}")
         if len(missing) > STDOUT_CAP:
-            print(f"还有 {len(missing) - STDOUT_CAP} 个没列出，种子清单见 {SCOPE_FILE.as_posix()}。")
+            _say(f"还有 {len(missing) - STDOUT_CAP} 个没列出，种子清单见 {SCOPE_FILE.as_posix()}。")
         return 1
     write_json(root / APPLIED_FILE, {"round": scope["round"], "at": _now(), "handled": handled, "skipped": skipped})
-    print(f"第 {scope['round']} 轮的种子都处理了：已改 {len(handled)} 个，跳过 {len(skipped)} 个。下一步 /incremental-check。")
+    _say(f"第 {scope['round']} 轮的种子都处理了：已改 {len(handled)} 个，跳过 {len(skipped)} 个。下一步 /incremental-check。")
     return 0
 
 
@@ -287,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.run(args, Path.cwd().resolve())
     except ChainError as exc:
-        print(str(exc))
+        _say(str(exc))
         return 2
 
 

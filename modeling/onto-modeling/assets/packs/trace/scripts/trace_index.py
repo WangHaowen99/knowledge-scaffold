@@ -16,19 +16,33 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import sys
 import tempfile
 import time
+from contextlib import suppress
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.append(str(Path(__file__).resolve().parent))
 from trace_inputs import parse_source  # noqa: E402
 
 SCENARIOS_INDEX = Path("ext/trace/index/scenarios.jsonl")
 MOCK_SKIPPED = Path("ext/trace/index/mock-skipped.jsonl")
 TEXT_MAX = 400
 LOG_MAX = 4000
+
+
+# 命令行输出通道：独立 logger，不经根 logger，消息原样（无前缀）
+_console = logging.Logger("trace_index", logging.INFO)
+_console_handler = logging.StreamHandler()
+_console.addHandler(_console_handler)
+
+
+def _say(text: object = "", *, error: bool = False) -> None:
+    """输出一行：结果写标准输出（助手读它），error=True 写标准错误；每次取当前的流，测试替换了也跟着走。"""
+    _console_handler.setStream(sys.stderr if error else sys.stdout)
+    _console.info(text)
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -50,10 +64,14 @@ def _read_jsonl(path: Path) -> list[dict]:
 def _write_jsonl(path: Path, records: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    with os.fdopen(fd, "w", encoding="utf-8") as stream:
-        for record in records:
-            stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            for record in records:
+                stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        os.replace(tmp, path)
+    finally:
+        with suppress(FileNotFoundError):
+            os.unlink(tmp)
 
 
 def _clip(text: str, limit: int = TEXT_MAX) -> str:
@@ -149,12 +167,12 @@ def main() -> int:
     try:
         if args.cmd == "record":
             keys = record(args.testcase, args.results)
-            print(f"已写入场景索引 {len(keys)} 项：{SCENARIOS_INDEX}")
+            _say(f"已写入场景索引 {len(keys)} 项：{SCENARIOS_INDEX}")
         else:
             count = mock_skipped(args.object, args.reason, args.clear)
-            print(f"跳过生成的对象 {count} 个：{MOCK_SKIPPED}")
+            _say(f"跳过生成的对象 {count} 个：{MOCK_SKIPPED}")
     except (OSError, ValueError) as exc:
-        print(f"[trace_index:error] {exc}", file=sys.stderr)
+        _say(f"[trace_index:error] {exc}", error=True)
         return 1
     return 0
 
