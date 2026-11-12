@@ -8,7 +8,7 @@ import { DRAWIO, RES_PATHS } from '../src/api/mock/resources-data.js';
 import {
   blockBody, blockLabel, cellPos, checkUpload, columnLetter, coverageChip, csvText, drawioLayout, feedbackView, fmtSize, metaText,
   parseDrawio, parseFileAnchor, parseFragment, pickDefault, purposeView, refCount, refRows, refSentence, refTarget, replaceName,
-  revisionBanner, routeTarget, scaleText, sheetView, shortTime, splitHighlights, textChip, textSections, hasTextTab,
+  revisionBanner, routeTarget, scaleText, sheetGrid, locateSheetCell, shortTime, splitHighlights, textChip, textSections, hasTextTab,
 } from '../src/pages/resources/resourcesModel.js';
 
 const R02 = 'resource/others/02-门店补货规则.docx';
@@ -88,10 +88,10 @@ test('读到哪的 chip', () => {
   assert.equal(coverageChip(null), null);
 });
 
-test('上传校验：格式白名单、20 MB；替换要同类型并改成原名', () => {
-  assert.equal(checkUpload('货架布置图.dwg', 10), '不支持这种格式，请转成 PDF 或 drawio 后再上传');
-  assert.equal(checkUpload('演示.pptx', 10), '不支持这种格式，请转成 PDF、Word 或 Markdown 后再上传');
-  assert.equal(checkUpload('a.xlsx', 21 * 1024 * 1024), '超过 20 MB，请拆分或压缩后再上传');
+test('上传校验：格式白名单、20 MB（文字同 develop）；替换要同类型并改成原名', () => {
+  assert.equal(checkUpload('货架布置图.dwg', 10), '不支持文件“货架布置图.dwg”的类型');
+  assert.equal(checkUpload('演示.pptx', 10), '不支持文件“演示.pptx”的类型');
+  assert.equal(checkUpload('a.xlsx', 21 * 1024 * 1024), '文件“a.xlsx”超过 20 MB，无法上传');
   assert.equal(checkUpload('a.DOCX', 1024), null);
   assert.deepEqual(replaceName({ name: '05-门店清单.xlsx' }, '新版.xlsx'), { name: '05-门店清单.xlsx' });
   assert.match(replaceName({ name: '05-门店清单.xlsx' }, '新版.csv').error, /\.xlsx/);
@@ -126,12 +126,20 @@ test('外部反馈：标题与说明、未处理和已处理两种第二行', ()
   assert.equal(done.icon, 'msg');
 });
 
-test('表格：表头写成「A 商品」，正文行号从 2 开始；单元格位置；CSV 原样', () => {
+test('表格：列字母表头、行号从 1 起，合并单元格与整块高亮（同 develop ExcelView）；单元格位置；CSV 原样', () => {
   assert.equal(columnLetter(0), 'A');
   assert.equal(columnLetter(26), 'AA');
-  const v = sheetView({ rows: [['商品', '品类'], ['牛奶', '乳制品'], ['酸奶']] });
-  assert.deepEqual(v.header, ['A 商品', 'B 品类']);
-  assert.deepEqual(v.body, [{ n: 2, cells: ['牛奶', '乳制品'] }, { n: 3, cells: ['酸奶', ''] }]);
+  const v = sheetGrid({ rows: [['商品', '品类'], ['牛奶', '乳制品'], ['酸奶']] });
+  assert.deepEqual(v.letters, ['A', 'B']);
+  assert.deepEqual(v.rows.map((r) => [r.n, r.cells.map((c) => c.value)]), [[1, ['商品', '品类']], [2, ['牛奶', '乳制品']], [3, ['酸奶', '']]]);
+  const merged = sheetGrid({ rows: [['标题', ''], ['1', '2']], merges: [{ row: 0, col: 0, rowspan: 1, colspan: 2 }] }, { row: 0, col: 1 });
+  assert.deepEqual(merged.rows[0].cells.map((c) => [c.value, c.colSpan, c.hit]), [['标题', 2, true]]);
+  assert.equal(merged.rows[1].cells[0].numeric, true);
+  const data = { sheets: [{ name: '规则', rows: [['a', 'b']], truncated: false }], sheet_truncated: false };
+  assert.deepEqual(locateSheetCell(data, 'sheet:规则!B1'), { index: 0, cell: { row: 0, col: 1 } });
+  assert.equal(locateSheetCell(data, 'sheet:规则!C9').message, '规则!C9 在当前文件中已不存在（资料可能已被替换）');
+  assert.equal(locateSheetCell(data, 'sheet:别的!A1').message, '工作表「别的」已不存在（资料可能已被替换）');
+  assert.equal(locateSheetCell({ ...data, sheets: [{ ...data.sheets[0], truncated: true }] }, 'sheet:规则!C9').problem, 'range');
   assert.deepEqual(cellPos('D1'), { row: 1, col: 3 });
   assert.deepEqual(cellPos('AA10'), { row: 10, col: 26 });
   assert.equal(csvText([['a', 'b,c'], ['"q"', '']]), 'a,"b,c"\n"""q""",');

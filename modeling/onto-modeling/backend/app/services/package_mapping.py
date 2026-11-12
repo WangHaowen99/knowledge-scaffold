@@ -214,15 +214,14 @@ def _resource_rel(path: Path) -> str | None:
 
 
 def read_table_headers(path: Path, directive: dict | None = None) -> dict[str, list[str]]:
-    """表格文件 → {Sheet 名: 表头列}。口径与工具箱 table_profile.py 一致：一个 Sheet = 一张表，表头 = 第一个非空行。
+    """Backend and project tools use the same sheet selection and first-row headers.
 
     资料区的表格按 Sheet 范围只取数据 Sheet（ADR-0096）；Excel 读文本版，不解析原件（ADR-0076），
-    还没有文本版时为空。人工范围对不上当前文件抛 409 schema_scope_stale。资料区之外的表格照旧整本读。"""
-    from . import table_sources
+    还没有文本版时为空。人工范围对不上当前文件抛 SheetSelectionError（409）。资料区之外的表格照旧整本读。"""
+    from .table_sources import rules
 
-    rel = _resource_rel(path)
-    if rel is not None and path.suffix.lower() in TABLE_SUFFIXES:
-        return table_sources.read_selected_headers(path, rel, directive)
+    if _resource_rel(path) is not None and path.suffix.lower() in TABLE_SUFFIXES:
+        return rules.read_selected_headers(path, directive or {"purpose": "schema"})
     if path.suffix.lower() == ".csv":
         try:
             with open(path, encoding="utf-8-sig", newline="") as handle:

@@ -2,7 +2,7 @@
 // 文件清单（R-01 的 Material）、文档正文（R-06 的块）、表格（F-05）、drawio 与 HTML 原文（F-02 / F-04）、
 // 被谁引用（R-05）、外部反馈（R-11）。资料名称和用途以 scenario.js 的 MATERIALS / LATE_MATERIALS 为准，
 // 另补设计稿里有的流程图、术语对照、台账导出、周报。资料分析（routes-materials.js）与资料区（routes-resources.js）共用这份清单。
-import { MAX_RESOURCE_BYTES, RESOURCE_TYPES } from '../../lib/resourceUpload.js';
+import { MAX_RESOURCE_FILE_SIZE, RESOURCE_TYPES } from '../../lib/resourceUpload.js';
 import { LATE_MATERIALS, MATERIALS, entryRef } from './scenario.js';
 
 const MIN = 60 * 1000;
@@ -42,7 +42,7 @@ const previewOfKind = (kind) => ({ xls: 'xls', csv: 'csv', drawio: 'drawio', htm
 // 资料区上传白名单（契约 1.8、标注 resources-003）
 // 与真后端同一份白名单与上限（lib/resourceUpload.js，契约 1.8）
 export const UPLOAD_EXTS = RESOURCE_TYPES.map((x) => x.slice(1));
-export const UPLOAD_LIMIT = MAX_RESOURCE_BYTES;
+export const UPLOAD_LIMIT = MAX_RESOURCE_FILE_SIZE;
 
 // 文本版状态（契约 7.4 MaterialText，ADR-0073）：md、txt、csv 本身是文本；流程图没有；其余按转换器判
 export const CONVERTERS = [

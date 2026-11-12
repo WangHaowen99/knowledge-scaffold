@@ -18,14 +18,16 @@ import uuid
 from pathlib import Path
 
 from ...evidence import convert
-from ..workspace.layout import RESOURCE_SUBDIRS, _content_revision, is_resource_text, resource_text_path
+from ..workspace.layout import (
+    RESOURCE_DIRECTIVES, RESOURCE_SUBDIRS, _content_revision, is_resource_text, resource_text_path,
+)
 from . import gateway, store
 
 _log = logging.getLogger(__name__)
 
 EVENT = "materials.text.updated"
 NOT_DOCUMENT = (".drawio",)
-IMAGE_TYPES = (".png", ".jpg", ".jpeg")
+IMAGE_TYPES = (".png", ".jpg", ".jpeg", ".webp")
 LEGACY_OFFICE = (".doc", ".xls")
 ACTIVE = ("converting", "waiting")
 WORKERS = 2
@@ -271,6 +273,10 @@ def _write_text(project_id: str, rel: str, revision: str, markdown: str) -> bool
             return True
         existing.parent.mkdir(parents=True, exist_ok=True)
         tx.write(target, payload)
+        # 标为数据 Schema 的 Excel：上传那刻还没有文本版，Sheet 范围在这里按结构算好、与文本版同一个提交存下（ADR-0096）
+        if (tx.root / RESOURCE_DIRECTIVES).is_file():
+            tx.touch(RESOURCE_DIRECTIVES)
+            manager.record_schema_scope(tx.root, rel)
         # 文本变了也是资料变了：前端「资料已更新」提示按这个时间比
         manager._update_meta_unlocked(tx.root, resource_updated_at=int(time.time()))
         tx.commit(f"plugin: 转换资料 {rel}")

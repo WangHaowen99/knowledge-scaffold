@@ -19,7 +19,7 @@ MATERIAL = "资料"
 MATERIAL_TYPES = {
     ".pdf": "PDF", ".doc": "Word", ".docx": "Word", ".xls": "Excel", ".xlsx": "Excel", ".xlsm": "Excel",
     ".csv": "CSV", ".drawio": "流程图", ".html": "网页", ".htm": "网页", ".png": "图片", ".jpg": "图片",
-    ".jpeg": "图片", ".md": "Markdown", ".markdown": "Markdown", ".txt": "文本",
+    ".jpeg": "图片", ".webp": "图片", ".md": "Markdown", ".markdown": "Markdown", ".txt": "文本",
 }
 ENTRY_LABELS = {"object": "对象", "operation": "操作", "rule": "规则", "metric": "指标", "script": "脚本"}
 # 流程节点 stale_on 的产物类别（flow/state.KIND_DIRS）→ 说法

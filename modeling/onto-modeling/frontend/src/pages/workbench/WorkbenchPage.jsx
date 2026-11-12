@@ -9,7 +9,7 @@ import { errorText, relativeTime } from '../../api/errors.js';
 import { commandFromTarget, commandNode, nodeActionKind, suggestionCommand, overlayRunning, scriptRunView, sectionGroups, trackClass, trackNodes, withoutEvidence } from '../../state/flow.js';
 import { evidenceInProject, withoutEvidenceSuggestions } from '../../state/evidence.js';
 import { composerState, lockPop, readonlyInfo } from '../../state/readonly.js';
-import { splitResourceFiles, uploadRules } from '../../lib/resourceUpload.js';
+import { rejectedResourceMessage, uploadRules, validateResourceFiles } from '../../lib/resourceUpload.js';
 import { runStatus } from '../../state/conversation.js';
 import { ShellP } from '../../shell/Shell.jsx';
 import {
@@ -316,8 +316,8 @@ function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCom
   const rules = useMemo(() => uploadRules(config), [config]);
   const addFiles = useCallback((files) => {
     // 附件落进资料区，与资料上传同一份规则：格式不对、太大的不传
-    const { accepted, rejected } = splitResourceFiles([...(files || [])].slice(0, 10), rules);
-    if (rejected.length) toast(rejected.map((x) => `${x.file.name}：${x.error}`).join('；'), 'alert');
+    const { accepted, rejected } = validateResourceFiles([...(files || [])].slice(0, 10), rules);
+    if (rejected.length) toast(rejectedResourceMessage(rejected), 'alert');
     accepted.forEach((file) => {
       const key = `${file.name}-${Math.random()}`;
       setAtts((a) => [...a, { key, name: file.name, image: /^image\//.test(file.type), progress: 0 }]);
@@ -398,7 +398,7 @@ function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCom
           if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
         }}
       />
-      <input ref={fileRef} type="file" multiple hidden onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} />
+      <input ref={fileRef} type="file" multiple hidden accept={rules.accept} onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} />
       <div className="wx-cb">
         <span className="wx-tb" title="附件" onClick={() => fileRef.current?.click()}><Icon name="clip" size={16} /></span>
         <span className="wx-tb" title="引用知识包里的条目" onClick={() => setPop(pop === 'ref' ? null : 'ref')}><Icon name="at" size={16} /></span>

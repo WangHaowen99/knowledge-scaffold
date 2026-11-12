@@ -8,7 +8,7 @@ import { evidenceFromSources, isEvidencePack } from '../../state/evidence.js';
 import { ShellG } from '../../shell/Shell.jsx';
 import { Button, Chip, Field, Icon, Menu, Prog, Toggle, cx, useOutside } from '../../ui/index.jsx';
 import { uiChip } from '../plugins/catalogModel.js';
-import { checkResourceFile, legacyOfficeHint, uploadRules } from '../../lib/resourceUpload.js';
+import { rejectedResourceMessage, uploadRules, validateResourceFiles } from '../../lib/resourceUpload.js';
 import { createBody } from './createBody.js';
 import { modelDisplayName } from '../settings/settingsModel.js';
 
@@ -100,19 +100,16 @@ export default function CreatePage() {
   }, [api]);
 
   const addFiles = (list) => {
-    [...(list || [])].forEach((file) => {
+    // 格式不对、太大的不加入列表，一条错误提示列出（与资料区同一份规则）
+    const { accepted, rejected } = validateResourceFiles(list, rules);
+    if (rejected.length) toast(rejectedResourceMessage(rejected), 'alert');
+    accepted.forEach((file) => {
       const key = `${file.name}-${file.size}-${Math.random()}`;
-      // 格式不对、太大的就地标红，不上传（与资料区同一份规则）
-      const bad = checkResourceFile(file.name, file.size, rules);
-      setFiles((fs) => [...fs, { key, name: file.name, purpose: 'auto', ...(bad ? { error: bad, progress: null } : { progress: 0 }) }]);
-      if (bad) return;
+      setFiles((fs) => [...fs, { key, name: file.name, progress: 0, purpose: 'auto' }]);
       services.upload(file, 'material', {
         onProgress: (p) => setFiles((fs) => fs.map((x) => (x.key === key ? { ...x, progress: p } : x))),
-      }).then((up) => {
-        setFiles((fs) => fs.map((x) => (x.key === key ? { ...x, upload: up, progress: 100 } : x)));
-        const hint = legacyOfficeHint(file.name);
-        if (hint) toast(hint, 'alert');
-      }).catch((e) => setFiles((fs) => fs.map((x) => (x.key === key ? { ...x, error: errorText(e), progress: null } : x))));
+      }).then((up) => setFiles((fs) => fs.map((x) => (x.key === key ? { ...x, upload: up, progress: 100 } : x))))
+        .catch((e) => setFiles((fs) => fs.map((x) => (x.key === key ? { ...x, error: errorText(e), progress: null } : x))));
     });
   };
   const removeFile = (f) => {
@@ -233,7 +230,7 @@ export default function CreatePage() {
                 <div className="en-drop mt16" onClick={() => fileRef.current?.click()} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); addFiles(e.dataTransfer.files); }}>
                   <div className="ic"><Icon name="upload" size={20} /></div>
                   <b style={{ color: 'var(--ink)' }}>把资料拖到这里，或点击选择</b>
-                  <div className="sm mt4">md / txt / pdf / word / excel / drawio · 单个不超过 20 MB</div>
+                  <div className="sm mt4">Markdown / TXT / PDF / Word / Excel / CSV / Drawio / 图片 · 单个文件不超过 20 MB</div>
                 </div>
                 {files.length ? (
                   <>

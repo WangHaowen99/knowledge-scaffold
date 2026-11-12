@@ -4,7 +4,7 @@ import { useApp } from '../../../app/context.js';
 import { navigate, pagePath } from '../../../app/router.js';
 import { toast } from '../../../app/toast.jsx';
 import { errorText } from '../../../api/errors.js';
-import { legacyOfficeHint, splitResourceFiles, uploadRules } from '../../../lib/resourceUpload.js';
+import { legacyOfficeHint, rejectedResourceMessage, uploadRules, validateResourceFiles } from '../../../lib/resourceUpload.js';
 import { Ev, Icon } from '../../../ui/index.jsx';
 import { useActions } from '../cards.jsx';
 import { WbCtx } from '../parts.jsx';
@@ -61,8 +61,8 @@ export function useMaterialUpload(pid, accept) {
   const [busy, setBusy] = useState(0);
   const upload = useCallback(async (files) => {
     // 格式不对、太大的先挡下（与资料区同一份规则），其余照常传
-    const { accepted: list, rejected } = splitResourceFiles(files, rules);
-    const notes = rejected.map((x) => `${x.file.name}：${x.error}`);
+    const { accepted: list, rejected } = validateResourceFiles(files, rules);
+    const notes = rejected.length ? [rejectedResourceMessage(rejected)] : [];
     setBusy((n) => n + list.length);
     let ok = 0;
     for (const file of list) {

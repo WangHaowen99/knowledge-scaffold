@@ -10,8 +10,8 @@ from __future__ import annotations
 import sys
 
 from table_profile import *  # noqa: F401,F403  旧名 import 的调用方照常拿到同一组函数
-from table_profile import main
+from table_profile import main, run  # noqa: F401  run：Sheet 范围要确认时退出码 2
 
 if __name__ == "__main__":
     print("提示：check_eval_data.py 已更名为 table_profile.py，旧名下个版本删除", file=sys.stderr)
-    sys.exit(main())
+    sys.exit(run())

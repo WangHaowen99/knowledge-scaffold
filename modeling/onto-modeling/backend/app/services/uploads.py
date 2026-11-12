@@ -38,7 +38,7 @@ PURPOSE_LIMITS = {
 }
 MATERIAL_TYPES = (
     ".md", ".markdown", ".txt", ".doc", ".docx", ".xls", ".xlsx", ".xlsm", ".csv", ".pdf",
-    ".drawio", ".html", ".htm", ".png", ".jpg", ".jpeg",
+    ".drawio", ".html", ".htm", ".png", ".jpg", ".jpeg", ".webp",
 )
 _ID_RE = re.compile(r"^up-[0-9a-f]{20}$")
 
@@ -58,13 +58,15 @@ def check_type(filename: str, purpose: str) -> None:
     suffix = Path(filename).suffix.lower()
     allowed = (".zip",) if purpose == "project_import" else MATERIAL_TYPES
     if suffix not in allowed:
-        raise ApiError("unsupported_media_type", "不支持的文件类型", 415, {"allowed": list(allowed)})
+        # 文字与 develop 一致；码按契约 1.8
+        raise ApiError("unsupported_media_type", f"不支持文件“{Path(filename).name}”的类型", 415, {"allowed": list(allowed)})
 
 
-def check_size(size: int, purpose: str) -> None:
+def check_size(size: int, purpose: str, filename: str = "") -> None:
     limit = PURPOSE_LIMITS[purpose]
     if size > limit:
-        raise ApiError("payload_too_large", "文件超过大小上限", 413, {"limit_bytes": limit})
+        message = f"文件“{filename}”超过 {limit // MIB} MB，无法上传" if filename else "文件超过大小上限"
+        raise ApiError("payload_too_large", message, 413, {"limit_bytes": limit})
 
 
 def _purge_expired(now: float) -> None:
@@ -101,7 +103,7 @@ def create(owner: str, purpose: str, filename: str, data: bytes, content_type: s
                        {"fields": {"purpose": "enum"}})
     name = check_filename(filename)
     check_type(name, purpose)
-    check_size(len(data), purpose)
+    check_size(len(data), purpose, name)
     now = time.time()
     _purge_expired(now)
     upload_id = f"up-{uuid.uuid4().hex[:20]}"

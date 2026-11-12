@@ -12,10 +12,9 @@ import DrawioPreview from '../../components/DrawioPreview.jsx';
 import { isLocked } from '../../state/readonly.js';
 import { Button, Chip, Icon, Modal, Note, Seg, cx, useEscape } from '../../ui/index.jsx';
 import { useProjectEvent } from '../plugin/parts.jsx';
-import { scopeChip } from './sheetScopeModel.js';
 import {
   PREVIEW_ICON, blockBody, isDocPreview, blockLabel, coverageChip, csvText, diamondPoints, drawioLayout, feedbackView, fmtSize,
-  parseDrawio, parseFragment, purposeView, refRows, refTarget, scaleText, sheetView, splitHighlights, tableTruncated, cellPos,
+  parseDrawio, parseFragment, purposeView, refRows, refTarget, scaleText, sheetGrid, locateSheetCell, splitHighlights,
   hasTextTab, materialTitle, textSections, inRange, isTextFragment, lineRange, textPathOf, textView,
 } from './resourcesModel.js';
 
@@ -265,47 +264,61 @@ function useTable(path, revision) {
 
 function SheetPane({ m, fragment }) {
   const data = useTable(m.path, m.revision);
-  const focus = parseFragment(fragment);
-  const cell = focus?.type === 'cell' ? cellPos(focus.cell) : null;
+  const download = useDownload(m.name, m.path);
+  const located = useMemo(() => (data?.sheets ? locateSheetCell(data, fragment) : null), [data, fragment]);
   const [pick, setPick] = useState(null);
   const sheets = data?.sheets || [];
-  const focusIndex = focus?.type === 'cell' ? sheets.findIndex((s) => s.name === focus.sheet) : -1;
-  const index = pick ?? (focusIndex >= 0 ? focusIndex : 0);
+  // 打开或换了定位锚点时切到目标工作表（组件按锚点重建，pick 回到 null）
+  const index = pick ?? located?.index ?? 0;
   const sheet = sheets[index];
-  const view = useMemo(() => sheetView(sheet), [sheet]);
-  const hereFocus = cell && (focusIndex < 0 || focusIndex === index);
+  const grid = useMemo(() => sheetGrid(sheet, located?.index === index ? located.cell : null), [sheet, located, index]);
   const scrollRef = useRef(null);
   useLayoutEffect(() => {
-    scrollRef.current?.querySelector('.rs-cell')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  }, [view]);
+    scrollRef.current?.querySelector('.rs-cell')?.scrollIntoView({ block: 'center', inline: 'center' });
+  }, [grid]);
   if (!data) return <div className="evd-sheet rs-loading"><span className="spin" />正在读取表格…</div>;
-  if (data.error) return <Note tone="red">{data.error}</Note>;
+  if (data.error) {
+    return (
+      <Note tone="amber">
+        {data.error}
+        <div className="row mt8"><Button size="xs" icon="download" onClick={download}>下载原文件</Button></div>
+      </Note>
+    );
+  }
+  const truncated = sheets.some((s) => s.truncated) || data.sheet_truncated;
   return (
     <>
+      {truncated ? <Note tone="gray" className="mb8">表格较大，仅预览前 500 行 × 60 列；完整内容请下载原文件</Note> : null}
+      {located?.problem ? (
+        <Note tone="amber" className="mb8">{located.problem === 'range' ? `${located.message}，完整内容请下载原文件` : located.message}</Note>
+      ) : null}
       <div className="evd-sheet">
-        <div className="rs-sheet-scroll" ref={scrollRef}>
-          <table>
-            <thead>
-              <tr>
-                <th className="rn" />
-                {view.header.map((h, c) => <th key={c} className={cx(hereFocus && cell.row === 1 && cell.col === c && 'rs-cell')}>{h}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {view.body.map((r) => (
-                <tr key={r.n}>
-                  <td className="rn">{r.n}</td>
-                  {r.cells.map((v, c) => <td key={c} className={cx(hereFocus && cell.row === r.n && cell.col === c && 'rs-cell')}>{v}</td>)}
+        {sheet && !(sheet.rows || []).length ? <div className="rs-empty-sheet muted sm">空工作表</div> : (
+          <div className="rs-sheet-scroll" ref={scrollRef}>
+            <table>
+              <thead>
+                <tr>
+                  <th className="rn" />
+                  {grid.letters.map((h) => <th key={h}>{h}</th>)}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {grid.rows.map((r) => (
+                  <tr key={r.n}>
+                    <td className="rn">{r.n}</td>
+                    {r.cells.map((c) => (
+                      <td key={c.key} rowSpan={c.rowSpan} colSpan={c.colSpan} className={cx(c.numeric && 'num', c.hit && 'rs-cell')}>{c.value}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
         <div className="evd-tabs">
           {sheets.map((s, i) => <span key={s.name} className={i === index ? 'on' : ''} onClick={() => setPick(i)}>{s.name}</span>)}
         </div>
       </div>
-      {tableTruncated(data, sheet) ? <div className="xs muted mt8 row g4"><Icon name="info" size={12} />仅预览前 500 行 × 60 列</div> : null}
     </>
   );
 }
@@ -536,7 +549,7 @@ function RefsPane({ m, onLocate }) {
 }
 
 // ---------- 预览卡 ----------
-export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, onUploadText, tasks, onScope }) {
+export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, onUploadText, tasks }) {
   const [tab, setTab] = useState('pv');
   const [focus, setFocus] = useState(fragment);
   const [coverage, setCoverage] = useState(null);
@@ -546,7 +559,6 @@ export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, 
   const onCoverage = useCallback((c) => setCoverage(c), []);
   const cov = isDocPreview(m) ? coverageChip(coverage) : null;
   const p = purposeView(m, purposes);
-  const scope = scopeChip(m.schema_scope);
   const scale = isDocPreview(m) || m.preview === 'drawio' || m.preview === 'html' ? fmtSize(m.size) : scaleText(m);
 
   let pane;
@@ -573,7 +585,6 @@ export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, 
         <div className="row mb12">
           <span className="row g4">
             <Chip tone="blue">{p.label}</Chip>
-            {scope && onScope ? <Chip tone={scope.tone} icon="table" className="rs-go" title="Sheet 范围" onClick={() => onScope(m)}>{scope.text}</Chip> : null}
             <Chip tone="line">{scale}</Chip>
             {cov ? <Chip tone={cov.tone} icon={cov.icon}>{cov.text}</Chip> : null}
           </span>

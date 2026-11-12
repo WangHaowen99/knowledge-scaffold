@@ -38,12 +38,16 @@ export function register(ctx) {
   // 表格的 Sheet：mock 里第一张是中文表头（提醒一条），其余是英文列名的数据表
   const mockSheets = (f) => Array.from({ length: f.sheets || 1 }, (_, i) => ({
     name: `Sheet${i + 1}`, kind: i ? 'table' : 'document', headers: i ? ['id', 'name'] : ['编号', '名称'], selectable: true, schema_selectable: true,
-    issues: i ? [] : [{ code: 'non_identifier_header', severity: 'warning', message: '列名不全是英文标识符，按原样使用' }],
+    issues: i ? [] : [{ code: 'non_identifier_header', severity: 'warning', message: '表头含中文或非英文标识符。系统会原样使用这些字段名；请核对是否与实际数据源列名一致，不要为通过识别而随意改名。' }],
   }));
+  const mockScope = (f) => {
+    const list = mockSheets(f);
+    return { version: 1, mode: 'auto', file_sha256: `mock-${f.path}`, included_sheets: list.map((x) => x.name),
+      reference_sheets: [], sheets: list, warnings: [] };
+  };
   const schemaTable = (f) => f.purpose === 'schema' && /\.(xlsx|xlsm|csv)$/i.test(f.path);
   const view = (s, f) => {
-    const m = { ...materialView(f, mapItemOf(s, f.path)), schema_scope: schemaTable(f)
-      ? { mode: 'auto', pending: false, included_sheets: mockSheets(f).map((x) => x.name), reference_sheets: [], error: null } : null };
+    const m = { ...materialView(f, mapItemOf(s, f.path)), schema_scope: schemaTable(f) ? mockScope(f) : null, schema_candidate: null };
     return f.kind === 'drawio' && db.files.get(f.path) ? { ...m, revision: db.files.get(f.path).revision } : m;
   };
   // 发布过才有外部反馈：还没传资料、读资料中、蓝图待确认的阶段没有
@@ -165,10 +169,7 @@ export function register(ctx) {
     const f = state(m[1]).files.find((x) => x.path === path);
     if (!f) return err(404, 'file_not_found', '资料不存在', { path });
     if (!/\.(xlsx|xlsm|csv)$/i.test(path)) return err(415, 'unsupported_media_type', '数据 Schema 只支持 xlsx、xlsm、csv', { allowed: ['.xlsx', '.xlsm', '.csv'] });
-    const sheets = mockSheets(f);
-    const names = sheets.map((s) => s.name);
-    return json(200, { version: 1, mode: 'auto', revision: 'mock000000000000', pending: false, error: null,
-      included_sheets: names, reference_sheets: [], sheets });
+    return json(200, mockScope(f));
   });
 
   // R-15 选出处的位置：逐行，q 按原文和位置筛，一页 limit 条（游标就是下标）；选中的锚点补进 EV-29 的解析表，悬停能看原文

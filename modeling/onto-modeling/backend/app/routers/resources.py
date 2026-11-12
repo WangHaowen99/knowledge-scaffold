@@ -14,7 +14,9 @@ from fastapi.responses import JSONResponse
 
 from ..api import deps
 from ..api.errors import ApiError
-from ..services import mainline, material_conversion, material_refs, material_text, research_view, table_sources, uploads, workspace_labels
+from ..services import mainline, material_conversion, material_refs, material_text, research_view, uploads, workspace_labels
+from ..services.workspace import WorkspaceError
+from ..services.workspace.files import UNREADABLE_TABLE
 from ..services.workspace.layout import (
     RESOURCE_DIRECTIVES, RESOURCE_SUBDIRS, _content_revision, is_auto_detected, is_resource_text,
 )
@@ -36,12 +38,13 @@ TEXT_VIEW_CHARS = 300_000
 
 
 def _material(project_id: str, root: Path, rel: str, directives: dict, referenced: int = 0,
-              coverage: dict | None = None) -> dict:
+              coverage: dict | None = None, schema: tuple[dict, dict] | None = None) -> dict:
     path = root / rel
     kind, preview = research_view.kind_of(rel)
     directive = directives.get(rel)
     purpose = directive.get("purpose", "auto") if isinstance(directive, dict) else "auto"
     data = path.read_bytes()
+    scopes, candidates = schema or _schema_info(project_id)
     return {
         "path": rel,
         "name": path.name,
@@ -62,15 +65,15 @@ def _material(project_id: str, root: Path, rel: str, directives: dict, reference
         "preview": preview,
         "revision": _content_revision(data),
         "text": material_conversion.view(project_id, root, rel, data),
-        "schema_scope": _schema_scope(path, purpose, directive),
+        # develop resource-meta 的 schema_scopes、schema_candidates，按资料给（ADR-0096）
+        "schema_scope": scopes.get(rel),
+        "schema_candidate": candidates.get(rel),
     }
 
 
-def _schema_scope(path: Path, purpose: str, directive) -> dict | None:
-    """数据 Schema 表格的 Sheet 范围摘要；别的资料为 None。"""
-    if purpose != "schema" or path.suffix.lower() not in table_sources.TABLE_SUFFIXES:
-        return None
-    return table_sources.summary(path, directive if isinstance(directive, dict) else None)
+def _schema_info(project_id: str) -> tuple[dict, dict]:
+    """数据 Schema 表格的 Sheet 范围（含逐 Sheet 的表头与问题）与「疑似数据表」候选。"""
+    return deps.workspaces.schema_scopes(project_id), deps.workspaces.schema_candidates(project_id)
 
 
 def _material_paths(root: Path) -> list[str]:
@@ -84,7 +87,9 @@ def list_resources(project_id: str, request: Request):
     paths = _material_paths(root)
     referenced = material_refs.counts(root, paths)
     coverage = research_view.material_coverage(deps.workspaces, project_id)
-    items = [_material(project_id, root, rel, directives, referenced.get(rel, 0), coverage.get(rel)) for rel in paths]
+    schema = _schema_info(project_id)
+    items = [_material(project_id, root, rel, directives, referenced.get(rel, 0), coverage.get(rel), schema)
+             for rel in paths]
     groups = [
         {"key": key, "label": label, "items": [item for item in items if item["group"] == key]}
         for key, label in GROUP_LABELS
@@ -110,7 +115,7 @@ async def upload_resource(project_id: str, request: Request):
         filename = uploads.check_filename(upload.filename or "")
         uploads.check_type(filename, "material")
         data = await upload.read(uploads.LIMITS["material_upload_bytes"] + 1)
-        uploads.check_size(len(data), "material")
+        uploads.check_size(len(data), "material", filename)
         fields, upload_id = dict(form), ""
     else:
         fields = await deps.json_body(request)
@@ -170,42 +175,35 @@ async def set_purpose(project_id: str, request: Request):
 
 
 def _selection_body(value) -> dict | None:
-    """R-03 的 schema_selection：{mode: auto|manual, included_sheets?: string[], revision?: string}。"""
+    """R-03 的 schema_selection：{mode: auto|manual, included_sheets: string[], file_sha256: string}（develop 同形）。"""
     if value is None:
         return None
+    fields = {}
     if not isinstance(value, dict) or value.get("mode") not in ("auto", "manual"):
-        raise ApiError("invalid_argument", "Sheet 范围不合法", 400, {"fields": {"schema_selection.mode": "enum"}})
-    if value["mode"] == "auto":
-        return {"mode": "auto"}
-    included, revision = value.get("included_sheets"), value.get("revision")
-    if not isinstance(included, list) or not all(isinstance(name, str) for name in included):
-        raise ApiError("invalid_argument", "Sheet 范围不合法", 400,
-                       {"fields": {"schema_selection.included_sheets": "required"}})
-    if not isinstance(revision, str) or not revision:
-        raise ApiError("invalid_argument", "Sheet 范围不合法", 400, {"fields": {"schema_selection.revision": "required"}})
-    return {"mode": "manual", "included_sheets": included, "revision": revision}
+        fields["schema_selection.mode"] = "enum"
+    elif not isinstance(value.get("included_sheets"), list) \
+            or not all(isinstance(name, str) for name in value["included_sheets"]):
+        fields["schema_selection.included_sheets"] = "required"
+    elif not isinstance(value.get("file_sha256"), str):
+        fields["schema_selection.file_sha256"] = "required"
+    if fields:
+        raise ApiError("invalid_argument", "Sheet 范围不合法", 400, {"fields": fields})
+    return {"mode": value["mode"], "included_sheets": value["included_sheets"], "file_sha256": value["file_sha256"]}
 
 
 @router.get("/schema-preview")
-def schema_preview(project_id: str, request: Request, path: str = ""):
-    """R-16：按「数据 Schema」检查这份表格的每个 Sheet——表头问题、建议范围；只读，不改用途。"""
-    root = deps.require_owner(project_id, request)
+def schema_preview(project_id: str, request: Request, path: str = "", force: bool = False):
+    """R-16：按「数据 Schema」检查这份表格的每个 Sheet——表头问题、建议范围；不改用途。force 时不用缓存重扫。"""
+    root = deps.require_writable(project_id, request)
     rel = _material_target(root, path)
-    target = root / rel
-    suffix = target.suffix.lower()
-    if suffix not in table_sources.TABLE_SUFFIXES:
-        message = "旧版 .xls 要另存为 .xlsx" if suffix == ".xls" else "数据 Schema 只支持 xlsx、xlsm、csv"
-        raise ApiError("unsupported_media_type", message, 415, {"allowed": list(table_sources.TABLE_SUFFIXES)})
-    directive = deps.workspaces.resource_directives(project_id).get(rel)
     try:
-        scope = table_sources.preview(target, directive if isinstance(directive, dict) else None)
-    except table_sources.SheetSelectionError as exc:
-        raise ApiError("invalid_argument", str(exc), 400, {"path": rel}) from exc
-    if scope["pending"]:
+        return deps.workspaces.preview_schema(project_id, rel, force=force)
+    except WorkspaceError as exc:
+        # 转换失败、暂不支持：文本版不会再有了，按 develop「文件无法解析为数据表」报
         state = (material_conversion.view(project_id, root, rel, heal=False) or {}).get("state")
-        if state in ("failed", "unsupported"):
-            raise ApiError("not_convertible", "表格转不出文本，检查不了表头", 409, {"path": rel})
-    return scope
+        if exc.code == "material_text_pending" and state in ("failed", "unsupported"):
+            raise WorkspaceError(UNREADABLE_TABLE, 400) from exc
+        raise
 
 
 @router.delete("")

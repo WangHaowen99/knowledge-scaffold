@@ -8,7 +8,7 @@
 全部有内容的 Sheet 都是术语表，整份判为术语表。
 
 判定规则与 Sheet 范围共用 table_sources（ADR-0096）。上传那一刻还没有文本版，这里仍读原件判用途——
-这是 ADR-0076 记下的遗留点之一，不扩大：Sheet 范围、表头预检都只读文本版。
+这是 ADR-0076 记下的遗留点之一，不扩大：Sheet 范围、表头预检都只读文本版（Excel）或直接读 CSV。
 """
 
 from __future__ import annotations
@@ -20,9 +20,19 @@ from pathlib import Path
 import openpyxl
 
 from .package_mapping import TABLE_SUFFIXES
-from .table_sources import (  # noqa: F401  判定规则对外照旧从这里取
-    DICTIONARY, DOCUMENT, EMPTY, MAYBE, META, TABLE, TERM, classify_sheet,
+from .table_sources import rules as _rules
+
+# 与 develop 的 material_detect 同一组名字：判定规则与 Sheet 范围都来自 table_sources
+TABLE, MAYBE, DICTIONARY, TERM, DOCUMENT, META, EMPTY = (
+    _rules.TABLE, _rules.MAYBE, _rules.DICTIONARY, _rules.TERM, _rules.DOCUMENT, _rules.META, _rules.EMPTY,
 )
+classify_sheet = _rules.classify_sheet
+resolve_selection = _rules.resolve_selection
+selection_metadata = _rules.selection_metadata
+read_selected_headers = _rules.read_selected_headers
+evaluation_selection = _rules.evaluation_selection
+SheetSelectionError = _rules.SheetSelectionError
+TextPending = _rules.TextPending
 
 SAMPLE_ROWS = 30
 MAX_SHEETS = 200

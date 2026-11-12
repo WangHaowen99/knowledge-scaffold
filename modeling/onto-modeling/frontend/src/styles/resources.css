@@ -59,3 +59,6 @@
 .evd-paper tr{scroll-margin:40px}
 
 .card .chip.rs-go{cursor:pointer}
+.evd-incl.danger{color:var(--red)}
+.evd-purp .auto{margin-left:4px}
+.rs-empty-sheet{padding:24px;text-align:center}

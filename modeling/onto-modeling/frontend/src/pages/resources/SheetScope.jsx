@@ -1,12 +1,11 @@
-// 数据 Schema 的 Sheet 范围弹窗（ADR-0096）：勾选的 Sheet 当数据表，其余只作参考；表头有错误的不能勾
+// 数据 Schema 的 Sheet 范围弹窗（ADR-0096）：元素与文字同 develop LeftPane，样式用新 UI
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
-import { errorText } from '../../api/errors.js';
-import { Button, Check, Chip, Modal, Note } from '../../ui/index.jsx';
+import { Button, Check, Modal, Note } from '../../ui/index.jsx';
 import { sheetScopeFlow } from './sheetScopeModel.js';
 
-// choose(m)：改用途为数据 Schema（先预检，没问题直接保存）；edit(m)：看或改已标 Schema 的范围
+// choose(m)：改用途为数据 Schema（先预检，全无问题直接保存）；open(m)：「查看范围」
 export function useSheetScope(pid, onSaved) {
   const { api } = useApp();
   const [state, setState] = useState({ editor: null, checking: false, saving: false });
@@ -15,17 +14,18 @@ export function useSheetScope(pid, onSaved) {
   const flow = useMemo(() => sheetScopeFlow({
     api,
     set: setState,
-    onSaved: (r, scope) => saved.current?.(r, scope),
-    onError: (e) => toast(errorText(e), 'alert'),
+    onSaved: (r, info) => {
+      toast(info.quick ? `已设为数据 Schema，选中 ${info.count} 个数据 Sheet` : 'Sheet 范围已保存；请重新执行受影响的资料分析和字段核验', 'check');
+      saved.current?.(r, info);
+    },
   }), [api]);
   useEffect(() => { flow.setProject(pid); }, [flow, pid]);
   const dialog = <SheetScopeDialog state={state} flow={flow} />;
-  return { choose: flow.choose, edit: flow.edit, dialog, checking: state.checking };
+  return { choose: flow.choose, open: flow.open, dialog };
 }
 
 function SheetScopeDialog({ state, flow }) {
   const { editor, checking, saving } = state;
-  const busy = checking || saving;
   const scope = editor?.scope;
   return (
     <Modal
@@ -33,37 +33,47 @@ function SheetScopeDialog({ state, flow }) {
       onClose={() => { if (!saving) flow.cancel(); }}
       sticky={saving}
       icon="table"
-      title="Sheet 范围"
-      sub={editor?.material?.name}
+      title="数据 Schema 的 Sheet 范围"
+      w={560}
       foot={(
         <>
-          <Button size="sm" kind="ghost" disabled={busy} onClick={() => flow.recheck()}>{checking ? '检查中…' : '重新检查'}</Button>
           <span className="sp" />
-          <Button size="sm" disabled={saving} onClick={() => flow.cancel()}>取消</Button>
-          <Button size="sm" kind="primary" disabled={!flow.canSave()} onClick={() => flow.confirm()}>{saving ? '保存中…' : '确认'}</Button>
+          <Button disabled={saving} onClick={() => flow.cancel()}>取消</Button>
+          <Button kind="primary" disabled={checking || saving || !scope?.file_sha256} onClick={() => flow.confirm()}>
+            {saving ? <span className="spin" /> : null}确认用途与范围
+          </Button>
         </>
       )}
     >
-      {scope?.error ? <Note tone="amber">{scope.error}</Note> : null}
-      <div className="col" style={{ gap: 10 }}>
+      <div className="sm b">{editor?.material?.path}</div>
+      <p className="sm muted mt8">
+        第一行应直接填写字段名，每列名称唯一且不合并。勾选的 Sheet 用于对象字段提取与数据映射，其余作为参考资料。确认后才保存用途，取消不改变原设置，原文件不会改写。
+      </p>
+      {scope?.error ? <Note tone="amber" className="mt8">{scope.error}</Note> : null}
+      <div className="col mt12" style={{ gap: 8 }}>
         {(scope?.sheets || []).map((sheet) => {
           const on = editor.selected.includes(sheet.name);
           const blocked = sheet.schema_selectable === false || sheet.selectable === false;
           return (
             <div key={sheet.name}>
-              <div className="row g8">
-                <Check on={on} disabled={busy || blocked} onChange={() => flow.toggle(sheet.name)} label={sheet.name} />
-                <span className="sp" />
-                <Chip tone={on ? 'blue' : 'line'} sm>{on ? '数据表' : '参考'}</Chip>
-              </div>
-              {(sheet.issues || []).map((issue, i) => (
-                <div key={`${issue.code}-${i}`} className="xs mt4" style={{ color: issue.severity === 'error' ? 'var(--red)' : 'var(--amber)' }}>
-                  {issue.message}
-                </div>
+              <Check
+                on={on} disabled={checking || saving || blocked} onChange={() => flow.toggle(sheet.name)}
+                label={`${sheet.name} · ${on ? '数据结构' : '参考资料'}`}
+              />
+              {(sheet.issues || []).map((issue, index) => (
+                <Note key={`${issue.code}-${index}`} tone={issue.severity === 'error' ? 'red' : 'amber'} className="mt4">
+                  {`Sheet「${sheet.name}」：${issue.message}`}
+                </Note>
               ))}
             </div>
           );
         })}
+      </div>
+      {editor && !editor.selected.length ? <Note className="mt12">未选择数据 Sheet：全部作为参考资料，不提供数据表字段。</Note> : null}
+      <div className="row mt12">
+        <Button size="sm" disabled={checking || saving} onClick={() => flow.recheck()}>
+          {checking ? <span className="spin" /> : null}重新检查文件
+        </Button>
       </div>
     </Modal>
   );

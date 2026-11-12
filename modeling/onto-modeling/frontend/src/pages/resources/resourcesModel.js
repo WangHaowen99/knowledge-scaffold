@@ -1,4 +1,5 @@
 // 资料区（设计稿 resources）的纯逻辑：分组与行文字、跳转参数、出处编号、上传校验、被引用、外部反馈、表格与 drawio 预览
+import { validateResourceFile } from '../../lib/resourceUpload.js';
 
 // R-01 拿不到 purposes 时用的兜底（说明文字同设计稿 EVD_PURPOSE）
 export const PURPOSE_FALLBACK = [
@@ -222,7 +223,9 @@ export function coverageChip(cov) {
 
 // ---------- 上传 ----------
 // 选完文件先在本地挡掉格式不对、太大的（标注 resources-003）；规则与后端同一份（lib/resourceUpload.js，契约 1.8）
-export { checkResourceFile as checkUpload } from '../../lib/resourceUpload.js';
+export function checkUpload(name, size, rules) {
+  return validateResourceFile({ name, size }, rules).message || null;
+}
 
 export const extOf = (name) => (String(name).includes('.') ? String(name).split('.').pop().toLowerCase() : '');
 
@@ -304,14 +307,64 @@ export function columnLetter(index) {
 }
 
 // 首行当表头：表头写成「A 商品」，正文行号从 2 开始
-export function sheetView(sheet) {
+// 表格预览（同 develop ExcelView）：列字母表头、行号从 1 起；合并单元格起点带 rowSpan/colSpan，被盖住的格子不出；
+// 定位格落在合并区内时高亮整个合并区（合并区左上角那格）
+export function sheetGrid(sheet, target = null) {
   const rows = sheet?.rows || [];
+  const merges = sheet?.merges || [];
   const cols = Math.max(0, ...rows.map((r) => r.length));
-  const head = rows[0] || [];
+  const anchors = new Map();
+  const covered = new Set();
+  for (const m of merges) {
+    anchors.set(`${m.row}:${m.col}`, m);
+    for (let r = m.row; r < m.row + m.rowspan; r += 1) {
+      for (let c = m.col; c < m.col + m.colspan; c += 1) {
+        if (r !== m.row || c !== m.col) covered.add(`${r}:${c}`);
+      }
+    }
+  }
+  let hit = '';
+  if (target) {
+    const merge = merges.find((m) => target.row >= m.row && target.row < m.row + m.rowspan
+      && target.col >= m.col && target.col < m.col + m.colspan);
+    hit = merge ? `${merge.row}:${merge.col}` : `${target.row}:${target.col}`;
+  }
   return {
-    header: Array.from({ length: cols }, (_, c) => `${columnLetter(c)} ${head[c] ?? ''}`.trim()),
-    body: rows.slice(1).map((r, i) => ({ n: i + 2, cells: Array.from({ length: cols }, (_, c) => r[c] ?? '') })),
+    letters: Array.from({ length: cols }, (_, c) => columnLetter(c)),
+    hit,
+    rows: rows.map((row, r) => ({
+      n: r + 1,
+      cells: Array.from({ length: cols }, (_, c) => c).filter((c) => !covered.has(`${r}:${c}`)).map((c) => {
+        const merge = anchors.get(`${r}:${c}`);
+        const value = row[c] ?? '';
+        return { key: `${r}:${c}`, value, rowSpan: merge?.rowspan, colSpan: merge?.colspan,
+          numeric: value !== '' && !Number.isNaN(Number(value)), hit: hit === `${r}:${c}` };
+      }),
+    })),
   };
+}
+
+// 出处锚点（sheet:名!B3）在预览里的位置；工作表或单元格不在时给出原因（文字同 develop locateSheetCell）
+export function locateSheetCell(data, fragment) {
+  const f = parseFragment(fragment);
+  const pos = f?.type === 'cell' ? cellPos(f.cell) : null;
+  if (!pos) return null;
+  const sheets = data?.sheets || [];
+  const index = sheets.findIndex((sheet) => sheet.name === f.sheet);
+  if (index < 0) {
+    return data?.sheet_truncated
+      ? { problem: 'range', message: `工作表「${f.sheet}」超出预览范围（仅预览前 20 个工作表）` }
+      : { problem: 'missing', message: `工作表「${f.sheet}」已不存在（资料可能已被替换）` };
+  }
+  const sheet = sheets[index];
+  const colCount = Math.max(0, ...(sheet.rows || []).map((row) => row.length));
+  const target = { row: pos.row - 1, col: pos.col };
+  if (target.row >= (sheet.rows || []).length || target.col >= colCount) {
+    return sheet.truncated
+      ? { index, problem: 'range', message: `${f.sheet}!${f.cell} 超出预览范围（仅预览前 500 行 × 60 列）` }
+      : { index, problem: 'missing', message: `${f.sheet}!${f.cell} 在当前文件中已不存在（资料可能已被替换）` };
+  }
+  return { index, cell: target };
 }
 
 // 单元格「D1」→ {row: 1, col: 3}（行从 1 起，列从 0 起）
