@@ -14,6 +14,7 @@ import pytest
 from app.api.errors import ApiError
 from app.services import agent_sessions
 from app.services.autobuild import store
+from tests import proc
 from tests.autobuild_helpers import (AutoEngine, ab, ask, gate, run_of, start, wait_state,  # noqa: F401
                                      wait_until)
 from tests.test_changesets import git, main_write, obj
@@ -115,12 +116,11 @@ def test_B_policy_refuses_deletes_and_release_tags(ab):
 
 def test_B_guard_blocks_release_tags_in_any_mode(tmp_path, monkeypatch):
     import json
-    import subprocess
 
     from app import kernel_guards
     from app.kernel_guards import _guard_common as guard
 
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    proc.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
 
     def verdict(command: str) -> list:

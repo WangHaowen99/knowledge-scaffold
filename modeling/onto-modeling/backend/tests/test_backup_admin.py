@@ -94,7 +94,7 @@ def seed(manager: WorkspaceManager, home: Path) -> dict:
 
 
 def members(archive: Path) -> set[str]:
-    with tarfile.open(archive) as tar:
+    with tarfile.open(archive) as tar:  # NOSONAR(S5042) 只读自己生成的备份包的成员名，不展开
         return set(tar.getnames())
 
 
@@ -145,7 +145,7 @@ def test_backup_covers_state_and_excludes_master_key(env, tmp_path):
     assert oct(archive.stat().st_mode & 0o777) == oct(0o600)
 
     extracted = tmp_path / "restore"
-    with tarfile.open(archive) as tar:
+    with tarfile.open(archive) as tar:  # NOSONAR(S5042) 展开合成备份包，要保留软链，不能用 data 过滤
         tar.extractall(extracted, filter="tar")
     rows = sqlite3.connect(extracted / "data/jiuwen/checkpoints.db").execute(
         "SELECT id FROM checkpoint").fetchall()
@@ -154,7 +154,7 @@ def test_backup_covers_state_and_excludes_master_key(env, tmp_path):
         "SELECT project_id FROM tokens").fetchall()
     assert tokens_rows == [(project,)]
     # 工作区里指向资产的软链按链接本身保存，不跟进去
-    with tarfile.open(archive) as tar:
+    with tarfile.open(archive) as tar:  # NOSONAR(S5042) 只读自己生成的备份包的成员信息，不展开
         assert tar.getmember(f"data/workspaces/{project}/CLAUDE.md").issym()
 
 

@@ -246,7 +246,7 @@ def _spec(job_id="ej-0001", data=ARTIFACT, **budget):
 
 
 def _untar(body):
-    with tarfile.open(fileobj=io.BytesIO(body), mode="r:") as tar:
+    with tarfile.open(fileobj=io.BytesIO(body), mode="r:") as tar:  # NOSONAR(S5042) 只读内存里合成结果包的成员，不落盘
         return {member.name: tar.extractfile(member).read() for member in tar.getmembers()}, \
             [member.name for member in tar.getmembers()]
 
@@ -446,7 +446,7 @@ def test_tar_size_matches_tarfile():
              bundle.Member("records/entity.jsonl", 513), bundle.Member("blobs/" + "a" * 64, 0)]
     out = io.BytesIO()
     files = {item.name: b"z" * item.size for item in items}
-    with tarfile.open(fileobj=out, mode="w|", format=tarfile.USTAR_FORMAT) as tar:
+    with tarfile.open(fileobj=out, mode="w|", format=tarfile.USTAR_FORMAT) as tar:  # NOSONAR(S5042) 内存里的合成归档
         for item in items:
             info = tarfile.TarInfo(item.name)
             info.size = item.size
@@ -603,7 +603,7 @@ def test_rea_static_listed_only_when_configured(monkeypatch):
     monkeypatch.delenv(REA_URL_ENV, raising=False)
     assert providers.load() == {}
     assert server.Gateway({}).providers() == {"items": [], "providers": []}
-    monkeypatch.setenv(REA_URL_ENV, "http://rea-sidecar:8130")
+    monkeypatch.setenv(REA_URL_ENV, "http://rea-sidecar:8130")  # NOSONAR(S5332) 合成地址，只解析不连接
     loaded = providers.load()
     rea = loaded["rea-static"]
     assert list(loaded) == ["rea-static"] and (rea.host, rea.port) == ("rea-sidecar", 8130)

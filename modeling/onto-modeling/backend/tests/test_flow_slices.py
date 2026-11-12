@@ -26,6 +26,7 @@ from app.services.flow import model as flow_model
 from app.services.flow import state as node_state
 from app.services.packs import contracts
 from app.services.session_host import exec_records
+from tests import proc
 from tests.test_changesets import agent_write, main_write, obj
 from tests.test_flow_states import env  # noqa: F401 - 共用 fixture
 
@@ -483,12 +484,11 @@ def test_optional_metric_going_stale_is_left_to_validation(env):
 
 def test_old_records_find_what_changed_from_git(env):
     """改动前留下的确认记录没存分类指纹：按确认那一刻主线上的提交比到现在，只改了操作就写「操作有变化」，不把四类全列出来。"""
-    import subprocess
     import time
 
     _client, _workspaces, _manager, _project_id, root = env
     _validated(root)
-    head_time = int(subprocess.run(["git", "log", "-1", "--format=%ct"], cwd=root, capture_output=True, text=True).stdout)
+    head_time = int(proc.run(["git", "log", "-1", "--format=%ct"], cwd=root, capture_output=True, text=True).stdout)
     stored = node_state.load(root)
     for record in [*stored["nodes"].values(), *stored.get("slices", {}).get("all", {}).values()]:
         record.pop("kinds", None)

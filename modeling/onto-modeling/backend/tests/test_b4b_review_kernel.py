@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -21,6 +20,7 @@ from app.kernel.changesets import service, store, worktree
 from app.kernel.writepath import tx as writepath_tx
 from app.kernel_guards import _guard_common as guards
 from app.services.workspace import WorkspaceError, WorkspaceManager
+from tests import proc
 from tests.test_changesets import _pending, agent_write, git, main_write, obj, project  # noqa: F401
 
 
@@ -50,7 +50,7 @@ def test_01_sparse_checkout_cannot_turn_into_deleting_mainline_resource(project)
         reason = guard_says("toolset", copy, {"tool_name": "Bash", "tool_input": {"command": command}})
         assert reason, command
     # 守卫被绕过（或助手在终端里跑）：关掉稀疏、把「资料不见了」提交进副本分支
-    subprocess.run(["git", "sparse-checkout", "disable"], cwd=copy, capture_output=True)
+    proc.run(["git", "sparse-checkout", "disable"], cwd=copy, capture_output=True)
     agent_write(copy, "ontology/object/门店.md", obj("门店", "助手加的门店"))
     # 下一轮开始：重设稀疏规则、核对资料条目仍是不检出
     service.copy_for_turn(workspaces, project_id, root)
@@ -59,8 +59,8 @@ def test_01_sparse_checkout_cannot_turn_into_deleting_mainline_resource(project)
     record = service.observe(workspaces, project_id, running=False)
     assert record["paths"] == ["ontology/object/门店.md"]
     # 就算副本分支上真有删资料的提交，合入也不碰受保护目录
-    subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "sparse-checkout", "disable"], cwd=copy,
-                   capture_output=True)
+    proc.run(["git", "-c", "core.hooksPath=/dev/null", "sparse-checkout", "disable"], cwd=copy,
+             capture_output=True)
     git(copy, "add", "-A")
     git(copy, "commit", "-qm", "agent: 门店（顺手删了资料）")
     record = service.observe(workspaces, project_id, running=False)
@@ -185,7 +185,10 @@ def test_05_concurrent_merges_and_discards_are_serialized(project, monkeypatch):
     _copy, record = _pending(workspaces, project_id, root)
     (root / "tmp-note.md").write_text("主线工作区里没提交的东西\n")
     _slow_gate(monkeypatch)
-    merge = lambda: service.merge(workspaces, project_id, record["id"], actor="employee_0001")  # noqa: E731
+
+    def merge():
+        return service.merge(workspaces, project_id, record["id"], actor="employee_0001")
+
     out, errors = _race(merge, merge)
     assert len(out) == 1 and len(errors) == 1 and errors[0].code == "changeset_closed"
     assert "tmp-note.md" not in git(root, "-c", "core.quotePath=false", "log", "--name-only", "--format=", "-3")
@@ -267,10 +270,10 @@ service.merge(ws, pid, rec["id"], actor="employee_0001")
 
 
 def _crash(tmp_path: Path, mode: str):
-    proc = subprocess.run([sys.executable, "-c", CRASH_CHILD, str(tmp_path), mode], capture_output=True, text=True,
-                          cwd=Path(__file__).resolve().parents[1])
-    assert proc.returncode == 9, proc.stderr[-800:]
-    project_id, changeset_id = proc.stdout.split()[-2:]
+    crashed = proc.run([sys.executable, "-c", CRASH_CHILD, str(tmp_path), mode], capture_output=True, text=True,
+                       cwd=Path(__file__).resolve().parents[1])
+    assert crashed.returncode == 9, crashed.stderr[-800:]
+    project_id, changeset_id = crashed.stdout.split()[-2:]
     workspaces = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
     return workspaces, project_id, changeset_id
 

@@ -1,5 +1,8 @@
-"""插件中心的采集类连接器（端到端验证待定事项第 9 条）：部署了连接器网关时，多源连接器里除了转换器，还列数据库、代码仓库、
-REA 这些采集类连接器（平台级、不按项目启用）；没部署网关、网关不通时不列，目录照常出。"""
+"""插件中心的采集类连接器（端到端验证待定事项第 9 条）。
+
+部署了连接器网关时，多源连接器里除了转换器，还列数据库、代码仓库、
+REA 这些采集类连接器（平台级、不按项目启用）；没部署网关、网关不通时不列，目录照常出。
+"""
 
 from __future__ import annotations
 
@@ -57,7 +60,7 @@ def test_no_gateway_lists_no_collectors(env):
 
 def test_gateway_collectors_are_listed_as_platform_connectors(env):
     client, project_id, monkeypatch = env
-    monkeypatch.setenv(gateway.URL_ENV, "http://connector-gateway.invalid:8120")
+    monkeypatch.setenv(gateway.URL_ENV, "http://connector-gateway.invalid:8120")  # NOSONAR(S5332) 合成地址，不连接
     monkeypatch.setattr(collector, "catalog", lambda force=False: [dict(item) for item in PROVIDERS])
     body = client.get("/api/v1/packs", params={"project_id": project_id}).json()
     cards = _providers(body)

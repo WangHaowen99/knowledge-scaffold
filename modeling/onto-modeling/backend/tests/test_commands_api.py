@@ -1,5 +1,8 @@
-"""命令与执行记录接口（契约 3.11 S-15～S-20、EP-09、EP-10）：页面发命令返回可追踪的任务对象，
-进度经项目流推送；执行记录列表、续跑、放弃。假引擎，不起真实 CLI；测试数据全部为合成内容。"""
+"""命令与执行记录接口（契约 3.11 S-15～S-20、EP-09、EP-10）。
+
+页面发命令返回可追踪的任务对象，
+进度经项目流推送；执行记录列表、续跑、放弃。假引擎，不起真实 CLI；测试数据全部为合成内容。
+"""
 
 from __future__ import annotations
 
@@ -17,6 +20,7 @@ from app.services import agent_sessions, auth, streams
 from app.services.agent_sessions import SessionManager
 from app.services.session_host import command_tasks, exec_records
 from app.services.workspace import WorkspaceManager
+from tests.test_event_streams import subscription
 from tests.test_session_host import EXEC, FakeEngine, lock, release, result
 
 TASK = {"task_id", "origin", "title", "state", "percent", "step_label", "conversation_id", "message_id", "exec_id",
@@ -212,9 +216,8 @@ def test_conversation_changes_reach_project_stream(api):
 
     def updates():
         async def replay():
-            subscriber, events, _ = channel.open(f"{streams.EPOCH}.0", asyncio.get_running_loop())
-            channel.unsubscribe(subscriber)
-            return events
+            with subscription(channel, f"{streams.EPOCH}.0") as (_subscriber, events, _reset):
+                return events
 
         return [item["data"] for item in asyncio.run(replay()) if item["type"] == "conversation.updated"]
 

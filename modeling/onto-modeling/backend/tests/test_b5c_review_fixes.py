@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import copy
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -15,6 +14,7 @@ import yaml
 from app.kernel.writepath import ChangeTx, Origin
 from app.services.packs import checks
 from app.services.workspace.errors import WorkspaceError
+from tests import proc
 from tests.pack_helpers import NODE_PACK_FLOW, make_node_pack, make_pack
 from tests.test_changesets import main_write, obj
 from tests.test_node_pack_lifecycle import (HUMAN_NODE, SCRIPT_NODE, enable_and_apply, env, fake_sandbox,  # noqa: F401
@@ -26,7 +26,7 @@ def failed(items: list[dict]) -> dict[str, str]:
 
 
 def git_status(root: Path) -> None:
-    subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, timeout=30)
+    proc.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, timeout=30)
 
 
 # ---- 审查第 1 条：脚本、人工节点的输出路径越过 produces / 受保护目录 ----
@@ -330,8 +330,8 @@ def test_review_5_follow_waits_for_unconfirmed_assistant_changes_and_is_a_change
     assert lockfile.read(root).get("naming").version == "0.2.0"
     record = changesets.records(manager, project_id, sources=["plugin"])[0]
     assert record["state"] == "merged" and record["switch"] == "follow"
-    head = subprocess.run(["git", "log", "-1", "--format=%(trailers:key=Onto-Changeset,valueonly)"], cwd=root,
-                          capture_output=True, text=True).stdout.strip()
+    head = proc.run(["git", "log", "-1", "--format=%(trailers:key=Onto-Changeset,valueonly)"], cwd=root,
+                    capture_output=True, text=True).stdout.strip()
     assert head == record["id"]
 
 
@@ -445,8 +445,10 @@ def test_review_8_pack_mcp_tool_names_never_collide(ops_env, tmp_path):
 
     _client, manager, _tmp = ops_env
     project_id = manager.create_project("工具名", owner="employee_0001")["id"]
-    tools = lambda *pairs: {"mcp_tools": [{"name": tool, "title": tool, "artifact": art, "mode": "list"}  # noqa: E731
-                                         for tool, art in pairs]}
+
+    def tools(*pairs):
+        return {"mcp_tools": [{"name": tool, "title": tool, "artifact": art, "mode": "list"} for tool, art in pairs]}
+
     assert publish_typed(manager, typed_pack(tmp_path / "a", "artifact", tools(("list", "artifact.item")))) == {}
     assert publish_typed(manager, typed_pack(tmp_path / "b", "ab", tools(("x-y", "ab.item")))) == {}
     assert publish_typed(manager, typed_pack(tmp_path / "c", "ab-x", tools(("y", "ab-x.item")))) == {}
@@ -522,14 +524,14 @@ def test_review_11_archived_project_cannot_answer_human_node_card(env):
     enable_and_apply(client, manager, project_id)
     question = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.signoff/start", json={}).json()["question"]
     manager.set_archived(project_id, True)
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout
+    head = proc.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout
     url = (f"/api/v1/projects/{project_id}/conversations/{question['conversation_id']}"
            f"/questions/{question['question_id']}/answer")
     answered = client.post(url, json={"option_id": "pass"})
     assert answered.status_code == 409 and answered.json()["code"] == "project_archived"
     inbox_url = f"/api/v1/projects/{project_id}/inbox/decision:{question['question_id']}/actions"
     assert client.post(inbox_url, json={"action": "answer", "option_id": "pass"}).status_code == 409
-    assert subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout == head
+    assert proc.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout == head
     manager.set_archived(project_id, False)
     assert client.post(url, json={"option_id": "pass"}).status_code == 200
 

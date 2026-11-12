@@ -148,7 +148,7 @@ def make_bundle(job_id: str, *, records: list[dict] | None = None, source: str =
     members = {"manifest.json": json.dumps(manifest, ensure_ascii=False).encode(), **files,
                **({f"blobs/{raw_sha}": raw} if raw is not None else {}), **(extra_files or {})}
     buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w") as archive:
+    with tarfile.open(fileobj=buffer, mode="w") as archive:  # NOSONAR(S5042) 只写内存里的合成归档，不展开
         for name, data in members.items():
             info = tarfile.TarInfo(name)
             info.size = len(data)
@@ -271,6 +271,9 @@ def make_db_bundle(job_id: str, *, records: list[dict] | None = None, source: st
 # ---------------------------------------------------------------------------
 
 
+PROGRESS_FIELDS = ("job_id", "state", "phase", "done", "total", "unit", "error_code", "error_message")
+
+
 class FakeGateway:
     """spec §4 的网关：验票据（操作、范围哈希、一次性），任务按 script 推进。"""
 
@@ -280,7 +283,11 @@ class FakeGateway:
         self.calls: list[tuple[str, str]] = []
         self.received: dict[str, bytes] = {}
         self.specs: list[dict] = []
-        self.bundle_for = lambda job_id, job: make_bundle(job_id)
+
+        def default_bundle(job_id, job):
+            return make_bundle(job_id)
+
+        self.bundle_for = default_bundle
         # 每次查进度推进一步；最后一步之后停在最后的状态
         self.script = [{"state": "running", "phase": "解析程序", "done": 1, "total": 3, "unit": "步"},
                        {"state": "succeeded", "phase": "完成", "done": 3, "total": 3, "unit": "步"}]
@@ -343,17 +350,20 @@ class FakeGateway:
                     self.connection.close()
                     return
                 if self.path == "/health":
-                    return self._reply(200, {"status": "ok", "converters": 0})
+                    self._reply(200, {"status": "ok", "converters": 0})
+                    return
                 if self.path == "/v1/providers":
-                    return self._reply(200, {"items": [], "providers": fake.providers})
+                    self._reply(200, {"items": [], "providers": fake.providers})
+                    return
                 parts = self.path.strip("/").split("/")
                 if len(parts) >= 3 and parts[:2] == ["v1", "jobs"]:
                     job = self._job(parts[2])
                     if job is None:
-                        return None
+                        return
                     if len(parts) == 4 and parts[3] == "bundle":
                         if job["state"] not in ("succeeded", "partial"):
-                            return self._reply(409, {"error": "job_state"})
+                            self._reply(409, {"error": "job_state"})
+                            return
                         data = fake.bundle_for(parts[2], job)
                         if fake.truncate_bundle:  # 网关发现原始结果不对时中途断开：头里的长度是全量
                             self.send_response(200)
@@ -361,14 +371,15 @@ class FakeGateway:
                             self.end_headers()
                             self.wfile.write(data[: len(data) // 2])
                             self.close_connection = True
-                            return None
-                        return self._reply(200, raw=data)
+                            return
+                        self._reply(200, raw=data)
+                        return
                     if job["state"] not in ("cancelled",) and job["step"] < len(fake.script):
                         job.update(fake.script[job["step"]])
                         job["step"] += 1
-                    return self._reply(200, {key: job.get(key) for key in (
-                        "job_id", "state", "phase", "done", "total", "unit", "error_code", "error_message")})
-                return self._reply(404, {"error": "not_found"})
+                    self._reply(200, {key: job.get(key) for key in PROGRESS_FIELDS})
+                    return
+                self._reply(404, {"error": "not_found"})
 
             def do_POST(self):
                 fake.calls.append(("POST", self.path))
@@ -454,6 +465,12 @@ class FakeGateway:
 # ---------------------------------------------------------------------------
 
 
+def expect_status(response, status: int) -> None:
+    """响应状态码不对时带上响应正文报错（辅助模块里不用 assert）。"""
+    if response.status_code != status:
+        raise AssertionError(response.text)
+
+
 class Env:
     def __init__(self, client: TestClient, workspaces: WorkspaceManager, fake: FakeGateway, monkeypatch):
         self.client = client
@@ -476,16 +493,16 @@ class Env:
     def upload(self, data: bytes, headers: dict | None = None, filename: str = "demo-desk.zip") -> dict:
         started = self.client.post("/api/v1/evidence/uploads", json={"filename": filename, "size": len(data)},
                                    headers=headers or {})
-        assert started.status_code == 201, started.text
+        expect_status(started, 201)
         upload = started.json()
         chunk = upload["chunk_bytes"]
         for index in range(max(1, -(-len(data) // chunk))):
             response = self.client.put(f"/api/v1/evidence/uploads/{upload['upload_id']}/chunks/{index}",
                                        content=data[index * chunk:(index + 1) * chunk], headers=headers or {})
-            assert response.status_code == 200, response.text
+            expect_status(response, 200)
         done = self.client.post(f"/api/v1/evidence/uploads/{upload['upload_id']}/complete",
                                 json={"sha256": hashlib.sha256(data).hexdigest()}, headers=headers or {})
-        assert done.status_code == 200, done.text
+        expect_status(done, 200)
         return done.json()["artifact"]
 
     def register(self, artifact: dict, *, source_id: str = SOURCE, headers: dict | None = None,
@@ -502,7 +519,7 @@ class Env:
         response = self.client.post(f"/api/v1/projects/{project_id}/evidence/jobs",
                                     json={"source_id": source_id, "operation": "snapshot", **body},
                                     headers=headers or {})
-        assert response.status_code == 202, response.text
+        expect_status(response, 202)
         return response.json()
 
     def wait(self, project_id: str, job_id: str, states=jobs.FINISHED, timeout: float = 15.0) -> dict:
@@ -517,15 +534,20 @@ class Env:
     def ready_source(self, project_id: str, data: bytes = b"synthetic-electron-app") -> dict:
         artifact = self.upload(data)
         response = self.register(artifact, grant_project_id=project_id)
-        assert response.status_code == 201, response.text
+        expect_status(response, 201)
         return artifact
 
     def snapshot(self, project_id: str, **bundle) -> str:
         if bundle:
-            self.fake.bundle_for = lambda job_id, job: make_bundle(job_id, **bundle)
+
+            def bundle_for(job_id, job):
+                return make_bundle(job_id, **bundle)
+
+            self.fake.bundle_for = bundle_for
         job = self.collect(project_id)
         done = self.wait(project_id, job["id"])
-        assert done["state"] in ("succeeded", "partial"), done
+        if done["state"] not in ("succeeded", "partial"):
+            raise AssertionError(done)
         return done["result"]["snapshot_id"]
 
     # ---- 连接型（F16）----
@@ -543,8 +565,12 @@ class Env:
         body = self.db_body(grant_project_id=project_id, **fields)
         body["secret"] = {"password": secret or secrets.token_urlsafe(18)}
         response = self.client.post("/api/v1/admin/evidence/sources", json=body, headers=headers or {})
-        assert response.status_code == 201, response.text
-        self.fake.bundle_for = lambda job_id, job: make_db_bundle(job_id, operation=job["spec"]["operation"])
+        expect_status(response, 201)
+
+        def bundle_for(job_id, job):
+            return make_db_bundle(job_id, operation=job["spec"]["operation"])
+
+        self.fake.bundle_for = bundle_for
         return response.json()
 
     def run_db(self, project_id: str, headers: dict | None = None, **body) -> dict:

@@ -52,8 +52,11 @@ def env(tmp_path: Path, monkeypatch):
 
 def track(flow: dict) -> list[str]:
     """进度条上的节点顺序（与前端 state/flow.trackNodes 同一规则：主线、串入、关卡，按连线排；连线分叉时按节点顺序）。"""
-    spine = [node for node in flow["nodes"] if node["placement"] in ("spine", "step", "gate")
-             and not node["flags"].get("disabled")]
+
+    def on_track(node):
+        return node["placement"] in ("spine", "step", "gate") and not node["flags"].get("disabled")
+
+    spine = [node for node in flow["nodes"] if on_track(node)]
     ids = {node["id"] for node in spine}
     nxt, has_in = {}, set()
     for edge in flow["edges"]:

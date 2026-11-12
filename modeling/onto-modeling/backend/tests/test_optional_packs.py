@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -21,6 +20,7 @@ from app.services import auth
 from app.services.packs import builtin, checks, lockfile
 from app.services.packs.lockfile import PackLock
 from app.services.workspace import WorkspaceManager
+from tests import proc
 from tests.test_event_streams import buffered
 
 ASSETS = Path(config.ASSETS_DIR)
@@ -153,7 +153,7 @@ def test_core_only_project_assembles_and_filters_suggestions(env):
     assert body["suggestions"]["primary"]["action"] == {"type": "navigate", "page": "publish"}
     assert next(node for node in body["nodes"] if node["id"] == "core.validate")["title"] == "校验"
     # 发布做完：整体视图，不推荐扫描脚本候选
-    subprocess.run(["git", "tag", "release/0.1.0"], cwd=root, check=True, capture_output=True)
+    proc.run(["git", "tag", "release/0.1.0"], cwd=root, check=True, capture_output=True)
     body = client.get(f"/api/v1/projects/{root.name}/flow").json()
     assert body["suggestions"]["primary"]["action"]["command"] == "/ontology-overview"
     assert body["suggestions"]["secondary"] == []
@@ -330,9 +330,9 @@ def test_industry_layer_lists_and_overrides(env):
     slug = json.loads(json.dumps(project_entry))["id"]
     # 改成与行业条目相同的 slug 才算覆盖：直接按行业条目的文件名写一条
     helper = root / ".claude" / "scripts" / "knowledge_helper.py"
-    subprocess.run([sys.executable, str(helper), "add", "--type", "domain-rule", "--slug", "safety-stock-formula",
-                    "--name", "安全库存（本项目口径）", "--scope", "global", "--source", "web", "--body", "## 规则\n\n按 5 天缓冲\n",
-                    "--after-conflict-check", "none-found"], cwd=root, check=True, capture_output=True)
+    proc.run([sys.executable, str(helper), "add", "--type", "domain-rule", "--slug", "safety-stock-formula",
+              "--name", "安全库存（本项目口径）", "--scope", "global", "--source", "web", "--body", "## 规则\n\n按 5 天缓冲\n",
+              "--after-conflict-check", "none-found"], cwd=root, check=True, capture_output=True)
     listed = client.get(base, params={"layer": "project"}).json()
     override = next(item for item in listed["items"] if item["id"] == "domain-rule-safety-stock-formula")
     assert override["overrides_industry"] is True
@@ -342,8 +342,8 @@ def test_industry_layer_lists_and_overrides(env):
     conflicts = client.post(f"{base}/conflicts").json()
     kinds = {item["kind"] for item in conflicts["conflicts"]}
     assert "scope_conflict" in kinds and client.get(f"{base}/conflicts").json()["checked_at"]
-    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
-    subprocess.run(["git", "commit", "-qm", "agent: 覆盖"], cwd=root, check=True)
+    proc.run(["git", "add", "-A"], cwd=root, check=True)
+    proc.run(["git", "commit", "-qm", "agent: 覆盖"], cwd=root, check=True)
     deleted = client.request("DELETE", f"{base}/domain-rule-safety-stock-formula", json={})
     assert deleted.status_code == 200 and deleted.json()["restored_industry_entry"] == entry["id"]
     assert [event["data"]["change"] for event in buffered(project_id, "knowledge.updated")] == ["created", "deleted"]
@@ -354,18 +354,18 @@ def test_knowledge_helper_loads_industry_layer_by_concept(env):
     manager, _ = env
     _, root = _industry_project(manager)
     helper = root / ".claude" / "scripts" / "knowledge_helper.py"
-    out = subprocess.run([sys.executable, str(helper), "load", "--scope", "object:补货单"], cwd=root,
-                         capture_output=True, text=True, check=True).stdout
+    out = proc.run([sys.executable, str(helper), "load", "--scope", "object:补货单"], cwd=root,
+                   capture_output=True, text=True, check=True).stdout
     assert "来源：零售连锁（行业包" in out and "补货" in out
-    unrelated = subprocess.run([sys.executable, str(helper), "load", "--scope", "object:无关对象"], cwd=root,
-                               capture_output=True, text=True, check=True).stdout
+    unrelated = proc.run([sys.executable, str(helper), "load", "--scope", "object:无关对象"], cwd=root,
+                         capture_output=True, text=True, check=True).stdout
     assert len(unrelated) < len(out)
 
 
 def _checker_issues(root: Path) -> list[dict]:
     checker = root / ".claude" / "scripts" / "ontology_checker.py"
-    run = subprocess.run([sys.executable, str(checker), "ontology", "--json"], cwd=root,
-                         capture_output=True, text=True, check=True)
+    run = proc.run([sys.executable, str(checker), "ontology", "--json"], cwd=root,
+                   capture_output=True, text=True, check=True)
     return json.loads(run.stdout)
 
 

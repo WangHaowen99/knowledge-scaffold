@@ -1,5 +1,8 @@
-"""前端静态资源（F2 第 1 条：第一次切换页面白屏几秒）：构建时预压缩的 .br / .gz 按 Accept-Encoding 发，
-带哈希的 assets/ 长缓存，index.html 每次都向服务端确认。"""
+"""前端静态资源（F2 第 1 条：第一次切换页面白屏几秒）。
+
+构建时预压缩的 .br / .gz 按 Accept-Encoding 发，
+带哈希的 assets/ 长缓存，index.html 每次都向服务端确认。
+"""
 
 from __future__ import annotations
 

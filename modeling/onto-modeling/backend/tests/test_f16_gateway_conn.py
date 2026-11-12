@@ -29,11 +29,16 @@ from app.connector_gateway.secrets import SecretStore
 from app.evidence import tickets
 from app.evidence.spec import encode_job_header, job_scope, record_hash, scope_hash
 from app.evidence.tickets import Issuer
+from tests.synthetic import password
+from tests.synthetic import token as synthetic_token
 
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 SOURCE = "f16-demo-db"
 PASSWORD = "pw-" + pysecrets.token_urlsafe(18)
 FAKES = ("f16-fake", "f16-fake-exec", "f16-fake-code")
+DOC_HOST = "192.0.2.1"  # NOSONAR(S1313) 保留的文档地址段（RFC 5737），合成数据，不会真连
+OTHER_DOC_HOST = "192.0.2.10"  # NOSONAR(S1313) 保留的文档地址段（RFC 5737），合成数据，不会真连
+REPO_URL = f"https://{DOC_HOST}/demo/shop.git"
 
 
 def _key() -> bytes:
@@ -162,7 +167,7 @@ def _test_spec(cred_ref, mode="ok", *, provider="f16-fake", connection=None, egr
 
 
 def _untar(body):
-    with tarfile.open(fileobj=io.BytesIO(body), mode="r:") as tar:
+    with tarfile.open(fileobj=io.BytesIO(body), mode="r:") as tar:  # NOSONAR(S5042) 只读内存里合成结果包的成员，不落盘
         return {member.name: tar.extractfile(member).read() for member in tar.getmembers()}
 
 
@@ -218,7 +223,7 @@ def test_secret_store_rotation_merge_and_retention(tmp_path):
     assert not store.exists(f"cred://{SOURCE}/1", SOURCE) and not store.exists("cred://bad", SOURCE)
     assert store.delete(SOURCE) == {"source": SOURCE, "deleted": 2}
     assert store.versions(SOURCE) == [] and not (tmp_path / "secrets" / SOURCE).exists()
-    for bad in ({}, {"Password": "x"}, {"password": 1}, {"password": "x" * 9000}):
+    for bad in ({}, {"Password": password("x")}, {"password": 1}, {"password": password("x") * 750}):
         with pytest.raises(Exception) as caught:
             store.put(SOURCE, bad)
         assert getattr(caught.value, "status", None) == 400
@@ -325,10 +330,10 @@ def test_snapshot_job_bundle_with_access_log(env):
 
 def test_code_repo_artifact_from_result(env):
     cred_ref = env.cred()
-    artifact = {"repo_url": "https://192.0.2.1/demo/shop.git", "ref": "main", "commit": "0" * 40}
-    connection = {"repo_url": "https://192.0.2.1/demo/shop.git", "ref": "main", "mode": "ok", "artifact": artifact}
+    artifact = {"repo_url": REPO_URL, "ref": "main", "commit": "0" * 40}
+    connection = {"repo_url": REPO_URL, "ref": "main", "mode": "ok", "artifact": artifact}
     spec = _spec("ej-f16-code", cred_ref, provider="f16-fake-code", connection=connection,
-                 egress=[{"host": "192.0.2.1", "port": 443}], masking=None)
+                 egress=[{"host": DOC_HOST, "port": 443}], masking=None)
     spec["scope"] = []
     assert env.submit(spec)[0] == 202
     assert env.wait("ej-f16-code")["state"] == "succeeded"
@@ -336,7 +341,7 @@ def test_code_repo_artifact_from_result(env):
     manifest = json.loads(files["manifest.json"])
     assert manifest["artifact"] == artifact and manifest["masking_policy"] == "none"
     assert json.loads(files["records/entity.jsonl"].decode().splitlines()[0])["id"].startswith(f"code:{SOURCE}/")
-    assert "`https://192.0.2.1/demo/shop.git` @ `" + "0" * 40 in files["summary.md"].decode()
+    assert f"`{REPO_URL}` @ `" + "0" * 40 in files["summary.md"].decode()
 
 
 def test_secret_only_via_stdin(env):
@@ -438,7 +443,7 @@ def test_audit_hook_allows_egress_and_blocks_the_rest(env, listener):
     assert run("connect", target={"host": "127.0.0.1", "port": listener})["ok"] is True
     # 同一主机、白名单外的端口；保留网段的地址
     for target in ({"host": "127.0.0.1", "port": listener + 1 if listener < 65535 else 1},
-                   {"host": "192.0.2.10", "port": 3306}):
+                   {"host": OTHER_DOC_HOST, "port": 3306}):
         body = run("connect", target=target)
         assert body["ok"] is False and body["error_code"] == "egress_denied", body
     body = run("resolve", target_host="blocked.example.invalid")
@@ -479,7 +484,10 @@ def test_test_endpoint(env):
 def test_job_spec_rejections(env):
     cred_ref = env.cred()
     env.store.put("f16-other", {"password": "pw-" + pysecrets.token_hex(8)})
-    code_conn = {"repo_url": "https://192.0.2.1/demo/shop.git", "ref": "main", "mode": "ok"}
+    code_conn = {"repo_url": REPO_URL, "ref": "main", "mode": "ok"}
+    plain_http = f"http://{DOC_HOST}/demo.git"  # NOSONAR(S5332) 合成的明文地址，测试它被拒
+    with_userinfo = f"https://{synthetic_token('user')}:{synthetic_token('pw')}@{DOC_HOST}/demo.git"
+    code_egress = [{"host": DOC_HOST, "port": 443}]
     cases = [
         (dict(cred_ref=None), 409, "cred_not_found"),
         (dict(cred_ref="cred://f16-other/1"), 409, "cred_not_found"),
@@ -495,12 +503,12 @@ def test_job_spec_rejections(env):
         (dict(operation="sample", selector=None, limit=5), 400, "bad_request"),
         (dict(rate_limit="fast"), 400, "bad_request"),
         (dict(provider="f16-fake-code", operation="discover", connection=code_conn,
-              egress=[{"host": "192.0.2.1", "port": 443}]), 400, "operation_not_supported"),
-        (dict(provider="f16-fake-code", connection={**code_conn, "repo_url": "http://192.0.2.1/demo.git"},
-              egress=[{"host": "192.0.2.1", "port": 443}]), 400, "bad_request"),
-        (dict(provider="f16-fake-code", connection={**code_conn, "repo_url": "https://u:p@192.0.2.1/demo.git"},
-              egress=[{"host": "192.0.2.1", "port": 443}]), 400, "bad_request"),
-        (dict(provider="f16-fake-code", connection=code_conn, egress=[{"host": "192.0.2.1", "port": 80}]),
+              egress=code_egress), 400, "operation_not_supported"),
+        (dict(provider="f16-fake-code", connection={**code_conn, "repo_url": plain_http},
+              egress=code_egress), 400, "bad_request"),
+        (dict(provider="f16-fake-code", connection={**code_conn, "repo_url": with_userinfo},
+              egress=code_egress), 400, "bad_request"),
+        (dict(provider="f16-fake-code", connection=code_conn, egress=[{"host": DOC_HOST, "port": 80}]),
          400, "egress_mismatch"),
         (dict(operation="incremental"), 400, "bad_request"),
     ]

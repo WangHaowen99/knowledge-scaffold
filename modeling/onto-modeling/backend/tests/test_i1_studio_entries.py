@@ -1,6 +1,5 @@
 """I1：Studio 新建条目、删除条目（契约 ST-09、ST-10）。"""
 
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -12,6 +11,7 @@ from app.kernel.changesets import service as changesets
 from app.main import app
 from app.services import auth, streams
 from app.services.workspace import WorkspaceManager
+from tests import proc
 
 
 @pytest.fixture()
@@ -30,7 +30,7 @@ def api(tmp_path, monkeypatch):
 
 
 def last_message(root: Path) -> str:
-    return subprocess.run(["git", "log", "-1", "--format=%B"], cwd=root, capture_output=True, text=True).stdout
+    return proc.run(["git", "log", "-1", "--format=%B"], cwd=root, capture_output=True, text=True).stdout
 
 
 def test_create_entry_from_template(api):
@@ -90,7 +90,7 @@ def test_delete_entry(api):
     client.post(base, json={"kind": "object", "name": "门店"})
     rule = client.post(base, json={"kind": "rule", "name": "门店规则", "from_template": False}).json()
     (root / "ontology/rule/门店规则.md").write_text("# 规则描述\n\n约束 [[门店]]\n", encoding="utf-8")
-    subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "commit", "-qam", "web: 引用"], cwd=root, check=True)
+    proc.run(["git", "-c", "core.hooksPath=/dev/null", "commit", "-qam", "web: 引用"], cwd=root, check=True)
     blocked = client.request("DELETE", f"{base}/object:门店", json={})
     assert blocked.status_code == 409 and blocked.json()["code"] == "entry_referenced"
     assert blocked.json()["details"]["references"][0]["id"] == "rule:门店规则"

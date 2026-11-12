@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 
 from app import config
+from tests import proc
+from tests.proc import git
 
 ASSETS = Path(config.ASSETS_DIR)
 TOOLKIT = ASSETS / "workspace-toolkit" / "scripts"
@@ -70,10 +72,6 @@ ENTRIES = {
 }
 
 
-def git(root: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
-
-
 def write(root: Path, rel: str, text: str) -> None:
     path = root / rel
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -109,8 +107,8 @@ def lock(root: Path, command: str) -> None:
 
 def run(root: Path, script: str, *args: str) -> subprocess.CompletedProcess:
     env = {**os.environ, "PYTHONPATH": str(TOOLKIT)}
-    return subprocess.run([sys.executable, str(SCRIPTS / script), *args], cwd=root, capture_output=True, text=True,
-                          env=env, timeout=60)
+    return proc.run([sys.executable, str(SCRIPTS / script), *args], cwd=root, capture_output=True, text=True,
+                    env=env, timeout=60)
 
 
 def scope_tool(root: Path, *args: str) -> subprocess.CompletedProcess:
@@ -208,6 +206,9 @@ def test_deleted_or_new_seed_still_has_referrers(repo, chain):
     assert {DELIVERY, PLACE, DAILY} <= items
 
 
+REFERENCE_KEYS = ("operation_refs", "action_refs", "object_refs", "called_by", "invokes_action", "mock_refs")
+
+
 def test_direct_referrers_cover_analyze_impact(repo, chain, monkeypatch):
     """关系的口径和 core 的影响分析一致；传播链多出规则、指标和同名测试数据。"""
     impact = importlib.import_module("impact_analysis")
@@ -217,8 +218,7 @@ def test_direct_referrers_cover_analyze_impact(repo, chain, monkeypatch):
     graph = chain.Graph(repo)
     for stem, doc in docs.items():
         result = impact.analyze_impact(stem, doc.doc_type, docs, ontology / "data-mock", ontology / "testcase")
-        expected = {name.split(" (字段")[0] for key in ("operation_refs", "action_refs", "object_refs", "called_by",
-                                                        "invokes_action", "mock_refs") for name in result[key]}
+        expected = {name.split(" (字段")[0] for key in REFERENCE_KEYS for name in result[key]}
         direct = {Path(path).stem for path in graph.referrers.get(docs[stem].path.relative_to(repo).as_posix(), {})}
         assert expected <= direct, stem
 

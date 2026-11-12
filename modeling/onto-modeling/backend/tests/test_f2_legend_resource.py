@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import importlib.util
-import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -18,6 +17,7 @@ import pytest
 from app import config
 from app.services import research_view
 from app.services.workspace import WorkspaceManager
+from tests import proc
 
 LEGEND = "图示说明定义.drawio"
 # 开始 → 合成活动 → 结束，外加一个图例里标成虚拟项的蓝色虚线框（不连线）
@@ -47,7 +47,7 @@ def project(tmp_path, monkeypatch):
 def _script(root: Path, name: str):
     """从项目的装配目录加载脚本（新命名空间，不污染 sys.modules 里的同名模块）。"""
     scripts = root / ".claude" / "scripts"
-    sys.path.insert(0, str(scripts))
+    sys.path.append(str(scripts))  # 脚本只用标准库；追加在末尾，不抢先于已有同名模块
     try:
         spec = importlib.util.spec_from_file_location(f"f2_{name}_{uuid.uuid4().hex[:6]}", scripts / f"{name}.py")
         module = importlib.util.module_from_spec(spec)
@@ -72,8 +72,8 @@ def test_new_project_resource_has_no_legend_and_scripts_use_the_packaged_one(pro
     diagram.write_text(DIAGRAM, encoding="utf-8")
     assert check.check_diagram(diagram, check.find_legend(root))["issues"] == []
     assert check.check_diagram(diagram, root / "nothing.drawio")["issues"]  # 没有图例时会误报
-    run = subprocess.run([sys.executable, ".claude/scripts/check_diagrams.py", "ontology/diagrams/合成流程.drawio"],
-                         cwd=root, capture_output=True, text=True, timeout=60)
+    run = proc.run([sys.executable, ".claude/scripts/check_diagrams.py", "ontology/diagrams/合成流程.drawio"],
+                   cwd=root, capture_output=True, text=True, timeout=60)
     assert run.returncode == 0 and "[有问题] 0 个" in run.stdout, run.stdout + run.stderr
     # 流程摘要带上图例的节点类型说明
     text = summarize.summarize(str(diagram), str(summarize.find_legend(root)))

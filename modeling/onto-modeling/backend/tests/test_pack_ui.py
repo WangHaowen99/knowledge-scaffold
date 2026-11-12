@@ -1,11 +1,13 @@
-"""包自带界面（ADR-0055）：静态检查对 ui/ 的放行与拦截、上传包界面静态资源的隔离响应头与票据、
-视图里编辑器与卡片声明的解析、对话里通用产物卡的形状。上传包样例是测试夹具里合成的 sticky-notes。"""
+"""包自带界面（ADR-0055）。
+
+静态检查对 ui/ 的放行与拦截、上传包界面静态资源的隔离响应头与票据、
+视图里编辑器与卡片声明的解析、对话里通用产物卡的形状。上传包样例是测试夹具里合成的 sticky-notes。
+"""
 
 from __future__ import annotations
 
 import io
 import shutil
-import subprocess
 import zipfile
 from pathlib import Path
 
@@ -19,6 +21,7 @@ from app.services import auth
 from app.services.packs import builtin, checks, lockfile, ui as pack_ui
 from app.services.packs.repository import write_checksums
 from app.services.workspace import WorkspaceManager
+from tests import proc
 from tests.pack_helpers import make_assets, make_pack
 
 FIXTURE = Path(__file__).parent / "fixtures" / "packs" / "sticky-notes"
@@ -154,10 +157,10 @@ def _write_note(manager, project_id: str, key: str, body: str, *, color: str = "
 
 
 def _commit(root: Path, message: str) -> str:
-    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
-    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", message],
-                   cwd=root, check=True, capture_output=True)
-    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+    proc.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+    proc.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", message],
+             cwd=root, check=True, capture_output=True)
+    return proc.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
 
 
 def test_artifact_types_carry_editor_and_card_declaration(env):
@@ -249,7 +252,7 @@ def test_save_from_editor_goes_through_write_path(env):
     saved = client.put(f"/api/v1/projects/{project_id}/artifacts/{NOTE}/n1",
                        json={"base_revision": detail["revision"], "sections": {"正文": "第二版"}, "summary": "在便签编辑器里修改"})
     assert saved.status_code == 200, saved.text
-    log = subprocess.run(["git", "log", "-1", "--format=%B"], cwd=root, capture_output=True, text=True).stdout
+    log = proc.run(["git", "log", "-1", "--format=%B"], cwd=root, capture_output=True, text=True).stdout
     assert "Onto-Source: web" in log
     from app.kernel.artifacts import service as artifact_service
 
@@ -272,7 +275,7 @@ def test_round_cards_follow_card_declaration(env):
     client, manager, project_id, tmp_path = env
     _publish_and_enable(client, tmp_path, project_id)
     root = manager.project_root(project_id)
-    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+    base = proc.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
     _write_note(manager, project_id, "n1", "第一版", color="blue")
     head = _commit(root, "合成：一轮新增便签")
     result = cards.round_cards(manager, project_id, {"added": ["ext/sticky-notes/notes/n1.md"], "modified": [], "deleted": []},
@@ -331,7 +334,11 @@ def test_md_sections_round_cards_only_changed_items(env):
     import app.kernel.artifacts.cards as cards_module
 
     original = cards_module.types_for_project
-    cards_module.types_for_project = lambda _manager, _root: [atype]
+
+    def one_type(_manager, _root):
+        return [atype]
+
+    cards_module.types_for_project = one_type
     try:
         result = cards.round_cards(manager, project_id, {"modified": ["ext/core/memos/m.md"]}, base=base, seed=head)
     finally:
@@ -349,7 +356,7 @@ def test_session_host_broadcasts_artifact_cards_after_a_turn(env):
     client, manager, project_id, tmp_path = env
     _publish_and_enable(client, tmp_path, project_id)
     root = manager.project_root(project_id)
-    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+    base = proc.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
     _write_note(manager, project_id, "n2", "助手写的")
     _commit(root, "合成：助手这一轮")
     sent: list[dict] = []

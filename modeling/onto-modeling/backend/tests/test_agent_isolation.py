@@ -25,6 +25,8 @@ from app.governance import agent_exec, agent_identity, secrets
 from app.services import backup, model_settings, personal_model_settings, service_tokens
 from app.services.onto_mcp import tokens as mcp_tokens
 from app.services.workspace import WorkspaceManager
+from tests import proc
+from tests.synthetic import proxy_url
 
 SECRET_ENV = {
     "ANTHROPIC_API_KEY": "synthetic-anthropic-key",
@@ -47,7 +49,7 @@ def _env_names(output: str) -> set[str]:
 def test_shell_env_drops_backend_config_and_credentials():
     env = {**SECRET_ENV, "PATH": "/usr/bin", "HOME": "/data/home", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
            "ONTO_WEB_DATA_DIR": "/data/onto-web", "CLAUDE_PROJECT_DIR": "/w", "GIT_EDITOR": "true",
-           "HTTPS_PROXY": "http://user:pass@proxy.example.com:8080", "NO_PROXY": "localhost"}
+           "HTTPS_PROXY": proxy_url(), "NO_PROXY": "localhost"}
     clean = agent_exec.shell_env(env)
     assert set(clean) == {"PATH", "HOME", "LANG", "LC_ALL", "CLAUDE_PROJECT_DIR", "GIT_EDITOR", "NO_PROXY"}
 
@@ -62,7 +64,7 @@ def test_cli_env_keeps_model_gateway_but_not_backend_secrets():
 
 
 def test_shell_shim_runs_command_with_minimal_env():
-    result = subprocess.run(
+    result = proc.run(
         [str(agent_identity.SHELL_SHIM), "env"], capture_output=True, text=True, timeout=30,
         env={**os.environ, **SECRET_ENV, "ONTO_AGENT_PYTHON": sys.executable},
     )
@@ -80,7 +82,7 @@ def test_claude_cli_wrapper_hands_cli_only_gateway_env_and_shell_prefix(tmp_path
     options = agent_identity.claude_options({"ANTHROPIC_API_KEY": "synthetic-anthropic-key"})
     assert options["cli_path"] == str(agent_identity.CLI_SHIM)
     env = {**os.environ, **SECRET_ENV, **options["env"], agent_exec.REAL_CLI_ENV: str(fake_cli)}
-    result = subprocess.run([options["cli_path"], "--version"], capture_output=True, text=True, timeout=30, env=env)
+    result = proc.run([options["cli_path"], "--version"], capture_output=True, text=True, timeout=30, env=env)
     assert result.returncode == 0, result.stderr
     cli_env = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
     assert cli_env["ANTHROPIC_API_KEY"] == "synthetic-anthropic-key"  # CLI 自己调模型要用
@@ -89,8 +91,8 @@ def test_claude_cli_wrapper_hands_cli_only_gateway_env_and_shell_prefix(tmp_path
                 "SOME_SERVICE_PASSWORD"} & set(cli_env)
 
     # CLI 里 agent 的 bash 经前缀执行：模型 Key 也不在
-    prefixed = subprocess.run([cli_env["CLAUDE_CODE_SHELL_PREFIX"], "env"], capture_output=True, text=True,
-                              timeout=30, env=cli_env)
+    prefixed = proc.run([cli_env["CLAUDE_CODE_SHELL_PREFIX"], "env"], capture_output=True, text=True,
+                        timeout=30, env=cli_env)
     assert prefixed.returncode == 0, prefixed.stderr
     assert not _env_names(prefixed.stdout) & CREDENTIAL_NAMES
 
@@ -120,12 +122,12 @@ def test_jiuwen_commands_run_through_shell_wrapper(monkeypatch):
 
     async def run() -> str:
         env = agent_identity.jiuwen_env({**os.environ, **SECRET_ENV})
-        proc = await asyncio.create_subprocess_shell(
+        child = await asyncio.create_subprocess_shell(
             agent_identity.jiuwen_command("env"), env=env,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
-        out, err = await proc.communicate()
-        assert proc.returncode == 0, err.decode()
+        out, err = await child.communicate()
+        assert child.returncode == 0, err.decode()
         return out.decode()
 
     names = _env_names(asyncio.run(run()))
@@ -189,7 +191,7 @@ def test_master_key_warning_and_separate_backup(data_dir, tmp_path, monkeypatch)
     manager = WorkspaceManager(data_dir, Path(config.ASSETS_DIR))
     model_settings.save("", "synthetic-admin-model-key", "")
     name = backup.run_backup(manager)
-    with tarfile.open(backup.backups_dir() / name) as tar:
+    with tarfile.open(backup.backups_dir() / name) as tar:  # NOSONAR(S5042) 只读自己合成的备份包成员名，不展开到磁盘
         names = tar.getnames()
     assert "data/secrets/model-settings.json" in names
     assert not any(".model-secret-key" in item for item in names)
@@ -214,8 +216,8 @@ def agent_env(monkeypatch):
     try:
         pwd.getpwnam(AGENT_TEST_USER)
     except KeyError:
-        subprocess.run(["useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", AGENT_TEST_USER],
-                       check=True)
+        proc.run(["useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", AGENT_TEST_USER],
+                 check=True)
     # 临时目录的上级要让 agent 能穿过（pytest 的 tmp 目录归 root 0700）
     base = Path(tempfile.mkdtemp(prefix="onto-agent-", dir="/tmp"))
     base.chmod(0o755)
@@ -240,8 +242,8 @@ def _as_agent(command: str, cwd: Path | None = None) -> subprocess.CompletedProc
     # 全局配置（GIT_CONFIG_GLOBAL）模拟
     git_safe = {"GIT_CONFIG_GLOBAL": str(Path(config.DATA_DIR).parent / "agent-gitconfig")}
     env = {**os.environ, **SECRET_ENV, **agent_identity.jiuwen_env(os.environ), **git_safe}
-    return subprocess.run([str(agent_identity.SHELL_SHIM), command], capture_output=True, text=True, timeout=30,
-                          env=env, cwd=cwd)
+    return proc.run([str(agent_identity.SHELL_SHIM), command], capture_output=True, text=True, timeout=30,
+                    env=env, cwd=cwd)
 
 
 @linux_root

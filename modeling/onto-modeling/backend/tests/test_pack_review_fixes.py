@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import subprocess
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -23,6 +22,7 @@ from app.main import app
 from app.services import auth
 from app.services.packs import builtin
 from app.services.workspace import WorkspaceManager
+from tests import proc
 
 ASSETS = Path(config.ASSETS_DIR)
 SCENARIO_REL = "ontology/testcase/补货编制主流程.md"
@@ -40,8 +40,8 @@ def env(tmp_path: Path, monkeypatch):
 
 
 def _commit_all(root: Path, message: str = "agent: 生成") -> None:
-    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-qm", message], cwd=root, check=True, capture_output=True)
+    proc.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+    proc.run(["git", "commit", "-qm", message], cwd=root, check=True, capture_output=True)
 
 
 def _write(root: Path, rel: str, text: str) -> None:

@@ -302,8 +302,8 @@ class FakeCursor:
 
 
 class FakeMySQL:
-    def __init__(self, grants=RO_GRANTS, fail_on=None):
-        self.grants = grants
+    def __init__(self, grants=None, fail_on=None):
+        self.grants = RO_GRANTS if grants is None else grants
         self.fail_on = fail_on
         self.log: list[str] = []
         self.closed = False

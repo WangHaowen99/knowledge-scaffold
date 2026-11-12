@@ -22,6 +22,7 @@ from app import config
 from app.services.flow import blueprint as blueprint_service
 from app.services.packs import contracts
 from app.services.session_host import injection
+from tests import proc
 from tests.test_blueprint import DRAFT, _write_mainline, env  # noqa: F401 - env 是夹具
 from tests.test_research_review import make_report, row, toolkit, workspace, write_report  # noqa: F401 - 夹具
 
@@ -187,8 +188,8 @@ def _text_version(root: Path, original: str, body: str) -> str:
 
 
 def _cli(root: Path, *args) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(SCRIPTS / "source_extract.py"), *args], cwd=root,
-                          capture_output=True, text=True)
+    return proc.run([sys.executable, str(SCRIPTS / "source_extract.py"), *args], cwd=root,
+                    capture_output=True, text=True)
 
 
 def test_source_list_and_cli_point_binaries_to_their_text_version(workspace):
