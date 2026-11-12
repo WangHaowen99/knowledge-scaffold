@@ -92,7 +92,7 @@ test('面板顶部：状态、已运行多久、做了几步；结束后是用�
   const timedOut = panelHead({ status: 'running', started_at: iso(0), ended_by: 'timeout' }, null, false, T0 + 60 * 1000);
   assert.equal(timedOut.status, 'timeout');
   assert.ok(timedOut.text.startsWith('执行超时'));
-  assert.deepEqual(outcome('timeout', null), { tone: 'gray', label: '执行超时', text: '长时间没有响应，没有交回结果' });
+  assert.deepEqual(outcome('timeout', null), { tone: 'gray', label: '执行超时', text: '长时间没有响应，已判定执行超时' });
   assert.deepEqual(outcome('failed', ''), { tone: 'red', label: '失败原因', text: '子任务出错，没有交回结果' });
   assert.equal(outcome('done', '0 个错误').text, '0 个错误');
   assert.equal(outcome('running', null), null);

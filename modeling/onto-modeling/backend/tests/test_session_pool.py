@@ -1000,6 +1000,57 @@ def test_stall_returns_followups(scripted_env, monkeypatch):
     asyncio.run(scenario())
 
 
+# ---- develop !568 原断言：出错收尾时注明本轮追加、可能还没处理的消息 ----
+
+
+def test_error_notice_mentions_followups_sent_during_turn(scripted_env):
+    """本轮进行中追加的消息随引擎拆除丢失：错误提示里说明，让用户重发。"""
+    manager, created, tmp_path = scripted_env
+
+    async def scenario():
+        session = await _running_session(manager, tmp_path)
+        await manager.send("p1", tmp_path / "w1", "追加一条")
+        await _exit_cli(session, created[0])
+
+        error = _session_errors(session)[-1]["error"]
+        assert "追加的 1 条消息" in error
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_error_notice_has_no_followup_hint_without_followups(scripted_env):
+    manager, created, tmp_path = scripted_env
+
+    async def scenario():
+        session = await _running_session(manager, tmp_path)
+        await _exit_cli(session, created[0])
+
+        assert "追加" not in _session_errors(session)[-1]["error"]
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_stall_notice_mentions_followups(scripted_env, monkeypatch):
+    manager, created, tmp_path = scripted_env
+    monkeypatch.setattr(config, "SESSION_STALL_TIMEOUT_SECONDS", 1800)
+
+    async def scenario():
+        session = await _running_session(manager, tmp_path)
+        await manager.send("p1", tmp_path / "w1", "追加一")
+        await manager.send("p1", tmp_path / "w1", "追加二")
+        session.last_activity = time.time() - 1801
+        assert await manager.reap_stalled() == 1
+
+        error = _session_errors(session)[-1]
+        assert error["reason"] == agent_sessions.STALL_TIMEOUT_REASON
+        assert "追加的 2 条消息" in error["error"]
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
 def test_runtime_activity_refreshes_stall_clock_without_broadcast(scripted_env, monkeypatch):
     """不转发的运行时消息（如状态消息）刷新活动时间，但不进历史。"""
     manager, created, tmp_path = scripted_env

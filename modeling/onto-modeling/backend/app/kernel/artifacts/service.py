@@ -738,6 +738,28 @@ def validate(manager, project_id: str, art_type: str, key: str, body: dict) -> d
     return {"ok": not errors, "errors": errors, "warnings": warnings}
 
 
+def drawio_source(manager, project_id: str, art_type: str, key: str, body: dict) -> dict:
+    """AR-10：交给 drawio 高级编辑器的 XML，不落盘。不带 content 是文件原文；带 content（标准编辑器里还没保存的模型）
+    时把模型合进原文，和 AR-05 标准编辑器保存写出的一样：尺寸、样式、泳道、批注、其他页都保留（develop !547）。"""
+    from . import flowchart
+
+    root = manager.project_root(project_id)
+    atype = _require_type(manager, root, art_type)
+    if atype.format != "drawio":
+        raise ArtifactError("invalid_argument", "只有 drawio 格式的产物能交给高级编辑器", 400)
+    row = _find(manager, root, atype, key)
+    previous = (root / row["rel"]).read_text(encoding="utf-8")
+    content = body.get("content")
+    if not isinstance(content, dict):
+        return {"xml": previous, "revision": row.get("revision")}
+    try:
+        xml = flowchart.render(flowchart.normalize(content), previous=previous)
+    except flowchart.FlowchartError as exc:
+        raise ArtifactError("artifact_schema_invalid", str(exc), 422,
+                            {"errors": [{"field": "content", "message": str(exc)}]}) from exc
+    return {"xml": xml, "revision": row.get("revision")}
+
+
 # ---- AR-09 汇总 ----
 
 

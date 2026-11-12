@@ -86,29 +86,34 @@ export default function FlowchartDialog({ artifact, onClose }) {
   const title = session.model.process.name || art?.title || artifact?.title || '流程图';
   const pluginOff = !!extensions && !hasArtifactType(type);
 
-  // drawio 高级编辑打开的 XML：没有未保存修改时用文件原文（尺寸、样式、泳道、批注、其他页都在，保存时照它保留）；
-  // 有未保存修改、或原文读不到时按当前模型生成（带内核属性，描述、条件等随保存一起交回）
-  const dioXml = useCallback(async (model, a, dirty) => {
+  // drawio 高级编辑打开的 XML（AR-10）：文件原文；有未保存修改时服务端把模型合进原文，尺寸、样式、泳道、批注、其他页都在。
+  // 看的是某一轮的版本、或者取不到时按模型生成（带内核属性，描述、条件等随保存一起交回）
+  const dioXml = useCallback(async (model, k, title, dirty) => {
     if (model?.storage === 'drawio_compressed') return model.drawio_xml || '';
-    if (!dirty && a?.path) {
+    if (k && !artifact?.changeset) {
       try {
-        const file = await api.fileContent(pid, a.path);
-        if (file?.content && !file.truncated) return file.content;
+        const r = await api.artifactDrawio(pid, type, k, dirty ? { content: model } : {});
+        if (r?.xml) return r.xml;
       } catch { /* 按模型生成 */ }
     }
-    return modelToDrawio(model, a?.title);
-  }, [api, pid]);
+    return modelToDrawio(model, title);
+  }, [api, pid, type, artifact?.changeset]);
 
+  // 载入的代次：先发的请求后回来（换了图、又点了载入最新版本）时丢掉旧结果
+  const loadGen = useRef(0);
   const load = useCallback(async () => {
+    const gen = ++loadGen.current;
     setLoadError(null);
     try {
       let k = artifact?.key || null;
       if (!k) {
         const r = await api.artifacts(pid, type, { limit: 1 });
+        if (gen !== loadGen.current) return;
         k = r.items?.[0]?.key || null;
         if (!k) { setEmpty(true); return; }
       }
       const a = await api.artifact(pid, type, k, artifactQuery(artifact, type, k));
+      if (gen !== loadGen.current) return;
       setKey(k);
       setArt(a);
       dispatch({ type: 'replace-model', model: a.content, savedRevision: a.revision, force: true, selection: initialSelection(a.content) });
@@ -116,12 +121,13 @@ export default function FlowchartDialog({ artifact, onClose }) {
       // 压缩存储只能用 drawio 高级编辑；已经在 drawio 里时（载入最新版本）编辑器也换成新内容
       const packed = a.content?.storage === 'drawio_compressed';
       if (packed || modeRef.current === 'dio') {
-        const xml = await dioXml(a.content, a, false);
+        const xml = await dioXml(a.content, k, a.title, false);
+        if (gen !== loadGen.current) return;
         setDio((d) => ({ ...d, key: d.key + 1, xml, dirty: false }));
         setMode('dio');
       }
     } catch (e) {
-      setLoadError(e);
+      if (gen === loadGen.current) setLoadError(e);
     }
   }, [api, pid, type, artifact?.key, artifact?.changeset]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -183,7 +189,7 @@ export default function FlowchartDialog({ artifact, onClose }) {
       return;
     }
     const asked = ++dioAsk.current;
-    dioXml(session.model, { ...art, title }, session.dirty).then((xml) => {
+    dioXml(session.model, key, title, session.dirty).then((xml) => {
       if (asked !== dioAsk.current) return; // 等原文时又切走了
       setDio((d) => ({ key: d.key + 1, xml, dirty: false, state: 'loading' }));
       setMode('dio');

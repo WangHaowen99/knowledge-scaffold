@@ -84,7 +84,7 @@ _RUNNER_LOCK: asyncio.Lock | None = None
 # 硬终止时等 agent 停下的上限：调用方整体只给 KILL_TIMEOUT_SECONDS，还要留时间取消轮任务
 _ABORT_TIMEOUT_SECONDS = 2.0
 # SDK 在步数用完、外层轮数用完或连续没有进展时收口：不是故障，但这一轮可能没做完
-ROUND_LIMIT_NOTICE = "这一轮已达到执行上限，任务可能还没做完。发送“继续”接着做。"
+ROUND_LIMIT_NOTICE = "这一轮已达到执行上限（步数用完或连续没有进展），任务可能还没做完。可以发送“继续”接着做。"
 
 
 def shadow_dir(project_id: str) -> Path:

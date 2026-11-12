@@ -1716,3 +1716,10 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
    PC-02 返回 `{cancelled: true}`，PC-03、PC-08 返回 `{deleted: true}`；时间字段改回 epoch 秒；任务失败的 `error` 是异常原文。
 4. 跨包的任务失败不再带 `error_code`（develop 没有），前端照 develop 在发起前比较两侧包标识、确认后再带 `allow_cross_package`。
 
+
+## 2026-11-12 · 对齐 develop !547：drawio 高级编辑拿合进原文的 XML（ADR-0097）
+
+1. **新增 AR-10** `POST /api/v1/projects/{id}/artifacts/{type}/{key}/drawio`：返回交给 drawio 高级编辑器的 XML，不落盘。不带 `content` 是文件原文；
+   带 `content`（标准编辑器里还没保存的模型）时把模型合进原文，和 AR-05 标准编辑器保存写出的一样，尺寸、样式、泳道、批注、其他页都保留。
+   流程图弹窗切到高级编辑时调它，原来的「有未保存修改时按模型重新生成 XML」只在取不到时兜底。
+2. **流程图编辑会话**：同一修订、或已经越过的旧修订的刷新不覆盖编辑内容；载入按代次丢掉过期结果。

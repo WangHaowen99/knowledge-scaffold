@@ -2739,6 +2739,16 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 查询参数：`group_by?`（默认 `status`）、`trend?: bool`。
 - 响应：`{total, by: [{value, label, count}], stale: int, trend: [{version_label, value_pct}]|null, delta_vs_previous_pct: number|null}`。
 
+#### AR-10 交给 drawio 高级编辑器的 XML
+
+`POST /api/v1/projects/{id}/artifacts/{type}/{key}/drawio` · 所有者 · 旧：— · 审计：否 · 依据：5.9.5 · 页面：flowchart（切到「drawio 高级编辑」）
+
+- 请求：`{content?: FlowchartModel}`。只用于 drawio 格式的产物。
+- 响应：`{xml: string, revision: string}`，不落盘。
+  - 不带 `content`：文件原文。
+  - 带 `content`（标准编辑器里还没保存的模型）：把模型合进原文，和 `AR-05` 标准编辑器保存写出的一样——只改第一页里内核认得的节点、连线与流程元数据，尺寸、样式、泳道、批注、其他页原样保留。
+- 错误：`artifact_type_unknown`、`artifact_not_found`、`artifact_schema_invalid`（模型不合法）、`invalid_argument`（不是 drawio 格式）。
+
 ---
 
 ### 3.18 脚本与求解契约
@@ -4743,7 +4753,7 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 | `wb-materials` | 建模初期 · 资料分析 | `S-01`、`S-05`、`S-06`、`S-07`、`S-08`、`S-11`、`U-01`、`R-02`、`R-03`、`R-06`、`R-07`、`R-08`、`R-09`、`R-10`、`P-05`（联网 / 仅本地）、`S-20`（追加分析、继续读取、让助手逐条修正）、`EV-01`、`FL-01`、`FL-02` | EC-01、EC-10、EC-12、EC-20/21、EC-32/33、EC-40/41（`upload_prompt`、`material_map`）、EC-51、EC-53；EP-01、EP-11、EP-12 |
 | `wb-blueprint` | 建模初期 · 分段规划 | `BP-01`、`BP-02`、`BP-03`、`RP-02`（资料分析小结）、`AB-03`、`AB-04`、`EV-01`（数据源提示）、`S-07`、`S-20`（重新划分、按章节拆分）、`FL-01`、`FL-02` | EC-40/41（`research_summary`、`blueprint`、`build_choice`）、EC-20、EC-53；EP-01 |
 | `wb-l2` | 建模中 · 陪伴（L2） | 见 4.9：`S-01`、`S-05`、`S-06`、`S-07`、`S-11`、`ST-04`、`AR-03`、`CS-02`～`CS-06`、`FL-01`～`FL-05`、`IN-01`、`EV-29`、`U-01`、`F-07`、`S-18`、`P-13` | 对话流全部；EP-01～EP-05 |
-| `flowchart` | 流程图编辑弹窗 | `AR-03`、`AR-05`、`AR-08`、`CS-06`、`PL-12`（图示插件标记）、`S-08`（锁定条「回到对话里打断它」） | EC-40 `flowchart`、EP-03、EP-05、EP-06 |
+| `flowchart` | 流程图编辑弹窗 | `AR-03`、`AR-05`、`AR-08`、`AR-10`、`CS-06`、`PL-12`（图示插件标记）、`S-08`（锁定条「回到对话里打断它」） | EC-40 `flowchart`、EP-03、EP-05、EP-06 |
 | `l4-run` | 建模中 · 自主构建（L4） | `AB-01`、`AB-03`、`AB-04`、`AB-05`～`AB-10`、`AB-14`、`AB-16`、`AB-17`、`V-02`（查看改动）、`S-05`、`S-06`、`S-07`（补充说明，`deferred`）、`CS-06`、`FL-01`、`FL-02` | EC-40/41（`autobuild_start`、`slice_progress`、`auto_decision`、`suspension`、`run_report`）、EC-53（`autobuild_controls`）；EP-03、EP-14～EP-17 |
 | `incremental` | 增量更新 | `INC-01`～`INC-05`、`R-11`、`R-12`、`CS-02`～`CS-05`、`S-07`、`S-20`（让助手分析、交给助手修）、`FL-01`、`FL-02` | EC-40/41（`change_list`、`impact`、`regression`、`external_feedback`、`round_changes`）、EC-20、EC-53；EP-18、EP-04 |
 | `inbox` | 待处理与复核 | `IN-01`～`IN-04`、`AB-10`～`AB-17`、`INC-01`～`INC-04`、`S-11`、`S-16`、`S-17`、`R-11`、`V-02`、`EV-29` | EP-02、EP-09、EP-17 |

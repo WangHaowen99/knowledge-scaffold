@@ -321,7 +321,6 @@ export function register(ctx) {
         next = normalizeModel(drawioToModel(content.drawio_xml, next));
       } catch { /* 解析不了就按模型保存 */ }
     }
-    if (!next.nodes.length) return err(400, 'artifact_schema_invalid', '流程图里没有节点', { findings: [{ code: 'E-FC-EMPTY', level: 'error', message: '流程图里没有节点' }] });
     rec.content = next;
     const { commit, version } = commitChange(pid, rec, body.summary || '在流程图弹窗里修改');
     return json(200, { artifact: detail(rec, scopeOf(pid), pid), commit, version_label: version });
@@ -367,6 +366,16 @@ export function register(ctx) {
     const rec = flowState(db, m[1], sc).get(decodeURIComponent(m[3]));
     if (!rec) return err(404, 'artifact_not_found', '流程图不存在');
     return json(200, checkFlowchart(body.content || rec.content));
+  });
+
+  // AR-10：mock 不存文件原文，按模型生成（服务端是把模型合进原文）
+  on('POST', '/projects/([^/]+)/artifacts/([^/]+)/([^/]+)/drawio', async ({ m, body }) => {
+    const bad = unknownType(decodeURIComponent(m[2]));
+    if (bad !== null) return bad;
+    const rec = flowState(db, m[1], sc).get(decodeURIComponent(m[3]));
+    if (!rec) return err(404, 'artifact_not_found', '流程图不存在');
+    const { modelToDrawio } = await import('@packs/diagram/ui/flowchart/drawioConvert.js');
+    return json(200, { xml: modelToDrawio(normalizeModel(body.content || rec.content), rec.content.process?.name), revision: rec.revision });
   });
 }
 
