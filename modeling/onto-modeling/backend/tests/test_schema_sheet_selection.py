@@ -11,7 +11,6 @@
 import io
 import json
 import posixpath
-import subprocess
 import sys
 from pathlib import Path
 
@@ -104,7 +103,7 @@ def cli_headers(root):
     script = (root / ".claude" / "scripts" / "check_eval_data.py").resolve()
     # 安全审查：解释器、项目工具脚本和参数均由测试固定；argv 不经 shell 解析，
     # 且工作目录仅为 tmp_path 下的合成项目。
-    return _Cli(run_cmd(  # NOSONAR(S4721)
+    return _Cli(run_cmd(
         [sys.executable, str(script), "--headers"],
         cwd=root,
         capture_output=True,
@@ -185,7 +184,7 @@ def test_replacing_workbook_versions_file_and_matching_scope(manager):
         pid, "excel", "sample.xlsx", out.getvalue(), purpose="schema"
     )
 
-    committed_file = run_cmd(  # NOSONAR(S4721)
+    committed_file = run_cmd(
         ["git", "show", f"HEAD:{rel}"],
         cwd=root,
         capture_output=True,
@@ -335,7 +334,7 @@ def test_csv_headers_work_without_excel_dependency(tmp_path):
     # -S removes site-packages, including openpyxl, from this subprocess.
     # 安全审查：解释器、仓库内工具脚本和参数均由测试固定；argv 不经 shell
     # 解析，且工作目录仅为 tmp_path 下的合成项目。
-    result = run_cmd(  # NOSONAR(S4721)
+    result = run_cmd(
         [sys.executable, "-S", str(script.resolve()), "--headers"],
         cwd=tmp_path,
         capture_output=True,
