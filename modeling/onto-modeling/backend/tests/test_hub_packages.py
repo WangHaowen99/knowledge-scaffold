@@ -59,6 +59,8 @@ def setup(tmp_path, monkeypatch):
             if path.endswith('/commit'):
                 return store.commit(path.split('/')[-2], actor)
             parts = path.split('?')[0].strip('/').split('/')
+            if len(parts) == 4 and parts[3] == 'authorized-users':
+                return store.authorized_users(parts[2], actor.subject)
             if len(parts) == 2:
                 return store.packages(actor.subject)
             if len(parts) == 4:

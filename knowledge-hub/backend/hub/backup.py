@@ -34,6 +34,11 @@ def restore(source, destination, current_metadata):
             if target.exists() or meta.get('state') == 'deleted':
                 write_json(target, meta)
         store.recover_all()
+        from .package_store import PackageStore
+        packages = PackageStore(store)
+        for record in (store.root / 'packages').glob('*/metadata.json'):
+            if read_json(record).get('state') == 'deleted':
+                packages.purge_deleted(record.parent.name)
     return destination
 
 

@@ -507,6 +507,7 @@ export function usePackagePublish(dialogExtras = {}) {
   const submitRelease = async (pid, allowUnbound, solverAcknowledged = false) => {
     const receipt = await api.publishPackage(pid, { allowUnbound, solverAcknowledged });
     notifyPackagePublished(pid);
+    if (receipt.hub_members?.status === 'failed') message.warning('知识包已发布，成员授权同步失败，请在成员共享中重试');
     if (receipt.local_record_pending) message.warning('知识包已发布，本地发布记录待恢复');
     else if (solverAcknowledged) {
       // 求解知识包：发布后直接去评测页面对这个版本发起求解验证

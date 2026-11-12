@@ -214,10 +214,10 @@ export const api = {
     }),
   // 显式确认体：request() 一律带 application/json，空体在严格服务端/网关会被判为非法 JSON；
   // 同时与 modeling 侧删除接口的 confirmed 契约保持一致
-  deleteProject: (pid) =>
+  deleteProject: (pid, deleteHubPackage = false) =>
     request(`/api/projects/${pid}`, {
       method: 'DELETE',
-      body: JSON.stringify({ confirmed: true }),
+      body: JSON.stringify({ confirmed: true, delete_hub_package: deleteHubPackage, hub_usage_confirmed: deleteHubPackage }),
     }),
   exportUrl: (pid, scope) =>
     `/api/projects/${pid}/export?scope=${scope}&token=${encodeURIComponent(authStore.token)}`,
@@ -359,6 +359,8 @@ export const api = {
   // name 为空时用默认的「原名-副本」；同名冲突（409）改名后带上新名称重新提交
   cloneProject: (pid, name = '') =>
     request(`/api/projects/${pid}/clone`, { method: 'POST', body: JSON.stringify({ name }) }),
+  hubDeletePreview: (pid) => request(`/api/projects/${pid}/hub-delete-preview`),
+  retryHubMembers: (pid, username) => request(`/api/projects/${pid}/members/hub-retry?username=${encodeURIComponent(username)}`, { method: 'POST' }),
   getMembers: (pid) => request(`/api/projects/${pid}/members`),
   saveMembers: (pid, members) =>
     request(`/api/projects/${pid}/members`, {
