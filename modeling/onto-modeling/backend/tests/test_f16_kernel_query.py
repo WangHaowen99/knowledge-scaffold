@@ -131,7 +131,11 @@ def test_er_caps_at_60_tables(f13):
     rows = []
     for number in range(70):
         rows += db_table("big", f"t{number:02d}", [("id", "bigint", "", True, False)])
-    f13.fake.bundle_for = lambda job_id, job: make_db_bundle(job_id, records=rows)
+
+    def er_bundle(job_id, job):
+        return make_db_bundle(job_id, records=rows)
+
+    f13.fake.bundle_for = er_bundle
     snapshot_id = f13.run_db(project_id)["result"]["snapshot_id"]
     er = f13.client.get(f"/api/v1/projects/{project_id}/evidence/er", params={"snapshot": snapshot_id}).json()
     assert len(er["tables"]) == 60 and er["total"] == 70 and er["truncated"] is True
@@ -190,7 +194,11 @@ def test_code_snapshot_keeps_generic_views(f13):
                         "loc": {"file": "src/Order.java", "line": 20, "end_line": 20}}),
             code("rule", "code:shop-code/rule:com::example::order::Order::NotNull", "NotNull", parent=entity,
                  attrs={"kind": "not_null", "loc": {"file": "src/Order.java", "line": 19, "end_line": 19}})]
-    f13.fake.bundle_for = lambda job_id, job: make_db_bundle(job_id, records=rows, source="shop-code")
+
+    def code_bundle(job_id, job):
+        return make_db_bundle(job_id, records=rows, source="shop-code")
+
+    f13.fake.bundle_for = code_bundle
     done = f13.run_db(project_id, source_id="shop-code")
     assert done["state"] == "succeeded", done
     base = f"/api/v1/projects/{project_id}/evidence"

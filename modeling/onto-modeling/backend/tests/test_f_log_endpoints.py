@@ -18,7 +18,7 @@ GATEWAY = "https://gateway.example.invalid/compatible/v1"
 KEY = "sk-" + "a1b2c3d4e5f6a7b8"
 
 
-class _Capture(logging.Handler):
+class _Capture(logging.Handler):  # NOSONAR(S4792) 测试里挂一个收集日志的 handler，验证日志脱敏
     def __init__(self):
         super().__init__()
         self.lines: list[str] = []
@@ -70,7 +70,11 @@ def test_engine_error_archive_hides_gateway(tmp_path, monkeypatch):
     monkeypatch.setattr(Runner, "run_agent_streaming", staticmethod(broken_stream))
     logged = []
     ctx = make_ctx(tmp_path)
-    ctx.log_error = lambda kind, text: logged.append(text)
+
+    def log_error(kind, text):
+        logged.append(text)
+
+    ctx.log_error = log_error
     engine = jiuwen.JiuwenEngine(ctx)
     engine.client = object()
     asyncio.run(engine._run_turn("开始"))

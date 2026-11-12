@@ -75,13 +75,15 @@ def post_zip(client, path, data, headers):
     return client.post(path, files={"file": ("pack.zip", data, "application/zip")}, headers=headers)
 
 
-def upload(client, tmp_path, name, version="0.1.0", headers=AS_OWNER, path=MINE, **kw) -> dict:
+def upload(client, tmp_path, name, version="0.1.0", headers=None, path=MINE, **kw) -> dict:
+    headers = AS_OWNER if headers is None else headers
     accepted = post_zip(client, path, zipped(make_pack(tmp_path / "src" / version, name, version, **kw)), headers)
     assert accepted.status_code == 202, accepted.text
     return client.get(f"{path}/{accepted.json()['id']}", headers=headers).json()
 
 
-def install(client, tmp_path, name, version="0.1.0", headers=AS_OWNER, **kw) -> dict:
+def install(client, tmp_path, name, version="0.1.0", headers=None, **kw) -> dict:
+    headers = AS_OWNER if headers is None else headers
     detail = upload(client, tmp_path, name, version, headers, **kw)
     assert detail["state"] == "passed", detail["checks"]
     done = client.post(f"{MINE}/{detail['id']}/install", json={}, headers=headers)
@@ -90,7 +92,8 @@ def install(client, tmp_path, name, version="0.1.0", headers=AS_OWNER, **kw) -> 
     return done.json()
 
 
-def project(client, headers=AS_OWNER, **body) -> str:
+def project(client, headers=None, **body) -> str:
+    headers = AS_OWNER if headers is None else headers
     created = client.post("/api/v1/projects", json={"name": "合成项目", "goal": "合成场景", **body}, headers=headers)
     assert created.status_code in (200, 201), created.text
     return created.json()["id"]
@@ -158,7 +161,10 @@ def test_user_and_admin_uploads_get_the_same_checks(env, files):
                         data={"tenant_label": "租户 A"}, headers=AS_ADMIN).json()["id"]
     mine = client.get(f"{MINE}/{mine}", headers=AS_OWNER).json()
     admin = client.get(f"{ADMIN_UPLOADS}/{admin}", headers=AS_ADMIN).json()
-    results = lambda detail: {item["id"]: item["result"] for item in detail["checks"] if item["id"] != "private_name"}  # noqa: E731
+
+    def results(detail):
+        return {item["id"]: item["result"] for item in detail["checks"] if item["id"] != "private_name"}
+
     assert results(mine) == results(admin) and mine["state"] == admin["state"]
 
 

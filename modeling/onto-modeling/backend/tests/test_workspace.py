@@ -1,13 +1,13 @@
 """工作区管理的单元测试：目录初始化、git 基线、文件树、路径守卫。"""
 
 import json
-import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
 from app.services.workspace import WorkspaceError, WorkspaceManager
+from tests import proc
 
 
 @pytest.fixture()
@@ -32,7 +32,7 @@ def test_create_project_initializes_workspace(manager: WorkspaceManager):
     assert (root / "resource" / "others" / "README.md").is_file()
     assert (root / "research").is_dir()
 
-    log = subprocess.run(
+    log = proc.run(
         ["git", "log", "--oneline"], cwd=root, capture_output=True, text=True
     )
     assert len(log.stdout.strip().splitlines()) == 1
@@ -110,8 +110,8 @@ def test_project_progress_full_chain_reaches_total(manager: WorkspaceManager):
     ):
         _write(root, rel)
     # 发布：工作区里有发布标签
-    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "tag", "release/0.1.0"],
-                   cwd=root, check=True, capture_output=True)
+    proc.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "tag", "release/0.1.0"],
+             cwd=root, check=True, capture_output=True)
 
     progress = manager._project_progress(root)
     assert progress["stages_done"] == progress["stages_total"] == 9
@@ -306,14 +306,14 @@ def test_file_at_revision_and_revert(manager: WorkspaceManager):
     meta = manager.create_project("t")
     root = manager.project_root(meta["id"])
     (root / "a.md").write_text("v1", encoding="utf-8")
-    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
-    subprocess.run(
+    proc.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+    proc.run(
         ["git", "commit", "-m", "c1"], cwd=root, check=True, capture_output=True
     )
     first = manager.versions(meta["id"])[0]["commit"]
     (root / "a.md").write_text("v2", encoding="utf-8")
-    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
-    subprocess.run(
+    proc.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+    proc.run(
         ["git", "commit", "-m", "c2"], cwd=root, check=True, capture_output=True
     )
 
@@ -340,8 +340,8 @@ def test_versions_numbering(manager: WorkspaceManager):
     meta = manager.create_project("t")
     root = manager.project_root(meta["id"])
     (root / "a.md").write_text("a", encoding="utf-8")
-    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
-    subprocess.run(
+    proc.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+    proc.run(
         ["git", "commit", "-m", "research: demo"],
         cwd=root,
         check=True,

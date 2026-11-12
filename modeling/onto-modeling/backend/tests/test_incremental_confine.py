@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -23,6 +22,7 @@ from app.services.flow import assemble
 from app.services.packs import builtin
 from app.services.packs import service as pack_service
 from app.services.workspace import WorkspaceManager
+from tests.proc import git
 from tests.test_guard_bypass import bash, denied, run_guard, write, ws  # noqa: F401 - 共用 fixture 与工具
 
 ASSETS = Path(config.ASSETS_DIR)
@@ -40,10 +40,6 @@ def _flow(*packs: str) -> str:
     contributions = [("core", "0.5.0", load("workspace-toolkit/flow.yaml"))]
     contributions += [(name, "0.1.0", load(f"packs/{name}/flow.yaml")) for name in packs]
     return assemble.render(assemble.assemble(contributions))
-
-
-def git(root: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
 
 
 def commit(root: Path, message: str = "合成提交") -> str:

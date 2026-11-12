@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 
 from app import config
+from tests import proc
+from tests.proc import git
 
 ASSETS = Path(config.ASSETS_DIR)
 TOOLKIT = ASSETS / "workspace-toolkit" / "scripts"
@@ -70,10 +72,6 @@ ENTRIES = {
 }
 
 
-def git(root: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
-
-
 def write(root: Path, rel: str, text: str) -> None:
     path = root / rel
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -109,8 +107,8 @@ def lock(root: Path, command: str) -> None:
 
 def run(root: Path, script: str, *args: str) -> subprocess.CompletedProcess:
     env = {**os.environ, "PYTHONPATH": str(TOOLKIT)}
-    return subprocess.run([sys.executable, str(SCRIPTS / script), *args], cwd=root, capture_output=True, text=True,
-                          env=env, timeout=60)
+    return proc.run([sys.executable, str(SCRIPTS / script), *args], cwd=root, capture_output=True, text=True,
+                    env=env, timeout=60)
 
 
 def scope_tool(root: Path, *args: str) -> subprocess.CompletedProcess:

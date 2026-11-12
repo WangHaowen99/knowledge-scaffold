@@ -113,7 +113,11 @@ def test_sample_becomes_supplementary_snapshot(f13):
     fresh = [r for r in db_records() if r["id"] == f"{customer}#sample"]
     fresh[0]["attrs"]["rows"] = [[9, "张*", "130****9999", "B"]]
     fresh[0]["hash"] = spec.record_hash(fresh[0])
-    f13.fake.bundle_for = lambda job_id, job: make_db_bundle(job_id, records=fresh, complete=True, operation="sample")
+
+    def sample_bundle(job_id, job):
+        return make_db_bundle(job_id, records=fresh, complete=True, operation="sample")
+
+    f13.fake.bundle_for = sample_bundle
     job = f13.run_db(project_id, operation="sample", sample={"selector": "crm.customer", "limit": 5})
     assert job["state"] == "succeeded", job
     sent = f13.fake.specs[-1]

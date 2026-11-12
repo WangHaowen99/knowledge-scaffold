@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -30,6 +29,7 @@ from app.services.flow import state as node_state
 from app.services.flow import view
 from app.services.session_host import exec_records, injection, next_steps
 from app.services.workspace import WorkspaceManager
+from tests import proc
 from tests.test_changesets import agent_write, main_write, obj
 from tests.test_session_host import FakeEngine, lock, release, result, settle
 
@@ -153,7 +153,7 @@ def test_skip_restore_and_start_nodes(env):
 def test_blocked_by_an_unconfirmed_gate(tmp_path):
     root = tmp_path / "data" / "workspaces" / "gate"
     root.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    proc.run(["git", "init", "-q"], cwd=root, check=True)
     flow = {"nodes": [
         {"id": "core.a", "title": "甲", "done": ["a"]},
         {"id": "x.gate", "title": "关卡", "placement": "gate", "after": "core.a", "done": ["g"],
@@ -220,8 +220,8 @@ def test_state_helper_suggest_matches_flow_and_host_injection(env):
     assert hint and all(label in hint for label in labels)
     # 命令行接口不变：detect-stage、check-prereq 仍输出旧阶段名与 ok/missing
     helper = ["python3", str(copy / ".claude" / "scripts" / "state_helper.py")]
-    stage = subprocess.run([*helper, "detect-stage"], cwd=copy, capture_output=True, text=True).stdout.strip()
+    stage = proc.run([*helper, "detect-stage"], cwd=copy, capture_output=True, text=True).stdout.strip()
     assert stage in flow_model.flow_state(root).stage_names(flow_model.load_for(root))
-    prereq = subprocess.run([*helper, "check-prereq", "extract-operation"], cwd=copy, capture_output=True,
-                            text=True).stdout.strip()
+    prereq = proc.run([*helper, "check-prereq", "extract-operation"], cwd=copy, capture_output=True,
+                      text=True).stdout.strip()
     assert prereq == "ok" or prereq.startswith("missing:")

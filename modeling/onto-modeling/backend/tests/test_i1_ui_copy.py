@@ -7,6 +7,7 @@ FL-01 脚本节点带最近一次结果（刷新后仍在）。
 from __future__ import annotations
 
 from app.services.flow import view
+from tests import proc
 from tests.test_node_pack_lifecycle import (  # noqa: F401  （夹具按名字注入）
     LINT_SCRIPT, SCRIPT_NODE, enable_and_apply, env, fake_sandbox, install, kinds_flow)
 from tests.test_changesets import main_write, obj, project  # noqa: F401
@@ -55,9 +56,8 @@ def test_script_node_failure_is_recorded_but_unavailable_sandbox_is_not(env, fak
 
 
 def subprocess_ls(root) -> str:
-    import subprocess
 
-    return subprocess.run(["git", "ls-files"], cwd=root, capture_output=True, text=True, check=True).stdout
+    return proc.run(["git", "ls-files"], cwd=root, capture_output=True, text=True, check=True).stdout
 
 
 # ---- 知识：加载规则说明、冲突说明不下发，冲突的另一方给数据 ----

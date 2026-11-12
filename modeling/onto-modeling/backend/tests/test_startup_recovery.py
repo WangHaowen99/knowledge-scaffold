@@ -47,12 +47,16 @@ def test_kernel_steps_are_registered_in_order():
 def test_registered_steps_run_in_order_and_failures_do_not_stop_others(manager, extra_steps):
     calls = []
     extra_steps("zz_quiet", "只做事", lambda m: calls.append("quiet"), order=95)
-    extra_steps("zz_broken", "会出错", lambda m: 1 / 0, order=96)
+
+    def broken_step(manager):
+        raise RuntimeError("合成：步骤出错")
+
+    extra_steps("zz_broken", "会出错", broken_step, order=96)
     extra_steps("zz_item", "进报告", lambda m: {"result": "ok", "tone": "ok", "detail": "合成步骤"}, order=97)
     report = startup_recovery.run(manager, include_background=False)
     items = {item["id"]: item for item in report["items"]}
     assert calls == ["quiet"] and "zz_quiet" not in items
-    assert items["zz_broken"]["result"] == "failed" and "ZeroDivisionError" in items["zz_broken"]["detail"]
+    assert items["zz_broken"]["result"] == "failed" and "RuntimeError" in items["zz_broken"]["detail"]
     assert items["zz_item"] == {"id": "zz_item", "title": "进报告", "result": "ok", "tone": "ok", "detail": "合成步骤"}
     ids = [item["id"] for item in report["items"]]
     assert ids.index("zz_broken") < ids.index("zz_item") and "purge" not in ids  # 后台步骤不在前台跑

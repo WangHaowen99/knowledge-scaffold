@@ -13,6 +13,7 @@ from app.api import deps
 from app.main import app
 from app.services import auth, streams
 from app.services.workspace import WorkspaceManager
+from tests import proc
 
 
 def _good_xlsx() -> bytes:
@@ -76,7 +77,6 @@ def test_upload_and_read_corrupt_materials(api):
 
 
 def test_corrupt_xlsx_already_in_resource(api):
-    import subprocess
 
     client, _ws, pid, root = api
     base = f"/api/v1/projects/{pid}"
@@ -88,8 +88,8 @@ def test_corrupt_xlsx_already_in_resource(api):
               "| --- | --- | --- | --- | --- | --- |\n| ITEM-01 | 门店 | 对象 | 无 | 无 | resource/excel/bad-workbook-xml.xlsx#sheet:Sheet!A1 |\n")
     (root / "research").mkdir(exist_ok=True)
     (root / "research" / "20261102-合成.md").write_text(report, encoding="utf-8")
-    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
-    subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "web: 合成坏表"], cwd=root, check=True)
+    proc.run(["git", "add", "-A"], cwd=root, check=True)
+    proc.run(["git", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "web: 合成坏表"], cwd=root, check=True)
     for name in CASES:
         if name.endswith(".xlsx"):
             path = f"resource/excel/{name}"

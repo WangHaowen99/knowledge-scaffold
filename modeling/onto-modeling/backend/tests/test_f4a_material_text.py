@@ -6,7 +6,6 @@
 """
 
 import json
-import subprocess
 import sys
 import textwrap
 import threading
@@ -22,6 +21,8 @@ from app.main import app
 from app.services import auth, material_conversion, streams
 from app.services.material_conversion import gateway, store
 from app.services.workspace import WorkspaceManager
+from tests import proc
+from tests.proc import git as _git
 
 FAKE_PDF = """
     from app.evidence.convert import Conversion, page_marker, parse_locations, unsupported
@@ -118,10 +119,6 @@ def _upload(client, pid, name, data):
 def _materials(client, pid):
     groups = client.get(f"/api/v1/projects/{pid}/resources").json()["groups"]
     return {item["path"]: item for group in groups for item in group["items"]}
-
-
-def _git(root, *args):
-    return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=True).stdout
 
 
 def _events(pid, kind):
@@ -336,8 +333,8 @@ def test_kernel_never_imports_parsers():
     """解析库只在网关镜像里：后端进程导入全部路由后，sys.modules 里没有它们。"""
     code = ("import sys; import app.main; "
             "print([m for m in ('pdfplumber', 'pdfminer', 'docx', 'pypdfium2') if m in sys.modules])")
-    out = subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).resolve().parents[1],
-                         capture_output=True, text=True, timeout=120)
+    out = proc.run([sys.executable, "-c", code], cwd=Path(__file__).resolve().parents[1],
+                   capture_output=True, text=True, timeout=120)
     assert out.stdout.strip().splitlines()[-1] == "[]", out.stderr[-500:]
 
 

@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 from app import wiring
@@ -15,6 +14,7 @@ from app.kernel_guards import _guard_common as guards
 from app.services.flow import model as flow_model
 from app.services.flow import view
 from app.services.session_host import exec_records, next_steps
+from tests import proc
 from tests.test_changesets import agent_write, main_write, obj
 from tests.test_flow_states import env  # noqa: F401
 from tests.test_inbox import idle
@@ -67,8 +67,8 @@ def test_09_stale_active_scope_does_not_outlive_the_command(env):
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))
     copy = service.copy_for_turn(workspaces, project_id, root)
     helper = ["python3", str(copy / ".claude" / "scripts" / "state_helper.py")]
-    assert subprocess.run([*helper, "acquire", "mock", "generate"], cwd=copy, capture_output=True,
-                          text=True).stdout.strip() == "ok"
+    assert proc.run([*helper, "acquire", "mock", "generate"], cwd=copy, capture_output=True,
+                    text=True).stdout.strip() == "ok"
     target = copy / "ontology/object/门店.md"
 
     def scope_reason():
@@ -94,7 +94,7 @@ def test_09_abandon_and_startup_clear_the_commands_scope(env):
     client, workspaces, _manager, project_id, root = env
     copy = service.copy_for_turn(workspaces, project_id, root)
     helper = ["python3", str(copy / ".claude" / "scripts" / "state_helper.py")]
-    subprocess.run([*helper, "acquire", "extract-object", "objects"], cwd=copy, capture_output=True)
+    proc.run([*helper, "acquire", "extract-object", "objects"], cwd=copy, capture_output=True)
     flow = flow_model.load_for(copy)
     record = exec_records.start(project_id, "default", root=copy, flow=flow, command="/ontology-extract-object",
                                 command_name="extract-object")
@@ -103,7 +103,7 @@ def test_09_abandon_and_startup_clear_the_commands_scope(env):
     assert response.status_code == 200, response.text
     assert not (copy / ".onto/run/active.json").exists() and not (copy / ".ontology-state/lock-extract-object.json").exists()
     # 启动恢复：执行记录改判为中断时，副本里留下的范围一起清掉
-    subprocess.run([*helper, "acquire", "mock", "generate"], cwd=copy, capture_output=True)
+    proc.run([*helper, "acquire", "mock", "generate"], cwd=copy, capture_output=True)
     exec_records.start(project_id, "default", root=copy, flow=flow, command="/ontology-mock", command_name="mock")
     from app.services.session_host import recovery
 

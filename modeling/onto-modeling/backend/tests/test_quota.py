@@ -25,8 +25,13 @@ from app.services.workspace import META_FILE, WorkspaceManager
 from tests.pack_helpers import make_assets
 
 NOW = calendar.timegm((2026, 11, 15, 12, 0, 0))  # 固定时钟：月中，当天、当月、上月都好构造
+
 DAY = 86400
 RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+
+
+def fixed_now() -> int:
+    return NOW
 
 
 @pytest.fixture()
@@ -40,7 +45,7 @@ def env(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(quota, "_service", None)
     service = quota.service()
     service.sync_interval = 0
-    service.clock = lambda: NOW
+    service.clock = fixed_now
     return SimpleNamespace(data=data, manager=manager, svc=service)
 
 
@@ -125,7 +130,7 @@ def test_resync_reads_only_new_complete_lines(env):
 
     # 换一个新实例（重启）重扫全部，同一个台账不重复计数
     restarted = quota.QuotaService(env.data, sync_interval=0)
-    restarted.clock = lambda: NOW
+    restarted.clock = fixed_now
     assert restarted.sync() == 0 and restarted.used_today("alice") == 147
 
 
@@ -164,7 +169,7 @@ def test_deleted_conversation_and_project_usage_still_counts_once(env):
 
     env.svc.db_path.unlink()  # 台账丢了从头建：只剩留存文件也照算
     fresh = quota.QuotaService(env.data, sync_interval=0)
-    fresh.clock = lambda: NOW
+    fresh.clock = fixed_now
     assert fresh.sync() == 2 and fresh.used_today("alice") == 300
 
     conversation_store.purge(pid)  # 删项目不能绕开当日上限
@@ -297,7 +302,11 @@ def test_remaining(env):
 def test_collections_per_source_per_hour(env):
     env.svc.set_limits({"collections_per_source_per_hour": 2}, {})
     clock = {"now": NOW}
-    env.svc.clock = lambda: clock["now"]
+
+    def now():
+        return clock["now"]
+
+    env.svc.clock = now
     env.svc.check_collection("ds-orders", "alice", record=False)  # 只查不记
     env.svc.check_collection("ds-orders", "alice")
     clock["now"] += 60
@@ -481,7 +490,11 @@ def test_gate_fails_open_on_internal_error(env, monkeypatch):
     assert ok.status_code == 200 and ok.json() == {"sent": pid}
 
     monkeypatch.setattr(quota, "service", lambda: env.svc)
-    monkeypatch.setattr(env.svc, "check_send", lambda project_id, username: 1 / 0)
+
+    def broken_check(project_id, username):
+        raise RuntimeError("合成：配额检查出错")
+
+    monkeypatch.setattr(env.svc, "check_send", broken_check)
     assert client.post(f"/api/v1/projects/{pid}/commands", json={}).status_code == 200
 
 

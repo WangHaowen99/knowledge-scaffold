@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -28,6 +27,7 @@ from app.services import auth, streams
 from app.services.onto_mcp import workspace as mcp
 from app.services.onto_mcp.errors import McpError
 from app.services.workspace import WorkspaceError, WorkspaceManager
+from tests import proc
 from tests.test_changesets import agent_write, main_write, obj
 from tests.test_event_streams import buffered
 
@@ -117,8 +117,8 @@ def test_decision_preview_entries_join_the_scope(env, monkeypatch):
 
 def test_revert_is_refused_while_a_changeset_is_open(env):
     _client, workspaces, project_id, root = env
-    first = subprocess.run(["git", "rev-list", "--max-parents=0", "HEAD"], cwd=root, capture_output=True,
-                           text=True).stdout.strip()
+    first = proc.run(["git", "rev-list", "--max-parents=0", "HEAD"], cwd=root, capture_output=True,
+                     text=True).stdout.strip()
     pending_change(workspaces, project_id, root)
     with pytest.raises(WorkspaceError) as exc:
         workspaces.revert_to(project_id, first, author="employee_0001")
@@ -185,7 +185,10 @@ def test_state_helper_records_the_running_nodes_scope(env):
     _client, workspaces, project_id, root = env
     copy = service.copy_for_turn(workspaces, project_id, root)
     helper = [ "python3", str(copy / ".claude" / "scripts" / "state_helper.py")]
-    run = lambda *args: subprocess.run([*helper, *args], cwd=copy, capture_output=True, text=True, check=True)
+
+    def run(*args):
+        return proc.run([*helper, *args], cwd=copy, capture_output=True, text=True, check=True)
+
     run("acquire", "extract-object", "objects")
     active = json.loads((copy / ".onto" / "run" / "active.json").read_text(encoding="utf-8"))
     assert active["commands"]["extract-object"]["node"] == "core.model"

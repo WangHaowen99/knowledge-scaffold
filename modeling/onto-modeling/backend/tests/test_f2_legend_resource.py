@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import importlib.util
-import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -18,6 +17,7 @@ import pytest
 from app import config
 from app.services import research_view
 from app.services.workspace import WorkspaceManager
+from tests import proc
 
 LEGEND = "图示说明定义.drawio"
 # 开始 → 合成活动 → 结束，外加一个图例里标成虚拟项的蓝色虚线框（不连线）
@@ -72,8 +72,8 @@ def test_new_project_resource_has_no_legend_and_scripts_use_the_packaged_one(pro
     diagram.write_text(DIAGRAM, encoding="utf-8")
     assert check.check_diagram(diagram, check.find_legend(root))["issues"] == []
     assert check.check_diagram(diagram, root / "nothing.drawio")["issues"]  # 没有图例时会误报
-    run = subprocess.run([sys.executable, ".claude/scripts/check_diagrams.py", "ontology/diagrams/合成流程.drawio"],
-                         cwd=root, capture_output=True, text=True, timeout=60)
+    run = proc.run([sys.executable, ".claude/scripts/check_diagrams.py", "ontology/diagrams/合成流程.drawio"],
+                   cwd=root, capture_output=True, text=True, timeout=60)
     assert run.returncode == 0 and "[有问题] 0 个" in run.stdout, run.stdout + run.stderr
     # 流程摘要带上图例的节点类型说明
     text = summarize.summarize(str(diagram), str(summarize.find_legend(root)))

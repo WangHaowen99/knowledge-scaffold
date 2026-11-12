@@ -6,13 +6,13 @@
 import dataclasses
 import importlib
 import json
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
 from app import config
+from tests import proc
 from tests.text_versions import write_text_versions
 
 SCRIPTS = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts"
@@ -247,11 +247,11 @@ def test_headers_flag_lists_schema_tables(toolkit, tmp_path: Path, monkeypatch, 
 def test_old_script_name_forwards_for_one_release(tmp_path: Path):
     """旧名 check_eval_data.py 保留一版转发：同一份输出，stderr 提示改名。"""
     columns_workspace(tmp_path)
-    old = subprocess.run(
+    old = proc.run(
         [sys.executable, str(SCRIPTS / "check_eval_data.py"), "--headers"],
         cwd=tmp_path, capture_output=True, text=True, timeout=60,
     )
-    new = subprocess.run(
+    new = proc.run(
         [sys.executable, str(SCRIPTS / "table_profile.py"), "--headers"],
         cwd=tmp_path, capture_output=True, text=True, timeout=60,
     )
@@ -267,9 +267,9 @@ def test_reconcile_given_tables(tmp_path: Path):
         COLUMNS_DOC.format(source="T_ORDER", rows=KEY_ROW), encoding="utf-8"
     )
     script = str(SCRIPTS / "table_profile.py")
-    idle = subprocess.run([sys.executable, script, "--json"], cwd=tmp_path, capture_output=True, text=True, timeout=60)
+    idle = proc.run([sys.executable, script, "--json"], cwd=tmp_path, capture_output=True, text=True, timeout=60)
     assert idle.returncode == 0 and json.loads(idle.stdout)["status"] == "no_files"
-    checked = subprocess.run(
+    checked = proc.run(
         [sys.executable, script, "--json", "resource/excel/结构.xlsx"],
         cwd=tmp_path, capture_output=True, text=True, timeout=60,
     )
@@ -278,9 +278,9 @@ def test_reconcile_given_tables(tmp_path: Path):
     assert result["files"][0]["sheets"][0]["attr_unmatched"] == ["AMOUNT", "name"]
     # 守卫不放行 Excel 原件路径：用法改成表名或文本版路径，结果一样
     for target in ("T_ORDER", "resource/text/excel/结构.xlsx.md"):
-        again = subprocess.run([sys.executable, script, "--json", target],
-                               cwd=tmp_path, capture_output=True, text=True, timeout=60)
+        again = proc.run([sys.executable, script, "--json", target],
+                         cwd=tmp_path, capture_output=True, text=True, timeout=60)
         assert json.loads(again.stdout)["files"][0]["sheets"][0]["attr_unmatched"] == ["AMOUNT", "name"]
-    unknown = subprocess.run([sys.executable, script, "--json", "T_UNKNOWN"],
-                             cwd=tmp_path, capture_output=True, text=True, timeout=60)
+    unknown = proc.run([sys.executable, script, "--json", "T_UNKNOWN"],
+                       cwd=tmp_path, capture_output=True, text=True, timeout=60)
     assert unknown.returncode == 1 and "找不到这张表" in json.loads(unknown.stdout)["files"][0]["reason"]

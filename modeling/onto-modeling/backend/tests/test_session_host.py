@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -24,6 +23,7 @@ from app.services.agent_sessions import SessionManager
 from app.services.engines.base import EngineContext
 from app.services.session_host import exec_records, injection, timeline
 from app.services.workspace import WorkspaceManager
+from tests import proc
 
 # ---- 契约第 4.2 节：事件类型 → 载荷字段（逐类定义） ----
 
@@ -334,8 +334,8 @@ def test_interrupt_marks_exec_and_offers_resume_then_resume_and_abandon(host):
     # 别人改了输入（资料）之后不能续跑
     (root / "resource").mkdir(exist_ok=True)
     (root / "resource" / "新资料.txt").write_text("合成资料\n", encoding="utf-8")
-    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-qm", "test: 补资料"], cwd=root, check=True, capture_output=True)
+    proc.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+    proc.run(["git", "commit", "-qm", "test: 补资料"], cwd=root, check=True, capture_output=True)
     from app.services.flow import model
 
     assert exec_records.not_resumable_reason(exec_records.get(project_id, interrupted["id"]), root,

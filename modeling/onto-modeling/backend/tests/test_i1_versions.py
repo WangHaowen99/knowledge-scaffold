@@ -2,7 +2,6 @@
 
 import io
 import json
-import subprocess
 import zipfile
 from pathlib import Path
 
@@ -14,6 +13,7 @@ from app.api import deps
 from app.main import app
 from app.services import auth, streams
 from app.services.workspace import WorkspaceManager
+from tests import proc
 
 
 def obj(name: str, desc: str, rows=(("编号", "code"),)) -> str:
@@ -26,14 +26,14 @@ def commit(root: Path, rel: str, text: str | None, message: str) -> str:
     path = root / rel
     if text is None:
         path.unlink()
-        subprocess.run(["git", "rm", "-q", "--cached", "--", rel], cwd=root, check=True)
+        proc.run(["git", "rm", "-q", "--cached", "--", rel], cwd=root, check=True)
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
-        subprocess.run(["git", "add", "--", rel], cwd=root, check=True)
-    subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "commit", "-qm", message], cwd=root, check=True)
-    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True,
-                          text=True).stdout.strip()
+        proc.run(["git", "add", "--", rel], cwd=root, check=True)
+    proc.run(["git", "-c", "core.hooksPath=/dev/null", "commit", "-qm", message], cwd=root, check=True)
+    return proc.run(["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True,
+                    text=True).stdout.strip()
 
 
 @pytest.fixture()
