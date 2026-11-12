@@ -101,11 +101,11 @@ def _call(request: urllib.request.Request, timeout: float) -> dict:
             raw = response.read()
     except urllib.error.HTTPError as exc:
         raise _error(exc) from None
-    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+    except (OSError, http.client.HTTPException) as exc:
         raise GatewayUnavailable(type(exc).__name__) from None
     try:
         data = json.loads(raw.decode("utf-8")) if raw else {}
-    except (UnicodeDecodeError, ValueError):
+    except ValueError:
         raise GatewayError(502, "bad_response", "网关回的不是 JSON") from None
     return data if isinstance(data, dict) else {}
 
@@ -136,8 +136,10 @@ def submit(job_spec: dict, artifact: Path | None) -> dict:
             connection.endheaders()
             if artifact is not None:
                 with Path(artifact).open("rb") as handle:
-                    while piece := handle.read(_COPY_BYTES):
+                    piece = handle.read(_COPY_BYTES)
+                    while piece:
                         connection.send(piece)
+                        piece = handle.read(_COPY_BYTES)
         except (BrokenPipeError, ConnectionResetError):
             pass  # 下面读响应：网关多半已经回了错误码
         except OSError as exc:
@@ -149,7 +151,7 @@ def submit(job_spec: dict, artifact: Path | None) -> dict:
             raise GatewayUnavailable(type(exc).__name__) from None
         try:
             data = json.loads(raw.decode("utf-8")) if raw else {}
-        except (UnicodeDecodeError, ValueError):
+        except ValueError:
             data = {}
         data = data if isinstance(data, dict) else {}
         if response.status >= 400:
@@ -228,11 +230,13 @@ def bundle(job_id: str, budget: dict, target: Path, max_bytes: int) -> int:
     written = 0
     try:
         with gateway._OPENER.open(request, timeout=BUNDLE_TIMEOUT_S) as response, Path(target).open("wb") as out:
-            while piece := response.read(_COPY_BYTES):
+            piece = response.read(_COPY_BYTES)
+            while piece:
                 written += len(piece)
                 if written > max_bytes:
                     raise GatewayError(413, "bundle_too_large", "快照包超过上限")
                 out.write(piece)
+                piece = response.read(_COPY_BYTES)
             expected = response.headers.get("Content-Length")
             if expected is not None and expected.isdigit() and int(expected) != written:
                 raise http.client.IncompleteRead(b"", int(expected) - written)
@@ -241,7 +245,7 @@ def bundle(job_id: str, budget: dict, target: Path, max_bytes: int) -> int:
     except http.client.IncompleteRead:
         # 网关发现原始结果不对会中途断开：按 Content-Length 读不满，入库失败、不留半份快照
         raise GatewayError(502, "bundle_incomplete", "快照包没收全") from None
-    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+    except (OSError, http.client.HTTPException) as exc:
         raise GatewayUnavailable(type(exc).__name__) from None
     return written
 

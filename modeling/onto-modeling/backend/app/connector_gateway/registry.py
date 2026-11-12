@@ -35,16 +35,24 @@ class LoadedConverter:
         return self.directory / self.entry
 
 
+def _complete(directory: Path, entry: str, types: tuple) -> bool:
+    """清单写全了：入口文件在、写法对，至少声明了一种类型且写法都对。"""
+    if not _ENTRY_RE.match(entry) or not (directory / entry).is_file():
+        return False
+    return bool(types) and all(_TYPE_RE.match(item) for item in types)
+
+
 def _load(directory: Path) -> LoadedConverter | None:
     data = yaml.safe_load((directory / "manifest.yaml").read_text(encoding="utf-8")) or {}
     spec = data.get("converter")
     name = str(data.get("name") or "")
-    if data.get("kind") != "provider" or not isinstance(spec, dict) or name != directory.name or not _NAME_RE.match(name):
+    if data.get("kind") != "provider" or not isinstance(spec, dict):
+        return None
+    if name != directory.name or not _NAME_RE.match(name):
         return None
     entry = str(spec.get("entry") or "")
     types = tuple(str(item).lower() for item in spec.get("types") or [])
-    if not _ENTRY_RE.match(entry) or not (directory / entry).is_file() or not types \
-            or not all(_TYPE_RE.match(item) for item in types):
+    if not _complete(directory, entry, types):
         _log.warning("转换器 %s 的清单不完整，跳过", name)
         return None
     info = ConverterInfo(id=name, version=str(data.get("version") or "0.0.0"), label=str(data.get("label") or name),

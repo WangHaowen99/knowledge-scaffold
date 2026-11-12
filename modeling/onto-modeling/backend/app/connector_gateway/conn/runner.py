@@ -22,7 +22,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import BinaryIO, Iterator
+from typing import BinaryIO, ContextManager, Iterator
 from urllib.parse import urlsplit
 
 from ...evidence import RECORD_TYPES
@@ -40,6 +40,8 @@ MEMORY_ENV = "ONTO_CONNECTOR_CONN_MEMORY_MB"
 FILE_ENV = "ONTO_CONNECTOR_CONN_FILE_MB"
 # 提供方自己的非机密配置（如 ONTO_CONNECTOR_DB_PROFILE_ROWS）原样传给子进程
 PASS_ENV_PREFIXES = ("ONTO_CONNECTOR_DB_", "ONTO_CONNECTOR_CODE_")
+# 任务说明里原样交给子进程的字段
+_HEAD_KEYS = ("source", "scope", "egress", "rate_limit", "masking", "selector", "limit")
 TEST_TIMEOUT_S = 30
 KILL_GRACE_S = 10
 MAX_EVENT_BYTES = bundle.MAX_LINE_BYTES + 4096
@@ -83,7 +85,7 @@ class _Run:
     # ---- 起进程 ----
 
     def start(self, head: dict, env: dict) -> None:
-        self.process = subprocess.Popen(
+        self.process = subprocess.Popen(  # NOSONAR(S4721) 固定参数列表起网关自己的 worker 模块，不经 shell
             [sys.executable, "-B", "-E", "-s", "-u", "-m", "app.connector_gateway.conn.worker"], cwd=APP_ROOT,
             env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
             close_fds=True)
@@ -96,14 +98,14 @@ class _Run:
             self.process.stdin.write(json.dumps(head, ensure_ascii=False).encode("utf-8") + b"\n")
             self.process.stdin.write(json.dumps(self._secret, ensure_ascii=False).encode("utf-8") + b"\n")
             self.process.stdin.close()
-        except (BrokenPipeError, OSError):
+        except OSError:
             pass
         threading.Thread(target=self._wait, name=f"conn-{self.job_id}", daemon=True).start()
 
     def _killpg(self) -> None:
         try:
             os.killpg(self.process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
+        except OSError:
             pass
 
     def _exited(self) -> bool:
@@ -161,7 +163,7 @@ class _Run:
                     return
                 try:
                     self._handle(line, handle)
-                except (UnicodeDecodeError, ValueError, TypeError, AttributeError):
+                except (ValueError, TypeError, AttributeError):
                     self._reject("事件不是合法的 JSON 对象")
                     return
         finally:
@@ -286,6 +288,10 @@ class _Run:
                 "error_message": self.error_message}
 
 
+def _valid_port(port) -> bool:
+    return isinstance(port, int) and not isinstance(port, bool) and 0 < port < 65536
+
+
 class SubprocessProvider:
     input = "connection"
 
@@ -342,22 +348,22 @@ class SubprocessProvider:
                 port = parts.port or 443
             except ValueError:
                 port = -1
-            if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
+            with_user = parts.username or parts.password
+            if parts.scheme != "https" or not parts.hostname or with_user:
                 raise GatewayError(400, "bad_request", "repo_url 要是不带用户信息的 https 地址")
             return [(host_key(parts.hostname), port)]
         host = host_key(connection.get("host"))
         port = connection.get("port", self.info.get("default_port"))
         if isinstance(port, str) and port.isdigit():
             port = int(port)
-        if not host or not isinstance(port, int) or isinstance(port, bool) or not 0 < port < 65536:
+        if not host or not _valid_port(port):
             raise GatewayError(400, "bad_request", "连接参数要有 host、port")
         return [(host, port)]
 
     # ---- 子进程 ----
 
     def _head(self, spec: dict, budget: dict, operation: str) -> dict:
-        head = {key: spec.get(key) for key in ("source", "scope", "egress", "rate_limit", "masking", "selector",
-                                              "limit")}
+        head = {key: spec.get(key) for key in _HEAD_KEYS}
         head.update({
             "provider": self.id, "operation": operation, "budget": budget, "module": catalog.module_of(self.id),
             "scheme": self.scheme, "executables": list(self.info.get("executables") or []),
@@ -375,7 +381,7 @@ class SubprocessProvider:
     def _start(self, job_id: str, spec: dict, budget: dict, operation: str, *, keep_records: bool,
                kill_after_s: float | None = None) -> _Run:
         cred_ref = spec.get("cred_ref")
-        secret = self.secrets.open(cred_ref)
+        secret = self.secrets.decrypt(cred_ref)
         directory = self.root / job_id
         shutil.rmtree(directory, ignore_errors=True)
         work = directory / "work"
@@ -452,10 +458,9 @@ class SubprocessProvider:
             # 任务表已经按类型写进快照包目录了，这一份不再留在内存盘上
             run.records_path.unlink(missing_ok=True)
 
-    @contextmanager
-    def raw(self, job_id: str, name: str) -> Iterator[BinaryIO]:
+    def raw(self, job_id: str, name: str) -> ContextManager[BinaryIO]:
+        """连接型提供方没有原始结果：取的时候直接报 404（与 ReaStatic 的同名方法一样在 with 上抛出）。"""
         raise GatewayError(404, "provider_job_missing", "连接型提供方没有原始结果")
-        yield  # pragma: no cover
 
     def delete(self, job_id: str) -> None:
         with self._lock:

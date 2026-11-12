@@ -141,7 +141,7 @@ def normalize(policy: dict, *, slice_ids: list[str], node_ids: list[str]) -> dic
         # F8 不再分段：老策略里存的段（s1…）都不在了，按「全部没做完的」跑，不报错
         out_scope["mode"] = "all_pending"
     for key in ("refresh_stale_first", "generate_scenarios", "include_optional"):
-        if not isinstance(out_scope[key], bool):
+        if not isinstance(out_scope.get(key), bool):
             fields[f"scope.{key}"] = "bool"
     if out_scope["until_node"] in REMOVED_UNTIL:
         out_scope["until_node"] = None

@@ -139,7 +139,8 @@ def decide(question: dict, raw: dict, advanced: dict) -> dict:
     options = _options(question)
     must = next((kind for kind in advanced.get("must_suspend_kinds") or [] if kind and kind in text), None)
     below = value < threshold
-    if must or not options or (below and advanced.get("below_threshold") == "suspend"):
+    suspend_below = below and advanced.get("below_threshold") == "suspend"
+    if must or not options or suspend_below:
         # 挂起的原因给人看（待处理「原因」），不放问题的 header
         reason = (f"涉及「{must}」，按策略一律挂起" if must else "没有可选的选项" if not options
                   else f"置信度 {value:.2f}，低于阈值 {threshold:.2f}")

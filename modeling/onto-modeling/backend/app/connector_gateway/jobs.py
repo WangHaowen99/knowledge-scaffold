@@ -71,6 +71,16 @@ def _positive(value) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
+def _artifact_valid(artifact) -> bool:
+    """artifact 要有 sha256、size（正整数）、filename（1～255 字符）。"""
+    if not isinstance(artifact, dict) or not isinstance(artifact.get("sha256"), str):
+        return False
+    if not SHA256_RE.match(artifact["sha256"]) or _positive(artifact.get("size")) is None:
+        return False
+    filename = artifact.get("filename")
+    return isinstance(filename, str) and 0 < len(filename) <= 255
+
+
 class Jobs:
     def __init__(self, providers: dict, root: Path | str | None = None, *, max_active: int = MAX_ACTIVE,
                  poll_s: float = 1.0, ttl_s: float = JOB_TTL_S, grace_s: float = 60.0, unreachable_s: float = 30.0,
@@ -186,9 +196,7 @@ class Jobs:
                 check_connection(provider, spec)
             return provider, budget
         artifact = spec.get("artifact")
-        if not isinstance(artifact, dict) or not isinstance(artifact.get("sha256"), str) \
-                or not SHA256_RE.match(artifact["sha256"]) or _positive(artifact.get("size")) is None \
-                or not isinstance(artifact.get("filename"), str) or not 0 < len(artifact["filename"]) <= 255:
+        if not _artifact_valid(artifact):
             raise GatewayError(400, "bad_request", "artifact 要有 sha256、size、filename")
         if artifact["size"] > provider.max_artifact_bytes:
             raise GatewayError(413, "too_large", "目标程序超过上限")

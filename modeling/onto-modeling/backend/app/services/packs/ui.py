@@ -78,6 +78,18 @@ _tickets: dict[str, Ticket] = {}
 _lock = threading.Lock()
 
 
+def _ticket_owner(item: Ticket) -> tuple:
+    """同一个人在同一项目里打开同一版本的同一个编辑器。"""
+    return item.user, item.project_id, item.pack, item.version, item.editor
+
+
+def _plain_number(value) -> bool:
+    """布尔值，或者有限、不太大的数（NaN 不算）。"""
+    if isinstance(value, bool):
+        return True
+    return isinstance(value, (int, float)) and value == value and abs(value) < 1e15
+
+
 def _enabled_view(manager, project_id: str, pack: str) -> registry.PackView | None:
     root = manager.project_root(project_id)
     return next((view for view in registry.desired_packs(manager, root) if view.name == pack), None)
@@ -105,9 +117,8 @@ def open_session(manager, project_id: str, pack: str, editor_id: str, *, user: s
         for key in [key for key, item in _tickets.items() if item.expires_at <= now]:
             _tickets.pop(key, None)
         # 同一个人重开同一个编辑器：沿用原来的票据、顺延有效期
-        token = next((key for key, item in _tickets.items()
-                      if (item.user, item.project_id, item.pack, item.version, item.editor)
-                      == (user, project_id, pack, view.version, editor["id"])), None)
+        wanted = (user, project_id, pack, view.version, editor["id"])
+        token = next((key for key, item in _tickets.items() if _ticket_owner(item) == wanted), None)
         if token is None:
             if sum(1 for item in _tickets.values() if item.user == user) >= TICKETS_PER_USER:
                 raise PackUiError("rate_limited", "打开的插件编辑器太多了，关掉一些或稍后再试", 429,
@@ -150,7 +161,7 @@ def check_command(manager, project_id: str, pack: str, command: str, args: dict,
     for key, value in args.items():
         if not isinstance(key, str) or not _ARG_KEY_RE.match(key):
             fields["args"] = "key"
-        elif isinstance(value, bool) or (isinstance(value, (int, float)) and value == value and abs(value) < 1e15):
+        elif _plain_number(value):
             continue
         elif not isinstance(value, str) or len(value) > COMMAND_ARG_CHARS or _CONTROL_RE.search(value):
             fields[f"args.{key}"] = "short_single_line"

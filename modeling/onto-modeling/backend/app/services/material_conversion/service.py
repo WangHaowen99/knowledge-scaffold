@@ -55,7 +55,9 @@ def kind_of(rel: str) -> str | None:
     """native：本身是文本；document：要转（或暂不支持）；None：不是资料、或流程图。"""
     rel = (rel or "").strip("/")
     parts = rel.split("/")
-    if len(parts) < 3 or parts[0] != "resource" or parts[1] not in RESOURCE_SUBDIRS or is_resource_text(rel):
+    if len(parts) < 3 or parts[0] != "resource" or parts[1] not in RESOURCE_SUBDIRS:
+        return None
+    if is_resource_text(rel):
         return None
     suffix = suffix_of(rel)
     if suffix in NOT_DOCUMENT:
@@ -67,6 +69,13 @@ _converters_cache: tuple[float, int, list[dict]] | None = None
 _converters_lock = threading.Lock()
 
 
+def _cache_fresh(key: int) -> bool:
+    """转换器清单的缓存还能用：同一个管理器、没过期。调用方持 _converters_lock。"""
+    if not _converters_cache or _converters_cache[1] != key:
+        return False
+    return time.time() - _converters_cache[0] < CONVERTERS_TTL_S
+
+
 def known_converters(force: bool = False) -> list[dict]:
     """平台装了哪些转换器：包仓库里 stable 版本带 `converter` 段的连接器包。
 
@@ -76,8 +85,7 @@ def known_converters(force: bool = False) -> list[dict]:
     manager = _manager()
     key = id(manager)
     with _converters_lock:
-        if not force and _converters_cache and _converters_cache[1] == key \
-                and time.time() - _converters_cache[0] < CONVERTERS_TTL_S:
+        if not force and _cache_fresh(key):
             return list(_converters_cache[2])
     repository = manager.packs.repository
     manager.packs.core_version()
@@ -162,6 +170,13 @@ def _converter_view(converter_id: str | None, version: str | None) -> dict | Non
     return {"id": converter_id, "label": label, "version": version or ""}
 
 
+def _stale_entry(entry: dict, revision: str, has_text: bool) -> bool:
+    """记录对不上文件：原文件换了，或者记着已转换、文本版却没了。"""
+    if entry.get("sha") != revision:
+        return True
+    return entry.get("state") == "converted" and not has_text
+
+
 def view(project_id: str, root: Path, rel: str, data: bytes | None = None, *, heal: bool = True) -> dict | None:
     """一份资料的文本版状态；不是文档返回 None。记录对不上文件时按文件重判，缺文本版的顺手排队（heal）。"""
     kind = kind_of(rel)
@@ -179,7 +194,7 @@ def view(project_id: str, root: Path, rel: str, data: bytes | None = None, *, he
     head = text_header(root, rel)
     has_text = bool(head and head["sha"] == revision)
     entry = store.get(project_id, rel)
-    if entry and (entry.get("sha") != revision or (entry.get("state") == "converted" and not has_text)):
+    if entry and _stale_entry(entry, revision, has_text):
         entry = None  # 记录对不上文件（原文件换了、文本版被恢复版本去掉了）：按文件重判
     out = {**base, "has_text": has_text}
     if entry and (entry.get("state") in ACTIVE + ("failed", "unsupported") or has_text):

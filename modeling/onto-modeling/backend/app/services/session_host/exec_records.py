@@ -103,12 +103,14 @@ def all_records(project_id: str) -> list[dict]:
     return records
 
 
+def _matches(record: dict, states: list[str] | None, conversation_id: str | None) -> bool:
+    if states and record.get("state") not in states:
+        return False
+    return not conversation_id or record.get("conversation_id") == conversation_id
+
+
 def query(project_id: str, states: list[str] | None = None, conversation_id: str | None = None) -> list[dict]:
-    return [
-        record for record in all_records(project_id)
-        if (not states or record.get("state") in states)
-        and (not conversation_id or record.get("conversation_id") == conversation_id)
-    ]
+    return [record for record in all_records(project_id) if _matches(record, states, conversation_id)]
 
 
 def open_record(project_id: str, conversation_id: str) -> dict | None:
@@ -190,8 +192,8 @@ def _input_dirs(flow: dict, node_id: str | None) -> list[str]:
 
 def _git(root: Path, *args: str) -> str:
     try:
-        result = subprocess.run(["git", "-c", "core.quotepath=false", *args], cwd=root, capture_output=True,
-                                text=True, timeout=30)
+        result = subprocess.run(  # NOSONAR(S4721) 固定的 git 参数列表，不经 shell
+            ["git", "-c", "core.quotepath=false", *args], cwd=root, capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
         return ""
     return result.stdout if result.returncode == 0 else ""

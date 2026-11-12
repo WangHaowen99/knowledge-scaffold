@@ -37,13 +37,20 @@ def _count_check_failure(check: str, result: str) -> str:
     return result
 
 
+def _plain_key(key: str) -> bool:
+    """条目 key 能直接拼进路径：非空，不含路径分隔符和空字符，不以 . 开头。"""
+    if not key or key.startswith("."):
+        return False
+    return not any(ch in key for ch in ("/", "\\", "\x00"))
+
+
 def entry_path(root: Path, entry_id: str) -> tuple[str, str, str]:
     """entry_id → (仓库相对路径, kind, key)；流程图条目已改为插件产物（410，见 AR-03）。"""
     kind, _, key = (entry_id or "").partition(":")
     if kind == "flowchart":
         raise ApiError("endpoint_removed", "流程图改由插件产物接口读写", 410,
                        {"successor": "/api/v1/projects/{id}/artifacts/diagram.flowchart/{key}"})
-    if kind not in KIND_PATHS or not key or "/" in key or "\\" in key or "\x00" in key or key.startswith("."):
+    if kind not in KIND_PATHS or not _plain_key(key):
         raise ApiError("not_found", "条目不存在", 404)
     directory, suffix = KIND_PATHS[kind]
     rel = f"{directory}/{key}{suffix}"
@@ -149,6 +156,15 @@ def _review_marks(project_id: str) -> dict:
         return {}
 
 
+def _listed_row(row: dict, kinds: set, needle: str, statuses: set) -> bool:
+    """条目列表的筛选：类型、名称或 key 里的关键字、状态。"""
+    if kinds and row["kind"] not in kinds:
+        return False
+    if needle and needle not in row["name"].lower() and needle not in row["key"].lower():
+        return False
+    return not statuses or row["status"] in statuses
+
+
 @router.get("/entries")
 def entries(
     project_id: str, request: Request, kind: str = "", q: str = "", status: str = "", sort: str = "name",
@@ -178,12 +194,7 @@ def entries(
     kinds = set(filter(None, kind.split(",")))
     needle = q.strip().lower()
     statuses = set(filter(None, status.split(",")))
-    items = [
-        row for row in rows
-        if (not kinds or row["kind"] in kinds)
-        and (not needle or needle in row["name"].lower() or needle in row["key"].lower())
-        and (not statuses or row["status"] in statuses)
-    ]
+    items = [row for row in rows if _listed_row(row, kinds, needle, statuses)]
     keys = {"name": lambda row: row["name"], "refs_in": lambda row: -row["refs_in"], "refs_out": lambda row: -row["refs_out"],
             # 新的在前，取不到时间的排最后
             "updated": lambda row: (row["id"] not in times, -times.get(row["id"], 0), row["name"])}
@@ -475,7 +486,10 @@ def _flowchart_titles(project_id: str) -> set[str]:
                                           limit=500, page=deps.page, iso=deps.iso)["items"]
     except artifact_service.ArtifactError:
         return set()
-    return {value for row in rows for value in (row.get("key"), row.get("title")) if value}
+    names: set[str] = set()
+    for row in rows:
+        names.update(value for value in (row.get("key"), row.get("title")) if value)
+    return names
 
 
 def _new_flowchart(project_id: str, name: str, key: str, actor: str) -> dict:
@@ -494,6 +508,10 @@ def _new_flowchart(project_id: str, name: str, key: str, actor: str) -> dict:
             raise ApiError("revision_conflict", "已经有同名的流程图", 409, {"kind": "name", "target": key}) from exc
         raise ApiError(exc.code, str(exc), exc.status, exc.details) from exc
     return result["artifact"]
+
+
+def _bad_name(text: str) -> bool:
+    return len(text) > NAME_MAX or bool(_NAME_BAD.search(text))
 
 
 @router.post("/entries")
@@ -515,9 +533,9 @@ async def create_entry(project_id: str, request: Request):
         raise ApiError("invalid_argument", "kind 取值不合法", 400, {"fields": {"kind": "enum"}})
     if not name:
         raise ApiError("invalid_argument", "名称不能为空", 400, {"fields": {"name": "required"}})
-    if len(name) > NAME_MAX or _NAME_BAD.search(name):
+    if _bad_name(name):
         raise ApiError("invalid_argument", "名称不合法", 400, {"fields": {"name": "pattern"}})
-    if key and (len(key) > NAME_MAX or _NAME_BAD.search(key) or key.startswith(".")):
+    if key and (_bad_name(key) or key.startswith(".")):
         raise ApiError("invalid_argument", "key 不合法", 400, {"fields": {"key": "pattern"}})
     # key 缺省用名称（也是文件名）：推出来的 key 同样要能当文件名，在写入之前就判
     field = "key" if key else "name"

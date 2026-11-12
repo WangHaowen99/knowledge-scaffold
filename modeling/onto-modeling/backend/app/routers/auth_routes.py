@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 import os
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -256,7 +255,7 @@ def revoke_refresh_token(refresh_token: str) -> bool:
     try:
         with urllib.request.urlopen(urllib.request.Request(f"{auth.AUTH_URL}/revoke", data=data), timeout=10):
             return True
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except OSError as exc:
         _log.warning("退出登录时吊销刷新令牌失败：%s", exc)
         return False
 

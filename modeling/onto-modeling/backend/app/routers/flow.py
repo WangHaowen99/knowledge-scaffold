@@ -187,6 +187,11 @@ async def answer_human_node(project_id: str, question_id: str, body: dict, actor
     return question
 
 
+def _pending_step(item: dict, stages: dict) -> bool:
+    """这一段里还没确认、也不是自动通过的必做步骤。"""
+    return not item.get("optional") and stages.get(item["id"]) not in ("confirmed", "auto")
+
+
 def _slice_command(root, node: dict, slice_id: str, step_id, fallback: str) -> tuple[str, str]:
     """建模节点开始：给了步骤用它的命令；给了分段取这一段还没做完的第一步；都没给取主线下一步（过期的先刷新）。
     返回 (命令, 分段)；全量模式不带分段。"""
@@ -207,6 +212,5 @@ def _slice_command(root, node: dict, slice_id: str, step_id, fallback: str) -> t
     summary = next((item for item in result.get("slices") or [] if item["id"] == slice_id), None)
     if summary is None:
         raise ApiError("invalid_argument", "分段不存在或已排除", 400, {"fields": {"slice_id": "unknown"}})
-    found = next((item for item in steps if not item.get("optional")
-                  and summary["stages"].get(item["id"]) not in ("confirmed", "auto")), None)
+    found = next((item for item in steps if _pending_step(item, summary["stages"])), None)
     return (found["command"] if found else fallback), (slice_id if result.get("sliced") else "")

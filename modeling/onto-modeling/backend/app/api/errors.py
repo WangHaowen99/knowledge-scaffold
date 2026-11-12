@@ -161,11 +161,12 @@ def _known_exception_types() -> tuple[type, ...]:
     from ..services.workspace import WorkspaceError
     from ..services.table_sources import SheetSelectionError
 
-    return (
+    known: list[type] = [
         ApiError, WorkspaceError, SessionError, ConversationError, AuthError, McpError,
         StudioError, PersonalConfigError, ServiceTokenError, FeedbackRejected,
         SheetSelectionError,  # Sheet 范围对不上当前文件：409 schema_selection_invalid（ADR-0096）
-    )
+    ]
+    return tuple(known)
 
 
 def _project_of(request: Request) -> str:

@@ -125,18 +125,22 @@ def extract(root: Path, rel: str) -> dict:
 def location_label(fragment: str) -> str:
     """片段 → 位置的界面写法：L12 → 第 12 行；p:3 → 第 3 段；table:1/row:2/cell:3 → 表 1 · 第 2 行 · 第 3 列；sheet:表!B3 → 表 · B3。"""
     fragment = fragment or ""
-    if match := re.fullmatch(r"L(\d+)", fragment):
+    match = re.fullmatch(r"L(\d+)", fragment)
+    if match:
         return f"第 {match.group(1)} 行"
-    if match := re.fullmatch(r"p:(.+)", fragment):
+    match = re.fullmatch(r"p:(.+)", fragment)
+    if match:
         return f"第 {match.group(1)} 段"
-    if match := re.fullmatch(r"table:(\d+)(?:/row:(\d+))?(?:/cell:(\d+))?", fragment):
+    match = re.fullmatch(r"table:(\d+)(?:/row:(\d+))?(?:/cell:(\d+))?", fragment)
+    if match:
         parts = [f"表 {match.group(1)}"]
         if match.group(2):
             parts.append(f"第 {match.group(2)} 行")
         if match.group(3):
             parts.append(f"第 {match.group(3)} 列")
         return " · ".join(parts)
-    if match := re.fullmatch(r"sheet:([^!]+)!([A-Z]+\d+)", fragment):
+    match = re.fullmatch(r"sheet:([^!]+)!([A-Z]+\d+)", fragment)
+    if match:
         return f"{match.group(1)} · {match.group(2)}"
     return fragment
 
@@ -159,7 +163,8 @@ def _unresolved(anchor: str, scheme: str, reason: str, source_label: str = "", l
 def _heading_before(lines: list[str], line: int) -> str:
     found = ""
     for text in lines[:line]:
-        if match := _MD_HEADING.match(text.strip()):
+        match = _MD_HEADING.match(text.strip())
+        if match:
             found = match.group(2).strip().strip("#").strip()
     return found
 
@@ -176,7 +181,8 @@ def line_location(root: Path, rel: str, line: int) -> str:
     if is_resource_text(rel):
         from ..evidence import convert
 
-        if (found := convert.location_at(text, line)) is not None:
+        found = convert.location_at(text, line)
+        if found is not None:
             return found.label
     return _heading_before(text.splitlines(), line)
 
@@ -226,12 +232,17 @@ def resolve(root: Path, anchor: str) -> dict:
             "confidence": None, "snapshot_id": None, "page": "resources"}
 
 
+def _line_in(anchor: str, low: int, high: int) -> bool:
+    """单行锚点 Ln 的行号落在 [low, high] 里。"""
+    found = re.fullmatch(r"L(\d+)", anchor)
+    return bool(found) and low <= int(found.group(1)) <= high
+
+
 def _span(segments: list[dict], fragment: str, lines) -> tuple[int, int] | None:
     """片段命中的段落下标 [起, 止]：行号范围 L12-L15 取范围里的各行，其余按片段原样找。"""
     if lines and lines.group(2):
         low, high = int(lines.group(1)), int(lines.group(2))
-        hits = [i for i, seg in enumerate(segments)
-                if (m := re.fullmatch(r"L(\d+)", seg["anchor"])) and low <= int(m.group(1)) <= high]
+        hits = [i for i, seg in enumerate(segments) if _line_in(seg["anchor"], low, high)]
         return (hits[0], hits[-1]) if hits else None
     index = next((i for i, seg in enumerate(segments) if seg["anchor"] == fragment), None)
     return None if index is None else (index, index)
@@ -277,7 +288,8 @@ def _block(segment: dict, markdown: bool) -> dict:
     anchor, text = segment["anchor"], str(segment["text"])
     if anchor.startswith(("table:", "sheet:")):
         return {"anchor": anchor, "kind": "table", "text": text}
-    if markdown and (match := _MD_HEADING.match(text)):
+    match = _MD_HEADING.match(text) if markdown else None
+    if match:
         return {"anchor": anchor, "kind": "heading", "level": len(match.group(1)), "text": match.group(2).strip()}
     if markdown and text.lstrip().startswith("|"):
         return {"anchor": anchor, "kind": "table", "text": text}
@@ -343,7 +355,8 @@ def _text_blocks(segments: list[dict], start: int, end: int) -> list[dict]:
     for segment in segments[start:end]:
         if convert.parse_header(str(segment["text"])) is not None:
             continue
-        if label := marker(segment):
+        label = marker(segment)
+        if label:
             location = label
             continue
         block = _block(segment, True)
@@ -387,9 +400,10 @@ def positions(root: Path, rel: str, *, q: str = "", limit: int = 0, cursor: str 
     empty = {"name": name, "readable": False, "items": [], "next_cursor": None}
     kind = material_conversion.kind_of(rel)
     markers: dict[int, str] = {}
+    text = material_conversion.text_file(root, rel) if kind == "document" else None
     if kind == "native":
         source = rel
-    elif kind == "document" and (text := material_conversion.text_file(root, rel)) is not None:
+    elif text is not None:
         source = resource_text_path(rel)
         from ..evidence import convert
 
@@ -402,14 +416,16 @@ def positions(root: Path, rel: str, *, q: str = "", limit: int = 0, cursor: str 
     headings = is_resource_text(source) or source.lower().endswith((".md", ".markdown"))
     marker, heading, items = "", "", []
     for segment in result.get("segments") or []:
-        if not (lines := _LINES.fullmatch(segment["anchor"])):
+        lines = _LINES.fullmatch(segment["anchor"])
+        if not lines:
             continue
         number = int(lines.group(1))
         line = str(segment["text"]).strip()
         if number in markers:
             marker = markers[number]
             continue
-        if headings and (match := _MD_HEADING.match(line)):
+        match = _MD_HEADING.match(line) if headings else None
+        if match:
             heading = match.group(2).strip().strip("#").strip()
             continue
         if _COMMENT.match(line) or _TABLE_RULE.match(line):

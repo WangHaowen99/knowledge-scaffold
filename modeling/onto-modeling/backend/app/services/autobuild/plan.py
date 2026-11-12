@@ -129,6 +129,13 @@ def _tail(root: Path, flow_doc: dict, policy: dict) -> list[dict]:
     return out
 
 
+def _left_out(step: dict, chosen: set, stages: dict) -> bool:
+    """策略没选上、这一段也还没做完的命令步骤（派生步骤不算）。"""
+    if step.get("derived") or not step.get("command") or step["id"] in chosen:
+        return False
+    return stages.get(step["id"]) not in (*DONE_STATES, "skipped")
+
+
 def build(manager, project_id: str, policy: dict) -> tuple[list[dict], list[dict]]:
     """(要做的单元, 预览用的全部分段 [{id, name, current, included}])。"""
     root = manager.project_root(project_id)
@@ -145,9 +152,8 @@ def build(manager, project_id: str, policy: dict) -> tuple[list[dict], list[dict
                     "before": dict(row.get("stages") or {})}
             # 策略里不做的步骤（不生成场景、不刷新过期、不含可选）：运行详情里不能算「自主完成」
             chosen = {step["id"] for step in steps}
-            left_out = [step["id"] for step in node.get("steps") or []
-                        if not step.get("derived") and step.get("command") and step["id"] not in chosen
-                        and (row.get("stages") or {}).get(step["id"]) not in (*DONE_STATES, "skipped")]
+            stages = row.get("stages") or {}
+            left_out = [step["id"] for step in node.get("steps") or [] if _left_out(step, chosen, stages)]
             if left_out:
                 unit["left_out"] = left_out
             if row["id"] in held:

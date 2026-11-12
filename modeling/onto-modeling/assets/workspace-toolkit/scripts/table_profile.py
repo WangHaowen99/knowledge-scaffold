@@ -31,6 +31,7 @@ from __future__ import annotations
 import csv
 import importlib.util
 import json
+import logging
 import re
 import sys
 from pathlib import Path
@@ -45,6 +46,16 @@ HEADERS_FILE = Path(".ontology-state") / "table-headers.json"
 SUMMARY_TABLE_LIMIT = 200
 MISSING_LIMIT = 50
 EXCEL_DEPENDENCY_MESSAGE = "需要 openpyxl 解析 Excel（pip install openpyxl），字段核验未完成"
+
+
+def _emit(text="", stream=None):
+    """结果写到标准输出（报错写到标准错误）：单独的输出通道，不受应用日志配置影响。"""
+    handler = logging.StreamHandler(stream or sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    output = logging.Logger("table_profile.out", logging.INFO)
+    output.propagate = False
+    output.addHandler(handler)
+    output.info(text)
 
 
 def load_directives(root: Path) -> dict:
@@ -82,6 +93,20 @@ def text_sheets(text_path: Path) -> dict[str, list[list[str]]] | None:
     return {sheet["name"]: sheet["rows"] for sheet in table_sources.text_sheets(markdown) if sheet["rows"]}
 
 
+class ExcelReaderMissing(RuntimeError):
+    """环境里没有 openpyxl，读不了 Excel：命令行入口报错后退出码 2。"""
+
+
+def _sheet_headers(sheets: dict[str, list[list[str]]]) -> dict[str, list[str]]:
+    """{表名: 行} → {表名: 第一行里非空的列名}；没有列名的表不要。"""
+    tables = {}
+    for name, rows in sheets.items():
+        headers = [cell.strip() for cell in rows[0] if cell.strip()]
+        if headers:
+            tables[name] = headers
+    return tables
+
+
 def read_tables(path: Path, directive: dict | None = None) -> dict[str, list[str]]:
     """表格文件 → {表名: [表头列]}。csv 的表名取文件名（去扩展名）；资料区的 Excel 读文本版，没有文本版返回空。
 
@@ -92,9 +117,7 @@ def read_tables(path: Path, directive: dict | None = None) -> dict[str, list[str
         return table_sources.read_selected_headers(path, directive or {"purpose": "schema"})
     text = resource_text(path)
     if text is not None:
-        sheets = text_sheets(text) or {}
-        return {name: headers for name, rows in sheets.items()
-                if (headers := [cell.strip() for cell in rows[0] if cell.strip()])}
+        return _sheet_headers(text_sheets(text) or {})
     if path.suffix.lower() == ".csv":
         try:
             with open(path, encoding="utf-8-sig", newline="") as f:
@@ -106,8 +129,7 @@ def read_tables(path: Path, directive: dict | None = None) -> dict[str, list[str
     try:
         import openpyxl  # 容器/后端环境自带；缺失时给出明确指引
     except ImportError:
-        print("需要 openpyxl 解析 Excel（pip install openpyxl）", file=sys.stderr)
-        sys.exit(2)
+        raise ExcelReaderMissing("需要 openpyxl 解析 Excel（pip install openpyxl）") from None
     try:
         wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     except Exception:
@@ -202,8 +224,12 @@ def read_profiles(path: Path) -> dict[str, dict]:
         sheets = text_sheets(text)
         if sheets is None:
             raise ValueError(NO_TEXT_MESSAGE.format(path.name))
-        return {name: profile for name, rows in sheets.items()
-                if (profile := field_semantics.profile_table(rows))}
+        profiles = {}
+        for name, rows in sheets.items():
+            profile = field_semantics.profile_table(rows)
+            if profile:
+                profiles[name] = profile
+        return profiles
     if path.suffix.lower() == ".csv":
         try:
             with open(path, encoding="utf-8-sig", newline="") as f:
@@ -292,6 +318,13 @@ def load_registered_tables(root: Path) -> tuple[dict, dict]:
     return tables, profiles
 
 
+def _readable(path: Path, excel_ok: bool) -> bool:
+    """登记的表格文件这次读得了：csv、有文本版，或者装了 openpyxl。"""
+    if not path.is_file():
+        return False
+    return path.suffix.lower() == ".csv" or resource_text(path) is not None or excel_ok
+
+
 def table_profiles(root: Path) -> dict[str, dict]:
     """非严格读取取值画像：与 table_headers 同口径，缺 openpyxl 跳过 Excel，读不了的表跳过。"""
     excel_ok = importlib.util.find_spec("openpyxl") is not None
@@ -299,7 +332,7 @@ def table_profiles(root: Path) -> dict[str, dict]:
     profiles: dict[str, dict] = {}
     for rel in registered_table_files(root):
         path = root / rel
-        if not path.is_file() or (path.suffix.lower() != ".csv" and resource_text(path) is None and not excel_ok):
+        if not _readable(path, excel_ok):
             continue
         try:
             selected = read_tables(path, directives.get(rel))
@@ -377,9 +410,7 @@ def target_tables(root: Path, target: str) -> dict[str, list[str]] | None:
         if original is not None:
             return read_tables(original, load_directives(root).get(original.relative_to(root).as_posix()))
         if path.suffix.lower() == ".md":
-            sheets = text_sheets(path) or {}
-            return {name: headers for name, rows in sheets.items()
-                    if (headers := [cell.strip() for cell in rows[0] if cell.strip()])}
+            return _sheet_headers(text_sheets(path) or {})
         if target.lower().endswith(TABLE_SUFFIXES):
             return read_tables(path)
     headers = table_headers(root)
@@ -441,13 +472,13 @@ def main() -> int:
     as_json = "--json" in sys.argv
     root = Path.cwd()
     if "--headers" in sys.argv:
-        print(json.dumps(write_headers(root), ensure_ascii=False))
+        _emit(json.dumps(write_headers(root), ensure_ascii=False))
         return 0
     if "--profile" in sys.argv:
         names = _option_values(sys.argv, "--tables")
         summary = profile_summary(table_profiles(root), names)
         summary.update(status=schema_status(root), missing_text=missing_text_versions(root)[:MISSING_LIMIT])
-        print(json.dumps(summary, ensure_ascii=False))
+        _emit(json.dumps(summary, ensure_ascii=False))
         return 0
 
     schema = schema_files(root)
@@ -479,26 +510,27 @@ def main() -> int:
         )
 
     if as_json:
-        print(json.dumps(result, ensure_ascii=False))
+        _emit(json.dumps(result, ensure_ascii=False))
     else:
-        print(f"schema 资料：{len(schema)} 份，字段 {len(schema_columns)} 个；"
+        _emit(f"schema 资料：{len(schema)} 份，字段 {len(schema_columns)} 个；"
               f"对象属性 {len(attr_names)} 个")
         for f in result["files"]:
             mark = "✅" if f["status"] == "ok" else "⚠️"
-            print(f"\n{mark} {f['path']}" + (f"：{f['reason']}" if f.get("reason") else ""))
+            _emit(f"\n{mark} {f['path']}" + (f"：{f['reason']}" if f.get("reason") else ""))
             for s in f["sheets"]:
-                print(f"  表「{s['name']}」{s['columns']} 列："
+                _emit(f"  表「{s['name']}」{s['columns']} 列："
                       f"schema 命中 {len(s['schema_matched'])}，属性命中 {len(s['attr_matched'])}")
                 if s["data_only"]:
-                    print(f"    - schema 中不存在的列：{', '.join(s['data_only'])}")
+                    _emit(f"    - schema 中不存在的列：{', '.join(s['data_only'])}")
                 if s["attr_unmatched"]:
-                    print(f"    - 未映射到对象属性的列：{', '.join(s['attr_unmatched'])}")
+                    _emit(f"    - 未映射到对象属性的列：{', '.join(s['attr_unmatched'])}")
         if result["missing_text"]:
-            print(f"\n（schema 资料还没有文本版，这次没有用到：{'、'.join(result['missing_text'])}）")
+            _emit(f"\n（schema 资料还没有文本版，这次没有用到：{'、'.join(result['missing_text'])}）")
         if result["status"] == "no_schema":
-            print("\n（无 schema 资料与对象属性可对账——先给结构表打 schema 标签或完成对象提取）")
+            _emit("\n（无 schema 资料与对象属性可对账——先给结构表打 schema 标签或完成对象提取）")
         elif result["status"] == "no_files":
-            print("\n（没有给出要对账的数据表：在命令行列出表名或文本版路径，如 订单表、resource/text/excel/业务数据.xlsx.md）")
+            _emit("\n（没有给出要对账的数据表：在命令行列出表名或文本版路径，"
+                  "如 订单表、resource/text/excel/业务数据.xlsx.md）")
     return 1 if result["status"] == "warn" else 0
 
 
@@ -507,7 +539,10 @@ def run() -> int:
     try:
         return main()
     except table_sources.SheetSelectionError as error:
-        print(f"Sheet 范围需要确认：{error}", file=sys.stderr)
+        _emit(f"Sheet 范围需要确认：{error}", sys.stderr)
+        return 2
+    except ExcelReaderMissing as error:
+        _emit(str(error), sys.stderr)
         return 2
 
 

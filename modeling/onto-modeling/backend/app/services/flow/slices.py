@@ -126,7 +126,11 @@ class _Inputs:
         kinds = list(step.get("kinds") or [])
         if not self.sliced:
             return any(self._under(kind, rel) for kind in kinds for rel in self.changed)
-        return any(rel in self.changed for kind in kinds for paths in self._entity_paths(item, kind) for rel in paths)
+        for kind in kinds:
+            for paths in self._entity_paths(item, kind):
+                if any(rel in self.changed for rel in paths):
+                    return True
+        return False
 
     def fingerprint(self, item: dict, step: dict) -> str:
         """这一步上游（stale_on）在主线上的摘要：按段模式下对象、操作、规则只取这一段的条目。
@@ -142,9 +146,24 @@ class _Inputs:
                 dirs += [f"{directory}/" for directory in node_state.KIND_DIRS.get(kind, ())]
             else:
                 wanted |= {rel for paths in self._entity_paths(item, kind) for rel in paths}
-        selected = [line for line in self.lines if "\t" in line
-                    and (line.split("\t", 1)[1] in wanted or line.split("\t", 1)[1].startswith(tuple(dirs or ["\0"])))]
+        prefixes = tuple(dirs or ["\0"])
+        selected = [line for line in self.lines if _selected_line(line, wanted, prefixes)]
         return hashlib.sha256("".join(f"{line}\n" for line in selected).encode("utf-8")).hexdigest()[:16]
+
+
+def _selected_line(line: str, wanted: set[str], prefixes: tuple[str, ...]) -> bool:
+    """ls-tree 的一行（`元数据\t路径`）：路径是这一段的条目，或在整目录都算的目录下。"""
+    if "\t" not in line:
+        return False
+    path = line.split("\t", 1)[1]
+    return path in wanted or path.startswith(prefixes)
+
+
+def _left_out(step: dict, skipped, inputs: "_Inputs", item: dict) -> bool:
+    """可选步骤这一段不做：手动跳过了，或按段模式下不在这一段的计划里。"""
+    if step["id"] in skipped:
+        return True
+    return bool(inputs.sliced) and not inputs.planned(item, step)
 
 
 def _kind_fps(inputs: "_Inputs", item: dict, step: dict) -> dict[str, str]:
@@ -235,7 +254,7 @@ def _step_state(inputs: _Inputs, item: dict, step: dict, stored: dict, cells: di
         records.pop(step["id"])  # 主线上不再满足（回退、删了）：基线作废
         changed = True
     skipped = (stored.get("slice_skips") or {}).get(slice_id, {})
-    if step.get("optional") and (step["id"] in skipped or (inputs.sliced and not inputs.planned(item, step))):
+    if step.get("optional") and _left_out(step, skipped, inputs, item):
         return "skipped", changed
     required = [cells[other["id"]] for other in inputs.steps
                 if other["id"] in cells and not other.get("optional") and not other.get("derived")]
@@ -373,8 +392,11 @@ def compute(root: Path, flow: dict, *, doc: dict | None, project_id: str | None 
             node_state.save(root, stored)
     total = len(summaries)
     done = sum(1 for item in summaries if item["_done"])
-    stale = [(item["id"], step, item["_fps"].get(step, "")) for item in summaries
-             for step, value in item["stages"].items() if value == "stale"]
+    stale = []
+    for item in summaries:
+        for step, value in item["stages"].items():
+            if value == "stale":
+                stale.append((item["id"], step, item["_fps"].get(step, "")))
     if total and done == total and not any(item["_stale"] for item in summaries):
         state = "confirmed"
     elif any(item["_stale"] for item in summaries):

@@ -148,7 +148,8 @@ def zip_files(root: Path, commit: str, prefix: str):
 
 def text_at(root: Path, commit: str, rel: str) -> str | None:
     """某版本里这份文件的文本；没有这个文件时 None。"""
-    proc = subprocess.run(["git", "show", f"{commit}:{rel}"], cwd=root, capture_output=True, timeout=60)
+    proc = subprocess.run(  # NOSONAR(S4721) 固定的 git 参数列表，不经 shell
+        ["git", "show", f"{commit}:{rel}"], cwd=root, capture_output=True, timeout=60)
     if proc.returncode != 0:
         return None
     data = proc.stdout[:DIFF_BYTES_MAX]
@@ -178,7 +179,7 @@ def _lock_versions(root: Path, rev: str) -> dict[str, str]:
         return {}
     try:
         lock = lockfile.PackLock.from_dict(json.loads(blob.decode("utf-8")))
-    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+    except ValueError:
         return {}
     return {entry.name: entry.version for entry in lock.enabled()}
 
@@ -203,9 +204,12 @@ def revert_preview(root: Path, target: str, head: str) -> dict:
     changed = rollback_changes(root, target, head)
     if not changed["restore"] and not changed["delete"]:
         raise WorkspaceError("当前业务内容与该版本一致，无需回退", 400, "nothing_to_revert")
-    files_out = sorted(({"path": rel, "change": change} for change in ("restore", "delete")
-                        for rel in changed[change] if not rel.startswith(SYSTEM_PREFIXES)),
-                       key=lambda item: item["path"])
+    files_out = []
+    for change in ("restore", "delete"):
+        for rel in changed[change]:
+            if not rel.startswith(SYSTEM_PREFIXES):
+                files_out.append({"path": rel, "change": change})
+    files_out.sort(key=lambda item: item["path"])
     target_n, head_n = mainline.count(root, target), mainline.count(root, head)
     before, now = _lock_versions(root, target), _lock_versions(root, head)
     packs = [{"pack": name, "label": _pack_label(name, now.get(name) or before.get(name)),

@@ -99,8 +99,8 @@ class ContractLibrary:
 
         def sibling_import(name, globals=None, locals=None, fromlist=(), level=0):
             # 同目录的兄弟脚本（不带点的模块名、目录里有同名 .py）解析到同一版本；其余照常导入
-            if level == 0 and name and "." not in name and name not in sys.builtin_module_names \
-                    and library.path(name).is_file():
+            bare = level == 0 and name and "." not in name
+            if bare and name not in sys.builtin_module_names and library.path(name).is_file():
                 return library.load(name)
             return real_import(name, globals, locals, fromlist, level)
 

@@ -98,7 +98,7 @@ def card_for(atype: ArtifactType, root: Path, row: dict, *, change: str, pack_la
     chips = [chip for chip in (_chip(atype, name, fields.get(name)) for name in spec.get("chips") or []) if chip]
     shown = [{"field": name, "label": _label(atype, name), "text": _text(fields.get(name))}
              for name in spec.get("fields") or [] if _text(fields.get(name))]
-    digest = hashlib.sha1(f"{seed}\0{atype.type}\0{row['key']}".encode("utf-8")).hexdigest()[:12]
+    digest = hashlib.sha256(f"{seed}\0{atype.type}\0{row['key']}".encode("utf-8")).hexdigest()[:12]
     card = {
         "card_id": f"ac-{digest}",
         "card_type": "artifact",

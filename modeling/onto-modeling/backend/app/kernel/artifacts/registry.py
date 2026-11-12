@@ -137,13 +137,28 @@ _YAML_CACHE_MAX = 512
 _YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 
 
+def _safe_yaml(text: str):
+    loader = _YAML_LOADER(text)
+    try:
+        return loader.get_single_data()
+    finally:
+        loader.dispose()
+
+
+def _single_star_path(path: str) -> bool:
+    """工作区相对路径，里面恰好一个 *（不是 **），没有 `..`。"""
+    if not path or path.startswith("/") or ".." in path:
+        return False
+    return path.count("*") == 1 and "**" not in path
+
+
 def _load_yaml(path: Path) -> dict:
     try:
         stat = path.stat()
         key = (str(path), stat.st_mtime_ns, stat.st_size)
         data = _YAML_CACHE.get(key)
         if data is None:
-            data = yaml.load(path.read_text(encoding="utf-8"), Loader=_YAML_LOADER) or {}
+            data = _safe_yaml(path.read_text(encoding="utf-8")) or {}
             if len(_YAML_CACHE) >= _YAML_CACHE_MAX:
                 _YAML_CACHE.clear()
             _YAML_CACHE[key] = data
@@ -358,7 +373,7 @@ def parse_registration(data: dict, *, pack: str, pack_version: str, official: bo
     if fmt not in FORMATS:
         raise RegistrationError(f"{art_type} 的格式 {fmt} 不认识（只能是 {'、'.join(FORMATS)}）")
     path = str(data.get("path") or "").replace("{key}", "*")
-    if not path or path.startswith("/") or ".." in path or path.count("*") != 1 or "**" in path:
+    if not _single_star_path(path):
         raise RegistrationError(f"{art_type} 的 path 要是工作区相对路径，且只有一个 * 或 {{key}}")
     allowed = path.startswith(f"ext/{pack}/") or (official and any(path.startswith(f"{base}/") for base in LEGACY_DIRS))
     if not allowed:

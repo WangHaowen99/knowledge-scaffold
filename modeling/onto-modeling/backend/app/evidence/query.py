@@ -58,8 +58,11 @@ class References:
     declared: dict[str, dict[str, str]] = field(default_factory=dict)        # 文件 → {源: 快照}
 
     def files_of_source(self, source_id: str) -> set[str]:
-        return {rel for anchor, hits in self.anchors.items()
-                if (parse_anchor(anchor) or {}).get("source_id") == source_id for rel, _line in hits}
+        files: set[str] = set()
+        for anchor, hits in self.anchors.items():
+            if (parse_anchor(anchor) or {}).get("source_id") == source_id:
+                files.update(rel for rel, _line in hits)
+        return files
 
     def snapshot_references(self, source_id: str, snapshot_id: str, latest_complete: str | None) -> int:
         """引用这份快照的已确认产物（`ontology/`）数：声明了它的；它是最新完整快照时，再加上引用这个源却没声明快照的。
@@ -386,8 +389,9 @@ def where_used(root: Path, refs: References, anchor: str, prefix: bool) -> list[
 def diff(connection: sqlite3.Connection, root: Path, refs: References, old: str, new: str) -> tuple[list[dict], dict]:
     """按锚点 + 哈希比较；affected 是引用这个锚点的产物。"""
     def rows(snapshot_id: str) -> dict[str, sqlite3.Row]:
-        return {row["anchor"]: row for row in connection.execute(
-            "SELECT anchor, type, name, label, hash, body FROM records WHERE snapshot_id = ?", (snapshot_id,))}
+        cursor = connection.execute(
+            "SELECT anchor, type, name, label, hash, body FROM records WHERE snapshot_id = ?", (snapshot_id,))
+        return {row["anchor"]: row for row in cursor}
 
     before, after = rows(old), rows(new)
     items = []

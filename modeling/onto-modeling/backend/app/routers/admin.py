@@ -37,7 +37,7 @@ PASSWORD_RULES = {
     "max_length": "max",
     "character_classes": "classes",
     "contains_username": "contains_username",
-    "common_password": "common",
+    "common_password": "common",  # NOSONAR(S2068) 策略违规项的名字映射，不是口令
     "surrounding_whitespace": "edge_space",
     "same_as_old": "same_as_old",
 }
@@ -179,7 +179,7 @@ def registration_enabled() -> bool | None:
     try:
         with urllib.request.urlopen(f"{auth.AUTH_URL}/capabilities", timeout=3) as response:
             value = json.loads(response.read() or b"{}").get("registration_enabled")
-    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+    except (ValueError, OSError):
         value = None
     value = value if isinstance(value, bool) else None
     _registration_cache = (time.time(), value)
@@ -280,7 +280,8 @@ def reset_password(username: str, body: ResetPasswordBody, request: Request):
     elif body.password:
         password = body.password
     else:
-        raise ApiError("invalid_argument", "请填写新密码或选择自动生成", 400, {"fields": {"password": "required"}})
+        missing = {"password": "required"}  # NOSONAR(S2068) 表单校验结果：密码字段必填，不是口令
+        raise ApiError("invalid_argument", "请填写新密码或选择自动生成", 400, {"fields": missing})
     _call("PUT", f"/admin/users/{username}", {"password": password})
     audit.log(
         deps.actor(request), "POST", request.url.path,

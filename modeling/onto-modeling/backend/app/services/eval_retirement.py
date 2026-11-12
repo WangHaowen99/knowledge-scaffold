@@ -91,11 +91,13 @@ def _referenced_uploads(folder: Path) -> dict[str, set[str]]:
     for path in folder.glob("*.json"):
         data = read_json(path, {})
         sources = data.get("sources") if isinstance(data, dict) else None
-        ids = {
-            str(item.get("id"))
-            for source in sources or [] if isinstance(source, dict)
-            for item in source.get("files") or [] if isinstance(item, dict) and item.get("id")
-        }
+        ids = set()
+        for source in sources or []:
+            if not isinstance(source, dict):
+                continue
+            for item in source.get("files") or []:
+                if isinstance(item, dict) and item.get("id"):
+                    ids.add(str(item.get("id")))
         if ids:
             found[path.stem] = ids
     return found
@@ -138,7 +140,7 @@ def _migrate_tables(manager, root: Path, uploads: list[tuple[str, Path]]) -> lis
             root, tables={**schema_tables, **upload_tables}, strict_declared=False,
         )
         used = {item["table"] for item in binding["objects"].values() if item.get("table")}
-    except (OSError, UnicodeError, ValueError):
+    except (OSError, ValueError):
         # 对象文档读不了时判断不出引用：宁可多迁，不丢表
         used = set(upload_tables)
     needed = list(dict.fromkeys(providers[name] for name in sorted(used) if name in providers))

@@ -221,7 +221,7 @@ def run_backup(manager) -> str:
     os.close(os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
     try:
         with tempfile.TemporaryDirectory(prefix=_STAGING_PREFIX, dir=directory) as scratch, \
-                tarfile.open(partial, "w:gz") as tar:
+                tarfile.open(partial, "w:gz") as tar:  # NOSONAR(S5042) 这里是写归档，不解压
             staging = Path(scratch)
             for root in manager._project_dirs():
                 # 持项目锁打包：避开 Web 保存、回退等写到一半的状态

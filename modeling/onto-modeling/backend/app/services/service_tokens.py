@@ -90,6 +90,10 @@ def _invalid(field: str, reason: str) -> ServiceTokenError:
     return ServiceTokenError(reason, 400, CODE_INVALID, {"fields": {field: reason}})
 
 
+def _ttl_seconds(ttl) -> bool:
+    return isinstance(ttl, int) and not isinstance(ttl, bool) and MIN_TTL_SECONDS <= ttl <= MAX_TTL_SECONDS
+
+
 def _normalize(body: dict) -> dict:
     name = str(body.get("name") or "").strip()
     if not name or len(name) > MAX_NAME_LENGTH:
@@ -105,9 +109,7 @@ def _normalize(body: dict) -> dict:
         if any(not _PROJECT_ID_RE.match(item) for item in project_ids):
             raise _invalid("project_ids", "有无效的项目 ID")
     ttl = body.get("expires_in_s")
-    if ttl is not None and (
-        isinstance(ttl, bool) or not isinstance(ttl, int) or not MIN_TTL_SECONDS <= ttl <= MAX_TTL_SECONDS
-    ):
+    if ttl is not None and not _ttl_seconds(ttl):
         raise _invalid("expires_in_s", f"必须是 {MIN_TTL_SECONDS} 至 {MAX_TTL_SECONDS} 的整数秒，不过期时传 null")
     return {
         "name": name,

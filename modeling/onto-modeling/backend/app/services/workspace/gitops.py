@@ -28,7 +28,7 @@ _NO_HOOKS = ("-c", "core.hooksPath=/dev/null")
 def _run_git(
     cwd: Path, args: tuple, env: dict | None = None, input: str | None = None
 ) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    return subprocess.run(  # NOSONAR(S4721) 固定的 git 参数列表，不经 shell
         ["git", *_NO_HOOKS, *args], cwd=cwd, capture_output=True, text=True, timeout=60,
         env=env, input=input,
     )

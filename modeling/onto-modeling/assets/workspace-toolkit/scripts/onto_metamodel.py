@@ -312,8 +312,11 @@ def split_sections(text: str) -> list[tuple[str, str]]:
     只有一个一级标题、下面是二级标题时，一级标题是文档名，不算章节（同 MCP 文档模型的口径）。
     """
     lines = (text or "").split("\n")
-    headings = [(index, len(match.group(1)), match.group(2)) for index, line in enumerate(lines)
-                if (match := _HEADING_RE.match(line))]
+    headings = []
+    for index, line in enumerate(lines):
+        match = _HEADING_RE.match(line)
+        if match:
+            headings.append((index, len(match.group(1)), match.group(2)))
     ones = [item for item in headings if item[1] == 1]
     skip = {ones[0][0]} if len(ones) == 1 and any(item[1] == 2 for item in headings) else set()
     starts = [item for item in headings if item[0] not in skip]

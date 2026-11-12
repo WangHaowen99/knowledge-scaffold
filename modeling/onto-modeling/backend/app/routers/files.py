@@ -317,7 +317,7 @@ def reverse_query(project_id: str, request: Request, kind: str = "", term: str =
         raise ApiError("service_unavailable", "查询脚本不存在（资产未挂载）", 503, {"dependency": "assets"})
     outputs = []
     for args in QUERY_KIND_ARGS[kind](term.strip()):
-        result = subprocess.run(
+        result = subprocess.run(  # NOSONAR(S4721) 固定参数列表跑受信的查询脚本，不经 shell
             ["python3", str(script), *args], cwd=root, capture_output=True, text=True, timeout=30, env=minimal_env(),
         )
         outputs.append(result.stdout if result.returncode == 0 else f"查询失败：{result.stderr[:200]}")

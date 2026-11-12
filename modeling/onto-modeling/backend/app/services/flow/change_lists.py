@@ -222,13 +222,19 @@ def save_points(root: Path, list_id: str, base_revision: str, points: list) -> d
         return _write(root, record)
 
 
+def _chosen(point: dict, point_ids: list[str] | None, high_confidence: bool) -> bool:
+    """按「全部高把握」或按点名选中的变更点。"""
+    if high_confidence and point.get("confidence") == "high":
+        return True
+    return bool(point_ids) and point["id"] in point_ids
+
+
 def accept(root: Path, list_id: str, *, point_ids: list[str] | None = None, high_confidence: bool = False) -> dict:
     """INC-03：低把握的条目不能出现在多于一条的批量里。"""
     with _lock:
         record = _require(root, list_id)
         points = record.get("points") or []
-        chosen = [point for point in points if (high_confidence and point.get("confidence") == "high")
-                  or (point_ids and point["id"] in point_ids)]
+        chosen = [point for point in points if _chosen(point, point_ids, high_confidence)]
         if point_ids and len(point_ids) > 1:
             low = [point["id"] for point in chosen if point.get("confidence") == "low"]
             if low:

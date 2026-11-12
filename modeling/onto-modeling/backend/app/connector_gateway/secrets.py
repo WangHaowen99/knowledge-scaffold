@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import base64
-import binascii
 import json
 import logging
 import os
@@ -69,8 +68,8 @@ class SecretStore:
                     key = base64.b64decode(Path(self.key_file).read_bytes().strip(), validate=True)
                     if len(key) != 32:
                         raise ValueError("主密钥要 32 字节")
-                    self._aead = AESGCM(key)
-                except (OSError, ValueError, binascii.Error) as exc:
+                    self._aead = AESGCM(key)  # NOSONAR(S4787) 凭据按设计用 AES-GCM 认证加密，密钥来自受保护的主密钥文件
+                except (OSError, ValueError) as exc:
                     if not self._warned:
                         self._warned = True
                         _log.warning("连接器主密钥不可用（%s）：凭据接口回 503，连接型提供方不可用", type(exc).__name__)
@@ -172,7 +171,7 @@ class SecretStore:
             return False
         return (self._source_dir(source_id) / f"{parsed[1]}.bin").is_file()
 
-    def open(self, cred_ref: str) -> dict:
+    def decrypt(self, cred_ref: str) -> dict:
         """解密一个版本给子进程运行器；不经任何接口回出去。"""
         aead = self._require()
         parsed = parse_ref(cred_ref)

@@ -113,6 +113,36 @@ def _snake(name: str) -> str:
     return "".join(f"_{char.lower()}" if char.isupper() and index else char.lower() for index, char in enumerate(name))
 
 
+def _assigned_names(body) -> list[str]:
+    """类体里直接赋值的名字（枚举的成员）。"""
+    names = []
+    for statement in body:
+        if isinstance(statement, ast.Assign):
+            names.extend(target.id for target in statement.targets if isinstance(target, ast.Name))
+    return names
+
+
+def _implied_many(annotation, target: str, fk_columns, options: dict) -> bool:
+    """relationship 没写类型注解、本表没有指向对方的外键列、也没给 uselist：按一对多算。"""
+    if annotation is not None:
+        return False
+    return f"{_snake(target)}_id" not in fk_columns and options.get("uselist") is None
+
+
+def _assigns_call_to_name(item) -> bool:
+    """`名字 = 调用(...)`。"""
+    if not isinstance(item, ast.Assign) or not isinstance(item.value, ast.Call):
+        return False
+    return len(item.targets) == 1 and isinstance(item.targets[0], ast.Name)
+
+
+def _assigns_self_attribute(item) -> bool:
+    """`self.x = ...`。"""
+    if not isinstance(item, ast.Assign) or len(item.targets) != 1:
+        return False
+    return isinstance(item.targets[0], ast.Attribute) and dotted(item.targets[0]).startswith("self.")
+
+
 class PythonFile:
     def __init__(self, sink: Sink, path: str, text: str, tree: ast.Module):
         self.sink = sink
@@ -229,8 +259,7 @@ class PythonFile:
             end_line=node.end_lineno or start, kind="enum" if kind == "enum" else "class", module=self.module,
             label=label, confidence="declared" if orm else "observed", table=table if isinstance(table, str) else None,
             orm=orm, role=role,
-            values=[target.id for statement in node.body if isinstance(statement, ast.Assign)
-                    for target in statement.targets if isinstance(target, ast.Name)] if kind == "enum" else None)
+            values=_assigned_names(node.body) if kind == "enum" else None)
         for base in node.bases:
             name = short(base)
             if name and name not in ("Base", "Model", "BaseModel"):
@@ -274,8 +303,7 @@ class PythonFile:
                     target = type_name(call.args[0])[0] or target
                 if "secondary" in options:
                     relation = "many_to_many"
-                elif many or (annotation is None and f"{_snake(target)}_id" not in fk_columns
-                              and options.get("uselist") is None):
+                elif many or _implied_many(annotation, target, fk_columns, options):
                     relation = "one_to_many"
                 elif isinstance(options.get("uselist"), ast.Constant) and options["uselist"].value is False:
                     relation = "one_to_one"
@@ -509,8 +537,7 @@ class PythonFile:
             if arg.annotation is not None:
                 local[arg.arg] = short(arg.annotation)
         for item in ast.walk(node):
-            if isinstance(item, ast.Assign) and isinstance(item.value, ast.Call) and len(item.targets) == 1 \
-                    and isinstance(item.targets[0], ast.Name):
+            if _assigns_call_to_name(item):
                 local.setdefault(item.targets[0].id, short(item.value.func))
         for item in ast.walk(node):
             if not isinstance(item, ast.Call) or not isinstance(item.func, ast.Attribute):
@@ -531,8 +558,7 @@ class PythonFile:
         params = {arg.arg: short(arg.annotation) for arg in init.args.args if arg.annotation is not None}
         types = {}
         for item in ast.walk(init):
-            if isinstance(item, ast.Assign) and len(item.targets) == 1 and isinstance(item.targets[0], ast.Attribute) \
-                    and dotted(item.targets[0]).startswith("self."):
+            if _assigns_self_attribute(item):
                 key = dotted(item.targets[0])
                 if isinstance(item.value, ast.Name) and item.value.id in params:
                     types[key] = params[item.value.id]

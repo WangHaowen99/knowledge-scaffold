@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -153,9 +154,9 @@ class JobStore:
                     {self.list_key: records[: self.max_records]}, handle, ensure_ascii=False, indent=2
                 )
             os.replace(temporary, self.path)
-        except BaseException:
-            Path(temporary).unlink(missing_ok=True)
-            raise
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temporary)
 
 
 def sweep_workspace_stores(

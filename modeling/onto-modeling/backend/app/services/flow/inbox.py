@@ -235,8 +235,8 @@ def _changesets(root: Path) -> list[dict]:
     record = store.current(root)
     if record is None or record.get("state") != "conflict":
         return []
-    names = [ref.get("name") or ref.get("title") or ref.get("key") for ref in
-             (record.get("entries") or []) + (record.get("artifacts") or [])]
+    refs = (record.get("entries") or []) + (record.get("artifacts") or [])
+    names = [ref.get("name") or ref.get("title") or ref.get("key") for ref in refs]
     impact = [{"label": "涉及", "items": names[:20]}] if names else []
     conflict = record.get("conflict") or {}
     return [_item("changeset_conflict", record["id"], "这一轮和你的修改有冲突，选好保留哪一边",
@@ -251,7 +251,9 @@ def _check_findings(root: Path) -> list[dict]:
 
     record = next(iter(store.all_records(root)), None)
     checks = (record or {}).get("checks") or {}
-    if not record or record.get("state") != "merged" or not record.get("collected") or not int(checks.get("errors") or 0):
+    if not record or record.get("state") != "merged":
+        return []
+    if not record.get("collected") or not int(checks.get("errors") or 0):
         return []
     errors = [item for item in checks.get("findings") or [] if item.get("level") == "error"]
     messages = [str(item.get("message") or item.get("label") or "")[:200] for item in errors][:20]
@@ -358,6 +360,11 @@ def _autobuild(project_id: str) -> list[dict]:
     return items
 
 
+def _pending_confident(entry: dict, threshold: float) -> bool:
+    """还没复核、置信度又够高的决定。"""
+    return entry.get("review_state") == "pending" and float(entry.get("confidence") or 0) >= threshold
+
+
 def autobuild_summary(project_id: str, run_id: str | None = None) -> dict | None:
     """IN-01 `filter=autobuild_review` 的汇总条：指定的运行，或最近一次。"""
     from ..autobuild import store as runs
@@ -376,8 +383,7 @@ def autobuild_summary(project_id: str, run_id: str | None = None) -> dict | None
         "decisions": len(ledger), "high_confidence": report["metrics"]["decisions"]["high_confidence"],
         "needs_look": report["metrics"]["decisions"]["needs_look"], "suspended": report["metrics"]["suspended"],
         "assumptions": sum(1 for entry in ledger if entry.get("assumption")),
-        "high_confidence_pending": sum(1 for entry in ledger if entry.get("review_state") == "pending"
-                                       and float(entry.get("confidence") or 0) >= threshold),
+        "high_confidence_pending": sum(1 for entry in ledger if _pending_confident(entry, threshold)),
     }
 
 
@@ -526,17 +532,26 @@ def counts(items: list[dict]) -> dict:
     return {"total": len(active), "by_filter": by_filter, "by_pack": by_pack}
 
 
+def _listed(item: dict, wanted, kinds, pack: str | None, run_id: str | None) -> bool:
+    """IN-01 的筛选：没被忽略，且符合分类、类型、插件、运行。"""
+    if item.get("_dismissed"):
+        return False
+    if wanted is not None and item["kind"] not in wanted:
+        return False
+    if kinds and item["kind"] not in kinds:
+        return False
+    if pack and item.get("pack") != pack:
+        return False
+    return not run_id or (item.get("run") or {}).get("run_id") == run_id
+
+
 def listing(manager, project_id: str, *, filter_: str = "all", kinds: list[str] | None = None,
             pack: str | None = None, run_id: str | None = None) -> tuple[list[dict], dict, dict]:
     """IN-01：(筛过的事项, counts, today)。"""
     items = collect(manager, project_id)
     total = counts(items)
     wanted = FILTERS.get(filter_)
-    picked = [item for item in items if not item.get("_dismissed")
-              and (wanted is None or item["kind"] in wanted)
-              and (not kinds or item["kind"] in kinds)
-              and (not pack or item.get("pack") == pack)
-              and (not run_id or (item.get("run") or {}).get("run_id") == run_id)]
+    picked = [item for item in items if _listed(item, wanted, kinds, pack, run_id)]
     root = manager.project_root(project_id)
     handled = handled_today(root)
     remaining = total["by_filter"]

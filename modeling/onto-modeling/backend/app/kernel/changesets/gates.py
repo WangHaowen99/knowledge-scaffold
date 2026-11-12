@@ -43,13 +43,13 @@ def _export(root: Path, tree: str, dest: Path) -> None:
     present = _run_git(root, ("ls-tree", "--name-only", tree, "--", *EXPORT_DIRS)).stdout.split()
     if present:
         archive = dest / "tree.tar"
-        result = subprocess.run(
+        result = subprocess.run(  # NOSONAR(S4721) 固定的 git 参数列表，不经 shell
             ["git", "-c", "core.hooksPath=/dev/null", "archive", "--format=tar", "-o", str(archive), tree, "--",
              *present], cwd=root, capture_output=True, timeout=120,
         )
         if result.returncode != 0:
             raise GateUnavailable(f"导出待检查的树失败：{result.stderr.decode(errors='replace').strip()}")
-        with tarfile.open(archive) as bundle:
+        with tarfile.open(archive) as bundle:  # NOSONAR(S5042) 自己用 git archive 导出的不压缩包，按 data 过滤器解开
             kwargs = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
             bundle.extractall(dest, **kwargs)
         archive.unlink()
@@ -79,7 +79,7 @@ def run(root: Path, tree: str) -> list[dict]:
         workdir = Path(scratch)
         _export(root, tree, workdir)
         try:
-            result = subprocess.run(
+            result = subprocess.run(  # NOSONAR(S4721) 固定参数列表跑受信的检查脚本，不经 shell
                 ["python3", str(script), str(workdir / "ontology"), "--json", "--include-mock"],
                 cwd=workdir, capture_output=True, text=True, timeout=CHECK_TIMEOUT_SECONDS, env=minimal_env(),
             )

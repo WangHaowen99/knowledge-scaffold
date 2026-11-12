@@ -97,8 +97,7 @@ class GovernanceMiddleware:
         started = time.monotonic()
         with context.bind(project=project_of(path)):
             with telemetry.span(f"{method} {self._route(path)}", "event", plane=self.plane, method=method) as span:
-                if (self.plane == "business" and method in WRITE_METHODS
-                        and ops_state.maintenance_mode() == "read_only" and not path.startswith(_READ_ONLY_EXEMPT)):
+                if self._read_only_blocks(method, path):
                     await _json_error(capture, 503, "maintenance_read_only", "系统维护中，暂时只读",
                                       _maintenance_details())
                 else:
@@ -112,6 +111,12 @@ class GovernanceMiddleware:
             telemetry.observe("onto_http_request_seconds", elapsed, plane=self.plane)
             if method in WRITE_METHODS and path.startswith("/api") and not path.startswith(_AUDIT_SKIP):
                 self._audit(scope, path, method, status)
+
+    def _read_only_blocks(self, method: str, path: str) -> bool:
+        """维护只读时挡下业务面的写请求（豁免的路径除外）。"""
+        if self.plane != "business" or method not in WRITE_METHODS:
+            return False
+        return ops_state.maintenance_mode() == "read_only" and not path.startswith(_READ_ONLY_EXEMPT)
 
     @staticmethod
     def _route(path: str) -> str:

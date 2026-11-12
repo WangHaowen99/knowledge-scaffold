@@ -427,7 +427,9 @@ def _slice_protect(node_id: str, allow: list) -> tuple:
     except (OSError, ValueError):
         return None, []
     item = blueprint.find_slice(doc, slice_id)
-    if node is None or not node.get('per_slice') or blueprint.mode(doc) != 'sliced' or item is None:
+    if node is None or not node.get('per_slice'):
+        return None, []
+    if blueprint.mode(doc) != 'sliced' or item is None:
         return None, []
     own = set(blueprint.member_paths(item))
     # 这一段的场景（一个操作一份）也是这一段的
@@ -440,7 +442,9 @@ def _slice_protect(node_id: str, allow: list) -> tuple:
             continue
         for path in sorted(Path(directory).glob('*.md')):
             rel = path.as_posix()
-            if path.name.lower() != 'index.md' and rel not in own and rel not in changed and rel not in protect:
+            if path.name.lower() == 'index.md':
+                continue
+            if rel not in own and rel not in changed and rel not in protect:
                 protect.append(rel)
     return slice_id, protect
 
@@ -610,8 +614,12 @@ FLOW_STATE_FILE = Path('.onto') / 'run' / 'flow-state.json'
 
 
 def _git_quiet(*args) -> str | None:
+    git = shutil.which('git')
+    if not git:
+        return None
     try:
-        result = subprocess.run(['git', *args], capture_output=True, text=True, timeout=30)
+        result = subprocess.run(  # NOSONAR(S4721) 固定的 git 参数列表，不经 shell
+            [git, *args], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout if result.returncode == 0 else None

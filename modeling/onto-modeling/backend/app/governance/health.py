@@ -14,7 +14,6 @@ import os
 import shutil
 import threading
 import time
-import urllib.error
 import urllib.request
 from typing import Callable
 
@@ -92,7 +91,7 @@ def _probe_auth_server():
     try:
         with urllib.request.urlopen(f"{auth.AUTH_URL}/jwks.json", timeout=3) as response:
             return ("ok", None) if response.status == 200 else ("fail", f"JWKS 返回 {response.status}")
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except OSError as exc:
         return "fail", f"JWKS 不可达：{type(exc).__name__}"
 
 

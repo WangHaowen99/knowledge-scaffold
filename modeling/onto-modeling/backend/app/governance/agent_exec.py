@@ -15,6 +15,7 @@ umask 007；这样密钥目录（0700，归后端用户）对 agent 不可读。
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sys
@@ -85,9 +86,19 @@ def drop_privileges(username: str) -> None:
     os.umask(0o007)
 
 
+def _complain(text: str) -> None:
+    # 用法错误写到标准错误：单独的输出通道，不受应用日志配置影响
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    output = logging.Logger("onto-agent-exec", logging.INFO)
+    output.propagate = False
+    output.addHandler(handler)
+    output.info(text)
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2 or argv[1] not in ("cli", "shell"):
-        sys.stderr.write("usage: agent_exec.py cli|shell ...\n")
+        _complain("usage: agent_exec.py cli|shell ...")
         return 2
     mode, args = argv[1], argv[2:]
     env = dict(os.environ)
@@ -95,23 +106,23 @@ def main(argv: list[str]) -> int:
     if mode == "cli":
         real_cli = env.get(REAL_CLI_ENV, "")
         if not real_cli:
-            sys.stderr.write("onto-agent-cli: 没有 ONTO_AGENT_REAL_CLI\n")
+            _complain("onto-agent-cli: 没有 ONTO_AGENT_REAL_CLI")
             return 2
         clean = cli_env(env)
         shell_shim = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin", "onto-agent-shell")
         clean[SHELL_PREFIX_ENV] = shell_shim
         drop_privileges(agent_user)
-        os.execve(real_cli, [real_cli, *args], clean)
+        os.execve(real_cli, [real_cli, *args], clean)  # NOSONAR(S4721) 降权后换成部署配置的 CLI，参数原样转交
     clean = shell_env(env)
     drop_privileges(agent_user)
     if len(args) == 1:
         # CLI 的 shell 前缀与 Jiuwen 都把整条命令作为一个参数传进来
-        os.execve("/bin/sh", ["/bin/sh", "-c", args[0]], clean)
+        os.execve("/bin/sh", ["/bin/sh", "-c", args[0]], clean)  # NOSONAR(S4721) 助手的 shell 前缀，降权后交给 sh
     if not args:
-        sys.stderr.write("onto-agent-shell: 没有要执行的命令\n")
+        _complain("onto-agent-shell: 没有要执行的命令")
         return 2
     path = args[0] if os.sep in args[0] else _which(args[0], clean.get("PATH", os.defpath))
-    os.execve(path, args, clean)
+    os.execve(path, args, clean)  # NOSONAR(S4721) 降权后直接执行命令，不经 shell
     return 0
 
 

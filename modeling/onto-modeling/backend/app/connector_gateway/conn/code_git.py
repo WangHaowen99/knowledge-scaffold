@@ -97,10 +97,23 @@ def parse_url(raw: str, *, allow_http: bool = False) -> Target:
     if parts.username is not None or parts.password is not None:
         raise ConnError("invalid_connection", "仓库地址里不能带用户信息，令牌填到访问令牌")
     path = parts.path or "/"
-    if parts.query or parts.fragment or not _HOST.match(host) or not _PATH.match(path) or "/../" in f"{path}/":
+    if not _plain_location(parts, host, path):
         raise ConnError("invalid_connection", "仓库地址不对")
     default = 443 if scheme == "https" else 80
     return Target(scheme, host, port or default, path, port is not None)
+
+
+def _plain_location(parts, host: str, path: str) -> bool:
+    """地址只有主机和路径：没有查询串和片段，主机、路径的写法对，路径里没有 `..` 段。"""
+    if parts.query or parts.fragment:
+        return False
+    return bool(_HOST.match(host)) and bool(_PATH.match(path)) and "/../" not in f"{path}/"
+
+
+def _valid_ref(ref: str) -> bool:
+    if not _REF.match(ref) or ref.startswith(("-", "/")):
+        return False
+    return ".." not in ref and not ref.endswith((".lock", "/"))
 
 
 def check_username(value) -> str:
@@ -113,7 +126,7 @@ def check_username(value) -> str:
 
 def check_ref(ref: str) -> str:
     ref = str(ref or "").strip() or "HEAD"
-    if not _REF.match(ref) or ref.startswith(("-", "/")) or ".." in ref or ref.endswith((".lock", "/")):
+    if not _valid_ref(ref):
         raise ConnError("invalid_connection", "分支或提交的写法不对")
     return ref
 
@@ -147,7 +160,8 @@ class Workspace:
         self.git = shutil.which("git")
         if not self.git:
             raise ConnError("provider_unavailable", "网关镜像里没有 git")
-        self.root = tempfile.mkdtemp(prefix="code-repo-")
+        self._scratch = tempfile.TemporaryDirectory(prefix="code-repo-", ignore_cleanup_errors=True)
+        self.root = self._scratch.name
         self.home = os.path.join(self.root, "home")
         self.repo = os.path.join(self.root, "repo")
         os.mkdir(self.home, 0o700)
@@ -173,7 +187,7 @@ class Workspace:
 
     def close(self) -> None:
         self.drop_token()
-        shutil.rmtree(self.root, ignore_errors=True)
+        self._scratch.cleanup()
 
     def __enter__(self) -> "Workspace":
         return self
@@ -210,9 +224,10 @@ class Workspace:
         if timeout <= 0:
             raise ConnError("timeout", "超过任务时限")
         try:
-            done = subprocess.run(self.command(*args), cwd=cwd or self.root, env=self.env(), input=data,
-                                  stdin=None if data is not None else subprocess.DEVNULL, capture_output=True,
-                                  timeout=timeout, check=False)
+            done = subprocess.run(  # NOSONAR(S4721) 固定的 git 参数列表，不经 shell
+                self.command(*args), cwd=cwd or self.root, env=self.env(), input=data,
+                stdin=None if data is not None else subprocess.DEVNULL, capture_output=True,
+                timeout=timeout, check=False)
         except subprocess.TimeoutExpired:
             raise ConnError("timeout", f"git {args[0]} 超过任务时限") from None
         if done.returncode != 0:
@@ -224,7 +239,7 @@ class Workspace:
         stderr_path = os.path.join(self.root, "fetch.err")
         deadline = time.monotonic() + timeout
         with open(stderr_path, "wb") as stderr:
-            proc = subprocess.Popen(
+            proc = subprocess.Popen(  # NOSONAR(S4721) 固定的 git 参数列表，不经 shell
                 self.command("-C", self.repo, "fetch", "-q", "--depth", "1", "--no-tags", "--no-recurse-submodules",
                              "origin", ref),
                 cwd=self.root, env=self.env(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr)
@@ -250,22 +265,27 @@ class Workspace:
             raise ConnError("repo_too_large", "仓库超过采集预算")
 
 
+# git 报错里的关键字 → 错误码（小写比较）
+_AUTH_FAILED = ("authentication failed", "could not read username", "could not read password",
+                "terminal prompts disabled", "returned error: 401", "returned error: 403")
+_REF_MISSING = ("couldn't find remote ref", "not our ref", "unknown revision", "no such remote ref")
+_UNREACHABLE = ("could not resolve host", "failed to connect", "connection refused", "connection timed out",
+                "couldn't connect")
+
+
 def _classify(message: str, step: str, returncode: int = 1) -> ConnError:
     lowered = message.lower()
     if returncode == -signal.SIGXFSZ:
         return ConnError("repo_too_large", "仓库的包文件超过网关的单文件上限")
     if any(key in lowered for key in ("out of memory", "cannot allocate memory", "mmap failed")):
         return ConnError("memory", f"git 超出内存上限：{message}")
-    if any(key in lowered for key in ("authentication failed", "could not read username", "could not read password",
-                                      "terminal prompts disabled", "returned error: 401", "returned error: 403")):
+    if any(key in lowered for key in _AUTH_FAILED):
         return ConnError("auth_failed", f"仓库拒绝了访问令牌：{message}")
-    if any(key in lowered for key in ("couldn't find remote ref", "not our ref", "unknown revision",
-                                      "no such remote ref")):
+    if any(key in lowered for key in _REF_MISSING):
         return ConnError("ref_not_found", f"找不到这个分支或提交：{message}")
     if any(key in lowered for key in ("returned error: 30", "redirect")):
         return ConnError("redirect_refused", f"仓库地址发生了重定向，不跟随：{message}")
-    if any(key in lowered for key in ("could not resolve host", "failed to connect", "connection refused",
-                                      "connection timed out", "couldn't connect")):
+    if any(key in lowered for key in _UNREACHABLE):
         return ConnError("unreachable", f"连不上仓库：{message}")
     return ConnError("git_failed", f"git {step} 失败：{message}")
 

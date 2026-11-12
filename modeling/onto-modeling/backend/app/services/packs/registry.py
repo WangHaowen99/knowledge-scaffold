@@ -298,10 +298,12 @@ def resolve_action(manager, project_id: str, action: dict) -> dict | None:
     return None
 
 
+_DIGEST_KEYS = ("nav", "pages", "subpages", "entries", "artifact_types", "views", "gates", "view_choices")
+
+
 def digest(view: dict) -> dict:
     """extensions.updated 的比较基准：各部分的内容（不含哈希）。"""
-    return {key: view.get(key) for key in ("nav", "pages", "subpages", "entries", "artifact_types", "views", "gates",
-                                           "view_choices")}
+    return {key: view.get(key) for key in _DIGEST_KEYS}
 
 
 def changed_parts(before: dict | None, after: dict) -> list[str]:

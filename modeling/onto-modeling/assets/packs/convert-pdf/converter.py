@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import re
 
@@ -83,14 +84,14 @@ def _ranges(numbers: list[int]) -> str:
 
 
 def convert(data: bytes, filename: str, limits: ConvertLimits) -> Conversion:
-    try:
-        pdf = pdfplumber.open(io.BytesIO(data))
-        total = len(pdf.pages)
-    except PDFPasswordIncorrect:
-        return unsupported("PDF 设了密码，暂不支持")
-    except Exception as exc:  # noqa: BLE001 - pdfminer 对坏文件抛各种异常
-        raise ConvertError("corrupt") from exc
-    with pdf:
+    with contextlib.ExitStack() as stack:
+        try:
+            pdf = stack.enter_context(pdfplumber.open(io.BytesIO(data)))
+            total = len(pdf.pages)
+        except PDFPasswordIncorrect:
+            return unsupported("PDF 设了密码，暂不支持")
+        except Exception as exc:  # noqa: BLE001 - pdfminer 对坏文件抛各种异常
+            raise ConvertError("corrupt") from exc
         count = min(total, limits.max_pages)
         parts: list[str] = []
         image_pages: list[int] = []

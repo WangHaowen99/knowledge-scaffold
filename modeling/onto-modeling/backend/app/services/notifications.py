@@ -179,7 +179,8 @@ def notify(username: str, kind: str, title: str, body: str = "", *, project_id: 
         with _LOCK:
             items, replaced = [], []
             for old in _load(username, now):
-                if group and old.get("group") == group and old.get("kind") == kind and not old.get("read"):
+                same_group = group and old.get("group") == group
+                if same_group and old.get("kind") == kind and not old.get("read"):
                     replaced.append(old["id"])
                 else:
                     items.append(old)

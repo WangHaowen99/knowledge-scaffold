@@ -9,6 +9,7 @@ from __future__ import annotations
 import fnmatch
 import py_compile
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -72,7 +73,7 @@ def declared_names(manifest: Manifest, directory: Path) -> dict[str, set[str]]:
         "scripts": {p.name for p in (directory / "scripts").glob("*") if p.is_file() and not p.name.startswith(".")}
         if (directory / "scripts").is_dir() else set(),
     }
-    return {key: actual[key] | set(manifest.items(key)) for key in actual}
+    return {key: names | set(manifest.items(key)) for key, names in actual.items()}
 
 
 def _installed_commands(repository: PackRepository, own: str) -> dict[str, str]:
@@ -177,6 +178,7 @@ def _secrets(directory: Path, files: list[str]) -> list[str]:
 
 def _syntax_errors(directory: Path, files: list[str]) -> list[str]:
     errors = []
+    bash = shutil.which("bash")
     with tempfile.TemporaryDirectory(prefix="onto-pack-check-") as scratch:
         for rel in files:
             path = directory / rel
@@ -186,8 +188,11 @@ def _syntax_errors(directory: Path, files: list[str]) -> list[str]:
                 except py_compile.PyCompileError as exc:
                     errors.append(f"{rel}: {str(exc).splitlines()[-1][:120]}")
             elif rel.endswith(".sh"):
+                if not bash:
+                    continue
                 try:
-                    proc = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True, timeout=10)
+                    proc = subprocess.run(  # NOSONAR(S4721) bash -n 只查语法不执行，固定参数列表
+                        [bash, "-n", str(path)], capture_output=True, text=True, timeout=10)
                 except (OSError, subprocess.TimeoutExpired):
                     continue
                 if proc.returncode != 0:
@@ -254,8 +259,11 @@ def in_scope(target: str, patterns: list[str]) -> bool:
     rel = mf.workspace_rel(target)
     if rel is None or mf.protected_path(rel):
         return False
-    return any(fnmatch.fnmatch(rel, normalized) for normalized in
-               (mf.workspace_rel(pattern) for pattern in patterns) if normalized and not mf.protected_path(normalized))
+    for pattern in patterns:
+        normalized = mf.workspace_rel(pattern)
+        if normalized and not mf.protected_path(normalized) and fnmatch.fnmatch(rel, normalized):
+            return True
+    return False
 
 
 def _node_problems(directory: Path, manifest: Manifest) -> tuple[list[str], list[str]]:
@@ -386,6 +394,20 @@ def _node_pack_problems(directory: Path, manifest: Manifest, files: list[str],
     return problems
 
 
+def _plain_scope_file(rel: str | None, text: str) -> bool:
+    """具体的工作区文件：写法已规范、不碰受保护目录、不在 ontology/ 下、不带通配符。"""
+    if rel is None or rel != text or mf.protected_path(rel):
+        return False
+    return rel.split("/", 1)[0] != "ontology" and not any(ch in rel for ch in "*?[")
+
+
+def _produced_file(rel: str | None, session: str, produces: list[str]) -> bool:
+    """具体文件（不带通配符），而且落在本包节点的 produces 里。"""
+    if rel is None or rel != session or any(ch in rel for ch in "*?["):
+        return False
+    return any(fnmatch.fnmatchcase(rel, pattern) for pattern in produces)
+
+
 def _confine_problems(directory: Path, manifest: Manifest, spec) -> list[str]:
     """flow.yaml 顶层的 confine（ADR-0085）：只写 scope_file；是工作区里的具体文件，不在 ontology/ 和受保护目录下，
     落在本包某个节点的 produces 里。只能有一个包声明这一条在启用组装时查。"""
@@ -396,8 +418,7 @@ def _confine_problems(directory: Path, manifest: Manifest, spec) -> list[str]:
         return ["confine.lock_on_activation 要是布尔值，为 true 时要声明 activation"]
     text = spec.get("scope_file")
     rel = mf.workspace_rel(text)
-    if rel is None or rel != text or mf.protected_path(rel) or rel.split("/", 1)[0] == "ontology" or any(
-            ch in rel for ch in "*?["):
+    if not _plain_scope_file(rel, text):
         return [f"confine.scope_file 要是工作区里的具体文件，不能在 ontology/ 或受保护目录下：{text or '（空）'}"]
     nodes, _ = _declared_nodes(directory, manifest)
     produces = [str(item.get("path") if isinstance(item, dict) else item)
@@ -428,8 +449,7 @@ def _activation_problems(directory: Path, manifest: Manifest, flow_data: dict) -
         rel = mf.workspace_rel(spec["session"])
         produces = [str(item.get("path") if isinstance(item, dict) else item)
                     for _, node in nodes for item in node.get("produces") or []]
-        if rel is None or rel != spec["session"] or any(ch in rel for ch in "*?[") or not any(
-                fnmatch.fnmatchcase(rel, pattern) for pattern in produces):
+        if not _produced_file(rel, spec["session"], produces):
             problems.append(f"activation.session 要是本包节点 produces 里的具体文件：{spec['session']}")
     problems += [f"节点 {node.get('id')} 的 preempt 只能用在 visible_if: activated 的节点上"
                  for _, node in nodes if node.get("preempt") and node.get("visible_if") != "activated"]
