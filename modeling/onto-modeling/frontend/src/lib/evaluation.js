@@ -13,10 +13,12 @@ export function defaultEvaluationBase(here) {
   return `http://${here.hostname}:${DEFAULT_PORT}${EVALUATION_PATH}`;
 }
 
-export function evaluationUrl(release, base) {
+// runType 为 solver 时评测页面的新建向导预选「求解验证」
+export function evaluationUrl(release, base, runType = '') {
   if (!release?.ontology_id || !release?.release_id) throw new Error('缺少 Hub 包版本引用');
   const query = new URLSearchParams({ ontology_id: release.ontology_id, release_id: release.release_id });
   if (release.package_digest) query.set('package_digest', release.package_digest);
+  if (runType === 'solver') query.set('run_type', 'solver');
   return `${base}?${query}`;
 }
 
@@ -55,6 +57,7 @@ export async function openEvaluation(release, {
   messages = window,
   tokens = () => ({ access_token: authStore.token, refresh_token: authStore.refreshToken }),
   handoffTimeoutMs = 120000,
+  runType = '',
 } = {}) {
   const base = (entry || await loadEntry()).url || defaultEvaluationBase(here);
   let target;
@@ -73,5 +76,5 @@ export async function openEvaluation(release, {
     throw error;
   }
   handOver({ popup, origin: target.origin, messages, tokens, timeoutMs: handoffTimeoutMs });
-  popup.location.href = evaluationUrl(release, target.href);
+  popup.location.href = evaluationUrl(release, target.href, runType);
 }

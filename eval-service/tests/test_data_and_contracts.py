@@ -5,10 +5,12 @@ import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+import zipfile
 
 import pytest
 from cryptography.fernet import Fernet
 from openpyxl import Workbook
+import yaml
 
 from evaluation.core import Config, Failure
 from evaluation.data_sources import DataSources, read_tables
@@ -55,6 +57,36 @@ def test_connection_snapshot_and_graph_mapping(tmp_path):
     assert result['config']['username']=='operator_a'
     assert scene_token(config,'eval_'+'a'*32)!=scene_token(config,'eval_'+'b'*32)
     store.db.close()
+
+
+def composite_key_package(primary_key):
+    # Packaged object documents carry 「必填」 instead of 「主键」; the key lives in the package mapping.
+    doc=('# reading\n\n# 数据来源\nreadings\n\n# 字段\n\n'
+         '| 字段 key | 中文名 | 类型 | 必填 | 业务说明 | 别名 | 属性规则 |\n| --- | --- | --- | --- | --- | --- | --- |\n'
+         '| entity_id | 条目 | 字符串 | 是 | 条目编号 | 条目编号 | 编码列 |\n'
+         '| period_id | 周期 | 字符串 | 是 | 周期编号 | 周期编号 | 编码列 |\n'
+         '| amount | 数值 | 小数 | 否 | 数值 | 数值 | 合成数据 |\n')
+    mapping={'schema_version':'0.1','default_provider_alias':'data','objects':{'reading':{'primary_key':primary_key}}}
+    files={'manifest.yaml':yaml.safe_dump(dict(id='knowledge_package_demo',name='Synthetic package',description='Synthetic data',kind='ontology-package',schema_version='0.1',version='0.1.1')),
+           'objects/index.md':'# Synthetic objects','operations/index.md':'# Synthetic operations','objects/reading.md':doc,
+           'index.md':'# Synthetic package','mappings/object-data-mappings.json':json.dumps(mapping)}
+    output=io.BytesIO()
+    with zipfile.ZipFile(output,'w') as z:
+        for key,value in files.items(): z.writestr('knowledge_package_demo/'+key,value)
+    return output.getvalue()
+
+
+@pytest.mark.parametrize('graph',[True,False])
+def test_packaged_composite_primary_key_is_kept(graph):
+    tables={'readings':['entity_id','period_id','amount']}
+    mapping,_=generate_mapping(composite_key_package(['entity_id','period_id']),tables,graph=graph)
+    assert mapping['objects']['reading']['primary_key']==['entity_id','period_id']
+
+
+def test_package_primary_key_outside_data_columns_keeps_inferred_key():
+    tables={'readings':['entity_id','period_id','amount']}
+    mapping,_=generate_mapping(composite_key_package(['entity_id','unknown_id']),tables,graph=True)
+    assert mapping['objects']['reading']['primary_key']==['entity_id']
 
 
 def test_consumer_evaluation_auth_requires_distinct_service_and_user_dependency(monkeypatch):

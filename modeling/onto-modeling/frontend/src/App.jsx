@@ -74,6 +74,8 @@ export default function App() {
   const [studioResetRevision, setStudioResetRevision] = useState(0);
   const [usage, setUsage] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
+  // 打开文件时附带的定位：{path, anchor, nonce, origin}；nonce 让重复点击同一位置也重新滚动
+  const [fileTarget, setFileTarget] = useState(null);
   const [focusStack, setFocusStack] = useState(['overview']);
   const [diffRev, setDiffRev] = useState(null);
   const [renaming, setRenaming] = useState(null);
@@ -139,15 +141,28 @@ export default function App() {
   }, []);
   const popFocus = () => setFocusStack((stack) => (stack.length > 1 ? stack.slice(0, -1) : stack));
 
-  // 打开文件 = 下钻（入返回栈）+ 记录最近文件
+  // 打开文件 = 下钻（入返回栈）+ 记录最近文件；options.anchor 定位到资料内的位置，
+  // options.origin（{path, focus}）记录从哪份文档点进来，预览上方据此提供返回
   const openFile = useCallback(
-    (path) => {
+    (path, options = {}) => {
       setSelectedFile(path);
+      setFileTarget({ path, anchor: options.anchor || '', nonce: Date.now(), origin: options.origin || null });
       setRecentFiles((prev) => [path, ...prev.filter((p) => p !== path)].slice(0, 6));
       pushFocus('file');
     },
     [pushFocus],
   );
+
+  // 从 Studio 详情点进来的回到 Studio（详情保持挂载），从文件预览点进来的重新打开原文件
+  const backToOrigin = () => {
+    const origin = fileTarget?.origin;
+    if (!origin) return;
+    if (origin.focus === 'file') openFile(origin.path);
+    else {
+      setFileTarget(null);
+      popFocus();
+    }
+  };
 
   const refreshProjects = useCallback(() => {
     return api
@@ -416,7 +431,7 @@ export default function App() {
       }
       if (key === 'export-onto') window.open(api.exportUrl(item.id, 'ontology'));
       if (key === 'export-pkg') homePublish.publish(item.id);
-      if (key === 'published-versions') homePublish.showVersions(item.id);
+      if (key === 'published-versions') homePublish.showVersions(item);
       if (key === 'export-ws') window.open(api.exportUrl(item.id, 'workspace'));
       if (key === 'delete') removeProject(item);
     },
@@ -1003,6 +1018,8 @@ export default function App() {
                 versionTotal={versionTotal}
                 usage={usage}
                 file={selectedFile}
+                fileTarget={fileTarget?.path === selectedFile ? fileTarget : null}
+                onBackToOrigin={backToOrigin}
                 focus={focus}
                 onFocus={pushFocus}
                 canBack={focusStack.length > 1}

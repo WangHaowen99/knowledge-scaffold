@@ -7,6 +7,7 @@ import {
   artifactState,
   carriedState,
   carryoverCounts,
+  isSolverRun,
   notificationState,
   optimizationState,
   packageVersions,
@@ -87,6 +88,7 @@ export function DeliveryCard({ run, onChanged, navigate }) {
     handled = optimizationState(run),
     earlier = run.optimization?.history || [],
     feedback = run.origin === 'consumer_feedback',
+    solver = isSolverRun(run),
     carried = carriedState(run);
   const regenerate = () =>
     act(async () => {
@@ -104,13 +106,13 @@ export function DeliveryCard({ run, onChanged, navigate }) {
     failed = run.optimization?.status === 'modeling_failed';
   const items = [
     {
-      label: state.report && state.suggestions ? '报告和建议已生成' : state.label,
+      label: state.report && state.suggestions ? (solver ? '报告和修复指引已生成' : '报告和建议已生成') : state.label,
       hint: state.hint,
       state: state.report && state.suggestions ? 'done' : state.tone === 'amber' ? 'failed' : 'current',
     },
     {
       label: notice ? `建模通知${notice.label}` : '通知建模',
-      hint: notice?.hint || '报告和建议生成后发送',
+      hint: solver && delivered ? '验证结果已同步到建模服务' : notice?.hint || '报告和建议生成后发送',
       state: delivered ? 'done' : notice?.canRetry ? 'failed' : generated ? 'current' : '',
     },
     {
@@ -127,7 +129,7 @@ export function DeliveryCard({ run, onChanged, navigate }) {
   return (
     <section className="panel delivery-card">
       <div className="section-title">
-        <h3>交付建模</h3>
+        <h3>{solver ? '验证报告与修复指引' : '交付建模'}</h3>
         <div className="actions">
           {notice?.canRetry && (
             <Button variant="text" busy={busy} onClick={resend}>
@@ -136,7 +138,7 @@ export function DeliveryCard({ run, onChanged, navigate }) {
           )}
           {state.canRegenerate && (
             <Button variant="text" icon="refresh" busy={busy} onClick={regenerate}>
-              重新生成报告和建议
+              {solver ? '重新生成报告和修复指引' : '重新生成报告和建议'}
             </Button>
           )}
           {done && navigate && !feedback && (
@@ -152,7 +154,7 @@ export function DeliveryCard({ run, onChanged, navigate }) {
           )}
         </div>
       </div>
-      <Steps items={feedback ? items.slice(0, 3) : items} />
+      <Steps items={solver ? items.slice(0, 2) : feedback ? items.slice(0, 3) : items} />
       <CarryoverNote carryover={run.artifacts?.carryover} feedback={feedback} navigate={navigate} />
       {carried && (
         <p className="carryover-note">

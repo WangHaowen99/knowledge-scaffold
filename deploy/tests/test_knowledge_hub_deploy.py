@@ -344,7 +344,6 @@ def _stack_env(tmp_path: Path) -> dict[str, str]:
         "STUB_HUB_TOKEN": secrets.token_hex(32),
         "ONTO_AGENT_INSTALL_DIR": str(tmp_path / "installation"),
         "MODELING_SERVICE_TOKEN": secrets.token_hex(32),
-        "MODELING_MCP_TOKEN_SECRET": secrets.token_hex(32),
     }
 
 
@@ -489,7 +488,7 @@ def test_release_deploys_hub_as_its_own_bundle_before_onto_modeling(tmp_path: Pa
     result = _run([str(deploy_dir / "deploy.sh")], env)
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert _lines(tmp_path / "calls.txt") == ["consumer", "modeling", "hub", "onto", "evaluation"]
+    assert _lines(tmp_path / "calls.txt") == ["consumer", "hub", "onto", "evaluation"]
     assert "CONSUMER_NETWORK=onto-agent_default" in _lines(tmp_path / "hub-snapshot.txt")
     onto_env = _lines(tmp_path / "onto-env-snapshot.txt")
     # .env.example 先落地，再对齐 Hub 凭据，Onto 原有默认值不丢
@@ -525,14 +524,14 @@ def test_release_knowledge_hub_only_requires_the_hub_bundle(tmp_path: Path) -> N
     assert _lines(tmp_path / "calls.txt") == []
 
 
-def test_release_without_hub_bundle_still_deploys_onto_modeling(tmp_path: Path) -> None:
+def test_full_release_without_hub_fails_before_changing_services(tmp_path: Path) -> None:
     deploy_dir, env = _release_bundle(tmp_path, with_hub=False)
 
     result = _run([str(deploy_dir / "deploy.sh")], env)
 
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "Knowledge Hub bundle not present; skipping" in result.stdout
-    assert _lines(tmp_path / "calls.txt") == ["consumer", "modeling", "onto", "evaluation"]
+    assert result.returncode != 0
+    assert '完整发布包缺少知识包 Hub' in result.stderr
+    assert _lines(tmp_path / "calls.txt") == []
 
 
 # ---------- 离线打包 ----------

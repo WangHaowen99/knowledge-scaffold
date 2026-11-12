@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import re
+import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -30,6 +33,11 @@ KIND_DIRS = (
     ("metric", "ontology/metric", "*.md"),
     ("script", "ontology/scripts", "*.py"),
 )
+
+_UPDATE_GIT_COMMANDS = {
+    ("log", "--format=%x00%ct", "--name-status", "-M100%", "--", "ontology/"),
+    ("status", "--porcelain", "-z", "--untracked-files=all", "--", "ontology/"),
+}
 
 
 def _docs(root: Path) -> list[dict]:
@@ -236,6 +244,108 @@ def operation_flow(root: Path, element_id: str) -> dict:
         "defaultView": "operation-steps" if steps else "empty",
         "issues": [],
     }
+
+
+def updates(root: Path) -> dict[str, int]:
+    """表视图「最后更新时间」：{文档路径: Unix 秒}，取不到的文档不出现在结果里。
+
+    已提交的文档取最后一次改动它的提交时间（同内容重复保存不产生提交，时间不变）；
+    已写入工作区、未提交的文档取文件修改时间。纯移动或改名（内容不变）不算更新，
+    沿用移动前的时间。要遍历版本历史，所以不并进 graph()，图视图不为它多付一次 git 查询。
+    git 不可用时返回空结果，不报错。
+    """
+    docs = {doc["path"]: doc["file"] for doc in _docs(root)}
+    if not docs or not (root / ".git").exists():
+        return {}
+    try:
+        # core.quotepath=false：否则中文文件名被转义成 "\346..."，对不上文档路径。
+        # -M100%：只把内容完全相同的移动认作重命名，移动同时改了内容的算更新
+        log = _git_output(
+            root, "log", "--format=%x00%ct", "--name-status", "-M100%", "--", "ontology/"
+        )
+        status = _git_output(
+            root, "status", "--porcelain", "-z", "--untracked-files=all", "--", "ontology/"
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+
+    result: dict[str, int] = {}
+    # 从新到旧：历史路径 → 现在的文档路径，遇到纯移动就沿旧路径继续往前找
+    pending = {path: path for path in docs}
+    timestamp = 0
+    for line in log.splitlines():
+        if line.startswith("\0"):
+            timestamp = int(line[1:])
+            continue
+        fields = line.split("\t")
+        if fields[0].startswith("R") and len(fields) == 3:
+            if fields[2] in pending:
+                pending[fields[1]] = pending.pop(fields[2])
+        elif len(fields) == 2 and fields[1] in pending:
+            result[pending.pop(fields[1])] = timestamp
+
+    entries = status.split("\0")
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if len(entry) < 4:
+            continue
+        if entry[0] in "RC":  # 重命名/复制条目后面跟一个原路径
+            index += 1
+        path = entry[3:]
+        if path in docs:
+            try:
+                result[path] = int(docs[path].stat().st_mtime)
+            except OSError:
+                result.pop(path, None)
+    return result
+
+
+def _git_output(root: Path, *args: str) -> str:
+    if args not in _UPDATE_GIT_COMMANDS:
+        raise ValueError("Only Studio update history and status queries are allowed")
+    executable = shutil.which("git")
+    if executable is None:
+        raise FileNotFoundError("Git executable is unavailable")
+    executable = Path(executable).resolve(strict=True)
+    if executable.is_relative_to(root.resolve()):
+        raise OSError("Git executable must be outside the project workspace")
+    # 不继承宿主 GIT_DIR、GIT_WORK_TREE 或命令配置注入；保留配置目录发现，
+    # 避免丢失 core.autocrlf 等文本转换设置，把已提交文件误判为工作区修改。
+    config_keys = ("SYSTEMROOT", "WINDIR", "HOME", "USERPROFILE", "XDG_CONFIG_HOME")
+    env = {key: os.environ[key] for key in config_keys if key in os.environ}
+    env.update(
+        {
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+        }
+    )
+    # 安全审查：Git 绝对路径位于工作区外；参数必须完整匹配上述两条只读命令，
+    # 不接收文档/请求内容；argv 不经 shell，关闭 pager、fsmonitor 与签名查询并限制超时。
+    completed = subprocess.run(  # NOSONAR(S4721)
+        [
+            str(executable),
+            "--no-pager",
+            "-c",
+            "core.quotepath=false",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "log.showSignature=false",
+            *args,
+        ],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        shell=False,
+        timeout=30,
+        check=True,
+    )
+    return completed.stdout
 
 
 def _working_revision(docs: list[dict], texts: dict[str, str]) -> str:
@@ -576,6 +686,7 @@ RULE_SCHEMA = [
     {"title": "约束表达", "kind": "text", "required": True},
     {"title": "违反处置", "kind": "text", "required": False},
     {"title": "来源", "kind": "text", "required": False},
+    {"title": "原始资料来源", "kind": "text", "required": False},
     {"title": "例外情况", "kind": "text", "required": False},
 ]
 

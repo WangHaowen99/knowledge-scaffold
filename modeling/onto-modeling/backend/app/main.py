@@ -1,3 +1,6 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
+
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -14,6 +17,19 @@ from .services.agent_sessions import SDK_AVAILABLE, SessionError
 from .services.auth import AuthError
 from .services.conversation_store import ConversationError
 from .services.workspace import WorkspaceError
+
+_log = logging.getLogger(__name__)
+
+
+async def _package_compare_cleanup_loop(service):
+    import asyncio
+    while True:
+        try:
+            await asyncio.to_thread(service.maintain)
+        except Exception:
+            _log.exception("知识包版本对比定时清理失败")
+        await asyncio.sleep(300)
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
@@ -35,21 +51,36 @@ async def _lifespan(app: FastAPI):
     recover_mcp_publishes(projects.workspaces)
     backup_task = asyncio.create_task(backup_scheduler_loop())  # workspace 定期备份
     modeling_cleanup_task = asyncio.create_task(scheduler_loop())
-    from .services import knowledge_hub
+    from .services import knowledge_hub, package_compare
+    package_compare_owner = package_compare.start()
+    if package_compare_owner:
+        package_compare.maintain()
     hub_task = asyncio.create_task(knowledge_hub.scheduler_loop(projects.workspaces))
+    package_compare_task = (
+        asyncio.create_task(_package_compare_cleanup_loop(package_compare))
+        if package_compare_owner else None
+    )
     # 上次删除项目时没删净的目录（文件被占用、删到一半停机）在后台清扫掉
     purge_task = asyncio.create_task(asyncio.to_thread(projects.workspaces.purge_leftovers))
     try:
         yield
     finally:
         hub_task.cancel()
+        if package_compare_task:
+            package_compare_task.cancel()
         backup_task.cancel()
         modeling_cleanup_task.cancel()
         purge_task.cancel()
         await asyncio.gather(
-            backup_task, modeling_cleanup_task, purge_task, hub_task, return_exceptions=True
+            backup_task,
+            modeling_cleanup_task,
+            purge_task,
+            hub_task,
+            *([package_compare_task] if package_compare_task else []),
+            return_exceptions=True,
         )
         await manager.shutdown()
+        package_compare.shutdown()
 
 
 app = FastAPI(title="Onto Modeling", version="0.1.0", lifespan=_lifespan)

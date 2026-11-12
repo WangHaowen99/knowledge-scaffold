@@ -1,14 +1,19 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Project-shared Hub modeling adapter. No consumer/workspace integration."""
 import hashlib
 import json
+import logging
 import os
 import posixpath
 import shutil
+import time
 import uuid
 from pathlib import Path
 
 from . import knowledge_hub as transport
 from .workspace import META_FILE, WorkspaceError, WorkspaceManager
+
+logger = logging.getLogger(__name__)
 
 
 def scope(subject):
@@ -99,10 +104,29 @@ def reference_path(package_id, release_id=''):
     return base + ('/' + transport.identifier(release_id) if release_id else '')
 
 
-def download(package_id, release_id, token, dest):
+def download(package_id, release_id, token, dest, *, checkpoint=None, timeout=None, deadline=None):
+    def remaining_timeout():
+        if deadline is None:
+            return timeout
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if checkpoint:
+                checkpoint()
+            raise WorkspaceError('知识包比较处理超时，请缩小知识包后重试', 408, 'compare_timeout')
+        return remaining
+
+    def request(path, **kwargs):
+        options = dict(kwargs)
+        remaining = remaining_timeout()
+        if checkpoint is not None:
+            options['checkpoint'] = checkpoint
+        if remaining is not None:
+            options['timeout'] = remaining
+        return call('GET', path, token, **options)
+
     base = reference_path(package_id, release_id)
-    receipt = call('GET', base, token)
-    call('GET', f'{base}/package', token, download=dest)
+    receipt = request(base)
+    request(f'{base}/package', download=dest)
     if receipt.get('ontology_id') != package_id or receipt.get('release_id') != release_id or (
             transport.file_digest(dest) != receipt.get('package_digest')):
         Path(dest).unlink(missing_ok=True)
@@ -150,9 +174,55 @@ def validate_publish_intent(task, expected_input_digest, expected_base):
                              409, 'publish_preview_stale')
 
 
+STRUCTURE_MESSAGES = 3
+SOLVER_RELEASES = 100
+
+
+def _solver_releases_path(pid):
+    return transport.state_dir() / 'packages' / transport.identifier(pid) / 'release-solver-state.json'
+
+
+def solver_revisions(pid):
+    """release_id → 发布时的求解契约修订，只含启用了求解契约的发布，最多最近 100 个。"""
+    value = transport.load(_solver_releases_path(pid), {})
+    if not isinstance(value, dict):
+        return {}
+    return {release_id: entry.get('revision') for release_id, entry in value.items() if isinstance(entry, dict)}
+
+
+def _record_solver_release(pid, receipt, task):
+    """发布成功后记下本版本的求解契约修订与未验证确认人；只用于提示，写入失败不影响发布。"""
+    if not task.get('solver_revision'):
+        return
+    try:
+        entries = transport.load(_solver_releases_path(pid), {})
+        entries = entries if isinstance(entries, dict) else {}
+        entries[receipt['release_id']] = dict(revision=task['solver_revision'], version=receipt.get('version'),
+                                              acknowledged_by=task.get('acknowledged_by') or '',
+                                              published_at=receipt.get('committed_at') or '')
+        newest = sorted(entries.items(), key=lambda item: str(item[1].get('published_at') or ''), reverse=True)
+        transport.save(_solver_releases_path(pid), dict(newest[:SOLVER_RELEASES]))
+    except (OSError, ValueError, KeyError, WorkspaceError):
+        logger.warning('Failed to record the solver revision of a release', exc_info=True)
+
+
+def ensure_importable(manager, pid, folder, value, allow_unbound, graph):
+    """Reject a frozen release that consumer would refuse to import, before Hub reserves a version.
+
+    The snapshot is exported with the same arguments as the release archive, except the version.
+    """
+    snapshot = WorkspaceManager(folder / 'input', manager.assets_dir)
+    findings = snapshot.package_structure_findings(
+        pid, binding=value['binding'], allow_unbound=allow_unbound, graph=graph, ontology_id=ontology_id(pid))
+    if findings:
+        detail = '；'.join(item['message'] for item in findings[:STRUCTURE_MESSAGES])
+        raise WorkspaceError(f'知识包结构不符合 consumer 导入规则：{detail}', 400, 'package_structure_invalid')
+
+
 def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
             kind="release", binding=None, graph=False, relation_report=None, object_texts=None,
-            delegated=None, expected_input_digest=None, expected_base=None, before_external=None):
+            delegated=None, expected_input_digest=None, expected_base=None, before_external=None,
+            acknowledged_by='', verified_revision=''):
     transport.identifier(request_id)
     if not token and not delegated:
         raise WorkspaceError('Hub 需要登录用户身份', 401)
@@ -187,6 +257,7 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
                     raise WorkspaceError('评测对象在准备快照时发生变化，请重试', 409)
             if kind == 'release':
                 manager._ensure_solver_publishable(pid)
+                ensure_importable(manager, pid, folder, value, allow_unbound, graph)
             base = association(pid, subject)
             if expected_base is not None:
                 actual = ((base or {}).get('release_id'), (base or {}).get('package_digest'))
@@ -200,6 +271,17 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
                                base_digest=base['package_digest'])
             task = dict(name=value['name'], allow_unbound=allow_unbound, payload=payload,
                         binding=value['binding'], files=value['files'], graph=graph)
+            if kind == 'release':
+                # 冻结时的求解契约修订：之后据此提示当前修改是否已发布并验证
+                check = manager.solver_check(pid)
+                if check.needs_validation:
+                    # 每个发布入口（网页、MCP）都须确认求解能力尚未验证，或依据已通过求解验证的同一修订免确认；
+                    # 冻结时修订与免确认依据不一致（期间改了契约）也回到发布检查重新确认
+                    if not acknowledged_by and check.revision != verified_revision:
+                        raise WorkspaceError('求解能力尚未经端到端验证：请在发布检查中确认后再发布，'
+                                             '发布后在「已发布版本（知识包评测）」中发起求解验证', 409,
+                                             'solver_validation_acknowledgement_required')
+                    task.update(solver_revision=check.revision, acknowledged_by=acknowledged_by)
             transport.save(task_file, task)
         payload = task['payload']
         validate_publish_intent(task, expected_input_digest, expected_base)
@@ -267,6 +349,7 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
             record(manager, pid, subject, receipt)
         except (OSError, WorkspaceError):
             return {**receipt, 'local_record_pending': True}
+        _record_solver_release(pid, receipt, task)
         shutil.rmtree(folder / 'input', ignore_errors=True)
         archive.unlink(missing_ok=True)
         return receipt

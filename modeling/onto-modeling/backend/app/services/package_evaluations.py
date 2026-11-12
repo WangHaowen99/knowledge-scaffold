@@ -90,7 +90,18 @@ class Optimization(_Model):
     history: list[Outcome] = Field(default_factory=list, max_length=50)
 
 
+class SolverSummary(_Model):
+    total: int = Field(ge=0)
+    passed: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    first_failure_code: str | None = Field(default=None, max_length=120)
+    first_failure_message: str | None = Field(default=None, max_length=400)
+
+
 ORIGINS = {'evaluation': 'releases', 'consumer_feedback': 'feedback'}
+# 评测来源的轮次再按类型分开索引：数据评测与求解验证（求解契约端到端验证）
+RUN_TYPES = Literal['data', 'solver']
+SECTIONS = ('releases', 'feedback', 'solver_releases')
 
 
 class Entry(_Model):
@@ -98,6 +109,8 @@ class Entry(_Model):
     version: str = Field(min_length=1, max_length=64)
     run_id: str = Field(pattern=RUN_PATTERN)
     status: str = Field(pattern=STATUS_PATTERN)
+    # 不带 run_type 的通知来自只有数据评测的评测服务
+    run_type: RUN_TYPES = 'data'
     created_at: float | None = None
     finished_at: float | None = None
     artifacts: Artifacts
@@ -105,11 +118,16 @@ class Entry(_Model):
     # Runs of evaluation services before data-flywheel support carry neither.
     origin: str = Field(default='evaluation', pattern=STATUS_PATTERN)
     optimization: Optimization | None = None
+    solver_summary: SolverSummary | None = None
 
 
-def bucket(origin):
-    """The index section of an origin; unknown origins of newer evaluation services are not shown."""
-    return ORIGINS.get(origin)
+def bucket(origin, run_type='data'):
+    """The index section of a run; unknown origins of newer evaluation services are not shown.
+
+    Evaluation runs are split by type: solver validations have their own section.
+    """
+    section = ORIGINS.get(origin)
+    return 'solver_releases' if section == 'releases' and run_type == 'solver' else section
 
 
 class Notification(Entry):
@@ -131,6 +149,7 @@ class Active(_Model):
     release_id: str = Field(pattern=ID_PATTERN)
     version: str = Field(min_length=1, max_length=64)
     status: str = Field(pattern=STATUS_PATTERN)
+    run_type: RUN_TYPES = 'data'
 
 
 def _invalid_response():
@@ -156,8 +175,9 @@ def _index_lock(ontology_id, owner):
 
 def _read_index(ontology_id, owner):
     value = knowledge_hub.load(_index_path(ontology_id, owner), {}) if owner else {}
-    return {'ontology_id': ontology_id, 'active': value.get('active'), 'releases': value.get('releases', {}),
-            'feedback': value.get('feedback', {}), 'reconciled_at': value.get('reconciled_at')}
+    # 早先的索引可能没有 feedback 或 solver_releases，按空处理
+    return {'ontology_id': ontology_id, 'active': value.get('active'),
+            **{section: value.get(section, {}) for section in SECTIONS}, 'reconciled_at': value.get('reconciled_at')}
 
 
 def _owner_path(subject):
@@ -196,7 +216,7 @@ def receive(notification):
     """Apply one notification durably to its owner's index; duplicates and late deliveries change nothing."""
     entry = {**_entry(notification), 'sequence': notification.sequence, 'received_at': time.time()}
     package_id, owner = notification.ontology_id, notification.owner
-    section = bucket(notification.origin)
+    section = bucket(notification.origin, notification.run_type)
     if not section:
         return
     with _index_lock(package_id, owner):
@@ -223,18 +243,23 @@ def reconcile(package_id, subject, token):
     owner = value.get('owner')
     if not isinstance(owner, str) or not re.fullmatch(ID_PATTERN, owner):
         raise _invalid_response()
+    # 只有数据评测的评测服务不返回 solver_releases
+    solver = value.get('solver_releases') or []
+    if not isinstance(solver, list):
+        raise _invalid_response()
     try:
         fetched = [_entry(Entry.model_validate(item)) for item in value['releases']]
+        fetched += [_entry(Entry.model_validate({**item, 'run_type': 'solver'})) for item in solver]
         active = Active.model_validate(value['active']).model_dump() if value.get('active') else None
-    except ValidationError as exc:
+    except (ValidationError, TypeError) as exc:
         raise _invalid_response() from exc
     if _owner_of(subject) != owner:
         knowledge_hub.save(_owner_path(subject), {'owner': owner})
     with _index_lock(package_id, owner):
         index = _read_index(package_id, owner)
-        sections = {section: {} for section in ORIGINS.values()}
+        sections = {section: {} for section in SECTIONS}
         for entry in fetched:
-            section = bucket(entry['origin'])
+            section = bucket(entry['origin'], entry['run_type'])
             if not section:
                 continue
             stored = index[section].get(entry['release_id'])
@@ -256,11 +281,40 @@ def reconcile(package_id, subject, token):
 # ---- 项目视图 ----
 
 
+def _solver_passed(entry):
+    summary = (entry or {}).get('solver_summary') or {}
+    return bool(entry) and entry.get('status') == 'completed' and summary.get('total', 0) > 0 and summary.get('failed') == 0
+
+
+def verified_solver_release(pid, subject, revision):
+    """The release behind the latest solver validation of this revision, when that validation passed.
+
+    Same rule as the solver panel: a later failure on another release with the same revision outweighs an
+    earlier pass, and a validation still running counts as unverified. Reads the local index only, so an
+    unsynced pass still asks for confirmation.
+    """
+    linked = hub_packages.association(pid, subject) if subject else None
+    if not revision or not linked:
+        return None
+    index = _read_index(linked['ontology_id'], _owner_of(subject))
+    releases = [release_id for release_id, recorded in hub_packages.solver_revisions(pid).items() if recorded == revision]
+    active = index['active'] or {}
+    if active.get('run_type') == 'solver' and active.get('release_id') in releases:
+        return None
+    validated = [(release_id, index['solver_releases'][release_id])
+                 for release_id in releases if release_id in index['solver_releases']]
+    if not validated:
+        return None
+    release_id, entry = max(validated, key=lambda item: _moment(item[1]))
+    return {'release_id': release_id, 'version': entry['version']} if _solver_passed(entry) else None
+
+
 def overview(pid, subject, token, refresh=False):
     linked = hub_packages.association(pid, subject) or {}
     result = dict(configured=eval_client.configured(), reachable=None, message=None,
                   ontology_id=linked.get('ontology_id'), current_release_id=linked.get('release_id'),
-                  current_version=linked.get('version'), active=None, releases={}, feedback={}, writeback=None)
+                  current_version=linked.get('version'), active=None, releases={}, feedback={}, writeback=None,
+                  solver_releases={}, solver_revisions=hub_packages.solver_revisions(pid))
     if not result['configured']:
         return {**result, 'message': '未配置评测服务地址'}
     if not linked:
@@ -283,7 +337,7 @@ def overview(pid, subject, token, refresh=False):
     def shown(section):
         return {release_id: {key: value for key, value in entry.items() if key not in ('sequence', 'received_at')}
                 for release_id, entry in index[section].items()}
-    return {**result, 'active': index['active'], 'releases': shown('releases'), 'feedback': shown('feedback'),
+    return {**result, 'active': index['active'], **{section: shown(section) for section in SECTIONS},
             'writeback': writeback_view(pid, subject)}
 
 
@@ -389,7 +443,9 @@ def regenerate(pid, subject, token, run_id):
         return artifacts
     with _index_lock(package_id, owner):
         index = _read_index(package_id, owner)
-        entries = [entry for entry in index['releases'].values() if entry['run_id'] == run_id]
+        entries = []
+        for section in SECTIONS:
+            entries += [entry for entry in index[section].values() if entry['run_id'] == run_id]
         for entry in entries:
             entry['artifacts'] = artifacts
         if entries:
@@ -486,6 +542,10 @@ def _store_import(root, run_id, reference, revision, stem, files, context):
 def optimize(manager, pid, subject, token, run_id):
     """Bring one run's artifacts into the workspace for /ontology-evolution; only for the project's current version."""
     run, linked = _linked_run(pid, subject, token, run_id)
+    if run.get('run_type') == 'solver':
+        # 求解验证的修复指引由失败码确定性生成，按指引修改求解契约后发布新版本再验证
+        raise WorkspaceError('求解验证不支持评测优化：请按修复指引修改求解契约后发布新版本，再发起求解验证', 409,
+                             'optimization_not_supported')
     base = _reference(run, 'base_ref')
     if base.get('ontology_id') != linked['ontology_id'] or base.get('release_id') != linked['release_id']:
         raise WorkspaceError(f"评测版本 {base.get('version') or '未知'} 与当前建模项目版本 {linked.get('version') or '未知'} 不一致，"
@@ -545,7 +605,7 @@ def _update_entry(package_id, subject, run_id, optimization):
     with _index_lock(package_id, owner):
         index = _read_index(package_id, owner)
         changed = False
-        for section in ORIGINS.values():
+        for section in SECTIONS:
             for item in index[section].values():
                 if item['run_id'] == run_id:
                     item['optimization'] = optimization

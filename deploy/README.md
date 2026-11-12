@@ -12,23 +12,18 @@
 | --- | --- | --- | --- | --- | --- |
 | consumer-backend | `consumer/backend/` | 5055 → 5055 | onto-agent-backend | LLM 端点 | 运行期 API（Flask），知识包运行时 |
 | consumer-frontend | `consumer/frontend/` | 8888 → 80 | onto-agent-frontend | backend | 知识工程控制台（nginx 托管） |
-| modeling | `modeling/` | 8100 → 5100 | mw-modeling | modeling-agent / consumer / auth-server | Workbench 静态页面与确定性 core |
-| modeling-agent | `modeling/modeling-agent/` | 仅容器网 5110 | mw-modeling-agent | modeling core / LLM | 新 Workbench 的 openJiuwen Agent 运行时 |
-| auth-server | `auth-server/` | 不暴露宿主端口（容器网内 5056） | onto-agent-auth-server | — | 必备鉴权服务，consumer 与 modeling 共用 |
+| onto-modeling | `modeling/onto-modeling/` | 5100 → 8100 | onto-modeling | auth-server / knowledge-hub | 引导式建模工作台，独立 compose 项目 |
+| auth-server | `auth-server/` | 不暴露宿主端口（容器网内 5056） | onto-agent-auth-server | — | 必备鉴权服务，consumer 与 onto-modeling 共用 |
 | knowledge-hub | `knowledge-hub/` | 不暴露宿主端口（容器网内 8200） | knowledge-hub | auth-server / onto-modeling | 知识包 Hub，独立 compose 项目（`knowledge-hub/deploy/docker-compose.knowledge-hub.yml`） |
 | knowledge-evaluation | `eval-service/` | 8090 → 8090（供浏览器打开评测页面） | knowledge-evaluation | auth-server / knowledge-hub / consumer-backend | 独立评测服务，单实例，独立 compose 项目（`eval-service/deploy/docker-compose.eval-service.yml`） |
-| eval-mysql（可选） | — | 3306 → 3306 | mysql:8 | — | 建模评测库（Excel 数据自动落库供查询类用例） |
 
-服务间调用链：`浏览器 → frontend(8888) → backend(5055)`；`浏览器 → modeling(8100) → modeling-agent(5110)`；modeling 登录直连 auth-server，评测调用 consumer。consumer 与 modeling 容器共享 Docker 网络；独立评测服务同样加入 consumer 网络，按服务名访问账号服务、Hub 与 consumer。
+服务间调用链：`浏览器 → frontend(8888) → backend(5055)`；onto-modeling 共享 consumer 账号中心，经 consumer 网络访问知识包 Hub。知识包 Hub 与独立评测服务同样加入 consumer 网络，按服务名访问账号服务、Hub 与 consumer。
 
 数据持久化位置：
 
 | 数据 | 位置 | 备份方式见 |
 | --- | --- | --- |
 | consumer 运行时（知识包/工作区/会话/配置） | `consumer/.onto-runtime/`（宿主目录挂载） | 第 8 节 |
-| 建模项目（SQLite） | docker 卷 `mw-modeling_modeling-data` | 第 8 节 |
-| Agent 运行与 checkpoint | docker 卷 `mw-modeling_modeling-agent-data` | 第 8 节 |
-| 评测库 | docker 卷 `mw-modeling_eval-mysql-data` | 第 8 节 |
 | 知识包 Hub（包归档、请求日志、项目最新资料） | docker 卷 `knowledge-hub_knowledge-hub-data` | [Hub README](../knowledge-hub/README.md#备份) |
 | 鉴权数据 | `consumer/.onto-auth/`（宿主目录挂载） | 第 8 节 |
 
@@ -39,17 +34,16 @@
 | 形态 | 包含 | 命令（在 `$REPO` 执行） |
 | --- | --- | --- |
 | A. 仅运行期 | consumer + auth-server + JiuwenBox | `./deploy/deploy.sh --consumer-only` |
-| B. 完整工作台（推荐） | A + modeling core + modeling-agent | `./deploy/deploy.sh` |
-| C. B + 评测闭环 | B + 评测库 MySQL / NL2SQL | `./deploy/deploy-stack.sh up --with-eval` |
+| B. 完整部署（推荐） | A + 知识包 Hub + Onto Modeling + 独立评测服务 | `./deploy/deploy.sh` |
 
-`deploy/deploy.sh` 会自动识别源码树和解压后的发布包：源码树转入 `deploy-stack.sh` 构建镜像，源码和发布包均依次部署 consumer、Modeling Workbench、知识包 Hub、Onto Modeling 与独立评测服务。评测运行配置默认由评测部署脚本维护在 `eval-service/deploy/.env`（自动生成、权限 600、不入库），沿用 Hub 与 consumer 的评测凭据；设置 `EVAL_ENV_FILE` 时改用仓库外受保护的配置文件，文件不存在则在变更服务前报错。完整离线包包含 Hub 与评测镜像。自动化流水线构建入口仍是 `./deploy/build.sh <version> [amd|arm]`。
+`deploy/deploy.sh` 会自动识别源码树和解压后的发布包：源码树转入 `deploy-stack.sh` 构建 consumer 镜像，源码和发布包均依次部署 consumer、知识包 Hub、Onto Modeling 与独立评测服务。评测运行配置默认由评测部署脚本维护在 `eval-service/deploy/.env`（自动生成、权限 600、不入库），沿用 Hub 与 consumer 的评测凭据；设置 `EVAL_ENV_FILE` 时改用仓库外受保护的配置文件，文件不存在则在变更服务前报错。完整离线包包含 Hub 与评测镜像。自动化流水线构建入口仍是 `./deploy/build.sh <version> [amd|arm]`。Modeling Workbench 不在 `deploy/` 的构建和部署范围内，见第 10 节。
 
 ## 2. 前置条件
 
 - Linux / macOS，Docker ≥ 20.10，Docker Compose v2（`docker compose`）或 v1 ≥ 1.28（`docker-compose`；本方案使用 compose profiles，更旧的 v1 会失败，preflight 会检查）；
-- 宿主端口 5055、8888、8100 空闲（形态 C 另需 3306）；
+- 宿主端口 5055、8888、5100、8090 空闲；
 - 一个可供 admin 在部署后配置的 OpenAI-compatible LLM 端点；LLM 不再是部署前置条件；
-- 目标机可访问 Docker Hub 或已配镜像源（首次构建需拉取 `python`、`node:22-slim`、`nginx`、`mysql:8` 等基础镜像）。
+- 目标机可访问 Docker Hub 或已配镜像源（首次构建需拉取 `python`、`node:22-slim`、`nginx` 等基础镜像）。
 
 自动检查（**先跑这个**）：
 
@@ -79,27 +73,9 @@ AUTH_SERVER_ADMIN_TOKEN=<至少 16 个字符的独立共享密钥>
 AUTH_BOOTSTRAP_ADMIN_PASSWORD=<首次部署使用的独立强密码>
 ```
 
-脚本会在 `MCP_TOKEN_SECRET` 或 `MODELING_SERVICE_TOKEN` 缺失时分别生成独立随机值并安全写回 `.env`，在缺少对应 tag 时构建固定版本 JiuwenBox 镜像，然后启动 consumer、auth-server、MCP 与 JiuwenBox。之后探测网络和 socket 卷，再构建并启动 `mw-modeling-agent` 与 `mw-modeling`；所有容器健康且 `/workbench.html` 返回成功后才报告部署完成。
+脚本会在 `MCP_TOKEN_SECRET` 或 `MODELING_SERVICE_TOKEN` 缺失时分别生成独立随机值并安全写回 `.env`，在缺少对应 tag 时构建固定版本 JiuwenBox 镜像，然后启动 consumer、auth-server、MCP 与 JiuwenBox，容器健康后依次部署知识包 Hub、Onto Modeling 与独立评测服务。`MODELING_SERVICE_TOKEN` 是 consumer 的入站凭据，供单独部署的 Modeling Workbench 对接。
 
-### 3.2 形态 C 附加说明（评测闭环）
-
-`--with-eval` 会启动 `eval-mysql`，并要求显式设置 `EVAL_MYSQL_ROOT_PASSWORD`；脚本把 `EVAL_DB_URL` 接到它（密码不会使用默认值）。建模工具和 NL2SQL 服务共用该连接；每个项目以 Scene 区分数据库，可创建固定名称 `mv_shadow_<项目id>`，Excel 会直接写入该数据库供查询类评测用例使用。建库和导入前页面会展示隐藏密码后的连接供确认，也可仅为本次项目操作输入其他 URL；该值不会持久化或覆盖 `EVAL_DB_URL`。
-
-查询类用例还需要 NL2SQL 数据服务供 consumer 查询评测库。`--with-eval` 会启动
-`modeling-nl2sql`，并把工作台的数据源默认地址设为容器内地址
-`http://modeling-nl2sql:5600`；它与 modeling 共用同一个 `EVAL_DB_URL`。
-
-不使用 compose 时也可作为宿主进程启动：
-
-```bash
-cd $REPO/modeling
-export NL2SQL_TOKEN EVAL_DB_URL MODELING_LLM_BASE_URL MODELING_LLM_MODEL MODELING_LLM_API_KEY
-npx tsx scripts/nl2sql-service.ts     # 监听 5600
-```
-
-仅做「业务问答类」用例评测时可跳过本步骤。详见 [modeling/docs/real-e2e-setup.md](../modeling/docs/real-e2e-setup.md)。
-
-### 3.3 鉴权说明
+### 3.2 鉴权说明
 
 auth-server 已是必备组件，无需额外开关。脚本校验配置后把敏感值从 `consumer/backend/.env` 注入容器且不打印具体值；首启使用 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 创建管理员 `admin`，该密码可直接登录。自助注册默认开启，不允许自行建号时设置 `AUTH_ENABLE_REGISTRATION=false`。
 
@@ -107,10 +83,7 @@ auth-server 已是必备组件，无需额外开关。脚本校验配置后把�
 
 1. **consumer 登录**：打开 `http://localhost:8888`，用 `admin` 和配置的 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 登录；`users.json` 创建后可从环境中移除该引导密码。
 2. **consumer 配模型**：控制台 → 配置中心 → 全局配置 → 模型池：添加 OpenAI-compatible 模型并「测试」通过、设为默认。（若已在 `backend/.env` 配了 `LLM_*` 可跳过。）
-3. **配置并进入新建模工作台**（形态 B/C）：打开 `http://localhost:8100/workbench.html#/create`，先用 `admin` 登录，在「配置中心 → 大模型 → 平台默认」填写 Base URL、模型名和 API Key，测试通过后保存。该配置会立即成为所有未设置个人覆盖账号的 core 与 Agent 统一默认，新任务无需重启容器即可使用。
-   - **consumer 服务**：默认已指向容器网内 backend，点「测试连接」，须三项全绿（服务可达 / 认证通过 / 模型就绪——第三项依赖步骤 2）。
-   - **评测数据**（形态 C）：评测库地址默认已注入，无需改动。
-4. **验证**：执行第 7 节验证清单。
+3. **验证**：执行第 7 节验证清单。
 
 ## 5. 手动分步部署（等价命令）
 
@@ -122,12 +95,10 @@ cd $REPO
 ./deploy/deploy.sh --consumer-only
 curl -fsS http://127.0.0.1:5055/health
 
-# 2) Modeling Workbench；自动探测 consumer 网络和 JiuwenBox socket 卷
-./modeling/deploy/deploy.sh
-#   评测闭环改用：
-#     EVAL_MYSQL_ROOT_PASSWORD=<强随机值> \
-#       ./deploy/deploy-stack.sh up --modeling-only --with-eval
-curl -fsS http://127.0.0.1:8100/workbench.html
+# 2) 知识包 Hub、Onto Modeling、独立评测服务（按此顺序）
+./deploy/deploy.sh --knowledge-hub-only
+./deploy/deploy.sh --onto-modeling-only
+./deploy/deploy.sh --eval-only
 ```
 
 ## 6. 配置参考
@@ -144,35 +115,7 @@ curl -fsS http://127.0.0.1:8100/workbench.html
 
 完整变量与发布包部署（离线 tar 包 + deploy/upgrade/rollback 脚本）见 [consumer/deploy/README.md](../consumer/deploy/README.md)。
 
-### 6.2 modeling（从 `consumer/backend/.env` 读取，shell 环境变量优先）
-
-| 变量 | compose 默认 | 说明 |
-| --- | --- | --- |
-| `MODELING_LLM_BASE_URL` / `MODELING_LLM_MODEL` | 空 | 可选部署兜底；推荐由 admin 登录 Workbench 后配置平台默认 |
-| `MODELING_LLM_API_KEY` | 空 | 可选部署兜底密钥；admin 页面保存的 Key 会加密存储且不回显 |
-| `MODELING_LLM_MAX_TOKENS` | `128000` | 单次模型输出 token 上限；与上下文窗口独立 |
-| `MODELING_LLM_CONTEXT_WINDOW` | `1000000` | 输入+输出总上下文 token 窗口；按所选模型 API 实际上限填写 |
-| `MODELING_AGENT_PIP_INDEX_URL` | 清华 PyPI 镜像 | 构建 modeling-agent 时使用的 Python 包索引；内网可设为企业镜像 |
-| `MODELING_AGENT_PIP_TIMEOUT` / `MODELING_AGENT_PIP_RETRIES` | `120` / `10` | modeling-agent 依赖下载的单次读取超时秒数与重试次数 |
-| `MODELING_SERVICE_TOKEN` | 自动生成 | modeling core、Agent 与 consumer 的服务间认证令牌；至少 32 字符，不是管理员 Token |
-| `MODELING_TASK_LLM_*` | 空 | 无用户上下文的后台流程部署兜底；认证用户可在配置中心单独配置后台任务模型，留空则使用个人主模型 |
-| `AUTH_ISSUER_URL` | `http://auth-server:5056` | modeling 登录与 JWT 验签的 auth-server 地址 |
-| `CONSUMER_API_URL` | `http://backend:5055` | 评测用 consumer 地址默认值（页面可覆盖） |
-| `EVAL_DB_URL` | 空 | NL2SQL 查询与 modeling 建库/Excel 导入共用的 MySQL 连接；`--with-eval` 时脚本按显式 `EVAL_MYSQL_ROOT_PASSWORD` 生成 |
-| `PORT` / `DATA_DIR` | `5100` / `/data`（卷 `modeling-data`） | 服务端口 / SQLite 数据目录 |
-| compose：`MODELING_PORT` / `MODELING_TAG` | `8100` / `latest` | 宿主端口 / 镜像 tag |
-| compose：`CONSUMER_NETWORK` | `consumer_onto-agent-network` | consumer 网络实际名（脚本自动探测注入） |
-
-源码部署时可在 `consumer/backend/.env` 设置上述 `MODELING_AGENT_PIP_*` 变量。制作发布包时，构建发生在部署之前，应通过 shell 环境变量传入：
-
-```bash
-MODELING_AGENT_PIP_INDEX_URL=https://pypi.example.com/simple \
-MODELING_AGENT_PIP_TIMEOUT=120 \
-MODELING_AGENT_PIP_RETRIES=10 \
-./deploy/build.sh v1.2.0
-```
-
-### 6.3 auth-server（compose 透传，前缀 `AUTH_`）
+### 6.2 auth-server（compose 透传，前缀 `AUTH_`）
 
 常用（compose 透传，在宿主 shell 设置即生效）：`AUTH_SERVER_ADMIN_TOKEN`（Admin API 共享密钥，须与 backend/.env 一致，编排脚本自动同步）、`AUTH_BOOTSTRAP_ADMIN_PASSWORD`（首次创建用户文件时使用的独立强密码）、`AUTH_ENABLE_REGISTRATION`（默认 `true`；设为 `false` 可关闭自助注册）。注册一步直接建号，无邮箱验证码，无需 SMTP。其余变量（如 `AUTH_ACCESS_TTL_SECONDS`）compose 未透传，需改 compose 或裸机运行才能覆盖；完整表见 [auth-server/README.md](../auth-server/README.md)。
 
@@ -183,60 +126,51 @@ MODELING_AGENT_PIP_RETRIES=10 \
 ```bash
 curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5055/health   # 预期 200（consumer backend）
 curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8888/         # 预期 200（控制台）
-curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8100/health   # 预期 200（建模工作台；形态 A 跳过）
-curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8100/workbench.html # 预期 200（新 Workbench）
-docker inspect --format '{{.State.Health.Status}}' mw-modeling-agent           # 预期 healthy
+curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5100/api/health  # 预期 200（Onto Modeling）
+curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8090/evaluation/api/health # 预期 200（独立评测服务）
 ./deploy/deploy-stack.sh status                                           # 预期各服务 [OK] 可达、容器 Status 含 healthy
-# 登录链路（预期 200，验证 modeling → consumer 转发；密码为改密后的值）：
-curl -fsS -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8100/auth/login \
-  -H 'Content-Type: application/json' -d '{"username":"admin","password":"<改密后的密码>"}'
-# 启用 --with-eval 时（预期 mysqld is alive；密码经临时环境变量传入，不进入命令参数）：
-docker exec -e MYSQL_PWD="${EVAL_MYSQL_ROOT_PASSWORD:?请先设置评测库密码}" \
-  mw-eval-mysql mysqladmin ping -uroot 2>/dev/null
 ```
 
 ## 8. 运维：升级 / 备份 / 停止
 
-- **升级（源码部署）**：更新代码后重跑 `./deploy/deploy.sh`，compose 会重建 core 与 Agent 镜像，数据卷保持不变。
-- **升级（生产发布包，全栈）**：在仓库根目录执行 `./deploy/build.sh <version>`；发布包会包含 `mw-modeling` 与 `mw-modeling-agent` 两个镜像，包内 `deploy/deploy.sh` 依次部署 consumer 与 Workbench 并执行双健康门禁。
+- **升级（源码部署）**：更新代码后重跑 `./deploy/deploy.sh`，compose 会重建镜像，数据卷保持不变。
+- **升级（生产发布包，全栈）**：在仓库根目录执行 `./deploy/build.sh <version>`；发布包包含 consumer、知识包 Hub、Onto Modeling 与独立评测服务，包内 `deploy/deploy.sh` 依次部署这四个服务。
 - **备份**：
   ```bash
   # consumer 运行时（宿主目录，直接归档）
   tar -czf onto-runtime-$(date +%Y%m%d).tar.gz -C $REPO/consumer .onto-runtime
-  # 建模项目数据（SQLite 卷）
-  docker run --rm -v mw-modeling_modeling-data:/data -v "$PWD":/backup alpine \
-    tar -czf /backup/modeling-data-$(date +%Y%m%d).tar.gz -C /data .
-  # 评测库（可再生数据：Excel 重传即可重建，通常无需备份）
   # 鉴权数据（启用 auth 时）
   tar -czf onto-auth-$(date +%Y%m%d).tar.gz -C $REPO/consumer .onto-auth
   ```
-- **停止**：`./deploy/deploy-stack.sh down`；连数据卷一起删（**不可恢复**）：`down --volumes`。
+- **停止**：`./deploy/deploy-stack.sh down` 只停止 consumer；连 consumer 数据卷一起删（**不可恢复**）：`down --volumes`。
 
 ## 9. 故障排查
 
 | 症状 | 检查命令 | 处理 |
 | --- | --- | --- |
-| preflight 报端口占用 | `lsof -iTCP:<port> -sTCP:LISTEN` | 停掉占用进程，或用 `BACKEND_PORT`/`FRONTEND_PORT`/`MODELING_PORT` 换端口后重跑 |
+| preflight 报端口占用 | `lsof -iTCP:<port> -sTCP:LISTEN` | 停掉占用进程，或用 `BACKEND_PORT`/`FRONTEND_PORT` 换端口后重跑 |
 | backend 起不来 / 不健康 | `./deploy/deploy-stack.sh logs backend` | 常见为 `.env` 格式错误或模型端点不通；改后重跑 `up` |
-| modeling 报「未找到 consumer 网络」 | `docker network ls \| grep onto-agent` | 先 `up --consumer-only`，或手动 `export CONSUMER_NETWORK=<实际网络名>` |
-| modeling 报「未找到 JiuwenBox socket 卷」 | `docker volume ls \| grep onto-jiuwenbox-sock` | 先用根部署脚本启动 consumer/JiuwenBox，或显式设置 `JIUWENBOX_SOCKET_VOLUME` |
-| modeling-agent 报模型未配置 | `./deploy/deploy-stack.sh logs modeling-agent` | 使用 admin 登录 Workbench，在「配置中心 → 大模型 → 平台默认」配置并测试主模型；无需重启容器 |
-| 构建 modeling-agent 时访问 `files.pythonhosted.org` 超时 | 查看 Docker 构建日志中的 `ReadTimeoutError` | 更新到包含镜像配置的版本后重跑；企业网络可在 `backend/.env` 设置 `MODELING_AGENT_PIP_INDEX_URL=<内网 PyPI simple 地址>` |
-| 建模工作台登录 401 | `docker exec mw-modeling node -e "fetch('http://backend:5055/health').then(r=>console.log(r.status))"` | 预期打印 200；不通说明不在同一网络——用脚本重新 `up`；账号密码须是 consumer 的有效账号 |
-| 建模评测报连不上 consumer | 建模页面 配置中心 → consumer 服务 → 测试连接 | 「模型就绪」红：先在 consumer 控制台配模型池；「认证」红：token 过期，重新登录 |
-| 查询类评测用例全失败 | 确认 `--with-eval` 已启用 + NL2SQL 桥接已启动（3.2 节） | 在 consumer 控制台该影子工作区配置数据连接指向 NL2SQL 服务 |
 | `docker compose` 命令不存在 | `docker-compose version` | 脚本自动兼容 v1 ≥ 1.28（profiles 所需）；更旧或两者都没有则安装 Compose v2 |
 | 构建拉不到基础镜像 | `docker pull node:22-slim` | 配置镜像加速源，或在可联网机器构建后 `docker save/load` 导入 |
 
 ## 10. 已知边界
 
-- 根部全栈发布包包含 backend / frontend / auth-server / JiuwenBox / modeling core / modeling-agent 镜像；`consumer/build.sh` 仍只构建 consumer 单服务发布包。
-- NL2SQL 桥接服务随 modeling 的 `eval` profile 容器化运行；非 compose 部署可继续使用宿主进程入口。
-- modeling-agent 仅通过容器网络访问，不发布宿主 5110 端口；浏览器统一经 modeling core 的同源代理访问。
-- 建模上传的文档正文存于 SQLite（卷 `mw-modeling_modeling-data`），不落宿主文件系统。
+- 根部全栈发布包包含 consumer（backend / frontend / auth-server / JiuwenBox）、知识包 Hub、Onto Modeling 与独立评测服务；`consumer/build.sh` 仍只构建 consumer 单服务发布包。
+- Modeling Workbench 不在 `deploy/` 的构建和部署范围内：用 `bash modeling/build.sh <version> [amd|arm]` 单独打包，用 `modeling/deploy/` 下的脚本单独部署（`deploy/docker-compose.modeling.yml` 仅供其源码部署使用）。单独部署时 Workbench 须使用 consumer `backend/.env` 中的 `MODELING_SERVICE_TOKEN`。
+- 已有的 Workbench 实例不受 `deploy/` 脚本影响；升级时脚本只读取它占用的宿主端口，避免 Onto Modeling 抢占。
 
 
 ## 知识包 Hub（独立部署）
+
+分离安装、升级及旧版迁移统一部署四个必需服务：Consumer、Onto Modeling、知识包 Hub、独立评测服务。
+必须提供 `--consumer-package`、`--onto-modeling-package`、`--knowledge-hub-package`、`--evaluation-package`，
+缺少任一参数即退出；交互入口同样不能留空。
+部署顺序为 Consumer → Hub → Onto Modeling → 评测。
+使用与发布包同版本的安装脚本；完整离线包必须包含四项交付物，不以服务已经运行为由跳过。
+`./deploy/build.sh` 生成完整离线包的同时，保留四个必需服务的独立发布包：`consumer/dist/onto-agent-*`、
+`modeling/onto-modeling/dist/onto-modeling-*`、`knowledge-hub/dist/knowledge-hub-*`、`eval-service/dist/evaluation-*`
+（同版本旧包会被覆盖）。Consumer 独立包与根目录 `dist/` 下的完整包同名，传给 `--consumer-package` 时应使用
+`consumer/dist/` 下的文件。
 
 Hub 不再写在 onto-modeling 的 compose 里，而是独立 compose 项目 `knowledge-hub/deploy/docker-compose.knowledge-hub.yml`（项目名、容器名 `knowledge-hub`，数据卷 `knowledge-hub_knowledge-hub-data`），由 `knowledge-hub/deploy/deploy.sh` 部署：加入 consumer 网络，onto-modeling 经 `http://knowledge-hub:8200` 访问，Hub 经 `auth-server` 校验令牌、经 `onto-modeling` 回调资料授权；不发布宿主端口，部署后在容器内做健康检查。
 
@@ -247,9 +181,13 @@ Hub 不再写在 onto-modeling 的 compose 里，而是独立 compose 项目 `kn
 
 ## 独立评测服务
 
+`install-consumer-modeling.sh` 的 `--evaluation-package` 是必填参数；交互安装和旧版迁移同样必填。
+升级统一更新四个必需服务，不触碰 Modeling Workbench，保留已有运行配置、数据卷及评测加密密钥。
+保留原有容器健康检查；本次不增加依赖就绪 API 或逐层网络探测。
+
 `bash deploy/deploy.sh --eval-only` 只部署 `eval-service/`，与其他 only 参数互斥；默认全栈 `bash deploy/deploy.sh` 包含评测服务，源码、离线首次安装和升级均在其他服务之后部署评测；`--onto-modeling-only`、`--knowledge-hub-only` 不包含评测服务。
 
-- 交互式与非交互式分离安装、分离升级及旧版迁移均支持独立评测服务：交互式按提示输入发布包路径；非交互式使用 `--evaluation-package <发布包>`。发布包由 `eval-service/build.sh` 生成（`evaluation-<version>-linux-<arch>.tar.gz`），也接受完整离线包中的 `eval-service/` 目录，不提供则跳过；评测在 Hub、Onto Modeling 之后部署并检查就绪。Consumer 已在运行时，可以只部署或升级 Hub、Onto Modeling 和评测：交互式选择模式 3，非交互式不传 `--consumer-package`、`--modeling-package`。发布包格式、凭据和升级配置保留规则见[部署与升级脚本说明](交互式部署与升级脚本说明.md)。
+- 交互式与非交互式分离安装、分离升级及旧版迁移均支持独立评测服务：交互式按提示输入发布包路径；非交互式使用 `--evaluation-package <发布包>`。发布包由 `eval-service/build.sh` 生成（`evaluation-<version>-linux-<arch>.tar.gz`），也接受完整离线包中的 `eval-service/` 目录，必须提供；评测在 Hub、Onto Modeling 之后部署并检查就绪。Consumer 已运行时仍须提供 Consumer 发布包，使用升级流程；不再提供省略 Consumer 的附加部署模式。发布包格式、凭据和升级配置保留规则见[部署与升级脚本说明](交互式部署与升级脚本说明.md)。
 - 运行配置：默认由 `eval-service/deploy/deploy.sh` 维护本目录 `.env`（权限 600，不入库），只保存凭据和显式配置的值。首次部署生成数据加密密钥 `EVAL_ENCRYPTION_KEY`；账号、Hub、consumer 地址的整栈默认值写在 `docker-compose.eval-service.yml`，`.env` 中的同名值优先；评测凭据沿用 Hub 的 `HUB_EVALUATION_SERVICE_TOKEN` 和 consumer 的 `EVALUATION_SERVICE_TOKEN`，两者分别由 Hub 部署脚本和 consumer 部署生成。评测完成通知发往 onto-modeling，凭据 `EVAL_MODELING_SERVICE_TOKEN` 沿用 onto-modeling `.env` 的 `ONTO_EVALUATION_SERVICE_TOKEN`（部署 onto-modeling 时缺失则生成）；找不到时只告警、不发通知，部署 onto-modeling 后重新部署评测即可。onto-modeling 经 `ONTO_WEB_EVAL_URL`（默认 `http://knowledge-evaluation:8090`）读取评测报告，须与评测同在 consumer 网络。评测容器与 Hub 一样必须加入 consumer 网络（`CONSUMER_NETWORK`，由根目录部署脚本探测注入并记入该 `.env`），探测不到时在生成配置前报错。
 - Judge 模型配置 `EVAL_JUDGE_BASE_URL`、`EVAL_JUDGE_API_KEY`、`EVAL_JUDGE_MODEL`、`EVAL_JUDGE_CONFIG_REVISION` 四项必填、无法自动生成，已在 `docker-compose.eval-service.yml` 中声明（不含值）：部署时缺失只告警，写入该 `.env` 或进程环境后重新部署评测即可；未配置时无法开始评测。
 - 加密密钥必须与数据卷一同保留：已有评测数据卷而 `.env` 缺少密钥时部署直接失败，不会生成新密钥；升级时若暂存目录没有评测配置，会沿用安装目录中的 `.env`。

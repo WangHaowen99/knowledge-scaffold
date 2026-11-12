@@ -22,7 +22,8 @@ export function releaseEvaluation(status, releaseId) {
     const reason = blocked(status.message || '未配置评测服务');
     return { entry: null, idle: '评测服务未配置', report: reason, suggestions: reason };
   }
-  if (status.active?.release_id === releaseId) {
+  // 同一版本正在求解验证时，数据评测的结果仍可查看
+  if (status.active?.release_id === releaseId && (status.active.run_type || 'data') === 'data') {
     const running = blocked('评测进行中，完成后可查看');
     return { entry: null, idle: '评测中', report: running, suggestions: running };
   }
@@ -44,12 +45,78 @@ const generating = ({ artifacts = {} }) => artifacts.status === 'generating' || 
 export function needsPolling(status) {
   if (!status || status.configured === false) return false;
   if (status.active) return true;
-  return [...Object.values(status.releases || {}), ...Object.values(status.feedback || {})].some(generating);
+  return ['releases', 'feedback', 'solver_releases'].some((section) => Object.values(status[section] || {}).some(generating));
 }
 
 // 项目还没有任何消费反馈轮次时，已发布版本不显示「用户反馈」一列
 export function hasFeedback(status) {
   return Object.keys(status?.feedback || {}).length > 0;
+}
+
+// ---- 求解验证：发布后在独立评测中对固定版本执行，结果与数据评测分开索引 ----
+
+export const SOLVER_VALIDATION_STATES = {
+  unverified: { label: '未验证', color: 'warning' },
+  running: { label: '验证中', color: 'processing' },
+  passed: { label: '已通过', color: 'success' },
+  failed: { label: '未通过', color: 'error' },
+};
+
+// 版本的求解验证状态；发布时未启用求解契约、也没有验证记录的版本返回 null（不显示）
+export function releaseSolverValidation(status, releaseId) {
+  if (!status) return null;
+  const tracked = Object.prototype.hasOwnProperty.call(status.solver_revisions || {}, releaseId);
+  const running = status.active?.run_type === 'solver' && status.active.release_id === releaseId;
+  const entry = status.solver_releases?.[releaseId] || null;
+  if (running) return { state: 'running', entry, reason: '求解验证进行中' };
+  if (!entry) return tracked ? { state: 'unverified', entry: null, reason: '该版本尚未完成求解验证' } : null;
+  const summary = entry.solver_summary;
+  const passed = entry.status === 'completed' && summary?.total > 0 && summary.failed === 0;
+  if (passed) return { state: 'passed', entry, reason: `${summary.total} 条用例全部通过` };
+  const reason = summary?.first_failure_message || summary?.first_failure_code || '求解验证未正常结束';
+  return { state: 'failed', entry, reason: `最近一次求解验证未通过：${reason}` };
+}
+
+// 中断的轮次没有 finished_at，以报告生成时间排序（与后端评测索引同一口径）
+const validatedAt = (entry) => entry.finished_at || entry.artifacts?.generated_at || 0;
+
+// 当前求解契约修订对应的发布与验证：unpublished 尚未发布；published 已发布未通过验证；passed 已通过。
+// 以该修订最近一次求解验证为准：同修订的较新版本验证失败时不算已通过，验证进行中也不算（发布确认后端同一规则）
+export function currentRevisionValidation(status, revision) {
+  const revisions = status?.solver_revisions || {};
+  const releases = Object.keys(revisions).filter((id) => revision && revisions[id] === revision);
+  if (!releases.length) return { state: 'unpublished' };
+  const running = releases.some((id) => releaseSolverValidation(status, id)?.state === 'running');
+  const latest = releases
+    .filter((id) => status.solver_releases?.[id])
+    .sort((a, b) => validatedAt(status.solver_releases[b]) - validatedAt(status.solver_releases[a]))[0];
+  if (!running && latest && releaseSolverValidation(status, latest)?.state === 'passed') {
+    return { state: 'passed', releaseId: latest, version: status.solver_releases[latest].version };
+  }
+  const current = releases.includes(status.current_release_id) ? status.current_release_id : releases[0];
+  return { state: 'published', releaseId: current, validation: releaseSolverValidation(status, current) };
+}
+
+// 求解页面「去评测」的目标版本：当前修订已发布时评测其对应版本；有草稿或尚未发布时只能评测最近发布的
+// 版本，它不含当前修改（stale），点击前需提示；从未发布过时返回 null
+export function solverEvaluationTarget(status, revision, dirty) {
+  const current = currentRevisionValidation(status, revision);
+  if (!dirty && current.releaseId) {
+    return { release: { ontology_id: status.ontology_id, release_id: current.releaseId }, stale: false };
+  }
+  if (!status?.current_release_id) return null;
+  return {
+    release: { ontology_id: status.ontology_id, release_id: status.current_release_id },
+    version: status.current_version,
+    stale: true,
+  };
+}
+
+// 发布入口与求解面板不在同一组件分支：发布成功后经窗口事件通知已挂载的面板重读评测状态
+export const PACKAGE_PUBLISHED = 'onto-package-published';
+
+export function notifyPackagePublished(projectId) {
+  window.dispatchEvent(new CustomEvent(PACKAGE_PUBLISHED, { detail: { projectId } }));
 }
 
 // 评测优化只针对当前建模项目的版本；首页弹窗没有聊天区，无法发送优化命令

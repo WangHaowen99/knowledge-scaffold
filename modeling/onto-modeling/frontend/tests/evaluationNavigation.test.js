@@ -11,6 +11,13 @@ test('evaluation navigation carries only Hub references', () => {
   assert.deepEqual([...url.searchParams.keys()], ['ontology_id', 'release_id', 'package_digest']);
   assert.equal(url.pathname, '/evaluation/');
 });
+
+test('solver validation navigation preselects the run type and nothing else', () => {
+  const url = new URL(evaluationUrl(release, 'https://eval.example.com/evaluation/', 'solver'));
+  assert.deepEqual([...url.searchParams.keys()], ['ontology_id', 'release_id', 'package_digest', 'run_type']);
+  assert.equal(url.searchParams.get('run_type'), 'solver');
+  assert.equal(new URL(evaluationUrl(release, 'https://eval.example.com/evaluation/', 'other')).searchParams.has('run_type'), false);
+});
 function crossOriginHarness() {
   const listeners = new Set();
   const messages = { addEventListener: (type, fn) => listeners.add(fn), removeEventListener: (type, fn) => listeners.delete(fn) };

@@ -53,6 +53,14 @@ These rules apply to all work in this repository.
    它按名称与分类列出报告里有、没生成的，生成在错误目录的，以及报告里没有的（并标明
    是否来自流程图）。不要凭印象说"已与报告一致"。
 
+3.2 **规则的「原始资料来源」只指向用户上传的原始资料** — 规则文档的「原始资料来源」节
+   逐条写 `resource/` 下的原始资料路径与锚点，取自资料分析报告的「来源位置」和「详细信息」，
+   锚点逐字沿用
+   （如 `resource/others/规则.docx#p:2`、`resource/excel/表.xlsx#sheet:规则!B3`），每条用
+   行内代码包住，工作台据此打开原文并定位。不写 `research/`、`reports/` 等过程文件；
+   没有对应上传资料时写「无」并在括号里照抄来源位置的文字，如 `无（领域知识整理）`。建模依据（报告路径、`[[链接]]`）仍写在
+   「来源」节，两节互不替代。指标、对象、操作不加这一节。
+
 ## Validation Rules
 
 4. **No external LLM APIs** — Semantic validation is performed by Claude itself. Never call external LLM APIs (Gemini, OpenAI, etc.) for validation tasks in this project.

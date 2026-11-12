@@ -92,7 +92,7 @@
 
 - 业务用户不再手写评估器：助手生成，专家确认参数，自检与面板检查同口径。
 - 含声明式评估器的知识包需要支持该格式的 Consumer。旧版 Consumer 找不到旧式符号会拒绝取数，
-  这个问题会在发布前的端到端验证中暴露。
+  这个问题会在端到端验证中暴露（2026-11 起改在发布后的独立评测中进行，见仓库 `docs/decisions/solver-validation-unified-entry.md`）。
 - 自动发现变严：旧式与声明式评估器并存时必须指定 `evaluator_path`，这是有意为之。
 - 导出知识包时，未绑定 operation 的评估器（旧式或声明式）只带 `scripts/*.py` 源码，不写脚本描述符，
   也不进 `scripts/index.md`。modeling 把每个描述符都当 operation 的可执行实现校验，评估器描述符没有

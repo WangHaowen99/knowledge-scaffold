@@ -27,6 +27,8 @@ cd ..
 - 执行详情：标题为知识包名称、版本和状态，主操作是停止、恢复或再次评测，复制链接、发布派生版本、删除收进“更多”。结果卡以得分为主，旁边是通过率；点结果分布可筛选下方用例，“接下来”列出待人工判定、异常、未通过等待办。“交付建模”四步条显示报告和建议的生成、建模通知、建模处理和在新版本上验证。页签为用例结果、评测报告、优化建议、历史记录、本轮配置；报告和建议直接显示，可下载。用例抽屉可上一条、下一条，非活动任务可人工改判，原因必填并保留历史。
 - 任务地址为 `/evaluation/#/runs/<run_id>`。关闭页面或重新登录后，从「评测任务」或原地址重新进入。查看任务不触发恢复执行；待授权与已中断任务需要明确确认恢复，停止任务需要确认并等待远端对账。映射派生版本的发布单独确认，正式回执来自 Hub。
 - 数据源和评测集有独立管理入口；修改定义不会改写已有任务快照。
+- 求解验证：新建评测时把评测类型选为“求解验证”，用求解验证集逐条让 consumer 智能体调用知识包的求解能力，按工具调用、入参、权威结果与候选数做确定性判定，不需要判分模型，也不提供人工改判。需要 Neo4j 业务数据源（开启图数据导入，或使用已有数据的 Workspace 范围）；每集最多 20 条用例，并发默认 1、最多 4。可导入建模侧导出的验证用例 JSON。字段与失败码见 `API.md`“求解验证”。
+- 数据评测执行详情的“交付建模”卡片中，建模通知“已送达”时，在日期时间后提示前往建模服务“已发布版本（知识包评测）”的“优化建议”弹框点击知识包优化。
 
 ## 配置与权限
 
@@ -37,7 +39,7 @@ cd ..
 - `EVAL_CONSUMER_API_URL`、`EVAL_CONSUMER_SERVICE_TOKEN`：后者对应 consumer 的 `EVALUATION_SERVICE_TOKEN`，与其 modeling 密钥不同；用户身份仍必需。
 - `EVAL_DATA_DIR`：独立卷。默认 `.runtime/` 仅用于合成数据本地开发，部署必须使用外部运行卷。
 - `EVAL_ENCRYPTION_KEY`：Fernet 密钥，用于连接配置、页面保存的 Judge API Key、上传数据和执行数据快照。部署脚本首次部署时生成并保存在 `deploy/.env`，不在数据卷内；备份时须与数据卷分开、同样受控保管。变更或丢失密钥会导致已有加密数据无法解密：已有数据卷而缺少密钥时部署脚本拒绝生成新密钥。
-- `EVAL_JUDGE_BASE_URL`、`EVAL_JUDGE_API_KEY`、`EVAL_JUDGE_MODEL`、`EVAL_JUDGE_CONFIG_REVISION`：临时 Judge 部署配置。问答模型在发起评测时选择：consumer 全局模型池中已启用的模型，或 consumer 默认模型；记录其非敏感配置摘要。此方案标记 **MODEL-CONFIG-01，待 eval2 整改**。
+- `EVAL_JUDGE_BASE_URL`、`EVAL_JUDGE_API_KEY`、`EVAL_JUDGE_MODEL`、`EVAL_JUDGE_CONFIG_REVISION`：临时 Judge 部署配置。问答模型在发起评测时选择：consumer 全局模型池或当前用户个人模型池中已启用的模型，或 consumer 默认模型；记录其非敏感配置摘要。此方案标记 **MODEL-CONFIG-01，待 eval2 整改**。
 - 页面配置 Judge：登录后进入侧边“评测判分模型配置”。所有用户可查看生效来源、模型和配置版本，只有管理员（账号服务中 role 为 admin）可修改，因为该配置对所有用户的评测生效，并会收到题目、参考答案和回答。
   - 管理员填写网关地址、模型和 API Key，可先“测试连接”（与轮次预检相同的结构化判分检查）再保存。保存的配置整体替换部署配置，“恢复部署配置”删除它。
   - API Key 用 `EVAL_ENCRYPTION_KEY` 加密存入数据卷，接口和页面从不返回。网关不变时 Key 可留空沿用；更换网关必须重填，部署 Key 不会被发往新地址。
@@ -80,6 +82,10 @@ Neo4j 按 Provider 展开 URL、Database、User、Password 与 Workspace / Ontol
 
 ## 独立部署
 
+完整安装、升级及旧版迁移必须同时提供 Consumer、Onto Modeling、Hub、评测四个发布包：
+`--consumer-package`、`--onto-modeling-package`、`--knowledge-hub-package`、`--evaluation-package`。
+交互入口同样要求四个必需包，不允许留空，也不以复用运行服务替代提供发布包。
+
 ```bash
 # 从仓库根执行；consumer 与知识包 Hub 需已部署
 bash deploy/deploy.sh --eval-only
@@ -98,7 +104,7 @@ bash deploy/deploy.sh --eval-only
 
 独立 Compose 不启动账号、Hub、consumer 或建模依赖。默认全栈 `bash deploy/deploy.sh` 会在其他服务之后部署评测；`--onto-modeling-only` 不包含评测。默认宿主端口 8090（所有网卡），网关按实际网络配置访问；直连方式见“配置与权限”。`/evaluation/api/health` 只报告进程活性，不能替代依赖与模型协议验证。
 
-离线包：`bash eval-service/build.sh <version> [amd|arm]`，产物为 `eval-service/dist/evaluation-<version>-linux-<arch>.tar.gz`（顶层目录 `eval-service/`），包含镜像、Compose、部署脚本和说明。目标机解压后执行包内 `deploy/deploy.sh`（自动加载镜像），或交给分离部署脚本的 `--evaluation-package`；运行配置规则同上。不包含运行配置和数据。根目录 `bash deploy/build.sh <version> [amd|arm]` 生成的完整离线包也包含评测镜像、部署脚本及网关配置示例。
+离线包：`bash eval-service/build.sh <version> [amd|arm]`，产物为 `eval-service/dist/evaluation-<version>-linux-<arch>.tar.gz`（顶层目录 `eval-service/`），包含镜像、Compose、部署脚本和说明。目标机解压后执行包内 `deploy/deploy.sh`（自动加载镜像），或交给分离部署脚本的 `--evaluation-package`；运行配置规则同上。不包含运行配置和数据。根目录 `bash deploy/build.sh <version> [amd|arm]` 生成的完整离线包也包含评测镜像、部署脚本及网关配置示例，并同时在 `eval-service/dist/` 生成上述独立发布包（同版本旧包会被覆盖）。
 
 ## 恢复与清理
 

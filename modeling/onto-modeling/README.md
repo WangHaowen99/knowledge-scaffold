@@ -134,6 +134,11 @@ cd frontend && npm test && npm run build
 
 ## 构建与部署
 
+完整安装和升级统一部署 Consumer、Onto Modeling、知识包 Hub、独立评测四个必需服务。
+分离安装脚本的 `--consumer-package`、`--onto-modeling-package`、`--knowledge-hub-package`、`--evaluation-package`
+四项必填。安装脚本不部署、不升级 Modeling Workbench。
+部署顺序：Consumer → Hub → Onto Modeling → 评测。安装入口须与发布包版本一致。
+
 ```bash
 ./build.sh <version> [amd|arm]     # 产出 dist/onto-modeling-<version>-linux-<arch>.tar.gz
 docker compose up --build          # 本地从源码起全栈（onto-modeling + auth-server）验证
@@ -193,6 +198,29 @@ JSON、YAML、GIF、SVG 等不在上传白名单内的格式不再接受上传�
 `word/document.xml` 单独限制为 32 MiB；二进制附件计入总量，但不抽取为正文。
 来源哈希和正文基于同一临时快照生成，避免文件替换导致证据不一致。
 
+## 规则的原始资料来源
+
+规则文档在「来源」之后有「原始资料来源」一节，逐条写用户上传资料的 `resource/` 路径和定位锚点
+（`#L12`、`#p:12`、`#table:1/row:2/cell:3`、`#sheet:规则!B3`），取自资料分析报告的
+「业务项清单」来源位置和「详细信息」出处，合并去重；没有对应资料时写 `无（来源位置原文）`。
+指标、对象、操作不加这一节，存量规则不自动补，重做提取后带上。
+
+- 知识包预览和 Studio 详情里，这些路径显示为芯片：文本和 Word 分段预览并高亮锚点位置，
+  Excel 切到对应工作表并高亮单元格（落在合并区时高亮整块），PDF、图片在平台内打开，
+  旧版 Office、PPT 等给下载入口；文件已删除时芯片置灰，锚点失效时提示并显示开头。
+  预览上方的「返回」回到点进来的文档。分段预览接口为 `GET /api/projects/{pid}/source-preview`。
+- 「来源」节写成 `research/报告.md#小节名` 时，芯片打开报告并定位到该小节。
+- `research_checker.py` 同时核对「详细信息」里的出处：文件不存在、锚点找不到、省略文件路径都不放行。
+- 上传 `.doc`、`.xls` 时提示另存为 `.docx`、`.xlsx`，否则无法分析和预览。
+- 发布包里规则正文原样带出，consumer 按 Markdown 显示这一节，不提供跳转。
+
+## Studio 表格的最后更新时间
+
+Studio 表视图在「名称」后有「最后更新时间」列（精确到秒，可排序）。已提交的文档取最后一次改动它的
+提交时间，同内容重复保存不产生提交、时间不变；已写入工作区但未提交的文档（如 AI 改了还没确认）取
+文件修改时间；纯移动或改名不算更新。Studio 草稿和编辑器里没保存的内容不算。时间来自
+`GET /api/projects/{pid}/studio/updates`，只在表视图请求，git 不可用时整列显示 `—`。
+
 ## 当前状态
 
 已有：项目生命周期（创建/导入向导（已发布知识包与工作区内容格式自动识别，识别不出
@@ -228,6 +256,8 @@ Hub 不可用时发布失败；Hub 已提交、本地关联尚未写入时提示
 
 建模备份包含 `hub-tasks/` 中的主体包关联、冻结发布输入及恢复记录，不保存用户令牌；Hub 卷单独备份。发布门槛继续提示资料分析、对象提取、操作提取和质量检查；示例数据、场景验证及可选步骤不阻塞发布。带发布副作用的 GET `export?scope=package` 已取消，应先 POST 发布，再下载指定版本。
 
+发布前结构自检：发布检查和提交 Hub 前，都会按与正式发布相同的参数导出知识包，再用 consumer 自己的导入规则检查。consumer 导入时会拒绝的包（数量或大小超限、别名冲突、文件名只差大小写、求解布局错误等）列在发布检查的「知识包结构」一栏，不能降级发布；提交时发现问题则返回 `package_structure_invalid`，不会向 Hub 预留版本。规则是 consumer 上游代码的副本，位于 `backend/app/services/consumer_package_rules/`，由人工同步，来源与同步步骤见其中的 `PROVENANCE.md`。部署调整了 consumer 的数量上限时，要在本服务设置同名环境变量：`ONTOLOGY_OBJECT_MAX_COUNT`（默认 200）、`ONTOLOGY_OPERATION_MAX_COUNT`（默认 100）、`ENTITY_ATTRIBUTE_MAX_COUNT`（默认 100）、`ONTOLOGY_OPERATION_MAX_CHARS`（默认 15000）。
+
 
 ## 独立评测入口（eval1）
 
@@ -238,6 +268,8 @@ Hub 不可用时发布失败；Hub 已提交、本地关联尚未写入时提示
 - 直连（默认）：未设置时，浏览器打开与建模页面同主机的 `http://<主机>:8090/evaluation/`，整栈同机部署无需配置。评测在其他主机、端口或经 HTTPS 时设为完整地址（如 `http://eval.example.com:8090/evaluation/`），须为 http(s)、不含账号和查询参数，路径固定为 `/evaluation/`。点击评测时打开新窗口，登录经 `postMessage` 只交给该地址的来源；评测侧的来源限制见评测服务说明。
 
 默认全栈 `bash deploy/deploy.sh` 包含评测；仅部署建模不会启动评测。也可从仓库根执行 `bash deploy/deploy.sh --eval-only` 独立部署评测，并按说明注入受保护的运行配置。健康检查返回 404 时检查路由，502/503 时检查评测上游，返回 HTML 时检查是否误入建模页面回退。正确响应应为 `{"status":"ok","service":"evaluation"}`。
+
+求解知识包（启用了求解契约）发布不再要求先通过端到端验证：发布只受求解契约静态检查与结构自检约束，发布检查中须勾选“求解能力尚未经端到端验证”的确认，后端未确认时返回 `solver_validation_acknowledgement_required`（409）；当前求解契约修订最近一次求解验证已通过时免确认。MCP 发布遵守同一规则：`preview_package_publish` 返回 `solver.requires_acknowledgement`，需要确认时 `publish_package_version` 须带 `solver_unverified_acknowledged: true`，否则返回 `SOLVER_VALIDATION_ACKNOWLEDGEMENT_REQUIRED`（409）。发布后在「已发布版本（知识包评测）」或求解模型面板点“去评测”，在评测页面以“求解验证”类型对该版本执行；版本列表显示每个版本的求解验证状态与验证报告。每次发布记下当时的求解契约修订（含对象的数据绑定），求解模型面板据此提示当前修改是否已发布并通过验证。建模侧原有的验证用例只读，可导出 JSON 后导入评测页面的求解验证集；保存用例与发起验证的接口返回 `solver_validation_moved`（410）。
 
 进度栏不再提供“数据评测（可选）”和数据源编辑。项目「已发布版本」列表提供「评测」入口，仅携带 Hub 包/版本引用跳转生效的评测入口，不自动执行，URL 中不含令牌或项目 ID。未配置独立评测时明确提示，不回退到 Core。
 

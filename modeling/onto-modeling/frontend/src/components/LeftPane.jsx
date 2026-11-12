@@ -33,6 +33,7 @@ import { api } from '../lib/api.js';
 import { openEvaluation, prefetchEvaluationEntry } from '../lib/evaluation.js';
 import { isResearchBlocking } from '../lib/researchGate.js';
 import { RESOURCE_FILE_ACCEPT, validateResourceFile } from '../lib/resourceUpload.js';
+import { legacyOfficeHint } from '../lib/sourceLocation.js';
 import { EMPTY_HISTORY, appendHistoryPage, historyEntryKey, versionTitle } from '../lib/versionHistory.js';
 import { hasWorkspaceDirty } from '../lib/workspaceDirty.js';
 import EvalRunDetail from './EvalRunDetail.jsx';
@@ -585,6 +586,8 @@ export default function LeftPane({
           ? `${done}，识别为数据表（${saved.detected.tables.length} 张），用途已设为「数据 Schema」，可在资料列表修改`
           : done,
       );
+      const hint = legacyOfficeHint(file.name);
+      if (hint) message.warning(hint, 6);
       onRefresh();
     } catch (error) {
       message.error(error.message);
@@ -745,7 +748,7 @@ export default function LeftPane({
           >
             发布知识包
           </Button>
-          <Button block style={{ marginBottom: 8 }} onClick={() => packagePublish.showVersions(project.id)}>
+          <Button block style={{ marginBottom: 8 }} onClick={() => packagePublish.showVersions(project)}>
             已发布版本（知识包评测）
           </Button>
           <Button block style={{ marginBottom: 8 }} onClick={() => setEvalDetailOpen(true)}>

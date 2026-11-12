@@ -18,7 +18,8 @@
 6. ID 稳定：派遣前固化的既有清单里的 ID 必须仍在报告中，新增 ID 必须在
    「ID变更对照」给出依据——不允许静默改名；
 7. 字段保真：「引用字段」列的每个字段必须是真实表头里的列（表名.列名 或列名）；
-8. 来源可定位：「来源位置」非空，写成路径时该文件必须存在；
+8. 来源可定位：「来源位置」非空，写成路径时该文件必须存在；「详细信息」里写到的
+   `resource/` 路径与锚点同样必须存在，且每处出处写全路径（规则的「原始资料来源」取自这里）；
 9. 人工待决：「缺口与待决」里未勾选的 `- [ ]` 条目转人工确认，不自动放行。
 
 用法（工作区根目录执行）：
@@ -89,6 +90,10 @@ CELL_SEPARATORS = re.compile(r'[,，、;；]')
 BOLD_NAME = re.compile(r'^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\*\*([^*\n]+)\*\*', re.MULTILINE)
 # 来源位置里形如 `路径/文件.后缀` 的片段；用于判断这条来源能否定位到真实文件。
 PATH_LIKE = re.compile(r'[^\s|，。；、]+\.[A-Za-z0-9]{1,6}')
+# 「详细信息」里的资料出处：`路径` 或 `路径#锚点`，锚点写法见 source_extract。
+DETAIL_SOURCE = re.compile(r'(resource/[^\s|，。；：、（）()`#]+\.[A-Za-z0-9]{1,6})(?:#([^\s，。；、（）()`|]+))?')
+# 省略路径的锚点（`#sheet:规则!C2`）：下游取不到它属于哪个文件。
+BARE_ANCHOR = re.compile(r'(?<![\w./\-])#(?:L\d|p:\d|table:\d|sheet:)[^\s，。；、（）()`|]*')
 # 来源位置可定位的查找范围：用户资料、设计文档与既有报告。
 LOCATE_DIRS = ('resource', 'docs', 'research')
 
@@ -554,6 +559,39 @@ def _check_rows(rel: str, rows: list[dict], ctx: CheckContext) -> list[dict]:
     return issues
 
 
+def _check_detail_sources(rel: str, raw: str, ctx: CheckContext) -> list[dict]:
+    """「详细信息」的资料出处要能定位：它们会写进规则的「原始资料来源」，页面据此打开原文。
+
+    条目写在「## 名称」小节里，extract_sections 会把小节拆成独立段，这里按一级标题整段截取。
+    """
+    match = re.search(r'^#[ 	]+详细信息[ 	]*$(.*?)(?=^#[ 	]|\Z)', raw, re.MULTILINE | re.DOTALL)
+    body = match.group(1) if match else ''
+    missing, broken = [], []
+    for path, anchor in dict.fromkeys(DETAIL_SOURCE.findall(body)):
+        source_rel = ctx.locatable.get(path)
+        if not source_rel:
+            missing.append(path)
+        elif anchor:
+            try:
+                ctx.source_text(source_rel, anchor)
+            except ValueError:
+                broken.append(f'{path}#{anchor}')
+    issues = []
+    if missing:
+        issues.append(_issue(rel, ERROR, '来源缺失',
+                             f'「详细信息」有 {len(missing)} 处出处指向不存在的文件：{_clip(missing, 5)}'))
+    if broken:
+        issues.append(_issue(rel, ERROR, '来源无法核验',
+                             f'「详细信息」有 {len(broken)} 处锚点在原文里找不到：{_clip(broken, 5)}。'
+                             '逐字使用抽取器返回的位置'))
+    bare = list(dict.fromkeys(BARE_ANCHOR.findall(body)))
+    if bare:
+        issues.append(_issue(rel, ERROR, '来源缺失',
+                             f'「详细信息」有 {len(bare)} 处锚点省略了文件路径：{_clip(bare, 5)}。'
+                             '每处出处都写完整的 路径#锚点'))
+    return issues
+
+
 def _manual_pending(rel: str, sections: dict) -> list[dict]:
     """「缺口与待决」里未勾选的条目——需人工确认，不由脚本自动放行。"""
     pending = []
@@ -590,6 +628,7 @@ def check_report(root: Path, rel: str, ctx: CheckContext) -> tuple[list, list]:
     issues += _check_categories(rel, sections, rows)
     issues += _check_duplicates(rel, rows)
     issues += _check_rows(rel, rows, ctx)
+    issues += _check_detail_sources(rel, raw, ctx)
     return issues, pending
 
 

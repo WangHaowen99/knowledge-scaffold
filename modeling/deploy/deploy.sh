@@ -510,6 +510,7 @@ deploy_source() {
     [ -f "${compose_file}" ] || die "Source compose file not found: ${compose_file}"
 
     ensure_source_modeling_service_token "${repo_root}/consumer/backend/.env"
+    ensure_modeling_mcp_token_secret "${repo_root}/consumer/backend/.env"
     load_modeling_env "${repo_root}/consumer/backend/.env" "${repo_root}/deploy/.env"
     resolve_modeling_mcp_public_base_url
     verify_consumer_service_token

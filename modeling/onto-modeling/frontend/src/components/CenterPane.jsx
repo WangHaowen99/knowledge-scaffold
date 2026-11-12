@@ -42,10 +42,20 @@ import { api } from '../lib/api.js';
 import { setWorkspaceDirty } from '../lib/workspaceDirty.js';
 import { SOLVER_DIR, isManagedSolverPath } from '../lib/solver-contract-model.js';
 import { versionTitle } from '../lib/versionHistory.js';
+import {
+  extensionOf,
+  findHeadingIndex,
+  parseHeadingRef,
+  parseSourceRef,
+  previewKind,
+  sourceChipLabel,
+  trimHeadingRef,
+} from '../lib/sourceLocation.js';
 import CodeEditor from './cm/CodeEditor.jsx';
 import MergeDiff from './cm/MergeDiff.jsx';
 import ExcelView from './ExcelView.jsx';
 import HtmlPreview from './HtmlPreview.jsx';
+import SourcePreview from './SourcePreview.jsx';
 
 const StudioView = lazy(() => import('./StudioView.jsx'));
 const SolverModelPanel = lazy(() => import('./SolverModelPanel.jsx'));
@@ -150,33 +160,35 @@ function extractText(node) {
 
 // ---- 产物路径实体芯片：消息/报告里的路径文本可点击打开（识别优于回忆） ----
 
-const PATH_RE = /(?:research|reports|ontology|knowledge|resource)\/[^\s`）)，。;；:"'<>|]+\.(?:md|mmd|drawio|xlsx|xlsm|html|py|csv)/g;
+// 资料路径可带 source_extract 写法的定位锚点（#L12、#p:12、#table:1/row:2/cell:3、#sheet:规则!B3），
+// 报告路径可带小节名（#退款时限（R-02）），小节名截到空白或中文分隔标点为止
+const PATH_RE = /(?:research|reports|ontology|knowledge|resource)\/[^\s`）)，。;；:"'<>|]+\.(?:md|mmd|drawio|xlsx|xlsm|html|py|csv|docx|pdf|png|jpe?g)(?:#(?:L\d+|p:\d+|table:\d+\/row:\d+\/cell:\d+|sheet:[^\s`）)，。;；"'<>|]+![A-Z]+\d+|[^\s`，。；;、,|"'<>「」【】[\]]+))?/g;
 // 行内代码路径判定：常见知识包目录开头 + 已知扩展名
 const INLINE_PATH_RE = /^(?:ontology|research|reports|resource)\/[^\s`]+\.(?:md|py|json|yaml|yml|csv|mmd|drawio|xlsx?|html|txt)$/i;
 
 const EXT_ICON = {
-  md: '📄', mmd: '🔀', drawio: '🔀', xlsx: '📊', xlsm: '📊',
-  html: '📈', py: '🐍', csv: '📊',
+  md: '📄', mmd: '🔀', drawio: '🔀', xlsx: '📊', xlsm: '📊', xls: '📊',
+  html: '📈', py: '🐍', csv: '📊', docx: '📝', doc: '📝', pdf: '📕',
+  png: '🖼️', jpg: '🖼️', jpeg: '🖼️', gif: '🖼️', webp: '🖼️',
 };
 
-export function FileChip({ path, exists = true, onOpen, status }) {
-  const name = path.split('/').pop();
-  const ext = (name.split('.').pop() || '').toLowerCase();
+export function FileChip({ path, anchor = '', exists = true, onOpen, status }) {
+  const open = () => onOpen?.(path, anchor ? { anchor } : undefined);
   return (
     <span
-      className={`file-chip${exists ? '' : ' missing'}${status ? ` ${status}` : ''}`}
-      title={path}
+      className={`file-chip${anchor ? ' source' : ''}${exists ? '' : ' missing'}${status ? ` ${status}` : ''}`}
+      title={anchor ? `${path}#${anchor}` : path}
       role="button"
       tabIndex={0}
       onClick={(e) => {
         e.stopPropagation();
-        if (exists) onOpen?.(path);
+        if (exists) open();
         else message.info('文件不存在（可能已改名或删除）');
       }}
-      onKeyDown={(e) => e.key === 'Enter' && exists && onOpen?.(path)}
+      onKeyDown={(e) => e.key === 'Enter' && exists && open()}
     >
-      <span className="file-chip-icon">{EXT_ICON[ext] || '📄'}</span>
-      {name}
+      <span className="file-chip-icon">{EXT_ICON[extensionOf(path)] || '📄'}</span>
+      {sourceChipLabel(path, anchor)}
     </span>
   );
 }
@@ -195,7 +207,8 @@ function linkifyPaths(md) {
             // 已在链接/wiki 语法里的不重复包装
             const before = whole.slice(Math.max(0, offset - 2), offset);
             if (before.includes('[') || before.includes('(')) return m;
-            return `[${m}](#file:${encodeURIComponent(m)})`;
+            const { ref, rest } = trimHeadingRef(m);
+            return `[${ref}](#file:${encodeURIComponent(ref)})${rest}`;
           });
         })
         .join('');
@@ -227,9 +240,9 @@ export const Markdown = memo(function Markdown({ content, onWikiLink, onOpenFile
               );
             }
             if (href && href.startsWith('#file:')) {
-              const path = decodeURIComponent(href.slice('#file:'.length));
+              const [path, anchor = ''] = decodeURIComponent(href.slice('#file:'.length)).split(/#(.*)/s);
               const exists = knownPaths ? knownPaths.has(path) : true;
-              return <FileChip path={path} exists={exists} onOpen={onOpenFile} />;
+              return <FileChip path={path} anchor={anchor} exists={exists} onOpen={onOpenFile} />;
             }
             // 评测报告中的完整答案附件是工作区文件，并非站点静态 URL。
             // 拦截带结果 ID 的相对链接，去掉 fragment 后交给工作区文件打开链路，
@@ -272,6 +285,23 @@ export const Markdown = memo(function Markdown({ content, onWikiLink, onOpenFile
               return <MermaidBlock code={text} />;
             }
             // 行内代码若是工作区文件路径 → 可点击芯片直接在中栏打开
+            // 原始资料路径（可带定位锚点）即使文件已删除也显示为置灰芯片，点了说明原因
+            const sourceRef = !className && !text.includes('\n') ? parseSourceRef(text) : null;
+            if (sourceRef) {
+              return (
+                <FileChip
+                  path={sourceRef.path}
+                  anchor={sourceRef.anchor}
+                  exists={!knownPaths || knownPaths.has(sourceRef.path)}
+                  onOpen={onOpenFile}
+                />
+              );
+            }
+            // 带小节的报告路径（`research/报告.md#小节`）：打开报告并定位到该小节
+            const headingRef = !className && !text.includes('\n') ? parseHeadingRef(text) : null;
+            if (headingRef && (!knownPaths || knownPaths.has(headingRef.path))) {
+              return <FileChip path={headingRef.path} anchor={headingRef.anchor} onOpen={onOpenFile} />;
+            }
             if (
               !className &&
               !text.includes('\n') &&
@@ -442,7 +472,16 @@ function extractHeadings(md) {
 }
 
 // 文件预览按类型分流：md 带目录、mmd 图、csv 表格、代码高亮、纯文本
-function FilePreviewBody({ file, content, onWikiLink, onOpenFile, onOpenAnswer, knownPaths }) {
+function FilePreviewBody({
+  file,
+  content,
+  onWikiLink,
+  onOpenFile,
+  onOpenAnswer,
+  knownPaths,
+  anchor = '',
+  nonce = 0,
+}) {
   const ext = (file.split('.').pop() || '').toLowerCase();
   const containerRef = useRef(null);
   const isMd = ext === 'md' || ext === 'markdown';
@@ -457,6 +496,20 @@ function FilePreviewBody({ file, content, onWikiLink, onOpenFile, onOpenAnswer, 
       }
     }
   };
+
+  // 从芯片带小节打开：滚到对应标题并高亮；nonce 让再次点击同一小节也重新定位
+  useEffect(() => {
+    if (!isMd || !anchor) return undefined;
+    const nodes = [...(containerRef.current?.querySelectorAll('h1, h2, h3') || [])];
+    const node = nodes[findHeadingIndex(nodes.map((item) => item.textContent), anchor)];
+    if (!node) {
+      message.warning(`小节「${anchor}」在文档里已不存在，显示文档开头`);
+      return undefined;
+    }
+    node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    node.classList.add('source-hit');
+    return () => node.classList.remove('source-hit');
+  }, [isMd, anchor, nonce, content]);
 
   if (ext === 'mmd') return <MermaidBlock code={content} />;
   if (ext === 'csv') return <CsvTable text={content} />;
@@ -671,6 +724,8 @@ export default function CenterPane({
   versionTotal,
   usage,
   file,
+  fileTarget,
+  onBackToOrigin,
   focus,
   onFocus,
   diffRev,
@@ -809,14 +864,17 @@ export default function CenterPane({
     api.listKnowledge(project.id).then((d) => setKnowledge(d.entries)).catch(() => {});
   }, [focus, project.id, versions.length]);
 
-  // 文件加载（drawio/excel/html 有专属渲染组件，不走文本读取）
+  // 文件加载（drawio/excel/html 与原始资料预览有专属渲染组件，不走文本读取）
+  const anchor = fileTarget?.anchor || '';
+  const kind = file ? previewKind(file, anchor) : 'default';
   const isDrawio = !!file && /\.(drawio|dio)$/i.test(file);
-  const isExcel = !!file && /\.(xlsx|xlsm|xls)$/i.test(file);
+  const isExcel = kind === 'excel';
   const isHtml = !!file && /\.html?$/i.test(file);
+  const isSource = ['segments', 'pdf', 'image', 'download'].includes(kind);
   useEffect(() => {
     setEditing(false);
     setConflict(null);
-    if (!file || isDrawio || isExcel || isHtml) {
+    if (!file || isDrawio || isExcel || isHtml || isSource) {
       setContent(null);
       return;
     }
@@ -844,7 +902,7 @@ export default function CenterPane({
       .catch((error) => setContent({ error: error.message }))
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project.id, file]);
+  }, [project.id, file, kind]);
 
   const dirty = editing && content?.content != null && draft !== content.content;
   const diffDirty =
@@ -1027,6 +1085,7 @@ export default function CenterPane({
                 key={`${project.id}:${studioResetRevision}`}
                 project={project}
                 onOpenFile={onOpenFile}
+                knownPaths={knownPaths}
                 onCommand={onCommand}
                 onWorkspaceChanged={onWorkspaceChanged}
                 active={focus === 'studio'}
@@ -1167,6 +1226,16 @@ export default function CenterPane({
                 )}
               </Empty>
             )}
+            {file && fileTarget?.origin && fileTarget.origin.path !== file && (
+              <Button
+                size="small"
+                icon={<ArrowLeftOutlined />}
+                style={{ marginBottom: 8 }}
+                onClick={onBackToOrigin}
+              >
+                返回 {fileTarget.origin.path.split('/').pop()}
+              </Button>
+            )}
             {isHtml && <HtmlPreview project={project} path={file} />}
             {isDrawio && (
               <Suspense fallback={<Spin style={{ marginTop: 48 }} />}>
@@ -1179,9 +1248,20 @@ export default function CenterPane({
                 />
               </Suspense>
             )}
-            {isExcel && <ExcelView project={project} path={file} />}
+            {isExcel && (
+              <ExcelView project={project} path={file} anchor={anchor} nonce={fileTarget?.nonce} />
+            )}
+            {isSource && (
+              <SourcePreview
+                project={project}
+                path={file}
+                kind={kind}
+                anchor={anchor}
+                nonce={fileTarget?.nonce}
+              />
+            )}
             {file && content?.unsupported && !isHtml && !isDrawio && !isExcel && (
-              <Empty description={`${file} 暂不支持预览（当前仅支持文本类文件）`} />
+              <SourcePreview project={project} path={file} kind="download" />
             )}
             {file && content?.error && <Empty description={content.error} />}
             {file && content?.content != null && (
@@ -1258,9 +1338,14 @@ export default function CenterPane({
                     file={file}
                     content={content.content}
                     onWikiLink={openWikiLink}
-                    onOpenFile={onOpenFile}
+                    onOpenFile={(path, options) =>
+                      onOpenFile(path, { ...options, origin: { path: file, focus: 'file' } })
+                    }
                     onOpenAnswer={openReportAnswer}
                     knownPaths={knownPaths}
+                    // 切换文件时上一份内容会多渲染一帧，只对本文件的内容定位，避免误报小节不存在
+                    anchor={content.path === file ? anchor : ''}
+                    nonce={fileTarget?.nonce}
                   />
                 )}
               </>

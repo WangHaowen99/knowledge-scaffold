@@ -261,12 +261,13 @@ class Store:
     def package_run_rows(self, owner, package, limit=1000):
         """Small fields of a package's runs, newest first, without loading their cases."""
         with self.lock:
-            rows=self.db.execute(f"SELECT id,json_extract(body,'$.status') AS status,json_extract(body,'$.base_ref') AS base_ref,"
+            rows=self.db.execute(f"SELECT id,json_extract(body,'$.status') AS status,json_extract(body,'$.run_type') AS run_type,"
+                                 f"json_extract(body,'$.base_ref') AS base_ref,"
                                  f"json_extract(body,'$.package_ref') AS package_ref,json_extract(body,'$.preparation_id') AS preparation_id,"
                                  f"{self.CREATED} AS created_at,json_extract(body,'$.finished_at') AS finished_at "
                                  f"FROM records WHERE owner=? AND kind='runs' AND {self.PACKAGE}=? ORDER BY {self.CREATED} DESC LIMIT ?",
                                  (owner,package,limit)).fetchall()
-            return [dict(id=r['id'],status=r['status'],base_ref=json.loads(r['base_ref']) if r['base_ref'] else None,
+            return [dict(id=r['id'],status=r['status'],run_type=r['run_type'] or 'data',base_ref=json.loads(r['base_ref']) if r['base_ref'] else None,
                          package_ref=json.loads(r['package_ref']) if r['package_ref'] else None,preparation_id=r['preparation_id'],
                          created_at=r['created_at'],finished_at=r['finished_at']) for r in rows]
 

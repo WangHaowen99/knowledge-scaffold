@@ -29,14 +29,11 @@ export const FINDING_TITLES = {
   solver_contract_revision_conflict: '修订冲突',
 };
 
+// 端到端验证改在发布后的独立评测中进行：这里只区分是否需要在发布后验证
 export const VALIDATION_STATES = {
   none: { label: '未启用求解', color: 'default' },
   not_needed: { label: '无需验证', color: 'default' },
-  required: { label: '待验证', color: 'warning' },
-  running: { label: '验证中', color: 'processing' },
-  passed: { label: '已通过', color: 'success' },
-  stale: { label: '已过期', color: 'warning' },
-  failed: { label: '未通过', color: 'error' },
+  after_publish: { label: '发布后验证', color: 'processing' },
 };
 
 // 表单直接编辑的 binding 字段；其余（声明里的能力与策略、Operation frontmatter、
@@ -629,12 +626,7 @@ export function validationState(status) {
   if (!status?.enabled) return 'none';
   const operations = status.operations || status.contract?.operations || [];
   if (!operations.some((operation) => operation.enabled)) return 'not_needed';
-  const record = status.validation;
-  if (record && ['queued', 'running'].includes(record.status)) return 'running';
-  if (record && record.status === 'passed' && record.authoritative === true) return 'passed';
-  if ((status.gate || []).some((item) => item.code === 'solver_contract_validation_stale')) return 'stale';
-  if (record && ['failed', 'passed'].includes(record.status)) return 'failed';
-  return 'required';
+  return 'after_publish';
 }
 
 // ---- 端到端验证用例：存于工作区状态（不进知识包），结构校验以后端 normalize_cases 为准 ----
@@ -820,7 +812,7 @@ export function parseCasesText(text, operations = []) {
 
 // 发起验证前的阻断原因；空串表示可以发起
 export function startBlocker(view, { dirty = false, casesDirty = false, cases = [] } = {}) {
-  if (validationState(view) === 'running' || isValidationActive(view?.validation)) return '当前修订的验证进行中';
+  if (isValidationActive(view?.validation)) return '当前修订的验证进行中';
   if (dirty) return '求解契约有未保存的修改，先保存再验证';
   if (casesDirty) return '验证用例有未保存的修改，先保存用例';
   if ((view?.findings || []).length) return '先修正上方的求解契约检查问题';

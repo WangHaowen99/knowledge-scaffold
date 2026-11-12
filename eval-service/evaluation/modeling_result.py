@@ -25,12 +25,19 @@ class ModelingResult(BaseModel):
     note: str = Field(default='', max_length=2000)
 
 
+def applies(run):
+    """Solver validations end in deterministic guidance: there are no suggestions for modeling to handle."""
+    return run.get('run_type') != 'solver'
+
+
 def initial(run):
     return 'awaiting_review' if run.get('origin') == 'consumer_feedback' else 'notified'
 
 
 def state(store, jobs, owner, run):
     """The stored state, or for runs from before it was kept, ``notified`` once their report exists."""
+    if not applies(run):
+        return None
     value = store.optimization(run['id'])
     if value is None and run.get('origin') != 'consumer_feedback':
         meta = jobs.meta(owner, run['id'])
@@ -41,11 +48,15 @@ def state(store, jobs, owner, run):
 
 def started(store, owner, run, now=None):
     """Create the state when a run's report is first generated; an existing state is kept."""
+    if not applies(run):
+        return None
     return store.put_optimization(owner, run['id'], {'status': initial(run), 'updated_at': now or time.time()}, only_new=True)
 
 
 def record(store, jobs, packages, owner, run, body, token, actor):
     """Validate a result modeling reported for the run and store it; returns the new state."""
+    if not applies(run):
+        raise Failure('not_applicable', '求解验证没有优化建议，不需要回写处理结果', 409)
     current = state(store, jobs, owner, run) or {}
     note = body.note.strip()
     release_id = body.release_id if body.outcome == 'done' else ''

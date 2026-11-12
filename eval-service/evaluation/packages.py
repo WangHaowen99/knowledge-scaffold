@@ -85,6 +85,28 @@ def conflicts(resolution):
     return found[:CONFLICTS]
 
 
+def _valid_primary_key(item):
+    """A non-empty list of distinct, non-empty field names."""
+    primary_key = item.get('primary_key') if isinstance(item, dict) else None
+    if not isinstance(primary_key, list) or not primary_key:
+        return False
+    named = all(isinstance(field, str) and field for field in primary_key)
+    return named and len(set(primary_key)) == len(primary_key)
+
+
+def _declared_primary_keys(files):
+    """Primary keys from the package's own mapping, written by modeling from the workspace documents.
+
+    Packaged object documents replace the key column with 「必填」, so a composite key cannot be
+    inferred from them again. Anything unreadable yields no override.
+    """
+    try:
+        objects = json.loads(files[MAPPING])['objects']
+        return {key: list(item['primary_key']) for key, item in objects.items() if _valid_primary_key(item)}
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return {}
+
+
 def generate_mapping(raw, tables, graph=False):
     files, _ = unpack(raw)
     with tempfile.TemporaryDirectory(prefix='eval-mapping-') as directory:
@@ -99,6 +121,12 @@ def generate_mapping(raw, tables, graph=False):
             raise Failure('mapping_conflict', f"有 {len(resolution['problems'])} 个对象与数据表不一致，请按下方清单在建模中修改对象的表绑定后重新发布，"
                           '或改用“不使用数据源”评测', 422, 'mapping', details={'issues':conflicts(resolution)})
         mapping=mapping_rules.object_data_mappings(resolution,graph=graph)
+        # 主键以发布包 mapping 为准（否则复合主键退化为首个字段，导入时多行合并成一个节点）；
+        # 只在主键列都对上本次数据的真实列时采用，其余对象保持原推断
+        for key,primary_key in _declared_primary_keys(files).items():
+            item=mapping['objects'].get(key)
+            if item and set(primary_key)<=set(item['sources'][0]['fields']):
+                item['primary_key']=primary_key
         if not mapping['objects']:
             raise Failure('mapping_empty','没有可绑定的数据对象',422,'mapping')
         if graph and any(item['missing_columns'] for item in resolution['objects'].values() if item['table']):

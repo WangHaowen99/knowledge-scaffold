@@ -2,13 +2,17 @@ import React, { useEffect, useRef, useState } from 'react';
 import { allPages, api, requestId } from './api.js';
 import {
   ACTIVE,
+  ASSERTION_TITLES,
   ENDED,
   PHASES,
+  RUN_TYPES,
   STATUS,
   VERDICTS,
+  assertionNote,
   canResume,
   caseState,
   duration,
+  isSolverRun,
   packageName,
   packageVersions,
   passRate,
@@ -110,7 +114,7 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
   const active = run && ACTIVE.has(run.status),
     summary = run?.summary,
     counts = resultCounts(summary);
-  const visible = cases.filter((c) => caseMatches(c, filter) && c.question.toLowerCase().includes(search.toLowerCase()));
+  const visible = cases.filter((c) => caseMatches(c, filter) && [c.question, c.name, c.case_id, c.solver_key].filter(Boolean).join(' ').toLowerCase().includes(search.toLowerCase()));
   function showCases(value) {
     setTab('cases');
     setFilter(value);
@@ -156,6 +160,7 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
       </Empty>
     );
   const phaseIndex = run.phase === 'finished' ? 4 : PHASES.findIndex(([key]) => key === run.phase);
+  const solver = isSolverRun(run);
   const current = cases.find((c) => RUNNING_CASE.includes(c.status));
   const versions = packageVersions(run),
     start = runStartTime(run),
@@ -176,7 +181,7 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
   if (counts.fail + counts.partial)
     next.push(
       artifacts.suggestions === 'ready'
-        ? [`${counts.fail + counts.partial} 条没有通过，已有归因建议`, '看优化建议', () => setTab('suggestions')]
+        ? [`${counts.fail + counts.partial} 条没有通过`, solver ? '看修复指引' : '看优化建议', () => setTab('suggestions')]
         : [`${counts.fail + counts.partial} 条没有通过`, '查看', () => showCases('fail')],
     );
   if (done)
@@ -195,6 +200,7 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
           <>
             {packageName(run)} <span className="version-tag">{versions.base || '—'}</span>
             <Badge tone={STATUS[run.status]?.[1]}>{STATUS[run.status]?.[0] || run.status}</Badge>
+            {solver && <Badge tone="blue">{RUN_TYPES.solver}</Badge>}
           </>
         }
         actions={
@@ -386,7 +392,7 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
         items={[
           ['cases', '用例结果', summary.planned],
           ['report', '评测报告'],
-          ['suggestions', '优化建议'],
+          ['suggestions', solver ? '修复指引' : '优化建议'],
           ['history', '历史记录', historyTotal ?? undefined],
           ['config', '本轮配置'],
         ]}
@@ -405,8 +411,7 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
                 ['all', '全部', summary.planned],
                 ...(active ? [['active', '执行中', cases.filter((c) => caseMatches(c, 'active')).length]] : []),
                 ['fail', '未通过', counts.fail],
-                ['partial', '部分通过', counts.partial],
-                ['manual', '待人工', counts.manual],
+                ...(!solver ? [['partial', '部分通过', counts.partial], ['manual', '待人工', counts.manual]] : []),
                 ...(counts.error ? [['errors', '异常', counts.error]] : []),
                 ...(!['all', 'active', 'fail', 'partial', 'manual', 'errors'].includes(filter)
                   ? [[filter, VERDICTS[filter]?.[0] || '未执行', visible.length]]
@@ -478,8 +483,9 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
                                 setSelected(c.id);
                               }}
                             >
-                              {c.question}
+                              {solver ? `${c.name || c.case_id} · ${c.solver_key}` : c.question}
                             </button>
+                            {solver && c.judgement?.code && <small className="danger">{c.judgement.code}</small>}
                           </td>
                           <td>
                             <Badge tone={view[1]}>{view[0]}</Badge>
@@ -525,12 +531,12 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
           ready={artifacts.suggestions === 'ready'}
           waiting={
             artifacts.status === 'generating'
-              ? '判分模型正在归因，生成后这里自动显示。'
+              ? (solver ? '正在生成修复指引。' : '判分模型正在归因，生成后这里自动显示。')
               : artifacts.suggestions_error || '评测结束后自动生成。'
           }
           note={
             <Alert>
-              这些建议由判分模型 {artifacts.suggestions_model || run.judge?.model || ''} 生成，只作归因初稿。建模执行「评测优化」时会逐条复核后才修改知识包。
+              {solver ? '修复指引来自确定性断言结果，不使用判分模型。' : <>这些建议由判分模型 {artifacts.suggestions_model || run.judge?.model || ''} 生成，只作归因初稿。建模执行「评测优化」时会逐条复核后才修改知识包。</>}
             </Alert>
           }
         />
@@ -555,8 +561,8 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
             <dd>{run.data_source_name || '不使用数据源'}</dd>
             <dt>数据源修订</dt>
             <dd>{summary.inputs?.data_source_revision || '—'}</dd>
-            <dt>评测集</dt>
-            <dd>{run.eval_set_name || '评测集快照'}</dd>
+            <dt>{solver ? '求解验证集' : '评测集'}</dt>
+            <dd>{(solver ? run.solver_set_name : run.eval_set_name) || '快照'}</dd>
             <dt>用例修订</dt>
             <dd>{run.case_revision}</dd>
             <dt>问答模型</dt>
@@ -565,7 +571,7 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
             <dd>{run.concurrency || '—'}</dd>
             <dt>判分模型</dt>
             <dd>
-              {run.judge?.model || summary.judge?.model || '—'}
+              {solver ? '不使用（确定性断言）' : run.judge?.model || summary.judge?.model || '—'}
               {run.judge?.revision ? ` · 配置版本 ${run.judge.revision}` : ''}
             </dd>
           </dl>
@@ -591,6 +597,84 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
   );
 }
 
+// 求解验证用例：判定来自确定性断言，展示断言结果与 consumer 公开证据，不提供人工改判
+const EVIDENCE_LABELS = [
+  ['job_id', '求解任务'],
+  ['feasibility', '可行性'],
+  ['result_artifact_ref', '结果引用'],
+  ['verification_evidence_ref', '验证证据'],
+  ['candidate_results_artifact_ref', '候选结果引用'],
+  ['candidate_count', '候选数'],
+  ['solver_tool', '求解工具'],
+];
+function SolverEvidence({ answer }) {
+  const evidence = answer.solver || {};
+  const judgement = answer.judgement;
+  return (
+    <>
+      <div className="answer-block">
+        <label>求解操作</label>
+        <p>
+          {answer.name || answer.case_id} · {answer.solver_key}
+        </p>
+      </div>
+      <div className="answer-block">
+        <label>判定</label>
+        {judgement ? (
+          <>
+            <Badge tone={VERDICTS[judgement.verdict]?.[1]}>{VERDICTS[judgement.verdict]?.[0]}</Badge>
+            {judgement.code && <code> {judgement.code}</code>}
+            <p>{judgement.reason}</p>
+          </>
+        ) : (
+          <p>{answer.error?.message || VERDICTS[answer.status]?.[0] || '暂无判定'}</p>
+        )}
+      </div>
+      {evidence.assertions?.length > 0 && (
+        <div className="answer-block">
+          <label>断言</label>
+          <ul className="check-list">
+            {evidence.assertions.map((item) => (
+              <li key={item.name}>
+                <Icon name={item.passed ? 'check' : 'info'} />
+                {ASSERTION_TITLES[item.name] || item.name}
+                {assertionNote(item) && ` · ${assertionNote(item)}`}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <div className="answer-block">
+        <label>入参</label>
+        <div className="answer-content">
+          <pre>{JSON.stringify(answer.arguments ?? {}, null, 2)}</pre>
+        </div>
+      </div>
+      <div className="answer-block">
+        <label>{answer.question_generated ? '提问（自动生成）' : '提问'}</label>
+        <div className="answer-content">{answer.question}</div>
+      </div>
+      <div className="answer-block">
+        <label>证据</label>
+        <dl className="snapshot">
+          {EVIDENCE_LABELS.filter(([key]) => evidence[key] != null && evidence[key] !== '').map(([key, label]) => (
+            <React.Fragment key={key}>
+              <dt>{label}</dt>
+              <dd>
+                <code>{String(evidence[key])}</code>
+              </dd>
+            </React.Fragment>
+          ))}
+        </dl>
+      </div>
+      <div className="answer-block">
+        <label>Agent 回复</label>
+        <div className="answer-content">{answer.answer || '尚未获得回复'}</div>
+      </div>
+    </>
+  );
+}
+
 function AnswerDrawer({ run, caseId, cases, onChange, onClose, onSaved }) {
   const [answer, setAnswer] = useState(null),
     [loading, setLoading] = useState(true),
@@ -612,8 +696,9 @@ function AnswerDrawer({ run, caseId, cases, onChange, onClose, onSaved }) {
       live.current = false;
     };
   }, [caseId]);
+  const solver = isSolverRun(run);
   const index = cases.findIndex((c) => String(c.id) === String(caseId)),
-    canOverride = !ACTIVE.has(run.status) && !!answer?.answer,
+    canOverride = !solver && !ACTIVE.has(run.status) && !!answer?.answer,
     shown = answer && (answer.override || answer.judgement),
     failures = answer?.trace?.tool_failures || [];
   async function saveOverride() {
@@ -632,7 +717,7 @@ function AnswerDrawer({ run, caseId, cases, onChange, onClose, onSaved }) {
       drawer
       title={
         <>
-          用例 {Number(caseId) + 1}{' '}
+          用例 {Number(caseId) + 1}{solver ? ' · 断言与证据 ' : ' '}
           {shown && <Badge tone={VERDICTS[shown.verdict]?.[1]}>{VERDICTS[shown.verdict]?.[0]}</Badge>}
         </>
       }
@@ -671,6 +756,8 @@ function AnswerDrawer({ run, caseId, cases, onChange, onClose, onSaved }) {
       )}
       {loading && !error ? (
         <Skeleton />
+      ) : answer && solver ? (
+        <SolverEvidence answer={answer} />
       ) : (
         answer && (
           <>

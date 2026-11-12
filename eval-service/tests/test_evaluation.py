@@ -163,6 +163,31 @@ def environment(tmp_path):
         yield client,app,deps,cfg
 
 
+def test_refresh_proxy_distinguishes_invalid_credentials_from_temporary_failures(environment):
+    client, _, deps, _ = environment
+    original = deps.json
+
+    def invalid(method, base, path, **kwargs):
+        if path == '/token':
+            raise Failure('dependency_rejected', 'Synthetic rejection', 503, 'dependency', upstream_status=400)
+        return original(method, base, path, **kwargs)
+
+    deps.json = invalid
+    response = client.post('/evaluation/api/auth/refresh', json={'refresh_token': 'synthetic-invalid'})
+    assert response.status_code == 400
+    assert response.json()['code'] == 'refresh_invalid'
+
+    def unavailable(method, base, path, **kwargs):
+        if path == '/token':
+            raise Failure('dependency_unavailable', 'Synthetic outage', 503, 'dependency')
+        return original(method, base, path, **kwargs)
+
+    deps.json = unavailable
+    response = client.post('/evaluation/api/auth/refresh', json={'refresh_token': 'synthetic-refresh'})
+    assert response.status_code == 503
+    assert response.json()['code'] == 'dependency_unavailable'
+
+
 def preparation(client,request_id='prepare_demo'):
     response=client.post('/evaluation/api/package-preparations',json={'request_id':request_id,'package_ref':{'ontology_id':'knowledge_package_demo','release_id':'release_demo'}})
     assert response.status_code==200,response.text

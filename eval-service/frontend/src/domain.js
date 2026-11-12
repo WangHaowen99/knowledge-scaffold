@@ -119,7 +119,12 @@ export function artifactState(run, now = Date.now() / 1000) {
 export function notificationState(n) {
   if (!n || n.status === 'none') return null;
   if (n.status === 'disabled') return { label: '未配置', tone: 'neutral', hint: '未配置建模通知凭据，建模服务打开页面时自行同步' };
-  if (n.status === 'delivered') return { label: '已送达', tone: 'green', hint: clock(n.delivered_at) };
+  if (n.status === 'delivered')
+    return {
+      label: '已送达',
+      tone: 'green',
+      hint: [clock(n.delivered_at), '已完成评测并通知了建模服务，前往建模服务“已发布版本（知识包评测）”中“优化建议”弹框中可点击知识包优化。'].filter(Boolean).join(' · '),
+    };
   if (n.status === 'rejected') return { label: '被拒绝', tone: 'red', hint: n.last_error || '', canRetry: true };
   if (n.status === 'failed')
     return { label: '通知失败', tone: 'red', hint: `已尝试 ${n.attempts} 次（${n.last_error || '未送达'}）`, canRetry: true };
@@ -234,6 +239,14 @@ export function modelOptionLabel(item) {
   const name = item.name || item.id;
   return `${name}${item.model && item.model !== name ? ` · ${item.model}` : ''}${item.is_default ? '（默认）' : ''}`;
 }
+// Answering model choices grouped by consumer pool; a pool without enabled models is not shown.
+export function modelOptionGroups(items = []) {
+  const personal = (item) => item.scope === 'user';
+  return [
+    { label: '全局模型池', items: items.filter((item) => !personal(item)) },
+    { label: '个人模型池', items: items.filter(personal) },
+  ].filter((group) => group.items.length);
+}
 export function shortId(id = '') {
   return id.length > 12 ? id.slice(0, 12) : id;
 }
@@ -282,10 +295,14 @@ export function parseRoute(hash = '') {
     return { page: 'new', from: query.get('from') || '', ...(release ? { release } : {}) };
   }
   if (path === '/eval-sets') return { page: 'sets' };
+  if (path === '/solver-sets') return { page: 'solverSets' };
   if (path === '/data-sources') return { page: 'sources' };
-  const definition = /^\/(eval-sets|data-sources)\/([a-zA-Z0-9_-]+)$/.exec(path);
+  const definition = /^\/(eval-sets|solver-sets|data-sources)\/([a-zA-Z0-9_-]+)$/.exec(path);
   if (definition)
-    return { page: definition[1] === 'eval-sets' ? 'sets' : 'sources', id: definition[2] };
+    return {
+      page: { 'eval-sets': 'sets', 'solver-sets': 'solverSets', 'data-sources': 'sources' }[definition[1]],
+      id: definition[2],
+    };
   if (path === '/settings') return { page: 'settings' };
   if (path === '/feedback') return { page: 'feedback' };
   const feedbackPackage = /^\/feedback\/package\/([A-Za-z0-9_-]+)$/.exec(path);
@@ -314,6 +331,96 @@ export function parseCases(text) {
       throw new Error(`用例 ${i + 1} 内容格式或长度无效`);
     return { question: item.question.trim(), reference };
   });
+}
+// Solver contract validation runs: deterministic assertions on one solver call per case, no Judge.
+export const RUN_TYPES = { data: '数据评测', solver: '求解验证' };
+export const SOLVER_MAX_CASES = 20;
+const SOLVER_KEY = /^[a-z][a-z0-9_]{0,31}$/;
+const SOLVER_CASE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+export function isSolverRun(run) {
+  return run?.run_type === 'solver';
+}
+// Default and maximum questions sent to consumer at once; solver jobs are heavier than plain questions.
+export function concurrencyLimits(runType) {
+  return runType === 'solver' ? { default: 1, max: 4 } : { default: DEFAULT_CONCURRENCY, max: MAX_CONCURRENCY };
+}
+export function emptySolverCase(index = 0, solverKey = '') {
+  return { id: `case_${index + 1}`, name: '', solver_key: solverKey, argumentsText: '{}', question: '', expected: '' };
+}
+// Editor rows keep arguments as text so a half-typed JSON object is not lost.
+export function solverCaseRows(cases = []) {
+  return cases.map((item) => ({
+    id: item.id,
+    name: item.name || '',
+    solver_key: item.solver_key || '',
+    argumentsText: JSON.stringify(item.arguments ?? {}, null, 2),
+    question: item.question || '',
+    expected: item.expected_candidate_count ?? '',
+  }));
+}
+// The API payload of edited rows; throws the first problem with its row number.
+export function solverCasePayload(rows) {
+  if (!rows.length || rows.length > SOLVER_MAX_CASES) throw new Error(`求解验证集需要 1-${SOLVER_MAX_CASES} 条用例`);
+  const seen = new Set();
+  return rows.map((row, i) => {
+    const label = `用例 ${i + 1}`;
+    const id = String(row.id || '').trim();
+    if (!SOLVER_CASE_ID.test(id) || seen.has(id)) throw new Error(`${label} 的标识需为字母、数字、下划线或短横线且不重复`);
+    seen.add(id);
+    const name = String(row.name || '').trim();
+    if (!name || name.length > 80) throw new Error(`${label} 需要 1-80 字的名称`);
+    if (!SOLVER_KEY.test(row.solver_key || '')) throw new Error(`${label} 请选择或填写有效的求解操作`);
+    let args;
+    try {
+      args = JSON.parse(row.argumentsText || '{}');
+    } catch {
+      throw new Error(`${label} 的入参不是有效的 JSON`);
+    }
+    if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error(`${label} 的入参须为 JSON 对象`);
+    const item = { id, name, solver_key: row.solver_key, arguments: args };
+    if (String(row.question || '').trim()) item.question = row.question.trim();
+    if (row.expected !== '' && row.expected != null) {
+      const count = Number(row.expected);
+      if (!Number.isInteger(count) || count < 0 || count > 100000) throw new Error(`${label} 的期望候选数须为 0-100000 的整数`);
+      item.expected_candidate_count = count;
+    }
+    return item;
+  });
+}
+// Accepts a case array or {cases: [...]}, including cases exported from the earlier modeling-side validation.
+export function parseSolverCases(text) {
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error('文件不是有效的 JSON，请检查格式');
+  }
+  const items = Array.isArray(value) ? value : value?.cases;
+  if (!Array.isArray(items)) throw new Error('文件格式不正确：最外层应为用例数组，或包含 cases 数组的对象');
+  return solverCaseRows(
+    solverCasePayload(
+      items.map((item, i) => ({
+        id: item?.id ?? `case_${i + 1}`,
+        name: item?.name ?? item?.id ?? `case_${i + 1}`,
+        solver_key: item?.solver_key ?? '',
+        argumentsText: JSON.stringify(item?.arguments ?? {}),
+        question: item?.question ?? '',
+        expected: item?.expected_candidate_count ?? '',
+      })),
+    ),
+  );
+}
+export const ASSERTION_TITLES = {
+  solver_tool_called: '调用了对应的求解工具',
+  arguments_match: '入参与用例一致',
+  completed: '得到求解结果',
+  authoritative: '结果为权威求解结果',
+  evidence: '权威结果证据齐全',
+  candidate_count: '候选数符合期望',
+};
+export function assertionNote(item) {
+  if (item.name === 'candidate_count') return `期望 ${item.expected}，实际 ${item.actual ?? '未读到'}`;
+  return [...(item.diff || []), ...(item.missing || [])].join('、');
 }
 export function sourceSummary(source) {
   if (!source || source.mode === 'none') return '仅验证知识包结构与语义，不查询数据';

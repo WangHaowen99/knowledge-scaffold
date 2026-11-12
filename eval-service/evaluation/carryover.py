@@ -76,6 +76,8 @@ def waiting(store, jobs, owner, run):
     """Earlier runs of the same source and version still waiting for modeling, newest handed first: (row, state).
 
     Rows carry the run's ID, references and creation time only; the runs carried are loaded in full."""
+    if not modeling_result.applies(run):
+        return []
     package = (run.get('package_ref') or {}).get('ontology_id')
     found = []
     for row in store.package_run_rows(owner, package, SCANNED):
@@ -83,7 +85,8 @@ def waiting(store, jobs, owner, run):
             continue
         if not same_version(row, run):
             continue
-        current = modeling_result.state(store, jobs, owner, {'id': row['id'], 'origin': run.get('origin')})
+        current = modeling_result.state(store, jobs, owner, {'id': row['id'], 'origin': run.get('origin'),
+                                                             'run_type': row.get('run_type') or 'data'})
         meta = jobs.meta(owner, row['id']) or {}
         if (current or {}).get('status') != 'notified' or meta.get('report') != 'ready':
             continue

@@ -3,7 +3,18 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
 import { api } from '../src/lib/api.js';
 import {
-  canReportFailure, hasFeedback, mergeStatus, needsPolling, optimizationBlock, processingState, releaseEvaluation, releaseFeedback, writebackNotice,
+  PACKAGE_PUBLISHED,
+  canReportFailure,
+  hasFeedback,
+  mergeStatus,
+  needsPolling,
+  notifyPackagePublished,
+  optimizationBlock,
+  processingState,
+  releaseEvaluation,
+  releaseFeedback,
+  solverEvaluationTarget,
+  writebackNotice,
 } from '../src/lib/packageEvaluation.js';
 
 const originals = { fetch: globalThis.fetch, localStorage: globalThis.localStorage };
@@ -168,4 +179,110 @@ test('a failure is reported with its reason', async () => {
   assert.equal(sent[0][1], 'POST');
   assert.match(sent[0][0], /\/package\/evaluations\/a{32}\/modeling-result$/);
   assert.deepEqual(JSON.parse(sent[0][2]), { note: '合成原因' });
+});
+
+import {
+  currentRevisionValidation,
+  releaseSolverValidation,
+} from '../src/lib/packageEvaluation.js';
+
+const solverEntry = (summary, extra = {}) => ({
+  ...entry(), run_id: 'b'.repeat(32), run_type: 'solver',
+  solver_summary: { total: 1, passed: 1, failed: 0, first_failure_code: null, first_failure_message: null, ...summary },
+  ...extra,
+});
+
+test('solver validation status is shown only for versions published with a solver contract or validated', () => {
+  assert.equal(releaseSolverValidation(status(), 'release-a'), null);
+  assert.equal(releaseSolverValidation(status({ solver_revisions: { 'release-a': 'sha256:r1' } }), 'release-a').state, 'unverified');
+  const passed = status({ solver_revisions: { 'release-a': 'sha256:r1' }, solver_releases: { 'release-a': solverEntry({}) } });
+  assert.equal(releaseSolverValidation(passed, 'release-a').state, 'passed');
+  const failed = status({ solver_releases: { 'release-a': solverEntry({ passed: 0, failed: 1, first_failure_code: 'solver_tool_not_called' }) } });
+  assert.match(releaseSolverValidation(failed, 'release-a').reason, /solver_tool_not_called/);
+  const interrupted = status({ solver_releases: { 'release-a': solverEntry({}, { status: 'interrupted' }) } });
+  assert.equal(releaseSolverValidation(interrupted, 'release-a').state, 'failed');
+  const running = status({ solver_revisions: { 'release-a': 'sha256:r1' }, active: { run_id: 'c'.repeat(32), release_id: 'release-a', run_type: 'solver' } });
+  assert.equal(releaseSolverValidation(running, 'release-a').state, 'running');
+});
+
+test('a running solver validation does not disable the data evaluation buttons', () => {
+  const value = status({ releases: { 'release-a': entry({}) }, active: { run_id: 'c'.repeat(32), release_id: 'release-a', run_type: 'solver' } });
+  assert.equal(releaseEvaluation(value, 'release-a').report.disabled, false);
+  assert.equal(needsPolling(value), true);
+  const data = status({ active: { run_id: 'c'.repeat(32), release_id: 'release-a' } });
+  assert.equal(releaseEvaluation(data, 'release-a').report.disabled, true);
+});
+
+test('current revision validation compares the contract revision with published releases', () => {
+  assert.equal(currentRevisionValidation(status(), 'sha256:r1').state, 'unpublished');
+  const published = status({ solver_revisions: { 'release-a': 'sha256:r1' } });
+  assert.equal(currentRevisionValidation(published, 'sha256:r1').state, 'published');
+  assert.equal(currentRevisionValidation(published, 'sha256:r2').state, 'unpublished');
+  const passed = status({ solver_revisions: { 'release-a': 'sha256:r1' }, solver_releases: { 'release-a': solverEntry({}) } });
+  assert.deepEqual(currentRevisionValidation(passed, 'sha256:r1'), { state: 'passed', releaseId: 'release-a', version: '0.1.0' });
+});
+
+test('the latest solver validation of a revision decides whether it passed', () => {
+  const two = (older, newer, extra = {}) => status({
+    solver_revisions: { 'release-a': 'sha256:r1', 'release-b': 'sha256:r1' },
+    solver_releases: {
+      'release-a': solverEntry(older, { finished_at: 1000 }),
+      'release-b': solverEntry(newer, { release_id: 'release-b', version: '0.2.0', finished_at: 2000 }),
+    },
+    ...extra,
+  });
+  assert.equal(currentRevisionValidation(two({}, { passed: 0, failed: 1 }), 'sha256:r1').state, 'published');
+  assert.deepEqual(currentRevisionValidation(two({ passed: 0, failed: 1 }, {}), 'sha256:r1'),
+    { state: 'passed', releaseId: 'release-b', version: '0.2.0' });
+  const rerunning = two({}, {}, { active: { release_id: 'release-a', run_type: 'solver', run_id: 'c'.repeat(32) } });
+  assert.equal(currentRevisionValidation(rerunning, 'sha256:r1').state, 'published');
+});
+
+test('publishing sends the solver acknowledgement only when it was given', async () => {
+  const bodies = [];
+  globalThis.fetch = async (path, options) => {
+    bodies.push(JSON.parse(options.body));
+    return { ok: true, status: 200, json: async () => ({ release_id: 'release-b' }) };
+  };
+  await api.publishPackage('project-alpha');
+  await api.publishPackage('project-alpha', { solverAcknowledged: true });
+  assert.equal('solver_unverified_acknowledged' in bodies[0], false);
+  assert.equal(bodies[1].solver_unverified_acknowledged, true);
+});
+
+const solverStatus = (extra = {}) => status({ solver_revisions: { 'release-a': 'rev-a' }, solver_releases: {}, ...extra });
+const staleTarget = { release: { ontology_id: 'pkg_demo', release_id: 'release-a' }, version: '0.1.0', stale: true };
+
+test('the solver evaluation target is the release holding the current revision', () => {
+  const state = solverStatus({
+    current_release_id: 'release-b',
+    current_version: '0.2.0',
+    solver_revisions: { 'release-a': 'rev-a', 'release-b': 'rev-b' },
+  });
+  assert.deepEqual(solverEvaluationTarget(state, 'rev-a', false), {
+    release: { ontology_id: 'pkg_demo', release_id: 'release-a' },
+    stale: false,
+  });
+});
+
+test('unsaved or unpublished solver changes target the latest release and are marked stale', () => {
+  assert.deepEqual(solverEvaluationTarget(solverStatus(), 'rev-a', true), staleTarget);
+  assert.deepEqual(solverEvaluationTarget(solverStatus(), 'rev-new', false), staleTarget);
+});
+
+test('a project that was never published has no solver evaluation target', () => {
+  assert.equal(solverEvaluationTarget(status({ current_release_id: null, current_version: null }), 'rev-a', false), null);
+  assert.equal(solverEvaluationTarget(null, 'rev-a', false), null);
+});
+
+test('publishing notifies open panels with the project id', () => {
+  const events = [];
+  globalThis.window = { dispatchEvent: (event) => events.push(event) };
+  try {
+    notifyPackagePublished('project_alpha');
+  } finally {
+    delete globalThis.window;
+  }
+  assert.equal(events[0].type, PACKAGE_PUBLISHED);
+  assert.deepEqual(events[0].detail, { projectId: 'project_alpha' });
 });

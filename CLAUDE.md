@@ -209,8 +209,8 @@ Current commands for the consumer application:
 - Check frontend architecture boundaries: `cd consumer/frontend && npm run check:architecture`
 - Check the frontend entry dependency baseline: `cd consumer/frontend && npm run check:entry`
 - Run full-stack Docker Compose: `cd consumer && docker compose up --build`
-- Build full release package: `./deploy/build.sh <version> [amd|arm]`
-- Deploy full stack, including Modeling Workbench, from source or an extracted release package: `./deploy/deploy.sh`
+- Build full release package: `./deploy/build.sh <version> [amd|arm]`; it also keeps the standalone Consumer, Onto Modeling, Knowledge Hub and evaluation packages under each area's `dist/` for the separated installers.
+- Deploy Consumer, Knowledge Hub, Onto Modeling and evaluation from source or an extracted release package (Modeling Workbench is built and deployed separately through `modeling/`): `./deploy/deploy.sh`
 - Build consumer-only release package: `cd consumer && ./build.sh <version> [amd|arm]`
 - Build modeling-only release package: `cd modeling && ./build.sh <version> [amd|arm]`
 
@@ -252,7 +252,7 @@ Commands for the independent evaluation service (`eval-service/`):
 - Frontend: `cd eval-service/frontend && npm ci && npm test && npm run build`
 - Run after injecting protected configuration: `cd eval-service && .venv/bin/python run.py`
 - Independent deployment: `bash deploy/deploy.sh --eval-only` (compose `eval-service/deploy/docker-compose.eval-service.yml`); included in default full-stack deployment; excluded from `--onto-modeling-only` and `--knowledge-hub-only`. Runtime configuration lives in `eval-service/deploy/.env` (generated, mode 600, never committed) and reuses the Hub and consumer evaluation credentials; `EVAL_ENV_FILE` optionally points to an external protected configuration instead. Judge model settings come from `EVAL_JUDGE_*` or, taking precedence, from an administrator's configuration saved on the evaluation page.
-- Offline package: `bash eval-service/build.sh <version> [amd|arm]`
+- Offline package: `bash eval-service/build.sh <version> [amd|arm]`; also produced by `./deploy/build.sh`, which extracts it into the full package, installed by the separated installers via `--evaluation-package`.
 - Configuration, API, model configuration debt and recovery: `eval-service/README.md`, `eval-service/API.md`.
 
 After initializing the project, Claude must update this section with real commands.

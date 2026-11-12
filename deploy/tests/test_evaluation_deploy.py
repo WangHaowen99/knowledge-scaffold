@@ -57,9 +57,14 @@ def deployment():
             'EVAL_SNAPSHOT': str(root / 'evaluation-snapshot.txt'),
             'ONTO_AGENT_INSTALL_DIR': str(root / 'installation'),
             'MODELING_SERVICE_TOKEN': 'synthetic-invalid-service-placeholder-0000',
-            'MODELING_MCP_TOKEN_SECRET': 'synthetic-invalid-mcp-placeholder-0000',
         }
         script(root / 'eval-service/deploy/deploy.sh', EVAL_STUB)
+        script(root / 'knowledge-hub/deploy.sh', 'exit 0')
+        script(root / 'knowledge-hub/deploy/deploy.sh', 'exit 0')
+        script(root / 'onto-modeling/deploy.sh', 'exit 0')
+        (root / 'modeling/onto-modeling').mkdir(parents=True)
+        script(root / 'bin/docker', 'exit 0')
+        env['PATH'] = str(root / 'bin') + os.pathsep + os.environ['PATH']
         yield root, calls, env
 
 
@@ -80,7 +85,7 @@ def check_default_deploy_includes_evaluation_last(deployment, mode):
                'printf "consumer\\n" >> "$DEPLOY_CALLS_FILE"')
         script(root / 'deploy/modeling/deploy.sh',
                'printf "modeling\\n" >> "$DEPLOY_CALLS_FILE"')
-        expected = ['consumer', 'modeling', 'evaluation']
+        expected = ['consumer', 'evaluation']
     else:
         (root / 'deploy/manifest.json').write_text('{}\n')
         (root / 'installation').mkdir()
@@ -133,7 +138,7 @@ def check_stack_hands_dependency_credentials_to_evaluation(deployment):
     env.pop('EVAL_ENV_FILE')
     script(root / 'deploy/deploy-stack.sh', 'exit 0')
     hub, consumer = secrets.token_hex(32), secrets.token_hex(32)
-    (root / 'knowledge-hub/deploy').mkdir(parents=True)
+    (root / 'knowledge-hub/deploy').mkdir(parents=True, exist_ok=True)
     (root / 'knowledge-hub/deploy/.env').write_text(f'HUB_EVALUATION_SERVICE_TOKEN={hub}\n')
     (root / 'consumer/backend').mkdir(parents=True)
     (root / 'consumer/backend/.env').write_text(f'EVALUATION_SERVICE_TOKEN={consumer}\n')
@@ -147,7 +152,7 @@ def check_stack_hands_dependency_credentials_to_evaluation(deployment):
 
     # Once Onto Modeling holds its inbound credential, evaluation reuses the same value.
     modeling = secrets.token_hex(32)
-    (root / 'modeling/onto-modeling').mkdir(parents=True)
+    (root / 'modeling/onto-modeling').mkdir(parents=True, exist_ok=True)
     (root / 'modeling/onto-modeling/.env').write_text(f'ONTO_EVALUATION_SERVICE_TOKEN={modeling}\n')
     result = run(root, env, '--eval-only')
     assert result.returncode == 0, result.stdout + result.stderr
@@ -160,7 +165,6 @@ def check_release_generates_the_consumer_evaluation_token(deployment):
     (root / 'backend').mkdir()
     (root / 'backend/.env.example').write_text('# Synthetic configuration\n')
     script(root / 'deploy/deploy-consumer.sh', 'exit 0')
-    script(root / 'deploy/modeling/deploy.sh', 'exit 0')
     result = run(root, env)
     assert result.returncode == 0, result.stdout + result.stderr
     consumer_env = root / 'backend/.env'
@@ -367,7 +371,7 @@ class EvaluationDeploymentTests(unittest.TestCase):
                 check_default_deploy_includes_evaluation_last(fixture, mode)
 
     def test_only_modes(self):
-        for option in ['--consumer-only', '--modeling-only', '--onto-modeling-only',
+        for option in ['--consumer-only', '--onto-modeling-only',
                        '--knowledge-hub-only', '--eval-only']:
             with self.subTest(option=option), deployment() as fixture:
                 check_only_modes_remain_independent(fixture, option)

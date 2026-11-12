@@ -118,28 +118,32 @@ def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_vi
     @app.get(f'{prefix}/package-evaluations')
     def package_evaluations(request: Request, ontology_id: str = Query(min_length=1, max_length=128, pattern=r'^[A-Za-z0-9_-]+$'),
                             origin: str = Query('evaluation', pattern=r'^(evaluation|all)$')):
-        """Per release, the newest run with a ready report; plus the package's active run. At most 100 releases.
+        """Per release and run type, the newest run with a ready report; plus the package's active run.
 
+        ``releases`` holds data evaluations and ``solver_releases`` solver validations, at most 100 releases each.
         ``owner`` identifies the caller as notifications do, so onto-modeling files both under the same user.
         ``origin=all`` adds, per release, the newest confirmed feedback run of the package when the caller may read it."""
         owner, token = actor(request)
-        active, releases = None, {}
+        active, found = None, {'data': {}, 'solver': {}}
         for row in store.package_run_rows(owner, ontology_id, SCANNED_RUNS):
             release_id, version = release_of(row)
+            kind = row['run_type'] if row['run_type'] in found else 'data'
             if row['status'] in ACTIVE:
                 if active is None:
-                    active = dict(run_id=row['id'], release_id=release_id, version=version, status=row['status'])
+                    active = dict(run_id=row['id'], release_id=release_id, version=version, status=row['status'], run_type=kind)
                 continue
+            releases = found[kind]
             if not release_id or release_id in releases or len(releases) >= RELEASES:
                 continue
             meta = jobs.meta(owner, row['id'])
             if meta and meta.get('report') == 'ready':
-                state = modeling_result.state(store, jobs, owner, {'id': row['id']})
+                state = modeling_result.state(store, jobs, owner, {'id': row['id'], 'run_type': kind})
                 releases[release_id] = dict(release_id=release_id, version=version, run_id=row['id'], status=row['status'],
-                                            created_at=row['created_at'], finished_at=row['finished_at'],
+                                            run_type=kind, created_at=row['created_at'], finished_at=row['finished_at'],
                                             artifacts=jobs.view(owner, row['id']), summary=meta.get('summary'),
+                                            solver_summary=meta.get('solver_summary'),
                                             origin='evaluation', optimization=modeling_result.public(state))
-        listed = list(releases.values())
+        listed = list(found['data'].values())
         if origin == 'all' and access.visible(owner, token, ontology_id):
             seen = set()
             for run in feedback['store'].feedback_runs(ontology_id, ('completed',)):
@@ -155,7 +159,8 @@ def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_vi
                                    created_at=run.get('created_at'), finished_at=run.get('finished_at'),
                                    artifacts=jobs.view(run_owner(ontology_id), run['id']), summary=meta.get('summary'),
                                    origin='consumer_feedback', optimization=modeling_result.public(state)))
-        return {'ontology_id': ontology_id, 'owner': owner, 'active': active, 'releases': listed}
+        return {'ontology_id': ontology_id, 'owner': owner, 'active': active, 'releases': listed,
+                'solver_releases': list(found['solver'].values())}
 
     @app.get(f'{prefix}/runs/{{rid}}/artifacts')
     def artifacts_status(rid: str, request: Request):

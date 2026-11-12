@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import {
   ACTIVE,
+  RUN_TYPES,
   STATUS,
+  isSolverRun,
   needsAttention,
   optimizationState,
   packageName,
@@ -200,6 +202,7 @@ export function TaskCenter({ runs, loading, navigate, lastSync, searchState, set
                       <td data-label="知识包">
                         <b className="package-name" title={run.package_ref?.ontology_id}>
                           {packageName(run)} <span className="version-tag">{packageVersions(run).base || '—'}</span>
+                          {isSolverRun(run) && <Badge tone="blue">{RUN_TYPES.solver}</Badge>}
                         </b>
                         <small>
                           最近一次 {start ? `${start.date.slice(5)} ${start.time.slice(0, 5)}` : '—'}

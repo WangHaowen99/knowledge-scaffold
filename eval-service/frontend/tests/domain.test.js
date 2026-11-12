@@ -14,7 +14,9 @@ import {
   modelingProjectQueries,
   modelingProjectLabel,
   DEFAULT_CONCURRENCY,
+  MAX_CONCURRENCY,
   modelOptionLabel,
+  modelOptionGroups,
   packageVersions,
   taskRows,
   artifactState,
@@ -150,6 +152,17 @@ test('model choices show name, model and the consumer default', () => {
     'Synthetic · synthetic-model（默认）',
   );
   assert.equal(modelOptionLabel({ id: 'global:synthetic_alt', name: '', model: '' }), 'global:synthetic_alt');
+});
+
+test('model choices are grouped by the global and personal consumer pools', () => {
+  const global = { id: 'global:synthetic', scope: 'global', name: 'Synthetic', model: 'synthetic-model' };
+  const personal = { id: 'user:synthetic_personal', scope: 'user', name: 'Personal', model: 'synthetic-personal' };
+  assert.deepEqual(modelOptionGroups([global, personal]), [
+    { label: '全局模型池', items: [global] },
+    { label: '个人模型池', items: [personal] },
+  ]);
+  assert.deepEqual(modelOptionGroups([global]).map((group) => group.label), ['全局模型池']);
+  assert.deepEqual(modelOptionGroups(undefined), []);
 });
 
 test('version column shows the chosen release and the snapshot that ran', () => {
@@ -299,4 +312,56 @@ test('a waiting run tells whether a newer push carries it', () => {
     { rounds: 2, cases: 3, items: 1, slidOut: 1 },
   );
   assert.deepEqual(carryoverCounts(null), { rounds: 0, cases: 0, items: 0, slidOut: 0 });
+});
+
+import {
+  concurrencyLimits,
+  isSolverRun,
+  parseSolverCases,
+  solverCasePayload,
+  solverCaseRows,
+  assertionNote,
+} from '../src/domain.js';
+
+// Solver validation cases are synthetic.
+test('solver validation runs use their own concurrency defaults', () => {
+  assert.deepEqual(concurrencyLimits('solver'), { default: 1, max: 4 });
+  assert.deepEqual(concurrencyLimits('data'), { default: DEFAULT_CONCURRENCY, max: MAX_CONCURRENCY });
+  assert.equal(isSolverRun({ run_type: 'solver' }), true);
+  assert.equal(isSolverRun({}), false);
+});
+
+test('solver case rows round-trip through the API payload', () => {
+  const cases = [{ id: 'case_1', name: '两个项目', solver_key: 'plan_route', arguments: { items: [1, 2] }, expected_candidate_count: 4 }];
+  const rows = solverCaseRows(cases);
+  assert.equal(rows[0].argumentsText, JSON.stringify({ items: [1, 2] }, null, 2));
+  assert.deepEqual(solverCasePayload(rows), cases);
+  assert.deepEqual(solverCasePayload([{ ...rows[0], expected: '', question: '  ' }]), [
+    { id: 'case_1', name: '两个项目', solver_key: 'plan_route', arguments: { items: [1, 2] } },
+  ]);
+});
+
+test('solver case payload names the first invalid row', () => {
+  const row = { id: 'case_1', name: 'x', solver_key: 'plan_route', argumentsText: '{}', question: '', expected: '' };
+  assert.throws(() => solverCasePayload([{ ...row, argumentsText: '{' }]), /用例 1 的入参不是有效的 JSON/);
+  assert.throws(() => solverCasePayload([{ ...row, argumentsText: '[]' }]), /须为 JSON 对象/);
+  assert.throws(() => solverCasePayload([row, { ...row }]), /用例 2 的标识/);
+  assert.throws(() => solverCasePayload([{ ...row, solver_key: '' }]), /请选择或填写有效的求解操作/);
+  assert.throws(() => solverCasePayload([{ ...row, expected: '1.5' }]), /期望候选数/);
+  assert.throws(() => solverCasePayload([]), /1-20/);
+});
+
+test('solver cases import from an array or a cases object, as exported by modeling', () => {
+  const exported = JSON.stringify({ cases: [{ id: 'legacy_1', name: '旧用例', solver_key: 'plan_route', arguments: { a: 1 } }] });
+  const rows = parseSolverCases(exported);
+  assert.equal(rows[0].id, 'legacy_1');
+  assert.equal(parseSolverCases(JSON.stringify([{ solver_key: 'plan_route', arguments: {} }]))[0].id, 'case_1');
+  assert.throws(() => parseSolverCases('{"items": []}'), /cases 数组/);
+  assert.throws(() => parseSolverCases('not json'), /有效的 JSON/);
+});
+
+test('assertion notes explain candidate counts and failing paths', () => {
+  assert.equal(assertionNote({ name: 'candidate_count', expected: 4, actual: 3 }), '期望 4，实际 3');
+  assert.equal(assertionNote({ name: 'arguments_match', diff: ['items[0].id'] }), 'items[0].id');
+  assert.equal(assertionNote({ name: 'evidence', missing: ['job_id'] }), 'job_id');
 });

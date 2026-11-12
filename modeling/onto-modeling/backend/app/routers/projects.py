@@ -4,7 +4,7 @@ import re
 import tempfile
 import urllib.error
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .. import config
 from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets, package_mapping
-from ..services import knowledge_hub, modeling_cleanup, modeling_mcp, package_archive
+from ..services import knowledge_hub, modeling_cleanup, modeling_mcp, package_archive, package_compare, package_evaluations
 from ..services import solver_contract, version_revert
 from ..services.workspace import (
     GOAL_PENDING,
@@ -90,6 +90,15 @@ class SolverContractBody(BaseModel):
 def _request_user(request: Request) -> str:
     user = getattr(request.state, "user", None)
     return (user or {}).get("sub", "")
+
+
+def _hub_subject(request: Request) -> str | None:
+    """登录用户的 Hub 主体（与 Hub 路由同一口径）；未登录或鉴权关闭时为 None。"""
+    from ..services import auth
+    user = getattr(request.state, "user", None)
+    if not user or not user.get("sub"):
+        return None
+    return json.dumps([user.get("iss", auth.ISSUER), user["sub"]], ensure_ascii=False)
 
 
 def _name_viewer(request: Request) -> tuple[str, bool] | None:
@@ -468,6 +477,130 @@ class ReleaseBody(BaseModel):
     model_config = {"extra": "forbid"}
     request_id: str = Field(min_length=1, max_length=128)
     allow_unbound: bool = False
+    # 启用了求解契约的知识包须确认求解能力尚未经端到端验证；验证在发布后的独立评测中进行
+    solver_unverified_acknowledged: bool = False
+
+
+class PackageCompareUploadSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["upload"]
+    input_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class PackageCompareReleaseSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["release"]
+    ontology_id: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    hub_package_id: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    release_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+PackageCompareSource = Annotated[
+    PackageCompareUploadSource | PackageCompareReleaseSource,
+    Field(discriminator="kind"),
+]
+
+
+class PackageCompareBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    left: PackageCompareSource
+    right: PackageCompareSource
+    allow_cross_package: bool = False
+    request_id: str = Field(default="", max_length=128, pattern=r"^[A-Za-z0-9_-]*$")
+
+
+def _compare_subject(request: Request) -> tuple[str, str]:
+    from .hub_packages import identity
+    token, subject, _ = identity(request)
+    return token, subject
+
+
+@router.post("/{project_id}/package-comparisons/inputs", status_code=201)
+def package_compare_input(project_id: str, request: Request, file: UploadFile = File(...)):
+    token, subject = _compare_subject(request)
+    ensure_access(project_id, request)
+    # The archive is isolated from the project and remains private to this login subject.
+    request_id = request.headers.get("x-compare-upload-id", "")
+    return package_compare.create_input(
+        subject, file.file, file.filename or "package.zip", project_id, request_id,
+    )
+
+
+@router.delete("/{project_id}/package-comparisons/uploads/{request_id}")
+def package_compare_upload_cancel(project_id: str, request_id: str, request: Request):
+    _token, subject = _compare_subject(request)
+    ensure_access(project_id, request)
+    package_compare.cancel_upload(subject, request_id)
+    return {"cancelled": True}
+
+
+@router.delete("/{project_id}/package-comparisons/inputs/{input_id}")
+def package_compare_input_delete(project_id: str, input_id: str, request: Request):
+    _token, subject = _compare_subject(request)
+    ensure_access(project_id, request)
+    package_compare.delete_input(subject, project_id, input_id)
+    return {"deleted": True}
+
+
+@router.post("/{project_id}/package-comparisons", status_code=202)
+def package_compare_create(project_id: str, body: PackageCompareBody, request: Request):
+    token, subject = _compare_subject(request)
+    ensure_access(project_id, request)
+    return package_compare.start_comparison(
+        project_id, subject, token,
+        body.left.model_dump(exclude_none=True),
+        body.right.model_dump(exclude_none=True),
+        body.allow_cross_package, body.request_id,
+    )
+
+
+@router.get("/{project_id}/package-comparisons/{comparison_id}")
+def package_compare_get(project_id: str, comparison_id: str, request: Request):
+    token, subject = _compare_subject(request)
+    ensure_access(project_id, request)
+    package_compare.ensure_sources_readable(subject, project_id, token, comparison_id)
+    return package_compare.get_comparison(subject, project_id, comparison_id)
+
+
+@router.get("/{project_id}/package-comparisons/{comparison_id}/files")
+def package_compare_files(
+    project_id: str,
+    comparison_id: str,
+    request: Request,
+    status: str = "",
+    category: str = "",
+    q: str = "",
+    offset: int = 0,
+    limit: int = 50,
+):
+    token, subject = _compare_subject(request)
+    ensure_access(project_id, request)
+    if offset < 0 or not 1 <= limit <= 200 or len(q) > 200:
+        raise WorkspaceError("分页参数无效")
+    package_compare.ensure_sources_readable(subject, project_id, token, comparison_id)
+    return package_compare.list_files(
+        subject, project_id, comparison_id, status, category, q, offset, limit,
+    )
+
+
+@router.get("/{project_id}/package-comparisons/{comparison_id}/file-diff")
+def package_compare_file_diff(project_id: str, comparison_id: str, request: Request, file_id: str):
+    token, subject = _compare_subject(request)
+    ensure_access(project_id, request)
+    return package_compare.file_diff(project_id, subject, token, comparison_id, file_id)
+
+
+@router.delete("/{project_id}/package-comparisons/{comparison_id}")
+def package_compare_delete(project_id: str, comparison_id: str, request: Request):
+    _token, subject = _compare_subject(request)
+    ensure_access(project_id, request)
+    package_compare._owned_result(subject, project_id, comparison_id)
+    package_compare.delete(subject, comparison_id)
+    return {"deleted": True}
 
 
 @router.post("/{project_id}/package/releases")
@@ -477,7 +610,21 @@ def publish_release(project_id: str, body: ReleaseBody, request: Request):
     from ..services import package_evaluations
     token, subject, _ = identity(request)
     ensure_access(project_id, request, write=True)
-    receipt = hub_packages.publish(workspaces, project_id, body.request_id, token, subject, body.allow_unbound)
+    check = workspaces.solver_check(project_id)
+    verified_revision = ""
+    if check.needs_validation and not body.solver_unverified_acknowledged:
+        # 当前修订已在早先版本通过求解验证时不必再确认；发布冻结时再核对修订没有变化
+        if not package_evaluations.verified_solver_release(project_id, subject, check.revision):
+            raise WorkspaceError(
+                "求解能力尚未经端到端验证：请在发布检查中确认后再发布，发布后在「已发布版本（知识包评测）」中发起求解验证",
+                409, "solver_validation_acknowledgement_required",
+            )
+        verified_revision = check.revision
+    receipt = hub_packages.publish(
+        workspaces, project_id, body.request_id, token, subject, body.allow_unbound,
+        acknowledged_by=_request_user(request) if body.solver_unverified_acknowledged else "",
+        verified_revision=verified_revision,
+    )
     # 评测优化之后发布的新版本，随即告诉评测服务；失败时下次打开已发布版本再补，不影响发布结果
     writeback = package_evaluations.after_publish(project_id, subject, token, receipt)
     return {**receipt, 'evaluation_writeback': writeback} if writeback else receipt
@@ -554,7 +701,13 @@ def hub_resource_download(project_id: str, file_id: str, request: Request):
 def package_check(project_id: str, request: Request):
     """发布前数据绑定体检：阻断项、无从核对项、提示，以及修复所需的表清单与文档版本。"""
     ensure_access(project_id, request)
-    return workspaces.package_binding_check(project_id)
+    check = workspaces.package_binding_check(project_id)
+    solver = check.get("solver") or {}
+    if solver.get("requires_validation_after_publish"):
+        verified = package_evaluations.verified_solver_release(project_id, _hub_subject(request), solver.get("revision"))
+        if verified:
+            check["solver"] = {**solver, "requires_validation_after_publish": False, "verified_release": verified}
+    return check
 
 
 @router.get("/{project_id}/package/solver-contract")
@@ -614,45 +767,23 @@ def get_solver_validation_cases(project_id: str, request: Request):
     return {"cases": solver_validation_run.list_cases(root)}
 
 
+SOLVER_VALIDATION_MOVED = "求解验证已移到独立评测：发布知识包后，在「已发布版本（知识包评测）」中对该版本发起求解验证"
+
+
 @router.put("/{project_id}/package/solver-validations/cases")
 def save_solver_validation_cases(project_id: str, body: SolverValidationCasesBody, request: Request):
-    from ..services import solver_validation_run
-
-    root = ensure_access(project_id, request, write=True)
-    return {"cases": solver_validation_run.save_cases(root, body.cases)}
+    """已停用：验证用例改在独立评测的求解验证集中维护；已有用例仍可经 GET 导出。"""
+    ensure_access(project_id, request, write=True)
+    raise WorkspaceError(SOLVER_VALIDATION_MOVED, 410, "solver_validation_moved")
 
 
 @router.post("/{project_id}/package/solver-validations")
 async def start_solver_validation(
     project_id: str, body: SolverValidationStartBody, request: Request
 ):
-    """对当前修订启动 Consumer 端到端验证（后台执行，经 latest 轮询）。
-
-    请求只含修订、用例与已保存的数据源 ID：Solver 地址与凭据只存在于 Consumer 侧。
-    """
-    from ..services import solver_validation_run
-
+    """已停用：端到端验证改由独立评测服务对已发布版本执行。"""
     ensure_access(project_id, request, write=True)
-    def reserve_validation():
-        with workspaces._project_lock(project_id):
-            return solver_validation_run.start(
-                workspaces,
-                project_id,
-                revision=body.revision,
-                case_ids=body.case_ids,
-                token=_modeling_token(request),
-                data_source_id=body.data_source_id,
-                allow_unbound=body.allow_unbound,
-                by=_request_user(request),
-            )
-
-    record, plan = await asyncio.to_thread(reserve_validation)
-    try:
-        solver_validation_run.launch(plan)
-    except Exception:
-        solver_validation_run.release_reservation(project_id)
-        raise
-    return {"validation": record}
+    raise WorkspaceError(SOLVER_VALIDATION_MOVED, 410, "solver_validation_moved")
 
 
 @router.get("/{project_id}/package/solver-validations/latest")
@@ -713,6 +844,21 @@ def excel_preview(project_id: str, path: str, request: Request):
     try:
         return excel_service.preview(target)
     except excel_service.ExcelPreviewError as exc:
+        raise WorkspaceError(str(exc), exc.status)
+
+
+@router.get("/{project_id}/source-preview")
+def source_preview(project_id: str, path: str, request: Request, anchor: str = ""):
+    """原始资料分段预览（文本、docx），返回锚点附近的分段与是否命中。"""
+    from ..services import source_preview as source_service
+
+    root = ensure_access(project_id, request)
+    target = workspaces._resolve_inside(root, path)
+    if not target.is_file():
+        raise WorkspaceError("文件不存在", 404)
+    try:
+        return source_service.preview(target, anchor)
+    except source_service.SourcePreviewError as exc:
         raise WorkspaceError(str(exc), exc.status)
 
 
@@ -1417,6 +1563,14 @@ def studio_graph(project_id: str, request: Request):
 
     root = ensure_access(project_id, request)
     return studio.graph(root)
+
+
+@router.get("/{project_id}/studio/updates")
+def studio_updates(project_id: str, request: Request):
+    from ..services import studio
+
+    root = ensure_access(project_id, request)
+    return {"updates": studio.updates(root)}
 
 
 @router.get("/{project_id}/studio/elements/{element_id}/flow")

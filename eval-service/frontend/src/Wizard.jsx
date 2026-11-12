@@ -2,9 +2,10 @@ import React, { useEffect, useRef, useState } from 'react';
 import { allPages, api, requestId } from './api.js';
 import {
   ACTIVE,
-  DEFAULT_CONCURRENCY,
-  MAX_CONCURRENCY,
+  RUN_TYPES,
+  concurrencyLimits,
   judgeMissingReason,
+  modelOptionGroups,
   modelOptionLabel,
   packageReference,
   sourceSummary,
@@ -12,16 +13,61 @@ import {
 } from './domain.js';
 import { Alert, Badge, Button, Confirm, Empty, Field, Heading, Icon, Skeleton, useAction } from './ui.jsx';
 import { CaseEditor } from './CaseEditor.jsx';
+import { SolverCaseEditor } from './SolverCaseEditor.jsx';
 import { GraphScopeStatus, MappingConflicts, MappingPreview, SourceEditor } from './SourceEditor.jsx';
 
-const steps = [
-  ['知识包版本', '固定本轮版本'],
-  ['选择数据源', '复用已存配置'],
-  ['选择评测集', '可编辑后执行'],
-  ['准备与确认', '预览映射并启动'],
-];
-export function Wizard({ sets, sources, runs, session, refreshDefinitions, navigate, from, release: chosen, registerDirty }) {
+const STEPS = {
+  data: [
+    ['知识包版本', '固定本轮版本'],
+    ['选择数据源', '复用已存配置'],
+    ['选择评测集', '可编辑后执行'],
+    ['准备与确认', '预览映射并启动'],
+  ],
+  solver: [
+    ['知识包版本', '固定本轮版本'],
+    ['选择数据源', 'Neo4j 业务数据'],
+    ['求解验证集', '可编辑后执行'],
+    ['准备与确认', '确认后启动'],
+  ],
+};
+const GRAPH_REPLACE_REASONS = {
+  data_changed: {
+    title: '数据源数据发生了改变，是否重新导入覆盖？',
+    detail: '数据源中上传的文件与上次导入图库时不同（知识包的对象映射也可能有变化）。',
+  },
+  mapping_changed: {
+    title: '知识包映射发生了改变，是否重新导入覆盖？',
+    detail: '数据源中的文件没有变化，但本轮知识包的对象映射与上次导入时不同，需要按新映射重新导入。',
+  },
+  graph_changed: {
+    title: '图数据与上次导入时不一致，是否重新导入覆盖？',
+    detail: '图中的节点或关系在上次导入后有变动，或无法确认它们未被修改。',
+  },
+  unrecorded: {
+    title: '图中已有其他来源的数据，是否导入覆盖？',
+    detail: '这个范围内的数据没有本服务的导入记录。',
+  },
+};
+export function Wizard({
+  sets,
+  solverSets = [],
+  sources,
+  runs,
+  session,
+  refreshDefinitions,
+  navigate,
+  from,
+  release: chosen,
+  registerDirty,
+}) {
   const query = new URLSearchParams(location.search);
+  const [runType, setRunType] = useState(query.get('run_type') === 'solver' ? 'solver' : 'data'),
+    [solverSetId, setSolverSetId] = useState(''),
+    [solverSet, setSolverSet] = useState(null),
+    [operations, setOperations] = useState(null);
+  const solver = runType === 'solver',
+    steps = STEPS[runType],
+    limits = concurrencyLimits(runType);
   const [step, setStep] = useState(0),
     [packages, setPackages] = useState([]),
     [versions, setVersions] = useState([]);
@@ -30,6 +76,7 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
   const [sourceId, setSourceId] = useState(''),
     [setId, setSetId] = useState(''),
     [evalSet, setEvalSet] = useState(null);
+  const chosenSet = solver ? solverSet : evalSet;
   const [prep, setPrep] = useState(null),
     [loading, setLoading] = useState(true),
     [versionLoading, setVersionLoading] = useState(false),
@@ -42,7 +89,7 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
     [replaceGraph, setReplaceGraph] = useState(null),
     [preview, setPreview] = useState(null);
   const [packageSearch, setPackageSearch] = useState(''),
-    [concurrency, setConcurrency] = useState(DEFAULT_CONCURRENCY),
+    [concurrency, setConcurrency] = useState(limits.default),
     [modelId, setModelId] = useState(''),
     [models, setModels] = useState(null),
     [judgeMissing, setJudgeMissing] = useState(false);
@@ -83,7 +130,9 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
               : '',
           );
           setSetId(sets.some((s) => s.id === run.eval_set_id) ? run.eval_set_id : '');
-          setConcurrency(run.concurrency || DEFAULT_CONCURRENCY);
+          setRunType(run.run_type === 'solver' ? 'solver' : 'data');
+          setSolverSetId(solverSets.some((s) => s.id === run.solver_set_id) ? run.solver_set_id : '');
+          setConcurrency(run.concurrency || concurrencyLimits(run.run_type).default);
           setModelId(run.model_profile_id || '');
         } else {
           setSetId(sets[0]?.id || '');
@@ -146,7 +195,34 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
   }, [releaseId, sourceId, source?.revision]);
   useEffect(() => {
     pendingRun.current = null;
-  }, [concurrency, modelId]);
+  }, [concurrency, modelId, runType]);
+  useEffect(() => {
+    setOperations(null);
+    if (!solver || !packageId || !releaseId) return undefined;
+    let live = true;
+    api(`/packages/${encodeURIComponent(packageId)}/releases/${encodeURIComponent(releaseId)}/solver-operations`)
+      .then((value) => live && setOperations(value.operations))
+      .catch((e) => live && setError(e.message));
+    return () => {
+      live = false;
+    };
+  }, [solver, packageId, releaseId]);
+  useEffect(() => {
+    let live = true;
+    setSolverSet(null);
+    if (!solverSetId) return undefined;
+    api(`/solver-sets/${solverSetId}`)
+      .then((value) => {
+        if (live) {
+          setSolverSet(value);
+          setCaseDirty(false);
+        }
+      })
+      .catch((e) => live && setError(e.message));
+    return () => {
+      live = false;
+    };
+  }, [solverSetId]);
   useEffect(() => {
     if (step !== 3 || models) return undefined;
     let live = true;
@@ -237,17 +313,18 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
     return check;
   }
   async function createRun(check, replaceExisting = false) {
-    if (!prep || !evalSet || caseDirty) throw new Error('请确认准备结果和已保存的评测集');
+    if (!prep || !chosenSet || caseDirty) throw new Error(`请确认准备结果和已保存的${solver ? '求解验证集' : '评测集'}`);
     if (!pendingRun.current) {
       const input = {
         preparation_id: prep.id,
-        eval_set_id: evalSet.id,
-        eval_set_revision: evalSet.revision,
+        ...(solver
+          ? { run_type: 'solver', solver_set_id: solverSet.id, solver_set_revision: solverSet.revision }
+          : { eval_set_id: evalSet.id, eval_set_revision: evalSet.revision }),
         concurrency,
         ...(modelId ? { model_profile_id: modelId } : {}),
         ...(check ? { graph_check_id: check.id, replace_existing_graph: replaceExisting } : {}),
       };
-      const key = requestId('run', JSON.stringify({ ...input, case_revision: evalSet.revision }));
+      const key = requestId('run', JSON.stringify({ ...input, case_revision: chosenSet.revision }));
       pendingRun.current = { input: { ...input, request_id: key.id }, key };
     }
     const pending = pendingRun.current;
@@ -270,6 +347,10 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
     if (pendingRun.current) return createRun();
     if (source?.provider === 'neo4j' && source.import_data) {
       const check = await checkGraph(prep.id);
+      if (check.import_state === 'unchanged') {
+        await createRun(check);
+        return;
+      }
       if (check.boundary_relationship_count) throw new Error('此范围存在跨范围关系，请处理关系或调整隔离范围后再试');
       if (check.node_count) {
         setReplaceGraph(check);
@@ -292,8 +373,15 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
   };
   async function next() {
     if (step === 0 && !release) throw new Error('请选择知识包与发布版本');
-    if (step === 2 && (!evalSet?.id || caseDirty)) throw new Error('请选择并保存评测集后继续');
+    if (step === 2 && (!chosenSet?.id || caseDirty))
+      throw new Error(`请选择并保存${solver ? '求解验证集' : '评测集'}后继续`);
     setStep(step + 1);
+  }
+  function chooseRunType(type) {
+    if (type === runType) return;
+    setRunType(type);
+    setConcurrency(concurrencyLimits(type).default);
+    setCaseDirty(false);
   }
   if (sourceEditor)
     return (
@@ -357,7 +445,21 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
                   <h2>选择知识包和版本</h2>
                   <Badge tone="blue">来自 Hub</Badge>
                 </div>
-                <p className="help-text">评测使用固定版本，之后发布新版本不会改变本轮输入。</p>
+                <p className="help-text">评测始终使用固定发布版本，后续发布新版本不会改变本轮输入。</p>
+                <Field label="评测类型">
+                  <select value={runType} onChange={(e) => chooseRunType(e.target.value)}>
+                    {Object.entries(RUN_TYPES).map(([key, label]) => (
+                      <option key={key} value={key}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <p className="help-text">
+                  {solver
+                    ? '求解验证：逐条让 consumer 智能体调用知识包的求解能力，按工具调用、入参与权威结果做确定性判定，不需要判分模型。'
+                    : '数据评测：consumer 智能体逐条回答问题，由判分模型对照参考答案判分。'}
+                </p>
                 {packages.length > 6 && (
                   <label className="search-input option-search">
                     <Icon name="search" />
@@ -465,6 +567,11 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
                   </Button>
                 </div>
                 <p className="help-text">选择已有配置，或新建后重复使用。</p>
+                {solver && source?.provider !== 'neo4j' && (
+                  <Alert tone="amber" title="求解验证需要 Neo4j 业务数据源">
+                    consumer 的求解评估器只从 Neo4j 取数。请选择 Neo4j 连接：开启图数据导入，或使用已有数据的 Workspace 范围。
+                  </Alert>
+                )}
                 <div className="option-list" role="radiogroup" aria-label="数据源">
                   {sources.map((s) => (
                     <div className={`option-row ${sourceId === s.id ? 'selected' : ''}`} key={s.id}>
@@ -527,7 +634,60 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
                 )}
               </section>
             )}
-            <section hidden={step !== 2} className="panel">
+            {step === 2 && solver && (
+              <section className="panel">
+                <div className="section-title">
+                  <h2>选择求解验证集</h2>
+                  <Button
+                    variant="text"
+                    onClick={() => {
+                      setSolverSetId('');
+                      setSolverSet({ name: '', cases: [] });
+                    }}
+                  >
+                    新建求解验证集
+                  </Button>
+                </div>
+                <Field label="已保存的求解验证集">
+                  <select value={solverSetId} onChange={(e) => setSolverSetId(e.target.value)}>
+                    <option value="">选择求解验证集</option>
+                    {solverSets.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name} · {item.case_count ?? 0} 条
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                {solverSet ? (
+                  <SolverCaseEditor
+                    embedded
+                    key={`${solverSet.id || 'new'}-${operations ? 'ready' : 'loading'}`}
+                    record={solverSet}
+                    operations={operations}
+                    onDirty={setCaseDirty}
+                    onSaved={(item) => {
+                      setSolverSet(item);
+                      setCaseDirty(false);
+                      if (solverSetId !== item.id) setSolverSetId(item.id);
+                      refreshDefinitions();
+                    }}
+                  />
+                ) : (
+                  <Empty
+                    title="请选择或创建求解验证集"
+                    icon="set"
+                    action={
+                      <Button icon="plus" onClick={() => setSolverSet({ name: '', cases: [] })}>
+                        新建求解验证集
+                      </Button>
+                    }
+                  >
+                    每条用例点名一个求解操作并给出入参，可导入建模侧导出的验证用例 JSON。
+                  </Empty>
+                )}
+              </section>
+            )}
+            <section hidden={step !== 2 || solver} className="panel">
               <div className="section-title">
                 <h2>选择评测集</h2>
                 <Button
@@ -640,8 +800,14 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
                       </li>
                       <li>
                         <Icon name="check" />
-                        评测集已保存：{evalSet?.cases.length} 条
+                        {solver ? '求解验证集' : '评测集'}已保存：{chosenSet?.cases.length} 条
                       </li>
+                      {solver ? (
+                        <li>
+                          <Icon name="check" />
+                          按确定性断言判定，不需要判分模型
+                        </li>
+                      ) : (
                       <li>
                         <Icon name={session.judge?.configured ? 'check' : 'info'} />
                         {session.judge?.configured
@@ -650,6 +816,7 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
                             ? '管理员已停用默认判分模型，请先在评测判分模型配置中填写你自己的判分模型'
                             : '评测判分模型尚未配置，请先前往评测判分模型配置'}
                       </li>
+                      )}
                     </ul>
                   </>
                 )}
@@ -661,22 +828,26 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
                   <h2>执行设置</h2>
                 </div>
                 <div className="form-grid">
-                  <Field label="并发数" hint={`同时发送给 consumer 的问题数，默认 ${DEFAULT_CONCURRENCY}`}>
+                  <Field label="并发数" hint={`同时发送给 consumer 的问题数，默认 ${limits.default}`}>
                     <select value={concurrency} onChange={(e) => setConcurrency(Number(e.target.value))}>
-                      {Array.from({ length: MAX_CONCURRENCY }, (_, i) => i + 1).map((n) => (
+                      {Array.from({ length: limits.max }, (_, i) => i + 1).map((n) => (
                         <option key={n} value={n}>
                           {n}
                         </option>
                       ))}
                     </select>
                   </Field>
-                  <Field label="问答模型" hint="可选 consumer 全局模型池中已启用的模型">
+                  <Field label="问答模型" hint="可选 consumer 全局模型池或个人模型池中已启用的模型">
                     <select value={modelId} disabled={!models} onChange={(e) => setModelId(e.target.value)}>
                       <option value="">consumer 默认模型</option>
-                      {models?.items.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {modelOptionLabel(item)}
-                        </option>
+                      {modelOptionGroups(models?.items).map((group) => (
+                        <optgroup key={group.label} label={group.label}>
+                          {group.items.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {modelOptionLabel(item)}
+                            </option>
+                          ))}
+                        </optgroup>
                       ))}
                     </select>
                   </Field>
@@ -706,8 +877,14 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
               <dd>{release?.version || '尚未选择'}</dd>
               <dt>数据源</dt>
               <dd>{source?.name || '不使用数据源'}</dd>
-              <dt>评测集</dt>
-              <dd>{evalSet?.name || sets.find((s) => s.id === setId)?.name || '尚未选择'}</dd>
+              <dt>评测类型</dt>
+              <dd>{RUN_TYPES[runType]}</dd>
+              <dt>{solver ? '求解验证集' : '评测集'}</dt>
+              <dd>
+                {solver
+                  ? solverSet?.name || solverSets.find((s) => s.id === solverSetId)?.name || '尚未选择'
+                  : evalSet?.name || sets.find((s) => s.id === setId)?.name || '尚未选择'}
+              </dd>
               <dt>并发数</dt>
               <dd>{concurrency}</dd>
               <dt>问答模型</dt>
@@ -719,12 +896,16 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
             </dl>
             <hr />
             <h3>判分方式</h3>
-            <p>
-              有参考答案：模型自动判分
-              <br />
-              无参考答案：等待人工判定
-            </p>
-            {evalSet && (
+            {solver ? (
+              <p>按求解工具调用、入参与权威结果做确定性判定，不需要判分模型，也不提供人工改判。</p>
+            ) : (
+              <p>
+                有参考答案：模型自动判分
+                <br />
+                无参考答案：等待人工判定
+              </p>
+            )}
+            {!solver && evalSet && (
               <>
                 <hr />
                 <p>
@@ -757,7 +938,7 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
                 versionLoading ||
                 caseLoading ||
                 (step === 0 && !release) ||
-                (step === 2 && (!evalSet?.id || caseDirty))
+                (step === 2 && (!chosenSet?.id || caseDirty))
               }
               onClick={() => act(next)}
             >
@@ -767,10 +948,10 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
             <Button
               variant="primary"
               busy={busy}
-              disabled={!prep || !evalSet?.id || !!currentRun}
-              onClick={() => (session.judge?.configured ? act(start) : setJudgeMissing(true))}
+              disabled={!prep || !chosenSet?.id || !!currentRun}
+              onClick={() => (solver || session.judge?.configured ? act(start) : setJudgeMissing(true))}
             >
-              开始评测 · {evalSet?.cases.length || 0} 条
+              开始{RUN_TYPES[runType]} · {chosenSet?.cases.length || 0} 条
             </Button>
           )}
         </div>
@@ -803,19 +984,20 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
       )}
       {replaceGraph && (
         <Confirm
-          title="删除旧图数据并导入新数据？"
-          label="确认删除并开始评测"
+          title={GRAPH_REPLACE_REASONS[replaceGraph.import_state]?.title || '删除旧图数据并导入新数据？'}
+          label="重新导入并开始评测"
           danger
           onClose={() => setReplaceGraph(null)}
           onConfirm={() => createRun(replaceGraph, true)}
         >
+          {GRAPH_REPLACE_REASONS[replaceGraph.import_state] && <p>{GRAPH_REPLACE_REASONS[replaceGraph.import_state].detail}</p>}
           <p>
             即将替换同时满足 {replaceGraph.scope.workspace_property} = {replaceGraph.scope.workspace_value}、
             {replaceGraph.scope.ontology_property} = {replaceGraph.scope.ontology_value} 的旧图数据。
           </p>
           <p>
             删除 {replaceGraph.node_count} 个节点及 {replaceGraph.relationship_count} 条范围内关系后，
-            导入当前选择的数据表。确认后无法恢复旧数据；取消后保留原数据。
+            导入当前选择的数据表。确认后无法恢复旧数据；取消后保留原数据，本轮不会启动。
           </p>
         </Confirm>
       )}
