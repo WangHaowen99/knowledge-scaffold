@@ -31,7 +31,7 @@ def package_script_filename(key: str) -> str:
     """
     if _PACKAGE_SCRIPT_STEM_RE.fullmatch(key) and ".." not in key:
         return f"{key}.py"
-    return f"script_{hashlib.sha1(key.encode('utf-8')).hexdigest()[:10]}.py"
+    return f"script_{hashlib.sha256(key.encode('utf-8')).hexdigest()[:10]}.py"
 
 
 def operation_stems(root: Path) -> list[str]:
