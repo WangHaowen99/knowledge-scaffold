@@ -114,3 +114,20 @@ def token_request(payload: dict) -> dict:
         raise AuthError("认证服务异常", 502) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         raise AuthError("认证服务不可达", 502) from exc
+
+
+def resolve_hub_member(username: str) -> dict:
+    """Resolve the current account contract: JWT subject is the directory username."""
+    from .. import config
+    if not AUTH_URL or not ISSUER or not config.AUTH_ADMIN_TOKEN:
+        raise AuthError("未配置可信账号目录，无法同步 Hub 成员", 503)
+    request = urllib.request.Request(
+        f"{AUTH_URL}/admin/users", headers={"X-Admin-Token": config.AUTH_ADMIN_TOKEN})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            users = json.loads(response.read())["users"]
+    except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as exc:
+        raise AuthError("账号目录查询失败", 502) from exc
+    if not any(user.get("username") == username for user in users):
+        raise AuthError("目标账号不存在，无法同步 Hub 授权", 422)
+    return {"issuer": ISSUER, "sub": username}
