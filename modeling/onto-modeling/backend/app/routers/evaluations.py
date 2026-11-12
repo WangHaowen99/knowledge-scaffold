@@ -1,4 +1,4 @@
-"""独立评测对接（ADR-0092，API 契约 3.21a ES-01～ES-11）：评测入口、完成通知、已发布版本的评测结果与评测优化，
+"""独立评测对接（ADR-0092，API 契约 3.21a ES-00～ES-12）：评测入口、完成通知、已发布版本的评测结果与评测优化，
 以及旧版评测记录（只读）。
 
 评测在评测服务里跑。onto 只给浏览器入口、收评测服务的完成通知，查看时以当前用户自己的登录读回报告、优化建议和
@@ -70,19 +70,17 @@ def _caller(project_id: str, request: Request, write: bool = False) -> tuple[str
     (deps.require_writable if write else deps.require_owner)(project_id, request)
     identity = _subject(request)
     if identity is None:
-        raise ApiError("login_required", "评测需要统一账号登录", 409)
+        # 与 develop 同一文案；码不用 unauthenticated，免得前端当成登录过期去刷新
+        raise ApiError("login_required", "个人 Hub 包需要统一账号登录", 401)
     return identity
 
 
 @router.get(f"{_P}/evaluations")
 def evaluations(project_id: str, request: Request, reconcile: bool = False):
     """ES-02：各发布版本的评测、求解验证、用户反馈状态；reconcile=1 时先向评测服务对账。"""
-    root = deps.require_owner(project_id, request)
-    identity = _subject(request)
-    if identity is None:
-        return package_evaluations.unavailable("评测需要统一账号登录")
-    token, subject = identity
-    # evolution：评测优化交给反馈演进包处理，包没启用时页面不出「评测优化」
+    token, subject = _caller(project_id, request)
+    root = deps.workspaces.project_root(project_id)
+    # evolution：评测优化交给反馈演进包处理，包没启用时「评测优化」置灰
     return {**package_evaluations.overview(project_id, subject, token, reconcile), "evolution": _evolution(root)}
 
 
@@ -139,9 +137,10 @@ def modeling_result(project_id: str, run_id: str, body: FailureBody, request: Re
 
 
 @router.get(f"{_P}/legacy-evaluations")
-def legacy_list(project_id: str, request: Request):
-    """ES-09"""
-    return {"items": legacy_evaluations.listing(deps.require_owner(project_id, request))}
+def legacy_status(project_id: str, request: Request):
+    """ES-09：评测移出前最近一轮的执行详情（develop 的「评测执行详情」）。"""
+    root = deps.require_owner(project_id, request)
+    return {**legacy_evaluations.status(root), "evolution_enabled": _evolution(root)}
 
 
 @router.get(f"{_P}/legacy-evaluations/{{stem}}")
@@ -154,3 +153,12 @@ def legacy_report(project_id: str, stem: str, request: Request):
 def legacy_answer(project_id: str, stem: str, result_id: str, request: Request):
     """ES-11"""
     return legacy_evaluations.answer(deps.require_owner(project_id, request), stem, result_id)
+
+
+@router.post(f"{_P}/legacy-evaluations/{{stem}}/optimization")
+def legacy_optimization(project_id: str, stem: str, request: Request):
+    """ES-12：旧报告的评测优化，整理成一批外部反馈交给 /ontology-evolution。"""
+    root = deps.require_writable(project_id, request)
+    if not _evolution(root):
+        raise ApiError("pack_not_enabled", "评测优化由反馈演进插件处理，项目没有启用它", 409, {"pack": feedback_inbox.EVOLUTION_PACK})
+    return legacy_evaluations.optimize(deps.workspaces, project_id, stem, deps.actor(request))

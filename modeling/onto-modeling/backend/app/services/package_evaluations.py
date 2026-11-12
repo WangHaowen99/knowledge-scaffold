@@ -310,11 +310,6 @@ def _view(configured, linked=None, solver_revisions=None, message=None):
                 solver_releases={}, solver_revisions=solver_revisions or {}, evolution=False)
 
 
-def unavailable(message):
-    """用不了评测时的视图（本地模式没有统一账号登录）：界面按未配置处理，不显示评测入口。"""
-    return _view(False, message=message)
-
-
 def overview(pid, subject, token, refresh=False):
     linked = hub_packages.association(pid, subject) or {}
     result = _view(eval_client.configured(), linked, hub_packages.solver_revisions(pid))
@@ -543,7 +538,7 @@ def _section(body, label):
 
 
 def _report_cases(text):
-    """报告「逐用例明细」里每个用例的标准答案与工具失败行（case-N → {...}）；格式认不出的用例不给。"""
+    """报告「逐用例明细」里每个用例的标准答案与工具失败行（第 N 个用例 → {...}）；格式认不出的用例不给。"""
     found = {}
     heads = list(_CASE_HEADING.finditer(text))
     for index, head in enumerate(heads):
@@ -551,31 +546,36 @@ def _report_cases(text):
         quoted = [line[1:].removeprefix(' ') for line in _section(body, '标准答案') if line.startswith('>')]
         expected = '\n'.join(quoted).strip()
         failures = [line[2:] for line in _section(body, '工具失败') if line.startswith('- ')]
-        found[f'case-{head.group(1)}'] = {'expected': '' if expected == '（无）' else expected, 'tool_failures': failures}
+        found[int(head.group(1))] = {'expected': '' if expected == '（无）' else expected, 'tool_failures': failures}
     return found
 
 
-def _feedback_items(files):
-    """answers.json 里失分（fail、partial、error）的用例；标准答案和工具失败只在报告里，按用例号对上。"""
-    try:
-        answers = json.loads(files['answers.json']).get('answers')
-    except (ValueError, AttributeError) as exc:
-        raise _invalid_response() from exc
+def feedback_items(answers_json, report):
+    """answers.json 里失分（fail、partial、error）的用例；标准答案和工具失败只在报告里，按用例顺序对上
+    （报告第 N 个用例就是 answers 的第 N 条；旧链路的结果 ID 不是 case-N）。格式不对时抛 ValueError。"""
+    answers = json.loads(answers_json).get('answers')
     if not isinstance(answers, list):
-        raise _invalid_response()
-    details = _report_cases(files['report.md'].decode('utf-8', errors='replace'))
+        raise ValueError('answers 必须是数组')
+    details = _report_cases(report.decode('utf-8', errors='replace') if isinstance(report, bytes) else report)
     items = []
-    for record in answers:
+    for position, record in enumerate(answers, 1):
         if not isinstance(record, dict) or record.get('verdict') not in feedback_inbox.VERDICTS:
             continue
         case_id, question = str(record.get('resultId') or ''), str(record.get('question') or '')
         if not case_id or not question.strip():
             continue
-        detail = details.get(case_id, {})
+        detail = details.get(position, {})
         items.append(dict(case_id=case_id, question=question, expected=detail.get('expected', ''),
                           actual=str(record.get('finalAnswer') or ''), loss_reason=str(record.get('reason') or ''),
                           verdict=record['verdict'], tool_failures=detail.get('tool_failures', [])))
     return items[:feedback_inbox.MAX_ITEMS]
+
+
+def _items(files):
+    try:
+        return feedback_items(files['answers.json'], files['report.md'])
+    except (ValueError, AttributeError) as exc:
+        raise _invalid_response() from exc
 
 
 def _feedback_document(run, reference, revision, stem, files, context, suggestions, tables):
@@ -593,7 +593,7 @@ def _feedback_document(run, reference, revision, stem, files, context, suggestio
         release_version=version if _VERSION.fullmatch(version) else '',
         summary={key: summary.get(key) for key in feedback_inbox.SUMMARY_FIELDS
                  if isinstance(summary.get(key), (int, float)) and not isinstance(summary.get(key), bool)},
-        items=_feedback_items(files), attachments=attachments)
+        items=_items(files), attachments=attachments)
     try:
         return feedback_inbox.normalize(payload, allow_empty=True)
     except feedback_inbox.FeedbackRejected as exc:

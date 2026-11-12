@@ -1,5 +1,5 @@
-// 已发布版本的独立评测状态（ADR-0092，ES-02）：来自后端的评测通知索引与对账结果；
-// 链接是否可点、处理状态、求解验证、回写提示都在这里算，组件只负责画
+// 已发布版本的「报告 / 优化建议」链接状态：状态来自建模后端的评测通知索引与对账结果（ES-02，ADR-0092；照 develop 的 lib/packageEvaluation.js）
+export const EVALUATION_HINT = '打开优化建议执行评测优化，修改并发布新版本后状态自动变为“已处理”。';
 export const POLL_INTERVAL_MS = 5000;
 // 轮询只读本地索引；每隔若干次向评测服务对账一次，通知丢失也不会一直停在“进行中”
 export const RECONCILE_EVERY = 6;
@@ -112,7 +112,14 @@ export function solverEvaluationTarget(status, revision, dirty) {
   };
 }
 
-// 评测优化只针对当前建模项目的版本；没有工作台对话的入口发不了优化命令
+// 发布入口与求解面板不在同一组件分支：发布成功后经窗口事件通知已挂载的面板重读评测状态
+export const PACKAGE_PUBLISHED = 'onto-package-published';
+
+export function notifyPackagePublished(projectId) {
+  window.dispatchEvent(new CustomEvent(PACKAGE_PUBLISHED, { detail: { projectId } }));
+}
+
+// 评测优化只针对当前建模项目的版本；首页弹窗没有聊天区，无法发送优化命令
 export function optimizationBlock(status, releaseId, canCommand) {
   if (!canCommand) return '请在项目内打开已发布版本后执行评测优化';
   if (status?.current_release_id !== releaseId) {
@@ -153,9 +160,28 @@ export function writebackNotice(status) {
   const w = status?.writeback;
   if (!w || !w.mine) return null;
   if (w.status === 'done') return null;
-  if (w.status === 'pending') return { type: 'warning', text: `新版本 ${w.version} 的处理结果未回写评测服务：${w.message}` };
+  if (w.status === 'pending') return { type: 'warning', text: `新版本 ${w.version} 的处理结果未能回写评测服务（${w.message}），下次打开已发布版本时自动重试` };
   if (w.status === 'refused') return { type: 'warning', text: `评测服务未接受新版本 ${w.version} 的处理结果：${w.message}` };
   if (status.current_release_id === w.base_release_id)
-    return { type: 'info', text: `已对 ${w.base_version} 做评测优化，发布新版本后回写` };
+    return { type: 'info', text: `已对版本 ${w.base_version} 执行评测优化，修改并发布新版本后自动变为“已处理”` };
   return null;
 }
+
+// 发布成功后的提示（develop 的 usePackagePublish）：求解包带「去评测」，评测优化之后发布的新版本带回写结果。
+// 返回 [{type: success|warning, text, solver?}]，solver 为真时提示里放「去评测」按钮（对这个版本发起求解验证）
+export function publishedNotices(receipt, { allowUnbound = false, solverAcknowledged = false } = {}) {
+  const notices = [];
+  if (receipt?.local_record_pending) notices.push({ type: 'warning', text: '知识包已发布，本地发布记录待恢复' });
+  else if (solverAcknowledged) notices.push({ type: 'success', text: `知识包 ${receipt.version} 已发布，求解能力待验证`, solver: true });
+  else notices.push({ type: 'success', text: allowUnbound ? '已降级发布，未通过检查的对象不绑定数据表' : '知识包已发布' });
+  const writeback = receipt?.evaluation_writeback;
+  if (writeback?.status === 'done' && writeback.release_id === receipt.release_id) {
+    notices.push({ type: 'success', text: `已回写评测服务：新版本 ${writeback.version} 处理了 ${writeback.base_version} 的优化建议` });
+  } else if (writeback?.status === 'pending') {
+    notices.push({ type: 'warning', text: '新版本的处理结果暂未回写评测服务，打开已发布版本时会自动重试' });
+  }
+  return notices;
+}
+
+// 评测优化交给反馈演进插件（ADR-0092）：插件没启用时「评测优化」置灰并说明
+export const EVOLUTION_DISABLED = '评测优化由反馈演进插件处理，项目没有启用它';

@@ -1687,3 +1687,13 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
    门禁链在缺阶段时第一关出 `modeling_stages`。
 3. 前端：发布页的发布检查卡、「已发布版本（知识包评测）」弹窗（HB-05，发布成功后自动打开）、项目列表「导入已有知识包 ▾」与
    「导入已发布知识包」弹窗、求解面板「求解验证」卡，元素与文字照 develop。
+
+## 2026-11-12 · 评测对接与 develop 对齐（ADR-0092 第二轮）
+
+用户要求除评测优化外行为和界面元素与 develop 一致。
+
+1. **未登录统一账号**：`ES-02`～`ES-08` 改回 develop 的 401「个人 Hub 包需要统一账号登录」（码 `login_required`）；`ES-02` 不再返回 `configured=false`。
+2. **`ES-09` 改为旧版评测的执行详情**：响应 `{state, evolution, evolution_enabled}`（develop `GET /eval/status` 的 `state`、`evolution`），不再列旧报告；
+   启动迁移（eval_retirement）不再删 `.ontology-state/eval.json`。`ES-10` 响应多 `path`。
+3. **新增 `ES-12`** `POST /api/v1/projects/{id}/legacy-evaluations/{id}/optimization`：旧报告的评测优化，与 `ES-07` 一样成一批外部反馈。
+

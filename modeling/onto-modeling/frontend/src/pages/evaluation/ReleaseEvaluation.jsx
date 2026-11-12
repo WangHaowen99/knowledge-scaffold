@@ -1,32 +1,38 @@
-// 已发布版本的独立评测（ADR-0092，ES-01～ES-11）：版本行里的评测、求解验证、用户反馈三格，表格上方的提示，
-// 报告、优化建议、完整回答、标记处理失败的弹窗，以及旧版评测记录（只读）。
-// 挂在发布页的已发布版本表上，用法：
-//   const ev = useReleaseEvaluations(pid, revision);  // revision 变了就重读（发布、回退后）
-//   <EvaluationNotices ev={ev} />  表格上方
-//   ev.enabled 时加一列「评测」：<EvaluationCell ev={ev} release={row} />（row 要有 release_id、version）
-//   ev.hasSolver(rows) 时加一列「求解验证」：<SolverValidationCell ev={ev} release={row} />
-//   ev.hasFeedback 时加一列「用户反馈」：<FeedbackCell ev={ev} release={row} />
-//   <EvaluationDialogs ev={ev} tasks={tasks} />  tasks 是页面的 useCommandTasks，评测优化经它发命令
-//   <LegacyEvaluations pid={pid} />  页头操作区；没有旧记录时什么都不画
+// 已发布版本的独立评测（ADR-0092，ES-01～ES-08）：照 develop 的 PublishedVersionsDialog 与 PackageEvaluationModals。
+// 发布页的发布记录表这样用：
+//   const ev = useReleaseEvaluations(pid, revision);  // revision 变了就重读；发布成功调 notifyPackagePublished(pid) 也会重读
+//   卡片顶部：<EvaluationHint total={记录数} />，<EvaluationNotices ev={ev} />
+//   「评测」列：<EvaluationCell ev={ev} release={row} />（row 要有 release_id、version）
+//   ev.hasSolver(rows) 时「求解验证」列：<SolverValidationCell ev={ev} release={row} />
+//   ev.hasFeedback 时「用户反馈」列：<FeedbackCell ev={ev} release={row} />
+//   操作列：<StartEvaluation ev={ev} release={row} />
+//   页面任意处：<EvaluationDialogs ev={ev} tasks={tasks} />（tasks 是页面的 useCommandTasks，评测优化经它发命令）
 import { useCallback, useEffect, useRef, useState } from 'react';
-import Markdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { useApp } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
-import { errorText } from '../../api/errors.js';
-import { Area, Button, Chip, Drawer, Modal, Note } from '../../ui/index.jsx';
+import { Area, Button, Chip, Modal, Note } from '../../ui/index.jsx';
 import { useProjectEvent } from '../plugin/parts.jsx';
+import { ArtifactBody, message, useAnswerPreview, useLoad } from './EvaluationDoc.jsx';
 import { openEvaluation, prefetchEvaluationEntry } from './evaluationEntry.js';
 import {
-  POLL_INTERVAL_MS, RECONCILE_EVERY, SOLVER_VALIDATION_STATES, canReportFailure, hasFeedback, mergeStatus, needsPolling,
-  optimizationBlock, processingState, releaseEvaluation, releaseFeedback, releaseSolverValidation, writebackNotice,
+  EVALUATION_HINT, EVOLUTION_DISABLED, PACKAGE_PUBLISHED, POLL_INTERVAL_MS, RECONCILE_EVERY, SOLVER_VALIDATION_STATES, canReportFailure, hasFeedback,
+  mergeStatus, needsPolling, optimizationBlock, processingState, releaseEvaluation, releaseFeedback, releaseSolverValidation,
+  writebackNotice,
 } from './evaluationModel.js';
 import '../../styles/evaluation.css';
 
-const TONES = { gold: 'amber', green: 'teal', red: 'red', processing: 'blue', default: 'gray' };
-const SOLVER_TONES = { warning: 'amber', processing: 'blue', success: 'teal', error: 'red' };
-// 报告里「完整回答」的链接：reports/<报告>.answers.json#<结果 ID>
-const ANSWER_LINK = /\.answers\.json#(.+)$/;
+export { LegacyEvaluations } from './LegacyEvaluations.jsx';
+export { SolverValidationCard } from './SolverValidationCard.jsx';
+
+const REPORT_LIMIT_HINT = '报告较长，仅显示前 2 MiB';
+const REPORT_OPTIMIZE_HINT = '此处仅查看评测结果。如需据此优化知识包，请打开「优化建议」并点击「评测优化」。';
+// develop 的 antd 颜色 → 设计系统的标签色
+export const TONES = {
+  gold: 'amber', green: 'teal', red: 'red', processing: 'blue', default: 'gray',
+  warning: 'amber', success: 'teal', error: 'red',
+};
+// 报告与建议篇幅长：弹窗尽量放大，同时在视口左右各留出边距
+const WIDE = 'min(1280px, calc(100vw - 96px))';
 
 export function useReleaseEvaluations(pid, revision = 0) {
   const { api, services } = useApp();
@@ -43,7 +49,7 @@ export function useReleaseEvaluations(pid, revision = 0) {
     let alive = true;
     api.evaluations(pid, { reconcile: true })
       .then((r) => { if (alive) setStatus(r); })
-      .catch((e) => { if (alive) setStatus({ configured: false, message: errorText(e), releases: {} }); });
+      .catch((e) => { if (alive) setStatus({ configured: false, message: `评测状态读取失败：${message(e)}`, releases: {} }); });
     return () => { alive = false; };
   }, [api, pid, revision, refreshes]);
   const polling = !!pid && needsPolling(status);
@@ -62,82 +68,52 @@ export function useReleaseEvaluations(pid, revision = 0) {
     }, POLL_INTERVAL_MS);
     return () => { alive = false; clearInterval(timer); };
   }, [api, pid, polling]);
+  // 从别处发布：发布入口经窗口事件通知（develop 的 notifyPackagePublished），项目流的 release.updated 同样重读
+  useEffect(() => {
+    const onPublished = (event) => { if (event.detail?.projectId === pid) refresh(); };
+    window.addEventListener(PACKAGE_PUBLISHED, onPublished);
+    return () => window.removeEventListener(PACKAGE_PUBLISHED, onPublished);
+  }, [pid, refresh]);
   useProjectEvent('release.updated', refresh);
-  const enabled = !!status?.configured;
-  // 点「去评测」要在任何 await 之前打开窗口：先取好入口地址，失败时点击会再取并给出原因
-  useEffect(() => { if (enabled) prefetchEvaluationEntry(api.evaluationEntry).catch(() => {}); }, [api, enabled]);
+  // 失败不阻断：点击「评测」时会重新读取并给出原因
+  useEffect(() => { if (pid) prefetchEvaluationEntry(api.evaluationEntry).catch(() => {}); }, [api, pid]);
 
   const evaluate = useCallback((release, runType = '') => {
     openEvaluation({ ontology_id: status?.ontology_id, ...release }, {
       loadEntry: api.evaluationEntry,
       tokens: () => ({ access_token: services.tokens.access, refresh_token: services.tokens.refresh }),
       runType,
-    }).catch((e) => toast(errorText(e), 'alert'));
+    }).catch((e) => toast(message(e), 'alert'));
   }, [api, services, status?.ontology_id]);
 
   return {
-    pid, status, enabled, refresh, evaluate, dialog, setDialog,
-    hasFeedback: enabled && hasFeedback(status),
-    hasSolver: (rows) => enabled && (rows || []).some((r) => releaseSolverValidation(status, r.release_id)),
+    pid, status, refresh, evaluate, dialog, setDialog,
+    enabled: !!status?.configured,
+    hasFeedback: hasFeedback(status),
+    hasSolver: (rows) => (rows || []).some((r) => releaseSolverValidation(status, r.release_id)),
   };
 }
 
-function Link({ children, onClick }) {
+// 不可用的按钮不消失，置灰并悬停说明原因（develop 的 ReasonButton）
+export function ReasonLink({ reason, children, onClick }) {
+  if (reason) return <span className="ev-link is-disabled" data-pop={reason} aria-disabled="true">{children}</span>;
   return <span className="ev-link" role="button" tabIndex={0} onClick={onClick} onKeyDown={(e) => e.key === 'Enter' && onClick()}>{children}</span>;
 }
 
-// 一种来源（评测 / 用户反馈）占一格：处理状态，加上能看的报告和优化建议
-function SourceCell({ ev, release, source, feedback, idle, children }) {
-  if (!source.entry) {
-    return <span className="ev-cell">{idle ? <span className="xs muted">{idle}</span> : null}{children}</span>;
-  }
-  const target = { runId: source.entry.run_id, version: release.version, releaseId: release.release_id, entry: source.entry, feedback };
-  const state = processingState(source.entry);
-  return (
-    <span className="ev-cell">
-      {state ? <Chip sm tone={TONES[state.color] || 'gray'} data-pop={state.hint}>{state.label}</Chip> : null}
-      {source.report.disabled ? null : <Link onClick={() => ev.setDialog({ kind: 'report', target })}>报告</Link>}
-      {source.suggestions.disabled ? null : <Link onClick={() => ev.setDialog({ kind: 'suggestions', target })}>优化建议</Link>}
-      {children}
-    </span>
-  );
+function ReasonButton({ reason, children, ...props }) {
+  const button = <Button disabled={!!reason} {...props}>{children}</Button>;
+  return reason ? <span data-pop={reason}>{button}</span> : button;
 }
 
-export function EvaluationCell({ ev, release }) {
-  const source = releaseEvaluation(ev.status, release.release_id);
-  const running = source.idle === '评测中';
-  return (
-    <SourceCell ev={ev} release={release} source={source} idle={source.idle === '未评测' ? '' : source.idle}>
-      {running ? null : <Link onClick={() => ev.evaluate(release)}>去评测</Link>}
-    </SourceCell>
-  );
-}
-
-export function FeedbackCell({ ev, release }) {
-  return <SourceCell ev={ev} release={release} source={releaseFeedback(ev.status, release.release_id)} feedback idle="—" />;
-}
-
-// 求解验证在发布后的独立评测里做：只有发布时启用了求解契约、或已有验证记录的版本有内容
-export function SolverValidationCell({ ev, release }) {
-  const validation = releaseSolverValidation(ev.status, release.release_id);
-  if (!validation) return <span className="xs muted">—</span>;
-  const view = SOLVER_VALIDATION_STATES[validation.state];
-  const target = validation.entry && { runId: validation.entry.run_id, version: release.version, releaseId: release.release_id };
-  return (
-    <span className="ev-cell">
-      <Chip sm tone={SOLVER_TONES[view.color]} data-pop={validation.reason}>{view.label}</Chip>
-      {target && validation.state !== 'running' ? <Link onClick={() => ev.setDialog({ kind: 'report', target })}>报告</Link> : null}
-      {['unverified', 'failed'].includes(validation.state) ? <Link onClick={() => ev.evaluate(release, 'solver')}>去验证</Link> : null}
-    </span>
-  );
+export function EvaluationHint({ total }) {
+  return <div className="sm muted mb8">共 {total} 个版本。{EVALUATION_HINT}</div>;
 }
 
 export function EvaluationNotices({ ev }) {
-  if (!ev.enabled) return null;
   const notice = writebackNotice(ev.status);
   return (
     <>
-      {ev.status?.reachable === false ? <Note tone="amber" className="mb8">评测服务连不上，显示的是上次同步的状态</Note> : null}
+      {ev.status?.reachable === false ? <Note tone="amber" className="mb8">评测服务暂不可用，评测状态可能不是最新</Note> : null}
       {notice ? (
         <Note tone={notice.type === 'warning' ? 'amber' : undefined} className="mb8">
           <span className="row">
@@ -150,146 +126,146 @@ export function EvaluationNotices({ ev }) {
   );
 }
 
-// ---------- 报告正文 ----------
-
-function Doc({ content, onAnswer }) {
-  const components = {
-    a: ({ href, children }) => {
-      const answer = (href || '').match(ANSWER_LINK);
-      if (answer && onAnswer) return <Link onClick={() => onAnswer(decodeURIComponent(answer[1]))}>{children}</Link>;
-      if (/^https?:\/\//.test(href || '')) return <a href={href} target="_blank" rel="noreferrer noopener">{children}</a>;
-      return <span>{children}</span>; // 工作区路径在这里打不开
-    },
-  };
-  return <div className="ev-doc"><Markdown remarkPlugins={[remarkGfm]} components={components}>{content}</Markdown></div>;
-}
-
-function useLoad(load, key) {
-  const [state, setState] = useState({ loading: true, error: '', data: null });
-  const [round, setRound] = useState(0);
-  useEffect(() => {
-    if (!key) return undefined;
-    let alive = true;
-    setState({ loading: true, error: '', data: null });
-    load()
-      .then((data) => { if (alive) setState({ loading: false, error: '', data }); })
-      .catch((e) => { if (alive) setState({ loading: false, error: errorText(e), data: null }); });
-    return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, round]);
-  return { ...state, retry: () => setRound((n) => n + 1) };
-}
-
-function Loaded({ state, children }) {
-  if (state.loading) return <div className="sm muted"><span className="spin" />读取中…</div>;
-  if (state.error) {
-    return <Note tone="red"><span className="row"><span className="grow">{state.error}</span><Button size="xs" kind="ghost" onClick={state.retry}>重试</Button></span></Note>;
-  }
-  return children;
-}
-
-function AnswerModal({ answer, onClose }) {
+// 版本的一种来源（评测 / 用户反馈）占一格：处理状态加上报告和优化建议两个链接
+function SourceCell({ ev, release, source, feedback, empty }) {
+  const target = source.entry && { runId: source.entry.run_id, version: release.version, releaseId: release.release_id, entry: source.entry, feedback };
+  if (!target) return <span className="xs muted">{empty}</span>;
+  const state = processingState(source.entry);
   return (
-    <Modal open={!!answer} onClose={onClose} title="完整回答" sub={answer ? `${answer.originalLength} 字符${answer.truncated ? `，只保留前 ${answer.fullAnswer.length} 字符` : ''}` : ''} w={860}>
-      {answer ? <Doc content={answer.fullAnswer} /> : null}
-    </Modal>
+    <span className="ev-cell">
+      {state ? <Chip sm tone={TONES[state.color] || 'gray'} data-pop={state.hint}>{state.label}</Chip> : null}
+      <ReasonLink reason={source.report.reason} onClick={() => ev.setDialog({ kind: 'report', target })}>报告</ReasonLink>
+      <ReasonLink reason={source.suggestions.reason} onClick={() => ev.setDialog({ kind: 'suggestions', target })}>优化建议</ReasonLink>
+    </span>
   );
 }
 
-function useAnswer(read) {
-  const [answer, setAnswer] = useState(null);
-  const open = (resultId) => read(resultId).then(setAnswer).catch((e) => toast(errorText(e), 'alert'));
-  return { open, modal: <AnswerModal answer={answer} onClose={() => setAnswer(null)} /> };
+export function EvaluationCell({ ev, release }) {
+  const source = releaseEvaluation(ev.status, release.release_id);
+  return <SourceCell ev={ev} release={release} source={source} empty={<span data-pop={source.report.reason}>{source.idle}</span>} />;
 }
 
-const WIDE = 'min(1180px, calc(100vw - 96px))';
+export function FeedbackCell({ ev, release }) {
+  return <SourceCell ev={ev} release={release} source={releaseFeedback(ev.status, release.release_id)} feedback empty="—" />;
+}
+
+// 求解验证在发布后的独立评测中进行：只有发布时启用了求解契约、或已有验证记录的版本显示
+export function SolverValidationCell({ ev, release }) {
+  const validation = releaseSolverValidation(ev.status, release.release_id);
+  if (!validation) return <span className="xs muted">—</span>;
+  const view = SOLVER_VALIDATION_STATES[validation.state];
+  const target = validation.entry && { runId: validation.entry.run_id, version: release.version, releaseId: release.release_id };
+  return (
+    <span className="ev-cell">
+      <Chip sm tone={TONES[view.color]} data-pop={validation.reason}>{view.label}</Chip>
+      {target && validation.state !== 'running' ? <ReasonLink onClick={() => ev.setDialog({ kind: 'report', target })}>验证报告</ReasonLink> : null}
+      {['unverified', 'failed'].includes(validation.state) ? <ReasonLink onClick={() => ev.evaluate(release, 'solver')}>去验证</ReasonLink> : null}
+    </span>
+  );
+}
+
+export function StartEvaluation({ ev, release }) {
+  return <ReasonLink onClick={() => ev.evaluate(release)}>发起评测</ReasonLink>;
+}
 
 function ReportModal({ ev, target, onClose }) {
   const { api } = useApp();
   const state = useLoad(() => api.evaluationReport(ev.pid, target.runId), target.runId);
-  const answer = useAnswer((resultId) => api.evaluationAnswer(ev.pid, target.runId, resultId));
+  const preview = useAnswerPreview((resultId) => api.evaluationAnswer(ev.pid, target.runId, resultId));
   return (
-    <Modal open onClose={onClose} title={`${target.feedback ? '用户反馈报告' : '评测报告'} · ${target.version}`} w={WIDE}>
-      <Loaded state={state}>
-        {state.data?.truncated ? <Note className="mb8">只显示前 2 MiB</Note> : null}
-        <Doc content={state.data?.content || ''} onAnswer={answer.open} />
-      </Loaded>
-      {answer.modal}
+    <Modal open onClose={onClose} w={WIDE} title={`${target.feedback ? '用户反馈报告' : '评测报告'} — 版本 ${target.version || ''}`}
+      foot={<><span className="sm muted grow">{REPORT_OPTIMIZE_HINT}</span><Button onClick={onClose}>关闭</Button></>}>
+      {state.data?.truncated ? <Note className="mb8">{REPORT_LIMIT_HINT}</Note> : null}
+      <ArtifactBody state={state} onOpenAnswer={preview.open} />
+      {preview.modal}
     </Modal>
   );
 }
 
-function SuggestionsModal({ ev, target, tasks, onClose, onFailure }) {
+function SuggestionsModal({ ev, target, tasks, onClose, onReportFailure }) {
   const { api } = useApp();
   const state = useLoad(() => api.evaluationSuggestions(ev.pid, target.runId), target.runId);
-  const answer = useAnswer((resultId) => api.evaluationAnswer(ev.pid, target.runId, resultId));
-  const [busy, setBusy] = useState(false);
-  // 评测优化交给反馈演进插件：插件没启用、不是当前版本时不出这个按钮
-  const blocked = !ev.status?.evolution || optimizationBlock(ev.status, target.releaseId, !!tasks);
-  const act = async (fn) => {
-    setBusy(true);
-    try { await fn(); } catch (e) { toast(errorText(e), 'alert'); } finally { setBusy(false); }
-  };
-  const regenerate = () => act(async () => {
-    await api.regenerateEvaluation(ev.pid, target.runId);
-    toast('已开始重新生成');
-    onClose();
-    ev.refresh();
-  });
-  // 评测优化：产物整理成一批外部反馈，交给反馈演进在工作台对话里处理
-  const optimize = () => act(async () => {
-    const r = await api.optimizeEvaluation(ev.pid, target.runId);
-    onClose();
-    await tasks.send({ command: r.command, args: r.args, text: `评测优化 · ${target.version}` });
-  });
+  const preview = useAnswerPreview((resultId) => api.evaluationAnswer(ev.pid, target.runId, resultId));
+  const [regenerating, setRegenerating] = useState(false);
+  const [optimizing, setOptimizing] = useState(false);
   const failed = state.data?.status === 'failed';
-  const foot = blocked && !onFailure ? null : (
-    <>
-      {onFailure ? <Button disabled={busy} onClick={onFailure}>标记处理失败</Button> : null}
-      <span className="sp" />
-      {blocked ? null : <Button kind="primary" icon="sparkle" disabled={busy || tasks.sending} onClick={optimize}>评测优化</Button>}
-    </>
-  );
-  return (
-    <Modal open onClose={onClose} title={`${target.feedback ? '用户反馈优化建议' : '优化建议'} · ${target.version}`} w={WIDE} foot={foot}>
-      <Loaded state={state}>
-        {failed ? (
-          <Note tone="red" className="mb8">
-            <span className="row">
-              <span className="grow">优化建议生成失败{state.data.error ? `：${state.data.error}` : ''}</span>
-              <Button size="xs" kind="ghost" disabled={busy} onClick={regenerate}>重新生成</Button>
-            </span>
-          </Note>
-        ) : null}
-        {state.data?.content ? <Doc content={state.data.content} onAnswer={answer.open} /> : null}
-      </Loaded>
-      {answer.modal}
-    </Modal>
-  );
-}
+  const blockReason = optimizationBlock(ev.status, target.releaseId, !!tasks) || (ev.status?.evolution ? '' : EVOLUTION_DISABLED);
 
-// 按建议改了却发布不了新版本时，告诉评测服务这一轮处理失败；处理成功由发布新版本自动回写
-function FailureModal({ ev, target, onClose }) {
-  const { api } = useApp();
-  const [note, setNote] = useState('');
-  const [busy, setBusy] = useState(false);
-  const submit = async () => {
-    setBusy(true);
+  const regenerate = async () => {
+    setRegenerating(true);
     try {
-      await api.reportEvaluationFailure(ev.pid, target.runId, note.trim());
-      toast('已回写评测服务');
+      await api.regenerateEvaluation(ev.pid, target.runId);
+      toast('已开始重新生成评测报告和优化建议');
       onClose();
       ev.refresh();
     } catch (e) {
-      toast(errorText(e), 'alert');
+      toast(message(e), 'alert');
     } finally {
-      setBusy(false);
+      setRegenerating(false);
+    }
+  };
+  // 评测优化：产物整理成一批外部反馈（ADR-0092），交给反馈演进在工作台对话里处理
+  const optimize = async () => {
+    setOptimizing(true);
+    try {
+      const result = await api.optimizeEvaluation(ev.pid, target.runId);
+      toast('已导入评测报告和优化建议，开始评测优化');
+      onClose();
+      await tasks.send({ command: result.command, args: result.args, text: `评测优化 — 版本 ${target.version || ''}` });
+    } catch (e) {
+      toast(message(e), 'alert');
+    } finally {
+      setOptimizing(false);
+    }
+  };
+
+  return (
+    <Modal open onClose={onClose} w={WIDE} title={`${target.feedback ? '用户反馈优化建议' : '优化建议'} — 版本 ${target.version || ''}`}
+      foot={(
+        <>
+          <Button onClick={onClose}>关闭</Button>
+          <span className="sp" />
+          {onReportFailure ? <Button onClick={onReportFailure}>标记处理失败</Button> : null}
+          <ReasonButton kind="primary" reason={blockReason} disabled={optimizing || tasks?.sending} onClick={optimize}>评测优化</ReasonButton>
+        </>
+      )}>
+      {failed ? (
+        <Note tone="red" className="mb8">
+          <span className="row">
+            <span className="grow"><b>优化建议生成失败</b>{state.data.error ? <div>{state.data.error}</div> : null}</span>
+            <Button size="xs" kind="ghost" disabled={regenerating} onClick={regenerate}>重新生成</Button>
+          </span>
+        </Note>
+      ) : null}
+      <ArtifactBody state={state} onOpenAnswer={preview.open} />
+      {preview.modal}
+    </Modal>
+  );
+}
+
+// 按建议修改后无法发布新版本时，告诉评测服务这一轮处理失败及原因；成功的处理由发布新版本自动回写
+function FailureModal({ ev, target, onClose, onReported }) {
+  const { api } = useApp();
+  const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
+  const submit = async () => {
+    setSaving(true);
+    try {
+      await api.reportEvaluationFailure(ev.pid, target.runId, note.trim());
+      toast('已回写评测服务：这一轮优化建议处理失败');
+      onReported();
+    } catch (e) {
+      toast(message(e), 'alert');
+    } finally {
+      setSaving(false);
     }
   };
   return (
-    <Modal open onClose={onClose} title={`标记处理失败 · ${target.version}`} w={560}
-      foot={<><span className="sp" /><Button onClick={onClose}>取消</Button><Button kind="primary" disabled={busy || !note.trim()} onClick={submit}>提交</Button></>}>
-      <Area minHeight={110} maxLength={1000} value={note} placeholder="失败原因" onChange={(e) => setNote(e.target.value)} autoFocus />
+    <Modal open onClose={onClose} w={560} title={`标记处理失败 — 版本 ${target.version || ''}`}
+      foot={<><span className="sp" /><Button onClick={onClose}>取消</Button><Button kind="primary" disabled={!note.trim() || saving} onClick={submit}>提交</Button></>}>
+      <p className="sm muted mb8">建议无法落实、发布不了新版本时使用。评测服务会记录“处理失败”和原因；之后修改并发布新版本，仍会自动变为“已处理”。</p>
+      <Area rows={4} maxLength={1000} value={note} placeholder="例如：建议要求的数据表在业务库中不存在" onChange={(e) => setNote(e.target.value)} autoFocus />
+      <div className="xs muted ev-count">{note.length} / 1000</div>
     </Modal>
   );
 }
@@ -300,52 +276,9 @@ export function EvaluationDialogs({ ev, tasks }) {
   const close = () => setDialog(null);
   const { target } = dialog;
   if (dialog.kind === 'report') return <ReportModal ev={ev} target={target} onClose={close} />;
-  if (dialog.kind === 'failure') return <FailureModal ev={ev} target={target} onClose={close} />;
+  if (dialog.kind === 'failure') {
+    return <FailureModal ev={ev} target={target} onClose={() => setDialog({ kind: 'suggestions', target })} onReported={() => { close(); ev.refresh(); }} />;
+  }
   const failure = canReportFailure(ev.status, target.releaseId, target.entry) ? () => setDialog({ kind: 'failure', target }) : null;
-  return <SuggestionsModal ev={ev} target={target} tasks={tasks} onClose={close} onFailure={failure} />;
-}
-
-// ---------- 旧版评测记录（只读） ----------
-
-function LegacyReport({ pid, stem, onBack }) {
-  const { api } = useApp();
-  const state = useLoad(() => api.legacyEvaluation(pid, stem), stem);
-  const answer = useAnswer((resultId) => api.legacyEvaluationAnswer(pid, stem, resultId));
-  return (
-    <>
-      <Button size="sm" kind="ghost" icon="arrowl" className="mb8" onClick={onBack}>返回</Button>
-      <Loaded state={state}>
-        {state.data?.truncated ? <Note className="mb8">只显示前 2 MiB</Note> : null}
-        <Doc content={state.data?.content || ''} onAnswer={answer.open} />
-      </Loaded>
-      {answer.modal}
-    </>
-  );
-}
-
-export function LegacyEvaluations({ pid }) {
-  const { api } = useApp();
-  const [items, setItems] = useState([]);
-  const [open, setOpen] = useState(false);
-  const [stem, setStem] = useState('');
-  useEffect(() => {
-    let alive = true;
-    setItems([]);
-    if (pid) api.legacyEvaluations(pid).then((r) => { if (alive) setItems(r.items || []); }).catch(() => {});
-    return () => { alive = false; };
-  }, [api, pid]);
-  if (!items.length) return null;
-  return (
-    <>
-      <Button kind="ghost" icon="history" onClick={() => setOpen(true)}>旧版评测记录</Button>
-      <Drawer open={open} onClose={() => { setOpen(false); setStem(''); }} icon="history" title="旧版评测记录" w={stem ? 920 : 520}>
-        {stem ? <LegacyReport pid={pid} stem={stem} onBack={() => setStem('')} /> : items.map((item) => (
-          <div key={item.id} className="ev-legacy-row" role="button" tabIndex={0} onClick={() => setStem(item.id)} onKeyDown={(e) => e.key === 'Enter' && setStem(item.id)}>
-            <span className="grow">{item.title}</span>
-            {item.score == null ? null : <Chip sm tone="blue">{item.score} 分</Chip>}
-          </div>
-        ))}
-      </Drawer>
-    </>
-  );
+  return <SuggestionsModal ev={ev} target={target} tasks={tasks} onClose={() => { close(); }} onReportFailure={failure} />;
 }
