@@ -203,12 +203,15 @@ def test_source_list_and_cli_point_binaries_to_their_text_version(workspace):
     assert sources["resource/others/说明.md"]["read"] == "resource/others/说明.md"
     assert sources["resource/others/导图.png"]["read"] is None and sources["resource/others/导图.png"]["kind"] == "missing"
     assert "resource/text/others/通知.pdf.md" not in sources and "resource/materials.json" not in sources
-    pdf = _cli(workspace, "resource/others/通知.pdf")
-    assert pdf.returncode == 2 and json.loads(pdf.stdout) == {"status": "use_text_version", "text": text}
+    # ADR-0093：读文本版给的是原件的位置，出处写 cite#anchor；原件路径也一样读文本版，不解析
+    for target in (text, "resource/others/通知.pdf"):
+        read = _cli(workspace, target)
+        body = json.loads(read.stdout)
+        assert read.returncode == 0, body
+        assert body["cite"] == "resource/others/通知.pdf" and body["segments"][0]["anchor"] == "page:1"
+        assert body["segments"][0]["text"] == "合成条款：补货单当天生成。"
     png = _cli(workspace, "resource/others/导图.png")
     assert png.returncode == 2 and json.loads(png.stdout)["status"] == "no_text_version"
-    ok = _cli(workspace, text)
-    assert ok.returncode == 0 and json.loads(ok.stdout)["segments"][0]["anchor"] == "L1"
 
 
 def test_report_anchored_to_a_text_version_verifies(workspace, toolkit):
@@ -221,21 +224,25 @@ def test_report_anchored_to_a_text_version_verifies(workspace, toolkit):
     assert checker.check_exit_code(result) == 0, result["issues"]
 
 
-def test_anchor_on_an_original_with_a_text_version_is_a_warning_and_corpus_skips_it(workspace, toolkit, monkeypatch):
-    checker, _review = toolkit
+def test_anchor_on_an_original_is_checked_against_its_text_version_without_parsing(workspace, toolkit, monkeypatch):
+    """ADR-0093：出处写原件和锚点（同 develop），按文本版里记的原件位置核对；原件一次都不解析（ADR-0076）。"""
+    import conversion_samples as samples
     from test_review_integrity import docx
 
-    docx(workspace / "resource" / "others" / "规范.docx")
-    _text_version(workspace, "resource/others/规范.docx", "合成规范 ITEM-01 RULE-01\n")
-    read = []
-    original = checker.source_extract.extract
-    monkeypatch.setattr(checker.source_extract, "extract", lambda path: (read.append(Path(path).name), original(path))[1])
-    write_report(workspace, make_report([row("ITEM-01", "RULE-01", location="resource/others/规范.docx")]))
+    checker, _review = toolkit
+    docx(workspace / "resource" / "others" / "规范.docx", '<w:p><w:r><w:t>ITEM-01 RULE-01</w:t></w:r></w:p>')
+    samples.write_text_version(workspace, "resource/others/规范.docx")
+
+    def no_parse(*_args, **_kwargs):
+        raise AssertionError("资料区里的原件不解析")
+
+    monkeypatch.setattr(checker.source_extract, "_extract_docx", no_parse)
+    location = "resource/others/规范.docx#table:1/row:1/cell:1"
+    write_report(workspace, make_report([row("ITEM-01", "RULE-01", location=location)]))
     result = checker.run_check(workspace)
-    warnings = [issue for issue in result["issues"] if issue["severity"] == "警告"]
-    assert any(issue["category"] == "出处" and "文本版" in issue["message"] for issue in warnings), result["issues"]
+    assert checker.check_exit_code(result) == 0, result["issues"]
+    assert not any(issue["category"] == "出处" for issue in result["issues"])
     checker.CheckContext(workspace, {}).corpus()
-    assert read.count("规范.docx") == 0  # F4c：报告指名的原件也按文本版核对，原件一次都不解析
 
 
 # ---------------------------------------------------------------------------

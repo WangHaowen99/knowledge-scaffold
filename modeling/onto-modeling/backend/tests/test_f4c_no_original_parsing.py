@@ -161,16 +161,21 @@ def test_release_tree_carries_the_text_version_of_tables():
 
 
 def test_legacy_anchor_on_an_original_is_checked_against_its_text_version(workspace, toolkit, monkeypatch):
+    """原件锚点（#p:1）按文本版里记的原件位置核对（ADR-0093），原件不解析。"""
+    import conversion_samples as samples
+    from test_review_integrity import docx
+
     checker, _review = toolkit
-    (workspace / "resource" / "others" / "规范.docx").write_bytes(b"PK synthetic")
-    _text_version(workspace, "resource/others/规范.docx", "合成规范 ITEM-31 RULE-31\n")
-    seen = []
-    original = checker.source_extract.extract
-    monkeypatch.setattr(checker.source_extract, "extract", lambda path: (seen.append(Path(path).name), original(path))[1])
+    docx(workspace / "resource" / "others" / "规范.docx")
+    samples.write_text_version(workspace, "resource/others/规范.docx")
+
+    def no_parse(*_args, **_kwargs):
+        raise AssertionError("资料区里的原件不解析")
+
+    monkeypatch.setattr(checker.source_extract, "_extract_docx", no_parse)
     write_report(workspace, make_report([row("ITEM-31", "RULE-31", location="resource/others/规范.docx#p:1")]))
     result = checker.run_check(workspace)
     assert checker.check_exit_code(result) == 0, result["issues"]
-    assert "规范.docx" not in seen
 
 
 def test_legacy_anchor_on_an_original_without_a_text_version_cannot_be_verified(workspace, toolkit):

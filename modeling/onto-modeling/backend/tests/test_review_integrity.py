@@ -270,3 +270,97 @@ def test_source_limits_never_return_partial_success(tmp_path, scripts, monkeypat
     assert source.extract(path)['status'] == 'unverifiable'
     monkeypatch.setattr(source, 'MAX_BYTES', 1)
     assert source.extract(path)['status'] == 'unverifiable'
+
+
+# ---------------------------------------------------------------------------
+# 资料区里的原件读带原件锚点的文本版（ADR-0076、ADR-0093）：段和锚点与直接读原件一致，不解析原件
+# ---------------------------------------------------------------------------
+
+def _word_with_gaps(path):
+    import docx as python_docx
+
+    document = python_docx.Document()
+    document.add_heading('合成规则', level=1)
+    document.add_paragraph('')
+    document.add_paragraph('退款 RULE-01 超过 30 天不退')
+    grid = document.add_table(rows=3, cols=3)
+    grid.cell(0, 0).text, grid.cell(0, 1).text, grid.cell(0, 2).text = '编号', '说明', '上限'
+    grid.cell(2, 0).text, grid.cell(2, 2).text = 'ITEM-01', '96'
+    document.add_paragraph('- 列表行')
+    document.save(path)
+
+
+def _sheet_with_gaps(path):
+    import openpyxl
+
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.title = '规则'
+    sheet['B2'], sheet['C2'] = '编号', '说明'
+    sheet['B4'], sheet['C4'] = 'ITEM-01', 'RULE-01'
+    sheet.merge_cells('C4:D4')
+    book.create_sheet('备注')['A1'] = '合成备注'
+    book.save(path)
+
+
+@pytest.mark.parametrize('suffix,build', [('docx', _word_with_gaps), ('xlsx', _sheet_with_gaps)])
+def test_workspace_original_reads_text_version_with_same_anchors(tmp_path, scripts, monkeypatch, suffix, build):
+    import conversion_samples as samples
+
+    _, source = scripts
+    loose = tmp_path / f'loose.{suffix}'
+    build(loose)
+    direct = source.extract(loose)                          # 资料区外：照 develop 直接读
+    root = tmp_path / 'ws'
+    material = root / 'resource' / 'others' / f'合成.{suffix}'
+    material.parent.mkdir(parents=True)
+    material.write_bytes(loose.read_bytes())
+    assert samples.write_text_version(root, f'resource/others/合成.{suffix}')
+
+    def no_parse(*_args, **_kwargs):
+        raise AssertionError('资料区里的原件不解析')
+
+    monkeypatch.setattr(source, '_extract_docx', no_parse)
+    monkeypatch.setattr(source, '_extract_xlsx', no_parse)
+    via_text = source.extract(material)
+    assert via_text['status'] == 'ok', via_text.get('reason')
+    assert via_text['source_sha256'] == direct['source_sha256']
+    assert [s['anchor'] for s in via_text['segments']] == [s['anchor'] for s in direct['segments']]
+    assert [s['text'] for s in via_text['segments']] == [s['text'] for s in direct['segments']]
+    if suffix == 'xlsx':
+        assert via_text['merges'] == {'规则': ['C4:D4']}
+        assert source.located_text(via_text, 'sheet:规则!B4') == 'ITEM-01'
+    else:
+        assert source.located_text(via_text, 'table:1/row:3/cell:1') == 'ITEM-01'
+
+
+def test_workspace_original_without_current_text_version_is_unverifiable(tmp_path, scripts):
+    import conversion_samples as samples
+
+    _, source = scripts
+    material = tmp_path / 'ws' / 'resource' / 'others' / '合成.docx'
+    material.parent.mkdir(parents=True)
+    docx(material)
+    missing = source.extract(material)
+    assert missing['status'] == 'unverifiable' and '还没有文本版' in missing['reason']
+    samples.write_text_version(tmp_path / 'ws', 'resource/others/合成.docx')
+    assert source.extract(material)['status'] == 'ok'
+    docx(material, '<w:p><w:r><w:t>ITEM-02</w:t></w:r></w:p>')    # 原件改了、文本版还是旧的
+    stale = source.extract(material)
+    assert stale['status'] == 'unverifiable' and '不是这一版原件转的' in stale['reason']
+
+
+def test_pdf_text_version_gives_page_anchors(tmp_path, scripts):
+    _, source = scripts
+    root = tmp_path / 'ws'
+    material = root / 'resource' / 'others' / '手册.pdf'
+    material.parent.mkdir(parents=True)
+    material.write_bytes(b'%PDF-1.4 synthetic')
+    sha = hashlib.sha256(material.read_bytes()).hexdigest()[:16]
+    text = root / 'resource' / 'text' / 'others' / '手册.pdf.md'
+    text.parent.mkdir(parents=True)
+    text.write_text(f'<!-- onto:text source="手册.pdf" sha256="{sha}" converter="convert-pdf@test" -->\n\n'
+                    '<!-- 第 1 页 -->\n合成手册\n\n<!-- 第 2 页 -->\n退款 RULE-01\n超过 30 天不退\n', encoding='utf-8')
+    result = source.extract(material)
+    assert result['status'] == 'ok'
+    assert source.located_text(result, 'page:2') == '退款 RULE-01\n超过 30 天不退'

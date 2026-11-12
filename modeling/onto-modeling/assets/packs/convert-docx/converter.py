@@ -21,8 +21,12 @@ from app.evidence.convert import Conversion, ConvertError, ConvertLimits, anchor
 _HEADING = re.compile(r"^(?:heading|标题)\s*(\d)$", re.IGNORECASE)
 
 
+def _paragraph_text(paragraph: Paragraph) -> str:
+    return re.sub(r"[ \t]+", " ", paragraph.text.replace("\x0b", " ")).strip()
+
+
 def _paragraph(paragraph: Paragraph) -> str:
-    text = re.sub(r"[ \t]+", " ", paragraph.text.replace("\x0b", " ")).strip()
+    text = _paragraph_text(paragraph)
     if not text:
         return ""
     style = (paragraph.style.name if paragraph.style is not None else "") or ""
@@ -77,7 +81,9 @@ def convert(data: bytes, filename: str, limits: ConvertLimits) -> Conversion:
             paragraph += 1
             text = _paragraph(Paragraph(child, document))
             if text:
-                parts.append([(text, f"p:{paragraph}")])
+                # 标题、列表记号是转换加的：记下长度，读回原文时去掉（锚点注释里写「p:3 2」）
+                mark = len(text) - len(_paragraph_text(Paragraph(child, document)))
+                parts.append([(text, f"p:{paragraph}" + (f" {mark}" if mark else ""))])
                 paragraphs += 1
         elif tag == "tbl":
             table_number += 1

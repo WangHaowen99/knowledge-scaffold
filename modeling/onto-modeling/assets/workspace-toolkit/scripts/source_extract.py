@@ -5,9 +5,9 @@ CLI（工作区根目录执行）：
   source_extract.py --sources          列出资料和各自要读的文本：md/txt/csv 等读原文件，PDF、Word、Excel
                                        读多源连接器转出的文本版 resource/text/<分组>/<原文件名>.md，没有文本版的标 missing
   source_extract.py FILE [--offset N] [--limit N]
-                                       只读文本：FILE 是 PDF、Word 这类原件时不解析，回 use_text_version（附文本版路径）
-                                       或 no_text_version，退出码 2（资料分析只读文本，F4b）
-Anchors: text L1; DOCX p:1 or table:1/row:1/cell:1; XLSX sheet:Sheet1!A1（后两种只给旧报告核验用，extract() 照常支持）.
+                                       FILE 是文本版时按它记的原件位置给段和锚点，cite 是出处要写的原件路径（ADR-0093）；
+                                       不解析原件
+Anchors: text L1; DOCX p:1 or table:1/row:1/cell:1; XLSX sheet:Sheet1!A1; PDF page:1（出处写 cite#锚点）.
 No generated summaries, formulas evaluated by us, or lossy encoding fallback.
 """
 from __future__ import annotations
@@ -147,8 +147,10 @@ def _extract_xlsx(path: Path, add) -> dict:
 def extract(path: Path) -> dict:
     result = {'status': 'unverifiable', 'extractor_version': VERSION,
               'source_sha256': '', 'segments': []}
+    suffix = path.suffix.lower()
+    if suffix in FROM_TEXT_VERSION and (material := _material_of(path)) is not None:
+        return _extract_from_text_version(path, *material)
     try:
-        suffix = path.suffix.lower()
         if suffix not in SUPPORTED:
             raise ValueError('不支持的来源格式')
         with _stable_snapshot(path) as (snapshot, source_sha256, source_size):
@@ -181,6 +183,161 @@ def extract(path: Path) -> dict:
     return result
 
 
+# ---------------------------------------------------------------------------
+# 资料区里的原件读网关转出的文本版（ADR-0076、ADR-0093）：文本版文末的锚点注释记着每一行在原件里的位置，
+# 这里按它还原出和直接读原件同样的段与锚点（Word p:3、table:1/row:2/cell:3，Excel sheet:表!B3），PDF 按页
+# 标记给 page:3。不解析原件，只读原件的字节算哈希、核对文本版是不是这一版原件转的。
+# 锚点注释的写法见后端 app/evidence/convert.py（anchor_index），两边同口径。
+# ---------------------------------------------------------------------------
+
+FROM_TEXT_VERSION = {'.docx', '.xlsx', '.xlsm', '.pdf'}
+TEXT_HEADER_PREFIX = '<!-- onto:text '
+ANCHORS_HEAD = '<!-- onto:anchors 1'
+PAGE_MARKER = re.compile(r'^<!-- 第 (\d+) 页 -->$')
+HEADER_SHA = re.compile(r'sha256="([0-9a-f]{16,64})"')
+
+
+def _material_of(path: Path) -> tuple[Path, str] | None:
+    """资料区里的原件 → (工作区根, 工作区相对路径)；不在资料区（或是文本版本身）返回 None。"""
+    parts = Path(os.path.abspath(path)).parts
+    for i in range(len(parts) - 2, 0, -1):
+        if parts[i] == 'resource':
+            rel = '/'.join(parts[i:])
+            return (None if rel.startswith(f'{TEXT_DIR}/') else (Path(*parts[:i]), rel))
+    return None
+
+
+def _unescape_anchor(text: str) -> str:
+    return text.replace('%0D', '\r').replace('%0A', '\n').replace('%3E', '>').replace('%25', '%')
+
+
+def anchor_index(lines: list[str]) -> tuple[dict[int, str], dict[str, list[str]], int]:
+    """文本版的行 → ({文件行号: 锚点}, {工作表: [合并区]}, 锚点注释开始的行号)；没有锚点注释时第三项是 0。"""
+    start = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].strip() == ANCHORS_HEAD), None)
+    if start is None:
+        return {}, {}, 0
+    offset = 2 if lines and lines[0].startswith(TEXT_HEADER_PREFIX) else 0
+    found, merges = {}, {}
+    for raw in lines[start + 1:]:
+        line = raw.strip()
+        if line == '-->':
+            break
+        number, _, anchor = line.partition(' ')
+        if number == 'merge':
+            sheet, _, refs = anchor.partition(' ')
+            merges.setdefault(_unescape_anchor(sheet.replace('%20', ' ')), []).extend(refs.split())
+        elif number.isdigit() and anchor:
+            found[int(number) + offset] = _unescape_anchor(anchor)
+    return found, merges, start + 1
+
+
+PARAGRAPH_MARK = re.compile(r'(p:\d+) (\d+)')
+
+
+def md_cells(line: str) -> list[str]:
+    """一行 Markdown 表格 → 单元格（转换器 md_cell 的逆：反斜杠转义、<br> 是格内换行）。"""
+    body = line.strip()
+    body = body[1:] if body.startswith('|') else body
+    cells, current, escaped = [], [], False
+    for char in body:
+        if escaped:
+            current.append(char)
+            escaped = False
+        elif char == '\\':
+            escaped = True
+        elif char == '|':
+            cells.append(''.join(current))
+            current = []
+        else:
+            current.append(char)
+    if ''.join(current).strip():
+        cells.append(''.join(current))
+    return [cell.strip().replace('<br>', '\n') for cell in cells]
+
+
+def column_letter(number: int) -> str:
+    label = ''
+    while number > 0:
+        number, rest = divmod(number - 1, 26)
+        label = chr(65 + rest) + label
+    return label
+
+
+def text_version_segments(text: str, suffix: str, add) -> dict:
+    """文本版全文 → 原件锚点的段（经 add 收集）；返回附带信息（合并区）。Word、Excel 没有锚点注释时 ValueError。"""
+    lines = text.splitlines()
+    index, merges, stop = anchor_index(lines)
+    if suffix != '.pdf' and not index:
+        raise ValueError('文本版还没有原件位置（转换后会补上），暂时核对不了')
+    body = lines[:stop - 1] if stop else lines
+    page = sheet = None
+    paragraph = None   # 正在收的段落：(锚点, [行])，软回车展开的续行接在后面
+    for number, line in enumerate(body, 1):
+        if number == 1 and line.startswith(TEXT_HEADER_PREFIX):
+            continue
+        anchor = index.get(number, '')
+        if paragraph and (anchor or not line.strip()):
+            add(paragraph[0], '\n'.join(paragraph[1]))
+            paragraph = None
+        if suffix == '.pdf':
+            marker = PAGE_MARKER.match(line.strip())
+            if marker:
+                page = marker.group(1)
+            elif page and line.strip():
+                add(f'page:{page}', line)
+        elif anchor.startswith('p:'):
+            # 段落原文：去掉转换器加的标题、列表记号（锚点注释里「p:3 2」的 2 是记号长度）
+            mark = PARAGRAPH_MARK.fullmatch(anchor)
+            paragraph = (mark.group(1), [line[int(mark.group(2)):]]) if mark else (anchor, [line])
+        elif anchor.startswith('table:'):
+            for column, value in enumerate(md_cells(line), 1):
+                add(f'{anchor}/cell:{column}', value)
+        elif anchor.startswith('sheet:'):
+            sheet = anchor[len('sheet:'):]
+        elif anchor.startswith('row:') and sheet is not None:
+            for column, value in enumerate(md_cells(line), 1):
+                add(f'sheet:{sheet}!{column_letter(column)}{anchor[len("row:"):]}', value)
+        elif paragraph and line.strip():
+            paragraph[1].append(line)
+    if paragraph:
+        add(paragraph[0], '\n'.join(paragraph[1]))
+    return {'merges': merges} if merges else {}
+
+
+def _extract_from_text_version(path: Path, root: Path, rel: str) -> dict:
+    """资料区里的 Word、Excel、PDF：读它的文本版，给出原件的锚点；不解析原件。"""
+    suffix = path.suffix.lower()
+    text_rel = text_version(rel)
+    result = {'status': 'unverifiable', 'extractor_version': VERSION, 'source_sha256': '', 'segments': [],
+              'text_version': text_rel}
+    try:
+        with _stable_snapshot(path) as (_snapshot, source_sha256, source_size):
+            result['source_sha256'] = source_sha256
+            result['source_size'] = source_size
+        try:
+            text = (root / text_rel).read_text(encoding='utf-8')
+        except FileNotFoundError:
+            raise ValueError('这份资料还没有文本版（转换中、暂不支持或转换失败）') from None
+        head = HEADER_SHA.search(text.split('\n', 1)[0])
+        if head and not source_sha256.startswith(head.group(1)[:16]):
+            raise ValueError('文本版不是这一版原件转的（资料改过，等重新转换）')
+        segments = []
+
+        def add(anchor, value):
+            if len(segments) >= MAX_SEGMENTS:
+                raise ValueError('来源位置数超限；不能以部分抽取充当完整来源')
+            if str(value).strip():
+                segments.append({'anchor': anchor, 'text': str(value)})
+
+        result.update(text_version_segments(text, suffix, add))
+        if not segments:
+            raise ValueError('未抽取到正文，无法核验来源')
+        result.update(status='ok', segments=segments)
+    except Exception as exc:  # 读不了一律按无法核验
+        result['reason'] = f'无法核验：{type(exc).__name__}：{str(exc)[:160]}'
+    return result
+
+
 def located_text(result: dict, anchor: str = '') -> str:
     if result['status'] != 'ok':
         raise ValueError(result.get('reason', '无法核验来源'))
@@ -209,6 +366,15 @@ SYSTEMS_DIR = 'resource/systems'
 def text_version(rel: str) -> str:
     """资料的文本版路径（多源连接器转出，ADR-0073）：resource/others/合同.pdf → resource/text/others/合同.pdf.md"""
     return f"{TEXT_DIR}/{rel.removeprefix('resource/')}.md"
+
+
+def original_of(rel: str) -> str | None:
+    """文本版 → 它的原件（只认带原件位置的 Word、Excel、PDF）：resource/text/others/合同.docx.md → resource/others/合同.docx"""
+    rel = rel.removeprefix('./')
+    if not (rel.startswith(f'{TEXT_DIR}/') and rel.endswith('.md')):
+        return None
+    original = 'resource/' + rel[len(TEXT_DIR) + 1:-3]
+    return original if Path(original).suffix.lower() in FROM_TEXT_VERSION else None
 
 
 def sources(root: Path) -> list[dict]:
@@ -257,16 +423,18 @@ def main() -> int:
         return 0
     if args.file is None:
         parser.error('要给资料路径，或用 --sources 列出资料')
-    if args.file.suffix.lower() not in TEXT_SUFFIXES:
-        # 资料分析只读文本（F4b）：原件交给多源连接器转换，这里不解析
-        rel = args.file.as_posix().removeprefix('./')
-        if Path(text_version(rel)).is_file():
-            _print_json({'status': 'use_text_version', 'text': text_version(rel)})
-        else:
-            _print_json({'status': 'no_text_version',
-                         'reason': '这份资料还没有文本版（转换中、暂不支持或转换失败），按未读记下，不要自己解析'})
+    rel = args.file.as_posix().removeprefix('./')
+    target, cite = args.file, rel
+    original = original_of(rel)
+    if original is not None:
+        # 读的是文本版：给出原件的锚点，出处写原件路径（ADR-0093）
+        target, cite = Path(original), original
+    elif args.file.suffix.lower() not in TEXT_SUFFIXES | FROM_TEXT_VERSION:
+        _print_json({'status': 'no_text_version',
+                     'reason': '这份资料没有文本版（暂不支持这种格式），按未读记下，不要自己解析'})
         return 2
-    result = extract(args.file)
+    result = extract(target)
+    result['cite'] = cite
     segments = result.pop('segments')
     if args.anchor:
         segments = [s for s in segments if s['anchor'] == args.anchor]

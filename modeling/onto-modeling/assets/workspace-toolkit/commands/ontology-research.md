@@ -74,6 +74,12 @@ python3 .claude/scripts/source_extract.py --sources
 `resource/text/…`）；`read` 为空的资料还没有文本版（转换中、暂不支持或转换失败），记为未读，不要自己解析原件。
 一份可读的文本都没有时停下（`acquire research confirm`），告诉用户先在资料区上传资料或等资料转成文本。
 
+派遣前逐个执行 `python3 .claude/scripts/source_extract.py "{read}" --offset 0 --limit 1` 做来源能力预检。
+`status=ok` 才继续；`unverifiable` 时立即列出文件和 `reason`。如果文件已经上传但格式不能作为确定性核验来源，
+明确说明“文件可作为辅助资料保留，但当前格式不能直接用于确定性来源核验”，并建议转换为
+DOCX、XLSX、Markdown、TXT 或 CSV；其他错误则提示用户修复、拆分或替换资料后重试，
+不得继续生成一份最终无法通过来源验收的报告。预检只验证能否受控抽取，不替代后续完整读取和内容验收。
+
 联网方式按 `$ARGUMENTS` 和项目能力定，也不问：含「仅基于本地」或项目没启用联网调研
 （`.claude/skills/deep-research/SKILL.md` 不存在）→ WEB_RESEARCH_MODE = skip；否则 supplement。
 

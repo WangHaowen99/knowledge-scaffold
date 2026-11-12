@@ -197,9 +197,11 @@ def anchor_index(lines: list[tuple[int, str]], merges: dict[str, list[str]] | No
 
 
 def parse_anchor_index(markdown: str) -> dict | None:
-    """文本版 → {lines: {文件行号: 锚点}, merges: {工作表: [A1:C1]}, start: 注释开始的文件行号}；没有这段时 None。
+    """文本版 → {lines: {文件行号: 锚点}, marks: {文件行号: 转换器加的记号长度}, merges: {工作表: [A1:C1]},
+    start: 注释开始的文件行号}；没有这段时 None。
 
-    文件第一行是内核写的文件头时，正文从第三行起（文件头 + 空行）。"""
+    文件第一行是内核写的文件头时，正文从第三行起（文件头 + 空行）。段落行可带记号长度（「p:3 2」：标题、列表的
+    「# 」「- 」是转换器加的，读回原文时去掉）。"""
     lines = str(markdown or "").splitlines()
     try:
         start = next(i for i in range(len(lines) - 1, -1, -1) if lines[i].strip() == ANCHORS_HEAD)
@@ -207,6 +209,7 @@ def parse_anchor_index(markdown: str) -> dict | None:
         return None
     offset = 2 if lines and parse_header(lines[0]) is not None else 0
     found: dict[int, str] = {}
+    marks: dict[int, int] = {}
     merges: dict[str, list[str]] = {}
     for raw in lines[start + 1:]:
         line = raw.strip()
@@ -217,8 +220,12 @@ def parse_anchor_index(markdown: str) -> dict | None:
             sheet, _, refs = anchor.partition(" ")
             merges.setdefault(_unescape_anchor(sheet.replace("%20", " ")), []).extend(refs.split())
         elif number.isdigit() and anchor:
+            mark = re.fullmatch(r"(p:\d+) (\d+)", anchor)
+            if mark:
+                anchor = mark.group(1)
+                marks[int(number) + offset] = int(mark.group(2))
             found[int(number) + offset] = _unescape_anchor(anchor)
-    return {"lines": found, "merges": merges, "start": start + 1}
+    return {"lines": found, "marks": marks, "merges": merges, "start": start + 1}
 
 
 def header(source: str, sha256: str, converter: str) -> str:
