@@ -323,6 +323,9 @@ def test_file_at_revision_and_revert(manager: WorkspaceManager):
     manager.revert_to(meta["id"], first)
     assert (root / "a.md").read_text(encoding="utf-8") == "v1"
     assert manager.versions(meta["id"])[0]["message"].startswith("revert")
+    assert manager.versions(meta["id"])[0]["message"] == (
+        f"revert: 回退到版本 2（{first[:8]}）"
+    )
 
 
 def test_delete_resource_scope(manager: WorkspaceManager):

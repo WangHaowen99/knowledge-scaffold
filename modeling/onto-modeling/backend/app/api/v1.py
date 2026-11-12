@@ -106,6 +106,7 @@ def _routers():
         studio.router,
         knowledge.router,
         versions.router,
+        versions.history_router,
         changesets.router,
         flow.router,
         blueprint.router,

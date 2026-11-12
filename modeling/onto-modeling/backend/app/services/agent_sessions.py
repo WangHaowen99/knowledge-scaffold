@@ -730,6 +730,12 @@ class SessionManager:
     def get(self, project_id: str) -> Session | None:
         return self._sessions.get(project_id)
 
+    def workspace_busy(self, project_id: str) -> bool:
+        """版本回退要等的助手工作（develop 同名）：在跑、排队、连接中、有待确认卡或处理中的发送、有积压消息，
+        以及本分支命令链还要接着跑下一条。"""
+        session = self._sessions.get(project_id)
+        return bool(session and (_busy(session) or session.pending_prompts or session.chaining))
+
     def resolve_conversation(
         self, project_id: str, conversation_id: str | None = None
     ) -> str:

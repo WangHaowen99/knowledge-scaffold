@@ -10,6 +10,7 @@ import { useApp, useProject } from '@onto/app/context.js';
 import { navigate, pagePath } from '@onto/app/router.js';
 import { artifactQuery } from '@onto/app/packUi.js';
 import { toast } from '@onto/app/toast.jsx';
+import { setWorkspaceDirty } from '@onto/lib/workspaceDirty.js';
 import { describeConflict, errorText } from '@onto/api/errors.js';
 import { DrawioEditorFrame, drawioStateText } from '@onto/components/DrawioView.jsx';
 import FlowchartEditor from './FlowchartEditor.jsx';
@@ -59,6 +60,11 @@ export default function FlowchartDialog({ artifact, onClose }) {
   const dioAsk = useRef(0);
   const dirtyRef = useRef(false);
   dirtyRef.current = session.dirty || dio.dirty || session.saveInFlight;
+  // 流程图有没保存的修改或正在保存时挡住版本回退（develop 同）
+  useEffect(() => {
+    setWorkspaceDirty('flowchart-editor', session.dirty || session.saveStatus === 'saving');
+    return () => setWorkspaceDirty('flowchart-editor', false);
+  }, [session.dirty, session.saveStatus]);
 
   // 有未保存修改时关页面、刷新先问一句
   useEffect(() => {

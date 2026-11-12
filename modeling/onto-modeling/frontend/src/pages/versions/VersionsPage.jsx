@@ -1,4 +1,5 @@
-// 版本历史与对比（设计稿 versions）：版本时间线（V-01）、「改了什么」（V-02）、与当前对比（V-04，右侧可编辑，保存走 F-03）、
+// 版本历史与对比（设计稿 versions）：左栏是历史时间线（V-09，迭代与 Hub 发布版本合并，元素照 develop 的「历史」页签，
+// ADR-0094），按来源筛选时改列 V-01；「改了什么」（V-02）、与当前对比（V-04，右侧可编辑，保存走 F-03）、
 // 某版本的文件（V-03、F-06）、标记与删除标记（V-07、V-08）、回退（V-05 预览 → V-06）；项目流 workspace.changed（EP-05）刷新。
 // 从别处跳来：?v=&run=&slice=（待处理、自主构建报告、运行矩阵的「查看改动」）选中那个版本；
 //            ?path=&from=&to=WORKTREE（原文编辑器的「刷新后对比」）直接打开这个文件的对比。
@@ -12,15 +13,16 @@ import {
   Button, Card, Chip, Icon, Menu, Note, Select, St, cx,
 } from '../../ui/index.jsx';
 import { createLatestRequest } from '../../lib/latestRequest.js';
-import { setWorkspaceDirty } from '../../lib/workspaceDirty.js';
+import { EMPTY_HISTORY, appendHistoryPage, historyEntryKey, versionTitle } from '../../lib/versionHistory.js';
+import { hasWorkspaceDirty, setWorkspaceDirty } from '../../lib/workspaceDirty.js';
+import { openEvaluation, prefetchEvaluationEntry } from '../evaluation/evaluationEntry.js';
 import CompareEditor from './CompareEditor.jsx';
 import { usePopMenu } from './popMenu.js';
+import { FilesDrawer, RevertConfirm, TagModal } from './dialogs.jsx';
 import {
-  DeleteTagModal, FilesDrawer, RevertModal, TagModal,
-} from './dialogs.jsx';
-import {
-  EMPTY_HISTORY, SOURCES, SOURCE_FILTERS, appendPage, byNewest, changeText, compareFromOf, compareOptions, defaultCompare, diffLines, editBlocks, entryPath,
-  fmtStamp, pathLocked, syncMeta, pickLanding, rangeOptions, reviewView, srcClass, srcLabel, targetLabel, versionMenu, changeRows, pathLabel, versionSub,
+  SOURCES, SOURCE_FILTERS, byNewest, changeText, compareFromOf, compareOptions, defaultCompare, diffLines, editBlocks, entryPath,
+  fmtStamp, pathLocked, syncMeta, pickLanding, rangeOptions, reviewView, revertBlockedText, srcClass, srcLabel, targetLabel, versionMenu,
+  changeRows, pathLabel, versionSub,
 } from './versionsModel.js';
 import '../../styles/more.css';
 import '../../styles/versions.css';
@@ -30,16 +32,37 @@ const LOCK_TEXT = {
   pending: ['这个文件和助手这一轮的修改有冲突，选好保留哪边后才能在这里编辑'],
 };
 
-function VersionRow({ v, on, onSelect, onMenu, onDelTag }) {
-  const menu = usePopMenu({ width: 190, height: 200 });
+// 历史时间线的一条（元素照 develop 的「历史」页签）：发布版本带「下载」「评测」；迭代带说明、标记、
+// 「标记」「回退到此版本」，另有本分支的来源、当前标记与 ⋯（查看文件、对比）
+function HistoryRow({ v, on, onSelect, onMenu, onTag, onDelTag, onRevert, reverting, downloading, onDownload, onEvaluate }) {
+  const menu = usePopMenu({ width: 190, height: 120 });
+  if (v.kind === 'release') {
+    return (
+      <div className="mr-vr vr-release">
+        <span className="dot" />
+        <div className="grow" style={{ minWidth: 0 }}>
+          <div className="row">
+            <b className="v">{versionTitle(v.kind, v.version)}</b>
+            <span className="xs muted num">{v.time ? fmtStamp(v.time * 1000) : ''}</span>
+          </div>
+          <div className="sm mt4">发布知识包{v.source_service ? ` · 来源 ${v.source_service}` : ''}</div>
+          <div className="row mt4 g4">
+            <Button size="xs" kind="ghost" disabled={downloading === v.release_id} onClick={() => onDownload(v.release_id)}>下载</Button>
+            <Button size="xs" kind="ghost" onClick={() => onEvaluate(v)}>评测</Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  const tags = v.tags || [];
   return (
-    <div className={cx('mr-vr', v.current && 'head', on && 'on')} onClick={() => onSelect(v)}>
+    <div className={cx('mr-vr', v.current && 'head', on && 'on', tags.length && 'vr-tagged')} onClick={() => onSelect(v)}>
       <span className="dot" />
       <div className="grow" style={{ minWidth: 0 }}>
         <div className="row">
-          <span className="v">{v.version_label}</span>
-          <span className={cx('mr-src', srcClass(v.source))}>{srcLabel(v)}</span>
-          <span className="xs muted num">{fmtStamp(v.at)}</span>
+          <b className="v">{versionTitle('iteration', v.version)}</b>
+          {v.source ? <span className={cx('mr-src', srcClass(v.source))}>{srcLabel(v)}</span> : null}
+          <span className="xs muted num">{fmtStamp(v.at || (v.time ? v.time * 1000 : ''))}</span>
           {v.current ? <Chip tone="blue" sm>当前</Chip> : null}
           <span className="sp" />
           <span ref={menu.ref} onClick={(e) => e.stopPropagation()}>
@@ -54,15 +77,24 @@ function VersionRow({ v, on, onSelect, onMenu, onDelTag }) {
             ) : null}
           </span>
         </div>
-        <div className="sm mt4">{v.summary}</div>
-        <div className="row mt4 g4 wrap">
-          {v.tags.map((t) => (
-            <span key={t.name} className="mr-tagc">
-              <Icon name="tag" size={12} />{t.label}
-              <button type="button" title="删除标记" onClick={(e) => { e.stopPropagation(); onDelTag({ ...t, version_label: v.version_label }); }}><Icon name="x" size={12} /></button>
-            </span>
-          ))}
-          {v.release ? <span className="vr-rel"><Icon name="upload" size={12} />已发布 {v.release}</span> : null}
+        <div className="sm mt4">{v.summary || v.message}</div>
+        {tags.length ? (
+          <div className="row mt4 g4 wrap">
+            {tags.map((t) => (
+              <span key={t.name} className="mr-tagc">
+                <Icon name="tag" size={12} />{t.label}
+                <button type="button" title="删除标记" onClick={(e) => { e.stopPropagation(); onDelTag(t); }}><Icon name="x" size={12} /></button>
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <div className="row mt4 g4" onClick={(e) => e.stopPropagation()}>
+          <Button size="xs" kind="ghost" onClick={() => onTag(v)}>标记</Button>
+          {!v.current && v.can_revert !== false ? (
+            <Button size="xs" kind="danger" disabled={!!reverting} onClick={() => onRevert(v)}>
+              {reverting === v.commit ? '回退中…' : '回退到此版本'}
+            </Button>
+          ) : null}
         </div>
       </div>
     </div>
@@ -76,7 +108,7 @@ function ChangesCard({ detail, onPick, current }) {
   const n = changes.filter((c) => c.review === 'needs_review').length;
   return (
     <Card
-      title={`${detail.version_label} 改了什么`}
+      title={`${versionTitle('iteration', detail.n)} 改了什么`}
       icon="file"
       sub={versionSub(detail)}
       extra={n ? <Chip tone="indigo" sm icon="eye">{n} 项需复核</Chip> : null}
@@ -111,12 +143,17 @@ function Lines({ lines, empty }) {
 }
 
 export default function VersionsPage({ route }) {
-  const { api } = useApp();
+  const { api, services } = useApp();
   const { pid, scope, setMeta } = useProject();
   const q = route?.query || {};
-  const [hist, setHist] = useState(null);
-  const items = useMemo(() => (hist ? byNewest(hist.items) : null), [hist]);
-  const more = hist?.next || null;
+  const [items, setItems] = useState(null);
+  const [total, setTotal] = useState(0);
+  const [history, setHistory] = useState(EMPTY_HISTORY);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyRevision, setHistoryRevision] = useState(0);
+  const [downloading, setDownloading] = useState('');
+  const [reverting, setReverting] = useState(null);
+  const [confirm, setConfirm] = useState(null);
   const diffReq = useMemo(() => createLatestRequest(), []);
   const [filter, setFilter] = useState('');
   const [filtered, setFiltered] = useState(null);
@@ -132,8 +169,6 @@ export default function VersionsPage({ route }) {
   const [outside, setOutside] = useState(null);
   const [saving, setSaving] = useState(false);
   const [tagFor, setTagFor] = useState(null);
-  const [revertFor, setRevertFor] = useState(null);
-  const [delTag, setDelTag] = useState(null);
   const [filesFor, setFilesFor] = useState(null);
   const landed = useRef('');
   const stepBack = useRef(false);
@@ -142,7 +177,8 @@ export default function VersionsPage({ route }) {
   const loadItems = useCallback(async () => {
     try {
       const r = await api.versions(pid, { limit: 200 });
-      setHist(appendPage(EMPTY_HISTORY, r));
+      setItems(byNewest(r.items));
+      setTotal(r.total ?? r.items.length);
       setMeta((m) => syncMeta(m, r));
       return r.items;
     } catch (e) {
@@ -150,15 +186,49 @@ export default function VersionsPage({ route }) {
       return null;
     }
   }, [api, pid, setMeta]);
-  useEffect(() => { setHist(null); loadItems(); }, [loadItems]);
-  const loadMore = async () => {
+  useEffect(() => { setItems(null); loadItems(); }, [loadItems]);
+
+  // 历史时间线：版本列表重读（有了新版本）或点「重试」时从第一页重新读取
+  useEffect(() => setHistory(EMPTY_HISTORY), [pid]);
+  // 失败不阻断：点击「评测」时会重新读取并给出原因
+  useEffect(() => { prefetchEvaluationEntry(api.evaluationEntry).catch(() => {}); }, [api]);
+  useEffect(() => {
+    let active = true;
+    setHistoryLoading(true);
+    api.history(pid)
+      .then((page) => { if (active) setHistory(appendHistoryPage(EMPTY_HISTORY, page)); })
+      .catch((error) => { if (active) setHistory({ ...EMPTY_HISTORY, error: errorText(error) }); })
+      .finally(() => { if (active) setHistoryLoading(false); });
+    return () => { active = false; };
+  }, [api, pid, items, historyRevision]);
+  const loadMoreHistory = async () => {
+    const cursor = history.nextCursor;
+    setHistoryLoading(true);
     try {
-      const r = await api.versions(pid, { limit: 200, cursor: more });
-      setHist((h) => appendPage(h || EMPTY_HISTORY, r));
-    } catch (e) {
-      toast(errorText(e), 'alert');
+      const page = await api.history(pid, { cursor });
+      // 读取期间列表已重新加载（游标变了）时丢弃这一页
+      setHistory((prev) => (prev.nextCursor === cursor ? appendHistoryPage(prev, page) : prev));
+    } catch (error) {
+      toast(errorText(error), 'alert');
+    } finally {
+      setHistoryLoading(false);
     }
   };
+  const downloadRelease = async (releaseId) => {
+    setDownloading(releaseId);
+    try {
+      await services.download(api.hubReleaseDownloadPath(pid, releaseId), 'package.zip');
+    } catch (error) {
+      toast(errorText(error), 'alert');
+    } finally {
+      setDownloading('');
+    }
+  };
+  const evaluateRelease = (release) => openEvaluation(release, {
+    loadEntry: api.evaluationEntry,
+    tokens: () => ({ access_token: services.tokens.access, refresh_token: services.tokens.refresh }),
+  }).catch((error) => toast(errorText(error), 'alert'));
+  const deleteTag = (tag) => api.deleteVersionTag(pid, tag.name).then(loadItems).catch((error) => toast(errorText(error), 'alert'));
   useEffect(() => {
     if (!filter) { setFiltered(null); return undefined; }
     let alive = true;
@@ -249,8 +319,44 @@ export default function VersionsPage({ route }) {
   const onMenu = (key, v) => {
     if (key === 'files') setFilesFor(v);
     if (key === 'compare') selectVersion(v, true);
-    if (key === 'tag') setTagFor(v.commit);
-    if (key === 'revert') setRevertFor(v);
+  };
+
+  // 回退（develop 的流程与提示）：页面上有没保存的修改先挡；预览说不能回退就提示原因；能回退再确认
+  const revertTo = async (version) => {
+    if (hasWorkspaceDirty()) {
+      toast('当前页面有未保存修改，请先保存或放弃后再回退', 'alert');
+      return;
+    }
+    setReverting(version.commit);
+    try {
+      const preview = await api.revertPreview(pid, version.commit);
+      if (!preview?.ready) {
+        toast(revertBlockedText(preview), 'alert');
+        setReverting(null);
+        return;
+      }
+      setConfirm({ version, preview });
+    } catch (error) {
+      toast(errorText(error), 'alert');
+      setReverting(null);
+    }
+  };
+  const cancelRevert = () => { setConfirm(null); setReverting(null); };
+  const confirmRevert = async () => {
+    const { version, preview } = confirm;
+    setConfirm(null);
+    try {
+      const result = await api.revertVersion(pid, version.commit, preview.expected_head);
+      toast('已回退并生成新版本', 'undo');
+      if (result.warning) toast(result.warning, 'alert');
+      const list = await loadItems();
+      const nv = (list || []).find((x) => x.commit === result.commit);
+      if (nv) selectVersion(nv);
+    } catch (error) {
+      toast(errorText(error), 'alert');
+    } finally {
+      setReverting(null);
+    }
   };
 
   // 别处改了文件（EP-05）：刷新列表；改到正在对比的文件时，没改过就直接刷新，改过就提示
@@ -300,7 +406,7 @@ export default function VersionsPage({ route }) {
 
   const rangeOpts = rangeOptions(items || []);
   const objOpts = options.length ? options : [{ value: '', label: '选择对象' }];
-  const leftLabel = diff?.from?.version_label || fromV?.version_label || '';
+  const leftLabel = fromV ? versionTitle('iteration', fromV.n) : (diff?.from?.version_label || '');
 
   return (
     <ShellP active="versions">
@@ -311,18 +417,45 @@ export default function VersionsPage({ route }) {
       <div className="mr-2c vr-page" style={{ gridTemplateColumns: '480px minmax(0,1fr)' }}>
         <div className="card" style={{ overflow: 'hidden' }}>
           <div className="row" style={{ padding: '12px 14px', borderBottom: '1px solid var(--line)' }}>
-            <b>{items ? `${timeline.length} 个版本` : '正在读取…'}</b>
+            <b>{items ? `${filtered ? filtered.length : total} 个版本` : '正在读取…'}</b>
             <span className="sp" />
             <Select value={filter} options={SOURCE_FILTERS} onChange={setFilter} icon="filter" w="130px" className="vr-sel" />
           </div>
+          {!filter && (history.error || history.releaseError) ? (
+            <div className="note amber" style={{ margin: '10px 14px 0' }}>
+              <Icon name="alert" />
+              <div className="grow">
+                {history.error ? `历史记录读取失败：${history.error}` : `发布版本读取失败：${history.releaseError}`}
+              </div>
+              <Button size="xs" onClick={() => setHistoryRevision((n) => n + 1)}>重试</Button>
+            </div>
+          ) : null}
           <div className="mr-tl">
-            {timeline.map((v) => (
-              <VersionRow key={v.commit} v={v} on={v.commit === selected} onSelect={(x) => selectVersion(x)} onMenu={onMenu} onDelTag={setDelTag} />
+            {(filter ? timeline : history.items).map((v) => (
+              <HistoryRow
+                key={historyEntryKey(v.kind ? v : { ...v, kind: 'iteration' })}
+                v={v.kind ? v : { ...v, kind: 'iteration', version: v.n, can_revert: true }}
+                on={v.commit === selected}
+                onSelect={(x) => selectVersion(x)}
+                onMenu={onMenu}
+                onTag={(x) => setTagFor(x.commit)}
+                onDelTag={deleteTag}
+                onRevert={revertTo}
+                reverting={reverting}
+                downloading={downloading}
+                onDownload={downloadRelease}
+                onEvaluate={evaluateRelease}
+              />
             ))}
-            {items && !timeline.length ? <div className="sm muted" style={{ padding: 14 }}>没有这个来源的版本。</div> : null}
+            {filter && items && !timeline.length ? <div className="sm muted" style={{ padding: 14 }}>没有这个来源的版本。</div> : null}
+            {!filter && !history.items.length && historyLoading ? <div className="sm muted" style={{ padding: 14 }}>正在读取…</div> : null}
+            {!filter && !history.items.length && !historyLoading && !history.error ? (
+              <div className="sm muted" style={{ padding: 14 }}>还没有版本记录</div>
+            ) : null}
           </div>
-          {more && !filter ? <div className="vr-more"><Button size="sm" kind="ghost" onClick={loadMore}>加载更早的版本</Button></div> : null}
-          {hist?.releaseError ? <div className="xs muted" style={{ padding: '0 14px' }}>发布记录读取失败</div> : null}
+          {!filter && history.nextCursor ? (
+            <div className="vr-more"><Button size="sm" kind="ghost" disabled={historyLoading} onClick={loadMoreHistory}>加载更多</Button></div>
+          ) : null}
           <div className="row xs muted" style={{ padding: '10px 14px' }}>
             {SOURCES.map(([k, t, c]) => <span key={k} className={cx('mr-src', c)}>{t}</span>)}
           </div>
@@ -398,8 +531,8 @@ export default function VersionsPage({ route }) {
                 <>
                   <div className="divider" />
                   <div className="row">
-                    <Button size="sm" icon="eye" onClick={() => setFilesFor(fromV)}>查看 {fromV.version_label} 的全部文件</Button>
-                    <Button size="sm" icon="undo" disabled={fromV.current} title={fromV.current ? '已是当前版本' : undefined} onClick={() => setRevertFor(fromV)}>回退到 {fromV.version_label}</Button>
+                    <Button size="sm" icon="eye" onClick={() => setFilesFor(fromV)}>查看{versionTitle('iteration', fromV.n)}的全部文件</Button>
+                    <Button size="sm" icon="undo" disabled={fromV.current || !!reverting} title={fromV.current ? '已是当前版本' : undefined} onClick={() => revertTo(fromV)}>回退到此版本</Button>
                   </div>
                 </>
               ) : null}
@@ -409,18 +542,8 @@ export default function VersionsPage({ route }) {
         </div>
       </div>
 
-      <TagModal open={!!tagFor} items={items} initial={tagFor} onClose={() => setTagFor(null)} onDone={() => { setTagFor(null); loadItems(); }} />
-      <DeleteTagModal tag={delTag} onClose={() => setDelTag(null)} onDone={() => { setDelTag(null); loadItems(); }} />
-      <RevertModal
-        version={revertFor}
-        onClose={() => setRevertFor(null)}
-        onDone={async (r) => {
-          setRevertFor(null);
-          const list = await loadItems();
-          const nv = (list || []).find((x) => x.commit === r.commit);
-          if (nv) selectVersion(nv);
-        }}
-      />
+      <TagModal commit={tagFor} onClose={() => setTagFor(null)} onDone={() => { setTagFor(null); loadItems(); }} />
+      <RevertConfirm target={confirm} onCancel={cancelRevert} onConfirm={confirmRevert} />
       <FilesDrawer
         version={filesFor}
         onClose={() => setFilesFor(null)}

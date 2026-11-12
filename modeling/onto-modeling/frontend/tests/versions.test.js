@@ -6,8 +6,7 @@ import { register as registerVersions } from '../src/api/mock/routes-versions.js
 import { mainHistory, undoChange } from '../src/api/mock/versions-data.js';
 import {
   compareFromOf, compareOptions, defaultCompare, diffLines, editBlocks, entryPath, pathLabel, pathLocked, pickLanding,
-  revertBlock, revertChips, revertCountText, revertErrorText, srcClass, srcLabel, syncMeta, tagLabelError, targetLabel,
-  undoneText, versionMenu, versionSub,
+  revertBlockedText, revertConfirmText, srcClass, srcLabel, syncMeta, targetLabel, undoneText, versionMenu, versionSub,
 } from '../src/pages/versions/versionsModel.js';
 
 // ---------- 纯逻辑 ----------
@@ -92,37 +91,22 @@ test('对比左侧：选中当前版本时和上一个版本比；对象下拉�
   assert.equal(versionSub(LIST[14]), '自主构建运行 #3 · 陈列量核定');
 });
 
-test('回退说明：撤回哪些版本、文件标签、被挡住时的说法', () => {
+test('回退说明（develop 原文）：确认框按业务文件计数，挡住时各原因用「；」连起来', () => {
   assert.equal(undoneText(['v0.12', 'v0.13']), 'v0.12、v0.13');
   assert.equal(undoneText(['v0.15', 'v0.16', 'v0.17', 'v0.18', 'v0.19']), 'v0.15～v0.19');
-  const chips = revertChips([
-    { path: 'ext/trace/scenarios/s-07.yaml', change: 'delete' }, { path: 'ontology/rule/R-08 临期分级.md', change: 'delete' },
-    { path: 'ontology/object/陈列量标准.md', change: 'restore' }, { path: 'ext/trace/scenarios/s-08.yaml', change: 'delete' },
-  ]);
-  assert.deepEqual(chips.map((c) => c.label), ['对象「陈列量标准」', '规则「R-08 临期分级」', '场景 ×2']);
-  assert.equal(chips[1].del, true);
-  const many = revertChips(Array.from({ length: 8 }, (_, i) => ({ path: `ontology/object/o${i}.md`, change: 'restore' })));
-  assert.equal(many.length, 5);
-  assert.equal(many[4].label, '另 4 个');
-  assert.equal(revertCountText([{ change: 'restore' }, { change: 'delete' }, { change: 'delete' }]), '将恢复 1 个文件，删除 2 个之后才有的文件');
-  assert.equal(revertCountText([]), '文件内容和当前一致');
-  assert.equal(revertBlock({ state: 'pending_confirm' }).action, 'confirm');
-  assert.equal(revertBlock({ state: 'assistant_running' }).action, 'chat');
-  assert.equal(revertBlock({ state: 'autobuild_slice' }).action, 'run');
-  assert.equal(revertBlock({ state: 'none' }), null);
-  assert.equal(revertErrorText({ code: 'write_scope_locked', details: { state: 'pending_confirm' } }, 'x'), revertBlock({ state: 'pending_confirm' }).text);
-  assert.notEqual(revertErrorText({ code: 'write_scope_locked', details: { state: 'pending_confirm' } }, 'x'), 'x');
-  assert.match(revertErrorText({ code: 'autobuild_running' }, 'x'), /自主构建正在运行/);
-  assert.equal(revertErrorText({ code: 'other' }, 'fallback'), 'fallback');
+  assert.equal(
+    revertConfirmText({ added: ['a'], modified: ['b', 'c'], deleted: [], total: 3 }),
+    '将新增 1、修改 2、删除 0 个业务文件；项目设置和运行状态不会回退。',
+  );
+  assert.equal(revertBlockedText({ ready: false, blockers: [{ message: '甲' }, { message: '乙' }] }), '甲；乙');
+  assert.equal(revertBlockedText({ ready: false, blockers: [] }), '当前项目暂不能回退');
 });
 
-test('标记校验、⋯ 菜单、写入范围只读、顶栏版本同步', () => {
-  assert.equal(tagLabelError('  '), '写一个标记名称');
-  assert.equal(tagLabelError('x'.repeat(121)), '标记名称不能超过 120 个字');
-  assert.equal(tagLabelError('月底盘点前'), '');
+test('⋯ 菜单只放查看文件与对比（标记、回退在行内）、写入范围只读、顶栏版本同步', () => {
   const menu = versionMenu({ current: true });
-  assert.equal(menu.find((x) => x.key === 'revert').disabled, true);
-  assert.equal(versionMenu({ current: false }).find((x) => x.key === 'revert').disabled, false);
+  assert.deepEqual(menu.map((x) => x.key), ['files', 'compare']);
+  assert.equal(menu.find((x) => x.key === 'compare').disabled, true);
+  assert.equal(versionMenu({ current: false }).find((x) => x.key === 'compare').disabled, false);
   const lock = { state: 'pending_confirm', entries: [{ kind: 'object', id: 'object:display_qty_std', key: 'display_qty_std', name: '陈列量标准' }], artifacts: [], paths: ['ext/trace/scenarios/**'] };
   assert.equal(pathLocked(lock, 'ontology/object/陈列量标准.md'), true);
   assert.equal(pathLocked(lock, 'ext/trace/scenarios/s-01.yaml'), true);
@@ -354,11 +338,3 @@ test('V-03：某版本的文件（v0.15 还没有临期那一段的条目）与 
   assert.equal(lib.body.total, 3);
 });
 
-test('回退预览：同名文件（四个 index.md）按业务名分得清，不出路径', () => {
-  const chips = revertChips([
-    { path: 'ontology/object/index.md', change: 'restore' }, { path: 'ontology/operation/index.md', change: 'restore' },
-    { path: 'ontology/rule/index.md', change: 'delete' }, { path: 'ontology/object/门店.md', change: 'restore' },
-  ]);
-  assert.deepEqual(chips.map((c) => c.label), ['对象清单', '操作清单', '对象「门店」', '规则清单']);
-  assert.equal(new Set(chips.map((c) => c.key)).size, chips.length);
-});

@@ -1697,3 +1697,11 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
    启动迁移（eval_retirement）不再删 `.ontology-state/eval.json`。`ES-10` 响应多 `path`。
 3. **新增 `ES-12`** `POST /api/v1/projects/{id}/legacy-evaluations/{id}/optimization`：旧报告的评测优化，与 `ES-07` 一样成一批外部反馈。
 
+
+## 2026-11-12 · 版本历史与回退对齐 develop（develop-sync 第二轮 P3，ADR-0094）
+
+1. **V-09 新增** `GET /api/v1/projects/{id}/history`：develop 的历史时间线，迭代与 Hub 发布版本合并分页（`version_history.py` 原样移植）。版本页左栏改用它。
+2. **V-05** 加 `changes: {added, modified, deleted, total}`（develop 确认框的计数）；`blockers` 的 `message` 改为 develop 原文。
+3. **V-06** 响应加 `changes`、`warning`；回退后删掉 `.ontology-state` 派生状态（第一轮按指纹失效、不删，改回 develop）；暂存了元数据也拒绝；提交说明改为「revert: 回退到版本 N（短提交号）」。
+4. 错误提示文字照 develop（「项目已产生新版本，请重新预览后再回退」「当前业务内容与该版本一致，无需回退」「只能回退到当前版本历史中的提交」等），错误码沿用 v1。
+5. 会话池加 `workspace_busy`（develop 同名），回退的「助手在跑」按它判断。
