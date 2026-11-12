@@ -264,3 +264,27 @@ test('consumer 导入规则不通过（知识包结构）挡发布且不能降�
   assert.deepEqual(degradeNote(check), { blocked: true, text: '知识包结构未通过' });
   assert.equal(degradeNote({ gates: [check.gates[0]] }).blocked, false);
 });
+
+test('mock：建模阶段没做完时门禁链第一关挡住（publish:stages），发布检查带 develop 的 stages、solver、structure、last_publish', async () => {
+  const { call } = mockServer({ sc: { publish: 'stages' } });
+  const r = await call('GET', `${P}/publish/check`);
+  assert.equal(r.body.gates[0].id, 'modeling_stages');
+  assert.equal(r.body.gates[0].summary, '建模未完成，请先完成：资料分析、质量检查');
+  assert.deepEqual(r.body.stages.missing_stages, [{ key: 'research', title: '资料分析' }, { key: 'validate', title: '质量检查' }]);
+  assert.equal(r.body.solver.requires_validation_after_publish, true);
+  assert.equal(r.body.structure.blocking, 0);
+  assert.equal(r.body.last_publish.version, '0.11.0');
+  const ok = await mockServer().call('GET', `${P}/publish/check`);
+  assert.ok(!ok.body.gates.some((g) => g.id === 'modeling_stages'));
+});
+
+test('mock：HB-05 列出项目所在包的版本，含别人发布到同一个包的，分页', async () => {
+  const { call } = mockServer();
+  const all = await call('GET', `${P}/hub/releases?offset=0&limit=10`);
+  assert.equal(all.body.total, 3);
+  assert.deepEqual(all.body.releases.map((r) => r.version), ['0.1.2', '0.11.0', '0.7.0']);
+  assert.ok(all.body.releases.every((r) => r.release_id && r.created_at && r.source_service));
+  const second = await call('GET', `${P}/hub/releases?offset=2&limit=2`);
+  assert.deepEqual(second.body.releases.map((r) => r.version), ['0.7.0']);
+  assert.equal((await call('GET', `${P}/hub/resources/status`)).body.pending, false);
+});

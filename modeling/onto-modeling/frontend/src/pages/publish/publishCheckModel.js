@@ -1,0 +1,134 @@
+// 发布检查与已发布版本的纯逻辑：文字照 develop（PublishCheckDialog、PublishedVersionsDialog、lib/packagePublish.js），
+// 数据取 PB-01（stages、solver、structure、binding、last_publish）与 HB-05（Hub 上这个包的版本）。
+
+// 发布必须完成的建模阶段（与后端 publish/stages.py 同一规则；后端已算好，这里只组织提示）
+export const PUBLISH_REQUIRED_STAGES = ['research', 'object', 'operation', 'validate'];
+export const missingPublishStages = (check) => check?.stages?.missing_stages || [];
+export function stageNote(check) {
+  const missing = missingPublishStages(check);
+  return missing.length ? `建模未完成，请先完成：${missing.map((stage) => stage.title).join('、')}` : '';
+}
+
+export const KIND_TEXT = {
+  declared_missing: '声明的表不存在',
+  no_columns: '表里没有一列对得上',
+  declared_unverifiable: '无数据表可核对',
+};
+
+export const STRUCTURE_TITLES = {
+  package_archive_invalid: '压缩包',
+  package_manifest_invalid: '清单',
+  package_revision_invalid: '修订包',
+  package_limit_exceeded: '数量上限',
+  object_aliases_invalid: '对象别名',
+  field_aliases_invalid: '字段别名',
+  solver_package_unsafe: '求解包安全',
+  solver_layout_invalid: '求解布局',
+  package_export_failed: '导出失败',
+};
+
+export const FINDING_TITLES = {
+  // 该错误码同时覆盖不支持的 Profile 与评估器不符合 Consumer 兼容层接口，标题不能只说版本
+  solver_contract_version_incompatible: '契约不兼容',
+  solver_contract_reference_missing: '引用缺失',
+  solver_context_missing: 'SOLVER_CONTEXT 不完整',
+  solver_runtime_binding_forbidden: '含运行时绑定',
+  solver_contract_invalid: '契约不合法',
+  solver_contract_revision_conflict: '修订冲突',
+};
+
+export const shortRevision = (revision) => (revision ? String(revision).replace(/^sha256:/, '').slice(0, 10) : '—');
+export const findingSource = (finding) => [finding?.path, finding?.field, finding?.code].filter(Boolean).join(' · ');
+
+// 「打开文档 / 打开文件」：本体文档到 Studio 的条目，脚本到代码生成页；求解契约受管目录不出入口
+export function fileTarget(path) {
+  const p = String(path || '');
+  const entry = p.match(/^ontology\/(object|operation|logic|rule|metric)\/([^/]+)\.md$/);
+  if (entry) return { page: 'studio', query: { entry: `${entry[1] === 'logic' ? 'operation' : entry[1]}:${entry[2]}` } };
+  if (/^ontology\/scripts\//.test(p)) return { page: 'scripts' };
+  return null;
+}
+
+// 不以空格结尾：发到当前对话里直接执行
+export function assistantPrompt(issues) {
+  return [
+    '发布前数据绑定检查发现以下对象的「# 数据来源」与项目数据表对不上，请逐个修正：',
+    ...issues.map((issue) => `- ${issue.message}`),
+    '修正口径：首行只写现有数据表名（schema 表格资料里的 Sheet 名，逐字相同）；'
+      + '确实不落库的对象填「无」；不要臆造表名。修完运行规则检查，确认没有「列名对账」错误。',
+  ].join('\n');
+}
+
+// 「改为现有数据表」：推荐（带对得上的列数）在前，其余在「全部数据表」
+export function tableGroups(issue, tables) {
+  const candidates = issue.candidates || [];
+  const recommended = new Set(candidates.map((item) => item.table));
+  const groups = [];
+  if (candidates.length) {
+    groups.push({ label: '推荐', options: candidates.map((item) => ({ value: item.table, label: item.matched ? `${item.table}（${item.matched} 列对得上）` : item.table })) });
+  }
+  groups.push({ label: '全部数据表', options: (tables || []).filter((name) => !recommended.has(name)).map((name) => ({ value: name, label: name })) });
+  return groups;
+}
+
+export function checkSummary(check) {
+  const b = check?.binding || {};
+  const blocking = (b.issues || []).filter((issue) => issue.blocking).length;
+  return `对象 ${b.objects ?? 0} 个，已绑定数据表 ${b.bound_objects ?? 0} 个；阻断项 ${blocking} 个`;
+}
+
+const localTime = (iso) => (iso ? new Date(iso).toLocaleString() : '');
+export function lastPublishText(check) {
+  const last = check?.last_publish;
+  if (!last) return '';
+  return `上次发布：${localTime(last.at)}${last.by ? ` · ${last.by}` : ''}${last.degraded ? ` · 降级发布（${last.unbound_count} 个对象未绑定）` : ''}`;
+}
+
+export const checkTitle = (check) => (check?.solver?.enabled ? '发布知识包 · 发布检查' : '发布知识包 · 数据绑定检查');
+
+// 降级不能绕过的问题数：求解契约静态检查与结构自检
+export const hardBlockers = (check) => (check?.solver?.blocking || 0) + (check?.structure?.blocking || 0);
+export const needsSolverAcknowledgement = (check) => Boolean(check?.solver?.requires_validation_after_publish);
+
+// 「发布」按钮：develop 的三种说法；建模阶段没做完时置灰，说明同 develop 的提示
+export function proceedState(check, acknowledged) {
+  const blocking = (check?.binding?.issues || []).filter((issue) => issue.blocking).length;
+  const hard = hardBlockers(check);
+  const awaiting = needsSolverAcknowledgement(check) && !acknowledged;
+  const stages = stageNote(check);
+  const otherGates = (check?.gates || []).filter((g) => g.blocking && !['data_binding', 'solver_contract', 'package_structure', 'modeling_stages'].includes(g.id));
+  let label = '发布';
+  if (blocking || hard) label = '发布（需先修复）';
+  else if (awaiting) label = '发布（需先确认）';
+  const disabled = !check || !!stages || blocking > 0 || hard > 0 || awaiting || otherGates.length > 0;
+  const title = stages || (otherGates.length ? `${otherGates.map((g) => g.title).join('、')}未通过` : '');
+  return { label, disabled, title };
+}
+
+// 降级：只放宽数据绑定；求解契约、知识包结构、建模阶段与其他门禁要先过
+export function degradeState(check, acknowledged) {
+  const others = (check?.gates || []).filter((g) => g.blocking && !g.degradable);
+  const awaiting = needsSolverAcknowledgement(check) && !acknowledged;
+  return {
+    disabled: others.length > 0 || awaiting,
+    title: hardBlockers(check) > 0 ? '降级只放宽数据绑定，求解契约与知识包结构问题须先修正' : (others.length ? `${others.map((g) => g.title).join('、')}未通过` : ''),
+  };
+}
+export const DEGRADE_NOTE = '这些对象发布后不绑定数据表，发布记录会注明降级发布。';
+
+// 发布成功的提示（develop usePackagePublish）
+export function publishedText(release, { degrade = false, acknowledged = false } = {}) {
+  if (release.local_record_pending) return { tone: 'warning', text: '知识包已发布，本地发布记录待恢复' };
+  if (acknowledged) return { tone: 'success', text: `知识包 ${release.version} 已发布，求解能力待验证`, evaluate: true };
+  return { tone: 'success', text: degrade ? '已降级发布，未通过检查的对象不绑定数据表' : '知识包已发布' };
+}
+
+// ---------- 已发布版本（HB-05） ----------
+export const VERSIONS_PAGE = 10;
+export const EVALUATION_HINT = '打开优化建议执行评测优化，修改并发布新版本后状态自动变为“已处理”。';
+export const versionsTitle = (data, projectName) => {
+  const name = data?.releases?.[0]?.name || projectName;
+  return name ? `已发布版本 — ${name}` : '已发布版本';
+};
+export const versionMeta = (row) => [row.created_at ? new Date(row.created_at).toLocaleString() : '', row.source_service].filter(Boolean).join(' · ');
+export const RESOURCES_NOTE = 'Hub 仅保存明确共享的最新资料集，不与历史包版本绑定；本地资料不会自动上传。';

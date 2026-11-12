@@ -1,4 +1,5 @@
-// 我的项目（设计稿 projects）：P-01 列表与筛选，P-03 重命名实时检查，P-05/06/07/08/09 卡片菜单，用户流 EU-02/03
+// 我的项目（设计稿 projects）：P-01 列表与筛选，P-03 重命名实时检查，P-05/06/07/08/09 卡片菜单，用户流 EU-02/03；
+// 「导入已有知识包 ▾」（已发布知识包 HB-04 / 本地知识包）与卡片菜单的发布、已发布版本同 develop 首页（ADR-0098）
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
@@ -9,6 +10,7 @@ import { PageHead, ShellG } from '../../shell/Shell.jsx';
 import {
   Button, Check, Empty, Field, Icon, Modal, Note, Prog, Seg, Select, cx, useOutside,
 } from '../../ui/index.jsx';
+import HubImportModal from '../import/HubImportModal.jsx';
 import { activityText, projectLook } from './projectCard.js';
 
 function ModeChip({ mode }) {
@@ -93,8 +95,14 @@ function mmdd(iso) {
 const FILTERS = [['all', '全部'], ['active', '进行中'], ['autobuild', '自主构建中'], ['publishable', '可发布'], ['archived', '已归档']];
 
 export default function ProjectsPage() {
-  const { api, services } = useApp();
+  const { api, services, config } = useApp();
   const [filter, setFilter] = useState('all');
+  const [importMenu, setImportMenu] = useState(false);
+  const [hubOpen, setHubOpen] = useState(false);
+  const importRef = useRef(null);
+  useOutside(importRef, () => setImportMenu(false), importMenu);
+  // 已发布知识包在 Hub 上按登录用户授权：本地模式（鉴权关闭）没有这一项
+  const hubOn = config?.auth?.enabled !== false;
   const [q, setQ] = useState('');
   const [sort, setSort] = useState('recent');
   const [data, setData] = useState(null);
@@ -153,8 +161,23 @@ export default function ProjectsPage() {
     <ShellG active="projects" onUserEvent={onUserEvent}>
       <PageHead
         title="我的项目"
-        actions={<><Button icon="download" onClick={() => navigate('/projects/import')}>导入项目</Button><Button kind="primary" icon="plus" onClick={() => navigate('/projects/new')}>新建项目</Button></>}
+        actions={(
+          <>
+            <div ref={importRef} style={{ position: 'relative' }}>
+              <Button icon="download" title="选择已发布知识包或本地知识包" onClick={() => setImportMenu((v) => !v)}>导入已有知识包 ▾</Button>
+              {importMenu ? (
+                <div className="menu" style={{ position: 'absolute', top: 40, right: 0, minWidth: 160, zIndex: 40 }}>
+                  {hubOn ? <div className="mi" onClick={() => { setImportMenu(false); setHubOpen(true); }}><Icon name="pkg" size={14} /><span>已发布知识包</span></div> : null}
+                  <div className="mi" onClick={() => { setImportMenu(false); navigate('/projects/import'); }}><Icon name="archive" size={14} /><span>本地知识包</span></div>
+                </div>
+              ) : null}
+            </div>
+            <Button kind="primary" icon="plus" onClick={() => navigate('/projects/new')}>新建项目</Button>
+          </>
+        )}
       />
+      <HubImportModal open={hubOpen} onClose={() => setHubOpen(false)}
+        onImported={async (created) => { await load(); navigate(pagePath(created.landing_page || 'wb-l2', created.id)); }} />
       {isEmpty ? (
         <div className="card" style={{ padding: 30 }}>
           <Empty
@@ -199,6 +222,8 @@ export default function ProjectsPage() {
                 <div className="mi" onClick={() => { setMenu(null); setDlg({ kind: 'rename', p: menu.p }); }}><Icon name="edit" size={14} /><span>重命名</span></div>
                 <div className="mi" onClick={() => { setMenu(null); setDlg({ kind: 'clone', p: menu.p }); }}><Icon name="copy" size={14} /><span>克隆</span></div>
                 <hr />
+                <div className="mi" onClick={() => { setMenu(null); navigate(pagePath('publish', menu.p.id)); }}><Icon name="upload" size={14} /><span>发布为知识包（供消费端导入）</span></div>
+                <div className="mi" onClick={() => { setMenu(null); navigate(pagePath('publish', menu.p.id), { versions: '1' }); }}><Icon name="history" size={14} /><span>已发布版本（知识包评测）</span></div>
                 <div className="mi" onClick={() => { setMenu(null); act(() => services.download(`/projects/${encodeURIComponent(menu.p.id)}/transfer-package`, `${menu.p.name}-transfer.zip`), '已导出迁移包', 'archive'); }}>
                   <Icon name="archive" size={14} /><span>导出迁移包</span>
                 </div>
