@@ -50,10 +50,26 @@ def click(client, project_id: str, item: dict):
     return None
 
 
+def session_where(manager, project_id: str, ready):
+    """等会话出现并满足 ready(session)，返回这个会话。"""
+
+    def check():
+        session = manager.get(project_id)
+        return session if session is not None and ready(session) else None
+
+    return wait(check)
+
+
 def idle(manager, project_id: str):
     """会话真正空下来：不在跑、不在连、没有积压的消息。"""
-    return wait(lambda: (session := manager.get(project_id)) is not None and session.state == "idle"
-                and not _busy(session) and not session.pending_prompts and session)
+    return session_where(manager, project_id,
+                         lambda session: session.state == "idle" and not _busy(session) and not session.pending_prompts)
+
+
+def settled_push(manager, project_id: str):
+    """最近一次推送已经不是「运行中」。"""
+    found = pushed(manager, project_id)[-1]
+    return found if found and found["mode"] != "running" else None
 
 
 def pushed(manager, project_id: str) -> list[dict]:
@@ -68,7 +84,7 @@ def interrupted_exec(client, manager, project_id: str) -> dict:
     response = client.post(f"{P}/{project_id}/commands", json={"command": "/ontology-extract-operation",
                                                                 "origin": {"page": "wb-l2", "label": "全部命令"}})
     assert response.status_code == 202, response.text
-    wait(lambda: (session := manager.get(project_id)) is not None and session.exec_id and session.state == "running")
+    session_where(manager, project_id, lambda session: session.exec_id and session.state == "running")
     assert client.post(f"{P}/{project_id}/conversations/default/interrupt", json={}).status_code == 200
     idle(manager, project_id)
     return wait(lambda: next(iter(exec_records.query(project_id, ["interrupted"])), None))
@@ -81,7 +97,7 @@ def test_running_hides_suggestions_and_pushes_on_state_change(api):
     client, manager, project_id, _ = api
     FakeEngine.scripts = [[{"type": "assistant_message", "blocks": [{"kind": "text", "text": "在看资料"}]}]]
     client.post(f"{P}/{project_id}/conversations/default/messages", json={"text": "门店有几类？"})
-    wait(lambda: (session := manager.get(project_id)) is not None and session.state == "running")
+    session_where(manager, project_id, lambda session: session.state == "running")
     sug = fl02(client, project_id)
     assert sug["mode"] == "running" and sug["primary"] is None and sug["secondary"] == [] and sug["rev"]
     wait(lambda: pushed(manager, project_id) and pushed(manager, project_id)[-1]["mode"] == "running")
@@ -90,7 +106,7 @@ def test_running_hides_suggestions_and_pushes_on_state_change(api):
     session = manager.get(project_id)
     client.portal.call(session.engine.queue.put, result())
     idle(manager, project_id)
-    last = wait(lambda: (found := pushed(manager, project_id)[-1]) and found["mode"] != "running" and found)
+    last = wait(lambda: settled_push(manager, project_id))
     assert last["mode"] == "normal" and last["primary"] and last["rev"] > running_rev
 
 
@@ -106,7 +122,7 @@ def test_pending_question_offers_answer_and_back_to_running_after_answer(api):
 
     FakeEngine.scripts = [[raise_question]]
     client.post(f"{P}/{project_id}/conversations/default/messages", json={"text": "开始"})
-    session = wait(lambda: (found := manager.get(project_id)) is not None and found.pending_permissions and found)
+    session = session_where(manager, project_id, lambda found: found.pending_permissions)
     question_id = next(iter(session.pending_permissions.values())).questions[0]["question_id"]
     sug = fl02(client, project_id)
     assert sug["mode"] == "waiting_decision"
@@ -130,7 +146,7 @@ def test_failed_turn_offers_retry_that_really_retries(api):
                            result(subtype="error_during_execution", is_error=True),
                            {"type": "_engine_end", "reason": "error", "error": "模型服务暂时不稳定，请稍后重试"}]]
     client.post(f"{P}/{project_id}/conversations/default/messages", json={"text": "门店有几类？"})
-    wait(lambda: (session := manager.get(project_id)) is not None and session.state == "error")
+    session_where(manager, project_id, lambda session: session.state == "error")
     sug = fl02(client, project_id)
     assert sug["mode"] == "failed" and sug["primary"]["label"] == "重试这一轮"
     assert sug["note"] == "模型服务暂时不稳定，请稍后重试"

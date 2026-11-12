@@ -101,8 +101,11 @@ def test_each_turn_becomes_a_version_with_one_card(api, monkeypatch):
     cards, history = _round_cards(manager, project_id)
     # 每一轮自己一张卡，第一张不被第二轮改写成一样的
     assert sorted(card["changeset_id"] for card in cards.values()) == ["cs-1", "cs-2"]
-    assert [item["text"] for card in cards.values() if card["changeset_id"] == "cs-1"
-            for group in card["groups"] for item in group["items"]] == ["对象 [[门店]]"]
+    texts = []
+    for card in cards.values():
+        if card["changeset_id"] == "cs-1":
+            texts += [item["text"] for group in card["groups"] for item in group["items"]]
+    assert texts == ["对象 [[门店]]"]
     assert not [event for event in history if event.get("type") == "card_updated"]
     # 建议条、待处理里都没有确认生效
     bars = [event["payload"] for event in history if event.get("type") == "suggestions"]
@@ -342,8 +345,8 @@ def test_suggestions_never_offer_confirm(project):
     out = flow_state.suggest({"nodes": []}, {}, {"changeset": {"id": "cs-1", "state": "pending_confirm"}})
     assert out["mode"] != "pending_confirm"
     items = [out.get("primary") or {}, *(out.get("secondary") or [])]
-    assert not [item for item in items if (item.get("action") or {}).get("type") in ("merge_changeset",
-                                                                                     "discard_changeset")]
+    changeset_actions = ("merge_changeset", "discard_changeset")
+    assert not [item for item in items if (item.get("action") or {}).get("type") in changeset_actions]
 
 
 # ---- Studio、MCP 只拦格式错误 ----

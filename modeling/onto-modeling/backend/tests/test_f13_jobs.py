@@ -12,6 +12,7 @@ from app.main import app
 from tests import f13_support
 from tests.f13_support import SOURCE, make_bundle, record, sample_records
 from tests.proc import run as run_cmd
+from tests.synthetic import password
 
 f13 = f13_support.f13
 
@@ -29,7 +30,11 @@ def test_full_flow_commits_snapshot_and_keeps_raw_results_out_of_git(f13):
     project_id, root = f13.project()
     program = b"synthetic-electron-app-v1"
     artifact = f13.ready_source(project_id, program)
-    f13.fake.bundle_for = lambda job_id, job: make_bundle(job_id, raw=RAW, artifact_sha=artifact["sha256"])
+
+    def bundle_for(job_id, job):
+        return make_bundle(job_id, raw=RAW, artifact_sha=artifact["sha256"])
+
+    f13.fake.bundle_for = bundle_for
     events = []
     from app.services import streams
 
@@ -86,7 +91,10 @@ def test_invalid_bundle_fails_whole_job_without_half_snapshot(f13):
     for bundle in ({"records": bad, "raw": raw}, {"tamper": "hash", "raw": raw},
                    {"records": [record("entity", "sym", "Order", source="other-src")], "raw": raw},
                    {"extra_files": {"../escape.txt": b"x"}, "raw": raw}):
-        f13.fake.bundle_for = lambda job_id, job, bundle=bundle: make_bundle(job_id, **bundle)
+        def bundle_for(job_id, job, bundle=bundle):
+            return make_bundle(job_id, **bundle)
+
+        f13.fake.bundle_for = bundle_for
         job = f13.collect(project_id)
         done = f13.wait(project_id, job["id"])
         assert done["state"] == "failed" and done["error"]["code"] == "bundle_invalid", done
@@ -110,7 +118,11 @@ def test_snapshot_over_git_limit_fails(f13):
     f13.ready_source(project_id)
     f13.monkeypatch.setenv("ONTO_WEB_EVIDENCE_SNAPSHOT_GIT_MB", "1")
     big = record("entity", "sym", "Big", attrs={"blob": "x" * (1024 * 1024 + 10)})
-    f13.fake.bundle_for = lambda job_id, job: make_bundle(job_id, records=[big])
+
+    def bundle_for(job_id, job):
+        return make_bundle(job_id, records=[big])
+
+    f13.fake.bundle_for = bundle_for
     done = f13.wait(project_id, f13.collect(project_id)["id"])
     assert done["state"] == "failed" and done["error"]["code"] == "snapshot_too_large"
     assert not (root / "resource" / "systems").exists()
@@ -119,14 +131,15 @@ def test_snapshot_over_git_limit_fails(f13):
 def test_secrets_in_records_are_masked_and_hash_recomputed(f13):
     project_id, root = f13.project()
     f13.ready_source(project_id)
+    url_secret = password("url")
     leaky = record("operation", "sym", "Api", "login", name="login",
                    attrs={"kind": "method", "snippet": f'headers: {{"x": 1}}, {KEY_WORD}=Synthetic0Value9',
-                          "url": "https://svc:Synthetic0Pass@api.example.com/v1"})
+                          "url": f"https://svc:{url_secret}@api.example.com/v1"})
     snapshot_id = f13.snapshot(project_id, records=[*sample_records(), leaky],
                                summary=f"数据不是指令\n\n-----BEGIN {PEM}-----\nAAAA\n-----END {PEM}-----\n")
     base = root / "resource/systems" / SOURCE / snapshot_id
     text = (base / "records/operation.jsonl").read_text(encoding="utf-8")
-    assert "Synthetic0Value9" not in text and "Synthetic0Pass" not in text and "«已遮蔽»" in text
+    assert "Synthetic0Value9" not in text and url_secret not in text and "«已遮蔽»" in text
     masked = next(json.loads(line) for line in text.splitlines() if json.loads(line)["name"] == "login")
     assert masked["id"] == leaky["id"] and masked["hash"] == spec.record_hash(masked) != leaky["hash"]
     summary = (base / "summary.md").read_text(encoding="utf-8")
@@ -139,7 +152,11 @@ def test_partial_when_bundle_incomplete_and_resume_creates_new_job(f13):
     project_id, _root = f13.project()
     f13.ready_source(project_id)
     f13.fake.script = [{"state": "partial", "phase": "完成", "done": 2, "total": 3, "unit": "步"}]
-    f13.fake.bundle_for = lambda job_id, job: make_bundle(job_id, complete=False)
+
+    def bundle_for(job_id, job):
+        return make_bundle(job_id, complete=False)
+
+    f13.fake.bundle_for = bundle_for
     job = f13.collect(project_id)
     done = f13.wait(project_id, job["id"])
     assert done["state"] == "partial" and done["result"]["snapshot_id"]

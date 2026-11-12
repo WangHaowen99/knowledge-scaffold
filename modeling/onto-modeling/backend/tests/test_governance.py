@@ -30,6 +30,7 @@ TOKENS = {
     "ops-token": {"sub": OPS, "role": "ops"},
 }
 RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+CLIENT_IP = "192.0.2.10"  # NOSONAR(S1313) 保留地址段 TEST-NET-1 的合成客户端地址
 
 
 def _h(token: str) -> dict:
@@ -135,12 +136,12 @@ def test_config_registry_endpoint_roles(main_client):
 
 
 def test_write_audit_after_response_with_status_trace_and_ip(main_client, manager):
-    response = main_client.post("/api/v1/projects", headers={**_h("user-token"), "X-Forwarded-For": "192.0.2.10"},
+    response = main_client.post("/api/v1/projects", headers={**_h("user-token"), "X-Forwarded-For": CLIENT_IP},
                                 json={"name": "审计演示", "goal": "合成目标"})
     assert response.status_code == 201
     entry = next(e for e in _audit_entries() if e.get("path") == "/api/v1/projects")
     assert entry["status"] == 201 and entry["actor"] == USER and entry["actor_kind"] == "user"
-    assert entry["trace_id"] == response.headers["x-trace-id"] and entry["ip"] == "192.0.2.10"
+    assert entry["trace_id"] == response.headers["x-trace-id"] and entry["ip"] == CLIENT_IP
     assert entry["type"] == "write" and entry["action"] == "http.post"
     assert "合成目标" not in json.dumps(entry, ensure_ascii=False)  # 不记请求正文
 

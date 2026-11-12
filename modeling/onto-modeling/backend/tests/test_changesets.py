@@ -408,8 +408,10 @@ def test_round_card_open_changeset_and_merge_notice(api, monkeypatch):
 
     asyncio.run(run_turn())
     history = manager.get_history(project_id, "default")
-    cards = [event["payload"] for event in history if event.get("type") == "card"
-             and event["payload"].get("card_type") == "round_changes"]
+    cards = []
+    for event in history:
+        if event.get("type") == "card" and event["payload"].get("card_type") == "round_changes":
+            cards.append(event["payload"])
     assert len(cards) == 1
     card = cards[0]
     # F3：这一轮结束就合入成一个版本，卡片只说改了什么

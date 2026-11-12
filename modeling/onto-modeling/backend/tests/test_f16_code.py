@@ -146,8 +146,8 @@ def test_python_project():
     assert {("references", "Order", "Customer"), ("many_to_one", "Order", "Customer"),
             ("one_to_many", "Customer", "Order"), ("one_to_many", "Order", "OrderItem"),
             ("calls", "create_order", "submit"), ("calls", "submit", "reserve")} <= relations
-    fk = next(item for item in records if item["type"] == "relation" and item["name"] == "references"
-              and item["from"].endswith("::Order"))
+    references = [item for item in records if item["type"] == "relation" and item["name"] == "references"]
+    fk = next(item for item in references if item["from"].endswith("::Order"))
     assert fk["attrs"]["columns"] == [["customer_id", "id"]]
     # 约束与校验器
     check = by_id[f"code:{SOURCE}/rule:app::orders::models::Order::ck_order_amount"]
@@ -474,9 +474,12 @@ def test_host_and_scheme_checks(git_server, private_tmp):
         code_repo.snapshot(ctx)
     assert caught.value.code == "invalid_connection"
     assert len(git_server["log"]) == before
-    for url in ("http://git.example.invalid/a.git", "file:///etc", "ssh://git.example.invalid/a.git",
-                "ext::sh -c touch% /tmp/x", "https://git.example.invalid/a.git?x=1", "https://-x/a.git",
-                "https://git.example.invalid/a b.git", "--upload-pack=x"):
+    for url in (
+        "http://git.example.invalid/a.git",  # NOSONAR(S5332) 合成的保留域名，测明文地址也被拒
+        "file:///etc", "ssh://git.example.invalid/a.git",
+        "ext::sh -c touch% /tmp/x", "https://git.example.invalid/a.git?x=1", "https://-x/a.git",
+        "https://git.example.invalid/a b.git", "--upload-pack=x",
+    ):
         with pytest.raises(ConnError):
             code_git.parse_url(url, allow_http=True)
     secret = secrets.token_hex(8)
@@ -594,7 +597,7 @@ def test_connection_test(git_server, private_tmp):
 
 @needs_git
 def test_git_environment_is_minimal(git_server, private_tmp, monkeypatch):
-    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.invalid:3128")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.invalid:3128")  # NOSONAR(S5332) 合成的保留域名
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/nonexistent")
     monkeypatch.setenv("GIT_SSL_NO_VERIFY", "1")
     monkeypatch.setenv(code_git.CA_FILE_ENV, "/certs/git.crt")

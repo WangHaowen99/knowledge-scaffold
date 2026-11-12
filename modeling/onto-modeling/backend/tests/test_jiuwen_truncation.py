@@ -197,12 +197,19 @@ def test_subagent_fails_with_reason_after_two_truncations(tmp_path):
     assert TRUNCATION_FAILURE in model.seen[3]
 
 
+def _text_blocks(events) -> list[str]:
+    texts = []
+    for event in events:
+        texts += [block["text"] for block in event.get("blocks", []) if block.get("kind") == "text"]
+    return texts
+
+
 def test_main_agent_truncation_tells_user(tmp_path):
     _, chunks, _ = _run(tmp_path, [TRUNCATED, TRUNCATED], with_subagent=False)
     bridge = _ChunkBridge()
     texts = []
     for chunk in chunks:
         events, _ = bridge.feed(chunk)
-        texts += [b["text"] for e in events for b in e.get("blocks", []) if b.get("kind") == "text"]
-    texts += [b["text"] for e in bridge.finish() for b in e.get("blocks", []) if b.get("kind") == "text"]
+        texts += _text_blocks(events)
+    texts += _text_blocks(bridge.finish())
     assert texts == [TRUNCATION_USER_TEXT]

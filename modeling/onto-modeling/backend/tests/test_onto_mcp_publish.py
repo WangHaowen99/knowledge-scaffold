@@ -233,8 +233,8 @@ def test_publish_tool_accepts_the_solver_acknowledgement_argument():
     tool = TOOLS["publish_package_version"]
     assert tool["inputSchema"]["properties"]["solver_unverified_acknowledged"] == {"type": "boolean"}
     assert "solver_unverified_acknowledged" not in tool["inputSchema"]["required"]
-    assert {TOOLS[name]["scope"] for name in ("preview_package_publish", "publish_package_version",
-                                              "get_package_publish_status")} == {"package.publish"}
+    publish_tools = ("preview_package_publish", "publish_package_version", "get_package_publish_status")
+    assert {TOOLS[name]["scope"] for name in publish_tools} == {"package.publish"}
 
 
 def test_package_publish_confirmation_is_bound_to_token_and_expiry(env):

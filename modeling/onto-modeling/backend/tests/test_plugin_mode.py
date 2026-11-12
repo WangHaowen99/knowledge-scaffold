@@ -392,8 +392,8 @@ def test_plugin_round_links_plugin_rules_and_posts_a_draft_card(env, monkeypatch
     assert card["card_type"] == "plugin_draft" and card["card_id"] == f"pd-{card['changeset_id']}-demo-notes"
     assert card["changed_files"] == ["commands/demo-notes-run.md", "manifest.yaml"]
     assert not any(event.get("type") == "workspace_changes" for event in history)
-    bars = [event["payload"] for event in history if event.get("type") == "suggestions" and event["payload"].get(
-        "mode") != "running"]
+    suggestions = [event["payload"] for event in history if event.get("type") == "suggestions"]
+    bars = [payload for payload in suggestions if payload.get("mode") != "running"]
     assert bars and all(bar["primary"] is None and bar["secondary"] == [] and not bar["all_commands"] for bar in bars)
     # 合入主线成一个版本；对话绑上草稿，标题换成 label
     assert (root / "plugins" / "demo-notes" / "manifest.yaml").is_file()

@@ -22,6 +22,7 @@ from app.services import audit, auth, error_log, model_settings, personal_model_
 from app.services.auth import AuthError
 from app.services.onto_mcp import tokens as mcp_tokens
 from app.services.workspace import WorkspaceManager
+from tests.synthetic import password
 
 ADMIN, USER, OTHER, OPS = "operator_admin", "operator_a", "operator_b", "operator_ops"
 TOKENS = {
@@ -32,6 +33,7 @@ TOKENS = {
 }
 RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 SYNTHETIC_KEY = "synthetic-user-key-0001"
+SHORT_PASSWORD = password("s")[:5]  # 短于 8 位，只触发长度规则
 REAL_AUTH_ADMIN_REQUEST = admin._auth_admin_request
 
 
@@ -40,9 +42,9 @@ class FakeAuthServer:
 
     def __init__(self):
         self.users = {
-            ADMIN: {"role": "admin", "password": "Synthetic#Admin1"},
-            USER: {"role": "user", "password": "Synthetic#User1"},
-            OTHER: {"role": "user", "password": "Synthetic#Other1"},
+            ADMIN: {"role": "admin", "password": password("admin")},
+            USER: {"role": "user", "password": password("user")},
+            OTHER: {"role": "user", "password": password("other")},
         }
         self.calls: list[tuple[str, str, dict | None]] = []
 
@@ -189,12 +191,12 @@ def test_login_returns_profile_and_audits_without_password(client, monkeypatch):
 
     def token_request(payload):
         calls.append(payload)
-        if payload.get("password") != "Synthetic#User1":
+        if payload.get("password") != password("user"):
             raise AuthError("用户名或密码错误，或登录已失效")
         return {"access_token": "user-token", "refresh_token": "synthetic-refresh", "token_type": "Bearer", "expires_in": 900}
 
     monkeypatch.setattr(auth, "token_request", token_request)
-    ok = client.post("/api/v1/auth/login", json={"username": USER, "password": "Synthetic#User1"})
+    ok = client.post("/api/v1/auth/login", json={"username": USER, "password": password("user")})
     assert ok.status_code == 200
     body = ok.json()
     assert body["access_token"] == "user-token" and body["expires_in"] == 900
@@ -202,17 +204,17 @@ def test_login_returns_profile_and_audits_without_password(client, monkeypatch):
         "username": USER, "display_name": USER, "role": "user", "role_label": "建模者",
         "roles": ["user"], "auth_source": "auth-server",
     }
-    _assert_error(client.post("/api/v1/auth/login", json={"username": USER, "password": "wrong-pass"}), 401, "invalid_credentials")
-    _assert_error(client.post("/api/v1/auth/login", json={"username": "", "password": "x"}), 400, "invalid_argument")
+    _assert_error(client.post("/api/v1/auth/login", json={"username": USER, "password": password("wrong")}), 401, "invalid_credentials")
+    _assert_error(client.post("/api/v1/auth/login", json={"username": "", "password": password("x")}), 400, "invalid_argument")
 
     entries = [entry for entry in audit.read(50) if (entry.get("detail") or {}).get("action") == "auth.login"]
     assert [entry["detail"]["result"] for entry in entries] == ["failed", "ok"]
-    assert "Synthetic#User1" not in audit._file().read_text(encoding="utf-8")
+    assert password("user") not in audit._file().read_text(encoding="utf-8")
 
     monkeypatch.setattr(auth, "token_request", lambda payload: (_ for _ in ()).throw(AuthError("认证服务不可达", 502)))
-    _assert_error(client.post("/api/v1/auth/login", json={"username": USER, "password": "x"}), 502, "upstream_unavailable")
+    _assert_error(client.post("/api/v1/auth/login", json={"username": USER, "password": password("x")}), 502, "upstream_unavailable")
 
-    legacy = client.post("/api/auth/login", json={"username": USER, "password": "wrong"})
+    legacy = client.post("/api/auth/login", json={"username": USER, "password": password("wrong")})
     assert legacy.status_code == 502 and legacy.json()["error"] == legacy.json()["message"]
     _assert_legacy(legacy, "/api/v1/auth/login")
 
@@ -233,7 +235,7 @@ def test_register_logs_in_and_maps_errors(client, monkeypatch):
 
     monkeypatch.setattr(auth, "register_request", register_request)
     monkeypatch.setattr(auth, "token_request", lambda payload: {"access_token": "other-token", "refresh_token": "r", "expires_in": 60})
-    body = {"username": "new_user", "password": "Synthetic#Pass1"}
+    body = {"username": "new_user", "password": password("pass")}
     created = client.post("/api/v1/auth/register", json=body)
     assert created.status_code == 201 and created.json()["user"]["username"] == OTHER
     assert registered[0]["email"].endswith("@users.example.com")
@@ -242,7 +244,7 @@ def test_register_logs_in_and_maps_errors(client, monkeypatch):
     weak = _assert_error(client.post("/api/v1/auth/register", json=body), 400, "weak_password")
     assert weak["details"]["failed_rules"] == ["len", "classes"]
     _assert_error(client.post("/api/v1/auth/register", json=body), 429, "rate_limited")
-    _assert_error(client.post("/api/v1/auth/register", json={"username": "a b", "password": "Synthetic#Pass1"}), 400, "invalid_argument")
+    _assert_error(client.post("/api/v1/auth/register", json={"username": "a b", "password": password("pass")}), 400, "invalid_argument")
     assert len(registered) == 5
 
 
@@ -273,18 +275,18 @@ def test_expired_token_is_distinguished(client, monkeypatch):
 def test_change_password_uses_token_username(client, fake_auth):
     response = client.put(
         "/api/v1/me/password", headers=_h("user-token"),
-        json={"old_password": "Synthetic#User1", "new_password": "Synthetic#User2"},
+        json={"old_password": password("user"), "new_password": password("user2")},
     )
     assert response.status_code == 204
-    assert fake_auth.users[USER]["password"] == "Synthetic#User2"
+    assert fake_auth.users[USER]["password"] == password("user2")
     _assert_error(
         client.put("/api/v1/me/password", headers=_h("user-token"),
-                   json={"old_password": "wrong", "new_password": "Synthetic#User3"}),
+                   json={"old_password": password("wrong"), "new_password": password("user3")}),
         400, "old_password_incorrect",
     )
     same = _assert_error(
         client.put("/api/v1/me/password", headers=_h("user-token"),
-                   json={"old_password": "Synthetic#User2", "new_password": "Synthetic#User2"}),
+                   json={"old_password": password("user2"), "new_password": password("user2")}),
         400, "weak_password",
     )
     assert same["details"]["failed_rules"] == ["same_as_old"]
@@ -292,18 +294,18 @@ def test_change_password_uses_token_username(client, fake_auth):
     # 旧接口请求体里的 username 不再认：改的是令牌里的用户
     legacy = client.post(
         "/api/auth/password", headers=_h("other-token"),
-        json={"username": USER, "old_password": "Synthetic#Other1", "new_password": "Synthetic#Other2"},
+        json={"username": USER, "old_password": password("other"), "new_password": password("other2")},
     )
     assert legacy.status_code == 204
     _assert_legacy(legacy, "/api/v1/me/password")
-    assert fake_auth.users[OTHER]["password"] == "Synthetic#Other2"
-    assert fake_auth.users[USER]["password"] == "Synthetic#User2"
+    assert fake_auth.users[OTHER]["password"] == password("other2")
+    assert fake_auth.users[USER]["password"] == password("user2")
 
 
 def test_change_password_unavailable_without_admin_token(client, monkeypatch):
     monkeypatch.setattr(admin, "_auth_admin_request", REAL_AUTH_ADMIN_REQUEST)
     monkeypatch.setattr(config, "AUTH_ADMIN_TOKEN", "")
-    response = client.put("/api/v1/me/password", headers=_h("user-token"), json={"old_password": "a", "new_password": "b"})
+    response = client.put("/api/v1/me/password", headers=_h("user-token"), json={"old_password": password("a"), "new_password": password("b")})
     _assert_error(response, 503, "user_admin_unavailable")
 
 
@@ -321,7 +323,7 @@ def test_me_in_local_mode(local_client, manager):
     manager.create_project("project_alpha")
     body = local_client.get("/api/v1/me").json()
     assert body["username"] == "local" and body["project_count"] == 1 and body["last_login"] is None
-    _assert_error(local_client.put("/api/v1/me/password", json={"old_password": "a", "new_password": "b"}), 403, "forbidden")
+    _assert_error(local_client.put("/api/v1/me/password", json={"old_password": password("a"), "new_password": password("b")}), 403, "forbidden")
 
 
 # ---- A-09～A-11 我的模型配置 ----
@@ -582,21 +584,21 @@ def test_change_role_and_last_admin_guard(client, fake_auth):
 
 def test_reset_password_generate_and_legacy_rewrite(client, fake_auth):
     generated = client.post(f"/api/v1/admin/users/{USER}/reset-password", headers=_h("admin-token"), json={"generate": True})
-    password = generated.json()["generated_password"]
-    assert len(password) == 16 and fake_auth.users[USER]["password"] == password
-    assert password not in audit._file().read_text(encoding="utf-8")
-    explicit = client.post(f"/api/v1/admin/users/{USER}/reset-password", headers=_h("admin-token"), json={"password": "Synthetic#Reset1"})
+    generated_password = generated.json()["generated_password"]
+    assert len(generated_password) == 16 and fake_auth.users[USER]["password"] == generated_password
+    assert generated_password not in audit._file().read_text(encoding="utf-8")
+    explicit = client.post(f"/api/v1/admin/users/{USER}/reset-password", headers=_h("admin-token"), json={"password": password("reset")})
     assert explicit.status_code == 200 and explicit.json() == {}
     weak = _assert_error(
-        client.post(f"/api/v1/admin/users/{USER}/reset-password", headers=_h("admin-token"), json={"password": "short"}),
+        client.post(f"/api/v1/admin/users/{USER}/reset-password", headers=_h("admin-token"), json={"password": SHORT_PASSWORD}),
         400, "weak_password",
     )
     assert weak["details"]["failed_rules"] == ["len"]
     _assert_error(client.post(f"/api/v1/admin/users/{USER}/reset-password", headers=_h("admin-token"), json={}), 400, "invalid_argument")
 
     # 旧接口 PUT 带 password 改写到 reset-password
-    legacy = client.put(f"/api/admin/users/{OTHER}", headers=_h("admin-token"), json={"password": "Synthetic#Legacy1"})
-    assert legacy.status_code == 200 and fake_auth.users[OTHER]["password"] == "Synthetic#Legacy1"
+    legacy = client.put(f"/api/admin/users/{OTHER}", headers=_h("admin-token"), json={"password": password("legacy")})
+    assert legacy.status_code == 200 and fake_auth.users[OTHER]["password"] == password("legacy")
     _assert_legacy(legacy, f"/api/v1/admin/users/{OTHER}/reset-password")
 
 
@@ -641,7 +643,7 @@ def test_delete_user_transfers_projects_and_revokes_tokens(client, manager, fake
     assert USER not in (personal_model_settings._load().get("users") or {})
 
     # 名下没有项目时不用给去向；旧接口改写过来，ops 不能删
-    fake_auth.users["operator_c"] = {"role": "user", "password": "Synthetic#C1"}
+    fake_auth.users["operator_c"] = {"role": "user", "password": password("c")}
     denied = client.delete("/api/admin/users/operator_c", headers=_h("ops-token"))
     _assert_error(denied, 403, "forbidden")
     legacy = client.delete("/api/admin/users/operator_c", headers=_h("admin-token"))

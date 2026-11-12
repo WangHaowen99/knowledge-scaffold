@@ -312,7 +312,8 @@ def test_resource_scope_api_permissions_and_stale_request(manager, monkeypatch):
         assert client.get(preview_url, params={'path': rel}, headers=user).status_code == 200
         response = client.get(url, headers=user)
         assert response.status_code == 200
-        scope = next(m for g in response.json()["groups"] for m in g["items"] if m["path"] == rel)["schema_scope"]
+        items = [m for g in response.json()["groups"] for m in g["items"]]
+        scope = next(m for m in items if m["path"] == rel)["schema_scope"]
         body = {"path": rel, "purpose": "schema", "schema_selection": manual_request(scope, ["table_b"])}
         assert client.patch(posixpath.join(url, "purpose"), json=body, headers=user).status_code == 200
         assert package_mapping.read_source_tables(root) == {"table_b": ["id", "name"]}

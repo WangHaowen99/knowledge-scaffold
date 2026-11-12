@@ -302,7 +302,7 @@ def fake_sandbox(monkeypatch):
         return {"results": client._parse_results(done.stdout, payload["case_count"])}
 
     monkeypatch.setattr(client, "_gateway_call", gateway_call)
-    monkeypatch.setattr(client, "gateway_url", lambda: "http://sandbox.example.invalid")
+    monkeypatch.setattr(client, "gateway_url", lambda: "http://sandbox.example.invalid")  # NOSONAR(S5332) 合成的保留域名
     return client, calls
 
 

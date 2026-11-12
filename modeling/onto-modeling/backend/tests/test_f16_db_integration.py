@@ -128,7 +128,8 @@ def _originals(db) -> set[str]:
         cursor = conn.cursor()
         for sql in queries:
             cursor.execute(sql)
-            values.update(str(value) for row in cursor.fetchall() for value in row if value is not None)
+            for row in cursor.fetchall():
+                values.update(str(value) for value in row if value is not None)
     finally:
         conn.close()
     return values

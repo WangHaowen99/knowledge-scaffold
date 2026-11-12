@@ -59,10 +59,17 @@ def idle(monkeypatch):
         return None
 
     sessions = SimpleNamespace(_lock=asyncio.Lock(), _sessions={}, _recycle=recycle, _drain_waiters=drain)
-    sessions.get = lambda project_id: sessions._sessions.get(project_id)
+
+    def get(project_id):
+        return sessions._sessions.get(project_id)
+
+    sessions.get = get
     from app.services import agent_sessions, conversation_store
 
-    sessions.workspace_busy = lambda project_id: agent_sessions.SessionManager.workspace_busy(sessions, project_id)
+    def workspace_busy(project_id):
+        return agent_sessions.SessionManager.workspace_busy(sessions, project_id)
+
+    sessions.workspace_busy = workspace_busy
 
     monkeypatch.setattr(agent_sessions, "manager", sessions)
     monkeypatch.setattr(conversation_store, "clear_all_resume_tokens", calls["cleared"].append)

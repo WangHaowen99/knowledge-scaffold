@@ -293,7 +293,11 @@ def test_engine_observers_receive_events():
 
     seen = []
     engine = Engine()
+
+    def failing_observer(event):
+        raise ZeroDivisionError("观察者出错")
+
     engine.add_observer(seen.append)
-    engine.add_observer(lambda event: 1 / 0)  # 观察者出错不影响别人
+    engine.add_observer(failing_observer)  # 观察者出错不影响别人
     engine._notify({"type": "result"})
     assert seen == [{"type": "result"}]
