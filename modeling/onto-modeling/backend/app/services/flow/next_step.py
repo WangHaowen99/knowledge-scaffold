@@ -27,13 +27,14 @@ def blocker(project_id: str, conversation_id: str | None, action: dict, root: Pa
     if kind in _NEEDS_ENGINE or kind == "abandon_exec":
         if autobuild_store.active(project_id) is not None:
             return "自主构建正在运行"
-    if kind in _NEEDS_ENGINE and session is not None and _busy(session) \
-            and not getattr(session, "interrupt_requested", False):
+    if kind in _NEEDS_ENGINE and session is not None and _busy(session):
         # 打断已经发出、引擎还没停下的这一会儿不算占着：建议条给打断后的那一份（同 view._engine_running）
-        return "助手正在运行" if not session.pending_permissions else "有等你回答的问题"
+        if not getattr(session, "interrupt_requested", False):
+            return "助手正在运行" if not session.pending_permissions else "有等你回答的问题"
     if kind == "retry":
-        if session is None or session.conversation_id != conversation_id or session.state != "error" \
-                or not session.last_prompt:
+        if session is None or session.conversation_id != conversation_id:
+            return "没有可以重试的一轮"
+        if session.state != "error" or not session.last_prompt:
             return "没有可以重试的一轮"
     if kind in ("resume_exec", "abandon_exec"):
         from ..session_host import exec_records

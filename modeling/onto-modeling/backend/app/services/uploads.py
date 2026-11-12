@@ -47,9 +47,16 @@ def _root() -> Path:
     return Path(config.DATA_DIR) / "uploads"
 
 
+def _plain_filename(name: str, filename: str) -> bool:
+    """不带目录、不是隐藏文件的文件名。"""
+    if not name or name.startswith(".") or name != filename:
+        return False
+    return "/" not in name and "\\" not in name
+
+
 def check_filename(filename: str) -> str:
     name = Path(filename or "").name
-    if not name or name.startswith(".") or name != filename or "/" in name or "\\" in name:
+    if not _plain_filename(name, filename):
         raise ApiError("invalid_filename", "文件名不合法", 400)
     return name
 

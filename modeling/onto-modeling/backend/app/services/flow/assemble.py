@@ -147,6 +147,12 @@ def _command_name(text: str) -> str:
     return str(text or "").split()[0].lstrip("/") if str(text or "").startswith("/") else ""
 
 
+def _offered(item: dict, available: set[str]) -> bool:
+    """下一步建议里的命令装了（不带命令的建议照留）。"""
+    name = _command_name(item.get("command"))
+    return not name or name in available
+
+
 def assemble(contributions: list[tuple[str, str, dict]], available_commands: set[str] | None = None) -> dict:
     """contributions：[(包名, 版本, 流程声明)]，core 必须在第一个并带主流程。
 
@@ -236,7 +242,7 @@ def assemble(contributions: list[tuple[str, str, dict]], available_commands: set
                 hooks.append({"id": str(hook.get("id") or ""), "title": str(hook.get("title") or hook.get("id") or ""),
                               "node": str(hook.get("node") or ""), "when": hook.get("when", "after"),
                               "command": str(hook.get("command") or ""), "pack": pack, "version": f"{pack}@{version}"})
-    if len({hook["id"] for hook in hooks}) != len(hooks):
+    if len({hook.get("id") for hook in hooks}) != len(hooks):
         problems.append("节点钩子编号重复")
     # 命令 → 节点的映射只能指向存在的节点
     for command, spec in (flow.get("commands") or {}).items():
@@ -249,8 +255,7 @@ def assemble(contributions: list[tuple[str, str, dict]], available_commands: set
         raise FlowAssemblyError(problems)
     if available_commands is not None:
         flow["next_steps"] = {
-            stage: [item for item in items if not _command_name(item.get("command"))
-                    or _command_name(item.get("command")) in available_commands]
+            stage: [item for item in items if _offered(item, available_commands)]
             for stage, items in (flow.get("next_steps") or {}).items()
         }
         flow["available_commands"] = sorted(available_commands)
@@ -274,9 +279,12 @@ def _bad_state_file(text: str) -> bool:
 
 
 def _in_produces(nodes: list[dict], pack: str, text: str) -> dict | None:
-    return next((node for node in nodes if node.get("pack") == pack and any(
-        fnmatch.fnmatchcase(text, str(item.get("path") if isinstance(item, dict) else item))
-        for item in node.get("produces") or [])), None)
+    return next((node for node in nodes if node.get("pack") == pack and _produces(node, text)), None)
+
+
+def _produces(node: dict, text: str) -> bool:
+    return any(fnmatch.fnmatchcase(text, str(item.get("path") if isinstance(item, dict) else item))
+               for item in node.get("produces") or [])
 
 
 def _activations(contributions: list[tuple[str, str, dict]], nodes: list[dict], flow: dict, problems: list[str]) -> None:

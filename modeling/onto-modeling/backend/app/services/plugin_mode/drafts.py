@@ -60,8 +60,8 @@ _install_locks_guard = threading.Lock()
 
 
 def _git(root: Path, *args: str, binary: bool = False):
-    result = subprocess.run(["git", "-c", "core.quotepath=false", *args], cwd=root, capture_output=True,
-                            timeout=_GIT_TIMEOUT)
+    result = subprocess.run(  # NOSONAR(S4721) 固定的 git 参数列表，不经 shell
+        ["git", "-c", "core.quotepath=false", *args], cwd=root, capture_output=True, timeout=_GIT_TIMEOUT)
     if result.returncode != 0:
         return None
     return result.stdout if binary else result.stdout.decode("utf-8", errors="replace")
@@ -292,7 +292,9 @@ def _diff(draft: Path, installed: Path, change: dict) -> dict | None:
 
 def installed_twin(repository, name: str, owner: str, manifest, draft: Path) -> str | None:
     """草稿和本人包仓库里同版本号的那份一模一样（停用后再启用、撤回到装过的版本）：直接用那个版本，不再上传、不占新版本号。"""
-    if manifest is None or not owner or repository.owner(name) != owner or not repository.has(name, manifest.version):
+    if manifest is None or not owner or repository.owner(name) != owner:
+        return None
+    if not repository.has(name, manifest.version):
         return None
     same = _digests(draft) == _digests(repository.version_dir(name, manifest.version))
     return manifest.version if same else None

@@ -284,7 +284,11 @@ class VersionsMixin:
             commit, ts, author, subject, body = parts
             commit_tags = tags.get(commit, [])
             trailers = _trailers(body)
-            releases = [match.group(1) for tag in commit_tags if (match := _RELEASE_TAG_RE.fullmatch(tag["name"]))]
+            releases = []
+            for tag in commit_tags:
+                match = _RELEASE_TAG_RE.fullmatch(tag["name"])
+                if match:
+                    releases.append(match.group(1))
             entries.append({
                 "commit": commit,
                 "n": total - index,

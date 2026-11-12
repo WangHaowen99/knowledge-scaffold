@@ -2,7 +2,8 @@
 """建模项目与知识包 Hub 的对接（ADR-0098）：项目 ↔ Hub 包的固定身份、可恢复的发布请求、从 Hub 导入。
 
 发布按提交（缺省主线最新）导出只读树并冻结到请求目录，版本号由 Hub 分配；Hub 提交成功后在本地
-打 release/<版本> 标签、留存一份包（publish 读它显示发布记录、按版本下载）。"""
+打 release/<版本> 标签、留存一份包（publish 读它显示发布记录、按版本下载）。
+"""
 import hashlib
 import json
 import logging

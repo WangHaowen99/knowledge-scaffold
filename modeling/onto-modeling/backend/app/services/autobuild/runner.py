@@ -89,6 +89,15 @@ def run_view(run: dict) -> dict:
     return views.run_view(run, _stage_ids(run["project_id"]))
 
 
+def _ran_step(record: dict, run: dict, unit: dict, step: dict, started: float) -> bool:
+    """执行记录是这次运行在这一段（开始之后）跑的这一步；节点级的单元不看段。"""
+    if record.get("run_id") != run["run_id"] or record.get("command") != step["command"]:
+        return False
+    if float(record.get("started_at") or 0) < started:
+        return False
+    return (record.get("slice") or {}).get("id") in (unit["id"], None) or unit["kind"] == "node"
+
+
 class AutobuildRunner:
     def __init__(self):
         self._tasks: dict[str, asyncio.Task] = {}
@@ -304,9 +313,7 @@ class AutobuildRunner:
                 if nxt != "continue":
                     await self._finish(project_id, run_id, nxt)
                     return
-        except asyncio.CancelledError:
-            raise  # 停机：运行记录停在检查点，启动恢复接着跑
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - 停机的 CancelledError 不在其中：运行记录停在检查点，启动恢复接着跑
             _log.exception("自主构建运行出错（%s %s）", project_id, run_id)
             try:
                 await self._finish(project_id, run_id, "failed", reason="internal")
@@ -441,9 +448,11 @@ class AutobuildRunner:
             except Exception:  # noqa: BLE001 - 段说明是增强信息
                 brief = ""
         notes = [item["text"] for item in run.get("notes") or [] if not item.get("read")]
-        carried = [found[1] for found in (store.find_suspension(run["project_id"], ref["id"])
-                                          for ref in unit.get("carried") or [])
-                   if found is not None and found[1].get("state") == "deferred"]
+        carried = []
+        for ref in unit.get("carried") or []:
+            found = store.find_suspension(run["project_id"], ref["id"])
+            if found is not None and found[1].get("state") == "deferred":
+                carried.append(found[1])
         hint.write(run["project_id"], run["conversation_id"],
                    hint.compose(run, unit, brief=brief, notes=notes, carried=carried))
         if notes:
@@ -568,9 +577,7 @@ class AutobuildRunner:
 
         started = float(((run.get("slices") or {}).get(unit["id"]) or {}).get("started_at") or 0)
         for record in exec_records.query(project_id, conversation_id=run["conversation_id"]):
-            if (record.get("run_id") == run["run_id"] and record.get("command") == step["command"]
-                    and float(record.get("started_at") or 0) >= started
-                    and ((record.get("slice") or {}).get("id") in (unit["id"], None) or unit["kind"] == "node")):
+            if _ran_step(record, run, unit, step, started):
                 return record["id"]
         return None
 
@@ -903,7 +910,7 @@ class AutobuildRunner:
                 if exc.code == "delete_forbidden":
                     changesets.discard(ws, run["project_id"], record["id"], actor=owner)
                 elif exc.code != "merge_conflict":
-                    raise
+                    raise exc
         except Exception:  # noqa: BLE001 - 收不了尾时变更集留着，下一轮开始前、重启时再合入
             _log.warning("自主构建结束时整理变更集失败（%s）", run["project_id"], exc_info=True)
 
@@ -988,7 +995,8 @@ class AutobuildRunner:
         if state not in allowed and not (orphan and op != "pause"):
             raise ApiError("autobuild_not_running", "运行不在可以控制的状态", 409, {"state": state})
         idle = state in ("paused", "interrupted") or orphan
-        if state == "queued" and op != "pause" or (idle and not self._in_slice(run)):
+        not_started = state == "queued" and op != "pause"
+        if not_started or (idle and not self._in_slice(run)):
             # 还没开始、或已经停在安全点：直接结束
             await self._finish(project_id, run_id, "stopped" if op == "stop" else "converted")
             return run_view(store.get(project_id, run_id))

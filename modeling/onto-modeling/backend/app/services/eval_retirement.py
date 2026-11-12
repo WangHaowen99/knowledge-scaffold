@@ -91,11 +91,13 @@ def _referenced_uploads(folder: Path) -> dict[str, set[str]]:
     for path in folder.glob("*.json"):
         data = read_json(path, {})
         sources = data.get("sources") if isinstance(data, dict) else None
-        ids = {
-            str(item.get("id"))
-            for source in sources or [] if isinstance(source, dict)
-            for item in source.get("files") or [] if isinstance(item, dict) and item.get("id")
-        }
+        ids = set()
+        for source in sources or []:
+            if not isinstance(source, dict):
+                continue
+            for item in source.get("files") or []:
+                if isinstance(item, dict) and item.get("id"):
+                    ids.add(str(item.get("id")))
         if ids:
             found[path.stem] = ids
     return found

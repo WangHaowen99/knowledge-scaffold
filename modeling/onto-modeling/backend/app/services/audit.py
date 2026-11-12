@@ -163,14 +163,18 @@ def record_agent_commits(project_id: str, cwd, base: str, head: str, changes: di
     import subprocess
 
     try:
-        count = subprocess.run(["git", "rev-list", "--count", f"{base}..{head}"], cwd=cwd, capture_output=True,
-                               text=True, timeout=15).stdout.strip()
-        body = subprocess.run(["git", "log", "-1", "--format=%B", head], cwd=cwd, capture_output=True, text=True,
-                              timeout=15).stdout
+        count = subprocess.run(  # NOSONAR(S4721) 固定的 git 参数列表，不经 shell
+            ["git", "rev-list", "--count", f"{base}..{head}"], cwd=cwd, capture_output=True, text=True,
+            timeout=15).stdout.strip()
+        body = subprocess.run(  # NOSONAR(S4721) 固定的 git 参数列表，不经 shell
+            ["git", "log", "-1", "--format=%B", head], cwd=cwd, capture_output=True, text=True, timeout=15).stdout
     except (OSError, subprocess.SubprocessError):
         count, body = "", ""
-    trailer = {key: value.strip() for key, _sep, value in
-               (line.partition(":") for line in body.splitlines() if line.startswith("Onto-"))}
+    trailer = {}
+    for line in body.splitlines():
+        if line.startswith("Onto-"):
+            key, _sep, value = line.partition(":")
+            trailer[key] = value.strip()
     files = sum(len(changes.get(kind) or []) for kind in ("added", "modified", "deleted"))
     record(type="commit", action="agent.commit", actor="agent", actor_kind="agent", project_id=project_id,
            summary=f"commits={count or '?'}，files={files}，head={head[:12]}", trailer=trailer or None)

@@ -523,6 +523,16 @@ def _with_followup_notice(error: str, count: int) -> str:
     return f"{error}本轮进行中追加的 {count} 条消息可能没有处理，已放回输入框，请重新发送。"
 
 
+def _occupied(session: Session) -> bool:
+    """会话在跑一轮、排着提示词，或者正在接下一轮。"""
+    return session.state == "running" or bool(session.pending_prompts) or bool(session.chaining)
+
+
+def _moved(base: str, head: str) -> bool:
+    """副本的 HEAD 离开了这一轮开始时的提交。"""
+    return bool(head) and bool(base) and head != base
+
+
 def _is_command(text: str, meta: dict) -> bool:
     """运行中发来的是命令（排到这一轮之后）还是文字（插进这一轮）：页面命令带 command，手打的以 / 开头。"""
     return bool(meta.get("command")) or str(text or "").lstrip().startswith("/")
@@ -952,7 +962,7 @@ class SessionManager:
         chained = bool(meta.pop("_chain", False))
         # 在跑（含消息已收下、引擎还在连接或排队）：平台不再把消息塞给引擎排着（引擎排着的平台不知道，执行记录会
         # 挂错命令）。文字插进这一轮，命令代存到这一轮结束
-        if not chained and (session.state == "running" or session.pending_prompts or session.chaining):
+        if not chained and _occupied(session):
             if _is_command(text, meta):
                 return await self._hold_next(session, cwd, text, meta, username)
             return await self._steer(session, cwd, text, meta)
@@ -1288,8 +1298,7 @@ class SessionManager:
     async def start_next(self, project_id: str, conversation_id: str, username: str = "") -> tuple[Session, dict]:
         """现在开始代存的命令（打断后暂停的那条）。在跑时 409 session_busy。"""
         session = self._sessions.get(project_id)
-        if session is not None and session.conversation_id == conversation_id and (
-                session.state == "running" or session.pending_prompts or session.chaining):
+        if session is not None and session.conversation_id == conversation_id and _occupied(session):
             error = SessionError("对话正在运行，等这一轮结束会自动开始", 409)
             error.code, error.details = "session_busy", {"running_conversation_id": conversation_id}
             raise error
@@ -1308,7 +1317,9 @@ class SessionManager:
 
     def _startable_next(self, session: Session) -> dict | None:
         entry = self._next.get((session.project_id, session.conversation_id))
-        if entry is None or entry["view"]["paused"] or session.pending_permissions or session.run_id:
+        if entry is None or entry["view"]["paused"]:
+            return None
+        if session.pending_permissions or session.run_id:
             return None
         return entry
 
@@ -1330,8 +1341,8 @@ class SessionManager:
                 self._next.setdefault((project_id, conversation_id), entry)
                 self._publish_next(project_id, conversation_id)
             session.chaining = False
-            if (self._sessions.get(project_id) is session and session.state == "running"
-                    and not session.turns_in_flight and not session.pending_prompts):
+            settled = not session.turns_in_flight and not session.pending_prompts
+            if self._sessions.get(project_id) is session and session.state == "running" and settled:
                 self._return_steers(session, None)  # 这期间收下的插话没有一轮可插了
                 session.set_state("idle")
                 record = await asyncio.to_thread(turns.suggestions_record, session)
@@ -2130,7 +2141,7 @@ class SessionManager:
         try:
             record_exec = exec_records.get(session.project_id, session.exec_id) if session.exec_id else None
             head = await asyncio.to_thread(_git_head, session.cwd)
-            if not running and head and session.round_base_commit and head != session.round_base_commit:
+            if not running and _moved(session.round_base_commit, head):
                 # 审计：agent 这一轮在副本里的提交（不经 HTTP 的专项审计，方案 E4）
                 changes = await asyncio.to_thread(_git_changes, session.cwd, session.round_base_commit, head)
                 await asyncio.to_thread(audit.record_agent_commits, session.project_id, session.cwd,
@@ -2261,7 +2272,8 @@ class SessionManager:
             if kind == "_cli_state":
                 session.on_cli_state(event.get("state"))
                 handed = any(entry.get("sent") for entry in session.steers.values())
-                if event.get("state") == "idle" and handed and not session.turns_in_flight and not session.chaining:
+                stalled = not session.turns_in_flight and not session.chaining
+                if event.get("state") == "idle" and handed and stalled:
                     # CLI 停下了却没拿插话开下一轮（出错后 CLI 不再接着跑）：撤回，会话照常收尾成空闲
                     self._return_steers(session, None)
                     session.set_state("idle")
@@ -2330,7 +2342,8 @@ class SessionManager:
         if reload:
             await self._reload_after_turn(session)
         for record in await asyncio.to_thread(self._after_turn, session, failed):
-            if record.get("type") == "suggestions" and (session.keep_suggestions or engine_continues or chain):
+            held = session.keep_suggestions or engine_continues or chain
+            if record.get("type") == "suggestions" and held:
                 continue
             session.broadcast(record)
         session.keep_suggestions = False

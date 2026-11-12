@@ -372,6 +372,10 @@ def ingest(turn: Turn, event: dict) -> list[tuple[dict, bool]]:
     return [(event, False)]
 
 
+# 子任务开始时记下的字段（后面的进度、结果按 tool_use_id 找回）
+_SUB_TASK_KEYS = ("task_id", "description", "agent_type")
+
+
 def _subagent_started(turn: Turn, event: dict) -> dict:
     """子任务开始：补上派发时的任务说明（稳定引擎从 Task 调用参数取），定下名称。"""
     dispatch = turn.sub_briefs.get(str(event.get("tool_use_id") or "")) or {}
@@ -381,8 +385,7 @@ def _subagent_started(turn: Turn, event: dict) -> dict:
     turn.sub_titles[task_id] = subagent_title(description, brief, event.get("agent_type"))
     turn.sub_counts.setdefault(task_id, 0)
     if event.get("tool_use_id"):
-        turn.sub_tasks[str(event["tool_use_id"])] = {key: event.get(key) for key in ("task_id", "description",
-                                                                                     "agent_type")}
+        turn.sub_tasks[str(event["tool_use_id"])] = {key: event.get(key) for key in _SUB_TASK_KEYS}
     return {**event, "description": description, "brief": brief, **_sub_fields(turn, event)}
 
 

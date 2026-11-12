@@ -270,7 +270,7 @@ def detect_stage(project_root: Path) -> str | None:
     超时或起不来返回 None；脚本出错、没有输出时返回空串，调用方与 hook 一样按「未开始」处理。
     """
     try:
-        proc = subprocess.run(
+        proc = subprocess.run(  # NOSONAR(S4721) 固定参数列表跑受信的工作区脚本，不经 shell
             ["python3", str(_state_helper(project_root)), "detect-stage"],
             cwd=project_root,
             capture_output=True,

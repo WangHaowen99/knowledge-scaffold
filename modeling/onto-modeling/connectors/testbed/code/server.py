@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hmac
+import logging
 import os
 import shutil
 import ssl
@@ -36,10 +37,21 @@ COMMIT_ENV = {
 }
 
 
+def _emit(text="", stream=None):
+    """结果写到标准输出（报错写到标准错误）：单独的输出通道，不受应用日志配置影响。"""
+    handler = logging.StreamHandler(stream or sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    output = logging.Logger("code-testbed.out", logging.INFO)
+    output.propagate = False
+    output.addHandler(handler)
+    output.info(text)
+
+
 def git(*args: str, cwd: Path | str | None = None, env: dict | None = None) -> str:
     base = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(cwd or "/tmp"), "GIT_CONFIG_NOSYSTEM": "1",
             "LC_ALL": "C", **COMMIT_ENV, **(env or {})}
-    done = subprocess.run(["git", *args], cwd=cwd, env=base, capture_output=True, text=True, check=False)
+    done = subprocess.run(  # NOSONAR(S4721) 测试台：固定的 git 参数列表，不经 shell
+        ["git", *args], cwd=cwd, env=base, capture_output=True, text=True, check=False)
     if done.returncode != 0:
         raise RuntimeError(f"git {args[0]} 失败：{done.stderr.strip()}")
     return done.stdout.strip()
@@ -136,7 +148,8 @@ class Handler(BaseHTTPRequestHandler):
             "HTTP_CONTENT_ENCODING": self.headers.get("Content-Encoding", ""),
             "GIT_PROTOCOL": self.headers.get("Git-Protocol", ""),
         }
-        done = subprocess.run(self.backend, input=body, env=env, capture_output=True, check=False)
+        done = subprocess.run(  # NOSONAR(S4721) 测试台：固定的 git http-backend 命令，不经 shell
+            self.backend, input=body, env=env, capture_output=True, check=False)
         head, sep, payload = done.stdout.partition(b"\r\n\r\n")
         if not sep:
             head, sep, payload = done.stdout.partition(b"\n\n")
@@ -184,17 +197,17 @@ def main() -> int:
     args = parser.parse_args()
     token = os.environ.get(TOKEN_ENV, "")
     if not token:
-        print(f"要先设置 {TOKEN_ENV}", file=sys.stderr)
+        _emit(f"要先设置 {TOKEN_ENV}", sys.stderr)
         return 2
     for name, commit in init_projects(Path(args.root)).items():
-        print(f"{name}.git {commit}", flush=True)
+        _emit(f"{name}.git {commit}")
     server = make_server(Path(args.root), token, args.host, args.port)
     if args.tls_cert:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(args.tls_cert, args.tls_key)
         server.socket = context.wrap_socket(server.socket, server_side=True)
     scheme = "https" if args.tls_cert else "http"
-    print(f"listening on {scheme}://{args.host}:{server.server_address[1]}", flush=True)
+    _emit(f"listening on {scheme}://{args.host}:{server.server_address[1]}")
     server.serve_forever()
     return 0
 

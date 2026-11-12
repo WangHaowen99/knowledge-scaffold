@@ -66,8 +66,9 @@ def flow_stops(record: dict | None, tool_input) -> tuple[dict, dict]:
     """资料分析里（任何构建方式、没有运行）决定流程走向的问题：从这次提问里拿掉，回答一律 STOP_ANSWER。
 
     返回 (剩下的 tool_input, {原问题: STOP_ANSWER})；不是资料分析、没有这类问题时原样返回和 {}。"""
-    if not record or (record.get("node") or {}).get("id") != RESEARCH_NODE or record.get("run_id") \
-            or not isinstance(tool_input, dict):
+    if not record or (record.get("node") or {}).get("id") != RESEARCH_NODE:
+        return tool_input, {}
+    if record.get("run_id") or not isinstance(tool_input, dict):
         return tool_input, {}
     from . import decide
 

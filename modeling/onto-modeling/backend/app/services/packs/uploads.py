@@ -61,6 +61,20 @@ class UploadError(Exception):
         self.details = details
 
 
+def _record_matches(record: dict, state: str, uploaded_by: str) -> bool:
+    """按状态（逗号分隔）和上传人筛；按上传人筛时只看私有包。"""
+    if state and record.get("state") not in state.split(","):
+        return False
+    if not uploaded_by:
+        return True
+    return record.get("uploaded_by") == uploaded_by and record.get("scope") == SCOPE_PRIVATE
+
+
+def _package_dir(child: Path, legacy: bool) -> bool:
+    """zip 里包了一层的那个目录：有清单，或者旧资产包有 commands/。"""
+    return (child / mf.MANIFEST_FILE).is_file() or bool(legacy and (child / "commands").is_dir())
+
+
 class UploadStore:
     def __init__(self, repository: PackRepository, assets_dir: Path):
         self.repository = repository
@@ -93,9 +107,7 @@ class UploadStore:
                 record = json.loads((entry / "record.json").read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            if (not state or record.get("state") in state.split(",")) \
-                    and (not uploaded_by or (record.get("uploaded_by") == uploaded_by
-                                             and record.get("scope") == SCOPE_PRIVATE)):
+            if _record_matches(record, state, uploaded_by):
                 records.append(record)
         return sorted(records, key=lambda record: record.get("uploaded_at", 0), reverse=True)
 
@@ -158,17 +170,18 @@ class UploadStore:
                 target = dest / info.filename
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(info) as source, open(target, "wb") as out:
-                    while chunk := source.read(1 << 20):
+                    chunk = source.read(1 << 20)
+                    while chunk:
                         budget -= len(chunk)
                         if private and budget < 0:
                             raise UploadError("pack_upload_invalid", "解压后超过 64 MiB", 400, {"reason": "too_large"})
                         out.write(chunk)
+                        chunk = source.read(1 << 20)
         root = dest
         # 兼容两种打包：zip 根就是包，或包一层目录（旧资产包还可能包一层 .claude/）
         if not (root / mf.MANIFEST_FILE).is_file():
             children = [child for child in dest.iterdir() if child.is_dir()] if dest.is_dir() else []
-            nested = [child for child in children if (child / mf.MANIFEST_FILE).is_file()
-                      or (legacy and (child / "commands").is_dir())]
+            nested = [child for child in children if _package_dir(child, legacy)]
             if len(nested) == 1:
                 root = nested[0]
         if legacy:

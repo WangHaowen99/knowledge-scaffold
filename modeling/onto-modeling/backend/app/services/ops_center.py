@@ -199,8 +199,9 @@ def _record_drill(drill: dict) -> None:
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "safe.directory=*", *args], cwd=cwd,
-                          capture_output=True, text=True, timeout=120)
+    return subprocess.run(  # NOSONAR(S4721) 固定的 git 参数列表，不经 shell
+        ["git", "-c", "core.hooksPath=/dev/null", "-c", "safe.directory=*", *args], cwd=cwd,
+        capture_output=True, text=True, timeout=120)
 
 
 def _check_project(root: Path) -> str | None:
@@ -218,6 +219,12 @@ def _check_project(root: Path) -> str | None:
     return None
 
 
+def _in_projects(name: str, chosen: list[str]) -> bool:
+    """备份包里的这个成员属于抽中的项目。"""
+    return any(name == f"data/workspaces/{project}" or name.startswith(f"data/workspaces/{project}/")
+               for project in chosen)
+
+
 def run_drill(task_id: str, backup_name: str, sample: int) -> dict:
     """把一份备份恢复到临时目录，抽检 sample 个项目。结果记进演练记录与任务。"""
     started = time.time()
@@ -231,9 +238,7 @@ def run_drill(task_id: str, backup_name: str, sample: int) -> dict:
             projects = sorted({parts[2] for parts in (member.name.split("/") for member in members)
                                if len(parts) > 2 and parts[0] == "data" and parts[1] == "workspaces"})
             chosen = projects[:sample]
-            wanted = [member for member in members
-                      if any(member.name == f"data/workspaces/{name}" or member.name.startswith(f"data/workspaces/{name}/")
-                             for name in chosen)]
+            wanted = [member for member in members if _in_projects(member.name, chosen)]
             progress(task_id, 30)
             if cancelled(task_id):
                 _cancel_flags.pop(task_id, None)
