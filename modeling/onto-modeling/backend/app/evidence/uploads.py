@@ -78,7 +78,8 @@ def _pending(owner: str) -> int:
 def start(owner: str, filename, size) -> dict:
     """EV-31。"""
     name = Path(str(filename or "")).name.strip()
-    if not name or len(name) > FILENAME_MAX or isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+    positive_size = isinstance(size, int) and not isinstance(size, bool) and size > 0
+    if not name or len(name) > FILENAME_MAX or not positive_size:
         raise ApiError("invalid_argument", "要给出文件名和大于 0 的字节数", 400,
                        {"fields": {"filename": "required", "size": "positive_int"}})
     limit = max_bytes()
@@ -167,7 +168,10 @@ def complete(upload_id: str, owner: str, sha256) -> dict:
         with temporary.open("wb") as out:
             for index in range(count):
                 with (folder / f"{index}.part").open("rb") as part:
-                    while piece := part.read(_COPY_BYTES):
+                    while True:
+                        piece = part.read(_COPY_BYTES)
+                        if not piece:
+                            break
                         digest.update(piece)
                         out.write(piece)
         if digest.hexdigest() != declared:

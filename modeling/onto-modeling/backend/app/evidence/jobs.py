@@ -135,8 +135,9 @@ def view(job: dict) -> dict:
 
     state = job["state"]
     progress = job.get("progress")
-    if isinstance(progress, dict) and progress.get("total"):
-        progress = {**progress, "pct": round(100.0 * progress.get("done", 0) / progress["total"], 1)}
+    total = progress.get("total") if isinstance(progress, dict) else None
+    if isinstance(progress, dict) and total:
+        progress = {**progress, "pct": round(100.0 * progress.get("done", 0) / total, 1)}
     elif isinstance(progress, dict):
         progress = {**progress, "pct": 0.0}
     actions = []

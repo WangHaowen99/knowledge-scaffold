@@ -11,7 +11,7 @@ import json
 import re
 import tarfile
 import time
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Callable
@@ -64,6 +64,7 @@ class RecordWriter:
         self.counts: dict[str, int] = {}
         self.digest = Digest()
         self._files: dict[str, BinaryIO] = {}
+        self._opened = ExitStack()  # 各类型的记录文件按需打开，close() 时一起关
         self._hashes: dict[str, "hashlib._Hash"] = {}
         self._seen: set[str] = set()
 
@@ -74,7 +75,7 @@ class RecordWriter:
             return True
         try:
             record = json.loads(text)
-        except (UnicodeDecodeError, ValueError):
+        except ValueError:  # 含 UnicodeDecodeError、JSONDecodeError
             raise RecordError("记录行不是 JSON") from None
         if not isinstance(record, dict):
             raise RecordError("记录行不是对象")
@@ -95,7 +96,7 @@ class RecordWriter:
             self.truncated = True
             return False
         if kind not in self._files:
-            self._files[kind] = open(self.directory / f"{kind}.jsonl", "wb")
+            self._files[kind] = self._opened.enter_context(open(self.directory / f"{kind}.jsonl", "wb"))
             self._hashes[kind] = hashlib.sha256()
         self._files[kind].write(data)
         self._hashes[kind].update(data)
@@ -108,8 +109,7 @@ class RecordWriter:
 
     def close(self) -> dict[str, str]:
         """关文件，回 `{"records/<type>.jsonl": sha256}`，按标准类型的顺序。"""
-        for handle in self._files.values():
-            handle.close()
+        self._opened.close()
         return {f"records/{kind}.jsonl": self._hashes[kind].hexdigest()
                 for kind in RECORD_TYPES if kind in self._hashes}
 
@@ -257,6 +257,15 @@ def as_count(value, default: int = 0) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else default
 
 
+def _valid_blob_entry(name, sha256, size) -> bool:
+    """原始结果条目：名字和 sha256 格式对，大小是 0～MAX_BLOB_BYTES 的整数。"""
+    if not isinstance(name, str) or not _BLOB_NAME_RE.match(name):
+        return False
+    if not isinstance(sha256, str) or not _SHA256_RE.match(sha256):
+        return False
+    return as_count(size, -1) >= 0 and size <= MAX_BLOB_BYTES
+
+
 def normalize_result(raw: dict) -> dict:
     """旁路容器 `/result` 的小 JSON → 网关用的形状；字段截短、限条数，原始结果条目不合格抛 ResultError。"""
     if not isinstance(raw, dict):
@@ -272,8 +281,7 @@ def normalize_result(raw: dict) -> dict:
         if not isinstance(item, dict):
             raise ResultError("原始结果条目不是对象")
         name, sha256, size = item.get("name"), item.get("sha256"), item.get("size")
-        if not isinstance(name, str) or not _BLOB_NAME_RE.match(name) or not isinstance(sha256, str) \
-                or not _SHA256_RE.match(sha256) or as_count(size, -1) < 0 or size > MAX_BLOB_BYTES:
+        if not _valid_blob_entry(name, sha256, size):
             raise ResultError("原始结果条目的名字、哈希或大小不对")
         if sha256 in seen:
             continue
@@ -433,7 +441,9 @@ class _Checked:
 def write_tar(out: BinaryIO, items: list[Member], open_blob: Callable[[str], AbstractContextManager[BinaryIO]],
               mtime: int) -> None:
     """流式写 tar（`w|`）。原始结果短了、哈希不对就抛错，调用方断开连接。"""
-    with tarfile.open(fileobj=out, mode="w|", format=tarfile.USTAR_FORMAT, copybufsize=CHUNK_BYTES) as tar:
+    # 只写不解压：成员是清单里列好的文件，原始结果大小在 normalize_result 里已限到 MAX_BLOB_BYTES
+    with tarfile.open(fileobj=out, mode="w|", format=tarfile.USTAR_FORMAT,  # NOSONAR(S5042) 写 tar，不解压
+                      copybufsize=CHUNK_BYTES) as tar:
         for item in items:
             info = tarfile.TarInfo(item.name)
             info.size, info.mtime, info.mode = item.size, mtime, 0o644

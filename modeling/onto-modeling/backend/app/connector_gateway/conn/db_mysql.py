@@ -145,9 +145,12 @@ class MySQL(Dialect):
         found: dict[tuple, Constraint] = {}
         for schema, table, name, kind, column, ref_schema, ref_table, ref_column, on_update, on_delete in rows:
             key = (text(schema), text(table), text(name), text(kind))
+            constraint_kind = kinds.get(key[3])
+            if constraint_kind is None:
+                continue  # 查询只取这三类，别的约束类型不建模
             item = found.get(key)
             if item is None:
-                item = Constraint(key[0], key[1], key[2], kinds[key[3]], ref_schema=text(ref_schema) or None,
+                item = Constraint(key[0], key[1], key[2], constraint_kind, ref_schema=text(ref_schema) or None,
                                   ref_table=text(ref_table) or None, on_update=text(on_update) or None,
                                   on_delete=text(on_delete) or None)
                 found[key] = item

@@ -47,7 +47,8 @@ HEAD_MAX = 2000
 _THIS_CALL = re.compile(r"this\.(" + _IDENT + r")\.(" + _IDENT + r")\s*\(")
 _ARROW_TARGET = re.compile(r"^\s*(?:\(\s*\w*\s*\)|\w+)\s*=>\s*(" + _IDENT + r")")
 _INVERSE = re.compile(r"=>\s*\w+\.(" + _IDENT + r")")
-_OPTION = r"\b{key}\s*:\s*(['\"`][^'\"`]*['\"`]|true|false|-?\d+|" + _IDENT + r"(?:\." + _IDENT + r")*)"
+# {key} 留给 format 填
+_OPTION = rf"\b{{key}}\s*:\s*(['\"`][^'\"`]*['\"`]|true|false|-?\d+|{_IDENT}(?:\.{_IDENT})*)"
 _KEYWORD_BEFORE = re.compile(r"\b(return|typeof|case)\s*$")
 _REGEX_BEFORE = set("(,=:[!&|?{};+-*%<>~^") | {""}
 
@@ -171,7 +172,9 @@ def match_close(masked: str, index: int, end: int | None = None) -> int:
     """`index` 处是开括号，回配对的闭括号位置；配不上回文本末尾。"""
     pairs = {"(": ")", "{": "}", "[": "]"}
     opener = masked[index]
-    closer = pairs[opener]
+    closer = pairs.get(opener)
+    if closer is None:
+        raise ValueError(f"位置 {index} 不是开括号")
     depth = 0
     limit = len(masked) if end is None else end
     for position in range(index, limit):
@@ -329,13 +332,15 @@ class TsFile:
         position = pos
         while position < end:
             char = masked[position]
+            outside = depth == 0 and angle == 0  # 不在括号或泛型尖括号里
+            closes_angle = char == ">" and angle and masked[position - 1] != "="
             if char in "([":
                 depth += 1
             elif char in ")]":
                 depth -= 1
             elif depth == 0 and char == "<" and masked[position + 1:position + 2] != "=":
                 angle += 1
-            elif depth == 0 and char == ">" and angle and masked[position - 1] != "=":
+            elif depth == 0 and closes_angle:
                 angle -= 1
             elif char == "{":
                 close = match_close(masked, position, end)
@@ -345,7 +350,7 @@ class TsFile:
                 return position, (position + 1, close), close + 1
             elif depth == 0 and char == ";":
                 return position, None, position + 1
-            elif depth == 0 and angle == 0 and char == "\n" and self._complete(pos, position, end):
+            elif outside and char == "\n" and self._complete(pos, position, end):
                 return position, None, position
             position += 1
         return end, None, end
@@ -424,8 +429,9 @@ class TsFile:
               block: tuple[int, int], stop: int) -> None:
         names = {item.name.rsplit(".", 1)[-1]: item for item in decorators}
         members = list(self.members(*block))
-        validated = any(self.is_validator(decorator.name) for member in members for decorator in member["decorators"]
-                        if member["kind"] == "property")
+        properties = [member for member in members if member["kind"] == "property"]
+        property_decorators = [decorator for member in properties for decorator in member["decorators"]]
+        validated = any(self.is_validator(decorator.name) for decorator in property_decorators)
         if "Schema" in names and self.imports.get("Schema", "").startswith("@nestjs/mongoose"):
             self.sink.note("Mongoose 的 @Schema / @Prop 模型没有识别", self.path)
         if "Table" in names and self.imports.get("Table", "").startswith("sequelize"):
@@ -480,7 +486,9 @@ class TsFile:
                 continue
             routes = [item for item in member["decorators"] if item.name in ROUTES]
             public = not member["modifiers"] & {"private", "protected"} and not member["name"].startswith("_")
-            if (role == "controller" and routes) or (role == "service" and public) or sql[id(member)]:
+            controller_route = role == "controller" and bool(routes)
+            public_service = role == "service" and public
+            if controller_route or public_service or sql[id(member)]:
                 self.method(anchor, name, member, role, sql[id(member)], types, routes, prefixes)
 
     def members(self, start: int, end: int):

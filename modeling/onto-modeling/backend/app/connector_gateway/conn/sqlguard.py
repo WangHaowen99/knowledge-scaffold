@@ -104,6 +104,11 @@ def _skip_block_comment(sql: str, start: int, *, nested: bool) -> int:
     raise _reject("注释没有闭合")
 
 
+def _dash_comment_follows(sql: str, after: int, mysql: bool) -> bool:
+    """`--` 后面（after 处）能不能算行注释：MySQL 要求后面是空白或到了结尾，其他方言都算。"""
+    return not mysql or after >= len(sql) or sql[after] in " \t\r\n\f\v"
+
+
 def skeleton(sql: str, dialect: str) -> str:
     """去掉注释（换成空格）、字符串（换成 `?`）、带引号的标识符（换成 `_q_`），剩下的就是要断词的骨架。"""
     if dialect not in DIALECTS:
@@ -130,7 +135,7 @@ def skeleton(sql: str, dialect: str) -> str:
                 raise _reject("MySQL 可执行注释或优化器提示")
             index = _skip_block_comment(sql, index + 2, nested=not mysql)
             out.append(" ")
-        elif char == "-" and nxt == "-" and (not mysql or index + 2 >= length or sql[index + 2] in " \t\r\n\f\v"):
+        elif char == "-" and nxt == "-" and _dash_comment_follows(sql, index + 2, mysql):
             # MySQL 里 `--` 后面要跟空白才是注释，否则是两个减号，照代码继续断词
             end = sql.find("\n", index)
             index = length if end < 0 else end + 1

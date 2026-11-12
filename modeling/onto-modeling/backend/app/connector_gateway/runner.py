@@ -35,7 +35,7 @@ def failed(code: str) -> dict:
 def _kill(process: subprocess.Popen) -> None:
     try:
         os.killpg(process.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
+    except OSError:  # 含 ProcessLookupError、PermissionError
         process.kill()
 
 
@@ -46,7 +46,7 @@ def run(converter: LoadedConverter, data: bytes, filename: str, convert_limits: 
             "memory_bytes": job.memory_bytes, "cpu_seconds": int(job.timeout_s) + 5}
     # 子进程只拿到最少的环境变量：不继承网关的任何配置
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONDONTWRITEBYTECODE": "1", "LANG": "C.UTF-8"}
-    process = subprocess.Popen(
+    process = subprocess.Popen(  # NOSONAR(S4721) 固定命令：本解释器跑网关 worker 模块，参数列表不经 shell
         [sys.executable, "-m", "app.connector_gateway.worker"], cwd=APP_ROOT, env=env,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
     )
@@ -80,7 +80,7 @@ def run(converter: LoadedConverter, data: bytes, filename: str, convert_limits: 
         process.stdin.write(json.dumps(head).encode("utf-8") + b"\n")
         process.stdin.write(data)
         process.stdin.close()
-    except (BrokenPipeError, OSError):
+    except OSError:  # 含 BrokenPipeError：子进程先退出了，结果按退出码判
         pass
     try:
         process.wait(timeout=job.timeout_s)
@@ -97,7 +97,7 @@ def run(converter: LoadedConverter, data: bytes, filename: str, convert_limits: 
         return failed("output_too_large")
     try:
         reply = json.loads(output.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except ValueError:  # 含 UnicodeDecodeError、JSONDecodeError
         # 被内核信号杀掉（-9 多半是内存）或异常退出；只记最后一行错误，不记内容
         tail = errors.decode("utf-8", "replace").strip().splitlines()[-1:] or [""]
         _log.warning("转换器 %s 子进程退出码 %s：%s", converter.info.id, process.returncode, tail[0][:200])
