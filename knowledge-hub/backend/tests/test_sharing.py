@@ -113,6 +113,7 @@ def test_restore_replays_current_acl_and_tombstone(store, tmp_path):
     assert restored.packages('synthetic-owner')['total'] == 0
     store.delete('ontology_demo', other)
     deleted = PackageStore(Store(restore(snapshot, tmp_path / 'deleted', store.root / 'packages')))
+    assert {p.name for p in deleted.root_of('ontology_demo').iterdir()} == {'metadata.json'}
     assert deleted.packages(other)['total'] == 0
     assert deleted.delete('ontology_demo', other)['state'] == 'deleted'
 
@@ -162,3 +163,53 @@ def test_release_creator_is_immutable_across_users_and_duplicate_uploads(store, 
     store.revoke('ontology_demo', second_actor.subject, first_actor.subject)
     store.recover_all()
     assert store.release('ontology_demo', first['release_id'], second_actor.subject)[0] == first
+
+
+def test_physical_delete_keeps_only_tombstone_and_retries_failure(store, monkeypatch):
+    from hub.storage import read_json, write_json
+    from hub import package_store
+    publish(store)
+    root = store.root_of('ontology_demo')
+    (root / 'resources-current').mkdir()
+    (root / 'resources-current' / 'synthetic.txt').write_text('Synthetic resource')
+    write_json(store.root / 'delegations' / 'synthetic.json', {'ontology_id': 'ontology_demo'})
+    write_json(store.root / 'delegations' / 'unrelated.json', {'ontology_id': 'ontology_other'})
+    original = package_store.shutil.rmtree
+
+    def fail(path):
+        raise OSError('Synthetic disk failure')
+
+    monkeypatch.setattr(package_store.shutil, 'rmtree', fail)
+    with pytest.raises(OSError):
+        store.delete('ontology_demo', 'synthetic-owner')
+    assert read_json(root / 'metadata.json')['state'] == 'deleted'
+    store.recover_all()
+    assert store.packages('synthetic-owner')['items'] == []
+    monkeypatch.setattr(package_store.shutil, 'rmtree', original)
+    result = store.delete('ontology_demo', 'synthetic-owner')
+    assert result == {'ontology_id': 'ontology_demo', 'state': 'deleted'}
+    assert {p.name for p in root.iterdir()} == {'metadata.json'}
+    assert not list((store.root / 'publish-requests').glob('*.json'))
+    assert not (store.root / 'delegations' / 'synthetic.json').exists()
+    assert (store.root / 'delegations' / 'unrelated.json').exists()
+    store.recover_all()
+    assert store.delete('ontology_demo', 'synthetic-owner') == result
+    with pytest.raises(PackageError):
+        store.delete('ontology_demo', 'unauthorized-synthetic')
+
+
+def test_delete_http_contract_physically_cleans(api):
+    client, headers = api
+    from test_packages import sha, archive
+    payload = archive()
+    with patch('hub.user_auth.urllib.request.OpenerDirector.open', side_effect=lambda *a, **k: userinfo()):
+        request = dict(request_id='physical_demo', ontology_id='ontology_demo',
+                       change_type='modeling_content', kind='release', input_digest=sha(payload))
+        assert client.post('/api/package-publish-requests', json=request, headers=headers['modeling']).status_code == 201
+        assert client.put('/api/package-publish-requests/physical_demo/content',
+                          files={'file': ('package.zip', payload)}, headers={**headers['modeling'], 'X-Package-Digest': sha(payload)}).status_code == 200
+        assert client.post('/api/package-publish-requests/physical_demo/commit', headers=headers['modeling']).status_code == 200
+        response = client.delete('/api/packages/ontology_demo', headers=headers['modeling'])
+        assert response.status_code == 200
+        assert response.json() == {'ontology_id': 'ontology_demo', 'state': 'deleted'}
+        assert client.get('/api/packages/ontology_demo', headers=headers['modeling']).status_code == 410

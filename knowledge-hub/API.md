@@ -45,11 +45,11 @@ mapping 仅允许修改 mapping 和清单 version。
 | GET /api/packages/{ontology_id}/authorized-users | 分页返回 issuer、sub、subject_id |
 | PUT /api/packages/{ontology_id}/authorized-users | users 数组（1至100项），各项 issuer+sub；全部身份通过格式与可信 issuer 校验后原子增加 |
 | DELETE /api/packages/{ontology_id}/authorized-users/{subject_id} | 幂等撤销，最后一人返回 409 last_authorized_user |
-| DELETE /api/packages/{ontology_id} | 整体逻辑删除；原授权用户重复调用成功 |
+| DELETE /api/packages/{ontology_id} | 整体删除并物理清理当前归档；原授权用户重复调用继续清理，完成后成功 |
 
 所有授权用户有相同权限；Hub 不识别项目角色或授权来源。
 目标账号的选择和存在性由调用服务负责。Hub 不查询账号目录、不持有账号管理凭据；操作者仍须通过在线身份验证及包授权检查。账号 sub 应保持稳定且不可复用。
-删除保留 ACL 和墓碑，全部版本与资料停止访问，相同 ID 不可重新创建。项目删除不调用此接口。
+删除先持久化 ACL 和墓碑使访问失效，再物理清理本体归档、资料、Git 历史、暂存及关联请求和委托记录；只有清理完成才返回原成功结构。失败后用同一 DELETE 重试，相同 ID 不可重新创建。独立备份和已安装副本不由本接口删除。建模删除项目默认不调用此接口；用户明确选择同时删除知识包并二次确认后调用。
 
 ## 本体共享资料
 

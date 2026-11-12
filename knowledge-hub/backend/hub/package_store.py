@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -220,7 +221,28 @@ class PackageStore:
         if meta['state'] != 'deleted':
             meta.update(state='deleted', deleted_at=now().isoformat())
             write_json(self.root_of(ontology_id) / 'metadata.json', meta)
+        self.purge_deleted(ontology_id)
         return dict(ontology_id=ontology_id, state='deleted')
+
+    def purge_deleted(self, ontology_id):
+        """Clear payloads under the write lock, preserving the durable ACL tombstone."""
+        root = self.root_of(ontology_id)
+        if read_json(root / 'metadata.json', {}).get('state') != 'deleted':
+            raise PackageError('delete_required', 'Package must be deleted before cleanup', 409)
+        for directory in ('publish-requests', 'delegations'):
+            for path in (self.root / directory).glob('*.json'):
+                if read_json(path, {}).get('ontology_id') == ontology_id:
+                    path.unlink(missing_ok=True)
+            if (self.root / directory).exists():
+                sync_dir(self.root / directory)
+        for path in root.iterdir():
+            if path.name == 'metadata.json':
+                continue
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+        sync_dir(root)
 
     def get_request(self, request_id, identity):
         key = request_key(identity.subject, identity.service, request_id)
@@ -441,6 +463,8 @@ class PackageStore:
         rows = self.requests()
         seen = set()
         for row in sorted(rows, key=lambda r: r['created_at']):
+            if read_json(self.root_of(row['ontology_id']) / 'metadata.json', {}).get('state') == 'deleted':
+                continue
             key = request_key(row['owner_subject'], row['source_service'], row['request_id'])
             if key != row['internal_request_id'] or not self.journal(row).is_file():
                 raise PackageError('archive_integrity', 'Request index mismatch', 503, 'recovery')
@@ -458,5 +482,7 @@ class PackageStore:
                     raise PackageError('archive_integrity', 'Archive receipt mismatch', 503, 'recovery')
             (self.pending(row) / 'upload.tmp').unlink(missing_ok=True)
         for root in (self.root / 'packages').glob('*'):
+            if read_json(root / 'metadata.json', {}).get('state') == 'deleted':
+                continue
             self.io.recover(root)
             self.io.validate_resources(root)
