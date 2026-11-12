@@ -64,9 +64,13 @@ def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_vi
             awaiting = [run for run in runs if status[run['id']] == 'awaiting_review']
             draft_waiting(package, awaiting, request, token)
             collecting = next((run for run in runs if run['status'] == 'collecting'), None)
-            handled = sorted((state for state in states.values() if state.get('status') in ('modeling_done', 'modeling_failed')
-                              and not (state.get('result') or {}).get('via')),
-                             key=lambda state: (state.get('result') or {}).get('reported_at') or 0)
+            handled = []
+            for state in states.values():
+                if state.get('status') not in ('modeling_done', 'modeling_failed'):
+                    continue
+                if not (state.get('result') or {}).get('via'):
+                    handled.append(state)
+            handled.sort(key=lambda state: (state.get('result') or {}).get('reported_at') or 0)
             # Deliveries modeling has not handled: runs handed over that no later delivery carries.
             handed = [states[run['id']] for run in runs if status[run['id']] == 'notified' and not states[run['id']].get('carried_into')]
             transport = {'delivered': 0, 'pending': 0, 'failed': 0, 'none': 0}
@@ -126,7 +130,8 @@ def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_vi
             for row in rows:
                 meta = jobs.meta(owner, row['id']) or {}
                 counts = meta.get('summary') or {}
-                if row['id'] != item['latest']['id'] and (counts.get('fail') or counts.get('partial') or counts.get('error')):
+                has_failures = any((counts.get('fail'), counts.get('partial'), counts.get('error')))
+                if row['id'] != item['latest']['id'] and has_failures:
                     failed += 1
                 state = modeling_result.state(store, jobs, owner, row) or {}
                 if state.get('status') in ('notified', 'modeling_failed') and not state.get('carried_into'):

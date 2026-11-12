@@ -86,7 +86,9 @@ def test_spliced_files_number_on_and_keep_the_overview_of_this_run():
     value = carryover.plan(own, [(earlier, [row([1, 2])], waiting(NOW - 60))])
     own_report = artifacts.render_report(own, STEM, NOW)
     report = carryover.report(own_report, own, value, STEM, NOW)
-    overview = lambda text: text.split('## 总览')[1].split('## 逐用例明细')[0]
+    def overview(text):
+        return text.split('## 总览')[1].split('## 逐用例明细')[0]
+
     assert overview(report) == overview(own_report) and blocks(report) == [1, 2, 3]
     assert '- **问题**：Synthetic earlier fail' in report and '**历史来源**：评测轮次 aaaaaaaaaaaa（版本 0.1.3）' in report
     answers = json.loads(carryover.answers(artifacts.render_answers(own), own, value))['answers']
@@ -237,8 +239,13 @@ def test_confirming_a_feedback_run_carries_earlier_confirmed_runs(flywheel):
     assert '反馈轮次' in report and 'Synthetic earlier question 1' in report and blocks(report) == list(range(1, 7))
     suggestions = client.get(f'/evaluation/api/runs/{second}/artifacts/suggestions.md').text
     assert '## 历史未处理建议（共 1 条，来自 1 个反馈轮次）' in suggestions
-    body = until(lambda: next((b for _, b in env.modeling.received if b['run_id'] == second
-                               and b['artifacts']['revision'] == after['artifacts']['revision']), None), 'notification')
+    def matching_notification():
+        for _, body in env.modeling.received:
+            if body['run_id'] == second and body['artifacts']['revision'] == after['artifacts']['revision']:
+                return body
+        return None
+
+    body = until(matching_notification, 'notification')
     assert body['artifacts']['carryover']['rounds'][0]['run_id'] == first
     assert client.get(f'/evaluation/api/runs/{first}').json()['optimization']['carried_into']['run_id'] == second
 
@@ -287,9 +294,17 @@ def test_feedback_on_two_versions_reaches_modeling_as_two_versions(flywheel):
         push(env, [signal(run=f'run_{version}_{n}', question=f'Synthetic {version} question {n}', version=version,
                           feedback={'comment': 'Synthetic wrong'}) for n in range(start, start + 3)])
         env.app.state.feedback.process()
-        rid = until(lambda: next((r['id'] for r in client.get('/evaluation/api/runs', params={
-            'origin': 'consumer_feedback', 'ontology_id': PACKAGE}).json()['items']
-            if r['package_ref']['version'] == version and r['status'] == 'completed' and r['artifacts']), None), 'sealed')
+        def sealed_run():
+            records = client.get('/evaluation/api/runs', params={
+                'origin': 'consumer_feedback', 'ontology_id': PACKAGE}).json()['items']
+            for record in records:
+                if record['package_ref']['version'] != version:
+                    continue
+                if record['status'] == 'completed' and record['artifacts']:
+                    return record['id']
+            return None
+
+        rid = until(sealed_run, 'sealed')
         response = client.post(f'/evaluation/api/runs/{rid}/artifacts/regenerate')
         assert response.status_code == 200, response.text
         until(lambda: client.get(f'/evaluation/api/runs/{rid}').json()['artifacts']['suggestions'] == 'ready', 'suggestions')

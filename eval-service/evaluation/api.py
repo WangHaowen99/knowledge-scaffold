@@ -962,7 +962,10 @@ def create_app(config=None,transport=None):
             for run,state in sorted(waiting,key=lambda pair:pair[0].get('created_at') or 0):
                 hand_over(owner,run,state)
 
-    jobs.drafted_hook=lambda owner,run:deliver(owner,(run.get('package_ref') or {}).get('ontology_id'))
+    def on_suggestions_drafted(owner, run):
+        deliver(owner, (run.get('package_ref') or {}).get('ontology_id'))
+
+    jobs.drafted_hook = on_suggestions_drafted
 
     def decide(owner,caller,token,run,body,credential=None):
         """A package owner hands a feedback run to modeling, or dismisses it with a reason.

@@ -18,13 +18,16 @@ def summary(store, jobs, owner, run):
     history = {'cases': sum(r.get('cases', 0) for r in rounds), 'items': sum(r.get('items', 0) for r in rounds),
                'rounds': len(rounds), 'omitted': len(carried.get('slid_out') or [])}
     ready = jobs.drafted(meta)
+    has_suggestions = any((history['cases'], history['items'], own['items']))
+    legacy_failure = own['failed'] and rows is None
+    has_unresolved_cases = any((own['errors'], own['manual'], own['failed']))
     if not modeling_result.applies(run):
         state = 'solver'
     elif not ready:
         state = 'pending'
-    elif history['cases'] or history['items'] or own['items'] or (own['failed'] and rows is None):
+    elif has_suggestions or legacy_failure:
         state = 'actionable'
-    elif own['errors'] or own['manual'] or own['failed'] or (run.get('status') != 'completed'):
+    elif has_unresolved_cases or run.get('status') != 'completed':
         state = 'diagnose'
     elif rows is None:
         # Legacy reports without stored rows cannot prove there is nothing to optimize.

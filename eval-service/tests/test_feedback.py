@@ -497,7 +497,9 @@ def test_the_public_health_check_is_unchanged(flywheel):
 
 def test_suggestions_are_drafted_when_an_owner_visits_and_delivery_waits_for_them(flywheel):
     env = flywheel
-    tasks = lambda: env.client.get('/evaluation/api/package-tasks', params={'origin': 'consumer_feedback'}).json()['items'][0]
+    def tasks():
+        return env.client.get('/evaluation/api/package-tasks', params={'origin': 'consumer_feedback'}).json()['items'][0]
+
     push(env, [signal(run=f'run_{n}', question=f'Synthetic question {n}', feedback={'comment': 'Synthetic wrong'}) for n in (1, 2, 3)])
     rid = sealed(env)['id']
     # Sealed in the background without a login: nothing could read the package yet.

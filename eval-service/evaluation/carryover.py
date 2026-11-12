@@ -124,8 +124,13 @@ def plan(own, taken, outside=()):
     start, keep, proposals, rounds = len(own['cases']), [], [], []
     for earlier, rows, state in taken:
         listed = rows or []
-        runtime = ({n for row in listed if row['category'] == 'E' for n in row['cases']}
-                   - {n for row in listed if row['category'] != 'E' for n in row['cases']})
+        runtime_cases, other_cases = set(), set()
+        for row in listed:
+            if row['category'] == 'E':
+                runtime_cases.update(row['cases'])
+            else:
+                other_cases.update(row['cases'])
+        runtime = runtime_cases - other_cases
         mapping = {}
         for number, case in enumerate(earlier['cases'], 1):
             verdict, mark = output.outcome(case)[0], fingerprint(case.get('question'))
