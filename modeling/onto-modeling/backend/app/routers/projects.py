@@ -467,6 +467,8 @@ async def delete_project(
 ):
     """永久删除（不进回收站）：名称逐字确认；会话、排队消息立即硬杀，MCP token 全部吊销。
 
+    选了同时删除 Hub 包（delete_hub_package，要 hub_usage_confirmed）时，先同步完成远端物理删除；
+    远端失败保留项目和删除进度，再次操作可以重试（develop !590）。
     响应前只做快的：硬杀会话、把工作区移出列表、清掉 Studio 草稿、吊销 token；
     目录递归删除与发布留存的删除放到响应之后（_finish_delete）。
     """
@@ -478,6 +480,8 @@ async def delete_project(
     meta = deps.workspaces.get_project(project_id)
     if (body or {}).get("confirm_name") != meta.get("name"):
         raise ApiError("confirm_name_mismatch", "输入的名称与项目名不一致", 400)
+    if (body or {}).get("delete_hub_package") is True:
+        await _delete_hub_package(project_id, request, body)
     from ..services.autobuild import store as autobuild_store
 
     autobuild_store.ensure_no_run(project_id)
@@ -489,6 +493,23 @@ async def delete_project(
     background.add_task(_finish_delete, project_id, staged)
     project_events.project_removed(meta.get("owner") or "", project_id, "deleted")
     return JSONResponse(status_code=202, content={"deleted": project_id})
+
+
+async def _delete_hub_package(project_id: str, request: Request, body: dict) -> None:
+    """删除项目前物理删除它的 Hub 包（整个本体的全部版本、评测快照与共享资料），要确认消费和评测不再使用。"""
+    from ..services import hub_members, knowledge_hub
+    from .hub_packages import identity
+
+    if body.get("hub_usage_confirmed") is not True:
+        raise ApiError("invalid_argument", "请确认消费和评测不再使用这些知识包", 422,
+                       {"fields": {"hub_usage_confirmed": "required"}})
+    token, _, _ = identity(request)
+
+    def delete_remote():
+        with knowledge_hub.lock(project_id):
+            hub_members.delete_package(deps.workspaces, project_id, token)
+
+    await asyncio.to_thread(delete_remote)
 
 
 async def _finish_delete(project_id: str, staged: Path) -> None:

@@ -16,6 +16,8 @@ import { notifyPackagePublished } from '../evaluation/evaluationModel.js';
 import PackageCompare from './PackageCompare.jsx';
 import PublishCheck from './PublishCheck.jsx';
 import PublishedVersions from './PublishedVersions.jsx';
+import KnowledgeSharing from './KnowledgeSharing.jsx';
+import { PUBLISH_FAILED_WARNING } from './sharingModel.js';
 import { proceedState, publishedText, writebackText } from './publishCheckModel.js';
 import { fileGroups } from '../versions/versionsModel.js';
 
@@ -181,6 +183,7 @@ export default function PublishPage() {
   const [records, setRecords] = useState(null);
   const [publishing, setPublishing] = useState(false);
   const [ack, setAck] = useState(false); // 我已了解，发布后需完成求解验证
+  const [sharingTick, setSharingTick] = useState(0);
   const [solverNotice, setSolverNotice] = useState(null); // 求解包发布后待验证：develop 成功提示里的「去评测」
   // 已发布版本（HB-05）：项目列表菜单带 ?versions=1 进来时直接打开；发布成功后自动打开
   const [versionsOpen, setVersionsOpen] = useState(() => route?.query?.versions === '1');
@@ -239,6 +242,9 @@ export default function PublishPage() {
       setSolverNotice(done.evaluate && r.hub?.release_id ? { text: done.text, release: { ...r.hub, version: r.version } } : null);
       const writeback = writebackText(r);
       if (writeback) setTimeout(() => toast(writeback.text, writeback.tone === 'warning' ? 'alert' : 'check'), 2500);
+      // 共享用户的 Hub 授权同步失败（develop !590）：发布照常成功，去「知识包共享」重试
+      if (r.hub_members?.status === 'failed') setTimeout(() => toast(PUBLISH_FAILED_WARNING, 'alert'), writeback ? 5000 : 2500);
+      setSharingTick((n) => n + 1);
       if (r.local_record_pending) loadRecords();
       else setRecords((list) => mergeRelease(list, r));
       setAck(false);
@@ -334,6 +340,7 @@ export default function PublishPage() {
               {proceed.title ? <div className="xs muted mt8">{proceed.title}</div> : null}
             </div>
           </div>
+          <KnowledgeSharing projectId={pid} refreshKey={sharingTick} />
           <div className="mr-exp">
             <span className="ei"><Icon name="archive" size={18} /></span>
             <div className="grow">

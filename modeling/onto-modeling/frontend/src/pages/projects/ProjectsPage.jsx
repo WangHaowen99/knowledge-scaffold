@@ -8,9 +8,10 @@ import { errorText } from '../../api/errors.js';
 import { evidenceFromSources } from '../../state/evidence.js';
 import { PageHead, ShellG } from '../../shell/Shell.jsx';
 import {
-  Button, Check, Empty, Field, Icon, Modal, Note, Prog, Seg, Select, cx, useOutside,
+  Button, Check, Empty, Field, Icon, Modal, Prog, Seg, Select, cx, useOutside,
 } from '../../ui/index.jsx';
 import HubImportModal from '../import/HubImportModal.jsx';
+import ProjectDeleteDialog from './ProjectDeleteDialog.jsx';
 import { activityText, projectLook } from './projectCard.js';
 
 function ModeChip({ mode }) {
@@ -239,46 +240,10 @@ export default function ProjectsPage() {
           </div>
         </>
       )}
-      <DeleteDialog dlg={dlg?.kind === 'delete' ? dlg : null} onClose={() => setDlg(null)} onDone={load} />
+      <ProjectDeleteDialog project={dlg?.kind === 'delete' ? dlg.p : null} onClose={() => setDlg(null)} onDeleted={load} />
       <RenameDialog dlg={dlg?.kind === 'rename' ? dlg : null} onClose={() => setDlg(null)} onDone={load} />
       <CloneDialog dlg={dlg?.kind === 'clone' ? dlg : null} onClose={() => setDlg(null)} onDone={load} />
     </ShellG>
-  );
-}
-
-function DeleteDialog({ dlg, onClose, onDone }) {
-  const { api } = useApp();
-  const [v, setV] = useState('');
-  const [busy, setBusy] = useState(false);
-  useEffect(() => { setV(''); }, [dlg]);
-  if (!dlg) return null;
-  const name = dlg.p.name;
-  const go = async () => {
-    setBusy(true);
-    try {
-      await api.deleteProject(dlg.p.id, v);
-      toast(`已删除「${name}」`, 'trash');
-      onClose();
-      onDone();
-    } catch (e) {
-      toast(errorText(e), 'alert');
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <Modal
-      open onClose={onClose} icon="trash" danger title={`删除「${name}」？`} sub="这个操作不可恢复" w={520}
-      foot={<><Button onClick={onClose}>取消</Button><Button kind="danger fill" icon="trash" disabled={v !== name || busy} onClick={go}>确认删除</Button></>}
-    >
-      <Note tone="red">正在进行的会话和<b>自主构建</b>会立即终止。</Note>
-      <div className="mt12 sm muted">工作区、对话记录和版本历史将永久清除。</div>
-      <div className="mt16">
-        <Field label="输入项目名称确认删除">
-          <div className="inp"><Icon name="edit" size={14} /><input placeholder={name} value={v} onChange={(e) => setV(e.target.value)} autoFocus /></div>
-        </Field>
-      </div>
-    </Modal>
   );
 }
 

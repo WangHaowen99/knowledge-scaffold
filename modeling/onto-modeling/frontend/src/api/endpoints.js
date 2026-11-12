@@ -47,7 +47,10 @@ export function createApi(client) {
     nameCheck: (name, excludeProjectId) => client.get('/projects/name-check', { query: { name, exclude_project_id: excludeProjectId } }), // P-03
     project: (id) => client.get(P(id)), // P-04
     patchProject: (id, body) => client.patch(P(id), body), // P-05
-    deleteProject: (id, confirm_name) => client.del(P(id), { confirm_name }), // P-06
+    // P-06；deleteHubPackage 时先物理删除项目的 Hub 包（要确认消费和评测不再使用，develop !590）
+    deleteProject: (id, confirm_name, { deleteHubPackage = false } = {}) => client.del(P(id), {
+      confirm_name, ...(deleteHubPackage ? { delete_hub_package: true, hub_usage_confirmed: true } : {}),
+    }),
     archiveProject: (id, archived) => client.post(`${P(id)}/archive`, { archived }), // P-07
     cloneProject: (id, body) => client.post(`${P(id)}/clone`, body), // P-08
     transferPackageUrl: (id) => client.withToken(client.url(`${P(id)}/transfer-package`)), // P-09
@@ -332,6 +335,10 @@ export function createApi(client) {
     ),
     projectHubReleases: (id, offset = 0, limit = 20) => client.get(`${P(id)}/hub/releases`, { query: { offset, limit } }), // HB-05
     projectHubResourcesStatus: (id) => client.get(`${P(id)}/hub/resources/status`), // HB-07
+    hubDeletePreview: (id) => client.get(`${P(id)}/hub/delete-preview`), // HB-10：删除项目前看它的 Hub 包与删除进度
+    hubSharing: (id) => client.get(`${P(id)}/hub/sharing`), // HB-11：知识包共享用户与授权同步状态
+    saveHubSharing: (id, users) => client.put(`${P(id)}/hub/sharing`, { users }), // HB-11
+    retryHubSharing: (id, username) => client.post(`${P(id)}/hub/sharing/retry`, {}, { query: { username } }), // HB-12
     // 3.21a 独立评测（ADR-0092）
     evaluationEntry: () => client.get('/evaluation/entry'), // ES-01
     evaluations: (id, { reconcile = false } = {}) => client.get(`${P(id)}/evaluations`, { query: { reconcile: reconcile ? 1 : 0 } }), // ES-02

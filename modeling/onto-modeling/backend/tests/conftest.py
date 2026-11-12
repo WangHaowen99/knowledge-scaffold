@@ -34,6 +34,7 @@ class SyntheticHub:
     def __init__(self, root: Path):
         self.root = root
         self.requests: dict[str, dict] = {}
+        self.authorized: dict[str, dict] = {}  # 包 → {sub: 授权用户}（共享授权同步用，develop !590）
         self.calls: list[tuple[str, str]] = []
         self.unavailable = False
         self.lock = threading.Lock()
@@ -85,6 +86,14 @@ class SyntheticHub:
                 row = self._request(parts[-2])
                 row.update(status='committed', committed_at=datetime.now(timezone.utc).isoformat())
                 return dict(row)
+            if parts[:2] == ['api', 'packages'] and parts[3:4] == ['authorized-users']:
+                granted = self.authorized.setdefault(parts[2], {})
+                if method == 'PUT':
+                    for user in body['users']:
+                        granted[user['sub']] = {**user, 'subject_id': user['sub']}
+                if method == 'DELETE':
+                    granted.pop(parts[-1], None)
+                return {'items': list(granted.values()), 'total': len(granted), 'next_offset': None}
             if parts[:2] == ['api', 'packages'] and parts[3:4] == ['releases']:
                 if len(parts) == 4:
                     rows = sorted(self.committed(parts[2]), key=lambda r: r['committed_at'], reverse=True)

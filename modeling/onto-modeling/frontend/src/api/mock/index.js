@@ -410,6 +410,8 @@ export function createMockServer() {
     const c = cardOf(m[1]);
     if (!c) return err(404, 'project_not_found', '项目不存在');
     if (body.confirm_name !== c.name) return err(400, 'confirm_name_mismatch', '名称不一致');
+    // 一并删除 Hub 包要确认消费和评测不再使用（develop !590）
+    if (body.delete_hub_package && body.hub_usage_confirmed !== true) return err(422, 'invalid_argument', '请确认消费和评测不再使用这些知识包');
     db.cards = db.cards.filter((x) => x.id !== c.id);
     emitUser('project.removed', { project_id: c.id, reason: 'deleted' });
     return json(202, { deleted: c.id });
