@@ -932,7 +932,10 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 
 `DELETE /api/v1/projects/{id}` · 所有者 · 旧：`DELETE /api/projects/{id}` · 审计：是 · 依据：ADR 0010 · 页面：projects、proj-settings
 
-- 请求体：`{confirm_name: string}`，必须与项目名逐字相同。
+- 请求体：`{confirm_name: string, delete_hub_package?: bool, hub_usage_confirmed?: bool}`，`confirm_name` 必须与项目名逐字相同。
+  - `delete_hub_package=true`（develop !590，ADR-0098）：先物理删除项目发布的 Hub 包（整个本体的全部正式版本、评测快照与共享资料），
+    要 `hub_usage_confirmed=true`（否则 `422 invalid_argument`「请确认消费和评测不再使用这些知识包」）且统一账号登录；
+    远端失败项目保留、删除进度留着，再次删除可以重试（`HB-10` 看进度）。
 - 效果：
   - 不论当前状态都直接删除；
   - 会话、排队消息、自主构建运行立即强制终止；
@@ -940,7 +943,8 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
   - 该项目的 MCP token 全部吊销；
   - 数据源登记和凭据不受影响。
 - 响应 `202`：`{deleted: id}`。清扫在后台完成，进程中途重启会接着清。
-- 错误：`confirm_name_mismatch`、`project_busy`。
+- 错误：`confirm_name_mismatch`、`project_busy`；一并删除 Hub 包时另有 `invalid_argument`（未确认使用情况）、
+  Hub 删除失败或结果待确认（503 / 502，项目尚未删除）、`409`（发布状态不明确、项目知识包关联不一致）。
 
 #### P-07 归档 / 恢复
 
@@ -3247,6 +3251,7 @@ ADR-0098：端到端验证在发布后的独立评测里做，onto 不再收回�
 - 流程：门禁 → 冻结只读树 → Hub 预留版本号 → 渲染 → 上传、提交到 Hub → 本地留存、打 `release/<版本>` 标签 → 写发布记录。
 - 响应 `201`：`ReleaseRecord`，另带 `hub: {ontology_id, release_id, package_digest, committed_at}`；Hub 已提交而本地标签没写成时
   为 `{project_id, version, local_record_pending: true, hub}`，后台恢复。
+  另带 `hub_members`（同 HB-11 的 `hub_sync`）：项目第一次发布时初始化共享授权的结果，`status=failed` 时页面提示去「知识包共享」重试，发布照常成功。
   评测服务配好时，发布后带着用户登录回写一次评测优化的结果，成功拿到状态的在响应里带 `evaluation_writeback`（ES-02 同结构），失败不影响发布。
 - 错误：
   - `gate_blocked`（`details.gates` 列出不通过的项；consumer 导入规则不通过时 `details.reason=package_structure_invalid`）；
@@ -3305,6 +3310,9 @@ ADR-0098。都要统一账号登录（`401 unauthenticated`），Hub 的错误�
 | HB-07 | `GET /api/v1/projects/{id}/hub/resources/status`、`GET …/hub/resources?offset&limit` | 共享资料同步状态与 Hub 上的当前集合 |
 | HB-08 | `PUT /api/v1/projects/{id}/hub/resources` | 请求 `{paths: string[], confirm_shared: true}`：把选中的资料同步成 Hub 包的共享资料（整个集合替换），要先发布过 |
 | HB-09 | `GET /api/v1/projects/{id}/hub/resources/{file_id}/download` | 下载一份共享资料 |
+| HB-10 | `GET /api/v1/projects/{id}/hub/delete-preview` | 删除项目前看它的 Hub 包：`{published: false}` 或 `{published: true, ontology_id, name, state?}`（`state` 为 `deleting` / `deleted` 表示上次删到一半或远端已删）；发布状态不明确或关联不一致时 409（develop 的 `hub-delete-preview`） |
+| HB-11 | `GET`、`PUT /api/v1/projects/{id}/hub/sharing` | 知识包共享用户（develop 的成员共享，本分支在知识包这一层，ADR-0098）：响应 `{owner, users: string[], hub_sync: {initialized, pending: {用户名: grant\|revoke}, results: {用户名: {action, status: pending\|synced\|failed, error?}}, status: synced\|failed\|not_published}}`；PUT 请求 `{users: string[]}`（最多 200 个用户名），已发布时按差异排授权 / 撤权并立即同步，失败不回滚名单；删除处理中 409 |
+| HB-12 | `POST /api/v1/projects/{id}/hub/sharing/retry?username=` | 按用户重试授权 / 撤权（develop 的 `members/hub-retry`），不给 `username` 重试全部；响应同 HB-11 |
 
 外部路径（评测服务调用，不进 `/api/v1`、不改名）：`GET /api/hub/package-projects?ontology_id=…`（1～20 个），用户令牌，
 返回 `{items: [{ontology_id, projects: string[≤5], total}]}`：当前用户可见、且关联到这些 Hub 包的建模项目名称。

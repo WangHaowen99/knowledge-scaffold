@@ -1749,3 +1749,11 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
 4. **R-17**（新）：`GET /resources/source-preview`，照 develop `/source-preview`。
 5. **R-06**：docx 的块改由带锚点的文本版给出（锚点不变）。
 6. **ST-03**：`updated_at` 与 `sort=updated` 不变（第一轮已加）；前端列宽、排序循环（降序 → 升序 → 取消）照 develop。
+
+## 2026-11-12 · 知识包共享授权与删除项目时一并删除 Hub 包（develop !590，ADR-0098）
+
+1. **知识包共享**（HB-11、HB-12，新增）：develop 把「所有者加建模者」同步成 Hub 授权用户；本分支项目只有所有者，
+   改成「所有者加知识包的共享用户」，共享在知识包这一层管理、不碰项目权限。首次发布时初始化，之后增量同步，失败按用户重试。
+   PB-03 响应多 `hub_members`。管理员换所有者（AD-07、删用户移交）时给新所有者排授权，旧所有者留作共享用户。
+2. **P-06** 请求体加 `delete_hub_package`、`hub_usage_confirmed`；新增 **HB-10** 删除预览。删除处理中或已删除时 Hub 发布与共享修改回 409。
+3. 新增 `auth.resolve_hub_member`：授权前在统一账号目录核实账号，要 `ONTO_WEB_AUTH_ADMIN_TOKEN`（已有配置项，不新增变量）。
