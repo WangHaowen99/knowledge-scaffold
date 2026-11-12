@@ -44,8 +44,11 @@ _SUB_OPERATION_RE = re.compile(r"调用\[\[([^\]]+)\]\]逻辑文档")
 
 def _emit(text=""):
     """结果写到标准输出：单独的输出通道，不受应用日志配置影响。"""
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
     output = logging.Logger("incremental_chain.out", logging.INFO)
-    output.addHandler(logging.StreamHandler(sys.stdout))
+    output.propagate = False
+    output.addHandler(handler)
     output.info(text)
 
 

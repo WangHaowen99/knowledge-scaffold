@@ -88,8 +88,11 @@ def drop_privileges(username: str) -> None:
 
 def _complain(text: str) -> None:
     # 用法错误写到标准错误：单独的输出通道，不受应用日志配置影响
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(message)s"))
     output = logging.Logger("onto-agent-exec", logging.INFO)
-    output.addHandler(logging.StreamHandler(sys.stderr))
+    output.propagate = False
+    output.addHandler(handler)
     output.info(text)
 
 

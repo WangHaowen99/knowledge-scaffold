@@ -31,8 +31,10 @@ def _limit(memory_bytes: int, cpu_seconds: int) -> None:
 def _reply(payload: dict) -> None:
     # 标准输出就是给网关的结果：单独的输出通道，原样写出（不加换行），不受应用日志配置影响
     handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
     handler.terminator = ""
     output = logging.Logger("converter.reply", logging.INFO)
+    output.propagate = False
     output.addHandler(handler)
     output.info(json.dumps(payload, ensure_ascii=False))
 

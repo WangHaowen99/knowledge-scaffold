@@ -26,8 +26,11 @@ PACKAGED_LEGEND = Path(os.path.realpath(__file__)).parent.parent / "reference" /
 
 def _emit(text=""):
     """结果写到标准输出：单独的输出通道，不受应用日志配置影响。"""
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
     output = logging.Logger("summarize_diagram.out", logging.INFO)
-    output.addHandler(logging.StreamHandler(sys.stdout))
+    output.propagate = False
+    output.addHandler(handler)
     output.info(text)
 
 

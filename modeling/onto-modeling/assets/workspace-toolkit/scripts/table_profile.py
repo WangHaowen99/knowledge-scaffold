@@ -50,8 +50,11 @@ EXCEL_DEPENDENCY_MESSAGE = "需要 openpyxl 解析 Excel（pip install openpyxl�
 
 def _emit(text="", stream=None):
     """结果写到标准输出（报错写到标准错误）：单独的输出通道，不受应用日志配置影响。"""
+    handler = logging.StreamHandler(stream or sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
     output = logging.Logger("table_profile.out", logging.INFO)
-    output.addHandler(logging.StreamHandler(stream or sys.stdout))
+    output.propagate = False
+    output.addHandler(handler)
     output.info(text)
 
 

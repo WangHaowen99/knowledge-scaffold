@@ -21,8 +21,11 @@ SUMMARY_DIR = "ontology/diagrams-summary"
 
 def _emit(text=""):
     """进度和结果写到标准输出（单独的输出通道，不受应用日志配置影响）。"""
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
     output = logging.Logger("batch_summarize.out", logging.INFO)
-    output.addHandler(logging.StreamHandler(sys.stdout))
+    output.propagate = False
+    output.addHandler(handler)
     output.info(text)
 
 
