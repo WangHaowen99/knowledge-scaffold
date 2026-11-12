@@ -381,7 +381,7 @@ class SubprocessProvider:
     def _start(self, job_id: str, spec: dict, budget: dict, operation: str, *, keep_records: bool,
                kill_after_s: float | None = None) -> _Run:
         cred_ref = spec.get("cred_ref")
-        secret = self.secrets.open(cred_ref)
+        secret = self.secrets.decrypt(cred_ref)
         directory = self.root / job_id
         shutil.rmtree(directory, ignore_errors=True)
         work = directory / "work"

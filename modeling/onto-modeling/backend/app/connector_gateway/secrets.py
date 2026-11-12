@@ -171,7 +171,7 @@ class SecretStore:
             return False
         return (self._source_dir(source_id) / f"{parsed[1]}.bin").is_file()
 
-    def open(self, cred_ref: str) -> dict:
+    def decrypt(self, cred_ref: str) -> dict:
         """解密一个版本给子进程运行器；不经任何接口回出去。"""
         aead = self._require()
         parsed = parse_ref(cred_ref)
