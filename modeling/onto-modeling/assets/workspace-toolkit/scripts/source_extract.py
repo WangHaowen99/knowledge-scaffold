@@ -148,7 +148,8 @@ def extract(path: Path) -> dict:
     result = {'status': 'unverifiable', 'extractor_version': VERSION,
               'source_sha256': '', 'segments': []}
     suffix = path.suffix.lower()
-    if suffix in FROM_TEXT_VERSION and (material := _material_of(path)) is not None:
+    material = _material_of(path) if suffix in FROM_TEXT_VERSION else None
+    if material is not None:
         return _extract_from_text_version(path, *material)
     try:
         if suffix not in SUPPORTED:
@@ -339,6 +340,12 @@ def _extract_from_text_version(path: Path, root: Path, rel: str) -> dict:
     return result
 
 
+def _line_in(anchor: str, low: int, high: int) -> bool:
+    """单行锚点 Ln 的行号落在 [low, high] 里。"""
+    found = LINE_ANCHOR.fullmatch(anchor)
+    return bool(found) and low <= int(found[1]) <= high
+
+
 def located_text(result: dict, anchor: str = '') -> str:
     if result['status'] != 'ok':
         raise ValueError(result.get('reason', '无法核验来源'))
@@ -349,8 +356,7 @@ def located_text(result: dict, anchor: str = '') -> str:
     if lines:
         # 行号范围 L40-L46：范围里有正文的各行（空行不出段）
         low, high = int(lines[1]), int(lines[2])
-        matches = [s['text'] for s in segments
-                   if (n := LINE_ANCHOR.fullmatch(s['anchor'])) and low <= int(n[1]) <= high]
+        matches = [s['text'] for s in segments if _line_in(s['anchor'], low, high)]
     else:
         matches = [s['text'] for s in segments if s['anchor'] == anchor]
     if not matches:
@@ -378,6 +384,13 @@ def original_of(rel: str) -> str | None:
     return original if Path(original).suffix.lower() in FROM_TEXT_VERSION else None
 
 
+def _listed(path: Path, rel: str, resource: Path) -> bool:
+    """资料区里要列进清单的文件：不是跳过的、文本版目录里的或隐藏的。"""
+    if not path.is_file() or rel in SKIP or rel.startswith(f'{TEXT_DIR}/'):
+        return False
+    return not any(part.startswith('.') for part in path.relative_to(resource).parts)
+
+
 def sources(root: Path) -> list[dict]:
     """资料清单：每份资料要读哪个文本。kind：native 原文件就是文本；converted 读文本版；missing 还没有文本版
     （转换中、暂不支持或转换失败，资料区能看到原因），资料分析把它记为未读，不去解析原件。"""
@@ -387,8 +400,7 @@ def sources(root: Path) -> list[dict]:
         return items
     for path in sorted(resource.rglob('*')):
         rel = path.relative_to(root).as_posix()
-        if not path.is_file() or rel in SKIP or rel.startswith(f'{TEXT_DIR}/') \
-                or any(part.startswith('.') for part in path.relative_to(resource).parts):
+        if not _listed(path, rel, resource):
             continue
         if rel.startswith(f'{SYSTEMS_DIR}/') and '/records/' in rel:
             continue

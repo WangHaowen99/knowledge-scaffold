@@ -9,6 +9,7 @@ Initialize flowchart source materials into ontology/.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import re
 import sys
@@ -26,6 +27,13 @@ DERIVED_EXCEL = Path("ontology/excel")
 DERIVED_SUMMARIES = Path("ontology/diagrams-summary")
 RESOURCE_DIAGRAMS = Path("resource/diagrams")
 RESOURCE_EXCEL = Path("resource/excel")
+
+
+def _emit(text="", stream=None):
+    """结果写到标准输出（报错写到标准错误）：单独的输出通道，不受应用日志配置影响。"""
+    output = logging.Logger("init_flowchart_resources.out", logging.INFO)
+    output.addHandler(logging.StreamHandler(stream or sys.stdout))
+    output.info(text)
 
 
 def _drawio_page_count(path: Path) -> int:
@@ -79,7 +87,7 @@ def initialize_diagrams(
     src = Path(src)
     dst = Path(dst)
     if source_paths is None and not src.is_dir():
-        print(f"跳过流程图：{src} 不存在")
+        _emit(f"跳过流程图：{src} 不存在")
         return []
 
     dst.mkdir(parents=True, exist_ok=True)
@@ -92,7 +100,7 @@ def initialize_diagrams(
     for path in files:
         header, pages = _drawio_pages(path)
         if not pages:
-            print(f"跳过流程图：{path} 未找到页签")
+            _emit(f"跳过流程图：{path} 未找到页签")
             continue
         for page_name, block in pages:
             if wanted and page_name not in wanted:
@@ -104,14 +112,14 @@ def initialize_diagrams(
             out_path = dst / f"{_safe_name(page_name)}.drawio"
             _write_drawio_page(header, block, out_path)
             outputs.append(out_path)
-            print(f"刷新流程图 {path.name}#{page_name} → {out_path}")
+            _emit(f"刷新流程图 {path.name}#{page_name} → {out_path}")
 
     missing = wanted - matched
     if missing and strict:
         raise ValueError("未找到流程图页签：" + "、".join(sorted(missing)))
 
     if not files:
-        print(f"跳过流程图：{src} 下没有业务 .drawio 文件")
+        _emit(f"跳过流程图：{src} 下没有业务 .drawio 文件")
     return outputs
 
 
@@ -126,12 +134,12 @@ def split_excel_workbooks(
     src = Path(src)
     dst = Path(dst)
     if source_paths is None and not src.is_dir():
-        print(f"跳过 Excel：{src} 不存在")
+        _emit(f"跳过 Excel：{src} 不存在")
         return []
 
     files = source_paths or _source_files(src, ".xlsx")
     if not files:
-        print(f"跳过 Excel：{src} 下没有 .xlsx 文件")
+        _emit(f"跳过 Excel：{src} 下没有 .xlsx 文件")
         return []
 
     dst.mkdir(parents=True, exist_ok=True)
@@ -166,7 +174,7 @@ def split_excel_workbooks(
             single.save(out_path)
             single.close()
             outputs.append(out_path)
-            print(f"拆分 {path.name}#{sheet_name} → {out_path}")
+            _emit(f"拆分 {path.name}#{sheet_name} → {out_path}")
 
     missing = wanted - matched
     if missing and strict:
@@ -198,7 +206,7 @@ def _generate_summaries(diagrams: list[Path], root: Path) -> list[Path]:
             text = f"# {diagram.stem} — 摘要提取失败\n\n错误：{exc}"
         out_path.write_text(text, encoding="utf-8")
         outputs.append(out_path)
-        print(f"摘要 {diagram.stem} → {out_path}")
+        _emit(f"摘要 {diagram.stem} → {out_path}")
     return outputs
 
 
@@ -248,7 +256,7 @@ def refresh_resources(
         _remove_files(root / DERIVED_DIAGRAMS, "*.drawio")
         _remove_files(root / DERIVED_EXCEL, "*.xlsx")
         _remove_files(root / DERIVED_SUMMARIES, "*.md")
-        print("已清理流程图相关派生文件。")
+        _emit("已清理流程图相关派生文件。")
 
     diagrams = (
         initialize_diagrams(
@@ -274,10 +282,10 @@ def refresh_resources(
     )
     summaries = _generate_summaries(diagrams, root) if update_summaries else []
 
-    print("完成。")
-    print(f"流程图：{len(diagrams)} 个 → ontology/diagrams/")
-    print(f"Excel 表：{len(excels)} 个 → ontology/excel/")
-    print(f"摘要：{len(summaries)} 个 → ontology/diagrams-summary/")
+    _emit("完成。")
+    _emit(f"流程图：{len(diagrams)} 个 → ontology/diagrams/")
+    _emit(f"Excel 表：{len(excels)} 个 → ontology/excel/")
+    _emit(f"摘要：{len(summaries)} 个 → ontology/diagrams-summary/")
     return {"diagrams": diagrams, "excels": excels, "summaries": summaries}
 
 
@@ -314,5 +322,5 @@ if __name__ == "__main__":
             update_summaries=not args.no_summary,
         )
     except Exception as exc:
-        print(f"初始化失败：{exc}", file=sys.stderr)
+        _emit(f"初始化失败：{exc}", sys.stderr)
         sys.exit(1)

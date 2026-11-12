@@ -9,6 +9,7 @@
     python3 scripts/summarize_diagram.py source/diagrams/物料可用周期.drawio source/图示说明定义.drawio
 """
 
+import logging
 import re
 import sys
 import os
@@ -21,6 +22,13 @@ LEGEND_NAME = "图示说明定义.drawio"
 DEFAULT_LEGEND = "resource/diagrams/" + LEGEND_NAME
 # 随 core 包的图例（装配目录 reference/，图示包依赖 core）
 PACKAGED_LEGEND = Path(os.path.realpath(__file__)).parent.parent / "reference" / LEGEND_NAME
+
+
+def _emit(text=""):
+    """结果写到标准输出：单独的输出通道，不受应用日志配置影响。"""
+    output = logging.Logger("summarize_diagram.out", logging.INFO)
+    output.addHandler(logging.StreamHandler(sys.stdout))
+    output.info(text)
 
 
 def find_legend(root="."):
@@ -341,10 +349,10 @@ def summarize(diagram_path, legend_path):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print(__doc__)
+        _emit(__doc__)
         sys.exit(1)
 
     diagram_file = sys.argv[1]
     legend_file = sys.argv[2] if len(sys.argv) > 2 else str(find_legend())
 
-    print(summarize(diagram_file, legend_file))
+    _emit(summarize(diagram_file, legend_file))

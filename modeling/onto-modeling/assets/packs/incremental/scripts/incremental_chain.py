@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import subprocess
 import sys
@@ -41,6 +42,13 @@ _LINK_RELATIONS = {"object": "引用对象", "operation": "引用操作", "rule"
 _SUB_OPERATION_RE = re.compile(r"调用\[\[([^\]]+)\]\]逻辑文档")
 
 
+def _emit(text=""):
+    """结果写到标准输出：单独的输出通道，不受应用日志配置影响。"""
+    output = logging.Logger("incremental_chain.out", logging.INFO)
+    output.addHandler(logging.StreamHandler(sys.stdout))
+    output.info(text)
+
+
 class ChainError(Exception):
     """给助手看的错误：打印后退出，不带调用栈。"""
 
@@ -65,8 +73,10 @@ def _doc_kind(rel: str) -> str | None:
 
 
 class Graph:
-    """条目之间的反向引用。stubs：文件已经不在（删除的种子）或还没有（新增的种子）的条目，
-    别人的链接照样指得到它。"""
+    """条目之间的反向引用。
+
+    stubs：文件已经不在（删除的种子）或还没有（新增的种子）的条目，别人的链接照样指得到它。
+    """
 
     def __init__(self, root: Path, stubs=()):
         self.root = root
@@ -128,7 +138,11 @@ class Graph:
                 tables = _parse_mock_tables(path)
             except (OSError, UnicodeDecodeError):
                 continue
-            cells = "\n".join(str(value) for rows in tables.values() for row in rows for value in row.values())
+            values = []
+            for rows in tables.values():
+                for row in rows:
+                    values.extend(str(value) for value in row.values())
+            cells = "\n".join(values)
             for stem in objects:
                 if stem in cells:
                     self._add(stem, rel, "测试数据")
@@ -180,7 +194,8 @@ class Graph:
 
 def _git(root: Path, *args: str) -> str:
     try:
-        result = subprocess.run(["git", "-c", "safe.directory=*", *args], cwd=root, capture_output=True, timeout=60)
+        result = subprocess.run(  # NOSONAR(S4721) 固定的 git 参数列表，不经 shell
+            ["git", "-c", "safe.directory=*", *args], cwd=root, capture_output=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as exc:
         raise ChainError(f"运行 git 失败：{exc}") from exc
     if result.returncode != 0:
@@ -282,12 +297,12 @@ def main(argv: list[str] | None = None) -> int:
     paths = [PurePosixPath(raw).as_posix() for raw in args.paths]
     chain = Graph(root, stubs=paths).walk(paths, args.depth)
     if args.json:
-        print(json.dumps(chain, ensure_ascii=False, indent=2))
+        _emit(json.dumps(chain, ensure_ascii=False, indent=2))
         return 0
-    print(f"传播链共 {len(chain)} 条（{clamp_depth(args.depth)} 层以内）。")
+    _emit(f"传播链共 {len(chain)} 条（{clamp_depth(args.depth)} 层以内）。")
     for line in capped(chain, lambda item: f"- 第 {item['depth']} 层：{item['path']}：{clean(item['trail'])}",
                        cap=STDOUT_CAP, pointer="--json 的输出"):
-        print(line)
+        _emit(line)
     return 0
 
 

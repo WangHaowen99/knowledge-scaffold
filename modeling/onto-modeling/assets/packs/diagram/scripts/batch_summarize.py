@@ -8,6 +8,7 @@
     python3 .claude/scripts/batch_summarize.py a.drawio b.drawio       # 增量：只更新指定文件的摘要
 """
 
+import logging
 import os
 import sys
 
@@ -16,6 +17,13 @@ from summarize_diagram import find_legend, summarize
 
 DEFAULT_DIR = "ontology/diagrams"
 SUMMARY_DIR = "ontology/diagrams-summary"
+
+
+def _emit(text=""):
+    """进度和结果写到标准输出（单独的输出通道，不受应用日志配置影响）。"""
+    output = logging.Logger("batch_summarize.out", logging.INFO)
+    output.addHandler(logging.StreamHandler(sys.stdout))
+    output.info(text)
 
 
 def resolve_paths(args):
@@ -32,7 +40,7 @@ def resolve_paths(args):
         elif arg.endswith(".drawio") and os.path.isfile(arg):
             paths.append(arg)
         else:
-            print("跳过：%s（不是 .drawio 文件或不存在）" % arg)
+            _emit("跳过：%s（不是 .drawio 文件或不存在）" % arg)
     return paths
 
 
@@ -49,22 +57,22 @@ def main(target_paths, legend_path=None):
             text = summarize(fpath, legend_path)
             with open(out_path, "w", encoding="utf-8") as f:
                 f.write(text)
-            print("  OK %s → %s" % (name, out_path))
+            _emit("  OK %s → %s" % (name, out_path))
         except Exception as e:
             if os.path.exists(out_path):
-                print("  !! %s: %s（保留上一份摘要，未覆盖）" % (name, e))
+                _emit("  !! %s: %s（保留上一份摘要，未覆盖）" % (name, e))
             else:
                 with open(out_path, "w", encoding="utf-8") as f:
                     f.write("# %s — 摘要提取失败\n\n错误：%s" % (name, e))
-                print("  !! %s: %s" % (name, e))
+                _emit("  !! %s: %s" % (name, e))
 
-    print()
-    print("已更新 %d 个摘要 → %s/" % (len(target_paths), SUMMARY_DIR))
+    _emit()
+    _emit("已更新 %d 个摘要 → %s/" % (len(target_paths), SUMMARY_DIR))
 
 
 if __name__ == "__main__":
     target_paths = resolve_paths(sys.argv[1:])
     if not target_paths:
-        print("没有找到 .drawio 文件")
+        _emit("没有找到 .drawio 文件")
         sys.exit(1)
     main(target_paths)
