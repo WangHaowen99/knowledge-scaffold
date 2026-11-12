@@ -6,7 +6,7 @@ import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
-import { checkResourceFile, uploadRules } from '../../lib/resourceUpload.js';
+import { uploadRules, validateResourceFile } from '../../lib/resourceUpload.js';
 import { isLocked } from '../../state/readonly.js';
 import { Button, Card, Check, Chip, Icon, Modal, Note, cx } from '../../ui/index.jsx';
 import { ScopeLockBar } from '../plugin/parts.jsx';
@@ -83,8 +83,8 @@ function TableSources({ check, busy, onMark, onUpload }) {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    const error = checkResourceFile(file.name, file.size, uploadRules(config));
-    if (error) { toast(error, 'alert'); return; }
+    const checked = validateResourceFile(file, uploadRules(config));
+    if (!checked.valid) { toast(checked.message, 'alert'); return; }
     onUpload(file);
   };
   return (
