@@ -187,7 +187,7 @@ def _sharing_view(project_id: str, sharing: dict) -> dict:
 def get_sharing(project_id: str, request: Request):
     """共享用户与 Hub 授权同步状态（pending 队列、各用户最近一次结果）。"""
     deps.require_owner(project_id, request)
-    return _sharing_view(project_id, hub_members.status(project_id))
+    return _sharing_view(project_id, hub_members.overview(project_id))
 
 
 @project_router.put("/sharing")

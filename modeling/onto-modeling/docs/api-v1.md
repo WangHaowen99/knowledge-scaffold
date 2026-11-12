@@ -3256,6 +3256,7 @@ ADR-0098：端到端验证在发布后的独立评测里做，onto 不再收回�
 - 错误：
   - `gate_blocked`（`details.gates` 列出不通过的项；consumer 导入规则不通过时 `details.reason=package_structure_invalid`）；
   - `modeling_stages_incomplete`（409）；
+  - `hub_package_deleting`（409）：项目关联的 Hub 知识包删除中或已删除（develop !590），共享的改动、MCP 发布预览同一错误码；
   - `solver_validation_acknowledgement_required`（409）；
   - `publish_preview_stale`（409，同一 `request_id` 的内容变了）；
   - `hub_unavailable`（503）、`version_conflict`、`package_deleted`；

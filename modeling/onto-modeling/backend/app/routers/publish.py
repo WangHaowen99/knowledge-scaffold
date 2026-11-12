@@ -245,7 +245,8 @@ def _mark_verified(project_id: str, request: Request, view: dict) -> dict:
 
 
 # 发布过程中由 Hub 或本地记录报出、要原样回给调用方的错误（不是门禁问题）
-PASS_THROUGH = ("invalid_commit", "modeling_stages_incomplete", "hub_unavailable", "hub_error", "version_conflict", "package_deleted", "not_found",
+PASS_THROUGH = ("invalid_commit", "modeling_stages_incomplete", "hub_package_deleting", "hub_unavailable", "hub_error",
+                "version_conflict", "package_deleted", "not_found",
                 "publish_preview_stale", "solver_validation_acknowledgement_required", "unauthenticated")
 
 

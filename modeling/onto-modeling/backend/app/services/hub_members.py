@@ -35,9 +35,12 @@ def deletion(pid):
     return transport.load(state_path(pid).with_name('deletion.json'), {})
 
 
+CODE_DELETING = 'hub_package_deleting'
+
+
 def writable(pid):
     if deletion(pid):
-        raise WorkspaceError(DELETING_TEXT, 409)
+        raise WorkspaceError(DELETING_TEXT, 409, CODE_DELETING)
 
 
 def _mark_pending(value):
@@ -126,6 +129,13 @@ def _failure_text(exc):
     return 'Hub 同步响应或状态保存失败'
 
 
+def overview(pid):
+    """读取时的同步状态：未发布、有待同步的（failed）或已同步，与 sync 的返回同一结构。"""
+    if not hub_packages.association(pid):
+        return {**status(pid), 'status': 'not_published'}
+    return _result(status(pid))
+
+
 def _result(value):
     return {**value, 'status': 'failed' if value['pending'] else 'synced'}
 
@@ -197,7 +207,7 @@ def delete_package(manager, pid, token):
     """删除项目前物理删除它的 Hub 包：先记进度再删，失败保留进度、项目不删，可以重试。"""
     preview = delete_preview(manager, pid, token)
     if not preview['published']:
-        raise WorkspaceError('项目没有已发布知识包', 409)
+        raise WorkspaceError('项目没有已发布知识包', 409, 'hub_package_not_published')
     if deletion(pid).get('state') == 'deleted':
         return
     path = state_path(pid).with_name('deletion.json')

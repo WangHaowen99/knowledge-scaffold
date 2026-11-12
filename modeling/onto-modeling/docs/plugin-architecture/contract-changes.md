@@ -1757,3 +1757,9 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
    PB-03 响应多 `hub_members`。管理员换所有者（AD-07、删用户移交）时给新所有者排授权，旧所有者留作共享用户。
 2. **P-06** 请求体加 `delete_hub_package`、`hub_usage_confirmed`；新增 **HB-10** 删除预览。删除处理中或已删除时 Hub 发布与共享修改回 409。
 3. 新增 `auth.resolve_hub_member`：授权前在统一账号目录核实账号，要 `ONTO_WEB_AUTH_ADMIN_TOKEN`（已有配置项，不新增变量）。
+
+## 2026-11-12 · 集成：知识包删除中的错误码与共享状态
+
+1. Hub 知识包删除中或已删除时，PB-03、HB 共享的写接口返回 `409 hub_package_deleting`（此前 PB-03 被归成 `422 gate_blocked`、共享接口被归成 `revision_conflict`）；MCP `preview_package_publish` 同样以这个错误码挡住，发布任务失败时不标可重试。没发布却要求删除知识包时返回 `409 hub_package_not_published`。
+2. `GET …/hub/sharing` 的 `hub_sync` 带 `status`（`not_published` / `failed` / `synced`），与保存、重试同一结构。
+

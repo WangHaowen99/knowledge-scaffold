@@ -12,7 +12,7 @@ import secrets
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from .. import hub_packages, knowledge_hub
+from .. import hub_members, hub_packages, knowledge_hub
 from ..publish import stages as publish_stages
 from ..workspace import WorkspaceError
 from . import tokens
@@ -100,6 +100,11 @@ def _verified_release(project_id, subject, revision):
     return verified(project_id, subject, revision) if verified else None
 
 
+def _retryable(exc) -> bool:
+    """冲突、Hub 暂不可用可以重试；知识包删除中重试也不会成功。"""
+    return exc.status in (409, 503) and exc.code != hub_members.CODE_DELETING
+
+
 def _blockers(manager, project_id, allow_unbound):
     """发布检查（PB-01 同口径）里挡发布的门禁；降级只放宽数据绑定。"""
     from .. import publish
@@ -117,6 +122,11 @@ def preview(manager, principal, args):
         raise McpError("MCP_HUB_IDENTITY_REQUIRED", "发布委托缺少 Hub 用户身份", 401)
     if not knowledge_hub.configured():
         raise McpError("HUB_UNAVAILABLE", "知识包 Hub 未配置", 503)
+    # 知识包删除中或已删除（develop !590）：和网页发布一样直接挡住
+    if hub_members.deletion(project_id):
+        return {"ready": False, "request_id": request_id,
+                "blockers": [{"code": hub_members.CODE_DELETING, "message": hub_members.DELETING_TEXT}],
+                "display": {"text": hub_members.DELETING_TEXT}}
     # 与网页同一规则：四个必经建模阶段没做完不能发布，告诉调用方缺哪几个
     readiness = publish_stages.readiness(manager, project_id)
     if not readiness["ready"]:
@@ -252,7 +262,7 @@ def _run(manager, job_id):
             job.update(status="committed", receipt=receipt, updated_at=time.time())
         except (McpError, WorkspaceError) as exc:
             job.update(status="failed", error={"code": exc.code, "message": str(exc),
-                                               "retryable": exc.status in (409, 503)}, updated_at=time.time())
+                                               "retryable": _retryable(exc)}, updated_at=time.time())
         except Exception:  # noqa: BLE001 - 后台任务的意外错误落到任务状态里，不丢
             job.update(status="failed", error={"code": "PUBLISH_INTERNAL_ERROR",
                                                "message": "知识包版本发布失败", "retryable": False},

@@ -211,9 +211,33 @@ def test_deleting_package_blocks_publish_and_sharing_writes(sharing, project):
     knowledge_hub.save(members.state_path(pid).with_name('deletion.json'), {'state': 'deleting'})
     with pytest.raises(WorkspaceError) as blocked:
         hub_packages.publish(deps.workspaces, pid, 'request_demo', synthetic.token('access'), 'scope_demo')
-    assert blocked.value.status == 409
+    assert blocked.value.status == 409 and blocked.value.code == members.CODE_DELETING
     response = TestClient(app).put(f'/api/v1/projects/{pid}/hub/sharing', json={'users': ['operator_b']})
-    assert response.status_code == 409
+    assert response.status_code == 409 and response.json()['code'] == members.CODE_DELETING
+
+
+def test_deleting_package_is_not_turned_into_a_gate_failure(sharing, project, monkeypatch):
+    """删除中：网页发布原样回 409（develop），MCP 预览直接挡住，不再说可以发布。"""
+    from app.routers import publish as publish_routes
+    from app.services.onto_mcp import package_publish
+
+    _, pid = project
+    knowledge_hub.save(members.state_path(pid).with_name('deletion.json'), {'state': 'deleting'})
+    assert members.CODE_DELETING in publish_routes.PASS_THROUGH
+    monkeypatch.setattr(knowledge_hub, 'configured', lambda: True)
+    principal = {'project_id': pid, 'hub_issuer': 'https://example.com', 'hub_sub': 'operator_a'}
+    preview = package_publish.preview(deps.workspaces, principal, {})
+    assert preview['ready'] is False
+    assert [item['code'] for item in preview['blockers']] == [members.CODE_DELETING]
+
+
+def test_reading_sharing_reports_the_sync_status(project):
+    """读取与保存、重试同一结构：带 status。"""
+    _, pid = project
+    client = TestClient(app)
+    assert client.get(f'/api/v1/projects/{pid}/hub/sharing').json()['hub_sync']['status'] == 'synced'
+    client.put(f'/api/v1/projects/{pid}/hub/sharing', json={'users': ['operator_b']})
+    assert client.get(f'/api/v1/projects/{pid}/hub/sharing').json()['hub_sync']['status'] == 'failed'
 
 
 def test_resolve_hub_member_needs_directory_credentials(monkeypatch):
