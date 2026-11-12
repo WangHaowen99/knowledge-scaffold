@@ -63,6 +63,8 @@ def idle(monkeypatch):
     sessions.get = lambda project_id: sessions._sessions.get(project_id)
     from app.services import agent_sessions, conversation_store
 
+    sessions.workspace_busy = lambda project_id: agent_sessions.SessionManager.workspace_busy(sessions, project_id)
+
     monkeypatch.setattr(agent_sessions, "manager", sessions)
     monkeypatch.setattr(conversation_store, "clear_all_resume_tokens", calls["cleared"].append)
     calls["sessions"] = sessions

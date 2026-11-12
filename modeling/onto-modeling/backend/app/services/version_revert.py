@@ -47,18 +47,12 @@ _previews_lock = threading.Lock()
 # ---- 挡住回退的情况 ----
 
 
-def _session_busy(project_id: str) -> bool:
-    from .agent_sessions import _busy, manager as sessions
-
-    session = sessions.get(project_id)
-    return bool(session and (_busy(session) or session.pending_prompts or session.chaining))
-
-
 def blockers(manager, project_id: str) -> list[dict]:
     """现在不能回退的原因 [{code, message, details}]，空表示可以回退。"""
     from ..kernel import metamodel
     from ..kernel.changesets import service as changesets
     from . import studio
+    from .agent_sessions import manager as sessions
     from .autobuild import store as autobuild_store
 
     root = manager.project_root(project_id)
@@ -67,7 +61,7 @@ def blockers(manager, project_id: str) -> list[dict]:
     if lock.get("state") not in (None, "none"):
         out.append({"code": "write_scope_locked", "message": lock.get("reason_text") or "助手这一轮还没结束",
                     "details": lock})
-    elif _session_busy(project_id):
+    elif sessions.workspace_busy(project_id):
         out.append({"code": "session_busy", "message": "助手正在修改该项目，请等待当前任务结束", "details": {}})
     run = autobuild_store.active(project_id)
     if run is not None:
