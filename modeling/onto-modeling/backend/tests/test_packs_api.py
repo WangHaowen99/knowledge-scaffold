@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import subprocess
 import zipfile
 from pathlib import Path
 
@@ -16,6 +15,7 @@ from app.services import auth
 from app.services.packs import builtin, lockfile
 from app.services.workspace import WorkspaceManager
 from tests.pack_helpers import make_assets, make_pack
+from tests.proc import run as run_cmd
 
 
 @pytest.fixture()
@@ -57,7 +57,7 @@ def publish_pack(client: TestClient, tmp_path: Path, name: str, version: str, **
 
 
 def git_log(root: Path) -> str:
-    return subprocess.run(["git", "log", "-1", "--format=%s%n%b"], cwd=root, capture_output=True, text=True).stdout
+    return run_cmd(["git", "log", "-1", "--format=%s%n%b"], cwd=root, capture_output=True, text=True).stdout
 
 
 # ---- 上传与审核 ----
@@ -273,8 +273,8 @@ def test_times_are_rfc3339(env):
 
 
 def _trailer_values(root: Path, key: str) -> list[str]:
-    out = subprocess.run(["git", "log", "-1", f"--format=%(trailers:key={key},valueonly)"], cwd=root,
-                         capture_output=True, text=True).stdout
+    out = run_cmd(["git", "log", "-1", f"--format=%(trailers:key={key},valueonly)"], cwd=root,
+                  capture_output=True, text=True).stdout
     return [line for line in out.splitlines() if line.strip()]
 
 
@@ -289,11 +289,11 @@ def test_lock_commit_goes_through_change_transaction(env):
     assert client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "trace"}).status_code == 201
     assert _trailer_values(root, "Onto-Source") == ["plugin"]
     assert _trailer_values(root, "Onto-Author") == ["local"]
-    changed = subprocess.run(["git", "show", "--name-only", "--format=", "HEAD"], cwd=root,
-                             capture_output=True, text=True).stdout.split()
+    changed = run_cmd(["git", "show", "--name-only", "--format=", "HEAD"], cwd=root,
+                      capture_output=True, text=True).stdout.split()
     assert changed == [lockfile.LOCK_REL]
-    assert "research/agent-draft.md" in subprocess.run(["git", "status", "--porcelain"], cwd=root,
-                                                       capture_output=True, text=True).stdout
+    assert "research/agent-draft.md" in run_cmd(["git", "status", "--porcelain"], cwd=root,
+                                                capture_output=True, text=True).stdout
 
 
 def test_lock_file_restored_when_commit_fails(env, monkeypatch):
@@ -301,7 +301,7 @@ def test_lock_file_restored_when_commit_fails(env, monkeypatch):
     root = manager.project_root(project_id)
     publish_pack(client, tmp_path, "trace", "0.9.0")
     before = (root / lockfile.LOCK_REL).read_bytes()
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout
+    head = run_cmd(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout
 
     from app.kernel.writepath import tx as writepath
     from app.services.workspace.errors import WorkspaceError
@@ -313,4 +313,4 @@ def test_lock_file_restored_when_commit_fails(env, monkeypatch):
     response = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "trace"})
     assert response.status_code == 500
     assert (root / lockfile.LOCK_REL).read_bytes() == before
-    assert subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout == head
+    assert run_cmd(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout == head

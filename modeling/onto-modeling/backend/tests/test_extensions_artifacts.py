@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -25,6 +24,7 @@ from app.services.onto_mcp import workspace as mcp_workspace
 from app.services.packs import builtin
 from app.services.workspace import WorkspaceManager
 from tests.pack_helpers import make_assets, make_pack
+from tests.proc import run as run_cmd
 from tests.test_event_streams import buffered
 from tests.test_packs_api import upload, zipped
 
@@ -107,8 +107,8 @@ def _write(root: Path, rel: str, text: str) -> None:
 
 
 def _commit_all(root: Path, message: str = "agent: 生成") -> None:
-    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-qm", message], cwd=root, check=True, capture_output=True)
+    run_cmd(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+    run_cmd(["git", "commit", "-qm", message], cwd=root, check=True, capture_output=True)
 
 
 # ---- 扩展项注册表与左栏 ----
@@ -279,7 +279,7 @@ def test_save_versions_history_schema_and_gates(env):
     assert artifact["fields"]["level"] == "low" and artifact["sections"]["处理"] == "区域审批"
     assert artifact["sections"]["说明"] == "超出要审批"
     root = manager.project_root(project_id)
-    log = subprocess.run(["git", "log", "-1", "--format=%B"], cwd=root, capture_output=True, text=True).stdout
+    log = run_cmd(["git", "log", "-1", "--format=%B"], cwd=root, capture_output=True, text=True).stdout
     assert "Onto-Source: web" in log and "降级" in log
 
     stale_write = client.put(f"{base}/shelf-limit", json={"base_revision": revision, "fields": {"level": "high"}})

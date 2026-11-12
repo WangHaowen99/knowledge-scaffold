@@ -81,7 +81,7 @@ def test_client_config_evidence_follows_connector_gateway(monkeypatch):
     features = TestClient(app).get("/api/v1/client-config").json()["features"]
     assert features["evidence"] is False and "drawio" in features
 
-    monkeypatch.setenv("ONTO_WEB_CONNECTOR_GATEWAY_URL", "http://connector-gateway.invalid:8120")
+    monkeypatch.setenv("ONTO_WEB_CONNECTOR_GATEWAY_URL", "http://connector-gateway.invalid:8120")  # NOSONAR(S5332) 合成域名
     assert TestClient(app).get("/api/v1/client-config").json()["features"]["evidence"] is True
 
 

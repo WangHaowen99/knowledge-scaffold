@@ -7,8 +7,8 @@ LeftPane/ChatPane。现在都读 core 包的 flow.yaml：这里逐处核对它�
 
 from __future__ import annotations
 
+import importlib.util
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -24,11 +24,21 @@ from app.services.flow import assemble, model as flow_model
 from app.services.packs import builtin
 from app.services.session_host import injection
 from app.services.workspace import WorkspaceManager
+from tests.proc import run as run_cmd
 
 TOOLKIT = Path(config.ASSETS_DIR) / "workspace-toolkit"
 FLOW = yaml.safe_load((TOOLKIT / "flow.yaml").read_text(encoding="utf-8"))
-sys.path.insert(0, str(TOOLKIT / "scripts"))
-import flow_state  # noqa: E402
+
+
+def _load_toolkit_script(name: str):
+    """按文件路径载入工具箱脚本，不改 sys.path，免得和应用里的同名模块串。"""
+    spec = importlib.util.spec_from_file_location(name, TOOLKIT / "scripts" / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+flow_state = _load_toolkit_script("flow_state")
 
 PACKS = Path(config.ASSETS_DIR) / "packs"
 # 拆包后（方案 D7 后半）命令分在 core 与各可选包里
@@ -95,8 +105,8 @@ def make_project(manager: WorkspaceManager, files: dict[str, str]) -> Path:
 
 
 def state_helper(root: Path, *args: str) -> str:
-    proc = subprocess.run([sys.executable, str(root / ".claude" / "scripts" / "state_helper.py"), *args],
-                          cwd=root, capture_output=True, text=True, timeout=60)
+    proc = run_cmd([sys.executable, str(root / ".claude" / "scripts" / "state_helper.py"), *args],
+                   cwd=root, capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
     return proc.stdout.strip()
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import time
 from collections import Counter
@@ -15,6 +16,8 @@ import pytest
 
 from app.connector_gateway.conn import db_common, db_mysql, db_postgres
 from app.connector_gateway.conn.context import ConnError, Context
+
+logger = logging.getLogger(__name__)
 
 SALT = "c3" * 16
 
@@ -125,7 +128,8 @@ def _originals(db) -> set[str]:
         cursor = conn.cursor()
         for sql in queries:
             cursor.execute(sql)
-            values.update(str(value) for row in cursor.fetchall() for value in row if value is not None)
+            for row in cursor.fetchall():
+                values.update(str(value) for value in row if value is not None)
     finally:
         conn.close()
     return values
@@ -205,8 +209,8 @@ def test_snapshot(db, monkeypatch):
     access = [event for event in events if event["event"] == "access"]
     assert len(access) == len(executed)
     assert events[-1]["event"] == "result" and events[-1]["complete"] is True
-    print(f"\n[{db['name']}] 记录 {len(records)} 条 {dict(sorted(counts.items()))}；语句 {len(executed)} 条；"
-          f"耗时 {elapsed} ms")
+    logger.info("[%s] 记录 %d 条 %s；语句 %d 条；耗时 %s ms", db["name"], len(records), dict(sorted(counts.items())),
+                len(executed), elapsed)
 
 
 def test_scope_filter(db, monkeypatch):

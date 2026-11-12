@@ -185,8 +185,8 @@ def test_build_release_bundles_the_gateway_and_sidecar_images(tmp_path: Path) ->
     for image in ("onto-modeling", "onto-modeling-auth-server", "onto-modeling-connector-gateway",
                   "onto-modeling-rea-sidecar"):
         assert any(line.endswith(f" {image}:v-test") for line in saved), image
-    with tarfile.open(tmp_path / "repo" / "modeling" / "onto-modeling" / "dist"
-                      / "onto-modeling-v-test-linux-amd64.tar.gz") as package:  # NOSONAR(S5042): 合成的桩包，只读清单
+    package_path = tmp_path / "repo" / "modeling" / "onto-modeling" / "dist" / "onto-modeling-v-test-linux-amd64.tar.gz"
+    with tarfile.open(package_path) as package:  # NOSONAR(S5042) 合成的桩包，只读清单，不展开
         images_env = package.extractfile("onto-modeling/images.env").read().decode()
         names = set(package.getnames())
     assert "CONNECTOR_GATEWAY_IMAGE=onto-modeling-connector-gateway:v-test" in images_env

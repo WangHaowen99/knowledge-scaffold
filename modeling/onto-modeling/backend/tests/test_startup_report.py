@@ -1,5 +1,7 @@
-"""启动自检报告（详设 4.9 目标 4、P0 验收；API 契约 O-35）：启动时清残留锁、列未提交改动，
-写日志并留存，运维接口能取到。项目全部合成。"""
+"""启动自检报告（详设 4.9 目标 4、P0 验收；API 契约 O-35）。
+
+启动时清残留锁、列未提交改动，写日志并留存，运维接口能取到。项目全部合成。
+"""
 
 from __future__ import annotations
 
@@ -81,7 +83,7 @@ def test_startup_runs_self_check_and_ops_endpoint_returns_it(manager, monkeypatc
     assert body["at"].endswith("Z")
     results = {item["id"]: item["result"] for item in body["items"]}
     # 前台步骤在就绪之前做完；外部依赖、清扫残留目录在后台，做完才补进报告
-    assert {key: results[key] for key in ("index_lock", "write_intents", "uncommitted", "assembly",
-                                          "history_repair", "interrupted_execs")} == {
+    foreground = ("index_lock", "write_intents", "uncommitted", "assembly", "history_repair", "interrupted_execs")
+    assert {key: results[key] for key in foreground} == {
         "index_lock": "cleared", "write_intents": "ok", "uncommitted": "awaiting_user", "assembly": "ok",
         "history_repair": "ok", "interrupted_execs": "ok"}

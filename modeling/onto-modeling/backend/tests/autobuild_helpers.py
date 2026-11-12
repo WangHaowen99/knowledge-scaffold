@@ -212,15 +212,20 @@ def wait_state(client, project_id: str, run_id: str, *states: str, timeout: floa
                       timeout, f"运行没到 {states}")
 
 
+def _expect_status(response, status: int) -> None:
+    if response.status_code != status:
+        raise AssertionError(response.text)
+
+
 def start(client, project_id: str, **policy) -> dict:
     base = f"/api/v1/projects/{project_id}/autobuild"
     if policy:
         saved = client.put(f"{base}/policy", json=policy)
-        assert saved.status_code == 200, saved.text
+        _expect_status(saved, 200)
     preview = client.post(f"{base}/runs/preview", json={})
-    assert preview.status_code == 200, preview.text
+    _expect_status(preview, 200)
     started = client.post(f"{base}/runs", json={"preview_token": preview.json()["preview_token"]})
-    assert started.status_code == 201, started.text
+    _expect_status(started, 201)
     return started.json()
 
 

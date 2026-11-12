@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,12 +15,12 @@ from app.services import auth, streams, studio, version_revert
 from app.services.onto_mcp.errors import McpError
 from app.services.workspace import WorkspaceError, WorkspaceManager
 from app.services.workspace.versions import managed_dirty_paths
+from tests.proc import git as proc_git
 
 
 
 def _git(root: Path, *args: str) -> str:
-    return subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=root, check=True,
-                          capture_output=True, text=True).stdout
+    return proc_git(root, "-c", "core.hooksPath=/dev/null", *args)
 
 
 def _write(root: Path, rel: str, text: str) -> None:
@@ -60,10 +59,17 @@ def idle(monkeypatch):
         return None
 
     sessions = SimpleNamespace(_lock=asyncio.Lock(), _sessions={}, _recycle=recycle, _drain_waiters=drain)
-    sessions.get = lambda project_id: sessions._sessions.get(project_id)
+
+    def get(project_id):
+        return sessions._sessions.get(project_id)
+
+    sessions.get = get
     from app.services import agent_sessions, conversation_store
 
-    sessions.workspace_busy = lambda project_id: agent_sessions.SessionManager.workspace_busy(sessions, project_id)
+    def workspace_busy(project_id):
+        return agent_sessions.SessionManager.workspace_busy(sessions, project_id)
+
+    sessions.workspace_busy = workspace_busy
 
     monkeypatch.setattr(agent_sessions, "manager", sessions)
     monkeypatch.setattr(conversation_store, "clear_all_resume_tokens", calls["cleared"].append)

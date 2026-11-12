@@ -1,12 +1,14 @@
-"""系统逆向建模包 rev（F13、F16；ADR-0082、ADR-0083、ADR-0086）：包检查与安装、取证节点按授权出现、完整快照算完成、
-有快照时的提示规则、工作区脚本 evidence.py 的七个子命令（程序 bin:、数据库 db:、代码仓库 code: 三种锚点）、
-三方对账命令。快照全是测试里现造的合成数据，锚点用 spec.py 生成。"""
+"""系统逆向建模包 rev（F13、F16；ADR-0082、ADR-0083、ADR-0086）。
+
+包检查与安装、取证节点按授权出现、完整快照算完成、有快照时的提示规则、
+工作区脚本 evidence.py 的七个子命令（程序 bin:、数据库 db:、代码仓库 code: 三种锚点）、三方对账命令。
+快照全是测试里现造的合成数据，锚点用 spec.py 生成。
+"""
 
 from __future__ import annotations
 
 import importlib.util
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -21,6 +23,7 @@ from app.services import auth
 from app.services.flow import conditions, model
 from app.services.packs import builtin, checks, registry
 from app.services.workspace import WorkspaceManager
+from tests.proc import run as run_cmd
 
 ASSETS = Path(config.ASSETS_DIR)
 PACK = ASSETS / "packs" / "rev"
@@ -125,8 +128,8 @@ def _snapshot(root: Path, snapshot_id: str, records: list[dict], *, complete=Tru
 
 
 def _run(workspace: Path, *args: str) -> tuple[int, dict]:
-    result = subprocess.run([sys.executable, str(SCRIPT), *args], cwd=workspace, capture_output=True, text=True,
-                            timeout=30)
+    result = run_cmd([sys.executable, str(SCRIPT), *args], cwd=workspace, capture_output=True, text=True,
+                     timeout=30)
     assert result.stdout.strip(), result.stderr
     data = json.loads(result.stdout)
     assert data["untrusted_content"] is True

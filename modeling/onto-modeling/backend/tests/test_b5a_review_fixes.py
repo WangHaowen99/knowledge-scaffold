@@ -140,15 +140,14 @@ def test_reopening_the_same_editor_reuses_the_ticket(env):
 
 def test_round_cards_do_not_persist_lock_state(env):
     """卡片进对话历史，锁是会变的：卡上不带 locked，前端只看实时的写入范围。"""
-    import subprocess
-
     from app.kernel.artifacts import cards
+    from tests.proc import git
     from tests.test_pack_ui import _commit, _write_note
 
     client, manager, project_id, tmp_path = env
     _publish_and_enable(client, tmp_path, project_id)
     root = manager.project_root(project_id)
-    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+    base = git(root, "rev-parse", "HEAD").strip()
     _write_note(manager, project_id, "n1", "第一版")
     head = _commit(root, "合成：一轮")
     result = cards.round_cards(manager, project_id, {"added": ["ext/sticky-notes/notes/n1.md"]}, base=base, seed=head)

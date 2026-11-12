@@ -24,6 +24,7 @@ from app import config
 from app.kernel.writepath import agent_commits
 from app.services.workspace import WorkspaceManager
 from app.services.workspace.gitops import _run_git
+from tests.proc import run as run_cmd
 
 pytestmark = pytest.mark.skipif(
     not (shutil.which("bash") and shutil.which("git") and shutil.which("python3")),
@@ -54,11 +55,11 @@ def agent_shell(root: Path, command: str, *, agent: bool = True, extra: dict | N
                 "GIT_COMMITTER_NAME": "agent", "GIT_COMMITTER_EMAIL": "agent@example.invalid"})
     if agent:
         env.update({"ONTO_RUN_ENGINE": "engine-1", "ONTO_RUN_PROJECT": root.name, "ONTO_RUN_CONVERSATION": "default"})
-    return subprocess.run(["bash", "-c", command], cwd=root, env=env, capture_output=True, text=True, timeout=120)
+    return run_cmd(["bash", "-c", command], cwd=root, env=env, capture_output=True, text=True, timeout=120)
 
 
 def last_message(root: Path) -> str:
-    return subprocess.run(["git", "log", "-1", "--format=%B"], cwd=root, capture_output=True, text=True).stdout
+    return run_cmd(["git", "log", "-1", "--format=%B"], cwd=root, capture_output=True, text=True).stdout
 
 
 def pre_tool_use(root: Path, command: str, *, agent: bool = True) -> str:
@@ -66,8 +67,8 @@ def pre_tool_use(root: Path, command: str, *, agent: bool = True) -> str:
     if agent:
         env["ONTO_RUN_ENGINE"] = "engine-1"
     payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(root)})
-    proc = subprocess.run(["bash", str(GUARD)], cwd=root, input=payload, env=env, capture_output=True, text=True,
-                          timeout=120)
+    proc = run_cmd(["bash", str(GUARD)], cwd=root, input=payload, env=env, capture_output=True, text=True,
+                   timeout=120)
     return proc.stdout.strip()
 
 

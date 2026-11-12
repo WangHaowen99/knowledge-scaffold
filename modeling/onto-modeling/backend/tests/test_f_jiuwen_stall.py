@@ -36,7 +36,11 @@ def test_stalled_model_request_ends_turn_as_error(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "JIUWEN_STALL_SECONDS", 0.3)
     errors = []
     ctx = make_ctx(tmp_path)
-    ctx.log_error = lambda kind, text: errors.append((kind, text))
+
+    def log_error(kind, text):
+        errors.append((kind, text))
+
+    ctx.log_error = log_error
     engine = JiuwenEngine(ctx)
     aborted = []
     engine.client = SimpleNamespace(abort=lambda: aborted.append(True))

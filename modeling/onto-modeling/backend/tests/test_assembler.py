@@ -1,12 +1,13 @@
-"""装配器：内核守卫注入、按内容寻址、原子切换、装配中途杀进程后的恢复、启动核对（方案 D2、D4、D8；
-详设 8.1、P1 验收「装配过程中杀进程，重启后能自动恢复」）。"""
+"""装配器：内核守卫注入、按内容寻址、原子切换、装配中途杀进程后的恢复、启动核对。
+
+方案 D2、D4、D8；详设 8.1、P1 验收「装配过程中杀进程，重启后能自动恢复」。
+"""
 
 from __future__ import annotations
 
 import json
 import os
 import shutil
-import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -18,6 +19,7 @@ from app.services.packs import builtin, lockfile, service
 from app.services.packs.assembler import AssemblyError
 from app.services.workspace import WorkspaceManager
 from tests.pack_helpers import make_assets, make_pack
+from tests.proc import git, run as run_cmd
 
 BACKEND = Path(__file__).resolve().parents[1]
 
@@ -32,10 +34,6 @@ def _fresh_builtin_cache():
 @pytest.fixture()
 def manager(tmp_path: Path) -> WorkspaceManager:
     return WorkspaceManager(tmp_path / "data", make_assets(tmp_path))
-
-
-def git(root: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=True).stdout
 
 
 def install_core(manager: WorkspaceManager, tmp_path: Path, version: str, **kw) -> str:
@@ -229,7 +227,7 @@ CHILD = textwrap.dedent(
 def run_child(tmp_path: Path, mode: str, manager: WorkspaceManager, project_id: str, version: str) -> int:
     script = tmp_path / "child.py"
     script.write_text(CHILD, encoding="utf-8")
-    proc = subprocess.run(
+    proc = run_cmd(
         [sys.executable, str(script), str(BACKEND), mode, str(manager.data_dir), str(manager.assets_dir), project_id, version],
         capture_output=True, text=True, timeout=120,
     )
@@ -290,8 +288,8 @@ def test_killed_mid_repository_install_leaves_no_version(tmp_path: Path):
         repository.PackRepository(Path(sys.argv[2])).install(Path(sys.argv[3]), origin="upload")
         """
     ), encoding="utf-8")
-    proc = subprocess.run([sys.executable, str(script), str(BACKEND), str(manager.data_dir), str(source)],
-                          capture_output=True, text=True, timeout=60)
+    proc = run_cmd([sys.executable, str(script), str(BACKEND), str(manager.data_dir), str(source)],
+                   capture_output=True, text=True, timeout=60)
     assert proc.returncode == 137
     repo = manager.packs.repository
     assert repo.versions("trace") == [] and list((repo.root / "trace").glob(".tmp-*"))

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -13,6 +12,7 @@ from app.api import deps
 from app.main import app
 from app.services import auth, streams, studio_form
 from app.services.workspace import WorkspaceManager
+from tests.proc import git as proc_git
 
 STORE = """# 对象描述
 合成场景里的门店，按 [[门店等级]] 分级。
@@ -70,8 +70,7 @@ RESTOCK = """# 补货下单
 
 
 def git(root: Path, *args: str) -> str:
-    return subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=root, check=True,
-                          capture_output=True, text=True).stdout
+    return proc_git(root, "-c", "core.hooksPath=/dev/null", *args)
 
 
 @pytest.fixture()

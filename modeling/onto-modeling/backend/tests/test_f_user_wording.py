@@ -37,8 +37,10 @@ def test_post_commit_hook_has_no_version_or_next_command_wording():
 
 
 def test_docs_do_not_tell_assistant_to_offer_rollback_by_reply():
-    found = [f"{path.relative_to(ASSETS)}:{n}" for path in DOCS
-             for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1) if OLD_WORDING.search(line)]
+    found = []
+    for path in DOCS:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        found += [f"{path.relative_to(ASSETS)}:{n}" for n, line in enumerate(lines, 1) if OLD_WORDING.search(line)]
     assert found == []
 
 

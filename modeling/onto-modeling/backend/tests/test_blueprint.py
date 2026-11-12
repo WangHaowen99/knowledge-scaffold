@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -33,6 +32,7 @@ from app.services.agent_sessions import SessionManager
 from app.services.flow import blueprint as blueprint_service
 from app.services.packs import contracts
 from app.services.workspace import WorkspaceManager
+from tests.proc import run as run_cmd
 from tests.test_changesets import git, main_write
 from tests.test_session_host import FakeEngine, result, settle
 
@@ -137,7 +137,7 @@ def test_cli_writes_checks_and_briefs_full_mode(tmp_path):
     cli = [sys.executable, str(SCRIPTS / "blueprint.py")]
 
     def run(*args):
-        return subprocess.run([*cli, *args], cwd=tmp_path, capture_output=True, text=True)
+        return run_cmd([*cli, *args], cwd=tmp_path, capture_output=True, text=True)
 
     written = run("write", "draft.json")
     assert written.returncode == 0 and written.stdout.startswith("ok:research/blueprint.json:草案 v1:1 段")
@@ -261,8 +261,8 @@ def _research_turn(manager, project_id, root):
         cwd = Path(ctx.cwd)
         (cwd / ".ontology-state").mkdir(exist_ok=True)
         (cwd / ".ontology-state" / "blueprint-draft.json").write_text(json.dumps(DRAFT, ensure_ascii=False))
-        done = subprocess.run([sys.executable, str(cwd / ".claude" / "scripts" / "blueprint.py"), "write",
-                               ".ontology-state/blueprint-draft.json"], cwd=cwd, capture_output=True, text=True)
+        done = run_cmd([sys.executable, str(cwd / ".claude" / "scripts" / "blueprint.py"), "write",
+                        ".ontology-state/blueprint-draft.json"], cwd=cwd, capture_output=True, text=True)
         assert done.returncode == 0, done.stderr
 
     FakeEngine.scripts = [[write, result()]]

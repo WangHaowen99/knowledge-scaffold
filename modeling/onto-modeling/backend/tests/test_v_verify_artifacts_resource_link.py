@@ -1,5 +1,8 @@
-"""V 阶段真实模型发现：助手副本里 `resource` 是平台挂的链接，轻量核验（verify_artifacts）算输入指纹时
-把 resource/materials.json 判成「核验路径越出工作区」直接抛错，提交 hook 拦下校验这一轮的修改，助手转去问用户。"""
+"""V 阶段真实模型发现：助手副本里 `resource` 是平台挂的链接，轻量核验算输入指纹时被它卡住。
+
+轻量核验（verify_artifacts）把 resource/materials.json 判成「核验路径越出工作区」直接抛错，
+提交 hook 拦下校验这一轮的修改，助手转去问用户。
+"""
 from __future__ import annotations
 
 import importlib

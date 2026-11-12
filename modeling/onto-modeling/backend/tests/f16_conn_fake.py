@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -65,15 +66,14 @@ def _run(ctx):
         record = _table(ctx, 0)
         record["label"] = f"连接串 user:{password}@db"
         ctx.record(record)
-        print(f"stdout 里的 {password}")
+        sys.stdout.write(f"stdout 里的 {password}\n")
         ctx.result(complete=True)
     elif mode == "raise_secret":
         raise RuntimeError(f"connect failed password={password}")
     elif mode == "connerror_secret":
         raise ConnError("auth_failed", f"认证失败：{password}")
     elif mode == "stderr_crash":
-        sys.stderr.write(f"Traceback: password={password}\n")
-        sys.stderr.flush()
+        os.write(2, f"Traceback: password={password}\n".encode())  # 崩溃前直接写 fd 2，不经缓冲
         os._exit(3)
     elif mode == "no_result":
         ctx.record(_table(ctx, 0))
@@ -87,18 +87,19 @@ def _run(ctx):
         ctx.result(complete=True, checks=[{"name": "connectivity", "ok": True}])
     elif mode == "swallow":
         try:
-            socket.create_connection(("192.0.2.10", 3306), timeout=1)
+            socket.create_connection(("192.0.2.10", 3306), timeout=1)  # NOSONAR(S1313) 保留地址段 TEST-NET-1，要一个连不通的合成地址
         except OSError:
             pass
         ctx.result(complete=True, checks=[{"name": "connectivity", "ok": True}])
     elif mode == "popen":
-        subprocess.run(ctx.connection["argv"], capture_output=True, check=False)
+        subprocess.run(ctx.connection["argv"], capture_output=True, check=False)  # NOSONAR(S4721) 假提供方故意起外部命令，测沙箱拦截
         ctx.result(complete=True, checks=[{"name": "connectivity", "ok": True}])
     elif mode == "system":
-        os.system("true")
+        os.system("true")  # NOSONAR(S4721) 假提供方故意走 shell，测沙箱拦截
         ctx.result(complete=True, checks=[{"name": "connectivity", "ok": True}])
     elif mode == "sleep_child":
-        child = subprocess.Popen(["sleep", "60"])
+        # 故意留一个子进程，测取消、超时时进程组被一并清掉
+        child = subprocess.Popen([shutil.which("sleep") or "/bin/sleep", "60"])  # NOSONAR(S4721) 模拟提供方起子进程
         ctx.progress(f"child:{child.pid}", 0, 1, "")
         time.sleep(60)
         ctx.result(complete=True)

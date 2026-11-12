@@ -22,6 +22,7 @@ import pytest
 from app import config, kernel_guards
 from app.services import package_mapping
 from app.services.engines.jiuwen_assets import run_hooks_sync
+from tests.proc import run as run_cmd
 from tests.test_blueprint import env  # noqa: F401 - 夹具
 from tests.test_jiuwen_assets import _git_workspace, make_loader
 from tests.test_research_review import make_report, row, toolkit, workspace, write_report  # noqa: F401 - 夹具
@@ -227,8 +228,8 @@ def test_blueprint_question_titles_hide_paths(env):
 
 
 def _helper(root: Path, *args) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(SCRIPTS / "state_helper.py"), *args], cwd=root,
-                          capture_output=True, text=True, timeout=30)
+    return run_cmd([sys.executable, str(SCRIPTS / "state_helper.py"), *args], cwd=root,
+                   capture_output=True, text=True, timeout=30)
 
 
 def _legacy_lock(root: Path, command: str, phase: str) -> Path:

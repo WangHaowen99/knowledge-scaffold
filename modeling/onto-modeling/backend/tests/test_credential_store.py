@@ -11,6 +11,7 @@ import pytest
 from app import config
 from app.services import credential_store, model_settings, personal_model_settings
 from app.services.credential_store import SecretStore
+from tests.synthetic import password, token
 
 
 def mode(path: Path) -> int:
@@ -50,10 +51,11 @@ def test_public_view_replaces_secrets_with_has_flags():
 
 
 def test_keep_secrets_reuses_saved_value_when_blank():
-    previous = {"password": "synthetic-old", "token": "synthetic-token"}
-    merged = credential_store.keep_secrets({"password": "", "token": "synthetic-new"}, previous, ("password", "token"))
-    assert merged == {"password": "synthetic-old", "token": "synthetic-new"}
-    assert credential_store.keep_secrets({"password": " "}, None, ("password",)) == {"password": " "}
+    saved, fresh, blank = password("old"), token("new"), " "
+    previous = {"password": saved, "token": token("old")}
+    merged = credential_store.keep_secrets({"password": "", "token": fresh}, previous, ("password", "token"))
+    assert merged == {"password": saved, "token": fresh}
+    assert credential_store.keep_secrets({"password": blank}, None, ("password",)) == {"password": blank}
 
 
 def test_store_update_is_serialized(tmp_path):

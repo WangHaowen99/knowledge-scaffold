@@ -5,7 +5,6 @@
 
 import json
 import os
-import subprocess
 import time
 import zipfile
 from pathlib import Path
@@ -21,14 +20,9 @@ from app.services.workspace import (
     WorkspaceError,
     WorkspaceManager,
 )
+from tests.proc import git
 
 LEGACY_GITIGNORE = ".claude\nCLAUDE.md\nREADME.md\ntmp/\n"
-
-
-def git(root: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=root, check=True, capture_output=True, text=True
-    ).stdout
 
 
 def tracked(root: Path) -> set[str]:

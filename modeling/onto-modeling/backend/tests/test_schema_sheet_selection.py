@@ -11,7 +11,6 @@
 import io
 import json
 import posixpath
-import subprocess
 import sys
 from pathlib import Path
 
@@ -25,6 +24,7 @@ from app.services import material_detect, package_mapping
 from app.services.material_conversion import service as conversion
 from app.services.workspace import WorkspaceManager, WorkspaceError, _git
 from app.services.workspace.layout import _content_revision
+from tests.proc import run as run_cmd
 from tests.text_versions import _converter
 
 
@@ -103,7 +103,7 @@ def cli_headers(root):
     script = (root / ".claude" / "scripts" / "check_eval_data.py").resolve()
     # 安全审查：解释器、项目工具脚本和参数均由测试固定；argv 不经 shell 解析，
     # 且工作目录仅为 tmp_path 下的合成项目。
-    return _Cli(subprocess.run(  # NOSONAR(S4721)
+    return _Cli(run_cmd(
         [sys.executable, str(script), "--headers"],
         cwd=root,
         capture_output=True,
@@ -184,7 +184,7 @@ def test_replacing_workbook_versions_file_and_matching_scope(manager):
         pid, "excel", "sample.xlsx", out.getvalue(), purpose="schema"
     )
 
-    committed_file = subprocess.run(  # NOSONAR(S4721)
+    committed_file = run_cmd(
         ["git", "show", f"HEAD:{rel}"],
         cwd=root,
         capture_output=True,
@@ -311,7 +311,8 @@ def test_resource_scope_api_permissions_and_stale_request(manager, monkeypatch):
         assert client.get(preview_url, params={'path': rel}, headers=user).status_code == 200
         response = client.get(url, headers=user)
         assert response.status_code == 200
-        scope = next(m for g in response.json()["groups"] for m in g["items"] if m["path"] == rel)["schema_scope"]
+        items = [m for g in response.json()["groups"] for m in g["items"]]
+        scope = next(m for m in items if m["path"] == rel)["schema_scope"]
         body = {"path": rel, "purpose": "schema", "schema_selection": manual_request(scope, ["table_b"])}
         assert client.patch(posixpath.join(url, "purpose"), json=body, headers=user).status_code == 200
         assert package_mapping.read_source_tables(root) == {"table_b": ["id", "name"]}
@@ -333,7 +334,7 @@ def test_csv_headers_work_without_excel_dependency(tmp_path):
     # -S removes site-packages, including openpyxl, from this subprocess.
     # 安全审查：解释器、仓库内工具脚本和参数均由测试固定；argv 不经 shell
     # 解析，且工作目录仅为 tmp_path 下的合成项目。
-    result = subprocess.run(  # NOSONAR(S4721)
+    result = run_cmd(
         [sys.executable, "-S", str(script.resolve()), "--headers"],
         cwd=tmp_path,
         capture_output=True,

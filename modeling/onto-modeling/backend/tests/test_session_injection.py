@@ -23,6 +23,7 @@ from app.services.engines.base import EngineContext
 from app.services.engines.jiuwen import JiuwenEngine
 from app.services.script_env import minimal_env
 from app.services.session_host import injection
+from tests.proc import run as run_cmd
 
 ASSETS_DIR = Path(config.ASSETS_DIR)
 SCRIPTS_DIR = ASSETS_DIR / "workspace-toolkit" / "scripts"
@@ -35,7 +36,7 @@ needs_shell = pytest.mark.skipif(
 def make_workspace(root: Path) -> Path:
     """与真实项目工作区同构：git 仓库，.claude 符号链接到资产里的工具箱。"""
     root.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True, env=minimal_env())
+    run_cmd(["git", "init", "-q"], cwd=root, check=True, env=minimal_env())
     (root / ".claude").symlink_to(ASSETS_DIR / "workspace-toolkit")
     return root
 
@@ -312,7 +313,7 @@ def test_jiuwen_buffered_messages_get_injection_when_delivered(tmp_path, monkeyp
     stage = {"text": "本体项目当前阶段：未开始。"}
     monkeypatch.setattr(injection, "stage_hint", lambda root: stage["text"])
     queries = []
-    gate = {}
+    gate = SimpleNamespace()
 
     def fake_stream(agent, inputs, session=None):
         queries.append(inputs["query"])
@@ -320,8 +321,8 @@ def test_jiuwen_buffered_messages_get_injection_when_delivered(tmp_path, monkeyp
             return answer("收到")
 
         async def gen():
-            gate["running"].set()
-            await gate["release"].wait()
+            gate.running.set()
+            await gate.release.wait()
             yield SimpleNamespace(type="llm_output", payload={"content": "第一轮"})
 
         return gen()
@@ -331,15 +332,15 @@ def test_jiuwen_buffered_messages_get_injection_when_delivered(tmp_path, monkeyp
     engine.client = object()
 
     async def scenario():
-        gate["running"], gate["release"] = asyncio.Event(), asyncio.Event()
+        gate.running, gate.release = asyncio.Event(), asyncio.Event()
         await engine.send("第一条")
-        await asyncio.wait_for(gate["running"].wait(), timeout=2)
+        await asyncio.wait_for(gate.running.wait(), timeout=2)
         # 轮内追加：按插话积压在引擎里，记的是原文；这一轮没有模型调用可插，结束后逐条开下一轮
         await engine.send("我们这边规则是先审后派")
         await engine.send("/ontology-research 示例领域")
         assert [text for _, text in engine._steers] == ["我们这边规则是先审后派", "/ontology-research 示例领域"]
         stage["text"] = "本体项目当前阶段：资料分析待核验。"
-        gate["release"].set()
+        gate.release.set()
         await asyncio.wait_for(engine._turn_task, timeout=5)
 
     asyncio.run(scenario())
@@ -360,7 +361,7 @@ def test_jiuwen_interrupt_reinjects_stage_next_message(tmp_path, monkeypatch):
 
     monkeypatch.setattr(injection, "stage_hint", lambda root: "本体项目当前阶段：未开始。")
     queries = []
-    started = {}
+    started = SimpleNamespace()
 
     def fake_stream(agent, inputs, session=None):
         queries.append(inputs["query"])
@@ -368,7 +369,7 @@ def test_jiuwen_interrupt_reinjects_stage_next_message(tmp_path, monkeypatch):
             return answer("收到")
 
         async def gen():
-            started["event"].set()
+            started.event.set()
             await asyncio.Event().wait()
             yield
 
@@ -379,9 +380,9 @@ def test_jiuwen_interrupt_reinjects_stage_next_message(tmp_path, monkeypatch):
     engine.client = object()
 
     async def scenario():
-        started["event"] = asyncio.Event()
+        started.event = asyncio.Event()
         running = asyncio.create_task(engine._run_turn("第一条"))
-        await asyncio.wait_for(started["event"].wait(), timeout=2)
+        await asyncio.wait_for(started.event.wait(), timeout=2)
         running.cancel()
         try:
             await running
