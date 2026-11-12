@@ -12,6 +12,8 @@ import DrawioPreview from '../../components/DrawioPreview.jsx';
 import { isLocked } from '../../state/readonly.js';
 import { Button, Chip, Icon, Modal, Note, Seg, cx, useEscape } from '../../ui/index.jsx';
 import { useProjectEvent } from '../plugin/parts.jsx';
+import { previewKind } from '../../lib/sourceLocation.js';
+import SourcePreview from './SourcePreview.jsx';
 import {
   PREVIEW_ICON, blockBody, isDocPreview, blockLabel, coverageChip, csvText, diamondPoints, drawioLayout, feedbackView, fmtSize,
   parseDrawio, parseFragment, purposeView, refRows, refTarget, scaleText, sheetGrid, locateSheetCell, splitHighlights,
@@ -549,7 +551,7 @@ function RefsPane({ m, onLocate }) {
 }
 
 // ---------- 预览卡 ----------
-export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, onUploadText, tasks }) {
+export function MaterialPreview({ m, purposes, fragment, source = null, full, onFull, onSaved, onUploadText, tasks }) {
   const [tab, setTab] = useState('pv');
   const [focus, setFocus] = useState(fragment);
   const [coverage, setCoverage] = useState(null);
@@ -562,8 +564,13 @@ export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, 
   const scale = isDocPreview(m) || m.preview === 'drawio' || m.preview === 'html' ? fmtSize(m.size) : scaleText(m);
 
   let pane;
-  // 出处指向文本版的行：在文本版里定位；PDF 没有原样预览，预览就是它的文本版；Word、Excel 另有「文本」页签
-  if (isTextFragment(m, focus)) pane = <TextAtPane m={m} fragment={focus} />;
+  // 资料芯片、「查看原文」带锚点跳来（source）：照 develop 的来源预览——Word、文本分段定位，Excel 定位单元格，
+  // PDF、图片在平台内打开，其他格式给下载；早先写文本版行号的出处（source.textVersion）在文本版里定位。
+  // 平时浏览：PDF 没有原样预览，预览就是它的文本版；Word、Excel 另有「文本」页签
+  const kind = source && focus === fragment ? previewKind(m.path, focus || '') : null;
+  if (source?.textVersion && isTextFragment(m, focus)) pane = <TextAtPane m={m} fragment={focus} />;
+  else if (kind === 'excel') pane = <SheetPane key={`${m.path}:${focus || ''}`} m={m} fragment={focus} />;
+  else if (['segments', 'pdf', 'image', 'download'].includes(kind)) pane = <SourcePreview path={m.path} kind={kind} anchor={focus || ''} />;
   else if (m.kind === 'pdf' && m.text) pane = <TextPane m={m} onUploadText={onUploadText} onCoverage={onCoverage} />;
   else if (isDocPreview(m)) pane = <DocPane m={m} fragment={focus} onCoverage={onCoverage} onUploadText={onUploadText} tasks={tasks} />;
   else if (m.preview === 'xls') pane = <SheetPane key={`${m.path}:${focus || ''}`} m={m} fragment={focus} />;

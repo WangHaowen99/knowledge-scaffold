@@ -9,12 +9,12 @@ import { setWorkspaceDirty } from '../../lib/workspaceDirty.js';
 import {
   Area, Button, Chip, Field, Icon, Inp, Modal, Note, cx, useOutside,
 } from '../../ui/index.jsx';
-import { reportRefs, researchReportId } from '../reports/reportModel.js';
 import EvidencePicker from './EvidencePicker.jsx';
+import SourceChips, { useKnownMaterials } from './SourceChips.jsx';
 import { KindChip, KindDot, LockBar, askAssistant, useLockCopy } from './parts.jsx';
 import {
   CONFIDENCE_CHIP, anchorChipLabel, commitSummary, fieldErrorMap, formFromEntry, hhmm, kindLabel,
-  rejectSummary, resolutionLabel, sectionAnchors, summarizeFormChanges,
+  rejectSummary, resolutionLabel, summarizeFormChanges,
 } from './studioModel.js';
 
 const AUTOSAVE_MS = 2000;
@@ -200,14 +200,11 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
   flushRef.current = putDraft;
   useEffect(() => () => { flushRef.current(); }, [id]);
 
-  // 章节里写的资料出处（规则「原始资料来源」等）：在章节下面列成芯片，点开去资料区定位
-  const sectionRefs = useMemo(
-    () => Object.fromEntries(Object.entries(form?.sections || {}).map(([title, text]) => [title, sectionAnchors(text)])),
-    [form?.sections],
-  );
-  // 草稿里新填的证据锚点、章节里的出处：经 EV-29 解析出业务说法
-  const unknownAnchors = [...(form?.fields || []).map((f) => f.evidence_anchor), ...Object.values(sectionRefs).flat()]
-    .filter((a, i, all) => a && all.indexOf(a) === i && !(a in anchorLabels) && !(entry?.fields || []).some((f) => f.evidence?.anchor === a));
+  // 草稿里新填的证据锚点：经 EV-29 解析出业务说法
+  const unknownAnchors = (form?.fields || []).map((f) => f.evidence_anchor)
+    .filter((a) => a && !anchorLabels[a] && !(entry?.fields || []).some((f) => f.evidence?.anchor === a));
+  // 章节里的出处芯片：资料已删除的置灰（develop knownPaths）
+  const known = useKnownMaterials();
   const unknownKey = unknownAnchors.join('|');
   useEffect(() => {
     if (!unknownKey) return;
@@ -372,20 +369,7 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
               Object.entries(form.sections || {}).map(([title, text]) => (
                 <div className="mt12" key={title}>
                   <Field label={title}><Area minHeight={96} textareaStyle={{ height: 78 }} value={text} onChange={(e) => change({ sections: { ...form.sections, [title]: e.target.value } })} /></Field>
-                  {sectionRefs[title]?.length || reportRefs(text).length ? (
-                    <div className="row wrap mt4" style={{ gap: 6 }}>
-                      {reportRefs(text).map((r) => (
-                        <Chip key={`${r.path}#${r.section}`} tone="line" sm icon="filetext" className="stt-src" title="打开资料分析报告" onClick={() => navigate(pagePath('reports', pid), { report: researchReportId(r.path), section: r.section })}>
-                          {r.section}
-                        </Chip>
-                      ))}
-                      {(sectionRefs[title] || []).map((a) => (
-                        <Chip key={a} tone="line" sm icon="filetext" className="stt-src" title="查看原文" onClick={() => navigate(pagePath('resources', pid), { anchor: a })}>
-                          {anchorLabels[a] || anchorChipLabel(a)}
-                        </Chip>
-                      ))}
-                    </div>
-                  ) : null}
+                  <SourceChips text={text} origin={entry.path.split('/').pop()} known={known} />
                 </div>
               ))
             )}

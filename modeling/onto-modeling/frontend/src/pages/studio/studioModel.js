@@ -1,4 +1,5 @@
 // Studio 图谱与表格页的纯逻辑：条目类型、写入范围锁的说法、草稿改动摘要、提交结果文案、证据标签
+import { parseHeadingRef, parseSourceRef, trimHeadingRef } from '../../lib/sourceLocation.js';
 import { sliceName } from '../../state/flow.js';
 import { isLocked, lockState } from '../../state/readonly.js';
 
@@ -36,29 +37,6 @@ export function filterRows(rows, kind, q) {
   return (rows || []).filter((r) => (kind === 'all' || r.kind === kind)
     && (!s || `${r.name}\n${r.key}`.toLowerCase().includes(s)));
 }
-
-// 最后更新时间（ST-03 updated_at）：本地时间精确到秒；取不到写「—」
-const pad2 = (n) => String(n).padStart(2, '0');
-export function fmtUpdated(iso) {
-  const d = iso ? new Date(iso) : null;
-  if (!d || Number.isNaN(d.getTime())) return '—';
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
-}
-
-// 按最后更新时间排：order 为 desc（新的在前）或 asc；取不到时间的两个方向都排最后；不排时原样返回
-export function sortByUpdated(rows, order) {
-  if (order !== 'desc' && order !== 'asc') return rows;
-  const t = (r) => { const v = r.updated_at ? Date.parse(r.updated_at) : NaN; return Number.isNaN(v) ? null : v; };
-  const sign = order === 'desc' ? -1 : 1;
-  return [...rows].sort((a, b) => {
-    const x = t(a);
-    const y = t(b);
-    if (x === null || y === null) return (x === null) - (y === null);
-    return sign * (x - y);
-  });
-}
-// 表头点一下：不排 → 新的在前 → 旧的在前 → 新的在前…
-export const nextUpdatedOrder = (order) => (order === 'desc' ? 'asc' : 'desc');
 
 // 点一行时的地址：带着对话链接给的搜索词（q），地址里的 q 不变，搜索框就不会被清掉
 export function rowQuery(query, id) {
@@ -231,18 +209,24 @@ export function anchorChipLabel(anchor) {
   return name.replace(/\.[^.]+$/, '') || name || a;
 }
 
-// 章节正文里的资料出处（规则「原始资料来源」等）：`resource/…[#片段]`，和后端 material_text.ANCHOR_RE 同一口径；
-// 片段在收尾的标点、引号、括号前结束。返回去重后的 `file:` 锚点
-const ANCHOR_END = '\\s|`\'"<>（）()，。；、\\]「」『』【】“”‘’？！：*,;';
-const SECTION_ANCHOR_RE = new RegExp(
-  `(?:file:)?(resource\\/[^\\s|\`'"<>（）()，。；、\\]]+?\\.[A-Za-z0-9]{1,6})(#[^${ANCHOR_END}]+)?(?=$|[${ANCHOR_END}])`, 'g',
-);
-export function sectionAnchors(text) {
+// 章节正文里的出处芯片（develop CenterPane 的识别规则）：行内代码里的资料路径（可带锚点）、报告路径带小节，
+// 以及正文里直接写的这两种路径。返回 [{type: 'source' | 'heading', path, anchor}]，按出现顺序去重
+const CODE_RE = /`([^`\n]+)`/g;
+const PATH_RE = /(?:research|reports|ontology|knowledge|resource)\/[^\s`）)，。;；:"'<>|]+\.(?:md|mmd|drawio|xlsx|xlsm|html|py|csv|docx|pdf|png|jpe?g)(?:#(?:L\d+|p:\d+|table:\d+\/row:\d+\/cell:\d+|sheet:[^\s`）)，。;；"'<>|]+![A-Z]+\d+|[^\s`，。；;、,|"'<>「」【】[\]]+))?/g;
+export function sourceRefsIn(text) {
   const out = [];
-  for (const m of String(text || '').matchAll(SECTION_ANCHOR_RE)) {
-    const anchor = `file:${m[1]}${m[2] || ''}`;
-    if (!out.includes(anchor)) out.push(anchor);
-  }
+  const push = (ref) => {
+    if (ref && !out.some((x) => x.path === ref.path && x.anchor === ref.anchor)) out.push(ref);
+  };
+  const fromRef = (value) => {
+    const source = parseSourceRef(value);
+    if (source) return { type: 'source', ...source };
+    const heading = parseHeadingRef(value);
+    return heading ? { type: 'heading', ...heading } : null;
+  };
+  const raw = String(text || '');
+  for (const m of raw.matchAll(CODE_RE)) push(fromRef(m[1]));
+  for (const m of raw.replace(CODE_RE, ' ').matchAll(PATH_RE)) push(fromRef(trimHeadingRef(m[0]).ref));
   return out;
 }
 

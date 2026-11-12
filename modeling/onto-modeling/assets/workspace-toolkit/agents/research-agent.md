@@ -18,7 +18,8 @@ dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自
 
 只读文本：先 `python3 .claude/scripts/source_extract.py --sources` 拿资料清单，每份资料读它的 `read`：
 md、txt、csv 读原文件；PDF、Word、Excel 读多源连接器转出的文本版 `resource/text/<分组>/<原文件名>.md`
-（里面的 `<!-- 第 3 页 -->`、`<!-- 工作表：客户 -->` 是位置标记）。`read` 为空（`kind: missing`）的资料
+（里面的 `<!-- 第 3 页 -->`、`<!-- 工作表：客户 -->` 是位置标记，文末 `<!-- onto:anchors … -->` 记着各行在原件里的位置，
+出处用抽取器给的锚点，不用自己数）。`read` 为空（`kind: missing`）的资料
 还没有文本版（转换中、暂不支持或转换失败），在「信息来源」里记为「未读：没有文本版」，不要自己解析原件，
 不要写临时脚本抽 PDF、Word 或图片里的文字。
 
@@ -186,9 +187,11 @@ dispatching command 会在你 prompt 顶部注入 `# 只读来源快照（自动
 5. **字段逐字取自真实表头。** 「引用字段」里的每个字段都要能在快照的表头里找到；
    找不到就填 `无` 并把这个缺口写进「缺口与待决」。
 6. **来源位置必须可定位。** 写你读的那份文本的相对路径加行号：用户上传的 md 写它自己（如
-   `resource/others/业务说明.md#L12`），PDF、Word、Excel 写文本版（如
-   `resource/text/others/管理办法.pdf.md#L40` 或 `#L40-L46`），逐字使用抽取器返回的位置，
-   不要编造锚点或写"见资料"。清单每行只写一处；同一业务项的全部出处写进「详细信息」的同名小节，
+   `resource/others/业务说明.md#L12`）；PDF、Word、Excel 用 `python3 .claude/scripts/source_extract.py {read}`
+   读文本版，它返回的 `cite` 是原件路径、每段的 `anchor` 是原件里的位置，出处写 `cite#anchor`（如
+   `resource/others/规则.docx#p:2`、`resource/others/规则.docx#table:1/row:2/cell:3`、
+   `resource/others/表.xlsx#sheet:规则!B3`、`resource/others/手册.pdf#page:3`），逐字使用抽取器返回的位置，
+   不要编造锚点、不要写文本版的行号或写"见资料"。清单每行只写一处；同一业务项的全部出处写进「详细信息」的同名小节，
    每处都写完整的 `路径#锚点`，同一文件的多处也不能省略路径。`research_checker.py` 会逐处核对。
 7. **缺失就是缺失。** 缺系数、价格、数量等数据时不要隐式补 1 或 0；只把受这项
    缺失影响的条目标为待决，不要因此阻塞其他条目。

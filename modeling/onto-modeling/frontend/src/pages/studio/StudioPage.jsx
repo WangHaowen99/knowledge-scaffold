@@ -145,7 +145,7 @@ function EvidenceCell({ cell }) {
   );
 }
 
-function EvidenceCard({ item, pid }) {
+function EvidenceCard({ item, pid, origin }) {
   const { api } = useApp();
   const project = useProject();
   const [used, setUsed] = useState(null);
@@ -169,7 +169,7 @@ function EvidenceCard({ item, pid }) {
       {item.used_for?.length ? <div className="xs muted mt4">用于属性{item.used_for.map((u) => `「${u}」`).join('、')}</div>
         : item.resolved?.location_label ? <div className="xs muted mt4">{item.resolved.location_label}</div> : null}
       <div className="row mt8">
-        {!db || evidenceOn ? <Button size="xs" onClick={() => navigate(pagePath(page, pid), { anchor: item.anchor })}>查看原文</Button> : null}
+        {!db || evidenceOn ? <Button size="xs" onClick={() => navigate(pagePath(page, pid), { anchor: item.anchor, from: window.location.hash.replace(/^#/, ''), fromLabel: origin || '' })}>查看原文</Button> : null}
         {evidenceOn ? <Button size="xs" kind="ghost" onClick={whereUsed}>被谁引用</Button> : null}
         <span className="sp" />
         <Button size="xs" kind="ghost" icon="copy" title="复制锚点" onClick={async () => toast((await copyText(item.anchor)) ? '已复制锚点' : '复制失败，请手动选择', 'copy')} />
@@ -286,7 +286,7 @@ function SidePanel({ entry, evidence, loading, onClose, onSelect }) {
       ) : null}
       {tab === 'ev' ? (
         <div className="bd">
-          {evidence ? evItems.map((it) => <EvidenceCard key={it.anchor + it.title} item={it} pid={pid} />) : <div className="xs muted">正在读取…</div>}
+          {evidence ? evItems.map((it) => <EvidenceCard key={it.anchor + it.title} item={it} pid={pid} origin={entry.path?.split('/').pop()} />) : <div className="xs muted">正在读取…</div>}
           {evidence && !evItems.length ? <div className="xs muted">还没有证据锚点</div> : null}
         </div>
       ) : null}

@@ -11,7 +11,8 @@ import '../../styles/studio.css';
 import EntryEditor from './EntryEditor.jsx';
 import FlowchartPanel from './FlowchartPanel.jsx';
 import { KindChip, LockIcon, PlugMark, RowStatus, useLockCopy } from './parts.jsx';
-import { filterRows, fmtUpdated, kindSegments, mergeFlowchartRows, nextUpdatedOrder, rowQuery, sortByUpdated } from './studioModel.js';
+import { filterRows, kindSegments, mergeFlowchartRows, rowQuery } from './studioModel.js';
+import { compareUpdatedAt, formatUpdatedAt } from '../../lib/studioUpdates.js';
 
 const NEW_KINDS = [['object', '对象'], ['operation', '操作'], ['rule', '规则'], ['metric', '指标']];
 
@@ -99,8 +100,12 @@ export default function StudioTablePage({ route }) {
   }, [route.query?.entry, autoId, rows]);
   const selectedId = route.query?.entry || autoId;
   const selected = rows.find((r) => r.id === selectedId) || null;
-  const [order, setOrder] = useState(null); // 最后更新时间列的排序：null 按名称（ST-03 默认）
-  const shown = useMemo(() => sortByUpdated(filterRows(rows, kind, q), order), [rows, kind, q, order]);
+  // 最后更新时间列（develop StudioView）：点表头 降序 → 升序 → 取消，取不到时间的两个方向都在最后
+  const [order, setOrder] = useState(null);
+  const shown = useMemo(() => {
+    const list = filterRows(rows, kind, q).map((r) => ({ ...r, updatedAt: r.updated_at ? Date.parse(r.updated_at) / 1000 : undefined }));
+    return order ? list.sort((a, b) => (order === 'ascend' ? 1 : -1) * compareUpdatedAt(a, b, order)) : list;
+  }, [rows, kind, q, order]);
   const segs = kindSegments(data?.counts, { flowchartEnabled });
   const select = (id) => navigate(pagePath('studio-table', pid), rowQuery(route.query, id));
   // 从别处跳来（报告「定位」、对话里的条目链接）时，把选中的行滚进视野
@@ -138,7 +143,7 @@ export default function StudioTablePage({ route }) {
           <div className="tw" style={{ padding: '0 16px 16px' }}>
             <div className="tbl-wrap">
               <table className="tbl compact">
-                <thead><tr><th style={{ width: 74 }}>类型</th><th>名称</th><th className="stt-sort" style={{ width: 150 }} aria-sort={order ? `${order}ending` : 'none'} onClick={() => setOrder(nextUpdatedOrder)}>最后更新时间{order ? <Icon name={order === 'desc' ? 'chevd' : 'chevu'} size={11} /> : null}</th><th style={{ width: 70 }}>引用</th><th style={{ width: 70 }}>被引</th><th style={{ width: 96 }}>状态</th></tr></thead>
+                <thead><tr><th style={{ width: 74 }}>类型</th><th>名称</th><th className="stt-sort" style={{ width: 170 }} aria-sort={order ? `${order}ing` : 'none'} onClick={() => setOrder((o) => ({ null: 'descend', descend: 'ascend' }[o] || null))}>最后更新时间{order ? <Icon name={order === 'descend' ? 'chevd' : 'chevu'} size={11} /> : null}</th><th style={{ width: 70 }}>引用</th><th style={{ width: 70 }}>被引</th><th style={{ width: 96 }}>状态</th></tr></thead>
                 <tbody ref={bodyRef}>
                   {shown.map((r) => {
                     const ref = r.kind === 'flowchart' ? { type: 'diagram.flowchart', key: r.key } : { id: r.id };
@@ -146,7 +151,7 @@ export default function StudioTablePage({ route }) {
                       <tr key={r.id} className={`stt-row${r.id === selectedId ? ' sel' : ''}`} onClick={() => select(r.id)}>
                         <td><KindChip kind={r.kind} /></td>
                         <td className="b">{r.name}<LockIcon info={lockFor(ref, r.name)} /></td>
-                        <td className="muted stt-time">{fmtUpdated(r.updated_at)}</td>
+                        <td className="muted stt-time">{formatUpdatedAt(r.updatedAt)}</td>
                         <td className="num">{r.refs_out}</td>
                         <td className="num">{r.refs_in}</td>
                         <td><RowStatus row={r} /></td>

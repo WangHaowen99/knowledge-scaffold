@@ -623,6 +623,28 @@ export function register(ctx) {
     });
   });
 
+  // R-17 原始资料分段预览（develop /source-preview）：文本按行、Word 按段与表格单元格；窗口 300 段、定位点前 60 段
+  on('GET', '/projects/([^/]+)/resources/source-preview', ({ m, query }) => {
+    const path = query.get('path') || '';
+    const anchor = query.get('anchor') || '';
+    const s = st(m[1]);
+    const f = s.files.find((x) => x.path === path);
+    if (!f) return err(404, 'file_not_found', '资料不存在', { path });
+    const ext = (path.split('.').pop() || '').toLowerCase();
+    if (!['md', 'markdown', 'txt', 'csv', 'json', 'yaml', 'yml', 'docx'].includes(ext)) {
+      return err(415, 'unsupported_media_type', '该格式不支持分段预览，请下载原文件查看');
+    }
+    const segments = previewBlocks(path, null, f).map((b) => ({ anchor: b.anchor, text: b.text }));
+    const index = anchor ? segments.findIndex((x) => x.anchor === anchor) : -1;
+    const start = index >= 0 ? Math.max(0, index - 60) : 0;
+    const end = Math.min(segments.length, start + 300);
+    return json(200, {
+      status: 'ok', anchor, anchor_found: anchor ? index >= 0 : null, total: segments.length, offset: start,
+      has_more_before: start > 0, has_more_after: end < segments.length,
+      segments: segments.slice(start, end).map((x) => ({ ...x, text: x.text.slice(0, 4000), truncated: x.text.length > 4000 })),
+    });
+  });
+
   // R-07 资料地图
   on('GET', '/projects/([^/]+)/materials/map', ({ m }) => json(200, st(m[1]).map));
 

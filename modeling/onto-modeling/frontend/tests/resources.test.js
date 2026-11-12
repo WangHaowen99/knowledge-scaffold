@@ -52,7 +52,7 @@ test('跳转参数：查看原文的锚点（含百分号编码）、上传文�
   assert.deepEqual(parseFileAnchor(`file:${R02}#p:9.2`), { path: R02, fragment: 'p:9.2' });
   assert.deepEqual(parseFileAnchor(`file:${encodeURIComponent('resource/others/a#b.docx')}#p:1`), { path: 'resource/others/a#b.docx', fragment: 'p:1' });
   assert.equal(parseFileAnchor('db:erp-prod/erp.replenish_std.max_qty'), null);
-  assert.deepEqual(routeTarget({ anchor: `file:${R02}#p:9.2` }), { kind: 'file', path: R02, fragment: 'p:9.2' });
+  assert.deepEqual(routeTarget({ anchor: `file:${R02}#p:9.2` }), { kind: 'file', path: R02, fragment: 'p:9.2', source: true });
   assert.deepEqual(routeTarget({ path: 'resource/others/07-门店C特殊需求.pdf' }), { kind: 'file', path: 'resource/others/07-门店C特殊需求.pdf', fragment: null });
   assert.deepEqual(routeTarget({ group: 'feedback', feedback: 'fb-1101-01' }), { kind: 'feedback', id: 'fb-1101-01' });
   assert.deepEqual(routeTarget({ group: 'feedback' }), { kind: 'feedback', id: null });

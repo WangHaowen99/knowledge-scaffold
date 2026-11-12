@@ -1,116 +1,143 @@
-// 规则出处打开资料并定位（P5b，develop sourceLocation / studioUpdates 的同类行为）：文本版锚点映射回原资料、
-// 行号范围、文本版块的画法、章节里的出处识别；Studio 条目表「最后更新时间」的显示与排序。
+// 原始资料「路径#锚点」解析、位置文案与定位判断（lib/sourceLocation.js）。合成数据。
 // 跑法：cd modeling/onto-modeling/frontend && npm test
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  inRange, isTextFragment, lineRange, materialOfText, mdCells, routeTarget, textPathOf, textView,
-} from '../src/pages/resources/resourcesModel.js';
-import {
-  anchorChipLabel, artifactToRow, fmtUpdated, nextUpdatedOrder, sectionAnchors, sortByUpdated,
-} from '../src/pages/studio/studioModel.js';
+  anchorLabel,
+  findHeadingIndex,
+  groupSegments,
+  legacyOfficeHint,
+  locateSheetCell,
+  parseCellRef,
+  parseHeadingRef,
+  parseSheetAnchor,
+  parseSourceRef,
+  previewKind,
+  sourceChipLabel,
+  trimHeadingRef,
+} from '../src/lib/sourceLocation.js';
 
-test('文本版路径和原资料互换', () => {
-  assert.equal(textPathOf('resource/others/合成规则.docx'), 'resource/text/others/合成规则.docx.md');
-  assert.equal(materialOfText('resource/text/others/合成规则.docx.md'), 'resource/others/合成规则.docx');
-  assert.equal(materialOfText('resource/others/说明.md'), null);
-  assert.equal(materialOfText('resource/text/others/合成规则.docx'), null);
+test('只把 resource/ 下的已知格式识别为资料路径，锚点可选', () => {
+  assert.deepEqual(parseSourceRef('resource/others/合成规则.docx#p:12'), {
+    path: 'resource/others/合成规则.docx',
+    anchor: 'p:12',
+  });
+  assert.deepEqual(parseSourceRef(' resource/excel/合成表.xlsx#sheet:规则!B3 '), {
+    path: 'resource/excel/合成表.xlsx',
+    anchor: 'sheet:规则!B3',
+  });
+  assert.deepEqual(parseSourceRef('resource/others/手册.pdf'), { path: 'resource/others/手册.pdf', anchor: '' });
+  assert.equal(parseSourceRef('research/20261030-合成.md#业务项清单'), null);
+  assert.equal(parseSourceRef('resource/others/无扩展名'), null);
+  assert.equal(parseSourceRef('无（领域知识整理）'), null);
 });
 
-test('出处写的是文本版：资料区选中原资料，片段照旧', () => {
-  assert.deepEqual(routeTarget({ anchor: 'file:resource/text/excel/合成表.xlsx.md#L12-L15' }),
-    { kind: 'file', path: 'resource/excel/合成表.xlsx', fragment: 'L12-L15' });
-  assert.deepEqual(routeTarget({ anchor: 'file:resource/others/说明.md#L3' }),
-    { kind: 'file', path: 'resource/others/说明.md', fragment: 'L3' });
+test('芯片显示文件名和位置', () => {
+  assert.equal(sourceChipLabel('resource/others/合成规则.docx', 'p:12'), '合成规则.docx · 第 12 段');
+  assert.equal(sourceChipLabel('resource/others/说明.md', 'L12'), '说明.md · 第 12 行');
+  assert.equal(
+    sourceChipLabel('resource/others/合成规则.docx', 'table:1/row:2/cell:3'),
+    '合成规则.docx · 表 1 第 2 行第 3 列',
+  );
+  assert.equal(sourceChipLabel('resource/excel/合成表.xlsx', 'sheet:规则!B3'), '合成表.xlsx · 规则!B3');
+  assert.equal(sourceChipLabel('resource/others/手册.pdf'), '手册.pdf');
+  assert.equal(anchorLabel('未知写法'), '未知写法');
 });
 
-test('行号片段与范围；只有要转文本的资料才按文本版定位', () => {
-  assert.deepEqual(lineRange('L12'), { from: 12, to: 12 });
-  assert.deepEqual(lineRange('L12-L15'), { from: 12, to: 15 });
-  assert.deepEqual(lineRange('L12-15'), { from: 12, to: 15 });
-  assert.equal(lineRange('p:3'), null);
-  assert.equal(lineRange('sheet:规则!B3'), null);
-  assert.ok(inRange('L13', lineRange('L12-L15')));
-  assert.ok(!inRange('L16', lineRange('L12-L15')));
-  const docx = { path: 'resource/others/合成规则.docx', text: { state: 'converted' } };
-  const md = { path: 'resource/others/说明.md', text: { state: 'native' } };
-  assert.ok(isTextFragment(docx, 'L12'));
-  assert.ok(!isTextFragment(docx, 'p:3'));
-  assert.ok(!isTextFragment(md, 'L12'));
+test('按格式和锚点选择预览方式', () => {
+  assert.equal(previewKind('resource/others/合成规则.docx'), 'segments');
+  assert.equal(previewKind('resource/others/说明.md', 'L3'), 'segments');
+  assert.equal(previewKind('resource/others/说明.md'), 'default');
+  assert.equal(previewKind('resource/excel/合成表.xlsx', 'sheet:规则!B3'), 'excel');
+  assert.equal(previewKind('resource/others/手册.pdf'), 'pdf');
+  assert.equal(previewKind('resource/others/截图.PNG'), 'image');
+  for (const name of ['旧版.doc', '旧版.xls', '汇报.ppt', '汇报.pptx']) {
+    assert.equal(previewKind(`resource/others/${name}`), 'download');
+  }
+  assert.equal(previewKind('resource/diagrams/流程.drawio'), 'default');
 });
 
-test('表格行按竖线拆格，转义的竖线和 <br> 还原', () => {
-  assert.deepEqual(mdCells('| 品类 | 周期 |'), ['品类', '周期']);
-  assert.deepEqual(mdCells('| a\\|b | 第一行<br>第二行 |'), ['a|b', '第一行\n第二行']);
-  assert.deepEqual(mdCells('| x |  |'), ['x', '']);
+test('解析单元格与工作表锚点，工作表名可含感叹号', () => {
+  assert.deepEqual(parseCellRef('B3'), { row: 2, col: 1 });
+  assert.deepEqual(parseCellRef('AA10'), { row: 9, col: 26 });
+  assert.equal(parseCellRef('3B'), null);
+  assert.deepEqual(parseSheetAnchor('sheet:合成!规则!$C$5'), {
+    sheet: '合成!规则', cell: '$C$5', row: 4, col: 2,
+  });
+  assert.equal(parseSheetAnchor('p:3'), null);
 });
 
-test('文本版的块：位置变了出分隔，连续表格行合成一张表，紧跟分隔行的是表头', () => {
-  const view = textView([
-    { anchor: 'L3', kind: 'paragraph', text: '第一页正文', location: '第 1 页' },
-    { anchor: 'L5', kind: 'table', text: '| 品类 | 周期 |', location: '第 2 页' },
-    { anchor: 'L6', kind: 'table', text: '|---|---|', location: '第 2 页' },
-    { anchor: 'L7', kind: 'table', text: '| 牛奶 | 隔日 |', location: '第 2 页' },
-    { anchor: 'L8', kind: 'paragraph', text: '冷链品单独配送', location: '第 2 页' },
+const workbook = {
+  sheet_truncated: false,
+  sheets: [
+    { name: '说明', rows: [['a']], merges: [], truncated: false },
+    { name: '规则', rows: [['编号', '说明'], ['R-01', '合成']], merges: [], truncated: false },
+  ],
+};
+
+test('Excel 定位：命中给出工作表与格子，失效与超出范围分别说明', () => {
+  assert.deepEqual(locateSheetCell(workbook, 'sheet:规则!B2'), { index: 1, cell: { row: 1, col: 1 } });
+  assert.equal(locateSheetCell(workbook, ''), null);
+  assert.equal(locateSheetCell(workbook, 'sheet:不存在!A1').problem, 'missing');
+  assert.equal(locateSheetCell(workbook, 'sheet:规则!B9').problem, 'missing');
+  const truncated = { ...workbook, sheets: [workbook.sheets[0], { ...workbook.sheets[1], truncated: true }] };
+  const beyond = locateSheetCell(truncated, 'sheet:规则!B600');
+  assert.equal(beyond.problem, 'range');
+  assert.equal(beyond.index, 1);
+  assert.equal(locateSheetCell({ ...workbook, sheet_truncated: true }, 'sheet:第21张!A1').problem, 'range');
+});
+
+test('连续的 Word 表格单元格合成一张表，表格之间和段落分开', () => {
+  const blocks = groupSegments([
+    { anchor: 'p:1', text: '标题' },
+    { anchor: 'table:1/row:1/cell:1', text: '编号' },
+    { anchor: 'table:1/row:2/cell:3', text: '合成' },
+    { anchor: 'table:2/row:1/cell:1', text: '另一张' },
+    { anchor: 'p:4', text: '结尾' },
   ]);
-  assert.deepEqual(view.map((v) => v.type), ['loc', 'block', 'loc', 'table', 'block']);
-  assert.deepEqual(view[3].rows.map((r) => [r.anchor, r.head, r.cells]), [['L5', true, ['品类', '周期']], ['L7', false, ['牛奶', '隔日']]]);
-  // 窗口从表格中间开始：没有分隔行就都是数据行；没有位置标记的（Word）不出分隔
-  const mid = textView([{ anchor: 'L9', kind: 'table', text: '| 酸奶 | 每日 |' }, { anchor: 'L10', kind: 'paragraph', text: '完' }]);
-  assert.deepEqual(mid.map((v) => v.type), ['table', 'block']);
-  assert.equal(mid[0].rows[0].head, false);
+  assert.deepEqual(blocks.map((block) => block.type), ['segment', 'table', 'table', 'segment']);
+  assert.equal(blocks[1].rows, 2);
+  assert.equal(blocks[1].cols, 3);
+  assert.equal(blocks[2].table, 2);
 });
 
-test('章节正文里的资料出处：去重、带片段、收尾标点不算进锚点', () => {
-  const text = '- `resource/text/others/合成规则.docx.md#L12`（规则ID R-01）\n'
-    + '- resource/others/说明.md#L3-L5；另见 resource/others/说明.md#L3-L5。\n'
-    + '- 无（领域知识整理）\n- `research/20260101-订单.md#退款时限`';
-  assert.deepEqual(sectionAnchors(text), [
-    'file:resource/text/others/合成规则.docx.md#L12',
-    'file:resource/others/说明.md#L3-L5',
-  ]);
-  assert.deepEqual(sectionAnchors('file:resource/others/说明.md'), ['file:resource/others/说明.md']);
-  assert.equal(anchorChipLabel('file:resource/text/others/合成规则.docx.md#L12'), '合成规则');
+test('上传 .doc、.xls 时给出另存提示，其他格式不提示', () => {
+  assert.match(legacyOfficeHint('旧版规则.doc'), /另存为 \.docx/);
+  assert.match(legacyOfficeHint('旧版表.XLS'), /另存为 \.xlsx/);
+  assert.equal(legacyOfficeHint('新版规则.docx'), '');
 });
 
-test('最后更新时间：本地时区精确到秒，取不到写破折号', () => {
-  const iso = new Date(2026, 0, 2, 3, 4, 5).toISOString();
-  assert.equal(fmtUpdated(iso), '2026-01-02 03:04:05');
-  assert.equal(fmtUpdated(null), '—');
-  assert.equal(fmtUpdated('bad'), '—');
+test('带小节的报告路径能解析，普通文字和资料路径不算', () => {
+  assert.deepEqual(parseHeadingRef('research/20261031-合成报告.md#退款金额上限（R-01）'), {
+    path: 'research/20261031-合成报告.md',
+    anchor: '退款金额上限（R-01）',
+  });
+  assert.equal(parseHeadingRef('research/20261031-合成报告.md'), null);
+  assert.equal(parseHeadingRef('resource/others/说明.md#L3'), null);
+  assert.equal(parseHeadingRef('合成文字#小节'), null);
 });
 
-test('按最后更新时间排：两个方向都按时间，取不到时间的始终在最后，同一时间保持原顺序', () => {
-  const at = (s) => new Date(s * 1000).toISOString();
-  const rows = [
-    { id: 'missing', updated_at: null },
-    { id: 'old', updated_at: at(100) },
-    { id: 'same-1', updated_at: at(200) },
-    { id: 'same-2', updated_at: at(200) },
-    { id: 'new', updated_at: at(300) },
-  ];
-  assert.deepEqual(sortByUpdated(rows, 'desc').map((r) => r.id), ['new', 'same-1', 'same-2', 'old', 'missing']);
-  assert.deepEqual(sortByUpdated(rows, 'asc').map((r) => r.id), ['old', 'same-1', 'same-2', 'new', 'missing']);
-  assert.equal(sortByUpdated(rows, null), rows);
-  assert.equal(nextUpdatedOrder(null), 'desc');
-  assert.equal(nextUpdatedOrder('desc'), 'asc');
-  assert.equal(nextUpdatedOrder('asc'), 'desc');
+test('小节定位优先全文相同，其次包含，找不到返回 -1', () => {
+  const headings = ['业务项清单', ' 退款金额上限（R-01） ', '退款金额'];
+  assert.equal(findHeadingIndex(headings, '退款金额'), 2);
+  assert.equal(findHeadingIndex(headings, '退款金额上限（R-01）'), 1);
+  assert.equal(findHeadingIndex(headings, '上限'), 1);
+  assert.equal(findHeadingIndex(headings, '不存在的小节'), -1);
 });
 
-test('流程图行的最后更新时间取产物的修改时间', () => {
-  const row = artifactToRow({ key: 'f1', title: '合成流程', status: { value: 'confirmed' }, updated_at: '2026-01-02T03:04:05.000Z' });
-  assert.equal(row.updated_at, '2026-01-02T03:04:05.000Z');
-});
-
-test('规则「来源」里的报告小节：小节名自带的括号保留，外层多出的右括号去掉；报告 id 同后端', async () => {
-  const { headingLine, reportRefs, researchReportId } = await import('../src/pages/reports/reportModel.js');
-  assert.deepEqual(reportRefs('`research/20260101-订单.md#退款时限`（规则ID R-02）'), [{ path: 'research/20260101-订单.md', section: '退款时限' }]);
-  assert.deepEqual(reportRefs('（见 research/报告.md#退款时限（R-02））'), [{ path: 'research/报告.md', section: '退款时限（R-02）' }]);
-  assert.deepEqual(reportRefs('resource/others/说明.md#L3 与 research/报告.md'), []);
-  assert.equal(researchReportId('research/20260101-订单.md'), 'research:20260101-订单');
-  const lines = ['# 详细信息', '## 退款时限（R-02）', '正文', '## 退款时限'];
-  assert.equal(headingLine(lines, '退款时限'), 3);
-  assert.equal(headingLine(lines, 'R-02'), 1);
-  assert.equal(headingLine(lines, '不存在'), -1);
+test('正文里的报告小节路径：小节名自带的括号保留，外层多出的右括号放回正文', () => {
+  assert.deepEqual(trimHeadingRef('research/合成报告.md#退款时限（R-02）'), {
+    ref: 'research/合成报告.md#退款时限（R-02）',
+    rest: '',
+  });
+  assert.deepEqual(trimHeadingRef('research/合成报告.md#退款时限）'), {
+    ref: 'research/合成报告.md#退款时限',
+    rest: '）',
+  });
+  assert.deepEqual(trimHeadingRef('research/合成报告.md#退款时限(R-02))'), {
+    ref: 'research/合成报告.md#退款时限(R-02)',
+    rest: ')',
+  });
+  assert.deepEqual(trimHeadingRef('research/合成报告.md'), { ref: 'research/合成报告.md', rest: '' });
 });

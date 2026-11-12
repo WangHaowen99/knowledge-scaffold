@@ -110,22 +110,12 @@ export function materialCounts(c) {
   return out.join(' · ');
 }
 
-// ---------- 规则「来源」里的报告小节（`research/报告.md#小节名`）：打开资料分析报告原文并定位 ----------
+// ---------- 规则「来源」里的报告小节（`research/报告.md#小节名`）：打开报告原文并定位 ----------
 
-// 报告路径 → 报告 id（同后端 reports.id_of）：research/20260101-订单.md → research:20260101-订单
-export const researchReportId = (path) => `research:${String(path).replace(/^research\//, '').replace(/\.md$/, '')}`;
-
-// 正文里的 `research/…md#小节`：小节在空白、反引号、中文分隔标点处结束；小节名末尾多出的右括号属于外层括号，去掉
-export function reportRefs(text) {
-  const out = [];
-  for (const m of String(text || '').matchAll(/(research\/[^\s`#|]+\.md)#([^\s`|，。；、]+)/g)) {
-    let section = m[2];
-    for (const [open, close] of [['（', '）'], ['(', ')']]) {
-      while (section.endsWith(close) && section.split(close).length > section.split(open).length) section = section.slice(0, -1);
-    }
-    if (section && !out.some((r) => r.path === m[1] && r.section === section)) out.push({ path: m[1], section });
-  }
-  return out;
+// 报告路径 → 报告 id（同后端 reports.id_of）：research/20260101-订单.md → research:20260101-订单；reports/x.md → x
+export function reportIdOf(path) {
+  const p = String(path || '').replace(/\.md$/, '');
+  return p.startsWith('research/') ? `research:${p.slice('research/'.length)}` : p.replace(/^reports\//, '');
 }
 
 // 原文里要定位的小节标题行：标题全文相同优先，其次标题包含小节名；找不到 -1

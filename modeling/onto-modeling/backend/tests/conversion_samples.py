@@ -114,3 +114,35 @@ def zip_bomb(member: str = "word/document.xml", expanded_mb: int = 200) -> bytes
             for _ in range(expanded_mb):
                 stream.write(block)
     return buffer.getvalue()
+
+
+def write_text_version(root, rel: str) -> str:
+    """测试里代替连接器网关：用预置转换器把资料区里的 Word、Excel、PDF 转成文本版，和内核落盘的写法一样
+    （文件头 + 空行 + 正文，带原件锚点，ADR-0093）。返回文本版的相对路径；转不了（坏文件）时不写，返回空串。"""
+    import hashlib
+    import importlib.util
+    from pathlib import Path
+
+    from app.evidence.convert import ConvertError, ConvertLimits, header
+
+    root = Path(root)
+    path = root / rel
+    name = {".docx": "convert-docx", ".xlsx": "convert-xlsx", ".xlsm": "convert-xlsx", ".pdf": "convert-pdf"}[path.suffix.lower()]
+    entry = Path(__file__).resolve().parents[2] / "assets" / "packs" / name / "converter.py"
+    spec = importlib.util.spec_from_file_location(f"samples_{name.replace('-', '_')}", entry)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    data = path.read_bytes()
+    try:
+        result = module.convert(data, path.name, ConvertLimits())
+    except ConvertError:
+        return ""
+    if result.state != "converted":
+        return ""
+    text_rel = "resource/text/" + rel.removeprefix("resource/") + ".md"
+    target = root / text_rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    body = result.markdown.strip("\n")
+    target.write_text(header(path.name, hashlib.sha256(data).hexdigest()[:16], f"{name}@test") + "\n\n" + body + "\n",
+                      encoding="utf-8")
+    return text_rel

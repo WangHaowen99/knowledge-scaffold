@@ -159,8 +159,11 @@ export function routeTarget(query = {}) {
   if (query.feedback || query.group === 'feedback') return { kind: 'feedback', id: query.feedback || null };
   if (query.anchor) {
     const a = parseFileAnchor(query.anchor);
-    // 出处写的是文本版（资料分析只读文本版）：选中原资料，片段照旧
-    if (a) return { kind: 'file', path: materialOfText(a.path) || a.path, fragment: a.fragment };
+    // 带锚点跳来（资料芯片、「查看原文」）：按来源预览打开（source）。早先的出处写文本版的行号：选中原资料，在文本版里定位
+    if (a) {
+      const original = materialOfText(a.path);
+      return { kind: 'file', path: original || a.path, fragment: a.fragment, source: true, ...(original ? { textVersion: true } : {}) };
+    }
   }
   if (query.path) return { kind: 'file', path: query.path, fragment: query.fragment || null };
   return null;

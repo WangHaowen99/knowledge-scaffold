@@ -1237,6 +1237,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 
 - 查询参数：`path`、`around?: string`（锚点片段，如 `p:9.2`，定位到该段前后；行号范围 `L12-L15` 按第一行定位）、`limit?: int`（块数，默认 200，最大 1000）、`cursor?`。
 - 文档类资料（docx、md、txt）经 `source_extract` 抽取成带锚点的块（PDF 的文字看文本版，R-13），片段格式沿用 `source_extract`：`L12`、`p:3`、`table:1/row:2/cell:3`。
+  docx 的块来自多源连接器转出的带原件锚点的文本版（ADR-0093），还没有文本版时没有块。
 - `path` 也可以是文本版（`resource/text/<分组>/<原文件名>.md`，规则出处与证据「查看原文」按它定位，ADR-0093）：块按行，锚点 `L<n>` 和 EV-29、R-15 同一套行号；
   第一行文件头不出块，页、工作表标记不单独成块，记在它后面每一块的 `location` 上（「第 3 页」「工作表 客户」）。
 - 表格和 drawio 分别用 `F-05` 和 `F-04`。
@@ -1360,6 +1361,18 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 - 表头是每个 Sheet 的物理第一行；第一行为空、合并、缺列名、重名都是错误。有内容的最右一列按整张表算。
 - 错误（文字同 develop）：`400`「只能检查资料区中存在的文件」「数据 Schema 支持 xlsx、xlsm 和 UTF-8 CSV。…」「文件无法解析为数据表：…」（含 CSV 不是 UTF-8、Excel 转换失败）；
   `409 material_text_pending`（Excel 还在转文本版）；`project_archived`。
+
+#### R-17 原始资料分段预览
+
+`GET /api/v1/projects/{id}/resources/source-preview` · 所有者 · 旧：`GET /api/projects/{id}/source-preview`（develop，无调用方，不改写） · 审计：否 · 依据：ADR-0093 · 页面：resources（资料芯片、「查看原文」带锚点跳来时的来源预览）
+
+- 查询参数：`path`（资料区里的 md、txt、csv、json、yaml、docx）、`anchor?`（`L12`、`p:3`、`table:1/row:2/cell:3`）。
+- 分段与锚点同工具箱 `source_extract`；资料区里的 Word 读多源连接器转出的带原件锚点的文本版（ADR-0076、ADR-0093），不解析原件。
+- 只返回定位点附近的一个窗口：最多 300 段，定位点前留 60 段；单段正文最多 4000 字。
+- 响应 `200`：`{status: "ok", anchor, anchor_found: bool|null（没给锚点时 null）, total, offset, has_more_before, has_more_after,
+  segments: [{anchor, text, truncated}]}`；读不了（文件超过抽取上限、坏文件、还没有文本版）时
+  `{status: "unavailable", reason, anchor, segments: []}`。
+- 错误：`file_not_found`、`path_forbidden`、`unsupported_media_type`（415，xlsx 走 F-05，PDF、图片按原样打开 F-04）。
 
 ---
 

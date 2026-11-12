@@ -1733,3 +1733,19 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
    （含现算的 `auto` 范围）；错误码 `schema_scope_stale` 改为 develop 的 `schema_selection_invalid`；新增 `resource_source_modified`（资料有没提交的改动）。
 4. **R-16** 加 `force`，权限改为能写（同 develop 的 write），响应字段同 develop（`file_sha256`、`warnings`，去掉 `revision`、`pending`），
    错误文字同 develop；Excel 还在转文本版时 `409 material_text_pending`。
+
+## 2026-11-12 · P5b 第二轮：规则出处与来源预览对齐 develop（ADR-0093 修订）
+
+1. **出处写法改回 develop**：资料分析报告的来源位置、「详细信息」出处与规则「原始资料来源」写资料原件路径加锚点
+   （`#L12`、`#p:3`、`#table:1/row:2/cell:3`、`#sheet:表!B3`；本分支另有 PDF 的 `#page:3`），不再写文本版行号。
+   早先写文本版行号的出处照旧能核对、能定位。
+2. **文本版带原件锚点**：convert-docx 1.1.0、convert-xlsx 1.2.0 的输出文末加一段 `<!-- onto:anchors 1 … -->` 注释
+   （`app.evidence.convert.anchor_index` / `parse_anchor_index`，工作区 `source_extract.py` 同口径）：Word 段落 `p:<n>`
+   （带标题、列表记号长度）、表格行 `table:<t>/row:<r>`；Excel `sheet:<名>`、`row:<Excel 行号>`、`merge <名> A1:C1 …`、
+   `cols <名> <n>`（整张表有值的最右一列，扫全部行）。
+   老的 Word、Excel 文本版启动迁移时重转一次补上。
+3. **source_extract**：资料区里的 Word、Excel、PDF 读文本版、按锚点注释给出原件的段与锚点，不解析原件；CLI 读文本版时
+   回 `cite`（原件路径）。抽取结果多 `text_version`、`merges`（Excel）。
+4. **R-17**（新）：`GET /resources/source-preview`，照 develop `/source-preview`。
+5. **R-06**：docx 的块改由带锚点的文本版给出（锚点不变）。
+6. **ST-03**：`updated_at` 与 `sort=updated` 不变（第一轮已加）；前端列宽、排序循环（降序 → 升序 → 取消）照 develop。

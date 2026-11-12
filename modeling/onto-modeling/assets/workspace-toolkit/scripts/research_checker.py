@@ -14,8 +14,9 @@
 3. 计数自洽：`合计` = 业务项清单的唯一业务项数；分类小计逐类条数 = 清单里该分类行数；
 4. ID 唯一：同一报告内业务项 ID、规则 ID 均不重复；
 5. ID 溯源：资料里的编号必须出现在声明的资料/锚点中，读不到明确为无法核验；资料里没有编号时助手按
-   `ITEM-01`、`RULE-01` 自编，资料里查不到这个编号就算自编，不需要人确认（F4b）。出处读资料的文本版
-   （多源连接器转出的 resource/text/…），旧报告指向 DOCX/XLSX 原件的锚点照常核对，只提示改指文本版；
+   `ITEM-01`、`RULE-01` 自编，资料里查不到这个编号就算自编，不需要人确认（F4b）。出处写资料原件和锚点
+   （`#L12`、`#p:3`、`#table:1/row:2/cell:3`、`#sheet:表!B3`），Word、Excel、PDF 按多源连接器转出的文本版里
+   记的原件位置核对（ADR-0093），不解析原件；
 6. ID 稳定：派遣前固化的既有清单里的 ID 必须仍在报告中，新增 ID 必须在
    「ID变更对照」给出依据——不允许静默改名；
 7. 字段保真：「引用字段」列的每个字段必须是真实表头里的列（表名.列名 或列名）；
@@ -414,40 +415,36 @@ class CheckContext:
         self._corpus = None
 
     def source_text(self, rel: str, anchor: str = '') -> str:
-        """出处所在文本。资料区里的原件（PDF、Word、Excel 等）不解析（F4c，ADR-0076）：旧报告指向原件的，
-        按它的文本版整篇核对；还没有文本版就核对不了。"""
+        """出处所在文本。资料区里的 Word、Excel、PDF 不在这里解析（ADR-0076）：source_extract 读多源连接器转出的
+        文本版，按文本版里记的原件位置给出段与锚点（ADR-0093），和直接读原件的结果一致。"""
         if rel not in self._sources:
             path = self.root / rel
             if not within_workspace(self.root, path):
                 raise ValueError('来源必须位于当前工作区内')
-            read = rel
-            if path.suffix.lower() not in source_extract.TEXT_SUFFIXES and rel.startswith('resource/'):
-                read = source_extract.text_version(rel)
-                if not (self.root / read).is_file():
-                    raise ValueError('出处指向资料原件，它还没有文本版（转换中、暂不支持或转换失败），这里不解析原件，核对不了')
-            self._sources[rel] = {**source_extract.extract(self.root / read), 'read_rel': read}
-        data = self._sources[rel]
-        return source_extract.located_text(data, '' if data['read_rel'] != rel else anchor)
+            self._sources[rel] = source_extract.extract(path)
+        return source_extract.located_text(self._sources[rel], anchor)
 
     def sources_read(self) -> list[str]:
-        """ID 溯源时实际读过的来源文档（原件读的是文本版，记文本版）。
+        """ID 溯源时实际读过的来源文档。
 
         回执要把它们记进输入指纹：规范 ID 就取自这些文档，文档里的 ID 改了而回执
         不失效的话，报告会带着已经对不上的 ID 继续算作已验收。
         """
-        return sorted({data['read_rel'] for data in self._sources.values()})
+        return sorted(self._sources)
 
     def corpus(self) -> str:
-        """resource/ 下的全部文本资料。不含任何报告，避免报告自证。有文本版的原件读文本版，不解析原件。"""
+        """resource/ 下的全部资料文本（原件按它的文本版读）。不含任何报告，避免报告自证。"""
         if self._corpus is None:
             parts = []
             resource = self.root / 'resource'
+            readable = source_extract.SUPPORTED | source_extract.FROM_TEXT_VERSION
             if resource.is_dir():
                 for path in sorted(resource.rglob('*')):
-                    # 只读文本（含 resource/text 下的文本版），原件一律不解析
-                    if path.is_file() and path.suffix.lower() in source_extract.TEXT_SUFFIXES:
+                    rel = path.relative_to(self.root).as_posix()
+                    if path.is_file() and path.suffix.lower() in readable \
+                            and not rel.startswith(f'{source_extract.TEXT_DIR}/'):
                         try:
-                            parts.append(self.source_text(path.relative_to(self.root).as_posix()))
+                            parts.append(self.source_text(rel))
                         except ValueError:
                             # Only cited/declared evidence can block the row. An unrelated
                             # unsupported material cannot prove absence or exempt an ID.
@@ -500,7 +497,7 @@ def _check_rows(rel: str, rows: list[dict], ctx: CheckContext) -> list[dict]:
     tables = ctx.tables
     columns, tables_lower = _column_index(tables)
     unknown_fields, unlocatable = [], []
-    untraceable, misplaced, on_original = [], [], []
+    untraceable, misplaced = [], []
 
     for row in rows:
         item_id = (row.get('业务项ID') or '').strip()
@@ -531,9 +528,6 @@ def _check_rows(rel: str, rows: list[dict], ctx: CheckContext) -> list[dict]:
             unlocatable.append(f'{item_id}:{location[:40]}')
             continue
         anchor = location.partition('#')[2].strip().strip('`')
-        if Path(source_rel).suffix.lower() not in source_extract.TEXT_SUFFIXES \
-                and (ctx.root / source_extract.text_version(source_rel)).is_file():
-            on_original.append(f'{item_id}:{source_rel}')
         try:
             source_text = ctx.source_text(source_rel, anchor)
         except ValueError as exc:
@@ -563,10 +557,6 @@ def _check_rows(rel: str, rows: list[dict], ctx: CheckContext) -> list[dict]:
                              f'{len(untraceable)} 个 ID 无法在所声明的来源位置核实：'
                              f'{_clip(untraceable, 5)}。资料里的编号逐字沿用、核对来源锚点；'
                              '资料里没有编号时自编为 ITEM-01、RULE-01 这种写法，不要编成像资料编号的样子'))
-    if on_original:
-        issues.append(_issue(rel, WARNING, '出处',
-                             f'{len(on_original)} 条出处指向原件，这些资料已有文本版：{_clip(on_original, 5)}。'
-                             '出处改指文本版 resource/text/…（带行号）'))
     if misplaced:
         issues.append(_issue(rel, WARNING, 'ID溯源',
                              f'{len(misplaced)} 个 ID 不在它自己声明的来源文件里'
@@ -745,7 +735,7 @@ def run_check(root: Path) -> dict:
         tracked.append(research_review.INVENTORY_FILE.as_posix())
     inputs = research_review.file_revisions(root, tracked)
     for rel, data in ctx._sources.items():
-        if data['source_sha256'] and inputs.get(data['read_rel']) != data['source_sha256'][:16]:
+        if data['source_sha256'] and inputs.get(rel) != data['source_sha256'][:16]:
             issues.append(_issue(rel, ERROR, '来源无法核验', '抽取后原文件修订发生变化，请重新核验'))
     errors = [issue for issue in issues if issue['severity'] == ERROR]
     status = (research_review.UNVERIFIABLE if any(i['category'] == '来源无法核验' for i in errors)

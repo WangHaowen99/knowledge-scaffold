@@ -12,6 +12,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import conversion_samples as samples
+
 from app import config
 from app.api import deps
 from app.main import app
@@ -31,6 +33,14 @@ def docx(paragraphs: list[str], table: list[list[str]] | None = None) -> bytes:
     xml = f'<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="{W}"><w:body>{body}</w:body></w:document>'
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
+        # 包结构写全（内容类型、关系），网关的转换器才打得开
+        archive.writestr("[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                         '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                         '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument'
+                         '.wordprocessingml.document.main+xml"/></Types>')
+        archive.writestr("_rels/.rels", '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/'
+                         'officeDocument" Target="word/document.xml"/></Relationships>')
         archive.writestr("word/document.xml", xml)
     return buffer.getvalue()
 
@@ -51,6 +61,8 @@ def env(tmp_path: Path, monkeypatch):
                            ("03-扫描件.pdf", b"%PDF-1.4 synthetic")):
             response = client.post(f"{base}/resources", files={"file": (name, data)})
             assert response.status_code == 201, response.text
+        # Word 的位置读多源连接器转出的文本版（ADR-0076、ADR-0093）；测试里没有网关，用同一个转换器写文本版
+        samples.write_text_version(workspaces.project_root(project_id), "resource/others/02-配送说明.docx")
         yield client, workspaces, project_id, workspaces.project_root(project_id), base
 
 
