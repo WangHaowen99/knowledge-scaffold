@@ -1677,3 +1677,19 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
 6. **增量构建包**：启用后没传新资料时节点不出现，不挡发布，也不限范围；已有条目时上传资料才触发。这一轮发布后自动结束；有改动没核对干净时「结束本轮」被拒。
 7. 触发记录在主线工作区的 `.onto/run/activation.json`，不进 git。FL-01 的响应形状不变，节点集合变化时 `flow_hash` 跟着变。
 8. **core 0.5.0、增量构建 0.2.0**：core 0.5.0 表示内核支持上面 1～4；用到它们的包声明 `depends: {core: ">=0.5"}`。建议条规则版本 `SUGGEST_RULES` 升到 7（多一条 6.5「触发后抢先的步骤」）。
+
+## 2026-11-12 · P5b 第二轮：规则出处与来源预览对齐 develop（ADR-0093 修订）
+
+1. **出处写法改回 develop**：资料分析报告的来源位置、「详细信息」出处与规则「原始资料来源」写资料原件路径加锚点
+   （`#L12`、`#p:3`、`#table:1/row:2/cell:3`、`#sheet:表!B3`；本分支另有 PDF 的 `#page:3`），不再写文本版行号。
+   早先写文本版行号的出处照旧能核对、能定位。
+2. **文本版带原件锚点**：convert-docx 1.1.0、convert-xlsx 1.2.0 的输出文末加一段 `<!-- onto:anchors 1 … -->` 注释
+   （`app.evidence.convert.anchor_index` / `parse_anchor_index`，工作区 `source_extract.py` 同口径）：Word 段落 `p:<n>`
+   （带标题、列表记号长度）、表格行 `table:<t>/row:<r>`；Excel `sheet:<名>`、`row:<Excel 行号>`、`merge <名> A1:C1 …`、
+   `cols <名> <n>`（整张表有值的最右一列，扫全部行）。
+   老的 Word、Excel 文本版启动迁移时重转一次补上。
+3. **source_extract**：资料区里的 Word、Excel、PDF 读文本版、按锚点注释给出原件的段与锚点，不解析原件；CLI 读文本版时
+   回 `cite`（原件路径）。抽取结果多 `text_version`、`merges`（Excel）。
+4. **R-17**（新）：`GET /resources/source-preview`，照 develop `/source-preview`。
+5. **R-06**：docx 的块改由带锚点的文本版给出（锚点不变）。
+6. **ST-03**：`updated_at` 与 `sort=updated` 不变（第一轮已加）；前端列宽、排序循环（降序 → 升序 → 取消）照 develop。
