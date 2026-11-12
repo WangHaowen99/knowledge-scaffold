@@ -9,6 +9,7 @@ import { errorText } from '../api/errors.js';
 import {
   Button, Chip, Icon, Modal, Note, cx,
 } from '../ui/index.jsx';
+import { setWorkspaceDirty } from '../lib/workspaceDirty.js';
 import DrawioPreview from './DrawioPreview.jsx';
 import '../styles/flowchart.css';
 
@@ -189,6 +190,12 @@ function DrawioDocument({ project, path, editorAvailable = true, onSaved, refres
       .catch((e) => alive && setDoc({ error: e.message || errorText(e) }));
     return () => { alive = false; };
   }, [project.id, path, mode, refreshKey, attempt]);
+
+  // 有没保存的编辑时挡住版本回退（develop 同）
+  useEffect(() => {
+    setWorkspaceDirty('drawio-editor', saveState === 'dirty' || saveState === 'saving' || saveState === 'error');
+    return () => setWorkspaceDirty('drawio-editor', false);
+  }, [saveState]);
 
   useEffect(() => {
     const guard = (e) => { if (dirty.current) { e.preventDefault(); e.returnValue = ''; } };

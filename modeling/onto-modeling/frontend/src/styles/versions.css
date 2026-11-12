@@ -14,3 +14,9 @@
 .vr-file:hover{background:var(--panel2)}
 .vr-pre{font-family:var(--mono);font-size:12px;line-height:1.7;white-space:pre-wrap;word-break:break-word;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px;margin:0}
 .chip.vr-del{text-decoration:line-through;color:var(--ink3)}
+/* 历史时间线（ADR-0094）：标题是「迭代 N」「发布版本 X」；发布版本紫色、有标记的迭代用青绿（develop 是紫、绿） */
+.vr-page .mr-vr .v{font-family:inherit;font-size:13px}
+.mr-vr.vr-tagged .dot{border-color:var(--teal)}
+.mr-vr.vr-release{cursor:default}
+.mr-vr.vr-release:hover{background:transparent}
+.mr-vr.vr-release .dot{border-color:var(--indigo);background:var(--indigo)}

@@ -1,216 +1,90 @@
-// 版本页的弹窗与抽屉：标记版本（V-07）、删除标记（V-08）、回退（V-05 预览 → V-06）、查看某版本的文件（V-03、F-06）
+// 版本页的弹窗与抽屉：标记迭代（V-07）、回退确认（V-05 预览后 → V-06）、查看某版本的文件（V-03、F-06）。
+// 标记与回退的文字照 develop 的「历史」页签（ADR-0094）
 import { useEffect, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
-import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, formatBytes } from '../../api/errors.js';
 import {
-  Button, Chip, Drawer, Field, Icon, Inp, Modal, Note, Select,
+  Button, Drawer, Icon, Inp, Modal, Note,
 } from '../../ui/index.jsx';
-import { hasWorkspaceDirty } from '../../lib/workspaceDirty.js';
-import {
-  blockerView, fileGroups, fmtStamp, pathLabel, revertBlock, revertChips, revertCountText, revertErrorText, tagLabelError,
-  undoneText,
-} from './versionsModel.js';
+import { versionTitle } from '../../lib/versionHistory.js';
+import { fileGroups, fmtStamp, pathLabel, revertConfirmText } from './versionsModel.js';
 
 const PACK_LABEL = { 'industry-retail': '零售行业包', core: '内核' };
 
-export function TagModal({ open, items, initial, onClose, onDone }) {
+// 「标记迭代」：commit 为空时不出现；名称为空时点「标记」不做事
+export function TagModal({ commit, onClose, onDone }) {
   const { api } = useApp();
   const { pid } = useProject();
-  const [commit, setCommit] = useState(initial);
   const [label, setLabel] = useState('');
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    if (open) { setCommit(initial); setLabel(''); setError(''); }
-  }, [open, initial]);
-  const v = (items || []).find((x) => x.commit === commit);
+  useEffect(() => { if (commit) setLabel(''); }, [commit]);
   const submit = async () => {
-    const bad = tagLabelError(label);
-    if (bad) { setError(bad); return; }
-    setBusy(true);
+    if (!label.trim()) return;
     try {
-      const r = await api.tagVersion(pid, commit, label.trim());
-      toast(`已标记 ${r.version_label || v?.version_label || ''}`, 'tag');
-      onDone?.(r);
+      await api.tagVersion(pid, commit, label.trim());
+      toast('已标记', 'tag');
+      onDone?.();
     } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(false);
+      toast(errorText(e), 'alert');
     }
   };
   return (
     <Modal
-      open={open}
+      open={!!commit}
       onClose={onClose}
       icon="tag"
-      title="标记版本"
+      title="标记迭代"
       foot={(
         <>
           <Button onClick={onClose}>取消</Button>
-          <Button kind="primary" disabled={busy} onClick={submit}>标记</Button>
+          <Button kind="primary" onClick={submit}>标记</Button>
         </>
       )}
     >
-      <div className="col" style={{ gap: 12 }}>
-        <Field label="版本">
-          <Select
-            value={commit}
-            options={(items || []).map((x) => ({ value: x.commit, label: `${x.version_label}${x.current ? ' · 当前' : ` · ${fmtStamp(x.at)}`}` }))}
-            onChange={setCommit}
-            className="vr-sel"
-          />
-        </Field>
-        <Field label="标记名称" hint={error ? <span style={{ color: 'var(--red)' }}>{error}</span> : null}>
-          <Inp
-            value={label}
-            placeholder="如：校验通过的里程碑"
-            maxLength={120}
-            error={!!error}
-            onChange={(e) => { setLabel(e.target.value); setError(''); }}
-            onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
-          />
-        </Field>
-      </div>
+      <Inp
+        value={label}
+        placeholder="如：校验通过的里程碑"
+        maxLength={120}
+        autoFocus
+        onChange={(e) => setLabel(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
+      />
     </Modal>
   );
 }
 
-export function DeleteTagModal({ tag, onClose, onDone }) {
-  const { api } = useApp();
-  const { pid } = useProject();
-  const [busy, setBusy] = useState(false);
-  const submit = async () => {
-    setBusy(true);
-    try {
-      await api.deleteVersionTag(pid, tag.name);
-      toast('已删除标记', 'tag');
-      onDone?.();
-    } catch (e) {
-      toast(errorText(e), 'alert');
-    } finally {
-      setBusy(false);
-    }
-  };
+// 回退确认（develop 的确认框）：预览能回退时才打开；能力锁有变化时多说一行（插件化独有）
+export function RevertConfirm({ target, onCancel, onConfirm }) {
+  const preview = target?.preview;
+  const packs = preview?.packs_lock_changes || [];
   return (
     <Modal
-      open={!!tag}
-      onClose={onClose}
+      open={!!target}
+      onClose={onCancel}
       danger
-      icon="tag"
-      title={`删除标记${tag?.label ? `「${tag.label}」` : ''}？`}
-      sub="只删标记，版本本身保留"
-      foot={(
-        <>
-          <Button onClick={onClose}>取消</Button>
-          <Button kind="danger fill" disabled={busy} onClick={submit}>删除标记</Button>
-        </>
-      )}
-    />
-  );
-}
-
-// 回退被挡住时（合入冲突、助手在跑、自主构建中、Studio 草稿）的去处；没有去处的只给说明
-function BlockAction({ action, lock, entry }) {
-  const { pid } = useProject();
-  const conv = lock?.conversation_id ? { c: lock.conversation_id } : undefined;
-  if (action === 'confirm') return <Button size="xs" kind="primary" icon="merge" onClick={() => navigate(pagePath('inbox', pid))}>去处理</Button>;
-  if (action === 'run') return <Button size="xs" onClick={() => navigate(pagePath('l4-run', pid))}>查看运行</Button>;
-  if (action === 'studio') return <Button size="xs" onClick={() => navigate(pagePath('studio-table', pid), entry ? { entry } : undefined)}>去处理</Button>;
-  if (action === 'chat') return <Button size="xs" onClick={() => navigate(pagePath('wb-l2', pid), conv)}>回到对话</Button>;
-  return null;
-}
-
-export function RevertModal({ version, onClose, onDone }) {
-  const { api } = useApp();
-  const { pid, scope } = useProject();
-  const [preview, setPreview] = useState(null);
-  const [error, setError] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [round, setRound] = useState(0);
-  useEffect(() => { setError(null); }, [version]);
-  useEffect(() => {
-    setPreview(null);
-    if (!version) return undefined;
-    let alive = true;
-    api.revertPreview(pid, version.commit).then((p) => alive && setPreview(p)).catch((e) => alive && setError({ text: errorText(e) }));
-    return () => { alive = false; };
-  }, [api, pid, version, round]);
-  const submit = async () => {
-    setBusy(true);
-    try {
-      const r = await api.revertVersion(pid, version.commit, preview.expected_head);
-      toast(`已回退并生成版本 ${r.version_label}`, 'undo');
-      onDone?.(r);
-    } catch (e) {
-      // 预览之后有了新版本：重新预览，要再确认一次
-      if (e.code === 'head_moved') setRound((n) => n + 1);
-      const block = e.code === 'head_moved' || e.code === 'nothing_to_revert' ? null : blockerView(e);
-      setError({ text: revertErrorText(e, errorText(e)), block, lock: e.details, soft: e.code === 'head_moved' });
-    } finally {
-      setBusy(false);
-    }
-  };
-  const label = version?.version_label || '';
-  const chips = revertChips(preview?.files);
-  const first = preview?.blockers?.[0];
-  const liveLock = revertBlock(scope);
-  const shownBlock = (liveLock && { ...liveLock, lock: scope })
-    || (hasWorkspaceDirty() && blockerView({ code: 'unsaved_editor' }))
-    || (first && { ...(blockerView(first) || { text: first.message, action: null }), lock: first.details })
-    || (error?.block && { ...error.block, lock: error.lock });
-  return (
-    <Modal
-      open={!!version}
-      onClose={onClose}
       icon="undo"
-      title={`回退到 ${label}？`}
-      sub={`会生成新版本 ${preview?.next_version_label || '…'}，可再回退`}
+      title={target ? `回退到版本 ${target.version.version ?? target.version.n}？` : ''}
       foot={(
         <>
-          <Button onClick={onClose}>取消</Button>
-          <Button kind="primary" disabled={busy || !preview || !!shownBlock} onClick={submit}>回退并生成新版本</Button>
+          <Button onClick={onCancel}>取消</Button>
+          <Button kind="danger fill" onClick={onConfirm}>确认回退</Button>
         </>
       )}
     >
       <div className="col sm" style={{ gap: 8 }}>
-        {shownBlock ? (
-          <div className="note amber">
-            <Icon name="lock" />
-            <div className="grow">{shownBlock.text}</div>
-            <BlockAction action={shownBlock.action} lock={shownBlock.lock || scope} entry={shownBlock.entry} />
-          </div>
-        ) : null}
-        {error && !error.block ? <Note tone={error.soft ? 'gray' : 'red'}>{error.text}</Note> : null}
-        {!preview && !error ? <div className="muted">正在计算要恢复的文件…</div> : null}
-        {preview ? (
-          <>
-            <div>
-              {revertCountText(preview.files)}
-              {preview.undone_versions.length ? `，${undoneText(preview.undone_versions)} 的改动会被撤回：` : '。'}
-            </div>
-            {chips.length ? (
-              <div className="row wrap g4">
-                {chips.map((c) => <Chip key={c.key} tone="line" sm className={c.del ? 'vr-del' : undefined} title={c.del ? '这个文件在那时还没有，回退后会删掉' : undefined}>{c.label}</Chip>)}
-              </div>
-            ) : null}
-            <Note tone="gray" icon="layers">
-              启用的能力也回到 {label} 时的状态
-              {preview.packs_lock_changes.length ? (
-                <div className="xs mt4">
-                  {preview.packs_lock_changes.map((p) => `${p.label || PACK_LABEL[p.pack] || p.pack} ${p.from || '未启用'} → ${p.to || '停用'}`).join('；')}
-                </div>
-              ) : null}
-            </Note>
-          </>
+        <div>{revertConfirmText(preview?.changes)}</div>
+        {packs.length ? (
+          <Note tone="gray" icon="layers">
+            启用的能力也回到当时的状态：
+            {packs.map((p) => `${p.label || PACK_LABEL[p.pack] || p.pack} ${p.from || '未启用'} → ${p.to || '停用'}`).join('；')}
+          </Note>
         ) : null}
       </div>
     </Modal>
   );
 }
 
-// 查看某个版本的文件：列表（V-03）→ 点开看内容（F-06），可以拿去和当前对比
+// 某版本的文件（V-03）：按业务类型分组；点一个看内容（F-06），可以拿去和当前对比
 export function FilesDrawer({ version, onClose, onCompare }) {
   const { api, services } = useApp();
   const { pid, meta } = useProject();
@@ -249,7 +123,7 @@ export function FilesDrawer({ version, onClose, onCompare }) {
       onClose={onClose}
       icon="eye"
       w={520}
-      title={open ? pathLabel(open.path) : `${version?.version_label || ''} 的文件`}
+      title={open ? pathLabel(open.path) : `${version ? versionTitle('iteration', version.n) : ''} 的文件`}
       sub={open ? `${open.version_label} · 只读` : `${files ? `${shown} 项 · ` : ''}只读，${version ? fmtStamp(version.at) : ''}`}
       foot={open ? (
         <>

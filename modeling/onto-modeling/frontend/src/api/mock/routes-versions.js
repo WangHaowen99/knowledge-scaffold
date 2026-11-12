@@ -173,6 +173,11 @@ export function register(ctx) {
       target: { commit: target.commit, version_label: target.version_label },
       next_version_label: `v${majorOf(head.version_label)}.${head.n + 1}`,
       expected_head: head.commit,
+      // develop 口径的计数（mock 分不出新增与修改，恢复的都算修改）
+      changes: {
+        added: [], modified: files.filter((f) => f.change === 'restore').map((f) => f.path),
+        deleted: files.filter((f) => f.change === 'delete').map((f) => f.path), total: files.length,
+      },
       files,
       undone_versions: after.map((v) => v.version_label),
       packs_lock_changes: after.filter((v) => v.source === 'plugin' && v.trailer?.packs).map((v) => {
@@ -214,6 +219,29 @@ export function register(ctx) {
       items: items.slice(offset, offset + limit).map(publicVersion),
       next_cursor: offset + limit < items.length ? String(offset + limit) : null,
       total: items.length, head: head.commit, current_version_label: head.version_label, release_error: '',
+    });
+  });
+
+  // ---------- V-09 历史时间线：迭代与发布版本合并（mock 把发布记在发布时的那个版本之后） ----------
+  on('GET', '/projects/([^/]+)/history', async ({ m, query, init }) => {
+    const list = await history(m[1], init);
+    if (!list) return err(404, 'project_not_found', '项目不存在');
+    const limit = Number(query.get('limit')) || 50;
+    if (limit < 1 || limit > 50) return err(400, 'invalid_argument', '分页参数无效', { fields: { limit: 'range' } });
+    const merged = [];
+    [...list].reverse().forEach((v) => {
+      const time = Math.floor(new Date(v.at).getTime() / 1000);
+      if (v.release) {
+        merged.push({ kind: 'release', release_id: `release-${v.release}`, ontology_id: `package-${m[1]}`, version: v.release,
+          package_digest: 'a'.repeat(64), source_service: 'onto-modeling', time: time + 60 });
+      }
+      merged.push({ ...publicVersion(v), kind: 'iteration', version: v.n, time, message: v.summary, can_revert: true });
+    });
+    const offset = Number(query.get('cursor')) || 0;
+    return json(200, {
+      items: merged.slice(offset, offset + limit),
+      next_cursor: offset + limit < merged.length ? String(offset + limit) : null,
+      release_error: '',
     });
   });
 

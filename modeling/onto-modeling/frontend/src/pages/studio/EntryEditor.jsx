@@ -5,6 +5,7 @@ import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, relativeTime } from '../../api/errors.js';
+import { setWorkspaceDirty } from '../../lib/workspaceDirty.js';
 import {
   Area, Button, Chip, Field, Icon, Inp, Modal, Note, cx, useOutside,
 } from '../../ui/index.jsx';
@@ -189,6 +190,11 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
     const t = setTimeout(putDraft, AUTOSAVE_MS);
     return () => clearTimeout(t);
   }, [form, putDraft]);
+  // 有草稿或没存完的修改时挡住版本回退（develop 的 studio-editor 同口径）
+  useEffect(() => {
+    setWorkspaceDirty('studio-editor', hasDraft || dirty.current || save.kind === 'saving' || save.kind === 'error');
+    return () => setWorkspaceDirty('studio-editor', false);
+  }, [hasDraft, save.kind, form]);
   // 换条目、离开页面前把没存的存掉
   const flushRef = useRef(putDraft);
   flushRef.current = putDraft;

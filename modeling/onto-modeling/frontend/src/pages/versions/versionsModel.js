@@ -125,7 +125,7 @@ export function compareFromOf(selected, items) {
   return byNewest(items).find((v) => v.n < selected.n) || selected;
 }
 
-export const rangeOptions = (items) => byNewest(items).map((v) => ({ value: v.commit, label: `${v.version_label} → 当前` }));
+export const rangeOptions = (items) => byNewest(items).map((v) => ({ value: v.commit, label: `迭代 ${v.n} → 当前` }));
 
 /**
  * 从别的页跳过来时选中哪个版本：
@@ -260,91 +260,23 @@ export function undoneText(labels) {
   return `${l[0]}～${l[l.length - 1]}`;
 }
 
-// 回退弹窗里的文件标签：条目文件写文件名，同名的（几个 index.md）写相对路径，场景合成「场景 ×N」；
-// 最多 5 个，多出来的写「另 N 个」
-export function revertChips(files, max = 5) {
-  const out = [];
-  let scenes = 0;
-  const seen = new Set();
-  // 恢复的在前，删掉的（目标版本时还没有的文件）在后；按业务名说，同名的只列一次（F4b-paths：不出路径）
-  [...(files || [])].sort((a, b) => (a.change === 'delete') - (b.change === 'delete')).forEach((f) => {
-    if (/^ext\/trace\/scenarios\//.test(f.path)) { scenes += 1; return; }
-    const label = pathLabel(f.path);
-    if (seen.has(label)) return;
-    seen.add(label);
-    out.push({ key: f.path, label, del: f.change === 'delete' });
-  });
-  if (scenes) out.push({ key: 'scenes', label: `场景 ×${scenes}`, del: false });
-  if (out.length <= max) return out;
-  return [...out.slice(0, max - 1), { key: 'more', label: `另 ${out.length - max + 1} 个`, del: false, more: true }];
+// 回退确认框的说明（develop 原文）：按业务文件计数，项目设置与运行状态不随回退
+export function revertConfirmText(changes) {
+  const n = (key) => (changes?.[key] || []).length;
+  return `将新增 ${n('added')}、修改 ${n('modified')}、删除 ${n('deleted')} 个业务文件；项目设置和运行状态不会回退。`;
 }
 
-// 「将恢复 6 个文件，删除 2 个之后才有的文件」
-export function revertCountText(files) {
-  const del = (files || []).filter((f) => f.change === 'delete').length;
-  const res = (files || []).length - del;
-  if (!res && !del) return '文件内容和当前一致';
-  return [res ? `将恢复 ${res} 个文件` : '', del ? `删除 ${del} 个之后才有的文件` : ''].filter(Boolean).join('，');
+// 预览说不能回退时的提示：各原因用「；」连起来
+export function revertBlockedText(preview) {
+  const reasons = Array.isArray(preview?.blockers) ? preview.blockers.map((b) => b?.message).filter(Boolean) : [];
+  return reasons.join('；') || '当前项目暂不能回退';
 }
 
-// 有未确认的助手修改、助手正在跑、自主构建中：都不能回退（V-06 返回 423 / 409），弹窗里先说明
-export function revertBlock(lock) {
-  const st = lock?.state;
-  if (st === 'pending_confirm') return { text: '助手的修改还没确认', action: 'confirm' };
-  if (st === 'assistant_running') return { text: '助手正在修改', action: 'chat' };
-  if (st === 'autobuild_slice') return { text: '自主构建正在运行', action: 'run' };
-  return null;
-}
-
-// V-05 blockers / V-06 错误的一条 → 弹窗里的说明与去处（action：confirm、chat、run、studio，没有去处时为 null）
-export function blockerView(b) {
-  const code = b?.code;
-  if (code === 'write_scope_locked') return revertBlock(b.details || { state: 'pending_confirm' }) || { text: b.message, action: null };
-  if (code === 'session_busy') return { text: '助手还有没跑完的消息', action: 'chat' };
-  if (code === 'autobuild_running') return { text: '自主构建正在运行', action: 'run' };
-  if (code === 'studio_draft_pending') return { text: 'Studio 里有没保存的草稿', action: 'studio', entry: b.details?.entry_id || null };
-  if (code === 'workspace_dirty') return { text: '项目里有没保存成版本的修改', action: null };
-  if (code === 'unsaved_editor') return { text: '对比里的修改还没保存', action: null };
-  return null;
-}
-
-// 回退失败的提示（按契约错误码）
-export function revertErrorText(e, fallback) {
-  if (e?.code === 'nothing_to_revert') return '当前内容和这个版本一致，不用回退。';
-  if (e?.code === 'head_moved') return '有了新版本，已重新计算，请再确认一次';
-  return blockerView(e)?.text || fallback;
-}
-
-// ---------- 历史分页（V-01 按游标往下读） ----------
-export const EMPTY_HISTORY = { items: [], next: null, releaseError: '' };
-
-// 把一页接到已读的列表后面（首页传 EMPTY_HISTORY）；读页之间有了新版本时同一版本不重复列，
-// 发布记录读不到的原因保留第一次的
-export function appendPage(prev, page) {
-  const seen = new Set(prev.items.map((v) => v.commit));
-  return {
-    items: [...prev.items, ...(page?.items || []).filter((v) => !seen.has(v.commit))],
-    next: page?.next_cursor || null,
-    releaseError: prev.releaseError || page?.release_error || '',
-  };
-}
-
-// ---------- 标记 ----------
-export function tagLabelError(label) {
-  const t = (label || '').trim();
-  if (!t) return '写一个标记名称';
-  if (t.length > 120) return '标记名称不能超过 120 个字';
-  return '';
-}
-
-// 版本右侧 ⋯ 的菜单
+// 版本右侧 ⋯ 的菜单（标记、回退在行内按钮上）
 export function versionMenu(v) {
   return [
     { key: 'files', label: '查看此版本的文件', icon: 'eye' },
     { key: 'compare', label: '与当前对比', icon: 'split', disabled: !!v.current, title: v.current ? '已是当前版本' : undefined },
-    { key: 'tag', label: '标记版本…', icon: 'tag' },
-    '-',
-    { key: 'revert', label: '回退到此版本…', icon: 'undo', disabled: !!v.current, title: v.current ? '已是当前版本' : undefined },
   ];
 }
 

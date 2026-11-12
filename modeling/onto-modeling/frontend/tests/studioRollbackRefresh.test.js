@@ -24,13 +24,22 @@ test('对比编辑器把没保存的内容登记给回退保护，离开页面�
   assert.match(page, /const dirty = !!diff && text !== diff\.right/);
   assert.match(page, /setWorkspaceDirty\('diff-editor', dirty\)/);
   assert.match(page, /setWorkspaceDirty\('diff-editor', false\)/);
-  const dialogs = read('pages/versions/dialogs.jsx');
-  assert.match(dialogs, /hasWorkspaceDirty\(\) && blockerView\(\{ code: 'unsaved_editor' \}\)/);
-  assert.match(dialogs, /disabled=\{busy \|\| !preview \|\| !!shownBlock\}/);
+  assert.match(page, /if \(hasWorkspaceDirty\(\)\) \{\n\s+toast\('当前页面有未保存修改，请先保存或放弃后再回退'/);
 });
 
-test('回退带上预览时的主线版本，预览之后有了新版本就重新预览', () => {
-  const dialogs = read('pages/versions/dialogs.jsx');
-  assert.match(dialogs, /api\.revertVersion\(pid, version\.commit, preview\.expected_head\)/);
-  assert.match(dialogs, /if \(e\.code === 'head_moved'\) setRound\(\(n\) => n \+ 1\)/);
+test('回退带上预览时的主线版本，成功后提示并报出没清理掉的派生状态（develop 同）', () => {
+  const page = read('pages/versions/VersionsPage.jsx');
+  assert.match(page, /api\.revertVersion\(pid, version\.commit, preview\.expected_head\)/);
+  assert.match(page, /toast\('已回退并生成新版本'/);
+  assert.match(page, /if \(result\.warning\) toast\(result\.warning/);
+});
+
+test('流程图、drawio 与 Studio 条目编辑器有没保存的内容时登记回退保护（develop 同）', () => {
+  const drawio = read('components/DrawioView.jsx');
+  assert.match(drawio, /setWorkspaceDirty\('drawio-editor', saveState === 'dirty' \|\| saveState === 'saving' \|\| saveState === 'error'\)/);
+  const flowchart = readFileSync(new URL('../../assets/packs/diagram/ui/flowchart/FlowchartDialog.jsx', import.meta.url), 'utf8');
+  assert.match(flowchart, /setWorkspaceDirty\('flowchart-editor', session\.dirty \|\| session\.saveStatus === 'saving'\)/);
+  assert.match(flowchart, /setWorkspaceDirty\('flowchart-editor', false\)/);
+  const editor = read('pages/studio/EntryEditor.jsx');
+  assert.match(editor, /setWorkspaceDirty\('studio-editor', hasDraft \|\| dirty\.current/);
 });

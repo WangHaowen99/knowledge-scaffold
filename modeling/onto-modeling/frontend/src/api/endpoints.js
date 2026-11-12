@@ -124,6 +124,8 @@ export function createApi(client) {
     revertVersion: (id, commit, expectedHead) => client.post(`${P(id)}/versions/revert`, { commit, ...(expectedHead ? { expected_head: expectedHead } : {}) }), // V-06
     tagVersion: (id, commit, label) => client.post(`${P(id)}/versions/tags`, { commit, label }), // V-07
     deleteVersionTag: (id, name) => client.del(`${P(id)}/versions/tags/${enc(name)}`), // V-08
+    history: (id, { limit = 50, cursor = '' } = {}) => client.get(`${P(id)}/history`, { query: { limit, cursor } }), // V-09
+    hubReleaseDownloadPath: (id, releaseId) => `${P(id)}/hub/releases/${enc(releaseId)}/download`, // HB-06（services.download 用）
 
     // 3.10 变更集
     changesets: (id, query) => client.get(`${P(id)}/changesets`, { query }), // CS-01
