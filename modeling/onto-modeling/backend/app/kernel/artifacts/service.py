@@ -151,8 +151,9 @@ def _latest_commits(root: Path, pathspec: str, limit: int) -> dict[str, dict]:
     fmt = ("%x1e%H%x1f%s%x1f%an%x1f%(trailers:key=Onto-Source,valueonly,separator=%x2c)"
            "%x1f%(trailers:key=Onto-Author,valueonly,separator=%x2c)%x1d")
     try:
-        out = subprocess.run(["git", "log", f"-n{limit}", f"--format={fmt}", "--name-only", "--", pathspec],
-                             cwd=root, capture_output=True, text=True, timeout=30).stdout
+        out = subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
+            ["git", "log", f"-n{limit}", f"--format={fmt}", "--name-only", "--", pathspec],
+            cwd=root, capture_output=True, text=True, timeout=30).stdout
     except (OSError, subprocess.TimeoutExpired):
         return {}
     latest: dict[str, dict] = {}
@@ -343,7 +344,7 @@ def history(manager, project_id: str, art_type: str, key: str, *, cursor: str = 
     root = manager.project_root(project_id)
     atype = _require_type(manager, root, art_type)
     row = _find(manager, root, atype, key)
-    out = subprocess.run(
+    out = subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
         ["git", "log", "-n200", "--format=%x1e%H%x1f%ct%x1f%s%x1f%b", "--", row["rel"]],
         cwd=root, capture_output=True, text=True, timeout=30,
     ).stdout
@@ -782,8 +783,9 @@ def summary(manager, project_id: str, art_type: str, *, group_by: str = "", tren
     by = [{"value": value, "label": labels.get(value, value or "未填"), "count": counts[value]} for value in ordered]
     points = _trend(atype, root) if trend else None
     delta = None
-    if points and len(points) >= 2 and points[-1]["value_pct"] is not None and points[-2]["value_pct"] is not None:
-        delta = round(points[-1]["value_pct"] - points[-2]["value_pct"], 1)
+    last_two = [point["value_pct"] for point in (points or [])[-2:]]
+    if len(last_two) == 2 and None not in last_two:
+        delta = round(last_two[1] - last_two[0], 1)
     return {"total": len(rows), "by": by, "stale": sum(1 for row in rows if row.get("stale")),
             "trend": points, "delta_vs_previous_pct": delta}
 
@@ -802,8 +804,9 @@ def _trend(atype: ArtifactType, root: Path) -> list[dict]:
     if not positive:
         return []
     paths = [atype.glob_root() or "."] + ([atype.index] if atype.index else [])
-    log = subprocess.run(["git", "log", "--first-parent", f"-n{TREND_POINTS}", "--format=%H", "--", *paths],
-                         cwd=root, capture_output=True, text=True, timeout=30).stdout.split()
+    log = subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
+        ["git", "log", "--first-parent", f"-n{TREND_POINTS}", "--format=%H", "--", *paths],
+        cwd=root, capture_output=True, text=True, timeout=30).stdout.split()
     numbers = mainline.first_parent_numbers(root)
     points = []
     for commit in reversed(log):
@@ -818,8 +821,9 @@ def _trend(atype: ArtifactType, root: Path) -> list[dict]:
 
 
 def _rows_at(atype: ArtifactType, root: Path, commit: str) -> list[dict]:
-    listing = subprocess.run(["git", "ls-tree", "-r", "--name-only", commit, "--", atype.glob_root() or "."],
-                             cwd=root, capture_output=True, text=True, timeout=30).stdout.splitlines()
+    listing = subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
+        ["git", "ls-tree", "-r", "--name-only", commit, "--", atype.glob_root() or "."],
+        cwd=root, capture_output=True, text=True, timeout=30).stdout.splitlines()
     wanted = [rel for rel in listing if atype.key_from_path(rel) is not None and Path(rel).name not in ("index.md", "INDEX.md")]
     if atype.index:
         wanted.append(atype.index)
@@ -856,7 +860,8 @@ def _cat_files(root: Path, commit: str, rels: list[str]) -> dict[str, bytes]:
         return {}
     request = "".join(f"{commit}:{rel}\n" for rel in rels).encode("utf-8")
     try:
-        proc = subprocess.run(["git", "cat-file", "--batch"], cwd=root, input=request, capture_output=True, timeout=60)
+        proc = subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
+            ["git", "cat-file", "--batch"], cwd=root, input=request, capture_output=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         return {}
     out: dict[str, bytes] = {}

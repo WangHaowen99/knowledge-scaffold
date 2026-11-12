@@ -51,7 +51,7 @@ def _toolkit():
 def _run_helper(root: Path, *args: str) -> None:
     from ..services.script_env import minimal_env
 
-    result = subprocess.run(
+    result = subprocess.run(  # NOSONAR(S4721) 跑核对过的工具箱脚本，参数列表不经 shell，最小环境变量
         ["python3", str(_helper(root)), *args], cwd=root, capture_output=True, text=True, timeout=30, env=minimal_env(),
     )
     if result.returncode != 0:
@@ -138,7 +138,7 @@ def _entries(root: Path) -> list[dict]:
                 continue
             try:
                 found.append(_entry(path, legacy))
-            except (OSError, ValueError, UnicodeDecodeError):
+            except (OSError, ValueError):  # ValueError 含 UnicodeDecodeError
                 continue
     return found
 
@@ -186,12 +186,13 @@ def list_knowledge(project_id: str, request: Request, layer: str = "all", type: 
     project, industry, _, packs = _layers(root)
     entries = [_public(entry) for entry in project] + [_public(entry) for entry in industry]
     needle = q.strip().lower()
-    items = [
-        entry for entry in entries
-        if layer in ("all", entry["layer"])
-        and (not type or entry["type"] in type.split(","))
-        and (not needle or needle in entry["title"].lower())
-    ]
+
+    def matches(entry: dict) -> bool:
+        if layer not in ("all", entry["layer"]) or (type and entry["type"] not in type.split(",")):
+            return False
+        return not needle or needle in entry["title"].lower()
+
+    items = [entry for entry in entries if matches(entry)]
     page = deps.page(items, cursor, limit, {"layer": layer, "type": type, "q": needle})
     return {
         "items": page["items"],

@@ -277,7 +277,8 @@ def prepare_filesystem() -> dict:
     for directory in read_only:
         share_read_only(directory)
     for child in data.iterdir():
-        if child in shared or child in read_only or child == secrets_root or child.is_symlink():
+        kept_apart = child in shared or child in read_only or child == secrets_root
+        if kept_apart or child.is_symlink():
             continue
         if first:
             for root, dirs, files in os.walk(child):

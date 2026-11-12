@@ -57,9 +57,10 @@ def _subject(request: Request) -> tuple[str, str] | None:
     claims = deps.user(request)
     header = request.headers.get("authorization", "")
     token = header[7:].strip() if header.lower().startswith("bearer ") else ""
-    if not auth.ENABLED or not claims or not claims.get("sub") or not token:
+    subject = claims.get("sub") if claims else None
+    if not auth.ENABLED or not subject or not token:
         return None
-    return token, json.dumps([claims.get("iss", auth.ISSUER), claims["sub"]], ensure_ascii=False)
+    return token, json.dumps([claims.get("iss", auth.ISSUER), subject], ensure_ascii=False)
 
 
 def _evolution(root) -> bool:

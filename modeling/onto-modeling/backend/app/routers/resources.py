@@ -148,13 +148,19 @@ async def upload_resource(project_id: str, request: Request):
     })
 
 
+def _material_path(path: str) -> bool:
+    """资料区里的资料：不是用途说明、不在系统证据目录、也不是资料的文本版。"""
+    if not path.startswith("resource/") or path == RESOURCE_DIRECTIVES or path.startswith("resource/systems/"):
+        return False
+    return not is_resource_text(path)
+
+
 @router.patch("/purpose")
 async def set_purpose(project_id: str, request: Request):
     root = deps.require_writable(project_id, request)
     body = await deps.json_body(request)
     path = str(body.get("path") or "")
-    if not path.startswith("resource/") or path == RESOURCE_DIRECTIVES or path.startswith("resource/systems/") \
-            or is_resource_text(path):
+    if not _material_path(path):
         raise ApiError("path_forbidden", "只能为资料区的资料设置用途", 403, {"path": path})
     if not (root / path).is_file():
         raise ApiError("file_not_found", "文件不存在", 404, {"path": path})
@@ -201,8 +207,7 @@ def schema_preview(project_id: str, request: Request, path: str = "", force: boo
 def delete_resource(project_id: str, request: Request, path: str = ""):
     """删除保存为新版本，可从版本历史恢复。"""
     root = deps.require_writable(project_id, request)
-    if path == RESOURCE_DIRECTIVES or path.startswith("resource/systems/") or not path.startswith("resource/") \
-            or is_resource_text(path):
+    if not _material_path(path):
         raise ApiError("path_forbidden", "只能删除资料区的资料", 403, {"path": path})
     # 引用它的出处删除后变成「来源无法核验」：删之前数一遍
     broken = material_refs.counts(root, [path]).get(path, 0) if material_text.is_material(path) else 0

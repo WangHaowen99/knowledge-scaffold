@@ -28,24 +28,22 @@ AUTH_EXEMPT_PREFIXES = (
 )
 # 允许用 ?token= 携带令牌的接口（契约 1.3：SSE 与文件下载），其余接口的 ?token= 一律忽略
 _P = r"/api/v1/projects/[^/]+"
-QUERY_TOKEN_PATHS = tuple(
-    re.compile(pattern)
-    for pattern in (
-        rf"^{_P}/conversations/[^/]+/events$",
-        rf"^{_P}/events$",
-        r"^/api/v1/me/events$",
-        r"^/api/v1/me/pack-uploads/[^/]+/report$",
-        r"^/api/v1/packs/dev-skills/[^/]+$",
-        r"^/api/v1/ops/logs/stream$",
-        rf"^{_P}/files/raw$",
-        rf"^{_P}/transfer-package$",
-        rf"^{_P}/releases/[^/]+/download$",
-        rf"^{_P}/versions/[^/]+/files$",
-        r"^/api/v1/admin/packs/uploads/[^/]+/report$",
-        r"^/api/v1/ops/diagnostics/[^/]+/download$",
-        r"^/api/v1/ops/audit/export$",
-    )
+_QUERY_TOKEN_PATTERNS = (
+    rf"^{_P}/conversations/[^/]+/events$",
+    rf"^{_P}/events$",
+    r"^/api/v1/me/events$",
+    r"^/api/v1/me/pack-uploads/[^/]+/report$",
+    r"^/api/v1/packs/dev-skills/[^/]+$",
+    r"^/api/v1/ops/logs/stream$",
+    rf"^{_P}/files/raw$",
+    rf"^{_P}/transfer-package$",
+    rf"^{_P}/releases/[^/]+/download$",
+    rf"^{_P}/versions/[^/]+/files$",
+    r"^/api/v1/admin/packs/uploads/[^/]+/report$",
+    r"^/api/v1/ops/diagnostics/[^/]+/download$",
+    r"^/api/v1/ops/audit/export$",
 )
+QUERY_TOKEN_PATHS = tuple(re.compile(pattern) for pattern in _QUERY_TOKEN_PATTERNS)
 WRITE_METHODS = ("POST", "PUT", "DELETE", "PATCH")
 
 
@@ -92,7 +90,7 @@ def _routers():
     )
     from ..routers import package_compare
 
-    return (
+    return [
         auth_routes.router,
         me.router,
         metamodel.router,
@@ -139,7 +137,7 @@ def _routers():
         ops_control.router,
         health.router,
         package_compare.router,
-    )
+    ]
 
 
 def _query_token_allowed(path: str) -> bool:
@@ -157,12 +155,8 @@ async def auth_middleware(request: Request, call_next):
 
     path = request.url.path
     token = bearer(request)
-    if (
-        not auth.ENABLED
-        or not path.startswith("/api")
-        or path.startswith(AUTH_EXEMPT_PREFIXES)
-        or contracts.skips_login(request.method, path, token)
-    ):
+    login_free = path.startswith(AUTH_EXEMPT_PREFIXES) or contracts.skips_login(request.method, path, token)
+    if not auth.ENABLED or not path.startswith("/api") or login_free:
         return await call_next(request)
     if service_tokens.looks_like_service_token(token):
         # 服务令牌只能调三份契约接口（契约 1.2 第 6 条）

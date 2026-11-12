@@ -548,7 +548,7 @@ def round_card(manager, project_id: str, record: dict, card_id: str) -> dict:
         "eyebrow": "这一轮改了什么",
         "title": f"改了 {total} 处",
         "subtitle": "" if record.get("change_list_id") else record.get("purpose") or "",
-        "status": {"key": keys[card_state], "label": labels[card_state]},
+        "status": {"key": keys.get(card_state, "pending"), "label": labels.get(card_state, "未生效")},
         "plugin": None,
         "open": None,
         "changeset_id": record["id"],
@@ -1176,7 +1176,8 @@ def startup_repair(manager) -> dict | None:
                 conflicts.append(root.name)
         except Exception:  # noqa: BLE001 - 单个项目核对不了不挡启动
             _log.warning("项目 %s 的变更集核对失败", root.name, exc_info=True)
-    if (reconciled or settled or conflicts) and report is None:
+    found_any = bool(reconciled or settled or conflicts)
+    if found_any and report is None:
         parts = [f"补记了 {len(reconciled)} 个已合入的变更集" if reconciled else "",
                  f"合入了 {len(settled)} 个项目遗留的修改" if settled else "",
                  f"{len(conflicts)} 个项目遗留的修改有冲突，已放进待处理" if conflicts else ""]
@@ -1291,8 +1292,9 @@ def scope_lock(manager, project_id: str) -> dict:
         for node_id in node_ids:
             slice_ids.setdefault(node_id, set()).add(slice_id)
     current_slice = exec_record.get("slice") if isinstance(exec_record.get("slice"), dict) else None
-    if running and node.get("id") and current_slice and current_slice.get("id"):
-        slice_ids.setdefault(node["id"], set()).add(current_slice["id"])
+    running_slice = (current_slice or {}).get("id")
+    if running and node.get("id") and running_slice:
+        slice_ids.setdefault(node["id"], set()).add(running_slice)
     whole, slice_paths, slice_entries, doc = _slice_scope(manager, project_id, root, node_ids, slice_ids)
     entries = list((record or {}).get("entries") or [])
     artifacts = list((record or {}).get("artifacts") or [])
@@ -1302,7 +1304,8 @@ def scope_lock(manager, project_id: str) -> dict:
                    ref.get("id", (ref.get("type"), ref.get("key"))) for existing in bucket):
             bucket.append(ref)
     paths = node_patterns(root, whole) + slice_paths + [_escape(rel) for rel in (record or {}).get("paths") or []]
-    if not entries and not artifacts and not paths and not running:
+    nothing_recorded = not entries and not artifacts and not paths
+    if nothing_recorded and not running:
         return empty_scope()
     if current_slice is None and doc is not None and (record or {}).get("slice_id"):
         found = next((item for item in doc.get("slices") or [] if item.get("id") == record["slice_id"]), None)
@@ -1318,8 +1321,7 @@ def scope_lock(manager, project_id: str) -> dict:
         reason = ("这一轮和你的修改有冲突，在待处理里选好保留哪边后才能编辑"
                   if (record or {}).get("state") == "conflict" else "这一轮的修改正在保存")
         lock_state = "pending_confirm"
-    if record is not None and record.get("source") == "autobuild" and record.get("state") in ("open", "pending_confirm") \
-            and _run_active(project_id, record.get("run_id")):
+    if _autobuild_unmerged(record) and _run_active(project_id, record.get("run_id")):
         # 自主构建的一段（契约 2.4、EP-03）：锁到这一段自动合入为止
         lock_state = "autobuild_slice"
         name = (current_slice or {}).get("name") or (node.get("title") if running else "") or ""
@@ -1338,6 +1340,11 @@ def scope_lock(manager, project_id: str) -> dict:
         "reason_text": reason,
         "since": _iso(since) if since else None,
     }
+
+
+def _autobuild_unmerged(record: dict | None) -> bool:
+    """自主构建的一段，还没合入（开着或等确认）。"""
+    return record is not None and record.get("source") == "autobuild" and record.get("state") in ("open", "pending_confirm")
 
 
 def _run_active(project_id: str, run_id: str | None) -> bool:
