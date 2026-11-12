@@ -216,7 +216,8 @@ def anchor_index(lines: list[str]) -> tuple[dict[int, str], dict[str, list[str]]
     start = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].strip() == ANCHORS_HEAD), None)
     if start is None:
         return {}, {}, 0
-    offset = 2 if lines and lines[0].startswith(TEXT_HEADER_PREFIX) else 0
+    # 内核写文件头 + 空行，正文从第三行起；文件头后面没有空行的也认
+    offset = (2 if len(lines) > 1 and not lines[1].strip() else 1) if lines and lines[0].startswith(TEXT_HEADER_PREFIX) else 0
     found, merges = {}, {}
     for raw in lines[start + 1:]:
         line = raw.strip()

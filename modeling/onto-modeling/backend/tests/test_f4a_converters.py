@@ -212,3 +212,28 @@ def test_xlsx_anchor_index_keeps_excel_row_numbers_and_merges():
     from app.evidence.convert import md_tables
 
     assert md_tables(result.markdown)["规则 表"][0] == ["编号", "说明", "上限"]
+
+
+def test_xlsx_cols_counts_widest_row_beyond_row_limit():
+    """cols 是整张表有值的最右一列：转换行数到上限后照样往下扫（P5a 的 Sheet 范围预检按它报「表格比表头宽」）。"""
+    from app.evidence.convert import parse_anchor_index
+
+    rows = [["编号", "说明"], *[[n, "x"] for n in range(30)], [99, "y", None, "第四列"]]
+    data = samples.xlsx({"客户 表": rows, "空": []})
+    result = XLSX.convert(data, "台账.xlsx", ConvertLimits(max_rows=5))
+    index = parse_anchor_index(result.markdown)
+    assert index["cols"] == {"客户 表": 4, "空": 0}
+    assert "第四列" not in result.markdown.split("<!-- onto:anchors")[0]   # 那一行没转，最右一列照样算到
+
+
+def test_anchor_index_reads_text_versions_with_or_without_blank_line_after_header():
+    """内核写文件头 + 空行；测试辅助 text_versions.py 写的文件头后面没有空行，两种都按正文第一行对上。"""
+    from app.evidence.convert import anchor_index, header, parse_anchor_index
+
+    body = "第一段\n\n第三行"
+    index = anchor_index([(1, "p:1"), (3, "p:2")])
+    head = header("a.docx", "0" * 16, "convert-docx@1")
+    for text in (f"{head}\n\n{body}\n{index}\n", f"{head}\n{body}\n{index}\n"):
+        lines = text.splitlines()
+        found = parse_anchor_index(text)["lines"]
+        assert {lines[n - 1]: anchor for n, anchor in found.items()} == {"第一段": "p:1", "第三行": "p:2"}

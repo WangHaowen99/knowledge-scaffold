@@ -5,7 +5,8 @@ max_rows 行、max_sheet_cells 格（宽表少转几行），全文到 max_outpu
 最坏输出不超过 max_output_chars 个字符：只有表头本身就超过它（几千个工作表、上万列）时才截掉尾部。
 公式取缓存的计算结果，不自己算。打开前先查 zip 成员数和解压后的大小（挡 zip 炸弹）。跑在连接器网关的子进程里，用 openpyxl（MIT）。
 文末带原件锚点（ADR-0093）：每个工作表记 `sheet:<工作表名>`，每个表格行记它在 Excel 里的行号 `row:<n>`（表格从 A 列起，
-第 n 列就是第 n 个列字母），合并区记 `merge <工作表名> A1:C1 …`，助手和主服务据此写出、找回 `sheet:表!B3`。
+第 n 列就是第 n 个列字母），合并区记 `merge <工作表名> A1:C1 …`，助手和主服务据此写出、找回 `sheet:表!B3`；
+`cols <工作表名> <n>` 是整张表有值的最右一列（扫全部行）。
 """
 
 from __future__ import annotations
@@ -42,12 +43,13 @@ def _width(values: list[str]) -> int:
     return max((i for i, v in enumerate(values) if v.strip()), default=-1) + 1
 
 
-def _rows(sheet, limits: ConvertLimits) -> tuple[list[list[str]], list[int], int]:
-    """工作表 → (表头加前面的数据行, 各行在 Excel 里的行号, 非空行总数)。表头整行留下；连表头到 max_rows 行或
-    max_sheet_cells 格为止（按每行实际的列数算，渲染时再按补齐后的列数收一次）。从 A1 读起，行号、列序和 Excel 一致。"""
+def _rows(sheet, limits: ConvertLimits) -> tuple[list[list[str]], list[int], int, int]:
+    """工作表 → (表头加前面的数据行, 各行在 Excel 里的行号, 非空行总数, 整张表有值的最右一列)。表头整行留下；
+    连表头到 max_rows 行或 max_sheet_cells 格为止（按每行实际的列数算，渲染时再按补齐后的列数收一次）；
+    最右一列照样扫完全部行。从 A1 读起，行号、列序和 Excel 一致。"""
     rows: list[list[str]] = []
     numbers: list[int] = []
-    total = cells = 0
+    total = cells = widest = 0
     full = False
     for number, raw in enumerate(sheet.iter_rows(min_row=1, min_col=1, values_only=True), 1):
         values = [_value(cell) for cell in raw]
@@ -55,6 +57,7 @@ def _rows(sheet, limits: ConvertLimits) -> tuple[list[list[str]], list[int], int
         if not width:
             continue
         total += 1
+        widest = max(widest, width)
         if not full and rows and (len(rows) >= limits.max_rows or cells + width > limits.max_sheet_cells):
             full = True
         if not full:
@@ -63,7 +66,7 @@ def _rows(sheet, limits: ConvertLimits) -> tuple[list[list[str]], list[int], int
             cells += width
         elif total >= COUNT_CAP:
             break
-    return rows, numbers, total
+    return rows, numbers, total, widest
 
 
 _NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
@@ -116,10 +119,11 @@ def convert(data: bytes, filename: str, limits: ConvertLimits) -> Conversion:
         workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     except Exception as exc:  # noqa: BLE001 - 坏文件抛 KeyError、InvalidFileException、zip 错误等
         raise ConvertError("corrupt") from exc
-    tables = []
+    tables, cols = [], {}
     try:
         for sheet in workbook.worksheets:
-            rows, numbers, total = _rows(sheet, limits)
+            rows, numbers, total, widest = _rows(sheet, limits)
+            cols[sheet.title] = widest
             # 每表读完就拼成文本行，不同时攒着全部工作表的单元格
             tables.append((sheet.title, *(_table(rows) if rows else ("", [], 0)), total, numbers))
     finally:
@@ -151,6 +155,6 @@ def convert(data: bytes, filename: str, limits: ConvertLimits) -> Conversion:
     if cut:
         notes.append("内容太长，只转了前一部分")
     kept_lines = markdown.count("\n") + (0 if markdown.endswith("\n") else 1)
-    index = anchor_index([(n, anchor) for n, anchor in anchors if n <= kept_lines], _merges(data))
+    index = anchor_index([(n, anchor) for n, anchor in anchors if n <= kept_lines], _merges(data), cols)
     return Conversion(state="converted", markdown=markdown + ("\n" + index + "\n" if index else ""),
                       locations=parse_locations(markdown), note="；".join(notes) or None, stats={"sheets": len(tables)})
