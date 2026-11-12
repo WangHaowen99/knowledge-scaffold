@@ -313,8 +313,9 @@ def test_export_rewrites_standard_relation_table_once_without_losing_metadata(tm
             "relation": "references", "target": "object_b", "note": "synthetic note",
             "evidence": "synthetic evidence", "sourceJoinProperty": "fk", "targetJoinProperty": "id",
         }]),
-        "object_b": "# 对象描述\n合成对象 B\n",
+        "object_b": "# 字段\n| 字段 key | 类型 |\n| --- | --- |\n| id | string |\n",
     }
+    snapshot["object_a"] = "# 字段\n| 字段 key | 类型 |\n| --- | --- |\n| fk | string |\n" + snapshot["object_a"]
     destination = io.BytesIO()
 
     manager.export_package_zip(
@@ -661,26 +662,20 @@ def test_graph_relation_mapping_uses_explicit_different_join_fields():
     assert mapped == [] and "只声明了一个关联字段" in skipped[0]
 
 
-def test_invalid_relation_is_skipped_with_full_diagnostics(tmp_path, monkeypatch):
-    """写错的关系只跳过那一条：评测与导包照常进行，诊断留在提示和 relation_report 里。"""
+def test_legacy_relation_name_is_exported_without_rewriting(tmp_path, monkeypatch):
+    """Quoted graph relationship types keep punctuation instead of silently dropping an edge."""
     manager, pid, root = _export(tmp_path, monkeypatch, {}, True)
     _objects(root)
     path = root / "ontology" / "object" / "订单.md"
     path.write_text(ORDER_DOC + "- 当前对象 → 关联/包含 → [[客户]]\n", encoding="utf-8")
-    file_id = _business_data(root)
-    plan = eval_import.prepare(root, {"files": [file_id]}, graph=True)
-    assert any("关联/包含" in w for w in plan["warnings"])
+    plan = eval_import.prepare(root, {"files": [_business_data(root)]}, graph=True)
     report = {}
-    dest = tmp_path / "skipped.zip"
+    dest = io.BytesIO()
     manager.export_package_zip(pid, dest, plan["binding"], graph=True, relation_report=report)
-    assert dest.exists()
     with zipfile.ZipFile(dest) as archive:
         doc = archive.read(f"{pid}/objects/订单.md").decode("utf-8")
-    assert "关联/包含" not in doc.split("# 关系", 1)[-1]
-    notes = report.get("notes") or []
-    assert report.get("relations_declared") == 2
-    assert report.get("relations_exported") == report.get("relations_skipped") == 1
-    assert notes and "第 " in notes[0] and "关联/包含" in notes[0]
+    assert "| 关联/包含 | 客户 |" in doc
+    assert report['relations_exported'] == 2 and report['relations_skipped'] == 0
 
 
 def test_relations_to_concept_objects_do_not_block_graph_import(tmp_path, monkeypatch):
@@ -696,6 +691,9 @@ def test_relations_to_concept_objects_do_not_block_graph_import(tmp_path, monkey
     manager.export_package_zip(pid, tmp_path / "concept.zip", plan["binding"], graph=True,
                                relation_report=report)
     assert report.get("relations_exported") == 1 and report.get("relations_unbound") == 1
+    with zipfile.ZipFile(tmp_path / "concept.zip") as archive:
+        concept = archive.read(f"{pid}/objects/合成概念.md").decode("utf-8")
+    assert "| 涉及 | 客户 |" in concept  # Semantic edge survives even without physical graph nodes.
     notes = report.get("notes") or []
     assert notes and "概念对象" in notes[0]
 
@@ -941,3 +939,54 @@ def test_neo4j_one_click_import_orchestration(tmp_path, monkeypatch):
         assert mapping["objects"]["订单"]["resource"] == "订单"
     finally:
         server.shutdown()
+
+
+@pytest.mark.parametrize('graph', [False, True])
+@pytest.mark.parametrize('name', ['属于object_b', '1:N'])
+def test_relation_names_survive_export_and_independent_evaluation(tmp_path, monkeypatch, graph, name):
+    """Synthetic end-to-end package bytes: exporter -> independent evaluation -> graph plan."""
+    evaluation_root = Path(__file__).resolve().parents[4] / 'eval-service'
+    if not evaluation_root.exists():
+        pytest.skip('independent evaluation source is not installed')
+    monkeypatch.syspath_prepend(str(evaluation_root))
+    from evaluation.packages import validate_relations, generate_mapping, unpack
+    from evaluation.graph_import import GraphImports
+
+    manager, pid, root = _export(tmp_path, monkeypatch, {}, graph)
+    fields = '# 字段\n| 英文名称 | 类型 | 主键 |\n| --- | --- | --- |\n| id | string | 是 |\n| fk | string | 否 |\n'
+    texts = {'object_a': '# 数据来源\ntable_object_a\n' + fields + '# 关联对象\n' + f'- 当前对象 → {name}（fk → id） → [[object_b]]\n',
+             'object_b': '# 数据来源\ntable_object_b\n' + fields}
+    binding = {'objects': {}, 'problems': []}
+    for key in texts:
+        binding['objects'][key] = {'table': 'table_' + key, 'primary_key': ['id'], 'fields': [
+            {'key': field, 'column': field, 'type': 'string', 'primary': field == 'id'} for field in ('id', 'fk')]}
+    dest = io.BytesIO()
+    manager.export_package_zip(pid, dest, binding=binding, graph=graph, object_texts=texts)
+    raw = dest.getvalue()
+    validate_relations(raw)
+    files, _ = unpack(raw)
+    assert f'| {name} | object_b |' in files['objects/object_a.md'].decode()
+    schemas = {key: ['id', 'fk'] for key in ('table_object_a', 'table_object_b')}
+    mapping, preview = generate_mapping(raw, schemas, graph=True)
+    assert preview['skipped'] == []
+    data = {key: {'columns': cols, 'rows': [['synthetic_1', 'synthetic_1']]} for key, cols in schemas.items()}
+    _, edges = GraphImports.plan({'workspace_property': 'workspace_id', 'ontology_property': 'ontology_id'},
+                                 data, mapping, preview['relations'])
+    assert len(edges) == 1 and f'[:`{name}`]' in edges[0]
+
+
+@pytest.mark.parametrize('graph', [False, True])
+@pytest.mark.parametrize('relation', [
+    '- 当前对象 → references → [[absent]]\n',
+    '- 当前对象 → references → [[object_b]]\n- 当前对象 → references → [[object_b]]\n',
+])
+def test_export_blocks_structural_errors_before_relations_are_dropped(tmp_path, monkeypatch, graph, relation):
+    manager, pid, root = _export(tmp_path, monkeypatch, {}, graph)
+    texts = {'object_a': '# 关联对象\n' + relation, 'object_b': '# 数据来源\n无\n'}
+    dest = io.BytesIO()
+    with pytest.raises(WorkspaceError) as error:
+        manager.export_package_zip(pid, dest, binding={'objects': {}, 'problems': []}, graph=graph,
+                                   object_texts=texts, allow_unbound=True)
+    assert error.value.code == 'EVALUATION_PACKAGE_INVALID'
+    assert 'ontology/object/object_a.md' in str(error.value)
+    assert dest.getvalue() == b''

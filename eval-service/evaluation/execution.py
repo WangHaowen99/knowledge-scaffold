@@ -570,6 +570,8 @@ class Engine:
                 # A model gateway rejecting its API Key must not read as an expired user login.
                 if exc.code=='dependency_rejected': raise connection_test_failure(exc) from exc
                 raise
+        # Validate fetched package bytes before creating a workspace or importing data.
+        package = self.packages.fetch(run['package_ref'], token) if not run.get('installed') else None
         if not run.get('workspace'):
             scope=self.configured_workspace(run)
             if scope:
@@ -584,7 +586,7 @@ class Engine:
         run=self.update(owner,rid,model=profile)
         if not run.get('installed'):
             self.update(owner,rid,phase='package_fetch')
-            raw,receipt=self.packages.fetch(run['package_ref'],token)
+            raw,receipt=package
             imported=self.consumer.install(token,ws,raw,receipt)
             unusable=solver_validation.unavailable(imported) if solver else {}
             run=self.update(owner,rid,installed=True,package_ref=receipt,unavailable_operations=unusable)

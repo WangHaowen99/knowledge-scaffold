@@ -1403,7 +1403,7 @@ class WorkspaceManager:
 
         binding：评测导入时传入按本轮导入工作簿算出的绑定，mapping 与导入库同源；
         所有模式均将「关联对象」转为 `# 关系` 表，graph 模式额外补齐物理关联字段；
-        转不出来的关系只跳过那一条，原因记进 relation_report["notes"]，不阻断导出；
+        结构错误在导出前拒绝；未绑定物理表的合法关系保留，图导入提示记进 relation_report["notes"]；
         allow_unbound：降级发布——声明对不上的对象不阻断，来源Sheet 写 UNBOUND、不进 mapping。
 
         工作区有求解契约（ontology/solver/）时升级为 v0.2 operation-centric.v1：求解
@@ -1468,15 +1468,18 @@ class WorkspaceManager:
             )
         bound = binding["objects"]
         mappings = package_mapping.object_data_mappings(binding, graph=graph)
-        graph_edges: dict[str, list] = {}
+        # Keep semantic declarations even when their endpoints have no physical table.
+        # Reject structural errors before normalization could discard them.
+        graph_edges, relation_problems = package_mapping.package_relations(
+            object_texts, reject_duplicate_relations=True, strict_fields=True,
+        )
+        if relation_problems:
+            raise WorkspaceError('对象关系结构无效：' + '；'.join(relation_problems[:20]),
+                                 422, 'EVALUATION_PACKAGE_INVALID')
         if graph:
-            graph_edges, _ = package_mapping.graph_relations(
-                object_texts, set(mappings["objects"]), relation_report,
-            )
-        else:
-            graph_edges, relation_notes = package_mapping.package_relations(object_texts)
-            if relation_report is not None:
-                relation_report.update(notes=relation_notes)
+            package_mapping.graph_relations(object_texts, set(mappings["objects"]), relation_report)
+        elif relation_report is not None:
+            relation_report.update(notes=[])
         rules = entry_items("ontology/rule")
         metrics = entry_items("ontology/metric")
         scripts = entry_items("ontology/scripts", pattern="*.py")

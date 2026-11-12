@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from .core import Config, Failure, Identity, Transport, digest, trusted_origins
 from .store import Store
-from .packages import Packages, generate_mapping, MAPPING, unpack
+from .packages import Packages, generate_mapping, MAPPING, unpack, validate_relations, RELATION_RULE_VERSION
 from .data_sources import DataSources, read_tables
 from .execution import Consumer, Credential, Judge, Engine, report, DEFAULT_CONCURRENCY, MAX_CONCURRENCY
 from .judge_settings import JudgeSettings, connection_test_failure
@@ -587,7 +587,7 @@ def create_app(config=None,transport=None):
         intent=body.model_dump()
         # Idempotency is checked before resolving mutable definitions again.
         prep=store.create(owner,'preparations',dict(status='pending',intent=intent),body.request_id,identity=intent)
-        if prep['status']=='ready': return public(prep)
+        if prep['status']=='ready': return public(checked_preparation(owner,prep,token))
         if not prep.get('source'):
             source=store.get(owner,body.data_source_id,'data-sources') if body.data_source_id else {'mode':'none'}
             source,tables=sources.freeze(owner,source)
@@ -596,10 +596,23 @@ def create_app(config=None,transport=None):
             files,_=unpack(raw)
             changed=mapping is not None and (MAPPING not in files or json.loads(files[MAPPING])!=mapping)
             prep=store.save(owner,prep['id'],dict(status='pending',intent=intent,base=base,source=source,
-                mapping=mapping,preview=preview,changed=changed))
+                mapping=mapping,preview=preview,changed=changed,relation_validation=validate_relations(raw)))
+        base_validation={'rule_version':RELATION_RULE_VERSION,'package_digest':prep['base'].get('package_digest')}
+        if prep.get('relation_validation') != base_validation:
+            raw, _ = packages.fetch(prep['base'],token)
+            prep['relation_validation']=validate_relations(raw)
         ref=packages.snapshot(owner,prep,token) if prep['changed'] else prep['base']
-        prep.update(status='ready',package_ref=ref)
+        prep.update(status='ready',package_ref=ref,relation_validation={
+            'rule_version':RELATION_RULE_VERSION,'package_digest':ref['package_digest']})
         return public(store.save(owner,prep['id'],prep))
+
+    def checked_preparation(owner, prep, token):
+        expected = {'rule_version': RELATION_RULE_VERSION, 'package_digest': prep['package_ref'].get('package_digest')}
+        if prep.get('relation_validation') == expected:
+            return prep
+        raw, _ = packages.fetch(prep['package_ref'], token)
+        prep['relation_validation'] = validate_relations(raw)
+        return store.save(owner, prep['id'], prep, prep['revision'])
 
     @app.get(f'{prefix}/package-preparations/{{rid}}')
     def preparation(rid:str,request:Request):
@@ -643,6 +656,7 @@ def create_app(config=None,transport=None):
             return public(previous)
         prep=store.get(owner,body.preparation_id,'preparations')
         if prep['status']!='ready': raise Failure('not_ready','包准备尚未完成',409)
+        prep=checked_preparation(owner,prep,token)
         if solver:
             definition_set,cases=solver_cases(owner,body,prep,token)
         else:

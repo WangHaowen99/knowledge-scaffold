@@ -54,6 +54,30 @@ def unpack(raw):
         raise Failure('invalid_package', '知识包结构或压缩内容无效', 422) from exc
 
 
+RELATION_RULE_VERSION = 1
+
+
+def validate_relations(raw):
+    """Validate original object declarations before mapping can discard or merge them."""
+    files, _ = unpack(raw)
+    texts = {}
+    for name, data in files.items():
+        path = PurePosixPath(name)
+        is_object = len(path.parts) == 2 and path.parts[0] == 'objects'
+        if not is_object or path.suffix != '.md' or path.stem == 'index':
+            continue
+        try:
+            texts[path.stem] = data.decode('utf-8-sig')
+        except UnicodeError as exc:
+            raise Failure('EVALUATION_PACKAGE_INVALID', f'{name}：无法读取对象文档', 422, 'package_validation') from exc
+    _, problems = mapping_rules.package_relations(texts, reject_duplicate_relations=True, strict_fields=True)
+    if problems:
+        problems = [p.replace('ontology/object/', 'objects/') for p in problems]
+        raise Failure('EVALUATION_PACKAGE_INVALID', '对象关系未通过评测前校验：' + '；'.join(problems[:3]),
+                      422, 'package_validation', details={'problems': problems[:100], 'total': len(problems)})
+    return {'rule_version': RELATION_RULE_VERSION, 'package_digest': digest(raw)}
+
+
 def derive(raw, mapping, version):
     files, manifest = unpack(raw)
     manifest['version'] = version
@@ -108,6 +132,7 @@ def _declared_primary_keys(files):
 
 
 def generate_mapping(raw, tables, graph=False):
+    validate_relations(raw)
     files, _ = unpack(raw)
     with tempfile.TemporaryDirectory(prefix='eval-mapping-') as directory:
         root=Path(directory)
@@ -158,6 +183,7 @@ class Packages:
         same_release=receipt['ontology_id']==ref['ontology_id'] and receipt['release_id']==ref['release_id']
         if not same_release or manifest['id']!=receipt['ontology_id'] or manifest['version']!=receipt['version']:
             raise Failure('manifest_mismatch','包版本与回执不一致',409,'package_fetch')
+        validate_relations(raw)
         return raw, receipt
 
     def publish(self, owner, preparation, token, request_id, kind):

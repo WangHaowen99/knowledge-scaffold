@@ -7,12 +7,19 @@ import time
 
 from .core import Failure, canonical, digest
 from .data_sources import identifier
+from .mapping_rules import valid_relation_type
 
 MAX_NODES = 100000
 MAX_RELATIONSHIPS = 200000
 CHECK_SECONDS = 600
 RECEIPT_LABEL = '_EvaluationGraphImport'
 logger = logging.getLogger(__name__)
+
+
+def relation_type(value):
+    if not valid_relation_type(value):
+        raise Failure('invalid_relation_type', '图关系名称包含不安全字符或超过长度限制', 422, 'data_import')
+    return value.replace('`', '``')
 
 
 def graph_scope(connection):
@@ -327,5 +334,5 @@ class GraphImports:
                 right = identifier(edge.get('targetJoinProperty') or mapping['objects'][target]['primary_key'][0])
                 edges.append('MATCH (a:`' + identifier(source) + '`), (b:`' + target + '`) WHERE ' + predicate('a', scope) +
                              ' AND ' + predicate('b', scope) + ' AND a.`' + left + '`=b.`' + right +
-                             '` MERGE (a)-[:`' + identifier(edge['relation']) + '`]->(b)')
+                             '` MERGE (a)-[:`' + relation_type(edge['relation']) + '`]->(b)')
         return objects, edges
