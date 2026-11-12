@@ -47,7 +47,7 @@ def project(tmp_path, monkeypatch):
 def _script(root: Path, name: str):
     """从项目的装配目录加载脚本（新命名空间，不污染 sys.modules 里的同名模块）。"""
     scripts = root / ".claude" / "scripts"
-    sys.path.insert(0, str(scripts))
+    sys.path.append(str(scripts))  # 脚本只用标准库；追加在末尾，不抢先于已有同名模块
     try:
         spec = importlib.util.spec_from_file_location(f"f2_{name}_{uuid.uuid4().hex[:6]}", scripts / f"{name}.py")
         module = importlib.util.module_from_spec(spec)

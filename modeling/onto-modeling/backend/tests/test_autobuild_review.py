@@ -41,9 +41,11 @@ def test_suspensions_and_reviews_go_to_the_inbox_and_get_resolved(ab):
     for item in body["items"]:
         by_kind.setdefault(item["kind"], []).append(item)
     assert body["counts"]["by_filter"]["autobuild_review"] == 3
-    low, = [item for item in by_kind["review"] if not item["high_confidence"]]
-    high, = [item for item in by_kind["review"] if item["high_confidence"]]
-    suspended, = by_kind["suspension"]
+    reviews = by_kind.get("review", [])
+    assert reviews and all("high_confidence" in item for item in reviews), by_kind
+    low, = [item for item in reviews if not item.get("high_confidence")]
+    high, = [item for item in reviews if item.get("high_confidence")]
+    suspended, = by_kind.get("suspension", [])
     assert low["title"] == "全部：三级" and low["source"] == "autobuild" and low["slice"]["id"] == "all"
     assert low["actions"] == ["accept", "rejudge", "revert_slice", "dismiss"]
     assert high["id"] == f"review:{run['run_id']}:high" and high["actions"] == ["accept", "dismiss"]

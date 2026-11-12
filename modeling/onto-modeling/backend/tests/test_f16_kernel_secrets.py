@@ -13,9 +13,11 @@ from app import config, evidence
 from app.evidence import collector, sources
 from tests import f13_support
 from tests.f13_support import CODE, DB_SOURCE
+from tests.synthetic import token as synthetic_token
 
 f13 = f13_support.f13
 ADMIN_BASE = "/api/v1/admin/evidence/sources"
+LEAKED = synthetic_token("bot")  # 拼进仓库地址的合成令牌，响应里不能回显
 
 
 def _files_containing(root: Path, needle: str) -> list[str]:
@@ -151,11 +153,14 @@ def test_code_repo_registration(f13):
             "scope_allowlist": [], "egress": [{"host": "git.example.com", "port": 443}],
             "budget": {"max_rows": 100000, "max_bytes": 10000000, "max_duration_s": 600},
             "rate_limit": {"concurrency": 1, "qps": 5, "query_timeout_s": 30}}
-    for url, reason in (("http://git.example.com/demo/shop.git", "https"),
-                        ("https://bot:abc@git.example.com/demo/shop.git", "userinfo")):
+    bad_urls = (
+        ("http://git.example.com/demo/shop.git", "https"),  # NOSONAR(S5332) 合成的明文地址，测试它被拒
+        (f"https://bot:{LEAKED}@git.example.com/demo/shop.git", "userinfo"),
+    )
+    for url, reason in bad_urls:
         response = f13.client.post(ADMIN_BASE, json={**body, "connection": {"repo_url": url, "ref": "main"}})
         assert response.status_code == 400 and response.json()["details"]["fields"] == {"connection.repo_url": reason}
-        assert "abc" not in response.text
+        assert LEAKED not in response.text
     wrong_port = f13.client.post(ADMIN_BASE, json={**body, "egress": [{"host": "git.example.com", "port": 22}]})
     assert wrong_port.status_code == 400
     token = secrets.token_urlsafe(18)

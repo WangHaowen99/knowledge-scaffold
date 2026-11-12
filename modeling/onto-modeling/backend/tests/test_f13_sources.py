@@ -8,6 +8,7 @@ from app.evidence import collector, storage
 from app.services import notifications
 from tests import f13_support
 from tests.f13_support import SOURCE
+from tests.synthetic import password
 
 f13 = f13_support.f13
 
@@ -91,7 +92,7 @@ def test_credential_providers_need_admin(f13):
     unknown = f13.client.post(ADMIN_BASE, json={**body, "id": "other-db", "provider": "nope"}, headers=admin)
     assert unknown.status_code == 409 and unknown.json()["code"] == "provider_not_installed"
     # 凭据接口只有管理员能调（F16 起开放，见 test_f16_kernel_secrets）
-    assert f13.client.put(f"{ADMIN_BASE}/orders-db/secret", json={"fields": {"password": "x"}},
+    assert f13.client.put(f"{ADMIN_BASE}/orders-db/secret", json={"fields": {"password": password("x")}},
                           headers=bob).status_code == 403
 
 
@@ -157,7 +158,7 @@ def test_requests_and_notify_admin(f13):
     assert saved["kind"] == "register" and saved["body"]["id"] == "orders-db"
     assert f13.client.post("/api/v1/evidence/source-requests",
                            json={"id": "x-db", "display_name": "x", "provider": "db-mysql",
-                                 "secret": {"password": "x"}}).status_code == 400
+                                 "secret": {"password": password("x")}}).status_code == 400
     notified = f13.client.post(f"/api/v1/evidence/sources/{SOURCE}/notify-admin",
                                json={"project_id": project_id, "reason": "connection_failed"})
     assert notified.status_code == 202

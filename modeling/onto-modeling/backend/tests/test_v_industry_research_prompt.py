@@ -1,5 +1,8 @@
-"""资料分析子代理要用上已启用的行业包（V 阶段：启用「零售连锁」后真实模型的资料分析没读 standards.json、concepts.json；
-行业包的用法只写在工作区规则里，派出去的资料分析子代理按自己的 prompt 走，没看到）。"""
+"""资料分析子代理要用上已启用的行业包。
+
+V 阶段：启用「零售连锁」后真实模型的资料分析没读 standards.json、concepts.json；
+行业包的用法只写在工作区规则里，派出去的资料分析子代理按自己的 prompt 走，没看到。
+"""
 
 from __future__ import annotations
 

@@ -21,9 +21,11 @@ from app.api import deps
 from app.services import agent_sessions, streams
 from app.services.agent_sessions import SessionManager
 from app.services.engines.base import EngineContext
+from app.services.flow import model as flow_model
 from app.services.session_host import exec_records, injection, timeline
 from app.services.workspace import WorkspaceManager
 from tests import proc
+from tests.test_event_streams import subscription
 
 # ---- 契约第 4.2 节：事件类型 → 载荷字段（逐类定义） ----
 
@@ -208,8 +210,9 @@ async def settle(manager: SessionManager, project_id: str, *, until=None, rounds
 
 
 def project_history(manager: SessionManager, project_id: str, conversation_id: str = "default") -> list[dict]:
-    return [envelope for envelope in (timeline.project(event, project_id, conversation_id)
-                                      for event in manager.get_history(project_id, conversation_id)) if envelope]
+    history = manager.get_history(project_id, conversation_id)
+    envelopes = [timeline.project(event, project_id, conversation_id) for event in history]
+    return [envelope for envelope in envelopes if envelope]
 
 
 # ---- 一轮对话：载荷、执行记录 ----
@@ -287,9 +290,8 @@ def test_command_turns_produce_contract_payloads_and_exec_lifecycle(host):
     channel = streams.project_channel(project_id)
 
     async def buffered():
-        subscriber, replay, _ = channel.open(f"{streams.EPOCH}.0", asyncio.get_running_loop())
-        channel.unsubscribe(subscriber)
-        return replay
+        with subscription(channel, f"{streams.EPOCH}.0") as (_subscriber, replay, _reset):
+            return replay
 
     states = [item["data"]["state"] for item in asyncio.run(buffered()) if item["type"] == "exec.updated"]
     assert states[0] == "running" and "waiting" in states and states[-1] == "done"
@@ -328,7 +330,7 @@ def test_interrupt_marks_exec_and_offers_resume_then_resume_and_abandon(host):
     group = [item for item in envelopes if item["type"].startswith("progress")][-1]["data"]
     assert group["state"] == "interrupted"
     view = exec_records.view(exec_records.get(project_id, interrupted["id"]), root=root,
-                             flow=__import__("app.services.flow.model", fromlist=["model"]).load_for(root))
+                             flow=flow_model.load_for(root))
     assert view["resumable"] is True
 
     # 别人改了输入（资料）之后不能续跑

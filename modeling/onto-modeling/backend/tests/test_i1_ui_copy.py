@@ -222,6 +222,12 @@ def test_project_facing_texts_avoid_merge_and_mainline():
     from app.services.flow import inbox
 
     words = ("合入", "主线")
-    found = [(path, text) for path in PROJECT_FACING for text in _messages(path) if any(w in text for w in words)]
+
+    def has_word(text):
+        return any(word in text for word in words)
+
+    found = []
+    for path in PROJECT_FACING:
+        found += [(path, text) for text in _messages(path) if has_word(text)]
     assert found == []
-    assert not [label for label in inbox.KIND_LABELS.values() if any(w in label for w in words)]
+    assert not [label for label in inbox.KIND_LABELS.values() if has_word(label)]

@@ -20,7 +20,7 @@ from app.main import app
 from app.services import auth, material_text
 from app.services.workspace import WorkspaceManager
 
-W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"  # NOSONAR(S5332) OOXML 命名空间标识，不是网络请求
 RULES_MD = "# 合成补货规则\n\n## 第一章 总则\n\n门店按周补货。\n\n- 安全库存取两周用量\n- 陈列量不超过货架容量\n\n| 项 | 值 |\n| --- | --- |\n| 上限 | 96 |\n"
 
 

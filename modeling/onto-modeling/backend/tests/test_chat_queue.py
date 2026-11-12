@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import namedtuple
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -42,9 +43,17 @@ async def settle(manager, project_id, *, until=None):
     return await _settle(manager, project_id, until=until or _quiet, rounds=1500)
 
 
+# 场景函数的多个返回值：解包用法不变
+CommandRun = namedtuple("CommandRun", "steer held occupied first_exec second_exec final")
+InterruptRun = namedtuple("InterruptRun", "engine steer returned paused sent_before started")
+
+
 class SteerEngine(FakeEngine):
-    """会插话的假引擎：一轮开着直到测试调 finish；插话在 model_call 时插进去（seen），结束时没插的拿第一条开下一轮
-    （new_turn）；打断带 cancel_queued 时撤回还没插的。"""
+    """会插话的假引擎。
+
+    一轮开着直到测试调 finish；插话在 model_call 时插进去（seen），结束时没插的拿第一条开下一轮
+    （new_turn）；打断带 cancel_queued 时撤回还没插的。
+    """
 
     name = "fake-steer"
 
@@ -163,7 +172,7 @@ def test_command_sent_while_running_starts_after_turn_and_exec_matches_engine(st
         await session.engine.finish(release("extract-object"))
         final = (await settle(manager, project_id)).state
         await manager.shutdown()
-        return steer, held, occupied.value, first_exec, second_exec, final
+        return CommandRun(steer, held, occupied.value, first_exec, second_exec, final)
 
     steer, held, occupied, first_exec, second_exec, final = asyncio.run(scenario())
     assert steer["delivery"] == "steer" and steer["message_id"]
@@ -293,7 +302,7 @@ def test_interrupt_returns_unseen_steers_and_pauses_next(steer_host):
         _, started = await manager.start_next(project_id, "default")
         await settle(manager, project_id, until=lambda s: s.state == "idle" and len(FakeEngine.sent) == 2)
         await manager.shutdown()
-        return engine, steer, returned, paused, sent_before, started
+        return InterruptRun(engine, steer, returned, paused, sent_before, started)
 
     engine, steer, returned, paused, sent_before, started = asyncio.run(scenario())
     assert engine.cancel_flags == [True] and engine.pending == []
@@ -378,8 +387,8 @@ def test_send_while_running_api_shapes(api):
     assert held.status_code == 202, held.text
     body = held.json()
     catalog = client.get(f"{base}/commands/catalog").json()
-    label = next(item["label"] for group in catalog["groups"] for item in group["items"]
-                 if item["command"] == "/ontology-extract-object")
+    catalog_items = [item for group in catalog["groups"] for item in group["items"]]
+    label = next(item["label"] for item in catalog_items if item["command"] == "/ontology-extract-object")
     assert body["delivery"] == "next" and body["message_id"] is None and body["task"]["state"] == "queued"
     assert set(body["next"]) == {"id", "label", "command", "text", "created_at", "paused", "origin"}
     assert body["next"]["label"] == label and body["next"]["origin"]["label"] == "全部命令"
@@ -415,8 +424,8 @@ def test_send_while_running_api_shapes(api):
     assert set(delivered[0]) == {"message_id", "state", "at", "waiting_on"}
     nexts = [item["data"] for item in items if item["type"] == "next.updated"]
     assert nexts == [{"next": None}]
-    user = next(item["data"] for item in items if item["type"] == "message.user"
-                and item["data"]["message_id"] == steer.json()["message_id"])
+    user_messages = [item["data"] for item in items if item["type"] == "message.user"]
+    user = next(data for data in user_messages if data["message_id"] == steer.json()["message_id"])
     assert user["delivery"] == "steer"
 
 

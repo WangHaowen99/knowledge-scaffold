@@ -799,8 +799,10 @@ def test_evaluation_entry_comes_only_from_deployment(env, monkeypatch):
     assert client.get('/api/v1/evaluation/entry').status_code == 500
     # 地址只由部署配置决定，没有页面修改入口
     assert client.get('/api/v1/evaluation/entry', headers={'Authorization': ''}).status_code == 401
-    writable = {(route.path, method) for route in app.routes for method in getattr(route, 'methods', ())
-                if 'evaluation/entry' in getattr(route, 'path', '') and method != 'GET'}
+    writable = set()
+    for route in app.routes:
+        if 'evaluation/entry' in getattr(route, 'path', ''):
+            writable |= {(route.path, method) for method in getattr(route, 'methods', ()) if method != 'GET'}
     assert writable == set()
 
 

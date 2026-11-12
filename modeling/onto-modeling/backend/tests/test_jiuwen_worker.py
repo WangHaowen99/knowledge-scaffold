@@ -7,6 +7,7 @@ worker 里跑假引擎（tests/fake_worker_engine.py），不需要模型。测�
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -71,7 +72,7 @@ def test_sessions_share_one_worker_and_callbacks_reach_kernel(worker, tmp_path):
     text = reply["blocks"][0]["text"]
     project, message, history, pid = text.split(":")
     assert (project, message, history) == ("p1", "你好", "1")  # 历史快照随连接带过去
-    assert int(pid) != __import__("os").getpid()  # 在子进程里跑
+    assert int(pid) != os.getpid()  # 在子进程里跑
     assert worker.starts == 1  # 两个会话共用一个 worker
     assert first_log["token"] == "jiuwen:p1" and first_log["errors"] == [("fake", "合成留档")]
     assert second_log["asked"] == ["AskUserQuestion"] and asked["blocks"][0]["text"] == "deny"

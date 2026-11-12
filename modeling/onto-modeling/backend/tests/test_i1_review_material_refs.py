@@ -1,5 +1,6 @@
 """I1 审查修复第 8 条：只写了文件名的引用要卡住文件名边界——「周报告.md」不算引用了「报告.md」（R-05、R-01 referenced、R-04 broken_references、资料地图的「读过」）。"""
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,8 @@ from app.main import app
 from app.services import auth, streams
 from app.services.workspace import WorkspaceManager
 from tests.test_changesets import main_write, obj
+
+_log = logging.getLogger(__name__)
 
 
 @pytest.fixture()
@@ -37,8 +40,8 @@ def test_name_substring_is_not_a_reference(api):
     listed = {item["path"]: item["referenced"] for group in client.get(f"{base}/resources").json()["groups"]
               for item in group["items"]}
     deleted = client.request("DELETE", f"{base}/resources", params={"path": "resource/others/报告.md"}).json()
-    print("R-05 报告.md:", refs["total"], [item["target"].get("id") for item in refs["items"]])
-    print("R-01 referenced:", listed)
-    print("R-04 broken_references:", deleted.get("broken_references"))
+    _log.info("R-05 报告.md: %s %s", refs["total"], [item["target"].get("id") for item in refs["items"]])
+    _log.info("R-01 referenced: %s", listed)
+    _log.info("R-04 broken_references: %s", deleted.get("broken_references"))
     assert refs["total"] == 0 and deleted["broken_references"] == 0
     assert listed["resource/others/周报告.md"] == 1

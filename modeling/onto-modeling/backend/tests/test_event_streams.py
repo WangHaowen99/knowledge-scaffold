@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import threading
 import time
@@ -57,6 +58,16 @@ def frames_of(chunks: list[str]) -> list[dict]:
     return frames
 
 
+@contextlib.contextmanager
+def subscription(channel, last_event_id: str = ""):
+    """订阅一条频道并保证退订：产出（订阅者, 回放, 重置原因）；要在运行中的事件循环里用。"""
+    subscriber, replay, reset = channel.open(last_event_id, asyncio.get_running_loop())
+    try:
+        yield subscriber, replay, reset
+    finally:
+        channel.unsubscribe(subscriber)
+
+
 async def collect(iterator, count: int, timeout: float = 3.0) -> list[str]:
     chunks = []
     while len(chunks) < count:
@@ -76,9 +87,8 @@ def test_ids_are_epoch_and_sequence_and_replay_after_last_id():
     assert set(first) == {"id", "type", "ts", "project_id", "data"} and first["ts"].endswith("Z")
 
     async def scenario():
-        subscriber, replay, reset = channel.open(first["id"], asyncio.get_running_loop())
-        channel.unsubscribe(subscriber)
-        return replay, reset
+        with subscription(channel, first["id"]) as (_subscriber, replay, reset):
+            return replay, reset
 
     replay, reset = asyncio.run(scenario())
     assert reset is None and [item["data"]["n"] for item in replay] == [2, 3]
@@ -91,9 +101,8 @@ def test_first_open_does_not_replay_and_transient_events_have_no_id():
     assert "id" not in transient
 
     async def scenario():
-        subscriber, replay, reset = channel.open("", asyncio.get_running_loop())
-        channel.unsubscribe(subscriber)
-        return replay, reset
+        with subscription(channel) as (_subscriber, replay, reset):
+            return replay, reset
 
     replay, reset = asyncio.run(scenario())
     assert replay == [] and reset is None
@@ -117,9 +126,8 @@ def test_evicted_events_reset_with_gap(monkeypatch):
     ids = [channel.publish("flow.updated", {"n": n}, project_id="p1")["id"] for n in range(6)]
 
     async def scenario():
-        old = channel.open(ids[0], asyncio.get_running_loop())
-        recent = channel.open(ids[3], asyncio.get_running_loop())
-        return old, recent
+        with subscription(channel, ids[0]) as old, subscription(channel, ids[3]) as recent:
+            return old, recent
 
     (_, replay, reset), (_, recent, recent_reset) = asyncio.run(scenario())
     assert reset == "gap" and replay == []
@@ -147,15 +155,16 @@ def test_frames_replay_then_live_then_ping():
     channel.publish("flow.updated", {"n": 2}, project_id="p1")
 
     async def scenario():
-        subscriber, replay, reset = channel.open(first["id"], asyncio.get_running_loop())
-        frames = streams.channel_frames(channel, subscriber, replay, reset, resync=streams.PROJECT_RESYNC,
-                                        heartbeat=0.05)
-        head = await collect(frames, 2)
-        # 在别的线程发：经事件循环转给订阅者
-        threading.Thread(target=channel.publish, args=("inbox.updated", {"n": 3}), kwargs={"project_id": "p1"}).start()
-        live = await collect(frames, 2)
-        await frames.aclose()
-        return head, live, channel.subscriber_count()
+        with subscription(channel, first["id"]) as (subscriber, replay, reset):
+            frames = streams.channel_frames(channel, subscriber, replay, reset, resync=streams.PROJECT_RESYNC,
+                                            heartbeat=0.05)
+            head = await collect(frames, 2)
+            # 在别的线程发：经事件循环转给订阅者
+            threading.Thread(target=channel.publish, args=("inbox.updated", {"n": 3}),
+                             kwargs={"project_id": "p1"}).start()
+            live = await collect(frames, 2)
+            await frames.aclose()
+            return head, live, channel.subscriber_count()
 
     head, live, remaining = asyncio.run(scenario())
     assert head[0] == "retry: 3000\n\n"
@@ -171,11 +180,11 @@ def test_reset_frame_lists_resync_snapshots():
     channel = streams.project_channel("p1")
 
     async def scenario():
-        subscriber, replay, reset = channel.open("feedbeef.9", asyncio.get_running_loop())
-        frames = streams.channel_frames(channel, subscriber, replay, reset, resync=streams.PROJECT_RESYNC)
-        chunks = await collect(frames, 2)
-        await frames.aclose()
-        return chunks
+        with subscription(channel, "feedbeef.9") as (subscriber, replay, reset):
+            frames = streams.channel_frames(channel, subscriber, replay, reset, resync=streams.PROJECT_RESYNC)
+            chunks = await collect(frames, 2)
+            await frames.aclose()
+            return chunks
 
     reset = frames_of(asyncio.run(scenario())[1:])[0]
     assert reset["id"] is None
@@ -188,15 +197,15 @@ def test_slow_subscriber_overflow_resets(monkeypatch):
     channel = streams.project_channel("p1")
 
     async def scenario():
-        subscriber, replay, reset = channel.open("", asyncio.get_running_loop())
-        frames = streams.channel_frames(channel, subscriber, replay, reset, resync=streams.PROJECT_RESYNC)
-        await collect(frames, 1)
-        for n in range(5):
-            channel.publish("flow.updated", {"n": n}, project_id="p1")
-        await asyncio.sleep(0)
-        chunks = await collect(frames, 2)
-        await frames.aclose()
-        return chunks
+        with subscription(channel) as (subscriber, replay, reset):
+            frames = streams.channel_frames(channel, subscriber, replay, reset, resync=streams.PROJECT_RESYNC)
+            await collect(frames, 1)
+            for n in range(5):
+                channel.publish("flow.updated", {"n": n}, project_id="p1")
+            await asyncio.sleep(0)
+            chunks = await collect(frames, 2)
+            await frames.aclose()
+            return chunks
 
     parsed = frames_of(asyncio.run(scenario()))
     assert parsed[0]["envelope"]["type"] == "stream.reset" and parsed[0]["envelope"]["data"]["reason"] == "overflow"
@@ -207,11 +216,11 @@ def test_expired_token_sends_auth_expired_and_closes():
     channel = streams.user_channel("employee_0001")
 
     async def scenario():
-        subscriber, replay, reset = channel.open("", asyncio.get_running_loop())
-        frames = streams.channel_frames(channel, subscriber, replay, reset, resync=streams.USER_RESYNC,
-                                        expires_at=time.time() + 0.05, heartbeat=5)
-        chunks = [chunk async for chunk in frames]
-        return chunks
+        with subscription(channel) as (subscriber, replay, reset):
+            frames = streams.channel_frames(channel, subscriber, replay, reset, resync=streams.USER_RESYNC,
+                                            expires_at=time.time() + 0.05, heartbeat=5)
+            chunks = [chunk async for chunk in frames]
+            return chunks
 
     chunks = asyncio.run(scenario())
     assert frames_of(chunks)[-1]["envelope"]["type"] == "auth.expired"
@@ -243,9 +252,8 @@ def buffered(project_id: str, event_type: str) -> list[dict]:
     channel = streams.project_channel(project_id)
 
     async def scenario():
-        subscriber, replay, _ = channel.open(f"{streams.EPOCH}.0", asyncio.get_running_loop())
-        channel.unsubscribe(subscriber)
-        return replay
+        with subscription(channel, f"{streams.EPOCH}.0") as (_subscriber, replay, _reset):
+            return replay
 
     return [item for item in asyncio.run(scenario()) if item["type"] == event_type]
 
@@ -325,9 +333,8 @@ def test_project_and_user_events(env):
     channel = streams.user_channel("")
 
     async def user_events():
-        subscriber, replay, _ = channel.open(f"{streams.EPOCH}.0", asyncio.get_running_loop())
-        channel.unsubscribe(subscriber)
-        return replay
+        with subscription(channel, f"{streams.EPOCH}.0") as (_subscriber, replay, _reset):
+            return replay
 
     cards = [item for item in asyncio.run(user_events()) if item["type"] == "project.card.updated"]
     assert cards and cards[-1]["data"]["project_id"] == project_id and cards[-1]["data"]["card"]["id"] == project_id

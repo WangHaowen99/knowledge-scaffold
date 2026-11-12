@@ -331,7 +331,7 @@ def test_http_protocol_and_scope_enforcement(env, monkeypatch):
     headers = {"Authorization": "Bearer " + raw}
     # v1 路径与永久保留的旧路径行为完全相同（契约 M-05）
     for url in (f"/api/v1/onto-mcp/{meta['id']}/read/mcp", f"/api/onto-mcp/{meta['id']}/read/mcp"):
-        def rpc(method, params=None, **kwargs):
+        def rpc(method, params=None, *, url=url, **kwargs):
             return client.post(url, headers=headers, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}, **kwargs)
         assert rpc("initialize").json()["result"]["serverInfo"]["name"] == tokens.SERVER["name"]
         assert rpc("server/discover").status_code == 200

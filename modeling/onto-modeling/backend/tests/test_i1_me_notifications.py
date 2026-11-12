@@ -15,6 +15,7 @@ from app.routers import sessions as session_routes
 from app.services import agent_sessions, auth, notifications, streams
 from app.services.agent_sessions import SessionManager
 from app.services.workspace import WorkspaceManager
+from tests.test_event_streams import subscription
 from tests.test_session_host import FakeEngine, result, settle
 
 
@@ -35,9 +36,8 @@ def user_events(username: str, event_type: str) -> list[dict]:
     channel = streams.user_channel(username)
 
     async def scenario():
-        subscriber, replay, _ = channel.open(f"{streams.EPOCH}.0", asyncio.get_running_loop())
-        channel.unsubscribe(subscriber)
-        return replay
+        with subscription(channel, f"{streams.EPOCH}.0") as (_subscriber, replay, _reset):
+            return replay
 
     return [item for item in asyncio.run(scenario()) if item["type"] == event_type]
 
