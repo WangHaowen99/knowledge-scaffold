@@ -36,8 +36,8 @@ CATEGORIES = ("capability", "industry", "system", "provider")
 URL = "/api/v1/packs/dev-skills/{}"
 
 
-def skill_zip(client, category: str, headers=AS_OWNER) -> bytes:
-    res = client.get(URL.format(category), headers=headers)
+def skill_zip(client, category: str, headers=None) -> bytes:
+    res = client.get(URL.format(category), headers=AS_OWNER if headers is None else headers)
     assert res.status_code == 200, res.text
     return res.content
 

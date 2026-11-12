@@ -1717,7 +1717,7 @@ def _ready(client, base, comparison_id):
         if response.json()["status"] in {"ready", "failed"}:
             return response.json()
         time.sleep(0.05)
-    pytest.fail("comparison did not finish")
+    raise AssertionError("comparison did not finish")
 
 
 def _edited_copy(source: Path, target: Path, member_suffix: str, text: str) -> Path:

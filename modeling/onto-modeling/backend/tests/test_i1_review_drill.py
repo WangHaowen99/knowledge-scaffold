@@ -1,11 +1,14 @@
 """I1 审查修复第 4 条：恢复演练在最后一个项目抽检期间被取消，任务停在「已取消」，演练跑完也不改回成功、不记演练记录。"""
 
+import logging
 import shutil
 import threading
 from pathlib import Path
 
 from app import config
 from app.services import backup, ops_center
+
+logger = logging.getLogger(__name__)
 
 
 def test_cancel_during_last_check_stays_cancelled(tmp_path, monkeypatch):
@@ -31,10 +34,10 @@ def test_cancel_during_last_check_stays_cancelled(tmp_path, monkeypatch):
     worker.start()
     assert entered.wait(5)
     cancelled = ops_center.act(task["id"], "cancel", "ops1")
-    print("after cancel:", cancelled["status"])
+    logger.info("after cancel: %s", cancelled["status"])
     release.set()
     worker.join(5)
     final = ops_center.get_task(task["id"])
-    print("final:", final["status"], "| drills recorded:", len(ops_center.list_drills()))
+    logger.info("final: %s | drills recorded: %d", final["status"], len(ops_center.list_drills()))
     assert cancelled["status"] == "cancelled" and final["status"] == "cancelled"
     assert ops_center.list_drills() == [] or all(item["id"] != task["id"] for item in ops_center.list_drills())
