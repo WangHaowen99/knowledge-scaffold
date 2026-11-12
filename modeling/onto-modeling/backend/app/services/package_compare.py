@@ -1,14 +1,14 @@
-"""知识包版本对比（API 契约 3.20 PC 组，ADR-0095）：只读比较两份知识包 ZIP。
+"""知识包版本对比（API 契约 3.20 PC 组，ADR-0095）：只读比较 Hub 上不可变的发布版本与临时上传的知识包。
 
-两侧来源：本项目的发布版本（经 publish.release_package 取包，发起时复制冻结到比较目录），或临时上传的
-知识包（只属于上传人，24 小时过期，从不导入工作区）。ZIP 在子进程里解析（package_compare_worker），
-限内存、CPU、条目数、解压大小，超时或取消即终止。比较数据在 DATA_DIR/package-comparisons/<用户摘要>/。
+发布版本只记 Hub 引用，不另存一套版本历史；发起对比时冻结一份，读结果时回 Hub 复核读权限。上传的包只属于
+上传人、短期有效，从不导入项目工作区。ZIP 在子进程（package_compare_worker）里解析，限内存、CPU 与各项大小。
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -27,6 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .. import config
+from . import hub_packages
 from .workspace import WorkspaceError, WorkspaceManager
 
 _log = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ _STORAGE_RESERVATIONS: dict[str, int] = {}
 _RESULT_RESERVATIONS: set[tuple[str, str]] = set()
 _CANCELLED_UPLOADS: dict[tuple[str, str], float] = {}
 _ACTIVE_UPLOADS: dict[tuple[str, str], str] = {}
+_PROCESS_STARTED_AT = time.time()
 _SERVICE_LOCK = None
 _SERVICE_AVAILABLE = True
 _SERVICE_OWNER = False
@@ -74,13 +76,6 @@ def _safe_id(value: str) -> str:
     return value
 
 
-def _safe_version(value: str) -> str:
-    # 格式由 publish.release_package 严格校验，这里只挡掉不能当标识用的值
-    if not isinstance(value, str) or not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._+-]{0,63}", value):
-        raise WorkspaceError("发布版本号无效", 400)
-    return value
-
-
 def _source_ref(value: dict, *, allow_frozen: bool = False) -> dict:
     if not isinstance(value, dict):
         raise WorkspaceError("比较来源参数无效", 400)
@@ -88,7 +83,11 @@ def _source_ref(value: dict, *, allow_frozen: bool = False) -> dict:
     if kind == "upload":
         return {"kind": kind, "input_id": _safe_id(value.get("input_id"))}
     if kind == "release":
-        return {"kind": kind, "version": _safe_version(value.get("version"))}
+        source = {"kind": kind, "release_id": _safe_id(value.get("release_id"))}
+        package_id = value.get("ontology_id") or value.get("hub_package_id")
+        if package_id is not None:
+            source["ontology_id"] = _safe_id(package_id)
+        return source
     if allow_frozen and kind == "frozen":
         side = value.get("side")
         if side not in {"left", "right"}:
@@ -759,39 +758,88 @@ def _validate_upload_refs(
             _load_input(subject, ref["input_id"], project_id)
 
 
-def _release_source(manager, project_id: str, subject: str, ref: dict, token: str = "") -> tuple[Path, dict, Path]:
-    """本项目某个发布版本的包：经 publish.release_package 取，复制到比较目录的临时目录再解析。
+def _resolve_release_ref(project_id: str, subject: str, ref: dict) -> dict:
+    if ref.get("kind") != "release" or ref.get("ontology_id"):
+        return ref
+    association = hub_packages.association(project_id, subject) or {}
+    package_id = association.get("ontology_id") or association.get("hub_package_id")
+    if not package_id:
+        raise WorkspaceError("发布版本缺少 Hub 包或 release 标识", 400)
+    return {**ref, "ontology_id": _safe_id(package_id)}
 
-    token 是发起人的登录令牌，本地留存缺失时 release_package 用它从 Hub 下回原包；只在这次请求里用，不落盘。
-    """
-    from . import publish  # 延迟导入：解析子进程只导入本模块，不带上发布链
 
-    version = _safe_version(ref.get("version"))
-    package, _record = publish.release_package(manager, project_id, version, token=token)
-    _checkpoint()
-    if package.stat().st_size > MAX_ARCHIVE_BYTES:
-        raise WorkspaceError("发布知识包超过版本对比大小限制", 413)
+def _release_source(project_id: str, subject: str, token: str, ref: dict) -> tuple[Path, dict, Path | None]:
+    association = hub_packages.association(project_id, subject) or {}
+    package_id = (
+        ref.get("ontology_id")
+        or ref.get("hub_package_id")
+        or association.get("ontology_id")
+        or association.get("hub_package_id")
+    )
+    release_id = ref.get("release_id", "")
+    if not package_id or not release_id:
+        raise WorkspaceError("发布版本缺少 Hub 包或 release 标识", 400)
+    package_id = _safe_id(package_id)
+    release_id = _safe_id(release_id)
     folder = Path(tempfile.mkdtemp(prefix="onto-package-compare-", dir=root(subject)))
     archive = folder / "package.zip"
     try:
-        shutil.copyfile(package, archive)
-        meta = _source_meta(archive, {"kind": "release", "version": version}, subject)
-        meta["version"] = version
+        download = hub_packages.download
+        signature = inspect.signature(download)
+        parameters = signature.parameters.values()
+        supports_keywords = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+        if supports_keywords or "checkpoint" in signature.parameters:
+            deadline = getattr(_ACTIVE_TASK, "deadline", None)
+            timeout = max(0.001, deadline - time.monotonic()) if deadline else None
+            options = {}
+            if supports_keywords or "checkpoint" in signature.parameters:
+                options["checkpoint"] = _checkpoint
+            if supports_keywords or "timeout" in signature.parameters:
+                options["timeout"] = timeout
+            if supports_keywords or "deadline" in signature.parameters:
+                options["deadline"] = deadline
+            receipt = download(
+                package_id,
+                release_id,
+                token,
+                archive,
+                **options,
+            )
+        else:
+            receipt = download(package_id, release_id, token, archive)
+        _checkpoint()
+        if archive.stat().st_size > MAX_ARCHIVE_BYTES:
+            raise WorkspaceError("发布知识包超过版本对比大小限制", 413)
+        source = {
+            "kind": "release",
+            "ontology_id": package_id,
+            "release_id": release_id,
+        }
+        meta = _source_meta(archive, source, subject)
+        meta.update({"version": receipt.get("version", ""),
+                     "package_id": receipt.get("manifest_id") or meta.get("package_id", ""),
+                     "package_digest": receipt.get("package_digest", _digest(archive)),
+                     "committed_at": receipt.get("committed_at", "")})
         return archive, meta, folder
     except Exception:
         shutil.rmtree(folder, ignore_errors=True)
         raise
 
 
-def _materialize(project_id: str, subject: str, ref: dict, comparison_id: str = "") -> tuple[Path, dict]:
-    # 发布版本在发起时已冻结成 frozen，之后的解析和正文差异都不再回源
+def _materialize(project_id: str, subject: str, token: str, ref: dict,
+                 comparison_id: str = "") -> tuple[Path, dict, Path | None]:
     kind = ref.get("kind")
     if kind == "upload":
-        return _load_input(subject, ref.get("input_id", ""), project_id)
+        archive, meta = _load_input(subject, ref.get("input_id", ""), project_id)
+        return archive, meta, None
+    if kind == "release":
+        return _release_source(project_id, subject, token, ref)
     if kind == "frozen":
         return _load_frozen(subject, project_id, comparison_id, ref)
-    raise WorkspaceError("比较来源必须是已冻结的发布版本或上传的知识包", 400)
-
+    raise WorkspaceError("比较来源必须是 release、upload 或 frozen", 400)
 
 def _summary(left: dict, right: dict) -> tuple[dict, list[dict]]:
     left_files, right_files = left["files"], right["files"]
@@ -854,12 +902,12 @@ def _write_task_json(subject: str, comparison_id: str, path: Path, value: dict) 
 def create_comparison(
     project_id: str,
     subject: str,
+    token: str,
     left_ref: dict,
     right_ref: dict,
     allow_cross_package: bool = False,
     comparison_id: str | None = None,
 ) -> dict:
-    """同步比较两份已就绪的来源（上传或冻结的发布版本）；异步任务（_run_job）也走这里。"""
     left_ref = _source_ref(left_ref, allow_frozen=True)
     right_ref = _source_ref(right_ref, allow_frozen=True)
     if left_ref == right_ref:
@@ -868,16 +916,25 @@ def create_comparison(
     comparison_id = comparison_id or "cmp_" + uuid.uuid4().hex
     folder = _comparison_folder(subject, comparison_id)
     folder.mkdir(parents=True, exist_ok=bool(comparison_id))
+    temp_folders: list[Path] = []
     try:
         _ensure_active(subject, comparison_id)
-        _left_path, left = _materialize(project_id, subject, left_ref, comparison_id)
+        left_path, left, temp = _materialize(
+            project_id, subject, token, left_ref, comparison_id,
+        )
+        if temp:
+            temp_folders.append(temp)
         _ensure_active(subject, comparison_id)
-        _right_path, right = _materialize(project_id, subject, right_ref, comparison_id)
+        right_path, right, temp = _materialize(
+            project_id, subject, token, right_ref, comparison_id,
+        )
+        if temp:
+            temp_folders.append(temp)
         left_package = left.get("package_id")
         right_package = right.get("package_id")
         different_packages = left_package and right_package and left_package != right_package
         if not allow_cross_package and different_packages:
-            raise WorkspaceError("两侧属于不同知识包，请确认跨包对比", 409, "compare_cross_package")
+            raise WorkspaceError("两侧属于不同 Hub 知识包，请确认跨包对比", 409, "compare_cross_package")
         fingerprint = hashlib.sha256(json.dumps([
             left.get("source"),
             left.get("package_digest"),
@@ -915,13 +972,14 @@ def create_comparison(
         _write_task_json(subject, comparison_id, folder / "result.json", result)
         return _public(result)
     finally:
+        for temp in temp_folders:
+            shutil.rmtree(temp, ignore_errors=True)
         if owns_folder and not (folder / "result.json").exists():
             shutil.rmtree(folder, ignore_errors=True)
 
 
-def _freeze_ref(manager, project_id: str, subject: str, comparison_id: str,
-                side: str, ref: dict, token: str = "") -> dict:
-    """发布版本复制成比较目录下的 <side>.zip：结果和正文差异读这一份，不受发布留存或缓存变化影响。"""
+def _freeze_ref(project_id: str, subject: str, token: str, comparison_id: str,
+                side: str, ref: dict) -> dict:
     if ref.get("kind") != "release":
         return ref
     reserved = False
@@ -931,7 +989,7 @@ def _freeze_ref(manager, project_id: str, subject: str, comparison_id: str,
     try:
         _reserve_upload(subject)
         reserved = True
-        path, meta, temporary = _release_source(manager, project_id, subject, ref, token)
+        path, meta, temporary = _release_source(project_id, subject, token, ref)
         destination = _comparison_folder(subject, comparison_id) / f"{side}.zip"
         meta_path = destination.with_suffix(".json")
         shutil.move(str(path), destination)
@@ -957,7 +1015,7 @@ def cancel_upload(subject: str, request_id: str) -> None:
         _CANCELLED_UPLOADS[(subject, request_id)] = time.time()
 
 
-def _load_frozen(subject: str, project_id: str, comparison_id: str, ref: dict) -> tuple[Path, dict]:
+def _load_frozen(subject: str, project_id: str, comparison_id: str, ref: dict) -> tuple[Path, dict, None]:
     side = ref.get("side")
     if side not in {"left", "right"}:
         raise WorkspaceError("冻结比较来源无效", 400)
@@ -968,18 +1026,34 @@ def _load_frozen(subject: str, project_id: str, comparison_id: str, ref: dict) -
     meta = _read_json(meta_path)
     if meta.get("owner") != subject or meta.get("project_id") != project_id:
         raise WorkspaceError("无权访问冻结比较来源", 403, "forbidden")
-    return path, meta
+    return path, meta, None
 
 
-def _failure(exc: Exception) -> dict:
-    # 非工作区错误（如文件系统异常）的原文可能带服务端路径，只记日志、不给界面
-    if isinstance(exc, WorkspaceError):
-        return {"error": str(exc), "error_code": exc.code}
-    _log.exception("知识包版本对比任务失败")
-    return {"error": "知识包比较失败，请重试", "error_code": "compare_failed"}
+def _ensure_frozen_readable(meta: dict, token: str) -> None:
+    source = meta.get("source", {})
+    if source.get("kind") != "release":
+        return
+    if not token:
+        raise WorkspaceError("Hub 需要登录用户身份", 401)
+    package_id = source.get("ontology_id") or source.get("hub_package_id", "")
+    hub_packages.call("GET", hub_packages.reference_path(
+        package_id, source.get("release_id", "")), token)
 
 
-def _run_job(project_id: str, subject: str, comparison_id: str,
+def _ensure_release_ref_readable(source: dict, token: str) -> None:
+    if not token:
+        raise WorkspaceError("Hub 需要登录用户身份", 401)
+    package_id = source.get("ontology_id") or source.get("hub_package_id", "")
+    hub_packages.call(
+        "GET",
+        hub_packages.reference_path(
+            package_id,
+            source.get("release_id", ""),
+        ),
+        token,
+    )
+
+def _run_job(project_id: str, subject: str, token: str, comparison_id: str,
              left_ref: dict, right_ref: dict, allow_cross_package: bool) -> None:
     try:
         _ACTIVE_TASK.key = (subject, comparison_id)
@@ -991,7 +1065,7 @@ def _run_job(project_id: str, subject: str, comparison_id: str,
             job = _read_json(job_path)
             job.update(status="running", phase="reading")
             _write_task_json(subject, comparison_id, job_path, job)
-        create_comparison(project_id, subject, left_ref, right_ref,
+        create_comparison(project_id, subject, token, left_ref, right_ref,
                           allow_cross_package, comparison_id=comparison_id)
         with _TASK_LOCK:
             _ensure_active(subject, comparison_id)
@@ -1004,7 +1078,7 @@ def _run_job(project_id: str, subject: str, comparison_id: str,
                 folder.mkdir(parents=True, exist_ok=True)
                 _write_json(folder / "job.json", {
                     "comparison_id": comparison_id, "project_id": project_id, "owner": subject,
-                    "status": "failed", "phase": "failed", "created_at": time.time(), **_failure(exc),
+                    "status": "failed", "phase": "failed", "error": str(exc), "created_at": time.time(),
                 })
         except WorkspaceError as cancelled:
             if cancelled.status != 410:
@@ -1057,21 +1131,34 @@ def _release_task_slot(key: tuple[str, str]) -> None:
 
 
 def start_comparison(
-    manager,
     project_id: str,
     subject: str,
+    token: str,
     left_ref: dict,
     right_ref: dict,
     allow_cross_package: bool = False,
     request_id: str = "",
-    *,
-    token: str = "",
 ) -> dict:
-    """PC-04：校验来源、占任务名额、冻结发布版本，再交给后台线程比较；同一 request_id 重放返回同一任务。"""
     _ensure_service_available()
-    left_ref = _source_ref(left_ref)
-    right_ref = _source_ref(right_ref)
-    if left_ref == right_ref:
+    left_ref = _resolve_release_ref(project_id, subject, _source_ref(left_ref))
+    right_ref = _resolve_release_ref(project_id, subject, _source_ref(right_ref))
+
+    def identity(ref: dict) -> tuple:
+        kind = ref.get("kind")
+        if kind == "upload":
+            return kind, ref.get("input_id", "")
+        if kind == "release":
+            association = hub_packages.association(project_id, subject) or {}
+            package_id = (
+                ref.get("ontology_id")
+                or ref.get("hub_package_id")
+                or association.get("ontology_id")
+                or association.get("hub_package_id", "")
+            )
+            return kind, package_id, ref.get("release_id", "")
+        return kind, json.dumps(ref, sort_keys=True, ensure_ascii=False)
+
+    if identity(left_ref) == identity(right_ref):
         raise WorkspaceError("两侧比较来源不能相同", 400)
     request_path = None
     request_fingerprint = ""
@@ -1081,7 +1168,7 @@ def start_comparison(
         request_path = root(subject) / "requests" / f"{request_key}.json"
         request_fingerprint = hashlib.sha256(
             json.dumps(
-                [left_ref, right_ref, bool(allow_cross_package)],
+                [identity(left_ref), identity(right_ref), bool(allow_cross_package)],
                 ensure_ascii=False,
                 sort_keys=True,
             ).encode()
@@ -1142,7 +1229,16 @@ def start_comparison(
                 shutil.rmtree(folder, ignore_errors=True)
                 raise
 
-        if replay_comparison_id:
+    if replay_comparison_id:
+        ensure_sources_readable(subject, project_id, token, replay_comparison_id)
+        with _TASK_LOCK:
+            if not request_path or not request_path.exists():
+                raise WorkspaceError("比较请求状态已变化，请重试", 409, "compare_request_changed")
+            current_record = _read_json(request_path)
+            same_request = current_record.get("fingerprint") == request_fingerprint
+            same_comparison = current_record.get("comparison_id") == replay_comparison_id
+            if not same_request or not same_comparison:
+                raise WorkspaceError("比较请求状态已变化，请重试", 409, "compare_request_changed")
             return get_comparison(subject, project_id, replay_comparison_id)
 
     previous_key = getattr(_ACTIVE_TASK, "key", None)
@@ -1150,8 +1246,8 @@ def start_comparison(
     _ACTIVE_TASK.key = key
     _ACTIVE_TASK.deadline = time.monotonic() + TASK_TIMEOUT_SECONDS
     try:
-        left_ref = _freeze_ref(manager, project_id, subject, comparison_id, "left", left_ref, token)
-        right_ref = _freeze_ref(manager, project_id, subject, comparison_id, "right", right_ref, token)
+        left_ref = _freeze_ref(project_id, subject, token, comparison_id, "left", left_ref)
+        right_ref = _freeze_ref(project_id, subject, token, comparison_id, "right", right_ref)
     except Exception:
         with _TASK_LOCK:
             _release_task_slot(key)
@@ -1171,6 +1267,7 @@ def start_comparison(
                 _run_job,
                 project_id,
                 subject,
+                "",
                 comparison_id,
                 left_ref,
                 right_ref,
@@ -1207,6 +1304,7 @@ def _public(result: dict) -> dict:
         "file_count",
         "uncompressed_size",
         "version",
+        "committed_at",
     )
     for side in ("left", "right"):
         value[side] = {key: result[side].get(key, "") for key in source_keys}
@@ -1240,6 +1338,25 @@ def _owned_result(subject: str, project_id: str, comparison_id: str) -> dict:
         return result
 
 
+def ensure_sources_readable(subject: str, project_id: str, token: str, comparison_id: str) -> None:
+    result = _owned_result(subject, project_id, comparison_id)
+    for side in ("left", "right"):
+        side_meta = result.get(side, {})
+        source = side_meta.get("source", {})
+        if not source:
+            source = result.get("input_refs", {}).get(side, {})
+        if source.get("kind") == "release":
+            if side_meta.get("source"):
+                _ensure_frozen_readable(side_meta, token)
+            else:
+                _ensure_release_ref_readable(source, token)
+        elif source.get("kind") == "frozen":
+            _path, frozen_meta, _temp = _load_frozen(
+                subject, project_id, comparison_id, source,
+            )
+            _ensure_frozen_readable(frozen_meta, token)
+
+
 def get_comparison(subject: str, project_id: str, comparison_id: str) -> dict:
     result = _owned_result(subject, project_id, comparison_id)
     if result.get("status") != "ready":
@@ -1256,7 +1373,7 @@ def list_files(
     category: str = "",
     query: str = "",
     offset: int = 0,
-    limit: int | None = 50,
+    limit: int = 50,
 ) -> dict:
     result = _owned_result(subject, project_id, comparison_id)
     if result.get("status") != "ready":
@@ -1287,7 +1404,7 @@ def list_files(
 
     rows = [row for row in result["files"] if matches(row)]
     return {
-        "items": rows[offset:None if limit is None else offset + limit],
+        "items": rows[offset:offset + limit],
         "total": len(rows),
         "filtered_total": len(rows),
         "overall_total": len(result["files"]),
@@ -1314,6 +1431,7 @@ def _read_member(path: Path, member: str) -> bytes:
 def file_diff(
     project_id: str,
     subject: str,
+    token: str,
     comparison_id: str,
     file_id: str,
 ) -> dict:
@@ -1323,51 +1441,59 @@ def file_diff(
     row = next((item for item in result["files"] if item["path"] == file_id), None)
     if row is None:
         raise WorkspaceError("比较文件不存在", 404)
-    paths = [
-        _materialize(
-            project_id, subject, result.get("input_refs", {}).get(side) or result[side]["source"], comparison_id,
-        )[0]
-        for side in ("left", "right")
-    ]
-    values = []
-    for path, side in zip(paths, ("left", "right")):
-        member = row[side]["path"] if row[side] else None
-        if not member:
-            values.append(None)
-            continue
-        size = int(row[side].get("size", 0))
-        if size > MAX_TEXT_BYTES:
-            values.append({"text": None, "encoding": "too_large", "bytes": size,
-                           "reason": "文件超过正文差异展示限制"})
-            continue
-        raw = _read_member(path, member)
-        try:
-            encoding = "utf-8-sig" if raw.startswith(b"\xef\xbb\xbf") else (
-                "utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8")
-            text = raw.decode(encoding)
-            lines = text.splitlines()
-            if len(lines) > MAX_TEXT_LINES or any(len(line) > MAX_LINE_CHARS for line in lines):
-                values.append({
-                    "text": None,
-                    "encoding": "complex_text",
-                    "bytes": len(raw),
-                    "reason": "文件行数或单行长度超过正文差异展示限制",
-                })
-            else:
-                values.append({
-                    "text": text,
-                    "encoding": encoding,
-                    "bytes": len(raw),
-                })
-        except UnicodeDecodeError:
-            values.append({"text": None, "encoding": "binary", "bytes": len(raw)})
-    return {
-        "path": file_id,
-        "status": row["status"],
-        "category": row["category"],
-        "left": values[0],
-        "right": values[1],
-    }
+    paths: list[Path] = []
+    folders: list[Path] = []
+    try:
+        for side in ("left", "right"):
+            source = result.get("input_refs", {}).get(side) or result[side]["source"]
+            path, meta, temp = _materialize(project_id, subject, token, source, comparison_id)
+            if source.get("kind") == "frozen":
+                _ensure_frozen_readable(meta, token)
+            paths.append(path)
+            if temp:
+                folders.append(temp)
+        values = []
+        for path, side in zip(paths, ("left", "right")):
+            member = row[side]["path"] if row[side] else None
+            if not member:
+                values.append(None)
+                continue
+            size = int(row[side].get("size", 0))
+            if size > MAX_TEXT_BYTES:
+                values.append({"text": None, "encoding": "too_large", "bytes": size,
+                               "reason": "文件超过正文差异展示限制"})
+                continue
+            raw = _read_member(path, member)
+            try:
+                encoding = "utf-8-sig" if raw.startswith(b"\xef\xbb\xbf") else (
+                    "utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8")
+                text = raw.decode(encoding)
+                lines = text.splitlines()
+                if len(lines) > MAX_TEXT_LINES or any(len(line) > MAX_LINE_CHARS for line in lines):
+                    values.append({
+                        "text": None,
+                        "encoding": "complex_text",
+                        "bytes": len(raw),
+                        "reason": "文件行数或单行长度超过正文差异展示限制",
+                    })
+                else:
+                    values.append({
+                        "text": text,
+                        "encoding": encoding,
+                        "bytes": len(raw),
+                    })
+            except UnicodeDecodeError:
+                values.append({"text": None, "encoding": "binary", "bytes": len(raw)})
+        return {
+            "path": file_id,
+            "status": row["status"],
+            "category": row["category"],
+            "left": values[0],
+            "right": values[1],
+        }
+    finally:
+        for folder in folders:
+            shutil.rmtree(folder, ignore_errors=True)
 
 
 def delete(subject: str, comparison_id: str) -> None:

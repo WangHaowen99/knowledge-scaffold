@@ -497,7 +497,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `optimization_not_supported` | 409 | 求解验证的轮次不能评测优化 | — |
 | `answer_not_found` | 404 | 报告附件里没有这条完整回答 | — |
 | `note_required` | 422 | 标记处理失败没写原因 | — |
-| `compare_cross_package` | 409 | 两侧是不同的知识包（manifest `id` 不同），没带 `allow_cross_package`；PC-05 失败任务的 `error_code` | — |
+| `compare_cross_package` | 409 | 两侧是不同的知识包（manifest `id` 不同），没带 `allow_cross_package` | — |
 | `compare_not_ready` | 409 | 对比还没完成 | — |
 | `compare_input_in_use` | 409 | 对比输入还被对比任务用着 | — |
 | `compare_request_conflict` | 409 | 同一 `request_id` 已绑定别的来源 | — |
@@ -3284,16 +3284,18 @@ ADR-0098。都要统一账号登录（`401 unauthenticated`），Hub 的错误�
 
 #### 知识包版本对比（PC 组）
 
-依据 ADR-0095。比较两份知识包 ZIP：本项目的发布版本 `{kind: "release", version}`，或这次上传的包 `{kind: "upload", input_id}`。
+依据 ADR-0095。参数、分页与响应照 develop（`routers/projects.py` 的 `package-comparisons/*`），路径在 `/api/v1` 下。
 
-- 只读，不改项目内容，已归档项目也能比。只有所有者能调；比较数据按登录用户隔离（本地模式记 `local`）。
-- 发起对比时发布版本当场复制冻结，之后的解析与正文差异都读这一份。取包同 PB-07：读发布留存，留存缺失时用发起人的登录令牌从 Hub 下回原包。
-- 两侧 manifest `id` 不同算跨包。经 Hub 发布的包 `id` 是 Hub 包标识，没走 Hub 的本地导出是项目 ID，两者也算跨包。
-- 上传输入、对比结果 24 小时过期（最近一次读取起算）。上限与 TTL 见环境变量 `ONTO_COMPARE_*`。
+- 来源：Hub 上的发布版本 `{kind: "release", ontology_id?|hub_package_id?, release_id}`（缺包标识时取项目关联的 Hub 包；当前用户在 Hub 上可见的版本都能选），
+  本项目发布版本的简写 `{kind: "release", version}`（按发布记录里的 Hub 身份换成前一种），或这次上传的包 `{kind: "upload", input_id}`。
+- 要统一账号登录（Hub 身份，鉴权关闭的本地模式 `401`），再过所有者守卫。比较数据按 Hub 主体（[签发方, sub]）隔离。
+- 只读，不改项目内容。发起对比时用发起人的令牌从 Hub 下载发布包并冻结；读结果、文件列表、正文差异，以及同一 `request_id` 重放时，回 Hub 复核读权限（无权时透出 Hub 的错误）。
+- 上传输入、对比结果 24 小时过期（最近一次读取起算）。上限与 TTL 见环境变量 `ONTO_COMPARE_*`。时间字段是 epoch 秒。
 - ZIP 在子进程里解析，拒绝路径穿越、符号链接、加密条目、异常压缩比、包根外的文件、重复或非字符串的 manifest 键；manifest 必须是
   `kind: ontology-package`，`schema_version` 0.1 或 0.2。
-- `ComparisonSide`：`{source, package_name, package_version, package_digest, file_count, uncompressed_size, version}`；
-  `version` 只有发布版本才有。
+- 两侧 manifest `id`（发布版本取 Hub 回执的 `manifest_id`）不同算跨包，要带 `allow_cross_package`，否则任务失败，`error` 为「两侧属于不同 Hub 知识包，请确认跨包对比」。
+- `ComparisonSide`：`{source, package_name, package_version, package_digest, file_count, uncompressed_size, version, committed_at}`；
+  `version`、`committed_at` 只有发布版本才有。
 - `CompareFile`：`{path, category, status: added|deleted|modified|unchanged, display_name, left: FileInfo|null, right: FileInfo|null}`，
   `FileInfo` 是 `{path, size, digest, category, display_name}`。
   - `category` 取 `objects|operations|rules|metrics|scripts|mappings|indexes|metadata|other`；
@@ -3301,7 +3303,7 @@ ADR-0098。都要统一账号登录（`401 unauthenticated`），Hub 的错误�
 
 #### PC-01 上传对比输入
 
-`POST /api/v1/projects/{id}/package-comparisons/inputs` · 所有者 · 旧：— · 审计：是 · 依据：ADR-0095 · 页面：publish（版本对比「上传 ZIP」）
+`POST /api/v1/projects/{id}/package-comparisons/inputs` · 所有者（统一账号） · 旧：— · 审计：是 · 依据：ADR-0095 · 页面：publish（版本对比「导入知识包 › 选择 ZIP」）
 
 - 请求：`multipart/form-data`，字段 `file`。请求头 `X-Compare-Upload-Id?`（`[A-Za-z0-9_-]{1,128}`）用于取消（PC-02）和防重复提交。
 - 响应 `201`：`{input_id, package_id, package_name, package_version, package_digest, content_digest, file_count, uncompressed_size, created_at, expires_at, warnings: []}`。
@@ -3310,53 +3312,51 @@ ADR-0098。都要统一账号登录（`401 unauthenticated`），Hub 的错误�
 
 #### PC-02 取消上传
 
-`DELETE /api/v1/projects/{id}/package-comparisons/uploads/{request_id}` · 所有者 · 旧：— · 审计：是 · 依据：ADR-0095 · 页面：publish
+`DELETE /api/v1/projects/{id}/package-comparisons/uploads/{request_id}` · 所有者（统一账号） · 旧：— · 审计：是 · 依据：ADR-0095 · 页面：publish
 
 - `request_id` 是 PC-01 的 `X-Compare-Upload-Id`；取消可以先于上传请求到达。
-- 响应 `204`。
+- 响应：`{cancelled: true}`。
 
 #### PC-03 删除对比输入
 
-`DELETE /api/v1/projects/{id}/package-comparisons/inputs/{input_id}` · 所有者 · 旧：— · 审计：是 · 依据：ADR-0095 · 页面：publish
+`DELETE /api/v1/projects/{id}/package-comparisons/inputs/{input_id}` · 所有者（统一账号） · 旧：— · 审计：是 · 依据：ADR-0095 · 页面：publish
 
-- 响应 `204`。
+- 响应：`{deleted: true}`。
 - 错误：`compare_input_in_use`（先删用到它的对比）、`forbidden`、`compare_expired`。
 
 #### PC-04 发起对比
 
-`POST /api/v1/projects/{id}/package-comparisons` · 所有者 · 旧：— · 审计：是 · 依据：ADR-0095 · 页面：publish
+`POST /api/v1/projects/{id}/package-comparisons` · 所有者（统一账号） · 旧：— · 审计：是 · 依据：ADR-0095 · 页面：publish
 
 - 请求：`{left: Source, right: Source, allow_cross_package?: bool, request_id?: string}`。
-  - `Source` 是 `{kind: "release", version}` 或 `{kind: "upload", input_id}`，多余字段 400；
-  - 同一 `request_id` 带同样的来源重放，返回同一个任务（PC-05 的视图），来源不同返回 `compare_request_conflict`。
+  - `Source` 见上；发布版本的 `release_id` 与 `version` 二选一，多余字段 400；
+  - 同一 `request_id` 带同样的来源重放，先回 Hub 复核读权限，再返回同一个任务（PC-05 的视图）；来源不同返回 `compare_request_conflict`。
 - 响应 `202`：`{comparison_id, status: "queued", phase, poll_after_ms}`。
-- 错误：`invalid_argument`（两侧相同、来源不合法）、`release_not_found`、`release_package_unavailable`、`payload_too_large`（发布包超过对比上限）、
-  `compare_user_busy`、`compare_busy`、`compare_request_conflict`、`compare_user_storage_full`、`compare_storage_full`、`compare_service_unavailable`。
+- 错误：`invalid_argument`（两侧相同、来源不合法、发布版本缺少 Hub 身份）、`release_not_found`（`version` 简写找不到）、`payload_too_large`（发布包超过对比上限）、
+  `compare_user_busy`、`compare_busy`、`compare_request_conflict`、`compare_user_storage_full`、`compare_storage_full`、`compare_service_unavailable`，以及 Hub 透出的错误。
 
 #### PC-05 对比结果
 
-`GET /api/v1/projects/{id}/package-comparisons/{comparison_id}` · 所有者 · 旧：— · 审计：否 · 依据：ADR-0095 · 页面：publish
+`GET /api/v1/projects/{id}/package-comparisons/{comparison_id}` · 所有者（统一账号） · 旧：— · 审计：否 · 依据：ADR-0095 · 页面：publish
 
-- 进行中、失败：`{comparison_id, status: queued|running|failed, phase, error?, error_code?}`。
-  - 两侧不是同一个知识包且没带 `allow_cross_package` 时 `error_code="compare_cross_package"`；
-  - 服务重启时没跑完的任务改判失败，`error_code="PROCESS_RESTARTED"`。
+- 进行中、失败：`{comparison_id, status: queued|running|failed, phase, error?, error_code?}`；服务重启时没跑完的任务改判失败，`error_code="PROCESS_RESTARTED"`。
 - 完成：`{comparison_id, status: "ready", created_at, left: ComparisonSide, right: ComparisonSide, summary}`。
   - `summary`：`{files: {added, deleted, modified, unchanged}, categories: {<category>: 同上}, affected_categories[], evidence[≤4], left_file_count, right_file_count}`。
-- 错误：`compare_expired`、`forbidden`。
+- 错误：`compare_expired`、`forbidden`，以及复核时 Hub 透出的错误。
 
 #### PC-06 差异文件
 
-`GET /api/v1/projects/{id}/package-comparisons/{comparison_id}/files` · 所有者 · 旧：— · 审计：否 · 依据：ADR-0095 · 页面：publish
+`GET /api/v1/projects/{id}/package-comparisons/{comparison_id}/files` · 所有者（统一账号） · 旧：— · 审计：否 · 依据：ADR-0095 · 页面：publish
 
-- 查询参数：`status?`（`changed` = 新增、删除、修改，或四种状态之一；缺省全部）、`category?`、`q?`（路径或业务名称，≤200 字）、分页。
-- 响应：`{items: CompareFile[], next_cursor, total}`，`total` 是筛选后的数量。
-- 错误：`compare_not_ready`、`compare_expired`、`invalid_argument`。
+- 查询参数：`status?`（`changed` = 新增、删除、修改，或四种状态之一；缺省全部）、`category?`、`q?`（路径或业务名称，≤200 字）、`offset`（≥0，默认 0）、`limit`（1～200，默认 50）。
+- 响应：`{items: CompareFile[], total, filtered_total, overall_total, offset, limit}`；`total`、`filtered_total` 是筛选后的数量，`overall_total` 是全部文件数。
+- 错误：`invalid_argument`（分页参数无效）、`compare_not_ready`、`compare_expired`。
 
 #### PC-07 单文件差异
 
-`GET /api/v1/projects/{id}/package-comparisons/{comparison_id}/file-diff` · 所有者 · 旧：— · 审计：否 · 依据：ADR-0095 · 页面：publish
+`GET /api/v1/projects/{id}/package-comparisons/{comparison_id}/file-diff` · 所有者（统一账号） · 旧：— · 审计：否 · 依据：ADR-0095 · 页面：publish
 
-- 查询参数：`path`（`CompareFile.path`）。
+- 查询参数：`file_id`（`CompareFile.path`）。
 - 响应：`{path, status, category, left: FileText|null, right: FileText|null}`，`null` 表示这一侧没有该文件。
   - `FileText` 是 `{text, encoding, bytes, reason?}`；
   - `encoding` 取 `utf-8|utf-8-sig|utf-16`，或不给正文的 `binary`、`too_large`（超过 1 MiB）、`complex_text`（超过 2 万行或单行 2 万字）。
@@ -3364,9 +3364,9 @@ ADR-0098。都要统一账号登录（`401 unauthenticated`），Hub 的错误�
 
 #### PC-08 删除对比
 
-`DELETE /api/v1/projects/{id}/package-comparisons/{comparison_id}` · 所有者 · 旧：— · 审计：是 · 依据：ADR-0095 · 页面：publish
+`DELETE /api/v1/projects/{id}/package-comparisons/{comparison_id}` · 所有者（统一账号） · 旧：— · 审计：是 · 依据：ADR-0095 · 页面：publish
 
-- 还在跑的一并取消。响应 `204`。
+- 还在跑的一并取消。响应：`{deleted: true}`。
 - 错误：`compare_expired`、`forbidden`。
 
 ---

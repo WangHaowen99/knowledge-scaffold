@@ -1705,3 +1705,14 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
 3. **V-06** 响应加 `changes`、`warning`；回退后删掉 `.ontology-state` 派生状态（第一轮按指纹失效、不删，改回 develop）；暂存了元数据也拒绝；提交说明改为「revert: 回退到版本 N（短提交号）」。
 4. 错误提示文字照 develop（「项目已产生新版本，请重新预览后再回退」「当前业务内容与该版本一致，无需回退」「只能回退到当前版本历史中的提交」等），错误码沿用 v1。
 5. 会话池加 `workspace_busy`（develop 同名），回退的「助手在跑」按它判断。
+
+## 2026-11-12 · 知识包版本对比改回 develop 的语义（PC 组，ADR-0095 修订）
+
+第二轮对齐 develop：除路径挂在 `/api/v1` 下、错误体带契约码外，PC 组的参数、分页、响应与鉴权都照 develop。
+
+1. **来源**：发布版本改回 Hub 引用 `{ontology_id?|hub_package_id?, release_id}`，能选当前用户在 Hub 上可见的版本；`{version}` 留作本项目简写。
+2. **鉴权**：要统一账号（Hub 身份），本地模式 401；读结果、文件列表、正文差异、重放时回 Hub 复核读权限；比较数据按 Hub 主体隔离。
+3. **参数与响应**：PC-06 改回 `offset/limit`，响应 `{items, total, filtered_total, overall_total, offset, limit}`；PC-07 参数改回 `file_id`；
+   PC-02 返回 `{cancelled: true}`，PC-03、PC-08 返回 `{deleted: true}`；时间字段改回 epoch 秒；任务失败的 `error` 是异常原文。
+4. 跨包的任务失败不再带 `error_code`（develop 没有），前端照 develop 在发起前比较两侧包标识、确认后再带 `allow_cross_package`。
+

@@ -167,7 +167,7 @@ export function Area({ minHeight, className, textareaStyle, ...props }) {
 }
 
 // 下拉选择：外观同设计稿 sel()，点开是 .menu
-export function Select({ value, options, onChange, icon, w, className, disabled }) {
+export function Select({ value, options, onChange, icon, w, className, disabled, placeholder }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useOutside(ref, () => setOpen(false), open);
@@ -181,7 +181,7 @@ export function Select({ value, options, onChange, icon, w, className, disabled 
         role="button"
       >
         {icon ? <Icon name={icon} size={14} /> : null}
-        <span className="grow ell">{current ? current.label : ''}</span>
+        <span className={cx('grow ell', !current && placeholder && 'muted')}>{current ? current.label : placeholder || ''}</span>
       </div>
       {open ? (
         <div className="menu" style={{ position: 'absolute', top: 40, left: 0, right: 0, zIndex: 40 }}>

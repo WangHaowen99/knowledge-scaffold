@@ -1,6 +1,5 @@
-"""知识包版本对比（API 契约 3.20 PC 组，ADR-0095）：上传与发布版本两种来源、ZIP 安全校验、异步任务、配额与清理。
-
-自 develop 的同名测试移植：发布版本的来源从 Hub release 改为本项目版本号（publish.release_package）。数据全部合成。
+"""知识包版本对比（API 契约 3.20 PC 组，ADR-0095）。自 develop 的同名测试原样移植（只改导入与路径），
+末尾是本分支 /api/v1 接口的端到端用例。数据全部合成。
 """
 
 import io
@@ -50,15 +49,18 @@ def archive(root="", package_id="synthetic", schema_version="0.1", **files):
 def comparison_root(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.setattr(package_compare, "_SERVICE_OWNER", True)
-    # 别的测试跑过应用生命周期会把服务标成已停（shutdown）
+    isolate_compare_state(monkeypatch)
+    yield "synthetic-subject"
+    drain_tasks()
+
+
+def isolate_compare_state(monkeypatch):
+    """模块级状态每个测试一份：别的测试跑过应用生命周期会停掉服务和线程池，配额预留也不能串到下一个测试。"""
     monkeypatch.setattr(package_compare, "_SERVICE_AVAILABLE", True)
     monkeypatch.setattr(package_compare, "_STORAGE_RESERVATIONS", {})
     monkeypatch.setattr(package_compare, "_RESULT_RESERVATIONS", set())
     if package_compare._EXECUTOR._shutdown:
-        # 同一进程里别的测试跑过应用生命周期，shutdown 停掉了线程池
         monkeypatch.setattr(package_compare, "_EXECUTOR", ThreadPoolExecutor(max_workers=2))
-    yield "synthetic-subject"
-    drain_tasks()
 
 
 def drain_tasks():
@@ -68,26 +70,6 @@ def drain_tasks():
     with package_compare._TASK_LOCK:
         pending = [future for future in package_compare._RUNNING.values() if future is not None]
     wait(pending, timeout=10)
-
-
-# 等待上限（join、wait、轮询次数）只是兜底：每次解析都起一个子进程，机器忙时 develop 原来的 2 秒不够；断言不变
-
-def fake_release(monkeypatch, tmp_path, payload: bytes, calls=None, before=None):
-    """publish.release_package 的替身：按版本返回一份留存包。"""
-    def release_package(manager, project_id, version, *rest, token=""):
-        if calls is not None:
-            calls.append((manager, project_id, version))
-        tokens.append(token)
-        if before:
-            before()
-        stored = tmp_path / "release-store" / f"{project_id}-{version}.zip"
-        stored.parent.mkdir(parents=True, exist_ok=True)
-        stored.write_bytes(payload)
-        return stored, {"version": version, "sha256": "0" * 64}
-
-    monkeypatch.setattr(publish, "release_package", release_package)
-    tokens = []
-    return tokens
 
 
 def test_modeling_export_is_accepted_as_comparison_input(
@@ -121,7 +103,6 @@ def test_modeling_export_is_accepted_as_comparison_input(
         project["id"],
     )
     assert metadata["package_id"] == project["id"]
-    # 本分支未发布导出的版本号按主线计（develop 固定 0.1.1），以导出包自己的 manifest 为准
     with zipfile.ZipFile(exported) as package:
         manifest_name = next(name for name in package.namelist() if name.endswith("/manifest.yaml") or name == "manifest.yaml")
         exported_version = yaml.safe_load(package.read(manifest_name))["version"]
@@ -139,7 +120,7 @@ def test_upload_compare_reports_four_file_states_and_categories(comparison_root)
     right = package_compare.create_input(comparison_root, archive(**{
         "objects/a.md": "a\n", "objects/changed.md": "new\n", "objects/added.md": "new\n",
     }), "right.zip")
-    result = package_compare.create_comparison("project_alpha", comparison_root, {
+    result = package_compare.create_comparison("project_alpha", comparison_root, "", {
         "kind": "upload", "input_id": left["input_id"]
     }, {"kind": "upload", "input_id": right["input_id"]})
     assert result["status"] == "ready"
@@ -147,7 +128,7 @@ def test_upload_compare_reports_four_file_states_and_categories(comparison_root)
     rows = package_compare.list_files(comparison_root, "project_alpha", result["comparison_id"], status="modified")
     assert rows["total"] == 1 and rows["items"][0]["path"] == "objects/changed.md"
     diff = package_compare.file_diff(
-        "project_alpha", comparison_root, result["comparison_id"], "objects/changed.md",
+        "project_alpha", comparison_root, "", result["comparison_id"], "objects/changed.md",
     )
     assert diff["left"]["text"] == "old\n" and diff["right"]["text"] == "new\n"
 
@@ -157,7 +138,8 @@ def test_compare_source_models_reject_invalid_field_types():
         PackageCompareBody.model_validate({
             "left": {
                 "kind": "release",
-                "version": ["0.1.0"],
+                "ontology_id": ["synthetic"],
+                "release_id": "release_demo",
             },
             "right": {"kind": "upload", "input_id": "cmpin_demo"},
         })
@@ -171,11 +153,13 @@ def test_compare_source_models_reject_invalid_field_types():
 def test_service_rejects_invalid_source_field_types(comparison_root):
     with pytest.raises(WorkspaceError) as error:
         package_compare.start_comparison(
-            None, "project_alpha",
+            "project_alpha",
             comparison_root,
+            "token",
             {
                 "kind": "release",
-                "version": ["0.1.0"],
+                "ontology_id": ["synthetic"],
+                "release_id": "release_demo",
             },
             {"kind": "upload", "input_id": "cmpin_demo"},
         )
@@ -277,7 +261,7 @@ def test_wrapper_directory_does_not_change_comparison_paths(comparison_root):
         comparison_root, archive(root="exported-package", **files), project_id="project_alpha",
     )
     result = package_compare.create_comparison(
-        "project_alpha", comparison_root,
+        "project_alpha", comparison_root, "",
         {"kind": "upload", "input_id": left["input_id"]},
         {"kind": "upload", "input_id": right["input_id"]},
     )
@@ -416,11 +400,11 @@ def test_compare_inputs_are_private_and_expire(comparison_root, monkeypatch):
 def test_start_comparison_is_pollable(comparison_root):
     left = package_compare.create_input(comparison_root, archive(**{"objects/a.md": "a"}), project_id="project_alpha")
     right = package_compare.create_input(comparison_root, archive(**{"objects/a.md": "b"}), project_id="project_alpha")
-    job = package_compare.start_comparison(None, "project_alpha", comparison_root, {
+    job = package_compare.start_comparison("project_alpha", comparison_root, "", {
         "kind": "upload", "input_id": left["input_id"]
     }, {"kind": "upload", "input_id": right["input_id"]})
     assert job["status"] == "queued"
-    for _ in range(3000):
+    for _ in range(30):
         result = package_compare.get_comparison(comparison_root, "project_alpha", job["comparison_id"])
         if result["status"] == "ready":
             assert result["summary"]["files"]["modified"] == 1
@@ -440,10 +424,10 @@ def test_start_comparison_is_idempotent_for_the_same_request(comparison_root):
     refs = ({"kind": "upload", "input_id": left["input_id"]},
             {"kind": "upload", "input_id": right["input_id"]})
     first = package_compare.start_comparison(
-        None, "project_alpha", comparison_root, *refs, request_id="request_demo",
+        "project_alpha", comparison_root, "", *refs, request_id="request_demo",
     )
     second = package_compare.start_comparison(
-        None, "project_alpha", comparison_root, *refs, request_id="request_demo",
+        "project_alpha", comparison_root, "", *refs, request_id="request_demo",
     )
     assert second["comparison_id"] == first["comparison_id"]
 
@@ -459,14 +443,14 @@ def test_request_id_rejects_different_sources(comparison_root):
         comparison_root, archive(**{"objects/a.md": "c"}), project_id="project_alpha",
     )
     package_compare.start_comparison(
-        None, "project_alpha", comparison_root,
+        "project_alpha", comparison_root, "",
         {"kind": "upload", "input_id": first["input_id"]},
         {"kind": "upload", "input_id": second["input_id"]},
         request_id="request_conflict",
     )
     with pytest.raises(WorkspaceError) as error:
         package_compare.start_comparison(
-            None, "project_alpha", comparison_root,
+            "project_alpha", comparison_root, "",
             {"kind": "upload", "input_id": first["input_id"]},
             {"kind": "upload", "input_id": third["input_id"]},
             request_id="request_conflict",
@@ -491,7 +475,7 @@ def test_file_search_includes_business_display_name(comparison_root):
         "objects/a.md": "---\nreport_name: 业务订单\n---\nnew\n",
     }))
     result = package_compare.create_comparison(
-        "project_alpha", comparison_root,
+        "project_alpha", comparison_root, "",
         {"kind": "upload", "input_id": left["input_id"]},
         {"kind": "upload", "input_id": right["input_id"]},
     )
@@ -519,12 +503,14 @@ def test_file_diff_degrades_text_with_excessive_line_length(
     result = package_compare.create_comparison(
         "project_alpha",
         comparison_root,
+        "",
         {"kind": "upload", "input_id": left["input_id"]},
         {"kind": "upload", "input_id": right["input_id"]},
     )
     diff = package_compare.file_diff(
         "project_alpha",
         comparison_root,
+        "",
         result["comparison_id"],
         "objects/a.md",
     )
@@ -556,18 +542,18 @@ def test_start_comparison_limits_user_and_global_pending_tasks(comparison_root, 
             {"kind": "upload", "input_id": right["input_id"]},
         )
 
-    first = package_compare.start_comparison(None, "project_alpha", "user-a", *refs("user-a"))
+    first = package_compare.start_comparison("project_alpha", "user-a", "", *refs("user-a"))
     with pytest.raises(WorkspaceError) as user_error:
-        package_compare.start_comparison(None, "project_alpha", "user-a", *refs("user-a"))
+        package_compare.start_comparison("project_alpha", "user-a", "", *refs("user-a"))
     assert user_error.value.status == 429 and user_error.value.code == "compare_user_busy"
 
-    second = package_compare.start_comparison(None, "project_alpha", "user-b", *refs("user-b"))
+    second = package_compare.start_comparison("project_alpha", "user-b", "", *refs("user-b"))
     with pytest.raises(WorkspaceError) as global_error:
-        package_compare.start_comparison(None, "project_alpha", "user-c", *refs("user-c"))
+        package_compare.start_comparison("project_alpha", "user-c", "", *refs("user-c"))
     assert global_error.value.status == 429 and global_error.value.code == "compare_busy"
 
     package_compare.delete("user-a", first["comparison_id"])
-    replacement = package_compare.start_comparison(None, "project_alpha", "user-c", *refs("user-c"))
+    replacement = package_compare.start_comparison("project_alpha", "user-c", "", *refs("user-c"))
     package_compare.delete("user-b", second["comparison_id"])
     package_compare.delete("user-c", replacement["comparison_id"])
 
@@ -586,7 +572,7 @@ def test_file_diff_rejects_unfinished_comparison(comparison_root):
     })
 
     with pytest.raises(WorkspaceError, match="尚未完成") as error:
-        package_compare.file_diff("project_alpha", comparison_root, comparison_id, "objects/a.md")
+        package_compare.file_diff("project_alpha", comparison_root, "", comparison_id, "objects/a.md")
     assert error.value.status == 409
 
 
@@ -598,9 +584,9 @@ def test_repeated_async_comparison_keeps_new_job_result(comparison_root):
 
     jobs = []
     for _ in range(2):
-        job = package_compare.start_comparison(None, "project_alpha", comparison_root, *refs)
+        job = package_compare.start_comparison("project_alpha", comparison_root, "", *refs)
         jobs.append(job)
-        for _ in range(3000):
+        for _ in range(100):
             result = package_compare.get_comparison(comparison_root, "project_alpha", job["comparison_id"])
             if result["status"] == "ready":
                 assert result["comparison_id"] == job["comparison_id"]
@@ -624,16 +610,16 @@ def test_cancelled_worker_cannot_recreate_ready_result(comparison_root, monkeypa
 
     def delayed_summary(*args):
         entered.set()
-        assert resume.wait(30)
+        assert resume.wait(2)
         return original(*args)
 
     monkeypatch.setattr(package_compare, "_summary", delayed_summary)
     job = package_compare.start_comparison(
-        None, "project_alpha", comparison_root,
+        "project_alpha", comparison_root, "",
         {"kind": "upload", "input_id": left["input_id"]},
         {"kind": "upload", "input_id": right["input_id"]},
     )
-    assert entered.wait(30)
+    assert entered.wait(2)
     package_compare.delete(comparison_root, job["comparison_id"])
     resume.set()
     future = package_compare._RUNNING.get((comparison_root, job["comparison_id"]))
@@ -646,10 +632,11 @@ def test_cancelled_worker_cannot_recreate_ready_result(comparison_root, monkeypa
 
 def test_same_release_is_rejected_before_freezing(comparison_root, monkeypatch):
     calls = []
-    monkeypatch.setattr(publish, "release_package", lambda *args: calls.append(args))
-    ref = {"kind": "release", "version": "0.1.0"}
+    monkeypatch.setattr(package_compare.hub_packages, "association", lambda *_: {"ontology_id": "pkg_demo"})
+    monkeypatch.setattr(package_compare.hub_packages, "download", lambda *args: calls.append(args))
+    ref = {"kind": "release", "release_id": "rel_demo"}
     with pytest.raises(WorkspaceError, match="不能相同"):
-        package_compare.start_comparison(None, "project_alpha", comparison_root, ref, dict(ref))
+        package_compare.start_comparison("project_alpha", comparison_root, "token", ref, dict(ref))
     assert calls == []
 
 
@@ -675,12 +662,12 @@ def test_large_text_uses_preview_fallback(comparison_root, monkeypatch):
         comparison_root, archive(**{"objects/a.md": "other"}), project_id="project_alpha",
     )
     result = package_compare.create_comparison(
-        "project_alpha", comparison_root,
+        "project_alpha", comparison_root, "",
         {"kind": "upload", "input_id": left["input_id"]},
         {"kind": "upload", "input_id": right["input_id"]},
     )
     diff = package_compare.file_diff(
-        "project_alpha", comparison_root, result["comparison_id"], "objects/a.md",
+        "project_alpha", comparison_root, "", result["comparison_id"], "objects/a.md",
     )
     assert diff["left"]["encoding"] == "too_large" and diff["left"]["text"] is None
 
@@ -693,7 +680,7 @@ def test_input_cannot_be_deleted_until_its_comparison_is_deleted(comparison_root
         comparison_root, archive(**{"objects/a.md": "b"}), project_id="project_alpha",
     )
     result = package_compare.create_comparison(
-        "project_alpha", comparison_root,
+        "project_alpha", comparison_root, "",
         {"kind": "upload", "input_id": left["input_id"]},
         {"kind": "upload", "input_id": right["input_id"]},
     )
@@ -726,7 +713,7 @@ def test_input_delete_and_task_creation_are_atomic(comparison_root, monkeypatch)
         if path == package_compare.root(comparison_root) and pattern == "cmp_*/*.json":
             values = list(rows)
             delete_checked.set()
-            assert delete_resume.wait(30)
+            assert delete_resume.wait(2)
             return iter(values)
         return rows
 
@@ -745,8 +732,9 @@ def test_input_delete_and_task_creation_are_atomic(comparison_root, monkeypatch)
     def create_task():
         try:
             package_compare.start_comparison(
-                None, "project_alpha",
+                "project_alpha",
                 comparison_root,
+                "",
                 {"kind": "upload", "input_id": left["input_id"]},
                 {"kind": "upload", "input_id": right["input_id"]},
             )
@@ -756,11 +744,11 @@ def test_input_delete_and_task_creation_are_atomic(comparison_root, monkeypatch)
     delete_thread = threading.Thread(target=remove_input)
     create_thread = threading.Thread(target=create_task)
     delete_thread.start()
-    assert delete_checked.wait(30)
+    assert delete_checked.wait(2)
     create_thread.start()
     delete_resume.set()
-    delete_thread.join(30)
-    create_thread.join(30)
+    delete_thread.join(2)
+    create_thread.join(2)
     assert not delete_thread.is_alive() and not create_thread.is_alive()
     assert delete_errors == []
     assert not input_folder.exists()
@@ -781,10 +769,10 @@ def test_cross_package_check_uses_manifest_identity_for_uploads(comparison_root)
         {"kind": "upload", "input_id": right["input_id"]},
     )
     with pytest.raises(WorkspaceError) as error:
-        package_compare.create_comparison("project_alpha", comparison_root, *refs)
+        package_compare.create_comparison("project_alpha", comparison_root, "", *refs)
     assert error.value.status == 409
     result = package_compare.create_comparison(
-        "project_alpha", comparison_root, *refs, allow_cross_package=True,
+        "project_alpha", comparison_root, "", *refs, allow_cross_package=True,
     )
     assert result["status"] == "ready"
 
@@ -846,7 +834,7 @@ def test_restart_marks_orphaned_active_job_failed(comparison_root):
     package_compare._write_json(folder / "job.json", {
         "comparison_id": comparison_id, "project_id": "project_alpha", "owner": comparison_root,
         "status": "running", "phase": "reading",
-        "created_at": time.time() - 1,
+        "created_at": package_compare._PROCESS_STARTED_AT - 1,
     })
     package_compare.maintain()
     result = package_compare.get_comparison(comparison_root, "project_alpha", comparison_id)
@@ -858,7 +846,7 @@ def test_expired_result_is_rejected_during_read(comparison_root, monkeypatch):
     left = package_compare.create_input(comparison_root, archive(**{"objects/a.md": "a"}))
     right = package_compare.create_input(comparison_root, archive(**{"objects/a.md": "b"}))
     result = package_compare.create_comparison(
-        "project_alpha", comparison_root,
+        "project_alpha", comparison_root, "",
         {"kind": "upload", "input_id": left["input_id"]},
         {"kind": "upload", "input_id": right["input_id"]},
     )
@@ -872,7 +860,7 @@ def test_maintenance_keeps_expired_input_referenced_by_ready_result(comparison_r
     left = package_compare.create_input(comparison_root, archive(**{"objects/a.md": "a"}), project_id="project_alpha")
     right = package_compare.create_input(comparison_root, archive(**{"objects/a.md": "b"}), project_id="project_alpha")
     result = package_compare.create_comparison(
-        "project_alpha", comparison_root,
+        "project_alpha", comparison_root, "",
         {"kind": "upload", "input_id": left["input_id"]},
         {"kind": "upload", "input_id": right["input_id"]},
     )
@@ -881,7 +869,7 @@ def test_maintenance_keeps_expired_input_referenced_by_ready_result(comparison_r
     package_compare.maintain()
 
     diff = package_compare.file_diff(
-        "project_alpha", comparison_root, result["comparison_id"], "objects/a.md",
+        "project_alpha", comparison_root, "", result["comparison_id"], "objects/a.md",
     )
     assert diff["left"]["text"] == "a" and diff["right"]["text"] == "b"
 
@@ -936,20 +924,21 @@ def test_async_job_crossing_input_ttl_still_completes(comparison_root, monkeypat
 
     def delayed_job(*args):
         entered.set()
-        assert resume.wait(30)
+        assert resume.wait(2)
         return original(*args)
 
     monkeypatch.setattr(package_compare, "_run_job", delayed_job)
     job = package_compare.start_comparison(
-        None, "project_alpha",
+        "project_alpha",
         comparison_root,
+        "",
         {"kind": "upload", "input_id": left["input_id"]},
         {"kind": "upload", "input_id": right["input_id"]},
     )
-    assert entered.wait(30)
+    assert entered.wait(2)
     monkeypatch.setattr(package_compare, "INPUT_TTL", 0)
     resume.set()
-    for _ in range(3000):
+    for _ in range(50):
         result = package_compare.get_comparison(
             comparison_root, "project_alpha", job["comparison_id"],
         )
@@ -958,30 +947,44 @@ def test_async_job_crossing_input_ttl_still_completes(comparison_root, monkeypat
         time.sleep(0.01)
     assert result["status"] == "ready"
     diff = package_compare.file_diff(
-        "project_alpha", comparison_root, job["comparison_id"], "objects/a.md",
+        "project_alpha", comparison_root, "", job["comparison_id"], "objects/a.md",
     )
     assert diff["left"]["text"] == "left" and diff["right"]["text"] == "right"
 
-def test_worker_and_diff_use_frozen_release_without_reading_it_again(comparison_root, tmp_path, monkeypatch):
-    calls = []
-    tokens = fake_release(monkeypatch, tmp_path, archive(**{"objects/a.md": "release"}).getvalue(), calls)
+def test_worker_uses_frozen_release_without_expired_token(comparison_root, monkeypatch):
+    uploaded = archive(**{"objects/a.md": "release"})
+
+    def download(_package_id, _release_id, delegated_identity, destination):
+        assert delegated_identity == "short-lived-token"
+        destination.write_bytes(uploaded.getvalue())
+        return {
+            "version": "1.0.0",
+            "package_digest": "digest",
+            "committed_at": "2026-01-01T00:00:00Z",
+        }
+
+    monkeypatch.setattr(package_compare.hub_packages, "download", download)
+    monkeypatch.setattr(
+        package_compare.hub_packages,
+        "association",
+        lambda *_: {"ontology_id": "pkg_demo"},
+    )
+    checked = []
+    monkeypatch.setattr(
+        package_compare.hub_packages, "call",
+        lambda method, path, token: checked.append((method, path, token)) or {},
+    )
     local = package_compare.create_input(
         comparison_root,
         archive(**{"objects/a.md": "local"}),
         project_id="project_alpha",
     )
     job = package_compare.start_comparison(
-        "manager", "project_alpha", comparison_root,
-        {"kind": "release", "version": "0.1.0"},
+        "project_alpha", comparison_root, "short-lived-token",
+        {"kind": "release", "ontology_id": "pkg_demo", "release_id": "rel_demo"},
         {"kind": "upload", "input_id": local["input_id"]},
-        token="login-token",
     )
-
-    def unavailable(*_args, **_kwargs):
-        raise WorkspaceError("发布包已不可用", 409, "release_package_unavailable")
-
-    monkeypatch.setattr(publish, "release_package", unavailable)
-    for _ in range(3000):
+    for _ in range(50):
         result = package_compare.get_comparison(
             comparison_root, "project_alpha", job["comparison_id"],
         )
@@ -991,21 +994,19 @@ def test_worker_and_diff_use_frozen_release_without_reading_it_again(comparison_
         time.sleep(0.01)
     else:
         pytest.fail(f"frozen release comparison did not finish: {result}")
-    assert result["left"]["source"] == {"kind": "release", "version": "0.1.0"}
-    assert result["left"]["version"] == "0.1.0"
     diff = package_compare.file_diff(
         "project_alpha",
         comparison_root,
+        "expired-token",
         job["comparison_id"],
         "objects/a.md",
     )
     assert diff["left"]["text"] == "release" and diff["right"]["text"] == "local"
-    # 发起人的令牌只交给 release_package（留存缺失时从 Hub 取原包），之后不再回源
-    assert calls == [("manager", "project_alpha", "0.1.0")] and tokens == ["login-token"]
+    assert checked == [("GET", "/api/packages/pkg_demo/releases/rel_demo", "expired-token")]
 
 
 def test_frozen_release_metadata_cannot_exceed_storage_quota(
-    comparison_root, tmp_path, monkeypatch,
+    comparison_root, monkeypatch,
 ):
     local = package_compare.create_input(
         comparison_root,
@@ -1013,7 +1014,17 @@ def test_frozen_release_metadata_cannot_exceed_storage_quota(
         project_id="project_alpha",
     )
     uploaded = archive(**{"objects/a.md": "release"}).getvalue()
-    fake_release(monkeypatch, tmp_path, uploaded)
+
+    def download(_package_id, _release_id, _token, destination):
+        destination.write_bytes(uploaded)
+        return {}
+
+    monkeypatch.setattr(package_compare.hub_packages, "download", download)
+    monkeypatch.setattr(
+        package_compare.hub_packages,
+        "association",
+        lambda *_: {"ontology_id": "pkg_demo"},
+    )
     monkeypatch.setattr(package_compare, "MAX_ARCHIVE_BYTES", len(uploaded) + 100)
     monkeypatch.setattr(package_compare, "RESULT_RESERVATION_BYTES", 100)
     current = package_compare._tree_size(package_compare.root(comparison_root))
@@ -1025,12 +1036,13 @@ def test_frozen_release_metadata_cannot_exceed_storage_quota(
 
     try:
         job = package_compare.start_comparison(
-            None, "project_alpha",
+            "project_alpha",
             comparison_root,
-            {"kind": "release", "version": "0.1.0"},
+            "token",
+            {"kind": "release", "ontology_id": "pkg_demo", "release_id": "release_demo"},
             {"kind": "upload", "input_id": local["input_id"]},
         )
-        for _ in range(3000):
+        for _ in range(100):
             result = package_compare.get_comparison(
                 comparison_root,
                 "project_alpha",
@@ -1048,32 +1060,36 @@ def test_frozen_release_metadata_cannot_exceed_storage_quota(
     )
 
 
-def test_release_source_reads_project_release_by_version(comparison_root, tmp_path, monkeypatch):
-    calls = []
-    fake_release(monkeypatch, tmp_path, archive(**{"objects/a.md": "release"}).getvalue(), calls)
+def test_release_source_uses_current_ontology_id_contract(comparison_root, monkeypatch):
+    uploaded = archive(**{"objects/a.md": "release"})
+    downloaded = []
+
+    def download(ontology_id, release_id, token, destination):
+        downloaded.append((ontology_id, release_id, token))
+        destination.write_bytes(uploaded.getvalue())
+        return {"version": "0.1.1", "package_digest": "digest"}
+
+    monkeypatch.setattr(package_compare.hub_packages, "download", download)
+    monkeypatch.setattr(
+        package_compare.hub_packages,
+        "association",
+        lambda *_: {"ontology_id": "ontology_demo"},
+    )
     path, meta, temporary = package_compare._release_source(
-        "manager",
         "project_alpha",
         comparison_root,
-        {"kind": "release", "version": "0.1.0"},
+        "token",
+        {"kind": "release", "release_id": "release_demo"},
     )
-    assert path.is_file() and path.parent == temporary
-    # 复制出来解析，不动发布留存
-    assert path != tmp_path / "release-store" / "project_alpha-0.1.0.zip"
-    assert meta["source"] == {"kind": "release", "version": "0.1.0"}
-    assert meta["version"] == "0.1.0" and meta["package_id"] == "synthetic"
-    assert calls == [("manager", "project_alpha", "0.1.0")]
-    package_compare.shutil.rmtree(temporary)
-
-
-def test_release_source_rejects_oversized_release(comparison_root, tmp_path, monkeypatch):
-    payload = archive(**{"objects/a.md": "release"}).getvalue()
-    fake_release(monkeypatch, tmp_path, payload)
-    monkeypatch.setattr(package_compare, "MAX_ARCHIVE_BYTES", len(payload) - 1)
-    with pytest.raises(WorkspaceError) as error:
-        package_compare._release_source("manager", "project_alpha", comparison_root, {"kind": "release", "version": "0.1.0"})
-    assert error.value.status == 413
-    assert not list(package_compare.root(comparison_root).glob("onto-package-compare-*"))
+    assert path.is_file()
+    assert meta["source"] == {
+        "kind": "release",
+        "ontology_id": "ontology_demo",
+        "release_id": "release_demo",
+    }
+    assert downloaded == [("ontology_demo", "release_demo", "token")]
+    if temporary:
+        package_compare.shutil.rmtree(temporary)
 
 
 def test_maintenance_does_not_delete_input_during_archive_validation(
@@ -1085,7 +1101,7 @@ def test_maintenance_does_not_delete_input_during_archive_validation(
 
     def delayed_source_meta(*args):
         entered.set()
-        assert resume.wait(30)
+        assert resume.wait(2)
         return original(*args)
 
     monkeypatch.setattr(package_compare, "_source_meta", delayed_source_meta)
@@ -1101,13 +1117,13 @@ def test_maintenance_does_not_delete_input_during_archive_validation(
 
     thread = threading.Thread(target=create)
     thread.start()
-    assert entered.wait(30)
+    assert entered.wait(2)
     active_id = package_compare._ACTIVE_UPLOADS[(comparison_root, "upload_maintenance")]
     active_folder = package_compare.root(comparison_root) / active_id
     package_compare.maintain()
     assert active_folder.is_dir()
     resume.set()
-    thread.join(30)
+    thread.join(2)
     assert not thread.is_alive()
     assert outcome["input"]["input_id"] == active_id
 
@@ -1136,19 +1152,19 @@ def test_maintenance_rechecks_uploads_started_after_cleanup_begins(
     def delayed_read(path):
         if path == result_folder / "result.json":
             cleanup_entered.set()
-            assert cleanup_resume.wait(30)
+            assert cleanup_resume.wait(2)
         return original_read(path)
 
     def delayed_source_meta(*args):
         upload_entered.set()
-        assert upload_resume.wait(30)
+        assert upload_resume.wait(2)
         return original_source_meta(*args)
 
     monkeypatch.setattr(package_compare, "_read_json", delayed_read)
     monkeypatch.setattr(package_compare, "_source_meta", delayed_source_meta)
     cleanup = threading.Thread(target=package_compare.maintain)
     cleanup.start()
-    assert cleanup_entered.wait(30)
+    assert cleanup_entered.wait(2)
     outcome = {}
     upload = threading.Thread(target=lambda: outcome.setdefault(
         "input",
@@ -1159,16 +1175,16 @@ def test_maintenance_rechecks_uploads_started_after_cleanup_begins(
         ),
     ))
     upload.start()
-    assert upload_entered.wait(30)
+    assert upload_entered.wait(2)
     active_id = package_compare._ACTIVE_UPLOADS[
         (comparison_root, "upload_after_cleanup_started")
     ]
     cleanup_resume.set()
-    cleanup.join(30)
+    cleanup.join(2)
     assert not cleanup.is_alive()
     assert (package_compare.root(comparison_root) / active_id).is_dir()
     upload_resume.set()
-    upload.join(30)
+    upload.join(2)
     assert not upload.is_alive()
     assert outcome["input"]["input_id"] == active_id
 
@@ -1208,13 +1224,13 @@ def test_maintenance_keeps_result_completed_during_job_scan(
         if path == job_path and not delayed:
             delayed = True
             cleanup_entered.set()
-            assert cleanup_resume.wait(30)
+            assert cleanup_resume.wait(2)
         return original_read(path)
 
     monkeypatch.setattr(package_compare, "_read_json", delayed_job_read)
     cleanup = threading.Thread(target=package_compare.maintain)
     cleanup.start()
-    assert cleanup_entered.wait(30)
+    assert cleanup_entered.wait(2)
     with package_compare._TASK_LOCK:
         package_compare._write_json(result_path, {
             "comparison_id": folder.name,
@@ -1232,7 +1248,7 @@ def test_maintenance_keeps_result_completed_during_job_scan(
         })
         job_path.unlink()
     cleanup_resume.set()
-    cleanup.join(30)
+    cleanup.join(2)
     assert not cleanup.is_alive()
     assert result_path.is_file()
     assert input_folder.is_dir()
@@ -1266,10 +1282,10 @@ def test_cancel_upload_during_archive_validation_removes_input(
 
     thread = threading.Thread(target=create)
     thread.start()
-    assert entered.wait(30)
+    assert entered.wait(2)
     input_id = package_compare._ACTIVE_UPLOADS[(comparison_root, "upload_cancel")]
     package_compare.cancel_upload(comparison_root, "upload_cancel")
-    thread.join(30)
+    thread.join(2)
     assert not thread.is_alive()
     assert errors and errors[0].code == "compare_upload_cancelled"
     assert not (package_compare.root(comparison_root) / input_id).exists()
@@ -1282,7 +1298,7 @@ def test_upload_limit_covers_archive_validation(comparison_root, monkeypatch):
 
     def delayed_source_meta(*args):
         entered.set()
-        assert resume.wait(30)
+        assert resume.wait(2)
         return original(*args)
 
     monkeypatch.setattr(package_compare, "_UPLOAD_LIMIT", threading.BoundedSemaphore(1))
@@ -1293,7 +1309,7 @@ def test_upload_limit_covers_archive_validation(comparison_root, monkeypatch):
         request_id="upload_first",
     ))
     first.start()
-    assert entered.wait(30)
+    assert entered.wait(2)
     with pytest.raises(WorkspaceError) as error:
         package_compare.create_input(
             comparison_root,
@@ -1303,7 +1319,7 @@ def test_upload_limit_covers_archive_validation(comparison_root, monkeypatch):
     assert error.value.status == 429
     assert error.value.code == "compare_upload_busy"
     resume.set()
-    first.join(30)
+    first.join(2)
     assert not first.is_alive()
 
 
@@ -1315,6 +1331,7 @@ def test_delete_waits_for_result_touch_and_result_does_not_reappear(
     result = package_compare.create_comparison(
         "project_alpha",
         comparison_root,
+        "",
         {"kind": "upload", "input_id": left["input_id"]},
         {"kind": "upload", "input_id": right["input_id"]},
     )
@@ -1327,7 +1344,7 @@ def test_delete_waits_for_result_touch_and_result_does_not_reappear(
     def delayed_write(path, value):
         if path == result_path:
             entered.set()
-            assert resume.wait(30)
+            assert resume.wait(2)
         return original(path, value)
 
     monkeypatch.setattr(package_compare, "_write_json", delayed_write)
@@ -1336,11 +1353,11 @@ def test_delete_waits_for_result_touch_and_result_does_not_reappear(
     ))
     remover = threading.Thread(target=lambda: package_compare.delete(comparison_root, comparison_id))
     reader.start()
-    assert entered.wait(30)
+    assert entered.wait(2)
     remover.start()
     resume.set()
-    reader.join(30)
-    remover.join(30)
+    reader.join(2)
+    remover.join(2)
     assert not reader.is_alive() and not remover.is_alive()
     assert not result_path.parent.exists()
 
@@ -1362,22 +1379,37 @@ def test_non_owner_process_does_not_maintain_running_jobs(comparison_root, monke
     assert package_compare._read_json(folder / "job.json")["status"] == "running"
 
 
-def test_idempotent_replay_returns_same_release_task_without_refreezing(comparison_root, tmp_path, monkeypatch):
-    calls = []
-    fake_release(monkeypatch, tmp_path, archive(**{"objects/a.md": "release"}).getvalue(), calls)
+def test_idempotent_replay_rechecks_hub_release_access(comparison_root, monkeypatch):
+    uploaded = archive(**{"objects/a.md": "release"})
+
+    def download(_ontology_id, _release_id, _token, destination):
+        destination.write_bytes(uploaded.getvalue())
+        return {"version": "0.1.1", "package_digest": "digest"}
+
+    monkeypatch.setattr(package_compare.hub_packages, "download", download)
+    monkeypatch.setattr(
+        package_compare.hub_packages,
+        "association",
+        lambda *_: {"ontology_id": "ontology_demo"},
+    )
+    monkeypatch.setattr(package_compare.hub_packages, "call", lambda *_: {})
     local = package_compare.create_input(
         comparison_root,
         archive(**{"objects/a.md": "local"}),
         project_id="project_alpha",
     )
     refs = (
-        {"kind": "release", "version": "0.1.0"},
+        {"kind": "release", "ontology_id": "ontology_demo", "release_id": "release_demo"},
         {"kind": "upload", "input_id": local["input_id"]},
     )
     first = package_compare.start_comparison(
-        "manager", "project_alpha", comparison_root, *refs, request_id="release_replay",
+        "project_alpha",
+        comparison_root,
+        "allowed-token",
+        *refs,
+        request_id="permission_replay",
     )
-    for _ in range(3000):
+    for _ in range(50):
         current = package_compare.get_comparison(
             comparison_root, "project_alpha", first["comparison_id"],
         )
@@ -1386,57 +1418,94 @@ def test_idempotent_replay_returns_same_release_task_without_refreezing(comparis
         time.sleep(0.01)
     else:
         pytest.fail(f"comparison did not finish: {current}")
-    replay = package_compare.start_comparison(
-        "manager", "project_alpha", comparison_root, *refs, request_id="release_replay",
+
+    def forbidden(*_args):
+        raise WorkspaceError("Hub 权限已撤销", 403)
+
+    monkeypatch.setattr(package_compare.hub_packages, "call", forbidden)
+    with pytest.raises(WorkspaceError) as error:
+        package_compare.start_comparison(
+            "project_alpha",
+            comparison_root,
+            "revoked-token",
+            *refs,
+            request_id="permission_replay",
+        )
+    assert error.value.status == 403
+
+
+def test_idempotent_hub_permission_check_does_not_hold_task_lock(
+    comparison_root, monkeypatch,
+):
+    uploaded = archive(**{"objects/a.md": "release"})
+
+    def download(_ontology_id, _release_id, _token, destination):
+        destination.write_bytes(uploaded.getvalue())
+        return {"version": "0.1.1", "package_digest": "digest"}
+
+    monkeypatch.setattr(package_compare.hub_packages, "download", download)
+    monkeypatch.setattr(
+        package_compare.hub_packages,
+        "association",
+        lambda *_: {"ontology_id": "ontology_demo"},
     )
-    assert replay["comparison_id"] == first["comparison_id"] and replay["status"] == "ready"
-    assert len(calls) == 1
-    # 换一个项目，同一个 request_id 不会拿到别的项目的结果
-    other = package_compare.create_input(
-        comparison_root, archive(**{"objects/a.md": "other"}), project_id="project_beta",
-    )
-    fresh = package_compare.start_comparison(
-        "manager", "project_beta", comparison_root,
-        {"kind": "release", "version": "0.1.0"},
-        {"kind": "upload", "input_id": other["input_id"]},
-        request_id="release_replay",
-    )
-    assert fresh["comparison_id"] != first["comparison_id"]
-
-
-def test_slow_release_fetch_does_not_hold_task_lock(comparison_root, tmp_path, monkeypatch):
-    started = threading.Event()
-    resume = threading.Event()
-
-    def wait_for_release():
-        started.set()
-        assert resume.wait(30)
-
-    fake_release(monkeypatch, tmp_path, archive(**{"objects/a.md": "release"}).getvalue(), before=wait_for_release)
+    monkeypatch.setattr(package_compare.hub_packages, "call", lambda *_: {})
     local = package_compare.create_input(
         comparison_root,
         archive(**{"objects/a.md": "local"}),
         project_id="project_alpha",
     )
+    refs = (
+        {"kind": "release", "ontology_id": "ontology_demo", "release_id": "release_demo"},
+        {"kind": "upload", "input_id": local["input_id"]},
+    )
+    first = package_compare.start_comparison(
+        "project_alpha",
+        comparison_root,
+        "allowed-token",
+        *refs,
+        request_id="nonblocking_permission_replay",
+    )
+    for _ in range(50):
+        current = package_compare.get_comparison(
+            comparison_root, "project_alpha", first["comparison_id"],
+        )
+        if current["status"] == "ready":
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail(f"comparison did not finish: {current}")
+
+    permission_started = threading.Event()
+    permission_resume = threading.Event()
+
+    def delayed_permission(*_args):
+        permission_started.set()
+        assert permission_resume.wait(2)
+        return {}
+
+    monkeypatch.setattr(package_compare.hub_packages, "call", delayed_permission)
     errors = []
 
-    def create():
+    def replay():
         try:
             package_compare.start_comparison(
-                "manager", "project_alpha", comparison_root,
-                {"kind": "release", "version": "0.1.0"},
-                {"kind": "upload", "input_id": local["input_id"]},
+                "project_alpha",
+                comparison_root,
+                "allowed-token",
+                *refs,
+                request_id="nonblocking_permission_replay",
             )
         except Exception as error:
             errors.append(error)
 
-    thread = threading.Thread(target=create)
-    thread.start()
-    assert started.wait(10)
+    replay_thread = threading.Thread(target=replay)
+    replay_thread.start()
+    assert permission_started.wait(2)
     package_compare.cancel_upload(comparison_root, "another_upload")
-    resume.set()
-    thread.join(30)
-    assert not thread.is_alive()
+    permission_resume.set()
+    replay_thread.join(2)
+    assert not replay_thread.is_alive()
     assert errors == []
 
 
@@ -1447,7 +1516,7 @@ def test_duplicate_active_upload_request_id_is_rejected(comparison_root, monkeyp
 
     def delayed_meta(*args):
         entered.set()
-        assert resume.wait(30)
+        assert resume.wait(2)
         return original(*args)
 
     monkeypatch.setattr(package_compare, "_source_meta", delayed_meta)
@@ -1465,7 +1534,7 @@ def test_duplicate_active_upload_request_id_is_rejected(comparison_root, monkeyp
 
     thread = threading.Thread(target=upload_first)
     thread.start()
-    assert entered.wait(30)
+    assert entered.wait(2)
     with pytest.raises(WorkspaceError) as duplicate:
         package_compare.create_input(
             comparison_root,
@@ -1475,48 +1544,59 @@ def test_duplicate_active_upload_request_id_is_rejected(comparison_root, monkeyp
     assert duplicate.value.status == 409
     package_compare.maintain()
     resume.set()
-    thread.join(30)
+    thread.join(2)
     assert not thread.is_alive()
     assert errors == []
 
 
-def test_release_ref_is_persisted_before_freezing_finishes(comparison_root, tmp_path, monkeypatch):
+def test_release_source_resolves_associated_package_before_persisting(
+    comparison_root, monkeypatch,
+):
+    monkeypatch.setattr(
+        package_compare.hub_packages,
+        "association",
+        lambda *_: {"ontology_id": "ontology_demo"},
+    )
+    uploaded = archive(**{"objects/a.md": "release"}).getvalue()
     entered = threading.Event()
     resume = threading.Event()
 
-    def wait_for_release():
+    def download(_package_id, _release_id, _token, destination):
         entered.set()
-        assert resume.wait(30)
+        assert resume.wait(2)
+        destination.write_bytes(uploaded)
+        return {}
 
-    fake_release(monkeypatch, tmp_path, archive(**{"objects/a.md": "release"}).getvalue(), before=wait_for_release)
+    monkeypatch.setattr(package_compare.hub_packages, "download", download)
+    monkeypatch.setattr(package_compare.hub_packages, "call", lambda *_args, **_kwargs: {})
     local = package_compare.create_input(
         comparison_root,
         archive(**{"objects/a.md": "local"}),
         project_id="project_alpha",
     )
     refs = (
-        {"kind": "release", "version": "0.1.0"},
+        {"kind": "release", "release_id": "release_demo"},
         {"kind": "upload", "input_id": local["input_id"]},
     )
     outcome = {}
 
     def create():
         outcome["job"] = package_compare.start_comparison(
-            "manager",
             "project_alpha",
             comparison_root,
+            "token",
             *refs,
-            request_id="persisted_release",
+            request_id="implicit_package",
         )
 
     thread = threading.Thread(target=create)
     thread.start()
-    assert entered.wait(10)
+    assert entered.wait(2)
     job_path = next(package_compare.root(comparison_root).glob("cmp_*/job.json"))
     persisted = package_compare._read_json(job_path)["input_refs"]["left"]
-    assert persisted == {"kind": "release", "version": "0.1.0"}
+    assert persisted["ontology_id"] == "ontology_demo"
     resume.set()
-    thread.join(30)
+    thread.join(2)
     assert not thread.is_alive()
     assert outcome["job"]["status"] == "queued"
 
@@ -1540,8 +1620,9 @@ def test_result_storage_is_reserved_before_accepting_task(comparison_root, monke
     )
     with pytest.raises(WorkspaceError) as error:
         package_compare.start_comparison(
-            None, "project_alpha",
+            "project_alpha",
             comparison_root,
+            "",
             *refs,
         )
     assert error.value.status == 429
@@ -1571,7 +1652,27 @@ def test_default_worker_memory_budget_accepts_regular_text_package(comparison_ro
     assert item["file_count"] == 2
 
 
-# ---- 经 /api/v1 的端到端：真实发布、上传、所有者守卫 ----
+def test_restart_after_shutdown_accepts_new_comparisons(comparison_root, monkeypatch):
+    monkeypatch.setattr(package_compare, "_SERVICE_LOCK", None)
+    monkeypatch.setattr(package_compare, "_EXECUTOR", ThreadPoolExecutor(max_workers=1))
+    assert package_compare.start() is True
+    package_compare.shutdown()
+    with pytest.raises(WorkspaceError) as error:
+        package_compare.create_input(comparison_root, archive(**{"objects/a.md": "a"}), project_id="project_alpha")
+    assert error.value.status == 503
+    assert package_compare.start() is True
+    left = package_compare.create_input(comparison_root, archive(**{"objects/a.md": "a"}), project_id="project_alpha")
+    right = package_compare.create_input(comparison_root, archive(**{"objects/a.md": "b"}), project_id="project_alpha")
+    job = package_compare.start_comparison(
+        "project_alpha", comparison_root, "",
+        {"kind": "upload", "input_id": left["input_id"]}, {"kind": "upload", "input_id": right["input_id"]},
+    )
+    assert job["status"] == "queued"
+    drain_tasks()
+    package_compare.shutdown()
+
+
+# ---- 经 /api/v1 的端到端：内存 Hub（conftest）发布、按版本号或 Hub 引用比较、所有者守卫 ----
 
 OWNER, OTHER = {"Authorization": "Bearer owner-token"}, {"Authorization": "Bearer other-token"}
 
@@ -1581,20 +1682,18 @@ def api(tmp_path, monkeypatch, synthetic_hub):
     data = tmp_path / "data"
     monkeypatch.setattr(config, "DATA_DIR", data)
     monkeypatch.setattr(package_compare, "_SERVICE_OWNER", True)
-    monkeypatch.setattr(package_compare, "_SERVICE_AVAILABLE", True)
-    if package_compare._EXECUTOR._shutdown:
-        monkeypatch.setattr(package_compare, "_EXECUTOR", ThreadPoolExecutor(max_workers=2))
+    isolate_compare_state(monkeypatch)
     manager = WorkspaceManager(data, Path(config.ASSETS_DIR))
     monkeypatch.setattr(deps, "workspaces", manager)
     tokens = {
-        "owner-token": {"sub": "employee_0001", "role": "user"},
-        "other-token": {"sub": "employee_0002", "role": "user"},
+        "owner-token": {"sub": "employee_0001", "role": "user", "iss": "https://example.com"},
+        "other-token": {"sub": "employee_0002", "role": "user", "iss": "https://example.com"},
     }
     monkeypatch.setattr(auth, "ENABLED", True)
     monkeypatch.setattr(auth, "verify_access_token", lambda token: tokens.get(token))
     monkeypatch.setattr(auth, "check_access_token", lambda token: (tokens.get(token), "" if token in tokens else "invalid"))
     project_id = manager.create_project("版本对比演示", owner="employee_0001")["id"]
-    yield manager, project_id, TestClient(app)
+    yield manager, project_id, TestClient(app), synthetic_hub
     drain_tasks()
 
 
@@ -1606,69 +1705,19 @@ def _release(manager, project_id, files: dict[str, str]) -> str:
     complete_publish_stages(root, commit=False)  # 发布前必经的建模阶段（ADR-0098）
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "test: synthetic release content")
-    # 发布走 Hub（ADR-0098），这里接 conftest 的内存 Hub
     return publish.publish_package(
-        manager, project_id, allow_unbound=True, token="synthetic-access", subject="scope_a",
+        manager, project_id, allow_unbound=True, token="owner-token", subject="scope_a",
     )["version"]
 
 
 def _ready(client, base, comparison_id):
-    for _ in range(300):
+    for _ in range(600):
         response = client.get(f"{base}/{comparison_id}", headers=OWNER)
         assert response.status_code == 200, response.text
         if response.json()["status"] in {"ready", "failed"}:
             return response.json()
         time.sleep(0.05)
     pytest.fail("comparison did not finish")
-
-
-def test_api_compares_two_project_releases_and_guards_owner(api):
-    manager, project_id, client = api
-    first = _release(manager, project_id, {"ontology/object/order.md": "# Order\n\nA synthetic order.\n"})
-    second = _release(manager, project_id, {
-        "ontology/object/order.md": "# Order\n\nA synthetic order with status.\n",
-        "ontology/object/item.md": "# Item\n\nA synthetic item.\n",
-    })
-    base = f"/api/v1/projects/{project_id}/package-comparisons"
-    body = {"left": {"kind": "release", "version": first}, "right": {"kind": "release", "version": second},
-            "request_id": "api_release_pair"}
-
-    assert client.post(base, json=body, headers=OTHER).status_code == 403
-    started = client.post(base, json=body, headers=OWNER)
-    assert started.status_code == 202, started.text
-    comparison_id = started.json()["comparison_id"]
-    result = _ready(client, base, comparison_id)
-    assert result["status"] == "ready", result
-    assert result["left"]["version"] == first and result["right"]["version"] == second
-    assert result["created_at"].endswith("Z")
-    assert result["summary"]["files"]["added"] >= 1 and result["summary"]["files"]["modified"] >= 1
-
-    listing = client.get(f"{base}/{comparison_id}/files", params={"status": "changed", "limit": 1}, headers=OWNER)
-    assert listing.status_code == 200
-    page = listing.json()
-    assert len(page["items"]) == 1 and page["next_cursor"] and page["total"] >= 2
-    rest = client.get(f"{base}/{comparison_id}/files",
-                      params={"status": "changed", "limit": 1, "cursor": page["next_cursor"]}, headers=OWNER).json()
-    assert rest["items"][0]["path"] != page["items"][0]["path"]
-    changed = client.get(f"{base}/{comparison_id}/files", params={"q": "order.md"}, headers=OWNER).json()["items"]
-    order = next(row for row in changed if row["path"].endswith("objects/order.md"))
-    assert order["status"] == "modified" and order["category"] == "objects"
-
-    diff = client.get(f"{base}/{comparison_id}/file-diff", params={"path": order["path"]}, headers=OWNER)
-    assert diff.status_code == 200
-    assert "status" in diff.json()["right"]["text"] and "status" not in diff.json()["left"]["text"]
-
-    for method, path in (("GET", f"{base}/{comparison_id}"), ("GET", f"{base}/{comparison_id}/files"),
-                         ("GET", f"{base}/{comparison_id}/file-diff?path={order['path']}"),
-                         ("DELETE", f"{base}/{comparison_id}")):
-        response = client.request(method, path, headers=OTHER)
-        assert response.status_code == 403 and response.json()["code"] == "project_owner_only"
-
-    # 同一 request_id 重放拿回同一任务
-    assert client.post(base, json=body, headers=OWNER).json()["comparison_id"] == comparison_id
-    assert client.delete(f"{base}/{comparison_id}", headers=OWNER).status_code == 204
-    gone = client.get(f"{base}/{comparison_id}", headers=OWNER)
-    assert gone.status_code == 410 and gone.json()["code"] == "compare_expired"
 
 
 def _edited_copy(source: Path, target: Path, member_suffix: str, text: str) -> Path:
@@ -1688,14 +1737,68 @@ def _upload(client, base, path: Path, request_id: str) -> dict:
     return uploaded.json()
 
 
+def test_api_compares_two_hub_releases_and_guards_owner(api):
+    manager, project_id, client, hub = api
+    first = _release(manager, project_id, {"ontology/object/order.md": "# Order\n\nA synthetic order.\n"})
+    second = _release(manager, project_id, {
+        "ontology/object/order.md": "# Order\n\nA synthetic order with status.\n",
+        "ontology/object/item.md": "# Item\n\nA synthetic item.\n",
+    })
+    base = f"/api/v1/projects/{project_id}/package-comparisons"
+    hub_releases = client.get(f"/api/v1/projects/{project_id}/hub/releases", headers=OWNER).json()["items"]
+    newest = next(item for item in hub_releases if item["version"] == second)
+    # 左边用本项目版本号的简写，右边用 develop 的 Hub 引用
+    body = {"left": {"kind": "release", "version": first},
+            "right": {"kind": "release", "ontology_id": newest["ontology_id"], "release_id": newest["release_id"]},
+            "request_id": "api_release_pair"}
+
+    assert client.post(base, json=body, headers=OTHER).status_code == 403
+    started = client.post(base, json=body, headers=OWNER)
+    assert started.status_code == 202, started.text
+    comparison_id = started.json()["comparison_id"]
+    result = _ready(client, base, comparison_id)
+    assert result["status"] == "ready", result
+    assert result["left"]["version"] == first and result["right"]["version"] == second
+    assert result["left"]["source"]["kind"] == "release" and result["left"]["source"]["release_id"]
+    assert result["summary"]["files"]["added"] >= 1 and result["summary"]["files"]["modified"] >= 1
+
+    page = client.get(f"{base}/{comparison_id}/files", params={"status": "changed", "limit": 1}, headers=OWNER).json()
+    assert len(page["items"]) == 1 and page["total"] >= 2 and page["offset"] == 0 and page["limit"] == 1
+    assert page["overall_total"] >= page["filtered_total"] == page["total"]
+    rest = client.get(f"{base}/{comparison_id}/files", params={"status": "changed", "limit": 1, "offset": 1}, headers=OWNER).json()
+    assert rest["items"][0]["path"] != page["items"][0]["path"]
+    bad = client.get(f"{base}/{comparison_id}/files", params={"limit": 0}, headers=OWNER)
+    assert bad.status_code == 400
+    order = next(row for row in client.get(f"{base}/{comparison_id}/files", params={"q": "order.md"}, headers=OWNER).json()["items"]
+                 if row["path"].endswith("objects/order.md"))
+    assert order["status"] == "modified" and order["category"] == "objects"
+    diff = client.get(f"{base}/{comparison_id}/file-diff", params={"file_id": order["path"]}, headers=OWNER)
+    assert diff.status_code == 200
+    assert "status" in diff.json()["right"]["text"] and "status" not in diff.json()["left"]["text"]
+
+    for method, path in (("GET", f"{base}/{comparison_id}"), ("GET", f"{base}/{comparison_id}/files"),
+                         ("GET", f"{base}/{comparison_id}/file-diff?file_id={order['path']}"),
+                         ("DELETE", f"{base}/{comparison_id}")):
+        response = client.request(method, path, headers=OTHER)
+        assert response.status_code == 403 and response.json()["code"] == "project_owner_only"
+
+    # 同一 request_id 重放拿回同一任务；读结果时回 Hub 复核读权限
+    calls_before = len(hub.calls)
+    assert client.post(base, json=body, headers=OWNER).json()["comparison_id"] == comparison_id
+    assert any(path.startswith("/api/packages/") for _method, path in hub.calls[calls_before:])
+    deleted = client.delete(f"{base}/{comparison_id}", headers=OWNER)
+    assert deleted.status_code == 200 and deleted.json() == {"deleted": True}
+    assert client.get(f"{base}/{comparison_id}", headers=OWNER).status_code == 410
+
+
 def test_api_upload_input_against_release(api, tmp_path):
-    manager, project_id, client = api
+    manager, project_id, client, _hub = api
     version = _release(manager, project_id, {"ontology/object/order.md": "# Order\n\nA synthetic order.\n"})
     released, _record = publish.release_package(manager, project_id, version)
     edited = _edited_copy(released, tmp_path / "edited.zip", "objects/order.md", "# Order\n\nA synthetic order, edited.\n")
     base = f"/api/v1/projects/{project_id}/package-comparisons"
     item = _upload(client, base, edited, "upload_demo")
-    assert item["package_version"] == version and item["expires_at"].endswith("Z")
+    assert item["package_version"] == version and item["expires_at"] > item["created_at"]
 
     started = client.post(base, json={"left": {"kind": "release", "version": version},
                                       "right": {"kind": "upload", "input_id": item["input_id"]}}, headers=OWNER)
@@ -1707,13 +1810,13 @@ def test_api_upload_input_against_release(api, tmp_path):
 
     busy = client.delete(f"{base}/inputs/{item['input_id']}", headers=OWNER)
     assert busy.status_code == 409 and busy.json()["code"] == "compare_input_in_use"
-    assert client.delete(f"{base}/{result['comparison_id']}", headers=OWNER).status_code == 204
-    assert client.delete(f"{base}/inputs/{item['input_id']}", headers=OWNER).status_code == 204
-    assert client.delete(f"{base}/uploads/upload_demo", headers=OWNER).status_code == 204
+    assert client.delete(f"{base}/{result['comparison_id']}", headers=OWNER).json() == {"deleted": True}
+    assert client.delete(f"{base}/inputs/{item['input_id']}", headers=OWNER).json() == {"deleted": True}
+    assert client.delete(f"{base}/uploads/upload_demo", headers=OWNER).json() == {"cancelled": True}
 
 
 def test_api_cross_package_upload_needs_confirmation(api, tmp_path):
-    manager, project_id, client = api
+    manager, project_id, client, _hub = api
     version = _release(manager, project_id, {"ontology/object/order.md": "# Order\n\nA synthetic order.\n"})
     # 没走 Hub 的本地导出，manifest id 是项目 ID，和发布包（Hub 包标识）不是同一个知识包
     exported = publish.export_package_zip(manager, project_id, tmp_path / "local.zip", allow_unbound=True)
@@ -1721,40 +1824,21 @@ def test_api_cross_package_upload_needs_confirmation(api, tmp_path):
     item = _upload(client, base, exported, "upload_cross")
     body = {"left": {"kind": "release", "version": version}, "right": {"kind": "upload", "input_id": item["input_id"]}}
     first = _ready(client, base, client.post(base, json=body, headers=OWNER).json()["comparison_id"])
-    assert first["status"] == "failed" and first["error_code"] == "compare_cross_package"
+    assert first["status"] == "failed" and "不同 Hub 知识包" in first["error"]
     confirmed = client.post(base, json={**body, "allow_cross_package": True}, headers=OWNER)
     assert confirmed.status_code == 202
     assert _ready(client, base, confirmed.json()["comparison_id"])["status"] == "ready"
 
 
-def test_api_rejects_unknown_release_and_invalid_sources(api):
-    _manager, project_id, client = api
+def test_api_rejects_unknown_release_invalid_sources_and_local_mode(api, monkeypatch):
+    _manager, project_id, client, _hub = api
     base = f"/api/v1/projects/{project_id}/package-comparisons"
     missing = client.post(base, json={"left": {"kind": "release", "version": "0.9.0"},
                                       "right": {"kind": "release", "version": "0.8.0"}}, headers=OWNER)
     assert missing.status_code == 404 and missing.json()["code"] == "release_not_found"
-    assert not list(package_compare.root("employee_0001").glob("cmp_*"))
-    invalid = client.post(base, json={"left": {"kind": "release", "release_id": "rel_demo"},
-                                      "right": {"kind": "release", "version": "0.8.0"}}, headers=OWNER)
-    assert invalid.status_code == 400 and invalid.json()["code"] == "invalid_argument"
-
-
-def test_restart_after_shutdown_accepts_new_comparisons(comparison_root, monkeypatch):
-    monkeypatch.setattr(package_compare, "_SERVICE_LOCK", None)
-    monkeypatch.setattr(package_compare, "_EXECUTOR", ThreadPoolExecutor(max_workers=1))
-    assert package_compare.start() is True
-    package_compare.shutdown()
-    with pytest.raises(WorkspaceError) as error:
-        package_compare.create_input(comparison_root, archive(**{"objects/a.md": "a"}), project_id="project_alpha")
-    assert error.value.status == 503
-    assert package_compare.start() is True
-    left = package_compare.create_input(comparison_root, archive(**{"objects/a.md": "a"}), project_id="project_alpha")
-    right = package_compare.create_input(comparison_root, archive(**{"objects/a.md": "b"}), project_id="project_alpha")
-    job = package_compare.start_comparison(
-        None, "project_alpha", comparison_root,
-        {"kind": "upload", "input_id": left["input_id"]}, {"kind": "upload", "input_id": right["input_id"]},
-    )
-    assert job["status"] == "queued"
-    drain_tasks()
-    package_compare.shutdown()
-
+    both = client.post(base, json={"left": {"kind": "release", "release_id": "rel_demo", "version": "0.1.1"},
+                                   "right": {"kind": "release", "version": "0.8.0"}}, headers=OWNER)
+    assert both.status_code == 400 and both.json()["code"] == "invalid_argument"
+    # develop 的对比要统一账号（Hub 身份），鉴权关闭的本地模式 401
+    monkeypatch.setattr(auth, "ENABLED", False)
+    assert client.post(f"{base}/inputs", files={"file": ("a.zip", b"PK", "application/zip")}).status_code == 401
