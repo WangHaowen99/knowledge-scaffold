@@ -529,7 +529,8 @@ def main() -> int:
         if result["status"] == "no_schema":
             _emit("\n（无 schema 资料与对象属性可对账——先给结构表打 schema 标签或完成对象提取）")
         elif result["status"] == "no_files":
-            _emit("\n（没有给出要对账的数据表：在命令行列出表名或文本版路径，如 订单表、resource/text/excel/业务数据.xlsx.md）")
+            _emit("\n（没有给出要对账的数据表：在命令行列出表名或文本版路径，"
+                  "如 订单表、resource/text/excel/业务数据.xlsx.md）")
     return 1 if result["status"] == "warn" else 0
 
 
