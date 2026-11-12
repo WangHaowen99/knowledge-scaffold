@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import threading
 import time
@@ -58,14 +57,23 @@ def frames_of(chunks: list[str]) -> list[dict]:
     return frames
 
 
-@contextlib.contextmanager
-def subscription(channel, last_event_id: str = ""):
-    """订阅一条频道并保证退订：产出（订阅者, 回放, 重置原因）；要在运行中的事件循环里用。"""
-    subscriber, replay, reset = channel.open(last_event_id, asyncio.get_running_loop())
-    try:
-        yield subscriber, replay, reset
-    finally:
-        channel.unsubscribe(subscriber)
+class _Subscribed:
+    """with 块里产出 channel.open 的结果（订阅者, 回放, 重置原因），退出时退订。"""
+
+    def __init__(self, channel, opened):
+        self.channel = channel
+        self.opened = opened
+
+    def __enter__(self):
+        return self.opened
+
+    def __exit__(self, *exc_info):
+        self.channel.unsubscribe(self.opened[0])
+
+
+def subscription(channel, last_event_id: str = "") -> _Subscribed:
+    """订阅一条频道，用 with 保证退订；要在运行中的事件循环里调。"""
+    return _Subscribed(channel, channel.open(last_event_id, asyncio.get_running_loop()))
 
 
 async def collect(iterator, count: int, timeout: float = 3.0) -> list[str]:
