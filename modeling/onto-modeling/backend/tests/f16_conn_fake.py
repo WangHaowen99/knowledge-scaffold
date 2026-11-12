@@ -1,6 +1,7 @@
 """F16 测试专用的假连接型提供方：跑在 `conn.worker` 子进程里，按连接参数 `mode` 做不同的事。数据全部合成。"""
 
 import hashlib
+import logging
 import os
 import shutil
 import socket
@@ -9,6 +10,19 @@ import sys
 import time
 
 from app.connector_gateway.conn.context import ConnError
+
+
+def _stdout_line(text: str) -> None:
+    """模拟连接器往标准输出写一行（测网关脱敏）；经只输出原文的 logger，内容与 print 一致。"""
+    logger = logging.getLogger("f16_conn_fake.stdout")
+    logger.propagate = False
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+    logger.handlers[0].setStream(sys.stdout)
+    logger.info(text)
 
 
 def _password(ctx) -> str:
@@ -66,7 +80,7 @@ def _run(ctx):
         record = _table(ctx, 0)
         record["label"] = f"连接串 user:{password}@db"
         ctx.record(record)
-        sys.stdout.write(f"stdout 里的 {password}\n")
+        _stdout_line(f"stdout 里的 {password}")
         ctx.result(complete=True)
     elif mode == "raise_secret":
         raise RuntimeError(f"connect failed password={password}")

@@ -32,7 +32,7 @@ token，其中约 1594 万是缓存读；资料分析加两轮提取就用了 32
 **做法**
 
 1. `model_pricing.tokens_of`：成本口径的计数；`quota._usage_of` 用它。
-2. 台账加 `meta` 表记口径版本 `cost-v1`，打开库时核对，不一致就重建。
+2. 台账加 `meta` 表记口径版本（现为 `cost-v1-sha256`：去重指纹与文件头校验由 sha1 换成 sha256，旧台账打开时按版本不一致重建），打开库时核对，不一致就重建。
 3. `PER_USER_DEFAULTS.daily_tokens = 10_000_000`，`PER_PROJECT_DEFAULTS.monthly_tokens = 100_000_000`；已在系统设置里改过的值不动。
 4. 系统设置配额页在「每日 token 预算」下写一行「缓存命中按 1/10 计」，只这一处。
 

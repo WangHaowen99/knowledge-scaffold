@@ -61,6 +61,17 @@ def bp():
 # ---------------------------------------------------------------------------
 
 
+def test_resubmitting_a_merged_slice_keeps_it():
+    """原样再提交早先合并出来的段（带着它的 merged_from）：编号和合并来源不变，不报错。"""
+    module = bp()
+    doc = module.apply_slices(module.empty(), [{"id": "tmp-a", "name": "下单"}, {"id": "tmp-b", "name": "退款"}])
+    assert [item["id"] for item in doc["slices"]] == ["s1", "s2"]
+    doc = module.apply_slices(doc, [{"id": "tmp-m", "name": "交易", "merged_from": ["s1", "s2"]}])
+    assert [(item["id"], item["merged_from"]) for item in doc["slices"]] == [("s3", ["s1", "s2"])]
+    again = module.apply_slices(doc, [{"id": "s3", "name": "交易", "merged_from": ["s1", "s2"]}])
+    assert [(item["id"], item["merged_from"]) for item in again["slices"]] == [("s3", ["s1", "s2"])]
+
+
 def test_draft_merges_into_one_full_slice():
     module = bp()
     doc = module.from_draft(DRAFT)
