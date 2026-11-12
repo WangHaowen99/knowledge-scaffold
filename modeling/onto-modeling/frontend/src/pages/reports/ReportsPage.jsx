@@ -10,6 +10,7 @@ import { Button, Card, Chip, Ev, Icon, KV, Note, Prog, Ring, Seg, St, cx } from 
 import { inlineTokens } from '../workbench/md.js';
 import { anchorChipLabel } from '../studio/studioModel.js';
 import { findHeadingIndex } from '../../lib/sourceLocation.js';
+import { SourceText, useKnownMaterials } from '../studio/SourceChips.jsx';
 import '../../styles/reports.css';
 import {
   ITEM_STATUS, LINK_STATS, PURPOSE_LABEL, PURPOSE_TONE, RECHECK_KINDS, fmtStamp, infoPairs, linkKind,
@@ -126,6 +127,9 @@ function RepairCard({ repair, items, arbitration, onAnswered }) {
 
 function RawPane({ raw, section, back = null }) {
   const bodyRef = useRef(null);
+  // 原文里的资料路径（带锚点）、报告小节显示成芯片（develop 文件预览），点开后「返回 <报告文件名>」
+  const known = useKnownMaterials();
+  const origin = raw?.path ? raw.path.split('/').pop() : '';
   const lines = raw ? raw.content_md.split('\n') : [];
   // 从芯片带小节打开（develop FilePreviewBody）：标题全文相同优先，其次包含小节名；找不到提示并显示开头
   const heads = lines.map((line, i) => [/^#{1,3}\s+(.*)$/.exec(line.trim())?.[1]?.trim(), i]).filter(([t]) => t != null);
@@ -144,7 +148,8 @@ function RawPane({ raw, section, back = null }) {
       </div>
       {raw ? (
         <div className="code" ref={bodyRef}>
-          {at < 0 ? raw.content_md : lines.map((line, i) => <div key={i} className={i === at ? 'rp-at' : undefined}>{line || '\u00a0'}</div>)}
+          {at < 0 ? <SourceText text={raw.content_md} origin={origin} known={known} />
+            : lines.map((line, i) => <div key={i} className={i === at ? 'rp-at' : undefined}>{line ? <SourceText text={line} origin={origin} known={known} /> : '\u00a0'}</div>)}
         </div>
       ) : <div className="xs muted">正在读取…</div>}
       {raw?.truncated ? <div className="xs muted mt8">原文太长，只显示了前一部分。</div> : null}

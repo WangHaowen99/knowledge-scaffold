@@ -8,6 +8,7 @@ import {
   Button, Chip, Drawer, Field, Icon, Inp, Modal, Note, Select,
 } from '../../ui/index.jsx';
 import { hasWorkspaceDirty } from '../../lib/workspaceDirty.js';
+import { SourceText, useKnownMaterials } from '../studio/SourceChips.jsx';
 import {
   blockerView, fileGroups, fmtStamp, pathLabel, revertBlock, revertChips, revertCountText, revertErrorText, tagLabelError,
   undoneText,
@@ -217,6 +218,8 @@ export function FilesDrawer({ version, onClose, onCompare }) {
   const [files, setFiles] = useState(null);
   const [open, setOpen] = useState(null);
   const [error, setError] = useState('');
+  // Markdown 文件里的资料路径（带锚点）、报告小节显示成芯片（develop 文件预览）
+  const known = useKnownMaterials();
   useEffect(() => {
     setFiles(null);
     setOpen(null);
@@ -268,7 +271,10 @@ export function FilesDrawer({ version, onClose, onCompare }) {
       {error ? <Note tone="red">{error}</Note> : null}
       {!files && !error ? <div className="muted sm">正在读取文件列表…</div> : null}
       {open ? (
-        <pre className="vr-pre">{open.content}{open.truncated ? '\n…（只显示前 512 KB）' : ''}</pre>
+        <pre className="vr-pre">
+          {/\.md$/i.test(open.path) ? <SourceText text={open.content} origin={open.path.split('/').pop()} known={known} /> : open.content}
+          {open.truncated ? '\n…（只显示前 512 KB）' : ''}
+        </pre>
       ) : groups.map((g) => (
         <div key={g.key} className="mb12">
           <div className="sec-t">{g.label}<span className="sp" /><span className="faint">{g.items.length}</span></div>

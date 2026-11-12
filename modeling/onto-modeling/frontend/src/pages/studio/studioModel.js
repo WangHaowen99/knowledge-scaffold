@@ -230,6 +230,25 @@ export function sourceRefsIn(text) {
   return out;
 }
 
+// 纯文本里的出处（报告原文、版本里的文件）：按 develop CenterPane 的路径识别切成文字段和芯片段，
+// 资料路径（可带锚点）、报告路径带小节成芯片，其余路径和文字原样
+export function sourceTokens(text) {
+  const raw = String(text || '');
+  const out = [];
+  let pos = 0;
+  for (const m of raw.matchAll(PATH_RE)) {
+    const { ref } = trimHeadingRef(m[0]);
+    const source = parseSourceRef(ref);
+    const heading = source ? null : parseHeadingRef(ref);
+    if (!source && !heading) continue;
+    if (m.index > pos) out.push({ t: 'text', v: raw.slice(pos, m.index) });
+    out.push(source ? { t: 'source', ...source } : { t: 'heading', ...heading });
+    pos = m.index + ref.length;
+  }
+  if (pos < raw.length) out.push({ t: 'text', v: raw.slice(pos) });
+  return out;
+}
+
 // ---------- 原文编辑 ----------
 export function fmtBytes(n) {
   if (n == null) return '';

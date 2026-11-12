@@ -14,6 +14,7 @@ import { Button, Chip, Icon, Modal, Note, Seg, cx, useEscape } from '../../ui/in
 import { useProjectEvent } from '../plugin/parts.jsx';
 import { previewKind } from '../../lib/sourceLocation.js';
 import SourcePreview from './SourcePreview.jsx';
+import { SourceText, useKnownMaterials } from '../studio/SourceChips.jsx';
 import { scopeChip } from './sheetScopeModel.js';
 import {
   PREVIEW_ICON, blockBody, isDocPreview, blockLabel, coverageChip, csvText, diamondPoints, drawioLayout, feedbackView, fmtSize,
@@ -42,6 +43,8 @@ function DocPane({ m, fragment, onCoverage, onUploadText, tasks }) {
   const { api } = useApp();
   const { pid } = useProject();
   const [data, setData] = useState(null);
+  // 正文里写的别的资料路径（带锚点）、报告小节显示成芯片（develop 文件预览）
+  const known = useKnownMaterials();
   const paperRef = useRef(null);
   const around = parseFragment(fragment)?.type === 'block' ? fragment : null;
 
@@ -91,7 +94,8 @@ function DocPane({ m, fragment, onCoverage, onUploadText, tasks }) {
           return (
             <p key={b.anchor} data-anchor={b.anchor} className={cx(isAt(b.anchor) && 'rs-at')}>
               {label ? <span className="an">{label}</span> : null}
-              {splitHighlights(body.text, body.highlights).map((s, i) => (s.hit ? <span key={i} className="hit">{s.t}</span> : s.t))}
+              {splitHighlights(body.text, body.highlights).map((s, i) => (s.hit ? <span key={i} className="hit">{s.t}</span>
+                : <SourceText key={i} text={s.t} origin={m.name} known={known} />))}
             </p>
           );
         })}
