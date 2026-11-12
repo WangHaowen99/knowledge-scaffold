@@ -15,7 +15,7 @@ import { EvaluationDialogs, LegacyEvaluations, useReleaseEvaluations } from '../
 import PackageCompare from './PackageCompare.jsx';
 import PublishCheck from './PublishCheck.jsx';
 import PublishedVersions from './PublishedVersions.jsx';
-import { proceedState, publishedText } from './publishCheckModel.js';
+import { proceedState, publishedText, writebackText } from './publishCheckModel.js';
 import { fileGroups } from '../versions/versionsModel.js';
 
 const listed = (groups) => groups.reduce((n, g) => n + g.items.length, 0);
@@ -233,6 +233,8 @@ export default function PublishPage() {
       });
       const done = publishedText(r, { degrade, acknowledged });
       toast(done.text, done.tone === 'warning' ? 'alert' : 'upload');
+      const writeback = writebackText(r);
+      if (writeback) setTimeout(() => toast(writeback.text, writeback.tone === 'warning' ? 'alert' : 'check'), 2500);
       if (r.local_record_pending) loadRecords();
       else setRecords((list) => mergeRelease(list, r));
       setAck(false);

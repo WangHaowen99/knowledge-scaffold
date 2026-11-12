@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   EVALUATION_HINT, RESOURCES_NOTE, assistantPrompt, checkSummary, checkTitle, degradeState, fileTarget, hardBlockers, lastPublishText,
-  needsSolverAcknowledgement, proceedState, publishedText, stageNote, tableGroups, versionMeta, versionsTitle,
+  needsSolverAcknowledgement, proceedState, publishedText, stageNote, tableGroups, versionMeta, versionsTitle, writebackText,
 } from '../src/pages/publish/publishCheckModel.js';
 import { needsValidation, validationText } from '../src/pages/scripts/solverValidationModel.js';
 
@@ -87,4 +87,11 @@ test('求解验证卡：只在启用了求解操作时出现，五种状态文�
   assert.equal(validationText({ status: {}, dirty: false, current: { state: 'passed', version: '0.1.2' } }), '当前修订已在 0.1.2 通过求解验证。');
   assert.equal(validationText({ status: {}, dirty: false, current: { state: 'published' } }), '当前修订已发布，尚未通过求解验证：在评测页面对该版本发起求解验证。');
   assert.equal(validationText({ status: {}, dirty: false, current: unpublished }), '当前修改尚未发布和验证：发布新版本后，在「已发布版本（知识包评测）」中发起求解验证。');
+});
+
+test('评测优化后发布的回写提示（develop usePackagePublish）', () => {
+  const done = { version: '0.1.4', hub: { release_id: 'r4' }, evaluation_writeback: { status: 'done', release_id: 'r4', version: '0.1.4', base_version: '0.1.3' } };
+  assert.deepEqual(writebackText(done), { tone: 'success', text: '已回写评测服务：新版本 0.1.4 处理了 0.1.3 的优化建议' });
+  assert.deepEqual(writebackText({ evaluation_writeback: { status: 'pending' } }), { tone: 'warning', text: '新版本的处理结果暂未回写评测服务，打开已发布版本时会自动重试' });
+  assert.equal(writebackText({ version: '0.1.4' }), null);
 });

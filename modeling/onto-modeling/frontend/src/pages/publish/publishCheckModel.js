@@ -132,3 +132,13 @@ export const versionsTitle = (data, projectName) => {
 };
 export const versionMeta = (row) => [row.created_at ? new Date(row.created_at).toLocaleString() : '', row.source_service].filter(Boolean).join(' · ');
 export const RESOURCES_NOTE = 'Hub 仅保存明确共享的最新资料集，不与历史包版本绑定；本地资料不会自动上传。';
+
+// 评测优化之后发布：回写评测服务这是哪一轮优化建议的处理结果（develop usePackagePublish 的两句提示）
+export function writebackText(release) {
+  const w = release?.evaluation_writeback;
+  if (w?.status === 'done' && w.release_id === (release.hub?.release_id || release.release_id)) {
+    return { tone: 'success', text: `已回写评测服务：新版本 ${w.version} 处理了 ${w.base_version} 的优化建议` };
+  }
+  if (w?.status === 'pending') return { tone: 'warning', text: '新版本的处理结果暂未回写评测服务，打开已发布版本时会自动重试' };
+  return null;
+}
