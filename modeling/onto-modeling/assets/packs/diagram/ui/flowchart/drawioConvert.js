@@ -2,8 +2,9 @@
  *
  * 节点样式沿用提示词资产的 flowchart 约定：
  *   开始 / 结束 shape=mxgraph.flowchart.terminator | 业务步骤 process（默认）| 判断 rhombus | 数据对象 shape=card
- * drawio 高级编辑打开标准存储的图时，没有未保存修改就打开文件原文；有未保存修改（或原文读不到）时用 modelToDrawio
- * 把当前模型交给编辑器。保存时把 XML 交回服务端，由内核解析成模型。drawioToModel 只在浏览器里用（mock 与降级预览）。
+ * drawio 高级编辑打开标准存储的图时，XML 由服务端给（AR-10）：文件原文，有未保存修改时是合进了模型的原文。
+ * modelToDrawio 只在取不到时兜底（以及 mock）。保存时把 XML 交回服务端，由内核解析成模型。
+ * drawioToModel 只在浏览器里用（mock 与降级预览）。
  */
 import { nodeSize } from './flowchartModel.js';
 
@@ -87,9 +88,10 @@ export function isCompressedDrawio(xml) {
   return !!m && !/<mxGraphModel\b/.test(m[1]) && m[1].trim().length > 0;
 }
 
-function typeOf(style, value, inDegree) {
+function typeOf(style, inDegree) {
   const s = style || '';
-  if (s.includes('mxgraph.flowchart.terminator')) return inDegree === 0 || /开始|start/i.test(value) ? 'start' : 'end';
+  // 开始 / 结束只按入度判，不按文字猜（同 develop !547）
+  if (s.includes('mxgraph.flowchart.terminator')) return inDegree === 0 ? 'start' : 'end';
   if (s.includes('rhombus')) return 'decision';
   if (s.includes('shape=card')) return 'data';
   return 'step';
@@ -147,7 +149,7 @@ export function drawioToModel(xml, base = null) {
       const w = Number(g?.getAttribute('width')) || 120;
       const h = Number(g?.getAttribute('height')) || 40;
       const prev = old.get(id);
-      const shaped = typeOf(c.getAttribute('style'), value, inDeg.get(id) || 0);
+      const shaped = typeOf(c.getAttribute('style'), inDeg.get(id) || 0);
       nodes.push({
         id,
         type: TYPE_STYLE[attrs.onto_type] && !['decision', 'data'].includes(shaped) ? attrs.onto_type : shaped,

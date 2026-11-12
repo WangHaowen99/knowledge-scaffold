@@ -112,6 +112,50 @@ def test_flowchart_standard_save_keeps_lanes_notes_and_other_pages(env):
     assert back["process"]["roles"] == ["门店"]
 
 
+def test_drawio_source_merges_unsaved_model_into_file(env):
+    """AR-10（develop !547）：有未保存修改时切到高级编辑，交给编辑器的是合进原文的 XML——尺寸、样式、泳道、批注、其他页都在；不落盘。"""
+    manager, client = env
+    project_id = manager.create_project("流程图")["id"]
+    root = manager.project_root(project_id)
+    _write(root, "ontology/diagrams/补货.drawio", DRAWIO)
+    _commit_all(root)
+    base = f"/api/v1/projects/{project_id}/artifacts/diagram.flowchart/补货"
+    detail = client.get(base).json()
+
+    plain = client.post(f"{base}/drawio", json={})
+    assert plain.status_code == 200, plain.text
+    assert plain.json() == {"xml": DRAWIO, "revision": detail["revision"]}
+
+    model = json.loads(json.dumps(detail["content"]))
+    step = next(node for node in model["nodes"] if node["id"] == "a")
+    step["label"] = "编制并提交补货单"
+    step["description"] = "第一行\n第二行"
+    model["edges"][0]["condition"] = "收到申请后"
+    merged = client.post(f"{base}/drawio", json={"content": model})
+    assert merged.status_code == 200, merged.text
+    xml = merged.json()["xml"]
+    pages = ET.fromstring(xml).findall("diagram")
+    assert [page.get("name") for page in pages] == ["主流程", "异常处理"]
+    assert "第二页的异常分支" in xml and "专家批注：这里要区分促销期" in xml
+    cells = {el.get("id"): el for el in pages[0].find("mxGraphModel/root")}
+    assert "swimlane" in cells["lane"].get("style")
+    cell = cells["a"].find("mxCell")
+    assert (cells["a"].get("label"), cells["a"].get("description")) == ("编制并提交补货单", "第一行\n第二行")
+    assert cell.get("style") == "rounded=1;fillColor=#ffe6cc;" and cell.find("mxGeometry").get("width") == "120"
+    assert cells["e1"].get("condition") == "收到申请后" and cells["e1"].find("mxCell").get("style") == "endArrow=classic;"
+    # 不落盘
+    assert (root / "ontology/diagrams/补货.drawio").read_text(encoding="utf-8") == DRAWIO
+    # 交回来的就是高级编辑保存时的 XML：解析出来和提交的模型一致
+    from app.kernel.artifacts import flowchart
+
+    again = flowchart.from_drawio_edit(xml, detail["content"])
+    assert next(node for node in again["nodes"] if node["id"] == "a")["description"] == "第一行\n第二行"
+    assert next(edge for edge in again["edges"] if edge["id"] == "e1")["condition"] == "收到申请后"
+
+    bad = client.post(f"{base}/drawio", json={"content": {"nodes": [{"id": "0"}]}})
+    assert bad.status_code == 422 and bad.json()["code"] == "artifact_schema_invalid"
+
+
 def test_flowchart_save_drops_cells_hanging_on_removed_nodes():
     from app.kernel.artifacts import flowchart
 

@@ -1,4 +1,4 @@
-"""插件产物与通用视图（契约 3.17 AR-01～AR-09；详设 5.9.4、5.9.5；方案 C13）。
+"""插件产物与通用视图（契约 3.17 AR-01～AR-10；详设 5.9.4、5.9.5；方案 C13）。
 
 `GET .../artifacts/{type}/summary` 先于 `GET .../artifacts/{type}/{key}` 登记：键恰好叫 summary 的
 产物要用 AR-02 列表找。
@@ -147,3 +147,12 @@ async def validate_artifact(project_id: str, art_type: str, key: str, request: R
     body = await deps.json_body(request, limit=8 * 1024 * 1024)
     with _errors():
         return await asyncio.to_thread(service.validate, deps.workspaces, project_id, art_type, key, body)
+
+
+@router.post("/artifacts/{art_type}/{key}/drawio")
+async def artifact_drawio(project_id: str, art_type: str, key: str, request: Request):
+    """AR-10：交给 drawio 高级编辑器的 XML（原文，或把未保存的模型合进原文；不落盘）。"""
+    deps.require_owner(project_id, request)
+    body = await deps.json_body(request, limit=8 * 1024 * 1024)
+    with _errors():
+        return await asyncio.to_thread(service.drawio_source, deps.workspaces, project_id, art_type, key, body)

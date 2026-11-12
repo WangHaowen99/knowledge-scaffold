@@ -55,7 +55,16 @@ export function createFlowchartEditorSession(model, { savedRevision = null, sele
     dirty: false,
     saveStatus: 'saved',
     saveError: '',
+    // 已经越过的修订号：先发的读取后回来时认得出是旧版本（修订号是内容指纹，比不出先后）
+    pastRevisions: [],
   };
+}
+
+const PAST_REVISIONS_MAX = 20;
+function passed(session, revision) {
+  const old = session.savedRevision;
+  if (old == null || old === revision) return session.pastRevisions || [];
+  return [...(session.pastRevisions || []), old].slice(-PAST_REVISIONS_MAX);
 }
 
 export function reduceFlowchartEditorSession(session, action) {
@@ -63,12 +72,17 @@ export function reduceFlowchartEditorSession(session, action) {
     case 'replace-model': {
       // 有未保存修改或正在保存时不覆盖，除非明确要求（载入最新版本）：保存中被刷新换掉，保存回来的结果就对不上了
       if ((session.dirty || session.saveInFlight) && !action.force) return session;
+      // 同一修订、或已经越过的旧修订（保存前发出的刷新在保存后才回来）不覆盖（develop !547）
+      const rev = action.savedRevision;
+      if (!action.force && rev != null && (rev === session.savedRevision || (session.pastRevisions || []).includes(rev))) {
+        return session;
+      }
       const next = createFlowchartEditorSession(action.model, {
-        savedRevision: action.savedRevision ?? session.savedRevision,
+        savedRevision: rev ?? session.savedRevision,
         selection: action.selection === undefined ? session.selection : action.selection,
       });
       if (same(next.model, session.model) && next.savedRevision === session.savedRevision && !session.dirty) return session;
-      return next;
+      return { ...next, pastRevisions: passed(session, next.savedRevision) };
     }
 
     case 'mark-saving':
@@ -93,6 +107,7 @@ export function reduceFlowchartEditorSession(session, action) {
         model,
         savedModel: clone(saved),
         savedRevision: action.savedRevision ?? session.savedRevision,
+        pastRevisions: passed(session, action.savedRevision ?? session.savedRevision),
         saveGeneration: null,
         savingModel: null,
         saveInFlight: false,
