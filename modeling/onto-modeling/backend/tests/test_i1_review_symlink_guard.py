@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 
 from app.kernel.changesets import service, worktree
 from app.kernel_guards import _guard_common as guards
+from tests.proc import run as run_cmd
 from tests.test_agent_commits import agent_shell, project as agent_project  # noqa: F401  （夹具按名字注入）
 from tests.test_changesets import project  # noqa: F401  （夹具按名字注入）
 
@@ -125,7 +125,7 @@ def test_agent_commit_with_symlink_is_blocked(agent_project):  # noqa: F811
     _manager, _project_id, root = agent_project
     (root / "ontology" / "object").mkdir(parents=True, exist_ok=True)
     os.symlink("门店.md", root / "ontology" / "object" / "链接.md")
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout
+    head = run_cmd(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout
     proc = agent_shell(root, "git add ontology/object/链接.md && git commit -qm 'agent: 链接'")
     assert proc.returncode != 0 and "符号链接" in proc.stderr, proc.stderr
-    assert subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout == head
+    assert run_cmd(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout == head

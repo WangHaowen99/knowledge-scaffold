@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
-import subprocess
 from pathlib import Path
 
 from app import config
 from app.evidence import convert
+from tests.proc import run as run_cmd
 
 EXCEL = (".xlsx", ".xlsm")
 
@@ -45,8 +45,8 @@ def write_text_versions(root: Path, *, commit: bool = False) -> list[str]:
                           + result.markdown, encoding="utf-8")
         written.append(target.relative_to(root).as_posix())
     if commit and written:
-        subprocess.run(["git", "add", "--", *written], cwd=root, check=True, capture_output=True)
+        run_cmd(["git", "add", "--", *written], cwd=root, check=True, capture_output=True)
         # 只提交文本版，索引里别人已暂存的改动不带进来（与写入路径的提交口径一致）
-        subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "-m",
-                        "多源连接器: 资料的文本版", "--", *written], cwd=root, check=True, capture_output=True)
+        run_cmd(["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "-m",
+                 "多源连接器: 资料的文本版", "--", *written], cwd=root, check=True, capture_output=True)
     return written

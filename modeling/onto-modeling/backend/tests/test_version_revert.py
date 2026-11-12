@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,12 +15,12 @@ from app.services import auth, streams, studio, version_revert
 from app.services.onto_mcp.errors import McpError
 from app.services.workspace import WorkspaceError, WorkspaceManager
 from app.services.workspace.versions import managed_dirty_paths
+from tests.proc import git as proc_git
 
 
 
 def _git(root: Path, *args: str) -> str:
-    return subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=root, check=True,
-                          capture_output=True, text=True).stdout
+    return proc_git(root, "-c", "core.hooksPath=/dev/null", *args)
 
 
 def _write(root: Path, rel: str, text: str) -> None:

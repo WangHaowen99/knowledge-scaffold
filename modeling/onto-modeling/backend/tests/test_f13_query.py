@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import subprocess
 
 from app.evidence import index, storage
 from app.kernel.writepath import ChangeTx, Origin
 from tests import f13_support
 from tests.f13_support import SOURCE, anchors, record, sample_records
+from tests.proc import run as run_cmd
 
 f13 = f13_support.f13
 
@@ -136,7 +136,7 @@ def test_where_used_resolve_diff_cleanup_and_suggestions(f13):
     removed = f13.client.delete(f"{base}/snapshots/{first}")
     assert removed.status_code == 200 and removed.json() == {"removed": True, "blob_retention_days": 90}
     assert not (root / "resource/systems" / SOURCE / first).exists()
-    log = subprocess.run(["git", "log", "--format=%s"], cwd=root, capture_output=True, text=True).stdout
+    log = run_cmd(["git", "log", "--format=%s"], cwd=root, capture_output=True, text=True).stdout
     assert f"evidence: 清理 {SOURCE} 快照 {first}" in log
     assert [item["id"] for item in f13.client.get(f"{base}/snapshots").json()["items"]] == [second]
 

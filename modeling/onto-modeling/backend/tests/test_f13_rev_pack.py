@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -21,6 +20,7 @@ from app.services import auth
 from app.services.flow import conditions, model
 from app.services.packs import builtin, checks, registry
 from app.services.workspace import WorkspaceManager
+from tests.proc import run as run_cmd
 
 ASSETS = Path(config.ASSETS_DIR)
 PACK = ASSETS / "packs" / "rev"
@@ -125,8 +125,8 @@ def _snapshot(root: Path, snapshot_id: str, records: list[dict], *, complete=Tru
 
 
 def _run(workspace: Path, *args: str) -> tuple[int, dict]:
-    result = subprocess.run([sys.executable, str(SCRIPT), *args], cwd=workspace, capture_output=True, text=True,
-                            timeout=30)
+    result = run_cmd([sys.executable, str(SCRIPT), *args], cwd=workspace, capture_output=True, text=True,
+                     timeout=30)
     assert result.stdout.strip(), result.stderr
     data = json.loads(result.stdout)
     assert data["untrusted_content"] is True

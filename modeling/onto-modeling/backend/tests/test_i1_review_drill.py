@@ -1,6 +1,6 @@
 """I1 审查修复第 4 条：恢复演练在最后一个项目抽检期间被取消，任务停在「已取消」，演练跑完也不改回成功、不记演练记录。"""
 
-import tarfile
+import shutil
 import threading
 from pathlib import Path
 
@@ -16,8 +16,7 @@ def test_cancel_during_last_check_stays_cancelled(tmp_path, monkeypatch):
     src.mkdir(parents=True)
     (src / ".onto-web.json").write_text('{"id": "task-1"}', encoding="utf-8")
     name = "onto-modeling-backup-20261102-000000.tar.gz"
-    with tarfile.open(tmp_path / "backups" / name, "w:gz") as tar:
-        tar.add(tmp_path / "src" / "data", arcname="data")
+    shutil.make_archive(str(tmp_path / "backups" / name.removesuffix(".tar.gz")), "gztar", tmp_path / "src", "data")
 
     entered, release = threading.Event(), threading.Event()
 

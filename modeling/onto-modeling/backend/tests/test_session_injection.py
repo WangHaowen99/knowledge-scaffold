@@ -23,6 +23,7 @@ from app.services.engines.base import EngineContext
 from app.services.engines.jiuwen import JiuwenEngine
 from app.services.script_env import minimal_env
 from app.services.session_host import injection
+from tests.proc import run as run_cmd
 
 ASSETS_DIR = Path(config.ASSETS_DIR)
 SCRIPTS_DIR = ASSETS_DIR / "workspace-toolkit" / "scripts"
@@ -35,7 +36,7 @@ needs_shell = pytest.mark.skipif(
 def make_workspace(root: Path) -> Path:
     """与真实项目工作区同构：git 仓库，.claude 符号链接到资产里的工具箱。"""
     root.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True, env=minimal_env())
+    run_cmd(["git", "init", "-q"], cwd=root, check=True, env=minimal_env())
     (root / ".claude").symlink_to(ASSETS_DIR / "workspace-toolkit")
     return root
 

@@ -1,7 +1,6 @@
 """I1：确认生效前双击这一轮的产物卡读到这一轮的版本（AR-03 `?changeset=`、产物卡 `changeset_id`；gaps「B5 合并」第 1 条）。"""
 
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -14,6 +13,7 @@ from app.kernel.changesets import service as changesets
 from app.main import app
 from app.services import auth, streams
 from app.services.workspace import WorkspaceManager
+from tests.proc import run as run_cmd
 
 FLOW = "diagram.flowchart"
 
@@ -78,6 +78,6 @@ def test_artifact_card_carries_changeset_slot(api):
     client, workspaces, pid, root = api
     client.post(f"/api/v1/projects/{pid}/artifacts/{FLOW}", json={"key": "flow-a", "fields": {"title": "流程甲"}})
     rel = next(root.glob("ontology/diagrams/flow-a.drawio")).relative_to(root).as_posix()
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+    head = run_cmd(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
     result = cards.round_cards(workspaces, pid, {"modified": [rel]}, seed=head)
     assert result and result[0]["changeset_id"] is None

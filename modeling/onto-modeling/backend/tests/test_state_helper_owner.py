@@ -15,12 +15,13 @@ from pathlib import Path
 import pytest
 
 from app import config
+from tests.proc import popen, run as run_cmd
 
 HELPER = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts" / "state_helper.py"
 
 
 def run_helper(workspace: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    return run_cmd(
         [sys.executable, str(HELPER), *args],
         cwd=workspace, capture_output=True, text=True, timeout=30,
     )
@@ -64,7 +65,7 @@ def test_engine_owned_lock_is_shared_across_calls(workspace):
 def test_other_caller_still_sees_engine_lock_as_locked(workspace):
     write_marker(workspace, "engine_a")
     run_helper(workspace, "acquire", "extract-object", "objects")
-    bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    bystander = popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
         write_marker(workspace, "engine_a", host_pid=bystander.pid)
         assert run_helper(workspace, "check-lock", "extract-object").stdout.strip().startswith("locked:")
@@ -87,7 +88,7 @@ def test_process_outside_backend_cannot_borrow_engine_lock(workspace):
     run_helper(workspace, "acquire", "extract-object", "source")
 
     # 同一个在线引擎，但调用者不是它的后端的子孙（例如在终端里人工跑脚本）
-    bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    bystander = popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
         write_marker(workspace, "engine_a", host_pid=bystander.pid)
         result = run_helper(workspace, "acquire", "extract-object", "start")

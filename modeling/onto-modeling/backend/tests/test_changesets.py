@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import subprocess
 import time
 from pathlib import Path
 
@@ -29,6 +28,7 @@ from app.routers import sessions as session_routes
 from app.services import agent_sessions, auth, mainline, streams
 from app.services.agent_sessions import SessionManager
 from app.services.workspace import WorkspaceManager, WorkspaceError
+from tests.proc import git as proc_git, run as run_cmd
 from tests.test_event_streams import buffered
 from tests.test_session_host import FakeEngine, result, settle
 
@@ -41,8 +41,7 @@ def obj(name: str, desc: str, rows=(("编号", "code", "主键编号", "是", "�
 
 
 def git(cwd: Path, *args: str) -> str:
-    return subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=cwd, check=True,
-                          capture_output=True, text=True).stdout
+    return proc_git(cwd, "-c", "core.hooksPath=/dev/null", *args)
 
 
 def agent_write(copy: Path, rel: str, text: str, *, commit: str | None = None) -> None:
@@ -485,8 +484,8 @@ def test_clone_with_history_leaves_the_assistant_copy_behind(project):
     clone = workspaces.clone_project(project_id, owner="employee_0001", include_history=True)
     clone_root = workspaces.project_root(clone["id"])
     assert not (clone_root / ".git" / "worktrees").exists()
-    assert subprocess.run(["git", "rev-parse", "--verify", "-q", "refs/heads/onto/assistant"], cwd=clone_root,
-                          capture_output=True).returncode != 0
+    assert run_cmd(["git", "rev-parse", "--verify", "-q", "refs/heads/onto/assistant"], cwd=clone_root,
+                   capture_output=True).returncode != 0
     copy = service.copy_for_turn(workspaces, clone["id"], clone_root)
     assert worktree.healthy(clone_root) and not (copy / "ontology/object/门店.md").exists()
     # 源项目的副本不受影响

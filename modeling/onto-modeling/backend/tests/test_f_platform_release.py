@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -16,6 +15,7 @@ from app.services import auth
 from app.services.flow import model, view
 from app.services.session_host import exec_records
 from app.services.workspace import WorkspaceManager
+from tests.proc import run as run_cmd
 
 CONTINUE = {"type": "send", "text": "继续"}
 
@@ -46,9 +46,9 @@ def _lock(root: Path, command: str, phase: str) -> Path:
 def _save(root: Path, name: str) -> None:
     (root / "ontology" / "object").mkdir(parents=True, exist_ok=True)
     (root / "ontology" / "object" / f"{name}.md").write_text(f"# {name}\n", encoding="utf-8")
-    subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "add", "ontology"], cwd=root, check=True)
-    subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=t", "-c", "user.email=t@example.com",
-                    "commit", "-q", "-m", f"extract: {name} objects"], cwd=root, check=True)
+    run_cmd(["git", "-c", "core.hooksPath=/dev/null", "add", "ontology"], cwd=root, check=True)
+    run_cmd(["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=t", "-c", "user.email=t@example.com",
+             "commit", "-q", "-m", f"extract: {name} objects"], cwd=root, check=True)
 
 
 def _finish(project_id: str, record: dict, root: Path) -> dict:

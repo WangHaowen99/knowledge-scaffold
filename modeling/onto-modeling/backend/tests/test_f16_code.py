@@ -10,7 +10,6 @@ import json
 import os
 import secrets
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -21,6 +20,7 @@ from app.connector_gateway.conn.code_model import SNIPPET_LINES, Sink
 from app.connector_gateway.conn.context import ConnError, Context
 from app.evidence import RECORD_TYPES
 from app.evidence.spec import record_hash
+from tests.proc import git as proc_git
 
 TESTBED = Path(__file__).resolve().parents[2] / "connectors" / "testbed" / "code"
 SOURCE = "demo-repo"
@@ -316,8 +316,7 @@ def _git(*args, cwd):
     env = {"PATH": os.environ.get("PATH", ""), "HOME": str(cwd), "GIT_CONFIG_NOSYSTEM": "1",
            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid", "GIT_COMMITTER_NAME": "t",
            "GIT_COMMITTER_EMAIL": "t@example.invalid"}
-    return subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True,
-                          text=True).stdout.strip()
+    return proc_git(cwd, *args, env=env).strip()
 
 
 @pytest.fixture(scope="module")

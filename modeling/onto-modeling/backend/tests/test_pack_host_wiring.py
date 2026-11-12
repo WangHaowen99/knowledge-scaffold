@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import asyncio
-import subprocess
 import time
 from pathlib import Path
 
@@ -29,6 +28,7 @@ from app.services.engines.base import EngineContext
 from app.services.packs import builtin
 from app.services.session_host import fingerprint, injection
 from app.services.workspace import WorkspaceManager
+from tests.proc import run as run_cmd
 from tests.test_event_streams import buffered
 from tests.test_session_host import FakeEngine, result
 
@@ -117,8 +117,8 @@ def test_agent_round_commit_reports_artifacts_on_project_stream(host):
         path = Path(ctx.cwd) / SCENARIO_FILE
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(SCENARIO_TEXT, encoding="utf-8")
-        subprocess.run(["git", "add", SCENARIO_FILE], cwd=ctx.cwd, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "agent: 补场景"], cwd=ctx.cwd, check=True, capture_output=True)
+        run_cmd(["git", "add", SCENARIO_FILE], cwd=ctx.cwd, check=True, capture_output=True)
+        run_cmd(["git", "commit", "-qm", "agent: 补场景"], cwd=ctx.cwd, check=True, capture_output=True)
 
     FakeEngine.scripts = [[write_and_commit, result()]]
     client.post(f"/api/v1/projects/{project_id}/conversations/default/messages", json={"text": "补一个补货场景"})

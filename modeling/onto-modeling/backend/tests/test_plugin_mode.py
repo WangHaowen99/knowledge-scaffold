@@ -9,7 +9,6 @@ import asyncio
 import json
 import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -32,6 +31,7 @@ from app.services.plugin_mode import assembly, drafts
 from app.services.session_host import exec_records, fingerprint, injection
 from app.services.workspace import WorkspaceManager
 from tests.pack_helpers import make_node_pack, make_pack
+from tests.proc import git as proc_git, run as run_cmd
 from tests.test_event_streams import buffered
 from tests.test_private_packs import AS_OTHER, AS_OWNER, MINE, OWNER, TOKENS, post_zip, project, zipped
 from tests.test_session_host import FakeEngine, result, settle
@@ -40,8 +40,7 @@ REASON = "插件开发模式只能改 plugins/ 下的草稿"
 
 
 def git(cwd: Path, *args: str) -> str:
-    return subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=cwd, check=True,
-                          capture_output=True, text=True).stdout
+    return proc_git(cwd, "-c", "core.hooksPath=/dev/null", *args)
 
 
 def put_draft(root: Path, source: Path, name: str | None = None, message: str = "web: 合成草稿") -> Path:
@@ -151,13 +150,13 @@ def test_guard_script_denies_through_the_hook_protocol(guarded):
     _check, copy, _data = guarded
     script = Path(guards.__file__).parent / "plugin_scope_guard.sh"
     payload = {"tool_name": "Write", "tool_input": {"file_path": "ontology/object/a.md"}, "cwd": str(copy)}
-    done = subprocess.run(["bash", str(script)], input=json.dumps(payload), capture_output=True, text=True,
-                          env={**os.environ, "CLAUDE_PROJECT_DIR": str(copy)}, timeout=30)
+    done = run_cmd(["bash", str(script)], input=json.dumps(payload), capture_output=True, text=True,
+                   env={**os.environ, "CLAUDE_PROJECT_DIR": str(copy)}, timeout=30)
     decision = json.loads(done.stdout)["hookSpecificOutput"]
     assert decision["permissionDecision"] == "deny" and REASON in decision["permissionDecisionReason"]
     payload["tool_input"]["file_path"] = "plugins/demo/a.md"
-    done = subprocess.run(["bash", str(script)], input=json.dumps(payload), capture_output=True, text=True,
-                          env={**os.environ, "CLAUDE_PROJECT_DIR": str(copy)}, timeout=30)
+    done = run_cmd(["bash", str(script)], input=json.dumps(payload), capture_output=True, text=True,
+                   env={**os.environ, "CLAUDE_PROJECT_DIR": str(copy)}, timeout=30)
     assert done.stdout.strip() == ""
 
 
@@ -212,11 +211,11 @@ def test_both_engines_read_the_plugin_rules_and_the_offline_tool_works(env):
         "^(?:Bash)$", "^(?:Read|NotebookRead)$", "^(?:Edit|Write|MultiEdit|NotebookEdit)$"}
     assert loader.expand_command("/ontology-research 合成") == "/ontology-research 合成"
     tool = workspace / ".claude" / "plugin-dev" / "capability" / "scripts" / "pack_tool.py"
-    done = subprocess.run([sys.executable, str(tool), "init", "demo-notes", "--out", "plugins"], cwd=workspace,
-                          capture_output=True, text=True, timeout=60)
+    done = run_cmd([sys.executable, str(tool), "init", "demo-notes", "--out", "plugins"], cwd=workspace,
+                   capture_output=True, text=True, timeout=60)
     assert done.returncode == 0, done.stderr
-    done = subprocess.run([sys.executable, str(tool), "check", "plugins/demo-notes"], cwd=workspace,
-                          capture_output=True, text=True, timeout=60)
+    done = run_cmd([sys.executable, str(tool), "check", "plugins/demo-notes"], cwd=workspace,
+                   capture_output=True, text=True, timeout=60)
     assert done.returncode == 0, done.stdout + done.stderr
     assert (workspace / "plugins" / "demo-notes" / "checksums.sha256").is_file()
     assert not list(directory.rglob("__pycache__"))  # 跑工具不往装配目录里留缓存

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import copy
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -28,6 +27,7 @@ from app.services.packs import builtin, lockfile
 from app.services.packs import service as pack_service
 from app.services.workspace import WorkspaceManager
 from tests.pack_helpers import NODE_PACK_FLOW, make_node_pack
+from tests.proc import git, run as run_cmd
 from tests.test_changesets import agent_write, main_write, obj
 
 
@@ -51,10 +51,6 @@ def install(manager, tmp_path: Path, version: str = "0.1.0", *, flow: dict | Non
     source = make_node_pack(tmp_path / "src" / f"{name}-{version}", name, version, flow=flow, files=files)
     manager.packs.repository.install(source, origin="upload", by="admin")
     manager.packs.repository.set_channel(name, "stable", version, by="admin")
-
-
-def git(root: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=True).stdout
 
 
 def trailer(root: Path, key: str) -> str:
@@ -301,8 +297,8 @@ def fake_sandbox(monkeypatch):
 
     def gateway_call(_url, method, path, payload=None, timeout=10.0):
         calls.append((method, path, payload["entry"]))
-        done = subprocess.run([sys.executable, "-I", "-c", client.RUNNER, payload["bundle"], payload["entry"],
-                               payload["cases"], "1500", "20"], capture_output=True, text=True, timeout=60)
+        done = run_cmd([sys.executable, "-I", "-c", client.RUNNER, payload["bundle"], payload["entry"],
+                        payload["cases"], "1500", "20"], capture_output=True, text=True, timeout=60)
         return {"results": client._parse_results(done.stdout, payload["case_count"])}
 
     monkeypatch.setattr(client, "_gateway_call", gateway_call)

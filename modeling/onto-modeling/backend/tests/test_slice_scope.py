@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -22,6 +21,7 @@ import pytest
 from app.kernel.changesets import service
 from app.services.packs import contracts
 from app.services.workspace import WorkspaceError
+from tests.proc import run as run_cmd
 from tests.test_changesets import agent_write, main_write, obj
 from tests.test_write_scope import env  # noqa: F401 - 共用 fixture
 
@@ -98,15 +98,15 @@ def test_guard_does_not_narrow_to_old_slices(env):
     (copy / ".onto" / "run" / "exec.json").write_text(json.dumps({"exec_id": "ex-1", "node": "core.model",
                                                                   "slice": {"id": "s1", "name": "订单受理"}}))
     helper = ["python3", str(copy / ".claude" / "scripts" / "state_helper.py")]
-    subprocess.run([*helper, "acquire", "extract-object", "objects"], cwd=copy, check=True, capture_output=True)
+    run_cmd([*helper, "acquire", "extract-object", "objects"], cwd=copy, check=True, capture_output=True)
     spec = json.loads((copy / ".onto" / "run" / "active.json").read_text(encoding="utf-8"))["commands"]["extract-object"]
     assert spec["node"] == "core.model" and "slice" not in spec and "protect" not in spec
 
     def guard(rel: str) -> str:
         payload = {"tool_name": "Write", "tool_input": {"file_path": str(copy / rel), "content": "x"}}
-        proc = subprocess.run(["bash", str(copy / ".claude" / "scripts" / "ontology_scope_guard.sh")],
-                              input=json.dumps(payload, ensure_ascii=False), cwd=copy, capture_output=True,
-                              text=True, timeout=30, env={**os.environ, "CLAUDE_PROJECT_DIR": str(copy)})
+        proc = run_cmd(["bash", str(copy / ".claude" / "scripts" / "ontology_scope_guard.sh")],
+                       input=json.dumps(payload, ensure_ascii=False), cwd=copy, capture_output=True,
+                       text=True, timeout=30, env={**os.environ, "CLAUDE_PROJECT_DIR": str(copy)})
         assert proc.returncode == 0, proc.stderr
         return proc.stdout.strip()
 
@@ -116,4 +116,4 @@ def test_guard_does_not_narrow_to_old_slices(env):
 
     # 老蓝图里另一段的对象照常能改（一次做完整个项目）
     assert not denied(guard("ontology/object/客户.md")) and not denied(guard("ontology/object/订单.md"))
-    subprocess.run([*helper, "release", "extract-object"], cwd=copy, check=True, capture_output=True)
+    run_cmd([*helper, "release", "extract-object"], cwd=copy, check=True, capture_output=True)

@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 
 import pytest
@@ -20,6 +19,7 @@ from app.services.packs import builtin, contracts, lockfile
 from app.services.session_host import fingerprint
 from app.services.workspace import WorkspaceManager
 from tests.pack_helpers import make_assets, make_pack
+from tests.proc import git
 
 
 class FakeEngine:
@@ -259,7 +259,7 @@ def test_follow_channel_upgrades_before_next_message(env):
         session = await settle(manager, root.name)
         assert lockfile.read(root).get("core").version == "0.2.0"
         assert session.engine.assembly_at_connect != old
-        log = os.popen(f"git -C '{root}' log -1 --format=%s%n%b").read()
+        log = git(root, "log", "-1", "--format=%s%n%b")
         assert "跟随通道升级能力包" in log and "Onto-Source: plugin" in log
         await manager.shutdown()
 

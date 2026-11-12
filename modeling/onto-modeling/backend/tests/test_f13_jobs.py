@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
 
 from fastapi.testclient import TestClient
 
@@ -12,6 +11,7 @@ from app.evidence import jobs, spec, storage
 from app.main import app
 from tests import f13_support
 from tests.f13_support import SOURCE, make_bundle, record, sample_records
+from tests.proc import run as run_cmd
 
 f13 = f13_support.f13
 
@@ -22,7 +22,7 @@ PEM = "RSA " + "PRIVATE KEY"
 
 
 def _git_log(root) -> list[str]:
-    return subprocess.run(["git", "log", "--format=%s"], cwd=root, capture_output=True, text=True).stdout.splitlines()
+    return run_cmd(["git", "log", "--format=%s"], cwd=root, capture_output=True, text=True).stdout.splitlines()
 
 
 def test_full_flow_commits_snapshot_and_keeps_raw_results_out_of_git(f13):
@@ -58,8 +58,8 @@ def test_full_flow_commits_snapshot_and_keeps_raw_results_out_of_git(f13):
     for name, digest in manifest["files"].items():
         assert hashlib.sha256((base / name).read_bytes()).hexdigest() == digest
     assert f"evidence: 采集 {SOURCE} 快照 {snapshot_id}" in _git_log(root)
-    tracked = subprocess.run(["git", "ls-files", f"resource/systems/{SOURCE}"], cwd=root, capture_output=True,
-                             text=True).stdout.split()
+    tracked = run_cmd(["git", "ls-files", f"resource/systems/{SOURCE}"], cwd=root, capture_output=True,
+                      text=True).stdout.split()
     assert len(tracked) == 7 and not any("blobs" in path for path in tracked)
     # 原始结果在 blob 仓，不在工作区
     assert storage.blob_size(hashlib.sha256(RAW).hexdigest()) == len(RAW)

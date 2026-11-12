@@ -28,6 +28,7 @@ from app.services.packs import checks, dev_skill
 from app.services.packs import manifest as mf
 from app.services.packs import service as pack_service
 from tests.pack_helpers import NODE_PACK_FLOW, make_node_pack, make_pack
+from tests.proc import run as run_cmd
 from tests.test_private_packs import (AS_OTHER, AS_OWNER, MINE, OWNER, install, post_zip, project,  # noqa: F401
                                        real_flow_env, zipped)
 
@@ -50,8 +51,8 @@ def skill_dir(client, tmp_path: Path, category: str) -> Path:
 
 def pack_tool(skill: Path, *args, cwd: Path, env: dict | None = None) -> subprocess.CompletedProcess:
     # -I：不带 PYTHONPATH 和当前目录，确认只靠 skill 自己的文件就能跑
-    return subprocess.run([sys.executable, "-I", str(skill / "scripts" / "pack_tool.py"), *map(str, args)],
-                          capture_output=True, text=True, cwd=cwd, env=env, timeout=60)
+    return run_cmd([sys.executable, "-I", str(skill / "scripts" / "pack_tool.py"), *map(str, args)],
+                   capture_output=True, text=True, cwd=cwd, env=env, timeout=60)
 
 
 def tool_check(skill: Path, directory: Path, *flags) -> tuple[int, dict]:
@@ -402,7 +403,7 @@ def test_checker_runs_without_the_backend_on_the_path(real_flow_env):
         f"pack_tool.run_checks(Path({str(directory)!r}), platform, write_checksums=True)\n"
         "print(json.dumps(sorted({m.split('.')[0] for m in sys.modules})))\n"
     )
-    done = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, cwd=tmp_path, timeout=60)
+    done = run_cmd([sys.executable, "-I", "-c", code], capture_output=True, text=True, cwd=tmp_path, timeout=60)
     assert done.returncode == 0, done.stderr
     roots = set(json.loads(done.stdout))
     assert "checker" in roots and not roots & {"app", "fastapi", "starlette", "pydantic"}
@@ -417,7 +418,7 @@ def test_missing_pyyaml_gives_a_clear_message(real_flow_env):
         f"sys.argv = ['pack_tool.py', 'init', 'my-pack']\n"
         f"runpy.run_path({str(skill / 'scripts' / 'pack_tool.py')!r}, run_name='__main__')\n"
     )
-    done = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, cwd=tmp_path, timeout=60)
+    done = run_cmd([sys.executable, "-I", "-c", code], capture_output=True, text=True, cwd=tmp_path, timeout=60)
     assert done.returncode == 1 and "PyYAML" in done.stderr and "Traceback" not in done.stderr
     assert not (tmp_path / "my-pack").exists()
 
@@ -582,8 +583,8 @@ def test_knowledge_pack_end_to_end(real_flow_env, category, name, entry, scope, 
     items = client.get(f"/api/v1/projects/{pid}/knowledge?layer=industry", headers=AS_OWNER).json()["items"]
     assert next(item for item in items if item["id"] == f"{name}:{entry}")["readonly"] is True
     # 建模步骤靠这条命令取知识，不只是文件落地
-    loaded = subprocess.run([sys.executable, ".claude/scripts/knowledge_helper.py", "load", "--scope", scope],
-                            capture_output=True, text=True, cwd=root, timeout=60)
+    loaded = run_cmd([sys.executable, ".claude/scripts/knowledge_helper.py", "load", "--scope", scope],
+                     capture_output=True, text=True, cwd=root, timeout=60)
     assert loaded.returncode == 0 and content in loaded.stdout, loaded.stdout + loaded.stderr
 
 

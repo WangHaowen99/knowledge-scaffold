@@ -9,12 +9,12 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 
 from app import kernel_guards
+from tests.proc import run as run_cmd
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None or shutil.which("git") is None,
                                 reason="需要 bash 与 git")
@@ -29,7 +29,7 @@ def ws(tmp_path: Path) -> Path:
     (tmp_path / "data" / "packs").mkdir()
     root = tmp_path / "data" / "workspaces" / "demo"
     root.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    run_cmd(["git", "init", "-q"], cwd=root, check=True)
     (root / ".claude").symlink_to(Path("../../assembled/0123456789abcdef"))
     (root / "CLAUDE.md").symlink_to(Path(".claude/CLAUDE.md"))
     (assembled / "CLAUDE.md").write_text("# 规则\n", encoding="utf-8")
@@ -45,7 +45,7 @@ def run_guard(root: Path, guard: str, payload, *, raw: str | None = None, cwd: P
     script = {"resource": "resource_write_guard.sh", "toolset": "toolset_write_guard.sh",
               "lock": "lock_file_guard.sh", "scope": "ontology_scope_guard.sh"}[guard]
     data = raw if raw is not None else json.dumps(payload, ensure_ascii=False)
-    proc = subprocess.run(
+    proc = run_cmd(
         ["bash", str(root / ".claude" / "scripts" / script)],
         input=data, cwd=cwd or root, capture_output=True, text=True, timeout=30,
         env={**os.environ, "CLAUDE_PROJECT_DIR": str(root)},
@@ -243,7 +243,7 @@ def test_guard_errors_deny(ws: Path, guard, raw):
 
 def test_missing_guard_script_blocks_via_exit_code(ws: Path):
     # settings.json 里每条守卫都带 `|| exit 2`：脚本缺失（127）也变成阻断
-    proc = subprocess.run(
+    proc = run_cmd(
         ["bash", "-c", 'bash "$CLAUDE_PROJECT_DIR/.claude/scripts/no_such_guard.sh" || exit 2'],
         input="{}", capture_output=True, text=True, env={**os.environ, "CLAUDE_PROJECT_DIR": str(ws)},
     )
@@ -261,7 +261,7 @@ def test_settings_base_wraps_every_guard_with_exit_2():
 
 
 def run_pre_commit(root: Path, command: str) -> str:
-    proc = subprocess.run(
+    proc = run_cmd(
         ["bash", str(root / ".claude" / "scripts" / "pre_commit_check.sh")],
         input=json.dumps(bash(command)), cwd=root, capture_output=True, text=True, timeout=60,
         env={**os.environ, "CLAUDE_PROJECT_DIR": str(root)},
@@ -277,17 +277,17 @@ def run_pre_commit(root: Path, command: str) -> str:
     "cd ontology && git commit -m x",
 ])
 def test_pre_commit_check_recognizes_commit_variants(ws: Path, command):
-    subprocess.run(["git", "add", "-f", "resource/a.md"], cwd=ws, check=True)
+    run_cmd(["git", "add", "-f", "resource/a.md"], cwd=ws, check=True)
     assert '"block"' in run_pre_commit(ws, command)
 
 
 def test_pre_commit_check_blocks_staged_lock_file(ws: Path):
-    subprocess.run(["git", "add", "-f", ".onto/packs.lock"], cwd=ws, check=True)
+    run_cmd(["git", "add", "-f", ".onto/packs.lock"], cwd=ws, check=True)
     assert "能力包与锁文件" in run_pre_commit(ws, "git commit -m x")
 
 
 def test_pre_commit_check_blocks_unreadable_input(ws: Path):
-    proc = subprocess.run(
+    proc = run_cmd(
         ["bash", str(ws / ".claude" / "scripts" / "pre_commit_check.sh")],
         input="not json", cwd=ws, capture_output=True, text=True, timeout=30,
     )
@@ -295,5 +295,5 @@ def test_pre_commit_check_blocks_unreadable_input(ws: Path):
 
 
 def test_pre_commit_check_ignores_non_commit_commands(ws: Path):
-    subprocess.run(["git", "add", "-f", "resource/a.md"], cwd=ws, check=True)
+    run_cmd(["git", "add", "-f", "resource/a.md"], cwd=ws, check=True)
     assert run_pre_commit(ws, "git status") == ""
