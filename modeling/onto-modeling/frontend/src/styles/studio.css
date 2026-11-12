@@ -117,3 +117,4 @@
 .sd-er-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
 .stt-src{cursor:pointer}.stt-src:hover{border-color:var(--blue3);color:var(--blue2)}
 .stt-sort{cursor:pointer;white-space:nowrap;user-select:none}.stt-sort svg{vertical-align:-1px;margin-left:3px}.stt-time{white-space:nowrap}
+.stt-src.missing{opacity:.55;color:var(--muted)}

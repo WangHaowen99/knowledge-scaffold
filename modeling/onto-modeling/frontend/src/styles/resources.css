@@ -59,3 +59,19 @@
 .evd-paper tr{scroll-margin:40px}
 
 .card .chip.rs-go{cursor:pointer}
+/* 原始资料来源预览（develop SourcePreview）：段号列、表 N、命中高亮、PDF 与图片 */
+.src-head{gap:8px;font-size:12.5px;color:var(--ink2)}
+.src-preview{max-height:520px}
+.src-seg{display:flex;gap:10px;padding:3px 6px;border-radius:6px;scroll-margin:40px}
+.src-seg-no{flex:none;min-width:28px;text-align:right;font-family:var(--mono);font-size:10.5px;color:var(--muted);padding-top:3px}
+.src-seg-text{flex:1;white-space:pre-wrap;word-break:break-word}
+.src-hit{background:var(--b50);box-shadow:inset 3px 0 0 var(--blue3)}
+.src-table-wrap{margin:8px 0 10px}
+.src-table-title{font-size:11px;color:var(--muted);margin-bottom:4px}
+.src-table{border-collapse:collapse;font-size:12px}
+.src-table td{border:1px solid var(--line);padding:3px 8px;vertical-align:top;white-space:pre-wrap;scroll-margin:40px}
+.src-table td.src-hit{box-shadow:inset 0 0 0 2px var(--blue3)}
+.src-frame{width:100%;height:560px;border:1px solid var(--line);border-radius:10px;background:#fff}
+.src-image{border:1px solid var(--line);border-radius:10px;padding:10px;background:#fff;text-align:center}
+.src-image img{max-width:100%;max-height:560px}
+.rs-back{margin-bottom:10px}

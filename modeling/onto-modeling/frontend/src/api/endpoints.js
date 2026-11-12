@@ -82,6 +82,7 @@ export function createApi(client) {
     resourcePositions: (id, path, query) => client.get(`${P(id)}/resources/positions`, { query: { path, ...query } }), // R-15
     resourceSchemaPreview: (id, path) => client.get(`${P(id)}/resources/schema-preview`, { query: { path } }), // R-16
     reconvertResource: (id, path) => client.post(`${P(id)}/resources/convert`, { path }), // R-14
+    resourceSourcePreview: (id, path, anchor) => client.get(`${P(id)}/resources/source-preview`, { query: { path, anchor: anchor || undefined } }), // R-17
     materialMap: (id) => client.get(`${P(id)}/materials/map`), // R-07
     materialCandidates: (id, query) => client.get(`${P(id)}/materials/candidates`, { query }), // R-08
     materialVerification: (id) => client.get(`${P(id)}/materials/verification`), // R-09

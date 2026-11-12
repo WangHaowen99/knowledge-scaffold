@@ -382,6 +382,12 @@ export default function ResourcesPage({ route }) {
   const handleFb = (fb) => tasks.send({ command: '/ontology-evolution', args: { feedback_id: fb.id }, text: `处理外部反馈：${feedbackView(fb).title}` });
 
   // ---------- 右侧 ----------
+  // 从别的文档的出处芯片点进来（?from=）：预览上方「返回 <文档名>」回到那里（develop 的 onBackToOrigin）
+  const back = sel?.source && route?.query?.from ? (
+    <Button size="sm" kind="ghost" icon="arrowl" className="rs-back" onClick={() => { window.location.hash = route.query.from; }}>
+      返回 {route.query.fromLabel || ''}
+    </Button>
+  ) : null;
   let right;
   if (sel?.kind === 'feedback' && selFeedback) {
     right = <FeedbackPreview fb={selFeedback} busy={fbBusy || tasks.sending} onSetState={(s) => setFbState(selFeedback, s)} onHandle={() => handleFb(selFeedback)} />;
@@ -389,6 +395,7 @@ export default function ResourcesPage({ route }) {
     right = (
       <MaterialPreview
         key={`${selected.path}:${sel?.n || ''}`} m={selected} purposes={purposes} fragment={sel?.kind === 'file' ? sel.fragment : null}
+        source={sel?.kind === 'file' && sel.source ? { textVersion: !!sel.textVersion } : null}
         full={full} onFull={toggleFull} onSaved={load} onUploadText={() => choose({ textOnly: true })} tasks={tasks}
         onScope={sheetScope.edit}
       />
@@ -478,7 +485,7 @@ export default function ResourcesPage({ route }) {
           ) : null}
         </div>
 
-        <div className={cx('evd-prev', full && 'rs-full')} onClick={full ? (e) => { if (e.target === e.currentTarget) toggleFull(); } : undefined}>{right}</div>
+        <div className={cx('evd-prev', full && 'rs-full')} onClick={full ? (e) => { if (e.target === e.currentTarget) toggleFull(); } : undefined}>{back}{right}</div>
       </div>
 
       <input

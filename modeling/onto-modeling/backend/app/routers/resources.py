@@ -259,6 +259,20 @@ def preview(project_id: str, request: Request, path: str = "", around: str = "",
     }
 
 
+@router.get("/source-preview")
+def source_preview(project_id: str, request: Request, path: str = "", anchor: str = ""):
+    """R-17 原始资料分段预览（文本、docx）：锚点附近的分段与是否命中（同 develop 的 /source-preview）。"""
+    from ..services import source_preview as source_service
+
+    root = deps.require_owner(project_id, request)
+    rel = _material_target(root, path)
+    try:
+        return source_service.preview(root / rel, anchor)
+    except source_service.SourcePreviewError as exc:
+        code = "unsupported_media_type" if exc.status == 415 else "invalid_argument"
+        raise ApiError(code, str(exc), exc.status) from None
+
+
 @router.get("/references")
 def references(project_id: str, request: Request, path: str = ""):
     """R-05：本体条目、插件产物里引用这份资料的地方（出处路径或文件名）。"""

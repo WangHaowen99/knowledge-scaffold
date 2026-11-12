@@ -74,6 +74,13 @@ export async function createServices({ onAuthRequired, onMaintenance }) {
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     },
 
+    // 平台内直接打开的原文件（PDF、图片，来源预览 R-17）：生产用带令牌的直链，mock 下取 blob 生成对象地址
+    async fileUrl(path, query) {
+      if (!transport.isMock) return client.withToken(client.url(path, query));
+      const res = await client.request('GET', path, { raw: true, query });
+      return URL.createObjectURL(await res.blob());
+    },
+
     // 开一条事件流（契约 1.11）
     openStream({ kind, url, lastId, onEvent, onReset, onStatus }) {
       const s = new EventStream({

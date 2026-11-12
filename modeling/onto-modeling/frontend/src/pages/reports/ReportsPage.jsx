@@ -9,10 +9,11 @@ import { ShellP } from '../../shell/Shell.jsx';
 import { Button, Card, Chip, Ev, Icon, KV, Note, Prog, Ring, Seg, St, cx } from '../../ui/index.jsx';
 import { inlineTokens } from '../workbench/md.js';
 import { anchorChipLabel } from '../studio/studioModel.js';
+import { findHeadingIndex } from '../../lib/sourceLocation.js';
 import '../../styles/reports.css';
 import {
   ITEM_STATUS, LINK_STATS, PURPOSE_LABEL, PURPOSE_TONE, RECHECK_KINDS, fmtStamp, infoPairs, linkKind,
-  headingLine, locateTarget, materialCounts, progressView, repairView,
+  locateTarget, materialCounts, progressView, repairView,
 } from './reportModel.js';
 
 const FIX_TOAST = '已发给助手';
@@ -123,15 +124,21 @@ function RepairCard({ repair, items, arbitration, onAnswered }) {
   );
 }
 
-function RawPane({ raw, section }) {
+function RawPane({ raw, section, back = null }) {
   const bodyRef = useRef(null);
   const lines = raw ? raw.content_md.split('\n') : [];
-  const at = section ? headingLine(lines, section) : -1;
+  // 从芯片带小节打开（develop FilePreviewBody）：标题全文相同优先，其次包含小节名；找不到提示并显示开头
+  const heads = lines.map((line, i) => [/^#{1,3}\s+(.*)$/.exec(line.trim())?.[1]?.trim(), i]).filter(([t]) => t != null);
+  const found = section ? findHeadingIndex(heads.map(([t]) => t), section) : -1;
+  const at = found >= 0 ? heads[found][1] : -1;
   useLayoutEffect(() => { bodyRef.current?.querySelector('.rp-at')?.scrollIntoView({ block: 'start' }); }, [raw, at]);
+  useEffect(() => {
+    if (raw && section && at < 0) toast(`小节「${section}」在文档里已不存在，显示文档开头`, 'alert');
+  }, [raw, section, at]);
   return (
     <div className="bd">
-      {raw && section && at < 0 ? <Note tone="amber" className="mb8">报告里找不到小节「{section}」，可能已改名。</Note> : null}
       <div className="row mb12">
+        {back}
         <span className="sp" />
         <Button size="xs" icon="copy" disabled={!raw} onClick={async () => { try { await navigator.clipboard.writeText(raw.content_md); toast('已复制', 'copy'); } catch { toast('复制失败，请手动选择', 'alert'); } }}>复制</Button>
       </div>
@@ -267,6 +274,10 @@ export default function ReportsPage({ route }) {
   const isLink = current?.type === 'link';
   const isResearch = current?.type === 'research';
 
+  // 从条目的出处芯片点进来（?from=）：「返回 <文档名>」回到那里（develop 的 onBackToOrigin）
+  const back = section && route.query?.from ? (
+    <Button size="sm" kind="ghost" icon="arrowl" onClick={() => { window.location.hash = route.query.from; }}>返回 {route.query.fromLabel || ''}</Button>
+  ) : null;
   let header = null;
   let body = null;
   if (current) {
@@ -291,8 +302,8 @@ export default function ReportsPage({ route }) {
       </div>
     );
     // 资料分析报告平时是结构化视图；从规则「来源」的小节跳来时看原文并定位（再点列表里的报告回到结构化视图）
-    if (isResearch) body = section ? <RawPane raw={raw} section={section} /> : <ResearchBody report={current} />;
-    else if (pane === 'raw' && !isLink) body = <RawPane raw={raw} section={section} />;
+    if (isResearch) body = section ? <RawPane raw={raw} section={section} back={back} /> : <ResearchBody report={current} />;
+    else if (pane === 'raw' && !isLink) body = <RawPane raw={raw} section={section} back={back} />;
     else {
       body = (
         <div className="bd">

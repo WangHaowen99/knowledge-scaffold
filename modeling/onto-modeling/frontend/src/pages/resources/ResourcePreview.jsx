@@ -12,11 +12,13 @@ import DrawioPreview from '../../components/DrawioPreview.jsx';
 import { isLocked } from '../../state/readonly.js';
 import { Button, Chip, Icon, Modal, Note, Seg, cx, useEscape } from '../../ui/index.jsx';
 import { useProjectEvent } from '../plugin/parts.jsx';
+import { locateSheetCell, previewKind } from '../../lib/sourceLocation.js';
+import SourcePreview from './SourcePreview.jsx';
 import { scopeChip } from './sheetScopeModel.js';
 import {
   PREVIEW_ICON, blockBody, isDocPreview, blockLabel, coverageChip, csvText, diamondPoints, drawioLayout, feedbackView, fmtSize,
   parseDrawio, parseFragment, purposeView, refRows, refTarget, scaleText, sheetView, splitHighlights, tableTruncated, cellPos,
-  hasTextTab, materialTitle, textSections, inRange, isTextFragment, lineRange, textPathOf, textView,
+  hasTextTab, materialTitle, textSections, inRange, isTextFragment, lineRange, sheetSpans, textPathOf, textView,
 } from './resourcesModel.js';
 
 const enc = encodeURIComponent;
@@ -266,36 +268,49 @@ function useTable(path, revision) {
 function SheetPane({ m, fragment }) {
   const data = useTable(m.path, m.revision);
   const focus = parseFragment(fragment);
+  // 定位（develop ExcelView）：切到锚点所在工作表；工作表或格子不在了、超出预览范围时说明
+  const located = useMemo(() => (data?.sheets && fragment ? locateSheetCell(data, fragment) : null), [data, fragment]);
   const cell = focus?.type === 'cell' ? cellPos(focus.cell) : null;
   const [pick, setPick] = useState(null);
   const sheets = data?.sheets || [];
-  const focusIndex = focus?.type === 'cell' ? sheets.findIndex((s) => s.name === focus.sheet) : -1;
+  const focusIndex = located?.index ?? (focus?.type === 'cell' ? sheets.findIndex((s) => s.name === focus.sheet) : -1);
   const index = pick ?? (focusIndex >= 0 ? focusIndex : 0);
   const sheet = sheets[index];
   const view = useMemo(() => sheetView(sheet), [sheet]);
-  const hereFocus = cell && (focusIndex < 0 || focusIndex === index);
+  const spans = useMemo(() => sheetSpans(sheet), [sheet]);
+  const hereFocus = cell && !located?.problem && (focusIndex < 0 || focusIndex === index);
+  // 定位格落在合并区内时高亮整个合并区（即合并区左上角那个格子）
+  const hit = hereFocus ? spans.hitOf(cell.row - 1, cell.col) : '';
   const scrollRef = useRef(null);
   useLayoutEffect(() => {
     scrollRef.current?.querySelector('.rs-cell')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  }, [view]);
+  }, [view, hit]);
   if (!data) return <div className="evd-sheet rs-loading"><span className="spin" />正在读取表格…</div>;
   if (data.error) return <Note tone="red">{data.error}</Note>;
+  const cellProps = (r, c) => {
+    const merge = spans.anchors.get(`${r}:${c}`);
+    return { rowSpan: merge?.rowspan, colSpan: merge?.colspan, className: cx(hit === `${r}:${c}` && 'rs-cell') };
+  };
   return (
     <>
+      {tableTruncated(data, sheet) ? <Note tone="blue" className="mb8">表格较大，仅预览前 500 行 × 60 列；完整内容请下载原文件</Note> : null}
+      {located?.problem ? (
+        <Note tone="amber" className="mb8">{located.problem === 'range' ? `${located.message}，完整内容请下载原文件` : located.message}</Note>
+      ) : null}
       <div className="evd-sheet">
         <div className="rs-sheet-scroll" ref={scrollRef}>
           <table>
             <thead>
               <tr>
                 <th className="rn" />
-                {view.header.map((h, c) => <th key={c} className={cx(hereFocus && cell.row === 1 && cell.col === c && 'rs-cell')}>{h}</th>)}
+                {view.header.map((h, c) => (spans.covered.has(`0:${c}`) ? null : <th key={c} {...cellProps(0, c)} rowSpan={undefined}>{h}</th>))}
               </tr>
             </thead>
             <tbody>
               {view.body.map((r) => (
                 <tr key={r.n}>
                   <td className="rn">{r.n}</td>
-                  {r.cells.map((v, c) => <td key={c} className={cx(hereFocus && cell.row === r.n && cell.col === c && 'rs-cell')}>{v}</td>)}
+                  {r.cells.map((v, c) => (spans.covered.has(`${r.n - 1}:${c}`) ? null : <td key={c} {...cellProps(r.n - 1, c)}>{v}</td>))}
                 </tr>
               ))}
             </tbody>
@@ -305,7 +320,6 @@ function SheetPane({ m, fragment }) {
           {sheets.map((s, i) => <span key={s.name} className={i === index ? 'on' : ''} onClick={() => setPick(i)}>{s.name}</span>)}
         </div>
       </div>
-      {tableTruncated(data, sheet) ? <div className="xs muted mt8 row g4"><Icon name="info" size={12} />仅预览前 500 行 × 60 列</div> : null}
     </>
   );
 }
@@ -536,7 +550,7 @@ function RefsPane({ m, onLocate }) {
 }
 
 // ---------- 预览卡 ----------
-export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, onUploadText, tasks, onScope }) {
+export function MaterialPreview({ m, purposes, fragment, source = null, full, onFull, onSaved, onUploadText, tasks, onScope }) {
   const [tab, setTab] = useState('pv');
   const [focus, setFocus] = useState(fragment);
   const [coverage, setCoverage] = useState(null);
@@ -550,8 +564,13 @@ export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, 
   const scale = isDocPreview(m) || m.preview === 'drawio' || m.preview === 'html' ? fmtSize(m.size) : scaleText(m);
 
   let pane;
-  // 出处指向文本版的行：在文本版里定位；PDF 没有原样预览，预览就是它的文本版；Word、Excel 另有「文本」页签
-  if (isTextFragment(m, focus)) pane = <TextAtPane m={m} fragment={focus} />;
+  // 资料芯片、「查看原文」带锚点跳来（source）：照 develop 的来源预览——Word、文本分段定位，Excel 定位单元格，
+  // PDF、图片在平台内打开，其他格式给下载；早先写文本版行号的出处（source.textVersion）在文本版里定位。
+  // 平时浏览：PDF 没有原样预览，预览就是它的文本版；Word、Excel 另有「文本」页签
+  const kind = source && focus === fragment ? previewKind(m.path, focus || '') : null;
+  if (source?.textVersion && isTextFragment(m, focus)) pane = <TextAtPane m={m} fragment={focus} />;
+  else if (kind === 'excel') pane = <SheetPane key={`${m.path}:${focus || ''}`} m={m} fragment={focus} />;
+  else if (['segments', 'pdf', 'image', 'download'].includes(kind)) pane = <SourcePreview path={m.path} kind={kind} anchor={focus || ''} />;
   else if (m.kind === 'pdf' && m.text) pane = <TextPane m={m} onUploadText={onUploadText} onCoverage={onCoverage} />;
   else if (isDocPreview(m)) pane = <DocPane m={m} fragment={focus} onCoverage={onCoverage} onUploadText={onUploadText} tasks={tasks} />;
   else if (m.preview === 'xls') pane = <SheetPane key={`${m.path}:${focus || ''}`} m={m} fragment={focus} />;
