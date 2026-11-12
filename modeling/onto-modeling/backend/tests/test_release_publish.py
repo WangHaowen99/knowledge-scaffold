@@ -123,7 +123,8 @@ def test_publish_packs_head_and_tags_release(manager, tmp_path, synthetic_hub):
     assert f"发布 {version}" in message and "发布人：operator_a" in message and "降级发布：否" in message
     assert f"Hub：{record['ontology_id']} {record['release_id']}" in message
     stored = manager.get_project(pid)["last_package_publish"]
-    assert stored == {key: value for key, value in record.items() if key != "local_record_pending"}
+    # 发布结果另带共享授权同步状态（hub_members），不写进项目元数据
+    assert stored == {key: value for key, value in record.items() if key not in ("local_record_pending", "hub_members")}
     assert publish_service.package_binding_check(manager, pid)["last_publish"]["version"] == version
     entry = publish_service.releases(manager, pid)[0]
     assert entry["hub"] == {key: record[key] for key in ("ontology_id", "release_id", "package_digest")}

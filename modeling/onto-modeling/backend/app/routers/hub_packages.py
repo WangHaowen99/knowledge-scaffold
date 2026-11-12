@@ -17,7 +17,7 @@ from starlette.background import BackgroundTask
 
 from ..api import deps
 from ..api.errors import ApiError
-from ..services import auth, hub_packages, knowledge_hub, ownership
+from ..services import auth, hub_members, hub_packages, knowledge_hub, ownership
 from ..services.workspace import WorkspaceError
 
 router = APIRouter(prefix="/api/v1/hub", tags=["hub"])
@@ -171,3 +171,59 @@ def resource_download(project_id: str, file_id: str, request: Request):
         shutil.rmtree(folder)
         raise
     return _file_response(folder, dest, file_id)
+
+
+# ---- 知识包共享（develop !590 的成员共享，本分支在知识包这一层管理，ADR-0098） ----
+
+MAX_SHARED_USERS = 200
+
+
+def _sharing_view(project_id: str, sharing: dict) -> dict:
+    meta = deps.workspaces.get_project(project_id)
+    return {"owner": meta.get("owner") or "", "users": hub_members.shared_users(project_id), "hub_sync": sharing}
+
+
+@project_router.get("/sharing")
+def get_sharing(project_id: str, request: Request):
+    """共享用户与 Hub 授权同步状态（pending 队列、各用户最近一次结果）。"""
+    deps.require_owner(project_id, request)
+    return _sharing_view(project_id, hub_members.status(project_id))
+
+
+@project_router.put("/sharing")
+async def put_sharing(project_id: str, request: Request):
+    """改共享用户名单：已发布时按差异排授权 / 撤权并立即同步；同步失败不回滚名单，可以按用户重试。"""
+    deps.require_writable(project_id, request)
+    body = await deps.json_body(request)
+    users = body.get("users")
+    if not isinstance(users, list) or len(users) > MAX_SHARED_USERS:
+        raise ApiError("invalid_argument", "users 要是用户名列表", 400, {"fields": {"users": "invalid"}})
+    names = []
+    for item in users:
+        if not isinstance(item, str) or not ownership.OWNER_NAME_RE.fullmatch(item.strip()):
+            raise ApiError("invalid_argument", "用户名不合法", 400, {"fields": {"users": "invalid"}})
+        names.append(item.strip())
+    owner = str(deps.workspaces.get_project(project_id).get("owner") or "")
+    token = knowledge_hub.token_of(request)
+    with knowledge_hub.lock(project_id):
+        hub_members.writable(project_id)
+        hub_members.set_shared(project_id, names, owner)
+        sharing = hub_members.sync(deps.workspaces, project_id, token)
+    return _sharing_view(project_id, sharing)
+
+
+@project_router.post("/sharing/retry")
+def retry_sharing(project_id: str, request: Request, username: str | None = None):
+    """按用户重试授权 / 撤权（develop 的 members/hub-retry）；不给 username 时重试全部。"""
+    deps.require_writable(project_id, request)
+    with knowledge_hub.lock(project_id):
+        sharing = hub_members.sync(deps.workspaces, project_id, knowledge_hub.token_of(request), username=username)
+    return _sharing_view(project_id, sharing)
+
+
+@project_router.get("/delete-preview")
+def delete_preview(project_id: str, request: Request):
+    """删除项目前看它的 Hub 包：没发布过、知识包名称与本体标识、删除进度（develop 的 hub-delete-preview）。"""
+    deps.require_owner(project_id, request)
+    with knowledge_hub.lock(project_id):
+        return hub_members.delete_preview(deps.workspaces, project_id, knowledge_hub.token_of(request))

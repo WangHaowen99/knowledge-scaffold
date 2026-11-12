@@ -298,6 +298,8 @@ async def create_release(project_id: str, request: Request):
         # Hub 已提交、本地标签没写成：照样算发布成功，带上 Hub 回执，后台恢复
         view = {"project_id": project_id, "version": record["version"], "local_record_pending": True}
     view["hub"] = {key: record.get(key) for key in publish.HUB_FIELDS}
+    if record.get("hub_members"):
+        view["hub_members"] = record["hub_members"]
     # 评测服务那边可能在等这次发布（评测优化后的回写），带着用户登录尽力回写一次，失败不影响发布
     writeback = package_evaluations.after_publish(project_id, subject, token, {**record, "status": "committed"})
     if writeback:

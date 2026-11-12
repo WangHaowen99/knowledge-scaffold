@@ -260,6 +260,9 @@ def publish_package(
         verified_revision=verified_revision, delegated=delegated,
     )
     record = _release_record(manager, project_id, receipt)
+    if receipt.get("hub_members"):
+        # 共享用户的 Hub 授权同步结果（develop !590）：失败时页面提示去「知识包共享」重试
+        record["hub_members"] = receipt["hub_members"]
     if dest_path is not None:
         shutil.copyfile(release_package(manager, project_id, receipt["version"], token=token)[0], dest_path)
     return record

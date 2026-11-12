@@ -278,6 +278,10 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
     if not token and not delegated:
         raise WorkspaceError('Hub 需要登录用户身份', 401)
     with transport.lock(pid):
+        from . import hub_members
+
+        # 删除项目时一并删 Hub 包：删除中或已删除时不再发布（develop !590）
+        hub_members.writable(pid)
         manager.project_root(pid)
         folder = directory(pid, subject) / 'requests' / request_id
         task_file = folder / 'task.json'
@@ -292,9 +296,10 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
             except (OSError, WorkspaceError):
                 return {**saved_receipt, 'local_record_pending': True}
             _record_local_release(manager, pid, saved_receipt, task, folder / 'package.zip')
+            sharing = hub_members.after_publish(manager, pid, token, task.get('first_project_publish', False))
             shutil.rmtree(folder / 'input', ignore_errors=True)
             (folder / 'package.zip').unlink(missing_ok=True)
-            return saved_receipt
+            return {**saved_receipt, 'hub_members': sharing}
         if not task:
             from .publish import stages as publish_stages
             from .solver import service as solver_service
@@ -321,7 +326,9 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
             if base:
                 payload.update(base_release_id=base['release_id'],
                                base_digest=base['package_digest'])
-            task = dict(name=value['name'], allow_unbound=allow_unbound, payload=payload,
+            # 项目第一次发布：Hub 提交后初始化共享授权（所有者加共享用户）
+            task = dict(first_project_publish=not bool(base), name=value['name'],
+                        allow_unbound=allow_unbound, payload=payload,
                         binding=value['binding'], files=value['files'], graph=graph,
                         commit=value['commit'], author=author)
             if kind == 'release':
@@ -364,9 +371,10 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
             except (OSError, WorkspaceError):
                 return {**receipt, 'local_record_pending': True}
             _record_local_release(manager, pid, receipt, task, folder / 'package.zip')
+            sharing = hub_members.after_publish(manager, pid, token, task.get('first_project_publish', False))
             shutil.rmtree(folder / 'input', ignore_errors=True)
             (folder / 'package.zip').unlink(missing_ok=True)
-            return receipt
+            return {**receipt, 'hub_members': sharing}
         if expected_base is not None:
             base = association(pid, subject)
             if ((base or {}).get('release_id'), (base or {}).get('package_digest')) != expected_base:
@@ -404,7 +412,8 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
         _record_solver_release(pid, receipt, task)
         shutil.rmtree(folder / 'input', ignore_errors=True)
         archive.unlink(missing_ok=True)
-        return receipt
+        sharing = hub_members.after_publish(manager, pid, token, task.get('first_project_publish', False))
+        return {**receipt, 'hub_members': sharing}
 
 
 def releases(pid, subject, token, offset=0, limit=20):

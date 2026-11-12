@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import secrets
 import string
@@ -24,6 +25,7 @@ from ..api.deps import workspaces  # noqa: F401  旧测试仍 monkeypatch admin.
 from ..api.errors import ApiError
 from ..api.views import project_meta_view
 from ..services import audit, auth, ownership
+from ..services.workspace import WorkspaceError
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
@@ -337,7 +339,8 @@ def delete_user(username: str, request: Request, body: DeleteUserBody | None = N
     from ..services import project_events
 
     for meta in owned:
-        deps.workspaces.set_owner(meta["id"], target)
+        previous, _ = deps.workspaces.set_owner(meta["id"], target)
+        _share_with_new_owner(meta["id"], previous, target, request)
         transferred += 1
         project_events.project_removed(username, meta["id"], "transferred")
         project_events.card_changed(meta["id"])
@@ -374,6 +377,21 @@ def unowned_projects(request: Request):
     return {"items": _meta_views(metas)}
 
 
+def _share_with_new_owner(project_id: str, previous: str, owner: str, request: Request) -> None:
+    """换所有者：给新所有者排一次知识包 Hub 授权，旧所有者留作共享用户（ADR-0098）。
+
+    同步要用 Hub 上已授权用户的令牌，管理员通常不是，所以这里只尽力同步一次，没成功的留在 pending 等重试。
+    """
+    from ..services import hub_members, knowledge_hub
+
+    try:
+        with knowledge_hub.lock(project_id):
+            hub_members.owner_changed(project_id, previous, owner)
+            hub_members.sync(deps.workspaces, project_id, knowledge_hub.token_of(request))
+    except (OSError, ValueError, WorkspaceError):
+        logging.getLogger(__name__).warning("换所有者后的知识包授权没排上", exc_info=True)
+
+
 class OwnerBody(BaseModel):
     owner: str
 
@@ -384,6 +402,7 @@ def set_project_owner(project_id: str, body: OwnerBody, request: Request):
     deps.require_role(request, "admin")
     owner = ownership.validate_owner_name(body.owner)
     previous, meta = deps.workspaces.set_owner(project_id, owner)
+    _share_with_new_owner(project_id, previous, owner, request)
     audit.log(
         deps.actor(request), "PUT", request.url.path,
         detail={"action": "project.set_owner", "project": project_id, "from": previous, "to": owner},
