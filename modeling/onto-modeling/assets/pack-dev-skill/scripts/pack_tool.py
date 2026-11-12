@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import platform as host
 import shutil
 import sys
@@ -19,17 +20,37 @@ from pathlib import Path
 sys.dont_write_bytecode = True  # 不往 skill 目录里留 __pycache__
 SCRIPTS = Path(__file__).resolve().parent
 SKILL = SCRIPTS.parent
-sys.path.insert(0, str(SCRIPTS))  # python3 -I 运行时脚本目录不在 sys.path 里
+sys.path.append(str(SCRIPTS))  # python3 -I 运行时脚本目录不在 sys.path 里
 MARKS = {"pass": "通过", "warn": "警告", "fail": "失败"}
+
+
+class ToolError(Exception):
+    """命令行报错：main 把消息写到标准错误，退出码 1。"""
+
+
+# 命令行输出通道：独立 logger，不经根 logger，消息原样（无前缀）
+_console = logging.Logger("pack_tool", logging.INFO)
+_console_handler = logging.StreamHandler()
+_console.addHandler(_console_handler)
+
+
+def _out(text: str = "", *, stream=None) -> None:
+    """输出一行：结果写标准输出（助手读它），报错传 stream=sys.stderr；每次取当前的流，测试替换了也跟着走。"""
+    _console_handler.setStream(stream or sys.stdout)
+    _console.info(text)
+
+
+def _err(text: str) -> None:
+    _out(text, stream=sys.stderr)
 
 
 def _require_runtime() -> None:
     if sys.version_info < (3, 9):
-        sys.exit(f"pack_tool 需要 Python 3.9 或更新版本，当前是 {sys.version.split()[0]}")
+        raise ToolError(f"pack_tool 需要 Python 3.9 或更新版本，当前是 {sys.version.split()[0]}")
     try:
         import yaml  # noqa: F401
     except ImportError:
-        sys.exit("缺少 PyYAML：运行 python3 -m pip install pyyaml 后重试")
+        raise ToolError("缺少 PyYAML：运行 python3 -m pip install pyyaml 后重试") from None
 
 
 def _platform() -> dict:
@@ -158,26 +179,31 @@ def _report(manifest, items: list[dict], upload_time: list[dict], *, as_json: bo
 
     summary = checks.summary(items)
     if as_json:
-        print(json.dumps({"ok": summary["fail"] == 0, "name": manifest.name if manifest else None,
-                          "version": manifest.version if manifest else None, "summary": summary, "checks": items,
-                          "upload_time": upload_time, **(extra or {})}, ensure_ascii=False))
+        _out(json.dumps({"ok": summary["fail"] == 0, "name": manifest.name if manifest else None,
+                         "version": manifest.version if manifest else None, "summary": summary, "checks": items,
+                         "upload_time": upload_time, **(extra or {})}, ensure_ascii=False))
         return
     for item in items:
         detail = f"：{item['detail']}" if item["detail"] else ""
-        print(f"{MARKS.get(item['result'], item['result'])}  {item['label']}{detail}")
+        _out(f"{MARKS.get(item['result'], item['result'])}  {item['label']}{detail}")
     if upload_time:
-        print("上传时检查（离线查不了，以上传后的报告为准）：")
+        _out("上传时检查（离线查不了，以上传后的报告为准）：")
         for item in upload_time:
-            print(f"  - {item['label']}：{item['detail']}")
-    print(f"结果：通过 {summary['pass']} 项，警告 {summary['warn']} 项，失败 {summary['fail']} 项")
+            _out(f"  - {item['label']}：{item['detail']}")
+    _out(f"结果：通过 {summary['pass']} 项，警告 {summary['warn']} 项，失败 {summary['fail']} 项")
     for key, value in (extra or {}).items():
-        print(f"{key}: {value}")
+        _out(f"{key}: {value}")
+
+
+def _skipped_example_file(path: Path, rel: str, checksums_file: str) -> bool:
+    """建骨架时不复制的样例文件：校验和清单与缓存、系统杂项。"""
+    return rel == checksums_file or "__pycache__" in rel or path.name == ".DS_Store"
 
 
 def _pack_dir(raw: str) -> Path:
     directory = Path(raw).resolve()
     if not directory.is_dir():
-        sys.exit(f"{directory} 不是目录")
+        raise ToolError(f"{directory} 不是目录")
     return directory
 
 
@@ -190,28 +216,28 @@ def cmd_init(args) -> int:
     platform = _platform()
     kind = args.kind or platform["kinds"][0]
     if kind not in platform["kinds"]:
-        sys.exit(f"这个 skill 能建的 kind：{' / '.join(platform['kinds'])}")
+        raise ToolError(f"这个 skill 能建的 kind：{' / '.join(platform['kinds'])}")
     name = args.name
     if not mf.NAME_RE.match(name):
-        sys.exit("包名要是 2～40 位小写字母、数字或连字符，以字母开头")
+        raise ToolError("包名要是 2～40 位小写字母、数字或连字符，以字母开头")
     if name in checks.RESERVED_PACK_NAMES or name in platform["packs"]:
-        sys.exit(f"{name} 已被平台占用，请换一个名字")
+        raise ToolError(f"{name} 已被平台占用，请换一个名字")
     target = Path(args.out).resolve() / name
     if target.exists():
-        sys.exit(f"{target} 已存在，换个包名或先处理掉它")
+        raise ToolError(f"{target} 已存在，换个包名或先处理掉它")
     for manifest_path in sorted((SKILL / "references" / "examples").glob("*/manifest.yaml")):
         example = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
         if example.get("kind") == kind:
             break
     else:
-        sys.exit(f"skill 里没有 kind 为 {kind} 的样例")
+        raise ToolError(f"skill 里没有 kind 为 {kind} 的样例")
     old = str(example["name"])
     renames = ((old, name), (old.replace("-", "_"), name.replace("-", "_")))
     source = manifest_path.parent
     created = []
     for path in sorted(source.rglob("*")):
         rel = path.relative_to(source).as_posix()
-        if not path.is_file() or rel == mf.CHECKSUMS_FILE or "__pycache__" in rel or path.name == ".DS_Store":
+        if not path.is_file() or _skipped_example_file(path, rel, mf.CHECKSUMS_FILE):
             continue
         data = path.read_bytes()
         try:
@@ -228,10 +254,10 @@ def cmd_init(args) -> int:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(data)
         created.append(rel)
-    print(f"已建骨架：{target}（kind: {kind}）")
+    _out(f"已建骨架：{target}（kind: {kind}）")
     for rel in created:
-        print(f"  {rel}")
-    print(f"下一步：按 references/{platform['category']}.md 把样例内容换成需求内容，再运行 build")
+        _out(f"  {rel}")
+    _out(f"下一步：按 references/{platform['category']}.md 把样例内容换成需求内容，再运行 build")
     return 0
 
 
@@ -249,12 +275,12 @@ def cmd_build(args) -> int:
     directory = _pack_dir(args.directory)
     out = Path(args.out).resolve() if args.out else directory.parent / "dist"
     if out == directory or directory in out.parents:
-        sys.exit("--out 不能在包目录里，否则 zip 会被算进包内容")
+        raise ToolError("--out 不能在包目录里，否则 zip 会被算进包内容")
     platform = _platform()
     manifest, items, upload_time = run_checks(directory, platform, write_checksums=True)
     if any(item["result"] == "fail" for item in items):
         _report(manifest, items, upload_time, as_json=args.json)
-        print("检查没通过，没有打包", file=sys.stderr)
+        _err("检查没通过，没有打包")
         return 1
     out.mkdir(parents=True, exist_ok=True)
     target = out / f"{manifest.name}-{manifest.version}.zip"
@@ -266,7 +292,7 @@ def cmd_build(args) -> int:
     if size > limit:
         target.unlink()
         _report(manifest, items, upload_time, as_json=args.json)
-        print(f"zip 有 {size} 字节，超过上传上限 {limit} 字节，没有留下文件", file=sys.stderr)
+        _err(f"zip 有 {size} 字节，超过上传上限 {limit} 字节，没有留下文件")
         return 1
     _report(manifest, items, upload_time, as_json=args.json, extra={"zip": str(target), "zip_bytes": size})
     return 0
@@ -291,8 +317,12 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--json", action="store_true", help="输出 JSON")
     build.set_defaults(run=cmd_build)
     args = parser.parse_args(argv)
-    _require_runtime()
-    return args.run(args)
+    try:
+        _require_runtime()
+        return args.run(args)
+    except ToolError as exc:
+        _err(str(exc))
+        return 1
 
 
 if __name__ == "__main__":

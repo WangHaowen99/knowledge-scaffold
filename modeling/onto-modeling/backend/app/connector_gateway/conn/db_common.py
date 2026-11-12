@@ -196,7 +196,10 @@ def scrub(text: Any, ctx: Context) -> str:
 
 
 def _payload_size(rows: list) -> int:
-    return sum(len(str(value)) for row in rows for value in row if value is not None)
+    total = 0
+    for row in rows:
+        total += sum(len(str(value)) for value in row if value is not None)
+    return total
 
 
 class GuardedCursor:
@@ -347,7 +350,10 @@ def infer_refs(tables: list[Table], columns: dict[tuple[str, str], list[Column]]
         if table.kind != "table":
             continue
         own = constraints.get((table.schema, table.name), [])
-        fk_columns = {column for item in own if item.kind == "fk" for column in item.columns}
+        fk_columns: set[str] = set()
+        for item in own:
+            if item.kind == "fk":
+                fk_columns.update(item.columns)
         for column in columns.get((table.schema, table.name), []):
             lowered = column.name.lower()
             if not lowered.endswith("_id") or len(lowered) <= 3 or column.name in fk_columns:
@@ -564,7 +570,10 @@ class Collection:
                       "ddl": self.dialect.ddl(table, columns, constraints)},
             "evidence": b.evidence("table"),
         })
-        pk_columns = {name for item in constraints if item.kind == "pk" for name in item.columns}
+        pk_columns: set[str] = set()
+        for item in constraints:
+            if item.kind == "pk":
+                pk_columns.update(item.columns)
         for column in columns:
             sensitivity = classified.sensitivity(column.name) if classified else masking.classify(
                 column.name, table=table.name, comment=column.comment, type_class=column.type_class,

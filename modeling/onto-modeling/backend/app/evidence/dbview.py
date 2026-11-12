@@ -85,6 +85,16 @@ def _is_table(body: dict) -> bool:
     return body.get("type") == "entity" and _attrs(body).get("kind", "table") == "table"
 
 
+def _whole_table(parsed: dict) -> bool:
+    """锚点指整张表（不是列，也没有 #sample 之类的后缀）。"""
+    return bool(parsed["table_anchor"]) and not parsed["column"] and not parsed["suffix"]
+
+
+def _table_record(parsed: dict | None, anchor: str, body: dict) -> bool:
+    """表本身的记录：锚点就是表锚点，而且记录是表（视图不算）。"""
+    return bool(parsed) and parsed["table_anchor"] == anchor and _is_table(body)
+
+
 def _label(row: sqlite3.Row, body: dict) -> str | None:
     comment = _attrs(body).get("comment")
     return row["label"] or (str(comment) if comment else None)
@@ -210,7 +220,8 @@ def _top_k(items, rows: int, scale: int) -> list[dict]:
     out = []
     for item in items if isinstance(items, list) else []:
         if isinstance(item, (list, tuple)) and len(item) == 2:
-            item = {"value": item[0], "count": item[1]}
+            value, count = item
+            item = {"value": value, "count": count}
         if not isinstance(item, dict):
             continue
         pct = _percent(item.get("pct"), scale) if "pct" in item else _percent(item.get("permille"), 1000)
@@ -255,7 +266,7 @@ def enrich_record(connection: sqlite3.Connection, view: dict, snapshot_id: str, 
         if _nullable(record) is not None:
             out["nullable"] = _nullable(record)
         return out
-    if view["type"] != "entity" or not parsed["table_anchor"] or parsed["column"] or parsed["suffix"]:
+    if view["type"] != "entity" or not _whole_table(parsed):
         return view
     table = view["anchor"]
     pk, fk = keys(connection, snapshot_id, table)
@@ -350,12 +361,11 @@ def er(connection: sqlite3.Connection, snapshot_id: str, *, focus: str = "", dep
                                   (snapshot_id,)):
         body = _body(row)
         parsed = parse(row["anchor"])
-        if parsed and parsed["table_anchor"] == row["anchor"] and _is_table(body) \
-                and (not domain or parsed["db"] == domain):
+        if _table_record(parsed, row["anchor"], body) and (not domain or parsed["db"] == domain):
             tables[row["anchor"]] = (row, body)
-    relations = [row for row in connection.execute(
+    relation_rows = connection.execute(
         "SELECT * FROM records WHERE snapshot_id = ? AND type = 'relation' ORDER BY anchor", (snapshot_id,))
-        if row["from_anchor"] in tables and row["to_anchor"] in tables]
+    relations = [row for row in relation_rows if row["from_anchor"] in tables and row["to_anchor"] in tables]
 
     if focus:
         parsed = parse(focus)

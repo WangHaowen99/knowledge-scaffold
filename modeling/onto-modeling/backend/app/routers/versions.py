@@ -240,7 +240,10 @@ def version_files(project_id: str, commit: str, request: Request, prefix: str = 
 
         def chunks():
             with archive:
-                while chunk := archive.read(1024 * 1024):
+                while True:
+                    chunk = archive.read(1024 * 1024)
+                    if not chunk:
+                        break
                     yield chunk
 
         return StreamingResponse(chunks(), media_type="application/zip",

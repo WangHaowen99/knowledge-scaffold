@@ -58,7 +58,8 @@ def _rows(sheet, limits: ConvertLimits) -> tuple[list[list[str]], list[int], int
             continue
         total += 1
         widest = max(widest, width)
-        if not full and rows and (len(rows) >= limits.max_rows or cells + width > limits.max_sheet_cells):
+        over_limit = len(rows) >= limits.max_rows or cells + width > limits.max_sheet_cells
+        if not full and rows and over_limit:
             full = True
         if not full:
             rows.append(values[:width])
@@ -69,9 +70,12 @@ def _rows(sheet, limits: ConvertLimits) -> tuple[list[list[str]], list[int], int
     return rows, numbers, total, widest
 
 
-_NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
-       "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
-       "rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
+# OOXML 规范定的 XML 命名空间名，只用来匹配元素，不发网络请求
+_NS = {
+    "m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",  # NOSONAR(S5332) XML 命名空间名，不是访问地址
+    "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",  # NOSONAR(S5332) XML 命名空间名
+    "rel": "http://schemas.openxmlformats.org/package/2006/relationships",  # NOSONAR(S5332) XML 命名空间名
+}
 
 
 def _merges(data: bytes) -> dict[str, list[str]]:

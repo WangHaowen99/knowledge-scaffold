@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,18 @@ sys.path.append(str(Path(__file__).resolve().parent))
 import research_review  # noqa: E402
 
 FLOW_FILE = Path(__file__).resolve().parent.parent / 'flow.yaml'
+
+
+# 命令行输出通道：独立 logger，不经根 logger，消息原样（无前缀）
+_console = logging.Logger('flow_state', logging.INFO)
+_console_handler = logging.StreamHandler()
+_console.addHandler(_console_handler)
+
+
+def _say(text: object = '', *, error: bool = False) -> None:
+    """输出一行：结果写标准输出（助手读它），error=True 写标准错误；每次取当前的流，测试替换了也跟着走。"""
+    _console_handler.setStream(sys.stderr if error else sys.stdout)
+    _console.info(text)
 
 
 def load_flow(path: Path | None = None) -> dict:
@@ -93,8 +106,8 @@ def _has_pending(root: Path, spec: dict) -> bool:
 def _has_tags(root: Path, pattern: str) -> bool:
     """工作区的版本库里有没有符合 pattern 的标签（发布打的 release/*）；不是版本库时 False。"""
     try:
-        result = subprocess.run(['git', 'tag', '--list', pattern], cwd=root, capture_output=True, text=True,
-                                timeout=10)
+        result = subprocess.run(['git', 'tag', '--list', pattern],  # NOSONAR(S4721) 参数列表、不经 shell，只读查标签
+                                cwd=root, capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0 and bool(result.stdout.strip())
@@ -294,14 +307,20 @@ def _goal_items(flow: dict, nodes: list, states: dict, context: dict) -> list:
 MAINLINE_PLACEMENTS = ('spine', 'step', 'gate')
 
 
+def _required_on_mainline(node: dict) -> bool:
+    """主线上的必做节点：不是可选的，摆在主线上，属于必做区。"""
+    return (not node.get('optional') and node.get('placement', 'spine') in MAINLINE_PLACEMENTS
+            and node.get('section', 'required') == 'required')
+
+
 def _covers(patterns: list, wanted: list) -> bool:
     """写入范围 patterns 盖得住 wanted 里每一个产出（ontology/* 盖得住 ontology/operation/*）。"""
     return bool(wanted) and all(any(fnmatch.fnmatch(item, pattern) for pattern in patterns) for item in wanted)
 
 
 def _outputs(node: dict) -> list:
-    return [str(item.get('path') if isinstance(item, dict) else item) for item in
-            [*(node.get('produces') or []), *(node.get('writes') or [])]]
+    declared = [*(node.get('produces') or []), *(node.get('writes') or [])]
+    return [str(item.get('path') if isinstance(item, dict) else item) for item in declared]
 
 
 # 可选的步骤（规则补抽、指标）过期时，后面的核对节点只要还会跑（没跳过）就交给它：可选步骤不是正确性必需的，
@@ -320,8 +339,7 @@ def _checked_downstream(node: dict, stale_on: list, nodes: list, state_of: dict,
         if other is node:
             after = True
             continue
-        if not after or state_of.get(other['id']) not in states or other.get('optional') \
-                or other.get('placement', 'spine') not in MAINLINE_PLACEMENTS or other.get('section', 'required') != 'required':
+        if not after or state_of.get(other['id']) not in states or not _required_on_mainline(other):
             continue
         if set(stale_on) <= set(other.get('stale_on') or []) and _covers(_outputs(other), _outputs(node)):
             return True
@@ -406,9 +424,12 @@ def _mainline_items(flow: dict, nodes: list, states: dict, context: dict) -> lis
     flags_of = {node_id: (item or {}).get('flags') or {} for node_id, item in states.items()}
     stage = context.get('stage') or ''
     slice_next = context.get('slice_next')
-    required = [node for node in nodes if node.get('section', 'required') == 'required'
+    def pending_required(node: dict) -> bool:
+        return (node.get('section', 'required') == 'required'
                 and state_of.get(node['id']) not in ('confirmed', 'stale', 'skipped')
-                and not flags_of.get(node['id'], {}).get('backfill')]
+                and not flags_of.get(node['id'], {}).get('backfill'))
+
+    required = [node for node in nodes if pending_required(node)]
     out = []
     if required:
         current = required[0]
@@ -445,8 +466,9 @@ def _session_rules(context: dict) -> list:
         question = {}
     if question is not None:
         action = {'type': 'focus_question'}
-        if question.get('id'):
-            action['question_id'] = question['id']
+        question_id = question.get('id')
+        if question_id:
+            action['question_id'] = question_id
         label = '去确认' if question.get('kind') == 'permission' else '去回答'
         rules.append(('waiting_decision', [_item('answer', label, action, reason='有等你回答的问题', priority=1,
                                                  icon='hand')], False))
@@ -594,7 +616,7 @@ def _shaped(mode: str, items: list, explain: bool) -> dict:
     primary = {**items[0], 'primary': True}
     secondary = [{**item, 'primary': False} for item in items[1:SUGGESTIONS_MAX]]
     return {'mode': mode, 'primary': primary, 'secondary': secondary, 'all_commands': True,
-            'note': primary['reason'] if explain else None}
+            'note': primary.get('reason') if explain else None}
 
 
 def main(argv: list) -> int:
@@ -603,8 +625,8 @@ def main(argv: list) -> int:
     flow = load_flow()
     probes = evaluate(flow, root)
     info = progress(flow, root, probes)
-    print(json.dumps({'stage': legacy_stage(flow, root, probes), 'done': info['done'],
-                      'total': info['total'], 'nodes': info['hits']}, ensure_ascii=False, indent=2))
+    _say(json.dumps({'stage': legacy_stage(flow, root, probes), 'done': info['done'],
+                     'total': info['total'], 'nodes': info['hits']}, ensure_ascii=False, indent=2))
     return 0
 
 

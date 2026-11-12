@@ -102,7 +102,8 @@ def _changeset_event(project_id: str, event: str, data: dict) -> None:
     """变更集变了：EP-04 changeset.updated、EP-03 scope.updated，并重算流程（节点「待确认」）。"""
     from .services import project_events, streams
 
-    if event == "changeset" and data and data.get("state") == "merged" and not data.get("reverted"):
+    merged = bool(data) and data.get("state") == "merged" and not data.get("reverted")
+    if event == "changeset" and merged:
         # 合入：变更集里执行过的节点按主线现状重记基线（不再过期；完成判定满足即已确认），人确认过的
         # 需复核标记去掉；自主构建自动合入的段改标「需复核（自主构建）」
         _confirm_nodes(project_id, data.get("nodes") or [], data)

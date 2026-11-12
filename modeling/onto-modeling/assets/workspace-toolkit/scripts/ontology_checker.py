@@ -808,6 +808,13 @@ MIN_CANDIDATE_COLUMNS = 2
 MAX_SOURCE_CANDIDATES = 3
 
 
+def _is_stored_attribute(row: dict) -> bool:
+    """写了英文名、也没标成派生或非库字段的属性（落库的列）。"""
+    if (row.get('英文名称') or '').strip() in ('', '无', '-'):
+        return False
+    return not any(marker in row.get('属性规则', '') for marker in _NON_STORED_MARKERS)
+
+
 def source_candidates(doc: OntologyDoc, tables: dict) -> list:
     """「# 数据来源」是「无」或没写表名的对象 → [(表名, 同名列)]：存储属性英文名与表头同名（不分大小写）
     至少 MIN_CANDIDATE_COLUMNS 列，且含全部主键列（主键不在表里实例身份无从确定，同后端 _match_table），
@@ -815,8 +822,7 @@ def source_candidates(doc: OntologyDoc, tables: dict) -> list:
     first = _source_first_line(doc)
     if first and not _declares_none(first):
         return []
-    stored = [row for row in doc.attribute_rows if (row.get('英文名称') or '').strip() not in ('', '无', '-')
-              and not any(marker in row.get('属性规则', '') for marker in _NON_STORED_MARKERS)]
+    stored = [row for row in doc.attribute_rows if _is_stored_attribute(row)]
     keys = {row['英文名称'].strip().lower(): row['英文名称'].strip() for row in stored}
     primary = {row['英文名称'].strip().lower() for row in stored if row.get('主键', '').strip() == '是'}
     ranked = []
@@ -1903,8 +1909,10 @@ def _extract_object_refs(doc: OntologyDoc) -> list:
     # Also infer from 关联对象 lines when available — only when attribute name exactly
     # equals a linked stem (substring match caused "顾客" to wrongly match "顾客服务").
     relation_section = doc.sections.get('关联对象', '')
-    linked_stems = {name for link in mm.parse_links(relation_section) if '/' not in link.target
-                    for name in (link.full_name, link.name)}
+    linked_stems = set()
+    for link in mm.parse_links(relation_section):
+        if '/' not in link.target:
+            linked_stems.update((link.full_name, link.name))
     for row in doc.attribute_rows:
         name = row.get('中文名称', '').strip()
         if not name or name not in linked_stems:

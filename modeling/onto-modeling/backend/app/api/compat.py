@@ -357,7 +357,7 @@ class LegacyPathMiddleware:
             receive = _replay(messages, receive)
             try:
                 body = json.loads(raw.decode("utf-8")) if raw else None
-            except (UnicodeDecodeError, ValueError):
+            except ValueError:  # 含 UnicodeDecodeError、JSONDecodeError
                 body = None
         query_string = scope.get("query_string", b"").decode("latin-1")
         outcome = resolve(method, path, query_string, body)
@@ -397,7 +397,8 @@ def _legacy_send(send, link: str):
     state = {"buffer": None, "start": None}
 
     async def wrapped(message):
-        if message["type"] == "http.response.start":
+        kind = message.get("type")
+        if kind == "http.response.start":
             headers = [
                 (k, v) for k, v in message.get("headers", [])
                 if k.lower() not in (b"deprecation", b"sunset", b"link")
@@ -409,16 +410,18 @@ def _legacy_send(send, link: str):
             ]
             message = {**message, "headers": headers}
             content_type = dict((k.lower(), v) for k, v in headers).get(b"content-type", b"")
-            if message["status"] >= 400 and content_type.startswith(b"application/json"):
+            # ASGI 的 response.start 必带 status；万一缺了不缓冲，原样交给服务器去报错
+            if message.get("status", 0) >= 400 and content_type.startswith(b"application/json"):
                 state["start"] = message
                 state["buffer"] = bytearray()
                 return
             return await send(message)
-        if message["type"] == "http.response.body" and state["buffer"] is not None:
-            state["buffer"].extend(message.get("body", b""))
+        buffer = state.get("buffer")
+        if kind == "http.response.body" and buffer is not None:
+            buffer.extend(message.get("body", b""))
             if message.get("more_body"):
                 return
-            payload = bytes(state["buffer"])
+            payload = bytes(buffer)
             try:
                 content = json.loads(payload)
                 if isinstance(content, dict) and "message" in content and "error" not in content:

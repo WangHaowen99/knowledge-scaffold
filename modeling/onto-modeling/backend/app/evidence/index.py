@@ -84,6 +84,14 @@ def _usable(path: Path) -> sqlite3.Connection | None:
 # ---------------------------------------------------------------------------
 
 
+def _real_dir(path: Path) -> bool:
+    return path.is_dir() and not path.is_symlink()
+
+
+def _real_file(path: Path) -> bool:
+    return path.is_file() and not path.is_symlink()
+
+
 def workspace_snapshots(root: Path) -> dict[str, tuple[str, Path]]:
     """{快照 ID: (源 ID, 目录)}：`resource/systems/<源>/<快照>/manifest.json` 在的才算。"""
     base = Path(root) / SYSTEMS_DIR
@@ -96,8 +104,7 @@ def workspace_snapshots(root: Path) -> dict[str, tuple[str, Path]]:
         for snapshot in sorted(source.iterdir()):
             manifest = snapshot / "manifest.json"
             # 快照 ID 项目内唯一（入库时保证）；工作区里被手工弄出重号时只认第一个
-            if snapshot.is_dir() and not snapshot.is_symlink() and manifest.is_file() and not manifest.is_symlink() \
-                    and snapshot.name not in found:
+            if _real_dir(snapshot) and _real_file(manifest) and snapshot.name not in found:
                 found[snapshot.name] = (source.name, snapshot)
     return found
 

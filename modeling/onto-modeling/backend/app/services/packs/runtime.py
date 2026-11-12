@@ -27,6 +27,11 @@ STATE_REL = ".onto/run/assembly.json"
 CORE = builtin.CORE
 
 
+def _default_capability(manifest) -> bool:
+    """清单写了 default_on 的能力包，而且不是要重启才生效的 H2。"""
+    return manifest.category == "capability" and bool(manifest.raw.get("default_on")) and manifest.hot_level != "H2"
+
+
 class PackRuntime:
     def __init__(self, data_dir: Path, assets_dir: Path):
         self.data_dir = Path(data_dir)
@@ -72,8 +77,7 @@ class PackRuntime:
             if name == CORE:
                 continue
             version, manifest = self._stable_manifest(name)
-            if manifest is not None and manifest.category == "capability" and manifest.raw.get("default_on") \
-                    and manifest.hot_level != "H2":
+            if manifest is not None and _default_capability(manifest):
                 out.append(name)
         return out
 

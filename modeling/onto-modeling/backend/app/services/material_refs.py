@@ -27,8 +27,8 @@ def _scan_files(root: Path) -> list[Path]:
         if not folder.is_dir() or folder.is_symlink():  # 目录本身是链接：不读链接指向的东西
             continue
         for path in sorted(folder.rglob("*")):
-            if path.is_file() and not path.is_symlink() and path.suffix.lower() in SCAN_SUFFIXES \
-                    and path.stat().st_size <= FILE_BYTES_MAX:
+            regular = path.is_file() and not path.is_symlink()
+            if regular and path.suffix.lower() in SCAN_SUFFIXES and path.stat().st_size <= FILE_BYTES_MAX:
                 files.append(path)
     return files
 

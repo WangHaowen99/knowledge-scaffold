@@ -372,6 +372,7 @@ class ChangeTx:
         self.origin = origin
         self.summary = summary
         self._target = target
+        self.target: ChangeTarget | None = None  # 进入事务时定下：传入的目标或主线
         self.expected_head = expected_head
         # 整批写入（一轮的合入）：崩溃后启动恢复整批回滚，而不是把已落盘的部分补提交
         self.rollback_on_crash = rollback_on_crash

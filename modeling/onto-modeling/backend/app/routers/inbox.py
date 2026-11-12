@@ -311,8 +311,14 @@ async def batch(project_id: str, request: Request):
         await asyncio.to_thread(inbox.refresh, deps.workspaces, project_id)
         return {"accepted": accepted, "skipped": [], "command_task": None}
     items = await asyncio.to_thread(inbox.collect, deps.workspaces, project_id)
-    stale = [item for item in items if item["kind"] == "stale" and not item.get("_dismissed")
-             and (not body.get("item_ids") or item["id"] in body["item_ids"])]
+    wanted = body.get("item_ids")
+
+    def selected(item: dict) -> bool:
+        if item["kind"] != "stale" or item.get("_dismissed"):
+            return False
+        return not wanted or item["id"] in wanted
+
+    stale = [item for item in items if selected(item)]
     if not stale:
         return {"accepted": 0, "skipped": [], "command_task": None}
     # 一次只能跑一条命令：刷新最上游的那一个（按流程里的节点顺序，审查第 18 条），其余等它做完再刷新

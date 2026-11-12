@@ -207,7 +207,7 @@ def _parse(raw: bytes, limit: int) -> dict | None:
         return None
     try:
         data = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except ValueError:  # 含 UnicodeDecodeError、JSONDecodeError
         return None
     return data if isinstance(data, dict) else None
 

@@ -27,7 +27,7 @@ import sqlite3
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -56,8 +56,9 @@ SYNC_INTERVAL_S = 1.0
 COLLECTION_WINDOW_S = 3600
 HEAD_BYTES = 4096
 DELETED_USAGE_FILE = "deleted-usage.jsonl"
-# 台账的计数口径：和库里记的不一样时清掉用量、去重指纹和读取位置，从会话历史重新入账
-COUNTING = "cost-v1"
+# 台账的计数口径：和库里记的不一样时清掉用量、去重指纹和读取位置，从会话历史重新入账。
+# 后缀 sha256：去重指纹与文件头校验改用 sha256 后，旧台账里存的旧哈希对不上，随口径版本一起重建
+COUNTING = "cost-v1-sha256"
 
 _MESSAGES = {
     "concurrent_sessions": "同时在线的建模会话已到上限（{limit} 个），请等其他项目的会话结束后再试，或请管理员调整配额",
@@ -184,7 +185,7 @@ def _fingerprint(project_id: str, event: dict) -> str:
         [project_id, event.get("type"), event.get("ts"), event.get("usage"), event.get("total_cost_usd")],
         sort_keys=True, ensure_ascii=False, default=str,
     )
-    return hashlib.sha1(raw.encode()).hexdigest()[:24]
+    return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
 def _holds_engine(session) -> bool:
@@ -282,7 +283,8 @@ class QuotaService:
                 json.dump(data, handle, ensure_ascii=False, indent=2)
             os.replace(temporary, path)
         finally:
-            Path(temporary).unlink(missing_ok=True)
+            with suppress(FileNotFoundError):
+                os.unlink(temporary)
 
     @staticmethod
     def _valid_override(item) -> bool:
@@ -338,8 +340,12 @@ class QuotaService:
         with self._lock:
             raw = self._raw()
             overrides = self.limits()["overrides"]
-            replaced = next((o for o in overrides if o["item"] == item and o["subject"]["kind"] == kind
-                             and o["subject"]["id"] == subject_id), None)
+
+            def same_target(override: dict) -> bool:
+                subject = override["subject"]
+                return override["item"] == item and subject["kind"] == kind and subject["id"] == subject_id
+
+            replaced = next((o for o in overrides if same_target(o)), None)
             overrides = [o for o in overrides if o is not replaced]
             ids = {o.get("id") for o in overrides}
             override_id = f"qo-{secrets.token_hex(3)}"
@@ -421,7 +427,7 @@ class QuotaService:
         with open(path, "rb") as handle:
             rewritten = stat.st_ino != inode or stat.st_size < offset
             if not rewritten and head_len:
-                rewritten = hashlib.sha1(handle.read(head_len)).hexdigest() != head
+                rewritten = hashlib.sha256(handle.read(head_len)).hexdigest() != head
             if rewritten:
                 offset = 0  # 被截断或改写：从头重扫，已入账的事件按指纹去重
             handle.seek(offset)
@@ -434,7 +440,7 @@ class QuotaService:
                     continue
                 try:
                     event = json.loads(line)
-                except (UnicodeDecodeError, ValueError):
+                except ValueError:  # 含 UnicodeDecodeError、JSONDecodeError
                     continue
                 usage = _usage_of(event) if isinstance(event, dict) else None
                 if usage is None:
@@ -444,7 +450,7 @@ class QuotaService:
             if rewritten or head_len < min(offset, HEAD_BYTES):
                 head_len = min(offset, HEAD_BYTES)
                 handle.seek(0)
-                head = hashlib.sha1(handle.read(head_len)).hexdigest()
+                head = hashlib.sha256(handle.read(head_len)).hexdigest()
         conn.execute(
             "INSERT OR REPLACE INTO files(path, offset, inode, head_len, head) VALUES (?, ?, ?, ?, ?)",
             (rel, offset, stat.st_ino, head_len, head),
@@ -460,8 +466,8 @@ class QuotaService:
             horizon = _horizon(now)
             added = 0
             with self._db() as conn:
-                known = {row[0]: tuple(row[1:]) for row in
-                         conn.execute("SELECT path, offset, inode, head_len, head FROM files")}
+                rows = conn.execute("SELECT path, offset, inode, head_len, head FROM files").fetchall()
+                known = {row[0]: tuple(row[1:]) for row in rows}
                 present, owners = set(), {}
                 for rel, project_id, path in self._history_files():
                     present.add(rel)
@@ -610,8 +616,9 @@ class QuotaService:
         with self._lock, self._db() as conn:
             conn.execute("DELETE FROM collections WHERE owner = ? AND source_id = ? AND ts <= ?",
                          (owner, source_id, now - COLLECTION_WINDOW_S))
-            times = [row[0] for row in conn.execute(
-                "SELECT ts FROM collections WHERE owner = ? AND source_id = ? ORDER BY ts", (owner, source_id))]
+            rows = conn.execute("SELECT ts FROM collections WHERE owner = ? AND source_id = ? ORDER BY ts",
+                                (owner, source_id)).fetchall()
+            times = [row[0] for row in rows]
             if limit and len(times) >= limit:
                 raise QuotaExceeded("collections_per_source_per_hour", limit, len(times),
                                     {"kind": "user", "id": owner}, times[0] + COLLECTION_WINDOW_S)

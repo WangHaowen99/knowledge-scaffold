@@ -89,10 +89,10 @@ def _assembly_item(manager) -> dict:
     result = packs_service.reconcile_all(manager)
     repaired, failed, locked = result.get("repaired") or [], result.get("failed") or {}, result.get("locked") or []
     if failed:
+        listed = sorted(failed.items())[:MAX_PROJECTS_LISTED]
         return {"id": "assembly", "title": "装配目录", "result": "failed", "tone": "warn",
                 "detail": f"{len(failed)} 个项目装配不了，保持原装配" + (f"；重新装配了 {len(repaired)} 个" if repaired else ""),
-                "projects": [{"project_id": pid, "count": 1, "paths": [str(reason)[:200]]} for pid, reason in
-                             sorted(failed.items())][:MAX_PROJECTS_LISTED]}
+                "projects": [{"project_id": pid, "count": 1, "paths": [str(reason)[:200]]} for pid, reason in listed]}
     if repaired or locked:
         return {"id": "assembly", "title": "装配目录", "result": "reassembled", "tone": "fix",
                 "detail": f"重新装配了 {len(repaired)} 个项目" + (f"，为 {len(locked)} 个存量项目写了锁文件" if locked else ""),

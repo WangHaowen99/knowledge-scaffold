@@ -54,5 +54,5 @@ async def stop(handle) -> None:
     server.should_exit = True
     try:
         await asyncio.wait_for(task, timeout=5)
-    except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+    except (asyncio.CancelledError, Exception):  # Exception 含 TimeoutError；CancelledError 不是 Exception 的子类
         task.cancel()

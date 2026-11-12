@@ -160,23 +160,29 @@ def _entry_by_name(root: Path, name: str) -> dict | None:
     return None
 
 
+def _status_of(content: str) -> tuple[str, str]:
+    """条目开头的勾选框或已修复、已跳过标记 → (状态, 去掉标记后的正文)；都没有时是待处理。"""
+    checkbox = _CHECKBOX.match(content)
+    if checkbox:
+        return ("fixed" if checkbox.group(1) != " " else "pending"), content[checkbox.end():]
+    for pattern, status in ((_DONE_MARK, "fixed"), (_SKIP_MARK, "skipped")):
+        mark = pattern.match(content)
+        if mark:
+            return status, content[mark.end():]
+    return "pending", content
+
+
 def items_of(root: Path, text: str) -> list[dict]:
     """ReportItem：`- [x]` 的算已修复；开头的规则码（如 E-ROUTE-01）进 code；正文里第一个 [[条目]] 作定位。"""
     parsed = report_items.parse(text)
     out = []
     for raw in parsed.get("items") or []:
         content = str(raw.get("text") or "")
-        status = "pending"
-        if match := _CHECKBOX.match(content):
-            status = "fixed" if match.group(1) != " " else "pending"
-            content = content[match.end():]
-        elif match := _DONE_MARK.match(content):
-            status, content = "fixed", content[match.end():]
-        elif match := _SKIP_MARK.match(content):
-            status, content = "skipped", content[match.end():]
+        status, content = _status_of(content)
         code = None
-        if match := _CODE.match(content):
-            code, content = match.group(1), content[match.end():]
+        code_match = _CODE.match(content)
+        if code_match:
+            code, content = code_match.group(1), content[code_match.end():]
         level = raw.get("severity", "error")
         # 分在「警告」小节下、或规则码是 W- 开头的是警告
         if (code or "").startswith("W-") or "警告" in str(raw.get("group") or "") or "warning" in str(raw.get("group") or "").lower():
@@ -184,8 +190,9 @@ def items_of(root: Path, text: str) -> list[dict]:
         elif (code or "").startswith("E-") or "错误" in str(raw.get("group") or ""):
             level = "error"
         target = None
-        if match := _LINK.search(content):
-            target = _entry_by_name(root, match.group(1))
+        link = _LINK.search(content)
+        if link:
+            target = _entry_by_name(root, link.group(1))
         out.append({
             "id": str(raw.get("id")), "code": code, "level": level, "text": content,
             # 小节标题可能是条目文件路径（按文件分组的报告）：界面上换成业务名（F4b-paths）
@@ -318,8 +325,9 @@ def _link_cached(root: Path) -> dict | None:
 def _query(root: Path, script: Path, flag: str):
     from .script_env import minimal_env
 
-    result = subprocess.run(["python3", str(script), flag, "--json"], cwd=root, capture_output=True, text=True,
-                            timeout=30, env=minimal_env())
+    result = subprocess.run(  # NOSONAR(S4721) 跑核对过的工具箱脚本，参数列表不经 shell，最小环境变量
+        ["python3", str(script), flag, "--json"], cwd=root, capture_output=True, text=True,
+        timeout=30, env=minimal_env())
     if result.returncode != 0:
         raise ReportError("链接检查没跑起来", 503, "service_unavailable", {"dependency": "query"})
     return json.loads(result.stdout or "null")
@@ -356,9 +364,8 @@ def link_check(manager, project_id: str) -> dict:
                       "location": {"label": label, "target": target, "page": "studio" if target else None},
                       "status": "pending", "status_note": ""})
     extras = {"orphans": sum(len(stems) for stems in orphans.values()), "unused": len(unused), "dangling": len(dangling)}
-    summary = " · ".join(f"{label} {extras[key]}" for key, label in (("orphans", "孤立"), ("unused", "未用"),
-                                                                     ("dangling", "失效"))
-                         if extras[key]) or "没有问题"
+    labels = (("orphans", "孤立"), ("unused", "未用"), ("dangling", "失效"))
+    summary = " · ".join(f"{label} {extras.get(key)}" for key, label in labels if extras.get(key)) or "没有问题"
     from ..api import deps
 
     report = {

@@ -20,7 +20,6 @@ import os
 import re
 import threading
 import time
-import urllib.error
 import urllib.request
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -81,7 +80,7 @@ class KeySource:
                 return None
             try:
                 fresh = Verifier(self._fetch())
-            except (urllib.error.URLError, OSError, ValueError, TypeError, jwt.PyJWTError) as exc:
+            except (OSError, ValueError, TypeError, jwt.PyJWTError) as exc:  # OSError 含 URLError
                 _log.warning("取不到内核的票据公钥：%s", type(exc).__name__)
                 return current
             # 换公钥时沿用已用过的 jti，不让旧票据在换钥后重放
@@ -149,7 +148,7 @@ class Gateway:
         """票据的 op 是任务说明里的 operation，scope 是任务说明的规范 JSON 哈希。"""
         try:
             spec = decode_job_header(header)
-        except (ValueError, UnicodeError):
+        except ValueError:  # 含 UnicodeError
             raise GatewayError(400, "bad_request", "X-Onto-Job 头不对") from None
         operation = spec.get("operation")
         if operation not in ("snapshot", "discover", "sample"):
@@ -311,7 +310,7 @@ def make_handler(gateway: Gateway):
                 raise GatewayError(400, "bad_request", "请求体要是不超过 64 KiB 的 JSON 对象")
             try:
                 data = json.loads(self.rfile.read(length).decode("utf-8"))
-            except (UnicodeDecodeError, ValueError):
+            except ValueError:  # 含 UnicodeDecodeError、JSONDecodeError
                 raise GatewayError(400, "bad_request", "请求体不是 JSON") from None
             if not isinstance(data, dict):
                 raise GatewayError(400, "bad_request", "请求体要是 JSON 对象")

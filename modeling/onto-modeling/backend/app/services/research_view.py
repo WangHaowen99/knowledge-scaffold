@@ -299,6 +299,13 @@ def problems(main: Path, parsed: dict, promoted: dict | None = None) -> list[dic
     return out
 
 
+def _open_contradiction_about(item: dict, rel: str, name: str) -> bool:
+    """没解决的矛盾，正文里提到了这份资料（路径或文件名）。"""
+    if item["kind"] != "contradiction" or item["state"] != "open":
+        return False
+    return rel in item["text_md"] or name in item["text_md"]
+
+
 def _mentioned(parsed: dict, rel: str) -> bool:
     name = rel.rsplit("/", 1)[-1]
     return any(rel in text or material_text.name_positions(text, name) for text in parsed["texts"].values())
@@ -348,8 +355,7 @@ def map_items(manager, project_id: str, parsed: dict, found_problems: list[dict]
         if purpose in ("schema", "term"):
             counts["fields"] = _table_fields(main, rel, directive)
         name = rel.rsplit("/", 1)[-1]
-        contradictions = sum(1 for item in found_problems if item["kind"] == "contradiction" and item["state"] == "open"
-                             and (rel in item["text_md"] or name in item["text_md"]))
+        contradictions = sum(1 for item in found_problems if _open_contradiction_about(item, rel, name))
         items.append({
             "path": rel, "name": name, "label": workspace_labels.material_name(rel), "kind": kind_of(rel)[0],
             "purpose": purpose,

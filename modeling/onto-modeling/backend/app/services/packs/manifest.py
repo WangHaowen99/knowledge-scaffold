@@ -188,6 +188,10 @@ def valid_range(spec: str) -> bool:
 # ---- 清单 ----
 
 
+# ManifestSummary 里按条数列出的贡献项
+_SUMMARY_KINDS = ("commands", "agents", "skills", "scripts", "templates", "entries", "gates", "config", "metrics")
+
+
 @dataclass
 class Manifest:
     name: str
@@ -244,8 +248,7 @@ class Manifest:
 
     def summary(self, *, checksums_ok: bool = True, size: int = 0, files: int = 0) -> dict:
         """契约 7.11 ManifestSummary。"""
-        counted = {key: len(self.items(key)) for key in
-                   ("commands", "agents", "skills", "scripts", "templates", "entries", "gates", "config", "metrics")}
+        counted = {key: len(self.items(key)) for key in _SUMMARY_KINDS}
         return {
             "name": self.name, "version": self.version, "kind": self.kind,
             "kernel_api": self.kernel_api, "engines": list(self.engines), "depends": dict(self.depends),
@@ -375,12 +378,17 @@ def parse(data: dict) -> Manifest:
     )
 
 
+def _unsafe_chars(value: str) -> bool:
+    """带反斜杠或控制字符。"""
+    return "\\" in value or any(ord(ch) < 32 for ch in value)
+
+
 def workspace_rel(value) -> str | None:
     """包声明的工作区路径（或通配）规范化成相对路径；绝对路径、带 `..`、带反斜杠或控制字符的一律 None。
 
     节点的 produces / writes、脚本输出、决策记录都先过它，再按规范化后的完整路径判受保护目录、匹配写入范围
     （审查第 1 条：`ext/../.git/config`、`reports/x/../../.onto/packs.lock` 这类写法原来能越过检查）。"""
-    if not isinstance(value, str) or not value.strip() or "\\" in value or any(ord(ch) < 32 for ch in value):
+    if not isinstance(value, str) or not value.strip() or _unsafe_chars(value):
         return None
     if value.startswith("/") or ":" in value.split("/", 1)[0]:
         return None

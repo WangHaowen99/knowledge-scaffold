@@ -495,11 +495,15 @@ def _hooks_by_node(flow: dict) -> dict[str, list[dict]]:
 
 def _actions(node: dict, state: str, hooks: list[dict] | None = None, *, blueprint_draft: bool = False,
              probes: dict | None = None, shown=None, cause: str = "") -> list[dict]:
+
+    def offered(action: dict) -> bool:
+        has_target = bool(action.get("command") or action.get("page"))
+        return has_target and (shown is None or shown(action, probes))
+
     actions = [
         {"kind": "start", "label": action["label"], "target": action.get("command") or action["page"],
          **({"verify": True} if action.get("verify") else {})}
-        for action in node.get("actions") or [] if (action.get("command") or action.get("page"))
-        and (shown is None or shown(action, probes))
+        for action in node.get("actions") or [] if offered(action)
     ]
     # 节点钩子（详设 6.4）：之前的排在节点自己的动作前面，之后的排在后面
     before = [{"kind": "start", "label": hook["title"], "target": hook["command"], "hook": hook["id"]}
@@ -542,6 +546,11 @@ def _assembly_notice(root: Path) -> list[dict]:
              "text": "插件变更下一条消息生效", "action": {"type": "navigate", "page": "proj-settings"}}]
 
 
+# 写给助手的 flow-state.json 里带的上下文字段
+_CONTEXT_KEYS = ("stage", "changeset", "autobuild", "blueprint", "slice_next", "slice_stale", "stale_upstream",
+                 "confine_active")
+
+
 def _write_flow_state(root: Path, copy: Path, flow: dict, states: dict, context: dict, suggestions: dict) -> None:
     """节点状态与上下文写进助手副本（没有副本时写主线工作区）的 `.onto/run/flow-state.json`：
     `state_helper.py suggest` 读它，按同一份输入、同一份算法给出下一步（方案 D15）。"""
@@ -553,9 +562,7 @@ def _write_flow_state(root: Path, copy: Path, flow: dict, states: dict, context:
         # 本项目不出现的节点（ADR-0083）还在装配目录的 flow.yaml 里：记成跳过，state_helper 不会把它当下一步
         "nodes": {**{node_id: {"state": "skipped", "flags": {"hidden": True}} for node_id in flow.get("hidden_nodes") or []},
                   **states},
-        "context": {key: value for key, value in context.items()
-                    if key in ("stage", "changeset", "autobuild", "blueprint", "slice_next", "slice_stale",
-                               "stale_upstream", "confine_active")},
+        "context": {key: value for key, value in context.items() if key in _CONTEXT_KEYS},
         "suggestions": suggestions,
     }
     for target in ([copy] if (copy / ".git").is_file() else [root]):

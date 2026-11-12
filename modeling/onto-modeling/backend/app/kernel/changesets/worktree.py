@@ -177,7 +177,10 @@ def _back_to_branch(root: Path, copy: Path) -> None:
     commit_pending(copy, "chore: 收拢副本里没提交的改动")
     current = rev(copy)
     branch_head = rev(root, f"refs/heads/{BRANCH}")
-    ancestor = lambda older, newer: _run_git(copy, ("merge-base", "--is-ancestor", older, newer)).returncode == 0  # noqa: E731
+
+    def ancestor(older: str, newer: str) -> bool:
+        return _run_git(copy, ("merge-base", "--is-ancestor", older, newer)).returncode == 0
+
     if not branch_head or (current and ancestor(branch_head, current)):
         git(copy, "checkout", "-q", "-B", BRANCH, current or "HEAD")
     elif not current or ancestor(current, branch_head):
@@ -207,8 +210,8 @@ def _ensure_sparse(copy: Path) -> None:
     try:
         git(copy, "sparse-checkout", "set", "--no-cone", *SPARSE_PATTERNS)
         git(copy, "config", "--worktree", "sparse.expectFilesOutsideOfPatterns", "true")
-        unmarked = [line[2:] for line in _run_git(copy, ("-c", "core.quotePath=false", "ls-files", "-t", "-z", "--",
-                                                         "resource")).stdout.split("\0") if line and not line.startswith("S ")]
+        listing = _run_git(copy, ("-c", "core.quotePath=false", "ls-files", "-t", "-z", "--", "resource")).stdout
+        unmarked = [line[2:] for line in listing.split("\0") if line and not line.startswith("S ")]
         if unmarked:
             git(copy, "--literal-pathspecs", "update-index", "--skip-worktree", "--", *unmarked)
     finally:
@@ -473,22 +476,27 @@ def _keep_protected(copy: Path, env: dict | None, *, mark_skip: bool = False) ->
 
     base = ["git", "-c", "core.hooksPath=/dev/null"]
     run_env = env or None
-    listed = subprocess.run([*base, "ls-tree", "-r", "-z", "HEAD", "--", *PROTECTED], cwd=copy, capture_output=True,
-                            env=run_env, timeout=60)
+    listed = subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
+        [*base, "ls-tree", "-r", "-z", "HEAD", "--", *PROTECTED], cwd=copy, capture_output=True,
+        env=run_env, timeout=60)
     head_paths = {entry.split(b"\t", 1)[1] for entry in listed.stdout.split(b"\0") if b"\t" in entry}
-    indexed = subprocess.run([*base, "ls-files", "-z", "--", *PROTECTED], cwd=copy, capture_output=True, env=run_env,
-                             timeout=60)
+    indexed = subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
+        [*base, "ls-files", "-z", "--", *PROTECTED], cwd=copy, capture_output=True, env=run_env,
+        timeout=60)
     extra = [path for path in indexed.stdout.split(b"\0") if path and path not in head_paths]
     if extra:
-        subprocess.run([*base, "update-index", "-z", "--force-remove", "--stdin"], cwd=copy, input=b"\0".join(extra),
-                       capture_output=True, env=run_env, timeout=60)
+        subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
+            [*base, "update-index", "-z", "--force-remove", "--stdin"], cwd=copy, input=b"\0".join(extra),
+            capture_output=True, env=run_env, timeout=60)
     if listed.stdout:
-        subprocess.run([*base, "update-index", "-z", "--index-info"], cwd=copy, input=listed.stdout,
-                       capture_output=True, env=run_env, timeout=60)
+        subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
+            [*base, "update-index", "-z", "--index-info"], cwd=copy, input=listed.stdout,
+            capture_output=True, env=run_env, timeout=60)
     resources = [path for path in head_paths if path.startswith(b"resource/")]
     if mark_skip and resources:
-        subprocess.run([*base, "update-index", "-z", "--skip-worktree", "--stdin"], cwd=copy,
-                       input=b"\0".join(resources), capture_output=True, env=run_env, timeout=60)
+        subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
+            [*base, "update-index", "-z", "--skip-worktree", "--stdin"], cwd=copy,
+            input=b"\0".join(resources), capture_output=True, env=run_env, timeout=60)
 
 
 def merge_base(root: Path, copy: Path) -> str:
@@ -516,8 +524,9 @@ def dirty(copy: Path) -> bool:
 def read_blob(path: Path, treeish: str, rel: str) -> bytes | None:
     import subprocess
 
-    result = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "--literal-pathspecs", "cat-file", "blob",
-                             f"{treeish}:{rel}"], cwd=path, capture_output=True, timeout=60)
+    result = subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
+        ["git", "-c", "core.hooksPath=/dev/null", "--literal-pathspecs", "cat-file", "blob",
+         f"{treeish}:{rel}"], cwd=path, capture_output=True, timeout=60)
     return result.stdout if result.returncode == 0 else None
 
 

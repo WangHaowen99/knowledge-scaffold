@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 import zipfile
+from contextlib import suppress
 from pathlib import Path
 
 import yaml
@@ -62,7 +63,8 @@ def _write_atomic(path: Path, data: bytes) -> None:
             os.fsync(handle.fileno())
         os.replace(temporary, path)
     except BaseException:
-        Path(temporary).unlink(missing_ok=True)
+        with suppress(FileNotFoundError):
+            os.unlink(temporary)
         raise
 
 

@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 def _git(root: Path, *args: str) -> str:
-    result = subprocess.run(
+    result = subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
         ["git", *args], cwd=root, capture_output=True, text=True, timeout=60,
     )
     return result.stdout.strip() if result.returncode == 0 else ""

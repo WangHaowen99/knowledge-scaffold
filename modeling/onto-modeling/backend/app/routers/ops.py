@@ -452,7 +452,8 @@ def _cli_version() -> str:
         _cli_version_cache = ""
         return ""
     try:
-        result = subprocess.run([cli, "--version"], capture_output=True, text=True, timeout=15)
+        result = subprocess.run(  # NOSONAR(S4721) CLI 来自 CLI_PATH 或 SDK 自带，参数列表不经 shell
+            [cli, "--version"], capture_output=True, text=True, timeout=15)
         _cli_version_cache = result.stdout.strip()[:80] if result.returncode == 0 else ""
     except Exception:
         _cli_version_cache = ""
@@ -972,6 +973,10 @@ def _audit_summary(detail: dict) -> str:
     return "，".join(parts)[:300]
 
 
+_AUDIT_FIELDS = ("actor", "actor_kind", "type", "action", "method", "path", "status", "project_id",
+                 "summary", "trailer", "ip", "trace_id")
+
+
 def audit_entry(index: int, raw: dict) -> dict:
     """审计记录 → AuditEntry（契约 7.16）。新记录（services/audit.record）已是这个形状；
     旧版记录（user、method、path、detail）按动作名与路径推断类型。"""
@@ -980,10 +985,7 @@ def audit_entry(index: int, raw: dict) -> dict:
         return {
             "id": "aud-" + hashlib.sha256(f"{index}:{ts}".encode()).hexdigest()[:12],
             "ts": deps.iso(ts),
-            **{key: raw.get(key) for key in (
-                "actor", "actor_kind", "type", "action", "method", "path", "status", "project_id",
-                "summary", "trailer", "ip", "trace_id",
-            )},
+            **{key: raw.get(key) for key in _AUDIT_FIELDS},
             "summary": raw.get("summary") or "",
         }
     actor = str(raw.get("user") or "anonymous")
@@ -1056,7 +1058,9 @@ def filtered_audit(request: Request, type: str = "", q: str = "") -> list[tuple[
     matched = []
     for index, raw in audit.read_all():
         ts = raw.get("ts") or 0
-        if (since is not None and ts < since) or (until is not None and ts > until):
+        too_early = since is not None and ts < since
+        too_late = until is not None and ts > until
+        if too_early or too_late:
             continue
         entry = audit_entry(index, raw)
         if types and entry["type"] not in types:

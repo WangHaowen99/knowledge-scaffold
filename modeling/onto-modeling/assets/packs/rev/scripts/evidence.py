@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import re
 import sys
 from pathlib import Path
@@ -101,12 +102,25 @@ class EvidenceError(Exception):
         self.extra = extra
 
 
+# 命令行输出通道：独立 logger，不经根 logger，消息原样（无前缀）
+_console = logging.Logger('evidence', logging.INFO)
+_console_handler = logging.StreamHandler()
+_console.addHandler(_console_handler)
+
+
+def _say(text: str) -> None:
+    """输出一行结果到标准输出（助手读它）；每次取当前的 sys.stdout，测试替换了也跟着走。"""
+    _console_handler.setStream(sys.stdout)
+    _console.info(text)
+
+
 def parse_anchor(anchor: str) -> tuple[str, str, str]:
     """`<scheme>:<源>/<路径>` → (scheme, 源, 路径)。bin:、code: 的路径是 `<类型>:<名字>`，db: 的是 `<库>.<表>…`。"""
     text = str(anchor or '')
     scheme, colon, rest = text.partition(':')
     source, slash, path = rest.partition('/')
-    if scheme not in SCHEMES or not colon or not slash or not _NAME_RE.match(source) or not path:
+    has_parts = bool(colon and slash and path)
+    if scheme not in SCHEMES or not has_parts or not _NAME_RE.match(source):
         raise EvidenceError('bad_anchor', f'不是 bin:、code:、db: 锚点：{_clip(text)}')
     if scheme != 'db':
         kind, sep, name = path.partition(':')
@@ -396,8 +410,11 @@ def _snapshot_of_anchor(root: Path, anchor: str, snapshot: str | None) -> tuple[
 def cmd_show(root: Path, args) -> dict:
     source, snapshot_id, snapshot_dir, candidates = _snapshot_of_anchor(root, args.anchor, args.snapshot)
     # 数据库表的样本、画像是单独的记录：`<表锚点>#sample`、`<表锚点>#profile`
-    extras = {f'{anchor}#{fragment}': (anchor, fragment) for anchor in candidates if anchor.startswith('db:')
-              for fragment in DB_FRAGMENTS}
+    extras: dict[str, tuple[str, str]] = {}
+    for anchor in candidates:
+        if anchor.startswith('db:'):
+            for fragment in DB_FRAGMENTS:
+                extras[f'{anchor}#{fragment}'] = (anchor, fragment)
     records: dict[str, dict] = {}
     children: dict[str, dict[str, list]] = {anchor: {} for anchor in candidates}
     attached: dict[tuple[str, str], dict] = {}
@@ -573,8 +590,7 @@ def main(argv: list[str] | None = None) -> int:
     except EvidenceError as exc:
         result = {'error': exc.code, 'message': str(exc), **exc.extra}
         code = 2 if exc.code in ('bad_argument', 'bad_anchor') else 1
-    sys.stdout.write(json.dumps({'untrusted_content': True, 'command': args.command, **result},
-                                ensure_ascii=False) + '\n')
+    _say(json.dumps({'untrusted_content': True, 'command': args.command, **result}, ensure_ascii=False))
     return code
 
 

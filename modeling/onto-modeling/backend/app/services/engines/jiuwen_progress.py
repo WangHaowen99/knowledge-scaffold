@@ -122,7 +122,8 @@ class JiuwenProgressTracker:
         # 其余整段作任务说明，名称由会话宿主按「说明第一行 → 子代理类型」回退（timeline.subagent_title）
         label = str(args.get("description") or "").strip()
         brief = str(args.get("task_description") or "").strip()
-        if not label and brief and len(brief) <= 120 and "\n" not in brief:
+        short_brief = len(brief) <= 120 and "\n" not in brief
+        if not label and brief and short_brief:
             label = brief
         if len(label) > 120 or "\n" in label:
             label = ""

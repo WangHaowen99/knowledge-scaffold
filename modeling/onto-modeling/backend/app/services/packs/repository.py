@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import uuid
+from contextlib import suppress
 from pathlib import Path
 
 from . import manifest as mf
@@ -128,7 +129,8 @@ def _atomic_write_json(path: Path, data) -> None:
             os.fsync(stream.fileno())
         os.replace(tmp, path)
     finally:
-        Path(tmp).unlink(missing_ok=True)
+        with suppress(FileNotFoundError):
+            os.unlink(tmp)
 
 
 def _now() -> float:
@@ -390,8 +392,8 @@ class PackRepository:
         disabled = entry.get("disabled") or {}
         for item in reversed(entry.get("history") or []):
             version = item.get("version")
-            if item.get("channel") == channel and version and version != exclude and version not in disabled \
-                    and self.has(name, version):
+            candidate = bool(version) and version != exclude and version not in disabled
+            if item.get("channel") == channel and candidate and self.has(name, version):
                 return version
         return None
 

@@ -59,9 +59,13 @@ def recent(project_id: str | None = None, event_type: str | None = None) -> list
     """进程内最近的事件（新的在后）。"""
     with _lock:
         items = list(_recent)
-    return [item for item in items
-            if (project_id is None or item["project_id"] == project_id)
-            and (event_type is None or item["type"] == event_type)]
+
+    def matches(item: dict) -> bool:
+        if project_id is not None and item["project_id"] != project_id:
+            return False
+        return event_type is None or item["type"] == event_type
+
+    return [item for item in items if matches(item)]
 
 
 def clear() -> None:

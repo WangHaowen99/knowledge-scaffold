@@ -127,7 +127,9 @@ def changes(engine: Any, project_id: str, owner: str, connected: Fingerprint | N
     current = compute(engine, project_id, owner, kind)
     found = current.diff(connected)
     stale = getattr(engine, "config_stale", None)
-    if "model" not in found and callable(stale) and not callable(getattr(engine, "model_fingerprint", None)) and stale():
+    # 引擎没有模型指纹、只给了 config_stale 时，用它判模型配置变没变
+    legacy_check = callable(stale) and not callable(getattr(engine, "model_fingerprint", None))
+    if "model" not in found and legacy_check and stale():
         found.insert(0, "model")
     return found
 

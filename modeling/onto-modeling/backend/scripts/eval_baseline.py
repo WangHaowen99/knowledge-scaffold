@@ -90,7 +90,7 @@ class Client:
 
 def login(base: str, username: str, password: str) -> str:
     req = urllib.request.Request(
-        base + "/api/v1/auth/login",
+        f"{base}/api/v1/auth/login",
         method="POST",
         headers={"Content-Type": "application/json"},
         data=json.dumps({"username": username, "password": password}).encode(),

@@ -214,9 +214,13 @@ def _rollback_target(runtime, lock: PackLock, name: str, locked: str) -> str | N
     if not older:
         # 同一基础版本的内容摘要不同（镜像自带的 core）：按入库时间取上一个，后入库的是新版本、不算回滚
         locked_at = repository.meta(name, locked).get("released_at", 0)
-        older = [version for version in repository.versions(name)
-                 if version != locked and version not in disabled
-                 and repository.meta(name, version).get("released_at", 0) < locked_at]
+
+        def released_earlier(version: str) -> bool:
+            if version == locked or version in disabled:
+                return False
+            return repository.meta(name, version).get("released_at", 0) < locked_at
+
+        older = [version for version in repository.versions(name) if released_earlier(version)]
     for version in older:
         trial = lock.copy()
         entry = trial.get(name)
@@ -248,8 +252,8 @@ def project_packs(manager, project_id: str) -> dict:
             state, actions = "disabled", ["enable"]
         else:
             state = "required" if manifest.required else "enabled"
-            actions = [action for action, ok in (("upgrade", latest), ("rollback", rollback_to),
-                                                 ("disable", not manifest.required)) if ok]
+            offered = (("upgrade", latest), ("rollback", rollback_to), ("disable", not manifest.required))
+            actions = [action for action, ok in offered if ok]
         items.append({
             "name": entry.name, "label": manifest.label, "category": manifest.category, "ui": _ui(manifest),
             "locked_version": entry.version, "latest_available": latest, "channel": entry.channel or "stable",
@@ -485,8 +489,9 @@ def cancel_pending(manager, project_id: str, name: str, actor: str = "") -> dict
     applied = {item["name"]: item for item in (active.get("lock") or {}).get("packs") or []}
     current = (lockfile.read(root) or PackLock()).get(name)
     before = applied.get(name)
-    if (current and current.enabled and before and before["version"] == current.version) or (
-            not before and (current is None or not current.enabled)):
+    enabled_now = bool(current and current.enabled)
+    unchanged = enabled_now and bool(before) and before["version"] == current.version
+    if unchanged or (not before and not enabled_now):
         raise PackError("no_pending_switch", "没有待生效的切换可撤销", 409)
 
     def mutate(lock: PackLock):

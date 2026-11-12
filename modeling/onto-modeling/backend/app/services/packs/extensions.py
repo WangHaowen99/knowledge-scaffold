@@ -101,8 +101,7 @@ def problems(manifest: Manifest, repository=None) -> list[str]:
             if not isinstance(rule, dict) or not rule.get("field") or not any(key in rule for key in GATE_RULES):
                 out.append(f"{where} 的规则要有 field 和 {' / '.join(GATE_RULES)} 之一")
         ratio = gate.get("ratio")
-        if ratio is not None and (not isinstance(ratio, dict) or not ratio.get("field") or not ratio.get("in")
-                                  or not 0 < _number(ratio.get("at_least")) <= 1):
+        if ratio is not None and not _valid_ratio(ratio):
             out.append(f"{where} 的 ratio 要有 field、in 和 0～1 之间的 at_least")
         if gate.get("min_count") is not None and (not isinstance(gate["min_count"], int) or gate["min_count"] < 0):
             out.append(f"{where} 的 min_count 要是非负整数")
@@ -148,6 +147,13 @@ def problems(manifest: Manifest, repository=None) -> list[str]:
     return out
 
 
+def _valid_ratio(ratio) -> bool:
+    """门禁的 ratio：有 field、in，at_least 在 (0, 1] 里。"""
+    if not isinstance(ratio, dict) or not ratio.get("field") or not ratio.get("in"):
+        return False
+    return 0 < _number(ratio.get("at_least")) <= 1
+
+
 def _number(value) -> float:
     try:
         return float(value)
@@ -155,9 +161,11 @@ def _number(value) -> float:
         return 0.0
 
 
+_EXTENSION_KEYS = ("entries", "gates", "view_choices", "config", "metrics", "alerts", "mcp_tools")
+
+
 def declares_any(manifest: Manifest) -> bool:
-    return any(manifest.contributes.get(key) for key in
-               ("entries", "gates", "view_choices", "config", "metrics", "alerts", "mcp_tools"))
+    return any(manifest.contributes.get(key) for key in _EXTENSION_KEYS)
 
 
 # ---------------------------------------------------------------------------
@@ -413,15 +421,18 @@ def _export(root: Path, commit: str, dirs: list[str], target: Path) -> None:
     import subprocess
     import tarfile
 
-    listed = subprocess.run(["git", "-c", "core.quotepath=false", "ls-tree", "--name-only", "-z", commit, "--", *dirs],
-                            cwd=root, capture_output=True, timeout=60)
+    listed = subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
+        ["git", "-c", "core.quotepath=false", "ls-tree", "--name-only", "-z", commit, "--", *dirs],
+        cwd=root, capture_output=True, timeout=60)
     present = [item for item in listed.stdout.decode("utf-8", "replace").split("\0") if item]
     if not present:
         return
     archive = target.parent / "gates.tar"
-    subprocess.run(["git", "archive", "--format=tar", "-o", str(archive), commit, "--", *present], cwd=root,
-                   check=True, capture_output=True, timeout=120)
-    with tarfile.open(archive) as tar:
+    subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
+        ["git", "archive", "--format=tar", "-o", str(archive), commit, "--", *present], cwd=root,
+        check=True, capture_output=True, timeout=120)
+    # 不压缩的 tar，由本仓库的提交 git archive 而来：解出的大小就是这些文件在提交里的大小；data 过滤器挡越界路径和链接
+    with tarfile.open(archive) as tar:  # NOSONAR(S5042) 本仓库提交导出的未压缩 tar，无放大
         tar.extractall(target, filter="data")
 
 

@@ -12,6 +12,7 @@ import os
 import shutil
 import tempfile
 import threading
+from contextlib import suppress
 from pathlib import Path
 from typing import Callable
 
@@ -50,7 +51,8 @@ def write_json(path: Path, data: dict) -> None:
             json.dump(data, handle, ensure_ascii=False, indent=1)
         os.replace(temporary, path)
     finally:
-        Path(temporary).unlink(missing_ok=True)
+        with suppress(FileNotFoundError):
+            os.unlink(temporary)
 
 
 def read_json(path: Path) -> dict | None:

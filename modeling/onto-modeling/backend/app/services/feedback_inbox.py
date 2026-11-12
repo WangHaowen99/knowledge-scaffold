@@ -209,13 +209,16 @@ def place(manager, root: Path, document: dict, received_by: str) -> tuple[str, d
 
     同一 feedback_id 已有批次时不再写，返回原批次。
     """
-    existing = _existing(root, document["feedback_id"])
+    feedback_id = document.get("feedback_id")
+    if feedback_id is None:
+        raise ValueError("反馈缺 feedback_id，调用方要先校验")
+    existing = _existing(root, feedback_id)
     if existing is not None:
         return existing[0], existing[1], False
     stamp = datetime.fromtimestamp(time.time(), timezone.utc)
     document = {**document, "received_at": stamp.strftime("%Y-%m-%dT%H:%M:%S.") + f"{stamp.microsecond // 1000:03d}Z",
                 "received_by": received_by}
-    rel = f"{FEEDBACK_DIR}/{stamp:%Y%m%d-%H%M%S}-{document['feedback_id']}.json"
+    rel = f"{FEEDBACK_DIR}/{stamp:%Y%m%d-%H%M%S}-{feedback_id}.json"
     manager._atomic_write_text(root / rel, json.dumps(document, ensure_ascii=False, indent=2) + "\n")
     return rel, document, True
 

@@ -114,7 +114,7 @@ def _rows(root: Path) -> list[dict]:
         doc = [item for item in issues if item[0] == f"scripts/{name}.md"]
         try:
             operation = script_contract.script_bound_operation(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, ValueError):
+        except (OSError, ValueError):  # ValueError 含 UnicodeDecodeError
             operation = ""
         if not operation:
             state = "none"
@@ -127,8 +127,9 @@ def _rows(root: Path) -> list[dict]:
         record = records.get(rel)
         verified = _verified(root, rel, record)
         failed = any(item["level"] == "error" for item in findings)
-        actions = [action for action, ok in (("fix", failed), ("regenerate_descriptor", state == "stale" or (operation and state == "none")),
-                                             ("regenerate", True)) if ok]
+        descriptor_outdated = state == "stale" or bool(operation and state == "none")
+        offered = (("fix", failed), ("regenerate_descriptor", descriptor_outdated), ("regenerate", True))
+        actions = [action for action, ok in offered if ok]
         rows.append({
             "script": _entry("script", name),
             "operation": _entry("operation", operation) if operation else None,

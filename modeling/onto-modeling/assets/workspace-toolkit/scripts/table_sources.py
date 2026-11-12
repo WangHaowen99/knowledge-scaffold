@@ -160,6 +160,12 @@ ANCHORS_HEAD = "<!-- onto:anchors 1"
 _REF_ROW = re.compile(r"^[A-Za-z]+(\d+)")
 
 
+def _on_first_row(ref: str) -> bool:
+    """合并区（A1:C1）是不是从第一行开始。"""
+    match = _REF_ROW.match(ref)
+    return bool(match) and int(match.group(1)) == 1
+
+
 def _unescape(text: str) -> str:
     return text.replace("%20", " ").replace("%0D", "\r").replace("%0A", "\n").replace("%3E", ">").replace("%25", "%")
 
@@ -195,7 +201,7 @@ def anchor_block(lines: list[str]) -> dict | None:
 def _new_sheet(name: str, block: dict | None) -> dict:
     # 有锚点时：每行的原行号、第一行是否在合并区里、整表最右一列；老文本版没有锚点时为 None，按表格本身推断
     merges = (block or {}).get("merges", {}).get(name, [])
-    first_row_merged = any((m := _REF_ROW.match(ref)) and int(m.group(1)) == 1 for ref in merges)
+    first_row_merged = any(_on_first_row(ref) for ref in merges)
     return {"name": name, "rows": [], "row_numbers": [] if block else None,
             "merged_header": first_row_merged if block else None,
             "width": (block or {}).get("cols", {}).get(name)}

@@ -67,8 +67,8 @@ def locate(manager, project_id: str) -> tuple[Path, str, dict | None]:
     root = manager.project_root(project_id)
     record = _open_record(root)
     copy = changesets.existing_copy(root)
-    if record and copy is not None and BLUEPRINT_REL in (record.get("paths") or []) \
-            and (copy / BLUEPRINT_REL).is_file():
+    touched = bool(record) and BLUEPRINT_REL in (record.get("paths") or [])
+    if touched and copy is not None and (copy / BLUEPRINT_REL).is_file():
         return copy, "changeset", record
     return root, "mainline", record
 
@@ -350,8 +350,8 @@ def run_slices(manager, project_id: str) -> list[dict]:
     root = manager.project_root(project_id)
     doc = effective_doc(manager, project_id)
     module = script(root)
-    states = {item["id"]: item for item in (slices.compute(root, model.load_for(root), doc=doc, persist=False)
-                                            or {}).get("slices") or []}
+    computed = slices.compute(root, model.load_for(root), doc=doc, persist=False) or {}
+    states = {item["id"]: item for item in computed.get("slices") or []}
     items = module.live_slices(doc) if module.mode(doc) == "sliced" else [dict(slices.FULL_SLICE)]
     out = []
     for item in items:

@@ -353,7 +353,11 @@ def channel_stream(request, item: Channel, last_id: str, *, user: str, resync: t
 
     async def frames():
         subscriber, replay, reset = item.open(last_id, asyncio.get_running_loop())
-        async for chunk in channel_frames(item, subscriber, replay, reset, resync=resync, expires_at=expires_at):
-            yield chunk
+        try:
+            async for chunk in channel_frames(item, subscriber, replay, reset, resync=resync, expires_at=expires_at):
+                yield chunk
+        finally:
+            # channel_frames 结束时也会退订；还没开始迭代就被取消时靠这里，重复退订无副作用
+            item.unsubscribe(subscriber)
 
     return event_stream(user, frames)

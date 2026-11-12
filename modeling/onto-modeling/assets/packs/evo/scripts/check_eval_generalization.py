@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import subprocess
 import sys
@@ -46,6 +47,18 @@ FEEDBACK_TEXT_FIELDS = ('question', 'expected')
 
 # 知识包打包范围（与 ontology_checker.PACKAGED_SUBDIRS 一致）。
 PACKAGED_SUBDIRS = ('object', 'operation', 'logic', 'rule', 'metric')
+
+
+# 命令行输出通道：独立 logger，不经根 logger，消息原样（无前缀）
+_console = logging.Logger('check_eval_generalization', logging.INFO)
+_console_handler = logging.StreamHandler()
+_console.addHandler(_console_handler)
+
+
+def _say(text: object = '', *, error: bool = False) -> None:
+    """输出一行：结果写标准输出（助手读它），error=True 写标准错误；每次取当前的流，测试替换了也跟着走。"""
+    _console_handler.setStream(sys.stderr if error else sys.stdout)
+    _console.info(text)
 
 
 def normalize(text: str) -> str:
@@ -234,25 +247,25 @@ def main() -> int:
 
     if not cases:
         msg = '未找到用例语料（没有 feedback/*.json 反馈批次，也没有旧版 reports/eval-*.md），跳过校验。'
-        print(json.dumps({'skipped': msg}, ensure_ascii=False) if args.json else f'⚠️  {msg}')
+        _say(json.dumps({'skipped': msg}, ensure_ascii=False) if args.json else f'⚠️  {msg}')
         return 0
     if not docs:
         msg = '本次没有打包范围内的本体文档改动，无需校验。'
-        print(json.dumps({'skipped': msg}, ensure_ascii=False) if args.json else f'✅ {msg}')
+        _say(json.dumps({'skipped': msg}, ensure_ascii=False) if args.json else f'✅ {msg}')
         return 0
 
     findings = check(workspace, docs, cases, args.threshold)
 
     if args.json:
-        print(json.dumps(findings, ensure_ascii=False))
+        _say(json.dumps(findings, ensure_ascii=False))
     else:
         scope = f'{len(docs)} 个文档 / {len(cases)} 条用例语料'
         if not findings:
-            print(f'✅ 泛化性校验通过（{scope}，无原文雷同与应试措辞）')
+            _say(f'✅ 泛化性校验通过（{scope}，无原文雷同与应试措辞）')
         else:
-            print(f'❌ 泛化性校验发现 {len(findings)} 个问题（{scope}）：')
+            _say(f'❌ 泛化性校验发现 {len(findings)} 个问题（{scope}）：')
             for f in findings:
-                print(f'  - [{f["category"]}] {f["file"]}：{f["message"]}')
+                _say(f'  - [{f["category"]}] {f["file"]}：{f["message"]}')
     return 1 if findings else 0
 
 

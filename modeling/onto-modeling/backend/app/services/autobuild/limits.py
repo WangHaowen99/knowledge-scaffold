@@ -69,6 +69,13 @@ def _int(value, low: int, high: int) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
 
 
+def _valid_night(night) -> bool:
+    """夜间优先：enabled 是布尔，start、end 是 HH:MM。"""
+    if not isinstance(night, dict) or not isinstance(night.get("enabled"), bool):
+        return False
+    return bool(_TIME.match(str(night.get("start") or ""))) and bool(_TIME.match(str(night.get("end") or "")))
+
+
 def save(body: dict) -> dict:
     """SY-17 PUT：给了哪项改哪项；不合法抛 LimitsError。"""
     data = {key: value for key, value in stored().items() if key not in RETIRED}
@@ -89,8 +96,7 @@ def save(body: dict) -> dict:
             fields["allow_production_collection"] = "bool"
     if "night_priority" in body:
         night = body["night_priority"]
-        if (isinstance(night, dict) and isinstance(night.get("enabled"), bool)
-                and _TIME.match(str(night.get("start") or "")) and _TIME.match(str(night.get("end") or ""))):
+        if _valid_night(night):
             data["night_priority"] = {"enabled": night["enabled"], "start": night["start"], "end": night["end"]}
         else:
             fields["night_priority"] = "invalid"

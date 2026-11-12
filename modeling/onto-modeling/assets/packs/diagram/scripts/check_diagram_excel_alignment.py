@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import logging
 import os
 import re
 import sys
@@ -29,6 +30,18 @@ DEFAULT_REPORTS_DIR = Path("reports")
 # 资料区里的图例（存量项目建项目时从资料区模板复制来的，模板里已去掉），有就用它；没有用随 core 包的
 DEFAULT_LEGEND = Path("resource/diagrams/图示说明定义.drawio")
 PACKAGED_LEGEND = Path(os.path.realpath(__file__)).parent.parent / "reference" / DEFAULT_LEGEND.name
+
+
+# 命令行输出通道：独立 logger，不经根 logger，消息原样（无前缀）
+_console = logging.Logger("check_diagram_excel_alignment", logging.INFO)
+_console_handler = logging.StreamHandler()
+_console.addHandler(_console_handler)
+
+
+def _say(text: object = "", *, error: bool = False) -> None:
+    """输出一行：结果写标准输出（助手读它），error=True 写标准错误；每次取当前的流，测试替换了也跟着走。"""
+    _console_handler.setStream(sys.stderr if error else sys.stdout)
+    _console.info(text)
 
 
 def find_legend(root: Path | str = ".") -> Path:
@@ -294,12 +307,12 @@ def run(
     report_path = write_report(result, diagrams_dir, excel_dir, reports_dir)
 
     if result["skipped"]:
-        print(f"Excel 对齐校验已跳过：{result['reason']}")
+        _say(f"Excel 对齐校验已跳过：{result['reason']}")
     elif result["issue_count"]:
-        print(f"Excel 对齐校验发现 {result['issue_count']} 个问题")
+        _say(f"Excel 对齐校验发现 {result['issue_count']} 个问题")
     else:
-        print("Excel 对齐校验通过")
-    print(f"报告已保存：{report_path}")
+        _say("Excel 对齐校验通过")
+    _say(f"报告已保存：{report_path}")
     return report_path, result
 
 
