@@ -104,7 +104,7 @@ function seed() {
       verification: { total: 46, passed: 46, unverifiable: 0, pending: 0, checked_at: at(10, 30, 18, 20) },
     },
     items: [],
-    raw: () => ['# 资料分析报告', '', `资料 ${S.MATERIALS.length} 份，全部读完；识别业务项 41、术语 13、规则候选 17。`, '', '## 资料矛盾（1，已裁决）', '- 陈列上限：补货规则 §7.3 和样例补货单 B 第 4 节不一致，按补货规则执行'].join('\n'),
+    raw: () => ['# 资料分析报告', '', `资料 ${S.MATERIALS.length} 份，全部读完；识别业务项 41、术语 13、规则候选 17。`, '', '## 资料矛盾（1，已裁决）', '- 陈列上限：补货规则 §7.3 和样例补货单 B 第 4 节不一致，按补货规则执行', '', '## 详细信息', '- 补货申请：`resource/others/02-门店补货规则.docx#h:4`', '- 已删除的资料：`resource/others/已删除.docx#p:1`'].join('\n'),
   };
   const simple = (id, name, type, type_label, when, summary, scope, items, progress) => ({
     id, name, type, type_label, at: when, summary, path: `reports/${type}/${name}.md`, scope_text: scope, mode: type === 'trace' ? 'full' : 'regression',

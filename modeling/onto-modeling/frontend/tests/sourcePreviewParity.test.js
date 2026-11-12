@@ -8,7 +8,7 @@ import {
   inRange, isTextFragment, lineRange, materialOfText, mdCells, routeTarget, textPathOf, textView,
 } from '../src/pages/resources/resourcesModel.js';
 import { reportIdOf } from '../src/pages/reports/reportModel.js';
-import { artifactToRow, sourceRefsIn } from '../src/pages/studio/studioModel.js';
+import { artifactToRow, sourceRefsIn, sourceTokens } from '../src/pages/studio/studioModel.js';
 
 test('带锚点跳来按来源预览打开；早先写文本版行号的出处选中原资料并记下是文本版', () => {
   assert.deepEqual(routeTarget({ anchor: 'file:resource/others/合成规则.docx#table:1/row:2/cell:3' }),
@@ -58,4 +58,19 @@ test('报告路径换报告 id（同后端 reports.id_of）', () => {
 test('流程图行的最后更新时间取产物的修改时间', () => {
   const row = artifactToRow({ key: 'f1', title: '合成流程', status: { value: 'confirmed' }, updated_at: '2026-01-02T03:04:05.000Z' });
   assert.equal(row.updated_at, '2026-01-02T03:04:05.000Z');
+});
+
+test('纯文本里的出处就地切成芯片（报告原文、版本里的文件）：资料路径带锚点、报告小节，其余路径和文字原样', () => {
+  const tokens = sourceTokens('| R-01 | `resource/others/规则.docx#table:1/row:2/cell:3` | 见 research/报告.md#退款时限（R-02）） 与 ontology/object/订单.md');
+  assert.deepEqual(tokens, [
+    { t: 'text', v: '| R-01 | `' },
+    { t: 'source', path: 'resource/others/规则.docx', anchor: 'table:1/row:2/cell:3' },
+    { t: 'text', v: '` | 见 ' },
+    { t: 'heading', path: 'research/报告.md', anchor: '退款时限（R-02）' },
+    { t: 'text', v: '） 与 ontology/object/订单.md' },
+  ]);
+  assert.deepEqual(sourceTokens('resource/excel/表.xlsx#sheet:规则!B3。'), [
+    { t: 'source', path: 'resource/excel/表.xlsx', anchor: 'sheet:规则!B3' }, { t: 'text', v: '。' },
+  ]);
+  assert.deepEqual(sourceTokens('没有路径'), [{ t: 'text', v: '没有路径' }]);
 });
