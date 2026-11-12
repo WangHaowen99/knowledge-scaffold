@@ -60,6 +60,44 @@ export function register(ctx) {
     const [latest] = hubReleasesOf(c.id);
     return { ...latest };
   });
+  // HB-10：删除项目前看它的 Hub 包（develop !590）
+  on('GET', '/projects/([^/]+)/hub/delete-preview', ({ m }) => {
+    const card = cardOf(m[1]);
+    if (!P.releasesOf(db, m[1], card).length) return json(200, { published: false });
+    return json(200, { published: true, ontology_id: hubOf(m[1]), name: card?.name || m[1] });
+  });
+  // HB-11 / HB-12：知识包共享用户与 Hub 授权同步（mock 参数 sharing:failed 时授权同步失败，可重试）
+  db.sharing = db.sharing || new Map();
+  const sharingOf = (pid) => {
+    if (!db.sharing.has(pid)) {
+      db.sharing.set(pid, { users: isMain(pid) ? ['operator_b'] : [], hub_sync: { initialized: true, pending: {}, results: {}, status: 'synced' } });
+    }
+    return db.sharing.get(pid);
+  };
+  const sharingView = (pid) => ({ owner: cardOf(pid)?.owner || 'zhangsan', users: [...sharingOf(pid).users], hub_sync: sharingOf(pid).hub_sync });
+  on('GET', '/projects/([^/]+)/hub/sharing', ({ m }) => json(200, sharingView(m[1])));
+  on('PUT', '/projects/([^/]+)/hub/sharing', ({ m, body }) => {
+    const state = sharingOf(m[1]);
+    const before = new Set(state.users);
+    const after = [...new Set(body.users || [])].sort();
+    const pending = {};
+    after.filter((u) => !before.has(u)).forEach((u) => { pending[u] = 'grant'; });
+    [...before].filter((u) => !after.includes(u)).forEach((u) => { pending[u] = 'revoke'; });
+    const failed = sc.sharing === 'failed' && Object.keys(pending).length > 0;
+    const results = Object.fromEntries(Object.entries(pending).map(([u, action]) => [u, failed
+      ? { action, status: 'failed', error: '目标账号不存在，无法同步 Hub 授权' } : { action, status: 'synced' }]));
+    state.users = after;
+    state.hub_sync = { ...state.hub_sync, pending: failed ? pending : {}, results, status: failed ? 'failed' : 'synced' };
+    return json(200, sharingView(m[1]));
+  });
+  on('POST', '/projects/([^/]+)/hub/sharing/retry', ({ m, query }) => {
+    const state = sharingOf(m[1]);
+    const name = query.get('username');
+    const pending = { ...state.hub_sync.pending };
+    Object.keys(pending).filter((u) => !name || u === name).forEach((u) => { delete pending[u]; });
+    state.hub_sync = { ...state.hub_sync, pending, status: Object.keys(pending).length ? 'failed' : 'synced' };
+    return json(200, sharingView(m[1]));
+  });
   on('GET', '/hub/packages', ({ query }) => json(200, page(hubPackages(), query))); // HB-01
   on('GET', '/hub/packages/([^/]+)/releases', ({ m, query }) => {
     const owner = (db.cards || []).find((c) => hubOf(c.id) === m[1]);

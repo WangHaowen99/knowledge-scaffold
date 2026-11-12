@@ -1,45 +1,11 @@
-// 项目设置 · 危险操作：导出迁移包（P-09）、归档 / 恢复（P-07）、永久删除（P-06，强确认名称，删除后回我的项目）
+// 项目设置 · 危险操作：导出迁移包（P-09）、归档 / 恢复（P-07）、永久删除（P-06，强确认名称，可一并删除 Hub 包，删除后回我的项目）
 import { useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
-import {
-  Button, Field, Icon, Inp, Modal, Note,
-} from '../../ui/index.jsx';
-
-function DeleteDialog({ onClose }) {
-  const { api } = useApp();
-  const { pid, meta } = useProject();
-  const [v, setV] = useState('');
-  const [busy, setBusy] = useState(false);
-  const name = meta.name;
-  const go = async () => {
-    setBusy(true);
-    try {
-      await api.deleteProject(pid, v);
-      toast(`已删除「${name}」`, 'trash');
-      onClose();
-      navigate('/projects');
-    } catch (e) {
-      toast(errorText(e), 'alert');
-      setBusy(false);
-    }
-  };
-  return (
-    <Modal
-      open onClose={onClose} icon="trash" danger title={`永久删除「${name}」？`} sub="删除后不可恢复。" w={520}
-      foot={<><Button onClick={onClose}>取消</Button><Button kind="danger" className="fill" disabled={v !== name || busy} onClick={go}>确认删除</Button></>}
-    >
-      <Note tone="red">正在进行的会话和自主构建会立即终止。</Note>
-      <div className="mt12">
-        <Field label="输入项目名称确认">
-          <Inp placeholder={name} value={v} autoFocus onChange={(e) => setV(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && v === name && !busy) go(); }} />
-        </Field>
-      </div>
-    </Modal>
-  );
-}
+import ProjectDeleteDialog from '../projects/ProjectDeleteDialog.jsx';
+import { Button, Icon } from '../../ui/index.jsx';
 
 export function DangerSection({ archived }) {
   const { api, services } = useApp();
@@ -89,7 +55,7 @@ export function DangerSection({ archived }) {
           <Button kind="danger" icon="trash" onClick={() => setDel(true)}>删除项目</Button>
         </div>
       </div>
-      {del ? <DeleteDialog onClose={() => setDel(false)} /> : null}
+      {del ? <ProjectDeleteDialog project={{ id: pid, name: meta.name }} title={`永久删除「${meta.name}」？`} onClose={() => setDel(false)} onDeleted={() => navigate('/projects')} /> : null}
     </div>
   );
 }
