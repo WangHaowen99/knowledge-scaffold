@@ -68,6 +68,9 @@ export default function App() {
   const [route, setRoute] = useState(parseHash);
   const [projects, setProjects] = useState([]);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
+  const [projectsLoading, setProjectsLoading] = useState(true);
+  const [projectsError, setProjectsError] = useState(null);
+  const projectsRequestIdRef = useRef(0);
   const [tree, setTree] = useState([]);
   const [versions, setVersions] = useState([]);
   const [versionTotal, setVersionTotal] = useState(0);
@@ -166,14 +169,33 @@ export default function App() {
     }
   };
 
+  const resetProjects = useCallback(() => {
+    projectsRequestIdRef.current += 1;
+    setProjects([]);
+    setProjectsLoaded(false);
+    setProjectsLoading(true);
+    setProjectsError(null);
+  }, []);
+
   const refreshProjects = useCallback(() => {
+    const requestId = ++projectsRequestIdRef.current;
+    setProjectsLoading(true);
+    setProjectsError(null);
     return api
       .listProjects()
       .then((data) => {
+        if (requestId !== projectsRequestIdRef.current) return;
         setProjects(data.projects);
         setProjectsLoaded(true);
       })
-      .catch(() => {});
+      .catch((error) => {
+        if (requestId === projectsRequestIdRef.current) {
+          setProjectsError(error.message || '项目列表加载失败');
+        }
+      })
+      .finally(() => {
+        if (requestId === projectsRequestIdRef.current) setProjectsLoading(false);
+      });
   }, []);
 
   const refreshUsage = useCallback(() => {
@@ -224,12 +246,13 @@ export default function App() {
       .catch(() => setAuth('disabled'));
     api.health().then((data) => setDrawioAvailable(!!data.drawio)).catch(() => {});
     const onAuthRequired = () => {
+      resetProjects();
       nav('#/');
       setAuth('required');
     };
     window.addEventListener('onto-auth-required', onAuthRequired);
     return () => window.removeEventListener('onto-auth-required', onAuthRequired);
-  }, []);
+  }, [resetProjects]);
 
   useEffect(() => {
     if (auth === 'ok' || auth === 'disabled') refreshProjects();
@@ -471,6 +494,7 @@ export default function App() {
 
   const logout = () => {
     authStore.clear();
+    resetProjects();
     nav('#/');
     setAuth('required');
   };
@@ -530,7 +554,7 @@ export default function App() {
   }
 
   // 深链项目：列表未加载完成前不闪首页
-  if (projectId && !projectsLoaded) return null;
+  if (projectId && !projectsLoaded && !projectsError) return null;
 
   if (route.name === 'home' || !project) {
     const activeProjects = projects.filter((p) => !p.archived);
@@ -732,7 +756,19 @@ export default function App() {
             </div>
             {activeProjects.length > 0 && <span className="pj-count">{activeProjects.length} 个任务</span>}
           </div>
-          {projects.length === 0 && (
+          {projectsLoading && (
+            <div className="empty" role="status" aria-live="polite">项目列表加载中…</div>
+          )}
+          {projectsError && (
+            <Alert
+              type="error"
+              showIcon
+              message={`项目列表加载失败：${projectsError}`}
+              action={<Button size="small" onClick={refreshProjects}>重试</Button>}
+              style={{ maxWidth: 1200, marginBottom: 18 }}
+            />
+          )}
+          {projectsLoaded && !projectsLoading && !projectsError && projects.length === 0 && (
             <div className="pj-hero">
               <span className="pj-hero-ic">✦</span>
               <div>
@@ -741,13 +777,15 @@ export default function App() {
               </div>
             </div>
           )}
-          <div className="pj-grid">
-            {activeProjects.map(renderCard)}
-            <button className="pj-card pj-new" onClick={() => nav('#/create')}>
-              <span className="pj-new-ic">＋</span>
-              <span>新建任务</span>
-            </button>
-          </div>
+          {projectsLoaded && (projects.length > 0 || (!projectsLoading && !projectsError)) && (
+            <div className="pj-grid">
+              {activeProjects.map(renderCard)}
+              <button className="pj-card pj-new" onClick={() => nav('#/create')}>
+                <span className="pj-new-ic">＋</span>
+                <span>新建任务</span>
+              </button>
+            </div>
+          )}
           {archivedProjects.length > 0 && (
             <Collapse
               ghost
