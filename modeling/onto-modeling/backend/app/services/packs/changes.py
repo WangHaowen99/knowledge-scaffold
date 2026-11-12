@@ -73,14 +73,16 @@ def abort(manager, project_id: str, record: dict | None) -> None:
 
 
 def _changed(root: Path, commit: str) -> list[str]:
-    result = subprocess.run(["git", "-c", "core.quotepath=false", "show", "--name-only", "--format=", commit],
-                            cwd=root, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
+        ["git", "-c", "core.quotepath=false", "show", "--name-only", "--format=", commit],
+        cwd=root, capture_output=True, text=True, timeout=30)
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
 def _last_lock_commit(root: Path) -> str:
-    result = subprocess.run(["git", "log", "-1", "--format=%H", "--", lockfile.LOCK_REL],
-                            cwd=root, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
+        ["git", "log", "-1", "--format=%H", "--", lockfile.LOCK_REL],
+        cwd=root, capture_output=True, text=True, timeout=30)
     return result.stdout.strip()
 
 

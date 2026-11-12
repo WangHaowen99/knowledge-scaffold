@@ -172,12 +172,16 @@ def run_view(run: dict, stage_ids: list[str], now: float | None = None) -> dict:
     """AutobuildRun（AB-04、AB-05、AB-06～AB-09 的响应）。"""
     info = list((run.get("slices") or {}).values())
     tail = [unit["name"] for unit in _units(run, "node")]
-    rows = [{"slice_id": row["id"], "slice_name": row["name"], "result": "运行前已完成",
-             "cells": {stage: ("confirmed" if (row.get("stages") or {}).get(stage) in ("confirmed", "auto") else
-                               "skipped" if (row.get("stages") or {}).get(stage) == "skipped" else "queued")
-                       for stage in stage_ids}}
-            for row in run.get("before_rows") or [] if row.get("group") == "done"
-            and row["id"] not in {unit["id"] for unit in _units(run)}]
+    in_run = {unit["id"] for unit in _units(run)}
+    rows = []
+    for row in run.get("before_rows") or []:
+        if row.get("group") != "done" or row["id"] in in_run:
+            continue
+        stages = row.get("stages") or {}
+        cells = {stage: ("confirmed" if stages.get(stage) in ("confirmed", "auto") else
+                         "skipped" if stages.get(stage) == "skipped" else "queued")
+                 for stage in stage_ids}
+        rows.append({"slice_id": row["id"], "slice_name": row["name"], "result": "运行前已完成", "cells": cells})
     rows += [_row(run, unit, stage_ids) for unit in _units(run, "slice")]
     return {
         **summary(run, now),

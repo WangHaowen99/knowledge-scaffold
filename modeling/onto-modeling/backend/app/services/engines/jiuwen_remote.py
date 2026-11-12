@@ -92,9 +92,7 @@ class WorkerClient:
                 except ValueError:
                     continue
                 await self._dispatch(message)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - 读坏了按 worker 没了处理
+        except Exception:  # noqa: BLE001 - 读坏了按 worker 没了处理；取消（CancelledError）不是 Exception，照常传出去
             _log.exception("读 Jiuwen worker 输出失败")
         await process.wait()
         if process is self.process:
@@ -131,7 +129,7 @@ class WorkerClient:
             if process.stdin is not None:
                 process.stdin.close()
             await asyncio.wait_for(process.wait(), 5)
-        except (asyncio.TimeoutError, OSError):
+        except OSError:  # 含 TimeoutError（3.11 起 asyncio.TimeoutError 就是内置的 TimeoutError）
             process.kill()
         if self.reader is not None:
             self.reader.cancel()

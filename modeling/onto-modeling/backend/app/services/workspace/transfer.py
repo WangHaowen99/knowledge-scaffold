@@ -225,7 +225,7 @@ class TransferMixin:
         script = root / ".claude" / "scripts" / "seed_example.py"
         if not script.exists():
             raise WorkspaceError("示例脚本不存在（资产未挂载）", 500)
-        result = subprocess.run(
+        result = subprocess.run(  # NOSONAR(S4721) 跑示例注入脚本，参数列表不经 shell，最小环境变量
             ["python3", str(script)], cwd=root, capture_output=True, text=True, timeout=120,
             env=minimal_env(),
         )

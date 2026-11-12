@@ -38,18 +38,10 @@ def release_tree(root: Path, commit: str):
         tree = Path(scratch) / "tree"
         tree.mkdir()
         # 本体各目录整棵导出；资料区只取用途清单和表格，大体积的 PDF、图片不复制
-        present = [
-            path for path in _git(
-                root, "--literal-pathspecs", "ls-tree", "--name-only", "-z", commit, "--",
-                *PACKAGE_SOURCE_DIRS,
-            ).split("\0") if path
-        ]
-        present += [
-            path for path in _git(
-                root, "--literal-pathspecs", "ls-tree", "-r", "--name-only", "-z", commit, "--",
-                "resource",
-            ).split("\0") if path and is_package_source(path)
-        ]
+        top = _git(root, "--literal-pathspecs", "ls-tree", "--name-only", "-z", commit, "--", *PACKAGE_SOURCE_DIRS)
+        present = [path for path in top.split("\0") if path]
+        resources = _git(root, "--literal-pathspecs", "ls-tree", "-r", "--name-only", "-z", commit, "--", "resource")
+        present += [path for path in resources.split("\0") if path and is_package_source(path)]
         if present:
             archive = Path(scratch) / "release.tar"
             _git(
@@ -57,7 +49,8 @@ def release_tree(root: Path, commit: str):
                 commit, "--", *present,
             )
             try:
-                with tarfile.open(archive) as tar:
+                # 本仓库提交 git archive 出来的未压缩 tar，解出大小等于提交里这些文件的大小
+                with tarfile.open(archive) as tar:  # NOSONAR(S5042) 本仓库提交导出的未压缩 tar，无放大
                     tar.extractall(tree, filter="data")
             except tarfile.TarError as exc:  # FilterError 是 TarError 的子类
                 raise WorkspaceError(

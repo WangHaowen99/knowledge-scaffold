@@ -157,13 +157,17 @@ def catalog(manager, *, category: str = "", q: str = "", project_id: str = "", v
                   enabled=sum(1 for item in cards if item["project_status"] in ("required", "enabled", "update", "pending")),
                   updatable=sum(1 for item in cards if item["project_status"] == "update"))
     needle = q.strip().lower()
-    items = [
-        item for item in cards
-        if (not wanted or item["category"] in wanted)
-        and (not needle or needle in f"{item['name']} {item['label']} {item['description']}".lower())
-        and (not installed_only or item["project_status"] in ("required", "enabled", "update", "pending"))
-        and (not updatable_only or item["project_status"] == "update")
-    ]
+
+    def matches(item: dict) -> bool:
+        if wanted and item["category"] not in wanted:
+            return False
+        if needle and needle not in f"{item['name']} {item['label']} {item['description']}".lower():
+            return False
+        if installed_only and item["project_status"] not in ("required", "enabled", "update", "pending"):
+            return False
+        return not updatable_only or item["project_status"] == "update"
+
+    items = [item for item in cards if matches(item)]
     body = {"items": items, "counts": counts}
     if project_id:
         # 按资料、数据源与分段进度推荐要等流程运行时的状态计算（P2）

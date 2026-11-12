@@ -24,8 +24,9 @@ def suggest(root: Path) -> dict | None:
 
     script = trusted_script(Path(root), "state_helper.py", Path(config.ASSETS_DIR))
     try:
-        proc = subprocess.run(["python3", str(script), "suggest"], cwd=root, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=TIMEOUT_SECONDS, env=minimal_env())
+        proc = subprocess.run(  # NOSONAR(S4721) 跑核对过的工具箱脚本，参数列表不经 shell，最小环境变量
+            ["python3", str(script), "suggest"], cwd=root, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=TIMEOUT_SECONDS, env=minimal_env())
     except (subprocess.TimeoutExpired, OSError):
         return None
     try:

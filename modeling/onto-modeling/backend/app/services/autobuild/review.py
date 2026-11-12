@@ -43,9 +43,13 @@ def ledger(project_id: str, run_id: str, *, review_state: str = "", below_thresh
     run = _run(project_id, run_id)
     entries = views.live_ledger(run)
     threshold = _threshold(run)
-    items = [entry for entry in entries
-             if (not review_state or entry.get("review_state") == review_state)
-             and (below_threshold is None or (float(entry.get("confidence") or 0) < threshold) == below_threshold)]
+
+    def listed(entry: dict) -> bool:
+        if review_state and entry.get("review_state") != review_state:
+            return False
+        return below_threshold is None or (float(entry.get("confidence") or 0) < threshold) == below_threshold
+
+    items = [entry for entry in entries if listed(entry)]
     below = sum(1 for entry in entries if float(entry.get("confidence") or 0) < threshold)
     return {"items": [views.ledger_entry(entry) for entry in items],
             "counts": {"total": len(entries), "high_confidence": len(entries) - below, "below_threshold": below,
@@ -335,7 +339,8 @@ def repair_reverts(project_id: str) -> int:
             continue
         for unit in run.get("units") or []:
             info = (run.get("slices") or {}).get(unit["id"]) or {}
-            if unit["kind"] != "slice" or info.get("reverted") or not info.get("commit") or not info.get("changeset_id"):
+            committed = info.get("commit") and info.get("changeset_id") and not info.get("reverted")
+            if unit["kind"] != "slice" or not committed:
                 continue
             done = (changeset_store.get(root, info["changeset_id"]) or {}).get("reverted")
             if not done:
@@ -427,8 +432,8 @@ def _flagged(run: dict) -> list[dict]:
     out = []
     for unit in run.get("units") or []:
         info = (run.get("slices") or {}).get(unit["id"]) or {}
-        if info.get("commit") and not info.get("reverted") and (
-                unit["id"] in pending or (unit["id"] not in decided and pending)):
+        flagged = unit["id"] in pending or (unit["id"] not in decided and bool(pending))
+        if info.get("commit") and not info.get("reverted") and flagged:
             out.append(info)
     return out
 
@@ -450,7 +455,9 @@ def entry_marks(project_id: str) -> dict[str, dict]:
 def review_ratio(project_id: str | None = None) -> float | None:
     """复核时被改掉的比例：改判 / 复核过的（可观测，详设 8.5）。"""
     runs = store.runs(project_id) if project_id else store.all_runs()
-    reviewed = [entry for run in runs for entry in run.get("ledger") or [] if entry.get("review_state") != "pending"]
+    reviewed = []
+    for run in runs:
+        reviewed += [entry for entry in run.get("ledger") or [] if entry.get("review_state") != "pending"]
     if not reviewed:
         return None
     return round(sum(1 for entry in reviewed if entry["review_state"] == "rejudged") / len(reviewed), 4)

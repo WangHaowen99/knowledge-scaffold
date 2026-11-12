@@ -86,7 +86,8 @@ def issue(manager, meta, body, user, hub_token="", hub_issuer="", hub_sub=""):
     # 只有所有者能签发（路由已校验），token 以签发人本人为主体，不能代他人签发
     subject = user.get("sub", "")
     publish = "package.publish" in scopes
-    if publish and (not hub_token or not hub_issuer or not hub_sub):
+    hub_identity = bool(hub_token and hub_issuer and hub_sub)
+    if publish and not hub_identity:
         raise McpError("MCP_HUB_IDENTITY_REQUIRED", "发布知识包版本需要统一账号登录", 401)
     if publish and subject != hub_sub:
         raise McpError("MCP_HUB_IDENTITY_MISMATCH", "只能为当前登录用户创建知识包发布 Token", 403)

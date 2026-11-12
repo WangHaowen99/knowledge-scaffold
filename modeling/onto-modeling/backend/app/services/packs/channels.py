@@ -56,7 +56,7 @@ def backup(repository: PackRepository) -> str:
     name = f"packs-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid() % 10000:04d}.tar.gz"
     target = directory / name
     tmp = target.with_suffix(".tmp")
-    with tarfile.open(tmp, "w:gz") as tar:
+    with tarfile.open(tmp, "w:gz") as tar:  # NOSONAR(S5042) 只写归档，不解压
         if repository.root.is_dir():
             for entry in sorted(repository.root.iterdir()):
                 if entry.name in ("uploads",) or entry.name.startswith(".tmp-"):

@@ -19,6 +19,7 @@ import os
 import shutil
 import tempfile
 import threading
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Callable, Iterable, TypeVar
 
@@ -62,7 +63,8 @@ def write_private_json(path: Path, data: Any) -> None:
         os.chmod(temporary, FILE_MODE)
         os.replace(temporary, path)
     except BaseException:
-        Path(temporary).unlink(missing_ok=True)
+        with suppress(FileNotFoundError):
+            os.unlink(temporary)
         raise
 
 

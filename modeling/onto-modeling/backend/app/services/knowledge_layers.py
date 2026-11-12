@@ -96,7 +96,7 @@ def industry_entries(manager, root: Path) -> list[dict]:
             try:
                 data = path.read_bytes()
                 fm, body = helper.parse_frontmatter(data.decode("utf-8"))
-            except (OSError, ValueError, UnicodeDecodeError):
+            except (OSError, ValueError):  # ValueError 含 UnicodeDecodeError
                 continue
             background, rule = split_body(body)
             out.append({
@@ -183,14 +183,18 @@ def check_conflicts(root: Path, project: list[dict], industry: list[dict]) -> di
         item["id"] = f"kc-{index}"
     unsourced = sum(1 for entry in project if entry["source"]["kind"] == "manual")
     conflicted = {item["project_entry"]["id"] for item in conflicts}
+
+    def sourced_and_clean(entry: dict) -> bool:
+        return entry["source"]["kind"] in ("conversation", "material") and entry["id"] not in conflicted
+
+    consistent = sum(1 for entry in project if sourced_and_clean(entry))
     return {
         "checked_at": _iso(time.time()),
         "duration_ms": int((time.time() - started) * 1000),
         "total_entries": len(project) + len(industry),
         "conflicts": conflicts,
         # 来自对话或资料、且没有冲突的项目条目数（「与资料一致」的确定性口径）
-        "consistent_with_materials": sum(1 for entry in project if entry["source"]["kind"] in ("conversation", "material")
-                                         and entry["id"] not in conflicted),
+        "consistent_with_materials": consistent,
         "unsourced": unsourced,
         "duplicates": sum(1 for item in conflicts if item["kind"] == "duplicate"),
         "broken_refs": sum(1 for item in conflicts if item["kind"] == "broken_ref"),

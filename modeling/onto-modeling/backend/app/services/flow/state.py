@@ -109,8 +109,9 @@ FINGERPRINT_EXCLUDE = ("research/blueprint.json",)
 
 def _ls_tree(root: Path, dirs: list[str]) -> str:
     try:
-        result = subprocess.run(["git", "-c", "core.quotepath=false", "ls-tree", "-r", "HEAD", "--", *dirs], cwd=root,
-                                capture_output=True, text=True, timeout=30)
+        result = subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
+            ["git", "-c", "core.quotepath=false", "ls-tree", "-r", "HEAD", "--", *dirs], cwd=root,
+            capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
         return ""
     if result.returncode != 0:
@@ -147,8 +148,9 @@ def changed_kinds(root: Path, record: dict, kinds: list[str]) -> list[str]:
 
 def _git(root: Path, *args: str) -> str | None:
     try:
-        result = subprocess.run(["git", "-c", "core.quotepath=false", *args], cwd=root, capture_output=True, text=True,
-                                timeout=30)
+        result = subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
+            ["git", "-c", "core.quotepath=false", *args], cwd=root, capture_output=True, text=True,
+            timeout=30)
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout if result.returncode == 0 else None
@@ -205,6 +207,11 @@ def _pending_nodes(root: Path) -> tuple[set[str], dict | None]:
     if record is None:
         return set(), None
     return set(record.get("nodes") or []), record
+
+
+def _gates(other: dict, node_id: str, sliced: bool) -> bool:
+    """other 挡着 node_id：blocks 里列了它；blocks_in 是 sliced 的只在分段模式下挡。"""
+    return node_id in (other.get("blocks") or []) and (other.get("blocks_in") != "sliced" or sliced)
 
 
 def compute(root: Path, flow: dict, hits: dict[str, bool], *, project_id: str | None = None,
@@ -276,8 +283,7 @@ def compute(root: Path, flow: dict, hits: dict[str, bool], *, project_id: str | 
             item = result[node["id"]]
             if item["state"] is not None:
                 continue
-            gates = [other for other in nodes if node["id"] in (other.get("blocks") or [])
-                     and (other.get("blocks_in") != "sliced" or sliced)]
+            gates = [other for other in nodes if _gates(other, node["id"], sliced)]
             if any(result[gate["id"]]["state"] not in ("confirmed", "stale", "skipped") for gate in gates):
                 item["state"] = "blocked"
                 continue

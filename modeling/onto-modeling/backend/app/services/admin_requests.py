@@ -38,11 +38,14 @@ def _project_name(project_id: str | None) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+_SOURCE_FIELDS = ("id", "display_name", "provider", "environment", "connection", "scope_allowlist", "egress",
+                  "access_window")
+
+
 def _source_view(record: dict) -> dict:
     form = record.get("body") or {}
     project_id = record.get("project_id") or None
-    payload = {key: form.get(key) for key in ("id", "display_name", "provider", "environment", "connection",
-                                               "scope_allowlist", "egress", "access_window")}
+    payload = {key: form.get(key) for key in _SOURCE_FIELDS}
     return {
         "id": record["id"], "kind": "source_registration", "state": record.get("state") or "pending",
         "requested_by": record.get("by") or "", "requested_at": deps.iso(record.get("at")),

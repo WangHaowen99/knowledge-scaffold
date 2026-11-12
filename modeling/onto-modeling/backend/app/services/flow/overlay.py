@@ -34,7 +34,8 @@ def broken_nodes(flow: dict) -> set[str]:
     out = set()
     for node in flow.get("nodes") or []:
         pack, version = _pack_version(node)
-        if pack and pack != "core" and version and ops_state.breaker_state(pack, version) == "open":
+        plugin = bool(pack) and pack != "core"
+        if plugin and version and ops_state.breaker_state(pack, version) == "open":
             out.add(node["id"])
     return out
 
@@ -65,8 +66,11 @@ def _kinds(node: dict) -> set[str]:
     from .state import KIND_DIRS
 
     patterns = [str(item.get("path") if isinstance(item, dict) else item) for item in node.get("produces") or []]
-    return {kind for kind, dirs in KIND_DIRS.items()
-            for directory in dirs if any(pattern.startswith(f"{directory}/") for pattern in patterns)}
+    kinds = set()
+    for kind, dirs in KIND_DIRS.items():
+        if any(pattern.startswith(f"{directory}/") for directory in dirs for pattern in patterns):
+            kinds.add(kind)
+    return kinds
 
 
 def backfill_ids(flow: dict, hits: dict) -> set[str]:
@@ -94,9 +98,13 @@ def backfill_ids(flow: dict, hits: dict) -> set[str]:
 def first_open(flow: dict, hits: dict) -> dict | None:
     """主线上第一个要做的必经节点：没完成、也没被越过（导入预览的起点，与下一步建议第 9 条同一口径）。"""
     passed = backfill_ids(flow, hits)
-    return next((node for node in flow.get("nodes") or []
-                 if node.get("section", "required") == "required" and not node.get("optional")
-                 and not hits.get(node["id"]) and node["id"] not in passed), None)
+
+    def open_required(node: dict) -> bool:
+        if node.get("section", "required") != "required" or node.get("optional"):
+            return False
+        return not hits.get(node["id"]) and node["id"] not in passed
+
+    return next((node for node in flow.get("nodes") or [] if open_required(node)), None)
 
 
 def mark_backfill(flow: dict, states: dict, hits: dict) -> None:
@@ -134,9 +142,12 @@ def disabled_nodes(root: Path, flow: dict) -> list[dict]:
             _log.warning("读取停用包 %s %s 的节点失败", entry.name, entry.version, exc_info=True)
             continue
         # 按项目条件本来就不出现的节点（ADR-0083）也不列成已停用
-        out += [{**node, "pack": entry.name, "version": f"{entry.name}@{entry.version}"}
-                for node in declared if node.get("id") and node["id"] not in present
-                and not (node.get("visible_if") and not conditions.holds(node["visible_if"], root))]
+        for node in declared:
+            if not node.get("id") or node["id"] in present:
+                continue
+            if node.get("visible_if") and not conditions.holds(node["visible_if"], root):
+                continue
+            out.append({**node, "pack": entry.name, "version": f"{entry.name}@{entry.version}"})
     return out
 
 

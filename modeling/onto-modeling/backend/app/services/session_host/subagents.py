@@ -31,8 +31,9 @@ def steps_of(history: list[dict], task_id: str) -> tuple[dict, list[dict]] | Non
             if isinstance(ts, (int, float)):
                 opened[step["id"]] = ts
         else:
-            current.update(state=step["state"], text=step["text"] or current["text"])
-        if step["state"] != "running" and step["kind"] == "tool" and step["id"] in opened and current["ended_at"] is None:
+            current.update(state=step.get("state"), text=step.get("text") or current.get("text"))
+        tool_finished = step.get("state") != "running" and step.get("kind") == "tool"
+        if tool_finished and step["id"] in opened and current.get("ended_at") is None:
             current["ended_at"] = iso(ts)
             current["duration_ms"] = max(0, int((ts - opened[step["id"]]) * 1000))
     return _task(task_id, records, steps), list(steps.values())
