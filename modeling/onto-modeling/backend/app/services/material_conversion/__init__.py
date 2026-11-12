@@ -13,6 +13,7 @@ from .service import (  # noqa: F401
     install,
     kind_of,
     known_converters,
+    lacks_anchors,
     migrate,
     pick,
     process,

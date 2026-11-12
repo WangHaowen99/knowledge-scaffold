@@ -141,3 +141,74 @@ def test_xlsx_zip_bomb_and_corrupt():
     with pytest.raises(ConvertError) as caught:
         XLSX.convert(b"PK\x03\x04 broken", "bad.xlsx", LIMITS)
     assert caught.value.code == "corrupt"
+
+
+# ---------------------------------------------------------------------------
+# 原件锚点（ADR-0093）：文末一段注释记每行对应原件的位置，编号和 source_extract 直接读原件一致
+# ---------------------------------------------------------------------------
+
+def _anchors(markdown: str) -> dict:
+    from app.evidence.convert import parse_anchor_index
+
+    index = parse_anchor_index(markdown)
+    lines = markdown.splitlines()
+    return {anchor: lines[number - 1] for number, anchor in index["lines"].items()}, index
+
+
+def test_docx_anchor_index_counts_empty_paragraphs_and_table_rows():
+    import io
+
+    import docx as python_docx
+
+    document = python_docx.Document()
+    document.add_paragraph("第一段")
+    document.add_paragraph("")                      # 空段也占号
+    document.add_paragraph("第三段 RULE-01")
+    grid = document.add_table(rows=3, cols=3)
+    grid.cell(0, 0).text, grid.cell(0, 1).text, grid.cell(0, 2).text = "编号", "说明", "备注"
+    grid.cell(2, 0).text, grid.cell(2, 1).text = "R-01", "超过 30 天不退"   # 第 2 行整行没字
+    document.add_paragraph("表后一段")
+    buffer = io.BytesIO()
+    document.save(buffer)
+
+    result = DOCX.convert(buffer.getvalue(), "规范.docx", LIMITS)
+    by_anchor, index = _anchors(result.markdown)
+    assert by_anchor["p:1"] == "第一段" and by_anchor["p:3"] == "第三段 RULE-01" and "p:2" not in by_anchor
+    assert by_anchor["table:1/row:1"] == "| 编号 | 说明 | 备注 |"
+    assert by_anchor["table:1/row:3"] == "| R-01 | 超过 30 天不退 |  |"
+    assert "table:1/row:2" not in by_anchor
+    assert by_anchor["p:4"] == "表后一段"            # 表格不占段落号
+    assert index["merges"] == {}
+    # 锚点那段是注释，不改正文：表格照旧是一张 Markdown 表
+    assert "| R-01 | 超过 30 天不退 |  |" in result.markdown.splitlines()
+
+
+def test_xlsx_anchor_index_keeps_excel_row_numbers_and_merges():
+    import io
+
+    import openpyxl
+
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.title = "规则 表"
+    sheet["A2"], sheet["B2"], sheet["C2"] = "编号", "说明", "上限"      # 第 1 行空：表头在第 2 行
+    sheet["A3"], sheet["B3"], sheet["C3"] = "R-01", "合成规则", 96
+    sheet["A5"], sheet["B5"] = "R-02", "隔一行"                        # 第 4 行空
+    sheet.merge_cells("B5:C5")
+    other = book.create_sheet("空")
+    del other
+    buffer = io.BytesIO()
+    book.save(buffer)
+
+    result = XLSX.convert(buffer.getvalue(), "台账.xlsx", LIMITS)
+    by_anchor, index = _anchors(result.markdown)
+    assert by_anchor["sheet:规则 表"] == "<!-- 工作表：规则 表 -->"
+    assert by_anchor["row:2"] == "| 编号 | 说明 | 上限 |"
+    assert by_anchor["row:3"] == "| R-01 | 合成规则 | 96 |"
+    assert by_anchor["row:5"] == "| R-02 | 隔一行 |  |"
+    assert by_anchor["sheet:空"] == "<!-- 工作表：空 -->"
+    assert index["merges"] == {"规则 表": ["B5:C5"]}
+    # 表头、数据照旧，schema 表头解析不受影响
+    from app.evidence.convert import md_tables
+
+    assert md_tables(result.markdown)["规则 表"][0] == ["编号", "说明", "上限"]

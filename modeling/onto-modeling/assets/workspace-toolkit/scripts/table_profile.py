@@ -79,7 +79,7 @@ def text_sheets(text_path: Path) -> dict[str, list[list[str]]] | None:
         markdown = text_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
-    return {name: rows for name, rows in table_sources.text_sheets(markdown) if rows}
+    return {sheet["name"]: sheet["rows"] for sheet in table_sources.text_sheets(markdown) if sheet["rows"]}
 
 
 def read_tables(path: Path, directive: dict | None = None) -> dict[str, list[str]]:
@@ -89,7 +89,7 @@ def read_tables(path: Path, directive: dict | None = None) -> dict[str, list[str
     别的用途如术语表整本读）；人工范围对不上当前文件抛 table_sources.SheetSelectionError，不退回整本读。"""
     as_schema = not isinstance(directive, dict) or directive.get("purpose", "schema") == "schema"
     if as_schema and in_resource(path) and path.suffix.lower() in table_sources.TABLE_SUFFIXES:
-        return table_sources.read_selected_headers(path, directive)
+        return table_sources.read_selected_headers(path, directive or {"purpose": "schema"})
     text = resource_text(path)
     if text is not None:
         sheets = text_sheets(text) or {}
@@ -275,11 +275,15 @@ def load_registered_tables(root: Path) -> tuple[dict, dict]:
             raise ValueError(NO_TEXT_MESSAGE.format(path.name))
         if path.suffix.lower() != ".csv" and text is None and importlib.util.find_spec("openpyxl") is None:
             raise ValueError(EXCEL_DEPENDENCY_MESSAGE)
-        try:
-            headers = read_tables(path, directives.get(rel))
-        except table_sources.SheetSelectionError as error:
-            raise ValueError(f"Sheet 范围需要在资料区重新确认（{path.name}：{error}），字段核验未完成") from error
-        if not headers and not table_sources.explicitly_empty(directives.get(rel)):
+        directive = directives.get(rel)
+        headers = read_tables(path, directive)
+        selection = directive.get("schema_selection") if isinstance(directive, dict) else None
+        explicitly_empty = (
+            isinstance(selection, dict)
+            and selection.get("mode") == "manual"
+            and selection.get("included_sheets") == []
+        )
+        if not headers and not explicitly_empty:
             raise ValueError("数据表无法解析或没有表头，字段核验未完成")
         for name, columns in headers.items():
             tables.setdefault(name, columns)
@@ -503,7 +507,7 @@ def run() -> int:
     try:
         return main()
     except table_sources.SheetSelectionError as error:
-        print(f"Sheet 范围需要在资料区重新确认：{error}", file=sys.stderr)
+        print(f"Sheet 范围需要确认：{error}", file=sys.stderr)
         return 2
 
 

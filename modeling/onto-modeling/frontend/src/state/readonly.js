@@ -134,7 +134,7 @@ export function composerState({ sessionState, archived, maintenance, autobuildRu
   }
   // researching：资料分析还没做完（读资料中，或还没传资料）
   if (researching) return { disabled: false, placeholder: '给助手补充说明，或者继续拖入资料…' };
-  return { disabled: false, placeholder: '给助手补充说明，可拖入文件或粘贴截图…' };
+  return { disabled: false, placeholder: '输入消息，可拖入资料或直接粘贴截图（单个文件不超过 20 MB）' };
 }
 
 // 顶栏锁图标的说明：有具体条目时说几个条目只读；写入范围只按路径给（如运行中整个本体，entries 为空）时说原因，

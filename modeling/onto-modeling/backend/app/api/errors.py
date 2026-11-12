@@ -159,10 +159,12 @@ def _known_exception_types() -> tuple[type, ...]:
     from ..services.service_tokens import ServiceTokenError
     from ..services.studio import StudioError
     from ..services.workspace import WorkspaceError
+    from ..services.table_sources import SheetSelectionError
 
     return (
         ApiError, WorkspaceError, SessionError, ConversationError, AuthError, McpError,
         StudioError, PersonalConfigError, ServiceTokenError, FeedbackRejected,
+        SheetSelectionError,  # Sheet 范围对不上当前文件：409 schema_selection_invalid（ADR-0096）
     )
 
 

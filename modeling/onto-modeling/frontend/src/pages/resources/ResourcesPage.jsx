@@ -14,7 +14,7 @@ import { legacyOfficeHint, uploadRules } from '../../lib/resourceUpload.js';
 import { CommandRunBar, useCommandTasks, useProjectEvent } from '../plugin/parts.jsx';
 import { FeedbackPreview, MaterialPreview, useFullscreen } from './ResourcePreview.jsx';
 import { useSheetScope } from './SheetScope.jsx';
-import { isSchemaTable } from './sheetScopeModel.js';
+import { isSchemaTable, scopeLink } from './sheetScopeModel.js';
 import {
   PURPOSE_FALLBACK, checkUpload, extOf, feedbackView, fileIcon, findMaterial, fmtSize, materialTitle, metaText, sortMaterials,
   pickDefault, purposeView, refSentence, replaceName, revisionBanner, routeTarget, targetKey, textChip,
@@ -71,10 +71,12 @@ function PurposeMenu({ value, auto, purposes, onPick, onClose }) {
   );
 }
 
-function FileRow({ m, picked, purposes, menuOpen, onPick, onMenu, onPurpose, onReplace, onDelete, onRevision }) {
+function FileRow({ m, picked, purposes, menuOpen, onPick, onMenu, onPurpose, onReplace, onDelete, onRevision, onScope }) {
   const ic = fileIcon(m.kind);
   const p = purposeView(m, purposes);
   const tc = textChip(m);
+  const scope = scopeLink(m.schema_scope);
+  const cand = m.schema_candidate;
   const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
   return (
     <div className={cx('evd-f', picked && 'pick')} data-path={m.path} onClick={() => onPick(m)}>
@@ -88,10 +90,14 @@ function FileRow({ m, picked, purposes, menuOpen, onPick, onMenu, onPurpose, onR
         <div className="xs muted ell">
           {metaText(m)}
           {m.is_revision && m.revision_task ? <> · <span className="evd-incl" onClick={stop(() => onRevision(m))}>去对话里确认 →</span></> : null}
+          {scope ? <> · <span className={cx('evd-incl', scope.danger && 'danger')} onClick={stop(() => onScope(m))}>{scope.text}</span></> : null}
+          {cand ? (
+            <> · <span className="evd-incl" title={`表头像数据库列名，识别出 ${cand.tables.length} 张表：${cand.tables.slice(0, 8).join('、')}`} onClick={stop(() => onPurpose(m, 'schema'))}>疑似数据表 · 设为 Schema</span></>
+          ) : null}
         </div>
       </div>
       <div className="evd-purp" data-purp {...(menuOpen ? { 'data-purp-open': '' } : {})} onClick={stop(() => onMenu(menuOpen ? null : m.path))}>
-        {p.label}<Icon name="chevd" size={12} />
+        {p.label}{p.auto ? <span className="auto" title="上传时按表格结构自动识别（数据表或术语表）；改用途即覆盖">自动识别</span> : null}<Icon name="chevd" size={12} />
       </div>
       <div className="evd-acts">
         <Button size="sm" kind="ghost" icon="eye" title="预览" onClick={stop(() => onPick(m, true))} />
@@ -104,6 +110,16 @@ function FileRow({ m, picked, purposes, menuOpen, onPick, onMenu, onPurpose, onR
 }
 
 function UploadRow({ u, onDismiss }) {
+  if (u.state === 'warn') {
+    return (
+      <div className="evd-up" style={{ background: 'var(--a50)', borderColor: 'var(--a100)' }}>
+        <Icon name="alert" size={14} />
+        <span className="sm" style={{ color: 'var(--amber)' }}>{u.error}</span>
+        <span className="sp" />
+        <Button size="xs" kind="ghost" icon="x" title="关闭" onClick={onDismiss} />
+      </div>
+    );
+  }
   if (u.state === 'error') {
     return (
       <div className="evd-up" style={{ background: 'var(--r50)', borderColor: 'var(--r100)' }}>
@@ -315,11 +331,17 @@ export default function ResourcesPage({ route }) {
     }
     if (!done.length) return;
     const last = done[done.length - 1];
-    // 旧版 .doc / .xls 传上去了但转不出文本：提示接在结果后面（只有一条轻提示，分开发会被后一条盖掉）
-    const hints = done.map((x) => legacyOfficeHint(x.material?.name)).filter(Boolean);
-    const tail = hints.length ? `；${hints.join('；')}` : '';
-    if (replaceOf) toast(`已替换 ${materialTitle(replaceOf)}，保存为新版本 ${last.version_label}${tail}`, hints.length ? 'alert' : 'upload');
-    else toast(`已上传 ${done.length} 份资料（${last.version_label}）${revision ? '；已发起增量更新' : ''}${tail}`, hints.length ? 'alert' : 'upload');
+    // 旧版 .doc / .xls 传上去了但转不出文本：提示留在上传列表里（轻提示只有一条，会被结果盖掉）
+    const hints = done.map((x) => ({ name: x.material?.name, hint: legacyOfficeHint(x.material?.name) })).filter((x) => x.hint);
+    if (hints.length) {
+      setUps((u) => [...u, ...hints.map((x) => ({ key: `hint-${x.name}-${Date.now()}`, name: x.name, state: 'warn', error: x.hint }))]);
+    }
+    // 一份时文字同 develop（已上传 / 已替换 X，识别出数据表时说明用途已设为数据 Schema）
+    const one = done.length === 1 ? last : null;
+    const detected = one?.detected
+      ? `，识别为数据表（${one.detected.tables.length} 张），用途已设为「数据 Schema」，可在资料列表修改` : '';
+    const head = one ? `${one.replaced ? '已替换' : '已上传'} ${one.material.name}${detected}` : `已上传 ${done.length} 份资料（${last.version_label}）`;
+    toast(`${head}${revision ? '；已发起增量更新' : ''}`, 'upload');
     if (revision) setRev(false);
     setSel({ kind: 'file', path: last.material.path, fragment: null });
     load();
@@ -347,11 +369,7 @@ export default function ResourcesPage({ route }) {
     if (r.reread_task) tracked.track(r.reread_task);
   };
   // 表格改成数据 Schema 先预检表头（R-16）：没问题直接保存，有问题弹窗选 Sheet 范围
-  const sheetScope = useSheetScope(pid, (r) => {
-    const before = findMaterial(data?.groups, r.material.path);
-    applyPurpose(r.material, 'schema', r);
-    toast(before?.purpose === 'schema' && !before?.purpose_auto ? 'Sheet 范围已保存' : '用途已改为「数据 Schema」', 'check');
-  });
+  const sheetScope = useSheetScope(pid, (r) => applyPurpose(r.material, 'schema', r));
   const setPurpose = async (m, value) => {
     setMenu(null);
     if (value === m.purpose && !m.purpose_auto) return;
@@ -390,7 +408,6 @@ export default function ResourcesPage({ route }) {
       <MaterialPreview
         key={`${selected.path}:${sel?.n || ''}`} m={selected} purposes={purposes} fragment={sel?.kind === 'file' ? sel.fragment : null}
         full={full} onFull={toggleFull} onSaved={load} onUploadText={() => choose({ textOnly: true })} tasks={tasks}
-        onScope={sheetScope.edit}
       />
     );
   } else if (data && !data.error && selPath) {
@@ -428,7 +445,7 @@ export default function ResourcesPage({ route }) {
             <span className="ic"><Icon name="upload" size={20} /></span>
             <div className="grow">
               <div className="b lg">把资料拖到这里</div>
-              <div className="muted sm">Word、Excel、PDF、Markdown、CSV、drawio、TXT、HTML · ≤ 20 MB</div>
+              <div className="muted sm">支持 Markdown、TXT、PDF、Word、Excel、CSV、Drawio、HTML 和常见图片；单个文件不超过 20 MB</div>
             </div>
             <Button icon="folder" onClick={() => choose()}>选择文件</Button>
           </div>
@@ -451,7 +468,7 @@ export default function ResourcesPage({ route }) {
                 {materials.map((m) => (
                   <FileRow
                     key={m.path} m={m} picked={!!selected && selected.path === m.path && sel?.kind !== 'feedback'} purposes={purposes} menuOpen={menu === m.path}
-                    onPick={pickFile} onMenu={setMenu} onPurpose={setPurpose} onReplace={(x) => choose({ replaceOf: x })} onDelete={setDel} onRevision={goIncremental}
+                    onPick={pickFile} onMenu={setMenu} onPurpose={setPurpose} onReplace={(x) => choose({ replaceOf: x })} onDelete={setDel} onRevision={goIncremental} onScope={sheetScope.open}
                   />
                 ))}
               </div>

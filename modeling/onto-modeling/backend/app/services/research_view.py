@@ -27,7 +27,7 @@ KINDS = {
     ".doc": ("doc", "doc"), ".docx": ("doc", "doc"), ".pdf": ("pdf", "doc"),
     ".xls": ("xls", "xls"), ".xlsx": ("xls", "xls"), ".xlsm": ("xls", "xls"), ".csv": ("csv", "csv"),
     ".drawio": ("drawio", "drawio"), ".html": ("html", "html"), ".htm": ("html", "html"),
-    ".png": ("image", None), ".jpg": ("image", None), ".jpeg": ("image", None),
+    ".png": ("image", None), ".jpg": ("image", None), ".jpeg": ("image", None), ".webp": ("image", None),
     ".md": ("text", "text"), ".markdown": ("text", "text"), ".txt": ("text", "text"),
 }
 _log = logging.getLogger(__name__)

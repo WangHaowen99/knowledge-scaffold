@@ -175,7 +175,7 @@
 | MCP 请求体 | 1 MiB | `413 REQUEST_TOO_LARGE`（MCP 码） |
 | 证据锚点批量解析 | 一次 100 个 | `400 invalid_argument` |
 
-允许的资料类型：`.md .markdown .txt .doc .docx .xls .xlsx .xlsm .csv .pdf .drawio .html .htm .png .jpg .jpeg`。图片只作为对话附件和资料附件。其他类型返回 `415 unsupported_media_type`，`details.allowed` 列出允许的扩展名。资料进资料区的所有入口（U-01、R-02、新建项目、对话附件）在服务层再按同一份白名单与上限挡一次；前端按 C-01 的 `material_types`、`limits.material_upload_bytes` 先在本地挡，规则不另写一份。上传 `.doc`、`.xls` 照收，前端传完提示另存为 `.docx`、`.xlsx`（转不出文本，不能分析和预览）。
+允许的资料类型：`.md .markdown .txt .doc .docx .xls .xlsx .xlsm .csv .pdf .drawio .html .htm .png .jpg .jpeg .webp`。图片只作为对话附件和资料附件。其他类型返回 `415 unsupported_media_type`（消息「不支持文件“X”的类型」），`details.allowed` 列出允许的扩展名；超限是 `413 payload_too_large`（消息「文件“X”超过 20 MB，无法上传」），文字与 develop 一致。资料进资料区的所有入口（U-01、R-02、新建项目、对话附件）在服务层再按同一份白名单与上限挡一次；前端按 C-01 的 `material_types`、`limits.material_upload_bytes` 先在本地挡，规则不另写一份。上传 `.doc`、`.xls` 照收，前端传完提示另存为 `.docx`、`.xlsx`（转不出文本，不能分析和预览）。
 
 ### 1.9 时间、数量与金额
 
@@ -364,8 +364,9 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `binary_not_previewable` | 415 | 二进制文件不能按文本预览 | — |
 | `preview_unavailable` | 501 | 服务端缺预览依赖 | `reason` |
 | `not_convertible` | 409 | 这份资料不能转成文本（本身是文本、流程图、没有能转的转换器） | `path` |
-| `schema_scope_stale` | 409 | 数据 Schema 的人工 Sheet 范围对不上当前文件（换过文件、所选 Sheet 没了），或保存时带的 `revision` 不是当前文件，要重新检查后确认（ADR-0096） | `path` |
-| `material_text_pending` | 409 | 表格还没转出文本版，暂时不能选 Sheet 范围 | `path` |
+| `schema_selection_invalid` | 409 | 数据 Schema 的 Sheet 范围对不上当前文件（换过文件、所选 Sheet 没了或不能作表头、配置无效），或保存时带的 `file_sha256` 不是当前文件，要重新检查后确认（ADR-0096，同 develop） | — |
+| `material_text_pending` | 409 | Excel 还没转出文本版，暂时检查不了 Sheet 范围 | `path` |
+| `resource_source_modified` | 409 | 资料有还没保存为项目版本的改动，先重新上传或恢复再改设置（同 develop） | — |
 | `invalid_filename` | 400 | 文件名不合法（含路径、以 `.` 开头） | — |
 | `revision_conflict` | 409 | 版本号不一致 | `target, expected, actual, changed_by, changed_at, version_label, kind` |
 
@@ -1205,12 +1206,14 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 `PATCH /api/v1/projects/{id}/resources/purpose` · 所有者 · 旧：`PATCH /api/projects/{id}/resource-meta` · 审计：是 · 依据：ADR 0017 · 页面：resources、wb-materials（资料地图改用途菜单）
 
 - 请求：`{path, purpose, reading_mode?, schema_selection?}`。改用途会覆盖自动识别结果。
-  - `schema_selection` 只给 `purpose=schema` 的 xlsx、xlsm、csv（ADR-0096）：`{mode: "auto"}` 撤掉人工范围、按结构现算；
-    `{mode: "manual", included_sheets: string[], revision}` 存人工范围，`revision` 取自 R-16 的结果，所选 Sheet 有表头错误（`severity=error`）时 `400 invalid_argument`。
-  - 不带 `schema_selection` 时沿用原来的人工范围；它对不上当前文件时 `409 schema_scope_stale`，先经 R-16 重新确认。改成别的用途时人工范围随之撤掉。
+  - `schema_selection`（ADR-0096，同 develop）：`{mode: "auto"|"manual", included_sheets: string[], file_sha256}`，`file_sha256` 取自 R-16。
+    只给 `purpose=schema` 的 xlsx、xlsm、csv，别的 `400`「仅数据 Schema 表格支持设置 Sheet 范围」；`file_sha256` 不是当前文件 `409`「文件已变化，请刷新 Sheet 范围后重试」；
+    所选 Sheet 有表头错误（`severity=error`）时 `400`，消息逐行「Sheet「名」：问题」。
+  - 标为 schema 后存下范围 `{version: 1, mode, included_sheets, reference_sheets, file_sha256}`：不带 `schema_selection` 时沿用原来的范围，对不上当前文件 `409 schema_selection_invalid`；
+    没有范围时按结构算好存下（`auto`）。Excel 还没转出文本版时先只改用途，范围在文本版转出的那个提交里存下。改成别的用途时范围随之撤掉。
 - 响应 `200`：`{material: Material, commit, version_label, reread_task: CommandTask|null}`。
   - 资料分析已经开始过时，服务端自动发一条「重读受影响部分」命令，在 `reread_task` 里返回。
-- 错误：`file_not_found`、`path_forbidden`、`invalid_argument`、`schema_scope_stale`、`material_text_pending`。
+- 错误：`file_not_found`、`path_forbidden`、`invalid_argument`、`schema_selection_invalid`、`resource_source_modified`。
 
 #### R-04 删除资料
 
@@ -1339,23 +1342,24 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 
 #### R-16 Sheet 范围预检
 
-`GET /api/v1/projects/{id}/resources/schema-preview?path=` · 所有者 · 旧：`POST /api/projects/{id}/resource-meta/schema-preview`（develop 新增，没有调用方，不映射） · 审计：否 · 依据：ADR 0096 · 页面：resources、wb-materials（改用途为数据 Schema、详情里的「数据表 N · 参考 M」）
+`GET /api/v1/projects/{id}/resources/schema-preview?path=&force=` · 所有者（项目未归档） · 旧：`POST /api/projects/{id}/resource-meta/schema-preview`（develop 新增，没有调用方，不映射） · 审计：否 · 依据：ADR 0096 · 页面：resources、wb-materials（改用途为数据 Schema、资料行「查看范围」里的重新检查）
 
-按「标成数据 Schema」检查一份表格的每个 Sheet，只读，不改用途。Excel 读文本版，CSV 直接读，不解析 Excel 原件（ADR-0076）。
+按「标成数据 Schema」检查一份表格的每个 Sheet，不改用途；行为与 develop 的 schema-preview 一致。Excel 读网关转出的文本版与它的原件锚点（行号、合并区），CSV 直接读，不解析 Excel 原件（ADR-0076）。检查结果按文件 sha256 缓存，`force=true` 重扫。
 
 - 响应 `200`：
 
   | 字段 | 类型 | 说明 |
   |---|---|---|
-  | `mode` | `"auto"\|"manual"` | 当前范围：现算的，或用户确认过的 |
-  | `revision` | string | 文件修订（与 `Material.revision` 同口径），R-03 保存人工范围时带回 |
-  | `pending` | bool | Excel 还没有文本版：`sheets` 为空，改用途时先只改用途 |
+  | `version` / `mode` | `1` / `"auto"\|"manual"` | 当前范围：现算的，或用户确认过的 |
+  | `file_sha256` | string | 文件 sha256，R-03 保存范围时带回 |
   | `included_sheets` / `reference_sheets` | string[] | 建议的数据表 / 只作参考的 Sheet；表头有错误的不进建议 |
-  | `sheets` | `[{name, kind, headers, selectable, schema_selectable, issues: [{code, severity, message}]}]` | `kind` 是结构类别（`table`、`maybe`、`dictionary`、`term`、`document`、`meta`、`empty`）；`issues.code`：`empty_header`、`blank_columns`、`duplicate_columns`（`error`，不能当数据表），`reference_sheet`、`single_column`、`non_identifier_header`（`warning`） |
-  | `error` | string \| null | 人工范围对不上当前文件时的原因（此时其余字段是现算的结果） |
+  | `sheets` | `[{name, kind, headers, selectable, schema_selectable, issues: [{code, severity, message}]}]` | `kind` 是结构类别（`table`、`maybe`、`dictionary`、`term`、`document`、`meta`、`empty`）；`issues.code`：`empty_header`、`merged_header`、`blank_columns`、`duplicate_columns`（`error`，不能当数据表），`reference_sheet`、`single_column`、`non_identifier_header`（`warning`），消息文字同 develop |
+  | `warnings` | string[] | 「没有选中数据 Sheet…」「未选中的 Sheet 仅作参考…」 |
+  | `error` | string | 只在人工范围对不上当前文件时出现，此时其余字段是现算的结果 |
 
-- 表头是每个 Sheet 的第一个非空行；合并单元格在文本版里是空格，表现为「第 N 列没有列名」。
-- 错误：`file_not_found`、`path_forbidden`、`unsupported_media_type`（415，只支持 xlsx、xlsm、csv；`.xls` 提示另存为 `.xlsx`）、`invalid_argument`（CSV 不是 UTF-8）、`not_convertible`（Excel 转不出文本版）。
+- 表头是每个 Sheet 的物理第一行；第一行为空、合并、缺列名、重名都是错误。有内容的最右一列按整张表算。
+- 错误（文字同 develop）：`400`「只能检查资料区中存在的文件」「数据 Schema 支持 xlsx、xlsm 和 UTF-8 CSV。…」「文件无法解析为数据表：…」（含 CSV 不是 UTF-8、Excel 转换失败）；
+  `409 material_text_pending`（Excel 还在转文本版）；`project_archived`。
 
 ---
 
@@ -5130,8 +5134,11 @@ type Material = {
   preview: "doc" | "xls" | "csv" | "drawio" | "html" | "text" | null;
   revision: string;
   text: MaterialText | null;      // 流程图为 null
-  // 数据 Schema 表格（xlsx、xlsm、csv）的 Sheet 范围摘要（ADR-0096），别的资料为 null；逐 Sheet 的表头与问题见 R-16
-  schema_scope: { mode: "auto" | "manual"; pending: boolean; included_sheets: string[]; reference_sheets: string[]; error: string | null } | null;
+  // 数据 Schema 表格（xlsx、xlsm、csv）的 Sheet 范围（ADR-0096，即 develop resource-meta 的 schema_scopes[path]）：结构同 R-16，
+  // 范围对不上当前文件时带 error；Excel 还没转出文本版时只有 {pending: true, sheets: [], included_sheets: [], reference_sheets: []}；别的资料为 null
+  schema_scope: object | null;
+  // 「疑似数据表」（develop 的 schema_candidates[path]）：用途仍是「由助手判断」、结构上像数据表的表格资料，否则 null
+  schema_candidate: { tables: string[] } | null;
 };
 
 // 资料的文本版（ADR-0073）

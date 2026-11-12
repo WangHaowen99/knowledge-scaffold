@@ -6,7 +6,7 @@ import json
 import time
 from pathlib import Path
 
-from .. import material_detect, package_mapping, solver_contract, table_sources
+from .. import material_detect, package_mapping, solver_contract
 from ..packs import contracts as _contracts
 from .errors import WorkspaceError
 from .gitops import _by, _git
@@ -21,6 +21,12 @@ from .layout import (
     _is_script_descriptor,
     is_auto_detected as _is_auto_detected,
     resource_text_path,
+)
+
+
+UNREADABLE_TABLE = (
+    "文件无法解析为数据表：可能已损坏、加密或编码不正确。请用表格软件确认可打开，取消密码保护并另存为 xlsx/xlsm；"
+    "CSV 请使用 UTF-8 编码后重新上传。"
 )
 
 
@@ -214,6 +220,39 @@ class FilesMixin:
                 directive["purpose"] = "auto"
         return data
 
+    def preview_schema(self, project_id: str, rel_path: str, *, force: bool = False) -> dict:
+        """Inspect a proposed schema tag without changing project metadata."""
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            target = self._resolve_inside(root, rel_path)
+            rel = target.relative_to(root.resolve()).as_posix()
+            if not rel.startswith("resource/") or not target.is_file():
+                raise WorkspaceError("只能检查资料区中存在的文件", 400)
+            if target.suffix.lower() not in (".xlsx", ".xlsm", ".csv"):
+                raise WorkspaceError("数据 Schema 支持 xlsx、xlsm 和 UTF-8 CSV。请将文件另存为这些格式；说明文档可设为通用业务依据。", 400)
+            previous = self.resource_directives(project_id).get(rel, {})
+            try:
+                scope = material_detect.resolve_selection(target, previous, force=force)
+            except material_detect.TextPending as exc:
+                from .. import material_conversion
+
+                # 转换失败、暂不支持：文本版不会再有了，与 develop 解析失败同一句；还在转的稍后再查
+                state = (material_conversion.view(project_id, root, rel, heal=False) or {}).get("state")
+                if state in ("failed", "unsupported"):
+                    raise WorkspaceError(UNREADABLE_TABLE, 400) from exc
+                raise WorkspaceError(str(exc), 409, "material_text_pending", {"path": rel}) from exc
+            except material_detect.SheetSelectionError as exc:
+                try:
+                    scope = material_detect.resolve_selection(target)
+                except material_detect.SheetSelectionError:
+                    raise WorkspaceError(UNREADABLE_TABLE, 400) from exc
+                scope["error"] = str(exc)
+            scope["included_sheets"] = [s["name"] for s in scope["sheets"]
+                if s["name"] in scope["included_sheets"] and s["schema_selectable"]]
+            scope["reference_sheets"] = [s["name"] for s in scope["sheets"]
+                if s["name"] not in scope["included_sheets"]]
+            return scope
+
     def set_resource_directive(
         self,
         project_id: str,
@@ -223,7 +262,6 @@ class FilesMixin:
         author: str = "",
         schema_selection: dict | None = None,
     ) -> dict:
-        """改用途；数据 Schema 表格可一并定 Sheet 范围（schema_selection：{mode, included_sheets, revision}）。"""
         if purpose not in self.MATERIAL_PURPOSES:
             raise WorkspaceError(f"资料用途必须是 {list(self.MATERIAL_PURPOSES)} 之一")
         if reading_mode not in self.MATERIAL_READING_MODES:
@@ -236,11 +274,44 @@ class FilesMixin:
             rel = target.relative_to(root.resolve()).as_posix()
             if not rel.startswith("resource/") or not target.is_file():
                 raise WorkspaceError("只能为 resource/ 下的资料设置用途", 400)
+            if _git(root, "ls-files", "--", rel).strip() and _git(root, "status", "--porcelain", "--", rel).strip():
+                raise WorkspaceError(
+                    "该资料存在尚未保存为项目版本的内容，请重新上传或恢复资料后再修改设置",
+                    409,
+                    "resource_source_modified",
+                )
             directives = self.resource_directives(project_id)
+            previous = directives.get(rel, {})
             directive = {"purpose": purpose, "reading_mode": reading_mode}
-            kept = self._schema_selection(target, rel, purpose, directives.get(rel), schema_selection)
-            if kept is not None:
-                directive["schema_selection"] = kept
+            if purpose == "schema" and target.suffix.lower() in package_mapping.TABLE_SUFFIXES:
+                if schema_selection is not None:
+                    if schema_selection.get("file_sha256") != material_detect.resolve_selection(target)["file_sha256"]:
+                        raise WorkspaceError("文件已变化，请刷新 Sheet 范围后重试", 409, "schema_selection_invalid")
+                    directive["schema_selection"] = {**schema_selection, "version": 1}
+                elif isinstance(previous, dict) and previous.get("schema_selection") is not None:
+                    directive["schema_selection"] = previous["schema_selection"]
+                try:
+                    scope = material_detect.resolve_selection(target, directive)
+                except material_detect.TextPending:
+                    # Excel 还没有文本版：先只改用途，范围等文本版转出时按结构算好存下（record_schema_scope）
+                    scope = None
+                    if directive.get("schema_selection", {}).get("mode") != "manual":
+                        directive.pop("schema_selection", None)
+                if scope is not None:
+                    if schema_selection is not None:
+                        problems = []
+                        included_sheets = set(scope["included_sheets"])
+                        for sheet in scope["sheets"]:
+                            if sheet["name"] not in included_sheets:
+                                continue
+                            for issue in sheet.get("issues", []):
+                                if issue["severity"] == "error":
+                                    problems.append(f"Sheet「{sheet['name']}」：{issue['message']}")
+                        if problems:
+                            raise WorkspaceError("\n".join(problems), 400)
+                    directive["schema_selection"] = material_detect.selection_metadata(scope)
+            elif schema_selection is not None:
+                raise WorkspaceError("仅数据 Schema 表格支持设置 Sheet 范围", 400)
             tx.touch(RESOURCE_DIRECTIVES)
             directives[rel] = directive
             self._write_resource_directives(root, directives)
@@ -248,50 +319,56 @@ class FilesMixin:
             self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
             # 资料本身一并提交：旧版上传未进 git 的表格，标成 schema 后发布才读得到
             tx.touch(rel, snapshot=False)
-            tx.commit(f"web: 设置资料用途 {rel}{_by(author)}")
-            return {"path": rel, **directives[rel]}
+            commit = tx.commit(f"web: 设置资料用途 {rel}{_by(author)}").commit
+            return {"path": rel, **directives[rel], "commit": commit}
 
-    @staticmethod
-    def _schema_selection(target: Path, rel: str, purpose: str, previous, requested: dict | None) -> dict | None:
-        """要存的人工 Sheet 范围；None 表示按结构现算（ADR-0096）。
+    def record_schema_scope(self, root: Path, rel: str) -> bool:
+        """数据 Schema 表格还没存范围（或存的是换文件前的自动范围）时，按结构算好存下；改了返回 True。
 
-        没带范围时沿用原来的人工范围（只改读法不丢勾选），但它对不上当前文件就报 409，先去确认范围；
-        mode=auto 撤掉人工范围；mode=manual 要带确认时的文件修订，勾的 Sheet 有表头错误不收。
+        Excel 上传那一刻还没有文本版（ADR-0076），由多源连接器写入文本版的同一个提交调这里；人工范围不动。
         """
-        is_table = target.suffix.lower() in table_sources.TABLE_SUFFIXES
-        if purpose != "schema" or not is_table:
-            if requested is not None:
-                raise WorkspaceError("只有数据 Schema 表格能设 Sheet 范围", 400, "invalid_argument",
-                                     {"fields": {"schema_selection": "not_allowed"}})
-            return None
-        if requested is None:
-            if not isinstance(previous, dict) or previous.get("purpose") != "schema":
-                return None
-            kept = previous.get("schema_selection")
-            if kept is not None:
-                table_sources.resolve(target, rel, {"purpose": "schema", "schema_selection": kept})
-            return kept
-        if requested.get("mode") == "auto":
-            return None
-        # 同一次检查里算修订和读表头：存下的修订就是检查过的那份文件
-        scope = table_sources.resolve(target, rel, {"purpose": "schema"})
-        if requested.get("revision") != scope["revision"]:
-            raise WorkspaceError("文件已变化，重新检查 Sheet 范围后再保存", 409, "schema_scope_stale", {"path": rel})
-        if scope["pending"]:
-            raise WorkspaceError("表格还没转出文本，稍后再选 Sheet 范围", 409, "material_text_pending", {"path": rel})
-        included = list(requested.get("included_sheets") or [])
-        by_name = {sheet["name"]: sheet for sheet in scope["sheets"]}
-        problems = [f"没有 Sheet「{name}」" for name in included if name not in by_name]
-        if len(set(included)) != len(included):
-            problems.append("Sheet 重复")
-        for name in included:
-            for issue in (by_name.get(name) or {}).get("issues", []):
-                if issue["severity"] == "error":
-                    problems.append(f"Sheet「{name}」：{issue['message']}")
-        if problems:
-            raise WorkspaceError("\n".join(problems), 400, "invalid_argument",
-                                 {"fields": {"schema_selection.included_sheets": "invalid"}})
-        return table_sources.manual_selection(included, scope["revision"])
+        directives = self._resource_directives_at(root)
+        directive = directives.get(rel)
+        if not isinstance(directive, dict) or directive.get("purpose") != "schema" \
+                or Path(rel).suffix.lower() not in package_mapping.TABLE_SUFFIXES:
+            return False
+        stored = directive.get("schema_selection")
+        if isinstance(stored, dict) and stored.get("mode") == "manual":
+            return False
+        try:
+            scope = material_detect.resolve_selection(root / rel, directive)
+        except material_detect.SheetSelectionError:
+            return False
+        metadata = material_detect.selection_metadata(scope)
+        if stored == metadata:
+            return False
+        directive["schema_selection"] = metadata
+        self._write_resource_directives(root, directives)
+        return True
+
+    def schema_scopes(self, project_id: str) -> dict:
+        root = self.project_root(project_id)
+        scopes = {}
+        for rel, directive in self.resource_directives(project_id).items():
+            if not isinstance(directive, dict) or directive.get("purpose") != "schema":
+                continue
+            if Path(rel).suffix.lower() not in package_mapping.TABLE_SUFFIXES:
+                continue
+            try:
+                target = self._resolve_inside(root, rel)
+                if not rel.startswith("resource/") or not target.is_file():
+                    continue
+                try:
+                    scopes[rel] = material_detect.resolve_selection(target, directive)
+                except material_detect.TextPending:
+                    # 还没转出文本版：范围还不知道，不当作「待确认」
+                    scopes[rel] = {"pending": True, "sheets": [], "included_sheets": [], "reference_sheets": []}
+                except material_detect.SheetSelectionError as exc:
+                    # Show fresh candidates but never silently apply them to manual selections.
+                    scopes[rel] = {**material_detect.resolve_selection(target), "error": str(exc)}
+            except (material_detect.SheetSelectionError, WorkspaceError) as exc:
+                scopes[rel] = {"error": str(exc), "sheets": [], "included_sheets": []}
+        return scopes
 
     def _write_resource_directives(self, root: Path, directives: dict) -> None:
         self._atomic_write_text(
@@ -325,7 +402,7 @@ class FilesMixin:
 
         # 资料进资料区都经过这里：类型白名单与 20 MiB 上限在服务层再挡一次，接口层漏了也绕不过去
         uploads.check_type(safe_name, "material")
-        uploads.check_size(len(data), "material")
+        uploads.check_size(len(data), "material", safe_name)
         rel = f"resource/{subdir}/{safe_name}"
         with ChangeTx(self, project_id, Origin("web", author), summary=f"上传资料 {rel}") as tx:
             root = tx.root
@@ -406,11 +483,20 @@ class FilesMixin:
         elif _is_auto_detected(directives.get(rel)):
             # 替换后不再像数据表或术语表：撤掉之前的自动标注
             directives.pop(rel)
-        # 换文件不丢人工 Sheet 范围：留着它，读的地方发现对不上新文件会要求重新确认，不悄悄换成现算的范围
-        kept = existing.get("schema_selection") if isinstance(existing, dict) else None
-        current = directives.get(rel)
-        if kept is not None and isinstance(current, dict) and current.get("purpose") == "schema":
-            current.setdefault("schema_selection", kept)
+        directive = directives.get(rel, {})
+        if directive.get("purpose") == "schema" and Path(rel).suffix.lower() in package_mapping.TABLE_SUFFIXES:
+            previous_scope = (existing or {}).get("schema_selection")
+            if isinstance(previous_scope, dict) and previous_scope.get("mode") == "manual":
+                directive["schema_selection"] = previous_scope
+            stored = directive.get("schema_selection")
+            # Replacements invalidate manual scope; preserve it so readers demand confirmation.
+            if not isinstance(stored, dict) or stored.get("mode") != "manual":
+                try:
+                    scope = material_detect.resolve_selection(root / rel, directive)
+                    directive["schema_selection"] = material_detect.selection_metadata(scope)
+                except material_detect.TextPending:
+                    # Excel 刚上传还没有文本版：等多源连接器转出文本版时再存（record_schema_scope）
+                    directive.pop("schema_selection", None)
         if json.dumps(directives, sort_keys=True) != before:
             self._write_resource_directives(root, directives)
         return detected

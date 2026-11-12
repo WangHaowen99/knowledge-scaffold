@@ -192,7 +192,6 @@ export function MaterialMapDialog({ onClose, initialVerify = false }) {
   // 表格改成数据 Schema 与资料区同一条路：先预检表头，有问题弹窗选 Sheet 范围
   const sheetScope = useSheetScope(pid, (r) => {
     setMap((m) => ({ ...m, items: m.items.map((x) => (x.path === r.material.path ? { ...x, purpose: 'schema', purpose_auto: false } : x)) }));
-    toast(`用途已改为：${purposeLabel('schema')}`, 'check');
   });
   const setPurpose = async (item, purpose) => {
     setMenu(null);

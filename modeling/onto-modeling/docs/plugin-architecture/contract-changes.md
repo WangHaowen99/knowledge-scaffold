@@ -1723,3 +1723,13 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
    带 `content`（标准编辑器里还没保存的模型）时把模型合进原文，和 AR-05 标准编辑器保存写出的一样，尺寸、样式、泳道、批注、其他页都保留。
    流程图弹窗切到高级编辑时调它，原来的「有未保存修改时按模型重新生成 XML」只在取不到时兜底。
 2. **流程图编辑会话**：同一修订、或已经越过的旧修订的刷新不覆盖编辑内容；载入按代次丢掉过期结果。
+
+## 2026-11-12 · P5a 第二轮：资料上传与 Sheet 范围对齐 develop（ADR-0096 改写）
+
+1. **上传白名单加 `.webp`**（同 develop），图片转换同 png；拒收消息改成 develop 的「不支持文件“X”的类型」「文件“X”超过 20 MB，无法上传」，码仍按 1.8。
+2. **R-01**：`Material.schema_scope` 从摘要改为 develop resource-meta 的完整范围（含逐 Sheet 的表头与问题、`file_sha256`、`warnings`、`error`），
+   Excel 还没文本版时是 `{pending: true, …}`；新增 `Material.schema_candidate`（疑似数据表）。
+3. **R-03 `schema_selection`** 改为 develop 的形状 `{mode, included_sheets, file_sha256}`（第一轮是 `revision`），存下的范围同 develop
+   （含现算的 `auto` 范围）；错误码 `schema_scope_stale` 改为 develop 的 `schema_selection_invalid`；新增 `resource_source_modified`（资料有没提交的改动）。
+4. **R-16** 加 `force`，权限改为能写（同 develop 的 write），响应字段同 develop（`file_sha256`、`warnings`，去掉 `revision`、`pending`），
+   错误文字同 develop；Excel 还在转文本版时 `409 material_text_pending`。

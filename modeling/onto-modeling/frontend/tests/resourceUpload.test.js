@@ -1,42 +1,63 @@
-// 资料上传的白名单与大小上限（移植自 develop 的同名测试）：资料区、新建项目、工作台、对话附件共用一份
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  MAX_RESOURCE_BYTES,
-  checkResourceFile,
+  MAX_RESOURCE_FILE_SIZE,
   legacyOfficeHint,
-  splitResourceFiles,
+  rejectedResourceMessage,
   uploadRules,
+  validateResourceFile,
+  validateResourceFiles,
 } from '../src/lib/resourceUpload.js';
 
-test('支持的扩展名不分大小写，正好 20 MB 能传', () => {
-  assert.equal(checkResourceFile('资料.PDF', MAX_RESOURCE_BYTES), null);
-  assert.equal(checkResourceFile('数据.csv', 1), null);
-  assert.equal(checkResourceFile('截图.PNG', 1), null);
+// ---- develop 原测试（只改了导入） ----
+
+test('resource upload accepts supported extensions case-insensitively at the size boundary', () => {
+  assert.equal(
+    validateResourceFile({ name: '资料.PDF', size: MAX_RESOURCE_FILE_SIZE }).valid,
+    true,
+  );
+  assert.equal(validateResourceFile({ name: '数据.csv', size: 1 }).valid, true);
+  assert.equal(validateResourceFile({ name: '截图.PNG', size: 1 }).valid, true);
 });
 
-test('超限和不支持的类型给出原因', () => {
-  assert.match(checkResourceFile('资料.docx', MAX_RESOURCE_BYTES + 1), /超过 20 MB/);
-  assert.match(checkResourceFile('程序.exe', 1), /不支持这种格式/);
-  assert.match(checkResourceFile('图形.svg', 1), /PDF 或 drawio/);
-  assert.match(checkResourceFile('没有扩展名', 1), /不支持这种格式/);
+test('resource upload rejects oversized and unsupported files with stable codes', () => {
+  assert.equal(
+    validateResourceFile({ name: '资料.docx', size: MAX_RESOURCE_FILE_SIZE + 1 }).code,
+    'resource_file_too_large',
+  );
+  assert.equal(
+    validateResourceFile({ name: '程序.exe', size: 1 }).code,
+    'unsupported_resource_file_type',
+  );
 });
 
-test('一批里有被挡的，其余照常传', () => {
-  const result = splitResourceFiles([{ name: '合法.md', size: 1 }, { name: '非法.exe', size: 1 }]);
+test('batch validation keeps valid files when another file is rejected', () => {
+  const result = validateResourceFiles([
+    { name: '合法.md', size: 1 },
+    { name: '非法.exe', size: 1 },
+  ]);
   assert.deepEqual(result.accepted.map((file) => file.name), ['合法.md']);
   assert.deepEqual(result.rejected.map((item) => item.file.name), ['非法.exe']);
 });
 
+// ---- 本分支：文字、C-01 下发的规则、旧版 Office 提示（develop 在 sourceLocation 测试里） ----
+
+test('拒收文字与 develop 一致，多份用「；」连成一条', () => {
+  const { rejected } = validateResourceFiles([
+    { name: '程序.exe', size: 1 },
+    { name: '资料.docx', size: MAX_RESOURCE_FILE_SIZE + 1 },
+  ]);
+  assert.equal(rejectedResourceMessage(rejected), '不支持文件“程序.exe”的类型；文件“资料.docx”超过 20 MB，无法上传');
+  assert.equal(validateResourceFile({ name: '截图.webp', size: 1 }).valid, true);
+});
+
 test('规则以 C-01 下发的为准，没取到时用兜底', () => {
   const rules = uploadRules({ material_types: ['.MD', '.csv'], limits: { material_upload_bytes: 1024 } });
-  assert.deepEqual(rules.types, ['.md', '.csv']);
   assert.equal(rules.accept, '.md,.csv');
-  assert.equal(checkResourceFile('a.pdf', 1, rules) !== null, true);
-  assert.match(checkResourceFile('a.md', 2048, rules), /超过/);
-  assert.equal(uploadRules(null).maxBytes, MAX_RESOURCE_BYTES);
-  assert.ok(uploadRules(undefined).types.includes('.xlsx'));
+  assert.equal(validateResourceFile({ name: 'a.pdf', size: 1 }, rules).valid, false);
+  assert.equal(validateResourceFile({ name: 'a.md', size: 2048 }, rules).code, 'resource_file_too_large');
+  assert.equal(uploadRules(null).maxBytes, MAX_RESOURCE_FILE_SIZE);
 });
 
 test('旧版 .doc / .xls 传完提示另存', () => {

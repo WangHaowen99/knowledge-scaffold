@@ -18,14 +18,16 @@ import uuid
 from pathlib import Path
 
 from ...evidence import convert
-from ..workspace.layout import RESOURCE_SUBDIRS, _content_revision, is_resource_text, resource_text_path
+from ..workspace.layout import (
+    RESOURCE_DIRECTIVES, RESOURCE_SUBDIRS, _content_revision, is_resource_text, resource_text_path,
+)
 from . import gateway, store
 
 _log = logging.getLogger(__name__)
 
 EVENT = "materials.text.updated"
 NOT_DOCUMENT = (".drawio",)
-IMAGE_TYPES = (".png", ".jpg", ".jpeg")
+IMAGE_TYPES = (".png", ".jpg", ".jpeg", ".webp")
 LEGACY_OFFICE = (".doc", ".xls")
 ACTIVE = ("converting", "waiting")
 WORKERS = 2
@@ -125,6 +127,21 @@ def unsupported_reason(suffix: str) -> str:
 # ---------------------------------------------------------------------------
 # 状态（契约 7.4 MaterialText）
 # ---------------------------------------------------------------------------
+
+
+# 文本版要带原件锚点的格式（ADR-0093）：老的文本版没有锚点时启动迁移补转一次
+ANCHORED_SUFFIXES = (".docx", ".xlsx", ".xlsm")
+
+
+def lacks_anchors(root: Path, rel: str) -> bool:
+    """Word、Excel 的文本版还没有原件锚点（ADR-0093 之前转的）。"""
+    if suffix_of(rel) not in ANCHORED_SUFFIXES:
+        return False
+    try:
+        text = (Path(root) / resource_text_path(rel)).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return convert.ANCHORS_HEAD not in text
 
 
 def text_header(root: Path, rel: str) -> dict | None:
@@ -271,6 +288,10 @@ def _write_text(project_id: str, rel: str, revision: str, markdown: str) -> bool
             return True
         existing.parent.mkdir(parents=True, exist_ok=True)
         tx.write(target, payload)
+        # 标为数据 Schema 的 Excel：上传那刻还没有文本版，Sheet 范围在这里按结构算好、与文本版同一个提交存下（ADR-0096）
+        if (tx.root / RESOURCE_DIRECTIVES).is_file():
+            tx.touch(RESOURCE_DIRECTIVES)
+            manager.record_schema_scope(tx.root, rel)
         # 文本变了也是资料变了：前端「资料已更新」提示按这个时间比
         manager._update_meta_unlocked(tx.root, resource_updated_at=int(time.time()))
         tx.commit(f"plugin: 转换资料 {rel}")
@@ -529,13 +550,17 @@ def migrate(manager) -> dict:
                     except OSError:
                         continue
                 head = text_header(root, rel)
+                stale = False
                 if head and entry.get("state") not in ACTIVE:
                     try:
                         if head["sha"] == _content_revision((root / rel).read_bytes()):
-                            continue
+                            # 文本版是最新的；没带原件锚点的（ADR-0093 之前转的）重转一次补上
+                            if not lacks_anchors(root, rel):
+                                continue
+                            stale = True
                     except OSError:
                         continue
-                if enqueue(project_id, rel, requested="migrate"):
+                if enqueue(project_id, rel, force=stale, requested="migrate"):
                     queued += 1
         except Exception:  # noqa: BLE001 - 一个项目读不了不挡别的
             _log.warning("补转资料文本版时跳过项目 %s", project_id, exc_info=True)

@@ -104,4 +104,16 @@ def test_frontend_fallback_rules_match_backend():
     source = FRONTEND_RULES.read_text(encoding="utf-8")
     listed = re.search(r"RESOURCE_TYPES = \[([^\]]*)\]", source).group(1)
     assert re.findall(r"'(\.[a-z0-9]+)'", listed) == list(uploads.MATERIAL_TYPES)
-    assert "MAX_RESOURCE_BYTES = 20 * 1024 * 1024" in source
+    assert "MAX_RESOURCE_FILE_SIZE = 20 * 1024 * 1024" in source
+
+
+def test_reject_messages_match_develop_and_webp_is_allowed():
+    """拒收文字同 develop（码按契约 1.8）；develop 加进白名单的 .webp 也收。"""
+    with pytest.raises(ApiError) as too_big:
+        uploads.check_size(REAL_LIMIT + 1, "material", "资料.pdf")
+    assert str(too_big.value) == "文件“资料.pdf”超过 20 MB，无法上传"
+    with pytest.raises(ApiError) as unsupported:
+        uploads.check_type("程序.exe", "material")
+    assert str(unsupported.value) == "不支持文件“程序.exe”的类型"
+    uploads.check_type("截图.WEBP", "material")
+    assert ".webp" in uploads.MATERIAL_TYPES
