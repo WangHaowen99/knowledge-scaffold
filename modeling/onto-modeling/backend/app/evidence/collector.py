@@ -136,8 +136,10 @@ def submit(job_spec: dict, artifact: Path | None) -> dict:
             connection.endheaders()
             if artifact is not None:
                 with Path(artifact).open("rb") as handle:
-                    while piece := handle.read(_COPY_BYTES):
+                    piece = handle.read(_COPY_BYTES)
+                    while piece:
                         connection.send(piece)
+                        piece = handle.read(_COPY_BYTES)
         except (BrokenPipeError, ConnectionResetError):
             pass  # 下面读响应：网关多半已经回了错误码
         except OSError as exc:
@@ -228,11 +230,13 @@ def bundle(job_id: str, budget: dict, target: Path, max_bytes: int) -> int:
     written = 0
     try:
         with gateway._OPENER.open(request, timeout=BUNDLE_TIMEOUT_S) as response, Path(target).open("wb") as out:
-            while piece := response.read(_COPY_BYTES):
+            piece = response.read(_COPY_BYTES)
+            while piece:
                 written += len(piece)
                 if written > max_bytes:
                     raise GatewayError(413, "bundle_too_large", "快照包超过上限")
                 out.write(piece)
+                piece = response.read(_COPY_BYTES)
             expected = response.headers.get("Content-Length")
             if expected is not None and expected.isdigit() and int(expected) != written:
                 raise http.client.IncompleteRead(b"", int(expected) - written)

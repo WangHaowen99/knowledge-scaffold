@@ -187,16 +187,17 @@ def _analyze(ctx: Context, repo: code_git.Clone, to_read: list[tuple[code_git.En
             contents = repo.read([entry for entry, _ in batch], timeout=ctx.remaining_s())
             for entry, language in batch:
                 ctx.check_deadline()
+                label = names.get(language, language)
                 text = _decode(contents.get(entry.path, b""))
                 if text is None:
-                    failures.setdefault(names[language], []).append(entry.path)
+                    failures.setdefault(label, []).append(entry.path)
                     continue
                 try:
                     _analyzer(language)(sink, entry.path, text)
                 except (ConnError, MemoryError):
                     raise
                 except Exception as exc:  # noqa: BLE001 - 目标代码不可信，解析器抛什么都只算这个文件失败
-                    failures.setdefault(names[language], []).append(f"{entry.path}（{type(exc).__name__}）")
+                    failures.setdefault(label, []).append(f"{entry.path}（{type(exc).__name__}）")
                 done_files += 1
                 done_bytes += entry.size
             ctx.progress("analyze", done_files, len(to_read), "file")

@@ -40,6 +40,8 @@ MEMORY_ENV = "ONTO_CONNECTOR_CONN_MEMORY_MB"
 FILE_ENV = "ONTO_CONNECTOR_CONN_FILE_MB"
 # 提供方自己的非机密配置（如 ONTO_CONNECTOR_DB_PROFILE_ROWS）原样传给子进程
 PASS_ENV_PREFIXES = ("ONTO_CONNECTOR_DB_", "ONTO_CONNECTOR_CODE_")
+# 任务说明里原样交给子进程的字段
+_HEAD_KEYS = ("source", "scope", "egress", "rate_limit", "masking", "selector", "limit")
 TEST_TIMEOUT_S = 30
 KILL_GRACE_S = 10
 MAX_EVENT_BYTES = bundle.MAX_LINE_BYTES + 4096
@@ -83,7 +85,7 @@ class _Run:
     # ---- 起进程 ----
 
     def start(self, head: dict, env: dict) -> None:
-        self.process = subprocess.Popen(
+        self.process = subprocess.Popen(  # NOSONAR(S4721) 固定参数列表起网关自己的 worker 模块，不经 shell
             [sys.executable, "-B", "-E", "-s", "-u", "-m", "app.connector_gateway.conn.worker"], cwd=APP_ROOT,
             env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
             close_fds=True)
@@ -286,6 +288,10 @@ class _Run:
                 "error_message": self.error_message}
 
 
+def _valid_port(port) -> bool:
+    return isinstance(port, int) and not isinstance(port, bool) and 0 < port < 65536
+
+
 class SubprocessProvider:
     input = "connection"
 
@@ -342,22 +348,22 @@ class SubprocessProvider:
                 port = parts.port or 443
             except ValueError:
                 port = -1
-            if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
+            with_user = parts.username or parts.password
+            if parts.scheme != "https" or not parts.hostname or with_user:
                 raise GatewayError(400, "bad_request", "repo_url 要是不带用户信息的 https 地址")
             return [(host_key(parts.hostname), port)]
         host = host_key(connection.get("host"))
         port = connection.get("port", self.info.get("default_port"))
         if isinstance(port, str) and port.isdigit():
             port = int(port)
-        if not host or not isinstance(port, int) or isinstance(port, bool) or not 0 < port < 65536:
+        if not host or not _valid_port(port):
             raise GatewayError(400, "bad_request", "连接参数要有 host、port")
         return [(host, port)]
 
     # ---- 子进程 ----
 
     def _head(self, spec: dict, budget: dict, operation: str) -> dict:
-        head = {key: spec.get(key) for key in ("source", "scope", "egress", "rate_limit", "masking", "selector",
-                                              "limit")}
+        head = {key: spec.get(key) for key in _HEAD_KEYS}
         head.update({
             "provider": self.id, "operation": operation, "budget": budget, "module": catalog.module_of(self.id),
             "scheme": self.scheme, "executables": list(self.info.get("executables") or []),

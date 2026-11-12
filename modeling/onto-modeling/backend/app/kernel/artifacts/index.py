@@ -146,6 +146,13 @@ def inside_no_links(root: Path, rel: str) -> Path | None:
     return inside(root, "/".join(parts))
 
 
+def _matches(atype: ArtifactType, root: Path, path: Path, rel: str, prefix: str) -> bool:
+    """按路径模式找到的文件里，算这个类型产物的那些。"""
+    if not path.is_file() or path.name in _SKIP_NAMES or not rel.startswith(prefix):
+        return False
+    return atype.key_from_path(rel) is not None and inside(root, rel) is not None
+
+
 def _files(atype: ArtifactType, root: Path) -> list[str]:
     base = Path(root) / atype.glob_root() if atype.glob_root() else Path(root)
     if not base.is_dir():
@@ -155,8 +162,7 @@ def _files(atype: ArtifactType, root: Path) -> list[str]:
     pattern = atype.path[len(atype.glob_root()) + 1:] if atype.glob_root() else atype.path
     for path in sorted(base.glob(pattern)):
         rel = path.relative_to(root).as_posix()
-        if path.is_file() and path.name not in _SKIP_NAMES and rel.startswith(prefix) \
-                and atype.key_from_path(rel) is not None and inside(root, rel) is not None:
+        if _matches(atype, root, path, rel, prefix):
             out.append(rel)
     return out
 
@@ -272,9 +278,14 @@ def _refresh_rows(conn: sqlite3.Connection, atype: ArtifactType, root: Path) -> 
             conn.execute("DELETE FROM fts WHERE type=? AND key=?", (atype.type, row["key"]))
             conn.execute("INSERT INTO fts (type, key, text) VALUES (?, ?, ?)", (atype.type, row["key"], _row_text(row)))
         conn.execute("INSERT OR REPLACE INTO files (type, rel, sig) VALUES (?, ?, ?)", (atype.type, rel, sig))
-    rows = [json.loads(row["data"]) for row in conn.execute(
-        "SELECT data FROM rows WHERE type=? ORDER BY rel, key", (atype.type,))]
-    return rows
+    cursor = conn.execute("SELECT data FROM rows WHERE type=? ORDER BY rel, key", (atype.type,))
+    return [json.loads(row["data"]) for row in cursor]
+
+
+def _parsable(atype: ArtifactType, root: Path, rel: str) -> bool:
+    if atype.key_from_path(rel) is None or Path(rel).name in _SKIP_NAMES:
+        return False
+    return inside(root, rel) is not None and (root / rel).is_file()
 
 
 def rows_of(atype: ArtifactType, root: Path, rels) -> list[dict]:
@@ -282,8 +293,7 @@ def rows_of(atype: ArtifactType, root: Path, rels) -> list[dict]:
 
     一轮结束出产物卡用：助手在变更集副本里改的文件还没进主线，不给副本另建一份索引。"""
     root = Path(root)
-    wanted = sorted({rel for rel in rels if atype.key_from_path(rel) is not None and Path(rel).name not in _SKIP_NAMES
-                     and inside(root, rel) is not None and (root / rel).is_file()})
+    wanted = sorted({rel for rel in rels if _parsable(atype, root, rel)})
     rows = _merge_index(atype, root, [row for rel in wanted for row in _parse_rows(atype, root, rel)])
     for row in rows:
         for name, value in atype.defaults.items():
@@ -377,16 +387,16 @@ def search(root: Path, art_type: str, q: str) -> set[str]:
             if fts_available():
                 terms = " ".join('"' + part.replace('"', '""') + '"*' for part in needle.split())
                 try:
-                    hits = {row["key"] for row in conn.execute(
-                        "SELECT key FROM fts WHERE type=? AND fts MATCH ?", (art_type, terms))}
+                    found = conn.execute("SELECT key FROM fts WHERE type=? AND fts MATCH ?", (art_type, terms))
+                    hits = {row["key"] for row in found}
                 except sqlite3.OperationalError:
                     hits = set()
                 # 中文没有分词：FTS 只按整段匹配，补一次子串
-                hits |= {row["key"] for row in conn.execute(
-                    "SELECT key FROM fts WHERE type=? AND text LIKE ?", (art_type, f"%{needle}%"))}
+                found = conn.execute("SELECT key FROM fts WHERE type=? AND text LIKE ?", (art_type, f"%{needle}%"))
+                hits |= {row["key"] for row in found}
                 return hits
-            return {row["key"] for row in conn.execute(
-                "SELECT key FROM fts WHERE type=? AND text LIKE ?", (art_type, f"%{needle}%"))}
+            found = conn.execute("SELECT key FROM fts WHERE type=? AND text LIKE ?", (art_type, f"%{needle}%"))
+            return {row["key"] for row in found}
         finally:
             conn.close()
 

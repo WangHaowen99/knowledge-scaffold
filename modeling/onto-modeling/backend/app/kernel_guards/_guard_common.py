@@ -31,6 +31,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+import logging
 import os
 import re
 import shlex
@@ -77,13 +78,17 @@ _ONTOLOGY_MENTION_RE = re.compile(r"(?<![\w.-])ontology(?:/[^\s'\"`;|&()<>,\]}]*
 
 
 def deny(reason: str) -> None:
-    print(json.dumps({
+    decision = json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": reason,
         }
-    }, ensure_ascii=False))
+    }, ensure_ascii=False)
+    # 钩子的结论写到标准输出（引擎读它）：单独的输出通道，不受应用日志配置影响
+    output = logging.Logger("kernel-guard.decision", logging.INFO)
+    output.addHandler(logging.StreamHandler(sys.stdout))
+    output.info(decision)
 
 
 @dataclass
@@ -121,8 +126,8 @@ def _project_root(data: dict) -> Path:
         return Path(env).resolve()
     start = data.get("cwd") or os.getcwd()
     try:
-        out = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=start, capture_output=True,
-                             text=True, timeout=10)
+        out = subprocess.run(  # NOSONAR(S4721) 固定的 git 参数列表，不经 shell
+            ["git", "rev-parse", "--show-toplevel"], cwd=start, capture_output=True, text=True, timeout=10)
         if out.returncode == 0 and out.stdout.strip():
             return Path(out.stdout.strip()).resolve()
     except (OSError, subprocess.SubprocessError):
@@ -213,6 +218,54 @@ def _find_writes(args: list[str]) -> bool:
     return False
 
 
+def _not_a_path(raw: str) -> bool:
+    """重定向目标里不是文件的：空、设备文件、`-`、`&1` 这类描述符。"""
+    if not raw or raw == "-":
+        return True
+    return raw.startswith(("/dev/", "&"))
+
+
+def _redirect_operator(word: str | None) -> bool:
+    return word in REDIRECTS or word in ("<", ">&", "<&")
+
+
+def _names_file(word: str | None) -> bool:
+    """`>&` 后面跟的是文件（不是描述符编号、也不是关闭描述符的 `-`）。"""
+    return word is not None and not word.isdigit() and word != "-"
+
+
+def _tar_extracts(rest: list[str]) -> bool:
+    """tar 这次是解包：第一个参数是含 x 的选项串，或者带 -x、--extract。"""
+    if rest and "x" in rest[0].lstrip("-"):
+        return True
+    return "-x" in rest or "--extract" in rest
+
+
+def _git_internal(sub: str, args: list[str], lowered: str) -> bool:
+    """改 git 内部状态的子命令、选项或配置。"""
+    if sub in GIT_INTERNAL_SUBCOMMANDS:
+        return True
+    if sub == "update-index" and any(flag in args for flag in GIT_INTERNAL_FLAGS):
+        return True
+    if sub == "config" and any(key in lowered for key in GIT_INTERNAL_CONFIG):
+        return True
+    return any(key in lowered for key in ("core.sparsecheckout", "core.hookspath"))
+
+
+def _git_release(sub: str, args: list[str]) -> bool:
+    """打发布标签、推发布分支或推全部标签。"""
+    if sub in ("tag", "push", "update-ref") and any("release/" in arg for arg in args):
+        return True
+    return sub == "push" and "--tags" in args
+
+
+def _confined_entry(parts: list[str]) -> bool:
+    """范围限定管的条目文件：ontology/<受限目录>/…，不是 index.md，也不是隐藏文件。"""
+    if len(parts) < 3 or parts[1] not in CONFINED_ONTOLOGY_DIRS:
+        return False
+    return parts[-1].lower() != "index.md" and not parts[-1].startswith(".")
+
+
 class _Parser:
     def __init__(self, call: Call):
         self.call = call
@@ -220,7 +273,7 @@ class _Parser:
 
     def add(self, cwd: Path, raw: str, destructive: bool = False) -> None:
         raw = raw.strip()
-        if not raw or raw.startswith("/dev/") or raw in ("-", "&1", "&2") or raw.startswith("&"):
+        if _not_a_path(raw):
             return
         value = _substitute(raw, self.variables)
         if _has_variable(value):
@@ -300,16 +353,15 @@ class _Parser:
         index = 0
         while index < len(words):
             word = words[index]
+            following = words[index + 1] if index + 1 < len(words) else None
             # `2>/dev/null`、`2>&1` 切出来是 2、>、…：紧挨重定向符的数字是文件描述符，不是路径
-            if word.isdigit() and index + 1 < len(words) and (words[index + 1] in REDIRECTS
-                                                              or words[index + 1] in ("<", ">&", "<&")):
+            if word.isdigit() and _redirect_operator(following):
                 index += 1
                 continue
             if word in (">&", "<&"):
                 # `>&2`、`2>&1`、`>&-` 是复制或关闭描述符；`>& 文件` 才写文件
-                if word == ">&" and index + 1 < len(words) and not words[index + 1].isdigit() \
-                        and words[index + 1] != "-":
-                    self.add(cwd, words[index + 1])
+                if word == ">&" and _names_file(following):
+                    self.add(cwd, following)
                 index += 2
                 continue
             if word in REDIRECTS or word == "<":
@@ -396,7 +448,7 @@ class _Parser:
                     self.add(cwd, arg[3:])
         elif name in ("unzip",) and "-d" in rest and rest.index("-d") + 1 < len(rest):
             self.add(cwd, rest[rest.index("-d") + 1], destructive=True)
-        elif name == "tar" and (rest and "x" in rest[0].lstrip("-") or "-x" in rest or "--extract" in rest):
+        elif name == "tar" and _tar_extracts(rest):
             for flag in ("-C", "--directory"):
                 if flag in rest and rest.index(flag) + 1 < len(rest):
                     self.add(cwd, rest[rest.index(flag) + 1], destructive=True)
@@ -436,13 +488,9 @@ class _Parser:
         sub = rest[index]
         args = rest[index + 1:]
         lowered = " ".join([*options, *args]).lower()
-        if (sub in GIT_INTERNAL_SUBCOMMANDS
-                or (sub == "update-index" and any(flag in args for flag in GIT_INTERNAL_FLAGS))
-                or (sub == "config" and any(key in lowered for key in GIT_INTERNAL_CONFIG))
-                or any(key in lowered for key in ("core.sparsecheckout", "core.hookspath"))):
+        if _git_internal(sub, args, lowered):
             self.call.git_internal.append(f"git {sub}")
-        if (sub in ("tag", "push", "update-ref") and any("release/" in arg for arg in args)) \
-                or (sub == "push" and "--tags" in args):
+        if _git_release(sub, args):
             self.call.git_release.append(" ".join(["git", sub, *args])[:120])
         if sub not in GIT_PATH_SUBCOMMANDS:
             return cwd
@@ -749,7 +797,7 @@ def _active_scope(call: Call) -> tuple[list[str], list[str], set[str]] | None:
         if not _command_alive(call.root, str(name)):
             continue  # 命令被打断、引擎换了实例：它的范围不再算数（审查第 9 条）
         allow = spec.get("allow") if isinstance(spec, dict) else None
-        if not spec or not isinstance(spec, dict) or not spec.get("node") or not isinstance(allow, list):
+        if not isinstance(spec, dict) or not spec.get("node") or not isinstance(allow, list):
             return None
         names.append(str(name))
         patterns += [str(item).replace("**", "*") for item in allow if str(item) not in patterns]
@@ -862,7 +910,8 @@ def _confine_spec(call: Call) -> tuple[dict, list[str]] | None:
 
 
 def _git_out(root: Path, *args: str) -> str:
-    out = subprocess.run(["git", "-c", "safe.directory=*", *args], cwd=root, capture_output=True, timeout=10)
+    out = subprocess.run(  # NOSONAR(S4721) 固定的 git 参数列表，不经 shell
+        ["git", "-c", "safe.directory=*", *args], cwd=root, capture_output=True, timeout=10)
     if out.returncode != 0:
         raise LookupError(args[0])
     return out.stdout.decode("utf-8", "replace")
@@ -949,8 +998,7 @@ def _entries_outside(common: Path, scope) -> list[str]:
     out = []
     for rel in listed.split("\0"):
         parts = rel.split("/")
-        if (len(parts) >= 3 and parts[1] in CONFINED_ONTOLOGY_DIRS and parts[-1].lower() != "index.md"
-                and not parts[-1].startswith(".") and rel not in allowed):
+        if _confined_entry(parts) and rel not in allowed:
             out.append(rel)
     return out
 

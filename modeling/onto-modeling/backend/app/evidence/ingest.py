@@ -164,9 +164,11 @@ def _unpack(bundle: Path, work: Path, git_limit: int) -> tuple[dict[str, bytes],
                 if blob:
                     digest, target = hashlib.sha256(), work / f"blob-{len(blobs)}"
                     with target.open("wb") as out:
-                        while piece := handle.read(_COPY_BYTES):
+                        piece = handle.read(_COPY_BYTES)
+                        while piece:
                             digest.update(piece)
                             out.write(piece)
+                            piece = handle.read(_COPY_BYTES)
                     if digest.hexdigest() != blob.group(1):
                         raise _invalid(f"原始结果 {blob.group(1)[:12]} 的哈希不对")
                     blobs[name] = target
@@ -216,6 +218,16 @@ def _manifest(texts: dict[str, bytes], blobs: dict[str, Path], source_id: str, j
     return manifest
 
 
+def _well_typed(record: dict, kind: str, prefix: str) -> bool:
+    """记录的类型、锚点前缀和各字段的类型都对。"""
+    anchor = record["id"]
+    if record["type"] != kind or not isinstance(anchor, str) or not anchor.startswith(prefix):
+        return False
+    if not isinstance(record["name"], str) or not isinstance(record["attrs"], dict):
+        return False
+    return isinstance(record["evidence"], dict) and isinstance(record["hash"], str)
+
+
 def _records(texts: dict[str, bytes], prefix: str) -> dict[str, list[dict]]:
     seen: set[str] = set()
     out: dict[str, list[dict]] = {}
@@ -241,9 +253,7 @@ def _records(texts: dict[str, bytes], prefix: str) -> dict[str, list[dict]]:
             if not isinstance(record, dict) or any(key not in record for key in RECORD_KEYS):
                 raise _invalid(f"{name} 第 {number} 行字段不齐")
             anchor = record["id"]
-            if record["type"] != kind or not isinstance(anchor, str) or not anchor.startswith(prefix) \
-                    or not isinstance(record["name"], str) or not isinstance(record["attrs"], dict) \
-                    or not isinstance(record["evidence"], dict) or not isinstance(record["hash"], str):
+            if not _well_typed(record, kind, prefix):
                 raise _invalid(f"{name} 第 {number} 行字段不对")
             if anchor in seen:
                 raise _invalid(f"锚点重复：{anchor[:120]}")

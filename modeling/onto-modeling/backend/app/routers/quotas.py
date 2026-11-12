@@ -91,12 +91,11 @@ async def put_quotas(request: Request):
     quotas = quota.service()
     before = quotas.limits()
     limits = quotas.set_limits(changes["per_user"], changes["per_project"])
-    changed = {
-        f"{group}.{key}": value
-        for group, _kind in _GROUPS
-        for key, value in limits[group].items()
-        if before[group].get(key) != value
-    }
+    changed = {}
+    for group, _kind in _GROUPS:
+        for key, value in limits[group].items():
+            if before[group].get(key) != value:
+                changed[f"{group}.{key}"] = value
     _audit(request, "quota.update", **changed)
     return _view(limits)
 

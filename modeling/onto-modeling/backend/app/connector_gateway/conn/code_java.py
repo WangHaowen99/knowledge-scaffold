@@ -130,6 +130,10 @@ def _paths(value) -> list:
     return value if isinstance(value, list) else [value]
 
 
+def _instance_field(member) -> bool:
+    return isinstance(member, javalang.tree.FieldDeclaration) and "static" not in member.modifiers
+
+
 class JavaFile:
     def __init__(self, sink: Sink, path: str, text: str, tree):
         self.sink = sink
@@ -185,8 +189,7 @@ class JavaFile:
             role = "service"
         elif "Repository" in names or (is_interface and any(base.name in REPOSITORY_BASES for base in bases)):
             role = "repository"
-        fields = [member for member in node.body if isinstance(member, javalang.tree.FieldDeclaration)
-                  and "static" not in member.modifiers]
+        fields = [member for member in node.body if _instance_field(member)]
         methods = [member for member in node.body if isinstance(member, javalang.tree.MethodDeclaration)]
         validated = any(set(_annotations(field)) & VALIDATIONS for field in fields)
         if role is None and validated:

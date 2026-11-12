@@ -278,12 +278,14 @@ async def _receive(file: UploadFile, limit: int) -> Path:
     """上传的 zip 落到临时文件，超过上限直接拒。"""
     with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
         size = 0
-        while chunk := await file.read(1 << 20):
+        chunk = await file.read(1 << 20)
+        while chunk:
             size += len(chunk)
             if size > limit:
                 Path(tmp.name).unlink(missing_ok=True)
                 raise ApiError("payload_too_large", f"插件包超过 {limit // (1 << 20)} MiB", 413, {"limit_bytes": limit})
             tmp.write(chunk)
+            chunk = await file.read(1 << 20)
         return Path(tmp.name)
 
 

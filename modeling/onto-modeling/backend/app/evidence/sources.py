@@ -107,14 +107,17 @@ def _strings(value, field: str) -> list[str]:
     return [item.strip() for item in value][:500]
 
 
+def _port_number(port) -> bool:
+    return isinstance(port, int) and not isinstance(port, bool) and 0 < port < 65536
+
+
 def _egress(value) -> list[dict]:
     if not isinstance(value, list):
         raise _invalid("egress", "list")
     out = []
     for item in value:
         port = item.get("port") if isinstance(item, dict) else None
-        if not isinstance(item, dict) or not str(item.get("host") or "").strip() or isinstance(port, bool) \
-                or not isinstance(port, int) or not 0 < port < 65536:
+        if not isinstance(item, dict) or not str(item.get("host") or "").strip() or not _port_number(port):
             raise _invalid("egress", "host_port")
         out.append({"host": str(item["host"]).strip(), "port": port})
     return out

@@ -167,7 +167,10 @@ class Postgres(Dialect):
         kinds = {"p": "pk", "u": "uk", "f": "fk", "c": "check"}
         out = []
         for schema, table, name, kind, definition, columns, ref_schema, ref_table, ref_columns, on_update, on_delete in rows:
-            kind = kinds[text(kind)]
+            code = text(kind)
+            if code not in kinds:
+                continue  # 查询只取这四类约束
+            kind = kinds[code]
             definition = text(definition)
             expression = None
             if kind == "check":

@@ -205,6 +205,11 @@ def conversation_state(project_id: str, cid: str, request: Request):
     }
 
 
+def _has_envelope(event, project_id: str, conversation_id: str) -> bool:
+    item = v1_event(event, project_id, conversation_id)
+    return item is not None and "id" in item
+
+
 @router.get("/conversations/{cid}/messages")
 def conversation_messages(project_id: str, cid: str, request: Request, before_seq: int | None = None, limit: int = 0):
     """S-06：持久事件按 seq 升序分页（取 before_seq 之前的），不含瞬时事件；卡片与问题给最新状态。"""
@@ -225,10 +230,7 @@ def conversation_messages(project_id: str, cid: str, request: Request, before_se
     envelopes.reverse()
     return {
         "items": timeline.collapse(envelopes),
-        "has_more": any(
-            (item := v1_event(event, project_id, conversation_id)) is not None and "id" in item
-            for event in history[:start]
-        ),
+        "has_more": any(_has_envelope(event, project_id, conversation_id) for event in history[:start]),
         "first_seq": int(envelopes[0]["id"]) if envelopes else None,
         "last_seq": len(history) if history else None,
     }
@@ -557,6 +559,13 @@ async def conversation_frames(project_id: str, conversation_id: str, after: int,
 # ---- S-14 重试 ----
 
 
+def _retryable(session, conversation_id: str) -> bool:
+    """这个对话上一轮出错了，而且记得那一轮的提示词。"""
+    if session is None or session.conversation_id != conversation_id:
+        return False
+    return session.state == "error" and bool(session.last_prompt)
+
+
 @router.post("/conversations/{cid}/retry")
 async def retry(project_id: str, cid: str, request: Request):
     """重新发起最近一轮出错的请求（出错卡的「重试」）。"""
@@ -566,7 +575,7 @@ async def retry(project_id: str, cid: str, request: Request):
     if body.get("from_suggestion"):
         await asyncio.to_thread(next_step.guard, project_id, conversation_id, {"type": "retry"}, root)
     session = manager.get(project_id)
-    if session is None or session.conversation_id != conversation_id or session.state != "error" or not session.last_prompt:
+    if not _retryable(session, conversation_id):
         raise ApiError("nothing_to_retry", "没有可重试的出错轮次", 409)
     session.retries += 1
     prompt = session.last_prompt

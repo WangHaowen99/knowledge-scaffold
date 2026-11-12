@@ -313,7 +313,8 @@ def _update_node(el: ET.Element, node: dict, old: dict, by_id: dict[str, _Cell],
     geo = cell.find("mxGeometry")
     if geo is None:
         geo = ET.SubElement(cell, "mxGeometry", {"as": "geometry"})
-    if not retyped and (node["x"], node["y"]) == (old["x"], old["y"]) and geo.get("width") and geo.get("height"):
+    unmoved = not retyped and (node["x"], node["y"]) == (old["x"], old["y"])
+    if unmoved and geo.get("width") and geo.get("height"):
         return obj
     w, h = NODE_SIZES[ntype]
     if not retyped and _float(geo.get("width")) and _float(geo.get("height")):
@@ -683,15 +684,13 @@ def _build(cells: list[_Cell], *, key: str, page_name: str, storage: str) -> _Do
         name = page or key or page_name
     pools = {lane.parent for lane in lanes}
     lane_roles = [_plain(lane.label, lane.style) for lane in lanes if lane.id not in pools]
-    process = {
-        "name": name,
-        "description": meta.get("process_description", ""),
-        "roles": _dedupe(_list_attr(meta.get("process_roles")) + [r for r in lane_roles if r]),
-        **{k: _list_attr(meta.get(f"process_{k}")) for k in PROCESS_LISTS if k != "roles"},
-    }
+    roles = _dedupe(_list_attr(meta.get("process_roles")) + [r for r in lane_roles if r])
+    process = {"name": name, "description": meta.get("process_description", "")}
+    for k in PROCESS_LISTS:
+        process[k] = roles if k == "roles" else _list_attr(meta.get(f"process_{k}"))
     model = {
         "storage": storage,
-        "process": {k: process[k] for k in ("name", "description", *PROCESS_LISTS)},
+        "process": process,
         "nodes": nodes,
         "edges": edges,
         "drawio_xml": None,

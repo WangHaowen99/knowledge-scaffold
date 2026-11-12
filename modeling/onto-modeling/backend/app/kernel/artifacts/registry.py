@@ -145,6 +145,13 @@ def _safe_yaml(text: str):
         loader.dispose()
 
 
+def _single_star_path(path: str) -> bool:
+    """工作区相对路径，里面恰好一个 *（不是 **），没有 `..`。"""
+    if not path or path.startswith("/") or ".." in path:
+        return False
+    return path.count("*") == 1 and "**" not in path
+
+
 def _load_yaml(path: Path) -> dict:
     try:
         stat = path.stat()
@@ -366,7 +373,7 @@ def parse_registration(data: dict, *, pack: str, pack_version: str, official: bo
     if fmt not in FORMATS:
         raise RegistrationError(f"{art_type} 的格式 {fmt} 不认识（只能是 {'、'.join(FORMATS)}）")
     path = str(data.get("path") or "").replace("{key}", "*")
-    if not path or path.startswith("/") or ".." in path or path.count("*") != 1 or "**" in path:
+    if not _single_star_path(path):
         raise RegistrationError(f"{art_type} 的 path 要是工作区相对路径，且只有一个 * 或 {{key}}")
     allowed = path.startswith(f"ext/{pack}/") or (official and any(path.startswith(f"{base}/") for base in LEGACY_DIRS))
     if not allowed:
