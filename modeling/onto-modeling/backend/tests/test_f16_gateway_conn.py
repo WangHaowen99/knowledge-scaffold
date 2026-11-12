@@ -210,8 +210,8 @@ def test_secret_store_rotation_merge_and_retention(tmp_path):
     # 轮换一个字段：其余字段沿用上一版
     rotated = "pw-" + pysecrets.token_urlsafe(18)
     assert store.put(SOURCE, {"password": rotated})["cred_ref"] == f"cred://{SOURCE}/2"
-    assert store.open(f"cred://{SOURCE}/2") == {"password": rotated, "extra": "x1"}
-    assert store.open(f"cred://{SOURCE}/1")["password"] == PASSWORD
+    assert store.decrypt(f"cred://{SOURCE}/2") == {"password": rotated, "extra": "x1"}
+    assert store.decrypt(f"cred://{SOURCE}/1")["password"] == PASSWORD
     # 第 3 版写入后只留最近 2 版；正在用的旧版本先不删，用完再删
     store.acquire(f"cred://{SOURCE}/2")
     store.put(SOURCE, {"password": "v3-" + pysecrets.token_hex(8)})
@@ -239,12 +239,12 @@ def test_secret_store_bound_to_source_version_and_key(tmp_path):
     other.mkdir(mode=0o700)
     (other / "1.bin").write_bytes((tmp_path / "secrets" / SOURCE / "1.bin").read_bytes())
     with pytest.raises(Exception) as caught:
-        store.open("cred://f16-other/1")
+        store.decrypt("cred://f16-other/1")
     assert caught.value.code == "cred_undecryptable"
     # 换了主密钥也解不开
     key_file.write_bytes(_key())
     with pytest.raises(Exception) as caught:
-        SecretStore(tmp_path / "secrets", key_file).open(f"cred://{SOURCE}/1")
+        SecretStore(tmp_path / "secrets", key_file).decrypt(f"cred://{SOURCE}/1")
     assert caught.value.code == "cred_undecryptable"
     # 主密钥不是 32 字节：不可用
     key_file.write_bytes(base64.b64encode(b"short"))
