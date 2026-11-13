@@ -14,7 +14,8 @@ services:
     env_file: ${EVAL_ENV_FILE:?Set EVAL_ENV_FILE to the protected runtime configuration}
     environment:
       EVAL_DATA_DIR: /var/lib/evaluation
-      EVAL_PORT: '8090'
+      # 容器监听端口固定；运行配置中的 EVAL_PORT 仅覆盖宿主机发布端口。
+      EVAL_PORT: '5180'
       # 整栈默认地址。deploy.sh 以 --env-file 传入运行配置，配置中的同名值优先；凭据只在运行配置中
       EVAL_AUTH_URL: ${EVAL_AUTH_URL:-http://auth-server:5056}
       EVAL_HUB_URL: ${EVAL_HUB_URL:-http://knowledge-hub:8200}
@@ -34,11 +35,11 @@ services:
     volumes:
       - evaluation-data:/var/lib/evaluation
     ports:
-      # 供用户浏览器直接打开评测页面（建模默认跳转同主机 8090），默认开放所有网卡；
+      # 供用户浏览器直接打开评测页面（建模默认跳转同主机 5180），默认开放所有网卡；
       # 只允许本机访问时设 EVAL_BIND_ADDRESS=127.0.0.1
-      - '${EVAL_BIND_ADDRESS:-0.0.0.0}:${EVAL_PORT:-8090}:8090'
+      - '${EVAL_BIND_ADDRESS:-0.0.0.0}:${EVAL_PORT:-5180}:5180'
     healthcheck:
-      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/evaluation/api/health',timeout=3)"]
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5180/evaluation/api/health',timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3

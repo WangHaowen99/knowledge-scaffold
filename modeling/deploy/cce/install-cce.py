@@ -298,8 +298,8 @@ def load_inputs(args, root: Path):
     evaluation_routes = [item for item in routes if item["endpointId"] == "evaluation"]
     if len(evaluation_routes) != 1 or evaluation_routes[0]["path"] != "/evaluation/":
         raise ConfigError("Evaluation Ingress route is required")
-    if access["mode"] == "port" and evaluation_routes[0]["listenerPort"] != 8090:
-        raise ConfigError("Evaluation listener must use port 8090")
+    if access["mode"] == "port" and evaluation_routes[0]["listenerPort"] != 5180:
+        raise ConfigError("Evaluation listener must use port 5180")
     if any(merged["modeling"]["workloads"][name]["replicas"] != 1
             for name in ("core", "agent", "onto")):
         raise ConfigError("stateful workloads must run at one replica")
@@ -402,7 +402,7 @@ def verify(args, root: Path):
         f"deployment/{args.release}-core", "-c", "core", "--", "node", "-e",
         "const http=require('http');const q=http.request({socketPath:'/run/jiuwenbox/jiuwenbox.sock',path:'/health'},r=>process.exit(r.statusCode===200?0:1));q.on('error',()=>process.exit(1));q.end()")
     for component, port, path in (("hub", 8200, "/api/health"),
-                                  ("evaluation", 8090, "/evaluation/api/health")):
+                                  ("evaluation", 5180, "/evaluation/api/health")):
         run("kubectl", "--context", args.context, "-n", args.namespace, "exec",
             f"deployment/{args.release}-{component}", "-c", component, "--",
             "python", "-c",

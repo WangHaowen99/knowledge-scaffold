@@ -93,7 +93,7 @@ def test_onto_modeling_compose_reaches_the_evaluation_service(compose_path: Path
     content = compose_path.read_text(encoding="utf-8")
 
     # 评测服务按固定容器名访问；通知凭据可缺省，不能让单独部署的 onto-modeling 因此起不来
-    assert "ONTO_WEB_EVAL_URL=${ONTO_WEB_EVAL_URL:-http://knowledge-evaluation:8090}" in content
+    assert "ONTO_WEB_EVAL_URL=${ONTO_WEB_EVAL_URL:-http://knowledge-evaluation:5180}" in content
     assert "ONTO_EVALUATION_SERVICE_TOKEN=${ONTO_EVALUATION_SERVICE_TOKEN:-}" in content
 
 

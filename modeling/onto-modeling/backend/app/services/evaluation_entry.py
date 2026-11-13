@@ -13,7 +13,7 @@ EVALUATION_PATH = "/evaluation/"
 
 
 def normalize(value: str) -> str:
-    """空串由浏览器按建模页面同主机的 8090 端口推导；其余须为不含凭据的 http(s) 地址。"""
+    """空串由浏览器按建模页面同主机的 5180 端口推导；其余须为不含凭据的 http(s) 地址。"""
     value = (value or "").strip()
     if not value:
         return ""

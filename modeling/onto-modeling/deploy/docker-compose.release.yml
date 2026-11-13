@@ -44,7 +44,7 @@ services:
       - ONTO_HUB_SERVICE_TOKEN=${ONTO_HUB_SERVICE_TOKEN:?Set ONTO_HUB_SERVICE_TOKEN}
       # 独立评测服务：后端按容器名访问（须与评测同在 consumer 网络，单独部署时不可达，评测结果入口置灰）；
       # 入站凭据校验评测完成通知，deploy.sh 缺失时生成，留空则拒绝通知
-      - ONTO_WEB_EVAL_URL=${ONTO_WEB_EVAL_URL:-http://knowledge-evaluation:8090}
+      - ONTO_WEB_EVAL_URL=${ONTO_WEB_EVAL_URL:-http://knowledge-evaluation:5180}
       - ONTO_EVALUATION_SERVICE_TOKEN=${ONTO_EVALUATION_SERVICE_TOKEN:-}
       # 代码生成脚本的运行验证经网关进 jiuwenbox 沙箱；本容器不挂 jiuwenbox socket
       - ONTO_WEB_SANDBOX_GATEWAY_URL=http://sandbox-gateway:8110

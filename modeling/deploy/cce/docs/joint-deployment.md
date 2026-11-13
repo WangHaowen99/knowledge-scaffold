@@ -262,7 +262,7 @@ global:
       - {id: core, protocol: HTTP, listenerPort: 8100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-core}
       - {id: onto, protocol: HTTP, listenerPort: 5100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: onto-modeling}
       - {id: mcp, protocol: HTTP, listenerPort: 5188, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-mcp}
-      - {id: evaluation, protocol: HTTP, listenerPort: 8090, tlsSecretName: "", host: "", path: /evaluation/, pathType: Prefix, endpointId: evaluation}
+      - {id: evaluation, protocol: HTTP, listenerPort: 5180, tlsSecretName: "", host: "", path: /evaluation/, pathType: Prefix, endpointId: evaluation}
 ```
 
 ## 5. 编辑两份镜像清单

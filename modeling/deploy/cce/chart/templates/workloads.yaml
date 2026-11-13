@@ -217,7 +217,7 @@ spec:
               valueFrom:
                 secretKeyRef: {name: {{ default (printf "%s-notify" .Release.Name) .Values.evaluation.secrets.notificationToken.name | quote }}, key: {{ default "service-token" .Values.evaluation.secrets.notificationToken.key | quote }}}
             - {name: ONTO_WEB_EVAL_PUBLIC_URL, value: {{ .Values.modeling.config.evalPublicUrl | quote }}}
-            - {name: ONTO_WEB_EVAL_URL, value: "http://{{ include "modeling.name" . }}-evaluation:8090"}
+            - {name: ONTO_WEB_EVAL_URL, value: "http://{{ include "modeling.name" . }}-evaluation:5180"}
             - {name: ONTO_WEB_SANDBOX_GATEWAY_URL, value: "http://{{ include "modeling.name" . }}-sandbox-gateway:8110"}
             - name: ONTO_WEB_MODELING_ASSOCIATION_URL
               value: "http://{{ include "modeling.name" . }}-core:5100"
@@ -449,7 +449,7 @@ spec:
         - name: evaluation
           image: {{ .Values.global.resolvedImages.evaluation | quote }}
           imagePullPolicy: IfNotPresent
-          ports: [{name: http, containerPort: 8090}]
+          ports: [{name: http, containerPort: 5180}]
           env:
             - {name: EVAL_DATA_DIR, value: /var/lib/evaluation}
             - {name: EVAL_AUTH_URL, value: {{ include "modeling.authUrl" . | quote }}}
@@ -460,7 +460,7 @@ spec:
             - name: EVAL_MODELING_SERVICE_TOKEN
               valueFrom:
                 secretKeyRef: {name: {{ default (printf "%s-notify" .Release.Name) .Values.evaluation.secrets.notificationToken.name | quote }}, key: {{ default "service-token" .Values.evaluation.secrets.notificationToken.key | quote }}}
-            - {name: EVAL_NL2SQL_URL, value: "http://{{ include "modeling.name" . }}-evaluation:8090/evaluation/api/nl2sql"}
+            - {name: EVAL_NL2SQL_URL, value: "http://{{ include "modeling.name" . }}-evaluation:5180/evaluation/api/nl2sql"}
             - {name: EVAL_TRUSTED_ORIGINS, value: {{ join "," .Values.evaluation.trustedOrigins | quote }}}
             - {name: EVAL_JUDGE_BASE_URL, value: {{ .Values.evaluation.judge.baseUrl | quote }}}
             - {name: EVAL_JUDGE_MODEL, value: {{ .Values.evaluation.judge.model | quote }}}
