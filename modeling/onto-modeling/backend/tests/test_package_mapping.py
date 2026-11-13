@@ -697,7 +697,7 @@ def test_self_relation_is_preserved_with_or_without_join_fields():
     "- 当前对象 → broken → [[object_b]] → extra",
     "- 当前对象 → broken（a → b → c） → [[object_b]]",
     "- 当前对象 → broken（a → b → [[object_b]]",
-    "- 当前对象 → bad/name → [[object_b]]",
+    "- 当前对象 → bad\\name → [[object_b]]",
     "- 当前对象 → references → [[missing]]",
 ])
 def test_bad_relation_declarations_have_line_diagnostics(line):

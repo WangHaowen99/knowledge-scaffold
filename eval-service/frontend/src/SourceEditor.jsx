@@ -33,6 +33,12 @@ const CONFLICT_KINDS = {
 };
 export function MappingConflicts({ details }) {
   const issues = details?.issues;
+  if (details?.problems?.length) return (
+    <Alert tone="red" title="知识包关系结构需要修正">
+      <ul>{details.problems.map((problem, index) => <li key={index}>{problem}</li>)}</ul>
+      {details.total > details.problems.length && <p>共 {details.total} 项，当前显示前 {details.problems.length} 项。</p>}
+    </Alert>
+  );
   if (!issues?.length) return null;
   return (
     <div className="mapping-preview mapping-conflicts">

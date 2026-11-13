@@ -103,3 +103,7 @@ Neo4j 导入使用配置的 Workspace 值与知识包 Ontology 值同时匹配�
 - `GET /package-tasks` 增加 `pending_deliveries`、`historical_failures` 和 `history_limited`，汇总最近最多 1000 次评测，已并入其他交付的记录不重复计待办。
 - 按知识包查询 `GET /runs` 可指定 `run_type=all|data|solver`，按类型筛选后分页。
 - 用户反馈知识包汇总增加 `transport`：分别统计已送达、待同步、同步失败、无需优化的独立交付；`status` 原协议保持兼容，页面结合两者显示。
+
+### 关系结构检查（Issue #367）
+
+`POST /package-preparations`、使用旧准备结果创建 `POST /runs`、包拉取及映射生成均检查原始对象关系。关系名保持读取兼容，自关联允许；重复身份由源对象、关系名、目标对象及两端关联字段组成。结构错误返回 HTTP 422，`code=EVALUATION_PACKAGE_INVALID`、`phase=package_validation`；`details.problems` 含对象文档路径、行号及原因（最多 100 项），`details.total` 为总数。准备结果中的 `relation_validation` 包含 `rule_version` 和 `package_digest`。该记录仅由服务端生成，不接受客户端声明已校验。
