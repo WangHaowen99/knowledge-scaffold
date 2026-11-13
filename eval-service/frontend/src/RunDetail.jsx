@@ -177,7 +177,7 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
       run.status === 'waiting_auth' ? '授权并继续' : '恢复并继续',
       () => onAction('resume', run, refresh),
     ]);
-  if (counts.manual) next.push([`${counts.manual} 条没有参考答案`, '去判定', () => showCases('manual')]);
+  if (counts.manual) next.push([`${counts.manual} 条待人工核实（无参考答案或执行依据不足）`, '去判定', () => showCases('manual')]);
   if (counts.error) next.push([`${counts.error} 条执行或判分异常`, '查看', () => showCases('errors')]);
   if (counts.fail + counts.partial)
     next.push(
@@ -468,7 +468,7 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
                     {visible.slice(0, limit).map((c) => {
                       const state = caseState(c),
                         view = VERDICTS[state] || VERDICTS.pending,
-                        reason = (c.override || c.judgement)?.reason || c.error?.message || '';
+                        reason = (c.override || c.judgement)?.reason || c.execution_verification?.reason || c.error?.message || '';
                       return (
                         <tr
                           key={c.id}
@@ -612,6 +612,25 @@ const EVIDENCE_LABELS = [
   ['candidate_count', '候选数'],
   ['solver_tool', '求解工具'],
 ];
+function QueryEvidence({ run, caseId, answer }) {
+  const [evidence, setEvidence] = useState(null);
+  const { busy, error, act } = useAction();
+  const labels = { not_required: '无需查数', verified: '依据已核实', missing_query: '未执行必要查询',
+    query_failed: '查询执行失败', unsupported: '依据不支持结论', unverifiable: '无法核实' };
+  const verification = answer.execution_verification;
+  return <div className="answer-block">
+    <label>执行依据 · {labels[verification.status] || verification.status}</label>
+    <p>{verification.reason}</p>
+    {answer.answer_judgement && <p className="muted">答案内容原判：{VERDICTS[answer.answer_judgement.verdict]?.[0]} · {answer.answer_judgement.reason}</p>}
+    <p className="muted">执行要求：{answer.execution_requirement?.mode} · {answer.execution_requirement?.source === 'explicit' ? '用例明确指定' : '自动识别'}。人工改判保留原始核验结果。</p>
+    {verification.status !== 'not_required' && <Button busy={busy} onClick={() => act(async () => {
+      setEvidence(await api(`/runs/${run.id}/results/${caseId}/evidence`));
+    })}>查看判分时的查询回执</Button>}
+    {error && <Alert tone="red">{error}</Alert>}
+    {evidence && <div className="answer-content"><pre>{JSON.stringify(evidence.execution || evidence, null, 2)}</pre></div>}
+  </div>;
+}
+
 function SolverEvidence({ answer }) {
   const evidence = answer.solver || {};
   const judgement = answer.judgement;
@@ -799,6 +818,7 @@ function AnswerDrawer({ run, caseId, cases, onChange, onClose, onSaved }) {
                 </p>
               )}
             </div>
+            {answer.execution_verification && <QueryEvidence key={caseId} run={run} caseId={caseId} answer={answer} />}
             {failures.length > 0 && (
               <div className="answer-block">
                 <label>工具失败</label>

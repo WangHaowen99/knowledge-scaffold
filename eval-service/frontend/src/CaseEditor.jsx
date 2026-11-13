@@ -43,9 +43,10 @@ export function CaseEditor({
       throw new Error('请填写名称并保留 1-500 条用例');
     const payload = {
       name,
-      cases: form.cases.map(({ question, reference }) => ({
+      cases: form.cases.map(({ question, reference, execution_mode }) => ({
         question: question.trim(),
         reference: reference || '',
+        ...(execution_mode && execution_mode !== 'auto' ? { execution_mode } : {}),
       })),
       ...(!asNew && form.id ? { revision: form.revision } : {}),
     };
@@ -148,6 +149,13 @@ export function CaseEditor({
                 />
               </Field>
             </div>
+            <Field label="执行要求" hint="自动识别覆盖明确查数表述；复杂或歧义题请明确选择。新任务会冻结该要求，不改原题或历史结果。">
+              <select value={item.execution_mode || 'auto'} onChange={(e) => update(index, 'execution_mode', e.target.value)}>
+                <option value="auto">自动识别</option>
+                <option value="business_query">必须查询业务数据</option>
+                <option value="reasoning_only">独立假设 / 纯规则推理</option>
+              </select>
+            </Field>
           </article>
         ))}
       </div>

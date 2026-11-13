@@ -379,3 +379,9 @@ test('delivery content and transport are distinct from modeling completion', () 
   assert.equal(optimizationState({ ...run, optimization: { status: 'modeling_done', result: { version: '0.2.0' } } }).label, '已处理');
   assert.deepEqual(parseRoute('#/new?run_type=solver'), { page: 'new', from: '', runType: 'solver' });
 });
+
+test('synthetic query requirements survive JSON import without rewriting question or reference', () => {
+  const item = { question: 'Synthetic query', reference: '2', execution_mode: 'business_query' };
+  assert.deepEqual(parseCases(JSON.stringify([item])), [item]);
+  assert.throws(() => parseCases(JSON.stringify([{ ...item, execution_mode: 'invalid' }])), /执行要求/);
+});

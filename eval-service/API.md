@@ -107,3 +107,12 @@ Neo4j 导入使用配置的 Workspace 值与知识包 Ontology 值同时匹配�
 ### 关系结构检查（Issue #367）
 
 `POST /package-preparations`、使用旧准备结果创建 `POST /runs`、包拉取及映射生成均检查原始对象关系。关系名保持读取兼容，自关联允许；重复身份由源对象、关系名、目标对象及两端关联字段组成。结构错误返回 HTTP 422，`code=EVALUATION_PACKAGE_INVALID`、`phase=package_validation`；`details.problems` 含对象文档路径、行号及原因（最多 100 项），`details.total` 为总数。准备结果中的 `relation_validation` 包含 `rule_version` 和 `package_digest`。该记录仅由服务端生成，不接受客户端声明已校验。
+
+### 查询题执行依据校验（Issue #382）
+
+- 评测集用例可选 `execution_mode`：`auto`（默认，识别明确查数表述）、`business_query`（必须查业务数据）、`reasoning_only`（独立假设或纯规则）。复杂、歧义表述应显式配置；自动识别不是完整自然语言意图分类。创建轮次时冻结 `execution_requirement`，不改问题、参考答案或历史结果。
+- 普通数据评测保存独立查询回执；从连续且闭合的消费运行事件读取工具输入、结果和查询摘要。仅本体读取、工具成功状态或回答自述均不能证明查询发生。最多 20 条回执，每条输入/输出各 2000 字符；缺失、截断、序号断裂或超限显示无法核实。
+- `answer_judgement` 是答案内容原判；`execution_verification.status` 为 `not_required` / `verified` / `missing_query` / `query_failed` / `unsupported` / `unverifiable`。最终 `judgement` 受执行校验约束：未查询或依据不支持结论判 fail，查询失败为 execution_error，无法核实为 manual，不能判完全通过。必要查询完成后还需 Judge 核对对象、过滤条件、关键事实与排除判断，并引用真实成功回执 ID。
+- `/results/{case_id}/answer` 返回两种判定和执行要求；`/evidence` 对新轮次返回判分时保存的 `execution` 查询回执，不重新取数。旧轮次沿用事件索引。`summary.execution_unverified`、`execution_failed` 给出计数；manual 与技术异常不进入得分分母，必须同时看有效判分数和全部用例通过率。人工改判仍有审计且保留原执行核验。
+- 执行依据问题仅生成诊断说明，不进入自动知识包归因或历史失败项拼接。工具是否注入未由当前事件协议证明，字段 `tool_availability=not_recorded`，不得仅凭工具未调用归责于模型。
+- Judge `rule_version=2`；旧轮次原结果保持原样。未完成轮次若固定的 Judge 规则版本不同，要求新建轮次，避免同轮混用判分规则。求解验证与反馈采集规则不变。
