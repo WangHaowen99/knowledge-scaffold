@@ -37,13 +37,14 @@ import ChatPane from './components/ChatPane.jsx';
 import LeftPane from './components/LeftPane.jsx';
 import LoginPage from './components/LoginPage.jsx';
 import HubPackagesDialog from './components/HubPackagesDialog.jsx';
-import { MAX_NAME_LENGTH, useNameConflict } from './components/NameConflictDialog.jsx';
+import { useNameConflict } from './components/NameConflictDialog.jsx';
 import { usePackagePublish } from './components/PublishCheckDialog.jsx';
 import CreatePage from './components/home/CreatePage.jsx';
 import './components/home/modeling-home.css';
 import '../src/components/studio/legacy/studio-tokens.css';
 import SettingsPage from './components/SettingsPage.jsx';
 import { api, authStore } from './lib/api.js';
+import { limitProjectName } from './lib/projectName.js';
 import { clearWorkspaceDirty } from './lib/workspaceDirty.js';
 
 function parseHash() {
@@ -808,8 +809,7 @@ export default function App() {
         >
           <Input
             value={renaming?.name}
-            maxLength={MAX_NAME_LENGTH}
-            onChange={(e) => setRenaming({ ...renaming, name: e.target.value })}
+            onChange={(e) => setRenaming({ ...renaming, name: limitProjectName(e.target.value) })}
           />
         </Modal>
         {homePublish.dialog}
@@ -973,8 +973,10 @@ export default function App() {
                   <Input
                     addonBefore="任务名称"
                     value={importWiz.name}
-                    maxLength={MAX_NAME_LENGTH}
-                    onChange={(e) => setImportWiz({ ...importWiz, name: e.target.value })}
+                    onChange={(e) => setImportWiz({
+                      ...importWiz,
+                      name: limitProjectName(e.target.value),
+                    })}
                     style={{ marginBottom: 16 }}
                   />
                   <Button type="primary" loading={importWiz.importing} onClick={() => importInspect()}>

@@ -348,6 +348,9 @@
 .wb-count-input { position: relative; }
 .wb-count-input textarea { padding-bottom: 22px; }
 .wb-count { position: absolute; right: var(--s-3); bottom: 6px; color: var(--c-faint); font-size: var(--t-xs); pointer-events: none; }
+.wb-name-count-input input { padding-right: 72px; }
+.wb-name-count-input .wb-count { top: 50%; bottom: auto; transform: translateY(-50%); }
+.wb-count.is-limit, .wb-name-limit.is-limit { color: var(--c-wait); }
 .wb-data-source-choice {
   margin: var(--s-6) 0 0; padding: 0; border: 0;
 }

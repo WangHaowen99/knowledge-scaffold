@@ -1,8 +1,9 @@
 import { Alert, Button, Input, Modal, Radio, Typography } from 'antd';
 import { useState } from 'react';
+import { limitProjectName, MAX_NAME_LENGTH } from '../lib/projectName.js';
 
 // 任务名称同名校验（与知识包建模工具同一口径）：后端返回 409 + 候选名，这里选名后重试
-export const MAX_NAME_LENGTH = 200;
+export { MAX_NAME_LENGTH } from '../lib/projectName.js';
 const CUSTOM = '__custom__'; // 候选名都以「（n）」结尾，不会与之相同
 
 const normalize = (value) => String(value ?? '').trim().normalize('NFKC').toLowerCase();
@@ -62,12 +63,11 @@ function ConflictForm({ conflict, busy, error, confirmText, busyText, onCancel, 
         <Input
           style={{ marginTop: 8 }}
           value={custom}
-          maxLength={MAX_NAME_LENGTH}
           placeholder="输入新的任务名称"
           autoFocus
           disabled={busy}
           onChange={(event) => {
-            setCustom(event.target.value);
+            setCustom(limitProjectName(event.target.value));
             setLocalError('');
           }}
           onPressEnter={() => submit()}

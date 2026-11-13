@@ -6,6 +6,7 @@ import {
   rejectedResourceMessage,
   validateResourceFiles,
 } from '../../lib/resourceUpload.js';
+import { limitProjectName, projectNameLengthState } from '../../lib/projectName.js';
 import { MAX_NAME_LENGTH, useNameConflict } from '../NameConflictDialog.jsx';
 import './modeling-home.css';
 
@@ -24,6 +25,7 @@ export default function CreatePage({ onBack, onCreated }) {
   const [creating, setCreating] = useState(false);
   const input = useRef(null);
   const nameConflict = useNameConflict();
+  const nameLength = projectNameLengthState(name);
 
   const addFiles = (items) => {
     const { accepted: incoming, rejected } = validateResourceFiles(items);
@@ -87,15 +89,32 @@ export default function CreatePage({ onBack, onCreated }) {
         <div className="inner">
           <div className="wb-field">
             <label htmlFor="pn">任务名称</label>
-            <input
-              id="pn"
-              className="input"
-              value={name}
-              maxLength={MAX_NAME_LENGTH}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="例如：电商订单建模"
-              autoFocus
-            />
+            <div className="wb-count-input wb-name-count-input">
+              <input
+                id="pn"
+                className="input"
+                value={name}
+                aria-describedby="pn-count pn-limit"
+                onChange={(event) => setName(limitProjectName(event.target.value))}
+                placeholder="例如：电商订单建模"
+                autoFocus
+              />
+              <span
+                id="pn-count"
+                className={`wb-count${nameLength.atLimit ? ' is-limit' : ''}`}
+              >
+                {nameLength.label}
+              </span>
+            </div>
+            <div
+              id="pn-limit"
+              className={`wb-create-hint wb-name-limit${nameLength.atLimit ? ' is-limit' : ''}`}
+              aria-live="polite"
+            >
+              {nameLength.atLimit
+                ? `已达到 ${MAX_NAME_LENGTH} 个字符上限`
+                : `最多 ${MAX_NAME_LENGTH} 个字符`}
+            </div>
           </div>
 
           <div className="wb-field">
