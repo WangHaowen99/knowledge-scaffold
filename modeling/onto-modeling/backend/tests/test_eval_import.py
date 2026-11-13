@@ -675,7 +675,7 @@ def test_legacy_relation_name_is_exported_without_rewriting(tmp_path, monkeypatc
     with zipfile.ZipFile(dest) as archive:
         doc = archive.read(f"{pid}/objects/订单.md").decode("utf-8")
     assert "| 关联/包含 | 客户 |" in doc
-    assert report['relations_exported'] == 2 and report['relations_skipped'] == 0
+    assert report.get('relations_exported') == 2 and report.get('relations_skipped') == 0
 
 
 def test_relations_to_concept_objects_do_not_block_graph_import(tmp_path, monkeypatch):
