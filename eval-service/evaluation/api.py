@@ -33,7 +33,7 @@ from .feedback.access import PackageAccess
 from .feedback.intake import Intake
 from .feedback.pipeline import Assistant, Pipeline
 from .feedback.store import FeedbackStore, run_owner
-from . import carryover, delivery, modeling_result, package_routes, solver_validation
+from . import carryover, delivery, execution_evidence, modeling_result, package_routes, solver_validation
 
 
 class Body(BaseModel):
@@ -418,7 +418,9 @@ def create_app(config=None,transport=None):
                 reference=case.get('reference','')
                 if not isinstance(reference,str) or len(reference)>20000:
                     raise Failure('case_invalid','参考答案格式无效',422)
-                normalized.append(dict(id=str(i),question=case['question'],reference=reference))
+                requested=case.get('execution_mode','auto')
+                execution_evidence.requirement(case['question'],requested)
+                normalized.append(dict(id=str(i),question=case['question'],reference=reference,**({'execution_mode':requested} if requested!='auto' else {})))
             return dict(name=body['name'],cases=normalized)
         if set(body)-{'name','mode','provider','input_ids','connection','tables','import_data','revision','inspection_id'}:
             raise Failure('definition_invalid','未知数据源字段',422)
@@ -664,7 +666,8 @@ def create_app(config=None,transport=None):
             definition_set=store.get(owner,body.eval_set_id,'eval-sets')
             if body.eval_set_revision is not None and definition_set['revision']!=body.eval_set_revision:
                 raise Failure('revision_conflict','评测集已变更，请返回上一步重新加载并确认',409)
-            cases=[dict(**c,status='pending') for c in definition_set['cases']]
+            cases=[dict(**c,status='pending',execution_requirement=execution_evidence.requirement(c['question'],c.get('execution_mode','auto')))
+                   for c in definition_set['cases']]
         with engine.guard:
             package_idle(owner,prep['package_ref']['ontology_id'])
             if any(key[0]==owner for key in engine.active): raise Failure('evaluation_busy','已有活动评测，请先查看或停止当前任务',409)
@@ -789,7 +792,7 @@ def create_app(config=None,transport=None):
         cases=load_run(request,rid)[3]['cases']
         items=[]
         for c in cases[offset:offset+20]:
-            item={k:v for k,v in c.items() if k not in ('answer','reference','overrides','judgement','override','trace','arguments')}
+            item={k:v for k,v in c.items() if k not in ('answer','reference','overrides','judgement','override','trace','arguments','answer_judgement')}
             item['question']=c['question'][:256]
             for key in ('judgement','override'):
                 if c.get(key): item[key]={**c[key],'reason':c[key]['reason'][:256]}
@@ -805,9 +808,12 @@ def create_app(config=None,transport=None):
 
     @app.get(f'{prefix}/runs/{{rid}}/results/{{cid}}/evidence')
     def evidence(rid:str,cid:int,request:Request):
-        _,_,token,run=load_run(request,rid)
+        owner,_,token,run=load_run(request,rid)
         if not 0<=cid<len(run['cases']): raise Failure('not_found','用例不存在',404)
         case=run['cases'][cid]
+        stored = store.evidence(owner, rid).get(cid) or {}
+        if stored.get('execution') is not None:
+            return {'trace_status': 'collected', 'execution': stored['execution'], 'events': []}
         if not case.get('remote_id') or not run.get('workspace') or case['status'] in ('executing','unknown','pending'):
             return {'trace_status':'unavailable','events':[],'message':'消费执行尚未结算'}
         try:

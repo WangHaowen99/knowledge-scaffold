@@ -95,6 +95,9 @@ def failed_cases(run):
     found = []
     for index, case in enumerate(run['cases'], 1):
         verdict, reason = outcome(case)
+        verification = case.get('execution_verification') or {}
+        if verification.get('status') in ('missing_query','query_failed','unverifiable','unsupported'):
+            continue  # Execution evidence problems require diagnosis, never automatic knowledge edits.
         if verdict in SEVERITY:
             found.append((SEVERITY[verdict], index, case, verdict, reason))
     found.sort(key=lambda item: item[:2])
@@ -442,6 +445,16 @@ def document(run, stem, now, value, rows, analysed, model, traced=0, batches=1, 
 
 
 def passed(run, stem, now, summary):
+    diagnostic = []
+    for number, case in enumerate(run['cases'], 1):
+        status = (case.get('execution_verification') or {}).get('status')
+        if status in ('missing_query', 'query_failed', 'unverifiable', 'unsupported'):
+            diagnostic.append(number)
+    if diagnostic:
+        return '\n'.join([f"# 评测执行诊断 — {datetime.fromtimestamp(now, CHINA).strftime('%Y-%m-%d %H:%M')}", '',
+                          f"> 依据评测报告：reports/{stem}.md（轮次 {run['id']}）", '',
+                          f"用例 {numbered(diagnostic)} 的必要查询或执行依据不齐备。请核对工具提供、数据源、完整执行轨迹与必要判断。",
+                          '本次不据此生成知识包修订建议；不得通过补写参考答案消除执行问题。', ''])
     return '\n'.join([f"# 评测优化建议 — {datetime.fromtimestamp(now, CHINA).strftime('%Y-%m-%d %H:%M')}", '',
                       f"> 依据评测报告：reports/{stem}.md（轮次 {run['id']}）", '',
                       f"本轮评测没有失败、部分正确或异常的用例（通过 {summary['pass']} 条，待人工判定 {summary['manual']} 条），无需评测优化。", ''])

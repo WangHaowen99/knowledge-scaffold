@@ -341,7 +341,10 @@ export function parseCases(text) {
     const reference = item.reference ?? item.groundTruth ?? '';
     if (typeof reference !== 'string' || item.question.length > 10000 || reference.length > 20000)
       throw new Error(`用例 ${i + 1} 内容格式或长度无效`);
-    return { question: item.question.trim(), reference };
+    const mode = item.execution_mode ?? 'auto';
+    if (!['auto', 'business_query', 'reasoning_only'].includes(mode))
+      throw new Error(`用例 ${i + 1} 的执行要求无效`);
+    return { question: item.question.trim(), reference, ...(mode !== 'auto' ? { execution_mode: mode } : {}) };
   });
 }
 // Solver contract validation runs: deterministic assertions on one solver call per case, no Judge.

@@ -182,7 +182,9 @@ def test_failed_run_gets_report_suggestions_trace_and_notification(service):
     assert calls[1]['code'] == 'SCRIPT_ARGUMENT_VALIDATION_FAILED' and 'Synthetic invalid argument' in calls[1]['error']
     owner = app.state.store.db.execute('SELECT owner FROM records WHERE id=?', (record['id'],)).fetchone()[0]
     stored = app.state.store.evidence(owner, record['id'])
-    assert sorted(stored) == [0, 1] and stored[1] == {'calls': calls, 'omitted': 0}
+    assert sorted(stored) == [0, 1]
+    assert stored[1]['calls'] == calls and stored[1]['omitted'] == 0
+    assert stored[1]['execution']['query_successes'] == 1
     assert 'synthetic-leaked-value' not in json.dumps(sent) + json.dumps(stored)
     context = client.get(f"/evaluation/api/runs/{record['id']}/artifacts/context.json").json()
     assert context['stem'] == stem and context['summary']['score'] == 50 and context['tables'] == {}

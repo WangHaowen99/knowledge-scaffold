@@ -134,7 +134,9 @@ def plan(own, taken, outside=()):
         mapping = {}
         for number, case in enumerate(earlier['cases'], 1):
             verdict, mark = output.outcome(case)[0], fingerprint(case.get('question'))
-            if verdict in ('partial', 'fail') and mark not in decided and number not in runtime:
+            execution_blocked = (case.get('execution_verification') or {}).get('status') in ('missing_query','query_failed','unverifiable','unsupported')
+            eligible = verdict in ('partial', 'fail') and mark not in decided and number not in runtime
+            if eligible and not execution_blocked:
                 keep.append((earlier, case))
                 mapping[number] = start + len(keep)
             if verdict in ('pass', 'partial', 'fail'):
