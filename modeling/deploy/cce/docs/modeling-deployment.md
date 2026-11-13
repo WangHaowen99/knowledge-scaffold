@@ -124,7 +124,7 @@ global:
       - {id: core, protocol: HTTP, listenerPort: 8100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-core}
       - {id: onto, protocol: HTTP, listenerPort: 5100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: onto-modeling}
       - {id: mcp, protocol: HTTP, listenerPort: 5188, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-mcp}
-      - {id: evaluation, protocol: HTTP, listenerPort: 8090, tlsSecretName: "", host: "", path: /evaluation/, pathType: Prefix, endpointId: evaluation}
+      - {id: evaluation, protocol: HTTP, listenerPort: 5180, tlsSecretName: "", host: "", path: /evaluation/, pathType: Prefix, endpointId: evaluation}
 ```
 
 编辑字段：
@@ -151,7 +151,7 @@ modeling:
 
 不需要外部 MCP 客户端时可以留空。`<ELB_IP>` 只能替换为客户实际 ELB 地址，不要提交到 Git。
 
-`modeling.config.evalPublicUrl` 不在客户 values 示例中；Chart 默认留空，Onto 页面会让浏览器尝试访问建模页面同主机的 HTTP 8090 端口及 `/evaluation/` 路径。若实际评测入口不同，可在包外 `modeling-values.yaml` 的 `modeling.config` 下手动添加浏览器可达的完整地址，或同源代理路径 `/evaluation/`：
+`modeling.config.evalPublicUrl` 不在客户 values 示例中；Chart 默认留空，Onto 页面会让浏览器尝试访问建模页面同主机的 HTTP 5180 端口及 `/evaluation/` 路径。若实际评测入口不同，可在包外 `modeling-values.yaml` 的 `modeling.config` 下手动添加浏览器可达的完整地址，或同源代理路径 `/evaluation/`：
 
 Onto 后端读取评测状态、报告和优化建议使用 Chart 内置的 `ONTO_WEB_EVAL_URL`，指向同一 release 的 Evaluation Service。这个集群内部地址与浏览器入口分开配置；不需要在客户 values 中填写。
 

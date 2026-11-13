@@ -186,14 +186,14 @@ def test_evaluation_preserves_key_port_and_consumer_credential(tmp_path, mode, i
     token = secrets.token_hex(32)
     with (setup['target'] / 'onto-agent/backend/.env').open('a') as stream:
         stream.write(f'EVALUATION_SERVICE_TOKEN={token}\n')
-    (deploy / '.env').write_text(f'EVAL_ENCRYPTION_KEY={encryption_key}\nEVAL_PORT=18090\nEVAL_BIND_ADDRESS=127.0.0.1\n')
+    (deploy / '.env').write_text(f'EVAL_ENCRYPTION_KEY={encryption_key}\nEVAL_PORT=19090\nEVAL_BIND_ADDRESS=127.0.0.1\n')
     # A source directory may contain runtime material; staging must only copy release files.
     (setup['evaluation_package'] / 'deploy/.env').write_text('# Synthetic source configuration; must not be copied.\n')
     rc, output = _run(setup, interactive=interactive, STUB_EVALUATION_VOLUME='1', STUB_EVALUATION_DIR=str(deploy))
     assert rc == 0, output
     config = _configuration(tmp_path)
     assert config['EVAL_ENCRYPTION_KEY'] == encryption_key
-    assert config['EVAL_PORT'] == '18090' and config['EVAL_BIND_ADDRESS'] == '127.0.0.1'
+    assert config['EVAL_PORT'] == '19090' and config['EVAL_BIND_ADDRESS'] == '127.0.0.1'
     assert config['EVAL_CONSUMER_SERVICE_TOKEN'] == token
     assert token == (tmp_path / 'consumer-token.snapshot').read_text().strip()
     assert 'Generated EVAL_ENCRYPTION_KEY' not in output

@@ -16,7 +16,7 @@ cd ..
 .venv/bin/python run.py
 ```
 
-打开 `/evaluation/`；直接访问服务根路径（如 `http://127.0.0.1:8090/`）会跳转到该页面。开发前端可用 `npm run dev`，代理默认本机 8090，可通过 `EVAL_DEV_API_URL` 覆盖。单独启动开发端口不与建模共享浏览器存储，免重复登录需从建模页面以直连方式打开（见下文）。
+打开 `/evaluation/`；直接访问服务根路径（如 `http://127.0.0.1:5180/`）会跳转到该页面。开发前端可用 `npm run dev`，代理默认本机 5180，可通过 `EVAL_DEV_API_URL` 覆盖。单独启动开发端口不与建模共享浏览器存储，免重复登录需从建模页面以直连方式打开（见下文）。
 
 ## 评测工作台
 
@@ -57,9 +57,9 @@ cd ..
 
 有效建模登录复用 `onto-access-token` 和 `onto-refresh-token`，刷新直连账号服务。不能通过 Onto 后端转发，也不能在跳转 URL 放 token。建模页面只通过独立地址打开评测，入口地址只由建模部署变量 `ONTO_WEB_EVAL_PUBLIC_URL` 决定：
 
-- 直连（默认）：未设置该变量时，建模页面打开与自身同主机的 `http://<主机>:8090/evaluation/`；评测在其他主机、端口或经 HTTPS 时设为完整地址（如 `http://eval.example.com:8090/evaluation/`）。无需网关。
+- 直连（默认）：未设置该变量时，建模页面打开与自身同主机的 `http://<主机>:5180/evaluation/`；评测在其他主机、端口或经 HTTPS 时设为完整地址（如 `http://eval.example.com:5180/evaluation/`）。无需网关。
   - 点击评测时建模页面打开新窗口；评测页面就绪后，建模页面用 `postMessage` 把登录只发给该地址的来源。评测页面只接受打开它的窗口发来、且来源受 `EVAL_TRUSTED_ORIGINS` 信任的交接。
-  - 评测端口默认开放所有网卡，供其他机器的浏览器访问。只允许本机访问时部署设置 `EVAL_BIND_ADDRESS=127.0.0.1`；它与 `EVAL_PORT`（默认 8090）都会记入 `deploy/.env`。
+  - 评测端口默认开放所有网卡，供其他机器的浏览器访问。只允许本机访问时部署设置 `EVAL_BIND_ADDRESS=127.0.0.1`；它与 `EVAL_PORT`（默认 5180）都会记入 `deploy/.env`。
   - 评测页面保存的是登录副本，在建模页面退出不会同步清除。
 
 当前权限为用户私有包；不复制项目成员共享权限。
@@ -102,7 +102,9 @@ bash deploy/deploy.sh --eval-only
 
 已有服务使用独立 Docker 网络时，可设置 `EVAL_COMPOSE_OVERRIDE` 指向受保护的 Compose 覆盖文件，接入共享网络；不添加同源评测网关。
 
-独立 Compose 不启动账号、Hub、consumer 或建模依赖。默认全栈 `bash deploy/deploy.sh` 会在其他服务之后部署评测；`--onto-modeling-only` 不包含评测。默认宿主端口 8090（所有网卡），网关按实际网络配置访问；直连方式见“配置与权限”。`/evaluation/api/health` 只报告进程活性，不能替代依赖与模型协议验证。
+独立 Compose 不启动账号、Hub、consumer 或建模依赖。默认全栈 `bash deploy/deploy.sh` 会在其他服务之后部署评测；`--onto-modeling-only` 不包含评测。默认映射为宿主端口 5180 → 容器端口 5180（所有网卡），网关按实际网络配置访问；直连方式见“配置与权限”。`/evaluation/api/health` 只报告进程活性，不能替代依赖与模型协议验证。
+
+升级旧部署时，原运行配置不会被自动覆盖。要统一使用 5180，须同步检查评测的 `EVAL_PORT`、建模的 `ONTO_WEB_EVAL_URL`（容器网络地址）与 `ONTO_WEB_EVAL_PUBLIC_URL`（浏览器地址），以及消费反馈发送地址、反向代理和使用评测内置 SQL 适配器时的 `EVAL_NL2SQL_URL`。显式设置的旧端口仍会覆盖新默认值。变更运行配置后需重新创建相应容器，单纯 restart 不会重新加载环境变量。
 
 离线包：`bash eval-service/build.sh <version> [amd|arm]`，产物为 `eval-service/dist/evaluation-<version>-linux-<arch>.tar.gz`（顶层目录 `eval-service/`），包含镜像、Compose、部署脚本和说明。目标机解压后执行包内 `deploy/deploy.sh`（自动加载镜像），或交给分离部署脚本的 `--evaluation-package`；运行配置规则同上。不包含运行配置和数据。根目录 `bash deploy/build.sh <version> [amd|arm]` 生成的完整离线包也包含评测镜像、部署脚本及网关配置示例，并同时在 `eval-service/dist/` 生成上述独立发布包（同版本旧包会被覆盖）。
 

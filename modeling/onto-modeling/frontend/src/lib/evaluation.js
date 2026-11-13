@@ -6,7 +6,7 @@ export const READY = 'onto-eval-ready';
 export const HANDOFF = 'onto-eval-handoff';
 const EVALUATION_PATH = '/evaluation/';
 // 与评测部署的默认宿主端口一致；评测在其他主机、端口或经 HTTPS 时由 ONTO_WEB_EVAL_PUBLIC_URL 指定
-const DEFAULT_PORT = 8090;
+const DEFAULT_PORT = 5180;
 let cachedEntry = null;
 
 export function defaultEvaluationBase(here) {
