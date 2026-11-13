@@ -445,9 +445,11 @@ def document(run, stem, now, value, rows, analysed, model, traced=0, batches=1, 
 
 
 def passed(run, stem, now, summary):
-    diagnostic = [n for n, case in enumerate(run['cases'], 1)
-                  if (case.get('execution_verification') or {}).get('status') in
-                  ('missing_query', 'query_failed', 'unverifiable', 'unsupported')]
+    diagnostic = []
+    for number, case in enumerate(run['cases'], 1):
+        status = (case.get('execution_verification') or {}).get('status')
+        if status in ('missing_query', 'query_failed', 'unverifiable', 'unsupported'):
+            diagnostic.append(number)
     if diagnostic:
         return '\n'.join([f"# 评测执行诊断 — {datetime.fromtimestamp(now, CHINA).strftime('%Y-%m-%d %H:%M')}", '',
                           f"> 依据评测报告：reports/{stem}.md（轮次 {run['id']}）", '',

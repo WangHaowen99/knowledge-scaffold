@@ -107,8 +107,9 @@ def collect(events):
                    'status': 'failed' if is_failed else 'completed' if is_success else 'unknown',
                    'input': input_text, 'output': output_text, 'truncated': truncated}
         if audit:
-            receipt['audit'] = {k: redact(str(audit.get(k) or ''))[:256] for k in
-                                ('status', 'entity', 'action', 'record_count', 'plan_digest', 'request_digest', 'error_code')}
+            receipt['audit'] = {}
+            for field in ('status', 'entity', 'action', 'record_count', 'plan_digest', 'request_digest', 'error_code'):
+                receipt['audit'][field] = redact(str(audit.get(field) or ''))[:256]
         # Successful tool status alone does not establish that a query really executed.
         anchors = output.get('evidence')
         anchored = isinstance(anchors, list) and any(isinstance(a, dict) and a.get('query_digest') for a in anchors)
