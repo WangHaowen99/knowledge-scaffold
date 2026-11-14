@@ -2,6 +2,7 @@ import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { Alert, Button, Input, Modal, Space, Spin, Tag, Typography, message } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import { enqueueStudioDraftSave } from '../lib/studioDraftQueue.js';
 import { setWorkspaceDirty } from '../lib/workspaceDirty.js';
 
 // ---- markdown 表格 ↔ 结构化行 双向转换 ----
@@ -113,8 +114,11 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
   const [sections, setSections] = useState([]);
   const [draftState, setDraftState] = useState('clean'); // clean | dirty | saving
   const [submitting, setSubmitting] = useState(false);
+  const [exiting, setExiting] = useState(false);
   const [rejection, setRejection] = useState(null);
   const draftTimer = useRef(0);
+  const leaseRequestRef = useRef(Promise.resolve());
+  const draftSaveRef = useRef(Promise.resolve());
   const baseRevisionRef = useRef(entry.revision);
 
   useEffect(() => {
@@ -162,7 +166,7 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
   // 租约：进入编辑即申请；他人持有 → 只读；退出释放
   useEffect(() => {
     let mounted = true;
-    api
+    const request = api
       .studioLease(project.id, entry.path)
       .then((data) => mounted && setLease(data))
       .catch((error) => {
@@ -171,6 +175,7 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
           message.warning(error.message);
         }
       });
+    leaseRequestRef.current = request;
     return () => {
       mounted = false;
       api.studioReleaseLease(project.id, entry.path).catch(() => {});
@@ -183,6 +188,20 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
       .map((s) => `${'#'.repeat(s.level || 1)} ${s.title}\n\n${(s.content || '').trim()}\n`)
       .join('\n');
 
+  const saveDraft = (next) =>
+    enqueueStudioDraftSave(draftSaveRef, () =>
+      api.studioSaveDraft(
+        project.id,
+        entry.path,
+        serialize(next),
+        baseRevisionRef.current,
+      ));
+
+  const releaseAndExit = async () => {
+    await api.studioReleaseLease(project.id, entry.path);
+    onExit?.();
+  };
+
   const scheduleDraftSave = (next) => {
     setSections(next);
     setDraftState('dirty');
@@ -190,7 +209,7 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
     draftTimer.current = setTimeout(async () => {
       setDraftState('saving');
       try {
-        await api.studioSaveDraft(project.id, entry.path, serialize(next), baseRevisionRef.current);
+        await saveDraft(next);
         setDraftState('dirty'); // 草稿已存但尚未提交为版本
       } catch (error) {
         message.error(error.message);
@@ -198,12 +217,29 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
     }, 800);
   };
 
+  const exit = async () => {
+    setExiting(true);
+    clearTimeout(draftTimer.current);
+    try {
+      await leaseRequestRef.current;
+      if (draftState === 'dirty') {
+        await saveDraft(sections);
+      } else {
+        await draftSaveRef.current;
+      }
+      await releaseAndExit();
+    } catch (error) {
+      message.error(error.message);
+      setExiting(false);
+    }
+  };
+
   const submit = async () => {
     setSubmitting(true);
     setRejection(null);
     try {
       clearTimeout(draftTimer.current);
-      await api.studioSaveDraft(project.id, entry.path, serialize(sections), baseRevisionRef.current);
+      await saveDraft(sections);
       const result = await api.studioSubmit(project.id, entry.path);
       if (result.result === 'committed') {
         message.success('检查通过，已直接保存为新的迭代');
@@ -223,7 +259,7 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
             </div>
           ),
         });
-        onExit?.();
+        await releaseAndExit();
       } else {
         setRejection(result.errors);
       }
@@ -269,7 +305,7 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
         <Button size="small" onClick={discard} disabled={readOnly}>
           放弃草稿
         </Button>
-        <Button size="small" onClick={onExit}>
+        <Button size="small" loading={exiting} onClick={exit}>
           退出
         </Button>
       </Space>
