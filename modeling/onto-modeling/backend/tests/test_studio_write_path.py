@@ -116,6 +116,32 @@ def test_deterministic_check_routes_to_review(env):
     assert any("不存在的对象" in r for r in checks["review"])
 
 
+def test_deterministic_check_does_not_report_unchanged_existing_extra_sections(env):
+    path = env / "ontology" / "object" / "订单.md"
+    baseline = OBJECT_OK + "\n# 数据来源\n\n合成来源\n\n# 查询边界\n\n只读查询\n"
+    path.write_text(baseline, encoding="utf-8")
+    draft = baseline.replace("订单是交易的核心record。", "订单是交易的核心合成记录。")
+
+    checks = studio.deterministic_check(env, "ontology/object/订单.md", draft)
+
+    assert checks["errors"] == []
+    assert not any("数据来源" in item or "查询边界" in item for item in checks["review"])
+
+
+def test_deterministic_check_reports_changed_existing_extra_section(env):
+    path = env / "ontology" / "object" / "订单.md"
+    baseline = OBJECT_OK + "\n# 数据来源\n\n合成来源\n"
+    path.write_text(baseline, encoding="utf-8")
+
+    checks = studio.deterministic_check(
+        env,
+        "ontology/object/订单.md",
+        baseline.replace("合成来源", "另一合成来源"),
+    )
+
+    assert "修改了模板外的章节「数据来源」" in checks["review"]
+
+
 def test_sections_serialize_roundtrip():
     sections = studio.parse_sections(OBJECT_OK)
     rebuilt = studio.serialize_sections(sections)

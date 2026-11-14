@@ -851,14 +851,28 @@ def deterministic_check(root: Path, rel_path: str, content: str) -> dict:
     sections = parse_sections(content)
     titles = {s["title"] for s in sections}
     known_titles = {s["title"] for s in schema}
+    baseline_by_title: dict[str, dict] = {}
+    target = (root / rel_path).resolve()
+    try:
+        target.relative_to(root.resolve())
+        baseline_by_title = {
+            section["title"]: section
+            for section in parse_sections(target.read_text(encoding="utf-8"))
+        }
+    except (OSError, UnicodeError, ValueError):
+        pass
 
     for spec in schema:
         if spec["required"] and spec["title"] not in titles:
             errors.append(f"缺少必需章节「{spec['title']}」")
-    for title in titles - known_titles:
-        review.append(f"新增了模板外的章节「{title}」")
-
     by_title = {s["title"]: s for s in sections}
+    for title in titles - known_titles:
+        baseline = baseline_by_title.get(title)
+        if baseline is None:
+            review.append(f"新增了模板外的章节「{title}」")
+        elif baseline["content"] != by_title[title]["content"]:
+            review.append(f"修改了模板外的章节「{title}」")
+
     for spec in schema:
         if spec["kind"] != "table" or spec["title"] not in by_title:
             continue
