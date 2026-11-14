@@ -768,7 +768,11 @@ def project_editing_status(project_id: str) -> dict | None:
     if active:
         path, lease = next(iter(active.items()))
         return {"kind": "lease", "path": path, "owner": lease.get("owner", "")}
-    drafts = _load(project_id, "drafts")
+    drafts = {
+        path: draft
+        for path, draft in _load(project_id, "drafts").items()
+        if not isinstance(draft, dict) or draft.get("state") != "stale"
+    }
     if drafts:
         path, draft = next(iter(drafts.items()))
         return {"kind": "draft", "path": path, "owner": draft.get("author", "")}
@@ -826,6 +830,42 @@ def save_draft(
 
 def get_draft(project_id: str, rel_path: str) -> dict | None:
     return _load(project_id, "drafts").get(rel_path)
+
+
+def get_active_draft(project_id: str, rel_path: str) -> dict | None:
+    draft = get_draft(project_id, rel_path)
+    return None if draft and draft.get("state") == "stale" else draft
+
+
+def reconcile_draft(
+    project_id: str,
+    root: Path,
+    rel_path: str,
+    current_content: bytes,
+    current_revision: str,
+) -> dict | None:
+    """Drop an applied draft, or mark it stale after its base file changed."""
+    drafts = _load(project_id, "drafts")
+    draft = drafts.get(rel_path)
+    if not draft:
+        return None
+    content = draft.get("content")
+    if isinstance(content, str) and content.encode("utf-8") == current_content:
+        drafts.pop(rel_path, None)
+        _save(project_id, "drafts", drafts)
+        staged = root / REVIEW_DIR / f"{Path(rel_path).stem}.md"
+        try:
+            staged.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+    base_revision = draft.get("base_revision", "")
+    state = "stale" if base_revision and base_revision != current_revision else "active"
+    if draft.get("state") != state:
+        draft = {**draft, "state": state}
+        drafts[rel_path] = draft
+        _save(project_id, "drafts", drafts)
+    return {**draft, "state": state}
 
 
 def discard_draft(project_id: str, rel_path: str, user: str) -> None:

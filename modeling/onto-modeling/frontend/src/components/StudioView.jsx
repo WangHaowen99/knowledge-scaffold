@@ -266,7 +266,12 @@ export default function StudioView({
             <Typography.Title level={5} style={{ margin: 0 }}>
               {entry.label || entry.name}
             </Typography.Title>
-            {entry.draft && <Tag color="warning">有未提交草稿（{entry.draft.author}）</Tag>}
+            {entry.draft && (
+              <Tag color="warning">
+                {entry.draft.state === 'stale' ? '旧版本草稿已失效' : '有未提交草稿'}
+                （{entry.draft.author}）
+              </Tag>
+            )}
             {entry.lease && <Tag color="processing">{entry.lease.owner} 编辑中</Tag>}
             {entry.schema && (
               <Button

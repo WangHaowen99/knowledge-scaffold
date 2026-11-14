@@ -62,6 +62,41 @@ def test_draft_roundtrip_and_discard(env):
     assert studio.lease_status("p2", "ontology/object/订单.md") is None
 
 
+def test_reconcile_draft_removes_content_already_applied_to_workspace(env):
+    path = "ontology/object/订单.md"
+    target = env / path
+    target.write_text(OBJECT_OK, encoding="utf-8")
+    studio.save_draft("p2", path, OBJECT_OK, "old-revision", "alice")
+    staged = env / studio.REVIEW_DIR / "订单.md"
+    staged.parent.mkdir(parents=True)
+    staged.write_text(OBJECT_OK, encoding="utf-8")
+
+    draft = studio.reconcile_draft("p2", env, path, OBJECT_OK.encode(), "new-revision")
+
+    assert draft is None
+    assert studio.get_draft("p2", path) is None
+    assert not staged.exists()
+
+
+def test_reconcile_draft_marks_old_baseline_without_deleting_content(env):
+    path = "ontology/object/订单.md"
+    studio.save_draft("p2", path, "未应用草稿", "old-revision", "alice")
+
+    draft = studio.reconcile_draft("p2", env, path, b"new workspace content", "new-revision")
+
+    assert draft["state"] == "stale"
+    assert draft["content"] == "未应用草稿"
+    assert studio.get_draft("p2", path)["content"] == "未应用草稿"
+    assert studio.get_active_draft("p2", path) is None
+    assert studio.lease_status("p2", path)["owner"] == "alice"
+
+    restored = studio.reconcile_draft(
+        "p2", env, path, b"restored workspace content", "old-revision"
+    )
+    assert restored["state"] == "active"
+    assert studio.get_active_draft("p2", path)["state"] == "active"
+
+
 def test_deterministic_check_pass(env):
     checks = studio.deterministic_check(env, "ontology/object/订单.md", OBJECT_OK)
     assert checks["errors"] == []

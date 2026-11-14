@@ -1632,15 +1632,25 @@ def studio_element(project_id: str, path: str, request: Request):
 
     root = ensure_access(project_id, request)
     target = workspaces._resolve_inside(root, path)
-    try:
-        data = studio.element(root, path)
-    except FileNotFoundError:
-        raise WorkspaceError("条目不存在", 404)
-    data["revision"] = _content_revision(target.read_bytes())
-    data["lease"] = studio.lease_status(project_id, path)
-    draft = studio.get_draft(project_id, path)
+    with workspaces._project_lock(project_id):
+        try:
+            data = studio.element(root, path)
+            current_content = target.read_bytes()
+        except FileNotFoundError:
+            raise WorkspaceError("条目不存在", 404)
+        data["revision"] = _content_revision(current_content)
+        draft = studio.reconcile_draft(
+            project_id, root, path, current_content, data["revision"]
+        )
+        data["lease"] = studio.lease_status(project_id, path)
     data["draft"] = (
-        {"updated_at": draft["updated_at"], "author": draft["author"]} if draft else None
+        {
+            "updated_at": draft["updated_at"],
+            "author": draft["author"],
+            "state": draft["state"],
+        }
+        if draft
+        else None
     )
     return data
 
@@ -1682,9 +1692,16 @@ def studio_release_lease(project_id: str, path: str, request: Request):
 @router.get("/{project_id}/studio/draft")
 def studio_get_draft(project_id: str, path: str, request: Request):
     from ..services import studio
+    from ..services.workspace import _content_revision
 
-    ensure_access(project_id, request)
-    return {"draft": studio.get_draft(project_id, path)}
+    root = ensure_access(project_id, request)
+    target = workspaces._resolve_inside(root, path)
+    with workspaces._project_lock(project_id):
+        current_content = target.read_bytes() if target.is_file() else b""
+        draft = studio.reconcile_draft(
+            project_id, root, path, current_content, _content_revision(current_content)
+        )
+    return {"draft": draft}
 
 
 @router.put("/{project_id}/studio/draft")
@@ -1723,7 +1740,7 @@ async def studio_submit(project_id: str, body: StudioLeaseBody, request: Request
 
     root = ensure_access(project_id, request, write=True)
     user = _request_user(request) or "本机用户"
-    draft = studio.get_draft(project_id, body.path)
+    draft = studio.get_active_draft(project_id, body.path)
     if not draft:
         raise WorkspaceError("没有待提交的草稿", 404)
     lease = studio.lease_status(project_id, body.path)
@@ -1747,7 +1764,7 @@ async def studio_submit(project_id: str, body: StudioLeaseBody, request: Request
         return {"result": "needs_review", "review": checks["review"], "staged": staged}
     with workspaces._project_lock(project_id):
         # Re-read under the project lock shared with rollback/MCP writes.
-        draft = studio.get_draft(project_id, body.path)
+        draft = studio.get_active_draft(project_id, body.path)
         if not draft:
             raise WorkspaceError("没有待提交的草稿", 404)
         saved = workspaces._write_file_unlocked(

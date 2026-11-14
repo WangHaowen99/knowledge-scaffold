@@ -142,6 +142,11 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
     }
     // 有历史草稿时优先载入草稿内容
     api.studioGetDraft(project.id, entry.path).then(({ draft }) => {
+      if (draft?.state === 'stale') {
+        message.warning('上次草稿基于旧版本，未自动载入；请放弃旧草稿或基于当前版本重新编辑');
+        setSections(merged);
+        return;
+      }
       if (draft?.content) {
         const draftSections = new Map(
           (draft.content.match(/^#{1,2}\s+.+$/gm) || []).length
@@ -168,12 +173,16 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
     let mounted = true;
     const request = api
       .studioLease(project.id, entry.path)
-      .then((data) => mounted && setLease(data))
+      .then((data) => {
+        if (mounted) setLease(data);
+        return true;
+      })
       .catch((error) => {
         if (mounted) {
           setReadOnly(true);
           message.warning(error.message);
         }
+        return false;
       });
     leaseRequestRef.current = request;
     return () => {
@@ -210,9 +219,11 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
       setDraftState('saving');
       try {
         await saveDraft(next);
-        setDraftState('dirty'); // 草稿已存但尚未提交为版本
       } catch (error) {
         message.error(error.message);
+      } finally {
+        // 保存失败仍保留编辑内容，允许退出时重新排队保存。
+        setDraftState('dirty');
       }
     }, 800);
   };
@@ -221,8 +232,13 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
     setExiting(true);
     clearTimeout(draftTimer.current);
     try {
-      await leaseRequestRef.current;
-      if (draftState === 'dirty') {
+      const leaseAcquired = await leaseRequestRef.current;
+      // 读取申请结果，避免等待期间变为只读却仍使用点击时的旧状态。
+      if (readOnly || !leaseAcquired) {
+        onExit?.();
+        return;
+      }
+      if (draftState !== 'clean') {
         await saveDraft(sections);
       } else {
         await draftSaveRef.current;
@@ -297,7 +313,7 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
           lease && <Tag color="success">已锁定编辑权（30 分钟）</Tag>
         )}
         <Tag>
-          {draftState === 'saving' ? '草稿保存中…' : draftState === 'dirty' ? '草稿已暂存' : '未修改'}
+          {draftState === 'saving' ? '草稿保存中…' : draftState === 'dirty' ? '草稿未提交' : '未修改'}
         </Tag>
         <Button type="primary" size="small" loading={submitting} disabled={readOnly} onClick={submit}>
           提交（检查并保存为迭代）
