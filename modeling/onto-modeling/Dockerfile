@@ -79,6 +79,8 @@ RUN --mount=type=bind,source=vendor/wheels,target=/tmp/wheels \
 
 COPY backend/app ./app
 COPY backend/scripts ./scripts
+RUN chmod 755 /app/scripts/onto-deterministic-check.py \
+    && ln -s /app/scripts/onto-deterministic-check.py /usr/local/bin/onto-deterministic-check
 COPY backend/run.py ./
 COPY assets /opt/onto-modeling/assets
 # 兼容软链：存量项目工作区的 .claude/CLAUDE.md 符号链接指向改名前的

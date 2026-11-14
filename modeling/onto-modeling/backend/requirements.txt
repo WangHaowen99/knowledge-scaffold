@@ -14,3 +14,5 @@ openjiuwen[sqlite]>=0.1.19; python_version >= "3.11"
 # 放锁失败导致锁泄漏，之后读写同一路径都要等满 300 秒超时，Jiuwen 一轮因此长时间没有输出
 filelock>=3.25,<4; python_version >= "3.11"
 opentelemetry-sdk>=1.25; python_version >= "3.11"
+# openjiuwen 0.1.21 imports the OTLP trace encoder when loading its harness.
+opentelemetry-exporter-otlp-proto-common>=1.25; python_version >= "3.11"

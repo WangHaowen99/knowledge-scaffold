@@ -19,6 +19,7 @@ import yaml
 from app.services import publish as publish_service
 from app.services import solver as solver_service
 from app.services import solver_contract
+from app.services import deterministic_contract
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 from tests.publish_fixtures import complete_publish_stages
 from tests.test_solver_evaluator_contract import (
@@ -861,6 +862,60 @@ def test_save_replaces_managed_directory(manager: WorkspaceManager):
     assert cleared["enabled"] is False and not base.exists()
     assert cleared["commit"]
     assert publish_service.package_binding_check(manager, pid)["solver"] == {"enabled": False}
+
+
+def _write_deterministic_contract(root: Path, *, enabled: bool = True) -> None:
+    directory = root / deterministic_contract.CONTRACT_DIR / "query_station"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / deterministic_contract.CONTRACT_FILE).write_text(json.dumps({
+        "schema_version": deterministic_contract.SCHEMA_VERSION,
+        "key": "query_station", "operation": "查询站点", "handler": "query_station",
+        "data_access": "none", "enabled": enabled, "aliases": [],
+        "routing": {"all_terms": [], "any_terms": ["查询站点"]},
+    }, ensure_ascii=False), encoding="utf-8")
+    (directory / deterministic_contract.PARSER_FILE).write_text(
+        'print({"matched": True, "arguments": {}, "issues": []})\n', encoding="utf-8",
+    )
+    schema = '{"type":"object","additionalProperties":false,"properties":{}}\n'
+    (directory / deterministic_contract.INPUT_SCHEMA_FILE).write_text(schema, encoding="utf-8")
+    (directory / deterministic_contract.OUTPUT_SCHEMA_FILE).write_text(schema, encoding="utf-8")
+    (directory / deterministic_contract.TESTS_FILE).write_text(json.dumps([{
+        "name": "合成查询", "text": "查询站点", "known_arguments": {},
+        "expected_matched": True, "expected_arguments": {}, "expected_issues": [],
+        "expected_output": {}, "provider_fixtures": [],
+    }], ensure_ascii=False), encoding="utf-8")
+    (root / "ontology" / "scripts" / "query_station.py").write_text(
+        '"""合成查询\n\n关联operation：查询站点\n功能描述：合成查询。\n输入参数：\n输出：\n"""\n'
+        'import json\nprint(json.dumps({}, ensure_ascii=False))\n',
+        encoding="utf-8",
+    )
+
+
+def test_solver_save_rejects_enabled_deterministic_contract(manager: WorkspaceManager):
+    pid, root = _project(manager)
+    _write_deterministic_contract(root)
+
+    draft = solver_service.check_solver_contract_draft(manager, pid, [_item()])
+    assert draft["rejected"][0]["code"] == solver_contract.CODE_EXECUTION_MODE_CONFLICT
+    with pytest.raises(solver_contract.SolverContractRejected) as exc:
+        solver_service.save_solver_contract(manager, pid, [_item()], "")
+    assert exc.value.problems[0].code == solver_contract.CODE_EXECUTION_MODE_CONFLICT
+    assert not (root / solver_contract.SOLVER_DIR).exists()
+
+
+def test_solver_save_allows_disabled_modes(manager: WorkspaceManager):
+    pid, root = _project(manager)
+    _write_deterministic_contract(root, enabled=False)
+
+    saved = solver_service.save_solver_contract(manager, pid, [_item()], "")
+    assert saved["enabled"] is True
+
+    second_pid, second_root = _project(manager)
+    _write_deterministic_contract(second_root)
+    disabled_solver = _item(operation_frontmatter={"execution": {"enabled": False}})
+    saved = solver_service.save_solver_contract(manager, second_pid, [disabled_solver], "")
+    assert saved["enabled"] is True
+    assert saved["contract"]["operations"][0]["enabled"] is False
 
 
 def test_view_exposes_template_and_profiles(manager: WorkspaceManager):

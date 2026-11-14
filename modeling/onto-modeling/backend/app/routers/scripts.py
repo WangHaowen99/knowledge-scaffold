@@ -136,6 +136,7 @@ def _rows(root: Path) -> list[dict]:
             "contract": {"status": "failed" if failed else "passed", "findings": findings},
             "descriptor": state,
             "sandbox": {"status": "passed" if verified else "not_run", "duration_ms": None,
+                        "runtime": (record or {}).get("runtime") if verified else None,
                         "ran_at": deps.iso((record or {}).get("verified_at")) if verified else None},
             "actions": actions,
         })
@@ -175,7 +176,9 @@ async def script_verification(project_id: str, key: str, request: Request):
         "ran_at": deps.iso(record.get("verified_at")) if verified else None,
         "status": "passed" if verified else "not_run",
         "duration_ms": None,
-        "network_access": False,
-        "cases": [{"args": str(case.get("name") or ""), "output": str(case.get("expect") or ""), "passed": True}
+        "runtime": record.get("runtime") if verified else None,
+        "network_access": False if verified and record.get("runtime") == "jiuwenbox" else None,
+        "cases": [{"name": str(case.get("name") or ""), "expected": str(case.get("expect") or ""),
+                   "passed": True}
                   for case in (record or {}).get("cases") or []] if verified else [],
     }

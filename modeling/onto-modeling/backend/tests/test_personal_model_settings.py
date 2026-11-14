@@ -186,11 +186,14 @@ def test_claude_session_env_disables_background_tasks_with_personal_key(data_dir
     assert env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
 
 
-def test_jiuwen_model_config_personal_overlay(data_dir, auth_on, monkeypatch):
+@pytest.mark.parametrize("api_mode", ["chat_completions", "responses"])
+def test_jiuwen_model_config_personal_overlay(data_dir, auth_on, monkeypatch, api_mode):
     monkeypatch.setattr(config, "JIUWEN_BASE_URL", "https://env.example.org/v1")
     monkeypatch.setattr(config, "JIUWEN_API_KEY", "env-key-synthetic")
     monkeypatch.setattr(config, "JIUWEN_MODEL", "env-model")
+    monkeypatch.setattr(config, "JIUWEN_API_MODE", api_mode)
     admin_cfg = jiuwen.model_config()
+    assert admin_cfg["api_mode"] == api_mode
     personal_model_settings.save("employee_0001", "jiuwen", "", USER_KEY, "user-model")
 
     assert jiuwen.model_config() == admin_cfg
@@ -202,6 +205,7 @@ def test_jiuwen_model_config_personal_overlay(data_dir, auth_on, monkeypatch):
         # 个人配置不含上下文参数与思考开关，沿用管理员配置
         "context": admin_cfg["context"],
         "thinking": admin_cfg["thinking"],
+        "api_mode": api_mode,
     }
 
 

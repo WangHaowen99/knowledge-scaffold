@@ -48,6 +48,26 @@ def test_system_prompt_contains_rules_and_command_index():
     assert len(loader.command_index()) >= 15
 
 
+def test_command_without_placeholder_keeps_selection_and_failure_details(tmp_path):
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    (commands / "repair-example.md").write_text("修复所选业务操作。", encoding="utf-8")
+    loader = JiuwenAssetLoader(dotclaude=tmp_path)
+    arguments = 'operation=合成查询 failed_cases=[{"name":"边界","reason":"输入越界"}]\n\n保留业务限制'
+    expanded = loader.expand_command(f"/repair-example {arguments}")
+    assert expanded.startswith("修复所选业务操作。")
+    assert arguments in expanded
+    assert loader.expand_command("/repair-example") == "修复所选业务操作。"
+
+
+def test_real_deterministic_command_preserves_page_repair_context():
+    loader = JiuwenAssetLoader(dotclaude=ASSETS_DIR / "packs/deterministic-execution")
+    arguments = 'operation=合成查询 handler=synthetic_query failed_cases=[{"name":"边界","reason":"输入越界"}]'
+    expanded = loader.expand_command(f"/ontology-deterministic-generate {arguments}")
+    assert arguments in expanded
+    assert "$ARGUMENTS" not in expanded
+
+
 def _git_workspace(tmp_path: Path) -> Path:
     ws = tmp_path / "ws"
     ws.mkdir()

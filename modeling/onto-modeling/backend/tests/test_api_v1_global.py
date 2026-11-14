@@ -140,6 +140,21 @@ def _h(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+def test_hub_download_accepts_query_token_but_keeps_other_routes_protected(client, manager):
+    project_id = manager.create_project("synthetic download", owner=USER)["id"]
+    path = f"/api/v1/projects/{project_id}/hub/releases/synthetic-missing/download"
+    # A valid token must reach the same owner/release checks as a Bearer request.
+    header = client.get(path, headers=_h("user-token"))
+    query = client.get(path, params={"token": "user-token"})
+    assert query.status_code == header.status_code
+    assert query.status_code != 401
+    assert client.get(path).status_code == 401
+    assert client.get(path, params={"token": "synthetic-invalid"}).status_code == 401
+    assert client.get(path, params={"token": "other-token"}).status_code in (403, 404)
+    listing = f"/api/v1/projects/{project_id}/hub/releases"
+    assert client.get(listing, params={"token": "user-token"}).status_code == 401
+
+
 def _assert_legacy(response, successor: str):
     assert response.headers["Deprecation"] == "true"
     assert response.headers["Sunset"] == compat.SUNSET

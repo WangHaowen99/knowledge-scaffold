@@ -1,8 +1,10 @@
 """按项目数据算的内核条件（ADR-0083）：流程节点出不出现、内核探针、提示规则注不注入。
 
-条件名是内核给的固定集合，包只能引用、不能自己写判断（包代码不在内核里跑）。`data_sources`：项目里有数据源资料（ADR-0104）；
-`materials_added`：上传了新资料、
-这一轮还没处理完（`activation.materials_pending`，内核的增量更新用；节点模型重构 3）。不认识的条件一律不成立。
+条件名是内核给的固定集合，包只能引用、不能自己写判断（包代码不在内核里跑）。当前包括：
+
+- `data_sources`：项目里有数据源资料（ADR-0104）；
+- `materials_added`：上传了新资料，这一轮还没处理完；
+- `deterministic_contract_verified`：至少一个启用的确定性契约通过当前修订验证，且静态检查无问题。
 
 三处用法：
 
@@ -43,8 +45,25 @@ def _end_materials_round(root: Path, reason: str) -> bool:
     return activation.end_materials_round(root, reason)
 
 
-# 条件名 → 按项目目录算是否成立；`activated` 与 `session_open` 另走 activation
-CONDITIONS: dict = {activation.MATERIALS_ADDED: _materials_added, "data_sources": _data_sources}
+def _main_root(root: Path) -> Path:
+    """助手副本中的契约状态按对应主线项目判断。"""
+    from ...kernel.changesets import worktree
+
+    return Path(worktree.main_root(Path(root)) or root)
+
+
+def _deterministic_contract_verified(root: Path) -> bool:
+    # 延迟导入，避免流程内核加载时反向初始化发布/Contract 服务。
+    from .. import deterministic_contract
+
+    return deterministic_contract.flow_complete(_main_root(root))
+
+
+CONDITIONS = {
+    activation.MATERIALS_ADDED: _materials_added,
+    "data_sources": _data_sources,
+    "deterministic_contract_verified": _deterministic_contract_verified,
+}
 # 条件名 → 结束这一轮（「这一轮不处理」），结束了返回 True、这一轮已经结束返回 False
 ROUND_ENDERS: dict = {activation.MATERIALS_ADDED: _end_materials_round}
 

@@ -16,7 +16,7 @@ import zipfile
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
-from . import solver_contract
+from . import deterministic_contract, solver_contract
 from .document_metadata import name_frontmatter, report_name
 # 只依赖工作区的叶子模块（布局常量、错误类型），不依赖工作区管理器：工作区导入时反过来用本模块
 from .workspace.errors import WorkspaceError
@@ -212,6 +212,8 @@ def inspect_archive(archive_path: Path) -> dict:
     names: set[str] = set()
     manifest = b""
     solver = solver_contract.PackageSolver()
+    deterministic_operations: list[dict] = []
+    deterministic_findings: list[dict] = []
     files = 0
     total_size = 0
     try:
@@ -235,7 +237,11 @@ def inspect_archive(archive_path: Path) -> dict:
             root = _package_root(names) if kind == KIND_KNOWLEDGE_PACKAGE else None
             if root is not None:
                 manifest = zf.read(f"{root}{MANIFEST_NAME}")
-                solver = _package_solver(zf, root)
+                package_files = _PackageFiles(zf, root)
+                solver = solver_contract.extract_package_solver(package_files)
+                deterministic_operations, deterministic_findings = (
+                    deterministic_contract.extract_package_contracts(package_files)
+                )
     except zipfile.BadZipFile as exc:
         raise WorkspaceError(f"压缩包无法解析：{exc}") from exc
 
@@ -258,8 +264,22 @@ def inspect_archive(archive_path: Path) -> dict:
 
     tops = sorted(top_dirs)
     blockers = _blockers(kind, root, counts, tops)
+    package_schema_version = _front_field(manifest, "schema_version")
     # 求解契约导入后要能原样再发布；带病导入只会把问题推迟到发布时、且丢了定位
     blockers += [f"求解契约：{problem}（{problem.path}）" for problem in solver.problems]
+    blockers += [
+        "确定性执行契约："
+        + str(problem.get("message") or "契约不合法")
+        + (f"（{problem['path']}）" if problem.get("path") else "")
+        for problem in deterministic_findings
+    ]
+    if solver.operation_keys and deterministic_operations:
+        blockers.append("第一版不能在同一知识包中混合 deterministic 与 solver_workflow")
+    if deterministic_operations and package_schema_version != "0.1":
+        blockers.append(
+            "确定性 Operation 第一版只支持 schema 0.1；"
+            f"当前包 schema_version 为 {package_schema_version or '缺失'}"
+        )
     return {
         "kind": kind,
         "kind_label": KIND_LABELS[kind],
@@ -270,9 +290,12 @@ def inspect_archive(archive_path: Path) -> dict:
         "package_root": root,
         "package_name": _front_field(manifest, "name"),
         "package_version": _front_field(manifest, "version"),
+        "package_schema_version": package_schema_version,
         **counts,
         "solver_operations": len(solver.operation_keys),
         "solver_problems": [problem.as_dict() for problem in solver.problems],
+        "deterministic_operations": len(deterministic_operations),
+        "deterministic_problems": deterministic_findings,
         "blockers": blockers,
     }
 
@@ -343,6 +366,13 @@ def materialize(workspace_root: Path, archive_path: Path, package_root: str) -> 
         for workspace_rel, data in solver.workspace_files.items():
             _write(workspace_root / workspace_rel, data)
         stats["solver_operations"] = len(solver.operation_keys)
+        package_files = _PackageFiles(zf, package_root)
+        deterministic_managed_paths: set[str] = set()
+        stats["deterministic_operations"] = deterministic_contract.materialize_package_contracts(
+            workspace_root,
+            package_files,
+            managed_package_paths=deterministic_managed_paths,
+        )
         paths = [info.filename for info in zf.infolist() if _is_importable(info)]
         script_keys = _script_keys(zf, paths, package_root)
         for path in paths:
@@ -353,6 +383,10 @@ def materialize(workspace_root: Path, archive_path: Path, package_root: str) -> 
             stats["preserved"] += 1
             target = _workspace_target(rel, script_keys) if inside else None
             if target is None:
+                continue
+            if rel in deterministic_managed_paths:
+                # 已还原到受管 Contract 目录的 Parser 不再作为普通脚本重复落地。
+                # 原始包成员仍完整保留在 imported-package/，Handler 及其他脚本照常导入。
                 continue
             key, workspace_rel = target
             if workspace_rel.endswith(".md"):

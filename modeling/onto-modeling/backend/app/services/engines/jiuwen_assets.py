@@ -61,6 +61,14 @@ _PLUGIN_RUNTIME_NOTE = (
     "- 全程使用中文。"
 )
 
+_FILE_READ_NOTE = (
+    "# 文件读取参数\n\n"
+    "当前 read_file 的 offset 表示跳过的行数，从 0 开始：省略或 offset=0 才从文件首行读取，"
+    "offset=1 会跳过首行。核对标题、frontmatter 或完整正文时必须从 offset=0 开始，"
+    "不要把部分读取未返回的首行判断为平台删除。补齐必需章节时需同时确认标题后的正文非空，"
+    "不能仅添加空标题或把正文留在标题之前。"
+)
+
 
 def _is_plugin_dev(directory: Path) -> bool:
     try:
@@ -126,6 +134,7 @@ class JiuwenAssetLoader:
             parts.append(self.rules_file.read_text(encoding="utf-8").strip())
         except OSError:
             parts.append("你是本体建模助手，在专家的项目工作区内工作（当前目录即项目根）。")
+        parts.append(_FILE_READ_NOTE)
         if self.plugin_dev:
             parts.append(_PLUGIN_RUNTIME_NOTE)
             return "\n\n".join(parts)
@@ -179,7 +188,11 @@ class JiuwenAssetLoader:
             content = path.read_text(encoding="utf-8")
         except OSError:
             return text
-        return content.replace("$ARGUMENTS", args)
+        if "$ARGUMENTS" in content:
+            return content.replace("$ARGUMENTS", args)
+        # Older/plugin templates may omit the placeholder. Preserve the actual
+        # selection, user instructions and validation failures sent by the UI.
+        return f"{content.rstrip()}\n\n本次调用参数与用户补充：\n{args}" if args else content
 
     # ---- hooks 配置 ----
 

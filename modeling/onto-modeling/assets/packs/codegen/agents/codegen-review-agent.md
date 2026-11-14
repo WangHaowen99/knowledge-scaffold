@@ -47,6 +47,8 @@ dispatcher 在 prompt 中提供：
 
 ### 2. CLI 入参规范
 
+确定性 Handler 按 `.claude/commands/ontology-deterministic-generate.md` 的专用骨架复审：禁止 sys/vars；显式传参替代 **vars(args)，print 输出单 JSON，仅主入口 raise SystemExit(_cli())；异常时 _cli 返回 ONTO_PUBLIC_ERROR 字符串，由入口写 stderr 并非 0 退出。这些写法不报普通骨架不规范；缺参、类型错误、未知参数仍必须提供可纠正的 INVALID_INPUT JSON。
+
 | 检查项 | 报告条件 | severity | category |
 |---|---|---|---|
 | 必须用 argparse | 没有 `import argparse` 或 `argparse.ArgumentParser` 调用 | 错误 | CLI不规范 |
@@ -66,6 +68,8 @@ dispatcher 在 prompt 中提供：
 运行验证不在复审里做：由 `/ontology-codegen` Step 4.6 用 `python3 .claude/scripts/script_verify.py run` 统一执行（经脚本验证网关在 jiuwenbox 沙箱中执行，不可用时在 onto-modeling 容器内），覆盖正常、边界、缺少必填参数、未知参数、空结果和预期业务错误。复审不要直接用 `python3` 运行 `ontology/scripts/` 下的脚本；stdout 必须是单个可解析 JSON、stderr 只承载诊断信息这两条，仍按源码静态检查。
 
 ### 3. import / 骨架规范
+
+对于确定性执行操作，另读取 `.claude/reference/deterministic-agent-draft.md` 与 `.claude/reference/deterministic-provider-sdk.md`，复核候选 Parser、测试预期和 Handler 的一致性。重点检查无关标题年份/编号是否干扰已明确参数、负数小数或矛盾值是否被截取成合法值，以及查询类别是否有独立数据映射依据。存在明确反例时按“流程覆盖”报告错误；缺少真实数据接入证据时说明待验证，不能仅凭沙箱夹具通过声明真实查询已通过，也不能因没有生产数据而虚构执行失败。普通脚本不要求提供确定性草稿。
 
 | 检查项 | 报告条件 | severity | category |
 |---|---|---|---|

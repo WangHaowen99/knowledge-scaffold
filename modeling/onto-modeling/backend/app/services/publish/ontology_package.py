@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 
 from ...kernel import metamodel
-from .. import package_mapping, package_operations, solver_contract
+from .. import deterministic_contract, package_mapping, package_operations, solver_contract
 from ..document_metadata import report_name
 from ..solver.service import solver_check_at
 from ..workspace.errors import WorkspaceError
@@ -188,9 +188,18 @@ class OntologyPackageAdapter:
                 "path": f"ontology/object/{issue['object']}.md",
             })
         solver = release_status_at(src.tree, src.state_root)
+        deterministic = deterministic_contract.release_status_at(src.tree)
         if solver.get("enabled"):
             for item in (solver.get("findings") or []) + (solver.get("gate") or []):
                 findings.append({"level": "error", **item})
+        for item in deterministic.get("findings") or []:
+            findings.append({"level": "error", **item})
+        if solver.get("enabled") and deterministic.get("enabled"):
+            findings.append({
+                "code": deterministic_contract.CODE_CONFLICT,
+                "level": "error",
+                "message": "第一版不能在同一知识包中混合 deterministic 与 solver_workflow",
+            })
         return findings
 
     def render(self, src: ReleaseSource, out: Path) -> Manifest:
@@ -242,7 +251,7 @@ class OntologyPackageAdapter:
                 if not directory.is_dir():
                     continue
                 for path in sorted(directory.glob(pattern)):
-                    if path.name == "index.md" or path.stem in seen:
+                    if path.is_symlink() or path.name == "index.md" or path.stem in seen:
                         continue
                     seen.add(path.stem)
                     raw = path.read_text(encoding="utf-8")
@@ -308,6 +317,13 @@ class OntologyPackageAdapter:
         solver = solver_contract.render_package_solver(
             solver_contracts, {key: root / rel for key, rel in solver_evaluators.items()}
         )
+        deterministic = deterministic_contract.ensure_publishable(root, solver_enabled=bool(solver.contracts))
+        deterministic_by_operation = {
+            item.operation: item for item in deterministic.contracts if item.enabled
+        }
+        deterministic_by_handler = {
+            item.handler: item for item in deterministic.contracts if item.enabled
+        }
         solver_by_stem = {item.operation: item for item in solver.contracts}
 
         def package_operation_key(stem: str) -> str:
@@ -445,6 +461,14 @@ class OntologyPackageAdapter:
                     )
 
                 operation_headers = ["operation key", "标题", "输入", "输出", "execution"]
+            elif deterministic_by_operation:
+                def operation_row(k: str) -> str:
+                    execution = "deterministic" if k in deterministic_by_operation else ""
+                    return package_operations.index_row(
+                        k, operation_bodies[k], operation_parents.get(k, []), execution=execution,
+                    )
+
+                operation_headers = ["operation key", "标题", "输入", "输出", "execution"]
             else:
                 def operation_row(k: str) -> str:
                     return package_operations.index_row(k, operation_bodies[k], operation_parents.get(k, []))
@@ -468,6 +492,30 @@ class OntologyPackageAdapter:
                     if callees:
                         # 主操作按顺序调用的子操作：consumer 据此识别主/子操作并路由脚本
                         extra += f"  operations: {json.dumps(callees, ensure_ascii=False)}\n"
+                    deterministic_item = deterministic_by_operation.get(key)
+                    if deterministic_item is not None:
+                        execution = {
+                            "type": "deterministic",
+                            "parser": f"scripts/{deterministic_item.key}_parser.py",
+                            "input_schema": f"schemas/{deterministic_item.key}.input.json",
+                            "output_schema": f"schemas/{deterministic_item.key}.output.json",
+                        }
+                        extra += f"aliases: {json.dumps(list(deterministic_item.aliases), ensure_ascii=False)}\n"
+                        extra += "execution:\n" + "".join(
+                            f"  {field}: {q(value)}\n" for field, value in execution.items()
+                        )
+                        if deterministic_item.routing_all_terms or deterministic_item.routing_any_terms:
+                            extra += "execution_policy:\n  routing:\n"
+                            extra += (
+                                "    all_terms: "
+                                + json.dumps(list(deterministic_item.routing_all_terms), ensure_ascii=False)
+                                + "\n"
+                            )
+                            extra += (
+                                "    any_terms: "
+                                + json.dumps(list(deterministic_item.routing_any_terms), ensure_ascii=False)
+                                + "\n"
+                            )
                     zf.writestr(f"{pkg}/operations/{key}.md", front("operation", key, key, extra) + body)
                     continue
                 zf.writestr(
@@ -478,6 +526,10 @@ class OntologyPackageAdapter:
                 )
             for path, data in solver.files.items():
                 zf.writestr(f"{pkg}/{path}", data)
+            for item in deterministic_by_operation.values():
+                zf.writestr(f"{pkg}/scripts/{item.key}_parser.py", item.parser)
+                zf.writestr(f"{pkg}/schemas/{item.key}.input.json", item.input_schema)
+                zf.writestr(f"{pkg}/schemas/{item.key}.output.json", item.output_schema)
             # 规则/指标/脚本：五元组一等实体（范式升级 ADR-0004），可选目录
             if rules:
                 zf.writestr(
@@ -530,12 +582,14 @@ class OntologyPackageAdapter:
                         filename = f"{key}.py"
                     zf.writestr(f"{pkg}/scripts/{filename}", code)
                     if operation:
+                        deterministic_item = deterministic_by_handler.get(key)
                         zf.writestr(
                             f"{pkg}/scripts/{key}.md",
                             _script_descriptor.render_descriptor(
                                 key, script_contracts[key], package_operation_key(operation), filename,
                                 operation_parents.get(operation, []),
                                 enums=object_enums,
+                                data_access=(deterministic_item.data_access if deterministic_item else None),
                             ),
                         )
         return _manifest(dest_path, solver.contracts, binding, allow_unbound)

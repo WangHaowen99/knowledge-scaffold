@@ -87,7 +87,7 @@ function ScriptTable({ items, selected, onSelect, tasks, onStudio }) {
     <div className="tbl-wrap">
       <table className="tbl compact scr-tbl">
           <thead>
-            <tr><th>脚本</th><th>对应操作</th><th>契约检查</th><th>描述符</th><th>沙箱验证</th><th aria-label="操作" /></tr>
+            <tr><th>脚本</th><th>对应操作</th><th>契约检查</th><th>描述符</th><th>运行验证</th><th aria-label="操作" /></tr>
           </thead>
           <tbody>
             {items.map((row) => {
@@ -169,7 +169,7 @@ function Verification({ row, tick }) {
   const vv = verificationView(v, row.script.name);
   let body;
   if (v === undefined) body = <span className="scr-dim">正在读取…</span>;
-  else if (vv.status === 'not_run') body = <span className="scr-dim">还没在沙箱里跑过</span>;
+  else if (vv.status === 'not_run') body = <span className="scr-dim">尚无当前脚本的有效验证记录</span>;
   else {
     body = (
       <>
@@ -179,7 +179,7 @@ function Verification({ row, tick }) {
     );
   }
   return (
-    <Card title="沙箱验证输出" icon="terminal" sub={vv.sub} extra={v === undefined ? null : <StateChip c={vv.chip} />}>
+    <Card title="运行验证记录" icon="terminal" sub={vv.sub} extra={v === undefined ? null : <StateChip c={vv.chip} />}>
       <div className="code scr-term">{body}</div>
     </Card>
   );

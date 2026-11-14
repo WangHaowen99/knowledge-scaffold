@@ -1,0 +1,25 @@
+nodes:
+  - id: deterministic-execution.contract
+    title: 确定性执行
+    kind: agent
+    placement: branch
+    section: optional
+    optional: true
+    after: [codegen.codegen, core.validate]
+    done: [deterministic_verified]
+    stale_on: [operation, script]
+    produces: ["ext/deterministic-execution/contracts/*"]
+    writes: ["ontology/scripts/*", "ext/deterministic-execution/drafts/*"]
+    entry: {command: /ontology-deterministic-scan}
+    actions:
+      - {label: 扫描候选, command: /ontology-deterministic-scan}
+      - {label: 定义契约, command: "/ontology-deterministic-contract "}
+      - {label: 生成执行闭包, command: "/ontology-deterministic-generate "}
+      - {label: 验证执行闭包, command: "/ontology-deterministic-verify "}
+probes:
+  deterministic_verified: {kernel: deterministic_contract_verified}
+commands:
+  deterministic-scan: {node: deterministic-execution.contract, requires: [逻辑已提取]}
+  deterministic-contract: {node: deterministic-execution.contract, requires: [逻辑已提取], lock_waits: [confirm]}
+  deterministic-generate: {node: deterministic-execution.contract, requires: [逻辑已提取], lock_waits: [confirm]}
+  deterministic-verify: {node: deterministic-execution.contract, requires: [逻辑已提取]}

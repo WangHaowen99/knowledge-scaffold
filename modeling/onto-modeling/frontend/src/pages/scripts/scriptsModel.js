@@ -7,9 +7,17 @@ import { relativeTime } from '../../api/errors.js';
 import { isLocked, lockState } from '../../state/readonly.js';
 
 export const SOLVER_TYPE = 'codegen.solver_contract';
+
+// 插件状态为 null 时仍在加载，不能把直接链接的确定性页签提前重置。
+export function availableScriptsTab(tab, deterministicEnabled) {
+  return tab === 'dt' && deterministicEnabled === false ? 'sc' : tab;
+}
 export const SOLVER_DIR = 'ontology/solver/';
 // 页签：?tab=sv 是求解契约；从导航栏下拉点「求解适配」（面板节点）过来带 ?node=codegen.solver，也开求解契约
-export const pageTab = (query) => (query?.tab === 'sv' || query?.node === 'codegen.solver' ? 'sv' : 'sc');
+export const pageTab = (query) => {
+  if (query?.tab === 'dt') return 'dt';
+  return query?.tab === 'sv' || query?.node === 'codegen.solver' ? 'sv' : 'sc';
+};
 
 // 插件命令（命令名不带参数；参数放 args）
 export const COMMANDS = {
@@ -47,9 +55,14 @@ const DESCRIPTOR = {
   none: { text: '—', tone: 'gray', icon: null },
 };
 export const descriptorChip = (row) => DESCRIPTOR[row?.descriptor] || DESCRIPTOR.none;
+function runtimeLabel(runtime) {
+  if (runtime === 'local') return '本地';
+  if (runtime === 'jiuwenbox') return '沙箱';
+  return '环境未记录';
+}
 export function sandboxChip(row) {
   const s = row?.sandbox || {};
-  if (s.status === 'passed') return { text: `通过${s.duration_ms != null ? ` · ${fmtSecs(s.duration_ms)}` : ''}`, tone: 'teal', icon: 'check' };
+  if (s.status === 'passed') return { text: `${runtimeLabel(s.runtime)}通过${s.duration_ms != null ? ` · ${fmtSecs(s.duration_ms)}` : ''}`, tone: s.runtime === 'jiuwenbox' ? 'teal' : 'amber', icon: 'check' };
   if (s.status === 'failed') return { text: `未通过${s.duration_ms != null ? ` · ${fmtSecs(s.duration_ms)}` : ''}`, tone: 'red', icon: 'x' };
   return { text: '未运行', tone: 'gray', icon: null };
 }
@@ -136,12 +149,14 @@ export function verificationView(v, scriptName) {
   const passed = v.status === 'passed';
   return {
     status: v.status,
-    chip: passed ? { text: '通过', tone: 'teal', icon: 'check' } : { text: '未通过', tone: 'red', icon: 'x' },
+    chip: sandboxChip({ sandbox: { status: v.status, runtime: v.runtime } }),
     sub: fmtStamp(v.ran_at) || null,
-    lines: cases.flatMap((c) => [{ kind: 'cmd', text: `$ ${name} ${c.args}`.trimEnd() }, { kind: c.passed ? 'out' : 'err', text: c.output }]),
+    lines: cases.flatMap((c) => c.name != null
+      ? [{ kind: 'cmd', text: `用例：${c.name}` }, { kind: c.passed ? 'out' : 'err', text: `预期：${c.expected}（记录未保存原始输出）` }]
+      : [{ kind: 'cmd', text: `$ ${name} ${c.args}`.trimEnd() }, { kind: c.passed ? 'out' : 'err', text: c.output }]),
     summary: {
       ok: passed,
-      text: `${passed ? '✓' : '✗'} ${ok}/${cases.length} 用例通过${v.duration_ms != null ? ` · ${fmtSecs(v.duration_ms)}` : ''} · ${v.network_access ? '有网络访问' : '无网络访问'}`,
+      text: `${passed ? '✓' : '✗'} ${ok}/${cases.length} 用例通过${v.duration_ms != null ? ` · ${fmtSecs(v.duration_ms)}` : ''} · ${runtimeLabel(v.runtime)}执行 · ${v.runtime === 'jiuwenbox' && v.network_access === false ? '网络隔离' : '网络隔离未证实'}`,
     },
   };
 }

@@ -12,16 +12,25 @@ class FakeWorkerEngine:
     def __init__(self, ctx):
         self.ctx = ctx
         self.queue: asyncio.Queue = asyncio.Queue()
+        self.queued_messages: list[str] = []
 
     async def connect(self) -> bool:
         if self.ctx.project_id == "refuse":
             raise RuntimeError("合成的连接失败")
         return bool(self.ctx.load_resume_token())
 
-    async def send(self, text: str, context: str | None = None) -> None:
-        asyncio.get_running_loop().create_task(self._turn(text))
+    async def send(self, text: str, context: str | None = None, message_id: str | None = None) -> None:
+        asyncio.get_running_loop().create_task(self._turn(text, message_id))
 
-    async def _turn(self, text: str) -> None:
+    async def steer(self, text: str, message_id: str) -> None:
+        if text == "等待插话":
+            self.queued_messages.append(message_id)
+            await self.queue.put({"type": "test_queued", "message_id": message_id})
+            return
+        await self.queue.put({"type": "_delivery", "message_id": message_id, "state": "seen"})
+        await self._turn(text, message_id)
+
+    async def _turn(self, text: str, message_id: str | None = None) -> None:
         if text == "崩溃":
             os._exit(3)
         if text == "提问":
@@ -39,7 +48,10 @@ class FakeWorkerEngine:
                                   "blocks": [{"kind": "text", "text": f"{self.ctx.project_id}:{text}:{history}:{os.getpid()}"}]})
         self.ctx.save_resume_token(f"jiuwen:{self.ctx.project_id}")
         self.ctx.log_error("fake", "合成留档")
-        await self.queue.put({"type": "result", "subtype": "success", "is_error": False})
+        await self.queue.put({
+            "type": "result", "subtype": "success", "is_error": False,
+            "message_ids": [message_id] if message_id else [],
+        })
 
     async def events(self):
         while True:
@@ -48,8 +60,12 @@ class FakeWorkerEngine:
             if event.get("type") == "_engine_end":
                 return
 
-    async def interrupt(self) -> None:
+    async def interrupt(self, cancel_queued: bool = False) -> list[str]:
+        withdrawn = list(self.queued_messages) if cancel_queued else []
+        if cancel_queued:
+            self.queued_messages.clear()
         await self.queue.put({"type": "result", "subtype": "interrupted", "is_error": False})
+        return withdrawn
 
     async def disconnect(self) -> None:
         pass

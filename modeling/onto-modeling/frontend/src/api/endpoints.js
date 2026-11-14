@@ -257,6 +257,12 @@ export function createApi(client) {
     solverContract: (id) => client.get(`${P(id)}/solver/contract`), // SV-01
     saveSolverContract: (id, body) => client.put(`${P(id)}/solver/contract`, body), // SV-02
     checkSolverContract: (id, body) => client.post(`${P(id)}/solver/contract/check`, body), // SV-03
+    deterministicContract: (id) => client.get(`${P(id)}/deterministic/contract`),
+    deterministicCandidates: (id) => client.get(`${P(id)}/deterministic/candidates`),
+    createDeterministicDraft: (id, body) => client.post(`${P(id)}/deterministic/candidates/draft`, body),
+    saveDeterministicContract: (id, body) => client.put(`${P(id)}/deterministic/contract`, body),
+    checkDeterministicContract: (id, body) => client.post(`${P(id)}/deterministic/contract/check`, body),
+    verifyDeterministicContract: (id, key, body) => client.post(`${P(id)}/deterministic/contract/${encodeURIComponent(key)}/verify`, body),
 
     // 3.19 出处
     resolveAnchors: (id, anchors) => client.post(`${P(id)}/anchors/resolve`, { anchors }), // EV-29

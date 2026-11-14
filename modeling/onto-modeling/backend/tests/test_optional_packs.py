@@ -243,6 +243,33 @@ def test_create_project_with_capabilities_and_industry(env):
     assert wrong_kind.status_code == 404
 
 
+def test_deterministic_execution_pack_assembles_from_real_assets(env):
+    manager, client = env
+    created = client.post("/api/v1/projects", json={
+        "name": "workspace_demo_create",
+        "goal": "Synthetic goal for deterministic execution",
+        "capabilities": {"deterministic-execution": True},
+        "industry_packs": [],
+        "system_packs": [],
+    })
+    assert created.status_code == 201, created.text
+    created_root = manager.project_root(created.json()["id"])
+    created_flow = json.loads((created_root / ".claude" / "flow.yaml").read_text(encoding="utf-8"))
+    assert "deterministic-execution.contract" in {node["id"] for node in created_flow["nodes"]}
+    assert created_flow["commands"]["deterministic-scan"]["node"] == "deterministic-execution.contract"
+
+    project_id = manager.create_project("workspace_demo_enable")["id"]
+    enabled = client.post(
+        f"/api/v1/projects/{project_id}/packs",
+        json={"name": "deterministic-execution"},
+    )
+    assert enabled.status_code == 201, enabled.text
+    enabled_root = manager.project_root(project_id)
+    manager.packs.apply(enabled_root)
+    enabled_flow = json.loads((enabled_root / ".claude" / "flow.yaml").read_text(encoding="utf-8"))
+    assert "deterministic-execution.contract" in {node["id"] for node in enabled_flow["nodes"]}
+
+
 def test_catalog_marks_default_on_and_categories(env):
     manager, client = env
     items = {item["name"]: item for item in client.get("/api/v1/packs", params={"category": "capability,industry"}).json()["items"]}

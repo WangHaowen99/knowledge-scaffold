@@ -62,6 +62,7 @@ CODE_INVALID = "solver_contract_invalid"
 # 发布门禁：当前修订缺少通过的端到端验证 / 最近一次验证失败
 CODE_VALIDATION_REQUIRED = "solver_contract_validation_required"
 CODE_VALIDATION_FAILED = "solver_contract_validation_failed"
+CODE_EXECUTION_MODE_CONFLICT = "deterministic_solver_conflict"
 
 FINDING_HINTS = {
     CODE_VERSION_INCOMPATIBLE: "请改用平台支持的契约版本或 Profile。",
@@ -72,6 +73,7 @@ FINDING_HINTS = {
     CODE_INVALID: "按提示修正文件格式或字段取值。",
     CODE_VALIDATION_REQUIRED: "求解知识包发布前须对当前修订完成一次 Consumer 端到端验证。",
     CODE_VALIDATION_FAILED: "查看验证诊断，修正后对当前修订重新验证。",
+    CODE_EXECUTION_MODE_CONFLICT: "停用确定性执行或求解器契约中的一种执行方式后重试。",
 }
 
 # consumer 运行时当前唯一支持的 Profile 及其事实来源约束（solver_fact_providers）
@@ -1916,6 +1918,16 @@ def stage_contracts(items: Iterable[Mapping], operation_stems: Iterable[str]) ->
     if problems:
         raise SolverContractRejected(problems)
     return staged
+
+
+def staged_enabled_operations(
+    staged: Mapping[str, Mapping[str, bytes]], operation_stems: Iterable[str],
+) -> set[str]:
+    """返回已完成结构校验的暂存契约中启用的工作区 Operation。"""
+    contracts, problems = _load_staged(staged, operation_stems)
+    if problems:
+        raise SolverContractRejected(problems)
+    return {item.operation for item in contracts if item.enabled}
 
 
 def evaluator_summary(path: Path | None) -> dict | None:

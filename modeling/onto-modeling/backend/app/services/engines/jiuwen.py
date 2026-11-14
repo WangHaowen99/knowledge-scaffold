@@ -130,7 +130,31 @@ def model_config(owner: str = "") -> dict:
     cfg["context"] = model_settings.jiuwen_effective_context()
     # 思考开关计入配置指纹：管理员改了，会话在下一条消息前按新配置重建
     cfg["thinking"] = model_settings.thinking_enabled()
+    cfg["api_mode"] = config.JIUWEN_API_MODE
     return cfg
+
+
+def _create_model(cfg: dict, extra_body: dict | None = None):
+    """协议属于 SDK 客户端配置，不能作为请求 extras 发给模型网关。"""
+    from openjiuwen.core.foundation.llm import init_model
+    from openjiuwen.core.foundation.llm.schema.config import LLMApiMode
+
+    from .jiuwen_stream import preserve_tool_call_fragments
+
+    context = cfg["context"]
+    model = init_model(
+        provider="OpenAI",
+        model_name=cfg["model"],
+        api_key=cfg["api_key"],
+        api_base=cfg["base_url"],
+        max_tokens=context["max_output_tokens"],
+        context_window=context["max_context_tokens"],
+        timeout=300.0,
+        **({"extra_body": extra_body} if extra_body else {}),
+    )
+    model.model_client_config.api_mode = LLMApiMode(cfg.get("api_mode", "chat_completions"))
+    preserve_tool_call_fragments(model)
+    return model
 
 
 def _fingerprint(cfg: dict) -> str:
@@ -979,7 +1003,6 @@ class JiuwenEngine(ObservableEngine):
 
     def _build_agent(self, cfg: dict):
         """测试替换点：单测注入假 agent，不触碰真实框架。"""
-        from openjiuwen.core.foundation.llm import init_model
         from openjiuwen.core.runner import Runner
         from openjiuwen.core.single_agent import AgentCard
         from openjiuwen.core.sys_operation import (
@@ -1002,28 +1025,9 @@ class JiuwenEngine(ObservableEngine):
         jiuwen_sandbox.install()
         context = cfg["context"]
         call_body = call_extra_body(bool(cfg.get("thinking")))
-        model = init_model(
-            provider="OpenAI",
-            model_name=cfg["model"],
-            api_key=cfg["api_key"],
-            api_base=cfg["base_url"],
-            max_tokens=context["max_output_tokens"],
-            # 只作上下文引擎的窗口元数据（压缩阈值按它算），不随请求发给网关
-            context_window=context["max_context_tokens"],
-            timeout=300.0,
-            **({"extra_body": call_body} if call_body else {}),
-        )
+        model = _create_model(cfg, call_body)
         quiet_body = quiet_extra_body()
-        quiet_model = init_model(
-            provider="OpenAI",
-            model_name=cfg["model"],
-            api_key=cfg["api_key"],
-            api_base=cfg["base_url"],
-            max_tokens=context["max_output_tokens"],
-            context_window=context["max_context_tokens"],
-            timeout=300.0,
-            extra_body=quiet_body,
-        ) if quiet_body else None
+        quiet_model = _create_model(cfg, quiet_body) if quiet_body else None
         _install_dispatch_brief_capture()
         # 框架私有工件区与项目 git 工作区分离（官方 cwd/workspace 分层）
         shadow = shadow_dir(self._ctx.project_id)
