@@ -135,6 +135,29 @@ def test_clone_copies_content_but_not_history(manager: WorkspaceManager):
     assert not (clone_root / ".onto-web.json").read_text(encoding="utf-8").count(meta["id"])
 
 
+@pytest.mark.parametrize("status", ["confirmed", "pending", None])
+def test_clone_preserves_goal_and_keeps_projects_independent(manager: WorkspaceManager, status):
+    """All names and goal content in this case are synthetic."""
+    goal = "Synthetic modeling goal.\nPreserve the complete text."
+    source = manager.create_project("project_alpha", background=goal if status else "")
+    if status == "confirmed":
+        manager.confirm_goal(source["id"])
+    elif status is None:
+        # Legacy projects can have a background without a confirmation status.
+        manager._update_meta(source["id"], background=goal)
+
+    clone = manager.clone_project(source["id"], owner="operator_a", name="project_copy")
+    persisted = manager.get_project(clone["id"])
+    assert clone["background"] == persisted["background"] == goal
+    assert clone.get("goal_status") == persisted.get("goal_status") == status
+    assert clone["id"] != source["id"]
+    assert clone["owner"] == "operator_a"
+    manager._update_meta(clone["id"], background="Synthetic copy revision.")
+    assert manager.get_project(source["id"])["background"] == goal
+    manager._update_meta(source["id"], background="Synthetic source revision.")
+    assert manager.get_project(clone["id"])["background"] == "Synthetic copy revision."
+
+
 def test_role_of_and_write_permission():
     meta = {"owner": "alice", "members": {"bob": "editor", "carol": "viewer"}}
     assert WorkspaceManager.role_of(meta, "alice", False) == "owner"
