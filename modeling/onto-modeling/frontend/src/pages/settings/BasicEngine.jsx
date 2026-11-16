@@ -9,6 +9,7 @@ import {
 import {
   basicPatch, createdText, engineCards, modelDisplayName, nameProblem,
 } from './settingsModel.js';
+import { NameCount, NameLimitHint, limitProjectName, nameAtLimit } from '../projects/NameCount.jsx';
 
 function useNameCheck(name, excludeId, enabled) {
   const { api } = useApp();
@@ -56,8 +57,8 @@ export function BasicSection({ archived }) {
       </div>
       <div className="card-b">
         <div className="grid2">
-          <Field label="项目名称" hint={problem ? <span style={{ color: 'var(--red)' }}>{problem}</span> : null}>
-            <Inp value={form.name} error={!!problem} disabled={archived} maxLength={220} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+          <Field label="项目名称" hint={problem ? <span style={{ color: 'var(--red)' }}>{problem}</span> : nameAtLimit(form.name) ? <NameLimitHint /> : null}>
+            <Inp value={form.name} error={!!problem} disabled={archived} after={<NameCount value={form.name} />} onChange={(e) => setForm((f) => ({ ...f, name: limitProjectName(e.target.value) }))} />
           </Field>
           <Field label="知识包名">
             <Inp mono value={meta.package_name || ''} readOnly after={<Icon name="lock" size={14} />} title="知识包名创建后不能改" />

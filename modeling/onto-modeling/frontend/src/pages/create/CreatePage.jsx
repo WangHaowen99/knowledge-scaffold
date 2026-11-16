@@ -11,6 +11,7 @@ import { uiChip } from '../plugins/catalogModel.js';
 import { rejectedResourceMessage, uploadRules, validateResourceFiles } from '../../lib/resourceUpload.js';
 import { createBody } from './createBody.js';
 import { modelDisplayName } from '../settings/settingsModel.js';
+import { NameCount, NameLimitHint, limitProjectName, nameAtLimit } from '../projects/NameCount.jsx';
 
 const STEPS = ['目标', '起点与资料', '行业与能力', '引擎与构建方式'];
 const EXAMPLES = ['店长一句话说明需求，按规则自动生成补货单', '根据业主报修判断故障紧急程度并派维修工单', '按订单预测和站点约束求解骑手排班方案'];
@@ -152,7 +153,7 @@ export default function CreatePage() {
       ? <span className="row g4" style={{ color: 'var(--red)' }}><Icon name="alert" size={12} />你已经有一个叫「{name.trim()}」的项目</span>
       : chk.reason === 'too_long'
         ? <span className="row g4" style={{ color: 'var(--red)' }}>项目名称不能超过 200 个字符</span>
-        : <span className="row g4" style={{ color: 'var(--teal)' }}><Icon name="check" size={12} />包名：<span className="mono">{chk.package_name}</span></span>;
+        : nameAtLimit(name) ? <NameLimitHint /> : <span className="row g4" style={{ color: 'var(--teal)' }}><Icon name="check" size={12} />包名：<span className="mono">{chk.package_name}</span></span>;
 
   const startItems = [
     ['upload', 'upload', '上传资料', ''],
@@ -195,7 +196,7 @@ export default function CreatePage() {
                 <h2>先说说这个知识包要解决什么问题</h2>
                 <div className="mt20">
                   <Field label="项目名称" req hint={nameHint}>
-                    <div className={cx('inp', (conflict || chk?.reason === 'too_long') && 'err')}><Icon name="edit" size={14} /><input value={name} onChange={(e) => { setName(e.target.value); setNameTouched(true); }} placeholder="给项目起个名字" autoFocus /></div>
+                    <div className={cx('inp', (conflict || chk?.reason === 'too_long') && 'err')}><Icon name="edit" size={14} /><input value={name} onChange={(e) => { setName(limitProjectName(e.target.value)); setNameTouched(true); }} placeholder="给项目起个名字" autoFocus /><NameCount value={name} /></div>
                   </Field>
                 </div>
                 <div className="mt16">

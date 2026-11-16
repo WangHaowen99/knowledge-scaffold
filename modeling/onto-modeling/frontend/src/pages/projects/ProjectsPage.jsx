@@ -5,13 +5,15 @@ import { useApp } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
+import { createLatestRequest } from '../../lib/latestRequest.js';
 import { evidenceFromSources } from '../../state/evidence.js';
 import { PageHead, ShellG } from '../../shell/Shell.jsx';
 import {
-  Button, Check, Empty, Field, Icon, Modal, Prog, Seg, Select, cx, useOutside,
+  Button, Check, Empty, Field, Icon, Modal, Note, Prog, Seg, Select, cx, useOutside,
 } from '../../ui/index.jsx';
 import HubImportModal from '../import/HubImportModal.jsx';
 import ProjectDeleteDialog from './ProjectDeleteDialog.jsx';
+import { NameCount, NameLimitHint, limitProjectName, nameAtLimit } from './NameCount.jsx';
 import { activityText, projectLook } from './projectCard.js';
 
 function ModeChip({ mode }) {
@@ -107,21 +109,24 @@ export default function ProjectsPage() {
   const [q, setQ] = useState('');
   const [sort, setSort] = useState('recent');
   const [data, setData] = useState(null);
+  const [loadError, setLoadError] = useState('');
+  const latest = useRef(null);
+  if (!latest.current) latest.current = createLatestRequest();
   const [menu, setMenu] = useState(null);
   const [dlg, setDlg] = useState(null);
   const wrapRef = useRef(null);
   const menuRef = useRef(null);
   useOutside(menuRef, () => setMenu(null), !!menu);
 
-  const load = useCallback(async () => {
-    try {
-      const r = await api.projects({ status: filter, q: q.trim() || undefined, sort });
-      setData(r);
-    } catch (e) {
-      toast(errorText(e), 'alert');
-      setData((d) => d || { items: [], counts: {} });
-    }
-  }, [api, filter, q, sort]);
+  // 只认最后一次请求（切筛选、搜索时迟到的响应不覆盖）；失败时不当成「还没有项目」，给重试
+  const load = useCallback(() => latest.current.run(
+    () => api.projects({ status: filter, q: q.trim() || undefined, sort }),
+    {
+      success: (r) => { setData(r); setLoadError(''); },
+      failure: (e) => setLoadError(errorText(e)),
+      settled: () => {},
+    },
+  ), [api, filter, q, sort]);
 
   useEffect(() => {
     const t = setTimeout(load, q ? 200 : 0);
@@ -179,7 +184,14 @@ export default function ProjectsPage() {
       />
       <HubImportModal open={hubOpen} onClose={() => setHubOpen(false)}
         onImported={async (created) => { await load(); navigate(pagePath(created.landing_page || 'wb-l2', created.id)); }} />
-      {isEmpty ? (
+      {loadError ? (
+        <Note tone="red" className="mb16">
+          <div className="row g12"><span className="grow">项目列表加载失败：{loadError}</span><Button size="sm" icon="refresh" onClick={load}>重试</Button></div>
+        </Note>
+      ) : null}
+      {!data ? (
+        loadError ? null : <div className="card row g12" style={{ padding: 30 }} role="status" aria-live="polite"><span className="spin" /><span className="muted">项目列表加载中…</span></div>
+      ) : isEmpty ? (
         <div className="card" style={{ padding: 30 }}>
           <Empty
             icon="cube"
@@ -266,7 +278,7 @@ function nameHint(chk, name) {
   if (chk.reason === 'empty') return <span style={{ color: 'var(--red)' }}>请输入项目名称</span>;
   if (chk.reason === 'too_long') return <span style={{ color: 'var(--red)' }}>项目名称不能超过 200 个字符</span>;
   if (chk.reason === 'conflict') return <span style={{ color: 'var(--red)' }}>你已经有一个叫「{name.trim()}」的项目，换个名字或加上日期</span>;
-  return null;
+  return nameAtLimit(name) ? <NameLimitHint /> : null;
 }
 
 function RenameDialog({ dlg, onClose, onDone }) {
@@ -293,7 +305,7 @@ function RenameDialog({ dlg, onClose, onDone }) {
       foot={<><Button onClick={onClose}>取消</Button><Button kind="primary" disabled={same || bad || !v.trim()} onClick={go}>改名</Button></>}
     >
       <Field label="项目名称" hint={same ? null : nameHint(chk, v)}>
-        <div className={cx('inp', bad && 'err')}><Icon name="edit" size={14} /><input value={v} onChange={(e) => setV(e.target.value)} autoFocus /></div>
+        <div className={cx('inp', bad && 'err')}><Icon name="edit" size={14} /><input value={v} onChange={(e) => setV(limitProjectName(e.target.value))} autoFocus /><NameCount value={v} /></div>
       </Field>
     </Modal>
   );
@@ -333,7 +345,7 @@ function CloneDialog({ dlg, onClose, onDone }) {
       foot={<><Button onClick={onClose}>取消</Button><Button kind="primary" disabled={bad || !v.trim()} onClick={go}>改名并克隆</Button></>}
     >
       <Field label="新项目名称" hint={nameHint(chk, v)}>
-        <div className={cx('inp', bad && 'err')}><Icon name="edit" size={14} /><input value={v} onChange={(e) => setV(e.target.value)} /></div>
+        <div className={cx('inp', bad && 'err')}><Icon name="edit" size={14} /><input value={v} onChange={(e) => setV(limitProjectName(e.target.value))} /><NameCount value={v} /></div>
       </Field>
       <div className="col mt16" style={{ gap: 10 }}>
         <Check on={opt.include_history} onChange={(x) => setOpt((o) => ({ ...o, include_history: x }))} label="包含版本历史" />

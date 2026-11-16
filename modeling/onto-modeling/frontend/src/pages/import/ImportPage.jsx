@@ -7,6 +7,7 @@ import { errorText, formatBytes } from '../../api/errors.js';
 import { PageHead, ShellG } from '../../shell/Shell.jsx';
 import { Button, Chip, Field, Icon, Note, Prog, Seg, Table, cx } from '../../ui/index.jsx';
 import HubImportModal from './HubImportModal.jsx';
+import { NameCount, limitProjectName } from '../projects/NameCount.jsx';
 
 // 格式由后端自动识别，页面只显示识别结果（R2）
 const FORMATS = [
@@ -165,7 +166,7 @@ export default function ImportPage() {
                   </div>
                   <div className="grid2 mt20">
                     <Field label="项目名称" req>
-                      <div className="inp"><Icon name="edit" size={14} /><input value={name} onChange={(e) => setName(e.target.value)} /></div>
+                      <div className="inp"><Icon name="edit" size={14} /><input value={name} onChange={(e) => setName(limitProjectName(e.target.value))} /><NameCount value={name} /></div>
                     </Field>
                     <Field label="构建方式">
                       <Seg items={[['L2', '陪伴建模'], ['L4', '自主构建']]} value={buildMode} onChange={setBuildMode} />
@@ -219,7 +220,7 @@ export default function ImportPage() {
                   <span className="k">B</span>
                   <div className="grow">
                     <div className="t">自定义名称</div>
-                    <div className="mt8"><div className="inp"><Icon name="edit" size={14} /><input placeholder="输入新的项目名称" value={custom} onChange={(e) => { setCustom(e.target.value); setNcPick('B'); }} /></div></div>
+                    <div className="mt8"><div className="inp"><Icon name="edit" size={14} /><input placeholder="输入新的项目名称" value={custom} onChange={(e) => { setCustom(limitProjectName(e.target.value)); setNcPick('B'); }} /><NameCount value={custom} /></div></div>
                   </div>
                 </div>
               </div>
