@@ -23,12 +23,15 @@ WRITE_FEATURES = frozenset({
 class UpstreamError(Exception):
     """A backend answered with an error or could not be reached."""
 
-    def __init__(self, status: int, code: str, message: str, backend: str = "") -> None:
+    def __init__(self, status: int, code: str, message: str, backend: str = "",
+                 details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.status = status
         self.code = code
         self.message = message
         self.backend = backend
+        # other scalar fields of the backend's error object (e.g. existingDocId of a duplicate upload)
+        self.details = details or {}
 
 
 @dataclass
@@ -39,6 +42,8 @@ class Backend:
     healthy: bool = False
     last_error: str | None = None
     answered: bool = False
+    # names of its knowledge bases as last listed: lets a tool result name them while the backend is down
+    kb_names: dict[str, str] = field(default_factory=dict)
 
     @property
     def id(self) -> str:
@@ -166,18 +171,25 @@ def _check_capabilities(caps: Any) -> str | None:
     return None
 
 
+ERROR_DETAIL_KEYS = 10
+
+
 def _upstream_error(backend: Backend, response: httpx.Response) -> UpstreamError:
-    code, message = "backend_error", response.text[:500]
+    code, message, details = "backend_error", response.text[:500], {}
     try:
         err = response.json().get("error") or {}
         if isinstance(err, dict):
             code = err.get("code") or code
             message = err.get("message") or message
+            details = {k: v for k, v in err.items()
+                       if k not in ("code", "message", "backend") and isinstance(k, str)
+                       and (v is None or isinstance(v, (str, int, float, bool)))}
+            details = dict(list(details.items())[:ERROR_DETAIL_KEYS])
         elif isinstance(err, str):
             message = err
     except (ValueError, AttributeError):
         pass
-    return UpstreamError(response.status_code, code, message, backend.id)
+    return UpstreamError(response.status_code, code, message, backend.id, details)
 
 
 class Registry:

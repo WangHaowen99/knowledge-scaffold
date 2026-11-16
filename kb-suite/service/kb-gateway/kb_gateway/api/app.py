@@ -52,7 +52,7 @@ def create_app(gateway: State | None = None) -> FastAPI:
 
     @app.exception_handler(UpstreamError)
     async def _upstream_error(_: Request, exc: UpstreamError) -> JSONResponse:
-        extra = {"backend": exc.backend} if exc.backend else {}
+        extra = {**exc.details, **({"backend": exc.backend} if exc.backend else {})}
         return JSONResponse(_error(exc.code, exc.message, **extra), status_code=exc.status)
 
     @app.get("/healthz")

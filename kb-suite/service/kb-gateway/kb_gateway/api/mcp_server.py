@@ -2,17 +2,22 @@
 
 Same seven tools and text formats as kb-service's MCP, answered across all
 backends. Callers authenticate with a retrieve key and may confine a
-connection to some knowledge bases with ``X-KB-Scope``.
+connection to some knowledge bases with ``X-KB-Scope``. Results carry the
+gateway's notes (``kb_gateway.notes``): knowledge bases not searched because
+their backend is unavailable, grep matches not returned, files without text.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
+import functools
 import json
+from typing import Awaitable, Callable
 
 from mcp.server.fastmcp import FastMCP
 
-from .. import ops
+from .. import notes, ops
 from ..auth import CAP_RETRIEVE, AuthError, Principal, check_scope, extract_token, narrow, parse_scope_header
 from ..deps import registry, state
 from ..registry import UpstreamError
@@ -25,8 +30,32 @@ INSTRUCTIONS = (
     "开启了 Wiki 的知识库还有大模型整理好的实体、概念和文档摘要页：要概览或跨文档综合时先用 search_wiki，"
     "再用 read_wiki_page 读全文并顺着 [[链接]] 读相关页面；Wiki 是二次整理，结论要回到原文片段核对出处。"
     "回答时引用片段末尾的出处（文档标题、章节、页码）。"
+    "回答里提到知识库个数时，直接引用 list_knowledge_bases 结果里的 total 和各后端的 count，不要自己数；"
+    "用户要求列出知识库时，按后端分组逐个写出全部库名，不要只举例或只给个数。"
+    "工具结果说某些知识库所在后端不可用、没有检索时，回答要告诉用户这些库没有查到；"
+    "说文件没有可识别文字时，如实说明查不到，不要猜测。"
 )
 WIKI_PAGE_CHARS = 12000
+# list_knowledge_bases: at most this many knowledge bases are listed (the counts always cover all of them),
+# each description cut to this length; worst case about 200 x 400 characters
+LIST_MAX_KBS = 200
+LIST_DESCRIPTION_CHARS = 160
+GREP_MAX_LINES = 100
+# a tool call that outlives the MCP client's own timeout breaks some clients' sessions for good (Swarm 0.2.7
+# does not reconnect, D44): every tool answers within this budget, with a note when it had to stop
+TOOL_BUDGET_S = 25.0
+
+
+def _within_budget(tool: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
+    @functools.wraps(tool)
+    async def wrapper(*args, **kwargs) -> str:
+        try:
+            return await asyncio.wait_for(tool(*args, **kwargs), TOOL_BUDGET_S)
+        except asyncio.TimeoutError:
+            return (f"这次查询超过 {int(TOOL_BUDGET_S)} 秒没有完成，已停止，结果不完整。"
+                    "可以缩小知识库范围或换更具体的查询再试；回答时要告诉用户这次没有查到。")
+
+    return wrapper
 
 
 def _make_server() -> FastMCP:
@@ -72,81 +101,164 @@ def _location(locators: list) -> str:
     return "、".join(dict.fromkeys(parts))
 
 
-def _error(exc: UpstreamError) -> str:
-    return f"知识服务出错：{exc.message}"
+def _error(exc: UpstreamError, scope: list[str] | None = None) -> str:
+    """The tool result for a failed call: why it failed (by error code), and which knowledge bases it concerns."""
+
+    if exc.code in notes.PATTERN_CODES:
+        return f"查找条件无效：{exc.message}"
+    if scope and notes.reportable(exc):
+        return notes.unavailable_message([notes.exc_ref(registry(), kb, exc) for kb in scope])
+    backend = registry().by_id.get(exc.backend)
+    label = backend.config.label if backend else "知识服务"
+    if notes.is_down(exc):
+        return f"{label} 当前不可用，这部分暂时查不到（不是不存在），回答时要告诉用户没有查到。（{exc.message}）"
+    return f"{label} {notes.explain(exc.code, exc.message)}"
+
+
+def _lead(failed: list[dict], warnings: list[str], scope: list[str]) -> str:
+    """What goes in front of a search result: the backends' warnings and the knowledge bases not searched."""
+
+    lines = [f"注意：{w}" for w in warnings]
+    if failed:
+        lines.append("（" + _missed(scope, failed) + "）")
+    return "\n\n".join(lines) + ("\n\n" if lines else "")
+
+
+def _missed(scope: list[str], failed: list[dict]) -> str:
+    """The note for backends that failed in a call over ``scope`` ([] = every knowledge base)."""
+
+    if not failed:
+        return ""
+    refs = notes.on_failed(registry(), scope, failed) if scope else []
+    return notes.unavailable_message(refs) if refs else notes.backends_message(registry(), failed)
+
+
+def _kb_label(kb_id: str) -> str:
+    """"知识库名（kb_id，后端）": which knowledge base and backend a hit came from, so answers name it right."""
+
+    backend = registry().route(kb_id)
+    name = backend.kb_names.get(kb_id)
+    return f"{name}（{kb_id}，{backend.config.label}）" if name else f"{kb_id}（{backend.config.label}）"
+
+
+def _kb_entry(kb: dict) -> dict:
+    description = kb.get("description") or ""
+    if len(description) > LIST_DESCRIPTION_CHARS:
+        description = description[:LIST_DESCRIPTION_CHARS] + "…"
+    return {"id": kb["id"], "name": kb.get("name"), "description": description,
+            "documents": int((kb.get("stats") or {}).get("completed") or 0)}
 
 
 @mcp.tool()
+@_within_budget
 async def list_knowledge_bases() -> str:
-    """列出可用的知识库（id、名称、说明、文档数、所在后端）。"""
+    """列出可用的知识库，按所在知识后端分组（id、名称、说明、已完成的文档数）。
+
+    结果开头的 summary、total 和每个后端的 count 是准确的个数：回答里提到知识库个数时直接引用这些数字，不要自己数。
+    用户要求列出知识库时，按后端分组逐个写出全部库名（说明可省略），不要只举例、用“等”省略或只给个数。
+    unavailable_backends 里的知识后端当前不可用，它们的知识库不在列表里、也检索不到，回答时要说明。
+    """
 
     principal = _caller()
-    items, _ = await ops.list_kbs(registry())
+    items, unavailable = await ops.list_kbs(registry())
     if principal.kb_allowlist:
         items = [kb for kb in items if kb["id"] in principal.kb_allowlist]
-    return json.dumps(
-        [
-            {"id": kb["id"], "name": kb.get("name"), "description": kb.get("description"),
-             "documents": int((kb.get("stats") or {}).get("completed") or 0), "backend": kb["backend"]["label"]}
-            for kb in items
-        ],
-        ensure_ascii=False,
-    )
+    groups: dict[str, list[dict]] = {}
+    for kb in items:
+        groups.setdefault(kb["backend"]["label"], []).append(kb)
+    counts = "、".join(f"{label} {len(kbs)} 个" for label, kbs in groups.items())
+    summary = f"共 {len(items)} 个可用的知识库" + (f"：{counts}" if counts else "") + "。"
+    room = LIST_MAX_KBS
+    backends = []
+    for label, kbs in groups.items():
+        listed = [_kb_entry(kb) for kb in kbs[:room]]
+        room -= len(listed)
+        entry = {"backend": label, "count": len(kbs), "knowledge_bases": listed}
+        if len(listed) < len(kbs):
+            entry["not_listed"] = len(kbs) - len(listed)
+        backends.append(entry)
+    if any("not_listed" in b for b in backends):
+        summary += f"列表只列出前 {LIST_MAX_KBS} 个，个数仍按全部统计。"
+    down = []
+    for u in unavailable:
+        backend = registry().by_id.get(u["id"])
+        known = dict(backend.kb_names) if backend else {}
+        if principal.kb_allowlist:
+            if backend is None or not any(registry().route(kb) is backend for kb in principal.kb_allowlist):
+                continue  # this connection cannot see that backend's knowledge bases anyway
+            known = {k: v for k, v in known.items() if k in principal.kb_allowlist}
+        down.append({"backend": u["label"], "last_seen_knowledge_bases": list(known.values())[:LIST_MAX_KBS]})
+    if down:
+        summary += ("另有知识后端当前不可用，其上的知识库没有计入、也检索不到："
+                    + "、".join(d["backend"] for d in down) + "。")
+    if items:
+        summary += "用户要求列出知识库时，按后端逐个写出全部库名。"
+    out: dict = {"summary": summary, "total": len(items), "backends": backends}
+    if down:
+        out["unavailable_backends"] = down
+    return json.dumps(out, ensure_ascii=False)
 
 
 @mcp.tool()
+@_within_budget
 async def search_knowledge(query: str, kb_ids: list[str] | None = None, top_k: int = 8) -> str:
     """在知识库中混合检索（向量 + 关键词 + 重排），返回最相关的片段和出处。kb_ids 为空时检索全部可用知识库。"""
 
+    scope = _scope(kb_ids)
     try:
-        hits, failed, _ = await ops.search(registry(), _scope(kb_ids), {"query": query}, max(1, min(int(top_k), 20)))
+        hits, failed, _, warnings = await ops.search(registry(), scope, {"query": query}, max(1, min(int(top_k), 20)))
     except UpstreamError as exc:
-        return _error(exc)
+        return _error(exc, scope)
+    lead = _lead(failed, warnings, scope)
     if not hits:
-        return "没有检索到相关内容。"
+        return lead + "没有检索到相关内容。"
     blocks = []
     for i, h in enumerate(hits, start=1):
         if h.get("chunk_type") == "wiki_page":
             blocks.append(
                 f"[{i}] Wiki 页面《{h.get('title')}》（{h.get('context_header') or ''}，kb_id={h['kb_id']}, "
                 f"slug={h.get('wiki_slug')}；整理自 {len(h.get('wiki_sources') or [])} 篇文档，用 read_wiki_page 读全文）\n"
+                f"知识库：{_kb_label(h['kb_id'])}\n"
                 f"{h.get('content')}"
             )
             continue
         where = " · ".join(x for x in (h.get("title"), h.get("context_header"), _location(h.get("locators"))) if x)
         note = f"，命中问题：{h['matched_question']}" if h.get("matched_question") else ""
         blocks.append(
-            f"[{i}] 出处：{where}\n(doc_id={h['doc_id']}, chunk_seq={h.get('seq')}, score={float(h.get('score') or 0):.3f}{note})\n"
-            f"{h.get('content')}"
+            f"[{i}] 出处：{where}\n知识库：{_kb_label(h['kb_id'])}\n"
+            f"(doc_id={h['doc_id']}, chunk_seq={h.get('seq')}, score={float(h.get('score') or 0):.3f}{note})\n"
+            + notes.instruction_line(h.get("content"), h.get("title"))
+            + f"{h.get('content')}"
         )
-    tail = ""
-    if failed:
-        tail = "\n\n（以下知识后端本次检索失败：" + "、".join(f["label"] for f in failed) + "）"
-    return "\n\n---\n\n".join(blocks) + tail
+    return lead + "\n\n---\n\n".join(blocks)
 
 
 @mcp.tool()
+@_within_budget
 async def search_wiki(query: str, kb_ids: list[str] | None = None, limit: int = 5) -> str:
     """在开启了 Wiki 的知识库里检索 Wiki 页面（实体、概念、文档摘要页），返回标题、摘要和 slug。"""
 
     n = max(1, min(int(limit), 20))
+    scope = _scope(kb_ids)
     try:
         # over-fetch so enough wiki pages survive the filter; the contract caps top_k at 50
-        hits, _, _ = await ops.search(registry(), _scope(kb_ids), {"query": query, "include_wiki": True},
-                                      min(n * 3, ops.SEARCH_MAX_TOP_K))
+        hits, failed, _, warnings = await ops.search(registry(), scope, {"query": query, "include_wiki": True},
+                                                     min(n * 3, ops.SEARCH_MAX_TOP_K))
     except UpstreamError as exc:
-        return _error(exc)
+        return _error(exc, scope)
     items = [
         {"kb_id": h["kb_id"], "slug": h.get("wiki_slug"), "title": h.get("title"), "type": h.get("wiki_type"),
          "summary": (h.get("content") or "").split("\n\n", 1)[0][:300], "score": round(float(h.get("score") or 0), 3)}
         for h in hits if h.get("chunk_type") == "wiki_page"
     ][:n]
+    lead = _lead(failed, warnings, scope)
     if not items:
-        return "没有检索到 Wiki 页面（知识库可能没有开启 Wiki）。"
-    return json.dumps(items, ensure_ascii=False)
+        return lead + "没有检索到 Wiki 页面（知识库可能没有开启 Wiki）。"
+    return lead + json.dumps(items, ensure_ascii=False)
 
 
 @mcp.tool()
+@_within_budget
 async def read_wiki_page(kb_id: str, slug: str) -> str:
     """读取一个 Wiki 页面全文，附带它链接到的页面、链接到它的页面和来源文档。slug 形如 entity/xxx、summary/<doc_id>、index。"""
 
@@ -159,7 +271,7 @@ async def read_wiki_page(kb_id: str, slug: str) -> str:
     except UpstreamError as exc:
         if exc.status == 404:
             return f"Wiki 页面不存在：{slug}（可以先用 search_wiki 或读 slug=index 的索引页）"
-        return _error(exc)
+        return _error(exc, [kb_id])
     content = page.get("content") or ""
     more = ""
     if len(content) > WIKI_PAGE_CHARS:
@@ -176,28 +288,34 @@ async def read_wiki_page(kb_id: str, slug: str) -> str:
 
 
 @mcp.tool()
+@_within_budget
 async def list_documents(kb_id: str, limit: int = 50) -> str:
-    """列出某个知识库的文档（标题、类型、状态、摘要）。"""
+    """列出某个知识库的文档（标题、类型、状态、摘要）。no_text=true 的文件没有可识别的文字（扫描件或图片），内容查不到。"""
 
     _scope([kb_id])
     try:
         docs = await ops.list_documents(registry(), kb_id, limit=max(1, min(int(limit), 200)))
     except UpstreamError as exc:
-        return _error(exc)
+        return _error(exc, [kb_id])
     items = [
         {"doc_id": d["id"], "title": d.get("title"), "file_name": d.get("file_name"),
-         "status": d.get("parse_status"), "summary": d.get("summary")}
+         "status": d.get("parse_status"), "summary": d.get("summary"),
+         **({"no_text": True} if notes.doc_has_no_text(d) else {})}
         for d in docs
     ]
     return json.dumps(items, ensure_ascii=False, default=str)
 
 
 @mcp.tool()
+@_within_budget
 async def read_document(doc_id: str, offset: int = 0, limit: int = 10) -> str:
     """按阅读顺序读取文档的分块（offset 从 0 开始，limit 最多 30），用于查看检索命中处的上下文。"""
 
-    doc = await ops.get_document(registry(), doc_id)
     principal = _caller()
+    try:
+        doc = await ops.get_document(registry(), doc_id)
+    except UpstreamError as exc:
+        return _error(exc)
     if doc is None or (principal.kb_allowlist and doc.get("kb_id") not in principal.kb_allowlist):
         return f"文档不存在或无权访问：{doc_id}"
     offset = max(0, int(offset))
@@ -206,6 +324,8 @@ async def read_document(doc_id: str, offset: int = 0, limit: int = 10) -> str:
     except UpstreamError as exc:
         return _error(exc)
     chunks, total = page.get("items") or [], int(page.get("total") or 0)
+    if notes.doc_has_no_text(doc) or (total == 0 and doc.get("parse_status") == "completed"):
+        return f"《{doc.get('title')}》（{doc.get('file_name') or doc_id}）：{notes.NO_TEXT}"
     head = f"《{doc.get('title')}》 共 {total} 个分块，当前 {offset}–{offset + len(chunks) - 1}"
     if doc.get("summary") and offset == 0:
         head += f"\n摘要：{doc['summary']}"
@@ -215,17 +335,31 @@ async def read_document(doc_id: str, offset: int = 0, limit: int = 10) -> str:
         for c in chunks
     )
     more = f"\n\n（还有更多，继续用 offset={offset + len(chunks)}）" if offset + len(chunks) < total else ""
-    return f"{head}\n\n{body}{more}"
+    warning = notes.instruction_line(body + "\n" + (doc.get("summary") or ""), doc.get("title"))
+    return f"{warning}{head}\n\n{body}{more}"
 
 
 @mcp.tool()
-async def grep_documents(pattern: str, kb_ids: list[str] | None = None, max_results: int = 20) -> str:
-    """在知识库正文中逐行查找正则或字面量（穷尽扫描），返回命中行和行号。"""
+@_within_budget
+async def grep_documents(pattern: str, kb_ids: list[str] | None = None, max_results: int = 20,
+                         max_lines_per_doc: int = 10) -> str:
+    """在知识库正文中逐行查找正则或字面量（穷尽扫描），返回命中行和行号。
 
+    每篇最多返回 max_lines_per_doc 行（最大 100）；某篇被截断时该篇 truncated=true，message 写明还有多少处没有返回。
+    """
+
+    scope = _scope(kb_ids)
+    max_results = max(1, min(int(max_results), 50))
+    max_lines = max(1, min(int(max_lines_per_doc), GREP_MAX_LINES))
     try:
-        result = ops.grep_view(await ops.grep(registry(), _scope(kb_ids), pattern, max_results=max(1, min(int(max_results), 50))))
+        result = ops.grep_view(await ops.grep(registry(), scope, pattern, max_results=max_results,
+                                              max_lines_per_doc=max_lines))
     except UpstreamError as exc:
-        return _error(exc)
+        return _error(exc, scope)
+    notes.annotate_grep(result, max_lines=max_lines, max_results=max_results, lines_cap=GREP_MAX_LINES, results_cap=50)
+    if result.get("failed_backends"):
+        notes.add_message(result, _missed(scope, result["failed_backends"]))
+    result = notes.flag_instructions(result) or result
     return json.dumps(result, ensure_ascii=False)
 
 

@@ -116,14 +116,18 @@ class FakeProvider:
                                    "outline": [line.lstrip("# ") for line in l1.split("\n") if line.startswith("#")],
                                    "anchors": anchors})
         if path == "/v1/grep":
-            matches = []
+            # as the contract says: total_matches counts every matching line, lines are cut per document
+            matches, total = [], 0
+            per_doc, max_results = int(body.get("max_lines_per_doc") or 10), int(body.get("max_results") or 50)
             for d in self.docs.values():
                 lines = [{"line_number": i, "text": t} for i, t in enumerate(d["_l1"].split("\n"), 1) if body["pattern"] in t]
                 if lines:
+                    total += len(lines)
                     matches.append({"doc_id": d["id"], "kb_id": d["kb_id"], "title": d["title"], "file_name": d["file_name"],
-                                    "lines": lines})
+                                    "lines": lines[:per_doc]})
             return self._json({"pattern": body["pattern"], "search_mode": "regex", "total_documents": len(matches),
-                               "total_matches": sum(len(m["lines"]) for m in matches), "has_more": False, "matches": matches})
+                               "total_matches": total, "has_more": len(matches) > max_results,
+                               "matches": matches[:max_results]})
         if path == "/v1/uploads":
             self.uploads.append({"begin": body})
             return self._json({"upload_id": f"{self.prefix}up1", "part_size": 1024, "part_count": 1}, 201)
