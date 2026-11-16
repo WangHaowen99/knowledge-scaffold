@@ -1,0 +1,29 @@
+# 领域包扩展（ADR-0099）：项目从已发布的领域本体包导入，以导入的那一版为底座，只靠新增条目扩展功能。
+# 底座的对象、操作、规则、指标、脚本、求解契约一律不改；助手写底座条目由内核按 flow.yaml 的 confine 挡，
+# 网页、Studio、MCP 上的人工改动在发布前的「底座核对」里列出，撤回之前不能发布。
+name: domain-extend
+version: 0.1.0
+kind: capability
+category: capability
+label: 领域包扩展
+description: 以导入的领域本体包为底座，只新增条目来扩展功能，底座的任何要素都不改；发布前核对底座和导入时逐字一致。不能和增量构建同时启用。
+publisher: {kind: official, label: 平台}
+default_on: false
+batch: second
+kernel_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+depends: {core: ">=0.5"}  # 0.5.0 起内核认 confine、kernel 探针 session_open
+changelog: 首个版本：锁定底座、新增功能、底座核对三步，底座核对挡发布。
+contributes:
+  commands: [domain-extend-bind, domain-extend-add, domain-extend-check]
+  scripts: [domain_extend.py]
+  rules: [domain-extend-rules.md]
+  prompts:
+    - id: domain-extend-no-round
+      match: ["结束本轮", "重新圈定"]
+      text: >-
+        这个项目启用了领域包扩展：底座（导入的领域本体包）一直只读，没有「本轮」可结束，也不能靠重新圈定放开。
+        新功能用新增条目实现（/domain-extend-add）；要改底座本身，请去改领域本体包并发布新版本。
+  flow: flow.yaml
+  nodes: [domain-extend.bind, domain-extend.add, domain-extend.check]
+checksums: checksums.sha256
