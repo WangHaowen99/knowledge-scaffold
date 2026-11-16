@@ -194,12 +194,16 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 }
 .question-option.selected .option-check { opacity: 1; transform: scale(1); }
 .qc-custom {
-  display: flex; align-items: center; gap: 6px; margin-top: 10px;
-  border: 1px dashed var(--border-default); border-radius: 999px; padding: 2px 4px 2px 8px;
-  transition: border-color 0.18s ease;
+  display: flex; flex-direction: column; gap: 6px; margin-top: 10px;
 }
-.qc-custom:focus-within { border-color: var(--color-primary); border-style: solid; }
+.qc-custom label { font-size: 12px; color: var(--text-secondary); }
 .qc-custom .ant-input { font-size: 13px; }
+.qc-submit { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
+.qc-error { color: var(--color-error, #d4380d); font-size: 12px; }
+.question-answer {
+  white-space: pre-wrap; overflow-wrap: anywhere; padding: 8px 10px;
+  border-radius: 8px; background: var(--surface-subtle); font-size: 13px;
+}
 
 /* 开始建模前的目标确认卡：沿用提问卡外观 */
 .goal-confirm-text {
