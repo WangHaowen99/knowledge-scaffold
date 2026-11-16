@@ -1436,6 +1436,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - 结构化字段、属性表（含证据列）、关系（声明 / 提及）；
   - 被谁引用、数据来源；
   - `revision`、`lock`、`draft`（本人未提交的草稿）、需复核标记。
+  - 读之前先拿草稿对一下正式条目（develop !608）：草稿内容已和条目一样（复核时合进去了）就删掉草稿，`draft` 为 null；
+    草稿基于的修订已不是条目当前修订时 `draft.state` 为 `stale`，`status` 不算 `editing`，编辑器不自动载入它。
 - 错误：`not_found`、`path_forbidden`。
 - 流程图条目返回 `410 endpoint_removed`，`details.successor` 指向 `AR-03`。
 
@@ -1457,11 +1459,13 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `GET`、`PUT`、`DELETE /api/v1/projects/{id}/studio/entries/{entry_id}/draft` · 所有者 · 旧：`GET/PUT/DELETE /api/projects/{id}/studio/draft` · 审计：PUT、DELETE 记 · 依据：4.3 · 页面：studio-table
 
-- **GET** 响应：`{draft: Draft|null}`。
+- **GET** 响应：`{draft: Draft|null}`，读前同 ST-04 对一下正式条目。
 - **PUT** 请求：`{base_revision, form?: EntryForm, content?: string}`。
   - `form` 是结构化编辑器的内容，由服务端按元模型渲染成 Markdown；`content` 是原文。二者必选其一。
   - 自动暂存时调用，节流由前端控制（建议 2 秒）。
   - 响应：`{saved_at, draft: Draft}`。
+  - `base_revision` 已不是条目当前修订时拒存，回 `409 revision_conflict`，`details: {draft_state: "stale"}`（develop !608）：旧底稿不能盖掉新版本。
+    基于当前修订再存会替换掉 stale 草稿。
 - **DELETE**（放弃草稿）响应 `204`。
 - 草稿存数据目录，不进 git；每人每条目一份。
 - 写入范围锁住时，PUT 仍允许（「你的草稿会保留」），但 `ST-08` 提交会被拒。
@@ -1479,7 +1483,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   | `rejected` | `errors: Finding[], warnings: Finding[]` | 解析不了的结构（缺必需章节、表头缺列），草稿保留 |
   | `needs_review` | `review_points: string[], conversation_id, command_task: CommandTask` | 超出确定性检查范围。草稿移进助手变更集副本，往工作台对话发一条复核命令，结果在对话里 |
 
-- 错误：`not_found`（没有草稿）、`revision_conflict`、`write_scope_locked`、`project_archived`。
+- 错误：`not_found`（没有草稿）、`revision_conflict`（含草稿已 stale：`details.draft_state = "stale"`，检查与复核前就拒，不转助手）、`write_scope_locked`、`project_archived`。
 
 #### ST-09 新建条目
 
@@ -5218,7 +5222,7 @@ type Feedback = {
 type EntryRow = {
   id: EntryId | string; kind: EntryKind | "flowchart"; key: string; name: string;
   refs_out: number; refs_in: number;
-  status: "confirmed" | "pending" | "stale" | "draft" | "editing";   // editing = 本人有未提交草稿
+  status: "confirmed" | "pending" | "stale" | "draft" | "editing";   // editing = 本人有未提交且未失效（非 stale）的草稿
   needs_review: boolean; locked: boolean;
   plugin: { name: string; label: string } | null;
   updated_at: time | null;                     // 最后更新时间（ST-03）
@@ -5258,7 +5262,10 @@ type EntryForm = {
   sections?: Record<string, string>;            // 操作的步骤、规则的条件等，按元模型章节
 };
 
-type Draft = { author: string; updated_at: time; base_revision: string; form: EntryForm | null; content: string };
+type Draft = {
+  author: string; updated_at: time; base_revision: string; form: EntryForm | null; content: string;
+  state: "active" | "stale";   // stale = 基于的修订已不是条目当前修订（develop !608）
+};
 
 type KnowledgeEntry = {
   id: string; title: string;
