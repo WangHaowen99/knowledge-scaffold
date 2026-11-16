@@ -27,9 +27,9 @@ class DocumentError(Exception):
 
 def _split_extension(name: str) -> tuple[str, str]:
     stem, dot, ext = name.rpartition(".")
-    if not dot or not stem or not ext or len(ext) > _MAX_EXTENSION:
-        return name, ""
-    return stem, "." + ext
+    if dot and stem and 0 < len(ext) <= _MAX_EXTENSION:
+        return stem, "." + ext
+    return name, ""
 
 
 def clean_file_name(name: str) -> str:

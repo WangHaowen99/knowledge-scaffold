@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 
@@ -29,8 +30,8 @@ from kb_service.parsing import (
     supported_types,
 )
 
-MINERU_URL = "http://mineru.example.com/"
-ASR_URL = "http://asr.example.com/v1"
+MINERU_URL = "https://mineru.example.com/"
+ASR_URL = "https://asr.example.com/v1"
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 PDF = b"%PDF-1.7\n" + b"\x00" * 64
 
@@ -153,7 +154,9 @@ def test_capabilities_declare_image_types_when_mineru_is_on():
         "print(json.dumps(asyncio.run(capabilities(caller=None))['file_types']))\n"
     )
     env = {**os.environ, "KBS_MINERU_ENABLED": "true", "KBS_MINERU_API_URL": MINERU_URL, "KBS_ASR_ENABLED": "false"}
-    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=120, check=True)
+    out = subprocess.run(  # NOSONAR(S4721): this interpreter with a fixed program, no shell
+        [sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=120, check=True
+    )
     file_types = json.loads(out.stdout.strip().splitlines()[-1])
     assert {"png", "jpg", "tif", "pdf", "docx"} <= set(file_types)
     assert "mp3" not in file_types
@@ -168,8 +171,8 @@ def test_image_text_comes_from_mineru(mineru):
     assert "合成编号 KB-0001" in result.markdown and "images/" not in result.markdown
     assert result.engine == "mineru-pipeline" and result.source_blocks == []
     assert result.metadata == {"ocr_engine": "mineru", "mineru_backend": "pipeline", "mineru_task_id": "task-1"}
-    assert fake.calls[0] == ("POST", "http://mineru.example.com/tasks")
-    assert fake.calls[-1] == ("GET", "http://mineru.example.com/tasks/task-1/result")
+    assert fake.calls[0] == ("POST", "https://mineru.example.com/tasks")
+    assert fake.calls[-1] == ("GET", "https://mineru.example.com/tasks/task-1/result")
     assert fake.polls == {"task-1": 3}
     form = fake.forms[0]
     assert form_field(form, "backend") == "pipeline" and form_field(form, "parse_method") == "ocr"
@@ -197,7 +200,7 @@ def test_hybrid_backend_falls_back_to_pipeline(mineru):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "GET" and not request.url.path.endswith("/result"):
             task_id = request.url.path.split("/")[2]
-            return httpx.Response(200, json={"status": states[task_id], "error": "synthetic engine error"})
+            return httpx.Response(200, json={"status": states.get(task_id), "error": "synthetic engine error"})
         response = fake(request)
         if request.method == "POST":
             backend = form_field(fake.forms[-1], "backend")
@@ -373,7 +376,8 @@ def test_audio_segments_become_timed_lines(asr):
             },
         )
 
-    asr(handler, asr_api_key="test-key-not-real", asr_model="synthetic-whisper")
+    key = secrets.token_hex(8)
+    asr(handler, asr_api_key=key, asr_model="synthetic-whisper")
     result = asyncio.run(parse_file("meeting.mp3", b"ID3" + b"\x00" * 32))
     assert result.markdown == "合成会议录音第一句。\n第二句 Epsilon。"
     assert result.engine == "asr" and result.metadata == {"asr_model": "synthetic-whisper", "language": "zh"}
@@ -381,8 +385,8 @@ def test_audio_segments_become_timed_lines(asr):
         (0, 10, {"type": "audio", "start_ms": 0, "end_ms": 2500}),
         (11, 23, {"type": "audio", "start_ms": 2500, "end_ms": 5250}),
     ]
-    assert seen["url"] == "http://asr.example.com/v1/audio/transcriptions"
-    assert seen["auth"] == "Bearer test-key-not-real"
+    assert seen["url"] == "https://asr.example.com/v1/audio/transcriptions"
+    assert seen["auth"] == f"Bearer {key}"
     assert form_field(seen["form"], "model") == "synthetic-whisper"
     assert form_field(seen["form"], "response_format") == "verbose_json"
     assert b'name="file"; filename="meeting.mp3"' in seen["form"]
@@ -396,10 +400,10 @@ def test_plain_transcript_without_segments(asr):
         seen["auth"] = request.headers.get("authorization")
         return httpx.Response(200, json={"text": "合成转写文本 Zeta", "language": "zh"})
 
-    asr(handler, asr_api_url="http://asr.example.com/v1/audio/transcriptions/")
+    asr(handler, asr_api_url="https://asr.example.com/v1/audio/transcriptions/")
     result = asyncio.run(parse_file("note.wav", b"RIFF" + b"\x00" * 32))
     assert result.markdown == "合成转写文本 Zeta" and result.source_blocks == []
-    assert seen["url"] == "http://asr.example.com/v1/audio/transcriptions" and seen["auth"] is None
+    assert seen["url"] == "https://asr.example.com/v1/audio/transcriptions" and seen["auth"] is None
 
 
 def test_asr_failures_are_readable(asr):

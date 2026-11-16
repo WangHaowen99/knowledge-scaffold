@@ -1,5 +1,7 @@
-"""Notes the gateway adds to agent tool results: unavailable backends, knowledge-base counts,
-grep truncation and files without text (synthetic data only)."""
+"""Notes the gateway adds to agent tool results (synthetic data only).
+
+Unavailable backends, knowledge-base counts, grep truncation and files without text.
+"""
 
 from __future__ import annotations
 
@@ -197,10 +199,10 @@ def test_grep_note_when_several_documents_are_cut_or_more_documents_exist():
         {"title": "甲", "lines": [1] * 5}, {"title": "乙", "lines": [1] * 5}, {"title": "丙", "lines": [1] * 2}]}
     assert notes.annotate_grep(result, max_lines=5, max_results=50, lines_cap=100, results_cap=200)
     assert [m.get("truncated") for m in result["matches"]] == [True, True, None]
-    assert "合计还有 18 处没有返回" in result["message"]
+    assert "合计还有 18 处没有返回" in result.get("message", "")
     more = {"totalMatches": 3, "hasMore": True, "matches": [{"title": "甲", "lines": [1, 2]}]}
     notes.annotate_grep(more, max_lines=5, max_results=1, lines_cap=100, results_cap=200)
-    assert "maxResults（最大 200）" in more["message"]
+    assert "maxResults（最大 200）" in more.get("message", "")
     # a document with exactly max_lines matches is not cut
     exact = {"totalMatches": 5, "hasMore": False, "matches": [{"title": "甲", "lines": [1] * 5}]}
     assert not notes.annotate_grep(exact, max_lines=5, max_results=50, lines_cap=100, results_cap=200)

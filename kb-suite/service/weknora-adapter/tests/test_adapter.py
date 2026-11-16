@@ -440,8 +440,10 @@ def test_listing_does_not_wait_for_a_slow_chunk_count(fake, monkeypatch):
         first = c.get("/v1/kbs").json()["items"][0]["stats"]
         assert "chunks" not in first and first["documents"] == 16
         deadline = time.monotonic() + 10
-        while "chunks" not in (stats := c.get("/v1/kbs").json()["items"][0]["stats"]) and time.monotonic() < deadline:
+        stats = first
+        while "chunks" not in stats and time.monotonic() < deadline:
             time.sleep(0.05)
+            stats = c.get("/v1/kbs").json()["items"][0]["stats"]
         assert stats["chunks"] == 15 + 3
     client_mod.get_settings.cache_clear()
 
@@ -575,11 +577,11 @@ def test_refused_internal_urls_do_not_reveal_the_network(client, fake):
         assert r.json()["error"] == {"code": "url_not_allowed", "message": "不允许导入内部或私有地址"}
     # WeKnora's own service-level check answers a bare 500
     fake.url_answer = _weknora_error(500, "invalid URL")
-    r = client.post("/v1/kbs/wk_kb1/documents/url", json={"url": "http://intranet.example.com/"})
+    r = client.post("/v1/kbs/wk_kb1/documents/url", json={"url": "https://intranet.example.com/"})
     assert r.status_code == 400 and "不允许导入内部或私有地址" in r.json()["error"]["message"]
     fake.url_answer = _weknora_error(400, "URL 未通过安全校验：SSRF validation failed: DNS resolution failed for hostname "
                                           "nowhere.example.com: cannot verify if it resolves to safe IP")
-    r = client.post("/v1/kbs/wk_kb1/documents/url", json={"url": "http://nowhere.example.com/"})
+    r = client.post("/v1/kbs/wk_kb1/documents/url", json={"url": "https://nowhere.example.com/"})
     assert r.status_code == 400 and r.json()["error"]["message"] == "无法解析网址中的域名，请检查网址"
 
 
@@ -588,7 +590,7 @@ def test_url_import_still_works_and_other_errors_lose_addresses(client, fake):
     assert doc["id"] == "wk_k7" and fake.calls[-1][2]["body"]["url"] == "https://www.example.com/a"
     fake.url_answer = _weknora_error(503, "upstream 192.0.2.15:8080 unavailable")
     r = client.post("/v1/kbs/wk_kb1/documents/url", json={"url": "https://www.example.com/b"})
-    assert r.status_code == 502 and "192.0.2.15" not in r.text
+    assert r.status_code == 502 and "192.0.2.15" not in r.text  # NOSONAR(S1313) RFC 5737 documentation address
 
 
 def test_failed_url_documents_hide_the_address_they_tried(client, fake):
@@ -596,7 +598,7 @@ def test_failed_url_documents_hide_the_address_they_tried(client, fake):
                   "error_message": "2026-01-01 10:20:30 fetch failed: dial tcp 192.0.2.15:443, [2001:db8::15]:443: "
                                    "connection refused"}]
     error = client.get("/v1/kbs/wk_kb1/documents").json()["items"][0]["error_message"]
-    assert "192.0.2.15" not in error and "2001:db8" not in error
+    assert "192.0.2.15" not in error and "2001:db8" not in error  # NOSONAR(S1313) RFC 5737 / RFC 3849 addresses
     assert error.startswith("2026-01-01 10:20:30 fetch failed") and "connection refused" in error
 
 

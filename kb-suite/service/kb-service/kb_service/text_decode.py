@@ -93,9 +93,9 @@ def _utf16_without_bom(data: bytes) -> str | None:
     if high < max(2, _UTF16_NUL_SHARE * units) or low * _UTF16_SKEW > high:
         return None
     text = _strict(data, codec)
-    if text is None or "\x00" in text or not plausible(text) or not _common_cjk(text):
+    if text is None or "\x00" in text:
         return None
-    return text
+    return text if plausible(text) and _common_cjk(text) else None
 
 
 def _damaged_utf8(data: bytes) -> str | None:

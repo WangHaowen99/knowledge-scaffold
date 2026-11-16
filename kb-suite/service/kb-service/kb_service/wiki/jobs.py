@@ -671,7 +671,10 @@ async def finalize(kb_id: str, cfg: kb_config.KbConfig, tenant_id: str) -> dict:
     if content_pages:
         if _intro_outdated(index, content_pages):
             # the documents the directory lists, so a deleted one is not described any more
-            doc_ids = [d for p in content_pages if p["page_type"] == "summary" for d in p["source_doc_ids"] or []]
+            doc_ids: list[str] = []
+            for p in content_pages:
+                if p["page_type"] == "summary":
+                    doc_ids.extend(p["source_doc_ids"] or [])
             summaries = await db.pool().fetch(
                 "SELECT title, summary FROM documents WHERE kb_id = $1 AND deleted_at IS NULL"
                 " AND parse_status = 'completed' AND (cardinality($2::text[]) = 0 OR id = ANY($2::text[]))"

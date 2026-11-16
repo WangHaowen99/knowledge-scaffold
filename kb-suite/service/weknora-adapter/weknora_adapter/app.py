@@ -480,12 +480,15 @@ def _router():
             pos = min((p for p in (low.find(t) for t in lowered) if p >= 0), default=-1)
             return None if pos < 0 else mapping.exact_hit(doc, text, pos)
 
+        docs: list[dict] = []
         try:
-            docs = [d for kb in wanted for d in await _kb_docs(kb)
-                    if d.get("parse_status") == "completed" and d["id"] not in covered][:EXACT_MAX_DOCS]
+            for kb in wanted:
+                docs.extend(d for d in await _kb_docs(kb)
+                            if d.get("parse_status") == "completed" and d["id"] not in covered)
         except ProviderError as exc:
             logger.warning("exact identifier scan skipped: %s", exc)
             docs = []
+        docs = docs[:EXACT_MAX_DOCS]
         tasks = [asyncio.create_task(scan(d)) for d in docs]
         extra: list[dict] = []
         if tasks:

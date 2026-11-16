@@ -60,7 +60,8 @@ def stats(backend, clock):
 KB = {"id": "kb1", "knowledge_count": 3, "processing_count": 2, "chunk_count": 0}
 
 
-async def _settled(stats: ChunkStats, kb: dict = KB) -> int | None:
+async def _settled(stats: ChunkStats, kb: dict | None = None) -> int | None:
+    kb = kb or KB
     stats.peek(kb)
     await stats.settle([kb["id"]], 5)
     return stats.peek(kb)

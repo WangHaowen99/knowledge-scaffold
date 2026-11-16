@@ -172,6 +172,14 @@ def _check_capabilities(caps: Any) -> str | None:
 
 
 ERROR_DETAIL_KEYS = 10
+_RESERVED_ERROR_KEYS = ("code", "message", "backend")
+
+
+def _passed_detail(key: Any, value: Any) -> bool:
+    """A field of a backend error object that reaches the caller: a scalar under a key of its own."""
+
+    scalar = value is None or isinstance(value, (str, int, float, bool))
+    return isinstance(key, str) and key not in _RESERVED_ERROR_KEYS and scalar
 
 
 def _upstream_error(backend: Backend, response: httpx.Response) -> UpstreamError:
@@ -181,9 +189,7 @@ def _upstream_error(backend: Backend, response: httpx.Response) -> UpstreamError
         if isinstance(err, dict):
             code = err.get("code") or code
             message = err.get("message") or message
-            details = {k: v for k, v in err.items()
-                       if k not in ("code", "message", "backend") and isinstance(k, str)
-                       and (v is None or isinstance(v, (str, int, float, bool)))}
+            details = {k: v for k, v in err.items() if _passed_detail(k, v)}
             details = dict(list(details.items())[:ERROR_DETAIL_KEYS])
         elif isinstance(err, str):
             message = err

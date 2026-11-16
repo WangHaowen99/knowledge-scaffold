@@ -264,7 +264,8 @@ class _Shape:
         chars = set(_PROBES)
         self._collect(tree, chars)
         if ignorecase:
-            chars |= {v for c in list(chars) for v in (c.lower(), c.upper(), c.casefold()) if len(v) == 1}
+            for c in list(chars):
+                chars.update(v for v in (c.lower(), c.upper(), c.casefold()) if len(v) == 1)
         self.alphabet = frozenset(chars)
 
     def _collect(self, seq, out: set) -> None:
@@ -487,7 +488,7 @@ class _Worker:
         if not sys.executable:
             raise PatternError(_UNAVAILABLE)
         try:
-            proc = subprocess.Popen(  # noqa: S603 - fixed interpreter and source
+            proc = subprocess.Popen(  # noqa: S603 - fixed interpreter and source, no shell; NOSONAR(S4721)
                 [sys.executable, "-I", "-S", "-c", _WORKER_SOURCE],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,

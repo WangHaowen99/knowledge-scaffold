@@ -780,8 +780,11 @@ async def _list_kbs() -> list[dict[str, Any]]:
     """
     kbs, down = await _catalog()
     listed = {kb["id"] for kb in kbs}
-    return kbs + [{"id": kb["id"], "name": kb["name"], "documents": 0, "backend": b["label"]}
-                  for b in down for kb in b["knowledge_bases"] if kb["id"] not in listed]
+    covered = list(kbs)
+    for backend in down:
+        covered.extend({"id": kb["id"], "name": kb["name"], "documents": 0, "backend": backend["label"]}
+                       for kb in backend["knowledge_bases"] if kb["id"] not in listed)
+    return covered
 
 
 async def _engine_ready(engine: str) -> bool:

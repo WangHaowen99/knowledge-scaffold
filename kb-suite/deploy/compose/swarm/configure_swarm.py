@@ -75,6 +75,10 @@ def drop_config_yaml_mcp() -> None:
 MANAGED_MODEL_NAME = "${MODEL_NAME}"
 
 
+def _uses_managed_model(entry: object) -> bool:
+    return isinstance(entry, dict) and (entry.get("model_client_config") or {}).get("model_name") == MANAGED_MODEL_NAME
+
+
 def set_model_temperature() -> None:
     """Put SWARM_TEMPERATURE into the managed model entry's model_config_obj.
 
@@ -92,11 +96,8 @@ def set_model_temperature() -> None:
         logger.warning("SWARM_TEMPERATURE=%r is not a number, temperature left unchanged", raw)
         return
     data = load_yaml_round_trip(CONFIG)
-    entries = [
-        entry for entry in ((data.get("models") or {}).get("defaults") or [])
-        if isinstance(entry, dict)
-        and (entry.get("model_client_config") or {}).get("model_name") == MANAGED_MODEL_NAME
-    ]
+    defaults = (data.get("models") or {}).get("defaults") or []
+    entries = [entry for entry in defaults if _uses_managed_model(entry)]
     if not entries:
         logger.warning("no models.defaults entry uses %s, SWARM_TEMPERATURE not applied", MANAGED_MODEL_NAME)
         return

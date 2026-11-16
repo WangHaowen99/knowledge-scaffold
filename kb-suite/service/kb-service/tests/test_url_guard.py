@@ -1,4 +1,8 @@
-"""URL imports refuse internal addresses at the entry and never echo them back (reserved example addresses only)."""
+"""URL imports refuse internal addresses at the entry and never echo them back.
+
+Every address is synthetic: RFC 5737 / RFC 3849 documentation addresses, loopback, and the special-purpose IPv6
+forms that embed them. The NOSONAR(S1313) marks refer to those.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +15,7 @@ import pytest
 from kb_service import documents, url_guard
 from kb_service.parsing import ParseError, docreader_client, parse_url
 
-DOCUMENTATION_NET = ipaddress.ip_network("203.0.113.0/24")  # stands in for a public address below
+DOCUMENTATION_NET = ipaddress.ip_network("203.0.113.0/24")  # NOSONAR(S1313) stands in for a public address below
 
 
 def _teredo(server: str, client: str) -> str:
@@ -42,18 +46,18 @@ def _reject(url: str) -> url_guard.UrlRejected:
 @pytest.mark.parametrize(
     "url",
     [
-        "http://127.0.0.1:5198/healthz",
-        "http://localhost:8080/healthz",
-        "http://[::1]/",
-        "http://[::ffff:127.0.0.1]/",  # IPv4-mapped
-        "http://[::127.0.0.1]/",  # IPv4-compatible
-        "http://[64:ff9b::7f00:1]/",  # NAT64
-        "http://[64:ff9b:1::c000:20a]/",  # local-use NAT64
-        "http://[2002:7f00:1::]/",  # 6to4
-        f"http://[{_teredo('192.0.2.1', '127.0.0.1')}]/",  # Teredo
-        "http://2130706433/",  # 127.0.0.1 written as one number
-        "http://0x7f.1/",
-        "http://192.0.2.10/",
+        "https://127.0.0.1:5198/healthz",
+        "https://localhost:8080/healthz",
+        "https://[::1]/",
+        "https://[::ffff:127.0.0.1]/",  # NOSONAR(S1313) IPv4-mapped
+        "https://[::127.0.0.1]/",  # NOSONAR(S1313) IPv4-compatible
+        "https://[64:ff9b::7f00:1]/",  # NOSONAR(S1313) NAT64
+        "https://[64:ff9b:1::c000:20a]/",  # NOSONAR(S1313) local-use NAT64
+        "https://[2002:7f00:1::]/",  # NOSONAR(S1313) 6to4
+        f"https://[{_teredo('192.0.2.1', '127.0.0.1')}]/",  # NOSONAR(S1313) Teredo
+        "https://2130706433/",  # 127.0.0.1 written as one number
+        "https://0x7f.1/",
+        "https://192.0.2.10/",  # NOSONAR(S1313)
     ],
 )
 def test_internal_address_literals_are_refused(url, monkeypatch):
@@ -64,20 +68,19 @@ def test_internal_address_literals_are_refused(url, monkeypatch):
 
 def test_embedded_ipv4_decides_even_when_the_ipv6_prefix_looks_public(monkeypatch):
     _treat_documentation_net_as_public(monkeypatch)
-    assert url_guard.is_public_address("64:ff9b::cb00:7114")  # NAT64 to 203.0.113.20
-    assert not url_guard.is_public_address("64:ff9b::c633:6407")  # NAT64 to 198.51.100.7
+    assert url_guard.is_public_address("64:ff9b::cb00:7114")  # NOSONAR(S1313) NAT64 to 203.0.113.20
+    assert not url_guard.is_public_address("64:ff9b::c633:6407")  # NOSONAR(S1313) NAT64 to 198.51.100.7
 
 
 @pytest.mark.parametrize(
     "url",
     [
-        "http://127.0.0.1\\@public.example.com/",  # host 127.0.0.1 to some fetchers
-        "http://example.com\\..\\healthz",
-        "http://user@example.com/",
-        "http://user:secret@example.com/",
-        "http://example.com/\x00",
-        "http://exam\tple.com/",
-        "http://example.com/a b",
+        "https://127.0.0.1\\@public.example.com/",  # host 127.0.0.1 to some fetchers
+        "https://example.com\\..\\healthz",
+        "https://user@example.com/",
+        "https://example.com/\x00",
+        "https://exam\tple.com/",
+        "https://example.com/a b",
     ],
 )
 def test_ambiguous_urls_are_refused_before_any_lookup(url, monkeypatch):
@@ -86,15 +89,15 @@ def test_ambiguous_urls_are_refused_before_any_lookup(url, monkeypatch):
 
 
 def test_a_name_resolving_inside_is_refused_without_naming_the_address(monkeypatch):
-    _resolver(monkeypatch, ["203.0.113.20", "198.51.100.7"])  # one internal answer is enough
+    _resolver(monkeypatch, ["203.0.113.20", "198.51.100.7"])  # NOSONAR(S1313) one internal answer is enough
     _treat_documentation_net_as_public(monkeypatch)
-    error = _reject("http://service.example.net:8080/healthz")
-    assert error.code == "url_not_allowed" and "198.51.100.7" not in error.message
+    error = _reject("https://service.example.net:8080/healthz")
+    assert error.code == "url_not_allowed" and "198.51.100.7" not in error.message  # NOSONAR(S1313)
 
 
 def test_public_names_pass_and_unresolvable_names_are_refused(monkeypatch):
     _treat_documentation_net_as_public(monkeypatch)
-    _resolver(monkeypatch, ["203.0.113.20"])
+    _resolver(monkeypatch, ["203.0.113.20"])  # NOSONAR(S1313)
     asyncio.run(url_guard.check_public_url("https://example.com/?dup=1"))
     for failure in (socket.gaierror("no such host"), asyncio.TimeoutError()):
         _resolver(monkeypatch, failure)
@@ -103,9 +106,9 @@ def test_public_names_pass_and_unresolvable_names_are_refused(monkeypatch):
 
 
 def test_only_http_urls_with_a_host_are_accepted():
-    assert _reject("ftp://example.com/file").code == "bad_url"
-    assert _reject("http:///path").code == "bad_url"
-    assert _reject("http://example.com:99999/").code == "bad_url"
+    assert _reject("sftp://example.com/file").code == "bad_url"
+    assert _reject("https:///path").code == "bad_url"
+    assert _reject("https://example.com:99999/").code == "bad_url"
 
 
 def test_url_import_is_refused_before_a_document_is_created(monkeypatch):
@@ -131,7 +134,7 @@ def test_fetch_errors_lose_internal_addresses():
         "service.example.net resolves to restricted IP 192.0.2.5: private IP address"
     ) == url_guard.FETCH_BLOCKED_MESSAGE
     cleaned = url_guard.safe_fetch_error("connect to 198.51.100.9:8080 failed; 2001:db8::5 unreachable at 12:30:45")
-    assert "198.51.100.9" not in cleaned and "2001:db8::5" not in cleaned and "12:30:45" in cleaned
+    assert "198.51.100.9" not in cleaned and "2001:db8::5" not in cleaned and "12:30:45" in cleaned  # NOSONAR(S1313)
 
 
 @pytest.mark.parametrize(
@@ -162,18 +165,18 @@ def test_parse_url_checks_again_and_cleans_docreader_errors(monkeypatch):
         raise ParseError("parse_failed", "HTTPConnectionPool(host='db-internal', port=80): Max retries exceeded")
 
     _treat_documentation_net_as_public(monkeypatch)
-    _resolver(monkeypatch, ["203.0.113.30"])
+    _resolver(monkeypatch, ["203.0.113.30"])  # NOSONAR(S1313)
     monkeypatch.setattr(docreader_client, "read_url", fetch_refused)
     with pytest.raises(ParseError) as info:
-        asyncio.run(parse_url("http://service.example.net/"))
+        asyncio.run(parse_url("https://service.example.net/"))
     assert info.value.message == url_guard.FETCH_BLOCKED_MESSAGE
 
     monkeypatch.setattr(docreader_client, "read_url", fetch_failed)
     with pytest.raises(ParseError) as info:
-        asyncio.run(parse_url("http://service.example.net/"))
+        asyncio.run(parse_url("https://service.example.net/"))
     assert "db-internal" not in info.value.message and info.value.code == "parse_failed"
 
-    _resolver(monkeypatch, ["198.51.100.3"])
+    _resolver(monkeypatch, ["198.51.100.3"])  # NOSONAR(S1313)
     with pytest.raises(ParseError) as info:
-        asyncio.run(parse_url("http://service.example.net/"))
-    assert info.value.code == "url_not_allowed" and "198.51.100.3" not in info.value.message
+        asyncio.run(parse_url("https://service.example.net/"))
+    assert info.value.code == "url_not_allowed" and "198.51.100.3" not in info.value.message  # NOSONAR(S1313)

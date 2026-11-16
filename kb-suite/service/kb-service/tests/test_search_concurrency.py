@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 from collections import OrderedDict
 
 import pytest
@@ -11,7 +12,7 @@ from kb_service import config, db, kb_config, models_client, questions, retrieva
 
 
 def _settings(**overrides) -> config.Settings:
-    return config.Settings(llm_api_key="placeholder-key", llm_base_url="http://model.example.com/v1", **overrides)
+    return config.Settings(llm_api_key=secrets.token_hex(8), llm_base_url="https://model.example.com/v1", **overrides)
 
 
 @pytest.fixture

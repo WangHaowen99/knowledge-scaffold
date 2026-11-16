@@ -691,7 +691,7 @@ async def test_hello_names_backends_whose_knowledge_bases_are_missing(ext, monke
 
     real_client = httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real_client(transport=httpx.MockTransport(gateway), **kw))
-    monkeypatch.setenv("KB_SERVICE_URL", "http://kb.example.com")
+    monkeypatch.setenv("KB_SERVICE_URL", "https://kb.example.com")
 
     async def no_engines() -> list[dict[str, Any]]:
         return []

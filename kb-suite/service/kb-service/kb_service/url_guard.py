@@ -138,7 +138,7 @@ async def check_public_url(url: str) -> None:
         return
     try:
         addresses = await _resolve(host, port)
-    except (OSError, UnicodeError, asyncio.TimeoutError) as exc:
+    except (OSError, UnicodeError) as exc:  # a timeout too: asyncio.TimeoutError is TimeoutError, an OSError
         raise UrlRejected("url_unresolvable", UNRESOLVABLE_MESSAGE) from exc
     if not addresses or any(not is_public_address(address) for address in addresses):
         raise UrlRejected("url_not_allowed", BLOCKED_MESSAGE)

@@ -17,6 +17,7 @@ from unittest import mock
 import pytest
 
 PLUGINS = Path(__file__).resolve().parents[1] / "plugin"
+CLIENT_HOST = "192.0.2.10"  # NOSONAR(S1313) RFC 5737 documentation address
 
 
 def _sdk_stand_in() -> dict[str, types.ModuleType]:
@@ -65,8 +66,8 @@ class Socket:
 
     def __init__(self, channel: Channel | None) -> None:
         app = types.SimpleNamespace(state=types.SimpleNamespace(web_channel=channel)) if channel else None
-        self.scope = {"type": "websocket", "path": "/ws/plugins/x", "query_string": b"t=1", "client": ("192.0.2.10", 50000),
-                      "app": app}
+        self.scope = {"type": "websocket", "path": "/ws/plugins/x", "query_string": b"t=1",
+                      "client": (CLIENT_HOST, 50000), "app": app}
         self.headers = {"origin": "http://localhost:5199", "cookie": "session=synthetic"}
         self.accepted = False
         self.closed: int | None = None
@@ -99,7 +100,7 @@ def test_plugin_socket_follows_swarm_login(plugin: str, answer: Any, allowed: bo
     socket = Socket(channel)
     _serve(plugin, socket)
     assert socket.accepted is allowed and socket.closed == (None if allowed else 1008)
-    assert channel.calls == [{"path": "/ws/plugins/x?t=1", "headers": socket.headers, "remote": "192.0.2.10:50000",
+    assert channel.calls == [{"path": "/ws/plugins/x?t=1", "headers": socket.headers, "remote": f"{CLIENT_HOST}:50000",
                               "channel": "web"}]
 
 

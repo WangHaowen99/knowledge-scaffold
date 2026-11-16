@@ -58,8 +58,9 @@ async def transcribe(file_name: str, data: bytes) -> ParseResult:
     if not markdown:
         raise ParseError("empty_content", "语音转写没有得到文字（录音可能是静音或纯音乐）")
     metadata = {"asr_model": settings.asr_model}
-    if isinstance(body.get("language"), str):
-        metadata["language"] = body["language"]
+    language = body.get("language")
+    if isinstance(language, str):
+        metadata["language"] = language
     return ParseResult(markdown=markdown, engine="asr", source_blocks=blocks, metadata=metadata)
 
 
