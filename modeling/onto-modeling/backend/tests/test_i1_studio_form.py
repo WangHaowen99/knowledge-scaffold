@@ -224,3 +224,56 @@ def test_rejects_key_rename_and_bad_input(api):
     # 原文方式照旧，草稿没有 form
     raw = client.put(f"/api/v1/projects/{pid}/studio/entries/object:门店/draft", json={"base_revision": "", "content": STORE})
     assert raw.status_code == 200 and raw.json()["draft"]["form"] is None
+
+
+# ---- 草稿对正式条目（develop !608）----
+
+
+def test_stale_draft_is_marked_and_blocked_before_review(api, monkeypatch):
+    """正式条目在草稿之后更新：草稿标 stale、不再算编辑中；存旧底稿、提交都回 409，不转给助手复核。"""
+    from app.services.agent_sessions import manager
+
+    client, pid, root = api
+    current = entry(client, pid, "object:门店")
+    form = studio_form.form_from_entry(current)
+    form["description"] = "合成描述：旧底稿上的修改。"
+    assert put_form(client, pid, "object:门店", form, current["revision"]).status_code == 200
+    path = root / "ontology/object/门店.md"
+    path.write_text(path.read_text(encoding="utf-8").replace("补充：门店由区域经理管理。", "补充：合成的新内容。"),
+                    encoding="utf-8")
+    called = []
+
+    async def no_review(*args, **kwargs):
+        called.append(args)
+
+    monkeypatch.setattr(manager, "send", no_review)
+    listed = {row["id"]: row for row in client.get(f"/api/v1/projects/{pid}/studio/entries").json()["items"]}
+    assert listed["object:门店"]["status"] == "confirmed"
+    after = entry(client, pid, "object:门店")
+    assert after["draft"]["state"] == "stale" and after["status"] == "confirmed"
+    assert client.get(f"/api/v1/projects/{pid}/studio/entries/object:门店/draft").json()["draft"]["state"] == "stale"
+    resaved = put_form(client, pid, "object:门店", form, current["revision"])
+    assert resaved.status_code == 409 and resaved.json()["code"] == "revision_conflict"
+    assert resaved.json()["details"] == {"draft_state": "stale"}
+    submitted = client.post(f"/api/v1/projects/{pid}/studio/entries/object:门店/submit", json={})
+    assert submitted.status_code == 409 and submitted.json()["details"] == {"draft_state": "stale"}
+    assert called == []
+    # 基于当前版本重新存：覆盖旧草稿，回到 active
+    fresh = put_form(client, pid, "object:门店", form, after["revision"])
+    assert fresh.status_code == 200 and fresh.json()["draft"]["state"] == "active"
+    listed = {row["id"]: row for row in client.get(f"/api/v1/projects/{pid}/studio/entries").json()["items"]}
+    assert listed["object:门店"]["status"] == "editing"
+
+
+def test_applied_draft_is_dropped_on_read(api):
+    """草稿内容已经和正式条目一样（复核时助手合进去了）：读的时候删掉草稿，不再显示编辑中。"""
+    client, pid, root = api
+    current = entry(client, pid, "object:门店等级")
+    form = studio_form.form_from_entry(current)
+    form["description"] = "合成的门店等级，复核后合入。"
+    text = put_form(client, pid, "object:门店等级", form, current["revision"]).json()["draft"]["content"]
+    (root / "ontology/object/门店等级.md").write_text(text, encoding="utf-8")
+    after = entry(client, pid, "object:门店等级")
+    assert after["draft"] is None and after["status"] == "confirmed"
+    assert client.get(f"/api/v1/projects/{pid}/studio/entries/object:门店等级/draft").json() == {"draft": None}
+

@@ -1,6 +1,7 @@
 // 对话里的基本件：与设计稿 pages-00-main.js 的 mU / mA / mSys / mDay / cc / wxProc / ct / srcRow / sl 对应
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { remarkWikiLinks } from '../../lib/wikiLinks.js';
 import { createContext, useContext, useLayoutEffect, useRef, useState } from 'react';
 import { navigate, pagePath } from '../../app/router.js';
 import { Icon, cx } from '../../ui/index.jsx';
@@ -34,6 +35,7 @@ export function Ct({ n, anchor }) {
 }
 
 const anchorMap = (list) => Object.fromEntries((list || []).map((x) => [x.n, x.anchor]));
+const REMARK_PLUGINS = [remarkGfm, [remarkWikiLinks, { prefix: '#wl:' }]];
 
 // Markdown 正文；inline=true 时不包 <p>
 export function Md({ text, anchors, inline }) {
@@ -47,7 +49,7 @@ export function Md({ text, anchors, inline }) {
   if (inline) comps.p = ({ children }) => <>{children}</>;
   return (
     <AnchorCtx.Provider value={anchorMap(anchors)}>
-      <Markdown remarkPlugins={[remarkGfm]} components={comps}>{preprocessMd(text)}</Markdown>
+      <Markdown remarkPlugins={REMARK_PLUGINS} components={comps}>{preprocessMd(text)}</Markdown>
     </AnchorCtx.Provider>
   );
 }

@@ -21,6 +21,7 @@ from ..kernel.metamodel import mm
 from ..services import mainline, workspace_labels
 from ..services import studio as studio_service
 from ..services.workspace.layout import _content_revision
+from ..services.workspace.errors import WorkspaceError
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/studio", tags=["studio"])
 
@@ -172,7 +173,9 @@ def entries(
 ):
     root = deps.require_owner(project_id, request)
     data, _ = _graph(root)
-    drafts = studio_service._load(project_id, "drafts")
+    # 有草稿的条目先对一下正式条目：已失效的旧版本草稿不算「编辑中」，已合进去的顺手清掉（同 ST-04，develop !608）
+    drafts = {rel for rel in studio_service._load(project_id, "drafts")
+              if (_listed_draft(project_id, root, rel) or {}).get("state") == "active"}
     scope = _scope(project_id)
     marks = _review_marks(project_id)
     # 最后更新时间：提交时间或未提交文件的修改时间，git 不可用时整列为 null
@@ -215,7 +218,29 @@ def _draft_view(draft: dict | None) -> dict | None:
     return {
         "author": draft.get("author", ""), "updated_at": deps.iso(draft.get("updated_at")),
         "base_revision": draft.get("base_revision", ""), "form": draft.get("form"), "content": draft.get("content", ""),
+        # stale：正式条目在草稿之后更新过，草稿不能再提交，编辑器不自动载入（develop !608）
+        "state": draft.get("state") or "active",
     }
+
+
+def _reconciled_draft(project_id: str, root: Path, rel: str) -> tuple[dict | None, str]:
+    """（对过正式条目的草稿, 正式条目当前修订）；和版本回退、MCP 写入同一把项目锁。"""
+    target = deps.workspaces._resolve_inside(root, rel)
+    with deps.workspaces._project_lock(project_id):
+        current = target.read_bytes() if target.is_file() else b""
+        revision = _content_revision(current)
+        return studio_service.reconcile_draft(project_id, root, rel, current, revision), revision
+
+
+def _listed_draft(project_id: str, root: Path, rel: str) -> dict | None:
+    try:
+        return _reconciled_draft(project_id, root, rel)[0]
+    except (OSError, WorkspaceError):
+        return None
+
+
+def _stale_draft_error(message: str) -> ApiError:
+    return ApiError("revision_conflict", message, 409, {"draft_state": "stale"})
 
 
 def _data_source(text: str) -> dict:
@@ -261,13 +286,13 @@ def entry_detail(project_id: str, entry_id: str, request: Request):
                       "expert_confirmed": False, "missing": True}}
         for item in node.get("fields") or []
     ]
-    draft = studio_service.get_draft(project_id, rel)
+    draft, _ = _reconciled_draft(project_id, root, rel)
     scope = _scope(project_id)
     backlinks = [{**item, "locked": _locked(scope, item["source"]["id"])} for item in backlinks]
     return {
         "id": f"{kind}:{key}", "kind": kind, "key": key, "name": element["label"], "path": rel,
         "description": node.get("description", ""),
-        "status": "editing" if draft else "confirmed", "needs_review": _review_marks(project_id).get(f"{kind}:{key}"),
+        "status": "editing" if draft and draft["state"] != "stale" else "confirmed", "needs_review": _review_marks(project_id).get(f"{kind}:{key}"),
         "sections": [{"level": item["level"], "title": item["title"], "content_md": item["content"]} for item in element["sections"]],
         "fields": fields,
         "relations": {"declared": declared, "mentions": mentions},
@@ -330,7 +355,7 @@ def entry_evidence(project_id: str, entry_id: str, request: Request):
 def get_draft(project_id: str, entry_id: str, request: Request):
     root = deps.require_owner(project_id, request)
     rel, _, _ = entry_path(root, entry_id)
-    return {"draft": _draft_view(studio_service.get_draft(project_id, rel))}
+    return {"draft": _draft_view(_reconciled_draft(project_id, root, rel)[0])}
 
 
 @router.put("/entries/{entry_id}/draft")
@@ -355,8 +380,15 @@ async def save_draft(project_id: str, entry_id: str, request: Request):
     elif not isinstance(content, str):
         raise ApiError("invalid_argument", "要提供草稿原文 content 或表单 form", 400,
                        {"fields": {"content": "required"}})
-    studio_service.save_draft(project_id, rel, content, str(body.get("base_revision") or ""), deps.actor(request),
-                              form=form if isinstance(form, dict) else None)
+    target = deps.workspaces._resolve_inside(root, rel)
+    try:
+        with deps.workspaces._project_lock(project_id):
+            current = _content_revision(target.read_bytes() if target.is_file() else b"")
+            studio_service.save_draft(project_id, rel, content, str(body.get("base_revision") or ""),
+                                      deps.actor(request), form=form if isinstance(form, dict) else None,
+                                      current_revision=current)
+    except studio_service.StudioError as exc:
+        raise _stale_draft_error(str(exc)) from exc
     draft = studio_service.get_draft(project_id, rel)
     return {"saved_at": deps.iso(draft["updated_at"]), "draft": _draft_view(draft)}
 
@@ -378,9 +410,15 @@ async def submit(project_id: str, entry_id: str, request: Request):
     rel, kind, key = entry_path(root, entry_id)
     body = await deps.json_body(request)
     user = deps.actor(request) or "本机用户"
-    draft = studio_service.get_draft(project_id, rel)
+    draft, current = _reconciled_draft(project_id, root, rel)
     if not draft:
         raise ApiError("not_found", "没有待保存的草稿", 404)
+    if draft["state"] == "stale":
+        raise _stale_draft_error("草稿基于旧版本，请刷新后基于最新内容重新编辑")
+    try:
+        studio_service.ensure_draft_current(draft, current)
+    except studio_service.StudioError as exc:
+        raise _stale_draft_error(str(exc)) from exc
     checks = studio_service.deterministic_check(root, rel, draft["content"])
     if checks["errors"]:
         return {

@@ -257,15 +257,23 @@ export function fmtBytes(n) {
   return `${n}B`;
 }
 
-// 打开原文时要显示的提示：恢复草稿、文件已被助手改过（草稿基于的版本和文件当前版本不一致）、大文件只读
+// 草稿基于的版本已经不是正式条目的当前版本（助手、别处改过）：草稿标 stale，编辑器不自动载入（develop !608）
+export const STALE_DRAFT_TEXT = '上次草稿基于旧版本，未自动载入；请放弃旧草稿或基于当前版本重新编辑';
+export const isStaleDraft = (draft) => draft?.state === 'stale';
+// 打开编辑器时用哪份草稿：stale 的不载入，另外记下来好提示和放弃
+export function openDraft(draft) {
+  if (!draft) return { active: null, stale: null };
+  return isStaleDraft(draft) ? { active: null, stale: draft } : { active: draft, stale: null };
+}
+
+// 打开原文时要显示的提示：恢复草稿、旧版本草稿未载入（草稿基于的版本和文件当前版本不一致）、大文件只读
 export function rawNotices(file, draft) {
-  if (!file) return { restored: null, changed: null, big: null };
+  if (!file) return { restored: null, stale: null, big: null };
   const big = file.truncated ? { shown: 512 * 1024, size: file.size } : null;
-  const restored = !big && draft && draft.content != null ? { at: draft.updated_at } : null;
-  const changed = !big && draft && draft.base_revision && draft.base_revision !== file.revision
-    ? { by: file.last_change?.source || null, at: file.last_change?.at || null, version_label: file.last_change?.version_label || null }
-    : null;
-  return { restored, changed, big };
+  const old = !!draft && (isStaleDraft(draft) || (!!draft.base_revision && draft.base_revision !== file.revision));
+  const stale = !big && old ? { at: draft.updated_at } : null;
+  const restored = !big && !old && draft && draft.content != null ? { at: draft.updated_at } : null;
+  return { restored, stale, big };
 }
 
 export function hhmm(iso) {

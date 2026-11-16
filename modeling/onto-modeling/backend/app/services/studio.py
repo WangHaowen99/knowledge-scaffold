@@ -681,11 +681,15 @@ def purge_project(project_id: str) -> None:
 
 
 def save_draft(
-    project_id: str, rel_path: str, content: str, base_revision: str, user: str, form: dict | None = None
+    project_id: str, rel_path: str, content: str, base_revision: str, user: str, form: dict | None = None,
+    current_revision: str | None = None,
 ) -> dict:
     """自动暂存草稿。不再占租约：助手在改的条目由写入范围锁挡（提交时 ChangeTx 统一检查，423）。
 
-    结构化编辑器存的草稿另带表单原样（form），重新打开时编辑器按它还原；content 是按表单渲染好的原文。"""
+    结构化编辑器存的草稿另带表单原样（form），重新打开时编辑器按它还原；content 是按表单渲染好的原文。
+    current_revision 是正式条目当前的修订：草稿基于的修订已经不是它时拒存（develop !608），免得旧内容盖掉新版本。"""
+    if current_revision is not None and base_revision and base_revision != current_revision:
+        raise StudioError("正式条目已更新，请刷新后基于最新内容重新编辑", 409)
     drafts = _load(project_id, "drafts")
     drafts[rel_path] = {
         "content": content,
@@ -703,8 +707,49 @@ def get_draft(project_id: str, rel_path: str) -> dict | None:
 
 
 def draft_paths(project_id: str) -> list[str]:
-    """有暂存草稿的文件（版本回退前要先保存或放弃，ADR-0094）。"""
-    return sorted(_load(project_id, "drafts"))
+    """有暂存草稿的文件（版本回退前要先保存或放弃，ADR-0094）；已失效的旧版本草稿不算（develop !608）。"""
+    return sorted(path for path, draft in _load(project_id, "drafts").items()
+                  if not isinstance(draft, dict) or draft.get("state") != "stale")
+
+
+def get_active_draft(project_id: str, rel_path: str) -> dict | None:
+    draft = get_draft(project_id, rel_path)
+    return None if draft and draft.get("state") == "stale" else draft
+
+
+def ensure_draft_current(draft: dict, current_revision: str) -> None:
+    """草稿基于的修订已经不是正式条目当前的修订：拒绝提交。"""
+    base_revision = draft.get("base_revision", "")
+    if base_revision and base_revision != current_revision:
+        raise StudioError("草稿基于旧版本，请刷新后基于最新内容重新编辑", 409)
+
+
+def reconcile_draft(
+    project_id: str, root: Path, rel_path: str, current_content: bytes, current_revision: str,
+) -> dict | None:
+    """读草稿前对一下正式条目：内容已经一样（复核或别处已合进去）就删掉草稿；基于的修订变了就标 stale，内容留着。
+
+    复核用的暂存稿在助手副本里（方案 C15）时不在 root 下，留在 .ontology-state，不进版本。"""
+    drafts = _load(project_id, "drafts")
+    draft = drafts.get(rel_path)
+    if not draft:
+        return None
+    content = draft.get("content")
+    if isinstance(content, str) and content.encode("utf-8") == current_content:
+        drafts.pop(rel_path, None)
+        _save(project_id, "drafts", drafts)
+        try:
+            (root / REVIEW_DIR / f"{Path(rel_path).stem}.md").unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+    base_revision = draft.get("base_revision", "")
+    state = "stale" if base_revision and base_revision != current_revision else "active"
+    if draft.get("state") != state:
+        draft = {**draft, "state": state}
+        drafts[rel_path] = draft
+        _save(project_id, "drafts", drafts)
+    return {**draft, "state": state}
 
 
 def discard_draft(project_id: str, rel_path: str, user: str) -> None:
@@ -731,14 +776,28 @@ def deterministic_check(root: Path, rel_path: str, content: str) -> dict:
     sections = parse_sections(content)
     titles = {s["title"] for s in sections}
     known_titles = {s["title"] for s in schema}
+    baseline_by_title: dict[str, dict] = {}
+    target = (root / rel_path).resolve()
+    try:
+        target.relative_to(root.resolve())
+        baseline_by_title = {
+            section["title"]: section
+            for section in parse_sections(target.read_text(encoding="utf-8"))
+        }
+    except (OSError, ValueError):
+        pass
 
     for spec in schema:
         if spec["required"] and spec["title"] not in titles:
             errors.append(f"缺少必需章节「{spec['title']}」")
-    for title in titles - known_titles:
-        review.append(f"新增了模板外的章节「{title}」")
-
     by_title = {s["title"]: s for s in sections}
+    for title in titles - known_titles:
+        baseline = baseline_by_title.get(title)
+        if baseline is None:
+            review.append(f"新增了模板外的章节「{title}」")
+        elif baseline["content"] != by_title[title]["content"]:
+            review.append(f"修改了模板外的章节「{title}」")
+
     for spec in schema:
         if spec["kind"] != "table" or spec["title"] not in by_title:
             continue

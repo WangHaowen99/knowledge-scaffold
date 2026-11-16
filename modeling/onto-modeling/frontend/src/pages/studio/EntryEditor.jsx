@@ -1,10 +1,13 @@
 // 条目编辑器（设计稿 studio-table 右栏）：结构化编辑、草稿自动暂存（ST-07）、提交三路结果（ST-08）、
-// 放弃草稿、写入范围锁定条；「编辑原文（高级）」切到 RawEditor（F-02 / F-03）
+// 放弃草稿、写入范围锁定条；「编辑原文（高级）」切到 RawEditor（F-02 / F-03）。
+// 打开时总是读条目最新内容（develop !608 的「进入编辑前重读」），基于旧版本的草稿（stale）不自动载入；
+// 暂存按顺序排队，慢的旧请求盖不掉新内容
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, relativeTime } from '../../api/errors.js';
+import { enqueueLatestDraftSave } from '../../lib/studioDraftQueue.js';
 import { setWorkspaceDirty } from '../../lib/workspaceDirty.js';
 import {
   Area, Button, Chip, Field, Icon, Inp, Modal, Note, cx, useOutside,
@@ -13,8 +16,8 @@ import EvidencePicker from './EvidencePicker.jsx';
 import SourceChips, { useKnownMaterials } from './SourceChips.jsx';
 import { KindChip, KindDot, LockBar, askAssistant, useLockCopy } from './parts.jsx';
 import {
-  CONFIDENCE_CHIP, anchorChipLabel, commitSummary, fieldErrorMap, formFromEntry, hhmm, kindLabel,
-  rejectSummary, resolutionLabel, summarizeFormChanges,
+  CONFIDENCE_CHIP, STALE_DRAFT_TEXT, anchorChipLabel, commitSummary, fieldErrorMap, formFromEntry, hhmm, kindLabel,
+  openDraft, rejectSummary, resolutionLabel, summarizeFormChanges,
 } from './studioModel.js';
 
 const AUTOSAVE_MS = 2000;
@@ -127,6 +130,7 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
   const [error, setError] = useState(null);
   const [form, setForm] = useState(null);
   const [hasDraft, setHasDraft] = useState(false);
+  const [staleDraft, setStaleDraft] = useState(false);
   const [loadedDraftAt, setLoadedDraftAt] = useState(null);
   const [save, setSave] = useState({ kind: 'idle', at: null });
   const [result, setResult] = useState(null);
@@ -138,16 +142,23 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
   const dirty = useRef(false);
   const formRef = useRef(null);
   formRef.current = form;
+  const saveQueue = useRef(Promise.resolve());
+  const baseRef = useRef('');
+  const hasDraftRef = useRef(false);
   const [, setNow] = useState(0);
 
   const load = useCallback(async ({ keepResult } = {}) => {
     try {
+      await saveQueue.current; // 排着的暂存先落地，再读
       const e = await api.studioEntry(pid, id);
       setEntry(e);
       setError(null);
-      const d = e.draft;
+      const { active: d, stale } = openDraft(e.draft);
       setForm(d?.form || formFromEntry(e));
       setHasDraft(!!d);
+      hasDraftRef.current = !!d;
+      setStaleDraft(!!stale);
+      baseRef.current = d?.base_revision || e.revision;
       setLoadedDraftAt(d ? d.updated_at : null);
       setSave({ kind: 'idle', at: d?.updated_at || null });
       setDsDraft(null);
@@ -162,27 +173,29 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
   // 「草稿已暂存 · N 分钟前」每半分钟走一次
   useEffect(() => { const t = setInterval(() => setNow((n) => n + 1), 30000); return () => clearInterval(t); }, []);
 
-  const baseRevision = entry?.draft?.base_revision || entry?.revision;
-  // 返回 {ok, saved}：saved 表示这次确实存了一份草稿
+  // 返回 {ok, saved}：saved 表示这次确实存了一份草稿。排队执行，排到时才读最新的表单
   const putDraft = useCallback(async () => {
-    if (!dirty.current || !formRef.current) return { ok: true, saved: false };
-    dirty.current = false;
-    setSave({ kind: 'saving', at: null });
-    try {
-      const r = await api.saveStudioDraft(pid, id, { base_revision: baseRevision, form: formRef.current });
+    const out = await enqueueLatestDraftSave(saveQueue, dirty, () => {
+      setSave({ kind: 'saving', at: null });
+      return api.saveStudioDraft(pid, id, { base_revision: baseRef.current, form: formRef.current });
+    });
+    if (out.saved) {
+      const r = out.result;
+      hasDraftRef.current = true;
       setHasDraft(true);
+      setStaleDraft(false); // 基于当前版本存了新草稿，旧版本草稿被它替换
       setEntry((e) => (e ? { ...e, draft: r.draft, status: 'editing' } : e));
       setSave({ kind: 'saved', at: r.saved_at });
-      return { ok: true, saved: true };
-    } catch (e) {
-      dirty.current = true;
+    } else if (!out.ok) {
+      // 失败时改动还留着（表单不动、仍算没存），下次暂存或离开前再试
+      const e = out.error;
       setSave({ kind: 'error', at: null });
       // 表单写不进原文（改 Key、这类条目的数据来源、加不了的关联）：服务端的说法更具体
       const unsupported = Object.values(e.details?.fields || {}).some((c) => c === 'rename_unsupported' || c === 'unsupported');
       toast(unsupported && e.serverMessage ? e.serverMessage : errorText(e), 'alert');
-      return { ok: false, saved: false };
     }
-  }, [api, pid, id, baseRevision]);
+    return out;
+  }, [api, pid, id]);
 
   // 自动暂存：停手 2 秒存一次（契约 ST-07 建议节流）
   useEffect(() => {
@@ -227,7 +240,7 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
   const submit = async () => {
     const flushed = await putDraft();
     if (!flushed.ok) return;
-    if (!hasDraft && !flushed.saved) { toast('没有改动', 'info'); return; }
+    if (!hasDraftRef.current && !flushed.saved) { toast('没有改动', 'info'); return; }
     const before = entry;
     const submitted = formRef.current;
     setSubmitting(true);
@@ -256,7 +269,8 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
     setDiscardOpen(false);
     try {
       dirty.current = false;
-      if (hasDraft) await api.discardStudioDraft(pid, id);
+      await saveQueue.current; // 等正在存的那次落地，免得放弃之后又被它存回来
+      if (hasDraftRef.current || staleDraft) await api.discardStudioDraft(pid, id);
       toast('已放弃草稿', 'undo');
       await load();
       onChanged?.();
@@ -323,7 +337,8 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
             </div>
           ) : null}
           <div className={cx('bd', lockInfo && 'stt-lock')}>
-            {entry.draft && !entry.draft.form ? <Note tone="gray" icon="code" className="mb12">这份草稿在原文里，去「编辑原文（高级）」继续</Note> : null}
+            {staleDraft ? <Note tone="amber" icon="history" className="mb12">{STALE_DRAFT_TEXT}</Note> : null}
+            {hasDraft && entry.draft && !entry.draft.form ? <Note tone="gray" icon="code" className="mb12">这份草稿在原文里，去「编辑原文（高级）」继续</Note> : null}
             <div className="grid2">
               <Field label="名称" req><Inp value={form.name} onChange={(e) => change({ name: e.target.value })} /></Field>
               <Field label="Key"><Inp mono value={form.key} onChange={(e) => change({ key: e.target.value })} /></Field>
@@ -399,7 +414,7 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
           </div>
           <div className="stt-ft">
             <span className="sp" />
-            <Button kind="ghost" disabled={!hasDraft && !changes.length} onClick={() => setDiscardOpen(true)}>放弃草稿</Button>
+            <Button kind="ghost" disabled={!hasDraft && !staleDraft && !changes.length} onClick={() => setDiscardOpen(true)}>放弃草稿</Button>
             <Button kind="primary" icon="check" disabled={!!lockInfo || submitting} onClick={submit}>{submitting ? '检查中…' : '保存'}</Button>
           </div>
         </>
@@ -413,7 +428,7 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
         w={440}
         foot={<><Button onClick={() => setDiscardOpen(false)}>继续编辑</Button><Button kind="danger" onClick={discard}>放弃</Button></>}
       >
-        <div className="sm muted">{changes.length ? `本次草稿改了 ${changes.length} 处：${changes.join('、')}。` : '草稿和当前版本一样，没有改动。'}</div>
+        <div className="sm muted">{changes.length ? `本次草稿改了 ${changes.length} 处：${changes.join('、')}。` : staleDraft ? '放弃基于旧版本的那份草稿。' : '草稿和当前版本一样，没有改动。'}</div>
       </Modal>
     </div>
   );

@@ -6,7 +6,8 @@
 //   submit:review   ST-08 提交返回 needs_review（超出确定性检查范围，转交助手复核，复核命令发到工作台对话）
 //   （缺省）         ST-08 返回 committed（检查通过，保存为下一个版本）
 //   raw:big         F-02 读原文返回 truncated（大文件，前 512KB 只读）
-//   raw:changed     陈列量标准的草稿基于旧版本，文件已被助手改过（2 分钟前，v0.13），编辑原文时出冲突提示，保存返回 409
+//   raw:changed     陈列量标准的草稿基于旧版本，文件已被助手改过（2 分钟前，v0.13）：草稿标 stale、编辑时不自动载入，
+//                   存旧底稿、提交返回 409（draft_state=stale）；原文按旧版本号保存返回 409
 //   draft:none      陈列量标准没有未提交的草稿（缺省有一份：新增属性「区域配额上限」、修改描述）
 //   scope:running / scope:pending 由 index.js 处理（写入范围锁两态）
 // F-02 / F-03 在这里登记（先登记的先匹配）：不是条目文件的路径查 ctx.db.files（Map：path → {content, revision, last_change?}），
@@ -341,14 +342,24 @@ export function register(ctx) {
     const lock = scopeOf(pid);
     return isLocked(lock, ref) ? lock : null;
   };
+  // 文件当前版本：raw:changed 时陈列量标准被助手改过，比条目记的版本新
+  const fileRevision = (e) => (st.rawChanged && e.key === S.FOCUS_ENTRY ? `${e.revision}-a` : e.revision);
+  // 草稿带 state：基于的版本已不是文件当前版本时是 stale，不算编辑中（develop !608）
+  function draftOf(e) {
+    const d = st.drafts.get(e.id);
+    if (!d) return null;
+    return { ...d, state: d.base_revision && d.base_revision !== fileRevision(e) ? 'stale' : 'active' };
+  }
+  const editing = (e) => draftOf(e)?.state === 'active';
   function entryView(pid, e) {
     const ref = { kind: e.kind, id: e.id, key: e.key, name: e.name };
-    const draft = st.drafts.get(e.id) || null;
+    const draft = draftOf(e);
     const scope = scopeOf(pid);
     return {
       ...e,
       raw: undefined,
-      status: draft ? 'editing' : e.status,
+      revision: fileRevision(e),
+      status: editing(e) ? 'editing' : e.status,
       backlinks: e.backlinks.map((b) => ({ ...b, locked: isLocked(scope, b.source) })),
       counts: { refs_out: e.relations.declared.length, refs_in: e.backlinks.length, fields: e.fields.length, evidence: evidenceItems(e).length },
       head: cardOf(pid)?.head || 'a71e03c9',
@@ -432,7 +443,7 @@ export function register(ctx) {
     const items = live().map((x) => stored(x.id));
     const nodes = items.map((e) => ({
       id: e.id, kind: e.kind, key: e.key, label: e.name, description: e.description,
-      status: st.drafts.has(e.id) ? 'editing' : e.status, locked: isLocked(scope, { id: e.id }),
+      status: editing(e) ? 'editing' : e.status, locked: isLocked(scope, { id: e.id }),
       slice_ids: byId.get(e.id).slice ? [byId.get(e.id).slice] : [],
     }));
     const idOf = (k) => byKey.get(k)?.id;
@@ -525,18 +536,19 @@ export function register(ctx) {
   on('GET', '/projects/([^/]+)/studio/entries/([^/]+)/draft', ({ m }) => {
     const e = found(m[1], m[2]);
     if (!e) return err(404, 'not_found', '条目不存在');
-    return json(200, { draft: st.drafts.get(e.id) || null });
+    return json(200, { draft: draftOf(e) });
   });
   on('PUT', '/projects/([^/]+)/studio/entries/([^/]+)/draft', ({ m, body }) => {
     const e = found(m[1], m[2]);
     if (!e) return err(404, 'not_found', '条目不存在');
     if (!body.form && body.content == null) return err(400, 'invalid_argument', 'form 和 content 必选其一', { fields: { form: 'required' } });
+    if (body.base_revision && body.base_revision !== fileRevision(e)) return err(409, 'revision_conflict', '正式条目已更新，请刷新后基于最新内容重新编辑', { draft_state: 'stale' });
     const draft = {
-      author: 'zhangsan', updated_at: new Date().toISOString(), base_revision: body.base_revision || e.revision,
+      author: 'zhangsan', updated_at: new Date().toISOString(), base_revision: body.base_revision || fileRevision(e),
       form: body.form || null, content: body.content != null ? body.content : renderMd(e, body.form),
     };
     st.drafts.set(e.id, draft);
-    return json(200, { saved_at: draft.updated_at, draft });
+    return json(200, { saved_at: draft.updated_at, draft: draftOf(e) });
   });
   on('DELETE', '/projects/([^/]+)/studio/entries/([^/]+)/draft', ({ m }) => {
     const e = found(m[1], m[2]);
@@ -562,8 +574,9 @@ export function register(ctx) {
     const pid = m[1];
     const e = found(pid, m[2]);
     if (!e) return err(404, 'not_found', '条目不存在');
-    const draft = st.drafts.get(e.id);
+    const draft = draftOf(e);
     if (!draft) return err(404, 'not_found', '没有可提交的草稿');
+    if (draft.state === 'stale') return err(409, 'revision_conflict', '草稿基于旧版本，请刷新后基于最新内容重新编辑', { draft_state: 'stale' });
     const ref = { kind: e.kind, id: e.id, key: e.key, name: e.name };
     const lock = lockOf(pid, ref);
     if (lock) return err(423, 'write_scope_locked', '在助手写入范围内', lock);
@@ -650,7 +663,6 @@ export function register(ctx) {
 
   // ---------- F-02 / F-03 原文 ----------
   const entryByPath = (pid, path) => (isMain(pid) ? live().map((x) => stored(x.id)).find((e) => e.path === path) : null);
-  const fileRevision = (e) => (st.rawChanged && e.key === S.FOCUS_ENTRY ? `${e.revision}-a` : e.revision);
   on('GET', '/projects/([^/]+)/files/content', ({ m, query }) => {
     const pid = m[1];
     const path = query.get('path') || '';

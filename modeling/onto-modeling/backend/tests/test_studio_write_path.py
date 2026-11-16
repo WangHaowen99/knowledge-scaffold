@@ -55,6 +55,63 @@ def test_draft_roundtrip_and_discard(env):
     assert studio.get_draft("p2", "ontology/object/订单.md") is None
 
 
+def test_save_draft_rejects_obsolete_baseline(env):
+    path = "ontology/object/订单.md"
+    with pytest.raises(studio.StudioError) as exc:
+        studio.save_draft(
+            "p2", path, "旧表单内容", "old-revision", "alice",
+            current_revision="new-revision",
+        )
+    assert exc.value.status == 409
+    assert "最新内容" in str(exc.value)
+    assert studio.get_draft("p2", path) is None
+    assert studio._load("p2", "leases") == {}
+
+
+def test_submit_guard_rejects_obsolete_draft_baseline():
+    with pytest.raises(studio.StudioError) as exc:
+        studio.ensure_draft_current(
+            {"base_revision": "old-revision"}, "new-revision"
+        )
+    assert exc.value.status == 409
+    assert "旧版本" in str(exc.value)
+
+
+def test_reconcile_draft_removes_content_already_applied_to_workspace(env):
+    path = "ontology/object/订单.md"
+    target = env / path
+    target.write_text(OBJECT_OK, encoding="utf-8")
+    studio.save_draft("p2", path, OBJECT_OK, "old-revision", "alice")
+    staged = env / studio.REVIEW_DIR / "订单.md"
+    staged.parent.mkdir(parents=True)
+    staged.write_text(OBJECT_OK, encoding="utf-8")
+
+    draft = studio.reconcile_draft("p2", env, path, OBJECT_OK.encode(), "new-revision")
+
+    assert draft is None
+    assert studio.get_draft("p2", path) is None
+    assert not staged.exists()
+
+
+def test_reconcile_draft_marks_old_baseline_without_deleting_content(env):
+    path = "ontology/object/订单.md"
+    studio.save_draft("p2", path, "未应用草稿", "old-revision", "alice")
+
+    draft = studio.reconcile_draft("p2", env, path, b"new workspace content", "new-revision")
+
+    assert draft["state"] == "stale"
+    assert draft["content"] == "未应用草稿"
+    assert studio.get_draft("p2", path)["content"] == "未应用草稿"
+    assert studio.get_active_draft("p2", path) is None
+    assert studio.draft_paths("p2") == []  # 失效的旧草稿不挡版本回退
+
+    restored = studio.reconcile_draft(
+        "p2", env, path, b"restored workspace content", "old-revision"
+    )
+    assert restored["state"] == "active"
+    assert studio.get_active_draft("p2", path)["state"] == "active"
+
+
 def test_deterministic_check_pass(env):
     checks = studio.deterministic_check(env, "ontology/object/订单.md", OBJECT_OK)
     assert checks["errors"] == []
@@ -75,6 +132,32 @@ def test_deterministic_check_routes_to_review(env):
     # F3：链接只提示
     assert any("不存在的对象" in r for r in checks["hints"])
     assert not any("不存在的对象" in r for r in checks["review"])
+
+
+def test_deterministic_check_does_not_report_unchanged_existing_extra_sections(env):
+    path = env / "ontology" / "object" / "订单.md"
+    baseline = OBJECT_OK + "\n# 业务备注\n\n合成备注\n\n# 历史说明\n\n合成说明\n"
+    path.write_text(baseline, encoding="utf-8")
+    draft = baseline.replace("订单是交易的核心record。", "订单是交易的核心合成记录。")
+
+    checks = studio.deterministic_check(env, "ontology/object/订单.md", draft)
+
+    assert checks["errors"] == []
+    assert not any("业务备注" in item or "历史说明" in item for item in checks["review"])
+
+
+def test_deterministic_check_reports_changed_existing_extra_section(env):
+    path = env / "ontology" / "object" / "订单.md"
+    baseline = OBJECT_OK + "\n# 业务备注\n\n合成备注\n"
+    path.write_text(baseline, encoding="utf-8")
+
+    checks = studio.deterministic_check(
+        env,
+        "ontology/object/订单.md",
+        baseline.replace("合成备注", "另一合成备注"),
+    )
+
+    assert "修改了模板外的章节「业务备注」" in checks["review"]
 
 
 def test_sections_serialize_roundtrip():

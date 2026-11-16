@@ -13,7 +13,7 @@ import { inlineTokens } from '../workbench/md.js';
 import '../../styles/studio.css';
 import { KindDot, LockIcon, LockMark, PlugMark, askAssistant, copyText, gotoEntry, useLockCopy } from './parts.jsx';
 import {
-  CONFIDENCE_CHIP, KIND_META, backlinkView, evidenceShortLabel, kindDotStyle, kindLabel, relationText,
+  CONFIDENCE_CHIP, KIND_META, backlinkView, evidenceShortLabel, isStaleDraft, kindDotStyle, kindLabel, relationText,
 } from './studioModel.js';
 import { hasErView } from './erModel.js';
 
@@ -223,6 +223,7 @@ function SidePanel({ entry, evidence, loading, onClose, onSelect }) {
           <b className="lg">{entry.name}</b>
           <Chip tone={KIND_META[entry.kind]?.tone} sm>{kindLabel(entry.kind)}</Chip>
           {entry.status === 'editing' ? <Chip tone="blue" sm icon="edit">编辑中</Chip> : <St k={STATE_KEY[entry.status] || 'confirmed'} sm />}
+          {isStaleDraft(entry.draft) ? <Chip tone="amber" sm icon="history">旧版本草稿已失效</Chip> : null}
           <LockMark info={lock} />
           <span className="sp" />
           <Button size="xs" kind="ghost" icon="x" title="关闭摘要" onClick={onClose} />

@@ -1,8 +1,8 @@
-// 助手正文的两种内联标记：[[名称]] 条目链接、[^n] 出处角标。先改写成普通链接，再交给 Markdown 渲染
+// 助手正文的两种内联标记：[[名称]] 条目链接、[^n] 出处角标。
+// 角标在这里改写成普通链接；条目链接在 Markdown 解析之后由 remarkWikiLinks 转成 #wl: 链接（develop !608），
+// 代码块、行内代码里的 [[x]] 不转，编码后的地址也不会作为原文露出来
 export function preprocessMd(text) {
-  return String(text || '')
-    .replace(/\[\[([^\]]+?)\]\]/g, (_, name) => `[${name.replace(/[[\]]/g, '')}](#wl:${encodeURIComponent(name)})`)
-    .replace(/\[\^(\d+)\]/g, (_, n) => `[${n}](#ct:${n})`);
+  return String(text || '').replace(/\[\^(\d+)\]/g, (_, n) => `[${n}](#ct:${n})`);
 }
 
 export const stripLinks = (s) => String(s || '').replace(/\[\[|\]\]/g, '');

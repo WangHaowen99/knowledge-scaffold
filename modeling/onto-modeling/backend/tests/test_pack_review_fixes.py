@@ -266,7 +266,9 @@ def test_studio_review_handoff_is_quota_gated(env, quotas, monkeypatch):
     project_id = manager.create_project("复核")["id"]
     service.set_limits({"daily_tokens": 1000}, {})
     service.record(project_id, "local", 5000)
-    monkeypatch.setattr(studio_routes.studio_service, "get_draft", lambda pid, rel: {"content": "# 订单\n", "base_revision": ""})
+    # 提交先对一下正式条目（develop !608）：草稿从对账结果取
+    monkeypatch.setattr(studio_routes.studio_service, "reconcile_draft",
+                        lambda pid, root, rel, content, revision: {"content": "# 订单\n", "base_revision": "", "state": "active"})
     monkeypatch.setattr(studio_routes.studio_service, "deterministic_check",
                         lambda root, rel, content: {"errors": [], "review": ["改了对象的主键"]})
     monkeypatch.setattr(studio_routes.studio_service, "stage_for_review", lambda root, rel, content: ".onto/run/review.md")

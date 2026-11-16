@@ -80,7 +80,7 @@ def editing_issue(project_id, path):
         return issue("PROJECT_EDITING_BUSY", "助手正在改这部分内容，这一轮结束后才能编辑", path,
                      entities=list(lock.get("entries") or []) + list(lock.get("artifacts") or []),
                      scope_state=lock.get("state"), changeset_id=lock.get("changeset_id"))
-    if studio.get_draft(project_id, path):
+    if studio.get_active_draft(project_id, path):
         return issue("PROJECT_EDITING_BUSY", "条目有未提交的 Studio 草稿，请先提交或放弃", path)
     return None
 

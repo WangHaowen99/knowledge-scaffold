@@ -116,7 +116,8 @@ export const ERROR_MESSAGES = {
   binary_not_previewable: '这个文件不能按文本预览，请下载查看',
   preview_unavailable: '服务端暂时不能预览这个文件',
   invalid_filename: '文件名不合法',
-  revision_conflict: (d) => describeConflict(d),
+  // Studio 草稿基于旧版本（develop !608）：服务端的说法更具体（「正式条目已更新，请刷新后基于最新内容重新编辑」）
+  revision_conflict: (d, msg) => (d?.draft_state === 'stale' && msg ? msg : describeConflict(d)),
   // 2.4 写入路径、变更集、版本
   write_scope_locked: (d) => (d?.state === 'pending_confirm'
     ? '这些条目和助手这一轮的修改有冲突，在待处理里选好保留哪边后才能编辑'

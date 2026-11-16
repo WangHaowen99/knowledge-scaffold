@@ -133,15 +133,15 @@ test('证据标签：库表取来源简称、推断写「推断」，资料取�
   assert.equal(resolutionLabel({ resolved: false }), null);
 });
 
-test('编辑原文：恢复草稿、助手改过（草稿基于旧版本）、大文件只读', () => {
+test('编辑原文：恢复草稿、助手改过（草稿基于旧版本，不载入）、大文件只读', () => {
   const file = { revision: 'r2', truncated: false, size: 900, last_change: { source: 'assistant', at: 't', version_label: 'v0.13' } };
-  assert.deepEqual(rawNotices(file, null), { restored: null, changed: null, big: null });
-  const n = rawNotices(file, { content: 'x', updated_at: 'u', base_revision: 'r1' });
-  assert.deepEqual(n.restored, { at: 'u' });
-  assert.deepEqual(n.changed, { by: 'assistant', at: 't', version_label: 'v0.13' });
-  assert.equal(rawNotices(file, { content: 'x', updated_at: 'u', base_revision: 'r2' }).changed, null);
+  assert.deepEqual(rawNotices(file, null), { restored: null, stale: null, big: null });
+  // 基于旧版本的草稿不恢复，只提示（develop !608）
+  assert.deepEqual(rawNotices(file, { content: 'x', updated_at: 'u', base_revision: 'r1' }), { restored: null, stale: { at: 'u' }, big: null });
+  assert.deepEqual(rawNotices(file, { content: 'x', updated_at: 'u', base_revision: 'r2', state: 'stale' }).stale, { at: 'u' });
+  assert.deepEqual(rawNotices(file, { content: 'x', updated_at: 'u', base_revision: 'r2', state: 'active' }), { restored: { at: 'u' }, stale: null, big: null });
   const big = rawNotices({ ...file, truncated: true, size: 1258291 }, { content: 'x', base_revision: 'r1' });
-  assert.deepEqual(big, { restored: null, changed: null, big: { shown: 524288, size: 1258291 } });
+  assert.deepEqual(big, { restored: null, stale: null, big: { shown: 524288, size: 1258291 } });
 });
 
 test('流程图：预览坐标把连线裁到节点边上；概况计数；AR-02 的行换掉 ST-03 的流程图行', () => {
@@ -246,7 +246,8 @@ test('mock：提交三路结果与写入范围锁', async () => {
   assert.equal(l.status, 423);
   assert.equal(l.body.code, 'write_scope_locked');
   // 锁住时草稿照样能暂存
-  assert.equal((await locked.call('PUT', `${P}/studio/entries/${ID}/draft`, { base_revision: 'x', form: formFromEntry(ENTRY) })).status, 200);
+  const current = (await locked.call('GET', `${P}/studio/entries/${ID}`)).body;
+  assert.equal((await locked.call('PUT', `${P}/studio/entries/${ID}/draft`, { base_revision: current.revision, form: formFromEntry(ENTRY) })).status, 200);
 });
 
 test('mock：编辑原文读写、助手改过返回 409、大文件截断', async () => {
@@ -267,6 +268,24 @@ test('mock：编辑原文读写、助手改过返回 409、大文件截断', asy
   assert.equal(b.truncated, true);
   assert.equal(b.size, 1258291);
   assert.equal((await big.call('GET', `${P}/files/content?path=${encodeURIComponent('../x')}`)).status, 403);
+});
+
+test('mock：草稿基于旧版本时标 stale、不算编辑中，存旧底稿和提交都回 409（develop !608）', async () => {
+  const { call } = mockCtx({ raw: 'changed' });
+  const e = (await call('GET', `${P}/studio/entries/${ID}`)).body;
+  assert.equal(e.draft.state, 'stale');
+  assert.notEqual(e.status, 'editing');
+  assert.equal((await call('GET', `${P}/studio/entries/${ID}/draft`)).body.draft.state, 'stale');
+  assert.notEqual((await call('GET', `${P}/studio/entries`)).body.items.find((x) => x.id === DISPLAY.id).status, 'editing');
+  const resaved = await call('PUT', `${P}/studio/entries/${ID}/draft`, { base_revision: e.draft.base_revision, form: e.draft.form });
+  assert.equal(resaved.status, 409);
+  assert.deepEqual(resaved.body.details, { draft_state: 'stale' });
+  const submitted = await call('POST', `${P}/studio/entries/${ID}/submit`);
+  assert.equal(submitted.status, 409);
+  // 基于当前版本重新存：覆盖旧草稿，回到编辑中
+  const fresh = await call('PUT', `${P}/studio/entries/${ID}/draft`, { base_revision: e.revision, form: e.draft.form });
+  assert.equal(fresh.body.draft.state, 'active');
+  assert.equal((await call('GET', `${P}/studio/entries/${ID}`)).body.status, 'editing');
 });
 
 test('mock：新建重名、删除被引用的条目、证据被谁引用', async () => {
