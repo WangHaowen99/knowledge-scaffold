@@ -252,3 +252,106 @@ def test_split_chunks_line_numbers_match_a_full_count():
 def test_search_keeps_only_the_requested_knowledge_bases(client):
     data = client.post("/v1/search", json={"query": "出口压力", "kb_ids": ["da_k1"], "top_k": 5}).json()
     assert {h["kb_id"] for h in data["items"]} == {"da_k1"}
+
+
+# ---- uploads: names DA can store, text as UTF-8 ---------------------------------------
+
+
+def _file_part(raw: bytes) -> tuple[str, bytes]:
+    """(file name, content) of the multipart ``file`` field sent to DA."""
+
+    found = re.search(rb'name="file"; filename="([^"]*)"\r\n(?:[^\r\n]+\r\n)*\r\n(.*?)\r\n--', raw, re.S)
+    return found.group(1).decode(), found.group(2)
+
+
+def _uploads(fake: FakeDa) -> list[dict]:
+    return [c[2] for c in fake.calls if c[1] == "/kbs/k1/upload"]
+
+
+def test_long_file_names_keep_up_to_255_characters(client, fake):
+    # the platform stores the file under a short name of its own and keeps the full name
+    name = "超长文件名_" + "储能电池运维知识" * 24 + ".md"  # 200 characters, about 600 bytes
+    r = client.post("/v1/kbs/da_k1/documents", files={"file": (name, "标记 SAMPLE-LONG-0001".encode())})
+    assert r.status_code == 201
+    sent, content = _file_part(_uploads(fake)[-1]["raw"])
+    assert sent == name
+    assert content == "标记 SAMPLE-LONG-0001".encode()
+    longer = "超长文件名_" + "储能电池运维知识" * 40 + ".md"
+    client.post("/v1/kbs/da_k1/documents", files={"file": (longer, b"x")})
+    sent = _file_part(_uploads(fake)[-1]["raw"])[0]
+    assert len(sent) <= 255 and sent.startswith("超长文件名_储能") and sent.endswith("….md")
+    # text documents are named after their title
+    client.post("/v1/kbs/da_k1/documents/text", json={"title": "巡检记录" * 80, "text": "正文"})
+    sent = _file_part(_uploads(fake)[-1]["raw"])[0]
+    assert len(sent) <= 255 and sent.endswith(".md")
+    # names that fit are left alone
+    client.post("/v1/kbs/da_k1/documents", files={"file": ("泵房规程.md", b"# x")})
+    assert _file_part(_uploads(fake)[-1]["raw"])[0] == "泵房规程.md"
+
+
+def test_too_long_folder_names_are_refused_readably(client, fake):
+    r = client.post("/v1/kbs/da_k1/documents", files={"file": ("a.md", b"# a")}, data={"folder_path": "手册/" + "层" * 100})
+    assert r.status_code == 400 and "文件夹名称过长" in r.json()["error"]["message"]
+    assert _uploads(fake) == []
+
+
+def test_text_files_reach_da_as_utf8(client, fake):
+    gb18030 = "GB18030 编码测试\n生僻字：𠀀𪚥龘；标记 SAMPLE-GB-0001。\n"
+    utf16 = "UTF-16 编码测试，标记 SAMPLE-U16-0001。"
+    gbk = "采购价格联动会议纪要（合成样例）：基准价上调，联动系数不变。"
+    for name, data, text in (("c15.txt", gb18030.encode("gb18030"), gb18030),
+                             ("c17.txt", utf16.encode("utf-16-le"), utf16),
+                             ("a15.md", gbk.encode("gbk"), gbk)):
+        assert client.post("/v1/kbs/da_k1/documents", files={"file": (name, data)}).status_code == 201, name
+        assert _file_part(_uploads(fake)[-1]["raw"])[1] == text.encode("utf-8"), name
+    bom_csv = "\ufeff日期,指标,数值\n2026-01-01,样例,1\n".encode("utf-8")
+    client.post("/v1/kbs/da_k1/documents", files={"file": ("c16.csv", bom_csv)})
+    assert _file_part(_uploads(fake)[-1]["raw"])[1] == bom_csv
+
+
+def test_text_of_unknown_encoding_is_refused_not_garbled(client, fake, tmp_path, monkeypatch):
+    r = client.post("/v1/kbs/da_k1/documents", files={"file": ("x.txt", bytes(range(256)) * 4)})
+    assert r.status_code == 400 and r.json()["error"]["code"] == "bad_encoding"
+    # chunked uploads go the same way
+    monkeypatch.setenv("DA_KB_UPLOAD_DIR", str(tmp_path))
+    app_mod.get_settings.cache_clear()
+    data = "分块上传的 GBK 文本".encode("gbk")
+    begin = client.post("/v1/uploads", json={"kb_id": "da_k1", "file_name": "y.txt", "file_size": len(data)}).json()
+    client.put(f"/v1/uploads/{begin['upload_id']}/parts/0", content=data)
+    assert client.post(f"/v1/uploads/{begin['upload_id']}/complete").status_code == 201
+    assert [_file_part(u["raw"])[1] for u in _uploads(fake)] == ["分块上传的 GBK 文本".encode("utf-8")]
+
+
+def test_search_keeps_one_whole_page_hit_per_document():
+    from da_kb_adapter.mapping import distinct_hits
+
+    hits = [{"doc_id": "da_a05", "anchor_id": None, "page_type": "structure_md"},
+            {"doc_id": "da_a05", "anchor_id": None, "page_type": "fulltext"},
+            {"doc_id": "da_a05", "anchor_id": None, "page_type": "abstract"},
+            {"doc_id": "da_a04", "anchor_id": None, "page_type": "structure_md"},
+            {"doc_id": "da_a05", "anchor_id": "da_a05:paragraph:2", "page_type": "structure_md"},
+            {"doc_id": "da_a05", "anchor_id": "da_a05:paragraph:2", "page_type": "structure_md"}]
+    kept = distinct_hits(hits)
+    assert [(h["doc_id"], h["anchor_id"], h["page_type"]) for h in kept] == [
+        ("da_a05", None, "structure_md"), ("da_a04", None, "structure_md"), ("da_a05", "da_a05:paragraph:2", "structure_md")]
+
+
+def test_search_drops_the_same_text_of_a_document_shown_twice():
+    from da_kb_adapter.mapping import distinct_hits
+
+    same = "第十二条 实施日期"
+    hits = [{"doc_id": "da_a05", "anchor_id": "da_a05:paragraph:1", "content": same},
+            {"doc_id": "da_a05", "anchor_id": None, "content": " 第十二条  实施日期 "},
+            {"doc_id": "da_a04", "anchor_id": None, "content": same}]
+    assert [(h["doc_id"], h["anchor_id"]) for h in distinct_hits(hits)] == [("da_a05", "da_a05:paragraph:1"), ("da_a04", None)]
+
+
+def test_search_puts_each_documents_best_hit_first():
+    from da_kb_adapter.mapping import distinct_hits
+
+    hits = [{"doc_id": "da_a05", "anchor_id": "da_a05:table:1", "content": "正文"},
+            {"doc_id": "da_a05", "anchor_id": None, "content": "摘要甲"},
+            {"doc_id": "da_a04", "anchor_id": "da_a04:paragraph:2", "content": "正文乙"},
+            {"doc_id": "da_a04", "anchor_id": None, "content": "摘要乙"},
+            {"doc_id": "da_a10", "anchor_id": None, "content": "摘要丙"}]
+    assert [h["content"] for h in distinct_hits(hits)] == ["正文", "正文乙", "摘要丙", "摘要甲", "摘要乙"]

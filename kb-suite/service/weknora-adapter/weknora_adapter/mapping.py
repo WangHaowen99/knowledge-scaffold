@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import ipaddress
+import re
 from typing import Any
 
 from kb_provider_kit import Ids, ProviderError
+from kb_provider_kit.textfiles import fit_file_name
 
 # WeKnora parse_status -> contract. "finalizing" is already indexed and searchable;
 # only enrichment (summary, questions) is still running. "deleting" is on its way out.
@@ -18,6 +21,24 @@ WIKI_TYPE = {"summary": "summary", "entity": "entity", "concept": "concept", "in
              "synthesis": "concept", "comparison": "concept"}
 LOCATOR_KEYS = ("page", "bbox", "sheet", "row_start", "row_end", "slide")
 RRF_K = 60
+
+# knowledges.title and knowledges.file_name are varchar(255) in WeKnora's schema; a longer
+# value ends in a database error (SQLSTATE 22001) that WeKnora passes on as a 500
+MAX_NAME_CHARS = 255
+# a text entry is stored with file_name "<title>.md"
+MAX_TITLE_CHARS = MAX_NAME_CHARS - len(".md")
+# WeKnora rejects malformed .json and rewrites valid JSON (arrays become objects keyed
+# "0", "1", ...). JSON handed over as plain text gets this suffix after its own name;
+# no user names a file like that, so only such names are shown as the .json again
+JSON_TEXT_SUFFIX = ".as-text.txt"
+_JSON_TEXT = re.compile(r"(\.json)\.as-text\.txt(?=[\";]|$)", re.IGNORECASE)
+URL_REFUSED = "不允许导入内部或私有地址"
+# WeKnora's SSRF refusals name the resolved address and its allow-list settings
+_SSRF_MARKERS = ("ssrf", "安全校验", "restricted", "whitelist", "白名单")
+# ASCII neighbours only: Chinese text runs straight up to an address
+_IPV4 = re.compile(r"(?<![0-9A-Za-z_.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9A-Za-z_]|\.[0-9])")
+_IPV6 = re.compile(r"(?<![0-9A-Za-z_:])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![0-9A-Za-z_:])")
+_SETTING = re.compile(r"(?<![0-9A-Za-z_])SSRF_[0-9A-Z_]+")
 
 DEFAULT_CHUNK_SIZE = 1000
 DEFAULT_CHUNK_OVERLAP = 200
@@ -74,10 +95,26 @@ def kb_config(kb: dict) -> dict:
     }
 
 
-def kb_view(kb: dict, ids: Ids, failed: int = 0, cancelled: int = 0) -> dict:
-    documents = int(kb.get("knowledge_count") or 0)
+def kb_view(kb: dict, ids: Ids, failed: int = 0, cancelled: int = 0, chunks: int | None = None,
+            documents: int | None = None) -> dict:
+    """``chunks`` is the chunk total; None (not computed yet) leaves it out of the stats.
+
+    ``documents`` is the document total counted from the document list; None falls back to
+    WeKnora's ``knowledge_count``.
+    """
+
+    documents = int(kb.get("knowledge_count") or 0) if documents is None else documents
     # WeKnora counts pending + processing here, the same as the contract's "processing"
     processing = int(kb.get("processing_count") or 0)
+    stats = {
+        "documents": documents,
+        "completed": max(0, documents - processing - failed - cancelled),
+        "processing": processing,
+        "failed": failed,
+        "cancelled": cancelled,
+    }
+    if chunks is not None:
+        stats["chunks"] = chunks
     return {
         "id": ids.out(kb["id"]),
         "name": kb.get("name") or "",
@@ -85,14 +122,7 @@ def kb_view(kb: dict, ids: Ids, failed: int = 0, cancelled: int = 0) -> dict:
         "created_at": kb.get("created_at"),
         "updated_at": kb.get("updated_at"),
         "config": kb_config(kb),
-        "stats": {
-            "documents": documents,
-            "completed": max(0, documents - processing - failed - cancelled),
-            "processing": processing,
-            "failed": failed,
-            "cancelled": cancelled,
-            "chunks": int(kb.get("chunk_count") or 0),
-        },
+        "stats": stats,
     }
 
 
@@ -140,14 +170,72 @@ def update_body(current: dict, patch: dict, *, chat_model_id: str) -> dict:
     }
 
 
-def doc_view(k: dict, ids: Ids) -> dict:
+def upload_name(name: str, *, as_text: bool) -> str:
+    """The base file name WeKnora gets: within its column, with the suffix of JSON handed over as text.
+
+    The ``fileName`` field is "folder/name"; WeKnora splits it at the last '/'
+    (types.SplitKnowledgeRelativePath): the folder goes to folder_path, varchar(1024),
+    which WeKnora fits itself (each level cut to 128 bytes, at most 16 levels), and
+    only the base name goes to file_name and title, varchar(255).
+    """
+
+    suffix = JSON_TEXT_SUFFIX if as_text else ""
+    return fit_file_name(name, max_chars=MAX_NAME_CHARS - len(suffix)) + suffix
+
+
+def display_name(name: str) -> str:
+    """A JSON file this adapter handed over as text shows under its own name again."""
+
+    return _JSON_TEXT.sub(r"\1", name)
+
+
+def scrub_network(message: str) -> str:
+    """``message`` without IP addresses or SSRF setting names."""
+
+    def hide(match: re.Match) -> str:
+        try:
+            ipaddress.ip_address(match.group())
+        except ValueError:
+            return match.group()
+        return "（地址已隐藏）"
+
+    return _SETTING.sub("相关配置", _IPV6.sub(hide, _IPV4.sub(hide, message)))
+
+
+def url_import_error(exc: ProviderError) -> ProviderError:
+    """What the caller is told when WeKnora refuses a URL import.
+
+    WeKnora's SSRF answer carries the address the host name resolved to and the
+    names of its allow-list settings; neither is for the user.
+    """
+
+    lower = exc.message.lower()
+    if any(marker in lower for marker in _SSRF_MARKERS):
+        if "dns resolution failed" in lower:
+            return ProviderError(400, "bad_url", "无法解析网址中的域名，请检查网址")
+        if "invalid scheme" in lower:
+            return ProviderError(400, "bad_url", "只能导入 http 或 https 网址")
+        return ProviderError(400, "url_not_allowed", URL_REFUSED)
+    if lower.endswith("invalid url"):
+        # WeKnora's service-level check answers a bare 500 "invalid URL", SSRF included
+        return ProviderError(400, "bad_url", f"网址无效，或{URL_REFUSED}")
+    return ProviderError(exc.status, exc.code, scrub_network(exc.message))
+
+
+def doc_view(k: dict, ids: Ids, chunk_count: int | None = None) -> dict:
+    """``chunk_count`` comes from the adapter's chunk statistics; None when not counted yet."""
+
     kind = k.get("type") or "file"
     file_type = (k.get("file_type") or ("md" if kind == "manual" else "")).lower().lstrip(".")
+    title, file_name = k.get("title") or "", k.get("file_name") or ""
+    if kind == "file" and display_name(file_name) != file_name:
+        title, file_name, file_type = display_name(title), display_name(file_name), "json"
+    error = k.get("error_message") or None
     return {
         "id": ids.out(k["id"]),
         "kb_id": ids.out(k.get("knowledge_base_id")),
-        "title": k.get("title") or k.get("file_name") or "",
-        "file_name": k.get("file_name") or None,
+        "title": title or file_name,
+        "file_name": file_name or None,
         "file_type": file_type,
         "file_size": k.get("file_size") or None,
         "folder_path": k.get("folder_path") or "",
@@ -155,10 +243,11 @@ def doc_view(k: dict, ids: Ids) -> dict:
         "source_url": k.get("source") if kind == "url" else None,
         "parse_status": PARSE_STATUS.get(k.get("parse_status") or "", "processing"),
         "stage": k.get("parse_status"),
-        "error_message": k.get("error_message") or None,
+        # a failed fetch names the address it tried
+        "error_message": scrub_network(error) if error and kind == "url" else error,
         "summary": k.get("description") or None,
         "summary_status": k.get("summary_status"),
-        "chunk_count": None,
+        "chunk_count": chunk_count,
         "l1_chars": None,
         "created_at": k.get("created_at"),
         "processed_at": k.get("processed_at"),
@@ -189,11 +278,26 @@ def chunk_view(c: dict, ids: Ids) -> dict:
     }
 
 
+def _repeated_table_head(content: str, span: int) -> int:
+    """Length of the table header WeKnora puts in front of a continued table's chunk, else 0.
+
+    Such a chunk is longer than its ``start_at``..``end_at`` span by exactly the header lines
+    (every line a Markdown table row), which are not part of the parsed text at that offset.
+    """
+
+    extra = len(content) - span
+    if extra <= 0 or content[extra - 1] != "\n":
+        return 0
+    lines = content[:extra].split("\n")[:-1]
+    return extra if lines and all(line.lstrip().startswith("|") for line in lines) else 0
+
+
 def stitch(chunks: list[dict]) -> str:
     """Rebuild the parsed text from text chunks, dropping the overlap between neighbours.
 
-    ``start_at``/``end_at`` are offsets in WeKnora's parsed text; when they do not
-    match the chunk length (or are missing) chunks are joined with a blank line.
+    ``start_at``/``end_at`` are offsets in WeKnora's parsed text. A chunk that continues a
+    table starts with the table's header again; that header is dropped. When the offsets
+    do not match the chunk otherwise (or are missing), chunks are joined with a blank line.
     """
 
     parts: list[str] = []
@@ -201,10 +305,12 @@ def stitch(chunks: list[dict]) -> str:
     for chunk in sorted(chunks, key=lambda c: int(c.get("chunk_index") or 0)):
         content = chunk.get("content") or ""
         start, end = chunk.get("start_at"), chunk.get("end_at")
-        exact = isinstance(start, int) and isinstance(end, int) and end - start == len(content)
+        offsets = isinstance(start, int) and isinstance(end, int)
+        body = content[_repeated_table_head(content, end - start):] if offsets and cursor is not None else content
+        exact = offsets and end - start == len(body)
         if exact and cursor is not None and start <= cursor:
             # contiguous (start == cursor) or overlapping: keep only the new text
-            parts.append(content[cursor - start:])
+            parts.append(body[cursor - start:])
         else:
             parts.append(("\n\n" if parts else "") + content)
         cursor = max(cursor or 0, end) if exact else None
@@ -218,8 +324,8 @@ def hit_view(r: dict, ids: Ids) -> dict:
         "kb_id": ids.out(r.get("knowledge_base_id")),
         "seq": int(r.get("chunk_index") or 0),
         "chunk_type": "text",
-        "title": r.get("knowledge_title") or r.get("knowledge_filename") or "",
-        "file_name": r.get("knowledge_filename") or None,
+        "title": display_name(r.get("knowledge_title") or r.get("knowledge_filename") or ""),
+        "file_name": display_name(r.get("knowledge_filename") or "") or None,
         "context_header": "",
         "content": r.get("content") or "",
         "score": float(r.get("score") or 0.0),
@@ -228,6 +334,25 @@ def hit_view(r: dict, ids: Ids) -> dict:
         "anchor_id": None,
         "locators": locators(r.get("source_locators")),
         # WeKnora's matched_content is the matched chunk text for documents, not a question
+    }
+
+
+EXACT_BEFORE = 300
+EXACT_AFTER = 500
+
+
+def exact_hit(doc: dict, text: str, pos: int) -> dict:
+    """A search hit for an identifier found at ``pos`` of a document's parsed text: the lines around it."""
+
+    start = text.rfind("\n", 0, max(0, pos - EXACT_BEFORE)) + 1
+    end = text.find("\n", min(len(text), pos + EXACT_AFTER))
+    end = len(text) if end < 0 else end
+    line = text.count("\n", 0, start) + 1
+    return {
+        "chunk_id": f"{doc['id']}#line-{line}", "doc_id": doc["id"], "kb_id": doc["kb_id"],
+        "seq": 0, "chunk_type": "text", "title": doc.get("title"), "file_name": doc.get("file_name"),
+        "context_header": "", "content": text[start:end], "score": 0.0, "relevance": None,
+        "line_start": line, "anchor_id": None, "locators": [], "matched_by": ["exact"],
     }
 
 

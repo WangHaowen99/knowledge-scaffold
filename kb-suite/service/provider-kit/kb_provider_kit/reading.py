@@ -42,15 +42,39 @@ async def grep(
         raise ProviderError(400, "bad_pattern", str(exc)) from exc
     docs = [d for d in docs if d.get("parse_status") == "completed"][:GREP_MAX_DOCS]
     gate = asyncio.Semaphore(GREP_CONCURRENCY)
+    loop = asyncio.get_running_loop()
+    stopped = False
 
     async def scan(doc: dict) -> tuple[int, dict]:
+        nonlocal stopped
+        # at most GREP_CONCURRENCY documents are read and scanned at once, on grep's own threads
         async with gate:
+            if stopped:
+                return 0, {}
             text = await read_l1(doc)
-        total, lines = await asyncio.to_thread(text_structure.grep_lines, text, regex, max_lines_per_doc)
+            if stopped:
+                return 0, {}
+            try:
+                total, lines = await loop.run_in_executor(
+                    text_structure.grep_executor(), text_structure.grep_lines, text, regex, max_lines_per_doc
+                )
+            except text_structure.PatternError:
+                stopped = True  # before the gate lets the next document in
+                raise
         return total, {"doc_id": doc["id"], "kb_id": doc["kb_id"], "title": doc.get("title"),
                        "file_name": doc.get("file_name"), "lines": lines}
 
-    found = [(n, m) for n, m in await asyncio.gather(*(scan(d) for d in docs)) if n]
+    tasks = [asyncio.create_task(scan(d)) for d in docs]
+    try:
+        results = await asyncio.gather(*tasks)
+    except BaseException as exc:  # e.g. PatternTimeout: the first failure ends the whole grep
+        stopped = True
+        for task in tasks:
+            task.cancel()
+        if isinstance(exc, text_structure.PatternError):
+            raise ProviderError(400, exc.code, str(exc)) from exc
+        raise
+    found = [(n, m) for n, m in results if n]
     return {
         "pattern": pattern, "search_mode": mode, "total_matches": sum(n for n, _ in found),
         "total_documents": len(found), "has_more": len(found) > max_results,

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import time
 
 import httpx
 import pytest
@@ -40,6 +42,12 @@ class FakeWeKnora:
         self.hits = [{"id": "c1", "knowledge_id": "k1", "knowledge_base_id": "kb1", "chunk_index": 1,
                       "knowledge_title": "泵手册", "content": "出口压力低于 0.3 MPa", "score": 0.7,
                       "matched_content": "出口压力低于 0.3 MPa", "source_locators": [{"page": 2, "type": "pdf"}]}]
+        # chunk-list totals of documents other than k1
+        self.chunk_totals: dict[str, int] = {}
+        # full chunk lists of documents other than k1
+        self.extra_chunks: dict[str, list[dict]] = {}
+        self.url_answer: httpx.Response | None = None
+        self.download_disposition = 'attachment; filename="pump.pdf"'
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path.removeprefix("/api/v1")
@@ -66,7 +74,13 @@ class FakeWeKnora:
             page, size = int(params.get("page", 1)), int(params.get("page_size", 20))
             return ok(docs[(page - 1) * size: page * size], total=len(docs), page=page, page_size=size)
         if path.endswith("/knowledge/file"):
-            return ok({**self.doc, "id": "k9", "parse_status": "pending"})
+            # WeKnora titles a file after the fileName field, without its folder
+            found = re.search(rb'name="fileName"\r\n\r\n(.*?)\r\n', request.content)
+            name = found.group(1).decode().rsplit("/", 1)[-1] if found else self.doc["file_name"]
+            return ok({**self.doc, "id": "k9", "parse_status": "pending", "title": name, "file_name": name,
+                       "file_type": name.rsplit(".", 1)[-1]})
+        if path.endswith("/knowledge/url"):
+            return self.url_answer or ok({**self.doc, "id": "k7", "type": "url", "source": body["url"]})
         if path.endswith("/knowledge/manual"):
             return ok({**self.doc, "id": "k8", "type": "manual", "title": body["title"], "file_type": ""})
         if path == "/knowledge/k1":
@@ -77,6 +91,13 @@ class FakeWeKnora:
             page, size = int(request.url.params["page"]), int(request.url.params["page_size"])
             chunks = _chunks()
             return ok(chunks[(page - 1) * size: page * size], total=len(chunks), page=page, page_size=size)
+        m = re.match(r"^/chunks/([^/]+)$", path)
+        if m and m.group(1) in self.extra_chunks:
+            chunks = self.extra_chunks[m.group(1)]
+            page, size = int(params.get("page", 1)), int(params.get("page_size", 20))
+            return ok(chunks[(page - 1) * size: page * size], total=len(chunks), page=page, page_size=size)
+        if m and m.group(1) in self.chunk_totals:
+            return ok([], total=self.chunk_totals[m.group(1)], page=1, page_size=1)
         if path == "/knowledge-search":
             return ok(self.hits)
         if path == "/wiki-search":
@@ -94,7 +115,7 @@ class FakeWeKnora:
             return httpx.Response(200, json={"pages": pages[(page - 1) * size: page * size], "total": len(pages)})
         if path == "/knowledge/k1/download":
             return httpx.Response(200, content=b"%PDF", headers={"content-type": "application/pdf",
-                                                                 "content-disposition": 'attachment; filename="pump.pdf"'})
+                                                                 "content-disposition": self.download_disposition})
         return httpx.Response(404, json={"success": False, "error": {"code": 1003, "message": path}})
 
 
@@ -129,7 +150,8 @@ def test_capabilities_declare_contract_and_schema(client):
 def test_kbs_are_prefixed_and_faq_bases_hidden(client):
     items = client.get("/v1/kbs").json()["items"]
     assert [kb["id"] for kb in items] == ["wk_kb1"]
-    assert items[0]["stats"] == {"documents": 2, "completed": 0, "processing": 1, "failed": 1, "cancelled": 0, "chunks": 3}
+    # documents is the document list's total (1 here), not WeKnora's knowledge_count (2)
+    assert items[0]["stats"] == {"documents": 1, "completed": 0, "processing": 1, "failed": 1, "cancelled": 0, "chunks": 3}
     assert items[0]["config"] == {"chunk_size": 500, "chunk_overlap": 50, "wiki_enabled": True}
 
 
@@ -277,7 +299,17 @@ def test_no_non_contract_status_and_cancelled_is_not_completed(client, fake):
     fake.kb = {**fake.kb, "knowledge_count": 5}
     assert [d["parse_status"] for d in client.get("/v1/kbs/wk_kb1/documents").json()["items"]] == ["processing", "cancelled"]
     stats = client.get("/v1/kbs/wk_kb1").json()["stats"]
-    assert stats["cancelled"] == 1 and stats["completed"] == 5 - 1 - 1 - 1
+    assert stats["cancelled"] == 1 and stats["documents"] == 2 and stats["completed"] == 0
+
+
+def test_document_total_follows_the_list_not_the_lagging_count(client, fake):
+    # WeKnora deletes in the background and its knowledge_count stays stale for minutes
+    fake.docs = [{**fake.doc, "parse_status": "completed"}, {**fake.doc, "id": "k2", "parse_status": "completed"},
+                 {**fake.doc, "id": "k3", "parse_status": "completed"}]
+    fake.kb = {**fake.kb, "knowledge_count": 7, "processing_count": 0}
+    fake.failed = 0
+    stats = client.get("/v1/kbs/wk_kb1").json()["stats"]
+    assert stats["documents"] == 3 and stats["completed"] == 3
 
 
 def test_wiki_pages_concept_filter_and_window(client, fake):
@@ -348,3 +380,275 @@ def test_bad_numbers_are_a_400(client):
 def test_a_single_page_of_a_disabled_wiki_is_not_found(client):
     r = client.get("/v1/kbs/wk_kb2/wiki/page", params={"slug": "entity/pump"})
     assert r.status_code == 404 and r.json()["error"]["code"] == "not_found"
+
+
+# ---- knowledge-base chunk statistics ---------------------------------------------------
+
+
+def _chunk_calls(fake: FakeWeKnora) -> list[str]:
+    return sorted(c[1] for c in fake.calls if c[1].startswith("/chunks/"))
+
+
+def test_chunk_stats_add_up_the_documents_when_weknora_counts_none(client, fake):
+    # WeKnora fills chunk_count for FAQ knowledge bases only
+    fake.kb = {**fake.kb, "chunk_count": 0, "knowledge_count": 3, "processing_count": 1}
+    fake.docs = [{**fake.doc, "updated_at": "2026-01-01T00:00:00Z"},
+                 {**fake.doc, "id": "k2", "parse_status": "completed", "updated_at": "2026-01-01T00:00:00Z"},
+                 {**fake.doc, "id": "k3", "parse_status": "pending"}]
+    fake.chunk_totals = {"k2": 2, "k3": 99}
+    assert client.get("/v1/kbs/wk_kb1").json()["stats"]["chunks"] == 3 + 2
+    assert client.get("/v1/kbs").json()["items"][0]["stats"]["chunks"] == 3 + 2
+    # computed once within its TTL; a pending document has no chunks to ask about
+    assert _chunk_calls(fake) == ["/chunks/k1", "/chunks/k2"]
+    # a new document refreshes the total at once, asking only about that document
+    fake.docs.append({**fake.doc, "id": "k4", "parse_status": "completed", "updated_at": "2026-01-02T00:00:00Z"})
+    fake.chunk_totals["k4"] = 4
+    fake.kb = {**fake.kb, "knowledge_count": 4}
+    assert client.get("/v1/kbs").json()["items"][0]["stats"]["chunks"] == 3 + 2 + 4
+    assert _chunk_calls(fake) == ["/chunks/k1", "/chunks/k2", "/chunks/k4"]
+
+
+def test_chunk_stats_read_every_page_of_documents(client, fake, monkeypatch):
+    from weknora_adapter import app as app_mod
+
+    monkeypatch.setattr(app_mod, "DOC_PAGE", 2)
+    fake.kb = {**fake.kb, "chunk_count": 0, "knowledge_count": 6}
+    fake.docs = _docs(6)
+    # k1 has the three chunks of _chunks(); k5 is gone by the time it is counted
+    fake.chunk_totals = {"k0": 1, "k2": 3, "k3": 4, "k4": 5}
+    assert client.get("/v1/kbs/wk_kb1").json()["stats"]["chunks"] == 1 + 3 + 3 + 4 + 5
+
+
+def test_listing_does_not_wait_for_a_slow_chunk_count(fake, monkeypatch):
+    from weknora_adapter import app as app_mod
+
+    monkeypatch.setenv("WEKNORA_ADAPTER_KEY", "adapter-key")
+    client_mod.get_settings.cache_clear()
+    monkeypatch.setattr(app_mod, "CHUNK_WAIT_S", 0.05)
+    fake.kb = {**fake.kb, "chunk_count": 0, "knowledge_count": 16}
+    fake.docs = _docs(16)
+    fake.chunk_totals = {f"k{i}": 1 for i in range(16) if i != 1}
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/api/v1/chunks/"):
+            await asyncio.sleep(0.3)
+        return fake(request)
+
+    weknora = WeKnora(httpx.AsyncClient(base_url="https://wk.example.com/api/v1", transport=httpx.MockTransport(slow)))
+    with TestClient(create_app(weknora), headers={"Authorization": "Bearer adapter-key"}) as c:
+        # 16 documents, 8 at a time: the total takes 0.6 s, the listing answers without it
+        first = c.get("/v1/kbs").json()["items"][0]["stats"]
+        assert "chunks" not in first and first["documents"] == 16
+        deadline = time.monotonic() + 10
+        while "chunks" not in (stats := c.get("/v1/kbs").json()["items"][0]["stats"]) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert stats["chunks"] == 15 + 3
+    client_mod.get_settings.cache_clear()
+
+
+# ---- uploads: encodings, JSON, long names ---------------------------------------------
+
+
+def _file_part(raw: bytes) -> tuple[str, bytes]:
+    """(file name, content) of the multipart ``file`` field sent to WeKnora."""
+
+    found = re.search(rb'name="file"; filename="([^"]*)"\r\n(?:[^\r\n]+\r\n)*\r\n(.*?)\r\n--', raw, re.S)
+    return found.group(1).decode(), found.group(2)
+
+
+def _form_field(raw: bytes, name: str) -> str:
+    return re.search(rb'name="' + name.encode() + rb'"\r\n\r\n(.*?)\r\n', raw).group(1).decode()
+
+
+def test_text_files_reach_weknora_as_utf8(client, fake):
+    text = "编码测试，标记 SAMPLE-MARK-0017。\n生僻字：𠀀𪚥\n"
+    table = "日期,指标\n2026-01-01,样例\n"
+    for name, data, expected in (
+        ("a.txt", text.encode("utf-16-le"), text),  # no byte order mark
+        ("b.txt", text.encode("utf-16"), text),
+        ("c.md", text.encode("gb18030"), text),
+        ("d.csv", table.encode("gbk"), table),
+    ):
+        assert client.post("/v1/kbs/wk_kb1/documents", files={"file": (name, data)}).status_code == 201, name
+        assert _file_part(fake.calls[-1][2]["raw"])[1] == expected.encode("utf-8"), name
+    # UTF-8, byte order mark included, goes through byte for byte
+    bom = ("\ufeff" + table).encode("utf-8")
+    client.post("/v1/kbs/wk_kb1/documents", files={"file": ("e.csv", bom)})
+    assert _file_part(fake.calls[-1][2]["raw"])[1] == bom
+
+
+def test_text_of_unknown_encoding_is_refused_not_garbled(client, fake):
+    r = client.post("/v1/kbs/wk_kb1/documents", files={"file": ("x.txt", bytes(range(256)) * 4)})
+    assert r.status_code == 400 and r.json()["error"]["code"] == "bad_encoding" and "UTF-8" in r.json()["error"]["message"]
+    assert not any(c[1].endswith("/knowledge/file") for c in fake.calls)
+    # other types are WeKnora's to read
+    assert client.post("/v1/kbs/wk_kb1/documents", files={"file": ("x.pdf", bytes(range(256)))}).status_code == 201
+
+
+def test_json_reaches_weknora_as_text_and_shows_as_json(client, fake):
+    valid = '[{"编号": "SAMPLE-JSON-0001"}, {"编号": "SAMPLE-JSON-0002"}]'.encode()
+    broken = b'{"note": "broken", "mark": "SAMPLE-JSON-0003", '
+    for name, data in (("list.json", valid), ("broken.json", broken)):
+        doc = client.post("/v1/kbs/wk_kb1/documents", files={"file": (name, data)}, data={"folder_path": "数据"}).json()
+        sent = fake.calls[-1][2]["raw"]
+        # the original bytes, under a name WeKnora reads as plain text
+        assert _file_part(sent) == (name + ".as-text.txt", data)
+        assert _form_field(sent, "fileName") == f"数据/{name}.as-text.txt"
+        assert (doc["title"], doc["file_name"], doc["file_type"]) == (name, name, "json")
+    client.post("/v1/kbs/wk_kb1/documents", files={"file": ("notes.txt", b"plain")})
+    assert _file_part(fake.calls[-1][2]["raw"])[0] == "notes.txt"
+
+    fake.hits = [{**fake.hits[0], "knowledge_title": "list.JSON.as-text.txt", "knowledge_filename": "list.JSON.as-text.txt"}]
+    hit = client.post("/v1/search", json={"query": "SAMPLE", "kb_ids": ["wk_kb1"], "include_wiki": False}).json()["items"][0]
+    assert (hit["title"], hit["file_name"]) == ("list.JSON", "list.JSON")
+    fake.download_disposition = "attachment; filename*=UTF-8''%E6%95%B0%E6%8D%AE.json.as-text.txt"
+    assert client.get("/v1/documents/wk_k1/file").headers["content-disposition"] == \
+        "attachment; filename*=UTF-8''%E6%95%B0%E6%8D%AE.json"
+
+
+def test_users_own_json_txt_files_keep_their_name(client, fake):
+    doc = client.post("/v1/kbs/wk_kb1/documents", files={"file": ("导出.json.txt", b'{"a": 1}')}).json()
+    assert _file_part(fake.calls[-1][2]["raw"])[0] == "导出.json.txt"
+    assert (doc["title"], doc["file_name"], doc["file_type"]) == ("导出.json.txt", "导出.json.txt", "txt")
+    fake.hits = [{**fake.hits[0], "knowledge_title": "导出.json.txt", "knowledge_filename": "导出.json.txt"}]
+    hit = client.post("/v1/search", json={"query": "a", "kb_ids": ["wk_kb1"], "include_wiki": False}).json()["items"][0]
+    assert hit["title"] == "导出.json.txt"
+    fake.download_disposition = 'attachment; filename="export.json.txt"'
+    assert client.get("/v1/documents/wk_k1/file").headers["content-disposition"] == 'attachment; filename="export.json.txt"'
+
+
+def test_json_can_stay_with_weknoras_json_reader(client, fake, monkeypatch):
+    monkeypatch.setenv("WEKNORA_JSON_AS_TEXT", "false")
+    client_mod.get_settings.cache_clear()
+    client.post("/v1/kbs/wk_kb1/documents", files={"file": ("a.json", b"{}")})
+    assert _file_part(fake.calls[-1][2]["raw"])[0] == "a.json"
+
+
+def test_long_file_names_fit_weknoras_column(client, fake):
+    client.post("/v1/kbs/wk_kb1/documents", files={"file": ("名" * 300 + ".md", b"# x")})
+    sent = _form_field(fake.calls[-1][2]["raw"], "fileName")
+    assert len(sent) == 255 and sent.endswith("….md") and sent.startswith("名" * 200)
+    client.post("/v1/kbs/wk_kb1/documents", files={"file": ("名" * 300 + ".json", b"{}")})
+    assert len(_form_field(fake.calls[-1][2]["raw"], "fileName")) == 255
+
+
+def test_only_the_base_name_is_fitted_under_a_folder(client, fake):
+    # WeKnora splits fileName at its last '/': the folder goes to folder_path (varchar(1024),
+    # fitted by WeKnora itself), the base name to file_name and title (varchar(255))
+    folder = "/".join(["很长的文件夹名" * 10] * 3)
+    doc = client.post("/v1/kbs/wk_kb1/documents", files={"file": ("名" * 300 + ".md", b"# x")},
+                      data={"folder_path": folder}).json()
+    sent_folder, _, sent_name = _form_field(fake.calls[-1][2]["raw"], "fileName").rpartition("/")
+    assert sent_folder == folder and len(sent_name) == 255 and sent_name.endswith("….md")
+    assert len(doc["title"]) == 255 and doc["title"] == sent_name
+
+
+def test_long_titles_are_cut_to_weknoras_column(client, fake):
+    r = client.post("/v1/kbs/wk_kb1/documents/text", json={"title": "标" * 301, "text": "正文"})
+    sent = fake.calls[-1][2]["body"]["title"]
+    # stored again as "<title>.md" in file_name, also varchar(255)
+    assert r.status_code == 201 and sent == "标" * 251 + "…" and len(sent + ".md") == 255
+    assert r.json()["title"] == sent
+    client.post("/v1/kbs/wk_kb1/documents/text", json={"title": "题" * 252, "text": "正文"})
+    assert fake.calls[-1][2]["body"]["title"] == "题" * 252
+
+
+# ---- URL import: refused addresses ---------------------------------------------------------
+
+# the shape of WeKnora's SSRF answer (FormatSSRFError), synthetic addresses
+SSRF_RESOLVED = ("URL 未通过安全校验：SSRF validation failed: hostname intranet.example.com resolves to restricted IP "
+                 "192.0.2.15: private IP。如该地址确实可信，请联系运维在服务端环境变量 SSRF_WHITELIST_EXTRA 中加入该主机，"
+                 "示例：SSRF_WHITELIST_EXTRA=intranet.example.com,*.example.com,192.0.2.0/24")
+SSRF_DIRECT_IP = ("URL 未通过安全校验：SSRF validation failed: direct IP address access is not allowed, use domain name "
+                  "or add to SSRF_WHITELIST。如该地址确实可信，请联系运维在服务端环境变量 SSRF_WHITELIST_EXTRA 中加入该主机")
+
+
+def _weknora_error(status: int, message: str) -> httpx.Response:
+    return httpx.Response(status, json={"success": False, "error": {"code": 1000, "message": message}})
+
+
+def test_refused_internal_urls_do_not_reveal_the_network(client, fake):
+    for message in (SSRF_RESOLVED, SSRF_DIRECT_IP):
+        fake.url_answer = _weknora_error(400, message)
+        r = client.post("/v1/kbs/wk_kb1/documents/url", json={"url": "http://127.0.0.1:8080/healthz"})
+        assert r.status_code == 400
+        assert r.json()["error"] == {"code": "url_not_allowed", "message": "不允许导入内部或私有地址"}
+    # WeKnora's own service-level check answers a bare 500
+    fake.url_answer = _weknora_error(500, "invalid URL")
+    r = client.post("/v1/kbs/wk_kb1/documents/url", json={"url": "http://intranet.example.com/"})
+    assert r.status_code == 400 and "不允许导入内部或私有地址" in r.json()["error"]["message"]
+    fake.url_answer = _weknora_error(400, "URL 未通过安全校验：SSRF validation failed: DNS resolution failed for hostname "
+                                          "nowhere.example.com: cannot verify if it resolves to safe IP")
+    r = client.post("/v1/kbs/wk_kb1/documents/url", json={"url": "http://nowhere.example.com/"})
+    assert r.status_code == 400 and r.json()["error"]["message"] == "无法解析网址中的域名，请检查网址"
+
+
+def test_url_import_still_works_and_other_errors_lose_addresses(client, fake):
+    doc = client.post("/v1/kbs/wk_kb1/documents/url", json={"url": " https://www.example.com/a "}).json()
+    assert doc["id"] == "wk_k7" and fake.calls[-1][2]["body"]["url"] == "https://www.example.com/a"
+    fake.url_answer = _weknora_error(503, "upstream 192.0.2.15:8080 unavailable")
+    r = client.post("/v1/kbs/wk_kb1/documents/url", json={"url": "https://www.example.com/b"})
+    assert r.status_code == 502 and "192.0.2.15" not in r.text
+
+
+def test_failed_url_documents_hide_the_address_they_tried(client, fake):
+    fake.docs = [{**fake.doc, "type": "url", "source": "https://www.example.com/", "parse_status": "failed",
+                  "error_message": "2026-01-01 10:20:30 fetch failed: dial tcp 192.0.2.15:443, [2001:db8::15]:443: "
+                                   "connection refused"}]
+    error = client.get("/v1/kbs/wk_kb1/documents").json()["items"][0]["error_message"]
+    assert "192.0.2.15" not in error and "2001:db8" not in error
+    assert error.startswith("2026-01-01 10:20:30 fetch failed") and "connection refused" in error
+
+
+def test_stitch_drops_the_table_header_repeated_on_continued_chunks():
+    head = "| 日期 | 价格 |\n| --- | --- |\n"
+    rows1 = "| 2021-01-01 | 1 |\n| 2021-01-02 | 2 |\n"
+    rows2 = "| 2021-01-03 | 3 |\n"
+    text = head + rows1 + rows2
+    a = len(head + rows1)
+    chunks = [{"chunk_index": 0, "content": head + rows1, "start_at": 0, "end_at": a},
+              {"chunk_index": 1, "content": head + rows2, "start_at": a, "end_at": len(text)}]
+    assert stitch(chunks) == text
+    # overlapping continuation: the header and the overlap both go
+    overlap = [{"chunk_index": 0, "content": head + rows1, "start_at": 0, "end_at": a},
+               {"chunk_index": 1, "content": head + "| 2021-01-02 | 2 |\n" + rows2,
+                "start_at": a - len("| 2021-01-02 | 2 |\n"), "end_at": len(text)}]
+    assert stitch(overlap) == text
+    # extra text that is not table rows is kept (joined as before)
+    odd = [{"chunk_index": 0, "content": "甲\n", "start_at": 0, "end_at": 2},
+           {"chunk_index": 1, "content": "前言\n乙", "start_at": 2, "end_at": 3}]
+    assert stitch(odd) == "甲\n\n\n前言\n乙"
+
+
+def test_search_puts_passages_with_the_identifier_first(client, fake):
+    # WeKnora's own ranking misses the identifier; the adapter scans the parsed text for it
+    text = "# 合成异常记录\n\n第 1 行无关。\n错误码 E-0x1F3A 表示电池容量衰减超限。\n结尾。"
+    fake.docs = [fake.doc, {**fake.doc, "id": "k5", "title": "异常记录", "file_name": "c32.md", "parse_status": "completed"}]
+    fake.extra_chunks["k5"] = [{"id": "c50", "chunk_index": 0, "content": text, "start_at": 0, "end_at": len(text)}]
+    data = client.post("/v1/search", json={"query": "E-0x1F3A 是什么错误", "kb_ids": ["wk_kb1"], "top_k": 5,
+                                           "include_wiki": False}).json()
+    first = data["items"][0]
+    assert first["doc_id"] == "wk_k5" and "E-0x1F3A" in first["content"] and first["matched_by"] == ["exact"]
+    assert first["line_start"] == 1 and first["content"].startswith("# 合成异常记录") and data["items"][1]["doc_id"] == "wk_k1"
+    scores = [h["score"] for h in data["items"]]
+    assert scores == sorted(scores, reverse=True)  # best-first even after the exact matches moved up
+    # a query without an identifier is left as WeKnora ranked it
+    plain = client.post("/v1/search", json={"query": "出口压力", "kb_ids": ["wk_kb1"], "include_wiki": False}).json()
+    assert [h["doc_id"] for h in plain["items"]] == ["wk_k1"] and "matched_by" not in plain["items"][0]
+
+
+def test_documents_carry_their_chunk_count_once_counted(client, fake):
+    # real WeKnora knowledge bases carry no chunk total: the knowledge-base view starts the background
+    # count per document, and the document list then has it
+    fake.kb = {**fake.kb, "chunk_count": 0, "processing_count": 0}
+    fake.doc = {**fake.doc, "parse_status": "completed", "updated_at": "2026-01-01T00:00:00Z"}
+    fake.docs = [fake.doc]
+    client.get("/v1/kbs/wk_kb1")
+    import time
+    for _ in range(50):
+        items = client.get("/v1/kbs/wk_kb1/documents").json()["items"]
+        if items[0]["chunk_count"] is not None:
+            break
+        time.sleep(0.05)
+    assert items[0]["chunk_count"] == 3
+    assert client.get("/v1/documents/wk_k1").json()["chunk_count"] == 3
