@@ -15,7 +15,7 @@ from ..workspace.errors import WorkspaceError
 from .spi import ReleaseSource
 
 # 渲染时才能发现的结构问题：与发布同口径，按降级发布渲染一次（数据绑定单独成一道门禁）
-_RENDER_CODES = ("script_binding_conflict", "script_argument_shape")
+_RENDER_CODES = ("script_binding_conflict", "script_argument_shape", "relation_structure_invalid")
 _PLATFORM = {"kind": "platform", "label": "平台"}
 
 

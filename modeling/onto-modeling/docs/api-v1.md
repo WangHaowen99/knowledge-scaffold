@@ -518,6 +518,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
   - `solver_contract_invalid`、`solver_contract_version_incompatible`、`solver_contract_reference_missing`、`solver_context_missing`、`solver_runtime_binding_forbidden`；
   - `solver_receipt_required`、`solver_receipt_stale`、`solver_receipt_failed`（旧码 `solver_contract_validation_required/_stale/_failed`）；
 - 脚本：`script_binding_conflict`、`script_argument_shape`；
+- 对象关系：`relation_structure_invalid`（缺端点、完整字段对重复、显式关联字段不在两端属性清单里；发布时同码 422）；
 - 发布树：`release_tree_unsafe`、`release_tree_mismatch`；
 - 证据：`anchor_missing`（ERROR）、`property_unevidenced`（WARNING）；
 - 流程关卡：`node_blocked`（`details.node_id`）；

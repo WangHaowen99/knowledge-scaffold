@@ -184,7 +184,7 @@ class OntologyPackageAdapter:
         operation 必须声明 uses.objects、index 首列与详情 key 逐字相等。
 
         src.binding：调用方已算好的绑定（按同一只读树算），缺省现算；
-        所有变体均将「关联对象」转为 `# 关系` 表，转不出来的关系只跳过那一条，不阻断导出。
+        所有变体均将「关联对象」转为 `# 关系` 表；缺端点、重复声明、显式关联字段不在两端字段清单里的，导出前拒绝。
         variant=graph：图模式（mappings 与关系按 modeling 图导入契约，补齐物理关联字段）。
         src.allow_unbound：降级发布——声明对不上的对象不阻断，来源Sheet 写 UNBOUND、不进 mapping。
 
@@ -260,10 +260,13 @@ class OntologyPackageAdapter:
             )
         bound = binding["objects"]
         mappings = package_mapping.object_data_mappings(binding, graph=graph)
-        if graph:
-            graph_edges, _ = package_mapping.graph_relations(object_texts, set(mappings["objects"]))
-        else:
-            graph_edges, _ = package_mapping.package_relations(object_texts)
+        # 两种变体都保留语义声明（端点没绑定物理表的概念关系也留着）；结构错误在规范化前拒绝，不静默丢掉（develop !594）
+        graph_edges, relation_problems = package_mapping.package_relations(
+            object_texts, reject_duplicate_relations=True, strict_fields=True,
+        )
+        if relation_problems:
+            raise WorkspaceError("对象关系结构无效：" + "；".join(relation_problems[:20]), 422,
+                                 "relation_structure_invalid")
         rules = entry_items("ontology/rule")
         metrics = entry_items("ontology/metric")
         scripts = entry_items("ontology/scripts", pattern="*.py")
