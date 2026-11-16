@@ -249,6 +249,8 @@ class Session:
     # 引擎绑定的会话：决定事件历史写到哪份文件、续接哪个 token
     conversation_id: str = DEFAULT_CONVERSATION
     sending: int = 0  # 处理中的 send() 数；期间不可回收或换绑，否则消息会落到已丢弃的会话上
+    last_submitted_prompt: str | None = None  # 只拦截连续重复提交；切换消息后允许再次主动提交
+    submission_version: int = 0  # 区分并发发送，旧请求失败时不能清除新请求的防重标记
     # 引擎使用谁的模型配置：用户名 = 该用户的个人 Key；"" = 管理员配置（原行为）
     model_owner: str = ""
     # Claude CLI 自报的会话状态（running / idle / requires_action）；None = 该引擎不上报
@@ -596,9 +598,21 @@ class SessionManager:
         async with self._lock:
             session = await self._bind_session(project_id, conversation_id)
             await self._bind_model_owner(session, owner, engine_cls.name)
+            if not _busy_for_owner_switch(session):
+                session.last_submitted_prompt = None
+            if text == session.last_submitted_prompt:
+                raise SessionError("相同消息正在处理中，请等待完成或停止后再重试", 409)
+            # 必须在释放锁、读取工作区和写历史之前占位，避免并发请求都通过检查。
+            session.last_submitted_prompt = text
+            session.submission_version += 1
+            submission_version = session.submission_version
             session.sending += 1
         try:
             await self._deliver(session, cwd, text)
+        except BaseException:
+            if session.submission_version == submission_version:
+                session.last_submitted_prompt = None
+            raise
         finally:
             session.sending -= 1
         return session
@@ -803,6 +817,8 @@ class SessionManager:
                 return
             error_log.log(project_id, "session_connect", str(exc))
             session.engine = None
+            # 失败轮的消息已留在历史中；重试只能发送新受理的消息，不能重放积压命令。
+            session.pending_prompts.clear()
             session.broadcast({"type": "session_error", "error": FRIENDLY_ERROR})
             session.set_state("error")
         finally:

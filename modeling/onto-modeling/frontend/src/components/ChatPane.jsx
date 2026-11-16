@@ -768,7 +768,7 @@ export default function ChatPane({
   const [state, setState] = useState('idle');
   const sendingRef = useRef(false); // 同步拦住同一次提交；不依赖 React 重渲染或服务端回包
   const [submitting, setSubmitting] = useState(false);
-  const [pending, setPending] = useState(null); // 乐观显示的用户消息
+  const [pending, setPending] = useState(null); // 上传附件时显示的待发送消息
   // 确认卡提交成功后立即收起，不等项目列表刷新回来
   const [goalConfirmedFor, setGoalConfirmedFor] = useState('');
   const goalPending = meta?.goal_status === 'pending' && goalConfirmedFor !== project.id;
@@ -1158,13 +1158,14 @@ export default function ChatPane({
     requestPermissionOnFirstBuild(); // 须在用户发送这一操作中申请，浏览器才弹申请框
     // 上传可能持续数秒：消息发往点发送时所在的会话
     const targetConversation = conversationIdRef.current;
-    setInput('');
-    recallIndexRef.current = -1;
-    // 附件立即离开输入框，进入对话区变成带进度条的文件卡（并行上传）
-    setAttachments([]);
-    for (const att of toUpload) if (att.preview) URL.revokeObjectURL(att.preview);
-    setPending({ text: trimmed || '（发送资料）' });
+    // 普通消息由服务端受理事件显示；被拒绝的重复请求不创建临时气泡。
     if (toUpload.length) {
+      setInput('');
+      recallIndexRef.current = -1;
+      // 附件立即离开输入框，进入对话区变成带进度条的文件卡（并行上传）
+      setAttachments([]);
+      for (const att of toUpload) if (att.preview) URL.revokeObjectURL(att.preview);
+      setPending({ text: trimmed || '（发送资料）' });
       setUploading(true);
       setUploads(
         toUpload.map((att) => ({
@@ -1215,14 +1216,20 @@ export default function ChatPane({
         : '';
       const body = trimmed || '请查看我刚上传的资料，说明接下来可以怎么用。';
       await api.sendMessage(project.id, prefix + body, targetConversation);
+      if (!toUpload.length) {
+        setInput((current) => (current.trim() === trimmed ? '' : current));
+        recallIndexRef.current = -1;
+      }
       setState('running');
       setConversationsEpoch((epoch) => epoch + 1);
     } catch (error) {
       // 走到这里说明附件都已入工作区，只是消息未发出；不退回附件避免重复上传
       // 409：引擎正被另一条会话占用；404：会话已被删除，回到默认会话
-      setPending(null);
-      setUploads([]);
-      setInput(trimmed);
+      if (toUpload.length) {
+        setPending(null);
+        setUploads([]);
+        setInput(trimmed);
+      }
       message.error(error.message);
       if (error.status === 404 && targetConversation) {
         setSelection({ projectId: project.id, id: null });

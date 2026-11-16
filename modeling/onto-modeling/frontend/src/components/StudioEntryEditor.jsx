@@ -2,6 +2,7 @@ import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { Alert, Button, Input, Modal, Space, Spin, Tag, Typography, message } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import { enqueueStudioDraftSave } from '../lib/studioDraftQueue.js';
 import { setWorkspaceDirty } from '../lib/workspaceDirty.js';
 
 // ---- markdown 表格 ↔ 结构化行 双向转换 ----
@@ -113,8 +114,11 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
   const [sections, setSections] = useState([]);
   const [draftState, setDraftState] = useState('clean'); // clean | dirty | saving
   const [submitting, setSubmitting] = useState(false);
+  const [exiting, setExiting] = useState(false);
   const [rejection, setRejection] = useState(null);
   const draftTimer = useRef(0);
+  const leaseRequestRef = useRef(Promise.resolve());
+  const draftSaveRef = useRef(Promise.resolve());
   const baseRevisionRef = useRef(entry.revision);
 
   useEffect(() => {
@@ -138,6 +142,11 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
     }
     // 有历史草稿时优先载入草稿内容
     api.studioGetDraft(project.id, entry.path).then(({ draft }) => {
+      if (draft?.state === 'stale') {
+        message.warning('上次草稿基于旧版本，未自动载入；请放弃旧草稿或基于当前版本重新编辑');
+        setSections(merged);
+        return;
+      }
       if (draft?.content) {
         const draftSections = new Map(
           (draft.content.match(/^#{1,2}\s+.+$/gm) || []).length
@@ -162,15 +171,20 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
   // 租约：进入编辑即申请；他人持有 → 只读；退出释放
   useEffect(() => {
     let mounted = true;
-    api
+    const request = api
       .studioLease(project.id, entry.path)
-      .then((data) => mounted && setLease(data))
+      .then((data) => {
+        if (mounted) setLease(data);
+        return true;
+      })
       .catch((error) => {
         if (mounted) {
           setReadOnly(true);
           message.warning(error.message);
         }
+        return false;
       });
+    leaseRequestRef.current = request;
     return () => {
       mounted = false;
       api.studioReleaseLease(project.id, entry.path).catch(() => {});
@@ -183,6 +197,20 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
       .map((s) => `${'#'.repeat(s.level || 1)} ${s.title}\n\n${(s.content || '').trim()}\n`)
       .join('\n');
 
+  const saveDraft = (next) =>
+    enqueueStudioDraftSave(draftSaveRef, () =>
+      api.studioSaveDraft(
+        project.id,
+        entry.path,
+        serialize(next),
+        baseRevisionRef.current,
+      ));
+
+  const releaseAndExit = async () => {
+    await api.studioReleaseLease(project.id, entry.path);
+    onExit?.();
+  };
+
   const scheduleDraftSave = (next) => {
     setSections(next);
     setDraftState('dirty');
@@ -190,12 +218,36 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
     draftTimer.current = setTimeout(async () => {
       setDraftState('saving');
       try {
-        await api.studioSaveDraft(project.id, entry.path, serialize(next), baseRevisionRef.current);
-        setDraftState('dirty'); // 草稿已存但尚未提交为版本
+        await saveDraft(next);
       } catch (error) {
         message.error(error.message);
+      } finally {
+        // 保存失败仍保留编辑内容，允许退出时重新排队保存。
+        setDraftState('dirty');
       }
     }, 800);
+  };
+
+  const exit = async () => {
+    setExiting(true);
+    clearTimeout(draftTimer.current);
+    try {
+      const leaseAcquired = await leaseRequestRef.current;
+      // 读取申请结果，避免等待期间变为只读却仍使用点击时的旧状态。
+      if (readOnly || !leaseAcquired) {
+        onExit?.();
+        return;
+      }
+      if (draftState !== 'clean') {
+        await saveDraft(sections);
+      } else {
+        await draftSaveRef.current;
+      }
+      await releaseAndExit();
+    } catch (error) {
+      message.error(error.message);
+      setExiting(false);
+    }
   };
 
   const submit = async () => {
@@ -203,7 +255,7 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
     setRejection(null);
     try {
       clearTimeout(draftTimer.current);
-      await api.studioSaveDraft(project.id, entry.path, serialize(sections), baseRevisionRef.current);
+      await saveDraft(sections);
       const result = await api.studioSubmit(project.id, entry.path);
       if (result.result === 'committed') {
         message.success('检查通过，已直接保存为新的迭代');
@@ -223,7 +275,7 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
             </div>
           ),
         });
-        onExit?.();
+        await releaseAndExit();
       } else {
         setRejection(result.errors);
       }
@@ -261,7 +313,7 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
           lease && <Tag color="success">已锁定编辑权（30 分钟）</Tag>
         )}
         <Tag>
-          {draftState === 'saving' ? '草稿保存中…' : draftState === 'dirty' ? '草稿已暂存' : '未修改'}
+          {draftState === 'saving' ? '草稿保存中…' : draftState === 'dirty' ? '草稿未提交' : '未修改'}
         </Tag>
         <Button type="primary" size="small" loading={submitting} disabled={readOnly} onClick={submit}>
           提交（检查并保存为迭代）
@@ -269,7 +321,7 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
         <Button size="small" onClick={discard} disabled={readOnly}>
           放弃草稿
         </Button>
-        <Button size="small" onClick={onExit}>
+        <Button size="small" loading={exiting} onClick={exit}>
           退出
         </Button>
       </Space>

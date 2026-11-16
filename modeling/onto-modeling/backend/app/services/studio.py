@@ -768,7 +768,11 @@ def project_editing_status(project_id: str) -> dict | None:
     if active:
         path, lease = next(iter(active.items()))
         return {"kind": "lease", "path": path, "owner": lease.get("owner", "")}
-    drafts = _load(project_id, "drafts")
+    drafts = {
+        path: draft
+        for path, draft in _load(project_id, "drafts").items()
+        if not isinstance(draft, dict) or draft.get("state") != "stale"
+    }
     if drafts:
         path, draft = next(iter(drafts.items()))
         return {"kind": "draft", "path": path, "owner": draft.get("author", "")}
@@ -810,8 +814,19 @@ def release_lease(project_id: str, rel_path: str, user: str) -> None:
 
 
 def save_draft(
-    project_id: str, rel_path: str, content: str, base_revision: str, user: str
+    project_id: str,
+    rel_path: str,
+    content: str,
+    base_revision: str,
+    user: str,
+    current_revision: str | None = None,
 ) -> dict:
+    if (
+        current_revision is not None
+        and base_revision
+        and base_revision != current_revision
+    ):
+        raise StudioError("正式条目已更新，请刷新后基于最新内容重新编辑", 409)
     acquire_lease(project_id, rel_path, user)  # 持有或续期租约
     drafts = _load(project_id, "drafts")
     drafts[rel_path] = {
@@ -826,6 +841,49 @@ def save_draft(
 
 def get_draft(project_id: str, rel_path: str) -> dict | None:
     return _load(project_id, "drafts").get(rel_path)
+
+
+def get_active_draft(project_id: str, rel_path: str) -> dict | None:
+    draft = get_draft(project_id, rel_path)
+    return None if draft and draft.get("state") == "stale" else draft
+
+
+def ensure_draft_current(draft: dict, current_revision: str) -> None:
+    """Reject a draft whose optimistic-concurrency baseline is no longer current."""
+    base_revision = draft.get("base_revision", "")
+    if base_revision and base_revision != current_revision:
+        raise StudioError("草稿基于旧版本，请刷新后基于最新内容重新编辑", 409)
+
+
+def reconcile_draft(
+    project_id: str,
+    root: Path,
+    rel_path: str,
+    current_content: bytes,
+    current_revision: str,
+) -> dict | None:
+    """Drop an applied draft, or mark it stale after its base file changed."""
+    drafts = _load(project_id, "drafts")
+    draft = drafts.get(rel_path)
+    if not draft:
+        return None
+    content = draft.get("content")
+    if isinstance(content, str) and content.encode("utf-8") == current_content:
+        drafts.pop(rel_path, None)
+        _save(project_id, "drafts", drafts)
+        staged = root / REVIEW_DIR / f"{Path(rel_path).stem}.md"
+        try:
+            staged.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+    base_revision = draft.get("base_revision", "")
+    state = "stale" if base_revision and base_revision != current_revision else "active"
+    if draft.get("state") != state:
+        draft = {**draft, "state": state}
+        drafts[rel_path] = draft
+        _save(project_id, "drafts", drafts)
+    return {**draft, "state": state}
 
 
 def discard_draft(project_id: str, rel_path: str, user: str) -> None:
@@ -851,14 +909,28 @@ def deterministic_check(root: Path, rel_path: str, content: str) -> dict:
     sections = parse_sections(content)
     titles = {s["title"] for s in sections}
     known_titles = {s["title"] for s in schema}
+    baseline_by_title: dict[str, dict] = {}
+    target = (root / rel_path).resolve()
+    try:
+        target.relative_to(root.resolve())
+        baseline_by_title = {
+            section["title"]: section
+            for section in parse_sections(target.read_text(encoding="utf-8"))
+        }
+    except (OSError, ValueError):
+        pass
 
     for spec in schema:
         if spec["required"] and spec["title"] not in titles:
             errors.append(f"缺少必需章节「{spec['title']}」")
-    for title in titles - known_titles:
-        review.append(f"新增了模板外的章节「{title}」")
-
     by_title = {s["title"]: s for s in sections}
+    for title in titles - known_titles:
+        baseline = baseline_by_title.get(title)
+        if baseline is None:
+            review.append(f"新增了模板外的章节「{title}」")
+        elif baseline["content"] != by_title[title]["content"]:
+            review.append(f"修改了模板外的章节「{title}」")
+
     for spec in schema:
         if spec["kind"] != "table" or spec["title"] not in by_title:
             continue
