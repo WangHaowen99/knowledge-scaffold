@@ -236,7 +236,12 @@ class PageInteractions:
 
 
 def _history_dir() -> Path:
-    return Path(os.getenv("DA_ANALYST_HISTORY_DIR") or Path.home() / ".jiuwenswarm" / "da-analyst" / "history")
+    """Under the instance's data root, so several Swarm instances on one host keep separate histories."""
+    explicit = os.getenv("DA_ANALYST_HISTORY_DIR")
+    if explicit:
+        return Path(explicit)
+    root = os.getenv("JIUWENSWARM_DATA_DIR") or str(Path.home() / ".jiuwenswarm")
+    return Path(root) / "da-analyst" / "history"
 
 
 _BACKGROUND: set[asyncio.Task] = set()

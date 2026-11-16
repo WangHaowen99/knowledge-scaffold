@@ -5,6 +5,8 @@ description: 通过 HarnessProtocol（deepanalyze provider）驱动 DeepAnalyze-
 author: kb-suite
 min_jiuwenswarm_version: "0.2.5"
 package_type: application
+# web-channel plugin: the AgentServer process does not load it
+requires_transport: true
 dependencies: {}
 permissions:
   - outbound_network

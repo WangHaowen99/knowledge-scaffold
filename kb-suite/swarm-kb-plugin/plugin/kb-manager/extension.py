@@ -1,8 +1,11 @@
 """JiuwenSwarm application plugin: knowledge-base management page.
 
-The page is an iframe served from ``frontend/dist``. It talks to this backend
-over the plugin's own WebSocket route; the backend forwards whitelisted calls
-to kb-service with the plugin service key, which never reaches the browser.
+The page is an iframe served from ``frontend/dist``. It calls this backend
+through the host's web channel: every method in ``METHODS`` is registered as
+``plugin.kb_manager.<method>`` with ``channel.register_method`` (the plugin
+RPC the framework prescribes), so the host's connection checks and the
+plugin's enabled state apply to it. The backend forwards each call to the
+knowledge service with the plugin service key, which never reaches the browser.
 
 Environment:
     KB_SERVICE_URL   e.g. http://kbs-api:8080
@@ -11,25 +14,30 @@ Environment:
 
 from __future__ import annotations
 
-import asyncio
 import base64
-import json
 import logging
 import os
 from typing import Any
 
 import httpx
 
-from jiuwenswarm.extensions.sdk import (
-    ApplicationPluginExtension,
-    FrontendContribution,
-    WebSocketRouteContribution,
-)
+from jiuwenswarm.extensions.sdk import ApplicationPluginExtension, FrontendContribution
 
 logger = logging.getLogger(__name__)
 
 PLUGIN_ID = "kb-manager"
-WS_PATH = "/ws/plugins/kb-manager"
+RPC_PREFIX = "plugin.kb_manager."
+# the page's whole API; anything else is not reachable from the browser
+METHODS = (
+    "status", "backends.list", "config.meta",
+    "kbs.list", "kbs.get", "kbs.create", "kbs.update", "kbs.delete", "kbs.reprocess",
+    "kbs.profile_generate", "kbs.profile_apply",
+    "docs.list", "docs.get", "docs.chunks", "docs.content", "docs.file", "docs.reprocess", "docs.cancel",
+    "docs.delete", "docs.text", "docs.url", "docs.questions_regenerate", "chunks.questions",
+    "upload.begin", "upload.part", "upload.complete", "search",
+    "wiki.status", "wiki.pages", "wiki.page", "wiki.edit", "wiki.delete", "wiki.graph", "wiki.rebuild",
+    "wiki.finalize",
+)
 MAX_FILE_DOWNLOAD = 30 * 1024 * 1024
 
 
@@ -46,34 +54,6 @@ def _p(params: dict, name: str, default: Any = None, *, required: bool = False) 
     if required and (value is None or value == ""):
         raise RpcError("bad_request", f"缺少参数 {name}")
     return value
-
-
-async def handshake_denied(websocket: Any) -> bool:
-    """Apply Swarm's own login check to this route; True when the connection was refused.
-
-    Swarm checks a handshake (``WebChannel.authenticate_handshake``, set up when Swarm login is on) only for
-    its main ``/ws``, not for plugin routes, so the plugin asks the same hook. Without Swarm login there is
-    no hook and nothing changes; foreign Origins are refused at the edge (deploy/compose/edge/nginx.conf).
-    """
-
-    scope = getattr(websocket, "scope", None) or {}
-    channel = getattr(getattr(scope.get("app"), "state", None), "web_channel", None)
-    authenticate = getattr(channel, "authenticate_handshake", None)
-    if authenticate is None:
-        return False
-    client = scope.get("client") or ("", "")
-    query = scope.get("query_string", b"").decode("latin-1")
-    path = scope.get("path", "") + (f"?{query}" if query else "")
-    try:
-        result = await authenticate(path=path, headers=websocket.headers, remote=f"{client[0]}:{client[1]}" if client[0] else "",
-                                    channel="web")
-        allowed = result is None or bool(getattr(result, "success", True))
-    except Exception:  # noqa: BLE001 - a login check that fails refuses the connection
-        logger.warning("[%s] handshake check failed", PLUGIN_ID, exc_info=True)
-        allowed = False
-    if not allowed:
-        await websocket.close(code=1008)
-    return not allowed
 
 
 class KbManagerPlugin(ApplicationPluginExtension):
@@ -102,8 +82,29 @@ class KbManagerPlugin(ApplicationPluginExtension):
             ),
         )
 
-    def websocket_routes(self) -> tuple[WebSocketRouteContribution, ...]:
-        return (WebSocketRouteContribution(path=WS_PATH, endpoint=self._serve),)
+    def bind_web_channel(self, channel: Any, services: Any) -> None:
+        del services
+        for name in METHODS:
+            channel.register_method(f"{RPC_PREFIX}{name}", self._rpc_handler(channel, name), local_only=True)
+
+    def _rpc_handler(self, channel: Any, name: str) -> Any:
+        async def handler(ws: Any, req_id: str, params: Any, session_id: Any) -> None:
+            del session_id
+            try:
+                result = await self._dispatch(name, params if isinstance(params, dict) else {})
+            except RpcError as exc:
+                await channel.send_response(ws, req_id, ok=False, payload={"status": exc.status},
+                                            error=exc.message, code=exc.code)
+                return
+            except Exception as exc:  # noqa: BLE001 - report to the page, keep the channel alive
+                logger.exception("[kb-manager] rpc %s failed", name)
+                await channel.send_response(ws, req_id, ok=False, payload={"status": 500}, error=str(exc),
+                                            code="internal")
+                return
+            # payload must be an object; lists and markdown text travel under "result"
+            await channel.send_response(ws, req_id, ok=True, payload={"result": result})
+
+        return handler
 
     # ---- kb-service HTTP --------------------------------------------------
 
@@ -293,46 +294,6 @@ class KbManagerPlugin(ApplicationPluginExtension):
         if action == "finalize":
             return await self._call("POST", f"{base}/finalize")
         raise RpcError("unknown_method", f"未知方法 wiki.{action}", 404)
-
-    # ---- WebSocket --------------------------------------------------------
-
-    async def _serve(self, websocket: Any) -> None:
-        if await handshake_denied(websocket):
-            return
-        await websocket.accept()
-        send_lock = asyncio.Lock()
-        tasks: set[asyncio.Task] = set()
-
-        async def reply(payload: dict) -> None:
-            async with send_lock:
-                await websocket.send_text(json.dumps(payload, ensure_ascii=False, default=str))
-
-        async def handle(req: dict) -> None:
-            req_id = req.get("id")
-            try:
-                result = await self._dispatch(str(req.get("method", "")), req.get("params") or {})
-                await reply({"id": req_id, "ok": True, "result": result})
-            except RpcError as exc:
-                await reply({"id": req_id, "ok": False, "error": {"code": exc.code, "message": exc.message, "status": exc.status}})
-            except Exception as exc:  # noqa: BLE001 - report, keep the socket alive
-                logger.exception("[kb-manager] rpc %s failed", req.get("method"))
-                await reply({"id": req_id, "ok": False, "error": {"code": "internal", "message": str(exc), "status": 500}})
-
-        try:
-            while True:
-                text = await websocket.receive_text()
-                try:
-                    req = json.loads(text)
-                except ValueError:
-                    continue
-                task = asyncio.create_task(handle(req))
-                tasks.add(task)
-                task.add_done_callback(tasks.discard)
-        except Exception:  # noqa: BLE001 - disconnect ends the session
-            pass
-        finally:
-            for task in tasks:
-                task.cancel()
 
 
 async def register_extensions(registry: Any) -> list[KbManagerPlugin]:
