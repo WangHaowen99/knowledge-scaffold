@@ -31,6 +31,7 @@
 #   da-kb.env    generated: DA_KB_DB_PASSWORD
 #   da-platform.env  generated: DAP_DB_PASSWORD; set DAP_MINERU_ENABLED=true, DAP_MINERU_API_URL and
 #                DAP_EXTRA_FILE_TYPES yourself when a MinerU of your own is available
+#   deploy.env   optional, not secret: SWARM_TAG, KB_PLUGINS_SRC (where build-plugin stages the plugins)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -41,7 +42,7 @@ KEYS="$KBS_SECRETS_DIR/keys.env"
 
 PROJECT="${KBS_PROJECT:-kb-suite}"
 export KBS_PROJECT="$PROJECT"
-ENV_FILES=(secrets.env gateway.env weknora.env da-kb.env da-platform.env)
+ENV_FILES=(secrets.env gateway.env weknora.env da-kb.env da-platform.env deploy.env)
 
 compose() {
   local args=() name
@@ -98,13 +99,25 @@ wait_healthy() {
 
 build_plugin() {
   # 一份前端工程出两个插件页面：kb-manager（知识库管理）和 da-analyst（知识求索）。
-  docker run --rm -v "$ROOT/swarm-kb-plugin:/src" docker.1ms.run/library/node:22-slim sh -c "
+  # 产物连同插件后端一起放到 $KB_PLUGINS_SRC（默认仓库里的 plugin 目录），swarm 从那里只读挂载；
+  # 线上用发布快照目录、测试栈用自己的目录，重建一边的页面不会改到另一边。
+  local repo="$ROOT/swarm-kb-plugin/plugin" out="${KB_PLUGINS_SRC:-$ROOT/swarm-kb-plugin/plugin}" p
+  case "$out" in /*) ;; *) out="$HERE/$out" ;; esac
+  mkdir -p "$out"
+  out="$(cd "$out" && pwd)"
+  if [ "$out" != "$repo" ]; then
+    for p in kb-manager da-analyst; do
+      mkdir -p "$out/$p"
+      cp "$repo/$p/extension.py" "$repo/$p/extension.yaml" "$out/$p/"
+    done
+  fi
+  docker run --rm -v "$ROOT/swarm-kb-plugin:/src:ro" -v "$out:/out" docker.1ms.run/library/node:22-slim sh -c "
     cp -r /src/frontend /work && cd /work &&
     npm ci --registry=https://registry.npmmirror.com --no-audit --no-fund --loglevel=error &&
     npx tsc --noEmit &&
-    KB_APP=kb npx vite build --outDir /src/plugin/kb-manager/frontend/dist --emptyOutDir &&
-    KB_APP=da npx vite build --outDir /src/plugin/da-analyst/frontend/dist --emptyOutDir &&
-    chown -R $(id -u):$(id -g) /src/plugin/kb-manager/frontend /src/plugin/da-analyst/frontend"
+    KB_APP=kb npx vite build --outDir /out/kb-manager/frontend/dist --emptyOutDir &&
+    KB_APP=da npx vite build --outDir /out/da-analyst/frontend/dist --emptyOutDir &&
+    chown -R $(id -u):$(id -g) /out/kb-manager /out/da-analyst"
 }
 
 build_docreader() {

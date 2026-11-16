@@ -128,13 +128,15 @@ services:
       SWARM_ENDPOINT_PROFILE: dashscope
     volumes:
       - swarm-home:/root/.jiuwenswarm
-      # the plugins go into the user plugin directory (read-only, so a rebuilt page shows up without
-      # copying); Swarm builds differ on where that is, ~/.jiuwenswarm/application_plugins or
-      # ~/.jiuwenswarm/domain/application_plugins, so each plugin is placed in both
-      - ../../swarm-kb-plugin/plugin/kb-manager:/root/.jiuwenswarm/application_plugins/kb-manager:ro
-      - ../../swarm-kb-plugin/plugin/da-analyst:/root/.jiuwenswarm/application_plugins/da-analyst:ro
-      - ../../swarm-kb-plugin/plugin/kb-manager:/root/.jiuwenswarm/domain/application_plugins/kb-manager:ro
-      - ../../swarm-kb-plugin/plugin/da-analyst:/root/.jiuwenswarm/domain/application_plugins/da-analyst:ro
+      # the plugins go into the user plugin directory, read-only; Swarm builds differ on where that is
+      # (~/.jiuwenswarm/application_plugins or ~/.jiuwenswarm/domain/application_plugins), so each
+      # plugin is placed in both. KB_PLUGINS_SRC (deploy.env) is where `kbsuite.sh build-plugin`
+      # staged them: a release snapshot for a production stack, a scratch dir for a test stack, so
+      # rebuilding pages for one never changes what the other serves.
+      - ${KB_PLUGINS_SRC:-../../swarm-kb-plugin/plugin}/kb-manager:/root/.jiuwenswarm/application_plugins/kb-manager:ro
+      - ${KB_PLUGINS_SRC:-../../swarm-kb-plugin/plugin}/da-analyst:/root/.jiuwenswarm/application_plugins/da-analyst:ro
+      - ${KB_PLUGINS_SRC:-../../swarm-kb-plugin/plugin}/kb-manager:/root/.jiuwenswarm/domain/application_plugins/kb-manager:ro
+      - ${KB_PLUGINS_SRC:-../../swarm-kb-plugin/plugin}/da-analyst:/root/.jiuwenswarm/domain/application_plugins/da-analyst:ro
     depends_on:
       kb-gateway:
         condition: service_healthy

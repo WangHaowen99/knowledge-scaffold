@@ -41,6 +41,7 @@
 - **`gateway.env`**：`up` 时生成，`KBGW_WEKNORA_ADAPTER_KEY`、`KBGW_DA_ADAPTER_KEY` 是 gateway 访问两个适配服务的密钥。可选的 `KBS_GATEWAY_BACKENDS` 指向本部署自己的后端清单（绝对路径），不设时用仓库里的 `gateway/backends.yaml`；要换默认后端又不想影响同一工作树的其他部署时用它。
 - **`weknora.env`**：`up`（或单独的 `up-weknora`）生成 WeKnora 实例的数据库、Redis、加密密钥和管理员密码，初始化后再写入 `WEKNORA_API_KEY` 和两个模型 id。
 - **`da-kb.env`**：`up-da-kb` 生成 DA 知识管线的数据库密码。DA 的模型地址和密钥写在它自己的数据库里（`da-kb/providers.py`）。
+- **`deploy.env`**（可选，不含密钥）：这套环境用哪个 Swarm 镜像（`SWARM_TAG`），插件从哪个目录挂载（`KB_PLUGINS_SRC`）。`./kbsuite.sh build-plugin` 把插件后端和构建好的页面放进 `KB_PLUGINS_SRC`。线上指向发布快照目录，测试栈指向自己的目录，开发时重建页面不会改到线上正在用的那份。不设置时用仓库里的插件目录。
 
 ## 操作
 
