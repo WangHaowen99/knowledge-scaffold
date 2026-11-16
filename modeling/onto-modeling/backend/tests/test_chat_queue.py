@@ -337,6 +337,61 @@ def test_cancel_next_drops_command_task(steer_host):
     assert records(manager, project_id, {"next_updated"})[-1]["payload"]["next"] is None
 
 
+# ---- 连续重复提交（develop !596）与代存命令的配合 ----
+
+
+def test_duplicate_command_rejected_while_held_and_chained_start_still_runs(steer_host):
+    manager, project_id, root, _ = steer_host
+    FakeEngine.scripts = [[lock("validate", "start")], [lock("extract-object", "source")]]
+    command = "/ontology-extract-object"
+
+    async def scenario():
+        await manager.send(project_id, root, "/ontology-validate")
+        session = await running(manager, project_id)
+        await manager.submit(project_id, root, command, meta={"command": command})
+        with pytest.raises(SessionError) as duplicate:
+            await manager.submit(project_id, root, f"  {command}\n", meta={"command": command})
+        # 平台在上一轮结束后接着开始代存的命令：同一条文字，不能被当成重复
+        await session.engine.finish(release("validate"))
+        await settle(manager, project_id, until=lambda s: len(FakeEngine.sent) == 2 and s.state == "running")
+        held_after = manager.next_view(project_id, "default")
+        await manager.shutdown()
+        return duplicate.value, held_after
+
+    duplicate, held_after = asyncio.run(scenario())
+    assert duplicate.status == 409 and duplicate.code == "message_duplicate"
+    assert FakeEngine.sent == ["/ontology-validate", command]
+    assert held_after is None
+
+
+def test_interrupt_and_cancel_next_allow_resubmitting_same_text(steer_host):
+    manager, project_id, root, _ = steer_host
+    FakeEngine.scripts = [[lock("validate", "start")], [lock("validate", "start")]]
+    command = "/ontology-extract-object"
+
+    async def scenario():
+        await manager.send(project_id, root, "/ontology-validate")
+        session = await running(manager, project_id)
+        await manager.submit(project_id, root, command, meta={"command": command})
+        manager.cancel_next(project_id, "default")
+        _, held_again = await manager.submit(project_id, root, command, meta={"command": command})
+        _, steer = await manager.submit(project_id, root, "先别改对象")
+        with pytest.raises(SessionError):
+            await manager.submit(project_id, root, "先别改对象")
+        await manager.interrupt(project_id)
+        # 撤回的插话放回输入框后马上重发（「打断并发送」）：不等这一轮收尾也不算重复
+        _, resent = await manager.submit(project_id, root, "先别改对象")
+        await settle(manager, project_id, until=lambda s: s.state == "running" and len(FakeEngine.sent) == 2)
+        await session.engine.finish()
+        await settle(manager, project_id)
+        await manager.shutdown()
+        return held_again, steer, resent
+
+    held_again, steer, resent = asyncio.run(scenario())
+    assert held_again["delivery"] == "next" and steer["delivery"] == "steer"
+    assert resent["delivery"] in ("immediate", "steer")
+
+
 # ---- 接口：S-07 delivery、S-05 next、S-08 returned、next/cancel、next/start ----
 
 
@@ -367,6 +422,24 @@ def wait(predicate, timeout: float = 5.0):
             return value
         time.sleep(0.02)
     raise AssertionError("等待超时")
+
+
+def test_double_click_command_cancels_second_task(api):
+    client, manager, project_id = api
+    base = f"/api/v1/projects/{project_id}"
+    FakeEngine.scripts = [[lock("validate", "start")]]
+    first = client.post(f"{base}/commands", json={"command": "/ontology-validate", "origin": {"page": "reports"}})
+    assert first.status_code == 202
+    cid = first.json()["conversation_id"]
+    wait(lambda: manager.get(project_id) and manager.get(project_id).state == "running")
+    again = client.post(f"{base}/commands", json={"command": "/ontology-validate", "conversation_id": cid,
+                                                  "origin": {"page": "reports"}})
+    assert again.status_code == 409 and again.json()["code"] == "message_duplicate"
+    tasks = [task for task in command_tasks.query(project_id, states=list(command_tasks.STATES))
+             if task["task_id"] != first.json()["task"]["task_id"]]
+    assert [task["state"] for task in tasks] == ["cancelled"]
+    assert client.get(f"{base}/conversations/{cid}").json()["next"] is None
+    client.post(f"{base}/conversations/{cid}/interrupt")
 
 
 def test_send_while_running_api_shapes(api):

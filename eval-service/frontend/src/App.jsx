@@ -2,7 +2,7 @@ import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { api, allPages, TOKEN, SESSION, clearLogin, loginSession, saveLogin, tokenSubject } from './api.js';
 import { receiveHandoff } from './handoff.js';
 import { ACTIVE, parseRoute, shortId, sourceSummary, taskRows } from './domain.js';
-import { Alert, Badge, Breadcrumb, Button, Confirm, Empty, Heading, Icon, Skeleton, useAction } from './ui.jsx';
+import { Alert, Badge, Breadcrumb, Button, Confirm, Empty, Heading, Icon, Segmented, Skeleton, useAction } from './ui.jsx';
 import { TaskCenter } from './TaskCenter.jsx';
 import { Wizard } from './Wizard.jsx';
 import { RunDetail } from './RunDetail.jsx';
@@ -15,6 +15,7 @@ import { UserMenu } from './UserMenu.jsx';
 // Loaded on first use: the page only exists where the deployment enabled consumer feedback.
 const FeedbackList = lazy(() => import('./FeedbackPage.jsx').then((module) => ({ default: module.FeedbackList })));
 const FeedbackRun = lazy(() => import('./FeedbackPage.jsx').then((module) => ({ default: module.FeedbackRun })));
+const FeedbackPackage = lazy(() => import('./FeedbackPage.jsx').then((module) => ({ default: module.FeedbackPackage })));
 
 const brandIconUrl = `${import.meta.env.BASE_URL}favicon.svg`;
 
@@ -30,13 +31,14 @@ export default function App() {
     [authLoading, setAuthLoading] = useState(true),
     [authError, setAuthError] = useState('');
   const [runs, setRuns] = useState([]),
+    [feedbackWaiting, setFeedbackWaiting] = useState(0),
     [sets, setSets] = useState([]),
     [solverSets, setSolverSets] = useState([]),
     [sources, setSources] = useState([]),
     [loading, setLoading] = useState(false),
     [syncError, setSyncError] = useState(''),
     [lastSync, setLastSync] = useState(null);
-  const [searchState, setSearchState] = useState({ tab: 'all', search: '', packageFilter: '' }),
+  const [searchState, setSearchState] = useState({ tab: 'all', search: '' }),
     [confirmation, setConfirmation] = useState(null),
     [leave, setLeave] = useState(null);
   const authEpoch = useRef(0),
@@ -50,6 +52,7 @@ export default function App() {
     listLock.current = false;
     setSession(null);
     setRuns([]);
+    setFeedbackWaiting(0);
     setSets([]);
     setSolverSets([]);
     setSources([]);
@@ -113,6 +116,13 @@ export default function App() {
       }
     }
   }
+  // Packages with feedback waiting for an owner, counted on the navigation; failures leave the last count.
+  async function refreshFeedback() {
+    const epoch = authEpoch.current;
+    const page = await api('/package-tasks?origin=consumer_feedback');
+    if (epoch === authEpoch.current)
+      setFeedbackWaiting(page.items.filter((item) => item.status === 'pending').length);
+  }
   async function refreshDefinitions() {
     const epoch = authEpoch.current;
     const [s, d, v] = await Promise.all([allPages('/eval-sets'), allPages('/data-sources'), allPages('/solver-sets')]);
@@ -149,10 +159,14 @@ export default function App() {
   }, []);
   useEffect(() => {
     if (!session) return;
+    const feedback = () => session.feedback_enabled && refreshFeedback().catch(() => {});
     refreshRuns();
+    feedback();
     refreshDefinitions().catch((e) => setSyncError(e.message));
     const timer = setInterval(() => {
-      if (document.visibilityState === 'visible') refreshRuns();
+      if (document.visibilityState !== 'visible') return;
+      refreshRuns();
+      feedback();
     }, 5000);
     return () => clearInterval(timer);
   }, [session?.subject]);
@@ -210,12 +224,18 @@ export default function App() {
   }
   const active = runs.filter((r) => ACTIVE.has(r.status)).length,
     nav = [
-      ['tasks', '/', 'task', '评测任务'],
-      ['sets', '/eval-sets', 'set', '评测集'],
-      ['sources', '/data-sources', 'db', '数据源'],
-      // Consumer feedback, when the deployment enabled it.
-      ...(session?.feedback_enabled ? [['feedback', '/feedback', 'message', '用户反馈']] : []),
-    ];
+      ['评测', [
+        ['tasks', '/', 'task', '评测任务', active, ''],
+        // Consumer feedback, when the deployment enabled it.
+        ...(session?.feedback_enabled ? [['feedback', '/feedback', 'message', '用户反馈', feedbackWaiting, 'amber']] : []),
+      ]],
+      ['配置', [
+        ['sets', '/eval-sets', 'set', '评测集'],
+        ['sources', '/data-sources', 'db', '数据源'],
+        ['settings', '/settings', 'settings', '判分模型'],
+      ]],
+    ],
+    crumbs = pageCrumbs(route);
   if (!session)
     return (
       <div className="login-page">
@@ -266,17 +286,58 @@ export default function App() {
     );
   return (
     <div className="app-shell">
-      <header className="topbar">
+      <aside className="sidebar">
         <button className="brand" onClick={() => navigate('/')}>
           <img className="brand-icon" src={brandIconUrl} alt="" />
           <b>知识包评测</b>
-          <span>EVALUATION</span>
         </button>
+        <nav aria-label="主要导航">
+          {nav.map(([group, items]) => (
+            <React.Fragment key={group}>
+              <div className="nav-group">{group}</div>
+              {items.map(([page, path, icon, label, count, tone]) => (
+                <button
+                  key={page}
+                  title={label}
+                  className={`nav-item ${route.page === page || (page === 'tasks' && ['run', 'new'].includes(route.page)) || (page === 'sets' && route.page === 'solverSets') ? 'selected' : ''}`}
+                  aria-current={route.page === page ? 'page' : undefined}
+                  onClick={() => navigate(path)}
+                >
+                  <Icon name={icon} />
+                  <span>{label}</span>
+                  {count > 0 && (
+                    <em className={tone} aria-label={page === 'tasks' ? `${count} 个评测进行中` : `${count} 个知识包有待确认的反馈`}>
+                      {count}
+                    </em>
+                  )}
+                </button>
+              ))}
+            </React.Fragment>
+          ))}
+        </nav>
+      </aside>
+      <div className="main-column">
+      <header className="topbar">
+        <nav className="crumbs" aria-label="当前位置">
+          {crumbs.map(([label, path], i) =>
+            path ? (
+              <React.Fragment key={label}>
+                <button type="button" className="text-link" onClick={() => navigate(path)}>
+                  {label}
+                </button>
+                <span aria-hidden="true">/</span>
+              </React.Fragment>
+            ) : (
+              <b key={label} aria-current={i === crumbs.length - 1 ? 'page' : undefined}>
+                {label}
+              </b>
+            ),
+          )}
+        </nav>
         <div className="topbar-actions">
           <Badge tone={session.judge?.configured ? 'green' : 'amber'}>
-            {session.judge?.configured ? '评测判分模型已配置' : '评测判分模型未配置'}
+            {session.judge?.configured ? '判分模型已配置' : '判分模型未配置'}
           </Badge>
-          <span className="topbar-divider" />
           <UserMenu
             user={session.user}
             onLogout={() => {
@@ -286,42 +347,6 @@ export default function App() {
           />
         </div>
       </header>
-      <aside className="sidebar">
-        <div className="side-caption">评测工作台</div>
-        <nav aria-label="主要导航">
-          {nav.map(([page, path, icon, label]) => (
-            <button
-              key={page}
-              title={label}
-              className={`nav-item ${route.page === page || (page === 'tasks' && ['run', 'new'].includes(route.page)) || (page === 'sets' && route.page === 'solverSets') ? 'selected' : ''}`}
-              aria-current={route.page === page ? 'page' : undefined}
-              onClick={() => navigate(path)}
-            >
-              <Icon name={icon} />
-              <span>{label}</span>
-              {page === 'tasks' && active > 0 && <em>{active}</em>}
-            </button>
-          ))}
-        </nav>
-        <div className="sidebar-bottom">
-          <button
-            className={`nav-item ${route.page === 'settings' ? 'selected' : ''}`}
-            title="评测判分模型配置"
-            onClick={() => navigate('/settings')}
-          >
-            <Icon name="settings" />
-            <span>评测判分模型配置</span>
-          </button>
-          <div className="sidebar-help">
-            <b>回到任务，继续查看</b>
-            <p>
-              关闭页面后，可从「评测任务」
-              <br />
-              找回运行记录和执行详情。
-            </p>
-          </div>
-        </div>
-      </aside>
       <main className={`content ${route.page === 'new' ? 'wizard-content' : ''}`} ref={contentRef}>
         {syncError && route.page !== 'run' && (
           <Alert
@@ -345,7 +370,6 @@ export default function App() {
             runs={runs}
             loading={loading}
             lastSync={lastSync}
-            onRefresh={refreshRuns}
             navigate={navigate}
             searchState={searchState}
             setSearchState={setSearchState}
@@ -354,7 +378,7 @@ export default function App() {
         )}
         {route.page === 'new' && (
           <Wizard
-            key={`${session.subject}-${route.from || ''}-${route.release || ''}`}
+            key={`${session.subject}-${route.from || ''}-${route.release || ''}-${route.runType || ''}`}
             sets={sets}
             solverSets={solverSets}
             sources={sources}
@@ -364,6 +388,7 @@ export default function App() {
             navigate={navigate}
             from={route.from}
             release={route.release}
+            runType={route.runType}
             registerDirty={(value) => {
               dirty.current = value;
             }}
@@ -394,7 +419,14 @@ export default function App() {
         )}
         {route.page === 'feedback' && (
           <Suspense fallback={<Skeleton />}>
-            {route.id ? (
+            {route.package ? (
+              <FeedbackPackage
+                key={`${session.subject}-${route.package}`}
+                ontologyId={route.package}
+                navigate={navigate}
+                onChanged={() => refreshFeedback().catch(() => {})}
+              />
+            ) : route.id ? (
               <FeedbackRun key={`${session.subject}-${route.id}`} id={route.id} navigate={navigate} />
             ) : (
               <FeedbackList key={session.subject} navigate={navigate} />
@@ -403,7 +435,7 @@ export default function App() {
         )}
         {route.page === 'settings' && (
           <>
-            <Heading title="评测判分模型配置">默认使用管理员维护的默认配置；取消“使用默认配置”可保存你自己的判分模型，默认配置启用时随时可切回。</Heading>
+            <Heading title="判分模型">给智能体的回答打分、生成优化建议的大模型。默认使用管理员维护的默认配置；取消“使用默认配置”可保存你自己的判分模型，默认配置启用时随时可切回。</Heading>
             <JudgeSettings
               onChanged={async () => {
                 const value = await api('/session');
@@ -413,6 +445,7 @@ export default function App() {
           </>
         )}
       </main>
+      </div>
       {confirmation && (
         <Confirm
           title={
@@ -468,6 +501,23 @@ export default function App() {
       )}
     </div>
   );
+}
+
+// Where the page sits, for the top bar: earlier steps link back.
+function pageCrumbs(route) {
+  const editing = (label, path) => [[label, path], [route.id === 'new' ? `新建${label}` : `编辑${label}`]];
+  if (route.page === 'run') return [['评测任务', '/'], ['执行详情']];
+  if (route.page === 'new') return [['评测任务', '/'], ['新建评测']];
+  if (route.page === 'sets') return route.id ? editing('评测集', '/eval-sets') : [['评测集']];
+  if (route.page === 'sources') return route.id ? editing('数据源', '/data-sources') : [['数据源']];
+  if (route.page === 'feedback')
+    return route.package
+      ? [['用户反馈', '/feedback'], ['知识包反馈']]
+      : route.id
+        ? [['用户反馈', '/feedback'], ['反馈详情']]
+        : [['用户反馈']];
+  if (route.page === 'settings') return [['判分模型']];
+  return [['评测任务']];
 }
 
 function Login({ onLogin, error: authError, returnToRun }) {
@@ -629,38 +679,23 @@ function Definitions({ kind, id, items, counts, refresh, navigate, registerDirty
             ? '管理可复用的问题与参考答案，已有任务保留原用例快照。'
             : '保存并复用连接与数据文件，按 Provider 配置评测数据源。'}
       </Heading>
+      <div className="list-toolbar">
+        {cases ? (
+          <Segmented
+            value={kind}
+            onChange={(value) => navigate(value === 'solverSets' ? '/solver-sets' : '/eval-sets')}
+            items={[
+              ['sets', '数据评测集', counts.sets],
+              ['solverSets', '求解验证集', counts.solverSets],
+            ]}
+          />
+        ) : <span className="muted">共 {items.length} 个数据源</span>}
+        <label className="search-input">
+          <Icon name="search" />
+          <input aria-label="搜索配置名称" placeholder="搜索名称" value={search} onChange={(e) => setSearch(e.target.value)} />
+        </label>
+      </div>
       <section className="panel table-panel">
-        <div className="table-toolbar">
-          {cases ? (
-            <div className="tabs">
-              {[
-                ['sets', '/eval-sets', '数据评测集'],
-                ['solverSets', '/solver-sets', '求解验证集'],
-              ].map(([value, target, title]) => (
-                <button
-                  key={value}
-                  type="button"
-                  className={kind === value ? 'selected' : ''}
-                  aria-pressed={kind === value}
-                  onClick={() => navigate(target)}
-                >
-                  {title} {counts[value]}
-                </button>
-              ))}
-            </div>
-          ) : (
-            <strong>{items.length} 个数据源</strong>
-          )}
-          <label className="search-input">
-            <Icon name="search" />
-            <input
-              aria-label="搜索配置名称"
-              placeholder="搜索名称"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </label>
-        </div>
         {!filtered.length ? (
           <Empty
             title={items.length ? '没有匹配的配置' : `还没有${label}`}
@@ -674,34 +709,44 @@ function Definitions({ kind, id, items, counts, refresh, navigate, registerDirty
           </Empty>
         ) : (
           <div className="table-scroll">
-            <table>
+            <table className="plain-table">
               <thead>
                 <tr>
                   <th>名称</th>
-                  <th>{cases ? '用例数量' : '类型与范围'}</th>
+                  <th>{cases ? '用例' : '类型与范围'}</th>
                   <th>修订</th>
-                  <th>操作</th>
+                  <th className="align-right">操作</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.map((item) => (
-                  <tr key={item.id}>
+                  <tr key={item.id} className="clickable" onClick={() => navigate(`${path}/${item.id}`)}>
                     <td>
-                      <strong>{item.name}</strong>
+                      <b className="package-name">{item.name}</b>
                     </td>
-                    <td>
+                    <td className="muted-cell">
                       {cases ? `${item.case_count ?? item.cases?.length ?? 0} 条用例` : sourceSummary(item)}
                     </td>
-                    <td>r{item.revision}</td>
                     <td>
-                      <div className="actions">
+                      <span className="version-tag">r{item.revision}</span>
+                    </td>
+                    <td className="align-right">
+                      <div className="row-actions">
                         <Button
-                          variant="text"
-                          onClick={() => navigate(`${path}/${item.id}`)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(`${path}/${item.id}`);
+                          }}
                         >
                           编辑
                         </Button>
-                        <Button variant="text danger" onClick={() => setDeleting(item)}>
+                        <Button
+                          variant="danger"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeleting(item);
+                          }}
+                        >
                           删除
                         </Button>
                       </div>

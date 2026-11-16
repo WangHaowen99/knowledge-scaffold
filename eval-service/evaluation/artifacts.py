@@ -138,13 +138,14 @@ def tool_failure_lines(trace):
 
 
 def outcome(case):
-    """Legacy verdict of one case: pass/partial/fail, manual (no reference) or error."""
+    """Stable verdicts; manual includes missing references and unverifiable execution."""
     judgement = case.get('override') or case.get('judgement')
     if judgement and case.get('answer'):
         reason = judgement.get('reason') or ''
         return judgement['verdict'], reason + ('（人工改判）' if case.get('override') else '')
     if case.get('status') == 'manual' and case.get('answer'):
-        return 'manual', '无参考答案，待人工判定'
+        verification = case.get('execution_verification') or {}
+        return 'manual', verification.get('reason') or '无参考答案，待人工判定'
     error = case.get('error') if isinstance(case.get('error'), dict) else {}
     message = str(error.get('message') or '').strip()
     if case.get('status') == 'judge_error':
@@ -157,7 +158,8 @@ def summarize(run):
     counts = {key: verdicts.count(key) for key in ('pass', 'partial', 'fail', 'error', 'manual')}
     valid = counts['pass'] + counts['partial'] + counts['fail']
     score = round((counts['pass'] + counts['partial'] * 0.5) * 100 / valid) if valid else None
-    technical = run['status'] != 'completed' or bool(counts['error']) or not verdicts
+    unverified = any((c.get('execution_verification') or {}).get('status') == 'unverifiable' for c in run['cases'])
+    technical = any((run['status'] != 'completed', counts['error'], not verdicts, unverified))
     result_status = 'unavailable' if not valid else 'partial' if technical else 'complete'
     if run.get('origin') == 'consumer_feedback':
         # Feedback is what users reported, not a sample of questions: it has no score.
@@ -179,7 +181,8 @@ def has_results(run):
 def fingerprint(run):
     """Changes whenever the report would change: run status, answers, judgements and overrides."""
     return digest([run['status'], [[c.get('status'), bool(c.get('answer')), c.get('judgement'), c.get('override'),
-                                    (c.get('error') or {}).get('message') if isinstance(c.get('error'), dict) else None]
+                                    (c.get('error') or {}).get('message') if isinstance(c.get('error'), dict) else None,
+                                    c.get('execution_verification'), c.get('answer_judgement')]
                                    for c in run['cases']]])
 
 
@@ -220,7 +223,7 @@ def render_report(run, stem, now):
               counts + (f" / 待人工判定 {summary['manual']}" if summary['manual'] else ''),
               f'- 结果状态：{outcome_text}',
               f"- 有效判分：{summary['valid']}/{summary['total']}；技术异常不计为业务答错，不进入得分分母。"
-              + ('待人工判定的用例没有参考答案，同样不计入。' if summary['manual'] else ''),
+              + ('待人工判定含无参考答案或执行依据无法核实的用例，同样不计入；请同时查看有效判分覆盖率。' if summary['manual'] else ''),
               (f"- {'有效用例得分' if technical else '综合得分'}：**{score}**（仅 {summary['valid']} 条有效用例，pass=1、partial=0.5 加权）"
                if score is not None else '- 得分：未形成有效评测（不是 0 分）'),
               '', '## 逐用例明细', '']
@@ -238,6 +241,14 @@ def render_report(run, stem, now):
                   '- **标准答案**：', '', nested_quote(clip(case.get('reference'), REFERENCE_CHARS) or '（无）'), '',
                   '- **智能体回答**：', '', nested_quote(display or '（无）'), '\n'.join(meta), '',
                   '- **判分理由**：', '', nested_quote(clip(reason, REASON_CHARS) or '（无）'), '']
+        verification = case.get('execution_verification')
+        if verification:
+            requirement = case.get('execution_requirement') or {}
+            lines += ['- **执行要求**：' + str(requirement.get('mode', 'auto')),
+                      '- **执行依据核验**：' + verification['status'] + ' · ' + clip(verification.get('reason'), REASON_CHARS), '']
+        if case.get('answer_judgement'):
+            answer_judgement = case['answer_judgement']
+            lines += ['- **答案内容原判**：' + answer_judgement['verdict'] + ' · ' + clip(answer_judgement.get('reason'), REASON_CHARS), '']
         failures = [] if verdict == 'pass' else tool_failure_lines(case.get('trace'))
         if failures:
             lines += ['- **工具失败**：', '', *failures, '']
@@ -255,6 +266,9 @@ def render_answers(run):
         answers.append({'resultId': f'case-{index}', 'question': str(case.get('question') or ''), 'finalAnswer': kept,
                         'originalLength': len(answer), 'truncated': len(kept) < len(answer),
                         'sha256': hashlib.sha256(answer.encode('utf-8')).hexdigest(), 'verdict': verdict, 'reason': reason})
+        for key in ('execution_requirement', 'execution_verification', 'answer_judgement'):
+            if key in case:
+                answers[-1][key] = case[key]
     return json.dumps({'roundId': run['id'], 'answers': answers}, ensure_ascii=False, indent=2)
 
 

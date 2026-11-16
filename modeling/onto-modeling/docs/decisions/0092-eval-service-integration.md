@@ -45,7 +45,7 @@
 1. 后端：`services/eval_client.py`（用户登录调评测服务，响应上限、错误映射）、`services/evaluation_entry.py`（浏览器入口只来自部署配置）、
    `services/package_evaluations.py`（通知、索引、对账、读回、评测优化成批、建模回写）、`services/legacy_evaluations.py`、
    `routers/evaluations.py`（ES-00～ES-11，API 契约 3.21a）；`feedback_inbox` 拆出 `place()`（写批次不提交）与 `attachments`。
-2. 配置：`ONTO_WEB_EVAL_PUBLIC_URL`（浏览器入口，空为同主机 8090）、`ONTO_WEB_EVAL_URL`（容器网络地址，空时不显示报告与建议）、
+2. 配置：`ONTO_WEB_EVAL_PUBLIC_URL`（浏览器入口，空为同主机 5180）、`ONTO_WEB_EVAL_URL`（容器网络地址，空时不显示报告与建议）、
    `ONTO_EVALUATION_SERVICE_TOKEN`（通知凭据，空时拒收）。
 3. 前端：`pages/evaluation/`——版本行的评测、求解验证、用户反馈三格，报告、建议、完整回答、标记处理失败的弹窗，旧版评测记录抽屉；
    挂在发布页的已发布版本表上。评测优化经 S-20 把 `/ontology-evolution feedback_id=…` 发到工作台对话。

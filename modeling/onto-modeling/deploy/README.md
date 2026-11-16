@@ -42,8 +42,8 @@ auth-server 管理令牌 `ONTO_WEB_AUTH_ADMIN_TOKEN`（auth-server 与后端读�
 | --- | --- | --- |
 | `ONTO_HUB_SERVICE_TOKEN` | 访问 Hub 的服务凭据 | 等于 Hub 的 `HUB_SERVICE_TOKEN`。deploy.sh 缺省时生成；整栈部署先部署 Hub，再改成 Hub 实际使用的值 |
 | `ONTO_EVALUATION_SERVICE_TOKEN` | 校验评测完成通知 `POST /api/internal/evaluation/notifications` | deploy.sh 缺省时生成，评测部署沿用它；不能等于 Hub 凭据，留空则拒绝通知 |
-| `ONTO_WEB_EVAL_URL` | 后端访问评测服务 | compose 默认 `http://knowledge-evaluation:8090` |
-| `ONTO_WEB_EVAL_PUBLIC_URL` | 浏览器打开评测页面的地址 | 空 = 与工作台同主机的 `http://<主机>:8090/evaluation/`；评测在别的主机、端口或走 HTTPS 时填完整地址，改后重新部署 |
+| `ONTO_WEB_EVAL_URL` | 后端访问评测服务 | compose 默认 `http://knowledge-evaluation:5180` |
+| `ONTO_WEB_EVAL_PUBLIC_URL` | 浏览器打开评测页面的地址 | 空 = 与工作台同主机的 `http://<主机>:5180/evaluation/`；评测在别的主机、端口或走 HTTPS 时填完整地址，改后重新部署 |
 
 单独升级本包时保留原 `.env`：凭据换了值，Hub 调用返回 401，评测通知被拒。
 旧版的 `ONTO_WEB_MODELING_*` 与评测并发上限变量已不再读取（清单见项目 README），`.env` 里留着也无影响，可以删掉。

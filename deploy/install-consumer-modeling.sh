@@ -502,13 +502,13 @@ deploy_evaluation() {
         || die "独立评测服务部署失败；修复后可单独执行 bash ${EVALUATION_DIR}/deploy/deploy.sh"
     unset hub_token consumer_token modeling_token flywheel_token
     until docker exec knowledge-evaluation python -c \
-        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/evaluation/api/health', timeout=3)" \
+        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5180/evaluation/api/health', timeout=3)" \
         >/dev/null 2>&1; do
         [ "${elapsed}" -lt 60 ] || die '独立评测服务 60 秒内未就绪，请查看 docker logs knowledge-evaluation'
         sleep 2
         elapsed=$((elapsed + 2))
     done
-    log '独立评测服务已就绪（默认访问 http://localhost:8090/evaluation/，端口以评测运行配置为准）'
+    log '独立评测服务已就绪（默认访问 http://localhost:5180/evaluation/，端口以评测运行配置为准）'
 }
 
 # Hub 是独立 compose 项目，排在 Onto Modeling 之前部署；服务凭据沿用已部署 Onto Modeling 的值，

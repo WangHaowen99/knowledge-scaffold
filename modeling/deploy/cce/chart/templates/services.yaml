@@ -1,5 +1,5 @@
 {{- $nl2sql := .Values.modeling.nl2sql | default dict }}
-{{- range $component, $ports := dict "core" (list (dict "name" "http" "port" 5100) (dict "name" "mcp" "port" 5188)) "agent" (list (dict "name" "http" "port" 5110)) "onto" (list (dict "name" "http" "port" 8100)) "hub" (list (dict "name" "http" "port" 8200)) "evaluation" (list (dict "name" "http" "port" 8090)) }}
+{{- range $component, $ports := dict "core" (list (dict "name" "http" "port" 5100) (dict "name" "mcp" "port" 5188)) "agent" (list (dict "name" "http" "port" 5110)) "onto" (list (dict "name" "http" "port" 8100)) "hub" (list (dict "name" "http" "port" 8200)) "evaluation" (list (dict "name" "http" "port" 5180)) }}
 apiVersion: v1
 kind: Service
 metadata:

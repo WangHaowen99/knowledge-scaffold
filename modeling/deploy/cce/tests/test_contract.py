@@ -2229,7 +2229,7 @@ class CceContractTests(unittest.TestCase):
         self.assertIn(".Values.hub.secrets.internal.evaluationTokenKey", source)
         self.assertIn(".Values.evaluation.secrets.encryptionKey.key", source)
         self.assertIn('name: ONTO_EVALUATION_SERVICE_TOKEN', source)
-        self.assertIn('name: ONTO_WEB_EVAL_URL, value: "http://{{ include "modeling.name" . }}-evaluation:8090"', source)
+        self.assertIn('name: ONTO_WEB_EVAL_URL, value: "http://{{ include "modeling.name" . }}-evaluation:5180"', source)
         self.assertIn('name: EVAL_MODELING_SERVICE_TOKEN', source)
         self.assertEqual(source.count('.Values.evaluation.secrets.notificationToken.name'), 2)
         self.assertEqual(source.count('.Values.evaluation.secrets.notificationToken.key'), 2)

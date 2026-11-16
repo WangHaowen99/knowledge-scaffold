@@ -95,6 +95,9 @@ def failed_cases(run):
     found = []
     for index, case in enumerate(run['cases'], 1):
         verdict, reason = outcome(case)
+        verification = case.get('execution_verification') or {}
+        if verification.get('status') in ('missing_query','query_failed','unverifiable','unsupported'):
+            continue  # Execution evidence problems require diagnosis, never automatic knowledge edits.
         if verdict in SEVERITY:
             found.append((SEVERITY[verdict], index, case, verdict, reason))
     found.sort(key=lambda item: item[:2])
@@ -377,11 +380,39 @@ def flat(text, limit):
     return ' '.join(clip(LINE_BREAK.sub(' ', str(text or '')), limit).split())
 
 
-def cell(text, limit):
-    return flat(text, limit).replace('|', '\\|')
+def row(number, item):
+    """One table row of an entry; carried rows of earlier runs are written the same way under a new number."""
+    cited = [*map(str, item['cases']), *(f'建议 {n}' for n in item.get('suggestions') or [])]
+    return (f"| {number} | {'、'.join(cited) or '—'} | {CATEGORIES.get(item['category'], item['category'])} | "
+            f"{item['evidence'].replace('|', chr(92) + '|')} | {item['suggestion'].replace('|', chr(92) + '|')} | "
+            f"{'、'.join(item.get('targets') or []) or '—'} |")
+
+
+def table_rows(run, value, analysed, known):
+    """Table rows of a model answer, final as rendered: generalization checked, targets as workspace paths.
+
+    Kept with the run so later runs can carry rows modeling has not handled without asking the model again."""
+    numbers = set(analysed)
+    proposals = {n for n, _ in enumerate(user_suggestions(run), 1)}
+    cases = {number: {'question': case.get('question'), 'reference': case.get('reference'), 'reason': outcome(case)[1]}
+             for number, case in enumerate(run['cases'], 1)}
+    rows = []
+    for item in valid_items(value, numbers, proposals)[:MAX_ITEMS]:
+        review = overfit(item, cases)
+        rows.append({'cases': item['cases'], 'suggestions': item['suggestions'], 'category': item['category'],
+                     'evidence': flat(item.get('evidence'), 400),
+                     'suggestion': (f'⚠ 需人工复核：{review}；' if review else '') + flat(item.get('suggestion'), 600),
+                     'targets': [path for path in (workspace_path(str(t), known) for t in (item.get('targets') or [])[:5])
+                                 if path]})
+    return rows
 
 
 def render(run, stem, now, value, analysed, known, model, traced=0, batches=1, skipped=(), failed=(), slow=False):
+    return document(run, stem, now, value, table_rows(run, value, analysed, known), analysed, model, traced, batches,
+                    skipped, failed, slow)
+
+
+def document(run, stem, now, value, rows, analysed, model, traced=0, batches=1, skipped=(), failed=(), slow=False):
     numbers = set(analysed)
     proposals = {n for n, _ in enumerate(user_suggestions(run), 1)}
     feedback = run.get('origin') == 'consumer_feedback'
@@ -401,18 +432,8 @@ def render(run, stem, now, value, analysed, known, model, traced=0, batches=1, s
                         else '生成失败，可点击“重新生成”重试'))
     lines += ['', '## 总体判断', '', flat(value.get('summary'), 1500) or '（无）', '',
               '## 失分归因与修订建议', '', '| # | 用例 | 归因 | 依据 | 建议修订 | 落点 |', '|---|---|---|---|---|---|']
-    count, cases = 0, {}
-    for number, case in enumerate(run['cases'], 1):
-        cases[number] = {'question': case.get('question'), 'reference': case.get('reference'), 'reason': outcome(case)[1]}
-    for item in valid_items(value, numbers, proposals)[:MAX_ITEMS]:
-        targets = [path for path in (workspace_path(str(t), known) for t in (item.get('targets') or [])[:5]) if path]
-        count += 1
-        cited = [*map(str, item['cases']), *(f'建议 {n}' for n in item['suggestions'])]
-        review = overfit(item, cases)
-        suggestion = (f'⚠ 需人工复核：{review}；' if review else '') + flat(item.get('suggestion'), 600)
-        lines.append(f"| {count} | {'、'.join(cited) or '—'} | {CATEGORIES[item['category']]} | "
-                     f"{cell(item.get('evidence'), 400)} | {suggestion.replace('|', chr(92) + '|')} | {'、'.join(targets) or '—'} |")
-    if not count:
+    lines += [row(count, item) for count, item in enumerate(rows, 1)]
+    if not rows:
         raise Failure('suggestions_protocol', '判分模型未返回有效的优化建议', 422, 'suggestions')
     lines += ['', '## 说明', '']
     lines += [f"- {flat(note, 300)}" for note in (value.get('notes') or [])[:10] if isinstance(note, str) and note.strip()]
@@ -424,6 +445,16 @@ def render(run, stem, now, value, analysed, known, model, traced=0, batches=1, s
 
 
 def passed(run, stem, now, summary):
+    diagnostic = []
+    for number, case in enumerate(run['cases'], 1):
+        status = (case.get('execution_verification') or {}).get('status')
+        if status in ('missing_query', 'query_failed', 'unverifiable', 'unsupported'):
+            diagnostic.append(number)
+    if diagnostic:
+        return '\n'.join([f"# 评测执行诊断 — {datetime.fromtimestamp(now, CHINA).strftime('%Y-%m-%d %H:%M')}", '',
+                          f"> 依据评测报告：reports/{stem}.md（轮次 {run['id']}）", '',
+                          f"用例 {numbered(diagnostic)} 的必要查询或执行依据不齐备。请核对工具提供、数据源、完整执行轨迹与必要判断。",
+                          '本次不据此生成知识包修订建议；不得通过补写参考答案消除执行问题。', ''])
     return '\n'.join([f"# 评测优化建议 — {datetime.fromtimestamp(now, CHINA).strftime('%Y-%m-%d %H:%M')}", '',
                       f"> 依据评测报告：reports/{stem}.md（轮次 {run['id']}）", '',
                       f"本轮评测没有失败、部分正确或异常的用例（通过 {summary['pass']} 条，待人工判定 {summary['manual']} 条），无需评测优化。", ''])
@@ -472,7 +503,7 @@ class Suggestions:
         return {**merged, 'notes': notes + [n for n in merged.get('notes') or [] if isinstance(n, str)]}
 
     def generate(self, owner, run, token, stem, now, data_tables, evidence=None, progress=None):
-        """Suggestions markdown and the model used. Raises Failure with a user-facing reason.
+        """Suggestions markdown, the model used and the table rows. Raises Failure with a user-facing reason.
 
         ``owner`` selects the judge configuration: the run's owner, or the package owner generating a feedback run's.
 
@@ -565,5 +596,6 @@ class Suggestions:
         else:
             value = results[0][1]
         traced = sum(1 for item in sent.values() if item.get('tool_calls'))
-        return render(run, stem, now, value, sorted(sent), set(package.names), profile['model'], traced, len(results),
-                      skipped, sorted(failed), slow), profile
+        rows = table_rows(run, value, sorted(sent), set(package.names))
+        return document(run, stem, now, value, rows, sorted(sent), profile['model'], traced, len(results), skipped,
+                        sorted(failed), slow), profile, rows

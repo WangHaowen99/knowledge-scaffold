@@ -15,7 +15,7 @@
 | onto-modeling | `modeling/onto-modeling/` | 5100 → 8100 | onto-modeling | auth-server / knowledge-hub | 引导式建模工作台，独立 compose 项目；同项目另有脚本验证网关、连接器网关、REA 旁路容器（不暴露端口） |
 | auth-server | `auth-server/` | 不暴露宿主端口（容器网内 5056） | onto-agent-auth-server | — | 必备鉴权服务，consumer 与 onto-modeling 共用 |
 | knowledge-hub | `knowledge-hub/` | 不暴露宿主端口（容器网内 8200） | knowledge-hub | auth-server / onto-modeling | 知识包 Hub，独立 compose 项目（`knowledge-hub/deploy/docker-compose.knowledge-hub.yml`） |
-| knowledge-evaluation | `eval-service/` | 8090 → 8090（供浏览器打开评测页面） | knowledge-evaluation | auth-server / knowledge-hub / consumer-backend | 独立评测服务，单实例，独立 compose 项目（`eval-service/deploy/docker-compose.eval-service.yml`） |
+| knowledge-evaluation | `eval-service/` | 5180 → 5180（供浏览器打开评测页面） | knowledge-evaluation | auth-server / knowledge-hub / consumer-backend | 独立评测服务，单实例，独立 compose 项目（`eval-service/deploy/docker-compose.eval-service.yml`） |
 
 服务间调用链：`浏览器 → frontend(8888) → backend(5055)`；onto-modeling 共享 consumer 账号中心，经 consumer 网络访问知识包 Hub。知识包 Hub 与独立评测服务同样加入 consumer 网络，按服务名访问账号服务、Hub 与 consumer。
 
@@ -41,7 +41,7 @@
 ## 2. 前置条件
 
 - Linux / macOS，Docker ≥ 20.10，Docker Compose v2（`docker compose`）或 v1 ≥ 1.28（`docker-compose`；本方案使用 compose profiles，更旧的 v1 会失败，preflight 会检查）；
-- 宿主端口 5055、8888、5100、8090 空闲；
+- 宿主端口 5055、8888、5100、5180 空闲；
 - 一个可供 admin 在部署后配置的 OpenAI-compatible LLM 端点；LLM 不再是部署前置条件；
 - 目标机可访问 Docker Hub 或已配镜像源（首次构建需拉取 `python`、`node:22-slim`、`nginx` 等基础镜像）。
 
@@ -128,7 +128,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5055/health   # 预�
 curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8888/         # 预期 200（控制台）
 curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5100/api/health  # 预期 200（Onto Modeling）
 for s in sandbox-gateway connector-gateway rea-sidecar; do docker ps --filter "label=com.docker.compose.service=$s" --format '{{.Names}} {{.Status}}'; done  # 预期三行，都含 (healthy)（Onto Modeling 的网关与旁路容器）
-curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8090/evaluation/api/health # 预期 200（独立评测服务）
+curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5180/evaluation/api/health # 预期 200（独立评测服务）
 ./deploy/deploy-stack.sh status                                           # 预期各服务 [OK] 可达、容器 Status 含 healthy
 ```
 
@@ -189,7 +189,7 @@ Hub 不再写在 onto-modeling 的 compose 里，而是独立 compose 项目 `kn
 `bash deploy/deploy.sh --eval-only` 只部署 `eval-service/`，与其他 only 参数互斥；默认全栈 `bash deploy/deploy.sh` 包含评测服务，源码、离线首次安装和升级均在其他服务之后部署评测；`--onto-modeling-only`、`--knowledge-hub-only` 不包含评测服务。
 
 - 交互式与非交互式分离安装、分离升级及旧版迁移均支持独立评测服务：交互式按提示输入发布包路径；非交互式使用 `--evaluation-package <发布包>`。发布包由 `eval-service/build.sh` 生成（`evaluation-<version>-linux-<arch>.tar.gz`），也接受完整离线包中的 `eval-service/` 目录，必须提供；评测在 Hub、Onto Modeling 之后部署并检查就绪。Consumer 已运行时仍须提供 Consumer 发布包，使用升级流程；不再提供省略 Consumer 的附加部署模式。发布包格式、凭据和升级配置保留规则见[部署与升级脚本说明](交互式部署与升级脚本说明.md)。
-- 运行配置：默认由 `eval-service/deploy/deploy.sh` 维护本目录 `.env`（权限 600，不入库），只保存凭据和显式配置的值。首次部署生成数据加密密钥 `EVAL_ENCRYPTION_KEY`；账号、Hub、consumer 地址的整栈默认值写在 `docker-compose.eval-service.yml`，`.env` 中的同名值优先；评测凭据沿用 Hub 的 `HUB_EVALUATION_SERVICE_TOKEN` 和 consumer 的 `EVALUATION_SERVICE_TOKEN`，两者分别由 Hub 部署脚本和 consumer 部署生成。评测完成通知发往 onto-modeling，凭据 `EVAL_MODELING_SERVICE_TOKEN` 沿用 onto-modeling `.env` 的 `ONTO_EVALUATION_SERVICE_TOKEN`（部署 onto-modeling 时缺失则生成）；找不到时只告警、不发通知，部署 onto-modeling 后重新部署评测即可。onto-modeling 经 `ONTO_WEB_EVAL_URL`（默认 `http://knowledge-evaluation:8090`）读取评测报告，须与评测同在 consumer 网络。评测容器与 Hub 一样必须加入 consumer 网络（`CONSUMER_NETWORK`，由根目录部署脚本探测注入并记入该 `.env`），探测不到时在生成配置前报错。
+- 运行配置：默认由 `eval-service/deploy/deploy.sh` 维护本目录 `.env`（权限 600，不入库），只保存凭据和显式配置的值。首次部署生成数据加密密钥 `EVAL_ENCRYPTION_KEY`；账号、Hub、consumer 地址的整栈默认值写在 `docker-compose.eval-service.yml`，`.env` 中的同名值优先；评测凭据沿用 Hub 的 `HUB_EVALUATION_SERVICE_TOKEN` 和 consumer 的 `EVALUATION_SERVICE_TOKEN`，两者分别由 Hub 部署脚本和 consumer 部署生成。评测完成通知发往 onto-modeling，凭据 `EVAL_MODELING_SERVICE_TOKEN` 沿用 onto-modeling `.env` 的 `ONTO_EVALUATION_SERVICE_TOKEN`（部署 onto-modeling 时缺失则生成）；找不到时只告警、不发通知，部署 onto-modeling 后重新部署评测即可。onto-modeling 经 `ONTO_WEB_EVAL_URL`（默认 `http://knowledge-evaluation:5180`）读取评测报告，须与评测同在 consumer 网络。评测容器与 Hub 一样必须加入 consumer 网络（`CONSUMER_NETWORK`，由根目录部署脚本探测注入并记入该 `.env`），探测不到时在生成配置前报错。
 - Judge 模型配置 `EVAL_JUDGE_BASE_URL`、`EVAL_JUDGE_API_KEY`、`EVAL_JUDGE_MODEL`、`EVAL_JUDGE_CONFIG_REVISION` 四项必填、无法自动生成，已在 `docker-compose.eval-service.yml` 中声明（不含值）：部署时缺失只告警，写入该 `.env` 或进程环境后重新部署评测即可；未配置时无法开始评测。
 - 加密密钥必须与数据卷一同保留：已有评测数据卷而 `.env` 缺少密钥时部署直接失败，不会生成新密钥；升级时若暂存目录没有评测配置，会沿用安装目录中的 `.env`。
 - 设置 `EVAL_ENV_FILE` 时改用仓库外受保护的配置文件，脚本不改写该文件。

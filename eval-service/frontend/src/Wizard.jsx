@@ -9,6 +9,7 @@ import {
   modelOptionLabel,
   packageReference,
   sourceSummary,
+  sourceWorkspace,
 } from './domain.js';
 import { Alert, Badge, Button, Confirm, Empty, Field, Heading, Icon, Skeleton, useAction } from './ui.jsx';
 import { CaseEditor } from './CaseEditor.jsx';
@@ -57,10 +58,11 @@ export function Wizard({
   navigate,
   from,
   release: chosen,
+  runType: initialRunType,
   registerDirty,
 }) {
   const query = new URLSearchParams(location.search);
-  const [runType, setRunType] = useState(query.get('run_type') === 'solver' ? 'solver' : 'data'),
+  const [runType, setRunType] = useState(initialRunType === 'solver' || query.get('run_type') === 'solver' ? 'solver' : 'data'),
     [solverSetId, setSolverSetId] = useState(''),
     [solverSet, setSolverSet] = useState(null),
     [operations, setOperations] = useState(null);
@@ -87,7 +89,8 @@ export function Wizard({
     [graphCheck, setGraphCheck] = useState(null),
     [replaceGraph, setReplaceGraph] = useState(null),
     [preview, setPreview] = useState(null);
-  const [concurrency, setConcurrency] = useState(limits.default),
+  const [packageSearch, setPackageSearch] = useState(''),
+    [concurrency, setConcurrency] = useState(limits.default),
     [modelId, setModelId] = useState(''),
     [models, setModels] = useState(null),
     [judgeMissing, setJudgeMissing] = useState(false);
@@ -268,6 +271,10 @@ export function Wizard({
         package_digest: release.package_digest,
       }
     : null;
+  const previewable = !!sourceId && (source?.mode === 'dataset' || !!source?.import_data);
+  useEffect(() => {
+    if (step === 1 && previewable && ref && !preview) act(loadPreview);
+  }, [step, sourceId, source?.revision, releaseId]);
   async function editSource(id = '') {
     const item = id ? await api(`/data-sources/${id}`) : null;
     setSourceEditor({ record: item });
@@ -397,19 +404,7 @@ export function Wizard({
     );
   return (
     <div className="wizard-page" ref={pageRef}>
-      <Heading
-        title="新建评测"
-        breadcrumb={
-          <>
-            <button className="text-link" onClick={() => navigate('/')}>
-              评测任务
-            </button>
-            <span>/</span>
-            <span>新建评测</span>
-          </>
-        }
-        actions={<Button onClick={() => navigate('/')}>退出向导</Button>}
-      >
+      <Heading title="新建评测" actions={<Button onClick={() => navigate('/')}>退出</Button>}>
         沿用已保存的配置，几步完成一次评测。
       </Heading>
       <div className="wizard-steps">
@@ -448,7 +443,7 @@ export function Wizard({
             {step === 0 && (
               <section className="panel">
                 <div className="section-title">
-                  <h2>选择知识包与固定版本</h2>
+                  <h2>选择知识包和版本</h2>
                   <Badge tone="blue">来自 Hub</Badge>
                 </div>
                 <p className="help-text">评测始终使用固定发布版本，后续发布新版本不会改变本轮输入。</p>
@@ -466,23 +461,48 @@ export function Wizard({
                     ? '求解验证：逐条让 consumer 智能体调用知识包的求解能力，按工具调用、入参与权威结果做确定性判定，不需要判分模型。'
                     : '数据评测：consumer 智能体逐条回答问题，由判分模型对照参考答案判分。'}
                 </p>
+                {packages.length > 6 && (
+                  <label className="search-input option-search">
+                    <Icon name="search" />
+                    <input
+                      aria-label="搜索知识包"
+                      placeholder="搜索知识包"
+                      value={packageSearch}
+                      onChange={(e) => setPackageSearch(e.target.value)}
+                    />
+                  </label>
+                )}
+                <div className="option-list" role="radiogroup" aria-label="知识包">
+                  {packages
+                    .filter((p) =>
+                      `${p.name || ''} ${p.ontology_id}`.toLowerCase().includes(packageSearch.toLowerCase()),
+                    )
+                    .map((p) => (
+                      <button
+                        type="button"
+                        role="radio"
+                        aria-checked={packageId === p.ontology_id}
+                        key={p.ontology_id}
+                        className={`option-row ${packageId === p.ontology_id ? 'selected' : ''}`}
+                        onClick={() => {
+                          if (packageId === p.ontology_id) return;
+                          setReleaseId('');
+                          setPackageId(p.ontology_id);
+                        }}
+                      >
+                        <span className="radio-mark" />
+                        <span className="source-icon">
+                          <Icon name="box" />
+                        </span>
+                        <span className="option-text">
+                          <strong>{p.name || p.ontology_id}</strong>
+                          <small>{p.ontology_id}</small>
+                        </span>
+                        {p.version && <span className="version-tag">{p.version}</span>}
+                      </button>
+                    ))}
+                </div>
                 <div className="form-grid">
-                  <Field label="知识包 *">
-                    <select
-                      value={packageId}
-                      onChange={(e) => {
-                        setReleaseId('');
-                        setPackageId(e.target.value);
-                      }}
-                    >
-                      <option value="">选择知识包</option>
-                      {packages.map((p) => (
-                        <option key={p.ontology_id} value={p.ontology_id}>
-                          {p.name || p.ontology_id} · {p.version}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
                   <Field label="发布版本 *">
                     <select
                       value={releaseId}
@@ -510,7 +530,7 @@ export function Wizard({
                       <Badge tone="green">已发布版本</Badge>
                     </div>
                     <dl>
-                      <dt>知识包</dt>
+                      <dt>知识包 ID</dt>
                       <dd>
                         {release.ontology_id ||
                           packages.find((p) => p.ontology_id === packageId)?.ontology_id}
@@ -553,52 +573,63 @@ export function Wizard({
                     consumer 的求解评估器只从 Neo4j 取数。请选择 Neo4j 连接：开启图数据导入，或使用已有数据的 Workspace 范围。
                   </Alert>
                 )}
-                {sources.map((s) => (
-                  <div className={`source-option ${sourceId === s.id ? 'selected' : ''}`} key={s.id}>
-                    <button
-                      type="button"
-                      className="source-choice"
-                      aria-pressed={sourceId === s.id}
-                      onClick={() => selectSource(s.id)}
-                    >
-                      <span className="source-icon">
-                        <Icon name={s.mode === 'connection' ? 'link' : 'db'} />
-                      </span>
-                      <span>
-                        <strong>{s.name}</strong>
-                        <small>{sourceSummary(s)}</small>
-                      </span>
-                      <span className="radio-mark" />
-                    </button>
-                    <div className="source-option-actions">
+                <div className="option-list" role="radiogroup" aria-label="数据源">
+                  {sources.map((s) => (
+                    <div className={`option-row ${sourceId === s.id ? 'selected' : ''}`} key={s.id}>
+                      <button
+                        type="button"
+                        role="radio"
+                        className="option-choice"
+                        aria-checked={sourceId === s.id}
+                        onClick={() => selectSource(s.id)}
+                      >
+                        <span className="radio-mark" />
+                        <span className="source-icon">
+                          <Icon name={s.mode === 'connection' ? 'link' : 'db'} />
+                        </span>
+                        <span className="option-text">
+                          <strong>{s.name}</strong>
+                          <small>{sourceSummary(s)}</small>
+                        </span>
+                        <small className="option-hint">{sourceWorkspace(s)}</small>
+                      </button>
                       <Button variant="text" onClick={() => act(() => editSource(s.id))}>
-                        编辑配置
+                        编辑
                       </Button>
                     </div>
+                  ))}
+                  <div className={`option-row ${!sourceId ? 'selected' : ''}`}>
+                    <button
+                      type="button"
+                      role="radio"
+                      className="option-choice"
+                      aria-checked={!sourceId}
+                      onClick={() => selectSource('')}
+                    >
+                      <span className="radio-mark" />
+                      <span className="source-icon">
+                        <Icon name="box" />
+                      </span>
+                      <span className="option-text">
+                        <strong>不使用数据源</strong>
+                        <small>只验证知识包的结构和语义，不查询数据</small>
+                      </span>
+                      <small className="option-hint">{sourceWorkspace(null)}</small>
+                    </button>
                   </div>
-                ))}
-                <div className={`source-option ${!sourceId ? 'selected' : ''}`}>
-                  <button
-                    type="button"
-                    className="source-choice"
-                    aria-pressed={!sourceId}
-                    onClick={() => selectSource('')}
-                  >
-                    <span className="source-icon">
-                      <Icon name="box" />
-                    </span>
-                    <span>
-                      <strong>不使用数据源</strong>
-                      <small>仅验证知识包结构与语义，不查询数据。</small>
-                    </span>
-                    <span className="radio-mark" />
-                  </button>
                 </div>
-                {sourceId && (source?.mode === 'dataset' || source?.import_data) && (
+                {previewable && (
                   <div className="preview-action">
-                    <Button busy={busy} onClick={() => act(loadPreview)}>
-                      预览{source?.provider === 'neo4j' ? '图导入' : '数据映射'}
-                    </Button>
+                    {!preview && (
+                      <p className="muted">
+                        {busy ? `正在预览${source?.provider === 'neo4j' ? '图导入' : '数据映射'}…` : '没有拿到预览结果。'}
+                        {!busy && (
+                          <Button variant="text" onClick={() => act(loadPreview)}>
+                            重新预览
+                          </Button>
+                        )}
+                      </p>
+                    )}
                     <MappingPreview preview={preview} />
                   </div>
                 )}
@@ -673,16 +704,28 @@ export function Wizard({
                   新建评测集
                 </Button>
               </div>
-              <Field label="已保存的评测集">
-                <select value={setId} onChange={(e) => chooseSet(e.target.value)}>
-                  <option value="">选择评测集</option>
-                  {sets.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name} · {s.case_count ?? s.cases?.length ?? 0} 条
-                    </option>
-                  ))}
-                </select>
-              </Field>
+              <p className="help-text">有参考答案的题由模型判分，没有参考答案的题等人工判定。选中后可以在下方直接修改用例。</p>
+              <div className="option-list" role="radiogroup" aria-label="评测集">
+                {sets.map((s) => (
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={setId === s.id}
+                    key={s.id}
+                    className={`option-row ${setId === s.id ? 'selected' : ''}`}
+                    onClick={() => setId !== s.id && chooseSet(s.id)}
+                  >
+                    <span className="radio-mark" />
+                    <span className="source-icon">
+                      <Icon name="set" />
+                    </span>
+                    <span className="option-text">
+                      <strong>{s.name}</strong>
+                      <small>{s.case_count ?? s.cases?.length ?? 0} 条用例</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
               {caseLoading ? (
                 <Skeleton />
               ) : evalSet ? (
@@ -825,10 +868,11 @@ export function Wizard({
             <h3>本轮评测</h3>
             <dl>
               <dt>知识包</dt>
-              <dd>
-                {release?.ontology_id ||
-                  packages.find((p) => p.ontology_id === packageId)?.ontology_id ||
-                  '尚未选择'}
+              <dd title={packageId}>
+                {(() => {
+                  const chosen = packages.find((p) => p.ontology_id === packageId);
+                  return chosen ? chosen.name || chosen.ontology_id : packageId || '尚未选择';
+                })()}
               </dd>
               <dt>固定版本</dt>
               <dd>{release?.version || '尚未选择'}</dd>

@@ -345,6 +345,8 @@ class Session:
     # 绑定对话的类型（chat、autobuild、plugin）：插件对话换装配目录、注入、指纹、收尾（ADR-0087）
     kind: str = "chat"
     sending: int = 0  # 处理中的 send() 数；期间不可回收或换绑，否则消息会落到已丢弃的会话上
+    last_submitted_prompt: str | None = None  # 只拦截连续重复提交；切换消息后允许再次主动提交
+    submission_version: int = 0  # 区分并发发送，旧请求失败时不能清除新请求的防重标记
     # 引擎使用谁的模型配置：用户名 = 该用户的个人 Key；"" = 管理员配置（原行为）
     model_owner: str = ""
     # 已交给引擎、还没等到 result 的消息数（引擎内积压的也算）
@@ -586,6 +588,11 @@ def _busy(session: "Session") -> bool:
         or bool(session.pending_permissions)
         or session.sending > 0
     )
+
+
+def _submission_open(session: "Session") -> bool:
+    """这一轮还没结束（在跑、排队、连接中、有处理中的发送、积压消息或接着要跑的代存命令）：连续提交同一条算重复。"""
+    return _busy(session) or bool(session.pending_prompts) or bool(session.chaining)
 
 
 def _expire_orphan_permissions(session: "Session") -> None:
@@ -901,9 +908,26 @@ class SessionManager:
                 await asyncio.to_thread(quota.check_before_turn, project_id, username, "concurrency", self._sessions)
             session = await self._bind_session(project_id, conversation_id)
             self._bind_model_owner(session, owner, engine_cls.name)
+            # 连续重复提交（双击、连点同一入口）在受理前拦下；代存命令接着开始、自主构建的每一步是平台自己发的，不拦
+            guarded = not autobuild_run and not (meta or {}).get("_chain")
+            if guarded:
+                if not _submission_open(session):
+                    session.last_submitted_prompt = None
+                if text == session.last_submitted_prompt:
+                    error = SessionError("相同消息正在处理中，请等待完成或停止后再重试", 409)
+                    error.code = "message_duplicate"
+                    raise error
+                # 必须在释放锁、读取工作区和写历史之前占位，避免并发请求都通过检查
+                session.last_submitted_prompt = text
+                session.submission_version += 1
+            submission_version = session.submission_version
             session.sending += 1
         try:
             outcome = await self._deliver(session, cwd, text, meta or {}, username=username)
+        except BaseException:
+            if guarded and session.submission_version == submission_version:
+                session.last_submitted_prompt = None
+            raise
         finally:
             session.sending -= 1
         return session, outcome
@@ -1291,6 +1315,9 @@ class SessionManager:
         entry = self._next.pop((project_id, conversation_id), None)
         if entry is None:
             return False
+        session = self._sessions.get(project_id)
+        if session is not None and session.last_submitted_prompt == entry["prompt"]:
+            session.last_submitted_prompt = None
         self._drop_next_task(entry, summary)
         self._publish_next(project_id, conversation_id)
         return True
@@ -1564,6 +1591,8 @@ class SessionManager:
                 return
             error_id = self._log_error(session, "session_connect", str(exc))
             session.engine = None
+            # 失败轮的消息已留在历史中；重试只能发送新受理的消息，不能重放积压命令
+            session.pending_prompts.clear()
             self._turn_failed(session, error_id, FRIENDLY_ERROR)
         finally:
             session.connect_task = None
@@ -1848,6 +1877,7 @@ class SessionManager:
             # 不 404——若历史尾部停在非终态（重启幽灵），补写终态
             return _reconcile_stale_history(project_id, conversation_id) is not None
         key = (project_id, conversation_id)
+        session.last_submitted_prompt = None
         # 代存的命令留着但不自动开始（你按了停止，就是要停下来）
         self._pause_next(project_id, conversation_id)
         if self._drop_material_wait(session):

@@ -34,8 +34,8 @@ def consumer_data_source(body):
     return {'success':True}
 
 
-def synthetic_package():
-    files={'manifest.yaml':yaml.safe_dump(dict(id='knowledge_package_demo',name='Synthetic package',description='Synthetic data',kind='ontology-package',schema_version='0.1',version='0.1.1')),
+def synthetic_package(version='0.1.1'):
+    files={'manifest.yaml':yaml.safe_dump(dict(id='knowledge_package_demo',name='Synthetic package',description='Synthetic data',kind='ontology-package',schema_version='0.1',version=version)),
            'objects/index.md':'# Synthetic objects', 'operations/index.md':'# Synthetic operations',
            'objects/item.md':'# item\n\n# 数据来源\nitems\n\n# 字段\n\n| 英文名称 | 中文名称 | 类型 | 主键 |\n| --- | --- | --- | --- |\n| id | 标识 | string | 是 |\n| value | 值 | string | 否 |\n',
            'index.md':'# Synthetic package'}
@@ -92,7 +92,9 @@ class Dependencies:
                 if path.split('/')[-1] not in self.releases:
                     raise Failure('dependency_rejected','Not found',404,'dependency',upstream_status=404)
                 return self.releases[path.split('/')[-1]][1]
-            return {'items':[self.receipt], 'total':1,'next_offset':None}
+            # Every release of the package, as Hub lists them.
+            items=[row for _,row in self.releases.values() if row.get('kind','release')=='release']
+            return {'items':items, 'total':len(items),'next_offset':None}
         if path=='/api/package-publish-requests':
             body=kwargs['json']; key=body['request_id']
             if key not in self.requests:
@@ -421,6 +423,9 @@ def test_manual_override_and_zero_denominator(environment):
     assert client.get(f"/evaluation/api/runs/{record['id']}/report").json()['counts']['fail']==1
     assert client.post(f"/evaluation/api/runs/{record['id']}/results/0/override",json=body).status_code==409
     assert report({'cases':[],'status':'completed'})['judged_pass_rate'] is None
+    # The page shows the report's score: one fail of one valid case is 0, and no valid case gives none.
+    assert client.get(f"/evaluation/api/runs/{record['id']}").json()['summary']['score']==0
+    assert report({'cases':[],'status':'completed'})['score'] is None
 
 
 def test_auth_and_request_validation_do_not_echo_secrets(environment):

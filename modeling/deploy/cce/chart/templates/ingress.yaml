@@ -43,7 +43,7 @@ spec:
                 port: {number: 8100}
                 {{- else if eq .endpointId "evaluation" }}
                 name: {{ $.Release.Name }}-evaluation
-                port: {number: 8090}
+                port: {number: 5180}
                 {{- else }}
                 {{- fail (printf "unknown external endpointId %s" .endpointId) }}
                 {{- end }}
@@ -96,7 +96,7 @@ spec:
                 port: {number: 8100}
                 {{- else if eq .endpointId "evaluation" }}
                 name: {{ $.Release.Name }}-evaluation
-                port: {number: 8090}
+                port: {number: 5180}
                 {{- else }}
                 {{- fail (printf "unknown external endpointId %s" .endpointId) }}
                 {{- end }}

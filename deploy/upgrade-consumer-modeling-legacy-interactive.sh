@@ -304,13 +304,13 @@ deploy_evaluation() {
     unset hub_token consumer_token modeling_token
     local elapsed=0
     until docker exec knowledge-evaluation python -c \
-        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/evaluation/api/health', timeout=3)" \
+        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5180/evaluation/api/health', timeout=3)" \
         >/dev/null 2>&1; do
         [ "${elapsed}" -lt 60 ] || die '独立评测服务 60 秒内未就绪，请查看 docker logs knowledge-evaluation'
         sleep 2
         elapsed=$((elapsed + 2))
     done
-    log '独立评测服务已就绪（默认访问 http://localhost:8090/evaluation/，端口以评测运行配置为准）'
+    log '独立评测服务已就绪（默认访问 http://localhost:5180/evaluation/，端口以评测运行配置为准）'
 }
 
 old_install_dir="$(prompt_value '请输入旧的合并部署根目录，例如 /opt/onto-agent：')"

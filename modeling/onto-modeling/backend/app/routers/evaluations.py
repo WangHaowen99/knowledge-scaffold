@@ -45,7 +45,7 @@ def notification(body: package_evaluations.Notification):
 
 @router.get("/api/v1/evaluation/entry")
 def entry():
-    """ES-01：评测服务的浏览器入口；url 为空时前端按建模页面同主机的 8090 端口推导。"""
+    """ES-01：评测服务的浏览器入口；url 为空时前端按建模页面同主机的 5180 端口推导。"""
     try:
         return {"url": evaluation_entry.public_url()}
     except ValueError as exc:

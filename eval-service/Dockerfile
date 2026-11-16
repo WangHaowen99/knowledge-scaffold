@@ -19,5 +19,5 @@ COPY run.py ./
 COPY --from=frontend /build/dist ./frontend/dist
 USER evaluation
 ENV EVAL_DATA_DIR=/var/lib/evaluation
-EXPOSE 8090
+EXPOSE 5180
 CMD ["python", "run.py"]

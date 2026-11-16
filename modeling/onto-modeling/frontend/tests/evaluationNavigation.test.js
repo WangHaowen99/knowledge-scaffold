@@ -106,9 +106,9 @@ test('without a deployed entry evaluation opens on the modeling host at the defa
     entry: { url: '' }, here, messages, tokens, openWindow: () => popup,
     fetchImpl: async (url) => { checked = url; return healthy(); },
   });
-  assert.equal(checked, 'http://modeling.example.com:8090/evaluation/api/health');
-  assert.equal(new URL(popup.location.href).origin, 'http://modeling.example.com:8090');
-  dispatch({ source: popup, origin: 'http://modeling.example.com:8090', data: { type: READY } });
+  assert.equal(checked, 'http://modeling.example.com:5180/evaluation/api/health');
+  assert.equal(new URL(popup.location.href).origin, 'http://modeling.example.com:5180');
+  dispatch({ source: popup, origin: 'http://modeling.example.com:5180', data: { type: READY } });
 });
 
 test('without a prefetched entry the click loads it once and reuses it', async () => {

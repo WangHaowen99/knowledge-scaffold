@@ -879,7 +879,7 @@ def _resolved_relation_fields(item: dict, source: str, target: str, fields: dict
 
 def package_relations(
     object_texts: dict[str, str], *, allow_self_relations: bool = True,
-    reject_duplicate_relations: bool = False,
+    reject_duplicate_relations: bool = False, strict_fields: bool = False,
 ) -> tuple[dict[str, list], list[str]]:
     """检查包内关系结构；严格模式拒绝规范化后的重复声明，默认归并双端声明。"""
     relations: dict[str, list] = {}
@@ -910,8 +910,14 @@ def package_relations(
             source, target = objects_by_identity[source_id], objects_by_identity[target_id]
             relation = {field: value for field, value in item.items() if field not in ("line", "source")}
             relation["target"] = target
+            if not valid_relation_type(item["relation"]):
+                problems.append(f"{label}：关系名包含不安全字符或超过长度限制")
+                continue
             try:
                 source_join, target_join = _resolved_relation_fields(item, source, target, fields, names)
+                if strict_fields and source_join and target_join:
+                    if source_join not in fields[source] or target_join not in fields[target]:
+                        raise ValueError("显式关联字段必须存在于两端对象的属性清单")
             except ValueError as exc:
                 problems.append(f"{label}：{exc}")
                 continue
@@ -949,6 +955,14 @@ def _relation_prefixes(key: str, doc: dict) -> set[str]:
     anchor = dbview.parse(doc["declared_table"])
     candidates = (key, doc["declared_table"], *doc["declared_mentions"], (anchor or {}).get("table") or "")
     return {name.lower() for name in candidates if name}
+
+
+def valid_relation_type(name: str) -> bool:
+    """Relationship types are quoted in Cypher; naming style is not a structural constraint."""
+    if not isinstance(name, str) or not name.strip() or len(name) > 256:
+        return False
+    # Backslashes can encode Cypher Unicode escapes before identifier parsing.
+    return not any(ord(char) < 32 or ord(char) == 127 or char == chr(92) for char in name)
 
 
 def graph_relations(
@@ -1013,7 +1027,7 @@ def graph_relations(
                     unbound += 1
                     skipped.append(f"{label}：关系端点「{'、'.join(missing)}」未绑定数据表，本条关系不导入")
                 continue
-            if not GRAPH_IDENTIFIER.fullmatch(name):
+            if not valid_relation_type(name):
                 triples.add(triple)
                 skipped.append(f"{label}：关系名「{name}」不是合法的图关系名，请确认名称")
                 continue

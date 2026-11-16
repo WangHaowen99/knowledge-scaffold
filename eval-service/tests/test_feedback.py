@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import threading
 from types import SimpleNamespace
 
 from cryptography.fernet import Fernet
@@ -192,11 +193,19 @@ def test_an_owner_reviews_generates_and_confirms_for_modeling(flywheel):
     assert env.client.post(f'/evaluation/api/runs/{rid}/artifacts/regenerate').status_code == 200
     ready = until(lambda: (lambda r: r if r['artifacts']['suggestions'] == 'ready' else None)(
         env.client.get(f'/evaluation/api/runs/{rid}').json()), 'suggestions')
-    tool, system, payload = next(item for item in env.asked if item[0] == 'submit_suggestions')
+    # Each correction drafts the suggestions again; the newest draft leaves out the misjudged answer.
+    tool, system, payload = [item for item in env.asked if item[0] == 'submit_suggestions'][-1]
     assert '终端用户' in system and [case['number'] for case in payload['cases']] == [1, 3]
     suggestions = env.client.get(f'/evaluation/api/runs/{rid}/artifacts/suggestions.md').text
     assert '覆盖：2 条错误问答' in suggestions
     assert ready['artifacts']['suggestions_stale'] is False
+    # The package list counts runs still waiting for an owner.
+    tasks = env.client.get('/evaluation/api/package-tasks', params={'origin': 'consumer_feedback'}).json()['items']
+    assert [(item['ontology_id'], item['awaiting_review']) for item in tasks] == [(PACKAGE, 1)]
+    # The owner sees what waits for the package as a whole: questions, user suggestions and since when.
+    assert (tasks[0]['awaiting_cases'], tasks[0]['awaiting_suggestions'], tasks[0]['handed']) == (env.client.get(f'/evaluation/api/runs/{rid}/results').json()['total'], 0, 0)
+    assert tasks[0]['awaiting_since'] == ready['created_at']
+    assert ready['summary']['score'] is None
     # Confirming finds the release of the version in Hub and tells modeling, filed under the confirming owner.
     confirmed = env.client.post(f'/evaluation/api/runs/{rid}/notifications/retry', json={'decision': 'confirm'})
     assert confirmed.status_code == 200, confirmed.text
@@ -205,6 +214,9 @@ def test_an_owner_reviews_generates_and_confirms_for_modeling(flywheel):
     body = until(lambda: next((b for _, b in env.modeling.received if b['run_id'] == rid), None), 'notification')
     assert body['origin'] == 'consumer_feedback' and body['owner'] == subject and body['release_id'] == 'release_demo'
     assert body['summary']['score'] is None
+    tasks = env.client.get('/evaluation/api/package-tasks', params={'origin': 'consumer_feedback'}).json()['items']
+    assert (tasks[0]['awaiting_review'], tasks[0]['awaiting_cases'], tasks[0]['handed']) == (0, 0, 1)
+    assert tasks[0]['transport'] == {'delivered': 1, 'pending': 0, 'failed': 0, 'none': 0}
     # Modeling sees it per release when it asks for all sources, and only then.
     listed = env.client.get('/evaluation/api/package-evaluations', params={'ontology_id': PACKAGE, 'origin': 'all'}).json()
     assert [entry['origin'] for entry in listed['releases']] == ['consumer_feedback']
@@ -481,3 +493,57 @@ def test_the_public_health_check_is_unchanged(flywheel):
     response = flywheel.client.get('/evaluation/api/health', headers={'Authorization': ''})
     assert response.status_code == 200 and response.json() == {'status': 'ok', 'service': 'evaluation'}
     assert response.headers['access-control-allow-origin'] == '*'
+
+
+def test_suggestions_are_drafted_when_an_owner_visits_and_delivery_waits_for_them(flywheel):
+    env = flywheel
+    def tasks():
+        return env.client.get('/evaluation/api/package-tasks', params={'origin': 'consumer_feedback'}).json()['items'][0]
+
+    push(env, [signal(run=f'run_{n}', question=f'Synthetic question {n}', feedback={'comment': 'Synthetic wrong'}) for n in (1, 2, 3)])
+    rid = sealed(env)['id']
+    # Sealed in the background without a login: nothing could read the package yet.
+    assert env.client.get(f'/evaluation/api/runs/{rid}').json()['artifacts']['suggestions'] == 'pending'
+    gate, original = threading.Event(), env.deps.json
+
+    def slow(method, base, path, **kwargs):
+        if path == '/chat/completions' and kwargs['json']['tool_choice']['function']['name'] == 'submit_suggestions':
+            gate.wait(10)
+        return original(method, base, path, **kwargs)
+    env.deps.json = slow
+    # A visit by someone who may read the package drafts them with that login and the default judge.
+    first = tasks()
+    assert (first['status'], first['suggestions'], first['awaiting_cases'], first['handed']) == ('pending', 'generating', 3, 0)
+    # Handing over now is accepted and waits for the suggestions; corrections are refused meanwhile.
+    asked = env.client.post(f'/evaluation/api/runs/{rid}/notifications/retry', json={'decision': 'confirm'}).json()
+    assert asked['optimization']['status'] == 'awaiting_review' and asked['optimization']['handover']
+    assert tasks()['status'] == 'delivering'
+    current = env.client.get(f'/evaluation/api/runs/{rid}').json()
+    assert env.client.post(f'/evaluation/api/runs/{rid}/results/0/override', json={
+        'verdict': 'pass', 'reason': 'Synthetic', 'revision': current['revision']}).json()['code'] == 'invalid_state'
+    assert not any(body['run_id'] == rid for _, body in env.modeling.received)
+    gate.set()
+    delivered = until(lambda: (lambda r: r if r['optimization']['status'] == 'notified' else None)(
+        env.client.get(f'/evaluation/api/runs/{rid}').json()), 'delivery')
+    assert delivered['artifacts']['suggestions'] == 'ready' and 'handover' not in delivered['optimization']
+    until(lambda: any(body['run_id'] == rid and body['artifacts']['suggestions'] == 'ready' for _, body in env.modeling.received),
+          'notification')
+    after = tasks()
+    assert (after['status'], after['awaiting_review'], after['handed'], after['total_cases']) == ('notified', 0, 1, 3)
+
+
+def test_an_owner_s_correction_drafts_the_suggestions_again(flywheel):
+    env = flywheel
+    push(env, [signal(run=f'run_{n}', question=f'Synthetic question {n}', feedback={'comment': 'Synthetic wrong'}) for n in (1, 2, 3)])
+    rid = sealed(env)['id']
+    env.client.get('/evaluation/api/package-tasks', params={'origin': 'consumer_feedback'})
+    ready = until(lambda: (lambda r: r if r['artifacts']['suggestions'] == 'ready' else None)(
+        env.client.get(f'/evaluation/api/runs/{rid}').json()), 'suggestions')
+    response = env.client.post(f'/evaluation/api/runs/{rid}/results/1/override', json={
+        'verdict': 'pass', 'reason': 'Synthetic user misunderstanding', 'revision': ready['revision']})
+    assert response.status_code == 200
+    again = until(lambda: (lambda r: r if r['artifacts']['suggestions'] == 'ready' and r['artifacts']['revision'] > ready['artifacts']['revision']
+                           else None)(env.client.get(f'/evaluation/api/runs/{rid}').json()), 'suggestions again')
+    assert again['artifacts']['suggestions_stale'] is False
+    payload = [item for item in env.asked if item[0] == 'submit_suggestions'][-1][2]
+    assert [case['number'] for case in payload['cases']] == [1, 3]
