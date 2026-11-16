@@ -36,6 +36,7 @@ import mermaid from 'mermaid';
 import { Suspense, lazy, memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { hideCoverageMetrics } from '../lib/coveragePresentation.js';
+import { remarkWikiLinks } from '../lib/wikiLinks.js';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
 import { api } from '../lib/api.js';
@@ -218,16 +219,11 @@ function linkifyPaths(md) {
 
 // memo：流式期间每帧重渲染的开销主要在 markdown 解析，内容不变时跳过
 export const Markdown = memo(function Markdown({ content, onWikiLink, onOpenFile, onOpenAnswer, knownPaths }) {
-  const prepared = linkifyPaths(
-    content.replace(
-      /\[\[([^\]]+)\]\]/g,
-      (_, name) => `[${name}](#wiki:${encodeURIComponent(name)})`,
-    ),
-  );
+  const prepared = linkifyPaths(content);
   return (
     <div className="markdown-body">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, hideCoverageMetrics]}
+        remarkPlugins={[remarkGfm, remarkWikiLinks, hideCoverageMetrics]}
         rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]}
         components={{
           a({ href, children }) {
