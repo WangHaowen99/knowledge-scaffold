@@ -62,6 +62,28 @@ def test_draft_roundtrip_and_discard(env):
     assert studio.lease_status("p2", "ontology/object/订单.md") is None
 
 
+def test_save_draft_rejects_obsolete_baseline_before_reacquiring_lease(env):
+    path = "ontology/object/订单.md"
+    with pytest.raises(studio.StudioError) as exc:
+        studio.save_draft(
+            "p2", path, "旧表单内容", "old-revision", "alice",
+            current_revision="new-revision",
+        )
+    assert exc.value.status == 409
+    assert "最新内容" in str(exc.value)
+    assert studio.get_draft("p2", path) is None
+    assert studio.lease_status("p2", path) is None
+
+
+def test_submit_guard_rejects_obsolete_draft_baseline():
+    with pytest.raises(studio.StudioError) as exc:
+        studio.ensure_draft_current(
+            {"base_revision": "old-revision"}, "new-revision"
+        )
+    assert exc.value.status == 409
+    assert "旧版本" in str(exc.value)
+
+
 def test_reconcile_draft_removes_content_already_applied_to_workspace(env):
     path = "ontology/object/订单.md"
     target = env / path
@@ -135,6 +157,56 @@ def test_studio_submit_reuses_held_project_lock(tmp_path, monkeypatch):
     assert result["result"] == "committed"
     assert (root / path).read_text(encoding="utf-8") == OBJECT_OK
     assert studio.get_draft(meta["id"], path) is None
+
+
+def test_studio_submit_rejects_stale_review_draft_before_calling_agent(
+    tmp_path, monkeypatch
+):
+    from app import config
+    from app.routers import projects
+    from app.services import agent_sessions
+    from app.services.workspace import _content_revision
+
+    assets = tmp_path / "assets"
+    (assets / "workspace-toolkit/templates").mkdir(parents=True)
+    (assets / "workspace-rules.md").write_text("# synthetic rules", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    manager = WorkspaceManager(data_dir, assets)
+    meta = manager.create_project("workspace_demo")
+    root = manager.project_root(meta["id"])
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(projects, "workspaces", manager)
+    path = "ontology/object/订单.md"
+    target = root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(OBJECT_OK, encoding="utf-8")
+    baseline = _content_revision(target.read_bytes())
+    studio.save_draft(
+        meta["id"], path, OBJECT_OK + "\n# 自定义章节\n\n合成内容\n",
+        baseline, "本机用户",
+    )
+    target.write_text(OBJECT_OK.replace("核心record", "最新合成记录"), encoding="utf-8")
+
+    called = False
+
+    async def reject_agent_call(*_args, **_kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(agent_sessions.manager, "send", reject_agent_call)
+    request = SimpleNamespace(state=SimpleNamespace(user=None))
+
+    with pytest.raises(WorkspaceError) as exc:
+        asyncio.run(
+            projects.studio_submit(
+                meta["id"], projects.StudioLeaseBody(path=path), request
+            )
+        )
+
+    assert exc.value.status == 409
+    assert "旧版本" in str(exc.value)
+    assert called is False
+    assert studio.get_draft(meta["id"], path)["state"] == "stale"
 
 
 def test_deterministic_check_rejects_missing_section(env):

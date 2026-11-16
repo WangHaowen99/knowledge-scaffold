@@ -1707,16 +1707,20 @@ def studio_get_draft(project_id: str, path: str, request: Request):
 @router.put("/{project_id}/studio/draft")
 def studio_save_draft(project_id: str, body: StudioDraftBody, request: Request):
     from ..services import studio
+    from ..services.workspace import _content_revision
 
-    ensure_access(project_id, request, write=True)
+    root = ensure_access(project_id, request, write=True)
+    target = workspaces._resolve_inside(root, body.path)
     try:
         with workspaces._project_lock(project_id):
+            current_content = target.read_bytes() if target.is_file() else b""
             return studio.save_draft(
                 project_id,
                 body.path,
                 body.content,
                 body.base_revision,
                 _request_user(request) or "本机用户",
+                current_revision=_content_revision(current_content),
             )
     except studio.StudioError as exc:
         raise WorkspaceError(str(exc), exc.status)
@@ -1737,21 +1741,45 @@ async def studio_submit(project_id: str, body: StudioLeaseBody, request: Request
     """草稿提交分流：确定性检查通过直接落版本；超范围转 agent 复核；硬伤拒绝。"""
     from ..services import studio
     from ..services.agent_sessions import manager
+    from ..services.workspace import _content_revision
 
     root = ensure_access(project_id, request, write=True)
     user = _request_user(request) or "本机用户"
-    draft = studio.get_active_draft(project_id, body.path)
-    if not draft:
-        raise WorkspaceError("没有待提交的草稿", 404)
-    lease = studio.lease_status(project_id, body.path)
-    if lease and lease["owner"] != user:
-        raise WorkspaceError(f"该条目正由 {lease['owner']} 编辑", 409)
+    target = workspaces._resolve_inside(root, body.path)
+    with workspaces._project_lock(project_id):
+        current_content = target.read_bytes() if target.is_file() else b""
+        current_revision = _content_revision(current_content)
+        draft = studio.reconcile_draft(
+            project_id, root, body.path, current_content, current_revision
+        )
+        if not draft:
+            raise WorkspaceError("没有待提交的草稿", 404)
+        if draft.get("state") == "stale":
+            raise WorkspaceError("草稿基于旧版本，请刷新后基于最新内容重新编辑", 409)
+        try:
+            studio.ensure_draft_current(draft, current_revision)
+        except studio.StudioError as exc:
+            raise WorkspaceError(str(exc), exc.status)
+        lease = studio.lease_status(project_id, body.path)
+        if lease and lease["owner"] != user:
+            raise WorkspaceError(f"该条目正由 {lease['owner']} 编辑", 409)
 
-    checks = studio.deterministic_check(root, body.path, draft["content"])
+        checks = studio.deterministic_check(root, body.path, draft["content"])
+        if checks["review"] and not checks["errors"]:
+            staged = studio.stage_for_review(root, body.path, draft["content"])
+        elif not checks["errors"]:
+            saved = workspaces._write_file_unlocked(
+                project_id,
+                body.path,
+                draft["content"],
+                base_revision=draft.get("base_revision", ""),
+                author=user,
+            )
+            studio.discard_draft(project_id, body.path, user)
+
     if checks["errors"]:
         return {"result": "rejected", "errors": checks["errors"], "review": checks["review"]}
     if checks["review"]:
-        staged = studio.stage_for_review(root, body.path, draft["content"])
         points = "；".join(checks["review"])
         await manager.send(
             project_id,
@@ -1762,19 +1790,6 @@ async def studio_submit(project_id: str, body: StudioLeaseBody, request: Request
             f"有问题则说明原因；缺失的关联文档如确有必要可一并创建。",
         )
         return {"result": "needs_review", "review": checks["review"], "staged": staged}
-    with workspaces._project_lock(project_id):
-        # Re-read under the project lock shared with rollback/MCP writes.
-        draft = studio.get_active_draft(project_id, body.path)
-        if not draft:
-            raise WorkspaceError("没有待提交的草稿", 404)
-        saved = workspaces._write_file_unlocked(
-            project_id,
-            body.path,
-            draft["content"],
-            base_revision=draft.get("base_revision", ""),
-            author=user,
-        )
-        studio.discard_draft(project_id, body.path, user)
     return {"result": "committed", **saved}
 
 

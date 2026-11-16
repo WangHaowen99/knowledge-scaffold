@@ -814,8 +814,19 @@ def release_lease(project_id: str, rel_path: str, user: str) -> None:
 
 
 def save_draft(
-    project_id: str, rel_path: str, content: str, base_revision: str, user: str
+    project_id: str,
+    rel_path: str,
+    content: str,
+    base_revision: str,
+    user: str,
+    current_revision: str | None = None,
 ) -> dict:
+    if (
+        current_revision is not None
+        and base_revision
+        and base_revision != current_revision
+    ):
+        raise StudioError("正式条目已更新，请刷新后基于最新内容重新编辑", 409)
     acquire_lease(project_id, rel_path, user)  # 持有或续期租约
     drafts = _load(project_id, "drafts")
     drafts[rel_path] = {
@@ -835,6 +846,13 @@ def get_draft(project_id: str, rel_path: str) -> dict | None:
 def get_active_draft(project_id: str, rel_path: str) -> dict | None:
     draft = get_draft(project_id, rel_path)
     return None if draft and draft.get("state") == "stale" else draft
+
+
+def ensure_draft_current(draft: dict, current_revision: str) -> None:
+    """Reject a draft whose optimistic-concurrency baseline is no longer current."""
+    base_revision = draft.get("base_revision", "")
+    if base_revision and base_revision != current_revision:
+        raise StudioError("草稿基于旧版本，请刷新后基于最新内容重新编辑", 409)
 
 
 def reconcile_draft(
