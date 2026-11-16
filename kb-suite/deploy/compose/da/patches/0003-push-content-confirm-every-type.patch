@@ -1,0 +1,66 @@
+DaPermissionHost: confirm every push_content, not only type=file
+
+actrule.yaml lists push_content as ask, but the scene hook approved every type
+except file before the policy was consulted, so a Markdown or table card reached
+the user with no confirmation (kb-suite SEC-F2: a made-up interview record was
+written and pushed without any prompt). push_content now goes through the policy
+like the other self-guarded tools: ask -> the user confirms, allow -> it runs,
+deny -> it is refused. The tool card says so.
+
+Cost: one confirmation per pushed card. A host without an approval channel
+(Swarm team member mode) denies the push, so the model answers in text instead.
+
+Applied by deploy/compose/da/build.sh until settled upstream (agent-solution
+common). Made against solution b70a00246, the deployed baseline (build with
+DA_SOLUTION_REF=b70a00246; 0002 does not apply to newer common either). Newer
+common keeps the auto-approval as FEAT-109's "fast path" (isFastPathShape):
+rebasing means dropping the push_content shape there.
+
+--- a/common/agents/deepanalyze-java/engine/src/main/java/com/openjiuwen/da/config/DaPermissionHost.java
++++ b/common/agents/deepanalyze-java/engine/src/main/java/com/openjiuwen/da/config/DaPermissionHost.java
+@@ -192,10 +192,8 @@ public final class DaPermissionHost {
+         if (early.isPresent() || !isShell && !SELF_GUARDED_TOOLS.contains(tool)) {
+             return early;
+         }
+-        // push_content 在 actrule 里是 ask：只有 type=file（与 push_file 一样把文件推给用户）交回引擎确认，其余直接放行
+-        if ("push_content".equals(tool) && !"file".equals(args.get("type"))) {
+-            return Optional.of(new PermissionSceneDecision(ACTION_APPROVE, null));
+-        }
++        // push_content 各类型都按策略级别走（actrule 为 ask 时弹确认）：Markdown 等内容卡片同样是交付给用户的成品，
++        // 不再在这里直接放行
+         if (!(input.engine() instanceof PermissionEngine engine)) {
+             return Optional.empty();
+         }
+--- a/common/agents/deepanalyze-java/engine/src/main/java/com/openjiuwen/da/tools/DaPushTools.java
++++ b/common/agents/deepanalyze-java/engine/src/main/java/com/openjiuwen/da/tools/DaPushTools.java
+@@ -60,7 +60,7 @@ public final class DaPushTools {
+                             + "(files written earlier in the session) and data for short text (< 2000 chars). "
+                             + "filePath takes precedence and is read directly from the session workspace "
+                             + "without passing through the model context. type: table/text/code/file/"
+-                            + "markdown/chart/image/audio/video. type=file asks the user to confirm first, "
++                            + "markdown/chart/image/audio/video. Every push asks the user to confirm first, "
+                             + "the same as push_file.")
+                     .inputParams(Map.of("type", "object",
+                             "properties", Map.of(
+--- a/common/agents/deepanalyze-java/engine/src/test/java/com/openjiuwen/da/config/DaPermissionHostTest.java
++++ b/common/agents/deepanalyze-java/engine/src/test/java/com/openjiuwen/da/config/DaPermissionHostTest.java
+@@ -153,12 +153,15 @@ class DaPermissionHostTest {
+         assertThat(decide(input("db_query", Map.of("connectionId", "c-1", "sql", "SELECT 1")), root)).isEmpty();
+     }
+ 
+-    // push_content 在 actrule 里是 ask：内容卡片直接放行，type=file 交回引擎按 ask 弹确认（与 push_file 一致）
++    // push_content 在 actrule 里是 ask：各类型（含 Markdown 等内容卡片）都交回引擎按 ask 弹确认（与 push_file 一致）
+     @Test
+-    void pushContent_onlyFileTypeLeftToEngineForConfirmation(@TempDir Path root) {
+-        assertApproved(decide(pushContentInput("markdown"), root));
+-        assertApproved(decide(pushContentInput("table"), root));
++    void pushContent_everyTypeLeftToEngineForConfirmation(@TempDir Path root) {
++        assertThat(decide(pushContentInput("markdown"), root)).isEmpty();
++        assertThat(decide(pushContentInput("table"), root)).isEmpty();
+         assertThat(decide(pushContentInput("file"), root)).isEmpty();
++        Map<String, Object> markdown = Map.of("type", "markdown", "title", "报告", "data", "正文");
++        assertThat(decide(engineInput("push_content", markdown, root, "ask"), root)).isEmpty();
++        assertApproved(decide(engineInput("push_content", markdown, root, "allow"), root));
+     }
+ 
+     @Test

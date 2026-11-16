@@ -8,8 +8,13 @@ Pure functions over hits so they can be tested without a database:
 - merging adjacent hits, short-hit neighbour expansion (merge_expand.go:
   below 350 chars grow to about 850, half before / half after) and a
   parent-section window, all computed on L1 offsets because chunks overlap;
+  given the L1 heading blocks, a window does not grow past the next heading
+  of the same or a higher level and its context header names the sections
+  the text comes from;
 - near-duplicate removal (search.go removePartialOverlaps);
-- keyword-only query variants (query_expansion.go), no LLM.
+- keyword-only query variants (query_expansion.go), no LLM;
+- exact identifiers (kb-service's own): hits containing a code from the query
+  verbatim rank above the rest.
 """
 
 from __future__ import annotations
@@ -18,10 +23,13 @@ import re
 from typing import TYPE_CHECKING, Callable, Iterable
 
 from . import text_utils
+from .chunking import section_bounds, span_header
 
 if TYPE_CHECKING:
     from .chunking import Block
     from .retrieval import Hit
+
+BlocksOf = Callable[[str], "list[Block] | None"]
 
 FALLBACK_MIN_SCORE = 0.15
 DEGRADE_FLOOR = 0.3
@@ -145,11 +153,24 @@ def _union_locators(groups: Iterable[list]) -> list:
     return out[:MAX_LOCATORS]
 
 
-def merge_adjacent(hits: list["Hit"], l1_of: Callable[[str], str | None]) -> list["Hit"]:
+def _same_section(blocks: "list[Block] | None", total: int, a: int, b: int) -> bool:
+    """Offsets ``a`` and ``b`` lie in the same section (always true without blocks)."""
+
+    if not blocks:
+        return True
+    return section_bounds(blocks, a, total) == section_bounds(blocks, b, total)
+
+
+def merge_adjacent(
+    hits: list["Hit"], l1_of: Callable[[str], str | None], blocks_of: BlocksOf | None = None
+) -> list["Hit"]:
     """Merge hits of one document whose L1 ranges touch or overlap.
 
     The merged hit keeps the best score, the earliest citation fields and
-    records every chunk it absorbed; its content is the L1 span.
+    records every chunk it absorbed; its content is the L1 span. With the
+    document's heading blocks (``blocks_of``), hits that only touch are merged
+    within one section, and the context header names the sections the merged
+    text covers.
     """
 
     by_doc: dict[str, list[Hit]] = {}
@@ -162,15 +183,23 @@ def merge_adjacent(hits: list["Hit"], l1_of: Callable[[str], str | None]) -> lis
     merged_of: dict[int, Hit] = {}
     for doc_id, group in by_doc.items():
         l1 = l1_of(doc_id)
+        blocks = blocks_of(doc_id) if blocks_of and l1 is not None and len(group) > 1 else None
         group.sort(key=lambda h: (h.start_offset, h.end_offset))
         runs: list[list[Hit]] = []
         for hit in group:
-            if runs and l1 is not None and hit.start_offset <= max(h.end_offset for h in runs[-1]) + 2:
-                runs[-1].append(hit)
+            if runs and l1 is not None:
+                run_end = max(h.end_offset for h in runs[-1])
+                overlaps = hit.start_offset < run_end
+                touches = hit.start_offset <= run_end + 2 and _same_section(
+                    blocks, len(l1), run_end - 1, hit.start_offset
+                )
+                if overlaps or touches:
+                    runs[-1].append(hit)
+                    continue
             elif runs and l1 is None and hit.seq == runs[-1][-1].seq + 1:
                 runs[-1].append(hit)
-            else:
-                runs.append([hit])
+                continue
+            runs.append([hit])
         for run in runs:
             head = max(run, key=lambda h: h.score)
             if len(run) > 1:
@@ -185,7 +214,11 @@ def merge_adjacent(hits: list["Hit"], l1_of: Callable[[str], str | None]) -> lis
                 head.start_offset, head.end_offset = start, end
                 head.line_start = first.line_start
                 head.anchor_id = first.anchor_id or head.anchor_id
-                head.context_header = first.context_header or head.context_header
+                if blocks:
+                    head.context_header = span_header(blocks, start, end)
+                else:
+                    headers = list(dict.fromkeys(h.context_header for h in run if h.context_header))
+                    head.context_header = " / ".join(headers) if len(headers) > 1 else (headers or [""])[0]
                 head.source_locators = _union_locators(h.source_locators for h in run)
                 head.merged_chunk_ids = list(dict.fromkeys(c for h in run for c in (h.merged_chunk_ids or [h.chunk_id])))
                 head.sources = set().union(*(h.sources for h in run))
@@ -224,13 +257,15 @@ def _snap_end(l1: str, end: int, limit: int) -> int:
     return end
 
 
-def expand_short(hit: "Hit", l1: str, min_chars: int, max_chars: int) -> None:
+def expand_short(hit: "Hit", l1: str, min_chars: int, max_chars: int, blocks: "list[Block] | None" = None) -> None:
     """Grow a short text hit with surrounding L1 text (same document only).
 
     The budget ``max_chars - len`` goes half before and half after; a side
     that hits the document edge passes its unused share to the other side.
     Each extension is then trimmed back (by at most a third) to a sentence
-    or line boundary.
+    or line boundary. With the document's heading ``blocks`` the edges are
+    those of the hit's own section: the window never reaches past a heading
+    of the same or a higher level, so it keeps the hit's context header.
     """
 
     if hit.is_wiki or hit.chunk_type != "text" or not l1:
@@ -238,21 +273,31 @@ def expand_short(hit: "Hit", l1: str, min_chars: int, max_chars: int) -> None:
     start, end = hit.start_offset, hit.end_offset
     if end - start >= min_chars:
         return
+    lo, hi = 0, len(l1)
+    if blocks:
+        lo = min(start, section_bounds(blocks, start, len(l1))[0])
+        hi = max(end, section_bounds(blocks, max(start, end - 1), len(l1))[1])
     budget = max_chars - (end - start)
     before, after = budget // 2, budget - budget // 2
-    if before > start:
-        after += before - start
-        before = start
-    if after > len(l1) - end:
-        before = min(start, before + after - (len(l1) - end))
-        after = len(l1) - end
+    if before > start - lo:
+        after += before - (start - lo)
+        before = start - lo
+    if after > hi - end:
+        before = min(start - lo, before + after - (hi - end))
+        after = hi - end
     if before == 0 and after == 0:
         return
-    new_start = _snap_start(l1, start - before, before // 3) if before else start
-    new_end = _snap_end(l1, end + after, after // 3) if after else end
+    new_start = start - before
+    if before and new_start > lo:
+        new_start = _snap_start(l1, new_start, before // 3)
+    new_end = end + after
+    if after and new_end < hi:
+        new_end = _snap_end(l1, new_end, after // 3)
     hit.core_abs = hit.core_abs or (start, end)
     hit.content = l1[new_start:new_end]
     hit.start_offset, hit.end_offset = new_start, new_end
+    if blocks:
+        hit.context_header = span_header(blocks, new_start, new_end)
     hit.expanded = True
     hit.sources.add("expanded")
 
@@ -364,3 +409,47 @@ def expand_query(query: str, limit: int = 5) -> list[str]:
         if len(out) >= limit:
             break
     return out
+
+
+# ---- exact identifiers ------------------------------------------------------
+
+# Codes such as LFP-2048X, v3.2.1-rc4, E-0x1F3A, KX_77_alpha: ASCII letters and
+# digits joined by . _ - / : #, with at least one letter and one digit.
+_IDENTIFIER = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9]+(?:[._\-/:#][A-Za-z0-9]+)*(?![A-Za-z0-9])")
+MAX_IDENTIFIERS = 5
+
+
+def identifier_terms(query: str) -> list[str]:
+    """Identifier-like tokens of a query, which BM25 splits into weak pieces (v3.2.1-rc4 -> v, 3, 2, 1, rc4)."""
+
+    out: list[str] = []
+    for match in _IDENTIFIER.finditer(query):
+        term = match.group(0)
+        if len(term) >= 4 and any(c.isdigit() for c in term) and any(c.isalpha() for c in term):
+            if term.lower() not in (t.lower() for t in out):
+                out.append(term)
+    return out[:MAX_IDENTIFIERS]
+
+
+def contains_terms(hit: "Hit", terms: list[str]) -> int:
+    text = f"{hit.context_header}\n{hit.content}".lower()
+    return sum(1 for term in terms if term.lower() in text)
+
+
+def boost_exact(hits: list["Hit"], terms: list[str]) -> None:
+    """Rank hits that contain the query's identifiers verbatim above the ones that do not.
+
+    Each hit gains the current top score times the share of identifiers it
+    contains, so the order inside each group is kept.
+    """
+
+    if not terms or not hits:
+        return
+    top = max(h.score for h in hits)
+    for hit in hits:
+        if hit.is_wiki:
+            continue
+        found = contains_terms(hit, terms)
+        if found:
+            hit.score += top * found / len(terms)
+            hit.sources.add("exact")

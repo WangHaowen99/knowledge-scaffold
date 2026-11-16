@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+from collections import OrderedDict
 from typing import Sequence
 
 import httpx
@@ -24,13 +25,20 @@ class ModelError(Exception):
 
 _client: httpx.AsyncClient | None = None
 _embed_sem: asyncio.Semaphore | None = None
+_query_sem_obj: asyncio.Semaphore | None = None
 _llm_sem_obj: asyncio.Semaphore | None = None
+# Connections stay open between bursts of searches instead of the default 5 s,
+# so a burst does not start with a TLS handshake per request.
+_LIMITS = httpx.Limits(max_connections=100, max_keepalive_connections=32, keepalive_expiry=60.0)
+QUERY_CACHE_SIZE = 256  # query vectors kept per process (about 10 MB at 1024 dimensions)
+_query_cache: OrderedDict[tuple, list[float]] = OrderedDict()
+_query_inflight: dict[tuple, asyncio.Future] = {}
 
 
 def _http() -> httpx.AsyncClient:
     global _client
     if _client is None:
-        _client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0), trust_env=False)
+        _client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0), limits=_LIMITS, trust_env=False)
     return _client
 
 
@@ -39,6 +47,13 @@ def _sem() -> asyncio.Semaphore:
     if _embed_sem is None:
         _embed_sem = asyncio.Semaphore(get_settings().embed_concurrency)
     return _embed_sem
+
+
+def _query_sem() -> asyncio.Semaphore:
+    global _query_sem_obj
+    if _query_sem_obj is None:
+        _query_sem_obj = asyncio.Semaphore(max(1, get_settings().query_embed_concurrency))
+    return _query_sem_obj
 
 
 async def aclose() -> None:
@@ -76,21 +91,68 @@ def _base() -> str:
     return get_settings().llm_base_url.rstrip("/")
 
 
+async def _embed_batch(batch: list[str]) -> list[list[float]]:
+    settings = get_settings()
+    data = await _post_json(
+        f"{_base()}/embeddings",
+        {"model": settings.embed_model, "input": batch, "dimensions": settings.embed_dim},
+    )
+    items = sorted(data.get("data", []), key=lambda d: d.get("index", 0))
+    if len(items) != len(batch):
+        raise ModelError("embedding response size mismatch", retriable=True)
+    return [item["embedding"] for item in items]
+
+
 async def embed(texts: Sequence[str]) -> list[list[float]]:
     settings = get_settings()
     out: list[list[float]] = []
     for start in range(0, len(texts), settings.embed_batch):
         batch = [t if t.strip() else " " for t in texts[start : start + settings.embed_batch]]
         async with _sem():
-            data = await _post_json(
-                f"{_base()}/embeddings",
-                {"model": settings.embed_model, "input": batch, "dimensions": settings.embed_dim},
-            )
-        items = sorted(data.get("data", []), key=lambda d: d.get("index", 0))
-        if len(items) != len(batch):
-            raise ModelError("embedding response size mismatch", retriable=True)
-        out.extend(item["embedding"] for item in items)
+            out.extend(await _embed_batch(batch))
     return out
+
+
+async def embed_query(text: str) -> list[float]:
+    """Embedding of one search query.
+
+    Searches are interactive: they take their own, larger slot pool
+    (``query_embed_concurrency``) instead of queueing behind each other and
+    behind ingestion batches in ``embed_concurrency`` slots. Recent query
+    vectors are kept, and concurrent searches for the same text share one
+    model call (agents often repeat a query); a failed call is not kept and
+    reaches every search waiting on it.
+    """
+
+    settings = get_settings()
+    text = text if text.strip() else " "
+    key = (settings.embed_model, settings.embed_dim, text)
+    cached = _query_cache.get(key)
+    if cached is not None:
+        _query_cache.move_to_end(key)
+        return list(cached)
+    task = _query_inflight.get(key)
+    if task is None:
+        task = asyncio.ensure_future(_fetch_query_vector(key, text))
+        _query_inflight[key] = task
+        task.add_done_callback(lambda done: _query_done(key, done))
+    # a search that is cancelled does not cancel the call the others wait on
+    return list(await asyncio.shield(task))
+
+
+async def _fetch_query_vector(key: tuple, text: str) -> list[float]:
+    async with _query_sem():
+        vector = (await _embed_batch([text]))[0]
+    _query_cache[key] = vector
+    while len(_query_cache) > QUERY_CACHE_SIZE:
+        _query_cache.popitem(last=False)
+    return vector
+
+
+def _query_done(key: tuple, task: asyncio.Future) -> None:
+    _query_inflight.pop(key, None)
+    if not task.cancelled():
+        task.exception()  # retrieved here too, in case every waiting search was cancelled
 
 
 async def rerank(query: str, documents: Sequence[str], top_n: int) -> list[tuple[int, float]]:

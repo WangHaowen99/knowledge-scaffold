@@ -124,6 +124,35 @@ def _page_title(title: str) -> str:
     return title
 
 
+def distinct_hits(hits: list[dict]) -> list[dict]:
+    """Drop repeats of a document: DA returns its abstract, structure and full-text pages as separate hits.
+
+    A hit without an anchor stands for a whole page of the document, so only the best-ranked one per
+    document is kept; anchored hits (a passage) are kept unless the same anchor came already. A hit whose
+    text is the same as an earlier hit of the same document (the structure page and the full-text page of
+    a short document) is dropped too.
+    """
+
+    out: list[dict] = []
+    seen: set[tuple[str, str | None]] = set()
+    texts: set[tuple[str, str]] = set()
+    for hit in hits:
+        key = (hit["doc_id"], hit.get("anchor_id"))
+        text = (hit["doc_id"], " ".join((hit.get("content") or "").split()))
+        if key in seen or (text[1] and text in texts):
+            continue
+        seen.add(key)
+        texts.add(text)
+        out.append(hit)
+    # each document's best hit first, so the top of the list shows different documents; the rest keep their order
+    firsts: set[str] = set()
+    head, tail = [], []
+    for hit in out:
+        (tail if hit["doc_id"] in firsts else head).append(hit)
+        firsts.add(hit["doc_id"])
+    return head + tail
+
+
 def hit_view(r: dict, ids: Ids, filenames: dict[str, str]) -> dict:
     doc_id = r.get("docId") or ""
     anchor = r.get("anchorId")

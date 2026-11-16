@@ -127,6 +127,21 @@ DA_TS_SRC=<DeepAnalyze 源码目录> ./kbsuite.sh build-da-kb
 - 粘贴文本转成 `.md` 文件上传；DA 不支持导入网页和取消处理，这两项不声明。
 - 检索用 `/api/knowledge/search`，DA 的锚点（`{docId}:{type}:{index}`）会加上 `da_` 前缀。
 
+### DA 知识管线：平台知识服务（profile `da-platform`）
+
+DeepAnalyze 平台仓的知识服务（`packages/service-knowledge`）对外提供与 DA 原版相同的 `/api/knowledge/*`，所以复用 `da-kb-adapter`，再起一个实例，作为第四个后端「DA 知识管线（平台）」，ID 前缀 `dap_`。和 DA 原版后端互不影响，各用各的数据库和数据卷。
+
+```bash
+PLATFORM_REPO=<平台仓克隆> PLATFORM_REF=<提交，缺省 HEAD> ./kbsuite.sh build-dap   # 用 git archive 导出后构建，不动平台仓工作区
+./kbsuite.sh up-dap
+```
+
+- **建表**：平台知识服务不建表。`up-dap` 先用 DA 原版镜像（`kb-suite/da-kb`，要先 `build-da-kb`）起一次 `dap-migrate` 迁移表结构，等 `settings` 表就绪后停掉它，否则两边会各自处理同一批文档。然后写入模型配置（同 `da-kb/providers.py`），再起知识服务和适配服务、重建 gateway。
+- **MinerU**：pdf、docx、pptx 和 OCR 交给 MinerU（3.x、4.x 都可以）。平台在没有配置时缺省用 MinerU 官方公共服务，文档会发往外网，所以这里缺省 `MINERU_ENABLED=false`。有自己的 MinerU 时，在 `$KBS_SECRETS_DIR/da-platform.env` 里写 `DAP_MINERU_ENABLED=true`、`DAP_MINERU_API_URL=<地址>`，并用 `DAP_EXTRA_FILE_TYPES=pdf,docx,pptx,doc,ppt` 告诉适配服务。`settings.mineru_config` 优先于这些变量，`up-dap` 会删掉它。
+- **实体抽取**：缺省开（与平台部署缺省一致），每份文档要多调几次模型，耗时可能超过文档本身的解析；不需要时设 `DAP_ENTITY_EXTRACTION=off`。
+- **中文全文检索**：数据库没有 zhparser，平台的全文检索按默认分词，这一点与 DA 原版相同。
+- **能力**：与 DA 原版后端相同（9 项）；导入网页、取消处理、Wiki、L2 不支持。
+
 ### 在旁边起一套测试环境
 
 `KBS_PROJECT` 和各个端口变量可以让第二套环境与线上的 5199 并存，镜像用另外的标签以免覆盖：
@@ -180,6 +195,7 @@ WeKnora 发布的 docreader 镜像（09-24 版）不返回原文定位，main �
   - 复用：DA 每个任务都新建 agent，第二个任务起重复注册时内核返回「id 已存在」，DA 把它当成不可用跳过，团队工具只在第一个任务里能用。现在改成复用已有注册。
   - 回收：原来注册从不注销，每个团队成员会话都会留下一份注册和一条连接，直到 DA 重启。现在按 agent 视图计数，最后一个卸载时注销并断开连接。
 - `0002-keep-cancel-mark-while-busy`：DA 的 `/cancel` 会标记会话已取消，任务在下一次模型调用前收尾。但每个新请求在被内核以「会话忙」拒绝之前，都会先重新登记会话，顺手清掉这个标记，取消后紧接着重试（每个宿主的下一轮都会这样）就等于撤销了取消，任务一直跑到自然结束。现在会话还有任务在跑时不清标记。实测：修之前每秒重试，取消 90 秒后还在忙；修之后约 5 秒空出来。
+- `0003-push-content-confirm-every-type`：`actrule.yaml` 把 `push_content` 列为“需确认”，但 DA 的场景钩子对 file 以外的类型一律直接放行，表格、Markdown 卡片可能带出用户还没看到的内容。现在每种类型都按权限策略先确认。上游 2026-11-12 起改成了配置项，见下文“推送确认”。
 
 **DA 怎么接 kb-service**：通过 Spring 的附加配置 `da/kbs-tools.yml`（`SPRING_CONFIG_ADDITIONAL_LOCATION`）重定义 `deepanalyze.tool-services`。其中 `base_url` 指向 kb-api，描述文件用上面生成的那份，`auth-headers` 里带 `KBS_DA_KEY`。DA 的 jar 和源码都不改。
 
@@ -272,6 +288,49 @@ agent-solution 里的 `loop-forest` 是一个 Java 库：在 agent-core 的 ReAc
 **在 Swarm 里怎么用**：
 - 「知识求索」页右上角可以切换引擎（DeepAnalyze / Loop Forest），每个引擎各自保留会话。
 - 集群模式下让 leader 用 `spawn_teammate` 时把 `cli_agent` 填成 `loopforest`。Swarm 侧的变量是 `LF_BASE_URL`、`LF_ENGINE_SECRET`、`LF_TENANT_ID`、`LF_KB_CATALOG_URL`、`LF_KB_CATALOG_KEY_ENV`、`LF_MCP_BRIDGE_HOST`，compose 已经配好。
+
+## 安全、识别与作答相关的配置（2026-11 测试迭代）
+
+**入口的访问控制**（`edge`）：
+- 默认只绑定本机（`KBS_EDGE_BIND`，默认 `127.0.0.1`），只接受 `localhost`、`127.0.0.1`、`[::1]` 这几个 Host。其他机器要访问时设 `KBS_EDGE_BIND=0.0.0.0`，并把访问用的主机名或 IP 写进 `KBS_EDGE_HOSTS`（空格分隔），可以防 DNS 重绑定。
+- WebSocket 握手要带 Origin，而且它的“主机:端口”必须和请求的 Host 相同，否则回 403。脚本直连时也要带本站的 Origin，例如连 `ws://127.0.0.1:5199` 时带 `Origin: http://localhost:5199`。这一层只挡浏览器里的外站页面，登录鉴权仍要由 Swarm 提供。
+
+**图片、扫描件和录音**（kb-service，默认关闭）：
+- `KBS_MINERU_ENABLED=true`，加上 `KBS_MINERU_API_URL`（例如 `http://mineru.example.com:8000`），就交给 MinerU 识别文字。
+- 可调项：
+  - `KBS_MINERU_TIMEOUT_S`（600）、`KBS_MINERU_CONCURRENCY`（1）、`KBS_MINERU_BACKEND`（`pipeline`）；
+  - `KBS_MINERU_FILE_TYPES`：默认 `pdf` 和常见图片；
+  - `KBS_MINERU_SCANNED_CHARS_PER_PAGE`（50）：PDF 每页文字少于这个数就当作扫描件，交给 MinerU。
+- 开启后要在知识库设置的文件类型里加上图片类型。已有的扫描件、图片要重新解析才会用上。
+- 语音转写：`KBS_ASR_ENABLED=true`，加上 `KBS_ASR_API_URL`（OpenAI 兼容的 `/audio/transcriptions`）。可调项有 `KBS_ASR_MODEL`（`whisper-1`）、`KBS_ASR_TIMEOUT_S`（900）、`KBS_ASR_CONCURRENCY`（1）。服务要密钥时写进 `secrets.env` 的 `KBS_ASR_API_KEY`。
+- DA 知识管线（平台）本来支持图片，但默认只收文档类型；要收图片，在 `da-platform.env` 里设 `DAP_EXTRA_FILE_TYPES=png,jpg,jpeg`。
+
+**并发检索**（kb-service）：
+- `KBS_QUERY_EMBED_CONCURRENCY`（16）：同时计算查询向量的个数，相同查询的向量会缓存；
+- `KBS_DB_POOL_SIZE`（20）：API 保持的数据库连接数；
+- `KBS_DB_PARALLEL_WORKERS`（0）：PostgreSQL 并行 worker，检索都是短查询，关掉更快。
+
+**WeKnora 后端**：`WEKNORA_JSON_AS_TEXT`（默认 `true`）让 json 文件按文本入库。WeKnora 自己不认 json。
+
+**作答的稳定性**：Swarm 主 agent 的 `SWARM_TEMPERATURE` 和 Loop Forest 的 `LF_TEMPERATURE` 默认都是 0.1；DA 的 temperature 在 `da/kbs-tools.yml` 里设。
+
+**DA 的作答条款**（`da/prompt-overlay/`）：
+- da-engine 用 PropertiesLauncher 启动，`loader.path` 把这个目录放在类路径最前面。这样在 DA 的反幻觉条款之后加上 kb-suite 的知识库作答规则（`kb-answer-rules`），并在 `kbs-tools.yml` 的 `prompt-assembly.system-prompt.clauses` 里列出。
+- 子智能体用的是同一组规则，写在 `segments/output-format.zh.md` 的末尾，**改条款时两处要同步**。
+- `output-format.zh.md` 的正文部分是 DA 自己的输出格式段落，**要和部署的 DA 基线一致**：升级 DA 基线时，换成新基线的正文，再在末尾追加规则。否则会盖掉 DA 对这一段的修改。
+- 改完要重建（不是重启）da-engine。
+
+**推送确认**（`da/kbs-tools.yml`）：
+- `deepanalyze.permission.push-content.fast-path-types: []` 表示每种内容卡片都先让用户确认。这是 agent-solution common 2026-11-12 起的配置项。
+- 现在部署的基线 `b70a00246` 不认识这个配置项，会忽略它，同样的效果靠补丁 `0003` 实现。
+
+**DA 本地补丁**（`da/patches/`）：
+- `0002`、`0003` 只适用于 `b70a00246` 基线。按更新的 common 构建时，要先移出这两个，否则 `build-da` 会因补丁打不上而中断。`0001` 在 2026-11-14 的 common 上仍能打上。
+- 补丁必须是 LF 换行，仓库根目录的 `.gitattributes` 已经这样设置。
+
+**重启的顺序**：
+- 只改插件页面时，`build-plugin` 之后要 `docker restart kb-suite-swarm-1`。
+- kb-gateway 重启之后也要重启 Swarm：Swarm 0.2.7 的 MCP 会话不会自动重连。
 
 ## 已知限制
 

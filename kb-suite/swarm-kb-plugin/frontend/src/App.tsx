@@ -363,6 +363,8 @@ function Shell() {
                   backend={backends?.find((b) => b.id === kb.backend?.id)}
                   onSaved={loadKbs}
                   onDeleted={async () => {
+                    // land on the next knowledge base's documents, never on its settings (delete button)
+                    setTab('docs');
                     setSelected(null);
                     await loadKbs();
                   }}
@@ -374,6 +376,8 @@ function Shell() {
                   kb={kb}
                   onSaved={loadKbs}
                   onDeleted={async () => {
+                    // land on the next knowledge base's documents, never on its settings (delete button)
+                    setTab('docs');
                     setSelected(null);
                     await loadKbs();
                   }}

@@ -6,6 +6,8 @@ from importlib import resources
 
 import asyncpg
 
+from .config import get_settings
+
 logger = logging.getLogger(__name__)
 
 _pool: asyncpg.Pool | None = None
@@ -18,11 +20,28 @@ async def _init_connection(conn: asyncpg.Connection) -> None:
         )
 
 
-async def connect(dsn: str, *, min_size: int = 1, max_size: int = 10) -> asyncpg.Pool:
+async def connect(dsn: str, *, min_size: int | None = None, max_size: int | None = None) -> asyncpg.Pool:
+    """Open the process-wide pool.
+
+    Without ``max_size`` (the API) the pool holds ``db_pool_size`` connections,
+    opened at start and kept while idle: a burst of searches then neither
+    waits for new connections nor pays a fresh backend's first-query cost.
+    PostgreSQL parallel query is set to ``db_parallel_workers`` per session.
+    """
+
     global _pool
     if _pool is None:
+        settings = get_settings()
+        if max_size is None:
+            max_size = settings.db_pool_size
+            min_size = max_size if min_size is None else min_size
         _pool = await asyncpg.create_pool(
-            dsn, min_size=min_size, max_size=max_size, init=_init_connection
+            dsn,
+            min_size=min(min_size or 1, max_size),
+            max_size=max_size,
+            max_inactive_connection_lifetime=0,
+            init=_init_connection,
+            server_settings={"max_parallel_workers_per_gather": str(max(0, settings.db_parallel_workers))},
         )
     return _pool
 

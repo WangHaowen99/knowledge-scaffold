@@ -5,18 +5,26 @@ A call whose scope lies on one backend that implements the tools itself
 gateway answers from the knowledge-provider/v1 core API, in the same result
 shapes (pageId ``{docId}:L0|L1|L2``, anchors ``{docId}:{type}:{index}``;
 Wiki pages of non-native backends are ``wiki:{kbId}/{slug}``).
+
+Either way the gateway may add notes (``kb_gateway.notes``): knowledge bases of
+the session that were not searched because their backend is unavailable
+(``unavailableKbs`` and a ``message``), grep matches that were not returned and
+documents without any readable text (``noText``), and document text that carries
+instructions for the AI reading it (``embeddedInstructions``). Notes only add fields.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
+import json
 import logging
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
-from .. import __version__, ops
+from .. import __version__, notes, ops
 from ..auth import CAP_REPROCESS, CAP_RETRIEVE, AuthError, parse_scope_header
 from ..config import get_settings
 from ..deps import caller, registry
@@ -28,6 +36,8 @@ router = APIRouter(prefix="/v1/tools")
 REQUIRED_HEADERS = ("x-session-id", "x-tenant-id", "x-request-id")
 L1_PAGE_CHARS = 30000
 MAX_ANCHORS = 200
+DEFAULT_GREP_LINES = 10
+DEFAULT_GREP_RESULTS = 50
 STRUCTURE_TYPES = {"structure", "structure_md", "structure_dt", "fulltext"}
 WIKI_PAGE_TYPES = {"entity": "entity", "concept": "concept", "summary": "overview", "index": "overview"}
 WIKI_DA_TYPES = {"entity", "concept", "overview"}
@@ -91,15 +101,109 @@ def _subset(scope: list[str], backend: Backend) -> list[str]:
     return [kb for kb in scope if reg.route(kb) is backend]
 
 
-async def _native(backend: Backend, request: Request, scope: list[str], body: dict) -> Response:
+Annotate = Callable[[Any], Awaitable[Any]]
+Handler = Callable[[Request], Awaitable[Response]]
+
+
+def _flags_instructions(handler: Handler) -> Handler:
+    """Point out document text with embedded instructions in the handler's JSON result (notes.flag_instructions)."""
+
+    @functools.wraps(handler)
+    async def wrapper(request: Request) -> Response:
+        response = await handler(request)
+        if response.status_code != 200 or not response.body:
+            return response
+        try:
+            data = json.loads(response.body)
+        except ValueError:
+            return response
+        flagged = notes.flag_instructions(data)
+        return response if flagged is None else JSONResponse(flagged)
+
+    return wrapper
+
+
+async def _native(backend: Backend, request: Request, scope: list[str], body: dict,
+                  annotate: Annotate | None = None) -> Response:
+    """Forward to the backend's own tool; ``annotate`` may return a replacement for the JSON result (None: as is)."""
+
     headers = {h: request.headers[h] for h in ("x-session-id", "x-request-id") if h in request.headers}
     headers["X-Kb-Scope"] = ",".join(_subset(scope, backend))
     response = await backend.send("POST", request.url.path, tools=True, headers=headers, json=body)
+    if annotate is not None and response.content:
+        try:
+            data = response.json()
+        except ValueError:
+            data = None
+        changed = await annotate(data) if data is not None else None
+        if changed is not None:
+            return JSONResponse(changed)
     return Response(response.content, status_code=response.status_code, media_type="application/json")
 
 
 def _native_ok(backend: Backend) -> bool:
     return backend.healthy and backend.has("tools.da")
+
+
+def _with_down_kbs(result: Any, scope: list[str], missed: list[dict] | None = None) -> Any:
+    """Name the session's knowledge bases that were not searched: those of ``missed`` and those on unavailable backends.
+
+    A bare list (kb_search) becomes ``{results, total, ...}``, the shape DA's contract has for results with a message.
+    Returns None when there is nothing to add.
+    """
+
+    down = notes.merge_refs(missed or [], notes.down_in_scope(registry(), scope))
+    if not down:
+        return None
+    if isinstance(result, list):
+        result = {"results": result, "total": len(result)}
+    if not isinstance(result, dict):
+        return None
+    result["unavailableKbs"] = notes.merge_refs(result.get("unavailableKbs") or [], down)
+    notes.add_message(result, notes.unavailable_message(result["unavailableKbs"]))
+    return result
+
+
+def _tool_error(exc: UpstreamError, what: str, kb_ids: list[str] | None = None) -> dict:
+    """A tool result for a call the backend did not answer: unavailable (which is not "not found"), or why it failed."""
+
+    backend = registry().by_id.get(exc.backend)
+    label = backend.config.label if backend else "知识后端"
+    if notes.is_down(exc):
+        error = f"{what}所在的知识后端 {label} 当前不可用，暂时无法读取（不是不存在）"
+    else:
+        error = f"{what}没有读到（{label} {notes.explain(exc.code, exc.message)}）"
+    out: dict[str, Any] = {"error": error + "。回答时要告诉用户这部分没有查到", "code": exc.code}
+    if notes.is_down(exc):
+        out["backendUnavailable"] = label
+    if kb_ids:
+        out["unavailableKbs"] = [notes.exc_ref(registry(), kb, exc) for kb in kb_ids]
+    return out
+
+
+def _pattern_error(pattern: str, exc: UpstreamError) -> dict:
+    return {"pattern": pattern, "total": 0, "matches": [], "error": f"查找条件无效：{exc.message}", "code": exc.code}
+
+
+async def _mark_no_text(items: list[dict]) -> bool:
+    """Mark the items (expand results) whose document is processed; True when any was marked.
+
+    A document still processing or failed is empty too, so the state is read first; one whose state
+    cannot be read is left alone.
+    """
+
+    async def completed(doc_id: str) -> bool:
+        try:
+            doc = await ops.get_document(registry(), doc_id)
+        except UpstreamError:
+            return False
+        return bool(doc) and doc.get("parse_status") == "completed"
+
+    done = await asyncio.gather(*(completed(str(item["docId"])) for item in items))
+    for item, ok in zip(items, done):
+        if ok:
+            notes.mark_no_text(item)
+    return any(done)
 
 
 async def _doc_in_scope(scope: list[str], doc_id: str) -> dict | None:
@@ -167,8 +271,12 @@ async def _linked_generic(scope: list[str], page_id: str, seen: set[str]) -> lis
     return out
 
 
-async def _search_group(backend: Backend, request: Request, scope: list[str], ids: list[str], body: dict) -> list[dict]:
-    """One backend's part of a cross-backend kb_search: on the short timeout, so one slow backend cannot sink the call."""
+async def _search_group(backend: Backend, request: Request, scope: list[str], ids: list[str],
+                        body: dict) -> tuple[list[dict], list[str]]:
+    """One backend's part of a cross-backend kb_search, with what the backend says about it (e.g. a degraded leg).
+
+    On the short timeout, so one slow backend cannot sink the call.
+    """
 
     timeout = get_settings().search_timeout_s
     if _native_ok(backend):
@@ -176,18 +284,24 @@ async def _search_group(backend: Backend, request: Request, scope: list[str], id
         headers["X-Kb-Scope"] = ",".join(_subset(scope, backend))
         data = await backend.json("POST", "/v1/tools/kb_search", tools=True, headers=headers, json={**body, "kbIds": ids},
                                   timeout=timeout)
-        return data if isinstance(data, list) else (data or {}).get("results", [])
+        if isinstance(data, list):
+            return data, []
+        data = data or {}
+        if data.get("error"):
+            # kb-service answers a search it cannot run (e.g. no embedding model) with 200 {error, code}
+            raise UpstreamError(503, str(data.get("code") or "backend_error"), str(data["error"]), backend.id)
+        return data.get("results", []), [str(data["message"])] if data.get("message") else []
     page_types = set(body.get("pageTypes") or [])
     want_chunks = not page_types or bool(page_types & STRUCTURE_TYPES)
     want_wiki = (not page_types or bool(page_types & WIKI_DA_TYPES)) and backend.has("wiki.read")
     top_k = int(body.get("topK") or 20)
-    hits, _, _ = await ops.search(
+    outcome = await ops.search(
         registry(), ids,
         {"query": str(body.get("query") or ""), "min_score": body.get("minScore"), "include_wiki": want_wiki},
         max(1, min(top_k, ops.SEARCH_MAX_TOP_K)), fan_out=True,
     )
     results = []
-    for hit in hits:
+    for hit in outcome.hits:
         is_wiki = hit.get("chunk_type") == "wiki_page"
         if not (want_wiki if is_wiki else want_chunks):
             continue
@@ -195,10 +309,11 @@ async def _search_group(backend: Backend, request: Request, scope: list[str], id
         if is_wiki and page_types and result["pageType"] not in page_types:
             continue
         results.append(result)
-    return results
+    return results, outcome.warnings
 
 
 @router.post("/kb_search")
+@_flags_instructions
 async def kb_search(request: Request) -> Response:
     scope = _context(request, CAP_RETRIEVE)
     body = await request.json()
@@ -207,24 +322,36 @@ async def kb_search(request: Request) -> Response:
         return JSONResponse({"results": [], "total": 0, "message": warning or "所选知识库都不在会话范围内"})
     groups = [(registry().by_id[bid], ids) for bid, ids in registry().group(kb_ids).items()]
     if len(groups) == 1 and _native_ok(groups[0][0]) and not warning:
-        return await _native(groups[0][0], request, scope, body)
+        backend, ids = groups[0]
+
+        async def down_note(data: Any) -> Any:
+            return _with_down_kbs(data, scope)
+
+        try:
+            return await _native(backend, request, scope, body, annotate=down_note)
+        except UpstreamError as exc:
+            if not notes.reportable(exc):
+                raise
+            return JSONResponse(_with_down_kbs([], scope, [notes.exc_ref(registry(), kb, exc) for kb in ids]))
     top_k = int(body.get("topK") or 20)
     outcomes = await asyncio.gather(
         *(_search_group(b, request, scope, ids, body) for b, ids in groups), return_exceptions=True
     )
-    lists, notes = [], [warning] if warning else []
-    for (backend, _), outcome in zip(groups, outcomes):
+    lists, missed, said = [], [], [warning] if warning else []
+    for (backend, ids), outcome in zip(groups, outcomes):
         if isinstance(outcome, Exception):
-            notes.append(f"{backend.config.label} 检索失败：{getattr(outcome, 'message', outcome)}")
+            logger.warning("kb_search on %s failed: %s", backend.id, getattr(outcome, "message", outcome))
+            missed.extend(notes.exc_ref(registry(), kb, outcome) for kb in ids)
         else:
-            lists.append(outcome)
+            lists.append(outcome[0])
+            said.extend(f"{backend.config.label}：{w}" if len(groups) > 1 else w for w in outcome[1])
     results = ops.rrf_merge(lists, top_k) if lists else []
     if body.get("linkedFrom"):
         seen = {r["pageId"] for r in results}
         results.extend(await _linked_generic(scope, str(body["linkedFrom"]), seen))
-    if notes:
-        return JSONResponse({"results": results, "total": len(results), "message": "；".join(n for n in notes if n)})
-    return JSONResponse(results)
+    payload: Any = {"results": results, "total": len(results), "message": "；".join(said)} if said else results
+    annotated = _with_down_kbs(payload, scope, missed)
+    return JSONResponse(payload if annotated is None else annotated)
 
 
 # ---- expand ---------------------------------------------------------------
@@ -240,6 +367,8 @@ async def _expand_batch(scope: list[str], doc_ids: list[str]) -> dict:
         try:
             return await _expand_outline(scope, doc_id)
         except UpstreamError as exc:
+            if notes.reportable(exc):
+                return {"docId": doc_id, **_tool_error(exc, f"文档 {doc_id} ")}
             return {"docId": doc_id, "error": exc.message}
 
     results = await asyncio.gather(*(one(d) for d in doc_ids[:20]))
@@ -251,11 +380,14 @@ async def _expand_outline(scope: list[str], doc_id: str) -> dict:
     if doc is None:
         return {"docId": doc_id, "error": "文档不存在或不在会话范围内"}
     win = await ops.structure(registry(), doc_id, limit=0)
-    return {
+    out = {
         "docId": doc_id, "filename": doc.get("file_name"), "title": doc.get("title"), "level": "L1",
         "pageId": f"{doc_id}:L1", "summary": doc.get("summary"), "outline": win["outline"],
         "tokenCount": _tokens("x" * int(win["total_chars"])),
     }
+    if notes.doc_has_no_text(doc):
+        notes.mark_no_text(out)
+    return out
 
 
 async def _expand_one(scope: list[str], body: dict) -> dict:
@@ -283,8 +415,12 @@ async def _expand_one(scope: list[str], body: dict) -> dict:
         content = doc.get("summary") or ""
         if not content:
             head = await ops.structure(registry(), doc_id, limit=800)
-            content = "[摘要尚未生成，以下为正文开头]\n" + head["content"]
-        return {**base, "content": content, "tokenCount": _tokens(content)}
+            content = notes.L0_HEAD_MARK + "\n" + head["content"]
+        payload = {**base, "content": content, "tokenCount": _tokens(content)}
+        if notes.doc_has_no_text(doc):
+            # a summary written from an empty body describes nothing that is in the file
+            notes.mark_no_text(payload)
+        return payload
     if level == "L2":
         if not backend.has("content.L2"):
             return {"error": f"{backend.config.label} 不提供 L2 解析数据，请改用 L1"}
@@ -314,29 +450,65 @@ async def _expand_one(scope: list[str], body: dict) -> dict:
         payload.update(totalChars=win["total_chars"], offset=win["offset"], hasMore=win["has_more"])
         if "next_offset" in win:
             payload["nextOffset"] = win["next_offset"]
+        if notes.doc_has_no_text(doc):
+            notes.mark_no_text(payload)
     return payload
 
 
 @router.post("/expand")
+@_flags_instructions
 async def expand(request: Request) -> Response:
     scope = _context(request, CAP_RETRIEVE)
     body = await request.json()
     doc_ids = [str(d) for d in body.get("docIds") or []]
     targets = doc_ids or [_split_page_id(str(body.get("pageId") or body.get("docId") or ""))[0]]
     owners = {registry().route(d).id for d in targets if d}
-    if len(owners) == 1:
-        backend = registry().by_id[owners.pop()]
-        if _native_ok(backend):
-            return await _native(backend, request, scope, body)
-    if doc_ids:
-        return JSONResponse(await _expand_batch(scope, doc_ids))
-    return JSONResponse(await _expand_one(scope, body))
+    heading = bool(body.get("heading"))
+
+    async def no_text(data: Any) -> Any:
+        return data if await _mark_no_text(notes.expand_candidates(data, heading=heading)) else None
+
+    try:
+        if len(owners) == 1:
+            backend = registry().by_id[owners.pop()]
+            if _native_ok(backend):
+                return await _native(backend, request, scope, body, annotate=no_text)
+        result = await (_expand_batch(scope, doc_ids) if doc_ids else _expand_one(scope, body))
+    except UpstreamError as exc:
+        if not notes.reportable(exc):
+            raise
+        return JSONResponse(_tool_error(exc, "文档" if len(targets) != 1 else f"文档 {targets[0]} "))
+    await no_text(result)
+    return JSONResponse(result)
 
 
 # ---- doc_grep -------------------------------------------------------------
 
 
+async def _grep_notes(result: Any, scope: list[str], max_lines: int, max_results: int) -> Any:
+    """Truncation notes and the session's knowledge bases on unavailable backends; None when nothing was added."""
+
+    if not isinstance(result, dict):
+        return None
+    changed = notes.annotate_grep(result, max_lines=max_lines, max_results=max_results,
+                                  lines_cap=ops.GREP_MAX_LINES_PER_DOC, results_cap=ops.GREP_MAX_RESULTS)
+    down = _with_down_kbs(result, scope) if "error" not in result else None
+    return result if changed or down is not None else None
+
+
+def _grep_failed(pattern: str, scope: list[str], kb_ids: list[str], exc: UpstreamError) -> dict:
+    """No backend answered the grep: a refused pattern, or the knowledge bases that were not searched and why."""
+
+    if exc.code in notes.PATTERN_CODES:
+        return _pattern_error(pattern, exc)
+    if not notes.reportable(exc):
+        raise exc
+    missed = [notes.exc_ref(registry(), kb, exc) for kb in kb_ids]
+    return _with_down_kbs({"pattern": pattern, "total": 0, "matches": []}, scope, missed)
+
+
 @router.post("/doc_grep")
+@_flags_instructions
 async def doc_grep(request: Request) -> Response:
     scope = _context(request, CAP_RETRIEVE)
     body = await request.json()
@@ -346,18 +518,31 @@ async def doc_grep(request: Request) -> Response:
     kb_ids, warning = _narrow(scope, body.get("kbIds"))
     if not kb_ids:
         return JSONResponse({"pattern": pattern, "total": 0, "matches": [], "message": warning})
-    max_lines = max(1, min(int(body.get("maxLinesPerPage") or 10), ops.GREP_MAX_LINES_PER_DOC))
-    max_results = max(1, min(int(body.get("maxResults") or 50), ops.GREP_MAX_RESULTS))
+    max_lines = max(1, min(int(body.get("maxLinesPerPage") or DEFAULT_GREP_LINES), ops.GREP_MAX_LINES_PER_DOC))
+    max_results = max(1, min(int(body.get("maxResults") or DEFAULT_GREP_RESULTS), ops.GREP_MAX_RESULTS))
     owners = {registry().route(kb).id for kb in kb_ids}
     if len(owners) == 1 and not warning:
         backend = registry().by_id[next(iter(owners))]
         if _native_ok(backend):
-            return await _native(backend, request, scope, {**body, "maxResults": max_results, "maxLinesPerPage": max_lines})
-    result = ops.grep_view(await ops.grep(registry(), kb_ids, pattern, max_results=max_results,
-                                          max_lines_per_doc=max_lines))
+            try:
+                return await _native(backend, request, scope, {**body, "maxResults": max_results, "maxLinesPerPage": max_lines},
+                                     annotate=lambda data: _grep_notes(data, scope, max_lines, max_results))
+            except UpstreamError as exc:
+                return JSONResponse(_grep_failed(pattern, scope, kb_ids, exc))
+    try:
+        result = ops.grep_view(await ops.grep(registry(), kb_ids, pattern, max_results=max_results,
+                                              max_lines_per_doc=max_lines))
+    except UpstreamError as exc:
+        return JSONResponse(_grep_failed(pattern, scope, kb_ids, exc))
     result.update({"totalPages": result["totalDocuments"], "maxLinesPerPage": max_lines, "total": result["totalMatches"]})
     if warning:
         result["message"] = warning
+    unsupported = notes.unsupported_message(registry(), kb_ids, result.get("skipped_backends") or [], "逐行查找")
+    if unsupported:
+        notes.add_message(result, unsupported)
+    notes.annotate_grep(result, max_lines=max_lines, max_results=max_results,
+                        lines_cap=ops.GREP_MAX_LINES_PER_DOC, results_cap=ops.GREP_MAX_RESULTS)
+    _with_down_kbs(result, scope, notes.on_failed(registry(), kb_ids, result.get("failed_backends") or []))
     return JSONResponse(result)
 
 
@@ -415,11 +600,14 @@ async def _doc_page(scope: list[str], page_id: str) -> dict:
         return {"error": f"Page not found: {page_id}"}
     else:
         content = await ops.read_content(registry(), doc_id, level)
-    return {
+    page = {
         "id": f"{doc_id}:{level}", "kbId": doc["kb_id"], "docId": doc_id, "filename": doc.get("file_name"),
         "pageType": LEVEL_TYPES[level], "title": doc.get("title"), "tokenCount": _tokens(content),
         "content": content[:L1_PAGE_CHARS], "truncated": len(content) > L1_PAGE_CHARS,
     }
+    if doc.get("parse_status") == "completed" and notes.page_candidate(page):
+        notes.mark_no_text(page)
+    return page
 
 
 def _categories(docs: list[dict]) -> list[dict]:
@@ -458,17 +646,38 @@ async def _kb_pages(kb_id: str, page_type: str | None) -> dict:
     return {"kbId": kb_id, "total": len(pages), "pages": pages}
 
 
-@router.post("/wiki_browse")
-async def wiki_browse(request: Request) -> Response:
-    scope = _context(request, CAP_RETRIEVE)
-    body = await request.json()
+def _documents_view(kb_id: str, docs: list[dict]) -> dict:
+    out: dict[str, Any] = {
+        "kbId": kb_id, "totalDocuments": len(docs), "categories": _categories(docs),
+        "documents": [
+            {"docId": d["id"], "filename": d.get("file_name") or d.get("title"), "title": d.get("title"),
+             "folderPath": d.get("folder_path") or None, "fileType": d.get("file_type"),
+             "status": d.get("parse_status"), "abstractPageId": f"{d['id']}:L0" if d.get("summary") else None,
+             "abstract": d.get("summary"), **({"noText": True} if notes.doc_has_no_text(d) else {})}
+            for d in docs
+        ],
+    }
+    empty = [d.get("file_name") or d.get("title") or d["id"] for d in docs if notes.doc_has_no_text(d)]
+    if empty:
+        names = "、".join(empty[:notes.MAX_NAMED]) + (f" 等 {len(empty)} 个" if len(empty) > notes.MAX_NAMED else "")
+        notes.add_message(out, f"以下文档没有可识别的文字内容（扫描件或纯图片，没有做文字识别），检索、doc_grep 和 expand 都查不到"
+                               f"它们的内容：{names}。问到这些文件时如实说明查不到，不要根据文件名或摘要猜测")
+    return out
+
+
+async def _browse(request: Request, scope: list[str], body: dict) -> Response:
     page_id = str(body.get("pageId") or "")
     if page_id:
         target = page_id.removeprefix(WIKI_PREFIX)
         parsed = _split_wiki_id(page_id) if page_id.startswith(WIKI_PREFIX) else None
         owner = registry().route(parsed[0] if parsed else _split_page_id(target)[0])
         if _native_ok(owner) and parsed is None:
-            return await _native(owner, request, scope, body)
+
+            async def no_text(data: Any) -> Any:
+                page = notes.page_candidate(data)
+                return data if page is not None and await _mark_no_text([page]) else None
+
+            return await _native(owner, request, scope, body, annotate=no_text)
         return JSONResponse(await (_wiki_page(scope, page_id) if parsed else _doc_page(scope, page_id)))
     kb_id = body.get("kbId")
     if not kb_id:
@@ -477,20 +686,34 @@ async def wiki_browse(request: Request) -> Response:
         return JSONResponse({"error": f"知识库不在会话范围内: {kb_id}"})
     owner = registry().route(kb_id)
     if _native_ok(owner):
-        return await _native(owner, request, scope, body)
+
+        async def down_note(data: Any) -> Any:
+            return _with_down_kbs(data, scope)
+
+        return await _native(owner, request, scope, body, annotate=down_note)
     if body.get("listDocuments"):
-        docs = await ops.list_documents(registry(), kb_id)
-        return JSONResponse({
-            "kbId": kb_id, "totalDocuments": len(docs), "categories": _categories(docs),
-            "documents": [
-                {"docId": d["id"], "filename": d.get("file_name") or d.get("title"), "title": d.get("title"),
-                 "folderPath": d.get("folder_path") or None, "fileType": d.get("file_type"),
-                 "status": d.get("parse_status"), "abstractPageId": f"{d['id']}:L0" if d.get("summary") else None,
-                 "abstract": d.get("summary")}
-                for d in docs
-            ],
-        })
-    return JSONResponse(await _kb_pages(kb_id, body.get("pageType")))
+        result = _documents_view(kb_id, await ops.list_documents(registry(), kb_id))
+    else:
+        result = await _kb_pages(kb_id, body.get("pageType"))
+    _with_down_kbs(result, scope)
+    return JSONResponse(result)
+
+
+@router.post("/wiki_browse")
+@_flags_instructions
+async def wiki_browse(request: Request) -> Response:
+    scope = _context(request, CAP_RETRIEVE)
+    body = await request.json()
+    try:
+        return await _browse(request, scope, body)
+    except UpstreamError as exc:
+        if not notes.reportable(exc):
+            raise
+        kb_id = None if body.get("pageId") else body.get("kbId")
+        if kb_id:
+            name = registry().route(str(kb_id)).kb_names.get(str(kb_id))
+            return JSONResponse(_tool_error(exc, f"知识库 {name or kb_id} ", [str(kb_id)]))
+        return JSONResponse(_tool_error(exc, f"页面 {body.get('pageId')} "))
 
 
 # ---- reprocess_document ----------------------------------------------------
@@ -505,8 +728,16 @@ async def reprocess_document(request: Request) -> Response:
     # checked before forwarding: a readonly backend keeps tools.da but loses documents.reprocess
     if not backend.has("documents.reprocess"):
         return JSONResponse({"error": f"{backend.config.label} 不支持重新处理文档"})
+    note = _processor_note(backend, body)
     if _native_ok(backend):
-        return await _native(backend, request, scope, body)
+
+        async def say_processor(data: Any) -> Any:
+            if note and isinstance(data, dict) and "error" not in data:
+                notes.add_message(data, note)
+                return data
+            return None
+
+        return await _native(backend, request, scope, body, annotate=say_processor)
     doc = await _doc_in_scope(scope, doc_id)
     if doc is None:
         return JSONResponse({"error": f"文档不存在或不在会话范围内: {doc_id}"})
@@ -514,7 +745,18 @@ async def reprocess_document(request: Request) -> Response:
         await backend.json("POST", f"/v1/documents/{doc_id}/reprocess")
     except UpstreamError as exc:
         return JSONResponse({"error": {"code": exc.code, "message": exc.message}})
-    return JSONResponse({"kbId": doc["kb_id"], "docId": doc_id, "status": "queued", "message": "已重新排队处理"})
+    message = "已重新排队处理" + (f"；{note}" if note else "")
+    return JSONResponse({"kbId": doc["kb_id"], "docId": doc_id, "status": "queued", "message": message})
+
+
+def _processor_note(backend: Backend, body: dict) -> str | None:
+    """The DA tool offers a processor choice; no backend behind the gateway takes one per request: say so."""
+
+    processor = str(body.get("processor") or "").strip()
+    if not processor:
+        return None
+    return (f"{backend.config.label} 不能按请求指定处理器（{processor}），本次按该知识库配置的默认方式重新处理；"
+            f"回答里不要说用了 {processor}")
 
 
 # ---- tool spec ------------------------------------------------------------
@@ -540,14 +782,17 @@ def tool_spec(base_url: str = "") -> dict:
         "/v1/tools/kb_search": _op(
             "kb_search",
             "语义搜索知识库（可跨多个知识后端，按排名融合）。返回 L1 结构化正文命中（含 pageId/docId/anchorId 与原文定位）"
-            "和 Wiki 页面（pageType 为 entity/concept/overview）；linkedFrom 追加某 Wiki 页面链接到的页面。",
+            "和 Wiki 页面（pageType 为 entity/concept/overview）；linkedFrom 追加某 Wiki 页面链接到的页面。"
+            "有知识库因所在后端不可用没有检索时，返回 {results, total, message, unavailableKbs}，回答要告诉用户这些库没有查到。",
             {"query": s, "kbIds": a, "topK": n, "linkedFrom": s, "pageTypes": a, "minScore": n}, ["query"]),
         "/v1/tools/expand": _op(
-            "expand", "逐层展开文档内容（L0 摘要 / L1 结构化 Markdown / L2 解析定位数据）。L1 返回 anchors，锚点 ID 须逐字复制。",
+            "expand", "逐层展开文档内容（L0 摘要 / L1 结构化 Markdown / L2 解析定位数据）。L1 返回 anchors，锚点 ID 须逐字复制。"
+            "noText=true 表示文件没有可识别的文字（扫描件或图片），内容查不到，如实说明。",
             {"pageId": s, "docId": s, "docIds": a, "kbId": s, "targetLevel": s, "format": s, "heading": s,
              "tokenBudget": n, "offset": n}, []),
         "/v1/tools/doc_grep": _op(
-            "doc_grep", "在知识库文档的 L1 正文中按正则或字面量逐行查找，穷尽扫描。",
+            "doc_grep", "在知识库文档的 L1 正文中按正则或字面量逐行查找，穷尽扫描。每篇最多返回 maxLinesPerPage 行（默认 10，"
+            "最大 100）；某篇被截断时该篇 truncated=true，message 写明还有多少处没有返回，按提示调大参数或缩小范围再查。",
             {"pattern": s, "kbIds": a, "pageTypes": a, "maxResults": n, "maxLinesPerPage": n}, ["pattern"]),
         "/v1/tools/wiki_browse": _op(
             "wiki_browse",

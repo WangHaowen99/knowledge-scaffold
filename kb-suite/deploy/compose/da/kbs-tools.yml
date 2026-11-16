@@ -2,6 +2,22 @@
 # Replaces deepanalyze.tool-services with kb-gateway as the knowledge service
 # (it serves the DA tools for every knowledge backend); no tool platform is
 # deployed alongside kb-suite. The key comes from the environment.
+#
+# Answer quality:
+# - temperature 0.1 for the main agent (core default 0.7) and the workflow /
+#   delegate_task members (default 0.3), which read the same key: the same
+#   evidence should give the same conclusion. Not 0: greedy decoding tends to
+#   repeat itself in long reports. top_p stays at the defaults (1.0 / 0.1).
+# - system prompt assembly on: DA's basic and strict anti-hallucination clauses
+#   (no mental arithmetic, numbers exactly as in the source, conflicts marked),
+#   then kb-suite's kb-answer-rules, which narrows strict's "count and sort with
+#   tools too" to numeric calculation. The standard clause is left out: its
+#   "single source -> [待确认]" contradicts answering from one document, and
+#   strict only refers to it ("includes all standard rules"; DA's own subagents
+#   load a single tier the same way). kb-answer-rules comes from
+#   da/prompt-overlay, which compose.yaml puts on the classpath with loader.path:
+#   without it DA stops at start-up (clause asset missing). Apply by recreating
+#   da-engine (部署步骤_da.md); a restart keeps the old entrypoint.
 deepanalyze:
   tool-services:
     - server-id: knowledge-service
@@ -13,3 +29,21 @@ deepanalyze:
         "[base_url]": http://kb-gateway:8080
       auth-headers:
         "[Authorization]": "Bearer ${KBS_DA_KEY}"
+  # Every push_content card asks the user first: kb-suite answers from evidence material, and a markdown or
+  # table card can carry content the user has not seen yet (SEC-F2). By default DA pushes every type but file
+  # without asking. The setting exists in agent-solution common since 2026-11-12 (b5f8658af); an older engine
+  # ignores it and needs da/patches/0003 for the same behaviour.
+  permission:
+    push-content:
+      fast-path-types: []
+  model:
+    model:
+      temperature: 0.1
+  prompt-assembly:
+    system-prompt:
+      enabled: true
+      anti-hallucination-tier: strict
+      clauses:
+        - anti-hallucination-basic
+        - anti-hallucination-strict
+        - kb-answer-rules

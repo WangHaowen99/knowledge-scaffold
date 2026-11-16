@@ -9,6 +9,7 @@ import { formatTime } from '../format';
 import { ToastProvider, useToast } from '../toast';
 import { Badge, Button, Spinner } from '../ui';
 import { channel, type Wire } from './channel';
+import { parseDown, reconcileSelection, type DownBackend } from './scope';
 
 type Kb = { id: string; name: string; documents: number; backend?: string };
 type Engine = { id: string; label: string; ready: boolean };
@@ -78,6 +79,7 @@ function forgetSession(hostSessionId: string): void {
 }
 // beyond this many knowledge bases the scope row folds the rest behind "+N"
 const KB_FOLD = 6;
+const LOST_SELECTION = '之前选的知识库都不在了（可能已删除），请重新选择；点「全部」检索全部知识库';
 
 type Example = { icon: ReactNode; title: string; text: string };
 const CAPS: { icon: ReactNode; label: string }[] = [
@@ -473,7 +475,13 @@ function Shell() {
   const notify = useToast();
   const [state, dispatch] = useReducer(reducer, { turns: [], running: false });
   const [kbs, setKbs] = useState<Kb[]>([]);
+  // backends that are down: their knowledge bases are missing from the list
+  const [down, setDown] = useState<DownBackend[]>([]);
+  const downRef = useRef(down);
+  downRef.current = down;
   const [selected, setSelected] = useState<string[]>(() => JSON.parse(localStorage.getItem(KB_KEY) || '[]'));
+  // the selection is gone entirely (deleted knowledge bases): ask again instead of searching everything
+  const [selectionLost, setSelectionLost] = useState(false);
   const [connected, setConnected] = useState(channel.connected);
   const [engines, setEngines] = useState<Engine[]>(DEFAULT_ENGINES);
   const enginesRef = useRef(engines);
@@ -511,18 +519,23 @@ function Shell() {
       if (msg.t === 'hello') {
         const list = (msg.kbs as Kb[]) ?? [];
         setKbs(list);
+        const offline = parseDown(msg.unavailable);
+        setDown(offline);
         kbsRef.current = list; // `started` may arrive before the next render
+        downRef.current = offline;
         const offered = (msg.engines as Engine[] | undefined)?.length
           ? (msg.engines as Engine[])
           : [{ ...DEFAULT_ENGINES[0], ready: Boolean(msg.da_ready) }];
         setEngines(offered);
         const chosen = offered.some((e) => e.id === engineRef.current) ? engineRef.current : offered[0].id;
         setEngine(chosen);
-        // an empty selection stays "every knowledge base", including ones added later
-        const ids = selectedRef.current.filter((id) => list.some((k) => k.id === id));
-        setSelected(ids);
+        // an empty selection stays "every knowledge base", including ones added later; one on a backend that
+        // is down stays (the tools say it was not searched); one that is gone entirely is not widened to all
+        const kept = reconcileSelection(selectedRef.current, list, offline);
+        setSelected(kept.ids);
+        setSelectionLost(kept.lost);
         channel.send({
-          type: 'start', engine: chosen, host_session_id: localStorage.getItem(sessionKey(chosen)) || '', kb_ids: ids,
+          type: 'start', engine: chosen, host_session_id: localStorage.getItem(sessionKey(chosen)) || '', kb_ids: kept.ids,
         });
       } else if (msg.t === 'started') {
         const opened = String(msg.engine || engineRef.current);
@@ -535,7 +548,9 @@ function Shell() {
         });
         // a conversation that has questions brings back its selection ([] = every knowledge base)
         if (Array.isArray(msg.kb_ids)) {
-          setSelected((msg.kb_ids as string[]).filter((id) => kbsRef.current.some((k) => k.id === id)));
+          const kept = reconcileSelection(msg.kb_ids as string[], kbsRef.current, downRef.current);
+          setSelected(kept.ids);
+          setSelectionLost(kept.lost);
         }
         if (msg.readonly) {
           // its engine did not start: show it, keep this page's engine for new conversations
@@ -611,6 +626,10 @@ function Shell() {
   const submit = () => {
     const value = text.trim();
     if (!value || !started) return;
+    if (selectionLost && !running) {
+      notify(LOST_SELECTION, true);
+      return;
+    }
     if (running) {
       const client_id = `s-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
       pendingSteers.current.set(client_id, value);
@@ -655,15 +674,22 @@ function Shell() {
     if (item.id === sessionId) open(engine, '');
   };
 
-  const toggleKb = (id: string) =>
+  const toggleKb = (id: string) => {
+    setSelectionLost(false);
     setSelected((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+  };
+
+  // selected knowledge bases whose backend is down: still in the scope, shown as unavailable
+  const downSelected = useMemo(() => reconcileSelection(selected, kbs, down).down, [selected, kbs, down]);
 
   const scopeText = useMemo(() => {
-    if (!kbs.length) return '没有可用的知识库';
-    return selected.length ? `${selected.length} 个知识库` : '全部知识库';
-  }, [kbs, selected]);
+    if (selectionLost) return '请重新选择知识库';
+    if (!kbs.length && !downSelected.length) return '没有可用的知识库';
+    if (!selected.length) return '全部知识库';
+    return `${selected.length} 个知识库${downSelected.length ? `（${downSelected.length} 个暂不可用）` : ''}`;
+  }, [kbs, selected, downSelected, selectionLost]);
 
-  const kbNames = kbs.filter((kb) => selected.includes(kb.id)).map((kb) => kb.name);
+  const kbNames = [...kbs.filter((kb) => selected.includes(kb.id)).map((kb) => kb.name), ...downSelected.map((kb) => kb.name)];
   const manyBackends = new Set(kbs.map((kb) => kb.backend || '')).size > 1;
   // selected knowledge bases stay visible when the list is folded
   const shownKbs = showAllKbs || kbs.length <= KB_FOLD
@@ -744,8 +770,11 @@ function Shell() {
           </span>
           {kbs.length ? (
             <button
-              className={`da-chip da-chip-all ${selected.length === 0 ? 'da-chip-on' : ''}`}
-              onClick={() => setSelected([])}
+              className={`da-chip da-chip-all ${selected.length === 0 && !selectionLost ? 'da-chip-on' : ''}`}
+              onClick={() => {
+                setSelectionLost(false);
+                setSelected([]);
+              }}
             >
               <span className="da-chip-check"><Layers size={11} /></span>
               全部
@@ -769,6 +798,24 @@ function Shell() {
               {showAllKbs ? '收起' : `+${kbs.length - KB_FOLD}`}
             </button>
           ) : null}
+          {downSelected.map((kb) => (
+            <button
+              key={kb.id}
+              className="da-chip da-chip-on da-chip-down"
+              onClick={() => toggleKb(kb.id)}
+              title={`${kb.backend} 暂不可用：这个知识库这次查不到，回答会说明。点一下取消选择`}
+            >
+              <span className="da-chip-check"><Check size={11} /></span>
+              {kb.name}
+              <span className="da-chip-backend">{kb.backend} 暂不可用</span>
+            </button>
+          ))}
+          {down.length ? (
+            <span className="da-scope-warn">
+              {down.map((b) => b.label).join('、')} 暂不可用：其上的知识库暂时查不到，回答会说明
+            </span>
+          ) : null}
+          {selectionLost ? <span className="da-scope-warn">{LOST_SELECTION}</span> : null}
           <span className="da-scope-hint">不选 = 检索全部知识库</span>
         </div>
         <main className={`da-thread ${state.turns.length ? '' : 'da-thread-empty'}`}>
@@ -839,7 +886,9 @@ function Shell() {
             <span className="muted">
               {readonlyEngine
                 ? '引擎恢复后重新打开即可继续追问'
-                : running
+                : selectionLost && !running
+                  ? '先重新选择知识库'
+                  : running
                   ? '分析执行中，发送的内容会作为补充指令'
                   : kbNames.length
                     ? `将在「${kbNames.join('」「')}」中检索`
@@ -849,7 +898,12 @@ function Shell() {
               {running ? (
                 <Button variant="danger" icon={<Square size={13} />} onClick={() => channel.send({ type: 'abort' })}>停止</Button>
               ) : null}
-              <Button variant="primary" icon={<Send size={13} />} disabled={!text.trim() || !started} onClick={submit}>
+              <Button
+                variant="primary"
+                icon={<Send size={13} />}
+                disabled={!text.trim() || !started || (selectionLost && !running)}
+                onClick={submit}
+              >
                 {running ? '补充指令' : '发送'}
               </Button>
             </div>

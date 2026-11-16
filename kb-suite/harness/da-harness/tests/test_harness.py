@@ -173,6 +173,44 @@ async def test_tool_items_and_unknown_events(monkeypatch: pytest.MonkeyPatch) ->
     await harness.stop()
 
 
+async def test_ask_user_with_several_questions_lists_each_with_its_choices(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeDA()
+    fake.run_stream = sse([
+        ("start", {"taskId": TASK}),
+        ("ask_user", {"question": "", "options": [], "kind": "question", "toolCallId": "ask-2", "taskId": TASK,
+                      "questions": [{"question": "哪一年？", "options": ["2024", "2025"]},
+                                    {"question": "哪个范围？", "options": ["全球", "国内"]}]}),
+        ("done", {"status": "completed", "output": "好的"}),
+    ])
+    handler = Handler()
+    harness = make(fake, monkeypatch)
+    await harness.start(context(handler))
+    await run_turn(harness)
+    request = handler.requests[0]
+    assert request.prompt == "1. 哪一年？（可选：2024、2025）\n2. 哪个范围？（可选：全球、国内）\n请按序号逐个回答。"
+    assert request.choices == ()
+    await harness.stop()
+
+
+async def test_ask_user_option_objects_show_their_labels(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeDA()
+    fake.run_stream = sse([
+        ("start", {"taskId": TASK}),
+        ("ask_user", {"question": "整段", "options": [], "kind": "question", "toolCallId": "ask-3", "taskId": TASK,
+                      "multiQuestion": True,
+                      "questions": [{"question": "哪一年？",
+                                     "options": [{"label": "2024"}, {"label": "2025", "description": "最新"}]},
+                                    {"question": "哪个范围？", "options": [{"label": "全球"}, {"label": "国内"}]}]}),
+        ("done", {"status": "completed", "output": "好的"}),
+    ])
+    handler = Handler()
+    harness = make(fake, monkeypatch)
+    await harness.start(context(handler))
+    await run_turn(harness)
+    assert handler.requests[0].prompt == "1. 哪一年？（可选：2024、2025）\n2. 哪个范围？（可选：全球、国内）\n请按序号逐个回答。"
+    await harness.stop()
+
+
 async def test_ask_user_routes_through_host_and_bumps_segment(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeDA()
     fake.run_stream = sse([

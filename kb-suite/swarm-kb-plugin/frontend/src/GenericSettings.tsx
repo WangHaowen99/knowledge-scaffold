@@ -1,11 +1,17 @@
 import { Trash2 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import SchemaForm, { schemaDefaults, schemaProblems } from './SchemaForm';
-import { has, type BackendInfo } from './backend';
+import { ADJUSTED_NOTICE, saveKb } from './SettingsTab';
+import { has, type BackendInfo, type JsonSchema } from './backend';
 import { rpc } from './rpc';
 import { errorText, useToast } from './toast';
 import type { KnowledgeBase } from './types';
 import { Button, Field, Spinner } from './ui';
+
+const withDefaults = (schema: JsonSchema | null, kb: KnowledgeBase): Record<string, unknown> => ({
+  ...schemaDefaults(schema),
+  ...((kb.config as unknown as Record<string, unknown>) ?? {}),
+});
 
 /** Settings of a knowledge base on a backend other than kb-service: name, description and its schema-described config. */
 export default function GenericSettings({
@@ -21,20 +27,30 @@ export default function GenericSettings({
 }) {
   const notify = useToast();
   const schema = backend?.config_schema ?? null;
-  const initial = useMemo(() => ({ ...schemaDefaults(schema), ...((kb.config as unknown as Record<string, unknown>) ?? {}) }), [schema, kb.config]);
+  // what the server holds: the list's copy, or what was read back right after saving
+  const [base, setBase] = useState<KnowledgeBase>(kb);
+  useEffect(() => setBase(kb), [kb]);
+  const initial = useMemo(() => withDefaults(schema, base), [schema, base]);
   const [name, setName] = useState(kb.name);
   const [description, setDescription] = useState(kb.description);
   const [config, setConfig] = useState<Record<string, unknown>>(initial);
   const [busy, setBusy] = useState(false);
   const writable = has(kb, 'kbs.write');
-  const dirty = name !== kb.name || description !== kb.description || JSON.stringify(config) !== JSON.stringify(initial);
+  const dirty = name !== base.name || description !== base.description || JSON.stringify(config) !== JSON.stringify(initial);
   const invalid = schemaProblems(schema, config).length > 0;
 
   const save = async () => {
     setBusy(true);
     try {
-      await rpc.call('kbs.update', { kb_id: kb.id, name: name.trim(), description, ...(schema ? { config } : {}) });
-      notify('已保存');
+      const sent = JSON.stringify(config);
+      const saved = await saveKb(kb.id, { name: name.trim(), description, ...(schema ? { config } : {}) });
+      if (saved) {
+        setBase(saved);
+        setName(saved.name);
+        setDescription(saved.description);
+        setConfig(withDefaults(schema, saved));
+      }
+      notify(schema && saved && JSON.stringify(withDefaults(schema, saved)) !== sent ? ADJUSTED_NOTICE : '已保存');
       onSaved();
     } catch (err) {
       notify(errorText(err), true);

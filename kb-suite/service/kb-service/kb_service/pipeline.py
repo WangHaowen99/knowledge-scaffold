@@ -13,7 +13,7 @@ import logging
 import re
 import uuid
 
-from . import db, jobs, kb_config, models_client, storage
+from . import db, jobs, kb_config, models_client, storage, text_utils
 from .chunking import chunk_markdown
 from .locators import LocatorIndex
 from .parsing import ParseError, ParseResult, parse_file, parse_url
@@ -27,6 +27,10 @@ SUMMARY_PROMPT = (
     "请用{language}为下面的文档写一段不超过 200 字的摘要，说明文档主题、主要内容和用途。"
     "直接输出摘要正文，不要加标题或前缀。{extra}\n\n文档标题：{title}\n\n文档内容（节选）：\n{text}"
 )
+# Below this many letters/digits in the body the model would only be guessing from the title.
+MIN_SUMMARY_TEXT_CHARS = 20
+NO_TEXT_SUMMARY_IMAGES = "这份文档只有图片，没有可识别的文字（可能是扫描件，当前不做文字识别），因此没有生成摘要。"
+NO_TEXT_SUMMARY = "这份文档没有足够的文字内容，因此没有生成摘要。"
 TABLE_FILE_TYPES = {"csv", "tsv", "xlsx", "xls"}
 
 
@@ -101,6 +105,22 @@ async def _parse(doc: dict, cfg: kb_config.KbConfig) -> ParseResult:
 async def handle_ingest(job: jobs.Job) -> None:
     doc_id = job.document_id or ""
     attempt = int(job.payload["attempt"])
+    try:
+        await _ingest(job, doc_id, attempt)
+    except (jobs.Abandon, jobs.RetryLater, jobs.Defer):
+        raise
+    except Exception as exc:
+        # Without this the document stayed "processing" forever (the job failed, the row never did).
+        await _fail(
+            doc_id,
+            attempt,
+            "internal_error",
+            f"处理时出现内部错误（{type(exc).__name__}），文档没有入库。可以重新解析；仍然失败请联系管理员查看日志",
+        )
+        raise
+
+
+async def _ingest(job: jobs.Job, doc_id: str, attempt: int) -> None:
     doc = await _load_current(doc_id, attempt)
     cfg = doc_config(doc)
     prefix = storage.doc_prefix(doc["tenant_id"], doc["kb_id"], doc_id)
@@ -291,6 +311,30 @@ def is_current_parse(row, attempt: int) -> bool:
     return row["attempt"] == attempt and row["parse_status"] == "completed"
 
 
+def summary_without_text(markdown: str) -> str | None:
+    """A fixed summary when the body has (almost) no text, so the model never writes one from the title alone."""
+
+    letters, images = text_utils.text_content(markdown)
+    if letters >= MIN_SUMMARY_TEXT_CHARS:
+        return None
+    if images:
+        return NO_TEXT_SUMMARY_IMAGES
+    return NO_TEXT_SUMMARY
+
+
+async def _save_summary(row: dict, doc_id: str, attempt: int, cfg: kb_config.KbConfig, summary: str) -> None:
+    async with db.pool().acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE documents SET summary = $3, summary_status = 'completed', updated_at = now()"
+                " WHERE id = $1 AND attempt = $2",
+                doc_id,
+                attempt,
+                summary,
+            )
+            await enqueue_after_summary(conn, row["kb_id"], doc_id, attempt, cfg)
+
+
 async def handle_summary(job: jobs.Job) -> None:
     doc_id = job.document_id or ""
     attempt = int(job.payload["attempt"])
@@ -307,7 +351,12 @@ async def handle_summary(job: jobs.Job) -> None:
     await db.pool().execute(
         "UPDATE documents SET summary_status = 'processing' WHERE id = $1 AND attempt = $2", doc_id, attempt
     )
-    text = storage.get_text(row["l1_key"])[: cfg.summary.input_chars]
+    body = storage.get_text(row["l1_key"])
+    fixed = summary_without_text(body)
+    if fixed:
+        await _save_summary(row, doc_id, attempt, cfg, fixed)
+        return
+    text = body[: cfg.summary.input_chars]
     try:
         summary = await models_client.chat(
             summary_prompt(row, cfg, text), system=SUMMARY_SYSTEM, max_tokens=500, model=cfg.summary.model
@@ -324,16 +373,7 @@ async def handle_summary(job: jobs.Job) -> None:
                 )
                 await enqueue_after_summary(conn, row["kb_id"], doc_id, attempt, cfg)
         return
-    async with db.pool().acquire() as conn:
-        async with conn.transaction():
-            await conn.execute(
-                "UPDATE documents SET summary = $3, summary_status = 'completed', updated_at = now()"
-                " WHERE id = $1 AND attempt = $2",
-                doc_id,
-                attempt,
-                summary,
-            )
-            await enqueue_after_summary(conn, row["kb_id"], doc_id, attempt, cfg)
+    await _save_summary(row, doc_id, attempt, cfg, summary)
 
 
 async def handle_delete(job: jobs.Job) -> None:

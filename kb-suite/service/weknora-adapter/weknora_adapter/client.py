@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     chat_model_id: str = ""
     max_file_mb: int = 50
     timeout_s: float = 120.0
+    # hand .json files to WeKnora as plain text: its JSON reader refuses malformed JSON and
+    # rewrites the rest (arrays become objects keyed "0", "1", ...); false keeps that reader
+    json_as_text: bool = True
     # adapter side
     adapter_key: str = ""
     id_prefix: str = "wk_"

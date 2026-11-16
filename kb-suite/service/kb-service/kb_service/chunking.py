@@ -190,6 +190,66 @@ def parse_blocks(markdown: str, doc_id: str = "") -> list[Block]:
     return blocks
 
 
+MAX_HEADER_BRANCHES = 3
+
+
+def section_bounds(blocks: list[Block], pos: int, text_len: int) -> tuple[int, int]:
+    """[start, end) of the innermost section holding offset ``pos``.
+
+    A section runs from its heading to the next heading of the same or a
+    higher level; text before the first heading is a section of its own.
+    """
+
+    if not blocks:
+        return 0, text_len
+    idx = max(0, bisect.bisect_right([b.start for b in blocks], pos) - 1)
+    path = blocks[idx].header_path
+    head = next(
+        (i for i in range(idx, -1, -1) if blocks[i].kind == "heading" and blocks[i].header_path == path), None
+    )
+    start, level = (0, 6) if head is None else (blocks[head].start, blocks[head].level)
+    end = text_len
+    for block in blocks[(idx if head is None else head) + 1 :]:
+        if block.kind == "heading" and block.level <= level:
+            end = block.start
+            break
+    return start, end
+
+
+def span_header(blocks: list[Block], start: int, end: int) -> str:
+    """Context header for the text range [start, end) of the markdown.
+
+    The heading path when the range lies in one section; when it covers several
+    sections, their shared path followed by every section it reaches
+    ("第三章 审批 / 第四章 合同"), so text is never labelled with the heading of
+    only one of the sections it comes from.
+    """
+
+    paths: list[tuple[str, ...]] = []
+    for block in blocks:
+        if block.end <= start:
+            continue
+        if block.start >= end:
+            break
+        if block.header_path not in paths:
+            paths.append(block.header_path)
+    if not paths:
+        return ""
+    common = paths[0]
+    for path in paths[1:]:
+        n = 0
+        while n < min(len(common), len(path)) and common[n] == path[n]:
+            n += 1
+        common = common[:n]
+    branches = list(dict.fromkeys(p[len(common)] for p in paths if len(p) > len(common)))
+    parts = list(common)
+    if len(branches) > 1:
+        if len(branches) > MAX_HEADER_BRANCHES:
+            branches = [branches[0], "…", branches[-1]]
+        parts.append(" / ".join(branches))
+    return " > ".join(parts)
+
+
 def _split_ranges(text: str, start: int, end: int, size: int, seps: list[str]) -> list[tuple[int, int]]:
     if end - start <= size:
         return [(start, end)]
@@ -276,8 +336,8 @@ def chunk_markdown(
 
     ``heading`` (default) packs blocks within a section and never crosses a
     heading; ``separator`` ignores structure and splits the whole text by the
-    separator priority list (WeKnora's heuristic tier), keeping the heading
-    path of the block each chunk starts in as its context header.
+    separator priority list (WeKnora's heuristic tier); a chunk that runs into
+    another section gets a context header naming every section it covers.
     """
 
     blocks = parse_blocks(markdown, doc_id)
@@ -301,7 +361,7 @@ def chunk_markdown(
                     end=e,
                     content=markdown[s:e],
                     chunk_type="text",
-                    context_header=" > ".join(block.header_path) if block else "",
+                    context_header=span_header(blocks, s, e),
                     line_start=lines.line_of(s),
                     anchor_id=block.anchor_id if block else "",
                     kinds={block.kind} if block else {"paragraph"},

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from typing import Any, Awaitable, Callable
 
 from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
@@ -12,11 +13,15 @@ from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from kb_provider_kit import (
     CONTRACT, Ids, ProviderError, check_bearer, install_error_handler, not_found, page_span, segment, segments,
 )
-from kb_provider_kit import reading
+from kb_provider_kit import reading, textfiles
 from kb_provider_kit.uploads import UploadStore
+from kb_service import postprocess
 
 from . import __version__, mapping
+from .chunk_stats import ChunkStats
 from .client import WeKnora, get_settings
+
+logger = logging.getLogger(__name__)
 
 CHUNK_PAGE = 100
 MAX_L1_CHUNKS = 5000
@@ -27,8 +32,19 @@ FEATURES = [
 ]
 # WeKnora's largest page_size for knowledge lists
 DOC_PAGE = 1000
+# exact identifier recall on search: documents scanned, parallel reads, time budget
+EXACT_MAX_DOCS = 300
+EXACT_CONCURRENCY = 8
+EXACT_BUDGET_S = 8.0
+# a knowledge base's chunk total is recomputed in the background once it is this old,
+# or as soon as its document or processing count changes
+CHUNK_TTL_S = 10.0
+# longest a knowledge-base view waits for a chunk total being computed; without one
+# the view leaves "chunks" out and the next view has it
+CHUNK_WAIT_S = 2.0
 
 _client: WeKnora | None = None
+_chunks: ChunkStats | None = None
 
 
 class WikiDisabled(ProviderError):
@@ -76,6 +92,33 @@ def wk() -> WeKnora:
     return _client
 
 
+def chunk_stats() -> ChunkStats:
+    if _chunks is None:
+        raise RuntimeError("adapter not started")
+    return _chunks
+
+
+async def _list_knowledge(raw_kb: str) -> list[dict]:
+    """Every document of a knowledge base, page by page."""
+
+    path = f"/knowledge-bases/{segment(raw_kb, '知识库')}/knowledge"
+    first = await wk().call("GET", path, params={"page": 1, "page_size": DOC_PAGE}) or {}
+    docs = list(first.get("data") or [])
+    pages = -(-int(first.get("total") or 0) // DOC_PAGE)
+    rest = await asyncio.gather(*(wk().call("GET", path, params={"page": p, "page_size": DOC_PAGE})
+                                  for p in range(2, pages + 1)))
+    for body in rest:
+        docs.extend((body or {}).get("data") or [])
+    return docs
+
+
+async def _count_chunks(raw_doc: str) -> int:
+    """The total of a document's chunk list (text chunks, as the document's chunks page shows)."""
+
+    body = await wk().call("GET", f"/chunks/{segment(raw_doc, '文档')}", params={"page": 1, "page_size": 1}) or {}
+    return int(body.get("total") or 0)
+
+
 def ids() -> Ids:
     return Ids(get_settings().id_prefix)
 
@@ -87,11 +130,13 @@ def authorized(request: Request) -> None:
 def create_app(client: WeKnora | None = None) -> FastAPI:
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):
-        global _client
+        global _client, _chunks
         _client = client or WeKnora.from_settings()
+        _chunks = ChunkStats(_list_knowledge, _count_chunks, ttl_s=CHUNK_TTL_S)
         yield
+        await _chunks.aclose()
         await _client.aclose()
-        _client = None
+        _client = _chunks = None
 
     app = FastAPI(title="weknora-adapter", version=__version__, lifespan=lifespan)
     install_error_handler(app)
@@ -124,9 +169,11 @@ def _router():
 
     # ---- knowledge bases ------------------------------------------------
 
-    async def _count(kb_id: str, status: str) -> int:
-        body = await wk().call("GET", f"/knowledge-bases/{segment(kb_id, '知识库')}/knowledge",
-                               params={"parse_status": status, "page": 1, "page_size": 1})
+    async def _count(kb_id: str, status: str | None) -> int:
+        params: dict[str, Any] = {"page": 1, "page_size": 1}
+        if status:
+            params["parse_status"] = status
+        body = await wk().call("GET", f"/knowledge-bases/{segment(kb_id, '知识库')}/knowledge", params=params)
         return int((body or {}).get("total") or 0)
 
     async def _kb(kb_id: str) -> dict:
@@ -136,8 +183,15 @@ def _router():
         return raw
 
     async def _kb_view(raw: dict) -> dict:
-        failed, cancelled = await asyncio.gather(_count(raw["id"], "failed"), _count(raw["id"], "cancelled"))
-        return mapping.kb_view(raw, ids(), failed=failed, cancelled=cancelled)
+        # starts a background refresh of the chunk total when it is due, waited for only briefly
+        chunk_stats().peek(raw)
+        # the document total comes from the document list: WeKnora's knowledge_count lags behind a
+        # background delete by minutes
+        documents, failed, cancelled, _ = await asyncio.gather(
+            _count(raw["id"], None), _count(raw["id"], "failed"), _count(raw["id"], "cancelled"),
+            chunk_stats().settle([raw["id"]], CHUNK_WAIT_S))
+        return mapping.kb_view(raw, ids(), failed=failed, cancelled=cancelled, chunks=chunk_stats().peek(raw),
+                               documents=documents)
 
     @router.get("/kbs")
     async def list_kbs() -> dict:
@@ -201,7 +255,7 @@ def _router():
         # WeKnora lists newest first
         items, total = await window(fetch, statuses, offset, limit, key=lambda k: str(k.get("created_at") or ""),
                                     reverse=True)
-        return {"items": [mapping.doc_view(k, ids()) for k in items], "total": total}
+        return {"items": [mapping.doc_view(k, ids(), chunk_stats().doc_count(k)) for k in items], "total": total}
 
     async def _doc(doc_id: str) -> dict:
         raw = await wk().data("GET", f"/knowledge/{segment(ids().inp(doc_id, '文档'))}")
@@ -211,7 +265,8 @@ def _router():
 
     @router.get("/documents/{doc_id}")
     async def get_doc(doc_id: str) -> dict:
-        return mapping.doc_view(await _doc(doc_id), ids())
+        raw = await _doc(doc_id)
+        return mapping.doc_view(raw, ids(), chunk_stats().doc_count(raw))
 
     async def _chunk_page(raw_id: str, page: int) -> dict:
         params = {"page": page, "page_size": CHUNK_PAGE}
@@ -276,7 +331,9 @@ def _router():
         upstream = await wk().send("GET", f"/knowledge/{segment(ids().inp(doc_id, '文档'))}/download", stream=True)
         # the body is relayed decoded, so a compressed upstream's content-length would be wrong
         passed = {"content-disposition"} if "content-encoding" in upstream.headers else {"content-disposition", "content-length"}
-        headers = {k: v for k, v in upstream.headers.items() if k.lower() in passed}
+        headers = {k.lower(): v for k, v in upstream.headers.items() if k.lower() in passed}
+        if "content-disposition" in headers:
+            headers["content-disposition"] = mapping.display_name(headers["content-disposition"])
 
         async def body():
             try:
@@ -295,6 +352,12 @@ def _router():
                                   file.content_type or "application/octet-stream")
 
     async def _ingest_file(raw_kb: str, name: str, data: bytes, folder_path: str, content_type: str) -> dict:
+        # WeKnora reads UTF-16 without a byte order mark byte by byte and marks the result parsed
+        data = await asyncio.to_thread(textfiles.to_utf8, name, data)
+        as_text = get_settings().json_as_text and textfiles.file_type(name) == "json"
+        name = mapping.upload_name(name, as_text=as_text)
+        if as_text:
+            content_type = "text/plain; charset=utf-8"
         display = f"{folder_path.strip('/')}/{name}" if folder_path.strip("/") else name
         doc = await wk().data(
             "POST", f"/knowledge-bases/{segment(raw_kb)}/knowledge/file",
@@ -331,6 +394,8 @@ def _router():
         if not text.strip():
             raise ProviderError(400, "bad_request", "正文不能为空")
         title = str(body.get("title") or "").strip() or text.strip().split("\n", 1)[0][:60]
+        # a title over WeKnora's column would only come back as a raw database error
+        title = textfiles.fit_text(title, max_chars=mapping.MAX_TITLE_CHARS)
         doc = await wk().data("POST", f"/knowledge-bases/{segment(ids().inp(kb_id, '知识库'))}/knowledge/manual",
                               json={"title": title, "content": text, "status": "publish", "channel": "api"})
         return mapping.doc_view(doc, ids())
@@ -338,8 +403,11 @@ def _router():
     @router.post("/kbs/{kb_id}/documents/url", status_code=201)
     async def url_doc(kb_id: str, request: Request) -> dict:
         body = await request.json()
-        doc = await wk().data("POST", f"/knowledge-bases/{segment(ids().inp(kb_id, '知识库'))}/knowledge/url",
-                              json={"url": str(body.get("url") or "").strip(), "channel": "api"})
+        try:
+            doc = await wk().data("POST", f"/knowledge-bases/{segment(ids().inp(kb_id, '知识库'))}/knowledge/url",
+                                  json={"url": str(body.get("url") or "").strip(), "channel": "api"})
+        except ProviderError as exc:
+            raise mapping.url_import_error(exc) from exc
         return mapping.doc_view(doc, ids())
 
     @router.delete("/documents/{doc_id}", status_code=204)
@@ -377,6 +445,9 @@ def _router():
         # WeKnora's score mixes vector, keyword and rerank scales: it is not a 0-1 relevance,
         # so relevance stays null and min_score (defined on relevance) is not applied
         hits = sorted((mapping.hit_view(r, ids()) for r in results), key=lambda h: -h["score"])
+        terms = postprocess.identifier_terms(query)
+        if terms:
+            hits = await _with_exact(wanted, terms, hits)
         wiki_kbs = [k for k in wanted if (by_id[k].get("indexing_strategy") or {}).get("wiki_enabled")]
         pages: list[dict] = []
         if body.get("include_wiki", True) and wiki_kbs:
@@ -387,6 +458,55 @@ def _router():
         else:
             items = hits[:top_k]
         return {"query": query, "items": items}
+
+    async def _with_exact(wanted: list[str], terms: list[str], hits: list[dict]) -> list[dict]:
+        """Put passages that contain an identifier of the query (E-0x1F3A, v3.2.1-rc4) first.
+
+        WeKnora's keyword leg rejects such tokens ("Unsupported query shape") and the vector
+        leg does not match them literally. The parsed text of the knowledge bases' documents
+        is scanned for the identifier (at most EXACT_MAX_DOCS documents, EXACT_BUDGET_S seconds;
+        documents not read in time are left out).
+        """
+
+        lowered = [t.lower() for t in terms]
+        containing = [h for h in hits if any(t in (h.get("content") or "").lower() for t in lowered)]
+        covered = {h["doc_id"] for h in containing}
+        gate = asyncio.Semaphore(EXACT_CONCURRENCY)
+
+        async def scan(doc: dict) -> dict | None:
+            async with gate:
+                text = await _l1(doc["id"])
+            low = text.lower()
+            pos = min((p for p in (low.find(t) for t in lowered) if p >= 0), default=-1)
+            return None if pos < 0 else mapping.exact_hit(doc, text, pos)
+
+        docs: list[dict] = []
+        try:
+            for kb in wanted:
+                docs.extend(d for d in await _kb_docs(kb)
+                            if d.get("parse_status") == "completed" and d["id"] not in covered)
+        except ProviderError as exc:
+            logger.warning("exact identifier scan skipped: %s", exc)
+            docs = []
+        docs = docs[:EXACT_MAX_DOCS]
+        tasks = [asyncio.create_task(scan(d)) for d in docs]
+        extra: list[dict] = []
+        if tasks:
+            done, pending = await asyncio.wait(tasks, timeout=EXACT_BUDGET_S)
+            for task in pending:
+                task.cancel()
+            if pending:
+                logger.warning("exact identifier scan: %d of %d documents not read in time", len(pending), len(tasks))
+            # documents keep their listing order, so the result does not depend on read timing
+            extra = [t.result() for t in tasks if t in done and not t.exception() and t.result() is not None]
+        for h in containing:
+            h["matched_by"] = ["exact"]
+        rest = [h for h in hits if h not in containing]
+        # the exact matches go first: give them the top score, so the list still reads best-first
+        top = max((float(h.get("score") or 0.0) for h in hits), default=1.0) or 1.0
+        for h in containing + extra:
+            h["score"] = top
+        return containing + extra + rest
 
     # ---- wiki ----------------------------------------------------------------
 
