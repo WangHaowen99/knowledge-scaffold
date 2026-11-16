@@ -1,12 +1,58 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { DOMParser } from '@xmldom/xmldom';
 import {
+  parseDrawioToDocument,
   serializeDocumentToDrawio,
 } from '../src/components/flowchart/drawioConvert.js';
 import {
   createFlowchartEditorSession,
   reduceFlowchartEditorSession,
 } from '../src/components/flowchart/flowchartEditorState.js';
+
+globalThis.DOMParser = DOMParser;
+
+test('独立文字标注归入对应分支连线，保存后保持原图结构', () => {
+  const xml = `<mxfile><diagram name="示例"><mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="decision" value="是否通过" style="rhombus;" vertex="1" parent="1"><mxGeometry x="300" y="200" width="100" height="80" as="geometry"/></mxCell>
+    <mxCell id="left" value="处理甲" vertex="1" parent="1"><mxGeometry x="100" y="370" width="100" height="60" as="geometry"/></mxCell>
+    <mxCell id="right" value="处理乙" vertex="1" parent="1"><mxGeometry x="500" y="370" width="100" height="60" as="geometry"/></mxCell>
+    <mxCell id="yes" edge="1" parent="1" source="decision" target="left"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="150" y="300"/></Array></mxGeometry></mxCell>
+    <mxCell id="no" edge="1" parent="1" source="decision" target="right"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="550" y="300"/></Array></mxGeometry></mxCell>
+    <mxCell id="yes-text" value="通过" style="text;html=1;strokeColor=none;fillColor=none;" vertex="1" parent="1"><mxGeometry x="150" y="300" width="50" height="24" as="geometry"/></mxCell>
+    <mxCell id="no-text" value="未通过" style="text;html=1;strokeColor=none;fillColor=none;" vertex="1" parent="1"><mxGeometry x="550" y="300" width="50" height="24" as="geometry"/></mxCell>
+  </root></mxGraphModel></diagram></mxfile>`;
+  const diagram = parseDrawioToDocument(xml).diagrams[0];
+  assert.equal(diagram.nodes.length, 3);
+  assert.equal(diagram.edges.length, 2);
+  assert.deepEqual(diagram.edges.map((edge) => edge.label), ['通过', '未通过']);
+  assert.deepEqual(diagram.edges.map((edge) => edge.kind), ['condition', 'condition']);
+  const saved = serializeDocumentToDrawio({ diagrams: [diagram] });
+  const reloaded = parseDrawioToDocument(saved).diagrams[0];
+  assert.equal(reloaded.nodes.length, 3);
+  assert.deepEqual(reloaded.edges.map((edge) => edge.label), ['通过', '未通过']);
+  const cells = Array.from(new DOMParser().parseFromString(saved, 'text/xml').getElementsByTagName('mxCell'));
+  assert.equal(cells.filter((cell) => cell.getAttribute('vertex') === '1').length, 5);
+  assert.equal(cells.filter((cell) => cell.getAttribute('edge') === '1').length, 2);
+  assert.equal(cells.find((cell) => cell.getAttribute('id') === 'yes').getElementsByTagName('mxPoint').length, 1);
+  diagram.edges[0].label = '已通过';
+  const renamed = serializeDocumentToDrawio({ diagrams: [diagram] });
+  const renamedCells = Array.from(new DOMParser().parseFromString(renamed, 'text/xml').getElementsByTagName('mxCell'));
+  assert.equal(renamedCells.find((cell) => cell.getAttribute('id') === 'yes-text').getAttribute('value'), '已通过');
+  assert.equal(renamedCells.find((cell) => cell.getAttribute('id') === 'yes').getAttribute('value'), '');
+  assert.equal(parseDrawioToDocument(renamed).diagrams[0].edges[0].label, '已通过');
+});
+
+test('无法确定所属连线的文字交给 drawio 编辑器，避免保存时丢失', () => {
+  const xml = `<mxfile><diagram><mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="note" value="说明" style="text;html=1;" vertex="1" parent="1">
+      <mxGeometry x="20" y="20" width="80" height="30" as="geometry"/>
+    </mxCell>
+  </root></mxGraphModel></diagram></mxfile>`;
+  assert.throws(() => parseDrawioToDocument(xml), /unsupported text annotation/);
+});
 
 test('保存时分别写入流程说明、连线文字与业务条件', () => {
     const document = {
