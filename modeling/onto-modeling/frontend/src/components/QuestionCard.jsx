@@ -77,67 +77,69 @@ export default function QuestionCard({ req, resolved, resolution, onAnswer, trac
         const invalid = showValidation && submission.missing.includes(index);
         const inputId = `${cardId}-${index}-answer`;
         const questionId = `${cardId}-${index}-question`;
+        const recordedAnswer = Object.hasOwn(recordedAnswers || {}, question.question)
+          ? recordedAnswers[question.question] : null;
         return (
           <div key={index} className="question-item">
             <div id={questionId} className="question-text">
               {question.header && <span className="qc-topic">{question.header}</span>}
               <span>{question.question}</span>
             </div>
+            {hasOptions && (
+              <div className="question-options" role="group" aria-labelledby={questionId}>
+                {options.map((option, optionIndex) => {
+                  const checked = (selected[index] || []).includes(option.label);
+                  return (
+                    <button
+                      type="button"
+                      key={optionIndex}
+                      aria-pressed={checked}
+                      className={`question-option${checked ? ' selected' : ''}`}
+                      disabled={locked}
+                      style={{ animationDelay: `${Math.min(optionIndex * 45, 220)}ms` }}
+                      onClick={() => choose(index, question, option.label)}
+                    >
+                      <span className="option-index">{optionIndex + 1}</span>
+                      <span className="option-main">
+                        <span className="option-label">{option.label}</span>
+                        {typeof option.description === 'string' && option.description && <span className="option-desc">{option.description}</span>}
+                      </span>
+                      <span className="option-check"><CheckOutlined /></span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             {resolved ? (
-              <div className="question-answer">
-                {recordedAnswers?.[question.question] ?? (resolution?.behavior === 'expired'
-                  ? '该问题已失效，请让助手重新提问。'
-                  : resolution?.behavior === 'deny' ? '未提交答案' : '此历史记录未保存答案')}
+              <div className="qc-custom">
+                <div className="question-answer">
+                  {recordedAnswer ?? (resolution?.behavior === 'expired'
+                    ? '该问题已失效，请让助手重新提问。'
+                    : resolution?.behavior === 'deny' ? '未提交答案' : '此历史记录未保存答案')}
+                </div>
               </div>
             ) : (
-              <>
-                {hasOptions && (
-                  <div className="question-options" role="group" aria-labelledby={questionId}>
-                    {options.map((option, optionIndex) => {
-                      const checked = (selected[index] || []).includes(option.label);
-                      return (
-                        <button
-                          type="button"
-                          key={optionIndex}
-                          aria-pressed={checked}
-                          className={`question-option${checked ? ' selected' : ''}`}
-                          disabled={locked}
-                          style={{ animationDelay: `${Math.min(optionIndex * 45, 220)}ms` }}
-                          onClick={() => choose(index, question, option.label)}
-                        >
-                          <span className="option-index">{optionIndex + 1}</span>
-                          <span className="option-main">
-                            <span className="option-label">{option.label}</span>
-                            {option.description && <span className="option-desc">{option.description}</span>}
-                          </span>
-                          <span className="option-check"><CheckOutlined /></span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-                <div className="qc-custom">
-                  <label id={`${inputId}-label`} htmlFor={inputId}>
-                    {hasOptions ? question.multiSelect ? '其他回答（可与选项一起提交）' : '或填写其他回答' : '填写回答'}
-                  </label>
-                  <Input.TextArea
-                    id={inputId}
-                    name={`answer-${index}`}
-                    aria-labelledby={`${questionId} ${inputId}-label`}
-                    ref={(input) => { inputs.current[index] = input; }}
-                    autoSize={{ minRows: 1, maxRows: 6 }}
-                    disabled={locked}
-                    aria-invalid={invalid || undefined}
-                    aria-describedby={invalid ? `${inputId}-error` : undefined}
-                    value={custom[index] || ''}
-                    onChange={(event) => {
-                      setCustom((previous) => ({ ...previous, [index]: event.target.value }));
-                      if (!question.multiSelect) setSelected((previous) => ({ ...previous, [index]: [] }));
-                    }}
-                  />
-                  {invalid && <span id={`${inputId}-error`} className="qc-error" role="alert">请选择选项或填写该题回答</span>}
-                </div>
-              </>
+              <div className="qc-custom">
+                <label id={`${inputId}-label`} htmlFor={inputId}>
+                  {hasOptions ? question.multiSelect ? '其他回答（可与选项一起提交）' : '或填写其他回答' : '填写回答'}
+                </label>
+                <Input.TextArea
+                  id={inputId}
+                  name={`answer-${index}`}
+                  aria-labelledby={`${questionId} ${inputId}-label`}
+                  ref={(input) => { inputs.current[index] = input; }}
+                  autoSize={{ minRows: 1, maxRows: 6 }}
+                  disabled={locked}
+                  aria-invalid={invalid || undefined}
+                  aria-describedby={invalid ? `${inputId}-error` : undefined}
+                  value={custom[index] || ''}
+                  onChange={(event) => {
+                    setCustom((previous) => ({ ...previous, [index]: event.target.value }));
+                    if (!question.multiSelect) setSelected((previous) => ({ ...previous, [index]: [] }));
+                  }}
+                />
+                {invalid && <span id={`${inputId}-error`} className="qc-error" role="alert">请选择选项或填写该题回答</span>}
+              </div>
             )}
           </div>
         );

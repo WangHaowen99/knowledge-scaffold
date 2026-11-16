@@ -56,6 +56,12 @@ test('Other 输入指引不能冒充答案，普通业务选项不被误判', ()
   }
 });
 
+test('非字符串选项说明不阻止填写正式选项或文字', () => {
+  const list = [{ question: '合成问题', options: [{ label: '方案一', description: 42 }] }];
+  assert.equal(buildQuestionSubmission(list, { 0: ['方案一'] }).answers.合成问题, '方案一');
+  assert.equal(buildQuestionSubmission(list, {}, { 0: '人工合成回答' }).answers.合成问题, '人工合成回答');
+});
+
 test('模型只在说明中标记占位时，也必须填写真实文字', () => {
   const option = { label: '示例一', description: '占位示例选项，仅示意，实际请通过 Other 输入。' };
   const list = [{ question: '合成文字', options: [option] }];

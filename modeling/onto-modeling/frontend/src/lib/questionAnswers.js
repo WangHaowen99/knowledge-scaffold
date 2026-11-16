@@ -1,7 +1,7 @@
 // AskUserQuestion 的传输契约仍以问题文本为键，控件状态按题目位置隔离。
 export function isCustomAnswerOption(option) {
-  const label = (option?.label || '').trim();
-  const description = (option?.description || '').trim();
+  const label = typeof option?.label === 'string' ? option.label.trim() : '';
+  const description = typeof option?.description === 'string' ? option.description.trim() : '';
   return /^(other|其他|其它|其他回答|自定义回答)$/i.test(label) ||
     /(?:点|选).*\bother\b.*(?:输入|填写|回答|文本)/i.test(label) ||
     /^占位(?:项|示例|选项|答案)(?:[一二三四\d]+)?$/.test(label) ||
