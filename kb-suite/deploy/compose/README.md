@@ -38,7 +38,7 @@
   这三把密钥同时是调用 kb-gateway 的密钥（`KBGW_KEYS` 按变量名引用，能力相同）；gateway 调 kb-service 时用 `KBS_PLUGIN_KEY`，原样转发 DA 工具时用 `KBS_DA_KEY`。
 
   密钥绑定的租户取 `DA_TENANT_ID`（默认 `default`），gateway、DA 和 Loop Forest 也用同一个值。第一次 `up` 之后再改它，要先删掉 `keys.env` 重新生成，否则 kb-service 会拒绝 gateway 的请求。
-- **`gateway.env`**：`up` 时生成，`KBGW_WEKNORA_ADAPTER_KEY`、`KBGW_DA_ADAPTER_KEY` 是 gateway 访问两个适配服务的密钥。
+- **`gateway.env`**：`up` 时生成，`KBGW_WEKNORA_ADAPTER_KEY`、`KBGW_DA_ADAPTER_KEY` 是 gateway 访问两个适配服务的密钥。可选的 `KBS_GATEWAY_BACKENDS` 指向本部署自己的后端清单（绝对路径），不设时用仓库里的 `gateway/backends.yaml`；要换默认后端又不想影响同一工作树的其他部署时用它。
 - **`weknora.env`**：`up`（或单独的 `up-weknora`）生成 WeKnora 实例的数据库、Redis、加密密钥和管理员密码，初始化后再写入 `WEKNORA_API_KEY` 和两个模型 id。
 - **`da-kb.env`**：`up-da-kb` 生成 DA 知识管线的数据库密码。DA 的模型地址和密钥写在它自己的数据库里（`da-kb/providers.py`）。
 
@@ -83,7 +83,7 @@ export PATH=/usr/bin:$PATH      # 让 docker 指向 /usr/bin/docker（Docker Des
 设计和取舍见 `docs/decisions/knowledge-gateway.md`，后端要实现的接口见 `contracts/knowledge-provider/v1/README.md`。
 
 - **谁连 gateway**：Swarm 的两个插件（`KB_SERVICE_URL`）、主 agent 的 MCP 连接器（`KBS_MCP_URL`）、DA-java 的知识服务插槽（`da/kbs-tools.yml`）、Loop Forest（`LF_KB_MCP_URL`），以及 DA、Loop Forest 作为团队成员时取知识库清单的地址，都指向 `kb-gateway:8080`。
-- **后端清单**：`gateway/backends.yaml`，静态配置。WeKnora 是默认后端：新建知识库不选后端时建在 WeKnora，页面上也默认选它。kb-service 的 ID 不带前缀，换默认后端不影响它已有的知识库；WeKnora 的 ID 以 `wk_` 开头，DA 知识管线以 `da_` 开头。DA 知识管线标了 `optional: true`：没部署时不出现在页面上；部署后只要连上过一次，之后再断开就会在知识库页提示「暂不可用」。
+- **后端清单**：`gateway/backends.yaml`（或 `KBS_GATEWAY_BACKENDS` 指定的文件），静态配置。WeKnora 是默认后端：新建知识库不选后端时建在 WeKnora，页面上也默认选它。kb-service 的 ID 不带前缀，换默认后端不影响它已有的知识库；WeKnora 的 ID 以 `wk_` 开头，DA 知识管线以 `da_` 开头。DA 知识管线标了 `optional: true`：没部署时不出现在页面上；部署后只要连上过一次，之后再断开就会在知识库页提示「暂不可用」。
 - **跨后端**：知识库页新建知识库时可以选后端；「知识求索」页和 MCP 可以同时选不同后端的知识库，检索时 gateway 并行查询、按排名融合，某个后端失败时其余结果照常返回。
 - **gateway 不读正文**：逐行查找、按标题取章节和锚点、分块上传都由各后端实现（统一接口集的 `grep`、`content.structure`、`uploads`），gateway 只转发、换算数据格式、合并多个后端的结果。
 - **前端按能力显示**：每个知识库带 `backend` 和 `features`。不支持的页签（如 Wiki）、按钮（如取消、问题生成、导入网页）不显示；上传提示和可选文件类型取自后端声明；非 kb-service 后端的设置页按它的 `config_schema` 生成。

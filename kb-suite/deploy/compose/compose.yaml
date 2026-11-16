@@ -234,7 +234,8 @@ services:
       KBGW_KEYS: plugin=KBS_PLUGIN_KEY:manage,ingest,retrieve;mcp=KBS_MCP_KEY:retrieve;da=KBS_DA_KEY:retrieve,reprocess
       KBGW_TENANT: ${DA_TENANT_ID:-default}
     volumes:
-      - ./gateway/backends.yaml:/etc/kb-gateway/backends.yaml:ro
+      # a deployment can mount its own list (KBS_GATEWAY_BACKENDS in gateway.env), e.g. to pick another default
+      - ${KBS_GATEWAY_BACKENDS:-./gateway/backends.yaml}:/etc/kb-gateway/backends.yaml:ro
     ports:
       - "127.0.0.1:${KBGW_PORT:-5195}:8080"
     depends_on:
