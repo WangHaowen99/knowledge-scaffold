@@ -160,6 +160,12 @@ def freeze(manager, pid, folder, allow_unbound, binding=None, graph=False):
             raise WorkspaceError('建模内容发生变化，请重试', 409)
     if transport.source_state(manager, pid, allow_unbound, binding, graph)[1] != source_digest:
         raise WorkspaceError('建模内容发生变化，请重试', 409)
+    # Receipts stay outside the package, but the frozen source needs its matching verification.
+    verification = manager.project_root(pid) / '.ontology-state/script-verifications.json'
+    if verification.is_file():
+        frozen_verification = root / '.ontology-state/script-verifications.json'
+        frozen_verification.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(verification, frozen_verification)
     return value, source_digest
 
 

@@ -35,6 +35,7 @@ from .name_conflict import MAX_DISPLAY_NAME_LENGTH, detect_name_conflict
 from .toolkit import script_argument_shape as _script_argument_shape
 from .toolkit import script_contract as _script_contract
 from .toolkit import script_descriptor as _script_descriptor
+from .toolkit import script_verify as _script_verify
 
 META_FILE = ".onto-web.json"  # 历史文件名保留：存量项目的识别键（ADR-0006）
 PURGE_MARKER = ".onto-web.purging"  # 原地清除兜底：顶替 META_FILE，重启清扫据此认领残留
@@ -1520,6 +1521,11 @@ class WorkspaceManager:
                 "脚本绑定不符合规则，无法发布：" + "；".join(script_bindings.messages()),
                 code="script_binding_conflict",
             )
+        for key in script_bindings.bindings:
+            if not script_contracts[key].output_verified:
+                problem = _script_verify.verification_problem(root, root / "ontology/scripts" / f"{key}.py")
+                if problem:
+                    raise WorkspaceError(f"脚本 {key} 输出尚未验证：{problem}", 422, "script_output_unverified")
         # 入参形态：会被 consumer 调用前的参数证据校验拒绝的脚本（一拒就可能终止整轮对话）不发布
         object_documents = dict(objects)
         shape_errors = _script_descriptor.argument_shape_errors(
@@ -2278,6 +2284,13 @@ class WorkspaceManager:
                 raise WorkspaceError(
                     "文件已被他人或助手修改，请刷新对比后再保存", 409
                 )
+        warnings = []
+        if _is_workspace_script(rel):
+            try:
+                contract = _script_contract.parse_script(content)
+            except ScriptContractError as exc:
+                raise WorkspaceError(f"{rel.as_posix()}：{exc}", 422, "script_validation_failed") from exc
+            warnings = _script_contract.script_warnings(content, rel.as_posix(), contract)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         # Web 端保存即成版本点：只提交本文件，与 agent 的阶段提交互不干扰；
@@ -2300,6 +2313,7 @@ class WorkspaceManager:
             "size": len(content.encode("utf-8")),
             "revision": _content_revision(content.encode("utf-8")),
             "commit": commit,
+            "warnings": warnings,
         }
 
     def file_at_revision(self, project_id: str, rev: str, rel_path: str) -> dict:
