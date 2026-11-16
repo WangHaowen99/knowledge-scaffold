@@ -56,3 +56,29 @@ export function deliveryNote(item, now = Date.now()) {
 export function restoreText(current, returned) {
   return [current, ...(returned || [])].filter((t) => t && t.trim()).join('\n');
 }
+
+// 提交中再点同一类入口（双击「提取对象」、连点建议条）：请求回来之前直接拦下，不发第二个请求、不画气泡。
+// 服务端另有连续重复提交的 409 message_duplicate（这一轮没结束时同一条不受理）
+export const SUBMITTING_TEXT = '消息正在提交，请勿重复操作';
+
+export function createSubmitGuard() {
+  let busy = false;
+  return {
+    busy: () => busy,
+    async run(fn) {
+      busy = true;
+      try {
+        return await fn();
+      } finally {
+        busy = false;
+      }
+    },
+  };
+}
+
+// 本地先画气泡之前判断：这一轮还没停下、又发了和上一条相同的文字，服务端会按重复拒收，先不画，免得画了又删
+export function likelyDuplicate(lastSent, { cid, text, sessionState }) {
+  const trimmed = (text || '').trim();
+  if (!trimmed || !lastSent || lastSent.cid !== cid || lastSent.text !== trimmed) return false;
+  return ['running', 'connecting', 'queued'].includes(sessionState);
+}

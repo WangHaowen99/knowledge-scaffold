@@ -144,6 +144,7 @@ export const ERROR_MESSAGES = {
   answer_invalid: '请先选择一个选项',
   not_queued: '当前不在排队',
   next_occupied: (d) => `已经排着「${d?.label || '一条命令'}」`,
+  message_duplicate: '相同消息正在处理中，等这一步结束或先停止再重试',
   next_not_found: '没有排着的命令',
   exec_not_found: '执行记录不存在',
   subagent_not_found: '这个子任务的记录找不到了',

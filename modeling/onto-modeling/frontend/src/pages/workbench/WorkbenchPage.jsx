@@ -25,7 +25,7 @@ import { WbCtx } from './parts.jsx';
 import { ScopePicker } from '../knowledge/ScopePicker.jsx';
 import { EarlierHistory, Timeline } from './Timeline.jsx';
 import { NextBar, RunLine } from './RunLine.jsx';
-import { restoreText, sendButtonMode } from './composerModel.js';
+import { SUBMITTING_TEXT, createSubmitGuard, likelyDuplicate, restoreText, sendButtonMode } from './composerModel.js';
 import { useConversation } from './useConversation.js';
 import {
   BUSY_TEXT, isPluginConv, latestDraftCards, menuConversations, pickConversation, planEnterPlugin, planLeavePlugin, pluginReturn, returnTarget,
@@ -65,7 +65,7 @@ function Track({ flow, onOpen }) {
 }
 
 // 建模步骤抽屉：按 sections 分组的节点（F8 起不分段，没有「业务分段」一栏）；节点动作的执行方式见 nodeActionKind
-function StepsDrawer({ open, onClose, flow, cid }) {
+function StepsDrawer({ open, onClose, flow, cid, submitOnce }) {
   const { api } = useApp();
   const { pid, reloadFlow } = useProject();
   const [more, setMore] = useState(null);
@@ -76,7 +76,7 @@ function StepsDrawer({ open, onClose, flow, cid }) {
   useOutside(moreRef, () => setMore(null), !!more);
   if (!flow) return <Drawer open={open} onClose={onClose} icon="branch" title="建模步骤" w={440}>正在读取…</Drawer>;
   const recommended = (flow.notices || []).some((n) => n.kind === 'new_materials');
-  const doAct = async (n, a) => {
+  const doAct = (n, a) => submitOnce(async () => {
     setMore(null);
     const kind = nodeActionKind(a);
     if (kind === 'navigate') { navigate(pagePath(a.target, pid)); return; }
@@ -102,7 +102,7 @@ function StepsDrawer({ open, onClose, flow, cid }) {
       }
       toast(errorText(e), 'alert');
     }
-  };
+  });
   const row = (n) => {
     const label = n.progress?.label || (n.section === 'on_demand' && n.display_state === 'ready' && recommended && /incremental|update$/.test(n.id) ? '推荐' : undefined);
     // 面板入口的节点（如求解适配）不走对话命令；同一节点的多个命令只摆第一个，其余收进「⋯」
@@ -652,6 +652,16 @@ export default function WorkbenchPage({ route }) {
 
   const running = ['running', 'connecting'].includes(state.session.state);
   // 停止（S-08）：还没被助手看到的插话撤回，放回输入框
+  // 发消息、发命令、建议条、建模步骤共用一个提交中拦截（develop !596）
+  const submitGuard = useMemo(createSubmitGuard, []);
+  const submitOnce = useCallback(async (fn, skipped) => {
+    if (submitGuard.busy()) {
+      toast(SUBMITTING_TEXT, 'info');
+      return skipped;
+    }
+    return submitGuard.run(fn);
+  }, [submitGuard]);
+  const lastSent = useRef(null);
   const interrupt = useCallback(async () => {
     try {
       const r = await api.interrupt(pid, cid);
@@ -672,14 +682,14 @@ export default function WorkbenchPage({ route }) {
   }, [api, pid, cid]);
   // 发命令（全部命令、快捷项）：运行中由平台代存到这一轮结束；已经排着一条时问要不要替换
   const [replaceAsk, setReplaceAsk] = useState(null);
-  const sendCommand = useCallback(async (body, replace = false) => {
+  const sendCommand = useCallback((body, replace = false) => submitOnce(async () => {
     try {
       await api.sendCommand(pid, { ...body, conversation_id: cid, ...(replace ? { replace: true } : {}) });
     } catch (e) {
       if (e?.code === 'next_occupied' && !replace) setReplaceAsk({ body, label: e.details?.label || '' });
       else toast(errorText(e), 'alert');
     }
-  }, [api, pid, cid]);
+  }), [api, pid, cid, submitOnce]);
   const nextOp = useCallback(async (op) => {
     try { await (op === 'start' ? api.startNext(pid, cid) : api.cancelNext(pid, cid)); } catch (e) { toast(errorText(e), 'alert'); }
   }, [api, pid, cid]);
@@ -754,7 +764,7 @@ export default function WorkbenchPage({ route }) {
   };
 
   // 建议条发起的请求都带 from_suggestion：点下去之前情况变了，接口回 suggestion_stale 并带回新的一份，直接换上
-  const onSuggestion = async (a, label) => {
+  const onSuggestion = (a, label) => submitOnce(async () => {
     const flag = { from_suggestion: true };
     try {
       switch (a.type) {
@@ -791,18 +801,21 @@ export default function WorkbenchPage({ route }) {
       setSuggestions(fresh);
       toast('情况变了，建议已更新', 'info');
     }
-  };
+  });
 
   const quickActions = useMemo(() => (extensions?.entries || []).filter((e) => e.kind === 'quick_action' && e.command), [extensions]);
   const runQuick = (q) => sendCommand({ command: q.command, display_label: q.label, origin: { page: 'wb-l2', label: q.label, pack: q.pack } });
 
-  const send = async (body) => {
+  const send = (body) => submitOnce(async () => {
     const localId = `cm-${Date.now()}`;
-    // 纯文字消息先在本地显示气泡（带发送动画），服务端回传同一条后原地换掉；带附件的要等服务端存好附件名
-    const local = !!body.text && !body.attachments?.length;
+    // 纯文字消息先在本地显示气泡（带发送动画），服务端回传同一条后原地换掉；带附件的要等服务端存好附件名。
+    // 这一轮没停下又发了和上一条相同的文字：服务端会按重复拒收，先不画
+    const repeat = likelyDuplicate(lastSent.current, { cid, text: body.text, sessionState: state.session.state });
+    const local = !!body.text && !body.attachments?.length && !repeat;
     if (local) conv.dispatch({ type: 'local_user', id: localId, text: body.text });
     try {
       const r = await api.sendMessage(pid, cid, { ...body, client_message_id: localId });
+      lastSent.current = { cid, text: (body.text || '').trim() };
       if (local) conv.dispatch({ type: 'local_ack', id: localId, messageId: r.message_id });
       if (r.delivery === 'queued') toast('已排队', 'clock');
       return true;
@@ -811,7 +824,7 @@ export default function WorkbenchPage({ route }) {
       fail(e);
       return false;
     }
-  };
+  }, false);
   sendRef.current = send;
 
   const evidenceOn = evidenceInProject(project);
@@ -939,7 +952,7 @@ export default function WorkbenchPage({ route }) {
             </div>
             {drag ? <div className="wb-dropmask"><Icon name="upload" size={24} /><b>松开以添加附件</b><span className="xs muted">Markdown、Word、Excel、PDF、Drawio、TXT · 单个不超过 20 MB</span></div> : null}
           </div>
-          <StepsDrawer open={drawer} onClose={() => setDrawer(false)} flow={viewFlow} cid={cid} />
+          <StepsDrawer open={drawer} onClose={() => setDrawer(false)} flow={viewFlow} cid={cid} submitOnce={submitOnce} />
           <Modal
             open={restart} onClose={() => setRestart(false)} icon="refresh" title="重启会话？" w={460}
             foot={<><Button onClick={() => setRestart(false)}>取消</Button><Button kind="primary" onClick={async () => { setRestart(false); try { await api.restartConversation(pid, cid); toast('会话已重启', 'check'); } catch (e) { fail(e); } }}>重启会话</Button></>}
