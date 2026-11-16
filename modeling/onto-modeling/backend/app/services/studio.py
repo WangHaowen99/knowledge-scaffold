@@ -917,7 +917,7 @@ def deterministic_check(root: Path, rel_path: str, content: str) -> dict:
             section["title"]: section
             for section in parse_sections(target.read_text(encoding="utf-8"))
         }
-    except (OSError, UnicodeError, ValueError):
+    except (OSError, ValueError):
         pass
 
     for spec in schema:
