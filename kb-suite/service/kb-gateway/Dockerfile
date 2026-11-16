@@ -9,7 +9,7 @@ ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
 WORKDIR /app
 RUN pip install --no-cache-dir \
       "fastapi>=0.115,<1.0" "uvicorn[standard]>=0.30,<1.0" "httpx>=0.27,<1.0" "pydantic>=2.6,<3" \
-      "pydantic-settings>=2.2,<3" "python-multipart>=0.0.9" "pyyaml>=6,<7" "mcp>=1.12,<2"
+      "pydantic-settings>=2.2,<3" "python-multipart>=0.0.9" "pyyaml>=6,<7" "mcp>=1.26,<2"
 
 COPY pyproject.toml ./
 COPY kb_gateway ./kb_gateway

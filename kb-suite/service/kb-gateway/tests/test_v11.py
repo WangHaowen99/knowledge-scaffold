@@ -227,3 +227,65 @@ def test_readonly_backend_loses_write_mechanisms(env, providers, tmp_path, monke
         assert item["actions"] == [] and item["settings_schema"] is None
         assert "folders.delete" not in item["features"] and "folders" in item["features"]
         assert client.post("/v1/kbs/v_kb1/actions/rebuild_embeddings", json={}, headers=auth()).status_code == 501
+
+
+# ---- show_source (MCP Apps card) ---------------------------------------------------------------------------
+
+
+def _mcp(coro, principal):
+    from kb_gateway.api import mcp_server
+
+    async def wrapped():
+        token = mcp_server._principal.set(principal)
+        try:
+            return await coro
+        finally:
+            mcp_server._principal.reset(token)
+
+    import asyncio
+
+    return asyncio.run(wrapped())
+
+
+def test_show_source_from_chunks_on_any_backend(client):
+    from kb_gateway.api import mcp_server
+    from kb_gateway.auth import Principal
+
+    result = _mcp(mcp_server.show_source("wk_d1", chunk_seq=1), Principal("mcp", frozenset({"retrieve"})))
+    source = result.structuredContent["source"]
+    assert source["doc_id"] == "wk_d1" and "0.3 MPa" in source["text"]
+    assert source["context_before"].startswith("# 离心泵") and source["locators"] == [{"page": 1}]
+    assert "出处：weknora 文档" in result.content[0].text
+
+
+def test_show_source_prefers_evidence_when_declared(v11):
+    from kb_gateway.api import mcp_server
+    from kb_gateway.auth import Principal
+
+    client, provider = v11
+    result = _mcp(mcp_server.show_source("v_d1", anchor_id="v_d1:paragraph:3"), Principal("mcp", frozenset({"retrieve"})))
+    assert result.structuredContent["source"]["locators"][0]["bbox"] == [1.0, 2.0, 3.0, 4.0]
+    assert provider.calls[-1][1] == "/v1/evidence/v_d1:paragraph:3"
+    # an anchor of another document is not followed
+    result = _mcp(mcp_server.show_source("v_d1", anchor_id="wk_d1:paragraph:3"), Principal("mcp", frozenset({"retrieve"})))
+    assert result.structuredContent is None and "没有找到" in result.content[0].text
+
+
+def test_show_source_respects_the_connection_scope(client):
+    from kb_gateway.api import mcp_server
+    from kb_gateway.auth import Principal
+
+    result = _mcp(mcp_server.show_source("d1", chunk_seq=0), Principal("mcp", frozenset({"retrieve"}), ("wk_kb1",)))
+    assert result.structuredContent is None and "无权访问" in result.content[0].text
+
+
+def test_show_source_card_is_an_mcp_app(client):
+    import asyncio
+
+    from kb_gateway.api import mcp_server
+
+    tools = {t.name: t for t in asyncio.run(mcp_server.mcp.list_tools())}
+    assert tools["show_source"].meta == {"ui": {"resourceUri": mcp_server.SOURCE_CARD_URI}}
+    contents = list(asyncio.run(mcp_server.mcp.read_resource(mcp_server.SOURCE_CARD_URI)))
+    assert contents[0].mime_type == "text/html;profile=mcp-app"
+    assert "ui/initialize" in contents[0].content and "ui/notifications/tool-result" in contents[0].content
