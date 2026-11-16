@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Literal
 
+import asyncpg
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
@@ -43,6 +44,8 @@ def _overrides(raw: dict | None) -> dict:
 
 def _doc_view(doc: dict) -> dict:
     view = {k: doc.get(k) for k in DOC_FIELDS}
+    if view["file_name"]:  # rows stored before names were cleaned may still carry a path
+        view["file_name"] = documents.clean_file_name(view["file_name"])
     view["engine"] = (doc.get("parse_meta") or {}).get("engine")
     return view
 
@@ -193,14 +196,17 @@ async def patch_kb(kb_id: str, body: KbPatch, caller: Caller = Depends(need(auth
         config = kb_config.apply_patch(row["config"], _config_patch(body))
     except kb_config.ConfigError as exc:
         raise _config_error(exc) from exc
-    row = await db.pool().fetchrow(
-        "UPDATE knowledge_bases SET name = coalesce($2, name), description = coalesce($3, description),"
-        " config = $4, updated_at = now() WHERE id = $1 RETURNING *",
-        kb_id,
-        body.name.strip() if body.name else None,
-        body.description,
-        config,
-    )
+    try:
+        row = await db.pool().fetchrow(
+            "UPDATE knowledge_bases SET name = coalesce($2, name), description = coalesce($3, description),"
+            " config = $4, updated_at = now() WHERE id = $1 RETURNING *",
+            kb_id,
+            body.name.strip() if body.name else None,
+            body.description,
+            config,
+        )
+    except asyncpg.UniqueViolationError as exc:
+        raise documents.DocumentError(409, "duplicate_name", "已存在同名知识库，名称没有修改") from exc
     return await _kb_view(row)
 
 
@@ -462,7 +468,9 @@ async def get_file(doc_id: str, caller: Caller = Depends(need(auth.CAP_RETRIEVE)
     doc = await _doc_for(caller, doc_id)
     if doc["source_type"] != "file" or not doc.get("storage_key"):
         raise documents.DocumentError(404, "no_file", "该文档没有原始文件")
-    return FileResponse(storage.path_of(doc["storage_key"]), filename=doc.get("file_name") or "file")
+    return FileResponse(
+        storage.path_of(doc["storage_key"]), filename=documents.clean_file_name(doc.get("file_name") or "file")
+    )
 
 
 @router.get("/documents/{doc_id}/assets/{name:path}")
@@ -609,7 +617,7 @@ async def grep(body: GrepBody, caller: Caller = Depends(need(auth.CAP_RETRIEVE))
         found = await retrieval.grep(caller.tenant_id, kb_ids, body.pattern, max_results=body.max_results,
                                      max_lines_per_doc=body.max_lines_per_doc)
     except text_structure.PatternError as exc:
-        raise documents.DocumentError(400, "bad_pattern", str(exc)) from exc
+        raise documents.DocumentError(400, exc.code, str(exc)) from exc
     return {
         "pattern": found["pattern"], "search_mode": found["searchMode"], "total_matches": found["totalMatches"],
         "total_documents": found["totalDocuments"], "has_more": found["hasMore"],
@@ -640,6 +648,7 @@ class SearchBody(BaseModel):
 async def search(body: SearchBody, caller: Caller = Depends(need(auth.CAP_RETRIEVE))) -> dict:
     kb_ids = await caller.kb_scope(body.kb_ids)
     trace: dict | None = {} if body.trace else None
+    warnings: list[str] = []
     try:
         hits = await retrieval.search(
             caller.tenant_id,
@@ -651,10 +660,15 @@ async def search(body: SearchBody, caller: Caller = Depends(need(auth.CAP_RETRIE
             options=body.options,
             include_wiki=body.include_wiki,
             trace=trace,
+            warnings=warnings,
         )
     except kb_config.ConfigError as exc:
         raise _config_error(exc) from exc
+    except retrieval.SearchUnavailable as exc:
+        raise documents.DocumentError(503, "search_unavailable", str(exc)) from exc
     out = {"query": body.query, "items": [h.as_snake() for h in hits]}
+    if warnings:
+        out["warnings"] = warnings
     if trace is not None:
         out["trace"] = trace
     return out

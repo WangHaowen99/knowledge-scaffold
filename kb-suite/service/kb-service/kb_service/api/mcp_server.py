@@ -96,9 +96,13 @@ async def search_knowledge(ctx: Context, query: str, kb_ids: list[str] | None = 
 
     principal, tenant = await _caller(ctx)
     scope = await auth.resolve_kb_scope(principal, tenant, kb_ids, allow_all_when_empty=True)
-    hits = await retrieval.search(tenant, scope, query, top_k=max(1, min(int(top_k), 20)))
+    notes: list[str] = []
+    try:
+        hits = await retrieval.search(tenant, scope, query, top_k=max(1, min(int(top_k), 20)), warnings=notes)
+    except retrieval.SearchUnavailable as exc:
+        return str(exc)
     if not hits:
-        return "没有检索到相关内容。"
+        return "没有检索到相关内容。" + "".join(f"（{n}）" for n in notes)
     blocks = []
     for i, h in enumerate(hits, start=1):
         if h.is_wiki:
@@ -112,7 +116,7 @@ async def search_knowledge(ctx: Context, query: str, kb_ids: list[str] | None = 
         blocks.append(
             f"[{i}] 出处：{where}\n(doc_id={h.document_id}, chunk_seq={h.seq}, score={h.score:.3f}{note})\n{h.content}"
         )
-    return "\n\n---\n\n".join(blocks)
+    return "".join(f"注意：{n}\n\n" for n in notes) + "\n\n---\n\n".join(blocks)
 
 
 @mcp.tool()
@@ -122,7 +126,10 @@ async def search_wiki(ctx: Context, query: str, kb_ids: list[str] | None = None,
     principal, tenant = await _caller(ctx)
     scope = await auth.resolve_kb_scope(principal, tenant, kb_ids, allow_all_when_empty=True)
     n = max(1, min(int(limit), 20))
-    hits = await retrieval.search(tenant, scope, query, top_k=n, include_chunks=False, wiki_limit=n)
+    try:
+        hits = await retrieval.search(tenant, scope, query, top_k=n, include_chunks=False, wiki_limit=n)
+    except retrieval.SearchUnavailable as exc:
+        return str(exc)
     if not hits:
         return "没有检索到 Wiki 页面（知识库可能没有开启 Wiki）。"
     items = [

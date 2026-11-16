@@ -248,10 +248,12 @@ def _modify_prompt(
     *,
     shared_context: str = "",
     new_content: str = "",
+    extracted: bool = False,
     deleted: str = "",
     remaining: str = "",
 ) -> list[dict]:
     title = page_meta["title"]
+    additions = prompts.ADDITIONS_EXTRACTED if extracted else prompts.ADDITIONS
     user = prompts.render(
         prompts.MODIFY_USER,
         SharedContext=f"<shared_source_contexts>\n{shared_context}\n</shared_source_contexts>\n\n" if shared_context else "",
@@ -260,7 +262,7 @@ def _modify_prompt(
         Type=page_meta["page_type"],
         Aliases=", ".join(page_meta.get("aliases") or []),
         Existing=existing or "(new page, no existing content)",
-        Additions=prompts.render(prompts.ADDITIONS, NewContent=new_content) if new_content else "",
+        Additions=prompts.render(additions, NewContent=new_content) if new_content else "",
         Retractions=prompts.render(prompts.RETRACTIONS, Deleted=deleted, Remaining=remaining or "(none)")
         if deleted
         else "",
@@ -273,13 +275,20 @@ def _modify_prompt(
     return [{"role": "system", "content": prompts.MODIFY_SYSTEM}, {"role": "user", "content": user}]
 
 
-async def _rewrite(messages: list[dict], cfg: kb_config.KbConfig) -> tuple[str, str] | None:
+async def _rewrite(messages: list[dict], cfg: kb_config.KbConfig, names: dict[str, list[str]]) -> tuple[str, str] | None:
     text, complete = await models_client.chat_long(messages, model=cfg.wiki.model, max_tokens=4096)
     if not complete:
         logger.warning("wiki page rewrite still truncated, not written")
         return None
-    summary, body = text_utils.split_summary_line(text)
+    summary, body = text_utils.split_summary_line(links.normalize_links(text, names))
     return summary, body
+
+
+def _naming_chunks(item: dict, chunk_text: dict[str, str]) -> list[str]:
+    """Chunks that name the item verbatim (its name or an alias of two or more characters)."""
+
+    names = [n for n in (item["name"], *item["aliases"]) if len(n.strip()) >= 2]
+    return [cid for cid, text in chunk_text.items() if any(n in text for n in names)]
 
 
 async def _merge_item(
@@ -291,11 +300,18 @@ async def _merge_item(
     valid_links: str,
     valid_slugs: set[str],
     shared_context: str,
+    names: dict[str, list[str]],
 ) -> dict | None:
-    """Create or merge one entity/concept page from this document's cited chunks."""
+    """Create or merge one entity/concept page from this document's cited chunks.
 
-    if chunk_ids:
-        ordered = [cid for cid in chunk_text if cid in chunk_ids]
+    Without cited chunks the page is built from the chunks that name the item;
+    only when none does is the extracted description used, marked as such.
+    """
+
+    source_ids = chunk_ids or set(_naming_chunks(item, chunk_text))
+    extracted = not source_ids
+    if source_ids:
+        ordered = [cid for cid in chunk_text if cid in source_ids]
         new_content = "\n\n---\n\n".join(chunk_text[c] for c in ordered)[:NEW_INFO_CHARS]
     else:
         new_content = "\n".join(x for x in (item["description"], item["details"]) if x)
@@ -305,16 +321,17 @@ async def _merge_item(
         result = await _rewrite(
             _modify_prompt(
                 meta, page["content"] if page else "", cfg, valid_links,
-                shared_context=shared_context, new_content=new_content,
+                shared_context=shared_context, new_content=new_content, extracted=extracted,
             ),
             cfg,
+            names,
         )
         if result is None:
             return None
         summary, body = result
         body = links.strip_dead_links(body, valid_slugs, item["slug"])
         refs = dict(page["chunk_refs"]) if page else {}
-        refs[doc["id"]] = sorted(chunk_ids)
+        refs[doc["id"]] = sorted(source_ids)
         if page is None:
             try:
                 created = await store.create(
@@ -366,6 +383,7 @@ async def retract_doc(page: dict, doc_id: str, doc_title: str, doc_summary: str,
         return None
     remaining = await _doc_titles(remaining_ids)
     titles = await store.all_titles(page["kb_id"])
+    names = links.link_names(titles)
     refs = {k: v for k, v in (page["chunk_refs"] or {}).items() if k != doc_id}
     for _ in range(WRITE_RETRIES + 1):
         result = await _rewrite(
@@ -375,6 +393,7 @@ async def retract_doc(page: dict, doc_id: str, doc_title: str, doc_summary: str,
                 remaining="\n".join(f"- {d['title']}: {(d['summary'] or '')[:200]}" for d in remaining.values()),
             ),
             cfg,
+            names,
         )
         try:
             if result is None:
@@ -457,6 +476,7 @@ async def ingest_document(doc: dict, cfg: kb_config.KbConfig) -> dict:
     titles = await store.all_titles(kb_id)
     valid = _valid_links(titles, items)
     valid_slugs = {p["slug"] for p in titles if p["page_type"] in links.PAGE_TYPES} | {it["slug"] for it in items}
+    names = links.link_names([*titles, *items])
     chunk_text = {c["id"]: c["content"] for c in chunks}
     shared = f"<source><title>{doc['title']}</title><summary>{(doc.get('summary') or '')[:SOURCE_CONTEXT_CHARS]}</summary></source>"
 
@@ -485,7 +505,8 @@ async def ingest_document(doc: dict, cfg: kb_config.KbConfig) -> dict:
             max_tokens=4096,
         )
         if complete:
-            summary, body = text_utils.split_summary_line(text)
+            summary, body = text_utils.split_summary_line(links.normalize_links(text, names))
+            summary = links.plain(summary, names)
             body = links.strip_dead_links(body, valid_slugs, summary_slug)
             page = None
             for _ in range(WRITE_RETRIES + 1):
@@ -509,7 +530,7 @@ async def ingest_document(doc: dict, cfg: kb_config.KbConfig) -> dict:
     # entity / concept pages
     results = await asyncio.gather(
         *(
-            _merge_item(doc, item, cited.get(item["slug"], set()), chunk_text, cfg, valid, valid_slugs, shared)
+            _merge_item(doc, item, cited.get(item["slug"], set()), chunk_text, cfg, valid, valid_slugs, shared, names)
             for item in items
         )
     )
@@ -604,38 +625,60 @@ def _directory(pages: list[dict]) -> str:
     return "\n".join(parts)
 
 
+def _intro_outdated(index: dict | None, content_pages: list[dict]) -> bool:
+    """The index introduction was written for another set of documents (or is missing).
+
+    The directory under the introduction links every summary page, so the
+    summary links of the stored index are the documents the introduction was
+    last written for; a document added or deleted since changes that set.
+    """
+
+    if index is None or not index["summary"]:
+        return True
+    listed = {s for s in links.parse_links(index["content"]) if s.startswith("summary/")}
+    return listed != {p["slug"] for p in content_pages if p["page_type"] == "summary"}
+
+
 async def finalize(kb_id: str, cfg: kb_config.KbConfig, tenant_id: str) -> dict:
     rows = await db.pool().fetch(
         f"SELECT {store.PAGE_COLUMNS} FROM wiki_pages WHERE kb_id = $1 AND deleted_at IS NULL", kb_id
     )
     pages = [dict(r) for r in rows]
     live = {p["slug"] for p in pages}
+    names = links.link_names(pages)
     targets: list[tuple[str, str]] = []
     for p in pages:
         if p["page_type"] in links.PAGE_TYPES:
             targets.extend((name, p["slug"]) for name in (p["title"], *(p["aliases"] or [])))
     changed: list[dict] = []
-    for page in pages:
+    for i, page in enumerate(pages):
         if page["page_type"] == "index":
             continue
-        content = links.strip_dead_links(page["content"], live, page["slug"])
+        content = links.normalize_links(page["content"], names)
+        content = links.strip_dead_links(content, live, page["slug"])
         content = links.linkify(content, targets, page["slug"])
-        if content != page["content"]:
+        summary = links.plain(page["summary"], names)
+        updates = {k: v for k, v in (("content", content), ("summary", summary)) if v != page[k]}
+        if updates:
             try:
-                changed.append(await store.update(page, content=content))
+                pages[i] = await store.update(page, **updates)
             except store.VersionConflict:
                 continue
+            changed.append(pages[i])
 
     content_pages = [p for p in pages if p["page_type"] != "index"]
     index = next((p for p in pages if p["slug"] == INDEX_SLUG), None)
     if content_pages:
-        summaries = await db.pool().fetch(
-            "SELECT title, summary FROM documents WHERE kb_id = $1 AND deleted_at IS NULL"
-            " AND parse_status = 'completed' ORDER BY created_at LIMIT 60",
-            kb_id,
-        )
-        intro = ""
-        if index is None or not index["summary"]:
+        if _intro_outdated(index, content_pages):
+            # the documents the directory lists, so a deleted one is not described any more
+            doc_ids = [d for p in content_pages if p["page_type"] == "summary" for d in p["source_doc_ids"] or []]
+            summaries = await db.pool().fetch(
+                "SELECT title, summary FROM documents WHERE kb_id = $1 AND deleted_at IS NULL"
+                " AND parse_status = 'completed' AND (cardinality($2::text[]) = 0 OR id = ANY($2::text[]))"
+                " ORDER BY created_at LIMIT 60",
+                kb_id,
+                doc_ids,
+            )
             intro = await models_client.chat(
                 prompts.render(
                     prompts.INDEX_INTRO,
@@ -656,8 +699,8 @@ async def finalize(kb_id: str, cfg: kb_config.KbConfig, tenant_id: str) -> dict:
                 summary=intro.strip(), content=body, aliases=[], source_doc_ids=[], chunk_refs={},
             )
             changed.append(index)
-        elif body != index["content"]:
-            changed.append(await store.update(index, title=title, content=body))
+        elif body != index["content"] or links.plain(intro.strip()) != index["summary"]:
+            changed.append(await store.update(index, title=title, summary=intro.strip(), content=body))
     elif index is not None:
         await store.soft_delete(index["id"])
 

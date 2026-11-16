@@ -7,13 +7,16 @@ Query shapes follow WeKnora's ParadeDB retriever
 
 Search flow (knobs in :mod:`kb_config` ``retrieval``):
   legs      chunk vectors, chunk BM25, generated-question vectors and BM25
-            (resolved to their chunk), wiki page vectors and BM25 — run
-            concurrently, each filtered by its knowledge base's threshold
+            (resolved to their chunk; only knowledge bases that have
+            questions), wiki page vectors and BM25 — run concurrently, each
+            filtered by its knowledge base's threshold
   expand    keyword-only query variants when recall is low (optional)
   fuse      weighted RRF; ``base_score`` keeps a 0-1 relevance per hit
   rerank    model rerank with WeKnora's threshold ladder and composite score
   select    wiki boost, MMR (or plain top-k), wiki pages capped
-  context   merge adjacent hits, grow short hits or return the parent section
+  context   merge adjacent hits, grow short hits or return the parent section;
+            a grown window stays in its section and a context header names
+            every section the text comes from
 """
 
 from __future__ import annotations
@@ -252,6 +255,40 @@ async def _keywords(tenant_id: str, kb_ids: list[str], query: str, limit: int) -
     return hits
 
 
+def _like_pattern(term: str) -> str:
+    return "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+async def _exact(tenant_id: str, kb_ids: list[str], terms: list[str], limit: int) -> list[Hit]:
+    """Chunks containing one of ``terms`` verbatim (case-insensitive); the tokenizer splits codes apart."""
+
+    sql = (
+        f"SELECT {_CHUNK_COLUMNS} FROM chunks c WHERE c.is_active"
+        " AND c.kb_id = ANY($2::text[]) AND c.tenant_id = $3 AND c.content ILIKE ANY($1::text[]) LIMIT $4"
+    )
+    try:
+        rows = await db.pool().fetch(sql, [_like_pattern(t) for t in terms], kb_ids, tenant_id, limit)
+    except Exception:  # noqa: BLE001 - best effort, like the keyword leg
+        logger.exception("exact identifier query failed")
+        return []
+    return [_hit(row) for row in rows]
+
+
+def merge_exact(keyword_hits: list[Hit], exact_hits: list[Hit], terms: list[str]) -> list[Hit]:
+    """Keyword leg with verbatim identifier matches first, at the top (normalised) keyword score."""
+
+    by_id = {h.chunk_id: h for h in keyword_hits}
+    for hit in exact_hits:
+        by_id.setdefault(hit.chunk_id, hit)
+    found = {cid: postprocess.contains_terms(h, terms) for cid, h in by_id.items()}
+    for cid, hit in by_id.items():
+        if found[cid]:
+            hit.keyword_score = 1.0
+            hit.sources.add("exact")
+    order = {h.chunk_id: i for i, h in enumerate(keyword_hits)}
+    return sorted(by_id.values(), key=lambda h: (-found[h.chunk_id], order.get(h.chunk_id, len(order))))
+
+
 async def _question_vector(tenant_id: str, kb_ids: list[str], vec: list[float], limit: int) -> list[tuple]:
     dim = len(vec)
     rows = await _knn(
@@ -442,6 +479,49 @@ def _rrf(
 # ---- search -----------------------------------------------------------------
 
 
+class SearchUnavailable(Exception):
+    """No retrieval leg can run: the query embedding failed and keyword search is off."""
+
+
+VECTOR_DOWN_WARNING = "向量检索暂不可用（调用向量模型失败，例如模型密钥无效或模型服务不可用），本次结果只来自关键词检索"
+
+
+async def _query_vector(query: str, rc: kb_config.RetrievalConfig, warnings: list[str] | None) -> list[float] | None:
+    """Query embedding, or None (keyword-only search) when the model fails and keywords can answer."""
+
+    if not rc.vector_enabled:
+        return None
+    try:
+        return await models_client.embed_query(query)
+    except models_client.ModelError as exc:
+        logger.warning("query embedding failed: %s", exc)
+        if not rc.keyword_enabled:
+            raise SearchUnavailable(
+                "检索暂不可用：调用向量模型失败（例如模型密钥无效或模型服务不可用），且所选知识库没有开启关键词检索"
+            ) from exc
+        if warnings is not None:
+            warnings.append(VECTOR_DOWN_WARNING)
+        return None
+
+
+async def _kbs_with_questions(kb_ids: list[str]) -> list[str]:
+    """Knowledge bases holding generated questions; the question legs search only these.
+
+    Each question leg costs a vector and a BM25 query over the whole question
+    index even when it can find nothing, which under concurrent searches
+    showed up as hundreds of milliseconds per search.
+    """
+
+    if not kb_ids:
+        return []
+    rows = await db.pool().fetch(
+        "SELECT DISTINCT kb_id FROM documents WHERE kb_id = ANY($1::text[]) AND deleted_at IS NULL"
+        " AND question_count > 0",
+        kb_ids,
+    )
+    return [r["kb_id"] for r in rows]
+
+
 async def search(
     tenant_id: str,
     kb_ids: list[str],
@@ -455,11 +535,14 @@ async def search(
     include_wiki: bool = True,
     wiki_limit: int | None = None,
     trace: dict | None = None,
+    warnings: list[str] | None = None,
 ) -> list[Hit]:
     """Hybrid search. ``min_score`` filters on ``relevance`` (0-1); ``options``
     overrides the knowledge bases' retrieval settings for this call.
     ``include_chunks=False`` searches wiki pages only (every wiki-enabled
-    knowledge base, ``wiki_limit`` pages)."""
+    knowledge base, ``wiki_limit`` pages). When the embedding model fails the
+    search falls back to keywords and appends a note to ``warnings``; it raises
+    SearchUnavailable when keywords are off too."""
 
     started = time.perf_counter()
     if not kb_ids or not query.strip():
@@ -490,27 +573,34 @@ async def search(
     if not chunk_kbs and not wiki_kbs:
         return []
 
-    vec = None
-    if rc.vector_enabled:
-        vec = (await models_client.embed([query]))[0]
-
     async def none() -> list:
         return []
 
-    q_on = rc.use_questions
+    stage_ms: dict[str, float] = {}
+    mark = time.perf_counter()
+    # which knowledge bases have generated questions is looked up while the query is embedded
+    vec, question_kbs = await asyncio.gather(
+        _query_vector(query, rc, warnings),
+        _kbs_with_questions(chunk_kbs) if rc.use_questions and chunk_kbs else none(),
+    )
+    stage_ms["embed"], mark = round((time.perf_counter() - mark) * 1000, 1), time.perf_counter()
+
+    terms = postprocess.identifier_terms(query) if rc.keyword_enabled and chunk_kbs else []
     legs = await asyncio.gather(
         _vector(tenant_id, chunk_kbs, vec, rc.vector_top_k) if vec and chunk_kbs else none(),
         _keywords(tenant_id, chunk_kbs, query, rc.keyword_top_k) if rc.keyword_enabled and chunk_kbs else none(),
-        _question_vector(tenant_id, chunk_kbs, vec, rc.vector_top_k) if q_on and vec and chunk_kbs else none(),
-        _question_keywords(tenant_id, chunk_kbs, query, rc.keyword_top_k)
-        if q_on and rc.keyword_enabled and chunk_kbs
+        _question_vector(tenant_id, question_kbs, vec, rc.vector_top_k) if vec and question_kbs else none(),
+        _question_keywords(tenant_id, question_kbs, query, rc.keyword_top_k)
+        if rc.keyword_enabled and question_kbs
         else none(),
         _wiki_vector(tenant_id, wiki_kbs, vec, max(10, wiki_cap * 3)) if vec and wiki_kbs else none(),
         _wiki_keywords(tenant_id, wiki_kbs, query, max(10, wiki_cap * 3))
         if rc.keyword_enabled and wiki_kbs
         else none(),
+        _exact(tenant_id, chunk_kbs, terms, rc.keyword_top_k) if terms else none(),
     )
-    vector_hits, keyword_hits, q_vector, q_keyword, wiki_vec, wiki_kw = legs
+    stage_ms["legs"], mark = round((time.perf_counter() - mark) * 1000, 1), time.perf_counter()
+    vector_hits, keyword_hits, q_vector, q_keyword, wiki_vec, wiki_kw, exact_hits = legs
     counts = {
         "vector": len(vector_hits),
         "keyword": len(keyword_hits),
@@ -518,6 +608,7 @@ async def search(
         "question_keyword": len(q_keyword),
         "wiki_vector": len(wiki_vec),
         "wiki_keyword": len(wiki_kw),
+        "exact": len(exact_hits),
     }
 
     # question hits -> parent chunks
@@ -533,6 +624,8 @@ async def search(
     else:
         _normalize_keyword(keyword_hits)
     _normalize_keyword(wiki_kw)
+    if terms:
+        keyword_hits = merge_exact(keyword_hits, exact_hits, terms)
 
     vector_hits = [h for h in vector_hits if (h.vector_score or 0.0) >= knob(h, "vector_threshold")]
     keyword_hits = [h for h in keyword_hits if (h.keyword_score or 0.0) >= knob(h, "keyword_threshold")]
@@ -567,7 +660,7 @@ async def search(
     pool = chunks_fused[: rc.rerank_candidates] + wiki_fused[: max(wiki_cap * 2, 0)]
     from .questions import questions_for_chunks
 
-    qmap = await questions_for_chunks([h.chunk_id for h in pool if not h.is_wiki])
+    qmap = await questions_for_chunks([h.chunk_id for h in pool if not h.is_wiki]) if question_kbs else {}
     for hit in pool:
         hit.questions = qmap.get(hit.chunk_id, [])
 
@@ -583,18 +676,24 @@ async def search(
             logger.warning("rerank failed, using fused order")
             ranked = []
         if ranked:
-            pool = postprocess.apply_rerank(
+            kept = postprocess.apply_rerank(
                 pool, ranked, lambda h: float(knob(h, "rerank_threshold")), composite=rc.composite_score
             )
+            if terms:  # a verbatim code match stays a candidate even below the rerank threshold
+                kept_ids = {id(h) for h in kept}
+                kept += [h for h in pool if id(h) not in kept_ids and postprocess.contains_terms(h, terms)]
+            pool = kept
             reranked = True
     if not reranked:
         pool.sort(key=lambda h: h.score, reverse=True)
     counts["after_rerank"] = len(pool)
+    stage_ms["rerank"], mark = round((time.perf_counter() - mark) * 1000, 1), time.perf_counter()
 
     for hit in pool:
         if hit.is_wiki:
             hit.score *= cfg_of(hit.kb_id).wiki.boost
             hit.sources.add("wiki")
+    postprocess.boost_exact(pool, terms)
     pool.sort(key=lambda h: h.score, reverse=True)
 
     if min_score is not None:
@@ -620,33 +719,45 @@ async def search(
         key = l1_keys.get(doc_id)
         return _l1_text(key) if key else None
 
+    def blocks_of(doc_id: str) -> list | None:
+        key = l1_keys.get(doc_id)
+        return _l1_blocks(key) if key else None
+
     if rc.parent_child:
         for hit in hits:
             key = l1_keys.get(hit.document_id)
             if key:
                 postprocess.parent_window(hit, _l1_text(key), _l1_blocks(key), rc.parent_chunk_size)
-        hits = postprocess.merge_adjacent(hits, l1_of) if rc.merge_adjacent else hits
+        hits = postprocess.merge_adjacent(hits, l1_of, blocks_of) if rc.merge_adjacent else hits
     else:
         if rc.merge_adjacent:
-            hits = postprocess.merge_adjacent(hits, l1_of)
+            hits = postprocess.merge_adjacent(hits, l1_of, blocks_of)
         if rc.expand_enabled:
             for hit in hits:
                 text = l1_of(hit.document_id) if not hit.is_wiki else None
-                if text:
-                    postprocess.expand_short(hit, text, rc.expand_min_chars, rc.expand_max_chars)
+                if text and hit.end_offset - hit.start_offset < rc.expand_min_chars:
+                    postprocess.expand_short(
+                        hit, text, rc.expand_min_chars, rc.expand_max_chars, blocks_of(hit.document_id)
+                    )
             # expansion can make windows of one document overlap: merge them again
-            hits = postprocess.merge_adjacent(hits, l1_of)
+            hits = postprocess.merge_adjacent(hits, l1_of, blocks_of)
     hits = postprocess.remove_overlaps(hits)
     hits.sort(key=lambda h: (-h.score, h.kb_id, h.document_id, h.seq, h.chunk_id))
     hits = hits[:top_k]
     counts["returned"] = len(hits)
+    stage_ms["context"] = round((time.perf_counter() - mark) * 1000, 1)
     if trace is not None:
         trace.update(
             counts=counts,
             reranked=reranked,
             variants=variants,
+            identifiers=terms,
+            warnings=list(warnings or []),
             settings=rc.model_dump(),
             elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
+            # embed: query embedding; legs: the database queries; rerank: fusion,
+            # question lookup and the rerank model; context: documents, windows, merging
+            timings_ms=stage_ms,
         )
     return hits
 
@@ -732,7 +843,10 @@ async def grep(
         max_docs,
     )
     # file reads and a caller-supplied regex over every document: keep them off the event loop
-    return await asyncio.to_thread(_grep_rows, rows, regex, mode, pattern, max_results, max_lines_per_doc)
+    # and off its default thread pool (see text_structure.grep_executor)
+    return await asyncio.get_running_loop().run_in_executor(
+        text_structure.grep_executor(), _grep_rows, rows, regex, mode, pattern, max_results, max_lines_per_doc
+    )
 
 
 def _grep_rows(rows: list, regex: re.Pattern[str], mode: str, pattern: str, max_results: int, max_lines_per_doc: int) -> dict:

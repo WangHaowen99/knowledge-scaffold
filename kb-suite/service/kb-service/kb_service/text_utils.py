@@ -47,6 +47,24 @@ def normalize(text: str) -> str:
     return _SPACE_RE.sub(" ", text).strip().lower()
 
 
+_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)|<img\b[^>]*>", re.IGNORECASE)
+_LINK_TARGET_RE = re.compile(r"\]\([^)]*\)")
+_TAG_RE = re.compile(r"<[^>]+>")
+_LETTER_RE = re.compile(r"[^\W_]")
+
+
+def text_content(markdown: str) -> tuple[int, int]:
+    """(letters and digits outside markup, images) of an L1 markdown.
+
+    Image references, link targets and HTML tags do not count as text, so a
+    scanned PDF whose L1 holds only page images has (almost) no text.
+    """
+
+    images = len(_IMAGE_RE.findall(markdown))
+    bare = _TAG_RE.sub(" ", _LINK_TARGET_RE.sub("]", _IMAGE_RE.sub(" ", markdown)))
+    return len(_LETTER_RE.findall(bare)), images
+
+
 def parse_json_object(text: str) -> dict:
     """Best-effort JSON object from an LLM reply (fences, preamble, raw newlines)."""
 

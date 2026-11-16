@@ -66,4 +66,6 @@ def test_separator_strategy_ignores_headings():
 
 
 def test_plain_turns_links_into_text():
-    assert links.plain("由[[entity/a|主油泵]]和[[concept/b]]组成") == "由主油泵和concept/b组成"
+    # a link without display text shows the page name, never the internal slug
+    assert links.plain("由[[entity/a|主油泵]]和[[concept/b]]组成", {"concept/b": ["润滑系统"]}) == "由主油泵和润滑系统组成"
+    assert links.plain("由[[entity/a|主油泵]]和[[concept/b]]组成") == "由主油泵和b组成"
