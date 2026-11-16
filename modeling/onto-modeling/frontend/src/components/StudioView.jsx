@@ -35,7 +35,9 @@ export default function StudioView({
   const [loading, setLoading] = useState(false);
   const [updates, setUpdates] = useState({});
   const [updatesRequest, setUpdatesRequest] = useState(0);
+  const [openingEditor, setOpeningEditor] = useState(false);
   const previousProjectId = useRef(project.id);
+  const previousWorkspaceRevision = useRef(workspaceRevision);
 
   const refreshGraph = useCallback(() => {
     setLoading(true);
@@ -58,6 +60,22 @@ export default function StudioView({
     }
     if (active) refreshGraph();
   }, [active, project.id, refreshGraph, workspaceRevision]);
+
+  // Agent review can update the selected document while Studio stays mounted. Refresh the
+  // detail on the result event; an open editor remains untouched and relies on revision checks.
+  useEffect(() => {
+    const changed = previousWorkspaceRevision.current !== workspaceRevision;
+    previousWorkspaceRevision.current = workspaceRevision;
+    if (!changed || !active || view === 'edit' || !entry?.path) return undefined;
+    let cancelled = false;
+    api
+      .studioElement(project.id, entry.path)
+      .then((data) => !cancelled && setEntry(data))
+      .catch((error) => !cancelled && message.error(error.message));
+    return () => {
+      cancelled = true;
+    };
+  }, [active, entry?.path, project.id, view, workspaceRevision]);
 
   // 最后更新时间要查 git 历史，只在表视图读取，图视图不发这个请求
   useEffect(() => {
@@ -108,6 +126,19 @@ export default function StudioView({
     setEntry(null);
     openEntry(path, elementId);
   }, [entry, openEntry, refreshGraph, selectedElementId, view]);
+
+  const startEditing = useCallback(() => {
+    if (!entry?.path || openingEditor) return;
+    setOpeningEditor(true);
+    api
+      .studioElement(project.id, entry.path)
+      .then((data) => {
+        setEntry(data);
+        setView('edit');
+      })
+      .catch((error) => message.error(error.message))
+      .finally(() => setOpeningEditor(false));
+  }, [entry?.path, openingEditor, project.id]);
 
   // 详情里的资料芯片：打开原文时记下当前条目，预览上方的「返回」回到这里
   const openFromEntry = useCallback(
@@ -266,14 +297,20 @@ export default function StudioView({
             <Typography.Title level={5} style={{ margin: 0 }}>
               {entry.label || entry.name}
             </Typography.Title>
-            {entry.draft && <Tag color="warning">有未提交草稿（{entry.draft.author}）</Tag>}
+            {entry.draft && (
+              <Tag color="warning">
+                {entry.draft.state === 'stale' ? '旧版本草稿已失效' : '有未提交草稿'}
+                （{entry.draft.author}）
+              </Tag>
+            )}
             {entry.lease && <Tag color="processing">{entry.lease.owner} 编辑中</Tag>}
             {entry.schema && (
               <Button
                 size="small"
                 type="primary"
                 icon={<EditOutlined />}
-                onClick={() => setView('edit')}
+                loading={openingEditor}
+                onClick={startEditing}
               >
                 结构化编辑
               </Button>

@@ -71,7 +71,7 @@ def editing_issue(project_id, path):
     state = manager.live_status(project_id)
     if state and state.get("busy"):
         return issue("PROJECT_EDITING_BUSY", "助手正在修改该项目，请等待当前任务结束", path)
-    if studio.lease_status(project_id, path) or studio.get_draft(project_id, path):
+    if studio.lease_status(project_id, path) or studio.get_active_draft(project_id, path):
         return issue("PROJECT_EDITING_BUSY", "条目存在 Studio 租约或未提交草稿，请先完成或放弃编辑", path)
     return None
 
