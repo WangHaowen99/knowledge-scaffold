@@ -3,17 +3,39 @@
   "$id": "knowledge-provider/v1/capabilities.schema.json",
   "title": "knowledge-provider/v1 capabilities",
   "type": "object",
-  "required": ["contract", "role", "provider", "features"],
+  "required": [
+    "contract",
+    "role",
+    "provider",
+    "features"
+  ],
   "properties": {
-    "contract": {"const": "knowledge-provider/v1"},
-    "role": {"enum": ["base", "enhancement"]},
+    "contract": {
+      "const": "knowledge-provider/v1"
+    },
+    "role": {
+      "enum": [
+        "base",
+        "enhancement"
+      ]
+    },
     "provider": {
       "type": "object",
-      "required": ["type", "version"],
+      "required": [
+        "type",
+        "version"
+      ],
       "properties": {
-        "type": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
-        "version": {"type": "string"},
-        "label": {"type": "string"}
+        "type": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "version": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
       }
     },
     "features": {
@@ -21,41 +43,222 @@
       "uniqueItems": true,
       "items": {
         "enum": [
-          "kbs.write", "kbs.reprocess",
-          "ingest.file", "ingest.text", "ingest.url",
-          "documents.delete", "documents.reprocess", "documents.cancel", "documents.file",
-          "content.L2", "content.structure", "grep", "uploads",
-          "wiki.read", "wiki.write",
-          "questions", "profile", "config.meta", "tools.da",
-          "chunks.questions.write", "documents.summary.write"
+          "kbs.write",
+          "kbs.reprocess",
+          "ingest.file",
+          "ingest.text",
+          "ingest.url",
+          "documents.delete",
+          "documents.reprocess",
+          "documents.cancel",
+          "documents.file",
+          "content.L2",
+          "content.structure",
+          "grep",
+          "uploads",
+          "wiki.read",
+          "wiki.write",
+          "questions",
+          "profile",
+          "config.meta",
+          "tools.da",
+          "chunks.questions.write",
+          "documents.summary.write",
+          "actions",
+          "jobs",
+          "views",
+          "settings",
+          "search.options",
+          "evidence",
+          "documents.file.range",
+          "documents.export",
+          "folders",
+          "folders.delete"
         ]
       }
     },
-    "file_types": {"type": "array", "items": {"type": "string"}},
+    "file_types": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "limits": {
       "type": "object",
       "properties": {
-        "max_upload_mb": {"type": "integer", "minimum": 1},
-        "max_top_k": {"type": "integer", "minimum": 1}
+        "max_upload_mb": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_top_k": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "config_schema": {
       "description": "JSON Schema of the provider-private knowledge-base config. Supported keywords: type object/string/integer/number/boolean, enum, title, description, default, minimum, maximum, properties. x-enum-labels gives display text per enum value.",
-      "type": ["object", "null"]
+      "type": [
+        "object",
+        "null"
+      ]
     },
-    "provides": {"type": "array", "items": {"type": "string"}},
+    "provides": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "hooks": {
       "type": "array",
-      "items": {"enum": ["search.pre", "search.post", "document.completed", "document.deleted", "kb.deleted"]}
+      "items": {
+        "enum": [
+          "search.pre",
+          "search.post",
+          "document.completed",
+          "document.deleted",
+          "kb.deleted"
+        ]
+      }
     },
-    "requires": {"type": "array", "items": {"type": "string"}},
-    "capability_groups": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+    "requires": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "capability_groups": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
     "ui": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["slot", "title", "entry"],
-        "properties": {"slot": {"type": "string"}, "title": {"type": "string"}, "entry": {"type": "string"}}
+        "required": [
+          "slot",
+          "title",
+          "entry"
+        ],
+        "properties": {
+          "slot": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "entry": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "scope",
+          "label"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "scope": {
+            "enum": [
+              "kb",
+              "document"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "params_schema": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "JSON Schema using the config_schema keywords."
+          },
+          "confirm": {
+            "type": "boolean"
+          },
+          "job": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "views": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "scope",
+          "label",
+          "media_type"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "scope": {
+            "enum": [
+              "kb",
+              "document"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "media_type": {
+            "enum": [
+              "text/markdown",
+              "application/json"
+            ]
+          },
+          "renderer": {
+            "enum": [
+              "timeline",
+              "table",
+              "kv"
+            ]
+          }
+        }
+      }
+    },
+    "settings_schema": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "JSON Schema using the config_schema keywords. x-secret marks write-only fields."
+    },
+    "search_options_schema": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "JSON Schema using the config_schema keywords."
+    },
+    "export_formats": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+$"
       }
     }
   }
