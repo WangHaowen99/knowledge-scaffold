@@ -222,7 +222,8 @@ def test_malformed_questions_can_receive_reask_feedback(questions):
     reason = "合成格式原因，请修正后重新提问"
     _fill_interactive_input(ii, "interaction_demo", {"tool_name": "ask_user", "questions": questions},
         {"behavior": "deny", "message": reason})
-    assert reason in filled["interaction_demo"]["answers"].values()
+    response = filled.get("interaction_demo", {})
+    assert reason in response.get("answers", {}).values()
 
 
 # ---- 历史回放 ----

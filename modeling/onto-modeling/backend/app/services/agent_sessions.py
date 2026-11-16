@@ -550,9 +550,15 @@ class SessionManager:
             if session and request_id in session.pending_permissions:
                 raise SessionError("该问题仍在等待回答，请直接提交原问题卡", 409)
             history = self.get_history(project_id, conversation_id)
-            question = next((event for event in history
-                if event.get("type") == "permission_request" and event.get("request_id") == request_id
-                and event.get("tool_name") == "AskUserQuestion"), None)
+            question = None
+            for event in history:
+                if (
+                    event.get("type") == "permission_request"
+                    and event.get("request_id") == request_id
+                    and event.get("tool_name") == "AskUserQuestion"
+                ):
+                    question = event
+                    break
             if question is None:
                 raise SessionError("原问题不属于当前会话，请刷新后重试", 404)
             resolution = next((event for event in reversed(history)
