@@ -189,12 +189,17 @@ def test_added_lists_new_entries_and_their_links_to_the_base(repo):
     assert "还没有新增条目" in out and not (repo / "ext/domain-extend/added.json").exists()
     write(repo, "ontology/object/订单配送扩展.md", "# 订单配送扩展\n\n关联[[订单|订单号]]，见[[不存在的对象]]。\n")
     write(repo, "ontology/operation/限时配送.md", "## 逻辑描述\n\n调用[[下单]]逻辑文档，再读取[[订单配送扩展]]。\n")
+    write(repo, "ontology/scripts/限时配送.py", "print('合成')\n")
+    write(repo, "ontology/scripts/限时配送.md", "# 限时配送\n\n脚本描述符\n")
     out = ok(repo, "added")
-    assert "新增条目 2 个" in out and "订单配送扩展（ontology/object/订单配送扩展.md）→ 订单" in out
-    entries = {item["name"]: item for item in read_json(repo, "ext/domain-extend/added.json")["entries"]}
-    assert entries["订单配送扩展"]["refs_to_base"] == ["订单"]
-    assert entries["订单配送扩展"]["unresolved"] == ["不存在的对象"]
-    assert entries["限时配送"]["refs_to_base"] == ["下单"] and entries["限时配送"]["unresolved"] == []
+    # 脚本和同名描述符算一个条目
+    assert "新增条目 3 个（对象 1、操作 1、脚本 1）" in out
+    assert "订单配送扩展（ontology/object/订单配送扩展.md）→ 订单" in out
+    entries = {item["path"]: item for item in read_json(repo, "ext/domain-extend/added.json")["entries"]}
+    assert entries["ontology/object/订单配送扩展.md"]["refs_to_base"] == ["订单"]
+    assert entries["ontology/object/订单配送扩展.md"]["unresolved"] == ["不存在的对象"]
+    operation = entries["ontology/operation/限时配送.md"]
+    assert operation["refs_to_base"] == ["下单"] and operation["unresolved"] == [] and operation["shadows"] is None
 
 
 # ---- 核对与撤回 ----
@@ -223,6 +228,17 @@ def test_check_lists_every_change_to_the_base_including_uncommitted_ones(repo):
     assert text.count("- [ ] 底座") == 3 and "被移动或改名到 ontology/rule/金额上限.md" in text
     assert "- [ ] ontology/operation/订单.md 和底座条目 ontology/object/订单.md 同名" in text
     assert "被改动 3 处" in out and "和底座重名 1 个" in out
+
+
+def test_scripts_cases_and_mocks_named_after_base_entries_are_not_shadows(repo):
+    """脚本、用例、测试数据按惯例和它服务的操作、对象同名：给底座操作补脚本、给底座对象补测试数据不算重名。"""
+    bound(repo)
+    write(repo, "ontology/scripts/派送.py", "print('合成')\n")
+    write(repo, "ontology/testcase/下单.md", "# 下单\n\n合成用例\n")
+    write(repo, "ontology/data-mock/订单.md", "# 订单\n\n| 编号 |\n| --- |\n| D001 |\n")
+    _, report = checked(repo)
+    assert [item["shadows"] for item in report["extension"]] == [None, None, None]
+    assert "[ ]" not in (repo / "ext/domain-extend/check.md").read_text(encoding="utf-8")
 
 
 def test_restore_puts_the_imported_bytes_back_and_deletes_nothing(repo):

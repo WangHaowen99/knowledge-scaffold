@@ -39,6 +39,8 @@ CONFINED_DIRS = ("object", "operation", "logic", "rule", "metric", "action", "da
 KIND_LABELS = {"object": "对象", "operation": "操作", "logic": "操作", "rule": "规则", "metric": "指标",
                "scripts": "脚本", "solver": "求解契约", "action": "动作", "data-mock": "测试数据", "testcase": "用例"}
 KIND_ALIASES = {label: key for key, label in KIND_LABELS.items() if key != "logic"}
+# [[链接]] 指得到的文档：只有它们之间同名才会让链接指歧义。脚本、用例、测试数据按惯例和它服务的操作、对象同名
+LINKED_DIRS = ("object", "operation", "logic", "rule", "metric", "action")
 # 给助手读的标准输出、md 最多列这么多条，完整清单在 json 里
 STDOUT_CAP = 20
 LIST_CAP = 50
@@ -247,11 +249,18 @@ def capped(items: list, render, *, cap: int, pointer: str) -> list[str]:
     return lines
 
 
+def _entries(paths) -> list[tuple[str, str]]:
+    """文件 → 条目：脚本的 .py 和同名描述符 .md 算一个条目。"""
+    return sorted({(kind_of(rel), entry_name(rel)) for rel in paths})
+
+
 def _counts(paths) -> str:
+    """「N 个（对象 a、操作 b…）」：按条目数，不按文件数。"""
+    entries = _entries(paths)
     tally: dict[str, int] = {}
-    for rel in paths:
-        tally[kind_of(rel)] = tally.get(kind_of(rel), 0) + 1
-    return "、".join(f"{kind} {count}" for kind, count in tally.items()) or "无"
+    for kind, _name in entries:
+        tally[kind] = tally.get(kind, 0) + 1
+    return f"{len(entries)} 个（" + ("、".join(f"{kind} {count}" for kind, count in tally.items()) or "无") + "）"
 
 
 def _now() -> str:
@@ -284,7 +293,7 @@ def bind(root: Path) -> None:
         "# 底座（领域本体包）", "",
         f"- 领域本体包：{package_text(package)}",
         f"- 导入提交：{commit[:8]}",
-        f"- 底座条目：{len(base)} 个（{_counts(base)}）",
+        f"- 底座条目：{_counts(base)}",
         f"- 锁定时间：{scope['bound_at']}", "",
         "底座条目一律不改、不删、不改名，也不加属性、章节或关系；新功能用新增条目实现，用 [[链接]] 引用下面的条目。", "",
         "## 条目", "",
@@ -292,7 +301,7 @@ def bind(root: Path) -> None:
                 pointer=BASE_JSON.as_posix()),
     ]
     (root / BASE_MD).write_text("\n".join(lines) + "\n", encoding="utf-8")
-    say(f"底座已锁定：领域本体包{package_text(package)}，导入提交 {commit[:8]}，底座条目 {len(base)} 个（{_counts(base)}）。")
+    say(f"底座已锁定：领域本体包{package_text(package)}，导入提交 {commit[:8]}，底座条目 {_counts(base)}。")
     say("这一轮合入主线后锁定对之后的修改一直有效（发布后要重新锁定）；这一轮里也已经不能改底座条目。新增条目不受限。")
 
 
@@ -303,7 +312,7 @@ def status(root: Path) -> None:
     commit, base = base_files(root)
     locked, reason = lock_state(root, commit)
     violations = integrity(root, base)
-    say(f"领域本体包{package_text(package_identity(root, commit))}，导入提交 {commit[:8]}，底座条目 {len(base)} 个。")
+    say(f"领域本体包{package_text(package_identity(root, commit))}，导入提交 {commit[:8]}，底座条目 {_counts(base)}。")
     say(f"底座锁定：{reason}。" + ("" if locked else "运行 /domain-extend-bind 锁定。"))
     say(f"底座被改动：{len(violations)} 处。" + ("运行 /domain-extend-check 核对。" if violations else ""))
 
@@ -343,11 +352,16 @@ def _links(root: Path, rel: str) -> list[str]:
     return names
 
 
+def _linked(rel: str) -> bool:
+    return rel.split("/")[1] in LINKED_DIRS
+
+
 def extension(root: Path, base: dict[str, str]) -> list[dict]:
-    """新增条目：工作区里有、底座里没有的条目文件，带它对底座的引用和指不到的链接。"""
+    """新增条目：工作区里有、底座里没有的条目文件，带它对底座的引用、指不到的链接、和哪个底座文档同名。"""
     present = current_files(root)
     all_names = {entry_name(rel) for rel in present}
     base_names = {entry_name(rel): rel for rel in base}
+    base_docs = {entry_name(rel): rel for rel in base if _linked(rel)}
     out = []
     for rel in present:
         if rel in base:
@@ -357,7 +371,7 @@ def extension(root: Path, base: dict[str, str]) -> list[dict]:
             "path": rel, "kind": kind_of(rel), "name": entry_name(rel),
             "refs_to_base": [name for name in links if name in base_names],
             "unresolved": [name for name in links if name not in all_names],
-            "shadows": base_names.get(entry_name(rel)),
+            "shadows": base_docs.get(entry_name(rel)) if _linked(rel) else None,
         })
     return out
 
@@ -371,7 +385,7 @@ def added(root: Path) -> None:
         say("还没有新增条目：新功能要落成新建的对象、操作、规则、指标或脚本。")
     else:
         write_json(root / ADDED_JSON, {"at": _now(), "import_commit": commit, "entries": items})
-        say(f"新增条目 {len(items)} 个（{_counts(item['path'] for item in items)}），已记到 {ADDED_JSON.as_posix()}。")
+        say(f"新增条目 {_counts(item['path'] for item in items)}，已记到 {ADDED_JSON.as_posix()}。")
         for line in capped(items, _added_line, cap=STDOUT_CAP, pointer=ADDED_JSON.as_posix()):
             say(line)
     if violations:
@@ -431,8 +445,8 @@ def check(root: Path) -> None:
     })
     lines = [
         "# 底座核对", "",
-        f"- 领域本体包：{package_text(package)}，导入提交 {commit[:8]}，底座条目 {len(base)} 个",
-        f"- 新增条目：{len(items)} 个（{_counts(item['path'] for item in items)}）",
+        f"- 领域本体包：{package_text(package)}，导入提交 {commit[:8]}，底座条目 {_counts(base)}",
+        f"- 新增条目：{_counts(item['path'] for item in items)}",
         f"- 核对时间：{_now()}", "",
         "## 结论", "",
         "底座和导入时逐字一致，可以发布。" if not pending else f"有 {pending} 项要处理，处理完重新核对才能发布。", "",
@@ -448,7 +462,7 @@ def check(root: Path) -> None:
                  cap=LIST_CAP, pointer=CHECK_JSON.as_posix()) or ["没有。"]),
     ]
     (root / CHECK_MD).write_text("\n".join(lines) + "\n", encoding="utf-8")
-    say(f"底座核对：底座条目 {len(base)} 个，被改动 {len(violations)} 处，新增条目 {len(items)} 个，"
+    say(f"底座核对：底座条目 {len(_entries(base))} 个，被改动 {len(violations)} 处，新增条目 {len(_entries(item['path'] for item in items))} 个，"
         f"和底座重名 {len(shadows)} 个；底座锁定：{reason}。报告在 {CHECK_MD.as_posix()}。")
     for line in capped(violations, _violation_line, cap=STDOUT_CAP, pointer=CHECK_JSON.as_posix()):
         say(line)
