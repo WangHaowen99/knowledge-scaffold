@@ -6,10 +6,12 @@ import { api } from '../../lib/api.js';
 import { setWorkspaceDirty } from '../../lib/workspaceDirty.js';
 import FlowchartEditor from './FlowchartEditor.jsx';
 import './flowchart-editor.css';
-import { parseDrawioToDocument, serializeDocumentToDrawio } from './drawioConvert.js';
+import { FlowchartValidationError, parseDrawioToDocument, serializeDocumentToDrawio } from './drawioConvert.js';
+import { inspectDrawioRepair } from './drawioRepair.js';
 
 // drawio 原生编辑器（iframe，重）只在用户切换或解析失败时加载
 const DrawioView = lazy(() => import('../DrawioView.jsx'));
+const DrawioRepairPanel = lazy(() => import('./DrawioRepairPanel.jsx'));
 
 /* drawio 流程图视图：默认用 modeling 同款 ReactFlow 编辑器（秒开、样式统一），
    保存时按资产节点样式约定回写 drawio XML；压缩存储或解析失败回退 drawio 编辑器。 */
@@ -22,12 +24,15 @@ export default function FlowchartView({ project, path, drawioAvailable, onWorksp
   const revisionRef = useRef('');
   const loadGenerationRef = useRef(0);
   const editorStateRef = useRef(null);
+  const repairDirtyRef = useRef(false);
+  const onRepairDirtyChange = useCallback((dirty) => { repairDirtyRef.current = dirty; }, []);
   // 标准编辑器全屏：铺满视口，Esc 退出（drawio 高级编辑自带全屏按钮）
   const [fullscreen, setFullscreen] = useState(false);
 
   const load = useCallback(() => {
     const generation = ++loadGenerationRef.current;
     editorStateRef.current = null;
+    repairDirtyRef.current = false;
     api
       .readFile(project.id, path)
       .then((data) => {
@@ -37,8 +42,13 @@ export default function FlowchartView({ project, path, drawioAvailable, onWorksp
           const doc = parseDrawioToDocument(data.content, path.split('/').pop());
           revisionRef.current = data.revision;
           setState({ loading: false, doc, revision: data.revision });
-        } catch {
-          setState({ loading: false, fallback: true });
+        } catch (error) {
+          const repairable = error instanceof FlowchartValidationError
+            && inspectDrawioRepair(data.content).length > 0;
+          setState({ loading: false, fallback: true,
+            validationError: error instanceof FlowchartValidationError ? error.message : '',
+            repairContent: repairable ? data.content : '',
+            revision: data.revision });
         }
       })
       .catch((error) => {
@@ -67,7 +77,7 @@ export default function FlowchartView({ project, path, drawioAvailable, onWorksp
 
   useEffect(() => {
     const guard = (event) => {
-      if (!editorStateRef.current?.dirty) return;
+      if (!editorStateRef.current?.dirty && !repairDirtyRef.current) return;
       event.preventDefault();
       event.returnValue = '';
     };
@@ -91,20 +101,20 @@ export default function FlowchartView({ project, path, drawioAvailable, onWorksp
   if (state.loading) return <Spin style={{ margin: 48 }} />;
   if (state.error) return <Alert type="error" showIcon message={state.error} />;
 
-  const useDrawio = mode === 'drawio' || state.fallback;
+  const useDrawio = mode === 'drawio' || (state.fallback && !state.repairContent);
   const expanded = fullscreen && !useDrawio;
   const switchEditor = (next) => {
     if (next === mode && !state.fallback) return;
-    if (next === 'drawio' && (editorStateRef.current?.dirty || editorStateRef.current?.saveStatus === 'saving')
+    if (next === 'drawio' && (editorStateRef.current?.dirty || editorStateRef.current?.saveStatus === 'saving' || repairDirtyRef.current)
       && !window.confirm('当前流程图有未保存修改。切换到原生 drawio 编辑器会丢弃这些修改，确定继续吗？')) return;
-    if (state.fallback && next === 'standard') {
-      message.info('该文件使用压缩存储，暂只支持 drawio 编辑器打开');
+    if (state.fallback && !state.repairContent && next === 'standard') {
+      message.info(state.validationError || '该文件使用压缩存储，暂只支持 drawio 编辑器打开');
       return;
     }
     setMode(next);
     editorStateRef.current = null;
     setFullscreen(false);
-    if (next === 'standard') {
+    if (next === 'standard' && !state.repairContent) {
       setState({ loading: true });
       load();
     }
@@ -121,7 +131,7 @@ export default function FlowchartView({ project, path, drawioAvailable, onWorksp
             { label: 'drawio 高级编辑', value: 'drawio' },
           ]}
         />
-        {state.fallback && (
+        {state.fallback && !state.validationError && (
           <span className="flowchart-host-hint">压缩格式，已回退 drawio 编辑器</span>
         )}
         {!useDrawio && (
@@ -136,7 +146,16 @@ export default function FlowchartView({ project, path, drawioAvailable, onWorksp
           </Tooltip>
         )}
       </div>
-      {useDrawio ? (
+      {state.validationError && !state.repairContent && (
+        <Alert type="error" showIcon message={`标准编辑器无法打开：${state.validationError}`} />
+      )}
+      {state.repairContent && mode !== 'drawio' ? (
+        <Suspense fallback={<Spin style={{ margin: 48 }} />}>
+          <DrawioRepairPanel project={project} path={path} content={state.repairContent}
+            revision={state.revision} onDirtyChange={onRepairDirtyChange}
+            onSaved={() => { onWorkspaceChanged?.(); load(); }} />
+        </Suspense>
+      ) : useDrawio ? (
         <Suspense fallback={<Spin style={{ margin: 48 }} />}>
           <DrawioView
             project={project}
@@ -144,6 +163,7 @@ export default function FlowchartView({ project, path, drawioAvailable, onWorksp
             editorAvailable={drawioAvailable}
             onSaved={() => {
               onWorkspaceChanged?.();
+              load();
             }}
           />
         </Suspense>

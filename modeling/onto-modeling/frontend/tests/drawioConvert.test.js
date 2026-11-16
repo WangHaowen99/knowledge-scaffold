@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DOMParser } from '@xmldom/xmldom';
 import {
+  FlowchartValidationError,
   parseDrawioToDocument,
   serializeDocumentToDrawio,
 } from '../src/components/flowchart/drawioConvert.js';
@@ -11,6 +12,43 @@ import {
 } from '../src/components/flowchart/flowchartEditorState.js';
 
 globalThis.DOMParser = DOMParser;
+
+function syntheticXml(cells) {
+  return `<mxfile><diagram name="合成流程"><mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>${cells}
+  </root></mxGraphModel></diagram></mxfile>`;
+}
+
+function syntheticNode(id, kind = 'action') {
+  return `<mxCell id="${id}" value="合成节点" vertex="1" parent="1" data-flowchart-node-kind="${kind}">
+    <mxGeometry x="20" y="20" width="100" height="60" as="geometry"/>
+  </mxCell>`;
+}
+
+test('标准编辑器拒绝重复节点 ID、悬空边和非法节点类型', () => {
+  const invalid = [
+    [syntheticNode('same') + syntheticNode('same'), /节点 ID 重复：same/],
+    [syntheticNode('source') + '<mxCell id="edge1" edge="1" parent="1" source="source" target="missing"><mxGeometry relative="1" as="geometry"/></mxCell>', /连线 edge1 指向不存在的节点/],
+    [syntheticNode('node1', 'invalid-test-kind'), /节点类型无效：invalid-test-kind/],
+  ];
+  for (const [cells, expected] of invalid) {
+    assert.throws(() => parseDrawioToDocument(syntheticXml(cells)), expected);
+  }
+});
+
+test('保存前重新校验，拒绝异常编辑器文档', () => {
+  const cases = [
+    [(doc) => doc.diagrams[0].nodes.push({ id: 'node1', kind: 'action', label: '重复' }), /节点 ID 重复/],
+    [(doc) => doc.diagrams[0].edges.push({ id: 'edge1', from: 'node1', to: 'missing', kind: 'sequence' }), /指向不存在的节点/],
+    [(doc) => { doc.diagrams[0].nodes[0].kind = 'invalid-test-kind'; }, /节点类型无效/],
+  ];
+  for (const [mutate, expected] of cases) {
+    const document = parseDrawioToDocument(syntheticXml(syntheticNode('node1')));
+    mutate(document);
+    assert.throws(() => serializeDocumentToDrawio(document), (error) =>
+      error instanceof FlowchartValidationError && expected.test(error.message));
+  }
+});
 
 test('独立文字标注归入对应分支连线，保存后保持原图结构', () => {
   const xml = `<mxfile><diagram name="示例"><mxGraphModel><root>
