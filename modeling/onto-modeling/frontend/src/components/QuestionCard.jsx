@@ -15,11 +15,11 @@ export default function QuestionCard({ req, resolved, resolution, onAnswer, onRe
   const inputs = useRef({});
   const cardId = useId();
   const submission = buildQuestionSubmission(questions, selected, custom);
-  // 补发会先收到旧卡失效事件；补发失败后仍应保留当前输入供重试。
-  const retryingExpired = resolution?.behavior === 'expired' && (submitted || Boolean(submitError));
-  const closed = Boolean(localResolution) || (resolved && !retryingExpired);
+  const result = localResolution || resolution;
+  const expired = result?.behavior === 'expired';
+  const preserveDraft = expired && (Object.keys(selected).length > 0 || Object.keys(custom).length > 0);
+  const closed = Boolean(localResolution) || resolved;
   const locked = closed || submitted;
-  const result = localResolution || (retryingExpired ? null : resolution);
   const recordedAnswers = result?.answers;
   const stateLabel = result?.reason === 'timeout' ? '已超时'
     : result?.behavior === 'forwarded' ? '已补发'
@@ -27,7 +27,7 @@ export default function QuestionCard({ req, resolved, resolution, onAnswer, onRe
     : result?.behavior === 'deny' ? '已取消'
     : closed ? '已答复' : submitted ? '提交中' : '等待你回答';
   const historyNotice = closed && result?.behavior === 'expired'
-    ? '该问题已失效，如需继续请直接给助手发消息。'
+    ? `该问题已失效，请让助手重新提问。${preserveDraft ? '当前填写的回答已保留，尚未提交。' : ''}`
     : closed && (!result || result.behavior === 'allow') && !submission.invalid &&
       questions.some((question) => !Object.hasOwn(recordedAnswers || {}, question.question))
       ? '此历史记录未保存完整答案。' : '';
@@ -40,9 +40,13 @@ export default function QuestionCard({ req, resolved, resolution, onAnswer, onRe
     try {
       setLocalResolution(await action());
     } catch (error) {
-      setSubmitted(false);
-      setSubmitError(error.message || '提交失败，回答已保留，请重试。');
+      if (error.status === 410 || error.status === 404) {
+        setLocalResolution({ behavior: 'expired' });
+      } else {
+        setSubmitError(error.message || '提交失败，回答已保留，请重试。');
+      }
     } finally {
+      setSubmitted(false);
       submitting.current = false;
     }
   };
@@ -132,7 +136,7 @@ export default function QuestionCard({ req, resolved, resolution, onAnswer, onRe
                 })}
               </div>
             )}
-            {closed ? recordedAnswer != null && (
+            {closed && !preserveDraft ? recordedAnswer != null && (
               <div className="qc-custom">
                 <div className="question-answer">{recordedAnswer}</div>
               </div>
@@ -147,7 +151,8 @@ export default function QuestionCard({ req, resolved, resolution, onAnswer, onRe
                   aria-labelledby={`${questionId} ${inputId}-label`}
                   ref={(input) => { inputs.current[index] = input; }}
                   autoSize={{ minRows: 1, maxRows: 6 }}
-                  disabled={locked}
+                  disabled={locked && !preserveDraft}
+                  readOnly={expired}
                   aria-invalid={invalid || undefined}
                   aria-describedby={invalid ? `${inputId}-error` : undefined}
                   value={custom[index] || ''}

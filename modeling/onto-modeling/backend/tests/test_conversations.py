@@ -84,34 +84,6 @@ async def _send_and_idle(env, text: str, conversation_id: str | None = None):
     return session
 
 
-def test_expired_question_forward_uses_normal_session_send_and_persists_answers(conv_env):
-    env = conv_env
-    path = env.sessions_dir / "p1.jsonl"
-    _write_history(path, [
-        {"type": "permission_request", "request_id": "request_demo", "tool_name": "AskUserQuestion",
-         "tool_input": {"questions": [{"question": "合成问题"}]}},
-        {"type": "session_state", "state": "running"},
-    ])
-
-    async def run():
-        session = await env.manager.forward_question_answer(
-            "p1", env.cwd, "request_demo", {"合成问题": "合成回答"}, "default")
-        await _settle(env.manager, "p1")
-        assert env.created[0].queries == ["合成问题\n我的回答：合成回答"]
-        saved = load_history("p1")
-        resolution = [event for event in saved if event.get("type") == "permission_resolved"][-1]
-        assert resolution["behavior"] == "forwarded"
-        assert resolution["answers"] == {"合成问题": "合成回答"}
-        assert any(event.get("type") == "user_message" for event in saved)
-        assert session.state == "running"
-        with pytest.raises(SessionError, match="已处理"):
-            await env.manager.forward_question_answer("p1", env.cwd, "request_demo", {"合成问题": "合成回答"})
-        assert len(env.created[0].queries) == 1
-        await env.manager.shutdown()
-
-    asyncio.run(run())
-
-
 # ---- 索引与标题 ----
 
 

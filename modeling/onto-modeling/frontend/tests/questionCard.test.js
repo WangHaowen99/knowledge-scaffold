@@ -104,7 +104,7 @@ test('正常卡保留显式提交按钮和快捷键提示', () => {
   assert.match(html, /type="submit"/);
 });
 
-test('失效事件先到、补发失败时保留原输入并允许重试，成功后显示已补发', async () => {
+function interactiveHarness(onAnswer) {
   const slots = [];
   let cursor = 0;
   const useSlot = (initial) => {
@@ -119,14 +119,12 @@ test('失效事件先到、补发失败时保留原输入并允许重试，成�
       useState: useSlot, useRef: (initial) => useSlot(() => ({ current: initial }))[0], useId: () => 'synthetic-card',
     } : specifier === '../lib/questionAnswers.js' ? questionAnswers : require(specifier),
   );
-  let fail, attempts = 0;
   const props = {
-    req: { request_id: 'request_demo', tool_input: { questions: [{ question: '合成问题' }] } },
-    onAnswer: async (_id, answers) => {
-      attempts++;
-      if (attempts === 1) await new Promise((_resolve, reject) => { fail = reject; });
-      return { behavior: 'forwarded', answers };
-    },
+    req: { request_id: 'request_demo', tool_input: { questions: [
+      { question: '合成单选', options: [{ label: '合成选项' }] },
+      { question: '合成文字甲' }, { question: '合成文字乙' },
+    ] } },
+    onAnswer,
   };
   const draw = () => { cursor = 0; return interactiveModule.exports.default(props); };
   const find = (element, predicate) => {
@@ -134,21 +132,80 @@ test('失效事件先到、补发失败时保留原输入并允许重试，成�
     if (predicate(element)) return element;
     return [element.props?.children].flat(Infinity).map((child) => find(child, predicate)).find(Boolean);
   };
-  find(draw(), (node) => node.props?.name === 'answer-0').props.onChange({ target: { value: '合成待补发答案' } });
-  const pending = draw().props.onSubmit({ preventDefault() {} });
-  props.resolved = true;
-  props.resolution = { behavior: 'expired' };
-  assert.equal(find(draw(), (node) => node.props?.name === 'answer-0').props.value, '合成待补发答案');
-  fail(new Error('合成 409 冲突'));
-  await pending;
-  const retry = draw();
-  const input = find(retry, (node) => node.props?.name === 'answer-0');
-  assert.equal(input.props.value, '合成待补发答案');
+  const fill = () => {
+    find(draw(), (node) => node.type === 'button' && node.props?.className?.startsWith('question-option')).props.onClick();
+    for (const [index, value] of [[1, '合成回答甲'], [2, '合成回答乙']]) {
+      find(draw(), (node) => node.props?.name === `answer-${index}`).props.onChange({ target: { value } });
+    }
+  };
+  return { props, draw, find, fill };
+}
+
+for (const status of [410, 404]) {
+  for (const expiredEventFirst of [false, true]) {
+    test(`${status} 失效后保留两题文字和所选项，关闭提交；失效事件先到=${expiredEventFirst}`, async () => {
+      let reject, attempts = 0;
+      const h = interactiveHarness(async () => {
+        attempts++;
+        await new Promise((_resolve, fail) => { reject = fail; });
+      });
+      h.fill();
+      const pending = h.draw().props.onSubmit({ preventDefault() {} });
+      if (expiredEventFirst) {
+        h.props.resolved = true;
+        h.props.resolution = { behavior: 'expired' };
+        assert.equal(h.find(h.draw(), (node) => node.props?.name === 'answer-1').props.value, '合成回答甲');
+      }
+      reject(Object.assign(new Error('合成问题失效'), { status }));
+      await pending;
+      const expired = h.draw();
+      for (const [index, value] of [[1, '合成回答甲'], [2, '合成回答乙']]) {
+        const input = h.find(expired, (node) => node.props?.name === `answer-${index}`);
+        assert.equal(input.props.value, value);
+        assert.equal(input.props.readOnly, true);
+        assert.equal(input.props.disabled, false);
+      }
+      const choice = h.find(expired, (node) => node.type === 'button' && node.props?.className?.startsWith('question-option'));
+      assert.equal(choice.props['aria-pressed'], true);
+      assert.equal(choice.props.disabled, true);
+      assert.ok(h.find(expired, (node) => node.props?.role === 'status' &&
+        typeof node.props.children === 'string' && node.props.children.includes('该问题已失效，请让助手重新提问')));
+      assert.equal(h.find(expired, (node) => node.props?.htmlType === 'submit'), undefined);
+      await expired.props.onSubmit({ preventDefault() {} });
+      assert.equal(attempts, 1);
+    });
+  }
+}
+
+test('主动收到失效事件也保留当前答案，不依赖提交失败才能保留', () => {
+  const h = interactiveHarness(async () => assert.fail('失效卡不得提交'));
+  h.fill();
+  h.props.resolved = true;
+  h.props.resolution = { behavior: 'expired' };
+  const expired = h.draw();
+  assert.equal(h.find(expired, (node) => node.props?.name === 'answer-1').props.value, '合成回答甲');
+  assert.equal(h.find(expired, (node) => node.props?.name === 'answer-2').props.value, '合成回答乙');
+  assert.equal(h.find(expired, (node) => node.props?.htmlType === 'submit'), undefined);
+});
+
+test('非失效错误保留可编辑答案并允许手动重试，成功后展示已保存答案', async () => {
+  let attempts = 0;
+  const h = interactiveHarness(async (_id, answers) => {
+    attempts++;
+    if (attempts === 1) throw Object.assign(new Error('合成 409 冲突'), { status: 409 });
+    return { behavior: 'allow', answers };
+  });
+  h.fill();
+  await h.draw().props.onSubmit({ preventDefault() {} });
+  const retry = h.draw();
+  const input = h.find(retry, (node) => node.props?.name === 'answer-1');
+  assert.equal(input.props.value, '合成回答甲');
   assert.equal(input.props.disabled, false);
-  assert.ok(find(retry, (node) => node.props?.role === 'alert' && node.props.children === '合成 409 冲突'));
+  assert.equal(input.props.readOnly, false);
+  assert.ok(h.find(retry, (node) => node.props?.role === 'alert' && node.props.children === '合成 409 冲突'));
   await retry.props.onSubmit({ preventDefault() {} });
-  const done = draw();
-  assert.equal(find(done, (node) => node.props?.name === 'answer-0'), undefined);
-  assert.ok(find(done, (node) => node.props?.className === 'question-answer' && node.props.children === '合成待补发答案'));
-  assert.ok(find(done, (node) => node.props?.role === 'status' && node.props.children.includes('已补发')));
+  const done = h.draw();
+  assert.ok(h.find(done, (node) => node.props?.className === 'question-answer' && node.props.children === '合成回答甲'));
+  assert.ok(h.find(done, (node) => node.props?.role === 'status' && node.props.children.includes('已答复')));
+  assert.equal(attempts, 2);
 });

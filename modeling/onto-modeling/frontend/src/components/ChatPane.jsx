@@ -1280,35 +1280,11 @@ export default function ChatPane({
   const [localResolved, setLocalResolved] = useState(() => new Set());
 
   const respondPermission = async (requestId, behavior, answers = null) => {
-    const targetConversation = conversationIdRef.current;
     try {
       await api.respondPermission(project.id, requestId, behavior, '', answers);
     } catch (error) {
-      // 会话重启后的失效确认卡：答案降级为普通消息续接（resume 会自动接上上下文）
-      if ((error.status === 410 || error.status === 404) && behavior === 'allow' && answers) {
-        if (sendingRef.current || uploading || goalPending) {
-          const blocked = new Error(goalPending ? '请先确认建模目标' : '消息正在提交，请勿重复操作');
-          message.warning(blocked.message);
-          throw blocked;
-        }
-        sendingRef.current = true;
-        setSubmitting(true);
-        try {
-          const response = await api.forwardQuestionAnswer(project.id, requestId, answers, targetConversation);
-          setLocalResolved((prev) => new Set(prev).add(requestId));
-          message.info('服务器已受理补发，回答已作为消息提交给助手');
-          setState(response.state);
-          setConversationsEpoch((epoch) => epoch + 1);
-          return { behavior: 'forwarded', answers };
-        } catch (sendError) {
-          message.error(sendError.message);
-          throw sendError;
-        } finally {
-          sendingRef.current = false;
-          setSubmitting(false);
-        }
-      }
       if (error.status === 410 || error.status === 404) {
+        if (answers) throw error;
         setLocalResolved((prev) => new Set(prev).add(requestId));
         message.info('该确认已失效（会话已重启），如需继续请直接发消息');
         return;

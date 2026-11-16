@@ -428,7 +428,6 @@ class SessionManager:
         # 各（项目, 会话）打开着的事件流队列：会话新建时直接挂上（首条消息、
         # 空闲回收后再发、切换会话后再发）
         self._watchers: dict[tuple[str, str], set[asyncio.Queue]] = {}
-        self._forwarding_questions: set[tuple[str, str, str]] = set()
 
     def _spawn(self, coro) -> None:
         task = asyncio.create_task(coro)
@@ -535,48 +534,6 @@ class SessionManager:
         }
 
     # ---- 发送与槽位调度 ----
-
-    async def forward_question_answer(
-        self, project_id: str, cwd: Path, request_id: str, answers: dict | None,
-        conversation_id: str | None = None, username: str = "",
-    ) -> Session:
-        """失效问题的答案按消息补发，受理成功后保存原卡片的回看状态。"""
-        conversation_id = self.resolve_conversation(project_id, conversation_id)
-        key = (project_id, conversation_id, request_id)
-        async with self._lock:
-            if key in self._forwarding_questions:
-                raise SessionError("回答正在补发，请勿重复操作", 409)
-            session = self._sessions.get(project_id)
-            if session and request_id in session.pending_permissions:
-                raise SessionError("该问题仍在等待回答，请直接提交原问题卡", 409)
-            history = self.get_history(project_id, conversation_id)
-            question = None
-            for event in history:
-                if (
-                    event.get("type") == "permission_request"
-                    and event.get("request_id") == request_id
-                    and event.get("tool_name") == "AskUserQuestion"
-                ):
-                    question = event
-                    break
-            if question is None:
-                raise SessionError("原问题不属于当前会话，请刷新后重试", 404)
-            resolution = next((event for event in reversed(history)
-                if event.get("type") == "permission_resolved" and event.get("request_id") == request_id), None)
-            if resolution and resolution.get("behavior") != "expired":
-                raise SessionError("该问题已处理，请刷新查看结果", 409)
-            _validate_question_answers((question.get("tool_input") or {}).get("questions"), answers)
-            self._forwarding_questions.add(key)
-        try:
-            text = "\n\n".join(f"{question}\n我的回答：{answer}" for question, answer in answers.items())
-            session = await self.send(project_id, cwd, text, conversation_id, username=username)
-            session.broadcast({
-                "type": "permission_resolved", "request_id": request_id,
-                "behavior": "forwarded", "answers": dict(answers),
-            })
-            return session
-        finally:
-            self._forwarding_questions.discard(key)
 
     async def send(
         self,

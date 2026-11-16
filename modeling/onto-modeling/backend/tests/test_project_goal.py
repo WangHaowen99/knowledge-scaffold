@@ -200,27 +200,6 @@ def test_project_without_goal_chats_without_confirmation(env):
     assert env.sent == [(PID, "开始建模")]
 
 
-def test_forwarded_question_uses_same_goal_gate_and_separate_dispatch(env, monkeypatch):
-    forwarded = []
-
-    async def forward(project_id, cwd, request_id, answers, conversation_id, username=""):
-        forwarded.append((project_id, request_id, answers, conversation_id))
-        return SimpleNamespace(id="session_demo", state="running", conversation_id="default")
-
-    monkeypatch.setattr(sessions.manager, "forward_question_answer", forward, raising=False)
-    body = sessions.ForwardQuestionBody(answers={"合成问题": "合成回答"})
-    with pytest.raises(WorkspaceError) as exc:
-        asyncio.run(sessions.forward_question_answer(PID, "request_demo", body, env.request))
-    assert exc.value.code == "goal_confirmation_required"
-    assert forwarded == []
-    projects.confirm_project_goal(PID, projects.GoalBody(), env.request)
-    assert asyncio.run(sessions.forward_question_answer(PID, "request_demo", body, env.request))["state"] == "running"
-    assert forwarded == [(PID, "request_demo", {"合成问题": "合成回答"}, None)]
-    assert env.sent == []
-    send_message(env)
-    assert env.sent == [(PID, "开始建模")]
-
-
 # ---- 注入提示词 ----
 
 

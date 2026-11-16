@@ -673,11 +673,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ text, conversation_id: conversationId || null }),
     }),
-  forwardQuestionAnswer: (pid, requestId, answers, conversationId) =>
-    request(`/api/projects/${pid}/session/questions/${encodeURIComponent(requestId)}/forward`, {
-      method: 'POST',
-      body: JSON.stringify({ answers, conversation_id: conversationId || null }),
-    }),
   respondPermission: (pid, requestId, behavior, message = '', answers = null) =>
     request(`/api/projects/${pid}/session/permissions/${requestId}`, {
       method: 'POST',
