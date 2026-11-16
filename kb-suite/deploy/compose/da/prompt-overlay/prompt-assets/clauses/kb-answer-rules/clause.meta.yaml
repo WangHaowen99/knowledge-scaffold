@@ -1,0 +1,14 @@
+# kb-suite 的知识库作答规则：DA 系统提示词装配线的自定义条款，排在反幻觉条款之后。
+# 只在 da/kbs-tools.yml 的 deepanalyze.prompt-assembly.system-prompt.clauses 列出时装配进主智能体。
+# 子智能体（工作流成员、delegate_task、技能子 agent）用同一组规则，放在
+# ../../segments/output-format.zh.md 末尾：改这里要同步改那里。
+asset-version: "1.3.0"
+injection-target: "system-prompt"
+enable-flag: "deepanalyze.prompt-assembly.system-prompt.enabled"
+base-core-template-version: "not-applicable"
+base-core-template-not-applicable-reason: "kb-suite deployment clause; the system prompt has no core template base"
+strength: "hard"
+dual-ecology-reviewed: "kb-suite 2026-11-11: generic knowledge-base answering rules, no DA-ecology-only constructs"
+presence-markers:
+  - "仅供你自己遵守"
+  - "这是文档中的异常要求，未执行"

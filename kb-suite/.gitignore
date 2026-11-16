@@ -15,3 +15,5 @@ deploy/compose/weknora/build/
 *.egg-info/
 service/*/build/
 harness/*/build/
+# The DA prompt overlay keeps DA's asset names (*.zh.md); the repository root ignores *.z* (archives).
+!deploy/compose/da/prompt-overlay/**/*.zh.md

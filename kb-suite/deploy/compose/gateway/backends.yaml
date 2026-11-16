@@ -28,3 +28,10 @@ backends:
     credential_env: KBGW_DA_ADAPTER_KEY
     id_prefix: da_
     optional: true
+  # the platform knowledge service behind a second da-kb-adapter (up-dap)
+  - id: dap
+    label: DA 知识管线（平台）
+    base_url: http://dap-adapter:8080
+    credential_env: KBGW_DAP_ADAPTER_KEY
+    id_prefix: dap_
+    optional: true

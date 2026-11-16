@@ -1,3 +1,4 @@
 *.sh text eol=lf
 Dockerfile text eol=lf
 **/Dockerfile text eol=lf
+kb-suite/deploy/compose/da/patches/*.patch text eol=lf
