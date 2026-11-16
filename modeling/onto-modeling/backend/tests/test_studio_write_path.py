@@ -62,6 +62,63 @@ def test_draft_roundtrip_and_discard(env):
     assert studio.lease_status("p2", "ontology/object/订单.md") is None
 
 
+def test_save_draft_rejects_obsolete_baseline_before_reacquiring_lease(env):
+    path = "ontology/object/订单.md"
+    with pytest.raises(studio.StudioError) as exc:
+        studio.save_draft(
+            "p2", path, "旧表单内容", "old-revision", "alice",
+            current_revision="new-revision",
+        )
+    assert exc.value.status == 409
+    assert "最新内容" in str(exc.value)
+    assert studio.get_draft("p2", path) is None
+    assert studio.lease_status("p2", path) is None
+
+
+def test_submit_guard_rejects_obsolete_draft_baseline():
+    with pytest.raises(studio.StudioError) as exc:
+        studio.ensure_draft_current(
+            {"base_revision": "old-revision"}, "new-revision"
+        )
+    assert exc.value.status == 409
+    assert "旧版本" in str(exc.value)
+
+
+def test_reconcile_draft_removes_content_already_applied_to_workspace(env):
+    path = "ontology/object/订单.md"
+    target = env / path
+    target.write_text(OBJECT_OK, encoding="utf-8")
+    studio.save_draft("p2", path, OBJECT_OK, "old-revision", "alice")
+    staged = env / studio.REVIEW_DIR / "订单.md"
+    staged.parent.mkdir(parents=True)
+    staged.write_text(OBJECT_OK, encoding="utf-8")
+
+    draft = studio.reconcile_draft("p2", env, path, OBJECT_OK.encode(), "new-revision")
+
+    assert draft is None
+    assert studio.get_draft("p2", path) is None
+    assert not staged.exists()
+
+
+def test_reconcile_draft_marks_old_baseline_without_deleting_content(env):
+    path = "ontology/object/订单.md"
+    studio.save_draft("p2", path, "未应用草稿", "old-revision", "alice")
+
+    draft = studio.reconcile_draft("p2", env, path, b"new workspace content", "new-revision")
+
+    assert draft["state"] == "stale"
+    assert draft["content"] == "未应用草稿"
+    assert studio.get_draft("p2", path)["content"] == "未应用草稿"
+    assert studio.get_active_draft("p2", path) is None
+    assert studio.lease_status("p2", path)["owner"] == "alice"
+
+    restored = studio.reconcile_draft(
+        "p2", env, path, b"restored workspace content", "old-revision"
+    )
+    assert restored["state"] == "active"
+    assert studio.get_active_draft("p2", path)["state"] == "active"
+
+
 def test_deterministic_check_pass(env):
     checks = studio.deterministic_check(env, "ontology/object/订单.md", OBJECT_OK)
     assert checks["errors"] == []
@@ -102,6 +159,56 @@ def test_studio_submit_reuses_held_project_lock(tmp_path, monkeypatch):
     assert studio.get_draft(meta["id"], path) is None
 
 
+def test_studio_submit_rejects_stale_review_draft_before_calling_agent(
+    tmp_path, monkeypatch
+):
+    from app import config
+    from app.routers import projects
+    from app.services import agent_sessions
+    from app.services.workspace import _content_revision
+
+    assets = tmp_path / "assets"
+    (assets / "workspace-toolkit/templates").mkdir(parents=True)
+    (assets / "workspace-rules.md").write_text("# synthetic rules", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    manager = WorkspaceManager(data_dir, assets)
+    meta = manager.create_project("workspace_demo")
+    root = manager.project_root(meta["id"])
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(projects, "workspaces", manager)
+    path = "ontology/object/订单.md"
+    target = root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(OBJECT_OK, encoding="utf-8")
+    baseline = _content_revision(target.read_bytes())
+    studio.save_draft(
+        meta["id"], path, OBJECT_OK + "\n# 自定义章节\n\n合成内容\n",
+        baseline, "本机用户",
+    )
+    target.write_text(OBJECT_OK.replace("核心record", "最新合成记录"), encoding="utf-8")
+
+    called = False
+
+    async def reject_agent_call(*_args, **_kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(agent_sessions.manager, "send", reject_agent_call)
+    request = SimpleNamespace(state=SimpleNamespace(user=None))
+
+    with pytest.raises(WorkspaceError) as exc:
+        asyncio.run(
+            projects.studio_submit(
+                meta["id"], projects.StudioLeaseBody(path=path), request
+            )
+        )
+
+    assert exc.value.status == 409
+    assert "旧版本" in str(exc.value)
+    assert called is False
+    assert studio.get_draft(meta["id"], path)["state"] == "stale"
+
+
 def test_deterministic_check_rejects_missing_section(env):
     bad = "# 对象描述\n\n只有描述\n"
     checks = studio.deterministic_check(env, "ontology/object/订单.md", bad)
@@ -114,6 +221,32 @@ def test_deterministic_check_routes_to_review(env):
     assert checks["errors"] == []
     assert any("自定义章节" in r for r in checks["review"])
     assert any("不存在的对象" in r for r in checks["review"])
+
+
+def test_deterministic_check_does_not_report_unchanged_existing_extra_sections(env):
+    path = env / "ontology" / "object" / "订单.md"
+    baseline = OBJECT_OK + "\n# 数据来源\n\n合成来源\n\n# 查询边界\n\n只读查询\n"
+    path.write_text(baseline, encoding="utf-8")
+    draft = baseline.replace("订单是交易的核心record。", "订单是交易的核心合成记录。")
+
+    checks = studio.deterministic_check(env, "ontology/object/订单.md", draft)
+
+    assert checks["errors"] == []
+    assert not any("数据来源" in item or "查询边界" in item for item in checks["review"])
+
+
+def test_deterministic_check_reports_changed_existing_extra_section(env):
+    path = env / "ontology" / "object" / "订单.md"
+    baseline = OBJECT_OK + "\n# 数据来源\n\n合成来源\n"
+    path.write_text(baseline, encoding="utf-8")
+
+    checks = studio.deterministic_check(
+        env,
+        "ontology/object/订单.md",
+        baseline.replace("合成来源", "另一合成来源"),
+    )
+
+    assert "修改了模板外的章节「数据来源」" in checks["review"]
 
 
 def test_sections_serialize_roundtrip():
