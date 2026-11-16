@@ -48,12 +48,18 @@ test('不要求文字题选择占位项，文字优先于模型生成的选项',
 });
 
 test('Other 输入指引不能冒充答案，普通业务选项不被误判', () => {
-  for (const label of ['Other', '其他', '（点 Other 输入自由文本）', '占位示例一']) {
+  for (const label of ['Other', '（点 Other 输入自由文本）', '占位示例一']) {
     assert.equal(isCustomAnswerOption({ label }), true);
   }
-  for (const label of ['方案一', '其他方案继续使用', 'Another option']) {
+  for (const label of ['方案一', '其他', '其它', '其他方案继续使用', 'Another option']) {
     assert.equal(isCustomAnswerOption({ label }), false);
   }
+});
+
+test('正常的其他选项与多选补充文字可以同时提交', () => {
+  const list = [{ question: '合成多选', multiSelect: true, options: [{ label: '其他' }, { label: '方案一' }] }];
+  assert.equal(buildQuestionSubmission(list, { 0: ['其他'] }, { 0: '人工合成说明' })
+    .answers.合成多选, '其他,人工合成说明');
 });
 
 test('非字符串选项说明不阻止填写正式选项或文字', () => {

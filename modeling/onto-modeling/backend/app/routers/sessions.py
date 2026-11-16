@@ -19,6 +19,11 @@ class MessageBody(BaseModel):
     conversation_id: str | None = None  # 省略 = 引擎当前绑定的会话，否则最近更新的一条
 
 
+class ForwardQuestionBody(BaseModel):
+    answers: dict
+    conversation_id: str | None = None
+
+
 class ConversationTitleBody(BaseModel):
     title: str
 
@@ -115,6 +120,20 @@ async def respond_permission(
         project_id, request_id, body.behavior, body.message, body.answers
     )
     return {"ok": True}
+
+
+@router.post("/questions/{request_id}/forward")
+async def forward_question_answer(
+    project_id: str, request_id: str, body: ForwardQuestionBody, request: Request
+):
+    cwd = ensure_access(project_id, request, write=True)
+    ensure_goal_confirmed(project_id)
+    user = getattr(request.state, "user", None) or {}
+    session = await manager.forward_question_answer(
+        project_id, cwd, request_id, body.answers,
+        body.conversation_id, username=user.get("sub", ""),
+    )
+    return {"state": session.state, "conversation_id": session.conversation_id}
 
 
 @router.post("/close")

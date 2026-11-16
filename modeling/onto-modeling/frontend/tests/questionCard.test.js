@@ -54,13 +54,101 @@ test('未答复卡保持选项及逐题文字输入，允许统一提交', () =>
   assert.match(html, /type="submit"/);
 });
 
-test('缺失历史答案时保留选项与缺失提示，不从原型属性取答案', () => {
+test('缺失历史答案时保留选项，仅在卡片级提示一次，不从原型属性取答案', () => {
   const html = render({ resolved: true, resolution: { behavior: 'allow' } });
   assert.equal([...html.matchAll(/aria-pressed="false"/g)].length, 2);
-  assert.equal([...html.matchAll(/此历史记录未保存答案/g)].length, 3);
+  assert.equal([...html.matchAll(/此历史记录未保存完整答案/g)].length, 1);
+  assert.doesNotMatch(html, /class="question-answer"/);
   const special = render({
     req: { request_id: 'request_demo', tool_input: { questions: [{ question: '__proto__' }] } },
     resolved: true, resolution: { behavior: 'allow', answers: {} },
   });
-  assert.match(special, /此历史记录未保存答案/);
+  assert.match(special, /此历史记录未保存完整答案/);
+});
+
+test('取消、超时和失效分别展示，逐题不重复渲染无答案提示', () => {
+  for (const [resolution, label] of [
+    [{ behavior: 'deny' }, '已取消'],
+    [{ behavior: 'deny', reason: 'timeout' }, '已超时'],
+    [{ behavior: 'expired' }, '已失效'],
+  ]) {
+    const html = render({ resolved: true, resolution });
+    assert.match(html, new RegExp(label));
+    assert.doesNotMatch(html, /class="question-answer"|未提交答案|此历史记录/);
+    assert.equal([...html.matchAll(/该问题已失效/g)].length, resolution.behavior === 'expired' ? 1 : 0);
+  }
+});
+
+test('补发后的历史卡显示已补发和保存答案，不再提示失效', () => {
+  const html = render({ resolved: true, resolution: { behavior: 'forwarded', answers: { 合成文字一: '合成补发答案' } } });
+  assert.match(html, /已补发/);
+  assert.match(html, /合成补发答案/);
+  assert.doesNotMatch(html, /已失效|未保存完整答案/);
+});
+
+test('异常问题和选项提供重新提问按钮，已结束的异常卡不提供操作', () => {
+  for (const malformed of [undefined, [], [null], [{ question: '合成问题', options: ['A', 'B'] }],
+    [{ question: '合成重复' }, { question: '合成重复' }]]) {
+    const req = { request_id: 'request_demo', tool_input: { questions: malformed } };
+    const html = render({ req, onReask: async () => {} });
+    assert.match(html, /让助手重新提问/);
+    assert.doesNotMatch(html, /<textarea|type="submit"/);
+    assert.doesNotMatch(render({ req, resolved: true }), /<button/);
+  }
+});
+
+test('正常卡保留显式提交按钮和快捷键提示', () => {
+  const html = render({ resolved: false });
+  assert.match(html, /Ctrl\/⌘\+Enter/);
+  assert.match(html, /aria-keyshortcuts="Control\+Enter Meta\+Enter"/);
+  assert.match(html, /type="submit"/);
+});
+
+test('失效事件先到、补发失败时保留原输入并允许重试，成功后显示已补发', async () => {
+  const slots = [];
+  let cursor = 0;
+  const useSlot = (initial) => {
+    const index = cursor++;
+    if (!(index in slots)) slots[index] = typeof initial === 'function' ? initial() : initial;
+    return [slots[index], (value) => { slots[index] = typeof value === 'function' ? value(slots[index]) : value; }];
+  };
+  const interactiveModule = { exports: {} };
+  runInThisContext(`(function(module, exports, require) { ${compiled.code}\n})`)(
+    interactiveModule, interactiveModule.exports,
+    (specifier) => specifier === 'react' ? {
+      useState: useSlot, useRef: (initial) => useSlot(() => ({ current: initial }))[0], useId: () => 'synthetic-card',
+    } : specifier === '../lib/questionAnswers.js' ? questionAnswers : require(specifier),
+  );
+  let fail, attempts = 0;
+  const props = {
+    req: { request_id: 'request_demo', tool_input: { questions: [{ question: '合成问题' }] } },
+    onAnswer: async (_id, answers) => {
+      attempts++;
+      if (attempts === 1) await new Promise((_resolve, reject) => { fail = reject; });
+      return { behavior: 'forwarded', answers };
+    },
+  };
+  const draw = () => { cursor = 0; return interactiveModule.exports.default(props); };
+  const find = (element, predicate) => {
+    if (!element || typeof element !== 'object') return null;
+    if (predicate(element)) return element;
+    return [element.props?.children].flat(Infinity).map((child) => find(child, predicate)).find(Boolean);
+  };
+  find(draw(), (node) => node.props?.name === 'answer-0').props.onChange({ target: { value: '合成待补发答案' } });
+  const pending = draw().props.onSubmit({ preventDefault() {} });
+  props.resolved = true;
+  props.resolution = { behavior: 'expired' };
+  assert.equal(find(draw(), (node) => node.props?.name === 'answer-0').props.value, '合成待补发答案');
+  fail(new Error('合成 409 冲突'));
+  await pending;
+  const retry = draw();
+  const input = find(retry, (node) => node.props?.name === 'answer-0');
+  assert.equal(input.props.value, '合成待补发答案');
+  assert.equal(input.props.disabled, false);
+  assert.ok(find(retry, (node) => node.props?.role === 'alert' && node.props.children === '合成 409 冲突'));
+  await retry.props.onSubmit({ preventDefault() {} });
+  const done = draw();
+  assert.equal(find(done, (node) => node.props?.name === 'answer-0'), undefined);
+  assert.ok(find(done, (node) => node.props?.className === 'question-answer' && node.props.children === '合成待补发答案'));
+  assert.ok(find(done, (node) => node.props?.role === 'status' && node.props.children.includes('已补发')));
 });

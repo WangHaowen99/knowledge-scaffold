@@ -3,23 +3,49 @@ import { Alert, Button, Input } from 'antd';
 import { useId, useRef, useState } from 'react';
 import { buildQuestionSubmission, isCustomAnswerOption } from '../lib/questionAnswers.js';
 
-export default function QuestionCard({ req, resolved, resolution, onAnswer, trace = 0 }) {
+export default function QuestionCard({ req, resolved, resolution, onAnswer, onReask, trace = 0 }) {
   const questions = req.tool_input?.questions;
   const [selected, setSelected] = useState({});
   const [custom, setCustom] = useState({});
   const [submitted, setSubmitted] = useState(false);
   const [showValidation, setShowValidation] = useState(false);
-  const [submitError, setSubmitError] = useState(false);
-  const [acceptedAnswers, setAcceptedAnswers] = useState(null);
+  const [submitError, setSubmitError] = useState('');
+  const [localResolution, setLocalResolution] = useState(null);
   const submitting = useRef(false);
   const inputs = useRef({});
   const cardId = useId();
   const submission = buildQuestionSubmission(questions, selected, custom);
-  const locked = resolved || submitted;
-  const recordedAnswers = resolution?.answers || acceptedAnswers;
-  const stateLabel = resolved
-    ? resolution?.behavior === 'expired' ? '已失效' : resolution?.behavior === 'deny' ? '已取消' : '已答复'
-    : submitted ? '已提交' : '等待你回答';
+  // 补发会先收到旧卡失效事件；补发失败后仍应保留当前输入供重试。
+  const retryingExpired = resolution?.behavior === 'expired' && (submitted || Boolean(submitError));
+  const closed = Boolean(localResolution) || (resolved && !retryingExpired);
+  const locked = closed || submitted;
+  const result = localResolution || (retryingExpired ? null : resolution);
+  const recordedAnswers = result?.answers;
+  const stateLabel = result?.reason === 'timeout' ? '已超时'
+    : result?.behavior === 'forwarded' ? '已补发'
+    : result?.behavior === 'expired' ? '已失效'
+    : result?.behavior === 'deny' ? '已取消'
+    : closed ? '已答复' : submitted ? '提交中' : '等待你回答';
+  const historyNotice = closed && result?.behavior === 'expired'
+    ? '该问题已失效，如需继续请直接给助手发消息。'
+    : closed && (!result || result.behavior === 'allow') && !submission.invalid &&
+      questions.some((question) => !Object.hasOwn(recordedAnswers || {}, question.question))
+      ? '此历史记录未保存完整答案。' : '';
+
+  const runSubmission = async (action) => {
+    if (locked || submitting.current) return;
+    submitting.current = true;
+    setSubmitted(true);
+    setSubmitError('');
+    try {
+      setLocalResolution(await action());
+    } catch (error) {
+      setSubmitted(false);
+      setSubmitError(error.message || '提交失败，回答已保留，请重试。');
+    } finally {
+      submitting.current = false;
+    }
+  };
 
   const submit = async (event) => {
     event.preventDefault();
@@ -29,18 +55,8 @@ export default function QuestionCard({ req, resolved, resolution, onAnswer, trac
       inputs.current[submission.missing[0]]?.focus();
       return;
     }
-    submitting.current = true;
-    setSubmitted(true);
-    setSubmitError(false);
-    try {
-      await onAnswer(req.request_id, submission.answers);
-      setAcceptedAnswers(submission.answers);
-    } catch {
-      setSubmitted(false);
-      setSubmitError(true);
-    } finally {
-      submitting.current = false;
-    }
+    await runSubmission(async () =>
+      await onAnswer(req.request_id, submission.answers) || { behavior: 'allow', answers: submission.answers });
   };
 
   const choose = (index, question, label) => {
@@ -57,9 +73,15 @@ export default function QuestionCard({ req, resolved, resolution, onAnswer, trac
 
   return (
     <form
-      className={`question-card${trace ? ' trace-card' : ''}${resolved ? ' resolved' : ''}`}
+      className={`question-card${trace ? ' trace-card' : ''}${closed ? ' resolved' : ''}`}
       aria-labelledby={`${cardId}-title`}
       onSubmit={submit}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing) {
+          event.preventDefault();
+          if (!locked && !submission.invalid) event.currentTarget.requestSubmit();
+        }
+      }}
     >
       <div className="qc-head">
         <span className="qc-glyph">?</span>
@@ -70,7 +92,7 @@ export default function QuestionCard({ req, resolved, resolution, onAnswer, trac
         </span>
       </div>
       {submission.invalid ? (
-        <Alert type="warning" showIcon message="问题格式不完整或问题重复，请让助手重新提问。" />
+        <Alert type="warning" showIcon message="问题格式不完整，无法回答。" description={submission.error} />
       ) : questions.map((question, index) => {
         const options = (question.options || []).filter((option) => !isCustomAnswerOption(option));
         const hasOptions = options.length > 0;
@@ -110,13 +132,9 @@ export default function QuestionCard({ req, resolved, resolution, onAnswer, trac
                 })}
               </div>
             )}
-            {resolved ? (
+            {closed ? recordedAnswer != null && (
               <div className="qc-custom">
-                <div className="question-answer">
-                  {recordedAnswer ?? (resolution?.behavior === 'expired'
-                    ? '该问题已失效，请让助手重新提问。'
-                    : resolution?.behavior === 'deny' ? '未提交答案' : '此历史记录未保存答案')}
-                </div>
+                <div className="question-answer">{recordedAnswer}</div>
               </div>
             ) : (
               <div className="qc-custom">
@@ -144,12 +162,25 @@ export default function QuestionCard({ req, resolved, resolution, onAnswer, trac
           </div>
         );
       })}
-      {!resolved && !submission.invalid && (
+      {historyNotice && <div role="status">{historyNotice}</div>}
+      {!closed && (
         <div className="qc-submit">
-          {submitError && <span className="qc-error" role="alert">提交失败，回答已保留，请重试。</span>}
-          <Button size="small" type="primary" shape="round" htmlType="submit" disabled={locked}>
-            {submitted ? '已提交' : '提交回答'}
-          </Button>
+          {submitError && <span className="qc-error" role="alert">{submitError}</span>}
+          {submission.invalid ? (
+            <Button size="small" htmlType="button" disabled={locked} onClick={() => runSubmission(async () => {
+              await onReask(req.request_id, submission.error);
+              return { behavior: 'deny' };
+            })}>
+              让助手重新提问
+            </Button>
+          ) : (
+            <>
+              <span>Ctrl/⌘+Enter 提交，Enter 换行</span>
+              <Button size="small" type="primary" shape="round" htmlType="submit" disabled={locked} aria-keyshortcuts="Control+Enter Meta+Enter">
+                {submitted ? '已提交' : '提交回答'}
+              </Button>
+            </>
+          )}
         </div>
       )}
     </form>

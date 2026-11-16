@@ -766,6 +766,8 @@ export default function ChatPane({
   const [live, setLive] = useState({ text: '', thinking: '' });
   const [input, setInput] = useState('');
   const [state, setState] = useState('idle');
+  const sendingRef = useRef(false); // 同步拦住同一次提交；不依赖 React 重渲染或服务端回包
+  const [submitting, setSubmitting] = useState(false);
   const [pending, setPending] = useState(null); // 乐观显示的用户消息
   // 确认卡提交成功后立即收起，不等项目列表刷新回来
   const [goalConfirmedFor, setGoalConfirmedFor] = useState('');
@@ -1134,7 +1136,10 @@ export default function ChatPane({
 
   const send = async (text, explicitAttachments = null) => {
     const trimmed = (text || '').trim();
-    if (uploading) return;
+    if (sendingRef.current || uploading) {
+      message.warning('消息正在提交，请勿重复操作');
+      return;
+    }
     if (goalPending) {
       message.warning('请先确认建模目标');
       return;
@@ -1148,6 +1153,8 @@ export default function ChatPane({
       return;
     }
     if (!trimmed && toUpload.length === 0) return;
+    sendingRef.current = true;
+    setSubmitting(true);
     requestPermissionOnFirstBuild(); // 须在用户发送这一操作中申请，浏览器才弹申请框
     // 上传可能持续数秒：消息发往点发送时所在的会话
     const targetConversation = conversationIdRef.current;
@@ -1221,6 +1228,8 @@ export default function ChatPane({
         setSelection({ projectId: project.id, id: null });
       }
     } finally {
+      sendingRef.current = false;
+      setSubmitting(false);
       setUploading(false);
     }
   };
@@ -1264,20 +1273,33 @@ export default function ChatPane({
   const [localResolved, setLocalResolved] = useState(() => new Set());
 
   const respondPermission = async (requestId, behavior, answers = null) => {
+    const targetConversation = conversationIdRef.current;
     try {
       await api.respondPermission(project.id, requestId, behavior, '', answers);
     } catch (error) {
       // 会话重启后的失效确认卡：答案降级为普通消息续接（resume 会自动接上上下文）
       if ((error.status === 410 || error.status === 404) && behavior === 'allow' && answers) {
-        const text = Object.entries(answers)
-          .map(([question, answer]) => `${question}\n我的回答：${answer}`)
-          .join('\n\n');
-        await api.sendMessage(project.id, text, conversationIdRef.current);
-        setLocalResolved((prev) => new Set(prev).add(requestId));
-        message.info('该确认来自上次会话，已把你的回答作为消息发给助手继续');
-        setState('running');
-        setConversationsEpoch((epoch) => epoch + 1);
-        return;
+        if (sendingRef.current || uploading || goalPending) {
+          const blocked = new Error(goalPending ? '请先确认建模目标' : '消息正在提交，请勿重复操作');
+          message.warning(blocked.message);
+          throw blocked;
+        }
+        sendingRef.current = true;
+        setSubmitting(true);
+        try {
+          const response = await api.forwardQuestionAnswer(project.id, requestId, answers, targetConversation);
+          setLocalResolved((prev) => new Set(prev).add(requestId));
+          message.info('服务器已受理补发，回答已作为消息提交给助手');
+          setState(response.state);
+          setConversationsEpoch((epoch) => epoch + 1);
+          return { behavior: 'forwarded', answers };
+        } catch (sendError) {
+          message.error(sendError.message);
+          throw sendError;
+        } finally {
+          sendingRef.current = false;
+          setSubmitting(false);
+        }
       }
       if (error.status === 410 || error.status === 404) {
         setLocalResolved((prev) => new Set(prev).add(requestId));
@@ -1286,6 +1308,16 @@ export default function ChatPane({
       }
       message.error(error.message);
       if (answers) throw error;
+    }
+  };
+
+  const reaskQuestion = async (requestId, reason) => {
+    try {
+      await api.respondPermission(project.id, requestId, 'deny',
+        `问题卡格式异常：${reason}。请修正格式后重新提问，每题提供非空且不重复的问题文本，选项使用带 label 的对象列表。`);
+    } catch (error) {
+      message.error(error.message);
+      throw error;
     }
   };
 
@@ -1487,7 +1519,7 @@ export default function ChatPane({
           ? { cls: 'error', text: '出错了' }
           : { cls: 'idle', text: '空闲' };
   // 运行、排队、上传或消息未落定时不能换会话：引擎同一时刻只绑定一条会话
-  const conversationBusy = state === 'running' || state === 'queued' || uploading || Boolean(pending);
+  const conversationBusy = state === 'running' || state === 'queued' || submitting || uploading || Boolean(pending);
 
   // ↑ 键召回历史输入（仅空输入框且非运行中，不抢正常光标行为）
   const userMessages = useMemo(
@@ -1672,6 +1704,7 @@ export default function ChatPane({
                     onAnswer={(requestId, answers) =>
                       respondPermission(requestId, 'allow', answers)
                     }
+                    onReask={reaskQuestion}
                   />
                 </div>
               );

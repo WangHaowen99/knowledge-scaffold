@@ -204,6 +204,20 @@ class SessionError(Exception):
         self.status = status
 
 
+def _validate_question_answers(questions: Any, answers: Any) -> None:
+    if not isinstance(questions, list) or not questions:
+        raise SessionError("问题格式不完整，请让助手重新提问", 400)
+    keys = [q.get("question") if isinstance(q, dict) else None for q in questions]
+    if any(not isinstance(key, str) or not key.strip() for key in keys):
+        raise SessionError("问题格式不完整，请让助手重新提问", 400)
+    if len(set(keys)) != len(keys):
+        raise SessionError("问题重复，请让助手重新提问", 400)
+    if not isinstance(answers, dict) or set(answers) != set(keys) or any(
+        not isinstance(answer, str) or not answer.strip() for answer in answers.values()
+    ):
+        raise SessionError("请逐题选择选项或填写回答", 400)
+
+
 @dataclass
 class PendingPermission:
     id: str
@@ -412,6 +426,7 @@ class SessionManager:
         # 各（项目, 会话）打开着的事件流队列：会话新建时直接挂上（首条消息、
         # 空闲回收后再发、切换会话后再发）
         self._watchers: dict[tuple[str, str], set[asyncio.Queue]] = {}
+        self._forwarding_questions: set[tuple[str, str, str]] = set()
 
     def _spawn(self, coro) -> None:
         task = asyncio.create_task(coro)
@@ -518,6 +533,42 @@ class SessionManager:
         }
 
     # ---- 发送与槽位调度 ----
+
+    async def forward_question_answer(
+        self, project_id: str, cwd: Path, request_id: str, answers: dict | None,
+        conversation_id: str | None = None, username: str = "",
+    ) -> Session:
+        """失效问题的答案按消息补发，受理成功后保存原卡片的回看状态。"""
+        conversation_id = self.resolve_conversation(project_id, conversation_id)
+        key = (project_id, conversation_id, request_id)
+        async with self._lock:
+            if key in self._forwarding_questions:
+                raise SessionError("回答正在补发，请勿重复操作", 409)
+            session = self._sessions.get(project_id)
+            if session and request_id in session.pending_permissions:
+                raise SessionError("该问题仍在等待回答，请直接提交原问题卡", 409)
+            history = self.get_history(project_id, conversation_id)
+            question = next((event for event in history
+                if event.get("type") == "permission_request" and event.get("request_id") == request_id
+                and event.get("tool_name") == "AskUserQuestion"), None)
+            if question is None:
+                raise SessionError("原问题不属于当前会话，请刷新后重试", 404)
+            resolution = next((event for event in reversed(history)
+                if event.get("type") == "permission_resolved" and event.get("request_id") == request_id), None)
+            if resolution and resolution.get("behavior") != "expired":
+                raise SessionError("该问题已处理，请刷新查看结果", 409)
+            _validate_question_answers((question.get("tool_input") or {}).get("questions"), answers)
+            self._forwarding_questions.add(key)
+        try:
+            text = "\n\n".join(f"{question}\n我的回答：{answer}" for question, answer in answers.items())
+            session = await self.send(project_id, cwd, text, conversation_id, username=username)
+            session.broadcast({
+                "type": "permission_resolved", "request_id": request_id,
+                "behavior": "forwarded", "answers": dict(answers),
+            })
+            return session
+        finally:
+            self._forwarding_questions.discard(key)
 
     async def send(
         self,
@@ -975,19 +1026,7 @@ class SessionManager:
         if behavior == "allow":
             updated_input = None
             if request.tool_name == "AskUserQuestion":
-                questions = request.tool_input.get("questions")
-                if not isinstance(questions, list) or not questions:
-                    raise SessionError("问题格式不完整，请让助手重新提问", 400)
-                keys = [q.get("question") if isinstance(q, dict) else None for q in questions]
-                if any(not isinstance(key, str) or not key.strip() for key in keys):
-                    raise SessionError("问题格式不完整，请让助手重新提问", 400)
-                if len(set(keys)) != len(keys):
-                    raise SessionError("问题重复，请让助手重新提问", 400)
-                if not isinstance(answers, dict) or set(answers) != set(keys) or any(
-                    not isinstance(answer, str) or not answer.strip()
-                    for answer in answers.values()
-                ):
-                    raise SessionError("请逐题选择选项或填写回答", 400)
+                _validate_question_answers(request.tool_input.get("questions"), answers)
             if answers:
                 # AskUserQuestion：答案经 updated_input.answers 回填（问题文本 → 选项文本）
                 updated_input = {**request.tool_input, "answers": answers}
@@ -1071,7 +1110,7 @@ class SessionManager:
                 request.future, timeout=config.PERMISSION_TIMEOUT_SECONDS
             )
         except asyncio.TimeoutError:
-            decision = {"behavior": "deny", "message": "等待确认超时，已自动拒绝"}
+            decision = {"behavior": "deny", "message": "等待确认超时，已自动拒绝", "reason": "timeout"}
         finally:
             session.pending_permissions.pop(request.id, None)
             # 等确认的时间不算引擎无响应
@@ -1081,6 +1120,8 @@ class SessionManager:
             "request_id": request.id,
             "behavior": decision.get("behavior"),
         }
+        if decision.get("reason") == "timeout":
+            resolved_event["reason"] = "timeout"
         if tool_name == "AskUserQuestion" and decision.get("behavior") == "allow":
             resolved_event["answers"] = (decision.get("updated_input") or {}).get("answers", {})
         session.broadcast(resolved_event)

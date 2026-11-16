@@ -205,6 +205,26 @@ def test_approval_interaction_maps_to_permission_card():
     assert ii.filled["i2"]["feedback"] == "不允许"
 
 
+@pytest.mark.parametrize("interaction_request", [
+    {"tool_name": "ask_user", "questions": [{"question": "合成问题", "options": ["A", {"label": "B", "description": "合成说明"}]}]},
+    {"tool_name": "ask_user", "tool_args": {"question": "合成问题", "options": ["A", {"label": "B", "description": "合成说明"}]}},
+    {"tool_name": "ask_user", "tool_args": {"questions": '[{"question":"合成问题","options":["A",{"label":"B","description":"合成说明"}]}]'}},
+])
+def test_string_options_are_normalized_without_changing_valid_options(interaction_request):
+    _, tool_input = _interaction_to_permission(interaction_request)
+    assert tool_input["questions"][0]["options"] == [{"label": "A"}, {"label": "B", "description": "合成说明"}]
+
+
+@pytest.mark.parametrize("questions", [[None], [{"question": "合成问题"}, None], [{"question": "合成问题"}, {"question": "合成问题"}]])
+def test_malformed_questions_can_receive_reask_feedback(questions):
+    filled = {}
+    ii = SimpleNamespace(update=lambda iid, value: filled.update({iid: value}))
+    reason = "合成格式原因，请修正后重新提问"
+    _fill_interactive_input(ii, "interaction_demo", {"tool_name": "ask_user", "questions": questions},
+        {"behavior": "deny", "message": reason})
+    assert reason in filled["interaction_demo"]["answers"].values()
+
+
 # ---- 历史回放 ----
 
 
