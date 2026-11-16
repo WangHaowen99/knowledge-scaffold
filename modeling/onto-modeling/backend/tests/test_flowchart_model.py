@@ -616,3 +616,72 @@ def test_editor_xml_carries_unsaved_metadata_over_previous_version():
     # 写回文件再读一遍，内容不变
     again = flowchart.parse(flowchart.render(model, previous=_EDITOR_XML), key="k")
     assert again["process"] == model["process"] and again["nodes"] == model["nodes"] and again["edges"] == model["edges"]
+
+
+# ---- 文字标注（develop !607）----
+
+ANNOTATED = """<mxfile><diagram name="示例"><mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/>
+<mxCell id="decision" value="是否通过" style="rhombus;" vertex="1" parent="1"><mxGeometry x="300" y="200" width="100" height="80" as="geometry"/></mxCell>
+<mxCell id="left" value="处理甲" vertex="1" parent="1"><mxGeometry x="100" y="370" width="100" height="60" as="geometry"/></mxCell>
+<mxCell id="right" value="处理乙" vertex="1" parent="1"><mxGeometry x="500" y="370" width="100" height="60" as="geometry"/></mxCell>
+<mxCell id="yes" edge="1" parent="1" source="decision" target="left"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="150" y="300"/></Array></mxGeometry></mxCell>
+<mxCell id="no" edge="1" parent="1" source="decision" target="right"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="550" y="300"/></Array></mxGeometry></mxCell>
+<mxCell id="yes-text" value="通过" style="text;html=1;strokeColor=none;fillColor=none;" vertex="1" parent="1"><mxGeometry x="150" y="300" width="50" height="24" as="geometry"/></mxCell>
+<mxCell id="no-text" value="未通过" style="text;html=1;strokeColor=none;fillColor=none;" vertex="1" parent="1"><mxGeometry x="550" y="300" width="50" height="24" as="geometry"/></mxCell>
+</root></mxGraphModel></diagram></mxfile>"""
+
+
+def _elements(xml: str) -> dict[str, ET.Element]:
+    """id → 单元格的外层元素（裸 mxCell 或包着 mxCell 的 object）。"""
+    root = ET.fromstring(xml).find("diagram/mxGraphModel/root")
+    return {el.get("id"): el for el in root}
+
+
+def _inner(el: ET.Element) -> ET.Element:
+    return el if el.tag == "mxCell" else el.find("mxCell")
+
+
+def _text_of(el: ET.Element) -> str:
+    return el.get("value" if el.tag == "mxCell" else "label", "")
+
+
+def test_text_annotations_attach_to_branch_edges_and_follow_relabel():
+    """分支旁的文字标注归到连线当条件；保存不丢标注和折点；改连线文字时标注跟着改，连线本身不写文字。"""
+    model = flowchart.parse(ANNOTATED)
+    assert len(model["nodes"]) == 3
+    assert [(e["id"], e["label"], e["type"], e["condition"]) for e in model["edges"]] == [
+        ("yes", "通过", "cond", "通过"), ("no", "未通过", "cond", "未通过"),
+    ]
+
+    saved = flowchart.render(model, previous=ANNOTATED)
+    cells = [_inner(el) for el in _elements(saved).values()]
+    assert sum(c.get("vertex") == "1" for c in cells) == 5
+    assert sum(c.get("edge") == "1" for c in cells) == 2
+    assert len(_inner(_elements(saved)["yes"]).findall(".//mxPoint")) == 1
+    assert [e["label"] for e in flowchart.parse(saved)["edges"]] == ["通过", "未通过"]
+
+    renamed = copy.deepcopy(model)
+    renamed["edges"][0]["label"] = "已通过"
+    out = flowchart.render(renamed, previous=saved)
+    els = _elements(out)
+    assert _text_of(els["yes-text"]) == "已通过"
+    assert els["yes-text"].get("data-flowchart-annotation-edge") == "yes"
+    assert _text_of(els["yes"]) == ""
+    assert flowchart.parse(out)["edges"][0]["label"] == "已通过"
+
+    # 连线文字清空：标注一起去掉
+    cleared = copy.deepcopy(model)
+    cleared["edges"][1].update(label="", condition="")
+    assert "no-text" not in _elements(flowchart.render(cleared, previous=saved))
+
+
+def test_unattached_text_annotation_stays_a_plain_note():
+    """离哪条分支都不近的文字不归属、不当节点，写回时原样保留（不必像 develop 那样退回 drawio 编辑器）。"""
+    xml = ANNOTATED.replace('x="150" y="300" width="50"', 'x="20" y="20" width="50"')
+    model = flowchart.parse(xml)
+    assert len(model["nodes"]) == 3
+    assert [e["label"] for e in model["edges"]] == ["", "未通过"]
+    els = _elements(flowchart.render(model, previous=xml))
+    assert _text_of(els["yes-text"]) == "通过"
+    assert els["yes-text"].get("data-flowchart-annotation-edge") is None

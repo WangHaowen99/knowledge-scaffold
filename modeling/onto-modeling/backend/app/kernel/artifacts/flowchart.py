@@ -14,6 +14,10 @@ draw.io。只用标准库；解析前拒绝 DOCTYPE、ENTITY 声明，输入限 
 
 没有 `onto_type` 的图按样式推断类型。带 `onto_type` 时以它为准，除非高级编辑器里把形状换成了另一类
 特征形状（椭圆、菱形、数据形状；连线改成虚线），这时按新形状重新推断。
+分支连线旁的独立文字格子（样式 `text`、没有 `onto_type`）是文字标注（develop !607）：带
+`data-flowchart-annotation-edge` 的归到那条连线；其余在起点出度大于 1、还没有文字和条件的连线里找离标注中心最近的，
+最近不超过 60 且比第二近的至少近 20 才归过去，那条线的文字取标注文字、记为条件分支。写回时标注的文字跟着连线走，
+连线本身不再写文字；归不到连线的标注和别的批注一样原样保留。
 压缩格式的 `<diagram>` 只解出节点、连线供展示，`storage="drawio_compressed"`，标准编辑器只读。只建模第一页；
 写回时只改第一页里内核认得的单元格，别的单元格与其他页原样保留（`render`）。
 """
@@ -85,6 +89,9 @@ _HTML_HINT = re.compile(r"<\s*/|<\s*(br|div|p|span|b|i|u|font)\b|&(nbsp|lt|gt|am
 _BREAK_TAG = re.compile(r"<\s*(br|/?(div|p|li|tr|h[1-6]))\b[^>]*>", re.IGNORECASE)
 _TAG = re.compile(r"<[^>]*>")
 _DEFAULT_PAGE = re.compile(r"^(Page-\d+|第\s*\d+\s*页)$")
+_ANNOTATION_EDGE = "data-flowchart-annotation-edge"
+_ANNOTATION_NEAR = 60      # 标注中心到连线折线的最大距离
+_ANNOTATION_MARGIN = 20    # 最近的连线要比第二近的至少近这么多，才算认得出归属
 
 
 class FlowchartError(ValueError):
@@ -106,6 +113,8 @@ class _Cell:
     w: float | None
     h: float | None
     attrs: dict[str, str]
+    points: list[tuple[float, float]] = field(default_factory=list)   # 连线折点（相对连线父级）
+    annotation_edge: str = ""   # 文字标注写明的所属连线
 
 
 @dataclass
@@ -116,6 +125,7 @@ class _Doc:
     sizes: dict[str, tuple[str, float, float]] = field(default_factory=dict)   # 节点 id → (类型, 宽, 高)
     page_name: str = ""
     page_id: str = ""
+    annotations: dict[str, str] = field(default_factory=dict)   # 文字标注 id → 所属连线 id
 
 
 # ── 公开接口 ────────────────────────────────────────────────────────────────
@@ -265,6 +275,8 @@ def _merge(m: dict, mxfile: ET.Element, diagram: ET.Element, graph: ET.Element) 
                 dropped.add(c.id)
                 grew = True
 
+    # 归属了文字标注的连线：文字写在标注上，连线本身不写（develop !607）；连线删了或文字清空了，标注一起去掉
+    annotated = set(before.annotations.values())
     out: list[ET.Element] = []
     written: set[str] = set()
     for el in list(root):
@@ -274,10 +286,18 @@ def _merge(m: dict, mxfile: ET.Element, diagram: ET.Element, graph: ET.Element) 
             out.append(_meta_element(m, el))
         elif cid in dropped:
             continue
+        elif cid in before.annotations:
+            edge = edges.get(before.annotations[cid])
+            if edge is None or not edge["label"]:
+                continue
+            out.append(_update_annotation(el, edge))
         elif cid in nodes:
             out.append(_update_node(el, nodes[cid], old_nodes[cid], by_id, dropped))
         elif cid in edges:
-            out.append(_update_edge(el, edges[cid], old_edges[cid]))
+            if cid in annotated:
+                out.append(_update_edge(el, {**edges[cid], "label": ""}, {**old_edges[cid], "label": None}))
+            else:
+                out.append(_update_edge(el, edges[cid], old_edges[cid]))
         else:
             out.append(el)
         if cid:
@@ -338,6 +358,15 @@ def _update_edge(el: ET.Element, edge: dict, old: dict) -> ET.Element:
         cell.set("style", _EDGE_STYLES[edge["type"] if edge["type"] in EDGE_TYPES else "seq"])
     cell.attrib.update({"source": edge["from"], "target": edge["to"]})
     return obj
+
+
+def _update_annotation(el: ET.Element, edge: dict) -> ET.Element:
+    cell = el if el.tag == "mxCell" else el.find("mxCell")
+    style = cell.get("style", "") if cell is not None else ""
+    text = _label_html(edge["label"]) if "html=1" in style else edge["label"]
+    el.set("value" if el.tag == "mxCell" else "label", text)
+    el.set(_ANNOTATION_EDGE, edge["id"])
+    return el
 
 
 def from_drawio_edit(xml: str, previous_model: dict | None) -> dict:
@@ -595,12 +624,18 @@ def _cells(graph: ET.Element) -> list[_Cell]:
             continue
         geo = cell.find("mxGeometry")
         get = geo.get if geo is not None else (lambda _k: None)
+        points = [
+            (_float(pt.get("x")) or 0.0, _float(pt.get("y")) or 0.0)
+            for arr in (geo.findall("Array") if geo is not None else []) if arr.get("as") == "points"
+            for pt in arr.findall("mxPoint")
+        ]
         cells[cid] = _Cell(
             id=cid, parent=cell.get("parent"), label=label, style=cell.get("style", "") or "",
             vertex=cell.get("vertex") == "1", edge=cell.get("edge") == "1",
             source=cell.get("source"), target=cell.get("target"),
             x=_float(get("x")) or 0.0, y=_float(get("y")) or 0.0,
             w=_float(get("width")), h=_float(get("height")), attrs=attrs,
+            points=points, annotation_edge=el.get(_ANNOTATION_EDGE) or cell.get(_ANNOTATION_EDGE) or "",
         )
     return list(cells.values())
 
@@ -611,6 +646,7 @@ def _build(cells: list[_Cell], *, key: str, page_name: str, storage: str) -> _Do
     edge_ids = {c.id for c in cells if c.edge}
 
     lanes: list[_Cell] = []
+    annotations: list[_Cell] = []
     edge_labels: dict[str, list[str]] = {}
     pre: dict[str, str] = {}
     node_cells: list[_Cell] = []
@@ -621,6 +657,9 @@ def _build(cells: list[_Cell], *, key: str, page_name: str, storage: str) -> _Do
             text = _plain(c.label, c.style)
             if text:
                 edge_labels.setdefault(c.parent, []).append(text)
+            continue
+        if _is_annotation(c):
+            annotations.append(c)
             continue
         kind = _vertex_kind(c)
         if kind == "lane":
@@ -674,6 +713,7 @@ def _build(cells: list[_Cell], *, key: str, page_name: str, storage: str) -> _Do
         carried[c.id] = {k for k in _NODE_ATTRS if k in attrs} | ({"description"} if has_desc else set())
         if c.w is not None and c.h is not None:
             sizes[c.id] = (ntype, c.w, c.h)
+    attached = _attach_annotations(annotations, nodes, edges, outdeg, by_id, carried)
 
     meta = by_id[root_id].attrs if root_id in by_id else {}
     root_carried = {k for k in _ROOT_ATTRS if k in meta}
@@ -696,7 +736,60 @@ def _build(cells: list[_Cell], *, key: str, page_name: str, storage: str) -> _Do
         "drawio_xml": None,
         "operation": _ref_attr(meta.get("operation")),
     }
-    return _Doc(model=model, carried=carried, root_carried=root_carried, sizes=sizes)
+    return _Doc(model=model, carried=carried, root_carried=root_carried, sizes=sizes, annotations=attached)
+
+
+def _is_annotation(c: _Cell) -> bool:
+    """独立文字格子（样式 text、没有内核类型、有字）：文字标注，不是流程节点。"""
+    return "text" in _style_names(c.style) and "onto_type" not in c.attrs and bool(_plain(c.label, c.style))
+
+
+def _segment_distance(p: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> float:
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    length = dx * dx + dy * dy
+    t = max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length)) if length else 0.0
+    return math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
+
+
+def _attach_annotations(
+    annotations: list[_Cell], nodes: list[dict], edges: list[dict], outdeg: dict[str, int],
+    by_id: dict[str, _Cell], carried: dict[str, set[str]],
+) -> dict[str, str]:
+    """文字标注归到连线（develop !607），返回 标注 id → 连线 id；归不到的不在里面，当普通批注保留。"""
+    centers = {n["id"]: (float(n["x"]), float(n["y"])) for n in nodes}
+    by_edge = {e["id"]: e for e in edges}
+    attached: dict[str, str] = {}
+
+    def take(a: _Cell, edge: dict, text: str) -> None:
+        attached[a.id] = edge["id"]
+        if edge["label"]:
+            return
+        edge["label"] = text
+        edge["type"] = "cond"
+        if "condition" not in carried.get(edge["id"], set()) or not edge["condition"]:
+            edge["condition"] = text
+
+    # 写明了归属的先归，再按距离找
+    for a in annotations:
+        edge = by_edge.get(a.annotation_edge)
+        if edge is not None and edge["id"] not in attached.values():
+            take(a, edge, _plain(a.label, a.style))
+    for a in annotations:
+        if a.id in attached:
+            continue
+        ox, oy = _offset(a.parent, by_id)
+        center = (ox + a.x + (a.w or 0.0) / 2, oy + a.y + (a.h or 0.0) / 2)
+        near = []
+        for edge in edges:
+            if edge["label"] or edge["condition"] or outdeg.get(edge["from"], 0) <= 1 or edge["id"] in attached.values():
+                continue
+            ex, ey = _offset(by_id[edge["id"]].parent, by_id)
+            line = [centers[edge["from"]], *((ex + x, ey + y) for x, y in by_id[edge["id"]].points), centers[edge["to"]]]
+            near.append((min(_segment_distance(center, line[i], line[i + 1]) for i in range(len(line) - 1)), edge))
+        near.sort(key=lambda item: item[0])
+        if near and near[0][0] <= _ANNOTATION_NEAR and (len(near) == 1 or near[1][0] - near[0][0] >= _ANNOTATION_MARGIN):
+            take(a, near[0][1], _plain(a.label, a.style))
+    return attached
 
 
 def _vertex_kind(c: _Cell) -> str:
