@@ -203,13 +203,24 @@ WeKnora 发布的 docreader 镜像（09-24 版）不返回原文定位，main �
 
 **一个坑**：Java 的 HttpClient 发出的 POST 会带 `Upgrade: h2c` 请求头，uvicorn 默认的 httptools 实现会在协议层直接回 400。所以 kb-api 改用 `--http h11` 启动。
 
-## Swarm 侧的配置（由 `swarm/configure_swarm.py` 在容器启动时完成）
+## Swarm 侧的配置（只用 Swarm 文档里的配置项和它对外的接口）
 
+启动前，`swarm/configure_swarm.py` 只写 Swarm 文档里列出的用户配置：
+
+- 首次启动跑 `jiuwenswarm-init`。
 - 模型配置写进 `~/.jiuwenswarm/config/.env`。Swarm 加载 `.env` 时会覆盖环境变量，所以只设容器环境变量不生效。
-- kb-service 登记成「已连接的连接器」，写在 `<workspace>/mcp/state.json`。密钥通过 Swarm 自带的 `CredentialStore` 加密保存。
-- 用 Swarm 自己的 `create_agent_template` / `install_equipment_gated` 创建并安装「知识库问答」专家（id `kb-qa`），这个专家绑定了 kb-service 连接器。
-- `swarm-kb-plugin/plugin/` 下每个带 `frontend/dist` 的插件目录（kb-manager、da-analyst）都复制到 `~/.jiuwenswarm/application_plugins/`。
-- 开发版：把镜像里的 `deepanalyze_harness-*.whl` 用 Swarm 的 `install_custom_agent` 装成「三方 Agent」，和设置页上传走的是同一段代码；再把它写进默认团队的 `external_cli_agents`，同时配上 hybrid transport。这个开发版的设置页能上传 wheel，但「三方 Agent」开关列表里不显示自定义 agent，所以开关由脚本代为打开。
+- 清掉旧版本写进 `config.yaml` 的条目（一个 Web 端不读的 MCP 配置）。
+
+插件按文档的方式放进用户插件目录：compose 把 kb-manager、da-analyst 两个目录只读挂进去，前端重新构建后刷新页面就生效，不用复制。不同版本的 Swarm 用户插件目录不同（`~/.jiuwenswarm/application_plugins/` 或 `~/.jiuwenswarm/domain/application_plugins/`），所以两处都挂。
+
+启动后，`swarm/provision_swarm.py` 在后台等服务就绪，再用 Web 界面用的同一套接口完成登记（每一步都可以重复执行，失败只记日志）：
+
+- 关掉首次打开时的模型配置向导（`config.set setup_guide_enabled=false`，和向导自己的关闭按钮同一个调用）：模型已由部署配好。
+- 知识库 MCP：`mcp.register_custom` 登记成自定义连接器 `kb-service`，`mcp.save_credentials` 把密钥存进 Swarm 的凭据库，`mcp.connect` 探活通过后才算已连接。
+- 「知识库问答」专家（id `kb-qa`，绑定 `kb-service` 连接器）：`agent_templates.create`（已存在时 `.update`），再 `agent_templates.install`。
+- 镜像里的 provider wheel（deepanalyze、loopforest）：走设置页的上传接口 `POST /file-api/external-cli/custom-agents` 装成自定义 agent，再用 `config.set external_cli_agent_<name>_enabled=true` 打开开关，团队 leader 就能 `spawn_teammate` 它们。
+
+登记结果在容器日志里，以 `[provision]` 开头。
 
 **怎么在对话里用知识库**：
 

@@ -109,7 +109,6 @@ services:
       # all knowledge access goes through kb-gateway (management API, MCP, DA tools)
       KB_SERVICE_URL: http://kb-gateway:8080
       KBS_MCP_URL: http://kb-gateway:8080/mcp/
-      KB_PLUGINS_DIR: /opt/kb-plugins
       DA_BASE_URL: http://da-engine:8192
       DA_TENANT_ID: ${DA_TENANT_ID:-default}
       # DA 作为团队成员时：检索范围取租户下全部知识库；团队 MCP 经本容器桥接给 DA
@@ -129,7 +128,13 @@ services:
       SWARM_ENDPOINT_PROFILE: dashscope
     volumes:
       - swarm-home:/root/.jiuwenswarm
-      - ../../swarm-kb-plugin/plugin:/opt/kb-plugins:ro
+      # the plugins go into the user plugin directory (read-only, so a rebuilt page shows up without
+      # copying); Swarm builds differ on where that is, ~/.jiuwenswarm/application_plugins or
+      # ~/.jiuwenswarm/domain/application_plugins, so each plugin is placed in both
+      - ../../swarm-kb-plugin/plugin/kb-manager:/root/.jiuwenswarm/application_plugins/kb-manager:ro
+      - ../../swarm-kb-plugin/plugin/da-analyst:/root/.jiuwenswarm/application_plugins/da-analyst:ro
+      - ../../swarm-kb-plugin/plugin/kb-manager:/root/.jiuwenswarm/domain/application_plugins/kb-manager:ro
+      - ../../swarm-kb-plugin/plugin/da-analyst:/root/.jiuwenswarm/domain/application_plugins/da-analyst:ro
     depends_on:
       kb-gateway:
         condition: service_healthy
@@ -509,4 +514,6 @@ volumes:
   kbs-files:
   swarm-home:
     # 两个版本的工作区分开放，互不迁移
-    name: ${KBS_PROJECT:-kb-suite}_swarm-home${SWARM_HOME_SUFFIX--dev}
+    # follows the compose project name however it was given (-p, KBS_PROJECT), so a second
+    # stack never mounts another stack's workspace
+    name: ${COMPOSE_PROJECT_NAME}_swarm-home${SWARM_HOME_SUFFIX--dev}
