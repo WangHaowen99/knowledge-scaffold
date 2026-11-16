@@ -739,22 +739,49 @@ def _engine_url(engine: str) -> str:
     return _engine_env(engine, "BASE_URL", ENGINES[engine]["default_url"]).rstrip("/")
 
 
-async def _list_kbs() -> list[dict[str, Any]]:
+async def _catalog() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Knowledge bases for the scope picker, and the backends whose knowledge bases are missing from it.
+
+    Each unavailable backend comes with its id prefix ("" for the one without, None when unknown) and the
+    knowledge bases kb-gateway last saw there, so the page keeps a selection made on it.
+    """
     base = os.getenv("KB_SERVICE_URL", "").rstrip("/")
     if not base:
         logger.warning("[da-analyst] KB_SERVICE_URL is not set, no knowledge bases to offer")
-        return []
+        return [], []
     key = os.getenv("KBS_PLUGIN_KEY", "")
     try:
         async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
             resp = await client.get(f"{base}/v1/kbs", headers={"Authorization": f"Bearer {key}"})
             resp.raise_for_status()
-            return [{"id": kb["id"], "name": kb["name"], "documents": kb["stats"]["completed"],
-                     "backend": (kb.get("backend") or {}).get("label") or ""}
-                    for kb in resp.json().get("items", [])]
-    except (httpx.HTTPError, ValueError, KeyError):
+            data = resp.json()
+            kbs = [{"id": kb["id"], "name": kb["name"], "documents": kb["stats"]["completed"],
+                    "backend": (kb.get("backend") or {}).get("label") or ""}
+                   for kb in data.get("items", [])]
+            return kbs, [_unlisted(b) for b in data.get("unavailable_backends") or [] if b.get("label") or b.get("id")]
+    except (httpx.HTTPError, ValueError, KeyError, AttributeError):
         logger.warning("[da-analyst] listing knowledge bases failed", exc_info=True)
-        return []
+        return [], []
+
+
+def _unlisted(backend: dict[str, Any]) -> dict[str, Any]:
+    prefix = backend.get("id_prefix")
+    seen = [{"id": str(kb["id"]), "name": str(kb.get("name") or kb["id"])}
+            for kb in backend.get("knowledge_bases") or [] if isinstance(kb, dict) and kb.get("id")]
+    return {"label": str(backend.get("label") or backend.get("id")), "id_prefix": prefix if isinstance(prefix, str) else None,
+            "knowledge_bases": seen}
+
+
+async def _list_kbs() -> list[dict[str, Any]]:
+    """What "every knowledge base" covers for a question.
+
+    The listed ones, plus those last seen on a backend that is down: kb-gateway's tools then say they were not
+    searched, instead of the question silently covering less.
+    """
+    kbs, down = await _catalog()
+    listed = {kb["id"] for kb in kbs}
+    return kbs + [{"id": kb["id"], "name": kb["name"], "documents": 0, "backend": b["label"]}
+                  for b in down for kb in b["knowledge_bases"] if kb["id"] not in listed]
 
 
 async def _engine_ready(engine: str) -> bool:
@@ -781,6 +808,35 @@ async def _engines() -> list[dict[str, Any]]:
     return found
 
 
+async def handshake_denied(websocket: Any) -> bool:
+    """Apply Swarm's own login check to this route; True when the connection was refused.
+
+    Swarm checks a handshake (``WebChannel.authenticate_handshake``, set up when Swarm login is on) only for
+    its main ``/ws``, not for plugin routes, so the plugin asks the same hook. Without Swarm login there is
+    no hook and nothing changes; foreign Origins are refused at the edge (deploy/compose/edge/nginx.conf).
+    Kept the same as kb-manager's: Swarm installs each plugin directory on its own.
+    """
+
+    scope = getattr(websocket, "scope", None) or {}
+    channel = getattr(getattr(scope.get("app"), "state", None), "web_channel", None)
+    authenticate = getattr(channel, "authenticate_handshake", None)
+    if authenticate is None:
+        return False
+    client = scope.get("client") or ("", "")
+    query = scope.get("query_string", b"").decode("latin-1")
+    path = scope.get("path", "") + (f"?{query}" if query else "")
+    try:
+        result = await authenticate(path=path, headers=websocket.headers, remote=f"{client[0]}:{client[1]}" if client[0] else "",
+                                    channel="web")
+        allowed = result is None or bool(getattr(result, "success", True))
+    except Exception:  # noqa: BLE001 - a login check that fails refuses the connection
+        logger.warning("[%s] handshake check failed", PLUGIN_ID, exc_info=True)
+        allowed = False
+    if not allowed:
+        await websocket.close(code=1008)
+    return not allowed
+
+
 class DaAnalystPlugin(ApplicationPluginExtension):
     plugin_id = PLUGIN_ID
 
@@ -802,6 +858,8 @@ class DaAnalystPlugin(ApplicationPluginExtension):
         return (WebSocketRouteContribution(path=WS_PATH, endpoint=self._serve),)
 
     async def _serve(self, websocket: Any) -> None:
+        if await handshake_denied(websocket):
+            return
         await websocket.accept()
         lock = asyncio.Lock()
         gone = False
@@ -844,7 +902,9 @@ class DaAnalystPlugin(ApplicationPluginExtension):
             try:
                 if kind == "hello":
                     engines = await _engines()
-                    await send({"t": "hello", "kbs": await _list_kbs(), "engines": engines,
+                    kbs, unavailable = await _catalog()
+                    # unavailable: backends whose knowledge bases are not offered (and not searched) right now
+                    await send({"t": "hello", "kbs": kbs, "unavailable": unavailable, "engines": engines,
                                 "da_ready": any(e["ready"] for e in engines if e["id"] == DEFAULT_ENGINE)})
                 elif kind == "start":
                     try:

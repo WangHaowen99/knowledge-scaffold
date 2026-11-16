@@ -8,6 +8,7 @@ import { useConfigMeta } from './meta';
 import { rpc } from './rpc';
 import { errorText, useToast } from './toast';
 import type { DocumentItem, KnowledgeBase } from './types';
+import { unsupportedType } from './fileTypes';
 import { ACCEPT, MAX_FILE_MB, uploadFile, type ProcessOverrides } from './upload';
 import { Badge, Button, Empty, Field, Modal, NumberField, Spinner } from './ui';
 
@@ -234,6 +235,11 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
   const fileInput = useRef<HTMLInputElement>(null);
   const uploadSeq = useRef(0);
 
+  // the knowledge base's counts (header, sidebar) follow the list: refresh them whenever its total changes
+  const onChangedRef = useRef(onChanged);
+  onChangedRef.current = onChanged;
+  const lastTotal = useRef<number | null>(null);
+
   const load = useCallback(async () => {
     try {
       const res = await rpc.call<{ items: DocumentItem[]; total: number }>('docs.list', {
@@ -244,6 +250,10 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
       });
       setDocs(res.items);
       setTotal(res.total);
+      if (!query.trim() && !status) {
+        if (lastTotal.current !== null && lastTotal.current !== res.total) onChangedRef.current();
+        lastTotal.current = res.total;
+      }
     } catch (err) {
       setDocs((cur) => cur ?? []);
       notify(errorText(err), true);
@@ -276,6 +286,12 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
     const list = Array.from(files);
     for (const file of list) {
       const id = ++uploadSeq.current;
+      // a dropped file skips the picker's type filter: refuse it here instead of uploading it first
+      const refused = unsupportedType(file.name, backend?.file_types);
+      if (refused) {
+        setUploads((cur) => [...cur, { id, name: file.name, progress: 0, error: refused }]);
+        continue;
+      }
       setUploads((cur) => [...cur, { id, name: file.name, progress: 0 }]);
       try {
         await uploadFile(
@@ -301,6 +317,15 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
       notify(done);
       void load();
       onChanged();
+      if (method === 'docs.delete') {
+        // some backends (WeKnora) delete in the background: refresh the counts again once it has finished
+        for (const ms of [2000, 6000]) {
+          window.setTimeout(() => {
+            void load();
+            onChanged();
+          }, ms);
+        }
+      }
     } catch (err) {
       notify(errorText(err), true);
     }

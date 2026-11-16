@@ -677,3 +677,35 @@ async def test_a_stuck_engine_does_not_block_close_forever(ext, monkeypatch):
         await asyncio.Event().wait()
 
     await asyncio.wait_for(ext._quietly(hang, "stop"), 2)
+
+
+async def test_hello_names_backends_whose_knowledge_bases_are_missing(ext, monkeypatch):
+    import httpx
+
+    def gateway(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "items": [{"id": "kb1", "name": "合成库", "stats": {"completed": 2}, "backend": {"label": "kb-service"}}],
+            "unavailable_backends": [{"id": "wk", "label": "WeKnora", "type": "weknora", "error": "connection refused",
+                                      "id_prefix": "wk_", "knowledge_bases": [{"id": "wk_kb1", "name": "合成库二"}]}],
+        })
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real_client(transport=httpx.MockTransport(gateway), **kw))
+    monkeypatch.setenv("KB_SERVICE_URL", "http://kb.example.com")
+
+    async def no_engines() -> list[dict[str, Any]]:
+        return []
+
+    monkeypatch.setattr(ext, "_engines", no_engines)
+    socket = FakeSocket()
+    task = serve(ext, socket)
+    socket.put(type="hello")
+    await asyncio.sleep(0.05)
+    socket.leave()
+    await task
+    hello = socket.got("hello")[0]
+    assert hello["kbs"] == [{"id": "kb1", "name": "合成库", "documents": 2, "backend": "kb-service"}]
+    assert hello["unavailable"] == [{"label": "WeKnora", "id_prefix": "wk_",
+                                     "knowledge_bases": [{"id": "wk_kb1", "name": "合成库二"}]}]
+    # "every knowledge base" still names the ones on the backend that is down, so the tools report them
+    assert [kb["id"] for kb in await ext._list_kbs()] == ["kb1", "wk_kb1"]

@@ -48,6 +48,34 @@ def _p(params: dict, name: str, default: Any = None, *, required: bool = False) 
     return value
 
 
+async def handshake_denied(websocket: Any) -> bool:
+    """Apply Swarm's own login check to this route; True when the connection was refused.
+
+    Swarm checks a handshake (``WebChannel.authenticate_handshake``, set up when Swarm login is on) only for
+    its main ``/ws``, not for plugin routes, so the plugin asks the same hook. Without Swarm login there is
+    no hook and nothing changes; foreign Origins are refused at the edge (deploy/compose/edge/nginx.conf).
+    """
+
+    scope = getattr(websocket, "scope", None) or {}
+    channel = getattr(getattr(scope.get("app"), "state", None), "web_channel", None)
+    authenticate = getattr(channel, "authenticate_handshake", None)
+    if authenticate is None:
+        return False
+    client = scope.get("client") or ("", "")
+    query = scope.get("query_string", b"").decode("latin-1")
+    path = scope.get("path", "") + (f"?{query}" if query else "")
+    try:
+        result = await authenticate(path=path, headers=websocket.headers, remote=f"{client[0]}:{client[1]}" if client[0] else "",
+                                    channel="web")
+        allowed = result is None or bool(getattr(result, "success", True))
+    except Exception:  # noqa: BLE001 - a login check that fails refuses the connection
+        logger.warning("[%s] handshake check failed", PLUGIN_ID, exc_info=True)
+        allowed = False
+    if not allowed:
+        await websocket.close(code=1008)
+    return not allowed
+
+
 class KbManagerPlugin(ApplicationPluginExtension):
     plugin_id = PLUGIN_ID
 
@@ -269,6 +297,8 @@ class KbManagerPlugin(ApplicationPluginExtension):
     # ---- WebSocket --------------------------------------------------------
 
     async def _serve(self, websocket: Any) -> None:
+        if await handshake_denied(websocket):
+            return
         await websocket.accept()
         send_lock = asyncio.Lock()
         tasks: set[asyncio.Task] = set()

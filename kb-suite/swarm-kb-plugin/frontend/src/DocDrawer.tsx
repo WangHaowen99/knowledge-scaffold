@@ -131,6 +131,14 @@ export default function DocDrawer({
     void loadDoc();
   }, [loadDoc]);
 
+  // another document opened in the same drawer: drop what was loaded for the previous one
+  useEffect(() => {
+    setDoc(null);
+    setContent(null);
+    setChunks([]);
+    setChunkTotal(0);
+  }, [docId]);
+
   const busy = doc ? statusOf(doc).busy || enrichBusy(doc) : false;
   useEffect(() => {
     if (!busy) return;

@@ -86,6 +86,17 @@ class _StreamBroken(Exception):
     """The SSE connection ended or stalled before ``done``."""
 
 
+def _option_labels(options: Any) -> list[str]:
+    """Choice labels from DA's options: plain strings, or ``{"label", "description"}`` objects."""
+
+    labels = []
+    for option in options or []:
+        label = option.get("label") if isinstance(option, dict) else option
+        if label is not None and str(label):
+            labels.append(str(label))
+    return labels
+
+
 def _error(message: str, *, code: str, category: str, retryable: bool | None = None) -> TurnError:
     return TurnError(message=message[:500], code=code, category=category, retryable=retryable)
 
@@ -496,7 +507,15 @@ class DeepAnalyzeHarness(SerializedTurnHarness):
 
         state.asks += 1
         question = str(data.get("question") or "")
-        options = [str(o) for o in (data.get("options") or []) if str(o)]
+        options = _option_labels(data.get("options"))
+        asked = [q for q in (data.get("questions") or []) if isinstance(q, dict) and str(q.get("question") or "")]
+        if len(asked) > 1:
+            # several questions in one card: list each with its own choices, the user answers them by number
+            question = "\n".join(
+                f"{i}. {q['question']}" + (f"（可选：{'、'.join(_option_labels(q.get('options')))}）"
+                                           if _option_labels(q.get("options")) else "")
+                for i, q in enumerate(asked, start=1)) + "\n请按序号逐个回答。"
+            options = []
         tool_call_id = data.get("toolCallId")
         request_id = f"{state.task_id}:{state.seg}:ask:{state.asks}"
         caps = self._context.host_capabilities if self._context else frozenset()
