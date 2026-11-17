@@ -271,7 +271,9 @@ export function Wizard({
         package_digest: release.package_digest,
       }
     : null;
-  const previewable = !!sourceId && (source?.mode === 'dataset' || !!source?.import_data);
+  const sourceUsesPackageMapping = source?.mode === 'connection'
+    && ['nl2sql_http', 'nl2sql_template'].includes(source.provider);
+  const previewable = !!sourceId && !sourceUsesPackageMapping && (source?.mode === 'dataset' || !!source?.import_data);
   useEffect(() => {
     if (step === 1 && previewable && ref && !preview) act(loadPreview);
   }, [step, sourceId, source?.revision, releaseId]);
@@ -769,8 +771,13 @@ export function Wizard({
                   <Icon name="arrow" />
                   <span>冻结数据源配置</span>
                   <Icon name="arrow" />
-                  <span>生成本轮映射</span>
+                  <span>{sourceUsesPackageMapping ? '沿用知识包映射' : '生成本轮映射'}</span>
                 </div>
+                {sourceUsesPackageMapping && (
+                  <Alert title="本轮沿用知识包已有映射">
+                    直接使用所选知识包版本中的对象、表与字段映射。
+                  </Alert>
+                )}
                 {!prep ? (
                   <Empty
                     title="确认输入，准备本轮评测"
@@ -781,17 +788,19 @@ export function Wizard({
                       </Button>
                     }
                   >
-                    读取固定版本并生成字段映射，准备成功后再启动任务。
+                    {sourceUsesPackageMapping
+                      ? '读取固定版本并沿用知识包映射，准备成功后再启动任务。'
+                      : '读取固定版本并生成字段映射，准备成功后再启动任务。'}
                   </Empty>
                 ) : (
                   <>
-                    <MappingPreview preview={prep.preview} />
+                    {prep.mapping && <MappingPreview preview={prep.preview} />}
                     {prep.changed && (
                       <Alert title="本轮使用派生评测快照">
                         映射变化已保存到内部快照，正式发布 Hub 新版本需在结果页单独确认。
                       </Alert>
                     )}
-                    {!prep.mapping && (
+                    {!prep.mapping && !sourceUsesPackageMapping && (
                       <Alert title="沿用原 Hub 版本">当前数据源不需要新的映射，评测直接使用固定版本。</Alert>
                     )}
                     <ul className="check-list">

@@ -743,51 +743,6 @@ code {
   color: var(--text-tertiary);
   font-size: 12px;
 }
-.schema-browser {
-  display: grid;
-  grid-template-columns: 200px minmax(0, 1fr);
-  border: 1px solid #dfe8f5;
-  border-radius: 7px;
-  overflow: hidden;
-  min-height: 220px;
-}
-.schema-tables {
-  background: #f8fafd;
-  border-right: 1px solid #e1e9f6;
-  padding: 13px 9px;
-  max-height: 340px;
-  overflow: auto;
-}
-.schema-tables > button {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: transparent;
-  border: 0;
-  color: var(--text-tertiary);
-  padding: 12px 10px;
-  width: 100%;
-  text-align: left;
-  border-radius: 5px;
-  font-size: 12px;
-  margin-bottom: 5px;
-}
-.schema-tables .icon {
-  width: 14px;
-  height: 14px;
-}
-.schema-tables button.selected {
-  background: #eaf2ff;
-  color: var(--link);
-}
-.schema-tables small {
-  margin-left: auto;
-}
-.schema-browser table th,
-.schema-browser table td {
-  padding: 10px 14px;
-  font-size: 12px;
-}
 .check-label {
   display: flex;
   align-items: center;
@@ -3171,22 +3126,6 @@ td.col-actions .button + .button {
     }
   .graph-modes button small {
       font-size: 12px;
-    }
-  .schema-browser {
-      grid-template-columns: 1fr;
-    }
-  .schema-tables {
-      border-right: 0;
-      border-bottom: 1px solid #e4ebf7;
-      display: flex;
-      overflow: auto;
-      padding: 7px;
-    }
-  .schema-tables > button {
-      width: auto;
-      min-width: 140px;
-      margin: 0 5px 0 0;
-      flex-shrink: 0;
     }
   .upload-zone {
       min-height: 130px;

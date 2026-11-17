@@ -113,7 +113,6 @@ test('source forms only submit the selected provider and never reconstruct saved
     provider: 'nl2sql_http',
     name: 'data_source_demo',
     secret_configured: true,
-    inspection_id: 'inspection_demo',
     connection_view: {
       url: 'https://service.example.net',
       scene: 'workspace_demo',
@@ -121,7 +120,6 @@ test('source forms only submit the selected provider and never reconstruct saved
     },
   });
   const value = sourcePayload(form);
-  assert.equal(value.inspection_id, 'inspection_demo');
   assert.ok(!('token' in value.connection));
   assert.ok(!('uri' in value.connection));
   assert.ok(!('tables' in value));

@@ -82,6 +82,12 @@ class DataSources:
 
     def freeze(self, owner, definition):
         source=dict(definition)
+        if source['mode']=='connection' and source.get('provider') in ('nl2sql_http','nl2sql_template'):
+            if source.get('import_data'):
+                raise Failure('external_import_denied','外部 SQL 连接仅支持查询，请使用 dataset 导入隔离评测库',422,'data_import')
+            # Previously saved table metadata must never replace the chosen package's mapping.
+            source.update(tables={},tables_snapshot=None)
+            return source,{}
         tables={}
         total=0
         if len(source.get('input_ids',[]))>20:
@@ -102,7 +108,7 @@ class DataSources:
                 identifier(name)
                 for col in columns: identifier(col)
                 tables.setdefault(name,dict(columns=columns,rows=[]))
-            if not tables and not (source.get('provider')=='neo4j' and not source.get('import_data')):
+            if not tables and source.get('import_data'):
                 raise Failure('schema_required','请提供外部连接的表字段定义',422)
         # Runtime input bytes are frozen and encrypted separately from Hub packages.
         source['tables_snapshot']=self.store.encrypt(tables) if tables else None

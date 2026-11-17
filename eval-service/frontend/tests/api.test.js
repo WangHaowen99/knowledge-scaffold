@@ -41,6 +41,46 @@ test('late result from previous login is rejected', async () => {
   };
   await assert.rejects(api('/packages'), /身份已变化/);
 });
+
+test('an aborted API request never starts a network operation', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  globalThis.fetch = async () => assert.fail('Cancelled request must not use the network');
+  await assert.rejects(api('/data-source-tests', undefined, 'GET', true, 'json', undefined,
+    { signal: controller.signal }), { name: 'AbortError' });
+});
+
+test('API forwards an abort signal to fetch and rejects a cancelled response body', async () => {
+  globalThis.localStorage = storage();
+  const controller = new AbortController();
+  globalThis.fetch = async (url, init) => {
+    assert.equal(init.signal, controller.signal);
+    return { ok: true, json: async () => {
+      controller.abort();
+      throw controller.signal.reason;
+    } };
+  };
+  await assert.rejects(api('/data-source-tests', undefined, 'GET', true, 'json', undefined,
+    { signal: controller.signal }), { name: 'AbortError' });
+});
+
+test('API keeps the abort signal after refreshing authentication', async () => {
+  globalThis.localStorage = storage();
+  saveLogin({ access_token: 'synthetic-access-old', refresh_token: 'synthetic-refresh-old' });
+  const controller = new AbortController();
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: {} });
+  globalThis.fetch = async (url, init) => {
+    if (url.endsWith('/auth/refresh')) return { ok: true, json: async () => ({
+      access_token: 'synthetic-access-new', refresh_token: 'synthetic-refresh-new',
+    }) };
+    assert.equal(init.signal, controller.signal);
+    return init.headers.Authorization === 'Bearer synthetic-access-old'
+      ? { status: 401, ok: false, json: async () => ({}) }
+      : { status: 200, ok: true, json: async () => ({ id: 'job_demo', status: 'running' }) };
+  };
+  assert.equal((await api('/data-source-tests', undefined, 'GET', true, 'json', undefined,
+    { signal: controller.signal })).id, 'job_demo');
+});
 test('a rejected request is never replayed after an account switch', async () => {
   globalThis.localStorage = storage();
   saveLogin({ access_token: 'synthetic-old', refresh_token: 'synthetic-old-refresh' });
