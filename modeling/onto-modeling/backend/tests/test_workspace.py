@@ -79,9 +79,9 @@ def test_project_progress_counts_stages_after_missing_required(manager: Workspac
     _write(root, "ontology/testcase/下单.md", "# 下单")
 
     overview = next(p for p in manager.list_projects() if p["id"] == meta["id"])
-    assert overview["stages_done"] == 3  # 建模、校验、场景模拟
-    # 建模已经用上资料分析该给的东西，资料分析算越过、不计入分母（ADR-0084）
-    assert overview["stages_total"] == 8
+    assert overview["stages_done"] == 4  # 提取对象、提取操作、校验、场景模拟
+    # 提取对象已经用上资料分析该给的东西，资料分析算越过、不计入分母（ADR-0084）
+    assert overview["stages_total"] == 9
 
 
 def test_project_progress_counts_solver_stage(manager: WorkspaceManager):
@@ -114,7 +114,7 @@ def test_project_progress_full_chain_reaches_total(manager: WorkspaceManager):
              cwd=root, check=True, capture_output=True)
 
     progress = manager._project_progress(root)
-    assert progress["stages_done"] == progress["stages_total"] == 9
+    assert progress["stages_done"] == progress["stages_total"] == 10
 
 
 def test_project_progress_ignores_index_only_directories(manager: WorkspaceManager):
@@ -124,7 +124,7 @@ def test_project_progress_ignores_index_only_directories(manager: WorkspaceManag
 
     progress = manager._project_progress(root)
     assert progress["stages_done"] == 0
-    assert progress["stages_total"] == 9
+    assert progress["stages_total"] == 10
 
 def test_file_tree_skips_git_and_symlinks(manager: WorkspaceManager):
     meta = manager.create_project("t")

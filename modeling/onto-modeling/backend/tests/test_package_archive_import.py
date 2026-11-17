@@ -102,10 +102,10 @@ def test_published_package_import_restores_entities(
     assert overview["objects"] == 2
     assert overview["operations"] == 1
     # 已发布知识包只有交付物、没有过程资产：research/ 等必选阶段不命中，但不截断后续，
-    # 建模（对象与操作）、指标、代码生成三个节点各自计入（与前端 stageStatuses 一致）
-    assert overview["stages_done"] == 3
+    # 提取对象、提取操作、指标、代码生成四个节点各自计入（与前端 stageStatuses 一致）
+    assert overview["stages_done"] == 4
     # 按需节点（如增量更新）不计进度
-    # 包里没有资料分析，建模已完成：资料分析算越过、不计入分母（ADR-0084）
+    # 包里没有资料分析，提取对象已完成：资料分析算越过、不计入分母（ADR-0084）
     assert overview["stages_total"] == sum(1 for node in flow_model.image_flow()["nodes"] if node.get("progress", True)) - 1
 
     # 工作区文档不带包契约 frontmatter，正文原样

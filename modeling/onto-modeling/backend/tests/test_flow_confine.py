@@ -347,7 +347,7 @@ def test_assembly_refuses_a_bad_confine(confine, message):
 def test_only_one_pack_may_declare_confine():
     second = {"confine": {"scope_file": "second/scope.json"}, "nodes": [{
         "id": "second.scope", "title": "合成范围", "kind": "agent", "placement": "step", "section": "required",
-        "after": "core.model", "done": [], "produces": ["second/scope.json"], "entry": {"command": "/ontology"},
+        "after": "core.operation", "done": [], "produces": ["second/scope.json"], "entry": {"command": "/ontology"},
     }]}
     with pytest.raises(assemble.FlowAssemblyError, match="只能有一个包声明 confine"):
         assemble.assemble([_core(), _round(), ("second", "0.1.0", second)])
@@ -357,7 +357,7 @@ def test_only_one_pack_may_declare_confine():
 
 def _synthetic_pack(base: Path, confine) -> Path:
     flow = {"nodes": [{"id": "my-scope.scope", "title": "合成范围", "kind": "agent", "placement": "step",
-                       "section": "required", "after": "core.model", "done": [],
+                       "section": "required", "after": "core.operation", "done": [],
                        "produces": ["my-scope/scope.json"], "entry": {"command": "/my-scope-run"}}]}
     if confine is not None:
         flow["confine"] = confine

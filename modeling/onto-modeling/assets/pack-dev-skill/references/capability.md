@@ -247,7 +247,7 @@ contributes:
 
 | 字段 | 写法 | 说明 |
 |---|---|---|
-| `requires_flow` | `core>=0.3` | 必须以 `core` 开头；仓库里要有满足它的 core 版本。挂在主线节点上时不要写得比 0.3 低，0.3 起才有 `core.model`、`core.validate` |
+| `requires_flow` | `core>=0.3` | 必须以 `core` 开头；仓库里要有满足它的 core 版本。挂在主线节点上时不要写得比 0.3 低，0.3 起才有 `core.validate`（`core.object`、`core.operation` 在旧版 core 里按别名认成建模节点） |
 | `probes` | 见下文 | 探针名不能和已有的重复，用 `<包名下划线化>_` 开头 |
 | `commands` | `sample-review-run: {node: sample-review.check, requires: []}` | 把命令关联到节点，运行时节点才显示进行中。键写命令全名；目标节点必须存在 |
 | `nodes` | 见下文 | 节点列表 |
@@ -364,7 +364,7 @@ nodes:
 
 **`section: required` 不挡发布。** 上面的 `sample-review.check` 挂在 `core.validate` 之后，和场景模拟并列；没做完时发布照样可以进行。要挡发布必须写 `blocks`。
 
-锚点用主线节点 `core.research`、`core.model`、`core.validate`、`core.publish`，或别的包的节点 id。`core.consistency` 这类旧名字不写进新包。
+锚点用主线节点 `core.research`、`core.object`、`core.operation`、`core.validate`、`core.publish`，或别的包的节点 id。`core.model`、`core.consistency` 这类旧名字不写进新包。
 
 | `placement` | 用途 | 常配 |
 |---|---|---|

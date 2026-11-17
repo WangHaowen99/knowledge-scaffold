@@ -299,7 +299,7 @@ def test_review_5_follow_waits_for_unconfirmed_assistant_changes_and_is_a_change
     install(manager, tmp_path, "0.1.0")
     enable_and_apply(client, manager, project_id)
     pending_assistant_changes(manager, project_id, root)
-    extra = {"id": "naming.extra", "title": "命名复核", "kind": "agent", "placement": "branch", "after": "core.model",
+    extra = {"id": "naming.extra", "title": "命名复核", "kind": "agent", "placement": "branch", "after": "core.operation",
              "done": [], "entry": {"command": "/naming-check"}}
     install(manager, tmp_path, "0.2.0", flow=flow_with_extra_node(extra))
     pack_service.prepare_for_message(manager, project_id)

@@ -240,9 +240,9 @@ def test_refresh_stale_follows_flow_order_and_skips_broken_nodes(env, monkeypatc
     enable_and_apply(client, manager, project_id)
     main_write(root, "reports/naming-1.md", "# 命名检查\n\n合成报告\n")
     nodes = nodes_of(root)
-    assert nodes["naming.check"]["state"] == nodes["core.model"]["state"] == "confirmed"
+    assert nodes["naming.check"]["state"] == nodes["core.object"]["state"] == nodes["core.operation"]["state"] == "confirmed"
     order = [node["id"] for node in flow_model.load_for(root)["nodes"]]
-    assert order.index("naming.check") < order.index("core.model")
+    assert order.index("naming.check") < order.index("core.object")
     main_write(root, "ontology/object/图书.md", obj("图书", "上游变了"))
     started = []
 
@@ -257,9 +257,9 @@ def test_refresh_stale_follows_flow_order_and_skips_broken_nodes(env, monkeypatc
     ops_state.set_breaker("naming", "0.1.0", "open", "ops")
     try:
         ids = [item["id"] for item in inbox.collect(manager, project_id) if not item.get("_dismissed")]
-        assert "stale:naming.check" not in ids and "stale:core.model" in ids  # 建模按段汇总：操作那一步过期
+        assert "stale:naming.check" not in ids and "stale:core.operation" in ids  # 对象变了：提取操作过期
         client.post(batch, json={"action": "refresh_stale"})
-        assert started[-1] == "core.model"
+        assert started[-1] == "core.operation"
     finally:
         ops_state.set_breaker("naming", "0.1.0", "close", "ops")
         ops_state.set_breaker("naming", "0.1.0", "close", "ops")

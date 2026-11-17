@@ -57,9 +57,7 @@ def _write_marker(root: Path | None, record: dict | None) -> None:
         tmp = path.with_name(f".exec.{uuid.uuid4().hex[:8]}.tmp")
         tmp.write_text(json.dumps({"exec_id": record["id"], "node": node.get("id") or "",
                                    "node_version": node.get("version") or "",
-                                   "conversation_id": record.get("conversation_id") or "",
-                                   # 按段的命令：当前这一段（blueprint.py brief、state_helper acquire 读它）
-                                   "slice": record.get("slice"), "step": record.get("step")}), encoding="utf-8")
+                                   "conversation_id": record.get("conversation_id") or ""}), encoding="utf-8")
         os.replace(tmp, path)
     except OSError:
         pass
@@ -282,11 +280,8 @@ RERUN_WHY = {"node_upgraded": "这一步的能力升级了", "inputs_changed": "
 
 
 def rerun_text(record: dict, reason: str) -> str:
-    """按新版重新执行（不能续跑时的「继续」）：带上原命令与分段，说明为什么从头做、已经保存的不要重做。"""
-    slice_ref = record.get("slice") or {}
+    """按新版重新执行（不能续跑时的「继续」）：带上原命令，说明为什么从头做、已经保存的不要重做。"""
     command = record.get("command") or ""
-    if slice_ref.get("id") and slice_ref["id"] != "all":
-        command = f"{command} slice={slice_ref['id']}"
     why = RERUN_WHY.get(reason, "上次的进度接不上了")
     return (f"{command} {why}，按新版重新做「{record.get('command_label') or '命令'}」："
             f"已经保存的修改保留，不要重做。").strip()

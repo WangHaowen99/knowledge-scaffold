@@ -15,8 +15,8 @@ nodes:
     kind: agent
     placement: spine
     section: required
-    after: core.model
-    display_after: [core.model]
+    after: core.operation
+    display_after: [core.operation]
     done: [domain_extend_bound]
     produces:
       - ext/domain-extend/scope.json

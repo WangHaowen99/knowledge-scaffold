@@ -15,7 +15,7 @@ badges: [recommended]
 kernel_api: ">=1.0 <2.0"
 page_api: ">=1.0 <2.0"
 engines: [claude, jiuwen]
-depends: {core: ">=0.3"}  # 0.3.0 起的主流程节点（core.model、core.validate）
+depends: {core: ">=0.3"}  # 0.3.0 起的主流程节点（core.validate）
 changelog: 改名「场景模拟」，串在校验之后；建模里不再有按段的「场景」一步，示例数据按场景生成。
 contributes:
   commands: [ontology-mock, ontology-trace, ontology-trace-single, ontology-trace-batch, ontology-trace-interactive]

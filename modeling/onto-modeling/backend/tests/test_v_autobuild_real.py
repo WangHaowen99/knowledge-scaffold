@@ -87,14 +87,15 @@ def test_wait_turn_does_not_count_old_error_while_reconnecting(monkeypatch):
 
 
 def test_matrix_does_not_mark_steps_left_out_as_done(ab):
-    """规则补抽默认不排（F8）：这一段合入后，运行详情的流水线不能把没做的一步也标成「自主完成」（流程里这一步还是 ready）。"""
+    """规则补抽默认不排（F8），节点模型重构 1 起「规则」一步删了（就是指标那一条命令）：运行详情的流水线只有对象、操作
+    两列，不会再出一列没做却标成「自主完成」的规则。"""
     from tests.autobuild_helpers import start, wait_state
 
     client, _workspaces, project_id, _root = ab
-    run = start(client, project_id, scope={"until_node": "core.model"})
+    run = start(client, project_id, scope={"until_node": "core.operation"})
     done = wait_state(client, project_id, run["run_id"], "completed")
     cells = done["matrix"][0]["cells"]
-    assert cells["rule"] == "skipped"
+    assert set(cells) == {"object", "operation"}
     assert cells["object"] == "auto"
 
 
@@ -133,7 +134,7 @@ def test_inbox_rejudge_of_an_autobuild_decision(ab):
     client, _workspaces, project_id, _root = ab
     AutoEngine.hooks["/ontology-extract-object:all"] = [ask([
         {"question": "报修单号几位", "header": "置信度 0.6", "options": [{"label": "八位（推荐）"}, {"label": "十位（保守）"}]}])]
-    run = start(client, project_id, scope={"until_node": "core.model"})
+    run = start(client, project_id, scope={"until_node": "core.operation"})
     wait_state(client, project_id, run["run_id"], "completed")
     items = client.get(f"/api/v1/projects/{project_id}/inbox", params={"filter": "autobuild_review"}).json()["items"]
     item = next(entry for entry in items if entry["kind"] == "review" and entry["title"].endswith("十位"))

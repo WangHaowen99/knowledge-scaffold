@@ -24,16 +24,16 @@ FILES = {
     "testcase": "ontology/testcase/受理申请.md",
     "scripts": "ontology/scripts/受理申请.py",
 }
-# 命令 → (节点, 建模步骤, 这条命令总会改的类别)
+# 命令 → (节点, 这条命令总会改的类别)
 COMMANDS = {
-    "/ontology-research": ("core.research", None, ["research"]),
-    "/ontology-extract-object": ("core.model", "object", ["object"]),
-    "/ontology-extract-operation": ("core.model", "operation", ["operation", "rule", "metric"]),
-    "/ontology-extract-rule-metric": ("core.metric", None, ["rule", "metric"]),
-    "/ontology-validate": ("core.validate", None, ["report"]),
-    "/ontology-trace": ("trace.trace", None, ["testcase"]),
-    "/ontology-codegen-scan": ("codegen.codegen", None, ["scripts"]),
-    "/ontology-codegen": ("codegen.codegen", None, ["scripts"]),
+    "/ontology-research": ("core.research", ["research"]),
+    "/ontology-extract-object": ("core.object", ["object"]),
+    "/ontology-extract-operation": ("core.operation", ["operation", "rule", "metric"]),
+    "/ontology-extract-rule-metric": ("core.metric", ["rule", "metric"]),
+    "/ontology-validate": ("core.validate", ["report"]),
+    "/ontology-trace": ("trace.trace", ["testcase"]),
+    "/ontology-codegen-scan": ("codegen.codegen", ["scripts"]),
+    "/ontology-codegen": ("codegen.codegen", ["scripts"]),
 }
 
 
@@ -61,10 +61,10 @@ class Project:
             main_write(self.root, FILES[kind], f"# 合成\n\n[[门店]]{mark}")
 
     def run(self, command: str) -> None:
-        node, step, kinds = COMMANDS[command]
+        node, kinds = COMMANDS[command]
         for kind in kinds + self.extra.get(command, []):
             self.write(kind)
-        wiring._confirm_nodes(self.project_id, [node], {"slice_steps": [["all", step]]} if step else {})
+        wiring._confirm_nodes(self.project_id, [node], {})
 
 
 def follow(project: Project, *, detour: tuple[int, str] | None = None, limit: int = 20) -> list[str]:

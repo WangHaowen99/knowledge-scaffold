@@ -272,7 +272,7 @@ def ensure_baseline(project_id: str) -> None:
 
 
 def refresh_flow(project_id: str) -> dict | None:
-    """重算流程，和上次比：节点状态、分段、建议有变化就发 flow.updated（只含变化的部分）。"""
+    """重算流程，和上次比：节点状态、建议有变化就发 flow.updated（只含变化的部分；`slices` 不再分段，恒为空）。"""
     flow = _flow_view(project_id)
     if flow is None:
         return None
@@ -286,20 +286,14 @@ def refresh_flow(project_id: str) -> dict | None:
         for node in flow.get("nodes") or []
         if previous is None or node["id"] not in before or _node_key(before[node["id"]]) != _node_key(node)
     ]
-    old_slices = {item.get("id"): item for item in (previous or {}).get("slices") or []}
-    slices = [
-        {"id": item.get("id"), "stages": item.get("stages") or {}, "note": item.get("note") or ""}
-        for item in flow.get("slices") or []
-        if old_slices.get(item.get("id")) != item
-    ]
     suggestions_changed = previous is None or _without_rev(previous.get("suggestions")) != _without_rev(
         flow.get("suggestions"))
     hash_changed = previous is not None and previous.get("flow_hash") != flow.get("flow_hash")
-    if not (nodes or slices or suggestions_changed or hash_changed):
+    if not (nodes or suggestions_changed or hash_changed):
         # 流程没变，待处理的来源（决策卡、续跑、报告……）可能变了
         _guard("inbox.updated", _refresh_inbox, project_id)
         return None
-    data = {"flow_hash": flow.get("flow_hash") or "", "nodes": nodes, "slices": slices,
+    data = {"flow_hash": flow.get("flow_hash") or "", "nodes": nodes, "slices": [],
             "suggestions_changed": suggestions_changed}
     envelope = streams.publish_project(project_id, "flow.updated", data)
     _guard("inbox.updated", _refresh_inbox, project_id)

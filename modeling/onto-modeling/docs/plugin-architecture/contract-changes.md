@@ -1957,3 +1957,54 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
     前端不再用；FL-05 留给建议条、发布页「去运行」、待处理「刷新」。S-20 `display_label` 不再有「建模步骤」来源。
 27. **随包删除的页面与入口**：资料子页 sources、snapshots、schema，知识沉淀页 knowledge；新建向导、上传卡、⌘K 的「连接业务系统」；
     资料区外部反馈分组；资料分析的联网 / 仅本地切换；发布页评测优化与标记处理失败；待处理的外部反馈、证据冲突筛选；对话里的采集确认、沉淀入库卡片。
+
+
+## 2026-11-17 · 建模拆成提取对象、提取操作，去掉分段（节点模型重构 1）
+
+用户定：建模拆成两个节点，分段遗留（按段的状态、步骤、写入范围、建议）整个去掉，「规则」一步删掉（和指标旁支是同一条命令）。
+这一批不动 `placement`、`section`、`optional` 等旧字段，不改名、不改菜单和推荐规则；自主构建的改写在下一批（1B），这一批留了
+兼容层让它照常跑。
+
+**节点编号与别名**
+
+1. core 的建模节点 `core.model` 拆成 `core.object`「提取对象」（`after: core.research`，`done: [object]`，`stale_on: [research]`，
+   `produces: ontology/object/*`）和 `core.operation`「提取操作」（`after: core.object`，`done: [operation]`，`stale_on: [object]`，
+   `produces: ontology/operation/*、ontology/rule/*`，`writes: ontology/logic/*、ontology/metric/*、ontology/object/*`）。
+   指标、校验、增量更新的锚点改成 `core.operation`，增量更新排到提取操作后面。
+2. 别名倒过来：`core.model → core.operation`（原来是 `core.object`、`core.operation → core.model`），`core.rule_metric → core.metric`、
+   `core.consistency → core.validate` 不变。没升级的包写的 `core.model` 锚点、钩子宿主、命令归属照样认；官方包（代码生成的求解适配、
+   领域包扩展的锁定底座）的锚点改成 `core.operation`。
+3. 命令归属：`extract-object → core.object`、`extract-operation → core.operation`、`extract-rule-metric → core.metric`。
+4. 写入范围随节点收窄：提取对象只能写 `ontology/object/*`；提取操作能写操作、规则、逻辑、指标、对象。
+5. 节点字段 `per_slice`、`steps` 去掉；包的 `slice_steps`、`node_titles` 和节点上的 `per_slice`、`steps` 装配时忽略（老版本的包、
+   锁定旧 core 的项目照样能装配，不报错）。`refresh_scope` 不再因为 `per_slice` 拒绝。`blocks_in: sliced` 的关卡一律不挡。
+
+**FL-01 等接口（只加不删）**
+
+6. FL-01 `slice_stages`、`slices` 恒为 `[]`；`nodes[].per_slice` 恒为 `false`、`progress` 恒为 null。EP-01 `flow.updated` 的 `slices`
+   恒为 `[]`。P-01 `ProjectCard.slices` 恒为 null。CS-06／EP-03 `ScopeLock.slice` 恒为 null，原因文案不再说「这一段」。
+7. FL-03、FL-04、FL-05：请求里的 `slice_id`、`step` 忽略，不报错；`node_id` 是旧编号时按别名认（`core.model` 认成提取操作，
+   必经，不能跳过；开始发 `/ontology-extract-operation`，不带分段）。FL-03 记的跳过不再带 `slice_id`。
+8. 建议条：建模不再按段推，提取对象、提取操作各自按节点推（主推是节点的动作，「提取对象」「提取操作」）；过期按钮写节点名
+   （「对象有变化，刷新提取操作」）。`flow_state.SUGGEST_RULES` 升到 8，`flow-state.json` 的上下文去掉 `slice_next`、`slice_stale`；
+   锁定旧 core 的项目（`SUGGEST_RULES` < 8）建议条和待处理的「已交给核对节点」判定都用平台镜像的 flow_state。
+
+**兼容规则**
+
+9. **节点状态记录迁移**（`state.migrate_split`，第一次按拆开的流程算状态或记确认时做，只做一次；流程里还有 `core.model` 的不做），
+   顺序不能乱：① 删掉 `nodes` 里残留的 0.2 时代 `core.object`、`core.operation` 记录；② 提取对象取 `slices.all.object`，没有就取
+   `core.model`；③ 提取操作取 `slices.all.operation`；④ 需复核标记、按类指纹、`rev` 一起带过来，判定签名不带旧的、按新节点记；
+   只有需复核没有基线的不搬；⑤ `slice_skips.all.rule` 转成跳过指标（指标已经跳过的保留原记录）；⑥ 删掉 `core.model`、`slices`、
+   `slice_skips`、`legacy_migrated`，记 `split_migrated: true`。
+10. **执行记录**：新增 `exec_records.node_of`。老记录的 `core.model` 按 `step` 认（对象 → 提取对象，操作 → 提取操作，规则 → 指标），
+    没有 `step` 时按命令名，再认不出按别名算提取操作；流程里还有 `core.model` 时原样。进行中、续跑前的检查都按它。`slice=` 参数
+    不再起作用；续跑（按新版重做）的命令不再拼 `slice=`；工作区 `.onto/run/exec.json` 不再写 `slice`、`step`。
+11. **变更集**：不再记 `slice_steps`，一轮结束不再把新条目记进蓝图的段；CS-05 撤回不再改蓝图、不再清分段记录。合入时节点列表里的
+    `core.model` 展开成新节点：有 `slice_steps` 时按做过的步骤（同第 10 条），没有时提取对象、提取操作都算。写入范围锁按别名认
+    `core.model`（提取操作的范围盖住原来建模的）。
+12. **守卫**：`.onto/run/active.json` 里分段时代记的 `protect`（段外已有的条目）不再看；`state_helper acquire` 不再记 `slice`、`protect`。
+13. **助手副本**：`state_helper suggest` 读到的 `flow-state.json` 里缺的节点（core 刚升级、后端还没按新流程算过）按副本里的完成判定
+    兜底：做完了算已确认，没做完时上游做完了算可开始，不会把已经有对象的项目推回「提取对象」。
+14. **自主构建（批次 1B 删除的兼容层）**：`flow/slices.py` 只剩自主构建还在调的接口，把两个节点包成一段「全部」× 两步（对象、操作），
+    每一步的状态、确认记录落在各自的节点上；`blueprint.run_slices`、`drop_added_members` 保留；提取对象、提取操作的执行记录照旧记
+    `slice`（「全部」）与 `step`。AB-01 等自主构建接口不变，策略的 `until_node` 要写 `core.operation`（这一批还不认别名）。

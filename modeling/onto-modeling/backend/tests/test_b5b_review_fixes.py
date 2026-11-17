@@ -19,7 +19,7 @@ from tests.autobuild_helpers import (AutoEngine, ab, ask, gate, run_of, start, w
                                      wait_until)
 from tests.test_changesets import git, main_write, obj
 
-ONE = {"scope": {"until_node": "core.model"}}
+ONE = {"scope": {"until_node": "core.operation"}}
 
 
 def _apply(rel: str, text: str):
@@ -429,7 +429,8 @@ def test_K_revert_restores_a_stale_slice_as_stale(ab):
 
     def stages():
         flow = client.get(f"/api/v1/projects/{project_id}/flow").json()
-        return {item["id"]: item["stages"] for item in flow["slices"]}["all"]
+        states = {node["id"]: node["state"] for node in flow["nodes"]}
+        return {"object": states["core.object"], "operation": states["core.operation"]}
 
     before = stages()
     assert before["object"] == "stale"

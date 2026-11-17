@@ -253,7 +253,7 @@ def test_command_turns_produce_contract_payloads_and_exec_lifecycle(host):
 
     first = asyncio.run(scenario())
     # 第一轮结束命令锁还在：等待；阶段取自命令锁
-    assert first["state"] == "waiting" and first["command_label"] == "对象提取"
+    assert first["state"] == "waiting" and first["command_label"] == "提取对象"
     assert first["phase"]["label"] == "写入对象" and first["phase"]["index"] == 2
     record = exec_records.get(project_id, first["id"])
     assert record["state"] == "done" and record["ended_at"]
@@ -274,7 +274,7 @@ def test_command_turns_produce_contract_payloads_and_exec_lifecycle(host):
     assert user["data"]["message_id"] == f"m-{user['id']}" and user["data"]["delivery"] == "immediate"
     assert user["data"]["command"] == "/ontology-extract-object"
     group = [item for item in envelopes if item["type"] == "progress.updated"][-1]["data"]
-    assert group["title"] == "对象提取" and group["state"] == "done" and group["collapsed"] is True
+    assert group["title"] == "提取对象" and group["state"] == "done" and group["collapsed"] is True
     # 派出子任务前做完的步骤收成一段，子任务单独成卡、不在组里占一步：步骤按组的最后一版合起来看
     latest = {item["data"]["group_id"]: item["data"] for item in envelopes if item["type"].startswith("progress")}
     texts = [step["text"] for data in latest.values() for step in data["steps"]]
@@ -322,7 +322,7 @@ def test_interrupt_marks_exec_and_offers_resume_then_resume_and_abandon(host):
     envelopes = project_history(manager, project_id)
     marker = [item for item in envelopes if item["type"] == "session.interrupted"][-1]["data"]
     assert marker["by"] == "user" and marker["exec_id"] == interrupted["id"]
-    assert "操作提取" in marker["position_label"] and set(marker["saved"]) == {"files", "version_label"}
+    assert "提取操作" in marker["position_label"] and set(marker["saved"]) == {"files", "version_label"}
     suggestions = [item for item in envelopes if item["type"] == "suggestions.updated"][-1]["data"]
     # 打断之后：主推「从打断处继续」（这一轮随后出的 result 不覆盖它）
     assert suggestions["mode"] == "interrupted"

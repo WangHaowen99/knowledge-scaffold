@@ -174,9 +174,11 @@ def detail(manager, name: str, *, project_id: str = "", version: str = "") -> di
     }
 
 
-# 主流程的段（PL-02 `flow_insertions[].at`）：包节点挂在哪个 core 节点前后就归哪一段；指标是建模旁支，老包写的全局一致性归校验
-_SEGMENTS = {"core.research": "research", "core.model": "model", "core.metric": "model", "core.validate": "validate",
-             "core.consistency": "validate", "core.publish": "publish"}
+# 主流程的段（PL-02 `flow_insertions[].at`）：包节点挂在哪个 core 节点前后就归哪一段；提取对象、提取操作与指标旁支都是建模，
+# 老包写的建模（core.model）照旧归建模、全局一致性归校验
+_SEGMENTS = {"core.research": "research", "core.object": "model", "core.operation": "model", "core.model": "model",
+             "core.metric": "model", "core.validate": "validate", "core.consistency": "validate",
+             "core.publish": "publish"}
 
 
 def _flow_insertions(repository, name: str, version: str, manifest) -> list[dict]:

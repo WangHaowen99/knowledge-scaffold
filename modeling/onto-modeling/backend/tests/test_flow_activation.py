@@ -40,11 +40,11 @@ STEPS = ROUND_STEPS
 OBJECT = "ontology/object/订单.md"
 OPERATION = "ontology/operation/下单.md"
 SCOPE_FILE = ROUND_SCOPE_FILE
-ORDER_WITH_PACK = ["core.research", "diagram.flowchart", "core.model", "intake.scope", "intake.apply", "intake.check",
-                   "core.metric", "core.validate", "trace.trace", "codegen.codegen", "codegen.solver", "core.publish",
-                   "core.update"]
-MAINLINE = ["core.research", "core.model", "intake.scope", "intake.apply", "intake.check", "core.validate",
-            "trace.trace", "core.publish"]
+ORDER_WITH_PACK = ["core.research", "diagram.flowchart", "core.object", "core.operation", "intake.scope", "intake.apply",
+                   "intake.check", "core.update", "core.metric", "core.validate", "trace.trace", "codegen.codegen",
+                   "codegen.solver", "core.publish"]
+MAINLINE = ["core.research", "core.object", "core.operation", "intake.scope", "intake.apply", "intake.check",
+            "core.validate", "trace.trace", "core.publish"]
 
 
 def _yaml(rel: str) -> dict:
@@ -82,7 +82,7 @@ def _enable(client, manager, project_id) -> None:
 def test_assembly_puts_the_nodes_between_modeling_and_validation():
     flow = assemble.assemble([_core(), _round()])
     ids = [node["id"] for node in flow["nodes"]]
-    assert ids.index("core.model") < ids.index("intake.scope") < ids.index("intake.apply") \
+    assert ids.index("core.object") < ids.index("core.operation") < ids.index("intake.scope") < ids.index("intake.apply") \
         < ids.index("intake.check") < ids.index("core.validate") < ids.index("core.publish")
     nodes = {node["id"]: node for node in flow["nodes"]}
     for step in STEPS:
@@ -378,7 +378,7 @@ GOOD = {"event": "materials_added", "requires": ["my_built"], "session": "my-sco
 
 def _pack(base, activation_spec, *, visible="activated", preempt=True, confine=None):
     node = {"id": "my-scope.scope", "title": "合成范围", "kind": "agent", "placement": "step", "section": "required",
-            "after": "core.model", "done": [], "produces": ["my-scope/scope.json"], "entry": {"command": "/my-scope-run"}}
+            "after": "core.operation", "done": [], "produces": ["my-scope/scope.json"], "entry": {"command": "/my-scope-run"}}
     if visible:
         node["visible_if"] = visible
     if preempt:

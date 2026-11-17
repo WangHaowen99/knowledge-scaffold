@@ -30,7 +30,7 @@ from tests.autobuild_helpers import (AutoEngine, ab, ask, gate, history, project
                                      wait_state, wait_until)
 from tests.test_changesets import git, trailers
 
-SLICES_ONLY = {"scope": {"until_node": "core.model"}}
+SLICES_ONLY = {"scope": {"until_node": "core.operation"}}
 UNTIL_VALIDATE = {"scope": {"until_node": "core.validate"}}
 
 
@@ -56,8 +56,9 @@ def test_full_project_runs_to_the_end_with_policy_answers(ab):
     assert subjects[1].startswith("autobuild: 自主构建运行 #1「全部」")
     assert trailers(root, "HEAD~1")["Onto-Source"] == "autobuild"
     flow = client.get(f"/api/v1/projects/{project_id}/flow").json()
-    model = next(node for node in flow["nodes"] if node["id"] == "core.model")
-    assert model["display_state"] == "auto" and model["flags"]["review_source"] == "autobuild"
+    for node_id in ("core.object", "core.operation"):
+        model = next(node for node in flow["nodes"] if node["id"] == node_id)
+        assert model["display_state"] == "auto" and model["flags"]["review_source"] == "autobuild"
     # 新开上下文、注入说明与台账摘要；全量模式命令不带分段，一次写完全部条目
     assert [text for text in AutoEngine.sent if text.startswith("/ontology-extract")] == [
         "/ontology-extract-object", "/ontology-extract-operation"]
@@ -237,9 +238,9 @@ def test_take_over_hands_the_question_and_the_unfinished_step_to_the_run(ab, mon
     events = history(client, project_id, default)
     interrupted = [item["data"] for item in events if item["type"] == "session.interrupted"]
     assert interrupted[-1]["by"] == "autobuild" and interrupted[-1]["saved"] is None
-    assert interrupted[-1]["position_label"] == "开始了自主构建，「对象提取」交给它接着做"
+    assert interrupted[-1]["position_label"] == "开始了自主构建，「提取对象」交给它接着做"
     notices = [item["data"]["text"] for item in events if item["type"] == "notice"]
-    assert notices == ["「对象提取」交给自主构建 · 运行 #1，这里不用再继续"]
+    assert notices == ["「提取对象」交给自主构建 · 运行 #1，这里不用再继续"]
     # 切回陪伴对话：注入里带交接说明（运行从哪个版本开始、增删改了哪些条目、以主线为准）；运行自己的对话、
     # 运行之后才建的对话不带
     from app.services.session_host import injection
@@ -263,7 +264,7 @@ def test_rules_written_along_with_operations_need_review(ab):
     是已确认）；指标节点同理（实测：运行合入后指标节点是已确认）。"""
     from pathlib import Path
 
-    client, _workspaces, project_id, _root = ab
+    client, _workspaces, project_id, root = ab
 
     def write_rule(ctx):
         for rel, text in (("ontology/rule/规则1.md", "# 规则1\n\n## 规则描述\n\n合成规则\n"),
@@ -276,8 +277,10 @@ def test_rules_written_along_with_operations_need_review(ab):
     run = start(client, project_id, **SLICES_ONLY)
     wait_state(client, project_id, run["run_id"], "completed")
     flow = client.get(f"/api/v1/projects/{project_id}/flow").json()
-    stages = next(item for item in flow["slices"] if item["id"] == "all")["stages"]
-    assert stages["operation"] == "auto" and stages["rule"] == "auto"
+    # 规则是提取操作的产出：随提取操作一起自主完成、待复核
+    operation = next(node for node in flow["nodes"] if node["id"] == "core.operation")
+    assert operation["display_state"] == "auto" and operation["flags"]["review_source"] == "autobuild"
+    assert (root / "ontology" / "rule" / "规则1.md").is_file() and flow["slices"] == []
     # 指标节点（旁支）也是这一轮顺带写的：自主完成、待复核，不是人确认过
     metric = next(node for node in flow["nodes"] if node["id"] == "core.metric")
     assert metric["display_state"] == "auto" and metric["flags"]["review_source"] == "autobuild"
@@ -294,7 +297,7 @@ def test_only_steps_the_run_owns_are_handed_over():
     runner_class = runner_module.AutobuildRunner
 
     def step(name, phase=None, state="interrupted"):
-        return {"slice": {"id": "all", "name": "全部"}, "step": name, "node": {"id": "core.model"},
+        return {"slice": {"id": "all", "name": "全部"}, "step": name, "node": {"id": "core.object"},
                 "state": state, "command_name": "extract-object", "phase": {"raw": phase}}
 
     assert runner_class._in_run(run, step("operation")) is True
@@ -314,9 +317,11 @@ def test_tail_redoes_a_node_taken_over_mid_work(tmp_path, monkeypatch):
     from app.services.autobuild import plan
     from app.services.flow import view
 
-    flow_doc = {"nodes": [{"id": "core.model", "per_slice": True},
-                          {"id": "core.validate", "title": "校验", "entry": {"command": "/ontology-validate"}}]}
-    monkeypatch.setattr(view, "build", lambda root: {"nodes": [{"id": "core.model", "state": "confirmed"},
+    flow_doc = {"nodes": [{"id": "core.object"}, {"id": "core.operation"},
+                          {"id": "core.validate", "title": "校验", "entry": {"command": "/ontology-validate"}}],
+                "commands": {"extract-object": {"node": "core.object"}, "extract-operation": {"node": "core.operation"}}}
+    monkeypatch.setattr(view, "build", lambda root: {"nodes": [{"id": "core.object", "state": "confirmed"},
+                                                               {"id": "core.operation", "state": "confirmed"},
                                                                {"id": "core.validate", "state": "confirmed"}]})
     policy = {"scope": {"until_node": "core.validate"}}
     assert plan._tail(tmp_path, flow_doc, policy) == []
@@ -380,8 +385,8 @@ def test_take_over_mid_work_lets_the_run_finish_that_step(ab, monkeypatch):
     first = next(hint for hint in AutoEngine.hints if hint.startswith("自主构建 · 运行 #1"))
     assert "「对象提取」是从陪伴建模接过来的、没做完的一步（停在「写入对象」）" in first
     flow = client.get(f"/api/v1/projects/{project_id}/flow").json()
-    stages = next(item for item in flow["slices"] if item["id"] == "all")["stages"]
-    assert stages["object"] == "auto" and stages["operation"] == "auto"
+    states = {node["id"]: node["display_state"] for node in flow["nodes"]}
+    assert states["core.object"] == "auto" and states["core.operation"] == "auto"
     records = [record for record in exec_records_of(project_id) if record.get("conversation_id") == default]
     assert [(record["state"], record["phase"]["raw"]) for record in records] == [("abandoned", "objects")]
     assert run_of(client, project_id, run["run_id"])["matrix"][0]["cells"]["object"] == "auto"
@@ -464,7 +469,7 @@ def test_pause_then_stop_at_safe_point_then_convert(ab):
 def test_usage_is_recorded_but_never_ends_the_run(ab):
     client, _workspaces, project_id, _root = ab
     # 每轮 125 token（对象、操作两轮），老客户端带的 200 token 预算忽略：用量照记，运行一直做到完
-    run = start(client, project_id, scope={"until_node": "core.model"}, budget={"max_tokens": 200})
+    run = start(client, project_id, scope={"until_node": "core.operation"}, budget={"max_tokens": 200})
     done = wait_state(client, project_id, run["run_id"], "completed")
     assert done["slices"] == {"done": 1, "total": 1} and done["tokens"]["used"] > 200
     assert set(done["tokens"]) == {"used"} and set(done["cost"]) == {"used"} and "budget" not in done["policy"]

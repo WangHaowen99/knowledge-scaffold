@@ -65,7 +65,8 @@ def test_catalog_lists_assembled_commands_by_business_group(api):
     assert catalog["total"] == len(items) > 5
     assert all(set(item) == COMMAND_ITEM for item in items)
     by_command = {item["command"]: item for item in items}
-    assert by_command["/ontology-extract-object"]["node_id"] == "core.model"
+    assert by_command["/ontology-extract-object"]["node_id"] == "core.object"
+    assert by_command["/ontology-extract-operation"]["node_id"] == "core.operation"
     assert by_command["/ontology-research"]["label"] and by_command["/ontology-research"]["pack"] == "core"
     assert catalog["groups"][0]["label"] == "建模"
 
@@ -183,7 +184,7 @@ def test_exec_list_resume_and_abandon(api):
     body = resumed.json()
     assert body["exec"]["state"] == "running" and body["conversation_id"] == "default" and body["message_id"]
     assert wait(lambda: len(FakeEngine.sent) == 2 and FakeEngine.sent)[-1].startswith(
-        "/ontology-extract-object 继续上次没做完的「对象提取」")
+        "/ontology-extract-object 继续上次没做完的「提取对象」")
     wait(lambda: (exec_records.get(project_id, record["id"]) or {}).get("state") == "done")
 
     gone = client.post(f"/api/v1/projects/{project_id}/execs/{record['id']}/abandon")

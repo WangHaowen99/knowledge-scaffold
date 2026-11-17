@@ -140,7 +140,7 @@ ROUND_PACK_FLOW = {
         "intake_pending": {"pending": ["intake"], "glob": "check.md"},
     },
     "nodes": [
-        _round_node("scope", "圈定范围", preempt="上传了新资料，先圈定这次要改的范围", display_after=["core.model"],
+        _round_node("scope", "圈定范围", preempt="上传了新资料，先圈定这次要改的范围", display_after=["core.operation"],
                     done=["intake_session"], produces=[ROUND_SCOPE_FILE, "intake/scope.md"]),
         _round_node("apply", "范围内修改", preempt=True, after="intake.scope", display_after=["intake.scope"],
                     done=["intake_applied", "intake_session"], produces=["intake/applied.json"], writes=_ROUND_WRITES),

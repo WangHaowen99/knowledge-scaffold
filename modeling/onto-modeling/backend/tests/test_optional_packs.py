@@ -112,8 +112,8 @@ def test_new_project_enables_default_capabilities(env):
     assert "domain-extend-add" not in commands  # 可选包不默认启用
     flow = json.loads((root / ".claude" / "flow.yaml").read_text(encoding="utf-8"))
     assert [node["id"] for node in flow["nodes"]] == [
-        "core.research", "diagram.flowchart", "core.model", "core.metric", "core.validate", "trace.trace",
-        "codegen.codegen", "codegen.solver", "core.publish", "core.update"]
+        "core.research", "diagram.flowchart", "core.object", "core.operation", "core.update", "core.metric",
+        "core.validate", "trace.trace", "codegen.codegen", "codegen.solver", "core.publish"]
     assert flow["commands"]["trace"]["node"] == "trace.trace" and flow["commands"]["flowchart"]["node"] == "diagram.flowchart"
     assert "ontology-codegen-scan" in flow["available_commands"]
 
@@ -127,10 +127,9 @@ def test_core_only_project_assembles_and_filters_suggestions(env):
                                "ontology-update", "ontology-impact", "ontology-query", "ontology-overview", "version"}
     flow = json.loads((root / ".claude" / "flow.yaml").read_text(encoding="utf-8"))
     assert [node["id"] for node in flow["nodes"]] == [
-        "core.research", "core.model", "core.metric", "core.validate", "core.publish",
-        "core.update"]
-    model = next(node for node in flow["nodes"] if node["id"] == "core.model")
-    assert [step["id"] for step in model["steps"]] == ["object", "operation", "rule", "check"]  # 没有「场景」
+        "core.research", "core.object", "core.operation", "core.update", "core.metric", "core.validate",
+        "core.publish"]
+    assert not any(node.get("steps") or node.get("per_slice") for node in flow["nodes"])  # 不再分段，也没有「场景」一步
     suggested = {item.get("command") for items in flow["next_steps"].values() for item in items}
     assert not suggested & {"/ontology-mock", "/ontology-trace", "/ontology-codegen", "/ontology-flowchart"}
     # 「完成」之后不再推荐扫描脚本候选（代码生成与求解包没启用）

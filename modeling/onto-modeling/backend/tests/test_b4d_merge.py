@@ -61,7 +61,7 @@ def _entries_done(root, obj_name: str, op_name: str) -> None:
 
 def _gate_before_model(**fields) -> dict:
     flow = copy.deepcopy(NODE_PACK_FLOW)
-    flow["nodes"][0].update({"placement": "gate", "after": "core.research", "blocks": ["core.model"], **fields})
+    flow["nodes"][0].update({"placement": "gate", "after": "core.research", "blocks": ["core.operation"], **fields})
     return flow
 
 
@@ -81,15 +81,15 @@ def test_pack_gate_and_breaker_with_an_old_sliced_blueprint(env):
     enable_and_apply(client, manager, project_id)
     built = view.build(root)
     nodes = {node["id"]: node for node in built["nodes"]}
-    assert nodes["core.model"]["state"] == "blocked" and nodes["naming.check"]["state"] == "ready"
-    assert [item["id"] for item in built["slices"]] == ["all"]  # 老的两段蓝图也只算「全部」
-    assert built["slices"][0]["stages"]["object"] == "confirmed"
+    assert nodes["core.operation"]["state"] == "blocked" and nodes["naming.check"]["state"] == "ready"
+    assert built["slices"] == []  # 老的两段蓝图也不分段
+    assert nodes["core.object"]["state"] == "confirmed"
     ops_state.set_breaker("naming", "0.1.0", "open", "ops")
     try:
         nodes = nodes_of(root)
         assert nodes["naming.check"]["state"] == "skipped" and nodes["naming.check"]["actions"] == []
-        assert nodes["core.model"]["state"] == "running"  # 关卡解除：对象做了、操作还没做
-        assert nodes["core.model"]["progress"] is None
+        assert nodes["core.operation"]["state"] == "ready"  # 关卡解除：对象做了、操作还没做
+        assert nodes["core.operation"]["progress"] is None
     finally:
         ops_state.set_breaker("naming", "0.1.0", "close", "ops")
         ops_state.set_breaker("naming", "0.1.0", "close", "ops")
@@ -110,8 +110,9 @@ def test_backfill_keeps_out_of_the_way_of_the_mainline_next_step(env):
     check = next(node for node in built["nodes"] if node["id"] == "naming.check")
     assert check["flags"]["backfill"] is True and check["counts_in_progress"] is False
     assert built["progress"] == before["progress"] and flow_model.progress(root)["total"] == total_before
-    model = next(node for node in built["nodes"] if node["id"] == "core.model")
-    assert model["state"] == "confirmed" and model["progress"] is None
+    for node_id in ("core.object", "core.operation"):
+        model = next(node for node in built["nodes"] if node["id"] == node_id)
+        assert model["state"] == "confirmed" and model["progress"] is None
     # 主推仍是主线下一步：校验
     primary = built["suggestions"]["primary"]
     assert primary["action"]["command"] == "/ontology-validate" and not primary["id"].startswith("backfill:")
@@ -128,12 +129,12 @@ def test_progress_matches_flow_with_an_old_sliced_blueprint_and_backfill(env):
     install(manager, tmp_path, flow=_step_after_research())
     enable_and_apply(client, manager, project_id)
     info = flow_model.progress(root)
-    assert info["hits"]["core.model"] is True  # 不分段：老蓝图第二段没做，建模也算做完
+    assert info["hits"]["core.object"] is info["hits"]["core.operation"] is True  # 不分段：老蓝图第二段没做，建模也算做完
     built = view.build(root)
     assert info["done"] == built["progress"]["done"] and info["total"] == built["progress"]["total"]
     _entries_done(root, "图书", "还书")
     info = flow_model.progress(root)
-    assert info["hits"]["core.model"] is True and info["done"] == view.build(root)["progress"]["done"]
+    assert info["hits"]["core.operation"] is True and info["done"] == view.build(root)["progress"]["done"]
 
 
 def test_human_node_card_and_blueprint_questions_share_the_decision_group(env):
@@ -142,7 +143,7 @@ def test_human_node_card_and_blueprint_questions_share_the_decision_group(env):
     _research(root)
     _blueprint(root, confirmed=False)
     main_write(root, "ontology/object/读者.md", obj("读者", "合成"))
-    install(manager, tmp_path, flow=kinds_flow({**HUMAN_NODE, "after": "core.research", "blocks": ["core.model"]},
+    install(manager, tmp_path, flow=kinds_flow({**HUMAN_NODE, "after": "core.research", "blocks": ["core.operation"]},
                                                 probes={"naming_signoff": {"files": ["reports"],
                                                                            "glob": "signoff-naming.md"}}))
     enable_and_apply(client, manager, project_id)

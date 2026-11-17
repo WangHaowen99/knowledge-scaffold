@@ -197,7 +197,7 @@
 | 执行记录 | `ex-<n>` | `ex-0412` |
 | 自主构建运行 | `run-<n>`，界面显示「运行 #n」 | `run-3` |
 | 证据锚点 | `<scheme>:<源ID>/<路径>[#<片段>]`（详设 5.8.5，名字里的特殊字符百分号编码）；ADR-0101 起只解析 `file:<资料路径>[#<片段>]` | `file:resource/text/others/合同.pdf.md#L40` |
-| 流程节点 | `<包>.<名>` | `core.model` |
+| 流程节点 | `<包>.<名>` | `core.object` |
 | 待处理事项 | `<kind>:<来源ID>`，来源不变 ID 就不变 | `decision:q-7f3a` |
 | 错误留档 | `err-<4～8 位 hex>` | `err-7f3a` |
 
@@ -1955,10 +1955,10 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 查询参数：`conversation_id?`（带上时 `suggestions` 按这条对话的打断状态计算）。
 - 响应：`Flow`，即
   - `flow_hash`；
-  - `nodes`：`FlowNode[]`，建模节点带 `slices`；
+  - `nodes`：`FlowNode[]`；建模是提取对象 `core.object`、提取操作 `core.operation` 两个节点（节点模型重构 1）；
   - `edges`；
   - `sections`：节点分组「必经步骤 / 发布前检查 / 可选步骤 / 有需要时」（建模步骤抽屉已删除，前端不再用，ADR-0101）；
-  - `slices`：分段 × 步骤；
+  - `slice_stages`、`slices`：恒为 `[]`（不再分段，字段只为兼容留着）；
   - `suggestions`；
   - `notices`：如「1 份新资料」；
   - `autobuild`：运行中时给运行控制。
@@ -1967,18 +1967,17 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 ```json
 {"flow_hash": "b41e09…",
- "nodes": [{"id": "core.model", "title": "建模", "kind": "agent", "placement": "spine",
+ "nodes": [{"id": "core.object", "title": "提取对象", "kind": "agent", "placement": "spine",
+            "state": "confirmed", "flags": {"needs_review": false, "disabled": false, "backfill": false},
+            "progress": null, "version": "core@1.4.2", "section": "required",
+            "actions": [{"kind": "start", "label": "提取对象", "target": "/ontology-extract-object"}], "per_slice": false},
+           {"id": "core.operation", "title": "提取操作", "kind": "agent", "placement": "spine",
             "state": "running", "flags": {"needs_review": false, "disabled": false, "backfill": false},
-            "progress": {"done": 3, "total": 5, "label": "3/5 段"}, "version": "core@1.4.2",
-            "section": "required", "actions": [], "per_slice": true}],
- "edges": [{"from": "core.research", "to": "core.model"}],
- "slice_stages": [{"id": "object", "label": "对象"}, {"id": "operation", "label": "操作"},
-                  {"id": "rule", "label": "规则"}, {"id": "check", "label": "写入即查"},
-                  {"id": "scenario", "label": "场景", "plugin": "trace"}],
- "slices": [{"id": "s5", "name": "超量与审批提示", "group": "now",
-             "stages": {"object": "confirmed", "operation": "pending_confirm", "rule": "draft",
-                        "check": "running", "scenario": "not_ready"},
-             "note": "正在做 · 停在「操作」"}],
+            "progress": null, "version": "core@1.4.2", "section": "required",
+            "actions": [{"kind": "start", "label": "提取操作", "target": "/ontology-extract-operation"}], "per_slice": false}],
+ "edges": [{"from": "core.research", "to": "core.object"}, {"from": "core.object", "to": "core.operation"}],
+ "slice_stages": [],
+ "slices": [],
  "suggestions": {"mode": "normal", "primary": {...}, "secondary": [...]},
  "notices": [{"kind": "new_materials", "count": 1, "files": ["resource/others/09-修订通知.docx"],
               "action": {"type": "navigate", "page": "incremental"}}]}
@@ -1997,9 +1996,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
      这一轮结束了、命令没收尾时同样两项（主推发「继续」）；
   5. 合入冲突：主推「处理冲突」，其余按 6～10 补齐；
   6. 目标问题没答（F8）：主推「回答目标问题」，次选是主线下一步，不拦着开始建模（蓝图草案不用确认）；
-  7. 过期的步骤：「对象有变化，刷新操作」——前半句是确认之后真变了的那几类（多于两类写「对象、操作等」；老记录按主线提交反查，还说不清时只写「刷新X」），后半句是刷新哪一步（按段时写「段名 · 步骤名」）；必经的排在可选的前面，可选的（规则补抽、指标）后面的校验还会跑时交给校验、不单独推；
+  7. 过期的节点：「对象有变化，刷新提取操作」——前半句是确认之后真变了的那几类（多于两类写「对象、操作等」；老记录按主线提交反查，还说不清时只写「刷新X」），后半句是节点名；必经的排在可选的前面，可选的（指标）后面的校验还会跑时交给校验、不单独推；
   8. 报告里有待处理问题、挡住发布的关卡没过：继续校验或关卡的操作；
-  9. 主线下一个必经步骤（按段时按钮带段名）；
+  9. 主线下一个必经步骤；
   10. 必经都做完：查看整体视图，次选扫描脚本候选、补做插件步骤。
   - 自主构建运行中 `mode="autobuild_controls"`，返回运行控制，不推荐下一步。
   - 能显示就能执行：每个条目的动作先过「此刻能不能执行」的检查（与接口收到 `from_suggestion` 请求时同一份），不能的不出现，整条规则没有能执行的就往下一条判。
@@ -2010,7 +2009,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `POST /api/v1/projects/{id}/flow/nodes/{node_id}/skip` · 所有者 · 旧：— · 审计：是 · 依据：6.9、features「跳过 / 补做 / 恢复」 · 页面：—（建模步骤抽屉已删除，前端不再调用，ADR-0101）
 
-- 请求：`{slice_id?: string, reason?: string}`。
+- 请求：`{reason?: string}`。不再分段：带了 `slice_id`、`step` 一律忽略，不报错。
+- `node_id` 可以是旧编号，按 core 的别名认成现在的节点（`core.model` → `core.operation`、`core.rule_metric` → `core.metric`）；响应里的 `node.id` 是现在的编号。
 - 主线和必经节点不能跳过。
 - 响应：`{node: FlowNode, flow_hash}`。
 - 错误：`node_not_found`、`node_not_skippable`。
@@ -2019,7 +2019,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `POST /api/v1/projects/{id}/flow/nodes/{node_id}/restore` · 所有者 · 旧：— · 审计：是 · 依据：6.9 · 页面：—（同 `FL-03`）
 
-- 请求：`{slice_id?}`。
+- 请求：`{}`；带了 `slice_id`、`step` 忽略。旧节点编号同 `FL-03`。
 - 响应：同 `FL-03`。
 - 错误：`node_not_skipped`。
 
@@ -2027,7 +2027,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `POST /api/v1/projects/{id}/flow/nodes/{node_id}/start` · 所有者 · 旧：— · 审计：是 · 依据：6.3 `entry`、6.9 · 页面：wb-l2（建议条）、publish（合规检查「去运行」）、inbox（「刷新这个场景」）
 
-- 请求：`{slice_id?, args?: object, origin: {page, label}}`。
+- 请求：`{args?: object, origin: {page, label}}`；带了 `slice_id`、`step` 忽略，命令不带分段。旧节点编号同 `FL-03`（`core.model` 开始的是提取操作）。
 - 等价于用节点声明的 `entry.command` 调 `S-20`。
 - 刷新过期节点：节点声明了 `refresh_scope: changed_entries`、此刻过期且算得出改动范围时，命令改为 `<entry.command> <条目名…> --since <确认时提交前 12 位>`（只查改动，ADR-0100）；算不出时照旧。
 - 响应 `202`：同 `S-20`。
@@ -4141,7 +4141,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 | 编号 | type | 载荷 | 用在哪 | 依据 |
 |---|---|---|---|---|
-| EP-01 | `flow.updated` | `{flow_hash, nodes: [{id, state, flags, progress}], slices: [{id, stages, note}], suggestions_changed: bool}`，只含变化的节点和分段 | 主线进度条、projects 卡片 | ㊴ |
+| EP-01 | `flow.updated` | `{flow_hash, nodes: [{id, state, flags, progress}], slices: [], suggestions_changed: bool}`，只含变化的节点（`slices` 不再分段，恒为空） | 主线进度条、projects 卡片 | ㊴ |
 | EP-02 | `inbox.updated` | `{counts: {total, by_filter, by_pack}, added: string[], removed: string[], changed: string[]}` | 左栏工作台角标、「待处理 N」、inbox 列表、插件页角标 | ㊴ |
 | EP-03 | `scope.updated` | `ScopeLock` | Studio、流程图弹窗、场景模拟、代码生成的锁定条和只读；两态「助手运行中 / 修改待确认」，自主构建下是「这一段自动合入为止」 | 4.3、方案 C10 |
 | EP-04 | `changeset.updated` | `{changeset_id, state: "open"\|"pending_confirm"\|"merged"\|"discarded"\|"conflict", source, conversation_id, version_label: string\|null}` | wb-l2「这一轮」卡、inbox | 8.2 |
@@ -4678,7 +4678,7 @@ type ProjectMetaView = {
 
 type ProjectCard = ProjectMeta & {
   industry_label: string | null;
-  slices: { total: number; confirmed: number; cells: DisplayState[] } | null;   // null = 分段待规划
+  slices: { total: number; confirmed: number; cells: DisplayState[] } | null;   // 恒为 null（不再分段）
   inbox_count: number;
   status: ("active" | "autobuild" | "autobuild_done" | "publishable" | "archived")[];
   autobuild: {
@@ -4867,7 +4867,7 @@ type Changeset = {
 type ScopeLock = {
   state: "none" | "assistant_running" | "pending_confirm" | "autobuild_slice";
   changeset_id: string | null; conversation_id: string | null; run_id: string | null;
-  slice: { id: string; name: string } | null;
+  slice: { id: string; name: string } | null;   // 恒为 null（不再分段）
   node: { id: string; version: string } | null;
   entries: EntryRef[];            // 范围内的本体条目
   artifacts: ArtifactRef[];       // 范围内的插件产物（场景、求解契约、流程图……）
@@ -4967,9 +4967,9 @@ type FlowNode = {
   state: NodeState;
   flags: { needs_review: boolean; review_source?: "autobuild" | "upgrade" | "import"; disabled: boolean; backfill: boolean };
   display_state: DisplayState;
-  progress: { done: number; total: number; label: string } | null;   // 「3/5 段」
+  progress: { done: number; total: number; label: string } | null;   // 恒为 null（不再分段）
   version: string;                // "core@1.4.2"
-  per_slice: boolean;
+  per_slice: boolean;             // 恒为 false（不再分段）
   note: string | null;
   blocks: string[];
   actions: { kind: "start" | "skip" | "restore" | "refresh" | "confirm"; label: string; target?: string }[];
@@ -4982,8 +4982,8 @@ type Flow = {
   flow_hash: string;
   nodes: FlowNode[];
   edges: { from: string; to: string }[];
-  slice_stages: { id: "object" | "operation" | "rule" | "check" | "scenario"; label: string; plugin?: string }[];
-  slices: { id: string; name: string; core_flow: string;
+  slice_stages: { id: "object" | "operation" | "rule" | "check" | "scenario"; label: string; plugin?: string }[];   // 恒为 []
+  slices: { id: string; name: string; core_flow: string;   // 恒为 []
             group: "done" | "now" | "wait" | "todo";
             stages: Record<string, SliceStageState>;
             note: string; no_rules: boolean }[];

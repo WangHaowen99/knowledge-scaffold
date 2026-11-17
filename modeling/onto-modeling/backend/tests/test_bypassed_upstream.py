@@ -55,7 +55,8 @@ def test_validate_is_not_bypassed_by_a_done_scenario_node(env):
 
 def test_import_start_follows_the_delivered_entries():
     assert projects_router._start_node({})["id"] == "core.research"
-    assert projects_router._start_node({"objects": 2})["id"] == "core.research"
+    # 只有对象：提取对象做完、用上了资料分析该给的，资料分析算越过，从提取操作开始
+    assert projects_router._start_node({"objects": 2})["id"] == "core.operation"
     start = projects_router._start_node({"objects": 2, "operations": 1})
     assert start["id"] == "core.validate" and start["title"] == "校验"
 
@@ -75,6 +76,7 @@ def test_imported_package_starts_from_validate(env):
     assert created.status_code == 201, created.text
     built = view.build(manager.project_root(created.json()["id"]))
     assert _node(built, "core.research")["flags"]["backfill"] is True
-    model = _node(built, "core.model")
-    assert model["state"] == "confirmed" and model["flags"]["needs_review"] is True
+    for node_id in ("core.object", "core.operation"):
+        model = _node(built, node_id)
+        assert model["state"] == "confirmed" and model["flags"]["needs_review"] is True
     assert _primary_command(built) == "/ontology-validate"

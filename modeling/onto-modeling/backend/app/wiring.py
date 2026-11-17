@@ -132,10 +132,28 @@ def _announce_round(project_id: str, record: dict) -> None:
             continue
 
 
+def _expand_legacy(node_ids: list[str], record: dict | None, flow: dict) -> list[str]:
+    """建模拆开之前的变更集记的是 core.model：按它做过的步骤（`slice_steps`）认成提取对象、提取操作（规则补抽算指标），
+    没记步骤时两个都算；流程里还有 core.model（锁定旧 core）时原样。"""
+    from .services.session_host.exec_records import LEGACY_MODEL, LEGACY_STEPS
+
+    known = {node["id"] for node in flow.get("nodes") or []}
+    if LEGACY_MODEL not in node_ids or LEGACY_MODEL in known:
+        return node_ids
+    steps = [LEGACY_STEPS.get(str(pair[1])) for pair in (record or {}).get("slice_steps") or []
+             if isinstance(pair, (list, tuple)) and len(pair) == 2]
+    expanded = [node_id for node_id in steps if node_id] or ["core.object", "core.operation"]
+    out = []
+    for node_id in node_ids:
+        for item in (expanded if node_id == LEGACY_MODEL else [node_id]):
+            if item in known and item not in out:
+                out.append(item)
+    return out
+
+
 def _confirm_nodes(project_id: str, node_ids: list[str], record: dict | None = None) -> None:
     import time
 
-    from .services.flow import blueprint, slices
     from .services.flow import model as flow_model
     from .services.flow import state as node_state
 
@@ -143,26 +161,19 @@ def _confirm_nodes(project_id: str, node_ids: list[str], record: dict | None = N
         return
     root = _workspaces().project_root(project_id)
     flow = flow_model.load_for(root)
+    node_ids = _expand_legacy(list(node_ids), record, flow)
     node_state.confirm(root, flow, node_ids)
-    review = None
     if record and record.get("needs_review"):
         review = {"source": "autobuild", "at": time.time(), "run_id": record.get("run_id"),
                   "slice_id": record.get("slice_id")}
         node_state.mark_needs_review(root, node_ids, "autobuild", run_id=record.get("run_id"),
                                      slice_id=record.get("slice_id"), note=record.get("purpose") or "")
-    # 按段的节点：这个变更集做过的那几段那几步记为确认过（B4d）；同一条命令做的建模步骤一并记上
-    doc = blueprint.load_doc(root)
-    pairs = [list(pair) for pair in (record or {}).get("slice_steps") or []]
-    pairs += [pair for pair in slices.steps_done_by(root, flow, node_ids, doc) if pair not in pairs]
-    if review is not None:
-        # 自主构建这一段顺带写出来的步骤（操作提取一起抽的规则）、节点（指标）也是它做的：一并记上需复核
-        paths = (record or {}).get("paths") or []
-        pairs += slices.steps_written(root, flow, pairs, paths, doc)
+        # 自主构建这一轮顺带写出来的别的节点的产物（提取操作一起抽的指标）也是它做的：一并记上需复核
+        paths = record.get("paths") or []
         written = node_state.produced_by(flow, paths, exclude=node_ids)
         if written:
             hits = flow_model.flow_state(root).node_hits(flow, root)
             node_state.mark_written_by_autobuild(root, flow, written, hits, review, note=record.get("purpose") or "")
-    slices.confirm(root, flow, pairs, doc=doc, needs_review=review)
 
 
 def _sync_change_lists(project_id: str, record: dict) -> None:

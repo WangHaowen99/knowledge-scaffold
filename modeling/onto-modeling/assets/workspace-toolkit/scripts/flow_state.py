@@ -243,8 +243,9 @@ def next_step_lines(flow: dict, stage: str) -> list:
 # 指纹算好，写进 `.onto/run/flow-state.json`）与上下文，输出契约 7.8 的 Suggestions。
 
 SUGGESTIONS_MAX = 3
-# 建议条判定的版本（F7 起按规则表从上往下判、带 check 与 note）：后端只用支持这一版的 flow_state
-SUGGEST_RULES = 7
+# 建议条判定的版本（F7 起按规则表从上往下判、带 check 与 note；8 起不认按段的节点，上下文里没有 slice_next、slice_stale）：
+# 后端只用支持这一版的 flow_state
+SUGGEST_RULES = 8
 
 
 def _item(sid: str, label: str, action: dict, *, reason: str, priority: int, primary: bool = False,
@@ -290,15 +291,6 @@ def _node_actions(node: dict, *, verify_first: bool = False, probes: dict | None
     return actions
 
 
-def _slice_step(next_step: dict) -> dict:
-    """按段的下一步：这一段下一步的命令带上分段（全量模式不带）。"""
-    args = {'slice': next_step['slice_id']} if next_step.get('slice_id') and next_step.get('sliced') else {}
-    action = {'type': 'send', 'text': '', 'command': next_step['command']}
-    if args:
-        action['args'] = args
-    return action
-
-
 def _goal_items(flow: dict, nodes: list, states: dict, context: dict) -> list:
     """6. 资料和建模目标对不上的那个问题没答：主推去回答，后面跟主线下一步——不拦着开始建模（F8，没回答按原目标建）。"""
     if not (context.get('blueprint') or {}).get('goal_pending'):
@@ -334,7 +326,7 @@ LENIENT_STATES = ('confirmed', 'stale', 'ready', 'running', 'pending_confirm', '
 
 
 def _checked_downstream(node: dict, stale_on: list, nodes: list, state_of: dict, states=('confirmed',)) -> bool:
-    """过期的 node（或它的某一步，stale_on 是那一步的）后面有已确认的必经节点 M 能核对并修复同一批改动：M.stale_on 盖住
+    """过期的 node 后面有已确认的必经节点 M 能核对并修复同一批改动：M.stale_on 盖住
     这些类别、M 的写入范围盖住 node 的产出。M 已确认说明它是在这批改动之后跑的、核对过了（典型：校验自己的修复改了对象），
     上游不再推刷新。M 没跑过或也过期时照旧推上游刷新——改动可能要补提取，M 核对不出来（ADR-0090）。"""
     if not stale_on:
@@ -351,27 +343,11 @@ def _checked_downstream(node: dict, stale_on: list, nodes: list, state_of: dict,
     return False
 
 
-def _step_stale_on(node: dict, step_id) -> list:
-    return next((list(step.get('stale_on') or []) for step in node.get('steps') or [] if step.get('id') == step_id), [])
-
-
-def _step_optional(node: dict, step_id) -> bool:
-    return any(step.get('optional') for step in node.get('steps') or [] if step.get('id') == step_id)
-
-
-def _step_handed_down(node: dict, step_id, nodes: list, state_of: dict) -> bool:
-    """按段节点过期的一步已交给后面的核对节点：可选的一步只要核对节点还会跑就算，必经的要核对节点已确认。"""
-    states = LENIENT_STATES if _step_optional(node, step_id) else ('confirmed',)
-    return _checked_downstream(node, _step_stale_on(node, step_id), nodes, state_of, states)
-
-
 def handed_down(node: dict, nodes: list, state_of: dict, slice_stale: list = ()) -> bool:
-    """过期的节点已经全交给后面的核对节点（第 7 条不推刷新）时返回 True。
+    """过期的节点已经交给后面的核对节点（第 7 条不推刷新）时返回 True：可选的只要核对节点还会跑就算，必经的要核对节点
+    已确认。待处理（服务端）用同一个判定，不列建议条不推的刷新——两边口径一致（ADR-0090）。
 
-    按段的节点要过期的每一步都交出去才算。待处理（服务端）用同一个判定，不列建议条不推的刷新——两边口径一致（ADR-0090）。"""
-    if node.get('per_slice'):
-        steps = list(slice_stale or [])
-        return bool(steps) and all(_step_handed_down(node, step.get('step'), nodes, state_of) for step in steps)
+    slice_stale 是按段节点时的参数，签名留着让旧调用方照样能调，不再使用。"""
     states = LENIENT_STATES if node.get('optional') else ('confirmed',)
     return _checked_downstream(node, list(node.get('stale_on') or []), nodes, state_of, states)
 
@@ -385,7 +361,7 @@ REFRESH_REASON = '按改动后的内容重新做这一步'
 
 
 def _stale_items(nodes: list, state_of: dict, context: dict) -> list:
-    """7. 过期的步骤：刷新。按段的节点一段一步地列（按钮写清哪一段哪一步），其余节点整个刷新；必经的排在可选的前面。
+    """7. 过期的节点：刷新；必经的排在可选的前面。
 
     可选的（规则补抽、指标这类旁支）过期时，后面的核对节点（校验）还会跑就交给它，不单独推：可选步骤不是
     正确性必需的，校验会查出缺的；单独推还会和建模来回兜圈子——指标补对象的关联让「操作」过期，重抽操作又让
@@ -399,17 +375,6 @@ def _stale_items(nodes: list, state_of: dict, context: dict) -> list:
     upstream = context.get('stale_upstream') or {}
     for node in nodes:
         if state_of.get(node['id']) != 'stale':
-            continue
-        if node.get('per_slice'):
-            for step in context.get('slice_stale') or []:
-                lenient = _step_optional(node, step.get('step'))
-                if _step_handed_down(node, step.get('step'), nodes, state_of):
-                    continue
-                where = f"「{step['slice_name']} · {step['step_label']}」" if step.get('sliced') else step['step_label']
-                (optional if lenient else required).append(
-                    _item(f"refresh:{node['id']}:{step.get('slice_id')}:{step['step']}",
-                          refresh_label(step.get('upstream') or '', where), _slice_step(step),
-                          reason=REFRESH_REASON, priority=2, icon='refresh'))
             continue
         lenient = bool(node.get('optional'))
         if handed_down(node, nodes, state_of):
@@ -441,12 +406,11 @@ def _check_items(nodes: list, state_of: dict, context: dict) -> list:
 
 
 def _mainline_items(flow: dict, nodes: list, states: dict, context: dict) -> list:
-    """9、10. 主线下一步：第一个没完成的必经步骤（按段的节点给这一段的下一步，带段名）；必经都做完时整体视图，
-    再加扫描脚本候选、补做越过插入位置的插件步骤。"""
+    """9、10. 主线下一步：第一个没完成的必经步骤；必经都做完时整体视图，再加扫描脚本候选、补做越过插入位置的插件步骤。"""
     state_of = {node_id: (item or {}).get('state') for node_id, item in states.items()}
     flags_of = {node_id: (item or {}).get('flags') or {} for node_id, item in states.items()}
     stage = context.get('stage') or ''
-    slice_next = context.get('slice_next')
+
     def pending_required(node: dict) -> bool:
         return (node.get('section', 'required') == 'required'
                 and state_of.get(node['id']) not in ('confirmed', 'stale', 'skipped')
@@ -456,13 +420,7 @@ def _mainline_items(flow: dict, nodes: list, states: dict, context: dict) -> lis
     out = []
     if required:
         current = required[0]
-        if current.get('per_slice') and slice_next and state_of.get(current['id']) not in ('pending_confirm', 'stale'):
-            label = slice_next.get('label') or current['title']
-            if slice_next.get('sliced') and slice_next.get('slice_name'):
-                label = f"{label}「{slice_next['slice_name']}」"
-            out.append(_item(f"{current['id']}:{slice_next.get('slice_id')}:{slice_next.get('step')}", label,
-                             _slice_step(slice_next), reason='下一步', priority=4))
-        elif state_of.get(current['id']) not in ('running', 'pending_confirm') and not current.get('per_slice'):
+        if state_of.get(current['id']) not in ('running', 'pending_confirm'):
             actions = _node_actions(current, verify_first=stage == '资料分析待核验', probes=context.get('probes'))
             for index, action in enumerate(actions[:SUGGESTIONS_MAX]):
                 out.append(_item(f"{current['id']}#{index}", action['label'], _action(action),
@@ -586,9 +544,7 @@ def suggest(flow: dict, states: dict, context: dict | None = None, check=None) -
     - changeset：当前的变更集 {id, state}：合入冲突时主推去待处理选保留哪边；
     - stage：旧版线性阶段（资料分析待核验时核验排第一、校验待审阅时继续校验）；report_pending：报告有待处理项；
     - blueprint：建模蓝图 {state: none|draft|confirmed, where: mainline|changeset, next, goal_pending}，目标问题没答时主推「回答目标问题」（F8 起草案不用确认）；
-    - slice_next：按段的节点这一段的下一步 {slice_id, slice_name, step, label, command, sliced}；
-    - slice_stale：按段的节点过期的那几段那几步 [{slice_id, slice_name, step, step_label, command, sliced, upstream}]；
-    - stale_upstream：其余过期节点 → 上游的说法（「对象、操作」）；
+    - stale_upstream：过期节点 → 上游的说法（「对象、操作」）；
     - stale_scope：声明了 refresh_scope 的过期节点 → {since, names, command}，第 7 条的刷新发这条只查改动条目的命令
       （`/ontology-validate 门店 受理申请 --since <提交>`）；没有这一项的照旧发整条入口命令；
     - probes：探针结果 {名字: bool}，按动作的 `when` 筛动作（不给时不筛）；

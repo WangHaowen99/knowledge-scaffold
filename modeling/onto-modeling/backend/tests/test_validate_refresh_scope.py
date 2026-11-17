@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from app.services.flow import model as flow_model
-from app.services.flow import slices, view
+from app.services.flow import view
 from app.services.flow import state as node_state
 from tests import proc
 from tests.test_changesets import git, main_write, obj
@@ -43,8 +43,7 @@ def _validated(root: Path) -> str:
     main_write(root, "ontology/metric/达标率.md", "# 达标率\n\n合成指标\n")
     main_write(root, "reports/20260101-rule.md", "# 合成检查报告\n\n- [x] 已处理\n")
     flow = flow_model.load_for(root)
-    node_state.confirm(root, flow, ["core.research", "core.model", "core.metric", "core.validate"])
-    slices.confirm(root, flow, [["all", "object"], ["all", "operation"], ["all", "rule"]], doc=None)
+    node_state.confirm(root, flow, ["core.research", "core.object", "core.operation", "core.metric", "core.validate"])
     return git(root, "rev-parse", "HEAD").strip()
 
 

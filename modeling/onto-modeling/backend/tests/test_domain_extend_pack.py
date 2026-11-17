@@ -158,7 +158,7 @@ def test_new_projects_do_not_get_it(env):
 def test_assembly_puts_the_nodes_after_modeling_and_the_check_blocks_publish():
     flow = assemble.assemble([_core(), _pack()])
     ids = [node["id"] for node in flow["nodes"]]
-    assert ids.index("core.model") < ids.index("domain-extend.bind") < ids.index("domain-extend.add") \
+    assert ids.index("core.operation") < ids.index("domain-extend.bind") < ids.index("domain-extend.add") \
         < ids.index("domain-extend.check") < ids.index("core.publish")
     nodes = {node["id"]: node for node in flow["nodes"]}
     assert nodes["domain-extend.add"]["autobuild"] is False

@@ -266,12 +266,11 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
     module = model.flow_state(root)
     hits = module.node_hits(flow, root)
     # 所属包版本被熔断的节点在流程里算跳过、开始不了（FL-05 回 409）：不列，免得 IN-04 选中它；
-    # 状态与 FL-01 同一份（建模节点按段汇总、熔断的节点不挡别的节点）
-    states, sliced, _doc, _context, broken = node_states(root, flow, hits)
-    handed_down = _handed_down_judge(module)
+    # 状态与 FL-01 同一份（熔断的节点不挡别的节点）
+    states, _context, broken = node_states(root, flow, hits)
+    handed_down = _handed_down_judge(root, module)
     flow_nodes = [node for node in flow.get("nodes") or [] if node["id"] in states]
     state_of = {node_id: info["state"] for node_id, info in states.items()}
-    slice_stale = (sliced or {}).get("slice_stale") or []
     by_id = {node["id"]: node for node in flow.get("nodes") or []}
     reviews = {item["node_id"]: item for item in node_state.reviews(root)}
     items = []
@@ -281,12 +280,11 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
         node = by_id.get(node_id) or {}
         pack = node.get("pack") if node.get("pack") not in (None, "core") else None
         # 已交给后面的核对节点的过期（校验自己修对象让建模、指标过期）：建议条不推刷新，这里也不列（ADR-0090）
-        if info["state"] == "stale" and not handed_down(node, flow_nodes, state_of, slice_stale):
+        if info["state"] == "stale" and not handed_down(node, flow_nodes, state_of):
             items.append(_item("stale", node_id, f"「{node.get('title') or node_id}」过期了",
                                source="assistant",
                                pack=pack, extra={"node": node},
-                               fingerprint=(sliced or {}).get("stale_key") if node.get("per_slice") and sliced
-                               else node_state.fingerprint(root, list(node.get("stale_on") or []))))
+                               fingerprint=node_state.fingerprint(root, list(node.get("stale_on") or []))))
         review = reviews.get(node_id)
         if review and review.get("source") == "autobuild":
             review = None  # 自主构建的需复核按决策台账出（_autobuild）
@@ -304,14 +302,12 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
     return items
 
 
-def _handed_down_judge(module):
-    """flow_state 的「已交给核对节点」判定；项目锁定的旧 core 没有时用平台镜像版本，再没有就都列。"""
-    judge = getattr(module, "handed_down", None)
-    if judge is None:
-        from ..packs import contracts
+def _handed_down_judge(root: Path, module):
+    """flow_state 的「已交给核对节点」判定，和建议条用同一个版本（项目锁定的旧 core 不够新时用平台镜像版本）；
+    再没有就都列。"""
+    from .view import _suggest_module
 
-        judge = getattr(contracts.default().load("flow_state"), "handed_down", None)
-    return judge or (lambda *_args: False)
+    return getattr(_suggest_module(root, module), "handed_down", None) or (lambda *_args: False)
 
 
 def _unit_name(slice_ref: dict) -> str:

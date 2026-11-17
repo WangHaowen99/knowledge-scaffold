@@ -39,7 +39,7 @@ def test_engine_error_offers_resume_like_user_interrupt(host):  # noqa: F811
     # 会话已经关了（重试不了）：刷新页面（FL-02）退到中断的那一步，主推继续、次选放弃
     again = view.build(root, conversation_id="default")["suggestions"]
     assert again["mode"] == "interrupted"
-    assert again["primary"]["label"] == "继续「操作提取」"
+    assert again["primary"]["label"] == "继续「提取操作」"
     assert again["primary"]["action"] == {"type": "resume_exec", "exec_id": interrupted[0]["id"]}
     assert [item["action"]["type"] for item in again["secondary"]] == ["abandon_exec"]
     assert again["note"]

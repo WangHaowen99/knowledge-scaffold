@@ -57,7 +57,7 @@ def pending_change(workspaces, project_id, root, rel="ontology/object/订单.md"
 
 
 def running(node_id: str | None = None, affected=None):
-    record = {"id": "ex-1", "node": {"id": node_id, "version": "core@0.2.0", "title": "对象提取"},
+    record = {"id": "ex-1", "node": {"id": node_id, "version": "core@0.2.0", "title": "提取对象"},
               "started_at": 1.0} if node_id else None
     return lambda pid: {"running": True, "conversation_id": "default", "exec": record, "affected": affected or []}
 
@@ -91,10 +91,10 @@ def test_pending_changeset_locks_changed_entities_until_closed(env):
 
 def test_running_node_locks_its_declared_scope(env, monkeypatch):
     _client, workspaces, project_id, root = env
-    monkeypatch.setattr(service, "_activity_provider", running("core.model"))
+    monkeypatch.setattr(service, "_activity_provider", running("core.object"))
     lock = service.scope_lock(workspaces, project_id)
-    assert lock["state"] == "assistant_running" and lock["node"]["id"] == "core.model"
-    assert "ontology/object/*" in lock["paths"] and "对象提取" in lock["reason_text"]
+    assert lock["state"] == "assistant_running" and lock["node"]["id"] == "core.object"
+    assert lock["paths"] == ["ontology/object/*"] and "提取对象" in lock["reason_text"]
     with pytest.raises(WorkspaceError) as exc:
         workspaces.write_file(project_id, "ontology/object/客户.md", obj("客户", "x"), author="employee_0001")
     assert exc.value.status == 423
@@ -191,10 +191,15 @@ def test_state_helper_records_the_running_nodes_scope(env):
 
     run("acquire", "extract-object", "objects")
     active = json.loads((copy / ".onto" / "run" / "active.json").read_text(encoding="utf-8"))
-    assert active["commands"]["extract-object"]["node"] == "core.model"
-    assert active["commands"]["extract-object"]["allow"] == ["ontology/object/*", "ontology/operation/*", "ontology/rule/*",
-                                                             "ontology/logic/*", "ontology/metric/*"]
-    assert "protect" not in active["commands"]["extract-object"]  # 全量模式不按段收窄
+    assert active["commands"]["extract-object"]["node"] == "core.object"
+    assert active["commands"]["extract-object"]["allow"] == ["ontology/object/*"]  # 提取对象只写对象
+    assert "protect" not in active["commands"]["extract-object"]  # 不按段收窄
+    run("acquire", "extract-operation", "operation")
+    active = json.loads((copy / ".onto" / "run" / "active.json").read_text(encoding="utf-8"))
+    assert active["commands"]["extract-operation"]["node"] == "core.operation"
+    assert active["commands"]["extract-operation"]["allow"] == ["ontology/operation/*", "ontology/rule/*", "ontology/logic/*",
+                                                                "ontology/metric/*", "ontology/object/*"]
+    run("release", "extract-operation")
     run("acquire", "overview", "start")  # 不属于任何节点的命令：守卫不收窄
     assert json.loads((copy / ".onto/run/active.json").read_text())["commands"]["overview"]["node"] is None
     run("release", "overview")

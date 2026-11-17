@@ -21,6 +21,7 @@
 
 状态的依据存在数据目录 `flow-state/<项目>.json`（不进 git）：每个已确认节点记下确认时的输入指纹、完成判定签名与
 主线提交（`rev`）、需复核标记、跳过记录。第一次看到已经满足完成判定的节点（存量项目）直接记成基线，不算过期。
+建模拆成提取对象、提取操作之前的记录在第一次按新流程算时搬过去（`migrate_split`）。
 
 刷新范围（节点声明 `refresh_scope: changed_entries`）：过期后刷新只查确认之后改动的条目，命令写成
 `<入口命令> <条目名…> --since <确认时提交前 12 位>`；删了条目、改了条目目录以外的文件、只改了 index.md、
@@ -29,8 +30,10 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+import logging
 import os
 import subprocess
 import threading
@@ -58,6 +61,7 @@ DISPLAY = {"not_ready": "not_ready", "ready": "ready", "running": "running", "pe
            "confirmed": "confirmed", "stale": "stale", "skipped": "skipped", "blocked": "blocked"}
 
 _lock = threading.RLock()
+_log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +111,7 @@ def purge(root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-# 不算进上游指纹的文件：建模蓝图在 research/ 下，调整分段不该让对象提取过期
+# 不算进上游指纹的文件：建模蓝图在 research/ 下，改蓝图不该让提取对象过期
 FINGERPRINT_EXCLUDE = ("research/blueprint.json",)
 
 
@@ -122,11 +126,6 @@ def _ls_tree(root: Path, dirs: list[str]) -> str:
         return ""
     return "".join(line + "\n" for line in result.stdout.splitlines()
                    if line.split("\t", 1)[-1] not in FINGERPRINT_EXCLUDE)
-
-
-def tree_listing(root: Path) -> list[str]:
-    """主线上 ontology/、research/ 的 ls-tree 行（一次读出，按段的指纹从里面挑）。"""
-    return _ls_tree(root, ["ontology", "research"]).splitlines()
 
 
 def fingerprint(root: Path, kinds: list[str]) -> str:
@@ -255,8 +254,8 @@ def refresh_scope(root: Path, node: dict, record: dict | None = None) -> dict | 
     """声明了 `refresh_scope: changed_entries` 的节点过期后的刷新范围：{since, names, command}，
     command 是 `<入口命令> <条目名…> --since <确认时提交前 12 位>`。节点是否过期由调用方判断。
 
-    算不出范围、节点按段算、节点升级后待复核（判定变了，之前查过的也要按新判定重看）时返回 None：照旧整条刷新。"""
-    if node.get("refresh_scope") != "changed_entries" or node.get("per_slice"):
+    算不出范围、节点升级后待复核（判定变了，之前查过的也要按新判定重看）时返回 None：照旧整条刷新。"""
+    if node.get("refresh_scope") != "changed_entries":
         return None
     entry = refresh_entry(node)
     if not entry:
@@ -279,7 +278,7 @@ def current_refresh_scope(root: Path, node: dict) -> dict | None:
     """开始节点（FL-05、待处理里的刷新）用：节点此刻过期且算得出范围才给，否则 None（照旧发整条入口命令）。"""
     from . import model
 
-    if node.get("refresh_scope") != "changed_entries" or node.get("per_slice"):
+    if node.get("refresh_scope") != "changed_entries":
         return None
     root = Path(root)
     flow = model.load_for(root)
@@ -302,12 +301,12 @@ def done_signature(flow: dict, node: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _open_execs(project_id: str) -> dict[str, dict]:
+def _open_execs(project_id: str, flow: dict) -> dict[str, dict]:
     from ..session_host import exec_records
 
     found = {}
     for record in exec_records.query(project_id, list(exec_records.OPEN_STATES)):
-        node_id = (record.get("node") or {}).get("id")
+        node_id = exec_records.node_of(record, flow)
         if node_id and node_id not in found:
             found[node_id] = record
     return found
@@ -322,25 +321,23 @@ def _pending_nodes(root: Path) -> tuple[set[str], dict | None]:
     return set(record.get("nodes") or []), record
 
 
-def _gates(other: dict, node_id: str, sliced: bool) -> bool:
-    """other 挡着 node_id：blocks 里列了它；blocks_in 是 sliced 的只在分段模式下挡。"""
-    return node_id in (other.get("blocks") or []) and (other.get("blocks_in") != "sliced" or sliced)
+def _gates(other: dict, node_id: str) -> bool:
+    """other 挡着 node_id：blocks 里列了它。老包写的 `blocks_in: sliced` 只在分段建模时挡，不再分段（F8）就不挡。"""
+    return node_id in (other.get("blocks") or []) and other.get("blocks_in") != "sliced"
 
 
 def compute(root: Path, flow: dict, hits: dict[str, bool], *, project_id: str | None = None,
-            persist: bool = True, sliced: bool = False) -> dict[str, dict]:
-    """全部节点 → {state, flags, display_state}。persist=False 时只算不记（预览、测试）。
-
-    sliced：项目分段建模（建模蓝图多于一段）；声明 `blocks_in: sliced` 的关卡只在这时挡。"""
+            persist: bool = True) -> dict[str, dict]:
+    """全部节点 → {state, flags, display_state}。persist=False 时只算不记（预览、测试）。"""
     root = Path(root)
     project_id = project_id or root.name
     nodes = flow.get("nodes") or []
     by_id = {node["id"]: node for node in nodes}
-    running = _open_execs(project_id)
+    running = _open_execs(project_id, flow)
     pending, changeset = _pending_nodes(root)
     with _lock:
         stored = load(root)
-        changed = False
+        changed = migrate_split(stored, flow)
         result: dict[str, dict] = {}
         fingerprints: dict[str, str] = {}
 
@@ -396,7 +393,7 @@ def compute(root: Path, flow: dict, hits: dict[str, bool], *, project_id: str | 
             item = result[node["id"]]
             if item["state"] is not None:
                 continue
-            gates = [other for other in nodes if _gates(other, node["id"], sliced)]
+            gates = [other for other in nodes if _gates(other, node["id"])]
             if any(result[gate["id"]]["state"] not in ("confirmed", "stale", "skipped") for gate in gates):
                 item["state"] = "blocked"
                 continue
@@ -434,6 +431,7 @@ def confirm(root: Path, flow: dict, node_ids: list[str]) -> None:
     by_id = {node["id"]: node for node in flow.get("nodes") or []}
     with _lock:
         stored = load(root)
+        migrate_split(stored, flow)  # 先搬旧记录：不然第一次按新流程算时会把这次记的当成 0.2 的残留删掉
         for node_id in node_ids:
             node = by_id.get(node_id)
             if node is None:
@@ -453,7 +451,7 @@ def mark_needs_review(root: Path, node_ids: list[str], source: str, *, run_id: s
         raise ValueError(f"需复核的来源只能是 {REVIEW_SOURCES}")
     root = Path(root)
     with _lock:
-        stored = load(root)
+        stored = _load_migrated(root)
         for node_id in node_ids:
             record = stored["nodes"].setdefault(node_id, {"fp": None, "sig": None, "at": time.time()})
             record["needs_review"] = {"source": source, "at": time.time(), "run_id": run_id, "slice_id": slice_id,
@@ -525,11 +523,11 @@ def reviews(root: Path) -> list[dict]:
             for node_id, record in stored["nodes"].items() if record.get("needs_review")]
 
 
-def skip(root: Path, node_id: str, *, reason: str = "", slice_id: str | None = None) -> None:
+def skip(root: Path, node_id: str, *, reason: str = "") -> None:
     root = Path(root)
     with _lock:
         stored = load(root)
-        stored["skipped"][node_id] = {"at": time.time(), "reason": reason, "slice_id": slice_id}
+        stored["skipped"][node_id] = {"at": time.time(), "reason": reason}
         save(root, stored)
 
 
@@ -546,3 +544,92 @@ def restore(root: Path, node_id: str) -> bool:
 
 def skipped(root: Path) -> dict:
     return load(root)["skipped"]
+
+
+# ---------------------------------------------------------------------------
+# 确认记录的暂存与放回（自主构建撤回一个单元）
+# ---------------------------------------------------------------------------
+
+
+def records_of(root: Path, node_ids: list[str]) -> dict:
+    """这几个节点现在的确认记录（自主构建开始做一个单元前记下，撤回时放回去）；没有记录的不列。"""
+    nodes = _load_migrated(Path(root))["nodes"]
+    return {node_id: copy.deepcopy(nodes[node_id]) for node_id in node_ids if node_id in nodes}
+
+
+def put_back(root: Path, node_ids: list[str], before: dict) -> None:
+    """这几个节点的确认记录放回成 before 里的（撤回）：原来过期的仍按原来的指纹算过期，原来没有的去掉（按主线现状重算）。"""
+    root = Path(root)
+    with _lock:
+        stored = _load_migrated(root)
+        for node_id in node_ids:
+            if node_id in before:
+                stored["nodes"][node_id] = before[node_id]
+            else:
+                stored["nodes"].pop(node_id, None)
+        save(root, stored)
+
+
+def forget(root: Path, node_ids: list[str]) -> None:
+    """这几个节点的确认记录作废（撤回之后没有运行前的记录可放回）：按主线现状重算，条目没了就回到可开始。"""
+    put_back(root, node_ids, {})
+
+
+# ---------------------------------------------------------------------------
+# 建模拆成提取对象、提取操作（节点模型重构 1）
+# ---------------------------------------------------------------------------
+
+
+def _load_migrated(root: Path) -> dict:
+    """读节点状态，还没迁过时先按本项目的流程迁（写新节点记录的地方都要先迁：不然之后迁移会把这次写的当成 0.2 的残留删掉）。"""
+    stored = load(root)
+    if not stored.get("split_migrated"):
+        from . import model
+
+        try:
+            migrate_split(stored, model.load_for(root))
+        except Exception:  # noqa: BLE001 - 流程读不出时照旧，下次按流程算状态时再迁
+            _log.warning("项目 %s 的节点状态记录没迁成", Path(root).name, exc_info=True)
+    return stored
+
+
+SPLIT_NODES = ("core.object", "core.operation")
+LEGACY_MODEL = "core.model"
+_CARRIED = ("fp", "kinds", "at", "rev", "needs_review")
+
+
+def migrate_split(stored: dict, flow: dict) -> bool:
+    """建模节点和它按段的记录搬到提取对象、提取操作上（每个项目只做一次）；返回 stored 改没改。
+
+    只在本项目的流程已经拆开（两个新节点都在、没有 core.model）时做，锁定旧 core 的项目照旧。顺序不能乱：
+
+    1. 删掉 nodes 里残留的 0.2 时代 core.object、core.operation 记录：0.3 起它们并进了建模，记录没删，指纹早就过时；
+    2. 提取对象取 `slices.all.object`，没有就取 core.model：两者的上游都是资料分析，指纹算法相同；
+    3. 提取操作取 `slices.all.operation`：上游是对象，指纹算法也相同；
+    4. 需复核标记、按类指纹、确认时的主线提交（rev）一起带过来；判定签名不带旧的（建模的完成判定和提取对象的不同，带过来会误标「方法升级」），
+       按新节点现记一份；
+    5. `slice_skips.all.rule`（跳过了「规则」补抽）转成跳过指标：两者是同一条命令；
+    6. 删掉 core.model、slices、slice_skips、legacy_migrated，记 split_migrated。"""
+    by_id = {node["id"]: node for node in flow.get("nodes") or []}
+    if stored.get("split_migrated") or not all(node_id in by_id for node_id in SPLIT_NODES) or LEGACY_MODEL in by_id:
+        return False
+    nodes = stored.setdefault("nodes", {})
+    for node_id in SPLIT_NODES:
+        nodes.pop(node_id, None)
+    full = ((stored.get("slices") or {}).get("all") or {}) if isinstance(stored.get("slices"), dict) else {}
+    sources = {"core.object": full.get("object") or nodes.get(LEGACY_MODEL), "core.operation": full.get("operation")}
+    for node_id, source in sources.items():
+        if not isinstance(source, dict) or not isinstance(source.get("fp"), str):
+            continue  # 没有记录、或只有需复核没有基线的：按主线现状重记
+        record = {key: source[key] for key in _CARRIED if source.get(key) is not None}
+        record["sig"] = done_signature(flow, by_id[node_id])
+        nodes[node_id] = record
+    rule_skip = ((stored.get("slice_skips") or {}).get("all") or {}).get("rule") \
+        if isinstance(stored.get("slice_skips"), dict) else None
+    if rule_skip is not None:
+        stored.setdefault("skipped", {}).setdefault("core.metric", rule_skip)
+    nodes.pop(LEGACY_MODEL, None)
+    for key in ("slices", "slice_skips", "legacy_migrated"):
+        stored.pop(key, None)
+    stored["split_migrated"] = True
+    return True

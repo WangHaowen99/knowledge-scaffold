@@ -14,7 +14,7 @@ batch: first
 kernel_api: ">=1.0 <2.0"
 page_api: ">=1.0 <2.0"
 engines: [claude, jiuwen]
-depends: {core: ">=0.3"}  # 0.3.0 起建模按段（求解适配挂在 core.model 后面）
+depends: {core: ">=0.3"}  # 求解适配挂在提取操作后面（core.operation；0.3～0.5 的 core 按别名认成建模节点）
 changelog: 跟随分段建模的主流程。
 contributes:
   commands: [ontology-codegen-scan, ontology-codegen, ontology-solver-evaluator]

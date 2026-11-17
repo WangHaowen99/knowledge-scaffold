@@ -128,15 +128,14 @@ def test_goal_question_goes_first_without_blocking_the_next_step(env):
 
     flow, module = model.load_for(root), model.flow_state(root)
     states = {node["id"]: {"state": "confirmed", "flags": {}} for node in flow["nodes"]}
-    states["core.model"] = {"state": "not_ready", "flags": {}}
-    following = {"slice_id": "all", "slice_name": "全部", "step": "object", "label": "提取对象",
-                 "command": "/ontology-extract-object", "sliced": False}
-    pending = module.suggest(flow, states, {"blueprint": {"state": "draft", "goal_pending": True},
-                                            "slice_next": following})
+    states["core.object"] = {"state": "ready", "flags": {}}
+    states["core.operation"] = {"state": "not_ready", "flags": {}}
+    pending = module.suggest(flow, states, {"blueprint": {"state": "draft", "goal_pending": True}})
     assert pending["primary"]["id"] == "answer_goal" and pending["primary"]["action"]["params"] == {"dialog": "blueprint"}
     assert pending["secondary"][0]["action"]["command"] == "/ontology-extract-object"
-    answered = module.suggest(flow, states, {"blueprint": {"state": "draft"}, "slice_next": following})
+    answered = module.suggest(flow, states, {"blueprint": {"state": "draft"}})
     assert answered["primary"]["action"]["command"] == "/ontology-extract-object"
+    assert answered["primary"]["label"] == "提取对象"
     every = [pending["primary"], *pending["secondary"], answered["primary"], *answered["secondary"]]
     assert not {"confirm_blueprint", "adjust_blueprint", "replan", "plan_slices"} & {item["id"] for item in every}
 

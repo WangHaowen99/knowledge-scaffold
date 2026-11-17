@@ -22,7 +22,7 @@ from tests.autobuild_helpers import (DRAFT, AutoEngine, ab, gate, run_of, start,
                                      wait_until)
 from tests.test_changesets import main_write
 
-ONE = {"scope": {"until_node": "core.model"}}
+ONE = {"scope": {"until_node": "core.operation"}}
 
 
 def test_cards_ops_views_and_guards_while_running(ab, monkeypatch):

@@ -15,7 +15,7 @@ from app.kernel.changesets import gates
 from tests.autobuild_helpers import (AutoEngine, ab, ask, history, op, start, wait_state, wait_until)  # noqa: F401
 from tests.test_changesets import git, main_write, obj
 
-MODEL_ONLY = {"scope": {"until_node": "core.model"}, "advanced": {"must_suspend_kinds": ["新增对象"]}}
+MODEL_ONLY = {"scope": {"until_node": "core.operation"}, "advanced": {"must_suspend_kinds": ["新增对象"]}}
 
 
 def _inbox(client, project_id: str, **params) -> dict:
@@ -64,7 +64,8 @@ def test_suspensions_and_reviews_go_to_the_inbox_and_get_resolved(ab):
         "新增区域审批单（推荐）", "挂到补货台账"]
     # 「自主完成」：复核之前建模节点显示 auto
     flow = client.get(f"/api/v1/projects/{project_id}/flow").json()
-    assert next(node for node in flow["nodes"] if node["id"] == "core.model")["display_state"] == "auto"
+    states = {node["id"]: node["display_state"] for node in flow["nodes"]}
+    assert states["core.object"] == states["core.operation"] == "auto"
     rows = {row["name"]: row for row in client.get(f"/api/v1/projects/{project_id}/studio/entries").json()["items"]}
     assert rows["操作2"]["needs_review"] is True and rows["对象2"]["needs_review"] is True
     detail_entry = client.get(f"/api/v1/projects/{project_id}/studio/entries/{rows['操作2']['id']}").json()
@@ -76,8 +77,9 @@ def test_suspensions_and_reviews_go_to_the_inbox_and_get_resolved(ab):
     done = client.post(f"/api/v1/projects/{project_id}/inbox/{low['id']}/actions", json={"action": "accept"}).json()
     assert done["resolved"] is True and done["result"]["entry"]["review_state"] == "accepted"
     flow = client.get(f"/api/v1/projects/{project_id}/flow").json()
-    model = next(node for node in flow["nodes"] if node["id"] == "core.model")
-    assert model["flags"]["needs_review"] is False and model["display_state"] != "auto"
+    for node_id in ("core.object", "core.operation"):
+        model = next(node for node in flow["nodes"] if node["id"] == node_id)
+        assert model["flags"]["needs_review"] is False and model["display_state"] != "auto"
     rows = {row["name"]: row for row in client.get(f"/api/v1/projects/{project_id}/studio/entries").json()["items"]}
     assert not any(row["needs_review"] for row in rows.values())
     # 回答挂起的问题（IN-03 → AB-15）：运行结束了，往运行对话发这一步的命令补上（全量模式不带分段）
@@ -128,7 +130,7 @@ def test_reverting_the_run_restores_what_was_there_before(ab):
     client, _workspaces, project_id, root = ab
     # 运行前已有对象：对象那一步算做过，这次运行只做操作
     main_write(root, "ontology/object/对象9.md", obj("对象9", "运行前就有的合成对象"))
-    run = start(client, project_id, scope={"until_node": "core.model"})
+    run = start(client, project_id, scope={"until_node": "core.operation"})
     wait_state(client, project_id, run["run_id"], "completed")
     base = f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}"
     # 合入之后这一段的条目又被改过：不能撤回；改回原样后可以
@@ -172,7 +174,7 @@ def test_check_errors_are_fixed_a_few_rounds_then_merged_anyway(ab, monkeypatch)
         return {"errors": 0, "warnings": 0, "findings": []}
 
     monkeypatch.setattr(gates, "compare", compare)
-    run = start(client, project_id, scope={"until_node": "core.model"}, advanced={"max_fix_rounds": 2})
+    run = start(client, project_id, scope={"until_node": "core.operation"}, advanced={"max_fix_rounds": 2})
     done = wait_state(client, project_id, run["run_id"], "completed")
     fixes = [text for text in AutoEngine.sent if text.startswith("合入前的检查发现 1 个新问题")]
     assert len(fixes) == 2 and "合成错误" in fixes[0]
@@ -195,7 +197,7 @@ def test_a_failed_run_does_not_leave_the_slice_waiting_for_confirmation(ab, monk
 
     real_merge = changeset_service.merge
     monkeypatch.setattr("app.kernel.changesets.service.merge", unavailable)
-    run = start(client, project_id, scope={"until_node": "core.model"})
+    run = start(client, project_id, scope={"until_node": "core.operation"})
     failed = wait_state(client, project_id, run["run_id"], "failed")
     assert failed["matrix"][0]["result"] in ("未开始", "部分完成")
     assert not [item for item in _inbox(client, project_id)["items"] if item["kind"] == "pending_changeset"]

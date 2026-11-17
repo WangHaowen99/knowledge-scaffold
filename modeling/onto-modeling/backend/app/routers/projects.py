@@ -55,16 +55,6 @@ def _meta(project_id: str) -> dict:
     return views.project_meta(deps.workspaces.get_project(project_id), root)
 
 
-def _slices(root) -> dict | None:
-    """按段建模的进度；全量模式（分段待规划）或算不出时 None。"""
-    from ..services.flow import model as flow_model
-
-    try:
-        return flow_model.slice_summary(root)
-    except Exception:  # noqa: BLE001 - 列表上的概览，不挡列项目
-        return None
-
-
 _CARD_RUN_STATE = {"stopping": "running", "converting": "running", "interrupted": "paused",
                    "budget_exhausted": "stopped", "failed": "stopped", "converted": "completed"}
 
@@ -98,7 +88,7 @@ def _card(meta: dict) -> dict:
     autobuild, tag = (None, None) if archived else _autobuild_card(meta["id"])
     card.update({
         "industry_label": None,
-        "slices": _slices(root),
+        "slices": None,  # 按段建模的进度：不再分段，恒为 null（契约 7.3 只加不删）
         "inbox_count": 0,
         "status": ["archived"] if archived else ["active", *([tag] if tag else [])],
         "autobuild": autobuild,
