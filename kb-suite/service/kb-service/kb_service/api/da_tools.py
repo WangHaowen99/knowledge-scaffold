@@ -150,16 +150,21 @@ async def kb_search(request: Request) -> JSONResponse:
             }
         )
     top_k = int(body.get("topK") or 20)
-    hits = await retrieval.search(
-        caller.tenant_id,
-        kb_ids,
-        str(body.get("query", "")),
-        top_k=top_k,
-        min_score=body.get("minScore"),
-        include_chunks=want_chunks,
-        include_wiki=want_wiki,
-        wiki_limit=None if want_chunks else top_k,
-    )
+    notes: list[str] = []
+    try:
+        hits = await retrieval.search(
+            caller.tenant_id,
+            kb_ids,
+            str(body.get("query", "")),
+            top_k=top_k,
+            min_score=body.get("minScore"),
+            include_chunks=want_chunks,
+            include_wiki=want_wiki,
+            wiki_limit=None if want_chunks else top_k,
+            warnings=notes,
+        )
+    except retrieval.SearchUnavailable as exc:
+        return JSONResponse({"error": str(exc), "code": "search_unavailable"})
     results = []
     for h in hits:
         if h.is_wiki:
@@ -187,8 +192,9 @@ async def kb_search(request: Request) -> JSONResponse:
     if body.get("linkedFrom"):
         seen = {r["pageId"] for r in results}
         results.extend(await _linked(caller, kb_ids, str(body["linkedFrom"]), seen))
-    if warning:
-        return JSONResponse({"results": results, "total": len(results), "message": warning})
+    message = "；".join(x for x in (warning, *notes) if x)
+    if message:
+        return JSONResponse({"results": results, "total": len(results), "message": message})
     return JSONResponse(results)
 
 
@@ -461,7 +467,7 @@ async def doc_grep(request: Request) -> JSONResponse:
             max_lines_per_doc=max_lines,
         )
     except text_structure.PatternError as exc:
-        return JSONResponse({"error": f"查找条件无效：{exc}"})
+        return JSONResponse({"error": f"查找条件无效：{exc}", "code": exc.code})
     result.update(
         {
             "totalPages": result["totalDocuments"],

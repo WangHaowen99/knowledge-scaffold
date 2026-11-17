@@ -14,6 +14,7 @@ import { WikiPageDrawer } from './WikiTab';
 const MATCH_LABEL: Record<string, string> = {
   vector: '向量',
   keyword: '关键词',
+  exact: '原样匹配',
   question: '问题',
   rerank: '重排',
   expansion: '查询扩展',

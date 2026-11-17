@@ -23,12 +23,15 @@ WRITE_FEATURES = frozenset({
 class UpstreamError(Exception):
     """A backend answered with an error or could not be reached."""
 
-    def __init__(self, status: int, code: str, message: str, backend: str = "") -> None:
+    def __init__(self, status: int, code: str, message: str, backend: str = "",
+                 details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.status = status
         self.code = code
         self.message = message
         self.backend = backend
+        # other scalar fields of the backend's error object (e.g. existingDocId of a duplicate upload)
+        self.details = details or {}
 
 
 @dataclass
@@ -39,6 +42,8 @@ class Backend:
     healthy: bool = False
     last_error: str | None = None
     answered: bool = False
+    # names of its knowledge bases as last listed: lets a tool result name them while the backend is down
+    kb_names: dict[str, str] = field(default_factory=dict)
 
     @property
     def id(self) -> str:
@@ -166,18 +171,31 @@ def _check_capabilities(caps: Any) -> str | None:
     return None
 
 
+ERROR_DETAIL_KEYS = 10
+_RESERVED_ERROR_KEYS = ("code", "message", "backend")
+
+
+def _passed_detail(key: Any, value: Any) -> bool:
+    """A field of a backend error object that reaches the caller: a scalar under a key of its own."""
+
+    scalar = value is None or isinstance(value, (str, int, float, bool))
+    return isinstance(key, str) and key not in _RESERVED_ERROR_KEYS and scalar
+
+
 def _upstream_error(backend: Backend, response: httpx.Response) -> UpstreamError:
-    code, message = "backend_error", response.text[:500]
+    code, message, details = "backend_error", response.text[:500], {}
     try:
         err = response.json().get("error") or {}
         if isinstance(err, dict):
             code = err.get("code") or code
             message = err.get("message") or message
+            details = {k: v for k, v in err.items() if _passed_detail(k, v)}
+            details = dict(list(details.items())[:ERROR_DETAIL_KEYS])
         elif isinstance(err, str):
             message = err
     except (ValueError, AttributeError):
         pass
-    return UpstreamError(response.status_code, code, message, backend.id)
+    return UpstreamError(response.status_code, code, message, backend.id, details)
 
 
 class Registry:

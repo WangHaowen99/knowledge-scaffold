@@ -23,6 +23,22 @@ x-kbs-env: &kbs-env
   KBS_WORKER_CONCURRENCY: ${KBS_WORKER_CONCURRENCY:-3}
   KBS_LLM_CONCURRENCY: ${KBS_LLM_CONCURRENCY:-4}
   KBS_UPLOAD_PART_MB: "2"
+  # MinerU OCR for images and scanned PDFs (off by default). A MinerU on the host
+  # is reached as http://host.docker.internal:<port>; one OCR task can take a few GB.
+  KBS_MINERU_ENABLED: ${KBS_MINERU_ENABLED:-false}
+  KBS_MINERU_API_URL: ${KBS_MINERU_API_URL:-}
+  KBS_MINERU_TIMEOUT_S: ${KBS_MINERU_TIMEOUT_S:-600}
+  KBS_MINERU_CONCURRENCY: ${KBS_MINERU_CONCURRENCY:-1}
+  KBS_MINERU_FILE_TYPES: ${KBS_MINERU_FILE_TYPES:-pdf,png,jpg,jpeg,bmp,tif,tiff,webp,gif}
+  KBS_MINERU_SCANNED_CHARS_PER_PAGE: ${KBS_MINERU_SCANNED_CHARS_PER_PAGE:-50}
+  KBS_MINERU_BACKEND: ${KBS_MINERU_BACKEND:-pipeline}
+  # Speech to text through an OpenAI-compatible /audio/transcriptions endpoint (off by
+  # default); a key, if the service needs one, goes into secrets.env as KBS_ASR_API_KEY.
+  KBS_ASR_ENABLED: ${KBS_ASR_ENABLED:-false}
+  KBS_ASR_API_URL: ${KBS_ASR_API_URL:-}
+  KBS_ASR_MODEL: ${KBS_ASR_MODEL:-whisper-1}
+  KBS_ASR_TIMEOUT_S: ${KBS_ASR_TIMEOUT_S:-900}
+  KBS_ASR_CONCURRENCY: ${KBS_ASR_CONCURRENCY:-1}
 
 services:
   kbs-postgres:
@@ -74,6 +90,8 @@ services:
     environment: *kbs-env
     volumes:
       - kbs-files:/data/files
+    extra_hosts:
+      - host.docker.internal:host-gateway
     depends_on:
       kbs-postgres:
         condition: service_healthy
@@ -106,6 +124,8 @@ services:
       LF_KB_CATALOG_KEY_ENV: KBS_MCP_KEY
       LF_MCP_BRIDGE_HOST: swarm
       SWARM_MODEL_NAME: ${SWARM_MODEL_NAME:-qwen-plus}
+      # 写进 config.yaml 的 models.defaults（configure_swarm.py），同样的资料每次给出同样的结论；置空则用模型自身缺省
+      SWARM_TEMPERATURE: ${SWARM_TEMPERATURE-0.1}
       SWARM_ENDPOINT_PROFILE: dashscope
     volumes:
       - swarm-home:/root/.jiuwenswarm
@@ -115,13 +135,17 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # 对外入口：给 Swarm 加 gzip，并让插件页带哈希的资源长缓存（见 edge/nginx.conf）
+  # 对外入口：给 Swarm 加 gzip，并让插件页带哈希的资源长缓存，只收白名单 Host、WebSocket 只收本站 Origin（见 edge/nginx.conf）。
+  # 默认只绑本机、只认本机名；其他机器要访问时设 KBS_EDGE_BIND=0.0.0.0，并把访问用的主机名或 IP 写进 KBS_EDGE_HOSTS（空格分隔）
   edge:
     image: nginx:alpine
+    environment:
+      KBS_EDGE_HOSTS: ${KBS_EDGE_HOSTS:-}
+      NGINX_ENVSUBST_FILTER: ^KBS_EDGE_
     volumes:
-      - ./edge/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./edge/nginx.conf:/etc/nginx/templates/default.conf.template:ro
     ports:
-      - "${KBS_EDGE_PORT:-5199}:8080"
+      - "${KBS_EDGE_BIND:-127.0.0.1}:${KBS_EDGE_PORT:-5199}:8080"
     depends_on:
       - swarm
     restart: unless-stopped
@@ -136,6 +160,12 @@ services:
   # knowledge-service slot points at kb-service via da/kbs-tools.yml.
   da-engine:
     image: kb-suite/deepanalyze-java:${DA_TAG:-current}
+    # The image's command with Spring Boot's PropertiesLauncher instead of JarLauncher (same
+    # jar), so loader.path puts da/prompt-overlay first on the classpath: kb-suite's prompt
+    # clause and subagent rules (see da/kbs-tools.yml). Recreate, not restart, after changes.
+    entrypoint: ["java", "-Dlogback.configurationFile=classpath:logback-da.xml",
+                 "-Dloader.path=/app/config/prompt-overlay", "-cp", "/app/app.jar",
+                 "org.springframework.boot.loader.launch.PropertiesLauncher"]
     env_file:
       - ${KBS_SECRETS_DIR}/secrets.env
       - ${KBS_SECRETS_DIR}/keys.env
@@ -156,6 +186,7 @@ services:
       - da-data:/app/data
       - ./da/kbs-tools.yml:/app/config/kbs-tools.yml:ro
       - ./da/build/knowledge-service.json:/app/config/knowledge-service.json:ro
+      - ./da/prompt-overlay:/app/config/prompt-overlay:ro
     ports:
       - "127.0.0.1:${DA_ENGINE_PORT:-5197}:8192"
     depends_on:
@@ -175,6 +206,8 @@ services:
       - ${KBS_SECRETS_DIR}/keys.env
     environment:
       LF_MODEL_NAME: ${LF_MODEL_NAME:-qwen-plus}
+      # 主智能体和分叉分支共用；服务缺省 0.7
+      LF_TEMPERATURE: ${LF_TEMPERATURE:-0.1}
       LF_KB_MCP_URL: http://kb-gateway:8080/mcp/
     ports:
       - "127.0.0.1:${LF_ENGINE_PORT:-5196}:8193"
@@ -364,8 +397,102 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # ---- DA knowledge pipeline on the platform knowledge service (profile da-platform) ----
+  # The platform's knowledge service (DeepAnalyze platform repo, packages/service-knowledge)
+  # serves DA's /api/knowledge/* unchanged, so it sits behind a second da-kb-adapter.
+  # It creates no tables: dap-migrate (the DA TypeScript backend) runs once to migrate
+  # the schema and is stopped again, otherwise both would process the same documents.
+  dap-postgres:
+    profiles: [da-platform]
+    image: paradedb/paradedb:v0.25.11-pg17
+    environment:
+      POSTGRES_USER: deepanalyze
+      POSTGRES_PASSWORD: ${DAP_DB_PASSWORD:-}
+      POSTGRES_DB: deepanalyze
+    volumes:
+      - dap-pg:/var/lib/postgresql/data
+    networks: [dap]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U deepanalyze -d deepanalyze"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  dap-migrate:
+    profiles: [da-platform]
+    image: kb-suite/da-kb:${DA_KB_TAG:-current}
+    environment:
+      PG_HOST: dap-postgres
+      PG_PORT: "5432"
+      PG_DATABASE: deepanalyze
+      PG_USER: deepanalyze
+      PG_PASSWORD: ${DAP_DB_PASSWORD:-}
+      DATA_DIR: /app/data
+      DA_AUTH_MODE: none
+      DA_SKIP_WIZARD: "true"
+    networks: [dap]
+    depends_on:
+      dap-postgres:
+        condition: service_healthy
+    restart: "no"
+
+  dap-knowledge:
+    profiles: [da-platform]
+    image: kb-suite/da-platform-knowledge:${DAP_TAG:-current}
+    environment:
+      PG_HOST: dap-postgres
+      PG_PORT: "5432"
+      PG_DATABASE: deepanalyze
+      PG_USER: deepanalyze
+      PG_PASSWORD: ${DAP_DB_PASSWORD:-}
+      DATA_DIR: /app/data
+      DA_AUTH_MODE: none
+      TOOL_PLATFORM_BIND_HOST: 0.0.0.0
+      TOOL_PLATFORM_PORT: "8082"
+      TZ: ${TZ:-Asia/Shanghai}
+      KNOWLEDGE_ENTITY_EXTRACTION: ${DAP_ENTITY_EXTRACTION:-on}
+      KNOWLEDGE_LOCAL_WHISPER: "off"
+      # Without a MinerU address the platform falls back to MinerU's public cloud service;
+      # keep it off unless DAP_MINERU_API_URL points at a MinerU of your own.
+      MINERU_ENABLED: ${DAP_MINERU_ENABLED:-false}
+      MINERU_API_URL: ${DAP_MINERU_API_URL:-}
+    volumes:
+      - dap-data:/app/data
+    networks: [dap]
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      dap-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bun --eval \"fetch('http://127.0.0.1:8082/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+  dap-adapter:
+    profiles: [da-platform]
+    image: kb-suite/da-kb-adapter:${KBGW_TAG:-dev}
+    environment:
+      DA_KB_BASE_URL: http://dap-knowledge:8082
+      DA_KB_ADAPTER_KEY: ${KBGW_DAP_ADAPTER_KEY:-}
+      DA_KB_ID_PREFIX: dap_
+      DA_KB_LABEL: DA 知识管线（平台）
+      # pdf, docx, pptx (and doc, ppt through LibreOffice) need MinerU
+      DA_KB_EXTRA_FILE_TYPES: ${DAP_EXTRA_FILE_TYPES:-}
+      DA_KB_UPLOAD_DIR: /tmp/dap-adapter-uploads
+    networks: [default, dap]
+    depends_on:
+      dap-knowledge:
+        condition: service_started
+    restart: unless-stopped
+
 networks:
   da-kb: {}
+  dap: {}
 
 volumes:
   weknora-pg:
@@ -373,6 +500,8 @@ volumes:
   weknora-docreader-tmp:
   da-kb-pg:
   da-kb-data:
+  dap-pg:
+  dap-data:
   kbs-redis:
   da-data:
   kbs-pg:

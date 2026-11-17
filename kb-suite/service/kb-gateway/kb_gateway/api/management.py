@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
-from .. import ops
+from .. import notes, ops
 from ..auth import CAP_INGEST, CAP_MANAGE, CAP_RETRIEVE, Principal, check_scope
 from ..deps import need, registry
 from ..registry import Backend, UpstreamError, require
@@ -28,6 +29,23 @@ def _relay(response) -> Response:
 async def _forward(backend: Backend, method: str, path: str, feature: str | None = None, **kwargs: Any) -> Response:
     require(backend, feature)
     return _relay(await backend.send(method, path, **kwargs))
+
+
+def _guarded(response: Response) -> Response:
+    """A document view or list whose summary repeats instructions embedded in the document gets a warning
+    (``notes.guard_summary``); backends write their own summaries and some repeat such instructions."""
+
+    if response.status_code != 200 or not response.body:
+        return response
+    media = response.media_type or ""
+    if "json" in media:
+        try:
+            data = json.loads(response.body)
+        except ValueError:
+            return response
+        return Response(json.dumps(data, ensure_ascii=False), media_type=media) if notes.guard_summaries(data) else response
+    guarded = notes.guard_summary(response.body.decode("utf-8", "replace"))
+    return response if guarded is None else Response(guarded, media_type=media)
 
 
 def _kb(kb_id: str) -> Backend:
@@ -114,7 +132,7 @@ async def list_docs(
     _: Principal = Depends(need(CAP_RETRIEVE)),
 ) -> Response:
     params = {k: v for k, v in {"status": status, "q": q, "limit": limit, "offset": offset}.items() if v is not None}
-    return await _forward(_kb(kb_id), "GET", f"/v1/kbs/{kb_id}/documents", params=params)
+    return _guarded(await _forward(_kb(kb_id), "GET", f"/v1/kbs/{kb_id}/documents", params=params))
 
 
 @router.post("/kbs/{kb_id}/documents", status_code=201)
@@ -146,7 +164,7 @@ async def url_doc(kb_id: str, request: Request, _: Principal = Depends(need(CAP_
 
 @router.get("/documents/{doc_id}")
 async def get_doc(doc_id: str, _: Principal = Depends(need(CAP_RETRIEVE))) -> Response:
-    return await _forward(_kb(doc_id), "GET", f"/v1/documents/{doc_id}")
+    return _guarded(await _forward(_kb(doc_id), "GET", f"/v1/documents/{doc_id}"))
 
 
 @router.get("/documents/{doc_id}/chunks")
@@ -164,7 +182,8 @@ async def get_content(
     doc_id: str, level: str = Query("L1", pattern="^L[012]$"), _: Principal = Depends(need(CAP_RETRIEVE))
 ) -> Response:
     feature = "content.L2" if level == "L2" else None
-    return await _forward(_kb(doc_id), "GET", f"/v1/documents/{doc_id}/content", feature, params={"level": level})
+    response = await _forward(_kb(doc_id), "GET", f"/v1/documents/{doc_id}/content", feature, params={"level": level})
+    return _guarded(response) if level == "L0" else response
 
 
 @router.get("/documents/{doc_id}/structure")
@@ -264,10 +283,12 @@ async def search(request: Request, principal: Principal = Depends(need(CAP_RETRI
     kb_ids = check_scope(principal, body.get("kb_ids") or principal.kb_allowlist)
     top_k = max(1, min(int(body.get("top_k") or 8), 50))
     extra = {k: v for k, v in body.items() if k not in {"kb_ids", "top_k"}}
-    hits, failed, traces = await ops.search(registry(), kb_ids, extra, top_k)
+    hits, failed, traces, warnings = await ops.search(registry(), kb_ids, extra, top_k)
     out: dict = {"query": query, "items": hits}
     if failed:
         out["failed_backends"] = failed
+    if warnings:
+        out["warnings"] = warnings
     # a trace describes one backend's pipeline; several cannot be merged into one
     if len(traces) == 1:
         out["trace"] = traces[0]

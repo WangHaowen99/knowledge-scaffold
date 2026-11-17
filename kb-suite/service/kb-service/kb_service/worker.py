@@ -6,7 +6,7 @@ import asyncio
 import logging
 import signal
 
-from . import db, models_client
+from . import db, log_policy, models_client
 from .config import get_settings
 from .jobs import Worker
 from .parsing import docreader_client
@@ -15,6 +15,7 @@ from .pipeline import handlers
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")  # NOSONAR(S4792)
+    log_policy.quiet_http_clients()
     settings = get_settings()
     await db.migrate(settings.database_url)
     await db.connect(settings.database_url, max_size=settings.worker_concurrency + settings.llm_concurrency + 4)

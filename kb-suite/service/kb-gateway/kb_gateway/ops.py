@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, NamedTuple
 
 from .config import get_settings
 from .registry import Backend, Registry, UpstreamError, require
@@ -23,13 +23,29 @@ def annotate_kb(kb: dict, backend: Backend) -> dict:
     return {**kb, "backend": backend.ref(), "features": sorted(backend.features)}
 
 
+def failure(backend: Backend, exc: BaseException) -> dict:
+    """A backend's failed part of a call: its ref, a readable message and the error code."""
+
+    if isinstance(exc, UpstreamError):
+        return {**backend.ref(), "error": exc.message, "code": exc.code}
+    return {**backend.ref(), "error": str(exc), "code": "backend_error"}
+
+
+def _unlisted(backend: Backend, error: str | None) -> dict:
+    # id_prefix and the knowledge bases last listed there let a page keep a selection made on this backend
+    return {**backend.ref(), "error": error, "id_prefix": backend.config.id_prefix,
+            "knowledge_bases": [{"id": kb_id, "name": name} for kb_id, name in backend.kb_names.items()]}
+
+
 async def list_kbs(registry: Registry) -> tuple[list[dict], list[dict]]:
     """All knowledge bases of all healthy backends, plus the backends that could not be listed."""
 
     async def one(backend: Backend) -> list[dict]:
         # every page load lists all backends: one that accepts but never answers must not stall it
         data = await backend.json("GET", "/v1/kbs", timeout=get_settings().search_timeout_s)
-        return [annotate_kb(kb, backend) for kb in (data or {}).get("items", [])]
+        kbs = (data or {}).get("items", [])
+        backend.kb_names = {kb["id"]: str(kb.get("name") or kb["id"]) for kb in kbs}
+        return [annotate_kb(kb, backend) for kb in kbs]
 
     items: list[dict] = []
     unavailable: list[dict] = []
@@ -37,19 +53,22 @@ async def list_kbs(registry: Registry) -> tuple[list[dict], list[dict]]:
     results = await asyncio.gather(*(one(b) for b in backends if b.healthy), return_exceptions=True)
     for backend, result in zip([b for b in backends if b.healthy], results):
         if isinstance(result, Exception):
-            unavailable.append({**backend.ref(), "error": getattr(result, "message", str(result))})
+            unavailable.append(_unlisted(backend, getattr(result, "message", str(result))))
         else:
             items.extend(result)
-    unavailable.extend({**b.ref(), "error": b.last_error} for b in backends if not b.healthy and b.visible)
+    unavailable.extend(_unlisted(b, b.last_error) for b in backends if not b.healthy and b.visible)
     return items, unavailable
 
 
 def _scope_groups(registry: Registry, kb_ids: list[str]) -> list[tuple[Backend, list[str]]]:
-    """``[]`` means every knowledge base: each healthy backend searches all of its own."""
+    """``[]`` means every knowledge base: each backend searches all of its own.
+
+    Unavailable backends stay in, so the caller reports them instead of silently searching less.
+    """
 
     if kb_ids:
         return [(registry.by_id[bid], ids) for bid, ids in registry.group(kb_ids).items()]
-    return [(b, []) for b in registry.healthy()]
+    return [(b, []) for b in registry.backends if b.visible]
 
 
 def rrf_merge(lists: list[list[dict]], top_k: int) -> list[dict]:
@@ -68,10 +87,17 @@ def rrf_merge(lists: list[list[dict]], top_k: int) -> list[dict]:
     return out
 
 
+class SearchOutcome(NamedTuple):
+    hits: list[dict]
+    failed: list[dict]  # per backend: ref, error, code
+    traces: list[dict]  # per backend, when asked for
+    warnings: list[str]  # what a backend says about its results, e.g. a degraded vector leg
+
+
 async def search(
     registry: Registry, kb_ids: list[str], body: dict, top_k: int, *, fan_out: bool = False,
-) -> tuple[list[dict], list[dict], list[dict]]:
-    """Search across backends; returns (hits, per-backend failures, per-backend traces when asked for).
+) -> SearchOutcome:
+    """Search across backends.
 
     ``fan_out``: this call is one of several the caller runs in parallel, so it gets the short timeout too.
     """
@@ -82,6 +108,7 @@ async def search(
     if len(groups) == 1:
         require(groups[0][0])
     trace: list[dict] = []
+    warnings: list[str] = []
 
     async def one(backend: Backend, ids: list[str]) -> list[dict]:
         # an unhealthy backend fails its own group only; the others still answer
@@ -92,27 +119,32 @@ async def search(
         )
         if isinstance((data or {}).get("trace"), dict):
             trace.append({"backend": backend.id, **data["trace"]})
+        for warning in (data or {}).get("warnings") or []:
+            warnings.append(f"{backend.config.label}：{warning}" if len(groups) > 1 else str(warning))
         return [{**hit, "backend": backend.id} for hit in (data or {}).get("items", [])]
 
     if len(groups) == 1:
-        return await one(*groups[0]), [], trace
+        return SearchOutcome(await one(*groups[0]), [], trace, warnings)
     results = await asyncio.gather(*(one(b, ids) for b, ids in groups), return_exceptions=True)
     lists, failed = [], []
     for (backend, _), result in zip(groups, results):
         if isinstance(result, Exception):
-            failed.append({**backend.ref(), "error": getattr(result, "message", str(result))})
+            failed.append(failure(backend, result))
             logger.warning("search on %s failed: %s", backend.id, result)
         else:
             lists.append(result)
     if not lists:
-        raise UpstreamError(502, "backend_unavailable", "所有知识后端检索都失败了：" + "；".join(f["error"] for f in failed))
-    return rrf_merge(lists, top_k), failed, trace
+        codes = {f["code"] for f in failed}
+        raise UpstreamError(502, codes.pop() if len(codes) == 1 else "backend_error",
+                            "所有知识后端检索都失败了：" + "；".join(f"{f['label']}：{f['error']}" for f in failed))
+    return SearchOutcome(rrf_merge(lists, top_k), failed, trace, warnings)
 
 
 async def get_document(registry: Registry, doc_id: str) -> dict | None:
+    """``None`` when the backend has no such document; an unavailable backend raises (it is not "not found")."""
+
     backend = registry.route(doc_id)
-    if not backend.healthy:
-        return None
+    require(backend)
     try:
         return await backend.json("GET", f"/v1/documents/{doc_id}")
     except UpstreamError as exc:
@@ -152,21 +184,27 @@ async def list_documents(registry: Registry, kb_id: str, *, limit: int = 2000, s
 async def grep(
     registry: Registry, kb_ids: list[str], pattern: str, *, max_results: int = 50, max_lines_per_doc: int = 10,
 ) -> dict:
-    """Merged ``POST /v1/grep`` of the backends in scope; backends without ``grep`` are skipped and listed."""
+    """Merged ``POST /v1/grep`` of the backends in scope.
+
+    Backends without ``grep`` are listed in ``skipped_backends``; unavailable ones, and those whose grep
+    failed, in ``failed_backends``.
+    """
 
     groups = _scope_groups(registry, kb_ids)
     eligible = [(b, ids) for b, ids in groups if b.healthy and b.has("grep")]
-    skipped = [b.ref() for b, _ in groups if not (b.healthy and b.has("grep"))]
+    skipped = [b.ref() for b, _ in groups if b.healthy and not b.has("grep")]
+    down = [{**b.ref(), "error": f"{b.config.label} 当前不可用：{b.last_error}", "code": "backend_unavailable"}
+            for b, _ in groups if not b.healthy]
     body = {"pattern": pattern, "max_results": max_results, "max_lines_per_doc": max_lines_per_doc}
     timeout = get_settings().search_timeout_s if len(eligible) > 1 else None
     outcomes = await asyncio.gather(
         *(b.json("POST", "/v1/grep", json={**body, "kb_ids": ids}, timeout=timeout) for b, ids in eligible),
         return_exceptions=True,
     )
-    found, failed = [], []
+    found, failed = [], list(down)
     for (backend, _), outcome in zip(eligible, outcomes):
         if isinstance(outcome, Exception):
-            failed.append({**backend.ref(), "error": getattr(outcome, "message", str(outcome))})
+            failed.append(failure(backend, outcome))
         else:
             found.append(outcome)
     if eligible and not found:

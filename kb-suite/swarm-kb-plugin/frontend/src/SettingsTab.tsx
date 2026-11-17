@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { EnrichSection, Group, ParsingSection, RetrievalSection, WikiSection, type ConfigPatch } from './KbConfigForm';
 import { formatTime } from './format';
 import { useConfigMeta } from './meta';
@@ -20,6 +20,21 @@ const NAV: { key: Section; label: string; group: string }[] = [
 ];
 
 const clone = (c: KbConfig): KbConfig => JSON.parse(JSON.stringify(c)) as KbConfig;
+
+export const ADJUSTED_NOTICE = '已保存；服务端调整了部分设置（如不合法的值恢复为默认），页面已显示保存后的值';
+
+/**
+ * Save, then read the knowledge base back: the server may replace what it does not accept
+ * (e.g. an empty separator list becomes its defaults), and the page must show what was kept.
+ */
+export async function saveKb(kbId: string, params: Record<string, unknown>): Promise<KnowledgeBase | null> {
+  const updated = await rpc.call<KnowledgeBase | null>('kbs.update', { kb_id: kbId, ...params });
+  try {
+    return await rpc.call<KnowledgeBase>('kbs.get', { kb_id: kbId });
+  } catch {
+    return updated;
+  }
+}
 
 export function useConfigDraft(initial: KbConfig) {
   const [config, setConfig] = useState<KbConfig>(() => clone(initial));
@@ -47,17 +62,29 @@ export default function SettingsTab({
   const [busy, setBusy] = useState(false);
   const [profile, setProfile] = useState(kb.profile);
   const [working, setWorking] = useState<string | null>(null);
+  // what the server holds: the list's copy, or what was read back right after saving
+  const [base, setBase] = useState<KnowledgeBase>(kb);
+  useEffect(() => setBase(kb), [kb]);
 
   const dirty = useMemo(
-    () => name !== kb.name || description !== kb.description || JSON.stringify(config) !== JSON.stringify(kb.config),
-    [name, description, config, kb],
+    () => name !== base.name || description !== base.description || JSON.stringify(config) !== JSON.stringify(base.config),
+    [name, description, config, base],
   );
+
+  const showSaved = (saved: KnowledgeBase) => {
+    setBase(saved);
+    setName(saved.name);
+    setDescription(saved.description);
+    setConfig(clone(saved.config));
+  };
 
   const save = async () => {
     setBusy(true);
     try {
-      await rpc.call('kbs.update', { kb_id: kb.id, name: name.trim(), description, config });
-      notify('已保存');
+      const sent = JSON.stringify(config);
+      const saved = await saveKb(kb.id, { name: name.trim(), description, config });
+      if (saved?.config) showSaved(saved);
+      notify(saved?.config && JSON.stringify(saved.config) !== sent ? ADJUSTED_NOTICE : '已保存');
       onSaved();
     } catch (err) {
       notify(errorText(err), true);
@@ -83,7 +110,11 @@ export default function SettingsTab({
 
   const remove = async () => {
     const typed = window.prompt(`删除知识库会同时删除其中全部文档、索引和 Wiki，且不可恢复。\n请输入知识库名称「${kb.name}」确认：`);
-    if (typed !== kb.name) return;
+    if (typed === null) return;
+    if (typed !== kb.name) {
+      notify('输入的名称与知识库名称不一致，没有删除', true);
+      return;
+    }
     try {
       await rpc.call('kbs.delete', { kb_id: kb.id });
       notify('知识库已删除');
@@ -225,9 +256,9 @@ export default function SettingsTab({
             <Button
               disabled={!dirty || busy}
               onClick={() => {
-                setName(kb.name);
-                setDescription(kb.description);
-                setConfig(clone(kb.config));
+                setName(base.name);
+                setDescription(base.description);
+                setConfig(clone(base.config));
               }}
             >
               撤销修改

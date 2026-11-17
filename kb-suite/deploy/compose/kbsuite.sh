@@ -12,9 +12,11 @@
 #   ./kbsuite.sh build-gateway     kb-gateway and the WeKnora / DA knowledge-pipeline adapters
 #   ./kbsuite.sh build-da-kb       DA knowledge pipeline image from $DA_TS_SRC (a DeepAnalyze source tree)
 #   ./kbsuite.sh build-weknora-config   WeKnora config.yaml from $WEKNORA_REPO@$WEKNORA_REF
+#   ./kbsuite.sh build-dap         platform knowledge service image from $PLATFORM_REPO@$PLATFORM_REF (DeepAnalyze platform repo)
 #   ./kbsuite.sh up         start everything, WeKnora (the default knowledge backend) included; bootstraps keys on first run
 #   ./kbsuite.sh up-weknora        start only the WeKnora backend and set it up for the adapter
 #   ./kbsuite.sh up-da-kb          start the DA knowledge-pipeline backend and point it at the models
+#   ./kbsuite.sh up-dap            start the DA knowledge pipeline on the platform knowledge service (needs build-dap and build-da-kb)
 #   ./kbsuite.sh status | logs [service] | restart [service] | down
 #
 # KBS_PROJECT (default kb-suite) and the *_PORT variables in compose.yaml run a
@@ -24,9 +26,11 @@
 #   secrets.env  KBS_PG_PASSWORD, KBS_LLM_BASE_URL, KBS_LLM_API_KEY, KBS_RERANK_URL,
 #                SWARM_API_BASE, SWARM_API_KEY, DA_ENGINE_SECRET
 #   keys.env     written by `bootstrap`: KBS_PLUGIN_KEY, KBS_MCP_KEY, KBS_DA_KEY
-#   gateway.env  generated: KBGW_WEKNORA_ADAPTER_KEY, KBGW_DA_ADAPTER_KEY (gateway -> adapters)
+#   gateway.env  generated: KBGW_WEKNORA_ADAPTER_KEY, KBGW_DA_ADAPTER_KEY, KBGW_DAP_ADAPTER_KEY (gateway -> adapters)
 #   weknora.env  generated passwords; `up-weknora` adds WEKNORA_API_KEY and the model ids
 #   da-kb.env    generated: DA_KB_DB_PASSWORD
+#   da-platform.env  generated: DAP_DB_PASSWORD; set DAP_MINERU_ENABLED=true, DAP_MINERU_API_URL and
+#                DAP_EXTRA_FILE_TYPES yourself when a MinerU of your own is available
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -37,7 +41,7 @@ KEYS="$KBS_SECRETS_DIR/keys.env"
 
 PROJECT="${KBS_PROJECT:-kb-suite}"
 export KBS_PROJECT="$PROJECT"
-ENV_FILES=(secrets.env gateway.env weknora.env da-kb.env)
+ENV_FILES=(secrets.env gateway.env weknora.env da-kb.env da-platform.env)
 
 compose() {
   local args=() name
@@ -46,7 +50,7 @@ compose() {
   done
   docker compose -p "$PROJECT" "${args[@]}" -f "$HERE/compose.yaml" "$@"
 }
-compose_all() { compose --profile weknora --profile da-kb "$@"; }
+compose_all() { compose --profile weknora --profile da-kb --profile da-platform "$@"; }
 
 # gen_env FILE VAR... : add a random value for each VAR not yet in FILE (mode 600)
 gen_env() {
@@ -213,6 +217,54 @@ up_da_kb() {
   compose up -d --force-recreate kb-gateway
 }
 
+# The DeepAnalyze platform repo's knowledge service, exported with git archive so the
+# checkout (and its node_modules links) is never touched.
+build_dap() {
+  local repo="${PLATFORM_REPO:?set PLATFORM_REPO to a DeepAnalyze platform repo clone}" ref="${PLATFORM_REF:-HEAD}" commit ctx
+  commit="$(git -C "$repo" rev-parse --short=7 "$ref")"
+  ctx="$(mktemp -d)"
+  git -C "$repo" archive "$commit" | tar -x -C "$ctx"
+  docker build -f "$ctx/deploy/knowledge-service.Dockerfile" --label kb-suite.platform-commit="$commit" \
+    -t kb-suite/da-platform-knowledge:"$commit" -t kb-suite/da-platform-knowledge:current "$ctx"
+  rm -rf "$ctx"
+}
+
+up_dap() {
+  require_secrets
+  docker image inspect kb-suite/da-platform-knowledge:"${DAP_TAG:-current}" >/dev/null 2>&1 ||
+    { echo "platform knowledge service image missing (run ./kbsuite.sh build-dap)" >&2; exit 1; }
+  docker image inspect kb-suite/da-kb:"${DA_KB_TAG:-current}" >/dev/null 2>&1 ||
+    { echo "DA backend image for the schema migration missing (run ./kbsuite.sh build-da-kb)" >&2; exit 1; }
+  gen_env gateway.env KBGW_WEKNORA_ADAPTER_KEY KBGW_DA_ADAPTER_KEY KBGW_DAP_ADAPTER_KEY
+  gen_env da-platform.env DAP_DB_PASSWORD
+  # the platform creates no tables: the DA backend migrates the schema, then stops again
+  compose --profile da-platform up -d dap-postgres
+  local psql=(compose --profile da-platform exec -T dap-postgres psql -U deepanalyze -d deepanalyze -v ON_ERROR_STOP=1 -tA)
+  local i ready=""
+  # pg_isready passes on the first start while the init server still refuses TCP; the migration
+  # connects over the network and does not retry, so wait for a TCP connection first
+  for i in $(seq 1 60); do
+    compose --profile da-platform exec -T dap-postgres pg_isready -h 127.0.0.1 -U deepanalyze -d deepanalyze >/dev/null 2>&1 && break
+    sleep 2
+  done
+  compose --profile da-platform up -d dap-migrate
+  for i in $(seq 1 90); do
+    ready="$("${psql[@]}" -c "SELECT 1 FROM settings WHERE key = 'providers'" 2>/dev/null)" || true
+    [ "$ready" = 1 ] && break
+    sleep 2
+  done
+  compose --profile da-platform stop dap-migrate
+  [ "$ready" = 1 ] || { echo "schema migration did not finish (./kbsuite.sh logs dap-migrate)" >&2; exit 1; }
+  (env_export "$SECRETS" KBS_LLM_BASE_URL KBS_LLM_API_KEY DA_KB_CHAT_MODEL DA_KB_EMBED_MODEL
+   python3 "$HERE/da-kb/providers.py") | "${psql[@]}" >/dev/null
+  # settings.mineru_config outranks the platform's MINERU_* variables; DAP_MINERU_* is the only MinerU setting here
+  "${psql[@]}" -c "DELETE FROM settings WHERE key = 'mineru_config'" >/dev/null
+  compose --profile da-platform up -d dap-knowledge
+  wait_healthy dap-knowledge
+  compose --profile da-platform up -d dap-adapter
+  compose up -d --force-recreate kb-gateway
+}
+
 case "$cmd" in
   build)
     docker build -t kb-suite/kb-service:"${KBS_TAG:-dev}" "$ROOT/service/kb-service"
@@ -256,11 +308,13 @@ case "$cmd" in
   build-gateway) build_gateway ;;
   build-da-kb) build_da_kb ;;
   build-weknora-config) build_weknora_config ;;
+  build-dap) build_dap ;;
   up-weknora) up_weknora ;;
   up-da-kb) up_da_kb ;;
+  up-dap) up_dap ;;
   status) compose_all ps ;;
   logs) compose_all logs -f --tail=200 "$@" ;;
   restart) compose_all restart "$@" ;;
   down) compose_all down ;;
-  *) sed -n '2,24p' "$0"; exit 1 ;;
+  *) sed -n '2,26p' "$0"; exit 1 ;;
 esac

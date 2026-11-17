@@ -19,9 +19,27 @@
 - **ID**：知识库、文档、分块、Wiki 页面的 ID 对 gateway 是不透明字符串，但必须满足两条：
   1. 以该后端注册时配置的 `id_prefix` 开头（最多一个后端的前缀为空，通常是 kb-service；它和「默认后端」无关，默认后端只决定新建知识库建在哪里）。适配服务负责在出参加前缀、入参去前缀。gateway 按最长前缀把请求路由到后端。
   2. 不含 `:`、`,`、`/` 和空白。`:` 留给 DA 的 pageId 和锚点（`{docId}:L1`、`{docId}:{type}:{index}`），`,` 留给 `X-Kb-Scope`。
-- **错误**：非 2xx 时返回 `{"error": {"code": "<机器可读>", "message": "<给人看的中文说明>"}}`。404 用 `not_found`，能力不支持用 501 `unsupported`。
+- **错误**：非 2xx 时返回 `{"error": {"code": "<机器可读>", "message": "<给人看的中文说明>"}}`。404 用 `not_found`，能力不支持用 501 `unsupported`。错误对象可以另带少量标量字段（如重复上传的 `existingDocId`），gateway 原样透传给调用方（最多 10 个，只透传字符串、数字、布尔和 null）。各接口用到的错误码见第 2.1 节。
 - **分页**：列表接口用 `limit` / `offset`，响应带 `total`。每个接口的最坏结果大小见第 5 节的上限列。
 - **时间**：ISO 8601，带时区。
+
+### 2.1 错误码
+
+| 错误码 | HTTP | 出现在 | 含义 |
+|---|---|---|---|
+| `not_found` | 404 | 所有按 ID 访问的接口 | 对象不存在 |
+| `unsupported` | 501 | 可选能力 | 后端没有声明该能力 |
+| `duplicate` | 409 | 入库 | 同一知识库里已有内容相同的文档；错误对象另带 `existingDocId`、`existingStatus`（已有文档的 ID 和解析状态，查不到时为 null） |
+| `duplicate_name` | 409 | `POST /v1/kbs`、`PATCH /v1/kbs/{kb_id}` | 已有同名知识库 |
+| `bad_encoding` | 400 | 入库文本类文件 | 认不出文字编码，或是二进制文件。适配服务转码时发现，在入库时就拒绝；kb-service 在异步解析时才发现，文档以 `failed` 结束（见下） |
+| `url_not_allowed` | 400 | `POST .../documents/url` | 网址指向回环、内网、链路本地等内部或私有地址（含特殊用途 IPv6 前缀里嵌的这类地址），或带用户名口令、非 http(s) 协议。提示里不回显解析出的地址 |
+| `url_unresolvable` | 400 | `POST .../documents/url` | 域名解析失败。无法确认它不指向内部地址，所以一律拒绝 |
+| `bad_pattern` | 400 | `POST /v1/grep` | 正则写法会导致灾难性回溯（嵌套量词、可重叠的分支） |
+| `pattern_timeout` | 400 | `POST /v1/grep` | 正则在时限内没有匹配完 |
+| `search_unavailable` | 503 | `POST /v1/search` | 检索整体不可用（如向量模型和全文检索都失败）。部分降级时不报错，见第 5.4 节的 `warnings` |
+| `checksum_mismatch` | 400 | 分块上传 | 大小或 sha256 不符 |
+
+文档解析失败不是 HTTP 错误：文档的 `parse_status` 为 `failed`，`error_message` 写给人看的原因；kb-service 另在 `error_code` 里给出机器可读的原因，如 `mineru_error`（调用 MinerU 识别图片或扫描件失败）、`asr_error`（调用语音转写失败）、`bad_encoding`、`parse_failed`。
 
 ## 3. `GET /v1/capabilities`
 
@@ -114,7 +132,7 @@ gateway 只做转发、格式转换和多后端结果合并，不读取正文，
 | `parse_status` | string | `pending` / `processing` / `completed` / `failed` / `cancelled` |
 | `error_message` | string \| null | |
 | `summary` | string \| null | L0 |
-| `chunk_count` | int | |
+| `chunk_count` | int | 分块数。适配服务在后端不直接给出时自己统计填写，知识库页据此显示 |
 | `l1_chars` | int \| null | L1 正文长度，未知时为 null |
 | `created_at`、`processed_at` | string \| null | |
 
@@ -145,9 +163,9 @@ gateway 只做转发、格式转换和多后端结果合并，不读取正文，
 
 - `kb_ids` 为空时检索该后端全部知识库。`top_k` 上限 50。
 - `min_score` 按 `relevance` 过滤，不按 `score`；`relevance` 始终为 null 的后端忽略它。
-- 响应 `{"query": "…", "items": [Hit]}`，按相关度降序。
+- 响应 `{"query": "…", "items": [Hit], "warnings"?: ["…"]}`，按相关度降序。`warnings` 只在部分降级时出现（如向量检索失败、只用了全文检索），每条是给人看的说明；检索整体不可用时返回 503 `search_unavailable`。
 
-`Hit`：`chunk_id`、`doc_id`、`kb_id`、`seq`、`chunk_type`、`title`（文档标题）、`file_name`、`context_header`、`content`、`score`（后端自己的分数，不同后端之间不可比）、`relevance`（0–1，可为 null）、`line_start`、`anchor_id`、`locators`。Wiki 命中的 `chunk_type` 为 `wiki_page`，另带 `wiki_slug`、`wiki_type`、`wiki_sources`。
+`Hit`：`chunk_id`、`doc_id`、`kb_id`、`seq`、`chunk_type`、`title`（文档标题）、`file_name`、`context_header`、`content`、`score`（后端自己的分数，不同后端之间不可比）、`relevance`（0–1，可为 null）、`line_start`、`anchor_id`、`locators`，可选 `matched_by`（命中途径列表，如 `vector`、`keyword`、`exact`；`exact` 表示查询里的编号、型号等在正文里原样出现，这类命中排在前面）。Wiki 命中的 `chunk_type` 为 `wiki_page`，另带 `wiki_slug`、`wiki_type`、`wiki_sources`。
 
 跨后端检索由 gateway 并行调用各后端，再按排名融合（RRF，k=60）；gateway 不比较各后端的 `score`。
 

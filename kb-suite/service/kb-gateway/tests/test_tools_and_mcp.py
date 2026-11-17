@@ -122,7 +122,7 @@ def _run(coro, principal: Principal):
 def test_mcp_tools_cover_all_backends(client):
     who = Principal("mcp", frozenset({"retrieve"}))
     kbs = json.loads(_run(mcp_server.list_knowledge_bases(), who))
-    assert {kb["backend"] for kb in kbs} == {"kbs", "WeKnora"}
+    assert {b["backend"] for b in kbs["backends"]} == {"kbs", "WeKnora"}
     text = _run(mcp_server.search_knowledge("压力"), who)
     assert "doc_id=wk_d1" in text and "doc_id=d1" in text
     read = _run(mcp_server.read_document("wk_d1"), who)
@@ -134,7 +134,7 @@ def test_mcp_tools_cover_all_backends(client):
 def test_mcp_scope_header_confines_the_connection(client):
     who = Principal("mcp", frozenset({"retrieve"}), ("wk_kb1",))
     kbs = json.loads(_run(mcp_server.list_knowledge_bases(), who))
-    assert [kb["id"] for kb in kbs] == ["wk_kb1"]
+    assert [kb["id"] for b in kbs["backends"] for kb in b["knowledge_bases"]] == ["wk_kb1"] and kbs["total"] == 1
     assert "无权访问" in _run(mcp_server.read_document("d1"), who)
 
 
@@ -238,3 +238,24 @@ def test_native_doc_grep_and_large_token_budget_are_clamped(client, providers):
     client.post("/v1/tools/expand", headers=da("wk_kb1"), json={"pageId": "wk_d1:L1", "tokenBudget": 10_000_000})
     params = [meta["params"] for _, path, meta in providers["wk"].calls if path.endswith("/structure")][-1]
     assert int(params["limit"]) <= 200000
+
+
+def test_reprocess_says_a_requested_processor_is_not_applied(client, providers):
+    generic = client.post("/v1/tools/reprocess_document", headers=da("wk_kb1"),
+                          json={"docId": "wk_d1", "processor": "mineru-hybrid"}).json()
+    assert generic["status"] == "queued"
+    assert "不能按请求指定处理器（mineru-hybrid）" in generic["message"] and "不要说用了 mineru-hybrid" in generic["message"]
+    real = providers["kbs"].handle
+
+    def native(request):
+        if request.url.path == "/v1/tools/reprocess_document":
+            import httpx
+            return httpx.Response(200, json={"kbId": "kb1", "docId": "d1", "status": "queued", "message": "已重新排队处理"})
+        return real(request)
+
+    providers["kbs"].handle = native
+    data = client.post("/v1/tools/reprocess_document", headers=da("kb1"),
+                       json={"docId": "d1", "processor": "asr"}).json()
+    assert data["status"] == "queued" and "不能按请求指定处理器（asr）" in data["message"]
+    plain = client.post("/v1/tools/reprocess_document", headers=da("kb1"), json={"docId": "d1"}).json()
+    assert plain["message"] == "已重新排队处理"

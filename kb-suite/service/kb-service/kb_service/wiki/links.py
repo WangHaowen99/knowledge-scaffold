@@ -21,6 +21,19 @@ _SLUG_SAFE = re.compile(r"[^0-9a-z㐀-鿿\-]+")
 _HAN_ONLY = re.compile(r"^[㐀-鿿]$")
 PAGE_TYPES = ("entity", "concept")
 
+# A slug the model wrote as text instead of a link ("entity/y-chu-neng（乙储能）"),
+# or a link without display text followed by the name in brackets
+# ("[[entity/y-chu-neng]]（乙储能）"). Slugs inside links, paths and URLs are left
+# alone. Unknown slugs are matched in their romanized form only: a slug with Han
+# characters cannot be told apart from the text that follows it.
+_PAREN = r"(?:[ \t]*[（(]([^（）()\[\]\n]{1,80})[）)])?"
+_SLUG_BEFORE = r"(?<![A-Za-z0-9_/\[|.\-])"
+_SLUG_AFTER = r"(?![A-Za-z0-9_/\-])"
+_ROMAN_SLUG = r"(?:entity|concept)/[0-9a-z]+(?:-[0-9a-z]+)*"
+_BARE_SLUG_RE = re.compile(f"{_SLUG_BEFORE}({_ROMAN_SLUG}){_SLUG_AFTER}{_PAREN}")
+_NAMELESS_LINK_RE = re.compile(r"\[\[([^\[\]|\n]+?)\]\]" + _PAREN)
+_CODE_OR_URL_RE = re.compile(r"```.*?```|~~~.*?~~~|`[^`\n]*`|https?://\S+", re.DOTALL)
+
 
 def parse_links(content: str) -> list[str]:
     out: list[str] = []
@@ -31,16 +44,91 @@ def parse_links(content: str) -> list[str]:
     return out
 
 
-def plain(text: str) -> str:
-    """``[[slug|text]]`` -> ``text`` for one-line summaries and search snippets."""
+def link_names(pages: list[dict]) -> dict[str, list[str]]:
+    """``{slug: [title, *aliases]}`` of pages (``title`` / ``aliases`` or a candidate's ``name``)."""
 
-    return LINK_RE.sub(lambda m: (m.group(2) or m.group(1)).strip(), text or "")
+    out: dict[str, list[str]] = {}
+    for page in pages:
+        title = str(page.get("title") or page.get("name") or "").strip()
+        names = [n for n in (title, *(page.get("aliases") or [])) if str(n).strip()]
+        if page.get("slug") and names:
+            out.setdefault(page["slug"], [str(n).strip() for n in names])
+    return out
+
+
+def _slug_text(slug: str) -> str:
+    return slug.split("/", 1)[-1]
+
+
+def _resolve(slug: str, shown: str | None, names: dict[str, list[str]]) -> tuple[str | None, str]:
+    """(display name, trailing text) for a slug written without display text.
+
+    The bracketed text is the display name when it is one of the page's names
+    or the page is unknown; otherwise the page title is shown and the
+    bracketed remark stays after it.
+    """
+
+    known = names.get(slug)
+    shown = (shown or "").strip()
+    if not known:
+        return (shown or None), ""
+    if not shown or normalize_title(shown) in {normalize_title(n) for n in known}:
+        return (shown or known[0]), ""
+    return known[0], f"（{shown}）"
+
+
+def _bare_slug_re(names: dict[str, list[str]]) -> re.Pattern:
+    known = sorted((s for s in names if "/" in s), key=len, reverse=True)
+    if not known:
+        return _BARE_SLUG_RE
+    alternatives = "|".join([*(re.escape(s) for s in known), _ROMAN_SLUG])
+    return re.compile(f"{_SLUG_BEFORE}({alternatives}){_SLUG_AFTER}{_PAREN}")
+
+
+def normalize_links(content: str, names: dict[str, list[str]]) -> str:
+    """Rewrite slugs written as text, and links without display text, as ``[[slug|name]]``.
+
+    ``names`` maps slugs to their page names (see :func:`link_names`). A text
+    slug of an unknown page becomes its bracketed name; unknown links are left
+    for :func:`strip_dead_links`.
+    """
+
+    def nameless(match: re.Match) -> str:
+        slug = match.group(1).strip()
+        shown, rest = _resolve(slug, match.group(2), names)
+        if shown is None:
+            return match.group(0)
+        return f"[[{slug}|{shown}]]{rest}"
+
+    def bare(match: re.Match) -> str:
+        if any(s <= match.start() < e for s, e in protected):
+            return match.group(0)
+        slug = match.group(1)
+        shown, rest = _resolve(slug, match.group(2), names)
+        if shown is None:
+            return match.group(0)
+        return f"[[{slug}|{shown}]]{rest}" if slug in names else shown
+
+    text = _NAMELESS_LINK_RE.sub(nameless, content or "")
+    protected = [m.span() for m in _CODE_OR_URL_RE.finditer(text)]
+    return _bare_slug_re(names).sub(bare, text)
+
+
+def plain(text: str, names: dict[str, list[str]] | None = None) -> str:
+    """``[[slug|text]]`` -> ``text`` for one-line summaries and search snippets.
+
+    Slugs never show as text: a link without display text shows the page name
+    (from ``names``, or the name the model put in brackets after it).
+    """
+
+    text = normalize_links(text or "", names or {})
+    return LINK_RE.sub(lambda m: (m.group(2) or _slug_text(m.group(1))).strip(), text)
 
 
 def strip_dead_links(content: str, valid: set[str], self_slug: str = "") -> str:
     def repl(match: re.Match) -> str:
         slug = match.group(1).strip()
-        text = (match.group(2) or slug).strip()
+        text = (match.group(2) or _slug_text(slug)).strip()
         if slug in valid and slug != self_slug:
             return match.group(0)
         return text

@@ -18,7 +18,7 @@ from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from kb_provider_kit import CONTRACT, Ids, ProviderError, check_bearer, install_error_handler, not_found, segment
-from kb_provider_kit import reading
+from kb_provider_kit import reading, textfiles
 from kb_provider_kit.uploads import UploadStore
 
 from . import __version__, mapping
@@ -32,6 +32,12 @@ FEATURES = [
     "content.structure", "grep", "uploads",
 ]
 _SAFE_NAME = re.compile(r"[^\w一-鿿.-]+")
+# The platform keeps the full name and stores the file under a short name of its own (since the
+# DeepAnalyze change of 2026-11-11; older platform builds answered a bare 500 for names over ~206 bytes):
+# names are only kept to a sane length, the same as the WeKnora adapter
+MAX_NAME_CHARS = 255
+# each folder level becomes a directory under DA's data dir
+MAX_FOLDER_BYTES = 255
 
 
 class Settings(BaseSettings):
@@ -381,6 +387,11 @@ def _router() -> APIRouter:
         return StreamingResponse(body(), media_type=upstream.headers.get("content-type"), headers=headers)
 
     async def _upload(raw_kb: str, name: str, data: bytes, folder_path: str, content_type: str) -> dict:
+        if any(len(part.encode()) > MAX_FOLDER_BYTES for part in folder_path.split("/")):
+            raise ProviderError(400, "bad_request", f"文件夹名称过长：每一级最多 {MAX_FOLDER_BYTES} 字节")
+        name = textfiles.fit_file_name(name, max_chars=MAX_NAME_CHARS)
+        # DA reads GB18030 with four-byte characters as Latin-1 and marks the garbled text ready
+        data = await asyncio.to_thread(textfiles.to_utf8, name, data)
         form = {"folderPath": folder_path} if folder_path.strip("/") else {}
         created = await da().json("POST", f"/kbs/{segment(raw_kb, '知识库')}/upload",
                                   files={"file": (name, data, content_type)}, data=form, timeout=600)
@@ -468,7 +479,7 @@ def _router() -> APIRouter:
                 filenames[doc["id"]] = doc.get("filename") or ""
         # DA's score is a rank-fusion score, not a 0-1 relevance: relevance stays null and
         # min_score (defined on relevance) is not applied
-        items = [mapping.hit_view(r, ids(), filenames) for r in results][:top_k]
+        items = mapping.distinct_hits([mapping.hit_view(r, ids(), filenames) for r in results])[:top_k]
         return {"query": query, "items": items}
 
     return router

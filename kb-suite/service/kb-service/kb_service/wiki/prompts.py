@@ -62,11 +62,16 @@ Each entity has:
 - "name": human-readable name in {{Language}}.
 - "slug": "entity/<lowercase-hyphenated-name>" (use pinyin/romanized form for non-Latin names). Reuse the previous slug if extracted before.
 - "aliases": names that refer to THE EXACT SAME entity only (abbreviations, full/short names, translations). [] if none.
-- "description": one sentence, 15-40 words, saying WHAT this entity IS and its role in the document; self-contained.
-- "details": a short 1-3 sentence fallback summary, under 300 characters.
+- "description": one sentence (at most 40 words) stating what THIS DOCUMENT says the entity is and its role in the document; self-contained.
+- "details": a short 1-3 sentence fallback summary of what the document says about it, under 300 characters.
 
 ### Concepts (topics, methods, procedures, theories, standards, etc.)
 Same fields, with "slug": "concept/<lowercase-hyphenated-name>".
+
+### Source Grounding (CRITICAL)
+- "description" and "details" restate only what <content> says. Do NOT add background knowledge, industry context, definitions or characterizing/evaluative wording (e.g. "专注于……", "领先的", "知名", "头部", "致力于") that the document does not state.
+- If the document does not say what an entity is (it is only listed or mentioned), describe only how the document mentions it; do not guess its business, field or history.
+- Keep names, numbers, dates and units exactly as written in the document.
 
 ### Deduplication Rules
 - Specific named things go ONLY in "entities"; abstract ideas, methods and procedures go ONLY in "concepts".
@@ -145,13 +150,14 @@ SUMMARY = """You are a wiki editor. Given the following document content, create
 </available_wiki_pages>
 
 <instructions>
-1. The FIRST line of your output MUST be: SUMMARY: {one sentence, 15-40 words, describing what this document is about}
+1. The FIRST line of your output MUST be: SUMMARY: {one plain-text sentence, at most 40 words, describing what this document is about; no [[...]] links and no slugs}
 2. After the SUMMARY line, write a summary of the document in Markdown: key facts, procedures, figures and conclusions.
 3. Use ## for sections and ### for subsections.
-4. **Wiki-link rule**: available_wiki_pages maps slugs to display names ("[[slug]] = name (Aliases: ...)"). Whenever you mention a listed name or alias, write it as [[slug|display name]]. Use the EXACT slugs; never invent slugs.
+4. **Wiki-link rule**: available_wiki_pages maps slugs to display names ("[[slug]] = name (Aliases: ...)"). Whenever you mention a listed name or alias, write it as [[slug|display name]] — always with the "|display name" part. Use the EXACT slugs; never invent slugs. A slug is internal: never write one as plain text, never write [[slug]] without the display name, and never add the name again in brackets after a link.
 5. End with a "## 要点" section of bullet points.
-6. Write in {{Language}}. Keep it concise but thorough (300-1200 words depending on document length).
+6. Write in {{Language}}. Keep it concise; the length follows how much the document itself says (a short document gets a short page). Never pad.
 7. If the content is empty or carries no substantive information, output exactly "SUMMARY: No textual content was extractable from this document." and a one-line note. Do NOT guess.
+8. **Source grounding (CRITICAL)**: write only facts, figures, names and conclusions stated in <content>, the SUMMARY line included. Do NOT add background knowledge, definitions, industry context or characterizing/evaluative wording (e.g. "一家专注于……的企业", "领先的", "知名", "头部", "旨在", "致力于") that the document does not state. When the document only lists or mentions an organization or product, say only that; do not describe what it does. Keep numbers, dates and units exactly as written. These rules override any business instructions below.
 {{ExtraInstructions}}</instructions>
 
 Output the SUMMARY line first, then the Markdown content, with no other preamble."""
@@ -169,11 +175,11 @@ MODIFY_SYSTEM = """You are a wiki editor updating one wiki page. You process NEW
 ### EDITING AND OUTPUT RULES
 1. You are a COMPILER, not a creative writer. Stay close to the source wording; lightly reorder and deduplicate, do not embellish.
 2. Do not over-structure. Prefer one top-level heading, short paragraphs and flat factual lists.
-3. No rhetorical filler ("旨在", "致力于", "具有重要意义") unless it appears verbatim in a source.
+3. No rhetorical filler ("旨在", "致力于", "具有重要意义") unless it appears verbatim in a source. Do not characterize the subject ("一家专注于……的企业", "领先的", "知名", "头部") unless a source says so; when the sources only list or mention it, say only that.
 4. Keep self-reported claims scoped and attributed.
 5. Preserve existing information that remains valid and on-topic, and the page's existing structure.
-6. Keep a [[slug|name]] link only when its slug is in the valid-link list; never invent a slug and never link the page to itself.
-7. The first output line must be "SUMMARY: {one sentence, 15-40 words}", followed immediately by the Markdown page content.
+6. Keep a [[slug|name]] link only when its slug is in the valid-link list, always with the "|name" part; never invent a slug, never link the page to itself, and never write a slug as plain text.
+7. The first output line must be "SUMMARY: {one plain-text sentence, at most 40 words, no links}", stating only what the page content supports, followed immediately by the Markdown page content.
 
 Output the SUMMARY line first, followed by the updated Markdown, with no other preamble."""
 
@@ -196,9 +202,9 @@ This wiki page is specifically about **{{Title}}** (a {{Type}}). Every statement
 </valid_wiki_links>
 
 <instructions>
-1. The FIRST line MUST be: SUMMARY: {one sentence, 15-40 words, describing this page after the update}
+1. The FIRST line MUST be: SUMMARY: {one plain-text sentence, at most 40 words, describing this page after the update; no links}
 {{RetractRule}}{{AddRule}}4. Preserve existing information that is still valid and still about {{Title}}.
-5. Keep [[slug|name]] links ONLY for slugs in <valid_wiki_links>; never link {{Slug}} to itself.
+5. Keep [[slug|name]] links ONLY for slugs in <valid_wiki_links>, always with the "|name" part; never link {{Slug}} to itself.
 6. Use "# {{Title}}" as the top-level heading if the page has none; do not add heading levels the sources do not justify.
 7. Write in {{Language}}.
 {{ExtraInstructions}}</instructions>
@@ -211,6 +217,14 @@ ADDITIONS = """
 </new_information>
 
 The <new_information> block is assembled from VERBATIM source chunks cited as directly supporting this page.
+"""
+
+ADDITIONS_EXTRACTED = """
+<new_information>
+{{NewContent}}
+</new_information>
+
+The <new_information> block is a short description extracted from the source document, not verbatim source text. Restate only what it says; do not expand on it or add anything it does not state.
 """
 
 RETRACTIONS = """
@@ -238,9 +252,10 @@ INDEX_INTRO = """You are a wiki editor. Write a brief introduction for a wiki kn
 
 <instructions>
 1. Write a title line starting with "# " that reflects the knowledge domain.
-2. Follow with 2-3 sentences describing what this wiki covers, based on the summaries above.
-3. Keep it concise; a directory listing is added separately below.
-4. Write in {{Language}}.
+2. Follow with 2-3 sentences describing what this wiki covers, based only on the summaries above.
+3. Mention only topics, organizations and products that appear in the summaries, and do not characterize them ("头部", "领先", "知名") unless a summary does.
+4. Keep it concise; a directory listing is added separately below.
+5. Write in {{Language}}.
 </instructions>
 
 Output ONLY the title and introduction paragraph. Do NOT list pages or links."""

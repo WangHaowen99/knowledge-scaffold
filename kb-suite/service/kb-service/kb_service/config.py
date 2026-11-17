@@ -45,6 +45,36 @@ class Settings(BaseSettings):
     retrieval_candidates: int = 40
     rerank_candidates: int = 30
 
+    # Concurrent searches: query embeddings have their own limit, apart from
+    # embed_concurrency (ingestion batches); the API keeps db_pool_size
+    # connections open; PostgreSQL parallel workers stay off for kb-service
+    # sessions (each one adds a process start to a short query and multiplies
+    # the CPU a search uses when many run at once).
+    query_embed_concurrency: int = 16
+    db_pool_size: int = 20
+    db_parallel_workers: int = 0
+
+    # MinerU (mineru-api 3.x task API) reads text from images and scanned PDFs.
+    # Off keeps docreader-only parsing; an OCR task can take several GB of
+    # memory on the MinerU side, so calls are capped per worker process.
+    mineru_enabled: bool = False
+    mineru_api_url: str = ""
+    mineru_timeout_s: float = 600.0
+    mineru_concurrency: int = 1
+    # Images in this list go to MinerU; a PDF goes there only when docreader
+    # finds fewer than mineru_scanned_chars_per_page characters per page.
+    mineru_file_types: str = "pdf,png,jpg,jpeg,bmp,tif,tiff,webp,gif"
+    mineru_scanned_chars_per_page: int = 50
+    mineru_backend: str = "pipeline"
+
+    # Speech to text through an OpenAI-compatible /audio/transcriptions endpoint.
+    asr_enabled: bool = False
+    asr_api_url: str = ""
+    asr_api_key: str = ""
+    asr_model: str = "whisper-1"
+    asr_timeout_s: float = 900.0
+    asr_concurrency: int = 1
+
 
 @lru_cache
 def get_settings() -> Settings:
