@@ -18,7 +18,7 @@ runInThisContext(`(function(module, exports, require) { ${compiled.code}\n})`)(
 );
 const QuestionCard = componentModule.exports.default;
 
-// 合成题目与回答，仅验证当前卡片展示，不推断历史选中状态。
+// 合成题目与回答，以重新挂载组件验证历史回显，不从答案字符串推断勾选。
 const questions = [
   { question: '合成单选', options: [{ label: '方案一' }, { label: '方案二' }] },
   { question: '合成文字一', options: [{ label: '占位示例' }] },
@@ -208,4 +208,90 @@ test('非失效错误保留可编辑答案并允许手动重试，成功后展�
   assert.ok(h.find(done, (node) => node.props?.className === 'question-answer' && node.props.children === '合成回答甲'));
   assert.ok(h.find(done, (node) => node.props?.role === 'status' && node.props.children.includes('已答复')));
   assert.equal(attempts, 2);
+});
+
+test('历史多选卡重新挂载后恢复两项选择，未选项仍未选，所有选项只读', () => {
+  const html = render({
+    req: { request_id: 'request_multiselect', tool_input: { questions: [{
+      question: '合成多选', multiSelect: true,
+      options: [{ label: '甲,乙' }, { label: '方案二' }, { label: '方案三' }],
+    }] } },
+    resolved: true,
+    resolution: {
+      behavior: 'allow', answers: { 合成多选: '甲,乙,方案二,人工合成补充' },
+      answer_details: { 合成多选: { selected_options: ['甲,乙', '方案二'], custom_text: '人工合成补充' } },
+    },
+  });
+  const options = [...html.matchAll(/<button\b[^>]*class="question-option[^>]*>/g)].map(([tag]) => tag);
+  assert.equal(options.length, 3);
+  assert.ok(options.every((tag) => tag.includes('disabled=""')));
+  assert.match(options[0], /aria-pressed="true"/);
+  assert.match(options[1], /aria-pressed="true"/);
+  assert.match(options[2], /aria-pressed="false"/);
+  assert.match(html, /甲,乙,方案二,人工合成补充/);
+  assert.doesNotMatch(html, /未保存选项状态|<textarea|type="submit"/);
+});
+
+test('历史单选恢复实际所选项，不默认首项；纯文字内容相同也不伪造勾选', () => {
+  const single = render({
+    resolved: true,
+    resolution: {
+      behavior: 'allow',
+      answers: { 合成单选: '方案二', 合成文字一: '人工合成回答一', 合成文字二: '人工合成回答二' },
+      answer_details: {
+        合成单选: { selected_options: ['方案二'], custom_text: '' },
+        合成文字一: { selected_options: [], custom_text: '人工合成回答一' },
+        合成文字二: { selected_options: [], custom_text: '人工合成回答二' },
+      },
+    },
+  });
+  assert.equal([...single.matchAll(/aria-pressed="true"/g)].length, 1);
+  const options = [...single.matchAll(/<button\b[^>]*class="question-option[^>]*>/g)].map(([tag]) => tag);
+  assert.match(options[0], /aria-pressed="false"/);
+  assert.match(options[1], /aria-pressed="true"/);
+
+  const custom = render({
+    resolved: true,
+    resolution: {
+      behavior: 'allow', answers: { 合成单选: '方案二' },
+      answer_details: { 合成单选: { selected_options: [], custom_text: '方案二' } },
+    },
+  });
+  assert.doesNotMatch(custom, /aria-pressed="true"/);
+  assert.match(custom, /class="question-answer">方案二/);
+});
+
+test('旧字符串答案、取消和失效记录不猜测历史选择', () => {
+  const legacy = render({ resolved: true, resolution: { behavior: 'allow', answers: { 合成单选: '方案二' } } });
+  assert.match(legacy, /此历史记录未保存选项状态/);
+  assert.match(legacy, /class="question-answer">方案二/);
+  assert.doesNotMatch(legacy, /aria-pressed="true"/);
+  for (const [behavior, expected] of [['deny', '已取消'], ['expired', '该问题已失效']]) {
+    const html = render({ resolved: true, resolution: { behavior } });
+    assert.ok(html.includes(expected));
+    assert.doesNotMatch(html, /aria-pressed="true"/);
+  }
+});
+
+test('成功提交的本地回显保留选择结构，后续有效历史答复优先于本地结果', async () => {
+  let sent;
+  const h = interactiveHarness(async (id, answers, details) => {
+    sent = { id, answers, details };
+  });
+  h.fill();
+  await h.draw().props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(sent.details, {
+    合成单选: { selected_options: ['合成选项'], custom_text: '' },
+    合成文字甲: { selected_options: [], custom_text: '合成回答甲' },
+    合成文字乙: { selected_options: [], custom_text: '合成回答乙' },
+  });
+  const option = (tree) => h.find(tree, (node) => node.type === 'button' && node.props?.className?.startsWith('question-option'));
+  assert.equal(option(h.draw()).props['aria-pressed'], true);
+  assert.equal(option(h.draw()).props.disabled, true);
+  // 同名自由文字与选项是不同的选择结构；以服务端已接受事件为准。
+  h.props.resolved = true;
+  h.props.resolution = { behavior: 'allow', answers: sent.answers, answer_details: {
+    ...sent.details, 合成单选: { selected_options: [], custom_text: '合成选项' },
+  } };
+  assert.equal(option(h.draw()).props['aria-pressed'], false);
 });
