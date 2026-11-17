@@ -233,18 +233,20 @@ def _validate_answer_details(questions: list[dict], answers: dict, details: dict
         options = question.get("options") or []
         if (
             not isinstance(choices, list)
-            or any(not isinstance(label, str) for label in choices)
             or not isinstance(text, str)
             or not isinstance(options, list)
         ):
+            raise SessionError("答案回显信息格式错误", 400)
+        if any(not isinstance(label, str) for label in choices):
             raise SessionError("答案回显信息格式错误", 400)
         labels = {option["label"] for option in options
                   if isinstance(option, dict) and isinstance(option.get("label"), str)}
         text = text.strip()
         if len(set(choices)) != len(choices) or any(label not in labels for label in choices):
             raise SessionError("答案包含无效选项", 400)
-        if not question.get("multiSelect") and (len(choices) > 1 or (choices and text)):
-            raise SessionError("单选答案只能选择一个选项或填写文字", 400)
+        if not question.get("multiSelect"):
+            if len(choices) > 1 or (choices and text):
+                raise SessionError("单选答案只能选择一个选项或填写文字", 400)
         answer = ",".join([*choices, *([text] if text else [])])
         if not answer or answer != answers[key]:
             raise SessionError("答案与回显信息不一致", 400)
