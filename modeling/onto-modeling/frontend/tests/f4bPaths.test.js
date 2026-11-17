@@ -44,14 +44,15 @@ test('出处标签：只说资料名，文本版映射回原资料名；解析�
   assert.equal(resolutionLabel({ resolved: true, scheme: 'file', source_label: '旧.docx', material: { name: '04-合成手册' }, location_label: '第 3 页' }), '04 合成手册 第 3 页');
 });
 
-test('版本页：改动表认不出的合成一行；文件抽屉按业务类型分组、按业务名列，不出目录和文件名', async () => {
-  const { changeRows, fileGroups, pathLabel, targetLabel } = await import('../src/pages/versions/versionsModel.js');
-  const rows = changeRows([
+test('版本页：改动表认不出的文件只计数；文件抽屉按业务类型分组、按业务名列，不出目录和文件名', async () => {
+  const { fileGroups, knownChanges, otherChanges, pathLabel, targetLabel } = await import('../src/pages/versions/versionsModel.js');
+  const changes = [
     { target: { kind: 'object', name: '门店', label: '对象「门店」' }, change: 'mod' },
     { target: { type: 'file', key: 'notes/a.txt', title: '', label: '' }, change: 'add' },
     { target: { type: 'file', key: 'notes/b.txt', title: '', label: '' }, change: 'add' },
-  ]);
-  assert.deepEqual(rows.map((r) => targetLabel(r.target)), ['对象「门店」', '另有 2 处改动']);
+  ];
+  assert.deepEqual(knownChanges(changes).map((c) => targetLabel(c.target)), ['对象「门店」']);
+  assert.equal(otherChanges(changes), 2);
   assert.equal(pathLabel('resource/others/02-合同.pdf'), '资料「02-合同」');
   assert.equal(pathLabel('notes/草稿.md'), '其他文件');
   const groups = fileGroups([

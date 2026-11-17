@@ -1,17 +1,50 @@
-/* 发布知识包（publish）：设计稿 mr-* 之外产品补的样式 */
+/* 发布知识包（publish）：一栏三块——发布卡、需要处理、已发布版本 */
+.pb-page{max-width:1120px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
 .pb-menu{position:fixed;z-index:60;max-height:300px;overflow:auto}
 .pb-menu .mi .mono{font-size:12px}
-.pb-sel~.menu{max-height:300px;overflow:auto;min-width:120px}
-.pb-link{cursor:pointer}
+.pb-sel~.menu{max-height:300px;overflow:auto;min-width:140px}
+.pb-link{cursor:pointer;color:var(--ink2)}
 .pb-link:hover{color:var(--blue);text-decoration:underline}
+
+/* 发布卡：一句结论 + 发布按钮，下面一行检查项 */
+.pb-hero{padding:18px 20px}
+.pb-hero-top{display:flex;align-items:center;gap:12px}
+.pb-verdict-i{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;flex:none;background:var(--panel2);color:var(--ink3)}
+.pb-hero.ok .pb-verdict-i{background:var(--t50);color:var(--teal)}
+.pb-hero.bad .pb-verdict-i{background:var(--r50);color:var(--red)}
+.pb-hero.warn .pb-verdict-i{background:var(--a50);color:var(--amber2)}
+.pb-verdict{font-size:18px;font-weight:700;color:var(--ink);line-height:1.3}
+.pb-gates{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.pb-gate{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 9px;border-radius:7px;font-size:12px;font-weight:600}
+.pb-gate.ok{background:var(--t50);color:var(--teal)}
+.pb-gate.warn{background:var(--a50);color:var(--amber);cursor:pointer}
+.pb-gate.bad{background:var(--r50);color:var(--red);cursor:pointer}
+.pb-format{margin-left:4px}
+.pb-line{margin-top:10px;color:var(--amber)}
+.pb-hints{margin-top:8px;padding:8px 10px;background:var(--panel2);border-radius:8px;display:flex;flex-direction:column;gap:4px;max-height:180px;overflow:auto}
+
+/* 需要处理：每个检查项一张卡，标题说问题，正文按对象列，底部动作 */
+.pb-problems{display:flex;flex-direction:column;gap:12px}
+.pb-sec{padding:14px 16px;scroll-margin-top:12px}
+.pb-sec.bad{border-color:var(--r100)}
+.pb-sec.warn{border-color:var(--a100)}
+.pb-sec-h{display:flex;gap:10px;align-items:flex-start}
+.pb-mark{width:24px;height:24px;border-radius:7px;display:grid;place-items:center;flex:none;margin-top:1px;background:var(--t50);color:var(--teal)}
+.pb-sec.bad .pb-mark{background:var(--r50);color:var(--red)}
+.pb-sec.warn .pb-mark{background:var(--a50);color:var(--amber2)}
+.pb-sec-t{font-weight:650;font-size:13.5px;margin-bottom:2px}
+.pb-sec-d{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all}
+.pb-sec-b{margin:8px 0 0 34px}
+.pb-sec-f{margin:12px 0 0 34px}
+.pb-row{padding:8px 0;border-top:1px dashed var(--line)}
+.pb-row:first-child{border-top:none}
+.pb-obj{flex:none;min-width:96px}
+.pb-more{color:var(--blue);cursor:pointer;padding:6px 0 0}
+.pb-fold{padding-top:8px}
+.pb-fold>.row{cursor:pointer;color:var(--ink2)}
+
+/* 包清单抽屉 */
 .pb-files{border:1px solid var(--line);border-radius:10px;padding:6px 10px;max-height:300px;overflow:auto}
 .pb-files .row{padding:4px 0;border-bottom:1px dashed var(--line)}
 .pb-files .row:last-child{border-bottom:none}
 .pb-pre{font-family:var(--mono);font-size:12px;line-height:1.7;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px;margin:8px 0 0}
-
-/* 发布检查（develop PublishCheckDialog 的分段，ADR-0098） */
-.pcd .pcd-summary{gap:6px 12px}
-.pcd .pcd-section{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
-.pcd .pcd-issue{padding:10px 0;border-bottom:1px dashed var(--line)}
-.pcd .pcd-issue:last-child{border-bottom:none}
-.pcd .pcd-fold{padding-top:6px}

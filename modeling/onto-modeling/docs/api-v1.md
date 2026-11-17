@@ -518,7 +518,8 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
   - `solver_contract_invalid`、`solver_contract_version_incompatible`、`solver_contract_reference_missing`、`solver_context_missing`、`solver_runtime_binding_forbidden`；
   - `solver_receipt_required`、`solver_receipt_stale`、`solver_receipt_failed`（旧码 `solver_contract_validation_required/_stale/_failed`）；
 - 脚本：`script_binding_conflict`、`script_argument_shape`；
-- 对象关系：`relation_structure_invalid`（缺端点、完整字段对重复、显式关联字段不在两端属性清单里；发布时同码 422）；
+- 对象关系：`relation_structure_invalid`（缺端点、显式关联字段不在两端属性清单里；发布时同码 422）。发布检查每个问题一条
+  Finding，带 `path`（对象文档）、`line`、`target`（对象），`message` 不含位置；两端各写一次的同一条关系归并，不算重复；
 - 发布树：`release_tree_unsafe`、`release_tree_mismatch`；
 - 证据：`anchor_missing`（ERROR）、`property_unevidenced`（WARNING）；
 - 流程关卡：`node_blocked`（`details.node_id`）；
@@ -3220,7 +3221,7 @@ ADR-0098：端到端验证在发布后的独立评测里做，onto 不再收回�
   | `version_label` | string | — |
   | `package_name` | string | — |
   | `format` | string | `ontology\|solver`：自动判定 |
-  | `gates` | `GateResult[]` | 按顺序：建模阶段（四个必经阶段没做完时才出现，`id=modeling_stages`，挡发布、不能降级，带 `missing_stages`）、数据绑定、求解契约（静态检查；`requires_acknowledgement` 为 true 时发布要确认未验证；当前修订已在评测服务通过求解验证的为 false 并带 `verified_revision`，要统一账号登录才判定）、知识包结构（含 consumer 导入规则）、包声明的门禁（如合规检查）、证据出处检查、流程关卡 |
+  | `gates` | `GateResult[]` | 按顺序：建模阶段（四个必经阶段没做完时才出现，`id=modeling_stages`，挡发布、不能降级，带 `missing_stages`）、数据绑定（没有问题、但有对象既没绑表也没声明不落库时 `status=warn`，summary「N 个对象没有绑定数据表，数据问答查不到它们」，不挡发布）、求解契约（静态检查；`requires_acknowledgement` 为 true 时发布要确认未验证；当前修订已在评测服务通过求解验证的为 false 并带 `verified_revision`，要统一账号登录才判定）、知识包结构（含 consumer 导入规则）、包声明的门禁（如合规检查）、证据出处检查、流程关卡 |
   | `solver_revision` | string | 求解契约修订（没有求解契约时为空） |
   | `solver` | object | develop 发布检查同名字段：`{enabled, revision, operations, findings, blocking, requires_validation_after_publish, truncated, verified_release?}`；没有求解契约时 `{enabled: false}`；当前修订已通过求解验证时 `requires_validation_after_publish=false` 并带 `verified_release: {release_id, version}`（要统一账号登录才判定） |
   | `structure` | object | consumer 导入规则的结构自检：`{blocking, findings: [{code, message, level}], truncated, skipped}`；求解契约有问题或渲染失败时 `skipped` 说明跳过的原因 |

@@ -29,13 +29,24 @@ def render_findings(src: ReleaseSource) -> list[dict]:
             if exc.code.startswith("solver_"):
                 return []  # 求解契约问题由求解门禁报
             code = exc.code if exc.code in _RENDER_CODES else "package_render_failed"
+            problems = (exc.details or {}).get("problems") if code == "relation_structure_invalid" else None
+            if problems:
+                # 关系结构逐条：哪个对象、第几行、什么问题（界面按对象列，路径只用来打开文档）
+                return [{
+                    "code": code, "level": "error", "message": item["message"], "path": item["path"],
+                    "line": item.get("line"),
+                    "target": {"kind": "object", "id": f"object:{item['object']}",
+                               "key": item["object"], "name": item["object"]},
+                } for item in problems]
             return [{"code": code, "level": "error", "message": str(exc)}]
     return []
 
 
-def _binding_gate(issues: list[dict]) -> dict:
+def _binding_gate(issues: list[dict], objects: dict | None = None) -> dict:
     blocking = [item for item in issues if item["blocking"]]
     warnings = [item for item in issues if not item["blocking"]]
+    # 没绑表、也没声明不落库的对象（数据问答查不到它们）：不挡发布，但不能说成「都已绑定」
+    unbound = [key for key, item in (objects or {}).items() if not item["table"] and not item.get("declared_none")]
     findings = [
         {
             "code": item["kind"],
@@ -50,6 +61,8 @@ def _binding_gate(issues: list[dict]) -> dict:
         status, summary = "fail", f"{len(blocking)} 个对象和数据表对不上"
     elif warnings:
         status, summary = "warn", f"{len(warnings)} 个对象的来源表无从核对，暂不绑定"
+    elif unbound:
+        status, summary = "warn", f"{len(unbound)} 个对象没有绑定数据表，数据问答查不到它们"
     else:
         status, summary = "pass", "对象都已绑定数据表或声明不落库"
     return {
@@ -76,11 +89,23 @@ def _solver_gate(solver: dict) -> dict | None:
     }
 
 
+def _structure_summary(findings: list[dict]) -> str:
+    if not findings:
+        return "脚本绑定、入参形态、文档元数据与 consumer 导入规则都通过"
+    first = findings[0]
+    name = (first.get("target") or {}).get("name")
+    if len(findings) == 1:
+        return f"「{name}」{first['message']}" if name else first["message"]
+    if all(item.get("code") == "relation_structure_invalid" for item in findings):
+        return f"{len(findings)} 处对象关系写法有误，consumer 导入会拒绝"
+    return f"{len(findings)} 个问题，consumer 导入会拒绝"
+
+
 def _structure_gate(findings: list[dict], order: int) -> dict:
     return {
         "id": "package_structure", "order": order, "title": "知识包结构", "source": _PLATFORM,
         "status": "fail" if findings else "pass",
-        "summary": findings[0]["message"] if findings else "脚本绑定、入参形态、文档元数据与 consumer 导入规则都通过",
+        "summary": _structure_summary(findings),
         "blocking": bool(findings), "degradable": False, "findings": findings, "action": None,
     }
 
@@ -101,10 +126,10 @@ def _stages_gate(stages: dict | None) -> dict | None:
 
 
 def gate_chain(issues: list[dict], solver: dict, structure: list[dict], tree_error: dict | None = None,
-               packs: list[dict] | None = None, stages: dict | None = None) -> list[dict]:
+               packs: list[dict] | None = None, stages: dict | None = None, objects: dict | None = None) -> list[dict]:
     stage_gate = _stages_gate(stages)
     chain = [stage_gate] if stage_gate else []
-    chain.append({**_binding_gate(issues), "order": len(chain) + 1})
+    chain.append({**_binding_gate(issues, objects), "order": len(chain) + 1})
     solver_gate = _solver_gate(solver)
     if solver_gate:
         chain.append({**solver_gate, "order": len(chain) + 1})

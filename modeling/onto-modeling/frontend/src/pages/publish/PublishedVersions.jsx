@@ -1,15 +1,19 @@
-// 已发布版本（develop PublishedVersionsDialog 的元素与文字，ADR-0098）：当前用户在知识包 Hub 上能看到的、这个项目所在包的
-// 全部版本（HB-05，含别人发布到同一个包的），每页 10 条。评测、求解验证、用户反馈三格与「发起评测」用评测对接的组件，
-// 「知识包版本对比」「与其他版本对比」挂版本对比的抽屉，「下载」走 HB-06。发布成功后自动打开。
+// 发布页「已发布版本」：一张表合并原来的发布记录（PB-04，本地：降级、包清单、图模式变体）与已发布版本（HB-05，
+// develop PublishedVersionsDialog，ADR-0098：Hub 上这个项目所在包的全部版本，含别人发布到同一个包的，每页 10 条）。
+// 评测、求解验证、用户反馈三格与「发起评测」用评测对接的组件；「对比」挂版本对比抽屉；下载标准包走 HB-06，
+// 图模式变体与包清单走本地留存（PB-06、PB-07）。Hub 读不到时退回本地记录。共享用户数与「知识包版本对比」在表头。
 import { useEffect, useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
-import { Button, Chip, Modal, Note } from '../../ui/index.jsx';
+import { Button, Chip, Icon, Menu, Note } from '../../ui/index.jsx';
 import {
   EvaluationCell, EvaluationNotices, FeedbackCell, SolverValidationCell, StartEvaluation,
 } from '../evaluation/ReleaseEvaluation.jsx';
-import { EVALUATION_HINT, RESOURCES_NOTE, VERSIONS_PAGE, versionMeta, versionsTitle } from './publishCheckModel.js';
+import { usePopMenu } from '../versions/popMenu.js';
+import { fmtStamp } from '../versions/versionsModel.js';
+import { VERSIONS_PAGE, localReleaseRows, releaseRows, releaseSource } from './publishCheckModel.js';
+import { releaseGate } from './publishModel.js';
 
 function Pager({ page, total, onPage }) {
   const pages = Math.max(1, Math.ceil(total / VERSIONS_PAGE));
@@ -23,7 +27,27 @@ function Pager({ page, total, onPage }) {
   );
 }
 
-export default function PublishedVersions({ open, projectId, projectName = '', ev, onClose, onCompare }) {
+// 下载与包清单：标准包走 Hub；图模式变体与包清单只有本地留存的才有
+function DownloadMenu({ row, busy, onHub, onLocal, onManifest }) {
+  const menu = usePopMenu({ width: 170, height: 130 });
+  const items = [
+    { label: '下载标准包', icon: 'download', disabled: busy, onClick: () => (row.release_id ? onHub(row) : onLocal(row.local, 'standard')) },
+    ...(row.local ? [
+      { label: '下载图模式包', icon: 'graph', onClick: () => onLocal(row.local, 'graph') },
+      { label: '查看包清单', icon: 'list', onClick: () => onManifest(row.local) },
+    ] : []),
+  ];
+  return (
+    <span ref={menu.ref}>
+      <span className="pb-link xs row g4" role="button" onClick={menu.toggle}>{busy ? '下载中…' : '下载'}<Icon name="chevd" size={12} /></span>
+      {menu.at ? <Menu className="pb-menu" style={menu.at} items={items} onPick={menu.close} /> : null}
+    </span>
+  );
+}
+
+export default function PublishedVersions({
+  projectId, projectName = '', ev, records, refreshKey, sharing, onCompare, onManifest, onDownloadLocal,
+}) {
   const { api, services } = useApp();
   const [page, setPage] = useState(1);
   const [data, setData] = useState({ releases: [], total: 0 });
@@ -31,11 +55,10 @@ export default function PublishedVersions({ open, projectId, projectName = '', e
   const [error, setError] = useState('');
   const [revision, setRevision] = useState(0);
   const [downloading, setDownloading] = useState('');
-  const [resources, setResources] = useState(null);
 
-  useEffect(() => { setPage(1); setData({ releases: [], total: 0 }); setResources(null); }, [projectId]);
+  useEffect(() => { setPage(1); setData({ releases: [], total: 0 }); }, [projectId]);
   useEffect(() => {
-    if (!open || !projectId) return undefined;
+    if (!projectId) return undefined;
     let active = true;
     setLoading(true);
     setError('');
@@ -43,13 +66,10 @@ export default function PublishedVersions({ open, projectId, projectName = '', e
       .then((result) => { if (active) setData({ releases: result.releases || result.items || [], total: result.total || 0 }); })
       .catch((e) => { if (active) setError(errorText(e)); })
       .finally(() => { if (active) setLoading(false); });
-    api.projectHubResourcesStatus(projectId)
-      .then((result) => { if (active) setResources(result); })
-      .catch(() => { if (active) setResources({ pending: true }); });
     return () => { active = false; };
-  }, [api, open, projectId, page, revision]);
+  }, [api, projectId, page, revision, refreshKey]);
 
-  const download = async (row) => {
+  const downloadHub = async (row) => {
     setDownloading(row.release_id);
     try {
       await services.download(
@@ -62,67 +82,81 @@ export default function PublishedVersions({ open, projectId, projectName = '', e
       setDownloading('');
     }
   };
-  const rows = data.releases;
-  const solver = ev?.hasSolver(rows);
-  const feedback = !!ev?.hasFeedback;
+  // Hub 读不到时退回本地记录（还能下载、看清单，评测要等 Hub 恢复）
+  const offline = !!error;
+  const rows = offline ? localReleaseRows(records) : releaseRows(data.releases, records);
+  const total = offline ? rows.length : data.total;
+  const solver = !offline && ev?.hasSolver(rows);
+  const feedback = !offline && !!ev?.hasFeedback;
+  const cols = 3 + (solver ? 1 : 0) + (feedback ? 1 : 0);
 
   return (
-    <Modal open={open} onClose={onClose} icon="history" title={versionsTitle(data, projectName)} w={980}
-      foot={<><span className="sp" /><Button onClick={onClose}>关闭</Button></>}>
-      <div className="row g12 mb12">
-        <span className="grow sm muted">共 {data.total} 个版本。{EVALUATION_HINT}</span>
-        <Button kind="primary" size="sm" onClick={() => onCompare(null)}>知识包版本对比</Button>
+    <section id="pb-releases" className="card pb-releases">
+      <div className="card-h">
+        <span style={{ color: 'var(--blue)' }}><Icon name="history" /></span>
+        <h3>已发布版本</h3>
+        {total ? <span className="xs muted">{total} 个</span> : null}
+        <span className="sp" />
+        {sharing}
+        <Button size="sm" icon="split" disabled={!total} onClick={() => onCompare({})}>版本对比</Button>
       </div>
-      {resources?.pending ? <Note tone="amber" className="mb8">共享资料状态暂不可用</Note> : null}
-      {ev ? <EvaluationNotices ev={ev} /> : null}
-      {error ? (
-        <Note tone="red" className="mb8">
-          <span className="row"><span className="grow">{error}</span><Button size="xs" kind="ghost" onClick={() => setRevision((n) => n + 1)}>重试</Button></span>
-        </Note>
-      ) : (
-        <div className="tbl-wrap">
-          <table className="tbl compact">
-            <thead>
-              <tr>
-                <th style={{ width: 270 }}>版本</th>
-                <th>评测</th>
-                {solver ? <th>求解验证</th> : null}
-                {feedback ? <th>用户反馈</th> : null}
-                <th style={{ width: 220 }}>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading && !rows.length ? (
-                <tr><td colSpan={5} className="sm muted">正在读取…</td></tr>
-              ) : null}
-              {!loading && !rows.length ? (
-                <tr><td colSpan={5} className="sm muted" style={{ textAlign: 'center', padding: 24 }}>暂无已发布版本</td></tr>
-              ) : null}
-              {rows.map((row, i) => (
-                <tr key={row.release_id}>
-                  <td>
-                    <span className="row g6"><b>{row.version}</b>{page === 1 && i === 0 ? <Chip sm tone="blue">最新</Chip> : null}</span>
-                    <div className="xs muted" style={{ whiteSpace: 'nowrap' }}>{versionMeta(row)}</div>
-                  </td>
-                  <td>{ev ? <EvaluationCell ev={ev} release={row} /> : null}</td>
-                  {solver ? <td><SolverValidationCell ev={ev} release={row} /></td> : null}
-                  {feedback ? <td><FeedbackCell ev={ev} release={row} /></td> : null}
-                  <td>
-                    <span className="row g12">
-                      <span className="xs pb-link" role="button" onClick={() => onCompare({ releaseId: row.release_id, version: row.version })}>与其他版本对比</span>
-                      {ev ? <StartEvaluation ev={ev} release={row} /> : null}
-                      <span className="xs pb-link" role="button" title="下载这个版本的知识包，不会生成新版本"
-                        onClick={() => downloading !== row.release_id && download(row)}>{downloading === row.release_id ? '下载中…' : '下载'}</span>
-                    </span>
-                  </td>
+      <div className="card-b">
+        {offline ? (
+          <Note tone="amber" className="mb8">
+            <span className="row"><span className="grow">知识包 Hub 暂时读不到，先列本机的发布记录：{error}</span>
+              <Button size="xs" kind="ghost" onClick={() => setRevision((n) => n + 1)}>重试</Button></span>
+          </Note>
+        ) : null}
+        {ev && !offline ? <EvaluationNotices ev={ev} /> : null}
+        {!rows.length ? (
+          <div className="sm muted">{loading ? '正在读取…' : '还没有发布过'}</div>
+        ) : (
+          <div className="tbl-wrap">
+            <table className="tbl compact">
+              <thead>
+                <tr>
+                  <th style={{ width: 230 }}>版本</th>
+                  {offline ? null : <th>评测</th>}
+                  {solver ? <th>求解验证</th> : null}
+                  {feedback ? <th>用户反馈</th> : null}
+                  <th style={{ width: 210 }} />
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <Pager page={page} total={data.total} onPage={setPage} />
-      <div className="xs muted mt12">{RESOURCES_NOTE}</div>
-    </Modal>
+              </thead>
+              <tbody>
+                {rows.map((row, i) => {
+                  const gate = row.local ? releaseGate(row.local) : null;
+                  const meta = [row.created_at ? fmtStamp(row.created_at) : '', releaseSource(row), row.local?.version_label ? `来自 ${row.local.version_label}` : '']
+                    .filter(Boolean).join(' · ');
+                  return (
+                    <tr key={row.release_id || row.version}>
+                      <td>
+                        <span className="row g6">
+                          <b>{row.version}</b>
+                          {page === 1 && i === 0 ? <Chip sm tone="blue">最新</Chip> : null}
+                          {gate?.chip[0] === '降级发布' ? <Chip sm tone="amber" title={gate.note || undefined}>降级发布</Chip> : null}
+                        </span>
+                        <div className="xs muted" style={{ whiteSpace: 'nowrap' }}>{meta}</div>
+                      </td>
+                      {offline ? null : <td>{ev ? <EvaluationCell ev={ev} release={row} /> : null}</td>}
+                      {solver ? <td><SolverValidationCell ev={ev} release={row} /></td> : null}
+                      {feedback ? <td><FeedbackCell ev={ev} release={row} /></td> : null}
+                      <td>
+                        <span className="row g12" style={{ justifyContent: 'flex-end' }}>
+                          {ev && !offline ? <StartEvaluation ev={ev} release={row} /> : null}
+                          {!offline ? <span className="pb-link xs" role="button" onClick={() => onCompare({ releaseId: row.release_id, version: row.version })}>对比</span> : null}
+                          <DownloadMenu row={row} busy={downloading === row.release_id} onHub={downloadHub} onLocal={onDownloadLocal} onManifest={onManifest} />
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {loading && !rows.length ? <tr><td colSpan={cols} className="sm muted">正在读取…</td></tr> : null}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {!offline ? <Pager page={page} total={total} onPage={setPage} /> : null}
+      </div>
+    </section>
   );
 }

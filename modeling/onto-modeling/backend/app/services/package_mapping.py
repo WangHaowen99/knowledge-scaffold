@@ -467,6 +467,7 @@ def resolve_object_tables(
             "missing_columns": missing,
             "primary_key": [f["key"] for f in matched if f["primary"]],
             "declared_table": declared,
+            "declared_none": parsed["declared_none"],
         }
         if found and table:
             objects[key]["source_anchor"] = declared
@@ -879,11 +880,20 @@ def _resolved_relation_fields(item: dict, source: str, target: str, fields: dict
 
 def package_relations(
     object_texts: dict[str, str], *, allow_self_relations: bool = True,
-    reject_duplicate_relations: bool = False, strict_fields: bool = False,
+    reject_duplicate_relations: bool = False, strict_fields: bool = False, details: list[dict] | None = None,
 ) -> tuple[dict[str, list], list[str]]:
-    """检查包内关系结构；严格模式拒绝规范化后的重复声明，默认归并双端声明。"""
+    """检查包内关系结构；严格模式拒绝规范化后的重复声明，默认归并双端声明。
+
+    details 给了就逐条追加结构化问题 {object, path, line, message}（message 不带位置），供发布检查按对象列出。
+    """
     relations: dict[str, list] = {}
     problems: list[str] = []
+
+    def report(key: str, line: int | None, text: str) -> None:
+        path = f"ontology/object/{key}.md"
+        problems.append(f"{path} 第 {line} 行：{text}" if line else f"{path} {text}")
+        if details is not None:
+            details.append({"object": key, "path": path, "line": line, "message": text})
     seen: dict[tuple, dict] = {}
     first_declarations: dict[tuple, str] = {}
     objects_by_identity = {_relation_identity(key): key for key in object_texts}
@@ -891,27 +901,27 @@ def package_relations(
     for key, text in object_texts.items():
         diagnostics: list[str] = []
         items = parse_relation_definitions(text, diagnostics)
-        path = f"ontology/object/{key}.md"
-        problems.extend(f"{path} {problem}" for problem in diagnostics)
+        for problem in diagnostics:
+            report(key, None, problem)
         for item in items:
             source_id = _relation_identity(key if item["source"] == CURRENT_OBJECT else _endpoint(item["source"], object_texts))
             target_id = _relation_identity(key if item["target"] == CURRENT_OBJECT else _endpoint(item["target"], object_texts))
-            label = f"{path} 第 {item['line']} 行"
+            line = item["line"]
             missing = sorted({source_id, target_id} - objects_by_identity.keys())
             if missing:
-                problems.append(f"{label}：关系端点「{'、'.join(missing)}」不存在")
+                report(key, line, f"关系端点「{'、'.join(missing)}」不存在")
                 continue
             if _relation_identity(key) not in (source_id, target_id):
-                problems.append(f"{label}：关系两端不包含当前对象")
+                report(key, line, "关系两端不包含当前对象")
                 continue
             if not allow_self_relations and source_id == target_id:
-                problems.append(f"{label}：不允许自关联「{item['relation']}」")
+                report(key, line, f"不允许自关联「{item['relation']}」")
                 continue
             source, target = objects_by_identity[source_id], objects_by_identity[target_id]
             relation = {field: value for field, value in item.items() if field not in ("line", "source")}
             relation["target"] = target
             if not valid_relation_type(item["relation"]):
-                problems.append(f"{label}：关系名包含不安全字符或超过长度限制")
+                report(key, line, "关系名包含不安全字符或超过长度限制")
                 continue
             try:
                 source_join, target_join = _resolved_relation_fields(item, source, target, fields, names)
@@ -919,18 +929,16 @@ def package_relations(
                     if source_join not in fields[source] or target_join not in fields[target]:
                         raise ValueError("显式关联字段必须存在于两端对象的属性清单")
             except ValueError as exc:
-                problems.append(f"{label}：{exc}")
+                report(key, line, str(exc))
                 continue
             if source_join and target_join:
                 relation.update(sourceJoinProperty=source_join, targetJoinProperty=target_join)
             triple = (source_id, _relation_identity(item["relation"]), target_id, source_join, target_join)
             if triple in seen:
                 if reject_duplicate_relations:
-                    problems.append(
-                        f"{label}：重复关系「{source} -{item['relation']}→ {target}」；"
-                        f"关联字段：{_join_text(relation)}；"
-                        f"首次声明于 {first_declarations[triple]}"
-                    )
+                    report(key, line, f"重复关系「{source} -{item['relation']}→ {target}」；"
+                                      f"关联字段：{_join_text(relation)}；"
+                                      f"首次声明于 {first_declarations[triple]}")
                     continue
                 previous = seen[triple]
                 for field in ("note", "evidence"):
@@ -938,7 +946,7 @@ def package_relations(
                         previous[field] = relation[field]
                 continue
             seen[triple] = relation
-            first_declarations[triple] = label
+            first_declarations[triple] = f"ontology/object/{key}.md 第 {line} 行"
             relations.setdefault(source, []).append(relation)
     return relations, problems
 

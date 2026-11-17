@@ -20,3 +20,12 @@
 .mr-vr.vr-release{cursor:default}
 .mr-vr.vr-release:hover{background:transparent}
 .mr-vr.vr-release .dot{border-color:var(--indigo);background:var(--indigo)}
+/* 时间线一行：说明只占一行，全文在悬停 */
+.vr-sum{margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mr-vr .row .btn.icon{margin:-4px -6px -4px 0}
+/* 选中版本的详情：标题行 + 操作，下面「改了什么」 */
+.vr-detail{padding:16px 18px}
+.vr-dh{display:flex;gap:12px;align-items:flex-start}
+.vr-dh h3{margin:0;font-size:16px}
+.vr-changes{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.vr-changes .tbl td{vertical-align:middle}

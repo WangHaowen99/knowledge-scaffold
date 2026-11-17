@@ -44,13 +44,6 @@ export function entryPath(ref) {
   return ref.kind === 'script' ? `scripts/${ref.name}` : `ontology/${ref.kind}/${ref.name}.md`;
 }
 
-// 改动表（V-02）：认不出的文件（后端 label 为空）合成最后一行「另有 N 处改动」，不出文件名（F4b-paths）
-export function changeRows(changes = []) {
-  const known = changes.filter((c) => c.target?.label !== '');
-  const n = changes.length - known.length;
-  return n ? [...known, { target: { label: `另有 ${n} 处改动` }, change: '', detail: '', review: null, more: true }] : known;
-}
-
 // 路径的说法：ontology/object/陈列量标准.md → 对象「陈列量标准」；资料按资料名，蓝图、资料分析报告按固定叫法；
 // 认不出的不出文件名（F4b-paths）
 export function pathLabel(path) {
@@ -125,7 +118,34 @@ export function compareFromOf(selected, items) {
   return byNewest(items).find((v) => v.n < selected.n) || selected;
 }
 
-export const rangeOptions = (items) => byNewest(items).map((v) => ({ value: v.commit, label: `迭代 ${v.n} → 当前` }));
+// 某个版本的上一版（first-parent 顺序里紧挨着的旧版本）；第一版没有
+export const previousOf = (v, items) => (v ? byNewest(items).find((x) => x.n < v.n) || null : null);
+// 选中一个版本时对比什么：看这一版改了什么（上一版 → 这一版；这一版是当前时右侧是可编辑的当前文件）
+export function selfRange(v, items) {
+  const prev = previousOf(v, items);
+  return { from: prev?.commit || null, to: v.current ? 'WORKTREE' : v.commit };
+}
+// 详情里「对比」的范围下拉：这一版改了什么 / 这一版到现在又变了什么；跳转带来的其他范围原样列一项
+export function rangeChoices(v, items, cmp) {
+  if (!v) return [];
+  const prev = previousOf(v, items);
+  const name = (x) => (x ? `迭代 ${x.n}` : '');
+  const self = selfRange(v, items);
+  const out = [];
+  if (prev) out.push({ value: 'self', label: `${name(prev)} → ${v.current ? '当前' : name(v)}`, ...self });
+  if (!v.current) out.push({ value: 'now', label: `${name(v)} → 当前`, from: v.commit, to: 'WORKTREE' });
+  const hit = out.find((o) => o.from === cmp.from && o.to === (cmp.to || 'WORKTREE'));
+  if (!hit && cmp.from) {
+    const from = (items || []).find((x) => x.commit === cmp.from);
+    const to = cmp.to && cmp.to !== 'WORKTREE' ? (items || []).find((x) => x.commit === cmp.to) : null;
+    out.unshift({ value: 'other', label: `${name(from) || '其他版本'} → ${to ? name(to) : '当前'}`, from: cmp.from, to: cmp.to || 'WORKTREE' });
+  }
+  return out;
+}
+export const rangeValue = (choices, cmp) => (choices.find((o) => o.from === cmp.from && o.to === (cmp.to || 'WORKTREE'))?.value || '');
+// 「改了什么」里认不出的文件（报告、流程记录等）只说个数
+export const otherChanges = (changes = []) => changes.filter((c) => c.target?.label === '').length;
+export const knownChanges = (changes = []) => changes.filter((c) => c.target?.label !== '');
 
 /**
  * 从别的页跳过来时选中哪个版本：
@@ -273,10 +293,16 @@ export function revertBlockedText(preview) {
 }
 
 // 版本右侧 ⋯ 的菜单（标记、回退在行内按钮上）
+// 时间线一行的 ⋯：查看文件、标记、回退（当前版本不能回退到自己，回退前会预览确认）
 export function versionMenu(v) {
   return [
-    { key: 'files', label: '查看此版本的文件', icon: 'eye' },
-    { key: 'compare', label: '与当前对比', icon: 'split', disabled: !!v.current, title: v.current ? '已是当前版本' : undefined },
+    { key: 'files', label: '查看这一版的全部文件', icon: 'eye' },
+    { key: 'tag', label: '标记', icon: 'tag' },
+    '-',
+    {
+      key: 'revert', label: '回退到这一版', icon: 'undo', disabled: !!v.current || v.can_revert === false,
+      title: v.current ? '已是当前版本' : undefined,
+    },
   ];
 }
 

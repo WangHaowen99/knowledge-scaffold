@@ -129,3 +129,15 @@ def test_revert_preview_matches_revert(api):
     assert client.get(f"{base}/revert-preview", params={"commit": head}).json()["code"] == "nothing_to_revert"
     done = client.post(f"{base}/revert", json={"commit": target}).json()
     assert done["version_label"] == preview["next_version_label"]
+
+
+def test_version_summary_hides_internal_markers():
+    """版本说明给人看：去掉来源前缀、变更集编号与「by 用户」，资料路径换成资料名，动词已带类别的不再重复。"""
+    from app.routers.versions import _summary
+
+    assert _summary("autobuild: 自主构建运行 #1「场景模拟」（cs-5）") == "自主构建运行 #1「场景模拟」"
+    assert _summary("assistant: 助手执行「对象提取」的修改（cs-2）") == "助手执行「对象提取」的修改"
+    assert _summary("plugin: 转换资料 resource/others/合成手册.pdf") == "转换资料「合成手册」"
+    assert _summary("import: 新建项目资料 by tester") == "新建项目资料"
+    assert _summary("自主构建运行 #1 报告") == "自主构建运行 #1 报告"
+

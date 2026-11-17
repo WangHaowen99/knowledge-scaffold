@@ -5,33 +5,39 @@ import * as F from '../src/api/mock/fixtures.js';
 import { nextReleaseVersion, register as registerPublish } from '../src/api/mock/routes-publish.js';
 import { register as registerVersions } from '../src/api/mock/routes-versions.js';
 import {
-  blockingSummary, degradeNote, fixOptions, formatLabel, gateBlockedText, gateView, issueView, mergeRelease, needsSolverAck,
-  publishBlockedTitle, releaseGate, releasedText, visibleGates,
+  degradeNote, fixOptions, formatLabel, gateBlockedText, issueView, mergeRelease, needsSolverAck, releaseGate, releasedText,
+  visibleGates,
 } from '../src/pages/publish/publishModel.js';
+import { gateMark, problemGates, publishVerdict } from '../src/pages/publish/publishCheckModel.js';
 
 // ---------- 纯逻辑 ----------
 
-test('门禁卡片：不通过 / 还没运行 / 通过（含有提醒）三种样子，合规检查带「去运行」', () => {
-  assert.deepEqual(gateView({ id: 'data_binding', status: 'fail', source: { kind: 'platform' } }), {
-    cls: 'bad', icon: 'alert', chip: { k: 'fail', label: '不通过' }, action: null,
-  });
-  const c = gateView({ id: 'retail.compliance', status: 'not_run', source: { kind: 'pack' }, action: { type: 'start_node', node_id: 'retail.compliance' } });
-  assert.equal(c.cls, 'warn');
-  assert.equal(c.icon, 'gate');
-  assert.deepEqual(c.chip, { k: 'blocked', label: '未通过' });
-  assert.equal(c.action.label, '去运行');
-  assert.equal(gateView({ id: 'rev.anchor_coverage', status: 'warn', source: { kind: 'pack' } }).cls, 'ok');
-  assert.equal(gateView({ id: 'rev.anchor_coverage', status: 'warn', source: { kind: 'pack' } }).icon, 'quote');
-  assert.equal(gateView({ id: 'solver_contract', status: 'pass' }).icon, 'badge');
+test('检查项标记：挡住 / 还没运行 / 有提醒 / 通过；需要处理只列没通过和有提醒的，挡住的在前', () => {
+  assert.deepEqual(gateMark({ id: 'data_binding', status: 'fail', blocking: true }), { tone: 'bad', icon: 'x', text: '没通过' });
+  // 还没运行的流程关卡挡发布时算没通过，不挡时算提醒
+  assert.equal(gateMark({ id: 'retail.compliance', status: 'not_run', blocking: true }).tone, 'bad');
+  assert.deepEqual(gateMark({ id: 'retail.compliance', status: 'not_run', blocking: false }), { tone: 'warn', icon: 'alert', text: '还没运行' });
+  assert.deepEqual(gateMark({ id: 'rev.anchor_coverage', status: 'warn' }), { tone: 'warn', icon: 'alert', text: '有提醒' });
+  assert.deepEqual(gateMark({ id: 'solver_contract', status: 'pass' }), { tone: 'ok', icon: 'check', text: '通过' });
+  const gates = [
+    { id: 'data_binding', title: '数据绑定', status: 'warn', blocking: false },
+    { id: 'package_structure', title: '知识包结构', status: 'fail', blocking: true },
+    { id: 'solver_contract', title: '求解契约', status: 'pass', blocking: false },
+  ];
+  assert.deepEqual(problemGates(gates).map((g) => g.id), ['package_structure', 'data_binding']);
   // 求解契约要验证时发布前要确认未验证（ADR-0098）
   assert.equal(needsSolverAck({ gates: [{ id: 'solver_contract', requires_acknowledgement: true }] }), true);
   assert.equal(needsSolverAck({ gates: [{ id: 'solver_contract', requires_acknowledgement: false }] }), false);
   assert.equal(needsSolverAck({ gates: [{ id: 'data_binding' }] }), false);
-  assert.equal(gateView({ id: 'retail.compliance', status: 'pass', source: { kind: 'flow' } }).icon, 'check');
-  assert.deepEqual(blockingSummary({ blocking_count: 2 }), { text: '2 项挡住发布', tone: 'red' });
-  assert.deepEqual(blockingSummary({ blocking_count: 0 }), { text: '全部通过', tone: 'teal' });
-  assert.equal(publishBlockedTitle({ blocking_count: 2 }), '2 项未通过');
-  assert.equal(publishBlockedTitle({ blocking_count: 0 }), '');
+  // 页面顶上的结论：门禁 blocking 是唯一口径，点名哪几项没通过
+  assert.deepEqual(publishVerdict(null), { tone: 'idle', title: '正在检查…', sub: '' });
+  assert.deepEqual(publishVerdict({ gates }, { versionLabel: 'v0.14' }), { tone: 'bad', title: '还不能发布 v0.14', sub: '知识包结构没通过' });
+  assert.deepEqual(publishVerdict({ gates: gates.filter((g) => !g.blocking) }, { versionLabel: 'v0.14' }),
+    { tone: 'ok', title: '可以发布 v0.14', sub: '数据绑定有提醒，不挡发布' });
+  assert.deepEqual(publishVerdict({ gates: [gates[2]] }), { tone: 'ok', title: '可以发布', sub: '' });
+  const solver = { gates: [gates[2]], solver: { enabled: true, requires_validation_after_publish: true } };
+  assert.equal(publishVerdict(solver).tone, 'warn');
+  assert.equal(publishVerdict(solver, { acknowledged: true }).tone, 'ok');
   assert.equal(formatLabel({ format: 'solver' }), '求解知识包');
   assert.equal(formatLabel({ format: 'ontology' }), '普通知识包');
 });

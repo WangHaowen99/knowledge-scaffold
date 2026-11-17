@@ -71,23 +71,11 @@ export function tableGroups(issue, tables) {
   return groups;
 }
 
-export function checkSummary(check) {
-  const b = check?.binding || {};
-  const blocking = (b.issues || []).filter((issue) => issue.blocking).length;
-  return `对象 ${b.objects ?? 0} 个，已绑定数据表 ${b.bound_objects ?? 0} 个；阻断项 ${blocking} 个`;
-}
-
-const localTime = (iso) => (iso ? new Date(iso).toLocaleString() : '');
-export function lastPublishText(check) {
-  const last = check?.last_publish;
-  if (!last) return '';
-  return `上次发布：${localTime(last.at)}${last.by ? ` · ${last.by}` : ''}${last.degraded ? ` · 降级发布（${last.unbound_count} 个对象未绑定）` : ''}`;
-}
-
-export const checkTitle = (check) => (check?.solver?.enabled ? '发布知识包 · 发布检查' : '发布知识包 · 数据绑定检查');
-
-// 降级不能绕过的问题数：求解契约静态检查与结构自检
-export const hardBlockers = (check) => (check?.solver?.blocking || 0) + (check?.structure?.blocking || 0);
+const gateBlocking = (check, id) => Boolean((check?.gates || []).find((g) => g.id === id)?.blocking);
+// 降级不能绕过的问题数：求解契约静态检查与结构自检。渲染时才发现的结构问题（关系写法、脚本绑定）只在门禁里，
+// 不计入 structure.blocking，也要挡住
+export const hardBlockers = (check) => (check?.solver?.blocking || 0)
+  + Math.max(check?.structure?.blocking || 0, gateBlocking(check, 'package_structure') ? 1 : 0);
 export const needsSolverAcknowledgement = (check) => Boolean(check?.solver?.requires_validation_after_publish);
 
 // 「发布」按钮：develop 的三种说法；建模阶段没做完时置灰，说明同 develop 的提示
@@ -126,12 +114,8 @@ export function publishedText(release, { degrade = false, acknowledged = false }
 // ---------- 已发布版本（HB-05） ----------
 export const VERSIONS_PAGE = 10;
 export { EVALUATION_HINT } from '../evaluation/evaluationModel.js';
-export const versionsTitle = (data, projectName) => {
-  const name = data?.releases?.[0]?.name || projectName;
-  return name ? `已发布版本 — ${name}` : '已发布版本';
-};
-export const versionMeta = (row) => [row.created_at ? new Date(row.created_at).toLocaleString() : '', row.source_service].filter(Boolean).join(' · ');
-export const RESOURCES_NOTE = 'Hub 仅保存明确共享的最新资料集，不与历史包版本绑定；本地资料不会自动上传。';
+// 本服务（modeling）发布的不写来源，只写别的服务（如评测回写）的
+export const releaseSource = (row) => (row?.source_service && row.source_service !== 'modeling' ? row.source_service : '');
 
 // 评测优化之后发布：回写评测服务这是哪一轮优化建议的处理结果（develop usePackagePublish 的两句提示）
 export function writebackText(release) {
@@ -142,3 +126,68 @@ export function writebackText(release) {
   if (w?.status === 'pending') return { tone: 'warning', text: '新版本的处理结果暂未回写评测服务，打开已发布版本时会自动重试' };
   return null;
 }
+
+// ---------- 发布页：结论、检查项、需要处理 ----------
+
+// 页面顶上的一句结论：能不能发、卡在哪几项（门禁的 blocking 是唯一口径）
+export function publishVerdict(check, { versionLabel = '', acknowledged = false } = {}) {
+  if (!check) return { tone: 'idle', title: '正在检查…', sub: '' };
+  const label = versionLabel ? ` ${versionLabel}` : '';
+  const blocking = (check.gates || []).filter((g) => g.blocking);
+  if (blocking.length) return { tone: 'bad', title: `还不能发布${label}`, sub: `${blocking.map((g) => g.title).join('、')}没通过` };
+  if (needsSolverAcknowledgement(check) && !acknowledged) {
+    return { tone: 'warn', title: `可以发布${label}`, sub: '求解能力还没验证，在下面「求解契约」里勾选确认后才能发布' };
+  }
+  const notes = (check.gates || []).filter((g) => g.status !== 'pass');
+  return { tone: 'ok', title: `可以发布${label}`, sub: notes.length ? `${notes.map((g) => g.title).join('、')}有提醒，不挡发布` : '' };
+}
+
+// 检查项小标签：通过 / 有提醒 / 挡住（还没运行的流程关卡算挡住或提醒，看它挡不挡发布）
+export function gateMark(g) {
+  if (g.blocking || g.status === 'fail') return { tone: 'bad', icon: 'x', text: '没通过' };
+  if (g.status === 'pass') return { tone: 'ok', icon: 'check', text: '通过' };
+  return { tone: 'warn', icon: 'alert', text: g.status === 'warn' ? '有提醒' : '还没运行' };
+}
+
+// 「需要处理」列哪些检查项：没通过的在前，有提醒的在后
+export const problemGates = (gates) => (gates || []).filter((g) => g.status !== 'pass')
+  .sort((a, b) => Number(b.blocking) - Number(a.blocking));
+
+// 知识包结构的问题按对象列：对象名、问题、打开文档的路径（路径与行号只给「打开」和助手用，不显示）
+export function structureRows(findings) {
+  return (findings || []).map((f, i) => ({
+    key: `${f.path || ''}:${f.line || ''}:${i}`,
+    name: f.target?.name || '',
+    message: f.message,
+    path: f.path || '',
+    line: f.line || null,
+  }));
+}
+
+// 交给助手修结构问题：带上文件与行号（助手要定位），不以空格结尾
+export function structurePrompt(findings) {
+  return [
+    '发布前的知识包结构检查没通过，请逐条修正：',
+    ...(findings || []).map((f) => `- ${f.path ? `${f.path}${f.line ? ` 第 ${f.line} 行` : ''}：` : ''}${f.message}`),
+    '修完运行规则检查，确认没有新的结构问题。',
+  ].join('\n');
+}
+
+// 发布哪个版本的下拉：版本号（与顶栏「知识包 vX」同一口径），当前的标出来
+export const iterationOptions = (items) => (items || []).map((v) => ({ value: v.commit, label: `${v.version_label}${v.current ? '（当前）' : ''}` }));
+
+// 已发布版本一张表：Hub 的版本（权威，含别人发布到同一个包的）挂上本地发布记录（降级、包清单、图模式下载）；
+// Hub 读不到时退回本地记录
+export function releaseRows(hubRows, records) {
+  const byId = new Map();
+  const byVersion = new Map();
+  (records || []).forEach((r) => {
+    if (r.hub?.release_id) byId.set(r.hub.release_id, r);
+    byVersion.set(r.version, r);
+  });
+  return (hubRows || []).map((row) => ({ ...row, local: byId.get(row.release_id) || byVersion.get(row.version) || null }));
+}
+export const localReleaseRows = (records) => (records || []).map((r) => ({
+  release_id: r.hub?.release_id || '', version: r.version, created_at: r.at, local: r,
+}));
+

@@ -236,7 +236,7 @@ export default function ProjectsPage() {
                 <div className="mi" onClick={() => { setMenu(null); setDlg({ kind: 'clone', p: menu.p }); }}><Icon name="copy" size={14} /><span>克隆</span></div>
                 <hr />
                 <div className="mi" onClick={() => { setMenu(null); navigate(pagePath('publish', menu.p.id)); }}><Icon name="upload" size={14} /><span>发布为知识包（供消费端导入）</span></div>
-                <div className="mi" onClick={() => { setMenu(null); navigate(pagePath('publish', menu.p.id), { versions: '1' }); }}><Icon name="history" size={14} /><span>已发布版本（知识包评测）</span></div>
+                <div className="mi" onClick={() => { setMenu(null); navigate(pagePath('publish', menu.p.id), { versions: '1' }); }}><Icon name="history" size={14} /><span>已发布版本</span></div>
                 <div className="mi" onClick={() => { setMenu(null); act(() => services.download(`/projects/${encodeURIComponent(menu.p.id)}/transfer-package`, `${menu.p.name}-transfer.zip`), '已导出迁移包', 'archive'); }}>
                   <Icon name="archive" size={14} /><span>导出迁移包</span>
                 </div>

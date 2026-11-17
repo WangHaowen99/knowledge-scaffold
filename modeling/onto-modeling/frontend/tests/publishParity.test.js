@@ -3,8 +3,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  EVALUATION_HINT, RESOURCES_NOTE, assistantPrompt, checkSummary, checkTitle, degradeState, fileTarget, hardBlockers, lastPublishText,
-  needsSolverAcknowledgement, proceedState, publishedText, stageNote, tableGroups, versionMeta, versionsTitle, writebackText,
+  EVALUATION_HINT, assistantPrompt, degradeState, fileTarget, hardBlockers, iterationOptions, localReleaseRows,
+  needsSolverAcknowledgement, proceedState, publishedText, releaseRows, releaseSource, stageNote, structurePrompt, structureRows,
+  tableGroups, writebackText,
 } from '../src/pages/publish/publishCheckModel.js';
 
 const clean = {
@@ -35,13 +36,25 @@ test('发布按钮的三种说法与降级规则（develop 页脚）', () => {
   assert.deepEqual(degradeState(structure, true), { disabled: true, title: '降级只放宽数据绑定，求解契约与知识包结构问题须先修正' });
 });
 
-test('检查卡的标题、摘要与上次发布', () => {
-  assert.equal(checkTitle(clean), '发布知识包 · 数据绑定检查');
-  assert.equal(checkTitle({ solver: { enabled: true } }), '发布知识包 · 发布检查');
-  assert.equal(checkSummary({ binding: { objects: 5, bound_objects: 3, issues: [{ blocking: true }, { blocking: false }] } }), '对象 5 个，已绑定数据表 3 个；阻断项 1 个');
-  const text = lastPublishText({ last_publish: { at: '2026-11-01T08:00:00Z', by: 'operator_a', degraded: true, unbound_count: 2 } });
-  assert.match(text, /^上次发布：.+ · operator_a · 降级发布（2 个对象未绑定）$/);
-  assert.equal(lastPublishText({ last_publish: null }), '');
+test('渲染时才发现的结构问题（关系写法）只在门禁里，也挡发布、不能降级', () => {
+  const render = { ...clean, gates: [...clean.gates, { id: 'package_structure', title: '知识包结构', blocking: true, degradable: false }] };
+  assert.equal(hardBlockers(render), 1);
+  assert.equal(proceedState(render).disabled, true);
+  assert.equal(proceedState(render).label, '发布（需先修复）');
+  assert.equal(degradeState(render).disabled, true);
+});
+
+test('结构问题按对象列（路径只给打开和助手），交给助手带文件与行号', () => {
+  const findings = [
+    { code: 'relation_structure_invalid', message: '关系端点「合成对象」不存在', path: 'ontology/object/订单.md', line: 12, target: { name: '订单' } },
+    { code: 'package_render_failed', message: '导出失败' },
+  ];
+  assert.deepEqual(structureRows(findings).map((r) => [r.name, r.message, r.path, r.line]), [
+    ['订单', '关系端点「合成对象」不存在', 'ontology/object/订单.md', 12],
+    ['', '导出失败', '', null],
+  ]);
+  assert.equal(structurePrompt(findings), '发布前的知识包结构检查没通过，请逐条修正：\n'
+    + '- ontology/object/订单.md 第 12 行：关系端点「合成对象」不存在\n- 导出失败\n修完运行规则检查，确认没有新的结构问题。');
 });
 
 test('改表下拉两组、打开文档的去处、交给助手的口径', () => {
@@ -66,13 +79,16 @@ test('发布成功的提示（develop usePackagePublish）', () => {
   assert.deepEqual(publishedText({ version: '0.1.3', local_record_pending: true }), { tone: 'warning', text: '知识包已发布，本地发布记录待恢复' });
 });
 
-test('已发布版本：标题、版本下面一行、提示与末行文字', () => {
-  assert.equal(versionsTitle({ releases: [{ name: '门店补货' }] }, '别名'), '已发布版本 — 门店补货');
-  assert.equal(versionsTitle({ releases: [] }, '门店补货'), '已发布版本 — 门店补货');
-  assert.equal(versionsTitle({ releases: [] }, ''), '已发布版本');
-  assert.match(versionMeta({ created_at: '2026-11-01T08:00:00Z', source_service: 'modeling' }), / · modeling$/);
+test('已发布版本一张表：Hub 版本挂上本地记录（按 release_id，其次版本号），Hub 读不到时退回本地记录；本服务不写来源', () => {
+  const hub = [{ release_id: 'r2', version: '0.1.2' }, { release_id: 'r1', version: '0.1.1' }, { release_id: 'rx', version: '0.1.0' }];
+  const local = [{ version: '0.1.2', hub: { release_id: 'r2' } }, { version: '0.1.1' }];
+  assert.deepEqual(releaseRows(hub, local).map((r) => r.local?.version || null), ['0.1.2', '0.1.1', null]);
+  assert.deepEqual(localReleaseRows(local).map((r) => [r.release_id, r.version]), [['r2', '0.1.2'], ['', '0.1.1']]);
+  assert.equal(releaseSource({ source_service: 'modeling' }), '');
+  assert.equal(releaseSource({ source_service: 'evaluation' }), 'evaluation');
+  assert.deepEqual(iterationOptions([{ commit: 'c2', version_label: 'v0.2', current: true }, { commit: 'c1', version_label: 'v0.1' }]),
+    [{ value: 'c2', label: 'v0.2（当前）' }, { value: 'c1', label: 'v0.1' }]);
   assert.equal(EVALUATION_HINT, '打开优化建议执行评测优化，修改并发布新版本后状态自动变为“已处理”。');
-  assert.equal(RESOURCES_NOTE, 'Hub 仅保存明确共享的最新资料集，不与历史包版本绑定；本地资料不会自动上传。');
 });
 
 test('评测优化后发布的回写提示（develop usePackagePublish）', () => {

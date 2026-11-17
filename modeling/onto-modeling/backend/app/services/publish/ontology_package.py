@@ -28,6 +28,8 @@ def _used_objects(body: str, object_keys) -> list[str]:
 
 
 ADAPTER_ID = "ontology-package"
+# 关系结构问题逐条带给发布检查的上限（错误消息仍只拼前 20 条）
+RELATION_PROBLEM_LIMIT = 50
 FORMAT_ONTOLOGY = "ontology"
 FORMAT_SOLVER = "solver"
 VARIANT_STANDARD = "standard"
@@ -260,13 +262,16 @@ class OntologyPackageAdapter:
             )
         bound = binding["objects"]
         mappings = package_mapping.object_data_mappings(binding, graph=graph)
-        # 两种变体都保留语义声明（端点没绑定物理表的概念关系也留着）；结构错误在规范化前拒绝，不静默丢掉（develop !594）
+        # 两种变体都保留语义声明（端点没绑定物理表的概念关系也留着）；结构错误在规范化前拒绝，
+        # 不静默丢掉（develop !594）。同一条关系在两端对象里各写一次（对象模板的写法）归并成一条，
+        # 不算错误：发布不做重复关系检查
+        relation_details: list[dict] = []
         graph_edges, relation_problems = package_mapping.package_relations(
-            object_texts, reject_duplicate_relations=True, strict_fields=True,
+            object_texts, strict_fields=True, details=relation_details,
         )
         if relation_problems:
             raise WorkspaceError("对象关系结构无效：" + "；".join(relation_problems[:20]), 422,
-                                 "relation_structure_invalid")
+                                 "relation_structure_invalid", {"problems": relation_details[:RELATION_PROBLEM_LIMIT]})
         rules = entry_items("ontology/rule")
         metrics = entry_items("ontology/metric")
         scripts = entry_items("ontology/scripts", pattern="*.py")

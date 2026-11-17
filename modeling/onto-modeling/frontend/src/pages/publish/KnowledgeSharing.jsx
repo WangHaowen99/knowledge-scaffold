@@ -1,6 +1,6 @@
 // 知识包共享（develop !590 成员向导的 Hub 同步部分，ADR-0098；HB-11 / HB-12）：所有者加共享用户同步成 Hub 授权用户。
 // 项目只有所有者，共享在知识包这一层管理、不碰项目权限。按用户名添加；保存后已发布的包立即同步，
-// 失败的用户旁边看失败原因、「重试授权 / 重试撤权」。入口在发布页右栏「知识包共享」卡。
+// 失败的用户旁边看失败原因、「重试授权 / 重试撤权」。入口在发布页「已发布版本」表头：「共享给 N 人」。
 import { useEffect, useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
@@ -111,7 +111,7 @@ function SharingModal({ projectId, onClose, onChanged }) {
   );
 }
 
-// 发布页右栏：共享用户数与同步状态，「管理」打开共享设置
+// 发布页「已发布版本」表头：共享用户数与同步状态，点开管理
 export default function KnowledgeSharing({ projectId, refreshKey }) {
   const { api } = useApp();
   const [state, setState] = useState(null);
@@ -123,17 +123,12 @@ export default function KnowledgeSharing({ projectId, refreshKey }) {
   }, [api, projectId, refreshKey]);
   const failed = syncFailed(state?.hub_sync) || Object.keys(state?.hub_sync?.pending || {}).length > 0;
   return (
-    <div className="mr-exp">
-      <span className="ei"><Icon name="users" size={18} /></span>
-      <div className="grow">
-        <div className="b">知识包共享</div>
-        <div className="sm muted">
-          {state ? `${(state.users || []).length} 个共享用户` : ''}
-          {failed ? <span style={{ color: 'var(--red)' }}> · 授权同步失败</span> : null}
-        </div>
-      </div>
-      <Button size="sm" onClick={() => setOpen(true)}>管理</Button>
+    <>
+      <Button size="sm" kind="ghost" icon="users" onClick={() => setOpen(true)}>
+        {state ? `共享给 ${(state.users || []).length} 人` : '共享'}
+        {failed ? <span style={{ color: 'var(--red)' }}> · 授权同步失败</span> : null}
+      </Button>
       {open ? <SharingModal projectId={projectId} onClose={() => setOpen(false)} onChanged={setState} /> : null}
-    </div>
+    </>
   );
 }

@@ -5,8 +5,9 @@ import * as F from '../src/api/mock/fixtures.js';
 import { register as registerVersions } from '../src/api/mock/routes-versions.js';
 import { mainHistory, undoChange } from '../src/api/mock/versions-data.js';
 import {
-  compareFromOf, compareOptions, defaultCompare, diffLines, editBlocks, entryPath, pathLabel, pathLocked, pickLanding,
-  revertBlockedText, revertConfirmText, srcClass, srcLabel, syncMeta, targetLabel, undoneText, versionMenu, versionSub,
+  compareFromOf, compareOptions, defaultCompare, diffLines, editBlocks, entryPath, pathLabel, pathLocked, pickLanding, previousOf,
+  rangeChoices, rangeValue, revertBlockedText, revertConfirmText, selfRange, srcClass, srcLabel, syncMeta, targetLabel, undoneText,
+  versionMenu, versionSub,
 } from '../src/pages/versions/versionsModel.js';
 
 // ---------- 纯逻辑 ----------
@@ -78,6 +79,27 @@ test('落地：刷新后对比按提交找；找不到时说明', () => {
   assert.ok(!miss.includes('deadbeef'), '不显示提交哈希');
 });
 
+test('选中一个版本看它改了什么：上一版 → 这一版（当前版本右侧是可编辑的当前文件），也可改看这一版到现在', () => {
+  const head = LIST[LIST.length - 1];
+  const mid = LIST[14];
+  assert.equal(previousOf(mid, LIST).n, mid.n - 1);
+  assert.equal(previousOf(LIST[0], LIST), null);
+  assert.deepEqual(selfRange(head, LIST), { from: previousOf(head, LIST).commit, to: 'WORKTREE' });
+  assert.deepEqual(selfRange(mid, LIST), { from: previousOf(mid, LIST).commit, to: mid.commit });
+  const choices = rangeChoices(mid, LIST, selfRange(mid, LIST));
+  assert.deepEqual(choices.map((c) => [c.value, c.label]), [
+    ['self', `迭代 ${mid.n - 1} → 迭代 ${mid.n}`], ['now', `迭代 ${mid.n} → 当前`],
+  ]);
+  assert.equal(rangeValue(choices, { from: mid.commit, to: 'WORKTREE' }), 'now');
+  // 当前版本只有「上一版 → 当前」；第一版没有可比的上一版
+  assert.deepEqual(rangeChoices(head, LIST, selfRange(head, LIST)).map((c) => c.label), [`迭代 ${head.n - 1} → 当前`]);
+  assert.deepEqual(rangeChoices(LIST[0], LIST, selfRange(LIST[0], LIST)).map((c) => c.value), LIST[0].current ? [] : ['now']);
+  // 跳转带来的其他范围原样列在最前
+  const other = rangeChoices(mid, LIST, { from: LIST[3].commit, to: 'WORKTREE' });
+  assert.equal(other[0].value, 'other');
+  assert.equal(other[0].label, `迭代 ${LIST[3].n} → 当前`);
+});
+
 test('对比左侧：选中当前版本时和上一个版本比；对象下拉取这个版本改过的条目', () => {
   const head = LIST[LIST.length - 1];
   assert.equal(compareFromOf(head, LIST).version_label, 'v0.18');
@@ -102,11 +124,12 @@ test('回退说明（develop 原文）：确认框按业务文件计数，挡住
   assert.equal(revertBlockedText({ ready: false, blockers: [] }), '当前项目暂不能回退');
 });
 
-test('⋯ 菜单只放查看文件与对比（标记、回退在行内）、写入范围只读、顶栏版本同步', () => {
+test('⋯ 菜单放查看文件、标记、回退（当前版本不能回退）、写入范围只读、顶栏版本同步', () => {
   const menu = versionMenu({ current: true });
-  assert.deepEqual(menu.map((x) => x.key), ['files', 'compare']);
-  assert.equal(menu.find((x) => x.key === 'compare').disabled, true);
-  assert.equal(versionMenu({ current: false }).find((x) => x.key === 'compare').disabled, false);
+  assert.deepEqual(menu.map((x) => (x === '-' ? x : x.key)), ['files', 'tag', '-', 'revert']);
+  assert.equal(menu.find((x) => x.key === 'revert').disabled, true);
+  assert.equal(versionMenu({ current: false }).find((x) => x.key === 'revert').disabled, false);
+  assert.equal(versionMenu({ current: false, can_revert: false }).find((x) => x.key === 'revert').disabled, true);
   const lock = { state: 'pending_confirm', entries: [{ kind: 'object', id: 'object:display_qty_std', key: 'display_qty_std', name: '陈列量标准' }], artifacts: [], paths: ['ext/trace/scenarios/**'] };
   assert.equal(pathLocked(lock, 'ontology/object/陈列量标准.md'), true);
   assert.equal(pathLocked(lock, 'ext/trace/scenarios/s-01.yaml'), true);

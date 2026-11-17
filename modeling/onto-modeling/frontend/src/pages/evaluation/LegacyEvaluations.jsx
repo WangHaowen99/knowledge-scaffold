@@ -1,7 +1,7 @@
 // 旧版评测记录（ES-09～ES-12）：照 develop 左栏「旧版评测记录（历史链路）」和 EvalRunDetail「评测执行详情」。
 // 旧运行器已随 ADR-0020 删除：没有「停止旧任务」「对账旧任务」；完整回答读报告附带的 answers.json；
 // 「评测优化」与新评测同一做法，整理成一批外部反馈交给反馈演进（ADR-0092）。
-// 用法：<LegacyEvaluations pid={pid} tasks={tasks} />（tasks 是页面的 useCommandTasks）
+// 用法：<LegacyEvaluations pid={pid} tasks={tasks} open={…} onClose={…} />（tasks 是页面的 useCommandTasks）
 import { useEffect, useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
@@ -253,9 +253,9 @@ function LegacyReport({ pid, stem, onClose }) {
   );
 }
 
-export function LegacyEvaluations({ pid, tasks }) {
+// open / onClose 由页面控制（发布页「⋯」菜单里的「旧版评测记录」）
+export function LegacyEvaluations({ pid, tasks, open, onClose }) {
   const { api } = useApp();
-  const [open, setOpen] = useState(false);
   const [info, setInfo] = useState(null);
   const [report, setReport] = useState('');
   // 打开期间定时重读（develop 的执行详情一样轮询）
@@ -271,8 +271,7 @@ export function LegacyEvaluations({ pid, tasks }) {
   const status = st.status || 'idle';
   return (
     <>
-      <Button icon="history" onClick={() => setOpen(true)}>旧版评测记录（历史链路）</Button>
-      <Modal open={open} onClose={() => setOpen(false)} w={880} className="erd-modal"
+      <Modal open={open} onClose={onClose} w={880} className="erd-modal"
         title={<span className="row">评测执行详情{STATUS_TEXT[status] ? <span className={`erd-status is-${status}`}>{STATUS_TEXT[status]}</span> : null}</span>}>
         <DetailBody pid={pid} st={st} evolution={info?.evolution} evolutionEnabled={!!info?.evolution_enabled} tasks={tasks}
           onOpenReport={(stem) => setReport(stem)} />

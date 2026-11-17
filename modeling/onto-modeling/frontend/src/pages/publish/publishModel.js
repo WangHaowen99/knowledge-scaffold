@@ -1,30 +1,5 @@
-// 发布知识包（设计稿 publish）的纯逻辑：门禁链每一关的样子、数据绑定问题与修正选项、能不能降级、发布记录的说法
+// 发布知识包的纯逻辑：门禁链里显示哪些关、数据绑定问题与修正选项、能不能降级、发布记录的说法（页面结论与检查项标记在 publishCheckModel）
 import { isEvidencePack } from '../../state/evidence.js';
-
-// 门禁卡片：样式类（设计稿 mr-gate ok / bad / warn）、图标、状态标、动作按钮
-export function gateView(g) {
-  const cls = g.status === 'fail' ? 'bad' : g.status === 'pass' || g.status === 'warn' ? 'ok' : 'warn';
-  let icon = 'shield';
-  if (g.id === 'data_binding') icon = cls === 'bad' ? 'alert' : 'db';
-  else if (g.id === 'solver_contract') icon = 'badge';
-  else if (g.id === 'package_structure') icon = 'pkg';
-  else if (/anchor|evidence/.test(g.id)) icon = 'quote';
-  else if (g.source?.kind === 'flow') icon = 'check';
-  else if (g.source?.kind === 'pack') icon = 'gate';
-  const chip = cls === 'ok' ? { k: 'pass', label: '通过' } : cls === 'bad' ? { k: 'fail', label: '不通过' } : { k: 'blocked', label: '未通过' };
-  let action = null;
-  if (g.action?.type === 'start_node') action = { label: '去运行', action: g.action };
-  else if (g.action) action = { label: '去处理', action: g.action };
-  return { cls, icon, chip, action };
-}
-
-export function blockingSummary(check) {
-  const n = check?.blocking_count || 0;
-  return n ? { text: `${n} 项挡住发布`, tone: 'red' } : { text: '全部通过', tone: 'teal' };
-}
-
-// 「发布为知识包」按钮置灰时的说明
-export const publishBlockedTitle = (check) => (check?.blocking_count ? `${check.blocking_count} 项未通过` : '');
 
 // 求解契约要端到端验证的包：发布时要确认「尚未验证」（验证在发布后的独立评测里做，ADR-0098）
 export const needsSolverAck = (check) => Boolean((check?.gates || []).find((g) => g.id === 'solver_contract')?.requires_acknowledgement);
@@ -84,9 +59,6 @@ export function mergeRelease(list, rec) {
   out.push(rec);
   return out.sort((a, b) => String(b.at).localeCompare(String(a.at)));
 }
-
-// 版本下拉：当前分支上的版本
-export const versionOptions = (items) => (items || []).map((v) => ({ value: v.commit, label: v.version_label }));
 
 // 版本号由 Hub 分配；本地标签没写成时（local_record_pending）只有包版本
 export function releasedText(rec) {

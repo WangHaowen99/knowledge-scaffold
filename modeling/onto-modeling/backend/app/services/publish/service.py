@@ -137,7 +137,9 @@ def package_binding_check(manager, project_id: str, commit: str | None = None) -
     objects = binding["objects"]
     uncommitted = uncommitted_package_changes(root)
     stages = publish_stages.readiness(manager, project_id)
-    gate_list = gates.gate_chain(issues, solver, script_findings + structure["findings"], tree_error, pack_gates, stages)
+    gate_list = gates.gate_chain(
+        issues, solver, script_findings + structure["findings"], tree_error, pack_gates, stages, objects,
+    )
     return {
         "commit": commit,
         "blocking": sum(1 for item in issues if item["blocking"]),

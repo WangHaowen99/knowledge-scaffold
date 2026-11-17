@@ -37,7 +37,7 @@ test('the solver validation card says where the current revision stands', () => 
   assert.equal(solverValidationText({ configured: false }, 'rev-a', false), '评测服务不可用或未配置，暂时读不到求解验证状态。');
   assert.equal(solverValidationText(status, 'rev-a', false), '当前修订已在 0.1.0 通过求解验证。');
   assert.equal(solverValidationText({ ...status, solver_releases: {} }, 'rev-a', false), '当前修订已发布，尚未通过求解验证：在评测页面对该版本发起求解验证。');
-  assert.equal(solverValidationText(status, 'rev-b', false), '当前修改尚未发布和验证：发布新版本后，在「已发布版本（知识包评测）」中发起求解验证。');
+  assert.equal(solverValidationText(status, 'rev-b', false), '当前修改尚未发布和验证：发布新版本后，在发布页「已发布版本」里发起求解验证。');
   assert.equal(shortRevision('sha256:0123456789abcdef'), '0123456789');
   assert.equal(shortRevision(''), '—');
 });

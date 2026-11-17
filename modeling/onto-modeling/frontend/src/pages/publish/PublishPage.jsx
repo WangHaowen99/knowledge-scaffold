@@ -1,107 +1,94 @@
-// 发布知识包（设计稿 publish）：门禁链（PB-01；合规检查「去运行」走 FL-05；建模阶段没做完时第一关挡住）、
-// 发布检查（develop PublishCheckDialog 的元素：数据绑定修正 PB-02、求解契约、结构自检、表的来源）、
-// 发布与降级发布（PB-03，经知识包 Hub，求解包要确认未验证；成功后打开「已发布版本」HB-05）、导出迁移包（P-09）、发布记录（PB-04）与包清单（PB-06）、下载标准包 / 图模式变体（PB-07）。
-// 版本下拉取当前分支上的版本（V-01）；项目流 release.updated（EP-19）、flow.updated（EP-01）、workspace.changed 实时刷新。
-// 发布记录带评测（ES-02，ADR-0092）与版本对比（PC 组，ADR-0095）。
+// 发布知识包：一栏三块。
+// 1. 发布卡：一句结论（能不能发、哪几项没通过）+「发布」+ 选版本；检查项小标签（PB-01 门禁链，点一下跳到对应问题）；
+//    未确认改动、上次发布、发布后「去评测」；「⋯」里是重新检查、导出迁移包（P-09）、旧版评测记录（ES-09）。
+// 2. 需要处理：没通过或有提醒的检查项各一张卡（PublishProblems：数据绑定修正 PB-02、求解契约、结构自检、包门禁「去运行」FL-05）。
+// 3. 已发布版本：Hub 版本（HB-05，带评测 ES-02、对比 PC 组）与本地发布记录（PB-04～PB-07）合一张表，表头有共享（HB-11）。
+// 发布与降级发布走 PB-03（求解包要确认未验证）；项目流 release.updated（EP-19）、flow.updated（EP-01）、workspace.changed 实时刷新。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath, useRoute } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, formatBytes } from '../../api/errors.js';
-import { PageHead, ShellP } from '../../shell/Shell.jsx';
+import { ShellP } from '../../shell/Shell.jsx';
 import { evidenceInProject } from '../../state/evidence.js';
 import { useCommandTasks, useProjectEvent } from '../plugin/parts.jsx';
 import { EvaluationDialogs, LegacyEvaluations, useReleaseEvaluations } from '../evaluation/ReleaseEvaluation.jsx';
 import { notifyPackagePublished } from '../evaluation/evaluationModel.js';
 import PackageCompare from './PackageCompare.jsx';
-import PublishCheck from './PublishCheck.jsx';
+import PublishProblems from './PublishProblems.jsx';
 import PublishedVersions from './PublishedVersions.jsx';
 import KnowledgeSharing from './KnowledgeSharing.jsx';
 import { PUBLISH_FAILED_WARNING } from './sharingModel.js';
-import { proceedState, publishedText, writebackText } from './publishCheckModel.js';
-import { fileGroups } from '../versions/versionsModel.js';
-
-const listed = (groups) => groups.reduce((n, g) => n + g.items.length, 0);
 import {
-  Button, Card, Chip, Drawer, Icon, KV, Note, Select, St, cx,
+  gateMark, iterationOptions, problemGates, proceedState, publishVerdict, publishedText, writebackText,
+} from './publishCheckModel.js';
+import {
+  Button, Drawer, Icon, KV, Menu, Note, Select, cx,
 } from '../../ui/index.jsx';
-import { byNewest, fmtStamp, syncMeta } from '../versions/versionsModel.js';
-import {
-  blockingSummary, formatLabel, gateBlockedText, gateView, mergeRelease, releaseGate, versionOptions, visibleGates,
-} from './publishModel.js';
+import { byNewest, fileGroups, fmtStamp, syncMeta } from '../versions/versionsModel.js';
+import { usePopMenu } from '../versions/popMenu.js';
+import { formatLabel, gateBlockedText, mergeRelease, visibleGates } from './publishModel.js';
 import '../../styles/more.css';
 import '../../styles/publish.css';
 
-function GateChain({ check, onAction, busy }) {
-  const sum = blockingSummary(check);
-  const evidenceOn = evidenceInProject(useProject());
+const listed = (groups) => groups.reduce((n, g) => n + g.items.length, 0);
+
+function MoreMenu({ items }) {
+  const menu = usePopMenu({ width: 180, height: 140 });
   return (
-    <>
-      <div className="row mb8">
-        <span className="sec-t" style={{ margin: 0 }}><Icon name="shield" size={14} />门禁链</span>
-        {check ? <span className={cx('chip sm', sum.tone)}>{sum.text}</span> : null}
-      </div>
-      <div className="mr-gates">
-        {visibleGates(check, evidenceOn).map((g, i) => {
-          const v = gateView(g);
-          return [
-            i ? <span key={`a${g.id}`} className="mr-garr"><Icon name="chev" size={14} /></span> : null,
-            <div key={g.id} className={cx('mr-gate', v.cls)} title={(g.findings || []).map((f) => f.message).join('\n') || undefined}>
-              <div className="row">
-                <span className="gi"><Icon name={v.icon} size={14} /></span>
-                <div className="t grow">{g.title}</div>
-                <St k={v.chip.k} sm label={v.chip.label} />
-              </div>
-              <div className="d mt8">{g.summary}</div>
-              {v.action ? <div className="mt8"><Button size="xs" kind="soft" disabled={busy} onClick={() => onAction(g, v.action.action)}>{v.action.label}</Button></div> : null}
-            </div>,
-          ];
-        })}
-      </div>
-    </>
+    <span ref={menu.ref}>
+      <Button icon="more" title="更多" onClick={menu.toggle} />
+      {menu.at ? <Menu className="pb-menu" style={menu.at} items={items} onPick={menu.close} /> : null}
+    </span>
   );
 }
 
-function ReleaseRecords({ records, onManifest, onDownload, onCompare }) {
-  const rows = records || [];
+const jump = (id) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+function PublishCard({
+  check, gates, verdict, versions, selCommit, onPickVersion, proceed, publishing, onPublish, menu, solverNotice, onEvaluate,
+}) {
+  const [hints, setHints] = useState(false);
+  const warnings = check?.binding?.warnings || [];
+  // 数据绑定有问题时提示在它的卡里；通过时零散提示收在这里
+  const bindingOk = (gates.find((g) => g.id === 'data_binding')?.status || 'pass') === 'pass';
+  const uncommitted = check?.uncommitted_count || check?.uncommitted?.length || 0;
   return (
-    <Card className="mt16" title="发布记录" icon="history">
-      {records && !records.length ? (
-        <div className="sm muted">还没有发布过</div>
-      ) : (
-        <div className="tbl-wrap">
-          <table className="tbl compact">
-            <thead>
-              <tr>
-                <th>版本</th><th>时间</th><th>格式</th><th>门禁</th><th>包清单</th>
-                <th style={{ width: 170 }} />
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => {
-                const g = releaseGate(r);
-                return (
-                  <tr key={r.version}>
-                    <td><b title={`包版本 ${r.version}`}>{r.version_label}</b></td>
-                    <td className="num">{fmtStamp(r.at)}</td>
-                    <td>{r.format_label}</td>
-                    <td><Chip tone={g.chip[1]} sm>{g.chip[0]}</Chip>{g.note ? <> <span className="xs muted">{g.note}</span></> : null}</td>
-                    <td><span className="xs pb-link" onClick={() => onManifest(r)} title="查看包清单">{r.manifest_attached ? '已附包清单' : '没有留存包'}</span></td>
-                    <td>
-                      <span className="row" style={{ justifyContent: 'flex-end', gap: 12 }}>
-                        <span className="xs pb-link" onClick={() => onCompare({ releaseId: r.hub?.release_id || '', version: r.version })}>与其他版本对比</span>
-                        <span className="xs pb-link row g4" title="下载标准包" onClick={() => onDownload(r, 'standard')}><Icon name="download" size={12} />标准包</span>
-                        <span className="xs pb-link" title="下载图模式包" onClick={() => onDownload(r, 'graph')}>图模式</span>
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+    <section className={cx('card pb-hero', verdict.tone)}>
+      <div className="pb-hero-top">
+        <span className="pb-verdict-i"><Icon name={verdict.tone === 'bad' ? 'alert' : verdict.tone === 'idle' ? 'clock' : 'upload'} size={18} /></span>
+        <div className="grow" style={{ minWidth: 0 }}>
+          <div className="pb-verdict">{verdict.title}</div>
+          {verdict.sub ? <div className="sm muted mt4">{verdict.sub}</div> : null}
         </div>
-      )}
-    </Card>
+        <Select value={selCommit} options={iterationOptions(versions)} onChange={onPickVersion} icon="tag" w="150px" className="pb-sel" />
+        <Button kind="primary" icon="upload" disabled={proceed.disabled || publishing} title={proceed.title || undefined} onClick={onPublish}>
+          {publishing ? '发布中…' : '发布'}
+        </Button>
+        <MoreMenu items={menu} />
+      </div>
+      {check ? <div className="pb-gates">
+        {gates.map((g) => {
+          const m = gateMark(g);
+          return (
+            <span key={g.id} className={cx('pb-gate', m.tone)} title={`${g.title}：${g.summary}`}
+              {...(m.tone === 'ok' ? {} : { role: 'button', onClick: () => jump(`pb-sec-${g.id}`) })}>
+              <Icon name={m.icon} size={12} />{g.title}
+            </span>
+          );
+        })}
+        <span className="xs muted pb-format">{formatLabel(check)}</span>
+        <span className="sp" />
+        {bindingOk && warnings.length ? <span className="pb-link xs" role="button" onClick={() => setHints((v) => !v)}>{warnings.length} 条提示</span> : null}
+      </div> : null}
+      {hints && bindingOk ? <div className="pb-hints">{warnings.map((w) => <div key={w} className="xs">{w}</div>)}</div> : null}
+      {uncommitted ? <div className="pb-line xs">{uncommitted} 处改动还没确认，不会随这次发布</div> : null}
+      {solverNotice ? (
+        <Note tone="amber" className="mt12">
+          <span className="row"><span className="grow">{solverNotice.text}</span><Button size="xs" onClick={onEvaluate}>去评测</Button></span>
+        </Note>
+      ) : null}
+    </section>
   );
 }
 
@@ -125,11 +112,11 @@ function ManifestDrawer({ rec, onClose, onDownload }) {
       onClose={onClose}
       icon="list"
       w={520}
-      title={`包清单 · ${rec?.version_label || ''}`}
-      sub={rec ? `包版本 ${rec.version} · ${rec.format_label} · ${fmtStamp(rec.at)}` : ''}
+      title={`包清单 · ${rec?.version || ''}`}
+      sub={rec ? `${rec.version_label} · ${rec.format_label} · ${fmtStamp(rec.at)}` : ''}
       foot={(
         <>
-          <Button size="sm" kind="ghost" onClick={() => onDownload(rec, 'graph')}>下载图模式变体</Button>
+          <Button size="sm" kind="ghost" onClick={() => onDownload(rec, 'graph')}>下载图模式包</Button>
           <Button size="sm" kind="primary" icon="download" onClick={() => onDownload(rec, 'standard')}>下载标准包</Button>
         </>
       )}
@@ -176,6 +163,7 @@ export default function PublishPage() {
   const { api, services } = useApp();
   const { pid, meta, setMeta } = useProject();
   const route = useRoute();
+  const evidenceOn = evidenceInProject(useProject());
   const [versions, setVersions] = useState(null);
   const [commit, setCommit] = useState(null); // null 表示跟随当前版本
   const [check, setCheck] = useState(null);
@@ -183,13 +171,12 @@ export default function PublishPage() {
   const [records, setRecords] = useState(null);
   const [publishing, setPublishing] = useState(false);
   const [ack, setAck] = useState(false); // 我已了解，发布后需完成求解验证
-  const [sharingTick, setSharingTick] = useState(0);
+  const [releasesTick, setReleasesTick] = useState(0);
   const [solverNotice, setSolverNotice] = useState(null); // 求解包发布后待验证：develop 成功提示里的「去评测」
-  // 已发布版本（HB-05）：项目列表菜单带 ?versions=1 进来时直接打开；发布成功后自动打开
-  const [versionsOpen, setVersionsOpen] = useState(() => route?.query?.versions === '1');
   const [manifestFor, setManifestFor] = useState(null);
   const [starting, setStarting] = useState(false);
-  // 版本对比（P4 的 PackageCompare）：{releaseId, version}，空对象表示不带初始版本、默认比最近两版
+  const [legacyOpen, setLegacyOpen] = useState(false);
+  // 版本对比（PackageCompare）：{releaseId, version}，空对象表示不带初始版本、默认比最近两版
   const [compareFor, setCompareFor] = useState(null);
   const tasks = useCommandTasks('publish');
   // 发布或回退后记录数变了就重读评测状态
@@ -217,17 +204,35 @@ export default function PublishPage() {
 
   useEffect(() => { loadVersions(); loadRecords(); }, [loadVersions, loadRecords]);
   useEffect(() => { runCheck(); }, [runCheck, commit]);
+  // 项目列表菜单「已发布版本」带 ?versions=1 进来：滚到已发布版本
+  useEffect(() => {
+    if (route?.query?.versions !== '1') return undefined;
+    const t = setTimeout(() => jump('pb-releases'), 300);
+    return () => clearTimeout(t);
+  }, [route?.query?.versions]);
 
   const timer = useRef(null);
   const later = (fn) => { clearTimeout(timer.current); timer.current = setTimeout(fn, 400); };
   useEffect(() => () => clearTimeout(timer.current), []);
-  useProjectEvent('release.updated', (d) => d.release && setRecords((list) => mergeRelease(list, d.release)));
+  useProjectEvent('release.updated', (d) => {
+    if (!d.release) return;
+    setRecords((list) => mergeRelease(list, d.release));
+    setReleasesTick((n) => n + 1);
+  });
   useProjectEvent('flow.updated', () => later(() => runCheck()));
   useProjectEvent('workspace.changed', () => { loadVersions(); later(() => runCheck()); });
 
   const head = (versions || []).find((v) => v.current) || null;
+  const selCommit = commit || head?.commit || '';
+  const selected = (versions || []).find((v) => v.commit === selCommit) || head;
   const ackNeeded = !!check?.solver?.requires_validation_after_publish;
   const proceed = proceedState(check, ack);
+  const gates = visibleGates(check, evidenceOn);
+  const verdict = publishVerdict(check && { ...check, gates }, { versionLabel: selected?.version_label || meta?.version_label || '', acknowledged: ack });
+  // 需要处理：没通过或有提醒的检查项；求解包要确认未验证时求解契约也列出来（说明与勾选在它的卡里）
+  const problems = problemGates(gates).concat(
+    ackNeeded ? gates.filter((g) => g.id === 'solver_contract' && g.status === 'pass') : [],
+  );
 
   const publish = async (degrade = false) => {
     setPublishing(true);
@@ -242,15 +247,15 @@ export default function PublishPage() {
       setSolverNotice(done.evaluate && r.hub?.release_id ? { text: done.text, release: { ...r.hub, version: r.version } } : null);
       const writeback = writebackText(r);
       if (writeback) setTimeout(() => toast(writeback.text, writeback.tone === 'warning' ? 'alert' : 'check'), 2500);
-      // 共享用户的 Hub 授权同步失败（develop !590）：发布照常成功，去「知识包共享」重试
+      // 共享用户的 Hub 授权同步失败（develop !590）：发布照常成功，去表头「共享」重试
       if (r.hub_members?.status === 'failed') setTimeout(() => toast(PUBLISH_FAILED_WARNING, 'alert'), writeback ? 5000 : 2500);
-      setSharingTick((n) => n + 1);
       if (r.local_record_pending) loadRecords();
       else setRecords((list) => mergeRelease(list, r));
+      setReleasesTick((n) => n + 1);
       setAck(false);
       loadVersions();
       runCheck();
-      setVersionsOpen(true);
+      setTimeout(() => jump('pb-releases'), 300);
     } catch (e) {
       toast(e.code === 'gate_blocked' ? gateBlockedText(e.details) : errorText(e), 'alert');
       runCheck();
@@ -258,7 +263,9 @@ export default function PublishPage() {
       setPublishing(false);
     }
   };
-  const gateAction = async (g, action) => {
+  const gateAction = async (g) => {
+    const action = g.action;
+    if (!action) return;
     if (action.type === 'navigate') { navigate(pagePath(action.page, pid), action.params); return; }
     if (action.type !== 'start_node') return;
     setStarting(true);
@@ -292,69 +299,57 @@ export default function PublishPage() {
     }
   };
 
-  const pkg = check?.package_name || meta?.package_name || '';
-  const mainLabel = head?.version_label || meta?.version_label || '';
-  const selCommit = commit || head?.commit || '';
+  const menu = [
+    { label: '重新检查', icon: 'refresh', disabled: checking, onClick: () => runCheck({ refresh: true }) },
+    { label: '导出迁移包', icon: 'archive', hint: '含资料和版本历史', onClick: exportTransfer },
+    { label: '旧版评测记录', icon: 'history', onClick: () => setLegacyOpen(true) },
+  ];
 
   return (
     <ShellP active="publish">
-      <PageHead
-        title="发布知识包"
-        desc={`${pkg} · 当前版本 ${mainLabel}`}
-        actions={<><LegacyEvaluations pid={pid} tasks={tasks} /><Button kind="primary" icon="split" onClick={() => setCompareFor({})}>知识包版本对比</Button><Button icon="history" onClick={() => setVersionsOpen(true)}>已发布版本（知识包评测）</Button><Button icon="refresh" disabled={checking} onClick={() => runCheck({ refresh: true })}>重新检查</Button></>}
-      />
-      <GateChain check={check} onAction={gateAction} busy={starting} />
-      {solverNotice ? (
-        <Note tone="amber" className="mb12">
-          <span className="row"><span className="grow">{solverNotice.text}</span>
-            <Button size="xs" onClick={() => { ev.evaluate(solverNotice.release, 'solver'); setSolverNotice(null); }}>去评测</Button></span>
-        </Note>
-      ) : null}
-      {check?.uncommitted?.count ? (
-        <Note tone="amber" className="mb12">{check.uncommitted.count} 处改动未确认，不会随这次发布</Note>
-      ) : null}
-      <div className="mr-2c" style={{ gridTemplateColumns: 'minmax(0,1fr) 400px' }}>
+      <div className="pb-page">
+        <PublishCard
+          check={check}
+          gates={gates}
+          verdict={verdict}
+          versions={versions}
+          selCommit={selCommit}
+          onPickVersion={(c) => setCommit(c === head?.commit ? null : c)}
+          proceed={proceed}
+          publishing={publishing}
+          onPublish={() => publish(false)}
+          menu={menu}
+          solverNotice={solverNotice}
+          onEvaluate={() => { ev.evaluate(solverNotice.release, 'solver'); setSolverNotice(null); }}
+        />
         {check ? (
-          <PublishCheck
+          <PublishProblems
             check={check}
-            checking={checking}
+            gates={problems}
             acknowledged={ack}
             onAcknowledge={setAck}
             publishing={publishing}
             onRecheck={() => runCheck()}
             onDegrade={() => publish(true)}
             onChanged={() => { setCommit(null); loadVersions(); }}
+            onGateAction={gateAction}
+            busy={starting}
           />
-        ) : <div className="card pad sm muted">正在检查…</div>}
-        <div className="col" style={{ gap: 12 }}>
-          <div className="mr-exp main">
-            <span className="ei"><Icon name="upload" size={18} /></span>
-            <div className="grow">
-              <div className="b mb8">发布为知识包</div>
-              <div className="row">
-                <Chip tone="blue" icon="cpu">{formatLabel(check)}</Chip>
-                <Select value={selCommit} options={versionOptions(versions)} onChange={(c) => setCommit(c === head?.commit ? null : c)} icon="tag" w="104px" className="pb-sel" />
-                <span className="sp" />
-                <Button size="sm" kind="primary" disabled={proceed.disabled || publishing} title={proceed.title || undefined} onClick={() => publish(false)}>{proceed.label}</Button>
-              </div>
-              {proceed.title ? <div className="xs muted mt8">{proceed.title}</div> : null}
-            </div>
-          </div>
-          <KnowledgeSharing projectId={pid} refreshKey={sharingTick} />
-          <div className="mr-exp">
-            <span className="ei"><Icon name="archive" size={18} /></span>
-            <div className="grow">
-              <div className="b">导出迁移包</div>
-              <div className="sm muted">含资料和版本历史</div>
-            </div>
-            <Button size="sm" onClick={exportTransfer}>导出</Button>
-          </div>
-        </div>
+        ) : null}
+        <PublishedVersions
+          projectId={pid}
+          projectName={meta?.name || ''}
+          ev={ev}
+          records={records}
+          refreshKey={releasesTick}
+          sharing={<KnowledgeSharing projectId={pid} refreshKey={releasesTick} />}
+          onCompare={(target) => setCompareFor(target || {})}
+          onManifest={setManifestFor}
+          onDownloadLocal={download}
+        />
       </div>
-      <ReleaseRecords records={records} onManifest={setManifestFor} onDownload={download} onCompare={setCompareFor} />
-      <PublishedVersions open={versionsOpen} projectId={pid} projectName={meta?.name || ''} ev={ev}
-        onClose={() => setVersionsOpen(false)} onCompare={(target) => setCompareFor(target || {})} />
       <EvaluationDialogs ev={ev} tasks={tasks} />
+      <LegacyEvaluations pid={pid} tasks={tasks} open={legacyOpen} onClose={() => setLegacyOpen(false)} />
       <PackageCompare open={!!compareFor} projectId={pid} projectName={meta?.name || ''} initialReleaseId={compareFor?.releaseId || ''}
         initialVersion={compareFor?.version || ''} onClose={() => setCompareFor(null)} />
       <ManifestDrawer rec={manifestFor} onClose={() => setManifestFor(null)} onDownload={download} />

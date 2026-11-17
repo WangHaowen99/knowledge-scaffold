@@ -51,11 +51,21 @@ def _autobuild_slices(project_id: str) -> dict[str, dict]:
     return index
 
 
+_SOURCE_PREFIX = re.compile(
+    r"^(?:revert|web|knowledge|studio|mcp|import|clone|init|chore|feedback|autobuild|agent|assistant|plugin):\s*")
+_CHANGESET_SUFFIX = re.compile(r"\s*[（(]cs-\d+[)）]\s*$")
+_AUTHOR_SUFFIX = re.compile(r" by [A-Za-z0-9_.-]{1,64}$")
+_KIND_REPEAT = re.compile(r"(资料|对象|操作|规则|指标) \1「")
+
+
 def _summary(message: str) -> str:
-    """版本说明给人看的那份（F4b-paths）：来源另有一栏，去掉提交信息里的来源前缀；路径换成业务名。"""
-    text = re.sub(r"^(?:revert|web|knowledge|studio|mcp|import|clone|init|chore|feedback|autobuild|agent):\s*", "",
-                  message or "")
-    return workspace_labels.humanize(text) or message
+    """版本说明给人看的那份（F4b-paths）。
+
+    来源、作者另有字段：去掉提交信息里的来源前缀、变更集编号与「by 用户」；路径换成业务名，
+    「转换资料 资料「X」」这类动词已带类别的不再重复。
+    """
+    text = _AUTHOR_SUFFIX.sub("", _CHANGESET_SUFFIX.sub("", _SOURCE_PREFIX.sub("", message or "")))
+    return _KIND_REPEAT.sub(r"\1「", workspace_labels.humanize(text)) or message
 
 
 def _releases(project_id: str, entries: list[dict]) -> tuple[dict[str, str], str]:
