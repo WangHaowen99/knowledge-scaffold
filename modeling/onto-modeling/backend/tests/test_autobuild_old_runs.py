@@ -5,7 +5,7 @@
 
 - 详情（AB-05）：只有老运行有步骤列（`stages`），按段的一行按步骤填格子，节点一行没有格子；报告（AB-16）每个单元一行；
 - 待处理：老运行的复核项写「建模」，改判、补上发这一段那一步的命令；留到下一次的挂起问题落到那一步的节点上；
-- 撤回（AB-17 `slices/all/revert`）：按步骤记的确认记录落回提取对象、提取操作；
+- 撤回（AB-17 `slices/all/revert`）：按步骤记的确认记录落回提取对象、提取操作；按段的一段本来就整体撤回，不按倒序挡；
 - 暂停在段中间的老运行续跑：接着做这一段没做的那一步，再做后面的节点。
 
 假引擎见 tests/autobuild_helpers.py；测试数据全部为合成内容。
@@ -189,3 +189,23 @@ def test_an_old_run_that_only_did_validation_still_shows_the_finished_slice(tmp_
     assert [(row["slice_id"], row["result"], row["cells"]) for row in view["matrix"]] == [
         ("all", "运行前已完成", {"object": "confirmed", "operation": "confirmed"}), ("core.validate", "完成", {})]
     assert view["slices"] == {"done": 1, "total": 1}
+
+
+def test_an_old_slice_is_not_held_back_by_later_steps(ab):
+    """老运行按段的一段整体撤回：后面跟着的节点单元（校验用到对象、操作）合入了也不挡；节点单元之间照样倒序。"""
+    from app.services.autobuild import review
+
+    _client, _workspaces, _project_id, root = ab
+    validate = {"id": "core.validate", "name": "校验", "kind": "node", "steps": []}
+    trace = {"id": "trace.trace", "name": "场景模拟", "kind": "node", "steps": []}
+    run = {"units": [{"id": "all", "name": "全部", "kind": "slice", "steps": OLD_STEPS}, validate, trace],
+           "slices": {"all": {"commit": "a" * 40}, "core.validate": {"commit": "b" * 40},
+                      "trace.trace": {"commit": "c" * 40}}}
+    assert review._later_user(run, run["units"][0], root) is None
+    assert review._later_user(run, validate, root) is None  # 场景模拟不看校验报告
+    node_run = {**run, "units": [{"id": "core.operation", "name": "提取操作", "kind": "node", "steps": []}, validate,
+                                 trace],
+                "slices": {**run["slices"], "core.operation": {"commit": "d" * 40}}}
+    assert review._later_user(node_run, node_run["units"][0], root) == trace
+    node_run["slices"]["trace.trace"]["reverted"] = {"commit": "e" * 40}
+    assert review._later_user(node_run, node_run["units"][0], root) == validate

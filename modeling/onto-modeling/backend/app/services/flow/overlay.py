@@ -61,8 +61,9 @@ def mark_broken(states: dict, broken: set[str]) -> None:
         item["broken"] = True
 
 
-def _kinds(node: dict) -> set[str]:
-    """节点产出落在哪些产物类别里（produces 的目录对 `state.KIND_DIRS`）。"""
+def produced_kinds(node: dict) -> set[str]:
+    """节点产出落在哪些产物类别里（produces 的目录对 `state.KIND_DIRS`）：别的节点的 `stale_on` 盖住它们，就是用到了它的
+    产出（可补做、自主构建倒序撤回同一口径）。"""
     from .state import KIND_DIRS
 
     patterns = [str(item.get("path") if isinstance(item, dict) else item) for item in node.get("produces") or []]
@@ -87,7 +88,7 @@ def backfill_ids(flow: dict, hits: dict) -> set[str]:
         if hits.get(node["id"]) or not later:
             continue
         if node.get("placement", "spine") == "spine":
-            kinds = _kinds(node)
+            kinds = produced_kinds(node)
             if any(kinds & set(item.get("stale_on") or []) for item in later):
                 out.add(node["id"])
         elif node.get("pack", "core") != "core":

@@ -191,12 +191,14 @@ export const ERROR_MESSAGES = {
   anchor_not_found: '找不到这个出处',
   // 2.10 自主构建
   autobuild_running: '自主构建正在运行，先暂停或等它结束',
-  slice_reverted: '这一段已经撤回',
+  slice_reverted: '这一步已经撤回',
   autobuild_not_running: '自主构建不在可以控制的状态',
   run_not_found: '这次自主构建运行不存在',
   ledger_entry_not_found: '这条自动决定不存在',
   suspension_not_found: '这个挂起的问题不存在或已回答',
-  slice_not_revertible: '这一段不能回退（未生效、已回退过，或后面的分段依赖它）',
+  // 后面的单元用到了它（倒序撤回）：服务端说先撤哪一步
+  slice_not_revertible: (d, message) => (d?.reason === 'revert_later_first' && message ? message
+    : '这一步不能回退（未生效、已回退过，或后面的修改改到了它）'),
   preview_expired: '预览已过期，请重新预览',
 };
 

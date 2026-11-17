@@ -516,7 +516,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `budget_exceeds_quota` | 422 | 预算超出平台上限或剩余配额 | `dimension, max` |
 | `ledger_entry_not_found` | 404 | 台账条目不存在 | — |
 | `suspension_not_found` | 404 | 挂起问题不存在或已回答 | — |
-| `slice_not_revertible` | 409 | 自主构建的这一步（老运行是这一段）不能撤回（未合入、已撤回，或后面的修改改到了它的条目） | `reason` |
+| `slice_not_revertible` | 409 | 自主构建的这一步（老运行是这一段）不能撤回（未合入、已撤回、后面的修改改到了它的条目，或后面用到它的一步还没撤回） | `reason`；`revert_later_first` 时另带 `slice_id`、`slice_name`（要先撤的那一步） |
 | `preview_expired` | 410 | 开始前预览已过期（10 分钟），要重新预览 | — |
 
 ### 2.11 运维
@@ -3299,6 +3299,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 - `slice_id` 是单元：节点编号（老运行是段，如 `all`）。
 - 只动这一步：恢复成运行开始前的样子，另存为新版本，其他单元不受影响；这一步的节点的确认记录放回运行前的（老运行按步骤记的落到提取对象、提取操作上）。建模蓝图不跟着撤。
+- 倒序撤回：同一次运行里更靠后的单元用到了这一步的产出（它的节点的 `stale_on` 盖住这一步节点的产出类别，同流程过期的口径）、还没撤回时，回 `409 slice_not_revertible`，`message` 是「先撤回「提取操作」」，`details` 为 `{reason: "revert_later_first", slice_id, slice_name}`（最靠后的那个单元）；它撤回以后这一步就能撤。老运行按段的单元整体撤回，不受这条限制。
 - 响应：`{commit, version_label, reverted_to_version_label}`。
 - 错误：`slice_not_revertible`、`autobuild_running`（本次运行还在跑）。
 

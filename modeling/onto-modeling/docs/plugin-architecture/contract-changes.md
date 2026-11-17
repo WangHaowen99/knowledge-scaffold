@@ -2045,7 +2045,10 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
 8. AB-16 `AutobuildReport`：`slices` 每个单元一行（原来只有段），`metrics.slices`、`metrics.produced` 按全部单元算；节点单元合入过
    就能撤回（`revertible`）。
 9. AB-17（路径 `/runs/{run_id}/slices/{单元}/revert` 不变）：撤回一个单元，节点单元也行（原来只有段）；这一步的节点的确认记录放回
-   运行前的；建模蓝图不跟着撤。错误码、专项审计 `autobuild.revert_slice` 不变。
+   运行前的；建模蓝图不跟着撤。错误码、专项审计 `autobuild.revert_slice` 不变。必须倒序撤回（用户定）：同一次运行里更靠后、用到了
+   这一步产出（它的节点的 `stale_on` 盖住这一步节点的产出类别，同流程过期的口径）、还没撤回的单元在，回 `409 slice_not_revertible`，
+   `message`「先撤回「提取操作」」，`details: {reason: "revert_later_first", slice_id, slice_name}` 是最靠后的那个；它撤回后这一步就能撤。
+   没用到的不挡（撤校验不看后面的场景模拟）。老运行按段的单元整体撤回，不受这条限制。
 10. AB-10～AB-15：`LedgerEntry.slice`、`Suspension.slice` 是单元 `{id, name}`；复核项 `summary` 以节点名开头（「提取操作：三级」）。
     待处理里自主构建复核项的影响写「步骤：<节点名>」。改判、补上发那一步的命令，不再带 `slice=` 参数。
 11. 卡片：`autobuild_start` 的「范围」写「N 步」；`slice_progress` 每个单元一张；EP-15 `autobuild.safe_point` 每个单元合入后发一次。

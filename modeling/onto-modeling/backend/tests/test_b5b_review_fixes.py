@@ -194,9 +194,11 @@ def test_C_shutdown_right_after_a_merge_keeps_the_slice_linked(ab, monkeypatch):
         assert "/ontology-extract-operation" in AutoEngine.sent and "/ontology-validate" in AutoEngine.sent
         versions = again.get(f"/api/v1/projects/{project_id}/versions", params={"source": "autobuild"}).json()["items"]
         assert next(item for item in versions if item["commit"] == fired["commit"])["run"]["slice_id"] == "core.object"
-        # 提取对象之后的提取操作改的是操作，不挡撤回提取对象
-        revert = again.post(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/core.object/revert")
-        assert revert.status_code == 200, revert.text
+        # 接回的那一步照样能撤：倒序撤回，先撤后面用到它的校验、提取操作
+        base = f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}"
+        for unit_id in ("core.validate", "core.operation", "core.object"):
+            revert = again.post(f"{base}/slices/{unit_id}/revert")
+            assert revert.status_code == 200, (unit_id, revert.text)
 
 
 def test_C_reconcile_merged_marks_autobuild_slices_for_review(ab):
@@ -463,9 +465,11 @@ def test_L_revert_removes_extra_entries_and_keeps_the_blueprint(ab):
     assert (root / "research/blueprint.json").read_text(encoding="utf-8") == before
     assert (root / "ontology/object/额外对象.md").is_file()
     versions = int(git(root, "rev-list", "--first-parent", "--count", "HEAD").strip())
-    reverted = client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/core.object/revert")
+    base = f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}"
+    assert client.post(f"{base}/slices/core.operation/revert").status_code == 200  # 倒序撤回：先撤提取操作
+    reverted = client.post(f"{base}/slices/core.object/revert")
     assert reverted.status_code == 200, reverted.text
-    assert int(git(root, "rev-list", "--first-parent", "--count", "HEAD").strip()) == versions + 1
+    assert int(git(root, "rev-list", "--first-parent", "--count", "HEAD").strip()) == versions + 2
     doc = json.loads((root / "research/blueprint.json").read_text(encoding="utf-8"))
     assert [item["id"] for item in doc["slices"]] == ["all"] and "对象1" in doc["slices"][0]["objects"]
     assert "额外对象" not in doc["slices"][0]["objects"]

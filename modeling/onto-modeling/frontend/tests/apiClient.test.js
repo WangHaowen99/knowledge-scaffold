@@ -170,3 +170,11 @@ test('超出配额：用服务端的说法（今天 / 本月、千分位），�
   const bare = new ApiError({ status: 429, code: 'quota_exceeded', details: { quota: 'daily_tokens', limit: 2000000, used: 3314435 } });
   assert.equal(errorText(bare), '已超出配额（上限 2,000,000，已用 3,314,435）');
 });
+
+test('自主构建撤回一步回 409：要先撤后面那一步时照服务端的说法提示，其余用固定说法', () => {
+  const later = new ApiError({ status: 409, code: 'slice_not_revertible', message: '先撤回「提取操作」',
+    details: { reason: 'revert_later_first', slice_id: 'core.operation', slice_name: '提取操作' } });
+  assert.equal(errorText(later), '先撤回「提取操作」');
+  const merged = new ApiError({ status: 409, code: 'slice_not_revertible', message: '这一步没有生效过', details: { reason: 'not_merged' } });
+  assert.equal(errorText(merged), '这一步不能回退（未生效、已回退过，或后面的修改改到了它）');
+});

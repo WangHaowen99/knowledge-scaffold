@@ -3,7 +3,8 @@
 一个节点一个单元（提取对象、提取操作……），撤回按单元：
 - 挂起的问题与需复核的产出都进待处理（自主构建复核）：低于阈值的一条一项，高置信的合成一项，挂起的一个一项；
 - 接受、一键接受高置信、改判、回答挂起问题；复核完去掉「需复核」，一个单元复核完就去掉它标的；
-- 撤回一步：反向提交，运行前已有的条目不受影响；合入之后又被改过的条目挡住撤回；
+- 撤回一步：反向提交，运行前已有的条目不受影响；合入之后又被改过的条目挡住撤回；后面用到它的产出的一步没撤回时
+  先撤后面的（倒序撤回）；
 - 检查修了几轮还不过：照样合入、标需复核，不挂起（F3）。
 
 假引擎按消息现做（tests/autobuild_helpers.py），等待一律按条件。测试数据全部为合成内容。
@@ -166,6 +167,40 @@ def test_reverting_a_step_restores_what_was_there_before(ab):
     cards = [item["data"] for item in history(client, project_id, run["conversation_id"]) if item["type"] == "card"]
     report_card = next(card for card in cards if card["card_type"] == "run_report")
     assert next(row for row in report_card["slices"] if row["slice_id"] == "core.operation")["reverted"] is True
+
+
+def test_steps_are_reverted_from_the_back(ab):
+    """倒序撤回：提取操作用到了提取对象的产出（stale_on 盖住对象），没撤提取操作时撤提取对象回 409、说先撤哪一步；
+    撤了提取操作，提取对象就能撤。"""
+    client, _workspaces, project_id, root = ab
+    run = start(client, project_id, scope={"until_node": "core.operation"})
+    wait_state(client, project_id, run["run_id"], "completed")
+    base = f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}"
+    blocked = client.post(f"{base}/slices/core.object/revert")
+    assert blocked.status_code == 409 and blocked.json()["code"] == "slice_not_revertible"
+    assert blocked.json()["message"] == "先撤回「提取操作」"
+    assert blocked.json()["details"] == {"reason": "revert_later_first", "slice_id": "core.operation",
+                                         "slice_name": "提取操作"}
+    assert (root / "ontology" / "object" / "对象1.md").is_file()  # 没撤
+    assert client.post(f"{base}/slices/core.operation/revert").status_code == 200
+    reverted = client.post(f"{base}/slices/core.object/revert")
+    assert reverted.status_code == 200, reverted.text
+    assert not (root / "ontology" / "object" / "对象1.md").exists()
+    assert not (root / "ontology" / "operation" / "操作1.md").exists()
+
+
+def test_a_later_step_that_does_not_use_the_output_does_not_block(ab):
+    """后面的一步没用到它的产出（场景模拟不看校验报告）：校验照样能撤；提取操作被校验、场景模拟用着，先撤最后那个。"""
+    client, _workspaces, project_id, _root = ab
+    run = start(client, project_id, scope={"until_node": "trace.trace"})
+    done = wait_state(client, project_id, run["run_id"], "completed")
+    assert [row["slice_id"] for row in done["matrix"]] == ["core.object", "core.operation", "core.validate", "trace.trace"]
+    base = f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}"
+    trace_name = done["matrix"][3]["slice_name"]
+    blocked = client.post(f"{base}/slices/core.operation/revert").json()
+    assert blocked["message"] == f"先撤回「{trace_name}」" and blocked["details"]["slice_id"] == "trace.trace"
+    validated = client.post(f"{base}/slices/core.validate/revert")
+    assert validated.status_code == 200, validated.text
 
 
 def test_check_errors_are_fixed_a_few_rounds_then_merged_anyway(ab, monkeypatch):

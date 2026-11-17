@@ -3,8 +3,8 @@
 - 台账（AB-10）；接受（AB-11）、改判（AB-12：往运行对话发重做受影响部分的命令，运行还没结束就排到结束后）、
   一键接受高置信（AB-13）；
 - 挂起的问题（AB-14）与回答（AB-15：陪伴模式下助手马上补上；也可以留到下一次自主构建）；
-- 撤回一个单元（AB-17）：在主线上写它的反向提交，别的单元不动；合入之后它的条目又被改过就不撤；它的节点的确认记录
-  放回运行前的样子；
+- 撤回一个单元（AB-17）：在主线上写它的反向提交，别的单元不动；合入之后它的条目又被改过就不撤；同一次运行里更靠后的
+  单元用到了它的产出、还没撤回时不撤（倒序撤回）；它的节点的确认记录放回运行前的样子；
 - 「需复核」标记：一个单元里的自动决定都复核过（没有决定的单元，整次运行都复核完）就去掉它合入时标的，整次运行都
   复核完时这次运行标的全去掉；
 - 复核被改掉的比例记进可观测（`onto_autobuild_reviews_total{outcome}`）。
@@ -307,6 +307,10 @@ def revert_slice(project_id: str, run_id: str, unit_id: str, *, actor: str) -> d
     if done:
         result = {"commit": done.get("commit"), "version_label": done.get("version_label")}
     else:
+        later = _later_user(run, unit, root)
+        if later is not None:
+            raise ApiError("slice_not_revertible", f"先撤回「{later['name']}」", 409,
+                           {"reason": "revert_later_first", "slice_id": later["id"], "slice_name": later["name"]})
         try:
             result = changesets.revert_merged(ws, project_id, info["changeset_id"], actor=actor, source="revert",
                                               keep=(blueprint.BLUEPRINT_REL,))
@@ -321,6 +325,29 @@ def revert_slice(project_id: str, run_id: str, unit_id: str, *, actor: str) -> d
     run = _after_revert(project_id, run_id, unit, result, actor)
     return {"commit": result["commit"], "version_label": result["version_label"],
             "reverted_to_version_label": run.get("base_version_label")}
+
+
+def _later_user(run: dict, unit: dict, root: Path) -> dict | None:
+    """同一次运行里更靠后、用到了这个单元的产出、还没撤回的单元（取最靠后的一个），要先撤它：倒序撤回，免得撤掉的条目
+    还被后面合入的内容引用着。用到 = 它的节点的 `stale_on` 盖住了这个单元的节点的产出类别（和流程过期同一口径）。
+    老运行按段的单元本来就整体撤回，不查；节点不在现在的流程里时判断不了，不挡。"""
+    from ..flow import model as flow_model
+    from ..flow import overlay
+
+    if unit.get("kind") == "slice":
+        return None
+    nodes = {node["id"]: node for node in flow_model.load_for(Path(root)).get("nodes") or []}
+    produced = overlay.produced_kinds(nodes[unit["id"]]) if unit["id"] in nodes else set()
+    units = run.get("units") or []
+    index = next((position for position, item in enumerate(units) if item["id"] == unit["id"]), len(units))
+    for later in reversed(units[index + 1:]):
+        info = store.unit_info(run, later["id"])
+        node = nodes.get(later["id"]) if later.get("kind") != "slice" else None
+        if node is None or not info.get("commit") or info.get("reverted"):
+            continue
+        if produced & {str(kind) for kind in node.get("stale_on") or []}:
+            return later
+    return None
 
 
 def repair_reverts(project_id: str) -> int:
