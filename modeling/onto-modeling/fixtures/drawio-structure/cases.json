@@ -1,0 +1,37 @@
+[
+  {
+    "name": "valid-wrapped",
+    "frontend_error": "unsupported wrapped cell",
+    "repair_issues": [],
+    "repairable": false,
+    "checker_issue": null
+  },
+  {
+    "name": "duplicate-id",
+    "frontend_error": "节点 ID 重复",
+    "repair_issues": ["duplicate"],
+    "repairable": true,
+    "checker_issue": "id 重复"
+  },
+  {
+    "name": "dangling-edge",
+    "frontend_error": "指向不存在的节点",
+    "repair_issues": ["dangling"],
+    "repairable": true,
+    "checker_issue": "不存在的端点"
+  },
+  {
+    "name": "duplicate-edge-id",
+    "frontend_error": "单元格 ID 重复",
+    "repair_issues": [],
+    "repairable": false,
+    "checker_issue": "id 重复"
+  },
+  {
+    "name": "missing-annotation-id",
+    "frontend_error": "文字标注 ID 缺失或重复",
+    "repair_issues": [],
+    "repairable": false,
+    "checker_issue": "缺少 id"
+  }
+]

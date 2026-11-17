@@ -88,7 +88,7 @@ function isEditableTarget(target) {
 }
 
 // 自定义节点：四向连线手柄 + 双击就地改名。拖动任意手柄到目标节点或空白处即可连线。
-function FlowNode({ id, data, selected }) {
+export function FlowNode({ id, data, selected }) {
   const [draft, setDraft] = useState(null);
   const inputRef = useRef(null);
   const editing = draft !== null;

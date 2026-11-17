@@ -122,7 +122,7 @@ export default function ExcelView({ project, path, anchor = '', nonce = 0 }) {
     return (
       <Space direction="vertical">
         <Alert type="warning" showIcon message={data.error} />
-        <Button icon={<DownloadOutlined />} href={api.rawUrl(project.id, path)}>
+        <Button icon={<DownloadOutlined />} href={api.rawUrl(project.id, path)} download={path.split('/').pop()}>
           下载原文件
         </Button>
       </Space>
@@ -136,7 +136,7 @@ export default function ExcelView({ project, path, anchor = '', nonce = 0 }) {
         <Typography.Title level={5} style={{ margin: 0 }}>
           {path}
         </Typography.Title>
-        <Button size="small" icon={<DownloadOutlined />} href={api.rawUrl(project.id, path)}>
+        <Button size="small" icon={<DownloadOutlined />} href={api.rawUrl(project.id, path)} download={path.split('/').pop()}>
           下载原文件
         </Button>
       </Space>
