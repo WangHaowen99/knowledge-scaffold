@@ -1851,3 +1851,74 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
    不计入，按钮可点、点了才 422）。版本历史页左栏每行只留版本号、来源、时间、一句说明，标记、回退、查看文件收进「⋯」；右栏是选中版本的
    详情与「改了什么」，对比默认看这一版改了什么（上一版 → 这一版），可切到「这一版 → 当前」。
 
+
+## 2026-11-17 · 去掉六个官方能力包与建模步骤抽屉（ADR-0100）
+
+用户定：删除系统逆向建模（rev）、反馈演进（evo）、知识沉淀（knowledge）、联网调研（websearch）、迁移复用（migrate）、增量构建（incremental）
+六个官方能力包，工作台去掉「建模步骤」抽屉。`api-v1.md` 已同步：删除的接口标「（已删除，ADR-0100）」、正文压成一句，3.19、7.13 只留组标题和说明。
+删除的 v1 路径回 `404 not_found`（同一路径还有别的方法时回 405）；旧路径兼容里原来改写到 K-03、K-05 的两条改为回 `410 endpoint_removed`（第 6 条）。
+
+**删除的接口**
+
+1. **EV-01～EV-28、EV-30～EV-34**（3.19）：数据源、凭据、测试连接、访问审计、提供方、项目授权、采集任务、快照、证据检索、ER 视图、
+   通知管理员、目标程序分块上传，随系统逆向建模包删除；连接器网关的 `/v1/jobs*`、`/v1/secrets/*`、`/v1/sources/*/test` 一并删除。
+   **EV-29 保留**：资料出处悬停看原文要用，只解析 `file:` 锚点，其余 scheme 回 `resolved=false`、`reason=not_available`，不再记专项审计。
+2. **AD-08～AD-10**（管理员申请审核）：只服务数据源登记申请和知识提名，两者都删了。
+3. **PL-04、PL-19**（申请平台安装、平台安装提供方）：一直只回 501，连接型提供方删除后没有要装的东西。
+4. **ES-07、ES-08、ES-12**（评测优化、标记处理失败、旧报告评测优化）：产出只交给反馈演进，随反馈演进包删除；发布后不再回写评测服务。
+   评测入口、完成通知、报告查看（ES-00～ES-06、ES-09～ES-11）保留。
+5. **R-11、R-12**（外部反馈列表、标记状态）：随反馈演进包删除；工作区已有的 `feedback/*.json` 不迁移、不删。
+6. **K-03～K-08**（新增、修改、删除、冲突检查、提名预览、提交提名）：随知识沉淀包删除。**K-01、K-02 保留**、只读：
+   知识条目的存放、加载和行业层在 core，条目由助手经工具箱 `knowledge_helper` 写入。旧路径 `POST`、`DELETE /api/projects/{id}/knowledge`
+   回 `410 endpoint_removed`，`successor` 为 null（6.1）。
+7. **IN-03 的 `send_to_evolution`、`arbitrate`**：去向（反馈演进命令、证据冲突裁决）都没有了。
+8. **MCP evidence 工具与 scope `evidence.read`**（M-03、M-08，P-14 内置 `evidence` 服务器）：依赖证据检索，契约里一并删除。
+9. **迁移复用（migrate）**：只删包资产，格式迁移的 `migrate` 待处理动作与它无关，保留。
+10. **增量构建（incremental）**：只删包资产，内核的激活与范围限定保留；内核增量更新（`core.update`、INC-01～INC-05）不变。
+
+**删除的字段与事件**
+
+11. **联网调研**：P-05 请求、`ProjectMeta` 的 `research_mode`，`MaterialMap` 的 `analysis_mode`、`web_available`，R-07 的分析范围；
+    资料分析只读本地资料。P-05 带 `research_mode` 时忽略，不再回 `pack_not_enabled`。
+12. **反馈演进**：R-01 `feedback_group`；ES-02 `writeback`、`evolution`（`reconcile=1` 不再补写回写）；ES-09 `evolution`、`evolution_enabled`；
+    PB-03 `evaluation_writeback`；`ReleaseRecord.feedback_count`；待处理 kind 与筛选 `feedback`（IN-01 `counts.by_filter`、IN-02 detail、
+    `InboxItem.source` 的 `external`）；类型 `Feedback`；卡片 `external_feedback`。
+13. **知识沉淀**：EP-23 `knowledge.updated`；内置页面 `knowledge`（左栏内核导航不再有「知识沉淀」）；卡片 `knowledge_saved`；类型 `ConflictFinding`。
+14. **证据采集**：C-01 `features.evidence`（契约里原本没写）；EP-13 `evidence.job.updated`；Question kind `collection`；`upload_prompt` 卡片的
+    `sources_available` 与动作 `connect_system`，P-02 `starting_points` 的 `connect_system`；`PackCard.collector`，PL-01 `project_status`
+    的 `platform_available`；PL-12 `entries` 的 `source_wizard`，`view_choices` 只剩 `er_view`；`FlowNode.kind` 的 `external`，流程条件
+    `evidence_sources`、`evidence_snapshot`（不认识的条件一律不成立）；P-06、P-08、P-09 里的证据快照、`include_snapshots`、数据源授权与登记；
+    P-10 `evidence_sources`；ST-04 的 `evidence_snapshots`、`counts.evidence`（每个属性的 `evidence` 占位保留）；
+    ST-06 `snapshot_basis` 恒为空、只给 `file:` 锚点、不记审计；`AnchorResolution` 的 `reason` 改为
+    `invalid|file_missing|not_found|unreadable|not_available`，`page` 不再有 `schema`，`snapshot_id` 恒为 null；7.13 的全部类型。
+15. **证据冲突**：待处理 kind 与筛选 `evidence_conflict`、动作 `arbitrate`、类型 `ConflictDetail`；IN-01 带 `filter=evidence_conflict` 回
+    `400 invalid_argument`（`fields.filter=enum`）。来源（三方对账）随证据采集没有了。
+16. **子页**：内核内置子页 `BUILTIN_SUBPAGES` 清空（原来是资料页的 sources、snapshots、schema），包声明子页时静态检查不通过；子页机制保留。
+17. **自主构建**：AB-01、AB-02 的 `production_collection`，SY-17 与 AB-01 `platform_limits` 的 `allow_production_collection`，AB-03 预览的
+    生产库授权，`Suspension.kind` 的 `unauthorized_collection`。请求里带了照样忽略，老文件里的不再读、下次保存时清掉；AB-01
+    `platform_limits` 为 `{}`、`not_enforced` 为 `[]`。
+18. **通知 kind**：`evidence_conflict`、`nomination_reviewed`、`request_pending`、`request_reviewed`。
+19. **错误码**：2.8 除 `anchor_not_found`（PB-02 设数据库锚点时一律返回）外全部删除；2.7 `knowledge_duplicate`、`nomination_not_found`；
+    2.9 `feedback_invalid`、`artifacts_changed`、`version_mismatch`、`optimization_not_supported`、`note_required`；AB-02 不再列 `source_not_authorized`。
+20. **配额**：SY-15 的 `collections_per_source_per_hour`、`snapshot_git_mb`，PUT 带了回 `400 invalid_argument`（`fields` 记 `unknown`）；
+    SY-16 单独设置的 `item` 取这两项回 `400`（`fields.item=enum`）；`not_enforced` 为 `[]`。老配额文件里的这两项不读，下次保存时去掉。
+21. **配置与运维**：配置项 `ONTO_WEB_EVIDENCE_MAX_ARTIFACT_MB`、`ONTO_WEB_EVIDENCE_SNAPSHOT_GIT_MB`；O-40 任务类型 `collection`（带了回 400）；
+    O-41 的 `resume` 操作（回 `404 not_found`）；O-48、O-49 审计类型 `evidence`（老记录照原样显示，按它筛选回 400）；O-50 错误来源
+    `collection`；O-02 `collections` 指标、O-42 `evidence-snapshot`、O-43 `snapshots` 保留项（代码里原本没有）。
+
+**新增（下架状态）**
+
+22. **启动时下架镜像里已移除的官方包**（`builtin.retire_missing`）：全部版本都由镜像入库、没有 owner、不是 core，这次 `assets/packs` 里
+    没有它，就在通道记录上记 `retired: {at, by, reason}`；`assets/packs` 整个不存在时不下架。原因：老环境的包仓库和锁文件里还有这些包，
+    不下架的话插件中心照样列出，启用过的项目装配时缺资产。
+23. **下架的效果**：PL-01、PL-02、新建项目的缺省启用、跟随通道、O-25 插件运维都不列；PL-06 启用、试装配回 `pack_not_found`；
+    `runtime.normalize` 把它从项目锁文件去掉，作为一次系统提交，项目照常装配。版本目录不删。
+24. **取消下架**：换回带这个包的镜像入库时，或上传发布同名新版本时；通道指针不变，已去掉的锁条目不加回来，要用的项目重新启用。
+25. 下架是包级的通道记录，不出现在接口字段里；和 O-25 版本行的 `channel="retired"`（这个版本不在任何通道上）不是一回事。
+
+**前端**
+
+26. **建模步骤抽屉**：顶栏按钮和抽屉删除，进度条只展示、不能点开。FL-03、FL-04 后端保留、前端不再调用；FL-01 `sections` 照常返回、
+    前端不再用；FL-05 留给建议条、发布页「去运行」、待处理「刷新」。S-20 `display_label` 不再有「建模步骤」来源。
+27. **随包删除的页面与入口**：资料子页 sources、snapshots、schema，知识沉淀页 knowledge；新建向导、上传卡、⌘K 的「连接业务系统」；
+    资料区外部反馈分组；资料分析的联网 / 仅本地切换；发布页评测优化与标记处理失败；待处理的外部反馈、证据冲突筛选；对话里的采集确认、沉淀入库卡片。
