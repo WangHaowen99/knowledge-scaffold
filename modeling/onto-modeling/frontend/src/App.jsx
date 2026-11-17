@@ -623,9 +623,20 @@ export default function App() {
           ×
         </button>
         <h3 title={item.name}>{item.name}</h3>
-        <div className={`pd ${item.background ? '' : 'pd-empty'}`}>
-          {item.background || `对象 ${item.objects ?? 0} · 操作 ${item.operations ?? 0}`}
-        </div>
+        <Tooltip
+          title={item.background ? (
+            <div
+              style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '50vh', overflowY: 'auto', userSelect: 'text', cursor: 'text' }}
+              onClick={(event) => event.stopPropagation()}
+            >
+              {item.background}
+            </div>
+          ) : null}
+        >
+          <div className={`pd ${item.background ? '' : 'pd-empty'}`}>
+            {item.background || `对象 ${item.objects ?? 0} · 操作 ${item.operations ?? 0}`}
+          </div>
+        </Tooltip>
         <div className="pj-prog" title={stageLabel(item)}>
           <div
             className="pj-prog-in"

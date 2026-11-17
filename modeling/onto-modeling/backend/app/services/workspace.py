@@ -1239,7 +1239,13 @@ class WorkspaceManager:
 
     def clone_project(self, project_id: str, owner: str = "", name: str = "") -> dict:
         source_root = self.project_root(project_id)
+        source_meta = self.get_project(project_id)
         meta = self.create_project(name or self.clone_name(project_id), owner=owner)
+        # Only inherit the goal fields; identity, ownership and runtime metadata stay new.
+        meta = self._update_meta(
+            meta["id"],
+            **{key: source_meta[key] for key in ("background", "goal_status") if key in source_meta},
+        )
         dest_root = self.project_root(meta["id"])
         for path in sorted(source_root.rglob("*")):
             if path.is_symlink() or not path.is_file():
