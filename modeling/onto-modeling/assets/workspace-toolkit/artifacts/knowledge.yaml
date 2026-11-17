@@ -1,5 +1,5 @@
-# 知识条目的格式由 core 登记（详设 5.9.8：存放和加载本来就在 core，知识沉淀页只是使用）。
-# 读写走知识接口（K-*，要经 knowledge_helper 维护索引与修订历史），通用产物接口只读。
+# 知识条目的格式由 core 登记（详设 5.9.8：存放和加载本来就在 core）。
+# 网页只读（K-01、K-02），写入经 knowledge_helper 维护索引与修订历史；通用产物接口只读。
 type: core.knowledge
 title: 业务知识
 path: ontology/knowledge/*.md

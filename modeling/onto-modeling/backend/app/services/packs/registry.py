@@ -39,7 +39,6 @@ KERNEL_NAV = (
 # 平台内置页面的默认标题与图标：包没写 nav 时用它
 PAGE_DEFAULTS = {
     "scenarios": ("场景模拟", "flask"),
-    "knowledge": ("知识沉淀", "book"),
     "scripts": ("代码生成与求解", "code"),
 }
 NAV_VISIBLE = 5
@@ -319,7 +318,7 @@ def changed_parts(before: dict | None, after: dict) -> list[str]:
 def prompt_rules(manager, root: Path) -> list[dict]:
     """生效中的装配里各包声明的提示规则：{id, pack, match: [正则], text}。
 
-    会话宿主（详设 4.2 ㊶）在两轮之间按用户消息匹配并注入 text；知识沉淀包的纠错信号就是一条。
+    会话宿主（详设 4.2 ㊶）在两轮之间按用户消息匹配并注入 text；增量更新包的「结束本轮」就是一条。
     """
     from ..flow import conditions
 

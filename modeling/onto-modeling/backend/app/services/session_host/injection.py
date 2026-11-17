@@ -8,8 +8,7 @@
   登记的提供方给（`register_next_step_provider`：在助手工作目录里跑 `state_helper suggest`，ADR-0048），
   没登记时用 FL-02；
 - 包的提示规则（详设 5.6；ADR-0040、0045）：生效中的装配里各包声明的 `prompts`，按用户原话匹配，
-  每条消息单独判断，探测的是用户原文，不是斜杠命令展开后的全文。知识沉淀包的纠错与惯例信号就是一条
-  （原 `knowledge_signal_probe.sh`），没启用这个包的项目不提示。规则由登记的数据源算
+  每条消息单独判断，探测的是用户原文，不是斜杠命令展开后的全文；没启用声明规则的包的项目不提示。规则由登记的数据源算
   （`register_prompt_hint_provider`，启动时在 `app/wiring.py` 登记；Jiuwen worker 进程自己登记一份）。
 
 - 自主构建（方案 B12）：运行中给这条对话注入段说明、台账摘要与用户补充，每条都带（`register_autobuild_hint_provider`）。
@@ -89,7 +88,7 @@ class InjectionResult:
     text: str  # 拼好的注入文本；空串 = 本条不注入
     digest: str | None  # 模型已看到的阶段提示摘要，下一条消息作为 last_injected 传回
     stage_hint: str = ""  # 本条带上的阶段提示，没带为空
-    prompt_hint: str = ""  # 本条命中的包提示规则（如知识沉淀的纠错信号），没命中为空
+    prompt_hint: str = ""  # 本条命中的包提示规则（如增量更新包的「结束本轮」），没命中为空
 
 
 def goal_hint(project_root: Path) -> str:
@@ -324,7 +323,7 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-# ---- 包的提示规则（知识沉淀的纠错信号原是 knowledge_signal_probe.sh）----
+# ---- 包的提示规则 ----
 
 _prompt_hint_provider: "Callable[[Path, str], list[str]] | None" = None
 

@@ -60,35 +60,6 @@ def subprocess_ls(root) -> str:
     return proc.run(["git", "ls-files"], cwd=root, capture_output=True, text=True, check=True).stdout
 
 
-# ---- 知识：加载规则说明、冲突说明不下发，冲突的另一方给数据 ----
-
-
-def test_knowledge_conflicts_carry_data_not_sentences(tmp_path):
-    import json
-
-    from app.services import knowledge_layers
-
-    root = tmp_path
-    (root / "ontology" / "object").mkdir(parents=True)
-    entry = {"id": "domain-rule-a", "title": "陈列上限", "_slug": "a", "_rule": "合成口径一", "source": {"kind": "manual"},
-             "scope": {"entries": [{"kind": "object", "key": "不存在的对象"}]}}
-    twin = {**entry, "id": "domain-rule-b", "_slug": "b", "scope": {}}
-    industry = [{"id": "industry-retail:a", "title": "陈列上限（行业）", "_slug": "a", "_rule": "合成口径二",
-                 "_pack_label": "零售连锁"}]
-    result = knowledge_layers.check_conflicts(root, [entry, twin], industry)
-    by_kind = {item["kind"]: item for item in result["conflicts"]}
-    assert all("note" not in item for item in result["conflicts"])
-    assert by_kind["duplicate"]["duplicate_of"] == {"id": "domain-rule-a", "title": "陈列上限"}
-    assert by_kind["broken_ref"]["missing"] == ["不存在的对象"]
-    assert [knowledge_layers.conflict_with(by_kind[k]) for k in ("scope_conflict", "duplicate", "broken_ref")] == [
-        "陈列上限（行业）", "陈列上限", "不存在的对象"]
-    # 旧版存下的结果带 note：读出来时去掉
-    old = {**result, "conflicts": [{**item, "note": "旧说明"} for item in result["conflicts"]]}
-    knowledge_layers.save_conflicts(root, old)
-    assert all("note" not in item for item in knowledge_layers.last_conflicts(root)["conflicts"])
-    assert json.loads((root / knowledge_layers.CONFLICTS_REL).read_text(encoding="utf-8"))
-
-
 # ---- 运维可观测：合入卡有计数来源、证据采集卡不返回、没有数据的列不返回 ----
 
 

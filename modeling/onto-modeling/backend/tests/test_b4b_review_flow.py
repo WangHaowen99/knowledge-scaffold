@@ -164,27 +164,8 @@ def test_21_autobuild_merges_keep_their_review_flag(project):
 # ---- 22 三处小问题 ----
 
 
-def test_22_feedback_review_actions_and_change_list_metamodel(env, monkeypatch):
+def test_22_review_actions_and_change_list_metamodel(env, monkeypatch):
     client, workspaces, _manager, project_id, root = env
-    folder = root / "feedback"
-    folder.mkdir(exist_ok=True)
-    (folder / "20260101-000000-fb-1.json").write_text(json.dumps({"feedback_id": "fb-1", "source": "eval", "items": [
-        {"id": "i1", "verdict": "pass", "question": "合成"}]}), encoding="utf-8")
-    (folder / "20260101-000001-fb-2.json").write_text(json.dumps({"feedback_id": "fb-2", "source": "eval", "items": [
-        {"id": "i1", "verdict": "fail", "question": "合成"}]}), encoding="utf-8")
-    ids = [item["id"] for item in inbox.collect(workspaces, project_id)]
-    assert "feedback:fb-1" not in ids and "feedback:fb-2" in ids  # 全部通过的批次没有要处理的
-    # 交给反馈演进之后这一项就处理掉了（反馈演进包没启用时回 409，不算处理）
-    from app.routers import sessions as session_routes
-    from fastapi.responses import JSONResponse
-
-    async def fake_dispatch(project_id_, root_, request, payload):
-        return JSONResponse(status_code=202, content={"task": {"task_id": "t-1"}})
-
-    monkeypatch.setattr(session_routes, "dispatch_command", fake_dispatch)
-    handled = client.post(f"/api/v1/projects/{project_id}/inbox/feedback:fb-2/actions",
-                          json={"action": "send_to_evolution"}).json()
-    assert handled["resolved"] is True
     # 不是自主构建的需复核项没有「撤回这一段」
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))
     main_write(root, "ontology/operation/补货.md", "# 补货\n\n## 业务描述\n\n合成\n")

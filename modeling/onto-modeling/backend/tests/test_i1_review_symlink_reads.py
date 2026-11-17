@@ -92,7 +92,6 @@ def test_feedback_and_solver_do_not_follow_links(api):
     client, root, base, outside = api
     _link(root, "feedback/fb-x.json", outside / "secret.json")
     _link(root, "ontology/solver/偷看", outside)
-    assert SECRET not in client.get(f"{base}/feedback").text
     assert SECRET not in client.get(f"{base}/inbox").text
     assert SECRET not in client.get(f"{base}/solver/contract").text
 

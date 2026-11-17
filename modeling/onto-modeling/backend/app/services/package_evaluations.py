@@ -3,11 +3,9 @@
 评测轮次与产物归评测服务所有。onto 只按 Hub 包和评测服务的所有者各存一份状态索引：评测服务的完成通知写入，
 对账时整份换成评测服务自己的视图。同一个包可以由多位用户评测，各人的轮次只属于本人，一个人的轮次不会点亮
 另一个人的按钮。当前用户在评测服务的所有者标识从对账结果里学来，不在本地按签发方推算（两边的签发方配置可能不同）。
-报告、优化建议和其中链接的完整回答，查看时都以用户自己的登录读取；只有用户对项目当前版本点「评测优化」时，
-才把产物拉进工作区，整理成一批外部反馈（feedback_inbox），交给反馈演进（/ontology-evolution）照常处理。
+报告、优化建议和其中链接的完整回答，查看时都以用户自己的登录读取。
 
-轮次有两种来源：评测轮次和由消费反馈汇成的轮次，索引按版本、来源分开记。评测优化之后发布的新版本，以做优化的
-用户的登录回写给评测服务，作为这一轮建议的处理结果：发布时带着该登录就立即回写，否则下次打开已发布版本时补写。
+轮次有两种来源：评测轮次和由消费反馈汇成的轮次，索引按版本、来源分开记。
 """
 import hashlib
 import json
@@ -15,12 +13,11 @@ import re
 import time
 from typing import Literal
 import urllib.parse
-import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from . import eval_client, feedback_inbox, hub_packages, knowledge_hub
-from .workspace import WorkspaceError, _commit_paths, remove_tree
+from . import eval_client, hub_packages, knowledge_hub
+from .workspace import WorkspaceError
 
 ID_PATTERN = r'^[A-Za-z0-9_-]{1,128}$'
 RUN_PATTERN = r'^[a-f0-9]{32}$'
@@ -28,12 +25,9 @@ STEM_PATTERN = r'^eval-\d{8}-\d{6}-[a-f0-9]{6}$'
 # answers.json 中的结果 ID：报告里第 N 个用例为 case-N
 RESULT_PATTERN = r'^case-[1-9][0-9]{0,5}$'
 STATUS_PATTERN = r'^[a-z_]{1,32}$'
-# 与评测服务一致的表名、字段名规则，也保证表名可以直接作文件名、字段名无需 CSV 转义
-TABLE_NAME = re.compile(r'[A-Za-z_一-鿿][A-Za-z0-9_一-鿿]{0,63}')
 VIEW_LIMIT = 2 * 1024 * 1024
 ARTIFACT_LIMITS = {'report.md': 8 * 1024 * 1024, 'suggestions.md': 256 * 1024,
-                   'answers.json': 8 * 1024 * 1024, 'context.json': 2 * 1024 * 1024}
-STATE_DIR = ('.ontology-state', 'eval-service')
+                   'answers.json': 8 * 1024 * 1024}
 
 
 class _Model(BaseModel):
@@ -306,8 +300,8 @@ def _view(configured, linked=None, solver_revisions=None, message=None):
     linked = linked or {}
     return dict(configured=configured, reachable=None, message=message,
                 ontology_id=linked.get('ontology_id'), current_release_id=linked.get('release_id'),
-                current_version=linked.get('version'), active=None, releases={}, feedback={}, writeback=None,
-                solver_releases={}, solver_revisions=solver_revisions or {}, evolution=False)
+                current_version=linked.get('version'), active=None, releases={}, feedback={},
+                solver_releases={}, solver_revisions=solver_revisions or {})
 
 
 def overview(pid, subject, token, refresh=False):
@@ -317,12 +311,6 @@ def overview(pid, subject, token, refresh=False):
         return {**result, 'message': '未配置评测服务地址'}
     if not linked:
         return result
-    if refresh:
-        # 先补上未完成的回写，随后的对账就能看到评测服务记下的处理结果；回写失败不影响查看
-        try:
-            settle(pid, subject, token)
-        except (OSError, ValueError, WorkspaceError):
-            pass
     # 还没对账过的用户不知道自己在评测服务的所有者标识，只能等对账，不能借用别人的索引
     index = _read_index(linked['ontology_id'], _owner_of(subject))
     if refresh:
@@ -335,8 +323,7 @@ def overview(pid, subject, token, refresh=False):
     def shown(section):
         return {release_id: {key: value for key, value in entry.items() if key not in ('sequence', 'received_at')}
                 for release_id, entry in index[section].items()}
-    return {**result, 'active': index['active'], **{section: shown(section) for section in SECTIONS},
-            'writeback': writeback_view(pid, subject)}
+    return {**result, 'active': index['active'], **{section: shown(section) for section in SECTIONS}}
 
 
 def _reference(run, key):
@@ -449,336 +436,3 @@ def regenerate(pid, subject, token, run_id):
         if entries:
             knowledge_hub.save(_index_path(package_id, owner), index)
     return artifacts
-
-
-# ---- 评测优化：把产物拉进工作区，整理成一批外部反馈 ----
-
-TABLES_DIR = 'tables'
-# 反馈批次的来源名：界面按「{来源}回传」显示
-SOURCE_NAMES = {'evaluation': '评测服务', 'consumer_feedback': '用户反馈'}
-_VERSION = re.compile(r'\d+\.\d+\.\d+')
-_CASE_HEADING = re.compile(r'^### (\d+)\. ', re.M)
-
-
-def feedback_id(run_id, revision):
-    """一轮评测的一个产物修订对应一批反馈：同一修订再点评测优化不会重复成批。"""
-    return f'eval-{run_id}-r{revision}'
-
-
-def _suggestions_name(stem):
-    # 不能落在 eval-*.md：泛化校验没有反馈批次时按这个模式取旧版评测报告
-    return 'optimization-' + stem.removeprefix('eval-') + '.md'
-
-
-def _tables_dir(root, stem):
-    return root.joinpath(*STATE_DIR, TABLES_DIR, stem)
-
-
-def _write_tables(root, stem, tables):
-    """数据源表头写成只有表头行的 CSV，供 table_profile.py 三方对账；业务数据不离开评测服务。"""
-    folder = _tables_dir(root, stem)
-    remove_tree(folder)
-    folder.mkdir(parents=True)
-    written = 0
-    for name, columns in (tables if isinstance(tables, dict) else {}).items():
-        header = [column for column in columns if isinstance(column, str) and TABLE_NAME.fullmatch(column)] \
-            if isinstance(columns, list) else []
-        if TABLE_NAME.fullmatch(name) and header:
-            (folder / f'{name}.csv').write_text(','.join(header) + '\n', encoding='utf-8')
-            written += 1
-    return written
-
-
-def _previous_import(root, run_id, artifacts):
-    """这一修订已经导入过且文件都在、之后也没有新出优化建议时，返回当时的记录。"""
-    state = root.joinpath(*STATE_DIR)
-    record = knowledge_hub.load(state / 'imports.json', {}).get(run_id)
-    if not record or record['revision'] != artifacts.revision:
-        return None
-    if artifacts.suggestions == 'ready' and not record['suggestions']:
-        return None
-    reports = [f'{record["stem"]}.md', f'{record["stem"]}.answers.json'] + ([record['suggestions']] if record['suggestions'] else [])
-    imported = all((root / 'reports' / name).is_file() for name in reports) and (state / f'{record["stem"]}.json').is_file()
-    if imported and feedback_inbox.batch_path(root, record['feedback_id']):
-        return record
-    return None
-
-
-def _fetch_import(run_id, artifacts, token):
-    """同一修订的全部产物；两次请求之间评测服务可能开始重新生成。"""
-    names = ['report.md', 'answers.json', 'context.json'] + (['suggestions.md'] if artifacts.suggestions == 'ready' else [])
-    responses = {name: _download(run_id, name, token) for name in names}
-    versions = {(revision, stem) for _, revision, stem in responses.values()}
-    if len(versions) != 1:
-        raise WorkspaceError('评测产物正在更新，请稍后重试', 409, 'artifacts_changed')
-    revision, stem = versions.pop()
-    if not revision.isdigit() or not re.fullmatch(STEM_PATTERN, stem):
-        raise _invalid_response()
-    try:
-        context = json.loads(responses['context.json'][0])
-    except ValueError as exc:
-        raise _invalid_response() from exc
-    if not isinstance(context, dict):
-        raise _invalid_response()
-    return int(revision), stem, {name: value[0] for name, value in responses.items()}, context
-
-
-def _section(body, label):
-    """用例小节里「- **label**：」之后、下一个「- **」之前的行。"""
-    lines, inside = [], False
-    for line in body.splitlines():
-        if line.startswith(f'- **{label}**'):
-            inside = True
-            continue
-        if inside and line.startswith('- **'):
-            break
-        if inside:
-            lines.append(line.strip())
-    return lines
-
-
-def _report_cases(text):
-    """报告「逐用例明细」里每个用例的标准答案与工具失败行（第 N 个用例 → {...}）；格式认不出的用例不给。"""
-    found = {}
-    heads = list(_CASE_HEADING.finditer(text))
-    for index, head in enumerate(heads):
-        body = text[head.end():heads[index + 1].start() if index + 1 < len(heads) else len(text)]
-        quoted = [line[1:].removeprefix(' ') for line in _section(body, '标准答案') if line.startswith('>')]
-        expected = '\n'.join(quoted).strip()
-        failures = [line[2:] for line in _section(body, '工具失败') if line.startswith('- ')]
-        found[int(head.group(1))] = {'expected': '' if expected == '（无）' else expected, 'tool_failures': failures}
-    return found
-
-
-def feedback_items(answers_json, report):
-    """answers.json 里失分（fail、partial、error）的用例；标准答案和工具失败只在报告里，按用例顺序对上
-    （报告第 N 个用例就是 answers 的第 N 条；旧链路的结果 ID 不是 case-N）。格式不对时抛 ValueError。"""
-    answers = json.loads(answers_json).get('answers')
-    if not isinstance(answers, list):
-        raise ValueError('answers 必须是数组')
-    details = _report_cases(report.decode('utf-8', errors='replace') if isinstance(report, bytes) else report)
-    items = []
-    for position, record in enumerate(answers, 1):
-        if not isinstance(record, dict) or record.get('verdict') not in feedback_inbox.VERDICTS:
-            continue
-        case_id, question = str(record.get('resultId') or ''), str(record.get('question') or '')
-        if not case_id or not question.strip():
-            continue
-        detail = details.get(position, {})
-        items.append(dict(case_id=case_id, question=question, expected=detail.get('expected', ''),
-                          actual=str(record.get('finalAnswer') or ''), loss_reason=str(record.get('reason') or ''),
-                          verdict=record['verdict'], tool_failures=detail.get('tool_failures', [])))
-    return items[:feedback_inbox.MAX_ITEMS]
-
-
-def _items(files):
-    try:
-        return feedback_items(files['answers.json'], files['report.md'])
-    except (ValueError, AttributeError) as exc:
-        raise _invalid_response() from exc
-
-
-def _feedback_document(run, reference, revision, stem, files, context, suggestions, tables):
-    summary = context.get('summary') if isinstance(context.get('summary'), dict) else {}
-    version = str(reference.get('version') or '')
-    attachments = dict(report=f'reports/{stem}.md', answers=f'reports/{stem}.answers.json')
-    if suggestions:
-        attachments['suggestions'] = f'reports/{suggestions}'
-    if tables:
-        attachments['tables'] = '/'.join((*STATE_DIR, TABLES_DIR, stem))
-    payload = dict(
-        feedback_id=feedback_id(run['id'], revision),
-        source={'service': SOURCE_NAMES.get(run.get('origin') or 'evaluation', SOURCE_NAMES['evaluation']), 'run': run['id']},
-        # Hub 正式版本是 0.1.N；评测快照、外部导入的版本号不当发布版本记
-        release_version=version if _VERSION.fullmatch(version) else '',
-        summary={key: summary.get(key) for key in feedback_inbox.SUMMARY_FIELDS
-                 if isinstance(summary.get(key), (int, float)) and not isinstance(summary.get(key), bool)},
-        items=_items(files), attachments=attachments)
-    try:
-        return feedback_inbox.normalize(payload, allow_empty=True)
-    except feedback_inbox.FeedbackRejected as exc:
-        raise _invalid_response() from exc
-
-
-def _store_import(manager, root, run, reference, revision, stem, files, context, actor):
-    report, answers = f'{stem}.md', f'{stem}.answers.json'
-    suggestions = _suggestions_name(stem) if 'suggestions.md' in files else None
-    written = {report: files['report.md'], answers: files['answers.json']}
-    if suggestions:
-        written[suggestions] = files['suggestions.md']
-    (root / 'reports').mkdir(exist_ok=True)  # 不带 parents：项目已删除时不重建工作区
-    for name, data in written.items():
-        (root / 'reports' / name).write_bytes(data)
-    state = root.joinpath(*STATE_DIR)  # .ontology-state 不进工作区 git
-    state.mkdir(parents=True, exist_ok=True)
-    (state / f'{stem}.json').write_bytes(files['context.json'])
-    tables = _write_tables(root, stem, context.get('tables'))
-    document = _feedback_document(run, reference, revision, stem, files, context, suggestions, tables)
-    batch, document, _ = feedback_inbox.place(manager, root, document, actor)
-    # 只提交导入的报告和这批反馈，助手进行中的改动不混入这个版本点
-    _commit_paths(root, [*(f'reports/{name}' for name in written), batch],
-                  f"feedback: 评测优化导入 {stem}（{len(document['items'])} 条）by {actor}")
-    record = dict(revision=revision, stem=stem, suggestions=suggestions, feedback_id=document['feedback_id'],
-                  release_id=reference.get('release_id'), version=reference.get('version'), imported_at=time.time())
-    history = knowledge_hub.load(state / 'imports.json', {})
-    knowledge_hub.save(state / 'imports.json', {**history, run['id']: record})
-    return record
-
-
-def optimize(manager, pid, subject, token, run_id, actor):
-    """把一轮评测的产物拉进工作区并整理成一批外部反馈，交给 /ontology-evolution；只对项目当前版本。"""
-    run, linked = _linked_run(pid, subject, token, run_id)
-    if run.get('run_type') == 'solver':
-        # 求解验证的修复指引由失败码确定性生成，按指引修改求解契约后发布新版本再验证
-        raise WorkspaceError('求解验证不支持评测优化：请按修复指引修改求解契约后发布新版本，再发起求解验证', 409,
-                             'optimization_not_supported')
-    base = _reference(run, 'base_ref')
-    if base.get('ontology_id') != linked['ontology_id'] or base.get('release_id') != linked['release_id']:
-        raise WorkspaceError(f"评测版本 {base.get('version') or '未知'} 与当前建模项目版本 {linked.get('version') or '未知'} 不一致，"
-                             '请评测当前版本后再优化', 409, 'version_mismatch')
-    artifacts = _artifacts(run)
-    if not artifacts or artifacts.report != 'ready':
-        raise WorkspaceError('评测报告尚未生成，请稍后再试', 409, 'artifacts_not_ready')
-    run = {**run, 'id': run_id}
-    root = manager.project_root(pid)
-    with manager._project_lock(pid):
-        record = _previous_import(root, run_id, artifacts)
-        if record and not _tables_dir(root, record['stem']).is_dir():
-            context = json.loads(root.joinpath(*STATE_DIR, f'{record["stem"]}.json').read_bytes())
-            _write_tables(root, record['stem'], context.get('tables'))
-    if not record:
-        revision, stem, files, context = _fetch_import(run_id, artifacts, token)
-        with manager._project_lock(pid):
-            record = _store_import(manager, root, run, base, revision, stem, files, context, actor)
-    remember(pid, subject, run, base, record['stem'])
-    return {'feedback_id': record['feedback_id'], 'report': f'reports/{record["stem"]}.md',
-            'suggestions': f'reports/{record["suggestions"]}' if record['suggestions'] else None,
-            'command': '/ontology-evolution', 'args': {'feedback_id': record['feedback_id']}}
-
-
-# ---- 建模回写：评测优化后发布的新版本，告诉评测服务是哪一轮建议的处理结果 ----
-
-WRITEBACK_NOTE = 1000
-
-
-def _optimization_path(pid):
-    # 与项目的 Hub 关联放在一起：项目删除时随之清理
-    return knowledge_hub.state_dir() / 'packages' / knowledge_hub.identifier(pid) / 'evaluation-optimization.json'
-
-
-def _optimization_lock(pid):
-    return knowledge_hub.lock('evaluation-optimization-' + hashlib.sha256(pid.encode()).hexdigest()[:32])
-
-
-def _save_optimization(pid, value):
-    path = _optimization_path(pid)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    knowledge_hub.save(path, value)
-
-
-def remember(pid, subject, run, base, stem):
-    """记下项目最近一次评测优化导入的是哪一轮；新的评测优化覆盖旧的。"""
-    with _optimization_lock(pid):
-        _save_optimization(pid, dict(run_id=run['id'] if isinstance(run.get('id'), str) else '', stem=stem,
-                                     origin=run.get('origin') or 'evaluation', base_release_id=base.get('release_id'),
-                                     base_version=base.get('version'), optimizer=hub_packages.scope(subject),
-                                     optimized_at=time.time(), result=None))
-
-
-def _update_entry(package_id, subject, run_id, optimization):
-    """评测服务记下的处理结果立即反映到索引，不等下一次对账。"""
-    owner = _owner_of(subject)
-    if not owner:
-        return
-    with _index_lock(package_id, owner):
-        index = _read_index(package_id, owner)
-        changed = False
-        for section in SECTIONS:
-            for item in index[section].values():
-                if item['run_id'] == run_id:
-                    item['optimization'] = optimization
-                    changed = True
-        if changed:
-            knowledge_hub.save(_index_path(package_id, owner), index)
-
-
-def _report(run_id, token, body):
-    value = eval_client.call('POST', f'/runs/{run_id}/modeling-result', token, body=body)
-    try:
-        return Optimization.model_validate((value or {}).get('optimization')).model_dump()
-    except ValidationError as exc:
-        raise _invalid_response() from exc
-
-
-def settle(pid, subject, token):
-    """把最近一次评测优化之后发布的新版本回写给评测服务，只写一次。
-
-    只有做优化的用户能写：评测服务只让轮次所有者（反馈轮次还有包负责人）记录处理结果。评测服务连不上时留作
-    待写、下次重试；被拒收的不再重试。返回本地的回写状态。"""
-    linked = hub_packages.association(pid, subject) or {}
-    with _optimization_lock(pid):
-        state = knowledge_hub.load(_optimization_path(pid))
-        mine = state and state.get('run_id') and state.get('optimizer') == hub_packages.scope(subject)
-        if not mine or not token:
-            return state
-        release_id = linked.get('release_id')
-        result = state.get('result') or {}
-        if not release_id or release_id == state.get('base_release_id'):
-            return state
-        if result.get('status') in ('done', 'refused') and result.get('release_id') == release_id:
-            return state
-        if result.get('status') == 'done':
-            return state  # 同一次优化只回写第一个新版本；之后的发布要先重新评测、再评测优化
-        version = linked.get('version') or ''
-        body = dict(request_id='mr-' + hashlib.sha256(f"{state['run_id']}|{release_id}".encode()).hexdigest()[:32],
-                    outcome='done', release_id=release_id,
-                    note=f"建模按 {state.get('base_version') or '原版本'} 的优化建议修改后，发布新版本 {version}"[:WRITEBACK_NOTE])
-        try:
-            optimization = _report(state['run_id'], token, body)
-        except WorkspaceError as exc:
-            refused = exc.status in (404, 409)
-            state['result'] = dict(status='refused' if refused else 'pending', release_id=release_id, version=version,
-                                   message=str(exc)[:300], at=time.time())
-            _save_optimization(pid, state)
-            return state
-        state['result'] = dict(status='done', release_id=release_id, version=version, message='', at=time.time())
-        _save_optimization(pid, state)
-    _update_entry(linked['ontology_id'], subject, state['run_id'], optimization)
-    return state
-
-
-def after_publish(pid, subject, token, receipt):
-    """发布成功后带着用户登录尽力回写一次；失败也不影响发布。"""
-    if not isinstance(receipt, dict) or receipt.get('status') != 'committed' or not eval_client.configured():
-        return None
-    try:
-        settle(pid, subject, token)
-    except (OSError, WorkspaceError):
-        pass
-    return writeback_view(pid, subject)
-
-
-def writeback_view(pid, subject):
-    """已发布版本里显示的最近一次评测优化与回写状态。"""
-    try:
-        state = knowledge_hub.load(_optimization_path(pid))
-    except (OSError, ValueError):
-        return None
-    if not state or not state.get('run_id'):
-        return None
-    result = state.get('result') or {}
-    return dict(run_id=state['run_id'], origin=state.get('origin') or 'evaluation', base_release_id=state.get('base_release_id'),
-                base_version=state.get('base_version'), optimized_at=state.get('optimized_at'),
-                mine=state.get('optimizer') == hub_packages.scope(subject), status=result.get('status') or 'waiting',
-                release_id=result.get('release_id'), version=result.get('version'), message=result.get('message') or '')
-
-
-def report_failure(pid, subject, token, run_id, note):
-    """用户告诉评测服务：这一轮的建议没能落实。"""
-    note = (note or '').strip()
-    if not 0 < len(note) <= WRITEBACK_NOTE:
-        raise WorkspaceError(f'请填写处理失败的原因（不超过 {WRITEBACK_NOTE} 字）', 422, 'note_required')
-    _, linked = _linked_run(pid, subject, token, run_id)
-    optimization = _report(run_id, token, dict(request_id='mr-' + uuid.uuid4().hex, outcome='failed', note=note))
-    _update_entry(linked['ontology_id'], subject, run_id, optimization)
-    return optimization

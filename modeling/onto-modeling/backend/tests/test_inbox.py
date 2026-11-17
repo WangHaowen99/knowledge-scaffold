@@ -1,6 +1,6 @@
 """待处理汇总（详设 4.7；契约 3.13 IN-01～IN-04、EP-02）与变更点清单（契约 3.14 INC-01～INC-05）。
 
-- 各来源：决策、续跑、修改待确认、合入冲突、过期、需复核、报告待处理、外部反馈、变更清单；
+- 各来源：决策、续跑、修改待确认、合入冲突、过期、需复核、报告待处理、变更清单；
 - 计数按筛选与按包（左栏插件页角标，B4c 的登记点）；忽略后不计数；处理一项转给等价接口；
 - 变更清单：一轮结束时收进来、记下所在对话，执行时发 `/ontology-update change_list_id=…`。
 
@@ -85,7 +85,7 @@ def conflicted(workspaces, project_id, root, rel="ontology/object/客户.md", na
 
 def test_sources_counts_and_detail_shapes(env):
     client, workspaces, _manager, project_id, root = env
-    # 过期的场景模拟节点（场景模拟包的节点，计进它的角标）、需复核的对象节点、报告、外部反馈、续跑
+    # 过期的场景模拟节点（场景模拟包的节点，计进它的角标）、需复核的对象节点、报告、续跑；外部反馈批次留在工作区，不再列出
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))
     main_write(root, "ontology/operation/补货.md", "# 补货\n\n## 业务描述\n\n合成\n")
     main_write(root, "ontology/testcase/补货.md", "# 测试场景：补货\n\n## 场景 1：合成\n")
@@ -108,7 +108,7 @@ def test_sources_counts_and_detail_shapes(env):
     assert found["stale:core.model"]["pack"] is None
     assert found["review:core.model"]["source"] == "import"
     assert found["report:20261102-rule"]["title"].endswith("1 条待处理")
-    assert found["feedback:fb1"]["source"] == "external"
+    assert not [key for key in found if key.startswith("feedback:")]
     assert found[f"resumable:{record['id']}"]["actions"] == ["resume", "abandon", "dismiss"]
     assert found["changeset_conflict:cs-1"]["actions"] == ["resolve", "discard", "dismiss"]
     assert not [key for key in found if key.startswith("pending_changeset:")]
@@ -118,7 +118,7 @@ def test_sources_counts_and_detail_shapes(env):
     assert all(set(item) == item_keys for item in body["items"])
     counts = body["counts"]
     assert counts["total"] == len(body["items"]) and counts["by_filter"]["stale"] >= 1
-    assert counts["by_filter"]["resumable"] == 1 and counts["by_filter"]["feedback"] == 1
+    assert counts["by_filter"]["resumable"] == 1 and "feedback" not in counts["by_filter"]
     assert counts["by_pack"]["trace"] >= 1
     assert "evidence_conflict" not in counts["by_filter"]  # 证据源本期不开放
     assert set(body["today"]) == {"handled", "total", "eta_minutes", "remaining_by_filter"}

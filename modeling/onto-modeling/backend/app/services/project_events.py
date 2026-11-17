@@ -5,7 +5,6 @@
 - `assembly.updated`（EP-08）、`extensions.updated`（EP-07）：锁文件提交后（待生效）与切换装配后（已生效：
   消息前切换，或只动纯数据包时插件运行时当场切换）；
 - `artifacts.updated`（EP-06）：内核产物索引经 `kernel/event_port` 发出，启动时（`app/wiring.py`）接到这里；
-- `knowledge.updated`（EP-23）：知识接口写入后；
 - `plugin_drafts.changed`（F17）：主线上 `plugins/` 下的草稿变了（跟着 `workspace.changed`）、装了、启用状态变了；
 - `scope.updated`（EP-03）：写入范围锁由变更集一侧算（ADR-0047），这里只留数据源登记点，默认「没有锁」；
 - `inbox.updated`（EP-02）：每次重算流程时顺带重算待处理，变了才发（ADR-0049）；
@@ -402,12 +401,6 @@ def plugin_drafts_changed(project_id: str, names: list[str]) -> None:
     """F17 第 7 条：插件草稿在主线上变了（一轮合入、网页改、安装写回版本号）、装了、停用了。"""
     _guard("plugin_drafts.changed", streams.publish_project, project_id, "plugin_drafts.changed",
            {"names": list(names)})
-
-
-def knowledge_changed(project_id: str, ids: list[str], change: str) -> None:
-    """EP-23：知识条目新增、修改、删除（知识沉淀页刷新列表）。"""
-    _guard("knowledge.updated", streams.publish_project, project_id, "knowledge.updated",
-           {"ids": list(ids), "change": change})
 
 
 # ---------------------------------------------------------------------------

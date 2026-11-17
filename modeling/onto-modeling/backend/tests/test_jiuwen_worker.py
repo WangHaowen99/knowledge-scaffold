@@ -118,18 +118,18 @@ def test_connect_failure_is_reported(worker, tmp_path):
 
 def test_worker_injects_pack_prompt_rules_like_the_kernel(worker, tmp_path):
     """worker 进程自己登记包提示规则（app/wiring.install_worker）：按内核给的数据目录读装配，
-    启用了知识沉淀包的项目带知识信号，没启用的不带。"""
+    启用了声明提示规则的包（增量构建）的项目带提示，没启用的不带。"""
     from app.services.workspace import WorkspaceManager
 
     manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
-    with_pack = manager.project_root(manager.create_project("有沉淀")["id"])
-    without = manager.project_root(manager.create_project("没有沉淀", packs=[])["id"])
+    with_pack = manager.project_root(manager.create_project("有提示", packs=["incremental"])["id"])
+    without = manager.project_root(manager.create_project("无提示", packs=[])["id"])
 
     async def ask(root: Path) -> str:
         engine = make_engine(root, root.name, {})
         await engine.connect()
         events = engine.events()
-        await engine.send("注入：不对，应该是按箱补")
+        await engine.send("注入：这一轮就到这，结束本轮")
         reply = await next_event(engine, events, "assistant_message", timeout=30)
         await engine.disconnect()
         return reply["blocks"][0]["text"]
@@ -140,7 +140,7 @@ def test_worker_injects_pack_prompt_rules_like_the_kernel(worker, tmp_path):
         return replies
 
     hinted, plain = asyncio.run(scenario())
-    assert hinted.startswith("【业务知识信号】") and "KNOWLEDGE_SEDIMENTATION.md" in hinted
+    assert "/incremental-scope" in hinted
     assert plain == ""
 
 

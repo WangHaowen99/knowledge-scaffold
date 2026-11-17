@@ -139,7 +139,7 @@ def test_command_display_name_writes_one_name_when_they_coincide():
 
     item = {"description": "资料分析", "label": "资料分析", "command": "/ontology-research"}
     assert command_display_name(item) == "资料分析"
-    assert command_display_name(item, "联网资料分析") == "联网资料分析"
+    assert command_display_name(item, "补充资料分析") == "补充资料分析"
     assert command_display_name(item, "追加分析") == "资料分析 · 追加分析"
     assert command_display_name({"description": "传播核对", "label": "传播核对"}) == "传播核对"
     assert command_display_name({"description": "", "label": "整体视图", "command": "/ontology-overview"}) == "整体视图"

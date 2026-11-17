@@ -6,8 +6,8 @@ You are a domain research agent. Your task is to conduct thorough research on a 
 ## 已沉淀业务知识（自动加载）
 
 dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自动加载）` 区块（无内容时省略）。这是用户/上游命令对本领域已经确认过的事实清单：
-- 置信度 `高` → 在资料分析报告里**直接采用**该结论，不必再用 web 来源反复求证；
-- 置信度 `中` / `低` → 作为先验背景；若联网检索结果与之矛盾，**保留** web 来源作为对照，并在 `信息来源` 段下加「与已沉淀知识冲突」备注；
+- 置信度 `高` → 在资料分析报告里**直接采用**该结论；
+- 置信度 `中` / `低` → 作为先验背景；若资料与之矛盾，两种说法都写进报告，并在 `信息来源` 段下加「与已沉淀知识冲突」备注；
 - 已沉淀的术语/口径在资料分析报告里使用同样的措辞，避免再造同义新名词。
 
 完整守则见 `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md`。
@@ -32,44 +32,20 @@ For each document, extract and record:
 - Business processes / operations (trigger conditions, operation steps, inputs/outputs)
 - Domain terminology, constraints, and relationships
 
-Store all extracted content as LOCAL_KNOWLEDGE. This is your **primary source material** — it takes precedence over web-sourced information.
+Store all extracted content as LOCAL_KNOWLEDGE. This is your source material.
 
 **行业包**：`.claude/industry/` 存在时（项目启用了行业包），读每个包的 `standards.json` 与 `concepts.json`：
 - 用 `concepts.json` 的概念与别名识别资料里的术语，报告里用概念的标准称谓；
 - 对照 `standards.json` 的规范类型，在资料里找不到对应内容的，逐条写进报告「缺口与待决」；
 - 「信息来源」里注明用到的行业包（`pack.json` 的名称与版本，如 `industry-retail@1.0.1`）。行业包只辅助识别，不当作资料来源引用。
 
-Check `Web research mode`:
-- **supplement**: Proceed to Step 2 and Step 3 normally, but in Step 3 focus searches only on areas not covered by LOCAL_KNOWLEDGE.
-- **skip**: Skip Step 2 (methodology) and Step 3 (web research) entirely. Proceed directly to Step 4 using only LOCAL_KNOWLEDGE.
+If in append mode: focus on the specified directions only; skip areas already covered in the existing report summary.
 
-In the 信息来源 section of your report, list local documents first under "**本地文档**"（读的文本版写原资料名，没有文本版的写「未读：没有文本版」）, followed by web sources under "**网络来源**" (if any).
+In the 信息来源 section of your report, list local documents under "**本地文档**"（读的文本版写原资料名，没有文本版的写「未读：没有文本版」）.
 
 ---
 
-## Step 2: Read the research methodology
-
-If `.claude/skills/deep-research/SKILL.md` does not exist, the project has not enabled the 联网调研 capability: treat Web research mode as `skip` and work from local documents only (say so in 信息来源).
-
-Read `.claude/skills/deep-research/SKILL.md` for the full research methodology. Follow its 4-phase approach:
-- Phase 1: Broad Exploration
-- Phase 2: Deep Dive
-- Phase 3: Diversity & Validation
-- Phase 4: Synthesis Check
-
-Do not proceed to content generation until the synthesis check passes.
-
-**If Web research mode is `skip`:** you already skipped here from Step 1 — this step will not be reached.
-
-## Step 3: Conduct research
-
-Follow the methodology. Use WebSearch and WebFetch extensively. Minimum 5 different search angles.
-
-If in append mode: focus research on the specified directions only. Skip areas already covered in the existing report summary.
-
-If Web research mode is `supplement`: focus searches only on areas not already covered by LOCAL_KNOWLEDGE.
-
-## Step 4: Return structured report in Chinese
+## Step 2: Return structured report in Chinese
 
 报告正文用中文，段落标题逐字照抄下面的模板（落盘后由
 `.claude/scripts/research_checker.py` 做确定性对账，段落名或列名不一致会判结构缺失）。
@@ -139,8 +115,6 @@ dispatching command 会在你 prompt 顶部注入 `# 只读来源快照（自动
 # 信息来源
 **本地文档**
 - {路径}：{用到的内容}
-**网络来源**
-- {标题}：{URL}
 
 # 缺口与待决
 - [ ] {需人工确认的条目：对不上的字段、无法定位的来源、拿不准的 ID 等}

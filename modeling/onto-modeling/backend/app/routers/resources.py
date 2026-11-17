@@ -1,5 +1,5 @@
 """资料（API 契约 3.6）：R-01 列表、R-02 上传、R-03 改用途、R-04 删除、R-05 被谁引用、R-06 原文预览、
-R-11 / R-12 外部反馈；R-13 查看文本、R-14 重新转换（资料的文本版，ADR-0073）；R-15 选出处的位置；
+R-13 查看文本、R-14 重新转换（资料的文本版，ADR-0073）；R-15 选出处的位置；
 R-16 数据 Schema 的 Sheet 范围预检（ADR-0096）。
 
 资料区对 agent 只读，只能由用户上传、替换、删除，每次都保存版本。资料分析（R-07～R-10）在 `materials.py`。
@@ -92,12 +92,7 @@ def list_resources(project_id: str, request: Request):
         {"key": key, "label": label, "items": [item for item in items if item["group"] == key]}
         for key, label in GROUP_LABELS
     ]
-    from ..services import feedback_inbox
-
-    feedback_on = research_view.pack_enabled(root, feedback_inbox.EVOLUTION_PACK)
-    return {"groups": groups,
-            "feedback_group": {"enabled": feedback_on, "count": feedback_inbox.open_count(root) if feedback_on else 0},
-            "purposes": list(PURPOSES)}
+    return {"groups": groups, "purposes": list(PURPOSES)}
 
 
 @router.post("")

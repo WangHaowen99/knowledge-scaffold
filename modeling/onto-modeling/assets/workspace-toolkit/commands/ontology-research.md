@@ -62,7 +62,7 @@ d) 自定义方向...
 - `purpose=schema` / `term` 的表格 → 资料分析报告中列入"数据与术语来源"清单，供后续对象提取直接引用；
 - 其余按 `auto` 处理。
 
-## Step 1.5: 资料与联网方式（不问用户）
+## Step 1.5: 资料（不问用户）
 
 资料就是资料区里的全部资料，不问用户还有没有别的文档、在哪个路径：
 
@@ -79,9 +79,6 @@ python3 .claude/scripts/source_extract.py --sources
 明确说明“文件可作为辅助资料保留，但当前格式不能直接用于确定性来源核验”，并建议转换为
 DOCX、XLSX、Markdown、TXT 或 CSV；其他错误则提示用户修复、拆分或替换资料后重试，
 不得继续生成一份最终无法通过来源验收的报告。预检只验证能否受控抽取，不替代后续完整读取和内容验收。
-
-联网方式按 `$ARGUMENTS` 和项目能力定，也不问：含「仅基于本地」或项目没启用联网调研
-（`.claude/skills/deep-research/SKILL.md` 不存在）→ WEB_RESEARCH_MODE = skip；否则 supplement。
 
 **Note for append mode:** materials are read by the research agent alongside the focused research directions. They do not affect the gap analysis in Step 1b, which is based solely on the existing report.
 
@@ -121,7 +118,7 @@ Dispatch a general-purpose subagent (Agent tool) with:
 - The full contents of `.claude/agents/research-agent.md` as the base prompt
 - Append: `\n\nResearch topic: {TOPIC}`
 - If append mode, also append: `\n\nAppend focus directions: {FOCUS_DIRECTIONS}\n\nExisting report summary (first 400 words):\n{SUMMARY}`
-- Always append: `\n\n建模目标：{建模目标}\nWeb research mode: {WEB_RESEARCH_MODE}`
+- Always append: `\n\n建模目标：{建模目标}`
 
 Wait for the subagent to complete and return the full structured report.
 

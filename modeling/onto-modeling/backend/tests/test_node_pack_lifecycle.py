@@ -123,7 +123,7 @@ def test_unconfirmed_assistant_changes_block_flow_changes_only(env):
     assert lockfile.read(root).get("naming") is None
     # 不改流程的包照常启用，也记成插件变更集（store.record_closed），助手那组修改的位置不受影响
     assistant = changesets.current(manager, project_id)["id"]
-    plain = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "websearch"})
+    plain = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "industry-retail"})
     assert plain.status_code == 201, plain.text
     record = changesets.get(manager, project_id, plain.json()["changeset_id"])
     assert record["source"] == "plugin" and record["state"] == "merged" and not record.get("committing")
