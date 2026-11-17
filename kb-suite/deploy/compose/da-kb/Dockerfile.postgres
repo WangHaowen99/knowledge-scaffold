@@ -1,0 +1,26 @@
+# Postgres for the DA knowledge pipeline: the paradedb image DA's data already lives on, plus the
+# Chinese word segmentation DeepAnalyze's own database image ships (scws + zhparser, see DA's
+# config/pg-zhparser.Dockerfile). Without it DA's keyword search falls back to the default parser,
+# which does not split Chinese text, so Chinese keyword queries find nothing.
+FROM paradedb/paradedb:v0.25.11-pg17
+
+USER root
+# Debian mirror for slow networks (the PostgreSQL apt repo stays upstream); empty keeps the image's sources
+ARG APT_MIRROR=http://mirrors.tuna.tsinghua.edu.cn
+ARG SCWS_URL=https://github.com/hightman/scws/archive/refs/tags/1.2.3.tar.gz
+ARG ZHPARSER_URL=https://github.com/amutu/zhparser/archive/refs/heads/master.tar.gz
+RUN set -e \
+ && if [ -n "$APT_MIRROR" ]; then \
+      sed -i "s#http://deb.debian.org#$APT_MIRROR#g" /etc/apt/sources.list.d/debian.sources; \
+    fi \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends build-essential postgresql-server-dev-17 wget ca-certificates \
+      autoconf automake libtool pkg-config \
+ && cd /tmp && wget -q "$SCWS_URL" -O scws.tar.gz && tar xzf scws.tar.gz && cd scws-* \
+ && autoreconf -fi && ./configure --prefix=/usr && make -j"$(nproc)" && make install && ldconfig \
+ && cd /tmp && wget -q "$ZHPARSER_URL" -O zhparser.tar.gz && tar xzf zhparser.tar.gz && cd zhparser-* \
+ && SCWS_HOME=/usr make && SCWS_HOME=/usr make install \
+ && rm -rf /tmp/scws* /tmp/zhparser* \
+ && apt-get purge -y build-essential postgresql-server-dev-17 autoconf automake libtool pkg-config wget \
+ && apt-get autoremove -y && apt-get clean && rm -rf /var/lib/apt/lists/*
+USER postgres

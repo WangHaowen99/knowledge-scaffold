@@ -356,7 +356,9 @@ services:
   # its own network that only its database and the adapter join.
   da-kb-postgres:
     profiles: [da-kb]
-    image: paradedb/paradedb:v0.25.11-pg17
+    # DA_KB_PG_IMAGE=kb-suite/da-kb-postgres:zhparser (./kbsuite.sh build-da-kb-pg) adds the Chinese word
+    # segmentation DA's keyword search relies on; the same data directory works with either image
+    image: ${DA_KB_PG_IMAGE:-paradedb/paradedb:v0.25.11-pg17}
     environment:
       POSTGRES_USER: deepanalyze
       POSTGRES_PASSWORD: ${DA_KB_DB_PASSWORD:-}
@@ -412,7 +414,7 @@ services:
   # the schema and is stopped again, otherwise both would process the same documents.
   dap-postgres:
     profiles: [da-platform]
-    image: paradedb/paradedb:v0.25.11-pg17
+    image: ${DA_KB_PG_IMAGE:-paradedb/paradedb:v0.25.11-pg17}
     environment:
       POSTGRES_USER: deepanalyze
       POSTGRES_PASSWORD: ${DAP_DB_PASSWORD:-}

@@ -10,7 +10,9 @@
 #   ./kbsuite.sh build-swarm       plugin pages + Swarm 0.2.7 image (with the DA harness provider)
 #   ./kbsuite.sh build-swarm-dev   plugin pages + Swarm image from $SWARM_REPO@$SWARM_REF (develop)
 #   ./kbsuite.sh build-gateway     kb-gateway and the WeKnora / DA knowledge-pipeline adapters
-#   ./kbsuite.sh build-da-kb       DA knowledge pipeline image from $DA_TS_SRC (a DeepAnalyze source tree)
+#   ./kbsuite.sh build-da-kb       DA knowledge pipeline image from $DA_TS_SRC (a DeepAnalyze source tree);
+#                                  DA_KB_FULL=1 adds DA's document parsers (docling on CPU, LibreOffice, ffmpeg)
+#   ./kbsuite.sh build-da-kb-pg    Postgres image for DA with Chinese word segmentation (zhparser)
 #   ./kbsuite.sh build-weknora-config   WeKnora config.yaml from $WEKNORA_REPO@$WEKNORA_REF
 #   ./kbsuite.sh build-dap         platform knowledge service image from $PLATFORM_REPO@$PLATFORM_REF (DeepAnalyze platform repo)
 #   ./kbsuite.sh up         start everything, WeKnora (the default knowledge backend) included; bootstraps keys on first run
@@ -176,8 +178,13 @@ build_gateway() {
 
 # DeepAnalyze's source is not in this repository; build from a checkout given by DA_TS_SRC.
 build_da_kb() {
-  local src="${DA_TS_SRC:?set DA_TS_SRC to a DeepAnalyze source tree}"
-  docker build -f "$HERE/da-kb/Dockerfile" -t kb-suite/da-kb:"${DA_KB_TAG:-current}" "$src"
+  local src="${DA_TS_SRC:?set DA_TS_SRC to a DeepAnalyze source tree}" file="Dockerfile"
+  [ "${DA_KB_FULL:-}" = 1 ] && file="Dockerfile.full"
+  docker build -f "$HERE/da-kb/$file" -t kb-suite/da-kb:"${DA_KB_TAG:-current}" "$src"
+}
+
+build_da_kb_pg() {
+  docker build -f "$HERE/da-kb/Dockerfile.postgres" -t kb-suite/da-kb-postgres:zhparser "$HERE/da-kb"
 }
 
 build_weknora_config() {
@@ -225,6 +232,8 @@ up_da_kb() {
   # DA reads its models only at start-up: write them, then restart
   (env_export "$SECRETS" KBS_LLM_BASE_URL KBS_LLM_API_KEY DA_KB_CHAT_MODEL DA_KB_EMBED_MODEL
    python3 "$HERE/da-kb/providers.py") | "${psql[@]}" >/dev/null
+  # Chinese keyword search: switch DA's text search configuration to zhparser when the image has it
+  "${psql[@]}" <"$HERE/da-kb/zhparser.sql" >/dev/null
   compose --profile da-kb restart da-kb
   compose --profile da-kb up -d da-kb-adapter
   compose up -d --force-recreate kb-gateway
@@ -320,6 +329,7 @@ case "$cmd" in
   build-lf) "$HERE/lf/build.sh" ;;
   build-gateway) build_gateway ;;
   build-da-kb) build_da_kb ;;
+  build-da-kb-pg) build_da_kb_pg ;;
   build-weknora-config) build_weknora_config ;;
   build-dap) build_dap ;;
   up-weknora) up_weknora ;;
@@ -329,5 +339,5 @@ case "$cmd" in
   logs) compose_all logs -f --tail=200 "$@" ;;
   restart) compose_all restart "$@" ;;
   down) compose_all down ;;
-  *) sed -n '2,26p' "$0"; exit 1 ;;
+  *) sed -n '2,25p' "$0"; exit 1 ;;
 esac

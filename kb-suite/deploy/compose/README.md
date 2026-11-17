@@ -113,14 +113,19 @@ WEKNORA_REPO=<WeKnora 克隆> ./kbsuite.sh build-weknora-config   # 导出 WeKno
 DeepAnalyze 原版（TypeScript）的源码不在本仓库，镜像从外部源码目录构建，只跑后端：
 
 ```bash
-DA_TS_SRC=<DeepAnalyze 源码目录> ./kbsuite.sh build-da-kb
+DA_TS_SRC=<DeepAnalyze 源码目录> DA_KB_FULL=1 DA_KB_TAG=full ./kbsuite.sh build-da-kb   # 带解析器的完整版
+./kbsuite.sh build-da-kb-pg                                                              # 带中文分词的数据库
 ./kbsuite.sh up-da-kb
 ```
 
-`up-da-kb` 等 DA 建好库表后，把模型配置写进它的 `settings` 表（对话 `qwen-plus`，向量 `text-embedding-v4`），再重启一次。DA 只在启动时读模型配置，改了配置要重启。
+`deploy.env` 里写 `DA_KB_TAG=full` 和 `DA_KB_PG_IMAGE=kb-suite/da-kb-postgres:zhparser`，compose 就用这两个镜像；不写时用不带解析器的后端和原来的 paradedb 数据库。
+
+`up-da-kb` 等 DA 建好库表后，把模型配置写进它的 `settings` 表（对话 `qwen-plus`，向量 `text-embedding-v4`），切换中文分词（`da-kb/zhparser.sql`），再重启一次。DA 只在启动时读模型配置，改了配置要重启；模型和解析设置也可以在知识库页的后端设置里改。
 
 - **认证**：DA 后端以 `DA_AUTH_MODE=none` 运行，只挂在 `da-kb` 网络上，这个网络里只有它的数据库和适配服务。
-- **格式**：不带 docling 和 MinerU，只能解析 txt、md、html、xlsx、csv、json、xml、yaml；pdf、docx、pptx 会处理失败。要支持它们，在 DA 里配置一个 MinerU 服务，再用 `DA_KB_EXTRA_FILE_TYPES=pdf,docx,pptx` 告诉适配服务。
+- **完整版**（`da-kb/Dockerfile.full`）：和 DA 自己的镜像一样，带 CPU 版 torch、docling（RapidOCR）、LibreOffice、ffmpeg，DA 把 docling 作为子进程启动，可以解析 pdf、docx、pptx，以及经 LibreOffice 转换的旧版 Office。不带 MinerU 和 GPU；有 MinerU 服务时在后端设置里填地址即可。第一次解析时 docling 从 HF 镜像下载版面和 OCR 模型到数据卷（`/app/data/hf`），可能超过 DA 默认的 120 秒而被重试一次，之后单篇几十秒。解析时内存约 1–3 GB。
+- **中文分词**（`da-kb/Dockerfile.postgres`）：在 paradedb 镜像上加 DA 自己镜像带的 scws + zhparser，同一个数据目录两个镜像都能用。DA 只在建库时创建 `chinese` 分词配置，缺 zhparser 时退回默认分词（中文关键词检索查不到东西）；`zhparser.sql` 把已有库切到 zhparser 并重算全文向量，可以重复执行，没有 zhparser 时什么都不做。
+- **格式**：不带解析器时只能解析 txt、md、html、xlsx、csv、json、xml、yaml。
 
 适配方式（`service/da-kb-adapter`）：
 - L1 取 DA 的结构化正文页（`structure_md`）；没有时（不经 docling 的文档，DA 的 L1 只是模型写的概览）取 L2 全文，保证读取和逐行查找看到的是完整正文。L0 是 DA 的摘要页。
