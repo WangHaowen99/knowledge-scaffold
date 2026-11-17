@@ -15,12 +15,6 @@ export const SECTION_TITLES = {
 // NodeState → 显示态（契约 7.8 DisplayState；pending_confirm 显示为「待确认」）
 const DISPLAY_OF = { pending_confirm: 'pending' };
 
-// 节点动作里 target 指向的页面（P2 起 refresh / confirm 带页面 id；P1 的 start 带命令文本）
-const PAGE_TARGETS = new Set([
-  'wb-l2', 'inbox', 'incremental', 'scenarios', 'scripts', 'knowledge', 'studio', 'studio-table', 'reports',
-  'resources', 'sources', 'snapshots', 'schema', 'publish', 'versions', 'proj-settings', 'wb-materials', 'wb-blueprint', 'l4-run',
-]);
-
 export function normalizeFlow(raw) {
   if (!raw) return raw;
   const sections = Array.isArray(raw.sections) && raw.sections.length ? raw.sections : null;
@@ -78,7 +72,7 @@ export function mergeFlow(flow, patch) {
   return { ...flow, flow_hash: patch.flow_hash || flow.flow_hash, nodes, slices };
 }
 
-// 主线节点按边的顺序排（只放 spine / step / gate；已停用的包的节点只在建模步骤抽屉里列出）。
+// 主线节点按边的顺序排（只放 spine / step / gate；已停用的包的节点不进进度条）。
 // 同一锚点后面挂了两个以上主线节点（节点包串入的一步和场景模拟都挂在质量检查之后）时连线排不出唯一顺序，
 // 按后端给的节点顺序（组装时已按锚点与包顺序排好）
 // 顶栏轨迹的样式：已完成的几种显示态（需复核、自主完成、通过）都打勾；可补做（导入后越过的资料分析等，ADR-0084）不算待办，淡显；
@@ -109,31 +103,7 @@ export function trackNodes(flow) {
   return order.map((id) => spine.find((n) => n.id === id));
 }
 
-// 建模步骤抽屉的分组：按 sections 的顺序，空组不出
-export function sectionGroups(flow) {
-  if (!flow) return [];
-  const byId = new Map(flow.nodes.map((n) => [n.id, n]));
-  return (flow.sections || [])
-    .map((s) => ({ id: s.id, title: s.title || SECTION_TITLES[s.id] || s.id, nodes: (s.nodes || []).map((id) => byId.get(id)).filter(Boolean) }))
-    .filter((s) => s.nodes.length);
-}
-
-/**
- * 节点动作怎么执行：
- * - navigate：target 是页面 id（P2 的「刷新」去场景模拟、「去确认」去待处理）；
- * - command：target 是命令文本（P1 的 start，如 `/ontology-extract-object`），经 S-20 发到对话；
- * - skip / restore / start：调 FL-03 / FL-04 / FL-05。
- */
-export function nodeActionKind(action) {
-  if (!action) return null;
-  const t = action.target;
-  if (t && PAGE_TARGETS.has(t)) return 'navigate';
-  if (t) return 'command';
-  if (action.kind === 'skip' || action.kind === 'restore') return action.kind;
-  return 'start';
-}
-
-// 节点动作的命令文本 → S-20 的 {command, args, text}：`键=值` 进 args，其余词是 text；
+// 命令文本 → S-20 的 {command, args, text}：`键=值` 进 args，其余词是 text；
 // 不以斜杠开头的（如「核验报告」的一句指令）当普通消息发，只给 text
 export function commandFromTarget(target) {
   const parts = String(target || '').trim().split(/\s+/).filter(Boolean);
@@ -180,7 +150,7 @@ export function overlayRunning(flow, nodeId) {
 }
 
 // 证据源本期不开放（ADR-0056）：证据源不可用时去掉依赖它的节点（如系统逆向建模的「系统取证」），
-// 连线接过去（前一个直接连到后一个），抽屉分组与命令归属同步去掉
+// 连线接过去（前一个直接连到后一个），分组与命令归属同步去掉
 export function withoutEvidence(flow, evidenceOn) {
   if (!flow || evidenceOn) return flow;
   const gone = new Set(flow.nodes.filter(isEvidenceNode).map((n) => n.id));
@@ -208,14 +178,3 @@ export const sliceName = (id, name) => (id === FULL_SLICE_ID ? '' : name || '');
 export const unitTitle = (id, name) => (id === FULL_SLICE_ID ? '建模' : name || '');
 // 一组行里有两段以上真的分段（老运行）时才出「分段」的列和说法
 export const multiSlice = (ids) => (ids || []).filter((id) => id && id !== FULL_SLICE_ID).length > 1;
-
-// 脚本节点的运行结果（FL-05 同步返回的 run，或 node_run_failed 错误）→ 通过 / 失败 + 一行摘要
-const firstLine = (t) => String(t || '').split('\n').map((x) => x.trim()).find(Boolean) || '';
-export function scriptRunView(run, error) {
-  if (error) {
-    const d = error.details || {};
-    return { ok: false, summary: d.timed_out ? '超时' : firstLine(d.stderr) || (d.exit_code != null ? `退出码 ${d.exit_code}` : '') };
-  }
-  const ok = run?.state === 'passed';
-  return { ok, summary: firstLine(run?.summary || run?.output) };
-}

@@ -288,7 +288,7 @@ export function flow({ trace = true } = {}) {
     node({ id: 'core.publish', title: '发布', kind: 'human', actions: [{ kind: 'start', label: '去发布', target: 'publish' }] }),
     node({ id: 'retail.compliance', title: '合规检查', placement: 'gate', section: 'pre_publish', state: 'blocked', display_state: 'blocked', version: 'industry-retail@1.0.3', note: `零售行业包带来；${trace ? '场景模拟' : '校验'}确认后才能运行` }),
     node({ id: 'diagram.flowchart', title: '流程图', placement: 'branch', section: 'optional', state: 'confirmed', display_state: 'confirmed', version: 'diagram@0.6.0', plugin: { name: 'diagram', label: '图示' } }),
-    // 节点包的脚本节点（B5c）：最近一次运行结果在建模步骤抽屉里展开看（R24）；last_run 是待后端补的 FL-01 字段（gaps「UI 文案」）
+    // 节点包的脚本节点（B5c）；last_run 是待后端补的 FL-01 字段（gaps「UI 文案」）
     node({ id: 'stock-check.run', title: '库存口径检查', kind: 'script', placement: 'branch', section: 'optional', state: 'confirmed', display_state: 'confirmed', version: 'stock-check@0.1.0', actions: [{ kind: 'start', label: '重新运行' }], plugin: { name: 'stock-check', label: '库存口径检查' }, last_run: { state: 'passed', summary: '15 个对象的库存口径一致', at: '2026-10-31T07:12:00Z' } }),
     node({ id: 'core.metric', title: '指标', placement: 'branch', section: 'optional', state: 'pending_confirm', display_state: 'pending', actions: [{ kind: 'confirm', label: '去确认', target: 'inbox' }] }),
     node({ id: 'codegen.codegen', title: '代码生成', placement: 'branch', section: 'optional', state: 'ready', display_state: 'ready', version: 'codegen@0.9.2', actions: [{ kind: 'start', label: '开始' }, { kind: 'skip', label: '跳过' }], plugin: { name: 'codegen', label: '代码生成与求解' } }),
@@ -320,7 +320,7 @@ export function flow({ trace = true } = {}) {
     blueprint: { state: 'confirmed' },
     suggestions: null,
     notices: [{ kind: 'new_materials', count: 1, files: ['resource/others/09-修订通知.docx'], text: '资料区有 1 个新文件（09 修订通知），建议走增量更新', action: { type: 'navigate', page: 'incremental' } }],
-    // 以下按 P1 的 /flow 补齐（contract-changes B3a 第 1 条）：抽屉分组、命令归属、项目进度、旧版阶段名
+    // 以下按 P1 的 /flow 补齐（contract-changes B3a 第 1 条）：节点分组、命令归属、项目进度、旧版阶段名
     sections: [['required', '必经步骤'], ['pre_publish', '发布前检查'], ['optional', '可选步骤'], ['on_demand', '有需要时']]
       .map(([id, title]) => ({ id, title, nodes: nodes.filter((n) => n.section === id).map((n) => n.id) })),
     commands: {

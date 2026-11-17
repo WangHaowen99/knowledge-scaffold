@@ -447,22 +447,8 @@ export function createMockServer() {
   on('GET', '/projects/([^/]+)/extensions', ({ m }) => json(200, db.extensionsOf ? db.extensionsOf(m[1]) : F.extensions()));
   on('GET', '/projects/([^/]+)/flow', ({ m }) => json(200, flowOf(m[1])));
   on('GET', '/projects/([^/]+)/flow/suggestions', () => json(200, F.suggestionsWaiting()));
-  on('POST', '/projects/([^/]+)/flow/nodes/([^/]+)/(skip|restore)', ({ m }) => {
-    const f = flowOf(m[1]);
-    const n = f.nodes.find((x) => x.id === m[2]);
-    if (!n) return err(404, 'node_not_found', '节点不存在');
-    if (m[3] === 'skip') {
-      if (n.section === 'required') return err(409, 'node_not_skippable', '主线不能跳过');
-      Object.assign(n, { state: 'skipped', display_state: 'skipped', actions: [{ kind: 'restore', label: '恢复' }] });
-    } else {
-      if (n.state !== 'skipped') return err(409, 'node_not_skipped', '没有被跳过');
-      Object.assign(n, { state: 'ready', display_state: 'ready', actions: [{ kind: 'start', label: '开始' }, { kind: 'skip', label: '跳过' }] });
-    }
-    emitProj(m[1], 'flow.updated', { flow_hash: f.flow_hash, nodes: [{ id: n.id, state: n.state, flags: n.flags, progress: n.progress }], slices: [], suggestions_changed: false });
-    return json(200, { node: n, flow_hash: f.flow_hash });
-  });
   on('POST', '/projects/([^/]+)/flow/nodes/([^/]+)/start', async ({ m, body }) => {
-    // 脚本节点（B5c）：同步跑完回 run，不发对话（契约 B5c 第 10 条）；建模步骤抽屉里展开看结果（R24）
+    // 脚本节点（B5c）：同步跑完回 run，不发对话（契约 B5c 第 10 条）
     const f = flowOf(m[1]);
     const sn = f.nodes.find((x) => x.id === m[2] && x.kind === 'script');
     if (sn) {

@@ -6,14 +6,14 @@ import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, relativeTime } from '../../api/errors.js';
-import { commandFromTarget, commandNode, nodeActionKind, suggestionCommand, overlayRunning, scriptRunView, sectionGroups, trackClass, trackNodes, withoutEvidence } from '../../state/flow.js';
+import { commandNode, suggestionCommand, overlayRunning, trackClass, trackNodes, withoutEvidence } from '../../state/flow.js';
 import { evidenceInProject, withoutEvidenceSuggestions } from '../../state/evidence.js';
 import { composerState, lockPop, readonlyInfo } from '../../state/readonly.js';
 import { rejectedResourceMessage, uploadRules, validateResourceFiles } from '../../lib/resourceUpload.js';
 import { runStatus } from '../../state/conversation.js';
 import { ShellP } from '../../shell/Shell.jsx';
 import {
-  Button, Drawer, Field, Icon, Menu, Modal, Ring, Seg, St, cx, useOutside,
+  Button, Field, Icon, Modal, Ring, Seg, St, cx, useOutside,
 } from '../../ui/index.jsx';
 import { FLOWCHART_TYPE, latestFlowchartArtifact, pendingChangeset } from '../../app/packUi.js';
 import { AutobuildBar, AutobuildCtx, useAutobuild } from './autobuild.jsx';
@@ -42,10 +42,10 @@ const ArtifactOpener = lazy(() => import('../../components/packs/ArtifactOpener.
 const MaterialsDialogs = lazy(() => import('./materials/MaterialsDialogs.jsx'));
 
 
-function Track({ flow, onOpen }) {
+function Track({ flow }) {
   const nodes = trackNodes(flow);
   return (
-    <div className="wx-track" onClick={onOpen}>
+    <div className="wx-track">
       {nodes.map((n, i) => {
         const k = trackClass(n.display_state);
         const prevOk = i > 0 && trackClass(nodes[i - 1].display_state) === 'ok';
@@ -64,96 +64,6 @@ function Track({ flow, onOpen }) {
   );
 }
 
-// 建模步骤抽屉：按 sections 分组的节点（F8 起不分段，没有「业务分段」一栏）；节点动作的执行方式见 nodeActionKind
-function StepsDrawer({ open, onClose, flow, cid, submitOnce }) {
-  const { api } = useApp();
-  const { pid, reloadFlow } = useProject();
-  const [more, setMore] = useState(null);
-  // 脚本节点最近一次运行结果（FL-05 同步返回的；FL-01 带 last_run 时以它为准）与展开的行
-  const [runs, setRuns] = useState({});
-  const [expanded, setExpanded] = useState(null);
-  const moreRef = useRef(null);
-  useOutside(moreRef, () => setMore(null), !!more);
-  if (!flow) return <Drawer open={open} onClose={onClose} icon="branch" title="建模步骤" w={440}>正在读取…</Drawer>;
-  const recommended = (flow.notices || []).some((n) => n.kind === 'new_materials');
-  const doAct = (n, a) => submitOnce(async () => {
-    setMore(null);
-    const kind = nodeActionKind(a);
-    if (kind === 'navigate') { navigate(pagePath(a.target, pid)); return; }
-    try {
-      if (kind === 'command') {
-        const c = commandFromTarget(a.target);
-        if (c.command) await api.sendCommand(pid, { ...c, display_label: a.label, origin: { page: 'wb-l2', label: '建模步骤' }, conversation_id: cid || undefined });
-        else await api.sendMessage(pid, cid || 'default', { text: c.text, client_message_id: `cm-${Date.now()}` });
-        onClose();
-      } else if (kind === 'skip') await api.skipNode(pid, n.id, {});
-      else if (kind === 'restore') await api.restoreNode(pid, n.id, {});
-      else {
-        const r = await api.startNode(pid, n.id, { origin: { page: 'wb-l2', label: '建模步骤' } });
-        // 脚本节点同步跑完，结果留在这一行；其余节点发到对话
-        if (r?.run) { setRuns((x) => ({ ...x, [n.id]: scriptRunView(r.run) })); setExpanded(n.id); } else onClose();
-      }
-      reloadFlow();
-    } catch (e) {
-      if (n.kind === 'script' && e.code === 'node_run_failed') {
-        setRuns((x) => ({ ...x, [n.id]: scriptRunView(null, e) }));
-        setExpanded(n.id);
-        return;
-      }
-      toast(errorText(e), 'alert');
-    }
-  });
-  const row = (n) => {
-    const label = n.progress?.label || (n.section === 'on_demand' && n.display_state === 'ready' && recommended && /incremental|update$/.test(n.id) ? '推荐' : undefined);
-    // 面板入口的节点（如求解适配）不走对话命令；同一节点的多个命令只摆第一个，其余收进「⋯」
-    const acts = n.panel ? [] : n.actions || [];
-    const [first, ...rest] = acts;
-    const run = n.kind === 'script' ? (runs[n.id] || (n.last_run ? scriptRunView(n.last_run) : null)) : null;
-    const open = run && expanded === n.id;
-    return (
-      <div key={n.id} style={{ borderBottom: '1px dashed var(--line)' }}>
-      <div className="row" style={{ padding: '9px 2px' }}>
-        <span className="grow" style={run ? { cursor: 'pointer' } : undefined} onClick={run ? () => setExpanded(open ? null : n.id) : undefined}>
-          <b style={{ fontWeight: 600 }}>{n.title}</b>{run ? <Icon name={open ? 'chevd' : 'chev'} size={12} style={{ marginLeft: 4, verticalAlign: -1 }} /> : null}
-        </span>
-        {n.flags?.needs_review ? <St k="needs_review" sm /> : null}
-        <St k={n.display_state} sm label={label} />
-        {first ? <Button size="xs" kind={first.kind === 'skip' || first.kind === 'restore' ? 'ghost' : 'soft'} onClick={() => doAct(n, first)}>{first.label}</Button> : null}
-        {rest.map((a) => (['skip', 'restore'].includes(a.kind) && !a.target ? <Button key={a.label} size="xs" kind="ghost" onClick={() => doAct(n, a)}>{a.label}</Button> : null))}
-        {rest.some((a) => !['skip', 'restore'].includes(a.kind) || a.target) ? (
-          <Button size="xs" kind="ghost" icon="more" title="更多操作" onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setMore({ node: n, left: r.right - 180, top: r.bottom + 4 }); }} />
-        ) : null}
-      </div>
-      {open ? (
-        <div className="row g8 wb-run" style={{ padding: '0 2px 9px' }}>
-          <St k={run.ok ? 'pass' : 'fail'} sm />
-          <span className="xs muted grow ell" title={run.summary}>{run.summary}</span>
-        </div>
-      ) : null}
-      </div>
-    );
-  };
-  return (
-    <Drawer open={open} onClose={onClose} icon="branch" title="建模步骤" w={440}>
-      {sectionGroups(flow).map((g, gi) => (
-        <div key={g.id}>
-          <div className={cx('sec-t', gi && 'mt16')}><Icon name={SECTION_ICON[g.id] || 'flow'} size={14} />{g.title}</div>
-          {g.nodes.map(row)}
-        </div>
-      ))}
-      {more ? (
-        <div ref={moreRef}>
-          <Menu
-            style={{ position: 'fixed', left: more.left, top: more.top, width: 180, zIndex: 80 }}
-            items={(more.node.actions || []).slice(1).filter((a) => !['skip', 'restore'].includes(a.kind) || a.target).map((a) => ({ label: a.label, onClick: () => doAct(more.node, a) }))}
-            onPick={() => setMore(null)}
-          />
-        </div>
-      ) : null}
-    </Drawer>
-  );
-}
-
 // 时间线里最后一条用户消息的文字（命令按钮发出的消息带 command）
 function lastUserText(state) {
   for (let i = state.order.length - 1; i >= 0; i -= 1) {
@@ -162,8 +72,6 @@ function lastUserText(state) {
   }
   return null;
 }
-
-const SECTION_ICON = { required: 'flow', pre_publish: 'lock', optional: 'branch', on_demand: 'zap' };
 
 // 会话切换菜单（chat-states 第 1 项）：新建、续聊、重命名、删除；运行中禁止
 export function ConversationMenu({
@@ -513,7 +421,6 @@ export default function WorkbenchPage({ route }) {
   const [filesDrawer, setFilesDrawer] = useState(null);
   // 进了插件开发，「回到插件开发」的记录就用过了
   useEffect(() => { if (plugin) pluginReturn.clear(window.sessionStorage, pid); }, [plugin, pid]);
-  const [drawer, setDrawer] = useState(false);
   const [menu, setMenu] = useState(null);
   const [restart, setRestart] = useState(false);
   const [knItem, setKnItem] = useState(null);
@@ -593,7 +500,7 @@ export default function WorkbenchPage({ route }) {
     fcPicked.current = '*';
     setOpened(latestFlowchartArtifact(state) || { type: FLOWCHART_TYPE, key: null });
   }, [route.page, route.query?.key, state]);
-  // 资料分析 / 建模蓝图的弹窗：地址带 ?dialog=material_map|verification|blueprint|build 时打开（建议条、建模步骤抽屉跳过来）
+  // 资料分析 / 建模蓝图的弹窗：地址带 ?dialog=material_map|verification|blueprint|build 时打开（建议条跳过来）
   useEffect(() => {
     const d = route.query?.dialog;
     if (MATERIAL_DIALOGS.includes(d)) setMDialog({ kind: d, next: route.query?.next });
@@ -652,7 +559,7 @@ export default function WorkbenchPage({ route }) {
 
   const running = ['running', 'connecting'].includes(state.session.state);
   // 停止（S-08）：还没被助手看到的插话撤回，放回输入框
-  // 发消息、发命令、建议条、建模步骤共用一个提交中拦截（develop !596）
+  // 发消息、发命令、建议条共用一个提交中拦截（develop !596）
   const submitGuard = useMemo(createSubmitGuard, []);
   const submitOnce = useCallback(async (fn, skipped) => {
     if (submitGuard.busy()) {
@@ -870,10 +777,10 @@ export default function WorkbenchPage({ route }) {
       <div className="wx-sess" title={plugin ? '切换插件' : '切换会话'} onClick={() => setMenu(menu === 'conv' ? null : 'conv')}>
         <Icon name={plugin ? 'puzzle' : 'msg'} size={14} /><span className="nm ell">{convTitle}</span><Icon name="chevd" size={12} />
       </div>
-      {plugin ? <PluginTrack draft={boundDraft} /> : viewFlow ? <Track flow={viewFlow} onOpen={() => setDrawer(true)} /> : <span />}
+      {plugin ? <PluginTrack draft={boundDraft} /> : viewFlow ? <Track flow={viewFlow} /> : <span />}
       <div className="wx-acts">
         {ab.active ? null : <StateChip session={state.session} queue={state.queue} />}
-        {/* 插件对话的顶栏只留上下文和更多：新资料、待处理、建模步骤属于建模 */}
+        {/* 插件对话的顶栏只留上下文和更多：新资料、待处理属于建模 */}
         {plugin ? null : lockInfo ? (
           <span
             className="wx-ib nt"
@@ -892,7 +799,6 @@ export default function WorkbenchPage({ route }) {
           <>
             <span className="wx-ib" onClick={() => navigate(pagePath('inbox', pid))}><Icon name="inbox" size={14} />待处理{inboxCount ? <span className="n">{inboxCount}</span> : null}</span>
             <span className="wx-sep" />
-            <span className="wx-ib" title="建模步骤" onClick={() => setDrawer(true)}><Icon name="branch" size={16} /></span>
           </>
         )}
         <span className="wx-ib" data-pop={ctx ? `上下文 ${Math.round(ctx.used / 1000)}k / ${Math.round(ctx.window / 1000)}k` : '上下文占用'} onClick={() => setMenu(menu === 'ctx' ? null : 'ctx')}>
@@ -952,7 +858,6 @@ export default function WorkbenchPage({ route }) {
             </div>
             {drag ? <div className="wb-dropmask"><Icon name="upload" size={24} /><b>松开以添加附件</b><span className="xs muted">Markdown、Word、Excel、PDF、Drawio、TXT · 单个不超过 20 MB</span></div> : null}
           </div>
-          <StepsDrawer open={drawer} onClose={() => setDrawer(false)} flow={viewFlow} cid={cid} submitOnce={submitOnce} />
           <Modal
             open={restart} onClose={() => setRestart(false)} icon="refresh" title="重启会话？" w={460}
             foot={<><Button onClick={() => setRestart(false)}>取消</Button><Button kind="primary" onClick={async () => { setRestart(false); try { await api.restartConversation(pid, cid); toast('会话已重启', 'check'); } catch (e) { fail(e); } }}>重启会话</Button></>}

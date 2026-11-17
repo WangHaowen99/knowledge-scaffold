@@ -169,8 +169,6 @@ export function createApi(client) {
     // 3.12 流程
     flow: (id, conversation_id) => client.get(`${P(id)}/flow`, { query: { conversation_id } }), // FL-01
     suggestions: (id, conversation_id) => client.get(`${P(id)}/flow/suggestions`, { query: { conversation_id } }), // FL-02
-    skipNode: (id, node, body) => client.post(`${P(id)}/flow/nodes/${enc(node)}/skip`, body || {}), // FL-03
-    restoreNode: (id, node, body) => client.post(`${P(id)}/flow/nodes/${enc(node)}/restore`, body || {}), // FL-04
     startNode: (id, node, body) => client.post(`${P(id)}/flow/nodes/${enc(node)}/start`, body), // FL-05
     blueprint: (id) => client.get(`${P(id)}/blueprint`), // BP-01
     saveBlueprint: (id, body) => client.put(`${P(id)}/blueprint`, body), // BP-02
