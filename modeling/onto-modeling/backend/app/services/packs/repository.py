@@ -151,12 +151,15 @@ def _settle_beta(entry: dict, stable: str, previous: str | None) -> dict:
 
 
 OWNER_FIELD = "owner"
+# 镜像里已移除的官方包启动时下架（builtin.retire_missing），记在通道记录上
+RETIRED_FIELD = "retired"
 
 
 class PackRepository:
     """<数据目录>/packs 下的包仓库。
 
     用户私有包（ADR-0079）和别的包放在一起，通道记录上多一个 owner：只归上传者，别人看不见也启用不了。
+    下架的官方包通道记录上多一个 retired：版本目录留着，但哪里都不列、通道上没有版本，也启用不了。
     """
 
     def __init__(self, data_dir: Path):
@@ -178,10 +181,11 @@ class PackRepository:
 
     def names(self, *, private: bool = False) -> list[str]:
         """公开的包。私有包默认不算：缺省能力、配置注册、指标告警这些遍历全部包的地方都碰不到它，
-        要看的地方（插件运维）显式带 private=True，目录按看的人取 private_names。"""
+        要看的地方（插件运维）显式带 private=True，目录按看的人取 private_names。下架的包哪种都不算。"""
         if not self.root.is_dir():
             return []
-        hidden = set() if private else {name for name, entry in self.channels().items() if entry.get(OWNER_FIELD)}
+        hidden = {name for name, entry in self.channels().items()
+                  if entry.get(RETIRED_FIELD) or (not private and entry.get(OWNER_FIELD))}
         return sorted(
             entry.name for entry in self.root.iterdir()
             if entry.is_dir() and mf.NAME_RE.match(entry.name) and entry.name not in hidden and self.versions(entry.name)
@@ -189,7 +193,7 @@ class PackRepository:
 
     def private_names(self, owner: str) -> list[str]:
         return sorted(name for name, entry in self.channels().items()
-                      if owner and entry.get(OWNER_FIELD) == owner and self.versions(name))
+                      if owner and entry.get(OWNER_FIELD) == owner and not entry.get(RETIRED_FIELD) and self.versions(name))
 
     def owner(self, name: str) -> str:
         """私有包的所有者；公开的包是空串。"""
@@ -328,8 +332,10 @@ class PackRepository:
         return data if isinstance(data, dict) else {}
 
     def channel(self, name: str, channel: str = "stable") -> str | None:
-        """通道指向的版本；指向的版本被禁用（O-28）后视为没设，`latest` 改取最新的可用版本。"""
+        """通道指向的版本；指向的版本被禁用（O-28）后视为没设，`latest` 改取最新的可用版本。下架的包没有。"""
         entry = self.channels().get(name) or {}
+        if entry.get(RETIRED_FIELD):
+            return None
         value = entry.get(channel)
         if isinstance(value, dict):
             value = value.get("version")
@@ -386,6 +392,28 @@ class PackRepository:
             data[name] = entry
             _atomic_write_json(self._channels_path(), data)
 
+    # ---- 下架（镜像里已移除的官方包）----
+
+    def retired(self, name: str) -> dict | None:
+        """下架记录 {at, by, reason}，没下架为 None。"""
+        value = (self.channels().get(name) or {}).get(RETIRED_FIELD)
+        return value if isinstance(value, dict) else None
+
+    def retire(self, name: str, *, reason: str, by: str = "builtin") -> None:
+        self.set_field(name, RETIRED_FIELD, {"at": _now(), "by": by, "reason": reason})
+
+    def unretire(self, name: str) -> bool:
+        """取消下架，返回原来是不是下架着。"""
+        with _LOCK:
+            data = self.channels()
+            entry = dict(data.get(name) or {})
+            if RETIRED_FIELD not in entry:
+                return False
+            entry.pop(RETIRED_FIELD)
+            data[name] = entry
+            _atomic_write_json(self._channels_path(), data)
+            return True
+
     def previous_in_channel(self, name: str, channel: str, exclude: str | None = None) -> str | None:
         """通道历史里最近一个还在、没禁用的版本（不含 exclude）。"""
         entry = self.channel_entry(name)
@@ -399,7 +427,9 @@ class PackRepository:
 
     def latest(self, name: str, channel: str = "stable") -> str | None:
         """通道指向的版本；指向的版本被禁用时退回这个通道历史里上一个可用的版本（审查第 4 条：不能退到只在
-        beta 上、还没放量的预发布版本）；通道没设时取最新的、没被禁用的正式版本。"""
+        beta 上、还没放量的预发布版本）；通道没设时取最新的、没被禁用的正式版本。下架的包没有。"""
+        if self.retired(name):
+            return None
         pinned = self.channel(name, channel)
         if pinned:
             return pinned

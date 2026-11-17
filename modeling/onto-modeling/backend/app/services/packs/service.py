@@ -390,7 +390,7 @@ def _missing_providers(repository, name: str, version: str) -> list[str]:
 
 
 def _require_version(repository, name: str, version: str | None) -> str:
-    if not repository.versions(name):
+    if not repository.versions(name) or repository.retired(name):
         raise PackError("pack_not_found", f"包 {name} 不存在", 404)
     version = version or repository.latest(name, "stable")
     if not version or not repository.has(name, version):
@@ -598,7 +598,7 @@ def compatibility(manager, name: str, version: str, project_id: str) -> dict:
     """PL-03：把这个版本放进本项目试装配一遍，逐项给出兼容结论（不改锁文件、不留装配目录）。"""
     runtime = manager.packs
     repository = runtime.repository
-    if not repository.versions(name):
+    if not repository.versions(name) or repository.retired(name):
         raise PackError("pack_not_found", f"包 {name} 不存在", 404)
     if not repository.has(name, version):
         raise PackError("pack_version_not_found", f"包 {name} 没有版本 {version}", 404)

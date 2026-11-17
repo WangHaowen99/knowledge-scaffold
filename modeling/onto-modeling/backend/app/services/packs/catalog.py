@@ -178,7 +178,7 @@ def catalog(manager, *, category: str = "", q: str = "", project_id: str = "", v
 def detail(manager, name: str, *, project_id: str = "", version: str = "") -> dict:
     """PL-02：插件详情。版本缺省取项目锁定的版本，没有则取 stable 最新版。"""
     repository = manager.packs.repository
-    if not repository.versions(name):
+    if not repository.versions(name) or repository.retired(name):
         found = next((item for item in collector_cards() if item["name"] == name), None)
         if found is None:
             raise PackError("pack_not_found", f"包 {name} 不存在", 404)
