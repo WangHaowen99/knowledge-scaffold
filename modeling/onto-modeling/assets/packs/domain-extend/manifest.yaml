@@ -2,7 +2,7 @@
 # 底座的对象、操作、规则、指标、脚本、求解契约一律不改；助手写底座条目由内核按 flow.yaml 的 confine 挡，
 # 网页、Studio、MCP 上的人工改动在发布前的「底座核对」里列出，撤回之前不能发布。
 name: domain-extend
-version: 0.1.0
+version: 0.2.0
 kind: capability
 category: capability
 label: 领域包扩展
@@ -12,8 +12,8 @@ default_on: false
 batch: second
 kernel_api: ">=1.0 <2.0"
 engines: [claude, jiuwen]
-depends: {core: ">=0.5"}  # 0.5.0 起内核认 confine、kernel 探针 session_open
-changelog: 首个版本：锁定底座、新增功能、底座核对三步，底座核对挡发布。
+depends: {core: ">=0.6"}  # 0.6.0 起节点用 need 写法（0.5.0 起内核认 confine、kernel 探针 session_open）
+changelog: 节点改用 need 写法。
 contributes:
   commands: [domain-extend-bind, domain-extend-add, domain-extend-check]
   scripts: [domain_extend.py]

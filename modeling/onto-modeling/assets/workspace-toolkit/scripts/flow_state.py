@@ -167,6 +167,45 @@ def _holds(conditions, probes: dict) -> bool:
     return True
 
 
+# ---- 节点什么时候要做（need）----
+#
+# 节点只用 `need` 表达：required、optional、{when: <内核条件>}。装配时内核已经补上（旧写法折算、旧字段补齐）；
+# 这里再按同一张映射表兜一次底：直接读工具箱源目录里没组装过的 flow.yaml、老装配格式时也认得出。
+# 映射表和内核 services/flow/need.py 的同一份，测试对齐两边。
+
+
+def need_of(node: dict):
+    """节点的 need：写了合法的 need 就用它，否则按旧写法折算（自上而下取第一条命中的）。"""
+    need = node.get('need')
+    if need in ('required', 'optional'):
+        return need
+    if isinstance(need, dict) and set(need) == {'when'} and isinstance(need['when'], str) and need['when'].strip():
+        return {'when': need['when'].strip()}
+    condition = node.get('visible_if')
+    if isinstance(condition, str) and condition.strip():
+        return {'when': condition.strip()}
+    if node.get('placement') == 'on_demand' or node.get('section') == 'on_demand':
+        return 'optional'
+    if (node.get('optional') is True or node.get('section') == 'optional' or node.get('placement') == 'branch'
+            or node.get('progress') is False):
+        return 'optional'
+    return 'required'
+
+
+def need_kind(node: dict) -> str:
+    """required、optional 或 when。"""
+    need = need_of(node)
+    return 'when' if isinstance(need, dict) else need
+
+
+def primary_command(node: dict) -> str:
+    """主命令：actions 里第一个带 command 或 page 的动作；是发到对话的命令时返回整条命令，否则空串。"""
+    action = next((item for item in node.get('actions') or []
+                   if isinstance(item, dict) and (item.get('command') or item.get('page'))), {})
+    command = str(action.get('command') or '').strip()
+    return command if command.startswith('/') else ''
+
+
 def node_hits(flow: dict, root: Path, probes: dict | None = None) -> dict:
     """节点 ID → 完成判定是否满足（done 为空的按需节点恒为 False）。"""
     probes = probes if probes is not None else evaluate(flow, root)
@@ -177,8 +216,8 @@ def node_hits(flow: dict, root: Path, probes: dict | None = None) -> dict:
 
 
 def progress_nodes(flow: dict) -> list:
-    """计入进度（x/N）的节点：按需节点（progress: false）不算。"""
-    return [node for node in flow.get('nodes') or [] if node.get('progress', True)]
+    """计入进度（x/N）的节点：必需节点（可选、条件节点不算）。后端另外去掉可补做的（overlay.progress_ids）。"""
+    return [node for node in flow.get('nodes') or [] if need_kind(node) == 'required']
 
 
 def progress(flow: dict, root: Path, probes: dict | None = None) -> dict:
@@ -301,13 +340,9 @@ def _goal_items(flow: dict, nodes: list, states: dict, context: dict) -> list:
     return [answer, *_mainline_items(flow, nodes, states, context)]
 
 
-MAINLINE_PLACEMENTS = ('spine', 'step', 'gate')
-
-
 def _required_on_mainline(node: dict) -> bool:
-    """主线上的必做节点：不是可选的，摆在主线上，属于必做区。"""
-    return (not node.get('optional') and node.get('placement', 'spine') in MAINLINE_PLACEMENTS
-            and node.get('section', 'required') == 'required')
+    """主线上的必做节点：`need: required`。"""
+    return need_kind(node) == 'required'
 
 
 def _covers(patterns: list, wanted: list) -> bool:
@@ -348,7 +383,7 @@ def handed_down(node: dict, nodes: list, state_of: dict, slice_stale: list = ())
     已确认。待处理（服务端）用同一个判定，不列建议条不推的刷新——两边口径一致（ADR-0090）。
 
     slice_stale 是按段节点时的参数，签名留着让旧调用方照样能调，不再使用。"""
-    states = LENIENT_STATES if node.get('optional') else ('confirmed',)
+    states = LENIENT_STATES if need_kind(node) == 'optional' else ('confirmed',)
     return _checked_downstream(node, list(node.get('stale_on') or []), nodes, state_of, states)
 
 
@@ -376,11 +411,10 @@ def _stale_items(nodes: list, state_of: dict, context: dict) -> list:
     for node in nodes:
         if state_of.get(node['id']) != 'stale':
             continue
-        lenient = bool(node.get('optional'))
+        lenient = need_kind(node) == 'optional'
         if handed_down(node, nodes, state_of):
             continue
-        entry = (node.get('entry') or {}).get('command') or next(
-            (action['command'] for action in _node_actions(node, probes=context.get('probes')) if action.get('command')), None)
+        entry = primary_command(node)
         scoped = ((context.get('stale_scope') or {}).get(node['id']) or {}).get('command')
         if entry and isinstance(scoped, str) and scoped.split()[:1] == entry.split()[:1]:
             entry = scoped  # 声明了刷新范围：只查确认之后改动的条目（后端算好的同一条命令）
@@ -412,7 +446,7 @@ def _mainline_items(flow: dict, nodes: list, states: dict, context: dict) -> lis
     stage = context.get('stage') or ''
 
     def pending_required(node: dict) -> bool:
-        return (node.get('section', 'required') == 'required'
+        return (need_kind(node) == 'required'
                 and state_of.get(node['id']) not in ('confirmed', 'stale', 'skipped')
                 and not flags_of.get(node['id'], {}).get('backfill'))
 
@@ -501,11 +535,11 @@ def _flow_rules(flow: dict, states: dict, context: dict) -> list:
 
 
 def _preempt_items(nodes: list, state_of: dict) -> list:
-    """触发后抢先的步骤（`preempt`，ADR-0091）：排在主线前面，没做完不推别的。`preempt` 是字符串时当说明行。"""
+    """条件节点（`need: {when: …}`，如按触发出现的，ADR-0091）出现了、没做完：排在主线前面，没做完不推别的。
+    节点在 states 里就是出现了（条件不成立的不在流程里）。"""
     for node in nodes:
-        if node.get('preempt') and state_of.get(node['id']) in ('ready', 'not_ready', 'blocked'):
-            reason = node['preempt'] if isinstance(node['preempt'], str) else '下一步'
-            return [_item(f"{node['id']}#{index}", action['label'], _action(action), reason=reason, priority=4)
+        if need_kind(node) == 'when' and state_of.get(node['id']) in ('ready', 'not_ready', 'blocked'):
+            return [_item(f"{node['id']}#{index}", action['label'], _action(action), reason='下一步', priority=4)
                     for index, action in enumerate(_node_actions(node)[:SUGGESTIONS_MAX])]
     return []
 
@@ -530,7 +564,7 @@ def suggest(flow: dict, states: dict, context: dict | None = None, check=None) -
     """统一下一步（详设 6.10）：从上往下判，命中第一条就停；1 个主推、最多 2 个次选（契约 7.8 Suggestions）。
 
     1 运行中不显示；2 有等你回答的问题；3 这一轮出错；4 刚被打断（或没收尾）的那一步；5 合入冲突（其余按 6～10
-    补齐）；6 建模蓝图草案待确认；6.5 包触发后抢先的步骤（preempt）；7 过期的步骤；8 报告待处理、关卡没过；9 主线下一个必经步骤；10 必经都做完。
+    补齐）；6 建模蓝图草案待确认；6.5 出现了的条件节点（need.when，如包触发后的步骤）；7 过期的步骤；8 报告待处理、关卡没过；9 主线下一个必经步骤；10 必经都做完。
 
     check(action) → bool：这个动作此刻能不能执行（后端给，和接口校验同一份）；不能的条目不出现，整条规则没有
     能执行的条目时往下一条判。不给时都算能执行（state_helper 在助手副本里算）。
@@ -546,7 +580,7 @@ def suggest(flow: dict, states: dict, context: dict | None = None, check=None) -
     - blueprint：建模蓝图 {state: none|draft|confirmed, where: mainline|changeset, next, goal_pending}，目标问题没答时主推「回答目标问题」（F8 起草案不用确认）；
     - stale_upstream：过期节点 → 上游的说法（「对象、操作」）；
     - stale_scope：声明了 refresh_scope 的过期节点 → {since, names, command}，第 7 条的刷新发这条只查改动条目的命令
-      （`/ontology-validate 门店 受理申请 --since <提交>`）；没有这一项的照旧发整条入口命令；
+      （`/ontology-validate 门店 受理申请 --since <提交>`）；没有这一项的照旧发整条主命令；
     - probes：探针结果 {名字: bool}，按动作的 `when` 筛动作（不给时不筛）；
     - confine_active：范围限定生效（限定范围的包这一轮进行中），这时第 7 条不出；
     - awaiting_reply：这条对话里的命令停下来等你在对话里回复（锁在命令声明的等回复阶段）{id, label}：这时不推别的命令
@@ -585,8 +619,8 @@ def suggest(flow: dict, states: dict, context: dict | None = None, check=None) -
                 'note': f"「{label}」在等你回复上面的问题" if label else '助手在等你回复上面的问题'}
     for rule, found in rules:
         if found:
-            # 过期那条按钮上已经写了哪类变了，不再另起一行说明；抢先的步骤用包写的 preempt 当说明行
-            return _shaped('normal', found, rule == 6.5 and found[0]['reason'] != '下一步')
+            # 过期那条按钮上已经写了哪类变了，不再另起一行说明
+            return _shaped('normal', found, False)
     return _shaped('normal', [], False)
 
 

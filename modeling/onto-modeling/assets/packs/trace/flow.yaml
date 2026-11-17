@@ -5,14 +5,12 @@ nodes:
   - id: trace.trace
     title: 场景模拟
     kind: agent
-    # 串在校验之后；随 core 拆出、本来就在主线上，按主线位置（spine）算，不当成新插进来的可补做节点（ADR-0066）
-    placement: spine
-    section: required
+    # 串在校验之后；随 core 拆出、本来就在主线上，不当成新插进来的可补做节点（ADR-0066）
+    need: required
     after: core.validate
     done: [testcase]
     stale_on: [object, operation]
     produces: ["ontology/testcase/*", "ext/trace/*", "ontology/data-mock/*"]
-    entry: {command: /ontology-trace}
     actions:
       - {label: 批量验证, command: /ontology-trace 全部}
       - {label: 交互模拟, command: /ontology-trace 交互}

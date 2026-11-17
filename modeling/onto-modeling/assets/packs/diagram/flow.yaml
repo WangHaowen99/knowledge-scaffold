@@ -1,16 +1,13 @@
-# 图示包的节点（详设 6.8：diagram.flowchart 旁支，挂在资料分析之后）
+# 图示包的节点（详设 6.8：diagram.flowchart 可选，挂在资料分析之后）
 nodes:
   - id: diagram.flowchart
     title: 流程图
     kind: agent
-    placement: branch
-    section: optional
-    optional: true
+    need: optional
     after: core.research
     done: [flowchart]
     stale_on: [research]
     produces: ["ontology/diagrams/*", "ontology/diagrams-summary/*", "ontology/excel/*", "ontology/mermaid/*"]
-    entry: {command: /ontology-flowchart}
     actions:
       - {label: 创建/打磨流程图, command: /ontology-flowchart}
       - {label: 全量刷新, command: /ontology-flowchart 全量刷新}

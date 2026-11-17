@@ -41,6 +41,22 @@ test('P1 形状：没有 section 的节点按顶层 sections 归组', () => {
   assert.equal(flow.nodes.find((n) => n.id === 'core.update').section, 'on_demand');
 });
 
+test('FL-01 带 need、nav、under 时原样保留；老响应没有时按 optional、placement 补默认值', () => {
+  const flow = normalizeFlow({ nodes: [
+    { id: 'core.metric', title: '指标', need: 'optional', nav: false, under: 'core.operation', placement: 'branch' },
+    { id: 'core.update', title: '增量更新', need: { when: 'materials_added' }, nav: false, under: 'core.operation' },
+    { id: 'core.object', title: '提取对象' },
+    { id: 'diagram.flowchart', title: '流程图', optional: true, placement: 'branch' },
+    { id: 'naming.check', title: '命名检查', placement: 'step', flags: { disabled: true } },
+  ] });
+  const of = (id) => flow.nodes.find((n) => n.id === id);
+  assert.deepEqual([of('core.metric').need, of('core.metric').nav, of('core.metric').under], ['optional', false, 'core.operation']);
+  assert.deepEqual(of('core.update').need, { when: 'materials_added' });
+  assert.deepEqual([of('core.object').need, of('core.object').nav, of('core.object').under], ['required', true, null]);
+  assert.deepEqual([of('diagram.flowchart').need, of('diagram.flowchart').nav], ['optional', false]);
+  assert.equal(of('naming.check').nav, false);
+});
+
 test('缺 display_state 时按 state 补；待确认显示为 pending', () => {
   const flow = normalizeFlow({ nodes: [{ id: 'a', title: 'A', state: 'pending_confirm' }, { id: 'b', title: 'B' }] });
   assert.equal(flow.nodes[0].display_state, 'pending');

@@ -1,7 +1,7 @@
 """项目的流程锁 `.onto/flow.lock`（详设 6.7 第 1 项、6.9 第 2 步、14#1；方案 D18）。
 
 锁文件 `packs.lock` 定了用哪些包，组装后的流程写进 flow.lock：进工作区 git，和 packs.lock 在同一个提交里，
-能追溯每份产物是在哪一版流程下做的。只记节点层面的东西（编号、来源包与版本、挂法、锚点、挡住谁、
+能追溯每份产物是在哪一版流程下做的。只记节点层面的东西（编号、来源包与版本、什么时候要做 `need`、锚点、挡住谁、
 完成判定签名、过期依据、写入范围），不记探针实现和下一步文案——那些随装配目录走。
 
 内容由锁文件唯一决定（同样的包与版本写出同样的字节）：只启用不带节点的包时 flow.lock 不变。
@@ -18,7 +18,8 @@ from pathlib import Path
 
 FLOW_LOCK_REL = ".onto/flow.lock"
 FLOW_LOCK_VERSION = 1
-_NODE_KEYS = ("title", "kind", "placement", "section", "after", "before", "blocks", "stale_on", "optional")
+# 挂法只记 need：placement、section、optional 由它补齐，记了也是重复（节点模型重构 2a 起）
+_NODE_KEYS = ("title", "kind", "need", "after", "before", "blocks", "stale_on")
 
 
 def _patterns(node: dict) -> list[str]:

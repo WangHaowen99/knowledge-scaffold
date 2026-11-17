@@ -24,6 +24,7 @@ from ..services import conversation_store, project_events, streams, uploads, wor
 from ..services.agent_sessions import SessionError, manager
 from ..services.autobuild import store as autobuild_store
 from ..services.flow import next_step
+from ..services.flow.need import SECTION_OF_NEED, need_kind, primary_command
 from ..services.session_host import command_tasks, exec_records, subagents, timeline, turns
 from ..services.session_host import views as session_views
 
@@ -750,8 +751,8 @@ def command_catalog(root: Path) -> dict:
         names = sorted(path.stem for path in commands_dir.glob("*.md"))
     except OSError:
         names = []
-    # 节点包只在节点上写入口命令（entry.command），没有 commands 映射
-    entries = {str((node.get("entry") or {}).get("command") or "").strip(): node for node in nodes.values()}
+    # 节点包没有 commands 映射：按节点的主命令认
+    entries = {primary_command(node).split(" ")[0]: node for node in nodes.values() if primary_command(node)}
     groups: dict[str, list] = {key: [] for key, _ in _SECTION_GROUPS}
     groups["other"] = []
     for name in names:
@@ -766,7 +767,7 @@ def command_catalog(root: Path) -> dict:
             "command": command, "pack": (node or {}).get("pack") or "core", "node_id": (node or {}).get("id"),
             "args_schema": None, "available": True, "unavailable_reason": None,
         }
-        groups[(node or {}).get("section") if node and (node.get("section") in groups) else "other"].append(item)
+        groups[SECTION_OF_NEED[need_kind(node)] if node else "other"].append(item)
     result = [{"id": key, "label": label, "items": groups[key]} for key, label in _SECTION_GROUPS if groups[key]]
     if groups["other"]:
         result.append({"id": "other", "label": "其他", "items": groups["other"]})

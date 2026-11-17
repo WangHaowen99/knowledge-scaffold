@@ -5,19 +5,21 @@
 
 三处用法：
 
-- 节点 `visible_if: <条件>`：不满足时节点不在本项目的流程里（`apply`，`model.load_for` 调），连线、命令归属、
-  钩子一起去掉，挂在它后面的节点改挂到它的上游；
+- 节点 `need: {when: <条件>}`（旧写法 `visible_if: <条件>`）：不满足时节点不在本项目的流程里（`apply`，`model.load_for` 调），
+  连线、命令归属、钩子一起去掉，挂在它后面的节点改挂到它的上游（增量更新写的 `materials_added` 还没有，按不成立算）；
 - 探针 `{kernel: <条件>}`：完成判定用。工作区里的 flow_state 不认识，恒为否；后端经 `with_kernel_probes`
   包一层补上（`model.flow_state` 调）。探针定义不变，完成判定签名就不会随结果变；
 - 提示规则 `visible_if: <条件>`：不满足时不注入（`packs/registry.prompt_rules`）。
 
-`visible_if: activated` 和探针 `{kernel: session_open, session: <路径>}` 按包声明的触发算（ADR-0091，`flow/activation.py`）。
+`need: {when: activated}` 和探针 `{kernel: session_open, session: <路径>}` 按包声明的触发算（ADR-0091，`flow/activation.py`）。
 """
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
+
+from .need import when_of
 
 _log = logging.getLogger(__name__)
 
@@ -38,7 +40,7 @@ def holds(name: str, root: Path) -> bool:
 
 
 def _node_visible(node: dict, flow: dict, root: Path) -> bool:
-    condition = node["visible_if"]
+    condition = when_of(node)
     if condition != "activated":
         return holds(condition, root)
     from . import activation
@@ -55,9 +57,9 @@ def apply(flow: dict, root: Path) -> dict:
 
     返回的流程多 `hidden_nodes`，`flow_hash` 换成去掉之后的摘要：节点集合变了，推给前端的流程摘要也要变。"""
     nodes = flow.get("nodes") or []
-    if not any(node.get("visible_if") for node in nodes):
+    if not any(when_of(node) for node in nodes):
         return flow
-    hidden = {node["id"] for node in nodes if node.get("visible_if") and not _node_visible(node, flow, root)}
+    hidden = {node["id"] for node in nodes if when_of(node) and not _node_visible(node, flow, root)}
     if not hidden:
         return flow
     from .assemble import flow_hash

@@ -1,5 +1,5 @@
 """一次自主构建做哪些事（详设 8.5「范围」）：流程里资料分析之后、到策略的 `until_node` 为止（含）的节点，一个节点一个
-单元、一步，跑节点的主命令（`entry.command`）。发布、增量更新是硬性不做的，不在里面。
+单元、一步，跑节点的主命令（actions 里第一个带 command 的动作）。发布、增量更新是硬性不做的，不在里面。
 
 单元：`{id: 节点, name: 节点名, kind: "node", steps: [{id, label, title, action, command, args}], carried?}`。
 
@@ -16,6 +16,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+
+from ..flow.need import primary_command
 
 START_AFTER = "core.research"
 SKIP = ("core.publish", "core.update")
@@ -39,7 +41,7 @@ def node_ids(flow_doc: dict) -> list[str]:
 
 
 def _command(node: dict) -> str:
-    return ((node.get("entry") or {}).get("command") or "").strip()
+    return primary_command(node)
 
 
 def _eligible(node: dict, policy: dict) -> bool:

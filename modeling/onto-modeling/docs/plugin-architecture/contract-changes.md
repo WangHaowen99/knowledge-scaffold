@@ -2074,3 +2074,75 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
 
 21. `flow/slices.py` 整个删除；`blueprint.run_slices`、`drop_added_members`，`revert_merged` 的 `rewrite` 参数删除；变更集检查的
     待建链接（`gates._planned`、`link_target`）删除；`exec_records` 不再写 `slice`、`step`。
+
+## 2026-11-17 · 节点挂法收成 need 一个字段（节点模型重构 2a）
+
+用户定：节点什么时候要做只用一个字段 `need` 表达。这一批换声明方式，界面行为基本不变：改名、全部命令菜单、推荐五级、跳过入口、
+前端交互在 2b；增量更新的事件条件、自主构建按 `need` 判资格在批次 3。
+
+**声明**
+
+1. `need` 三种取值：`required`（上导航栏，计入进度，没做时推荐，自主构建做）、`optional`（不上导航栏，挂在它前面最近的必需节点下面，
+   可以跳过）、`{when: <内核条件>}`（条件成立时出现）。缺省 `required`。取值不对装配失败（「节点 X 的 need 只能是……」）。
+2. 旧写法装配时折算成 `need`，自上而下取第一条命中的：
+
+   | 旧写法 | 折算成 |
+   |---|---|
+   | `visible_if: X` | `{when: X}`，`preempt` 不带过来 |
+   | `placement` 或 `section` 是 `on_demand` | `optional`，没写 `autobuild` 时加 `autobuild: false` |
+   | `optional: true`、`section: optional`、`placement: branch`、`progress: false` | `optional` |
+   | `gate`、`pre_publish` | `required` |
+   | 其余（`spine`、`step`、什么都没写） | `required` |
+
+3. 同时写了 `need` 和旧字段时以 `need` 为准。旧字段不删，装配时按 `need` 补齐（锁定旧 core 的项目、助手副本里的旧脚本还读）：
+   - `required`：`placement` 是 spine、step、gate 的保留，否则 spine；`section` 是 required、pre_publish 的保留，否则 required；
+     去掉 `optional`、`progress`、`visible_if`、`preempt`；
+   - `optional`：`placement` 是 branch、on_demand 的保留，否则 branch；`section` 是 optional、on_demand 的保留，否则 optional；
+     `optional: true`、`progress: false`，去掉 `visible_if`、`preempt`；
+   - `{when: X}`：`visible_if: X`、`progress: false`，`preempt` 没写时补 `true`（旧脚本按它先推），去掉 `optional`；
+     `placement`、`section` 不合法时补 spine、required。
+
+   整理是幂等的：装配目录里的流程再整理一遍不变。
+4. 分段遗留的 `per_slice`、`steps`、`slice_steps`、`node_titles`、`blocks_in` 照旧不起作用（`blocks_in: sliced` 的关卡不挡），静态检查给警告。
+5. **主命令**：`actions` 里第一个带 `command` 或 `page` 的动作。`entry` 只做兼容：没写时装配补成主命令；只写了 `entry`、没有这样的动作的
+   老节点，装配时把 `entry` 补成第一个动作（叫法取节点标题）。内核不再读 `entry`：开始节点（FL-05）、范围限定的
+   `confine.entry`、自主构建、建议条和待处理的刷新、S-18 命令归组、节点钩子提示、静态检查都改读主命令。和原来不同的两处：
+   资料分析发 `/ontology-research 仅基于本地文档`（原来 `/ontology-research`，命令说明里这句话不改变做法）；场景模拟发
+   `/ontology-trace 全部`（原来 `/ontology-trace`，会先问做哪种；节点卡片上的刷新原来就发这一条）。
+6. **第三方包不进自主构建**：不是镜像内置入库、也不是 core 的包，节点没写 `autobuild` 时装配成 `autobuild: false`（自主构建无人值守，
+   第三方包的输入不可信）；要进写 `autobuild: true`，上传检查列出来。可选节点同样处理（批次 3 打开「包括可选步骤」时也不做）。
+7. **`display_after` 保留**：求解适配改成 `after: codegen.codegen` 的话，没做代码生成时要等场景模拟做完才能开始（原来等提取操作）；
+   底座核对改成挂在新增功能后面，没新增时核对不了。两处「可开始」都会变，所以这两个节点继续用 `display_after` 只管显示顺序，
+   锁定底座、新增功能的 `display_after` 和 `after` 相同，去掉。
+8. **触发**：`activation` 的节点写 `need: {when: activated}`（旧写法 `visible_if: activated` 照认）；`preempt` 不再校验、不再起作用。
+   条件节点出现且没做完时，建议条先推它（原来要写 `preempt`）；说明行不再取 `preempt` 的字符串，为空。
+9. 装配格式 `ASSEMBLY_FORMAT` 升到 2：装配哈希跟着变，所有项目启动核对时重新装配。读装配目录的流程时再整理一遍（还没重新装配的
+   老格式也有 `need`）。`flow.lock` 的节点只记 `need`，去掉 `placement`、`section`、`optional`（下次提交锁文件时改写一次）。
+
+**资产**
+
+10. core 升到 0.6.0，主流程节点改用 `need`，去掉 `placement`、`section`、`optional`、`progress`、`entry`：资料分析、提取对象、提取操作、
+    校验、发布是 `required`，指标是 `optional`；增量更新是 `{when: materials_added}`，这个条件内核还没有，按不成立算，**节点不出现**：
+    FL-01 里没有增量更新，`/ontology-update` 在 S-18 里没有节点、归到「其他」，手动输入照样能发。
+11. 官方包改用 `need`，`depends` 改成 `core: ">=0.6"`：trace 0.11.0（场景模拟 `required`）、diagram 0.7.0（流程图 `optional`）、
+    codegen 0.10.0（代码生成、求解适配 `optional`，代码生成加 `autobuild: false`）、domain-extend 0.2.0（三个节点 `required`）。
+
+**接口（只加不删）**
+
+12. FL-01 节点加 `need`、`nav`（必需节点为 true，已停用的为 false）、`under`（可选、条件节点挂在哪个必需节点下面：after 链上它前面
+    最近的必需节点，链上没有时取流程顺序里它前面最近的；必需节点为 null）。`section` 按 `need` 算（必需 required、可选 optional、
+    条件 on_demand，`pre_publish` 不再出现）；`optional` 按 `need`；`placement` 是补齐后的旧字段。
+13. **进度只算必需节点**（可补做的做完之前不算）：FL-01 `progress` 和 P-01 项目卡片的 x/N 由内核按 `need` 同一口径算，锁定旧 core
+    的项目也一样。默认几个包启用时分母从 10 变成 6（指标、流程图、代码生成、求解适配不再算）。
+14. FL-03 只能跳过 `need: optional` 的节点，必需、条件节点回 `409 node_not_skippable`（「只有可选节点能跳过」）。
+15. PL-15 等上传检查：`node_entry` 改查主命令是本包的命令；新增 `node_need`（`need` 写错失败，分段遗留字段警告，没问题时不出现）、
+    `autobuild`（上传的包有节点时出现：写了 `autobuild: true` 的节点列在说明里、结果为警告，没有时通过）；节点包的 `node_pack`
+    不再限制 `placement`（第三方包也能声明必需节点），锚点仍要写（旧写法的按需节点除外），agent 节点的主命令要是本包命令；
+    `activation` 不再查 `preempt`。插件开发 skill 的离线检查器带上 `services/flow/need.py`。
+16. 工作台插件开发的草稿内容（`contents.nodes`）加 `need`。
+17. S-18 命令按节点的 `need` 归组（必需「建模」、可选「可选能力」、条件「有需要时」），节点包的命令按主命令认节点。
+
+**助手副本（flow_state、state_helper）**
+
+18. `flow_state` 加 `need_of`、`need_kind`、`primary_command`（映射表和内核同一份，测试对齐）；`progress_nodes`、`_required_on_mainline`、
+    已交给核对节点的判定、过期刷新、主线下一步、`state_helper` 补缺的节点状态改读 `need`；过期刷新发主命令。`SUGGEST_RULES` 不变。

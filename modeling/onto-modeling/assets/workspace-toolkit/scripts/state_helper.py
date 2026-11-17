@@ -575,7 +575,7 @@ def _locked_nodes(flow: dict) -> set:
 def _fill_missing(flow: dict, states: dict, hits: dict) -> None:
     """flow-state.json 里没有的节点（core 刚升级、后端还没按新流程算过；没有这个文件）按这份副本里的完成判定兜底：
     做完了算已确认，没做完时上游（after 链，没做的可选节点跳过）做完了算可开始。不兜底的话缺的节点按未就绪叠加，
-    已经有对象的项目会被推回「提取对象」。"""
+    已经有对象的项目会被推回「提取对象」。条件节点（need.when）出不出现只有后端算得出，没记的按不出现算。"""
     nodes = flow.get('nodes') or []
     by_id = {node['id']: node for node in nodes}
 
@@ -587,12 +587,15 @@ def _fill_missing(flow: dict, states: dict, hits: dict) -> None:
     for node in nodes:
         if node['id'] in states:
             continue
+        if flow_state.need_kind(node) == 'when':
+            states[node['id']] = {'state': 'skipped', 'flags': {'hidden': True}}
+            continue
         if hits.get(node['id']):
             states[node['id']] = {'state': 'confirmed', 'flags': {}}
             continue
         anchor = after(node)
-        while anchor in by_id and by_id[anchor].get('optional') and (states.get(anchor) or {}).get('state') not in (
-                'confirmed', 'stale'):
+        while anchor in by_id and flow_state.need_kind(by_id[anchor]) == 'optional' and (
+                states.get(anchor) or {}).get('state') not in ('confirmed', 'stale'):
             anchor = after(by_id[anchor])
         upstream = (states.get(anchor) or {}).get('state') if anchor else 'confirmed'
         states[node['id']] = {'state': 'ready' if upstream in ('confirmed', 'stale') else 'not_ready', 'flags': {}}

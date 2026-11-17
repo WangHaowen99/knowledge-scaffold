@@ -45,7 +45,9 @@ def image_flow() -> dict:
     with _LOCK:
         if _IMAGE_FLOW is None:
             data = yaml.safe_load(_IMAGE_FLOW_FILE.read_text(encoding="utf-8")) or {}
-            _IMAGE_FLOW = assemble.assemble([("core", "image", data), *_image_pack_flows()])
+            packs = _image_pack_flows()
+            _IMAGE_FLOW = assemble.assemble([("core", "image", data), *packs],
+                                            trusted={name for name, _version, _flow in packs})
         return _IMAGE_FLOW
 
 
@@ -63,7 +65,8 @@ def _assembled(root: Path) -> dict:
         path = real / "flow.yaml"
         if real.parent.name == "assembled" and path.is_file():
             try:
-                return json.loads(path.read_text(encoding="utf-8"))
+                # 老装配格式（还没重新装配）的节点没有 need：读进来补上
+                return assemble.normalize_flow(json.loads(path.read_text(encoding="utf-8")))
             except (OSError, ValueError):
                 pass
     return image_flow()
@@ -78,16 +81,14 @@ def flow_state(root: Path):
 
 
 def progress(root: Path) -> dict:
-    """项目列表上的阶段进度：{done, total, hits, stage, probes}（同 FL-01）。"""
+    """项目列表上的阶段进度：{done, total, hits, stage, probes}，和 FL-01 的进度同一口径（`overlay.progress_ids`）：
+    只算必需节点，可补做的不算。内核自己算，锁定旧 core 的项目也一样（旧版 flow_state 还把可选节点算进去）。"""
+    from .overlay import progress_ids
+
     flow = load_for(root)
     state = flow_state(root)
     probes = state.evaluate(flow, root)
-    info = state.progress(flow, root, probes)
-    # 越过插入位置的插件节点（可补做）做完之前不计入分母，和 FL-01 的进度同一口径
-    from .overlay import backfill_ids
-
-    progress_ids = {node["id"] for node in state.progress_nodes(flow)}
-    info["total"] -= len(backfill_ids(flow, info["hits"]) & progress_ids)
-    info["stage"] = state.legacy_stage(flow, root, probes)
-    info["probes"] = probes
-    return info
+    hits = state.node_hits(flow, root, probes)
+    counted = progress_ids(flow, hits)
+    return {"done": sum(1 for node_id in counted if hits.get(node_id)), "total": len(counted), "hits": hits,
+            "stage": state.legacy_stage(flow, root, probes), "probes": probes}

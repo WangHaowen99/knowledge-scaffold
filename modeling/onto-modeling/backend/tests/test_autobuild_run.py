@@ -320,7 +320,9 @@ def test_only_steps_the_run_owns_are_handed_over():
 
 def _flow_doc(**extra) -> dict:
     def node(node_id, title, command, **fields):
-        return {"id": node_id, "title": title, "entry": {"command": command}, **fields}
+        # 主命令是第一个动作（节点模型重构 2a，不再读 entry）
+        return {"id": node_id, "title": title, "actions": [{"label": title, "command": command}] if command else [],
+                **fields}
     return {"nodes": [node("core.research", "资料分析", "/ontology-research"),
                       node("diagram.flowchart", "流程图", "/ontology-flowchart", placement="branch", optional=True),
                       node("core.object", "提取对象", "/ontology-extract-object"),
@@ -376,8 +378,9 @@ def test_a_project_locked_on_the_old_model_node_runs_both_extractions(tmp_path, 
     from app.services.autobuild import plan
 
     monkeypatch.setattr(plan, "node_states", lambda root, flow_doc: {})
-    flow_doc = {"nodes": [{"id": "core.research", "entry": {"command": "/ontology-research"}},
-                          {"id": "core.model", "title": "建模", "entry": {"command": "/ontology-extract-object"}}]}
+    flow_doc = {"nodes": [{"id": "core.research", "actions": [{"label": "资料分析", "command": "/ontology-research"}]},
+                          {"id": "core.model", "title": "建模",
+                           "actions": [{"label": "建模", "command": "/ontology-extract-object"}]}]}
     units, _rows = plan.lay_out(tmp_path, flow_doc, {"scope": {"until_node": None}},
                                 {"core.model": {"step": "core.model", "phase": "写入操作",
                                                 "command": "/ontology-extract-operation"}})

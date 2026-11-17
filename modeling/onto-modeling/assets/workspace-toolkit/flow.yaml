@@ -9,8 +9,11 @@
 # 探针怎么算在 scripts/flow_state.py（只用标准库），后端与 state_helper 共用同一份实现。
 # 装配时组装成装配目录里的 flow.yaml（JSON 写法，也是合法 YAML）。
 #
-# 主线（详设 6.8）：资料分析 → 提取对象 → 提取操作（规则与指标随操作一起抽）→ 校验 → 发布；指标、流程图是旁支，
-# 增量更新按需。建模蓝图（research/blueprint.json）只记统一叫法与待定问题。
+# 主线（详设 6.8）：资料分析 → 提取对象 → 提取操作（规则与指标随操作一起抽）→ 校验 → 发布；指标、流程图是可选的，
+# 增量更新在上传了新资料时出现。建模蓝图（research/blueprint.json）只记统一叫法与待定问题。
+#
+# 节点什么时候要做只看 need（节点模型重构 2a）：required 上导航栏、计入进度；optional 挂在它前面最近的必需节点下面，
+# 可以跳过；{when: <内核条件>} 条件成立时才出现。主命令是 actions 里第一个动作（节点名、开始节点、自主构建都用它）。
 #
 # 节点状态由后端按执行记录、变更集、产物指纹算（详设 6.6；方案 D13）。节点上与之相关的声明：
 # - produces：本节点的输出（组装时检查两节点不能声明同一路径）；writes：运行期间还会改、但不归它产出的路径；
@@ -61,11 +64,9 @@ nodes:
   - id: core.research
     title: 资料分析
     kind: agent
-    placement: spine
-    section: required
+    need: required
     done: [research_done]
     produces: ["research/*"]
-    entry: {command: /ontology-research}
     actions:
       # 「追加分析」要已有资料分析报告
       - {label: 资料分析, command: "/ontology-research 仅基于本地文档 "}
@@ -77,59 +78,49 @@ nodes:
   - id: core.object
     title: 提取对象
     kind: agent
-    placement: spine
-    section: required
+    need: required
     after: core.research
     done: [object]
     stale_on: [research]
     produces: ["ontology/object/*"]
-    entry: {command: /ontology-extract-object}
     actions:
       - {label: 提取对象, command: /ontology-extract-object}
   - id: core.operation
     title: 提取操作
     kind: agent
-    placement: spine
-    section: required
+    need: required
     after: core.object
     done: [operation]
     stale_on: [object]
     produces: ["ontology/operation/*", "ontology/rule/*"]
     writes: ["ontology/logic/*", "ontology/metric/*", "ontology/object/*"]
-    entry: {command: /ontology-extract-operation}
     actions:
       - {label: 提取操作, command: /ontology-extract-operation}
+  # 上传了新资料时出现（条件 materials_added 内核还没有，现在不出现）
   - id: core.update
     title: 增量更新
     kind: agent
-    placement: on_demand
-    section: on_demand
-    progress: false
+    need: {when: materials_added}
     after: core.operation
     done: []
     writes: ["ontology/*", "reports/*"]
-    entry: {command: /ontology-update}
     actions:
       - {label: 增量更新, command: "/ontology-update "}
   - id: core.metric
     title: 指标
     kind: agent
-    placement: branch
-    section: optional
-    optional: true
+    need: optional
     after: core.operation
     done: [metric]
     stale_on: [object, operation]
     produces: ["ontology/metric/*"]
     writes: ["ontology/rule/*", "ontology/operation/*", "ontology/logic/*", "ontology/object/*"]
-    entry: {command: /ontology-extract-rule-metric}
     actions:
       - {label: 提取规则与指标, command: /ontology-extract-rule-metric}
   - id: core.validate
     title: 校验
     kind: agent
-    placement: spine
-    section: required
+    need: required
     after: core.operation
     done: [validation_report, "!reports_pending"]
     stale_on: [object, operation, rule, metric]
@@ -141,15 +132,13 @@ nodes:
     # 的只查改动模式。删了条目、改了 ontology/logic/ 或非 .md 文件、只改了 index.md 时整条刷新；第一次校验、
     # 点「运行质量检查」、在对话里要求校验照旧全量
     refresh_scope: changed_entries
-    entry: {command: /ontology-validate}
     actions:
       - {label: 运行质量检查, command: /ontology-validate}
   # 发布（详设 6.8 新增）：主线终点，关卡都挂在它前面；就是发布页那套流程（PB-01～PB-03），不另写一套
   - id: core.publish
     title: 发布
     kind: human
-    placement: spine
-    section: required
+    need: required
     after: [trace.trace, core.validate]
     done: [released]
     stale_on: [object, operation, rule, metric, script]

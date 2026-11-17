@@ -271,25 +271,24 @@ probes:
 | `id` | `<包名>.<名字>` |
 | `title` | 必填，面板上显示的名字，用动宾结构 |
 | `kind` | `agent`、`script`、`human` |
-| `placement` | `step`、`branch`、`gate`、`on_demand`；`spine` 只给 core |
-| `section` | 面板分组，取值见 protocol.md |
-| `after`、`before` | 挂载锚点；不是 `on_demand` 的节点至少写一个 |
+| `need` | 什么时候要做：`required`（缺省，上导航栏、计入进度、没做时推荐）、`optional`（挂在前面最近的必需节点下面，可以跳过，不计入进度）、`{when: activated}`（触发后才出现，见第 12 节） |
+| `actions` | 节点上的按钮 `[{label, command}]`；第一个是主命令，开始节点、自主构建都发它，`agent` 节点的主命令要是本包命令 |
+| `after`、`before` | 挂载锚点，至少写一个 |
 | `display_after` | 只影响显示顺序 |
 | `blocks` | 被它挡住的节点，发布关卡写 `[core.publish]` |
 | `done` | 完成条件，探针名列表 |
 | `stale_on` | 这些类别的内容改了，节点变成过期；类别见 protocol.md |
 | `produces` | `[{path, kind}]`，节点产出；不能碰受保护目录 |
 | `writes` | 节点会改但不算产出的路径 |
-| `optional` | `true` 表示可以不做，下游不等它 |
-| `progress` | `false` 表示不计入进度 |
-| `visible_if` | 内核条件名，不成立时节点不在这个项目的流程里；现在只有 `activated`（本包声明的 `activation` 触发了，或这一轮开着）。内核探针写 `{kernel: session_open, session: <这一轮的状态文件>}` |
-| `preempt` | 只能和 `visible_if: activated` 一起用：节点出现且没做完时，下一步建议先推它。写字符串时当说明行 |
+| `autobuild` | 上传的包的节点缺省不进自主构建；要进写 `true`，上传检查会列出来给审核的人看 |
+
+旧写法 `placement`、`section`、`optional`、`progress`、`visible_if`、`preempt`、`entry` 还能装配（折算成 `need` 和主命令），新包不要再写。
 
 ## 11. 节点包：三类节点
 
 | `kind` | 必填 | 怎么跑 |
 |---|---|---|
-| `agent` | `entry.command`，且是本包命令 | 用户在面板点动作或输入命令，助手按命令干活 |
+| `agent` | 主命令（`actions` 第一项的 `command`），且是本包命令 | 用户在面板点动作或输入命令，助手按命令干活 |
 | `script` | `script.name`（本包脚本）、`script.output` | 面板启动，在沙箱里跑，标准输出写进 `script.output` |
 | `human` | `decision.title`、至少 2 个带 `id` 的 `options`、`decision.record` | 面板弹决策卡，回答写进 `record` 文件 |
 
@@ -302,8 +301,6 @@ probes:
 - id: sample-review.approve
   title: 确认命名结论
   kind: human
-  placement: gate
-  section: pre_publish
   after: sample-review.check
   blocks: [core.publish]
   done: [sample_review_approve]
@@ -351,27 +348,26 @@ activation:
 confine: {scope_file: my-pack/scope.json, lock_on_activation: true}  # 可选：触发后、范围确认前已有条目全部只读
 nodes:
   - id: my-pack.scope
-    visible_if: activated        # 只在触发后、这一轮开着时出现
-    preempt: 上传了新资料，先圈定范围   # 可选：下一步先推它
+    need: {when: activated}      # 只在触发后、这一轮开着时出现；出现且没做完时下一步先推它
 ```
 
 状态文件是 JSON：`status` 是 `active` 算这一轮开着；`covers`（确认时的主线提交）包含触发时的提交算这次触发处理过；`baseline.commit` 之后发布过算这一轮结束。
 探针写 `{kernel: session_open, session: <路径>}` 判断这一轮开没开着，节点完成判定带上它，上一轮留下的文件才不会让新一轮的节点直接算完成。启用插件之前上传的资料不触发。
 
-**`autobuild: false`** 让自主构建跳过这个节点，用于要用户先给输入才能做的节点。
+**`autobuild: false`** 让自主构建跳过这个节点，用于要用户先给输入才能做的节点（上传的包不写也不进）。
 
 **动作的条件 `when`**（`actions` 里每一项可选）：探针名列表，`!名字` 取反，都成立时这个动作才出现在建议条和面板上，如 `{label: 追加分析, command: …, when: [research_report]}`。用到的探针要在本包或 core 的 `probes` 里声明。
 
-**`section: required` 不挡发布。** 上面的 `sample-review.check` 挂在 `core.validate` 之后，和场景模拟并列；没做完时发布照样可以进行。要挡发布必须写 `blocks`。
+**`need: required` 不挡发布。** 上面的 `sample-review.check` 挂在 `core.validate` 之后，和场景模拟并列；没做完时发布照样可以进行。要挡发布必须写 `blocks`。
 
 锚点用主线节点 `core.research`、`core.object`、`core.operation`、`core.validate`、`core.publish`，或别的包的节点 id。`core.model`、`core.consistency` 这类旧名字不写进新包。
 
-| `placement` | 用途 | 常配 |
+| `need` | 用途 | 常配 |
 |---|---|---|
-| `step` | 流程里的一步 | `section: required`、`after` |
-| `branch` | 旁支，可以不做 | `section: optional`、`optional: true`、`after` |
-| `gate` | 关卡 | `section: pre_publish`、`after`、`blocks` |
-| `on_demand` | 随时可跑 | `section: on_demand`、`progress: false`，不写 `after` |
+| `required` | 流程里必做的一步 | `after` |
+| `optional` | 可以不做，挂在前面最近的必需节点下面 | `after` |
+| `required` + `blocks` | 发布关卡 | `after`、`blocks: [core.publish]` |
+| `{when: activated}` | 触发后才出现 | 顶层 `activation`、`after` |
 
 这些情况上传和安装都能过，启用时才返回 422 `flow_assembly_failed`：
 
@@ -405,13 +401,15 @@ nodes:
 | 语法错误 | `syntax` | 脚本编译不过 | 本地 `python3 -m py_compile` 修好 |
 | 产物路径不合法 | `entity_types` | 不在 `ext/<包名>/` 下，或路径里有两个 `*` | 按第 8 节改 |
 | 节点包内容超范围 | `node_pack` | 带了 `skills/`、`ui/`、页面、产物登记 | 拆成能力包 |
-| 挂法或锚点不对 | `node_pack` | 写了 `spine`，或非 `on_demand` 节点没写 `after`、`before` | 改成 `step`，补锚点 |
+| `need` 写错 | `node_need` | 写了 `required`、`optional`、`{when: <条件>}` 以外的值 | 改成这三种之一 |
+| 锚点不对 | `node_pack` | 没写 `after`、`before` | 补锚点 |
 | 探针未声明 | `node_pack` | `done` 里的名字拼错或没写 `probes` | 补 `probes` |
 | `requires_flow` 不满足 | `node_pack` | 版本要求超过仓库里的 core | 放宽范围 |
 | 写入范围不对 | `write_scope` | `produces`、`writes` 碰受保护目录，或 `script.output`、`decision.record` 没写进 `produces` | 改到 `reports/` 或 `ext/<包名>/`，补进 `produces` |
 | 范围限定写错 | `confine` | 写了 `scope_file` 以外的键、路径带通配或在 `ontology/`、受保护目录下、不在本包节点的 `produces` 里 | 改成本包状态目录下的具体文件，并写进范围节点的 `produces` |
-| 触发写错 | `activation` | 事件不认识、`requires` 不是本包声明的探针、`session` 不在本包节点的 `produces` 里、写了 `visible_if: activated` 没声明 `activation`、`preempt` 用在别的节点上 |
-| 入口命令不属于本包 | `node_pack`、`node_entry` | `entry.command` 或钩子命令写了别的包 | 改成本包命令 |
+| 触发写错 | `activation` | 事件不认识、`requires` 不是本包声明的探针、`session` 不在本包节点的 `produces` 里、写了 `need: {when: activated}` 没声明 `activation` |
+| 主命令不属于本包 | `node_pack`、`node_entry` | `actions` 第一项或钩子命令写了别的包的命令 | 改成本包命令 |
+| 自主构建会执行（warn） | `autobuild` | 节点写了 `autobuild: true` | 确认要让自主构建无人值守地跑它；不需要就去掉 |
 | 启用返回 409，提示路径同时来自两个包 | `pack_incompatible` | 两个包落到同一路径 | 文件名带包名前缀 |
 | 启用返回 422，提示同时声明输出 | `flow_assembly_failed` | `produces` 通配太宽 | 改成精确路径 |
 | 启用返回 422，提示锚点不存在 | `flow_assembly_failed` | `after` 写错，或上游包没启用 | 改锚点，或写成列表兜底 |

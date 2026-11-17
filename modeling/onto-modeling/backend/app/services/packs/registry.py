@@ -371,8 +371,8 @@ def hook_hints(root: Path, user_text: str) -> list[str]:
         return []
     nodes = {}
     for node in flow.get("nodes") or []:
-        entry = str((node.get("entry") or {}).get("command") or "").split(" ")[0]
-        for text in [entry, *(str(action.get("command") or "").split(" ")[0] for action in node.get("actions") or [])]:
+        for action in node.get("actions") or []:
+            text = str(action.get("command") or "").split(" ")[0]
             if text.startswith("/"):
                 nodes.setdefault(text, node)
     node = nodes.get(command)

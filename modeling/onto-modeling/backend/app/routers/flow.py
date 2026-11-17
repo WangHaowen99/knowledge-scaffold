@@ -1,8 +1,9 @@
 """流程（契约 3.12 FL-01～FL-05；详设 6.6、6.7、6.9、6.10；方案 D13、D14、D16）。
 
 节点状态由内核算（执行记录、变更集、产物指纹），下一步与 `state_helper suggest`、宿主注入同一份。
-跳过与恢复只对可选节点；开始节点等价于用节点声明的入口命令调 S-20。声明了 `refresh_scope` 的节点此刻过期时，
-开始（刷新）发只查改动条目的命令（`<入口命令> <条目名…> --since <提交>`，见 services/flow/state.refresh_scope）。
+只能跳过 `need: optional` 的节点；开始节点等价于用节点的主命令（actions 里第一个带 command 或 page 的动作）调 S-20。
+声明了 `refresh_scope` 的节点此刻过期时，开始（刷新）发只查改动条目的命令（`<主命令> <条目名…> --since <提交>`，
+见 services/flow/state.refresh_scope）。
 不再分段：请求里带的 `slice_id`、`step` 忽略；旧节点编号（如 `core.model`）按 core 的别名认成现在的节点。
 """
 
@@ -17,6 +18,7 @@ from ..api.errors import ApiError
 from ..services import plugin_mode
 from ..services.flow import model, node_kinds, overlay, view
 from ..services.flow import state as node_state
+from ..services.flow.need import OPTIONAL, need_kind, primary_action, primary_command
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/flow", tags=["flow"])
 
@@ -63,12 +65,12 @@ def _after_change(project_id: str) -> None:
 
 @router.post("/nodes/{node_id}/skip")
 async def skip_node(project_id: str, node_id: str, request: Request):
-    """FL-03：跳过可选节点（主线与必经节点不能跳过）。"""
+    """FL-03：跳过可选节点（`need: optional`）；必需节点、条件节点不能跳过。"""
     root = deps.require_writable(project_id, request)
     body = await deps.json_body(request)
     node = _node(root, node_id)
-    if not node.get("optional") or node.get("section", "required") == "required":
-        raise ApiError("node_not_skippable", "必经节点不能跳过", 409)
+    if need_kind(node) != OPTIONAL:
+        raise ApiError("node_not_skippable", "只有可选节点能跳过", 409)
     node_state.skip(root, node["id"], reason=str(body.get("reason") or "")[:200])
     _after_change(project_id)
     return await asyncio.to_thread(_node_view, root, node["id"])
@@ -88,7 +90,7 @@ async def restore_node(project_id: str, node_id: str, request: Request):
 
 @router.post("/nodes/{node_id}/start")
 async def start_node(project_id: str, node_id: str, request: Request):
-    """FL-05：开始节点（含补做、刷新）。agent 节点用入口命令发到对话，等价于 S-20；脚本、人工、外部节点
+    """FL-05：开始节点（含补做、刷新）。agent 节点用主命令发到对话，等价于 S-20；脚本、人工、外部节点
     由内核执行（详设 6.5，见 services/flow/node_kinds）。过期且声明了刷新范围的节点只查改动条目。"""
     return await _start(project_id, node_id, request, scoped=True)
 
@@ -107,17 +109,15 @@ async def _start(project_id: str, node_id: str, request: Request, *, scoped: boo
     node_id = node["id"]
     if node_id in overlay.broken_nodes(model.load_for(root)):
         raise ApiError("pack_unavailable", "这个节点所属的插件版本已被运维熔断", 409, {"reason": "breaker"})
-    page = next((str(action["page"]) for action in node.get("actions") or [] if action.get("page")), "")
-    if page and not (node.get("entry") or {}).get("command") and not node.get("decision"):
-        # 在页面里做的节点（发布）：没有对话入口，也不是出决策卡的人工节点
+    page = str((primary_action(node) or {}).get("page") or "")
+    if page and not node.get("decision"):
+        # 主命令是去页面做的节点（发布）：没有对话入口，也不是出决策卡的人工节点
         raise ApiError("invalid_argument", "这个节点在页面里操作", 400, {"fields": {"node_id": "no_entry"}, "page": page})
     kind = node_kinds.kind_of(node)
     if kind != "agent":
         return await _start_kernel_node(project_id, root, node, kind, body, request)
-    command = str((node.get("entry") or {}).get("command") or "").strip() or next(
-        (str(action["command"]).strip() for action in node.get("actions") or []
-         if str(action.get("command") or "").startswith("/")), "")
-    if not command.startswith("/"):
+    command = primary_command(node)
+    if not command:
         raise ApiError("invalid_argument", "这个节点没有对话入口（在面板里操作）", 400, {"fields": {"node_id": "no_entry"}})
     origin = body.get("origin") if isinstance(body.get("origin"), dict) else {}
     if not origin.get("page"):

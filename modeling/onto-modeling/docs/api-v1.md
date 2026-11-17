@@ -1955,9 +1955,13 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 查询参数：`conversation_id?`（带上时 `suggestions` 按这条对话的打断状态计算）。
 - 响应：`Flow`，即
   - `flow_hash`；
-  - `nodes`：`FlowNode[]`；建模是提取对象 `core.object`、提取操作 `core.operation` 两个节点（节点模型重构 1）；
+  - `nodes`：`FlowNode[]`；建模是提取对象 `core.object`、提取操作 `core.operation` 两个节点（节点模型重构 1）。
+    每个节点带 `need`（什么时候要做：`"required"`、`"optional"` 或 `{when: <条件>}`）、`nav`（上不上导航栏，必需节点为 true）、
+    `under`（可选、条件节点挂在哪个必需节点下面：after 链上它前面最近的必需节点；必需节点为 null）（节点模型重构 2a）；
   - `edges`；
-  - `sections`：节点分组「必经步骤 / 发布前检查 / 可选步骤 / 有需要时」（建模步骤抽屉已删除，前端不再用，ADR-0101）；
+  - `sections`：节点分组按 `need` 分：必需进「必经步骤」、可选进「可选步骤」、条件进「有需要时」；「发布前检查」为兼容留着，
+    不再有节点（建模步骤抽屉已删除，前端不再用，ADR-0101）；
+  - `progress`：`{done, total}`，只算必需节点，可补做的做完之前不算；项目卡片的 x/N 同一口径；
   - `slice_stages`、`slices`：恒为 `[]`（不再分段，字段只为兼容留着）；
   - `suggestions`；
   - `notices`：如「1 份新资料」；
@@ -1968,13 +1972,16 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 ```json
 {"flow_hash": "b41e09…",
  "nodes": [{"id": "core.object", "title": "提取对象", "kind": "agent", "placement": "spine",
+            "need": "required", "nav": true, "under": null,
             "state": "confirmed", "flags": {"needs_review": false, "disabled": false, "backfill": false},
             "progress": null, "version": "core@1.4.2", "section": "required",
             "actions": [{"kind": "start", "label": "提取对象", "target": "/ontology-extract-object"}], "per_slice": false},
-           {"id": "core.operation", "title": "提取操作", "kind": "agent", "placement": "spine",
-            "state": "running", "flags": {"needs_review": false, "disabled": false, "backfill": false},
-            "progress": null, "version": "core@1.4.2", "section": "required",
-            "actions": [{"kind": "start", "label": "提取操作", "target": "/ontology-extract-operation"}], "per_slice": false}],
+           {"id": "core.metric", "title": "指标", "kind": "agent", "placement": "branch",
+            "need": "optional", "nav": false, "under": "core.operation",
+            "state": "ready", "flags": {"needs_review": false, "disabled": false, "backfill": false},
+            "progress": null, "version": "core@1.4.2", "section": "optional",
+            "actions": [{"kind": "start", "label": "提取规则与指标", "target": "/ontology-extract-rule-metric"},
+                        {"kind": "skip", "label": "跳过"}], "per_slice": false}],
  "edges": [{"from": "core.research", "to": "core.object"}, {"from": "core.object", "to": "core.operation"}],
  "slice_stages": [],
  "slices": [],
@@ -2011,7 +2018,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 请求：`{reason?: string}`。不再分段：带了 `slice_id`、`step` 一律忽略，不报错。
 - `node_id` 可以是旧编号，按 core 的别名认成现在的节点（`core.model` → `core.operation`、`core.rule_metric` → `core.metric`）；响应里的 `node.id` 是现在的编号。
-- 主线和必经节点不能跳过。
+- 只有可选节点（`need: "optional"`）能跳过；必需节点、条件节点回 `node_not_skippable`。
 - 响应：`{node: FlowNode, flow_hash}`。
 - 错误：`node_not_found`、`node_not_skippable`。
 
@@ -2028,8 +2035,10 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `POST /api/v1/projects/{id}/flow/nodes/{node_id}/start` · 所有者 · 旧：— · 审计：是 · 依据：6.3 `entry`、6.9 · 页面：wb-l2（建议条）、publish（合规检查「去运行」）、inbox（「刷新这个场景」）
 
 - 请求：`{args?: object, origin: {page, label}}`；带了 `slice_id`、`step` 忽略，命令不带分段。旧节点编号同 `FL-03`（`core.model` 开始的是提取操作）。
-- 等价于用节点声明的 `entry.command` 调 `S-20`。
-- 刷新过期节点：节点声明了 `refresh_scope: changed_entries`、此刻过期且算得出改动范围时，命令改为 `<entry.command> <条目名…> --since <确认时提交前 12 位>`（只查改动，ADR-0100）；算不出时照旧。
+- 等价于用节点的主命令（`actions` 里第一个带 `command` 或 `page` 的动作）调 `S-20`；主命令是页面动作（发布）时回 `400`。
+  `entry.command` 只做兼容，不再读（节点模型重构 2a）：资料分析发 `/ontology-research 仅基于本地文档`，场景模拟发
+  `/ontology-trace 全部`（原来 `/ontology-trace`，会先问做哪种）。
+- 刷新过期节点：节点声明了 `refresh_scope: changed_entries`、此刻过期且算得出改动范围时，命令改为 `<主命令> <条目名…> --since <确认时提交前 12 位>`（只查改动，ADR-0100）；算不出时照旧。
 - 响应 `202`：同 `S-20`。
 - 脚本节点（`kind: script`）当场在沙箱里跑完，响应 `200`：节点视图加 `run: {state, output, commit, version_label, duration_ms, runtime, warnings}`。`warnings: [{code: "pack_gate", level: "warning", message, gate, path}]` 是输出没过的包提交门禁：只提示，输出照常写进版本（F3b）。
 - 错误：`node_not_found`、`flow_assembly_failed`、`autobuild_running`。
@@ -2500,6 +2509,11 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - hooks 只追加拒绝型；
   - 页面只选用平台内置、没有前端代码；
   - 流程声明了范围限定（`confine`）时：只有一个范围文件，在本包节点的 `produces` 里，不在 `ontology/` 和受保护目录下（检查项 `confine`，ADR-0085）；
+  - 节点的主命令（`actions` 里第一个带 `command` 的动作）是本包的命令（检查项 `node_entry`）；
+  - 节点的 `need` 只能是 `required`、`optional`、`{when: <条件>}`，写错失败；带了分段遗留字段（`per_slice`、`steps`、`slice_steps`、
+    `node_titles`、`blocks_in`）给警告（检查项 `node_need`，只在有问题时出现）。第三方包也能声明必需节点；
+  - 包里有节点时，列出自主构建会执行的节点（检查项 `autobuild`）：上传的包的节点没写 `autobuild` 时不进自主构建，写了
+    `autobuild: true` 的列在说明里、结果为警告，让审核的人看到；
   - 提示词体积预算。
 
 #### PL-16 下载检查报告
@@ -4971,8 +4985,11 @@ type NodeState = "not_ready" | "ready" | "running" | "pending_confirm" | "confir
 type FlowNode = {
   id: string; title: string;      // core.validate 的 title 恒为「校验」（11-05 起场景模拟包不再改它的显示名）
   kind: "agent" | "script" | "human";   // external 随证据采集删除（ADR-0101）
-  placement: "spine" | "step" | "branch" | "gate" | "on_demand";
-  section: "required" | "pre_publish" | "optional" | "on_demand";
+  need: "required" | "optional" | { when: string };   // 什么时候要做（节点模型重构 2a）
+  nav: boolean;                   // 上不上导航栏：必需节点为 true，已停用的为 false
+  under: string | null;           // 可选、条件节点挂在哪个必需节点下面（after 链上它前面最近的必需节点）
+  placement: "spine" | "step" | "branch" | "gate" | "on_demand";   // 旧字段，按 need 补齐
+  section: "required" | "pre_publish" | "optional" | "on_demand";   // 按 need 算，pre_publish 不再出现
   state: NodeState;
   flags: { needs_review: boolean; review_source?: "autobuild" | "upgrade" | "import"; disabled: boolean; backfill: boolean };
   display_state: DisplayState;

@@ -8,9 +8,9 @@
 | pending_confirm 待确认 | 执行结束了，节点的改动在没确认的变更集里 |
 | confirmed 已确认 | 完成判定在主线上满足，且记下的输入指纹没变 |
 | stale 过期 | 已确认之后，`stale_on` 声明的产物在主线上的指纹变了 |
-| skipped 已跳过 | 可选节点被你跳过（FL-03） |
+| skipped 已跳过 | 可选节点（`need: optional`）被你跳过（FL-03） |
 | blocked 被挡住 | 挡住它的关卡（`blocks` 指向它的节点）还没确认 |
-| ready 可开始 | 输入都已确认（锚点链上的上游节点已确认或过期） |
+| ready 可开始 | 输入都已确认（锚点链上的上游节点已确认或过期；没做的可选节点越过去看它的上游） |
 | not_ready 未就绪 | 其余 |
 
 完成判定只看主线：助手在副本里改的文件要这一轮合入才进主线，进度不再因为文件落盘就打勾。
@@ -24,8 +24,8 @@
 建模拆成提取对象、提取操作之前的记录在第一次按新流程算时搬过去（`migrate_split`）。
 
 刷新范围（节点声明 `refresh_scope: changed_entries`）：过期后刷新只查确认之后改动的条目，命令写成
-`<入口命令> <条目名…> --since <确认时提交前 12 位>`；删了条目、改了条目目录以外的文件、只改了 index.md、
-找不到确认时的提交时算不出范围，照旧发整条入口命令（`refresh_scope`）。
+`<主命令> <条目名…> --since <确认时提交前 12 位>`；删了条目、改了条目目录以外的文件、只改了 index.md、
+找不到确认时的提交时算不出范围，照旧发整条主命令（`refresh_scope`）。
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ import time
 import uuid
 from pathlib import Path
 
+from .need import OPTIONAL, need_kind, primary_command
 
 # stale_on 里能写的产物类别 → 主线上的目录
 KIND_DIRS = {
@@ -196,7 +197,7 @@ def changed_since(root: Path, at, kinds: list[str]) -> list[str] | None:
 
 # 刷新范围 changed_entries 认的目录：一个 .md 文件是一个条目，文件名（去掉 .md）是条目名
 ENTRY_DIRS = ("ontology/object/", "ontology/operation/", "ontology/rule/", "ontology/metric/")
-# 改动的条目多于这么多时不列名字，整条入口命令刷新：命令太长，查的量也接近全量
+# 改动的条目多于这么多时不列名字，整条主命令刷新：命令太长，查的量也接近全量
 SCOPE_NAMES_MAX = 100
 
 
@@ -243,16 +244,14 @@ def changed_entries(root: Path, record: dict, kinds: list[str]) -> dict | None:
 
 
 def refresh_entry(node: dict) -> str:
-    """节点的入口命令（没有时取第一个对话命令动作）；带参数的入口返回空串（不往后拼条目名）。"""
-    command = str((node.get("entry") or {}).get("command") or "").strip() or next(
-        (str(action["command"]).strip() for action in node.get("actions") or []
-         if str(action.get("command") or "").startswith("/")), "")
-    return command if command.startswith("/") and len(command.split()) == 1 else ""
+    """节点的主命令；带参数的返回空串（不往后拼条目名）。"""
+    command = primary_command(node)
+    return command if len(command.split()) == 1 else ""
 
 
 def refresh_scope(root: Path, node: dict, record: dict | None = None) -> dict | None:
     """声明了 `refresh_scope: changed_entries` 的节点过期后的刷新范围：{since, names, command}，
-    command 是 `<入口命令> <条目名…> --since <确认时提交前 12 位>`。节点是否过期由调用方判断。
+    command 是 `<主命令> <条目名…> --since <确认时提交前 12 位>`。节点是否过期由调用方判断。
 
     算不出范围、节点升级后待复核（判定变了，之前查过的也要按新判定重看）时返回 None：照旧整条刷新。"""
     if node.get("refresh_scope") != "changed_entries":
@@ -275,7 +274,7 @@ def refresh_scope(root: Path, node: dict, record: dict | None = None) -> dict | 
 
 
 def current_refresh_scope(root: Path, node: dict) -> dict | None:
-    """开始节点（FL-05、待处理里的刷新）用：节点此刻过期且算得出范围才给，否则 None（照旧发整条入口命令）。"""
+    """开始节点（FL-05、待处理里的刷新）用：节点此刻过期且算得出范围才给，否则 None（照旧发整条主命令）。"""
     from . import model
 
     if node.get("refresh_scope") != "changed_entries":
@@ -358,7 +357,7 @@ def compute(root: Path, flow: dict, hits: dict[str, bool], *, project_id: str | 
                 state = "running"
             elif node_id in pending and changeset is not None:
                 state = "pending_confirm"
-            elif node_id in stored["skipped"] and node.get("optional") and not hits.get(node_id):
+            elif node_id in stored["skipped"] and need_kind(node) == OPTIONAL and not hits.get(node_id):
                 state = "skipped"
             elif hits.get(node_id):
                 if node_id in stored["skipped"]:
@@ -398,7 +397,7 @@ def compute(root: Path, flow: dict, hits: dict[str, bool], *, project_id: str | 
                 item["state"] = "blocked"
                 continue
             anchor = node.get("after")
-            while anchor and by_id.get(anchor, {}).get("optional") and result.get(anchor, {}).get("state") not in (
+            while anchor in by_id and need_kind(by_id[anchor]) == OPTIONAL and result.get(anchor, {}).get("state") not in (
                     "confirmed", "stale"):
                 anchor = by_id[anchor].get("after")
             upstream = result.get(anchor, {}).get("state") if anchor else "confirmed"

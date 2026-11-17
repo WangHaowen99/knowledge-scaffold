@@ -1,6 +1,8 @@
 """`GET /api/v1/projects/{id}/flow` 的响应（契约 FL-01、FL-02；详设 6.6、6.7 第 6 项、6.10）。
 
-- 节点、连线、分组来自装配好的 flow.yaml；
+- 节点、连线、分组来自装配好的 flow.yaml；节点什么时候要做看 `need`（need.py）：`nav` 是上不上导航栏（必需节点），
+  `under` 是可选、条件节点挂在哪个必需节点下面（after 链上它前面最近的必需节点），分组 `sections` 按 need 分，
+  进度只算必需节点（`overlay.progress_ids`，项目列表同一口径）；
 - 节点状态由内核算（`flow/state.py`，方案 D13）：执行记录 + 变更集 + 产物指纹 → 8 种状态与需复核标记，
   完成判定只看主线；
 - 下一步建议由 core 的 `flow_state.suggest` 算（方案 D15、D16）：后端（FL-01/FL-02、对话里的建议条）、
@@ -23,6 +25,7 @@ from pathlib import Path
 
 from . import model, overlay
 from . import state as node_state
+from .need import OPTIONAL, REQUIRED, SECTION_OF_NEED, need_kind, need_of
 
 _log = logging.getLogger(__name__)
 
@@ -320,7 +323,9 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
             states[node_id]["display_state"] = node_state.display("running", states[node_id]["flags"])
     overlay.mark_broken(states, broken)
     overlay.mark_backfill(flow, states, hits)
-    passed = overlay.backfill_ids(flow, hits)
+    counted = overlay.progress_ids(flow, hits)
+    by_id = {node["id"]: node for node in flow.get("nodes") or []}
+    order = list(by_id)
     hooks = _hooks_by_node(flow)
     from . import node_kinds
 
@@ -331,12 +336,16 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     nodes = []
     for node in flow.get("nodes") or []:
         item = states[node["id"]]
+        kind = need_kind(node)
         nodes.append({
             "id": node["id"],
             "title": node["title"],
             "kind": node.get("kind", "agent"),
             "placement": node.get("placement", "spine"),
-            "section": node.get("section", "required"),
+            "section": SECTION_OF_NEED[kind],
+            "need": need_of(node),
+            "nav": kind == REQUIRED,
+            "under": under(node, by_id, order),
             "state": item["state"],
             "flags": item["flags"],
             "display_state": item["display_state"],
@@ -353,13 +362,12 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
             "hooks": [{key: hook[key] for key in ("id", "title", "when", "command", "pack")}
                       for hook in hooks.get(node["id"], [])],
             "plugin": None if node.get("pack", "core") == "core" else _plugin_ref(node),
-            "optional": bool(node.get("optional")),
+            "optional": kind == OPTIONAL,
             "panel": bool(node.get("panel")),
-            # 可补做的节点做完之前不计入进度：越过插入位置的项目，主线进度不往回退（详设 6.9 第 4 步）
-            "counts_in_progress": bool(node.get("progress", True)) and node["id"] not in passed,
+            "counts_in_progress": node["id"] in counted,
             **({"last_run": script_runs.get(node["id"])} if node.get("kind") == "script" else {}),
         })
-    nodes += [_disabled_view(node) for node in overlay.disabled_nodes(root, flow)]
+    nodes += [_disabled_view(node, by_id) for node in overlay.disabled_nodes(root, flow)]
     sections = [
         {"id": key, "title": title, "nodes": [node["id"] for node in nodes if node["section"] == key]}
         for key, title in SECTION_TITLES.items()
@@ -423,7 +431,7 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
         "suggestions": suggestions,
         "notices": _notices(suggest_context) + _assembly_notice(root),
         "stage": stage,
-        # 进度：主线上满足完成判定的节点（已确认与过期都算做过）；助手副本里的改动要这一轮合入才算
+        # 进度：必需节点里主线上满足完成判定的（已确认与过期都算做过）；助手副本里的改动要这一轮合入才算
         "progress": {
             "done": sum(1 for node in progress_nodes if hits.get(node["id"])),
             "total": len(progress_nodes),
@@ -455,12 +463,37 @@ def _plugin_ref(node: dict) -> dict:
     return {"name": pack, "label": _pack_label(data_dir, pack, version) if version else pack}
 
 
-def _disabled_view(node: dict) -> dict:
-    """停用了的包的节点：产物保留，列出来标「已停用」，不进进度、没有动作（详设 6.9 第 5 步）。"""
+def under(node: dict, by_id: dict, order: list[str]) -> str | None:
+    """可选、条件节点挂在哪个必需节点下面：after 链上它前面最近的必需节点；链上没有时（只写了 before、display_after）
+    取流程顺序里它前面最近的必需节点。必需节点自己为 None。"""
+    if need_kind(node) == REQUIRED:
+        return None
+    seen = {node["id"]}
+    anchor = _anchor(node.get("after"), by_id)
+    while anchor is not None and anchor not in seen:
+        if need_kind(by_id[anchor]) == REQUIRED:
+            return anchor
+        seen.add(anchor)
+        anchor = _anchor(by_id[anchor].get("after"), by_id)
+    if node["id"] not in order:
+        return None
+    before = order[:order.index(node["id"])]
+    return next((other for other in reversed(before) if need_kind(by_id[other]) == REQUIRED), None)
+
+
+def _anchor(value, by_id: dict) -> str | None:
+    """after 写的锚点里第一个在流程里的（组装后是一个编号，停用包的原始声明可能是列表）。"""
+    candidates = value if isinstance(value, list) else [value]
+    return next((str(item) for item in candidates if item and str(item) in by_id), None)
+
+
+def _disabled_view(node: dict, by_id: dict) -> dict:
+    """停用了的包的节点：产物保留，列出来标「已停用」，不进进度、不上导航栏、没有动作（详设 6.9 第 5 步）。"""
     flags = {"needs_review": False, "disabled": True, "backfill": False}
     return {
         "id": node["id"], "title": str(node.get("title") or node["id"]), "kind": node.get("kind", "agent"),
-        "placement": node.get("placement", "step"), "section": node.get("section", "optional"),
+        "placement": node.get("placement", "step"), "section": SECTION_OF_NEED[need_kind(node)],
+        "need": need_of(node), "nav": False, "under": under(node, by_id, []),
         "state": "skipped", "flags": flags, "display_state": node_state.display("skipped", flags),
         "progress": None, "version": node.get("version") or "", "per_slice": False, "blocks": [],
         "actions": [], "plugin": _plugin_ref(node), "optional": True, "panel": False,
@@ -477,7 +510,7 @@ def _hooks_by_node(flow: dict) -> dict[str, list[dict]]:
 
 def _stale_scope(root: Path, flow: dict, states: dict) -> dict:
     """过期且声明了 `refresh_scope` 的节点 → 只查改动条目的刷新 {since, names, command}（state.refresh_scope）。
-    算不出范围的不列：建议条、节点卡片的刷新照旧发整条入口命令。"""
+    算不出范围的不列：建议条、节点卡片的刷新照旧发整条主命令。"""
     out = {}
     for node in flow.get("nodes") or []:
         if node.get("refresh_scope") and (states.get(node["id"]) or {}).get("state") == "stale":
@@ -514,7 +547,7 @@ def _actions(node: dict, state: str, hooks: list[dict] | None = None, *, bluepri
                     "label": f"{cause}有变化，刷新{node['title']}" if cause else f"刷新{node['title']}"}, *actions]
     if node["id"] == "core.research" and blueprint_draft:
         actions = [{"kind": "confirm", "label": "去确认", "target": "wb-blueprint"}, *actions]
-    if node.get("optional"):
+    if need_kind(node) == OPTIONAL:
         actions.append({"kind": "restore" if state == "skipped" else "skip",
                         "label": "恢复" if state == "skipped" else "跳过"})
     return actions

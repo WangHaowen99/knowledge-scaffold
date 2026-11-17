@@ -17,9 +17,9 @@ import copy
 import logging
 from pathlib import Path
 
-_log = logging.getLogger(__name__)
+from .need import REQUIRED, need_kind, when_of
 
-MAINLINE = ("spine", "step", "gate")
+_log = logging.getLogger(__name__)
 
 
 def _pack_version(node: dict) -> tuple[str, str]:
@@ -75,13 +75,12 @@ def produced_kinds(node: dict) -> set[str]:
 
 
 def backfill_ids(flow: dict, hits: dict) -> set[str]:
-    """节点自己还没完成、项目已经越过了它（可补做）。两种越过：
+    """必需节点自己还没完成、项目已经越过了它（可补做）。两种越过：
 
-    - 串入、关卡这类插件节点：后面的主线节点已经在主线上完成，越过了插入位置；
-    - 主线位置（spine）的节点：后面已完成的节点用的正是它的产出（`stale_on` 里有它产出的类别）。导入知识包后建模已经
+    - 旧写法串入、关卡这类插件节点（`placement: step|gate`）：后面的必需节点已经在主线上完成，越过了插入位置；
+    - 其余必需节点：后面已完成的节点用的正是它的产出（`stale_on` 里有它产出的类别）。导入知识包后建模已经
       完成，资料分析就是这样被越过的（ADR-0084）。后面完成的节点不用它的产出时不算（场景模拟做了、校验没做），没做就是没做。"""
-    order = [node for node in flow.get("nodes") or []
-             if node.get("placement", "spine") in MAINLINE and not node.get("optional")]
+    order = [node for node in flow.get("nodes") or [] if need_kind(node) == REQUIRED]
     out = set()
     for index, node in enumerate(order):
         later = [item for item in order[index + 1:] if hits.get(item["id"])]
@@ -96,12 +95,19 @@ def backfill_ids(flow: dict, hits: dict) -> set[str]:
     return out
 
 
+def progress_ids(flow: dict, hits: dict) -> set[str]:
+    """计入进度（x/N）的节点：必需节点，可补做的做完之前不算（越过插入位置的项目，进度不往回退，详设 6.9 第 4 步）。
+    FL-01 与项目列表同一口径。"""
+    passed = backfill_ids(flow, hits)
+    return {node["id"] for node in flow.get("nodes") or [] if need_kind(node) == REQUIRED and node["id"] not in passed}
+
+
 def first_open(flow: dict, hits: dict) -> dict | None:
-    """主线上第一个要做的必经节点：没完成、也没被越过（导入预览的起点，与下一步建议第 9 条同一口径）。"""
+    """第一个要做的必需节点：没完成、也没被越过（导入预览的起点，与下一步建议第 9 条同一口径）。"""
     passed = backfill_ids(flow, hits)
 
     def open_required(node: dict) -> bool:
-        if node.get("section", "required") != "required" or node.get("optional"):
+        if need_kind(node) != REQUIRED:
             return False
         return not hits.get(node["id"]) and node["id"] not in passed
 
@@ -146,7 +152,8 @@ def disabled_nodes(root: Path, flow: dict) -> list[dict]:
         for node in declared:
             if not node.get("id") or node["id"] in present:
                 continue
-            if node.get("visible_if") and not conditions.holds(node["visible_if"], root):
+            condition = when_of(node)
+            if condition and not conditions.holds(condition, root):
                 continue
             out.append({**node, "pack": entry.name, "version": f"{entry.name}@{entry.version}"})
     return out

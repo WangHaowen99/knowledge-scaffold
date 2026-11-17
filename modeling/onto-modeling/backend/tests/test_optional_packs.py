@@ -94,9 +94,9 @@ def test_core_no_longer_carries_split_out_commands_and_keeps_knowledge_loading()
     assert (toolkit / "scripts" / "knowledge_helper.py").is_file()
     assert not (toolkit / "agents" / "knowledge-conflict-agent.md").exists()
     assert "KNOWLEDGE_SEDIMENTATION.md" not in (toolkit / "BUSINESS_KNOWLEDGE_SNIPPET.md").read_text(encoding="utf-8")
-    # 增量更新留在 core，作为按需节点（第 16 项）
+    # 增量更新留在 core（第 16 项），是上传了新资料时出现的条件节点（节点模型重构 2a）
     flow = (toolkit / "flow.yaml").read_text(encoding="utf-8")
-    assert "id: core.update" in flow and "placement: on_demand" in flow
+    assert "id: core.update" in flow and "need: {when: materials_added}" in flow
     for dead in ("generate_overview.py", "split_drawio.py", "summary_to_drawio.py"):
         assert not (toolkit / "scripts" / dead).exists()
 

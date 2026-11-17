@@ -185,7 +185,8 @@ def test_autobuild_leaves_adding_features_to_the_user(env):
     manager, _client = env
     project_id = manager.create_project("自动建模")["id"]
     root = manager.project_root(project_id)
-    flow = assemble.assemble([_core(), _pack()])
+    # 官方包（镜像内置入库）：没写 autobuild 的节点自主构建照做
+    flow = assemble.assemble([_core(), _pack()], trusted={"domain-extend"})
     policy = {"scope": {"until_node": None, "include_optional": False}}
     units = {unit["id"] for unit in plan.lay_out(root, flow, policy)[0]}
     assert "domain-extend.bind" in units and "domain-extend.check" in units

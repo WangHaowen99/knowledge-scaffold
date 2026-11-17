@@ -21,9 +21,14 @@ export function normalizeFlow(raw) {
   (sections || []).forEach((s) => (s.nodes || []).forEach((id) => { sectionOf[id] = s.id; }));
   const nodes = (raw.nodes || []).map((n) => {
     const state = n.state || 'not_ready';
+    // 节点什么时候要做（need）、上不上导航栏（nav）、挂在哪个必需节点下（under）：老响应没有时按 optional、placement 推
+    const need = n.need || (n.optional ? 'optional' : 'required');
     return {
       kind: 'agent',
       placement: 'spine',
+      need,
+      nav: need === 'required' && ['spine', 'step', 'gate'].includes(n.placement || 'spine') && !n.flags?.disabled,
+      under: null,
       flags: { needs_review: false, disabled: false, backfill: false },
       progress: null,
       version: '',
