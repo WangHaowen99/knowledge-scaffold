@@ -359,7 +359,9 @@ export function projectStudioLargeGraph(graph, {
   edges.forEach((edge) => {
     const source = displayIdByNode.get(edge.source);
     const target = displayIdByNode.get(edge.target);
-    if (!source || !target || source === target) return;
+    if (!source || !target) return;
+    // 两端折叠进同一个簇时簇内连线不画；未折叠节点的对象自关联保留
+    if (source === target && source !== edge.source) return;
     const collapsedEdge = source.startsWith('cluster:') && target.startsWith('cluster:');
     const key = collapsedEdge ? `${source}|${target}` : `${source}|${target}|${edge.kind}`;
     const current = aggregatedEdges.get(key);

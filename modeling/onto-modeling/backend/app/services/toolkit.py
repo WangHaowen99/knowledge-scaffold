@@ -33,6 +33,9 @@ def _load(name: str) -> ModuleType:
 # 依赖顺序：script_descriptor 在模块顶层 import 前三者
 operation_relations = _load("operation_relations")
 script_argument_shape = _load("script_argument_shape")
+script_output = _load("script_output")
 script_contract = _load("script_contract")
 script_descriptor = _load("script_descriptor")
+jiuwenbox_client = _load("jiuwenbox_client")
+script_verify = _load("script_verify")
 source_extract = _load("source_extract")

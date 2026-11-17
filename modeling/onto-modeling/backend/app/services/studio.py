@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import time
+from collections import Counter
 from pathlib import Path
 
 from .. import config
@@ -67,7 +68,8 @@ def _is_known_edge(
     by_name: dict[str, dict],
     seen_edges: set[tuple[str, str, str, str]],
 ) -> bool:
-    if source == target:
+    # 只有对象关联允许自关联（见 _declared_object_relations）；其他自引用只是正文提到自己
+    if source == target and key[2] != "object_relation":
         return False
     if source not in by_name or target not in by_name:
         return False
@@ -119,7 +121,7 @@ def graph(root: Path) -> dict:
         except OSError:
             texts[doc["name"]] = ""
 
-    def add_edge(source: str, target: str, kind: str, label: str) -> None:
+    def add_edge(source: str, target: str, kind: str, label: str, declared: bool = False) -> None:
         key = (source, target, kind, label)
         if not _is_known_edge(source, target, key, by_name, seen_edges):
             return
@@ -137,7 +139,9 @@ def graph(root: Path) -> dict:
                     edges.remove(edge)
                     out_degree[edge["source"]] -= 1
                     in_degree[edge["target"]] -= 1
-        if kind == "object_relation":
+        # 关系声明已按导出身份去重，每条都保留；逐行扫描出的旧写法和裸链接才按
+        # 「每对对象同方向只留一条」取舍，泛化的「关联对象」给有名字的关系让位
+        if kind == "object_relation" and not declared:
             existing = [edge for edge in edges if _is_relation_edge(edge, source, target)]
             if label == "关联对象" and any(edge["label"] != "关联对象" for edge in existing):
                 return
@@ -162,6 +166,10 @@ def graph(root: Path) -> dict:
         )
         out_degree[source] += 1
         in_degree[target] += 1
+
+    # 先投影对象之间的关系声明，后面逐行扫描到同一对对象时据此让位
+    for source, target, label in _declared_object_relations(docs, texts):
+        add_edge(source, target, "object_relation", label, declared=True)
 
     script_names = [d["name"] for d in docs if d["kind"] == "script"]
     for doc in docs:
@@ -211,6 +219,7 @@ def graph(root: Path) -> dict:
                 "fields": summary["fields"],
                 "out": out_degree[doc["name"]],
                 "in": in_degree[doc["name"]],
+                **summary["owners"],
             }
         )
     return {
@@ -372,7 +381,43 @@ def _node_summary(doc: dict, text: str) -> dict:
     else:
         description = _plain_summary(sections.get(description_section or "", ""))
     fields = _object_fields(sections.get("对象属性清单", "")) if doc["kind"] == "object" else []
-    return {"title": _display_name(text, doc["name"]), "description": description, "fields": fields}
+    owners = _rule_owners(sections, text) if doc["kind"] == "rule" else {}
+    return {
+        "title": _display_name(text, doc["name"]),
+        "description": description,
+        "fields": fields,
+        "owners": owners,
+    }
+
+
+def _rule_owners(sections: dict[str, str], text: str) -> dict[str, list[str]]:
+    """规则的责任部门、维护人：同名章节的取值，加上正文里的登记行（见 RULE_OWNER_REGISTRATIONS）。"""
+    owners = {}
+    for key, title in RULE_OWNER_SECTIONS.items():
+        # 名称里不会有冒号，带冒号的是登记行，交给下面的登记行解析
+        values = [value for value in _listed_values(sections.get(title, "")) if not re.search("[：:]", value)]
+        for match in RULE_OWNER_REGISTRATIONS[key].finditer(text):
+            values += [value for value in _listed_values(match.group(1)) if value not in values]
+        owners[key] = values
+    return owners
+
+
+def _listed_values(text: str) -> list[str]:
+    """登记类章节的取值：逐行去掉列表符号和 Markdown 标记，按顿号、逗号、分号拆开去重；
+    模板占位和「无」「无（说明）」不算填写。"""
+    values: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(("|", "```", "{", ">")):
+            continue
+        line = re.sub(r"^[-*+]\s+", "", line)
+        line = re.sub(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]", r"\1", line)
+        for value in LISTED_VALUE_SEPARATORS.split(re.sub(r"[`*]", "", line)):
+            value = value.strip()
+            unset = value in EMPTY_LISTED_VALUES or value.startswith(("无（", "无("))
+            if value and not unset and value not in values:
+                values.append(value)
+    return values
 
 
 def _display_name(text: str, fallback: str) -> str:
@@ -437,6 +482,8 @@ def _relation_projection(
     target_kind = target["kind"]
 
     if source_kind == "object" and target_kind == "object":
+        if source_name == target_name:  # 自关联只认关系声明，由 _declared_object_relations 投影
+            return None, None, None, None
         relation = _object_relation_label(line, source_name, target_name)
         if _target_points_to_current(line, source_name, target_name):
             return target_name, source_name, "object_relation", relation
@@ -505,6 +552,27 @@ def _object_relation_label(line: str, source: str, target: str) -> str:
             if label:
                 return label
     return "关联对象"
+
+
+def _declared_object_relations(docs: list[dict], texts: dict[str, str]) -> list[tuple[str, str, str]]:
+    """对象之间「关联对象」关系声明投影出的边：(源对象, 目标对象, 标签)，含自关联。
+
+    直接用导出的 package_relations 判定身份：源、关系名、目标和两端关联字段都相同才是同一条，
+    两端重复声明只出一条边；同一对对象的同名关系字段不同时，标签注明字段以便区分。导出不认的
+    声明（如字段不在属性清单里）这里也不出，由质量检查报告。
+    """
+    object_texts = {doc["name"]: texts[doc["name"]] for doc in docs if doc["kind"] == "object"}
+    relations, _ = package_mapping.package_relations(object_texts)
+    declared = [(source, item) for source, items in relations.items() for item in items]
+    name_counts = Counter((source, item["relation"], item["target"]) for source, item in declared)
+    result = []
+    for source, item in declared:
+        label = item["relation"]
+        fields = item.get("sourceJoinProperty"), item.get("targetJoinProperty")
+        if name_counts[(source, label, item["target"])] > 1 and all(fields):
+            label = f"{label}（{fields[0]} → {fields[1]}）"
+        result.append((source, item["target"], label))
+    return result
 
 
 def _target_points_to_current(line: str, source: str, target: str) -> bool:
@@ -688,7 +756,22 @@ RULE_SCHEMA = [
     {"title": "来源", "kind": "text", "required": False},
     {"title": "原始资料来源", "kind": "text", "required": False},
     {"title": "例外情况", "kind": "text", "required": False},
+    {"title": "责任部门", "kind": "text", "required": False},
+    {"title": "维护人", "kind": "text", "required": False},
 ]
+
+# 规则的登记信息：图接口在规则节点上返回解析后的取值，供 Studio 表格筛选
+RULE_OWNER_SECTIONS = {"departments": "责任部门", "maintainers": "维护人"}
+# 正文里的登记行，如备注写「维护部门：合成仓储组；维护人：测试员甲」。标签前须是行首、空白或
+# 标点，避免把「设备维护人：」这类业务描述当成登记；取值到分号、句号或行尾为止
+_OWNER_LABEL_PREFIX = r"(?:^|(?<=[\s，,；;。：:（(*]))"
+_OWNER_LABEL_VALUE = r"\**\s*[：:]\s*([^；;。\n|]+)"
+RULE_OWNER_REGISTRATIONS = {
+    "departments": re.compile(_OWNER_LABEL_PREFIX + r"(?:责任部门|维护部门)" + _OWNER_LABEL_VALUE, re.MULTILINE),
+    "maintainers": re.compile(_OWNER_LABEL_PREFIX + r"维护人" + _OWNER_LABEL_VALUE, re.MULTILINE),
+}
+LISTED_VALUE_SEPARATORS = re.compile(r"[、,，;；]")
+EMPTY_LISTED_VALUES = {"无", "-", "—", "–"}
 
 METRIC_SCHEMA = [
     {"title": "指标描述", "kind": "text", "required": True},

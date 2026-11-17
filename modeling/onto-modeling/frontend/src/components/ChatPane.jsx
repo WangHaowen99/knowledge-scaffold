@@ -59,6 +59,7 @@ import {
 } from '../lib/subagentEvents.js';
 import { FileChip, Markdown } from './CenterPane.jsx';
 import ConversationSwitcher from './ConversationSwitcher.jsx';
+import QuestionCard from './QuestionCard.jsx';
 import { STAGES, stageForCommand, stageHits } from './LeftPane.jsx';
 
 // 「⋯ 更多」里的全量命令（希克定律：常显建议 ≤4，全集收进菜单）
@@ -632,128 +633,6 @@ function GoalConfirmCard({ goal, onConfirm }) {
           </>
         )}
       </div>
-    </div>
-  );
-}
-
-// AskUserQuestion 专用卡：渲染问题与选项，答案经 answers 回填给工具
-function QuestionCard({ req, resolved, onAnswer, trace = 0 }) {
-  const questions = req.tool_input?.questions || [];
-  const [chosen, setChosen] = useState({});
-  const [custom, setCustom] = useState('');
-  const [submitted, setSubmitted] = useState(false); // 乐观：等确认事件期间即时反馈
-  const multi = questions.length > 1 || questions.some((q) => q.multiSelect);
-
-  const submit = (answers) => {
-    setSubmitted(true);
-    Promise.resolve(onAnswer(req.request_id, answers)).catch(() => setSubmitted(false));
-  };
-
-  const choose = (q, label) => {
-    if (resolved) return;
-    if (q.multiSelect) {
-      const current = new Set((chosen[q.question] || '').split(',').filter(Boolean));
-      current.has(label) ? current.delete(label) : current.add(label);
-      setChosen({ ...chosen, [q.question]: [...current].join(',') });
-      return;
-    }
-    const next = { ...chosen, [q.question]: label };
-    setChosen(next);
-    if (!multi) submit(next);
-  };
-
-  const allAnswered = questions.every((q) => chosen[q.question]);
-
-  return (
-    <div className={`question-card${trace ? ' trace-card' : ''}${resolved ? ' resolved' : ''}`}>
-      <div className="qc-head">
-        <span className="qc-glyph">?</span>
-        <span className="qc-title">{trace ? '走查分支选择' : '请专家确认'}</span>
-        {resolved ? (
-          <span className="qc-state done">
-            <CheckCircleFilled /> 已答复
-          </span>
-        ) : submitted ? (
-          <span className="qc-state done">
-            <CheckCircleFilled /> 已提交
-          </span>
-        ) : (
-          <span className="qc-state live">
-            <span className="qc-dot" />
-            等待你选择
-          </span>
-        )}
-      </div>
-      {questions.map((q) => (
-        <div key={q.question} className="question-item">
-          <div className="question-text">
-            {q.header && <span className="qc-topic">{q.header}</span>}
-            <span>{q.question}</span>
-          </div>
-          <div className="question-options" role="radiogroup" aria-label={q.question}>
-            {(q.options || []).map((opt, index) => {
-              const selected = (chosen[q.question] || '').split(',').includes(opt.label);
-              return (
-                <button
-                  type="button"
-                  key={opt.label}
-                  role={q.multiSelect ? 'checkbox' : 'radio'}
-                  aria-checked={selected}
-                  className={`question-option${selected ? ' selected' : ''}`}
-                  disabled={resolved}
-                  style={{ animationDelay: `${Math.min(index * 45, 220)}ms` }}
-                  onClick={() => choose(q, opt.label)}
-                >
-                  <span className="option-index">{index + 1}</span>
-                  <span className="option-main">
-                    <span className="option-label">{opt.label}</span>
-                    {opt.description && <span className="option-desc">{opt.description}</span>}
-                  </span>
-                  <span className="option-check">
-                    <CheckOutlined />
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      ))}
-      {!resolved && (
-        <div className="qc-custom">
-          <Input
-            placeholder="或输入自定义回答…"
-            variant="borderless"
-            value={custom}
-            onChange={(e) => setCustom(e.target.value)}
-            onPressEnter={() => {
-              if (custom.trim() && questions[0]) {
-                submit({ [questions[0].question]: custom.trim() });
-              }
-            }}
-          />
-          {multi ? (
-            <Button size="small" type="primary" shape="round" disabled={!allAnswered} onClick={() => submit(chosen)}>
-              提交
-            </Button>
-          ) : (
-            <Button
-              size="small"
-              type="primary"
-              shape="round"
-              disabled={!custom.trim() && !questions.every((q) => chosen[q.question])}
-              onClick={() => {
-                if (custom.trim()) {
-                  submit({ [questions[0]?.question]: custom.trim() });
-                } else {
-                  submit(chosen);
-                }
-              }}
-            >
-              发送
-            </Button>
-          )}
-        </div>
-      )}
     </div>
   );
 }
@@ -1404,22 +1283,24 @@ export default function ChatPane({
     try {
       await api.respondPermission(project.id, requestId, behavior, '', answers);
     } catch (error) {
-      // 会话重启后的失效确认卡：答案降级为普通消息续接（resume 会自动接上上下文）
-      if ((error.status === 410 || error.status === 404) && behavior === 'allow' && answers) {
-        setLocalResolved((prev) => new Set(prev).add(requestId));
-        const text = Object.entries(answers)
-          .map(([question, answer]) => `${question}\n我的选择：${answer}`)
-          .join('\n\n');
-        message.info('该确认来自上次会话，已把你的选择作为消息发给助手继续');
-        await send(text);
-        return;
-      }
       if (error.status === 410 || error.status === 404) {
+        if (answers) throw error;
         setLocalResolved((prev) => new Set(prev).add(requestId));
         message.info('该确认已失效（会话已重启），如需继续请直接发消息');
         return;
       }
       message.error(error.message);
+      if (answers) throw error;
+    }
+  };
+
+  const reaskQuestion = async (requestId, reason) => {
+    try {
+      await api.respondPermission(project.id, requestId, 'deny',
+        `问题卡格式异常：${reason}。请修正格式后重新提问，每题提供非空且不重复的问题文本，选项使用带 label 的对象列表。`);
+    } catch (error) {
+      message.error(error.message);
+      throw error;
     }
   };
 
@@ -1445,6 +1326,12 @@ export default function ChatPane({
         ...localResolved,
       ]),
     [events, localResolved],
+  );
+
+  const questionResolutions = useMemo(
+    () => new Map(events.filter((event) => event.type === 'permission_resolved')
+      .map((event) => [event.request_id, event])),
+    [events],
   );
 
   // tool_use_id → {isError, excerpt}，用于工具行状态与详情展开
@@ -1792,12 +1679,15 @@ export default function ChatPane({
                     </div>
                   )}
                   <QuestionCard
+                    key={item.content.request_id}
                     req={item.content}
                     resolved={item.resolved}
+                    resolution={questionResolutions.get(item.content.request_id)}
                     trace={item.trace}
                     onAnswer={(requestId, answers) =>
                       respondPermission(requestId, 'allow', answers)
                     }
+                    onReask={reaskQuestion}
                   />
                 </div>
               );

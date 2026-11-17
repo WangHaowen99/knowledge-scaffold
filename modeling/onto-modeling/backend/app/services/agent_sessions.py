@@ -204,6 +204,20 @@ class SessionError(Exception):
         self.status = status
 
 
+def _validate_question_answers(questions: Any, answers: Any) -> None:
+    if not isinstance(questions, list) or not questions:
+        raise SessionError("问题格式不完整，请让助手重新提问", 400)
+    keys = [q.get("question") if isinstance(q, dict) else None for q in questions]
+    if any(not isinstance(key, str) or not key.strip() for key in keys):
+        raise SessionError("问题格式不完整，请让助手重新提问", 400)
+    if len(set(keys)) != len(keys):
+        raise SessionError("问题重复，请让助手重新提问", 400)
+    if not isinstance(answers, dict) or set(answers) != set(keys) or any(
+        not isinstance(answer, str) or not answer.strip() for answer in answers.values()
+    ):
+        raise SessionError("请逐题选择选项或填写回答", 400)
+
+
 @dataclass
 class PendingPermission:
     id: str
@@ -990,6 +1004,8 @@ class SessionManager:
             raise SessionError("确认请求不存在或已处理", 410)
         if behavior == "allow":
             updated_input = None
+            if request.tool_name == "AskUserQuestion":
+                _validate_question_answers(request.tool_input.get("questions"), answers)
             if answers:
                 # AskUserQuestion：答案经 updated_input.answers 回填（问题文本 → 选项文本）
                 updated_input = {**request.tool_input, "answers": answers}
@@ -1073,18 +1089,21 @@ class SessionManager:
                 request.future, timeout=config.PERMISSION_TIMEOUT_SECONDS
             )
         except asyncio.TimeoutError:
-            decision = {"behavior": "deny", "message": "等待确认超时，已自动拒绝"}
+            decision = {"behavior": "deny", "message": "等待确认超时，已自动拒绝", "reason": "timeout"}
         finally:
             session.pending_permissions.pop(request.id, None)
             # 等确认的时间不算引擎无响应
             session.last_activity = time.time()
-        session.broadcast(
-            {
-                "type": "permission_resolved",
-                "request_id": request.id,
-                "behavior": decision.get("behavior"),
-            }
-        )
+        resolved_event = {
+            "type": "permission_resolved",
+            "request_id": request.id,
+            "behavior": decision.get("behavior"),
+        }
+        if decision.get("reason") == "timeout":
+            resolved_event["reason"] = "timeout"
+        if tool_name == "AskUserQuestion" and decision.get("behavior") == "allow":
+            resolved_event["answers"] = (decision.get("updated_input") or {}).get("answers", {})
+        session.broadcast(resolved_event)
         return decision
 
     # ---- 事件消费 ----

@@ -1,5 +1,10 @@
 import { Application, Circle, Container, Graphics, Polygon, Rectangle, RoundedRectangle, Text } from 'pixi.js';
 import { KIND_META } from '../studio-model.js';
+import {
+  studioParallelEdgeOffsets,
+  studioSelfLoopIndexes,
+  studioSelfLoopPoints,
+} from '../studio-graph-geometry.js';
 
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2.2;
@@ -64,7 +69,8 @@ export class WebGLGraphRuntime {
     this.layers = null;
     this.scene = { nodes: [], edges: [], routes: {} };
     this.nodeById = new Map();
-    this.reciprocalEdgeKeys = new Set();
+    this.parallelEdgeOffsets = new Map();
+    this.selfLoopIndexes = new Map();
     this.nodeViews = new Map();
     this.positions = new Map();
     this.basePositions = new Map();
@@ -235,10 +241,8 @@ export class WebGLGraphRuntime {
     this.scene = scene;
     this.nodeById = new Map(scene.nodes.map((item) => [item.id, item]));
     this.ambientComponentKeys = ambientComponentKeys(scene.nodes, scene.edges);
-    const directedEdges = new Set(scene.edges.map((item) => `${item.source}>${item.target}`));
-    this.reciprocalEdgeKeys = new Set(scene.edges.filter((item) => (
-      directedEdges.has(`${item.target}>${item.source}`)
-    )).map((item) => `${item.source}>${item.target}`));
+    this.parallelEdgeOffsets = studioParallelEdgeOffsets(scene.edges);
+    this.selfLoopIndexes = studioSelfLoopIndexes(scene.edges);
     if (this.host) {
       this.host.dataset.sceneNodeCount = String(scene.nodes.length);
       this.host.dataset.sceneEdgeCount = String(scene.edges.length);
@@ -720,11 +724,22 @@ export class WebGLGraphRuntime {
       || this.movedNodeIds.has(edge.target);
     if (!useDynamicPath && this.scene.routes[edge.id]?.length >= 2) return this.scene.routes[edge.id];
 
+    if (edge.source === edge.target) {
+      // 对象类型自关联：两端是同一节点，直线长度为 0 看不见，改画节点上方的环线；
+      // 同一节点的多条自关联由内到外嵌套，互不重叠
+      const reach = Math.max(sourceNode.width, sourceNode.height);
+      return studioSelfLoopPoints(
+        shapeAnchor(source, sourceNode, point(source.x - reach * 0.4, source.y - reach)),
+        shapeAnchor(source, sourceNode, point(source.x + reach * 0.4, source.y - reach)),
+        this.selfLoopIndexes.get(edge.id) || 0,
+      );
+    }
     const sourceAnchor = shapeAnchor(source, sourceNode, target);
     const targetAnchor = shapeAnchor(target, targetNode, source);
-    const reciprocal = this.reciprocalEdgeKeys.has(`${edge.source}>${edge.target}`);
-    if (!reciprocal) return [sourceAnchor, targetAnchor];
-    return quadraticPoints(sourceAnchor, targetAnchor, 28, 18);
+    // 互逆或同方向的多条关系弯成不同弧度，避免叠成一条线
+    const offset = this.parallelEdgeOffsets.get(edge.id) || 0;
+    if (!offset) return [sourceAnchor, targetAnchor];
+    return quadraticPoints(sourceAnchor, targetAnchor, offset, 18);
   }
 
   drawEdgeLabels(entries) {
@@ -1991,6 +2006,7 @@ function uniqueForceLinks(edges) {
   const seen = new Set();
   const result = [];
   edges.forEach((item) => {
+    if (item.source === item.target) return; // 自关联不参与力导：它不牵引节点，计入后会削弱该节点其他连线
     const key = [item.source, item.target].sort().join(':');
     if (seen.has(key)) return;
     seen.add(key);

@@ -31,7 +31,8 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent))
 import jiuwenbox_client as sandbox  # noqa: E402
 from script_argument_shape import identity_keys, is_identity_field  # noqa: E402
-from script_contract import parse_script  # noqa: E402
+from script_contract import ScriptContractError, parse_script  # noqa: E402
+from script_output import VERIFICATION_VERSION  # noqa: E402
 
 RECORD_FILE = Path(".ontology-state") / "script-verifications.json"
 SCRIPTS_DIR = Path("ontology") / "scripts"
@@ -186,6 +187,8 @@ def judge(case: dict, result: dict) -> str:
                 "预期成功，实际输出的是失败结果（ok=false / error / status=failed），consumer 会当成调用失败；"
                 "资料不足等业务结论写在业务字段里"
             )
+        if result.get("output_contract_error"):
+            return result["output_contract_error"]
     elif result["exit_code"] == 0 and not failed_payload:
         return "预期报错，实际正常输出了结果"
     missing = _missing_texts(case.get("stdout_contains", []), result["stdout"])
@@ -227,10 +230,12 @@ def save_record(root: Path, relative: str, record: dict) -> None:
 
 def command_run(args, root: Path) -> int:
     script, relative = resolve_script(root, args.script)
-    cases = load_cases(Path(args.cases))
-    require_identity_free_case(script.read_text(encoding="utf-8", errors="replace"), cases)
     verified_hash = sandbox.source_hash(script)
-    outcome = sandbox.run_cases(script, [case["argv"] for case in cases])
+    cases = load_cases(Path(args.cases))
+    source = script.read_text(encoding="utf-8", errors="replace")
+    require_identity_free_case(source, cases)
+    contract = parse_script(source)
+    outcome = sandbox.run_cases(script, [case["argv"] for case in cases], outputs=contract.outputs)
     reported = []
     for case, result in zip(cases, outcome["results"]):
         reason = judge(case, result)
@@ -250,6 +255,7 @@ def command_run(args, root: Path) -> int:
     if recorded:
         save_record(root, relative, {
             "source_hash": verified_hash,
+            "output_contract_version": VERIFICATION_VERSION,
             "runtime": outcome["runtime"],
             "verified_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "cases": [{"name": case["name"], "expect": case["expect"]} for case in cases],
@@ -288,6 +294,16 @@ def command_check(args, root: Path) -> int:
     return 1 if problems else 0
 
 
+def verification_problem(root: Path, script: Path) -> str:
+    """Publication uses the same dependency hash and requires the output-aware verifier."""
+    record = load_records(root).get(script.relative_to(root).as_posix(), {})
+    if not isinstance(record, dict) or record.get("output_contract_version") != VERIFICATION_VERSION:
+        return "请使用 script_verify.py run 完成包含输出契约检查的运行验证"
+    if record.get("source_hash") != sandbox.source_hash(script):
+        return "验证后脚本或依赖已修改，请重新运行验证"
+    return ""
+
+
 def command_status(_args, _root: Path) -> int:
     status = sandbox.gateway_status()
     if status["connected"]:
@@ -320,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"未知命令：{args.command}")
     try:
         return handler(args, root)
-    except (UsageError, sandbox.BundleError) as exc:
+    except (UsageError, sandbox.BundleError, ScriptContractError) as exc:
         _emit(f"错误：{exc}", sys.stderr)
         return 2
     except sandbox.SandboxError as exc:

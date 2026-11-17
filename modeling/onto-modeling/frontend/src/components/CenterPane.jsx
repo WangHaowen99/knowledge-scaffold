@@ -41,6 +41,7 @@ import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
 import { api } from '../lib/api.js';
 import { setWorkspaceDirty } from '../lib/workspaceDirty.js';
+import { showFileSaveFeedback } from '../lib/fileSaveFeedback.js';
 import { SOLVER_DIR, isManagedSolverPath } from '../lib/solver-contract-model.js';
 import { versionTitle } from '../lib/versionHistory.js';
 import {
@@ -1000,7 +1001,7 @@ export default function CenterPane({
     try {
       const result = await api.writeFile(project.id, file, text, content?.revision || '');
       setContent((prev) => (prev ? { ...prev, revision: result.revision } : prev));
-      message.success('已保存并记录迭代');
+      showFileSaveFeedback(result, message);
       onWorkspaceChanged?.();
       after?.();
     } catch (error) {
@@ -1021,7 +1022,7 @@ export default function CenterPane({
       const result = await api.writeFile(project.id, file, text, theirs.revision);
       setContent({ ...theirs, content: text, revision: result.revision });
       setDraft(text);
-      message.success('已保存并记录迭代');
+      showFileSaveFeedback(result, message);
       onWorkspaceChanged?.();
       after?.();
     } catch (error) {

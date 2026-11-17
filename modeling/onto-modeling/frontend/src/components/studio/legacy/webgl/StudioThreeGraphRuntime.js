@@ -10,6 +10,7 @@ import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { KIND_META } from '../studio-model.js';
+import { studioParallelEdgeOffsets, studioSelfLoopIndexes } from '../studio-graph-geometry.js';
 import { graphCameraDistance, graphDepthDistribution, graphDepthSpan, graphNodeRadius, graphWorldPosition, validCameraSnapshot } from './studio-three-geometry.js';
 import { studioCategoryPositions, studioLabelNodeIds, studioNodeName, STUDIO_3D_PARTICLE_LIMIT } from './studio-three-presentation.js';
 import { createSemanticIconLibrary, disposeIconInstance, ICON_TYPES, resolveIconKind } from './semantic-icons.js';
@@ -74,6 +75,8 @@ export class ThreeGraphRuntime {
     this.iconLibrary = createSemanticIconLibrary();
     this.iconTilt = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.1, 0.14, 0));
     this.edgeViews = new Map();
+    this.parallelEdgeOffsets = new Map();
+    this.selfLoopIndexes = new Map();
     this.nodeById = new Map();
     this.forceTargets = new Map();
     this.pinnedNodeIds = new Set();
@@ -253,6 +256,8 @@ export class ThreeGraphRuntime {
     this.sceneSignature = nextSignature;
     this.nodeById = new Map(scene.nodes.map((node) => [node.id, node]));
     this.scene = { ...scene, edges: scene.edges.filter((edge) => this.nodeById.has(edge.source) && this.nodeById.has(edge.target)) };
+    this.parallelEdgeOffsets = studioParallelEdgeOffsets(this.scene.edges);
+    this.selfLoopIndexes = studioSelfLoopIndexes(this.scene.edges);
     if (sameStructure && this.nodeViews.size) {
       let moved = false;
       this.nodeViews.forEach((view, id) => {
@@ -375,22 +380,34 @@ export class ThreeGraphRuntime {
     this.edgeViews.forEach((view) => {
       const source = this.nodeViews.get(view.edge.source);
       const target = this.nodeViews.get(view.edge.target);
-      const delta = target.mesh.position.clone().sub(source.mesh.position);
-      const length = delta.length();
-      const direction = delta.clone().normalize();
-      const start = source.mesh.position.clone().addScaledVector(direction, source.radius + 2);
-      const end = target.mesh.position.clone().addScaledVector(direction, -target.radius - 5);
-      const middle = start.clone().lerp(end, 0.5);
-      middle.z += Math.min(60, length * 0.12);
       if (view.edge.source === view.edge.target) {
-        start.x -= source.radius;
-        end.x += source.radius;
-        middle.y += source.radius * 4;
+        // Each node owns its loop indexes; both endpoints stay on its boundary.
+        const reach = source.radius * 2 + (this.selfLoopIndexes.get(view.edge.id) || 0) * 30;
+        const start = source.mesh.position.clone().add(new THREE.Vector3(-source.radius * 0.6, source.radius * 0.8, 0));
+        const end = source.mesh.position.clone().add(new THREE.Vector3(source.radius * 0.6, source.radius * 0.8, 0));
+        view.curve = new THREE.CubicBezierCurve3(start,
+          start.clone().add(new THREE.Vector3(-reach * 0.6, reach, 0)),
+          end.clone().add(new THREE.Vector3(reach * 0.6, reach, 0)), end);
+      } else {
+        const delta = target.mesh.position.clone().sub(source.mesh.position);
+        const direction = delta.clone().normalize();
+        const start = source.mesh.position.clone().addScaledVector(direction, source.radius + 2);
+        const end = target.mesh.position.clone().addScaledVector(direction, -target.radius - 5);
+        const middle = start.clone().lerp(end, 0.5);
+        middle.z += Math.min(60, delta.length() * 0.12);
+        const offset = this.parallelEdgeOffsets.get(view.edge.id) || 0;
+        if (offset) {
+          // Reversing an edge reverses this normal, placing reciprocal arcs on
+          // opposite sides. Depth-aligned edges use a finite perpendicular too.
+          const normal = new THREE.Vector3(-direction.y, direction.x, 0);
+          if (normal.lengthSq() < 1e-8) normal.set(0, -direction.z, direction.y);
+          middle.addScaledVector(normal.normalize(), offset);
+        }
+        view.curve = new THREE.QuadraticBezierCurve3(start, middle, end);
       }
-      view.curve = new THREE.QuadraticBezierCurve3(start, middle, end);
       view.line.geometry.setFromPoints(view.curve.getPoints(20));
       if (view.emphasisLine) this.updateWideEdgeGeometry(view);
-      view.arrow.position.copy(end);
+      view.arrow.position.copy(view.curve.getPoint(1));
       view.arrow.quaternion.setFromUnitVectors(UP, view.curve.getTangent(1).normalize());
     });
   }
@@ -680,6 +697,7 @@ export class ThreeGraphRuntime {
     this.forceWorker.onerror = () => { this.setForceStatus('error'); this.callbacks.onForceError?.(); };
     const seen = new Set();
     const links = this.scene.edges.filter((edge) => {
+      if (edge.source === edge.target) return false;
       const key = [edge.source, edge.target].sort().join(':');
       if (seen.has(key)) return false;
       seen.add(key); return true;

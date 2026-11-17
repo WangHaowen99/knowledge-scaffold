@@ -9,8 +9,20 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } fro
 import { api } from '../lib/api.js';
 import { workspaceDirtySources } from '../lib/workspaceDirty.js';
 import { compareUpdatedAt, formatUpdatedAt, withUpdatedAt } from '../lib/studioUpdates.js';
+import {
+  INITIAL_STUDIO_TABLE_STATE,
+  studioEntryReturnView,
+  studioFilteredValue,
+  studioOwnerFilters,
+  studioOwnerMatches,
+  studioRuleColumnsVisible,
+  studioSortOrder,
+  studioTableState,
+  studioUpdatedWithin,
+} from '../lib/studioTable.js';
 import { Markdown } from './CenterPane.jsx';
 import StudioEntryEditor from './StudioEntryEditor.jsx';
+import StudioUpdatedRangeFilter from './StudioUpdatedRangeFilter.jsx';
 import { studioTextMatchesQuery } from './studio/legacy/studio-model.js';
 
 // 图模式 = 原版 modeling Studio 图整体搬迁（含 WebGL 力导运行时），按需加载
@@ -18,6 +30,17 @@ const LegacyStudioGraphHost = lazy(() => import('./studio/LegacyStudioGraphHost.
 
 // 表格视图的 kind 视觉沿用原版 KIND_META 的对象/操作用色
 const KIND_LABEL = { object: '对象', operation: '操作', logic: '操作', rule: '规则', metric: '指标', script: '脚本' };
+
+// 责任部门、维护人只在类型筛选为规则时显示，规则没填显示破折号
+const renderOwners = (values) => values?.join('、') || '—';
+
+// 统计与表格共用列筛选条件，避免搜索叠加筛选后仍显示搜索前的数量。
+const TABLE_FILTER_MATCHERS = {
+  kind: (value, row) => row.kind === value,
+  updatedAt: (value, row) => studioUpdatedWithin(row, value),
+  departments: (value, row) => studioOwnerMatches(row, 'departments', value),
+  maintainers: (value, row) => studioOwnerMatches(row, 'maintainers', value),
+};
 
 export default function StudioView({
   project,
@@ -29,6 +52,8 @@ export default function StudioView({
   workspaceRevision = 0,
 }) {
   const [view, setView] = useState('graph');
+  const [returnView, setReturnView] = useState('graph');
+  const [tableState, setTableState] = useState(INITIAL_STUDIO_TABLE_STATE);
   const [graph, setGraph] = useState({ nodes: [], edges: [] });
   const [entry, setEntry] = useState(null);
   const [selectedElementId, setSelectedElementId] = useState('');
@@ -55,6 +80,8 @@ export default function StudioView({
     if (projectChanged) {
       setEntry(null);
       setView('graph');
+      setReturnView('graph');
+      setTableState(INITIAL_STUDIO_TABLE_STATE);
       setQuery('');
       setSelectedElementId('');
       setUpdates({});
@@ -99,8 +126,29 @@ export default function StudioView({
     return withUpdatedAt(nodes, updates);
   }, [graph, query, updates]);
 
+  const tableMatches = useMemo(() => {
+    const fields = studioRuleColumnsVisible(tableState)
+      ? ['kind', 'updatedAt', 'departments', 'maintainers']
+      : ['kind', 'updatedAt'];
+    const filters = fields
+      .map((field) => [field, studioFilteredValue(tableState, field)])
+      .filter(([, values]) => values?.length);
+    return {
+      filtered: filters.length > 0,
+      count: tableRows.filter((row) => filters.every(([field, values]) =>
+        values.some((value) => TABLE_FILTER_MATCHERS[field](value, row)),
+      )).length,
+    };
+  }, [tableRows, tableState]);
+
+  const changeTableQuery = (value) => {
+    setQuery(value);
+    setTableState((previous) => ({ ...previous, current: 1 }));
+  };
+
   const openEntry = useCallback(
     (path, elementId = '') => {
+      setReturnView((previous) => studioEntryReturnView(view, previous));
       api
         .studioElement(project.id, path)
         .then((data) => {
@@ -111,7 +159,7 @@ export default function StudioView({
         })
         .catch((error) => message.error(error.message));
     },
-    [graph.nodes, project.id],
+    [graph.nodes, project.id, view],
   );
 
   const refresh = useCallback(() => {
@@ -158,6 +206,14 @@ export default function StudioView({
     [graph],
   );
 
+  const ownerFilters = useMemo(
+    () => ({
+      departments: studioOwnerFilters(graph.nodes, 'departments'),
+      maintainers: studioOwnerFilters(graph.nodes, 'maintainers'),
+    }),
+    [graph],
+  );
+
   if (!loading && graph.nodes.length === 0) {
     return (
       <Empty
@@ -174,7 +230,7 @@ export default function StudioView({
           <Button
             size="small"
             icon={<ArrowLeftOutlined />}
-            onClick={() => setView(view === 'edit' ? 'entry' : 'graph')}
+            onClick={() => setView(view === 'edit' ? 'entry' : returnView)}
           >
             返回
           </Button>
@@ -201,17 +257,17 @@ export default function StudioView({
             placeholder="搜索元素"
             aria-label="搜索表格元素"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => changeTableQuery(e.target.value)}
           />
           {query && (
-            <button type="button" onClick={() => setQuery('')}>
+            <button type="button" onClick={() => changeTableQuery('')}>
               ×
             </button>
           )}
         </div>}
         <span className="studio-count">
-          {view === 'table' && query.trim()
-            ? `匹配 ${tableRows.length} / ${graph.nodes.length} 元素`
+          {view === 'table' && (query.trim() || tableMatches.filtered)
+            ? `匹配 ${tableMatches.count} / ${graph.nodes.length} 元素`
             : `${graph.nodes.length} 元素`} · {graph.edges.length} 关联
         </span>
         <Button
@@ -241,14 +297,18 @@ export default function StudioView({
           <Table
             size="small"
             rowKey="id"
-            pagination={{ pageSize: 15, hideOnSinglePage: true }}
+            pagination={{ pageSize: 15, hideOnSinglePage: true, current: tableState.current }}
             dataSource={tableRows}
+            onChange={(pagination, filters, sorter) =>
+              setTableState(studioTableState(pagination, filters, sorter))
+            }
             onRow={(row) => ({ onClick: () => openEntry(row.path), style: { cursor: 'pointer' } })}
             columns={[
               {
                 title: '类型',
                 dataIndex: 'kind',
                 width: 80,
+                filteredValue: studioFilteredValue(tableState, 'kind'),
                 filters: [
                   { text: '对象', value: 'object' },
                   { text: '操作', value: 'operation' },
@@ -256,7 +316,7 @@ export default function StudioView({
                   { text: '指标', value: 'metric' },
                   { text: '脚本', value: 'script' },
                 ],
-                onFilter: (value, row) => row.kind === value,
+                onFilter: TABLE_FILTER_MATCHERS.kind,
                 render: (kind) => (
                   <Tag
                     color={{ object: 'blue', operation: 'green', logic: 'green', rule: 'gold', metric: 'purple', script: 'magenta' }[kind] || 'default'}
@@ -271,11 +331,51 @@ export default function StudioView({
                 dataIndex: 'updatedAt',
                 width: 170,
                 sorter: compareUpdatedAt,
+                sortOrder: studioSortOrder(tableState, 'updatedAt'),
                 sortDirections: ['descend', 'ascend'],
+                filteredValue: studioFilteredValue(tableState, 'updatedAt'),
+                filterDropdown: (props) => <StudioUpdatedRangeFilter {...props} />,
+                onFilter: TABLE_FILTER_MATCHERS.updatedAt,
                 render: formatUpdatedAt,
               },
-              { title: '引用', dataIndex: 'out', width: 70, sorter: (a, b) => a.out - b.out },
-              { title: '被引', dataIndex: 'in', width: 70, sorter: (a, b) => a.in - b.in },
+              ...(studioRuleColumnsVisible(tableState)
+                ? [
+                    {
+                      title: '责任部门',
+                      dataIndex: 'departments',
+                      width: 120,
+                      filters: ownerFilters.departments,
+                      filterSearch: true,
+                      filteredValue: studioFilteredValue(tableState, 'departments'),
+                      onFilter: TABLE_FILTER_MATCHERS.departments,
+                      render: renderOwners,
+                    },
+                    {
+                      title: '维护人',
+                      dataIndex: 'maintainers',
+                      width: 110,
+                      filters: ownerFilters.maintainers,
+                      filterSearch: true,
+                      filteredValue: studioFilteredValue(tableState, 'maintainers'),
+                      onFilter: TABLE_FILTER_MATCHERS.maintainers,
+                      render: renderOwners,
+                    },
+                  ]
+                : []),
+              {
+                title: '引用',
+                dataIndex: 'out',
+                width: 70,
+                sorter: (a, b) => a.out - b.out,
+                sortOrder: studioSortOrder(tableState, 'out'),
+              },
+              {
+                title: '被引',
+                dataIndex: 'in',
+                width: 70,
+                sorter: (a, b) => a.in - b.in,
+                sortOrder: studioSortOrder(tableState, 'in'),
+              },
             ]}
           />
         </div>
