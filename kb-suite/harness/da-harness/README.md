@@ -12,19 +12,21 @@ Besides `tool` and `step`, the provider emits three item types. Their `data` alr
 | `subagent` | `{taskId}:sub:{subagent_id}` | STARTED → UPDATED (activity) → COMPLETED | `workflow_event` (workflow runs and delegated tasks) |
 | `file` | `{tool item id}:file` | COMPLETED | `tool_result` of `push_file` |
 
-### Proposed io_adapter mapping
+### io_adapter mapping (upstream drafts)
 
-`_project_item` in `openjiuwen/harness_providers/io_adapter.py` (today it keeps only `tool`):
+`_project_item` in agent-core's `openjiuwen/harness_providers/io_adapter.py` keeps only `tool` today. The upstream drafts project the other three:
 
 | item | OutputSchema `type` | `payload` | Swarm event |
 |---|---|---|---|
-| `todo` | `todo.updated` | `{"todos": data["todos"]}` | `todo.updated` |
-| `subagent` without `activity` | `subagent_updated` | `{"subagent_updated": {**data, "parent_session_id": S}}` | `chat.subtask_update` |
-| `subagent` with `activity` | `subagent_activity` | `{"subagent_activity": {**data["activity"], "parent_session_id": S}}` | `chat.subagent_activity` |
-| `file` | `chat.file` | `{"files": [{path, name, size, mime_type} + download_url, download_token}]` | `chat.file` |
+| `todo` | `todo.updated` | `{"todos": [...]}` | `todo.updated` |
+| `subagent` without `activity` | `subagent_updated` | `{"subagent_updated": {..., "parent_session_id": S}}` | `chat.subtask_update` |
+| `subagent` with `activity` | `subagent_activity` | `{"subagent_activity": {..., "parent_session_id": S}}` | `chat.subagent_activity` |
+| `file` (COMPLETED) | `file.delivered` | `{path, name, size, mime_type, item_id}` | `chat.file`, built by Swarm |
 
-- `S` is the host session id: only the host knows it.
-- `download_url` and `download_token` are minted by the host (Swarm's `build_file_download_info(path, name, session_id, user_id)`). `title` is extra and can be dropped.
+- `S` is `HarnessContext.host_session_id`, which the adapter already has; it overrides whatever the provider sent. The activity form needs it too (`SubagentActivity.to_dict()` has no such key).
+- A file is not sent as `chat.file` directly: Swarm's single-agent parser has no branch for it and the team stream would show a card without a link. Swarm checks the path again (inside the harness workspace, a regular file), reads size and type itself and calls `build_file_download_info` (`user_id` by keyword: the fourth positional parameter is `expires_in`).
+- Item data is rebuilt from known keys; text is cut at 2000 characters, a todo list at 200 entries; a file path must resolve inside the start context's `cwd`.
+- Known limits: todos and files from an external harness do not survive a page reload in Swarm's native chat; token usage is not projected.
 
 ### Field shapes
 
@@ -46,7 +48,7 @@ Besides `tool` and `step`, the provider emits three item types. Their `data` alr
 | `subagent_id`, `sub_session_id` | `da-{workflowId}-{agentId}`; characters other than `[A-Za-z0-9_-]` become `_` |
 | `subagent_type` | the run's `mode` from `workflow_start` (`council`, `pipeline`, ...); `deepanalyze` if the start was not seen |
 | `display_name` / `role` / `task_description` | `agentId` / `role` / `task` of `workflow_agent_start` |
-| `status` | `running`, then `closed` |
+| `status` | `running`, then `closed` (agent-core's own sub-agents end a turn as `idle` with `turn_outcome`; Swarm renders both) |
 | `turn_outcome` = `closed_reason` | `completed`, `failed` or `cancelled`: from `workflow_agent_complete.status`; for members still open, from `workflow_complete.status` |
 | `error` | `{"code": "DA_MEMBER_FAILED", "message": ...}` when failed, else null |
 | `created_at`, `updated_at`, `closed_at` | ms since epoch, taken when the event arrives |
