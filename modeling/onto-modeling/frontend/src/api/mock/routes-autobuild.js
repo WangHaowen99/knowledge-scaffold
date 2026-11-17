@@ -152,6 +152,7 @@ export function register(ctx) {
     not_enforced: [],
     last_run: lastRunOf(m[1]),
     optional_nodes: S.OPTIONAL_NODES,
+    until_order: S.untilOrder(policyOf(m[1])),
   })); // AB-01
   on('PUT', '/projects/([^/]+)/autobuild/policy', ({ m, body }) => {
     const cur = policyOf(m[1]);
@@ -162,7 +163,7 @@ export function register(ctx) {
     if (bad) return err(...bad);
     next.revision = `p${uid()}`;
     db.abPolicy.set(m[1], next);
-    return json(200, { ...next, platform_limits: {}, not_enforced: [], last_run: lastRunOf(m[1]), optional_nodes: S.OPTIONAL_NODES });
+    return json(200, { ...next, platform_limits: {}, not_enforced: [], last_run: lastRunOf(m[1]), optional_nodes: S.OPTIONAL_NODES, until_order: S.untilOrder(next) });
   }); // AB-02
   on('POST', '/projects/([^/]+)/autobuild/runs/preview', ({ m, body }) => {
     const pid = m[1];

@@ -98,7 +98,7 @@ nodes:
     writes: ["ontology/logic/*", "ontology/metric/*", "ontology/object/*"]
     actions:
       - {label: 提取操作, command: /ontology-extract-operation}
-  # 已经有对象或操作时上传了新资料才出现（内核条件 materials_added）；上传之后开始的一次增量更新做完、发布过、
+  # 对象和操作都有了以后上传新资料才出现（内核条件 materials_added）；上传之后开始的一次增量更新正常做完、发布过、
   # 或选了「这一轮不处理」就隐藏，再上传又出现。自主构建不做（条件节点）
   - id: core.update
     title: 增量更新

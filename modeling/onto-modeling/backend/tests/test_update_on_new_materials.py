@@ -1,12 +1,12 @@
 """增量更新响应「新资料到了」、自主构建按 need 判资格（节点模型重构 3）。
 
-- 内核条件 materials_added：主线上已经有对象或操作时上传资料，记下这一轮（`kernel:materials_added`）；增量更新出现在
+- 内核条件 materials_added：主线上对象和操作都有了以后上传资料，记下这一轮（`kernel:materials_added`）；增量更新出现在
   FL-01、被第 2 级推荐、S-18 里有它的按钮，助手副本的 state_helper 和后端给同一份；
-- 这一轮处理完就隐藏：上传之后开始的一次增量更新做完（上传时已经在跑的那次不算）、触发之后发布过、「这一轮不处理」（FL-03）；
-  再上传开始新的一轮；处理完记在记录上，之后不再翻执行记录、不起 git；
+- 这一轮处理完就隐藏：上传之后开始的一次增量更新正常做完（走到过执行更新；取消、中断、放弃、上传时已经在跑的那次都不算）、
+  触发之后发布过、「这一轮不处理」（FL-03）；再上传开始新的一轮；处理完记在记录上，之后不再翻执行记录、不起 git；
 - 触发出错不影响上传；R-02 的 `is_revision` 不另外发增量更新命令；
 - 自主构建只做必需节点，打开「包括可选步骤」加上绘制流程图、提取规则与指标，不加生成脚本；第三方包的必需节点没写
-  `autobuild: true` 不做；AB-01 的 `optional_nodes`。
+  `autobuild: true` 不做；`until_node` 之后的可选节点不做；AB-01 的 `optional_nodes`（带 under、order）和 `until_order`。
 
 项目、条目、资料都是合成的。
 """
@@ -51,12 +51,17 @@ def _flow_state_file(root) -> dict:
     return json.loads((root / view.FLOW_STATE_REL).read_text(encoding="utf-8"))
 
 
-def _update_run(project_id, root, *, done: bool = True) -> dict:
-    """一次增量更新的执行记录（开始时间就是现在）。"""
+APPLIED = ["analyze", "confirm", "apply", "validate"]  # 正常做完：确认后执行更新、校验
+CANCELLED = ["analyze", "confirm"]  # 在确认卡上选了「取消」：release 后停下，执行记录也是 done
+
+
+def _update_run(project_id, root, *, state: str = "done", phases=APPLIED) -> dict:
+    """一次增量更新的执行记录（开始时间就是现在），停在 state，命令锁走过 phases。"""
     record = exec_records.start(project_id, "default", root=root, flow=model.load_for(root),
                                 command="/ontology-update", command_name="update")
-    if done:
-        record = exec_records.update(project_id, record["id"], state="done", ended_at=time.time())
+    if state != "running":
+        record = exec_records.update(project_id, record["id"], state=state, ended_at=time.time(),
+                                     phases_seen=list(phases))
     return record
 
 
@@ -69,6 +74,22 @@ def test_upload_before_anything_is_built_does_not_trigger(env):  # noqa: F811
     _upload(workspaces, project_id)
     assert activation.load(root) == {}
     assert "core.update" not in _nodes(root)
+
+
+def test_objects_without_operations_do_not_trigger(env):  # noqa: F811
+    """只有对象、没有操作：增量更新的前置（逻辑已提取）不满足，不开新一轮，下一步照旧是提取操作；两样都有了再上传才触发。"""
+    client, workspaces, _manager, project_id, root = env
+    main_write(root, "research/订单.md", "# 合成资料分析\n")
+    main_write(root, "ontology/object/订单.md", obj("订单", "合成订单"))
+    _upload(workspaces, project_id)
+    assert activation.load(root) == {}
+    assert "core.update" not in _nodes(root)
+    assert client.get(f"{P}/{project_id}/flow").json()["suggestions"]["primary"]["label"] == "提取操作"
+
+    main_write(root, "ontology/operation/下单.md", "## 逻辑描述\n\n读取[[订单]]。\n")
+    _upload(workspaces, project_id, "再一份.md")
+    assert activation.load(root)[KEY]["files"] == ["resource/others/再一份.md"]
+    assert "core.update" in _nodes(root)
 
 
 def test_upload_after_modeling_shows_the_update_everywhere(env):  # noqa: F811
@@ -114,9 +135,9 @@ def test_files_pile_up_within_a_round(env):  # noqa: F811
 def test_an_update_started_after_the_upload_hides_it_and_one_already_running_does_not(env):  # noqa: F811
     _client, workspaces, _manager, project_id, root = env
     _modeled(root)
-    running = _update_run(project_id, root, done=False)  # 上传前就在跑（手动输入的命令）
+    running = _update_run(project_id, root, state="running")  # 上传前就在跑（手动输入的命令）
     _upload(workspaces, project_id)
-    exec_records.update(project_id, running["id"], state="done", ended_at=time.time())
+    exec_records.update(project_id, running["id"], state="done", ended_at=time.time(), phases_seen=APPLIED)
     assert "core.update" in _nodes(root)  # 在跑的那次没看过这次的资料
 
     _update_run(project_id, root)
@@ -128,6 +149,22 @@ def test_an_update_started_after_the_upload_hides_it_and_one_already_running_doe
     helper = next_steps.suggest(root)
     assert helper == {key: value for key, value in built.items() if key != "rev"}
     assert (helper["primary"] or {}).get("label") != "增量更新"
+
+
+def test_a_cancelled_failed_interrupted_or_abandoned_update_leaves_it_there(env):  # noqa: F811
+    """只有正常做完的那一次结束这一轮：确认卡上取消（done 但没走到执行更新）、前置不满足就停下（锁都没拿）、
+    被打断、放弃的都不算。"""
+    _client, workspaces, _manager, project_id, root = env
+    _modeled(root)
+    _upload(workspaces, project_id)
+    _update_run(project_id, root, phases=CANCELLED)
+    assert "core.update" in _nodes(root)
+    _update_run(project_id, root, phases=[])
+    _update_run(project_id, root, state="interrupted", phases=APPLIED)
+    _update_run(project_id, root, state="abandoned", phases=APPLIED)
+    assert "core.update" in _nodes(root) and "handled" not in activation.load(root)[KEY]
+    _update_run(project_id, root)
+    assert "core.update" not in _nodes(root)
 
 
 def test_handled_round_is_remembered_without_git_or_exec_records(env, monkeypatch):  # noqa: F811
@@ -239,8 +276,32 @@ def test_autobuild_runs_required_nodes_and_optional_ones_only_when_asked(env):  
     every = rows(True)
     assert set(every) - set(required) == {"diagram.flowchart", "core.metric"}
     assert not {"codegen.codegen", "codegen.solver", "core.update", "core.publish"} & set(every)
-    assert plan.optional_nodes(flow) == [{"id": "diagram.flowchart", "name": "绘制流程图"},
-                                         {"id": "core.metric", "name": "提取规则与指标"}]
+    ids = [node["id"] for node in flow["nodes"]]
+    assert plan.optional_nodes(flow) == [
+        {"id": "diagram.flowchart", "name": "绘制流程图", "under": "core.research", "order": ids.index("diagram.flowchart")},
+        {"id": "core.metric", "name": "提取规则与指标", "under": "core.operation", "order": ids.index("core.metric")}]
+
+
+def test_optional_nodes_after_until_node_are_not_done(env):  # noqa: F811
+    """做到哪一步（until_node）之后的可选节点不做：后端走到 until_node 就停，AB-01 的 until_order 和每项的 order 同一个顺序。"""
+    client, _workspaces, _manager, project_id, root = env
+    flow = plan.flow(root)
+
+    def picked(until: str) -> set[str]:
+        policy = {"scope": {"until_node": until, "refresh_stale_first": True, "include_optional": True}}
+        return {node["id"] for node in plan.candidates(flow, policy)}
+
+    assert "diagram.flowchart" in picked("core.object") and "core.metric" not in picked("core.object")
+    assert "core.metric" not in picked("core.operation")  # 挂在提取操作下面，但排在它后面
+    assert {"diagram.flowchart", "core.metric"} <= picked("core.validate")
+
+    url = f"{P}/{project_id}/autobuild/policy"
+    body = client.put(url, json={"scope": {"until_node": "core.object"}}).json()
+    assert body["until_order"] == plan.position(flow, "core.object")
+    kept = [item["id"] for item in body["optional_nodes"] if item["order"] <= body["until_order"]]
+    assert kept == ["diagram.flowchart"] and kept == [node_id for node_id in ("diagram.flowchart", "core.metric")
+                                                      if node_id in picked("core.object")]
+    assert client.put(url, json={"scope": {"until_node": None}}).json()["until_order"] is None
 
 
 def _core() -> tuple[str, str, dict]:

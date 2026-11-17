@@ -94,27 +94,31 @@ def _last_run(project_id: str) -> dict | None:
     return None
 
 
-def _optional_nodes(project_id: str) -> list[dict]:
-    """「包括可选步骤」会多做的节点（`plan.optional_nodes`）；流程读不出时为空（开关不显示）。"""
+def _optional_nodes(project_id: str, until: str | None) -> tuple[list[dict], int | None]:
+    """(「包括可选步骤」可能多做的节点 `plan.optional_nodes`, `until_node` 在流程里排第几)；流程读不出时 ([], None)，开关不显示。"""
     from ...api import deps
     from . import plan
 
     try:
-        return plan.optional_nodes(plan.flow(deps.workspaces.project_root(project_id)))
+        flow_doc = plan.flow(deps.workspaces.project_root(project_id))
     except Exception:  # noqa: BLE001 - 项目还没建好、流程装配不出：不列
-        return []
+        return [], None
+    return plan.optional_nodes(flow_doc), plan.position(flow_doc, until) if until else None
 
 
 def view(project_id: str, policy: dict | None = None) -> dict:
-    """AB-01。`optional_nodes` 是只读的：打开「包括可选步骤」时多做的节点 `[{id, name}]`，开关的说法按它列，为空时不显示开关。"""
+    """AB-01。只读的 `optional_nodes`：可能多做的可选节点 `[{id, name, under, order}]`；`until_order`：`until_node` 排第几
+    （没设或不在流程里为 null）。`order` 大于 `until_order` 的不做，开关的说法只列剩下的，一个都不剩时不显示开关。"""
     policy = policy or load(project_id)
+    optional, until_order = _optional_nodes(project_id, policy["scope"].get("until_node"))
     return {
         **policy,
         "platform_limits": {},
         "last_run": _last_run(project_id),
         "revision": revision(policy),
         "not_enforced": list(NOT_ENFORCED),
-        "optional_nodes": _optional_nodes(project_id),
+        "optional_nodes": optional,
+        "until_order": until_order,
     }
 
 

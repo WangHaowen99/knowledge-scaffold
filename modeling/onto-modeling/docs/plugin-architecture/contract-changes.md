@@ -2231,11 +2231,15 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
 
 **内核条件 materials_added**
 
-1. 上传资料（R-02，`save_resource`）时主线上已经有对象或操作（`ontology/object`、`ontology/operation`、`ontology/logic` 下有
-   条目），就在主线工作区的 `.onto/run/activation.json` 记下 `kernel:materials_added`：`{event, commit, at, files}`。不要求有包
-   声明这个事件；包级的 `activation` 照旧，同一次上传各记一份。还什么都没建时上传不记。
+1. 上传资料（R-02，`save_resource`）时主线上对象和操作都有了（`ontology/object` 下有条目，`ontology/operation` 或 `ontology/logic`
+   下也有），就在主线工作区的 `.onto/run/activation.json` 记下 `kernel:materials_added`：`{event, commit, at, files}`。和增量更新
+   命令的前置 `[逻辑已提取, 对象已提取]` 一致：只有对象时上传不记，免得建议条推一条跑不了的命令、把「提取操作」挤下去。不要求有包
+   声明这个事件；包级的 `activation` 照旧（它的前提是包自己的探针），同一次上传各记一份。
 2. 这一轮处理完（满足一条就算），节点隐藏：
-   - 上传之后**开始**的一次增量更新执行完成（执行记录 `done`，`started_at` 晚于上传时间）；上传时已经在跑的那次做完也不算；
+   - 上传之后**开始**的一次增量更新正常做完：执行记录 `done`、`started_at` 晚于上传时间，而且命令锁走到过执行更新（`phases_seen`
+     有 `apply` 或 `validate`）。在确认卡上选「取消」的那次也是 `done`，但只到过 `analyze`、`confirm`，不算；前置不满足就停下的
+     （锁都没拿）不算；被打断（`interrupted`）、放弃（`abandoned`）的不算；上传时已经在跑的那次做完也不算。出错时命令锁还在，
+     记录停在等待或中断，同样不算；
    - 触发那次提交之后发布过（最新的 `release/*` 标签包含触发时的提交，和 `round_open` 同一口径）；
    - 用户选了「这一轮不处理」（FL-03）。
    处理完时在记录上写 `handled: {by: update|release|skip, at, reason?}`，之后读流程不再翻执行记录、不起 git 进程（执行记录只留
@@ -2257,8 +2261,8 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
 8. **FL-04** 只恢复跳过的可选节点；条件节点结束这一轮后不在流程里（`node_not_found`）。
 9. **R-02** `is_revision`、`batch_id` 收下不处理，`command_task` 恒为 null。原设计是整批发一条增量更新命令，和条件节点重复
    （同一批资料会推一次、又自己跑一次）；现在一律由条件节点出现、用户点了才发。
-10. **AB-01** 加只读的 `optional_nodes: [{id, name}]`：启用的、资料分析之后、自主构建能做的可选节点，按流程顺序，不看
-    `until_node`。AB-02 的响应同 AB-01。
+10. **AB-01** 加只读的 `optional_nodes: [{id, name, under, order}]`（启用的、资料分析之后、自主构建能做的可选节点，按流程顺序；
+    `under` 挂在哪个必需节点下，`order` 在流程里排第几）和 `until_order`（`until_node` 排第几，没设为 null）。AB-02 的响应同 AB-01。
 
 **自主构建**
 
@@ -2267,13 +2271,16 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
     增量更新是条件节点）。第三方包的节点没写 `autobuild: true` 时装配已补成 `autobuild: false`（2a），这里不再另判。
 12. 行为变化：原来按 `placement: spine` 判，旁支（`branch`）的可选节点打开开关也不做，开关实际不起作用；现在打开后加上绘制流程图、
     提取规则与指标，生成脚本（`autobuild: false`）、求解适配（面板）不加。旧写法 `step`、`gate` 的节点现在按必需节点做（官方包里没有这种写法，第三方包的默认不做）。
+13. `until_node` 之后的可选节点不做：自主构建按流程顺序走到 `until_node`（含）就停，原来就是这样，没有改。注意按的是流程顺序，
+    不是挂在哪个节点下：做到「提取操作」时，挂在它下面、排在它后面的「提取规则与指标」不做。
 
 **前端**
 
-13. 项目设置「范围」的开关文案按 `optional_nodes` 生成：「包括可选步骤：」后面列节点名，用「、」连接；没有可选节点（或老后端没有
-    这个字段）时不显示开关。mock 的 AB-01、AB-02 带上 `optional_nodes`。
+14. 项目设置「范围」的开关文案按 `optional_nodes` 生成：「包括可选步骤：」后面列节点名，用「、」连接，只列 `order <= until_order`
+    的（做到哪一步之后的不列，和后端同一口径）；一个都不剩（或老后端没有这个字段）时不显示开关。做到哪一步在这个页面上不能改，
+    按已保存的策略算。mock 的 AB-01、AB-02 带上 `optional_nodes`、`until_order`。
 
 **资产与插件开发指南**
 
-14. core `flow.yaml` 增量更新节点的注释改成现在的出现、隐藏规则（内容摘要变，core 版本号的 `+摘要` 随之变）；插件开发指南里
+15. core `flow.yaml` 增量更新节点的注释改成现在的出现、隐藏规则（内容摘要变，core 版本号的 `+摘要` 随之变）；插件开发指南里
     `need.when` 的说明补上 `materials_added`。

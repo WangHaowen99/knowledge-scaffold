@@ -23,10 +23,13 @@ def _url(project_id: str, tail: str = "policy") -> str:
 def test_policy_defaults_and_save(env):
     client, _workspaces, _manager, project_id, _root = env
     first = client.get(_url(project_id)).json()
-    assert set(first) == {"scope", "advanced", "platform_limits", "last_run", "revision", "not_enforced", "optional_nodes"}
-    # 「包括可选步骤」多做的节点：默认启用的官方包里能自主做的可选节点（生成脚本 autobuild: false、求解适配是面板，不在里面）
-    assert first["optional_nodes"] == [{"id": "diagram.flowchart", "name": "绘制流程图"},
-                                       {"id": "core.metric", "name": "提取规则与指标"}]
+    assert set(first) == {"scope", "advanced", "platform_limits", "last_run", "revision", "not_enforced", "optional_nodes",
+                          "until_order"}
+    # 「包括可选步骤」多做的节点：默认启用的官方包里能自主做的可选节点（生成脚本 autobuild: false、求解适配是面板，不在里面），
+    # 带挂在哪个必需节点下、排第几；没设做到哪一步时 until_order 为 null
+    assert [(item["id"], item["name"], item["under"]) for item in first["optional_nodes"]] == [
+        ("diagram.flowchart", "绘制流程图", "core.research"), ("core.metric", "提取规则与指标", "core.operation")]
+    assert first["optional_nodes"][0]["order"] < first["optional_nodes"][1]["order"] and first["until_order"] is None
     assert first["scope"]["mode"] == "all_pending" and first["advanced"]["confidence_threshold"] == 0.8
     assert first["platform_limits"] == {} and first["last_run"] is None
     assert first["not_enforced"] == []

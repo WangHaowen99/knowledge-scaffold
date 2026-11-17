@@ -1178,7 +1178,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 
 - 同名文件直接替换（`replaced=true`）。上传即经写入路径提交，`Onto-Source: web`。
 - 上传立即返回，`material.text.state` 是 `converting`（网关没部署时 `waiting`）；转换在后台做，结果经 EP-25 推送。
-- 新资料和增量更新（节点模型重构 3）：主线上已经有对象或操作时，每次上传都记进「新资料」这一轮（内核条件 `materials_added`），
+- 新资料和增量更新（节点模型重构 3）：主线上对象和操作都有了以后（同增量更新命令的前置），每次上传都记进「新资料」这一轮（内核条件 `materials_added`），
   增量更新 `core.update` 出现在 `FL-01`、建议条第 2 级推它，由用户点了才发命令。`is_revision` 不再另外发增量更新命令（原来的
   设计是整批发一条，和条件节点重复），`command_task` 恒为 null；同一轮里传几份都只出现一个增量更新，文件累加。触发算不出来不影响上传。
 - 响应 `201`：`{material: Material, replaced: bool, commit, version_label, detected: {purpose, tables[]}|null, command_task: null}`。
@@ -1970,9 +1970,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - `nodes`：`FlowNode[]`；建模是提取对象 `core.object`、提取操作 `core.operation` 两个节点（节点模型重构 1）。
     每个节点带 `need`（什么时候要做：`"required"`、`"optional"` 或 `{when: <条件>}`）、`nav`（上不上导航栏，必需节点为 true）、
     `under`（可选、条件节点挂在哪个必需节点下面：after 链上它前面最近的必需节点；必需节点为 null）（节点模型重构 2a）。
-    条件节点只在条件成立时出现：增量更新 `core.update` 是 `{when: "materials_added"}`，主线上已经有对象或操作时上传了资料才出现，
-    `under` 是 `core.operation`、`nav` 为 false、不计入进度；这一轮处理完（上传之后开始的一次增量更新做完、触发之后发布过、
-    `FL-03`「这一轮不处理」）就不在 `nodes` 里，再上传又出现（节点模型重构 3）。
+    条件节点只在条件成立时出现：增量更新 `core.update` 是 `{when: "materials_added"}`，主线上对象和操作都有了以后上传了资料才出现，
+    `under` 是 `core.operation`、`nav` 为 false、不计入进度；这一轮处理完（上传之后开始的一次增量更新正常做完——走到过执行更新，
+    在确认卡上取消、中断、放弃的不算；触发之后发布过；`FL-03`「这一轮不处理」）就不在 `nodes` 里，再上传又出现（节点模型重构 3）。
     节点动作的 `label` 是按钮名：主命令叫节点名；过期时排在最前的 `kind: "refresh"` 那条也叫节点名，哪类变了写在它的 `reason`
     （「对象有变化」）（节点模型重构 2b）；
   - `edges`；
@@ -3202,9 +3202,12 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
   - `quota_remaining: {tokens, cost: Money}`；
   - `last_run: {run_id, run_no, ended_at, duration_ms, reviewed: bool}|null`；
   - `revision`；
-  - `optional_nodes: [{id, name}]`（只读，节点模型重构 3）：打开「包括可选步骤」时多做的节点，即启用的、资料分析之后、自主构建能做的
-    可选节点，按流程顺序，不看 `until_node` 和做没做完。默认几个官方包启用时是绘制流程图、提取规则与指标。开关的说法按它列
-    （「包括可选步骤：绘制流程图、提取规则与指标」），为空时不显示开关。
+  - `optional_nodes: [{id, name, under, order}]`（只读，节点模型重构 3）：打开「包括可选步骤」时可能多做的节点，即启用的、资料分析之后、
+    自主构建能做的可选节点，按流程顺序，不看做没做完。`under` 是它挂在哪个必需节点下面，`order` 是它在流程里排第几（从 0 起）。
+    默认几个官方包启用时是绘制流程图、提取规则与指标；
+  - `until_order: int|null`（只读）：`scope.until_node` 在流程里排第几，没设或不在流程里为 null。自主构建走到 `until_node` 就停，
+    `order` 大于它的可选节点不做。开关的说法只列 `order <= until_order` 的（「包括可选步骤：绘制流程图、提取规则与指标」），一个都
+    不剩时不显示开关。
 
 #### AB-02 保存策略
 
@@ -5438,7 +5441,8 @@ type AutobuildPolicy = {
               source_priority: string[];                // 资料与证据冲突时的取值顺序
               max_fix_rounds: 1 | 2 | 3 };
   boundary_text: string;          // 硬性不做，只读
-  optional_nodes: { id: string; name: string }[];   // AB-01 只读：「包括可选步骤」多做的节点，为空时不显示开关
+  optional_nodes: { id: string; name: string; under: string | null; order: number }[];   // AB-01 只读：「包括可选步骤」可能多做的节点
+  until_order: number | null;     // AB-01 只读：until_node 排第几；order 比它大的不做，开关只列剩下的，不剩时不显示
 };
 
 type AutobuildPreview = {

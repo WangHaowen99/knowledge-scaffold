@@ -70,9 +70,17 @@ test('策略表单：只读字段、老策略里的预算与生产库授权都�
   assert.deepEqual(Object.keys(policyBody(form, 'p3')), ['scope', 'advanced', 'base_revision']);
 });
 
-test('「包括可选步骤」开关：按 AB-01 的 optional_nodes 列节点名，用「、」连；没有可选节点时不显示（空串）', () => {
-  const two = { optional_nodes: [{ id: 'diagram.flowchart', name: '绘制流程图' }, { id: 'core.metric', name: '提取规则与指标' }] };
+test('「包括可选步骤」开关：按 AB-01 的 optional_nodes 列节点名，用「、」连；做到哪一步之后的不列；没有剩下的不显示（空串）', () => {
+  const two = { optional_nodes: [
+    { id: 'diagram.flowchart', name: '绘制流程图', under: 'core.research', order: 1 },
+    { id: 'core.metric', name: '提取规则与指标', under: 'core.operation', order: 5 },
+  ], until_order: null };
   assert.equal(optionalStepsText(two), '包括可选步骤：绘制流程图、提取规则与指标');
+  // 做到「提取对象」（排第 2）：指标排在后面不做
+  assert.equal(optionalStepsText({ ...two, until_order: 2 }), '包括可选步骤：绘制流程图');
+  assert.equal(optionalStepsText({ ...two, until_order: 5 }), '包括可选步骤：绘制流程图、提取规则与指标', '做到它本身也做');
+  // 做到的那一步在所有可选节点前面：一个都不剩，不显示开关
+  assert.equal(optionalStepsText({ ...two, until_order: 0 }), '');
   assert.equal(optionalStepsText({ optional_nodes: [{ id: 'core.metric', name: '提取规则与指标' }] }), '包括可选步骤：提取规则与指标');
   assert.equal(optionalStepsText({ optional_nodes: [] }), '');
   assert.equal(optionalStepsText({}), '', '老后端没有这个字段：不显示');
@@ -313,6 +321,7 @@ test('mock AB-01～AB-04、AB-18：保存的策略决定预览；开始后开一
   assert.equal(p0.last_run.run_no, 3);
   assert.deepEqual([p0.platform_limits, p0.not_enforced], [{}, []]);
   assert.equal(optionalStepsText(p0), '包括可选步骤：绘制流程图、提取规则与指标');
+  assert.equal(p0.until_order, null);
   assert.equal(p0.budget, undefined);
   assert.equal('production_collection' in p0, false);
 
@@ -335,6 +344,10 @@ test('mock AB-01～AB-04、AB-18：保存的策略决定预览；开始后开一
   const kept = (await call('GET', `${P}/autobuild/policy`)).body.scope;
   assert.equal(kept.mode, 'all_pending');
   assert.deepEqual(kept.slice_ids, ['s3', 's4']);
+  // 做到「提取对象」：until_order 跟着变，开关只列它之前的
+  const until = (await call('PUT', `${P}/autobuild/policy`, { scope: { until_node: 'core.object' } })).body;
+  assert.equal(optionalStepsText(until), '包括可选步骤：绘制流程图');
+  await call('PUT', `${P}/autobuild/policy`, { scope: { until_node: null } });
 
   // 一个节点一行：资料分析之后的主线节点，发布不在里面
   const pv = (await call('POST', `${P}/autobuild/runs/preview`, {})).body;

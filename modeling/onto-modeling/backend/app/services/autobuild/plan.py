@@ -74,11 +74,24 @@ def candidates(flow_doc: dict, policy: dict) -> list[dict]:
     return out
 
 
+def position(flow_doc: dict, node_id: str | None) -> int | None:
+    """节点在流程里排第几（从 0 起，`candidates` 走的同一个顺序）；不在流程里为 None。"""
+    ids = node_ids(flow_doc)
+    return ids.index(node_id) if node_id in ids else None
+
+
 def optional_nodes(flow_doc: dict) -> list[dict]:
-    """「包括可选步骤」打开时多做的节点 `[{id, name}]`（AB-01 `optional_nodes`，开关的说法按它列）：资料分析之后、
-    启用的、自主构建能做的可选节点，按流程顺序；不看 `until_node`，也不看做没做完。"""
-    return [{"id": node["id"], "name": node.get("title") or node["id"]} for node in _after_start(flow_doc)
-            if need_kind(node) == OPTIONAL and eligible(node, True)]
+    """「包括可选步骤」打开时可能多做的节点 `[{id, name, under, order}]`（AB-01 `optional_nodes`）：资料分析之后、
+    启用的、自主构建能做的可选节点，按流程顺序，不看做没做完。`under` 是它挂在哪个必需节点下面，`order` 是它在流程里排第几：
+    `until_node` 排在它前面时不做（`candidates` 走到 `until_node` 就停），前端按 AB-01 的 `until_order` 过滤开关的说法。"""
+    from ..flow.view import under
+
+    nodes = flow_doc.get("nodes") or []
+    by_id = {node["id"]: node for node in nodes}
+    ids = list(by_id)
+    return [{"id": node["id"], "name": node.get("title") or node["id"], "under": under(node, by_id, ids),
+             "order": ids.index(node["id"])}
+            for node in _after_start(flow_doc) if need_kind(node) == OPTIONAL and eligible(node, True)]
 
 
 def node_states(root: Path, flow_doc: dict) -> dict[str, str | None]:

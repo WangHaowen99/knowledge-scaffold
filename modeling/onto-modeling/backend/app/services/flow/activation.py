@@ -5,8 +5,10 @@
 
 **内核条件 `materials_added`**（键 `kernel:materials_added`，节点模型重构 3）：内核的增量更新写 `need: {when: materials_added}`。
 
-- 上传资料时主线上已经有对象或操作，就记下 `{commit, at, files}`，不要求有包声明这个事件；
-- 这一轮处理完（满足一条就算）：上传之后**开始**的一次增量更新执行完成（上传时已经在跑的那次不算）；触发那次提交之后发布过
+- 上传资料时主线上对象和操作都有了（和增量更新命令的前置「对象已提取、逻辑已提取」一致，不然推荐会把人带进跑不了的命令），
+  就记下 `{commit, at, files}`，不要求有包声明这个事件；
+- 这一轮处理完（满足一条就算）：上传之后**开始**的一次增量更新正常做完——执行记录 `done`，而且走到过执行更新（命令锁进过
+  `apply` 或 `validate`）；在确认卡上取消、出错停下、被打断、放弃的都不算，上传时已经在跑的那次也不算；触发那次提交之后发布过
   （和 `round_open` 同一口径：最新的 release/* 标签包含触发时的提交）；用户选了「这一轮不处理」（FL-03）。处理完时在记录上
   写 `handled`，之后读流程不再起 git 进程、不再翻执行记录（执行记录只留最近 200 条，不能靠它记住这一轮结束过）；
 - 这一轮没处理完时再上传：文件累加，提交和时间换成这一次的（这次的资料也要有一次增量更新看过）；处理完之后再上传开始新的一轮。
@@ -37,11 +39,13 @@ STATE_REL = Path(".onto") / "run" / "activation.json"
 MAX_FILES = 50
 MATERIALS_ADDED = "materials_added"
 KERNEL_MATERIALS = f"kernel:{MATERIALS_ADDED}"
-# 处理新资料的是内核的增量更新：这个节点（或这条命令）上传之后开始、执行完成了，这一轮就算处理完
+# 处理新资料的是内核的增量更新：这个节点（或这条命令）上传之后开始、正常做完了，这一轮就算处理完
 UPDATE_NODE = "core.update"
 UPDATE_COMMAND = "update"
-# 「已经有对象或操作」看的目录（同 flow/state.KIND_DIRS 的 object、operation）
-_BUILT_DIRS = ("ontology/object", "ontology/operation", "ontology/logic")
+# 增量更新走到过这些阶段（命令锁，`/ontology-update` 第 4、5 步）才算正常做完：在确认卡上取消时只到过 analyze、confirm
+UPDATE_APPLIED_PHASES = ("apply", "validate")
+# 「对象和操作都有了」看的目录（同 flow/state.KIND_DIRS 的 object、operation）
+_BUILT_DIRS = (("ontology/object",), ("ontology/operation", "ontology/logic"))
 
 
 def _main(root: Path) -> Path:
@@ -102,33 +106,38 @@ def _open(item) -> bool:
     return isinstance(item, dict) and bool(item.get("commit")) and not item.get("handled")
 
 
-def _built(main: Path) -> bool:
-    """主线上已经有对象或操作（隐藏文件、index.md 不算）。"""
-    for rel in _BUILT_DIRS:
-        base = main / rel
-        if not base.is_dir():
-            continue
-        for path in base.rglob("*.md"):
-            parts = path.relative_to(base).parts
-            if path.is_file() and path.name.lower() != "index.md" and not any(part.startswith(".") for part in parts):
-                return True
+def _has_entries(main: Path, rel: str) -> bool:
+    base = main / rel
+    if not base.is_dir():
+        return False
+    for path in base.rglob("*.md"):
+        parts = path.relative_to(base).parts
+        if path.is_file() and path.name.lower() != "index.md" and not any(part.startswith(".") for part in parts):
+            return True
     return False
 
 
+def _built(main: Path) -> bool:
+    """主线上对象和操作都有了（隐藏文件、index.md 不算）。"""
+    return all(any(_has_entries(main, rel) for rel in dirs) for dirs in _BUILT_DIRS)
+
+
 def _updated_since(project_id: str, at: float) -> bool:
-    """上传之后开始的增量更新有一次执行完成了。"""
+    """上传之后开始的增量更新有一次正常做完了（走到过执行更新）。"""
     from ..session_host import exec_records
 
-    for record in exec_records.query(project_id, ["done"]):  # 新的在前
+    for record in exec_records.query(project_id, ["done"]):  # 新的在前；中断、放弃的不在里面
         if float(record.get("started_at") or 0) <= at:
             break
-        if record.get("command_name") == UPDATE_COMMAND or exec_records.node_of(record) == UPDATE_NODE:
+        if record.get("command_name") != UPDATE_COMMAND and exec_records.node_of(record) != UPDATE_NODE:
+            continue
+        if set(record.get("phases_seen") or ()) & set(UPDATE_APPLIED_PHASES):
             return True
     return False
 
 
 def _handled_by(main: Path, item: dict) -> str | None:
-    """这一轮怎么结束的：`update`（做过一次增量更新）、`release`（触发之后发布过）；都没有返回 None。"""
+    """这一轮怎么结束的：`update`（正常做完一次增量更新）、`release`（触发之后发布过）；都没有返回 None。"""
     if _updated_since(main.name, float(item.get("at") or 0)):
         return "update"
     from ...kernel_guards import _guard_common as guard

@@ -107,9 +107,13 @@ export function policyBody(form, revision) {
   return { ...policyForm(form), base_revision: revision };
 }
 
-// 「包括可选步骤」开关的说法：按 AB-01 的 optional_nodes 列节点名；没有可选节点时返回空串，开关不显示
+// 「包括可选步骤」开关的说法：按 AB-01 的 optional_nodes 列节点名，只列做到哪一步（until_order）之前、真正会做的；
+// 一个都不剩时返回空串，开关不显示（同后端 autobuild/plan：走到 until_node 就停）
 export function optionalStepsText(policy) {
-  const names = (policy?.optional_nodes || []).map((n) => n?.name).filter(Boolean);
+  const until = policy?.until_order;
+  const names = (policy?.optional_nodes || [])
+    .filter((n) => until == null || n?.order == null || n.order <= until)
+    .map((n) => n?.name).filter(Boolean);
   return names.length ? `包括可选步骤：${names.join('、')}` : '';
 }
 
