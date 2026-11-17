@@ -109,7 +109,7 @@ export default function LoginPage() {
             <span className="chip" style={{ background: 'rgba(255,255,255,.12)', color: '#CFE0FF', borderColor: 'transparent' }}>onto-modeling</span>
           </div>
           <div className="en-lg-h">把领域业务知识<br />整理成结构化、可验证的本体模型</div>
-          <div className="en-lg-sub">上传业务资料，或者连接正在运行的业务系统，助手陪你把对象、操作、规则一步步建出来，每条结论都能指回出处。</div>
+          <div className="en-lg-sub">上传业务资料，助手陪你把对象、操作、规则一步步建出来，每条结论都能指回出处。</div>
           <div className="en-lg-feats">
             {FEATS.map(([i, t, d, n]) => (
               <div className="en-lg-f" key={t}>

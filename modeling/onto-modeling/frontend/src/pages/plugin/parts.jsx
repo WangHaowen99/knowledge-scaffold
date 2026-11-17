@@ -13,7 +13,7 @@ import { PAGE_TITLES } from '../../shell/CommandPalette.jsx';
 import { Button, Empty, Icon, cx } from '../../ui/index.jsx';
 import '../../styles/more.css';
 
-// 订阅项目流里的某几类事件（artifacts.updated、knowledge.updated、release.updated…）
+// 订阅项目流里的某几类事件（artifacts.updated、release.updated…）
 export function useProjectEvent(types, handler) {
   const { subscribe } = useProject();
   const ref = useRef(handler);

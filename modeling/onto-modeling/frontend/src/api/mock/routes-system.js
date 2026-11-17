@@ -16,8 +16,8 @@ import * as S from './system-data.js';
 
 const ENGINES = ['claude', 'jiuwen'];
 const QUOTA_KEYS = {
-  user: ['concurrent_sessions', 'daily_tokens', 'collections_per_source_per_hour'],
-  project: ['monthly_tokens', 'snapshot_git_mb'],
+  user: ['concurrent_sessions', 'daily_tokens'],
+  project: ['monthly_tokens'],
 };
 
 export function register(ctx) {
@@ -232,7 +232,6 @@ export function register(ctx) {
       permissionMode: st.session.permission_mode,
       presetsText: extra ? `内置 + 自定义 ${extra} 行` : '内置',
       maxRuns: st.limits.max_concurrent_runs,
-      snapshotMb: st.quotas.per_project.snapshot_git_mb,
     });
     const effect = query.get('effect');
     const q = (query.get('q') || '').toLowerCase();
@@ -249,15 +248,23 @@ export function register(ctx) {
     const no = admin(user);
     if (no) return no;
     if (p1) return gone();
+    // 同后端：只改给出的项；不认识的项（如已删的采集频率、快照上限）回 unknown，online_engines 只读、带了也忽略
     const fields = {};
+    const changes = { per_user: {}, per_project: {} };
     const pos = (v) => Number.isInteger(v) && v >= 0;
-    QUOTA_KEYS.user.forEach((k) => { if (!pos(body.per_user?.[k])) fields[`per_user.${k}`] = 'invalid'; });
-    QUOTA_KEYS.project.forEach((k) => { if (!pos(body.per_project?.[k])) fields[`per_project.${k}`] = 'invalid'; });
-    if (Object.keys(fields).length) return err(400, 'invalid_argument', '配额要填非负整数', { fields });
+    [['per_user', 'user'], ['per_project', 'project']].forEach(([group, kind]) => {
+      Object.entries(body[group] || {}).forEach(([k, v]) => {
+        if (k === 'online_engines') return;
+        if (!QUOTA_KEYS[kind].includes(k)) fields[`${group}.${k}`] = 'unknown';
+        else if (!pos(v)) fields[`${group}.${k}`] = 'non_negative_int';
+        else changes[group][k] = v;
+      });
+    });
+    if (Object.keys(fields).length) return err(400, 'invalid_argument', '配额必须是不小于 0 的整数（0 表示不限）', { fields });
     st.quotas = {
       ...st.quotas,
-      per_user: { ...st.quotas.per_user, ...body.per_user },
-      per_project: { ...st.quotas.per_project, ...body.per_project, online_engines: 1 },
+      per_user: { ...st.quotas.per_user, ...changes.per_user },
+      per_project: { ...st.quotas.per_project, ...changes.per_project, online_engines: 1 },
     };
     return json(200, st.quotas);
   });
@@ -304,8 +311,8 @@ export function register(ctx) {
     const r = body.max_concurrent_runs;
     if (Number.isInteger(r) && r < 1) return err(422, 'invalid_argument', '同时运行上限至少是 1', { fields: { max_concurrent_runs: 'min' }, min: 1 });
     if (!Number.isInteger(r) || r > 16) return err(400, 'invalid_argument', '同时运行上限要在 1–16 之间', { fields: { max_concurrent_runs: 'range' } });
-    // 只收认得的几项（F6 起没有单次时长、token、费用上限）
-    const known = ['max_concurrent_runs', 'allow_production_collection', 'night_priority'].filter((k) => k in body);
+    // 只收认得的几项（F6 起没有单次时长、token、费用上限；生产库采集授权已删，带了也忽略）
+    const known = ['max_concurrent_runs', 'night_priority'].filter((k) => k in body);
     st.limits = { ...st.limits, ...Object.fromEntries(known.map((k) => [k, body[k]])), running: st.limits.running };
     return json(200, st.limits);
   });

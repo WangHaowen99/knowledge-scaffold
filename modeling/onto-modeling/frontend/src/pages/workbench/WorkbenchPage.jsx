@@ -6,14 +6,13 @@ import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, relativeTime } from '../../api/errors.js';
-import { commandNode, suggestionCommand, overlayRunning, trackClass, trackNodes, withoutEvidence } from '../../state/flow.js';
-import { evidenceInProject, withoutEvidenceSuggestions } from '../../state/evidence.js';
+import { commandNode, suggestionCommand, overlayRunning, trackClass, trackNodes } from '../../state/flow.js';
 import { composerState, lockPop, readonlyInfo } from '../../state/readonly.js';
 import { rejectedResourceMessage, uploadRules, validateResourceFiles } from '../../lib/resourceUpload.js';
 import { runStatus } from '../../state/conversation.js';
 import { ShellP } from '../../shell/Shell.jsx';
 import {
-  Button, Field, Icon, Modal, Ring, Seg, St, cx, useOutside,
+  Button, Icon, Modal, Ring, St, cx, useOutside,
 } from '../../ui/index.jsx';
 import { FLOWCHART_TYPE, latestFlowchartArtifact, pendingChangeset } from '../../app/packUi.js';
 import { AutobuildBar, AutobuildCtx, useAutobuild } from './autobuild.jsx';
@@ -22,7 +21,6 @@ import { canInterrupt } from './autobuildModel.js';
 import { needsRefetch, pickSuggestions, staleSuggestions, suggestionBarHidden } from './suggestionModel.js';
 import { ActionsCtx, ContextPanel, QueueCard } from './cards.jsx';
 import { WbCtx } from './parts.jsx';
-import { ScopePicker } from '../knowledge/ScopePicker.jsx';
 import { EarlierHistory, Timeline } from './Timeline.jsx';
 import { NextBar, RunLine } from './RunLine.jsx';
 import { SUBMITTING_TEXT, createSubmitGuard, likelyDuplicate, restoreText, sendButtonMode } from './composerModel.js';
@@ -165,45 +163,6 @@ function StateChip({ session, queue }) {
   if (session.state === 'connecting') return <span className="chip gray sm wb-state-chip">连接中</span>;
   if (session.state === 'error') return <span className="chip red sm wb-state-chip"><Icon name="alert" />出错</span>;
   return null;
-}
-
-const KN_TYPES = [['correction', '纠错'], ['convention', '惯例'], ['term', '术语'], ['domain_rule', '领域规则']];
-function KnowledgeDialog({ item, onClose }) {
-  const { services } = useApp();
-  const { pid } = useProject();
-  const [title, setTitle] = useState('');
-  const [type, setType] = useState('domain_rule');
-  const [body, setBody] = useState('');
-  const [scope, setScope] = useState({ kind: 'global' });
-  useEffect(() => {
-    if (!item) return;
-    const plain = item.text_md.replace(/\[\[|\]\]/g, '').replace(/\[\^\d+\]/g, '');
-    setTitle(plain.split(/[。；\n]/)[0].slice(0, 60));
-    setBody(`## 规则\n${plain}`);
-    setScope({ kind: 'global' });
-  }, [item]);
-  if (!item) return null;
-  const save = async () => {
-    try {
-      await services.client.post(`/projects/${encodeURIComponent(pid)}/knowledge`, {
-        title: title.trim(), type, scope, rule_md: body, source: { conversation_id: item.conversation_id, message_id: item.message_id },
-      });
-      toast('已入库', 'book');
-      onClose();
-    } catch (e) {
-      toast(errorText(e), 'alert');
-    }
-  };
-  return (
-    <Modal open onClose={onClose} icon="book" title="沉淀为业务知识" w={520} foot={<><Button onClick={onClose}>取消</Button><Button kind="primary" disabled={!title.trim() || !body.trim()} onClick={save}>确认入库</Button></>}>
-      <div className="col" style={{ gap: 10 }}>
-        <Field label="条目名称"><div className="inp"><input value={title} maxLength={60} onChange={(e) => setTitle(e.target.value)} /></div></Field>
-        <Field label="类型"><Seg items={KN_TYPES} value={type} onChange={setType} /></Field>
-        <Field label="作用范围"><ScopePicker value={scope} onChange={setScope} /></Field>
-        <Field label="内容"><div className="inp area" style={{ minHeight: 90 }}><textarea style={{ height: 72 }} value={body} onChange={(e) => setBody(e.target.value)} /></div></Field>
-      </div>
-    </Modal>
-  );
 }
 
 const MODES = [['L2', 'users', '陪伴建模'], ['L4', 'rocket', '自主构建']];
@@ -399,7 +358,7 @@ function SuggestionBar({ sug, quick = [], onAction, onAll, onQuick, lead }) {
 export default function WorkbenchPage({ route }) {
   const { api, maintenance } = useApp();
   const project = useProject();
-  const { pid, meta, flow, scope, inboxCount, hasPlugin, extensions } = project;
+  const { pid, meta, flow, scope, inboxCount, extensions } = project;
   // 增量更新（incremental）落到进行中的变更清单所在的对话
   const incTarget = useIncrementalTarget(route);
   const conv = useConversation(route.query?.c || incTarget.cid, { preferAutobuild: route.page === 'l4-run' });
@@ -423,7 +382,6 @@ export default function WorkbenchPage({ route }) {
   useEffect(() => { if (plugin) pluginReturn.clear(window.sessionStorage, pid); }, [plugin, pid]);
   const [menu, setMenu] = useState(null);
   const [restart, setRestart] = useState(false);
-  const [knItem, setKnItem] = useState(null);
   const [catalog, setCatalog] = useState(null);
   const [usage, setUsage] = useState(null);
   const [drag, setDrag] = useState(false);
@@ -627,9 +585,6 @@ export default function WorkbenchPage({ route }) {
     retry: async () => { try { await api.retryTurn(pid, cid); } catch (e) { fail(e); } },
     clearInput: () => comp.current.clear?.(),
     registerRound: (cs, fn) => { rounds.current.set(cs, fn); },
-    // 插件对话里的回复说的是插件草稿，不是业务知识
-    canSaveKnowledge: hasPlugin('knowledge') && !plugin,
-    saveKnowledge: (item) => setKnItem({ ...item, conversation_id: cid }),
     // 卡上的变更集还待确认时，带上它读这一轮的版本（AR-03 ?changeset=）
     openArtifact: (artifact, changesetId) => {
       const cs = pendingChangeset(scopeRef.current, changesetId);
@@ -641,7 +596,7 @@ export default function WorkbenchPage({ route }) {
     executeChangeList: inc.execute,
     conversationId: cid,
     stopAndSend,
-  }), [api, pid, cid, hasPlugin, plugin, stopAndSend]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [api, pid, cid, plugin, stopAndSend]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 插件对话的草稿卡、文件抽屉共用：草稿状态缓存、每份草稿最新的一张卡、发话、切回建模
   const sendRef = useRef(null);
@@ -734,19 +689,15 @@ export default function WorkbenchPage({ route }) {
   }, false);
   sendRef.current = send;
 
-  const evidenceOn = evidenceInProject(project);
   const picked = pickSuggestions(state.suggestions, suggestions);
-  const sug = withoutEvidenceSuggestions(inc.decorate(picked), evidenceOn);
+  const sug = inc.decorate(picked);
   const sugHidden = suggestionBarHidden(picked, state.session.state);
   // 会话已经停下、手里那份还是「运行中」（推送丢了）：再取一份
   const stuck = needsRefetch(picked, state.session.state);
   useEffect(() => { if (stuck) refetchSuggestions(); }, [stuck, refetchSuggestions]);
   // 对话正在跑的命令属于哪个节点（FL-01 commands）；服务端标出进行中之前，进度条先按它显示
   const runningCmd = ['running', 'connecting'].includes(state.session.state) ? lastUserText(state) : null;
-  const viewFlow = useMemo(() => {
-    const f = withoutEvidence(flow, evidenceOn);
-    return overlayRunning(f, commandNode(f, runningCmd));
-  }, [flow, evidenceOn, runningCmd]);
+  const viewFlow = useMemo(() => overlayRunning(flow, commandNode(flow, runningCmd)), [flow, runningCmd]);
   // 自主构建正在做的那一段由运行条和运行详情说明，顶栏不再放锁标记
   const lockInfo = scope && scope.state !== 'none' && !(ab.active && scope.state === 'autobuild_slice') ? readonlyInfo(scope) : null;
   // 运行中、排队时顶栏多了状态，「新资料」先收起，避免挤出顶栏；自主构建的状态在运行条上
@@ -870,7 +821,6 @@ export default function WorkbenchPage({ route }) {
           >
             <div className="sm muted">这一轮结束后改做「{replaceAsk?.body?.text || replaceAsk?.body?.command}」</div>
           </Modal>
-          <KnowledgeDialog item={knItem} onClose={() => setKnItem(null)} />
           <DraftFilesDrawer open={!!filesDrawer?.open} name={filesDrawer?.name} changes={filesDrawer?.changes} onClose={() => setFilesDrawer((f) => (f ? { ...f, open: false } : f))} />
           {opened ? (
             <Suspense fallback={null}>

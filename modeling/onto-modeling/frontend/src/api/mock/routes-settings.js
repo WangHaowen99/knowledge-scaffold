@@ -2,14 +2,14 @@
 // PL-12 扩展项由 index.js 那条路由调这里登记的 db.extensionsOf（启用、停用后左栏跟着变）。
 // 自主构建策略（AB-01～AB-04、AB-18）在 routes-autobuild.js。
 // ?mock=assembly:failed：装配失败（PL-11 state=failed，带 last_error）
-// ?mock=off:rev、off:trace+knowledge：一开始就停用这些能力（左栏、资料子页跟着消失，直接打开地址看到「本项目没有启用」）
+// ?mock=off:trace、off:trace+codegen：一开始就停用这些能力（左栏跟着消失，直接打开地址看到「本项目没有启用」）
 import {
-  DATA_CATEGORIES, OFFLINE_PACKS, SCOPES, clientConfigs, mcpOverview, mcpServers, mcpTokens, projectPacks, remainingText,
+  DATA_CATEGORIES, SCOPES, clientConfigs, mcpOverview, mcpServers, mcpTokens, projectPacks, remainingText,
 } from './settings-data.js';
 
-// 带左栏页面、资料子页或产物类型的包，决定扩展项
-const EXT_PACKS = ['trace', 'knowledge', 'codegen', 'rev', 'diagram'];
-const PAGE_OF = { trace: ['scenarios', '场景模拟'], knowledge: ['knowledge', '知识沉淀'], solver: ['scripts', '代码生成'] };
+// 带左栏页面或产物类型的包，决定扩展项
+const EXT_PACKS = ['trace', 'codegen', 'diagram'];
+const PAGE_OF = { trace: ['scenarios', '场景模拟'], codegen: ['scripts', '代码生成'] };
 
 export function actionsOf(p) {
   if (p.status === 'required') return [];
@@ -45,7 +45,6 @@ export function register(ctx) {
     if (!db.settings.has(pid)) {
       // ?mock=off:<包名>[+<包名>]：一开始就停用这些能力（插件页的「本项目没有启用」空状态用）
       const off = (sc.off || '').split(/[+\s]+/).filter(Boolean); // 地址里的 + 会解码成空格
-      if (sc.evidence === 'off') off.push('rev'); // ?mock=evidence:off：系统逆向建模包不在（本期后端没有这个包）
       const packs = projectPacks().map((p) => (off.includes(p.name) && p.status !== 'required' ? { ...p, status: 'disabled', locked_version: p.locked_version } : p));
       db.seedProjectPacks?.(pid, packs); // 插件中心的 mock 状态（routes-plugins.js 的 ?mock=plugins:…）在这里改初始能力表
       db.settings.set(pid, { packs, servers: mcpServers(), tokens: mcpTokens(), rev: 1 });
@@ -155,7 +154,6 @@ export function register(ctx) {
     if (p && p.status !== 'disabled') return err(409, 'pack_already_enabled', '已经启用了');
     const card = (db.packCatalog?.() || F.packs()).find((x) => x.name === body.name); // 插件目录（routes-plugins.js）比 packs() 多租户包
     if (!p && !card) return err(404, 'pack_not_found', '找不到这个能力包');
-    if (OFFLINE_PACKS.includes(body.name)) return err(409, 'pack_unavailable', '离线部署不可用', { reason: 'offline' });
     const version = body.version || p?.locked_version || card.latest;
     if (!p) {
       p = { name: card.name, label: card.label, category: card.category, ui: card.ui, locked_version: version, latest_available: card.latest, channel: card.channel, status: 'disabled', pending: null, enabled_at: null, rollback_to: null, added: true };
@@ -219,7 +217,7 @@ export function register(ctx) {
     const ttl = body.expires_in_s;
     const fields = {};
     if (!name || name.length > 120) fields.name = name ? 'too_long' : 'required';
-    if (!scopes.length || scopes.some((x) => ![...SCOPES, 'evidence.read'].includes(x))) fields.scopes = scopes.length ? 'unknown_scope' : 'required';
+    if (!scopes.length || scopes.some((x) => !SCOPES.includes(x))) fields.scopes = scopes.length ? 'unknown_scope' : 'required';
     if (ttl !== null && !(Number.isInteger(ttl) && ttl >= 300 && ttl <= 2592000)) fields.expires_in_s = 'out_of_range';
     if (Object.keys(fields).length) return err(400, 'invalid_argument', '参数不合法', { fields });
     const s = stOf(pid);

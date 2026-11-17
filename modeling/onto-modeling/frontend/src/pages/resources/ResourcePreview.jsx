@@ -1,5 +1,5 @@
 // 资料区右侧的预览卡（设计稿 .evd-prev）：文档（R-06，带出处编号、定位到锚点）、表格与 CSV（F-05）、
-// drawio（F-02 读、F-03 存）、HTML 报告（F-04，沙箱 iframe）；「被引用」页签（R-05）；外部反馈的逐条查看（R-11）
+// drawio（F-02 读、F-03 存）、HTML 报告（F-04，沙箱 iframe）；「被引用」页签（R-05）
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -16,7 +16,7 @@ import { previewKind } from '../../lib/sourceLocation.js';
 import SourcePreview from './SourcePreview.jsx';
 import { SourceText, useKnownMaterials } from '../studio/SourceChips.jsx';
 import {
-  PREVIEW_ICON, blockBody, isDocPreview, blockLabel, coverageChip, csvText, diamondPoints, drawioLayout, feedbackView, fmtSize,
+  PREVIEW_ICON, blockBody, isDocPreview, blockLabel, coverageChip, csvText, diamondPoints, drawioLayout, fmtSize,
   parseDrawio, parseFragment, purposeView, refRows, refTarget, scaleText, sheetGrid, locateSheetCell, splitHighlights,
   hasTextTab, materialTitle, textSections, inRange, isTextFragment, lineRange, textPathOf, textView,
 } from './resourcesModel.js';
@@ -603,60 +603,6 @@ export function MaterialPreview({ m, purposes, fragment, source = null, full, on
           <Seg items={hasTextTab(m) ? [['pv', '预览'], ['txt', '文本'], ['ref', '被引用']] : [['pv', '预览'], ['ref', '被引用']]} value={tab} onChange={setTab} />
         </div>
         {tab === 'pv' ? pane : tab === 'txt' && hasTextTab(m) ? <TextPane m={m} /> : <RefsPane m={m} onLocate={(a) => { setFocus(a); setTab('pv'); }} />}
-      </div>
-    </div>
-  );
-}
-
-// ---------- 外部反馈逐条查看（待处理「逐条查看」跳过来） ----------
-export function FeedbackPreview({ fb, onSetState, onHandle, busy }) {
-  const { pid } = useProject();
-  const v = feedbackView(fb);
-  return (
-    <div className="card">
-      <div className="card-h">
-        <span style={{ color: v.open ? 'var(--amber2)' : 'var(--ink3)' }}><Icon name={v.icon} /></span>
-        <h3 className="ell">{v.title}</h3>
-        <span className="sp" />
-        <Chip tone={v.state[1]} sm icon={v.state[2]}>{v.state[0]}</Chip>
-      </div>
-      <div className="card-b">
-        <div className="row g4 mb12 wrap">
-          <Chip tone="line">{fb.source?.service || '外部'}</Chip>
-          {fb.release_version ? <Chip tone="line">知识包 {fb.release_version}</Chip> : null}
-          {v.note ? <span className="xs muted">{v.note}</span> : null}
-        </div>
-        <div className="col" style={{ gap: 0 }}>
-          {(fb.items || []).map((x) => (
-            <div key={x.case_id} className="rs-case">
-              <b className="sm">{x.question}</b>
-              <div className="xs muted mt4">期望：{x.expected}　·　实际：{x.actual}</div>
-              {x.loss_reason ? <div className="xs mt4" style={{ color: 'var(--amber)' }}>疑似原因：{x.loss_reason}</div> : null}
-              {(x.suspected || []).length ? (
-                <div className="row g4 mt4 wrap">
-                  {x.suspected.map((t, i) => {
-                    const to = refTarget(t);
-                    return <Chip key={i} tone="line" sm icon="link" className="rs-go" title="去看这一项" onClick={() => to && navigate(pagePath(to.page, pid), to.query)}>{t.name || t.title}</Chip>;
-                  })}
-                </div>
-              ) : null}
-            </div>
-          ))}
-        </div>
-        <div className="row mt12">
-          {fb.state === 'open' ? (
-            <>
-              <Button size="sm" kind="primary" icon="msg" disabled={busy} onClick={onHandle}>在对话里处理</Button>
-              <Button size="sm" disabled={busy} onClick={() => onSetState('handled')}>标为已处理</Button>
-              <Button size="sm" kind="ghost" disabled={busy} onClick={() => onSetState('dismissed')}>忽略</Button>
-            </>
-          ) : (
-            <>
-              {fb.state === 'handled' && fb.handled_version_label ? <Button size="sm" icon="history" onClick={() => navigate(pagePath('versions', pid), { v: fb.handled_version_label })}>看对应版本</Button> : null}
-              <Button size="sm" kind="ghost" disabled={busy} onClick={() => onSetState('open')}>重新打开</Button>
-            </>
-          )}
-        </div>
       </div>
     </div>
   );

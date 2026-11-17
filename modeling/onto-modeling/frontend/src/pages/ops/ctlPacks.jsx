@@ -8,9 +8,8 @@ import {
 } from '../../ui/index.jsx';
 import { ConfirmModal, Missing, ViewChip } from './ctlParts.jsx';
 import {
-  BREAKER, CHANNEL, PACK_KIND, ROLLOUT_PRESETS, coreRows, errorRateView, fmtBytes, fmtDateTime, packActions, rolloutProblem, startReloads, visiblePacks,
+  BREAKER, CHANNEL, PACK_KIND, ROLLOUT_PRESETS, coreRows, errorRateView, fmtBytes, fmtDateTime, packActions, rolloutProblem, startReloads,
 } from './ctlModel.js';
-import { useEvidenceOn } from './parts.jsx';
 
 // 「灰度 ▾」：按钮下方的小浮层（表格外框 overflow:hidden，浮层用 fixed 定位挂到弹层宿主）
 function RolloutButton({ item, act, onApply, busy }) {
@@ -95,9 +94,8 @@ export function PacksSection({
   const rollbackCore = (v) => run('core', () => api.ops.rollbackCore({ version: v }), { ok: '已回滚默认版本' }).then(after('core', 'packs', 'versions', 'repoBackups'));
   const backupRepo = () => run('repo', () => api.ops.backupPackRepo(), { ok: '已开始备份包仓库', icon: 'archive' }).then(after(...startReloads('pack_repo_backup')));
   const deny = perm.opsWrite ? null : perm.hint('ops.write');
-  const evidenceOn = useEvidenceOn();
 
-  const rows = visiblePacks(packs?.items, { evidenceOn }).map((it) => {
+  const rows = (packs?.items || []).map((it) => {
     const a = packActions(it, perm.opsWrite);
     const ch = CHANNEL[it.channel] || { label: it.channel, tone: 'gray' };
     const er = errorRateView(it.error_rate_pct);

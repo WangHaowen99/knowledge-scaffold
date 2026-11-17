@@ -9,9 +9,8 @@ import {
 import { Missing, ViewChip } from './ctlParts.jsx';
 import {
   CHECK_ICON, CHECK_RESULT, SCOPE_LABEL, TASK_STATE, TASK_TYPE, backupScope, drillView, fmtBytes, fmtDateTime, fmtDuration, fmtWhen,
-  nameOf, scheduleText, startReloads, startupSub, taskAction, taskActionToast, taskProgress, visibleTasks,
+  nameOf, scheduleText, startReloads, startupSub, taskAction, taskActionToast, taskProgress,
 } from './ctlModel.js';
-import { useEvidenceOn } from './parts.jsx';
 
 export function StartupCard({ report }) {
   return (
@@ -91,7 +90,6 @@ export function BackupsCard({
 
 export function TasksCard({ tasks, names, perm, reload }) {
   const { api } = useApp();
-  const evidenceOn = useEvidenceOn();
   const [busy, setBusy] = useState(null);
   const act = async (t, a) => {
     setBusy(t.id);
@@ -111,7 +109,7 @@ export function TasksCard({ tasks, names, perm, reload }) {
       <Table
         compact
         cols={['类型', '对象', '发起人', '状态', '进度', '开始', '操作']}
-        rows={visibleTasks(tasks?.items, { evidenceOn }).map((t) => {
+        rows={(tasks?.items || []).map((t) => {
           const p = taskProgress(t);
           const a = taskAction(t, perm.opsWrite);
           return [

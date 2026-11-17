@@ -1,13 +1,13 @@
-// 上传与审核（plugin-upload，PL-13～PL-18）与管理员审核申请（AD-08～AD-10）：页面纯逻辑与 mock
+// 上传与审核（plugin-upload，PL-13～PL-18）：页面纯逻辑与 mock
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
-import { failedChecks, passedChecks, reportMarkdown, seedRequests, seedUploads, summaryOf } from '../src/api/mock/pack-uploads-data.js';
-import { addAdminRequest, finishCheck, register } from '../src/api/mock/routes-pack-uploads.js';
+import { failedChecks, passedChecks, reportMarkdown, seedUploads, summaryOf } from '../src/api/mock/pack-uploads-data.js';
+import { finishCheck, register } from '../src/api/mock/routes-pack-uploads.js';
 import {
-  PACK_MAX_BYTES, approveBody, approveHint, canReject, checkView, contributesText, defaultPublishForm, effectText, eligibleProjects, filterRequests,
+  PACK_MAX_BYTES, canReject, checkView, contributesText, defaultPublishForm, effectText, eligibleProjects,
   fmtClock, installBlock, isPublishable, kindText, orderUploads, packLimit, pickUpload, publishBlock, publishBody, publishToast, reasonProblem,
-  rejectDraft, requestCounts, requestMeta, requestReason, rolloutEstimate, rolloutProblem, segUploads, summaryText, timelineRows,
+  rejectDraft, rolloutEstimate, rolloutProblem, segUploads, summaryText, timelineRows,
   uploadErrorText, uploadMeta, uploadStatus, uploadTitle, validatePackFile,
 } from '../src/pages/plugins/uploadModel.js';
 
@@ -243,7 +243,6 @@ test('mock：只有管理员能调；列表、详情、检查报告', async () =
   const h = harness();
   const modeler = { ...F.USERS.modeler01, roles: ['user'] };
   assert.equal((await h.call('GET', U, null, { user: modeler })).status, 403);
-  assert.equal((await h.call('GET', '/api/v1/admin/requests', null, { user: modeler })).status, 403);
   const list = await h.call('GET', U);
   assert.deepEqual(list.body.items.map((x) => x.state), ['passed', 'failed']);
   assert.equal('checks' in list.body.items[0], false);
@@ -326,56 +325,6 @@ test('mock：退回要写原因，退回后不能再发布', async () => {
   assert.equal(detail.body.timeline.at(-1).text, '退回：带了前端代码');
   assert.equal((await h.call('POST', `${U}/${bad.id}/reject`, { reason: 'x' })).status, 409);
   assert.equal((await h.call('POST', `${U}/${bad.id}/publish`, { channel: 'beta' })).status, 409);
-});
-
-// ---------- 管理员审核申请 ----------
-
-test('审核申请：筛选、计数、理由、说明', () => {
-  const now = new Date(2026, 10, 1, 22, 0).getTime();
-  const items = seedRequests(now);
-  assert.deepEqual(filterRequests(items).map((r) => r.kind), ['pack_install', 'source_registration', 'knowledge_nomination']);
-  assert.deepEqual(filterRequests(items, { kind: 'source_registration' }).map((r) => r.id), ['req-9a47e3']);
-  assert.deepEqual(filterRequests(items, { state: 'done' }).map((r) => r.state), ['approved']);
-  assert.equal(filterRequests(items, { state: 'all' }).length, 4);
-  assert.deepEqual(requestCounts(items), { all: 3, pack_install: 1, source_registration: 1, knowledge_nomination: 1, done: 1 });
-  assert.deepEqual(requestCounts(null), { all: 0, pack_install: 0, source_registration: 0, knowledge_nomination: 0, done: 0 });
-  assert.match(requestReason(items[0]), /平台上还没有装这个连接器/);
-  assert.equal(requestReason({ payload: {} }), '');
-  assert.equal(requestMeta(items[1], { nameOf: (x) => (x === 'liming' ? '李明' : x), now }), '李明 · 社区诊所排队分诊 · 20:00');
-  // 数据源申请在弹窗里直接写凭据、知识提名通过只记结论：都不另加说明
-  assert.equal(approveHint(items[1]), '');
-  assert.equal(approveHint(items[2]), '');
-  assert.match(approveHint(items[0]), /安装到平台/);
-  // 数据源申请通过要带提供方的密钥字段；别的申请只带备注
-  const sf = { name: 'password', label: '密码', secret: true };
-  assert.deepEqual(approveBody(items[1], { sf }), { body: null, problem: '请填写密码' });
-  assert.deepEqual(approveBody(items[1], { sf, secret: 's3cret', note: ' 已开只读 ' }),
-    { body: { note: '已开只读', secret: { password: 's3cret' } }, problem: null });
-  assert.deepEqual(approveBody(items[2], { note: '' }), { body: {}, problem: null });
-  // 申请里只有保留网段的地址
-  assert.match(items[1].payload.connection.host, /^198\.51\.100\./);
-});
-
-test('mock：通过 / 退回申请；处理过的再处理 409；别的分组能推申请进来', async () => {
-  const h = harness();
-  const list = await h.call('GET', '/api/v1/admin/requests?state=pending');
-  assert.equal(list.body.items.length, 3);
-  const byKind = await h.call('GET', '/api/v1/admin/requests?kind=knowledge_nomination');
-  assert.equal(byKind.body.items.length, 1);
-  const [first, second] = list.body.items;
-  const ok = await h.call('POST', `/api/v1/admin/requests/${first.id}/approve`, { note: '已安装' });
-  assert.deepEqual([ok.body.state, ok.body.reviewed_by, ok.body.note], ['approved', 'zhangsan', '已安装']);
-  assert.deepEqual((await h.call('POST', `/api/v1/admin/requests/${first.id}/reject`, { reason: 'x' })).body.code, 'request_state');
-  assert.equal((await h.call('POST', `/api/v1/admin/requests/${second.id}/reject`, {})).status, 400);
-  const rej = await h.call('POST', `/api/v1/admin/requests/${second.id}/reject`, { reason: '请先用测试库' });
-  assert.deepEqual([rej.body.state, rej.body.note], ['rejected', '请先用测试库']);
-  assert.equal((await h.call('POST', '/api/v1/admin/requests/req-none/approve', {})).body.code, 'request_not_found');
-  const source = (await h.call('GET', '/api/v1/admin/requests?kind=source_registration&state=pending')).body.items;
-  assert.equal(source.length, 0);
-  const pushed = addAdminRequest(h.ctx, { kind: 'pack_install', requested_by: 'wanggong', summary: 'HTTP 接口提供方 0.3.0' });
-  assert.equal(pushed.state, 'pending');
-  assert.equal(h.events.at(-1).data.kind, 'request_pending');
-  assert.equal((await h.call('GET', '/api/v1/admin/requests?state=pending')).body.items.length, 2);
 });
 
 // ---------- 普通用户装自己的包（PL-22～PL-26） ----------

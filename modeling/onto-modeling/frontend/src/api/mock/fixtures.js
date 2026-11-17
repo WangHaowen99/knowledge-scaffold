@@ -92,7 +92,7 @@ export function projectCards() {
   return [
     card({
       id: MAIN_PID, name: '门店补货单编制', package_name: 'retail-restock', goal: GOAL, build_mode: 'L2', version_label: 'v0.12',
-      industry_label: '零售连锁', last_activity_at: ago(5 * MIN), inbox_count: 18, status: ['active'], landing_page: 'wb-l2',
+      industry_label: '零售连锁', last_activity_at: ago(5 * MIN), inbox_count: 15, status: ['active'], landing_page: 'wb-l2',
       slices: null,
     }),
     card({
@@ -140,7 +140,6 @@ export function projectCards() {
 export function notifications() {
   return [
     { id: 'n1', kind: 'autobuild_finished', title: '自主构建完成，需复核 4 项', body: '外卖骑手排班求解 · 1 小时 52 分 · 5/6 段完成，挂起 2 个问题', project_id: 'rider-shifts-52c9d0f3', project_name: '外卖骑手排班求解', action: { label: '去复核', page: 'inbox' }, created_at: ago(HOUR), read: false },
-    { id: 'n2', kind: 'evidence_conflict', title: '需要你处理：证据冲突', body: '门店补货单编制 · 牛奶陈列上限：文档写 150 箱，数据库快照是 140', project_id: MAIN_PID, project_name: '门店补货单编制', action: { label: '去处理', page: 'inbox' }, created_at: ago(26 * MIN), read: false },
     { id: 'n3', kind: 'autobuild_progress', title: '自主构建中', body: '共享单车故障诊断 · 第 3/5 段 · 预计 25 分钟后完成', project_id: 'bike-fleet-7b20e4a1', project_name: '共享单车故障诊断', action: { label: '查看', page: 'l4-run' }, created_at: ago(10 * MIN), read: true },
     { id: 'n4', kind: 'publish_done', title: '发布完成', body: '图书借阅管理 v1.3 已发布，包清单已交给评测服务', project_id: 'library-desk-1e8f6a07', project_name: '图书借阅管理', action: { label: '查看', page: 'publish' }, created_at: yesterdayAt(18, 20), read: true },
   ];
@@ -167,21 +166,9 @@ export function modelSettings() {
   };
 }
 
-export function evidenceSources() {
-  return {
-    items: [
-      { id: 'erp-prod', display_name: 'ERP 生产库', provider: 'db-mysql', environment: 'production' },
-      { id: 'crm-test', display_name: 'CRM 测试库', provider: 'db-postgres', environment: 'test' },
-    ],
-    total: 2,
-    authorized_count: 0,
-  };
-}
-
 const ui = {
   kernel: { kind: 'kernel', note: '内核：工作台、Studio、资料、发布' },
   page: (id, title) => ({ kind: 'page', pages: [{ id, title }], note: `启用后左栏出现「${title}」` }),
-  subpages: { kind: 'subpages', subpages: [{ parent: 'resources', id: 'sources', title: '数据源' }, { parent: 'resources', id: 'snapshots', title: '采集与快照' }, { parent: 'resources', id: 'schema', title: '证据浏览器' }], note: '资料页多出数据源、快照、证据 3 个子页' },
   none: (note) => ({ kind: 'none', note }),
 };
 const pack = (o) => ({
@@ -189,7 +176,7 @@ const pack = (o) => ({
   ui: null, batch: 'first', badges: [], meta: null, project_status: null, locked_version: null, usage_note: null, default_on: false, ...o,
 });
 
-export function packs({ offline = true } = {}) {
+export function packs() {
   return [
     pack({ name: 'industry-retail', label: '零售连锁', category: 'industry', latest: '1.0.3', description: '术语 312 · 规则 48 · 参考对象 36 · 示例 2 · 带「合规检查」关卡', default_on: true }),
     pack({ name: 'industry-property', label: '物业服务', category: 'industry', latest: '1.2.0', description: '术语 268 · 规则 31 · 参考对象 22' }),
@@ -199,14 +186,8 @@ export function packs({ offline = true } = {}) {
     pack({ name: 'sys-pos-generic', label: 'POS 收银', category: 'system', latest: '0.2.1', description: '常用表结构' }),
     pack({ name: 'core', label: '基础建模', category: 'capability', latest: '1.4.2', description: '资料分析、对象 / 操作 / 规则抽取、校验、增量更新、版本', ui: ui.kernel, project_status: 'required', default_on: true }),
     pack({ name: 'trace', label: '场景模拟', category: 'capability', latest: '0.9.1', description: '校验之后多出「场景模拟」一步：生成验收场景，逐条推演操作', ui: ui.page('scenarios', '场景模拟'), badges: ['recommended'], default_on: true }),
-    pack({ name: 'knowledge', label: '知识沉淀', category: 'capability', latest: '0.6.0', description: '把对话里的纠错、惯例沉淀成条目，可提名进行业包；已有知识不装也会加载', ui: ui.page('knowledge', '知识沉淀'), default_on: true }),
     pack({ name: 'codegen', label: '代码生成与求解', category: 'capability', latest: '0.9.2', description: '脚本生成、沙箱验证、求解契约', ui: ui.page('scripts', '代码生成'), default_on: true }),
-    pack({ name: 'rev', label: '系统逆向建模', category: 'capability', latest: '0.2.0', description: '连接数据源、采集快照、三方对账', ui: ui.subpages, default_on: false }),
     pack({ name: 'diagram', label: '图示', category: 'capability', latest: '0.5.0', description: '流程图生成与校验；不启用就没有流程图卡和流程图条目', ui: ui.none('无独立页面 · 对话里出现流程图卡，Studio 多出「流程图」类型'), default_on: true }),
-    pack({ name: 'websearch', label: '联网调研', category: 'capability', latest: '0.2.0', description: '离线部署已禁用', ui: ui.none('无独立页面，在对话里生效'), batch: 'second', project_status: offline ? 'offline' : null }),
-    pack({ name: 'migrate', label: '迁移复用', category: 'capability', latest: '0.2.0', description: '复用旧项目里的对象', ui: ui.none('无独立页面，在对话里生效'), batch: 'second' }),
-    pack({ name: 'evo', label: '反馈演进', category: 'capability', latest: '0.3.0', description: '按外部反馈修订本体', ui: ui.none('无独立页面，在对话里生效'), batch: 'second' }),
-    pack({ name: 'incremental', label: '增量构建', category: 'capability', latest: '0.1.0', description: '每轮圈定范围，范围外只读，改完核对传播', ui: ui.none('无独立页面，在对话里生效'), batch: 'second' }),
   ];
 }
 
@@ -216,16 +197,15 @@ export function projectMeta(cardItem) {
   return meta;
 }
 
-export function extensions(enabled = ['trace', 'knowledge', 'codegen', 'rev', 'diagram']) {
+export function extensions(enabled = ['trace', 'codegen', 'diagram']) {
   const nav = [
-    { id: 'wb-l2', title: '工作台', icon: 'layout', kind: 'kernel', badge: { source: 'inbox', count: 18 }, order: 0, overflow: false },
+    { id: 'wb-l2', title: '工作台', icon: 'layout', kind: 'kernel', badge: { source: 'inbox', count: 15 }, order: 0, overflow: false },
     { id: 'studio', title: 'Studio', icon: 'graph', kind: 'kernel', order: 1, overflow: false },
     { id: 'resources', title: '资料', icon: 'folder', kind: 'kernel', order: 2, overflow: false },
     { id: 'publish', title: '发布', icon: 'upload', kind: 'kernel', order: 3, overflow: false },
   ];
   const plug = [
     ['trace', 'scenarios', '场景模拟', 'flask'],
-    ['knowledge', 'knowledge', '知识沉淀', 'book'],
     ['codegen', 'scripts', '代码生成', 'code'],
   ].filter(([p]) => enabled.includes(p));
   plug.forEach(([p, id, title, icon], i) => nav.push({ id, title, icon, kind: 'plugin', pack: p, order: 10 + i, overflow: false }));
@@ -234,20 +214,15 @@ export function extensions(enabled = ['trace', 'knowledge', 'codegen', 'rev', 'd
     pending_hash: null,
     page_api: '1.0',
     nav,
-    subpages: enabled.includes('rev') ? [
-      { parent: 'resources', id: 'sources', title: '数据源', pack: 'rev' },
-      { parent: 'resources', id: 'snapshots', title: '采集与快照', pack: 'rev' },
-      { parent: 'resources', id: 'schema', title: '证据浏览器', pack: 'rev' },
-    ] : [],
+    subpages: [],
     pages: plug.map(([p, id]) => ({ id, pack: p, page_api: '>=1.0 <2.0', data: { artifacts: [], reports: [], nodes: [] }, actions: [], pending: false })),
     // 包声明的界面入口（B5c）：快捷项放输入框「全部命令」旁，附加操作放对应插件页的操作区（R22）
     entries: [
       ...(enabled.includes('trace') ? [{ id: 'trace.walk', kind: 'quick_action', label: '交互模拟', where: 'composer', command: '/ontology-trace-interactive', pack: 'trace' }] : []),
-      ...(enabled.includes('knowledge') ? [{ id: 'knowledge.export', kind: 'extra_action', label: '导出知识清单', where: 'knowledge', command: '/ontology-knowledge-export', pack: 'knowledge' }] : []),
     ],
     artifact_types: enabled.includes('diagram') ? ['diagram.flowchart'] : [],
     views: [],
-    // 包选用的内核视图（B5c）：ER 视图放进 Studio 的视图切换（R23）；依赖证据源的两种本期不下发
+    // 包选用的内核视图（B5c）：ER 视图放进 Studio 的视图切换（R23）
     view_choices: enabled.includes('diagram') ? [{ id: 'er_view', pack: 'diagram' }] : [],
     gates: [],
     config: [],
@@ -255,18 +230,18 @@ export function extensions(enabled = ['trace', 'knowledge', 'codegen', 'rev', 'd
   };
 }
 
-export const PACK_LABEL = { trace: '场景模拟', knowledge: '知识沉淀', solver: '代码生成与求解', rev: '系统逆向建模', diagram: '图示' };
+export const PACK_LABEL = { trace: '场景模拟', solver: '代码生成与求解', diagram: '图示' };
 
 export function inboxCounts() {
   return {
     items: [],
     next_cursor: null,
     counts: {
-      total: 18,
-      by_filter: { all: 18, autobuild_review: 8, decision: 2, evidence_conflict: 2, change_list: 1, stale: 3, resumable: 1, feedback: 1 },
+      total: 15,
+      by_filter: { all: 15, autobuild_review: 8, decision: 2, change_list: 1, stale: 3, resumable: 1 },
       by_pack: { trace: 3 },
     },
-    today: { handled: 0, total: 18, eta_minutes: 40, remaining_by_filter: {} },
+    today: { handled: 0, total: 15, eta_minutes: 40, remaining_by_filter: {} },
     autobuild_summary: null,
   };
 }
@@ -280,7 +255,6 @@ const node = (o) => ({
 export function flow({ trace = true } = {}) {
   const nodes = [
     node({ id: 'core.research', title: '资料分析', state: 'confirmed', display_state: 'confirmed' }),
-    node({ id: 'rev.evidence', title: '系统取证', placement: 'step', state: 'confirmed', display_state: 'confirmed', version: 'rev@0.2.0', note: '授权了数据源才有这一步', plugin: { name: 'rev', label: '系统逆向建模' } }),
     node({ id: 'core.model', title: '建模', state: 'running', display_state: 'running', progress: null, per_slice: true }),
     node({ id: 'core.validate', title: '校验' }),
     // 场景模拟随 core 拆出、串在校验之后（spine，contract-changes B4d 合并第 4 条）
@@ -294,7 +268,6 @@ export function flow({ trace = true } = {}) {
     node({ id: 'codegen.codegen', title: '代码生成', placement: 'branch', section: 'optional', state: 'ready', display_state: 'ready', version: 'codegen@0.9.2', actions: [{ kind: 'start', label: '开始' }, { kind: 'skip', label: '跳过' }], plugin: { name: 'codegen', label: '代码生成与求解' } }),
     node({ id: 'codegen.solver', title: '求解适配', placement: 'branch', section: 'optional', state: 'skipped', display_state: 'skipped', version: 'codegen@0.9.2', actions: [{ kind: 'restore', label: '恢复' }], plugin: { name: 'codegen', label: '代码生成与求解' } }),
     node({ id: 'core.update', title: '增量更新', placement: 'on_demand', section: 'on_demand', state: 'ready', display_state: 'ready', note: '资料区有 1 个新文件：09 修订通知', actions: [{ kind: 'start', label: '开始', target: 'incremental' }] }),
-    node({ id: 'evo.evolution', title: '反馈演进', placement: 'on_demand', section: 'on_demand', note: '收到外部反馈后出现', version: 'evo@0.3.0', plugin: { name: 'evo', label: '反馈演进' } }),
   ];
   const st = (a) => {
     const keys = ['object', 'operation', 'rule', 'check', 'scenario'];
@@ -306,7 +279,7 @@ export function flow({ trace = true } = {}) {
     flow_hash: 'b41e09c2a7',
     nodes,
     edges: [
-      { from: 'core.research', to: 'rev.evidence' }, { from: 'rev.evidence', to: 'core.model' }, { from: 'core.model', to: 'core.validate' },
+      { from: 'core.research', to: 'core.model' }, { from: 'core.model', to: 'core.validate' },
       ...(trace ? [{ from: 'core.validate', to: 'trace.trace' }, { from: 'trace.trace', to: 'retail.compliance' }] : [{ from: 'core.validate', to: 'retail.compliance' }]), { from: 'retail.compliance', to: 'core.publish' },
     ],
     slice_stages: [
@@ -326,9 +299,9 @@ export function flow({ trace = true } = {}) {
     commands: {
       research: 'core.research', 'extract-object': 'core.model', 'extract-operation': 'core.model', 'extract-rule-metric': 'core.metric',
       validate: 'core.validate', 'validate-diagrams': 'diagram.flowchart', flowchart: 'diagram.flowchart', update: 'core.update',
-      codegen: 'codegen.codegen', 'codegen-scan': 'codegen.codegen', 'solver-evaluator': 'codegen.solver', evolution: 'evo.evolution', ...(trace ? { trace: 'trace.trace' } : {}),
+      codegen: 'codegen.codegen', 'codegen-scan': 'codegen.codegen', 'solver-evaluator': 'codegen.solver', ...(trace ? { trace: 'trace.trace' } : {}),
     },
-    progress: { done: 2, total: 6 },
+    progress: { done: 1, total: 5 },
     stage: '逻辑已提取',
   };
 }
@@ -343,7 +316,7 @@ export function flowP1() {
     optional: section === 'optional', panel: false, counts_in_progress: true, ...extra,
   });
   const nodes = [
-    n('core.research', '资料分析', 'spine', 'required', 'confirmed', [['联网资料分析', '/ontology-research '], ['资料分析', '/ontology-research 仅基于本地文档 '], ['追加分析', '/ontology-research 追加']]),
+    n('core.research', '资料分析', 'spine', 'required', 'confirmed', [['资料分析', '/ontology-research 仅基于本地文档 '], ['追加分析', '/ontology-research 追加']]),
     n('core.flowchart', '流程图', 'branch', 'optional', 'confirmed', [['创建/打磨流程图', '/ontology-flowchart'], ['全量刷新', '/ontology-flowchart 全量刷新'], ['校验流程图', '/ontology-validate-diagrams']]),
     n('core.object', '对象提取', 'spine', 'required', 'confirmed', [['提取对象', '/ontology-extract-object']]),
     n('core.operation', '操作提取', 'spine', 'required', 'confirmed', [['提取操作', '/ontology-extract-operation']]),
@@ -391,7 +364,7 @@ export function conversations() {
 const A = {
   ea: 'file:resource/others/03-样例补货单-A门店.docx#p:5',
   e92: 'file:resource/others/02-门店补货规则.docx#p:9.2',
-  edb: 'db:erp-prod/erp.replenish_std.max_qty',
+  ecat: 'file:resource/schema/06-商品品类表.xlsx#sheet:品类!E2',
   e114: 'file:resource/others/02-门店补货规则.docx#p:11.4',
   eb: 'file:resource/others/03-样例补货单-B.docx#p:4',
 };
@@ -415,14 +388,14 @@ function res(anchor, source_label, location_label, marked, confidence = null) {
   const material = file ? { name, type: /\.docx?$/.test(source_label) ? 'Word' : /\.xlsx?$/.test(source_label) ? 'Excel' : '文件', path: anchor.slice(5).split('#')[0] } : null;
   return {
     anchor, scheme, resolved: true, source_label: name, location_label, material, text: text.replace(/<br>/g, '\n'), highlights, confidence,
-    snapshot_id: scheme === 'db' ? '20261030-221500-9c1d' : null, page: scheme === 'db' ? 'schema' : 'resources',
+    snapshot_id: null, page: 'resources',
   };
 }
 
 export const ANCHOR_RESOLUTIONS = {
   [A.ea]: res(A.ea, '03-样例补货单-A门店.docx', '第 5 节 超量说明', '牛奶：品类标准上限 120 箱，<mark>门店申请 96 箱（严于标准，按门店执行）</mark>。'),
   [A.e92]: res(A.e92, '02-门店补货规则.docx', '§9.2 超量处理', '门店申请与标准不一致时，应在补货单中逐条列出超量项，注明标准值与申请值，<mark>门店申请严于标准的按门店执行</mark>，超出标准的须经区域审批。'),
-  [A.edb]: res(A.edb, '业务系统 ERP', '补货标准表 · 标准上限', '字段「标准上限」，关联到商品品类表。<br>样本（合成）：乳制品 / 牛奶 / <mark>120.00</mark>', 'declared'),
+  [A.ecat]: res(A.ecat, '06-商品品类表.xlsx', '品类 E2', '牛奶一行「标准上限（箱）」：<mark>120</mark>'),
   [A.e114]: res(A.e114, '02-门店补货规则.docx', '§11.4 临时加量', '对临时加量的商品，<mark>店长应生成提示并提交区域审批</mark>，审批通过前不得下单。'),
   [A.eb]: res(A.eb, '03-样例补货单-B.docx', '第 4 节', '牛奶按<mark>区域统一配额 ≤100 箱</mark> 执行。'),
 };
@@ -468,7 +441,7 @@ export function stepOutputCard(confirmed = false) {
       confirmed
         ? { n: 2, text_md: '按 [[商品品类]] 的「适用标准」逐类取上限，同一商品在多类出现时取最严值（规则 R-09）', anchors: [], awaiting_question_id: null }
         : { n: 2, text_md: '按 [[商品品类]] 的适用标准取标准上限', anchors: [], awaiting_question_id: QUESTION_ID },
-      { n: 3, text_md: '逐项比较：严于标准记为「按门店执行」，超出标准记为「需审批」[^2][^3]', anchors: [{ n: 2, anchor: A.e92 }, { n: 3, anchor: A.edb }], awaiting_question_id: null },
+      { n: 3, text_md: '逐项比较：严于标准记为「按门店执行」，超出标准记为「需审批」[^2][^3]', anchors: [{ n: 2, anchor: A.e92 }, { n: 3, anchor: A.ecat }], awaiting_question_id: null },
       { n: 4, text_md: '对「需审批」的项生成 [[审批提示]]，挂到 [[补货台账]][^4]', anchors: [{ n: 4, anchor: A.e114 }], awaiting_question_id: null },
     ],
     outputs: [REFS.overage, REFS.approval],
@@ -476,7 +449,7 @@ export function stepOutputCard(confirmed = false) {
     sources: [
       { n: 1, anchor: A.ea, label: '样例补货单 A §5', scheme: 'file' },
       { n: 2, anchor: A.e92, label: '补货规则 §9.2', scheme: 'file' },
-      { n: 3, anchor: A.edb, label: 'ERP 补货标准表', scheme: 'db' },
+      { n: 3, anchor: A.ecat, label: '商品品类表 品类 E2', scheme: 'file' },
       { n: 4, anchor: A.e114, label: '补货规则 §11.4', scheme: 'file' },
     ],
     entry_links: [REFS.order, REFS.request, REFS.category, REFS.safety, REFS.display, REFS.approval, REFS.ledger, REFS.overage],
@@ -710,7 +683,6 @@ export function importInspection(kind = 'published', name = '门店补货单编�
     suggested_name: name,
     name_check: { available: true, normalized: name, package_name: 'retail-restock', conflict: null, reason: null },
     after_import: { capabilities: [{ name: 'core', label: '基础建模', version: '1.4.2' }, { name: 'industry-retail', label: '零售连锁行业包', version: '1.0.3' }], start_node: 'core.validate', start_title: '校验', mark_needs_review: true },
-    evidence_sources: [{ id: 'erp-prod', display_name: 'ERP 生产库', needs_reauth: true }],
   };
   if (kind === 'conflict') {
     return {

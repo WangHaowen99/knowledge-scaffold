@@ -1,12 +1,10 @@
-// 启用、更新、平台安装的流程与弹窗（插件中心、插件详情共用）：
+// 启用、更新的流程与弹窗（插件中心、插件详情共用）：
 // 启用：PL-03 兼容检查 → 启用弹窗（检查、会带来什么、界面、生效时机）→ PL-06；
-// 更新：PL-03 → 不通过弹「暂时不能更新」；纯数据包弹「更新 x → y」；其余直接 PL-07；
-// 提供方：管理员 PL-19 安装到平台，其他人 PL-04 申请。
+// 更新：PL-03 → 不通过弹「暂时不能更新」；纯数据包弹「更新 x → y」；其余直接 PL-07。
 import { useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
-import { can } from '../../state/roles.js';
 import {
   Button, Chip, Icon, Modal, Note,
 } from '../../ui/index.jsx';
@@ -131,14 +129,13 @@ function BlockedDialog({ dlg, onClose }) {
 }
 
 /**
- * 启用、更新、平台安装。onChanged 在切换成功后调（页面重取 PL-01 / PL-02）。
- * 返回 { act(action, pack, opts), busy, requested, dialogs }；action 为 enable | update | install。
+ * 启用、更新。onChanged 在切换成功后调（页面重取 PL-01 / PL-02）。
+ * 返回 { act(action, pack, opts), busy, dialogs }；action 为 enable | update。
  */
 export function usePackActions({ projectId, projectName, onChanged }) {
-  const { api, user } = useApp();
+  const { api } = useApp();
   const [dlg, setDlg] = useState(null);
   const [busy, setBusy] = useState(null);
-  const [requested, setRequested] = useState(() => new Set());
   const close = () => setDlg(null);
 
   const compatOf = (p, version) => api.packCompatibility(p.name, version, { project_id: projectId });
@@ -201,25 +198,9 @@ export function usePackActions({ projectId, projectName, onChanged }) {
     else await upgrade(p, to, { effective });
   }
 
-  async function install(p) {
-    setBusy(p.name);
-    try {
-      if (can(user, 'admin')) {
-        await api.installPack(p.name, { version: p.latest || p.version });
-        toast(`已开始安装「${p.label}」到平台，装好后所有项目都能登记这类数据源`, 'download');
-        onChanged?.();
-      } else {
-        await api.requestPackInstall(p.name, { version: p.latest || p.version });
-        setRequested((s) => new Set(s).add(p.name));
-        toast('需要管理员权限，已发送安装申请', 'check');
-      }
-    } catch (e) { toast(errorText(e), 'alert'); } finally { setBusy(null); }
-  }
-
   const act = (action, p, opts) => {
     if (action === 'enable') return enable(p);
     if (action === 'update') return update(p, opts);
-    if (action === 'install') return install(p);
     return null;
   };
 
@@ -227,5 +208,5 @@ export function usePackActions({ projectId, projectName, onChanged }) {
   if (dlg?.kind === 'enable') dialogs = <EnableDialog dlg={dlg} projectName={projectName} busy={!!busy} onOk={confirmEnable} onClose={close} />;
   else if (dlg?.kind === 'confirm') dialogs = <ConfirmUpdateDialog dlg={dlg} busy={!!busy} onOk={() => upgrade(dlg.pack, dlg.to, { viaDialog: true })} onClose={close} />;
   else if (dlg?.kind === 'blocked') dialogs = <BlockedDialog dlg={dlg} onClose={close} />;
-  return { act, busy, requested, dialogs };
+  return { act, busy, dialogs };
 }

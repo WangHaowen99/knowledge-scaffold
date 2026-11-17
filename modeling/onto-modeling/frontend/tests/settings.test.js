@@ -4,12 +4,12 @@ import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
 import { register as registerAutobuild } from '../src/api/mock/routes-autobuild.js';
 import { actionsOf, extensionState, register as registerSettings } from '../src/api/mock/routes-settings.js';
-import { mcpServers, projectPacks, remainingText } from '../src/api/mock/settings-data.js';
+import { projectPacks, remainingText } from '../src/api/mock/settings-data.js';
 import {
-  activeSection, advancedSummary, basicPatch, createdText, defaultConfigTab, engineCards, finalizePolicy,
-  isRecommended, lastRunText, modelDisplayName, modelSourceText, moveItem, nameProblem, packToolsText, parseScope,
-  parseWindow, pendingSummary, policyBody, policyDirty, policyForm, rowActions, scopeLabel, sectionTarget, startBlocker,
-  statusChip, switchToast, thresholdAt, thresholdPos, tokenBody, tokenProblems, toolList, toolsText, uiCell, visibleMcp, windowText,
+  activeSection, advancedSummary, basicPatch, createdText, defaultConfigTab, engineCards,
+  isRecommended, lastRunText, modelDisplayName, modelSourceText, moveItem, nameProblem, packToolsText,
+  pendingSummary, policyBody, policyDirty, policyForm, rowActions, scopeLabel, sectionTarget, startBlocker,
+  statusChip, switchToast, thresholdAt, thresholdPos, tokenBody, tokenProblems, toolList, toolsText, uiCell,
 } from '../src/pages/settings/settingsModel.js';
 
 const P = `/api/v1/projects/${F.MAIN_PID}`;
@@ -58,29 +58,16 @@ test('引擎卡：界面只显示标签；内测引擎不再挂「内测」小�
   assert.equal(modelDisplayName(undefined), '使用我的模型配置');
 });
 
-test('策略表单：只读字段与老策略里的预算不提交；生产库的时间窗口、采集范围文字并进表单', () => {
-  const policy = { scope: { mode: 'all_pending', slice_ids: [] }, budget: { max_duration_min: 120, max_tokens: 6e6, max_cost: { amount: 150, currency: 'CNY' } }, production_collection: [{ source_id: 'erp-prod', allowed: false, window: null, scope: [] }], advanced: { confidence_threshold: 0.8 }, boundary_text: 'x', revision: 'p3', platform_limits: {} };
+test('策略表单：只读字段、老策略里的预算与生产库授权都不提交', () => {
+  const policy = { scope: { mode: 'all_pending', slice_ids: [] }, budget: { max_duration_min: 120, max_tokens: 6e6, max_cost: { amount: 150, currency: 'CNY' } }, production_collection: [], advanced: { confidence_threshold: 0.8 }, boundary_text: 'x', revision: 'p3', platform_limits: {} };
   const form = policyForm(policy);
-  assert.deepEqual(Object.keys(form), ['scope', 'production_collection', 'advanced']);
+  assert.deepEqual(Object.keys(form), ['scope', 'advanced']);
   assert.equal(policyDirty(policy, form), false);
   form.advanced.confidence_threshold = 0.9;
   assert.equal(policyDirty(policy, form), true);
   assert.equal(policy.advanced.confidence_threshold, 0.8, '深拷贝，不改原策略');
   assert.equal(policyBody(form, 'p3').base_revision, 'p3');
-
-  const on = { ...form, production_collection: [{ ...form.production_collection[0], allowed: true }] };
-  const ok = finalizePolicy(on, { 'erp-prod': { window: '22:00 – 06:00', scope: '补货标准表、商品品类表' } });
-  assert.deepEqual(ok.problems, {});
-  assert.deepEqual(ok.form.production_collection[0].window, { start: '22:00', end: '06:00' });
-  assert.deepEqual(ok.form.production_collection[0].scope, ['补货标准表', '商品品类表']);
-  const bad = finalizePolicy(on, { 'erp-prod': { window: '晚上' } });
-  assert.match(bad.problems['window:erp-prod'], /22:00 – 06:00/);
-  // F8 起不分段：老策略里「只跑选中的分段」不再在前端拦，服务端按全部处理
-  assert.deepEqual(finalizePolicy({ ...form, scope: { mode: 'selected', slice_ids: [] } }).problems, {});
-  assert.deepEqual(parseWindow('8:00-9:00'), { error: '写成「22:00 – 06:00」这样的起止时间' });
-  assert.deepEqual(parseWindow('22:00-06:00'), { value: { start: '22:00', end: '06:00' } });
-  assert.equal(windowText({ start: '22:00', end: '06:00' }), '22:00 – 06:00');
-  assert.deepEqual(parseScope('补货标准表，商品品类表 ;门店清单'), ['补货标准表', '商品品类表', '门店清单']);
+  assert.deepEqual(Object.keys(policyBody(form, 'p3')), ['scope', 'advanced', 'base_revision']);
 });
 
 test('高级设置：摘要、是否推荐值、阈值滑块、资料优先级排序', () => {
@@ -112,42 +99,40 @@ test('能力表：界面列、状态 chip、行内按钮与设计稿一致', () 
   const by = (n) => items.find((p) => p.name === n);
   assert.deepEqual(uiCell(by('core').ui), { kind: 'kernel', text: '内核：工作台 · Studio · 资料 · 发布' });
   assert.deepEqual(uiCell(by('trace').ui), { kind: 'page', text: '左栏页面：场景模拟' });
-  assert.deepEqual(uiCell(by('rev').ui), { kind: 'subpages', text: '资料页 3 个子页', pop: '数据源、采集与快照、证据浏览器' });
+  assert.deepEqual(uiCell({ kind: 'subpages', subpages: [{ parent: 'resources', title: '台账' }, { parent: 'resources', title: '周报' }] }), { kind: 'subpages', text: '资料页 2 个子页', pop: '台账、周报' });
   assert.deepEqual(uiCell(by('industry-retail').ui), { kind: 'none', text: '—' });
   assert.deepEqual(statusChip(by('core')), { tone: 'blue', icon: 'lock', text: '必装' });
   assert.equal(statusChip(by('trace')).text, '0.10.0 下一条消息生效');
   assert.equal(statusChip(by('trace')).pop, '下一条消息前切换');
-  assert.equal(statusChip(by('migrate')).text, '已停用');
-  const labels = (n) => { const r = rowActions(by(n)); return [r.note || null, r.buttons.map((b) => b.label), r.more.map((b) => b.label)]; };
+  const disabled = { ...by('diagram'), status: 'disabled' };
+  disabled.actions = actionsOf(disabled);
+  assert.equal(statusChip(disabled).text, '已停用');
+  const labelsOf = (p) => { const r = rowActions(p); return [r.note || null, r.buttons.map((b) => b.label), r.more.map((b) => b.label)]; };
+  const labels = (n) => labelsOf(by(n));
   assert.deepEqual(labels('core'), [null, [], []]);
   assert.deepEqual(labels('trace'), [null, ['撤销切换'], []]);
-  assert.deepEqual(labels('knowledge'), [null, ['停用'], []]);
+  assert.deepEqual(labels('industry-retail'), [null, ['停用'], []]);
   assert.deepEqual(labels('codegen'), [null, ['回滚', '停用'], []]);
   assert.deepEqual(labels('diagram'), [null, ['升级'], ['停用']]);
-  assert.deepEqual(labels('migrate'), [null, ['启用'], []]);
+  assert.deepEqual(labelsOf(disabled), [null, ['启用'], []]);
   assert.equal(pendingSummary([{ pack: 'trace', from: '0.9.1', to: '0.10.0', kind: 'upgrade' }], items), '1 个待生效的切换：场景模拟 0.9.1 → 0.10.0');
   assert.equal(pendingSummary([], items), '');
   assert.equal(switchToast('upgrade', by('diagram'), { effective: 'next_message', pack: { pending: { to: '0.6.0' } } }), '已升级到图示 0.6.0，下一条消息生效');
-  assert.equal(switchToast('disable', by('knowledge'), { effective: 'next_message' }), '已停用「知识沉淀」，左栏的「知识沉淀」已移除，下一条消息生效');
+  assert.equal(switchToast('disable', by('codegen'), { effective: 'next_message' }), '已停用「代码生成与求解」，左栏的「代码生成」已移除，下一条消息生效');
   assert.equal(switchToast('disable', by('industry-retail'), { effective: 'immediate' }), '已停用「零售连锁」');
   assert.equal(switchToast('cancel_pending', by('trace')), '已撤销，保持 0.9.1');
 });
 
 test('MCP：工具的写法、对外工具排序、包贡献工具、权限范围、新建 Token 的校验', () => {
-  assert.equal(toolsText(['evidence.search', 'evidence.show', 'evidence.where-used', 'evidence.lineage', 'evidence.diff']), 'evidence.search / show / where-used / lineage / diff');
+  assert.equal(toolsText(['trace.list', 'trace.get', 'trace.run']), 'trace.list / get / run');
   assert.equal(toolsText(['flow.get']), 'flow.get');
   assert.equal(toolsText([]), '—');
   assert.equal(toolsText(['a_x', 'b_y', 'c_z']), 'a_x 等 3 个');
   const tools = toolList([{ tools: ['rule_get', 'object_list', 'object_delete'] }, { tools: ['object_change_apply', 'object_get', 'object_change_validate'] }]);
   assert.deepEqual(tools, ['object_list', 'object_get', 'object_change_validate', 'object_change_apply', 'object_delete', 'rule_get']);
-  assert.equal(packToolsText([{ name: 'flow.get' }, ...['search', 'show', 'where-used', 'lineage', 'diff', 'er'].map((t) => ({ name: `evidence.${t}` }))]), 'flow.get、evidence.*（6）');
+  assert.equal(packToolsText([{ name: 'flow.get' }, ...['list', 'get', 'run'].map((t) => ({ name: `trace.${t}` }))]), 'flow.get、trace.*（3）');
   assert.deepEqual(['ontology.read', 'ontology.change.validate', 'ontology.change.apply'].map(scopeLabel), ['ontology.read', 'change.validate', 'change.apply']);
   assert.deepEqual(tokenProblems({ name: ' ', scopes: [] }), { name: '请填写名称', scopes: '至少选一个' });
-  // 证据源本期不开放：EV-01 读不到时不列内置的 evidence 服务器与 evidence.* 工具；读得到时照常
-  assert.deepEqual(visibleMcp(mcpServers(), false).map((s) => s.name), ['flow', 'replenish-std-lookup', 'mermaid-render']);
-  assert.equal(visibleMcp(mcpServers(), true).length, 4);
-  assert.deepEqual(visibleMcp([{ name: 'flow.get' }, { name: 'evidence.search' }], false).map((x) => x.name), ['flow.get']);
-  assert.deepEqual(visibleMcp(undefined, false), []);
   assert.deepEqual(tokenBody({ name: ' 联调 ', scopes: ['ontology.read'], ttl: '0' }), { name: '联调', scopes: ['ontology.read'], expires_in_s: null });
   assert.equal(tokenBody({ name: 'x', scopes: ['ontology.read'], ttl: '1' }).expires_in_s, 86400);
   assert.equal(defaultConfigTab(['ontology.read']), 'r');
@@ -222,22 +207,22 @@ test('mock PL-05～PL-11：停用带页面的能力，左栏立刻少一页、�
   const list = await call('GET', `${P}/packs`);
   assert.equal(list.body.pending_switches, 1);
   assert.deepEqual(list.body.items.find((p) => p.name === 'diagram').actions, ['upgrade', 'disable']);
-  assert.deepEqual(ctx.db.extensionsOf(F.MAIN_PID).nav.filter((x) => x.kind === 'plugin').map((x) => x.id), ['scenarios', 'knowledge', 'scripts']);
+  assert.deepEqual(ctx.db.extensionsOf(F.MAIN_PID).nav.filter((x) => x.kind === 'plugin').map((x) => x.id), ['scenarios', 'scripts']);
 
-  const off = await call('POST', `${P}/packs/knowledge/disable`);
+  const off = await call('POST', `${P}/packs/codegen/disable`);
   assert.equal(off.status, 200);
   assert.equal(off.body.effective, 'next_message');
-  assert.deepEqual(off.body.pack.pending, { from: '0.6.0', to: null, kind: 'disable', effective: 'next_message' });
+  assert.deepEqual(off.body.pack.pending, { from: '0.9.2', to: null, kind: 'disable', effective: 'next_message' });
   assert.deepEqual(events.map((e) => e.type), ['assembly.updated', 'extensions.updated']);
   const ext = ctx.db.extensionsOf(F.MAIN_PID);
-  assert.deepEqual(ext.nav.filter((x) => x.kind === 'plugin').map((x) => x.id), ['scenarios', 'scripts']);
-  assert.deepEqual(ext.disabled_pages, [{ id: 'knowledge', pack: 'knowledge', title: '知识沉淀' }]);
+  assert.deepEqual(ext.nav.filter((x) => x.kind === 'plugin').map((x) => x.id), ['scenarios']);
+  assert.deepEqual(ext.disabled_pages, [{ id: 'scripts', pack: 'codegen', title: '代码生成' }]);
   assert.equal((await call('GET', `${P}/assembly`)).body.pending_changes.length, 2);
 
-  const back = await call('POST', `${P}/packs/knowledge/cancel-pending`);
+  const back = await call('POST', `${P}/packs/codegen/cancel-pending`);
   assert.equal(back.body.pack.status, 'enabled');
-  assert.ok(ctx.db.extensionsOf(F.MAIN_PID).nav.some((x) => x.id === 'knowledge'));
-  assert.equal((await call('POST', `${P}/packs/knowledge/cancel-pending`)).body.code, 'no_pending_switch');
+  assert.ok(ctx.db.extensionsOf(F.MAIN_PID).nav.some((x) => x.id === 'scripts'));
+  assert.equal((await call('POST', `${P}/packs/codegen/cancel-pending`)).body.code, 'no_pending_switch');
 });
 
 test('mock PL-06～PL-09：升级、回滚待生效；纯数据包立即生效；必装不能停；新启用的页面带 pending', async () => {
@@ -252,11 +237,14 @@ test('mock PL-06～PL-09：升级、回滚待生效；纯数据包立即生效�
   assert.equal(ind.body.effective, 'immediate');
   assert.equal(ind.body.pack.status, 'disabled');
   assert.equal((await call('POST', `${P}/packs/core/disable`)).body.code, 'pack_required');
-  const en = await call('POST', `${P}/packs`, { name: 'migrate' });
+  assert.equal((await call('POST', `${P}/packs`, { name: 'codegen' })).body.code, 'pack_already_enabled');
+  assert.equal((await call('POST', `${P}/packs`, { name: 'nope' })).body.code, 'pack_not_found');
+  // 一开始就停用的能力（?mock=off:codegen）：启用后待生效，左栏的页面带 pending
+  const offH = harness({ sc: { off: 'codegen' } });
+  const en = await offH.call('POST', `${P}/packs`, { name: 'codegen' });
   assert.equal(en.status, 201);
-  assert.deepEqual(en.body.pack.pending, { from: null, to: '0.2.0', kind: 'enable', effective: 'next_message' });
-  assert.equal((await call('POST', `${P}/packs`, { name: 'knowledge' })).body.code, 'pack_already_enabled');
-  assert.equal((await call('POST', `${P}/packs`, { name: 'websearch' })).body.code, 'pack_unavailable');
+  assert.deepEqual(en.body.pack.pending, { from: null, to: '0.9.2', kind: 'enable', effective: 'next_message' });
+  assert.equal(offH.ctx.db.extensionsOf(F.MAIN_PID).pages.find((p) => p.id === 'scripts').pending, true);
   // 停用场景模拟（有待生效的升级）要先撤销
   await call('POST', `${P}/packs/trace/cancel-pending`);
   await call('POST', `${P}/packs/trace/disable`);
@@ -284,8 +272,8 @@ test('mock P-12、P-14、M-01～M-04：引擎没装或运行中不能换；服�
   assert.equal(h.cards[0].engine_label, '内测引擎');
   assert.equal(h.events.at(-1).type, 'project.updated');
 
-  const srv = await h.call('PUT', `${P}/mcp-servers`, { disabled: ['evidence', 'mermaid-render'] });
-  assert.deepEqual(srv.body.items.map((s) => [s.name, s.enabled]), [['evidence', false], ['flow', true], ['replenish-std-lookup', true], ['mermaid-render', false]]);
+  const srv = await h.call('PUT', `${P}/mcp-servers`, { disabled: ['mermaid-render'] });
+  assert.deepEqual(srv.body.items.map((s) => [s.name, s.enabled]), [['flow', true], ['replenish-std-lookup', true], ['mermaid-render', false]]);
 
   const mcp = (await h.call('GET', `${P}/mcp`)).body;
   assert.equal(mcp.local_only, true);
@@ -312,19 +300,21 @@ test('mock AB-01～AB-04、AB-18：保存的策略决定预览；开始后开一
   const p0 = (await call('GET', `${P}/autobuild/policy`)).body;
   assert.equal(p0.revision, 'p3');
   assert.equal(p0.last_run.run_no, 3);
-  assert.deepEqual(p0.platform_limits, { allow_production_collection: true });
+  assert.deepEqual([p0.platform_limits, p0.not_enforced], [{}, []]);
   assert.equal(p0.budget, undefined);
+  assert.equal('production_collection' in p0, false);
 
   assert.equal((await call('PUT', `${P}/autobuild/policy`, { base_revision: 'old' })).body.code, 'revision_conflict');
-  // 老客户端还发预算：不收、不报错
-  const legacy = await call('PUT', `${P}/autobuild/policy`, { ...policyForm(p0), budget: { max_tokens: 20e6 }, base_revision: 'p3' });
+  // 老客户端还发预算、生产库采集授权：不收、不报错
+  const legacy = await call('PUT', `${P}/autobuild/policy`, {
+    ...policyForm(p0), budget: { max_tokens: 20e6 }, production_collection: [{ source_id: 'x', allowed: true }], base_revision: 'p3',
+  });
   assert.equal(legacy.status, 200);
   assert.equal(legacy.body.budget, undefined);
-  assert.equal((await call('PUT', `${P}/autobuild/policy`, { ...policyForm(p0), production_collection: [{ source_id: 'nope', allowed: true, window: null, scope: [] }], base_revision: legacy.body.revision })).body.code, 'source_not_authorized');
+  assert.equal(legacy.body.production_collection, undefined);
 
   const form = policyForm(p0);
   form.scope = { ...form.scope, mode: 'selected', slice_ids: ['s3', 's4'] };
-  form.production_collection = [{ source_id: 'erp-prod', allowed: true, window: { start: '22:00', end: '06:00' }, scope: ['补货标准表'] }];
   const saved = await call('PUT', `${P}/autobuild/policy`, policyBody(form, legacy.body.revision));
   assert.equal(saved.status, 200);
   assert.notEqual(saved.body.revision, legacy.body.revision);
@@ -335,7 +325,6 @@ test('mock AB-01～AB-04、AB-18：保存的策略决定预览；开始后开一
 
   const pv = (await call('POST', `${P}/autobuild/runs/preview`, {})).body;
   assert.deepEqual(pv.slices.filter((s) => s.included).map((s) => s.id), ['all']);
-  assert.equal(pv.production, '允许采集 ERP 生产库（22:00 – 06:00）');
   // 「全部」正做到一半（有待确认的一步）：会按策略决定
   assert.deepEqual(pv.warnings, ['有 1 个未决决策会被按策略决定']);
   assert.ok(pv.preview_token);
@@ -348,8 +337,8 @@ test('mock AB-01～AB-04、AB-18：保存的策略决定预览；开始后开一
   assert.deepEqual([conv.id, conv.title, conv.kind, conv.live], [run.body.conversation_id, '自主构建 · 运行 #4', 'autobuild', true]);
   const start = seeded.get(`${F.MAIN_PID}:${conv.id}`).find((e) => e.type === 'card').data;
   assert.equal(start.card_type, 'autobuild_start');
-  assert.deepEqual(start.chips.map((c) => c.label), ['范围', '生产库', '拿不准时']);
-  assert.deepEqual(start.chips.map((c) => c.value), ['全部没做完的步骤', '允许采集 ERP 生产库（22:00 – 06:00）', '先按最稳妥的做法往下做，做完列出来给你复核']);
+  assert.deepEqual(start.chips.map((c) => c.label), ['范围', '拿不准时']);
+  assert.deepEqual(start.chips.map((c) => c.value), ['全部没做完的步骤', '先按最稳妥的做法往下做，做完列出来给你复核']);
   assert.deepEqual([run.body.tokens, run.body.acknowledged], [{ used: 0 }, false]);
 
   const running = (await call('GET', `${P}/autobuild/runs?state=running`)).body.items;

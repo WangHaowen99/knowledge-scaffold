@@ -248,9 +248,7 @@ export function opsPacks() {
     p('core', 'capability', CORE.beta, 'beta', 10, 0.4, 'closed', 3, null),
     p('trace', 'capability', '0.9.1', 'stable', 100, 1.1, 'closed', 22, '0.9.0'),
     p('codegen', 'capability', '0.9.2', 'stable', 100, 2.8, 'closed', 14, '0.9.1'),
-    p('rev', 'capability', '0.2.0', 'beta', 20, 3.1, 'half_open', 5, '0.1.0'),
     p('industry-retail', 'industry', '1.0.3', 'stable', 100, 12.0, 'open', 9, '1.0.2'),
-    p('db-mysql', 'provider', '1.0.0', 'stable', 100, 0.0, 'closed', 6, null),
     p('exporter-otel', 'exporter', '0.2.0', 'stable', 100, 0.0, 'closed', 1, '0.1.5'),
   ];
 }
@@ -345,11 +343,10 @@ export function tasks(now) {
   const today = (h, m) => at(now, 0, h, m);
   const s1530 = Math.min(now - 14 * MIN, today(15, 30));
   return [
-    t('task-c1530', 'collection', `erp-prod · 快照 ${stamp(s1530)}`, '门店补货单编制', 'zhangsan', 'running', 64, s1530, null, null, { production: true }),
+    t('task-e1530', 'export', '门店补货单编制 · 迁移包', '门店补货单编制', 'zhangsan', 'running', 64, s1530, null),
     t('task-e1512', 'export', '快递分拣异常处理 · 迁移包', '快递分拣异常处理', 'wanggong', 'succeeded', 100, Math.min(now - 30 * MIN, today(15, 12)), now - 28 * MIN),
     t('task-b0200', 'backup', '定时备份 · 全量范围', null, 'system', 'succeeded', 100, today(2, 0), today(2, 6)),
     t('task-s0300', 'sweep', '回收站过期项目 2 个', null, 'system', 'succeeded', 100, today(3, 0), today(3, 1)),
-    t('task-c2210', 'collection', `crm-test · 快照 ${stamp(at(now, 1, 22, 10))}`, '共享单车故障诊断', 'liming', 'partial', 100, at(now, 1, 22, 10), at(now, 1, 22, 31), '3 张表超时，已采到的部分可用'),
     t('task-e1741', 'export', '门店补货单编制 · 知识包 v0.12', '门店补货单编制', 'zhangsan', 'failed', 40, at(now, 1, 17, 41), at(now, 1, 17, 44), '渲染超时'),
   ];
 }
@@ -367,7 +364,7 @@ export function tickTasks(list, now) {
   });
   return done;
 }
-export const publicTask = ({ done_at: _d, done_state: _s, production: _p, ...x }) => x;
+export const publicTask = ({ done_at: _d, done_state: _s, ...x }) => x;
 
 // ---------- 版本清单（O-42） ----------
 export function versions() {
@@ -380,15 +377,13 @@ export function versions() {
     v('capability', 'trace', '0.9.1'),
     v('capability', 'codegen', '0.9.2'),
     v('capability', 'diagram', '0.5.0'),
-    v('capability', 'rev', '0.2.0 beta'),
     v('industry', 'industry-retail', '1.0.3'),
     v('industry', 'industry-property', '1.2.0'),
     v('engine', '稳定引擎', '2.1.30'),
     v('engine', '内测引擎', '0.4.1'),
-    v('provider', 'db-mysql · file', '1.0.0'),
+    v('provider', 'convert-pdf · convert-docx · convert-xlsx', '1.0.0'),
     v('data_format', 'ontology-package', 'v0.1'),
     v('data_format', 'operation-centric', 'v1'),
-    v('data_format', 'evidence-snapshot', '1'),
     v('lockfile', 'packs.lock · flow.lock', 'v1'),
   ];
 }
@@ -398,7 +393,6 @@ export function retention(now) {
   const r = (id, label, ret, rule, next, editable = true) => ({ id, label, retention: ret, rule, next_run_at: next == null ? null : iso(next), editable });
   return [
     r('session_history', '会话历史', { days: 180 }, '超期归档到备份后删除', at(now, -1, 3)),
-    r('snapshots', '证据快照', { keep_last: 5 }, '被已确认产物引用的快照不清理', at(now, 0, 23)),
     r('logs', '结构化日志', { days: 30 }, '按天滚动', at(now, -1, 0, 5)),
     r('audit', '审计日志', { days: 365 }, '只追加，不可编辑', null, false),
     r('backups', '备份', { keep_last: 3 }, '滚动覆盖最旧的一份', at(now, -1, 2)),

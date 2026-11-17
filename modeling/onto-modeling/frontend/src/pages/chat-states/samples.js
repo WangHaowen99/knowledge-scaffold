@@ -95,8 +95,8 @@ export const RECONNECTED = { reason: 'config_changed', changes: [], context_kept
 export const ERROR_ITEM = { error_id: 'err-7f3a', message: '模型服务暂时不可用', retries: 2, retryable: true, actions: ['retry', 'redirect'] };
 
 export const PACK_CARD = {
-  card_id: 'pk', card_type: 'pack_recommendation', pack: { name: 'provider-db', version: '0.3.0', label: '业务数据库' },
-  category_label: '多源连接器', description: '只读采集 MySQL / PostgreSQL，凭据只放在连接器网关，助手拿不到', reason: '',
+  card_id: 'pk', card_type: 'pack_recommendation', pack: { name: 'convert-pdf', version: '0.3.0', label: 'PDF 转换' },
+  category_label: '多源连接器', description: '把文字版 PDF 转成带页码的文本，表格转成表格', reason: '',
 };
 
 export const ATTACH_GROUP = {

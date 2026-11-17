@@ -4,7 +4,7 @@
 // 业务：店长一句话说明门店、品类、库存和到货周期，智能体查基础数据，按补货规则生成补货单；
 // 门店申请量严于（不超过）品类标准时按门店执行，超出标准时生成审批提示，挂到补货台账，交区域审批。
 // 数值口径：品类标准上限 120 箱；门店申请 96 箱；09 修订通知把乳制品区域配额上限改为 150 箱（日均销量 ≥80 箱时适用），
-// ERP 快照里还是 140；样例补货单 B 按区域统一配额 ≤100 箱。
+// 02 补货规则里还是 140；样例补货单 B 按区域统一配额 ≤100 箱。
 
 // ---------- 资料 ----------
 // purpose：goal 建模目标依据、evidence 通用业务依据、schema 数据结构
@@ -22,9 +22,6 @@ export const LATE_MATERIALS = [
   { path: 'resource/others/09-修订通知.docx', name: '09-修订通知.docx', purpose: 'evidence' },
   { path: 'resource/others/07-门店C特殊需求.pdf', name: '07-门店C特殊需求.pdf', purpose: 'evidence', scanned: true },
 ];
-
-// ---------- 业务系统数据源（证据） ----------
-export const DB_SOURCE = { id: 'erp-prod', label: '业务系统 ERP', short: 'ERP', table: 'replenish_std', table_label: '补货标准表' };
 
 // ---------- 分段（与 fixtures.flow() 的 slices 一致） ----------
 export const SLICES = [

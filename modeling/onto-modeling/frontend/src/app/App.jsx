@@ -19,7 +19,6 @@ import '../styles/autobuild.css';
 import '../styles/more.css';
 import '../styles/incremental.css';
 import '../styles/materials.css';
-import '../styles/knowledge.css';
 import '../styles/workbench-extra.css';
 
 const GLOBAL_PAGES = ['plugins', 'plugin-detail', 'plugin-upload', 'me', 'sys', 'ops', 'ops-obs', 'ops-ctl', 'ops-users'];
@@ -41,16 +40,12 @@ const StudioPage = routePage(() => import('../pages/studio/StudioPage.jsx'));
 const StudioTablePage = routePage(() => import('../pages/studio/StudioTablePage.jsx'));
 const ReportsPage = routePage(() => import('../pages/reports/ReportsPage.jsx'));
 const InboxPage = routePage(() => import('../pages/inbox/InboxPage.jsx'));
-// F3：插件页（知识沉淀、场景模拟、代码生成）与项目页（版本、发布、资料与证据源、项目设置）
-const KnowledgePage = routePage(() => import('../pages/knowledge/KnowledgePage.jsx'));
+// F3：插件页（场景模拟、代码生成）与项目页（版本、发布、资料、项目设置）
 const ScenariosPage = routePage(() => import('../pages/scenarios/ScenariosPage.jsx'));
 const ScriptsPage = routePage(() => import('../pages/scripts/ScriptsPage.jsx'));
 const VersionsPage = routePage(() => import('../pages/versions/VersionsPage.jsx'));
 const PublishPage = routePage(() => import('../pages/publish/PublishPage.jsx'));
 const ResourcesPage = routePage(() => import('../pages/resources/ResourcesPage.jsx'));
-const SourcesPage = routePage(() => import('../pages/evidence/SourcesPage.jsx'));
-const SnapshotsPage = routePage(() => import('../pages/evidence/SnapshotsPage.jsx'));
-const SchemaPage = routePage(() => import('../pages/evidence/SchemaPage.jsx'));
 const ProjectSettingsPage = routePage(() => import('../pages/settings/ProjectSettingsPage.jsx'));
 // F4：运维中心、插件中心、个人与系统设置（全局页，都按路由拆包）
 const GLOBAL_PAGE_COMPONENTS = {
@@ -77,22 +72,18 @@ const PROJECT_PAGES = {
   'studio-er': StudioPage,
   'studio-table': StudioTablePage,
   reports: ReportsPage,
-  knowledge: KnowledgePage,
   scenarios: ScenariosPage,
   scripts: ScriptsPage,
   versions: VersionsPage,
   publish: PublishPage,
   resources: ResourcesPage,
-  sources: SourcesPage,
-  snapshots: SnapshotsPage,
-  schema: SchemaPage,
   'proj-settings': ProjectSettingsPage,
   ...DEV_PAGES,
 };
 
 // 首屏之后预取：项目里的页面在前（工作台、左栏内核页、设置、插件页），全局页随后，运维与管理页按角色
 const PREFETCH = [
-  WorkbenchPage, StudioPage, ResourcesPage, PublishPage, InboxPage, ProjectSettingsPage, ScenariosPage, KnowledgePage, ScriptsPage,
+  WorkbenchPage, StudioPage, ResourcesPage, PublishPage, InboxPage, ProjectSettingsPage, ScenariosPage, ScriptsPage,
   VersionsPage, StudioTablePage, ReportsPage, ProjectsPage, CreatePage,
   GLOBAL_PAGE_COMPONENTS.plugins, GLOBAL_PAGE_COMPONENTS['plugin-detail'], GLOBAL_PAGE_COMPONENTS.me,
 ];

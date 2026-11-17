@@ -1,15 +1,12 @@
-// mock：插件目录、详情、兼容检查、申请与平台安装（PL-01～PL-04、PL-19）。页面：plugins、plugin-detail、create（第 3 步）
+// mock：插件目录、详情、兼容检查（PL-01～PL-03）。页面：plugins、plugin-detail、create（第 3 步）
 // PL-05～PL-11（按项目启用、升级、回滚、停用）在 routes-settings.js。带 project_id 时经 ctx.self 转调 PL-05 算本项目视角的状态，
 // 插件中心和项目设置的能力表说的是同一件事；routes-settings.js 留了两处接口：db.seedProjectPacks（初始能力表）、db.packCatalog（PL-06 查目录）。
 // mock 状态 ?mock=plugins:<标记>[+<标记>]：
 //   norec  PL-01 不给推荐（B3a 后端现状：推荐恒为空，整条推荐带不出现）
 //   held   基础建模 1.5 还在 beta，场景模拟 0.10.0 依赖它：兼容检查不通过，本项目也没排这次升级（设计稿 plugins、plugin-detail 那一刻）
 //   ind    零售连锁 1.1.0 已发布到 stable，本项目可以更新（行业包的更新弹窗）
-import { industryEntries, projectEntries } from './knowledge-data.js';
-import { seedSnapshots } from './evidence-data.js';
-import { addAdminRequest } from './routes-pack-uploads.js';
 import {
-  APPLIES_TO, catalogCards, catalogCounts, compareVersions, detailOf, filterCatalog, installedProviders, isInstalledStatus,
+  APPLIES_TO, catalogCards, catalogCounts, compareVersions, detailOf, filterCatalog, isInstalledStatus,
   pluginFlags, projectCard, projectStatsOf, recommendationsOf, requiresCore, satisfies, KERNEL_VERSION,
 } from './plugins-data.js';
 import { ENTRIES, FLOWCHARTS } from './scenario.js';
@@ -90,9 +87,8 @@ export function compatibilityOf(card, version, d, { items, flags }) {
 }
 
 export function register(ctx) {
-  const { on, json, err, db, sc, F, cardOf, forbid, uid } = ctx;
+  const { on, json, err, db, sc, F, cardOf } = ctx;
   const flags = pluginFlags(sc);
-  db.plugins = { installed: new Set(installedProviders()) };
   db.packCatalog = () => catalogCards(flags);
   // 初始能力表按 mock 状态改：held 时场景模拟没排升级；ind 时零售连锁可更新到 1.1.0
   db.seedProjectPacks = (pid, packs) => packs.forEach((p) => {
@@ -111,13 +107,13 @@ export function register(ctx) {
   async function cardsFor(pid, init) {
     const all = [...catalogCards(flags), ...(db.privateCards || [])]; // 普通用户装的私有包（PL-26）
     if (!pid) {
-      const o = { project: false, installed: db.plugins.installed, enabledNames: [] };
+      const o = { project: false, enabledNames: [] };
       return { cards: all.filter((c) => !APPLIES_TO[c.name]).map((c) => projectCard(c, null, o)), items: null };
     }
     if (!cardOf(pid)) return { error: err(404, 'project_not_found', '项目不存在') };
     const r = await projectItems(pid, init);
     if (r.error) return r;
-    const o = { project: true, installed: db.plugins.installed, enabledNames: activeNames(r.items) };
+    const o = { project: true, enabledNames: activeNames(r.items) };
     return { cards: all.map((c) => projectCard(c, r.items.find((p) => p.name === c.name), o)), items: r.items };
   }
 
@@ -153,10 +149,8 @@ export function register(ctx) {
     ENTRIES.forEach((e) => { by[e.kind] = (by[e.kind] || 0) + 1; });
     return {
       entries: { total: ENTRIES.length, note: Object.entries(KIND_LABEL).filter(([k]) => by[k]).map(([k, t]) => `${t} ${by[k]}`).join(' · ') },
-      knowledge: { project: projectEntries().length, industry: industryEntries().length },
       scripts: scripts().length,
       flowcharts: { total: FLOWCHARTS.length, note: `已确认 ${FLOWCHARTS.filter((f) => f.state === 'confirmed').length} · 草稿 ${FLOWCHARTS.filter((f) => f.state === 'draft').length}` },
-      snapshots: seedSnapshots().length,
     };
   };
   on('GET', '/packs/([^/]+)', async ({ m, query, init }) => {
@@ -166,14 +160,6 @@ export function register(ctx) {
     if (r.error) return r.error;
     const card = r.cards.find((c) => c.name === name);
     if (!card) return err(404, 'pack_not_found', `包 ${name} 不存在`);
-    // 采集类连接器：同真实后端，没有包内容、流程节点和版本记录
-    if (card.collector) {
-      return json(200, {
-        ...card, size: 0, files: 0, released_at: null, released_by: null, enabled_at: null,
-        requires: { depends: {}, kernel_api: '', page_api: null }, flow_insertions: [], project_stats: null,
-        contents: [], config: [], changelog: [], hot_level: 'H2', effective: 'immediate',
-      });
-    }
     const d = detailOf(card, flags);
     const pp = r.items?.find((p) => p.name === name && p.status !== 'disabled');
     const version = query.get('version') || pp?.locked_version || card.latest;
@@ -204,7 +190,7 @@ export function register(ctx) {
       requires: { depends: range ? { core: range } : {}, kernel_api: '>=1.0 <2.0', page_api: withPages ? '>=1.0 <2.0' : null },
       flow_insertions: d.flow_insertions,
       flow_note: d.flow_note,
-      project_stats: provider || (pid === F.MAIN_PID && isInstalledStatus(card.project_status)) ? projectStatsOf(name, stats()) : null,
+      project_stats: pid === F.MAIN_PID && isInstalledStatus(card.project_status) ? projectStatsOf(name, stats()) : null,
       contents: d.contents,
       config: d.config,
       changelog,
@@ -225,35 +211,5 @@ export function register(ctx) {
     const d = detailOf(card, flags);
     if (!knownVersion(card, d, version)) return err(404, 'pack_version_not_found', `包 ${name} 没有版本 ${version}`);
     return json(200, compatibilityOf(card, version, d, { items: r.items, flags }));
-  });
-
-  // ---------- PL-04 申请平台安装、PL-19 平台安装提供方 ----------
-  const providerCheck = (name) => {
-    const card = catalogCards(flags).find((c) => c.name === name);
-    if (!card) return { error: err(404, 'pack_not_found', `包 ${name} 不存在`) };
-    if (card.category !== 'provider') return { error: err(400, 'invalid_argument', '只有连接器装在平台上', { fields: { name: 'not_provider' } }) };
-    if (card.project_status === 'offline') return { error: err(409, 'pack_unavailable', '离线部署不可用', { reason: 'offline' }) };
-    if (db.plugins.installed.has(name)) return { error: err(409, 'pack_already_enabled', '平台已经装了这个连接器') };
-    return { card };
-  };
-  on('POST', '/packs/([^/]+)/install-requests', ({ m, body, user }) => {
-    const c = providerCheck(decodeURIComponent(m[1]));
-    if (c.error) return c.error;
-    // 进管理员审核申请（AD-08～AD-10，routes-pack-uploads.js；没挂界面），管理员收到 request_pending 通知
-    const version = body.version || c.card.latest;
-    const req = addAdminRequest(ctx, {
-      kind: 'pack_install', requested_by: user?.username || null, project_id: null, summary: `${c.card.label} ${version}`,
-      payload: { pack: { name: c.card.name, label: c.card.label }, version, note: body.note || null },
-    });
-    return json(202, { request_id: req.id });
-  });
-  on('POST', '/admin/packs/([^/]+)/install', ({ m, body, user }) => {
-    const denied = forbid(user, ['admin']);
-    if (denied) return denied;
-    const c = providerCheck(decodeURIComponent(m[1]));
-    if (c.error) return c.error;
-    if (body.version && body.version !== c.card.latest) return err(404, 'pack_version_not_found', `包 ${c.card.name} 没有版本 ${body.version}`);
-    db.plugins.installed.add(c.card.name); // 真实环境装进连接器网关要几分钟（O-40 任务）；mock 直接装好
-    return json(202, { task_id: `task-${uid()}` });
   });
 }

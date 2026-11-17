@@ -3,7 +3,6 @@
 // P1 的 /flow 只给 4 种状态、命令文本形式的 actions、顶层 sections 与 commands；P2 起给全量的 8 种状态与建模的步骤。
 // normalizeFlow 把两种形状收成同一份视图数据，页面只认归一后的字段。
 
-import { isEvidenceNode } from './evidence.js';
 
 export const SECTION_TITLES = {
   required: '必经步骤',
@@ -51,7 +50,7 @@ export function normalizeFlow(raw) {
   };
 }
 
-// 节点集合变了（如项目授权了数据源，多出「系统取证」）时 flow_hash 跟着变；增量只能合已有节点，这时要重取整份流程（FL-01）
+// 节点集合变了（如启用、停用了节点包）时 flow_hash 跟着变；增量只能合已有节点，这时要重取整份流程（FL-01）
 export const flowNeedsReload = (flow, patch) => !!flow && !!patch?.flow_hash && patch.flow_hash !== flow.flow_hash;
 
 // 项目流里流程增量合进快照
@@ -147,28 +146,6 @@ export function overlayRunning(flow, nodeId) {
   const hit = flow.nodes.find((n) => n.id === nodeId);
   if (!hit || hit.state === 'running' || hit.display_state === 'running') return flow;
   return { ...flow, nodes: flow.nodes.map((n) => (n.id === nodeId ? { ...n, state: 'running', display_state: 'running' } : n)) };
-}
-
-// 证据源本期不开放（ADR-0056）：证据源不可用时去掉依赖它的节点（如系统逆向建模的「系统取证」），
-// 连线接过去（前一个直接连到后一个），分组与命令归属同步去掉
-export function withoutEvidence(flow, evidenceOn) {
-  if (!flow || evidenceOn) return flow;
-  const gone = new Set(flow.nodes.filter(isEvidenceNode).map((n) => n.id));
-  if (!gone.size) return flow;
-  const edges = (flow.edges || []).filter((e) => !gone.has(e.from) && !gone.has(e.to));
-  gone.forEach((id) => {
-    const ins = (flow.edges || []).filter((e) => e.to === id && !gone.has(e.from)).map((e) => e.from);
-    const outs = (flow.edges || []).filter((e) => e.from === id && !gone.has(e.to)).map((e) => e.to);
-    ins.forEach((from) => outs.forEach((to) => { if (!edges.some((e) => e.from === from && e.to === to)) edges.push({ from, to }); }));
-  });
-  const commands = Object.fromEntries(Object.entries(flow.commands || {}).filter(([, id]) => !gone.has(id)));
-  return {
-    ...flow,
-    nodes: flow.nodes.filter((n) => !gone.has(n.id)),
-    edges,
-    sections: (flow.sections || []).map((s) => ({ ...s, nodes: (s.nodes || []).filter((id) => !gone.has(id)) })),
-    commands,
-  };
 }
 
 // F8 起不分段：建模只有一段「全部」（id all），界面上不提它，要有个叫法时叫「建模」。

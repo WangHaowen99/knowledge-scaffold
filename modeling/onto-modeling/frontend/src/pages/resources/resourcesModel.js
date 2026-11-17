@@ -1,4 +1,4 @@
-// 资料区（设计稿 resources）的纯逻辑：分组与行文字、跳转参数、出处编号、上传校验、被引用、外部反馈、表格与 drawio 预览
+// 资料区（设计稿 resources）的纯逻辑：分组与行文字、跳转参数、出处编号、上传校验、被引用、表格与 drawio 预览
 import { validateResourceFile } from '../../lib/resourceUpload.js';
 
 // R-01 拿不到 purposes 时用的兜底（说明文字同设计稿 EVD_PURPOSE）
@@ -44,11 +44,6 @@ export function shortTime(iso, now = Date.now()) {
   const d = new Date(iso);
   const day = `${two(d.getMonth() + 1)}-${two(d.getDate())}`;
   return now - d.getTime() < 48 * 3600 * 1000 ? `${day} ${two(d.getHours())}:${two(d.getMinutes())}` : day;
-}
-export function shortDate(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  return `${two(d.getMonth() + 1)}-${two(d.getDate())}`;
 }
 
 const num = (n) => Number(n || 0).toLocaleString('en-US');
@@ -154,9 +149,8 @@ export const lineOf = (anchor) => lineRange(anchor)?.from ?? null;
 // 要转文本的资料（PDF、Word、Excel）上的行号片段指的是它的文本版：预览里按文本版定位
 export const isTextFragment = (m, fragment) => isConvertible(m) && !!lineRange(fragment);
 
-// 地址参数 → 要选中什么：?anchor=、?path=、?group=feedback&feedback=
+// 地址参数 → 要选中什么：?anchor=、?path=
 export function routeTarget(query = {}) {
-  if (query.feedback || query.group === 'feedback') return { kind: 'feedback', id: query.feedback || null };
   if (query.anchor) {
     const a = parseFileAnchor(query.anchor);
     // 带锚点跳来（资料芯片、「查看原文」）：按来源预览打开（source）。早先的出处写文本版的行号：选中原资料，在文本版里定位
@@ -271,31 +265,6 @@ export function refTarget(t) {
   if (t.type === 'diagram.flowchart') return { page: 'studio-table', query: { entry: `flowchart:${t.key}` } };
   if (t.type === 'trace.scenario') return { page: 'scenarios', query: { key: t.key } };
   return null;
-}
-
-// ---------- 外部反馈（R-11） ----------
-export const FEEDBACK_STATE = {
-  open: ['未处理', 'amber', null],
-  handled: ['已处理', 'teal', 'check'],
-  dismissed: ['已忽略', 'gray', null],
-};
-
-// summary「评测失分用例 4 条 · 多数和「…」有关」拆成标题和说明
-export function feedbackView(fb, now = Date.now()) {
-  const [title, ...rest] = String(fb.summary || '').split(' · ');
-  const note = rest.join(' · ');
-  const evaluated = /评测/.test(fb.source?.service || '');
-  const meta = fb.state === 'open'
-    ? [`${fb.source?.service || '外部'}回传`, shortTime(fb.received_at, now), note]
-    : [note, shortDate(fb.received_at), fb.state === 'handled' ? '已转成修订建议' : '已忽略'];
-  return {
-    title: title || '外部反馈',
-    note,
-    meta: meta.filter(Boolean).join(' · '),
-    icon: evaluated ? 'target' : 'msg',
-    open: fb.state === 'open',
-    state: FEEDBACK_STATE[fb.state] || FEEDBACK_STATE.open,
-  };
 }
 
 // ---------- 表格（F-05） ----------

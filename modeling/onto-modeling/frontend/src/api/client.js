@@ -3,7 +3,7 @@ import { ApiError, errorFromResponse } from './errors.js';
 
 export const API_PREFIX = '/api/v1';
 
-// 字节请求体（分块上传 EV-32）原样发，不转 JSON
+// 字节请求体原样发，不转 JSON
 const isBinary = (body) => body instanceof ArrayBuffer || ArrayBuffer.isView(body) || (typeof Blob !== 'undefined' && body instanceof Blob);
 
 // 令牌存放：access / refresh 两个键；本地模式不带令牌

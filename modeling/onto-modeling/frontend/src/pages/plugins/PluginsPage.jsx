@@ -1,5 +1,5 @@
 // 插件中心（设计稿 plugins）：PL-01 目录（带「启用到」的项目算本项目视角的状态与推荐）、PL-05 待生效的是什么、
-// 启用（PL-03 → PL-06）、更新（PL-03 → 更新弹窗或直接 PL-07）、提供方安装（管理员 PL-19，其他人 PL-04）。
+// 启用（PL-03 → PL-06）、更新（PL-03 → 更新弹窗或直接 PL-07）。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
@@ -11,8 +11,8 @@ import {
 } from '../../ui/index.jsx';
 import { PackCard, RecBar } from './catalogCards.jsx';
 import { usePackActions } from './catalogDialogs.jsx';
-import { catOf, devSkillOf, sectionsOf, visibleCatalog } from './catalogModel.js';
-import { PluginsNav, useEvidenceOn, usePluginProject } from './parts.jsx';
+import { catOf, devSkillOf, sectionsOf } from './catalogModel.js';
+import { PluginsNav, usePluginProject } from './parts.jsx';
 
 export default function PluginsPage({ route }) {
   const { api, services } = useApp();
@@ -21,9 +21,7 @@ export default function PluginsPage({ route }) {
   const devSkill = devSkillOf(cat);
   // ?pack= 来自助手推荐卡：搜索框先填上这个包
   const [q, setQ] = useState(route.query?.pack || '');
-  const [raw, setData] = useState(null);
-  const evidenceOn = useEvidenceOn();
-  const data = visibleCatalog(raw, evidenceOn);
+  const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [pending, setPending] = useState({});
   // 推荐只在换项目时取一次：处理过的那条留着，按钮换成「已启用」「已更新」（设计稿）
@@ -53,7 +51,7 @@ export default function PluginsPage({ route }) {
   const actions = usePackActions({ projectId, projectName, onChanged: load });
   const items = data?.items || [];
   const sections = sectionsOf(items, { cat, q });
-  const recItems = visibleCatalog({ recommendations: recs.items }, evidenceOn).recommendations || [];
+  const recItems = recs.items || [];
   const pickCat = (k) => {
     const rest = { ...(route.query || {}) };
     delete rest.cat;
@@ -99,7 +97,6 @@ export default function PluginsPage({ route }) {
                 p={p}
                 projectId={projectId}
                 pendingKind={pending[p.name]?.kind}
-                requested={actions.requested.has(p.name)}
                 busy={actions.busy === p.name}
                 onAction={actions.act}
               />

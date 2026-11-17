@@ -300,7 +300,6 @@ export function CardItem({ card, scope, cardKey }) {
     }
     case 'resume': return <ResumeCard card={card} />;
     case 'pack_recommendation': return <PackRecommendationCard card={card} />;
-    case 'knowledge_saved': return <div className="row mt8"><Chip tone="teal" icon="check">已入库</Chip></div>;
     default: {
       const Extra = EXTRA_CARDS[card.card_type];
       return Extra ? <Extra card={card} scope={scope} /> : <GenericCard card={card} />;

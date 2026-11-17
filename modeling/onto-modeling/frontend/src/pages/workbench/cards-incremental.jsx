@@ -1,5 +1,5 @@
-// 增量更新的对话卡片（设计稿 incremental：变更点清单、影响面、回归、外部反馈、执行后的「这一轮改了什么」），在工作台对话里走完
-// 契约 4.7 change_list / impact / regression / external_feedback / round_changes（带 change_list_id 的那种）。
+// 增量更新的对话卡片（设计稿 incremental：变更点清单、影响面、回归、执行后的「这一轮改了什么」），在工作台对话里走完
+// 契约 4.7 change_list / impact / regression / round_changes（带 change_list_id 的那种）。
 // 清单弹窗、确认清单并执行由工作台注入（useActions 的 openChangeList / executeChangeList）；没有宿主的页面跳到 incremental。
 import { Fragment, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useApp } from '../../app/context.js';
@@ -8,7 +8,7 @@ import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import { roundLockNote } from '../../state/readonly.js';
 import { Button, Chip, Ev, Icon, St, Table } from '../../ui/index.jsx';
-import { PluginEyebrow, useProjectEvent } from '../plugin/parts.jsx';
+import { useProjectEvent } from '../plugin/parts.jsx';
 import { roundState, useActions } from './cards.jsx';
 import { roundDiffLines } from './roundState.js';
 import { CC, DiffBlock, Inline, WbCtx, Wl } from './parts.jsx';
@@ -195,68 +195,6 @@ function RegressionCard({ card }) {
   );
 }
 
-// ---------- 外部反馈卡（反馈演进插件）：「让助手分析」发命令，「稍后处理」留在待处理 ----------
-function ExternalFeedbackCard({ card }) {
-  const { api } = useApp();
-  const { pid } = useContext(WbCtx);
-  const { conversationId } = useActions();
-  const [done, setDone] = useState(null);
-  // R-11：这份反馈在别处（待处理、资料区）已经处理过的，卡上直接显示
-  useEffect(() => {
-    let alive = true;
-    api.feedback(pid, {}).then((r) => {
-      const f = (r.items || []).find((x) => x.id === card.feedback_id);
-      if (alive && f && f.state !== 'open') setDone(f.state === 'handled' ? `已处理${f.handled_version_label ? ` · 版本 ${f.handled_version_label}` : ''}` : '已忽略');
-    }).catch(() => {});
-    return () => { alive = false; };
-  }, [api, pid, card.feedback_id]);
-  const items = card.items || [];
-  const todo = M.feedbackToAnalyze(card);
-  const analyze = async () => {
-    const ns = todo.map((x) => x.i).join('、');
-    try {
-      await api.sendCommand(pid, {
-        command: '/ontology-evolution', args: { feedback_id: card.feedback_id, case_ids: todo.map((x) => x.case_id) },
-        text: `分析外部反馈的第 ${ns} 条失分用例`, origin: { page: 'wb-l2', label: '外部反馈' }, ...(conversationId ? { conversation_id: conversationId } : {}),
-      });
-      setDone('已交给助手分析');
-      toast(`已交给助手分析第 ${ns} 条反馈`, 'sparkle');
-    } catch (e) {
-      toast(errorText(e), 'alert');
-    }
-  };
-  const later = () => {
-    setDone('留在待处理里');
-    toast('已留在待处理', 'inbox');
-  };
-  return (
-    <CC
-      icon="inbox" tone="indigo" title={card.title} chip={card.plugin ? <PluginEyebrow pack={card.plugin.name} label={card.plugin.label} /> : null}
-      sub={card.source ? M.feedbackSource(card.source) : card.subtitle}
-      foot={(
-        <>
-          <span className="sp" />
-          {done ? <Chip tone="gray" sm icon="check">{done}</Chip> : (
-            <>
-              <Button size="xs" kind="ghost" onClick={later}>稍后处理</Button>
-              <Button size="xs" kind="soft" icon="sparkle" disabled={!todo.length} onClick={analyze}>让助手分析</Button>
-            </>
-          )}
-        </>
-      )}
-    >
-      <Table
-        compact className="mr-ct" cols={['问题', '失分原因', '涉及产物', '']}
-        rows={items.map((it) => [
-          it.question, it.loss_reason || '—',
-          <span className="row wrap g4">{(it.artifacts || []).map((a, i) => <Wl key={i} name={M.refName(a)} />)}</span>,
-          it.related ? <Chip tone="blue" sm>{it.related}</Chip> : '',
-        ])}
-      />
-    </CC>
-  );
-}
-
 // ---------- 执行后的「这一轮改了什么」：逐行改动、查看改动（CS-03）、撤回这一轮（CS-05）；一轮结束就合入（F3） ----------
 function IncrementalRoundCard({ card, scope }) {
   const { api } = useApp();
@@ -322,7 +260,6 @@ export const INCREMENTAL_CARDS = {
   change_list: ChangeListCard,
   impact: ImpactCard,
   regression: RegressionCard,
-  external_feedback: ExternalFeedbackCard,
   // 带 change_list_id 的「这一轮」按设计稿 incremental 的样子画（cards.jsx 的 CardItem 按它分流）
   'round_changes.incremental': IncrementalRoundCard,
 };

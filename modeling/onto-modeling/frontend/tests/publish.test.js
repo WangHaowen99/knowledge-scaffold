@@ -6,7 +6,6 @@ import { nextReleaseVersion, register as registerPublish } from '../src/api/mock
 import { register as registerVersions } from '../src/api/mock/routes-versions.js';
 import {
   degradeNote, fixOptions, formatLabel, gateBlockedText, issueView, mergeRelease, needsSolverAck, releaseGate, releasedText,
-  visibleGates,
 } from '../src/pages/publish/publishModel.js';
 import { gateMark, problemGates, publishVerdict } from '../src/pages/publish/publishCheckModel.js';
 
@@ -17,7 +16,7 @@ test('检查项标记：挡住 / 还没运行 / 有提醒 / 通过；需要处�
   // 还没运行的流程关卡挡发布时算没通过，不挡时算提醒
   assert.equal(gateMark({ id: 'retail.compliance', status: 'not_run', blocking: true }).tone, 'bad');
   assert.deepEqual(gateMark({ id: 'retail.compliance', status: 'not_run', blocking: false }), { tone: 'warn', icon: 'alert', text: '还没运行' });
-  assert.deepEqual(gateMark({ id: 'rev.anchor_coverage', status: 'warn' }), { tone: 'warn', icon: 'alert', text: '有提醒' });
+  assert.deepEqual(gateMark({ id: 'package_structure', status: 'warn' }), { tone: 'warn', icon: 'alert', text: '有提醒' });
   assert.deepEqual(gateMark({ id: 'solver_contract', status: 'pass' }), { tone: 'ok', icon: 'check', text: '通过' });
   const gates = [
     { id: 'data_binding', title: '数据绑定', status: 'warn', blocking: false },
@@ -50,17 +49,6 @@ test('数据绑定：问题标签、说明与「改为现有表」的选项', ()
   assert.equal(o.placeholder, '改为 erp.replenish_ledger');
   assert.deepEqual(o.options.map((x) => [x.value, x.hint]), [['erp.replenish_ledger', '对上 2 列'], ['erp.store', '']]);
   assert.equal(fixOptions({ declared: 'crm.x', candidates: [] }, ['erp.store']).placeholder, '改为现有数据表');
-});
-
-test('门禁链：证据源不可用时不出依赖证据源的包带来的门禁', () => {
-  const check = { gates: [
-    { id: 'data_binding', source: { kind: 'platform' } },
-    { id: 'retail.compliance', source: { kind: 'pack', pack: 'industry-retail' } },
-    { id: 'rev.anchor_coverage', source: { kind: 'pack', pack: 'rev' } },
-  ] };
-  assert.deepEqual(visibleGates(check, false).map((g) => g.id), ['data_binding', 'retail.compliance']);
-  assert.equal(visibleGates(check, true).length, 3);
-  assert.deepEqual(visibleGates(null, false), []);
 });
 
 test('能不能降级：其余挡住的门禁照样挡（按钮置灰、悬停写是哪一关）；都过了就能降级发布', () => {
@@ -153,7 +141,7 @@ test('PB-01：门禁链按顺序，数据绑定与合规检查挡住发布，只
   assert.equal(r.body.format, 'solver');
   assert.deepEqual(r.body.gates.map((g) => [g.title, g.status, g.blocking]), [
     ['数据绑定检查', 'fail', true], ['求解契约', 'pass', false], ['包结构检查', 'pass', false],
-    ['合规检查', 'not_run', true], ['证据出处检查', 'warn', false],
+    ['合规检查', 'not_run', true],
   ]);
   assert.equal(r.body.gates[0].summary, '3 个对象和数据表对不上');
   assert.equal(r.body.gates[1].summary, '求解契约静态检查通过');

@@ -1,6 +1,6 @@
 // 自主构建的对话卡片（契约 4.7：autobuild_start、slice_progress、auto_decision、suspension、run_report），样式见 autobuild.css
 import { useContext, useEffect, useState } from 'react';
-import { useApp, useProject } from '../../app/context.js';
+import { useApp } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
@@ -9,18 +9,16 @@ import { Conf, useAutobuildCtx } from './autobuild.jsx';
 import {
   REPORT_CHIP, hhmm, reportMetrics, reportSub, sliceSegments,
 } from './autobuildModel.js';
-import { evidenceInProject } from '../../state/evidence.js';
 import { multiSlice, sliceName, unitTitle } from '../../state/flow.js';
 import { CC, Tli, WbCtx } from './parts.jsx';
 import '../../styles/autobuild.css';
 
-const POLICY_ICON = { 范围: 'layers', 生产库: 'db', 拿不准时: 'scale' };
+const POLICY_ICON = { 范围: 'layers', 拿不准时: 'scale' };
 
-// 开始时的策略：范围 / 生产库 / 拿不准时（生产库一格随证据源出现，本期不开放）
+// 开始时的策略：范围 / 拿不准时
 function AutobuildStartCard({ card }) {
   const { pid } = useContext(WbCtx);
-  const evidenceOn = evidenceInProject(useProject());
-  const chips = (card.chips || []).filter((c) => c.label !== '生产库' || evidenceOn);
+  const chips = card.chips || [];
   return (
     <>
       <div className="g2-pol">

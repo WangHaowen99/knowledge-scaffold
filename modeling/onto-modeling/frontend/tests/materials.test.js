@@ -103,7 +103,7 @@ test('mock 阶段 materials：资料地图卡、资料用途问题卡、建议�
 test('mock 阶段 materials-empty / estate-empty / blueprint', () => {
   const empty = applyEvents(initialConversation(), stages['materials-empty'].history());
   assert.equal(empty.suggestions.primary, null);
-  assert.deepEqual(empty.suggestions.secondary.map((s) => s.label), ['先聊聊目标', '连接业务系统']);
+  assert.deepEqual(empty.suggestions.secondary.map((s) => s.label), ['先聊聊目标']);
   assert.equal(trackNodes(stages['materials-empty'].flow(F.flow()))[0].progress.label, '等资料');
   assert.equal(projectStages['estate-repair-c4d2b915'], 'estate-empty');
   const estate = applyEvents(initialConversation(), stages['estate-empty'].history());

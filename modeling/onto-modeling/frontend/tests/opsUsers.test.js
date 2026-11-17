@@ -130,7 +130,7 @@ test('回收站剩余天数：向上取整，过期算「今天」，purge_at �
   assert.equal(restoreDoneText({ project: { name: '测试项目 0919' } }, { name: '测试项目 0919（恢复）' }), '已恢复为「测试项目 0919（恢复）」');
 });
 
-test('审计筛选：设计稿的分段去掉证据采集（证据源本期不开放），「全部」不带 type；分页合并按 id 去重，第一页整体替换', () => {
+test('审计筛选：设计稿的分段去掉已删的证据采集，「全部」不带 type；分页合并按 id 去重，第一页整体替换', () => {
   assert.deepEqual(AUDIT_FILTERS.map(([k]) => k), ['all', 'write', 'mcp', 'commit', 'plugin', 'ops']);
   assert.equal(AUDIT_FILTERS.find(([k]) => k === 'plugin')[1], '插件');
   assert.deepEqual(auditQuery('all', '', 50), { limit: 50 });

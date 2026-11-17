@@ -1,10 +1,9 @@
-// 新建项目（设计稿 create）：四步向导。P-03 名称检查、U-01 资料暂存、EV-01 数据源数、PL-01 包目录、C-06 引擎、A-09 模型配置、P-02 创建
+// 新建项目（设计稿 create）：四步向导。P-03 名称检查、U-01 资料暂存、PL-01 包目录、C-06 引擎、A-09 模型配置、P-02 创建
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { navigate, pagePath, useRoute } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
-import { evidenceFromSources, isEvidencePack } from '../../state/evidence.js';
 import { ShellG } from '../../shell/Shell.jsx';
 import { Button, Chip, Field, Icon, Menu, Prog, Toggle, cx, useOutside } from '../../ui/index.jsx';
 import { uiChip } from '../plugins/catalogModel.js';
@@ -18,7 +17,7 @@ const EXAMPLES = ['店长一句话说明需求，按规则自动生成补货单'
 const PURPOSES = [['auto', '由助手判断'], ['goal', '建模目标依据'], ['evidence', '通用业务依据'], ['schema', '数据 Schema'], ['term', '术语表']];
 const PURPOSE_LABEL = Object.fromEntries(PURPOSES);
 const isRequired = (p) => p.required || p.project_status === 'required';
-const CAP_ICON = { core: 'cube', trace: 'flask', knowledge: 'book', codegen: 'code', rev: 'db', diagram: 'branch', websearch: 'globe', migrate: 'recycle', evo: 'refresh' };
+const CAP_ICON = { core: 'cube', trace: 'flask', codegen: 'code', diagram: 'branch' };
 
 function useNameCheck(api, name) {
   const [res, setRes] = useState(null);
@@ -81,7 +80,6 @@ export default function CreatePage() {
   const [engines, setEngines] = useState(null);
   const [engine, setEngine] = useState('claude');
   const [model, setModel] = useState(null);
-  const [sources, setSources] = useState(null);
   const [buildMode, setBuildMode] = useState('L2');
   const [busy, setBusy] = useState(false);
   const chk = useNameCheck(api, name);
@@ -97,7 +95,6 @@ export default function CreatePage() {
     }).catch((e) => toast(errorText(e), 'alert'));
     api.engines().then((r) => { setEngines(r); setEngine(r.default || 'claude'); }).catch(() => {});
     api.modelSettings().then(setModel).catch(() => {});
-    api.evidenceSources().then(setSources).catch(() => {});
   }, [api]);
 
   const addFiles = (list) => {
@@ -119,12 +116,9 @@ export default function CreatePage() {
   };
 
   const conflict = chk?.reason === 'conflict';
-  // 证据源本期只留接口（EV-01 回 501）：读不到数据源登记时不出「连接业务系统」和依赖证据源的能力包（ADR-0056）
-  const evidenceOn = evidenceFromSources(sources);
   const sysPacks = packs.filter((p) => p.category === 'system');
-  const capPacks = packs.filter((p) => p.category === 'capability' && (evidenceOn || !isEvidencePack(p.name)));
+  const capPacks = packs.filter((p) => p.category === 'capability');
   const selectedPages = capPacks.filter((p) => p.ui?.kind === 'page' && caps[p.name]).flatMap((p) => p.ui.pages.map((x) => x.title));
-  const srcCount = sources?.total ?? 0;
   const engineModel = model?.engines?.[engine];
   const modelName = modelDisplayName(engineModel);
   const uploading = files.some((f) => f.progress != null && f.progress < 100);
@@ -135,8 +129,7 @@ export default function CreatePage() {
     setBusy(true);
     try {
       const finalName = conflict && chk.conflict?.candidates?.[0] ? chk.conflict.candidates[0] : name;
-      const enabledCaps = evidenceOn ? caps : Object.fromEntries(Object.entries(caps).filter(([n]) => !isEvidencePack(n)));
-      const meta = await api.createProject(createBody({ name: finalName, goal, starts, files, industries, systems, caps: enabledCaps, engine, buildMode }));
+      const meta = await api.createProject(createBody({ name: finalName, goal, starts, files, industries, systems, caps, engine, buildMode }));
       toast(`项目已创建：${meta.name}`, 'check');
       setTimeout(() => navigate(pagePath(meta.landing_page || 'wb-materials', meta.id)), 600);
     } catch (e) {
@@ -157,7 +150,6 @@ export default function CreatePage() {
 
   const startItems = [
     ['upload', 'upload', '上传资料', ''],
-    ...(evidenceOn ? [['connect_system', 'plug', '连接业务系统', srcCount ? `已登记 ${srcCount} 个数据源可用：${sources.items.map((s) => s.id).join('、')}` : '还没有登记数据源，管理员登记后可用']] : []),
     ['industry_pack', 'layers', '从行业包开始', ''],
     ['import_package', 'pkg', '导入已有知识包', ''],
     ['example', 'play', '看示例项目', ''],
@@ -216,9 +208,8 @@ export default function CreatePage() {
                 <div className="grid3 mt16" style={{ gridTemplateColumns: `repeat(${startItems.length},1fr)`, gap: 10 }}>
                   {startItems.map(([k, i, t, d]) => {
                     const on = starts.includes(k);
-                    const dis = k === 'connect_system' && !srcCount;
                     return (
-                      <div key={k} className={cx('en-pick', on && 'on', dis && 'dis')} onClick={() => { if (dis) return; if (k === 'import_package') { navigate('/projects/import'); return; } setStarts((s) => (on ? s.filter((x) => x !== k) : [...s, k])); }}>
+                      <div key={k} className={cx('en-pick', on && 'on')} onClick={() => { if (k === 'import_package') { navigate('/projects/import'); return; } setStarts((s) => (on ? s.filter((x) => x !== k) : [...s, k])); }}>
                         <span className={cx('ck chk', on && 'on')} />
                         <span className="pi"><Icon name={i} size={18} /></span>
                         <div className="t mt8">{t}</div>

@@ -8,7 +8,7 @@ const ROW_H = 19;
 const MAX_ROWS = 8;
 const PAD = 24;
 
-// 包选用了 ER 视图才有这个选项；依赖证据源的两种（schema_browser、evidence_sidebar）本期不出
+// 包选用了 ER 视图才有这个选项
 export const hasErView = (extensions) => (extensions?.view_choices || []).some((v) => v.id === 'er_view');
 
 // ST-02 的图 + 各对象的属性（ST-04 fields）→ 实体与关系

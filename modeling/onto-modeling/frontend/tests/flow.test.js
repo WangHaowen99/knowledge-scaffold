@@ -4,7 +4,7 @@ import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
 import {
   commandFromTarget, commandName, commandNode, flowNeedsReload, mergeFlow, multiSlice, normalizeFlow, suggestionCommand, overlayRunning, sliceName,
-  trackClass, trackNodes, unitTitle, withoutEvidence,
+  trackClass, trackNodes, unitTitle,
 } from '../src/state/flow.js';
 
 test('P1 形状：主线按 after 连线排出 6 个必经步骤，分支与按需节点不进进度条', () => {
@@ -89,21 +89,6 @@ test('流程增量只带 state 时显示态跟着变', () => {
   assert.equal(mergeFlow(null, {}), null);
 });
 
-test('证据源不可用：系统取证节点从进度条与分组里去掉，前后连线接上；可用时原样', () => {
-  const flow = normalizeFlow(F.flow());
-  assert.ok(trackNodes(flow).some((n) => n.title === '系统取证'));
-  assert.equal(withoutEvidence(flow, true), flow);
-  const off = withoutEvidence(flow, false);
-  assert.deepEqual(trackNodes(off).map((n) => n.title).slice(0, 2), ['资料分析', '建模']);
-  assert.ok(!off.sections.flatMap((s) => s.nodes).includes('rev.evidence'));
-  assert.ok(off.edges.some((e) => e.from === 'core.research' && e.to === 'core.model'));
-  // 外部节点（要证据源提供方）同样去掉
-  const raw = F.flow();
-  raw.nodes.push({ id: 'x.ext', title: '外部取数', kind: 'external', placement: 'branch', section: 'optional', state: 'ready' });
-  raw.sections.find((x) => x.id === 'optional').nodes.push('x.ext');
-  assert.ok(!withoutEvidence(normalizeFlow(raw), false).sections.flatMap((s) => s.nodes).includes('x.ext'));
-});
-
 test('F8 起不分段：「全部」不显示名字、要有叫法时叫「建模」；老运行的分段照原名，两段以上才算分段', () => {
   assert.equal(sliceName('all', '全部'), '');
   assert.equal(sliceName('s2', '安全库存测算'), '安全库存测算');
@@ -130,11 +115,11 @@ test('建议条 send 动作：text 为空串时只发 command + args；整段命
   assert.equal(suggestionCommand({ type: 'send', text: '继续刚才的任务' }), null);
 });
 
-test('flow.updated 带来新的 flow_hash（节点集合变了，如授权数据源后多出系统取证）时要重取整份流程；增量合不进新节点', () => {
+test('flow.updated 带来新的 flow_hash（节点集合变了，如启用图示后多出流程图）时要重取整份流程；增量合不进新节点', () => {
   const flow = normalizeFlow({ flow_hash: 'h1', nodes: [{ id: 'core.research', state: 'done' }, { id: 'core.model', state: 'ready' }] });
   assert.equal(flowNeedsReload(flow, { flow_hash: 'h1', nodes: [{ id: 'core.model', state: 'running' }] }), false);
   assert.equal(flowNeedsReload(flow, { nodes: [{ id: 'core.model', state: 'running' }] }), false);
-  const added = { flow_hash: 'h2', nodes: [{ id: 'rev.evidence', state: 'ready' }] };
+  const added = { flow_hash: 'h2', nodes: [{ id: 'diagram.flowchart', state: 'ready' }] };
   assert.equal(flowNeedsReload(flow, added), true);
   assert.equal(flowNeedsReload(null, added), false, '流程还没取到时不另外重取');
   const merged = mergeFlow(flow, added);

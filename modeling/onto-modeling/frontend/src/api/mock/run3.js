@@ -48,7 +48,6 @@ export const AB_ANCHORS = {
   n4: `${F09}#p:4`,
   n5: `${F09}#p:5`,
   n6: `${F09}#p:6`,
-  db: ANCHORS.edb,
   stores: 'file:resource/schema/05-门店清单.xlsx#cell:门店表!F7',
   cats: 'file:resource/schema/06-商品品类表.xlsx#cell:品类表!D12',
 };
@@ -104,8 +103,8 @@ export function ledger() {
       { reason_text: '低于阈值，采用了不新增对象的选项并记为假设。', affected: [entryRef('safety_stock_std')] }),
     L('led-1522', '15:22', 's2', '样例补货单 B 的酸奶范围按什么取', '按区域统一配额', 0.84, A.b4, '样例补货单 B §4', '安全库存：样例补货单 B 的酸奶范围按区域统一配额',
       [adopted('A', '按区域统一配额', '和样例补货单 B 一致'), opt('B', '按品类标准', '样例补货单 B 的场景要改预期')]),
-    L('led-1529', '15:29', 's3', '乳制品陈列上限：修订通知写 150 箱，ERP 快照是 140', '150（修订通知优先）', 0.86, A.n2, '09 修订通知 §2', '陈列量：乳制品上限取 150（修订通知优先）',
-      [adopted('A', '150（修订通知优先）', '资料优先级里修订通知排第一'), opt('B', '140（以 ERP 为准）', '修订通知当作待落地')]),
+    L('led-1529', '15:29', 's3', '乳制品陈列上限：修订通知写 150 箱，补货规则写 140', '150（修订通知优先）', 0.86, A.n2, '09 修订通知 §2', '陈列量：乳制品上限取 150（修订通知优先）',
+      [adopted('A', '150（修订通知优先）', '资料优先级里修订通知排第一'), opt('B', '140（以补货规则为准）', '修订通知当作待落地')]),
     L('led-1531', '15:31', 's3', '「日均销量 ≥80 箱」是不是新上限的适用条件', '是，作为新上限的适用条件', 0.93, A.n2, '09 修订通知 §2', '陈列量：「日均销量 ≥80 箱」作为新上限的适用条件',
       [adopted('A', '是，作为新上限的适用条件', ''), opt('B', '不是，新上限对所有门店适用', '')]),
     L('led-1533', '15:33', 's3', '场景 3 的预期标准值要不要更新', '更新为 150', 0.95, A.n2, '09 修订通知 §2', '陈列量：场景 3 的预期标准值更新为 150',
@@ -129,7 +128,7 @@ export function ledger() {
       [adopted('A', '一律生成审批提示', ''), opt('B', '超出 10% 以内不提示', '')]),
     L('led-1640', '16:40', 'gc', '「要货方」和「门店」是不是同一个说法', '统一叫「门店」', 0.97, A.r92, '补货规则 §9.2', '校验：「要货方」统一叫「门店」',
       [adopted('A', '统一叫「门店」', ''), opt('B', '保留两种叫法', '')]),
-    L('led-1644', '16:44', 'gc', '商品品类的关系是推断的还是声明的', '改为声明', 0.85, A.db, 'ERP 补货标准表', '校验：商品品类的关系改为声明',
+    L('led-1644', '16:44', 'gc', '商品品类的关系是推断的还是声明的', '改为声明', 0.85, A.cats, '商品品类表 D12', '校验：商品品类的关系改为声明',
       [adopted('A', '改为声明', ''), opt('B', '保持推断', '')]),
     L('led-1652', '16:52', 'gc', 'R-07 缺适用品类', '补上适用品类', 0.81, A.r73, '补货规则 §7.3', '校验：R-07 补上适用品类',
       [adopted('A', '补上适用品类', ''), opt('B', '先不补', '')]),
@@ -160,9 +159,8 @@ export function suspensions() {
 export function policy() {
   return {
     scope: { mode: 'all_pending', slice_ids: ['s2', 's3', 's4', 's5'], refresh_stale_first: true, generate_scenarios: true, include_optional: false, until_node: null },
-    production_collection: [{ source_id: 'erp-prod', allowed: false, window: null, scope: [] }],
-    advanced: { confidence_threshold: THRESHOLD, below_threshold: 'conservative_assumption', must_suspend_kinds: [], source_priority: ['09 修订通知', '补货规则', '样例补货单', '数据库'], max_fix_rounds: 2 },
-    boundary_text: '自主构建不会发布、不会删除已确认内容、不会改资料区、不会在未授权时采集生产库',
+    advanced: { confidence_threshold: THRESHOLD, below_threshold: 'conservative_assumption', must_suspend_kinds: [], source_priority: ['09 修订通知', '补货规则', '样例补货单'], max_fix_rounds: 2 },
+    boundary_text: '自主构建不会发布、不会删除已确认内容、不会改资料区',
   };
 }
 
@@ -352,7 +350,7 @@ export function startCard() {
   return {
     card_id: 'ab3-start', card_type: 'autobuild_start', eyebrow: '', title: '自主构建 · 运行 #3', subtitle: '', status: null, plugin: null,
     open: { kind: 'page', target: 'proj-settings' }, run_id: RUN_ID, run_no: RUN_NO,
-    chips: [{ label: '范围', value: '未完成的 4 段' }, { label: '生产库', value: '不采集' }, { label: '拿不准时', value: '先按最稳妥的做法往下做，做完列出来给你复核' }],
+    chips: [{ label: '范围', value: '未完成的 4 段' }, { label: '拿不准时', value: '先按最稳妥的做法往下做，做完列出来给你复核' }],
   };
 }
 

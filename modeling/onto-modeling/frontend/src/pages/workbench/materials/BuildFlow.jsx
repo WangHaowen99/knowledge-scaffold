@@ -7,15 +7,13 @@ import { errorText } from '../../../api/errors.js';
 import {
   Button, KV, Modal, Note,
 } from '../../../ui/index.jsx';
-import { evidenceInProject } from '../../../state/evidence.js';
 import {
   previewScope, startErrorText, startLabel, takeOverText,
 } from '../autobuildModel.js';
 
 export function AutobuildPreviewDialog({ preview: initial, onClose }) {
   const { api } = useApp();
-  const project = useProject();
-  const { pid } = project;
+  const { pid } = useProject();
   const [preview, setPreview] = useState(initial);
   const [busy, setBusy] = useState(false);
   const start = async () => {
@@ -50,8 +48,6 @@ export function AutobuildPreviewDialog({ preview: initial, onClose }) {
         w="72px"
         pairs={[
           ['范围', previewScope(preview)],
-          // 证据源本期不开放：生产库采集这一行随证据源出现
-          ...(evidenceInProject(project) ? [['生产库', preview.production || '—']] : []),
           ['拿不准时', preview.below_threshold_text || '—'],
         ]}
       />

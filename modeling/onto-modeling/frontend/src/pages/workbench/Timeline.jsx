@@ -37,7 +37,6 @@ const AssistantText = memo(function AssistantText({ item }) {
       {!item.streaming ? (
         <div className="g2-acts wb-msg-acts">
           <span className={copied ? 'on' : ''} onClick={copy}><Icon name={copied ? 'check' : 'copy'} size={12} />{copied ? '已复制' : '复制'}</span>
-          {actions.canSaveKnowledge ? <span onClick={() => actions.saveKnowledge?.(item)}><Icon name="book" size={12} />沉淀为业务知识</span> : null}
         </div>
       ) : null}
     </div>

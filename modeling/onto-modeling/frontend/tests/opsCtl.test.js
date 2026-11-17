@@ -9,7 +9,7 @@ import {
   fmtBytesPair, fmtDuration, fmtMs, fmtStamp, fmtWhen, idleText, liveView, maintActions, maintBody, maintErrorText, maintProblem,
   maintSteps, maintTitle, nameOf, packActions, poolBody, poolDirty, poolForm, readyView, reloadsAfter, retentionBody, retentionForm,
   retentionText, rolloutProblem, scheduleText, sectionOf, sessionActions, sessionSub, startupSub, taskAction, taskActionToast, validatePool,
-  validateRetention, visibleInventory, visiblePacks, visibleRetention, visibleTasks,
+  validateRetention,
 } from '../src/pages/ops/ctlModel.js';
 
 const local = (...a) => new Date(...a).toISOString();
@@ -210,14 +210,14 @@ test('core 默认版本表：beta、stable、下线的按发布时间倒序；�
 });
 
 // ---------- 任务、备份、保留、诊断包 ----------
-test('任务按钮：进行中取消、失败重试、部分完成的采集续采；428 提示所有者确认；结束后刷新对应的块', () => {
+test('任务按钮：进行中取消、失败或部分完成的重试；结束后刷新对应的块', () => {
   assert.equal(taskAction({ state: 'running' }, true).op, 'cancel');
   assert.equal(taskAction({ state: 'failed', type: 'export' }, true).label, '重试');
-  assert.deepEqual([taskAction({ state: 'partial', type: 'collection' }, true).op, taskAction({ state: 'partial', type: 'collection' }, true).label], ['resume', '续采']);
+  assert.deepEqual([taskAction({ state: 'partial', type: 'export' }, true).op, taskAction({ state: 'partial', type: 'export' }, true).label], ['retry', '重试']);
   assert.equal(taskAction({ state: 'succeeded' }, true), null);
   assert.equal(taskAction({ state: 'running' }, false).disabled, true);
-  assert.match(taskActionToast('retry', {}, { status: 428, code: 'confirmation_required', needsConfirmation: true }), /所有者确认/);
-  assert.equal(taskActionToast('resume', {}, null), '已续采，从断点继续');
+  assert.equal(taskActionToast('retry', {}, null), '已重新开始');
+  assert.equal(taskActionToast('retry', {}, { status: 409, code: 'task_state_invalid' }), null);
   const before = [{ id: 'a', type: 'backup', state: 'running' }, { id: 'b', type: 'drill', state: 'running' }, { id: 'c', type: 'export', state: 'running' }];
   const after = [{ id: 'a', type: 'backup', state: 'succeeded' }, { id: 'b', type: 'drill', state: 'running' }, { id: 'c', type: 'export', state: 'failed' }, { id: 'n', type: 'pack_repo_backup', state: 'succeeded' }];
   assert.deepEqual(reloadsAfter(before, after), ['backups']);
@@ -228,41 +228,16 @@ test('备份计划：有固定时刻写每天，B2 只有间隔时写每 N 小�
   assert.equal(scheduleText({ daily_at: null, interval_hours: 24, keep: 3 }), '每 24 小时 · 保留最近 3 份');
 });
 
-test('数据保留：快照按份数说，表单只送改过的可编辑项，范围校验', () => {
+test('数据保留：备份按份数说，表单只送改过的可编辑项，范围校验', () => {
   const items = D.retention(Date.now());
-  assert.equal(retentionText(items.find((x) => x.id === 'snapshots')), '每个数据源最近 5 份');
   assert.equal(retentionText(items.find((x) => x.id === 'backups')), '最近 3 份');
   assert.equal(retentionText(items.find((x) => x.id === 'audit')), '365 天');
   const form = retentionForm(items);
   assert.deepEqual(retentionBody(form, items), { items: [] });
   const changed = form.map((f) => (f.id === 'logs' ? { ...f, value: '60' } : f.id === 'audit' ? { ...f, value: '30' } : f));
   assert.deepEqual(retentionBody(changed, items), { items: [{ id: 'logs', retention: { days: 60 } }] });
-  const bad = form.map((f) => (f.id === 'snapshots' ? { ...f, value: '0' } : f.id === 'audit' ? { ...f, value: '0' } : f));
-  assert.deepEqual(Object.keys(validateRetention(bad)), ['snapshots']);
-  // 证据快照一行随证据源开关（本期不开放时不列）
-  assert.equal(visibleRetention(items).some((x) => x.id === 'snapshots'), false);
-  assert.equal(visibleRetention(items).length, items.length - 1);
-  assert.deepEqual(visibleRetention(items, { evidenceOn: true }), items);
-  assert.deepEqual(visibleRetention(null), []);
-});
-
-test('证据源不可用时运维管控不列证据相关的行：提供方与系统逆向建模包、证据采集任务；可用时原样', () => {
-  const packs = D.opsPacks();
-  const off = visiblePacks(packs);
-  assert.equal(off.some((p) => p.kind === 'provider' || p.name === 'rev'), false);
-  assert.equal(off.length, packs.filter((p) => p.kind !== 'provider' && p.name !== 'rev').length);
-  assert.deepEqual(visiblePacks(packs, { evidenceOn: true }), packs);
-  const inv = D.versions();
-  assert.equal(visibleInventory(inv).some((r) => r.category === 'provider' || r.component === 'rev' || r.component.startsWith('evidence')), false);
-  assert.deepEqual(visibleInventory(inv, { evidenceOn: true }), inv);
-  // 多源连接器里的转换器照常列（ADR-0073）
-  const conv = { category: 'provider', component: 'convert-pdf', version: '1.0.0', note: 'PDF 转换', converter: true };
-  assert.deepEqual(visibleInventory([...inv, conv]).filter((r) => r.category === 'provider'), [conv]);
-  const tasks = D.tasks(Date.now()).items || D.tasks(Date.now());
-  assert.ok(tasks.some((t) => t.type === 'collection'));
-  assert.equal(visibleTasks(tasks).some((t) => t.type === 'collection'), false);
-  assert.deepEqual(visibleTasks(tasks, { evidenceOn: true }), tasks);
-  assert.deepEqual([visiblePacks(null), visibleInventory(null), visibleTasks(null)], [[], [], []]);
+  const bad = form.map((f) => (f.id === 'backups' ? { ...f, value: '0' } : f.id === 'audit' ? { ...f, value: '0' } : f));
+  assert.deepEqual(Object.keys(validateRetention(bad)), ['backups']);
 });
 
 test('诊断包：默认勾前 5 项；提示里写上次生成的时间与人', () => {
@@ -436,12 +411,12 @@ test('mock 维护：?mock=maint:reject 时一打开就在排空这一步，与�
 test('mock 插件运维：灰度、熔断 → 半开、重复熔断 409、禁用要原因、回滚通道', async () => {
   const { call } = mockServer();
   const packs = (await call('GET', `${O}/packs`)).body.items;
-  // 包名只用合成场景的（新建向导的包目录 + 证据源提供方与导出器）
-  const synthetic = new Set([...F.packs().map((p) => p.name), 'db-mysql', 'exporter-otel']);
+  // 包名只用合成场景的（新建向导的包目录 + 导出器）
+  const synthetic = new Set([...F.packs().map((p) => p.name), 'exporter-otel']);
   assert.deepEqual(packs.filter((x) => !synthetic.has(x.name)).map((x) => x.name), []);
   assert.ok(packs.find((x) => x.name === 'industry-retail' && x.breaker === 'open'));
-  assert.equal((await call('PUT', `${O}/packs/rev/0.2.0/rollout`, { percent: 101 })).status, 400);
-  assert.equal((await call('PUT', `${O}/packs/rev/0.2.0/rollout`, { percent: 50, by: 'tenant' })).body.rollout_pct, 50);
+  assert.equal((await call('PUT', `${O}/packs/codegen/0.9.2/rollout`, { percent: 101 })).status, 400);
+  assert.equal((await call('PUT', `${O}/packs/codegen/0.9.2/rollout`, { percent: 50, by: 'tenant' })).body.rollout_pct, 50);
   assert.equal((await call('POST', `${O}/packs/industry-retail/1.0.3/breaker`, { action: 'open' })).body.code, 'breaker_state_invalid');
   assert.equal((await call('POST', `${O}/packs/industry-retail/1.0.3/breaker`, { action: 'close' })).body.breaker, 'half_open');
   assert.equal((await call('POST', `${O}/packs/trace/0.9.1/breaker`, { action: 'open', reason: '失败率高' })).body.breaker, 'open');
@@ -478,7 +453,7 @@ test('mock 启动自检：write_intents 在 index_lock 之后、uncommitted 之�
   assert.deepEqual([by.index_lock.result, by.uncommitted.result, by.assembly.title, by.dependencies.title], ['cleared', 'committed', '装配目录 38 / 38 一致', '依赖 6 / 6 可达']);
 });
 
-test('mock 备份：范围含 packs；演练要指定已有备份；任务列表可按类型筛选；取消与续采', async () => {
+test('mock 备份：范围含 packs；演练要指定已有备份；任务列表可按类型筛选；取消与重试', async () => {
   const { call } = mockServer();
   const b = (await call('GET', `${O}/backups`)).body;
   assert.ok(b.scope.includes('packs'));
@@ -490,13 +465,12 @@ test('mock 备份：范围含 packs；演练要指定已有备份；任务列表
   assert.deepEqual(drills.map((x) => [x.type, x.state]), [['drill', 'running']]);
   assert.equal('onDone' in drills[0] || 'done_at' in drills[0], false);
   const all = (await call('GET', `${O}/tasks`)).body.items;
-  const running = all.find((x) => x.type === 'collection' && x.state === 'running');
+  const running = all.find((x) => x.type === 'export' && x.state === 'running');
   assert.equal((await call('POST', `${O}/tasks/${running.id}/cancel`)).body.state, 'cancelled');
   assert.equal((await call('POST', `${O}/tasks/${running.id}/cancel`)).body.code, 'task_state_invalid');
-  const partial = all.find((x) => x.state === 'partial');
-  assert.equal((await call('POST', `${O}/tasks/${partial.id}/resume`)).body.state, 'running');
   const failed = all.find((x) => x.state === 'failed');
-  assert.equal((await call('POST', `${O}/tasks/${failed.id}/resume`)).status, 409);
+  assert.equal((await call('POST', `${O}/tasks/${failed.id}/resume`)).status, 404, '续跑（O-41 resume）已删');
+  assert.equal((await call('POST', `${O}/tasks/${failed.id}/retry`)).body.state, 'running');
   assert.equal((await call('POST', `${O}/tasks/nope/retry`)).status, 404);
 });
 

@@ -4,13 +4,13 @@
 
 export const GENERIC_ICON = {
   material_map: 'map', blueprint: 'layers', change_list: 'refresh', run_report: 'rocket', research_summary: 'filetext',
-  impact: 'target', regression: 'flask', external_feedback: 'inbox', autobuild_start: 'rocket', slice_progress: 'layers',
+  impact: 'target', regression: 'flask', autobuild_start: 'rocket', slice_progress: 'layers',
   auto_decision: 'bot', suspension: 'pause', build_choice: 'compass', upload_prompt: 'upload', artifact: 'layers',
 };
 // 没带 open 的卡默认去哪一页
 export const GENERIC_PAGE = {
   material_map: 'wb-materials', blueprint: 'wb-blueprint', change_list: 'incremental', run_report: 'l4-run', impact: 'incremental',
-  regression: 'incremental', external_feedback: 'incremental', autobuild_start: 'l4-run', slice_progress: 'l4-run',
+  regression: 'incremental', autobuild_start: 'l4-run', slice_progress: 'l4-run',
   auto_decision: 'inbox', suspension: 'inbox',
 };
 const ITEMS_MAX = 4;

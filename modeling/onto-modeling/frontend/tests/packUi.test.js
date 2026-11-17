@@ -55,7 +55,7 @@ test('卡片双击：产物卡打开产物，带 open.page 的去页面，旧卡
   assert.deepEqual(cardOpen(noteCard), { kind: 'artifact', ref: noteCard.open.ref });
   assert.deepEqual(cardOpen({ card_type: 'x', open: { kind: 'page', target: 'scenarios' } }), { kind: 'page', page: 'scenarios' });
   assert.deepEqual(cardOpen({ card_type: 'blueprint' }), { kind: 'page', page: 'wb-blueprint' });
-  assert.equal(cardOpen({ card_type: 'knowledge_saved' }), null);
+  assert.equal(cardOpen({ card_type: 'build_choice' }), null);
 });
 
 test('卡片只读：写入范围锁里有这份产物', () => {
@@ -219,17 +219,11 @@ test('窄接口：上下文与主题变量；回应与推送的信封', async ()
   assert.deepEqual(event('artifact.changed', { key: 'n1' }), { onto_ui: UI_API, event: 'artifact.changed', data: { key: 'n1' } });
 });
 
-// ---------- 证据源只留接口：入口不出现 ----------
+// ---------- 可选分类：没有包时不出 ----------
 
-test('证据源入口：待处理的「证据冲突」没有事项时不出，插件中心的提供方分类没有包时不出', async () => {
-  const { visibleFilters, FILTERS } = await import('../src/pages/inbox/inboxModel.js');
+test('插件中心的多源连接器、导出器分类没有包时不出', async () => {
   const { OPTIONAL_CATEGORIES } = await import('../src/pages/plugins/catalogModel.js');
-  const keys = (list) => list.map(([k]) => k);
-  assert.equal(keys(visibleFilters({ by_filter: {} }, 'all')).includes('evidence_conflict'), false);
-  assert.equal(keys(visibleFilters({ by_filter: { evidence_conflict: 2 } }, 'all')).includes('evidence_conflict'), true);
-  assert.equal(keys(visibleFilters(null, 'evidence_conflict')).includes('evidence_conflict'), true);
-  assert.equal(visibleFilters({ by_filter: { evidence_conflict: 1 } }, 'all').length, FILTERS.length);
-  assert.ok(OPTIONAL_CATEGORIES.includes('provider'));
+  assert.deepEqual(OPTIONAL_CATEGORIES, ['exporter', 'provider']);
 });
 
 test('审查第 7 条：卡片只读只看实时的写入范围，不看卡片里存的 locked', () => {

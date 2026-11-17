@@ -16,7 +16,7 @@ import {
 } from './obsModel.js';
 import { RulesCard } from './obsRules.jsx';
 import { TraceCard } from './obsTrace.jsx';
-import { OpsShell, useEvidenceOn } from './parts.jsx';
+import { OpsShell } from './parts.jsx';
 import '../../styles/ops-obs.css';
 
 function LabelFilter({ tags, onChange }) {
@@ -67,7 +67,6 @@ function LabelFilter({ tags, onChange }) {
 
 function MetricCards({ range, labels }) {
   const { api } = useApp();
-  const evidenceOn = useEvidenceOn();
   const [cards, setCards] = useState(null);
   const [error, setError] = useState(null);
   useEffect(() => {
@@ -80,7 +79,7 @@ function MetricCards({ range, labels }) {
   if (error) return <div className="card pad mt16 muted sm">指标没取到：{error}</div>;
   return (
     <div className="op-k5 mt16">
-      {visibleMetricCards(cards, { evidenceOn }).map((c) => {
+      {visibleMetricCards(cards).map((c) => {
         const v = metricView(c);
         return (
           <div className="op-mc" key={v.id}>

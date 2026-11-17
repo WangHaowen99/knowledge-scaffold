@@ -1,6 +1,5 @@
 // mock：系统设置（sys）的合成数据。模型名一律合成（model-*），厂商写「厂商 A」这类；
 // 域名只用 example.com，密钥只给掩码占位，服务令牌的明文是明显的占位串。
-import { PLATFORM_LIMITS } from './settings-data.js';
 import { MAIN_PID } from './fixtures.js';
 
 const MIN = 60 * 1000;
@@ -130,7 +129,6 @@ export function registryItems(state) {
     item('context.presets', state.presetsText, 'data_dir', '表结构 + 数值', 'immediate', { edit_page: 'sys', description: '模型上下文推荐表（只做推荐，不参与运行时取值）' }),
     item('trace.max_cases_per_slice', '6', 'pack', '整数 1–20', 'next_message', { pack: 'trace@0.9.1', description: '每段最多推演的场景数' }),
     item('l4.max_concurrent_runs', String(state.maxRuns), 'data_dir', '整数 0–16', 'immediate', { edit_page: 'sys', description: '自主构建同时运行上限' }),
-    item('evidence.snapshot.max_git_mb', String(state.snapshotMb), state.snapshotMb === 20 ? 'default' : 'data_dir', '整数 MB', 'immediate', { edit_page: 'sys', description: '单份快照在 git 里的上限' }),
     item('backup.keep', '3', 'default', '整数 ≥ 1', 'immediate', { description: '保留的备份份数' }),
   ];
 }
@@ -138,8 +136,9 @@ export function registryItems(state) {
 // SY-15、SY-16
 export function quotas() {
   return {
-    per_user: { concurrent_sessions: 2, daily_tokens: 2000000, collections_per_source_per_hour: 3 },
-    per_project: { online_engines: 1, monthly_tokens: 30000000, snapshot_git_mb: 20 },
+    per_user: { concurrent_sessions: 2, daily_tokens: 2000000 },
+    per_project: { online_engines: 1, monthly_tokens: 30000000 },
+    not_enforced: [],
     overrides: [
       { id: 'qo-seed-1', subject: { kind: 'user', id: 'zhangsan', label: '张工' }, item: 'daily_tokens', value: 5000000, reason: '补货场景培训周', created_at: iso(Date.now() - 3 * DAY), created_by: 'zhangsan' },
       { id: 'qo-seed-2', subject: { kind: 'project', id: 'bike-fleet-7b20e4a1', label: '共享单车故障诊断' }, item: 'monthly_tokens', value: 60000000, reason: 'L4 夜间批量构建', created_at: iso(Date.now() - 6 * DAY), created_by: 'zhangsan' },
@@ -147,15 +146,14 @@ export function quotas() {
   };
 }
 
-// SY-17：平台上限与项目设置（AB-01 platform_limits）同一份
+// SY-17：自主构建的平台上限
 export function autobuildLimits() {
   return {
     max_concurrent_runs: 4,
-    allow_production_collection: PLATFORM_LIMITS.allow_production_collection,
     night_priority: { enabled: true, start: '20:00', end: '08:00' },
     running: 2,
-    // 与后端（B5b）一致：生产库采集授权、夜间优先本期只存不用
-    not_enforced: ['allow_production_collection', 'night_priority'],
+    // 与后端一致：夜间优先本期只存不用
+    not_enforced: ['night_priority'],
   };
 }
 

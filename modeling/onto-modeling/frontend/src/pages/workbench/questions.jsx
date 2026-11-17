@@ -167,7 +167,7 @@ export function WalkthroughCard({ q }) {
   );
 }
 
-// 一般的是 / 否确认、采集确认
+// 一般的是 / 否确认
 export function ConfirmCard({ q }) {
   const [busy, submit] = useAnswer(q);
   return (

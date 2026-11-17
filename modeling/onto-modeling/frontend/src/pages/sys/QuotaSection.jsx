@@ -1,11 +1,9 @@
 // 系统设置 · 配额与自主构建：按用户 / 按项目的默认配额（SY-15）、单独设置的增删（SY-16）、自主构建平台限制（SY-17）。
 // 页头「保存」一次存两份（哪份改了存哪份），立即生效。哪组接口回 404 就不画那一块（R17；两组都没有时左栏不出这个分区）。
-// 证据源相关的项（采集频率、快照体积、自主构建采集生产库）按证据源是否可用过滤（EV-01 读不到就不出），不只靠 not_enforced。
 import { useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
-import { evidenceFromSources } from '../../state/evidence.js';
 import {
   Button, Card, Chip, Field, Icon, Inp, Modal, Seg, Select, Table, Toggle, cx,
 } from '../../ui/index.jsx';
@@ -81,8 +79,6 @@ export function QuotaSection() {
   const { api } = useApp();
   const quota = useLoad(() => api.quotas());
   const limits = useLoad(() => api.autobuildLimits());
-  const sources = useLoad(() => api.evidenceSources());
-  const evidenceOn = evidenceFromSources(sources.data);
   const [qf, setQf] = useState(null);
   const [lf, setLf] = useState(null);
   const [tried, setTried] = useState(false);
@@ -94,7 +90,7 @@ export function QuotaSection() {
   const lForm = lf || (limits.data ? limitsForm(limits.data) : null);
   const qDirty = !!(quota.data && qf && quotaDirty(quota.data, qf));
   const lDirty = !!(limits.data && lf && limitsDirty(limits.data, lf));
-  // SY-17 not_enforced：本期不生效的项（夜间优先、采集生产库）不显示，字段照常存
+  // SY-17 not_enforced：本期不生效的项（夜间优先）不显示，字段照常存
   const limitsOff = new Set(limits.data?.not_enforced || []);
   const qp = tried && qForm ? quotaProblems(qForm) : {};
   // 服务端判的字段错误（SY-17 回 422 fields.max_concurrent_runs=min 等）与本地校验一起显示
@@ -140,8 +136,8 @@ export function QuotaSection() {
   );
 
   const overrides = quota.data?.overrides || [];
-  // 不显示的项：SY-15 not_enforced 列出的，加上证据源不可用时的采集频率、快照体积（字段保留、照常能存）
-  const hidden = new Set([...(quota.data?.not_enforced || []), ...(evidenceOn ? [] : ['collections_per_source_per_hour', 'snapshot_git_mb'])]);
+  // 不显示的项：SY-15 not_enforced 列出的
+  const hidden = new Set(quota.data?.not_enforced || []);
   return (
     <>
       {head}
@@ -156,12 +152,6 @@ export function QuotaSection() {
                 <Field label="每日 token 预算" hint={err(qp, 'daily_tokens', '缓存命中按 1/10 计')}>
                   <Inp mono value={qForm.daily_tokens} error={!!qp.daily_tokens} onChange={setQ('daily_tokens')} />
                 </Field>
-                {hidden.has('collections_per_source_per_hour') ? null : (
-                  <Field label="证据采集频率" hint={err(qp, 'collections_per_source_per_hour', null)}>
-                    <Inp value={qForm.collections_per_source_per_hour} error={!!qp.collections_per_source_per_hour} onChange={setQ('collections_per_source_per_hour')}
-                      after={<span className="muted sm sy-nowrap">次 / 每个数据源每小时</span>} />
-                  </Field>
-                )}
               </div>
             </Card>
             <Card title="按项目" icon="pkg">
@@ -169,11 +159,6 @@ export function QuotaSection() {
                 <Field label="每月 token 预算" hint={err(qp, 'monthly_tokens', null)}>
                   <Inp mono value={qForm.monthly_tokens} error={!!qp.monthly_tokens} onChange={setQ('monthly_tokens')} />
                 </Field>
-                {hidden.has('snapshot_git_mb') ? null : (
-                  <Field label="单份快照在 git 里的上限" hint={err(qp, 'snapshot_git_mb', null)}>
-                    <Inp mono value={qForm.snapshot_git_mb} error={!!qp.snapshot_git_mb} onChange={setQ('snapshot_git_mb')} after={<span className="muted sm">MB</span>} />
-                  </Field>
-                )}
               </div>
             </Card>
           </div>
@@ -207,14 +192,8 @@ export function QuotaSection() {
                 <Inp mono value={lForm.max_concurrent_runs} error={!!lp.max_concurrent_runs} onChange={setL('max_concurrent_runs')} />
               </Field>
             </div>
-            {evidenceOn && !limitsOff.has('allow_production_collection') ? (
-              <div className="pl-sw mt8">
-                <div className="sm b">允许自主构建采集生产环境数据源</div>
-                <Toggle on={lForm.allow_production_collection} onChange={setL('allow_production_collection')} />
-              </div>
-            ) : null}
             {limitsOff.has('night_priority') ? null : (
-              <div className={cx('pl-sw', !evidenceOn && 'mt8')}>
+              <div className="pl-sw mt8">
                 <div>
                   <div className="sm b">夜间优先</div>
                   <div className="xs muted">{nightText(limits.data.night_priority)}</div>

@@ -6,7 +6,6 @@ import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import { createLatestRequest } from '../../lib/latestRequest.js';
-import { evidenceFromSources } from '../../state/evidence.js';
 import { PageHead, ShellG } from '../../shell/Shell.jsx';
 import {
   Button, Check, Empty, Field, Icon, Modal, Note, Prog, Seg, Select, cx, useOutside,
@@ -314,24 +313,19 @@ function RenameDialog({ dlg, onClose, onDone }) {
 function CloneDialog({ dlg, onClose, onDone }) {
   const { api } = useApp();
   const [v, setV] = useState('');
-  const [opt, setOpt] = useState({ include_history: true, include_snapshots: true, include_conversations: false });
-  // 证据源本期不开放：EV-01 读不到时不出「包含证据快照」，也不带这个选项
-  const [evidenceOn, setEvidenceOn] = useState(false);
+  const [opt, setOpt] = useState({ include_history: true, include_conversations: false });
   useEffect(() => {
-    if (!dlg) return undefined;
-    setV(`${dlg.p.name}（副本）`);
-    setOpt({ include_history: true, include_snapshots: true, include_conversations: false });
-    let alive = true;
-    api.evidenceSources().then((r) => alive && setEvidenceOn(evidenceFromSources(r)), () => alive && setEvidenceOn(false));
-    return () => { alive = false; };
-  }, [api, dlg]);
+    if (dlg) {
+      setV(`${dlg.p.name}（副本）`);
+      setOpt({ include_history: true, include_conversations: false });
+    }
+  }, [dlg]);
   const chk = useNameCheck(v, undefined, !!dlg);
   if (!dlg) return null;
   const bad = chk && !chk.available;
   const go = async () => {
     try {
-      const { include_snapshots: snapshots, ...rest } = opt;
-      await api.cloneProject(dlg.p.id, { name: v.trim(), ...rest, ...(evidenceOn ? { include_snapshots: snapshots } : {}) });
+      await api.cloneProject(dlg.p.id, { name: v.trim(), ...opt });
       toast('克隆完成');
       onClose();
       onDone();
@@ -349,7 +343,6 @@ function CloneDialog({ dlg, onClose, onDone }) {
       </Field>
       <div className="col mt16" style={{ gap: 10 }}>
         <Check on={opt.include_history} onChange={(x) => setOpt((o) => ({ ...o, include_history: x }))} label="包含版本历史" />
-        {evidenceOn ? <Check on={opt.include_snapshots} onChange={(x) => setOpt((o) => ({ ...o, include_snapshots: x }))} label="包含证据快照" /> : null}
         <Check on={opt.include_conversations} onChange={(x) => setOpt((o) => ({ ...o, include_conversations: x }))} label="包含对话记录" />
       </div>
     </Modal>

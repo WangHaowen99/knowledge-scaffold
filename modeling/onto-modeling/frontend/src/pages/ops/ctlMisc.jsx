@@ -7,18 +7,16 @@ import {
 import { Missing } from './ctlParts.jsx';
 import {
   DIAG_ITEMS, INV_CATEGORY, diagDefaults, diagLine, diagNote, fmtBytes, fmtDay, retentionBody, retentionForm, retentionText,
-  validateRetention, visibleInventory, visibleRetention,
+  validateRetention,
 } from './ctlModel.js';
-import { useEvidenceOn } from './parts.jsx';
 
 export function VersionsCard({ versions }) {
-  const evidenceOn = useEvidenceOn();
   return (
     <Card title="版本清单" icon="layers" data-sec="versions">
       <Table
         compact
         cols={['类别', '组件', '版本']}
-        rows={visibleInventory(versions?.items, { evidenceOn }).map((r) => [
+        rows={(versions?.items || []).map((r) => [
           <span className="muted" style={{ whiteSpace: 'nowrap' }}>{INV_CATEGORY[r.category] || r.category}</span>,
           <span className="sm" title={r.note || undefined}>{r.component}</span>,
           <span className="mono xs">{r.version}</span>,
@@ -61,7 +59,7 @@ function RetentionModal({ open, onClose, items, run, busy, onSaved }) {
               <span className="op-lock" style={{ width: 120 }}><Icon name="lock" size={12} />{f.value} 天</span>
             )}
             <span className="xs muted grow">
-              {errors[f.id] || (!f.editable ? '只追加，不可编辑' : f.id === 'snapshots' ? '每个数据源保留的份数' : '')}
+              {errors[f.id] || (!f.editable ? '只追加，不可编辑' : '')}
             </span>
           </div>
         ))}
@@ -72,8 +70,7 @@ function RetentionModal({ open, onClose, items, run, busy, onSaved }) {
 
 export function RetentionCard({ retention, perm, run, busy, onSaved }) {
   const [open, setOpen] = useState(false);
-  const evidenceOn = useEvidenceOn();
-  const items = visibleRetention(retention?.items, { evidenceOn });
+  const items = retention?.items || [];
   return (
     <Card
       title="数据保留" icon="clock" data-sec="retention"

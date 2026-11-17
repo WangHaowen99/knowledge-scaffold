@@ -3,7 +3,7 @@
 // 地址参数（?mock=，逗号分隔）：
 //   ops:p1  —— O-01 按 B2 后端的口径返回：calls_today、autobuild.limit、accounts、avg_cost.amount 为 null，
 //              费用是美元，告警与运行中的自主构建为空（contract-changes「B2 · 非项目级路由」第 1、16 条）。
-//   obs:p1  —— 可观测按 B3b 后端的口径返回：指标卡是数加单位、合入与证据采集恒为 0 带 note、归因的 reruns 与
+//   obs:p1  —— 可观测按 B3b 后端的口径返回：指标卡是数加单位、合入恒为 0 带 note、归因的 reruns 与
 //              first_accept_pct 为 null、日志有 DEBUG 与 message；告警规则与导出器（O-08～O-12）后端没做，返回 404。
 import { matchLog, parseLabelsQuery, selectTraces } from '../../pages/ops/obsModel.js';
 import * as D from './ops-obs-data.js';

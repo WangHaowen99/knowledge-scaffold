@@ -1,4 +1,4 @@
-// 3.7 Studio 条目（ST-01～ST-10）、原文编辑用到的文件接口（F-02、F-03）、证据「被谁引用」（EV-26）
+// 3.7 Studio 条目（ST-01～ST-10）、原文编辑用到的文件接口（F-02、F-03）
 // 只有主示例项目「门店补货单编制」有条目，其余项目是空知识包。条目、分段、资料名称都来自 scenario.js。
 //
 // mock 参数（?mock=…，和其他参数用逗号拼）：
@@ -103,7 +103,7 @@ const DESC = {
   build_replenish_order: '生成补货单的脚本。',
 };
 
-// 对象的属性：[属性, 英文名, 类型]；证据缺省是 ERP 补货标准表上的同名字段（系统元数据）
+// 对象的属性：[属性, 英文名, 类型]；证据缺省是表格资料的表头（门店类对象取门店清单，其余取商品品类表）
 const FIELDS = {
   replenish_order: [['门店', 'store_code', '文本'], ['商品', 'goods_code', '文本'], ['申请量', 'request_qty', '数值 · 箱'], ['到货周期', 'delivery_cycle', '枚举']],
   store: [['门店编号', 'store_code', '文本'], ['门店名称', 'store_name', '文本'], ['门店等级', 'level_code', '枚举']],
@@ -120,6 +120,7 @@ const FIELDS = {
   store_level: [['等级', 'level_code', '枚举']],
   history_order: [['补货单号', 'order_no', '文本']],
 };
+const SCHEMA_SHEET = { store: ['05-门店清单.xlsx', '门店'], store_level: ['05-门店清单.xlsx', '门店'], store_request: ['05-门店清单.xlsx', '门店'] };
 const TABLE = {
   replenish_order: ['erp.replenish_order', '补货单表'], store: ['erp.store', '门店表'], store_request: ['erp.store_request', '门店需求表'],
   replenish_ledger: ['erp.replenish_ledger', '补货台账表'], goods_category: ['erp.goods_category', '商品品类表'],
@@ -128,12 +129,12 @@ const TABLE = {
   expiry_loss_std: ['erp.expiry_std', '临期标准表'], check_item: ['erp.check_item', '检查项目表'],
 };
 
-// 陈列量标准（设计稿选中的条目）手写：属性带证据，覆盖系统元数据 / 数据观察 / 推断 / 资料原文 / 专家确认 / 缺证据
+// 陈列量标准（设计稿选中的条目）手写：属性带证据，覆盖资料原文 / 专家确认 / 缺证据
 const AN = {
-  cat: 'db:erp-prod/erp.replenish_std.category_code',
-  cycle: 'db:erp-prod/erp.replenish_std.delivery_cycle',
-  max: 'db:erp-prod/erp.replenish_std.max_qty',
-  std: 'db:erp-prod/erp.replenish_std.std_ref',
+  cat: 'file:resource/schema/06-商品品类表.xlsx#sheet:品类!B2',
+  cycle: 'file:resource/schema/06-商品品类表.xlsx#sheet:品类!D2',
+  max: 'file:resource/schema/06-商品品类表.xlsx#sheet:品类!E2',
+  std: 'file:resource/schema/06-商品品类表.xlsx#sheet:品类!C2',
   r73: 'file:resource/others/02-门店补货规则.docx#p:7.3',
   show3: 'file:resource/others/04-商品陈列说明.pdf#p:3',
   rev2: 'file:resource/others/09-修订通知.docx#p:2',
@@ -142,22 +143,22 @@ const ev = (anchor, label, scheme, confidence = null) => ({ anchor, label, schem
 const EV_NONE = { anchor: null, label: '', scheme: null, confidence: null, expert_confirmed: false, missing: true };
 const EV_EXPERT = { anchor: null, label: '专家确认', scheme: null, confidence: null, expert_confirmed: true, missing: false };
 const FOCUS_FIELDS = [
-  { name: '商品品类', column: 'category_code', type: '文本', evidence: ev(AN.cat, 'ERP · 商品品类', 'db', 'declared') },
-  { name: '到货周期', column: 'delivery_cycle', type: '枚举', evidence: ev(AN.cycle, 'ERP · 到货周期', 'db', 'observed') },
+  { name: '商品品类', column: 'category_code', type: '文本', evidence: ev(AN.cat, '商品品类表 品类 B2', 'file') },
+  { name: '到货周期', column: 'delivery_cycle', type: '枚举', evidence: ev(AN.cycle, '商品品类表 品类 D2', 'file') },
   { name: '陈列上限', column: 'display_max', type: '数值 · 箱', evidence: ev(AN.r73, '补货规则 §7.3', 'file') },
   { name: '陈列下限', column: 'display_min', type: '数值 · 箱', evidence: ev(AN.show3, '商品陈列说明 第 3 节', 'file') },
-  { name: '适用标准', column: 'std_code', type: '文本', evidence: ev(AN.std, 'ERP · 适用标准', 'db', 'inferred') },
+  { name: '适用标准', column: 'std_code', type: '文本', evidence: ev(AN.std, '商品品类表 品类 C2', 'file') },
   { name: '检查方法', column: 'check_method', type: '文本', evidence: EV_EXPERT },
   { name: '生效日期', column: 'effective_from', type: '日期', evidence: EV_NONE },
 ];
-// 证据侧栏（ST-06）：比属性多一条 ERP 标准上限（陈列上限同时有库表和资料两处证据）
+// 证据侧栏（ST-06）：比属性多一条品类表的标准上限（陈列上限同时有品类表和补货规则两处出处）
 const FOCUS_EVIDENCE = [
-  [AN.max, 'db', 'ERP · 补货标准表 · 标准上限', 'declared', ['陈列上限']],
-  [AN.cycle, 'db', 'ERP · 补货标准表 · 到货周期', 'observed', ['到货周期']],
-  [AN.std, 'db', 'ERP · 补货标准表 · 适用标准', 'inferred', ['适用标准']],
+  [AN.max, 'file', '商品品类表 品类 E2', null, ['陈列上限']],
+  [AN.cycle, 'file', '商品品类表 品类 D2', null, ['到货周期']],
+  [AN.std, 'file', '商品品类表 品类 C2', null, ['适用标准']],
   [AN.r73, 'file', '补货规则 §7.3', null, ['陈列上限']],
   [AN.show3, 'file', '商品陈列说明 第 3 节', null, ['陈列下限']],
-  [AN.cat, 'db', 'ERP · 补货标准表 · 商品品类', 'declared', ['商品品类']],
+  [AN.cat, 'file', '商品品类表 品类 B2', null, ['商品品类']],
 ];
 
 // EV-29 悬浮原文（index.js 的 /anchors/resolve 查 F.ANCHOR_RESOLUTIONS，这里把 Studio 用到的锚点补进去）
@@ -171,13 +172,13 @@ function resolution(anchor, source_label, location_label, marked, confidence = n
   const scheme = anchor.split(':')[0];
   return {
     anchor, scheme, resolved: true, source_label, location_label, text, highlights, confidence,
-    snapshot_id: scheme === 'db' ? '20261030-221500-9c1d' : null, page: scheme === 'db' ? 'schema' : 'resources',
+    snapshot_id: null, page: 'resources',
   };
 }
 const RESOLUTIONS = [
-  resolution(AN.cat, '业务系统 ERP', '补货标准表 · 商品品类', '关联到商品品类表，<mark>表结构里明确写着</mark>', 'declared'),
-  resolution(AN.cycle, '业务系统 ERP', '补货标准表 · 到货周期', '常见取值：<mark>每日 / 隔日 / 每周</mark>', 'observed'),
-  resolution(AN.std, '业务系统 ERP', '补货标准表 · 适用标准', '字段取值和「适用标准」对象的 Key 重合 92%', 'inferred'),
+  resolution(AN.cat, '06-商品品类表.xlsx', '品类 B2', '牛奶一行「品类」：<mark>乳制品</mark>'),
+  resolution(AN.cycle, '06-商品品类表.xlsx', '品类 D2', '牛奶一行「到货周期」：<mark>每日</mark>'),
+  resolution(AN.std, '06-商品品类表.xlsx', '品类 C2', '牛奶一行「适用标准」：<mark>乳制品陈列标准 2024</mark>'),
   resolution(AN.r73, '02-门店补货规则.docx', '§7.3 陈列量', '陈列量按适用标准规定的<mark>上限</mark>执行，单位：箱。'),
   resolution(AN.show3, '04-商品陈列说明.pdf', '第 3 节', '每个品类陈列量<mark>不低于下限</mark>，下限为空时按 0 处理。'),
   resolution(AN.rev2, '09-修订通知.docx', '第 2 条', '乳制品陈列量按<mark>区域配额 ≤150 箱</mark> 执行，自 11 月 1 日起生效。'),
@@ -247,10 +248,11 @@ export function register(ctx) {
     let fields = [];
     if (x.key === 'display_qty_std') fields = FOCUS_FIELDS.map((f) => ({ ...f, evidence: { ...f.evidence } }));
     else if (x.kind === 'object') {
-      const [table] = TABLE[x.key] || ['erp.misc'];
+      const [file, sheet] = SCHEMA_SHEET[x.key] || ['06-商品品类表.xlsx', '品类'];
+      const short = file.replace(/^\d+-|\.xlsx$/g, '');
       fields = (FIELDS[x.key] || []).map(([name, column, type], i) => ({
         name, column, type,
-        evidence: x.orphan && i > 0 ? { ...EV_NONE } : ev(`db:erp-prod/${table}.${column}`, `ERP · ${name}`, 'db', 'declared'),
+        evidence: x.orphan && i > 0 ? { ...EV_NONE } : ev(`file:resource/schema/${file}#sheet:${sheet}!${'ABCDEFGH'[i]}1`, `${short} ${sheet} ${'ABCDEFGH'[i]}1`, 'file'),
       }));
     }
     const sections = [{ level: 1, title: x.name, content_md: DESC[x.key] || '' }];
@@ -269,7 +271,6 @@ export function register(ctx) {
       backlinks,
       data_source: x.kind !== 'object' ? { kind: 'unset', value: null, label: '' }
         : table ? { kind: 'table', value: table, label: `业务系统 ERP · ${tableLabel}` } : { kind: 'none', value: null, label: '无' },
-      evidence_snapshots: x.kind === 'object' ? { 'erp-prod': '20261030-221500-9c1d' } : {},
       revision: `r${x.key.length}-1`,
       raw: null,
     };
@@ -313,13 +314,13 @@ export function register(ctx) {
     if (e.kind === 'object') lines.push('', '## 数据来源', form.data_source?.kind === 'none' ? '无' : (form.data_source?.value || ''));
     return lines.join('\n');
   }
-  // 证据的业务说法：库表写「ERP · 字段」，资料写「简称 + 位置」；不显示原始锚点
+  // 证据的业务说法：资料写「简称 + 位置」；不显示原始锚点
   const evidenceFor = (anchor, fallback) => {
     if (!anchor) return { ...EV_NONE };
     const r = F.ANCHOR_RESOLUTIONS[anchor];
     const scheme = anchor.split(':')[0];
     let label = fallback?.anchor === anchor ? fallback.label : EV_LABEL[anchor];
-    if (!label && r) label = scheme === 'db' ? `${S.DB_SOURCE.short} · ${r.location_label.split(' · ').pop()}` : `${r.source_label.replace(/\.\w+$/, '')} ${r.location_label}`;
+    if (!label && r) label = `${r.source_label.replace(/\.\w+$/, '')} ${r.location_label}`;
     return { anchor, label: label || anchor.split('/').pop(), scheme, confidence: r?.confidence ?? null, expert_confirmed: false, missing: false };
   };
   function applyForm(e, form) {
@@ -361,7 +362,7 @@ export function register(ctx) {
       revision: fileRevision(e),
       status: editing(e) ? 'editing' : e.status,
       backlinks: e.backlinks.map((b) => ({ ...b, locked: isLocked(scope, b.source) })),
-      counts: { refs_out: e.relations.declared.length, refs_in: e.backlinks.length, fields: e.fields.length, evidence: evidenceItems(e).length },
+      counts: { refs_out: e.relations.declared.length, refs_in: e.backlinks.length, fields: e.fields.length },
       head: cardOf(pid)?.head || 'a71e03c9',
       lock: lockOf(pid, ref),
       draft,
@@ -374,7 +375,7 @@ export function register(ctx) {
         ...extra.map((f) => ({ anchor: f.evidence.anchor, scheme: f.evidence.scheme, title: f.evidence.label, confidence: f.evidence.confidence, used_for: [f.name] }))];
     }
     return e.fields.filter((f) => f.evidence.anchor).map((f) => ({
-      anchor: f.evidence.anchor, scheme: f.evidence.scheme, title: `${S.DB_SOURCE.short} · ${(TABLE[e.key] || [])[1] || '数据表'} · ${f.name}`, confidence: f.evidence.confidence, used_for: [f.name],
+      anchor: f.evidence.anchor, scheme: f.evidence.scheme, title: f.evidence.label, confidence: f.evidence.confidence, used_for: [f.name],
     }));
   }
   function row(pid, e) {
@@ -517,20 +518,13 @@ export function register(ctx) {
     if (!e) return err(404, 'not_found', '条目不存在');
     const items = evidenceItems(e).map((x) => ({
       ...x,
-      resolved: F.ANCHOR_RESOLUTIONS[x.anchor] || { anchor: x.anchor, scheme: x.scheme, resolved: true, source_label: x.scheme === 'db' ? '业务系统 ERP' : x.title, location_label: x.title.split(' · ').slice(1).join(' · '), text: '', highlights: [], confidence: x.confidence, snapshot_id: null, page: x.scheme === 'db' ? 'schema' : 'resources' },
+      resolved: F.ANCHOR_RESOLUTIONS[x.anchor] || { anchor: x.anchor, scheme: x.scheme, resolved: true, source_label: x.anchor.startsWith('file:') ? x.anchor.slice(5).split('#')[0].split('/').pop() : x.title, location_label: x.title.split(' ').slice(1).join(' '), text: '', highlights: [], confidence: x.confidence, snapshot_id: null, page: 'resources' },
     }));
     return json(200, {
-      snapshot_basis: items.some((x) => x.scheme === 'db') ? [{ source_id: S.DB_SOURCE.id, snapshot_id: '20261030-221500-9c1d', collected_at: collectedAt() }] : [],
+      snapshot_basis: [],
       items,
     });
   });
-  function collectedAt() {
-    const d = new Date();
-    d.setMonth(9, 30);
-    d.setHours(22, 15, 0, 0);
-    if (d.getTime() > Date.now()) d.setFullYear(d.getFullYear() - 1);
-    return d.toISOString();
-  }
 
   // ---------- ST-07 草稿 ----------
   on('GET', '/projects/([^/]+)/studio/entries/([^/]+)/draft', ({ m }) => {
@@ -704,21 +698,5 @@ export function register(ctx) {
     st.rawChanged = false;
     const { commit, version_label } = committed(pid, e, [e.path]);
     return json(200, { path: body.path, size: new TextEncoder().encode(e.raw).length, revision: e.revision, commit, version_label });
-  });
-
-  // ---------- EV-26 被谁引用 ----------
-  on('GET', '/projects/([^/]+)/evidence/where-used', ({ m, query }) => {
-    const pid = m[1];
-    const anchor = query.get('anchor') || '';
-    const prefix = query.get('prefix') === 'true';
-    if (!isMain(pid)) return json(200, { items: [], total: 0 });
-    const items = [];
-    live().map((x) => stored(x.id)).forEach((e) => {
-      const hit = e.fields.filter((f) => f.evidence.anchor && (prefix ? f.evidence.anchor.startsWith(anchor) : f.evidence.anchor === anchor));
-      const extra = e.key === S.FOCUS_ENTRY && FOCUS_EVIDENCE.some((x) => x[0] === anchor) && !hit.length ? FOCUS_EVIDENCE.filter((x) => x[0] === anchor).flatMap((x) => x[4]) : [];
-      [...hit.map((f) => f.name), ...extra].forEach((n) => items.push({ target: { kind: e.kind, id: e.id, key: e.key, name: e.name }, location: `属性「${n}」` }));
-    });
-    if (anchor === AN.max) items.push({ target: { type: 'trace.scenario', key: 's-04', title: '场景 4 · 乳制品隔日到货 ≤150 箱' }, location: '输入' });
-    return json(200, { items, total: items.length });
   });
 }
