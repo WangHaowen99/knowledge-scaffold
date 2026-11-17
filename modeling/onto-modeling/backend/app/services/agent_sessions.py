@@ -603,7 +603,7 @@ class SessionManager:
             session = await self._bind_session(project_id, conversation_id)
             if is_codegen_scan and session.codegen_scan_active:
                 raise SessionError("扫描候选正在运行，请等待本轮完成", 409)
-            if is_codegen_scan and session.engine is not None and _busy(session):
+            if is_codegen_scan and _busy_for_owner_switch(session):
                 # 现有任务的 result 可能先于排队扫描返回，届时 idle 会提前释放扫描占位。
                 raise SessionError("当前任务正在运行，请等待完成后再扫描候选", 409)
             await self._bind_model_owner(session, owner, engine_cls.name)

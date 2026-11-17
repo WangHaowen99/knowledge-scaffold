@@ -173,6 +173,26 @@ def test_codegen_scan_waits_for_prior_turn_in_same_session(scripted_env, tmp_pat
     asyncio.run(scenario())
 
 
+def test_codegen_scan_rejects_prior_turn_queued_for_pool_slot(pool_env, tmp_path):
+    manager, _created, _ = pool_env
+    command = "/ontology-codegen-scan"
+
+    async def scenario():
+        await manager.send("p1", tmp_path / "w1", "占用会话池")
+        await _settle(manager, "p1")
+        await manager.send("p2", tmp_path / "w2", "排队任务")
+        queued = manager.get("p2")
+        assert queued.state == "queued"
+        with pytest.raises(SessionError, match="当前任务正在运行") as error:
+            await manager.send("p2", tmp_path / "w2", command)
+        assert error.value.status == 409
+        assert queued.pending_prompts == ["排队任务"]
+        assert not queued.codegen_scan_active
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
 def test_pool_evicts_oldest_idle_session(pool_env, tmp_path):
     manager, created, _ = pool_env
 
