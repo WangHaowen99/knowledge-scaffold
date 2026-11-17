@@ -45,7 +45,7 @@ from script_argument_shape import (
     load_object_documents,
     yes_no_issues,
 )
-from script_contract import ScriptContract, parse_script
+from script_contract import ScriptContract, parse_script, script_warnings
 
 RENDER_COMMAND = "python3 .claude/scripts/script_descriptor.py render ontology"
 PARAM_HEADER = "| 参数 key | CLI 参数 | 类型 | 必填 | 默认值 | 说明 | 是否多值 | Action |"
@@ -310,7 +310,8 @@ def descriptor_issues(ontology_dir: Path) -> list[tuple[str, str, str]]:
     issues += [(file, "警告", message) for file, message in state.report.warnings]
     for name in sorted(state.report.bindings):
         contract = state.contracts[name]
-        issues += [(f"scripts/{name}.py", "警告", message) for message in contract.warnings]
+        issues += [(f"scripts/{name}.py", "警告", f"第 {warning['line']} 行：{warning['message']}")
+                   for warning in script_warnings(state.sources[name], f"scripts/{name}.py", contract)]
         issues += [
             (f"scripts/{name}.py", severity, message)
             for severity, message in argument_shape_issues(list(contract.params), state.attributes)
