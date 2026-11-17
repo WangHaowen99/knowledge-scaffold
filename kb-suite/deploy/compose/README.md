@@ -145,7 +145,18 @@ PLATFORM_REPO=<平台仓克隆> PLATFORM_REF=<提交，缺省 HEAD> ./kbsuite.sh
 - **建表**：平台知识服务不建表。`up-dap` 先用 DA 原版镜像（`kb-suite/da-kb`，要先 `build-da-kb`）起一次 `dap-migrate` 迁移表结构，等 `settings` 表就绪后停掉它，否则两边会各自处理同一批文档。然后写入模型配置（同 `da-kb/providers.py`），再起知识服务和适配服务、重建 gateway。
 - **MinerU**：pdf、docx、pptx 和 OCR 交给 MinerU（3.x、4.x 都可以）。平台在没有配置时缺省用 MinerU 官方公共服务，文档会发往外网，所以这里缺省 `MINERU_ENABLED=false`。有自己的 MinerU 时，在 `$KBS_SECRETS_DIR/da-platform.env` 里写 `DAP_MINERU_ENABLED=true`、`DAP_MINERU_API_URL=<地址>`，并用 `DAP_EXTRA_FILE_TYPES=pdf,docx,pptx,doc,ppt` 告诉适配服务。`settings.mineru_config` 优先于这些变量，`up-dap` 会删掉它。
 - **实体抽取**：缺省开（与平台部署缺省一致），每份文档要多调几次模型，耗时可能超过文档本身的解析；不需要时设 `DAP_ENTITY_EXTRACTION=off`。
-- **中文全文检索**：数据库没有 zhparser，平台的全文检索按默认分词，这一点与 DA 原版相同。
+- **中文全文检索**：数据库镜像和 DA 原版后端用同一个（`DA_KB_PG_IMAGE`），`up-dap` 同样执行 `da-kb/zhparser.sql`；用不带 zhparser 的镜像时按默认分词，中文关键词查不到东西。
+- **比 DA 原版少的能力**：平台知识服务对下面这些接口回 501（本期未迁移），也没有 `/api/settings`。适配服务按探测结果声明能力，知识库页对这个后端不显示对应的按钮和设置。
+
+  | 能力 | DA 原版接口 | 平台 |
+  |---|---|---|
+  | 重新生成摘要（单篇、全库补缺） | `POST /kbs/{kb}/documents/{doc}/regenerate-abstract`、`POST /kbs/{kb}/regenerate-abstracts` | 501 |
+  | 文档导出（Markdown、JSON 等） | `GET /kbs/{kb}/documents/{doc}/export/{format}` | 501 |
+  | 质量审计与报告 | `POST …/documents/{doc}/quality-audit`、`GET /kbs/{kb}/quality-report` | 501 |
+  | 深度预处理（全局概览、跨页表格、图片核查） | `/kbs/{kb}/preprocess`、`/status`、`/cancel`、`/report` | 501 |
+  | 后端设置（模型、解析策略、docling / MinerU / VLM、自动处理、解析优先级） | `/api/settings/*` | 没有；模型由 `up-dap` 写库，MinerU 用 `DAP_MINERU_*` |
+
+  其余接口（检索、展开、Wiki、原文、媒体信息、锚点与结构视图、重新处理、重建向量、时间线、图谱、报告）两边都有。
 - **能力**：与 DA 原版后端相同（9 项）；导入网页、取消处理、Wiki、L2 不支持。
 
 ### 在旁边起一套测试环境

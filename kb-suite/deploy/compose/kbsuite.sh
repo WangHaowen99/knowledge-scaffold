@@ -281,6 +281,8 @@ up_dap() {
    python3 "$HERE/da-kb/providers.py") | "${psql[@]}" >/dev/null
   # settings.mineru_config outranks the platform's MINERU_* variables; DAP_MINERU_* is the only MinerU setting here
   "${psql[@]}" -c "DELETE FROM settings WHERE key = 'mineru_config'" >/dev/null
+  # same database image as DA's own backend (DA_KB_PG_IMAGE): Chinese keyword search when it has zhparser
+  "${psql[@]}" <"$HERE/da-kb/zhparser.sql" >/dev/null
   compose --profile da-platform up -d dap-knowledge
   wait_healthy dap-knowledge
   compose --profile da-platform up -d dap-adapter
