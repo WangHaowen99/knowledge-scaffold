@@ -1188,16 +1188,19 @@ async def _start_kb_action(action: str, raw_kb: str) -> str:
     paths = {"process_pending": f"/kbs/{kb_seg}/process-all", "reindex": f"/kbs/{kb_seg}/reindex",
              "preprocess": f"/kbs/{kb_seg}/preprocess", "regenerate_summaries": f"/kbs/{kb_seg}/regenerate-abstracts",
              "rebuild_embeddings": f"/kbs/{kb_seg}/rebuild-embeddings"}
+    path = paths.get(action)
+    if path is None:
+        raise ProviderError(400, "bad_request", f"未知操作：{action}")
     if action in jobs.REQUEST_ACTIONS:
         # checked now, so an unknown knowledge base fails here rather than in the background
         response = await da().send("GET", f"/kbs/{kb_seg}")
     else:
-        response = await da().send("POST", paths[action])
+        response = await da().send("POST", path)
     started = jobs.started_at(response.headers.get("date"))
     raw_job = jobs.job_id(action, raw_kb, started)
     record = da().remember(raw_job, {"action": action, "kb": raw_kb, "started": started})
     if action in jobs.REQUEST_ACTIONS:
-        record["task"] = asyncio.create_task(_run_request_job(record, paths[action]))
+        record["task"] = asyncio.create_task(_run_request_job(record, path))
     return raw_job
 
 
@@ -1270,7 +1273,11 @@ async def _settings_raw() -> dict:
 
     paths = {"providers": "/providers", "strategies": "/pipeline-strategies", "parsing_mode": "/parsing-priority-mode",
              "auto_process": "/key/auto_process", **{g: route for g, (_, route, _) in backend_settings.CONFIGS.items()}}
-    found = dict(zip(served, await asyncio.gather(*(get(paths[g]) for g in served)), strict=True))
+    # a group DA serves but this adapter has no route for is left out
+    routes = [(group, paths.get(group)) for group in served]
+    known = [(group, path) for group, path in routes if path]
+    values = await asyncio.gather(*(get(path) for _, path in known))
+    found = {group: value for (group, _), value in zip(known, values, strict=True)}
     if "auto_process" in found:
         found["auto_process"] = (found["auto_process"] or {}).get("value")
     if "strategies" in found and not isinstance(found["strategies"], list):

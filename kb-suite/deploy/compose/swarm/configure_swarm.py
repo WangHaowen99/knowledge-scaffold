@@ -23,7 +23,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from ruamel.yaml import YAML
 
 logger = logging.getLogger("configure")
 
@@ -66,15 +65,17 @@ def _uses_managed_model(entry: object) -> bool:
     return isinstance(entry, dict) and (entry.get("model_client_config") or {}).get("model_name") == MANAGED_MODEL_NAME
 
 
-def _load_config() -> tuple[YAML, dict]:
-    yaml = YAML()
-    with CONFIG.open(encoding="utf-8") as fh:
-        return yaml, (yaml.load(fh) or {})
+def _load_config() -> dict:
+    """config.yaml through Swarm's own round-trip helpers: comments and formatting stay, writes are atomic."""
+    from jiuwenswarm.common.config import load_yaml_round_trip
+
+    return load_yaml_round_trip(CONFIG) or {}
 
 
-def _dump_config(yaml: YAML, data: dict) -> None:
-    with CONFIG.open("w", encoding="utf-8") as fh:
-        yaml.dump(data, fh)
+def _dump_config(data: dict) -> None:
+    from jiuwenswarm.common.config import dump_yaml_round_trip
+
+    dump_yaml_round_trip(CONFIG, data)
 
 
 def set_model_temperature() -> None:
@@ -91,7 +92,7 @@ def set_model_temperature() -> None:
     except ValueError:
         logger.warning("SWARM_TEMPERATURE=%r is not a number, temperature left unchanged", raw)
         return
-    yaml, data = _load_config()
+    data = _load_config()
     defaults = (data.get("models") or {}).get("defaults") or []
     entries = [entry for entry in defaults if _uses_managed_model(entry)]
     if not entries:
@@ -108,7 +109,7 @@ def set_model_temperature() -> None:
             options["temperature"] = value
             changed = True
     if changed:
-        _dump_config(yaml, data)
+        _dump_config(data)
 
 
 GENERAL_RULES_BEGIN = "<!-- kb-suite:answer-rules begin -->"
@@ -144,8 +145,8 @@ def ensure_general_rules() -> None:
 
 
 def drop_legacy_config() -> None:
-    """Undo earlier versions' edits; round trip with ruamel (a Swarm dependency) keeps comments and types."""
-    yaml, data = _load_config()
+    """Undo earlier versions' edits; round trip through Swarm's own helpers keeps comments and types."""
+    data = _load_config()
     changed = False
     mcp = data.get("mcp")
     if isinstance(mcp, dict) and isinstance(mcp.get("servers"), list):
@@ -159,7 +160,7 @@ def drop_legacy_config() -> None:
         extensions["extension_dirs"] = ";".join(d for d in dirs.split(";") if d != LEGACY_PLUGIN_DIR)
         changed = True
     if changed:
-        _dump_config(yaml, data)
+        _dump_config(data)
         logger.info("config.yaml: removed entries left by earlier versions")
 
 

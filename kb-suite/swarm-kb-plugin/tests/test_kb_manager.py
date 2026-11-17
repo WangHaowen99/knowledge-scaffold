@@ -13,7 +13,7 @@ import json
 import sys
 import types
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 import pytest
@@ -67,8 +67,22 @@ def call(ext: Any) -> Any:
     return run
 
 
+def reply(status: int, **kwargs: Any) -> Callable[[httpx.Request], httpx.Response]:
+    """A gateway route that answers every request with the same response."""
+
+    def route(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(status, **kwargs)
+
+    return route
+
+
+def echo_json(request: httpx.Request) -> httpx.Response:
+    """A gateway route that answers with the JSON body it was sent."""
+    return httpx.Response(200, json=json.loads(request.content))
+
 def test_action_forwards_params(call: Any) -> None:
-    call.gateway.routes[("POST", "/v1/kbs/da-1/actions/rebuild_index")] = lambda r: httpx.Response(
+    call.gateway.routes[("POST", "/v1/kbs/da-1/actions/rebuild_index")] = reply(
         200, json={"job": {"id": "da-job-1", "status": "queued"}})
     assert call("actions.run", {"kb_id": "da-1", "action": "rebuild_index", "params": {"full": True}}) == {
         "job": {"id": "da-job-1", "status": "queued"}}
@@ -76,7 +90,7 @@ def test_action_forwards_params(call: Any) -> None:
 
 
 def test_document_scope_wins_and_ids_are_checked(call: Any, ext: Any) -> None:
-    call.gateway.routes[("POST", "/v1/documents/d1/actions/summarize")] = lambda r: httpx.Response(200, json={"result": 1})
+    call.gateway.routes[("POST", "/v1/documents/d1/actions/summarize")] = reply(200, json={"result": 1})
     assert call("actions.run", {"kb_id": "k", "doc_id": "d1", "action": "summarize"}) == {"result": 1}
     for bad in ({"kb_id": "k", "action": "Rebuild"}, {"kb_id": "../kbs", "action": "a"}, {"kb_id": "a/b", "action": "a"},
                 {"kb_id": "k", "action": "a", "params": [1]}):
@@ -92,10 +106,10 @@ def test_unsupported_keeps_gateway_error(call: Any, ext: Any) -> None:
 
 
 def test_views_missing_markdown_and_json(call: Any) -> None:
-    call.gateway.routes[("GET", "/v1/documents/d1/views/overview")] = lambda r: httpx.Response(
+    call.gateway.routes[("GET", "/v1/documents/d1/views/overview")] = reply(
         200, text="# 概览", headers={"content-type": "text/markdown; charset=utf-8"})
-    call.gateway.routes[("GET", "/v1/kbs/k/views/timeline")] = lambda r: httpx.Response(200, json={"items": []})
-    call.gateway.routes[("GET", "/v1/kbs/k/views/quality")] = lambda r: httpx.Response(
+    call.gateway.routes[("GET", "/v1/kbs/k/views/timeline")] = reply(200, json={"items": []})
+    call.gateway.routes[("GET", "/v1/kbs/k/views/quality")] = reply(
         404, json={"error": {"code": "not_found", "message": "还没有"}})
     assert call("views.get", {"doc_id": "d1", "view": "overview"}) == {"media_type": "text/markdown", "content": "# 概览"}
     assert call("views.get", {"kb_id": "k", "view": "timeline"}) == {"media_type": "application/json", "content": {"items": []}}
@@ -103,9 +117,9 @@ def test_views_missing_markdown_and_json(call: Any) -> None:
 
 
 def test_jobs_and_settings(call: Any, ext: Any) -> None:
-    call.gateway.routes[("GET", "/v1/jobs/da-j1")] = lambda r: httpx.Response(200, json={"id": "da-j1"})
-    call.gateway.routes[("GET", "/v1/kbs/k/jobs")] = lambda r: httpx.Response(200, json={"items": []})
-    call.gateway.routes[("PUT", "/v1/settings")] = lambda r: httpx.Response(200, json=json.loads(r.content))
+    call.gateway.routes[("GET", "/v1/jobs/da-j1")] = reply(200, json={"id": "da-j1"})
+    call.gateway.routes[("GET", "/v1/kbs/k/jobs")] = reply(200, json={"items": []})
+    call.gateway.routes[("PUT", "/v1/settings")] = echo_json
     call("jobs.get", {"job_id": "da-j1", "report": True})
     assert call.gateway.requests[-1].url.params["report"] == "true"
     call("jobs.list", {"kb_id": "k", "status": "running"})
@@ -135,7 +149,7 @@ def test_file_range(call: Any, ext: Any) -> None:
         with pytest.raises(ext.RpcError):
             call("docs.file_range", bad)
 
-    call.gateway.routes[("GET", "/v1/documents/d2/file")] = lambda r: httpx.Response(200, content=body)
+    call.gateway.routes[("GET", "/v1/documents/d2/file")] = reply(200, content=body)
     res = call("docs.file_range", {"doc_id": "d2", "offset": 1000, "length": 100})
     assert (res["offset"], res["total"], base64.b64decode(res["data"])) == (1000, 1024, body[1000:])
 
@@ -149,17 +163,17 @@ def test_file_range_without_range_support_reads_only_up_to_the_slice(call: Any) 
             served.append(i)
             yield bytes([i]) * 16
 
-    call.gateway.routes[("GET", "/v1/documents/d3/file")] = lambda r: httpx.Response(200, content=chunks())
+    call.gateway.routes[("GET", "/v1/documents/d3/file")] = reply(200, content=chunks())
     res = call("docs.file_range", {"doc_id": "d3", "offset": 40, "length": 20})
     assert base64.b64decode(res["data"]) == bytes([2]) * 8 + bytes([3]) * 12
     assert res["total"] is None and len(served) < 10
-    call.gateway.routes[("GET", "/v1/documents/d4/file")] = lambda r: httpx.Response(200, content=b"abc")
+    call.gateway.routes[("GET", "/v1/documents/d4/file")] = reply(200, content=b"abc")
     res = call("docs.file_range", {"doc_id": "d4", "offset": 0, "length": 100})
     assert (res["total"], base64.b64decode(res["data"])) == (3, b"abc")
 
 
 def test_export_and_cap(call: Any, ext: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    call.gateway.routes[("GET", "/v1/documents/d1/export/md")] = lambda r: httpx.Response(200, content=b"# x", headers={
+    call.gateway.routes[("GET", "/v1/documents/d1/export/md")] = reply(200, content=b"# x", headers={
         "content-type": "text/markdown", "content-disposition": "attachment; filename*=UTF-8''%E6%8A%A5%E5%91%8A.md"})
     res = call("docs.export", {"doc_id": "d1", "format": "md"})
     assert (res["file_name"], base64.b64decode(res["data"])) == ("报告.md", b"# x")
@@ -172,8 +186,8 @@ def test_export_and_cap(call: Any, ext: Any, monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_folders(call: Any, ext: Any) -> None:
-    call.gateway.routes[("GET", "/v1/kbs/k/documents")] = lambda r: httpx.Response(200, json={"items": [], "total": 0})
-    call.gateway.routes[("DELETE", "/v1/kbs/k/folders")] = lambda r: httpx.Response(204)
+    call.gateway.routes[("GET", "/v1/kbs/k/documents")] = reply(200, json={"items": [], "total": 0})
+    call.gateway.routes[("DELETE", "/v1/kbs/k/folders")] = reply(204)
     call("docs.list", {"kb_id": "k", "folder": "/a/b/"})
     assert call.gateway.requests[-1].url.params["folder"] == "a/b"
     call("docs.list", {"kb_id": "k"})
@@ -186,5 +200,5 @@ def test_folders(call: Any, ext: Any) -> None:
 
 
 def test_evidence_keeps_colons(call: Any) -> None:
-    call.gateway.routes[("GET", "/v1/evidence/d1:table:3")] = lambda r: httpx.Response(200, json={"anchor_id": "d1:table:3"})
+    call.gateway.routes[("GET", "/v1/evidence/d1:table:3")] = reply(200, json={"anchor_id": "d1:table:3"})
     assert call("evidence.get", {"anchor_id": "d1:table:3"}) == {"anchor_id": "d1:table:3"}

@@ -24,10 +24,12 @@ import itertools
 import json
 import logging
 import os
+import posixpath
 import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import websockets
@@ -35,7 +37,9 @@ import websockets
 logger = logging.getLogger("provision")
 
 BASE = os.environ.get("SWARM_LOCAL_URL", "http://127.0.0.1:5173").rstrip("/")
-WS_URL = BASE.replace("http", "ws", 1) + "/ws"
+_BASE_URL = urlsplit(BASE)
+WS_URL = urlunsplit((_BASE_URL.scheme.replace("http", "ws", 1), _BASE_URL.netloc,
+                     posixpath.join(_BASE_URL.path or "/", "ws"), "", ""))
 WHEELS = Path(os.environ.get("KB_SUITE_WHEELS", "/opt/kb-suite/wheels"))
 READY_TIMEOUT_S = 600
 MCP_NAME = "kb-service"

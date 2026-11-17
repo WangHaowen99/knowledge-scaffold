@@ -212,7 +212,11 @@ def values(raw: dict) -> dict:
     processing = {"auto_process": lambda: _auto_process(raw.get("auto_process")),
                   "parsing_mode": lambda: (raw.get("parsing_mode") or {}).get("mode") or "quality"}
     if _processing(raw):
-        out["processing"] = {f.key: processing[f.key]() for f in _processing(raw)}
+        out["processing"] = {}
+        for f in _processing(raw):
+            read = processing.get(f.key)
+            if read is not None:
+                out["processing"][f.key] = read()
     choices = _choices(raw.get("strategies"))
     if choices:
         out["pipelines"] = {file_type: names[0] for file_type, names in choices.items()}
