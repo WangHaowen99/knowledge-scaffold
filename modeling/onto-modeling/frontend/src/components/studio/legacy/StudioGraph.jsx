@@ -1,8 +1,9 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   Boxes,
   FileCode2,
   Gauge,
+  LocateFixed,
   Maximize2,
   Minimize2,
   PanelRightOpen,
@@ -19,7 +20,6 @@ import {
   BaseEdge,
   Background,
   Controls,
-  EdgeLabelRenderer,
   Handle,
   MarkerType,
   MiniMap,
@@ -31,23 +31,27 @@ import {
   filterStudioGraph,
   clearStudioSearch,
   KIND_META,
+  locateStudioGraphElement,
   projectStudioLargeGraph,
   shouldSubmitStudioSearch,
   stageStudioSearch,
+  studioSearchCandidates,
   studioSearchDraft,
   studioGraphChain,
   studioGraphEdgeStyle,
-  studioGraphNeighborhood,
+  studioGraphNeighborhoodHops,
   studioGraphScrollSurface,
   studioSummaryVisible,
-  submitStudioSearch,
   studioVisibleElementId,
 } from './studio-model.js';
 import { fallbackStudioLayout, layoutStudioGraph } from './studio-graph-layout.js';
 import StudioWebGLGraph from './webgl/StudioWebGLGraph.jsx';
+import { boundedStudioClusterExpansion, studioLabelNodeIds } from './webgl/studio-three-presentation.js';
+import { resolveGraphTheme } from './webgl/graph-theme.js';
+import SemanticLegendIcon from './SemanticLegendIcon.jsx';
+import { ThemeCtx } from '../../../lib/theme-context.js';
 import {
   buildStudioRoutePresentation,
-  studioLabelPosition,
   studioPolylineLength,
   studioRoundedPath,
   studioRouteHandles,
@@ -59,11 +63,16 @@ const KIND_ICON = { object: Boxes, operation: Workflow, rule: Scale, metric: Gau
 const CLUSTER_META = {
   label: '关系簇', className: 'cluster', color: '#176b87', soft: '#b9e3ed', glow: 'rgba(23, 107, 135, .46)',
 };
-const studioGraphKindMeta = (kind) => kind === 'cluster' ? CLUSTER_META : KIND_META[kind] || KIND_META.object;
+const studioGraphKindMeta = (kind, mode = 'light') => {
+  const meta = kind === 'cluster' ? CLUSTER_META : KIND_META[kind] || KIND_META.object;
+  const color = resolveGraphTheme(mode).colors[kind] || resolveGraphTheme(mode).colors.object;
+  return { ...meta, color, soft: `color-mix(in srgb, ${color} 12%, var(--surface-card))`, glow: `color-mix(in srgb, ${color} 30%, transparent)` };
+};
 const MAX_PARTICLE_EDGES = 20;
 const PARTICLE_NODE_LIMIT = 500;
 const PARTICLE_EDGE_LIMIT = 1500;
 const ROUTE_PRESENTATION_EDGE_LIMIT = 400;
+const EMPTY_WEBGL_ROUTES = Object.freeze({});
 export const STUDIO_NODE_CLICK_DISTANCE = 6;
 export const STUDIO_NODE_DRAG_THRESHOLD = 6;
 
@@ -74,13 +83,17 @@ export function studioGraphNodeAttributes(node, details = {}) {
 }
 
 export default function StudioGraph({ projectId, session, update, onOpen, focus }) {
+  const { mode: themeMode } = useContext(ThemeCtx);
+  const graphTheme = resolveGraphTheme(themeMode);
   const instanceRef = useRef(null);
   const graphRef = useRef(null);
   const graphCanvasRef = useRef(null);
+  const searchListRef = useRef(null);
   const fallbackFullscreenRef = useRef(false);
   const layoutRequestRef = useRef(0);
   const firstLayoutRef = useRef(true);
   const centeredFocusElementRef = useRef('');
+  const focusedSelectionRef = useRef('');
   const initialViewportRef = useRef(session.graphViewport);
   const [zoomTier, setZoomTier] = useState(() => studioZoomTier(session.graphViewport?.zoom || 0.8));
   const [hoveredEdgeId, setHoveredEdgeId] = useState('');
@@ -94,11 +107,56 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
   const [graphScrollPosition, setGraphScrollPosition] = useState({ left: 0, top: 0 });
   const [webglUnavailable, setWebglUnavailable] = useState(false);
   const [forceStatus, setForceStatus] = useState('initializing');
+  const [graphLayoutMode, setGraphLayoutMode] = useState('force');
+  const [allLabels, setAllLabels] = useState(false);
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [searchCandidateIndex, setSearchCandidateIndex] = useState(-1);
+  const [searchFeedback, setSearchFeedback] = useState(null);
+  const [previewKind, setPreviewKind] = useState('');
+  const [hopDepth, setHopDepth] = useState(0);
+  const searchListId = useId();
   const reducedMotion = useReducedMotion();
   const motionEnabled = true;
   const searchDraft = studioSearchDraft(session);
-  const submitSearch = useCallback(() => update(submitStudioSearch), [update]);
-  const clearSearch = useCallback(() => update(clearStudioSearch), [update]);
+  const searchCandidates = useMemo(
+    () => studioSearchCandidates(session.graph?.nodes || [], searchDraft, session.elements, 8),
+    [searchDraft, session.elements, session.graph],
+  );
+  const locateElement = useCallback((elementId) => {
+    setDismissedSummaryElementId('');
+    setHopDepth(0);
+    update((current) => locateStudioGraphElement(current, elementId));
+  }, [update]);
+  const chooseSearchCandidate = useCallback((candidate) => {
+    if (!candidate) return;
+    locateElement(candidate.id);
+    setSearchFocused(false);
+    setSearchFeedback({ id: candidate.id, label: candidate.label });
+  }, [locateElement]);
+  const submitSearch = useCallback(() => {
+    chooseSearchCandidate(searchCandidates[searchCandidateIndex] || searchCandidates[0]);
+    if (!searchCandidates.length) setSearchFocused(true);
+  }, [chooseSearchCandidate, searchCandidateIndex, searchCandidates]);
+  const clearSearch = useCallback(() => {
+    update(clearStudioSearch);
+    setSearchFeedback(null);
+    setSearchCandidateIndex(-1);
+  }, [update]);
+  useEffect(() => { setSearchCandidateIndex(-1); }, [searchDraft]);
+  useEffect(() => {
+    const list = searchListRef.current;
+    const item = list?.children[searchCandidateIndex];
+    if (!list || !item) return;
+    if (item.offsetTop < list.scrollTop) list.scrollTop = item.offsetTop;
+    else if (item.offsetTop + item.offsetHeight > list.scrollTop + list.clientHeight) {
+      list.scrollTop = item.offsetTop + item.offsetHeight - list.clientHeight;
+    }
+  }, [searchCandidateIndex, searchFocused]);
+  useEffect(() => {
+    if (!searchFeedback) return undefined;
+    const timer = window.setTimeout(() => setSearchFeedback(null), 2000);
+    return () => window.clearTimeout(timer);
+  }, [searchFeedback]);
   const selectElement = useCallback((elementId) => {
     setDismissedSummaryElementId('');
     update({ selectedElementId: elementId });
@@ -117,12 +175,21 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
       update((current) => ({
         ...current,
         selectedElementId: '',
-        expandedClusterIds: [...new Set([...(current.expandedClusterIds || []), elementId])],
+        expandedClusterIds: boundedStudioClusterExpansion(filtered.clusters, [elementId, ...(current.expandedClusterIds || [])]),
       }));
       return;
     }
     selectElement(elementId);
   }, [filtered.clusters, selectElement, update]);
+  const expandGraph = useCallback(() => {
+    const all = filterStudioGraph(session.graph, session.kind, session.query, session.elements, []);
+    const projected = projectStudioLargeGraph(all);
+    update({
+      hiddenKinds: [],
+      selectedElementId: '',
+      expandedClusterIds: boundedStudioClusterExpansion(projected.clusters, Object.keys(projected.clusters)),
+    });
+  }, [session.graph, session.kind, session.query, session.elements, update]);
   const [layoutResult, setLayoutResult] = useState(() => ({
     nodes: fallbackStudioLayout(filtered.nodes, session.graph?.edges || filtered.edges),
     routes: {},
@@ -154,6 +221,24 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
     () => studioVisibleElementId(session.selectedElementId, filtered.nodes),
     [filtered.nodes, session.selectedElementId],
   );
+  // Multi-hop expansion resets whenever the selection moves to another element.
+  useEffect(() => { setHopDepth(0); }, [visibleSelectedElementId]);
+  const selectedNeighbors = useMemo(() => {
+    if (!visibleSelectedElementId) return [];
+    const seen = new Set([visibleSelectedElementId]);
+    const neighbors = [];
+    const allNodes = new Map((session.graph?.nodes || []).map((node) => [node.id, node]));
+    (session.graph?.edges || []).forEach((edge) => {
+      const other = edge.source === visibleSelectedElementId ? edge.target
+        : edge.target === visibleSelectedElementId ? edge.source : null;
+      if (other && !seen.has(other)) {
+        seen.add(other);
+        const node = allNodes.get(other);
+        if (node && KIND_META[node.kind]) neighbors.push(node);
+      }
+    });
+    return neighbors;
+  }, [session.graph, visibleSelectedElementId]);
   const arrangedNodesById = useMemo(
     () => new Map(arrangedNodes.map((node) => [node.id, node])),
     [arrangedNodes],
@@ -168,7 +253,9 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
     () => new Map(positionedNodes.map((node) => [node.id, node])),
     [positionedNodes],
   );
-  const webglNodes = positionedNodes;
+  const webglNodes = useMemo(() => positionedNodes.map((node) => ({
+    ...node, attributes: studioGraphNodeAttributes(node, session.details),
+  })), [positionedNodes, session.details]);
   const displayedRoutes = useMemo(() => webglUnavailable ? Object.fromEntries(filtered.edges.map((edge) => {
     const sourceNode = arrangedNodesById.get(edge.source);
     const targetNode = arrangedNodesById.get(edge.target);
@@ -189,25 +276,27 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
     return degree;
   }, [filtered.edges, filtered.nodes]);
   const active = useMemo(() => {
-    if (visibleSelectedElementId) return studioGraphNeighborhood(visibleSelectedElementId, filtered.edges);
+    if (visibleSelectedElementId) return studioGraphNeighborhoodHops(visibleSelectedElementId, filtered.edges, 1 + hopDepth);
     if (session.graphHighlight === 'rule' || session.graphHighlight === 'metric') {
       return studioGraphChain(session.graphHighlight, filtered.nodes, filtered.edges);
     }
     return { nodes: new Set(), edges: new Set() };
-  }, [filtered.edges, filtered.nodes, session.graphHighlight, visibleSelectedElementId]);
+  }, [filtered.edges, filtered.nodes, hopDepth, session.graphHighlight, visibleSelectedElementId]);
   const hasHighlight = active.nodes.size > 0;
+  const previewNodeIds = useMemo(() => new Set(previewKind
+    ? filtered.nodes.filter((node) => node.kind === previewKind).map((node) => node.id) : []), [filtered.nodes, previewKind]);
+  const labelNodeIds = useMemo(() => studioLabelNodeIds(filtered.nodes, allLabels, {
+    selectedId: visibleSelectedElementId, activeNodeIds: active.nodes, hasHighlight,
+  }), [active.nodes, allLabels, filtered.nodes, hasHighlight, visibleSelectedElementId]);
   const routePresentation = useMemo(() => (
     webglUnavailable && filtered.edges.length <= ROUTE_PRESENTATION_EDGE_LIMIT
       ? buildStudioRoutePresentation(
         displayedRoutes,
-        Object.fromEntries(filtered.edges.map((edge) => [
-          edge.id,
-          (!hasHighlight || active.edges.has(edge.id)) ? edge.label || '' : '',
-        ])),
+        {},
         positionedNodes,
       )
       : { labelAnchors: {}, sharedEdges: {} }
-  ), [active.edges, displayedRoutes, filtered.edges, hasHighlight, positionedNodes, webglUnavailable]);
+  ), [displayedRoutes, filtered.edges, positionedNodes, webglUnavailable]);
   const hoveredEdgeIds = useMemo(() => {
     if (!hoveredEdgeId) return new Set();
     return new Set([hoveredEdgeId, ...(routePresentation.sharedEdges[hoveredEdgeId] || [])]);
@@ -237,7 +326,7 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
   }, [active.edges, filtered.edges, filtered.nodes.length, hoveredEdgeIds, isNodeDragging, isViewportMoving, motionEnabled, session.graphHighlight, visibleSelectedElementId, webglUnavailable, zoomTier]);
 
   const projectedNodes = useMemo(() => (() => { if (webglUnavailable) return arrangedNodes.map((node) => {
-    const meta = studioGraphKindMeta(node.kind);
+    const meta = studioGraphKindMeta(node.kind, themeMode);
     const selected = node.id === visibleSelectedElementId;
     return {
       ...node,
@@ -251,16 +340,16 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
         id: node.id,
         label: node.label,
         kind: node.kind,
-        relationCount: degreeById.get(node.id) || 0,
         selected,
-        highlighted: active.nodes.has(node.id),
-        dimmed: hasHighlight && !active.nodes.has(node.id),
+        highlighted: active.nodes.has(node.id) || previewNodeIds.has(node.id),
+        labelVisible: labelNodeIds.has(node.id),
+        dimmed: previewNodeIds.size ? !previewNodeIds.has(node.id) : hasHighlight && !active.nodes.has(node.id),
         onOpen,
         onSelect: selectGraphElement,
       },
-      ariaLabel: `${meta.label || node.kind}：${node.label}`,
+      ariaLabel: `${meta.label}：${node.label}`,
     };
-  }); return []; })(), [active.nodes, arrangedNodes, degreeById, hasHighlight, onOpen, selectGraphElement, session.nodePositions, visibleSelectedElementId, webglUnavailable]);
+  }); return []; })(), [active.nodes, arrangedNodes, hasHighlight, labelNodeIds, onOpen, previewNodeIds, selectGraphElement, session.nodePositions, visibleSelectedElementId, webglUnavailable, themeMode]);
   const [nodes, setNodes] = useState(projectedNodes);
   const graphScrollDecorations = useMemo(() => {
     if (!webglUnavailable) return [];
@@ -268,14 +357,8 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
     Object.values(displayedRoutes).forEach((points) => {
       points.forEach((point) => bounds.push({ x: point.x - 4, y: point.y - 4, width: 8, height: 8 }));
     });
-    filtered.edges.forEach((edge) => {
-      const points = displayedRoutes[edge.id] || [];
-      if (!edge.label || points.length < 2) return;
-      const position = studioLabelPosition(points, routePresentation.labelAnchors[edge.id]);
-      bounds.push({ x: position.x - 60, y: position.y - 14, width: 120, height: 28 });
-    });
     return bounds;
-  }, [displayedRoutes, filtered.edges, routePresentation.labelAnchors, webglUnavailable]);
+  }, [displayedRoutes, webglUnavailable]);
   const graphScrollSurface = useMemo(() => studioGraphScrollSurface(
     nodes,
     graphFullscreenZoom,
@@ -291,6 +374,7 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
   }, []);
   const edges = useMemo(() => (() => { if (webglUnavailable) return filtered.edges.map((edge) => {
     const visual = studioGraphEdgeStyle(edge, nodesById);
+    visual.color = active.edges.has(edge.id) || hoveredEdgeIds.has(edge.id) ? graphTheme.selection : graphTheme.edge;
     const dimmed = hasHighlight && !active.edges.has(edge.id);
     const route = displayedRoutes[edge.id] || [];
     return {
@@ -302,25 +386,26 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
       markerEnd: { type: MarkerType.ArrowClosed, color: visual.color, width: 14, height: 14 },
       data: {
         points: route,
-        label: edge.label,
         color: visual.color,
-        labelColor: visual.labelColor,
         dash: visual.dash,
         active: active.edges.has(edge.id),
         hovered: hoveredEdgeIds.has(edge.id),
-        labelAnchor: routePresentation.labelAnchors[edge.id],
         particleCount: (() => { if (particleEdgeIds.has(edge.id)) return ((() => { if (active.edges.has(edge.id)) return 2; return 1; })()); return 0; })(),
         dimmed,
       },
       zIndex: (() => { if (active.edges.has(edge.id)) return 1; return 0; })(),
     };
-  }); return []; })(), [active.edges, displayedRoutes, filtered.edges, hasHighlight, hoveredEdgeIds, nodesById, particleEdgeIds, positionedNodesById, routePresentation.labelAnchors, webglUnavailable]);
+  }); return []; })(), [active.edges, displayedRoutes, filtered.edges, hasHighlight, hoveredEdgeIds, nodesById, particleEdgeIds, positionedNodesById, webglUnavailable, graphTheme]);
   const selectedNode = nodesById.get(visibleSelectedElementId);
   const selectedElement = session.details?.[session.selectedElementId]
     || session.elements.find((element) => element.id === session.selectedElementId);
   const selectedObjectAttributes = selectedNode?.kind === 'object'
     ? studioGraphNodeAttributes(selectedNode, session.details)
     : [];
+  const summaryVisible = selectedNode && studioSummaryVisible(visibleSelectedElementId, dismissedSummaryElementId, {
+    activeKind: session.kind,
+    selectedKind: selectedNode.kind,
+  });
   useEffect(() => setNodes(projectedNodes), [projectedNodes]);
 
   useEffect(() => {
@@ -352,15 +437,16 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
     const canvas = graphCanvasRef.current;
     if (!canvas) return undefined;
     if (!webglUnavailable) {
+      if (visibleSelectedElementId) return undefined;
       const timer = window.setTimeout(() => {
-        if (visibleSelectedElementId) instanceRef.current?.focusNode(visibleSelectedElementId);
-        else instanceRef.current?.fitView();
+        instanceRef.current?.fitView();
       }, 100);
       return () => window.clearTimeout(timer);
     }
     if (!graphFullscreen) {
       canvas.scrollLeft = 0;
       canvas.scrollTop = 0;
+      if (visibleSelectedElementId) return undefined;
       const timer = window.setTimeout(() => instanceRef.current?.fitView({
         padding: 0.14,
         minZoom: canvas.clientWidth <= 520 ? 0.22 : 0.3,
@@ -368,6 +454,7 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
       }), 80);
       return () => window.clearTimeout(timer);
     }
+    if (visibleSelectedElementId) return undefined;
     let innerFrame = 0;
     const frame = window.requestAnimationFrame(() => {
       innerFrame = window.requestAnimationFrame(() => {
@@ -384,14 +471,50 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
     if (!visibleSelectedElementId) setDismissedSummaryElementId('');
   }, [visibleSelectedElementId]);
 
-  useEffect(() => {
-  }, [visibleSelectedElementId]);
+  const focusDisplayedElement = useCallback((elementId) => {
+    if (!webglUnavailable) {
+      if (!instanceRef.current?.focusNode) return false;
+      instanceRef.current.focusNode(elementId);
+      return true;
+    }
+    const node = positionedNodesById.get(elementId);
+    if (!node) return false;
+    const x = node.position.x + node.width / 2;
+    const y = node.position.y + node.height / 2;
+    if (graphFullscreen) {
+      const canvas = graphCanvasRef.current;
+      if (!canvas) return false;
+      canvas.scrollTo({
+        left: Math.max(0, x * graphFullscreenZoom + graphScrollSurface.viewport.x - canvas.clientWidth / 2),
+        top: Math.max(0, y * graphFullscreenZoom + graphScrollSurface.viewport.y - canvas.clientHeight / 2),
+        behavior: reducedMotion ? 'instant' : 'smooth',
+      });
+      return true;
+    }
+    if (!instanceRef.current?.setCenter) return false;
+    const zoom = instanceRef.current.getViewport?.().zoom || 0.85;
+    instanceRef.current.setCenter(x, y, { zoom: Math.min(1.2, Math.max(0.88, zoom)), duration: reducedMotion ? 0 : 360 });
+    return true;
+  }, [graphFullscreen, graphFullscreenZoom, graphScrollSurface.viewport, positionedNodesById, reducedMotion, webglUnavailable]);
 
   useEffect(() => {
-  }, [session.kind]);
+    if (!visibleSelectedElementId) {
+      focusedSelectionRef.current = '';
+      return undefined;
+    }
+    if (!layoutResult.ready || !positionedNodesById.has(visibleSelectedElementId)) return undefined;
+    const request = `${visibleSelectedElementId}:${session.graphFocusRequest || 0}:${graphFullscreen}:${webglUnavailable}`;
+    if (focusedSelectionRef.current === request) return undefined;
+    // A newly revealed cluster member reaches the runtime in the child's effect first.
+    const frame = window.requestAnimationFrame(() => {
+      if (focusDisplayedElement(visibleSelectedElementId)) focusedSelectionRef.current = request;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusDisplayedElement, graphFullscreen, layoutResult.ready, positionedNodesById, session.graphFocusRequest, visibleSelectedElementId, webglUnavailable]);
 
   useEffect(() => {
     if (!layoutResult.ready) return undefined;
+    if (visibleSelectedElementId) return undefined;
     if (firstLayoutRef.current) {
       firstLayoutRef.current = false;
       if (initialViewportRef.current) return undefined;
@@ -403,7 +526,7 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
       duration: 360,
     }), 30);
     return () => window.clearTimeout(timer);
-  }, [layoutResult.ready]);
+  }, [layoutResult.ready, visibleSelectedElementId]);
 
   const requestedFocusElementId = focus?.view === 'graph' ? focus?.elementId || '' : '';
   useEffect(() => {
@@ -412,19 +535,13 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
       return undefined;
     }
     if (!layoutResult.ready || centeredFocusElementRef.current === requestedFocusElementId) return undefined;
-    const node = projectedNodes.find((item) => item.id === requestedFocusElementId);
+    const node = positionedNodesById.get(requestedFocusElementId);
     if (!node) return undefined;
     const timer = window.setTimeout(() => {
-      centeredFocusElementRef.current = requestedFocusElementId;
-      const currentZoom = instanceRef.current?.getViewport().zoom || 0.85;
-      instanceRef.current?.setCenter(
-        node.position.x + node.width / 2,
-        node.position.y + node.height / 2,
-        { zoom: Math.min(1.2, Math.max(0.88, currentZoom)), duration: 460 },
-      );
+      if (focusDisplayedElement(requestedFocusElementId)) centeredFocusElementRef.current = requestedFocusElementId;
     }, 40);
     return () => window.clearTimeout(timer);
-  }, [layoutResult.ready, projectedNodes, requestedFocusElementId]);
+  }, [focusDisplayedElement, layoutResult.ready, positionedNodesById, requestedFocusElementId]);
 
   const toggleLegendKind = (kind) => update((current) => {
     const hidden = new Set(current.hiddenKinds || []);
@@ -472,7 +589,7 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
   };
 
   return (
-    <div ref={graphRef} className={`studio-graph zoom-${zoomTier}${motionEnabled ? ' motion-enabled' : ''}`}
+    <div ref={graphRef} className={`studio-graph zoom-${zoomTier}${motionEnabled ? ' motion-enabled' : ''}${!webglUnavailable ? ' studio-graph-stars' : ''}${webglUnavailable && !allLabels ? ' studio-graph-labels-hidden' : ''}`}
       aria-label="知识包关系图" aria-busy={!layoutResult.ready} data-layout-ready={layoutResult.ready} data-zoom-tier={zoomTier}>
       <div ref={graphCanvasRef}
         className={`studio-graph-canvas${graphFullscreen ? ` is-fullscreen${webglUnavailable ? ' is-scrollable' : ''}` : ''}`}
@@ -488,30 +605,69 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
         {graphFullscreen && webglUnavailable && <StudioGraphScrollMiniMap nodes={nodes} routes={displayedRoutes} zoom={graphFullscreenZoom}
           surface={graphScrollSurface} viewport={graphCanvasViewport} scroll={graphScrollPosition}
           onNavigate={navigateFullscreenGraph} />}
-        <div className="studio-graph-content" style={graphFullscreen && webglUnavailable ? {
-          width: graphScrollSurface.width,
-          height: graphScrollSurface.height,
-          minWidth: '100%',
-          minHeight: '100%',
-        } : undefined}>
         <div className="studio-graph-tools" aria-label="图谱工具">
-        {graphFullscreen && (
-          <div className="studio-graph-fullscreen-search" role="search">
-            <input value={searchDraft} aria-label="搜索全屏图谱" placeholder="搜索名称、Key 或说明"
-              onChange={(event) => update((current) => stageStudioSearch(current, event.target.value), '')}
+        <div className="studio-graph-fullscreen-search" role="search"
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget)) setSearchFocused(false);
+          }}>
+            <Search size={13} aria-hidden="true" />
+            <input value={searchDraft} role="combobox" aria-label="搜索图谱" placeholder="搜索名称、Key 或说明"
+              autoComplete="off" aria-autocomplete="list" aria-expanded={searchFocused && searchCandidates.length > 0}
+              aria-controls={searchListId}
+              aria-activedescendant={searchFocused && searchCandidateIndex >= 0 && searchCandidates[searchCandidateIndex] ? `${searchListId}-${searchCandidateIndex}` : undefined}
+              onChange={(event) => {
+                update((current) => stageStudioSearch(current, event.target.value), '');
+                setSearchFocused(true);
+                setSearchFeedback(null);
+              }}
+              onFocus={() => { setSearchFocused(true); setSearchCandidateIndex(-1); }}
               onKeyDown={(event) => {
                 event.stopPropagation();
+                if (event.nativeEvent.isComposing) return;
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  setSearchFocused(true);
+                  if (searchCandidates.length) setSearchCandidateIndex((index) => (
+                    index < 0 ? (event.key === 'ArrowDown' ? 0 : searchCandidates.length - 1)
+                      : (index + (event.key === 'ArrowDown' ? 1 : -1) + searchCandidates.length) % searchCandidates.length
+                  ));
+                  return;
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  setSearchFocused(false);
+                  return;
+                }
                 if (!shouldSubmitStudioSearch(event)) return;
                 event.preventDefault();
                 submitSearch();
               }} />
-            <button type="button" title="搜索" aria-label="搜索" onClick={submitSearch}><Search size={13} /></button>
+            <button type="button" title="搜索并定位首个匹配" aria-label="搜索" onClick={submitSearch}><Search size={13} /></button>
             {(searchDraft || session.query) && (
               <button type="button" title="清除搜索" aria-label="清除搜索"
                 onClick={clearSearch}><X size={13} /></button>
             )}
+            {searchFocused && searchDraft.trim() && searchCandidates.length === 0 && (
+              <div className="studio-graph-search-empty" role="status">没有匹配的知识元素</div>
+            )}
+            {searchFocused && searchCandidates.length > 0 && (
+              <ul ref={searchListRef} className="studio-graph-search-candidates" id={searchListId} role="listbox" aria-label="搜索候选">
+                {searchCandidates.map((candidate, index) => (
+                  <li key={candidate.id} role="presentation">
+                    <button type="button" id={`${searchListId}-${index}`} role="option" tabIndex={-1}
+                      aria-selected={index === searchCandidateIndex} onClick={() => chooseSearchCandidate(candidate)}
+                      onMouseDown={(event) => event.preventDefault()}
+                      title={`${candidate.label} · ${candidate.id}`}>
+                      <i style={{ background: studioGraphKindMeta(candidate.kind, themeMode).color }} aria-hidden="true" />
+                      <span>{candidate.label}<code>{candidate.id}</code></span>
+                      <small>{KIND_META[candidate.kind]?.label || candidate.kind}</small>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
-        )}
+        <div className="studio-graph-tool-actions">
         <div className="seg" aria-label="关系高亮">
           <button type="button" className={session.graphHighlight === 'all' ? 'on' : ''}
             onClick={() => update({ graphHighlight: 'all', selectedElementId: '' })}>全部</button>
@@ -520,11 +676,15 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
           <button type="button" className={session.graphHighlight === 'metric' ? 'on' : ''}
             onClick={() => update({ graphHighlight: 'metric', selectedElementId: '' })}><Gauge size={13} />指标链</button>
         </div>
+        {webglUnavailable && <div className="seg">
+          <button type="button" className={allLabels ? 'on' : ''} aria-pressed={allLabels}
+            title="仅显示元素名称；有高亮节点时仅显示高亮节点的名称" onClick={() => setAllLabels((visible) => !visible)}>显示标签</button>
+        </div>}
         {(session.expandedClusterIds || []).length > 0 && (
           <button type="button" className="studio-icon-button" title="折叠关系簇" aria-label="折叠关系簇"
             onClick={() => update({ expandedClusterIds: [], selectedElementId: '' })}><Minimize2 size={15} /></button>
         )}
-        {!webglUnavailable && <>
+        {!webglUnavailable && graphLayoutMode === 'force' && <>
           <span className={`studio-force-status is-${forceStatus}`}><i />{studioForceStatusLabel(forceStatus)}</span>
           <button type="button" className="studio-icon-button"
             title={forcePaused ? '继续力模拟' : '暂停力模拟'} aria-label={forcePaused ? '继续力模拟' : '暂停力模拟'}
@@ -534,9 +694,17 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
           <button type="button" className="studio-icon-button" title="重新加热力模拟" aria-label="重新加热力模拟"
             onClick={() => instanceRef.current?.reheatForce()}><RotateCcw size={15} /></button>
         </>}
-        <button type="button" className="studio-icon-button" title="全屏查看" aria-label="全屏查看"
-          onClick={() => void toggleFullscreen()}>{graphFullscreen ? <X size={15} /> : <Maximize2 size={15} />}</button>
         </div>
+        <button type="button" className="studio-icon-button studio-graph-fullscreen-button" title="全屏查看" aria-label="全屏查看"
+          onClick={() => void toggleFullscreen()}>{graphFullscreen ? <X size={15} /> : <Maximize2 size={15} />}</button>
+        {searchFeedback && <div className="studio-graph-search-feedback sr-only" role="status" aria-live="polite">已定位：{searchFeedback.label}</div>}
+        </div>
+        <div className={`studio-graph-content${summaryVisible ? ' has-summary' : ''}`} style={graphFullscreen && webglUnavailable ? {
+          width: graphScrollSurface.width,
+          height: graphScrollSurface.height,
+          minWidth: '100%',
+          minHeight: '100%',
+        } : undefined}>
         {!filtered.nodes.length && (
           <div className="studio-graph-empty-overlay" role="status">
             <b>没有匹配的知识元素</b><span>调整搜索或筛选条件后重试。</span>
@@ -598,17 +766,23 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
           onZoomOut={() => changeGraphFullscreenZoom(graphFullscreenZoom - 0.25)}
           onFitView={resetFullscreenGraph} />
           : <Controls showInteractive={false} position="top-right" />}
-        {!graphFullscreen && nodes.length <= 80 && <MiniMap pannable zoomable nodeColor={(node) => studioGraphKindMeta(node.data.kind).color} />}
+        {!graphFullscreen && nodes.length <= 80 && <MiniMap pannable zoomable nodeColor={(node) => studioGraphKindMeta(node.data.kind, themeMode).color} />}
         </ReactFlow> : <StudioWebGLGraph
           ref={instanceRef}
           nodes={webglNodes}
           edges={filtered.edges}
-          routes={{}}
-          layoutMode="force"
+          routes={EMPTY_WEBGL_ROUTES}
+          layoutMode={graphLayoutMode}
+          onLayoutModeChange={setGraphLayoutMode}
+          onExpandAll={expandGraph}
+          clustered={filtered.clustered}
+          allLabels={allLabels}
+          onAllLabelsChange={setAllLabels}
           selectedId={visibleSelectedElementId}
           activeNodeIds={active.nodes}
           activeEdgeIds={active.edges}
           hasHighlight={hasHighlight}
+          previewKind={previewKind}
           motionEnabled
           reducedMotion={reducedMotion}
           initialViewport={initialViewportRef.current}
@@ -640,26 +814,43 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
           const visible = !(session.hiddenKinds || []).includes(kind);
           return (
             <button type="button" key={kind} className={visible ? '' : 'off'} aria-pressed={visible}
-              onClick={() => toggleLegendKind(kind)}>
-              <i className={`studio-swatch ${meta.className}`} style={{ background: meta.color, borderColor: meta.color }} />
+              title={`${visible ? '隐藏' : '显示'}${meta.label}；悬停预览`}
+              onMouseEnter={() => setPreviewKind(visible ? kind : '')}
+              onMouseLeave={() => setPreviewKind('')}
+              onFocus={() => setPreviewKind(visible ? kind : '')}
+              onBlur={() => setPreviewKind('')}
+              onClick={() => { setPreviewKind(''); toggleLegendKind(kind); }}>
+              <SemanticLegendIcon kind={kind} className="studio-swatch" color={graphTheme.colors[kind]} mode={graphTheme.mode} />
               {meta.label}<small>{session.graph?.nodes?.filter((node) => node.kind === kind).length || 0}</small>
             </button>
           );
         })}
         </div>
-        {selectedNode && studioSummaryVisible(visibleSelectedElementId, dismissedSummaryElementId, {
-          activeKind: session.kind,
-          selectedKind: selectedNode.kind,
-        }) && (
-          <aside className={`studio-graph-summary${selectedNode.kind === 'object' ? ' has-attributes' : ''}`}
+        {summaryVisible && (
+          <aside className={`studio-graph-summary${selectedNode.kind === 'object' ? ' has-attributes' : ''}${searchFeedback?.id === selectedNode.id ? ' is-search-target' : ''}`}
             aria-label={selectedNode.kind === 'object' ? '对象属性' : '节点摘要'}>
           <button type="button" className="studio-summary-close" title="关闭摘要" aria-label="关闭摘要"
             onClick={() => setDismissedSummaryElementId(visibleSelectedElementId)}><X size={14} /></button>
-          <span>{KIND_META[selectedNode.kind]?.label || selectedNode.kind}</span>
+          <span className="studio-summary-kind"><SemanticLegendIcon kind={selectedNode.kind} className="studio-swatch"
+            color={studioGraphKindMeta(selectedNode.kind, themeMode).color} mode={graphTheme.mode} />
+            {KIND_META[selectedNode.kind]?.label || selectedNode.kind}</span>
           <strong>{selectedNode.label}</strong>
           <code>{selectedNode.id}</code>
           {selectedElement?.description && <p>{selectedElement.description}</p>}
-          <small>{degreeById.get(selectedNode.id) || 0} 条关联关系</small>
+          <small>{selectedNeighbors.length} 个关联节点 · {degreeById.get(selectedNode.id) || 0} 条可见关系</small>
+          {selectedNeighbors.length > 0 && (
+            <div className="studio-summary-neighbors" aria-label="直接关联节点">
+              {selectedNeighbors.slice(0, 6).map((neighbor) => (
+                <button type="button" key={neighbor.id} onClick={() => locateElement(neighbor.id)}
+                  title={`定位${KIND_META[neighbor.kind]?.label || ''}：${neighbor.label}`}>
+                  <SemanticLegendIcon kind={neighbor.kind} className="studio-swatch"
+                    color={studioGraphKindMeta(neighbor.kind, themeMode).color} mode={graphTheme.mode} />
+                  <span>{neighbor.label}</span>
+                </button>
+              ))}
+              {selectedNeighbors.length > 6 && <small>等 {selectedNeighbors.length} 个</small>}
+            </div>
+          )}
           {selectedNode.kind === 'object' && (
             <section className="studio-object-attributes" aria-label="完整属性列表">
               <header><b>属性</b><small>{selectedObjectAttributes.length} 项</small></header>
@@ -678,6 +869,20 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
               ) : <div className="studio-object-attributes-state">暂无属性</div>; })()}
             </section>
           )}
+          <div className="studio-summary-actions">
+            <button type="button" className="btn" title="将相机对准选中节点及其关联"
+              onClick={() => locateElement(visibleSelectedElementId)}>
+              <LocateFixed size={14} />定位
+            </button>
+            {hopDepth < 2 && (
+              <button type="button" className="btn" title="把高亮范围再向外扩展一跳"
+                onClick={() => setHopDepth((depth) => depth + 1)}>再扩一跳</button>
+            )}
+            {hopDepth > 0 && (
+              <button type="button" className="btn" onClick={() => setHopDepth(0)}>收起扩展</button>
+            )}
+          </div>
+          {hopDepth > 0 && <small role="status">已显示 {hopDepth + 1} 跳范围 · {active.nodes.size} 个节点</small>}
           <button type="button" className="btn btn-p" onClick={() => onOpen(selectedNode.id, 'graph')}>
             <PanelRightOpen size={14} />打开条目
           </button>
@@ -694,6 +899,8 @@ const SCROLL_MINIMAP_HEIGHT = 126;
 const SCROLL_MINIMAP_PADDING = 8;
 
 function StudioGraphScrollMiniMap({ nodes, routes, zoom, surface, viewport, scroll, onNavigate }) {
+  const { mode } = useContext(ThemeCtx);
+  const colors = resolveGraphTheme(mode).colors;
   const projection = useMemo(() => {
     const width = Math.max(1, surface.width || 1);
     const height = Math.max(1, surface.height || 1);
@@ -744,7 +951,7 @@ function StudioGraphScrollMiniMap({ nodes, routes, zoom, surface, viewport, scro
           return <rect key={node.id} x={x} y={y}
             width={Math.max(1.5, nodeWidth * zoom * projection.scale)}
             height={Math.max(1.5, nodeHeight * zoom * projection.scale)} rx="1"
-            fill={KIND_META[node.data?.kind]?.color || '#98a2b1'} />;
+            fill={colors[node.data?.kind] || colors.cluster} />;
         })}
         <rect
           x={scroll.left * projection.scale + projection.offsetX}
@@ -758,10 +965,12 @@ function StudioGraphScrollMiniMap({ nodes, routes, zoom, surface, viewport, scro
 }
 
 const StudioNode = memo(({ data }) => {
+  const { mode } = useContext(ThemeCtx);
   const Icon = KIND_ICON[data.kind] || Boxes;
-  const meta = studioGraphKindMeta(data.kind);
+  const meta = studioGraphKindMeta(data.kind, mode);
   return (
     <div className={`studio-node ${meta.className}${data.selected ? ' selected' : ''}${data.highlighted ? ' highlighted' : ''}${data.dimmed ? ' dimmed' : ''}`}
+      data-labels-visible={data.labelVisible}
       style={{ '--node-color': meta.color, '--node-soft': meta.soft, '--node-glow': meta.glow }}
       role="button" tabIndex={0} aria-label={`${meta.label}：${data.label}`}
       onKeyDown={(event) => {
@@ -773,7 +982,7 @@ const StudioNode = memo(({ data }) => {
       }}>
       <Handle id="target-left" type="target" position={Position.Left} isConnectable={false} />
       <Handle id="source-left" type="source" position={Position.Left} isConnectable={false} />
-      <div className="studio-node-meta"><Icon size={13} /><span>{meta.label}</span><small>{data.relationCount} 条关系</small></div>
+      <div className="studio-node-meta" aria-hidden="true"><Icon size={13} /></div>
       <strong title={data.label}>{data.label}</strong>
       <Handle id="target-right" type="target" position={Position.Right} isConnectable={false} />
       <Handle id="source-right" type="source" position={Position.Right} isConnectable={false} />
@@ -784,7 +993,6 @@ const StudioNode = memo(({ data }) => {
 const StudioEdge = memo(({ id, sourceX, sourceY, targetX, targetY, markerEnd, data }) => {
   const points = studioRoutePoints(data.points, sourceX, sourceY, targetX, targetY);
   const path = studioRoundedPath(points);
-  const { x: labelX, y: labelY } = studioLabelPosition(points, data.labelAnchor);
   const emphasized = data.active || data.hovered;
   const dimmed = data.dimmed && !data.hovered;
   const particleDuration = Math.min(3.2, Math.max(1.6, studioPolylineLength(points) / 135));
@@ -806,14 +1014,6 @@ const StudioEdge = memo(({ id, sourceX, sourceY, targetX, targetY, markerEnd, da
           dur={`${particleDuration}s`} begin={`${begin}s`} repeatCount="indefinite" />
       </circle>;
     })}
-    {data.label && (
-      <EdgeLabelRenderer>
-        <span className={`studio-edge-label${data.active ? ' active' : ''}${data.hovered ? ' hovered' : ''}`}
-          style={{ color: data.labelColor, opacity: (() => { if (dimmed) return 0.58; return emphasized ? 1 : 0.94; })(), transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}>
-          {data.label}
-        </span>
-      </EdgeLabelRenderer>
-    )}
   </>;
 });
 

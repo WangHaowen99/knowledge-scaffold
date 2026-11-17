@@ -11,6 +11,7 @@ import { workspaceDirtySources } from '../lib/workspaceDirty.js';
 import { compareUpdatedAt, formatUpdatedAt, withUpdatedAt } from '../lib/studioUpdates.js';
 import { Markdown } from './CenterPane.jsx';
 import StudioEntryEditor from './StudioEntryEditor.jsx';
+import { studioTextMatchesQuery } from './studio/legacy/studio-model.js';
 
 // 图模式 = 原版 modeling Studio 图整体搬迁（含 WebGL 力导运行时），按需加载
 const LegacyStudioGraphHost = lazy(() => import('./studio/LegacyStudioGraphHost.jsx'));
@@ -93,7 +94,7 @@ export default function StudioView({
   const tableRows = useMemo(() => {
     const keyword = query.trim();
     const nodes = keyword
-      ? graph.nodes.filter((n) => `${n.id} ${n.label || ''} ${n.description || ''}`.includes(keyword))
+      ? graph.nodes.filter((node) => studioTextMatchesQuery(`${node.id} ${node.label || ''} ${node.description || ''}`, keyword))
       : graph.nodes;
     return withUpdatedAt(nodes, updates);
   }, [graph, query, updates]);
@@ -194,10 +195,11 @@ export default function StudioView({
             表
           </button>
         </div>
-        <div className="studio-search">
+        {view === 'table' && <div className="studio-search">
           <SearchOutlined />
           <input
             placeholder="搜索元素"
+            aria-label="搜索表格元素"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -206,9 +208,11 @@ export default function StudioView({
               ×
             </button>
           )}
-        </div>
+        </div>}
         <span className="studio-count">
-          {graph.nodes.length} 元素 · {graph.edges.length} 关联
+          {view === 'table' && query.trim()
+            ? `匹配 ${tableRows.length} / ${graph.nodes.length} 元素`
+            : `${graph.nodes.length} 元素`} · {graph.edges.length} 关联
         </span>
         <Button
           size="small"
@@ -225,7 +229,6 @@ export default function StudioView({
             <LegacyStudioGraphHost
               project={project}
               graph={graph}
-              query={query}
               selectedElementId={selectedElementId}
               onOpenEntry={openEntry}
             />

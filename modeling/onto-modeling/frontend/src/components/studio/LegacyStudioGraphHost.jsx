@@ -13,7 +13,7 @@ import './legacy/studio.css';
  *    与设计"逻辑沿用操作的视觉"一致）；
  * 2. 提供原版所需的 session 状态容器与 update/onOpen 回调。
  */
-export default function LegacyStudioGraphHost({ project, graph, query, selectedElementId, onOpenEntry }) {
+export default function LegacyStudioGraphHost({ project, graph, selectedElementId, onOpenEntry }) {
   const [session, setSession] = useState(() => ({
     ...createStudioSession(),
     kind: '',
@@ -31,6 +31,7 @@ export default function LegacyStudioGraphHost({ project, graph, query, selectedE
   const mapped = useMemo(() => {
     const nodes = (graph.nodes || []).map((node) => ({
       id: node.id,
+      key: node.key,
       label: node.label || node.title || node.id,
       kind: node.kind === 'logic' ? 'operation' : node.kind,
     }));
@@ -67,11 +68,6 @@ export default function LegacyStudioGraphHost({ project, graph, query, selectedE
       selectedElementId: selectedElementId || '',
     });
   }, [graph.workingRevision, mapped, selectedElementId, update]);
-
-  // 外层工具条搜索同步进原版的图过滤
-  useEffect(() => {
-    update({ query: (query || '').trim(), queryDraft: query || '' });
-  }, [query, update]);
 
   const onOpen = useCallback(
     (elementId) => {
