@@ -1420,6 +1420,41 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 /* drawio 高级编辑放在宿主里时由宿主给高度；它自己的全屏仍铺满视口 */
 .flowchart-host .drawio-root { flex: 1; height: auto; min-height: 0; }
 .flowchart-host .drawio-root.fullscreen { height: 100dvh; }
+.flowchart-repair-panel {
+  display: flex; gap: 12px; flex: 1; min-height: 0; min-width: 0;
+}
+.flowchart-repair-canvas {
+  display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0;
+}
+.flowchart-repair-canvas .flowchart-editor-canvas {
+  flex: 1; min-height: 0; border: 1px solid var(--border-default); border-radius: 12px;
+}
+.flowchart-repair-missing-node .fc-node {
+  border: 1.5px dashed #d4380d; background: #fff2e8;
+}
+.flowchart-repair-invalid-node .fc-node {
+  border-color: #d4380d; background: #fff7f3;
+}
+.flowchart-repair-highlight-node .fc-node {
+  border: 3px solid #1677ff; box-shadow: 0 0 0 4px rgba(22, 119, 255, 0.18);
+}
+.flowchart-repair-highlight-edge path {
+  stroke: #1677ff; stroke-width: 4;
+}
+.flowchart-repair-selected-issue { background: #f0f7ff; border-radius: 8px; }
+.flowchart-repair-issue-title { height: auto; white-space: normal; text-align: left; padding: 4px 6px; }
+.flowchart-repair-preview-hint {
+  flex: none; padding: 8px 2px; font-size: 11px; color: var(--text-tertiary);
+}
+.flowchart-repair-controls {
+  flex: 0 0 300px; min-width: 260px; overflow: auto; padding: 12px;
+  border: 1px solid var(--border-default); border-radius: 12px; background: var(--surface-card);
+}
+@media (max-width: 900px) {
+  .flowchart-repair-panel { flex-direction: column; overflow: auto; }
+  .flowchart-repair-canvas { min-height: 360px; }
+  .flowchart-repair-controls { flex: none; min-width: 0; }
+}
 /* 标准编辑器全屏 */
 .flowchart-host.fullscreen {
   position: fixed; inset: 0; z-index: 1000; height: 100dvh; min-height: 0;

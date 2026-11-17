@@ -26,6 +26,54 @@ const DETAIL_ATTR = 'data-flowchart-detail';
 const NODE_KIND_ATTR = 'data-flowchart-node-kind';
 const EDGE_KIND_ATTR = 'data-flowchart-edge-kind';
 const ANNOTATION_EDGE_ATTR = 'data-flowchart-annotation-edge';
+const NODE_KINDS = new Set(['start', 'end', 'action', 'decision', 'object', 'data']);
+
+export class FlowchartValidationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'FlowchartValidationError';
+  }
+}
+
+export function validateFlowchartDocument(doc) {
+  for (const [index, diagram] of (doc.diagrams || []).entries()) {
+    const prefix = `第 ${index + 1} 张流程图`;
+    const ids = new Set();
+    const nodeIds = new Set();
+    for (const node of diagram.nodes || []) {
+      if (!node.id || typeof node.id !== 'string') {
+        throw new FlowchartValidationError(`${prefix}存在缺少 ID 的节点`);
+      }
+      if (ids.has(node.id)) {
+        throw new FlowchartValidationError(`${prefix}的节点 ID 重复：${node.id}`);
+      }
+      if (!NODE_KINDS.has(node.kind)) {
+        throw new FlowchartValidationError(`${prefix}的节点类型无效：${node.kind || '空'}`);
+      }
+      ids.add(node.id);
+      nodeIds.add(node.id);
+    }
+    for (const edge of diagram.edges || []) {
+      if (!edge.id || typeof edge.id !== 'string') {
+        throw new FlowchartValidationError(`${prefix}存在缺少 ID 的连线`);
+      }
+      if (ids.has(edge.id)) {
+        throw new FlowchartValidationError(`${prefix}的单元格 ID 重复：${edge.id}`);
+      }
+      if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) {
+        throw new FlowchartValidationError(`${prefix}的连线 ${edge.id} 指向不存在的节点`);
+      }
+      ids.add(edge.id);
+    }
+    for (const annotation of diagram.annotations || []) {
+      if (!annotation.id || typeof annotation.id !== 'string' || ids.has(annotation.id)) {
+        throw new FlowchartValidationError(`${prefix}的文字标注 ID 缺失或重复`);
+      }
+      ids.add(annotation.id);
+    }
+  }
+  return doc;
+}
 
 function styleToKind(style) {
   const s = style || '';
@@ -100,6 +148,10 @@ export function parseDrawioToDocument(xml, fileName = '流程图') {
   const diagrams = models.map(({ name, description, processMeta, model }, index) => {
     if (!model) throw new Error('compressed'); // 压缩存储：交给 drawio 编辑器
     const cells = Array.from(model.getElementsByTagName('mxCell'));
+    // 外层对象保存链接、提示和自定义数据；标准编辑器重建 XML 时无法保留它们。
+    if (cells.some((cell) => ['object', 'UserObject'].includes(cell.parentNode?.tagName))) {
+      throw new Error('unsupported wrapped cell');
+    }
     const nodes = [];
     const edges = [];
     const positions = {};
@@ -152,7 +204,6 @@ export function parseDrawioToDocument(xml, fileName = '流程图') {
       } else if (cell.getAttribute('edge') === '1') {
         const from = cell.getAttribute('source');
         const to = cell.getAttribute('target');
-        if (!from || !to) continue;
         edges.push({
           id: id || `edge-${edges.length + 1}`,
           from,
@@ -203,7 +254,7 @@ export function parseDrawioToDocument(xml, fileName = '流程图') {
       layout: { direction: 'TB', positions },
     };
   });
-  return { diagrams };
+  return validateFlowchartDocument({ diagrams });
 }
 
 function escapeXml(text) {
@@ -228,6 +279,7 @@ function serializeXmlElement(element) {
 }
 
 export function serializeDocumentToDrawio(doc) {
+  validateFlowchartDocument(doc);
   const pages = (doc.diagrams || []).map((diagram) => {
     const positions = diagram.layout?.positions || {};
     const cells = [];

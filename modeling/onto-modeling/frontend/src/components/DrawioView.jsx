@@ -22,7 +22,7 @@ export default function DrawioView(props) {
   return <DrawioDocument key={`${props.project.id}:${props.path}`} {...props} />;
 }
 
-function DrawioDocument({ project, path, editorAvailable, onSaved, refreshKey }) {
+function DrawioDocument({ project, path, editorAvailable, onSaved, onStateChange, onEditModeChange, refreshKey }) {
   const [modal, modalContext] = Modal.useModal();
   const [messageApi, messageContext] = message.useMessage();
   const [doc, setDoc] = useState(null);
@@ -37,8 +37,13 @@ function DrawioDocument({ project, path, editorAvailable, onSaved, refreshKey })
 
   useEffect(() => {
     setWorkspaceDirty('drawio-editor', saveState === 'dirty' || saveState === 'saving' || saveState === 'error');
-    return () => setWorkspaceDirty('drawio-editor', false);
-  }, [saveState]);
+    onStateChange?.(saveState);
+  }, [saveState, onStateChange]);
+  useEffect(() => () => {
+    setWorkspaceDirty('drawio-editor', false);
+    onStateChange?.('clean');
+    onEditModeChange?.(false);
+  }, [onStateChange, onEditModeChange]);
   const dirtyRef = useRef(false);
   const savingRef = useRef(false);
   const aliveRef = useRef(true);
@@ -113,6 +118,7 @@ function DrawioDocument({ project, path, editorAvailable, onSaved, refreshKey })
       return;
     }
     dirtyRef.current = false;
+    onEditModeChange?.(false);
     setMode('view');
     setSaveState('clean');
   };
@@ -240,10 +246,13 @@ function DrawioDocument({ project, path, editorAvailable, onSaved, refreshKey })
           {mode === 'view' ? <>
             <Tooltip title={editorAvailable ? '在画布上编辑节点、文字和连线' : '当前部署未包含编辑器组件'}>
               <Button size="small" type="primary" icon={<EditOutlined />}
-                disabled={!editorAvailable || !doc || !!doc.error} onClick={() => setMode('edit')}>编辑流程图</Button>
+                disabled={!editorAvailable || !doc || !!doc.error} onClick={() => {
+                  onEditModeChange?.(true);
+                  setMode('edit');
+                }}>编辑流程图</Button>
             </Tooltip>
             <Tooltip title="刷新预览"><Button size="small" aria-label="刷新预览" icon={<ReloadOutlined />} onClick={retry} /></Tooltip>
-            <Tooltip title="下载原文件"><Button size="small" aria-label="下载原文件" icon={<DownloadOutlined />} href={api.rawUrl(project.id, path)} /></Tooltip>
+            <Tooltip title="下载原文件"><Button size="small" aria-label="下载原文件" icon={<DownloadOutlined />} href={api.rawUrl(project.id, path)} download={filename} /></Tooltip>
           </> : <>
             <Button size="small" type="primary" icon={<SaveOutlined />} loading={saveState === 'saving'}
               disabled={editorState !== 'ready'} onClick={requestSave}>保存</Button>
