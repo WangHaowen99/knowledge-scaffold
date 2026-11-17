@@ -2,7 +2,7 @@
 
 import importlib
 import json
-import subprocess
+import runpy
 import sys
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -160,17 +160,19 @@ def test_existing_document_mock_and_testcase_references_are_preserved(impact, tm
     assert 'parent_flow' in impact.format_report(result)
 
 
-def test_cli_returns_json_candidates_without_writing_resources(tmp_path):
+def test_cli_returns_json_candidates_without_writing_resources(tmp_path, monkeypatch, capsys):
     ontology = tmp_path / 'ontology'
     target = put(ontology, 'operation/calculate_quantity.md', '# 逻辑描述\n`' + OLD_FORMULA + '`')
     flow = put(ontology, 'diagrams/other_flow.drawio', diagram(OLD_FORMULA))
     before = {path: path.read_bytes() for path in (target, flow)}
-    command = [
-        sys.executable, '-B', '-X', 'utf8', str(SCRIPTS / 'impact_analysis.py'),
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    monkeypatch.setattr(sys, 'argv', [
+        str(SCRIPTS / 'impact_analysis.py'),
         'ontology/operation/calculate_quantity.md', '--json', '--diagram-limit', '1',
-    ]
-    result = subprocess.run(command, cwd=tmp_path, capture_output=True, encoding='utf-8', check=True)
-    data = json.loads(result.stdout)
+    ])
+    runpy.run_path(str(SCRIPTS / 'impact_analysis.py'), run_name='__main__')
+    data = json.loads(capsys.readouterr().out)
     assert data['category'] == 'operation'
     assert data['diagram_refs'][0]['file'] == 'ontology/diagrams/other_flow.drawio'
     assert data['diagram_scan']['limit'] == 1

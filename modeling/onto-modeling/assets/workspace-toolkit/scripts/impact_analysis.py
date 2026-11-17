@@ -81,7 +81,7 @@ def _diagram_impact(related_stems: set[str], target_doc, ontology_dir: Path) -> 
                 normalized = _normalized_text(text)
                 if not reason and any(formula in normalized for formula in formulas):
                     reason = '包含目标文档中的公式，需另行复核并同步'
-            except (OSError, UnicodeError, ET.ParseError, ValueError):
+            except (OSError, ET.ParseError, ValueError):
                 warning = '无法完整扫描，需人工复核并另行同步'
             if reason or warning:
                 entries.append({
