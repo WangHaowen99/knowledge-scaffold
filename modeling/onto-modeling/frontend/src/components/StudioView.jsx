@@ -9,14 +9,29 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } fro
 import { api } from '../lib/api.js';
 import { workspaceDirtySources } from '../lib/workspaceDirty.js';
 import { compareUpdatedAt, formatUpdatedAt, withUpdatedAt } from '../lib/studioUpdates.js';
+import {
+  INITIAL_STUDIO_TABLE_STATE,
+  studioEntryReturnView,
+  studioFilteredValue,
+  studioOwnerFilters,
+  studioOwnerMatches,
+  studioRuleColumnsVisible,
+  studioSortOrder,
+  studioTableState,
+  studioUpdatedWithin,
+} from '../lib/studioTable.js';
 import { Markdown } from './CenterPane.jsx';
 import StudioEntryEditor from './StudioEntryEditor.jsx';
+import StudioUpdatedRangeFilter from './StudioUpdatedRangeFilter.jsx';
 
 // 图模式 = 原版 modeling Studio 图整体搬迁（含 WebGL 力导运行时），按需加载
 const LegacyStudioGraphHost = lazy(() => import('./studio/LegacyStudioGraphHost.jsx'));
 
 // 表格视图的 kind 视觉沿用原版 KIND_META 的对象/操作用色
 const KIND_LABEL = { object: '对象', operation: '操作', logic: '操作', rule: '规则', metric: '指标', script: '脚本' };
+
+// 责任部门、维护人只在类型筛选为规则时显示，规则没填显示破折号
+const renderOwners = (values) => values?.join('、') || '—';
 
 export default function StudioView({
   project,
@@ -28,6 +43,8 @@ export default function StudioView({
   workspaceRevision = 0,
 }) {
   const [view, setView] = useState('graph');
+  const [returnView, setReturnView] = useState('graph');
+  const [tableState, setTableState] = useState(INITIAL_STUDIO_TABLE_STATE);
   const [graph, setGraph] = useState({ nodes: [], edges: [] });
   const [entry, setEntry] = useState(null);
   const [selectedElementId, setSelectedElementId] = useState('');
@@ -54,6 +71,8 @@ export default function StudioView({
     if (projectChanged) {
       setEntry(null);
       setView('graph');
+      setReturnView('graph');
+      setTableState(INITIAL_STUDIO_TABLE_STATE);
       setQuery('');
       setSelectedElementId('');
       setUpdates({});
@@ -100,6 +119,7 @@ export default function StudioView({
 
   const openEntry = useCallback(
     (path, elementId = '') => {
+      setReturnView((previous) => studioEntryReturnView(view, previous));
       api
         .studioElement(project.id, path)
         .then((data) => {
@@ -110,7 +130,7 @@ export default function StudioView({
         })
         .catch((error) => message.error(error.message));
     },
-    [graph.nodes, project.id],
+    [graph.nodes, project.id, view],
   );
 
   const refresh = useCallback(() => {
@@ -157,6 +177,14 @@ export default function StudioView({
     [graph],
   );
 
+  const ownerFilters = useMemo(
+    () => ({
+      departments: studioOwnerFilters(graph.nodes, 'departments'),
+      maintainers: studioOwnerFilters(graph.nodes, 'maintainers'),
+    }),
+    [graph],
+  );
+
   if (!loading && graph.nodes.length === 0) {
     return (
       <Empty
@@ -173,7 +201,7 @@ export default function StudioView({
           <Button
             size="small"
             icon={<ArrowLeftOutlined />}
-            onClick={() => setView(view === 'edit' ? 'entry' : 'graph')}
+            onClick={() => setView(view === 'edit' ? 'entry' : returnView)}
           >
             返回
           </Button>
@@ -238,14 +266,18 @@ export default function StudioView({
           <Table
             size="small"
             rowKey="id"
-            pagination={{ pageSize: 15, hideOnSinglePage: true }}
+            pagination={{ pageSize: 15, hideOnSinglePage: true, current: tableState.current }}
             dataSource={tableRows}
+            onChange={(pagination, filters, sorter) =>
+              setTableState(studioTableState(pagination, filters, sorter))
+            }
             onRow={(row) => ({ onClick: () => openEntry(row.path), style: { cursor: 'pointer' } })}
             columns={[
               {
                 title: '类型',
                 dataIndex: 'kind',
                 width: 80,
+                filteredValue: studioFilteredValue(tableState, 'kind'),
                 filters: [
                   { text: '对象', value: 'object' },
                   { text: '操作', value: 'operation' },
@@ -268,11 +300,51 @@ export default function StudioView({
                 dataIndex: 'updatedAt',
                 width: 170,
                 sorter: compareUpdatedAt,
+                sortOrder: studioSortOrder(tableState, 'updatedAt'),
                 sortDirections: ['descend', 'ascend'],
+                filteredValue: studioFilteredValue(tableState, 'updatedAt'),
+                filterDropdown: (props) => <StudioUpdatedRangeFilter {...props} />,
+                onFilter: (value, row) => studioUpdatedWithin(row, value),
                 render: formatUpdatedAt,
               },
-              { title: '引用', dataIndex: 'out', width: 70, sorter: (a, b) => a.out - b.out },
-              { title: '被引', dataIndex: 'in', width: 70, sorter: (a, b) => a.in - b.in },
+              ...(studioRuleColumnsVisible(tableState)
+                ? [
+                    {
+                      title: '责任部门',
+                      dataIndex: 'departments',
+                      width: 120,
+                      filters: ownerFilters.departments,
+                      filterSearch: true,
+                      filteredValue: studioFilteredValue(tableState, 'departments'),
+                      onFilter: (value, row) => studioOwnerMatches(row, 'departments', value),
+                      render: renderOwners,
+                    },
+                    {
+                      title: '维护人',
+                      dataIndex: 'maintainers',
+                      width: 110,
+                      filters: ownerFilters.maintainers,
+                      filterSearch: true,
+                      filteredValue: studioFilteredValue(tableState, 'maintainers'),
+                      onFilter: (value, row) => studioOwnerMatches(row, 'maintainers', value),
+                      render: renderOwners,
+                    },
+                  ]
+                : []),
+              {
+                title: '引用',
+                dataIndex: 'out',
+                width: 70,
+                sorter: (a, b) => a.out - b.out,
+                sortOrder: studioSortOrder(tableState, 'out'),
+              },
+              {
+                title: '被引',
+                dataIndex: 'in',
+                width: 70,
+                sorter: (a, b) => a.in - b.in,
+                sortOrder: studioSortOrder(tableState, 'in'),
+              },
             ]}
           />
         </div>

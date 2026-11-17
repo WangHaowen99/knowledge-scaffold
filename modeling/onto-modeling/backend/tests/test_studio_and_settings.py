@@ -43,6 +43,133 @@ def test_studio_graph_links_and_degrees(ontology_root: Path):
     assert names["订单"]["out"] == 1 and names["订单"]["in"] == 1
 
 
+SYNTHETIC_AREA_FIELDS = (
+    "# 对象属性清单\n\n"
+    "| 中文名称 | 英文名称 | 描述 | 主键 | 类型 |\n"
+    "|---|---|---|---|---|\n"
+    "| 编号 | area_id | 合成编号 | 是 | 字符串 |\n"
+    "| 上级编号 | parent_area_id | 合成上级 | 否 | 字符串 |\n"
+    "| 备用上级编号 | backup_parent_id | 合成备用上级 | 否 | 字符串 |\n\n"
+)
+
+
+def test_studio_graph_keeps_declared_object_self_relation(tmp_path: Path):
+    obj_dir = tmp_path / "ontology" / "object"
+    obj_dir.mkdir(parents=True)
+    (obj_dir / "合成仓区.md").write_text(
+        "# 对象描述\n\n合成仓区，上级仍是[[合成仓区]]。\n\n" + SYNTHETIC_AREA_FIELDS
+        + "# 关联对象\n\n- 当前对象 → 上级仓区（parent_area_id → area_id） → [[合成仓区]]\n",
+        encoding="utf-8",
+    )
+    (obj_dir / "合成库存.md").write_text(
+        "# 关联对象\n\n- 当前对象 → 存放于（area_id → area_id） → [[合成仓区]]\n",
+        encoding="utf-8",
+    )
+    operation_dir = tmp_path / "ontology" / "operation"
+    operation_dir.mkdir(parents=True)
+    (operation_dir / "合成盘点.md").write_text(
+        "# 与operation的关联\n\n调用[[合成盘点]]\n", encoding="utf-8"
+    )
+
+    result = studio.graph(tmp_path)
+
+    edges = [(e["source"], e["target"], e["kind"], e["label"]) for e in result["edges"]]
+    assert ("合成库存", "合成仓区", "object_relation", "存放于") in edges
+    # 自关联只取「关联对象」里的声明：正文提到自己、操作调用自己都不成边
+    assert [edge for edge in edges if edge[0] == edge[1]] == [
+        ("合成仓区", "合成仓区", "object_relation", "上级仓区")
+    ]
+    names = {n["id"]: n for n in result["nodes"]}
+    assert names["合成仓区"]["out"] == 1 and names["合成仓区"]["in"] == 2
+
+
+def test_studio_graph_shows_each_distinct_object_self_relation(tmp_path: Path):
+    obj_dir = tmp_path / "ontology" / "object"
+    obj_dir.mkdir(parents=True)
+    (obj_dir / "合成仓区.md").write_text(
+        SYNTHETIC_AREA_FIELDS
+        + "# 关联对象\n\n"
+        "- 当前对象 → 上级仓区（parent_area_id → area_id） → [[合成仓区]]\n"
+        "- 当前对象 → 上级仓区（backup_parent_id → area_id） → [[合成仓区]]\n"
+        "- 当前对象 → 相邻仓区 → [[合成仓区]]\n"
+        "- 当前对象 → 上级仓区（parent_area_id → area_id） → [[合成仓区]]\n"
+        "- 当前对象 → 下级仓区（missing_id → area_id） → [[合成仓区]]\n",
+        encoding="utf-8",
+    )
+
+    result = studio.graph(tmp_path)
+
+    # 与导出同一身份：同名不同字段各成一条并注明字段，完全相同的重复声明只出一条，
+    # 字段不在属性清单里的声明导出会丢弃，图上也不画
+    assert sorted(edge["label"] for edge in result["edges"]) == [
+        "上级仓区（backup_parent_id → area_id）",
+        "上级仓区（parent_area_id → area_id）",
+        "相邻仓区",
+    ]
+    assert len({edge["id"] for edge in result["edges"]}) == 3
+    node = result["nodes"][0]
+    assert node["out"] == 3 and node["in"] == 3
+
+
+def test_studio_graph_lists_rule_departments_and_maintainers(tmp_path: Path):
+    rule_dir = tmp_path / "ontology" / "rule"
+    rule_dir.mkdir(parents=True)
+    filled = (
+        "# 规则描述\n\n合成规则。\n\n"
+        "# 责任部门\n\n- 合成部门甲、合成部门乙\n- `合成部门甲`\n\n"
+        "# 维护人\n\n合成维护人A，合成维护人B；合成维护人A\n"
+    )
+    (rule_dir / "合成补货规则.md").write_text(filled, encoding="utf-8")
+    (rule_dir / "合成盘点规则.md").write_text(
+        "# 规则描述\n\n合成规则。\n\n# 责任部门\n\n无（资料未写明）\n\n"
+        "# 维护人\n\n{待填写：资料明确写出的规则维护人}\n",
+        encoding="utf-8",
+    )
+    obj_dir = tmp_path / "ontology" / "object"
+    obj_dir.mkdir(parents=True)
+    (obj_dir / "合成对象.md").write_text("# 对象描述\n\n合成对象。\n\n# 维护人\n\n合成维护人A\n", encoding="utf-8")
+
+    nodes = {n["id"]: n for n in studio.graph(tmp_path)["nodes"]}
+
+    assert nodes["合成补货规则"]["departments"] == ["合成部门甲", "合成部门乙"]
+    assert nodes["合成补货规则"]["maintainers"] == ["合成维护人A", "合成维护人B"]
+    # 写「无（说明）」或保留模板占位都算未填写
+    assert nodes["合成盘点规则"]["departments"] == []
+    assert nodes["合成盘点规则"]["maintainers"] == []
+    # 只有规则登记部门和维护人
+    assert "departments" not in nodes["合成对象"] and "maintainers" not in nodes["合成对象"]
+    # 结构化编辑提交这两节不会被当成模板外章节转复核
+    checks = studio.deterministic_check(tmp_path, "ontology/rule/合成补货规则.md", filled)
+    assert not any("模板外" in item for item in checks["review"])
+
+
+def test_studio_graph_reads_rule_owner_registration_lines(tmp_path: Path):
+    rule_dir = tmp_path / "ontology" / "rule"
+    rule_dir.mkdir(parents=True)
+    # 存量规则把登记信息写在备注里，没有单独的「责任部门」「维护人」章节
+    (rule_dir / "合成下限规则.md").write_text(
+        "# 规则描述\n\n合成规则。\n\n"
+        "# 约束表达\n\n公司级/部门级双口径；设备维护人：合成岗位须复核。\n\n"
+        "# 例外情况\n\n无\n\n"
+        "备注（元数据，用于目录与筛选验证）：维护部门：合成仓储组；维护人：测试员甲。\n",
+        encoding="utf-8",
+    )
+    (rule_dir / "合成上限规则.md").write_text(
+        "# 规则描述\n\n合成规则。\n\n# 责任部门\n\n合成质量组\n\n"
+        "# 备注\n\n- **责任部门**：合成仓储组、合成质量组\n- 维护人：测试员乙，测试员丙\n",
+        encoding="utf-8",
+    )
+
+    nodes = {n["id"]: n for n in studio.graph(tmp_path)["nodes"]}
+
+    assert nodes["合成下限规则"]["departments"] == ["合成仓储组"]
+    # 「设备维护人：」是业务描述，不算登记
+    assert nodes["合成下限规则"]["maintainers"] == ["测试员甲"]
+    # 章节与登记行合并去重
+    assert nodes["合成上限规则"]["departments"] == ["合成质量组", "合成仓储组"]
+    assert nodes["合成上限规则"]["maintainers"] == ["测试员乙", "测试员丙"]
+
+
 def test_studio_element_sections_and_backlinks(ontology_root: Path):
     element = studio.element(ontology_root, "ontology/object/订单.md")
     # 旧章节名「与logic的关联」读取时归一为新术语（ADR-0004）
