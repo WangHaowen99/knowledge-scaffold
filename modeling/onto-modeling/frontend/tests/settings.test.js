@@ -7,7 +7,7 @@ import { actionsOf, extensionState, register as registerSettings } from '../src/
 import { projectPacks, remainingText } from '../src/api/mock/settings-data.js';
 import {
   activeSection, advancedSummary, basicPatch, createdText, defaultConfigTab, engineCards,
-  isRecommended, lastRunText, modelDisplayName, modelSourceText, moveItem, nameProblem, packToolsText,
+  isRecommended, lastRunText, modelDisplayName, modelSourceText, moveItem, nameProblem, optionalStepsText, packToolsText,
   pendingSummary, policyBody, policyDirty, policyForm, rowActions, scopeLabel, sectionTarget, startBlocker,
   statusChip, switchToast, thresholdAt, thresholdPos, tokenBody, tokenProblems, toolList, toolsText, uiCell,
 } from '../src/pages/settings/settingsModel.js';
@@ -68,6 +68,17 @@ test('策略表单：只读字段、老策略里的预算与生产库授权都�
   assert.equal(policy.advanced.confidence_threshold, 0.8, '深拷贝，不改原策略');
   assert.equal(policyBody(form, 'p3').base_revision, 'p3');
   assert.deepEqual(Object.keys(policyBody(form, 'p3')), ['scope', 'advanced', 'base_revision']);
+});
+
+test('「包括可选步骤」开关：按 AB-01 的 optional_nodes 列节点名，用「、」连；没有可选节点时不显示（空串）', () => {
+  const two = { optional_nodes: [{ id: 'diagram.flowchart', name: '绘制流程图' }, { id: 'core.metric', name: '提取规则与指标' }] };
+  assert.equal(optionalStepsText(two), '包括可选步骤：绘制流程图、提取规则与指标');
+  assert.equal(optionalStepsText({ optional_nodes: [{ id: 'core.metric', name: '提取规则与指标' }] }), '包括可选步骤：提取规则与指标');
+  assert.equal(optionalStepsText({ optional_nodes: [] }), '');
+  assert.equal(optionalStepsText({}), '', '老后端没有这个字段：不显示');
+  assert.equal(optionalStepsText(null), '');
+  // 只读字段，不进表单
+  assert.deepEqual(Object.keys(policyForm({ ...two, scope: {}, advanced: {} })), ['scope', 'advanced']);
 });
 
 test('高级设置：摘要、是否推荐值、阈值滑块、资料优先级排序', () => {
@@ -301,6 +312,7 @@ test('mock AB-01～AB-04、AB-18：保存的策略决定预览；开始后开一
   assert.equal(p0.revision, 'p3');
   assert.equal(p0.last_run.run_no, 3);
   assert.deepEqual([p0.platform_limits, p0.not_enforced], [{}, []]);
+  assert.equal(optionalStepsText(p0), '包括可选步骤：绘制流程图、提取规则与指标');
   assert.equal(p0.budget, undefined);
   assert.equal('production_collection' in p0, false);
 
@@ -310,6 +322,7 @@ test('mock AB-01～AB-04、AB-18：保存的策略决定预览；开始后开一
     ...policyForm(p0), budget: { max_tokens: 20e6 }, production_collection: [{ source_id: 'x', allowed: true }], base_revision: 'p3',
   });
   assert.equal(legacy.status, 200);
+  assert.deepEqual(legacy.body.optional_nodes, p0.optional_nodes, 'AB-02 的响应同 AB-01');
   assert.equal(legacy.body.budget, undefined);
   assert.equal(legacy.body.production_collection, undefined);
 

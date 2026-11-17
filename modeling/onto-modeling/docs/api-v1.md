@@ -1173,13 +1173,15 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
   | `subdir` | string | 否 | `diagrams\|excel\|others`，缺省按扩展名归类 |
   | `purpose` | string | 否 | 5 种用途之一，缺省 `auto` |
   | `reading_mode` | string | 否 | `on_demand\|full`，缺省 `on_demand` |
-  | `is_revision` | bool | 否 | 「这批是修订 / 变更资料」 |
-  | `batch_id` | string | 否 | 同一批多个文件共用；`is_revision=true` 时整批只发起一次增量更新 |
+  | `is_revision` | bool | 否 | 「这批是修订 / 变更资料」：收下不处理（见下） |
+  | `batch_id` | string | 否 | 同一批多个文件共用：收下不处理 |
 
 - 同名文件直接替换（`replaced=true`）。上传即经写入路径提交，`Onto-Source: web`。
 - 上传立即返回，`material.text.state` 是 `converting`（网关没部署时 `waiting`）；转换在后台做，结果经 EP-25 推送。
-- `is_revision=true` 时，整批上传完成后往工作台对话发一条增量更新命令（`core.update`），响应里带 `command_task`。
-- 响应 `201`：`{material: Material, replaced: bool, commit, version_label, detected: {purpose, tables[]}|null, command_task: CommandTask|null}`。
+- 新资料和增量更新（节点模型重构 3）：主线上已经有对象或操作时，每次上传都记进「新资料」这一轮（内核条件 `materials_added`），
+  增量更新 `core.update` 出现在 `FL-01`、建议条第 2 级推它，由用户点了才发命令。`is_revision` 不再另外发增量更新命令（原来的
+  设计是整批发一条，和条件节点重复），`command_task` 恒为 null；同一轮里传几份都只出现一个增量更新，文件累加。触发算不出来不影响上传。
+- 响应 `201`：`{material: Material, replaced: bool, commit, version_label, detected: {purpose, tables[]}|null, command_task: null}`。
 - 错误：`payload_too_large`、`unsupported_media_type`、`invalid_filename`、`project_archived`、`upload_expired`。
 
 #### R-03 改资料用途
@@ -1968,6 +1970,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - `nodes`：`FlowNode[]`；建模是提取对象 `core.object`、提取操作 `core.operation` 两个节点（节点模型重构 1）。
     每个节点带 `need`（什么时候要做：`"required"`、`"optional"` 或 `{when: <条件>}`）、`nav`（上不上导航栏，必需节点为 true）、
     `under`（可选、条件节点挂在哪个必需节点下面：after 链上它前面最近的必需节点；必需节点为 null）（节点模型重构 2a）。
+    条件节点只在条件成立时出现：增量更新 `core.update` 是 `{when: "materials_added"}`，主线上已经有对象或操作时上传了资料才出现，
+    `under` 是 `core.operation`、`nav` 为 false、不计入进度；这一轮处理完（上传之后开始的一次增量更新做完、触发之后发布过、
+    `FL-03`「这一轮不处理」）就不在 `nodes` 里，再上传又出现（节点模型重构 3）。
     节点动作的 `label` 是按钮名：主命令叫节点名；过期时排在最前的 `kind: "refresh"` 那条也叫节点名，哪类变了写在它的 `reason`
     （「对象有变化」）（节点模型重构 2b）；
   - `edges`；
@@ -1976,7 +1981,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - `progress`：`{done, total}`，只算必需节点，可补做的做完之前不算；项目卡片的 x/N 同一口径；
   - `slice_stages`、`slices`：恒为 `[]`（不再分段，字段只为兼容留着）；
   - `suggestions`：同 FL-02（推荐五级）；
-  - `notices`：如「1 份新资料」；
+  - `notices`：合入冲突、插件变更下一条消息生效（新资料不另给提示，由增量更新节点出现、建议条推它）；
   - `autobuild`：运行中时给运行控制。
 
 返回示例：
@@ -1998,8 +2003,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
  "slice_stages": [],
  "slices": [],
  "suggestions": {"mode": "normal", "primary": {...}, "secondary": [...]},
- "notices": [{"kind": "new_materials", "count": 1, "files": ["resource/others/09-修订通知.docx"],
-              "action": {"type": "navigate", "page": "incremental"}}]}
+ "notices": []}
 ```
 
 #### FL-02 统一下一步
@@ -2038,17 +2042,22 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 请求：`{reason?: string}`。不再分段：带了 `slice_id`、`step` 一律忽略，不报错。
 - `node_id` 可以是旧编号，按 core 的别名认成现在的节点（`core.model` → `core.operation`、`core.rule_metric` → `core.metric`）；响应里的 `node.id` 是现在的编号。
-- 只有可选节点（`need: "optional"`）能跳过；必需节点、条件节点回 `node_not_skippable`。
-- 响应：`{node: FlowNode, flow_hash}`。
-- 错误：`node_not_found`、`node_not_skippable`。
+- 可选节点（`need: "optional"`）：跳过，节点留在流程里、状态 `skipped`，能用 `FL-04` 恢复。
+- 条件节点（`need: {when}`）：「这一轮不处理」（节点模型重构 3）。结束这一轮，节点隐藏，不记跳过；条件下次成立时照常出现
+  （增量更新：再上传资料开始新的一轮）。`reason` 记在这一轮的记录上。只有内核条件能这样结束（现在是 `materials_added`）；
+  按插件触发出现的节点（`{when: "activated"}`）这一轮由插件自己的状态文件管，回 `node_not_skippable`。
+- 必需节点回 `node_not_skippable`。
+- 响应：`{node: FlowNode|null, flow_hash}`；条件节点结束这一轮后不在流程里，`node` 为 null。
+- 错误：`node_not_found`（含条件不成立、节点没出现）、`node_not_skippable`。
 
 #### FL-04 恢复节点
 
 `POST /api/v1/projects/{id}/flow/nodes/{node_id}/restore` · 所有者 · 旧：— · 审计：是 · 依据：6.9 · 页面：—（同 `FL-03`）
 
 - 请求：`{}`；带了 `slice_id`、`step` 忽略。旧节点编号同 `FL-03`。
+- 只恢复跳过的可选节点；条件节点「这一轮不处理」之后不在流程里（`node_not_found`），没有恢复，再次满足条件时自己出现。
 - 响应：同 `FL-03`。
-- 错误：`node_not_skipped`。
+- 错误：`node_not_skipped`、`node_not_found`。
 
 #### FL-05 开始节点（含补做）
 
@@ -3172,6 +3181,9 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 依据详设 8.5、1.6#2、方案 B12～B14、C8。
 
 - 按流程顺序一个节点一个单元（资料分析之后、到 `until_node` 为止），每个单元一步，跑节点的主命令（节点模型重构 1B）。
+- 做哪些节点按 `need` 判（节点模型重构 3）：必需节点做；可选节点只在 `scope.include_optional` 打开时做；条件节点（增量更新）、
+  `autobuild: false`（生成脚本；第三方包没写 `autobuild: true` 的节点装配时补成 false）、人工（发布）、面板（求解适配）、
+  没有主命令的节点不做。
 - 运行由会话宿主托管，每个单元一个变更集，检查通过自动合入，产出标「需复核」。
 - 每个单元合入之后是安全点。
 - 契约里 `slice`、`slice_id`、`slices` 等字段名不变，装的是单元（节点编号、节点名）；按段跑的老运行照旧是段。
@@ -3189,7 +3201,10 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
   - `not_enforced: []`；
   - `quota_remaining: {tokens, cost: Money}`；
   - `last_run: {run_id, run_no, ended_at, duration_ms, reviewed: bool}|null`；
-  - `revision`。
+  - `revision`；
+  - `optional_nodes: [{id, name}]`（只读，节点模型重构 3）：打开「包括可选步骤」时多做的节点，即启用的、资料分析之后、自主构建能做的
+    可选节点，按流程顺序，不看 `until_node` 和做没做完。默认几个官方包启用时是绘制流程图、提取规则与指标。开关的说法按它列
+    （「包括可选步骤：绘制流程图、提取规则与指标」），为空时不显示开关。
 
 #### AB-02 保存策略
 
@@ -5413,7 +5428,8 @@ type ReleaseManifest = {
 ```ts
 type AutobuildPolicy = {
   scope: { mode: "all_pending" | "selected"; slice_ids: string[];   // selected 存成 all_pending；slice_ids 按段时代的，不起作用
-           refresh_stale_first: boolean; generate_scenarios: boolean; include_optional: boolean;   // generate_scenarios 不起作用
+           refresh_stale_first: boolean; generate_scenarios: boolean;   // generate_scenarios 不起作用
+           include_optional: boolean;   // 做不做 optional_nodes 里的可选节点
            until_node: string | null };   // 做到哪一步，如 "core.validate"；旧编号按别名认
   budget: { max_duration_min: number; max_tokens: number; max_cost: Money };
   advanced: { confidence_threshold: number;            // 0.5–1.0，默认 0.80
@@ -5422,6 +5438,7 @@ type AutobuildPolicy = {
               source_priority: string[];                // 资料与证据冲突时的取值顺序
               max_fix_rounds: 1 | 2 | 3 };
   boundary_text: string;          // 硬性不做，只读
+  optional_nodes: { id: string; name: string }[];   // AB-01 只读：「包括可选步骤」多做的节点，为空时不显示开关
 };
 
 type AutobuildPreview = {

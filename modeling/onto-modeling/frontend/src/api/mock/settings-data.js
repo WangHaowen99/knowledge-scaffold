@@ -152,6 +152,10 @@ export function normalizeScope(scope) {
   return s.mode === 'selected' ? { ...s, mode: 'all_pending' } : s;
 }
 
+// AB-01 的 optional_nodes：默认启用的官方包里自主构建能做的可选节点（同后端 autobuild/plan.optional_nodes；生成脚本
+// autobuild: false、求解适配是面板节点，不在里面）
+export const OPTIONAL_NODES = [{ id: 'diagram.flowchart', name: '绘制流程图' }, { id: 'core.metric', name: '提取规则与指标' }];
+
 const SKIP = new Set(['core.publish', 'core.update']);
 const CURRENT = { confirmed: '已确认', stale: '有过期', skipped: '已跳过', running: '进行中', pending_confirm: '待确认' };
 

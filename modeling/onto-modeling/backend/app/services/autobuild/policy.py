@@ -94,8 +94,19 @@ def _last_run(project_id: str) -> dict | None:
     return None
 
 
+def _optional_nodes(project_id: str) -> list[dict]:
+    """「包括可选步骤」会多做的节点（`plan.optional_nodes`）；流程读不出时为空（开关不显示）。"""
+    from ...api import deps
+    from . import plan
+
+    try:
+        return plan.optional_nodes(plan.flow(deps.workspaces.project_root(project_id)))
+    except Exception:  # noqa: BLE001 - 项目还没建好、流程装配不出：不列
+        return []
+
+
 def view(project_id: str, policy: dict | None = None) -> dict:
-    """AB-01。"""
+    """AB-01。`optional_nodes` 是只读的：打开「包括可选步骤」时多做的节点 `[{id, name}]`，开关的说法按它列，为空时不显示开关。"""
     policy = policy or load(project_id)
     return {
         **policy,
@@ -103,6 +114,7 @@ def view(project_id: str, policy: dict | None = None) -> dict:
         "last_run": _last_run(project_id),
         "revision": revision(policy),
         "not_enforced": list(NOT_ENFORCED),
+        "optional_nodes": _optional_nodes(project_id),
     }
 
 

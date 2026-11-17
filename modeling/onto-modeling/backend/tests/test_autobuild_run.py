@@ -337,17 +337,25 @@ def _flow_doc(**extra) -> dict:
 
 
 def test_units_are_the_nodes_after_research_up_to_until_node(tmp_path, monkeypatch):
-    """一个节点一个单元、一步，跑节点的主命令：资料分析之后、到做到哪一步为止；旁支、按需、不自主做的、面板、人工节点
-    不做（批次 3 之前沿用原来的规则）；已确认、已跳过的不做，过期的按「先处理过期的内容」。"""
+    """一个节点一个单元、一步，跑节点的主命令：资料分析之后、到做到哪一步为止；按 need 判（节点模型重构 3）：必需节点做，
+    可选节点只在「包括可选步骤」时做，按需（旧写法）、不自主做的、面板、人工节点不做；已确认、已跳过的不做，过期的按
+    「先处理过期的内容」。"""
     from app.services.autobuild import plan
 
     states = {"core.object": "confirmed", "core.operation": "stale", "core.validate": "ready"}
     monkeypatch.setattr(plan, "node_states", lambda root, flow_doc: states)
-    every = {"scope": {"until_node": None, "refresh_stale_first": True, "include_optional": True}}
-    units, rows = plan.lay_out(tmp_path, _flow_doc(), every)
+    required = {"scope": {"until_node": None, "refresh_stale_first": True, "include_optional": False}}
+    units, rows = plan.lay_out(tmp_path, _flow_doc(), required)
     assert [(row["id"], row["current"], row["included"]) for row in rows] == [
         ("core.object", "已确认", False), ("core.operation", "有过期", True), ("core.validate", "未开始", True)]
     assert [unit["id"] for unit in units] == ["core.operation", "core.validate"]
+    every = {"scope": {"until_node": None, "refresh_stale_first": True, "include_optional": True}}
+    units, rows = plan.lay_out(tmp_path, _flow_doc(), every)
+    assert [(row["id"], row["included"]) for row in rows] == [
+        ("diagram.flowchart", True), ("core.object", False), ("core.operation", True), ("core.metric", True),
+        ("core.validate", True)]
+    assert [unit["id"] for unit in units] == ["diagram.flowchart", "core.operation", "core.metric", "core.validate"]
+    units, _rows = plan.lay_out(tmp_path, _flow_doc(), required)
     assert units[0] == {"id": "core.operation", "name": "提取操作", "kind": "node", "steps": [
         {"id": "core.operation", "label": "提取操作", "title": "提取操作", "action": "提取操作",
          "command": "/ontology-extract-operation", "args": {}}]}

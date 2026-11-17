@@ -228,7 +228,7 @@ def protocol_markdown(snapshot: dict) -> str:
 
 ## 节点
 
-- 什么时候要做 `need`：`required`（上导航栏、计入进度、没做时推荐）、`optional`（挂在前面最近的必需节点下面，可以跳过，不计入进度）、`{{when: <内核条件>}}`（条件成立时出现，现在只有 `activated`）。缺省 `required`。旧写法 `placement`、`section`、`optional`、`progress`、`visible_if` 还能装配，按映射折算成 `need`，新包不要再写。节点要写锚点 `after` 或 `before`。
+- 什么时候要做 `need`：`required`（上导航栏、计入进度、没做时推荐）、`optional`（挂在前面最近的必需节点下面，可以跳过，不计入进度）、`{{when: <内核条件>}}`（条件成立时出现：`activated` 按本包的触发；`materials_added` 是上传了新资料、内核增量更新这一轮还没处理完，做完一次增量更新、发布过或用户选了「这一轮不处理」就不成立）。缺省 `required`。旧写法 `placement`、`section`、`optional`、`progress`、`visible_if` 还能装配，按映射折算成 `need`，新包不要再写。节点要写锚点 `after` 或 `before`。
 - 主命令：`actions` 里第一个带 `command`（或 `page`）的动作，开始节点、自主构建都用它；`agent` 节点的主命令要是本包的命令。`entry` 不用再写。
 - 节点名就是主命令名：主命令的叫法装配时换成节点 `title`，导航栏、全部命令、建议条、对话气泡都叫这一个名字。其余动作是变体，按钮名单独拿出来也要看得懂（写「追加资料分析」，不写「追加」），界面上不加节点名前缀。
 - 范围限定 `confine`（`flow.yaml` 顶层，可选）：`{{scope_file: <路径>}}`。范围文件合入主线、`status` 是 `active` 时，基线提交里有、`editable` 里没有的本体条目助手不能写也不能删，新增条目不限；范围文件只能在它所属节点的命令运行时写。一次装配最多一个包声明。

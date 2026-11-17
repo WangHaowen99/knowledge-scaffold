@@ -1,10 +1,11 @@
 """一次自主构建做哪些事（详设 8.5「范围」）：流程里资料分析之后、到策略的 `until_node` 为止（含）的节点，一个节点一个
-单元、一步，跑节点的主命令（actions 里第一个带 command 的动作）。发布、增量更新是硬性不做的，不在里面。
+单元、一步，跑节点的主命令（actions 里第一个带 command 的动作）。发布（人工节点）、增量更新（条件节点）不在里面。
 
 单元：`{id: 节点, name: 节点名, kind: "node", steps: [{id, label, title, action, command, args}], carried?}`。
 
-- 哪些节点能做（这一批沿用原来的规则，批次 3 改成按 `need` 判）：主线上的（`placement: spine`）、不是人工或面板节点、
-  没声明 `autobuild: false`、有主命令；可选的只在「包括可选步骤」时做；
+- 哪些节点能做按 `need` 判（节点模型重构 3，`eligible`）：必需节点做；可选节点只在「包括可选步骤」时做；条件节点、
+  `autobuild: false`、人工、面板、没有主命令的不做。第三方包的节点没写 `autobuild: true` 时装配已补成 `autobuild: false`，
+  旧写法的按需节点同样不做；
 - 已确认、已跳过的不再做；过期的按 `refresh_stale_first` 决定要不要重做；
 - 之前的运行里「留到下一次」的挂起问题（`carried`）所在的节点照做，即使已经做完（审查 I）；开始时从别的对话接过来、
   停在干活中途的节点也照做（redo）。
@@ -17,10 +18,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..flow.need import primary_command
+from ..flow.need import OPTIONAL, WHEN, legacy_need, need_kind, primary_command
 
 START_AFTER = "core.research"
-SKIP = ("core.publish", "core.update")
 STATE_TEXT = {"confirmed": "已确认", "stale": "有过期", "skipped": "已跳过", "running": "进行中", "pending_confirm": "待确认"}
 # 老运行按段的单元里，哪几步的确认记录落在现在的哪个节点上（撤回时放回去）。规则补抽一步的记录拆分时没搬到指标上
 # （两边的输入指纹口径不同），这里也不管
@@ -44,25 +44,41 @@ def _command(node: dict) -> str:
     return primary_command(node)
 
 
-def _eligible(node: dict, policy: dict) -> bool:
-    return not (node["id"] in SKIP or node.get("placement", "spine") != "spine" or node.get("autobuild") is False
-                or node.get("kind") == "human" or node.get("panel") or not _command(node)
-                or (node.get("optional") and not policy["scope"].get("include_optional")))
+def eligible(node: dict, include_optional: bool) -> bool:
+    """自主构建能不能做这个节点：必需节点做，可选节点只在「包括可选步骤」时做；条件节点、`autobuild: false`、人工、面板、
+    没有主命令的不做。没整理过的流程（老装配格式、测试里手写的）里旧写法的按需节点同样不做（装配时会补 `autobuild: false`）。"""
+    kind = need_kind(node)
+    if kind == WHEN or (kind == OPTIONAL and not include_optional):
+        return False
+    on_demand = "need" not in node and legacy_need(node)[1]
+    return not (node.get("autobuild") is False or on_demand or node.get("kind") == "human" or node.get("panel")
+                or not _command(node))
+
+
+def _after_start(flow_doc: dict) -> list[dict]:
+    nodes = flow_doc.get("nodes") or []
+    ids = node_ids(flow_doc)
+    return nodes[ids.index(START_AFTER) + 1:] if START_AFTER in ids else list(nodes)
 
 
 def candidates(flow_doc: dict, policy: dict) -> list[dict]:
     """资料分析之后、到 `until_node` 为止（含）能自主做的节点，按流程顺序；不看做没做完。"""
-    nodes = flow_doc.get("nodes") or []
-    ids = node_ids(flow_doc)
-    start = ids.index(START_AFTER) + 1 if START_AFTER in ids else 0
+    include_optional = bool(policy["scope"].get("include_optional"))
     until = policy["scope"].get("until_node")
     out = []
-    for node in nodes[start:]:
-        if _eligible(node, policy):
+    for node in _after_start(flow_doc):
+        if eligible(node, include_optional):
             out.append(node)
         if node["id"] == until:
             break
     return out
+
+
+def optional_nodes(flow_doc: dict) -> list[dict]:
+    """「包括可选步骤」打开时多做的节点 `[{id, name}]`（AB-01 `optional_nodes`，开关的说法按它列）：资料分析之后、
+    启用的、自主构建能做的可选节点，按流程顺序；不看 `until_node`，也不看做没做完。"""
+    return [{"id": node["id"], "name": node.get("title") or node["id"]} for node in _after_start(flow_doc)
+            if need_kind(node) == OPTIONAL and eligible(node, True)]
 
 
 def node_states(root: Path, flow_doc: dict) -> dict[str, str | None]:

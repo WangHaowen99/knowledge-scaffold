@@ -107,6 +107,12 @@ export function policyBody(form, revision) {
   return { ...policyForm(form), base_revision: revision };
 }
 
+// 「包括可选步骤」开关的说法：按 AB-01 的 optional_nodes 列节点名；没有可选节点时返回空串，开关不显示
+export function optionalStepsText(policy) {
+  const names = (policy?.optional_nodes || []).map((n) => n?.name).filter(Boolean);
+  return names.length ? `包括可选步骤：${names.join('、')}` : '';
+}
+
 const BELOW_TEXT = { conservative_assumption: '拿不准时先按最稳妥的做法往下做', suspend: '拿不准时先跳过，留给你来定' };
 const shortSource = (s) => (s || '').replace(/^\d+\s*/, '');
 export function advancedSummary(adv) {

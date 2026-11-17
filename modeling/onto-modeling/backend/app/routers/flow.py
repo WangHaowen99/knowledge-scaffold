@@ -1,7 +1,9 @@
 """流程（契约 3.12 FL-01～FL-05；详设 6.6、6.7、6.9、6.10；方案 D13、D14、D16）。
 
 节点状态由内核算（执行记录、变更集、产物指纹），下一步与 `state_helper suggest`、宿主注入同一份。
-只能跳过 `need: optional` 的节点；开始节点等价于用节点的主命令（actions 里第一个带 command 或 page 的动作）调 S-20。
+跳过（FL-03）：可选节点（`need: optional`）是跳过，能恢复；条件节点（`need: {when}`）是「这一轮不处理」，结束这一轮、节点隐藏，
+条件下次成立时重新出现（只有内核条件能这样结束，`conditions.end_round`）。开始节点等价于用节点的主命令（actions 里第一个带
+command 或 page 的动作）调 S-20。
 声明了 `refresh_scope` 的节点此刻过期时，开始（刷新）发只查改动条目的命令（`<主命令> <条目名…> --since <提交>`，
 见 services/flow/state.refresh_scope）。
 不再分段：请求里带的 `slice_id`、`step` 忽略；旧节点编号（如 `core.model`）按 core 的别名认成现在的节点。
@@ -16,9 +18,9 @@ from fastapi import APIRouter, Request
 from ..api import deps
 from ..api.errors import ApiError
 from ..services import plugin_mode
-from ..services.flow import model, node_kinds, overlay, view
+from ..services.flow import conditions, model, node_kinds, overlay, view
 from ..services.flow import state as node_state
-from ..services.flow.need import OPTIONAL, need_kind, primary_action, primary_command
+from ..services.flow.need import OPTIONAL, WHEN, need_kind, primary_action, primary_command, when_of
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/flow", tags=["flow"])
 
@@ -53,8 +55,9 @@ def _node(root, node_id: str) -> dict:
 
 
 def _node_view(root, node_id: str) -> dict:
+    """节点和流程摘要；条件节点结束这一轮后不在流程里，`node` 为 null。"""
     flow = view.build(root)
-    return {"node": next(item for item in flow["nodes"] if item["id"] == node_id), "flow_hash": flow["flow_hash"]}
+    return {"node": next((item for item in flow["nodes"] if item["id"] == node_id), None), "flow_hash": flow["flow_hash"]}
 
 
 def _after_change(project_id: str) -> None:
@@ -65,13 +68,24 @@ def _after_change(project_id: str) -> None:
 
 @router.post("/nodes/{node_id}/skip")
 async def skip_node(project_id: str, node_id: str, request: Request):
-    """FL-03：跳过可选节点（`need: optional`）；必需节点、条件节点不能跳过。"""
+    """FL-03：跳过可选节点（`need: optional`）；条件节点是「这一轮不处理」：结束这一轮，节点隐藏（不记跳过，下一轮照常出现）。
+    必需节点、这一轮由包自己管的条件节点不能跳过。"""
     root = deps.require_writable(project_id, request)
     body = await deps.json_body(request)
     node = _node(root, node_id)
-    if need_kind(node) != OPTIONAL:
+    reason = str(body.get("reason") or "")[:200]
+    kind = need_kind(node)
+    if kind == WHEN:
+        ended = await asyncio.to_thread(conditions.end_round, when_of(node), root, reason)
+        if ended is None:
+            raise ApiError("node_not_skippable", "这个节点的这一轮由插件自己结束", 409)
+        if not ended:
+            raise ApiError("node_not_skippable", "这一轮已经结束", 409)
+        _after_change(project_id)
+        return await asyncio.to_thread(_node_view, root, node["id"])
+    if kind != OPTIONAL:
         raise ApiError("node_not_skippable", "只有可选节点能跳过", 409)
-    node_state.skip(root, node["id"], reason=str(body.get("reason") or "")[:200])
+    node_state.skip(root, node["id"], reason=reason)
     _after_change(project_id)
     return await asyncio.to_thread(_node_view, root, node["id"])
 

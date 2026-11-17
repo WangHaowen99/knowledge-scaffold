@@ -1,5 +1,6 @@
 """包的节点按事件触发（ADR-0091）：启用带 activation 的包后，已经建了一部分又上传新资料才出现、抢先推荐，
-范围确认前已有条目只读，这一轮结束或发布后消失；组装和上传时校验声明。
+范围确认前已有条目只读，这一轮结束或发布后消失；组装和上传时校验声明。内核的增量更新（条件 materials_added，
+节点模型重构 3）同一次上传也记一份，两边各管各的。
 
 用 tests/pack_helpers 里合成的触发包（圈定范围 → 范围内修改 → 核对，核对挡发布，带 confine.lock_on_activation），
 其余用仓库里真实的资产。项目、条目、资料都是合成的。
@@ -270,7 +271,7 @@ def test_upload_before_enabling_the_pack_does_not_trigger(project):  # noqa: F81
     _modeled(root)
     _upload(manager, project_id)
     _enable(client, manager, project_id)
-    assert activation.load(root) == {} and not _visible(root)
+    assert ROUND_PACK not in activation.load(root) and not _visible(root)
 
 
 def test_confirmed_scope_takes_over_and_closing_ends_the_round(project):  # noqa: F811
@@ -350,10 +351,26 @@ def test_disabling_the_pack_lifts_everything(project):  # noqa: F811
 
 
 def test_projects_without_the_pack_never_record_a_trigger(project):  # noqa: F811
+    """没启用包：不记包的触发，只有内核的增量更新那一份。"""
     _client, manager, project_id, root = project
     _modeled(root)
     _upload(manager, project_id)
-    assert activation.load(root) == {}
+    assert set(activation.load(root)) == {activation.KERNEL_MATERIALS}
+
+
+def test_kernel_update_and_the_round_pack_both_answer_new_materials(project):  # noqa: F811
+    """同一次上传，包的触发和内核的增量更新各记一份；包的这一轮在流程里靠前，先推它，结束后推增量更新。"""
+    client, manager, project_id, root = project
+    _modeled(root)
+    _enable(client, manager, project_id)
+    _upload(manager, project_id)
+    assert set(activation.load(root)) == {ROUND_PACK, activation.KERNEL_MATERIALS}
+    ids = {node["id"] for node in view.build(root)["nodes"]}
+    assert _visible(root) and "core.update" in ids
+    assert _next_command(client, project_id) == "/intake-scope"
+    _confirm_scope(root, status="closed")
+    assert not _visible(root)
+    assert _next_command(client, project_id) == "/ontology-update"
 
 
 # ---- 声明的校验：组装和上传检查 ----

@@ -1,17 +1,20 @@
 """按项目数据算的内核条件（ADR-0083）：流程节点出不出现、内核探针、提示规则注不注入。
 
-条件名是内核给的固定集合，包只能引用、不能自己写判断（包代码不在内核里跑）。现在没有按项目数据算的条件
-（证据源两条随系统证据采集去掉），不认识的条件一律不成立。
+条件名是内核给的固定集合，包只能引用、不能自己写判断（包代码不在内核里跑）。现在只有 `materials_added`：上传了新资料、
+这一轮还没处理完（`activation.materials_pending`，内核的增量更新用；节点模型重构 3）。不认识的条件一律不成立。
 
 三处用法：
 
 - 节点 `need: {when: <条件>}`（旧写法 `visible_if: <条件>`）：不满足时节点不在本项目的流程里（`apply`，`model.load_for` 调），
-  连线、命令归属、钩子一起去掉，挂在它后面的节点改挂到它的上游（增量更新写的 `materials_added` 还没有，按不成立算）；
+  连线、命令归属、钩子一起去掉，挂在它后面的节点改挂到它的上游；
 - 探针 `{kernel: <条件>}`：完成判定用。工作区里的 flow_state 不认识，恒为否；后端经 `with_kernel_probes`
   包一层补上（`model.flow_state` 调）。探针定义不变，完成判定签名就不会随结果变；
 - 提示规则 `visible_if: <条件>`：不满足时不注入（`packs/registry.prompt_rules`）。
 
 `need: {when: activated}` 和探针 `{kernel: session_open, session: <路径>}` 按包声明的触发算（ADR-0091，`flow/activation.py`）。
+
+条件节点的「这一轮不处理」（FL-03）：`end_round` 结束这一轮，节点隐藏，条件下次成立时重新出现。只有列在 `ROUND_ENDERS` 里的
+条件能这样结束；按包触发的节点（`activated`）这一轮由包自己的状态文件管，不能从外面结束。
 """
 
 from __future__ import annotations
@@ -19,12 +22,24 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from . import activation
 from .need import when_of
 
 _log = logging.getLogger(__name__)
 
-# 条件名 → 按项目目录算是否成立；现在为空，`activated` 与 `session_open` 另走 activation
-CONDITIONS: dict = {}
+
+def _materials_added(root: Path) -> bool:
+    return activation.materials_pending(root)
+
+
+def _end_materials_round(root: Path, reason: str) -> bool:
+    return activation.end_materials_round(root, reason)
+
+
+# 条件名 → 按项目目录算是否成立；`activated` 与 `session_open` 另走 activation
+CONDITIONS: dict = {activation.MATERIALS_ADDED: _materials_added}
+# 条件名 → 结束这一轮（「这一轮不处理」），结束了返回 True、这一轮已经结束返回 False
+ROUND_ENDERS: dict = {activation.MATERIALS_ADDED: _end_materials_round}
 
 
 def holds(name: str, root: Path) -> bool:
@@ -39,12 +54,16 @@ def holds(name: str, root: Path) -> bool:
         return False
 
 
+def end_round(name: str, root: Path, reason: str = "") -> bool | None:
+    """条件节点「这一轮不处理」：结束了 True，这一轮已经结束 False，这个条件不能这样结束 None。"""
+    ender = ROUND_ENDERS.get(str(name or ""))
+    return None if ender is None else bool(ender(Path(root), reason))
+
+
 def _node_visible(node: dict, flow: dict, root: Path) -> bool:
     condition = when_of(node)
     if condition != "activated":
         return holds(condition, root)
-    from . import activation
-
     try:
         return activation.active(Path(root), node.get("pack"), flow)
     except Exception:  # noqa: BLE001 - 同 holds：算不出来按不成立
@@ -97,8 +116,6 @@ def kernel_probes(flow: dict, root: Path) -> dict[str, bool]:
 def _kernel_probe(spec: dict, root: Path) -> bool:
     if spec["kernel"] != "session_open":
         return holds(spec["kernel"], root)
-    from . import activation
-
     try:
         return activation.session_open(Path(root), spec.get("session"))
     except Exception:  # noqa: BLE001 - 同 holds：算不出来按不成立

@@ -1,6 +1,6 @@
 """变更点清单（契约 3.14 INC-01～INC-05、7.10 ChangeList；F3 补充：清单要能找到所在对话）。
 
-增量更新（core 的按需节点 `core.update`）的影响分析由助手在副本里写进 `.ontology-state/update-plan.json`
+增量更新（core 的条件节点 `core.update`，上传了新资料时出现）的影响分析由助手在副本里写进 `.ontology-state/update-plan.json`
 （`/ontology-update` 第 2 步，原样是助手返回的条目数组，可能带 `base_commit`）。一轮结束时宿主把它收成一份
 清单存进数据目录 `change-lists/<项目>/<清单>.json`（不进 git），记下所在对话与变更集；之后：
 

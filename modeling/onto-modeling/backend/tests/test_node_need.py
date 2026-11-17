@@ -5,7 +5,7 @@
 - 第三方包的节点默认不进自主构建，上传检查列出会被执行的节点；
 - 装配格式升级后所有项目重新装配；读老格式的装配目录时补上 need；
 - FL-01 的 need、nav、under，进度只算必需节点（项目列表同一口径），只能跳过可选节点；
-- 旧写法的触发包（visible_if、preempt）照样出现、抢先推荐；增量更新的条件还没有，节点不出现。
+- 旧写法的触发包（visible_if、preempt）照样出现、抢先推荐；增量更新的条件没成立（没传新资料）时节点不出现。
 
 项目、条目、包都是合成的。
 """
@@ -213,8 +213,9 @@ def test_core_and_official_packs_declare_need_only():
     assert yaml.safe_load((TOOLKIT / "manifest.yaml").read_text(encoding="utf-8"))["version"] == "0.6.1"
 
 
-def test_update_stays_hidden_until_its_condition_exists(tmp_path):
-    assert "materials_added" not in conditions.CONDITIONS and not conditions.holds("materials_added", tmp_path)
+def test_update_stays_hidden_until_new_materials_arrive(tmp_path):
+    """条件 materials_added 内核有了（节点模型重构 3）：没有上传记录时不成立，节点不出现。"""
+    assert "materials_added" in conditions.CONDITIONS and not conditions.holds("materials_added", tmp_path)
     flow = conditions.apply(assemble.assemble([_core()]), tmp_path)
     assert "core.update" in flow["hidden_nodes"]
     assert "core.update" not in {node["id"] for node in flow["nodes"]}
@@ -467,4 +468,5 @@ def test_legacy_round_pack_still_appears_and_goes_first(legacy_round):
     assert body["suggestions"]["note"] is None  # preempt 的字符串不再当说明行
     assert not any(nodes[step]["counts_in_progress"] for step in ROUND_STEPS)
     refused = client.post(f"/api/v1/projects/{project_id}/flow/nodes/intake.scope/skip", json={})
-    assert refused.status_code == 409 and refused.json()["code"] == "node_not_skippable"  # 条件节点不能跳过
+    # 按包触发的节点：这一轮由包自己的状态文件管，不能「这一轮不处理」
+    assert refused.status_code == 409 and refused.json()["code"] == "node_not_skippable"

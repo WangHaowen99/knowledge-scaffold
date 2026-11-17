@@ -23,7 +23,10 @@ def _url(project_id: str, tail: str = "policy") -> str:
 def test_policy_defaults_and_save(env):
     client, _workspaces, _manager, project_id, _root = env
     first = client.get(_url(project_id)).json()
-    assert set(first) == {"scope", "advanced", "platform_limits", "last_run", "revision", "not_enforced"}
+    assert set(first) == {"scope", "advanced", "platform_limits", "last_run", "revision", "not_enforced", "optional_nodes"}
+    # 「包括可选步骤」多做的节点：默认启用的官方包里能自主做的可选节点（生成脚本 autobuild: false、求解适配是面板，不在里面）
+    assert first["optional_nodes"] == [{"id": "diagram.flowchart", "name": "绘制流程图"},
+                                       {"id": "core.metric", "name": "提取规则与指标"}]
     assert first["scope"]["mode"] == "all_pending" and first["advanced"]["confidence_threshold"] == 0.8
     assert first["platform_limits"] == {} and first["last_run"] is None
     assert first["not_enforced"] == []
@@ -34,7 +37,7 @@ def test_policy_defaults_and_save(env):
     assert "budget" not in saved and saved["advanced"]["below_threshold"] == "suspend"  # 老客户端带的预算忽略
     assert saved["advanced"]["confidence_threshold"] == 0.8  # 没给的项保留
     assert "production_collection" not in saved  # 老客户端带的生产库采集授权忽略
-    assert saved["revision"] != first["revision"]
+    assert saved["revision"] != first["revision"] and saved["optional_nodes"] == first["optional_nodes"]
     stale = client.put(_url(project_id), json={**body, "base_revision": first["revision"]})
     assert stale.status_code == 409 and stale.json()["code"] == "revision_conflict"
 
