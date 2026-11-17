@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from .. import subagent_result
 from .timeline import _SUBAGENT_STATUS, _sub_step, subagent_title
 from .views import iso
 
@@ -24,6 +25,8 @@ def steps_of(history: list[dict], task_id: str) -> tuple[dict, list[dict]] | Non
         if record["type"] != "subagent_activity" or record.get("kind") == "thinking":
             continue
         step = _sub_step(record)
+        if step is None:
+            continue
         ts = record.get("ts")
         current = steps.get(step["id"])
         if current is None:
@@ -56,5 +59,5 @@ def _task(task_id: str, records: list[dict], steps: dict[str, dict]) -> dict:
         "started_at": iso(started.get("ts")),
         "ended_at": iso(finished.get("ts")) if finished else None,
         "step_count": sum(1 for step in steps.values() if step["kind"] == "tool"),
-        "summary": (finished or {}).get("summary") or None,
+        "summary": subagent_result.display((finished or {}).get("summary")),
     }

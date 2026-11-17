@@ -23,7 +23,7 @@ export const RUNNING_EVENTS = [
       { id: 'b', text: '质量检查：同时派出 3 个子任务', meta: '进行中', state: 'running' },
     ],
   }),
-  ev('subagent.updated', { task_id: 't1', group_id: 'g3', title: '规则检查', status: 'done', progress_text: '', summary: '0 个错误', step_count: 2 }),
+  ev('subagent.updated', { task_id: 't1', group_id: 'g3', title: '规则检查', status: 'done', progress_text: '', summary: '发现 2 个问题：错误 1 · 警告 1\n· 错误 · 操作「门店补货」：Wiki 链接 [[补货单]] 无对应文件\n· 警告 · 对象「门店」：字段「营业状态」缺少取值说明', step_count: 2 }),
   ev('subagent.updated', { task_id: 't2', group_id: 'g3', title: '语义检查', status: 'started', progress_text: '', summary: null, step_count: 0 }),
   ev('subagent.updated', { task_id: 't2', group_id: 'g3', title: '语义检查', status: 'running', progress_text: '读取规则「陈列量上限」', summary: null, step_count: 5, step: { id: 's5', kind: 'tool', text: '读取规则「陈列量上限」', state: 'done' } }),
   // 子代理只在想、不调工具：卡片和面板上显示想了多久（瞬时事件，没有 id）

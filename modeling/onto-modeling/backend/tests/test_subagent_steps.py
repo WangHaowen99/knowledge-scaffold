@@ -46,6 +46,22 @@ def test_steps_of_rebuilds_task_and_step_durations():
     assert subagents.steps_of(history(), "missing") is None
 
 
+def test_old_history_with_raw_json_result_reads_as_business_text():
+    """F7 之后、本次之前的历史：子代理交回的 `[]` 记成了说的话和小结。读出时不算一步，小结换成说法。"""
+    raw = [*history()[:4],
+           {"type": "subagent_activity", **SUB, "step_id": "call-9-say-3", "kind": "text", "text": "[]", "ts": 104.0},
+           {"type": "subagent_finished", **SUB, "status": "completed", "summary": "[]", "ts": 106.0}]
+    task, steps = subagents.steps_of(raw, "call-9")
+    assert [step["id"] for step in steps] == ["s-a"] and task["summary"] == "没有发现问题"
+    kind, data = timeline.payload(raw[-2])
+    assert kind == "subagent.updated" and data["step"] is None and data["progress_text"] == ""
+    assert timeline.payload(raw[-1])[1]["summary"] == "没有发现问题"
+    # 截断了换不出的给 null（界面用默认说法），普通的话原样
+    cut = {**raw[-1], "summary": '[{"severity": "错误", "message": "Wiki'}
+    assert timeline.payload(cut)[1]["summary"] is None
+    assert timeline.payload({**raw[-1], "summary": "整理完了"})[1]["summary"] == "整理完了"
+
+
 def test_steps_endpoint_pages_and_reports_missing_task(conv_env, monkeypatch):  # noqa: F811
     monkeypatch.setattr(deps, "require_owner", lambda project_id, request: None)
     _write_history(conv_env.sessions_dir / "p1.jsonl", history())

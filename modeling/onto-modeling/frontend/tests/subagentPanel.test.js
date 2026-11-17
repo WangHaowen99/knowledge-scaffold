@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { SUB_STEPS_MAX, applyEvents, initialConversation } from '../src/state/conversation.js';
 import {
-  fmtElapsed, outcome, panelHead, panelSteps, stepTime, thinkingText,
+  fmtElapsed, outcome, panelHead, panelSteps, stepTime, summaryParts, thinkingText,
 } from '../src/pages/workbench/subagentModel.js';
 
 let n = 0;
@@ -92,10 +92,21 @@ test('面板顶部：状态、已运行多久、做了几步；结束后是用�
   const timedOut = panelHead({ status: 'running', started_at: iso(0), ended_by: 'timeout' }, null, false, T0 + 60 * 1000);
   assert.equal(timedOut.status, 'timeout');
   assert.ok(timedOut.text.startsWith('执行超时'));
-  assert.deepEqual(outcome('timeout', null), { tone: 'gray', label: '执行超时', text: '长时间没有响应，已判定执行超时' });
-  assert.deepEqual(outcome('failed', ''), { tone: 'red', label: '失败原因', text: '子任务出错，没有交回结果' });
-  assert.equal(outcome('done', '0 个错误').text, '0 个错误');
+  assert.deepEqual(outcome('timeout', null), { tone: 'gray', label: '执行超时', text: '长时间没有响应，已判定执行超时', details: [] });
+  assert.deepEqual(outcome('failed', ''), { tone: 'red', label: '失败原因', text: '子任务出错，没有交回结果', details: [] });
+  assert.equal(outcome('done', '没有发现问题').text, '没有发现问题');
   assert.equal(outcome('running', null), null);
+});
+
+test('结果：第一行是结论（卡片第二行只放它），其后每行一条明细', () => {
+  const summary = '发现 2 个问题：错误 1 · 警告 1\n· 错误 · 操作「门店补货」：Wiki 链接 [[补货单]] 无对应文件\n· 警告 · 对象「门店」：缺少取值说明';
+  assert.deepEqual(summaryParts(summary), {
+    head: '发现 2 个问题：错误 1 · 警告 1',
+    details: ['错误 · 操作「门店补货」：Wiki 链接 [[补货单]] 无对应文件', '警告 · 对象「门店」：缺少取值说明'],
+  });
+  assert.deepEqual(outcome('done', summary).details, summaryParts(summary).details);
+  assert.deepEqual(summaryParts(null), { head: '', details: [] });
+  assert.deepEqual(outcome('done', null), { tone: 'green', label: '结果', text: '已完成，结果交回给助手', details: [] });
 });
 
 test('思考中：按开始时刻算想了多久，有输出 token 时一起说', () => {

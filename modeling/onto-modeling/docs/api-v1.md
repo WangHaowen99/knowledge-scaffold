@@ -2003,6 +2003,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 查询参数：`cursor?`、`limit?`（默认 50，最大 200）；游标分页（1.6），游标绑定 `task_id`。
 - 响应：`{task: {task_id, title, brief: string|null, status, started_at, ended_at, step_count, summary}, items: {id, kind: "tool"|"text", text, state, started_at, ended_at, duration_ms}[], next_cursor}`。
 - 数据来自对话历史里这个子任务的记录。一个子任务最多记 200 步，最坏约 100 KB；时间线上的 `subagent.updated` 只带当前一步，面板打开时才拉明细。
+- `task.summary` 与 EC-22 同一口径；`items` 不含子代理交回的 JSON 原文。
 - 错误：`subagent_not_found`。
 
 #### S-22 取消代存的命令
@@ -4545,7 +4546,7 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 |---|---|---|---|---|
 | EC-20 | `progress` | 是 | `ProgressGroup`：`{group_id, title, desc, state: "running"\|"done"\|"failed"\|"waiting"\|"interrupted", started_at, duration_ms: int\|null, collapsed: bool, steps: [{id, text, meta: string（耗时或状态文字）, state: "done"\|"running"\|"waiting"\|"failed"\|"info", duration_ms}]}` | 「工作过程」折叠块和时间线（wb-l2「已完成 3 步」，wb-materials 读资料进度，chat-states 第 3、4、15、17、19 项） |
 | EC-21 | `progress.updated` | 是 | 同 EC-20，同一 `group_id` 整体替换 | 运行中步骤逐条回填耗时 |
-| EC-22 | `subagent.updated` | 是 | `{task_id, group_id: string\|null, title: string（业务名，如「语义检查」；依次取描述、任务说明第一行、子代理类型）, status: "started"\|"running"\|"done"\|"failed", progress_text: string（如「第 6 / 11 个操作」）, summary: string\|null, step: {id, kind: "tool"\|"text", text: string\|null, state: "running"\|"done"\|"failed"}\|null, step_count: int, brief: string\|null（派给它的任务说明，≤2000 字，只在开始那条里有）, thinking: {since, elapsed_ms}\|null}`（`step` 是子代理自己的一步，同一 `id` 后到的只改状态，`text` 为 null 时沿用先到的；`thinking` 是一次模型调用超过 15 秒还没出结果时每 15 秒的心跳，瞬时，不进历史。步骤明细见 S-21） | 时间线上的子任务卡（沿用旧版对话页样式：第二行是 `progress_text`，做完是 `summary`）；`group_id` 只记派出时在哪一段，前端不按它挂 |
+| EC-22 | `subagent.updated` | 是 | `{task_id, group_id: string\|null, title: string（业务名，如「语义检查」；依次取描述、任务说明第一行、子代理类型）, status: "started"\|"running"\|"done"\|"failed", progress_text: string（如「第 6 / 11 个操作」）, summary: string\|null（第一行是结论，其后每行「· 」开头一条明细，最多 5 条；子代理交回给主助手的 JSON 由平台换成说法，如规则检查的 `[]` 为「没有发现问题」，认不出的为 null）, step: {id, kind: "tool"\|"text", text: string\|null, state: "running"\|"done"\|"failed"}\|null, step_count: int, brief: string\|null（派给它的任务说明，≤2000 字，只在开始那条里有）, thinking: {since, elapsed_ms}\|null}`（`step` 是子代理自己的一步，同一 `id` 后到的只改状态，`text` 为 null 时沿用先到的，子代理交回的 JSON 原文不算一步；`thinking` 是一次模型调用超过 15 秒还没出结果时每 15 秒的心跳，瞬时，不进历史。步骤明细见 S-21） | 时间线上的子任务卡（沿用旧版对话页样式：第二行是 `progress_text`，做完是 `summary` 的第一行）；`group_id` 只记派出时在哪一段，前端不按它挂 |
 | EC-23 | `tool.activity` | 是 | `{tool_use_id, visibility: "internal", tool, summary, state: "started"\|"done"\|"failed"}` | 默认不渲染；内部步骤只进执行日志（第 9 章建议 4），留给排障 |
 
 内部步骤由执行记录的阶段（㊶）和子代理事件归并成业务话的 `progress`。工具调用原文不进用户可见的事件。

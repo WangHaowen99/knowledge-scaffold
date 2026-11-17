@@ -20,6 +20,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
+from .. import subagent_result
+
 # 单个子任务的步骤事件上限：事件会逐条进 JSONL 历史并参与回放，长子任务
 # 不能把历史刷爆（CLAUDE.md §6 结果体积封顶）。最坏一个子任务 200 步 × 约 500 字节 ≈ 100 KB
 _MAX_STEPS = 200
@@ -197,7 +199,8 @@ class JiuwenProgressTracker:
 
     async def say(self, task: _TaskProgress, text: str) -> None:
         body = str(text or "").strip()
-        if task.finished or not body:
+        # 交回给主助手解析的 JSON 不是给人看的过程，结论在收尾时换成说法（subagent_result）
+        if task.finished or not body or subagent_result.is_machine(body):
             return
         if not await self._reserve(task):
             return
@@ -272,8 +275,8 @@ def _failed(ctx: Any) -> bool:
 
 
 def _result_summary(ctx: Any, failed: bool) -> str:
-    """子任务结束时卡片和面板上的一句话：做完了取它交回的结果开头；失败只给平台自己写的原因，
-    原始异常文本不进界面。"""
+    """子任务结束时卡片和面板上的一句话：做完了取它交回的结果开头，交回的是 JSON 的趁没截断换成说法；
+    失败只给平台自己写的原因，原始异常文本不进界面。"""
     if failed:
         from .jiuwen import TRUNCATION_FAILURE
 
@@ -282,6 +285,8 @@ def _result_summary(ctx: Any, failed: bool) -> str:
     result = getattr(ctx.inputs, "tool_result", None)
     data = result.get("data") if isinstance(result, dict) else getattr(result, "data", None)
     output = data.get("output") if isinstance(data, dict) else None
+    if subagent_result.is_machine(output):
+        return subagent_result.summarize(output)
     text = " ".join(str(output or "").split())
     return text[:_TEXT_LIMIT] + ("…" if len(text) > _TEXT_LIMIT else "")
 

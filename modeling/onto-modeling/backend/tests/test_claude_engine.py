@@ -225,6 +225,12 @@ def test_task_notification_maps_terminal_status_and_keeps_only_duration():
     }
 
 
+def test_task_notification_turns_json_result_into_business_text():
+    message = SimpleNamespace(subtype="task_notification", task_id="task-2", description="规则检查", tool_use_id="tool-2",
+                              status="completed", summary="[]", usage={})
+    assert _normalize_task_event(message)["summary"] == "没有发现问题"
+
+
 def test_task_updated_terminal_status_uses_patch_fallback():
     message = SimpleNamespace(
         subtype="task_updated",

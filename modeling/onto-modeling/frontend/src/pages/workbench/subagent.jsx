@@ -9,7 +9,7 @@ import { subagentStatus } from '../../state/conversation.js';
 import { Drawer, Icon, cx } from '../../ui/index.jsx';
 import { WbCtx } from './parts.jsx';
 import {
-  fmtElapsed, outcome, panelHead, panelSteps, stepTime, thinkingText,
+  fmtElapsed, outcome, panelHead, panelSteps, stepTime, summaryParts, thinkingText,
 } from './subagentModel.js';
 
 const SUB_TITLE = { done: '子任务完成', failed: '子任务失败', interrupted: '子任务已中断', timeout: '子任务执行超时' };
@@ -19,12 +19,12 @@ const END_HINT = { interrupted: '已中断，没有收到子代理的结果', ti
 const PAGE = 200;
 const PAGES_MAX = 5;
 
-// 第二行：正在想就说想了多久，否则是正在做的那一步；做完了是小结。会话已停下还没收到终态的显示已中断（ADR-0009）
+// 第二行：正在想就说想了多久，否则是正在做的那一步；做完了是小结的结论（明细在面板里）。会话已停下还没收到终态的显示已中断（ADR-0009）
 export function SubagentCard({ s, ended = false }) {
   const [open, setOpen] = useState(false);
   const status = subagentStatus(s, ended);
   const over = Boolean(SUB_ICON[status]);
-  const line = over ? (s.summary || END_HINT[status] || '')
+  const line = over ? (summaryParts(s.summary).head || END_HINT[status] || '')
     : s.thinking ? `思考中 · ${fmtElapsed(s.thinking.elapsed_ms)}`
       : (s.progress_text || '独立子代理执行中，主对话稍后汇总结果');
   return (
@@ -122,6 +122,7 @@ export function SubagentPanel({
         <div className={cx('sp-end', end.tone)}>
           <div className="xs b">{end.label}</div>
           <div className="sm">{end.text}</div>
+          {end.details.length ? <ul className="sp-end-list">{end.details.map((x, i) => <li key={i}>{x}</li>)}</ul> : null}
         </div>
       ) : null}
     </Drawer>

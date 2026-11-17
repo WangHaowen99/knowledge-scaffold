@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ... import config
+from .. import subagent_result
 from .base import FRIENDLY_ERROR, EngineContext, ObservableEngine, config_error_for, safe_json
 from .jiuwen_progress import THINKING_EVERY
 
@@ -372,6 +373,11 @@ def _short_task_summary(value: Any, limit: int = 400) -> str:
     return text[:limit] + ("…" if len(text) > limit else "")
 
 
+def _task_result(value: Any) -> str:
+    """子代理交回的结果：JSON 的趁没截断换成说法（subagent_result），别的取开头。"""
+    return subagent_result.summarize(value) if subagent_result.is_machine(value) else _short_task_summary(value)
+
+
 def _normalize_task_event(message: Any) -> dict | None:
     """把 Claude SDK 的 task_* 系统消息转成稳定的平台子代理事件。
 
@@ -415,14 +421,14 @@ def _normalize_task_event(message: Any) -> dict | None:
             "description": description
             or _short_task_summary(patch.get("description"), 240),
             "status": status,
-            "summary": _short_task_summary(patch.get("summary")),
+            "summary": _task_result(patch.get("summary")),
             "usage": _task_usage(patch.get("usage", {})),
         }
     return {
         "type": "subagent_finished",
         **common,
         "status": str(_task_value(message, "status", "failed") or "failed"),
-        "summary": _short_task_summary(_task_value(message, "summary", "")),
+        "summary": _task_result(_task_value(message, "summary", "")),
         "usage": _task_usage(_task_value(message, "usage", {})),
     }
 

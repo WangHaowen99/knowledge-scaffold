@@ -76,11 +76,18 @@ export function thinkingText(thinking, now) {
   return `思考中${tokens} · ${fmtElapsed(elapsed)}`;
 }
 
-// 结束后面板底部：结果摘要或失败原因
+// 小结第一行是结论，其后「· 」开头的每行一条明细（后端把检查、修复类子代理交回的 JSON 换成的说法）
+export function summaryParts(summary) {
+  const [head = '', ...rest] = String(summary || '').split('\n');
+  return { head: head.trim(), details: rest.map((x) => x.replace(/^·\s*/, '').trim()).filter(Boolean) };
+}
+
+// 结束后面板底部：结论与明细，或失败原因
 export function outcome(status, summary) {
-  if (status === 'done') return { tone: 'green', label: '结果', text: summary || '已完成，结果交回给助手' };
-  if (status === 'failed') return { tone: 'red', label: '失败原因', text: summary || '子任务出错，没有交回结果' };
-  if (status === 'interrupted') return { tone: 'gray', label: '已中断', text: '会话已停下，这个子任务没有交回结果' };
-  if (status === 'timeout') return { tone: 'gray', label: '执行超时', text: '长时间没有响应，已判定执行超时' };
+  const { head, details } = summaryParts(summary);
+  if (status === 'done') return { tone: 'green', label: '结果', text: head || '已完成，结果交回给助手', details };
+  if (status === 'failed') return { tone: 'red', label: '失败原因', text: head || '子任务出错，没有交回结果', details };
+  if (status === 'interrupted') return { tone: 'gray', label: '已中断', text: '会话已停下，这个子任务没有交回结果', details: [] };
+  if (status === 'timeout') return { tone: 'gray', label: '执行超时', text: '长时间没有响应，已判定执行超时', details: [] };
   return null;
 }

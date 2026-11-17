@@ -19,7 +19,7 @@ export function subagentTask(taskId, now = Date.now()) {
   if (taskId === 't1') {
     const base = now - 6 * MIN;
     return {
-      task: { task_id: 't1', title: '规则检查', brief: '对 11 个操作逐条跑规则检查，汇总错误与警告。', status: 'done', started_at: at(base, 0), ended_at: at(base, 2.5 * MIN), step_count: 2, summary: '0 个错误' },
+      task: { task_id: 't1', title: '规则检查', brief: '对 11 个操作逐条跑规则检查，汇总错误与警告。', status: 'done', started_at: at(base, 0), ended_at: at(base, 2.5 * MIN), step_count: 2, summary: '发现 2 个问题：错误 1 · 警告 1\n· 错误 · 操作「门店补货」：Wiki 链接 [[补货单]] 无对应文件\n· 警告 · 对象「门店」：字段「营业状态」缺少取值说明' },
       items: [tool('r1', '运行脚本「规则检查」', at(base, 5000), at(base, 98000)), tool('r2', '读取报告「规则检查」', at(base, 99000), at(base, 101000))],
     };
   }

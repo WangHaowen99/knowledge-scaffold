@@ -197,6 +197,33 @@ def test_finish_reports_a_short_summary_and_hides_raw_failures():
     assert "synthetic private exception detail" not in json.dumps(final, ensure_ascii=False)
 
 
+def test_json_result_is_not_a_step_and_finishes_as_business_text():
+    """规则检查子代理按约定交回 JSON：过程里不出原文，结论换成说法（截断前换）。"""
+    issues = [{"severity": "警告", "category": "命名", "file": "operation/门店补货.md", "message": "名称" + "长" * 400}]
+
+    async def scenario():
+        rail = build_progress_rail(_TOOL_NAME_MAP)
+        events = []
+        tracker = JiuwenProgressTracker(events.append)
+        results = {"call-none": "[]", "call-some": json.dumps(issues, ensure_ascii=False)}
+        with progress_scope(tracker):
+            for call_id, output in results.items():
+                parent = context("task_tool", {"task_description": "规则检查"}, call_id)
+                parent.inputs.tool_result = SimpleNamespace(success=True, data={"output": output})
+                await rail.before_tool_call(parent)
+                task = tracker._tasks[call_id]
+                await tracker.say(task, output)
+                await rail.after_tool_call(parent)
+        return events
+
+    events = asyncio.run(scenario())
+    assert not [event for event in events if event.get("kind") == "text"]
+    final = {event["task_id"]: event["summary"] for event in events if event["type"] == "subagent_finished"}
+    assert final["call-none"] == "没有发现问题"
+    head, detail = final["call-some"].split("\n")
+    assert head == "发现 1 个问题：警告 1" and detail.startswith("· 警告 · 操作「门店补货」：名称长") and detail.endswith("…")
+
+
 def test_step_budget_caps_activity_events():
     async def scenario():
         events = []

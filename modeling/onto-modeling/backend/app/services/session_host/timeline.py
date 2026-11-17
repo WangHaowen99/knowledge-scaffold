@@ -18,6 +18,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
+from .. import subagent_result
 from .views import STATE, iso
 
 # 瞬时事件：不带 id、不回放（契约 1.11）
@@ -442,7 +443,8 @@ def _claude_sub_steps(turn: Turn, event: dict) -> list[tuple[dict, bool]]:
             records += _subagent_activity(turn, {**base, "step_id": step_id, "kind": "tool",
                                                  "tool": str(block.get("tool") or ""),
                                                  "input": _sub_input(block.get("input"))})
-        elif block.get("kind") == "text" and str(block.get("text") or "").strip():
+        elif block.get("kind") == "text" and str(block.get("text") or "").strip() \
+                and not subagent_result.is_machine(block["text"]):  # 交回给主助手解析的 JSON 不进过程
             text = str(block["text"]).strip()
             records += _subagent_activity(turn, {
                 **base, "step_id": f"{parent}-say-{uuid.uuid4().hex[:6]}", "kind": "text",
@@ -741,7 +743,8 @@ def payload(record: dict) -> tuple[str | None, dict | None]:
             "task_id": record.get("task_id") or "", "group_id": record.get("group_id"),
             "title": str(record.get("title") or subagent_title(record.get("description"), record.get("brief"),
                                                                record.get("agent_type"))),
-            "status": status, "progress_text": progress_text[:120], "summary": record.get("summary") or None,
+            "status": status, "progress_text": progress_text[:120],
+            "summary": subagent_result.display(record.get("summary")),
             "step": step, "step_count": record.get("step_count"),
             # 开始那条带派给它的任务说明（≤2000 字），其余为 null
             "brief": (record.get("brief") or None) if kind == "subagent_started" else None,
@@ -832,9 +835,12 @@ def _plain(text: str) -> str:
     return "\n".join(line for line in lines if line and not re.fullmatch(r"[-*_=|: ]{3,}", line))
 
 
-def _sub_step(record: dict) -> dict:
-    """子代理的一步（契约 EC-22 `step`，F2 补充）：同一个 id 后到的只改状态；说法为 null 时沿用先到的。"""
+def _sub_step(record: dict) -> dict | None:
+    """子代理的一步（契约 EC-22 `step`，F2 补充）：同一个 id 后到的只改状态；说法为 null 时沿用先到的。
+    旧历史里子代理交回的 JSON 原文记成了说的话，不算一步（None）。"""
     step_id = str(record.get("step_id") or "")
+    if record.get("kind") == "text" and subagent_result.is_machine(record.get("text")):
+        return None
     if record.get("kind") == "text":
         return {"id": step_id, "kind": "text", "text": _plain(str(record.get("text") or ""))[:300], "state": "done"}
     text = record.get("step_text")
