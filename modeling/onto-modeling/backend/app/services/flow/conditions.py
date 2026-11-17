@@ -1,9 +1,7 @@
 """按项目数据算的内核条件（ADR-0083）：流程节点出不出现、内核探针、提示规则注不注入。
 
-条件名是内核给的固定集合，包只能引用、不能自己写判断（包代码不在内核里跑）。现在只有证据源两条：
-
-- `evidence_sources`：项目有授权的数据源（授权存数据目录，智能体改不了；`app/evidence/grants`）；
-- `evidence_snapshot`：授权的源里有一份完整快照（`resource/systems/<源>/<快照>/manifest.json` 的 `complete: true`）。
+条件名是内核给的固定集合，包只能引用、不能自己写判断（包代码不在内核里跑）。现在没有按项目数据算的条件
+（证据源两条随系统证据采集去掉），不认识的条件一律不成立。
 
 三处用法：
 
@@ -18,51 +16,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 
 _log = logging.getLogger(__name__)
 
-SYSTEMS_DIR = Path("resource") / "systems"
-
-
-def _main_root(root: Path) -> Path:
-    """助手副本 → 主线工作区（授权按项目记，快照只经内核写入路径进主线）。"""
-    from ...kernel.changesets import worktree
-
-    return Path(worktree.main_root(Path(root)) or root)
-
-
-def _authorized(root: Path) -> list[str]:
-    from ...evidence import grants
-
-    return grants.authorized_ids(_main_root(root).name)
-
-
-def _evidence_sources(root: Path) -> bool:
-    return bool(_authorized(root))
-
-
-def _evidence_snapshot(root: Path) -> bool:
-    base = _main_root(root) / SYSTEMS_DIR
-    for source in _authorized(root):
-        directory = base / source
-        if "/" in source or source.startswith(".") or not directory.is_dir():
-            continue
-        for manifest in directory.glob("*/manifest.json"):
-            try:
-                if json.loads(manifest.read_text(encoding="utf-8")).get("complete") is True:
-                    return True
-            except (OSError, ValueError, AttributeError):
-                continue
-    return False
-
-
-CONDITIONS = {
-    "evidence_sources": _evidence_sources,
-    "evidence_snapshot": _evidence_snapshot,
-}
+# 条件名 → 按项目目录算是否成立；现在为空，`activated` 与 `session_open` 另走 activation
+CONDITIONS: dict = {}
 
 
 def holds(name: str, root: Path) -> bool:

@@ -153,26 +153,6 @@ detect_jiuwenbox_socket_volume() {
         | grep -E '(^|_)onto-jiuwenbox-sock$' | head -n 1 || true
 }
 
-# 连接器网关的主密钥（ADR-0086）：compose secrets 只挂给网关，文件不存在时网关容器建不起来。与发布包
-# deploy.sh 同规则：不存在时生成一次（丢了只能重新录入数据源凭据，和凭据卷分开备份），root 部署时属主改成网关的 uid 65534
-ensure_onto_connector_master_key() { # <onto-modeling 目录>
-    local key_file
-    key_file="$(env_get "$1/.env" ONTO_CONNECTOR_MASTER_KEY_FILE)"
-    key_file="${key_file:-./secrets/connector-master.key}"
-    case "${key_file}" in
-        /*) ;;
-        *) key_file="$1/${key_file#./}" ;;
-    esac
-    if [ ! -f "${key_file}" ]; then
-        mkdir -p "$(dirname "${key_file}")"
-        chmod 700 "$(dirname "${key_file}")"
-        (umask 077 && { openssl rand -base64 32 2>/dev/null || head -c 32 /dev/urandom | base64; } > "${key_file}")
-        chmod 600 "${key_file}"
-        log "Generated Onto Modeling connector master key ${key_file}; back it up apart from the connector-secrets volume"
-    fi
-    [ "$(id -u)" -ne 0 ] || chown 65534:65534 "${key_file}"
-}
-
 write_onto_modeling_stack_override() { # <onto-modeling 目录>
     local dir="$1" network socket_volume sandbox_service="" sandbox_volume=""
     local hub_env="${dir}/.env" hub_secret
@@ -498,7 +478,6 @@ elif [ -f "${SCRIPT_DIR}/deploy-stack.sh" ]; then
                 adopt_hub_service_token "${SCRIPT_DIR}/../knowledge-hub/deploy/.env" "${ONTO_MODELING_SOURCE}/.env"
                 ensure_onto_evaluation_service_token "${ONTO_MODELING_SOURCE}/.env"
                 write_onto_modeling_stack_override "${ONTO_MODELING_SOURCE}"
-                ensure_onto_connector_master_key "${ONTO_MODELING_SOURCE}"
                 # --remove-orphans 清掉旧版本随 onto-modeling 部署的 Hub 容器，避免与独立 Hub 抢同一服务名
                 (cd "${ONTO_MODELING_SOURCE}" \
                     && docker compose -f docker-compose.yml -f docker-compose.stack.yml up -d --build --remove-orphans)

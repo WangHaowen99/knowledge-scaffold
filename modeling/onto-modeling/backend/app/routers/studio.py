@@ -326,7 +326,7 @@ def entry_flow(project_id: str, entry_id: str, request: Request):
 
 @router.get("/entries/{entry_id}/evidence")
 def entry_evidence(project_id: str, entry_id: str, request: Request):
-    """ST-06：条目正文里上传资料的出处（`file:` 锚点，同 EV-29 解析）；业务系统证据快照本期没有。"""
+    """ST-06：条目正文里上传资料的出处（`file:` 锚点，同 EV-29 解析）。"""
     from ..services import material_text
 
     root = deps.require_owner(project_id, request)

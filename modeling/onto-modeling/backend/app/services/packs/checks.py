@@ -380,10 +380,6 @@ def _node_pack_problems(directory: Path, manifest: Manifest, files: list[str],
                 problems.append(f"{where}: 人工节点要有 decision.title 和至少两个选项")
             if not record:
                 problems.append(f"{where}: 人工节点要声明 decision.record（落在 produces 里）")
-        elif kind == "external":
-            provider = node.get("provider") if isinstance(node.get("provider"), dict) else {}
-            if not provider.get("kind"):
-                problems.append(f"{where}: 外部节点要声明需要的连接器 provider.kind")
     requires = str((_flow_data(directory, manifest) or {}).get("requires_flow") or "")
     if requires and repository is not None:
         spec = requires[len("core"):].strip() if requires.startswith("core") else None

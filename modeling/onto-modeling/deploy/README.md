@@ -6,7 +6,7 @@
 
 ```
 onto-modeling/
-  images/                     # 镜像 tar：onto-modeling、auth-server、连接器网关、REA 旁路容器
+  images/                     # 镜像 tar：onto-modeling、auth-server、连接器网关
   images.env                  # 镜像 tag 清单（deploy.sh 自动读取）
   docker-compose.release.yml
   deploy.sh                   # 预检 → 加载镜像 → 拉起
@@ -193,42 +193,25 @@ onto-modeling 容器里做：上传的文件不可信，解析可能卡死、吃
 - 服务 `connector-gateway`（容器 `onto-modeling-connector-gateway`）用**单独的镜像**
   `onto-modeling-connector-gateway:<版本>`（同一个 Dockerfile 的 `connector-gateway` 目标），离线包里多一个
   镜像 tar，`deploy.sh` 一起加载；`redeploy-app.sh` 一起重建、替换（旧部署目录的 compose 没有这个服务时跳过）。
-- 接 `internal: true` 的 `connector` 网络（和 onto-modeling 互通）和 `rea` 网络；另接有出口的 `biz-egress` 网络，
-  只给数据库、代码仓库连接器连业务系统用（ADR-0086），onto-modeling 和旁路容器都不接。不读 `.env`、不发布端口；
+- 只接 `internal: true` 的 `connector` 网络（和 onto-modeling 互通），没有出口；不读 `.env`、不发布端口；
   非 root、只读根文件系统、无 capability，内存 1.5G、最多 64 个进程。
 - 每个转换一个子进程：120 秒超时、768 MiB 内存、16 MiB 输出上限，同时最多 2 个；
   可用 `ONTO_CONNECTOR_JOB_TIMEOUT_S`、`ONTO_CONNECTOR_JOB_MEMORY_MB`、`ONTO_CONNECTOR_MAX_CONCURRENT` 调（网关容器的环境变量）。
 - onto-modeling 经 `ONTO_WEB_CONNECTOR_GATEWAY_URL=http://connector-gateway:8120` 调它，每次带一张内核签的一次性
   票据；网关从 `http://onto-modeling:8100/api/v1/connector/issuer-key` 取公钥验签。
-- 程序逆向采集（ADR-0082）上传的目标程序和 REA 原始结果存在数据卷的 `evidence/blobs/`，按程序大小预留磁盘；上限在
-  onto-modeling 的 `.env` 里：`ONTO_WEB_EVIDENCE_MAX_ARTIFACT_MB`（默认 2048）、`ONTO_WEB_EVIDENCE_SNAPSHOT_GIT_MB`（默认 20）。
 - 网关停了不丢活：资料标「等待转换」，网关恢复后 30 秒内自动补转；升级后已有项目里还没有文本版的资料在后台补转一次。
 - 健康状态在运维中心「健康与依赖」的「连接器网关」一行和启动自检报告里。
 
-### 数据库、代码仓库连接器的凭据（ADR-0086）
+### 从带系统证据采集的版本升级
 
-- 数据源的密码、访问令牌只存在网关：AES-256-GCM 加密后放在卷 `onto-web_connector-secrets`（只挂给网关），
-  onto-modeling 收到后立即转交，自己不存；没有任何读出明文的接口。
-- 主密钥是部署目录下的 `secrets/connector-master.key`（32 字节 base64），`deploy.sh` 第一次部署时生成（0600，
-  root 部署时属主改成网关的 uid 65534）；经 compose `secrets:` 只挂给网关。要换位置在 `.env` 设
-  `ONTO_CONNECTOR_MASTER_KEY_FILE=<宿主路径>`。交付包里不带主密钥，每个部署各自一把。
-- **主密钥和凭据卷分开备份**：两样放在一起，拿到备份的人就能解出全部业务系统凭据。主密钥丢了，卷里的密文解不开，
-  只能在「数据源」里重新录入每个源的凭据；凭据卷丢了也一样。换主密钥同样要重新录入。
-- 没有主密钥（文件不存在或网关读不到）时，网关的凭据接口回 503，数据库、代码仓库连接器显示未安装，其余功能不受影响。
-- 采集时网关解密凭据，经标准输入交给提供方子进程（不进命令行和环境变量）；子进程只能连数据源登记的出口白名单里的
-  主机和端口。每个源保留最近 2 个凭据版本，轮换后更旧的版本在没有任务用时删除。
+系统逆向建模包和数据库、代码仓库、程序逆向连接器已去掉。`deploy.sh` 用 `--remove-orphans` 清掉旧的
+`onto-modeling-rea-sidecar` 容器；以下内容不自动删除，确认不再需要后手工清理：
 
-## REA 旁路容器（程序逆向采集）
-
-上传的业务程序（Electron、.NET、PyInstaller 等）由旁路容器 `rea-sidecar` 用固定版本的 REA 做静态分析，转成带锚点的
-证据记录（ADR-0082）。只有它碰目标程序的字节，不运行目标程序。
-
-- 服务 `rea-sidecar`（容器 `onto-modeling-rea-sidecar`）用**单独的镜像** `onto-modeling-rea-sidecar:<版本>`
-  （源码 `connectors/rea-sidecar`），离线包里多一个镜像 tar，`deploy.sh` 一起加载；`redeploy-app.sh` 一起重建、替换。
-- 只接 `internal: true` 的 `rea` 网络，这个网络上只有连接器网关；onto-modeling 不在上面，助手连不到它。
-  非 root、只读根文件系统、无 capability，内存 3G、2 核、最多 128 个进程；任务目录在命名卷 `onto-web-rea-scratch`。
-- 连接器网关经 `ONTO_CONNECTOR_REA_URL=http://rea-sidecar:8130` 调它；旁路容器不健康时，提供方 `rea-static` 报未安装，不能发起采集。
-- 采集任务在网关内存里，同时最多 2 个；网关重启后进行中的任务标失败，可以重试。
+- 卷 `onto-web_connector-secrets`（数据源凭据密文）和 `onto-web_onto-web-rea-scratch`；
+- 部署目录下的 `secrets/connector-master.key`，以及 `.env` 里的 `ONTO_CONNECTOR_MASTER_KEY_FILE`、
+  `ONTO_WEB_EVIDENCE_MAX_ARTIFACT_MB`、`ONTO_WEB_EVIDENCE_SNAPSHOT_GIT_MB`；
+- 数据卷里的 `evidence/` 目录（数据源登记、采集任务、目标程序和 REA 原始结果）。项目工作区里已提交的
+  `resource/systems/` 快照留在版本历史里，不再读取。
 
 ## 从原 modeling 服务迁移数据
 

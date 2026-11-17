@@ -71,20 +71,6 @@ def test_release_updated_on_publish(manager, monkeypatch, hub_login):
     assert events and events[-1]["data"]["release"]["version"] == response.json()["version"]
 
 
-def test_client_config_evidence_follows_connector_gateway(monkeypatch):
-    """C-01 features.evidence 跟着连接器网关走：没部署网关时 false（前端不调 EV-01、不出数据接入入口），部署了为 true。"""
-    from fastapi.testclient import TestClient
-
-    from app.main import app
-
-    monkeypatch.delenv("ONTO_WEB_CONNECTOR_GATEWAY_URL", raising=False)
-    features = TestClient(app).get("/api/v1/client-config").json()["features"]
-    assert features["evidence"] is False and "drawio" in features
-
-    monkeypatch.setenv("ONTO_WEB_CONNECTOR_GATEWAY_URL", "http://connector-gateway.invalid:8120")  # NOSONAR(S5332) 合成域名
-    assert TestClient(app).get("/api/v1/client-config").json()["features"]["evidence"] is True
-
-
 def test_web_research_action_needs_websearch_pack():
     """联网资料分析要联网调研包：没启用时研究节点不出这个动作（用不了的入口不出现），启用了照常。"""
     import yaml

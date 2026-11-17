@@ -1,6 +1,6 @@
-"""I1：界面文案的后端部分（UI 文案口径 ③ ⑤、证据源本期不下发）与前端新认的字段。
+"""I1：界面文案的后端部分（UI 文案口径 ③ ⑤）与前端新认的字段。
 
-说明槽位不再下发；证据源相关的数据不下发；项目内显示的文字不用「合入」「主线」「提交」「L4」；
+说明槽位不再下发；项目内显示的文字不用「合入」「主线」「提交」「L4」；
 FL-01 脚本节点带最近一次结果（刷新后仍在）。
 """
 
@@ -89,7 +89,7 @@ def test_knowledge_conflicts_carry_data_not_sentences(tmp_path):
     assert json.loads((root / knowledge_layers.CONFLICTS_REL).read_text(encoding="utf-8"))
 
 
-# ---- 运维可观测：合入卡有计数来源、证据采集卡不返回、没有数据的列不返回 ----
+# ---- 运维可观测：合入卡有计数来源、没有数据的列不返回 ----
 
 
 def test_merge_counts_for_ops_merges_card(project):
@@ -141,7 +141,7 @@ def test_release_manifest_gives_source_version_label(manager, monkeypatch, hub_l
 
 
 def test_pack_catalog_has_no_meta_line_and_data_access_only_converters(env):
-    """多源连接器分类里只有转换器（F4a，ADR-0073）；数据库采集这类证据源仍不出现（ADR-0056，见下一条）。"""
+    """多源连接器分类里只有转换器（F4a，ADR-0073）；没有转换器的提供方包不出现（见下一条）。"""
     client, _manager, project_id, _tmp = env
     body = client.get("/api/v1/packs", params={"project_id": project_id}).json()
     assert body["items"] and all("meta" not in item for item in body["items"])
@@ -158,24 +158,7 @@ def test_editor_reference_carries_pack_label(env):
     assert editor["pack"] == "diagram" and editor["pack_label"] == "图示"
 
 
-# ---- 证据源本期不下发 ----
-
-
-def test_external_nodes_are_not_listed_in_flow(env):
-    from tests.test_node_pack_lifecycle import EXTERNAL_NODE
-
-    client, manager, project_id, tmp_path = env
-    root = manager.project_root(project_id)
-    # 没写提供方的外部节点能装进流程（启用检查只认声明了的提供方），FL-01 照样不列
-    install(manager, tmp_path, flow=kinds_flow({key: value for key, value in EXTERNAL_NODE.items() if key != "provider"}))
-    enable_and_apply(client, manager, project_id)
-    from app.services.flow import model
-
-    assert "naming.fetch" in {node["id"] for node in model.load_for(root)["nodes"]}  # 确实装进了流程
-    flow = view.build(root)
-    assert "naming.fetch" not in {node["id"] for node in flow["nodes"]}
-    assert all("naming.fetch" not in (edge["from"], edge["to"]) for edge in flow["edges"])
-    assert all("naming.fetch" not in section["nodes"] for section in flow["sections"])
+# ---- 没有转换器的提供方包不下发 ----
 
 
 def test_provider_packs_are_not_listed_anywhere(env, monkeypatch):

@@ -374,16 +374,13 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
             **({"last_run": script_runs.get(node["id"])} if node.get("kind") == "script" else {}),
         })
     nodes += [_disabled_view(node) for node in overlay.disabled_nodes(root, flow)]
-    # 外部节点要证据源提供方，本期证据源只留接口（ADR-0056）：不下发
-    hidden = {node["id"] for node in nodes if node["kind"] == "external"}
-    nodes = [node for node in nodes if node["id"] not in hidden]
     sections = [
         {"id": key, "title": title, "nodes": [node["id"] for node in nodes if node["section"] == key]}
         for key, title in SECTION_TITLES.items()
     ]
     commands = {
         name: spec.get("node") for name, spec in (flow.get("commands") or {}).items()
-        if spec.get("node") and spec.get("node") not in hidden
+        if spec.get("node")
     }
     changeset = _changeset_context(root)
     simple_states = {node_id: {"state": item["state"], "flags": item["flags"]} for node_id, item in states.items()}
@@ -432,7 +429,7 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     result = {
         "flow_hash": flow.get("flow_hash") or "",
         "nodes": nodes,
-        "edges": [edge for edge in flow.get("edges") or [] if not hidden & {edge.get("from"), edge.get("to")}],
+        "edges": list(flow.get("edges") or []),
         "sections": sections,
         # 有没有建模蓝图：没有时建模步骤抽屉的「调整分段」改为发起分段规划（设计调整，gaps B4d 合并）
         "blueprint": {"state": blueprint_context["state"]},

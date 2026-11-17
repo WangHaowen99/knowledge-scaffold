@@ -51,6 +51,7 @@ def _routers():
     from ..governance import health
     from ..routers import (
         admin,
+        anchors,
         artifacts,
         auth_routes,
         autobuild,
@@ -60,7 +61,6 @@ def _routers():
         converters,
         evaluations,
         events,
-        evidence,
         files,
         flow,
         hub_packages,
@@ -114,7 +114,7 @@ def _routers():
         plugin_drafts.router,
         converters.router,
         artifacts.router,
-        evidence.router,
+        anchors.router,
         sessions.router,
         events.router,
         solver.router,

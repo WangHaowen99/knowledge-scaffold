@@ -9,8 +9,6 @@
 - **启动收敛**：进程重启后内存里没有任何编排，记录却可能永远停在 queued / running，把界面
   按钮永久锁死。各类任务在启动时登记收敛步骤（register_startup_sweep），lifespan 统一执行
   run_startup_sweeps，把这些记录改判中断。
-
-后面的证据源层（采集任务）复用这里。
 """
 
 from __future__ import annotations

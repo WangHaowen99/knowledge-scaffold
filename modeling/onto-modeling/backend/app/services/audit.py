@@ -115,7 +115,6 @@ TYPE_BY_PATH = (
     (re.compile(r"/changesets(?:/|$)"), "changeset"),
     (re.compile(r"/autobuild(?:/|$)"), "autobuild"),
     (re.compile(r"/(?:packs|plugins)(?:/|$)"), "plugin"),
-    (re.compile(r"/evidence(?:/|$)"), "evidence"),
     (re.compile(r"^/api(?:/v1)?/onto-mcp/|/mcp(?:/|$)"), "mcp"),
 )
 

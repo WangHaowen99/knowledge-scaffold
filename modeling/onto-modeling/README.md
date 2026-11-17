@@ -77,14 +77,11 @@ cd backend && ONTO_WEB_AUTH_URL=http://127.0.0.1:5056 ONTO_WEB_AUTH_ISSUER=http:
 
 - 打开 `http://127.0.0.1:8100`，用 `admin` 和初始密码登录；模型网关在「系统设置 → 模型接入」或 `.env` 里配。
 - 脚本验证与脚本节点要沙箱网关（`ONTO_WEB_SANDBOX_GATEWAY_URL`），本机没有时这两项报沙箱不可用，其余不受影响；
-  要全套（含网关）用 `docker compose up --build`；先生成连接器主密钥（compose 缺这个文件起不来）：
-  `mkdir -p secrets && openssl rand -base64 32 > secrets/connector-master.key && chmod 600 secrets/connector-master.key`。
+  要全套（含网关）用 `docker compose up --build`。
 - PDF、Word、Excel 转文本要连接器网关（`ONTO_WEB_CONNECTOR_GATEWAY_URL`，ADR-0073），本机没有时这些资料停在「等待转换」；
   本机单独起网关：`cd backend && pip install -r connector-requirements.txt && ONTO_CONNECTOR_CONVERTERS_DIR=../assets/packs
   ONTO_CONNECTOR_ISSUER_KEY_URL=http://127.0.0.1:8100/api/v1/connector/issuer-key python -m app.connector_gateway`，
   再给后端设 `ONTO_WEB_CONNECTOR_GATEWAY_URL=http://127.0.0.1:8120`。
-- 程序逆向采集（ADR-0082）还要旁路容器 `rea-sidecar`：网关设 `ONTO_CONNECTOR_REA_URL=http://<旁路容器>:8130` 才列出提供方
-  `rea-static`；旁路容器不健康时它在提供方清单里是 `installed: false`。
 
 模型接入通过环境变量注入（见 `.env.example`），不落盘、不进仓库。
 
@@ -365,11 +362,6 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
   前四个（清单 `default_on`），向导里可以改；项目设置里按项目启用、停用，停用后已有产物保留。可选包用自己的 `flow.yaml`
   往主流程上挂节点，`/ontology` 只推荐本项目启用了的命令。锁文件格式升到 2：存量项目在 core 升到 0.2.0 时一次性补上
   拆出去的全部包（能力不变）。联网调研没启用时，项目不能切到联网调研模式。
-- **系统逆向建模**（ADR-0082、0083）：`assets/packs/rev/`，不默认启用。资料页多数据源、采集与快照、证据浏览器三个子页；
-  项目授权了数据源时，资料分析和建模之间多一步「系统取证」（授权的源有完整快照就算完成），`/rev-evidence` 把快照整理成
-  `reports/evidence/<源>.md`，`/rev-reconcile` 对照资料、数据库、代码快照写三方对账 `reports/evidence/reconcile.md`（0.2.0，
-  ADR-0086），工作区脚本 `evidence.py` 检索快照（认 `bin:`、`db:`、`code:` 锚点，输出都标 `untrusted_content`）。节点按项目条件出现的写法是
-  通用的（`visible_if`、内核探针 `{kernel: 条件}`，条件表在 `services/flow/conditions.py`）。
 - **行业包**（ADR-0044）：`assets/packs/industry-retail/`（零售连锁，合成内容）是第一个行业包，新建项目时在向导里选。
   它的知识条目作为只读的行业层加载（项目里同名条目覆盖），`ontology_checker` 按它的声明式规则给警告；在装配目录的
   `industry/<包名>/` 下。知识沉淀包启用时，项目知识可以提名进行业包（自动脱敏后等管理员审核）。
@@ -406,9 +398,8 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
   commit 在写入事务提交与合入时查，publish 进发布门禁链）、视图选择 `view_choices`、配置项 `config`（进配置注册表，键
   `<包名>.<key>`）、指标 `metrics` 与告警规则 `alerts`（进 /metrics 与 O-08，规则本期只登记不评估）、只读 MCP 工具 `mcp_tools`
   （按本包产物类型列表或取一项）；包的 flow.yaml 可以写节点钩子 `hooks`（挂在已有节点前后，进节点动作与两轮之间的提示）。
-- **证据源**（ADR-0056）：本期只留接口。`backend/app/evidence/` 只有提供方、网关客户端、数据源登记的协议；
-  `/api/v1/evidence/…`、项目下的 `/evidence/…`、`/anchors/resolve` 与提供方安装接口一律回 `501 evidence_not_available`；
-  助手没有 `evidence.*` 工具；界面上连接业务系统的入口不出现。
+- **资料锚点**：`/api/v1/projects/{id}/anchors/resolve`（EV-29）只解析 `file:` 锚点（资料文本），其余锚点回
+  `resolved: false`。系统证据采集（数据源、采集任务、快照）已去掉，`backend/app/evidence/` 只剩资料转换的协议与票据。
 - **主流程**：阶段、完成判定、命令前置与 `/ontology` 的下一步建议只在 core 包的 `flow.yaml` 里定义一次，
   后端进度、`state_helper.py`、`GET /api/v1/projects/{id}/flow` 都读它。「质量检查完成」= 有校验报告且
   `reports/` 下没有未处理的 `[ ]`。包可以用 `slice_steps` 往按段的节点里加步骤、用 `node_titles` 改主线节点的显示名；core 的 `aliases`
@@ -622,17 +613,15 @@ Consumer → Hub → Onto Modeling → 评测：仓库根 `deploy/build.sh` 产�
 
 ```bash
 ./build.sh <version> [amd|arm]     # 产出 dist/onto-modeling-<version>-linux-<arch>.tar.gz
-# 首次：连接器主密钥与 Hub 服务凭据（compose 缺了起不来）
-mkdir -p secrets && (umask 077 && openssl rand -base64 32 > secrets/connector-master.key)
+# 首次：Hub 服务凭据（compose 缺了起不来）
 grep -q '^ONTO_HUB_SERVICE_TOKEN=..*' .env 2>/dev/null || printf 'ONTO_HUB_SERVICE_TOKEN=%s\n' "$(openssl rand -hex 32)" >> .env
-docker compose up --build          # 本地从源码起本服务（onto-modeling + auth-server + 两个网关 + REA 旁路容器）
+docker compose up --build          # 本地从源码起本服务（onto-modeling + auth-server + 两个网关）
 ```
 
 本地单独起时连不到 Hub 与评测服务，发布和评测入口不可用；要联调就用仓库根 `deploy/deploy.sh` 起整栈。
 
-离线包里有四个镜像：onto-modeling、auth-server、连接器网关（`onto-modeling-connector-gateway`，同一个 Dockerfile 的
-`connector-gateway` 目标，只装 `backend/connector-requirements.txt` 里的转换库，见 ADR-0073）、REA 旁路容器
-（`onto-modeling-rea-sidecar`，见 ADR-0082）。Hub 与评测服务是各自独立的离线包，不在本包里。
+离线包里有三个镜像：onto-modeling、auth-server、连接器网关（`onto-modeling-connector-gateway`，同一个 Dockerfile 的
+`connector-gateway` 目标，只装 `backend/connector-requirements.txt` 里的转换库，见 ADR-0073）。Hub 与评测服务是各自独立的离线包，不在本包里。
 
 依赖复用（需 BuildKit，Docker Desktop / buildx 默认开启）：
 
@@ -695,30 +684,6 @@ Studio 表视图在「名称」后有「最后更新时间」列（精确到秒�
 同内容重复保存不产生提交、时间不变；已写入工作区但未提交的取文件修改时间；纯移动或改名不算更新，Studio 草稿
 和编辑器里没保存的内容不算。git 不可用时整列显示 `—`。时间在条目列表（ST-03）每行的 `updated_at` 里，`sort=updated`
 按它排序。
-
-## 证据层（多源连接器）
-
-数据源登记、目标程序上传、采集任务、快照与检索（契约 3.19，ADR-0082，`docs/plugin-architecture/design/evidence-collection.md`）。
-
-- 数据都在 `ONTO_WEB_DATA_DIR/evidence/`（不在工作区）：登记、项目授权、采集任务、上传临时目录、blob 仓（目标程序和 REA 原始结果）、
-  每个项目一个检索索引（SQLite，可以删掉，下次读时从工作区重建）。快照本身经写入事务提交到工作区 `resource/systems/<源>/<快照>/`。
-- 采集经连接器网关（`ONTO_WEB_CONNECTOR_GATEWAY_URL`），全平台同时跑 2 个；后端重启时没跑完的任务标失败，可以重试。
-- `ONTO_WEB_EVIDENCE_MAX_ARTIFACT_MB`（默认 2048）：上传目标程序的单文件上限；每人同时最多 2 个没完成的上传，24 小时没完成的自动清掉。
-- `ONTO_WEB_EVIDENCE_SNAPSHOT_GIT_MB`（默认 20）：一份快照进 git 的部分（记录、摘要、清单）上限，超了采集失败；原始结果不算在内。
-- 项目侧接口要项目启用系统逆向建模包（`rev`）。
-- 数据库、代码仓库连接器（ADR-0086）跑在网关的子进程里，凭据只存在网关。网关容器的环境变量：
-  - `ONTO_CONNECTOR_MASTER_KEY_FILE`：主密钥文件（32 字节 base64），compose 里指向 `/run/secrets/connector-master-key`；
-    宿主上的文件默认 `./secrets/connector-master.key`，可在 `.env` 用同名变量改。没配时不列这三个提供方，配了但读不出来时
-    它们是 `installed: false`、凭据接口回 503。
-  - `ONTO_CONNECTOR_SECRETS_DIR`（默认 `/secrets`，卷 `connector-secrets`）：凭据密文 `<源>/<版本>.bin`。
-  - `ONTO_CONNECTOR_CONN_DIR`（默认 `/tmp/connector-conn`）：采集子进程的运行目录（记录、克隆的代码），任务清理时删。
-  - `ONTO_CONNECTOR_CONN_MEMORY_MB`（默认 768）、`ONTO_CONNECTOR_CONN_FILE_MB`（默认 256）：每个采集子进程的内存、单文件上限。
-  - `ONTO_CONNECTOR_CODE_CA_FILE`：代码仓库用自签证书时，网关容器里 CA 证书的路径（要另外把证书挂进网关）。
-  - `ONTO_CONNECTOR_DB_*`、`ONTO_CONNECTOR_CODE_*`：提供方自己的配置（如 `ONTO_CONNECTOR_DB_PROFILE_ROWS`），原样传给子进程；
-    子进程拿不到其他环境变量。
-- 数据库、代码仓库（ADR-0086）：凭据只在网关，内核收到就转交、只存引用（`cred://<源>/<版本>`）；每个项目的脱敏盐在
-  `evidence/salts/<项目>.key`（随数据卷备份，丢了以后加盐哈希的值和旧快照对不上）；`discover` 的清单在 `evidence/inventories/`。
-  对象文档「# 数据来源」首行可以写 `db:<源>/<库>.<表>`，发布时按这个源最新的完整快照绑定表名和列名。
 
 ## 当前状态
 

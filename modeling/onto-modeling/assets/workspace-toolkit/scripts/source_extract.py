@@ -366,7 +366,7 @@ def located_text(result: dict, anchor: str = '') -> str:
 
 TEXT_DIR = 'resource/text'
 SKIP = {'resource/materials.json'}
-# 系统快照（ADR-0082）的标准记录是给 evidence.py 检索的机读数据，不是资料：列成「没有文本版」会让助手以为它们还没转换
+# 旧版系统证据采集（已去掉）留在工作区的快照记录是机读数据，不是资料：列成「没有文本版」会让助手以为它们还没转换
 SYSTEMS_DIR = 'resource/systems'
 
 

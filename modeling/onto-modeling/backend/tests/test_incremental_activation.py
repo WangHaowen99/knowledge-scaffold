@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 
 import pytest
 import yaml
 
 from app.kernel.changesets import service as changesets
-from app.services.flow import activation, assemble, view
+from app.services.flow import activation, assemble, conditions, view
 from app.services.packs import checks
 from app.services.packs import service as pack_service
 from tests.pack_helpers import make_pack
@@ -276,3 +277,19 @@ def test_upload_check_reads_lock_on_activation(tmp_path, spec, confine, result):
     _, items = checks.run(_pack(tmp_path, spec, visible=None if spec is None else "activated",
                                 preempt=None if spec is None else True, confine=confine), core_names={})
     assert next(item for item in items if item["id"] == "confine")["result"] == result
+
+
+def test_hidden_node_reanchors_followers():
+    """visible_if 不成立的节点去掉后，挂在它后面的节点改挂到它的上游，连线、命令、钩子一起去掉。"""
+    flow = {"nodes": [{"id": "core.a"}, {"id": "x.mid", "after": "core.a", "visible_if": "nope"},
+                      {"id": "y.tail", "after": "x.mid"}],
+            "edges": [{"from": "core.a", "to": "x.mid"}, {"from": "x.mid", "to": "y.tail"}],
+            "commands": {"mid": {"node": "x.mid"}, "a": {"node": "core.a"}},
+            "hooks": [{"id": "z.h", "node": "x.mid"}], "flow_hash": "old"}
+    out = conditions.apply(flow, Path("/nonexistent"))
+    assert [node["id"] for node in out["nodes"]] == ["core.a", "y.tail"]
+    assert out["nodes"][1]["after"] == "core.a" and out["hidden_nodes"] == ["x.mid"]
+    assert out["edges"] == [] and out["commands"] == {"a": {"node": "core.a"}} and out["hooks"] == []
+    assert out["flow_hash"] != "old" and flow["nodes"][2]["after"] == "x.mid"  # 不改原流程
+    plain = {"nodes": [{"id": "core.a"}]}
+    assert conditions.apply(plain, Path("/nonexistent")) is plain

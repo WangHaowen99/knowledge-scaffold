@@ -1,13 +1,11 @@
-"""四类节点里不经助手执行的三类（详设 6.5；方案 D18；ADR-0066）。
+"""三类节点里不经助手执行的两类（详设 6.5；方案 D18；ADR-0066）。
 
 - agent：助手执行入口命令（FL-05 等价于 S-20），不在这里；
 - script：内核把包里的脚本（本项目装配目录里哈希核对过的那份）连同节点声明的输入文件打包，经脚本验证网关放进
   jiuwenbox 一次性沙箱运行，标准输出写成节点声明的产出、经写入事务合入。网关或沙箱不可用时不在本机回退：
   脚本来自包作者，不能在主容器里跑；
 - human：只出一张决策卡（对话流 question.asked，也进待处理的「决策」，S-11 或 IN-03 回答），结论写进节点声明的
-  记录文件；
-- external：要经连接器网关调外部系统，需要对应的证据源提供方。本期证据源只留接口（ADR-0056），没有提供方，
-  启用检查与开始节点都如实报「需要的提供方不可用」。
+  记录文件。
 """
 
 from __future__ import annotations
@@ -42,36 +40,6 @@ def kind_of(node: dict) -> str:
 def node_trailer(node: dict) -> str:
     version = str(node.get("version") or "").rpartition("@")[2]
     return f"{node['id']}@{version}" if version else node["id"]
-
-
-# ---------------------------------------------------------------------------
-# 外部节点：需要的证据源提供方
-# ---------------------------------------------------------------------------
-
-
-def required_providers(nodes: list[dict]) -> list[str]:
-    out = []
-    for node in nodes:
-        provider = node.get("provider") if isinstance(node.get("provider"), dict) else {}
-        kind = str(provider.get("kind") or "")
-        if kind_of(node) == "external" and kind and kind not in out:
-            out.append(kind)
-    return out
-
-
-def missing_providers(nodes: list[dict]) -> list[str]:
-    from ...evidence import available_providers
-
-    installed = available_providers()
-    return [kind for kind in required_providers(nodes) if kind not in installed]
-
-
-def pack_nodes(repository, name: str, version: str) -> list[dict]:
-    """包仓库里某个版本声明的节点（启用检查用）。"""
-    from ..packs.assembler import flow_declaration
-
-    declared = flow_declaration(name, repository.manifest(name, version), repository.version_dir(name, version))
-    return [node for node in (declared or {}).get("nodes") or [] if isinstance(node, dict)]
 
 
 # ---------------------------------------------------------------------------

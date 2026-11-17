@@ -270,7 +270,7 @@ probes:
 |---|---|
 | `id` | `<包名>.<名字>` |
 | `title` | 必填，面板上显示的名字，用动宾结构 |
-| `kind` | `agent`、`script`、`human`、`external`；`external` 这一期没有提供方，视图里隐藏 |
+| `kind` | `agent`、`script`、`human` |
 | `placement` | `step`、`branch`、`gate`、`on_demand`；`spine` 只给 core |
 | `section` | 面板分组，取值见 protocol.md |
 | `after`、`before` | 挂载锚点；不是 `on_demand` 的节点至少写一个 |
@@ -282,17 +282,16 @@ probes:
 | `writes` | 节点会改但不算产出的路径 |
 | `optional` | `true` 表示可以不做，下游不等它 |
 | `progress` | `false` 表示不计入进度 |
-| `visible_if` | 内核条件名，不成立时节点不在这个项目的流程里：`evidence_sources`（项目有授权的数据源）、`evidence_snapshot`（授权的源有完整快照）。提示规则也能写；探针写 `{kernel: <条件名>}`；`activated`（本包声明的 `activation` 触发了，或这一轮开着） |
+| `visible_if` | 内核条件名，不成立时节点不在这个项目的流程里；现在只有 `activated`（本包声明的 `activation` 触发了，或这一轮开着）。内核探针写 `{kernel: session_open, session: <这一轮的状态文件>}` |
 | `preempt` | 只能和 `visible_if: activated` 一起用：节点出现且没做完时，下一步建议先推它。写字符串时当说明行 |
 
-## 11. 节点包：四类节点
+## 11. 节点包：三类节点
 
 | `kind` | 必填 | 怎么跑 |
 |---|---|---|
 | `agent` | `entry.command`，且是本包命令 | 用户在面板点动作或输入命令，助手按命令干活 |
 | `script` | `script.name`（本包脚本）、`script.output` | 面板启动，在沙箱里跑，标准输出写进 `script.output` |
 | `human` | `decision.title`、至少 2 个带 `id` 的 `options`、`decision.record` | 面板弹决策卡，回答写进 `record` 文件 |
-| `external` | `provider.kind` | 这一期不可启动 |
 
 `script.output` 和 `decision.record` 必须落在本节点的 `produces` 或 `writes` 里。
 

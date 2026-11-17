@@ -11,8 +11,6 @@ nl2sql 才有表名和列名可用。
 也可以降级发布（strict_declared=False）：对不上的对象来源Sheet 写 UNBOUND，不进 mapping。
 
 绑定优先级：对象文档「# 数据来源」的显式声明 > 属性英文名与 Sheet 列头的唯一最佳重合。
-声明可以写数据库锚点 `db:<源>/<库>.<表>`（F16，ADR-0086）：项目里有这个源的完整快照时，按最新那份快照
-绑定真实表名（只写表名，不带库名：下游把表名当一个标识符加引号）和列名；没有快照时照旧当表名处理。
 推断只在重合列数达标且候选唯一时成立（声明了主键的对象，候选表还须含全部主键列），
 够不着就留空（来源Sheet 写 UNBOUND），不猜。
 首行写「无」是显式声明不落库（如只作为输出的单据），不再按重合度推断。
@@ -355,25 +353,6 @@ def _declared_binding(
     }
 
 
-def _db_declared(root: Path, declared: str, cache: dict) -> tuple[dict | None, dict[str, list[str]] | None]:
-    """声明是数据库锚点且项目里有这个源的完整快照 → (锚点指的表或 None, 快照里的表 {表名: 列})；否则 (None, None)。
-    快照按源缓存：一次解析里同一个源只读一遍。"""
-    from ..evidence import dbview
-
-    parsed = dbview.parse(declared)
-    if parsed is None:
-        return None, None
-    source = parsed["source_id"]
-    if source not in cache:
-        cache[source] = dbview.tree_tables(root, source)
-    snapshot = cache[source]
-    if snapshot is None:
-        return None, None
-    lowered = {anchor.lower(): anchor for anchor in snapshot}
-    found = snapshot.get(declared) or snapshot.get(lowered.get(declared.lower(), ""))
-    return found, {item["name"]: list(item["columns"]) for item in snapshot.values()}
-
-
 def _may_infer(tables: dict[str, list[str]], parsed: dict) -> bool:
     """未声明来源表时能否按重合度推断：「无」是显式不落库，没有数据表或属性也无从推断。"""
     if parsed["declared_none"]:
@@ -409,7 +388,6 @@ def resolve_object_tables(
         (problems if blocking else warnings).append(issue["message"])
         issues.append({"object": key, **issue, "blocking": blocking, "declared": declared, "table": table})
 
-    snapshots: dict[str, dict | None] = {}
     for key, text in read_object_texts(root).items():
         parsed = parse_object_doc(text)
         fields = parsed["fields"]
@@ -417,21 +395,7 @@ def resolve_object_tables(
         declared = parsed["declared_table"]
         table, matched_by = "", ""
         reported = False
-        available = tables
-        found, snapshot_tables = _db_declared(root, declared, snapshots) if declared else (None, None)
-        if snapshot_tables is not None:
-            # 数据库锚点：按快照里的表绑定，候选也从快照里找
-            available = snapshot_tables
-            if found:
-                table, matched_by = found["name"], "declared"
-            else:
-                report(key, {
-                    "kind": "declared_missing",
-                    "message": f"对象「{key}」声明的来源表「{declared}」在这个数据源最新的完整快照里不存在",
-                    "candidates": _candidates(field_keys, declared.rsplit(".", 1)[-1], snapshot_tables),
-                }, declared)
-                reported = True
-        elif declared:
+        if declared:
             table, note, issue = _declared_binding(key, parsed, field_keys, tables, by_lower)
             matched_by = "declared" if table else ""
             if note:
@@ -443,7 +407,7 @@ def resolve_object_tables(
             table = _match_table(field_keys, tables, [f["key"] for f in fields if f["primary"]])
             matched_by = "inferred" if table else ""
 
-        columns = available.get(table, [])
+        columns = tables.get(table, [])
         lowered_columns = {c.lower(): c for c in columns}
         # fields 保留全部声明属性（发布包的 `# 字段` 段要完整），column 只在对上列时填
         fields = [{**f, "column": lowered_columns.get(f["key"].lower(), "")} for f in fields]
@@ -453,7 +417,7 @@ def resolve_object_tables(
             report(key, {
                 "kind": "no_columns",
                 "message": f"对象「{key}」绑定的表「{table}」没有一列能对上属性英文名",
-                "candidates": _candidates(field_keys, declared or key, available, exclude=table),
+                "candidates": _candidates(field_keys, declared or key, tables, exclude=table),
             }, declared, table)
             reported = True
             table, matched_by = "", ""
@@ -469,8 +433,6 @@ def resolve_object_tables(
             "declared_table": declared,
             "declared_none": parsed["declared_none"],
         }
-        if found and table:
-            objects[key]["source_anchor"] = declared
         if not table and not reported:
             warnings.append(f"对象「{key}」没有绑定真实数据表，数据问答无法命中该对象")
         elif missing:
@@ -958,10 +920,7 @@ def _join_text(relation: dict) -> str:
 
 def _relation_prefixes(key: str, doc: dict) -> set[str]:
     """括注 `表名.字段` 可用的前缀：对象名与「# 数据来源」声明的表名（小写）。"""
-    from ..evidence import dbview
-
-    anchor = dbview.parse(doc["declared_table"])
-    candidates = (key, doc["declared_table"], *doc["declared_mentions"], (anchor or {}).get("table") or "")
+    candidates = (key, doc["declared_table"], *doc["declared_mentions"])
     return {name.lower() for name in candidates if name}
 
 

@@ -43,8 +43,6 @@ def _run_build_release(
     drawio_index.parent.mkdir(parents=True)
     drawio_index.write_text("<html></html>\n", encoding="utf-8")
     (tmp_path / "repo" / "auth-server").mkdir()
-    # REA 旁路容器在 connectors/rea-sidecar 下自带 Dockerfile，脚本 cd 进去构建
-    (project_root / "connectors" / "rea-sidecar").mkdir(parents=True)
 
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
@@ -176,22 +174,22 @@ def test_build_release_vendors_wheels_from_overridable_index(
     assert f"--build-arg PIP_INDEX_URL={index_url}" in _onto_modeling_build_command(log_dir)
 
 
-def test_build_release_bundles_the_gateway_and_sidecar_images(tmp_path: Path) -> None:
-    """离线包带齐 compose 里的四个镜像，images.env 给出各自的 tag，目标机 deploy.sh 才能全部加载并拉起。"""
+def test_build_release_bundles_the_gateway_image(tmp_path: Path) -> None:
+    """离线包带齐 compose 里的三个镜像，images.env 给出各自的 tag，目标机 deploy.sh 才能全部加载并拉起；REA 旁路容器已去掉。"""
     _, log_dir = _run_build_release(tmp_path, "")
 
     saved = [line for line in (log_dir / "docker.log").read_text(encoding="utf-8").splitlines()
              if line.startswith("save ")]
-    for image in ("onto-modeling", "onto-modeling-auth-server", "onto-modeling-connector-gateway",
-                  "onto-modeling-rea-sidecar"):
+    for image in ("onto-modeling", "onto-modeling-auth-server", "onto-modeling-connector-gateway"):
         assert any(line.endswith(f" {image}:v-test") for line in saved), image
+    assert len(saved) == 3
     package_path = tmp_path / "repo" / "modeling" / "onto-modeling" / "dist" / "onto-modeling-v-test-linux-amd64.tar.gz"
     with tarfile.open(package_path) as package:  # NOSONAR(S5042) 合成的桩包，只读清单，不展开
         images_env = package.extractfile("onto-modeling/images.env").read().decode()
         names = set(package.getnames())
     assert "CONNECTOR_GATEWAY_IMAGE=onto-modeling-connector-gateway:v-test" in images_env
-    assert "REA_SIDECAR_IMAGE=onto-modeling-rea-sidecar:v-test" in images_env
-    assert "onto-modeling/images/onto-modeling-rea-sidecar-v-test.tar" in names
+    assert "REA_SIDECAR_IMAGE" not in images_env
+    assert not any("rea-sidecar" in name for name in names)
 
 
 def test_build_release_no_longer_bundles_the_knowledge_hub(tmp_path: Path) -> None:
@@ -207,5 +205,8 @@ def test_onto_modeling_dockerfile_takes_pip_index_from_build_arg() -> None:
     assert f"ARG PIP_INDEX_URL={DEFAULT_PIP_INDEX_URL}" in dockerfile
     assert '-i "${PIP_INDEX_URL}"' in dockerfile
     assert "pypi.tuna.tsinghua.edu.cn" not in dockerfile
-    # 改源只应失效 pip 层，不能连带 apt 层重跑
-    assert dockerfile.index("apt-get install") < dockerfile.index("ARG PIP_INDEX_URL=")
+    # 改源只应失效 pip 层，不能连带 apt 层重跑：每个装 apt 包的构建阶段都先 apt 后 ARG
+    stages = [stage for stage in dockerfile.split("\nFROM ") if "apt-get install" in stage]
+    assert stages
+    for stage in stages:
+        assert stage.index("apt-get install") < stage.index("ARG PIP_INDEX_URL=")

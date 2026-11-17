@@ -28,7 +28,7 @@ import json
 FLOW_API = 1
 PLACEMENTS = ("spine", "step", "branch", "gate", "on_demand")
 SECTIONS = ("required", "pre_publish", "optional", "on_demand")
-KINDS = ("agent", "script", "human", "external")
+KINDS = ("agent", "script", "human")
 
 
 class FlowAssemblyError(ValueError):

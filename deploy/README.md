@@ -12,7 +12,7 @@
 | --- | --- | --- | --- | --- | --- |
 | consumer-backend | `consumer/backend/` | 5055 → 5055 | onto-agent-backend | LLM 端点 | 运行期 API（Flask），知识包运行时 |
 | consumer-frontend | `consumer/frontend/` | 8888 → 80 | onto-agent-frontend | backend | 知识工程控制台（nginx 托管） |
-| onto-modeling | `modeling/onto-modeling/` | 5100 → 8100 | onto-modeling | auth-server / knowledge-hub | 引导式建模工作台，独立 compose 项目；同项目另有脚本验证网关、连接器网关、REA 旁路容器（不暴露端口） |
+| onto-modeling | `modeling/onto-modeling/` | 5100 → 8100 | onto-modeling | auth-server / knowledge-hub | 引导式建模工作台，独立 compose 项目；同项目另有脚本验证网关、连接器网关（不暴露端口） |
 | auth-server | `auth-server/` | 不暴露宿主端口（容器网内 5056） | onto-agent-auth-server | — | 必备鉴权服务，consumer 与 onto-modeling 共用 |
 | knowledge-hub | `knowledge-hub/` | 不暴露宿主端口（容器网内 8200） | knowledge-hub | auth-server / onto-modeling | 知识包 Hub，独立 compose 项目（`knowledge-hub/deploy/docker-compose.knowledge-hub.yml`） |
 | knowledge-evaluation | `eval-service/` | 5180 → 5180（供浏览器打开评测页面） | knowledge-evaluation | auth-server / knowledge-hub / consumer-backend | 独立评测服务，单实例，独立 compose 项目（`eval-service/deploy/docker-compose.eval-service.yml`） |
@@ -127,7 +127,7 @@ curl -fsS http://127.0.0.1:5055/health
 curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5055/health   # 预期 200（consumer backend）
 curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8888/         # 预期 200（控制台）
 curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5100/api/health  # 预期 200（Onto Modeling）
-for s in sandbox-gateway connector-gateway rea-sidecar; do docker ps --filter "label=com.docker.compose.service=$s" --format '{{.Names}} {{.Status}}'; done  # 预期三行，都含 (healthy)（Onto Modeling 的网关与旁路容器）
+for s in sandbox-gateway connector-gateway; do docker ps --filter "label=com.docker.compose.service=$s" --format '{{.Names}} {{.Status}}'; done  # 预期两行，都含 (healthy)（Onto Modeling 的两个网关）
 curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5180/evaluation/api/health # 预期 200（独立评测服务）
 ./deploy/deploy-stack.sh status                                           # 预期各服务 [OK] 可达、容器 Status 含 healthy
 ```

@@ -170,7 +170,6 @@ class PackRuntime:
 
         每改一个包先试着定装配计划（依赖、内核接口）：通道指到一个和项目里别的包配不上的版本（比如 core 的
         stable 被回滚到拆分前，拆出去的包要求 core ≥0.2）时这个包不跟，留在原版本，项目照常能装配。
-        和手动启用同一道检查（审查第 5 条）：新版本里有外部节点、需要的证据源提供方不可用时也不跟。
         """
         try:
             lock = lockfile.read(root)
@@ -191,11 +190,6 @@ class PackRuntime:
                 latest = beta_for(self.repository, entry.name, Path(root).name) or latest
             if not latest or latest == entry.version:
                 continue
-            missing = self._missing_providers(entry.name, latest)
-            if missing:
-                _log.warning("项目 %s 的 %s 不跟随通道版本 %s：需要的证据源提供方不可用（%s）",
-                             Path(root).name, entry.name, latest, "、".join(missing))
-                continue
             before = (entry.version, entry.sha256)
             entry.version, entry.sha256 = latest, self.repository.digest(entry.name, latest)
             if guarded and not self._plannable(lock):
@@ -205,14 +199,6 @@ class PackRuntime:
             changed.append(entry.name)
         migrated = self._migrate_split(lock)
         return (lock, changed) if changed or migrated else (None, [])
-
-    def _missing_providers(self, name: str, version: str) -> list[str]:
-        from ..flow import node_kinds
-
-        try:
-            return node_kinds.missing_providers(node_kinds.pack_nodes(self.repository, name, version))
-        except Exception:  # noqa: BLE001 - 节点声明坏了由装配检查报
-            return []
 
     def _plannable(self, lock: PackLock) -> bool:
         try:

@@ -231,7 +231,7 @@ def protocol_markdown(snapshot: dict) -> str:
 - 范围限定 `confine`（`flow.yaml` 顶层，可选）：`{{scope_file: <路径>}}`。范围文件合入主线、`status` 是 `active` 时，基线提交里有、`editable` 里没有的本体条目助手不能写也不能删，新增条目不限；范围文件只能在它所属节点的命令运行时写。一次装配最多一个包声明。
 - 触发 `activation`（`flow.yaml` 顶层，可选）：`{{event: materials_added, requires: [<本包探针>], session: <这一轮的状态文件>}}`。用户上传资料时前提成立就算触发，节点写 `visible_if: activated` 只在触发后、这一轮开着时出现，写 `preempt` 时下一步先推它；`session` 文件的 `status` 是 active 算这一轮开着，`covers`（确认时的主线提交）包含触发时的提交算处理过，基线（`baseline.commit`）之后发布过算这一轮结束。`confine` 加 `lock_on_activation: true`：触发后、范围确认前已有条目全部只读。
 - `autobuild: false`：自主构建跳过这个节点（要用户给输入才能做的节点）。
-- 节点类型 `kind`：`agent`（缺省）、`script`、`human`、`external`。
+- 节点类型 `kind`：`agent`（缺省）、`script`、`human`。
 - 面板分组 `section`：{_code(SECTIONS)}。
 - `stale_on`、`requires` 里的产物类别：{_code(KIND_DIRS)}。
 - `done` 能用本包的探针和基础建模能力的探针：{_code(snapshot['core']['probes'])}。
