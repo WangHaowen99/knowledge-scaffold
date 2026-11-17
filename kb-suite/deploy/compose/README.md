@@ -120,6 +120,8 @@ DA_TS_SRC=<DeepAnalyze 源码目录> DA_KB_FULL=1 DA_KB_TAG=full ./kbsuite.sh bu
 
 `deploy.env` 里写 `DA_KB_TAG=full` 和 `DA_KB_PG_IMAGE=kb-suite/da-kb-postgres:zhparser`，compose 就用这两个镜像；不写时用不带解析器的后端和原来的 paradedb 数据库。
 
+用完整版时还要在 `deploy.env` 里写 `DA_KB_EXTRA_FILE_TYPES=pdf,docx,pptx,doc,ppt`。DA 报告不出 docling 和 LibreOffice 能不能用，适配服务默认不声明这几种格式，知识库页上传时就选不了这些文件。
+
 `up-da-kb` 等 DA 建好库表后，把模型配置写进它的 `settings` 表（对话 `qwen-plus`，向量 `text-embedding-v4`），切换中文分词（`da-kb/zhparser.sql`），再重启一次。DA 只在启动时读模型配置，改了配置要重启；模型和解析设置也可以在知识库页的后端设置里改。
 
 - **认证**：DA 后端以 `DA_AUTH_MODE=none` 运行，只挂在 `da-kb` 网络上，这个网络里只有它的数据库和适配服务。
