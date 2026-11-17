@@ -210,6 +210,8 @@ WeKnora 发布的 docreader 镜像（09-24 版）不返回原文定位，main �
 
 **DA 怎么接 kb-service**：通过 Spring 的附加配置 `da/kbs-tools.yml`（`SPRING_CONFIG_ADDITIONAL_LOCATION`）重定义 `deepanalyze.tool-services`。其中 `base_url` 指向 kb-api，描述文件用上面生成的那份，`auth-headers` 里带 `KBS_DA_KEY`。DA 的 jar 和源码都不改。
 
+**文件与命令工具**：kb-suite 不部署 jiuwenbox 沙箱，compose 给 da-engine 设了 `OPENJIUWEN_SERVICE_EXTERNAL_SANDBOX_ENABLED=false`，和 DA-java 自己的参考部署一样：`write_file`、`edit_file`、`bash` 等在引擎容器的会话工作区（`/app/data/sessions/<会话>`）里执行，镜像自带 bash、Python 和 pandas。不设时引擎按沙箱模式启动，把这些工具都发给 `jiuwenbox-service:8321`，每次都失败（报错 `file system operation execution error`，原因为空）。本地模式没有沙箱的隔离：路径越出会话目录由 DA 的工作区守卫拒绝，命令首词要在白名单里，`bash` 每次都要用户确认。启动日志里 `da sysOperation configured mode=LOCAL` 即生效。
+
 **调用方式**：DA 的 `/api/agents/**` 要带三个请求头：`X-Engine-Secret`（取 `DA_ENGINE_SECRET`）、`X-Da-Tenant-Id: default`、`X-Da-Session-Id`；知识库范围放在请求体的 `scope.kbIds`。验证脚本：`python3 da/smoke.py "<问题>" [--tools kb_search]`，会打印工具调用和最终回答。
 
 **一个坑**：Java 的 HttpClient 发出的 POST 会带 `Upgrade: h2c` 请求头，uvicorn 默认的 httptools 实现会在协议层直接回 400。所以 kb-api 改用 `--http h11` 启动。

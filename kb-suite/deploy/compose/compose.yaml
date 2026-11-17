@@ -188,6 +188,10 @@ services:
       DA_SKILLS_LOCAL_DIR: /app/data/skills/local
       DA_WORKSPACE_ROOT: /app/data/sessions
       SKILLHUB_RUNTIME_ACCESS_ENABLED: "false"
+      # No jiuwenbox sandbox in kb-suite: file and command tools (write_file, edit_file, bash, ...) run in
+      # this container's session workspace, as in DA-java's own deploy/docker-compose.yml. Left on, the
+      # engine sends them to http://jiuwenbox-service:8321 and every one of them fails.
+      OPENJIUWEN_SERVICE_EXTERNAL_SANDBOX_ENABLED: "false"
       SPRING_CONFIG_ADDITIONAL_LOCATION: file:/app/config/kbs-tools.yml
     volumes:
       - da-data:/app/data
