@@ -10,10 +10,11 @@ export function isCustomAnswerOption(option) {
 
 export function buildQuestionSubmission(questions, selected = {}, custom = {}) {
   const entries = [];
+  const details = [];
   const missing = [];
   const seen = new Set();
   if (!Array.isArray(questions) || !questions.length) {
-    return { answers: {}, missing, invalid: true, error: '缺少有效的问题列表' };
+    return { answers: {}, answerDetails: {}, missing, invalid: true, error: '缺少有效的问题列表' };
   }
   for (const [index, question] of questions.entries()) {
     let error;
@@ -25,7 +26,7 @@ export function buildQuestionSubmission(questions, selected = {}, custom = {}) {
       question.options.some((option) => typeof option?.label !== 'string' || !option.label.trim()))) {
       error = `第 ${index + 1} 题的选项必须是带有非空 label 的对象列表`;
     }
-    if (error) return { answers: {}, missing: [], invalid: true, error };
+    if (error) return { answers: {}, answerDetails: {}, missing: [], invalid: true, error };
     seen.add(question.question);
     const labels = new Set((question.options || [])
       .filter((option) => !isCustomAnswerOption(option)).map((option) => option.label));
@@ -34,8 +35,13 @@ export function buildQuestionSubmission(questions, selected = {}, custom = {}) {
     const answer = question.multiSelect
       ? [...choices, ...(text ? [text] : [])].join(',')
       : text || choices[0] || '';
-    if (answer) entries.push([question.question, answer]);
-    else missing.push(index);
+    if (answer) {
+      entries.push([question.question, answer]);
+      details.push([question.question, {
+        selected_options: question.multiSelect ? choices : text ? [] : choices.slice(0, 1),
+        custom_text: text,
+      }]);
+    } else missing.push(index);
   }
-  return { answers: Object.fromEntries(entries), missing, invalid: false };
+  return { answers: Object.fromEntries(entries), answerDetails: Object.fromEntries(details), missing, invalid: false };
 }

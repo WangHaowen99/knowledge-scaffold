@@ -1279,9 +1279,9 @@ export default function ChatPane({
 
   const [localResolved, setLocalResolved] = useState(() => new Set());
 
-  const respondPermission = async (requestId, behavior, answers = null) => {
+  const respondPermission = async (requestId, behavior, answers = null, answerDetails = null) => {
     try {
-      await api.respondPermission(project.id, requestId, behavior, '', answers);
+      await api.respondPermission(project.id, requestId, behavior, '', answers, answerDetails);
     } catch (error) {
       if (error.status === 410 || error.status === 404) {
         if (answers) throw error;
@@ -1684,8 +1684,8 @@ export default function ChatPane({
                     resolved={item.resolved}
                     resolution={questionResolutions.get(item.content.request_id)}
                     trace={item.trace}
-                    onAnswer={(requestId, answers) =>
-                      respondPermission(requestId, 'allow', answers)
+                    onAnswer={(requestId, answers, answerDetails) =>
+                      respondPermission(requestId, 'allow', answers, answerDetails)
                     }
                     onReask={reaskQuestion}
                   />

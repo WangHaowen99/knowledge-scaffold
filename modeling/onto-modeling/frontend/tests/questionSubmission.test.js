@@ -49,14 +49,15 @@ test('普通提交错误仍展示具体原因并交由原卡保留答案供重�
 test('正常问答只提交权限答案，不发送普通消息', async () => {
   const h = responseHarness();
   const answers = { 合成问题: '合成答案' };
+  const details = { 合成问题: { selected_options: [], custom_text: '合成答案' } };
   h.context.api.respondPermission = async (...args) => {
-    assert.deepEqual(args, ['project_alpha', 'request_demo', 'allow', '', answers]);
+    assert.deepEqual(args, ['project_alpha', 'request_demo', 'allow', '', answers, details]);
   };
-  await h.respond('request_demo', 'allow', answers);
+  await h.respond('request_demo', 'allow', answers, details);
   assert.deepEqual(h.resolved, []);
 });
 
-test('普通消息和正常权限接口的请求契约保持不变', async () => {
+test('普通消息契约不变，权限接口兼容旧调用并支持可选选择结构', async () => {
   const originals = { fetch: globalThis.fetch, localStorage: globalThis.localStorage };
   const calls = [];
   globalThis.localStorage = { getItem: () => null };
@@ -67,11 +68,15 @@ test('普通消息和正常权限接口的请求契约保持不变', async () =>
   try {
     await api.sendMessage('project_alpha', '合成普通消息', 'default');
     await api.respondPermission('project_alpha', 'request_demo', 'allow', '', { 合成问题: '合成答案' });
+    const details = { 合成问题: { selected_options: [], custom_text: '合成答案' } };
+    await api.respondPermission('project_alpha', 'request_demo', 'allow', '', { 合成问题: '合成答案' }, details);
     assert.deepEqual(calls, [
       { path: '/api/projects/project_alpha/session/messages', method: 'POST',
         body: { text: '合成普通消息', conversation_id: 'default' } },
       { path: '/api/projects/project_alpha/session/permissions/request_demo', method: 'POST',
-        body: { behavior: 'allow', message: '', answers: { 合成问题: '合成答案' } } },
+        body: { behavior: 'allow', message: '', answers: { 合成问题: '合成答案' }, answer_details: null } },
+      { path: '/api/projects/project_alpha/session/permissions/request_demo', method: 'POST',
+        body: { behavior: 'allow', message: '', answers: { 合成问题: '合成答案' }, answer_details: details } },
     ]);
   } finally {
     Object.assign(globalThis, originals);

@@ -15,12 +15,14 @@ export default function QuestionCard({ req, resolved, resolution, onAnswer, onRe
   const inputs = useRef({});
   const cardId = useId();
   const submission = buildQuestionSubmission(questions, selected, custom);
-  const result = localResolution || resolution;
+  const savedResolution = resolved && resolution?.behavior !== 'expired' ? resolution : null;
+  const result = savedResolution || localResolution || resolution;
   const expired = result?.behavior === 'expired';
   const preserveDraft = expired && (Object.keys(selected).length > 0 || Object.keys(custom).length > 0);
   const closed = Boolean(localResolution) || resolved;
   const locked = closed || submitted;
   const recordedAnswers = result?.answers;
+  const recordedDetails = result?.answer_details;
   const stateLabel = result?.reason === 'timeout' ? '已超时'
     : result?.behavior === 'forwarded' ? '已补发'
     : result?.behavior === 'expired' ? '已失效'
@@ -59,8 +61,12 @@ export default function QuestionCard({ req, resolved, resolution, onAnswer, onRe
       inputs.current[submission.missing[0]]?.focus();
       return;
     }
-    await runSubmission(async () =>
-      await onAnswer(req.request_id, submission.answers) || { behavior: 'allow', answers: submission.answers });
+    await runSubmission(async () => {
+      const response = await onAnswer(req.request_id, submission.answers, submission.answerDetails);
+      return response || {
+        behavior: 'allow', answers: submission.answers, answer_details: submission.answerDetails,
+      };
+    });
   };
 
   const choose = (index, question, label) => {
@@ -105,6 +111,10 @@ export default function QuestionCard({ req, resolved, resolution, onAnswer, onRe
         const questionId = `${cardId}-${index}-question`;
         const recordedAnswer = Object.hasOwn(recordedAnswers || {}, question.question)
           ? recordedAnswers[question.question] : null;
+        const detail = Object.hasOwn(recordedDetails || {}, question.question)
+          ? recordedDetails[question.question] : null;
+        const recordedChoices = Array.isArray(detail?.selected_options) ? detail.selected_options : null;
+        const choices = closed && !preserveDraft ? recordedChoices || [] : selected[index] || [];
         return (
           <div key={index} className="question-item">
             <div id={questionId} className="question-text">
@@ -114,7 +124,7 @@ export default function QuestionCard({ req, resolved, resolution, onAnswer, onRe
             {hasOptions && (
               <div className="question-options" role="group" aria-labelledby={questionId}>
                 {options.map((option, optionIndex) => {
-                  const checked = (selected[index] || []).includes(option.label);
+                  const checked = choices.includes(option.label);
                   return (
                     <button
                       type="button"
@@ -138,6 +148,9 @@ export default function QuestionCard({ req, resolved, resolution, onAnswer, onRe
             )}
             {closed && !preserveDraft ? recordedAnswer != null && (
               <div className="qc-custom">
+                {hasOptions && !recordedChoices && (
+                  <span className="qc-history-note">此历史记录未保存选项状态，以下为原始回答。</span>
+                )}
                 <div className="question-answer">{recordedAnswer}</div>
               </div>
             ) : (

@@ -27,6 +27,7 @@ class PermissionBody(BaseModel):
     behavior: str  # allow | deny
     message: str = ""
     answers: dict | None = None  # AskUserQuestion 的选项答案（问题文本 → 选项文本）
+    answer_details: dict | None = None  # 回显选择状态，不传给引擎工具
 
 
 @router.get("/usage")
@@ -112,7 +113,7 @@ async def respond_permission(
 ):
     ensure_access(project_id, request, write=True)
     await manager.respond_permission(
-        project_id, request_id, body.behavior, body.message, body.answers
+        project_id, request_id, body.behavior, body.message, body.answers, body.answer_details
     )
     return {"ok": True}
 

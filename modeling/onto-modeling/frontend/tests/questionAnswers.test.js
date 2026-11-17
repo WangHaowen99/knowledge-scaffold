@@ -15,6 +15,12 @@ test('混合题提交全部真实答案，文字逐题绑定', () => {
     { 2: '  人工合成回答一  ', 3: '人工合成回答二' });
   assert.deepEqual(result, {
     answers: { 合成单选: '方案二', 合成多选: '渠道一,渠道二', 合成文字一: '人工合成回答一', 合成文字二: '人工合成回答二' },
+    answerDetails: {
+      合成单选: { selected_options: ['方案二'], custom_text: '' },
+      合成多选: { selected_options: ['渠道一', '渠道二'], custom_text: '' },
+      合成文字一: { selected_options: [], custom_text: '人工合成回答一' },
+      合成文字二: { selected_options: [], custom_text: '人工合成回答二' },
+    },
     missing: [], invalid: false,
   });
 });
@@ -32,6 +38,19 @@ test('自定义文字替代单选，且不会遗漏多选中的补充文字', ()
     { 0: ['方案一'], 1: ['渠道一'] }, { 0: '自定义方案', 1: '自定义渠道' });
   assert.deepEqual(result.answers, { 合成单选: '自定义方案', 合成多选: '渠道一,自定义渠道' });
   assert.deepEqual(result.missing, []);
+  assert.deepEqual(result.answerDetails, {
+    合成单选: { selected_options: [], custom_text: '自定义方案' },
+    合成多选: { selected_options: ['渠道一'], custom_text: '自定义渠道' },
+  });
+});
+
+test('结构化答案区分带逗号的选项和内容相同的自由文字', () => {
+  const list = [{ question: '合成多选', multiSelect: true, options: [{ label: '甲,乙' }] }];
+  const selected = buildQuestionSubmission(list, { 0: ['甲,乙'] });
+  const typed = buildQuestionSubmission(list, {}, { 0: '甲,乙' });
+  assert.deepEqual(selected.answers, typed.answers);
+  assert.deepEqual(selected.answerDetails.合成多选, { selected_options: ['甲,乙'], custom_text: '' });
+  assert.deepEqual(typed.answerDetails.合成多选, { selected_options: [], custom_text: '甲,乙' });
 });
 
 test('选项标签中的逗号保持完整，未知选项不作为有效答案', () => {

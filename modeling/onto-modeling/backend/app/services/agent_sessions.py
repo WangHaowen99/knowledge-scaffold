@@ -218,6 +218,42 @@ def _validate_question_answers(questions: Any, answers: Any) -> None:
         raise SessionError("请逐题选择选项或填写回答", 400)
 
 
+def _validate_answer_details(questions: list[dict], answers: dict, details: dict) -> dict:
+    """回显数据必须与工具实际收到的答案一致；旧客户端仍可仅提交字符串答案。"""
+    if not isinstance(details, dict) or set(details) != set(answers):
+        raise SessionError("答案回显信息不完整", 400)
+    normalized = {}
+    for question in questions:
+        key = question["question"]
+        detail = details[key]
+        if not isinstance(detail, dict):
+            raise SessionError("答案回显信息格式错误", 400)
+        choices = detail.get("selected_options")
+        text = detail.get("custom_text")
+        options = question.get("options") or []
+        if (
+            not isinstance(choices, list)
+            or not isinstance(text, str)
+            or not isinstance(options, list)
+        ):
+            raise SessionError("答案回显信息格式错误", 400)
+        if any(not isinstance(label, str) for label in choices):
+            raise SessionError("答案回显信息格式错误", 400)
+        labels = {option["label"] for option in options
+                  if isinstance(option, dict) and isinstance(option.get("label"), str)}
+        text = text.strip()
+        if len(set(choices)) != len(choices) or any(label not in labels for label in choices):
+            raise SessionError("答案包含无效选项", 400)
+        if not question.get("multiSelect"):
+            if len(choices) > 1 or (choices and text):
+                raise SessionError("单选答案只能选择一个选项或填写文字", 400)
+        answer = ",".join([*choices, *([text] if text else [])])
+        if not answer or answer != answers[key]:
+            raise SessionError("答案与回显信息不一致", 400)
+        normalized[key] = {"selected_options": list(choices), "custom_text": text}
+    return normalized
+
+
 @dataclass
 class PendingPermission:
     id: str
@@ -994,6 +1030,7 @@ class SessionManager:
         behavior: str,
         message: str = "",
         answers: dict | None = None,
+        answer_details: dict | None = None,
     ) -> None:
         session = self._sessions.get(project_id)
         if not session:
@@ -1004,14 +1041,18 @@ class SessionManager:
             raise SessionError("确认请求不存在或已处理", 410)
         if behavior == "allow":
             updated_input = None
+            details = None
             if request.tool_name == "AskUserQuestion":
                 _validate_question_answers(request.tool_input.get("questions"), answers)
+                if answer_details is not None:
+                    details = _validate_answer_details(request.tool_input["questions"], answers, answer_details)
             if answers:
                 # AskUserQuestion：答案经 updated_input.answers 回填（问题文本 → 选项文本）
                 updated_input = {**request.tool_input, "answers": answers}
-            request.future.set_result(
-                {"behavior": "allow", "updated_input": updated_input}
-            )
+            decision = {"behavior": "allow", "updated_input": updated_input}
+            if details is not None:
+                decision["answer_details"] = details
+            request.future.set_result(decision)
         else:
             request.future.set_result(
                 {"behavior": "deny", "message": message or "用户拒绝了该操作"}
@@ -1103,6 +1144,8 @@ class SessionManager:
             resolved_event["reason"] = "timeout"
         if tool_name == "AskUserQuestion" and decision.get("behavior") == "allow":
             resolved_event["answers"] = (decision.get("updated_input") or {}).get("answers", {})
+            if "answer_details" in decision:
+                resolved_event["answer_details"] = decision["answer_details"]
         session.broadcast(resolved_event)
         return decision
 

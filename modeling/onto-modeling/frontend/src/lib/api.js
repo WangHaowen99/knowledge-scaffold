@@ -673,10 +673,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ text, conversation_id: conversationId || null }),
     }),
-  respondPermission: (pid, requestId, behavior, message = '', answers = null) =>
+  respondPermission: (pid, requestId, behavior, message = '', answers = null, answerDetails = null) =>
     request(`/api/projects/${pid}/session/permissions/${requestId}`, {
       method: 'POST',
-      body: JSON.stringify({ behavior, message, answers }),
+      body: JSON.stringify({ behavior, message, answers, answer_details: answerDetails }),
     }),
   interrupt: (pid, conversationId) =>
     request(`/api/projects/${pid}/session/interrupt${conversationQuery(conversationId)}`, {
