@@ -595,26 +595,26 @@ Tell user:
 
 **校验全部完成。**{两三句话：修了哪些、跳过和没处理的还剩几条要用户定}"
 
-不列下一步菜单（界面的建议条会给出）。用户之后在对话里说「测试数据」「追踪」「交互模拟」「整体视图」「扫描候选」「代码生成」「增量对象」「增量逻辑」「补充资料分析」「再校验」，按下面的分支做；「再校验」从本命令 Step 0 重新开始。
+不列下一步菜单（界面的建议条会给出）。用户之后在对话里说「生成示例数据」「场景模拟」「交互模拟」「整体视图」「扫描脚本候选」「生成脚本」「提取对象」「提取操作」「追加资料分析」「校验」（和界面按钮同名），按下面的分支做；「校验」从本命令 Step 0 重新开始。
 
 > 锁已在小结前释放；下面分支里的 release 再调一次无害。
 
-**If user replies 测试数据:** release validate，然后 read `.claude/commands/ontology-mock.md`（场景模拟能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions.
+**If user replies 生成示例数据:** release validate，然后 read `.claude/commands/ontology-mock.md`（场景模拟能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions.
 
-**If user replies 追踪:** ask "要追踪哪个逻辑（如「创建订单」）？或回复 **全部** 追踪所有逻辑：". Then release validate 并 read `.claude/commands/ontology-trace.md`（场景模拟能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions with `ontology/operation/{用户说的逻辑}.md`（用户回复 **全部** 时传 `全部`）.
+**If user replies 场景模拟:** ask "要追踪哪个逻辑（如「创建订单」）？或回复 **全部** 追踪所有逻辑：". Then release validate 并 read `.claude/commands/ontology-trace.md`（场景模拟能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions with `ontology/operation/{用户说的逻辑}.md`（用户回复 **全部** 时传 `全部`）.
 
 **If user replies 交互模拟:** ask "要交互模拟哪个逻辑（如「创建订单」）？或回复 **选择** 让我列出所有逻辑：". Then release validate 并 read `.claude/commands/ontology-trace.md`（场景模拟能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow it with `交互 ontology/operation/{用户说的逻辑}.md`（如果用户回复 **选择**，传 `交互`）。
 
 **If user replies 整体视图:** release validate，然后 read `.claude/commands/ontology-overview.md` and follow its instructions.
 
-**If user replies 扫描候选:** release validate，然后 read `.claude/commands/ontology-codegen-scan.md`（代码生成与求解能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions.
+**If user replies 扫描脚本候选:** release validate，然后 read `.claude/commands/ontology-codegen-scan.md`（代码生成与求解能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions.
 
-**If user replies 代码生成:** release validate，然后 read `.claude/commands/ontology-codegen.md`（代码生成与求解能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions.
+**If user replies 生成脚本:** release validate，然后 read `.claude/commands/ontology-codegen.md`（代码生成与求解能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions.
 
-**If user replies 增量对象:** release validate，然后 Read `.claude/commands/ontology-extract-object.md` and follow its instructions with these overrides: MODE = incremental; collect EXISTING_FILES from current `ontology/object/` contents before dispatching the agent. After the agent returns its summary, say "增量对象完成，要再校验可以说「再校验」。" — 用户说再校验时 restart from Step 1 of this command.
+**If user replies 提取对象:** release validate，然后 Read `.claude/commands/ontology-extract-object.md` and follow its instructions with these overrides: MODE = incremental; collect EXISTING_FILES from current `ontology/object/` contents before dispatching the agent. After the agent returns its summary, say "对象已增量提取，要重新校验可以说「校验」。" — 用户说校验时 restart from Step 1 of this command.
 
-**If user replies 增量逻辑:** release validate，然后 Read `.claude/commands/ontology-extract-operation.md` and follow its instructions with these overrides: MODE = incremental; collect EXISTING_FILES from current `ontology/operation/` contents before dispatching the agent. After the agent returns its summary, say "增量逻辑完成，要再校验可以说「再校验」。" — 用户说再校验时 restart from Step 1 of this command.
+**If user replies 提取操作:** release validate，然后 Read `.claude/commands/ontology-extract-operation.md` and follow its instructions with these overrides: MODE = incremental; collect EXISTING_FILES from current `ontology/operation/` contents before dispatching the agent. After the agent returns its summary, say "操作已增量提取，要重新校验可以说「校验」。" — 用户说校验时 restart from Step 1 of this command.
 
-**If user replies 补充资料分析:** Ask: "请描述要补充的分析方向（例如：「XX子流程的逻辑细节」「YY对象的状态转换」「某个引用断裂的缺失实体」）：". Then release validate 并 read `.claude/commands/ontology-research.md` and follow it using **追加资料分析（append）mode** with the user's direction as FOCUS_DIRECTIONS; **skip research's Step 5 next-step prompt** (do not ask about running flowchart). After research completes, ask: "资料分析完成。要增量提取哪一类？回复 **对象**、**逻辑** 或 **否**。" — if object, follow `/ontology-extract-object` incremental; if operation, follow `/ontology-extract-operation` incremental; then say "增量提取完成，要再校验可以说「再校验」。" — 用户说再校验时 restart from Step 1.
+**If user replies 追加资料分析:** Ask: "请描述要补充的分析方向（例如：「XX子流程的逻辑细节」「YY对象的状态转换」「某个引用断裂的缺失实体」）：". Then release validate 并 read `.claude/commands/ontology-research.md` and follow it using **追加资料分析（append）mode** with the user's direction as FOCUS_DIRECTIONS; **skip research's Step 5 next-step prompt** (do not ask about running flowchart). After research completes, ask: "资料分析完成。要增量提取哪一类？回复 **对象**、**逻辑** 或 **否**。" — if object, follow `/ontology-extract-object` incremental; if operation, follow `/ontology-extract-operation` incremental; then say "增量提取完成，要重新校验可以说「校验」。" — 用户说校验时 restart from Step 1.
 
 **If user replies 完成:** `python3 .claude/scripts/state_helper.py release validate`，Stop.

@@ -6,7 +6,7 @@
 - **熔断**：运维把某个包的某个版本熔断（O-29）后，它的节点暂时跳过，它挡住的关卡解除——算状态前把这些节点的
   `blocks` 拿掉，算完标成已跳过；
 - **可补做**：项目已经越过了还没做的节点（插件节点后面的主线节点已经完成，或主线节点的产出已被后面完成的节点
-  用上，比如导入知识包后的资料分析），标 `backfill`，不计入进度的分母，下一步建议不推它；
+  用上，比如导入知识包后的资料分析），标 `backfill`，不计入进度的分母，下一步建议只在必需节点都做完后推它（第 4 级）；
 - **已停用**：锁文件里停用了的包（enabled=false），它的节点不在组装后的流程里、挡不住任何节点；产物保留，
   节点以「已停用」列出（不进进度、没有动作）。
 """
@@ -103,11 +103,11 @@ def progress_ids(flow: dict, hits: dict) -> set[str]:
 
 
 def first_open(flow: dict, hits: dict) -> dict | None:
-    """第一个要做的必需节点：没完成、也没被越过（导入预览的起点，与下一步建议第 9 条同一口径）。"""
+    """第一个要做的必需节点：没完成、也没被越过（导入预览的起点，与下一步建议第 3 级同一口径：`done` 为空的不算）。"""
     passed = backfill_ids(flow, hits)
 
     def open_required(node: dict) -> bool:
-        if need_kind(node) != REQUIRED:
+        if need_kind(node) != REQUIRED or not node.get("done"):
             return False
         return not hits.get(node["id"]) and node["id"] not in passed
 

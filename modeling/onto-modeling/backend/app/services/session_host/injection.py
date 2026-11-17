@@ -4,9 +4,9 @@
 原来收不到；Claude 的两个 hook 已退役）。注入三样东西：
 
 - 阶段提示：当前阶段、进行中的命令、最近报告（原 `session_start_hook.sh` 的内容，逐字一致）；
-- 统一「下一步」：与界面建议条（FL-02）同一份结果，助手回复末尾的「下一步建议」按它给。计算由
-  登记的提供方给（`register_next_step_provider`：在助手工作目录里跑 `state_helper suggest`，ADR-0048），
-  没登记时用 FL-02；
+- 统一「下一步」：与界面建议条（FL-02）同一份结果，仅供模型判断接下来该做什么，不在回复里列出（建议条会给，
+  和 INTERACTION_CONVENTIONS「不列下一步」一致）。计算由登记的提供方给（`register_next_step_provider`：在助手
+  工作目录里跑 `state_helper suggest`，ADR-0048），没登记时用 FL-02；
 - 包的提示规则（详设 5.6；ADR-0040、0045）：生效中的装配里各包声明的 `prompts`，按用户原话匹配，
   每条消息单独判断，探测的是用户原文，不是斜杠命令展开后的全文；没启用声明规则的包的项目不提示。规则由登记的数据源算
   （`register_prompt_hint_provider`，启动时在 `app/wiring.py` 登记；Jiuwen worker 进程自己登记一份）。
@@ -76,7 +76,7 @@ def next_step_hint(project_root: Path) -> str:
         target = f"（{command}）" if command.startswith("/") else ""
         parts.append(f"{item.get('label')}{target}")
     return (
-        "下一步建议（与界面上的建议按钮同一份；回复末尾给「下一步建议」时按这个顺序，最多 3 条）："
+        "下一步建议（与界面上的建议按钮同一份，仅供判断，不要在回复里列出）："
         + "；".join(parts) + "。"
     )
 

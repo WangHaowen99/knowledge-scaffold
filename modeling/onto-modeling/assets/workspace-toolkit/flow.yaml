@@ -13,7 +13,9 @@
 # 增量更新在上传了新资料时出现。建模蓝图（research/blueprint.json）只记统一叫法与待定问题。
 #
 # 节点什么时候要做只看 need（节点模型重构 2a）：required 上导航栏、计入进度；optional 挂在它前面最近的必需节点下面，
-# 可以跳过；{when: <内核条件>} 条件成立时才出现。主命令是 actions 里第一个动作（节点名、开始节点、自主构建都用它）。
+# 可以跳过；{when: <内核条件>} 条件成立时才出现。主命令是 actions 里第一个动作（开始节点、自主构建都用它）。
+# 节点名就是主命令名（节点模型重构 2b）：导航栏、全部命令、建议条、对话气泡、排队条、执行记录都叫这一个名字；
+# 其余动作是变体，名字单独拿出来也要看得懂（「追加资料分析」，不写「追加」）。
 #
 # 节点状态由后端按执行记录、变更集、产物指纹算（详设 6.6；方案 D13）。节点上与之相关的声明：
 # - produces：本节点的输出（组装时检查两节点不能声明同一路径）；writes：运行期间还会改、但不归它产出的路径；
@@ -68,11 +70,11 @@ nodes:
     done: [research_done]
     produces: ["research/*"]
     actions:
-      # 「追加分析」要已有资料分析报告
+      # 追加、核验都要已有资料分析报告
       - {label: 资料分析, command: "/ontology-research 仅基于本地文档 "}
-      - {label: 追加分析, command: "/ontology-research 追加", when: [research_report]}
-      # 报告挡着后续阶段时，这个入口排到最前
-      - {label: 核验报告, verify: true, command: "运行 python3 .claude/scripts/research_checker.py 核验资料分析报告，逐条列出错误项与来源位置"}
+      - {label: 追加资料分析, command: "/ontology-research 追加", when: [research_report]}
+      # 核验动作（verify）：节点已有产出、还没完成时排第一（报告没核验通过时先核验），其余时候不推
+      - {label: 核验资料分析报告, verify: true, when: [research_report], command: "运行 python3 .claude/scripts/research_checker.py 核验资料分析报告，逐条列出错误项与来源位置"}
   # 提取对象、提取操作（ADR-0012：规则、指标随操作提取一起抽，也会补对象的关联）。写入即查由每轮合入时的检查
   # 完成（ADR-0046；F3 起只提示不拦），不单独跑命令
   - id: core.object
@@ -107,7 +109,7 @@ nodes:
     actions:
       - {label: 增量更新, command: "/ontology-update "}
   - id: core.metric
-    title: 指标
+    title: 提取规则与指标
     kind: agent
     need: optional
     after: core.operation
@@ -130,10 +132,10 @@ nodes:
     # 过期后刷新（建议条、节点卡片、待处理、FL-05）发 `/ontology-validate <条目名…> --since <确认时提交前 12 位>`：
     # 条目名是确认之后新增、修改的 object/operation/rule/metric 文件名（去掉 .md），空格分隔，对应命令 Step 0.5
     # 的只查改动模式。删了条目、改了 ontology/logic/ 或非 .md 文件、只改了 index.md 时整条刷新；第一次校验、
-    # 点「运行质量检查」、在对话里要求校验照旧全量
+    # 点节点上的「校验」、在对话里要求校验照旧全量
     refresh_scope: changed_entries
     actions:
-      - {label: 运行质量检查, command: /ontology-validate}
+      - {label: 校验, command: /ontology-validate}
   # 发布（详设 6.8 新增）：主线终点，关卡都挂在它前面；就是发布页那套流程（PB-01～PB-03），不另写一套
   - id: core.publish
     title: 发布
@@ -143,7 +145,7 @@ nodes:
     done: [released]
     stale_on: [object, operation, rule, metric, script]
     actions:
-      - {label: 去发布, page: publish}
+      - {label: 发布, page: publish}
 
 # state_helper 的 8 级线性阶段（detect-stage 的输出）：命令模板按这些字面量分支，名字不能改。
 # 从低到高排列；判定时从高往低找第一个 when 全部满足的。
@@ -172,43 +174,44 @@ commands:
   impact: {requires: [对象已提取]}
   query: {requires: [对象已提取]}
 
-# /ontology 各阶段「下一步建议」的条目（state_helper.py next-step 原样输出，命令文档不再各写一份）
+# /ontology 各阶段「下一步建议」的条目（state_helper.py next-step 原样输出，命令文档不再各写一份）。
+# reply 用统一后的名字：节点的是节点名（主命令名），变体用变体名，和界面按钮一个叫法
 next_steps:
   未开始:
     - {reply: 资料分析, command: /ontology-research, text: 先做资料分析}
-    - {reply: 流程图, command: /ontology-flowchart, text: 直接创建流程图}
+    - {reply: 绘制流程图, command: /ontology-flowchart, text: 直接创建流程图}
     - {line: "或输入 `/ontology <领域名称>` 一键启动（如 `/ontology 电商`）"}
   资料分析待核验:
     - {reply: 修正, text: 按错误项修改报告后重新核验}
     - {reply: 人工确认, text: 你逐条给出结论，我据此补充报告再核验}
-    - {reply: 重新做资料分析, command: /ontology-research, text: 重做本轮资料分析}
+    - {reply: 资料分析, command: /ontology-research, text: 重做本轮资料分析}
     - {after: 验收通过前不建议提取对象：错误的字段或 ID 会被后续映射、规则与追溯继续沿用。}
   资料分析完成:
-    - {reply: 流程图, command: /ontology-flowchart, text: 创建业务流程图（流程复杂或多子流程交叉时推荐）}
+    - {reply: 绘制流程图, command: /ontology-flowchart, text: 创建业务流程图（流程复杂或多子流程交叉时推荐）}
     - {reply: 提取对象, command: /ontology-extract-object, text: 跳过流程图，直接从资料分析报告提取对象（概念清晰、流程线性时推荐）}
     - {reply: 追加资料分析, command: /ontology-research, text: 补充分析方向}
   流程图就绪:
     - {reply: 提取对象, command: /ontology-extract-object, text: 开始提取业务对象}
     - {reply: 校验流程图, command: /ontology-validate-diagrams, text: 先打磨流程图}
   对象已提取:
-    - {reply: 提取逻辑, command: /ontology-extract-operation, text: 提取业务逻辑}
+    - {reply: 提取操作, command: /ontology-extract-operation, text: 提取业务逻辑}
   逻辑已提取:
     - {reply: 校验, command: /ontology-validate, text: 开始校验}
-    - {reply: 规则与指标, command: /ontology-extract-rule-metric, text: 补抽规则/指标：有资料分析报告的项目在逻辑提取阶段已按分类分流，这里用于从存量 operation 文档与 object 属性规则列补抽遗漏（可选）}
+    - {reply: 提取规则与指标, command: /ontology-extract-rule-metric, text: 补抽规则/指标：有资料分析报告的项目在逻辑提取阶段已按分类分流，这里用于从存量 operation 文档与 object 属性规则列补抽遗漏（可选）}
     - {reply: 整体视图, command: /ontology-overview, text: 先看全局关系}
-    - {reply: 更新, command: /ontology-update, text: 按新的参考内容增量更新已有 ontology}
+    - {reply: 增量更新, command: /ontology-update, text: 按新的参考内容增量更新已有 ontology}
   校验待审阅:
-    - {reply: 继续校验, command: /ontology-validate, text: 继续处理问题清单}
+    - {reply: 校验, command: /ontology-validate, text: 继续处理问题清单}
   完成:
-    - {reply: 测试数据, command: /ontology-mock, text: 生成测试数据}
-    - {reply: 追踪, command: /ontology-trace, text: 场景追踪验证}
+    - {reply: 生成示例数据, command: /ontology-mock, text: 生成测试数据}
+    - {reply: 场景模拟, command: /ontology-trace, text: 场景追踪验证}
     - {reply: 交互模拟, command: /ontology-trace 交互, text: 逐个分支由你选方向，AI 辅助构造 testcase 和正常 mock 数据}
-    - {reply: 扫描候选, command: /ontology-codegen-scan, text: 看哪些逻辑适合转脚本（推荐先扫一遍）}
-    - {reply: 代码生成, command: /ontology-codegen, text: 生成 Python 代码}
+    - {reply: 扫描脚本候选, command: /ontology-codegen-scan, text: 看哪些逻辑适合转脚本（推荐先扫一遍）}
+    - {reply: 生成脚本, command: /ontology-codegen, text: 生成 Python 代码}
     - {reply: 整体视图, command: /ontology-overview, text: 查看对象/逻辑全局关系}
-    - {reply: 再校验, command: /ontology-validate, text: 重新校验}
-    - {reply: 更新, command: /ontology-update, text: 按新的参考内容更新已有 ontology}
-    - {reply: 补充对象, command: /ontology-extract-object, text: 增量补充对象}
-    - {reply: 补充逻辑, command: /ontology-extract-operation, text: 增量补充逻辑}
+    - {reply: 校验, command: /ontology-validate, text: 重新校验}
+    - {reply: 增量更新, command: /ontology-update, text: 按新的参考内容更新已有 ontology}
+    - {reply: 提取对象, command: /ontology-extract-object, text: 增量补充对象}
+    - {reply: 提取操作, command: /ontology-extract-operation, text: 增量补充逻辑}
     - {reply: 追加资料分析, command: /ontology-research, text: 追加资料分析}
     - {reply: 版本历史, command: /version, text: 查看历史}

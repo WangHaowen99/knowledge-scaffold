@@ -110,13 +110,15 @@ def test_stale_when_upstream_fingerprint_changes(env):
     built = view.build(root)
     model = next(item for item in built["nodes"] if item["id"] == "core.operation")
     assert model["state"] == "stale" and model["actions"][0]["kind"] == "refresh"
-    assert model["actions"][0]["label"] == "对象有变化，刷新提取操作"
+    # 过期的按钮也叫节点名（和建议条、全部命令一个叫法），哪类变了写在 reason
+    assert (model["actions"][0]["label"], model["actions"][0]["reason"]) == ("提取操作", "对象有变化")
     assert next(item for item in built["nodes"] if item["id"] == "core.object")["state"] == "confirmed"
     stale = [item for item in [built["suggestions"]["primary"], *built["suggestions"]["secondary"]]
              if item["id"].startswith("refresh:core.operation")]
     assert stale and stale[0]["priority"] == 2
     assert stale[0]["action"]["command"] == "/ontology-extract-operation"  # 刷新过期的节点
-    assert stale[0]["label"] == "对象有变化，刷新提取操作" and built["suggestions"]["note"] is None  # 写清哪类变了
+    # 按钮叫节点名，哪类变了写在说明行
+    assert stale[0]["label"] == "提取操作" and built["suggestions"]["note"] == stale[0]["reason"] == "对象有变化"
     # 重新跑过（这一轮合入）：按新的上游重记基线
     node_state.confirm(root, flow_model.load_for(root), ["core.operation"])
     assert states(root)["core.operation"] == "confirmed"

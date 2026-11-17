@@ -305,9 +305,13 @@ def node_of(record: dict, flow: dict | None = None) -> str | None:
 
 
 def start(project_id: str, conversation_id: str, *, root: Path, flow: dict, command: str, command_name: str,
-          engine_instance: str = "", task_id: str | None = None, text: str = "") -> dict:
+          engine_instance: str = "", task_id: str | None = None, text: str = "", label: str | None = None) -> dict:
+    """开一份执行记录。command_label 和对话气泡、排队条同一个名字：发消息时已经按名字表取好的（label）优先，
+    没有时按这条消息取（`names.py`，「/ontology-research 追加」叫追加资料分析）。"""
+    from ..flow import names
+
     node = _node(flow, (flow.get("commands") or {}).get(command_name, {}).get("node")) or {}
-    label = node.get("title") or command_name
+    label = label or names.lookup(flow, text or command) or node.get("title") or command_name
     now = time.time()
     record = {
         "id": f"ex-{uuid.uuid4().hex[:8]}",

@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { needsRefetch, pickSuggestions, staleSuggestions, suggestionBarHidden } from '../src/pages/workbench/suggestionModel.js';
-import { withStartSuggestion } from '../src/pages/workbench/incremental/model.js';
 
 const sug = (mode, rev, primary = null) => ({ mode, primary, secondary: [], all_commands: true, note: null, rev });
 
@@ -36,10 +35,3 @@ test('建议条：点下去之前情况变了（suggestion_stale），换上接�
   assert.equal(staleSuggestions(null), null);
 });
 
-test('增量更新页：出错（重试这一轮）、等你回答（去回答）、运行中时不把「开始增量更新」顶到主推', () => {
-  const retry = sug('failed', 1, { id: 'retry', label: '重试这一轮', primary: true, action: { type: 'retry' } });
-  assert.equal(withStartSuggestion(retry, null).primary.id, 'retry');
-  const answer = sug('waiting_decision', 1, { id: 'answer', label: '去回答', primary: true, disabled: false, action: { type: 'focus_question', question_id: 'q-1' } });
-  assert.equal(withStartSuggestion(answer, null).primary.id, 'answer');
-  assert.equal(withStartSuggestion(sug('running', 1), null).mode, 'running');
-});

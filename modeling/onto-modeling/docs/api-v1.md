@@ -1884,7 +1884,14 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `GET /api/v1/projects/{id}/commands/catalog` · 所有者 · 旧：— · 审计：否 · 依据：5.6（界面入口）、6.10（全部命令下拉） · 页面：chat-states（第 2 项）、全部工作台页（「全部命令」、⌘K）
 
 - 响应：`{groups: [{id, label, items: CommandItem[]}], total}`。
-- 按业务名分组，只列已启用包的命令。命令名只在 `command` 字段里，界面不显示。
+- 每个导航栏节点（必需节点）一组：`id` 是节点编号，`label` 是节点名，按导航顺序（节点模型重构 2b）。组内先列这个节点发到对话的
+  按钮（主命令在前，动作的 `when` 照样生效，节点钩子跟在后面），再列挂在它下面（FL-01 的 `under`）的可选、条件节点发到对话的按钮。
+  只列当前装配里装了的命令；同一条命令文本只列一次；没有按钮的节点不出组。
+- 跳页面的按钮（发布）不列。不在任何节点上的命令（整体视图、影响分析、查询、版本历史、`/ontology`、场景模拟的子文档
+  `/ontology-trace-batch` 等）不进菜单，也不设「其他」组；手动输入照样能发（S-20 认装了的全部命令）。
+- 条目：`label` 是按钮名（主命令叫节点名，和 FL-01 节点动作、建议条、对话气泡、排队条、执行记录同一个叫法）；`target` 是完整命令
+  文本（`/ontology-research 追加`），前端发 S-20 时拆成 `command`、`text` 并带 `display_label`；`node_id` 是按钮所在的节点；
+  `primary` 表示是这个节点的主命令；`command` 是命令名（`target` 的第一个词），界面不显示；`description` 恒为空串。
 
 #### S-19 页面命令任务
 
@@ -1902,16 +1909,19 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `action` | `{pack, page, action_id}` | 与 `command` 二选一 | 包页面声明里的按钮（详设 5.9.2 `actions`） |
-| `command` | string | 与 `action` 二选一 | 内核或包的命令名，如 `/ontology-trace-batch` |
+| `command` | string | 与 `action` 二选一 | 内核或包的命令名，如 `/ontology-trace-batch`；当前装配里装了的命令（`.claude/commands/<名>.md` 在）都能发，不在全部命令菜单里的也能发 |
 | `args` | object | 否 | 命令参数，如 `{scenario: "s-03"}`、`{report_item: "RI-12"}` |
 | `text` | string | 否 | 附带的自然语言说明 |
-| `display_label` | string | 否 | 页面上按钮的叫法（建议条、命令面板、快捷项）。给了时 `text` 当作动作自带的参数、不在对话里显示 |
-| `display_text` | string | 否 | 对话里显示的说明（F4b-paths）；不给时用 `text`（给了 `display_label` 时不用）。对话里显示「业务名 + 说明」：业务名是命令所属节点的标题加按钮叫法（叫法里已有节点标题时只写叫法），不出命令原文和 `args`，说明里的工作区路径换成业务名；自动标题也用它。发给助手的仍是命令、参数和 `text` 原文 |
+| `display_label` | string | 否 | 页面上按钮的叫法（建议条、命令面板、快捷项）。名字表认不出这条命令时才用作对话里的名字；给了时 `text` 当作动作自带的参数、不在对话里显示 |
+| `display_text` | string | 否 | 对话里显示的说明（F4b-paths）；不给时用 `text`（给了 `display_label` 时不用）。对话里显示「名字 + 说明」，不出命令原文和 `args`，说明里的工作区路径换成业务名；任务标题、自动标题、排队条、执行记录 `command_label` 用同一个名字。发给助手的仍是命令、参数和 `text` 原文 |
 | `origin` | `{page, label}` | 是 | 对话里显示「来自「场景模拟」页」用 |
 | `conversation_id` | string | 否 | 缺省：引擎当前绑定的对话，没有就取最近更新的一条 |
 | `replace` | bool | 否 | 同 S-07（F7） |
 | `from_suggestion` | bool | 否 | 同 S-07（F7） |
 
+- 名字（节点模型重构 2b，`flow/names.py`）：看 `command` 连同 `text` 的第一行，按顺序取，命中就停：动作文本完全匹配（动作文本后面
+  带参数也算，取最长的）→ 某个节点的主命令（取节点名）→ 变体（取变体名）→ 命令表里的节点（取节点名）→ `display_label` → 命令名。
+  用条件过滤之前的流程，没出现的增量更新也叫「增量更新」。手打的斜杠命令（S-07）按同一张表取名。
 - 响应 `202`：`{task: CommandTask, conversation_id, message_id: string|null, delivery: "immediate"|"next"|"queued", next: NextCommand|null}`。
   - 助手正在跑时命令由平台代存（`delivery="next"`，同 S-07），这一轮结束后开始；被替换的那条的页面命令任务记为 `cancelled`。
   - 对话里出现一条带 `origin` 的用户消息；
@@ -1957,13 +1967,15 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - `flow_hash`；
   - `nodes`：`FlowNode[]`；建模是提取对象 `core.object`、提取操作 `core.operation` 两个节点（节点模型重构 1）。
     每个节点带 `need`（什么时候要做：`"required"`、`"optional"` 或 `{when: <条件>}`）、`nav`（上不上导航栏，必需节点为 true）、
-    `under`（可选、条件节点挂在哪个必需节点下面：after 链上它前面最近的必需节点；必需节点为 null）（节点模型重构 2a）；
+    `under`（可选、条件节点挂在哪个必需节点下面：after 链上它前面最近的必需节点；必需节点为 null）（节点模型重构 2a）。
+    节点动作的 `label` 是按钮名：主命令叫节点名；过期时排在最前的 `kind: "refresh"` 那条也叫节点名，哪类变了写在它的 `reason`
+    （「对象有变化」）（节点模型重构 2b）；
   - `edges`；
   - `sections`：节点分组按 `need` 分：必需进「必经步骤」、可选进「可选步骤」、条件进「有需要时」；「发布前检查」为兼容留着，
     不再有节点（建模步骤抽屉已删除，前端不再用，ADR-0101）；
   - `progress`：`{done, total}`，只算必需节点，可补做的做完之前不算；项目卡片的 x/N 同一口径；
   - `slice_stages`、`slices`：恒为 `[]`（不再分段，字段只为兼容留着）；
-  - `suggestions`；
+  - `suggestions`：同 FL-02（推荐五级）；
   - `notices`：如「1 份新资料」；
   - `autobuild`：运行中时给运行控制。
 
@@ -1976,7 +1988,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
             "state": "confirmed", "flags": {"needs_review": false, "disabled": false, "backfill": false},
             "progress": null, "version": "core@1.4.2", "section": "required",
             "actions": [{"kind": "start", "label": "提取对象", "target": "/ontology-extract-object"}], "per_slice": false},
-           {"id": "core.metric", "title": "指标", "kind": "agent", "placement": "branch",
+           {"id": "core.metric", "title": "提取规则与指标", "kind": "agent", "placement": "branch",
             "need": "optional", "nav": false, "under": "core.operation",
             "state": "ready", "flags": {"needs_review": false, "disabled": false, "backfill": false},
             "progress": null, "version": "core@1.4.2", "section": "optional",
@@ -1995,21 +2007,29 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `GET /api/v1/projects/{id}/flow/suggestions` · 所有者 · 旧：— · 审计：否 · 依据：6.10、㊸（`state_helper suggest` 同源） · 页面：全部工作台页（建议条）、chat-states（第 18 项）
 
 - 查询参数：`conversation_id?`。
-- 响应：`Suggestions`。规则（F7，详设 6.10）：从上往下判，命中第一条就停；1 个主推，最多 2 个次选。
-  1. 这条对话在跑：`mode="running"`，不给建议；
-  2. 有等你回答的问题：`mode="waiting_decision"`，主推「去回答」（`focus_question`，可点）；
-  3. 这一轮出错：`mode="failed"`，主推「重试这一轮」（`retry`）；
-  4. 刚被打断且有执行记录：`mode="interrupted"`，主推「继续「命令名」」（`resume_exec`，能力升级时按新版重新做），次选「放弃这一步」（`abandon_exec`）；
-     这一轮结束了、命令没收尾时同样两项（主推发「继续」）；
-  5. 合入冲突：主推「处理冲突」，其余按 6～10 补齐；
-  6. 目标问题没答（F8）：主推「回答目标问题」，次选是主线下一步，不拦着开始建模（蓝图草案不用确认）；
-  7. 过期的节点：「对象有变化，刷新提取操作」——前半句是确认之后真变了的那几类（多于两类写「对象、操作等」；老记录按主线提交反查，还说不清时只写「刷新X」），后半句是节点名；必经的排在可选的前面，可选的（指标）后面的校验还会跑时交给校验、不单独推；
-  8. 报告里有待处理问题、挡住发布的关卡没过：继续校验或关卡的操作；
-  9. 主线下一个必经步骤；
-  10. 必经都做完：查看整体视图，次选扫描脚本候选、补做插件步骤。
-  - 自主构建运行中 `mode="autobuild_controls"`，返回运行控制，不推荐下一步。
-  - 能显示就能执行：每个条目的动作先过「此刻能不能执行」的检查（与接口收到 `from_suggestion` 请求时同一份），不能的不出现，整条规则没有能执行的就往下一条判。
-  - 第 3、4 条带说明行 `note`（主推的 `reason`），其余为 null（第 7 条的原因已经写在按钮上）。
+- 响应：`Suggestions`。规则（推荐五级，节点模型重构 2b；后端、助手副本 `state_helper suggest`、注入给模型的同一份）：从上往下判，
+  命中就停；1 个主推，最多 2 个次选。
+  1. 对话状态（`priority` 1）：
+     - 这条对话在跑：`mode="running"`，不给建议；自主构建运行中：`mode="autobuild_controls"`，返回运行控制；
+     - 有等你回答的问题：`mode="waiting_decision"`，主推「去回答」（`focus_question`），目标问题没答时次选「回答目标问题」；
+     - 这一轮出错：`mode="failed"`，主推「重试这一轮」（`retry`）；
+     - 刚被打断且有执行记录：`mode="interrupted"`，主推「继续「名字」」（`resume_exec`，能力升级时按新版重新做），次选「放弃这一步」；
+       这一轮结束了、命令没收尾时同样两项（主推发「继续」）；
+     - 合入冲突：只有「处理冲突」；
+     - 命令停下来等你在对话里打字回复：不给按钮，只有说明行；
+     - 只有目标问题没答：只有「回答目标问题」（`mode="normal"`）。
+  2. 条件已成立、没处理完的节点（`need: {when}`，条目的 `reason` 是出现的原因，如「上传了新资料」），以及过期、没交给下游核对的必需节点
+     （ADR-0090，说明行是哪类变了，如「对象有变化」），取流程里最靠前的一个；范围限定生效时不出过期项。选中的条件节点在跑时为空。
+  3. 第一个没做完的必需节点（`done` 为空、可补做的不算）；它在跑或待确认时建议条为空。
+  4. 必需节点都做完时：没做也没跳过的可选节点、过期且没交给下游核对的可选节点（说明行是哪类变了）、可补做的必需节点，取流程里最靠前的一个。
+  5. 不显示。
+  - 第 2～4 级一次只推一个节点：主推是节点主命令（按钮叫节点名，和全部命令、对话气泡同一个叫法），次选是同一节点的变体；
+    节点已有产出（`produces` 下有文件）、还没完成时，核验动作（`verify: true`）排第一。`done` 为空的节点判断不了做没做完，第 3、4 级不推
+    （条件节点做没做完由条件说了算）。条目的 `priority` 是所在的级。
+  - 不再有写死的「查看整体视图」「扫描脚本候选」「继续校验」，关卡规则、`preempt` 不再起作用。
+  - 能显示就能执行：每个条目的动作先过「此刻能不能执行」的检查（与接口收到 `from_suggestion` 请求时同一份），不能的不出现；
+    第 1 级整条没有能执行的往下判，第 2～4 级选中的节点没有能执行的条目时建议条为空（不越过它推后面的）。
+  - 说明行 `note`：出错、被打断、没收尾、等你打字回复，以及第 2 级和第 4 级的过期项（主推的 `reason`，哪类变了）；其余为 null。
   - 会话变为运行中、回到空闲、出现等你回答的问题、出错、打断时，对话流推新的一份（EC-53）；`rev` 递增，界面取 `rev` 大的那份。
 
 #### FL-03 跳过节点
@@ -2097,7 +2117,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `change_list` | 变更清单 | 增量更新的变更点清单 | `accept_points`、`rewrite_point`、`execute` |
 | `review` | 需复核 | 自主构建自动决定、节点升级、导入；`source` 分别为 `autobuild\|upgrade\|import` | `accept`、`rejudge`、`revert_slice` |
 | `suspension` | 挂起 | 自主构建挂起的问题 | `answer`、`use_generic` |
-| `stale` | 过期 | 节点状态；已交给后面已确认的核对节点的过期不列（和建议条第 7 条同一判定 `flow_state.handed_down`，ADR-0090） | `refresh`、`keep_stale` |
+| `stale` | 过期 | 节点状态；已交给后面已确认的核对节点的过期不列（和建议条推荐第 2、4 级同一判定 `flow_state.handed_down`，ADR-0090） | `refresh`、`keep_stale` |
 | `resumable` | 续跑 | 中断的执行；开始自主构建时交给运行收尾的不列（见 AB-04） | `resume`、`abandon` |
 | `report` | 报告待处理 | 某份报告里还没处理的条目，一份报告合成一项 | `send_to_assistant` |
 | `changeset_conflict` | 合入冲突 | 这一轮合入时和你的修改改到同一条（F3 起唯一会出现的变更集事项；没有「修改待确认」） | `resolve`、`discard`（撤回这一轮） |
@@ -4234,7 +4254,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | `decision` | 结构化决策卡（wb-l2、wb-materials 资料用途确认、inbox 决策） | `options[].consequence`；`options[].preview: DiffLine[]`（选中后卡内显示「选 X 会这样改」）；最后一项「其他，我来说」`allow_custom_on` | `S-11`；没选不能确认；键盘 1–4、↵ |
 | `branch` | 模拟分支选择卡（chat-states 第 7 项） | `scenario: ArtifactRef`、`context_text` | `S-11`，可带 `custom_text` |
 | `expert` | 请专家确认卡（chat-states 第 7 项、reports 专家裁决） | `options` 渲染为按钮，含 `dismiss` 型选项「不需要问这个」 | `S-11` |
-| `walkthrough` | 交互模拟卡（chat-states 第 20 项） | `scenario: ArtifactRef`、`inputs: [{name, value, type, source: "input"\|"example"}]`、`steps: [{n, label, text, ref: EntryRef\|null, source}]`、判断点 `prompt` | `S-11`；选择记进场景，下次批量验证按这条分支推演 |
+| `walkthrough` | 交互模拟卡（chat-states 第 20 项） | `scenario: ArtifactRef`、`inputs: [{name, value, type, source: "input"\|"example"}]`、`steps: [{n, label, text, ref: EntryRef\|null, source}]`、判断点 `prompt` | `S-11`；选择记进场景，下次场景模拟按这条分支推演 |
 | `collection` | 采集确认（已删除，ADR-0101） | — | — |
 | `confirm` | 一般的是 / 否确认 | 两个选项 | `S-11` |
 
@@ -4304,7 +4324,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 |---|---|---|
 | 0 产物卡一览：资料地图、建模蓝图、本步产出、流程图、变更点清单、运行报告 | EC-40/41：`material_map`、`blueprint`、`step_output`、`flowchart`、`change_list`、`run_report` | `R-07`、`BP-01`、`ST-04`、`AR-03`、`INC-01`、`AB-16` |
 | 1 会话切换菜单（新建、续聊、重命名、删除；运行中禁止） | EC-01、EP-21 | `S-01`～`S-04` |
-| 2 全部命令（按业务名分组） | — | `S-18`；选中后 `S-07` 或 `S-20` |
+| 2 全部命令（按导航栏节点分组） | — | `S-18`；选中后 `S-20`（发条目的 `target`） |
 | 3 运行中：子代理进度与打断 | EC-01、EC-20/21、EC-22 | `S-08` |
 | 4 打断之后（继续 / 从打断处继续 / 换个方向） | EC-05、EC-53（`mode="interrupted"`） | 继续：`S-07`；从打断处继续：`S-16`；换个方向：前端清空输入框 |
 | 5 中断续跑卡 | EC-40 `resume`、EP-09 | `S-16`、`S-17` |
@@ -4384,7 +4404,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | `schema` | 证据浏览器（已删除，ADR-0101） | — | — |
 | `publish` | 发布知识包 | `PB-01`～`PB-07`、`HB-05`～`HB-09`、`P-09`、`FL-05`（合规检查「去运行」）、`RP-06`（修完重新检查）、`V-01`（版本下拉） | EP-19、EP-01 |
 | `versions` | 版本历史与对比 | `V-01`～`V-08`、`F-06`、`F-03` | EP-05 |
-| `scenarios` | 场景模拟（插件） | `AR-01`、`AR-02`、`AR-03`、`AR-04`、`AR-05`、`AR-06`、`AR-07`、`AR-09`（类型 `trace.scenario`、`trace.mock`）、`S-20`（批量验证、交互模拟、补齐过期场景、按场景补生成、行内 ▶）、`S-19`、`CS-06`、`IN-01`（`pack=trace` 角标）、`PL-12` | EP-03、EP-06、EP-10 |
+| `scenarios` | 场景模拟（插件） | `AR-01`、`AR-02`、`AR-03`、`AR-04`、`AR-05`、`AR-06`、`AR-07`、`AR-09`（类型 `trace.scenario`、`trace.mock`）、`S-20`（场景模拟、交互模拟、补齐过期场景、按场景补生成、行内 ▶）、`S-19`、`CS-06`、`IN-01`（`pack=trace` 角标）、`PL-12` | EP-03、EP-06、EP-10 |
 | `knowledge` | 知识沉淀（插件，已删除，ADR-0101） | — | — |
 | `scripts` | 代码生成与求解（插件） | `SC-01`、`SC-02`、`SC-03`、`SV-01`～`SV-03`、`ST-04`（脚本只读预览）、`S-20`（扫描、生成脚本、修复、重新生成、按模板重新生成）、`S-19`、`CS-06` | EP-03、EP-06、EP-10 |
 | `proj-settings` | 项目设置 | `P-04`、`P-05`、`P-06`、`P-07`、`P-12`、`P-13`、`P-14`、`C-06`、`A-09`、`AB-01`、`AB-02`、`AB-03`、`AB-18`、`BP-01`（范围里的分段清单）、`PL-05`～`PL-11`、`M-01`～`M-04` | EP-08、EP-20 |
@@ -4955,9 +4975,11 @@ type ExecRecord = {
 };
 
 type CommandItem = {
-  id: string; label: string; description: string;
-  command: string;                // 不在界面显示
-  pack: string; node_id: string | null;
+  id: string; label: string; description: string;   // label 是按钮名（主命令叫节点名）；description 恒为空串
+  command: string;                // 命令名，不在界面显示
+  target: string;                 // 节点模型重构 2b：完整命令文本，如「/ontology-research 追加」
+  pack: string; node_id: string;  // 按钮所在的节点
+  primary: boolean;               // 节点模型重构 2b：是不是这个节点的主命令
   args_schema: object | null;
   available: boolean; unavailable_reason: string | null;
 };
@@ -5030,14 +5052,16 @@ type SuggestionAction =
   | { type: "clear_input" };
 
 type Suggestion = { id: string; label: string; icon?: string; primary: boolean; disabled: boolean;
-                    reason: string; priority: 1 | 2 | 3 | 4 | 5; action: SuggestionAction };
+                    reason: string;                // 说明（过期项是「对象有变化」这类）
+                    priority: 1 | 2 | 3 | 4 | 5;   // 推荐五级里所在的级
+                    action: SuggestionAction };
 
 type Suggestions = {
   mode: "normal" | "running" | "failed" | "interrupted" | "waiting_decision" | "autobuild_controls";   // F3 起没有 pending_confirm；历史里留下的前端不画「确认生效」
   primary: Suggestion | null;
   secondary: Suggestion[];        // 最多 2 个
   all_commands: true;             // 末尾固定有「全部命令」
-  note: string | null;            // F7：主推下面的一行说明（出错原因、能力升级后按新版从头做、上游哪里改过）
+  note: string | null;            // F7：主推下面的一行说明（出错原因、能力升级后按新版从头做、过期的节点哪类变了）
   rev: number;                    // F7：越大越新；F7 之前的历史记录没有，按 0 算
 };
 

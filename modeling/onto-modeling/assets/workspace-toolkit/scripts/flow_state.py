@@ -276,15 +276,28 @@ def next_step_lines(flow: dict, stage: str) -> list:
     return lines
 
 
-# ---- 统一下一步（详设 6.10；方案 D16）----
+# ---- 统一下一步（详设 6.10；方案 D16；节点模型重构 2b 推荐五级）----
 #
 # 后端（FL-01/FL-02、宿主注入）与 state_helper suggest 共用这一份：输入是节点状态（后端按执行记录、变更集、
 # 指纹算好，写进 `.onto/run/flow-state.json`）与上下文，输出契约 7.8 的 Suggestions。
+#
+# 从上往下判，命中就停：
+# 1. 对话状态：等回答（含目标问题）、出错、被打断、没收尾、合入冲突、命令等你打字回复；自主构建在跑时给运行控制；
+# 2. 条件已成立、没处理完的节点，以及过期且没交给下游核对的必需节点（ADR-0090），取流程里最靠前的一个；
+#    范围限定生效时（confine_active）不出过期项；过期项的说明行写哪类变了；
+# 3. 第一个没做完的必需节点；它在跑或待确认时建议条为空；
+# 4. 必需节点都做完时：没做也没跳过的可选节点、过期的可选节点、可补做的必需节点，取流程里最靠前的一个；
+# 5. 不显示。
+# 第 2～4 级一次只推一个节点：主推是节点主命令（叫节点名），次选是同一节点的变体，最多 2 个。节点已有产出、还没完成时，
+# 核验动作（verify）排第一。`done` 为空的节点判断不了做没做完，第 3、4 级不推（条件节点做没做完由条件说了算）。
 
 SUGGESTIONS_MAX = 3
-# 建议条判定的版本（F7 起按规则表从上往下判、带 check 与 note；8 起不认按段的节点，上下文里没有 slice_next、slice_stale）：
-# 后端只用支持这一版的 flow_state
-SUGGEST_RULES = 8
+# 建议条判定的版本（9 起按五级推荐判，一次只推一个节点，上下文多 produced）：后端只用支持这一版的 flow_state
+SUGGEST_RULES = 9
+
+# 条件 → 建议条上的说明（条件节点出现的原因）
+CONDITION_REASONS = {'materials_added': '上传了新资料'}
+_OPEN = ('running', 'pending_confirm')
 
 
 def _item(sid: str, label: str, action: dict, *, reason: str, priority: int, primary: bool = False,
@@ -297,18 +310,21 @@ def _item(sid: str, label: str, action: dict, *, reason: str, priority: int, pri
 
 
 def _send(command: str) -> dict:
+    """发到对话：斜杠命令带 command（走 S-20），别的文字（「核验资料分析报告」那句指令）只给 text（当普通消息发）。"""
+    if not command.strip().startswith('/'):
+        return {'type': 'send', 'text': command.strip()}
     return {'type': 'send', 'text': command, 'command': command.split()[0]}
 
 
 def _action(action: dict) -> dict:
-    """节点动作 → 建议的动作：命令发到对话，页面动作（如「去发布」）跳页。"""
+    """节点动作 → 建议的动作：命令发到对话，页面动作（如「发布」）跳页。"""
     if action.get('page'):
         return {'type': 'navigate', 'page': action['page']}
     return _send(action['command'])
 
 
 def action_shown(action: dict, probes: dict | None) -> bool:
-    """动作的 `when`（探针名列表，`!名字` 取反）都成立才出现，如「追加分析」要已有资料分析报告。
+    """动作的 `when`（探针名列表，`!名字` 取反）都成立才出现，如「追加资料分析」要已有资料分析报告。
     不知道结果的探针（没给 probes，或工作区里算不了的内核探针）不过滤。"""
     for name in action.get('when') or []:
         probe = str(name).lstrip('!')
@@ -317,27 +333,6 @@ def action_shown(action: dict, probes: dict | None) -> bool:
         if bool(probes[probe]) == str(name).startswith('!'):
             return False
     return True
-
-
-def _node_actions(node: dict, *, verify_first: bool = False, probes: dict | None = None) -> list:
-    actions = [action for action in node.get('actions') or []
-               if (action.get('command') or action.get('page')) and action_shown(action, probes)]
-    if verify_first:
-        actions = sorted(actions, key=lambda action: not action.get('verify'))
-    else:
-        # 「核验报告」只在报告挡着后续阶段时给：平时没有要核验的报告（F8 去掉「分段规划」后它会挤进前三个）
-        actions = [action for action in actions if not action.get('verify')]
-    return actions
-
-
-def _goal_items(flow: dict, nodes: list, states: dict, context: dict) -> list:
-    """6. 资料和建模目标对不上的那个问题没答：主推去回答，后面跟主线下一步——不拦着开始建模（F8，没回答按原目标建）。"""
-    if not (context.get('blueprint') or {}).get('goal_pending'):
-        return []
-    answer = _item('answer_goal', '回答目标问题',
-                   {'type': 'navigate', 'page': 'wb-blueprint', 'params': {'dialog': 'blueprint'}},
-                   reason='资料和建模目标对不上，先定以哪个为准', priority=4, icon='target')
-    return [answer, *_mainline_items(flow, nodes, states, context)]
 
 
 def _required_on_mainline(node: dict) -> bool:
@@ -379,7 +374,7 @@ def _checked_downstream(node: dict, stale_on: list, nodes: list, state_of: dict,
 
 
 def handed_down(node: dict, nodes: list, state_of: dict, slice_stale: list = ()) -> bool:
-    """过期的节点已经交给后面的核对节点（第 7 条不推刷新）时返回 True：可选的只要核对节点还会跑就算，必经的要核对节点
+    """过期的节点已经交给后面的核对节点（建议条不推它）时返回 True：可选的只要核对节点还会跑就算，必经的要核对节点
     已确认。待处理（服务端）用同一个判定，不列建议条不推的刷新——两边口径一致（ADR-0090）。
 
     slice_stale 是按段节点时的参数，签名留着让旧调用方照样能调，不再使用。"""
@@ -387,94 +382,55 @@ def handed_down(node: dict, nodes: list, state_of: dict, slice_stale: list = ())
     return _checked_downstream(node, list(node.get('stale_on') or []), nodes, state_of, states)
 
 
-def refresh_label(cause: str, title: str) -> str:
-    """过期步骤的按钮：「对象有变化，刷新校验」（cause 是确认之后变了的那几类）；说不清哪类变了时只写「刷新校验」。"""
-    return f"{cause}有变化，刷新{title}" if cause else f"刷新{title}"
+def stale_reason(cause: str) -> str:
+    """过期节点那一条的说明：「对象有变化」（cause 是确认之后变了的那几类）；说不清哪类变了时只说前面变了。"""
+    return f"{cause}有变化" if cause else '前面的内容有变化'
 
 
-REFRESH_REASON = '按改动后的内容重新做这一步'
+# ---- 节点已有产出（核验排第一用）----
 
 
-def _stale_items(nodes: list, state_of: dict, context: dict) -> list:
-    """7. 过期的节点：刷新；必经的排在可选的前面。
-
-    可选的（规则补抽、指标这类旁支）过期时，后面的核对节点（校验）还会跑就交给它，不单独推：可选步骤不是
-    正确性必需的，校验会查出缺的；单独推还会和建模来回兜圈子——指标补对象的关联让「操作」过期，重抽操作又让
-    指标过期（ADR-0090）。
-
-    范围限定生效时（限定范围的包这一轮进行中，ADR-0085）不出：改动的传播由那一轮的核对节点处理，整段重新提取
-    会去写范围外的条目、被守卫拦下。"""
-    if context.get('confine_active'):
-        return []
-    required, optional = [], []
-    upstream = context.get('stale_upstream') or {}
-    for node in nodes:
-        if state_of.get(node['id']) != 'stale':
+def _has_output(node: dict, root: Path) -> bool:
+    """节点 produces 声明的路径下有文件（隐藏文件、index.md 不算）。"""
+    for item in node.get('produces') or []:
+        pattern = str(item.get('path') if isinstance(item, dict) else item).strip('/')
+        parts = pattern.split('/')
+        fixed = []
+        for part in parts:
+            if any(ch in part for ch in '*?['):
+                break
+            fixed.append(part)
+        base = root.joinpath(*fixed) if fixed else root
+        if len(fixed) == len(parts):
+            if base.is_file() and _visible(base):
+                return True
             continue
-        lenient = need_kind(node) == 'optional'
-        if handed_down(node, nodes, state_of):
+        if not base.is_dir():
             continue
-        entry = primary_command(node)
-        scoped = ((context.get('stale_scope') or {}).get(node['id']) or {}).get('command')
-        if entry and isinstance(scoped, str) and scoped.split()[:1] == entry.split()[:1]:
-            entry = scoped  # 声明了刷新范围：只查确认之后改动的条目（后端算好的同一条命令）
-        if entry:
-            (optional if lenient else required).append(
-                _item(f"refresh:{node['id']}", refresh_label(upstream.get(node['id']) or '', node['title']),
-                      _send(entry), reason=REFRESH_REASON, priority=2, icon='refresh'))
-    return required + optional
+        for path in base.rglob('*'):
+            if not path.is_file() or not _visible(path) or any(
+                    part.startswith('.') for part in path.relative_to(base).parts):
+                continue
+            if fnmatch.fnmatch(path.relative_to(root).as_posix(), pattern):
+                return True
+    return False
 
 
-def _check_items(nodes: list, state_of: dict, context: dict) -> list:
-    """8. 报告里还有待处理的问题、挡住发布的关卡没通过：继续校验或关卡的操作。"""
-    out = []
-    if (context.get('stage') or '') == '校验待审阅' or context.get('report_pending'):
-        out.append(_item('core.validate', '继续校验', _send('/ontology-validate'),
-                         reason='报告里还有待处理的问题', priority=3))
-    for node in nodes:
-        if node.get('placement') == 'gate' and state_of.get(node['id']) in ('ready', 'not_ready') and node.get('blocks'):
-            for action in _node_actions(node, probes=context.get('probes'))[:1]:
-                out.append(_item(f"gate:{node['id']}", action['label'], _action(action),
-                                 reason='挡住发布的关卡还没通过', priority=3))
-    return out
+def produced(flow: dict, root: Path) -> list:
+    """带核验动作（`verify: true`）的节点里，工作区已经有产出的：给这些节点推荐时没完成就先核验（上下文 produced）。
+    只看带核验动作的节点，不扫整个工作区。"""
+    root = Path(root)
+    return [node['id'] for node in flow.get('nodes') or []
+            if any(isinstance(action, dict) and action.get('verify') for action in node.get('actions') or [])
+            and _has_output(node, root)]
 
 
-def _mainline_items(flow: dict, nodes: list, states: dict, context: dict) -> list:
-    """9、10. 主线下一步：第一个没完成的必经步骤；必经都做完时整体视图，再加扫描脚本候选、补做越过插入位置的插件步骤。"""
-    state_of = {node_id: (item or {}).get('state') for node_id, item in states.items()}
-    flags_of = {node_id: (item or {}).get('flags') or {} for node_id, item in states.items()}
-    stage = context.get('stage') or ''
-
-    def pending_required(node: dict) -> bool:
-        return (need_kind(node) == 'required'
-                and state_of.get(node['id']) not in ('confirmed', 'stale', 'skipped')
-                and not flags_of.get(node['id'], {}).get('backfill'))
-
-    required = [node for node in nodes if pending_required(node)]
-    out = []
-    if required:
-        current = required[0]
-        if state_of.get(current['id']) not in ('running', 'pending_confirm'):
-            actions = _node_actions(current, verify_first=stage == '资料分析待核验', probes=context.get('probes'))
-            for index, action in enumerate(actions[:SUGGESTIONS_MAX]):
-                out.append(_item(f"{current['id']}#{index}", action['label'], _action(action),
-                                 reason='下一步', priority=4))
-        return out
-    out.append(_item('overview', '查看整体视图', _send('/ontology-overview'), reason='必经步骤都已完成', priority=5))
-    available = flow.get('available_commands')
-    if available is None or 'ontology-codegen-scan' in available:
-        out.append(_item('codegen-scan', '扫描脚本候选', _send('/ontology-codegen-scan'),
-                         reason='可选步骤', priority=5))
-    for node in nodes:
-        if flags_of.get(node['id'], {}).get('backfill'):
-            for action in _node_actions(node, probes=context.get('probes'))[:1]:
-                out.append(_item(f"backfill:{node['id']}", f"补做「{node['title']}」", _action(action),
-                                 reason='可补做', priority=5))
-    return out
+# ---- 第 1 级：对话状态 ----
 
 
 def _session_rules(context: dict) -> list:
-    """2～4. 会话侧：等你回答的问题、这一轮出错、刚被打断（或没收尾）的那一步。按顺序 (mode, 条目, 要不要说明)。"""
+    """第 1 级，按顺序 (mode, 条目, 要不要说明)：等你回答（去回答、回答目标问题）、这一轮出错、刚被打断、没收尾、合入冲突。
+    命令等你打字回复、只有目标问题没答的两种在 suggest 里接着判。"""
     rules = []
     question = context.get('question')
     if question is None and context.get('waiting_decision'):
@@ -485,8 +441,9 @@ def _session_rules(context: dict) -> list:
         if question_id:
             action['question_id'] = question_id
         label = '去确认' if question.get('kind') == 'permission' else '去回答'
-        rules.append(('waiting_decision', [_item('answer', label, action, reason='有等你回答的问题', priority=1,
-                                                 icon='hand')], False))
+        answers = [_item('answer', label, action, reason='有等你回答的问题', priority=1, icon='hand')]
+        answers += _goal_items(context)
+        rules.append(('waiting_decision', answers, False))
     failed = context.get('failed')
     if failed is not None:
         rules.append(('failed', [_item('retry', '重试这一轮', {'type': 'retry'},
@@ -507,7 +464,21 @@ def _session_rules(context: dict) -> list:
         abandon = _item('abandon', '放弃这一步', {'type': 'abandon_exec', 'exec_id': unfinished['id']},
                         reason='已经保存的修改不回退', priority=1)
         rules.append(('normal', [cont, abandon], True))
+    changeset = context.get('changeset')
+    if changeset and changeset.get('state') == 'conflict':
+        # 一轮结束就合入，只有和你的修改冲突时停下来等你选（待处理）
+        rules.append(('normal', [_item('resolve', '处理冲突', {'type': 'navigate', 'page': 'inbox'},
+                                       reason='这一轮和你的修改有冲突', priority=1, icon='merge')], False))
     return rules
+
+
+def _goal_items(context: dict) -> list:
+    """资料和建模目标对不上的那个问题没答：去回答（F8 起没回答按原目标建，不拦着别的操作）。"""
+    if not (context.get('blueprint') or {}).get('goal_pending'):
+        return []
+    return [_item('answer_goal', '回答目标问题',
+                  {'type': 'navigate', 'page': 'wb-blueprint', 'params': {'dialog': 'blueprint'}},
+                  reason='资料和建模目标对不上，先定以哪个为准', priority=1, icon='target')]
 
 
 def _continue_reason(interrupted: dict) -> str:
@@ -521,27 +492,96 @@ def _continue_reason(interrupted: dict) -> str:
     return '，'.join(part for part in (f"从「{phase}」接着做" if phase else '从打断的地方接着做', kept) if part)
 
 
-def _flow_rules(flow: dict, states: dict, context: dict) -> list:
-    """6～10，按顺序：(规则号, 条目)。"""
+# ---- 第 2～4 级：按节点 ----
+
+
+def _primary(node: dict) -> dict | None:
+    """主命令：actions 里第一个带 command 或 page 的动作（同内核 need.primary_action）。"""
+    return next((item for item in node.get('actions') or []
+                 if isinstance(item, dict) and (item.get('command') or item.get('page'))), None)
+
+
+def _node_items(node: dict, context: dict, *, level: int, reason: str, state: str | None, stale: bool = False) -> list:
+    """一个节点的建议：主推是主命令（叫节点名），次选是变体；已有产出、没完成时核验动作排第一，其余时候不推核验。
+    过期的主命令声明了刷新范围时发只查改动条目的那条命令（后端算好放在 stale_scope）。"""
+    if state in _OPEN:
+        return []
+    probes = context.get('probes')
+    primary = _primary(node)
+    if primary is None:
+        return []
+    shown = [action for action in node.get('actions') or []
+             if isinstance(action, dict) and (action.get('command') or action.get('page')) and action_shown(action, probes)]
+    verify = [action for action in shown if action.get('verify') and action is not primary]
+    variants = [action for action in shown if not action.get('verify') and action is not primary]
+    head = [primary] if any(action is primary for action in shown) else []
+    verify_first = (not stale and state != 'confirmed' and node['id'] in (context.get('produced') or ()))
+    ordered = [*verify, *head, *variants] if verify_first else [*head, *variants]
+    out = []
+    for index, action in enumerate(ordered[:SUGGESTIONS_MAX]):
+        is_primary = action is primary
+        target = _action(action)
+        if is_primary and stale and target.get('command'):
+            scoped = ((context.get('stale_scope') or {}).get(node['id']) or {}).get('command')
+            if isinstance(scoped, str) and scoped.split()[:1] == [target['command']]:
+                target = _send(scoped)
+        label = str(node.get('title') or action.get('label') or '') if is_primary else str(action.get('label') or '')
+        sid = f"refresh:{node['id']}" if is_primary and stale else f"{node['id']}#{index}"
+        out.append(_item(sid, label, target, reason=reason, priority=level,
+                         icon='refresh' if is_primary and stale else None))
+    return out
+
+
+def _condition_reason(flow: dict, node: dict) -> str:
+    """条件节点为什么出现（条目的 reason）：按条件，按触发出现的看包声明的事件。旧写法 preempt 的说法不再用。"""
+    need = need_of(node)
+    condition = need.get('when') if isinstance(need, dict) else ''
+    if condition == 'activated':
+        condition = ((flow.get('activations') or {}).get(node.get('pack')) or {}).get('event') or condition
+    return CONDITION_REASONS.get(condition, '有新情况要处理')
+
+
+def _flow_levels(flow: dict, states: dict, context: dict):
+    """第 2～4 级：命中就返回 (条目, 要不要说明)；都没命中返回 None。条目为空表示命中了但此刻没有可推的（节点在跑）。"""
     nodes = [node for node in flow.get('nodes') or [] if node.get('id') in states]
     state_of = {node_id: (item or {}).get('state') for node_id, item in states.items()}
-    return [
-        (6, _goal_items(flow, nodes, states, context)),
-        (6.5, _preempt_items(nodes, state_of)),
-        (7, _stale_items(nodes, state_of, context)),
-        (8, _check_items(nodes, state_of, context)),
-        (9, _mainline_items(flow, nodes, states, context)),
-    ]
+    flags_of = {node_id: (item or {}).get('flags') or {} for node_id, item in states.items()}
+    causes = context.get('stale_upstream') or {}
+    confined = bool(context.get('confine_active'))
 
+    def stale_hit(node: dict) -> tuple:
+        reason = stale_reason(causes.get(node['id']) or '')
+        return _node_items(node, context, level=2 if _required_on_mainline(node) else 4, reason=reason,
+                           state='stale', stale=True), True
 
-def _preempt_items(nodes: list, state_of: dict) -> list:
-    """条件节点（`need: {when: …}`，如按触发出现的，ADR-0091）出现了、没做完：排在主线前面，没做完不推别的。
-    节点在 states 里就是出现了（条件不成立的不在流程里）。"""
+    # 第 2 级
     for node in nodes:
-        if need_kind(node) == 'when' and state_of.get(node['id']) in ('ready', 'not_ready', 'blocked'):
-            return [_item(f"{node['id']}#{index}", action['label'], _action(action), reason='下一步', priority=4)
-                    for index, action in enumerate(_node_actions(node)[:SUGGESTIONS_MAX])]
-    return []
+        state, kind = state_of.get(node['id']), need_kind(node)
+        if kind == 'when' and state not in ('confirmed', 'skipped'):
+            return _node_items(node, context, level=2, reason=_condition_reason(flow, node), state=state), False
+        if kind == 'required' and state == 'stale' and not confined and not handed_down(node, nodes, state_of):
+            return stale_hit(node)
+    # 第 3 级
+    for node in nodes:
+        state = state_of.get(node['id'])
+        if (need_kind(node) != 'required' or not node.get('done') or state in ('confirmed', 'stale', 'skipped')
+                or flags_of.get(node['id'], {}).get('backfill')):
+            continue
+        return _node_items(node, context, level=3, reason='下一步', state=state), False
+    # 第 4 级
+    for node in nodes:
+        state, kind = state_of.get(node['id']), need_kind(node)
+        if not node.get('done') or _primary(node) is None:
+            continue
+        if kind == 'optional' and state == 'stale':
+            if confined or handed_down(node, nodes, state_of):
+                continue
+            return stale_hit(node)
+        if kind == 'optional' and state in ('ready', 'not_ready', 'blocked'):
+            return _node_items(node, context, level=4, reason='可选步骤', state=state), False
+        if kind == 'required' and flags_of.get(node['id'], {}).get('backfill') and state in ('ready', 'not_ready'):
+            return _node_items(node, context, level=4, reason='可补做', state=state), False
+    return None
 
 
 def overlay_pending(flow: dict, states: dict, local_hits: dict, locked: set | None = None) -> dict:
@@ -561,30 +601,27 @@ def overlay_pending(flow: dict, states: dict, local_hits: dict, locked: set | No
 
 
 def suggest(flow: dict, states: dict, context: dict | None = None, check=None) -> dict:
-    """统一下一步（详设 6.10）：从上往下判，命中第一条就停；1 个主推、最多 2 个次选（契约 7.8 Suggestions）。
+    """统一下一步（详设 6.10；推荐五级见本节开头）：从上往下判，命中就停；1 个主推、最多 2 个次选（契约 7.8 Suggestions）。
 
-    1 运行中不显示；2 有等你回答的问题；3 这一轮出错；4 刚被打断（或没收尾）的那一步；5 合入冲突（其余按 6～10
-    补齐）；6 建模蓝图草案待确认；6.5 出现了的条件节点（need.when，如包触发后的步骤）；7 过期的步骤；8 报告待处理、关卡没过；9 主线下一个必经步骤；10 必经都做完。
-
-    check(action) → bool：这个动作此刻能不能执行（后端给，和接口校验同一份）；不能的条目不出现，整条规则没有
-    能执行的条目时往下一条判。不给时都算能执行（state_helper 在助手副本里算）。
+    check(action) → bool：这个动作此刻能不能执行（后端给，和接口校验同一份）；不能的条目不出现。第 1 级整条没有能执行的
+    往下判；第 2～4 级选中的节点没有能执行的条目时建议条为空（不越过它推后面的）。不给时都算能执行（state_helper 在助手副本里算）。
 
     context：
     - autobuild：自主构建在跑 → 运行控制；running：这条对话在跑；
     - question：等你回答的问题 {id, kind: question|permission}（旧写法 waiting_decision: True）；
+    - blueprint：建模蓝图 {state, where, next, goal_pending}，目标问题没答时给「回答目标问题」；
     - failed：这一轮出错 {reason}；
     - interrupted：刚被打断的执行 {id, label, mode: resume|rerun, why, saved_files, phase}；
     - unfinished：这一轮结束了、命令没收尾的执行 {id, label}；
     - changeset：当前的变更集 {id, state}：合入冲突时主推去待处理选保留哪边；
-    - stage：旧版线性阶段（资料分析待核验时核验排第一、校验待审阅时继续校验）；report_pending：报告有待处理项；
-    - blueprint：建模蓝图 {state: none|draft|confirmed, where: mainline|changeset, next, goal_pending}，目标问题没答时主推「回答目标问题」（F8 起草案不用确认）；
-    - stale_upstream：过期节点 → 上游的说法（「对象、操作」）；
-    - stale_scope：声明了 refresh_scope 的过期节点 → {since, names, command}，第 7 条的刷新发这条只查改动条目的命令
-      （`/ontology-validate 门店 受理申请 --since <提交>`）；没有这一项的照旧发整条主命令；
-    - probes：探针结果 {名字: bool}，按动作的 `when` 筛动作（不给时不筛）；
-    - confine_active：范围限定生效（限定范围的包这一轮进行中），这时第 7 条不出；
     - awaiting_reply：这条对话里的命令停下来等你在对话里回复（锁在命令声明的等回复阶段）{id, label}：这时不推别的命令
-      （点了会把命令丢在半路），只留一行说明。
+      （点了会把命令丢在半路），只留一行说明；
+    - stale_upstream：过期节点 → 确认之后变了的那几类的说法（「对象、操作」），写进那一条的说明；
+    - stale_scope：声明了 refresh_scope 的过期节点 → {since, names, command}：过期的主命令发这条只查改动条目的命令；
+    - probes：探针结果 {名字: bool}，按动作的 `when` 筛动作（不给时不筛）；
+    - produced：已有产出的节点编号（`produced()`），没完成时核验动作排第一；
+    - confine_active：范围限定生效（限定范围的包这一轮进行中），这时不推过期的节点；
+    - stage：旧版线性阶段，不再参与判定（写给助手的 flow-state.json 还带着）。
     """
     context = context or {}
     allowed = check or (lambda action: True)
@@ -602,26 +639,22 @@ def suggest(flow: dict, states: dict, context: dict | None = None, check=None) -
     for mode, items, explain in _session_rules(context):
         items = [item for item in items if allowed(item['action'])]
         if items:
+            if mode == 'waiting_decision' and items[0]['id'] != 'answer':
+                mode = 'normal'
             return _shaped(mode, items, explain)
-    rules = [(rule, [item for item in found if allowed(item['action'])])
-             for rule, found in _flow_rules(flow, states, context)]
-    changeset = context.get('changeset')
-    if changeset and changeset.get('state') == 'conflict':
-        # 一轮结束就合入，只有和你的修改冲突时停下来等你选（待处理）
-        resolve = _item('resolve', '处理冲突', {'type': 'navigate', 'page': 'inbox'},
-                        reason='这一轮和你的修改有冲突', priority=1, icon='merge')
-        rest = next((found for _rule, found in rules if found), [])
-        return _shaped('normal', [resolve, *rest], False)
     waiting = context.get('awaiting_reply')
     if waiting:
         label = (waiting.get('label') if isinstance(waiting, dict) else '') or ''
         return {'mode': 'normal', 'primary': None, 'secondary': [], 'all_commands': True,
                 'note': f"「{label}」在等你回复上面的问题" if label else '助手在等你回复上面的问题'}
-    for rule, found in rules:
-        if found:
-            # 过期那条按钮上已经写了哪类变了，不再另起一行说明
-            return _shaped('normal', found, False)
-    return _shaped('normal', [], False)
+    goal = [item for item in _goal_items(context) if allowed(item['action'])]
+    if goal:
+        return _shaped('normal', goal, False)
+    hit = _flow_levels(flow, states, context)
+    if hit is None:
+        return _shaped('normal', [], False)
+    items, explain = hit
+    return _shaped('normal', [item for item in items if allowed(item['action'])], explain)
 
 
 def _shaped(mode: str, items: list, explain: bool) -> dict:

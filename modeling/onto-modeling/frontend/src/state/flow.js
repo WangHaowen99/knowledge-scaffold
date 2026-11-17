@@ -122,6 +122,12 @@ export function commandFromTarget(target) {
   return { command: parts[0], ...(Object.keys(args).length ? { args } : {}), text: words.join(' ') };
 }
 
+// 全部命令（S-18）的条目 → S-20 请求体：发条目的完整命令文本（target，「/ontology-research 追加」），带上按钮名；
+// 对话里的名字由服务端按名字表取。老响应没有 target 时发命令名
+export function catalogCommand(item) {
+  return { ...commandFromTarget(item?.target || item?.command), display_label: item?.label || '' };
+}
+
 // 建议条的 send 动作 → S-20 请求体：建模的下一步给 command + args、text 为空串（contract-changes B4d 第 14 条），
 // 不把空 text 当正文；core 的 _send 给的是整段命令文本（如「/ontology-research phase=blueprint」），拆成 command / args / text
 export function suggestionCommand(action) {

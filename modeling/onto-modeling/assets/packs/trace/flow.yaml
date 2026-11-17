@@ -11,10 +11,16 @@ nodes:
     done: [testcase]
     stale_on: [object, operation]
     produces: ["ontology/testcase/*", "ext/trace/*", "ontology/data-mock/*"]
+    # 主命令和节点同名（场景模拟）；变体名单独拿出来也看得懂
     actions:
-      - {label: 批量验证, command: /ontology-trace 全部}
+      - {label: 场景模拟, command: /ontology-trace 全部}
       - {label: 交互模拟, command: /ontology-trace 交互}
       - {label: 生成示例数据, command: /ontology-mock}
+# 场景模拟页直接发 trace-batch、trace-single、trace-interactive（不经 /ontology-trace 路由）：都算场景模拟这一步。
+# 它们不取自己名字的命令锁（锁记在 trace 上），不写 lock_waits
 commands:
   mock: {node: trace.trace, requires: [对象已提取], lock_waits: [confirm]}
   trace: {node: trace.trace, requires: [逻辑已提取], lock_waits: [confirm]}
+  trace-batch: {node: trace.trace, requires: [逻辑已提取]}
+  trace-single: {node: trace.trace, requires: [逻辑已提取]}
+  trace-interactive: {node: trace.trace, requires: [逻辑已提取]}

@@ -5,9 +5,10 @@
   进度只算必需节点（`overlay.progress_ids`，项目列表同一口径）；
 - 节点状态由内核算（`flow/state.py`，方案 D13）：执行记录 + 变更集 + 产物指纹 → 8 种状态与需复核标记，
   完成判定只看主线；
-- 下一步建议由 core 的 `flow_state.suggest` 算（方案 D15、D16）：后端（FL-01/FL-02、对话里的建议条）、
-  宿主注入、助手命令收尾的 `state_helper.py suggest` 三处同一份算法、同一份输入——后端每算一次就把节点状态
-  与上下文写进助手副本的 `.onto/run/flow-state.json`，`state_helper suggest` 读它。
+- 下一步建议由 core 的 `flow_state.suggest` 算（方案 D15、D16；推荐五级，节点模型重构 2b）：后端（FL-01/FL-02、
+  对话里的建议条）、宿主注入、助手命令收尾的 `state_helper.py suggest` 三处同一份算法、同一份输入——后端每算一次
+  就把节点状态与上下文写进助手副本的 `.onto/run/flow-state.json`，`state_helper suggest` 读它；
+- 节点动作的名字：主命令叫节点名，过期时那一条也叫节点名，哪类变了写在 `reason`（`names.py` 同一个叫法）。
 
 建模拆成提取对象、提取操作两个节点，不再分段：`slice_stages`、`slices`、节点的 `per_slice` 只为兼容留着，恒为空。
 """
@@ -65,8 +66,8 @@ def _lock_alive(root: Path, command: str) -> bool:
 
 def _suggest_module(root: Path, state):
     """本项目锁定版本的 flow_state 支持这一版建议条判定（SUGGEST_RULES）就用它，旧 core 版本用镜像版本：
-    规则表、能否执行的检查与说明行（F7）三处要同一份，升级前的项目不能还按旧的判（旧版要按段的上下文才推建模）。"""
-    if getattr(state, "SUGGEST_RULES", 0) >= 8:
+    规则表、能否执行的检查与说明行（F7）三处要同一份，升级前的项目不能还按旧的判（9 起按推荐五级，一次只推一个节点）。"""
+    if getattr(state, "SUGGEST_RULES", 0) >= 9:
         return state
     from ..packs import contracts
 
@@ -332,6 +333,7 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     script_runs = node_kinds.last_runs(root)
     stale_upstream = _stale_upstream(flow, states, states)
     stale_scope = _stale_scope(root, flow, states)
+    suggester = _suggest_module(root, state)
     # F8 不再分段：蓝图草案不用确认，资料分析做完就是做完，不再停在「等你确认」
     nodes = []
     for node in flow.get("nodes") or []:
@@ -356,7 +358,8 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
             "actions": [] if item.get("broken") else _actions(node, item["state"], hooks.get(node["id"], []),
                                                               blueprint_draft=blueprint_context["state"] == "draft",
                                                               probes=probes, shown=getattr(state, "action_shown", None),
-                                                              cause=stale_upstream.get(node["id"], ""),
+                                                              reason=suggester.stale_reason(
+                                                                  stale_upstream.get(node["id"], "")),
                                                               refresh_target=(stale_scope.get(node["id"]) or {}).get(
                                                                   "command", "")),
             "hooks": [{key: hook[key] for key in ("id", "title", "when", "command", "pack")}
@@ -378,11 +381,12 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     }
     changeset = _changeset_context(root)
     simple_states = {node_id: {"state": item["state"], "flags": item["flags"]} for node_id, item in states.items()}
-    suggester = _suggest_module(root, state)
     suggest_stage = stage
     suggest_probes = probes
+    suggest_root = root
     if changeset and (copy / ".git").is_file():
         # 有没确认的变更集：下一步按助手副本里的样子算（和助手收尾时 state_helper suggest 看到的一样）
+        suggest_root = copy
         copy_probes = state.evaluate(flow, copy)
         suggest_stage = state.legacy_stage(flow, copy, copy_probes)
         suggest_probes = copy_probes
@@ -396,7 +400,9 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
                 node["display_state"] = node_state.display(changed, node["flags"])
     extra = dict(context or {})
     interrupted_exec = extra.pop("interrupted_exec", None)
-    suggest_context = {"stage": suggest_stage, "probes": suggest_probes, "changeset": changeset, "blueprint": blueprint_context,
+    suggest_context = {"stage": suggest_stage, "probes": suggest_probes,
+                       "produced": suggester.produced(flow, suggest_root),
+                       "changeset": changeset, "blueprint": blueprint_context,
                        "stale_upstream": _stale_upstream(flow, simple_states, states),
                        "stale_scope": stale_scope,
                        "confine_active": _confine_active(flow, root),
@@ -521,7 +527,7 @@ def _stale_scope(root: Path, flow: dict, states: dict) -> dict:
 
 
 def _actions(node: dict, state: str, hooks: list[dict] | None = None, *, blueprint_draft: bool = False,
-             probes: dict | None = None, shown=None, cause: str = "", refresh_target: str = "") -> list[dict]:
+             probes: dict | None = None, shown=None, reason: str = "", refresh_target: str = "") -> list[dict]:
 
     def offered(action: dict) -> bool:
         has_target = bool(action.get("command") or action.get("page"))
@@ -539,12 +545,12 @@ def _actions(node: dict, state: str, hooks: list[dict] | None = None, *, bluepri
              for hook in hooks or [] if hook.get("when") != "before"]
     actions = before + actions + after
     if state == "stale" and actions and actions[0]["target"].startswith("/"):
-        # 和建议条同一个说法：「对象有变化，刷新校验」；声明了刷新范围的只查改动条目（同一条命令），其余动作不变
+        # 和建议条同一个说法：按钮叫节点名，哪类变了写在 reason（「对象有变化」）；声明了刷新范围的只查改动条目
         target = actions[0]["target"]
         if refresh_target and refresh_target.split()[0] == target.split()[0]:
             target = refresh_target
-        actions = [{**actions[0], "kind": "refresh", "target": target,
-                    "label": f"{cause}有变化，刷新{node['title']}" if cause else f"刷新{node['title']}"}, *actions]
+        actions = [{**actions[0], "kind": "refresh", "target": target, "label": node["title"], "reason": reason},
+                   *actions]
     if node["id"] == "core.research" and blueprint_draft:
         actions = [{"kind": "confirm", "label": "去确认", "target": "wb-blueprint"}, *actions]
     if need_kind(node) == OPTIONAL:

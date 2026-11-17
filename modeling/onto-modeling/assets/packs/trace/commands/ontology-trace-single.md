@@ -248,9 +248,9 @@ Write the full trace results to the report file。报告**必须**包含以下�
 详细步骤见追踪报告；测试场景已保存，下次追踪自动复用。
 {有问题时补一句：哪些问题需要用户定}"
 
-不列下一步菜单（界面的建议条会给出）。用户之后在对话里说「修复」（逐条提出修改方案，同校验流程）、「再追踪」（改场景后重新执行）或「补充资料分析」，按下面的分支做。
+不列下一步菜单（界面的建议条会给出）。用户之后在对话里说「修复」（逐条提出修改方案，同校验流程）、「再追踪」（改场景后重新执行）或「追加资料分析」，按下面的分支做。
 
-**If user replies 补充资料分析:** Ask: "请描述要补充的分析方向（例如：「XX子流程的详细逻辑」「YY业务规则的边界条件」）：". Then `python3 .claude/scripts/state_helper.py release trace`，再 read `.claude/commands/ontology-research.md` and follow it using **追加资料分析（append）mode** with the user's direction as FOCUS_DIRECTIONS; **skip research's Step 5 next-step prompt**. After research completes, ask: "资料分析完成。要增量提取哪一类？回复 **对象**、**逻辑** 或 **否**。" — if object, read `.claude/commands/ontology-extract-object.md` and follow it using **incremental mode**; if operation, read `.claude/commands/ontology-extract-operation.md` and follow it using **incremental mode**. After extract summary, ask: "是否重新追踪？回复 **是** 或 **否**。" — if yes, restart this command from Step 1（restart 时新一轮 Step 0 会重新 acquire）.
+**If user replies 追加资料分析:** Ask: "请描述要补充的分析方向（例如：「XX子流程的详细逻辑」「YY业务规则的边界条件」）：". Then `python3 .claude/scripts/state_helper.py release trace`，再 read `.claude/commands/ontology-research.md` and follow it using **追加资料分析（append）mode** with the user's direction as FOCUS_DIRECTIONS; **skip research's Step 5 next-step prompt**. After research completes, ask: "资料分析完成。要增量提取哪一类？回复 **对象**、**逻辑** 或 **否**。" — if object, read `.claude/commands/ontology-extract-object.md` and follow it using **incremental mode**; if operation, read `.claude/commands/ontology-extract-operation.md` and follow it using **incremental mode**. After extract summary, ask: "是否重新追踪？回复 **是** 或 **否**。" — if yes, restart this command from Step 1（restart 时新一轮 Step 0 会重新 acquire）.
 
 **If user replies 完成:** `python3 .claude/scripts/state_helper.py release trace`，Stop.
 

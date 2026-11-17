@@ -6,7 +6,7 @@ import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, relativeTime } from '../../api/errors.js';
-import { commandNode, suggestionCommand, overlayRunning, trackClass, trackNodes } from '../../state/flow.js';
+import { catalogCommand, commandNode, suggestionCommand, overlayRunning, trackClass, trackNodes } from '../../state/flow.js';
 import { composerState, lockPop, readonlyInfo } from '../../state/readonly.js';
 import { rejectedResourceMessage, uploadRules, validateResourceFiles } from '../../lib/resourceUpload.js';
 import { runStatus } from '../../state/conversation.js';
@@ -237,7 +237,7 @@ function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCom
   };
   const runCommand = (c) => {
     setPop(null);
-    onCommand({ command: c.command, text: c.label, origin: { page: 'wb-l2', label: '全部命令' } });
+    onCommand({ ...catalogCommand(c), origin: { page: 'wb-l2', label: '全部命令' } });
   };
   // 有字就发送（运行中：文字插进这一轮，命令排在这一轮之后）；没字时运行中是停止、空闲时灰掉
   const mode = sendButtonMode({ canStop: !!onStop, hasContent: !!text.trim() || atts.length > 0, disabled: st.disabled || uploading });
@@ -424,7 +424,7 @@ export default function WorkbenchPage({ route }) {
   };
   const returnId = plugin ? null : returnTarget(list?.items, pluginReturn.get(window.sessionStorage, pid));
   const mainRef = useRef(null);
-  const inc = useIncremental({ route, target: incTarget, conv, state, flow, mainRef });
+  const inc = useIncremental({ route, target: incTarget, conv, state, mainRef });
   const headRef = useRef(null);
   const comp = useRef({});
   const rounds = useRef(new Map());
@@ -669,9 +669,8 @@ export default function WorkbenchPage({ route }) {
         }
         // F8 之前缓存下来的「确认蓝图」：蓝图不用确认了，自主构建直接走开始前预览，其余打开蓝图看一眼
         case 'confirm_blueprint': setMDialog(a.next === 'L4' ? { kind: 'build', next: 'L4' } : { kind: 'blueprint' }); break;
-        // 增量更新：确认清单并执行（INC-04）、开始增量更新
-        case 'execute_change_list':
-        case 'start_incremental': await inc.onAction(a); break;
+        // 增量更新：确认清单并执行（INC-04）
+        case 'execute_change_list': await inc.onAction(a); break;
         default: break;
       }
     } catch (e) {
@@ -706,11 +705,10 @@ export default function WorkbenchPage({ route }) {
   }, false);
   sendRef.current = send;
 
-  const picked = pickSuggestions(state.suggestions, suggestions);
-  const sug = inc.decorate(picked);
-  const sugHidden = suggestionBarHidden(picked, state.session.state);
+  const sug = pickSuggestions(state.suggestions, suggestions);
+  const sugHidden = suggestionBarHidden(sug, state.session.state);
   // 会话已经停下、手里那份还是「运行中」（推送丢了）：再取一份
-  const stuck = needsRefetch(picked, state.session.state);
+  const stuck = needsRefetch(sug, state.session.state);
   useEffect(() => { if (stuck) refetchSuggestions(); }, [stuck, refetchSuggestions]);
   // 对话正在跑的命令属于哪个节点（FL-01 commands）；服务端标出进行中之前，进度条先按它显示
   const runningCmd = ['running', 'connecting'].includes(state.session.state) ? lastUserText(state) : null;

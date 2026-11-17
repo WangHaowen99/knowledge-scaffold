@@ -15,7 +15,7 @@ nodes:
     produces:
       - {path: reports/sample-review-check.md, kind: report}
     actions:
-      - {label: 运行命名复核, command: /sample-review-run}
+      - {label: 复核对象命名, command: /sample-review-run}
   - id: sample-review.stats
     title: 统计对象文件
     kind: script

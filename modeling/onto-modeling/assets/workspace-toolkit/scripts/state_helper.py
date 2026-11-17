@@ -618,6 +618,7 @@ def suggest_payload() -> dict:
     # 内核探针（{kernel: …}）工作区里算不了，恒为否：不交给动作条件，按不知道处理
     context['probes'] = {name: hit for name, hit in probes.items()
                          if not (isinstance((flow.get('probes') or {}).get(name), dict) and flow['probes'][name].get('kernel'))}
+    context['produced'] = flow_state.produced(flow, root)
     _fill_missing(flow, states, hits)
     changed = _local_changes(str(data.get('mainline_head') or ''))
     flow_state.overlay_pending(flow, states, hits if changed else {}, _locked_nodes(flow))
@@ -628,7 +629,7 @@ def suggest_payload() -> dict:
 
 
 def suggest() -> int:
-    """输出 JSON（1 个主推，最多 2 个次选）；命令收尾按它渲染「下一步建议」，最多 3 条。"""
+    """输出 JSON（1 个主推，最多 2 个次选）：和界面建议条同一份，助手只拿来判断接下来该做什么，不在回复里列出。"""
     print(json.dumps(suggest_payload(), ensure_ascii=False))
     return 0
 

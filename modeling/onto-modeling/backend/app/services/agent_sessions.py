@@ -1050,7 +1050,7 @@ class SessionManager:
                 session.project_id, session.conversation_id, meta.get("display_text") or text
             )
         await asyncio.to_thread(turns.begin, session, text, task_id=meta.get("task_id"),
-                                resume_exec=meta.get("resume_exec"))
+                                resume_exec=meta.get("resume_exec"), label=meta.get("command_label"))
         session.turn = timeline.Turn.new(session.turn_title)
         session.last_prompt = text
         project_events.scope_changed(session.project_id)

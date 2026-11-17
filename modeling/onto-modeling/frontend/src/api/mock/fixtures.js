@@ -644,28 +644,35 @@ export function suggestionsInterrupted() {
   };
 }
 
+// S-18：每个导航栏节点一组（组名是节点名），组内先是本节点发到对话的按钮，再是挂在它下面的可选节点的按钮
 export function commandCatalog() {
-  const item = (id, label, description, command) => ({ id, label, description, command, pack: 'core', node_id: null, args_schema: null, available: true, unavailable_reason: null });
-  return {
-    groups: [
-      { id: 'model', label: '建模', items: [
-        item('guide', '引导式建模', '从头带你走一遍', '/ontology'),
-        item('research', '资料分析', '读全资料，统一叫法', '/ontology-research'),
-        item('objects', '提取对象', '从资料里抽出业务对象', '/ontology-extract-object'),
-        item('operations', '提取操作', '抽出业务流程和步骤', '/ontology-extract-operation'),
-        item('rules', '规则与指标', '抽出判断规则和统计口径', '/ontology-extract-rule-metric'),
-        item('check', '校验', '规则检查 + 语义检查', '/ontology-validate'),
-        item('incremental', '增量更新', '资料变了，只改受影响的部分', '/ontology-update'),
-      ] },
-      { id: 'optional', label: '可选能力', items: [
-        { ...item('trace', '场景模拟', '用样例推演，看结论对不对', '/ontology-trace'), pack: 'trace' },
-        { ...item('mock', '生成示例数据', '按场景需要生成', '/ontology-mock'), pack: 'trace' },
-        { ...item('flowchart', '画流程图', '创建或打磨业务流程图', '/ontology-flowchart'), pack: 'diagram' },
-        { ...item('scan', '扫描脚本候选', '找出适合写成脚本的操作', '/ontology-codegen-scan'), pack: 'codegen' },
-      ] },
-    ],
-    total: 22,
-  };
+  const item = (nodeId, index, label, target, pack = 'core', primary = index === 0) => ({
+    id: `${nodeId}#${index}`, label, description: '', command: target.split(' ')[0], target, pack, node_id: nodeId, primary,
+    args_schema: null, available: true, unavailable_reason: null,
+  });
+  const groups = [
+    { id: 'core.research', label: '资料分析', items: [
+      item('core.research', 0, '资料分析', '/ontology-research 仅基于本地文档'),
+      item('core.research', 1, '追加资料分析', '/ontology-research 追加'),
+      item('diagram.flowchart', 0, '绘制流程图', '/ontology-flowchart', 'diagram'),
+      item('diagram.flowchart', 1, '全量刷新流程图', '/ontology-flowchart 全量刷新', 'diagram'),
+      item('diagram.flowchart', 2, '校验流程图', '/ontology-validate-diagrams', 'diagram'),
+    ] },
+    { id: 'core.object', label: '提取对象', items: [item('core.object', 0, '提取对象', '/ontology-extract-object')] },
+    { id: 'core.operation', label: '提取操作', items: [
+      item('core.operation', 0, '提取操作', '/ontology-extract-operation'),
+      item('core.metric', 0, '提取规则与指标', '/ontology-extract-rule-metric'),
+    ] },
+    { id: 'core.validate', label: '校验', items: [item('core.validate', 0, '校验', '/ontology-validate')] },
+    { id: 'trace.trace', label: '场景模拟', items: [
+      item('trace.trace', 0, '场景模拟', '/ontology-trace 全部', 'trace'),
+      item('trace.trace', 1, '交互模拟', '/ontology-trace 交互', 'trace'),
+      item('trace.trace', 2, '生成示例数据', '/ontology-mock', 'trace'),
+      item('codegen.codegen', 0, '生成脚本', '/ontology-codegen', 'codegen'),
+      item('codegen.codegen', 1, '扫描脚本候选', '/ontology-codegen-scan', 'codegen'),
+    ] },
+  ];
+  return { groups, total: groups.reduce((n, g) => n + g.items.length, 0) };
 }
 
 // ---------- 导入 ----------

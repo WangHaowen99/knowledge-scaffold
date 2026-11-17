@@ -269,10 +269,10 @@ probes:
 | 字段 | 说明 |
 |---|---|
 | `id` | `<包名>.<名字>` |
-| `title` | 必填，面板上显示的名字，用动宾结构 |
+| `title` | 必填，节点名，用动宾结构。节点名就是主命令名：导航栏、全部命令、建议条、对话气泡都叫它，主命令的 `label` 装配时换成它 |
 | `kind` | `agent`、`script`、`human` |
 | `need` | 什么时候要做：`required`（缺省，上导航栏、计入进度、没做时推荐）、`optional`（挂在前面最近的必需节点下面，可以跳过，不计入进度）、`{when: activated}`（触发后才出现，见第 12 节） |
-| `actions` | 节点上的按钮 `[{label, command}]`；第一个是主命令，开始节点、自主构建都发它，`agent` 节点的主命令要是本包命令 |
+| `actions` | 节点上的按钮 `[{label, command}]`；第一个是主命令，开始节点、自主构建都发它，`agent` 节点的主命令要是本包命令。其余是变体，按钮名单独拿出来也要看得懂（写「追加资料分析」，不写「追加」），界面上不加节点名前缀 |
 | `after`、`before` | 挂载锚点，至少写一个 |
 | `display_after` | 只影响显示顺序 |
 | `blocks` | 被它挡住的节点，发布关卡写 `[core.publish]` |
@@ -356,7 +356,7 @@ nodes:
 
 **`autobuild: false`** 让自主构建跳过这个节点，用于要用户先给输入才能做的节点（上传的包不写也不进）。
 
-**动作的条件 `when`**（`actions` 里每一项可选）：探针名列表，`!名字` 取反，都成立时这个动作才出现在建议条和面板上，如 `{label: 追加分析, command: …, when: [research_report]}`。用到的探针要在本包或 core 的 `probes` 里声明。
+**动作的条件 `when`**（`actions` 里每一项可选）：探针名列表，`!名字` 取反，都成立时这个动作才出现在建议条和面板上，如 `{label: 追加资料分析, command: …, when: [research_report]}`。用到的探针要在本包或 core 的 `probes` 里声明。
 
 **`need: required` 不挡发布。** 上面的 `sample-review.check` 挂在 `core.validate` 之后，和场景模拟并列；没做完时发布照样可以进行。要挡发布必须写 `blocks`。
 

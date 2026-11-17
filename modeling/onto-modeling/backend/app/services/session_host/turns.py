@@ -76,9 +76,10 @@ def publish_exec(project_id: str, record: dict, root: Path | None, flow: dict | 
 # ---------------------------------------------------------------------------
 
 
-def begin(session, text: str, *, task_id: str | None = None, resume_exec: str | None = None) -> None:
+def begin(session, text: str, *, task_id: str | None = None, resume_exec: str | None = None,
+          label: str | None = None) -> None:
     """消息开始交给引擎时：斜杠命令开一份执行记录；普通消息接着这条对话里等待中的执行；
-    续跑（S-16）接着原来那份记录。"""
+    续跑（S-16）接着原来那份记录。label：发消息时取好的命令名字（气泡、排队条用的那个），执行记录照用。"""
     if getattr(session, "kind", "chat") == "plugin":
         # 插件对话（ADR-0087）不跑建模命令：不建执行记录、不取命令锁，斜杠命令按普通消息交给引擎
         session.exec_id = None
@@ -87,7 +88,7 @@ def begin(session, text: str, *, task_id: str | None = None, resume_exec: str | 
     if resume_exec:
         _safe("续跑执行记录", _resume, session, resume_exec)
     else:
-        _safe("开始执行记录", _begin, session, text, task_id)
+        _safe("开始执行记录", _begin, session, text, task_id, label)
     title = ""
     if session.exec_id:
         record = exec_records.get(session.project_id, session.exec_id)
@@ -97,7 +98,7 @@ def begin(session, text: str, *, task_id: str | None = None, resume_exec: str | 
         _safe("任务开始", command_tasks.start_running, session.project_id, task_id)
 
 
-def _begin(session, text: str, task_id: str | None) -> None:
+def _begin(session, text: str, task_id: str | None, label: str | None = None) -> None:
     root = session.cwd
     flow = _flow(root)
     parsed = exec_records.parse_command(text, flow)
@@ -108,7 +109,7 @@ def _begin(session, text: str, task_id: str | None) -> None:
         slash, name = parsed
         record = exec_records.start(session.project_id, session.conversation_id, root=root, flow=flow,
                                     command=slash, command_name=name, engine_instance=session.engine_instance,
-                                    task_id=task_id, text=text)
+                                    task_id=task_id, text=text, label=label)
         if getattr(session, "run_id", None):
             # 自主构建的一步（契约 ExecRecord.run_id）：重启后由运行器续跑，不放续跑卡、不进待处理
             record = exec_records.update(session.project_id, record["id"], run_id=session.run_id) or record

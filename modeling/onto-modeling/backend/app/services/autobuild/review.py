@@ -144,12 +144,14 @@ def _command_for(run: dict, unit_ref: dict, step_id: str | None) -> str:
 
 async def send_command(project_id: str, run: dict, line: str, text: str, origin: dict, title: str,
                        *, task_id: str | None = None) -> dict:
-    """往运行对话发一条命令（S-20 同样的任务对象）；运行结束之后才用。"""
+    """往运行对话发一条命令（S-20 同样的任务对象）；运行结束之后才用。排队条、执行记录用名字表取的名字（`names.py`）。"""
     from .. import agent_sessions
+    from ..flow import names
     from ..session_host import command_tasks
 
     name = line.split()[0]
     conversation_id = run["conversation_id"]
+    root = _ws().project_root(project_id)
     task = command_tasks.get(project_id, task_id) if task_id else None
     if task is None:
         task = command_tasks.create(project_id, origin=origin, title=title, conversation_id=conversation_id,
@@ -157,9 +159,9 @@ async def send_command(project_id: str, run: dict, line: str, text: str, origin:
     prompt = f"{line}\n\n{text}"
     meta = {"display_text": prompt, "origin": {"kind": "inbox", "page": origin["page"], "label": origin["label"],
                                                "task_id": task["task_id"]},
-            "task_id": task["task_id"], "command": name}
+            "task_id": task["task_id"], "command": name, "command_label": names.name_at(root, line)}
     try:
-        await agent_sessions.manager.send(project_id, _ws().project_root(project_id), prompt, conversation_id,
+        await agent_sessions.manager.send(project_id, root, prompt, conversation_id,
                                           username=run.get("owner") or "", meta=meta)
     except Exception:
         command_tasks.update(project_id, task["task_id"], state="failed", result={"summary": "没能发到对话里", "refs": []})

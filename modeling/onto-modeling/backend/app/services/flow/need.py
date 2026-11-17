@@ -17,6 +17,8 @@
 旧脚本还读 placement、section、optional、progress、visible_if、preempt、entry。
 
 主命令是 actions 里第一个带 command 或 page 的动作；`entry` 只做兼容，没有这样的动作时由它补一个，缺省时取主命令。
+节点名就是主命令名（节点模型重构 2b）：主命令的 label 和节点 title 不一样时以 title 为准，导航栏、全部命令、建议条、
+对话气泡、排队条、执行记录都叫这一个名字（`names.py`）。
 第三方包（不是镜像内置入库、也不是 core）的节点没写 autobuild 时装配成 `autobuild: false`。
 
 只用标准库：插件开发 skill 的离线检查器原样带着这个文件（`packs/dev_skill.CHECKER_SOURCES`）。
@@ -150,7 +152,17 @@ def normalize_node(node: dict, *, trusted: bool = True) -> dict:
         out["actions"] = [{"label": str(out.get("title") or entry), "command": entry}, *(out.get("actions") or [])]
     if not entry and primary_command(out):
         out["entry"] = {"command": primary_command(out)}
+    _title_primary(out)
     return out
+
+
+def _title_primary(node: dict) -> None:
+    """主命令的叫法换成节点名（不改原来的动作映射，换一份新的）。"""
+    title = str(node.get("title") or "").strip()
+    action = primary_action(node)
+    if not title or action is None or action.get("label") == title:
+        return
+    node["actions"] = [{**item, "label": title} if item is action else item for item in node["actions"]]
 
 
 def _keep_or(node: dict, key: str, allowed: tuple, default: str) -> None:

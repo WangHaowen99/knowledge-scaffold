@@ -172,8 +172,11 @@ def test_primary_command_is_the_first_action_and_entry_is_only_compat():
                                              {"label": "第二", "command": "/x-other"}]))
     assert need.primary_command(node) == "/x-run 全部"
     assert node["entry"] == {"command": "/x-run 全部"}  # 旧脚本读的 entry 缺省取主命令
+    # 节点名就是主命令名（节点模型重构 2b）：主命令的叫法换成节点名，变体不动
+    assert [action["label"] for action in node["actions"]] == ["说明", "合成节点", "第二"]
     page = need.normalize_node(_node(actions=[{"label": "去发布", "page": "publish"}, {"label": "x", "command": "/x"}]))
     assert need.primary_command(page) == "" and "entry" not in page
+    assert [action["label"] for action in page["actions"]] == ["合成节点", "x"]
     # 只写了 entry 的老节点：入口补成第一个动作
     old = need.normalize_node(_node(actions=[], entry={"command": "/x-old"}))
     assert old["actions"] == [{"label": "合成节点", "command": "/x-old"}]
@@ -207,7 +210,7 @@ def test_core_and_official_packs_declare_need_only():
     for name in ("trace", "diagram", "codegen", "domain-extend"):
         manifest = yaml.safe_load((ASSETS / "packs" / name / "manifest.yaml").read_text(encoding="utf-8"))
         assert manifest["depends"] == {"core": ">=0.6"}
-    assert yaml.safe_load((TOOLKIT / "manifest.yaml").read_text(encoding="utf-8"))["version"] == "0.6.0"
+    assert yaml.safe_load((TOOLKIT / "manifest.yaml").read_text(encoding="utf-8"))["version"] == "0.6.1"
 
 
 def test_update_stays_hidden_until_its_condition_exists(tmp_path):

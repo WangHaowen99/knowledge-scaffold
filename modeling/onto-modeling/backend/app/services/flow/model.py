@@ -58,6 +58,11 @@ def load_for(root: Path) -> dict:
     return conditions.apply(_assembled(root), root)
 
 
+def assembled_for(root: Path) -> dict:
+    """本项目装配的主流程，条件不成立的节点也在（取名字用：手打隐藏节点的命令也认得出，`names.py`）。"""
+    return _assembled(root)
+
+
 def _assembled(root: Path) -> dict:
     link = Path(root) / ".claude"
     if os.path.lexists(link):

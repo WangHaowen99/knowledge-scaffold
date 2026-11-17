@@ -1,5 +1,5 @@
 // 场景模拟（插件页，设计稿 scenarios）：场景列表（trace.scenario）、示例数据（trace.mock）、推演通过率。
-// 插件页只发命令、不跑助手（详设 5.9.3）：批量验证、交互模拟、补齐过期场景、按场景补生成、行内 ▶ 都发 S-20，
+// 插件页只发命令、不跑助手（详设 5.9.3）：场景模拟、交互模拟、补齐过期场景、按场景补生成、行内 ▶ 都发 S-20，
 // 页面显示进度条和「去对话里看」，跑完结果回到列表（artifacts.updated）。
 // 写入范围只读两态：助手运行中 / 修改待确认时，锁里的场景只读（行上带锁，详情里编辑、删除停用）。
 // 地址参数：?key=<场景 key> 定位并高亮那一行（Studio、报告页跳过来）；?tab=md 打开「示例数据」页签。
@@ -141,7 +141,7 @@ function Scenarios({ route }) {
             <ExtraActions page="scenarios" tasks={tasks} />
             <SendButton tasks={tasks} {...refresh} icon="refresh" kind="soft" disabled={!stale.length}>补齐过期场景 {stale.length}</SendButton>
             <SendButton tasks={tasks} command={headWalk?.command} args={headWalk?.args} text={headWalk?.text} icon="hand" disabled={!headWalk}>交互模拟</SendButton>
-            <SendButton tasks={tasks} {...batch} kind="primary" icon="play" disabled={!all.length}>批量验证</SendButton>
+            <SendButton tasks={tasks} {...batch} kind="primary" icon="play" disabled={!all.length}>场景模拟</SendButton>
           </>
         )}
       />

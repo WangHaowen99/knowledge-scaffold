@@ -83,6 +83,10 @@ def _labels(built: dict) -> list[str]:
     return [item["label"] for item in [built["suggestions"]["primary"], *built["suggestions"]["secondary"]] if item]
 
 
+def _ids(built: dict) -> list[str]:
+    return [item["id"] for item in [built["suggestions"]["primary"], *built["suggestions"]["secondary"]] if item]
+
+
 # ---------------------------------------------------------------------------
 # 流程形状与装配
 # ---------------------------------------------------------------------------
@@ -172,7 +176,7 @@ def test_flow_api_shape_for_a_new_project(env):
     assert built["commands"]["extract-operation"] == "core.operation"
     assert built["commands"]["extract-rule-metric"] == "core.metric"
     publish = _node(built, "core.publish")
-    assert publish["actions"] == [{"kind": "start", "label": "去发布", "target": "publish"}]
+    assert publish["actions"] == [{"kind": "start", "label": "发布", "target": "publish"}]
 
 
 # ---------------------------------------------------------------------------
@@ -536,7 +540,7 @@ def test_guard_keeps_extract_object_to_objects_and_ignores_old_protect(env):
 
 
 def test_draft_blueprint_does_not_stop_after_research(env):
-    """F8：蓝图草案不用确认，资料分析做完就是做完；目标问题没答时主推去回答，后面跟主线下一步。"""
+    """F8：蓝图草案不用确认，资料分析做完就是做完；目标问题没答时主推去回答（推荐第 1 级，命中就停）。"""
     _client, _workspaces, _manager, _project_id, root = env
     main_write(root, "research/20260101-合成.md", "# 合成资料分析\n")
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))
@@ -553,7 +557,7 @@ def test_draft_blueprint_does_not_stop_after_research(env):
     built = view.build(root)
     primary, secondary = built["suggestions"]["primary"], built["suggestions"]["secondary"]
     assert primary["id"] == "answer_goal" and primary["action"]["params"] == {"dialog": "blueprint"}
-    assert secondary[0]["action"]["command"] == "/ontology-extract-operation"
+    assert secondary == []
     assert _node(built, "core.research")["state"] == "confirmed"
 
 
@@ -605,9 +609,7 @@ def test_a_backlink_in_an_operation_does_not_roll_back_modeling(env):
     main_write(root, "ontology/operation/受理申请.md", op("受理申请", "[[门店]]，按[[取严规则]]校验"))
     built = view.build(root)
     assert _node(built, "core.object")["state"] == "confirmed" and _node(built, "core.operation")["state"] == "confirmed"
-    labels = _labels(built)
-    assert not any(label.startswith("刷新") or "有变化，刷新提取" in label for label in labels)
-    assert not any(label.endswith("刷新指标") for label in labels)
+    assert not {"refresh:core.operation", "refresh:core.metric"} & set(_ids(built))
 
 
 def _validated(root: Path) -> None:
@@ -619,16 +621,16 @@ def _validated(root: Path) -> None:
 
 
 def test_stale_label_names_what_changed_not_every_input(env):
-    """过期的按钮写确认之后真变了的那几类：只改了指标，校验写「指标有变化」，不把对象、操作、规则、指标全列出来；
-    节点上的刷新按钮同一个说法。"""
+    """过期的说明写确认之后真变了的那几类：只改了指标，校验写「指标有变化」，不把对象、操作、规则、指标全列出来；
+    按钮叫节点名，节点上的刷新按钮同一个说法。"""
     _client, _workspaces, _manager, _project_id, root = env
     _validated(root)
     main_write(root, "ontology/metric/达标率.md", "# 达标率\n\n合成指标，改了口径\n")
     built = view.build(root)
     assert _node(built, "core.validate")["state"] == "stale"
-    assert "指标有变化，刷新校验" in _labels(built)
-    assert _node(built, "core.validate")["actions"][0]["label"] == "指标有变化，刷新校验"
-    assert built["suggestions"]["note"] is None
+    assert _labels(built)[0] == "校验" and built["suggestions"]["note"] == "指标有变化"
+    refresh = _node(built, "core.validate")["actions"][0]
+    assert (refresh["kind"], refresh["label"], refresh["reason"]) == ("refresh", "校验", "指标有变化")
 
 
 def test_optional_metric_going_stale_is_left_to_validation(env):
@@ -639,9 +641,8 @@ def test_optional_metric_going_stale_is_left_to_validation(env):
     main_write(root, "ontology/operation/受理申请.md", op("受理申请", "[[门店]]，补一句"))
     built = view.build(root)
     assert _node(built, "core.metric")["state"] == "stale"
-    labels = _labels(built)
-    assert labels[0] == "操作有变化，刷新校验"
-    assert not any(label.endswith("刷新指标") for label in labels)
+    assert (_ids(built)[0], built["suggestions"]["note"]) == ("refresh:core.validate", "操作有变化")
+    assert "refresh:core.metric" not in _ids(built) and "提取规则与指标" not in _labels(built)
 
 
 def test_an_object_change_pushes_the_operation_refresh_until_validation_has_checked_it(env):
@@ -651,9 +652,10 @@ def test_an_object_change_pushes_the_operation_refresh_until_validation_has_chec
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店（改了口径）"))
     built = view.build(root)
     assert _node(built, "core.operation")["state"] == "stale" and _node(built, "core.object")["state"] == "confirmed"
-    assert _labels(built)[0] == "对象有变化，刷新提取操作"
+    assert (_labels(built)[0], _ids(built)[0], built["suggestions"]["note"]) == (
+        "提取操作", "refresh:core.operation", "对象有变化")
     node_state.confirm(root, flow_model.load_for(root), ["core.validate"])
-    assert "对象有变化，刷新提取操作" not in _labels(view.build(root))
+    assert "refresh:core.operation" not in _ids(view.build(root))
 
 
 def test_old_records_find_what_changed_from_git(env):
@@ -670,4 +672,5 @@ def test_old_records_find_what_changed_from_git(env):
     node_state.save(root, stored)
     time.sleep(1.1)  # 下一个提交落在确认之后的那一秒
     main_write(root, "ontology/operation/受理申请.md", op("受理申请", "[[门店]]，补一句"))
-    assert _labels(view.build(root))[0] == "操作有变化，刷新校验"
+    built = view.build(root)
+    assert (_labels(built)[0], built["suggestions"]["note"]) == ("校验", "操作有变化")

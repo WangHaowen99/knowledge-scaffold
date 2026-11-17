@@ -229,7 +229,8 @@ def protocol_markdown(snapshot: dict) -> str:
 ## 节点
 
 - 什么时候要做 `need`：`required`（上导航栏、计入进度、没做时推荐）、`optional`（挂在前面最近的必需节点下面，可以跳过，不计入进度）、`{{when: <内核条件>}}`（条件成立时出现，现在只有 `activated`）。缺省 `required`。旧写法 `placement`、`section`、`optional`、`progress`、`visible_if` 还能装配，按映射折算成 `need`，新包不要再写。节点要写锚点 `after` 或 `before`。
-- 主命令：`actions` 里第一个带 `command`（或 `page`）的动作，节点名、开始节点、自主构建都用它；`agent` 节点的主命令要是本包的命令。`entry` 不用再写。
+- 主命令：`actions` 里第一个带 `command`（或 `page`）的动作，开始节点、自主构建都用它；`agent` 节点的主命令要是本包的命令。`entry` 不用再写。
+- 节点名就是主命令名：主命令的叫法装配时换成节点 `title`，导航栏、全部命令、建议条、对话气泡都叫这一个名字。其余动作是变体，按钮名单独拿出来也要看得懂（写「追加资料分析」，不写「追加」），界面上不加节点名前缀。
 - 范围限定 `confine`（`flow.yaml` 顶层，可选）：`{{scope_file: <路径>}}`。范围文件合入主线、`status` 是 `active` 时，基线提交里有、`editable` 里没有的本体条目助手不能写也不能删，新增条目不限；范围文件只能在它所属节点的命令运行时写。一次装配最多一个包声明。
 - 触发 `activation`（`flow.yaml` 顶层，可选）：`{{event: materials_added, requires: [<本包探针>], session: <这一轮的状态文件>}}`。用户上传资料时前提成立就算触发，节点写 `need: {{when: activated}}` 只在触发后、这一轮开着时出现，出现且没做完时下一步先推它；`session` 文件的 `status` 是 active 算这一轮开着，`covers`（确认时的主线提交）包含触发时的提交算处理过，基线（`baseline.commit`）之后发布过算这一轮结束。`confine` 加 `lock_on_activation: true`：触发后、范围确认前已有条目全部只读。
 - `autobuild`：上传的包的节点缺省不进自主构建，要进写 `autobuild: true`，上传检查会列出来给审核的人看；`autobuild: false` 让节点总不进自主构建（要用户给输入才能做的节点）。

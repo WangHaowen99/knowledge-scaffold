@@ -142,10 +142,11 @@ def test_core_only_project_assembles_and_filters_suggestions(env):
     # 主线下一步是发布
     assert body["suggestions"]["primary"]["action"] == {"type": "navigate", "page": "publish"}
     assert next(node for node in body["nodes"] if node["id"] == "core.validate")["title"] == "校验"
-    # 发布做完：整体视图，不推荐扫描脚本候选
+    # 发布做完：推可选节点（只有 core 的提取规则与指标），不推荐扫描脚本候选（代码生成没启用），也不再推整体视图
     proc.run(["git", "tag", "release/0.1.0"], cwd=root, check=True, capture_output=True)
     body = client.get(f"/api/v1/projects/{root.name}/flow").json()
-    assert body["suggestions"]["primary"]["action"]["command"] == "/ontology-overview"
+    assert body["suggestions"]["primary"]["action"]["command"] == "/ontology-extract-rule-metric"
+    assert body["suggestions"]["primary"]["label"] == "提取规则与指标"
     assert body["suggestions"]["secondary"] == []
     # 场景模拟没启用：代码生成挂在质量检查之后
     enabled = client.post(f"/api/v1/projects/{root.name}/packs", json={"name": "codegen"})

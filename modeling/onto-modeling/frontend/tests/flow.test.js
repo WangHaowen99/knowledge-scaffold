@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
 import {
-  commandFromTarget, commandName, commandNode, flowNeedsReload, mergeFlow, multiSlice, normalizeFlow, suggestionCommand, overlayRunning, sliceName,
+  catalogCommand, commandFromTarget, commandName, commandNode, flowNeedsReload, mergeFlow, multiSlice, normalizeFlow, suggestionCommand, overlayRunning, sliceName,
   trackClass, trackNodes, unitTitle,
 } from '../src/state/flow.js';
 
@@ -127,6 +127,17 @@ test('节点动作的命令文本拆成 S-20 的 command / args / text；不以�
   assert.deepEqual(commandFromTarget('/ontology-research 仅基于本地文档 '), { command: '/ontology-research', text: '仅基于本地文档' });
   assert.deepEqual(commandFromTarget('/ontology-extract-object'), { command: '/ontology-extract-object', text: '' });
   assert.deepEqual(commandFromTarget('运行 python3 .claude/scripts/research_checker.py 核验'), { text: '运行 python3 .claude/scripts/research_checker.py 核验' });
+});
+
+test('全部命令（S-18）：按节点分组，条目发完整命令文本（target）带按钮名；老响应没有 target 时发命令名', () => {
+  const catalog = F.commandCatalog();
+  assert.deepEqual(catalog.groups.map((g) => g.label), ['资料分析', '提取对象', '提取操作', '校验', '场景模拟']);
+  assert.equal(catalog.total, catalog.groups.reduce((n, g) => n + g.items.length, 0));
+  const append = catalog.groups[0].items.find((c) => c.label === '追加资料分析');
+  assert.equal(append.primary, false);
+  assert.deepEqual(catalogCommand(append), { command: '/ontology-research', text: '追加', display_label: '追加资料分析' });
+  assert.deepEqual(catalogCommand({ label: '提取对象', command: '/ontology-extract-object' }),
+    { command: '/ontology-extract-object', text: '', display_label: '提取对象' });
 });
 
 test('建议条 send 动作：text 为空串时只发 command + args；整段命令文本拆成 args；普通消息不走 S-20', () => {
