@@ -8,7 +8,8 @@ Two kinds of hosts create this harness:
   keys every provider shares (``cwd``, ``env``, ``skills`` ...). Those are
   accepted, and the engine settings fall back to ``<prefix>*`` variables
   (``DA_*`` for DeepAnalyze) read from that ``env`` mapping, then from the
-  process environment.
+  process environment. ``cwd`` is kept: files DA pushes are fetched into it
+  when the start context names no working directory.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from typing import Any, Mapping
 
 # Keys an openJiuwen host hands every provider package; DA has no use for them.
 HOST_KEYS = frozenset({
-    "cwd", "inherit_process_env", "skills", "skill_conflict", "cli_path", "system_prompt_mode", "model", "effort",
+    "inherit_process_env", "skills", "skill_conflict", "cli_path", "system_prompt_mode", "model", "effort",
 })
 
 # Config field -> environment variable (after the engine prefix) consulted when the field is absent.
@@ -68,6 +69,11 @@ class DeepAnalyzeConfig:
     busy_retry_s: float = 180.0
     busy_poll_s: float = 3.0
     unanswered_reply: str = "（当前无法向用户提问，请基于已有信息继续完成任务）"
+    # Host working directory for files DA pushes (``push_file``); the start
+    # context's ``cwd`` wins. Empty and no context cwd: files stay on DA.
+    cwd: str = ""
+    # Largest pushed file fetched into the working directory (DA's own default cap).
+    max_file_bytes: int = 104_857_600
     # Environment handed over by the host; consulted for secrets.
     env: Mapping[str, str] = field(default_factory=dict, repr=False, compare=False)
 
@@ -110,4 +116,7 @@ class DeepAnalyzeConfig:
             data["reconnect_max_attempts"] = max(0, int(data["reconnect_max_attempts"]))
         if data.get("max_turns") is not None:
             data["max_turns"] = int(data["max_turns"])
+        if "max_file_bytes" in data:
+            data["max_file_bytes"] = max(0, int(data["max_file_bytes"]))
+        data["cwd"] = str(data.get("cwd") or "")
         return cls(**data)
