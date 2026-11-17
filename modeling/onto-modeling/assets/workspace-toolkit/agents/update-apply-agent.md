@@ -74,6 +74,8 @@ For each entry, in order:
 
 These are informational — they tell you *why* you have other entries in the PLAN. You do not separately act on `cascading[]`; if a cascading file actually needs editing, the PLAN will contain its own top-level entry for it. Skip cascading entries during execution.
 
+Exception to that top-level-edit convention: diagram/summary reminders explicitly require separate synchronization and have no executable entry. Preserve each reminder in the returned `notes`, with its path and the fact that it has not been synchronized by this update. Never report these resources as modified or synchronized. An out-of-scope diagram accidentally placed at the top level must still be skipped and reported with the same pending synchronization note.
+
 ## Step 3: Return execution summary
 
 Return a JSON object:

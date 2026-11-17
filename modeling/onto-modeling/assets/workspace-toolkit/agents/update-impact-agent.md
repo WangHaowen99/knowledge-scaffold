@@ -26,6 +26,8 @@ dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自
 - `MOCK_DIR`: e.g. `ontology/data-mock/`
 - `TESTCASE_DIR`: e.g. `ontology/testcase/`
 - `SCRIPTS_DIR`: e.g. `ontology/scripts/` (codegen-produced Python scripts that implement specific operation docs)
+- `DIAGRAMS_DIR`: e.g. `ontology/diagrams/` (read-only impact review)
+- `DIAGRAM_SUMMARIES_DIR`: e.g. `ontology/diagrams-summary/` (read-only impact review)
 
 ## Step 1: Read everything
 
@@ -44,6 +46,8 @@ dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自
    - the script's filename English stem is referenced by an "调用脚本 `ontology/scripts/{stem}.py`" line in some operation's `# 逻辑描述`.
 
    Build a mapping `{operation_stem → [script_path, ...]}` for later use.
+
+5. Inventory the diagrams and summaries, then read those related to changed concepts: same-name resources, resources referenced by the documents, callers/sub-flows, and resources containing the current formula or business step. Inspect draw.io node `value` / `label` text as well as summaries; diagrams need not contain wiki links. Compare with the reference to identify stale formulas, thresholds and branches. If a diagram is compressed/unreadable or its relationship cannot be confirmed, return an explicit manual-review reminder instead of treating it as unaffected. Read these resources only; do not plan automatic diagram edits.
 
 ## Step 2: Decide change set
 
@@ -71,10 +75,11 @@ For each `modify` or `delete` entry, identify which other files reference the ta
 
 - For an object: any operation that lists it under 与object的关联 or uses `[[object]]` in 逻辑描述; any mock-data file with the same stem; any object with ref-attribute pointing at it. Also: any script in `SCRIPTS_DIR` whose bound operation uses this object's fields in input/output — those scripts should appear as cascading with `needs_change=true` if the field name/type change affects the script signature.
 - For a operation: any parent operation that calls it via `调用[[子流程]]逻辑文档`; any operation mentioning it in 与operation的关联; any saved testcase under `TESTCASE_DIR/{operation}.md`. Also: each script bound to this operation via the mapping built in Step 1.4 — if the change affects script-relevant content (input/output table, 逻辑描述 of step semantics, attribute names), add a separate top-level `kind=script, operation=modify` entry for each bound script (do not bury scripts in `cascading[]`). If the change is purely cosmetic (typo in 业务描述, reformatting), keep scripts out.
+- For changes to a formula, threshold or step: include related diagrams and summaries in `cascading[]` with their complete paths and a specific reason, even without an explicit link. Use `needs_change=false` and state `需另行复核并同步，本次更新不自动修改` — false means outside the executor's scope, not that the resource is already consistent. Do not add top-level diagram edits. Record unreadable candidates as pending manual review.
 
 For each cascading file, decide `needs_change`:
 - `true` — the change to the root file requires this file to be edited too (e.g. an object renamed → operation docs referencing it must update the link)
-- `false` — the cascading file only references the root and the change is contained inside the root (e.g. internal operation step rewording, with no contract change)
+- `false` — the cascading file only references the root and the change is contained inside the root (e.g. internal operation step rewording, with no contract change), OR it is a diagram/summary requiring separate synchronization as described above. Always distinguish those cases in `reason`.
 
 You don't need to enumerate the full cascade — the caller will additionally run `impact_analysis.py` for static link coverage. Focus on **semantic** cascading: which downstream files actually need editing.
 
@@ -120,6 +125,6 @@ If the reference does not imply any change at all, return `[]` and append one li
 
 - Never invent attributes/concepts that aren't in the reference.
 - Never propose deletion unless the reference explicitly contradicts an existing concept.
-- Never propose changes to `reports/`, `research/`, `ontology/diagrams/`, `ontology/diagrams-summary/`, `.claude/`, `.ontology-state/` — those are out of scope for ontology update.
+- Never propose automatic changes to `reports/`, `research/`, `ontology/diagrams/`, `ontology/diagrams-summary/`, `.claude/`, `.ontology-state/`. Diagrams and summaries remain outside the update executor's write scope but MUST be reviewed and listed as read-only cascading reminders when affected or pending review; the write restriction does not exclude impact analysis.
 - Never propose `kind=script, operation=create` — script generation belongs to `/ontology-codegen`. If a operation is newly created and would normally have a corresponding script, mention it once in the top-level explanation text after the JSON (e.g. "新建 operation `XXX`，如需生成脚本请跑 /ontology-codegen") instead of adding a script entry.
 - If the reference contains business-knowledge signal words (per `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md`), still focus on **document changes** in this agent; the calling command handles knowledge sedimentation separately.

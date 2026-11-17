@@ -33,9 +33,14 @@ Directly show the script's markdown output. It already contains:
 - 调用此子流程的父流程（若目标是逻辑）
 - 引用此目标的对象
 - 相关测试数据
+- 流程图及摘要（只读候选，需另行复核并同步）
 - 提示（advisory notes — 基于目标类型给出的修改建议）
 
-If the script reports **无任何下游引用**, add a line: "修改这个文档不会牵连其他文档。"
+If the script returns a non-empty `diagram_scan.next_offset` in JSON or a pagination hint in markdown, continue with `--diagram-offset {next_offset} --diagram-limit {limit}` until all diagram candidates have been presented. Do not present only the first page as the full list.
+
+List every diagram/summary candidate with its complete `file` path and its own `reason`. Long lists may be split into sections, but never replace entries with filename ranges or abbreviated numeric lists. Calculate each category count from the de-duplicated entries; distinguish literal formulas, name/reference candidates and unreadable resources. Do not describe all candidates as containing an old formula.
+
+If the script reports no static references, explain the static scan boundary and review business semantics before drawing a conclusion. Never turn an empty result into a guarantee that modifying the document cannot affect other resources. Unreadable/unsupported diagrams must remain explicit pending-review reminders.
 
 ## Step 4: Suggest next step
 
