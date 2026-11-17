@@ -18,17 +18,21 @@ Environment:
     DA_TENANT_ID       default "default"
     KB_SERVICE_URL / KBS_PLUGIN_KEY   to list knowledge bases for the scope picker
     DA_ANALYST_HISTORY_DIR            where conversation transcripts are kept
+    DA_ANALYST_FILES_DIR              where files DA pushes are kept, one directory per conversation
+                                      (default ``files`` next to the history directory)
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import importlib
 import json
 import logging
 import os
 import re
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -68,6 +72,13 @@ SUMMARY_HEAD_BYTES = 65536
 CHECKPOINT_LIMIT = 200
 # wire messages the page's reducer uses to redraw a conversation
 RECORDED = frozenset({"output", "tool", "turn", "ask", "ask_cancelled", "state"})
+# protocol items the page shows besides tools: a file DA pushed and the harness fetched
+SHOWN_ITEMS = frozenset({"file"})
+# a pushed file goes to the page in pieces of this size (base64 on the socket)
+FILE_CHUNK = 512 * 1024
+# DA's own events the page shows in a turn: pushed cards, the todo list, sub-agent progress. A sub-agent's
+# streamed output (workflow_event of type workflow_agent_chunk) only keeps its row running and is not kept.
+RECORDED_PROVIDER = frozenset({"push_content", "todo_update", "workflow_event"})
 SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")  # used with fullmatch
 
 Send = Callable[[dict[str, Any]], Awaitable[None]]
@@ -119,6 +130,15 @@ def _plain(value: Any) -> Any:
         return str(value)
 
 
+def _kept_provider_event(wire: dict[str, Any]) -> bool:
+    """Whether a provider event goes into the transcript (see RECORDED_PROVIDER)."""
+
+    payload = wire.get("payload")
+    if wire.get("event_type") not in RECORDED_PROVIDER or not isinstance(payload, dict):
+        return False
+    return not (wire["event_type"] == "workflow_event" and payload.get("type") == "workflow_agent_chunk")
+
+
 def event_to_wire(envelope: Any) -> dict[str, Any] | None:
     """Project a HarnessEvent onto the small JSON shape the page renders."""
 
@@ -137,6 +157,11 @@ def event_to_wire(envelope: Any) -> dict[str, Any] | None:
             return {**base, "t": "tool", "phase": ev.kind.value,
                     "name": data.get("name") or data.get("tool_name"),
                     "arguments": data.get("arguments"), "result": _clip(data.get("result"))}
+        if ev.item_type == "file" and isinstance(data, dict):
+            # the page asks for it by name; where it lies on the host stays here
+            return {**base, "t": "item", "item_type": "file", "phase": ev.kind.value,
+                    "name": data.get("name"), "size": data.get("size"), "mime_type": data.get("mime_type"),
+                    "title": data.get("title")}
         return {**base, "t": "item", "item_type": ev.item_type, "phase": ev.kind.value}
     if isinstance(ev, UsageUpdatedEvent):
         return {**base, "t": "usage", "mode": ev.mode.value,
@@ -244,6 +269,36 @@ def _history_dir() -> Path:
     return Path(root) / "da-analyst" / "history"
 
 
+def _files_dir(host_session_id: str) -> Path:
+    """Where the harness puts the files DA pushes in one conversation (its working directory)."""
+    explicit = os.getenv("DA_ANALYST_FILES_DIR")
+    return (Path(explicit) if explicit else _history_dir().parent / "files") / host_session_id
+
+
+def read_pushed_file(host_session_id: str, name: str, offset: int) -> dict[str, Any]:
+    """One piece of a file DA pushed in a conversation (blocking; run it in a thread).
+
+    Only a plain name of a regular file directly in the conversation's file
+    directory is served: no paths, no hidden or partial files, no symlinks.
+    """
+
+    if not SESSION_ID_RE.fullmatch(host_session_id or ""):
+        raise ValueError("会话不存在")
+    if not name or name != Path(name).name or name.startswith(".") or "\x00" in name:
+        raise ValueError("文件名不合法")
+    directory = _files_dir(host_session_id)
+    path = directory / name
+    if path.is_symlink() or not path.is_file() or path.resolve().parent != directory.resolve():
+        raise FileNotFoundError(f"文件不存在：{name}")
+    size = path.stat().st_size
+    offset = max(0, min(int(offset), size))
+    with path.open("rb") as file:
+        file.seek(offset)
+        piece = file.read(FILE_CHUNK)
+    return {"name": name, "offset": offset, "size": size, "eof": offset + len(piece) >= size,
+            "data": base64.b64encode(piece).decode("ascii")}
+
+
 _BACKGROUND: set[asyncio.Task] = set()
 
 
@@ -323,9 +378,18 @@ class Transcript:
         self.touch()
 
     def record(self, wire: dict[str, Any]) -> None:
-        if wire.get("t") not in RECORDED:
+        if wire.get("t") == "provider":
+            if not _kept_provider_event(wire):
+                return
+        elif wire.get("t") == "item":
+            if wire.get("item_type") not in SHOWN_ITEMS:
+                return
+        elif wire.get("t") not in RECORDED:
             return
         entry = {k: v for k, v in wire.items() if k != "seq"}
+        data = (entry.get("payload") or {}).get("data") if entry["t"] == "provider" else None
+        if isinstance(data, str) and len(data) > MAX_TRANSCRIPT_OUTPUT:  # a long pushed card
+            entry["payload"] = {**entry["payload"], "data": data[:MAX_TRANSCRIPT_OUTPUT] + "…"}
         if entry["t"] == "output":
             text = str(entry.get("content") or "")
             first = self._outputs.get(entry.get("output_id"))
@@ -380,8 +444,9 @@ def _tombstone(host_session_id: str) -> Path:
 
 
 def _delete_files(host_session_id: str) -> None:
-    """Remove the transcript and remember the id, so a page still holding it gets a new conversation."""
+    """Remove the transcript and pushed files, and remember the id, so a page still holding it gets a new conversation."""
     Transcript.path_for(host_session_id).unlink(missing_ok=True)
+    shutil.rmtree(_files_dir(host_session_id), ignore_errors=True)
     tombstone = _tombstone(host_session_id)
     tombstone.parent.mkdir(parents=True, exist_ok=True)
     tombstone.touch()
@@ -508,6 +573,8 @@ class Conversation:
             HostCapability.USER_INPUT, HostCapability.TOOL_APPROVAL, HostCapability.CHECKPOINT_SINK,
         })
         checkpoint = CHECKPOINTS.latest.get(self.host_session_id)
+        files = _files_dir(self.host_session_id)
+        await asyncio.to_thread(files.mkdir, parents=True, exist_ok=True)
         context = HarnessContext(
             agent_name=engine,
             agent_id="swarm-da-analyst",
@@ -519,6 +586,8 @@ class Conversation:
             checkpoint=checkpoint,
             checkpoint_sink=CHECKPOINTS,
             interactions=self.interactions,
+            # files DA pushes are fetched here and handed to the page by `file` requests
+            cwd=str(files),
             # no session-wide scope: each question carries its own, and one without a list
             # ("every knowledge base", listing failed) leaves the choice to the harness's catalog
             metadata={},
@@ -880,11 +949,11 @@ class DaAnalystPlugin(ApplicationPluginExtension):
         convo: Conversation | None = None
         tasks: set[asyncio.Task] = set()
         # Session-shaping messages run in arrival order (a `send` right behind a
-        # `start` must see the new harness); abort/answer never wait behind them.
+        # `start` must see the new harness); abort/answer and file reads never wait behind them.
         ordered = asyncio.Lock()
 
         async def handle(msg: dict[str, Any]) -> None:
-            if msg.get("type") in ("abort", "answer"):
+            if msg.get("type") in ("abort", "answer", "file"):
                 await dispatch(msg)
             else:
                 async with ordered:
@@ -942,6 +1011,10 @@ class DaAnalystPlugin(ApplicationPluginExtension):
                     await current().answer(str(msg.get("request_id") or ""), msg, send)
                 elif kind == "history":
                     await send({"t": "history", "items": await list_history()})
+                elif kind == "file":
+                    piece = await asyncio.to_thread(read_pushed_file, str(msg.get("host_session_id") or ""),
+                                                    str(msg.get("name") or ""), int(msg.get("offset") or 0))
+                    await send({"t": "file_chunk", "client_id": msg.get("client_id"), **piece})
                 elif kind == "delete":
                     target = str(msg.get("host_session_id") or "")
                     if convo is not None and convo.host_session_id == target:

@@ -9,6 +9,9 @@ import { formatTime } from '../format';
 import { ToastProvider, useToast } from '../toast';
 import { Badge, Button, Spinner } from '../ui';
 import { channel, type Wire } from './channel';
+import { downloadPushedFile } from './download';
+import { NO_EXTRAS, applyFileItem, applyProviderEvent, applyToolResult, type Extras, type PushedFile } from './events';
+import { FileList, PushCard, TodoPanel, WorkflowPanel } from './extras';
 import { parseDown, reconcileSelection, type DownBackend } from './scope';
 
 type Kb = { id: string; name: string; documents: number; backend?: string };
@@ -37,7 +40,7 @@ type Turn = {
   error?: string;
   duration_ms?: number;
   tokens?: number;
-};
+} & Extras;
 
 type HistoryItem = {
   id: string;
@@ -120,7 +123,7 @@ function entryAction(e: Wire, engineLabel: string): Action {
       turn: {
         client_id: String(e.client_id || e.turn_id), turn_id: e.turn_id ? String(e.turn_id) : undefined,
         engine: engineLabel, input: String(e.text ?? ''), steers: [], outputs: [], tools: [], asks: [],
-        status: 'queued',
+        status: 'queued', ...NO_EXTRAS,
       },
     };
   }
@@ -214,8 +217,21 @@ function reducer(state: State, action: Action): State {
             const tools = existing
               ? t.tools.map((x) => (x.id === id ? { ...x, result: m.result, done: m.phase === 'completed' } : x))
               : [...t.tools, { id, name: String(m.name ?? ''), arguments: m.arguments, done: m.phase === 'completed' }];
-            return { ...t, tools };
+            // a file DA delivered (push_file) is listed with the turn
+            return { ...t, ...(m.phase === 'completed' ? applyToolResult(t, m.result) : {}), tools };
           }),
+        };
+      }
+      if (m.t === 'item' && m.item_type === 'file' && m.phase === 'completed') {
+        // the harness fetched a pushed file to the plugin host: it can be downloaded now
+        return { ...state, turns: patchTurn(state.turns, m.turn_id, (t) => ({ ...t, ...applyFileItem(t, { name: m.name, size: m.size, mime_type: m.mime_type }) })) };
+      }
+      if (m.t === 'provider') {
+        // DA's own events (pushed cards, todo list, sub-agent progress); one without a turn id goes to the latest turn
+        const turnId = m.turn_id ?? state.turns[state.turns.length - 1]?.turn_id;
+        return {
+          ...state,
+          turns: patchTurn(state.turns, turnId, (t) => ({ ...t, ...applyProviderEvent(t, String(m.event_type), m.payload) })),
         };
       }
       if (m.t === 'turn') {
@@ -306,10 +322,12 @@ function AskCard({ ask, onAnswer }: { ask: Ask; onAnswer: (payload: Record<strin
     );
   }
   if (ask.kind === 'approval') {
+    // DA's own prompt repeats the arguments as text; it is shown only when they did not come separately
+    const args = ask.arguments && typeof ask.arguments === 'object' && Object.keys(ask.arguments).length ? ask.arguments : null;
     return (
       <div className="da-ask">
-        <div className="da-ask-q">DA 请求执行工具 <b>{ask.tool_name}</b>{ask.prompt ? `：${ask.prompt}` : ''}</div>
-        {ask.arguments ? <pre className="da-ask-args">{json(ask.arguments).slice(0, 1500)}</pre> : null}
+        <div className="da-ask-q">DA 请求执行工具 <b>{ask.tool_name}</b>{!args && ask.prompt ? `：${ask.prompt}` : ''}</div>
+        {args ? <pre className="da-ask-args">{json(args).slice(0, 1500)}</pre> : null}
         <div className="da-ask-actions">
           <Button size="sm" variant="primary" onClick={() => onAnswer({ decision: 'allow' }, '允许')}>允许</Button>
           <Button size="sm" onClick={() => onAnswer({ decision: 'deny' }, '拒绝')}>拒绝</Button>
@@ -345,11 +363,18 @@ function AskCard({ ask, onAnswer }: { ask: Ask; onAnswer: (payload: Record<strin
   );
 }
 
-function TurnView({ turn, onAnswer }: { turn: Turn; onAnswer: (ask: Ask, payload: Record<string, unknown>, label: string) => void }) {
+function TurnView({
+  turn, onAnswer, onDownload,
+}: {
+  turn: Turn;
+  onAnswer: (ask: Ask, payload: Record<string, unknown>, label: string) => void;
+  onDownload: (file: PushedFile) => void;
+}) {
   const [showReasoning, setShowReasoning] = useState(false);
   const reasoning = turn.outputs.filter((o) => o.channel === 'reasoning').map((o) => o.text).join('\n');
   const answerParts = turn.outputs.filter((o) => o.channel === 'answer').map((o) => o.text);
   const answer = answerParts.join('\n\n') || turn.final_output || '';
+  const live = turn.status === 'running' || turn.status === 'queued';
   return (
     <div className="da-turn">
       <div className="da-user">{turn.input}</div>
@@ -380,10 +405,14 @@ function TurnView({ turn, onAnswer }: { turn: Turn; onAnswer: (ask: Ask, payload
             {showReasoning ? <div className="da-reasoning-text">{reasoning}</div> : null}
           </div>
         ) : null}
+        {turn.todos?.length ? <TodoPanel todos={turn.todos} live={live} /> : null}
+        {turn.workflows.map((flow) => <WorkflowPanel key={flow.id} flow={flow} live={live} />)}
         {turn.tools.map((tool) => <ToolCard key={tool.id} tool={tool} />)}
         {turn.asks.map((ask) => (
           <AskCard key={ask.request_id} ask={ask} onAnswer={(payload, label) => onAnswer(ask, payload, label)} />
         ))}
+        {turn.pushes.map((push, i) => <PushCard key={i} push={push} />)}
+        {turn.files.length ? <FileList files={turn.files} onDownload={onDownload} /> : null}
         {answer ? (
           <div className="markdown da-answer">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown>
@@ -640,6 +669,7 @@ function Shell() {
         type: 'local',
         turn: {
           client_id, engine: engineLabel, input: value, steers: [], outputs: [], tools: [], asks: [], status: 'queued',
+          ...NO_EXTRAS,
         },
       });
       channel.send({ type: 'send', text: value, kb_ids: selected, client_id });
@@ -856,6 +886,12 @@ function Shell() {
                 onAnswer={(ask, payload, label) => {
                   channel.send({ type: 'answer', request_id: ask.request_id, label, ...payload });
                   dispatch({ type: 'answered', request_id: ask.request_id, label });
+                }}
+                onDownload={(file) => {
+                  // a failed read is reported by the socket's error message; a timeout only here
+                  downloadPushedFile(sessionId, file.name, file.mimeType).catch((err: Error) => {
+                    if (err.message === '下载超时') notify(err.message, true);
+                  });
                 }}
               />
             ))
