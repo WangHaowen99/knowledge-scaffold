@@ -84,7 +84,7 @@ class JudgeSwitch(Body):
     enabled: bool
 
 
-class SourceInspection(Body):
+class SourceConnectionTest(Body):
     provider: str = Field(pattern=r'^(nl2sql_http|nl2sql_template)$')
     connection: dict | None = None
     data_source_id: str = Field(default='',max_length=128)
@@ -105,7 +105,7 @@ def release_ref(receipt):
 
 
 def public(record):
-    value={k:v for k,v in record.items() if k not in ('connection','tables_snapshot','content','source','cases','intent','mapping','preview','model','relations','schema_fingerprint','graph_confirmation')}
+    value={k:v for k,v in record.items() if k not in ('connection','tables_snapshot','content','source','cases','intent','mapping','preview','model','relations','graph_confirmation')}
     if 'cases' in record: value['case_count']=len(record['cases'])
     if 'mapping' in record:
         value['mapping']=bool(record['mapping'])
@@ -422,7 +422,7 @@ def create_app(config=None,transport=None):
                 execution_evidence.requirement(case['question'],requested)
                 normalized.append(dict(id=str(i),question=case['question'],reference=reference,**({'execution_mode':requested} if requested!='auto' else {})))
             return dict(name=body['name'],cases=normalized)
-        if set(body)-{'name','mode','provider','input_ids','connection','tables','import_data','revision','inspection_id'}:
+        if set(body)-{'name','mode','provider','input_ids','connection','tables','import_data','revision'}:
             raise Failure('definition_invalid','未知数据源字段',422)
         if 'import_data' in body and not isinstance(body['import_data'],bool):
             raise Failure('import_flag_invalid','导入选项必须是布尔值',422)
@@ -443,19 +443,14 @@ def create_app(config=None,transport=None):
         if any(not isinstance(cols,list) or len(cols)>256 or any(not isinstance(col,str) or len(col)>64 for col in cols) for cols in tables.values()):
             raise Failure('table_invalid','表字段定义无效',422)
         value=dict(name=body['name'],mode=mode,provider=provider,input_ids=ids,tables=body.get('tables',{}),import_data=bool(body.get('import_data')))
-        # Form payloads use a narrow connection schema; old API clients may still submit
-        # their existing connection/tables contract without the new inspection handle.
+        # Form payloads use a narrow connection schema; older API connections remain readable.
         form=body.get('connection',{})
         graph_form=provider=='neo4j' and 'workspace_value' in form
-        form_payload='inspection_id' in body or 'evaluation_workspace_id' in form or graph_form
+        form_payload='evaluation_workspace_id' in form or graph_form
         if mode=='connection' and form_payload:
             connection=source_config.connection(owner,provider,body.get('connection'),existing)
             value['connection']=store.encrypt(connection)
-            if provider!='neo4j':
-                inspection_id=body.get('inspection_id')
-                if not inspection_id: raise Failure('schema_required','请先读取对应数据库的表与字段',422,'schema')
-                value.update(source_config.apply_inspection(owner,provider,connection,inspection_id))
-            elif value['import_data'] and not connection.get('ontology_property'):
+            if provider=='neo4j' and value['import_data'] and not connection.get('ontology_property'):
                 raise Failure('graph_scope_required','导入图数据需要 Ontology 隔离字段',422)
         elif 'connection' in body:
             if not isinstance(body['connection'],dict): raise Failure('connection_invalid','连接配置需要对象',422)
@@ -464,12 +459,12 @@ def create_app(config=None,transport=None):
         if mode=='connection' and not value.get('connection'): raise Failure('connection_missing','需要连接配置',422)
         return value
 
-    @app.post(f'{prefix}/data-source-inspections')
-    def inspect_source(body:SourceInspection,request:Request):
+    @app.post(f'{prefix}/data-source-tests')
+    def test_source_connection(body:SourceConnectionTest,request:Request):
         owner,_=actor(request)
         existing=store.get(owner,body.data_source_id,'data-sources') if body.data_source_id else None
         connection=source_config.connection(owner,body.provider,body.connection,existing)
-        return source_config.inspect(owner,body.provider,connection)
+        return source_config.test_connection(body.provider,connection)
 
     @app.post(f'{prefix}/graph-import-checks')
     def inspect_graph(body:GraphInspection,request:Request):

@@ -1,9 +1,9 @@
-"""Safe connection forms and bounded, read-only database introspection."""
+"""Safe connection forms and bounded connectivity checks."""
 import re
 import time
 from urllib.parse import urlsplit
 
-from .core import Failure, digest, endpoint
+from .core import Failure, endpoint
 from .data_sources import identifier
 
 SQL_KEYS = ('url', 'scene', 'evaluation_workspace_id', 'token')
@@ -65,7 +65,7 @@ class SourceConfig:
         return value
 
     def view(self, owner, record):
-        value = {k: v for k, v in record.items() if k not in ('connection', 'schema_fingerprint')}
+        value = {k: v for k, v in record.items() if k != 'connection'}
         if record.get('connection'):
             config = self.store.decrypt(record['connection'])
             secret = 'password' if record.get('provider') == 'neo4j' else 'token'
@@ -83,46 +83,17 @@ class SourceConfig:
                 value['inputs'].append({k: item[k] for k in ('id', 'name', 'size', 'tables')})
         return value
 
-    def inspect(self, owner, provider, connection):
+    def test_connection(self, provider, connection):
         if provider not in ('nl2sql_http', 'nl2sql_template'):
-            raise Failure('provider_invalid', '仅 NL2SQL 连接支持数据库表字段读取', 422)
-        schema, seen = {}, set()
-        # This fixed SELECT reads metadata only, scoped to the selected database.
-        for offset in range(0, 25601, 200):
-            sql = ("SELECT TABLE_NAME AS table_name, COLUMN_NAME AS column_name, "
-                   "COLUMN_TYPE AS data_type, IS_NULLABLE AS is_nullable "
-                   "FROM information_schema.columns WHERE TABLE_SCHEMA = '" + connection['scene'] +
-                   "' ORDER BY TABLE_NAME, ORDINAL_POSITION LIMIT 200 OFFSET " + str(offset))
-            try:
-                response = self.http.json('POST', connection['url'], '/api/v1/sql', token=connection.get('token', ''),
-                                          json={'scene': connection['scene'], 'sql': sql}, limit=1024*1024)
-            except Failure as exc:
-                raise Failure('schema_unavailable', '读取数据库结构失败，请检查连接、Scene 与元数据查询权限后重试', 503, 'schema') from exc
-            rows = response.get('data') if isinstance(response, dict) and response.get('success') is True else None
-            if not isinstance(rows, list) or len(rows) > 200:
-                raise Failure('schema_protocol', '数据服务未返回有效的数据库结构', 422, 'schema')
-            for row in rows:
-                if not isinstance(row, dict):
-                    raise Failure('schema_protocol', '数据库字段格式无效', 422, 'schema')
-                table, column = identifier(row.get('table_name')), identifier(row.get('column_name'))
-                if (table, column) in seen:
-                    raise Failure('schema_changed', '数据库结构读取不一致，请重新读取', 409, 'schema')
-                seen.add((table, column))
-                schema.setdefault(table, []).append({'name': column, 'type': str(row.get('data_type', ''))[:128], 'nullable': row.get('is_nullable') == 'YES'})
-                if len(schema) > 100 or len(schema[table]) > 256:
-                    raise Failure('schema_limit', '数据库结构超过 100 张表或每表 256 个字段的限制', 413, 'schema')
-            if len(rows) < 200: break
-        else:
-            raise Failure('schema_limit','数据库结构读取达到上限，请缩小数据源范围',413,'schema')
-        if not schema:
-            raise Failure('schema_empty', '此数据库没有可读取的数据表，请检查 Scene 与访问权限', 422, 'schema')
-        record = self.store.create(owner, 'source_inspections', {'provider': provider, 'fingerprint': digest([provider, connection]),
-                                  'schema': [{'name': name, 'columns': columns} for name, columns in schema.items()],
-                                  'tables': {name: [c['name'] for c in columns] for name, columns in schema.items()}, 'created_at': time.time()})
-        return {'inspection_id': record['id'], 'schema': record['schema'], 'tables': record['tables'], 'read_at': record['created_at']}
-
-    def apply_inspection(self, owner, provider, connection, inspection_id):
-        record = self.store.get(owner, inspection_id, 'source_inspections')
-        if record['fingerprint'] != digest([provider, connection]):
-            raise Failure('schema_stale', '连接信息已变化，请重新读取数据库结构', 409, 'schema')
-        return {'inspection_id': inspection_id, 'schema': record['schema'], 'tables': record['tables'], 'read_at': record['created_at']}
+            raise Failure('provider_invalid', '仅 NL2SQL 连接支持此连接测试', 422)
+        try:
+            response = self.http.json(
+                'POST', connection['url'], '/api/v1/sql', token=connection.get('token', ''),
+                json={'scene': connection['scene'], 'sql': 'SELECT 1'}, timeout=10, limit=64*1024)
+        except Failure as exc:
+            raise Failure('connection_unavailable', '连接测试失败，请检查服务地址、Scene、凭据与网络',
+                          503, 'connection_test') from exc
+        if not isinstance(response, dict) or response.get('success') is not True:
+            raise Failure('connection_test_failed', '数据服务未通过连接测试，请检查 Scene 与访问权限',
+                          422, 'connection_test')
+        return {'success': True, 'message': '连接测试通过', 'tested_at': time.time()}

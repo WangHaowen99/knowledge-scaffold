@@ -451,9 +451,6 @@ export function emptySource() {
     provider: 'nl2sql_http',
     input_ids: [],
     inputs: [],
-    tables: {},
-    schema: [],
-    inspection_id: '',
     import_data: false,
     connection: {
       url: '',
@@ -477,7 +474,6 @@ export function sourceFromRecord(record) {
     ...record,
     connection: { ...emptySource().connection, ...record.connection_view },
     inputs: record.inputs || [],
-    inspection_id: record.inspection_id || '',
   };
 }
 export function sourcePayload(form) {
@@ -504,9 +500,7 @@ export function sourcePayload(form) {
     provider: form.mode === 'dataset' ? 'nl2sql_http' : form.provider,
     input_ids: form.mode === 'dataset' || (graph && form.import_data) ? form.input_ids : [],
     import_data: form.mode === 'connection' && graph && form.import_data,
-    ...(form.mode === 'connection'
-      ? { connection, ...(graph ? {} : { inspection_id: form.inspection_id }) }
-      : {}),
+    ...(form.mode === 'connection' ? { connection } : {}),
     ...(form.id ? { revision: form.revision } : {}),
   };
 }

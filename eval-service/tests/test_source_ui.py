@@ -1,64 +1,6 @@
 """All connection metadata, identities, credentials and rows here are synthetic."""
-import json
-import time
 
 from test_evaluation import consumer_data_source, environment, preparation, run, wait
-
-
-def sql_connection():
-    return {'url':'https://service.example.net','scene':'workspace_demo',
-            'evaluation_workspace_id':'workspace_demo','token':'synthetic-invalid-token'}
-
-
-def test_sql_inspection_readonly_metadata_owner_scope_and_secret_roundtrip(environment):
-    client,app,deps,cfg=environment
-    original=deps.json
-    calls=[]
-    def dependency(method,base,path,**kwargs):
-        if path=='/api/v1/sql':
-            calls.append(kwargs['json'])
-            return {'success':True,'data':[{'table_name':'items','column_name':'id','data_type':'varchar(64)','is_nullable':'NO'},
-                                         {'table_name':'items','column_name':'value','data_type':'int','is_nullable':'YES'}]}
-        return original(method,base,path,**kwargs)
-    deps.json=dependency
-    connection=sql_connection()
-    inspected=client.post('/evaluation/api/data-source-inspections',json={'provider':'nl2sql_http','connection':connection})
-    assert inspected.status_code==200,inspected.text
-    handle=inspected.json()['inspection_id']
-    assert calls and calls[0]['sql'].startswith('SELECT TABLE_NAME')
-    assert "TABLE_SCHEMA = 'workspace_demo'" in calls[0]['sql']
-    assert inspected.json()['tables']=={'items':['id','value']}
-    assert 'synthetic-invalid-token' not in inspected.text
-    payload={'name':'data_source_demo','mode':'connection','provider':'nl2sql_http','connection':connection,'inspection_id':handle}
-    saved=client.post('/evaluation/api/data-sources',json=payload)
-    assert saved.status_code==200,saved.text
-    record=saved.json()
-    read=client.get(f"/evaluation/api/data-sources/{record['id']}")
-    assert read.json()['connection_view']['scene']=='workspace_demo'
-    assert read.json()['secret_configured'] is True
-    assert 'token' not in read.json()['connection_view']
-    assert 'synthetic-invalid-token' not in read.text
-    without_token={k:v for k,v in connection.items() if k!='token'}
-    updated=client.put(f"/evaluation/api/data-sources/{record['id']}",json={**payload,'connection':without_token,'revision':record['revision']})
-    assert updated.status_code==200,updated.text
-    stale=client.post('/evaluation/api/data-sources',json={**payload,'connection':{**connection,'scene':'other_demo'}})
-    assert stale.status_code==409
-    client.headers['Authorization']='Bearer synthetic-user-b'
-    assert client.post('/evaluation/api/data-sources',json=payload).status_code==404
-    assert client.get(f"/evaluation/api/data-sources/{record['id']}").status_code==404
-
-
-def test_schema_failure_hides_dependency_body_and_duplicate_pages(environment):
-    client,app,deps,cfg=environment
-    original=deps.json
-    def failing_sql(method,base,path,**kw):
-        if path=='/api/v1/sql': return {'success':False,'error':'synthetic dependency diagnostic'}
-        return original(method,base,path,**kw)
-    deps.json=failing_sql
-    response=client.post('/evaluation/api/data-source-inspections',json={'provider':'nl2sql_http','connection':sql_connection()})
-    assert response.status_code==422
-    assert 'synthetic dependency diagnostic' not in response.text
-    assert client.post('/evaluation/api/data-source-inspections',json={'provider':'nl2sql_http','connection':{**sql_connection(),'scene':"demo'; DELETE"}}).status_code==422
 
 
 def test_neo4j_no_import_needs_no_handwritten_schema_and_binds_ontology(environment):
@@ -127,26 +69,6 @@ def test_graph_preview_uses_uploaded_rows_and_rejects_missing_primary_keys(envir
     assert changed.status_code==200
     assert client.post('/evaluation/api/data-source-previews',json=query).status_code==422
     assert not deps.requests
-
-
-def test_sql_pagination_detects_repeated_metadata_and_refuses_secret_retarget(environment):
-    client,app,deps,cfg=environment
-    original=deps.json
-    rows=[{'table_name':'items','column_name':f'field_{i}','data_type':'int','is_nullable':'YES'} for i in range(200)]
-    def repeating_sql(method,base,path,**kw):
-        if path=='/api/v1/sql': return {'success':True,'data':rows}
-        return original(method,base,path,**kw)
-    deps.json=repeating_sql
-    response=client.post('/evaluation/api/data-source-inspections',json={'provider':'nl2sql_http','connection':sql_connection()})
-    assert response.status_code==409
-    assert response.json()['code']=='schema_changed'
-    from evaluation.source_config import SourceConfig
-    config=SourceConfig(app.state.store,deps)
-    existing={'provider':'nl2sql_http','connection':app.state.store.encrypt(sql_connection())}
-    from evaluation.core import Failure
-    import pytest
-    with pytest.raises(Failure,match='重新填写'):
-        config.connection('synthetic-owner','nl2sql_http',{**sql_connection(),'url':'https://other.example.net','token':''},existing)
 
 
 def test_start_rejects_changed_case_revision_before_creating_task(environment):

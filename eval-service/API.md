@@ -22,7 +22,7 @@
 | `GET /packages/{id}/releases/{rid}/solver-operations` | 该版本启用的求解操作：solver_key、title、decision_model、profile_id、input_schema（不超过 16 KiB，超出时只给 input_schema_truncated）；最多 64 项，供编辑求解验证集 |
 | `GET/POST /eval-sets`、`/data-sources`、`/solver-sets` | 用户定义列表和创建 |
 | `GET/PUT/DELETE /eval-sets/{id}`、`/data-sources/{id}`、`/solver-sets/{id}` | 读取、带 revision 更新、删除定义；不改历史快照。数据源读取额外返回 connection_view、secret_configured 和 inputs 文件元数据，不返回凭据值 |
-| `POST /data-source-inspections` | provider、connection、可选 data_source_id；从 Scene 对应数据库读取表字段，返回 inspection_id、schema、tables、read_at。固定只读元数据查询，不接受客户端 SQL |
+| `POST /data-source-tests` | provider 为 nl2sql_http 或 nl2sql_template，connection、可选 data_source_id；使用固定 SELECT 1 测试连接，返回 success、message、tested_at，不保存配置 |
 | `POST /data-source-previews` | data_source_id、package_ref；只读预览对象绑定、实体实例与关系数量、缺失列、警告和截断标志；不发布或写入外部数据 |
 | `POST /graph-import-checks` | data_source_id、package_ref、可选 preparation_id；只读检查 Workspace 与 Ontology 同时匹配的节点、范围内关系和跨范围关系，返回 id、scope、计数、expires_at、import_state；启动用检查必须绑定 preparation_id |
 | `POST /inputs` | multipart file，CSV/XLSX，返回受控句柄和摘要 |
@@ -65,7 +65,9 @@
 
 Hub 查询默认每页 20、最多 100；本地列表每页 20，按 next_offset 翻页。用例列表截短问题/理由，完整答案单独读取。映射预览最多 20 个对象，有 truncated 标志。consumer 单次响应最多 2 MiB、事件索引源最多 1 MiB/输出最多 100 项；超限明确失败，不伪装成完整结果。
 
-新表单的 NL2SQL 数据源保存传 inspection_id，结构由服务端读取结果填入；句柄须属于当前主体且与 Provider / 连接指纹一致，不能把旧库结构套用到新连接。每次读取最多 100 张表、每表 256 字段，每批响应最多 1 MiB；空结构、权限失败、重复分页或超限明确报错。外部服务地址和凭据不进入错误正文。旧客户端的 connection / tables 请求仍按原契约处理。
+两类 NL2SQL Provider 通过 `POST /data-source-tests` 测试当前连接：请求体仅接受 `provider`、`connection` 和可选的自有 `data_source_id`。编辑已有配置时，Token 留空沿用已保存值；地址变化时不能沿用旧凭据。服务向规范化后的地址调用 `POST /api/v1/sql`，请求体固定为 `{"scene":"<当前 Scene>","sql":"SELECT 1"}`，超时 10 秒、响应上限 64 KiB。仅对端明确返回 `success: true` 视为通过；网络或 HTTP 失败返回 `connection_unavailable`（503），业务拒绝或协议异常返回 `connection_test_failed`（422）。错误不回显对端正文、地址或凭据。测试不创建数据源、不保存结构，也不修改配置。
+
+NL2SQL 外部连接在预览和准备阶段始终沿用知识包既有映射，忽略旧记录或客户端携带的 `tables` 与旧文件选择；不生成派生评测快照。外部 SQL 导入仍被拒绝。已有 dataset 和 Neo4j 图导入按其数据表生成映射。
 
 Neo4j 查询模式允许无 tables；导入模式需要文件和明确的 import_data。表单支持 workspace_property / workspace_value / ontology_property，ontology_value 在执行时由固定知识包补入。新建表单默认 `d2o_workspace_id` / `d2o_ontology_id`，与 consumer 图数据的范围字段一致；保存时 workspace_property 留空按 `d2o_workspace_id` 处理。图导入预览最多 100 个对象、100 条关系与 20 条提示，truncated 标记不完整结果。节点实例按主键去重；关系按源 / 目标主键与关联字段统计，预览不提交任何图写入。
 
