@@ -343,6 +343,34 @@ def test_flow_rules_in_order(api):
     assert blocked["primary"]["label"] == "继续校验"
 
 
+def test_handed_down_matches_rule_7(api):
+    """待处理和建议条第 7 条用同一个判定（flow_state.handed_down）。
+
+    校验已确认时它修对象让建模、指标过期，不要你刷新；资料变了（对象一步过期）、校验没跑过时要你刷新。
+    按段的节点要过期的每一步都交出去才算。"""
+    _, _, _, root = api
+    flow = model.load_for(root)
+    module = model.flow_state(root)
+    nodes = flow["nodes"]
+    by_id = {node["id"]: node for node in nodes}
+
+    def state_of(**overrides):
+        return {node_id: item["state"] for node_id, item in _states(root, **overrides).items()}
+
+    op_step = {"slice_id": "all", "step": "operation"}
+    obj_step = {"slice_id": "all", "step": "object"}
+    rule_step = {"slice_id": "all", "step": "rule"}
+    checked = state_of(core_model="stale", core_metric="stale")
+    assert module.handed_down(by_id["core.model"], nodes, checked, [op_step, rule_step])
+    assert module.handed_down(by_id["core.metric"], nodes, checked)
+    assert not module.handed_down(by_id["core.model"], nodes, checked, [op_step, obj_step])
+    unchecked = state_of(core_model="stale", core_validate="ready")
+    assert not module.handed_down(by_id["core.model"], nodes, unchecked, [op_step])
+    # 可选的一步（规则）：后面的校验还会跑就交给它
+    assert module.handed_down(by_id["core.model"], nodes, unchecked, [rule_step])
+    assert not module.handed_down(by_id["core.model"], nodes, checked, [])
+
+
 def test_flow_rule_commands_are_accepted_by_the_api(api):
     """第 5～10 条给出的命令按建议条的方式发一次（S-20，带 from_suggestion），都收下（2xx）。"""
     client, manager, project_id, root = api

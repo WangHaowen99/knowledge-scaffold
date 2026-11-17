@@ -16,6 +16,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import logging
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -85,8 +86,12 @@ def _has_files(root: Path, spec: dict) -> bool:
     return False
 
 
-def _has_pending(root: Path, spec: dict) -> bool:
-    """报告里有没有未处理的 `[ ]` 条目（只看目录第一层）。"""
+# 未处理的条目：列表项开头的 `[ ]`（`- [ ] ❌ …`）。正文里出现的 `[ ]`（如修复说明「补 `[[ ]]` 包裹」）不算
+_PENDING_ITEM = re.compile(r'^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[ \]', re.MULTILINE)
+
+
+def has_pending(root: Path, spec: dict) -> bool:
+    """报告里有没有未处理的 `[ ]` 条目（只看目录第一层，只认列表项开头的）。内核按平台这份算（conditions）。"""
     globs = _as_list(spec.get('glob')) or ['*.md']
     for rel in _as_list(spec.get('pending')):
         base = root / rel
@@ -96,7 +101,7 @@ def _has_pending(root: Path, spec: dict) -> bool:
             if not path.is_file() or not any(fnmatch.fnmatch(path.name, g) for g in globs):
                 continue
             try:
-                if '[ ]' in path.read_text(encoding='utf-8', errors='ignore'):
+                if _PENDING_ITEM.search(path.read_text(encoding='utf-8', errors='ignore')):
                     return True
             except OSError:
                 continue
@@ -133,7 +138,7 @@ def evaluate(flow: dict, root: Path) -> dict:
         if 'files' in spec:
             result = _has_files(root, spec)
         elif 'pending' in spec:
-            result = _has_pending(root, spec)
+            result = has_pending(root, spec)
         elif 'tags' in spec:
             result = _has_tags(root, str(spec['tags']))
         elif spec.get('research') == 'accepted':
@@ -354,6 +359,23 @@ def _step_optional(node: dict, step_id) -> bool:
     return any(step.get('optional') for step in node.get('steps') or [] if step.get('id') == step_id)
 
 
+def _step_handed_down(node: dict, step_id, nodes: list, state_of: dict) -> bool:
+    """按段节点过期的一步已交给后面的核对节点：可选的一步只要核对节点还会跑就算，必经的要核对节点已确认。"""
+    states = LENIENT_STATES if _step_optional(node, step_id) else ('confirmed',)
+    return _checked_downstream(node, _step_stale_on(node, step_id), nodes, state_of, states)
+
+
+def handed_down(node: dict, nodes: list, state_of: dict, slice_stale: list = ()) -> bool:
+    """过期的节点已经全交给后面的核对节点（第 7 条不推刷新）时返回 True。
+
+    按段的节点要过期的每一步都交出去才算。待处理（服务端）用同一个判定，不列建议条不推的刷新——两边口径一致（ADR-0090）。"""
+    if node.get('per_slice'):
+        steps = list(slice_stale or [])
+        return bool(steps) and all(_step_handed_down(node, step.get('step'), nodes, state_of) for step in steps)
+    states = LENIENT_STATES if node.get('optional') else ('confirmed',)
+    return _checked_downstream(node, list(node.get('stale_on') or []), nodes, state_of, states)
+
+
 def refresh_label(cause: str, title: str) -> str:
     """过期步骤的按钮：「对象有变化，刷新校验」（cause 是确认之后变了的那几类）；说不清哪类变了时只写「刷新校验」。"""
     return f"{cause}有变化，刷新{title}" if cause else f"刷新{title}"
@@ -381,8 +403,7 @@ def _stale_items(nodes: list, state_of: dict, context: dict) -> list:
         if node.get('per_slice'):
             for step in context.get('slice_stale') or []:
                 lenient = _step_optional(node, step.get('step'))
-                states = LENIENT_STATES if lenient else ('confirmed',)
-                if _checked_downstream(node, _step_stale_on(node, step.get('step')), nodes, state_of, states):
+                if _step_handed_down(node, step.get('step'), nodes, state_of):
                     continue
                 where = f"「{step['slice_name']} · {step['step_label']}」" if step.get('sliced') else step['step_label']
                 (optional if lenient else required).append(
@@ -391,8 +412,7 @@ def _stale_items(nodes: list, state_of: dict, context: dict) -> list:
                           reason=REFRESH_REASON, priority=2, icon='refresh'))
             continue
         lenient = bool(node.get('optional'))
-        states = LENIENT_STATES if lenient else ('confirmed',)
-        if _checked_downstream(node, list(node.get('stale_on') or []), nodes, state_of, states):
+        if handed_down(node, nodes, state_of):
             continue
         entry = (node.get('entry') or {}).get('command') or next(
             (action['command'] for action in _node_actions(node, probes=context.get('probes')) if action.get('command')), None)

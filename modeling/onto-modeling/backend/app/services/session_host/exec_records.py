@@ -390,14 +390,18 @@ def observe_phase(project_id: str, exec_id: str, root: Path) -> tuple[dict | Non
         raw = lock_phase(root, record.get("command_name") or "")
         if raw is None or raw == (record.get("phase") or {}).get("raw"):
             return record, False
-        seen = list(record.get("phases_seen") or [])
-        if raw not in seen:
-            seen.append(raw)
-        record["phases_seen"] = seen
-        record["phase"] = {"index": seen.index(raw) + 1, "total": len(seen), "label": phase_label(raw), "raw": raw}
+        _set_phase(record, raw)
         record["heartbeat_at"] = time.time()
         _write(record)
         return record, True
+
+
+def _set_phase(record: dict, raw: str) -> None:
+    seen = list(record.get("phases_seen") or [])
+    if raw not in seen:
+        seen.append(raw)
+    record["phases_seen"] = seen
+    record["phase"] = {"index": seen.index(raw) + 1, "total": len(seen), "label": phase_label(raw), "raw": raw}
 
 
 def finish_turn(project_id: str, exec_id: str, root: Path, *, waiting_user: bool = False, flow: dict | None = None,
@@ -455,6 +459,10 @@ def interrupt(project_id: str, exec_id: str, reason: str, *, root: Path | None =
         record["interrupted"] = {"at": now, "reason": reason if reason in REASONS else "engine_exit",
                                  "reason_text": reason_text or REASON_TEXT.get(reason, "")}
         if root is not None:
+            # 停在哪个阶段按打断这一刻的命令锁记（心跳之间阶段可能变过）：接管时据此判断活干完没有
+            raw = lock_phase(root, record.get("command_name") or "")
+            if raw is not None and raw != (record.get("phase") or {}).get("raw"):
+                _set_phase(record, raw)
             record["saved"] = saved(root, record.get("base_commit") or "")
             if flow is not None:
                 record["input_fingerprint"] = input_fingerprint(root, flow, (record.get("node") or {}).get("id"))

@@ -157,15 +157,23 @@ def _slice_ref(run: dict) -> dict:
     return {"id": unit["id"], "name": unit["name"]} if unit else {"id": None, "name": ""}
 
 
-def record(project_id: str, run_id: str, questions: list[dict], raws: list[dict], exec_id: str | None) -> tuple[dict, list, list]:
-    """按策略答一组问题，台账与挂起记进运行记录。返回 (问题原文 → 答案, 台账条目, 挂起的问题)。"""
+HANDED_OVER_PREFIX = "开始自主构建时没回答的问题："
+
+
+def record(project_id: str, run_id: str, questions: list[dict], raws: list[dict], exec_id: str | None, *,
+           slice_ref: dict | None = None, handed_over: bool = False) -> tuple[dict, list, list]:
+    """按策略答一组问题，台账与挂起记进运行记录。返回 (问题原文 → 答案, 台账条目, 挂起的问题)。
+
+    handed_over：开始运行时从别的对话接过来的问题（接管时撤回的决策卡）。没有正在问的那一步，记在 slice_ref
+    那一段上；答案靠运行每一步的注入（「已做的自动决定」「挂起的问题」）带给助手。"""
     answers: dict[str, str] = {}
     entries, suspensions = [], []
+    given_slice = slice_ref
 
     def change(run: dict) -> None:
         advanced = (run.get("policy") or {}).get("advanced") or {}
         threshold = float(advanced.get("confidence_threshold") or 0.8)
-        slice_ref = _slice_ref(run)
+        slice_ref = given_slice or _slice_ref(run)
         step = (run.get("cursor") or {}).get("step")
         info = (run.setdefault("slices", {})).setdefault(slice_ref["id"] or "", {})
         now = time.time()
@@ -184,6 +192,8 @@ def record(project_id: str, run_id: str, questions: list[dict], raws: list[dict]
                         "handled_as": "跳过这一项，先做下一步", "kind": "question", "options": options,
                         "allow_custom": True, "actions": [], "state": "open", "step": step, "exec_id": exec_id,
                         "confidence": outcome["confidence"], "anchors": found}
+                if handed_over:
+                    item.update(handed_over=True, handled_as="跳过和它相关的部分，先做别的")
                 run.setdefault("suspensions", []).append(item)
                 info.setdefault("suspensions", []).append(item["id"])
                 info.setdefault("timeline", []).append({"type": "suspension", "id": item["id"]})
@@ -202,6 +212,8 @@ def record(project_id: str, run_id: str, questions: list[dict], raws: list[dict]
                 "summary": f"{slice_ref['name']}：{plain_label(chosen)}" if slice_ref["name"] else plain_label(chosen),
                 "step": step, "exec_id": exec_id, "option_id": chosen["id"],
             }
+            if handed_over:
+                entry.update(handed_over=True, reason_text=HANDED_OVER_PREFIX + entry["reason_text"])
             run.setdefault("ledger", []).append(entry)
             info.setdefault("decisions", []).append(entry["id"])
             info.setdefault("timeline", []).append({"type": "auto_decision", "id": entry["id"]})

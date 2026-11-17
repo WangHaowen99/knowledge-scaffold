@@ -871,11 +871,12 @@ async def dispatch_command(project_id: str, root: Path, request: Request, body: 
     _ensure_not_busy(project_id, conversation_id)
     text = _render_command(command, args, str(body.get("text") or ""))
     label = known[name]["label"]
-    task = command_tasks.create(project_id, origin=origin, title=f"助手正在执行「{label}」",
-                                conversation_id=conversation_id, command=name)
     # 对话里显示业务名、不出命令原文和参数（F4b-paths；端到端验证）：「节点 · 按钮叫法」，页面另给的说明另起一段。
-    # 页面给了 display_label（按钮叫法）时 text 是动作自带的参数，不当说明显示
+    # 任务标题用同一个名字：同一条命令有几个按钮时（资料分析、追加资料分析），目录里只记了其中一个叫法
     head = command_display_name(known[name], str(body.get("display_label") or "").strip())
+    task = command_tasks.create(project_id, origin=origin, title=f"助手正在执行「{head}」",
+                                conversation_id=conversation_id, command=name)
+    # 页面给了 display_label（按钮叫法）时 text 是动作自带的参数，不当说明显示
     shown = str(body.get("display_text") or ("" if body.get("display_label") else body.get("text")) or "").strip()
     if shown.startswith("/"):
         shown = ""

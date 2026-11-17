@@ -172,6 +172,250 @@ def test_start_takes_over_a_conversation_waiting_for_an_answer(ab):
     wait_state(client, project_id, started.json()["run_id"], "completed")
 
 
+def test_take_over_hands_the_question_and_the_unfinished_step_to_the_run(ab, monkeypatch):
+    """接管时的交接（实测：撤回的决策卡没去向、被打断的那一步留成「没做完」的续跑项、打断记录写「已保存到」旧版本）。
+
+    陪伴对话里对象提取写完对象、停在问题卡上，从这里开始自主构建：这一轮的对象先合入，对象一步开始时已经做完；
+    - 撤回的问题按「拿不准时」的做法定下来，记进台账（标明是开始时没回答的、待复核），并带给运行的每一步；
+    - 被打断的执行交给运行收尾：不进待处理的续跑，陪伴对话的建议条不推「继续」，对话里留一行交给了哪次运行；
+    - 打断记录写「交给自主构建」，不带已保存的版本。"""
+    import asyncio
+    import threading
+
+    from tests.autobuild_helpers import OBJECTS
+    from tests.test_changesets import obj
+
+    client, _workspaces, project_id, root = ab
+    held = threading.Event()
+
+    def write_objects(ctx):
+        from pathlib import Path
+
+        for name in OBJECTS:
+            path = Path(ctx.cwd) / "ontology" / "object" / f"{name}.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(obj(name, "合成对象"), encoding="utf-8")
+
+    async def hold(ctx):
+        await asyncio.to_thread(held.wait, 30)
+
+    monkeypatch.setattr(AutoEngine, "interrupt", stopping_interrupt(held))
+
+    AutoEngine.hooks["/ontology-extract-object:all"] = [write_objects, lock_phase("confirm"), ask([
+        {"question": "补货明细要不要单独建对象", "header": "置信度 0.6",
+         "options": [{"label": "单独建（推荐）"}, {"label": "并入补货单（保守）"}]}]), hold]
+    default = client.get(f"/api/v1/projects/{project_id}/conversations").json()["items"][0]["id"]
+    assert client.post(f"/api/v1/projects/{project_id}/conversations/{default}/messages",
+                       json={"text": "/ontology-extract-object"}).status_code == 202
+    wait_until(lambda: [item for item in history(client, project_id, default) if item["type"] == "question.asked"])
+    base = f"/api/v1/projects/{project_id}/autobuild"
+    client.put(f"{base}/policy", json=SLICES_ONLY)
+    preview = client.post(f"{base}/runs/preview", json={}).json()
+    started = client.post(f"{base}/runs", json={"preview_token": preview["preview_token"], "take_over": True})
+    assert started.status_code == 201, started.text
+    run = wait_state(client, project_id, started.json()["run_id"], "completed")
+    # 撤回的问题：低于阈值，取保守项记为假设、待复核；运行的每一步都带着它
+    ledger = client.get(f"{base}/runs/{run['run_id']}/ledger").json()["items"]
+    handed = [item for item in ledger if item["question"] == "补货明细要不要单独建对象"]
+    assert len(handed) == 1 and handed[0]["chosen"] == "并入补货单" and handed[0]["assumption"] is True
+    assert handed[0]["review_state"] == "pending" and handed[0]["slice"] == {"id": "all", "name": "全部"}
+    assert handed[0]["reason_text"].startswith("开始自主构建时没回答的问题")
+    run_hints = [hint for hint in AutoEngine.hints if hint.startswith("自主构建 · 运行 #1")]
+    assert run_hints and all("补货明细要不要单独建对象 → 并入补货单（假设）" in hint for hint in run_hints)
+    # 对象一步开始时已经做完（这一轮先合入了），运行只做操作；被打断的执行交给运行收尾
+    assert [text for text in AutoEngine.sent if text.startswith("/ontology-extract")] == [
+        "/ontology-extract-object", "/ontology-extract-operation"]
+    records = [record for record in exec_records_of(project_id) if record.get("conversation_id") == default]
+    assert len(records) == 1 and records[0]["state"] == "abandoned"
+    assert records[0]["handed_over"] == {"run_id": run["run_id"], "run_no": 1, "taken_over": True}
+    inbox_items = client.get(f"/api/v1/projects/{project_id}/inbox").json()["items"]
+    assert not [item for item in inbox_items if item["kind"] == "resumable"]
+    suggestions = client.get(f"/api/v1/projects/{project_id}/flow/suggestions",
+                             params={"conversation_id": default}).json()
+    actions = [item["action"] for item in [suggestions["primary"], *suggestions["secondary"]] if item]
+    assert not [action for action in actions if action.get("type") in ("resume_exec", "abandon_exec")]
+    events = history(client, project_id, default)
+    interrupted = [item["data"] for item in events if item["type"] == "session.interrupted"]
+    assert interrupted[-1]["by"] == "autobuild" and interrupted[-1]["saved"] is None
+    assert interrupted[-1]["position_label"] == "开始了自主构建，「对象提取」交给它接着做"
+    notices = [item["data"]["text"] for item in events if item["type"] == "notice"]
+    assert notices == ["「对象提取」交给自主构建 · 运行 #1，这里不用再继续"]
+    # 切回陪伴对话：注入里带交接说明（运行从哪个版本开始、增删改了哪些条目、以主线为准）；运行自己的对话、
+    # 运行之后才建的对话不带
+    from app.services.session_host import injection
+
+    def injected(conversation_id):
+        return injection.build_context(root, user_text="现在几个操作", session_start=True, last_injected=None,
+                                       conversation_id=conversation_id).text
+
+    note = injected(default)
+    assert "交接：这条对话之后，自主构建运行 #1（从 " in note and "新增 操作1、操作2、操作3、操作4、操作5" in note
+    assert "以现在的主线为准" in note and "对象1" not in note  # 对象在运行开始前就合入了，不是运行改的
+    assert "交接" not in injected(run["conversation_id"])
+    later = client.post(f"/api/v1/projects/{project_id}/conversations", json={}).json()["id"]
+    assert "交接" not in injected(later)
+
+
+def test_rules_written_along_with_operations_need_review(ab):
+    """操作提取一起抽的规则、指标也记成自主完成、待复核。
+
+    规则一步不在运行计划里（F8 随操作一起抽），原来按「内容在、没有记录」记成人确认过（实测：运行写的 13 条规则在流程上
+    是已确认）；指标节点同理（实测：运行合入后指标节点是已确认）。"""
+    from pathlib import Path
+
+    client, _workspaces, project_id, _root = ab
+
+    def write_rule(ctx):
+        for rel, text in (("ontology/rule/规则1.md", "# 规则1\n\n## 规则描述\n\n合成规则\n"),
+                          ("ontology/metric/指标1.md", "# 指标1\n\n## 指标定义\n\n合成指标\n")):
+            path = Path(ctx.cwd) / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+
+    AutoEngine.hooks["/ontology-extract-operation:all"] = [write_rule]
+    run = start(client, project_id, **SLICES_ONLY)
+    wait_state(client, project_id, run["run_id"], "completed")
+    flow = client.get(f"/api/v1/projects/{project_id}/flow").json()
+    stages = next(item for item in flow["slices"] if item["id"] == "all")["stages"]
+    assert stages["operation"] == "auto" and stages["rule"] == "auto"
+    # 指标节点（旁支）也是这一轮顺带写的：自主完成、待复核，不是人确认过
+    metric = next(node for node in flow["nodes"] if node["id"] == "core.metric")
+    assert metric["display_state"] == "auto" and metric["flags"]["review_source"] == "autobuild"
+
+
+def test_only_steps_the_run_owns_are_handed_over():
+    """开始时别的对话里没做完的执行，哪些交给运行收尾。
+
+    运行计划里有的交给运行；不在计划里的，停在等回答（活干完了）、这一步也做完了的收尾；停在干活中途的（条目写了一半也算
+    「做完」）、运行范围外又没做完的留着，照常能续跑。"""
+    run = {"units": [{"id": "all", "kind": "slice", "steps": [{"id": "operation"}]},
+                     {"id": "core.validate", "kind": "node", "steps": [{"id": "core.validate"}]}]}
+    rows = {"all": {"object": "confirmed", "operation": "ready", "rule": "not_ready"}}
+    runner_class = runner_module.AutobuildRunner
+
+    def step(name, phase=None, state="interrupted"):
+        return {"slice": {"id": "all", "name": "全部"}, "step": name, "node": {"id": "core.model"},
+                "state": state, "command_name": "extract-object", "phase": {"raw": phase}}
+
+    assert runner_class._in_run(run, step("operation")) is True
+    assert runner_class._in_run(run, step("object")) is False
+    assert runner_class._in_run(run, {"slice": None, "step": None, "node": {"id": "core.validate"}}) is True
+    assert runner_class._done_at_start(step("object"), rows) is True
+    assert runner_class._done_at_start(step("rule"), rows) is False
+    assert runner_class._done_at_start({"slice": None, "step": None, "node": {"id": "core.metric"}}, rows) is None
+    flow = {"nodes": [], "commands": {}}
+    assert runner_module._stopped_for_reply(step("object", "confirm"), flow) is True
+    assert runner_module._stopped_for_reply(step("object", "objects"), flow) is False
+    assert runner_module._stopped_for_reply(step("object", None, state="waiting"), flow) is True
+
+
+def test_tail_redoes_a_node_taken_over_mid_work(tmp_path, monkeypatch):
+    """被接管时停在干活中途的主线节点（校验写了一半的报告也满足完成判定）：已确认也排进运行，提示从哪停的。"""
+    from app.services.autobuild import plan
+    from app.services.flow import view
+
+    flow_doc = {"nodes": [{"id": "core.model", "per_slice": True},
+                          {"id": "core.validate", "title": "校验", "entry": {"command": "/ontology-validate"}}]}
+    monkeypatch.setattr(view, "build", lambda root: {"nodes": [{"id": "core.model", "state": "confirmed"},
+                                                               {"id": "core.validate", "state": "confirmed"}]})
+    policy = {"scope": {"until_node": "core.validate"}}
+    assert plan._tail(tmp_path, flow_doc, policy) == []
+    units = plan._tail(tmp_path, flow_doc, policy, {"core.validate": {"step": "core.validate", "phase": "检查"}})
+    assert [unit["id"] for unit in units] == ["core.validate"] and units[0]["steps"][0]["resume_from"] == "检查"
+
+
+def test_preview_warns_about_unanswered_blueprint_questions(ab):
+    """蓝图里没回答的问题留在待处理、运行不代答（契约 BP-03）：开始前预览说清楚（实测：没提，跑完还在待处理里）。"""
+    from app.services.flow import blueprint as blueprint_service
+
+    client, workspaces, project_id, _root = ab
+    base = f"/api/v1/projects/{project_id}/autobuild"
+    client.put(f"{base}/policy", json=SLICES_ONLY)
+    assert client.post(f"{base}/runs/preview", json={}).json()["warnings"] == []
+    blueprint_service.add_question(workspaces, project_id, "补货金额按含税还是不含税", actor="employee_0001")
+    warnings = client.post(f"{base}/runs/preview", json={}).json()["warnings"]
+    assert warnings == ["建模蓝图里有 1 个问题没回答，运行不会替你答，会留在待处理里"]
+
+
+def test_take_over_mid_work_lets_the_run_finish_that_step(ab, monkeypatch):
+    """对象提取写到一半（「写入对象」阶段，不是在等回答）时接管，运行接着做完这一步。
+
+    写了一半的对象合入后按「条目在」算这一步做完了，运行原来直接跳过对象（实测）。现在运行照做，提示里说清从哪停的、
+    已保存的不要重做；做完记自主完成。"""
+    import asyncio
+    import threading
+
+    from tests.autobuild_helpers import OBJECTS
+    from tests.test_changesets import obj
+
+    client, _workspaces, project_id, _root = ab
+    held = threading.Event()
+
+    def write_two(ctx):
+        from pathlib import Path
+
+        for name in OBJECTS[:2]:
+            path = Path(ctx.cwd) / "ontology" / "object" / f"{name}.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(obj(name, "合成对象"), encoding="utf-8")
+
+    async def hold(ctx):
+        await asyncio.to_thread(held.wait, 30)
+
+    AutoEngine.hooks["/ontology-extract-object:all"] = [lock_phase("objects"), write_two, hold]
+    monkeypatch.setattr(AutoEngine, "interrupt", stopping_interrupt(held))
+    default = client.get(f"/api/v1/projects/{project_id}/conversations").json()["items"][0]["id"]
+    assert client.post(f"/api/v1/projects/{project_id}/conversations/{default}/messages",
+                       json={"text": "/ontology-extract-object"}).status_code == 202
+    wait_until(lambda: "/ontology-extract-object" in AutoEngine.sent)
+    base = f"/api/v1/projects/{project_id}/autobuild"
+    client.put(f"{base}/policy", json=SLICES_ONLY)
+    preview = client.post(f"{base}/runs/preview", json={}).json()
+    assert preview["busy"] == {"conversation_id": default, "waiting": False}
+    started = client.post(f"{base}/runs", json={"preview_token": preview["preview_token"], "take_over": True})
+    assert started.status_code == 201, started.text
+    run = wait_state(client, project_id, started.json()["run_id"], "completed")
+    assert [text for text in AutoEngine.sent if text.startswith("/ontology-extract")] == [
+        "/ontology-extract-object", "/ontology-extract-object", "/ontology-extract-operation"]
+    first = next(hint for hint in AutoEngine.hints if hint.startswith("自主构建 · 运行 #1"))
+    assert "「对象提取」是从陪伴建模接过来的、没做完的一步（停在「写入对象」）" in first
+    flow = client.get(f"/api/v1/projects/{project_id}/flow").json()
+    stages = next(item for item in flow["slices"] if item["id"] == "all")["stages"]
+    assert stages["object"] == "auto" and stages["operation"] == "auto"
+    records = [record for record in exec_records_of(project_id) if record.get("conversation_id") == default]
+    assert [(record["state"], record["phase"]["raw"]) for record in records] == [("abandoned", "objects")]
+    assert run_of(client, project_id, run["run_id"])["matrix"][0]["cells"]["object"] == "auto"
+
+
+def lock_phase(phase: str, command: str = "extract-object"):
+    """假引擎把命令锁切到某个阶段（工具箱的命令等你回答之前切到 confirm）。"""
+    def action(ctx):
+        from pathlib import Path
+
+        path = Path(ctx.cwd) / ".ontology-state" / f"lock-{command}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"command": command, "phase": phase}), encoding="utf-8")
+    return action
+
+
+def stopping_interrupt(held):
+    """和真引擎一样的打断：这一轮剩下的不再做，马上以「已打断」结束（假引擎原来只在队尾补一个结果）。"""
+    from tests.autobuild_helpers import result
+
+    async def interrupt(self):
+        while not self.queue.empty():
+            self.queue.get_nowait()
+        await self.queue.put(result(subtype="interrupted"))
+        held.set()
+    return interrupt
+
+
+def exec_records_of(project_id: str) -> list[dict]:
+    from app.services.session_host import exec_records
+
+    return exec_records.all_records(project_id)
+
+
 def test_pause_then_stop_at_safe_point_then_convert(ab):
     client, _workspaces, project_id, root = ab
     release = gate("/ontology-extract-object:all")

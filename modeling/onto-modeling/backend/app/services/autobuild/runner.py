@@ -32,7 +32,7 @@ import uuid
 
 from ...api.errors import ApiError
 from .. import workspace_labels
-from . import budget, hint, limits, plan, store, views
+from . import budget, decide, hint, limits, plan, store, views
 
 _log = logging.getLogger(__name__)
 
@@ -98,6 +98,26 @@ def _ran_step(record: dict, run: dict, unit: dict, step: dict, started: float) -
     return (record.get("slice") or {}).get("id") in (unit["id"], None) or unit["kind"] == "node"
 
 
+def _stopped_for_reply(record: dict, flow: dict) -> bool:
+    """执行停在等你回答（命令锁在「等你确认」「等你回复」，或这一轮已结束在等回复）：活干完了，只差回答。"""
+    from ..session_host import exec_records
+
+    if record.get("state") == "waiting":
+        return True
+    raw = (record.get("phase") or {}).get("raw")
+    return exec_records.waiting_for_reply(raw, flow, record.get("command_name") or "")
+
+
+def _blueprint_unanswered(ws, project_id: str) -> int:
+    from ..flow import blueprint
+
+    try:
+        doc = blueprint.effective_doc(ws, project_id)
+    except Exception:  # noqa: BLE001 - 预览的提示是增强信息
+        return 0
+    return sum(1 for question in (doc or {}).get("questions") or [] if not question.get("answer"))
+
+
 class AutobuildRunner:
     def __init__(self):
         self._tasks: dict[str, asyncio.Task] = {}
@@ -126,6 +146,10 @@ class AutobuildRunner:
         pending = changeset_store.current(ws.project_root(project_id))
         if pending is not None and pending.get("state") == "conflict":
             warnings.append("有一轮的修改和你的修改冲突，先在待处理里选好保留哪边")
+        unanswered = _blueprint_unanswered(ws, project_id)
+        if unanswered:
+            # 契约 BP-03：蓝图没答的问题留在待处理，运行不代答（实测：开始前没提，跑完还在待处理里）
+            warnings.append(f"建模蓝图里有 {unanswered} 个问题没回答，运行不会替你答，会留在待处理里")
         now = time.time()
         for token, item in list(self._previews.items()):
             if item["expires"] < now:
@@ -169,8 +193,9 @@ class AutobuildRunner:
         reject_new_session(project_id)
         manager = _manager()
         live = manager.live_status(project_id)
+        handover = {"exec_id": None, "questions": []}
         if live and live["busy"] and take_over:
-            await manager.take_over(project_id, TAKE_OVER_REASON)
+            handover = await manager.take_over(project_id, TAKE_OVER_REASON)
             live = manager.live_status(project_id)
         if live and live["busy"]:
             message = "助手在等你回答一个问题，回答或打断后再开始" if live["waiting"] else "助手正在另一条对话里干活，等它结束或先打断"
@@ -189,7 +214,8 @@ class AutobuildRunner:
         await asyncio.to_thread(quota.check_before_turn, project_id, owner, "tokens")
         self._previews.pop(token, None)
         policy_doc = item["policy"]
-        units, rows = await asyncio.to_thread(plan.build, ws, project_id, policy_doc)
+        redo = await asyncio.to_thread(self._unfinished_step, project_id, handover.get("exec_id"))
+        units, rows = await asyncio.to_thread(plan.build, ws, project_id, policy_doc, redo)
         if not units:
             raise ApiError("invalid_argument", "范围里没有要做的步骤", 400, {"fields": {"scope": "empty"}})
         run_no = store.next_run_no(project_id)
@@ -212,10 +238,145 @@ class AutobuildRunner:
         }
         await asyncio.to_thread(store.save, record)
         self._post_card(record, views.start_card(record))
+        await self._hand_over(record, handover)
         project_events.conversation_changed(project_id, conversation["id"])
         _publish(project_id, "autobuild.run.updated", views.summary(record))
         await self.admit()
         return run_view(store.get(project_id, run_id) or record)
+
+    # ------------------------------------------------------------------
+    # 接手别的对话里没做完的（开始时）
+    # ------------------------------------------------------------------
+
+    async def _hand_over(self, run: dict, handover: dict) -> None:
+        """运行建好之后：接管时撤回的问题按策略定下来记进台账（或挂起），别的对话里没做完的执行交给运行收尾。
+
+        开始失败（合入冲突、配额）走不到这里：问题已撤回，执行留着中断，照常能续跑。"""
+        project_id, run_id = run["project_id"], run["run_id"]
+        pairs = handover.get("questions") or []
+        if pairs:
+            try:
+                _answers, entries, suspensions = await asyncio.to_thread(
+                    decide.record, project_id, run_id, [question for question, _ in pairs],
+                    [raw for _, raw in pairs], handover.get("exec_id"),
+                    slice_ref=self._handover_slice(run, handover.get("exec_id")), handed_over=True)
+                await self.on_decisions(project_id, run_id, entries, suspensions)
+            except Exception:  # noqa: BLE001 - 记台账失败不挡开始；问题已撤回，运行里助手会再问
+                _log.exception("接管时撤回的问题没记进台账（%s %s）", project_id, run_id)
+        try:
+            closed = await asyncio.to_thread(self._close_handed_over, run, handover.get("exec_id"))
+        except Exception:  # noqa: BLE001 - 收尾失败时续跑项留着，和修复前一样
+            _log.exception("别的对话里没做完的执行没收尾（%s %s）", project_id, run_id)
+            return
+        by_conversation: dict[str, list[str]] = {}
+        for record in closed:
+            labels = by_conversation.setdefault(record.get("conversation_id") or "", [])
+            label = record.get("command_label") or "这一步"
+            if label not in labels:
+                labels.append(label)
+        for conversation_id, labels in by_conversation.items():
+            if not conversation_id:
+                continue
+            steps = "、".join(f"「{label}」" for label in labels)
+            text = f"{steps}交给自主构建 · 运行 #{run['run_no']}，这里不用再继续"
+            try:
+                _manager().append_record(project_id, conversation_id, {"type": "notice", "payload": {
+                    "kind": "info", "text": text, "version_label": None, "changeset_id": None, "align": "center"}})
+            except Exception:  # noqa: BLE001 - 对话删了：不留这一行
+                _log.warning("对话 %s 里没留下交接说明（%s）", conversation_id, project_id, exc_info=True)
+
+    @staticmethod
+    def _unfinished_step(project_id: str, exec_id: str | None) -> dict:
+        """被接管打断、停在干活中途的那一步，运行要接着做完。
+
+        建模的一步返回 {段: {step, phase}}，主线节点返回 {节点: {step, phase}}。
+
+        合入时条目写了一半也按「条目在」算这一步做完（实测：「写入对象」中途接管，对象一步记成已确认，运行跳过对象）。
+        停在「等你确认」「等你回复」的不算：活已经干完，只差回答，回答交给台账。"""
+        from ..session_host import exec_records
+
+        record = exec_records.get(project_id, exec_id) if exec_id else None
+        if record is None or record.get("state") != "interrupted":
+            return {}
+        if _stopped_for_reply(record, plan.flow(_ws().project_root(project_id))):
+            return {}
+        phase = (record.get("phase") or {}).get("label") or ""
+        slice_ref, step = record.get("slice"), record.get("step")
+        if isinstance(slice_ref, dict) and slice_ref.get("id") and step:
+            return {slice_ref["id"]: {"step": step, "phase": phase}}
+        node_id = (record.get("node") or {}).get("id") or ""
+        return {} if not node_id or node_id.startswith("command.") else {node_id: {"step": node_id, "phase": phase}}
+
+    @staticmethod
+    def _handover_slice(run: dict, exec_id: str | None) -> dict:
+        """接管时撤回的问题记在哪一段：被打断的那一步所在的段，运行里没有这一段时记在第一段。"""
+        from ..session_host import exec_records
+
+        units = run.get("units") or []
+        record = exec_records.get(run["project_id"], exec_id) if exec_id else None
+        wanted = ((record or {}).get("slice") or {}).get("id") or ((record or {}).get("node") or {}).get("id")
+        unit = next((item for item in units if item["id"] == wanted), units[0] if units else None)
+        return {"id": unit["id"], "name": unit["name"]} if unit else {"id": None, "name": ""}
+
+    def _close_handed_over(self, run: dict, taken_exec: str | None) -> list[dict]:
+        """别的对话里没做完的执行交给运行收尾，返回收尾了的执行记录。
+
+        收尾 = 记为放弃、清掉命令锁，不再列「没做完」、建议条不再推「继续」：
+        - 运行计划里有这一步：运行接着做，交给它；
+        - 不在计划里：停在「等你确认」「等你回复」（活干完了，只差回答）、这一步也已经做完的收尾；停在干活中途的留着续跑
+          ——条目写了一半也按「条目在」算做完，收掉就没人知道它没做完。"""
+        from ..session_host import exec_records, turns
+
+        project_id = run["project_id"]
+        root = _ws().project_root(project_id)
+        candidates = [record for record in exec_records.query(project_id, ["running", "waiting", "interrupted"])
+                      if not record.get("run_id") and record.get("conversation_id") != run["conversation_id"]]
+        if not candidates:
+            return []
+        flow = plan.flow(root)
+        rows = {row["id"]: row.get("stages") or {} for row in run.get("before_rows") or []}
+        node_states: dict | None = None
+        closed = []
+        for record in candidates:
+            if not self._in_run(run, record):
+                if not _stopped_for_reply(record, flow):
+                    continue
+                done = self._done_at_start(record, rows)
+                if done is None:
+                    if node_states is None:
+                        from ..flow import view
+
+                        node_states = {node["id"]: node["state"] for node in view.build(root)["nodes"]}
+                    done = node_states.get((record.get("node") or {}).get("id")) == "confirmed"
+                if not done:
+                    continue
+            self._close_exec(project_id, record["id"])
+            updated = exec_records.update(project_id, record["id"],
+                                          handed_over={"run_id": run["run_id"], "run_no": run["run_no"],
+                                                       "taken_over": record["id"] == taken_exec})
+            if updated is not None:
+                turns.publish_exec(project_id, updated, root)
+                closed.append(updated)
+        return closed
+
+    @staticmethod
+    def _in_run(run: dict, record: dict) -> bool:
+        """这次执行的那一步在运行计划里（建模的一步按段和步骤对，主线节点按节点对）。"""
+        units = run.get("units") or []
+        slice_ref, step = record.get("slice"), record.get("step")
+        if isinstance(slice_ref, dict) and slice_ref.get("id") and step:
+            return any(unit["kind"] == "slice" and unit["id"] == slice_ref["id"]
+                       and any(item["id"] == step for item in unit.get("steps") or []) for unit in units)
+        node_id = (record.get("node") or {}).get("id")
+        return any(unit["kind"] == "node" and unit["id"] == node_id for unit in units)
+
+    @staticmethod
+    def _done_at_start(record: dict, rows: dict) -> bool | None:
+        """建模的一步开始时做完了没有（按分段的状态）；不是建模步骤返回 None，由调用方按节点状态判。"""
+        slice_ref, step = record.get("slice"), record.get("step")
+        if isinstance(slice_ref, dict) and slice_ref.get("id") and step:
+            return (rows.get(slice_ref["id"]) or {}).get(step) in plan.DONE_STATES
+        return None
 
     # ------------------------------------------------------------------
     # 名额与驱动

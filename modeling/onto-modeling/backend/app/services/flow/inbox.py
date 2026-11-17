@@ -269,10 +269,15 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
 
     from .view import node_states
 
-    hits = model.flow_state(root).node_hits(flow, root)
+    module = model.flow_state(root)
+    hits = module.node_hits(flow, root)
     # 所属包版本被熔断的节点在流程里算跳过、开始不了（FL-05 回 409）：不列，免得 IN-04 选中它；
     # 状态与 FL-01 同一份（建模节点按段汇总、熔断的节点不挡别的节点）
     states, sliced, _doc, _context, broken = node_states(root, flow, hits)
+    handed_down = _handed_down_judge(module)
+    flow_nodes = [node for node in flow.get("nodes") or [] if node["id"] in states]
+    state_of = {node_id: info["state"] for node_id, info in states.items()}
+    slice_stale = (sliced or {}).get("slice_stale") or []
     by_id = {node["id"]: node for node in flow.get("nodes") or []}
     reviews = {item["node_id"]: item for item in node_state.reviews(root)}
     items = []
@@ -281,7 +286,8 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
             continue
         node = by_id.get(node_id) or {}
         pack = node.get("pack") if node.get("pack") not in (None, "core") else None
-        if info["state"] == "stale":
+        # 已交给后面的核对节点的过期（校验自己修对象让建模、指标过期）：建议条不推刷新，这里也不列（ADR-0090）
+        if info["state"] == "stale" and not handed_down(node, flow_nodes, state_of, slice_stale):
             items.append(_item("stale", node_id, f"「{node.get('title') or node_id}」过期了",
                                source="assistant",
                                pack=pack, extra={"node": node},
@@ -302,6 +308,16 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
                                # 「撤回这一段」只对自主构建合入的段
                                actions=ACTIONS["review"] if source == "autobuild" else ["accept", "rejudge"]))
     return items
+
+
+def _handed_down_judge(module):
+    """flow_state 的「已交给核对节点」判定；项目锁定的旧 core 没有时用平台镜像版本，再没有就都列。"""
+    judge = getattr(module, "handed_down", None)
+    if judge is None:
+        from ..packs import contracts
+
+        judge = getattr(contracts.default().load("flow_state"), "handed_down", None)
+    return judge or (lambda *_args: False)
 
 
 def _unit_name(slice_ref: dict) -> str:

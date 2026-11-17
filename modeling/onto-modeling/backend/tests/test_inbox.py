@@ -181,6 +181,38 @@ def test_refresh_stale_and_resume_send_commands(env):
     assert client.post(f"{base}/batch", json={"action": "bogus"}).status_code == 400
 
 
+def test_stale_handed_down_to_a_confirmed_check_is_not_listed(env, monkeypatch):
+    """已交给已确认的校验的过期，待处理不列。
+
+    校验已确认、它修对象让建模（操作一步）、指标过期：建议条按 ADR-0090 不推刷新，待处理也不列（实测：自主构建跑完
+    报「全部完成」，待处理却多出「建模过期了」「指标过期了」）。校验没跑过、跳过时照列。"""
+    client, workspaces, manager, project_id, root = env
+    from app.services.flow import view
+
+    flow = flow_model.load_for(root)
+    real = view.node_states
+
+    def fake(validate):
+        def states(root_, flow_, hits):
+            _states, sliced, doc, context, broken = real(root_, flow_, hits)
+            out = {node["id"]: {"state": "confirmed", "flags": {}, "display_state": "confirmed"}
+                   for node in flow["nodes"]}
+            for node_id in ("core.model", "core.metric"):
+                out[node_id] = {"state": "stale", "flags": {}, "display_state": "stale"}
+            out["core.validate"] = {"state": validate, "flags": {}, "display_state": validate}
+            stale = {**(sliced or {}), "slice_stale": [{"slice_id": "all", "step": "operation"}]}
+            return out, stale, doc, context, broken
+        return states
+
+    monkeypatch.setattr(view, "node_states", fake("confirmed"))
+    assert not [key for key in kinds(client, project_id) if key.startswith("stale:")]
+    # 校验还没跑：必经的操作要你刷新；可选的指标交给之后的校验（ADR-0090 补充）。校验跳过了：两个都要你刷新
+    monkeypatch.setattr(view, "node_states", fake("ready"))
+    assert [key for key in kinds(client, project_id) if key.startswith("stale:")] == ["stale:core.model"]
+    monkeypatch.setattr(view, "node_states", fake("skipped"))
+    assert {"stale:core.model", "stale:core.metric"} <= set(kinds(client, project_id))
+
+
 def test_decision_items_come_from_the_live_session(env):
     client, workspaces, manager, project_id, root = env
     session = Session(id="s1", project_id=project_id, conversation_id="default")

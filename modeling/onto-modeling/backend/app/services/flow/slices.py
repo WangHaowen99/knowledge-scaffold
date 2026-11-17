@@ -517,6 +517,30 @@ def steps_done_by(root: Path, flow: dict, node_ids: list, doc: dict | None) -> l
             if step.get("command") and step["command"] in entries]
 
 
+def steps_written(root: Path, flow: dict, pairs: list, paths: list, doc: dict | None) -> list[list[str]]:
+    """合入的这一轮在 pairs 那几段里顺带写出来的别的步骤：改到了这一步的条目、条目也在主线上。
+
+    操作提取会一起抽规则（F8），规则这一步不在自主构建的计划里；合入时不记它，它就按「内容在、没有记录」记成人确认过
+    （实测：运行写的 13 条规则在流程上是已确认，不是需复核）。自主构建合入时由调用方一并记上需复核。"""
+    node = per_slice_node(flow)
+    slice_ids = {pair[0] for pair in pairs}
+    if node is None or not slice_ids or not paths:
+        return []
+    inputs = _Inputs(Path(root), flow, node, doc, Path(root).name)
+    inputs.changed = set(paths)
+    out = []
+    for item in inputs.slices:
+        if item["id"] not in slice_ids:
+            continue
+        for step in inputs.steps:
+            pair = [item["id"], step["id"]]
+            if step.get("derived") or pair in pairs:
+                continue
+            if inputs.touches(item, step) and inputs.present(item, step):
+                out.append(pair)
+    return out
+
+
 def slice_for_command(root: Path, flow: dict, step_id: str, explicit: str | None) -> dict | None:
     """建模命令执行在哪一段 {id, name}：带了分段就是它（不存在或已排除时 None）；没带时取这一步还没做完的
     第一段，都做完了取第一段没做完的；全量模式是「全部」。root 可以是助手副本（蓝图按副本里的读）。"""

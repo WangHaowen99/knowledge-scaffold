@@ -123,6 +123,7 @@ def test_suggestion_command_shows_its_business_name_and_titles_the_conversation(
         "command": "/ontology-research", "text": "仅基于本地文档", "display_label": "仅本地资料",
         "origin": {"page": "wb-l2", "label": "下一步建议"}})
     assert response.status_code == 202, response.text
+    assert response.json()["task"]["title"] == "助手正在执行「资料分析 · 仅本地资料」"  # 和气泡同一个名字
     sent = wait(lambda: FakeEngine.sent)[0]
     assert sent.startswith("/ontology-research") and "仅基于本地文档" in sent
     cid = response.json()["conversation_id"]

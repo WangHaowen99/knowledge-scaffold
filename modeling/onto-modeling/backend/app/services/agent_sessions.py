@@ -634,6 +634,19 @@ def _expire_orphan_permissions(session: "Session") -> None:
                                "payload": {"question_id": question_id, "reason": "会话已重启"}})
 
 
+def _unanswered_questions(request: "PendingPermission") -> list[tuple[dict, dict]]:
+    """决策卡里还没回答的问题：[(拆好的问题, 原始提问)]，原始提问按位置对应（取不到时用标题）。"""
+    source = request.full_input if isinstance(request.full_input, dict) else request.tool_input
+    asked = (source or {}).get("questions") or []
+    raws = [item if isinstance(item, dict) else {"question": str(item)} for item in asked]
+    out = []
+    for index, question in enumerate(request.questions):
+        if question.get("question_id") in request.answers:
+            continue
+        out.append((question, raws[index] if index < len(raws) else {"question": question.get("title")}))
+    return out
+
+
 async def _interrupt_engine(engine: Any) -> list[str] | None:
     """打断引擎并撤回还没插进去的插话；返回撤回的 message_id，引擎不支持撤回（单测的假引擎）时返回 None。"""
     import inspect
@@ -785,21 +798,33 @@ class SessionManager:
             "waiting": bool(session.pending_permissions),
         }
 
-    async def take_over(self, project_id: str, reason: str) -> bool:
-        """自主构建要开始而引擎正忙：没回答的问题按 reason 撤回、这一轮打断，等它停下。返回是否已经空出来。"""
+    async def take_over(self, project_id: str, reason: str) -> dict:
+        """自主构建要开始而引擎正忙：没回答的问题按 reason 撤回、这一轮打断，等它停下。
+
+        返回 {freed, conversation_id, exec_id, questions}：是否已经空出来、被打断的对话与执行、撤回的决策卡问题
+        （[(拆好的问题, 原始提问)]）。问题和执行由运行器在运行建好之后接手（记进台账、执行收尾），
+        开始失败时原样留着。"""
         session = self._sessions.get(project_id)
         if session is None or not _busy(session):
-            return True
+            return {"freed": True, "conversation_id": None, "exec_id": None, "questions": []}
+        conversation_id = session.conversation_id
+        questions = []
         # 先作答再打断：等回答的那次调用照常收尾，问题以 reason 撤回，不留一张永远「等你决定」的卡
         for request in list(session.pending_permissions.values()):
-            if not request.future.done():
-                request.future.set_result({"behavior": "deny", "message": reason})
-        self.cancel_next(project_id, session.conversation_id, summary="开始了自主构建，排着的命令不再执行")
-        await self.interrupt(project_id, session.conversation_id)
+            if request.future.done():
+                continue
+            if request.tool_name == timeline.ASK_TOOL:
+                questions += _unanswered_questions(request)
+            request.future.set_result({"behavior": "deny", "message": reason})
+        self.cancel_next(project_id, conversation_id, summary="开始了自主构建，排着的命令不再执行")
+        exec_id = session.exec_id
+        await self.interrupt(project_id, conversation_id, by="autobuild")
+        self.interrupted_execs.pop((project_id, conversation_id), None)
         deadline = time.monotonic() + INTERRUPT_TIMEOUT_SECONDS
         while _busy(session) and time.monotonic() < deadline:
             await asyncio.sleep(0.05)
-        return not _busy(session)
+        freed = not _busy(session)
+        return {"freed": freed, "conversation_id": conversation_id, "exec_id": exec_id, "questions": questions}
 
     def get_history(
         self, project_id: str, conversation_id: str | None = None
@@ -1867,9 +1892,11 @@ class SessionManager:
             )
 
     async def interrupt(
-        self, project_id: str, conversation_id: str | None = None
+        self, project_id: str, conversation_id: str | None = None, *, by: str = "user"
     ) -> bool:
-        """打断当前轮。返回是否做了幽灵态和解（调用方据此让前端重放刷新）。"""
+        """打断当前轮。返回是否做了幽灵态和解（调用方据此让前端重放刷新）。
+
+        by="autobuild"：开始自主构建时接管（对话里不说「你打断了」，不推「从打断处继续」）。"""
         conversation_id = self.resolve_conversation(project_id, conversation_id)
         session = self._sessions.get(project_id)
         if not session or session.conversation_id != conversation_id:
@@ -1883,7 +1910,7 @@ class SessionManager:
         if self._drop_material_wait(session):
             # 命令还在等资料、没交给引擎：撤回它，执行记为你打断，回到空闲
             self.returned_steers[key] = self._return_steers(session, None)
-            await self._mark_user_interrupt(session)
+            await self._mark_user_interrupt(session, by=by)
             session.set_state("idle")
             return False
         if session.engine is None:
@@ -1911,18 +1938,19 @@ class SessionManager:
             session.engine = None
             self._settle_after_failure(session)
             self.returned_steers[key] = self._return_steers(session, None)
-            await self._mark_user_interrupt(session)
+            await self._mark_user_interrupt(session, by=by)
             session.set_state("idle")
             await self._drain_waiters()
             return False
         self.returned_steers[key] = self._return_steers(session, withdrawn)
-        await self._mark_user_interrupt(session)
+        await self._mark_user_interrupt(session, by=by)
         return False
 
-    async def _mark_user_interrupt(self, session: Session) -> None:
-        """你打断了这一步（EC-05）：执行记为中断（不放续跑卡，建议条给「从打断处继续」），工作过程收起。"""
-        from .session_host import command_tasks
+    async def _mark_user_interrupt(self, session: Session, *, by: str = "user") -> None:
+        """你打断了这一步（EC-05）：执行记为中断（不放续跑卡，建议条给「从打断处继续」），工作过程收起。
 
+        by="autobuild"（开始自主构建时接管）：这一轮没做完的随后合入、交给运行，对话里写「交给自主构建」，
+        不带已保存的版本（合入在这之后）、不推建议条（续跑项由运行器收尾）。"""
         session.interrupting = False
         if session.turn is not None and session.turn.steps:
             session.turn.finish("interrupted")
@@ -1930,6 +1958,14 @@ class SessionManager:
         session.turn = None
         session.open_subagents.clear()
         record, _ = await asyncio.to_thread(turns.interrupt_exec, session, "user", card=False)
+        if by == "autobuild":
+            fields = turns.interrupted_fields(record)
+            label = (record or {}).get("command_label")
+            session.broadcast({"type": "session_interrupted", "reason": "user", "by": "autobuild", **fields,
+                               "position_label": f"开始了自主构建，「{label}」交给它接着做" if label
+                               else "开始了自主构建，这一轮交给它接着做", "saved": None})
+            await asyncio.to_thread(self._finish_interrupt_tasks, session)
+            return
         self.interrupted_execs[(session.project_id, session.conversation_id)] = record
         session.broadcast({"type": "session_interrupted", "reason": "user", "by": "user",
                            **turns.interrupted_fields(record)})
@@ -1937,10 +1973,15 @@ class SessionManager:
         if suggestions is not None:
             session.broadcast(suggestions)
             session.keep_suggestions = True
+        await asyncio.to_thread(self._finish_interrupt_tasks, session)
+
+    def _finish_interrupt_tasks(self, session: Session) -> None:
+        from .session_host import command_tasks
+
         entry = self._next.get((session.project_id, session.conversation_id))
         keep = {entry["meta"]["task_id"]} if entry is not None and entry["meta"].get("task_id") else set()
         try:
-            await asyncio.to_thread(command_tasks.on_interrupt, session.project_id, session.conversation_id, keep=keep)
+            command_tasks.on_interrupt(session.project_id, session.conversation_id, keep=keep)
         except Exception:  # noqa: BLE001 - 任务收尾是增强信息
             pass
 

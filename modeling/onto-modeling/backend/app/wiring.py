@@ -154,6 +154,14 @@ def _confirm_nodes(project_id: str, node_ids: list[str], record: dict | None = N
     doc = blueprint.load_doc(root)
     pairs = [list(pair) for pair in (record or {}).get("slice_steps") or []]
     pairs += [pair for pair in slices.steps_done_by(root, flow, node_ids, doc) if pair not in pairs]
+    if review is not None:
+        # 自主构建这一段顺带写出来的步骤（操作提取一起抽的规则）、节点（指标）也是它做的：一并记上需复核
+        paths = (record or {}).get("paths") or []
+        pairs += slices.steps_written(root, flow, pairs, paths, doc)
+        written = node_state.produced_by(flow, paths, exclude=node_ids)
+        if written:
+            hits = flow_model.flow_state(root).node_hits(flow, root)
+            node_state.mark_written_by_autobuild(root, flow, written, hits, review, note=record.get("purpose") or "")
     slices.confirm(root, flow, pairs, doc=doc, needs_review=review)
 
 
@@ -261,6 +269,7 @@ def install() -> None:
 
     agent_sessions.register_policy_responder(decide.respond)
     injection.register_autobuild_hint_provider(hint.for_engine)
+    injection.register_handover_provider(hint.handover)
     blueprint.register_autobuild_preview(_autobuild_preview)
     view.register_autobuild_context(_autobuild_context)
     runner.register_steps(startup_recovery.register)
@@ -278,3 +287,4 @@ def install_worker(data_dir: Path, assets_dir: Path) -> None:
     from .services.autobuild import hint
 
     injection.register_autobuild_hint_provider(hint.for_engine)
+    injection.register_handover_provider(hint.handover)

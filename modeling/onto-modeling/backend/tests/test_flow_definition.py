@@ -75,6 +75,10 @@ SCENARIOS = {
                    "reports/20260101-000000-all-rule.md": "- [x] 已修\n"}, "完成", 2),
     "validate_pending": ({"ontology/object/a.md": "x", "ontology/operation/b.md": "x",
                           "reports/20260101-000000-all-rule.md": "- [ ] 待修\n"}, "校验待审阅", 1),
+    # 处理过的条目说明里写着 `[[ ]]` 不算待处理：只认列表项开头的 `[ ]`（实测：校验因此一直没做完）
+    "validated_with_brackets": ({"ontology/object/a.md": "x", "ontology/operation/b.md": "x",
+                                 "reports/20260101-000000-all-rule.md": "- ✅ ⚠️ 归属操作名补 `[[ ]]` 包裹\n"},
+                                "完成", 2),
     # 建模、流程图、校验、场景模拟、代码生成；发布还没做
     "full": ({"ontology/object/a.md": "x", "ontology/operation/b.md": "x", "ontology/rule/r.md": "x",
               "reports/20260101-000000-all-semantic.md": "ok\n", "ontology/data-mock/m.md": "x",
@@ -239,3 +243,21 @@ def test_flow_follows_project_locked_core_version(manager: WorkspaceManager):
     (root / ".claude").unlink()
     assert flow_model.load_for(root) == flow_model.image_flow()
 
+
+
+def test_kernel_judges_report_pending_for_locked_older_versions(manager):
+    """项目锁定的旧 flow_state 在报告全文里找 `[ ]`：内核按平台这份重算报告待处理探针，旧项目的校验也能算做完。"""
+    from app.services.flow import conditions
+    from app.services.flow import model as flow_model
+
+    root = make_project(manager, {"reports/20260101-000000-all-rule.md": "- ✅ 归属操作名补 `[[ ]]` 包裹\n"})
+    flow = flow_model.load_for(root)
+
+    class Older:
+        @staticmethod
+        def evaluate(flow_doc, root_):
+            return {"reports_pending": True}
+
+    assert conditions.with_kernel_probes(Older()).evaluate(flow, root)["reports_pending"] is False
+    (root / "reports" / "20260101-000001-all-rule.md").write_text("- [ ] ❌ [逻辑缺陷] 待修\n", encoding="utf-8")
+    assert conditions.with_kernel_probes(Older()).evaluate(flow, root)["reports_pending"] is True

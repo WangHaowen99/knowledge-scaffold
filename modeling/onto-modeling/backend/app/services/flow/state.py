@@ -348,6 +348,36 @@ def mark_needs_review(root: Path, node_ids: list[str], source: str, *, run_id: s
         save(root, stored)
 
 
+def produced_by(flow: dict, paths: list[str], exclude: list[str] = ()) -> list[str]:
+    """改到这些路径的是哪些节点的产物（按 `produces` 的路径模式）；exclude 里的不算。"""
+    import fnmatch
+
+    out = []
+    for node in flow.get("nodes") or []:
+        if node["id"] in exclude:
+            continue
+        patterns = [str(pattern) for pattern in node.get("produces") or []]
+        if any(fnmatch.fnmatch(path, pattern) for path in paths for pattern in patterns):
+            out.append(node["id"])
+    return out
+
+
+def mark_written_by_autobuild(root: Path, flow: dict, node_ids: list[str], hits: dict, review: dict,
+                              note: str = "") -> list[str]:
+    """自主构建合入时顺带写了产物、已满足完成判定的别的节点（操作提取一起抽的指标）也标「需复核」。
+
+    原来没有基线的按主线记一个（不记的话需复核的空记录会被当成过期）；人确认过的保留原基线，只加标记。返回标了的节点。"""
+    done = [node_id for node_id in node_ids if hits.get(node_id)]
+    if not done:
+        return []
+    with _lock:
+        known = set(load(root)["nodes"])
+    confirm(root, flow, [node_id for node_id in done if node_id not in known])
+    mark_needs_review(root, done, "autobuild", run_id=review.get("run_id"), slice_id=review.get("slice_id"),
+                      note=note)
+    return done
+
+
 def mark_imported(root: Path) -> list[str]:
     """导入已发布的知识包后：主线上已满足完成判定的节点标「需复核」（来源 import）。返回标了的节点。"""
     from . import model

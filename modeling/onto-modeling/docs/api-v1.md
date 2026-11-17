@@ -2161,8 +2161,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `change_list` | 变更清单 | 增量更新的变更点清单 | `accept_points`、`rewrite_point`、`execute` |
 | `review` | 需复核 | 自主构建自动决定、节点升级、导入；`source` 分别为 `autobuild\|upgrade\|import` | `accept`、`rejudge`、`revert_slice` |
 | `suspension` | 挂起 | 自主构建挂起的问题，包括未授权的采集 | `answer`、`use_generic` |
-| `stale` | 过期 | 节点状态 | `refresh`、`keep_stale` |
-| `resumable` | 续跑 | 中断的执行 | `resume`、`abandon` |
+| `stale` | 过期 | 节点状态；已交给后面已确认的核对节点的过期不列（和建议条第 7 条同一判定 `flow_state.handed_down`，ADR-0090） | `refresh`、`keep_stale` |
+| `resumable` | 续跑 | 中断的执行；开始自主构建时交给运行收尾的不列（见 AB-04） | `resume`、`abandon` |
 | `feedback` | 外部反馈 | 评测服务回传（㉔） | `send_to_evolution`、`dismiss` |
 | `report` | 报告待处理 | 某份报告里还没处理的条目，一份报告合成一项 | `send_to_assistant` |
 | `changeset_conflict` | 合入冲突 | 这一轮合入时和你的修改改到同一条（F3 起唯一会出现的变更集事项；没有「修改待确认」） | `resolve`、`discard`（撤回这一轮） |
@@ -3598,7 +3598,7 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
   - 预算；
   - 生产库授权；
   - 低于阈值时怎么处理；
-  - `warnings`，如「有 1 个未决决策会被按策略决定」；
+  - `warnings`，如「有 1 个未决决策会被按策略决定」「建模蓝图里有 1 个问题没回答，运行不会替你答，会留在待处理里」（蓝图的问题按 BP-03 不代答）；
   - `queued`：平台同时运行数满了时为 true；
   - `busy`：别的对话正占着助手时为 `{conversation_id, waiting}`（`waiting` 为 true 表示它停在没回答的问题上），否则为 null。前端据此在开始前说明，并在 AB-04 带 `take_over`。
 - 错误：`autobuild_running`（F8 起不再回 `blueprint_not_confirmed`；`budget_exceeds_quota` F6 已删）。
@@ -3607,7 +3607,12 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 
 `POST /api/v1/projects/{id}/autobuild/runs` · 所有者 · 旧：— · 审计：专项 `autobuild.start` · 依据：④、8.5 · 页面：l4-run、wb-blueprint、proj-settings、chat-states（对话里说「剩下的你自己做完」时由助手发起确认，用户确认后前端调本接口）
 
-- 请求：`{preview_token, take_over?: boolean}`。`take_over` 为 true 且别的对话正占着助手时，先把没回答的问题撤回（EC-34，`reason`「已交给自主构建，按「拿不准时」的策略处理」）、打断那一轮（EC-05），等它停下再开始；不带时照旧回 `session_busy`。
+- 请求：`{preview_token, take_over?: boolean}`。`take_over` 为 true 且别的对话正占着助手时，先把没回答的问题撤回（EC-34，`reason`「已交给自主构建，按「拿不准时」的策略处理」）、打断那一轮（EC-05，`by: "autobuild"`），等它停下再开始；不带时照旧回 `session_busy`。
+- 运行建好之后接手别的对话里没做完的：
+  - 撤回的问题按策略定下来，记进这次运行的台账（`reason_text` 以「开始自主构建时没回答的问题：」开头、待复核）或挂起，答案经每一步的注入带给助手；
+  - 别的对话里没做完的执行（被接管打断的、等你回复的、之前中断留着续跑的），这一步运行要做、或开始时已经做完的，记为放弃并清掉命令锁，不再进待处理的续跑、建议条不再推「继续」，那条对话里留一行「「对象提取」交给自主构建 · 运行 #n，这里不用再继续」；运行范围外又没做完的照旧能续跑。
+  - 被接管时停在干活中途（命令锁不在「等你确认」「等你回复」）的建模那一步，运行照做、接着做完：写了一半的条目合入后按「条目在」会算这一步做完，不能跳过；
+  - 开始失败（合入冲突、配额）时问题已撤回，执行留着中断，照常能续跑。
 - 响应 `201`：`AutobuildRun`（`state` 为 `queued` 或 `running`），加 `conversation_id`。
 - 错误：`preview_expired`、`autobuild_running`、`session_busy`、`quota_exceeded`、`maintenance_no_new_sessions`。
 
@@ -4517,7 +4522,7 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 | EC-02 | `session.queued` | 是 | `{position: int, ahead: int, pool: {active, max}, progress_pct: number}` | chat-states 第 9 项排队卡 |
 | EC-03 | `session.started` | 是 | `{engine_label, resumed: bool, context_kept: bool}` | — |
 | EC-04 | `session.error` | 是 | `{error_id: "err-7f3a", message: string（友好提示）, retries: int, retryable: bool, actions: ("retry"\|"redirect")[], reason: "stall_timeout"\|null（运行中长时间没有引擎事件、判定执行超时；ADR-0097）}`。这一轮还没收尾的子任务卡随出错收尾显示「已中断」，`reason` 为 `stall_timeout` 时显示「执行超时」 | chat-states 第 15 项出错卡 |
-| EC-05 | `session.interrupted` | 是 | `{by: "user"\|"ops"\|"restart"\|"engine_exit"\|"shutdown", at, exec_id: string\|null, position_label: string（如「你在生成第 3 个场景时打断了」）, saved: {files: int, version_label}\|null}` | chat-states 第 4 项 |
+| EC-05 | `session.interrupted` | 是 | `{by: "user"\|"ops"\|"restart"\|"engine_exit"\|"shutdown"\|"autobuild", at, exec_id: string\|null, position_label: string（如「你在生成第 3 个场景时打断了」）, saved: {files: int, version_label}\|null}` | chat-states 第 4 项；`by` 为 `autobuild` 是开始自主构建时接管：`position_label`「开始了自主构建，「…」交给它接着做」，`saved` 为 null |
 | EC-06 | `session.config_pending` | 是 | `{changes: [{kind: "assembly"\|"model"\|"flow"\|"mcp"\|"permission_mode"\|"engine", summary: string}], effective: "next_message"\|"next_safe_point", detail_link: {page: "plugin-detail", pack: string}\|null}` | chat-states 第 14 项「建模能力有更新」提示条 |
 | EC-07 | `session.reconnected` | 是 | `{reason: "config_changed"\|"restart"\|"recycled", changes: string[], context_kept: bool, duration_ms: int}` | chat-states 第 14 项时间线「已切换到新版本并重新连接，上下文保留」 |
 

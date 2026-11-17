@@ -13,6 +13,8 @@
   （`register_prompt_hint_provider`，启动时在 `app/wiring.py` 登记；Jiuwen worker 进程自己登记一份）。
 
 - 自主构建（方案 B12）：运行中给这条对话注入段说明、台账摘要与用户补充，每条都带（`register_autobuild_hint_provider`）。
+- 交接说明：自主构建结束后，运行开始前就有的对话带一段「运行改了主线什么、之前说的以主线为准」，和阶段提示一起
+  按摘要去重（`register_handover_provider`）。
 - 资料文本版：建模命令开始时仍没有文本版的资料（`material_wait.note`），点名按未读处理，每条建模命令都带。
 
 宿主给每个引擎实例建一个 `Injector`（经 EngineContext 交给引擎）：引擎在消息真正送到模型的那一刻
@@ -145,7 +147,8 @@ def build_context(
         text = plugin if session_start or digest != last_injected else ""
         return InjectionResult(text=text, digest=digest, stage_hint=text)
     hint = stage_hint(project_root)
-    goal = "\n".join(part for part in (goal_hint(project_root), terms_hint(project_root)) if part)
+    goal = "\n".join(part for part in (goal_hint(project_root), terms_hint(project_root),
+                                       handover_hint(project_root, conversation_id)) if part)
     digest = last_injected
     stage_part = ""
     if hint is not None or goal:
@@ -348,12 +351,32 @@ def prompt_hint(project_root: Path, user_text: str) -> str:
 # ---- 自主构建（方案 B12）----
 
 _autobuild_hint_provider: "Callable[[Path, str | None], str] | None" = None
+_handover_provider: "Callable[[Path, str | None], str] | None" = None
 
 
 def register_autobuild_hint_provider(provider: "Callable[[Path, str | None], str] | None") -> None:
     """自主构建的注入：(助手工作目录, 对话) → 段说明与台账摘要；不在运行中返回空串。"""
     global _autobuild_hint_provider
     _autobuild_hint_provider = provider
+
+
+def register_handover_provider(provider: "Callable[[Path, str | None], str] | None") -> None:
+    """登记切回陪伴建模后的交接说明：(助手工作目录, 对话) → 这条对话之后自主构建改了主线什么；没有时返回空串。
+
+    和阶段提示一起按摘要去重（引擎实例第一条必带，内容不变不重复）。"""
+    global _handover_provider
+    _handover_provider = provider
+
+
+def handover_hint(project_root: Path, conversation_id: str | None) -> str:
+    provider = _handover_provider
+    if provider is None:
+        return ""
+    try:
+        return provider(Path(project_root), conversation_id) or ""
+    except Exception:  # noqa: BLE001 - 注入是增强信息
+        _log.warning("项目 %s 的交接说明算不出来，本条不带", Path(project_root).name, exc_info=True)
+        return ""
 
 
 def autobuild_hint(project_root: Path, conversation_id: str | None) -> str:

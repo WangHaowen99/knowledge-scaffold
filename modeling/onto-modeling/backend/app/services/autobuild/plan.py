@@ -52,11 +52,13 @@ def _step(row: dict, step: dict) -> dict:
             "command": step["command"], "args": args}
 
 
-def _slice_steps(row: dict, node: dict, policy: dict, carried: list[dict] = ()) -> list[dict]:
+def _slice_steps(row: dict, node: dict, policy: dict, carried: list[dict] = (), redo: dict | None = None) -> list[dict]:
     scope = policy["scope"]
     runnable = [step for step in node.get("steps") or [] if not step.get("derived") and step.get("command")]
-    # 留到这一次的问题所在的那一步（不知道哪一步时取第一步）照做
+    # 留到这一次的问题所在的那一步（不知道哪一步时取第一步）照做；开始时接过来的没做完的那一步也照做
     wanted = {item.get("step") or (runnable[0]["id"] if runnable else None) for item in carried}
+    if redo:
+        wanted.add(redo["step"])
     out = []
     for step in runnable:
         state = (row.get("stages") or {}).get(step["id"])
@@ -72,7 +74,10 @@ def _slice_steps(row: dict, node: dict, policy: dict, carried: list[dict] = ()) 
                 continue
             if step["id"] == "scenario" and not scope.get("generate_scenarios", True):
                 continue
-        out.append(_step(row, step))
+        item = _step(row, step)
+        if redo and step["id"] == redo["step"]:
+            item["resume_from"] = redo.get("phase") or ""
+        out.append(item)
     return out
 
 
@@ -98,9 +103,11 @@ def included(row: dict, policy: dict) -> bool:
                                           and "stale" in (row.get("stages") or {}).values())
 
 
-def _tail(root: Path, flow_doc: dict, policy: dict) -> list[dict]:
+def _tail(root: Path, flow_doc: dict, policy: dict, redo: dict | None = None) -> list[dict]:
     """分段之后主线上的几步：按流程顺序，到 `until_node` 为止（含）；已确认的、可选的（不含可选时）、人工与面板节点、
-    声明了 `autobuild: false` 的节点（要用户给输入才能做，如增量构建的圈定范围）不做。"""
+    声明了 `autobuild: false` 的节点（要用户给输入才能做，如增量构建的圈定范围）不做。
+
+    redo 里的节点（开始时接过来、停在干活中途的）已确认也照做：产物写了一半也满足完成判定。"""
     from ..flow import view
 
     node = per_slice_node(flow_doc)
@@ -113,17 +120,20 @@ def _tail(root: Path, flow_doc: dict, policy: dict) -> list[dict]:
     out = []
     for item in nodes[start + 1:]:
         state = (states.get(item["id"]) or {}).get("state")
+        again = (redo or {}).get(item["id"])
+        finished = state in ("confirmed", "skipped") and again is None
         command = ((item.get("entry") or {}).get("command") or "").strip()
         eligible = not (item["id"] in SKIP_TAIL or item.get("placement", "spine") != "spine"
                         or item.get("autobuild") is False
                         or item.get("kind") == "human" or item.get("panel") or not command
                         or (item.get("optional") and not policy["scope"].get("include_optional"))
-                        or state in ("confirmed", "skipped"))
+                        or finished)
         if eligible:
             title = item.get("title") or item["id"]
-            out.append({"id": item["id"], "name": title, "kind": "node",
-                        "steps": [{"id": item["id"], "label": title, "title": title, "action": title,
-                                   "command": command, "args": {}}]})
+            step = {"id": item["id"], "label": title, "title": title, "action": title, "command": command, "args": {}}
+            if again is not None:
+                step["resume_from"] = again.get("phase") or ""
+            out.append({"id": item["id"], "name": title, "kind": "node", "steps": [step]})
         if item["id"] == until:
             break
     return out
@@ -136,16 +146,21 @@ def _left_out(step: dict, chosen: set, stages: dict) -> bool:
     return stages.get(step["id"]) not in (*DONE_STATES, "skipped")
 
 
-def build(manager, project_id: str, policy: dict) -> tuple[list[dict], list[dict]]:
-    """(要做的单元, 预览用的全部分段 [{id, name, current, included}])。"""
+def build(manager, project_id: str, policy: dict, redo: dict | None = None) -> tuple[list[dict], list[dict]]:
+    """(要做的单元, 预览用的全部分段 [{id, name, current, included}])。
+
+    redo：开始时从别的对话接过来、停在干活中途的那一步 {段: {step, phase}}——条目写了一半也按「条目在」算做完了，
+    要照做（接着做完），不能跳过。"""
     root = manager.project_root(project_id)
     flow_doc = flow(root)
     node = per_slice_node(flow_doc) or {}
     held = carried(project_id)
     units, preview = [], []
     for row in slice_rows(manager, project_id):
-        take = included(row, policy) or (row["id"] in held and policy["scope"].get("mode") != "selected")
-        steps = _slice_steps(row, node, policy, held.get(row["id"]) or []) if take else []
+        again = (redo or {}).get(row["id"])
+        take = (included(row, policy) or (row["id"] in held and policy["scope"].get("mode") != "selected")
+                or again is not None)
+        steps = _slice_steps(row, node, policy, held.get(row["id"]) or [], again) if take else []
         preview.append({"id": row["id"], "name": row["name"], "current": current_label(row), "included": bool(steps)})
         if steps:
             unit = {"id": row["id"], "name": row["name"], "kind": "slice", "steps": steps,
@@ -160,7 +175,7 @@ def build(manager, project_id: str, policy: dict) -> tuple[list[dict], list[dict
                 unit["carried"] = [{"run_id": item["run_id"], "id": item["id"]} for item in held[row["id"]]]
             units.append(unit)
     if units or policy["scope"].get("mode") != "selected":
-        units += _tail(root, flow_doc, policy)
+        units += _tail(root, flow_doc, policy, redo)
     return units, preview
 
 

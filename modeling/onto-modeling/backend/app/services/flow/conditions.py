@@ -144,6 +144,23 @@ def _kernel_probe(spec: dict, root: Path) -> bool:
         return False
 
 
+def pending_probes(flow: dict, root: Path) -> dict[str, bool]:
+    """报告待处理探针（`{pending: [...]}`）按平台这份 flow_state 算，锁定旧版本的项目也一样。
+
+    旧版本在报告全文里找 `[ ]`，修复说明里写的「补 `[[ ]]` 包裹」也算成没处理：校验一直不算做完，建模的过期交不出去
+    （实测：自主构建跑完，建议条推「刷新操作」）。"""
+    declared = (flow.get("probes") or {}).items()
+    specs = {name: spec for name, spec in declared if isinstance(spec, dict) and "pending" in spec}
+    if not specs:
+        return {}
+    from ..packs import contracts
+
+    judge = getattr(contracts.default().load("flow_state"), "has_pending", None)
+    if judge is None:
+        return {}
+    return {name: bool(judge(Path(root), spec)) for name, spec in specs.items()}
+
+
 class _WithKernelProbes:
     """本项目锁定版本的 flow_state 加上内核探针：会自己算探针的几个函数改成先补上内核探针，其余原样转过去。"""
 
@@ -156,6 +173,7 @@ class _WithKernelProbes:
     def evaluate(self, flow: dict, root: Path) -> dict:
         probes = self._module.evaluate(flow, root)
         probes.update(kernel_probes(flow, root))
+        probes.update(pending_probes(flow, root))
         return probes
 
     def _probes(self, flow, root, probes):
