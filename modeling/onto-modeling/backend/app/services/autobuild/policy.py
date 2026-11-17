@@ -5,7 +5,9 @@
 
 - 没有预算（F6）：运行在做完、叫停、出错时结束；花费的硬上限是平台配额（4.10.1），用完时运行暂停。老请求带的
   `budget` 忽略；
-- 生产库采集授权随证据采集删除（ADR-0101）：老策略文件里的 `production_collection` 不再读出来，请求里带了也忽略。
+- 生产库采集授权随证据采集删除（ADR-0101）：老策略文件里的 `production_collection` 不再读出来，请求里带了也忽略；
+- 自主构建按节点排（节点模型重构 1B）：`until_node` 写的是旧节点编号（如 `core.model`）时按流程的别名认；按段时代的
+  `slice_ids` 原样存着、不再起作用，「只跑选中的段」按「全部没做完的」跑；`generate_scenarios` 存着、不再起作用。
 """
 
 from __future__ import annotations
@@ -52,11 +54,27 @@ def defaults() -> dict:
     }
 
 
-def load(project_id: str) -> dict:
-    """本项目的策略（没存过时是默认值）；F6 之前存的 `budget`、证据采集删除前存的 `production_collection` 不再读出来。"""
+def load(project_id: str, aliases: dict | None = None) -> dict:
+    """本项目的策略（没存过时是默认值）；F6 之前存的 `budget`、证据采集删除前存的 `production_collection` 不再读出来。
+    `until_node` 按流程的别名认成现在的节点（aliases 不给时读本项目的流程）。"""
     stored = store.read_json(_path(project_id))
     policy = stored if stored and isinstance(stored.get("scope"), dict) else defaults()
-    return {key: copy.deepcopy(policy.get(key)) for key in GROUPS}
+    out = {key: copy.deepcopy(policy.get(key)) for key in GROUPS}
+    until = out["scope"].get("until_node")
+    if until and until not in REMOVED_UNTIL:
+        out["scope"]["until_node"] = (_aliases(project_id) if aliases is None else aliases).get(until, until)
+    return out
+
+
+def _aliases(project_id: str) -> dict:
+    """本项目流程的旧节点编号 → 现在的节点；流程读不出时为空（策略照原样读）。"""
+    from ...api import deps
+    from . import plan
+
+    try:
+        return dict(plan.flow(deps.workspaces.project_root(project_id)).get("aliases") or {})
+    except Exception:  # noqa: BLE001 - 项目还没建好、流程装配不出：别名不认，校验时再报
+        return {}
 
 
 def advanced(project_id: str) -> dict:
@@ -117,8 +135,8 @@ def merge(current: dict, body: dict | None) -> dict:
     return merged
 
 
-def normalize(policy: dict, *, slice_ids: list[str], node_ids: list[str]) -> dict:
-    """校验并规整；不合法抛 400 invalid_argument（`fields`）。"""
+def normalize(policy: dict, *, node_ids: list[str], aliases: dict | None = None) -> dict:
+    """校验并规整；不合法抛 400 invalid_argument（`fields`）。`until_node` 先按流程的别名（旧节点编号 → 现在的）认。"""
     fields: dict[str, str] = {}
     scope, advanced = policy.get("scope"), policy.get("advanced")
     if not isinstance(scope, dict) or not isinstance(advanced, dict):
@@ -131,18 +149,20 @@ def normalize(policy: dict, *, slice_ids: list[str], node_ids: list[str]) -> dic
     if out_scope["mode"] not in SCOPE_MODES:
         fields["scope.mode"] = "enum"
     picked = scope.get("slice_ids") or []
-    if not isinstance(picked, list):
+    if not isinstance(picked, list) or len(picked) > LIST_MAX or not all(isinstance(item, str) for item in picked):
         fields["scope.slice_ids"] = "unknown"
     else:
-        out_scope["slice_ids"] = [item for item in slice_ids if item in picked]
-    if out_scope["mode"] == "selected" and not out_scope["slice_ids"] and "scope.slice_ids" not in fields:
-        # F8 不再分段：老策略里存的段（s1…）都不在了，按「全部没做完的」跑，不报错
+        out_scope["slice_ids"] = list(picked)  # 按段时代存的：原样存着，不再起作用
+    if out_scope["mode"] == "selected":
+        # 不再分段：「只跑选中的段」按「全部没做完的」跑，不报错
         out_scope["mode"] = "all_pending"
     for key in ("refresh_stale_first", "generate_scenarios", "include_optional"):
         if not isinstance(out_scope.get(key), bool):
             fields[f"scope.{key}"] = "bool"
     if out_scope["until_node"] in REMOVED_UNTIL:
         out_scope["until_node"] = None
+    elif out_scope["until_node"]:
+        out_scope["until_node"] = (aliases or {}).get(out_scope["until_node"], out_scope["until_node"])
     until = out_scope["until_node"]
     if until is not None and (until not in node_ids or until in NOT_UNTIL):
         fields["scope.until_node"] = "unknown"

@@ -64,12 +64,12 @@ def test_states_follow_exec_records_changesets_and_mainline(env, monkeypatch):
     first = states(root)
     assert first["core.research"] == "ready" and first["core.object"] == "not_ready"
     assert first["core.operation"] == "not_ready"
-    # 进行中：有没结束的执行记录（提取对象的命令记在提取对象上；自主构建还按「全部」那一段认，批次 1B 去掉）
+    # 进行中：有没结束的执行记录（提取对象的命令记在提取对象上；不再记分段与步骤）
     flow = flow_model.load_for(root)
     record = exec_records.start(project_id, "default", root=root, flow=flow, command="/ontology-extract-object",
                                 command_name="extract-object")
     assert record["node"]["id"] == "core.object" and record["command_label"] == "提取对象"
-    assert record["slice"] == {"id": "all", "name": "全部"} and record["step"] == "object"
+    assert not {"slice", "step"} & set(record)
     assert states(root)["core.object"] == "running" and states(root)["core.operation"] == "not_ready"
     exec_records.update(project_id, record["id"], state="done")
     # 待确认：节点的改动在这一轮还没合入的变更集里（合入前的一瞬）；主线上还没有，进度不打勾

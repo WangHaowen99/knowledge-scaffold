@@ -446,7 +446,7 @@ def confirm(root: Path, flow: dict, node_ids: list[str]) -> None:
 
 def mark_needs_review(root: Path, node_ids: list[str], source: str, *, run_id: str | None = None,
                       slice_id: str | None = None, note: str = "") -> None:
-    """标「需复核」（自主构建自动合入的段、导入、节点升级）；P3 自主构建合入一段后调。"""
+    """标「需复核」（自主构建自动合入的一步、导入、节点升级）；自主构建合入一步后调，slice_id 记是哪个单元。"""
     if source not in REVIEW_SOURCES:
         raise ValueError(f"需复核的来源只能是 {REVIEW_SOURCES}")
     root = Path(root)
@@ -598,6 +598,18 @@ LEGACY_MODEL = "core.model"
 _CARRIED = ("fp", "kinds", "at", "rev", "needs_review")
 
 
+def carried(flow: dict, node_id: str, source) -> dict | None:
+    """一条老的确认记录（建模节点的、按段的一步的）搬到 node_id 上：需复核标记、按类指纹、确认时的主线提交（rev）带过来；
+    判定签名不带旧的（建模的完成判定和提取对象的不同，带过来会误标「方法升级」），按 node_id 现记一份。没有基线（只有
+    需复核、没有指纹）的返回 None：按主线现状重记。"""
+    node = next((item for item in flow.get("nodes") or [] if item.get("id") == node_id), None)
+    if node is None or not isinstance(source, dict) or not isinstance(source.get("fp"), str):
+        return None
+    record = {key: source[key] for key in _CARRIED if source.get(key) is not None}
+    record["sig"] = done_signature(flow, node)
+    return record
+
+
 def migrate_split(stored: dict, flow: dict) -> bool:
     """建模节点和它按段的记录搬到提取对象、提取操作上（每个项目只做一次）；返回 stored 改没改。
 
@@ -606,8 +618,7 @@ def migrate_split(stored: dict, flow: dict) -> bool:
     1. 删掉 nodes 里残留的 0.2 时代 core.object、core.operation 记录：0.3 起它们并进了建模，记录没删，指纹早就过时；
     2. 提取对象取 `slices.all.object`，没有就取 core.model：两者的上游都是资料分析，指纹算法相同；
     3. 提取操作取 `slices.all.operation`：上游是对象，指纹算法也相同；
-    4. 需复核标记、按类指纹、确认时的主线提交（rev）一起带过来；判定签名不带旧的（建模的完成判定和提取对象的不同，带过来会误标「方法升级」），
-       按新节点现记一份；
+    4. 需复核标记、按类指纹、确认时的主线提交（rev）一起带过来，判定签名按新节点现记（`carried`）；
     5. `slice_skips.all.rule`（跳过了「规则」补抽）转成跳过指标：两者是同一条命令；
     6. 删掉 core.model、slices、slice_skips、legacy_migrated，记 split_migrated。"""
     by_id = {node["id"]: node for node in flow.get("nodes") or []}
@@ -619,11 +630,9 @@ def migrate_split(stored: dict, flow: dict) -> bool:
     full = ((stored.get("slices") or {}).get("all") or {}) if isinstance(stored.get("slices"), dict) else {}
     sources = {"core.object": full.get("object") or nodes.get(LEGACY_MODEL), "core.operation": full.get("operation")}
     for node_id, source in sources.items():
-        if not isinstance(source, dict) or not isinstance(source.get("fp"), str):
-            continue  # 没有记录、或只有需复核没有基线的：按主线现状重记
-        record = {key: source[key] for key in _CARRIED if source.get(key) is not None}
-        record["sig"] = done_signature(flow, by_id[node_id])
-        nodes[node_id] = record
+        record = carried(flow, node_id, source)
+        if record is not None:  # 没有记录、或只有需复核没有基线的：按主线现状重记
+            nodes[node_id] = record
     rule_skip = ((stored.get("slice_skips") or {}).get("all") or {}).get("rule") \
         if isinstance(stored.get("slice_skips"), dict) else None
     if rule_skip is not None:

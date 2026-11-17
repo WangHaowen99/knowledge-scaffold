@@ -13,7 +13,7 @@ from ..api import deps
 from ..api.errors import ApiError
 from ..services import audit, model_pricing
 from ..services.autobuild import limits, plan, policy, store, views
-from ..services.autobuild.runner import run_view, runner
+from ..services.autobuild.runner import runner
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/autobuild", tags=["autobuild"])
 admin_router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
@@ -31,18 +31,12 @@ def _special_audit(request: Request, project_id: str, action: str, summary: str,
 # ---- AB-01、AB-02 策略 ----
 
 
-def _policy_inputs(project_id: str) -> tuple[list[str], list[str]]:
-    """策略校验要的：分段编号、流程节点编号。"""
-    root = deps.workspaces.project_root(project_id)
-    slice_ids = [row["id"] for row in plan.slice_rows(deps.workspaces, project_id)]
-    return slice_ids, plan.node_ids(plan.flow(root))
-
-
 def normalized_policy(project_id: str, body: dict | None) -> dict:
-    """当前策略并上请求里给的，校验后返回（AB-02、AB-03 共用）。"""
-    merged = policy.merge(policy.load(project_id), body)
-    slice_ids, node_ids = _policy_inputs(project_id)
-    return policy.normalize(merged, slice_ids=slice_ids, node_ids=node_ids)
+    """当前策略并上请求里给的，校验后返回（AB-02、AB-03 共用）：做到哪一步按本项目流程的节点与别名认。"""
+    flow = plan.flow(deps.workspaces.project_root(project_id))
+    aliases = dict(flow.get("aliases") or {})
+    merged = policy.merge(policy.load(project_id, aliases), body)
+    return policy.normalize(merged, node_ids=plan.node_ids(flow), aliases=aliases)
 
 
 @router.get("/policy")
@@ -160,7 +154,7 @@ def list_runs(project_id: str, request: Request, state: str = "", cursor: str = 
 def get_run(project_id: str, run_id: str, request: Request):
     """AB-05。"""
     deps.require_owner(project_id, request)
-    return run_view(_run_or_404(project_id, run_id))
+    return views.run_view(_run_or_404(project_id, run_id))
 
 
 async def _control(project_id: str, run_id: str, request: Request, op: str):
@@ -179,13 +173,13 @@ async def pause_run(project_id: str, run_id: str, request: Request):
 
 @router.post("/runs/{run_id}/stop-at-safe-point")
 async def stop_run(project_id: str, run_id: str, request: Request):
-    """AB-07：做完这一段再停。"""
+    """AB-07：做完当前这一步再停。"""
     return await _control(project_id, run_id, request, "stop")
 
 
 @router.post("/runs/{run_id}/convert-to-l2")
 async def convert_run(project_id: str, run_id: str, request: Request):
-    """AB-08：这一段做完后转为陪伴；项目默认构建方式不变。"""
+    """AB-08：当前这一步做完后转为陪伴；项目默认构建方式不变。"""
     return await _control(project_id, run_id, request, "convert")
 
 
@@ -205,7 +199,7 @@ async def acknowledge_run(project_id: str, run_id: str, request: Request):
     return run
 
 
-# ---- AB-10～AB-17 台账、挂起、报告、按段撤回 ----
+# ---- AB-10～AB-17 台账、挂起、报告、撤回一步 ----
 
 
 def _refresh(project_id: str) -> None:
@@ -304,7 +298,7 @@ def get_report(project_id: str, run_id: str, request: Request):
 
 @router.post("/runs/{run_id}/slices/{slice_id}/revert")
 async def revert_slice(project_id: str, run_id: str, slice_id: str, request: Request):
-    """AB-17：反向提交，只动这一段。"""
+    """AB-17：反向提交，只动这一步（老运行是这一段）；路径沿用 `slices/{单元}`。"""
     from ..services.agent_sessions import manager
     from ..services.autobuild import review
 

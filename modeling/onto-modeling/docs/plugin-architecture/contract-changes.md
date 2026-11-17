@@ -2008,3 +2008,66 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
 14. **自主构建（批次 1B 删除的兼容层）**：`flow/slices.py` 只剩自主构建还在调的接口，把两个节点包成一段「全部」× 两步（对象、操作），
     每一步的状态、确认记录落在各自的节点上；`blueprint.run_slices`、`drop_added_members` 保留；提取对象、提取操作的执行记录照旧记
     `slice`（「全部」）与 `step`。AB-01 等自主构建接口不变，策略的 `until_node` 要写 `core.operation`（这一批还不认别名）。
+
+## 2026-11-17 · 自主构建按节点排（节点模型重构 1B）
+
+用户定：自主构建不再按「段 × 步骤」排单元。这一批把 1A 留下的分段兼容层删掉；哪些节点能自主做沿用原来的规则（批次 3 再改成按
+`need` 判）。契约里 `slice`、`slice_id`、`slices` 这些字段名、AB-17 的路径、`slice_progress` 卡片类型、`slice_not_revertible` 等错误码
+都不变，装的是单元：新运行是节点编号与节点名，按段跑的老运行照旧是段。
+
+**单元与执行**
+
+1. 一个节点一个单元、一步：资料分析之后、到策略的 `until_node` 为止（含）的节点，按流程顺序，跑节点的主命令（`entry.command`）。
+   能做的节点：主线（`placement: spine`）、不是人工或面板节点、没写 `autobuild: false`、有主命令；可选的只在 `include_optional` 时做。
+   已确认、已跳过的不做；过期的按 `refresh_stale_first`（原来主线上的几步过期了总是重做，现在和建模一样听这个开关）。做没做完按
+   确认记录与完成判定算，不叠副本里的命令锁。
+2. 每个单元新开上下文、先占一个变更集、合入后是安全点：提取对象、提取操作各合入一次（原来「全部」一段合入一次）。暂停、停在
+   安全点、转为陪伴都在当前这一步合入之后生效（原来暂停停在段内一步之后，变更集开着、写入范围锁着）。合入提交说明是
+   `autobuild: 自主构建运行 #n「提取对象」（cs-…）`。
+3. 注入：开头是「自主构建 · 运行 #n · <节点名>（第几步/共几步）」；去掉段说明；「只改这一段的内容」改成「只做这一步」；合入前
+   修检查问题的提示写「只改「<节点名>」这一步写的内容」。
+4. 锁定旧 core 的项目（流程里还是 `core.model`，主命令只提取对象）：这个单元照原来做两步（提取对象、提取操作）。
+
+**接口**
+
+5. AB-01、AB-02：`scope.until_node` 写旧节点编号时按 core 的别名认，读出来、保存后都是现在的编号（`core.model` → `core.operation`；
+   原来开始运行回 400）；`core.consistency` 照旧当成跑完主线。`scope.slice_ids` 原样保存、不再起作用（原来只留现存的段）；
+   `mode: "selected"` 存成 `all_pending`；`generate_scenarios` 保存、不再起作用。
+6. AB-03 `slices`（键名不变）：一个节点一行 `{id: 节点, name: 节点名, current, included}`，`current` 是「已确认」「有过期」「已跳过」
+   「进行中」「待确认」「未开始」之一；原来只有「全部」一行。
+7. `AutobuildRun`（AB-04～AB-09）与 `AutobuildRunSummary`（AB-18、EP-14、P-01 `autobuild.slice_done/slice_total`、O-01）：
+   - `slices: {done, total}` 按全部单元算（原来只数段，校验等节点不算）；
+   - `current.slice_id/slice_name` 是节点编号、节点名，`step_label` 也是节点名；
+   - `matrix` 每个单元一行 `{slice_id, slice_name, state, cells, result}`，新加 `state`（`queued|running|done|partial|skipped`），
+     节点单元的 `cells` 为 `{}`；
+   - 新加 `stages: [{id, label}]`：按段的老运行的步骤列（对象、操作……），新运行为 `[]`；
+   - `tail_text` 恒为 `""`（节点单元都在 `matrix` 里，原来写「跑完全部分段后：校验 → …」）。
+8. AB-16 `AutobuildReport`：`slices` 每个单元一行（原来只有段），`metrics.slices`、`metrics.produced` 按全部单元算；节点单元合入过
+   就能撤回（`revertible`）。
+9. AB-17（路径 `/runs/{run_id}/slices/{单元}/revert` 不变）：撤回一个单元，节点单元也行（原来只有段）；这一步的节点的确认记录放回
+   运行前的；建模蓝图不跟着撤。错误码、专项审计 `autobuild.revert_slice` 不变。
+10. AB-10～AB-15：`LedgerEntry.slice`、`Suspension.slice` 是单元 `{id, name}`；复核项 `summary` 以节点名开头（「提取操作：三级」）。
+    待处理里自主构建复核项的影响写「步骤：<节点名>」。改判、补上发那一步的命令，不再带 `slice=` 参数。
+11. 卡片：`autobuild_start` 的「范围」写「N 步」；`slice_progress` 每个单元一张；EP-15 `autobuild.safe_point` 每个单元合入后发一次。
+12. 「需复核」：一个单元里的自动决定都复核过（没有决定的单元，要整次运行都复核过）就去掉它合入时标在节点上的；整次运行都复核完时
+    去掉这次运行标的全部。原来按段清段内记录，节点上的标记要等整次运行复核完。
+13. 执行记录：不再记 `slice`、`step`；ExecRecord 的 `slice` 新记录为 null，老记录照读。
+14. 变更集检查：按段的「待建链接」（`pending_links`、`pending`）去掉，链接找不到一律算问题；`round_changes` 卡的 `checks.pending` 恒为 0，
+    提示不再有「N 处指向第 X 段待建的内容」（老变更集记着的也不再提示）。
+
+**老运行兼容**（运行记录不迁移，按记录里的单元原样认；运行记录里各单元的进度仍存在 `slices` 键下，回退到上一版也能读新运行）
+
+15. 详情（AB-05）：`stages` 从按段单元的步骤和开始时记下的各步状态得出；按段的一行按步骤填格子，跟在后面的节点单元一行、没有
+    格子；开始时就做完的段照旧一行「运行前已完成」。
+16. 报告、台账、挂起、待处理照旧按 `slice` 认单元；复核项的「全部」写「建模」，按好几段跑的才说「分段」「N 段」。
+17. 撤回（`slices/all/revert`）：按步骤记的运行前确认记录（`object`、`operation`）落到提取对象、提取操作上（同节点状态迁移：带指纹、
+    需复核标记，判定签名按现在的节点记）；「规则」一步的记录不放回。原来会去掉这一段合入时记进建模蓝图的条目，现在蓝图不动。
+18. 暂停中的老运行续跑：接着做这一段没做完的步骤（不重做做完的），再做后面的节点单元。
+19. 留到下一次的挂起问题按那一步落到节点（对象 → 提取对象，操作 → 提取操作，不知道哪一步时按这一段的第一步），下一次运行在那个
+    节点上补上。
+20. 策略里的 `slice_ids` 只保存不使用（第 5 条）。
+
+**删除**
+
+21. `flow/slices.py` 整个删除；`blueprint.run_slices`、`drop_added_members`，`revert_merged` 的 `rewrite` 参数删除；变更集检查的
+    待建链接（`gates._planned`、`link_target`）删除；`exec_records` 不再写 `slice`、`step`。

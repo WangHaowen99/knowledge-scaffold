@@ -32,7 +32,7 @@ def _needs_input(project_id: str) -> list[dict]:
 def test_template_confirmation_in_a_run_is_confirmed_without_a_ledger_entry(ab):
     client, _workspaces, project_id, _root = ab
     answers: list = []
-    AutoEngine.hooks["/ontology-extract-object:all"] = [
+    AutoEngine.hooks["/ontology-extract-object"] = [
         ask([CONFIRM, {"question": "门店编号沿用资料里的四位码吗", "header": "置信度 0.9",
                        "options": [{"label": "沿用（推荐）"}, {"label": "重新编号"}]}], into=answers),
         ask([], into=answers, tool="Write")]

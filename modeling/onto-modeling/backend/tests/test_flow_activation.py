@@ -99,9 +99,9 @@ def test_autobuild_leaves_the_nodes_to_the_user(project):  # noqa: F811
     _client, _manager, _project_id, root = project
     flow = assemble.assemble([_core(), _round(), ("trace", "0.1.0", _yaml("packs/trace/flow.yaml"))])
     policy = {"scope": {"until_node": None, "include_optional": False}}
-    titles = {unit.get("node_id") or unit.get("node") or unit.get("id") for unit in plan._tail(root, flow, policy)}
+    titles = {unit["id"] for unit in plan.lay_out(root, flow, policy)[0]}
     assert not {name for name in titles if str(name).startswith("intake.")}
-    assert "core.validate" in titles
+    assert {"core.object", "core.operation", "core.validate"} <= titles
 
 
 # ---- 真实项目：触发、抢先推荐、发布关卡 ----

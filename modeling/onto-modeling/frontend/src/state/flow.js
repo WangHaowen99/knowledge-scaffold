@@ -148,10 +148,12 @@ export function overlayRunning(flow, nodeId) {
   return { ...flow, nodes: flow.nodes.map((n) => (n.id === nodeId ? { ...n, state: 'running', display_state: 'running' } : n)) };
 }
 
-// F8 起不分段：建模只有一段「全部」（id all），界面上不提它，要有个叫法时叫「建模」。
-// F8 之前按段跑的运行记录、锁里还带着分段名，照原名显示
+// 自主构建的单元（契约里的 slice_id、slice）：现在一个节点一个单元，编号带包名前缀（core.object）；老运行按段，
+// F8 之后只有一段「全部」（id all），之前是 s1、s2……。「全部」界面上不提，要有个叫法时叫「建模」；真的分段照原名显示
 export const FULL_SLICE_ID = 'all';
-export const sliceName = (id, name) => (id === FULL_SLICE_ID ? '' : name || '');
+export const isNodeUnit = (id) => !!id && id.includes('.');
+// 这是老运行里真的一段时给段名（用在「这一段」「分段」的说法上），全部、节点都给空
+export const sliceName = (id, name) => (id === FULL_SLICE_ID || isNodeUnit(id) ? '' : name || '');
 export const unitTitle = (id, name) => (id === FULL_SLICE_ID ? '建模' : name || '');
 // 一组行里有两段以上真的分段（老运行）时才出「分段」的列和说法
-export const multiSlice = (ids) => (ids || []).filter((id) => id && id !== FULL_SLICE_ID).length > 1;
+export const multiSlice = (ids) => (ids || []).filter((id) => sliceName(id, id)).length > 1;

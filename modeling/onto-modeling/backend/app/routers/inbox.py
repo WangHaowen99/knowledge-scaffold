@@ -84,10 +84,11 @@ def _detail(project_id: str, item: dict) -> dict | None:
         return {"group": "high_confidence", "run_id": run["run_id"], "threshold": threshold,
                 "entries": [autobuild_views.ledger_entry(entry) for entry in extra["group"]]}
     if kind == "review" and extra.get("entry") is not None:
+        from ..services.autobuild import store as autobuild_store
         from ..services.autobuild import views as autobuild_views
 
         run, entry = extra["run"], extra["entry"]
-        info = (run.get("slices") or {}).get((entry.get("slice") or {}).get("id")) or {}
+        info = autobuild_store.unit_info(run, (entry.get("slice") or {}).get("id"))
         return {**autobuild_views.ledger_entry(entry), "base_version_label": run.get("base_version_label"),
                 "slice_version_label": info.get("version_label")}
     if kind == "suspension":
@@ -222,7 +223,7 @@ async def _run_action(project_id: str, item: dict, action: str, request: Request
 
 
 async def _autobuild_review(project_id: str, item: dict, action: str, request: Request, body: dict) -> dict:
-    """自主构建复核：接受（AB-11 / 高置信合并项 = AB-13）、改判（AB-12）、回退这一段（AB-17）。"""
+    """自主构建复核：接受（AB-11 / 高置信合并项 = AB-13）、改判（AB-12）、回退这一步（AB-17）。"""
     from ..services.autobuild import review
 
     extra = item.get("_extra") or {}

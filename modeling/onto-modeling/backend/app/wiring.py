@@ -13,7 +13,7 @@
   一轮写出建模蓝图 → 蓝图卡（B4d，ADR-0050）同一个登记点。
 - 包声明的门禁 → 写入事务的门禁链（ADR-0068）：`kernel/writepath.register_gate_checker`。
 - 自主构建（B5b，ADR-0060～0062）：运行中确认卡、决策卡由策略作答（`agent_sessions.register_policy_responder`）；
-  段说明与台账摘要注入（`injection.register_autobuild_hint_provider`）；BP-03 `next=L4` 的开始前预览
+  台账摘要注入（`injection.register_autobuild_hint_provider`）；BP-03 `next=L4` 的开始前预览
   （`blueprint.register_autobuild_preview`）；运行期间建议条换成运行控制（`view.register_autobuild_context`）；
   启动恢复的「自主构建」一步。
 

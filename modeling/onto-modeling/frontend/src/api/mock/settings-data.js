@@ -146,24 +146,33 @@ export function checkPolicy(p) {
 
 const BELOW = { conservative_assumption: '先按最稳妥的做法往下做，做完列出来给你复核', suspend: '先跳过这一项，留给你来定' };
 
-// F8 起不分段：策略里不认识的分段编号丢掉，「只跑选中的」一个不剩时按全部没做完的（同后端 autobuild/policy normalize）
-export function normalizeScope(scope, sliceIds) {
+// 不再分段：按段时代的 slice_ids 原样存着、不再起作用，「只跑选中的段」按全部没做完的（同后端 autobuild/policy normalize）
+export function normalizeScope(scope) {
   const s = { ...(scope || {}) };
-  const kept = (s.slice_ids || []).filter((id) => sliceIds.includes(id));
-  if (s.mode === 'selected' && !kept.length) return { ...s, mode: 'all_pending', slice_ids: [] };
-  return { ...s, slice_ids: kept };
+  return s.mode === 'selected' ? { ...s, mode: 'all_pending' } : s;
 }
 
-// AB-03：按策略算这次的范围（flow 里没完成的；F8 起只有「全部」）、警告
-export function previewOf(policy, flowSlices) {
+const SKIP = new Set(['core.publish', 'core.update']);
+const CURRENT = { confirmed: '已确认', stale: '有过期', skipped: '已跳过', running: '进行中', pending_confirm: '待确认' };
+
+// AB-03：一个节点一行（资料分析之后的主线节点，到 until_node 为止；同后端 autobuild/plan），没做完的在范围里
+export function previewOf(policy, flow) {
   const scope = policy.scope || {};
-  const slices = (flowSlices || []).map((s) => {
-    const open = s.group !== 'done';
-    return { id: s.id, name: s.name, current: open ? '未完成' : '已确认', included: open && (scope.mode !== 'selected' || (scope.slice_ids || []).includes(s.id)), group: s.group };
-  });
-  const warnings = slices.some((s) => s.included && s.group === 'now') ? ['有 1 个未决决策会被按策略决定'] : [];
+  const nodes = flow?.nodes || [];
+  const start = nodes.findIndex((n) => n.id === 'core.research') + 1;
+  const rows = [];
+  for (const n of nodes.slice(start)) {
+    const eligible = !SKIP.has(n.id) && (n.placement || 'spine') === 'spine' && n.kind !== 'human' && !n.panel && n.autobuild !== false
+      && !(n.optional && !scope.include_optional);
+    if (eligible) {
+      const todo = !['confirmed', 'skipped'].includes(n.state) && (n.state !== 'stale' || scope.refresh_stale_first !== false);
+      rows.push({ id: n.id, name: n.title, current: CURRENT[n.state] || '未开始', included: todo, running: n.state === 'running' });
+    }
+    if (n.id === scope.until_node) break;
+  }
+  const warnings = rows.some((s) => s.included && s.running) ? ['有 1 个未决决策会被按策略决定'] : [];
   return {
-    slices: slices.map(({ group, ...s }) => s),
+    slices: rows.map(({ running, ...s }) => s),
     below_threshold_text: BELOW[policy.advanced?.below_threshold] || BELOW.conservative_assumption,
     warnings, queued: false, queue_position: null,
   };

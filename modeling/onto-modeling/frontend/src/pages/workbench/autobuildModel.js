@@ -80,7 +80,8 @@ export function stripTitle(run) {
   if (!run) return { title: '', sub: '' };
   const n = `运行 #${run.run_no}`;
   const unit = run.current ? unitTitle(run.current.slice_id, run.current.slice_name) : '';
-  const cur = run.current ? [unit, run.current.step_label].filter(Boolean).join(' › ') : '';
+  // 节点单元只有一步，步骤名就是节点名：不重复
+  const cur = run.current ? [...new Set([unit, run.current.step_label].filter(Boolean))].join(' › ') : '';
   switch (run.state) {
     case 'queued': return { title: `排队中 · ${n}`, sub: '' };
     case 'running': return { title: `自主构建中 · ${n}`, sub: cur ? `当前：${cur}` : '' };
@@ -105,9 +106,14 @@ export const CELL = {
   skipped: ['skip', '已跳过'],
 };
 
-// 结果列：进行中 / 运行前就完成 / 排队 / 部分完成 / 自主完成
+// 结果列：进行中 / 运行前就完成 / 排队 / 部分完成 / 自主完成。按段的老运行看各步的格子，一个节点一行的看单元状态
 export function matrixTone(row) {
   const cells = Object.values(row.cells || {});
+  if (!cells.length) {
+    if (row.state === 'running') return 'running';
+    if (row.state === 'queued' || /回退/.test(row.result || '')) return 'gray';
+    return /部分|未开始|删除|没通过/.test(row.result || '') ? 'amber' : 'indigo';
+  }
   if (cells.includes('running')) return 'running';
   if (cells.every((c) => c === 'queued')) return 'gray';
   if (cells.every((c) => c === 'confirmed' || c === 'skipped')) return 'gray';
@@ -161,14 +167,10 @@ export function reportMetrics(r) {
   ];
 }
 
-// 建模这一格：F8 起不分段（只有「全部」）时说做完没有；F8 之前按段跑的老报告照旧写几段做完
+// 步骤这一格：做完几步（一个单元一步，老运行的一段也算一步）
 function buildMetric(slices) {
   const partial = slices.partial || [];
-  if ((slices.total || 0) <= 1) {
-    const text = partial.length ? '部分完成' : slices.done ? '完成' : '未做';
-    return ['建模', text, ''];
-  }
-  return ['分段', `${slices.done} / ${slices.total}`, partial.length ? `${partial.join('、')}部分完成` : '全部完成'];
+  return ['步骤', `${slices.done || 0} / ${slices.total || 0}`, partial.length ? `${partial.join('、')}部分完成` : slices.done === slices.total ? '全部完成' : ''];
 }
 
 // 报告卡副标题：起止时间 + 崩溃续跑说明
@@ -195,10 +197,10 @@ export function takeOverText(busy) {
     : '助手正在另一条对话里干活。开始会先打断它，已经保存的修改不受影响。';
 }
 
-// 开始前预览（AB-03）的「范围」：F8 起不分段，预览只有「全部」一行，说它现在做到哪（未开始、做了一部分…）
+// 开始前预览（AB-03）的「范围」：一个节点一行，列出这次要做的几步
 export function previewScope(preview) {
-  const row = (preview?.slices || [])[0];
-  return row?.current ? `全部没做完的步骤 · 建模${row.current}` : '全部没做完的步骤';
+  const names = (preview?.slices || []).filter((row) => row.included).map((row) => row.name);
+  return names.length ? names.join(' → ') : '全部没做完的步骤';
 }
 
 export function startLabel(preview) {

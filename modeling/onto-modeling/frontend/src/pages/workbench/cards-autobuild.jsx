@@ -9,7 +9,7 @@ import { Conf, useAutobuildCtx } from './autobuild.jsx';
 import {
   REPORT_CHIP, hhmm, reportMetrics, reportSub, sliceSegments,
 } from './autobuildModel.js';
-import { multiSlice, sliceName, unitTitle } from '../../state/flow.js';
+import { multiSlice, unitTitle } from '../../state/flow.js';
 import { CC, Tli, WbCtx } from './parts.jsx';
 import '../../styles/autobuild.css';
 
@@ -123,7 +123,7 @@ function ReportRow({ row, card, multi, scenarios, onRevert, busy }) {
   );
 }
 
-// 运行报告卡：产出汇总、结果（F8 之前按段跑时每段一行）、去复核
+// 运行报告卡：产出汇总、每一步一行的结果（老运行按段跑的是每段一行）、去复核
 function RunReportCard({ card }) {
   const { api } = useApp();
   const { pid } = useContext(WbCtx);
@@ -137,7 +137,7 @@ function RunReportCard({ card }) {
     setBusy(true);
     try {
       const r = await api.revertAutobuildSlice(pid, card.run_id, row.slice_id);
-      const name = sliceName(row.slice_id, row.name);
+      const name = unitTitle(row.slice_id, row.name);
       toast(name ? `已回退「${name}」，存为 ${r.version_label}` : `已回退到运行前，存为 ${r.version_label}`, 'undo');
     } catch (e) {
       toast(errorText(e), 'alert');

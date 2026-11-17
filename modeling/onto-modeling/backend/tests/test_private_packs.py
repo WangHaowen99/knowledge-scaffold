@@ -327,8 +327,9 @@ def test_report_counts_what_is_left_at_the_end():
     assert views._checks(_run(final_checks={"errors": 1, "warnings": 2}), infos) == {"errors": 1, "warnings": 2}
 
 
-def test_start_card_does_not_mention_segments_when_not_sliced():
-    chips = {chip["label"]: chip["value"] for chip in views.start_card(_run())["chips"]}
-    assert chips["范围"] == "未完成的步骤"
-    sliced = _run(units=[{"id": f"s{index}", "name": f"段{index}", "kind": "slice"} for index in range(3)])
-    assert {chip["label"]: chip["value"] for chip in views.start_card(sliced)["chips"]}["范围"] == "未完成的 3 段"
+def test_start_card_does_not_mention_segments():
+    """开始卡的范围按这次运行的单元数说（一个节点一步），不再提「段」。"""
+    units = [{"id": node_id, "name": name, "kind": "node"}
+             for node_id, name in (("core.object", "提取对象"), ("core.operation", "提取操作"), ("core.validate", "校验"))]
+    chips = {chip["label"]: chip["value"] for chip in views.start_card(_run(units=units))["chips"]}
+    assert chips["范围"] == "3 步"

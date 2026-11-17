@@ -23,7 +23,7 @@ import yaml
 
 from app import config, wiring
 from app.kernel.changesets import service as changesets
-from app.services.flow import assemble, blueprint, view
+from app.services.flow import assemble, view
 from app.services.flow import model as flow_model
 from app.services.flow import state as node_state
 from app.services.packs import contracts
@@ -368,7 +368,9 @@ def test_exec_records_land_on_the_new_nodes(env):
     found = start("/ontology-extract-operation slice=s2")  # F8 之前的写法：分段参数不再起作用
     assert (found["node"]["id"], found["command_label"]) == ("core.operation", "提取操作")
     found = start("/ontology-extract-rule-metric slice=s2")  # 原来是建模的「规则」一步，现在就是指标
-    assert found["node"]["id"] == "core.metric" and found["slice"] is None and found["step"] is None
+    # 执行记录不再记分段与步骤（老记录照样按 node_of 认，见下一条）；视图里的 slice 恒为 null
+    assert found["node"]["id"] == "core.metric" and not {"slice", "step"} & set(found)
+    assert exec_records.view(found)["slice"] is None
 
 
 def test_old_exec_records_are_read_as_the_new_nodes(env):
@@ -565,22 +567,20 @@ def test_sliced_blueprint_never_gates_publish(env):
     assert _node(view.build(root), "core.publish")["state"] != "blocked"
 
 
-def test_project_card_and_run_slices_for_autobuild(env):
-    client, workspaces, _manager, project_id, root = env
+def test_project_card_and_autobuild_preview_with_an_old_sliced_blueprint(env):
+    """老的三段蓝图：项目卡片不显示分段；自主构建按节点排，不看蓝图里的段（一个节点一行，状态取各自的节点）。"""
+    client, _workspaces, _manager, project_id, root = env
     card = next(item for item in client.get("/api/v1/projects").json()["items"] if item["id"] == project_id)
     assert card["slices"] is None
-    full = blueprint.run_slices(workspaces, project_id)
-    assert [item["id"] for item in full] == ["all"] and full[0]["brief"].startswith("全量模式")
-    assert full[0]["stages"] == {"object": "not_ready", "operation": "not_ready"} and full[0]["group"] == "todo"
-    # 老的三段蓝图：项目卡片不显示分段；自主构建只跑「全部」一段，各步的状态取提取对象、提取操作
     _blueprint(root)
     main_write(root, "ontology/object/门店.md", obj("门店", "合成"))
     card = next(item for item in client.get("/api/v1/projects").json()["items"] if item["id"] == project_id)
     assert card["slices"] is None
-    items = blueprint.run_slices(workspaces, project_id)
-    assert [item["id"] for item in items] == ["all"] and items[0]["depends_on"] == []
-    assert items[0]["brief"].startswith("全量模式")
-    assert items[0]["stages"] == {"object": "confirmed", "operation": "ready"} and items[0]["group"] == "now"
+    preview = client.post(f"/api/v1/projects/{project_id}/autobuild/runs/preview",
+                          json={"policy_overrides": {"scope": {"until_node": "core.operation"}}})
+    assert preview.status_code == 200, preview.text
+    assert [(row["id"], row["current"], row["included"]) for row in preview.json()["slices"]] == [
+        ("core.object", "已确认", False), ("core.operation", "未开始", True)]
 
 
 # ---------------------------------------------------------------------------

@@ -234,15 +234,17 @@ def test_new_check_errors_do_not_block_and_the_card_says_what_to_look_at(project
     out = service.settle(workspaces, project_id, actor=OWNER)
     assert out["state"] == "merged" and (root / "ontology/object/坏对象.md").is_file()
     checks = store.get(root, record["id"])["checks"]
-    assert checks["errors"] >= 1 and checks["pending"] == 0
+    assert checks["errors"] >= 1 and "pending" not in checks
     card = service.round_card(workspaces, project_id, store.get(root, record["id"]), "rc-x")
+    assert card["checks"]["pending"] == 0  # 契约只加不删：待建链接随分段去掉，恒为 0
     texts = [hint["text"] for hint in card["hints"]]
     assert "1 处链接找不到对象" in texts
     assert not any("新错误" in text or "没通过" in text for text in [card["title"], *texts])
 
 
 def test_links_to_planned_content_are_problems_without_slicing(project):
-    """F8 不分段：蓝图里规划了、还没建的内容不再算「待建」（F8 之前写下的两段蓝图也一样），链接找不到照常算问题。"""
+    """不分段：蓝图里规划了、还没建的内容不再算「待建」（F8 之前写下的两段蓝图也一样），链接找不到照常算问题；
+    按段时代区分待建链接的代码已经删了，检查结果里不再有 pending、pending_links。"""
     workspaces, project_id, root = project
     from app.services.flow import blueprint
 
@@ -258,7 +260,7 @@ def test_links_to_planned_content_are_problems_without_slicing(project):
     _copy, record = _pending(workspaces, project_id, root, text=store_text)
     service.settle(workspaces, project_id, actor=OWNER)
     checks = store.get(root, record["id"])["checks"]
-    assert checks["pending"] == 0 and checks["pending_links"] == []
+    assert not {"pending", "pending_links"} & set(checks) and checks["errors"] >= 3
     card = service.round_card(workspaces, project_id, store.get(root, record["id"]), "rc-x")
     assert {hint["text"]: hint["tone"] for hint in card["hints"]} == {"3 处链接找不到对象": "warn"}
 
@@ -268,9 +270,22 @@ def test_pending_classification_without_a_blueprint_counts_as_problems(project):
     _copy, record = _pending(workspaces, project_id, root, text=obj("门店", "向 [[供应商]] 进货"))
     service.settle(workspaces, project_id, actor=OWNER)
     checks = store.get(root, record["id"])["checks"]
-    assert checks["pending"] == 0 and checks["pending_links"] == []
+    assert not {"pending", "pending_links"} & set(checks)
     card = service.round_card(workspaces, project_id, store.get(root, record["id"]), "rc-x")
     assert [hint["text"] for hint in card["hints"]] == ["1 处链接找不到对象"]
+
+
+def test_old_changeset_checks_with_pending_links_still_render(project):
+    """按段时代合入的变更集，检查结果里记着待建链接：卡片照样能出，待建的不再单独提示，`pending` 恒为 0。"""
+    workspaces, project_id, root = project
+    _copy, record = _pending(workspaces, project_id, root, text=obj("门店", "向 [[供应商]] 进货"))
+    service.settle(workspaces, project_id, actor=OWNER)
+    old = {"errors": 0, "warnings": 0, "findings": [], "pending": 2,
+           "pending_links": [{"target": "供应商", "path": "ontology/object/门店.md", "slice_id": "s2",
+                              "slice_name": "合成段", "slice_no": 2}] * 2}
+    store.update(root, record["id"], checks=old)
+    card = service.round_card(workspaces, project_id, store.get(root, record["id"]), "rc-x")
+    assert card["checks"] == {"errors": 0, "warnings": 0, "pending": 0} and card["hints"] == []
 
 
 # ---- 确认蓝图不依赖合入；升级迁移 ----

@@ -1,6 +1,7 @@
 // mock：主示例项目的自主构建运行 #3（设计稿 l4-run 与 inbox 共用的同一次运行，合成场景）。
-// 运行范围是未完成的 4 段：安全库存测算、陈列量核定、临期与损耗检查、超量与审批提示；运行前版本 v0.12。
-// running：停在 15:48「临期与损耗检查 › 提取规则」；completed：17:02 全部分段完成。
+// 按段跑的老运行（节点模型重构 1B 之前开始的，详情里才有步骤列 stages）：未完成的 4 段（安全库存测算、陈列量核定、
+// 临期与损耗检查、超量与审批提示）之后跟校验；运行前版本 v0.12。
+// running：停在 15:48「临期与损耗检查 › 提取规则」；completed：17:02 全部做完。
 import { ANCHORS, MAIN_PID } from './fixtures.js';
 import { entryRef } from './scenario.js';
 
@@ -164,7 +165,8 @@ export function policy() {
   };
 }
 
-const ROW = (slice, cells, result) => ({ slice_id: slice.id, slice_name: slice.name, cells: Object.fromEntries(['object', 'operation', 'rule', 'check', 'scenario'].map((k, i) => [k, cells[i]])), result });
+const STAGES = [['object', '对象'], ['operation', '操作'], ['rule', '规则'], ['check', '写入即查'], ['scenario', '场景']];
+const ROW = (slice, cells, result, state = 'done') => ({ slice_id: slice.id, slice_name: slice.name, state, cells: Object.fromEntries(STAGES.map(([k], i) => [k, cells[i]])), result });
 const C = 'confirmed';
 const AU = 'auto';
 const Q = 'queued';
@@ -185,10 +187,11 @@ export function runOf(state = 'running', { led = ledger().filter(upTo(state)), s
     ROW(SL.s1, [C, C, 'skipped', C, C], '运行前已完成'),
     ROW(SL.s2, [C, C, AU, AU, AU], '完成 · 1 项需复核'),
     ROW(SL.s3, [C, AU, AU, AU, AU], '已刷新过期 3 项'),
-    done ? ROW(SL.s4, [AU, AU, AU, AU, AU], '部分完成 · 挂起 2 项')
-      : ended ? ROW(SL.s4, [AU, AU, AU, AU, AU], '部分完成 · 挂起 1 项')
-        : ROW(SL.s4, [AU, AU, 'running', Q, Q], '进行中'),
-    done ? ROW(SL.s5, [AU, AU, AU, AU, AU], '完成 · 挂起 1 项') : ROW(SL.s5, [Q, Q, Q, Q, Q], ended ? '未开始' : '排队'),
+    done ? ROW(SL.s4, [AU, AU, AU, AU, AU], '部分完成 · 挂起 2 项', 'partial')
+      : ended ? ROW(SL.s4, [AU, AU, AU, AU, AU], '部分完成 · 挂起 1 项', 'partial')
+        : ROW(SL.s4, [AU, AU, 'running', Q, Q], '进行中', 'running'),
+    done ? ROW(SL.s5, [AU, AU, AU, AU, AU], '完成 · 挂起 1 项') : ROW(SL.s5, [Q, Q, Q, Q, Q], ended ? '未开始' : '排队', 'queued'),
+    { slice_id: SL.gc.id, slice_name: SL.gc.name, state: done ? 'done' : 'queued', cells: {}, result: done ? '完成' : ended ? '未开始' : '排队' },
   ];
   return {
     run_id: RUN_ID,
@@ -199,7 +202,7 @@ export function runOf(state = 'running', { led = ledger().filter(upTo(state)), s
     est_total_ms: ended ? null : 84 * MIN,
     tokens: { used: done ? 5100000 : 2100000 },
     cost: { used: cny(done ? 86 : 31) },
-    slices: { done: done ? 4 : ended ? 3 : 2, total: 4 },
+    slices: { done: done ? 5 : ended ? 3 : 2, total: 5 },
     decisions: led.length,
     suspended: sus.length,
     needs_review: led.length,
@@ -213,7 +216,8 @@ export function runOf(state = 'running', { led = ledger().filter(upTo(state)), s
     scenarios: done ? { passed: 16, total: 18 } : { passed: 14, total: 15 },
     fix_rounds: { used: 1, limit: 2 },
     matrix,
-    tail_text: '跑完全部分段后：校验 → 合规检查（发布前，留给你）',
+    stages: STAGES.map(([id, label]) => ({ id, label })),
+    tail_text: '',
     scope_lock_text: '正在做的这一段，写入范围内的条目在 Studio 和插件页里只读，到这一段自动合入为止；其他条目照常编辑，保存即生效',
     recovered_from_checkpoint: done ? 1 : 0,
     report_available: ended,
@@ -236,7 +240,7 @@ export function reportOf(state = 'completed') {
     base_version_label: BASE_VERSION,
     metrics: {
       duration_ms: done ? 112 * MIN : 46 * MIN,
-      slices: { done: done ? 5 : 4, total: 5, partial: [SL.s4.name] },
+      slices: { done: done ? 5 : 3, total: 5, partial: [SL.s4.name] },
       produced: done ? { objects: 5, operations: 2, rules: 7 } : { objects: 3, operations: 1, rules: 4 },
       checks: { errors: 0, warnings: 3 },
       scenarios: done ? { passed: 16, total: 18, suspended_failures: 2 } : { passed: 13, total: 14, suspended_failures: 1 },
@@ -250,6 +254,7 @@ export function reportOf(state = 'completed') {
       slice(SL.s3, 'done', '完成 · 刷新过期 3 项', '改 2 操作 · +1 规则', 6, 6, 'v0.15'),
       slice(SL.s4, 'partial', done ? '部分完成 · 挂起 2 项' : '部分完成 · 挂起 1 项', '+3 对象 +1 操作 +3 规则', 3, 4, 'v0.17'),
       done ? slice(SL.s5, 'done', '完成', '+2 对象 +1 操作 +2 规则', 3, 4, 'v0.19') : slice(SL.s5, 'skipped', '未开始', '—', 0, 0, BASE_VERSION),
+      done ? slice(SL.gc, 'done', '完成', '—', 0, 0, 'v0.20') : slice(SL.gc, 'skipped', '未开始', '—', 0, 0, BASE_VERSION),
     ],
     note: '产出已生效并标「需复核」；复核完之前，发布检查会提醒你',
   };

@@ -30,8 +30,8 @@ SOURCE_LABELS = {
 LABEL_MAX = 120
 
 
-def _autobuild_slices(project_id: str) -> dict[str, dict]:
-    """自主构建合入的段：变更集 → {run, needs_review}（契约 7.6 Version.run，F3 补充第 19 条）。"""
+def _autobuild_units(project_id: str) -> dict[str, dict]:
+    """自主构建合入的单元：变更集 → {run, needs_review}（契约 7.6 Version.run，F3 补充第 19 条；`slice_*` 字段装的是单元）。"""
     from ..services.autobuild import store, views
 
     index = {}
@@ -39,10 +39,10 @@ def _autobuild_slices(project_id: str) -> dict[str, dict]:
         pending: dict[str, int] = {}
         for entry in views.live_ledger(run):
             if entry.get("review_state") == "pending":
-                slice_id = (entry.get("slice") or {}).get("id")
-                pending[slice_id] = pending.get(slice_id, 0) + 1
+                unit_id = (entry.get("slice") or {}).get("id")
+                pending[unit_id] = pending.get(unit_id, 0) + 1
         for unit in run.get("units") or []:
-            info = (run.get("slices") or {}).get(unit["id"]) or {}
+            info = store.unit_info(run, unit["id"])
             if info.get("changeset_id") and info.get("commit"):
                 index[info["changeset_id"]] = {
                     "run": {"run_id": run["run_id"], "run_no": run["run_no"], "slice_id": unit["id"],
@@ -90,7 +90,7 @@ def _releases(project_id: str, entries: list[dict]) -> tuple[dict[str, str], str
 
 def _version(entry: dict, head: str, autobuild: dict | None = None, releases: dict | None = None) -> dict:
     trailer = entry["trailer"]
-    slice_run = (autobuild or {}).get(trailer.get("Onto-Changeset") or "") if entry["source"] == "autobuild" else None
+    unit_run = (autobuild or {}).get(trailer.get("Onto-Changeset") or "") if entry["source"] == "autobuild" else None
     return {
         "commit": entry["commit"],
         "n": entry["n"],
@@ -104,8 +104,8 @@ def _version(entry: dict, head: str, autobuild: dict | None = None, releases: di
         "release": (releases or {}).get(entry["commit"]) or entry["release"],
         "current": entry["commit"] == head,
         "changeset_id": trailer.get("Onto-Changeset"),
-        "run": (slice_run or {}).get("run"),
-        "needs_review": (slice_run or {}).get("needs_review", 0),
+        "run": (unit_run or {}).get("run"),
+        "needs_review": (unit_run or {}).get("needs_review", 0),
         "trailer": {
             "source": trailer.get("Onto-Source", ""),
             "author": trailer.get("Onto-Author", ""),
@@ -124,7 +124,7 @@ def list_versions(project_id: str, request: Request, source: str = "", cursor: s
         raise ApiError("invalid_argument", "source 取值不合法", 400, {"fields": {"source": "enum"}})
     state = mainline.state(root)
     entries = deps.workspaces.versions(project_id)
-    autobuild = _autobuild_slices(project_id)
+    autobuild = _autobuild_units(project_id)
     releases, release_error = _releases(project_id, entries)
     items = [_version(entry, state["head"], autobuild, releases)
              for entry in entries if not wanted or entry["source"] in wanted]
@@ -155,7 +155,7 @@ def history(project_id: str, request: Request, limit: int = 50, cursor: str = ""
             raise ApiError("invalid_cursor", str(exc), 400) from exc
         raise
     head = mainline.state(root)["head"]
-    autobuild = _autobuild_slices(project_id)
+    autobuild = _autobuild_units(project_id)
     result["items"] = [{**item, **_version(item, head, autobuild)} if item["kind"] == "iteration" else item
                        for item in result["items"]]
     return result

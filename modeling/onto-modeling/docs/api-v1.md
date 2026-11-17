@@ -156,7 +156,7 @@
 - `base_revision` 为空串或省略时不做冲突检查。只有新建文件，或明确要覆盖时才这样传。
 - **写入范围锁**（详设 4.3、方案 C10）：
   - 写到助手写入范围内的条目，所有写接口统一返回 `423 write_scope_locked`，`details` 为 `ScopeLock`；
-  - 锁的状态有两态：`assistant_running`（助手运行中，到这一轮结束合入为止）、`pending_confirm`（F3 起只在这一轮和你的修改合入冲突时出现，到在待处理里选好为止；界面叫「有冲突」）。自主构建下是 `autobuild_slice`，持续到这一段自动合入；
+  - 锁的状态有两态：`assistant_running`（助手运行中，到这一轮结束合入为止）、`pending_confirm`（F3 起只在这一轮和你的修改合入冲突时出现，到在待处理里选好为止；界面叫「有冲突」）。自主构建下是 `autobuild_slice`，持续到当前这一步自动合入；
   - 范围外照常写，保存即合入主线。
 - 网页、Studio、MCP、导入的写入都经内核写入路径（⑤），成功响应带 `commit` 和 `version_label`。
 
@@ -516,7 +516,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `budget_exceeds_quota` | 422 | 预算超出平台上限或剩余配额 | `dimension, max` |
 | `ledger_entry_not_found` | 404 | 台账条目不存在 | — |
 | `suspension_not_found` | 404 | 挂起问题不存在或已回答 | — |
-| `slice_not_revertible` | 409 | 这一段不能撤回（未合入、已撤回，或后续段依赖它的改动） | `reason` |
+| `slice_not_revertible` | 409 | 自主构建的这一步（老运行是这一段）不能撤回（未合入、已撤回，或后面的修改改到了它的条目） | `reason` |
 | `preview_expired` | 410 | 开始前预览已过期（10 分钟），要重新预览 | — |
 
 ### 2.11 运维
@@ -3137,8 +3137,10 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 依据详设 8.5、1.6#2、方案 B12～B14、C8。
 
-- 运行由会话宿主托管，每段一个变更集，检查通过自动合入，产出标「需复核」。
-- 每段合入之后是安全点。
+- 按流程顺序一个节点一个单元（资料分析之后、到 `until_node` 为止），每个单元一步，跑节点的主命令（节点模型重构 1B）。
+- 运行由会话宿主托管，每个单元一个变更集，检查通过自动合入，产出标「需复核」。
+- 每个单元合入之后是安全点。
+- 契约里 `slice`、`slice_id`、`slices` 等字段名不变，装的是单元（节点编号、节点名）；按段跑的老运行照旧是段。
 - 运行在自己的对话里进行（会话名「自主构建 · 运行 #n」）。
 - 运行中用户发的消息按 `deferred` 处理，下一步开始前读取。
 
@@ -3147,6 +3149,8 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 `GET /api/v1/projects/{id}/autobuild/policy` · 所有者 · 旧：— · 审计：否 · 依据：8.5 策略表 · 页面：proj-settings（构建方式内嵌策略）、l4-run（开始时的策略说明）
 
 - 响应：`AutobuildPolicy`，加：
+  - `scope.until_node` 存的是旧节点编号时按 core 的别名返回现在的节点（`core.model` → `core.operation`）；`scope.slice_ids`
+    是按段时代存的，原样返回、不再起作用；
   - `platform_limits: {}`（`allow_production_collection` 随证据采集删除，ADR-0101）；
   - `not_enforced: []`；
   - `quota_remaining: {tokens, cost: Money}`；
@@ -3158,6 +3162,8 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 `PUT /api/v1/projects/{id}/autobuild/policy` · 所有者 · 旧：— · 审计：是 · 依据：8.5、4.10.1（预算只能设在配额之内） · 页面：proj-settings（「保存」「保存并开始自主构建」）
 
 - 请求：`AutobuildPolicy` 去掉只读字段，加 `base_revision`。带 `production_collection` 时忽略（ADR-0101）。
+- `until_node` 按别名认（写 `core.model` 存成 `core.operation`），不能是发布、资料分析、增量更新；`slice_ids` 原样保存、不起作用，
+  `mode: "selected"` 存成 `all_pending`；`generate_scenarios` 保存、不起作用。
 - 硬性不做的几项（发布、删除已确认内容、改资料区）不在策略里，打不开。
 - 响应：同 `AB-01`。
 - 错误：`budget_exceeds_quota`、`revision_conflict`、`invalid_argument`。
@@ -3169,7 +3175,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 - 请求：`{policy_overrides?: Partial<AutobuildPolicy>}`。开始前可以临时改。
 - 响应：`AutobuildPreview`，即：
   - `preview_token`（10 分钟有效）；
-  - 范围：分段列表、每段现状；
+  - 范围 `slices`：一个节点一行 `{id: 节点, name: 节点名, current: "已确认"|"有过期"|"已跳过"|"进行中"|"待确认"|"未开始", included}`；
   - 预算；
   - 低于阈值时怎么处理；
   - `warnings`，如「有 1 个未决决策会被按策略决定」「建模蓝图里有 1 个问题没回答，运行不会替你答，会留在待处理里」（蓝图的问题按 BP-03 不代答）；
@@ -3195,9 +3201,10 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 `GET /api/v1/projects/{id}/autobuild/runs/{run_id}` · 所有者 · 旧：— · 审计：否 · 依据：8.5 · 页面：l4-run（运行条、运行详情抽屉、流水线矩阵）
 
 - 响应：`AutobuildRun`，包括：
-  - 状态、当前分段与步骤；
+  - 状态、当前单元与步骤；
   - 指标：用时与预计、token、费用、写入即查错误与提醒、场景通过、修复轮次；
-  - `slices`：每段状态、摘要、版本、矩阵单元格；
+  - `slices: {done, total}` 按全部单元算；`matrix` 每个单元一行（新加 `state`），`stages` 是按段的老运行的步骤列（新运行为 `[]`），
+    节点单元的 `cells` 为 `{}`；`tail_text` 恒为 `""`；
   - 自动决定数、挂起数；
   - `recovered_from_checkpoint: int`（崩溃后自动续跑次数）；
   - `report_available`。
@@ -3207,7 +3214,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 `POST /api/v1/projects/{id}/autobuild/runs/{run_id}/pause` · 所有者 · 旧：— · 审计：专项 `autobuild.control` · 依据：8.5 安全点 · 页面：l4-run（「暂停」）
 
-- 停在当前步骤，以后可以续跑。
+- 当前这一步做完、合入之后停下（安全点），以后可以续跑；按段的老运行在这一段的当前步骤做完后停。
 - 响应：`AutobuildRun`（`state="pausing"`，到点后变 `paused`）。
 - 错误：`autobuild_not_running`。
 
@@ -3215,7 +3222,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 `POST /api/v1/projects/{id}/autobuild/runs/{run_id}/stop-at-safe-point` · 所有者 · 旧：— · 审计：专项 `autobuild.control` · 依据：8.5 · 页面：l4-run（「停在安全点」）
 
-- 做完这一段再停。
+- 做完当前这一步再停。
 - 响应：`AutobuildRun`（`state="stopping"`）。
 
 #### AB-08 转为陪伴
@@ -3278,19 +3285,20 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 #### AB-16 运行报告
 
-`GET /api/v1/projects/{id}/autobuild/runs/{run_id}/report` · 所有者 · 旧：— · 审计：否 · 依据：8.5「运行报告卡」 · 页面：l4-run（报告卡）、inbox（「按段结果」弹窗）
+`GET /api/v1/projects/{id}/autobuild/runs/{run_id}/report` · 所有者 · 旧：— · 审计：否 · 依据：8.5「运行报告卡」 · 页面：l4-run（报告卡）、inbox（「运行结果」弹窗）
 
 - 响应：`AutobuildReport`，即：
   - 起止时间、重启续跑说明；
   - 指标：用时与预算、分段、产出（对象 / 操作 / 规则）、检查、场景推演、自动决策、挂起、费用与 token；
-  - 按段结果：结果、产出、场景、运行后版本、能否撤回；
+  - 每个单元的结果：结果、产出、场景、运行后版本、能否撤回（`slices`，`metrics.slices` 按全部单元算）；
   - 提示文案。
 
-#### AB-17 按段撤回
+#### AB-17 撤回一步
 
-`POST /api/v1/projects/{id}/autobuild/runs/{run_id}/slices/{slice_id}/revert` · 所有者 · 旧：— · 审计：专项 `autobuild.revert_slice` · 依据：8.5、方案 C8（反向提交） · 页面：inbox（「回退到运行前」）、l4-run（报告卡「回退这一段」）
+`POST /api/v1/projects/{id}/autobuild/runs/{run_id}/slices/{slice_id}/revert` · 所有者 · 旧：— · 审计：专项 `autobuild.revert_slice` · 依据：8.5、方案 C8（反向提交） · 页面：inbox（「回退到运行前」）、l4-run（报告卡「回退到运行前」）
 
-- 只动这一段：恢复成运行开始前的样子，另存为新版本，其他分段不受影响。
+- `slice_id` 是单元：节点编号（老运行是段，如 `all`）。
+- 只动这一步：恢复成运行开始前的样子，另存为新版本，其他单元不受影响；这一步的节点的确认记录放回运行前的（老运行按步骤记的落到提取对象、提取操作上）。建模蓝图不跟着撤。
 - 响应：`{commit, version_label, reverted_to_version_label}`。
 - 错误：`slice_not_revertible`、`autobuild_running`（本次运行还在跑）。
 
@@ -4143,7 +4151,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 |---|---|---|---|---|
 | EP-01 | `flow.updated` | `{flow_hash, nodes: [{id, state, flags, progress}], slices: [], suggestions_changed: bool}`，只含变化的节点（`slices` 不再分段，恒为空） | 主线进度条、projects 卡片 | ㊴ |
 | EP-02 | `inbox.updated` | `{counts: {total, by_filter, by_pack}, added: string[], removed: string[], changed: string[]}` | 左栏工作台角标、「待处理 N」、inbox 列表、插件页角标 | ㊴ |
-| EP-03 | `scope.updated` | `ScopeLock` | Studio、流程图弹窗、场景模拟、代码生成的锁定条和只读；两态「助手运行中 / 修改待确认」，自主构建下是「这一段自动合入为止」 | 4.3、方案 C10 |
+| EP-03 | `scope.updated` | `ScopeLock` | Studio、流程图弹窗、场景模拟、代码生成的锁定条和只读；两态「助手运行中 / 修改待确认」，自主构建下是「当前这一步自动合入为止」 | 4.3、方案 C10 |
 | EP-04 | `changeset.updated` | `{changeset_id, state: "open"\|"pending_confirm"\|"merged"\|"discarded"\|"conflict", source, conversation_id, version_label: string\|null}` | wb-l2「这一轮」卡、inbox | 8.2 |
 | EP-05 | `workspace.changed` | `{commit, version_label, source: "assistant"\|"web"\|"studio"\|"mcp"\|"autobuild"\|"import"\|"plugin"\|"revert", changeset_id, by, entries: EntryRef[], artifacts: ArtifactRef[], paths: string[≤200]}` | 外壳知识包版本、Studio 表格与图谱刷新、编辑器「文件已被助手修改」提示 | 方案 C2 |
 | EP-06 | `artifacts.updated` | `{type, change: "created"\|"updated"\|"deleted"\|"stale"\|"fresh", keys: string[]}` | 场景模拟、代码生成列表；Studio 流程图行 | 4.1、5.9.4 |
@@ -4155,7 +4163,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | EP-12 | `materials.candidate` | `{candidate: {id, kind, name, anchor, anchor_label}, total}` | 资料地图弹窗「候选实时流」 | 第 9 章 |
 | EP-13 | `evidence.job.updated` | — | 已删除（ADR-0101，随证据采集） | — |
 | EP-14 | `autobuild.run.updated` | `AutobuildRunSummary` | l4-run 运行条（进度、用时、token、费用、自动决定数、挂起数） | 8.5 |
-| EP-15 | `autobuild.safe_point` | `{run_id, slice_id, slice_name, version_label, next: "continue"\|"paused"\|"stopped"\|"converted"}` | l4-run | 8.5 |
+| EP-15 | `autobuild.safe_point` | `{run_id, slice_id, slice_name, version_label, next: "continue"\|"paused"\|"stopped"\|"converted"}`（每个单元合入后一次，`slice_*` 是单元） | l4-run | 8.5 |
 | EP-16 | `autobuild.budget_warning` | `{run_id, dimension: "duration"\|"tokens"\|"cost", used_pct: number}` | l4-run，到 80% 提醒 | 8.5 |
 | EP-17 | `autobuild.finished` | `{run_id, run_no, state: "completed"\|"stopped"\|"budget_exhausted"\|"failed"\|"converted", report_available: bool}` | l4-run、inbox 汇总条 | 8.5 |
 | EP-18 | `change_list.updated` | `{change_list_id, revision, impact_ms}` | incremental 清单卡、影响面卡 | 第 9 章建议 6 |
@@ -4268,8 +4276,8 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | `external_feedback` | 外部反馈卡（已删除，ADR-0101） | — | — |
 | `pack_recommendation` | 助手推荐插件 | `{pack: PackRef, category_label, description, reason}` | chat-states 第 16 项 |
 | `resume` | 中断续跑卡 | `{exec_id, title: "上次没做完：操作提取在步骤 3 / 4 中断", reason, position: {step, total, label}, saved: {files, version_label}, resumable: bool, not_resumable_reason: string\|null}` | chat-states 第 5 项；按钮：`S-16`、`S-17` |
-| `autobuild_start` | 自主构建开始时的策略说明 | `{run_id, run_no, chips: [{label, value}]}`（范围、预算、生产库、拿不准时） | l4-run |
-| `slice_progress` | 按段的进展块 | `{run_id, slice: {id, name}, state: "done"\|"running"\|"queued"\|"partial", summary, version_label: string\|null, timeline: ProgressStep[], decision_ids: string[], suspension_ids: string[]}` | l4-run |
+| `autobuild_start` | 自主构建开始时的策略说明 | `{run_id, run_no, chips: [{label, value}]}`（范围「N 步」、拿不准时） | l4-run |
+| `slice_progress` | 每个单元（节点；老运行是段）一张进展块 | `{run_id, slice: {id, name}, state: "done"\|"running"\|"queued"\|"partial", summary, version_label: string\|null, timeline: ProgressStep[], decision_ids: string[], suspension_ids: string[]}` | l4-run |
 | `auto_decision` | 自动决定卡 | `{run_id, ledger_id, at, question, chosen, anchors, confidence: number, threshold: number, assumption: bool, review_state: "pending"\|"accepted"\|"rejudged", recorded: true}` | l4-run；「改判」去 inbox |
 | `suspension` | 挂起卡 | `{run_id, suspension_id, title, reason, inbox_item_id}` | l4-run；「现在回答」去 inbox |
 | `run_report` | 运行报告卡 | `AutobuildReport` 摘要：`{run_id, run_no, state, started_at, ended_at, recovered_restarts: int, metrics: [...], slices: [...]}` | l4-run、chat-states 产物卡；按钮「去复核」「转为陪伴继续」 |
@@ -4684,7 +4692,7 @@ type ProjectCard = ProjectMeta & {
   autobuild: {
     run_id: string; run_no: number;
     state: "queued" | "running" | "pausing" | "paused" | "completed" | "stopped";
-    slice_done: number; slice_total: number; progress_pct: number; eta_ms: number | null;
+    slice_done: number; slice_total: number; progress_pct: number; eta_ms: number | null;   // 按单元（一个节点一步）算
     decisions: number; suspended: number; budget_used_pct: number;
     needs_review: number; duration_ms: number;
   } | null;
@@ -5362,9 +5370,9 @@ type ReleaseManifest = {
 
 ```ts
 type AutobuildPolicy = {
-  scope: { mode: "all_pending" | "selected"; slice_ids: string[];
-           refresh_stale_first: boolean; generate_scenarios: boolean; include_optional: boolean;
-           until_node: string | null };   // 做到哪一步，如 "core.validate"
+  scope: { mode: "all_pending" | "selected"; slice_ids: string[];   // selected 存成 all_pending；slice_ids 按段时代的，不起作用
+           refresh_stale_first: boolean; generate_scenarios: boolean; include_optional: boolean;   // generate_scenarios 不起作用
+           until_node: string | null };   // 做到哪一步，如 "core.validate"；旧编号按别名认
   budget: { max_duration_min: number; max_tokens: number; max_cost: Money };
   advanced: { confidence_threshold: number;            // 0.5–1.0，默认 0.80
               below_threshold: "conservative_assumption" | "suspend";
@@ -5376,7 +5384,7 @@ type AutobuildPolicy = {
 
 type AutobuildPreview = {
   preview_token: string; expires_at: time;
-  slices: { id: string; name: string; current: string; included: boolean }[];
+  slices: { id: string; name: string; current: string; included: boolean }[];   // 一个节点一行
   budget: AutobuildPolicy["budget"]; below_threshold_text: string;
   warnings: string[]; queued: boolean; queue_position: number | null;
   busy: { conversation_id: string; waiting: boolean } | null;
@@ -5386,11 +5394,11 @@ type AutobuildRunSummary = {
   run_id: string; run_no: number;
   state: "queued" | "running" | "pausing" | "paused" | "stopping" | "converting" | "converted"
        | "completed" | "stopped" | "budget_exhausted" | "failed" | "interrupted";
-  current: { slice_id: string; slice_name: string; step_label: string } | null;
+  current: { slice_id: string; slice_name: string; step_label: string } | null;   // 当前单元（节点）
   elapsed_ms: number; est_total_ms: number | null;
   tokens: { used: number; limit: number };
   cost: { used: Money; budget: Money };
-  slices: { done: number; total: number };
+  slices: { done: number; total: number };   // 全部单元
   decisions: number; suspended: number; needs_review: number;
   started_at: time; ended_at: time | null;
 };
@@ -5401,10 +5409,12 @@ type AutobuildRun = AutobuildRunSummary & {
   checks: { errors: number; warnings: number };
   scenarios: { passed: number; total: number };
   fix_rounds: { used: number; limit: number };
-  matrix: { slice_id: string; slice_name: string;
-            cells: Record<"object" | "operation" | "rule" | "check" | "scenario", "confirmed" | "auto" | "running" | "queued" | "skipped">;
+  matrix: { slice_id: string; slice_name: string;   // 每个单元一行
+            state: "queued" | "running" | "done" | "partial" | "skipped";
+            cells: Record<string, "confirmed" | "auto" | "running" | "queued" | "skipped">;   // 只有按段的老运行有，键是 stages 的 id
             result: string }[];
-  tail_text: string;              // 「跑完全部分段后：合规检查（发布前，留给你）」
+  stages: { id: string; label: string }[];   // 按段的老运行的步骤列（对象、操作…）；新运行为 []
+  tail_text: string;              // 恒为 ""（节点都在 matrix 里）
   scope_lock_text: string;
   recovered_from_checkpoint: number;
   report_available: boolean;
@@ -5438,13 +5448,13 @@ type AutobuildReport = {
   started_at: time; ended_at: time;
   recovered_restarts: number;     // 「中途服务重启 1 次，已从检查点自动续跑」
   metrics: { duration_ms: number; budget_duration_ms: number;
-             slices: { done: number; total: number; partial: string[] };
+             slices: { done: number; total: number; partial: string[] };   // 全部单元
              produced: { objects: number; operations: number; rules: number };
              checks: { errors: number; warnings: number };
              scenarios: { passed: number; total: number; suspended_failures: number };
              decisions: { total: number; high_confidence: number; needs_look: number };
              suspended: number; cost: Money; tokens: number; budget: Money };
-  slices: { slice_id: string; name: string; result: "done" | "partial" | "skipped"; result_text: string;
+  slices: { slice_id: string; name: string; result: "done" | "partial" | "skipped"; result_text: string;   // 每个单元一行
             produced_text: string; scenarios: { passed: number; total: number };
             version_label: string; revertible: boolean }[];
   note: string;                   // 「产出已确认生效并标「需复核」；复核完之前，发布检查会提醒你」

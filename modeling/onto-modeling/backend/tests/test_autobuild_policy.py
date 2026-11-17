@@ -2,6 +2,7 @@
 
 - 没有预算（F6）：老请求带的 `budget` 忽略，策略和平台限制里都不再有单次上限；
 - 生产库采集授权随证据采集删除：老请求带的忽略；做到哪一步不能是发布；
+- 按节点排（节点模型重构 1B）：做到哪一步写旧节点编号按别名认；按段时代的 `slice_ids` 存着不用；
 - 同时运行数上限是配置项（设置页保存的优先于环境变量）；
 - 费用 = token × 单价；没有单价时用引擎报的费用（单价表是美元时），都没有记 0 并标估算。
 
@@ -48,16 +49,36 @@ def test_policy_validation(env):
                        ({"scope": {"slice_ids": "s1"}}, "scope.slice_ids")):
         response = client.put(_url(project_id), json=bad)
         assert response.status_code == 400 and field in response.json()["details"]["fields"], bad
-    # F8 不再分段：老策略里存的段（s1…）都不在了，「选定的段」按「全部没做完的」存，不报错
+    # 不再分段：「选定的段」按「全部没做完的」存，不报错；按段时代的 slice_ids 原样存着、不再起作用
     for scope in ({"mode": "selected", "slice_ids": []}, {"mode": "selected", "slice_ids": ["s9"]}):
         saved = client.put(_url(project_id), json={"scope": scope})
         assert saved.status_code == 200 and saved.json()["scope"]["mode"] == "all_pending", scope
-        assert saved.json()["scope"]["slice_ids"] == []
+        assert saved.json()["scope"]["slice_ids"] == scope["slice_ids"]
     ok = client.put(_url(project_id), json={"scope": {"until_node": "core.validate"}})
     assert ok.status_code == 200 and ok.json()["scope"]["until_node"] == "core.validate"
     # 全局一致性节点删了：老策略写到它等于跑完主线，不报错
     old = client.put(_url(project_id), json={"scope": {"until_node": "core.consistency"}})
     assert old.status_code == 200 and old.json()["scope"]["until_node"] is None
+
+
+def test_old_policy_with_slices_and_the_old_model_node_still_previews(env):
+    """建模拆开、按节点排之前存的策略：做到「建模」（core.model）按别名认成提取操作，不回 400；选定的段、不生成场景
+    存着不用，预览按节点出行，提取对象、提取操作都在范围里。"""
+    from app.services.autobuild import policy, store
+
+    client, _workspaces, _manager, project_id, _root = env
+    old = policy.defaults()
+    old["scope"].update(mode="selected", slice_ids=["s1", "s2"], generate_scenarios=False, until_node="core.model")
+    store.write_json(policy._path(project_id), old)
+    shown = client.get(_url(project_id)).json()["scope"]
+    assert shown["until_node"] == "core.operation" and shown["slice_ids"] == ["s1", "s2"]
+    preview = client.post(_url(project_id, "runs/preview"), json={})
+    assert preview.status_code == 200, preview.text
+    assert [(row["id"], row["included"]) for row in preview.json()["slices"]] == [
+        ("core.object", True), ("core.operation", True)]
+    saved = client.put(_url(project_id), json={"scope": {"until_node": "core.model"}}).json()["scope"]
+    assert saved["until_node"] == "core.operation" and saved["mode"] == "all_pending"
+    assert saved["slice_ids"] == ["s1", "s2"] and saved["generate_scenarios"] is False
 
 
 def test_platform_limits_and_config_item(env):

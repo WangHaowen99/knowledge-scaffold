@@ -11,7 +11,7 @@
 - 合入（`merge`）：`merge-tree --write-tree` 叠到最新主线 → 按实体检测冲突 → 合成树上跑检查（只看新增问题，
   只记录不拦，发布时才拦）→ 经写入事务（ChangeTx）在主线写一个 squash 提交，trailer 写在这个合入提交上；
 - 撤回这一轮（`revert_round`）：合入过的写反向提交（之后又被改过的不硬撤）；冲突中还没合入的重置副本；
-- 撤回已合入的变更集（`revert_merged`，也给 P3 自主构建撤回单段）：在主线上写反向提交；
+- 撤回已合入的变更集（`revert_merged`，也给 P3 自主构建撤回一步）：在主线上写反向提交；
 - 写入范围锁（`scope_lock`）：助手在跑时节点声明的 `produces`，加副本里已改的实体与产物，加等你决定的
   决策卡改动预览里列出的条目，持续到这一轮合入（冲突时到选好保留哪边）。
 
@@ -254,7 +254,7 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
         record = store.current(root)
         if not changes:
             if record is not None and record["state"] in ("open", "pending_confirm") and record.get("tree"):
-                # 助手把改动又改回去了：这个变更集是空的，悄悄关掉。先占着、还没改过的（自主构建的一段）不关
+                # 助手把改动又改回去了：这个变更集是空的，悄悄关掉。先占着、还没改过的（自主构建的一步）不关
                 closed = store.update(root, record["id"], state="discarded", closed_at=time.time(), empty=True)
                 _notify(project_id, "changeset", closed)
             return None
@@ -302,7 +302,7 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
 def open_changeset(manager, project_id: str, *, source: str = "assistant", build_mode: str = "L2",
                    purpose: str = "", conversation_id: str | None = None, run_id: str | None = None,
                    slice_id: str | None = None) -> dict:
-    """先占一个变更集（P3 自主构建每段开始前调：source="autobuild"、build_mode="L4"、run_id、slice_id）。
+    """先占一个变更集（P3 自主构建每个单元开始前调：source="autobuild"、build_mode="L4"、run_id、slice_id 记单元）。
 
     已有没关闭的变更集时返回它（同一项目同一时刻只有一个）；之后 `observe` 往里记改动。
     """
@@ -509,8 +509,9 @@ def round_card(manager, project_id: str, record: dict, card_id: str) -> dict:
         "open": None,
         "changeset_id": record["id"],
         "change_list_id": record.get("change_list_id"),
+        # pending（指向按段规划、还没建的内容的链接数）随分段去掉，恒为 0
         "checks": {"errors": int(checks.get("errors") or 0), "warnings": int(checks.get("warnings") or 0),
-                   "pending": int(checks.get("pending") or 0)},
+                   "pending": 0},
         "hints": ([{"tone": "warn", "text": "助手没提交完，平台代存了这一轮，检查没过的在待处理里"}]
                   if record.get("collected") and int(checks.get("errors") or 0) else []) + check_hints(checks),
         "groups": [{"kind": kind, "label": GROUP_LABELS[kind], "items": groups[kind]}
@@ -525,13 +526,8 @@ def round_card(manager, project_id: str, record: dict, card_id: str) -> dict:
 
 
 def check_hints(checks: dict) -> list[dict]:
-    """检查结果 → 卡片上的提示 [{tone: info|warn, text}]：待建的链接（info）、找不到对象的链接、其余按类别数错误。"""
+    """检查结果 → 卡片上的提示 [{tone: warn, text}]：找不到对象的链接、其余按类别数错误。"""
     hints = []
-    pending = checks.get("pending_links") or []
-    if pending:
-        numbers = sorted({int(item.get("slice_no") or 0) for item in pending if item.get("slice_no")})
-        where = f"第 {'、'.join(str(number) for number in numbers)} 段" if numbers else ""
-        hints.append({"tone": "info", "text": f"{len(pending)} 处指向{where}待建的内容"})
     findings = checks.get("findings") or []
     links = [item for item in findings if item.get("code") == gates.LINK_CATEGORY]
     if links:
@@ -652,7 +648,7 @@ def merge(manager, project_id: str, changeset_id: str, *, actor: str, expected_h
           choices: dict[str, str] | None = None, source: str | None = None, needs_review: bool = False,
           message: str | None = None, auto: bool = False) -> dict:
     """合入：一轮结束时的自动合入（`settle`，auto=True：会话宿主在这一轮收尾时调，不再查助手在不在跑）、
-    选好冲突后重试（CS-07）、自主构建按段自动合入（source="autobuild"、needs_review=True）。
+    选好冲突后重试（CS-07）、自主构建每一步自动合入（source="autobuild"、needs_review=True）。
 
     choices：合入冲突时用户选的 {路径或条目 ID: "mainline"|"changeset"}（CS-07）。
     检查（规则检查、插件声明的提交门禁）只记进变更集的 checks，不挡合入（F3）。
@@ -721,7 +717,7 @@ def _merged_tree(manager, project_id: str, root: Path, record: dict, main: str, 
             picks[rel] = main
     merged_tree = _tree_with(root, merged_tree, picks)
     if forbid_deletes:
-        # 自主构建硬性不做「删除已确认的内容」（详设 1.6 #2、8.5）：主线上已有的本体文件被删、被改名，这一段不合入
+        # 自主构建硬性不做「删除已确认的内容」（详设 1.6 #2、8.5）：主线上已有的本体文件被删、被改名，这一步不合入
         removed = [rel for status, rel in worktree.diff(root, main, merged_tree)
                    if status == "D" and rel.startswith("ontology/") and not _derived(rel)]
         if removed:
@@ -730,7 +726,7 @@ def _merged_tree(manager, project_id: str, root: Path, record: dict, main: str, 
         result = gates.compare(root, worktree.tree_of(root, main), merged_tree)
     except Exception:  # noqa: BLE001 - 检查跑不起来不挡合入（只提示），记一笔
         _log.warning("项目 %s 合入 %s 时检查没跑起来", project_id, record["id"], exc_info=True)
-        result = {"errors": 0, "warnings": 0, "findings": [], "pending": 0, "pending_links": [], "unavailable": True}
+        result = {"errors": 0, "warnings": 0, "findings": [], "unavailable": True}
     return merged_tree, result
 
 
@@ -809,8 +805,8 @@ def settle(manager, project_id: str, *, actor: str | None = None, announce: bool
            turn_over: bool = False) -> dict | None:
     """把没关闭的变更集合入成一个版本（F3：一轮结束、出错、被打断都合入，下一轮开始前、启动时补合遗留的）。
 
-    只管助手的变更集，和自主构建已经结束的运行留下的那一段（按段合入的口径：需复核、不许删已确认的内容）；运行没结束
-    的一段归运行器。冲突时记 conflict（进待处理）、不抛。返回 {state, record, version_label}；没有要合入的返回 None。
+    只管助手的变更集，和自主构建已经结束的运行留下的那一步（按它合入的口径：需复核、不许删已确认的内容）；运行没结束
+    的归运行器。冲突时记 conflict（进待处理）、不抛。返回 {state, record, version_label}；没有要合入的返回 None。
     announce 时合入后交给登记的通告方更新对话里的卡片（启动时用；会话宿主自己出卡）。
     turn_over：调用方知道这一轮已经结束（会话宿主收尾、下一轮开始前）；否则助手还在跑时不动（Studio 复核、执行清单
     这类入口也会经 `copy_for_turn` 走到这里，不能把跑到一半的修改合进去）。
@@ -827,7 +823,7 @@ def settle(manager, project_id: str, *, actor: str | None = None, announce: bool
     if autobuild and _run_active(project_id, record.get("run_id")):
         return None
     if not record.get("tree"):
-        # 先占着、还没改出东西（自主构建的一段）：关掉，版本不变
+        # 先占着、还没改出东西（自主构建的一步）：关掉，版本不变
         if autobuild:
             store.update(root, record["id"], state="discarded", closed_at=time.time(), empty=True)
         return None
@@ -893,7 +889,7 @@ def revert_round(manager, project_id: str, changeset_id: str, *, actor: str) -> 
 
 
 def discard(manager, project_id: str, changeset_id: str, *, actor: str) -> dict:
-    """撤回还没合入的修改（合入冲突时、自主构建放弃一段）：副本分支与副本重置到主线，主线不受影响。"""
+    """撤回还没合入的修改（合入冲突时、自主构建放弃一步）：副本分支与副本重置到主线，主线不受影响。"""
     root = manager.project_root(project_id)
     with manager._project_lock(project_id):
         record = _require_open(manager, project_id, changeset_id)  # 锁里重读：合入可能刚做完（审查第 5 条）
@@ -912,12 +908,11 @@ REVERT_PREFIX = "revert: 撤回 "
 
 
 def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, source: str = "revert",
-                  keep: tuple[str, ...] = (), rewrite: dict | None = None) -> dict:
-    """撤回一个已经合入的变更集（P3 自主构建「按段撤回」）：在主线上写它的反向提交。
+                  keep: tuple[str, ...] = ()) -> dict:
+    """撤回一个已经合入的变更集（P3 自主构建撤回一步）：在主线上写它的反向提交。
 
     合入之后别的提交又改到了同一实体时不撤（`merge_conflict`，details 列出实体），免得把后来的修改一起撤掉。
-    keep 里的路径不整个撤（自主构建撤回一段时的建模蓝图：后面的段合入时也会改它）；rewrite 给这类路径算撤回后的内容
-    （`{路径: f(合入前, 合入后, 现在) -> bytes | None}`，None 表示不动），写在同一个反向提交里。
+    keep 里的路径不撤（自主构建撤回一步时的建模蓝图：它是资料分析的产物）。
     反向提交已经在主线上、记录还没标撤回（写完提交就出错）时补标，不再写一次。返回 {commit, version_label}。
     """
     from ..writepath import ChangeTx, Origin
@@ -953,11 +948,6 @@ def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, so
             if data is None:
                 tx.remove(rel)
             else:
-                tx.write(rel, data)
-        for rel, compute in (rewrite or {}).items():
-            data = compute(worktree.read_blob(root, parent, rel), worktree.read_blob(root, commit, rel),
-                           worktree.read_blob(root, tx.base_head, rel))
-            if data is not None:
                 tx.write(rel, data)
         # 派生文件（index.md、脚本描述符）不按旧版本恢复：写入事务按撤回后的条目重新生成
         result = tx.commit(f"{REVERT_PREFIX}{record['id']}（{record.get('purpose') or '助手的修改'}）")
@@ -1005,7 +995,7 @@ def reconcile_merged(manager, root: Path) -> str | None:
         worktree.collect_state(root, copy)
         worktree.reset(root, copy, worktree.rev(root))
     now = time.time()
-    # 自主构建的一段：合入时本该带的「需复核」一起补上，并照常通知（节点、分段记成确认过并标需复核，审查 C）
+    # 自主构建的一步：合入时本该带的「需复核」一起补上，并照常通知（节点记成确认过并标需复核，审查 C）
     updated = store.update(root, record["id"], state="merged", closed_at=now, conflict=None,
                            needs_review=record.get("source") == "autobuild",
                            merged={"commit": commit, "version_label": _label(root, commit), "at": now})
@@ -1191,7 +1181,7 @@ def scope_lock(manager, project_id: str) -> dict:
                   if (record or {}).get("state") == "conflict" else "这一轮的修改正在保存")
         lock_state = "pending_confirm"
     if _autobuild_unmerged(record) and _run_active(project_id, record.get("run_id")):
-        # 自主构建的一段（契约 2.4、EP-03）：锁到这一段自动合入为止
+        # 自主构建的一步（契约 2.4、EP-03）：锁到它自动合入为止
         lock_state = "autobuild_slice"
         reason = "自主构建正在做这一步"
     since = (record or {}).get("created_at") or exec_record.get("started_at")
@@ -1211,12 +1201,12 @@ def scope_lock(manager, project_id: str) -> dict:
 
 
 def _autobuild_unmerged(record: dict | None) -> bool:
-    """自主构建的一段，还没合入（开着或等确认）。"""
+    """自主构建的一步，还没合入（开着或等确认）。"""
     return record is not None and record.get("source") == "autobuild" and record.get("state") in ("open", "pending_confirm")
 
 
 def _run_active(project_id: str, run_id: str | None) -> bool:
-    """自主构建的这次运行还没结束（运行结束后遗留的那一段由 `settle` 合入）。"""
+    """自主构建的这次运行还没结束（运行结束后遗留的那一步由 `settle` 合入）。"""
     from ...services.autobuild import store as runs
 
     active = runs.active(project_id)

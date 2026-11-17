@@ -318,27 +318,31 @@ test('mock AB-01～AB-04、AB-18：保存的策略决定预览；开始后开一
   const saved = await call('PUT', `${P}/autobuild/policy`, policyBody(form, legacy.body.revision));
   assert.equal(saved.status, 200);
   assert.notEqual(saved.body.revision, legacy.body.revision);
-  // F8 起不分段：老客户端选的分段不认，按全部没做完的处理（不报错）
+  // 不再分段：老客户端选的分段原样存着、不再起作用，按全部没做完的处理（不报错）
   const kept = (await call('GET', `${P}/autobuild/policy`)).body.scope;
   assert.equal(kept.mode, 'all_pending');
-  assert.deepEqual(kept.slice_ids, []);
+  assert.deepEqual(kept.slice_ids, ['s3', 's4']);
 
+  // 一个节点一行：资料分析之后的主线节点，发布不在里面
   const pv = (await call('POST', `${P}/autobuild/runs/preview`, {})).body;
-  assert.deepEqual(pv.slices.filter((s) => s.included).map((s) => s.id), ['all']);
-  // 「全部」正做到一半（有待确认的一步）：会按策略决定
+  assert.deepEqual(pv.slices.map((s) => [s.id, s.current, s.included]), [
+    ['core.model', '进行中', true], ['core.validate', '未开始', true], ['trace.trace', '有过期', true]]);
+  // 建模正做到一半（有待确认的一步）：会按策略决定
   assert.deepEqual(pv.warnings, ['有 1 个未决决策会被按策略决定']);
   assert.ok(pv.preview_token);
 
   assert.equal((await call('POST', `${P}/autobuild/runs`, {})).body.code, 'preview_expired');
   const run = await call('POST', `${P}/autobuild/runs`, { preview_token: pv.preview_token });
   assert.equal(run.status, 201);
-  assert.deepEqual([run.body.run_no, run.body.state, run.body.slices.total], [4, 'queued', 1]);
+  assert.deepEqual([run.body.run_no, run.body.state, run.body.slices.total], [4, 'queued', 3]);
+  assert.deepEqual([run.body.stages, run.body.matrix.map((row) => [row.slice_id, row.state])],
+    [[], [['core.model', 'queued'], ['core.validate', 'queued'], ['trace.trace', 'queued']]]);
   const conv = convs.get(F.MAIN_PID)[0];
   assert.deepEqual([conv.id, conv.title, conv.kind, conv.live], [run.body.conversation_id, '自主构建 · 运行 #4', 'autobuild', true]);
   const start = seeded.get(`${F.MAIN_PID}:${conv.id}`).find((e) => e.type === 'card').data;
   assert.equal(start.card_type, 'autobuild_start');
   assert.deepEqual(start.chips.map((c) => c.label), ['范围', '拿不准时']);
-  assert.deepEqual(start.chips.map((c) => c.value), ['全部没做完的步骤', '先按最稳妥的做法往下做，做完列出来给你复核']);
+  assert.deepEqual(start.chips.map((c) => c.value), ['3 步', '先按最稳妥的做法往下做，做完列出来给你复核']);
   assert.deepEqual([run.body.tokens, run.body.acknowledged], [{ used: 0 }, false]);
 
   const running = (await call('GET', `${P}/autobuild/runs?state=running`)).body.items;

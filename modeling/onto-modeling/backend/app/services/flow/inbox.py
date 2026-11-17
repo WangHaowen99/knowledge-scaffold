@@ -297,7 +297,7 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
                                run={"run_id": review["run_id"], "run_no": 0, "at": _iso(review.get("at"))}
                                if review.get("run_id") else None, extra={"node": node, "review": review},
                                fingerprint=f"{source}:{review.get('at')}",
-                               # 「撤回这一段」只对自主构建合入的段
+                               # 「撤回这一步」只对自主构建合入的单元
                                actions=ACTIONS["review"] if source == "autobuild" else ["accept", "rejudge"]))
     return items
 
@@ -310,9 +310,9 @@ def _handed_down_judge(root: Path, module):
     return getattr(_suggest_module(root, module), "handed_down", None) or (lambda *_args: False)
 
 
-def _unit_name(slice_ref: dict) -> str:
-    """不分段时那一段的名字是「全部」，给人看的时候叫建模（同前端 unitTitle）。"""
-    return "建模" if slice_ref.get("id") == "all" else slice_ref.get("name") or ""
+def _unit_name(unit_ref: dict) -> str:
+    """单元给人看的名字：老运行不分段时那一段叫「全部」，给人看的时候叫建模（同前端 unitTitle）；新运行是节点名。"""
+    return "建模" if unit_ref.get("id") == "all" else unit_ref.get("name") or ""
 
 
 def _autobuild(project_id: str) -> list[dict]:
@@ -326,20 +326,20 @@ def _autobuild(project_id: str) -> list[dict]:
         threshold = float(((run.get("policy") or {}).get("advanced") or {}).get("confidence_threshold") or 0.8)
         ref = {"run_id": run["run_id"], "run_no": run["run_no"]}
         ended = run.get("state") in runs.ENDED
-        slices = run.get("slices") or {}
         pending = [entry for entry in views.live_ledger(run) if entry.get("review_state") == "pending"]
+        # 老运行按好几段跑的才说「分段」「N 段」，新运行一个节点一步
         sliced = sum(1 for unit in run.get("units") or [] if unit.get("kind") == "slice") > 1
         impact_label = "分段" if sliced else "步骤"
         high = [entry for entry in pending if float(entry.get("confidence") or 0) >= threshold]
         for entry in pending:
             if entry in high:
                 continue
-            slice_ref = entry.get("slice") or {}
-            revertible = ended and bool((slices.get(slice_ref.get("id")) or {}).get("commit"))
+            unit_ref = entry.get("slice") or {}
+            revertible = ended and bool(runs.unit_info(run, unit_ref.get("id")).get("commit"))
             items.append(_item("review", entry["id"], entry.get("summary") or entry.get("question") or "",
-                               source="autobuild", created_at=entry.get("at"), slice_=slice_ref,
+                               source="autobuild", created_at=entry.get("at"), slice_=unit_ref,
                                run={**ref, "at": _iso(entry.get("at"))}, confidence=entry.get("confidence"),
-                               batchable=False, impact=[{"label": impact_label, "items": [_unit_name(slice_ref)]}],
+                               batchable=False, impact=[{"label": impact_label, "items": [_unit_name(unit_ref)]}],
                                extra={"entry": entry, "run": run},
                                actions=["accept", "rejudge", "revert_slice"] if revertible else ["accept", "rejudge"]))
             items[-1]["high_confidence"] = False  # 低于这次运行的阈值

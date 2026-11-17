@@ -11,7 +11,7 @@
   每条消息单独判断，探测的是用户原文，不是斜杠命令展开后的全文；没启用声明规则的包的项目不提示。规则由登记的数据源算
   （`register_prompt_hint_provider`，启动时在 `app/wiring.py` 登记；Jiuwen worker 进程自己登记一份）。
 
-- 自主构建（方案 B12）：运行中给这条对话注入段说明、台账摘要与用户补充，每条都带（`register_autobuild_hint_provider`）。
+- 自主构建（方案 B12）：运行中给这条对话注入台账摘要与用户补充，每条都带（`register_autobuild_hint_provider`）。
 - 交接说明：自主构建结束后，运行开始前就有的对话带一段「运行改了主线什么、之前说的以主线为准」，和阶段提示一起
   按摘要去重（`register_handover_provider`）。
 - 资料文本版：建模命令开始时仍没有文本版的资料（`material_wait.note`），点名按未读处理，每条建模命令都带。

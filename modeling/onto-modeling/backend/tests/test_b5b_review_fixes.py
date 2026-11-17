@@ -1,6 +1,6 @@
 """B5b 独立审查修复（A～M 与推断几条；复现脚本见审查报告）：每条一个修复前会失败的用例。
 
-F8 起不分段：一次运行只有一段「全部」（ONE），要两个单元时再跟一个校验（TWO）；原来按段的几条改成整段的说法。
+一个节点一个单元：做到提取操作（ONE）是提取对象、提取操作两步，再跟一个校验（TWO）是三步；原来按段的几条改成按单元。
 假引擎按消息现做（tests/autobuild_helpers.py），等待一律按条件。测试数据全部为合成内容。
 """
 
@@ -45,7 +45,7 @@ def test_A_internal_entry_points_cannot_send_during_a_run(ab):
     client, _workspaces, project_id, root = ab
     # 已有对象：对象那一步算做过，运行从操作开始
     main_write(root, "ontology/object/门店.md", obj("门店", "原始描述"), "web: 门店")
-    release = gate("/ontology-extract-operation:all")
+    release = gate("/ontology-extract-operation")
     run = start(client, project_id, **ONE)
     wait_until(lambda: store.get(project_id, run["run_id"])["cursor"].get("exec_id"))
     # 执行记录先于步骤消息落下（一轮开始前还要准备副本）：等步骤消息真的交给引擎，再记下发了几条
@@ -72,7 +72,8 @@ def test_A_internal_entry_points_cannot_send_during_a_run(ab):
     release.set()
     wait_state(client, project_id, run["run_id"], "completed")
     record = store.get(project_id, run["run_id"])
-    files = git(root, "-c", "core.quotePath=false", "show", "--name-only", "--format=", record["slices"]["all"]["commit"])
+    files = git(root, "-c", "core.quotePath=false", "show", "--name-only", "--format=",
+                record["slices"]["core.operation"]["commit"])
     assert "ontology/object/门店.md" not in files.split()
 
 
@@ -106,7 +107,7 @@ def test_B_policy_refuses_deletes_and_release_tags(ab):
             decisions.append(await ctx.request_permission("Bash", {"command": command}, None, None))
         return action
 
-    AutoEngine.hooks["/ontology-extract-object:all"] = [confirm("rm ontology/object/对象9.md"),
+    AutoEngine.hooks["/ontology-extract-object"] = [confirm("rm ontology/object/对象9.md"),
                                                       confirm("git tag release/9.9.9"),
                                                       confirm("git tag -a v3-合成 -m 合成")]
     run = start(client, project_id, **ONE)
@@ -139,7 +140,7 @@ def test_B_guard_blocks_release_tags_in_any_mode(tmp_path, monkeypatch):
 # C、E、M 与推断：停机、崩溃、并发控制
 # ---------------------------------------------------------------------------
 
-TWO = {"scope": {"until_node": "core.validate"}}  # 「全部」一段，后面跟校验
+TWO = {"scope": {"until_node": "core.validate"}}  # 提取对象、提取操作，后面跟校验
 
 
 def _restart(monkeypatch):
@@ -175,7 +176,7 @@ def test_C_shutdown_right_after_a_merge_keeps_the_slice_linked(ab, monkeypatch):
 
     def merge(*args, **kwargs):
         result = real(*args, **kwargs)
-        if "「全部」" in (kwargs.get("message") or "") and not fired:
+        if "「提取对象」" in (kwargs.get("message") or "") and not fired:
             fired.update(cs=result["record"]["id"], commit=result["commit"])
             _cancel_driver(project_id)  # 停机时取消运行任务：合入已写进主线，运行记录还没记
         return result
@@ -186,14 +187,15 @@ def test_C_shutdown_right_after_a_merge_keeps_the_slice_linked(ab, monkeypatch):
     client.__exit__(None, None, None)
     with _restart(monkeypatch) as again:
         wait_state(again, project_id, run["run_id"], "completed")
-        unit = store.get(project_id, run["run_id"])["slices"]["all"]
+        unit = store.get(project_id, run["run_id"])["slices"]["core.object"]
         assert unit["commit"] == fired["commit"] and unit["changeset_id"] == fired["cs"]
-        # 接回合入提交，不再另开变更集重做；后面的校验照常做
+        # 接回合入提交，不再另开变更集重做；后面的提取操作、校验照常做
         assert sum(1 for text in AutoEngine.sent if text.startswith("/ontology-extract-object")) == 1
-        assert "/ontology-validate" in AutoEngine.sent
+        assert "/ontology-extract-operation" in AutoEngine.sent and "/ontology-validate" in AutoEngine.sent
         versions = again.get(f"/api/v1/projects/{project_id}/versions", params={"source": "autobuild"}).json()["items"]
-        assert next(item for item in versions if item["commit"] == fired["commit"])["run"]["slice_id"] == "all"
-        revert = again.post(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/all/revert")
+        assert next(item for item in versions if item["commit"] == fired["commit"])["run"]["slice_id"] == "core.object"
+        # 提取对象之后的提取操作改的是操作，不挡撤回提取对象
+        revert = again.post(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/core.object/revert")
         assert revert.status_code == 200, revert.text
 
 
@@ -205,7 +207,7 @@ def test_C_reconcile_merged_marks_autobuild_slices_for_review(ab):
     client, workspaces, project_id, root = ab
     run = start(client, project_id, **ONE)
     wait_state(client, project_id, run["run_id"], "completed")
-    cs_id = store.get(project_id, run["run_id"])["slices"]["all"]["changeset_id"]
+    cs_id = store.get(project_id, run["run_id"])["slices"]["core.operation"]["changeset_id"]
     # 崩在合入提交之后、记 merged 之前：记录还开着，「需复核」也还没标
     changeset_store.update(root, cs_id, state="pending_confirm", merged=None, needs_review=False, closed_at=None)
     data = changeset_store._load(root)
@@ -221,7 +223,7 @@ def test_C_reconcile_merged_marks_autobuild_slices_for_review(ab):
 
 def test_E_shutdown_while_pausing_pauses_once(ab, monkeypatch):
     client, _workspaces, project_id, _root = ab
-    release = gate("/ontology-extract-object:all")
+    release = gate("/ontology-extract-object")
     run = start(client, project_id, **TWO)
     base = f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}"
     wait_until(lambda: run_of(client, project_id, run["run_id"])["current"])
@@ -275,7 +277,7 @@ def test_finish_always_reaches_an_end_state(ab, monkeypatch):
 
 
 def test_stop_without_a_driver_and_stop_racing_resume(ab, monkeypatch):
-    """推断：没有驱动任务的「在跑」运行，停在安全点直接收尾；停止收尾时来了续跑，不再多做一段（校验不做）。"""
+    """推断：没有驱动任务的「在跑」运行，停在安全点直接收尾；停止收尾时来了续跑，不再多做一步（提取操作、校验不做）。"""
     from app.services.autobuild.runner import runner
 
     client, _workspaces, project_id, _root = ab
@@ -286,7 +288,7 @@ def test_stop_without_a_driver_and_stop_racing_resume(ab, monkeypatch):
         result = await real(project_id_, run_id_, unit)
         if not fired:
             fired["done"] = True
-            raise asyncio.CancelledError()  # 驱动任务在两段之间没了
+            raise asyncio.CancelledError()  # 驱动任务在两步之间没了
         return result
 
     monkeypatch.setattr(runner, "_safe_point", safe_point)
@@ -302,8 +304,8 @@ def test_stop_without_a_driver_and_stop_racing_resume(ab, monkeypatch):
     results = client.portal.call(both)
     assert not isinstance(results[0], Exception) and isinstance(results[1], ApiError)
     stopped = wait_state(client, project_id, run["run_id"], "stopped")
-    assert stopped["slices"]["done"] == 1 and not runner.running(project_id)
-    assert "/ontology-validate" not in AutoEngine.sent
+    assert stopped["slices"] == {"done": 1, "total": 3} and not runner.running(project_id)
+    assert "/ontology-extract-operation" not in AutoEngine.sent and "/ontology-validate" not in AutoEngine.sent
     assert client.post(f"{base}/resume").json()["code"] == "autobuild_not_running"
 
 
@@ -313,7 +315,7 @@ def test_H_two_starts_at_once_make_one_run(ab):
     client, _workspaces, project_id, _root = ab
     base = f"/api/v1/projects/{project_id}/autobuild"
     assert client.put(f"{base}/policy", json=ONE).status_code == 200
-    release = gate("/ontology-extract-object:all")
+    release = gate("/ontology-extract-object")
     tokens = [client.post(f"{base}/runs/preview", json={}).json()["preview_token"] for _ in range(2)]
 
     async def both():
@@ -369,7 +371,7 @@ def test_D_confidence_parsing_and_tags():
 
 
 # ---------------------------------------------------------------------------
-# G、I、K、L 与推断：复核、挂起、撤回（全量模式只有一段「全部」）
+# G、I、K、L 与推断：复核、挂起、撤回（按单元）
 # ---------------------------------------------------------------------------
 
 ASK_TWO = [{"question": "临期按几级分", "header": "置信度 0.6", "options": [{"label": "四级（推荐）"},
@@ -378,16 +380,17 @@ ASK_TWO = [{"question": "临期按几级分", "header": "置信度 0.6", "option
                                                                             {"label": "门店"}]}]
 
 
-def test_G_reverted_slices_refuse_rejudge_and_answers(ab):
+def test_G_reverted_steps_refuse_rejudge_and_answers(ab):
     client, _workspaces, project_id, _root = ab
-    AutoEngine.hooks["/ontology-extract-operation:all"] = [ask(ASK_TWO)]
+    AutoEngine.hooks["/ontology-extract-operation"] = [ask(ASK_TWO)]
     run = start(client, project_id, scope=ONE["scope"],
                 advanced={"must_suspend_kinds": ["新增对象"]})
     wait_state(client, project_id, run["run_id"], "completed")
     record = store.get(project_id, run["run_id"])
     entry, suspension = record["ledger"][0], record["suspensions"][0]
     base = f"/api/v1/projects/{project_id}/autobuild"
-    assert client.post(f"{base}/runs/{run['run_id']}/slices/all/revert").status_code == 200
+    assert entry["slice"]["id"] == suspension["slice"]["id"] == "core.operation"
+    assert client.post(f"{base}/runs/{run['run_id']}/slices/core.operation/revert").status_code == 200
     sent = len(AutoEngine.sent)
     for response in (client.post(f"{base}/ledger/{entry['id']}/rejudge", json={"option_id": entry["options"][0]["id"]}),
                      client.post(f"{base}/ledger/{entry['id']}/accept"),
@@ -399,7 +402,7 @@ def test_G_reverted_slices_refuse_rejudge_and_answers(ab):
 
 def test_I_defer_to_next_run_keeps_the_answer_and_the_next_run_uses_it(ab):
     client, _workspaces, project_id, _root = ab
-    AutoEngine.hooks["/ontology-extract-operation:all"] = [ask(ASK_TWO[1:])]
+    AutoEngine.hooks["/ontology-extract-operation"] = [ask(ASK_TWO[1:])]
     first = start(client, project_id, scope=ONE["scope"],
                   advanced={"must_suspend_kinds": ["新增对象"]})
     wait_state(client, project_id, first["run_id"], "completed")
@@ -410,8 +413,9 @@ def test_I_defer_to_next_run_keeps_the_answer_and_the_next_run_uses_it(ab):
     inbox = client.get(f"/api/v1/projects/{project_id}/inbox", params={"filter": "autobuild_review"}).json()
     assert f"suspension:{item['id']}" in [entry["id"] for entry in inbox["items"]]
     AutoEngine.hints.clear()
-    # 下一次运行：这一段做完了，也为它补做挂起的那一步，注入里带上回答
+    # 下一次运行：提取操作做完了，也为它补做挂起的那一步，注入里带上回答
     second = start(client, project_id, scope=ONE["scope"])
+    assert [unit["slice_id"] for unit in second["matrix"]] == ["core.operation"]
     wait_state(client, project_id, second["run_id"], "completed")
     assert any("审批交给谁" in hint and "门店" in hint for hint in AutoEngine.hints)
     assert store.get(project_id, first["run_id"])["suspensions"][0]["state"] == "answered"
@@ -419,7 +423,7 @@ def test_I_defer_to_next_run_keeps_the_answer_and_the_next_run_uses_it(ab):
     assert f"suspension:{item['id']}" not in [entry["id"] for entry in inbox["items"]]
 
 
-def test_K_revert_restores_a_stale_slice_as_stale(ab):
+def test_K_revert_restores_a_stale_step_as_stale(ab):
     client, _workspaces, project_id, root = ab
     first = start(client, project_id, **ONE)
     wait_state(client, project_id, first["run_id"], "completed")
@@ -436,14 +440,15 @@ def test_K_revert_restores_a_stale_slice_as_stale(ab):
     assert before["object"] == "stale"
     second = start(client, project_id, **ONE)
     wait_state(client, project_id, second["run_id"], "completed")
-    reverted = client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{second['run_id']}/slices/all/revert")
+    # 撤回提取对象：对象回到用户改过的样子，提取对象的确认记录放回运行前的（仍是过期）
+    reverted = client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{second['run_id']}/slices/core.object/revert")
     assert reverted.status_code == 200, reverted.text
     assert "用户改过" in (root / "ontology/object/对象1.md").read_text(encoding="utf-8")
     assert stages()["object"] == "stale"
 
 
 def test_L_revert_removes_extra_entries_and_keeps_the_blueprint(ab):
-    """F8 全量模式：新条目不再记进分段（蓝图只有一段「全部」），撤回这次运行顺手建的条目一并撤掉，蓝图不动。"""
+    """新条目不再记进蓝图（F8），撤回提取对象时这一步顺手建的条目一并撤掉，蓝图不动。"""
     import json
 
     client, _workspaces, project_id, root = ab
@@ -451,14 +456,14 @@ def test_L_revert_removes_extra_entries_and_keeps_the_blueprint(ab):
     def extra(ctx):
         (Path(ctx.cwd) / "ontology/object/额外对象.md").write_text(obj("额外对象", "这一次顺手建的"), encoding="utf-8")
 
-    AutoEngine.hooks["/ontology-extract-object:all"] = [extra]
+    AutoEngine.hooks["/ontology-extract-object"] = [extra]
     before = (root / "research/blueprint.json").read_text(encoding="utf-8")
     run = start(client, project_id, **ONE)
     wait_state(client, project_id, run["run_id"], "completed")
     assert (root / "research/blueprint.json").read_text(encoding="utf-8") == before
     assert (root / "ontology/object/额外对象.md").is_file()
     versions = int(git(root, "rev-list", "--first-parent", "--count", "HEAD").strip())
-    reverted = client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/all/revert")
+    reverted = client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/core.object/revert")
     assert reverted.status_code == 200, reverted.text
     assert int(git(root, "rev-list", "--first-parent", "--count", "HEAD").strip()) == versions + 1
     doc = json.loads((root / "research/blueprint.json").read_text(encoding="utf-8"))
@@ -480,7 +485,7 @@ def test_revert_interrupted_after_the_commit_is_finished_on_retry(ab, monkeypatc
         raise RuntimeError("合成故障")
 
     monkeypatch.setattr(review, "_after_revert", broken)
-    url = f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/all/revert"
+    url = f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/core.operation/revert"
     with pytest.raises(RuntimeError):
         client.post(url)
     assert git(root, "log", "-1", "--format=%s").startswith("revert: 撤回")
@@ -488,7 +493,7 @@ def test_revert_interrupted_after_the_commit_is_finished_on_retry(ab, monkeypatc
     again = client.post(url)
     assert again.status_code == 200, again.text
     assert sum(1 for line in git(root, "log", "--format=%s").splitlines() if line.startswith("revert: 撤回")) == 1
-    assert store.get(project_id, run["run_id"])["slices"]["all"]["reverted"]
+    assert store.get(project_id, run["run_id"])["slices"]["core.operation"]["reverted"]
 
 
 def test_revert_interrupted_before_the_changeset_is_marked_is_finished_on_retry(ab, monkeypatch):
@@ -506,7 +511,7 @@ def test_revert_interrupted_before_the_changeset_is_marked_is_finished_on_retry(
         return real(root_, changeset_id, **fields)
 
     monkeypatch.setattr(changeset_store, "update", broken)
-    url = f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/all/revert"
+    url = f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/core.operation/revert"
     with pytest.raises(RuntimeError):
         client.post(url)
     monkeypatch.setattr(changeset_store, "update", real)
@@ -515,11 +520,11 @@ def test_revert_interrupted_before_the_changeset_is_marked_is_finished_on_retry(
     reverts = [line.split(" ", 1)[0] for line in git(root, "log", "--format=%H %s").splitlines()
                if line.split(" ", 1)[1].startswith("revert: 撤回")]
     assert reverts == [again.json()["commit"]]
-    assert store.get(project_id, run["run_id"])["slices"]["all"]["reverted"]
+    assert store.get(project_id, run["run_id"])["slices"]["core.operation"]["reverted"]
 
 
 def test_revert_interrupted_by_a_shutdown_is_finished_at_startup(ab, monkeypatch):
-    """推断：撤回写完反向提交就停了机——启动恢复按主线上的反向提交补记，这一段记为已撤回、不再提供撤回。"""
+    """推断：撤回写完反向提交就停了机——启动恢复按主线上的反向提交补记，这一步记为已撤回、不再提供撤回。"""
     from app.kernel.changesets import store as changeset_store
     from app.services.autobuild import runner as runner_module
 
@@ -535,11 +540,11 @@ def test_revert_interrupted_by_a_shutdown_is_finished_at_startup(ab, monkeypatch
 
     monkeypatch.setattr(changeset_store, "update", broken)
     with pytest.raises(RuntimeError):
-        client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/all/revert")
+        client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/core.operation/revert")
     monkeypatch.setattr(changeset_store, "update", real)
     report = runner_module.startup_sweep(workspaces)
     assert report is not None and "补完 1 次撤回" in report["detail"], report
-    info = store.get(project_id, run["run_id"])["slices"]["all"]
+    info = store.get(project_id, run["run_id"])["slices"]["core.operation"]
     assert info["reverted"]["commit"] == git(root, "log", "-1", "--format=%H", "--grep", "^revert: 撤回").strip()
     assert runner_module.startup_sweep(workspaces) is None
 

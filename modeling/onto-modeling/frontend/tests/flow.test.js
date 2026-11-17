@@ -99,6 +99,11 @@ test('F8 起不分段：「全部」不显示名字、要有叫法时叫「建�
   assert.equal(multiSlice(['s1']), false);
   assert.equal(multiSlice(['s1', 's2']), true);
   assert.equal(multiSlice(null), false);
+  // 现在一个节点一个单元：不是段，不叫「分段」，不说「这一段」
+  assert.equal(sliceName('core.object', '提取对象'), '');
+  assert.equal(unitTitle('core.object', '提取对象'), '提取对象');
+  assert.equal(multiSlice(['core.object', 'core.operation', 'core.validate']), false);
+  assert.equal(multiSlice(['s1', 's2', 'core.validate']), true);
 });
 
 test('节点动作的命令文本拆成 S-20 的 command / args / text；不以斜杠开头的当普通消息', () => {

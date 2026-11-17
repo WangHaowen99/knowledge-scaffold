@@ -304,20 +304,9 @@ def node_of(record: dict, flow: dict | None = None) -> str | None:
             or "core.operation")
 
 
-def _autobuild_unit(flow: dict, command: str) -> tuple[dict | None, str | None]:
-    """批次 1B 删除：自主构建还按「一段『全部』× 步骤」认执行记录（接管、续做、单元里有没有这一步），改成按节点出单元
-    之前，提取对象、提取操作的执行照旧记 slice（「全部」）与 step。"""
-    from ..flow import slices
-
-    node = slices.per_slice_node(flow) or {}
-    step = next((item for item in node.get("steps") or [] if item.get("command") == command), None)
-    return ({"id": slices.FULL_SLICE["id"], "name": slices.FULL_SLICE["name"]}, step["id"]) if step else (None, None)
-
-
 def start(project_id: str, conversation_id: str, *, root: Path, flow: dict, command: str, command_name: str,
           engine_instance: str = "", task_id: str | None = None, text: str = "") -> dict:
     node = _node(flow, (flow.get("commands") or {}).get(command_name, {}).get("node")) or {}
-    slice_ref, step = _autobuild_unit(flow, command)
     label = node.get("title") or command_name
     now = time.time()
     record = {
@@ -330,8 +319,6 @@ def start(project_id: str, conversation_id: str, *, root: Path, flow: dict, comm
         "command_label": label,
         "node": {"id": node.get("id") or f"command.{command_name}", "version": node.get("version") or "",
                  "title": node.get("title") or command_name},
-        "slice": slice_ref,
-        "step": step,
         "run_id": None,
         "phase": {"index": 0, "total": 0, "label": "", "raw": None},
         "phases_seen": [],
@@ -520,7 +507,7 @@ def view(record: dict, *, root: Path | None = None, flow: dict | None = None) ->
         "conversation_id": record.get("conversation_id") or "",
         "engine_instance": record.get("engine_instance") or "",
         "node": {key: (record.get("node") or {}).get(key) or "" for key in ("id", "version", "title")},
-        "slice": record.get("slice"),
+        "slice": record.get("slice"),  # 按段建模时的老记录才有；新记录不再记，恒为 null
         "run_id": record.get("run_id"),
         "command_label": record.get("command_label") or "",
         "phase": {"index": int(phase.get("index") or 0), "total": int(phase.get("total") or 0),

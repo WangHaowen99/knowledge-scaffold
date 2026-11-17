@@ -7,7 +7,7 @@
   挂起的问题（进待处理），答案交回给助手；
 - 工具确认卡（权限模式不是全放行时才有）：放行。发布、删除已确认内容、改资料区由守卫与写入路径挡，不靠这里。
 - 命令模板自带的产物确认（「确认无误请回复确认」，只有「确认」和「要改」两种回答）：按确认往下做，不进台账、不挂起
-  （V 报告需要改设计第 10 条：没写置信度就记成假设进复核；挂起它时段末照样合入，事后回答「确认」没有意义）。
+  （V 报告需要改设计第 10 条：没写置信度就记成假设进复核；挂起它时这一步照样合入，事后回答「确认」没有意义）。
 
 还没开始运行、构建方式是自主构建的项目，资料分析里的提问见 prerun.py。
 
@@ -151,7 +151,8 @@ def decide(question: dict, raw: dict, advanced: dict) -> dict:
     return {"kind": "decision", "option": chosen, "confidence": value, "assumption": below, "text": text}
 
 
-def _slice_ref(run: dict) -> dict:
+def _unit_ref(run: dict) -> dict:
+    """正在做的单元 {id, name}（台账、挂起问题的 `slice` 字段）。"""
     cursor = run.get("cursor") or {}
     unit = next((item for item in run.get("units") or [] if item["id"] == cursor.get("unit")), None)
     return {"id": unit["id"], "name": unit["name"]} if unit else {"id": None, "name": ""}
@@ -161,21 +162,21 @@ HANDED_OVER_PREFIX = "开始自主构建时没回答的问题："
 
 
 def record(project_id: str, run_id: str, questions: list[dict], raws: list[dict], exec_id: str | None, *,
-           slice_ref: dict | None = None, handed_over: bool = False) -> tuple[dict, list, list]:
+           unit_ref: dict | None = None, handed_over: bool = False) -> tuple[dict, list, list]:
     """按策略答一组问题，台账与挂起记进运行记录。返回 (问题原文 → 答案, 台账条目, 挂起的问题)。
 
-    handed_over：开始运行时从别的对话接过来的问题（接管时撤回的决策卡）。没有正在问的那一步，记在 slice_ref
-    那一段上；答案靠运行每一步的注入（「已做的自动决定」「挂起的问题」）带给助手。"""
+    handed_over：开始运行时从别的对话接过来的问题（接管时撤回的决策卡）。没有正在问的那一步，记在 unit_ref
+    那个单元上；答案靠运行每一步的注入（「已做的自动决定」「挂起的问题」）带给助手。"""
     answers: dict[str, str] = {}
     entries, suspensions = [], []
-    given_slice = slice_ref
+    given = unit_ref
 
     def change(run: dict) -> None:
         advanced = (run.get("policy") or {}).get("advanced") or {}
         threshold = float(advanced.get("confidence_threshold") or 0.8)
-        slice_ref = given_slice or _slice_ref(run)
+        ref = given or _unit_ref(run)
         step = (run.get("cursor") or {}).get("step")
-        info = (run.setdefault("slices", {})).setdefault(slice_ref["id"] or "", {})
+        info = store.unit_entry(run, ref["id"] or "")
         now = time.time()
         for question, raw in zip(questions, raws):
             original = str(raw.get("question") or question.get("title") or "")
@@ -187,7 +188,7 @@ def record(project_id: str, run_id: str, questions: list[dict], raws: list[dict]
             options = [{**option, "recommended": False} for option in _options(question)]
             found = anchors(outcome["text"])
             if outcome["kind"] == "suspension":
-                item = {"id": f"sp-{uuid.uuid4().hex[:8]}", "run_id": run["run_id"], "at": now, "slice": slice_ref,
+                item = {"id": f"sp-{uuid.uuid4().hex[:8]}", "run_id": run["run_id"], "at": now, "slice": ref,
                         "title": question.get("title") or "", "reason": outcome["reason"],
                         "handled_as": "跳过这一项，先做下一步", "kind": "question", "options": options,
                         "allow_custom": True, "actions": [], "state": "open", "step": step, "exec_id": exec_id,
@@ -203,13 +204,13 @@ def record(project_id: str, run_id: str, questions: list[dict], raws: list[dict]
             chosen = outcome["option"]
             options = [{**option, "recommended": option["id"] == chosen["id"]} for option in options]
             entry = {
-                "id": f"led-{uuid.uuid4().hex[:8]}", "run_id": run["run_id"], "at": now, "slice": slice_ref,
+                "id": f"led-{uuid.uuid4().hex[:8]}", "run_id": run["run_id"], "at": now, "slice": ref,
                 "question": question.get("title") or "", "chosen": plain_label(chosen), "options": options,
                 "confidence": round(outcome["confidence"], 2), "threshold": threshold,
                 "assumption": outcome["assumption"], "anchors": found, "affected": question.get("affected") or [],
                 "review_state": "pending", "rejudged_to": None,
                 "reason_text": "没有把握，先按最稳妥的做法往下做，等你复核" if outcome["assumption"] else "有把握，按推荐的做法",
-                "summary": f"{slice_ref['name']}：{plain_label(chosen)}" if slice_ref["name"] else plain_label(chosen),
+                "summary": f"{ref['name']}：{plain_label(chosen)}" if ref["name"] else plain_label(chosen),
                 "step": step, "exec_id": exec_id, "option_id": chosen["id"],
             }
             if handed_over:

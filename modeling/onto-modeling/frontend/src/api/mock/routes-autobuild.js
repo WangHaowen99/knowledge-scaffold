@@ -156,7 +156,7 @@ export function register(ctx) {
     const cur = policyOf(m[1]);
     if (body.base_revision && body.base_revision !== cur.revision) return err(409, 'revision_conflict', '策略已被修改', { current_revision: cur.revision });
     const next = S.mergePolicy(cur, body);
-    next.scope = S.normalizeScope(next.scope, ctx.flowOf(m[1]).slices.map((s) => s.id));
+    next.scope = S.normalizeScope(next.scope);
     const bad = S.checkPolicy(next);
     if (bad) return err(...bad);
     next.revision = `p${uid()}`;
@@ -168,10 +168,10 @@ export function register(ctx) {
     const active = db.autobuildActiveOf(pid);
     if (active) return err(409, 'autobuild_running', '自主构建运行中', { run_id: active.run_id });
     const policy = S.mergePolicy(policyOf(pid), body.policy_overrides);
-    policy.scope = S.normalizeScope(policy.scope, ctx.flowOf(pid).slices.map((s) => s.id));
+    policy.scope = S.normalizeScope(policy.scope);
     const bad = S.checkPolicy(policy);
     if (bad) return err(...bad);
-    const pv = S.previewOf(policy, ctx.flowOf(pid).slices);
+    const pv = S.previewOf(policy, ctx.flowOf(pid));
     if (!pv.slices.some((s) => s.included)) return err(422, 'invalid_argument', '没有要做的步骤', { fields: { scope: 'empty' } });
     const token = `pv-${uid()}`;
     db.abPreview = { token, pid, policy };
@@ -183,7 +183,7 @@ export function register(ctx) {
     if (active) return err(409, 'autobuild_running', '自主构建运行中', { run_id: active.run_id });
     if (!body.preview_token) return err(410, 'preview_expired', '预览已过期');
     const policy = db.abPreview?.token === body.preview_token ? db.abPreview.policy : policyOf(pid);
-    const pv = S.previewOf(policy, ctx.flowOf(pid).slices);
+    const pv = S.previewOf(policy, ctx.flowOf(pid));
     const included = pv.slices.filter((s) => s.included);
     const n = (storeOf(pid)?.run().run_no || 0) + 1;
     const run = S.queuedRun(n, included.length);
@@ -199,7 +199,7 @@ export function register(ctx) {
       ev(2, 'card', {
         ...R.startCard(), card_id: `ab${n}-start`, title: `自主构建 · 运行 #${n}`, run_id: run.run_id, run_no: n,
         chips: [
-          { label: '范围', value: '全部没做完的步骤' }, { label: '拿不准时', value: pv.below_threshold_text },
+          { label: '范围', value: `${included.length} 步` }, { label: '拿不准时', value: pv.below_threshold_text },
         ],
       }),
       ev(3, 'notice', { kind: 'info', text: `运行 #${n} 已排队，轮到时自动开始`, version_label: null, changeset_id: null, align: 'center' }),
@@ -210,7 +210,8 @@ export function register(ctx) {
     emitProj(pid, 'autobuild.run.updated', run);
     return json(201, {
       ...run, conversation_id: conv.id, policy, checks: { errors: 0, warnings: 0 }, scenarios: { passed: 0, total: 0 }, fix_rounds: { used: 0, limit: policy.advanced.max_fix_rounds },
-      matrix: [], tail_text: '', scope_lock_text: '', recovered_from_checkpoint: 0, report_available: false, base_version_label: cardOf(pid)?.version_label || null,
+      matrix: included.map((s) => ({ slice_id: s.id, slice_name: s.name, state: 'queued', cells: {}, result: '排队' })), stages: [],
+      tail_text: '', scope_lock_text: '', recovered_from_checkpoint: 0, report_available: false, base_version_label: cardOf(pid)?.version_label || null,
     });
   }); // AB-04
   on('GET', '/projects/([^/]+)/autobuild/runs', ({ m, query }) => {

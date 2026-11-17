@@ -87,16 +87,16 @@ def test_wait_turn_does_not_count_old_error_while_reconnecting(monkeypatch):
 
 
 def test_matrix_does_not_mark_steps_left_out_as_done(ab):
-    """规则补抽默认不排（F8），节点模型重构 1 起「规则」一步删了（就是指标那一条命令）：运行详情的流水线只有对象、操作
-    两列，不会再出一列没做却标成「自主完成」的规则。"""
+    """规则补抽默认不排（F8），节点模型重构 1 起「规则」一步删了（就是指标那一条命令）：运行详情一个节点一行，只有
+    提取对象、提取操作，不会再出一行没做却标成「自主完成」的规则；新运行没有按段的步骤列。"""
     from tests.autobuild_helpers import start, wait_state
 
     client, _workspaces, project_id, _root = ab
     run = start(client, project_id, scope={"until_node": "core.operation"})
     done = wait_state(client, project_id, run["run_id"], "completed")
-    cells = done["matrix"][0]["cells"]
-    assert set(cells) == {"object", "operation"}
-    assert cells["object"] == "auto"
+    assert done["stages"] == []
+    assert [(row["slice_id"], row["state"], row["cells"]) for row in done["matrix"]] == [
+        ("core.object", "done", {}), ("core.operation", "done", {})]
 
 
 def test_ledger_anchor_label_for_ranges():
@@ -132,13 +132,13 @@ def test_inbox_rejudge_of_an_autobuild_decision(ab):
     from tests.autobuild_helpers import AutoEngine, ask, start, wait_state, wait_until
 
     client, _workspaces, project_id, _root = ab
-    AutoEngine.hooks["/ontology-extract-object:all"] = [ask([
+    AutoEngine.hooks["/ontology-extract-object"] = [ask([
         {"question": "报修单号几位", "header": "置信度 0.6", "options": [{"label": "八位（推荐）"}, {"label": "十位（保守）"}]}])]
     run = start(client, project_id, scope={"until_node": "core.operation"})
     wait_state(client, project_id, run["run_id"], "completed")
     items = client.get(f"/api/v1/projects/{project_id}/inbox", params={"filter": "autobuild_review"}).json()["items"]
     item = next(entry for entry in items if entry["kind"] == "review" and entry["title"].endswith("十位"))
-    assert item["impact"] == [{"label": "步骤", "items": ["建模"]}]  # 不分段时不提「分段」，也不写「全部」
+    assert item["impact"] == [{"label": "步骤", "items": ["提取对象"]}]  # 不提「分段」，写节点名
     detail = client.get(f"/api/v1/projects/{project_id}/inbox/{item['id']}").json()["detail"]
     other = next(option for option in detail["options"] if option["label"].startswith("八位"))
     done = client.post(f"/api/v1/projects/{project_id}/inbox/{item['id']}/actions",
