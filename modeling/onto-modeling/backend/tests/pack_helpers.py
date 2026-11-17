@@ -110,3 +110,68 @@ def make_node_pack(base: Path, name: str = "naming", version: str = "0.1.0", *, 
     contributes = {"flow": "flow.yaml", "nodes": [node["id"] for node in flow.get("nodes") or []]}
     contributes.update(extra.pop("contributes", {}))
     return make_pack(base, name, version, files=files, kind="node", contributes=contributes, **extra)
+
+
+# 合成的按事件触发、限定范围的能力包（ADR-0085、ADR-0091）：已经建了一部分又上传新资料时触发三步——圈定范围 →
+# 范围内修改 → 核对，核对没做完挡发布；没触发时节点不出现。范围确认后基线里不在 editable 的条目助手只读，
+# 触发后、范围确认前已有条目全部只读。内核的触发、抢先推荐、范围限定用它测，不依赖哪个真实的包。
+ROUND_PACK = "intake"
+ROUND_SCOPE_FILE = "intake/scope.json"
+ROUND_STEPS = ("intake.scope", "intake.apply", "intake.check")
+_ROUND_WRITES = ["ontology/object/*", "ontology/operation/*", "ontology/logic/*", "ontology/rule/*", "ontology/metric/*",
+                 "ontology/action/*", "ontology/scripts/*", "ontology/testcase/*", "ontology/data-mock/*",
+                 "ontology/knowledge/*"]
+
+
+def _round_node(step: str, title: str, **fields) -> dict:
+    return {"id": f"intake.{step}", "title": title, "kind": "agent", "placement": "spine", "section": "required",
+            "autobuild": False, "visible_if": "activated", **fields, "entry": {"command": f"/intake-{step}"},
+            "actions": [{"label": title, "command": f"/intake-{step}"}]}
+
+
+ROUND_PACK_FLOW = {
+    "activation": {"event": "materials_added", "requires": ["intake_has_entries"], "session": ROUND_SCOPE_FILE},
+    "confine": {"scope_file": ROUND_SCOPE_FILE, "lock_on_activation": True},
+    "probes": {
+        "intake_has_entries": {"files": ["ontology/object", "ontology/operation"], "glob": "*.md", "recursive": True},
+        "intake_session": {"kernel": "session_open", "session": ROUND_SCOPE_FILE},
+        "intake_applied": {"files": ["intake"], "glob": "applied.json"},
+        "intake_checked": {"files": ["intake"], "glob": "check.md"},
+        "intake_pending": {"pending": ["intake"], "glob": "check.md"},
+    },
+    "nodes": [
+        _round_node("scope", "圈定范围", preempt="上传了新资料，先圈定这次要改的范围", display_after=["core.model"],
+                    done=["intake_session"], produces=[ROUND_SCOPE_FILE, "intake/scope.md"]),
+        _round_node("apply", "范围内修改", preempt=True, after="intake.scope", display_after=["intake.scope"],
+                    done=["intake_applied", "intake_session"], produces=["intake/applied.json"], writes=_ROUND_WRITES),
+        _round_node("check", "核对", preempt=True, after="intake.apply", display_after=["intake.apply"],
+                    done=["intake_checked", "!intake_pending", "intake_session"],
+                    stale_on=["object", "operation", "rule", "metric"], blocks=["core.publish"],
+                    produces=["intake/check.md", "intake/check.json"], writes=_ROUND_WRITES),
+    ],
+    "commands": {f"intake-{step}": {"node": f"intake.{step}", "requires": ["对象已提取"], "lock_waits": ["confirm"]}
+                 for step in ("scope", "apply", "check")},
+}
+# 用户要结束这一轮时提示助手走圈定范围的命令
+ROUND_PACK_PROMPT = {"id": "intake-close-round", "match": ["结束本轮"],
+                     "text": "用户要结束这一轮。运行 /intake-scope 把范围改成已结束，结束后范围外的条目恢复可写。"}
+
+
+def make_round_pack(base: Path, version: str = "0.1.0", *, flow: dict | None = None, checksums: bool = True) -> Path:
+    """合成的按事件触发、限定范围的包（ROUND_PACK_FLOW）：三个节点各带入口命令，清单带一条提示规则。"""
+    flow = flow if flow is not None else ROUND_PACK_FLOW
+    files = {f"commands/intake-{step}.md": f"按合成范围{title} $ARGUMENTS\n"
+             for step, title in (("scope", "圈定"), ("apply", "修改"), ("check", "核对"))}
+    files["flow.yaml"] = yaml.safe_dump(flow, allow_unicode=True, sort_keys=False)
+    return make_pack(base, ROUND_PACK, version, files=files, checksums=checksums, category="capability",
+                     description="合成：上传新资料后圈定范围、范围内修改、核对。", default_on=False,
+                     depends={"core": ">=0.5"}, changelog="合成版本。",
+                     contributes={"flow": "flow.yaml", "nodes": [node["id"] for node in flow.get("nodes") or []],
+                                  "prompts": [ROUND_PACK_PROMPT]})
+
+
+def install_round_pack(manager, base: Path, version: str = "0.1.0") -> None:
+    """合成的触发包入库、stable 指向它，项目里就能按名字启用。"""
+    source = make_round_pack(Path(base) / "round-pack-src", version)
+    manager.packs.repository.install(source, origin="upload", by="admin")
+    manager.packs.repository.set_channel(ROUND_PACK, "stable", version, by="admin")

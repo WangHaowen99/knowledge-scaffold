@@ -120,11 +120,12 @@ def test_sources_counts_and_detail_shapes(env):
     assert counts["total"] == len(body["items"]) and counts["by_filter"]["stale"] >= 1
     assert counts["by_filter"]["resumable"] == 1 and "feedback" not in counts["by_filter"]
     assert counts["by_pack"]["trace"] >= 1
-    assert "evidence_conflict" not in counts["by_filter"]  # 证据源本期不开放
+    assert "evidence_conflict" not in counts["by_filter"]  # 证据采集已删除，没有这一类
     assert set(body["today"]) == {"handled", "total", "eta_minutes", "remaining_by_filter"}
     assert body["autobuild_summary"] is None
     assert set(kinds(client, project_id, filter="stale")) == {key for key in found if key.startswith("stale:")}
     assert client.get(f"/api/v1/projects/{project_id}/inbox", params={"filter": "bogus"}).status_code == 400
+    assert client.get(f"/api/v1/projects/{project_id}/inbox", params={"filter": "evidence_conflict"}).status_code == 400
     # 详情按 kind
     detail = client.get(f"/api/v1/projects/{project_id}/inbox/changeset_conflict:cs-1").json()["detail"]
     assert detail["changeset"]["id"] == "cs-1" and detail["entities"][0]["id"] == "object:客户"

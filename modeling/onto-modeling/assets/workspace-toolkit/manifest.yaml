@@ -11,7 +11,7 @@ kind: capability
 category: capability
 label: 基础建模能力
 description: 资料分析、建模、指标、校验、发布、增量更新、影响分析、业务知识的存放与加载、共享契约库。
-changelog: 流程声明支持按事件触发（activation、visible_if activated、preempt、confine.lock_on_activation），增量构建包要 0.5 以上。
+changelog: 流程声明支持按事件触发（activation、visible_if activated、preempt、confine.lock_on_activation），用到这些声明的包要 0.5 以上。
 publisher:
   kind: official
   label: 平台

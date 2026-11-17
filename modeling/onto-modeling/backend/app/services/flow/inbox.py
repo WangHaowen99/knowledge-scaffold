@@ -14,8 +14,6 @@
 | report 报告待处理 | 报告里还有没处理的 `[ ]` 条目，一份报告一项 |
 | format_migration 格式待迁移 | 插件产物的格式版本比包里登记的旧 |
 | change_list 变更清单 | 增量更新识别出、还没执行的变更点清单 |
-
-证据冲突（evidence_conflict）随证据源（本期只留接口）。
 """
 
 from __future__ import annotations
@@ -30,13 +28,13 @@ from datetime import datetime
 from pathlib import Path
 
 KIND_LABELS = {
-    "decision": "决策", "evidence_conflict": "证据冲突", "change_list": "变更清单", "review": "需复核",
+    "decision": "决策", "change_list": "变更清单", "review": "需复核",
     "suspension": "挂起", "stale": "过期", "resumable": "续跑", "report": "报告待处理",
     "changeset_conflict": "冲突", "format_migration": "格式待迁移",
     "notification": "通知", "check_findings": "检查未过",
 }
 ACTIONS = {
-    "decision": ["answer"], "evidence_conflict": ["arbitrate"],
+    "decision": ["answer"],
     "change_list": ["accept_points", "rewrite_point", "execute"], "review": ["accept", "rejudge", "revert_slice"],
     "suspension": ["answer", "use_generic"], "stale": ["refresh", "keep_stale"], "resumable": ["resume", "abandon"],
     "report": ["send_to_assistant"],
@@ -45,11 +43,8 @@ ACTIONS = {
 }
 FILTERS = {
     "all": None, "autobuild_review": ("review", "suspension"), "decision": ("decision",),
-    "evidence_conflict": ("evidence_conflict",), "change_list": ("change_list",), "stale": ("stale",),
-    "resumable": ("resumable",),
+    "change_list": ("change_list",), "stale": ("stale",), "resumable": ("resumable",),
 }
-# 证据源本期不开放（ADR-0056）：筛选照样认，计数里不出这一项
-COUNTED_FILTERS = [name for name in FILTERS if name != "evidence_conflict"]
 DISMISSED_REL = Path(".onto") / "run" / "inbox-dismissed.json"
 HANDLED_REL = Path(".onto") / "run" / "inbox-handled.jsonl"
 MINUTES_PER_ITEM = 2
@@ -512,7 +507,7 @@ def public(item: dict) -> dict:
 def counts(items: list[dict]) -> dict:
     active = [item for item in items if not item.get("_dismissed")]
     by_filter = {name: sum(1 for item in active if FILTERS[name] is None or item["kind"] in FILTERS[name])
-                 for name in COUNTED_FILTERS}
+                 for name in FILTERS}
     by_pack: dict[str, int] = {}
     for item in active:
         if item.get("pack"):

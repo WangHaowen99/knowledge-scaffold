@@ -592,7 +592,7 @@ def test_both_engines_inject_the_same_context(tmp_path, monkeypatch):
         assert query == injection.compose_query(message, claude_text)
     assert results[0][0].startswith("本体项目当前阶段：未开始。") and "下一步建议" in results[0][0]
     assert results[1][0] == ""  # 内容没变不重复
-    assert "/incremental-scope" in results[2][0] and "当前阶段" not in results[2][0]
+    assert "/domain-extend-add" in results[2][0] and "当前阶段" not in results[2][0]
     assert "对象已提取" in results[3][0]
     # Claude 的回调随 SDK 选项注册（UserPromptSubmit），会话身份进 agent 的环境（方案 B7）
     options = claude._build_options(None)

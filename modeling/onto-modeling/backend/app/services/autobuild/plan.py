@@ -105,7 +105,7 @@ def included(row: dict, policy: dict) -> bool:
 
 def _tail(root: Path, flow_doc: dict, policy: dict, redo: dict | None = None) -> list[dict]:
     """分段之后主线上的几步：按流程顺序，到 `until_node` 为止（含）；已确认的、可选的（不含可选时）、人工与面板节点、
-    声明了 `autobuild: false` 的节点（要用户给输入才能做，如增量构建的圈定范围）不做。
+    声明了 `autobuild: false` 的节点（要用户给输入才能做，如领域包扩展的新增功能）不做。
 
     redo 里的节点（开始时接过来、停在干活中途的）已确认也照做：产物写了一半也满足完成判定。"""
     from ..flow import view

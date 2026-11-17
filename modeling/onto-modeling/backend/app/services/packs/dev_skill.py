@@ -213,7 +213,7 @@ def protocol_markdown(snapshot: dict) -> str:
 - 命令放 `commands/<名>.md`，子代理放 `agents/<名>.md`，skill 放 `skills/<名>/`，脚本放 `scripts/<文件名>`，声明的都要存在。
 - 指向包内路径的字段：`flow`、`readme`、`knowledge_dir`，以及 `artifacts`、`views`、`docs`、`nodes` 的每一项，只能是包内相对路径。
 - `pages`：只能选平台内置页面 {_code(mf.BUILTIN_PAGES)}。图标 `nav.icon` 只能选 {_code(mf.NAV_ICONS)}。
-- `subpages`：只能选 {_code(mf.BUILTIN_SUBPAGES)}，挂在内核页面 {_code(mf.KERNEL_PAGES)} 下。
+- `subpages`：挂在内核页面 {_code(mf.KERNEL_PAGES)} 下，`id` 只能选平台内置子页：{_code(mf.BUILTIN_SUBPAGES) or "现在没有，不要写"}。
 - `hooks`：只能写 `PreToolUse`，每项有 `matcher` 和 `command`。
 - 知识包的数据字段 `knowledge_dir`、`concepts`、`checks`、`standards`、`reference_dir`、`library_dir`、`examples`：写法在行业包和系统包 skill 的参考文档里。
 - `editors`：包自带界面，入口 `{mf.UI_DIR}/<id>/{mf.EDITOR_ENTRY_IFRAME}`，`{mf.UI_DIR}/` 只能放这些后缀的静态资源：{_code(checks.UI_STATIC_SUFFIXES)}。

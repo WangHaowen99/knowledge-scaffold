@@ -1,10 +1,12 @@
-"""内核的范围限定 confine（ADR-0085）：范围生效时，基线里不在 editable 的条目对助手只读。
+"""内核的范围限定 confine（ADR-0085）：范围生效时，基线里不在 editable 的条目对助手只读；组装和上传时校验声明。
 
-直接跑内核守卫的 shell 包装，流程用真实的组装结果（core 加增量构建包）。条目、范围都是合成的。
+直接跑内核守卫的 shell 包装，流程用真实的组装结果（真实的 core 加 tests/pack_helpers 里合成的限定范围包）。
+条目、范围、包都是合成的。
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 from pathlib import Path
@@ -19,27 +21,33 @@ from app.kernel.changesets import service as changesets
 from app.main import app
 from app.services import auth
 from app.services.flow import assemble
-from app.services.packs import builtin
+from app.services.packs import builtin, checks
 from app.services.packs import service as pack_service
 from app.services.workspace import WorkspaceManager
+from tests.pack_helpers import ROUND_PACK, ROUND_PACK_FLOW, ROUND_SCOPE_FILE, install_round_pack, make_pack
 from tests.proc import git
+from tests.test_dev_skill import pack_tool, skill_dir
 from tests.test_guard_bypass import bash, denied, run_guard, write, ws  # noqa: F401 - 共用 fixture 与工具
+from tests.test_private_packs import project as make_project, real_flow_env  # noqa: F401 - 共用 fixture
 
 ASSETS = Path(config.ASSETS_DIR)
-SCOPE_FILE = "incremental/scope.json"
+SCOPE_FILE = ROUND_SCOPE_FILE
 OUTSIDE = "ontology/object/仓库.md"
 INSIDE = "ontology/object/订单.md"
 INSIDE_OP = "ontology/operation/下单.md"
 ENTRIES = (OUTSIDE, INSIDE, INSIDE_OP, "ontology/operation/派送.md")
 
 
-def _flow(*packs: str) -> str:
-    def load(rel: str) -> dict:
-        return yaml.safe_load((ASSETS / rel).read_text(encoding="utf-8"))
+def _core() -> tuple[str, str, dict]:
+    return ("core", "0.5.0", yaml.safe_load((ASSETS / "workspace-toolkit" / "flow.yaml").read_text(encoding="utf-8")))
 
-    contributions = [("core", "0.5.0", load("workspace-toolkit/flow.yaml"))]
-    contributions += [(name, "0.1.0", load(f"packs/{name}/flow.yaml")) for name in packs]
-    return assemble.render(assemble.assemble(contributions))
+
+def _round() -> tuple[str, str, dict]:
+    return (ROUND_PACK, "0.1.0", copy.deepcopy(ROUND_PACK_FLOW))
+
+
+def _flow(*, confined: bool = True) -> str:
+    return assemble.render(assemble.assemble([_core(), _round()] if confined else [_core()]))
 
 
 def commit(root: Path, message: str = "合成提交") -> str:
@@ -82,7 +90,7 @@ def scoped(ws):  # noqa: F811
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"# {Path(rel).stem}\n", encoding="utf-8")
     baseline = commit(ws, "合成基线")
-    set_flow(ws, _flow("incremental"))
+    set_flow(ws, _flow())
     set_scope(ws, scope_doc(baseline))
     return ws
 
@@ -117,9 +125,11 @@ def test_out_of_scope_writes_are_blocked_without_a_command(scoped, name, payload
     assert denied(guard(scoped, payload)), name
 
 
-def test_denial_tells_how_to_widen_the_scope(scoped):
+def test_denial_names_the_command_that_sets_the_scope(scoped):
+    """拒绝说明只讲范围由哪条命令确定，不承诺能扩大（领域包扩展的底座就放不宽）。"""
     message = json.loads(guard(scoped, write(OUTSIDE)))["hookSpecificOutput"]["permissionDecisionReason"]
-    assert "只读" in message and "/incremental-scope" in message and "新增条目不受限" in message and "结束本轮" in message
+    assert OUTSIDE in message and "不在本轮可改范围内" in message and "范围由 /intake-scope 确定" in message
+    assert "新增条目不受限" in message and "扩大" not in message
 
 
 ALLOWED = [
@@ -146,13 +156,13 @@ def test_other_tool_calls_pass(scoped, name, payload):
 
 
 def test_same_rule_applies_while_a_command_runs(scoped):
-    acquire(scoped, "incremental-apply")
+    acquire(scoped, "intake-apply")
     assert denied(guard(scoped, write(OUTSIDE)))
     assert denied(guard(scoped, bash(f"rm {OUTSIDE}")))
     assert not denied(guard(scoped, write(INSIDE)))
     assert not denied(guard(scoped, write("ontology/object/新对象.md")))
     # 建模命令也一样：节点声明的写入范围放行，范围限定照样拦
-    (scoped / ".ontology-state" / "lock-incremental-apply.json").unlink()
+    (scoped / ".ontology-state" / "lock-intake-apply.json").unlink()
     acquire(scoped, "extract-object")
     assert denied(guard(scoped, write(OUTSIDE)))
     assert not denied(guard(scoped, write(INSIDE)))
@@ -161,15 +171,15 @@ def test_same_rule_applies_while_a_command_runs(scoped):
 def test_scope_file_is_only_writable_while_the_scope_command_runs(scoped):
     assert denied(guard(scoped, write(SCOPE_FILE)))
     assert denied(guard(scoped, bash(f"echo '{{}}' > {SCOPE_FILE}")))
-    assert denied(guard(scoped, bash("rm -rf incremental")))
+    assert denied(guard(scoped, bash("rm -rf intake")))
     assert not denied(guard(scoped, bash(f"cat {SCOPE_FILE}")))
     # 同一个节点的文件才归这条命令；别的命令拿不到
-    acquire(scoped, "incremental-apply")
+    acquire(scoped, "intake-apply")
     assert denied(guard(scoped, write(SCOPE_FILE)))
-    (scoped / ".ontology-state" / "lock-incremental-apply.json").unlink()
-    acquire(scoped, "incremental-scope", pid=1)  # 持有者已经不在
+    (scoped / ".ontology-state" / "lock-intake-apply.json").unlink()
+    acquire(scoped, "intake-scope", pid=1)  # 持有者已经不在
     assert denied(guard(scoped, write(SCOPE_FILE)))
-    acquire(scoped, "incremental-scope")
+    acquire(scoped, "intake-scope")
     assert not denied(guard(scoped, write(SCOPE_FILE)))
 
 
@@ -206,7 +216,7 @@ def test_result_is_cached_by_mainline_head(scoped):
 
 def test_lifted_when_the_pack_is_off(scoped):
     assert denied(guard(scoped, write(OUTSIDE)))
-    set_flow(scoped, _flow())
+    set_flow(scoped, _flow(confined=False))
     assert not denied(guard(scoped, write(OUTSIDE)))
     assert not denied(guard(scoped, write(SCOPE_FILE)))
     assert not denied(guard(scoped, bash(f"rm {OUTSIDE}")))
@@ -242,7 +252,7 @@ def test_scope_confirmed_in_the_copy_tightens_at_once(ws):  # noqa: F811
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("# 仓库\n", encoding="utf-8")
     baseline = commit(ws)
-    set_flow(ws, _flow("incremental"))
+    set_flow(ws, _flow())
     (ws / SCOPE_FILE).parent.mkdir(parents=True, exist_ok=True)
     (ws / SCOPE_FILE).write_text(scope_doc(baseline, editable=()), encoding="utf-8")
     assert denied(guard(ws, write(OUTSIDE)))
@@ -271,6 +281,7 @@ def project(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(deps, "workspaces", manager)
     monkeypatch.setattr(changesets, "_activity_provider", None)
     project_id = manager.create_project("范围限定")["id"]
+    install_round_pack(manager, tmp_path)
     yield TestClient(app), manager, project_id, manager.project_root(project_id)
     builtin.clear_cache()
 
@@ -285,7 +296,7 @@ def test_real_project_copy_is_confined_until_the_pack_is_disabled(project):
     copy = changesets.copy_for_turn(manager, project_id, root)
     assert not denied(guard(copy, write(OUTSIDE), cwd=copy))  # 没启用包的项目和以前一样
 
-    assert client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "incremental"}).status_code == 201
+    assert client.post(f"/api/v1/projects/{project_id}/packs", json={"name": ROUND_PACK}).status_code == 201
     pack_service.prepare_for_message(manager, project_id)
     set_scope(root, scope_doc(baseline))
     copy = changesets.copy_for_turn(manager, project_id, root)
@@ -293,7 +304,94 @@ def test_real_project_copy_is_confined_until_the_pack_is_disabled(project):
     assert not denied(guard(copy, write(INSIDE), cwd=copy))
     assert denied(guard(copy, write(SCOPE_FILE), cwd=copy))
 
-    assert client.post(f"/api/v1/projects/{project_id}/packs/incremental/disable").status_code == 200
+    assert client.post(f"/api/v1/projects/{project_id}/packs/{ROUND_PACK}/disable").status_code == 200
     pack_service.prepare_for_message(manager, project_id)
     copy = changesets.copy_for_turn(manager, project_id, root)
     assert not denied(guard(copy, write(OUTSIDE), cwd=copy))
+
+
+# ---- 声明的校验：组装、上传检查、开发 skill ----
+
+
+def test_assembly_records_the_owner_of_the_scope_file():
+    assert assemble.assemble([_core(), _round()])["confine"] == {
+        "scope_file": SCOPE_FILE, "pack": ROUND_PACK, "node": "intake.scope", "entry": "/intake-scope",
+        "lock_on_activation": True}
+    assert "confine" not in assemble.assemble([_core()])
+
+
+def _with_confine(confine) -> tuple[str, str, dict]:
+    pack, version, data = _round()
+    return pack, version, {**data, "confine": confine}
+
+
+@pytest.mark.parametrize("confine, message", [
+    ("intake/scope.json", "只能写 scope_file"),
+    ({"scope_file": SCOPE_FILE, "other": 1}, "只能写 scope_file"),
+    ({"scope_file": ""}, "具体文件"),
+    ({"scope_file": "/etc/scope.json"}, "具体文件"),
+    ({"scope_file": "intake/../scope.json"}, "具体文件"),
+    ({"scope_file": "intake\\scope.json"}, "具体文件"),
+    ({"scope_file": "intake/*.json"}, "具体文件"),
+    ({"scope_file": "ontology/object/scope.json"}, "具体文件"),
+    ({"scope_file": ".onto/scope.json"}, "具体文件"),
+    ({"scope_file": ".claude/scope.json"}, "具体文件"),
+    ({"scope_file": "resource/scope.json"}, "具体文件"),
+    ({"scope_file": "intake/other.json"}, "produces"),
+])
+def test_assembly_refuses_a_bad_confine(confine, message):
+    with pytest.raises(assemble.FlowAssemblyError, match=message):
+        assemble.assemble([_core(), _with_confine(confine)])
+
+
+def test_only_one_pack_may_declare_confine():
+    second = {"confine": {"scope_file": "second/scope.json"}, "nodes": [{
+        "id": "second.scope", "title": "合成范围", "kind": "agent", "placement": "step", "section": "required",
+        "after": "core.model", "done": [], "produces": ["second/scope.json"], "entry": {"command": "/ontology"},
+    }]}
+    with pytest.raises(assemble.FlowAssemblyError, match="只能有一个包声明 confine"):
+        assemble.assemble([_core(), _round(), ("second", "0.1.0", second)])
+    # 一个包声明就没事
+    assert assemble.assemble([_core(), ("second", "0.1.0", second)])["confine"]["pack"] == "second"
+
+
+def _synthetic_pack(base: Path, confine) -> Path:
+    flow = {"nodes": [{"id": "my-scope.scope", "title": "合成范围", "kind": "agent", "placement": "step",
+                       "section": "required", "after": "core.model", "done": [],
+                       "produces": ["my-scope/scope.json"], "entry": {"command": "/my-scope-run"}}]}
+    if confine is not None:
+        flow["confine"] = confine
+    return make_pack(base, "my-scope", "0.1.0", files={
+        "commands/my-scope-run.md": "运行 $ARGUMENTS\n", "flow.yaml": yaml.safe_dump(flow, allow_unicode=True),
+    }, contributes={"flow": "flow.yaml", "nodes": ["my-scope.scope"]})
+
+
+@pytest.mark.parametrize("confine, result", [
+    ({"scope_file": "my-scope/scope.json"}, "pass"),
+    ({"scope_file": "my-scope/other.json"}, "fail"),
+    ({"scope_file": "ontology/scope.json"}, "fail"),
+    ({"scope_file": ".onto/scope.json"}, "fail"),
+    ({"scope_file": "../scope.json"}, "fail"),
+    ({"scope_file": "my-scope/*.json"}, "fail"),
+    ({"scope_file": "my-scope/scope.json", "extra": 1}, "fail"),
+    ("my-scope/scope.json", "fail"),
+])
+def test_static_check_reads_confine(tmp_path, confine, result):
+    _, items = checks.run(_synthetic_pack(tmp_path, confine), core_names={})
+    assert next(item for item in items if item["id"] == "confine")["result"] == result
+
+
+def test_static_check_has_no_confine_item_without_the_declaration(tmp_path):
+    _, items = checks.run(_synthetic_pack(tmp_path, None), core_names={})
+    assert "confine" not in {item["id"] for item in items}
+
+
+def test_local_check_reports_a_bad_confine(real_flow_env, tmp_path):  # noqa: F811
+    client, _manager, _tmp = real_flow_env
+    make_project(client)
+    skill = skill_dir(client, tmp_path, "capability")
+    source = tmp_path / "bad" / "my-scope-0.1.0"
+    _synthetic_pack(tmp_path / "bad", {"scope_file": "ontology/scope.json"})
+    done = pack_tool(skill, "check", source, "--json", cwd=tmp_path)
+    assert done.returncode != 0
+    assert next(item for item in json.loads(done.stdout)["checks"] if item["id"] == "confine")["result"] == "fail"

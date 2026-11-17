@@ -102,13 +102,6 @@ def _entry(suffix: str, method: str | None = None):
     return target
 
 
-def _knowledge_delete(groups, query, body):
-    path = _q(query, "path")
-    stem = path.rsplit("/", 1)[-1]
-    stem = stem[:-3] if stem.endswith(".md") else stem
-    return "DELETE", f"/api/v1/projects/{groups['id']}/knowledge/{quote(stem, safe='')}"
-
-
 def _report_items(groups, query, body):
     path = _q(query, "path")
     report_id = quote(path.removeprefix("reports/").removesuffix(".md"), safe="")
@@ -199,8 +192,9 @@ RULES: tuple[Rule, ...] = (
     _r("GET", f"{_PROJ}/report-items", _report_items),
     _r("GET", f"{_PROJ}/query", _same("GET", f"{_V1}/query")),
     _r("GET", f"{_PROJ}/knowledge", _same("GET", f"{_V1}/knowledge")),
-    _r("POST", f"{_PROJ}/knowledge", _same("POST", f"{_V1}/knowledge")),
-    _r("DELETE", f"{_PROJ}/knowledge", _knowledge_delete),
+    # 知识条目的网页写入随知识沉淀包删除（ADR-0100），没有替代
+    _gone("POST", f"{_PROJ}/knowledge"),
+    _gone("DELETE", f"{_PROJ}/knowledge"),
     _r("GET", f"{_PROJ}/versions", _same("GET", f"{_V1}/versions")),
     _r("POST", f"{_PROJ}/versions/revert", _same("POST", f"{_V1}/versions/revert")),
     _r("POST", f"{_PROJ}/versions/tag", _same("POST", f"{_V1}/versions/tags")),

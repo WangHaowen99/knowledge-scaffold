@@ -2,7 +2,7 @@
 
 两个提示 hook（session_start_hook.sh、knowledge_signal_probe.sh）已退役（ADR-0034）。阶段提示只剩
 injection.py 一份实现，下面的期望文本是退役前用 hook 脚本本体对同一组场景跑出的输出，保证移植后逐字一致；
-包的提示规则以增量构建包的「结束本轮」为例（ADR-0045）。
+包的提示规则以领域包扩展的「结束本轮」为例（ADR-0045）。
 bash、python3、git 不可用时跳过要起工作区的用例。测试数据全部为合成内容。
 """
 
@@ -48,17 +48,17 @@ def write(path: Path, text: str, mtime: int | None = None) -> None:
         os.utime(path, (mtime, mtime))
 
 
-# ---- 包的提示规则（以增量构建包为例）----
+# ---- 包的提示规则（以领域包扩展为例）----
 
 
 def pack_rules() -> list[dict]:
-    """增量构建包清单里声明的提示规则（官方包原文）。"""
-    manifest = yaml.safe_load((ASSETS_DIR / "packs" / "incremental" / "manifest.yaml").read_text(encoding="utf-8"))
+    """领域包扩展清单里声明的提示规则（官方包原文）。"""
+    manifest = yaml.safe_load((ASSETS_DIR / "packs" / "domain-extend" / "manifest.yaml").read_text(encoding="utf-8"))
     return manifest["contributes"]["prompts"]
 
 
 def pack_provider(root, user_text):
-    """不起包仓库时的提示规则数据源：只按增量构建包的规则匹配（等同于项目启用了这个包）。"""
+    """不起包仓库时的提示规则数据源：只按领域包扩展的规则匹配（等同于项目启用了这个包）。"""
     return [rule["text"] for rule in pack_rules()
             if any(re.search(pattern, user_text) for pattern in rule["match"])]
 

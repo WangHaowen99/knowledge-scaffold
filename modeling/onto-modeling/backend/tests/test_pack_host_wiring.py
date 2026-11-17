@@ -4,7 +4,7 @@
 - agent 一轮提交了产物文件，确认生效后项目流 workspace.changed 的 artifacts 有值，并发 artifacts.updated；
 - 停用、启用带页面的包，extensions.updated.changed 只含变了的类；
 - assembly.updated 每次（锁文件提交、装配切换）只发一次；
-- 只有启用了声明提示规则的包（如增量构建）的项目注入对应提示，两个引擎一致。
+- 只有启用了声明提示规则的包（如领域包扩展）的项目注入对应提示，两个引擎一致。
 
 用仓库里真实的官方包；假引擎，不起真实 CLI；测试数据全部为合成内容。
 """
@@ -32,7 +32,7 @@ from tests.proc import run as run_cmd
 from tests.test_event_streams import buffered
 from tests.test_session_host import FakeEngine, result
 
-SIGNAL = "/incremental-scope"
+SIGNAL = "/domain-extend-add"
 SCENARIO_FILE = "ontology/testcase/补货编制主流程.md"
 SCENARIO_TEXT = ("# 测试场景：补货编制主流程\n\n## 场景 1：正常补货\n\n- **输入**：\n  - `qty` = `12`\n"
                  "- **预期路径**：正常完成\n- **数据来源**：自定义\n")
@@ -240,7 +240,7 @@ def test_pack_prompt_rule_only_with_declaring_pack_for_both_engines(host):
     assert injection.prompt_hint(plain, message) == ""
 
     # 启用后等装配切过去（下一条消息前）才注入
-    _pack(client, plain_id, "incremental", enable=True)
+    _pack(client, plain_id, "domain-extend", enable=True)
     assert injection.prompt_hint(plain, message) == ""
     fingerprint.prepare(plain_id)
     assert SIGNAL in injection.prompt_hint(plain, message)

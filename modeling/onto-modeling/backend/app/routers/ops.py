@@ -690,7 +690,7 @@ def drills(request: Request, cursor: str = "", limit: int = 0):
 
 @router.get("/tasks")
 def tasks(request: Request, type: str = "", state: str = "", cursor: str = "", limit: int = 0):  # noqa: A002
-    """O-40：备份、包仓库备份、恢复演练的任务记录（新的在前）；证据采集本期没有。"""
+    """O-40：备份、包仓库备份、恢复演练的任务记录（新的在前）。"""
     from ..services import ops_center as center
 
     _read(request)
@@ -706,9 +706,9 @@ def tasks(request: Request, type: str = "", state: str = "", cursor: str = "", l
 
 @router.post("/tasks/{task_id}/{op}")
 async def task_action(task_id: str, op: str, request: Request):
-    """O-41：cancel（还在跑的恢复演练）、retry（失败的备份、恢复演练）；resume 只有证据采集有。"""
+    """O-41：cancel（还在跑的恢复演练）、retry（失败的备份、恢复演练）。"""
     _write(request)
-    if op not in ("cancel", "retry", "resume"):
+    if op not in ("cancel", "retry"):
         raise ApiError("not_found", "没有这个操作", 404)
     try:
         record = await asyncio.to_thread(ops_center.act, task_id, op, deps.actor(request))
@@ -945,7 +945,7 @@ def log_page(entries: list[tuple[int, dict]], cursor: str, limit: int, binding: 
 # ---- O-48 审计 ----
 
 AUDIT_TYPES = (
-    "write", "mcp", "commit", "plugin", "evidence", "ops", "auth", "publish", "changeset",
+    "write", "mcp", "commit", "plugin", "ops", "auth", "publish", "changeset",
     "autobuild", "user", "contract",
 )
 _PROJECT_IN_PATH = re.compile(r"^/api(?:/v1)?/(?:projects|onto-mcp)/([a-z0-9][a-z0-9-]*)(?:/|$)|^/projects/([a-z0-9][a-z0-9-]*)/")
@@ -1096,7 +1096,7 @@ _SECRET_PATTERNS = (
 )
 _ORIGINS = {
     "kernel": "kernel", "project_delete": "kernel", "eval_retirement": "kernel",
-    "publish": "publish", "collection": "collection", "assembly": "assembly", "gate": "gate",
+    "publish": "publish", "assembly": "assembly", "gate": "gate",
 }
 _FRIENDLY = {
     "session": "会话出错，已记录原始错误",

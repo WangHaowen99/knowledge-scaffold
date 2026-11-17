@@ -352,7 +352,6 @@ def inspect_import(request: Request, body: dict = Body(...)):
         "start_title": start["title"] if start else None,
         "mark_needs_review": result["kind"] == "published_package",
     }
-    result["evidence_sources"] = []
     return result
 
 

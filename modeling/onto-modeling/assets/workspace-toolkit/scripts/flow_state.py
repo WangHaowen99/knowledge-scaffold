@@ -391,7 +391,7 @@ def _stale_items(nodes: list, state_of: dict, context: dict) -> list:
     正确性必需的，校验会查出缺的；单独推还会和建模来回兜圈子——指标补对象的关联让「操作」过期，重抽操作又让
     指标过期（ADR-0090）。
 
-    范围限定生效时（增量构建的一轮进行中，ADR-0085）不出：改动的传播由那一轮的核对节点处理，整段重新提取
+    范围限定生效时（限定范围的包这一轮进行中，ADR-0085）不出：改动的传播由那一轮的核对节点处理，整段重新提取
     会去写范围外的条目、被守卫拦下。"""
     if context.get('confine_active'):
         return []
@@ -587,7 +587,7 @@ def suggest(flow: dict, states: dict, context: dict | None = None, check=None) -
     - slice_stale：按段的节点过期的那几段那几步 [{slice_id, slice_name, step, step_label, command, sliced, upstream}]；
     - stale_upstream：其余过期节点 → 上游的说法（「对象、操作」）；
     - probes：探针结果 {名字: bool}，按动作的 `when` 筛动作（不给时不筛）；
-    - confine_active：范围限定生效（增量构建一轮进行中），这时第 7 条不出；
+    - confine_active：范围限定生效（限定范围的包这一轮进行中），这时第 7 条不出；
     - awaiting_reply：这条对话里的命令停下来等你在对话里回复（锁在命令声明的等回复阶段）{id, label}：这时不推别的命令
       （点了会把命令丢在半路），只留一行说明。
     """

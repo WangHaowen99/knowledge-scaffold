@@ -126,7 +126,7 @@ pages:
 - `actions` 的 `command` 是点按钮时发给助手的命令，`hint` 是提示语。
 - `badge: inbox` 显示待处理数。
 - 同一个页面 id 先到先得：两个启用的包都选 `scenarios` 时，后到的不显示，用之前要确认项目里没有别的包占用。
-- 子页写 `subpages: [{parent, id, title}]`，`parent` 和 `id` 都只能是内置值。
+- 子页写 `subpages: [{parent, id, title}]`，`parent` 和 `id` 都只能是内置值；现在没有内置子页可选，见 `protocol.md`。
 
 ## 8. 产物登记
 
@@ -339,7 +339,7 @@ probes:
 | `before: core.publish` | 只加一条边。没写 `after` 时节点一开始就可开始 |
 | `blocks: [core.publish]` | 本节点没确认时目标节点被挡住，并进入发布关卡 |
 
-**范围限定 `confine`（`flow.yaml` 顶层，可选）。** 写 `confine: {scope_file: <包的状态目录>/scope.json}`：范围文件合入主线、`status` 是 `active` 时，基线提交（`baseline.commit`）里有、`editable` 里没有的本体条目助手不能写也不能删，没有命令在跑时也一样；新增条目不限，网页上人工编辑不限。只认主线上的范围文件，副本里改它扩大不了范围；范围文件只能在它所属节点的命令运行时写。停用包就解除。一次装配只能有一个包声明，范围文件要落在本包某个节点的 `produces` 里。增量构建包（`incremental`）是现成的例子。
+**范围限定 `confine`（`flow.yaml` 顶层，可选）。** 写 `confine: {scope_file: <包的状态目录>/scope.json}`：范围文件合入主线、`status` 是 `active` 时，基线提交（`baseline.commit`）里有、`editable` 里没有的本体条目助手不能写也不能删，没有命令在跑时也一样；新增条目不限，网页上人工编辑不限。只认主线上的范围文件，副本里改它扩大不了范围；范围文件只能在它所属节点的命令运行时写。停用包就解除。一次装配只能有一个包声明，范围文件要落在本包某个节点的 `produces` 里。领域包扩展（`domain-extend`）是现成的例子。
 
 **触发 `activation`（`flow.yaml` 顶层，可选）。** 节点不该一直在流程里、要等某件事发生才出现时用：
 

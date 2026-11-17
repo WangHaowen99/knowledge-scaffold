@@ -6,7 +6,7 @@ version: 0.1.0
 kind: capability
 category: capability
 label: 领域包扩展
-description: 以导入的领域本体包为底座，只新增条目来扩展功能，底座的任何要素都不改；发布前核对底座和导入时逐字一致。不能和增量构建同时启用。
+description: 以导入的领域本体包为底座，只新增条目来扩展功能，底座的任何要素都不改；发布前核对底座和导入时逐字一致。不能和其他限定范围的包同时启用。
 publisher: {kind: official, label: 平台}
 default_on: false
 batch: second

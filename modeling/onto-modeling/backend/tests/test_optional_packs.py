@@ -109,7 +109,7 @@ def test_new_project_enables_default_capabilities(env):
     assert set(_lock_names(root)) == {"core", *DEFAULT_ON}
     commands = _commands(root)
     assert {"ontology-trace", "ontology-mock", "ontology-codegen", "ontology-flowchart"} <= commands
-    assert "incremental-scope" not in commands  # 可选包不默认启用
+    assert "domain-extend-add" not in commands  # 可选包不默认启用
     flow = json.loads((root / ".claude" / "flow.yaml").read_text(encoding="utf-8"))
     assert [node["id"] for node in flow["nodes"]] == [
         "core.research", "diagram.flowchart", "core.model", "core.metric", "core.validate", "trace.trace",
@@ -161,7 +161,6 @@ def test_core_only_project_assembles_and_filters_suggestions(env):
     ("trace", "scenarios", "ontology-trace-batch"),
     ("codegen", "scripts", "ontology-codegen-scan"),
     ("diagram", None, "ontology-flowchart"),
-    ("incremental", None, "incremental-scope"),
     ("domain-extend", None, "domain-extend-add"),
 ])
 def test_each_optional_pack_enables_and_disables_per_project(env, name, page, command):
@@ -226,13 +225,13 @@ def test_legacy_lock_gets_split_packs_when_core_is_split(env):
 def test_create_project_with_capabilities_and_industry(env):
     manager, client = env
     body = {"name": "选能力", "goal": "合成场景：门店补货单编制",
-            "capabilities": {"trace": False, "incremental": True, "reverse": True},
+            "capabilities": {"trace": False, "domain-extend": True, "reverse": True},
             "industry_packs": [{"name": "industry-retail"}], "system_packs": []}
     created = client.post("/api/v1/projects", json=body)
     assert created.status_code == 201, created.text
     root = manager.project_root(created.json()["id"])
     names = _lock_names(root)
-    assert set(names) == {"core", "codegen", "diagram", "incremental", "industry-retail"}
+    assert set(names) == {"core", "codegen", "diagram", "domain-extend", "industry-retail"}
     assert (root / ".claude" / "industry" / "industry-retail" / "concepts.json").is_file()
     # 工作区规则告诉助手怎么用行业包的规范清单、写法提示与参考库
     rules = (root / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
@@ -252,7 +251,7 @@ def test_catalog_marks_default_on_and_categories(env):
     assert {name for name, item in items.items() if item["category"] == "capability" and item["default_on"]} == {
         "core", *DEFAULT_ON}
     assert items["trace"]["ui"]["kind"] == "page" and items["trace"]["ui"]["pages"] == [{"id": "scenarios", "title": "场景模拟"}]
-    assert items["incremental"]["ui"]["kind"] == "none" and items["trace"]["badges"] == ["recommended"]
+    assert items["domain-extend"]["ui"]["kind"] == "none" and items["trace"]["badges"] == ["recommended"]
 
 
 def test_project_no_longer_carries_research_mode(env):
@@ -379,9 +378,9 @@ def test_prompt_rules_follow_active_assembly(env):
     from app.services.packs import registry
 
     manager, _ = env
-    root = manager.project_root(manager.create_project("提示规则", packs=["incremental"])["id"])
+    root = manager.project_root(manager.create_project("提示规则", packs=["domain-extend"])["id"])
     hints = registry.prompt_hints(manager, root, "这一轮就到这，结束本轮")
-    assert len(hints) == 1 and "/incremental-scope" in hints[0]
+    assert len(hints) == 1 and "/domain-extend-add" in hints[0]
     assert registry.prompt_hints(manager, root, "帮我画一张流程图") == []
     defaults = manager.project_root(manager.create_project("缺省能力")["id"])
     assert registry.prompt_hints(manager, defaults, "这一轮就到这，结束本轮") == []

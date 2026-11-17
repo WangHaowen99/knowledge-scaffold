@@ -88,7 +88,7 @@ class InjectionResult:
     text: str  # 拼好的注入文本；空串 = 本条不注入
     digest: str | None  # 模型已看到的阶段提示摘要，下一条消息作为 last_injected 传回
     stage_hint: str = ""  # 本条带上的阶段提示，没带为空
-    prompt_hint: str = ""  # 本条命中的包提示规则（如增量更新包的「结束本轮」），没命中为空
+    prompt_hint: str = ""  # 本条命中的包提示规则（如领域包扩展的「结束本轮」），没命中为空
 
 
 def goal_hint(project_root: Path) -> str:

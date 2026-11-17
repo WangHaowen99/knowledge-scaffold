@@ -102,7 +102,7 @@ def _card(card_id: str, label: str, value, unit: str, series: list[float], secon
 
 @router.get("/metrics")
 def metrics(request: Request, range: str = "24h", labels: str = ""):  # noqa: A002  契约查询参数名
-    """O-02：指标卡片。数值来自进程内指标（重启后从零开始）；证据采集卡本期不返回（证据源只留接口）。"""
+    """O-02：指标卡片。数值来自进程内指标（重启后从零开始）。"""
     _read(request)
     if range not in RANGES:
         raise ApiError("invalid_argument", "range 只能是 1h、24h、7d", 400, {"fields": {"range": "enum"}})

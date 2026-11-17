@@ -5,7 +5,7 @@
 - 提交改到的插件产物 → `workspace.changed.artifacts`：`services/project_events.register_artifact_mapper`；
 - 装配变了以后扩展项哪几类变了 → `extensions.updated.changed`：`register_extension_differ`；
 - 内核产物索引发的 `artifacts.updated` → 项目流：`kernel/event_port.register_sink`；
-- 包的提示规则（如增量更新包的「结束本轮」）→ 宿主注入：`session_host/injection.register_prompt_hint_provider`；
+- 包的提示规则（如领域包扩展的「结束本轮」）→ 宿主注入：`session_host/injection.register_prompt_hint_provider`；
 - 变更集（B4b）：会话状态 → `kernel/changesets/service.register_activity_provider`，变更集变化 → 项目流
   （`changeset.updated`、`scope.updated`、`flow.updated`），写入范围锁 → `project_events.register_scope_provider`
   与插件产物的 `register_lock_provider`。

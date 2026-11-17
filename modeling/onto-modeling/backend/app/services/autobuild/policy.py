@@ -1,11 +1,11 @@
 """自主构建策略（详设 8.5 策略表；契约 AB-01、AB-02、7.15 AutobuildPolicy）。
 
-范围、决定策略、资料优先级、生产库授权按项目存在数据目录；硬性不做的几项（发布、删除已确认内容、改资料区、
-采集未授权的生产库）由守卫与写入路径保证，不在策略里。
+范围、决定策略、资料优先级按项目存在数据目录；硬性不做的几项（发布、删除已确认内容、改资料区）由守卫与写入路径
+保证，不在策略里。
 
 - 没有预算（F6）：运行在做完、叫停、出错时结束；花费的硬上限是平台配额（4.10.1），用完时运行暂停。老请求带的
   `budget` 忽略；
-- 生产库授权保留字段、原样存取，本期不生效（证据源只留接口，ADR-0056）：`not_enforced` 里标出来。
+- 生产库采集授权随证据采集删除（ADR-0100）：老策略文件里的 `production_collection` 不再读出来，请求里带了也忽略。
 """
 
 from __future__ import annotations
@@ -15,21 +15,22 @@ import hashlib
 import json
 
 from ...api.errors import ApiError
-from . import limits, store
+from . import store
 
 BELOW_THRESHOLD = ("conservative_assumption", "suspend")
 # 「拿不准时」怎么办的说法（预览、开始卡、设置页）：用户看得懂的话，不用「保守选项」「假设」「挂起」
 BELOW_TEXT = {"conservative_assumption": "先按最稳妥的做法往下做，做完列出来给你复核",
               "suspend": "先跳过这一项，留给你来定"}
 SCOPE_MODES = ("all_pending", "selected")
-NOT_ENFORCED = ("production_collection",)
+# 存着、但本期不生效的组（AB-01 的 not_enforced）；现在没有
+NOT_ENFORCED: tuple[str, ...] = ()
 LIST_MAX = 20
 TEXT_MAX = 60
 # 做到哪一步：这些节点不能作为终点（发布是硬性不做；资料分析在建模之前）
 NOT_UNTIL = ("core.publish", "core.research", "core.update")
 # 删掉的节点：老策略写到这里，等于跑完主线（全局一致性，11-05 删）
 REMOVED_UNTIL = ("core.consistency",)
-GROUPS = ("scope", "production_collection", "advanced")
+GROUPS = ("scope", "advanced")
 
 
 def _path(project_id: str):
@@ -46,14 +47,13 @@ def defaults() -> dict:
     return {
         "scope": {"mode": "all_pending", "slice_ids": [], "refresh_stale_first": True, "generate_scenarios": True,
                   "include_optional": False, "until_node": None},
-        "production_collection": [],
         "advanced": {"confidence_threshold": 0.8, "below_threshold": "conservative_assumption",
                      "must_suspend_kinds": [], "source_priority": [], "max_fix_rounds": 2},
     }
 
 
 def load(project_id: str) -> dict:
-    """本项目的策略（没存过时是默认值）；F6 之前存的 `budget` 不再读出来。"""
+    """本项目的策略（没存过时是默认值）；F6 之前存的 `budget`、证据采集删除前存的 `production_collection` 不再读出来。"""
     stored = store.read_json(_path(project_id))
     policy = stored if stored and isinstance(stored.get("scope"), dict) else defaults()
     return {key: copy.deepcopy(policy.get(key)) for key in GROUPS}
@@ -81,7 +81,7 @@ def view(project_id: str, policy: dict | None = None) -> dict:
     policy = policy or load(project_id)
     return {
         **policy,
-        "platform_limits": limits.platform_limits(),
+        "platform_limits": {},
         "last_run": _last_run(project_id),
         "revision": revision(policy),
         "not_enforced": list(NOT_ENFORCED),
@@ -114,8 +114,6 @@ def merge(current: dict, body: dict | None) -> dict:
             merged[group] = {**merged[group], **part}
         elif part is not None:
             merged[group] = part
-    if "production_collection" in (body or {}):
-        merged["production_collection"] = body["production_collection"]
     return merged
 
 
@@ -157,20 +155,10 @@ def normalize(policy: dict, *, slice_ids: list[str], node_ids: list[str]) -> dic
         fields["advanced.max_fix_rounds"] = "enum"
     kinds = _strings(advanced.get("must_suspend_kinds", []), "advanced.must_suspend_kinds", fields)
     priority = _strings(advanced.get("source_priority", []), "advanced.source_priority", fields)
-    production = policy.get("production_collection", [])
-    if not isinstance(production, list) or len(production) > LIST_MAX or not all(
-            isinstance(item, dict) and isinstance(item.get("source_id"), str) for item in production):
-        fields["production_collection"] = "list"
-        production = []
     if fields:
         raise _invalid(fields)
     return {
         "scope": out_scope,
-        # 本期不生效（证据源只留接口）：原样存，只留认得的字段
-        "production_collection": [{"source_id": item["source_id"], "allowed": bool(item.get("allowed")),
-                                   "window": item.get("window") if isinstance(item.get("window"), dict) else None,
-                                   "scope": [str(value) for value in item.get("scope") or []][:LIST_MAX]}
-                                  for item in production],
         "advanced": {"confidence_threshold": round(float(threshold), 2), "below_threshold": advanced["below_threshold"],
                      "must_suspend_kinds": kinds, "source_priority": priority,
                      "max_fix_rounds": advanced["max_fix_rounds"]},

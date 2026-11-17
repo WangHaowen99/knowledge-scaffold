@@ -307,7 +307,7 @@ def test_flow_rules_in_order(api):
     both = _suggest(root, _states(root, core_model="stale", core_validate="stale"),
                     {"slice_stale": [op_step], "stale_upstream": {"core.validate": "对象、操作"}})
     assert [item["id"] for item in items(both)] == ["refresh:core.model:all:operation", "refresh:core.validate"]
-    # 7 不出：增量构建一轮进行中（范围限定生效），传播交给那一轮的核对，不推整段重新提取（会写范围外的条目）
+    # 7 不出：限定范围的包这一轮进行中（范围限定生效），传播交给那一轮的核对，不推整段重新提取（会写范围外的条目）
     confined = _suggest(root, _states(root, core_model="stale", core_validate="ready", core_publish="not_ready"),
                         {"slice_stale": [stale_step], "confine_active": True})
     assert not any(item["id"].startswith("refresh:") for item in items(confined))
