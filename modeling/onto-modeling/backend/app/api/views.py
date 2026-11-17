@@ -71,7 +71,6 @@ def project_meta(meta: dict, root: Path) -> dict:
         "engine": engine,
         "engine_label": engine_label(engine),
         "build_mode": meta.get("build_mode") or "L2",
-        "research_mode": meta.get("research_mode") or "local",
         "version_label": state["version_label"],
         "head": state["head"],
         "last_release": {"version": last["version"], "at": iso(last.get("at"))} if last else None,

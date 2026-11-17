@@ -12,12 +12,21 @@ core 包的内容就是 `assets/workspace-toolkit`（原样迁过来，命令名
 
 镜像自带的其他官方包（方案 D7 后半拆出的可选包、第一个行业包）放在 `assets/packs/<名>/`，按同样的
 规则入库：版本号是清单版本加内容摘要，镜像换了内容才动 stable 指针。
+
+镜像里去掉了的官方包在入库时下架（retire_missing）：只认全部版本都由镜像入库、不是私有包、也不是 core 的包，
+`assets/packs` 里没有它就下架。`assets/packs` 整个不存在（旧版资产、测试里的最小资产）时什么都不下架。
+下架只记在通道记录上，版本目录不删：目录、详情、缺省启用、跟随通道、插件运维都看不到它，项目锁文件里的这一项
+在下次核对锁文件时去掉（runtime.normalize），项目照常装配。
+
+回滚：换回带这个包的旧镜像，入库时就取消下架，通道指针还是原来的版本。已经从项目锁文件里去掉的条目不会加回来
+（锁文件变更已经提交，自动加回等于替用户改能力配置），要用的项目重新启用；新建项目按 default_on 照常带上。
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 import tempfile
 import threading
@@ -28,11 +37,13 @@ import yaml
 from . import manifest as mf
 from .repository import PackRepository, pack_files, write_checksums
 
+_log = logging.getLogger(__name__)
 CORE = "core"
 TOOLKIT_DIR = "workspace-toolkit"
 PACKS_DIR = "packs"
 # 不在工具箱目录里、但属于 core 包的文件（详设 8.1：装配目录的 CLAUDE.md 来自 core 的工作区规则）
 EXTRA_FILES = {"workspace-rules.md": "rules", "workspace-readme.md": "readme"}
+RETIRE_REASON = "镜像里没有这个官方包"
 _CACHE: dict[tuple[str, str], str] = {}
 _PACKS_CACHE: dict[tuple[str, str], dict[str, str]] = {}
 _CACHE_LOCK = threading.Lock()
@@ -126,6 +137,8 @@ def _install_builtin(repository: PackRepository, source: Path, *, extras_from: P
         staged = Path(scratch) / source.name
         manifest = stage(source, staged, extras_from=extras_from)
         repository.install(staged, origin="builtin", note=str(source))
+    if repository.unretire(manifest.name):
+        _log.warning("镜像重新带上了官方包 %s，取消下架；之前从项目锁文件里去掉的不加回来", manifest.name)
     version = manifest.version
     entry = repository.channel_entry(manifest.name)
     if entry.get("builtin") != version or not repository.channel(manifest.name, "stable"):
@@ -152,8 +165,27 @@ def import_packs(repository: PackRepository, assets_dir: Path) -> dict[str, str]
             if data.get("name") != directory.name or data.get("name") == CORE:
                 continue
             versions[directory.name] = _install_builtin(repository, directory)
+        retire_missing(repository, set(versions))
         _PACKS_CACHE[key] = versions
         return dict(versions)
+
+
+def retire_missing(repository: PackRepository, present: set[str]) -> list[str]:
+    """下架镜像里已经没有的官方包（present 是这次从镜像入库的包名），返回这次下架的包名。
+
+    有上传版本的包、私有包不动：它们归上传方管，镜像去掉同名官方包不代表平台不要它。
+    """
+    retired = []
+    for name in repository.names(private=True):
+        if name == CORE or name in present or repository.owner(name):
+            continue
+        versions = repository.versions(name)
+        if not versions or not all(repository.is_builtin(name, version) for version in versions):
+            continue
+        repository.retire(name, reason=RETIRE_REASON)
+        _log.warning("镜像里没有官方包 %s 了，下架；项目锁文件里的这一项下次核对时去掉", name)
+        retired.append(name)
+    return retired
 
 
 def clear_cache() -> None:

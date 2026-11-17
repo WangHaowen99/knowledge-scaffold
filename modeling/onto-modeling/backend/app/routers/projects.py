@@ -203,17 +203,6 @@ def _selected_packs(body: dict, viewer: str) -> list[str] | None:
     return sorted(chosen - {"core"}) + selected
 
 
-def _pack_enabled(project_id: str, name: str) -> bool:
-    from ..services.packs import lockfile
-
-    try:
-        lock = lockfile.read(deps.workspaces.project_root(project_id))
-    except (ValueError, OSError):
-        return False
-    entry = lock.get(name) if lock else None
-    return bool(entry and entry.enabled)
-
-
 def _materials(body: dict, owner: str) -> list[dict]:
     items = []
     for item in body.get("materials") or []:
@@ -433,7 +422,7 @@ def get_project(project_id: str, request: Request):
 
 @router.patch("/{project_id}")
 def update_project(project_id: str, request: Request, body: dict = Body(...)):
-    """改名、改目标、调研范围；元数据不进工作区 git，不产生版本。"""
+    """改名、改目标；元数据不进工作区 git，不产生版本。"""
     deps.require_writable(project_id, request)
     meta = deps.workspaces.get_project(project_id)
     fields = {}
@@ -442,14 +431,6 @@ def update_project(project_id: str, request: Request, body: dict = Body(...)):
         if not 1 <= len(goal) <= GOAL_MAX:
             raise ApiError("invalid_argument", f"目标须为 1–{GOAL_MAX} 个字符", 400, {"fields": {"goal": "length"}})
         fields["goal"] = goal
-    if "research_mode" in body:
-        mode = body.get("research_mode")
-        if mode not in ("web", "local"):
-            raise ApiError("invalid_argument", "research_mode 取值不合法", 400, {"fields": {"research_mode": "enum"}})
-        if mode == "web" and not _pack_enabled(project_id, "websearch"):
-            # 联网调研是可选包（websearch）：没启用时不能切到联网模式
-            raise ApiError("pack_not_enabled", "联网调研能力没有启用", 409, {"pack": "websearch"})
-        fields["research_mode"] = mode
     if fields:
         deps.workspaces._update_meta(project_id, **fields)
     if "name" in body:
@@ -457,7 +438,7 @@ def update_project(project_id: str, request: Request, body: dict = Body(...)):
         if name != meta.get("name"):
             with deps.workspaces.name_claim(name, _viewer(request), exclude_id=project_id):
                 deps.workspaces.rename_project(project_id, name)
-    project_events.project_changed(project_id, sorted(key for key in ("name", "goal", "research_mode") if key in body))
+    project_events.project_changed(project_id, sorted(key for key in ("name", "goal") if key in body))
     return _meta(project_id)
 
 

@@ -13,7 +13,6 @@
 | suspension 挂起 | 自主构建挂起的问题（撤回了的段上的不列） |
 | report 报告待处理 | 报告里还有没处理的 `[ ]` 条目，一份报告一项 |
 | format_migration 格式待迁移 | 插件产物的格式版本比包里登记的旧 |
-| feedback 外部反馈 | 评测服务回传的反馈批次 |
 | change_list 变更清单 | 增量更新识别出、还没执行的变更点清单 |
 
 证据冲突（evidence_conflict）随证据源（本期只留接口）。
@@ -32,7 +31,7 @@ from pathlib import Path
 
 KIND_LABELS = {
     "decision": "决策", "evidence_conflict": "证据冲突", "change_list": "变更清单", "review": "需复核",
-    "suspension": "挂起", "stale": "过期", "resumable": "续跑", "feedback": "外部反馈", "report": "报告待处理",
+    "suspension": "挂起", "stale": "过期", "resumable": "续跑", "report": "报告待处理",
     "changeset_conflict": "冲突", "format_migration": "格式待迁移",
     "notification": "通知", "check_findings": "检查未过",
 }
@@ -40,14 +39,14 @@ ACTIONS = {
     "decision": ["answer"], "evidence_conflict": ["arbitrate"],
     "change_list": ["accept_points", "rewrite_point", "execute"], "review": ["accept", "rejudge", "revert_slice"],
     "suspension": ["answer", "use_generic"], "stale": ["refresh", "keep_stale"], "resumable": ["resume", "abandon"],
-    "feedback": ["send_to_evolution"], "report": ["send_to_assistant"],
+    "report": ["send_to_assistant"],
     "changeset_conflict": ["resolve", "discard"], "format_migration": ["migrate"], "notification": [],
     "check_findings": ["send_to_assistant"],
 }
 FILTERS = {
     "all": None, "autobuild_review": ("review", "suspension"), "decision": ("decision",),
     "evidence_conflict": ("evidence_conflict",), "change_list": ("change_list",), "stale": ("stale",),
-    "resumable": ("resumable",), "feedback": ("feedback",),
+    "resumable": ("resumable",),
 }
 # 证据源本期不开放（ADR-0056）：筛选照样认，计数里不出这一项
 COUNTED_FILTERS = [name for name in FILTERS if name != "evidence_conflict"]
@@ -428,32 +427,6 @@ def _reports(root: Path) -> list[dict]:
     return items
 
 
-def _feedback(root: Path) -> list[dict]:
-    from .. import feedback_inbox
-
-    folder = Path(root) / feedback_inbox.FEEDBACK_DIR
-    items = []
-    for path in sorted(folder.glob("*.json")) if folder.is_dir() and not folder.is_symlink() else []:
-        if path.is_symlink():
-            continue
-        try:
-            document = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(document, dict) or not document.get("feedback_id"):
-            continue
-        if feedback_inbox.state_of(root, document["feedback_id"]) != "open":
-            continue  # 资料区里标过已处理、已忽略的（R-12）
-        view = feedback_inbox.view(f"{feedback_inbox.FEEDBACK_DIR}/{path.name}", document, "")
-        failed = view["verdicts"].get("fail", 0)
-        if not failed:
-            continue  # 全部通过的批次没有要处理的（审查第 22 条）
-        items.append(_item("feedback", document["feedback_id"], f"外部反馈：{view['item_count']} 条",
-                           source="external", pack="evo",
-                           created_at=path.stat().st_mtime, extra={"feedback": view}))
-    return items
-
-
 def _format_migrations(manager, root: Path) -> list[dict]:
     from ...kernel.artifacts import index
     from ...kernel.artifacts.registry import types_for_project
@@ -513,7 +486,6 @@ def collect(manager, project_id: str) -> list[dict]:
         lambda: _resumables(project_id, root, flow),
         lambda: _node_items(root, flow),
         lambda: _reports(root),
-        lambda: _feedback(root),
         lambda: _format_migrations(manager, root),
         lambda: _change_lists(root),
         lambda: _autobuild(project_id),

@@ -209,7 +209,7 @@ def assemble(contributions: list[tuple[str, str, dict]], available_commands: set
             node[key] = anchor
             edges.append((anchor, node["id"]) if key == "after" else (node["id"], anchor))
     nodes = _ordered(nodes, problems)
-    # 动作声明了 `pack`（要某个包才能做，如联网资料分析要联网调研包）而这次装配没有这个包：去掉这个动作
+    # 动作声明了 `pack`（要某个包才能做）而这次装配没有这个包：去掉这个动作
     for node in nodes:
         if node.get("actions"):
             node["actions"] = [action for action in node["actions"]

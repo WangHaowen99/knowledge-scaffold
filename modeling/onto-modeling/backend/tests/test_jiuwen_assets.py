@@ -123,26 +123,26 @@ def test_hooks_deny_self_invented_ontology_dir(tmp_path):
     )
     assert reason and "自创目录" in reason
 
-    # 白名单内但不打包的目录，非演进期不拦（建模代理的上下文沉淀区）
+    # 白名单内但不打包的目录，没有命令声明写入范围时不拦（建模代理的上下文沉淀区）
     assert run_hooks_sync(
         entries, "write_file", {"file_path": "ontology/knowledge/条目.md", "content": "x"}, ws
     ) is None
 
 
-def test_hooks_restrict_evolution_writes_to_packaged_dirs(tmp_path):
-    """反馈演进期：写入必须落在会进知识包的目录，否则 consumer 看不到。"""
+def test_hooks_restrict_writes_to_declared_scope(tmp_path):
+    """命令节点声明了写入范围时（方案 D11），写入只能落在范围内；这里用合成命令。"""
     loader = make_loader()
     entries = loader.pre_tool_use_hooks()
     ws = _git_workspace(tmp_path)
-    # 反馈演进节点声明的写入范围（state_helper acquire evolution 写进 .onto/run/active.json，方案 D11）
+    # 命令节点声明的写入范围（state_helper acquire 写进 .onto/run/active.json，方案 D11）
     active = ws / ".onto" / "run" / "active.json"
     active.parent.mkdir(parents=True)
-    active.write_text(json.dumps({"commands": {"evolution": {"node": "evo.evolution", "allow": [
+    active.write_text(json.dumps({"commands": {"extra-review": {"node": "extra-review.review", "allow": [
         "ontology/object/*", "ontology/operation/*", "ontology/logic/*", "ontology/rule/*", "ontology/metric/*",
         "ontology/scripts/*", "ontology/testcase/*", "ontology/data-mock/*"]}}}), encoding="utf-8")
     # 守卫只认锁还在的命令（审查第 9 条）：这把锁不带持有者信息，按还在跑
     (ws / ".ontology-state").mkdir(exist_ok=True)
-    (ws / ".ontology-state" / "lock-evolution.json").write_text(json.dumps({"command": "evolution"}), encoding="utf-8")
+    (ws / ".ontology-state" / "lock-extra-review.json").write_text(json.dumps({"command": "extra-review"}), encoding="utf-8")
 
     for rel in ("ontology/knowledge/案例.md", "ontology/action/动作.md"):
         reason = run_hooks_sync(entries, "write_file", {"file_path": rel, "content": "x"}, ws)

@@ -116,10 +116,15 @@ class PackRuntime:
         return lock
 
     def normalize(self, lock: PackLock) -> tuple[PackLock, bool]:
-        """锁里的版本在本仓库不存在（别的部署导出来的项目）或摘要不符：换成通道版本并跟随。"""
+        """锁里的版本在本仓库不存在（别的部署导出来的项目）或摘要不符：换成通道版本并跟随。
+        下架的包（镜像里已移除的官方包，builtin.retire_missing）从锁里去掉；取消下架时不加回来。"""
         lock = lock.copy()
         changed = False
         for entry in list(lock.packs):
+            if entry.name != CORE and self.repository.retired(entry.name):
+                lock.packs.remove(entry)
+                changed = True
+                continue
             known = self.repository.has(entry.name, entry.version)
             digest = self.repository.digest(entry.name, entry.version) if known else ""
             if known and entry.sha256 in ("", digest):

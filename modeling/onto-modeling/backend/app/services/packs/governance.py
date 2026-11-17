@@ -63,7 +63,7 @@ def pack_item(manager, name: str, version: str) -> dict | None:
     from ...governance import ops_state
 
     repository = manager.packs.repository
-    if not repository.has(name, version):
+    if not repository.has(name, version) or repository.retired(name):
         return None
     manifest = repository.manifest(name, version)
     entry = repository.channel_entry(name)
@@ -152,7 +152,8 @@ class OpsError(Exception):
 
 
 def _require(manager, name: str, version: str) -> None:
-    if not manager.packs.repository.has(name, version):
+    repository = manager.packs.repository
+    if not repository.has(name, version) or repository.retired(name):
         raise OpsError("pack_version_not_found", "包或版本不存在", 404)
 
 
@@ -214,6 +215,8 @@ def rollout_bucket(project_id: str) -> int:
 
 def beta_for(repository, name: str, project_id: str) -> str | None:
     """跟随 stable 的项目这次该不该拿 beta：beta 在名单里点了它，或分桶落在放量比例里。"""
+    if repository.retired(name):
+        return None
     beta = repository.channel_entry(name).get("beta")
     if not isinstance(beta, dict) or not beta.get("version") or str(beta.get("by") or "project") != "project":
         return None

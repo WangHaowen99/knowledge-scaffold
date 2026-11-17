@@ -277,6 +277,8 @@ class UploadStore:
                                             rollout={**(rollout or {}), "auto_breaker": bool(auto_breaker)})
                 if owner:
                     self.repository.set_field(record["name"], OWNER_FIELD, None)  # 管理员把私有包转成公开的
+                # 发布了镜像里已移除的官方包的新版本：取消下架（有了上传的版本，以后也不会再被下架）
+                self.repository.unretire(record["name"])
             except RepositoryError as exc:
                 raise UploadError(exc.code, str(exc), exc.status, exc.details) from exc
             record["state"] = "published"

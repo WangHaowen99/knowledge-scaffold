@@ -44,17 +44,16 @@ PACKS = Path(config.ASSETS_DIR) / "packs"
 # 拆包后（方案 D7 后半）命令分在 core 与各可选包里
 COMMANDS = {path.stem for path in (TOOLKIT / "commands").glob("*.md")} | {
     path.stem for path in PACKS.glob("*/commands/*.md")}
-# 新建项目缺省启用的能力包里带流程节点的（知识沉淀包没有节点）
+# 新建项目缺省启用的能力包（都带流程节点）
 DEFAULT_FLOW_PACKS = ("codegen", "diagram", "trace")
 
 
 def _default_flow() -> dict:
     contributions = [("core", "test", FLOW)]
     available = {path.stem for path in (TOOLKIT / "commands").glob("*.md")}
-    for name in ("codegen", "diagram", "knowledge", "trace"):
+    for name in DEFAULT_FLOW_PACKS:
         available |= {path.stem for path in (PACKS / name / "commands").glob("*.md")}
-        if name in DEFAULT_FLOW_PACKS:
-            contributions.append((name, "test", yaml.safe_load((PACKS / name / "flow.yaml").read_text(encoding="utf-8"))))
+        contributions.append((name, "test", yaml.safe_load((PACKS / name / "flow.yaml").read_text(encoding="utf-8"))))
     return assemble.assemble(contributions, available_commands=available)
 
 

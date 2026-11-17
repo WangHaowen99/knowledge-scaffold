@@ -104,7 +104,7 @@ def test_published_package_import_restores_entities(
     # 已发布知识包只有交付物、没有过程资产：research/ 等必选阶段不命中，但不截断后续，
     # 建模（对象与操作）、指标、代码生成三个节点各自计入（与前端 stageStatuses 一致）
     assert overview["stages_done"] == 3
-    # 按需节点（增量更新、反馈演进、迁移复用）不计进度
+    # 按需节点（如增量更新）不计进度
     # 包里没有资料分析，建模已完成：资料分析算越过、不计入分母（ADR-0084）
     assert overview["stages_total"] == sum(1 for node in flow_model.image_flow()["nodes"] if node.get("progress", True)) - 1
 

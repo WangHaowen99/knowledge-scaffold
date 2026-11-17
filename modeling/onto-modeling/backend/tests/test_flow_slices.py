@@ -372,14 +372,14 @@ def test_new_core_assembles_with_packs_that_have_not_upgraded_yet():
         {"id": "codegen.solver", "title": "求解适配", "placement": "branch", "section": "optional", "optional": True,
          "after": "core.operation", "done": ["solver"], "panel": True, "actions": []}],
         "commands": {"solver-evaluator": {"node": "codegen.solver"}}}
-    old_evo = {"nodes": [
-        {"id": "evo.evolution", "title": "反馈演进", "placement": "on_demand", "section": "on_demand", "progress": False,
+    old_extra = {"nodes": [
+        {"id": "extra-review.review", "title": "合成复核", "placement": "on_demand", "section": "on_demand", "progress": False,
          "after": "core.operation", "display_after": ["core.update"], "done": []}],
-        "commands": {"evolution": {"node": "evo.evolution", "requires": []}}}
+        "commands": {"extra-review": {"node": "extra-review.review", "requires": []}}}
     flow = assemble.assemble([core, ("trace", "0.9.2", old_trace), ("codegen", "0.9.1", old_codegen),
-                              ("evo", "0.3.1", old_evo)])
+                              ("extra-review", "0.3.1", old_extra)])
     by_id = {node["id"]: node for node in flow["nodes"]}
-    assert by_id["codegen.solver"]["after"] == "core.model" and by_id["evo.evolution"]["after"] == "core.model"
+    assert by_id["codegen.solver"]["after"] == "core.model" and by_id["extra-review.review"]["after"] == "core.model"
     assert {"from": "trace.trace", "to": "core.publish"} in flow["edges"]
 
 

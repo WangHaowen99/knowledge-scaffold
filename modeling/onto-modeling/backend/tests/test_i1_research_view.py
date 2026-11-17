@@ -95,7 +95,7 @@ def test_nothing_analysed_yet(env):
     got = client.get(f"{base}/materials/map").json()
     assert got["total"] == 2 and got["read_pct"] == 0 and got["problems"] == []
     assert {item["status"] for item in got["items"]} == {"queued"} and got["can_generate_blueprint"] is False
-    assert got["analysis_mode"] == "local" and got["verification"]["total"] == 0
+    assert got["verification"]["total"] == 0 and "analysis_mode" not in got and "web_available" not in got
     assert client.get(f"{base}/materials/candidates").json() == {"total": 0, "items": []}
     assert client.get(f"{base}/materials/verification").json()["items"] == []
     listed = client.get(f"{base}/resources").json()
@@ -184,43 +184,10 @@ def test_materials_updated_after_upload(env):
     assert set(data) == {"items", "read_pct", "problems_count"}
 
 
-# ---- R-11、R-12 外部反馈 ----
-
-FEEDBACK = {"feedback_id": "fb-synthetic-01", "source": {"service": "合成评测", "run": "run-1"},
-            "items": [{"case_id": "c-01", "question": "合成问题", "expected": "按门店执行", "actual": "生成了审批提示",
-                       "loss_reason": "方向判断反了", "suspected_artifacts": ["门店", "ontology/rule/没有.md"]},
-                      {"case_id": "c-02", "question": "合成问题二", "verdict": "partial"}]}
+# ---- R-11、R-12 外部反馈随反馈演进包删除 ----
 
 
-def test_feedback_list_and_state(env):
-    from app.services import feedback_inbox
-
-    client, workspaces, project_id, root, base = env
-    feedback_inbox.receive(workspaces, project_id, FEEDBACK, "svc-eval")
-    off = client.get(f"{base}/feedback").json()
-    assert off == {"items": [], "next_cursor": None, "plugin_disabled": True}
-    assert client.get(f"{base}/resources").json()["feedback_group"] == {"enabled": False, "count": 0}
-    assert client.post(f"{base}/packs", json={"name": "evo"}).status_code == 201
-    main_write(root, "ontology/object/门店.md", "# 门店\n\n## 对象描述\n\n合成。\n", "web: 合成对象")
-    listed = client.get(f"{base}/feedback").json()
-    assert "plugin_disabled" not in listed and len(listed["items"]) == 1
-    item = listed["items"][0]
-    assert item["id"] == "fb-synthetic-01" and item["state"] == "open" and item["summary"] == "失分用例 1 条"
-    assert item["items"][0]["suspected"] == [{"kind": "object", "id": "object:门店", "key": "门店", "name": "门店"}]
-    assert item["items"][1]["loss_reason"] is None and item["handled_version_label"] is None
-    assert set(item) == {"id", "source", "release_version", "received_at", "state", "summary", "items",
-                         "handled_version_label"}
-    assert client.get(f"{base}/resources").json()["feedback_group"] == {"enabled": True, "count": 1}
-    assert "feedback:fb-synthetic-01" in [entry["id"] for entry in client.get(f"{base}/inbox").json()["items"]]
-    handled = client.patch(f"{base}/feedback/fb-synthetic-01", json={"state": "handled"}).json()
-    assert handled["state"] == "handled" and handled["handled_version_label"]
-    assert client.get(f"{base}/feedback", params={"state": "open"}).json()["items"] == []
-    assert [entry["id"] for entry in client.get(f"{base}/feedback", params={"state": "handled"}).json()["items"]] == [
-        "fb-synthetic-01"]
-    assert "feedback:fb-synthetic-01" not in [entry["id"] for entry in client.get(f"{base}/inbox").json()["items"]]
-    assert client.get(f"{base}/resources").json()["feedback_group"]["count"] == 0
-    reopened = client.patch(f"{base}/feedback/fb-synthetic-01", json={"state": "open"}).json()
-    assert reopened["state"] == "open" and reopened["handled_version_label"] is None
-    assert client.patch(f"{base}/feedback/fb-none", json={"state": "handled"}).json()["code"] == "not_found"
-    assert client.patch(f"{base}/feedback/fb-synthetic-01", json={"state": "x"}).json()["code"] == "invalid_argument"
-    assert client.get(f"{base}/feedback", params={"state": "x"}).json()["code"] == "invalid_argument"
+def test_feedback_endpoints_are_gone(env):
+    client, _workspaces, _pid, _root, base = env
+    assert client.get(f"{base}/feedback").status_code in (404, 405)
+    assert "feedback_group" not in client.get(f"{base}/resources").json()

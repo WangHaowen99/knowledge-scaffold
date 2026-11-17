@@ -2,7 +2,7 @@
 
 处理事项（IN-03）一律转给等价接口：决策 → S-11（人工节点的卡走 S-11 同一个退路），续跑 / 放弃 → S-16 / S-17，
 合入冲突 → CS-07（选好保留哪边）或 CS-05（撤回这一轮），刷新 / 重做 → FL-05，报告 → 以校验命令调 S-20，
-外部反馈 → 以反馈演进命令调 S-20，变更清单 → INC-03 / INC-02 / INC-04。忽略只记在主线工作区的 `.onto/run/`（不进 git）。
+变更清单 → INC-03 / INC-02 / INC-04。忽略只记在主线工作区的 `.onto/run/`（不进 git）。
 """
 
 from __future__ import annotations
@@ -100,8 +100,6 @@ def _detail(project_id: str, item: dict) -> dict | None:
                 "options": [{"id": "accept", "label": "接受"}, {"id": "rejudge", "label": "重做这一步"}]}
     if kind == "change_list":
         return change_lists.view(extra["change_list"])
-    if kind == "feedback":
-        return extra.get("feedback")
     if kind == "report":
         return {"path": extra.get("path"), "pending": extra.get("pending")}
     if kind == "format_migration":
@@ -200,16 +198,6 @@ async def _run_action(project_id: str, item: dict, action: str, request: Request
                    "text": f"处理报告 {extra.get('path')} 里还没处理的 [ ] 条目", "conversation_id": "-",
                    "display_text": f"处理{workspace_labels.path_label(str(extra.get('path') or '')) or '检查报告'}里还没处理的条目"}
         response = await session_routes.dispatch_command(project_id, root, request, payload)
-        return {"command_task": _json(response).get("task")}
-    if action == "send_to_evolution":
-        payload = {"command": "/ontology-evolution", "args": {"feedback_id": source_id},
-                   "origin": {"page": "inbox", "label": "交给反馈演进"}, "conversation_id": "-"}
-        response = await session_routes.dispatch_command(project_id, root, request, payload)
-        # 交出去就算处理了：按处理记下（审查第 22 条），资料区的外部反馈分组同一个状态（R-12）
-        inbox.dismiss(root, item["id"], by=actor, fingerprint=item.get("_fp"))
-        from ..services import feedback_inbox
-
-        feedback_inbox.set_state(deps.workspaces, project_id, source_id, "handled", by=actor)
         return {"command_task": _json(response).get("task")}
     if action == "migrate":
         raise ApiError("pack_not_enabled", "登记这个产物的包没有提供迁移命令", 409,
