@@ -149,6 +149,30 @@ def test_duplicate_codegen_scan_is_rejected_while_queued(pool_env, tmp_path):
     asyncio.run(scenario())
 
 
+def test_codegen_scan_waits_for_prior_turn_in_same_session(scripted_env, tmp_path):
+    manager, created, _ = scripted_env
+    command = "/ontology-codegen-scan"
+
+    async def scenario():
+        await manager.send("p1", tmp_path / "w1", "长任务")
+        session = await _settle(manager, "p1")
+        with pytest.raises(SessionError, match="当前任务正在运行") as error:
+            await manager.send("p1", tmp_path / "w1", command)
+        assert error.value.status == 409
+        assert session.client.queries == ["长任务"]
+        assert not session.codegen_scan_active
+
+        await _feed(created[0], _turn_result())
+        assert session.state == "idle"
+        await manager.send("p1", tmp_path / "w1", command)
+        assert session.client.queries == ["长任务", command]
+        with pytest.raises(SessionError, match="扫描候选正在运行"):
+            await manager.send("p1", tmp_path / "w1", command)
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
 def test_pool_evicts_oldest_idle_session(pool_env, tmp_path):
     manager, created, _ = pool_env
 
