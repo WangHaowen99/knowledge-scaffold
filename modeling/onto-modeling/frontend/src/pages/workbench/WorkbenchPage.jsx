@@ -27,6 +27,7 @@ import { EarlierHistory, Timeline } from './Timeline.jsx';
 import { NextBar, RunLine } from './RunLine.jsx';
 import { SUBMITTING_TEXT, createSubmitGuard, likelyDuplicate, restoreText, sendButtonMode } from './composerModel.js';
 import { useConversation } from './useConversation.js';
+import { scrollFollow } from './scrollFollow.js';
 import {
   BUSY_TEXT, isPluginConv, latestDraftCards, menuConversations, pickConversation, planEnterPlugin, planLeavePlugin, pluginReturn, returnTarget,
 } from './pluginModeModel.js';
@@ -630,10 +631,26 @@ export default function WorkbenchPage({ route }) {
     return undefined;
     // 草稿卡的实时状态（PD-02）比历史晚到、卡片会变高：到了也跟一次
   }, [state.order.length, state.items, state.thinking, drafts.drafts]);
-  useEffect(() => () => cancelAnimationFrame(stickFrame.current), []);
+  // 清理时把帧号归零：开发模式（StrictMode）会先卸载再挂载一次，留着旧帧号会让上面一直提前返回、再也不跟到底
+  useEffect(() => () => { cancelAnimationFrame(stickFrame.current); stickFrame.current = 0; }, []);
+  // 离开底部时出「回到底部」；点下去后平滑滚动的途中仍跟着新内容，往上翻就不再跟
+  const [away, setAway] = useState(false);
+  const follow = useRef({ jumping: false, top: 0 });
   const onScroll = () => {
     const m = mainRef.current;
-    if (m) stick.current = m.scrollHeight - m.scrollTop - m.clientHeight < 120;
+    if (!m) return;
+    const f = scrollFollow(follow.current, { top: m.scrollTop, gap: m.scrollHeight - m.scrollTop - m.clientHeight });
+    follow.current = f;
+    stick.current = f.stick;
+    setAway(!f.stick);
+  };
+  const toBottom = () => {
+    const m = mainRef.current;
+    if (!m) return;
+    follow.current = { jumping: true, top: m.scrollTop };
+    stick.current = true;
+    setAway(false);
+    m.scrollTo({ top: m.scrollHeight });
   };
   // 往前翻页（S-06）后保持视线不动：记下最上面那一块的位置，旧记录插到前面后把它挪回原处
   const earlierAnchor = useRef(null);
@@ -936,6 +953,7 @@ export default function WorkbenchPage({ route }) {
               </div>
             </div>
             <div className="wbc-foot">
+              <button type="button" className={cx('wb-tobottom', away && 'on')} title="回到底部" onClick={toBottom}><Icon name="chevd" size={16} /></button>
               <div className="in">
                 {/* 自主构建的运行对话由运行条说明在做什么、控制暂停停下 */}
                 {ab.running ? null : <RunLine info={runStatus(state)} />}

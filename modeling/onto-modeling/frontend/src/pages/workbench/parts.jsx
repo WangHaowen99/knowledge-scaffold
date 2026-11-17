@@ -92,17 +92,7 @@ export function WxFile({ name, kind }) {
 }
 
 export function Orb() {
-  return (
-    <span className="wx-orb">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round">
-        <path d="M12 12.4V6.4M12 12.4l-5.4 4M12 12.4l5.4 4" opacity=".8" />
-        <circle cx="12" cy="4.8" r="2.7" fill="#fff" stroke="none" />
-        <circle cx="5.2" cy="17.6" r="2.7" fill="#fff" stroke="none" />
-        <circle cx="18.8" cy="17.6" r="2.7" fill="#fff" stroke="none" />
-        <circle cx="12" cy="12.4" r="1.9" fill="#93C5FD" stroke="none" />
-      </svg>
-    </span>
-  );
+  return <span className="wx-orb"><Icon name="atom" size={18} /></span>;
 }
 
 // 插件对话里的插件助手（ADR-0087）：靛蓝底的拼图

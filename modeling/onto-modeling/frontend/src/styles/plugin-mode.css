@@ -5,7 +5,7 @@
 .wx-st.fail .x{color:var(--red);background:rgba(220,38,38,.08)}
 .wx-track.pm{cursor:default}
 .wx-mode.pm i{background:var(--indigo);box-shadow:0 0 0 3px rgba(67,56,202,.15)}
-.wx-orb.pm{background:linear-gradient(145deg,#5B54E8 0%,#3F37C9 55%,#231C7A 100%);color:#fff}
+.wx-orb.pm{border-radius:7px;background:linear-gradient(145deg,#5B54E8 0%,#3F37C9 55%,#231C7A 100%);box-shadow:inset 0 0 0 1px rgba(255,255,255,.14),inset 0 1px 0 rgba(255,255,255,.22);color:#fff}
 .wx-orb.pm svg.i{width:14px;height:14px;stroke-width:2}
 
 .pm-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;max-width:600px;margin:40px auto 0}

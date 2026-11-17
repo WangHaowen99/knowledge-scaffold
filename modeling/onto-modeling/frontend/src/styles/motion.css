@@ -96,6 +96,6 @@
   .m-u.mo-send>div,.m-u.mo-send .bub,.mo-up,.mo-pop,.mo-ask .wb-dc,.mo-ask .wb-dc .opts>*,.mo-fade,.overlay,.overlay>.modal,
   .drawer,.menu,.g2-cmd,#palette.show,#palette.show .box,.en-pc,.prail a .bdg,.pg-body,.wx-send.mo-press{animation:none}
   .overlay.mo-leave,.drawer.mo-leave{animation:none;opacity:0}
-  .pop,#toast,.btn,.tog,.tog::after,.prog>i,.opt,.en-pc,.wx-send{transition:none}
+  .pop,#toast,.btn,.tog,.tog::after,.prog>i,.opt,.en-pc,.wx-send,.wb-tobottom{transition:none}
   .en-pc:hover,.btn:active:not(:disabled),.opt:active,.wx-send:hover{transform:none}
 }

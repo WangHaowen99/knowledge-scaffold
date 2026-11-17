@@ -72,10 +72,10 @@
 .m-a+.m-a{margin-top:14px}
 .m-a+.m-a .wx-who{display:none}
 .wx-who{display:flex;align-items:center;gap:8px;margin-bottom:8px}
-.wx-orb{width:22px;height:22px;border-radius:7px;flex:none;display:grid;place-items:center;background:linear-gradient(145deg,#2457E0 0%,#173A9E 55%,#0B1F4D 100%);box-shadow:inset 0 0 0 1px rgba(255,255,255,.14),inset 0 1px 0 rgba(255,255,255,.22)}
+.wx-orb{width:22px;height:22px;flex:none;display:grid;place-items:center;color:var(--blue)}
 .wx-orb svg{display:block}
 .wx-who b{font-size:13px;font-weight:650;color:var(--ink0)}
-.wx-who span{font-size:12px;color:var(--faint)}
+.wx-who b+span{font-size:12px;color:var(--faint)}
 .m-a .bd{font-size:14px;line-height:1.7;color:#1F2937;min-width:0}
 .m-a .bd>p{margin:0 0 10px}
 .wx-proc{margin:2px 0 12px}
@@ -178,6 +178,10 @@
 .wbc-foot{flex:none;position:relative;padding:2px 36px 18px;background:var(--cv)}
 .wbc-foot::before{content:"";position:absolute;left:0;right:0;top:-34px;height:34px;background:linear-gradient(rgba(251,252,254,0),var(--cv));pointer-events:none}
 .wbc-foot .in{max-width:748px;margin:0 auto}
+/* 回到底部：浮在输入区上方，右边和输入框对齐；离开底部才出现 */
+.wb-tobottom{position:absolute;z-index:3;bottom:calc(100% + 10px);right:max(36px,calc((100% - 748px) / 2));width:32px;height:32px;padding:0;border-radius:50%;border:1px solid rgba(15,23,42,.1);background:#fff;color:var(--body);display:grid;place-items:center;cursor:pointer;box-shadow:0 6px 16px -8px rgba(15,23,42,.28);opacity:0;visibility:hidden;transform:translateY(6px);transition:opacity .18s,transform .18s,visibility .18s,color .15s,border-color .15s}
+.wb-tobottom.on{opacity:1;visibility:visible;transform:none}
+.wb-tobottom:hover{color:var(--blue2);border-color:rgba(37,99,235,.38)}
 .wb-sug{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:0 0 10px}
 .wb-sug .s{height:30px;padding:0 12px;border-radius:999px;border:1px solid rgba(15,23,42,.11);background:#fff;font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:6px;color:#263246;cursor:pointer;transition:border-color .15s,color .15s,background .15s}
 .wb-sug .s:hover{border-color:rgba(37,99,235,.38);color:#1D4ED8}
