@@ -42,7 +42,7 @@ _log = logging.getLogger(__name__)
 
 LOCAL_USER = "local"  # 与 deps.LOCAL_USER 一致：本地模式的用户与无主项目的用量归属
 # 默认值按成本口径定（ADR-0088）：实测一整轮建模（资料分析到发布）折算后约 215 万
-# 证据采集删除后（ADR-0100）采集次数、快照大小两项不再有；老的 quotas.json 里的这两项不读，下次保存时去掉
+# 证据采集删除后（ADR-0101）采集次数、快照大小两项不再有；老的 quotas.json 里的这两项不读，下次保存时去掉
 PER_USER_DEFAULTS = {"concurrent_sessions": 3, "daily_tokens": 10_000_000}
 PER_PROJECT_DEFAULTS = {"online_engines": 1, "monthly_tokens": 100_000_000}
 READ_ONLY_ITEMS = frozenset({"online_engines"})  # 一个项目只有一个在线引擎，由会话池保证，不可改

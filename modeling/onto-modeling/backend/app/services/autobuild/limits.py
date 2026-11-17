@@ -5,7 +5,7 @@
 - 单次运行的时长、token、费用上限在 F6 去掉了（运行不按用量判停，花费的硬上限是配额）：老文件里的这几项不再读，
   请求里带了也忽略；
 - `night_priority` 保存、回显，本期不生效（夜间优先没有调度器）；
-- `allow_production_collection` 随证据采集删除（ADR-0100）：老文件里的不再读，请求里带了也忽略，下次保存时清掉。
+- `allow_production_collection` 随证据采集删除（ADR-0101）：老文件里的不再读，请求里带了也忽略，下次保存时清掉。
 """
 
 from __future__ import annotations

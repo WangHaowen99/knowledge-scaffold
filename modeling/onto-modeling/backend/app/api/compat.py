@@ -192,7 +192,7 @@ RULES: tuple[Rule, ...] = (
     _r("GET", f"{_PROJ}/report-items", _report_items),
     _r("GET", f"{_PROJ}/query", _same("GET", f"{_V1}/query")),
     _r("GET", f"{_PROJ}/knowledge", _same("GET", f"{_V1}/knowledge")),
-    # 知识条目的网页写入随知识沉淀包删除（ADR-0100），没有替代
+    # 知识条目的网页写入随知识沉淀包删除（ADR-0101），没有替代
     _gone("POST", f"{_PROJ}/knowledge"),
     _gone("DELETE", f"{_PROJ}/knowledge"),
     _r("GET", f"{_PROJ}/versions", _same("GET", f"{_V1}/versions")),

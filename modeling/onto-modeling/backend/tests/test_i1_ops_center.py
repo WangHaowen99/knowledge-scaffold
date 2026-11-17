@@ -145,7 +145,7 @@ def test_task_actions(api, monkeypatch):
     for op in ("retry", "cancel"):
         res = client.post(f"{OPS}/tasks/{retried.json()['id']}/{op}")
         assert res.status_code == 409 and res.json()["code"] == "task_state_invalid"
-    # 续跑只有证据采集用，随它删除（ADR-0100）
+    # 续跑只有证据采集用，随它删除（ADR-0101）
     assert client.post(f"{OPS}/tasks/{retried.json()['id']}/resume").status_code == 404
     assert client.post(f"{OPS}/tasks/nope/cancel").json()["code"] == "task_not_found"
     # 进程内可取消的演练：取消后任务记为已取消

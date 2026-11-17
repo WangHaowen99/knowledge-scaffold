@@ -5,7 +5,7 @@
 
 - 没有预算（F6）：运行在做完、叫停、出错时结束；花费的硬上限是平台配额（4.10.1），用完时运行暂停。老请求带的
   `budget` 忽略；
-- 生产库采集授权随证据采集删除（ADR-0100）：老策略文件里的 `production_collection` 不再读出来，请求里带了也忽略。
+- 生产库采集授权随证据采集删除（ADR-0101）：老策略文件里的 `production_collection` 不再读出来，请求里带了也忽略。
 """
 
 from __future__ import annotations

@@ -15,7 +15,7 @@
 - 接口块里的「依据」写详设章节或接口编号（①～㊹），「页面」写设计稿页面 id。
 - 对象类型名（如 `ProjectCard`、`ScopeLock`）在第 7 章定义；接口里只写引用。
 - 只写契约，不写实现。实现位置以改造方案第 3 章为准。
-- 界面叫法：插件里的「证据源提供方」在界面上叫「多源连接器」（F4a），现在只有文档转换器；证据采集（数据源、证据快照、证据浏览器）已删除（ADR-0100）。接口路径、字段、错误码里的 `evidence`、`provider` 不变。
+- 界面叫法：插件里的「证据源提供方」在界面上叫「多源连接器」（F4a），现在只有文档转换器；证据采集（数据源、证据快照、证据浏览器）已删除（ADR-0101）。接口路径、字段、错误码里的 `evidence`、`provider` 不变。
 
 ---
 
@@ -86,7 +86,7 @@
 **MCP token。** 只用于 `/api/v1/onto-mcp/*` 传输接口（M-05～M-07）。
 
 - 格式 `onto_pat_<urlsafe>`，只存 SHA-256 摘要，明文只在签发响应里出现一次。
-- 权限范围 `ontology.read`、`ontology.change.validate`、`ontology.change.apply`，新增 `project.version.revert`（版本列表、回退预览与回退，read 和 change 两个工具集都认，ADR-0094）、`package.publish`（发布知识包版本，ADR-0098）。`evidence.read` 随证据采集删除（ADR-0100）。
+- 权限范围 `ontology.read`、`ontology.change.validate`、`ontology.change.apply`，新增 `project.version.revert`（版本列表、回退预览与回退，read 和 change 两个工具集都认，ADR-0094）、`package.publish`（发布知识包版本，ADR-0098）。`evidence.read` 随证据采集删除（ADR-0101）。
 - 含 `package.publish` 的 token 要统一账号登录签发，只能给登录用户本人签：签发时在 Hub 登记委托（不保存登录令牌），吊销时一并撤销；Hub 登记失败则不签发（`401 MCP_HUB_IDENTITY_REQUIRED`、`403 MCP_HUB_IDENTITY_MISMATCH`）。
 - token 绑定项目和签发人；签发人不再是项目所有者时立即失效。
 
@@ -196,7 +196,7 @@
 | 变更集 | `cs-<n>` | `cs-31` |
 | 执行记录 | `ex-<n>` | `ex-0412` |
 | 自主构建运行 | `run-<n>`，界面显示「运行 #n」 | `run-3` |
-| 证据锚点 | `<scheme>:<源ID>/<路径>[#<片段>]`（详设 5.8.5，名字里的特殊字符百分号编码）；ADR-0100 起只解析 `file:<资料路径>[#<片段>]` | `file:resource/text/others/合同.pdf.md#L40` |
+| 证据锚点 | `<scheme>:<源ID>/<路径>[#<片段>]`（详设 5.8.5，名字里的特殊字符百分号编码）；ADR-0101 起只解析 `file:<资料路径>[#<片段>]` | `file:resource/text/others/合同.pdf.md#L40` |
 | 流程节点 | `<包>.<名>` | `core.model` |
 | 待处理事项 | `<kind>:<来源ID>`，来源不变 ID 就不变 | `decision:q-7f3a` |
 | 错误留档 | `err-<4～8 位 hex>` | `err-7f3a` |
@@ -260,7 +260,7 @@ data: {"id":"1532","type":"question.asked","ts":"2026-11-01T07:21:03.120Z","proj
 ### 1.12 审计
 
 - 业务面和运维管理面的每个写请求（POST、PUT、PATCH、DELETE）都在**响应之后**写一条审计（方案 E4）：`AuditEntry{ts, actor, actor_kind, type, method, path, status, project_id, summary, trace_id, ip}`。
-- 读请求不记，例外是下载发布包（`PB-07`、`X-03`），按详设 4.10.1 记录。证据检索的专项审计随证据采集删除（ADR-0100），`EV-29` 不记。
+- 读请求不记，例外是下载发布包（`PB-07`、`X-03`），按详设 4.10.1 记录。证据检索的专项审计随证据采集删除（ADR-0101），`EV-29` 不记。
 - 另有几类不经 HTTP 的专项审计：agent 提交与合入、插件切换、熔断等。事件类型见第 7 章 `AuditEntry.type`。
 - 审计不带项目内容：只记路径、条目 key、动作和结果，不记文件正文、对话正文、字段值。
 - 接口块里的「审计」一栏：
@@ -447,11 +447,11 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `artifact_readonly` | 403 | 只读产物（行业层知识、索引文件等） | `reason` |
 | `format_migration_required` | 409 | 产物还是旧格式版本，要先迁移 | `from, to` |
 
-`knowledge_duplicate`（K-03）、`nomination_not_found`（K-08）已删除（ADR-0100）。
+`knowledge_duplicate`（K-03）、`nomination_not_found`（K-08）已删除（ADR-0101）。
 
 ### 2.8 证据源
 
-证据采集已删除（ADR-0100），本组只剩 `anchor_not_found`。删除的码：`source_not_found`、`source_id_taken`、`source_not_authorized`、
+证据采集已删除（ADR-0101），本组只剩 `anchor_not_found`。删除的码：`source_not_found`、`source_id_taken`、`source_not_authorized`、
 `provider_not_installed`、`gateway_unavailable`、`connection_test_failed`、`outside_access_window`、`confirmation_expired`、`job_not_found`、
 `job_state_invalid`、`snapshot_not_found`、`snapshot_referenced`、`anchor_invalid`，以及目标程序分块上传的 `artifact_not_found`（422）、
 `upload_not_found`、`upload_incomplete`、`upload_hash_mismatch`、`upload_too_large`。2.3、2.7 里同名的 `upload_not_found`、`artifact_not_found` 不受影响。
@@ -490,7 +490,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `compare_user_storage_full` / `compare_storage_full` | 429 / 507 | 本人、全局临时空间满 | — |
 | `compare_service_unavailable` | 503 | 多进程部署时本进程没拿到对比服务锁 | — |
 
-`feedback_invalid`、`artifacts_changed`、`version_mismatch`、`optimization_not_supported`、`note_required` 随外部反馈与评测优化删除（ADR-0100）。
+`feedback_invalid`、`artifacts_changed`、`version_mismatch`、`optimization_not_supported`、`note_required` 随外部反馈与评测优化删除（ADR-0101）。
 
 门禁链里各项的 `Finding.code`（不作为 HTTP 错误码出现）：
 
@@ -567,7 +567,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 | `F-` | 文件与检索 | 3.5 |
 | `R-` | 资料与资料分析 | 3.6 |
 | `ST-` | Studio 条目 | 3.7 |
-| `K-` | 知识（ADR-0100 起只读） | 3.8 |
+| `K-` | 知识（ADR-0101 起只读） | 3.8 |
 | `V-` | 版本与标签 | 3.9 |
 | `CS-` | 变更集与写入范围 | 3.10 |
 | `S-` | 会话、对话、执行记录、命令 | 3.11 |
@@ -578,7 +578,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 | `PL-` | 插件：目录、按项目启用、装配状态、上传审核 | 3.16 |
 | `AR-` | 插件产物与通用视图 | 3.17 |
 | `SC-`、`SV-` | 脚本、求解契约 | 3.18 |
-| `EV-` | 证据源（ADR-0100 起只剩 `EV-29`） | 3.19 |
+| `EV-` | 证据源（ADR-0101 起只剩 `EV-29`） | 3.19 |
 | `PB-` | 发布 | 3.20 |
 | `PC-` | 知识包版本对比 | 3.20 |
 | `X-` | 三份契约（服务令牌） | 3.21 |
@@ -905,7 +905,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 
 `PATCH /api/v1/projects/{id}` · 所有者 · 旧：`PATCH /api/projects/{id}`（旧接口只能改名） · 审计：是 · 依据：4.9 · 页面：proj-settings、projects（重命名）
 
-- 请求（字段都可选）：`{name?: string, goal?: string}`。`research_mode` 随联网调研包删除（ADR-0100），带了也忽略。
+- 请求（字段都可选）：`{name?: string, goal?: string}`。`research_mode` 随联网调研包删除（ADR-0101），带了也忽略。
 - 改名不影响包名和版本历史。
 - 元数据不进工作区 git（方案 A13），不产生版本。
 - 响应 `200`：`ProjectMeta`。
@@ -1032,7 +1032,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 `GET /api/v1/projects/{id}/mcp-servers`、`PUT /api/v1/projects/{id}/mcp-servers` · 所有者 · 旧：`GET/PUT /api/projects/{id}/mcp` · 审计：PUT 记 · 依据：4.2 指纹 · 页面：proj-settings
 
 - GET 响应：`{items: [{name, transport: "stdio"|"http", target: string（地址或命令）, origin: "builtin"|"global"|"pack", read_only: bool, status: "running"|"stopped"|"error", tools: string[], enabled: bool, enabled_globally: bool}]}`。
-  - `origin=builtin` 的是内核内置的只读服务器：`flow`（`flow.get`）。`evidence` 服务器随证据采集删除（ADR-0100）。
+  - `origin=builtin` 的是内核内置的只读服务器：`flow`（`flow.get`）。`evidence` 服务器随证据采集删除（ADR-0101）。
 - PUT 请求：`{disabled: string[]}`，即本项目停用的服务器名，最多 64 个。
 - 只影响新建的会话。
 - 响应：GET 的形状。
@@ -1149,7 +1149,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 
 ### 3.6 资料与资料分析
 
-资料区对 agent 只读，只能由用户上传、替换、删除，每次都保存版本（详设 4.5、4.8）。`resource/systems/`（旧版本采集的证据快照，ADR-0100 起不再产生）不出现在资料接口里。
+资料区对 agent 只读，只能由用户上传、替换、删除，每次都保存版本（详设 4.5、4.8）。`resource/systems/`（旧版本采集的证据快照，ADR-0101 起不再产生）不出现在资料接口里。
 
 资料的文本版（F4a，ADR-0073）：PDF、Word、Excel 上传后在后台经连接器网关转成 Markdown，放在 `resource/text/<分组>/<原文件名>.md`（第一行记原文件修订与转换器），走写入路径提交（`Onto-Source: plugin`），不在资料列表里出现、不能单独删除或改用途；替换、删除原文件时同一个提交里删掉旧的文本版。状态见 7.4 `MaterialText`，变化经 EP-25 推送；md、txt、csv 本身就是文本。
 
@@ -1157,7 +1157,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 
 `GET /api/v1/projects/{id}/resources` · 所有者 · 旧：`GET /api/projects/{id}/resource-meta` + `GET /files` · 审计：否 · 依据：4.5、ADR 0017 · 页面：resources、wb-materials
 
-- 响应 `200`：`{groups: [{key: "diagrams"|"excel"|"others", label, items: Material[]}], purposes: PurposeOption[]}`。`feedback_group`（外部反馈分组）随反馈演进包删除（ADR-0100）。
+- 响应 `200`：`{groups: [{key: "diagrams"|"excel"|"others", label, items: Material[]}], purposes: PurposeOption[]}`。`feedback_group`（外部反馈分组）随反馈演进包删除（ADR-0101）。
   - `purposes` 是 5 种用途：`goal` 建模目标依据、`schema` 数据 Schema、`term` 术语表、`evidence` 通用业务依据、`auto` 由助手判断，每项带 `{value, label, description}`。
 - 不分页，单项目资料上限 500 份。
 
@@ -1269,11 +1269,11 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 - 响应 `200`：`{question_id, inbox_item_id|null}`。
 - 错误：`not_found`、`write_scope_locked`。
 
-#### R-11 外部反馈列表（已删除，ADR-0100）
+#### R-11 外部反馈列表（已删除，ADR-0101）
 
 `GET /api/v1/projects/{id}/feedback` 随反馈演进包删除；工作区已有的 `feedback/*.json` 不迁移、不删。
 
-#### R-12 标记外部反馈状态（已删除，ADR-0100）
+#### R-12 标记外部反馈状态（已删除，ADR-0101）
 
 `PATCH /api/v1/projects/{id}/feedback/{feedback_id}` 随反馈演进包删除。
 
@@ -1419,7 +1419,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `GET /api/v1/projects/{id}/studio/entries/{entry_id}/evidence` · 所有者 · 旧：— · 审计：否 · 依据：5.6（证据侧栏）、5.8.5 · 页面：studio（证据页签）、studio-table（属性表证据列悬停）
 
 - 响应：`{snapshot_basis: [], items: [{anchor, scheme: "file", title, confidence: null, used_for: string[]（属性名）, resolved: AnchorResolution}]}`。
-- 只列条目正文里上传资料的出处（`file:` 锚点，解析同 `EV-29`）。业务系统证据随证据采集删除（ADR-0100），`snapshot_basis` 恒为空数组。「查看原文」去 resources。
+- 只列条目正文里上传资料的出处（`file:` 锚点，解析同 `EV-29`）。业务系统证据随证据采集删除（ADR-0101），`snapshot_basis` 恒为空数组。「查看原文」去 resources。
 
 #### ST-07 草稿
 
@@ -1475,11 +1475,11 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 ### 3.8 知识
 
-知识条目的存放和加载在 core（详设 5.3、5.5），条目由助手经工具箱 `knowledge_helper` 写入。知识沉淀包和它的页面已删除（ADR-0100），网页只留只读的 `K-01`、`K-02`。
+知识条目的存放和加载在 core（详设 5.3、5.5），条目由助手经工具箱 `knowledge_helper` 写入。知识沉淀包和它的页面已删除（ADR-0101），网页只留只读的 `K-01`、`K-02`。
 
 #### K-01 知识条目列表
 
-`GET /api/v1/projects/{id}/knowledge` · 所有者 · 旧：`GET /api/projects/{id}/knowledge` · 审计：否 · 依据：5.5 · 页面：—（知识沉淀页已删除，ADR-0100）
+`GET /api/v1/projects/{id}/knowledge` · 所有者 · 旧：`GET /api/projects/{id}/knowledge` · 审计：否 · 依据：5.5 · 页面：—（知识沉淀页已删除，ADR-0101）
 
 - 查询参数：
   - `layer?`：`all|project|industry`，默认 all；core 通用守则不展示；
@@ -1498,27 +1498,27 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - `overrides: {pack, entry_title, note}|null`；
   - `used_by: (EntryRef|ArtifactRef)[]`。
 
-#### K-03 新增知识条目（已删除，ADR-0100）
+#### K-03 新增知识条目（已删除，ADR-0101）
 
 `POST /api/v1/projects/{id}/knowledge` 随知识沉淀包删除。
 
-#### K-04 修改知识条目（已删除，ADR-0100）
+#### K-04 修改知识条目（已删除，ADR-0101）
 
 `PUT /api/v1/projects/{id}/knowledge/{knowledge_id}` 随知识沉淀包删除。
 
-#### K-05 删除知识条目（已删除，ADR-0100）
+#### K-05 删除知识条目（已删除，ADR-0101）
 
 `DELETE /api/v1/projects/{id}/knowledge/{knowledge_id}` 随知识沉淀包删除。
 
-#### K-06 知识冲突检查（已删除，ADR-0100）
+#### K-06 知识冲突检查（已删除，ADR-0101）
 
 `GET`、`POST /api/v1/projects/{id}/knowledge/conflicts` 随知识沉淀包删除。
 
-#### K-07 提名预览（已删除，ADR-0100）
+#### K-07 提名预览（已删除，ADR-0101）
 
 `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/nomination-preview` 随知识沉淀包删除。
 
-#### K-08 提交提名（已删除，ADR-0100）
+#### K-08 提交提名（已删除，ADR-0101）
 
 `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/nominations` 随知识沉淀包删除，管理员审核 `AD-08`～`AD-10` 一并删除。
 
@@ -1956,7 +1956,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - `flow_hash`；
   - `nodes`：`FlowNode[]`，建模节点带 `slices`；
   - `edges`；
-  - `sections`：节点分组「必经步骤 / 发布前检查 / 可选步骤 / 有需要时」（建模步骤抽屉已删除，前端不再用，ADR-0100）；
+  - `sections`：节点分组「必经步骤 / 发布前检查 / 可选步骤 / 有需要时」（建模步骤抽屉已删除，前端不再用，ADR-0101）；
   - `slices`：分段 × 步骤；
   - `suggestions`；
   - `notices`：如「1 份新资料」；
@@ -2007,7 +2007,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### FL-03 跳过节点
 
-`POST /api/v1/projects/{id}/flow/nodes/{node_id}/skip` · 所有者 · 旧：— · 审计：是 · 依据：6.9、features「跳过 / 补做 / 恢复」 · 页面：—（建模步骤抽屉已删除，前端不再调用，ADR-0100）
+`POST /api/v1/projects/{id}/flow/nodes/{node_id}/skip` · 所有者 · 旧：— · 审计：是 · 依据：6.9、features「跳过 / 补做 / 恢复」 · 页面：—（建模步骤抽屉已删除，前端不再调用，ADR-0101）
 
 - 请求：`{slice_id?: string, reason?: string}`。
 - 主线和必经节点不能跳过。
@@ -2092,7 +2092,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `changeset_conflict` | 合入冲突 | 这一轮合入时和你的修改改到同一条（F3 起唯一会出现的变更集事项；没有「修改待确认」） | `resolve`、`discard`（撤回这一轮） |
 | `check_findings` | 检查未过 | 助手这一轮没提交完、平台代存了版本，合入检查有错误（F8；最近一个合入的变更集才出，`impact` 列错误，最多 20 条） | `send_to_assistant`（发 `/ontology-validate` 修正，发出后算处理过） |
 | `format_migration` | 格式待迁移 | 插件升级改了产物格式（5.9.4） | `migrate` |
-| `notification` | 通知 | 暂无来源（提名审核随 `K-08` 删除，ADR-0100） | `dismiss` |
+| `notification` | 通知 | 暂无来源（提名审核随 `K-08` 删除，ADR-0101） | `dismiss` |
 
 所有事项都可以 `dismiss`，忽略后不计数。设计稿的筛选分段对应：
 
@@ -2105,7 +2105,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | 过期 | `stale` |
 | 续跑 | `resumable` |
 
-外部反馈（kind 与筛选 `feedback`）和它的 `send_to_evolution` 动作随反馈演进包删除；证据冲突（kind 与筛选 `evidence_conflict`）和它的 `arbitrate` 动作随证据采集删除（ADR-0100）。
+外部反馈（kind 与筛选 `feedback`）和它的 `send_to_evolution` 动作随反馈演进包删除；证据冲突（kind 与筛选 `evidence_conflict`）和它的 `arbitrate` 动作随证据采集删除（ADR-0101）。
 
 #### IN-01 待处理列表
 
@@ -2312,8 +2312,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 依据详设 4.6、5.2、5.3、5.6、5.9、8.1、方案 D1～D7、D17。
 
 - 包有 6 类：能力包、行业包、系统知识包、多源连接器（`category=provider`，旧称证据源提供方）、节点包、导出器。
-- 多源连接器里只列文档转换器（`PackCard.converter` 不为空，ADR-0073）；网关里的采集类连接器随证据采集删除（ADR-0100）。
-- 镜像里已移除的官方包启动时下架（ADR-0100）：
+- 多源连接器里只列文档转换器（`PackCard.converter` 不为空，ADR-0073）；网关里的采集类连接器随证据采集删除（ADR-0101）。
+- 镜像里已移除的官方包启动时下架（ADR-0101）：
   - 条件：全部版本都由镜像入库、没有 owner、不是 core，这次的 `assets/packs` 里没有它；`assets/packs` 整个不存在时不下架；
   - 只在通道记录上记 `retired`，版本目录不删；目录、详情、缺省启用、跟随通道、插件运维（`O-25`）都不列，启用、试装配回 `pack_not_found`；
   - 项目锁文件里的这一项在启动核对时去掉（一次系统提交），项目照常装配；
@@ -2387,7 +2387,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   | `impact` | object | `{needs_review_after_upgrade: int, affected_artifacts: int, note}`：节点完成判定变化等 |
   | `blocked_reason` | string \| null | 如「需要先升级基础建模能力」 |
 
-#### PL-04 申请平台安装（已删除，ADR-0100）
+#### PL-04 申请平台安装（已删除，ADR-0101）
 
 `POST /api/v1/packs/{name}/install-requests` 原来只占位回 `501`，随证据采集删除。
 
@@ -2457,7 +2457,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 响应：`Extensions`，包括：
   - 左栏 `nav`：内核 4 项，加上插件页面，按声明顺序排，超过 5 个进「更多」；
-  - `subpages`：机制保留；内核内置的子页现在没有（资料页的数据源、采集与快照、证据浏览器随 ADR-0100 删除），包声明子页时静态检查不通过；
+  - `subpages`：机制保留；内核内置的子页现在没有（资料页的数据源、采集与快照、证据浏览器随 ADR-0101 删除），包声明子页时静态检查不通过；
   - `pages`：页面声明，含 `data`、`actions`、`badge`；
   - `entries`：界面入口，如快捷项、附加操作；
   - `artifact_types`、`views`、`gates`、`config`；
@@ -2525,7 +2525,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 响应：`PackUpload`（`state="rejected"`）。
 - 「暂不发布」不调接口，上传保持 `passed`。
 
-#### PL-19 平台安装提供方（已删除，ADR-0100）
+#### PL-19 平台安装提供方（已删除，ADR-0101）
 
 `POST /api/v1/admin/packs/{name}/install` 原来只占位回 `501`，随证据采集删除。
 
@@ -2759,7 +2759,7 @@ ADR-0098：端到端验证在发布后的独立评测里做，onto 不再收回�
 
 ### 3.19 证据源
 
-证据采集随系统逆向建模包删除（ADR-0100），本组只保留 `EV-29`。下面这些接口已删除，路径回 `404 not_found`：
+证据采集随系统逆向建模包删除（ADR-0101），本组只保留 `EV-29`。下面这些接口已删除，路径回 `404 not_found`：
 
 - `EV-01`～`EV-10`：数据源列表、登记、登记申请、修改、删除、凭据写入与删除、测试连接、访问审计、提供方列表
   （`/api/v1/evidence/sources*`、`/api/v1/admin/evidence/sources*`、`/api/v1/evidence/providers`）；
@@ -2829,7 +2829,7 @@ ADR-0098：端到端验证在发布后的独立评测里做，onto 不再收回�
 
 - 请求：`{kind: "table"|"anchor"|"none", value?: string, base_revision}`。
   - `table`：首行只写现有数据表名，逐字相同，大小写规范成原名；
-  - `anchor`：数据库锚点，如 `db:pos-prod/pos.store_grade`。证据快照已删除（ADR-0100），现在一律回 `anchor_not_found`；
+  - `anchor`：数据库锚点，如 `db:pos-prod/pos.store_grade`。证据快照已删除（ADR-0101），现在一律回 `anchor_not_found`；
   - `none`：确实不落库的对象。
 - 响应：`{entry: EntryRef, revision, commit, version_label, binding: BindingIssue|null}`。
 - 错误：`not_found`、`invalid_argument`（表名不在 Schema 资料里）、`anchor_not_found`、`revision_conflict`、`write_scope_locked`。
@@ -2847,7 +2847,7 @@ ADR-0098：端到端验证在发布后的独立评测里做，onto 不再收回�
 - 响应 `201`：`ReleaseRecord`，另带 `hub: {ontology_id, release_id, package_digest, committed_at}`；Hub 已提交而本地标签没写成时
   为 `{project_id, version, local_record_pending: true, hub}`，后台恢复。
   另带 `hub_members`（同 HB-11 的 `hub_sync`）：项目第一次发布时初始化共享授权的结果，`status=failed` 时页面提示去「知识包共享」重试，发布照常成功。
-  发布后不再回写评测优化的结果，`evaluation_writeback` 随评测优化删除（ADR-0100）。
+  发布后不再回写评测优化的结果，`evaluation_writeback` 随评测优化删除（ADR-0101）。
 - 错误：
   - `gate_blocked`（`details.gates` 列出不通过的项；consumer 导入规则不通过时 `details.reason=package_structure_invalid`）；
   - `modeling_stages_incomplete`（409）；
@@ -3026,7 +3026,7 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 #### X-05 提交外部反馈（已退役，ADR-0092）
 
 原 `POST /api/v1/projects/{id}/feedback`（服务令牌 `feedback.write`）没有调用方，已删除，`feedback.write` 不再签发。外部反馈批次后来由 `ES-07` 评测优化写入，
-ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、待处理 `feedback`；工作区已有的 `feedback/*.json` 不迁移、不删。
+ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、待处理 `feedback`；工作区已有的 `feedback/*.json` 不迁移、不删。
 
 #### X-06 服务令牌管理
 
@@ -3042,7 +3042,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 ### 3.21a 独立评测（ADR-0092）
 
 评测在独立的评测服务里跑。onto 只做三件事：给浏览器入口（`ES-01`）、收完成通知（`ES-00`）、以当前用户自己的登录读回结果（`ES-02`～`ES-06`）。
-评测优化（`ES-07`、`ES-08`、`ES-12`）随反馈演进包删除（ADR-0100）。评测记录按发起人私有：同一个 Hub 包由多人评测时，各人只看见自己的轮次。
+评测优化（`ES-07`、`ES-08`、`ES-12`）随反馈演进包删除（ADR-0101）。评测记录按发起人私有：同一个 Hub 包由多人评测时，各人只看见自己的轮次。
 本地模式（没有统一账号）不能用评测：`ES-02`～`ES-06` 与 develop 一样返回 401（码 `login_required`），页面按「评测状态读取失败」显示为评测服务未配置。
 
 #### ES-00 完成通知（评测服务调用）
@@ -3069,7 +3069,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 - 查询参数：`reconcile?: 0|1`，1 时向评测服务对账（评测服务连不上时 `reachable=false`，返回上次同步的状态）。
 - 响应：`{configured, reachable: bool|null, message, ontology_id, current_release_id, current_version, active, releases, feedback, solver_releases,
   solver_revisions}`。`releases`、`feedback`、`solver_releases` 按 `release_id` 给每个版本最近一次已生成报告的评测、用户反馈、求解验证轮次。
-  `writeback`、`evolution` 随评测优化删除（ADR-0100）。
+  `writeback`、`evolution` 随评测优化删除（ADR-0101）。
 
 #### ES-03 评测报告
 
@@ -3097,11 +3097,11 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 - 响应：评测服务的 `artifacts`（修订号加一、生成中）；本地索引同时标为生成中，结果随通知写入。
 
-#### ES-07 评测优化（已删除，ADR-0100）
+#### ES-07 评测优化（已删除，ADR-0101）
 
 `POST /api/v1/projects/{id}/evaluations/{run_id}/optimization` 随反馈演进包删除，发布后也不再回写评测服务。
 
-#### ES-08 标记处理失败（已删除，ADR-0100）
+#### ES-08 标记处理失败（已删除，ADR-0101）
 
 `POST /api/v1/projects/{id}/evaluations/{run_id}/modeling-result` 随评测优化删除。
 
@@ -3111,7 +3111,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 - 评测移出 onto 之前最近一轮的「评测执行详情」（develop 的 `GET /eval/status` 里的 `state`），只读；状态读 `.ontology-state/eval.json`，启动迁移不再删它。
 - 响应：`{state}`。`state` 没有旧记录时是 `{}`；仍是 `running` 的显示为 `interrupted`（旧运行器已删，不改盘上记录），`resumable` 恒为 false。
-  `evolution`、`evolution_enabled` 随反馈演进包删除（ADR-0100）。
+  `evolution`、`evolution_enabled` 随反馈演进包删除（ADR-0101）。
 
 #### ES-10 旧版评测报告
 
@@ -3125,7 +3125,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 - 读同名 `.answers.json` 附件（develop 报告预览的首选来源）。响应：同 `ES-05`。错误：`answer_not_found`（「完整回答证据不可用」或「完整回答证据不存在或不属于当前评测轮次」）、`not_found`。
 
-#### ES-12 旧版报告的评测优化（已删除，ADR-0100）
+#### ES-12 旧版报告的评测优化（已删除，ADR-0101）
 
 `POST /api/v1/projects/{id}/legacy-evaluations/{id}/optimization` 随反馈演进包删除。
 
@@ -3145,7 +3145,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 `GET /api/v1/projects/{id}/autobuild/policy` · 所有者 · 旧：— · 审计：否 · 依据：8.5 策略表 · 页面：proj-settings（构建方式内嵌策略）、l4-run（开始时的策略说明）
 
 - 响应：`AutobuildPolicy`，加：
-  - `platform_limits: {}`（`allow_production_collection` 随证据采集删除，ADR-0100）；
+  - `platform_limits: {}`（`allow_production_collection` 随证据采集删除，ADR-0101）；
   - `not_enforced: []`；
   - `quota_remaining: {tokens, cost: Money}`；
   - `last_run: {run_id, run_no, ended_at, duration_ms, reviewed: bool}|null`；
@@ -3155,7 +3155,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 `PUT /api/v1/projects/{id}/autobuild/policy` · 所有者 · 旧：— · 审计：是 · 依据：8.5、4.10.1（预算只能设在配额之内） · 页面：proj-settings（「保存」「保存并开始自主构建」）
 
-- 请求：`AutobuildPolicy` 去掉只读字段，加 `base_revision`。带 `production_collection` 时忽略（ADR-0100）。
+- 请求：`AutobuildPolicy` 去掉只读字段，加 `base_revision`。带 `production_collection` 时忽略（ADR-0101）。
 - 硬性不做的几项（发布、删除已确认内容、改资料区）不在策略里，打不开。
 - 响应：同 `AB-01`。
 - 错误：`budget_exceeds_quota`、`revision_conflict`、`invalid_argument`。
@@ -3399,7 +3399,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | `artifact_get` | `ontology.read` | `AR-03` |
 
 - 工具名用下划线，因为 MCP 客户端普遍不接受点号；文档和界面上写作 `flow.get`。
-- evidence 工具（`evidence_search` 等 5 个）和 scope `evidence.read` 随证据采集删除（ADR-0100）。
+- evidence 工具（`evidence_search` 等 5 个）和 scope `evidence.read` 随证据采集删除（ADR-0101）。
 - 包贡献的只读工具按 `<包>_<名>` 命名，只读，写操作一律走写入路径。
 
 **版本回退工具（ADR-0094，scope 都是 `project.version.revert`）：**
@@ -3531,7 +3531,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 `GET /api/v1/admin/quotas`、`PUT /api/v1/admin/quotas` · admin · 旧：— · 审计：PUT 记 · 依据：4.10.1、方案 E9 · 页面：sys（配额与 L4 限制）
 
 - 对象：`{per_user: {concurrent_sessions: int, daily_tokens: int}, per_project: {online_engines: 1（只读）, monthly_tokens: int}, overrides: QuotaOverride[], not_enforced: []}`。
-- PUT 只改 `per_user`、`per_project`，立即生效。`collections_per_source_per_hour`、`snapshot_git_mb` 随证据采集删除（ADR-0100），PUT 带了回 `400 invalid_argument`（`fields` 记 `unknown`）。
+- PUT 只改 `per_user`、`per_project`，立即生效。`collections_per_source_per_hour`、`snapshot_git_mb` 随证据采集删除（ADR-0101），PUT 带了回 `400 invalid_argument`（`fields` 记 `unknown`）。
 - token 按成本口径计：输入 + 缓存写 + 输出 + 缓存读 // 10（ADR-0088）。默认每人每天 10,000,000、每项目每月 100,000,000。
 
 #### SY-16 配额单独设置
@@ -3611,15 +3611,15 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 - 响应：`ProjectMetaView`。
 - 错误：`invalid_owner`、`project_not_found`。
 
-#### AD-08 待管理员处理的申请（已删除，ADR-0100）
+#### AD-08 待管理员处理的申请（已删除，ADR-0101）
 
 `GET /api/v1/admin/requests` 随数据源登记申请和知识提名删除。
 
-#### AD-09 通过申请（已删除，ADR-0100）
+#### AD-09 通过申请（已删除，ADR-0101）
 
 `POST /api/v1/admin/requests/{request_id}/approve` 一并删除。
 
-#### AD-10 退回申请（已删除，ADR-0100）
+#### AD-10 退回申请（已删除，ADR-0101）
 
 `POST /api/v1/admin/requests/{request_id}/reject` 一并删除。
 
@@ -3842,7 +3842,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 `GET /api/v1/ops/packs` · ops、admin · 旧：— · 审计：否 · 依据：4.10.3、㉙ · 页面：ops-ctl（插件运维）
 
-- 普通用户的私有包也列出来，能禁用（ADR-0079）。镜像里已移除、已下架的官方包不列、不能操作（ADR-0100，见 3.16）。
+- 普通用户的私有包也列出来，能禁用（ADR-0079）。镜像里已移除、已下架的官方包不列、不能操作（ADR-0101，见 3.16）。
 - 响应：`{items: [{name, kind, version, channel: "stable"|"beta"|"retired", rollout_pct, rollout_by, error_rate_pct, breaker: "closed"|"half_open"|"open", projects_using: int}]}`。
 
 #### O-26 调整灰度
@@ -3948,14 +3948,14 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 `GET /api/v1/ops/tasks` · ops、admin · 旧：— · 审计：否 · 依据：4.10.3（导出、备份、清扫） · 页面：ops-ctl（任务）
 
-- 查询参数：`type?`（`export|backup|sweep|pack_install|drill|pack_repo_backup`）、`state?`；分页。取值不对回 `400 invalid_argument`；`collection` 随证据采集删除（ADR-0100）。
+- 查询参数：`type?`（`export|backup|sweep|pack_install|drill|pack_repo_backup`）、`state?`；分页。取值不对回 `400 invalid_argument`；`collection` 随证据采集删除（ADR-0101）。
 - 响应：`{items: [{id, type, target: string, project: ProjectMetaView|null, initiator: string（用户名或 system）, state: "queued"|"running"|"succeeded"|"partial"|"failed"|"cancelled", progress_pct, started_at, finished_at, error: string|null}], next_cursor}`。
 
 #### O-41 任务操作
 
 `POST /api/v1/ops/tasks/{task_id}/cancel`、`.../retry` · ops · 旧：— · 审计：是 · 依据：4.10.3 · 页面：ops-ctl
 
-- `resume`（原来只给证据采集任务）随证据采集删除（ADR-0100），回 `404 not_found`。
+- `resume`（原来只给证据采集任务）随证据采集删除（ADR-0101），回 `404 not_found`。
 - 响应：任务对象。
 - 错误：`task_not_found`、`task_state_invalid`。
 
@@ -4006,7 +4006,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 `GET /api/v1/ops/audit` · ops、admin · 旧：`GET /api/admin/audit`（旧接口固定 200 条） · 审计：否 · 依据：4.10.1、方案 E4 · 页面：ops-users（审计日志）
 
 - 查询参数：`type?`（`write|mcp|commit|plugin|ops|auth|publish|changeset|autobuild|user|contract`，多值；未知类型回 `400 invalid_argument`）、`q?`（操作者、项目、内容）、`from?`、`to?`；分页（默认 100）。
-- 响应：`{items: AuditEntry[], next_cursor}`。类型 `evidence` 随证据采集删除（ADR-0100）：老记录照原样显示，不能再按它筛选。
+- 响应：`{items: AuditEntry[], next_cursor}`。类型 `evidence` 随证据采集删除（ADR-0101）：老记录照原样显示，不能再按它筛选。
 
 #### O-49 导出审计
 
@@ -4151,7 +4151,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | EP-10 | `command.progress` | `CommandTask`（中间百分比瞬时，状态变化持久） | 插件页、报告页、资料页的进度条和「去对话里看」；完成后列表刷新 | 5.9.3 |
 | EP-11 | `materials.updated` | `{items: MaterialMapItem[]（只含变化的）, read_pct, problems_count}` | 资料地图卡与弹窗 | 第 9 章建议 5 |
 | EP-12 | `materials.candidate` | `{candidate: {id, kind, name, anchor, anchor_label}, total}` | 资料地图弹窗「候选实时流」 | 第 9 章 |
-| EP-13 | `evidence.job.updated` | — | 已删除（ADR-0100，随证据采集） | — |
+| EP-13 | `evidence.job.updated` | — | 已删除（ADR-0101，随证据采集） | — |
 | EP-14 | `autobuild.run.updated` | `AutobuildRunSummary` | l4-run 运行条（进度、用时、token、费用、自动决定数、挂起数） | 8.5 |
 | EP-15 | `autobuild.safe_point` | `{run_id, slice_id, slice_name, version_label, next: "continue"\|"paused"\|"stopped"\|"converted"}` | l4-run | 8.5 |
 | EP-16 | `autobuild.budget_warning` | `{run_id, dimension: "duration"\|"tokens"\|"cost", used_pct: number}` | l4-run，到 80% 提醒 | 8.5 |
@@ -4161,7 +4161,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | EP-20 | `project.updated` | `{fields: string[], meta: ProjectMeta}` | 外壳面包屑、构建方式胶囊、引擎、归档状态 | — |
 | EP-21 | `conversation.updated` | `{conversation: Conversation, deleted: bool}` | 会话切换菜单 | ADR 0013 |
 | EP-22 | `report.updated` | `{report_id, type, items_changed: bool}` | reports 条目状态（修复中 → 已修复） | 5.9.4 |
-| EP-23 | `knowledge.updated` | — | 已删除（ADR-0100，随知识沉淀包） | — |
+| EP-23 | `knowledge.updated` | — | 已删除（ADR-0101，随知识沉淀包） | — |
 | EP-24 | `maintenance.updated` | `MaintenanceState` | 全局横幅 | 4.10.3 |
 | EP-25 | `materials.text.updated` | `{path, text: MaterialText}` | resources（列表行状态、预览） | ADR-0073 |
 
@@ -4190,7 +4190,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | `publish_done` | 发布完成 |
 | `upload_rejected` | 插件包被退回 |
 
-`evidence_conflict`、`nomination_reviewed`、`request_reviewed`、`request_pending` 随证据采集、知识提名、管理员申请删除（ADR-0100）。
+`evidence_conflict`、`nomination_reviewed`、`request_reviewed`、`request_pending` 随证据采集、知识提名、管理员申请删除（ADR-0101）。
 
 ### 4.5 日志跟随流
 
@@ -4210,7 +4210,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | `branch` | 模拟分支选择卡（chat-states 第 7 项） | `scenario: ArtifactRef`、`context_text` | `S-11`，可带 `custom_text` |
 | `expert` | 请专家确认卡（chat-states 第 7 项、reports 专家裁决） | `options` 渲染为按钮，含 `dismiss` 型选项「不需要问这个」 | `S-11` |
 | `walkthrough` | 交互模拟卡（chat-states 第 20 项） | `scenario: ArtifactRef`、`inputs: [{name, value, type, source: "input"\|"example"}]`、`steps: [{n, label, text, ref: EntryRef\|null, source}]`、判断点 `prompt` | `S-11`；选择记进场景，下次批量验证按这条分支推演 |
-| `collection` | 采集确认（已删除，ADR-0100） | — | — |
+| `collection` | 采集确认（已删除，ADR-0101） | — | — |
 | `confirm` | 一般的是 / 否确认 | 两个选项 | `S-11` |
 
 `Question` 的共有字段：
@@ -4263,7 +4263,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | `change_list` | 变更点清单卡 | `{change_list_id, source: {path, label}, count, low_confidence: int, rows: ChangePoint[≤10], state: "editing"\|"confirmed"\|"executed"}`；`open={dialog, "change_list"}` | incremental、chat-states |
 | `impact` | 影响面卡 | `Impact` 加 `{change_list_id, executed: bool}` | incremental |
 | `regression` | 回归结果卡 | `{passed, total, rows: [{scenario: ArtifactRef, type: "affected"\|"guard", result: "pass"\|"fail", reason: string\|null}]}` | incremental |
-| `external_feedback` | 外部反馈卡（已删除，ADR-0100） | — | — |
+| `external_feedback` | 外部反馈卡（已删除，ADR-0101） | — | — |
 | `pack_recommendation` | 助手推荐插件 | `{pack: PackRef, category_label, description, reason}` | chat-states 第 16 项 |
 | `resume` | 中断续跑卡 | `{exec_id, title: "上次没做完：操作提取在步骤 3 / 4 中断", reason, position: {step, total, label}, saved: {files, version_label}, resumable: bool, not_resumable_reason: string\|null}` | chat-states 第 5 项；按钮：`S-16`、`S-17` |
 | `autobuild_start` | 自主构建开始时的策略说明 | `{run_id, run_no, chips: [{label, value}]}`（范围、预算、生产库、拿不准时） | l4-run |
@@ -4271,7 +4271,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | `auto_decision` | 自动决定卡 | `{run_id, ledger_id, at, question, chosen, anchors, confidence: number, threshold: number, assumption: bool, review_state: "pending"\|"accepted"\|"rejudged", recorded: true}` | l4-run；「改判」去 inbox |
 | `suspension` | 挂起卡 | `{run_id, suspension_id, title, reason, inbox_item_id}` | l4-run；「现在回答」去 inbox |
 | `run_report` | 运行报告卡 | `AutobuildReport` 摘要：`{run_id, run_no, state, started_at, ended_at, recovered_restarts: int, metrics: [...], slices: [...]}` | l4-run、chat-states 产物卡；按钮「去复核」「转为陪伴继续」 |
-| `knowledge_saved` | 沉淀入库结果（已删除，ADR-0100） | — | — |
+| `knowledge_saved` | 沉淀入库结果（已删除，ADR-0101） | — | — |
 
 ### 4.8 `chat-states` 页全部条目 → 事件与接口
 
@@ -4289,7 +4289,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | 9 排队中 | EC-01（`queued`）、EC-02 | `S-12` |
 | 10 上下文占用与自动压缩、项目累计用量 | EC-51、EC-52 | `S-05`、`P-16` |
 | 11 重启会话 | EC-01（`closed`） | `S-09` |
-| 12 沉淀为业务知识（已删除，ADR-0100） | — | — |
+| 12 沉淀为业务知识（已删除，ADR-0101） | — | — |
 | 13 复制 | — | 前端本地完成 |
 | 14 能力包升级提示（下一条消息生效） | EC-06、EC-07、EP-08 | `PL-11`；「查看更新内容」去 `PL-02` |
 | 15 出错时（友好提示 + 错误编号） | EC-04 | `S-14`（重试）；管理员看 `O-51` |
@@ -4313,7 +4313,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | 写入范围只读（助手运行中 / 有冲突） | EP-03 | `CS-06` |
 | 这一轮改了什么卡（查看改动、撤回这一轮） | EC-40/41 `round_changes`、EP-04 | `CS-03`、`CS-05` |
 | 建议条三态（先做上面的决定 / 确认生效 / 提取这一段的规则） | EC-53 | `FL-02` |
-| 建模步骤抽屉（已删除，ADR-0100；进度条只展示，不能点开） | — | — |
+| 建模步骤抽屉（已删除，ADR-0101；进度条只展示，不能点开） | — | — |
 | 输入框（拖入文件、粘贴截图、@ 引用条目、命令、发送；模式胶囊） | EC-10 | `U-01`、`S-07`、`S-18`、`F-07`（@ 搜条目）、`P-13` |
 
 ---
@@ -4354,13 +4354,13 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | `studio-table` | 表格与条目编辑 | `ST-03`、`ST-04`、`ST-07`、`ST-08`、`ST-09`、`ST-10`、`F-02`、`F-03`（编辑原文）、`F-04`（大文件下载）、`V-04`（刷新后对比）、`AR-02`、`AR-03`、`AR-07`、`AR-08`（流程图条目）、`R-01`、`R-15`（证据列选出处）、`EV-29`、`CS-06`、`C-05`、`PL-12` | EP-03、EP-05、EP-06 |
 | `reports` | 报告评审 | `RP-01`～`RP-06`、`S-11`（专家裁决）、`R-09`（资料分析报告核验） | EP-22、EP-10 |
 | `resources` | 资料区 | `R-01`～`R-06`、`F-04`、`F-05`、`F-03`（drawio 保存）、`F-02`（drawio、文本）、`PL-12`（子页） | EP-05、EP-07 |
-| `sources` | 业务系统数据源（已删除，ADR-0100） | — | — |
-| `snapshots` | 采集与快照（已删除，ADR-0100） | — | — |
-| `schema` | 证据浏览器（已删除，ADR-0100） | — | — |
+| `sources` | 业务系统数据源（已删除，ADR-0101） | — | — |
+| `snapshots` | 采集与快照（已删除，ADR-0101） | — | — |
+| `schema` | 证据浏览器（已删除，ADR-0101） | — | — |
 | `publish` | 发布知识包 | `PB-01`～`PB-07`、`HB-05`～`HB-09`、`P-09`、`FL-05`（合规检查「去运行」）、`RP-06`（修完重新检查）、`V-01`（版本下拉） | EP-19、EP-01 |
 | `versions` | 版本历史与对比 | `V-01`～`V-08`、`F-06`、`F-03` | EP-05 |
 | `scenarios` | 场景模拟（插件） | `AR-01`、`AR-02`、`AR-03`、`AR-04`、`AR-05`、`AR-06`、`AR-07`、`AR-09`（类型 `trace.scenario`、`trace.mock`）、`S-20`（批量验证、交互模拟、补齐过期场景、按场景补生成、行内 ▶）、`S-19`、`CS-06`、`IN-01`（`pack=trace` 角标）、`PL-12` | EP-03、EP-06、EP-10 |
-| `knowledge` | 知识沉淀（插件，已删除，ADR-0100） | — | — |
+| `knowledge` | 知识沉淀（插件，已删除，ADR-0101） | — | — |
 | `scripts` | 代码生成与求解（插件） | `SC-01`、`SC-02`、`SC-03`、`SV-01`～`SV-03`、`ST-04`（脚本只读预览）、`S-20`（扫描、生成脚本、修复、重新生成、按模板重新生成）、`S-19`、`CS-06` | EP-03、EP-06、EP-10 |
 | `proj-settings` | 项目设置 | `P-04`、`P-05`、`P-06`、`P-07`、`P-12`、`P-13`、`P-14`、`C-06`、`A-09`、`AB-01`、`AB-02`、`AB-03`、`AB-18`、`BP-01`（范围里的分段清单）、`PL-05`～`PL-11`、`M-01`～`M-04` | EP-08、EP-20 |
 | `plugins` | 插件中心 | `PL-01`、`PL-03`、`PL-06`、`PL-07` | EU-01 |
@@ -4443,7 +4443,7 @@ ADR-0100 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | `POST /api/projects/{id}/studio/submit` | `ST-08` | 改写 |
 | `GET /api/projects/{id}/report-items?path=` | `RP-02`、`RP-03` | 改写 |
 | `GET /api/projects/{id}/query` | `F-08` | 改写 |
-| `GET/POST/DELETE /api/projects/{id}/knowledge` | `K-01`（`K-03`、`K-05` 已删除，ADR-0100） | GET 改写；POST、DELETE 删除，回 `410 endpoint_removed`，`successor` 为 null |
+| `GET/POST/DELETE /api/projects/{id}/knowledge` | `K-01`（`K-03`、`K-05` 已删除，ADR-0101） | GET 改写；POST、DELETE 删除，回 `410 endpoint_removed`，`successor` 为 null |
 | `GET /api/projects/{id}/versions` | `V-01` | 改写 |
 | `POST /api/projects/{id}/versions/revert` | `V-06` | 改写 |
 | `POST /api/projects/{id}/versions/tag` | `V-07` | 改写 |
@@ -4609,7 +4609,7 @@ type AnchorResolution = {
   text: string;                   // 原文
   highlights: { start: number; end: number }[];
   confidence: "declared" | "observed" | "inferred" | null;   // 界面叫法：系统元数据 / 数据观察 / 推断
-  snapshot_id: string | null;     // 恒为 null（证据快照已删除，ADR-0100）
+  snapshot_id: string | null;     // 恒为 null（证据快照已删除，ADR-0101）
   page: "resources" | null;      // 「查看原文」去哪：file 锚点为 resources
 };
 ```
@@ -4763,7 +4763,7 @@ type MaterialMap = {
   can_generate_blueprint: boolean;
 };
 
-// Feedback（外部反馈批次）随反馈演进包删除（ADR-0100）
+// Feedback（外部反馈批次）随反馈演进包删除（ADR-0101）
 ```
 
 ### 7.5 Studio 与知识
@@ -4797,7 +4797,7 @@ type Entry = {
   };
   backlinks: { source: EntryRef | ArtifactRef; relation: string; locked: boolean }[];
   data_source: { kind: "table" | "anchor" | "none" | "unset"; value: string | null; label: string };
-  counts: { refs_out: number; refs_in: number; fields: number };   // evidence_snapshots、counts.evidence 随证据采集删除（ADR-0100）
+  counts: { refs_out: number; refs_in: number; fields: number };   // evidence_snapshots、counts.evidence 随证据采集删除（ADR-0101）
   revision: string; head: string;
   lock: ScopeLock | null;
   draft: Draft | null;
@@ -4828,7 +4828,7 @@ type KnowledgeEntry = {
   revision: string; updated_at: time;
 };
 
-// ConflictFinding 随 K-03 删除（ADR-0100）
+// ConflictFinding 随 K-03 删除（ADR-0101）
 ```
 
 ### 7.6 版本、变更集、写入范围
@@ -4959,7 +4959,7 @@ type NodeState = "not_ready" | "ready" | "running" | "pending_confirm" | "confir
 
 type FlowNode = {
   id: string; title: string;      // core.validate 的 title 恒为「校验」（11-05 起场景模拟包不再改它的显示名）
-  kind: "agent" | "script" | "human";   // external 随证据采集删除（ADR-0100）
+  kind: "agent" | "script" | "human";   // external 随证据采集删除（ADR-0101）
   placement: "spine" | "step" | "branch" | "gate" | "on_demand";
   section: "required" | "pre_publish" | "optional" | "on_demand";
   state: NodeState;
@@ -5037,7 +5037,7 @@ type Blueprint = {
                options: { id: string; label: string }[];
                answer: { option_id?: string; custom_text?: string } | null }[];
   research: { verified: boolean; report_id: string | null };
-  evidence_hint: null;            // 恒为 null（证据采集已删除，ADR-0100）
+  evidence_hint: null;            // 恒为 null（证据采集已删除，ADR-0101）
   revision: string; updated_at: time;
 };
 ```
@@ -5063,7 +5063,7 @@ type InboxItem = {
   batchable: boolean;             // 低把握、低置信条目为 false
 };
 
-// ConflictDetail 随 evidence_conflict 删除（ADR-0100）
+// ConflictDetail 随 evidence_conflict 删除（ADR-0101）
 
 type StaleDetail = {
   upstream_diff: { title: string; lines: DiffLine[] };
@@ -5307,7 +5307,7 @@ type Receipt = {
 
 ### 7.13 证据源
 
-证据采集已删除（ADR-0100），本节的 `EvidenceSourceRef`、`EvidenceSource`、`CollectionJob`、`SnapshotSummary`、`SnapshotRef`、`EvidenceRecord` 一并删除。
+证据采集已删除（ADR-0101），本节的 `EvidenceSourceRef`、`EvidenceSource`、`CollectionJob`、`SnapshotSummary`、`SnapshotRef`、`EvidenceRecord` 一并删除。
 锚点解析结果 `AnchorResolution` 见 7.1，属性表证据列 `EvidenceCell` 见 7.5。
 
 ### 7.14 发布
@@ -5495,7 +5495,7 @@ type AuditEntry = {
   actor: string;                  // 用户名、"agent"、"mcp:<token 名>"、"system"
   actor_kind: "user" | "agent" | "mcp" | "service" | "system";
   type: "write" | "mcp" | "commit" | "plugin" | "ops" | "auth" | "publish" | "changeset"
-      | "autobuild" | "user" | "contract";   // 老记录里可能还有 "evidence"（ADR-0100 前）
+      | "autobuild" | "user" | "contract";   // 老记录里可能还有 "evidence"（ADR-0101 前）
   action: string;                 // 如 changeset.merge、pack.enable
   method: string | null; path: string | null; status: number | null;
   project_id: string | null;
@@ -5508,7 +5508,7 @@ type ErrorRecord = {
   id: string;                     // "err-7f3a"
   at: time;
   project: ProjectMetaView | null;
-  origin: "session" | "publish" | "assembly" | "gate" | "kernel";   // collection 随证据采集删除（ADR-0100）
+  origin: "session" | "publish" | "assembly" | "gate" | "kernel";   // collection 随证据采集删除（ADR-0101）
   pack: string | null; node: string | null;
   raw_message: string;            // 已脱敏：去掉密钥、连接串、内容摘录
   friendly_message: string;       // 用户看到的那句
@@ -5586,7 +5586,7 @@ type ErrorRecord = {
 30. **Studio 提交的三路结果都返回 200 加 `result`，`rejected` 不算 422。** 编辑器把三种结果都当正常流程显示，与现有接口一致。
 31. **草稿 PUT 接受 `form`（结构化）或 `content`（原文），由服务端按元模型渲染 Markdown。** 前端重写；序列化放在后端，才能和校验器用同一份元模型（详设 4.4）。
 32. **流程图是图示包登记的插件产物 `diagram.flowchart`，Studio 经通用产物接口读写。** 理由见 9.1#2。
-33. **知识条目用专用的 `K-*` 接口，不走通用产物接口。** 分层、覆盖、提名是 core 的知识逻辑，通用视图表达不了；列表读法和 `core.knowledge` 产物等价。（ADR-0100 起只剩只读的 `K-01`、`K-02`。）
+33. **知识条目用专用的 `K-*` 接口，不走通用产物接口。** 分层、覆盖、提名是 core 的知识逻辑，通用视图表达不了；列表读法和 `core.knowledge` 产物等价。（ADR-0101 起只剩只读的 `K-01`、`K-02`。）
 34. **`ST-10` 删除被引用的条目返回 `409 entry_referenced`，流程图例外。** 避免断链；设计稿删流程图时只提示「流程图缺失」。
 
 **流程、蓝图、待处理**
@@ -5602,9 +5602,9 @@ type ErrorRecord = {
 
 41. **自主构建先 `AB-03` 预览、拿 `preview_token`，再用 `AB-04` 启动。** 详设 8.5 要求开始前展示范围和预算，用户确认后才跑。
 42. **预算加 token 上限。** 设计稿有 token 上限；与配额口径（4.10.1）一致。
-43. **自主构建的生产库授权放在策略里（`AB-02`），和项目授权（`EV-11`）分开。** 详设 8.5 说「只能用项目设置里事先授权过的数据源」，设计稿也分两处。（`EV-11` 已删除，ADR-0100。）
+43. **自主构建的生产库授权放在策略里（`AB-02`），和项目授权（`EV-11`）分开。** 详设 8.5 说「只能用项目设置里事先授权过的数据源」，设计稿也分两处。（`EV-11` 已删除，ADR-0101。）
 
-**证据源**（44～47 随证据采集删除，ADR-0100）
+**证据源**（44～47 随证据采集删除，ADR-0101）
 
 44. **「租户级登记」就是平台全局登记。** 方案 E11 指出代码里没有租户概念。
 45. **数据源登记接口放在 admin 下，普通用户走 `EV-03` 提交申请。** 设计稿登记抽屉写「需要管理员权限，你可以先填好不含密钥的部分提交」。
@@ -5613,7 +5613,7 @@ type ErrorRecord = {
 
 **MCP 与三份契约**
 
-48. **MCP 新工具名用下划线（`flow_get`、`evidence_search`），文档写点号；evidence 工具 5 个，新增 scope `evidence.read`。** 现有 15 个工具都用下划线，MCP 客户端对点号兼容性差；工具数按详设 5.8.7。（evidence 工具和 `evidence.read` 已删除，ADR-0100。）
+48. **MCP 新工具名用下划线（`flow_get`、`evidence_search`），文档写点号；evidence 工具 5 个，新增 scope `evidence.read`。** 现有 15 个工具都用下划线，MCP 客户端对点号兼容性差；工具数按详设 5.8.7。（evidence 工具和 `evidence.read` 已删除，ADR-0101。）
 49. **服务令牌前缀 `onto_svc_`，可以限定项目，由 admin 在 `X-06` 管理。** 方案第 6 章 #6 定了服务令牌和 MCP token 分开。
 50. **验证回执用方案 A2 给的路径 `/api/v1/projects/{id}/solver/receipts`；包清单和下载与所有者共用 `PB-06`、`PB-07`；另加跨项目列表 `/api/v1/contract/releases`。** A2 的路径已定；评测服务要按时间增量拉取。
 51. **图模式是 `PB-07` 的 `variant=graph`，按需渲染，不另打标签。** 方案第 6 章 #1：同一提交的格式变体。
@@ -5652,10 +5652,10 @@ type ErrorRecord = {
 | 1 | 运维、管理员能看到多少项目信息 | 1.6、4.10.1：只看元数据（名称、所有者、阶段、占用） | ops-users 审计「内容」列有文件名、对象名、表名；错误留档有表名、凭据引用、规则文件行号 | 详设。只保留路径、条目 key 这类定位标识，不含正文；错误原文脱敏 |
 | 2 | 流程图归在哪 | 4.4「插件不能新增实体类型」；5.9.3 规则 3「本体条目只在 Studio 编辑，插件产物在插件页面编辑」 | 流程图是 Studio 的「条目类型」：表格筛选、新建、删除、编辑器面板，图示插件决定它出不出现 | 两边都保住。流程图是图示包登记的插件产物 `diagram.flowchart`（5.9.5 把流程图列为专用组件），不算本体实体，不进知识包；Studio 和流程图弹窗经通用产物接口读写 |
 | 3 | 节点状态有几种 | 6.6：8 种状态 + 需复核、已停用 2 个标记；6.9 又用了「可补做」 | core.js 状态表有 17 种：多了冲突、草稿、未开始、可补做、自主完成、失败、通过 | 详设。API 只用 8 种加 `flags`；`display_state` 给出设计稿的显示态。「可补做」是 `ready` 加 `backfill` 标记，「自主完成」是分段步骤的 `auto` |
-| 4 | evidence 工具有几个 | 5.8.7：search、show、where-used、lineage、diff 共 5 个 | proj-settings 写「evidence.*（6）」，同页 MCP 表列了 5 个 | 详设，5 个（已删除，ADR-0100） |
+| 4 | evidence 工具有几个 | 5.8.7：search、show、where-used、lineage、diff 共 5 个 | proj-settings 写「evidence.*（6）」，同页 MCP 表列了 5 个 | 详设，5 个（已删除，ADR-0101） |
 | 5 | 待处理有哪些类型 | 4.7 列了「报告里的待处理条目」，8.2 有未确认的变更集提示 | inbox 筛选只有 8 类，没有报告条目 | 详设。保留这些类型，计入「全部」，不单设筛选 |
 | 6 | 自主构建预算有哪些维度 | 8.5：费用和时长上限 | 有时长、token、费用三项 | 设计稿。加上 token，与配额口径一致 |
-| 7 | 提名回流由谁审核 | 5.5：管理员审核、脱敏后发布 | knowledge 页只有提交，没有管理员审核入口 | 详设。提供 `AD-08`～`AD-10`（提名与审核已删除，ADR-0100） |
+| 7 | 提名回流由谁审核 | 5.5：管理员审核、脱敏后发布 | knowledge 页只有提交，没有管理员审核入口 | 详设。提供 `AD-08`～`AD-10`（提名与审核已删除，ADR-0101） |
 | 8 | 资料用途有几种 | ADR 0017 与现有代码：goal、schema、term、evidence、auto | features 写 4 种，资料菜单实际 5 种（多「由助手判断」） | 5 种（菜单与代码一致） |
 
 ### 9.2 设计稿内部不一致
@@ -5666,7 +5666,7 @@ type ErrorRecord = {
 | 2 | L4 平台上限：proj-settings 写「4 小时、10M、¥300」，sys 写「4 小时、8,000,000、¥600」 | 单一来源 `SY-17`，proj-settings 经 `AB-01.platform_limits` 读同一份 |
 | 3 | 场景模拟更新到 0.10.0：plugins 页直接提示成功，plugin-detail 弹「暂时不能更新」 | 两页都先调 `PL-03` 兼容检查，按结果显示 |
 | 4 | 会话池：sys 写「来自环境变量，改了要重建容器」，ops-ctl 却能编辑并保存 | 详设 4.10.3（运维可调整并发上限）。运维面可改（`O-16`）；sys 页只读显示当前值和来源 |
-| 5 | 提供方数量：features 写 8 个，插件目录 9 个（MySQL、PostgreSQL 分开），登记抽屉类型格另有 Oracle、达梦 | 按实现的提供方 ID 列出（`EV-10`）；`kind` 分组对应详设的 8 类（已删除，ADR-0100） |
+| 5 | 提供方数量：features 写 8 个，插件目录 9 个（MySQL、PostgreSQL 分开），登记抽屉类型格另有 Oracle、达梦 | 按实现的提供方 ID 列出（`EV-10`）；`kind` 分组对应详设的 8 类（已删除，ADR-0101） |
 | 6 | 待处理和锁定条里的数字（如过期场景 2 / 3、通过 19 / 21）前后不一 | 示例数据问题，不影响契约 |
 
 ### 9.3 与代码或方案的出入
