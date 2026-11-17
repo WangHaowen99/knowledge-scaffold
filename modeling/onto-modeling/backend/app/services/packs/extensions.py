@@ -2,9 +2,9 @@
 
 | 扩展项 | 清单里怎么写 | 谁来消费 |
 |---|---|---|
-| 界面入口 | `entries: [{id, kind: quick_action\\|extra_action, label, command, where}]` | PL-12 `entries`；数据源连接向导随证据源留空，不出现 |
+| 界面入口 | `entries: [{id, kind: quick_action\\|extra_action, label, command, where}]` | PL-12 `entries` |
 | 声明式门禁 | `gates: [{id, label, artifact, on: [save, commit, publish], level, rules, min_count, ratio}]` | 保存（AR-05）、写入事务提交与合入（㉖）、发布门禁链（PB-01） |
-| 视图选择 | `view_choices: [er_view \\| schema_browser \\| evidence_sidebar]` | PL-12 `view_choices`；依赖证据源的两种本期不出现 |
+| 视图选择 | `view_choices: [er_view]` | PL-12 `view_choices` |
 | 配置项 | `config: [{key, label, type, default, min, max, choices}]` | 配置注册表（来源 pack，键 `<包名>.<key>`） |
 | 指标与告警规则 | `metrics: [{name, help, type}]`、`alerts: [{id, name, condition, window, level, runbook}]` | 可观测：指标说明进 /metrics，规则进 O-08 |
 | 只读 MCP 工具 | `mcp_tools: [{name, title, artifact, mode: list\\|get}]` | 本项目的 MCP 读工具集，按本包产物类型列表或取一项 |
@@ -22,9 +22,9 @@ from .manifest import BUILTIN_PAGES, Manifest
 
 _log = logging.getLogger(__name__)
 
-ENTRY_KINDS = ("quick_action", "extra_action", "source_wizard")
-# 内核内置、包只能选用的视图（详设 5.6「视图选择」）；值为真表示依赖证据源（本期只留接口，ADR-0056）
-KERNEL_VIEWS = {"er_view": False, "schema_browser": True, "evidence_sidebar": True}
+ENTRY_KINDS = ("quick_action", "extra_action")
+# 内核内置、包只能选用的视图（详设 5.6「视图选择」）
+KERNEL_VIEWS = ("er_view",)
 GATE_RULES = ("required", "in", "max_length", "ref_exists")
 GATE_LEVELS = ("error", "warning")
 CONFIG_TYPES = {"str": "str", "int": "int", "bool": "bool", "enum": "enum"}
@@ -83,7 +83,7 @@ def problems(manifest: Manifest, repository=None) -> list[str]:
         if kind not in ENTRY_KINDS:
             out.append(f"界面入口 {item.get('id')} 的 kind 只能是 {' / '.join(ENTRY_KINDS)}")
         command = str(item.get("command") or "").split(" ")[0]
-        if kind != "source_wizard" and command not in commands:
+        if command not in commands:
             out.append(f"界面入口 {item.get('id')} 的命令 {command or '（空）'} 不是本包的命令")
     for gate in manifest.declared("gates"):
         where = f"门禁 {gate.get('id') or '（空）'}"
@@ -185,13 +185,13 @@ def _entry_where(view, kind: str, declared) -> str | None:
 
 
 def entries(view) -> list[dict]:
-    """包的界面入口：快捷项、附加操作；命令要是本包的。数据源连接向导随证据源留空（ADR-0056），不出现。"""
+    """包的界面入口：快捷项、附加操作；命令要是本包的。"""
     commands = {f"/{name}" for name in view.manifest.items("commands")}
     out = []
     for index, entry in enumerate(view.manifest.declared("entries")):
         kind = entry.get("kind") if entry.get("kind") in ENTRY_KINDS else "quick_action"
         command = str(entry.get("command") or "")
-        if kind == "source_wizard" or command.split(" ")[0] not in commands:
+        if command.split(" ")[0] not in commands:
             continue
         where = _entry_where(view, kind, entry.get("where"))
         if where is None:
@@ -203,11 +203,8 @@ def entries(view) -> list[dict]:
 
 
 def view_choices(view) -> list[dict]:
-    from ...evidence import available_providers
-
-    evidence = bool(available_providers())
     return [{"id": choice, "pack": view.name} for choice in _declared(view.manifest, "view_choices")
-            if choice in KERNEL_VIEWS and (evidence or not KERNEL_VIEWS[choice])]
+            if choice in KERNEL_VIEWS]
 
 
 def gate_view(view, gate: dict) -> dict:

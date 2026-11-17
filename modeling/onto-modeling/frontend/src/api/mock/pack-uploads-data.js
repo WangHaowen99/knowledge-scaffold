@@ -1,4 +1,4 @@
-// 上传与审核（PL-13～PL-18）与管理员审核申请（AD-08～AD-10）的合成数据。
+// 上传与审核（PL-13～PL-18）的合成数据。
 // 检查项 id、标签按后端 B3a 的静态检查（contract-changes B3a 第 11 条），说明文字是合成的。
 
 // 后端的 14 项（租户上传 core 时另有 tenant_core）
@@ -116,41 +116,4 @@ export function reportMarkdown(rec) {
   const title = rec.name ? `${rec.name} ${rec.version}` : rec.filename;
   const rows = (rec.checks || []).map((c) => `| ${c.label} | ${marks[c.result] || c.result} | ${String(c.detail || '').replace(/\|/g, '\\|')} |`);
   return [`# 静态检查报告：${title}`, '', '| 检查项 | 结果 | 说明 |', '|---|---|---|', ...rows].join('\n') + '\n';
-}
-
-// ---------- 管理员审核申请（AD-08） ----------
-
-const HOUR = 60 * MIN;
-/** 三类申请各一条待处理，另有一条昨天通过的 */
-export function seedRequests(now = Date.now()) {
-  return [
-    {
-      id: 'req-5d21c8', kind: 'pack_install', state: 'pending', requested_by: 'wanggong', requested_at: iso(now - 25 * MIN),
-      project_id: 'parcel-sort-6c1f2a90', summary: 'HTTP 接口连接器 0.3.0',
-      payload: { pack: { name: 'provider-http-api', label: 'HTTP 接口连接器' }, version: '0.3.0', project_name: '快递分拣异常处理', note: '要从分拣系统的接口拉异常件记录，平台上还没有装这个连接器' },
-    },
-    {
-      id: 'req-9a47e3', kind: 'source_registration', state: 'pending', requested_by: 'liming', requested_at: iso(now - 2 * HOUR),
-      project_id: 'clinic-queue-9e3b7d21', summary: '分诊系统测试库（PostgreSQL · 测试环境）',
-      payload: {
-        id: 'triage-test', display_name: '分诊系统测试库', provider: 'db-postgres', environment: 'test',
-        connection: { host: '198.51.100.24', port: 5432, database: 'triage' }, project_name: '社区诊所排队分诊',
-        note: '想对一下挂号表和分诊表的字段口径，只读测试库',
-      },
-    },
-    {
-      id: 'req-c06b12', kind: 'knowledge_nomination', state: 'pending', requested_by: 'chenjing', requested_at: iso(now - 5 * HOUR),
-      project_id: 'hotel-room-2d8a4c55', summary: '退房后先登记再派单 → 物业服务',
-      payload: {
-        industry_pack: 'industry-property', industry_pack_label: '物业服务', knowledge_id: 'domain-rule-checkout-first', title: '退房后先登记再派单',
-        sanitized_text: '房间退房后先登记清洁需求和紧急程度，再派给保洁；紧急程度缺失时按「一般」处理并提示补填。', project_name: '酒店客房清洁排程',
-        note: '各家酒店都这么排，适合放进行业包',
-      },
-    },
-    {
-      id: 'req-71f0d4', kind: 'source_registration', state: 'approved', requested_by: 'zhaolei', requested_at: iso(now - 26 * HOUR),
-      project_id: 'gym-member-7f04b6e3', summary: '会员系统只读库（MySQL · 测试环境）', reviewed_by: 'zhangsan', reviewed_at: iso(now - 22 * HOUR), note: '已写入凭据并测试通过',
-      payload: { id: 'member-ro', display_name: '会员系统只读库', provider: 'db-mysql', environment: 'test', project_name: '健身房会员续费提醒', note: '续费提醒要读会员到期日' },
-    },
-  ];
 }

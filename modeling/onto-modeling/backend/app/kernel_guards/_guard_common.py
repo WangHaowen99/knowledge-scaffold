@@ -1112,7 +1112,7 @@ def _guard_confine(call: Call) -> str | None:
     shown = "、".join(list(dict.fromkeys(found))[:5])
     if locked:
         return f"上传了新资料，这一轮的范围还没确认，已有条目只读：{shown}；先运行 {entry} 确认这次要改什么。新增条目不受限。"
-    return f"本轮增量范围外的条目只读：{shown}；要扩大范围请重新圈定（{entry}），不再需要限制就说「结束本轮」。新增条目不受限。"
+    return f"不在本轮可改范围内：{shown}（范围由 {entry} 确定）。新增条目不受限。"
 
 
 # ---- 插件开发（ADR-0087） ----

@@ -1,7 +1,7 @@
 // ⌘K 命令面板的数据：跳转项、全文搜索结果、排序（纯逻辑，单测用）
 import { can } from '../state/roles.js';
 
-export function staticItems({ projectId, inboxCount, hasPlugin, hasSubpage, user }) {
+export function staticItems({ projectId, inboxCount, hasPlugin, user }) {
   const canOps = can(user, 'ops.read');
   if (!projectId) {
     return [
@@ -13,13 +13,12 @@ export function staticItems({ projectId, inboxCount, hasPlugin, hasSubpage, user
   }
   return [
     ['跳转', '打开 Studio 图谱', 'graph', 'studio'], ['跳转', `待处理（${inboxCount ?? 0}）`, 'inbox', 'inbox'],
-    ...(hasSubpage('schema') ? [['跳转', '证据浏览器', 'db', 'schema']] : []), ['跳转', 'Studio 报告', 'filetext', 'reports'],
+    ['跳转', 'Studio 报告', 'filetext', 'reports'],
     ['建模', '发起增量更新…', 'refresh', 'incremental'], ['建模', '建模蓝图…', 'layers', 'wb-blueprint', { dialog: 'blueprint' }],
     // 开始自主构建走项目设置的开始入口（AB-03 预览 → 确认 → AB-04，契约 5.0）
     ['建模', '开始自主构建…', 'rocket', 'proj-settings', { section: 'autobuild', dialog: 'start' }], ['建模', '自主构建设置', 'gear', 'proj-settings', { section: 'autobuild' }],
     ...(hasPlugin('scenarios') ? [['建模', '补齐过期场景', 'flask', 'scenarios']] : []),
     ['资料', '上传资料…', 'upload', 'resources'],
-    ...(hasSubpage('sources') ? [['资料', '连接业务系统…', 'plug', 'sources'], ['资料', '采集一次快照', 'scan', 'snapshots']] : []),
     ['发布', '发布检查与发布…', 'upload', 'publish'], ['发布', '标记一个版本…', 'tag', 'versions'],
     // 插件中心是全局页：带上当前项目，「启用到」就是这个项目（F2 第 4 条）
     ['插件', '安装插件 / 能力包…', 'puzzle', 'plugins', { project: projectId }], ['插件', '本项目已启用的能力', 'layers', 'proj-settings', { section: 'plugins' }],

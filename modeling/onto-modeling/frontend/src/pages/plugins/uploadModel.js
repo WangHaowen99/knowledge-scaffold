@@ -1,4 +1,4 @@
-// 上传与审核（plugin-upload，PL-13～PL-18）、普通用户装自己的包（PL-22～PL-26）与管理员审核申请（AD-08～AD-10）的纯逻辑。
+// 上传与审核（plugin-upload，PL-13～PL-18）、普通用户装自己的包（PL-22～PL-26）的纯逻辑。
 // 检查项、状态、错误码按后端 B3a 的实现口径（contract-changes B3a 第 10～13 条）。
 import { errorText, formatBytes } from '../../api/errors.js';
 
@@ -282,63 +282,4 @@ export function reasonProblem(reason) {
   if (!t) return '请写明退回原因';
   if (t.length > 500) return '退回原因最多 500 字';
   return null;
-}
-
-// ---------- 管理员审核申请（AD-08～AD-10） ----------
-
-export const REQUEST_KINDS = {
-  pack_install: { label: '插件安装', icon: 'puzzle', cls: 'cap' },
-  source_registration: { label: '数据源登记', icon: 'db', cls: 'prov' },
-  knowledge_nomination: { label: '知识提名', icon: 'book', cls: 'ind' },
-};
-export const REQUEST_STATES = { pending: ['待处理', 'amber'], approved: ['已通过', 'teal'], rejected: ['已退回', 'gray'] };
-
-/** 按类型、状态筛（state：pending | done | all），时间倒序 */
-export function filterRequests(items, { kind = 'all', state = 'pending' } = {}) {
-  return (items || [])
-    .filter((r) => kind === 'all' || r.kind === kind)
-    .filter((r) => state === 'all' || (state === 'pending' ? r.state === 'pending' : r.state !== 'pending'))
-    .sort((a, b) => (Date.parse(b.requested_at) || 0) - (Date.parse(a.requested_at) || 0));
-}
-
-/** 各类型待处理的个数（页签上的数字） */
-export function requestCounts(items) {
-  const out = { all: 0, pack_install: 0, source_registration: 0, knowledge_nomination: 0, done: 0 };
-  (items || []).forEach((r) => {
-    if (r.state !== 'pending') { out.done += 1; return; }
-    out.all += 1;
-    if (r.kind in out) out[r.kind] += 1;
-  });
-  return out;
-}
-
-/** 申请的理由：payload 里的 note / reason，没有时用 summary */
-export const requestReason = (r) => r?.payload?.note || r?.payload?.reason || '';
-
-/** 一行的说明：「李明 · 社区诊所排队分诊 · 10-31 20:15」 */
-export function requestMeta(r, { nameOf = (x) => x, now = Date.now() } = {}) {
-  const project = r.payload?.project_name || r.project_id || '';
-  return [nameOf(r.requested_by), project, fmtClock(r.requested_at, now)].filter(Boolean).join(' · ');
-}
-
-/** 通过前要提醒的话。数据源申请在弹窗里直接写凭据，知识提名通过只记结论，都不另加说明 */
-export function approveHint(r) {
-  if (r?.kind === 'pack_install') return '通过后在插件中心把这个连接器安装到平台，装好后申请人就能启用。';
-  return '';
-}
-
-/**
- * 通过的请求体（AD-09）：数据源申请要带凭据（提供方的密钥字段 sf，如密码、访问令牌），没填返回 problem。
- * @returns {{ body: object|null, problem: string|null }}
- */
-export function approveBody(r, { note = '', secret = '', sf = null } = {}) {
-  const body = note.trim() ? { note: note.trim() } : {};
-  if (r?.kind !== 'source_registration' || !sf) return { body, problem: null };
-  if (!secret.trim()) return { body: null, problem: `请填写${sf.label || '凭据'}` };
-  return { body: { ...body, secret: { [sf.name]: secret } }, problem: null };
-}
-
-export function requestToast(r, action) {
-  const label = REQUEST_KINDS[r?.kind]?.label || '申请';
-  return action === 'approve' ? `已通过${label}申请：${r.summary}` : `已退回${label}申请：${r.summary}`;
 }

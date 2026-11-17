@@ -24,7 +24,7 @@ test('本页进行中的任务取最近发起的一条，别的页和已结束�
     t('d', 'scripts', 'running', { started_at: '2026-11-01T10:03:00.000Z' }),
   ];
   assert.equal(pageTask(list, 'scenarios').task_id, 'c');
-  assert.equal(pageTask(list, 'knowledge'), null);
+  assert.equal(pageTask(list, 'resources'), null);
   assert.equal(isTaskActive(t('x', 'p', 'waiting_user')), true);
   assert.equal(isTaskActive(t('x', 'p', 'interrupted')), false);
   assert.equal(isTaskActive(null), false);

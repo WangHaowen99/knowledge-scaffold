@@ -484,7 +484,7 @@ def test_request_trace_spans_and_metrics(manager, auth_on, ops_client):
     cards = {card["id"]: card for card in ops_client.get("/api/v1/ops/metrics", headers=_h("ops-token")).json()["cards"]}
     assert {"pool", "turn_duration", "model_latency_p95", "output_tokens", "model_fail_rate", "guard_denies",
             "check_failures", "merges", "reconnects"} <= set(cards)
-    assert "collections" not in cards and all("note" not in card for card in cards.values())  # 证据源本期不开放
+    assert "collections" not in cards and all("note" not in card for card in cards.values())  # 证据采集已删除
     assert cards["output_tokens"]["value"] == 300 and len(cards["output_tokens"]["series"]) == 12
     assert "onto_http_requests_total" in telemetry.prometheus_text()
 

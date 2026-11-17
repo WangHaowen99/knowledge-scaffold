@@ -1,13 +1,10 @@
-"""已发布版本的独立评测（ADR-0092，ES-01～ES-11）：完成通知、状态索引、以用户登录读回结果、评测优化成批反馈、
-建模回写，以及旧版评测记录只读。
+"""已发布版本的独立评测（ADR-0092，ES-01～ES-06、ES-09～ES-11）：完成通知、状态索引、以用户登录读回结果，
+以及旧版评测记录只读。评测优化（ES-07、ES-08、ES-12）已随反馈演进包删除。
 
 评测服务是进程内的合成桩；标识与内容全部为合成数据。
 """
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import importlib
 import json
-from pathlib import Path
-import shutil
 import threading
 
 import pytest
@@ -16,7 +13,7 @@ from fastapi.testclient import TestClient
 from app import config
 from app.main import app
 from app.api import deps
-from app.services import auth, eval_client, feedback_inbox, hub_packages, package_evaluations
+from app.services import auth, eval_client, hub_packages, package_evaluations
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 
 SERVICE_TOKEN = 'synthetic-evaluation-service-token-000000'
@@ -31,7 +28,6 @@ OTHER_RUN = 'd' * 32
 STEM = 'eval-20261031-101010-abc123'
 SUMMARY = {'total': 2, 'pass': 1, 'partial': 0, 'fail': 1, 'error': 0, 'manual': 0, 'valid': 2,
            'score': 50, 'result_status': 'complete'}
-SCRIPTS = Path(config.ASSETS_DIR) / 'workspace-toolkit' / 'scripts'
 
 
 def artifacts(**changes):
@@ -60,14 +56,10 @@ class EvaluationStub:
         self.run = {'id': RUN, 'status': 'completed', 'artifacts': artifacts(),
                     'base_ref': {'ontology_id': PACKAGE, 'release_id': 'release_one', 'version': '0.1.1'},
                     'package_ref': {'ontology_id': PACKAGE, 'release_id': 'snapshot_one', 'version': '0.1.1-eval.1'}}
-        self.writebacks, self.writeback_failure, self.optimization = [], None, None
         self.files = {
             'report.md': '# 数据评测报告\n\n- **问题**：合成问题一\n'.encode(),
             'answers.json': json.dumps({'answers': []}).encode(),
             'suggestions.md': '# 评测优化建议\n'.encode(),
-            'context.json': json.dumps({'run_id': RUN, 'revision': 1, 'stem': STEM, 'summary': SUMMARY,
-                                        'tables': {'订单表': ['order_id', '金额'], '../bad': ['x'],
-                                                   'empty_table': []}}, ensure_ascii=False).encode(),
         }
 
     def __call__(self, method, path, token, body=None, limit=eval_client.JSON_LIMIT):
@@ -75,22 +67,9 @@ class EvaluationStub:
         if self.failure:
             raise self.failure
         if path.startswith('/package-evaluations?'):
-            # Like the evaluation service: what modeling wrote back is part of the listing.
-            listing = {**self.listing, 'releases': [{**item, 'optimization': self.optimization}
-                                                    if self.optimization and item['run_id'] == RUN else item
-                                                    for item in self.listing['releases']]}
-            return json.dumps(listing).encode(), {}
+            return json.dumps(self.listing).encode(), {}
         if path == f'/runs/{RUN}':
             return json.dumps(self.run).encode(), {}
-        if path == f'/runs/{RUN}/modeling-result':
-            self.writebacks.append(body)
-            if self.writeback_failure:
-                raise self.writeback_failure
-            result = {key: body.get(key) for key in ('outcome', 'release_id', 'note')}
-            status = 'modeling_done' if body['outcome'] == 'done' else 'modeling_failed'
-            self.optimization = {'status': status, 'updated_at': 2000.0, 'history': [],
-                                 'result': {**result, 'version': '0.1.2' if body.get('release_id') else None, 'reported_at': 2000.0}}
-            return json.dumps({'run_id': RUN, 'optimization': self.optimization}).encode(), {}
         if path == f'/runs/{RUN}/artifacts/regenerate':
             return json.dumps(artifacts(revision=2, status='generating', report='pending',
                                         suggestions='pending')).encode(), {}
@@ -120,8 +99,6 @@ def env(tmp_path, monkeypatch):
                                                'version': '0.1.1', 'committed_at': '2026-10-31T00:00:00+00:00'})
     client = TestClient(app)
     client.headers['Authorization'] = 'Bearer user-token'
-    # 评测优化交给反馈演进包处理
-    assert client.post(f'/api/v1/projects/{pid}/packs', json={'name': 'evo'}).status_code == 201
     return manager, pid, stub, client
 
 
@@ -274,14 +251,6 @@ def test_index_written_before_solver_validation_is_still_readable(env):
     assert list(index()['solver_releases']) == ['release_one']
 
 
-def test_solver_validation_runs_cannot_be_optimized(env):
-    manager, pid, stub, client = env
-    stub.run['run_type'] = 'solver'
-    response = client.post(f'/api/v1/projects/{pid}/evaluations/{RUN}/optimization', json={})
-    assert response.status_code == 409 and response.json()['code'] == 'optimization_not_supported'
-    assert not (manager.project_root(pid) / 'reports' / f'{STEM}.md').exists()
-
-
 def test_evaluations_of_users_sharing_a_package_stay_separate(env):
     _, pid, stub, client = env
     assert client.get(f'/api/v1/projects/{pid}/evaluations?reconcile=1').json()['reachable'] is True
@@ -355,143 +324,14 @@ def test_regenerate_marks_index_generating(env):
     assert index()['releases']['release_one']['artifacts']['status'] == 'generating'
 
 
-def test_optimization_requires_the_current_project_version(env):
+def test_optimization_and_writeback_routes_are_gone(env):
+    """评测优化（ES-07、ES-08、ES-12）随反馈演进包删除：路由不在了，不找评测服务，也不写工作区。"""
     manager, pid, stub, client = env
-    stub.run['base_ref'] = {'ontology_id': PACKAGE, 'release_id': 'release_old', 'version': '0.1.0'}
-    response = client.post(f'/api/v1/projects/{pid}/evaluations/{RUN}/optimization', json={})
-    assert response.status_code == 409 and response.json()['code'] == 'version_mismatch'
-    assert '0.1.0' in response.json()['message'] and '0.1.1' in response.json()['message']
-    assert not (manager.project_root(pid) / 'reports' / f'{STEM}.md').exists()
-
-
-def test_optimization_requires_the_evolution_pack(env):
-    manager, pid, stub, client = env
-    assert client.get(f'/api/v1/projects/{pid}/evaluations').json()['evolution'] is True
-    assert client.post(f'/api/v1/projects/{pid}/packs/evo/disable', json={}).status_code == 200
-    assert client.get(f'/api/v1/projects/{pid}/evaluations').json()['evolution'] is False
-    response = client.post(f'/api/v1/projects/{pid}/evaluations/{RUN}/optimization', json={})
-    assert response.status_code == 409 and response.json()['code'] == 'pack_not_enabled'
-    assert not (manager.project_root(pid) / 'feedback').exists() and stub.calls == []
-
-
-def test_optimization_requires_a_ready_report(env):
-    _, pid, stub, client = env
-    stub.run['artifacts'] = artifacts(status='generating', report='pending', suggestions='pending')
-    response = client.post(f'/api/v1/projects/{pid}/evaluations/{RUN}/optimization', json={})
-    assert response.status_code == 409 and response.json()['code'] == 'artifacts_not_ready'
-
-
-REPORT_WITH_CASES = '\n'.join([
-    '# 数据评测报告', '', '## 逐用例明细', '',
-    '### 1. ✅ pass', '', '- **问题**：合成问题一', '', '- **标准答案**：', '', '  > 合成答案一', '',
-    '### 2. ❌ fail', '', '- **问题**：合成问题二', '', '- **标准答案**：', '', '  > 第一行', '  >', '  > 第二行', '',
-    '- **智能体回答**：', '', '  > 合成回答二', '', '- **判分理由**：', '', '  > 合成理由二', '',
-    '- **工具失败**：', '', '  - execute_script · SCRIPT_ARGUMENT_VALIDATION_FAILED · 问题：ungrounded_identity arguments.code', '',
-    '### 3. 🛑 error', '', '- **问题**：合成问题三', '', '- **标准答案**：', '', '  > （无）', '',
-]).encode()
-ANSWERS_WITH_CASES = json.dumps({'roundId': RUN, 'answers': [
-    {'resultId': 'case-1', 'question': '合成问题一', 'finalAnswer': '合成回答一', 'verdict': 'pass', 'reason': '一致'},
-    {'resultId': 'case-2', 'question': '合成问题二', 'finalAnswer': '合成回答二', 'verdict': 'fail', 'reason': '合成理由二'},
-    {'resultId': 'case-3', 'question': '合成问题三', 'finalAnswer': '', 'verdict': 'error', 'reason': '运行失败'},
-    {'resultId': 'case-4', 'question': '合成问题四', 'finalAnswer': '合成回答四', 'verdict': 'manual', 'reason': '待人工判定'},
-]}, ensure_ascii=False).encode()
-
-
-def test_optimization_imports_artifacts_once_as_a_feedback_batch(env, monkeypatch):
-    manager, pid, stub, client = env
-    stub.files.update({'report.md': REPORT_WITH_CASES, 'answers.json': ANSWERS_WITH_CASES})
-    response = client.post(f'/api/v1/projects/{pid}/evaluations/{RUN}/optimization', json={})
-    assert response.status_code == 200, response.text  # 不在已下线的 /eval/ 前缀下，未被 410 拦截
-    suggestions = 'optimization-20261031-101010-abc123.md'
-    batch_id = f'eval-{RUN}-r1'
-    assert response.json() == {'feedback_id': batch_id, 'report': f'reports/{STEM}.md',
-                               'suggestions': f'reports/{suggestions}', 'command': '/ontology-evolution',
-                               'args': {'feedback_id': batch_id}}
-    root = manager.project_root(pid)
-    assert (root / 'reports' / f'{STEM}.md').read_bytes() == stub.files['report.md']
-    assert (root / 'reports' / f'{STEM}.answers.json').read_bytes() == stub.files['answers.json']
-    assert (root / 'reports' / suggestions).read_bytes() == stub.files['suggestions.md']
-    assert (root / '.ontology-state' / 'eval-service' / f'{STEM}.json').read_bytes() == stub.files['context.json']
-    tables = root / '.ontology-state' / 'eval-service' / 'tables' / STEM
-    assert sorted(p.name for p in tables.iterdir()) == ['订单表.csv']
-    assert (tables / '订单表.csv').read_text(encoding='utf-8') == 'order_id,金额\n'
-    # 失分用例成为一批外部反馈：反馈演进照常消费；标准答案与工具失败取自报告
-    rel = feedback_inbox.batch_path(root, batch_id)
-    batch = json.loads((root / rel).read_text(encoding='utf-8'))
-    assert batch['format'] == feedback_inbox.FORMAT and batch['received_by'] == USER['sub']
-    assert batch['source'] == {'service': '评测服务', 'run': RUN} and batch['release_version'] == '0.1.1'
-    assert batch['summary'] == {'score': 50, 'total': 2, 'pass': 1, 'partial': 0, 'fail': 1, 'error': 0}
-    assert [item['case_id'] for item in batch['items']] == ['case-2', 'case-3']
-    failed, broken = batch['items']
-    assert failed['expected'] == '第一行\n\n第二行' and failed['actual'] == '合成回答二' and failed['verdict'] == 'fail'
-    assert failed['loss_reason'] == '合成理由二'
-    assert failed['tool_failures'] == ['execute_script · SCRIPT_ARGUMENT_VALIDATION_FAILED · 问题：ungrounded_identity arguments.code']
-    assert broken['expected'] == '' and broken['verdict'] == 'error' and broken['tool_failures'] == []
-    assert batch['attachments'] == {'report': f'reports/{STEM}.md', 'answers': f'reports/{STEM}.answers.json',
-                                    'suggestions': f'reports/{suggestions}',
-                                    'tables': f'.ontology-state/eval-service/tables/{STEM}'}
-    assert feedback_inbox.latest_batch(root) == rel
-    log = _git(root, 'log', '-1', '--name-only', '--format=%s')
-    assert f'评测优化导入 {STEM}（2 条）' in log and rel in log and '.ontology-state' not in log
-    assert _git(root, 'status', '--porcelain', '--', 'reports', 'feedback').strip() == ''
-    downloads = len(stub.calls)
-    again = client.post(f'/api/v1/projects/{pid}/evaluations/{RUN}/optimization', json={})
-    assert again.json() == response.json()
-    assert len(stub.calls) == downloads + 1  # 只重新读取轮次，不再下载产物
-    assert len(list((root / 'feedback').glob('*.json'))) == 1
-
-    # 三方对账脚本直接读导入的表头
-    monkeypatch.syspath_prepend(str(SCRIPTS))
-    table_profile = importlib.import_module('table_profile')
-    assert table_profile.read_tables(tables / '订单表.csv') == {'订单表': ['order_id', '金额']}
-
-
-def test_optimization_of_a_new_revision_is_a_new_batch(env):
-    manager, pid, stub, client = env
-    assert client.post(f'/api/v1/projects/{pid}/evaluations/{RUN}/optimization', json={}).status_code == 200
-    root = manager.project_root(pid)
-    shutil.rmtree(root / '.ontology-state' / 'eval-service' / 'tables')
-    # 表头目录被清掉时补写，不重新下载
-    calls = len(stub.calls)
-    assert client.post(f'/api/v1/projects/{pid}/evaluations/{RUN}/optimization', json={}).status_code == 200
-    assert len(stub.calls) == calls + 1 and (root / '.ontology-state' / 'eval-service' / 'tables' / STEM).is_dir()
-    # 人工改判后产物修订号加一：同一轮再成一批，旧批次保留
-    stub.run['artifacts'] = artifacts(revision=2)
-    second = client.post(f'/api/v1/projects/{pid}/evaluations/{RUN}/optimization', json={}).json()
-    assert second['feedback_id'] == f'eval-{RUN}-r2'
-    assert sorted(p.name.split('-', 2)[2] for p in (root / 'feedback').glob('*.json')) == [
-        f'eval-{RUN}-r1.json', f'eval-{RUN}-r2.json']
-
-
-def test_optimization_of_a_feedback_run_names_its_source(env):
-    manager, pid, stub, client = env
-    stub.run['origin'] = 'consumer_feedback'
-    batch_id = client.post(f'/api/v1/projects/{pid}/evaluations/{RUN}/optimization', json={}).json()['feedback_id']
-    root = manager.project_root(pid)
-    batch = json.loads((root / feedback_inbox.batch_path(root, batch_id)).read_text(encoding='utf-8'))
-    assert batch['source']['service'] == '用户反馈' and batch['items'] == []
-
-
-def test_optimization_rejects_malformed_answers(env):
-    manager, pid, stub, client = env
-    stub.files['answers.json'] = b'[]'
-    response = client.post(f'/api/v1/projects/{pid}/evaluations/{RUN}/optimization', json={})
-    assert response.status_code == 502 and response.json()['code'] == 'eval_invalid_response'
-    assert not (manager.project_root(pid) / 'feedback').exists()
-
-
-def test_optimization_rejects_artifacts_of_mixed_revisions(env, monkeypatch):
-    _, pid, stub, client = env
-    original = stub.__call__
-
-    def changing(method, path, token, body=None, limit=eval_client.JSON_LIMIT):
-        data, headers = original(method, path, token, body, limit)
-        if path.endswith('/context.json'):
-            headers = {**headers, 'x-artifact-revision': '2'}
-        return data, headers
-    monkeypatch.setattr(eval_client, 'request', changing)
-    response = client.post(f'/api/v1/projects/{pid}/evaluations/{RUN}/optimization', json={})
-    assert response.status_code == 409 and response.json()['code'] == 'artifacts_changed'
+    for url in (f'/api/v1/projects/{pid}/evaluations/{RUN}/optimization',
+                f'/api/v1/projects/{pid}/evaluations/{RUN}/modeling-result',
+                f'/api/v1/projects/{pid}/legacy-evaluations/{LEGACY}/optimization'):
+        assert client.post(url, json={'note': '合成'}).status_code in (404, 405), url
+    assert stub.calls == [] and not (manager.project_root(pid) / 'feedback').exists()
 
 
 def test_legacy_evaluation_mutations_stay_retired(env):
@@ -585,103 +425,13 @@ def test_client_requires_address_and_login(monkeypatch):
     assert anonymous.value.status == 401
 
 
-# ---- 建模回写与两种来源 ----
-
-
-def optimize(client, pid):
-    response = client.post(f'/api/v1/projects/{pid}/evaluations/{RUN}/optimization', json={})
-    assert response.status_code == 200, response.text
-
-
-def publish_next(manager, pid, release='release_two', version='0.1.2'):
-    """A newer Hub release becomes the project's base, as after a publication."""
-    hub_packages.record(manager, pid, SUBJECT, {'ontology_id': PACKAGE, 'release_id': release, 'package_digest': 'e' * 64,
-                                               'version': version, 'committed_at': '2026-11-05T00:00:00+00:00'})
+# ---- 两种来源 ----
 
 
 def overview(client, pid):
     response = client.get(f'/api/v1/projects/{pid}/evaluations?reconcile=1')
     assert response.status_code == 200, response.text
     return response.json()
-
-
-def test_a_release_published_after_optimization_is_written_back_once(env):
-    manager, pid, stub, client = env
-    stub.listing['releases'] = [entry()]
-    optimize(client, pid)
-    assert overview(client, pid)['writeback']['status'] == 'waiting' and not stub.writebacks
-    publish_next(manager, pid)
-    value = overview(client, pid)
-    sent, = stub.writebacks
-    assert sent['outcome'] == 'done' and sent['release_id'] == 'release_two' and sent['request_id'].startswith('mr-')
-    assert '0.1.1' in sent['note'] and '0.1.2' in sent['note']
-    assert value['writeback'] == {**value['writeback'], 'status': 'done', 'release_id': 'release_two', 'version': '0.1.2', 'mine': True}
-    # Shown at once, before the evaluation service's next notification or reconciliation.
-    assert index()['releases']['release_one']['optimization']['status'] == 'modeling_done'
-    overview(client, pid)
-    publish_next(manager, pid, 'release_three', '0.1.3')
-    overview(client, pid)
-    assert len(stub.writebacks) == 1  # 同一次优化只回写第一个新版本
-
-
-def test_right_after_publishing_the_write_back_is_immediate(env):
-    manager, pid, stub, client = env
-    optimize(client, pid)
-    publish_next(manager, pid)
-    receipt = {'status': 'committed', 'release_id': 'release_two', 'version': '0.1.2'}
-    value = package_evaluations.after_publish(pid, SUBJECT, 'user-token', receipt)
-    assert value['status'] == 'done' and len(stub.writebacks) == 1
-    assert package_evaluations.after_publish(pid, SUBJECT, 'user-token', {'status': 'pending'}) is None
-
-
-def test_an_unreachable_evaluation_service_is_retried_and_a_refusal_is_not(env):
-    manager, pid, stub, client = env
-    optimize(client, pid)
-    publish_next(manager, pid)
-    stub.writeback_failure = WorkspaceError('评测服务不可用，请稍后重试', 503, 'eval_unavailable')
-    assert overview(client, pid)['writeback']['status'] == 'pending'
-    stub.writeback_failure = None
-    assert overview(client, pid)['writeback']['status'] == 'done' and len(stub.writebacks) == 2
-    # A refused write-back for a later optimization is not sent again for the same release.
-    stub.run['base_ref'] = {'ontology_id': PACKAGE, 'release_id': 'release_two', 'version': '0.1.2'}
-    optimize(client, pid)
-    publish_next(manager, pid, 'release_three', '0.1.3')
-    stub.writeback_failure = WorkspaceError('这一轮的优化建议还未交给建模', 409, 'invalid_state')
-    assert overview(client, pid)['writeback']['status'] == 'refused'
-    overview(client, pid)
-    assert len(stub.writebacks) == 3
-
-
-def test_only_the_optimizing_user_writes_back(env):
-    manager, pid, stub, client = env
-    optimize(client, pid)
-    publish_next(manager, pid)
-    other = json.dumps(['https://example.com', 'operator_b'])
-    state = package_evaluations.settle(pid, other, 'other-token')
-    assert not stub.writebacks and state['result'] is None
-    assert package_evaluations.writeback_view(pid, other)['mine'] is False
-
-
-def test_nothing_is_written_back_without_a_new_release_or_an_optimization(env):
-    manager, pid, stub, client = env
-    overview(client, pid)
-    optimize(client, pid)
-    overview(client, pid)
-    assert not stub.writebacks
-
-
-def test_a_failure_is_reported_with_its_reason(env):
-    _, pid, stub, client = env
-    stub.listing['releases'] = [entry()]
-    overview(client, pid)
-    url = f'/api/v1/projects/{pid}/evaluations/{RUN}/modeling-result'
-    assert client.post(url, json={'note': ''}).status_code == 400
-    response = client.post(url, json={'note': '合成：建议需要的数据表不存在'})
-    assert response.status_code == 200 and response.json()['optimization']['status'] == 'modeling_failed'
-    assert stub.writebacks[-1]['outcome'] == 'failed' and stub.writebacks[-1]['note'] == '合成：建议需要的数据表不存在'
-    assert index()['releases']['release_one']['optimization']['status'] == 'modeling_failed'
-    stub.run['base_ref'] = {'ontology_id': 'pkg_other', 'release_id': 'release_x', 'version': '9.9.9'}
-    assert client.post(url, json={'note': '合成'}).status_code == 404
 
 
 def test_feedback_runs_are_kept_apart_from_evaluation_runs(env):
@@ -747,7 +497,7 @@ def test_evaluations_are_owner_only(env, monkeypatch):
     other = {'Authorization': 'Bearer other-token'}
     assert client.get(f'/api/v1/projects/{pid}/evaluations', headers=other).status_code in (403, 404)
     assert client.get(f'/api/v1/projects/{pid}/evaluations/{RUN}/report', headers=other).status_code in (403, 404)
-    assert client.post(f'/api/v1/projects/{pid}/evaluations/{RUN}/optimization', headers=other).status_code in (403, 404)
+    assert client.post(f'/api/v1/projects/{pid}/evaluations/{RUN}/regenerate', headers=other).status_code in (403, 404)
     assert client.get(f'/api/v1/projects/{pid}/legacy-evaluations', headers=other).status_code in (403, 404)
 
 
@@ -806,7 +556,7 @@ def test_evaluation_entry_comes_only_from_deployment(env, monkeypatch):
     assert writable == set()
 
 
-# ---- 旧版评测记录（只读，ES-09～ES-12） ----
+# ---- 旧版评测记录（只读，ES-09～ES-11） ----
 
 LEGACY = 'eval-20261001-090000'
 LEGACY_REPORT = '\n'.join([
@@ -844,11 +594,11 @@ def legacy_project(manager, pid, state=None):
 def test_legacy_record_shows_the_last_run_like_develop(env):
     manager, pid, stub, client = env
     base = f'/api/v1/projects/{pid}/legacy-evaluations'
-    assert client.get(base).json() == {'state': {}, 'evolution': None, 'evolution_enabled': True}
+    assert client.get(base).json() == {'state': {}}
     legacy_project(manager, pid)
     value = client.get(base).json()
     assert value['state']['status'] == 'done' and value['state']['cases'][1]['result_id'] == 'r-2'
-    assert value['evolution'] == {'report': f'reports/{LEGACY}.md', 'score': 50, 'errors': 0, 'fails': 1, 'round_failed': False}
+    assert set(value) == {'state'}
     report = client.get(f'{base}/{LEGACY}').json()
     assert report['content'].startswith('# 数据评测报告') and report['path'] == f'reports/{LEGACY}.md'
     answer = client.get(f'{base}/{LEGACY}/answers/r-2').json()
@@ -866,24 +616,6 @@ def test_legacy_running_state_shows_as_interrupted_without_rewriting(env):
     state = client.get(f'/api/v1/projects/{pid}/legacy-evaluations').json()['state']
     assert state['status'] == 'interrupted' and state['message'] == '上一轮评测被服务重启中断' and state['resumable'] is False
     assert json.loads((root / '.ontology-state' / 'eval.json').read_text(encoding='utf-8'))['status'] == 'running'
-
-
-def test_legacy_report_optimization_is_a_feedback_batch(env):
-    manager, pid, _, client = env
-    root = legacy_project(manager, pid)
-    url = f'/api/v1/projects/{pid}/legacy-evaluations/{LEGACY}/optimization'
-    value = client.post(url, json={}).json()
-    assert value == {'feedback_id': f'legacy-{LEGACY}', 'report': f'reports/{LEGACY}.md', 'suggestions': None,
-                     'command': '/ontology-evolution', 'args': {'feedback_id': f'legacy-{LEGACY}'}}
-    batch = json.loads((root / feedback_inbox.batch_path(root, f'legacy-{LEGACY}')).read_text(encoding='utf-8'))
-    assert [item['case_id'] for item in batch['items']] == ['r-2']
-    assert batch['items'][0]['expected'] == '旧答案二' and batch['items'][0]['loss_reason'] == '合成旧理由'
-    assert batch['summary']['score'] == 50 and batch['source'] == {'service': '评测服务', 'run': 'round-1'}
-    assert batch['attachments'] == {'report': f'reports/{LEGACY}.md', 'answers': f'reports/{LEGACY}.answers.json'}
-    head = _git(root, 'rev-parse', 'HEAD')
-    assert client.post(url, json={}).json() == value and _git(root, 'rev-parse', 'HEAD') == head
-    assert client.post(f'/api/v1/projects/{pid}/packs/evo/disable', json={}).status_code == 200
-    assert client.post(url, json={}).json()['code'] == 'pack_not_enabled'
 
 
 def test_legacy_records_do_not_follow_links(env, tmp_path):

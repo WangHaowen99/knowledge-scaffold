@@ -144,7 +144,7 @@ def translate(exc: Exception) -> tuple[int, str, str, dict | None]:
         return status, _status_code(status, {}), message, None
     code = getattr(exc, "code", None)
     if isinstance(code, str) and code:
-        # 契约接口的异常（服务令牌、回执、反馈）已经用契约码
+        # 契约接口的异常（服务令牌、回执）已经用契约码
         return status, code, message, getattr(exc, "details", None)
     raise exc
 
@@ -153,7 +153,6 @@ def _known_exception_types() -> tuple[type, ...]:
     from ..services.agent_sessions import SessionError
     from ..services.auth import AuthError
     from ..services.conversation_store import ConversationError
-    from ..services.feedback_inbox import FeedbackRejected
     from ..services.onto_mcp.errors import McpError
     from ..services.personal_model_settings import PersonalConfigError
     from ..services.service_tokens import ServiceTokenError
@@ -163,7 +162,7 @@ def _known_exception_types() -> tuple[type, ...]:
 
     known: list[type] = [
         ApiError, WorkspaceError, SessionError, ConversationError, AuthError, McpError,
-        StudioError, PersonalConfigError, ServiceTokenError, FeedbackRejected,
+        StudioError, PersonalConfigError, ServiceTokenError,
         SheetSelectionError,  # Sheet 范围对不上当前文件：409 schema_selection_invalid（ADR-0096）
     ]
     return tuple(known)

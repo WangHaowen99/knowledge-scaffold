@@ -377,12 +377,9 @@ def material_map(manager, project_id: str) -> dict:
     items = map_items(manager, project_id, parsed, found)
     checked = verification(manager, project_id, parsed)
     receipt = review(where)
-    meta = manager.get_project(project_id) or {}
     return {
         "total": len(items),
         "read_pct": round(sum(item["read_pct"] for item in items) / len(items)) if items else 0,
-        "analysis_mode": "web" if meta.get("research_mode") == "web" else "local",
-        "web_available": pack_enabled(main, "websearch"),
         "items": items,
         "problems": found,
         "verification": {"total": checked["total"], "passed": checked["passed"], "unverifiable": checked["problems"],

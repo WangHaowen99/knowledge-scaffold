@@ -23,7 +23,6 @@ const NTF_STYLE = {
   needs_input: ['hand', 'var(--a50)', 'var(--amber2)'],
   step_done: ['check', 'var(--b50)', 'var(--blue)'],
   session_error: ['alert', 'var(--r50)', 'var(--red)'],
-  evidence_conflict: ['alert', 'var(--r50)', 'var(--red)'],
   publish_done: ['upload', 'var(--t50)', 'var(--teal)'],
   nomination_reviewed: ['book', 'var(--b50)', 'var(--blue)'],
   request_pending: ['inbox', 'var(--a50)', 'var(--amber2)'],
@@ -118,7 +117,7 @@ const KERNEL_RAIL = [['wb-l2', '工作台', 'layout'], ['studio', 'Studio', 'gra
 // 子页面归到哪个导航项（同设计稿 RAIL_OF）
 export const RAIL_OF = {
   inbox: 'wb-l2', 'wb-materials': 'wb-l2', 'wb-blueprint': 'wb-l2', 'l4-run': 'wb-l2', incremental: 'wb-l2', flowchart: 'wb-l2', 'chat-states': 'wb-l2',
-  'studio-table': 'studio', 'studio-er': 'studio', reports: 'studio', sources: 'resources', snapshots: 'resources', schema: 'resources', versions: 'publish',
+  'studio-table': 'studio', 'studio-er': 'studio', reports: 'studio', versions: 'publish',
 };
 const MAX_PLUGIN_RAIL = 5;
 
@@ -188,7 +187,7 @@ function SubNav({ active }) {
   }
   if (grp === 'publish') items = [['publish', '发布'], ['versions', '版本历史']];
   if (grp === 'resources') {
-    items = [['resources', '资料区'], ...(extensions?.subpages || []).filter((s) => s.parent === 'resources').map((s) => [s.id, <>{s.title}{plugMark(s.pack_label || '系统逆向建模')}</>])];
+    items = [['resources', '资料区'], ...(extensions?.subpages || []).filter((s) => s.parent === 'resources').map((s) => [s.id, <>{s.title}{s.pack_label ? plugMark(s.pack_label) : null}</>])];
   }
   if (!items) return null;
   const cur = items.some(([k]) => k === active) ? active : grp;

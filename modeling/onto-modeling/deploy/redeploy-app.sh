@@ -46,8 +46,6 @@ if [ "${NO_BUILD}" -eq 0 ]; then
     # 连接器网关（ADR-0073）：同一个 Dockerfile 的另一个目标，随主服务一起换
     (cd "${PROJECT_ROOT}" && ${BUILD_CMD} --target connector-gateway \
         -t "onto-modeling-connector-gateway:${VERSION}" -f Dockerfile .)
-    # REA 旁路容器（ADR-0082）：自带 Dockerfile，跟着一起换
-    (cd "${PROJECT_ROOT}/connectors/rea-sidecar" && ${BUILD_CMD} -t "onto-modeling-rea-sidecar:${VERSION}" .)
     if [ "${WITH_AUTH}" -eq 1 ]; then
         (cd "${REPOSITORY_ROOT}/auth-server" && ${BUILD_CMD} -t "onto-modeling-auth-server:${VERSION}" .)
     fi
@@ -66,27 +64,8 @@ if grep -q '^CONNECTOR_GATEWAY_IMAGE=' "${DEPLOY_DIR}/images.env"; then
 else
     echo "CONNECTOR_GATEWAY_IMAGE=onto-modeling-connector-gateway:${VERSION}" >> "${DEPLOY_DIR}/images.env"
 fi
-if grep -q '^REA_SIDECAR_IMAGE=' "${DEPLOY_DIR}/images.env"; then
-    sed -i "s|^REA_SIDECAR_IMAGE=.*|REA_SIDECAR_IMAGE=onto-modeling-rea-sidecar:${VERSION}|" "${DEPLOY_DIR}/images.env"
-else
-    echo "REA_SIDECAR_IMAGE=onto-modeling-rea-sidecar:${VERSION}" >> "${DEPLOY_DIR}/images.env"
-fi
 if [ "${WITH_AUTH}" -eq 1 ]; then
     sed -i "s|^AUTH_SERVER_IMAGE=.*|AUTH_SERVER_IMAGE=onto-modeling-auth-server:${VERSION}|" "${DEPLOY_DIR}/images.env"
-fi
-
-# 部署目录的 compose 要连接器主密钥、但还没有（解包了新版本却没跑 deploy.sh）：按 deploy.sh 同样的规则生成
-if grep -q 'connector-master-key:' "${DEPLOY_DIR}/docker-compose.release.yml"; then
-    (cd "${DEPLOY_DIR}" && {
-        MASTER_KEY_FILE="$(sed -n 's/^ONTO_CONNECTOR_MASTER_KEY_FILE=//p' .env | head -1)"
-        MASTER_KEY_FILE="${MASTER_KEY_FILE:-./secrets/connector-master.key}"
-        if [ ! -f "${MASTER_KEY_FILE}" ]; then
-            mkdir -p "$(dirname "${MASTER_KEY_FILE}")" && chmod 700 "$(dirname "${MASTER_KEY_FILE}")"
-            (umask 077 && { openssl rand -base64 32 2>/dev/null || head -c 32 /dev/urandom | base64; } > "${MASTER_KEY_FILE}")
-            [ "$(id -u)" -eq 0 ] && chown 65534:65534 "${MASTER_KEY_FILE}"
-            echo "已生成连接器主密钥 ${MASTER_KEY_FILE}：和凭据卷分开备份，丢了只能重新录入数据源凭据。"
-        fi
-    })
 fi
 
 COMPOSE="docker compose"
@@ -104,7 +83,6 @@ SERVICES=(onto-modeling)
 grep -q '^  sandbox-gateway:' "${DEPLOY_DIR}/docker-compose.release.yml" && SERVICES+=(sandbox-gateway)
 # 连接器网关：部署目录的 compose 里有它（新版 compose）才一起起
 grep -q '^  connector-gateway:' "${DEPLOY_DIR}/docker-compose.release.yml" && SERVICES+=(connector-gateway)
-grep -q '^  rea-sidecar:' "${DEPLOY_DIR}/docker-compose.release.yml" && SERVICES+=(rea-sidecar)
 [ "${WITH_AUTH}" -eq 1 ] && SERVICES+=(auth-server)
 
 (cd "${DEPLOY_DIR}" && ${COMPOSE} --env-file .env --env-file images.env \

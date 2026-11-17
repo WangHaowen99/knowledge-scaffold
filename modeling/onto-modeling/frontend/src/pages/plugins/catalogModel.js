@@ -1,6 +1,5 @@
 // 插件中心的纯逻辑（设计稿 pages-60-plugins.js 的 PL_CAT、plFoot、plUi、plCard、启用 / 更新弹窗）：
 // 筛选与分组、卡脚按 project_status 映射、兼容检查结果到弹窗文字、提示语。页面只负责画。
-import { isEvidencePack } from '../../state/evidence.js';
 
 // 分类：名称、图标、说明（设计稿 PL_CAT）；exporter 契约里有、设计稿没画，有包时才出现。
 // 节点包是能力包的特例（用户 2026-11-02 定），归进能力包，不单列
@@ -11,14 +10,14 @@ export const PACK_CATEGORIES = {
   provider: ['多源连接器', 'db', '连接器网关里运行，管理员安装'],
   exporter: ['导出器', 'download', '把知识包导出成其他格式'],
 };
-// 有包时才出现在左栏的分类：导出器设计稿没画；多源连接器在部署了连接器网关时才有（转换器、采集类连接器）
+// 有包时才出现在左栏的分类：导出器设计稿没画；多源连接器在部署了连接器网关时才有（转换器）
 export const OPTIONAL_CATEGORIES = ['exporter', 'provider'];
 // 卡片图标底色（设计稿 .pl-ico.cap / .ind / .sys / .prov / .exp）
 export const PACK_ICON_CLASS = { capability: 'cap', industry: 'ind', system: 'sys', provider: 'prov', exporter: 'exp' };
 // 旧数据里的 node 分类按能力包算
 export const categoryOf = (p) => (p?.category === 'node' ? 'capability' : p?.category);
 // 详情页英雄区的大图标：能力包按包名（与新建向导第 3 步一致），其余按分类
-const PACK_ICON = { core: 'cube', trace: 'flask', knowledge: 'book', codegen: 'code', rev: 'db', diagram: 'branch', websearch: 'globe', migrate: 'recycle', evo: 'refresh' };
+const PACK_ICON = { core: 'cube', trace: 'flask', codegen: 'code', diagram: 'branch' };
 export const packIcon = (p) => PACK_ICON[p?.name] || PACK_CATEGORIES[categoryOf(p)]?.[1] || 'puzzle';
 
 // 纯数据包（行业包、系统知识包）现读即生效，更新前先给看更新弹窗
@@ -27,23 +26,6 @@ export const isDataPack = (p) => DATA_CATEGORIES.includes(p?.category);
 
 const INSTALLED = ['required', 'enabled', 'update', 'pending'];
 export const isInstalled = (p) => INSTALLED.includes(p?.project_status);
-
-// ---------- 证据采集 ----------
-/**
- * 证据采集本期不开放（ADR-0056）：EV-01 读不到时，多源连接器里的采集类（没有 converter 的）和依赖它的包（系统逆向建模）
- * 不出现，转换器照常出现（ADR-0073）；计数、推荐按剩下的重算。不依赖后端碰巧不下发
- */
-export const isConverter = (p) => !!p?.converter;
-export function visibleCatalog(data, evidenceOn) {
-  if (!data || evidenceOn) return data;
-  const hidden = (p) => (categoryOf(p) === 'provider' && !isConverter(p)) || isEvidencePack(p?.name);
-  const items = (data.items || []).filter((p) => !hidden(p));
-  const counts = { ...(data.counts || {}), all: items.length };
-  Object.keys(PACK_CATEGORIES).forEach((k) => { counts[k] = items.filter((p) => categoryOf(p) === k).length; });
-  counts.enabled = items.filter(isInstalled).length;
-  counts.updatable = items.filter((p) => p.project_status === 'update').length;
-  return { ...data, items, counts, recommendations: (data.recommendations || []).filter((r) => !isEvidencePack(r.pack?.name)) };
-}
 
 // ---------- 筛选与分组 ----------
 // cat：all、分类键、inst（本项目已启用，含待生效）、upd（可更新）；q 按名称、ID、说明（设计稿 data-name）
@@ -125,17 +107,11 @@ export const versionOf = (p) => (isInstalled(p) && p.locked_version ? p.locked_v
 
 /**
  * 卡脚（设计稿 plFoot）：left 是 chip 或按钮，note 是中间的说明，right 是「详情」或按钮。
- * o.pendingKind 来自 PL-05（待生效的是停用时换说法）；o.requested 是已经申请过平台安装。
+ * o.pendingKind 来自 PL-05（待生效的是停用时换说法）。
  */
 export function cardFoot(p, o = {}) {
   const chip = (text, tone, icon) => ({ type: 'chip', text, tone, icon: icon || null });
   const detail = { type: 'detail' };
-  // 采集类连接器（数据库、代码仓库、REA）装在网关或旁路容器里，平台级；没装的只能管理员部署，不出安装按钮
-  if (p.collector) {
-    return p.collector.installed
-      ? { left: chip('平台已安装', 'teal', 'check'), note: p.usage_note || null, noteClass: 'xs muted ell grow', right: detail }
-      : { left: chip('未安装', 'gray'), note: '需要管理员部署', noteClass: 'xs faint ell grow', right: detail };
-  }
   switch (p.project_status) {
     case 'required': return { left: chip('必装 · 已启用', 'blue', 'lock'), right: detail };
     case 'enabled': return { left: chip('已启用', 'blue', 'check'), right: detail };
@@ -147,9 +123,6 @@ export function cardFoot(p, o = {}) {
     case 'offline': return { left: chip('离线部署不可用', 'gray', 'ban'), right: { type: 'button', label: '启用', disabled: true, title: '离线部署不可用' } };
     case 'not_applicable': return { left: chip('本项目不适用', 'gray'), note: p.usage_note || null, noteClass: 'xs faint ell grow', right: detail };
     case 'platform_installed': return { left: chip('平台已安装', 'teal', 'check'), note: p.usage_note || null, noteClass: 'xs muted ell grow', right: detail };
-    case 'platform_available':
-      if (o.requested) return { left: chip('未安装', 'gray'), right: { type: 'button', label: '已申请安装', icon: 'check', disabled: true, title: '已发送安装申请，等管理员处理' } };
-      return { left: chip('未安装', 'gray'), right: { type: 'button', label: '安装到平台', icon: 'download', action: 'install' } };
     default: return { note: '先建一个项目才能启用', noteClass: 'xs faint ell grow', right: detail };
   }
 }
@@ -162,7 +135,7 @@ export function recView(rec, item) {
 }
 
 // ---------- 启用、更新弹窗 ----------
-/** 兼容检查的行：通过的「页面接口」在不带页面的包上不列（设计稿迁移复用那屏是 5 行） */
+/** 兼容检查的行：通过的「页面接口」在不带页面的包上不列（这时只有 5 行） */
 export function compatRows(checks, ui) {
   const withPages = ui?.kind === 'page' || ui?.kind === 'subpages';
   return (checks || []).filter((c) => c.id !== 'page_api' || !c.ok || withPages);

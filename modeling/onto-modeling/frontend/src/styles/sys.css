@@ -1,7 +1,6 @@
 /* 系统设置（sys）补充样式；设计稿的 pl-* 在 plugins.css */
 .pl-pane.sy-wide{max-width:1100px}
 .sy-err{color:var(--red)}
-.sy-nowrap{white-space:nowrap}
 .pl-radio .opt.sy-dis{opacity:.5;cursor:not-allowed}
 .pl-ico.sy-bad{background:var(--r50);color:var(--red)}
 .seg button[disabled]{opacity:.45;cursor:not-allowed}

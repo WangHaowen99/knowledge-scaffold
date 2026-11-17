@@ -20,7 +20,7 @@ from .. import config
 MAX_PATH_LENGTH = 200
 MAX_SUMMARY_LENGTH = 300
 TYPES = (
-    "write", "mcp", "commit", "plugin", "evidence", "ops", "auth", "publish", "changeset",
+    "write", "mcp", "commit", "plugin", "ops", "auth", "publish", "changeset",
     "autobuild", "user", "contract",
 )
 ACTOR_KINDS = ("user", "agent", "mcp", "service", "system")
@@ -115,7 +115,6 @@ TYPE_BY_PATH = (
     (re.compile(r"/changesets(?:/|$)"), "changeset"),
     (re.compile(r"/autobuild(?:/|$)"), "autobuild"),
     (re.compile(r"/(?:packs|plugins)(?:/|$)"), "plugin"),
-    (re.compile(r"/evidence(?:/|$)"), "evidence"),
     (re.compile(r"^/api(?:/v1)?/onto-mcp/|/mcp(?:/|$)"), "mcp"),
 )
 

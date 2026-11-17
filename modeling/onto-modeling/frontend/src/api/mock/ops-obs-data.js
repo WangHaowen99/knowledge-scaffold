@@ -144,7 +144,6 @@ const SERIES = {
   guard_denies: [2, 3, 1, 4, 2, 6, 3, 2, 1, 2, 3, 23],
   check_failures: [5, 4, 6, 3, 7, 4, 3, 2, 4, 1, 1, 1],
   merges: [12, 18, 15, 21, 19, 14, 9, 16, 22, 17, 20, 3],
-  collections: [0, 1, 0, 0, 2, 0, 1, 0, 0, 1, 0, 1],
   reconnects: [0, 0, 3, 0, 0, 1, 0, 6, 0, 2, 0, 2],
 };
 // 时间范围、公共标签对计数类指标的缩放（演示联动）
@@ -155,7 +154,7 @@ export function metrics({ range = '24h', labels = '', p1 = false } = {}) {
   const k = (RANGE_SCALE[range] ?? 1) * (labels ? 0.12 : 1);
   const n = (v) => Math.max(0, Math.round(v * k));
   if (p1) {
-    // B3b 后端的形状：value 是数、unit 是计量单位；合入、证据采集恒为 0 并带 note。
+    // B3b 后端的形状：value 是数、unit 是计量单位；合入恒为 0 并带 note。
     // 合入按 I1 的口径带 unavailable（变更集合入还没计数，前端不画这张卡，R18）
     return {
       cards: [
@@ -167,7 +166,6 @@ export function metrics({ range = '24h', labels = '', p1 = false } = {}) {
         card('guard_denies', '守卫拒绝', n(23), '次', '', ''),
         card('check_failures', '检查失败', n(41), '次', '', ''),
         { ...card('merges', '合入', 0, '次', '', '变更集在 P2'), series: Array(12).fill(0), unavailable: true },
-        { ...card('collections', '证据采集', 0, '次', '', '业务系统的连接器在 P3'), series: Array(12).fill(0) },
         card('reconnects', '热更新与重连', n(14), '次', '', ''),
       ],
     };
@@ -182,7 +180,6 @@ export function metrics({ range = '24h', labels = '', p1 = false } = {}) {
       card('guard_denies', '守卫拒绝', n(23), '次', '', 'resource_write_guard 占 70%'),
       card('check_failures', '检查失败', n(41), '次', '', '写入即查 34 · 门禁链 7'),
       card('merges', '合入', n(186), '次', '', '自动合入 74%（单人 + L4）'),
-      card('collections', '证据采集', n(6), '次', '', '成功 4 · 部分完成 1 · 失败 1'),
       card('reconnects', '热更新与重连', n(14), '次', '', '失败 0 · 平均重连 2.3 秒'),
     ],
   };
@@ -195,7 +192,6 @@ const ATTR = {
     ['trace', '0.10.0', 1102, 1.1, 52000, 2, 3, 76],
     ['codegen', '0.9.2', 214, 2.8, 106000, 0, 9, 61],
     ['diagram', '0.6.0', 186, 0.5, 24000, 1, null, 88],
-    ['rev', '0.2.0', 96, 3.1, 130000, 5, 4, 58],
     ['industry-retail', '1.0.3', 312, 12.0, 11000, 0, 27, null],
   ],
   node: [
@@ -371,10 +367,6 @@ export function alertRules() {
     {
       id: 'guard-spike', name: '守卫拒绝突增', condition: 'guard.deny 环比 > 300%', window: '', level: 'info', state: 'ok', enabled: true,
       source: 'kernel', auto_action: null, runbook_md: '检查包是否越界写入。\n\n按包归因看是哪个包的拒绝变多，再看守卫日志里的路径。',
-    },
-    {
-      id: 'collect-fail', name: '采集任务失败', condition: 'evidence.job.failed ≥ 2', window: '1 小时', level: 'warning', state: 'ok', enabled: true,
-      source: 'rev@0.2.0', auto_action: null, runbook_md: '查看连接器网关日志。\n\n多数是凭据过期或不在访问时间窗口内。',
     },
     {
       id: 'reconnect-fail', name: '热更新重连失败', condition: 'assembly.reconnect.error > 0', window: '', level: 'critical', state: 'ok', enabled: true,

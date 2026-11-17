@@ -6,7 +6,7 @@ import { register as registerMaterials, stages } from '../src/api/mock/routes-ma
 import { register as registerResources, taskSeeds } from '../src/api/mock/routes-resources.js';
 import { DRAWIO, RES_PATHS } from '../src/api/mock/resources-data.js';
 import {
-  blockBody, blockLabel, cellPos, checkUpload, columnLetter, coverageChip, csvText, drawioLayout, feedbackView, fmtSize, metaText,
+  blockBody, blockLabel, cellPos, checkUpload, columnLetter, coverageChip, csvText, drawioLayout, fmtSize, metaText,
   parseDrawio, parseFileAnchor, parseFragment, pickDefault, purposeView, refCount, refRows, refSentence, refTarget, replaceName,
   revisionBanner, routeTarget, scaleText, sheetGrid, locateSheetCell, shortTime, splitHighlights, textChip, textSections, hasTextTab,
 } from '../src/pages/resources/resourcesModel.js';
@@ -48,14 +48,12 @@ test('默认选中被引用最多的资料；修订横幅取最近上传的那�
   assert.equal(revisionBanner(groups), null);
 });
 
-test('跳转参数：查看原文的锚点（含百分号编码）、上传文本版的路径、逐条查看的反馈', () => {
+test('跳转参数：查看原文的锚点（含百分号编码）、上传文本版的路径', () => {
   assert.deepEqual(parseFileAnchor(`file:${R02}#p:9.2`), { path: R02, fragment: 'p:9.2' });
   assert.deepEqual(parseFileAnchor(`file:${encodeURIComponent('resource/others/a#b.docx')}#p:1`), { path: 'resource/others/a#b.docx', fragment: 'p:1' });
-  assert.equal(parseFileAnchor('db:erp-prod/erp.replenish_std.max_qty'), null);
+  assert.equal(parseFileAnchor(`${R02}#p:9.2`), null, '不带 file: 的不是资料锚点');
   assert.deepEqual(routeTarget({ anchor: `file:${R02}#p:9.2` }), { kind: 'file', path: R02, fragment: 'p:9.2', source: true });
   assert.deepEqual(routeTarget({ path: 'resource/others/07-门店C特殊需求.pdf' }), { kind: 'file', path: 'resource/others/07-门店C特殊需求.pdf', fragment: null });
-  assert.deepEqual(routeTarget({ group: 'feedback', feedback: 'fb-1101-01' }), { kind: 'feedback', id: 'fb-1101-01' });
-  assert.deepEqual(routeTarget({ group: 'feedback' }), { kind: 'feedback', id: null });
   assert.equal(routeTarget({}), null);
 });
 
@@ -112,18 +110,6 @@ test('被引用：行文字、出处数、删除弹窗的那句话、点了去�
   assert.deepEqual(refTarget(items[0].target), { page: 'studio-table', query: { entry: 'operation:overage_and_hint' } });
   assert.deepEqual(refTarget({ type: 'diagram.flowchart', key: 'overage-flow' }), { page: 'studio-table', query: { entry: 'flowchart:overage-flow' } });
   assert.deepEqual(refTarget(items[1].target), { page: 'scenarios', query: { key: 's-05' } });
-});
-
-test('外部反馈：标题与说明、未处理和已处理两种第二行', () => {
-  const now = new Date('2026-11-01T12:00:00').getTime();
-  const open = feedbackView({ summary: '评测失分用例 4 条 · 多数和「超量与审批提示」有关', source: { service: '评测服务' }, received_at: new Date('2026-11-01T09:10:00').toISOString(), state: 'open' }, now);
-  assert.equal(open.title, '评测失分用例 4 条');
-  assert.equal(open.meta, '评测服务回传 · 11-01 09:10 · 多数和「超量与审批提示」有关');
-  assert.equal(open.icon, 'target');
-  assert.equal(open.state[0], '未处理');
-  const done = feedbackView({ summary: '线上反馈 1 条 · 「牛奶隔日到货的陈列上限取错了」', source: { service: '线上反馈' }, received_at: new Date('2026-10-29T16:25:00').toISOString(), state: 'handled' }, now);
-  assert.equal(done.meta, '「牛奶隔日到货的陈列上限取错了」 · 10-29 · 已转成修订建议');
-  assert.equal(done.icon, 'msg');
 });
 
 test('表格：列字母表头、行号从 1 起，合并单元格与整块高亮（同 develop ExcelView）；单元格位置；CSV 原样', () => {
@@ -200,7 +186,7 @@ function fakeServer(stage = 'l2', sc = {}) {
 }
 const all = (r) => r.body.groups.flatMap((g) => g.items);
 
-test('R-01：按流程图 / 表格 / 其他资料分组，含修订通知和扫描件；外部反馈分组随反馈演进包', () => {
+test('R-01：按流程图 / 表格 / 其他资料分组，含修订通知和扫描件', () => {
   const s = fakeServer();
   const r = s.call('GET', '/resources');
   assert.deepEqual(r.body.groups.map((g) => [g.key, g.items.length]), [['diagrams', 2], ['excel', 4], ['others', 8]]);
@@ -211,20 +197,16 @@ test('R-01：按流程图 / 表格 / 其他资料分组，含修订通知和扫�
   assert.equal(rev.revision_task.conversation_id, 'c7a1e2f03b44');
   assert.ok(!('scanned' in rev), '不把 mock 自用字段漏给页面');
   assert.equal(all(r).find((x) => x.path === R02).referenced, 13);
-  assert.deepEqual(r.body.feedback_group, { enabled: true, count: 2 });
   assert.equal(r.body.purposes.length, 5);
-  const off = fakeServer('l2', { feedback: 'off' });
-  assert.equal(off.call('GET', '/resources').body.feedback_group.enabled, false);
-  assert.equal(off.call('GET', '/feedback').body.plugin_disabled, true);
+  assert.equal('feedback_group' in r.body, false);
 });
 
-test('读资料中只有最早那 7 份、没有引用和反馈；还没传资料时为空', () => {
+test('读资料中只有最早那 7 份、没有引用；还没传资料时为空', () => {
   const s = fakeServer('materials');
   const r = s.call('GET', '/resources');
   assert.equal(all(r).length, 7);
   assert.equal(all(r).find((x) => x.path === R02).coverage.label, '读到 §10 · 还剩 §10–§12');
   assert.equal(s.call('GET', '/resources/references', { query: `path=${R02}` }).body.total, 0);
-  assert.equal(s.call('GET', '/resources').body.feedback_group.count, 0);
   assert.equal(all(fakeServer('materials-empty').call('GET', '/resources')).length, 0);
 });
 
@@ -304,18 +286,6 @@ test('R-06：不带 around 时高亮所有出处，带 around 只高亮那一段
   const scan = s.call('GET', '/resources/preview', { query: 'path=resource/others/07-门店C特殊需求.pdf' }).body;
   assert.deepEqual(scan.blocks, []);
   assert.equal(scan.coverage.complete, false);
-});
-
-test('R-11 / R-12：外部反馈列表与标记状态', () => {
-  const s = fakeServer();
-  const list = s.call('GET', '/feedback').body.items;
-  assert.deepEqual(list.map((x) => [x.id, x.state]), [['fb-1101-01', 'open'], ['fb-1029-01', 'handled']]);
-  assert.equal(list[0].items.length, 4);
-  assert.equal(s.call('GET', '/feedback', { query: 'state=open' }).body.items.length, 1);
-  const r = s.call('PATCH', '/feedback/fb-1101-01', { body: { state: 'dismissed' } });
-  assert.equal(r.body.state, 'dismissed');
-  assert.equal(s.call('PATCH', '/feedback/fb-1101-01', { body: { state: 'nope' } }).status, 400);
-  assert.equal(s.call('PATCH', '/feedback/none', { body: { state: 'open' } }).status, 404);
 });
 
 test('F-05 表格预览、F-04 原文件（HTML 带沙箱头，下载带文件名）；不是资料区的路径交给别人', async () => {

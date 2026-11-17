@@ -6,13 +6,12 @@ import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import { buildClientConfigs } from '../../lib/mcpClientConfig.js';
-import { evidenceFromSources } from '../../state/evidence.js';
 import {
   Button, Check, Chip, Field, Icon, Inp, Modal, Note, Seg, Table, Toggle,
 } from '../../ui/index.jsx';
 import {
   SERVER_STATUS, TRANSPORT_LABEL, TTL_OPTIONS, defaultConfigTab, mdhm, packToolsText, primaryEndpoint, scopeLabel, scopeTone,
-  tokenBody, tokenProblems, toolList, toolsText, visibleMcp,
+  tokenBody, tokenProblems, toolList, toolsText,
 } from './settingsModel.js';
 
 const CFG_TABS = [['r', 'Read 配置'], ['c', 'Change 配置'], ['f', '完整配置']];
@@ -31,13 +30,11 @@ export function McpServersSection({ d, put, archived }) {
   const { api, user } = useApp();
   const { pid } = useProject();
   const [busy, setBusy] = useState(false);
-  // 启停按完整列表算，显示时去掉证据源相关的（本期不开放）
-  const all = d.servers?.items || [];
-  const items = visibleMcp(all, evidenceFromSources(d.sources));
+  const items = d.servers?.items || [];
 
   const toggle = async (srv, on) => {
     if (archived) { toast('项目已归档，只能查看', 'lock'); return; }
-    const disabled = all.filter((x) => (x.name === srv.name ? !on : !x.enabled)).map((x) => x.name);
+    const disabled = items.filter((x) => (x.name === srv.name ? !on : !x.enabled)).map((x) => x.name);
     setBusy(true);
     try {
       put('servers', await api.saveProjectMcpServers(pid, { disabled }));
@@ -185,7 +182,7 @@ export function McpOutSection({ d, reload }) {
   const url = primaryEndpoint(mcp);
   const tools = toolList(mcp?.toolsets);
   const cfgs = configsOf(mcp);
-  const packTools = visibleMcp(mcp?.pack_tools, evidenceFromSources(d.sources));
+  const packTools = mcp?.pack_tools || [];
 
   const doRevoke = async () => {
     try {

@@ -157,15 +157,11 @@ async def _start(project_id: str, node_id: str, request: Request, *, scoped: boo
 
 
 async def _start_kernel_node(project_id: str, root, node: dict, kind: str, body: dict, request: Request) -> dict:
-    """脚本节点在沙箱里跑完再返回；人工节点出一张决策卡；外部节点要的提供方本期都不可用。"""
+    """脚本节点在沙箱里跑完再返回；人工节点出一张决策卡。"""
     from ..services.agent_sessions import manager
     from . import sessions
 
     try:
-        if kind == "external":
-            missing = node_kinds.missing_providers([node])
-            raise node_kinds.NodeRunError("pack_unavailable", "需要的连接器不可用", 409,
-                                          {"reason": "not_installed", "providers": missing})
         if kind == "script":
             run = await asyncio.to_thread(node_kinds.run_script, deps.workspaces, project_id, node,
                                           actor=deps.actor(request))

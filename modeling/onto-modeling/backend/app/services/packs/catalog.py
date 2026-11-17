@@ -66,7 +66,6 @@ def card(manager, name: str, project: dict | None) -> dict | None:
         # 必装（core）：不带项目时 project_status 为空，新建向导靠它锁住开关
         "required": bool(manifest.required),
         "converter": converter,
-        "collector": None,
     }
 
 
@@ -86,57 +85,6 @@ def _converter(name: str, manifest) -> dict | None:
     return {"types": types, "default_for": default_for, "license": str(spec.get("license") or "")}
 
 
-# 采集类连接器（数据库、代码仓库、REA）：不是包仓库里的包，装在连接器网关或旁路容器里（ADR-0082、0084）。部署了网关时
-# 随目录列在多源连接器里，平台级、不按项目启用；网关不通时不列，目录照常出
-EVIDENCE_TYPE_LABELS = {"entity": "实体", "field": "字段", "relation": "关系", "constraint": "约束", "operation": "操作",
-                        "rule": "规则", "flow": "流程", "profile": "数据画像", "sample": "脱敏样本", "term": "术语"}
-
-
-def collector_cards() -> list[dict]:
-    from ..material_conversion import gateway
-
-    if not gateway.base_url():
-        return []
-    from ...evidence import collector
-
-    try:
-        providers = collector.catalog() or []
-    except Exception:  # noqa: BLE001 - 网关回了读不懂的东西：目录照常出，只是不列采集类
-        return []
-    return [_collector_card(item) for item in providers if isinstance(item, dict) and item.get("id")]
-
-
-def _collector_card(item: dict) -> dict:
-    types = [str(value) for value in item.get("evidence_types") or []]
-    labels = [EVIDENCE_TYPE_LABELS.get(value, value) for value in types]
-    installed = bool(item.get("installed", True))
-    version = str(item.get("version") or "")
-    return {
-        "name": str(item["id"]), "version": version, "label": str(item.get("label") or item["id"]),
-        "description": f"采集{'、'.join(labels)}" if labels else "", "category": "provider",
-        "publisher": {"kind": "official", "label": "平台"}, "ui": None, "batch": None, "badges": [],
-        "latest": version, "channel": "stable",
-        # 没装（如没部署 REA 旁路）只能由管理员部署，平台安装（PL-19）仍不开放
-        "project_status": "platform_installed" if installed else "platform_available",
-        "locked_version": None, "usage_note": None, "default_on": False, "required": False, "converter": None,
-        "collector": {
-            "kind": str(item.get("kind") or ""), "evidence_types": types,
-            "input": "artifact" if item.get("input") == "artifact" else "connection",
-            "self_service": bool(item.get("self_service")), "installed": installed,
-            "readonly_method": str(item.get("readonly_method") or ""), "license_note": str(item.get("license_note") or ""),
-        },
-    }
-
-
-def _collector_detail(found: dict) -> dict:
-    """PL-02 给采集类连接器：没有包内容、流程节点和版本记录，只有卡片上的说明。"""
-    return {
-        **found, "size": 0, "files": 0, "released_at": None, "released_by": None, "enabled_at": None,
-        "requires": {"depends": {}, "kernel_api": "", "page_api": None}, "flow_insertions": [], "project_stats": None,
-        "contents": [], "config": [], "changelog": [], "hot_level": "H2", "effective": "immediate",
-    }
-
-
 def catalog(manager, *, category: str = "", q: str = "", project_id: str = "", viewer: str = "",
             installed_only: bool = False, updatable_only: bool = False) -> dict:
     """PL-01：插件目录，不分页（平台包总数上限 500）。viewer 自己的私有包排在公开包后面。"""
@@ -147,11 +95,10 @@ def catalog(manager, *, category: str = "", q: str = "", project_id: str = "", v
     if wanted - set(CATEGORY_KEYS):
         raise PackError("invalid_argument", f"category 只能取 {'|'.join(CATEGORY_KEYS)}", 400,
                         {"fields": {"category": "enum"}})
-    # 多源连接器：包仓库里的只列转换器（ADR-0073），再加网关里的采集类连接器（同名的以包仓库为准）
+    # 多源连接器：包仓库里的只列转换器（ADR-0073）
     names = [*repository.names()[:500], *repository.private_names(viewer)]
     cards = [item for item in (card(manager, name, project) for name in names)
              if item and (item["category"] != "provider" or item["converter"] is not None)]
-    cards += [item for item in collector_cards() if item["name"] not in names]
     counts = {key: sum(1 for item in cards if item["category"] == key) for key in CATEGORY_KEYS}
     counts.update(all=len(cards),
                   enabled=sum(1 for item in cards if item["project_status"] in ("required", "enabled", "update", "pending")),
@@ -178,11 +125,8 @@ def catalog(manager, *, category: str = "", q: str = "", project_id: str = "", v
 def detail(manager, name: str, *, project_id: str = "", version: str = "") -> dict:
     """PL-02：插件详情。版本缺省取项目锁定的版本，没有则取 stable 最新版。"""
     repository = manager.packs.repository
-    if not repository.versions(name):
-        found = next((item for item in collector_cards() if item["name"] == name), None)
-        if found is None:
-            raise PackError("pack_not_found", f"包 {name} 不存在", 404)
-        return _collector_detail(found)
+    if not repository.versions(name) or repository.retired(name):
+        raise PackError("pack_not_found", f"包 {name} 不存在", 404)
     project = project_packs(manager, project_id) if project_id else None
     if not version and project_id:
         lock = lockfile.read(manager.project_root(project_id))

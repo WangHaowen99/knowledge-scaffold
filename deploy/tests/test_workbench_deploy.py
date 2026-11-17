@@ -752,7 +752,7 @@ def test_onto_modeling_compose_serves_ops_on_business_port_by_default(compose_pa
 
 
 def test_redeploy_app_replaces_gateway_and_keeps_socket_override(tmp_path: Path) -> None:
-    """快速重部署要连同两个网关、REA 旁路容器一起替换，并沿用 deploy.sh 生成的 socket 挂载，否则挂载随容器重建丢失。"""
+    """快速重部署要连同两个网关一起替换，并沿用 deploy.sh 生成的 socket 挂载，否则挂载随容器重建丢失。"""
     deploy_dir = tmp_path / "deploy-dir"
     deploy_dir.mkdir()
     shutil.copy2(
@@ -792,10 +792,10 @@ printf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"\
     assert result.returncode == 0, result.stdout + result.stderr
     arguments = calls.read_text(encoding="utf-8").split("\n")
     assert "docker-compose.jiuwenbox.yml" in arguments
-    assert arguments[-5:-1] == ["onto-modeling", "sandbox-gateway", "connector-gateway", "rea-sidecar"]
+    assert arguments[-4:-1] == ["onto-modeling", "sandbox-gateway", "connector-gateway"]
     images = (deploy_dir / "images.env").read_text(encoding="utf-8")
     assert "CONNECTOR_GATEWAY_IMAGE=onto-modeling-connector-gateway:v2" in images
-    assert "REA_SIDECAR_IMAGE=onto-modeling-rea-sidecar:v2" in images
+    assert "REA_SIDECAR_IMAGE" not in images
     assert "ONTO_WEB_IMAGE=onto-modeling:v2" in (deploy_dir / "images.env").read_text(encoding="utf-8")
 
 

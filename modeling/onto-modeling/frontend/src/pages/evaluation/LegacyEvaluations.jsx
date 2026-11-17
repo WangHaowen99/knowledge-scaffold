@@ -1,13 +1,11 @@
 // 旧版评测记录（ES-09～ES-12）：照 develop 左栏「旧版评测记录（历史链路）」和 EvalRunDetail「评测执行详情」。
 // 旧运行器已随 ADR-0020 删除：没有「停止旧任务」「对账旧任务」；完整回答读报告附带的 answers.json；
-// 「评测优化」与新评测同一做法，整理成一批外部反馈交给反馈演进（ADR-0092）。
-// 用法：<LegacyEvaluations pid={pid} tasks={tasks} open={…} onClose={…} />（tasks 是页面的 useCommandTasks）
+// 用法：<LegacyEvaluations pid={pid} open={…} onClose={…} />
 import { useEffect, useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
 import { Button, Modal } from '../../ui/index.jsx';
-import { Doc, message, useAnswerPreview, useLoad } from './EvaluationDoc.jsx';
-import { EVOLUTION_DISABLED } from './evaluationModel.js';
+import { Doc, useAnswerPreview, useLoad } from './EvaluationDoc.jsx';
 import {
   POLL_MS, STATUS_TEXT, TERMINAL, VERDICTS, VERDICT_TEXT, formatDuration, phaseIndex, verdictCounts, PHASES,
 } from './evaluationText.js';
@@ -140,11 +138,10 @@ function CaseRow({ item, index, open, onToggle, onLoadFullAnswer }) {
   );
 }
 
-function DetailBody({ pid, st, evolution, evolutionEnabled, tasks, onOpenReport }) {
+function DetailBody({ pid, st, onOpenReport }) {
   const { api } = useApp();
   const [filter, setFilter] = useState(null);
   const [openIndex, setOpenIndex] = useState(null);
-  const [busy, setBusy] = useState(false);
   const cases = st.cases || [];
   const counts = verdictCounts(cases);
   const finished = VERDICTS.reduce((sum, [key]) => sum + counts[key], 0);
@@ -160,19 +157,7 @@ function DetailBody({ pid, st, evolution, evolutionEnabled, tasks, onOpenReport 
     }
     preview.open(item.result_id);
   };
-  const evolve = async () => {
-    setBusy(true);
-    try {
-      const result = await api.optimizeLegacyEvaluation(pid, evolution.report.replace(/^reports\//, '').replace(/\.md$/, ''));
-      await tasks.send({ command: result.command, args: result.args, text: '评测优化' });
-    } catch (e) {
-      toast(message(e), 'alert');
-    } finally {
-      setBusy(false);
-    }
-  };
   const visible = cases.map((item, index) => ({ item, index })).filter(({ item }) => !filter || item.verdict === filter);
-  const evolutionBlock = !tasks ? '请在项目内打开已发布版本后执行评测优化' : evolutionEnabled ? '' : EVOLUTION_DISABLED;
   return (
     <div className="erd-body">
       <MetaLine st={st} />
@@ -224,14 +209,9 @@ function DetailBody({ pid, st, evolution, evolutionEnabled, tasks, onOpenReport 
         {!cases.length ? <div className="erd-empty">启动评测后，这里会实时展示每条用例的执行状态</div> : null}
         {cases.length > 0 && !visible.length ? <div className="erd-empty">没有「{VERDICT_TEXT[filter]}」的用例</div> : null}
       </div>
-      {(st.report || evolution) && !running ? (
+      {st.report && !running ? (
         <div className="erd-footer">
-          {st.report ? <Button onClick={() => onOpenReport(stem)}>查看完整报告</Button> : null}
-          {evolution ? (
-            <span data-pop={evolutionBlock || '根据最近一轮评测的失分与异常用例归因并优化知识包'}>
-              <Button kind="primary" disabled={!!evolutionBlock || busy || tasks?.sending} onClick={evolve}>评测优化</Button>
-            </span>
-          ) : null}
+          <Button onClick={() => onOpenReport(stem)}>查看完整报告</Button>
         </div>
       ) : null}
       {preview.modal}
@@ -254,7 +234,7 @@ function LegacyReport({ pid, stem, onClose }) {
 }
 
 // open / onClose 由页面控制（发布页「⋯」菜单里的「旧版评测记录」）
-export function LegacyEvaluations({ pid, tasks, open, onClose }) {
+export function LegacyEvaluations({ pid, open, onClose }) {
   const { api } = useApp();
   const [info, setInfo] = useState(null);
   const [report, setReport] = useState('');
@@ -273,8 +253,7 @@ export function LegacyEvaluations({ pid, tasks, open, onClose }) {
     <>
       <Modal open={open} onClose={onClose} w={880} className="erd-modal"
         title={<span className="row">评测执行详情{STATUS_TEXT[status] ? <span className={`erd-status is-${status}`}>{STATUS_TEXT[status]}</span> : null}</span>}>
-        <DetailBody pid={pid} st={st} evolution={info?.evolution} evolutionEnabled={!!info?.evolution_enabled} tasks={tasks}
-          onOpenReport={(stem) => setReport(stem)} />
+        <DetailBody pid={pid} st={st} onOpenReport={(stem) => setReport(stem)} />
       </Modal>
       {report ? <LegacyReport pid={pid} stem={report} onClose={() => setReport('')} /> : null}
     </>

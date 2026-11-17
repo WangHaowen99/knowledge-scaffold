@@ -7,7 +7,6 @@ PB-05 记录详情、PB-06 包清单、PB-07 下载。PB-05～PB-07 也接受服
 
 from __future__ import annotations
 
-import json
 
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -16,7 +15,7 @@ from ..api import deps, views
 from ..api.errors import ApiError
 from ..governance import telemetry
 from ..services import (
-    audit, feedback_inbox, knowledge_hub, mainline, ownership, package_evaluations, publish, release_store, service_tokens, streams,
+    audit, knowledge_hub, mainline, ownership, package_evaluations, publish, release_store, service_tokens, streams,
 )
 from ..services.service_tokens import SCOPE_RELEASES_READ
 from ..services.workspace import WorkspaceError
@@ -47,20 +46,7 @@ def urls(project_id: str, version: str) -> dict:
     return {"manifest_url": f"{base}/manifest", "download_url": f"{base}/download"}
 
 
-def _feedback_counts(root) -> dict[str, int]:
-    folder = root / feedback_inbox.FEEDBACK_DIR
-    counts: dict[str, int] = {}
-    for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
-        try:
-            version = json.loads(path.read_text(encoding="utf-8")).get("release_version")
-        except (OSError, ValueError):
-            continue
-        if version:
-            counts[version] = counts.get(version, 0) + 1
-    return counts
-
-
-def record_view(project_id: str, entry: dict, root, feedback: dict[str, int] | None = None) -> dict:
+def record_view(project_id: str, entry: dict, root) -> dict:
     """ReleaseRecord（契约 7.14），另带 project_id 与清单、下载地址（三份契约的下游直接用）。"""
     package = entry.get("package") or {}
     fmt = entry.get("format")
@@ -84,7 +70,6 @@ def record_view(project_id: str, entry: dict, root, feedback: dict[str, int] | N
             {"at": deps.iso(pull.get("at")), "by_token": pull.get("by", ""), "variant": pull.get("variant", "standard")}
             for pull in entry.get("pulls") or []
         ],
-        "feedback_count": (feedback or {}).get(entry["version"], 0),
         "size": package.get("size"),
         "sha256": package.get("sha256"),
         "hub": entry.get("hub"),
@@ -301,10 +286,6 @@ async def create_release(project_id: str, request: Request):
     view["hub"] = {key: record.get(key) for key in publish.HUB_FIELDS}
     if record.get("hub_members"):
         view["hub_members"] = record["hub_members"]
-    # 评测服务那边可能在等这次发布（评测优化后的回写），带着用户登录尽力回写一次，失败不影响发布
-    writeback = package_evaluations.after_publish(project_id, subject, token, {**record, "status": "committed"})
-    if writeback:
-        view["evaluation_writeback"] = writeback
     streams.publish_project(project_id, "release.updated", {"release": view})  # EP-19
     return JSONResponse(status_code=201, content=view)
 
@@ -316,8 +297,7 @@ async def create_release(project_id: str, request: Request):
 def list_releases(project_id: str, request: Request, cursor: str = "", limit: int = 0):
     """PB-04：发布记录（只给所有者；服务令牌用 X-01）。"""
     root = deps.require_owner(project_id, request)
-    feedback = _feedback_counts(root)
-    items = [record_view(project_id, entry, root, feedback) for entry in publish.releases(deps.workspaces, project_id)]
+    items = [record_view(project_id, entry, root) for entry in publish.releases(deps.workspaces, project_id)]
     page = deps.page(items, cursor, limit, {"project_id": project_id})
     return {"items": page["items"], "next_cursor": page["next_cursor"]}
 
@@ -326,7 +306,7 @@ def list_releases(project_id: str, request: Request, cursor: str = "", limit: in
 def get_release(project_id: str, version: str, request: Request):
     _reader(request, project_id)
     root = deps.workspaces.project_root(project_id)
-    return record_view(project_id, find_release(project_id, version), root, _feedback_counts(root))
+    return record_view(project_id, find_release(project_id, version), root)
 
 
 @router.get("/releases/{version}/manifest")
@@ -373,8 +353,7 @@ def download_release(project_id: str, version: str, request: Request, variant: s
         try:
             root = deps.workspaces.project_root(project_id)
             streams.publish_project(project_id, "release.updated",
-                                    {"release": record_view(project_id, find_release(project_id, version), root,
-                                                            _feedback_counts(root))})
+                                    {"release": record_view(project_id, find_release(project_id, version), root)})
         except (ApiError, WorkspaceError):
             pass
     else:

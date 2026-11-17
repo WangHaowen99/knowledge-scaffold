@@ -1,5 +1,5 @@
 // mock 数据 · 项目设置（合成场景）：本项目的能力（PL-05）、助手可用的 MCP 服务器（P-14）、对外 MCP（M-01、M-02）
-// 版本与状态取自设计稿 proj-settings：场景模拟有一个待生效的升级，代码生成可回滚，图示可升级，迁移复用停用过。
+// 版本与状态取自设计稿 proj-settings：场景模拟有一个待生效的升级，代码生成可回滚，图示可升级。
 import { buildClientConfigs } from '../../lib/mcpClientConfig.js';
 
 const MIN = 60 * 1000;
@@ -15,15 +15,6 @@ const dayAt = (daysAgo, h, m) => {
 const UI = {
   kernel: { kind: 'kernel', note: '内核：工作台 · Studio · 资料 · 发布' },
   page: (id, title) => ({ kind: 'page', pages: [{ id, title }], note: `左栏页面：${title}` }),
-  rev: {
-    kind: 'subpages',
-    subpages: [
-      { parent: 'resources', id: 'sources', title: '数据源' },
-      { parent: 'resources', id: 'snapshots', title: '采集与快照' },
-      { parent: 'resources', id: 'schema', title: '证据浏览器' },
-    ],
-    note: '资料页多出数据源、快照、证据 3 个子页',
-  },
   none: { kind: 'none', note: '无独立页面' },
 };
 
@@ -40,26 +31,18 @@ export function projectPacks() {
       name: 'trace', label: '场景模拟', ui: UI.page('scenarios', '场景模拟'), locked_version: '0.9.1', latest_available: '0.10.0', status: 'pending',
       pending: { from: '0.9.1', to: '0.10.0', kind: 'upgrade', effective: 'next_message' },
     }),
-    pk({ name: 'knowledge', label: '知识沉淀', ui: UI.page('knowledge', '知识沉淀'), locked_version: '0.6.0' }),
     pk({ name: 'codegen', label: '代码生成与求解', ui: UI.page('scripts', '代码生成'), locked_version: '0.9.2', rollback_to: '0.9.1' }),
-    pk({ name: 'rev', label: '系统逆向建模', ui: UI.rev, locked_version: '0.2.0' }),
     pk({ name: 'diagram', label: '图示', locked_version: '0.5.0', latest_available: '0.6.0' }),
-    pk({ name: 'evo', label: '反馈演进', locked_version: '0.3.0' }),
     pk({ name: 'industry-retail', label: '零售连锁', category: 'industry', ui: null, locked_version: '1.0.3' }),
     pk({ name: 'sys-erp-generic', label: 'ERP 通用表结构', category: 'system', ui: null, locked_version: '0.3.0' }),
-    pk({ name: 'migrate', label: '迁移复用', locked_version: '0.2.0', status: 'disabled', enabled_at: null }),
   ];
 }
 
 // 只动了行业包、系统知识包这类纯数据包时立即生效（contract-changes B3a 第 7 条）
 export const DATA_CATEGORIES = ['industry', 'system'];
 
-// 「上次锁定版本」之外，PL-06 新启用时用目录里的最新版；离线部署不可用的包拒绝启用
-export const OFFLINE_PACKS = ['websearch'];
-
 export function mcpServers() {
   return [
-    { name: 'evidence', transport: 'stdio', target: 'onto evidence-mcp', origin: 'builtin', read_only: true, status: 'running', tools: ['evidence.search', 'evidence.show', 'evidence.where-used', 'evidence.lineage', 'evidence.diff'], enabled: true, enabled_globally: true },
     { name: 'flow', transport: 'stdio', target: 'onto flow-mcp', origin: 'builtin', read_only: true, status: 'running', tools: ['flow.get'], enabled: true, enabled_globally: true },
     { name: 'replenish-std-lookup', transport: 'http', target: 'https://mcp.example.com/std', origin: 'global', read_only: false, status: 'running', tools: ['std_clause_search', 'std_clause_get', 'std_version_diff'], enabled: true, enabled_globally: true },
     { name: 'mermaid-render', transport: 'stdio', target: 'npx mermaid-mcp', origin: 'global', read_only: false, status: 'stopped', tools: [], enabled: false, enabled_globally: true },
@@ -102,7 +85,6 @@ export function mcpOverview(pid, { archived = false } = {}) {
     ],
     pack_tools: [
       { name: 'flow.get', scope: 'ontology.read', read_only: true, pack: 'core' },
-      ...['search', 'show', 'where-used', 'lineage', 'diff', 'er'].map((t) => ({ name: `evidence.${t}`, scope: 'ontology.read', read_only: true, pack: 'rev' })),
     ],
     scope_catalog: [
       { scope: 'ontology.read', description: '列出、读取对象 / 操作 / 规则' },
@@ -142,23 +124,23 @@ export function mcpTokens() {
 }
 
 // ---------- 自主构建策略（AB-01～AB-04，路由在 routes-autobuild.js） ----------
-export const PLATFORM_LIMITS = { allow_production_collection: true };
-// 只读字段；budget 是 F6 取消的预算，老客户端发来也不收
-const READONLY_POLICY_KEYS = ['boundary_text', 'platform_limits', 'last_run', 'revision', 'base_revision', 'budget'];
+// 同后端：请求体只收 scope、advanced 两组，组内给了哪项改哪项；别的（F6 取消的 budget、已删的 production_collection、只读字段）带了也不收
+const POLICY_GROUPS = ['scope', 'advanced'];
 
-// AB-02 的请求体并进当前策略（只读字段不收）
+// AB-02 的请求体、AB-03 的 policy_overrides 并进当前策略
 export function mergePolicy(current, body) {
   const next = { ...current };
-  Object.keys(body || {}).forEach((k) => { if (!READONLY_POLICY_KEYS.includes(k)) next[k] = body[k]; });
+  POLICY_GROUPS.forEach((g) => {
+    const part = body?.[g];
+    if (part && typeof part === 'object' && !Array.isArray(part)) next[g] = { ...(current[g] || {}), ...part };
+  });
   return next;
 }
 
 // 返回 null 表示合法；否则 [status, code, message, details]
-export function checkPolicy(p, sourceIds) {
+export function checkPolicy(p) {
   const t = p.advanced?.confidence_threshold;
   if (t != null && !(t >= 0.5 && t <= 1)) return [400, 'invalid_argument', '阈值在 0.5～1.0 之间', { fields: { 'advanced.confidence_threshold': 'out_of_range' } }];
-  const bad = (p.production_collection || []).find((x) => !sourceIds.includes(x.source_id));
-  if (bad) return [422, 'source_not_authorized', '本项目没有获授权使用这个数据源', { source_id: bad.source_id }];
   return null;
 }
 
@@ -172,21 +154,17 @@ export function normalizeScope(scope, sliceIds) {
   return { ...s, slice_ids: kept };
 }
 
-// AB-03：按策略算这次的范围（flow 里没完成的；F8 起只有「全部」）、生产库、警告
-export function previewOf(policy, flowSlices, sourceName = (id) => id) {
+// AB-03：按策略算这次的范围（flow 里没完成的；F8 起只有「全部」）、警告
+export function previewOf(policy, flowSlices) {
   const scope = policy.scope || {};
   const slices = (flowSlices || []).map((s) => {
     const open = s.group !== 'done';
     return { id: s.id, name: s.name, current: open ? '未完成' : '已确认', included: open && (scope.mode !== 'selected' || (scope.slice_ids || []).includes(s.id)), group: s.group };
   });
-  const allowed = (policy.production_collection || []).filter((x) => x.allowed);
-  const production = allowed.length
-    ? `允许采集 ${allowed.map((x) => `${sourceName(x.source_id)}${x.window ? `（${x.window.start} – ${x.window.end}）` : ''}`).join('、')}`
-    : '不采集';
   const warnings = slices.some((s) => s.included && s.group === 'now') ? ['有 1 个未决决策会被按策略决定'] : [];
   return {
     slices: slices.map(({ group, ...s }) => s),
-    production, below_threshold_text: BELOW[policy.advanced?.below_threshold] || BELOW.conservative_assumption,
+    below_threshold_text: BELOW[policy.advanced?.below_threshold] || BELOW.conservative_assumption,
     warnings, queued: false, queue_position: null,
   };
 }

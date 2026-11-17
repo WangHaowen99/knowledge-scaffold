@@ -195,10 +195,22 @@ def test_old_events_and_direct_records(env):
 
 def test_limits_defaults_and_corrupt_config(env):
     limits = env.svc.limits()
-    assert limits["per_user"] == {"concurrent_sessions": 3, "daily_tokens": 10_000_000,
-                                  "collections_per_source_per_hour": 6}
-    assert limits["per_project"] == {"online_engines": 1, "monthly_tokens": 100_000_000, "snapshot_git_mb": 20}
+    assert limits["per_user"] == {"concurrent_sessions": 3, "daily_tokens": 10_000_000}
+    assert limits["per_project"] == {"online_engines": 1, "monthly_tokens": 100_000_000}
     env.svc.limits_path.parent.mkdir(parents=True, exist_ok=True)
+    # 证据采集删除前存的采集次数、快照大小：不读，单独设置也不认，下次保存时去掉
+    env.svc.limits_path.write_text(json.dumps({
+        "per_user": {"daily_tokens": 7, "collections_per_source_per_hour": 2}, "per_project": {"snapshot_git_mb": 50},
+        "overrides": [{"id": "qo-000001", "subject": {"kind": "user", "id": "alice"},
+                       "item": "collections_per_source_per_hour", "value": 1}],
+    }), encoding="utf-8")
+    old = env.svc.limits()
+    assert old["per_user"] == {"concurrent_sessions": 3, "daily_tokens": 7}
+    assert old["per_project"] == {"online_engines": 1, "monthly_tokens": 100_000_000} and old["overrides"] == []
+    env.svc.set_limits({"daily_tokens": 8}, {})
+    stored = json.loads(env.svc.limits_path.read_text(encoding="utf-8"))
+    assert "collections_per_source_per_hour" not in stored["per_user"] and "snapshot_git_mb" not in stored["per_project"]
+    assert stored["overrides"] == []
     env.svc.limits_path.write_text("{坏的", encoding="utf-8")
     assert env.svc.limits()["per_user"]["daily_tokens"] == 10_000_000
     saved = env.svc.set_limits({"daily_tokens": 10}, {"online_engines": 9, "monthly_tokens": 0})
@@ -299,30 +311,6 @@ def test_remaining(env):
     assert env.svc.remaining(pid, "alice") == {"tokens": None, "dimension": None}
 
 
-def test_collections_per_source_per_hour(env):
-    env.svc.set_limits({"collections_per_source_per_hour": 2}, {})
-    clock = {"now": NOW}
-
-    def now():
-        return clock["now"]
-
-    env.svc.clock = now
-    env.svc.check_collection("ds-orders", "alice", record=False)  # 只查不记
-    env.svc.check_collection("ds-orders", "alice")
-    clock["now"] += 60
-    env.svc.check_collection("ds-orders", "alice")
-    with pytest.raises(quota.QuotaExceeded) as caught:
-        env.svc.check_collection("ds-orders", "alice")
-    assert caught.value.details["quota"] == "collections_per_source_per_hour"
-    assert caught.value.details["used"] == 2 and caught.value.details["reset_at"] == "2026-11-15T13:00:00.000Z"
-    env.svc.check_collection("ds-stock", "alice")  # 另一个数据源各算各的
-    env.svc.check_collection("ds-orders", "bob")  # 另一个用户各算各的
-    clock["now"] = NOW + 3600  # 第一次采集滑出窗口
-    env.svc.check_collection("ds-orders", "alice")
-    with pytest.raises(quota.QuotaExceeded):
-        env.svc.check_collection("ds-orders", "alice")
-
-
 # ---- 管理接口与闸门 ----
 
 
@@ -365,18 +353,18 @@ def test_get_and_put_quotas(env):
     client = _app()
     body = client.get("/api/v1/admin/quotas").json()
     assert body == {
-        "per_user": {"concurrent_sessions": 3, "daily_tokens": 10_000_000, "collections_per_source_per_hour": 6},
-        "per_project": {"online_engines": 1, "monthly_tokens": 100_000_000, "snapshot_git_mb": 20},
+        "per_user": {"concurrent_sessions": 3, "daily_tokens": 10_000_000},
+        "per_project": {"online_engines": 1, "monthly_tokens": 100_000_000},
         "overrides": [],
-        "not_enforced": ["collections_per_source_per_hour", "snapshot_git_mb"],  # 证据源本期只留接口
+        "not_enforced": [],
     }
     saved = client.put("/api/v1/admin/quotas", json={
-        "per_user": {"daily_tokens": 5000}, "per_project": {"online_engines": 4, "snapshot_git_mb": 50},
+        "per_user": {"daily_tokens": 5000}, "per_project": {"online_engines": 4, "monthly_tokens": 50},
         "overrides": [{"ignored": True}],
     })
     assert saved.status_code == 200, saved.text
     assert saved.json()["per_user"]["daily_tokens"] == 5000
-    assert saved.json()["per_project"] == {"online_engines": 1, "monthly_tokens": 100_000_000, "snapshot_git_mb": 50}
+    assert saved.json()["per_project"] == {"online_engines": 1, "monthly_tokens": 50}
     assert env.svc.limit("daily_tokens", "user", "alice") == 5000  # 立即生效
     entry = next(item for item in audit.read(20) if (item.get("detail") or {}).get("action") == "quota.update")
     assert entry["actor"] == "local" and entry["detail"]["per_user.daily_tokens"] == 5000
@@ -389,7 +377,7 @@ def test_get_and_put_quotas(env):
     assert bad.json()["details"]["fields"] == {
         "per_user.daily_tokens": "non_negative_int", "per_user.concurrent_sessions": "non_negative_int",
         "per_user.unknown_item": "unknown", "per_project.monthly_tokens": "non_negative_int",
-        "per_project.snapshot_git_mb": "non_negative_int",
+        "per_project.snapshot_git_mb": "unknown",  # 随证据采集删除
     }
     not_object = client.put("/api/v1/admin/quotas", json={"per_user": [1]})
     assert not_object.json()["details"]["fields"] == {"per_user": "object"}
@@ -427,6 +415,9 @@ def test_override_endpoints(env):
     kind = client.post("/api/v1/admin/quotas/overrides", json={"subject": {"kind": "team", "id": "x"}, "item": "x",
                                                                 "value": 1, "reason": "x"})
     assert kind.json()["details"]["fields"] == {"subject.kind": "enum"}
+    removed = client.post("/api/v1/admin/quotas/overrides", json={
+        "subject": {"kind": "user", "id": "alice"}, "item": "collections_per_source_per_hour", "value": 1, "reason": "x"})
+    assert removed.status_code == 400 and removed.json()["details"]["fields"] == {"item": "enum"}
     name = client.post("/api/v1/admin/quotas/overrides", json={"subject": {"kind": "user", "id": "bad name"},
                                                                 "item": "daily_tokens", "value": 1, "reason": "x"})
     assert name.status_code == 400 and name.json()["details"]["fields"] == {"subject.id": "format"}

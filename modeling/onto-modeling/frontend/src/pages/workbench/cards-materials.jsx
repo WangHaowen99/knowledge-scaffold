@@ -6,7 +6,6 @@ import { navigate, pagePath } from '../../app/router.js';
 import {
   Button, Chip, Icon, Prog, cx,
 } from '../../ui/index.jsx';
-import { evidenceInProject } from '../../state/evidence.js';
 import { CC, WbCtx } from './parts.jsx';
 import {
   MatIcon, pageCommand, useMaterialUpload, useOpenDialog,
@@ -28,10 +27,7 @@ function UploadPromptCard({ card }) {
   const { pid } = useContext(WbCtx);
   const up = useMaterialUpload(pid, card.accept);
   const [over, setOver] = useState(false);
-  const project = useProject();
-  // 「连接业务系统」只在服务端给了这个动作、且证据源可用时出现；证据源本期只留接口（ADR-0056）
-  const evidenceOn = evidenceInProject(project);
-  const acts = (card.actions || ['upload', 'import_package']).filter((a) => a !== 'connect_system' || evidenceOn);
+  const acts = card.actions || ['upload', 'import_package'];
   const importPackage = () => pageCommand(api, pid, {
     command: '/ontology', text: '从已有知识包导入：列出可选的已发布知识包',
     label: '欢迎卡', done: '已发给助手',
@@ -52,10 +48,8 @@ function UploadPromptCard({ card }) {
       {up.input}
       <div className="row mt12" style={{ gap: 8 }}>
         {acts.includes('upload') ? <Button icon="upload" kind="primary" size="sm" disabled={up.busy} onClick={up.pick}>上传资料</Button> : null}
-        {acts.includes('connect_system') ? <Button icon="plug" size="sm" onClick={() => navigate(pagePath('sources', pid))}>连接业务系统</Button> : null}
         {acts.includes('import_package') ? <Button icon="pkg" size="sm" onClick={importPackage}>从已有知识包导入</Button> : null}
         <span className="sp" />
-        {evidenceOn && card.sources_available ? <span className="xs muted">已登记 {card.sources_available} 个数据源可用</span> : null}
       </div>
     </CC>
   );

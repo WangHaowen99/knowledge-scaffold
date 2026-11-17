@@ -307,7 +307,7 @@ export function register(ctx) {
       .sort((a, b) => b.started_at.localeCompare(a.started_at)).map(taskOut);
     return json(200, { items, next_cursor: null });
   });
-  on('POST', '/ops/tasks/([^/]+)/(cancel|retry|resume)', ({ user, m }) => {
+  on('POST', '/ops/tasks/([^/]+)/(cancel|retry)', ({ user, m }) => {
     const deny = write(user);
     if (deny) return deny;
     tick();
@@ -320,14 +320,9 @@ export function register(ctx) {
       Object.assign(t, { state: 'cancelled', finished_at: new Date(now).toISOString(), done_at: null });
       return json(200, taskOut(t));
     }
-    const ok = op === 'retry' ? ['failed', 'partial'].includes(t.state) : t.state === 'partial' && t.type === 'collection';
-    if (!ok) return err(409, 'task_state_invalid', '任务状态不允许该操作', { state: t.state });
-    // 生产环境的续采、重试要项目所有者确认（契约 O-41）
-    if (t.type === 'collection' && t.production) {
-      return err(428, 'confirmation_required', '生产环境的续采和重试要项目所有者确认，已通知所有者', { owner: t.project?.owner || null });
-    }
+    if (!['failed', 'partial'].includes(t.state)) return err(409, 'task_state_invalid', '任务状态不允许该操作', { state: t.state });
     Object.assign(t, {
-      state: 'running', progress_pct: op === 'resume' ? t.progress_pct : 0, error: null, finished_at: null,
+      state: 'running', progress_pct: 0, error: null, finished_at: null,
       started_at: new Date(now).toISOString(), done_at: now + D.TASK_MS, done_state: 'succeeded',
     });
     return json(200, taskOut(t));

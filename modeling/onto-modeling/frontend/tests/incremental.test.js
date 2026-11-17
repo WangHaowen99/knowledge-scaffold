@@ -84,9 +84,6 @@ test('影响面、回归、这一轮的文字', () => {
   assert.equal(round.state, 'merged');
   assert.equal(M.remainingNote(round), '不通过的 1 个场景已留在待处理');
   assert.equal(M.remainingNote(D.roundCard({ csId: 'cs-1', nextVersion: 'v0.13', fixed: true })), '');
-  assert.deepEqual(M.feedbackToAnalyze(D.feedbackCard()).map((x) => x.i), [1, 2], '和变更点对上的用例随这次执行一起回归');
-  assert.equal(M.feedbackSource({ service: '评测服务', run: 'eval-1101-0910' }), '来自评测服务 · 运行 eval-1101-0910');
-  assert.equal(M.feedbackSource({ service: '评测服务', run: '运行 #42' }), '来自评测服务 · 运行 #42');
   const fix = M.fixCommand('cl-09', D.SCENARIOS.affected[2], 'c1');
   assert.deepEqual(fix, { command: '/ontology-update', args: { change_list_id: 'cl-09', fix_scenarios: ['s-06'] }, text: '修复场景 6', origin: { page: 'wb-l2', label: '增量更新' }, conversation_id: 'c1' });
 });
@@ -129,12 +126,12 @@ test('清单就是待处理里的 cl-09：条数、把握、状态照旧，只�
   assert.equal(D.overlay(edited).points[0].condition, '自定');
 });
 
-test('对话历史：等确认时有清单、影响面、外部反馈，建议条主推确认清单并执行；执行后有回归和这一轮', () => {
+test('对话历史：等确认时有清单、影响面，建议条主推确认清单并执行；执行后有回归和这一轮', () => {
   const cl = D.overlay(inboxList());
   const impact = D.impactOf();
   const pre = D.incHistory({ pid: 'p', cl, impact, others: 17 });
   const cards = pre.filter((e) => e.type === 'card').map((e) => e.data.card_type);
-  assert.deepEqual(cards, ['change_list', 'impact', 'external_feedback']);
+  assert.deepEqual(cards, ['change_list', 'impact']);
   const sug = pre.at(-1);
   assert.equal(sug.type, 'suggestions.updated');
   assert.deepEqual(sug.data.primary.action, { type: 'execute_change_list', change_list_id: 'cl-09' });

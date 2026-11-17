@@ -132,7 +132,7 @@ def _mcp_servers(project_id: str) -> dict:
 
 @router.get("/projects/{project_id}/mcp-servers")
 def get_project_mcp_servers(project_id: str, request: Request):
-    """P-14：全局 MCP 服务器在本项目是否可用；内核内置的只读服务器（evidence、flow）随证据源与流程运行时加入。"""
+    """P-14：全局 MCP 服务器在本项目是否可用；内核内置的只读服务器（flow）随流程运行时加入。"""
     deps.require_owner(project_id, request)
     return _mcp_servers(project_id)
 

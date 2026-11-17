@@ -1,12 +1,12 @@
 // 资料地图弹窗（设计稿 wb-materials #enMapM）：每份资料的用途、读取覆盖、候选实时流、问题区
-// R-07 资料地图、R-08 候选、R-03 改用途、R-10 问题转待答、R-06 原文、P-05 联网 / 仅本地、S-20 继续读取 / 追加分析
+// R-07 资料地图、R-08 候选、R-03 改用途、R-10 问题转待答、R-06 原文、S-20 继续读取 / 追加分析
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp, useProject } from '../../../app/context.js';
 import { navigate, pagePath } from '../../../app/router.js';
 import { toast } from '../../../app/toast.jsx';
 import { errorText } from '../../../api/errors.js';
 import {
-  Button, Chip, Ev, Icon, Modal, Prog, Seg, cx, useOutside,
+  Button, Chip, Ev, Icon, Modal, Prog, cx, useOutside,
 } from '../../../ui/index.jsx';
 import { AnchorText, MatIcon, pageCommand, useMaterialUpload } from './parts.jsx';
 import {
@@ -145,7 +145,7 @@ function VerifyChip({ v, onClick }) {
 
 export function MaterialMapDialog({ onClose, initialVerify = false }) {
   const { api } = useApp();
-  const { pid, subscribe, setMeta } = useProject();
+  const { pid, subscribe } = useProject();
   const [map, setMap] = useState(null);
   const [error, setError] = useState(null);
   const [cands, setCands] = useState({ total: 0, items: [] });
@@ -205,18 +205,6 @@ export function MaterialMapDialog({ onClose, initialVerify = false }) {
       toast(errorText(e), 'alert');
     }
   };
-  const setMode = async (mode) => {
-    if (!map || mode === map.analysis_mode) return;
-    if (mode === 'web' && !map.web_available) { toast('「联网调研」插件未启用', 'alert'); return; }
-    try {
-      const meta = await api.patchProject(pid, { research_mode: mode });
-      setMeta?.(meta);
-      setMap((m) => ({ ...m, analysis_mode: mode }));
-      toast(mode === 'web' ? '已改为联网资料分析' : '已改为仅本地资料', 'check');
-    } catch (e) {
-      toast(errorText(e), 'alert');
-    }
-  };
   const promote = async (p, as) => {
     try {
       await api.promoteMaterialProblem(pid, p.id, { as });
@@ -247,7 +235,6 @@ export function MaterialMapDialog({ onClose, initialVerify = false }) {
             <div className="row g8">
               <Chip tone="line">{map.total} 份资料 · 已读 {map.read_pct}%</Chip>
               <span className="sp" />
-              <Seg items={[['web', '联网资料分析'], ['local', '仅本地资料']]} value={map.analysis_mode} onChange={setMode} />
               <Button size="sm" icon="plus" onClick={appendAnalysis}>追加分析</Button>
               <VerifyChip v={map.verification} onClick={() => setVerify(true)} />
             </div>

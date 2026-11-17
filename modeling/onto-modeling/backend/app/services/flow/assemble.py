@@ -29,7 +29,7 @@ import json
 FLOW_API = 1
 PLACEMENTS = ("spine", "step", "branch", "gate", "on_demand")
 SECTIONS = ("required", "pre_publish", "optional", "on_demand")
-KINDS = ("agent", "script", "human", "external")
+KINDS = ("agent", "script", "human")
 # 节点过期后刷新的范围：changed_entries 只查确认之后改动的条目（state.refresh_scope）；不写时整条刷新
 REFRESH_SCOPES = ("changed_entries",)
 
@@ -217,7 +217,7 @@ def assemble(contributions: list[tuple[str, str, dict]], available_commands: set
             node[key] = anchor
             edges.append((anchor, node["id"]) if key == "after" else (node["id"], anchor))
     nodes = _ordered(nodes, problems)
-    # 动作声明了 `pack`（要某个包才能做，如联网资料分析要联网调研包）而这次装配没有这个包：去掉这个动作
+    # 动作声明了 `pack`（要某个包才能做）而这次装配没有这个包：去掉这个动作
     for node in nodes:
         if node.get("actions"):
             node["actions"] = [action for action in node["actions"]

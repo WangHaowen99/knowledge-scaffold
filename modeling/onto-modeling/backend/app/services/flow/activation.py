@@ -30,9 +30,10 @@ MAX_FILES = 50
 
 
 def _main(root: Path) -> Path:
-    from .conditions import _main_root
+    """助手副本 → 主线工作区（触发记录按主线记）。"""
+    from ...kernel.changesets import worktree
 
-    return _main_root(Path(root))
+    return Path(worktree.main_root(Path(root)) or root)
 
 
 def load(root: Path) -> dict:

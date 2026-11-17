@@ -1,7 +1,7 @@
 """自主构建策略、平台限制、模型单价（详设 8.5、4.10.1；方案 B13、B14；契约 AB-01、AB-02、SY-17、SY-18）。
 
 - 没有预算（F6）：老请求带的 `budget` 忽略，策略和平台限制里都不再有单次上限；
-- 生产库授权原样存、标明不生效；做到哪一步不能是发布；
+- 生产库采集授权随证据采集删除：老请求带的忽略；做到哪一步不能是发布；
 - 同时运行数上限是配置项（设置页保存的优先于环境变量）；
 - 费用 = token × 单价；没有单价时用引擎报的费用（单价表是美元时），都没有记 0 并标估算。
 
@@ -22,18 +22,17 @@ def _url(project_id: str, tail: str = "policy") -> str:
 def test_policy_defaults_and_save(env):
     client, _workspaces, _manager, project_id, _root = env
     first = client.get(_url(project_id)).json()
-    assert set(first) == {"scope", "production_collection", "advanced", "platform_limits", "last_run", "revision",
-                          "not_enforced"}
+    assert set(first) == {"scope", "advanced", "platform_limits", "last_run", "revision", "not_enforced"}
     assert first["scope"]["mode"] == "all_pending" and first["advanced"]["confidence_threshold"] == 0.8
-    assert first["platform_limits"] == {"allow_production_collection": False} and first["last_run"] is None
-    assert first["not_enforced"] == ["production_collection"]
+    assert first["platform_limits"] == {} and first["last_run"] is None
+    assert first["not_enforced"] == []
     body = {"base_revision": first["revision"], "budget": {"max_duration_min": 60, "max_tokens": 500_000},
             "advanced": {"below_threshold": "suspend", "must_suspend_kinds": ["新增对象"]},
             "production_collection": [{"source_id": "src-1", "allowed": True}]}
     saved = client.put(_url(project_id), json=body).json()
     assert "budget" not in saved and saved["advanced"]["below_threshold"] == "suspend"  # 老客户端带的预算忽略
     assert saved["advanced"]["confidence_threshold"] == 0.8  # 没给的项保留
-    assert saved["production_collection"] == [{"source_id": "src-1", "allowed": True, "window": None, "scope": []}]
+    assert "production_collection" not in saved  # 老客户端带的生产库采集授权忽略
     assert saved["revision"] != first["revision"]
     stale = client.put(_url(project_id), json={**body, "base_revision": first["revision"]})
     assert stale.status_code == 409 and stale.json()["code"] == "revision_conflict"
@@ -62,15 +61,21 @@ def test_policy_validation(env):
 
 
 def test_platform_limits_and_config_item(env):
+    from app.services.autobuild import limits as autobuild_limits
+
     client, *_ = env
+    # 证据采集删除前存的生产库采集授权：不再读，下次保存时清掉
+    autobuild_limits.store.write_json(autobuild_limits._file(), {"allow_production_collection": True})
     limits = client.get("/api/v1/admin/autobuild-limits").json()
     assert limits["max_concurrent_runs"] == 2 and limits["running"] == 0
     assert not {"max_duration_min", "max_tokens", "max_cost"} & set(limits)
-    assert set(limits["not_enforced"]) == {"allow_production_collection", "night_priority"}
+    assert "allow_production_collection" not in limits and limits["not_enforced"] == ["night_priority"]
     saved = client.put("/api/v1/admin/autobuild-limits", json={
-        "max_concurrent_runs": 5, "max_tokens": 2_000_000, "night_priority": {"enabled": True, "start": "21:00",
-                                                                                "end": "07:00"}}).json()
+        "max_concurrent_runs": 5, "max_tokens": 2_000_000, "allow_production_collection": "不是布尔值",
+        "night_priority": {"enabled": True, "start": "21:00", "end": "07:00"}}).json()
     assert saved["max_concurrent_runs"] == 5 and "max_tokens" not in saved  # F6 去掉的单次上限忽略
+    assert "allow_production_collection" not in saved  # 随证据采集删除，带了也忽略
+    assert "allow_production_collection" not in autobuild_limits.stored()
     assert config_registry.resolve("ONTO_WEB_AUTOBUILD_MAX_RUNS") == (5, "data_dir")
     bad = client.put("/api/v1/admin/autobuild-limits", json={"max_concurrent_runs": 17, "night_priority": {}})
     assert bad.status_code == 400 and set(bad.json()["details"]["fields"]) == {"max_concurrent_runs", "night_priority"}

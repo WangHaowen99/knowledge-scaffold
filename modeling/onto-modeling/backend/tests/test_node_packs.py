@@ -108,7 +108,6 @@ def test_node_pack_cannot_carry_hooks_skills_pages_artifacts_or_ui(tmp_path, rep
     ({"done": ["unknown_probe"]}, "探针"),
     ({"kind": "script"}, "script.name"),
     ({"kind": "human"}, "decision"),
-    ({"kind": "external"}, "provider.kind"),
 ])
 def test_node_declaration_rules(tmp_path, repo, fields, word):
     result = run(make_node_pack(tmp_path / "src", flow=flow_with(**fields), tenant=True), repo)
@@ -116,7 +115,7 @@ def test_node_declaration_rules(tmp_path, repo, fields, word):
     assert word in result["node_pack"]["detail"]
 
 
-def test_four_node_kinds_with_their_declarations_pass(tmp_path, repo):
+def test_three_node_kinds_with_their_declarations_pass(tmp_path, repo):
     flow = copy.deepcopy(NODE_PACK_FLOW)
     flow["probes"].update({
         "naming_lint": {"files": ["reports"], "glob": "naming-lint.md"},
@@ -130,8 +129,6 @@ def test_four_node_kinds_with_their_declarations_pass(tmp_path, repo):
          "done": ["naming_signoff"], "produces": ["reports/naming-signoff.md"],
          "decision": {"title": "线下会签结果", "options": [{"id": "pass", "label": "已签署"}, {"id": "fail", "label": "未通过"}],
                       "record": "reports/naming-signoff.md"}},
-        {"id": "naming.fetch", "title": "取系统命名表", "kind": "external", "placement": "on_demand",
-         "done": [], "provider": {"kind": "db-generic"}},
     ]
     files = {"commands/naming-check.md": "检查 $ARGUMENTS\n", "scripts/naming_lint.py": "print('{}')\n"}
     result = run(make_node_pack(tmp_path / "src", flow=flow, files=files, tenant=True), repo)

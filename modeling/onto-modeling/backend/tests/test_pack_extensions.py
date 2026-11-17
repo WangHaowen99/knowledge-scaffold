@@ -44,7 +44,6 @@ EXTRA = {
     "entries": [
         {"id": "quick-run", "kind": "quick_action", "label": "跑一遍检查", "command": "/checklist-run", "where": "wb-l2"},
         {"id": "extra-run", "kind": "extra_action", "label": "重跑", "command": "/checklist-run", "where": "scenarios"},
-        {"id": "connect", "kind": "source_wizard", "label": "连接业务系统"},
     ],
     "gates": [
         *CHECKLIST_CONTRIBUTES["gates"],
@@ -53,7 +52,7 @@ EXTRA = {
         {"id": "enough", "label": "检查项通过率", "artifact": "checklist.item", "on": ["publish"],
          "min_count": 1, "ratio": {"field": "result", "in": ["pass"], "at_least": 0.5}},
     ],
-    "view_choices": ["er_view", "evidence_sidebar"],
+    "view_choices": ["er_view"],
     "config": [{"key": "max_items", "label": "每次最多检查几项", "type": "int", "default": 6, "min": 1, "max": 50}],
     "metrics": [{"name": "items_checked", "help": "检查过的检查项数", "type": "counter"}],
     "alerts": [{"id": "fail-rate", "name": "检查失败率", "condition": "checklist.fail_rate > 20%", "window": "1h",
@@ -117,7 +116,7 @@ def test_entries_view_choices_config_in_extensions(env):
     ext = client.get(f"/api/v1/projects/{project_id}/extensions").json()
     assert [(item["id"], item["kind"]) for item in ext["entries"]] == [("quick-run", "quick_action"), ("extra-run", "extra_action")]
     assert ext["entries"][0]["command"] == "/checklist-run"
-    assert ext["view_choices"] == [{"id": "er_view", "pack": "checklist"}]  # 证据侧栏随证据源留空
+    assert ext["view_choices"] == [{"id": "er_view", "pack": "checklist"}]
     assert {"key": "checklist.max_items", "pack": "checklist"} in ext["config"]
     gates = {gate["id"]: gate["on"] for gate in ext["gates"]}
     assert gates == {"title-short": ["save"], "level-set": ["commit"], "enough": ["publish"]}

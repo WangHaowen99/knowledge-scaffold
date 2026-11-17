@@ -23,10 +23,6 @@ These rules apply to all work in this repository.
 | 场景模拟 | `/ontology-trace`、`/ontology-trace-single`、`/ontology-trace-batch`、`/ontology-trace-interactive`、`/ontology-mock` |
 | 代码生成与求解 | `/ontology-codegen-scan`、`/ontology-codegen`、`/ontology-solver-evaluator` |
 | 图示 | `/ontology-flowchart`、`/ontology-validate-diagrams`、mermaid-flowchart 技能 |
-| 知识沉淀 | `/knowledge-record`、`/knowledge-review`、`/knowledge-nominate`，`.claude/KNOWLEDGE_SEDIMENTATION.md` |
-| 反馈演进 | `/ontology-evolution` |
-| 联网调研 | deep-research 技能 |
-| 迁移复用 | extract-migrated-objects 技能 |
 
 - 命令文档、下一步建议、菜单里提到这些命令时，先看 `.claude/commands/<命令名>.md`（技能看 `.claude/skills/<名>/SKILL.md`）在不在：在才提供这个选项、才去读它；不在就不要列出，用户问起时说明本项目没有启用对应能力，可以在项目设置里启用。
 - 下一步建议统一用 `python3 .claude/scripts/state_helper.py next-step` 取，它只列出本项目已启用的命令。
@@ -158,9 +154,7 @@ These rules apply to all work in this repository.
 
 9. **业务知识** —
    已沉淀的业务知识（项目知识与已启用行业包的知识）由 `python3 .claude/scripts/knowledge_helper.py load` 加载，各命令照常应用。
-   把对话里的纠错与惯例沉淀成新条目属于「知识沉淀」能力：`.claude/KNOWLEDGE_SEDIMENTATION.md` 存在时，
-   专家说出 `应该是 / 其实 / 我们这边 / 我们公司 / 规则是 / 通常 / 必须 / 不对 / 你弄错了 / 实际上 / 行业里 / 标准做法` 这类信号词，
-   按它的守则询问是否记入（用户主动说「记一下：…」时直接保存）；不存在时只应用、不新增。
+   已沉淀的知识只应用、不新增（不调用 `knowledge_helper.py add`）；用户要求记下某条规则时，按建模口径写进对应的对象、规则或指标文档。
    所有规则细节见 `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md`。
 
 ## Git Commit Conventions
@@ -192,7 +186,7 @@ These rules apply to all work in this repository.
      工具调用里；工具调用之间不写过程旁白，要说就一句业务话（「读完了 4 份资料，开始整理业务对象」）。
    - 工具调用的说明（Bash、Task 的 description）界面上会作为过程步骤给用户看：用中文业务话写（「读取补货资料」
      「整理业务对象」），加锁、释放锁、检查前置这类内部动作写「准备」「收尾」；正文里也不提数据字段名、环境变量、
-     命令参数（如 `read: null`、`WEB_RESEARCH_MODE`）。
+     命令参数（如 `read: null`）。
    - 提交只是把这一轮的修改记下来，这一轮结束平台自动存成一个版本：不说「已保存版本 N」，不让用户回复「回退」「撤回」。
      这一轮改了什么、撤回这一轮，界面上有卡片和按钮；回退旧版本在版本页做。
    - 命令做完先释放锁，再写两三句小结：做了什么、还有什么要用户定。不列「下一步建议 / 回复 X →」菜单，

@@ -14,7 +14,7 @@ def _view(*pages: str):
 
 def test_where_values():
     assert extensions._entry_where(_view("scenarios"), "quick_action", "wb-l2") == "composer"
-    assert extensions._entry_where(_view(), "extra_action", "knowledge") == "knowledge"
+    assert extensions._entry_where(_view(), "extra_action", "scenarios") == "scenarios"
     # 没写或写的不是插件页：取本包自己的第一个插件页；没有插件页时没有位置
     assert extensions._entry_where(_view("scripts"), "extra_action", "") == "scripts"
     assert extensions._entry_where(_view("scripts"), "extra_action", "wb-l2") == "scripts"

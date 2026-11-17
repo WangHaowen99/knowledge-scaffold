@@ -79,7 +79,7 @@ const ENTRY = {
   id: DISPLAY.id, kind: 'object', key: 'display_qty_std', name: '陈列量标准', description: '按商品品类和到货周期确定的陈列量上下限。',
   sections: [{ level: 1, title: '陈列量标准', content_md: '…' }],
   fields: [
-    { name: '商品品类', column: 'category_code', type: '文本', evidence: { anchor: 'db:a', label: 'ERP · 商品品类', scheme: 'db', confidence: 'declared', expert_confirmed: false, missing: false } },
+    { name: '商品品类', column: 'category_code', type: '文本', evidence: { anchor: 'file:resource/schema/06-商品品类表.xlsx#cell:品类表!B2', label: '商品品类表 品类 B2', scheme: 'file', confidence: null, expert_confirmed: false, missing: false } },
     { name: '生效日期', column: 'effective_from', type: '日期', evidence: { anchor: null, label: '', scheme: null, confidence: null, expert_confirmed: false, missing: true } },
   ],
   relations: { declared: [{ target: ref('object', 'goods_category', '商品品类'), label: '按品类查' }, { target: ref('operation', 'display_qty_check', '陈列量核定'), label: '被读取' }], mentions: [] },
@@ -119,9 +119,8 @@ test('提交未通过：一句话汇总错误和警告，单元格按 field 标�
   assert.deepEqual(fieldErrorMap(r), { 'fields[2].column': '必填' });
 });
 
-test('证据标签：库表取来源简称、推断写「推断」，资料取章节号', () => {
-  assert.equal(evidenceShortLabel({ label: 'ERP · 商品品类', scheme: 'db', confidence: 'declared' }), 'ERP');
-  assert.equal(evidenceShortLabel({ label: 'ERP · 适用标准', scheme: 'db', confidence: 'inferred' }), '推断');
+test('证据标签：推断写「推断」，资料取章节号', () => {
+  assert.equal(evidenceShortLabel({ label: '商品品类表 品类 C2', scheme: 'file', confidence: 'inferred' }), '推断');
   assert.equal(evidenceShortLabel({ label: '补货规则 §7.3', scheme: 'file' }), '§7.3');
   assert.equal(evidenceShortLabel({ label: '09 修订通知 第 2 条', scheme: 'file' }), '09 修订');
   assert.equal(evidenceShortLabel({ label: '商品陈列说明 第 3 节', scheme: 'file' }), '第 3 节');
@@ -129,7 +128,6 @@ test('证据标签：库表取来源简称、推断写「推断」，资料取�
   assert.equal(anchorChipLabel('file:resource/others/02-门店补货规则.docx#p:11.4'), '§11.4');
   assert.equal(anchorChipLabel('file:resource/others/09-修订通知.docx#p:2'), '第 2 节');
   assert.equal(resolutionLabel({ resolved: true, scheme: 'file', source_label: '09-修订通知.docx', location_label: '第 2 条' }), '09 修订通知 第 2 条');
-  assert.equal(resolutionLabel({ resolved: true, scheme: 'db', source_label: '业务系统 ERP', location_label: '补货标准表 · 标准上限' }), 'ERP · 标准上限');
   assert.equal(resolutionLabel({ resolved: false }), null);
 });
 
@@ -288,7 +286,7 @@ test('mock：草稿基于旧版本时标 stale、不算编辑中，存旧底稿�
   assert.equal((await call('GET', `${P}/studio/entries/${ID}`)).body.status, 'editing');
 });
 
-test('mock：新建重名、删除被引用的条目、证据被谁引用', async () => {
+test('mock：新建重名、删除被引用的条目', async () => {
   const { call } = mockCtx();
   const dup = await call('POST', `${P}/studio/entries`, { kind: 'object', name: '陈列量标准' });
   assert.equal(dup.status, 409);
@@ -299,17 +297,15 @@ test('mock：新建重名、删除被引用的条目、证据被谁引用', asyn
   const ref09 = await call('DELETE', `${P}/studio/entries/${ID}`, { base_revision: 'x' });
   assert.equal(ref09.body.code, 'entry_referenced');
   assert.ok((await call('DELETE', `${P}/studio/entries/${encodeURIComponent('object:promo_stock')}`, {})).status === 200);
-  const wu = await call('GET', `${P}/evidence/where-used?anchor=${encodeURIComponent('db:erp-prod/erp.replenish_std.category_code')}`);
-  assert.ok(wu.body.items.some((x) => x.target.id === DISPLAY.id));
   const other = await call('GET', '/projects/bike-fleet-7b20e4a1/studio/entries');
   assert.equal(other.body.items.length, 0);
 });
 
 test('ER 视图：包选用了 er_view 才有；只画对象和对象之间的关系声明，属性最多列 8 个', () => {
   assert.equal(hasErView({ view_choices: [{ id: 'er_view', pack: 'diagram' }] }), true);
-  assert.equal(hasErView({ view_choices: [{ id: 'schema_browser', pack: 'rev' }] }), false);
+  assert.equal(hasErView({ view_choices: [{ id: 'flowchart', pack: 'diagram' }] }), false);
   assert.equal(hasErView({}), false);
-  assert.equal(hasErView(F.extensions(['trace', 'knowledge', 'codegen', 'diagram'])), true);
+  assert.equal(hasErView(F.extensions(['trace', 'codegen', 'diagram'])), true);
   assert.equal(hasErView(F.extensions(['trace'])), false);
   const graph = {
     nodes: [

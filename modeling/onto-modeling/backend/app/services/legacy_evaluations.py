@@ -4,8 +4,6 @@
 ``reports/eval-<日期>-<时间>.md`` 和同名 ``.answers.json``（完整回答附件），随工作区 git 保存。这里照 develop
 的「评测执行详情」读出来：状态按 develop 的口径收敛（没有编排却仍是 running 的显示为中断），完整回答读报告附件。
 旧运行器与 modeling 服务已按 ADR-0020 删除，不能停止、续接旧任务。
-
-旧报告的「评测优化」与新评测同一做法：整理成一批外部反馈交给反馈演进（ADR-0092）。
 """
 
 from __future__ import annotations
@@ -22,8 +20,6 @@ STEM = re.compile(r"^eval-\d{8}-\d{6}$")
 TEXT_LIMIT = 2 * 1024 * 1024
 ANSWERS_LIMIT = 16 * 1024 * 1024
 STATE_LIMIT = 4 * 1024 * 1024
-# 与 develop 的评测优化提示同一阈值：得分低于它、或有异常用例时提示评测优化
-EVOLUTION_SCORE_THRESHOLD = 90
 INTERRUPTED_MESSAGE = "上一轮评测被服务重启中断"
 
 
@@ -52,26 +48,8 @@ def read_state(root: Path) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def evolution_hint(state: dict) -> dict | None:
-    """最近一轮评测是否该做评测优化（develop 的 evolution_hint）：得分低于阈值、或有异常用例。"""
-    report = state.get("report")
-    summary = state.get("summary") or {}
-    if not (report and summary) or state.get("status") not in ("done", "failed"):
-        return None
-    # 报告须出自最近一轮；旧版状态没有 report_round 字段，done 即视为最近一轮
-    fresh = state.get("report_round") if "report_round" in state else state.get("status") == "done"
-    if not fresh:
-        return None
-    score = summary.get("score")
-    errors = int(summary.get("error") or 0)
-    if not (errors or (score is not None and score < EVOLUTION_SCORE_THRESHOLD)):
-        return None
-    return {"report": report, "score": score, "errors": errors, "fails": int(summary.get("fail") or 0),
-            "round_failed": state.get("status") == "failed"}
-
-
 def status(root: Path) -> dict:
-    """{state, evolution}：state 是 develop「评测执行详情」读的那份状态，没有旧记录时为空。"""
+    """{state}：state 是 develop「评测执行详情」读的那份状态，没有旧记录时为空。"""
     state = read_state(root)
     # 旧运行器已经没有了：仍标 running 的一律按中断显示（develop 重启后同样改判中断），不改盘上的记录
     if state.get("status") == "running":
@@ -79,7 +57,7 @@ def status(root: Path) -> dict:
     if state.get("status") in ("interrupted", "failed"):
         state = {**state, "resumable": False}
     state.pop("queue_position", None)
-    return {"state": state, "evolution": evolution_hint(state)}
+    return {"state": state}
 
 
 def _stem(stem: str) -> str:
@@ -129,36 +107,3 @@ def answer(root: Path, stem: str, result_id: str) -> dict:
     length = record.get("originalLength")
     return {"resultId": result_id, "question": str(record.get("question") or ""), "fullAnswer": full,
             "originalLength": length if isinstance(length, int) else len(full), "truncated": record.get("truncated") is True}
-
-
-def optimize(manager, project_id: str, stem: str, actor: str) -> dict:
-    """旧报告的评测优化：整理成一批外部反馈（ADR-0092），交给 /ontology-evolution。同一份报告只成一批。"""
-    from . import feedback_inbox
-    from .package_evaluations import feedback_items
-    from .workspace import _commit_paths
-
-    root = manager.project_root(project_id)
-    report_rel, answers_rel = _file_rel(_stem(stem), ".md"), _file_rel(stem, ".answers.json")
-    report_path, answers_path = _file(root, report_rel), _file(root, answers_rel)
-    if report_path is None or answers_path is None:
-        raise WorkspaceError("完整回答证据不可用", 404, "answer_not_found")
-    try:
-        items = feedback_items(answers_path.read_bytes(), report_path.read_bytes())
-    except (ValueError, AttributeError) as exc:
-        raise WorkspaceError("旧版评测报告的回答附件格式不对", 422, "invalid_argument") from exc
-    state = read_state(root)
-    summary = state.get("summary") if state.get("report") == report_rel and isinstance(state.get("summary"), dict) else {}
-    payload = {
-        "feedback_id": f"legacy-{stem}",
-        "source": {"service": "评测服务", "run": str(state.get("round_id") or stem) if summary else stem},
-        "summary": {key: summary.get(key) for key in feedback_inbox.SUMMARY_FIELDS
-                    if isinstance(summary.get(key), (int, float)) and not isinstance(summary.get(key), bool)},
-        "items": items, "attachments": {"report": report_rel, "answers": answers_rel},
-    }
-    document = feedback_inbox.normalize(payload, allow_empty=True)
-    with manager._project_lock(project_id):
-        rel, document, created = feedback_inbox.place(manager, root, document, actor)
-        if created:
-            _commit_paths(root, [rel], f"feedback: 旧版评测报告评测优化 {stem}（{len(document['items'])} 条）by {actor}")
-    return {"feedback_id": document["feedback_id"], "report": report_rel, "suggestions": None,
-            "command": "/ontology-evolution", "args": {"feedback_id": document["feedback_id"]}}

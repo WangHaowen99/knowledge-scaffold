@@ -30,9 +30,9 @@ function FootPart({ part, busy, onAction, detail }) {
 }
 
 /** 一张插件卡。pendingKind 来自 PL-05；busy 是这张卡正在做兼容检查 */
-export function PackCard({ p, projectId, pendingKind, requested, busy, onAction }) {
+export function PackCard({ p, projectId, pendingKind, busy, onAction }) {
   const { tags } = cardTags(p);
-  const foot = cardFoot(p, { pendingKind, requested });
+  const foot = cardFoot(p, { pendingKind });
   const detail = () => goDetail(p.name, projectId);
   return (
     <div className={cx('card pl-card', isInstalled(p) && 'on')}>

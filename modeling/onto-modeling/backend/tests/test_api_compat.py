@@ -127,6 +127,8 @@ def test_legacy_error_body_carries_error_field(client):
         ("POST", "/api/projects/p1/package/solver-validations", None),
         ("GET", "/api/projects/p1/package/solver-validations/latest", None),
         ("GET", "/api/admin/modeling-cleanups", None),
+        ("POST", "/api/projects/p1/knowledge", None),
+        ("DELETE", "/api/projects/p1/knowledge?path=knowledge/备注.md", None),
     ],
 )
 def test_removed_endpoints_return_410(client, method, path, successor):

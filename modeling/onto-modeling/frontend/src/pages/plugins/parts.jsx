@@ -4,25 +4,13 @@ import { useApp } from '../../app/context.js';
 import { SNav } from '../../shell/SideNav.jsx';
 import { can } from '../../state/roles.js';
 import { Chip } from '../../ui/index.jsx';
-import { OPTIONAL_CATEGORIES, PACK_CATEGORIES, visibleCatalog } from './catalogModel.js';
+import { OPTIONAL_CATEGORIES, PACK_CATEGORIES } from './catalogModel.js';
 import '../../styles/plugins.css';
 
 // 分类与图标底色的定义在 catalogModel.js（纯逻辑，单测用），这里照旧导出
 export { PACK_CATEGORIES, PACK_ICON_CLASS } from './catalogModel.js';
 
 const PROJECT_KEY = 'onto.plugins.project';
-
-/** 证据源可不可用（EV-01 读得到才算，本期回 501）；没读完之前按不可用 */
-export function useEvidenceOn() {
-  const { api } = useApp();
-  const [on, setOn] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    api.evidenceSources().then(() => alive && setOn(true)).catch(() => alive && setOn(false));
-    return () => { alive = false; };
-  }, [api]);
-  return on;
-}
 
 /**
  * 「启用到」哪个项目：地址参数 ?project= 优先，其次上次选的，最后取最近的一个未归档项目。
@@ -72,13 +60,12 @@ export function PluginsNav({ active, counts: given, onCat, projectId }) {
   const fallback = usePluginProject(undefined, { enabled: !given && projectId === undefined });
   const pid = projectId !== undefined ? projectId : fallback.projectId;
   const waiting = projectId === undefined && !fallback.ready;
-  const evidenceOn = useEvidenceOn();
   useEffect(() => {
     if (given || waiting) return undefined;
     let alive = true;
-    api.packs(pid ? { project_id: pid } : undefined).then((r) => alive && setFetched(visibleCatalog(r, evidenceOn).counts || null)).catch(() => {});
+    api.packs(pid ? { project_id: pid } : undefined).then((r) => alive && setFetched(r.counts || null)).catch(() => {});
     return () => { alive = false; };
-  }, [api, given, pid, waiting, evidenceOn]);
+  }, [api, given, pid, waiting]);
   const counts = given || fetched || {};
   const n = (k) => <span className="xs faint num">{counts[k] ?? ''}</span>;
   const item = (key, title, icon, extra) => (onCat ? { key, title, icon, extra } : { key, title, icon, extra, go: 'plugins', query: key === 'all' ? undefined : { cat: key } });

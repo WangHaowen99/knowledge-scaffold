@@ -1,5 +1,4 @@
 // 项目设置页的纯逻辑：分区与地址参数、表单与校验、自主构建策略、能力与插件的行、MCP 的展示
-import { isEvidenceMcp } from '../../state/evidence.js';
 
 // ---------- 分区 ----------
 // 地址参数 section 取这里的 id
@@ -93,7 +92,7 @@ export function modelSourceText(source, cfg) {
 
 // ---------- 自主构建策略 ----------
 export const RECOMMENDED = { confidence_threshold: 0.8, below_threshold: 'conservative_assumption', max_fix_rounds: 2 };
-const POLICY_FIELDS = ['scope', 'production_collection', 'advanced'];
+const POLICY_FIELDS = ['scope', 'advanced'];
 
 // 可编辑的那部分（深拷贝），AB-02 按它提交
 export function policyForm(policy) {
@@ -107,19 +106,6 @@ export function policyDirty(policy, form) {
 export function policyBody(form, revision) {
   return { ...policyForm(form), base_revision: revision };
 }
-
-// 生产库授权的时间窗口：「22:00 – 06:00」
-const HM = /^([01]\d|2[0-3]):[0-5]\d$/;
-export const windowText = (w) => (w ? `${w.start} – ${w.end}` : '');
-export function parseWindow(text) {
-  const t = (text || '').trim();
-  if (!t) return { value: null };
-  const parts = t.split(/\s*[–—~-]\s*/);
-  if (parts.length !== 2 || !HM.test(parts[0]) || !HM.test(parts[1])) return { error: '写成「22:00 – 06:00」这样的起止时间' };
-  return { value: { start: parts[0], end: parts[1] } };
-}
-export const scopeText = (arr) => (arr || []).join('、');
-export const parseScope = (text) => (text || '').split(/[、,，;；\s]+/).map((x) => x.trim()).filter(Boolean);
 
 const BELOW_TEXT = { conservative_assumption: '拿不准时先按最稳妥的做法往下做', suspend: '拿不准时先跳过，留给你来定' };
 const shortSource = (s) => (s || '').replace(/^\d+\s*/, '');
@@ -168,19 +154,6 @@ export function startBlocker({ archived, active }) {
   if (archived) return '项目已归档，不能开始自主构建';
   if (active) return `${runStateText(active)}，结束后才能开始下一次`;
   return null;
-}
-
-// 保存前：把生产库授权里正在编辑的时间窗口、采集范围文字并进表单；返回 { form, problems }
-export function finalizePolicy(form, drafts = {}) {
-  const problems = {};
-  const rows = (form?.production_collection || []).map((row) => {
-    const d = drafts[row.source_id];
-    if (!d) return row;
-    const w = d.window != null ? parseWindow(d.window) : { value: row.window };
-    if (w.error && row.allowed) problems[`window:${row.source_id}`] = w.error;
-    return { ...row, window: w.error ? row.window : w.value, scope: d.scope != null ? parseScope(d.scope) : row.scope };
-  });
-  return { form: { ...form, production_collection: rows }, problems };
 }
 
 // ---------- 能力与插件 ----------
@@ -250,10 +223,7 @@ export function switchToast(op, p, res) {
 }
 
 // ---------- MCP ----------
-// 证据源本期不开放：EV-01 读不到时，内置的 evidence 服务器、包贡献的 evidence.* 工具不出现
-export const visibleMcp = (items, evidenceOn) => (evidenceOn ? items || [] : (items || []).filter((x) => !isEvidenceMcp(x)));
-
-// 「evidence.search / show / where-used / lineage / diff」；没有工具时「—」
+// 同一前缀的工具合并写成「前缀.甲 / 乙 / 丙」；没有工具时「—」
 export function toolsText(tools) {
   if (!tools?.length) return '—';
   const prefix = tools[0].includes('.') ? tools[0].slice(0, tools[0].indexOf('.') + 1) : '';
@@ -277,7 +247,7 @@ export function toolList(toolsets) {
   };
   return all.sort((a, b) => { const [x1, y1] = key(a); const [x2, y2] = key(b); return x1 - x2 || y1 - y2 || a.localeCompare(b); });
 }
-// 「flow.get、evidence.*（6）」
+// 按前缀分组：一个工具写全名，多个写「前缀.*（个数）」
 export function packToolsText(packTools) {
   const groups = new Map();
   (packTools || []).forEach((t) => {

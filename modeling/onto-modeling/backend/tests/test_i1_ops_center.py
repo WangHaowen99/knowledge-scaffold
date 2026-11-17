@@ -142,9 +142,11 @@ def test_task_actions(api, monkeypatch):
     assert failed["state"] == "failed" and "合成的磁盘错误" in failed["error"]
     retried = client.post(f"{OPS}/tasks/{failed['id']}/retry")
     assert retried.status_code == 200 and retried.json()["state"] == "succeeded" and retried.json()["id"] != failed["id"]
-    for op in ("retry", "cancel", "resume"):
+    for op in ("retry", "cancel"):
         res = client.post(f"{OPS}/tasks/{retried.json()['id']}/{op}")
         assert res.status_code == 409 and res.json()["code"] == "task_state_invalid"
+    # 续跑只有证据采集用，随它删除（ADR-0101）
+    assert client.post(f"{OPS}/tasks/{retried.json()['id']}/resume").status_code == 404
     assert client.post(f"{OPS}/tasks/nope/cancel").json()["code"] == "task_not_found"
     # 进程内可取消的演练：取消后任务记为已取消
     task = ops_center.start_task("drill", "合成备份", "local", cancellable=True)

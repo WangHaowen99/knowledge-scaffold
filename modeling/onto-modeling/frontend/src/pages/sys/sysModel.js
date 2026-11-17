@@ -544,15 +544,13 @@ export function registryValue(item) {
 
 // ---------- 配额与自主构建限制（SY-15～SY-17） ----------
 export const QUOTA_ITEMS = {
-  user: [['concurrent_sessions', '同时在线会话'], ['daily_tokens', '每日 token 预算'], ['collections_per_source_per_hour', '证据采集频率']],
-  project: [['monthly_tokens', '每月 token 预算'], ['snapshot_git_mb', '单份快照在 git 里的上限']],
+  user: [['concurrent_sessions', '同时在线会话'], ['daily_tokens', '每日 token 预算']],
+  project: [['monthly_tokens', '每月 token 预算']],
 };
 export const quotaItemLabel = (item) => [...QUOTA_ITEMS.user, ...QUOTA_ITEMS.project].find(([k]) => k === item)?.[1] || item;
-/** 单独设置的值怎么显示：token 加千分位，快照加 MB，采集频率写「每小时 N 次」 */
+/** 单独设置的值怎么显示：token 加千分位 */
 export function quotaValueText(item, v) {
   if (v == null) return '—';
-  if (item === 'snapshot_git_mb') return `${fmtInt(v)} MB`;
-  if (item === 'collections_per_source_per_hour') return `每小时 ${v} 次`;
   return fmtInt(v);
 }
 export function subjectText(s) {
@@ -565,12 +563,12 @@ export function quotaForm(q) {
   const p = q?.per_project || {};
   const s = (v) => (v == null ? '' : fmtInt(v));
   return {
-    concurrent_sessions: s(u.concurrent_sessions), daily_tokens: s(u.daily_tokens), collections_per_source_per_hour: s(u.collections_per_source_per_hour),
-    monthly_tokens: s(p.monthly_tokens), snapshot_git_mb: s(p.snapshot_git_mb),
+    concurrent_sessions: s(u.concurrent_sessions), daily_tokens: s(u.daily_tokens),
+    monthly_tokens: s(p.monthly_tokens),
   };
 }
 const QUOTA_RANGE = {
-  concurrent_sessions: [1, 64], daily_tokens: [1, 1e12], collections_per_source_per_hour: [0, 1000], monthly_tokens: [1, 1e13], snapshot_git_mb: [1, 10240],
+  concurrent_sessions: [1, 64], daily_tokens: [1, 1e12], monthly_tokens: [1, 1e13],
 };
 export function quotaProblems(f) {
   const out = {};
@@ -584,8 +582,8 @@ export function quotaProblems(f) {
 /** SY-15 PUT：只改 per_user、per_project（online_engines 只读，不发） */
 export function quotaBody(f) {
   return {
-    per_user: { concurrent_sessions: parseIntText(f.concurrent_sessions), daily_tokens: parseIntText(f.daily_tokens), collections_per_source_per_hour: parseIntText(f.collections_per_source_per_hour) },
-    per_project: { monthly_tokens: parseIntText(f.monthly_tokens), snapshot_git_mb: parseIntText(f.snapshot_git_mb) },
+    per_user: { concurrent_sessions: parseIntText(f.concurrent_sessions), daily_tokens: parseIntText(f.daily_tokens) },
+    per_project: { monthly_tokens: parseIntText(f.monthly_tokens) },
   };
 }
 export const quotaDirty = (q, f) => JSON.stringify(quotaForm(q)) !== JSON.stringify(quotaForm(quotaBodyToView(q, f)));
@@ -619,7 +617,6 @@ export const moneySymbol = (c) => SYMBOL[c] || c || '';
 export function limitsForm(l) {
   return {
     max_concurrent_runs: l?.max_concurrent_runs == null ? '' : String(l.max_concurrent_runs),
-    allow_production_collection: !!l?.allow_production_collection,
     night: !!l?.night_priority?.enabled,
   };
 }
@@ -633,7 +630,6 @@ export function limitsProblems(f) {
 export function limitsBody(f, prev) {
   return {
     max_concurrent_runs: parseIntText(f.max_concurrent_runs),
-    allow_production_collection: !!f.allow_production_collection,
     night_priority: { ...(prev?.night_priority || { start: '20:00', end: '08:00' }), enabled: !!f.night },
   };
 }

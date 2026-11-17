@@ -219,7 +219,6 @@ test('指标卡：设计稿形状与 B3b 后端形状都能显示，后端下发
   assert.equal(p.turn_duration.big, '3 分 10 秒');
   assert.equal(p.merges.big, '0');
   assert.equal('note' in p.merges, false);
-  assert.equal('note' in p.collections, false);
   assert.equal(metricView({ id: 'x', value: null, unit: '次' }).big, '—');
   assert.equal(fmtSeconds(190), '3 分 10 秒');
   assert.equal(fmtSeconds(120), '2 分');
@@ -227,17 +226,13 @@ test('指标卡：设计稿形状与 B3b 后端形状都能显示，后端下发
   assert.equal(fmtCount(2.3e8), '2.3 亿');
 });
 
-test('指标卡哪些画（R18）：没有数据来源的不画（unavailable / available=false），证据采集随证据源开关', () => {
-  const ids = (cards, o) => visibleMetricCards(cards, o).map((c) => c.id);
+test('指标卡哪些画（R18）：没有数据来源的不画（unavailable / available=false）', () => {
+  const ids = (cards) => visibleMetricCards(cards).map((c) => c.id);
   const p1 = D.metrics({ p1: true }).cards;
   assert.equal(ids(p1).includes('merges'), false);
-  assert.equal(ids(p1).includes('collections'), false);
-  assert.equal(ids(p1, { evidenceOn: true }).includes('collections'), true);
-  assert.equal(ids(p1).length, p1.length - 2);
+  assert.equal(ids(p1).length, p1.length - 1);
   const design = D.metrics().cards;
-  assert.equal(ids(design).includes('merges'), true);
-  assert.equal(ids(design).includes('collections'), false);
-  assert.deepEqual(ids(design, { evidenceOn: true }), design.map((c) => c.id));
+  assert.deepEqual(ids(design), design.map((c) => c.id));
   assert.deepEqual(ids([{ id: 'merges', available: false }, { id: 'pool' }, null]), ['pool']);
 });
 
@@ -334,7 +329,7 @@ test('跟随：按 ts 与事件去重，最多留 500 条', () => {
 
 test('告警规则：显示、处置手册第一句、校验、只提交改了的字段、包声明的规则只能改 enabled', () => {
   const rules = D.alertRules();
-  assert.equal(rulesSub(rules), '7 条');
+  assert.equal(rulesSub(rules), '6 条');
   assert.equal(rulesSub(rules.filter((r) => r.source === 'kernel')), '5 条');
   const v = ruleView(rules[0]);
   assert.equal(v.condition, 'node.fail_rate > 5%（1 小时）');
@@ -432,7 +427,7 @@ test('mock O-02 / O-03：range 校验、按标签筛归因', async () => {
   const { call } = mockServer();
   assert.equal((await call('GET', `${O}/metrics?range=30d`)).status, 400);
   const m = await call('GET', `${O}/metrics?range=1h`);
-  assert.equal(m.body.cards.length, 10);
+  assert.equal(m.body.cards.length, 9);
   assert.equal((await call('GET', `${O}/attribution?by=x`)).status, 400);
   const a = await call('GET', `${O}/attribution?by=pack&labels=${encodeURIComponent('pack=core@1.4.2')}`);
   assert.deepEqual(a.body.items.map((x) => x.key), ['core']);
@@ -478,7 +473,7 @@ test('mock O-06 / O-07：级别筛选、非法级别 400、日志流按事件信
 test('mock O-08～O-10：触发数、新建校验、包声明的规则只能启停不能删、内核规则可删；admin 写 403', async () => {
   const { call } = mockServer();
   const list = await call('GET', `${O}/alerts/rules`, null, ['user', 'admin']);
-  assert.equal(list.body.items.length, 7);
+  assert.equal(list.body.items.length, 6);
   assert.equal(list.body.firing, 2);
   assert.equal((await call('POST', `${O}/alerts/rules`, { name: 'x', condition: 'a > 1', level: 'warning' }, ['user', 'admin'])).status, 403);
   const bad = await call('POST', `${O}/alerts/rules`, { name: '', condition: '', level: 'nope' });
@@ -492,7 +487,7 @@ test('mock O-08～O-10：触发数、新建校验、包声明的规则只能启�
   assert.equal((await call('GET', `${O}/alerts/rules`)).body.firing, 1);
   assert.equal((await call('DELETE', `${O}/alerts/rules/node-fail-rate`)).status, 403);
   assert.equal((await call('DELETE', `${O}/alerts/rules/${created.body.id}`)).status, 204);
-  assert.equal((await call('GET', `${O}/alerts/rules`)).body.items.length, 7);
+  assert.equal((await call('GET', `${O}/alerts/rules`)).body.items.length, 6);
 });
 
 test('mock O-11 / O-12：开启没有地址的导出器 400，填了地址后保存、滚动重启生效', async () => {

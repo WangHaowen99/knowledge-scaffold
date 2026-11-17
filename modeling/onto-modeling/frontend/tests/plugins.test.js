@@ -1,5 +1,5 @@
 // 插件中心与插件详情（plugins、plugin-detail）：筛选与计数、卡脚按状态映射、兼容检查到弹窗文字、主线图布局、
-// 「包含什么」分组，以及 mock 的 PL-01～PL-04、PL-19 与项目设置能力表（PL-05）口径一致
+// 「包含什么」分组，以及 mock 的 PL-01～PL-03 与项目设置能力表（PL-05）口径一致
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
@@ -8,11 +8,11 @@ import { compatibilityOf, register as registerPlugins } from '../src/api/mock/ro
 import { register as registerSettings } from '../src/api/mock/routes-settings.js';
 import {
   blockedView, bringsView, cardFoot, cardTags, catOf, categoryOf, compatRows, compatView, devSkillOf, effectiveNote, enableToast, impactText, matchCard, recView,
-  PACK_CATEGORIES, sectionsOf, uiChip, uiEffectText, updateRoute, updateToast, versionOf, visibleCatalog,
+  PACK_CATEGORIES, sectionsOf, uiChip, uiEffectText, updateRoute, updateToast, versionOf,
 } from '../src/pages/plugins/catalogModel.js';
 import {
   changelogView, configText, contentGroups, contentTotal, converterDefaults, dependsText, disableConfirm, flowCaption, flowLayout, fmtSize, heroActions, heroFacts, heroMenu,
-  collectorFacts, insertionAt, rangeText, statCards,
+  insertionAt, rangeText, statCards,
 } from '../src/pages/plugins/detailModel.js';
 
 const card = (o) => ({ name: 'x', label: 'X', category: 'capability', version: '1.0.0', latest: '1.0.0', description: '', publisher: { kind: 'official', label: '官方' }, ...o });
@@ -21,14 +21,14 @@ const card = (o) => ({ name: 'x', label: 'X', category: 'capability', version: '
 test('筛选：分类、已启用（含待生效）、可更新，搜索名称 / ID / 说明不分大小写', () => {
   const items = [
     card({ name: 'trace', label: '场景模拟', project_status: 'update', description: '每段多一步' }),
-    card({ name: 'migrate', label: '迁移复用', project_status: 'available' }),
-    card({ name: 'knowledge', label: '知识沉淀', project_status: 'pending' }),
+    card({ name: 'codegen', label: '代码生成与求解', project_status: 'available' }),
+    card({ name: 'diagram', label: '图示', project_status: 'pending' }),
     card({ name: 'industry-retail', label: '零售连锁', category: 'industry', project_status: 'enabled' }),
-    card({ name: 'db-mysql', label: '数据库 · MySQL', category: 'provider', project_status: 'platform_installed' }),
+    card({ name: 'convert-pdf', label: 'PDF 转换', category: 'provider', project_status: 'platform_installed' }),
   ];
-  assert.deepEqual(items.filter((p) => matchCard(p, { cat: 'inst' })).map((p) => p.name), ['trace', 'knowledge', 'industry-retail']);
+  assert.deepEqual(items.filter((p) => matchCard(p, { cat: 'inst' })).map((p) => p.name), ['trace', 'diagram', 'industry-retail']);
   assert.deepEqual(items.filter((p) => matchCard(p, { cat: 'upd' })).map((p) => p.name), ['trace']);
-  assert.deepEqual(items.filter((p) => matchCard(p, { q: 'MYSQL' })).map((p) => p.name), ['db-mysql']);
+  assert.deepEqual(items.filter((p) => matchCard(p, { q: 'pdf' })).map((p) => p.name), ['convert-pdf']);
   assert.deepEqual(items.filter((p) => matchCard(p, { q: '每段' })).map((p) => p.name), ['trace']);
   const secs = sectionsOf(items, { cat: 'all', q: '' });
   assert.deepEqual(secs.map((s) => [s.key, s.items.length]), [['capability', 3], ['industry', 1], ['provider', 1]]);
@@ -39,39 +39,11 @@ test('筛选：分类、已启用（含待生效）、可更新，搜索名称 /
   assert.equal(catOf({}), 'all');
 });
 
-test('证据源不可用时：提供方和系统逆向建模不出现，计数与推荐按剩下的重算；可用时原样', () => {
-  const data = {
-    items: [
-      card({ name: 'trace', project_status: 'update' }),
-      card({ name: 'rev', project_status: 'enabled' }),
-      card({ name: 'industry-retail', category: 'industry', project_status: 'enabled' }),
-      card({ name: 'db-mysql', category: 'provider', project_status: 'platform_installed' }),
-    ],
-    counts: { all: 4, capability: 2, industry: 1, provider: 1, enabled: 3, updatable: 1 },
-    recommendations: [{ pack: { name: 'rev' } }, { pack: { name: 'migrate' } }],
-  };
-  const off = visibleCatalog(data, false);
-  assert.deepEqual(off.items.map((p) => p.name), ['trace', 'industry-retail']);
-  assert.deepEqual([off.counts.all, off.counts.capability, off.counts.industry, off.counts.provider, off.counts.enabled, off.counts.updatable], [2, 1, 1, 0, 2, 1]);
-  assert.deepEqual(off.recommendations.map((r) => r.pack.name), ['migrate']);
-  assert.equal(visibleCatalog(data, true), data);
-  assert.equal(visibleCatalog(null, false), null);
-});
-
-test('多源连接器里的转换器（ADR-0073）：证据采集不可用时照样出现，分类叫「多源连接器」', () => {
-  const data = {
-    items: [
-      card({ name: 'convert-pdf', category: 'provider', project_status: 'platform_installed', converter: { types: ['.pdf'], default_for: ['.pdf'] } }),
-      card({ name: 'db-mysql', category: 'provider', project_status: 'platform_installed' }),
-    ],
-    counts: { all: 2, provider: 2 },
-    recommendations: [],
-  };
-  const off = visibleCatalog(data, false);
-  assert.deepEqual(off.items.map((p) => p.name), ['convert-pdf']);
-  assert.equal(off.counts.provider, 1);
+test('多源连接器里的转换器（ADR-0073）：归在「多源连接器」分类，卡脚是平台已安装', () => {
+  const conv = card({ name: 'convert-pdf', category: 'provider', project_status: 'platform_installed', converter: { types: ['.pdf'], default_for: ['.pdf'] } });
+  assert.deepEqual(sectionsOf([conv, card({ name: 'trace' })], { cat: 'provider', q: '' }).map((s) => [s.key, s.items.map((p) => p.name)]), [['provider', ['convert-pdf']]]);
   assert.equal(PACK_CATEGORIES.provider[0], '多源连接器');
-  assert.deepEqual(cardFoot(off.items[0]).left, { type: 'chip', text: '平台已安装', tone: 'teal', icon: 'check' });
+  assert.deepEqual(cardFoot(conv).left, { type: 'chip', text: '平台已安装', tone: 'teal', icon: 'check' });
 });
 
 test('转换器默认（PL-20 / PL-21）：只有一个转换器的类型不出；有别的时默认的标出来，管理员能改', () => {
@@ -83,7 +55,7 @@ test('转换器默认（PL-20 / PL-21）：只有一个转换器的类型不出�
   assert.deepEqual(converterDefaults(d, two, { admin: false }), [{ type: '.pdf', label: 'PDF', isDefault: false, canSet: false }]);
   assert.deepEqual(converterDefaults({ ...d, name: 'convert-pdf' }, two, { admin: true }), [{ type: '.pdf', label: 'PDF', isDefault: true, canSet: false }]);
   assert.deepEqual(converterDefaults({ name: 'trace' }, two), []);
-  assert.equal(heroActions({ project_status: 'platform_installed', category: 'provider', converter: {} }, { hasProject: true }).hint, '');
+  assert.deepEqual(heroActions({ project_status: 'platform_installed', category: 'provider', converter: {} }, { hasProject: true }), { primary: { label: '平台已安装', icon: 'check', disabled: true, kind: 'soft' } });
 });
 
 test('节点包归进能力包：不单列分类，旧数据里的 node 分类也算能力包', () => {
@@ -95,8 +67,8 @@ test('节点包归进能力包：不单列分类，旧数据里的 node 分类�
 });
 
 // ---------- 卡片 ----------
-test('卡脚：9 种 project_status 的 chip 与按钮（契约 PL-01 的表）', () => {
-  const foot = (st, o, extra) => cardFoot(card({ project_status: st, locked_version: '0.9.1', latest: '0.10.0', usage_note: 'erp-prod 在用', ...extra }), o);
+test('卡脚：8 种 project_status 的 chip 与按钮（契约 PL-01 的表）', () => {
+  const foot = (st, o, extra) => cardFoot(card({ project_status: st, locked_version: '0.9.1', latest: '0.10.0', usage_note: '2 个项目在用', ...extra }), o);
   assert.deepEqual(foot('required').left, { type: 'chip', text: '必装 · 已启用', tone: 'blue', icon: 'lock' });
   assert.equal(foot('enabled').right.type, 'detail');
   const upd = foot('update');
@@ -106,9 +78,7 @@ test('卡脚：9 种 project_status 的 chip 与按钮（契约 PL-01 的表）'
   assert.equal(foot('available').left.kind, 'primary');
   assert.deepEqual([foot('offline').left.text, foot('offline').right.disabled], ['离线部署不可用', true]);
   assert.equal(foot('not_applicable', {}, { usage_note: '适用于物业服务项目' }).note, '适用于物业服务项目');
-  assert.deepEqual([foot('platform_installed').left.text, foot('platform_installed').note], ['平台已安装', 'erp-prod 在用']);
-  assert.equal(foot('platform_available').right.action, 'install');
-  assert.equal(foot('platform_available', { requested: true }).right.disabled, true);
+  assert.deepEqual([foot('platform_installed').left.text, foot('platform_installed').note], ['平台已安装', '2 个项目在用']);
   assert.equal(foot('pending').left.text, '已启用 · 下一条消息生效');
   assert.equal(foot('pending', { pendingKind: 'disable' }).left.text, '停用 · 下一条消息生效');
   assert.equal(foot(null).note, '先建一个项目才能启用');
@@ -177,7 +147,7 @@ test('会带来什么、界面、生效时机、影响、提示语', () => {
   assert.equal(impactText({ note: '原样' }), '原样');
   assert.equal(impactText({ needs_review_after_upgrade: 0, affected_artifacts: 4 }), '节点完成判定没有变化，已确认的产物不会被标为需复核。用到这个包的 4 个产物会在下次校验时按新内容检查。');
   assert.match(impactText({ needs_review_after_upgrade: 2 }), /2 个已确认的产物会标为需复核/);
-  assert.equal(enableToast({ label: '迁移复用' }, { version_label: 'v0.13' }), '已启用 迁移复用，保存为版本 v0.13');
+  assert.equal(enableToast({ label: '图示' }, { version_label: 'v0.13' }), '已启用 图示，保存为版本 v0.13');
   assert.equal(updateToast({ label: '图示', name: 'diagram' }, '0.6.0', { effective: 'next_message' }), '已更新图示到 0.6.0，下一条消息生效');
   assert.equal(updateToast({ label: '零售连锁', name: 'industry-retail' }, '1.1.0', { effective: 'immediate' }, true), '已更新到 industry-retail 1.1.0，现读即生效');
 });
@@ -204,7 +174,7 @@ test('主线图：插入点挂到对应的段，同一段竖排，图下那句�
   // 真实后端只给节点 ID：按 ID 猜段
   assert.deepEqual(['core.research', 'trace.regression', 'retail.compliance', 'foo.bar'].map((id) => insertionAt({ id })), ['research', 'validate', 'publish', 'model']);
   // 官方包的真实节点编号（各包 flow.yaml 的 after）
-  assert.deepEqual(['trace.trace', 'codegen.codegen', 'codegen.solver', 'diagram.flowchart', 'evo.evolution'].map((id) => insertionAt({ id })), ['validate', 'validate', 'model', 'research', 'publish']);
+  assert.deepEqual(['trace.trace', 'codegen.codegen', 'codegen.solver', 'diagram.flowchart'].map((id) => insertionAt({ id })), ['validate', 'validate', 'model', 'research']);
   // 图下只用包自带的说明；处数和统计卡、图本身重复，不写
   assert.equal(flowCaption({ flow_insertions: [{}, {}], flow_note: '示例' }), '示例');
   assert.equal(flowCaption({ flow_insertions: [{}, {}] }), '');
@@ -227,7 +197,7 @@ test('包含什么：mock 的完整分组原样，真实后端的 contents 补�
     flow_insertions: [{ id: 'trace.scenario', title: 'trace.scenario' }],
     contents: [{ group: '命令', items: ['trace-run'] }, { group: '子代理', items: ['tracer'] }],
     config: [{ id: 'max_per_slice', default: 6 }, 'regression_mode'],
-    ui: { kind: 'subpages', subpages: [{ title: '采集与快照' }] },
+    ui: { kind: 'subpages', subpages: [{ title: '台账' }] },
   });
   assert.deepEqual(backend.map((g) => g.title), ['加进流程', '命令', '子代理', '界面入口', '可调设置']);
   assert.deepEqual(backend[4].items, ['max_per_slice 6', 'regression_mode']);
@@ -261,7 +231,6 @@ test('英雄区：依赖、大小、日期；按钮与菜单随状态变', () =>
   assert.equal(pend[0].disabled, true);
   assert.equal(heroActions({ ...d, project_status: 'pending' }, { hasProject: true, pending: { kind: 'upgrade', to: '0.10.0' } }).menu.label, '0.10.0 · 下一条消息生效');
   assert.equal(heroActions({ ...d, project_status: 'available' }, { hasProject: true }).primary.action, 'enable');
-  assert.equal(heroActions({ ...d, category: 'provider', project_status: 'platform_available' }, { admin: false }).hint, '需要管理员安装，点了会发送安装申请。');
   assert.equal(heroActions(d, { hasProject: false }).primary, undefined);
 });
 
@@ -278,7 +247,7 @@ test('统计卡：project_stats 为 null 时显示「—」；更新记录标记
   assert.equal(cl[0].date, '2026-10-28');
 });
 
-// ---------- mock：PL-01～PL-04、PL-19 与 PL-05 ----------
+// ---------- mock：PL-01～PL-03 与 PL-05 ----------
 function harness({ sc = {}, user = F.USERS.zhangsan } = {}) {
   const routes = [];
   const cards = F.projectCards();
@@ -323,7 +292,7 @@ test('mock PL-01 不带项目：新建向导的结果不变（名字、版本、
   assert.deepEqual(r.body.items.map(pick), F.packs().map(pick));
   assert.equal(r.body.recommendations, undefined);
   const all = await api('GET', '/api/v1/packs');
-  assert.equal(all.body.counts.provider, 12); // 8 个采集类（设计对照用）+ 网关里另有的程序逆向 + 3 个转换器（ADR-0073，取代原「文件资料」提供方）
+  assert.equal(all.body.counts.provider, 3); // 3 个转换器（ADR-0073）
   assert.equal(all.body.items.find((p) => p.name === 'convert-pdf').project_status, 'platform_installed');
   assert.deepEqual([all.body.counts.enabled, all.body.counts.updatable], [0, 0]);
   assert.ok(!all.body.items.some((p) => p.name === 'property-compliance'));
@@ -338,21 +307,13 @@ test('mock PL-01 带项目：状态按项目设置的能力表算，计数、推
   assert.equal(st.trace, 'pending'); // 项目设置里有一个待生效的升级
   assert.equal(st.diagram, 'update');
   assert.equal(r.body.items.find((p) => p.name === 'diagram').latest, '0.6.0');
-  assert.equal(st.migrate, 'available'); // 停用过
-  assert.equal(st.websearch, 'offline');
+  assert.equal(st['industry-property'], 'available'); // 没启用过
   assert.equal(st['property-compliance'], 'not_applicable');
   assert.equal(r.body.items.find((p) => p.name === 'property-compliance').usage_note, '适用于物业服务项目');
-  assert.equal(st['db-mysql'], 'platform_installed');
-  assert.equal(r.body.items.find((p) => p.name === 'db-mysql').usage_note, 'erp-prod 在用');
-  assert.equal(st['rea-binary'], 'platform_available');
   assert.equal(st['convert-pdf'], 'platform_installed');
   assert.equal(r.body.items.find((p) => p.name === 'convert-pdf').usage_note, null);
-  // 网关里真有的采集类连接器带 collector：程序逆向（rea-static）不在设计稿的提供方清单里，单独多一张
-  assert.equal(st['rea-static'], 'platform_installed');
-  assert.equal(r.body.items.find((p) => p.name === 'rea-static').collector.self_service, true);
-  assert.equal(r.body.items.find((p) => p.name === 'rea-binary').collector, undefined);
-  assert.deepEqual(r.body.counts, { all: 29, capability: 10, industry: 4, system: 3, provider: 12, node: 0, exporter: 0, enabled: 9, updatable: 1 });
-  assert.deepEqual(r.body.recommendations.map((x) => [x.pack.name, x.action]), [['migrate', 'enable'], ['diagram', 'upgrade']]);
+  assert.deepEqual(r.body.counts, { all: 14, capability: 4, industry: 4, system: 3, provider: 3, node: 0, exporter: 0, enabled: 6, updatable: 1 });
+  assert.deepEqual(r.body.recommendations.map((x) => [x.pack.name, x.action]), [['diagram', 'upgrade']]);
   const inst = await api('GET', `/api/v1/packs?project_id=${P}&installed_only=true&q=模拟`);
   assert.deepEqual(inst.body.items.map((p) => p.name), ['trace']);
   assert.equal((await api('GET', '/api/v1/packs?project_id=nope')).status, 404);
@@ -361,13 +322,15 @@ test('mock PL-01 带项目：状态按项目设置的能力表算，计数、推
 });
 
 test('mock：插件中心启用后，项目设置的能力表是同一个状态', async () => {
-  const { api } = harness();
-  const en = await api('POST', `/api/v1/projects/${P}/packs`, { name: 'migrate' });
+  const { api } = harness({ sc: { off: 'codegen' } });
+  const before = await api('GET', `/api/v1/packs?project_id=${P}`);
+  assert.equal(before.body.items.find((p) => p.name === 'codegen').project_status, 'available'); // 停用过
+  const en = await api('POST', `/api/v1/projects/${P}/packs`, { name: 'codegen' });
   assert.equal(en.status, 201);
   const r = await api('GET', `/api/v1/packs?project_id=${P}`);
-  assert.equal(r.body.items.find((p) => p.name === 'migrate').project_status, 'pending');
+  assert.equal(r.body.items.find((p) => p.name === 'codegen').project_status, 'pending');
   const pl05 = await api('GET', `/api/v1/projects/${P}/packs`);
-  assert.equal(pl05.body.items.find((p) => p.name === 'migrate').status, 'pending');
+  assert.equal(pl05.body.items.find((p) => p.name === 'codegen').status, 'pending');
   // 行业包现读即生效：启用物业服务后，只适用于物业服务项目的租户包变成可启用，也能经 PL-06 启用
   await api('POST', `/api/v1/projects/${P}/packs`, { name: 'industry-property' });
   const r2 = await api('GET', `/api/v1/packs?project_id=${P}`);
@@ -405,21 +368,21 @@ test('mock ?mock=plugins:held+ind+norec：场景模拟没排升级且更新被�
   assert.equal(after.body.items.find((p) => p.name === 'industry-retail').project_status, 'enabled');
   const withRecs = harness({ sc: { plugins: 'ind' } });
   const recs = await withRecs.api('GET', `/api/v1/packs?project_id=${P}`);
-  assert.deepEqual(recs.body.recommendations.map((x) => x.pack.name), ['industry-retail', 'migrate']);
+  assert.deepEqual(recs.body.recommendations.map((x) => x.pack.name), ['industry-retail', 'diagram']);
 });
 
-test('mock PL-03：六项检查齐全；启用迁移复用的说法与设计稿一致；参数校验', async () => {
-  const { api } = harness();
-  const c = await api('GET', `/api/v1/packs/migrate/versions/0.2.0/compatibility?project_id=${P}`);
+test('mock PL-03：六项检查齐全；启用代码生成与求解的说法；参数校验', async () => {
+  const { api } = harness({ sc: { off: 'codegen' } });
+  const c = await api('GET', `/api/v1/packs/codegen/versions/0.9.2/compatibility?project_id=${P}`);
   assert.equal(c.status, 200);
   assert.deepEqual(c.body.checks.map((x) => x.id), ['kernel_api', 'engines', 'depends', 'names', 'flow', 'page_api']);
-  assert.equal(c.body.checks.find((x) => x.id === 'flow').detail, '新增按需节点「迁移复用」，无环、输出路径不重复');
+  assert.equal(c.body.checks.find((x) => x.id === 'flow').detail, '新增旁支节点「代码生成」、旁支节点「求解适配」，无环、输出路径不重复');
   assert.equal(c.body.checks.find((x) => x.id === 'depends').detail, '已锁定 core@1.4.2');
-  assert.match(c.body.brings.summary_md, /extract-migrated-objects/);
+  assert.equal(c.body.brings.summary_md, '命令 3 个、助手角色 1 个、模板 2 个、检查规则 1 条、流程步骤 2 个。');
   assert.equal(c.body.effective, 'next_message');
-  assert.equal(c.body.ui_effect.text, '在对话里生效');
-  assert.equal((await api('GET', '/api/v1/packs/migrate/versions/0.2.0/compatibility')).status, 400);
-  assert.equal((await api('GET', `/api/v1/packs/migrate/versions/9.9.9/compatibility?project_id=${P}`)).body.code, 'pack_version_not_found');
+  assert.equal(c.body.ui_effect.text, '启用后左栏出现「代码生成」');
+  assert.equal((await api('GET', '/api/v1/packs/codegen/versions/0.9.2/compatibility')).status, 400);
+  assert.equal((await api('GET', `/api/v1/packs/codegen/versions/9.9.9/compatibility?project_id=${P}`)).body.code, 'pack_version_not_found');
   assert.equal((await api('GET', `/api/v1/packs/nope/versions/1.0.0/compatibility?project_id=${P}`)).body.code, 'pack_not_found');
   // 纯函数：升级时用这个版本的更新说明
   const d = { flow_insertions: [], contents: [], changelog: [{ version: '0.6.0', notes: '泳道' }] };
@@ -444,35 +407,17 @@ test('mock PL-02：详情、在用 / 需要先升级的标记、统计只给主�
   assert.equal(other.body.project_stats, null);
   const ind = await api('GET', `/api/v1/packs/industry-retail?project_id=${P}`);
   assert.deepEqual([ind.body.hot_level, ind.body.effective], ['H0', 'immediate']);
-  // 采集类连接器同真实后端：带 collector，没有包内容、版本记录和统计
-  const prov = await api('GET', '/api/v1/packs/db-mysql');
-  assert.deepEqual([prov.body.collector.installed, prov.body.contents, prov.body.changelog, prov.body.project_stats], [true, [], [], null]);
+  // 转换器装在连接器网关里：热加载等级 H2，不按项目统计
+  const conv = await api('GET', `/api/v1/packs/convert-pdf?project_id=${P}`);
+  assert.deepEqual([conv.body.project_status, conv.body.hot_level, conv.body.project_stats], ['platform_installed', 'H2', null]);
   const core = await api('GET', `/api/v1/packs/core?project_id=${P}`);
   assert.equal(core.body.ui.kind, 'kernel');
   assert.match(core.body.project_stats.produced.note, /^对象 15/);
-  for (const name of ['knowledge', 'codegen', 'diagram', 'rev', 'evo', 'incremental', 'migrate', 'websearch', 'sys-wms-generic', 'code-repo']) {
+  for (const name of ['codegen', 'diagram', 'industry-property', 'sys-wms-generic', 'convert-docx', 'convert-xlsx']) {
     assert.equal((await api('GET', `/api/v1/packs/${name}?project_id=${P}`)).status, 200, name);
   }
   assert.equal((await api('GET', '/api/v1/packs/nope')).body.code, 'pack_not_found');
   assert.equal((await api('GET', '/api/v1/packs/trace?version=7.0.0')).body.code, 'pack_version_not_found');
-});
-
-test('mock PL-04、PL-19：普通用户申请，管理员安装；只认没装的提供方', async () => {
-  const user = { ...F.USERS.modeler01, roles: ['user'] };
-  const u = harness({ user });
-  const req = await u.api('POST', '/api/v1/packs/rea-binary/install-requests', { version: '0.1.0' });
-  assert.equal(req.status, 202);
-  assert.ok(req.body.request_id);
-  const queued = u.ctx.db.adminRequests.find((x) => x.id === req.body.request_id);
-  assert.deepEqual([queued.kind, queued.state, queued.payload.pack.name, queued.requested_by], ['pack_install', 'pending', 'rea-binary', 'modeler01']);
-  assert.equal((await u.api('POST', '/api/v1/admin/packs/rea-binary/install', {})).status, 403);
-  assert.equal((await u.api('POST', '/api/v1/packs/db-mysql/install-requests', {})).body.code, 'pack_already_enabled');
-  assert.equal((await u.api('POST', '/api/v1/packs/trace/install-requests', {})).status, 400);
-  const a = harness({ user: { ...F.USERS.zhangsan, roles: ['user', 'admin'] } });
-  const ins = await a.api('POST', '/api/v1/admin/packs/log-file/install', { version: '0.1.0' });
-  assert.equal(ins.status, 202);
-  const r = await a.api('GET', `/api/v1/packs?project_id=${P}`);
-  assert.equal(r.body.items.find((p) => p.name === 'log-file').project_status, 'platform_installed');
 });
 
 test('版本比较与范围', () => {
@@ -510,41 +455,4 @@ test('mock PL-27：四个分类给 zip 和文件名，导出器和不认识的�
   assert.ok((await res.arrayBuffer()).byteLength > 0);
   assert.equal((await ctx.self('/api/v1/packs/dev-skills/exporter')).status, 404);
   assert.equal((await ctx.self('/api/v1/packs/dev-skills/nope')).status, 404);
-});
-
-// ---------- 采集类连接器（端到端验证待定事项第 9 条） ----------
-const MYSQL = card({
-  name: 'db-mysql', label: 'MySQL', category: 'provider', project_status: 'platform_installed', converter: null,
-  collector: { kind: 'db', evidence_types: ['entity', 'field', 'sample'], input: 'connection', self_service: false, installed: true, readonly_method: '只读账号 · 只读会话', license_note: '驱动（MIT）' },
-});
-const REA = card({
-  name: 'rea-static', label: 'REA 静态分析', category: 'provider', project_status: 'platform_available', converter: null,
-  collector: { kind: 'rea', evidence_types: ['entity', 'operation'], input: 'artifact', self_service: true, installed: false, readonly_method: '静态分析', license_note: '' },
-});
-
-test('采集类连接器的卡脚：装了是平台已安装，没装是未安装、要管理员部署，都不出安装按钮', () => {
-  assert.deepEqual([cardFoot(MYSQL).left.text, cardFoot(MYSQL).right.type], ['平台已安装', 'detail']);
-  const missing = cardFoot(REA);
-  assert.deepEqual([missing.left.text, missing.note, missing.right.type], ['未安装', '需要管理员部署', 'detail']);
-  assert.equal(cardFoot(REA, { requested: true }).right.type, 'detail');
-});
-
-test('采集类连接器的详情：按钮只表状态，说明怎么登记；几行事实写能采什么、只读方式、许可、登记方式', () => {
-  assert.deepEqual(heroActions(MYSQL, { hasProject: false }), {
-    primary: { label: '平台已安装', icon: 'check', disabled: true, kind: 'soft' }, hint: '在项目的「资料 → 数据源」里登记，需要管理员。',
-  });
-  assert.deepEqual(heroActions(REA, {}), { primary: { label: '未安装', disabled: true, kind: '' }, hint: '需要管理员部署。' });
-  assert.equal(heroActions({ ...REA, collector: { ...REA.collector, installed: true } }, {}).hint, '在项目的「资料 → 数据源」里自己登记。');
-  assert.deepEqual(collectorFacts(MYSQL), [['能采', '实体、字段、脱敏样本'], ['只读方式', '只读账号 · 只读会话'], ['许可', '驱动（MIT）'], ['登记', '需管理员登记']]);
-  assert.deepEqual(collectorFacts(REA).map(([k]) => k), ['能采', '只读方式', '登记']);
-  assert.deepEqual(collectorFacts(card({})), []);
-});
-
-test('采集类连接器随多源连接器分组出现，证据采集不可用时和别的采集类一起藏起来', () => {
-  const data = { items: [MYSQL, REA, card({ name: 'convert-pdf', category: 'provider', converter: { types: ['.pdf'] }, project_status: 'platform_installed' })], counts: { all: 3, provider: 3 } };
-  const sections = sectionsOf(data.items, { cat: 'provider' });
-  assert.deepEqual(sections.map((s) => [s.key, s.total]), [['provider', 3]]);
-  const off = visibleCatalog(data, false);
-  assert.deepEqual(off.items.map((p) => p.name), ['convert-pdf']);
-  assert.equal(off.counts.provider, 1);
 });

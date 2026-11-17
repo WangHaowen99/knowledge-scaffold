@@ -307,53 +307,6 @@ def test_concurrent_session_limit_holds_under_simultaneous_sends(env, quotas, mo
     assert len([item for item in results if not isinstance(item, BaseException)]) == 1
 
 
-# ---- 6、7. 知识：提名服务端重新脱敏；同名条目覆盖行业条目 ----
-
-
-def _industry_project(client) -> str:
-    created = client.post("/api/v1/projects", json={"name": "零售", "goal": "合成场景：门店补货",
-                                                    "industry_packs": ["industry-retail"]})
-    assert created.status_code == 201, created.text
-    return created.json()["id"]
-
-
-def test_nomination_rejects_text_that_still_needs_sanitizing(env):
-    _, client = env
-    project_id = _industry_project(client)
-    base = f"/api/v1/projects/{project_id}/knowledge"
-    entry = client.post(base, json={"title": "补货周期口径", "type": "convention", "rule_md": "按日均销量乘以补货周期"})
-    assert entry.status_code == 201, entry.text
-    entry_id = entry.json()["entry"]["id"]
-    raw = "联系 13800000000 或 someone@example.com，示例有限公司 合同 HT-20231234 金额 50000元"
-    refused = client.post(f"{base}/{entry_id}/nominations", json={
-        "industry_pack": "industry-retail", "confirm_general": True, "sanitized_text": raw})
-    assert refused.status_code == 422 and refused.json()["code"] == "nomination_not_sanitized"
-    found = {item["item"] for item in refused.json()["details"]["checks"]}
-    assert found == {"secret_or_pii", "customer_name", "internal_id", "amount"}
-    assert "13800000000" not in refused.text  # 不回显命中的原文
-    preview = client.post(f"{base}/{entry_id}/nomination-preview", json={"industry_pack": "industry-retail"}).json()
-    accepted = client.post(f"{base}/{entry_id}/nominations", json={
-        "industry_pack": "industry-retail", "confirm_general": True, "sanitized_text": preview["sanitized_text"]})
-    assert accepted.status_code == 201, accepted.text
-
-
-def test_same_title_project_entry_overrides_industry_entry(env):
-    _, client = env
-    project_id = _industry_project(client)
-    base = f"/api/v1/projects/{project_id}/knowledge"
-    industry = client.get(base, params={"layer": "industry", "limit": 200}).json()["items"]
-    target = industry[0]
-    created = client.post(base, json={"title": target["title"], "type": target["type"],
-                                      "rule_md": "本项目按近 6 个月的口径"})
-    assert created.status_code == 201, created.text
-    entry = created.json()["entry"]
-    assert entry["overrides_industry"] is True
-    layers = client.get(base).json()["layers"]
-    assert next(layer for layer in layers if layer["layer"] == "project")["overridden"] == 1
-    detail = client.get(f"{base}/{entry['id']}").json()
-    assert detail["overrides"]["entry_id"] == target["id"]
-
-
 # ---- 8. 目录符号链接读不到工作区外 ----
 
 

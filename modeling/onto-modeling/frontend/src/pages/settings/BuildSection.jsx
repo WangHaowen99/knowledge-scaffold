@@ -1,4 +1,4 @@
-// 项目设置 · 构建方式（P-13）与自主构建策略（AB-01、AB-02；F8 起不分段，范围是全部没做完的步骤；生产库授权行取 EV-01），
+// 项目设置 · 构建方式（P-13）与自主构建策略（AB-01、AB-02；F8 起不分段，范围是全部没做完的步骤），
 // 一个「保存」同时存构建方式和策略；「保存并开始自主构建」只在策略分区底部 = 保存 → AB-03 预览 → 确认 → AB-04 → 去 l4-run（契约 8.1 #41）
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
@@ -6,18 +6,15 @@ import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import {
-  Button, Card, Field, Icon, Inp, KV, Modal, Note, Seg, Toggle, cx,
+  Button, Card, Icon, KV, Modal, Note, Seg, Toggle, cx,
 } from '../../ui/index.jsx';
-import { evidenceFromSources } from '../../state/evidence.js';
 import {
   previewScope, startErrorText, startLabel, takeOverText,
 } from '../workbench/autobuildModel.js';
 import {
-  advancedSummary, finalizePolicy, isRecommended, lastRunText, moveItem, policyBody, policyDirty, policyForm,
-  runStateText, scopeText, startBlocker, thresholdAt, thresholdPos, windowText,
+  advancedSummary, isRecommended, lastRunText, moveItem, policyBody, policyDirty, policyForm,
+  runStateText, startBlocker, thresholdAt, thresholdPos,
 } from './settingsModel.js';
-
-const ENV_LABEL = { production: '生产环境', staging: '预发环境', test: '测试环境', dev: '开发环境' };
 
 function ThresholdSlider({ value, onChange, disabled }) {
   const ref = useRef(null);
@@ -84,7 +81,7 @@ function PriorityChain({ items, onChange, disabled }) {
 }
 
 // 开始前预览（AB-03 的结果）：样子同工作台里切到自主构建时的预览弹窗
-export function StartDialog({ preview: initial, evidenceOn, onClose }) {
+export function StartDialog({ preview: initial, onClose }) {
   const { api } = useApp();
   const { pid } = useProject();
   const [preview, setPreview] = useState(initial);
@@ -118,7 +115,6 @@ export function StartDialog({ preview: initial, evidenceOn, onClose }) {
         w="72px"
         pairs={[
           ['范围', previewScope(preview)],
-          ...(evidenceOn ? [['生产库', preview.production || '—']] : []),
           ['拿不准时', preview.below_threshold_text || '—'],
         ]}
       />
@@ -136,31 +132,22 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
   const policy = d.policy;
   const [mode, setMode] = useState(bm.build_mode);
   const [form, setForm] = useState(() => policyForm(policy));
-  const [drafts, setDrafts] = useState({});
   const [adv, setAdv] = useState(false);
   const [busy, setBusy] = useState(null);
-  const [errors, setErrors] = useState({});
   const [preview, setPreview] = useState(null);
 
   useEffect(() => { setMode(bm.build_mode); }, [bm.build_mode]);
-  useEffect(() => { setForm(policyForm(policy)); setDrafts({}); setErrors({}); }, [policy]);
+  useEffect(() => { setForm(policyForm(policy)); }, [policy]);
 
-  const final = finalizePolicy(form, drafts);
   const modeDirty = mode !== bm.build_mode;
-  const pDirty = !!policy && policyDirty(policy, final.form);
+  const pDirty = !!policy && policyDirty(policy, form);
   const locked = archived;
   const modeLocked = archived || !!active;
   const blocker = startBlocker({ archived, active });
-  const limits = policy?.platform_limits || {};
-  const sources = d.sources?.items || [];
-  // 证据源本期只留接口（EV-01 回 501）：读不到数据源登记时不出生产库采集授权（策略里的字段保留，ADR-0056）
-  const evidenceOn = evidenceFromSources(d.sources);
 
   const setF = (k, fn) => setForm((f) => ({ ...f, [k]: fn(f[k]) }));
   const setScope = (patch) => setF('scope', (s) => ({ ...s, ...patch }));
   const setAdvanced = (patch) => setF('advanced', (a) => ({ ...a, ...patch }));
-  const setProd = (sid, patch) => setF('production_collection', (list) => list.map((x) => (x.source_id === sid ? { ...x, ...patch } : x)));
-  const setDraft = (sid, patch) => setDrafts((x) => ({ ...x, [sid]: { ...x[sid], ...patch } }));
 
   const saveMode = async () => {
     const r = await api.setBuildMode(pid, mode);
@@ -169,14 +156,9 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
     return r;
   };
   const savePolicy = async () => {
-    if (Object.keys(final.problems).length) {
-      setErrors(final.problems);
-      throw Object.assign(new Error(Object.values(final.problems)[0]), { local: true });
-    }
     try {
-      const r = await api.saveAutobuildPolicy(pid, policyBody(final.form, policy.revision));
+      const r = await api.saveAutobuildPolicy(pid, policyBody(form, policy.revision));
       put('policy', r);
-      setErrors({});
       return r;
     } catch (e) {
       if (e.code === 'revision_conflict') reload('policy');
@@ -192,7 +174,7 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
       if (pDirty) await savePolicy();
       toast('已保存');
     } catch (e) {
-      toast(e.local ? e.message : errorText(e), 'alert');
+      toast(errorText(e), 'alert');
     } finally {
       setBusy(null);
     }
@@ -206,7 +188,7 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
       if (save && pDirty) await savePolicy();
       setPreview(await api.previewAutobuild(pid, {}));
     } catch (e) {
-      toast(e.local ? e.message : errorText(e), 'alert');
+      toast(errorText(e), 'alert');
     } finally {
       setBusy(null);
     }
@@ -273,34 +255,6 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
               </div>
             </Card>
 
-            {evidenceOn ? <Card title="生产库采集授权" icon="db" sub="没授权的数据源，需要采集时会挂起该项，不会自己去连">
-              {(form.production_collection || []).length ? (form.production_collection || []).map((row) => {
-                const src = sources.find((s) => s.id === row.source_id);
-                const dr = drafts[row.source_id] || {};
-                const werr = errors[`window:${row.source_id}`];
-                const allowedByPlatform = limits.allow_production_collection !== false;
-                return (
-                  <div key={row.source_id} className={cx('g2-guard g2s-prod', !row.allowed && 'g2-off')} style={{ background: '#fff', flexWrap: 'wrap' }}>
-                    <Icon name="db" size={14} />
-                    <b style={{ fontWeight: 600 }}>{src?.display_name || row.source_id}</b>
-                    <span className="xs muted">业务系统 · {ENV_LABEL[src?.environment] || '生产环境'}</span>
-                    <span className="sp" />
-                    <span className="row sm" title={allowedByPlatform ? undefined : '平台不允许自主构建采集生产库'}>
-                      <Toggle on={row.allowed} disabled={locked || !allowedByPlatform} onChange={(v) => setProd(row.source_id, { allowed: v })} />允许自主构建时采集
-                    </span>
-                    <div className="g2s-mf">
-                      <Field label="时间窗口" hint={werr ? <span style={{ color: 'var(--red)' }}>{werr}</span> : null}>
-                        <Inp icon="clock" placeholder="22:00 – 06:00" error={!!werr} disabled={locked} value={dr.window ?? windowText(row.window)} onChange={(e) => setDraft(row.source_id, { window: e.target.value })} />
-                      </Field>
-                      <Field label="采集范围">
-                        <Inp icon="filter" placeholder="补货标准表、商品品类表" disabled={locked} value={dr.scope ?? scopeText(row.scope)} onChange={(e) => setDraft(row.source_id, { scope: e.target.value })} />
-                      </Field>
-                    </div>
-                  </div>
-                );
-              }) : <div className="sm muted">本项目还没有授权的生产库数据源；在「资料 › 数据源」里登记并授权后会出现在这里。</div>}
-            </Card> : null}
-
             <div className="card">
               <div className="g2-advh" onClick={() => setAdv((v) => !v)}>
                 <Icon name="sliders" size={14} /><b>高级设置</b>
@@ -346,7 +300,7 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
           </div>
         )}
       </div>
-      {preview ? <StartDialog preview={preview} evidenceOn={evidenceOn} onClose={closePreview} /> : null}
+      {preview ? <StartDialog preview={preview} onClose={closePreview} /> : null}
     </div>
   );
 }

@@ -559,12 +559,12 @@ def test_both_engines_inject_the_same_context(tmp_path, monkeypatch):
     from app.services.engines.claude import ClaudeEngine
     from app.services.engines.jiuwen import JiuwenEngine
 
-    from tests.test_session_injection import knowledge_provider
+    from tests.test_session_injection import pack_provider
 
     stage = {"text": "本体项目当前阶段：未开始。"}
     monkeypatch.setattr(injection, "stage_hint", lambda root: stage["text"])
     monkeypatch.setattr(injection, "next_step_hint", lambda root: "下一步建议：资料分析（/ontology-research）。")
-    monkeypatch.setattr(injection, "_prompt_hint_provider", knowledge_provider)
+    monkeypatch.setattr(injection, "_prompt_hint_provider", pack_provider)
 
     def ctx():
         return EngineContext(project_id="p1", cwd=tmp_path, request_permission=None, load_resume_token=lambda: None,
@@ -574,7 +574,7 @@ def test_both_engines_inject_the_same_context(tmp_path, monkeypatch):
 
     claude = ClaudeEngine(ctx())
     jiuwen = JiuwenEngine(ctx())
-    messages = ["开始建模", "好的", "其实我们公司按周统计", "继续"]
+    messages = ["开始建模", "好的", "这一轮就到这，结束本轮", "继续"]
 
     async def scenario():
         out = []
@@ -592,7 +592,7 @@ def test_both_engines_inject_the_same_context(tmp_path, monkeypatch):
         assert query == injection.compose_query(message, claude_text)
     assert results[0][0].startswith("本体项目当前阶段：未开始。") and "下一步建议" in results[0][0]
     assert results[1][0] == ""  # 内容没变不重复
-    assert results[2][0].startswith("【业务知识信号】") and "当前阶段" not in results[2][0]
+    assert "/domain-extend-add" in results[2][0] and "当前阶段" not in results[2][0]
     assert "对象已提取" in results[3][0]
     # Claude 的回调随 SDK 选项注册（UserPromptSubmit），会话身份进 agent 的环境（方案 B7）
     options = claude._build_options(None)

@@ -7,10 +7,9 @@ import { entryRef } from './scenario.js';
 const MIN = 60 * 1000;
 export const CL_ID = 'cl-09';
 export const INC_CID = '0e9c4d7a21b5';
-export const FEEDBACK_ID = 'fb-1101-01';
 export const SOURCE_PATH = 'resource/others/09-修订通知.docx';
 export const CARD = {
-  list: 'card-inc-list', impact: 'card-inc-impact', feedback: 'card-inc-feedback', regression: 'card-inc-regression', round: 'card-inc-round',
+  list: 'card-inc-list', impact: 'card-inc-impact', regression: 'card-inc-regression', round: 'card-inc-round',
 };
 
 const two = (n) => String(n).padStart(2, '0');
@@ -88,23 +87,6 @@ export function impactCard(cl, impact, executed = false) {
   return {
     card_id: CARD.impact, card_type: 'impact', eyebrow: '', title: '影响面', subtitle: '', status: null, plugin: null, open: null,
     ...impact, change_list_id: cl.id, executed, entry_links: entryLinks(),
-  };
-}
-
-// 和待处理、资料区「外部反馈」里的是同一份（fb-1101-01，评测服务回传的 4 条失分用例）
-const FEEDBACK_ITEMS = [
-  { case_id: 'c-01', question: '牛奶日均销量 60 箱、隔日到货，门店申请 ≤96 箱', loss_reason: '超量方向判断反了（步骤 3）', artifacts: [REFS.op], related: null },
-  { case_id: 'c-02', question: '酸奶临期抽检', loss_reason: '临期损耗标准缺这个商品', artifacts: [entryRef('expiry_loss_std')], related: null },
-  { case_id: 'c-03', question: '门店指定 2024 版陈列标准', loss_reason: '用了 2019 版，缺少 6.3 条', artifacts: [entryRef('applicable_std')], related: '同变更点 5' },
-  { case_id: 'c-04', question: '临时加量 5 箱', loss_reason: '直接下单，R-11 没有挂到操作', artifacts: [entryRef('r11_temp_increase'), REFS.op], related: '同变更点 3' },
-];
-
-export function feedbackCard() {
-  return {
-    card_id: CARD.feedback, card_type: 'external_feedback', eyebrow: '', title: `外部反馈 · ${FEEDBACK_ITEMS.length} 条失分用例`, subtitle: '',
-    status: null, plugin: { name: 'evo', label: '反馈演进' }, open: null,
-    feedback_id: FEEDBACK_ID, source: { service: '评测服务', run: 'eval-1101-0910' }, items: FEEDBACK_ITEMS,
-    entry_links: [REFS.op, entryRef('expiry_loss_std'), entryRef('applicable_std'), entryRef('r11_temp_increase')],
   };
 }
 
@@ -220,7 +202,7 @@ export function runProgress(done) {
  */
 export function incHistory({ pid, cl, impact, others, phase = 'editing', csId = null, version = null }) {
   let seq = 4000;
-  const t = { merged: ago(41), user: ago(40), plan: ago(32), fb: ago(29), exec: ago(12), done: ago(9) };
+  const t = { merged: ago(41), user: ago(40), plan: ago(32), exec: ago(12), done: ago(9) };
   const e = (type, data, ts) => ({ id: String(++seq), type, ts, project_id: pid, conversation_id: INC_CID, data });
   const executed = phase !== 'editing';
   const out = [
@@ -243,12 +225,9 @@ export function incHistory({ pid, cl, impact, others, phase = 'editing', csId = 
     }, t.plan),
     e('card', listCard(cl), t.plan),
     e('card', impactCard(cl, impact, executed), t.plan),
-    e('notice', { kind: 'info', text: `${stamp(t.fb)} · 评测服务回传反馈`, version_label: null, changeset_id: null, align: 'center' }, t.fb),
-    e('message.assistant', { message_id: 'm-inc-a2', text_md: '评测服务刚回传 4 条失分用例。第 3、4 条和变更点 5、3 是同一件事，这次执行后会一起回归；第 1、2 条要单独分析。', anchors: [], entry_links: [], continued: false }, t.fb),
-    e('card', feedbackCard(), t.fb),
   ];
   if (!executed) {
-    out.push(e('suggestions.updated', preSuggestions(others), t.fb));
+    out.push(e('suggestions.updated', preSuggestions(others), t.plan));
     return out;
   }
   out.push(

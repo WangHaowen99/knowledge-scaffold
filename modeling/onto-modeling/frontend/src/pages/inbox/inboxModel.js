@@ -2,33 +2,18 @@
 
 // 筛选带：键与 IN-01 的 filter 一致
 export const FILTERS = [
-  ['all', '全部'], ['autobuild_review', '自主构建复核'], ['decision', '决策'], ['evidence_conflict', '证据冲突'],
-  ['change_list', '变更清单'], ['stale', '过期'], ['resumable', '续跑'], ['feedback', '外部反馈'],
+  ['all', '全部'], ['autobuild_review', '自主构建复核'], ['decision', '决策'],
+  ['change_list', '变更清单'], ['stale', '过期'], ['resumable', '续跑'],
 ];
-
-// 证据冲突来自证据源（三方对账），证据源本期只留接口（ADR-0056）：证据源不可用、或没有这类事项时筛选带上不出这一格
-export const visibleFilters = (counts, current, evidenceOn = true) => FILTERS
-  .filter(([k]) => k !== 'evidence_conflict' || (evidenceOn && (k === current || (counts?.by_filter?.[k] ?? 0) > 0)));
-
-// 证据源不可用时不列证据冲突，计数也不算它（不依赖后端碰巧不下发）
-export const withoutEvidence = (items, evidenceOn) => (evidenceOn ? items : (items || []).filter((x) => x.kind !== 'evidence_conflict'));
-export function countsWithoutEvidence(counts, evidenceOn) {
-  const n = counts?.by_filter?.evidence_conflict || 0;
-  if (evidenceOn || !counts || !n) return counts;
-  const all = counts.by_filter.all != null ? counts.by_filter.all - n : undefined;
-  return { ...counts, total: counts.total - n, by_filter: { ...counts.by_filter, all, evidence_conflict: 0 } };
-}
 
 // 类型 → 设计稿的样式类（k-*）与图标
 export const KIND_STYLE = {
   decision: ['decision', 'hand'],
-  evidence_conflict: ['conflict', 'alert'],
   change_list: ['change', 'refresh'],
   review: ['review', 'bot'],
   suspension: ['suspend', 'pause'],
   stale: ['stale', 'refresh'],
   resumable: ['resume', 'history'],
-  feedback: ['feedback', 'inbox'],
   check_findings: ['conflict', 'alert'],
 };
 export const kindStyle = (kind) => KIND_STYLE[kind] || ['resume', 'inbox'];
@@ -108,17 +93,16 @@ export function adoptedIndex(options, chosen) {
   return list.findIndex((o) => chosen && chosen.startsWith(o.label));
 }
 
-// 详情里要选的选项：决策、证据冲突、需复核、挂起
+// 详情里要选的选项：决策、需复核、挂起
 export function optionsOf(item, detail) {
   if (!item || !detail) return [];
   if (item.kind === 'decision') return detail.options || [];
-  if (item.kind === 'evidence_conflict') return detail.question?.options || [];
   if (item.kind === 'review' && !detail.group) return detail.options || [];
   if (item.kind === 'suspension') return detail.options || [];
   return [];
 }
 
-// 有选项的事项（决策、证据冲突、需复核、挂起）底栏才提示「1–4 选择」；有自定义回答才提示「E 改写」
+// 有选项的事项（决策、需复核、挂起）底栏才提示「1–4 选择」；有自定义回答才提示「E 改写」
 export function keyHints(opts) {
   if (!opts?.length) return null;
   return { rewrite: opts.some((o) => o.custom) };
@@ -134,8 +118,7 @@ export function confirmLabel(item, detail) {
     case 'review': return detail?.group ? '全部接受并下一条' : '确认并下一条';
     case 'stale': return '刷新并下一条';
     case 'resumable': return '续跑并下一条';
-    case 'feedback': return '交给反馈演进并下一条';
-    case 'decision': case 'evidence_conflict': case 'suspension': case undefined: return '确认并下一条';
+    case 'decision': case 'suspension': case undefined: return '确认并下一条';
     default: return item.actions?.includes('dismiss') ? '忽略并下一条' : '确认并下一条';
   }
 }
@@ -156,7 +139,6 @@ export function confirmPlan(item, detail, sel, text) {
   };
   switch (item.kind) {
     case 'decision': return answer('answer');
-    case 'evidence_conflict': return answer('arbitrate');
     case 'change_list': {
       const pending = (detail?.points || []).filter((p) => p.state === 'pending').length;
       return pending ? { error: `还有 ${pending} 条变更点没确认` } : { action: 'execute', body: {} };
@@ -172,15 +154,13 @@ export function confirmPlan(item, detail, sel, text) {
       return answer('answer');
     case 'stale': return { action: 'refresh', body: {} };
     case 'resumable': return { action: 'resume', body: {} };
-    case 'feedback': return { action: 'send_to_evolution', body: {} };
     default: return item.actions?.includes('dismiss') ? { action: 'dismiss', body: {} } : { error: '这一项要在对应的页面里处理' };
   }
 }
 
-// 出处的短标签：「§9.2」「品类表 D12」「ERP」
+// 出处的短标签：「§9.2」「品类表 D12」
 export function anchorLabel(anchor) {
   const s = String(anchor || '');
-  if (s.startsWith('db:')) return '数据库';
   const m = s.match(/#p:([\d.]+)/);
   if (m) return `§${m[1]}`;
   const c = s.match(/#cell:([^!]+)!(\w+)/);

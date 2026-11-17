@@ -11,15 +11,15 @@ const MAIN_IDS = MAINLINE.map(([id]) => id);
 /** 插入点挂在主线哪一段：带 at 就用；只有节点 ID 时按 ID 里的词猜，猜不出算「建模」 */
 // 官方包节点挂在主线哪一段（各包 flow.yaml 的 after）；后端 PL-02 只给 {id, title} 时用
 const KNOWN_AT = {
-  'diagram.flowchart': 'research', 'migrate.reuse': 'research', 'codegen.solver': 'model',
-  'trace.trace': 'validate', 'codegen.codegen': 'validate', 'evo.evolution': 'publish',
+  'diagram.flowchart': 'research', 'codegen.solver': 'model',
+  'trace.trace': 'validate', 'codegen.codegen': 'validate',
 };
 
 export function insertionAt(ins) {
   if (MAIN_IDS.includes(ins?.at)) return ins.at;
   if (KNOWN_AT[ins?.id]) return KNOWN_AT[ins.id];
   const id = String(ins?.id || '').toLowerCase();
-  if (/research|material|evidence/.test(id)) return 'research';
+  if (/research|material/.test(id)) return 'research';
   if (/publish|release|compliance|gate|feedback/.test(id)) return 'publish';
   if (/validat|regression|review|check/.test(id)) return 'validate';
   return 'model';
@@ -79,7 +79,7 @@ export function flowCaption(d, kernel) {
 const GROUP_ICON = {
   加进流程: 'branch', 命令: 'terminal', 助手角色: 'bot', 子代理: 'bot', 技能: 'sparkle', 脚本: 'code', 模板: 'filetext',
   检查规则: 'gate', 界面入口: 'layout', 报告格式: 'list', 可调设置: 'sliders', 参考指南: 'book', 术语: 'book', 规则: 'scale',
-  参考对象: 'cube', 示例项目: 'folder', 表字典: 'table', 状态码: 'tag', 证据类型: 'db', 只读保障: 'shieldok', 凭据字段: 'key', 登记要求: 'filetext',
+  参考对象: 'cube', 示例项目: 'folder', 表字典: 'table', 状态码: 'tag',
 };
 
 /** 可调设置一项的说法：字符串原样；{label, value} →「每段最多场景数 6」；清单原样给的 {id, default} 也认 */
@@ -162,17 +162,10 @@ export function heroFacts(d) {
 /**
  * 英雄区右侧：menu 是「已启用到本项目」那个按钮（点开下拉菜单），primary 是主按钮，hint 是下面那句说明。
  * 已启用、必装、待生效、可启用时不写说明：生效时机由按钮、启用弹窗和 toast 说。
- * o：{pending: PL-05 的 pending, hasProject, admin, requested}
+ * o：{pending: PL-05 的 pending, hasProject}
  */
 export function heroActions(d, o = {}) {
   const st = d?.project_status;
-  if (d?.collector) {
-    if (!d.collector.installed) return { primary: { label: '未安装', disabled: true, kind: '' }, hint: '需要管理员部署。' };
-    return {
-      primary: { label: '平台已安装', icon: 'check', disabled: true, kind: 'soft' },
-      hint: d.collector.self_service ? '在项目的「资料 → 数据源」里自己登记。' : '在项目的「资料 → 数据源」里登记，需要管理员。',
-    };
-  }
   if (!o.hasProject && d?.category !== 'provider') return { hint: '先在「我的项目」里建一个项目，才能启用到项目。' };
   switch (st) {
     case 'required': return { menu: { label: '必装 · 已启用', icon: 'lock' } };
@@ -190,13 +183,7 @@ export function heroActions(d, o = {}) {
     case 'offline': return { primary: { label: '启用', disabled: true, title: '离线部署不可用', kind: '' }, hint: '离线部署不可用：这个包要联网。' };
     case 'not_applicable': return { primary: { label: '本项目不适用', disabled: true, kind: '' }, hint: d.usage_note || '本项目不适用这个包。' };
     case 'platform_installed':
-      return { primary: { label: '平台已安装', icon: 'check', disabled: true, kind: 'soft' }, hint: d.converter ? '' : '装在连接器网关里；登记数据源在项目的资料页里。' };
-    case 'platform_available':
-      if (o.requested) return { primary: { label: '已申请安装', icon: 'check', disabled: true, kind: '' }, hint: '已发送安装申请，等管理员处理。' };
-      return {
-        primary: { label: '安装到平台', icon: 'download', action: 'install' },
-        hint: o.admin ? '装进连接器网关，装好后所有项目都能登记这类数据源。' : '需要管理员安装，点了会发送安装申请。',
-      };
+      return { primary: { label: '平台已安装', icon: 'check', disabled: true, kind: 'soft' } };
     default: return { hint: '' };
   }
 }
@@ -260,22 +247,4 @@ export function changelogView(changelog) {
       ? { text: '本项目在用', tone: 'blue', icon: 'check' }
       : t === 'needs_core_upgrade' ? { text: '需要先升级基础建模能力', tone: 'amber', icon: 'alert' } : { text: t, tone: 'gray', icon: null })),
   }));
-}
-
-// ---------- 采集类连接器 ----------
-const EVIDENCE_TYPE_LABELS = {
-  entity: '实体', field: '字段', relation: '关系', constraint: '约束', operation: '操作', rule: '规则', flow: '流程', profile: '数据画像', sample: '脱敏样本', term: '术语',
-};
-
-/** 采集类连接器详情的几行（没有包内容、流程节点和版本记录）：能采什么、只读方式、许可、怎么登记 */
-export function collectorFacts(d) {
-  const c = d?.collector;
-  if (!c) return [];
-  const types = (c.evidence_types || []).map((x) => EVIDENCE_TYPE_LABELS[x] || x).join('、');
-  return [
-    ['能采', types],
-    ['只读方式', c.readonly_method],
-    ['许可', c.license_note],
-    ['登记', c.self_service ? '可自己登记' : '需管理员登记'],
-  ].filter(([, v]) => v);
 }

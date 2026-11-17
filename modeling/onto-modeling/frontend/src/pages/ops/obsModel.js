@@ -1,6 +1,6 @@
 // 可观测（设计稿 ops-obs）的纯逻辑：公共标签、指标卡、归因表、链路瀑布、结构化日志、告警规则、导出器、链路检索。
 // 后端口径（contract-changes B3b 第 6～8 条）：指标的 value 是数、unit 是「个 / 秒 / tokens / % / 次」；
-// merges、collections 恒为 0 时带 note（底注是后端下发的说明，前端不画）；归因的 reruns、first_accept_pct 为 null；日志 level 另有 DEBUG。
+// merges 恒为 0 时带 note（底注是后端下发的说明，前端不画）；归因的 reruns、first_accept_pct 为 null；日志 level 另有 DEBUG。
 import { DASH, fmtNum } from './overviewModel.js';
 
 const pad = (n, w = 2) => String(n).padStart(w, '0');
@@ -65,7 +65,7 @@ export function traceTags(labels) {
 // ---------- 指标卡（O-02） ----------
 const METRIC_ICON = {
   pool: 'msg', turn_duration: 'clock', model_latency_p95: 'sparkle', output_tokens: 'zap', model_fail_rate: 'alert',
-  guard_denies: 'shield', check_failures: 'shieldok', merges: 'merge', collections: 'scan', reconnects: 'refresh',
+  guard_denies: 'shield', check_failures: 'shieldok', merges: 'merge', reconnects: 'refresh',
 };
 const RED = { color: '#DC2626', fill: 'rgba(220,38,38,.08)' };
 const AMBER = { color: '#F59E0B', fill: 'rgba(245,158,11,.10)' };
@@ -94,9 +94,9 @@ export function fmtCount(n) {
  * 指标卡的显示：大字（数值带单位）、小字（secondary，没有时给计数单位）、迷你折线颜色。
  * value 是字符串时原样显示（mock 的「7 / 12」）。
  */
-// O-02 的卡片哪些画：没有数据来源的（后端不返回或带 unavailable）不画；证据采集随证据源开关（R18）
-export function visibleMetricCards(cards, { evidenceOn = false } = {}) {
-  return (cards || []).filter((c) => c && !c.unavailable && c.available !== false && (evidenceOn || c.id !== 'collections'));
+// O-02 的卡片哪些画：没有数据来源的（后端不返回或带 unavailable）不画
+export function visibleMetricCards(cards) {
+  return (cards || []).filter((c) => c && !c.unavailable && c.available !== false);
 }
 
 export function metricView(card) {

@@ -1,5 +1,0 @@
-# 合成测试项目：订单服务（FastAPI + SQLAlchemy + pydantic）。只给连接器做静态分析，不安装、不运行。
-[project]
-name = "orders-python"
-version = "0.1.0"
-dependencies = ["fastapi", "sqlalchemy>=2", "pydantic>=2"]

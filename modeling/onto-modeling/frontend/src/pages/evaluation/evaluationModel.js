@@ -1,5 +1,5 @@
 // 已发布版本的「报告 / 优化建议」链接状态：状态来自建模后端的评测通知索引与对账结果（ES-02，ADR-0092；照 develop 的 lib/packageEvaluation.js）
-export const EVALUATION_HINT = '打开优化建议执行评测优化，修改并发布新版本后状态自动变为“已处理”。';
+export const EVALUATION_HINT = '按优化建议修改并发布新版本后，状态自动变为“已处理”。';
 export const POLL_INTERVAL_MS = 5000;
 // 轮询只读本地索引；每隔若干次向评测服务对账一次，通知丢失也不会一直停在“进行中”
 export const RECONCILE_EVERY = 6;
@@ -119,15 +119,6 @@ export function notifyPackagePublished(projectId) {
   window.dispatchEvent(new CustomEvent(PACKAGE_PUBLISHED, { detail: { projectId } }));
 }
 
-// 评测优化只针对当前建模项目的版本；首页弹窗没有聊天区，无法发送优化命令
-export function optimizationBlock(status, releaseId, canCommand) {
-  if (!canCommand) return '请在项目内打开已发布版本后执行评测优化';
-  if (status?.current_release_id !== releaseId) {
-    return `该版本与当前建模项目版本 ${status?.current_version || '未发布'} 不一致，不能评测优化`;
-  }
-  return '';
-}
-
 // 对账轮次之间的本地读取不带 reachable：沿用上次对账结论，避免告警闪烁
 export function mergeStatus(previous, next) {
   return next.reachable == null && previous ? { ...next, reachable: previous.reachable } : next;
@@ -136,7 +127,7 @@ export function mergeStatus(previous, next) {
 // 建模对这一轮优化建议的处理结果，来自评测服务记录的 optimization；还没有记录时只区分产物是否在生成
 const PROCESSING = {
   awaiting_review: ['待确认', 'default', '等待包负责人在评测服务确认'],
-  notified: ['待处理', 'gold', '打开优化建议执行评测优化，修改并发布新版本后自动变为已处理'],
+  notified: ['待处理', 'gold', '按优化建议修改并发布新版本后自动变为已处理'],
   modeling_done: ['已处理', 'green', '已按这一轮优化建议发布新版本'],
   modeling_failed: ['处理失败', 'red', '这一轮优化建议处理失败；修改并发布新版本后仍会自动变为已处理'],
   dismissed: ['已驳回', 'default', '包负责人已驳回，无需处理'],
@@ -166,8 +157,3 @@ export function writebackNotice(status) {
     return { type: 'info', text: `已对版本 ${w.base_version} 执行评测优化，修改并发布新版本后自动变为“已处理”` };
   return null;
 }
-
-// 发布成功后的提示（develop 的 usePackagePublish）：求解包带「去评测」，评测优化之后发布的新版本带回写结果。
-
-// 评测优化交给反馈演进插件（ADR-0092）：插件没启用时「评测优化」置灰并说明
-export const EVOLUTION_DISABLED = '评测优化由反馈演进插件处理，项目没有启用它';

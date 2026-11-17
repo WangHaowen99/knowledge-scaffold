@@ -10,8 +10,7 @@ import { navigate, pagePath, useRoute } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, formatBytes } from '../../api/errors.js';
 import { ShellP } from '../../shell/Shell.jsx';
-import { evidenceInProject } from '../../state/evidence.js';
-import { useCommandTasks, useProjectEvent } from '../plugin/parts.jsx';
+import { useProjectEvent } from '../plugin/parts.jsx';
 import { EvaluationDialogs, LegacyEvaluations, useReleaseEvaluations } from '../evaluation/ReleaseEvaluation.jsx';
 import { notifyPackagePublished } from '../evaluation/evaluationModel.js';
 import PackageCompare from './PackageCompare.jsx';
@@ -27,7 +26,7 @@ import {
 } from '../../ui/index.jsx';
 import { byNewest, fileGroups, fmtStamp, syncMeta } from '../versions/versionsModel.js';
 import { usePopMenu } from '../versions/popMenu.js';
-import { formatLabel, gateBlockedText, mergeRelease, visibleGates } from './publishModel.js';
+import { formatLabel, gateBlockedText, mergeRelease } from './publishModel.js';
 import '../../styles/more.css';
 import '../../styles/publish.css';
 
@@ -163,7 +162,6 @@ export default function PublishPage() {
   const { api, services } = useApp();
   const { pid, meta, setMeta } = useProject();
   const route = useRoute();
-  const evidenceOn = evidenceInProject(useProject());
   const [versions, setVersions] = useState(null);
   const [commit, setCommit] = useState(null); // null 表示跟随当前版本
   const [check, setCheck] = useState(null);
@@ -178,7 +176,6 @@ export default function PublishPage() {
   const [legacyOpen, setLegacyOpen] = useState(false);
   // 版本对比（PackageCompare）：{releaseId, version}，空对象表示不带初始版本、默认比最近两版
   const [compareFor, setCompareFor] = useState(null);
-  const tasks = useCommandTasks('publish');
   // 发布或回退后记录数变了就重读评测状态
   const ev = useReleaseEvaluations(pid, records ? records.length : 0);
   const commitRef = useRef(commit);
@@ -227,8 +224,8 @@ export default function PublishPage() {
   const selected = (versions || []).find((v) => v.commit === selCommit) || head;
   const ackNeeded = !!check?.solver?.requires_validation_after_publish;
   const proceed = proceedState(check, ack);
-  const gates = visibleGates(check, evidenceOn);
-  const verdict = publishVerdict(check && { ...check, gates }, { versionLabel: selected?.version_label || meta?.version_label || '', acknowledged: ack });
+  const gates = check?.gates || [];
+  const verdict = publishVerdict(check, { versionLabel: selected?.version_label || meta?.version_label || '', acknowledged: ack });
   // 需要处理：没通过或有提醒的检查项；求解包要确认未验证时求解契约也列出来（说明与勾选在它的卡里）
   const problems = problemGates(gates).concat(
     ackNeeded ? gates.filter((g) => g.id === 'solver_contract' && g.status === 'pass') : [],
@@ -348,8 +345,8 @@ export default function PublishPage() {
           onDownloadLocal={download}
         />
       </div>
-      <EvaluationDialogs ev={ev} tasks={tasks} />
-      <LegacyEvaluations pid={pid} tasks={tasks} open={legacyOpen} onClose={() => setLegacyOpen(false)} />
+      <EvaluationDialogs ev={ev} />
+      <LegacyEvaluations pid={pid} open={legacyOpen} onClose={() => setLegacyOpen(false)} />
       <PackageCompare open={!!compareFor} projectId={pid} projectName={meta?.name || ''} initialReleaseId={compareFor?.releaseId || ''}
         initialVersion={compareFor?.version || ''} onClose={() => setCompareFor(null)} />
       <ManifestDrawer rec={manifestFor} onClose={() => setManifestFor(null)} onDownload={download} />

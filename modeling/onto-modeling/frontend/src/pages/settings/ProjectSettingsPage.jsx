@@ -33,7 +33,6 @@ function useSettingsData(pid) {
     buildMode: () => api.buildMode(pid),
     policy: () => api.autobuildPolicy(pid),
     runs: () => api.autobuildRuns(pid),
-    sources: () => api.evidenceSources({ project_id: pid }),
     packs: () => api.projectPacks(pid),
     assembly: () => api.assembly(pid),
     servers: () => api.projectMcpServers(pid),

@@ -247,7 +247,6 @@ svg.i.s12{width:12px;height:12px} svg.i.s14{width:14px;height:14px} svg.i.s18{wi
 .ev{display:inline-flex;align-items:center;gap:3px;height:19px;padding:0 6px;margin:0 2px;border-radius:6px;background:#F2F6FD;border:1px solid #DCE6F5;color:#3A5A8C;font-size:11px;font-weight:600;cursor:help;vertical-align:1px;white-space:nowrap}
 .ev:hover{background:var(--b100);border-color:var(--b200);color:var(--blue2)}
 .ev svg.i{width:11px;height:11px}
-.ev.db{background:#EEF8F7;border-color:#CDEBE6;color:#0F6B63}
 .wl{color:var(--blue2);font-weight:600;border-bottom:1px dashed var(--b300);cursor:pointer}
 .anchor{font-family:var(--mono);font-size:11.5px;color:#3A5A8C;background:#F2F6FD;padding:1px 6px;border-radius:5px}
 

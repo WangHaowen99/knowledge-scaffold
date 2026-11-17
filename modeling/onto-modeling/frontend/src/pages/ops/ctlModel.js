@@ -1,6 +1,5 @@
 // 运维管控与健康（设计稿 ops-ctl）页面纯逻辑：格式化、状态到显示的映射、维护向导、插件运维的按钮可用性、表单校验、分区参数。
 // 接口见契约 3.25 O-13～O-47；后端实际口径见 contract-changes B2、B3a、B3b（字段为 null 时这里都有兜底）。
-import { isEvidencePack } from '../../state/evidence.js';
 
 const pad2 = (n) => String(n).padStart(2, '0');
 const DENY = '仅运维可操作';
@@ -439,7 +438,7 @@ export function drillView(drill) {
 
 // ---------- 任务中心（O-40、O-41） ----------
 export const TASK_TYPE = {
-  collection: '证据采集', export: '导出', backup: '备份', sweep: '清扫', pack_install: '插件安装', drill: '恢复演练', pack_repo_backup: '包仓库备份',
+  export: '导出', backup: '备份', sweep: '清扫', pack_install: '插件安装', drill: '恢复演练', pack_repo_backup: '包仓库备份',
 };
 export const TASK_STATE = {
   queued: { label: '排队中', tone: 'gray' },
@@ -455,8 +454,7 @@ export const isLiveTask = (t) => LIVE.includes(t?.state);
 export function taskAction(task, opsWrite) {
   let a = null;
   if (isLiveTask(task)) a = { op: 'cancel', label: '取消', kind: undefined };
-  else if (task?.state === 'failed') a = { op: 'retry', label: '重试', kind: 'soft' };
-  else if (task?.state === 'partial') a = task.type === 'collection' ? { op: 'resume', label: '续采', kind: 'soft' } : { op: 'retry', label: '重试', kind: 'soft' };
+  else if (['failed', 'partial'].includes(task?.state)) a = { op: 'retry', label: '重试', kind: 'soft' };
   if (!a) return null;
   return { ...a, disabled: !opsWrite, title: opsWrite ? null : DENY };
 }
@@ -482,9 +480,8 @@ export function reloadsAfter(prev, next) {
 }
 
 export function taskActionToast(op, task, e) {
-  if (e?.needsConfirmation || e?.code === 'confirmation_required') return '生产环境的续采和重试要项目所有者确认，已通知所有者';
   if (e) return null;
-  return { cancel: '已取消任务', retry: '已重新开始', resume: '已续采，从断点继续' }[op] || '已处理';
+  return { cancel: '已取消任务', retry: '已重新开始' }[op] || '已处理';
 }
 
 // ---------- 版本清单（O-42） ----------
@@ -497,23 +494,8 @@ export const INV_CATEGORY = {
 export function retentionText(item) {
   const r = item?.retention || {};
   if (r.days != null) return `${r.days} 天`;
-  if (r.keep_last != null) return item.id === 'snapshots' ? `每个数据源最近 ${r.keep_last} 份` : `最近 ${r.keep_last} 份`;
+  if (r.keep_last != null) return `最近 ${r.keep_last} 份`;
   return '—';
-}
-// 证据源本期不开放（ADR-0056）：证据源不可用时，运维管控不列证据相关的行——数据保留的证据快照、
-// 插件运维与版本清单里的证据源提供方（和系统逆向建模包）、任务里的证据采集
-export function visibleRetention(items, { evidenceOn = false } = {}) {
-  return (items || []).filter((r) => evidenceOn || r.id !== 'snapshots');
-}
-export function visiblePacks(items, { evidenceOn = false } = {}) {
-  return (items || []).filter((p) => evidenceOn || (p.kind !== 'provider' && !isEvidencePack(p.name)));
-}
-export function visibleInventory(items, { evidenceOn = false } = {}) {
-  // 多源连接器里的转换器（ADR-0073）照常列
-  return (items || []).filter((r) => evidenceOn || r.converter || (r.category !== 'provider' && !isEvidencePack(r.component) && !/^evidence/.test(r.component || '')));
-}
-export function visibleTasks(items, { evidenceOn = false } = {}) {
-  return (items || []).filter((t) => evidenceOn || t.type !== 'collection');
 }
 
 export function retentionForm(items) {

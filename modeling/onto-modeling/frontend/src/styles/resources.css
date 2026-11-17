@@ -26,13 +26,6 @@
 .evd-wu .chip.rs-go{cursor:pointer}
 .evd-wu .chip.rs-go:hover{border-color:var(--b300);color:var(--blue2)}
 
-/* 外部反馈：行可选中，右侧逐条查看 */
-.evd-fb.rs-fb{cursor:pointer}
-.evd-fb.rs-fb:hover{background:#FAFCFF}
-.evd-fb.rs-fb.pick{background:var(--b50)}
-.rs-case{padding:9px 0;border-bottom:1px dashed var(--line)}
-.rs-case:last-child{border-bottom:0}
-
 /* drawio 编辑弹窗里的编辑器 */
 .rs-dio-edit{position:relative;height:560px;border:1px solid var(--line);border-radius:10px;overflow:hidden}
 
@@ -42,8 +35,6 @@
 .evd-prev.rs-full .card-b{flex:1;display:flex;flex-direction:column;min-height:0}
 .evd-prev.rs-full .evd-paper,.evd-prev.rs-full .evd-csv,.evd-prev.rs-full .rs-sheet-scroll{max-height:none;flex:1}
 .evd-prev.rs-full .evd-dio,.evd-prev.rs-full .evd-html{height:auto;flex:1;min-height:300px}
-.rs-case .chip.rs-go{cursor:pointer}
-.rs-case .chip.rs-go:hover{border-color:var(--b300);color:var(--blue2)}
 .evd-pmenu .auto{margin-left:6px;font-size:10px;color:var(--teal);font-weight:700}
 /* 文本版（ADR-0073）：Markdown 渲染，位置标记画成分隔条 */
 .rs-text h1,.rs-text h2,.rs-text h3,.rs-text h4{font-size:13.5px;color:var(--ink);margin:12px 0 4px}

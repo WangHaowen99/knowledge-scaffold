@@ -4,7 +4,8 @@
   （配置注册表，设置页保存的值优先于环境变量）；
 - 单次运行的时长、token、费用上限在 F6 去掉了（运行不按用量判停，花费的硬上限是配额）：老文件里的这几项不再读，
   请求里带了也忽略；
-- `allow_production_collection`、`night_priority` 保存、回显，本期不生效（证据源只留接口；夜间优先没有调度器）。
+- `night_priority` 保存、回显，本期不生效（夜间优先没有调度器）；
+- `allow_production_collection` 随证据采集删除（ADR-0101）：老文件里的不再读，请求里带了也忽略，下次保存时清掉。
 """
 
 from __future__ import annotations
@@ -17,9 +18,9 @@ from . import store
 
 MAX_RUNS_KEY = "ONTO_WEB_AUTOBUILD_MAX_RUNS"
 MAX_RUNS_MIN, MAX_RUNS_CAP = 1, 16
-NOT_ENFORCED = ("allow_production_collection", "night_priority")
-# F6 去掉的单次上限：老文件里有，下次保存时清掉
-RETIRED = ("max_duration_min", "max_tokens", "max_cost")
+NOT_ENFORCED = ("night_priority",)
+# 去掉的项（F6 的单次上限、证据采集的生产库授权）：老文件里有，下次保存时清掉
+RETIRED = ("max_duration_min", "max_tokens", "max_cost", "allow_production_collection")
 _TIME = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -56,7 +57,6 @@ def current() -> dict:
     night = data.get("night_priority") if isinstance(data.get("night_priority"), dict) else {}
     return {
         "max_concurrent_runs": max_runs(),
-        "allow_production_collection": bool(data.get("allow_production_collection", False)),
         "night_priority": {"enabled": bool(night.get("enabled", False)),
                            "start": night.get("start") if _TIME.match(str(night.get("start") or "")) else "20:00",
                            "end": night.get("end") if _TIME.match(str(night.get("end") or "")) else "08:00"},
@@ -89,11 +89,6 @@ def save(body: dict) -> dict:
             data["max_concurrent_runs"] = value
         else:
             fields["max_concurrent_runs"] = "range"
-    if "allow_production_collection" in body:
-        if isinstance(body["allow_production_collection"], bool):
-            data["allow_production_collection"] = body["allow_production_collection"]
-        else:
-            fields["allow_production_collection"] = "bool"
     if "night_priority" in body:
         night = body["night_priority"]
         if _valid_night(night):
@@ -104,8 +99,3 @@ def save(body: dict) -> dict:
         raise LimitsError("自主构建限制不合法", fields)
     store.write_json(_file(), data)
     return current()
-
-
-def platform_limits() -> dict:
-    """AB-01 的 platform_limits。"""
-    return {"allow_production_collection": current()["allow_production_collection"]}

@@ -88,7 +88,7 @@ test('已发布版本一张表：Hub 版本挂上本地记录（按 release_id�
   assert.equal(releaseSource({ source_service: 'evaluation' }), 'evaluation');
   assert.deepEqual(iterationOptions([{ commit: 'c2', version_label: 'v0.2', current: true }, { commit: 'c1', version_label: 'v0.1' }]),
     [{ value: 'c2', label: 'v0.2（当前）' }, { value: 'c1', label: 'v0.1' }]);
-  assert.equal(EVALUATION_HINT, '打开优化建议执行评测优化，修改并发布新版本后状态自动变为“已处理”。');
+  assert.equal(EVALUATION_HINT, '按优化建议修改并发布新版本后，状态自动变为“已处理”。');
 });
 
 test('评测优化后发布的回写提示（develop usePackagePublish）', () => {

@@ -60,24 +60,6 @@ if grep -q "replace-with-real-token-at-runtime" .env; then
     echo "提示：.env 未填模型网关令牌；部署后可在管理员「配置中心」里配置 Base URL / API Key。"
 fi
 
-# 连接器网关的主密钥（ADR-0086）：加密数据库、代码仓库的凭据，经 compose secrets 只挂给网关。文件不存在时生成一次；
-# 丢了只能重新录入数据源凭据，要和凭据卷 connector-secrets 分开备份（见 README「连接器网关」）。
-# 网关以 uid 65534 运行，Linux 上绑定挂载保留宿主属主：root 部署时把属主改成 65534，否则网关读不到
-MASTER_KEY_FILE="$(sed -n 's/^ONTO_CONNECTOR_MASTER_KEY_FILE=//p' .env | head -1)"
-MASTER_KEY_FILE="${MASTER_KEY_FILE:-./secrets/connector-master.key}"
-if [ ! -f "${MASTER_KEY_FILE}" ]; then
-    mkdir -p "$(dirname "${MASTER_KEY_FILE}")"
-    chmod 700 "$(dirname "${MASTER_KEY_FILE}")"
-    (umask 077 && { openssl rand -base64 32 2>/dev/null || head -c 32 /dev/urandom | base64; } > "${MASTER_KEY_FILE}")
-    chmod 600 "${MASTER_KEY_FILE}"
-    echo "已生成连接器主密钥 ${MASTER_KEY_FILE}：和凭据卷分开备份，丢了只能重新录入数据源凭据。"
-fi
-if [ "$(id -u)" -eq 0 ]; then
-    chown 65534:65534 "${MASTER_KEY_FILE}"
-elif [ "$(stat -c %u "${MASTER_KEY_FILE}" 2>/dev/null || echo 65534)" != "65534" ]; then
-    echo "提示：连接器网关以 uid 65534 运行，Linux 上需 sudo chown 65534:65534 ${MASTER_KEY_FILE}，否则数据库、代码仓库连接器不可用。"
-fi
-
 COMPOSE="docker compose"
 docker compose version >/dev/null 2>&1 || COMPOSE="docker-compose"
 

@@ -288,8 +288,8 @@ test('MCP 表单：名称、地址校验，Bearer 只存引用；stdio 命令拆
 
 // ---------- 配置注册表 ----------
 test('配置注册表：按生效时机与关键字筛（含说明）；来源优先级的显示；每项自己的优先级不同时给短说明', () => {
-  const items = S.registryItems({ stableGateway: 'https://gateway.example.com/anthropic', permissionMode: 'bypassPermissions', presetsText: '内置', maxRuns: 4, snapshotMb: 20 });
-  assert.equal(filterRegistry(items, { effect: 'all' }).length, 10);
+  const items = S.registryItems({ stableGateway: 'https://gateway.example.com/anthropic', permissionMode: 'bypassPermissions', presetsText: '内置', maxRuns: 4 });
+  assert.equal(filterRegistry(items, { effect: 'all' }).length, 9);
   assert.deepEqual(filterRegistry(items, { effect: 'restart' }).map((x) => x.key), ['ONTO_WEB_AUTH_URL']);
   assert.deepEqual(filterRegistry(items, { q: '权限模式' }).map((x) => x.key), ['ONTO_WEB_PERMISSION_MODE']);
   assert.deepEqual(filterRegistry(items, { q: 'TRACE' }).map((x) => x.key), ['trace.max_cases_per_slice']);
@@ -316,7 +316,7 @@ test('默认配额：表单带千分位，校验整数与范围，请求体不�
   assert.equal(quotaProblems({ ...f, concurrent_sessions: '0' }).concurrent_sessions, '整数 1–64');
   assert.equal(quotaProblems({ ...f, daily_tokens: '两百万' }).daily_tokens, '填整数');
   const body = quotaBody({ ...f, monthly_tokens: '40,000,000' });
-  assert.deepEqual(body.per_project, { monthly_tokens: 40000000, snapshot_git_mb: 20 });
+  assert.deepEqual(body, { per_user: { concurrent_sessions: 2, daily_tokens: 2000000 }, per_project: { monthly_tokens: 40000000 } });
   assert.ok(!('online_engines' in body.per_project));
 });
 
@@ -335,14 +335,13 @@ test('单独设置：对象、项、值、原因都要；同一对象同一项�
   assert.equal(subjectText(existing[0].subject), '用户 zhangsan');
   assert.equal(subjectText(existing[1].subject), '项目 共享单车故障诊断');
   assert.equal(quotaValueText('monthly_tokens', 60000000), '60,000,000');
-  assert.equal(quotaValueText('snapshot_git_mb', 40), '40 MB');
-  assert.equal(quotaValueText('collections_per_source_per_hour', 5), '每小时 5 次');
+  assert.equal(quotaValueText('daily_tokens', null), '—');
 });
 
 test('L4 平台限制：同时运行上限校验 1–16；没有单次时长、token、费用上限；夜间时段沿用原值', () => {
   const l = S.autobuildLimits();
   const f = limitsForm(l);
-  assert.deepEqual(Object.keys(f), ['max_concurrent_runs', 'allow_production_collection', 'night']);
+  assert.deepEqual(Object.keys(f), ['max_concurrent_runs', 'night']);
   assert.equal(limitsDirty(l, f), false);
   assert.deepEqual(limitsProblems(f), {});
   assert.equal(limitsProblems({ ...f, max_concurrent_runs: '17' }).max_concurrent_runs, '整数 1–16');
@@ -532,6 +531,14 @@ test('mock SY-15～SY-17：保存配额与平台限制；单独设置的增删�
   const put = await call('PUT', `${A}/quotas`, quotaBody({ ...quotaForm(q), concurrent_sessions: '3' }));
   assert.equal(put.body.per_user.concurrent_sessions, 3);
   assert.equal(put.body.per_project.online_engines, 1);
+  // 已删的采集频率、快照上限：PUT 回 unknown，单独设置回 enum
+  const gone = await call('PUT', `${A}/quotas`, { per_user: { collections_per_source_per_hour: 3 }, per_project: { snapshot_git_mb: 20 } });
+  assert.deepEqual([gone.status, gone.body.details.fields], [400, { 'per_user.collections_per_source_per_hour': 'unknown', 'per_project.snapshot_git_mb': 'unknown' }]);
+  for (const [kind, id, item] of [['user', 'wanggong', 'collections_per_source_per_hour'], ['project', 'parcel-sort-6c1f2a90', 'snapshot_git_mb']]) {
+    const r = await call('POST', `${A}/quotas/overrides`, { subject: { kind, id }, item, value: 1, reason: 'x' });
+    assert.deepEqual([r.status, r.body.details.fields.item], [400, 'enum'], item);
+  }
+  assert.deepEqual(q.not_enforced, []);
   const add = await call('POST', `${A}/quotas/overrides`, { subject: { kind: 'project', id: 'parcel-sort-6c1f2a90' }, item: 'monthly_tokens', value: 80000000, reason: '夜间批量回归' });
   assert.equal(add.status, 201);
   assert.equal(add.body.subject.label, '快递分拣异常处理');
@@ -544,9 +551,11 @@ test('mock SY-15～SY-17：保存配额与平台限制；单独设置的增删�
   assert.equal((await call('PUT', `${A}/autobuild-limits`, { ...limitsBody(limitsForm(l), l), max_concurrent_runs: 17 })).status, 400);
   const zero = await call('PUT', `${A}/autobuild-limits`, { ...limitsBody(limitsForm(l), l), max_concurrent_runs: 0 });
   assert.deepEqual([zero.status, zero.body.details.fields.max_concurrent_runs], [422, 'min']);
-  assert.deepEqual(l.not_enforced, ['allow_production_collection', 'night_priority']);
-  const lp = await call('PUT', `${A}/autobuild-limits`, limitsBody({ ...limitsForm(l), max_concurrent_runs: '6' }, l));
-  assert.deepEqual([lp.body.max_concurrent_runs, lp.body.running], [6, 2]);
+  assert.deepEqual(l.not_enforced, ['night_priority']);
+  assert.equal('allow_production_collection' in l, false);
+  // 老客户端还发生产库采集授权：忽略
+  const lp = await call('PUT', `${A}/autobuild-limits`, { ...limitsBody({ ...limitsForm(l), max_concurrent_runs: '6' }, l), allow_production_collection: true });
+  assert.deepEqual([lp.body.max_concurrent_runs, lp.body.running, 'allow_production_collection' in lp.body], [6, 2, false]);
   const p1 = harness({ sys: 'p1' });
   for (const path of ['/quotas', '/autobuild-limits', '/settings/pricing', '/service-tokens']) {
     assert.equal((await p1.call('GET', `${A}${path}`)).status, 404, path);

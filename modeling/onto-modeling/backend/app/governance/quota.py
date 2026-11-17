@@ -1,4 +1,4 @@
-"""配额（详设 4.10.1、方案 E9、契约 SY-15、SY-16）：按用户和项目限制并发、token 预算、采集频率。
+"""配额（详设 4.10.1、方案 E9、契约 SY-15、SY-16）：按用户和项目限制并发和 token 预算。
 
 - 用量台账：SQLite（DATA_DIR/governance/quota.sqlite），按（项目、所有者、UTC 日、来源）聚合 token 与成本。
   token 按成本口径计（ADR-0088）：输入 + 缓存写 + 输出 + 缓存读 // 10；台账记着口径版本，口径变了从会话历史重建
@@ -9,7 +9,7 @@
 - 用量记在项目所有者名下（本地模式是 local）；所有者变更后，已入账的用量不跟着走；
 - 台账只管本月和上月：更早的事件不入账，去重指纹也随之清掉；
 - 限额：DATA_DIR/governance/quotas.json，默认值加单独设置（覆盖到某个用户或项目），0 表示不限；
-- 检查：发消息前（QuotaGate）查并发会话、用户当日 token、项目当月 token；采集按数据源每小时次数；
+- 检查：发消息前（QuotaGate）查并发会话、用户当日 token、项目当月 token；
   自主构建每一步也走这道检查，配额用完时运行暂停（F6，自主构建没有单独的预算）；
 - 配额自身出错一律放行并记日志：配额不能拖垮服务。
 """
@@ -42,18 +42,18 @@ _log = logging.getLogger(__name__)
 
 LOCAL_USER = "local"  # 与 deps.LOCAL_USER 一致：本地模式的用户与无主项目的用量归属
 # 默认值按成本口径定（ADR-0088）：实测一整轮建模（资料分析到发布）折算后约 215 万
-PER_USER_DEFAULTS = {"concurrent_sessions": 3, "daily_tokens": 10_000_000, "collections_per_source_per_hour": 6}
-PER_PROJECT_DEFAULTS = {"online_engines": 1, "monthly_tokens": 100_000_000, "snapshot_git_mb": 20}
+# 证据采集删除后（ADR-0101）采集次数、快照大小两项不再有；老的 quotas.json 里的这两项不读，下次保存时去掉
+PER_USER_DEFAULTS = {"concurrent_sessions": 3, "daily_tokens": 10_000_000}
+PER_PROJECT_DEFAULTS = {"online_engines": 1, "monthly_tokens": 100_000_000}
 READ_ONLY_ITEMS = frozenset({"online_engines"})  # 一个项目只有一个在线引擎，由会话池保证，不可改
-# 证据源本期只留接口（ADR-0056）：这两项保留、能设，但没有地方检查（SY-15 的 not_enforced）
-NOT_ENFORCED = ("collections_per_source_per_hour", "snapshot_git_mb")
+# 能设、但没有地方检查的项（SY-15 的 not_enforced）；现在没有
+NOT_ENFORCED: tuple[str, ...] = ()
 ITEMS = {
     "user": tuple(PER_USER_DEFAULTS),
     "project": tuple(item for item in PER_PROJECT_DEFAULTS if item not in READ_ONLY_ITEMS),
 }
 MAX_VALUE = 10**15
 SYNC_INTERVAL_S = 1.0
-COLLECTION_WINDOW_S = 3600
 HEAD_BYTES = 4096
 DELETED_USAGE_FILE = "deleted-usage.jsonl"
 # 台账的计数口径：和库里记的不一样时清掉用量、去重指纹和读取位置，从会话历史重新入账。
@@ -64,7 +64,6 @@ _MESSAGES = {
     "concurrent_sessions": "同时在线的建模会话已到上限（{limit} 个），请等其他项目的会话结束后再试，或请管理员调整配额",
     "daily_tokens": "今天的模型用量已到上限（{limit} token），明天再试或请管理员调整配额",
     "monthly_tokens": "本项目本月的模型用量已到上限（{limit} token），下个月再试或请管理员调整配额",
-    "collections_per_source_per_hour": "这个数据源一小时内的采集次数已到上限（{limit} 次），稍后再试或请管理员调整配额",
 }
 
 _SCHEMA = """
@@ -80,9 +79,7 @@ CREATE TABLE IF NOT EXISTS files (
     path TEXT PRIMARY KEY, offset INTEGER NOT NULL, inode INTEGER NOT NULL,
     head_len INTEGER NOT NULL, head TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS collections (source_id TEXT NOT NULL, owner TEXT NOT NULL, ts REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS collections_lookup ON collections(owner, source_id, ts);
 """
 
 
@@ -605,25 +602,6 @@ class QuotaService:
             candidates.append((max(0, monthly - self.used_month(project_id)), "monthly_tokens"))
         tokens, dimension = min(candidates, key=lambda candidate: candidate[0])
         return {"tokens": tokens, "dimension": dimension}
-
-    def check_collection(self, source_id: str, username: str, record: bool = True) -> None:
-        """证据采集（EV-14）：同一用户对同一数据源每小时的次数；没超时默认记一次。
-
-        本期证据源只留接口，EV-14 回 501，这里没有调用方（NOT_ENFORCED）。"""
-        owner = username or LOCAL_USER
-        limit = self.limit("collections_per_source_per_hour", "user", owner)
-        now = self.clock()
-        with self._lock, self._db() as conn:
-            conn.execute("DELETE FROM collections WHERE owner = ? AND source_id = ? AND ts <= ?",
-                         (owner, source_id, now - COLLECTION_WINDOW_S))
-            rows = conn.execute("SELECT ts FROM collections WHERE owner = ? AND source_id = ? ORDER BY ts",
-                                (owner, source_id)).fetchall()
-            times = [row[0] for row in rows]
-            if limit and len(times) >= limit:
-                raise QuotaExceeded("collections_per_source_per_hour", limit, len(times),
-                                    {"kind": "user", "id": owner}, times[0] + COLLECTION_WINDOW_S)
-            if record:
-                conn.execute("INSERT INTO collections(source_id, owner, ts) VALUES (?, ?, ?)", (source_id, owner, now))
 
 
 _service: QuotaService | None = None

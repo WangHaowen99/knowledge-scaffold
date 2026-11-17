@@ -132,10 +132,6 @@ fi
     -t "onto-modeling-connector-gateway:${VERSION}" -f Dockerfile .)
 (cd "${IMAGES_DIR}" && docker save -o "onto-modeling-connector-gateway-${VERSION}.tar" \
     "onto-modeling-connector-gateway:${VERSION}")
-# REA 旁路容器（ADR-0082）：connectors/rea-sidecar 自带 Dockerfile，REA 版本在构建时装死，运行时不联网
-(cd "${PROJECT_ROOT}/connectors/rea-sidecar" && ${BUILD_CMD} -t "onto-modeling-rea-sidecar:${VERSION}" .)
-(cd "${IMAGES_DIR}" && docker save -o "onto-modeling-rea-sidecar-${VERSION}.tar" \
-    "onto-modeling-rea-sidecar:${VERSION}")
 
 AUTH_SERVER_SRC="${REPOSITORY_ROOT}/auth-server"
 [ -d "${AUTH_SERVER_SRC}" ] || {
@@ -146,7 +142,6 @@ AUTH_SERVER_SRC="${REPOSITORY_ROOT}/auth-server"
 (cd "${IMAGES_DIR}" && docker save -o "onto-modeling-auth-server-${VERSION}.tar" "onto-modeling-auth-server:${VERSION}")
 
 # 知识包 Hub、评测服务是独立交付包（knowledge-hub/build.sh、eval-service/build.sh），不随本包打入镜像
-# 连接器主密钥（ADR-0086）不进交付包：每台目标机由 deploy.sh 在首次部署时各自生成，交付包里带一把就是所有部署共用一把
 cp "${SCRIPT_DIR}/docker-compose.release.yml" "${BUNDLE_DIR}/"
 cp "${SCRIPT_DIR}/deploy.sh" "${SCRIPT_DIR}/preflight.sh" \
    "${SCRIPT_DIR}/migrate-from-modeling.sh" "${BUNDLE_DIR}/"
@@ -160,7 +155,6 @@ cat > "${BUNDLE_DIR}/images.env" <<EOF
 ONTO_WEB_IMAGE=onto-modeling:${VERSION}
 AUTH_SERVER_IMAGE=onto-modeling-auth-server:${VERSION}
 CONNECTOR_GATEWAY_IMAGE=onto-modeling-connector-gateway:${VERSION}
-REA_SIDECAR_IMAGE=onto-modeling-rea-sidecar:${VERSION}
 RELEASE_VERSION=${VERSION}
 RELEASE_ARCH=${RELEASE_ARCH}
 EOF

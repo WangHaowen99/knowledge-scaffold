@@ -298,8 +298,7 @@ def entry_detail(project_id: str, entry_id: str, request: Request):
         "relations": {"declared": declared, "mentions": mentions},
         "backlinks": backlinks,
         "data_source": _data_source(text) if kind == "object" else {"kind": "unset", "value": None, "label": "不适用"},
-        "evidence_snapshots": {},
-        "counts": {"refs_out": node.get("out", 0), "refs_in": node.get("in", 0), "fields": len(fields), "evidence": 0},
+        "counts": {"refs_out": node.get("out", 0), "refs_in": node.get("in", 0), "fields": len(fields)},
         "revision": _content_revision(target.read_bytes()),
         "head": mainline.state(root)["head"],
         "lock": scope if _locked(scope, f"{kind}:{key}", rel) else None,
@@ -326,7 +325,7 @@ def entry_flow(project_id: str, entry_id: str, request: Request):
 
 @router.get("/entries/{entry_id}/evidence")
 def entry_evidence(project_id: str, entry_id: str, request: Request):
-    """ST-06：条目正文里上传资料的出处（`file:` 锚点，同 EV-29 解析）；业务系统证据快照本期没有。"""
+    """ST-06：条目正文里上传资料的出处（`file:` 锚点，同 EV-29 解析）。"""
     from ..services import material_text
 
     root = deps.require_owner(project_id, request)

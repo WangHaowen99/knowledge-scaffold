@@ -154,14 +154,6 @@ export function register(ctx) {
         status: ran ? 'pass' : 'not_run', blocking: !ran, summary: ran ? '补货单格式与审批留痕都符合' : '还没运行 · 挡住发布',
         action: ran ? null : { type: 'start_node', node_id: 'retail.compliance' },
       });
-      g({
-        id: 'rev.anchor_coverage', title: '证据出处检查', source: { kind: 'pack', label: '系统逆向建模能力', pack: 'rev' },
-        status: 'warn', summary: '出处都能找到 · 2 个提醒',
-        findings: [
-          { code: 'property_unevidenced', level: 'warning', message: '属性「生效日期」没有出处', target: entryRef('display_qty_std') },
-          { code: 'property_unevidenced', level: 'warning', message: '属性「检查方法」只有专家确认', target: entryRef('display_qty_std') },
-        ],
-      });
     }
     const rel = P.releasesOf(db, pid, card);
     const solver = fmt.format === 'solver'

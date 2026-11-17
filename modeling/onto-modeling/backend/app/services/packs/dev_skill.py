@@ -213,7 +213,7 @@ def protocol_markdown(snapshot: dict) -> str:
 - 命令放 `commands/<名>.md`，子代理放 `agents/<名>.md`，skill 放 `skills/<名>/`，脚本放 `scripts/<文件名>`，声明的都要存在。
 - 指向包内路径的字段：`flow`、`readme`、`knowledge_dir`，以及 `artifacts`、`views`、`docs`、`nodes` 的每一项，只能是包内相对路径。
 - `pages`：只能选平台内置页面 {_code(mf.BUILTIN_PAGES)}。图标 `nav.icon` 只能选 {_code(mf.NAV_ICONS)}。
-- `subpages`：只能选 {_code(mf.BUILTIN_SUBPAGES)}，挂在内核页面 {_code(mf.KERNEL_PAGES)} 下。
+- `subpages`：挂在内核页面 {_code(mf.KERNEL_PAGES)} 下，`id` 只能选平台内置子页：{_code(mf.BUILTIN_SUBPAGES) or "现在没有，不要写"}。
 - `hooks`：只能写 `PreToolUse`，每项有 `matcher` 和 `command`。
 - 知识包的数据字段 `knowledge_dir`、`concepts`、`checks`、`standards`、`reference_dir`、`library_dir`、`examples`：写法在行业包和系统包 skill 的参考文档里。
 - `editors`：包自带界面，入口 `{mf.UI_DIR}/<id>/{mf.EDITOR_ENTRY_IFRAME}`，`{mf.UI_DIR}/` 只能放这些后缀的静态资源：{_code(checks.UI_STATIC_SUFFIXES)}。
@@ -231,7 +231,7 @@ def protocol_markdown(snapshot: dict) -> str:
 - 范围限定 `confine`（`flow.yaml` 顶层，可选）：`{{scope_file: <路径>}}`。范围文件合入主线、`status` 是 `active` 时，基线提交里有、`editable` 里没有的本体条目助手不能写也不能删，新增条目不限；范围文件只能在它所属节点的命令运行时写。一次装配最多一个包声明。
 - 触发 `activation`（`flow.yaml` 顶层，可选）：`{{event: materials_added, requires: [<本包探针>], session: <这一轮的状态文件>}}`。用户上传资料时前提成立就算触发，节点写 `visible_if: activated` 只在触发后、这一轮开着时出现，写 `preempt` 时下一步先推它；`session` 文件的 `status` 是 active 算这一轮开着，`covers`（确认时的主线提交）包含触发时的提交算处理过，基线（`baseline.commit`）之后发布过算这一轮结束。`confine` 加 `lock_on_activation: true`：触发后、范围确认前已有条目全部只读。
 - `autobuild: false`：自主构建跳过这个节点（要用户给输入才能做的节点）。
-- 节点类型 `kind`：`agent`（缺省）、`script`、`human`、`external`。
+- 节点类型 `kind`：`agent`（缺省）、`script`、`human`。
 - 面板分组 `section`：{_code(SECTIONS)}。
 - `stale_on`、`requires` 里的产物类别：{_code(KIND_DIRS)}。
 - `done` 能用本包的探针和基础建模能力的探针：{_code(snapshot['core']['probes'])}。

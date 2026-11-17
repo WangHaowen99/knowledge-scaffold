@@ -178,17 +178,14 @@ export function fieldErrorMap(result) {
 
 // ---------- 证据 ----------
 export const CONFIDENCE_CHIP = {
-  declared: ['系统元数据', 'teal'],
-  observed: ['数据观察', 'blue'],
   inferred: ['推断', 'amber'],
 };
 
-// 图谱侧栏属性表里的短标签：库表证据取来源简称（推断的直接写「推断」），资料取章节号
+// 图谱侧栏属性表里的短标签：推断的直接写「推断」，资料取章节号
 export function evidenceShortLabel(cell) {
   if (!cell || cell.missing || !cell.label) return '';
   if (cell.confidence === 'inferred') return '推断';
   const label = String(cell.label);
-  if (cell.scheme === 'db') return label.split(' · ')[0];
   const sec = label.match(/§[\d.]+/);
   if (sec) return sec[0];
   const lead = label.match(/^(\d+)\s*(\S{2})/);
@@ -202,7 +199,6 @@ export function anchorChipLabel(anchor) {
   const a = String(anchor || '');
   const p = a.match(/#p:([\d.]+)$/);
   if (p) return /\./.test(p[1]) ? `§${p[1]}` : `第 ${p[1]} 节`;
-  if (a.startsWith('db:')) return a.split('/').pop().split('.').slice(-2).join('.');
   // 其余只说资料名（F4b-paths）：去掉目录、片段和扩展名，文本版（resource/text/…/合同.pdf.md）映射回原资料名
   const path = a.replace(/^file:/, '').split('#')[0];
   const name = path.split('/').pop().replace(/\.md$/, (m) => (path.startsWith('resource/text/') ? '' : m));
@@ -381,13 +377,9 @@ export function backlinkView(source) {
   return { name: source?.name || '', kind: kindLabel(source?.kind), icon, artifact: false };
 }
 
-// EV-29 的解析结果 → 证据列里的业务说法（「09 修订通知 第 2 条」「ERP · 标准上限」）
+// EV-29 的解析结果 → 证据列里的业务说法（「09 修订通知 第 2 条」）
 export function resolutionLabel(res) {
   if (!res || !res.resolved) return null;
-  if (res.scheme === 'db') {
-    const src = String(res.source_label || '').replace(/^业务系统\s*/, '');
-    return `${src} · ${String(res.location_label || '').split(' · ').pop()}`;
-  }
   const doc = String(res.material?.name || res.source_label || '').replace(/\.\w+$/, '').replace(/^(\d+)-/, '$1 ');
   return `${doc} ${res.location_label || ''}`.trim();
 }

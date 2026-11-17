@@ -4,7 +4,7 @@
 - agent 一轮提交了产物文件，确认生效后项目流 workspace.changed 的 artifacts 有值，并发 artifacts.updated；
 - 停用、启用带页面的包，extensions.updated.changed 只含变了的类；
 - assembly.updated 每次（锁文件提交、装配切换）只发一次；
-- 只有启用了知识沉淀包的项目注入知识信号，两个引擎一致。
+- 只有启用了声明提示规则的包（如领域包扩展）的项目注入对应提示，两个引擎一致。
 
 用仓库里真实的官方包；假引擎，不起真实 CLI；测试数据全部为合成内容。
 """
@@ -32,7 +32,7 @@ from tests.proc import run as run_cmd
 from tests.test_event_streams import buffered
 from tests.test_session_host import FakeEngine, result
 
-SIGNAL = "【业务知识信号】"
+SIGNAL = "/domain-extend-add"
 SCENARIO_FILE = "ontology/testcase/补货编制主流程.md"
 SCENARIO_TEXT = ("# 测试场景：补货编制主流程\n\n## 场景 1：正常补货\n\n- **输入**：\n  - `qty` = `12`\n"
                  "- **预期路径**：正常完成\n- **数据来源**：自定义\n")
@@ -207,7 +207,7 @@ def test_assembly_updated_once_per_lock_commit_and_once_per_switch(host):
     assert _count(project_id, "extensions.updated") == _count(project_id, "assembly.updated") == 4
 
 
-# ---- 知识信号：只在启用了知识沉淀包的项目里注入 ----
+# ---- 包的提示规则：只在启用了声明规则的包的项目里注入 ----
 
 
 def _ctx(root: Path) -> EngineContext:
@@ -227,26 +227,24 @@ def _both_engines(root: Path, message: str) -> tuple[str, str]:
         return (hook.get("hookSpecificOutput") or {}).get("additionalContext", ""), await jiuwen._model_query(message)
 
     return asyncio.run(scenario())
-
-
-def test_knowledge_signal_only_with_knowledge_pack_for_both_engines(host):
+def test_pack_prompt_rule_only_with_declaring_pack_for_both_engines(host):
     client, manager, project_id, root = host
-    message = "不对，应该是按箱补"
-    plain_id = manager.create_project("没有沉淀", packs=[])["id"]
+    message = "这一轮就到这，结束本轮"
+    plain_id = manager.create_project("无提示", packs=[])["id"]
     plain = manager.project_root(plain_id)
 
-    claude_text, query = _both_engines(root, message)
-    assert SIGNAL in claude_text and query == injection.compose_query(message, claude_text)
-    claude_text, query = _both_engines(plain, message)
-    assert SIGNAL not in claude_text and SIGNAL not in query
+    # 缺省能力包都没有声明这条规则：两个引擎都不带
+    for target in (root, plain):
+        claude_text, query = _both_engines(target, message)
+        assert SIGNAL not in claude_text and SIGNAL not in query
     assert injection.prompt_hint(plain, message) == ""
 
     # 启用后等装配切过去（下一条消息前）才注入
-    _pack(client, plain_id, "knowledge", enable=True)
+    _pack(client, plain_id, "domain-extend", enable=True)
     assert injection.prompt_hint(plain, message) == ""
     fingerprint.prepare(plain_id)
-    assert injection.prompt_hint(plain, message).startswith(SIGNAL)
+    assert SIGNAL in injection.prompt_hint(plain, message)
     claude_text, query = _both_engines(plain, message)
     assert SIGNAL in claude_text and query == injection.compose_query(message, claude_text)
-    # 没有信号词的消息不带
+    # 不匹配规则的消息不带
     assert injection.prompt_hint(plain, "帮我画一张流程图") == ""

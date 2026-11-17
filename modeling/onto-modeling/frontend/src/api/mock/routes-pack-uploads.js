@@ -1,5 +1,5 @@
-// mock：插件上传与审核（PL-13～PL-18）、普通用户装自己的包（PL-22～PL-26），以及没挂界面的管理员审核申请（AD-08～AD-10）。
-// 页面：plugin-upload。PL-13～PL-18 只有 admin 能调（ctx.forbid）。状态放在 db.packUploads、db.packRepo、db.adminRequests 上。
+// mock：插件上传与审核（PL-13～PL-18）、普通用户装自己的包（PL-22～PL-26）。
+// 页面：plugin-upload。PL-13～PL-18 只有 admin 能调（ctx.forbid）。状态放在 db.packUploads、db.packRepo 上。
 // 地址参数 ?mock=upload:<状态>，几个状态用 + 连起来（如 upload:checking+exists）：
 // - 缺省            两个上传：industry-retail-1.1.0.zip 检查通过（13 通过 · 1 警告），demo-trace-ext-0.1.0.zip 是租户包、4 项失败
 // - upload:checking 再加一个正在检查的 sys-wms-generic-0.5.0.zip（一直停在检查中，不会跑完）
@@ -8,9 +8,8 @@
 // 发布 409 也可以自然造出来：再上传一个同名同版本的包（如 industry-retail-1.1.0.zip），检查通过后先发布一个，再发布另一个。
 // 新上传的包约 2.4 秒后检查完：文件名以 demo- 开头的当作租户「示例租户」上传、判 4 项失败，其余检查通过；
 // 文件名含 nomanifest 返回 400 pack_upload_invalid（缺 manifest.yaml）。
-// 别的分组的 mock（PL-04 申请平台安装、EV-03 数据源登记申请、K-08 知识提名）可以用 addAdminRequest(ctx, 申请) 推进审核申请。
 import {
-  failedChecks, manifestOf, parseFilename, passedChecks, reportMarkdown, seedRequests, seedUploads, summaryOf,
+  failedChecks, manifestOf, parseFilename, passedChecks, reportMarkdown, seedUploads, summaryOf,
 } from './pack-uploads-data.js';
 
 const ADMIN = ['admin'];
@@ -41,22 +40,6 @@ export function finishCheck(rec, now = Date.now()) {
   });
   rec.timeline.push({ at: new Date(now).toISOString(), actor: 'system', text: summary.fail ? '静态检查未通过' : '静态检查通过', state: rec.state });
   return rec;
-}
-
-const requestsOf = (db) => {
-  db.adminRequests = db.adminRequests || seedRequests();
-  return db.adminRequests;
-};
-
-/** 别的分组推一条待处理的申请进来（管理员收到 request_pending 通知） */
-export function addAdminRequest(ctx, req) {
-  const item = { id: `req-${ctx.uid()}`, state: 'pending', requested_at: new Date().toISOString(), payload: {}, ...req };
-  requestsOf(ctx.db).push(item);
-  ctx.emitUser('notification', {
-    id: `n-${item.id}`, kind: 'request_pending', title: '有新的申请待处理', body: item.summary, project_id: item.project_id || null,
-    project_name: item.payload?.project_name || null, action: null, created_at: item.requested_at, read: false,
-  });
-  return item;
 }
 
 export function register(ctx) {
@@ -182,33 +165,5 @@ export function register(ctx) {
     }
     return json(200, uploadView(rec));
   });
-
-  // ---------- AD-08～AD-10 管理员审核申请（插件安装页的「申请」页签） ----------
-  const findReq = (id) => requestsOf(db).find((r) => r.id === decodeURIComponent(id));
-
-  on('GET', '/admin/requests', ({ user, query }) => forbid(user, ADMIN) || (() => {
-    const kinds = (query.get('kind') || '').split(',').filter(Boolean);
-    const states = (query.get('state') || '').split(',').filter(Boolean);
-    const items = requestsOf(db)
-      .filter((r) => (!kinds.length || kinds.includes(r.kind)) && (!states.length || states.includes(r.state)))
-      .sort((a, b) => Date.parse(b.requested_at) - Date.parse(a.requested_at));
-    return json(200, { items, next_cursor: null });
-  })());
-
-  const decide = (action) => ({ user, m, body }) => forbid(user, ADMIN) || (() => {
-    const r = findReq(m[1]);
-    if (!r) return err(404, 'request_not_found', '申请不存在');
-    if (r.state !== 'pending') return err(409, 'request_state', '这条申请已经处理过了', { state: r.state });
-    if (action === 'reject' && !String(body.reason || '').trim()) return err(400, 'invalid_argument', '请写明退回原因', { fields: { reason: 'required' } });
-    // 同内核：数据源申请通过要带凭据
-    if (action === 'approve' && r.kind === 'source_registration' && !body.secret) return err(400, 'invalid_argument', '通过前要写入凭据', { fields: { secret: 'required' } });
-    Object.assign(r, {
-      state: action === 'approve' ? 'approved' : 'rejected', reviewed_by: user.username, reviewed_at: new Date().toISOString(),
-      note: action === 'approve' ? String(body.note || '').trim() || null : String(body.reason).trim(),
-    });
-    return json(200, r);
-  })();
-  on('POST', '/admin/requests/([^/]+)/approve', decide('approve'));
-  on('POST', '/admin/requests/([^/]+)/reject', decide('reject'));
 }
 

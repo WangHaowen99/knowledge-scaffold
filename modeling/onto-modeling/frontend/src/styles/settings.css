@@ -12,14 +12,10 @@
 .g2-slider .kn{position:absolute;top:5px;width:20px;height:20px;border-radius:50%;background:#fff;border:2px solid var(--blue);box-shadow:0 2px 6px rgba(37,99,235,.35);transform:translateX(-50%)}
 .g2-slider .tk{position:absolute;top:24px;font-size:10.5px;color:var(--muted);transform:translateX(-50%)}
 .g2-chain{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.g2-guard{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:10px;background:var(--panel2);border:1px solid var(--line);font-size:12.8px}
 .g2-advh{display:flex;align-items:center;gap:8px;padding:14px 18px;cursor:pointer;color:var(--ink2)}
 .g2-advh:hover{background:var(--panel2)}
 .g2s-sl{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.g2s-sl.g2-off{opacity:.45;pointer-events:none}
 .g2s-r{cursor:pointer}
-.g2s-prod .g2s-mf{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;flex-basis:100%}
-.g2s-prod.g2-off .g2s-mf{display:none}
 .g2s-foot{display:flex;align-items:center;gap:8px}
 
 /* 产品补充 */
@@ -42,9 +38,6 @@
 .evd-eng.lock{cursor:not-allowed}
 /* 模型来源：只读显示，样子同下拉 */
 .ps-src{cursor:default}
-/* 生产库授权行里的两个输入框 */
-.g2s-mf .field label{font-size:12px}
-.g2s-mf .hint.err{color:var(--red)}
 /* 能力表的更多菜单 */
 .ps-more{position:relative;display:inline-flex}
 .ps-more .menu{position:absolute;right:0;top:28px;z-index:30;min-width:140px}

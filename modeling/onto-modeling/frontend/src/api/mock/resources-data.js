@@ -1,6 +1,6 @@
 // mock · 资料区的合成资料（主示例「门店补货单编制」，全部合成）：
 // 文件清单（R-01 的 Material）、文档正文（R-06 的块）、表格（F-05）、drawio 与 HTML 原文（F-02 / F-04）、
-// 被谁引用（R-05）、外部反馈（R-11）。资料名称和用途以 scenario.js 的 MATERIALS / LATE_MATERIALS 为准，
+// 被谁引用（R-05）。资料名称和用途以 scenario.js 的 MATERIALS / LATE_MATERIALS 为准，
 // 另补设计稿里有的流程图、术语对照、台账导出、周报。资料分析（routes-materials.js）与资料区（routes-resources.js）共用这份清单。
 import { MAX_RESOURCE_FILE_SIZE, RESOURCE_TYPES } from '../../lib/resourceUpload.js';
 import { LATE_MATERIALS, MATERIALS, entryRef } from './scenario.js';
@@ -537,29 +537,6 @@ export function referencesOf(f) {
   return REFERENCES[f.name] || [];
 }
 export const anchorCount = (items) => items.reduce((n, x) => n + Math.max(1, (x.anchors || []).length), 0);
-
-// ---------- 外部反馈（R-11，反馈演进包） ----------
-export function feedbackSeed() {
-  return [
-    {
-      id: 'fb-1101-01', source: { service: '评测服务', run: 'eval-1101-0910' }, release_version: 'v0.11', received_at: atDaysAgo(0, 9, 10),
-      state: 'open', summary: '评测失分用例 4 条 · 多数和「超量与审批提示」有关', handled_version_label: null,
-      items: [
-        { case_id: 'c-01', question: '牛奶日均销量 60 箱、隔日到货，门店申请 ≤96 箱', expected: '按门店执行', actual: '生成了审批提示', loss_reason: '超量方向判断反了（步骤 3）', suspected: [entryRef('overage_and_hint')], related: null },
-        { case_id: 'c-02', question: '酸奶临期抽检', expected: '保质期剩余 ≤3 天下架', actual: '未给出', loss_reason: '临期损耗标准缺这个商品', suspected: [entryRef('expiry_loss_std')], related: null },
-        { case_id: 'c-03', question: '门店指定 2024 版陈列标准', expected: '以门店为准', actual: '用了 2019 版', loss_reason: '缺少 6.3 条', suspected: [entryRef('applicable_std')], related: null },
-        { case_id: 'c-04', question: '临时加量 5 箱', expected: '需区域审批', actual: '直接下单', loss_reason: 'R-11 没有挂到操作', suspected: [entryRef('r11_temp_increase'), entryRef('overage_and_hint')], related: null },
-      ],
-    },
-    {
-      id: 'fb-1029-01', source: { service: '线上反馈', run: 'web' }, release_version: 'v0.10', received_at: atDaysAgo(3, 16, 25),
-      state: 'handled', summary: '线上反馈 1 条 · 「牛奶隔日到货的陈列上限取错了」', handled_version_label: 'v0.11',
-      items: [
-        { case_id: 'u-01', question: '牛奶隔日到货的陈列上限', expected: '96 箱', actual: '120 箱', loss_reason: '到货周期没参与取值', suspected: [entryRef('display_qty_std')], related: null },
-      ],
-    },
-  ];
-}
 
 // ---------- 提交 ----------
 const nextVersion = (label) => {

@@ -1,12 +1,12 @@
-// mock · 3.6 资料区：R-01 列表、R-02 上传、R-04 删除、R-05 被谁引用、R-11 / R-12 外部反馈、R-15 选出处的位置，
+// mock · 3.6 资料区：R-01 列表、R-02 上传、R-04 删除、R-05 被谁引用、R-15 选出处的位置，
 // 另有 F-04 原文件（资料区的路径）、F-05 表格预览，以及资料页发出的命令（S-20）的进度。
 // R-03 改用途、R-06 原文预览仍登记在 routes-materials.js（资料分析也在用）；两边共用 ctx.materials 的资料状态，
 // 合成资料本身在 resources-data.js。
-// 地址参数：?mock=feedback:off（没启用反馈演进，没有外部反馈分组）、?mock=task:resources（一打开就有一个重读任务在跑）
+// 地址参数：?mock=task:resources（一打开就有一个重读任务在跑）
 import * as F from './fixtures.js';
 import {
   CONVERTERS, DRAWIO, EMPTY_DRAWIO, HTML_REPORT, PURPOSES, PURPOSE_VALUES, UPLOAD_EXTS, UPLOAD_LIMIT,
-  anchorCount, feedbackSeed, fileRecord, groupOf, kindOf, materialView, positionsOf, referencesOf, tableOf, textMarkdown, textState, webCommit,
+  anchorCount, fileRecord, groupOf, kindOf, materialView, positionsOf, referencesOf, tableOf, textMarkdown, textState, webCommit,
 } from './resources-data.js';
 
 const ORIGIN = { page: 'resources', label: '资料区' };
@@ -24,13 +24,11 @@ function detectPurpose(name, kind) {
 }
 
 export function register(ctx) {
-  const { on, json, err, db, sc, uid, convsOf, emitConv, emitProj, putTask } = ctx;
+  const { on, json, err, db, uid, convsOf, emitConv, emitProj, putTask } = ctx;
   db.files = db.files || new Map();
   Object.entries(DRAWIO).forEach(([path, content]) => {
     if (!db.files.has(path)) db.files.set(path, { content, revision: 'r-dio1' });
   });
-  const feedbackOn = sc?.feedback !== 'off';
-  const fbStore = new Map();
   const revisionTasks = new Map(); // batch_id → CommandTask（同一批修订资料只发起一次增量更新）
 
   const state = (pid) => ctx.materials.state(pid);
@@ -50,15 +48,6 @@ export function register(ctx) {
     const m = { ...materialView(f, mapItemOf(s, f.path)), schema_scope: schemaTable(f) ? mockScope(f) : null, schema_candidate: null };
     return f.kind === 'drawio' && db.files.get(f.path) ? { ...m, revision: db.files.get(f.path).revision } : m;
   };
-  // 发布过才有外部反馈：还没传资料、读资料中、蓝图待确认的阶段没有
-  const feedbackOf = (pid) => {
-    if (!fbStore.has(pid)) {
-      const stage = ctx.stageOf(pid);
-      const early = !stage || /empty$/.test(stage) || stage === 'materials' || stage === 'blueprint';
-      fbStore.set(pid, feedbackOn && !early ? feedbackSeed() : []);
-    }
-    return fbStore.get(pid);
-  };
   const cidOf = (pid) => convsOf(pid)[0]?.id;
   const nowIso = () => new Date().toISOString();
 
@@ -69,7 +58,6 @@ export function register(ctx) {
     const items = s.files.map((f) => view(s, f));
     return json(200, {
       groups: GROUPS.map(([key, label]) => ({ key, label, items: items.filter((x) => x.group === key) })),
-      feedback_group: { enabled: feedbackOn, count: feedbackOn ? feedbackOf(pid).length : 0 },
       purposes: PURPOSES,
     });
   });
@@ -254,25 +242,6 @@ export function register(ctx) {
     if (!f) return err(404, 'file_not_found', '资料不存在', { path });
     const items = referencesOf(f);
     return json(200, { path, total: items.length, items });
-  });
-
-  // R-11 外部反馈列表（反馈演进包没启用时为空，带 plugin_disabled）
-  on('GET', '/projects/([^/]+)/feedback', ({ m, query }) => {
-    if (!feedbackOn) return json(200, { items: [], next_cursor: null, plugin_disabled: true });
-    const want = query.get('state');
-    const items = feedbackOf(m[1]).filter((x) => !want || x.state === want);
-    return json(200, { items, next_cursor: null });
-  });
-
-  // R-12 标记外部反馈状态
-  on('PATCH', '/projects/([^/]+)/feedback/([^/]+)', ({ m, body }) => {
-    const pid = m[1];
-    const fb = feedbackOf(pid).find((x) => x.id === decodeURIComponent(m[2]));
-    if (!fb) return err(404, 'not_found', '反馈不存在');
-    if (!['open', 'handled', 'dismissed'].includes(body.state)) return err(400, 'invalid_argument', '状态不对', { fields: { state: 'invalid' } });
-    fb.state = body.state;
-    if (body.state !== 'handled') fb.handled_version_label = null;
-    return json(200, fb);
   });
 
   // F-04 原文件：只管资料区的路径，别的交给后面登记的

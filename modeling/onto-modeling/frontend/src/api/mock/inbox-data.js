@@ -1,4 +1,4 @@
-// mock：待处理（IN-01～IN-04）的事项与详情。主示例项目的 18 项对应设计稿 inbox 的 G2Q（合成场景）；
+// mock：待处理（IN-01～IN-04）的事项与详情。主示例项目的 15 项对应设计稿 inbox 的 G2Q（合成场景）；
 // 其中自主构建复核（需复核、挂起）由运行 #3 的台账实时算出，处理一项计数就少一项。
 import { ANCHORS, MAIN_PID, QUESTION_ID, REFS, decisionQuestion } from './fixtures.js';
 import { AB_ANCHORS as A, BASE_VERSION, RUN_ID, RUN_NO, THRESHOLD } from './run3.js';
@@ -6,22 +6,15 @@ import { entryRef } from './scenario.js';
 
 const MIN = 60 * 1000;
 const ago = (ms) => new Date(Date.now() - ms).toISOString();
-const todayOrYesterdayAt = (h, m) => {
-  const d = new Date();
-  d.setHours(h, m, 0, 0);
-  if (d.getTime() > Date.now()) d.setDate(d.getDate() - 1);
-  return d.toISOString();
-};
-const yesterday = () => { const d = new Date(Date.now() - 24 * 60 * MIN); d.setHours(17, 40, 0, 0); return d.toISOString(); };
 
 export const KIND_LABEL = {
-  decision: '决策', evidence_conflict: '证据冲突', change_list: '变更清单', review: '需复核', suspension: '挂起', stale: '过期',
-  resumable: '续跑', feedback: '外部反馈', report: '报告待处理', changeset_conflict: '合入冲突',
+  decision: '决策', change_list: '变更清单', review: '需复核', suspension: '挂起', stale: '过期',
+  resumable: '续跑', report: '报告待处理', changeset_conflict: '合入冲突',
   format_migration: '格式待迁移', notification: '通知',
 };
 const ACTIONS = {
-  decision: ['answer'], evidence_conflict: ['arbitrate'], change_list: ['accept_points', 'rewrite_point', 'execute'], review: ['accept', 'rejudge', 'revert_slice'],
-  suspension: ['answer', 'use_generic'], stale: ['refresh', 'keep_stale'], resumable: ['resume', 'abandon'], feedback: ['send_to_evolution'],
+  decision: ['answer'], change_list: ['accept_points', 'rewrite_point', 'execute'], review: ['accept', 'rejudge', 'revert_slice'],
+  suspension: ['answer', 'use_generic'], stale: ['refresh', 'keep_stale'], resumable: ['resume', 'abandon'],
 };
 const imp = (...pairs) => pairs.map(([label, text]) => ({ label, items: text.split('、') }));
 const item = (id, kind, title, extra) => ({
@@ -44,22 +37,6 @@ function mainStatic() {
       slice: sl('s5', '超量与审批提示'), meta: '4 个选项 · 推荐 A', created_at: ago(18 * MIN),
       impact: imp(['操作', '超量与审批提示'], ['对象', '安全库存标准、陈列量标准'], ['场景', '2 个待生成']),
     }), { ...q1, options: q1.options.map((o) => ({ ...o, preview: null })) }],
-    [item('evidence_conflict:cf-display', 'evidence_conflict', '陈列量上限：修订通知写 150 箱，ERP 快照是 140', {
-      slice: sl('s3', '陈列量核定'), meta: '修订通知 vs ERP 系统', source: 'materials', created_at: ago(26 * MIN),
-      impact: imp(['对象', '陈列量标准'], ['操作', '陈列量核定'], ['场景', '场景 3、6、9']),
-    }), {
-      question: question('cf-display', '陈列量上限以哪边为准？', '', [], [
-        opt('A', '以修订通知为准：150 箱', '修订通知是最新的书面规定，资料优先级更高；数据库可能还没同步', { recommended: true }),
-        opt('B', '以数据库为准：140', '和业务系统保持一致，修订通知当作待落地'),
-        opt('C', '两个都保留，按到货周期区分', '需要确认 140 是否只适用于隔日到货'),
-        custom('D'),
-      ]),
-      sides: [
-        { label: '09-修订通知.docx', type_label: '发布日期', date: '10-20', value: '≤150 箱', note: '§2：乳制品区域配额上限，按区域统一配额 ≤150 箱 执行', highlight: '按区域统一配额 ≤150 箱', anchor: A.n2, anchor_label: '09 修订通知 §2' },
-        { label: 'ERP 系统 · 补货标准表', type_label: '系统元数据', value: '140.00', note: '「标准上限」字段，牛奶 / 乳制品 / 陈列；10-30 采集', anchor: A.db, anchor_label: 'ERP 补货标准表 · 标准上限' },
-      ],
-      writes_to: entryRef('display_qty_std'),
-    }],
     [item('change_list:cl-09', 'change_list', '09 修订通知：5 个变更点待确认', {
       slice: sl('s3', '陈列量核定 等 3 段'), meta: '影响 6 个产物 · 4 个场景', source: 'materials', created_at: ago(32 * MIN),
       impact: imp(['对象', '陈列量标准、检查项目'], ['操作', '陈列量核定、临期损耗编制'], ['规则', 'R-06、R-11'], ['场景', '4 个']),
@@ -87,40 +64,12 @@ function mainStatic() {
       interrupted: { at: ago(62 * MIN), reason: 'restart', reason_text: '服务重启，这一步没有正常结束' },
       saved: { files: 2, version_label: BASE_VERSION }, resumable: true, not_resumable_reason: null,
     }],
-    [item('feedback:fb-1101-01', 'feedback', '外部反馈：评测服务回传 4 个失分用例', {
-      slice: sl('release', '知识包 v0.11'), meta: '交给反馈演进处理', source: 'external', pack: 'evo', created_at: todayOrYesterdayAt(9, 10),
-      impact: imp(['操作', '超量与审批提示、陈列量核定'], ['规则', 'R-09']),
-    }), {
-      feedback_id: 'fb-1101-01', path: 'feedback/20261101T091000Z-fb-1101-01.json', source: '评测服务', release_version: 'v0.11', item_count: 4,
-      verdicts: { fail: 3, partial: 1, error: 0 }, received_at: todayOrYesterdayAt(9, 10), received_by: 'svc-eval', commit: 'fb11a0c2',
-      items: [
-        { question: '牛奶日均销量 60 箱、隔日到货，门店申请 ≤96 箱', expected: '按门店执行', actual: '生成了审批提示', loss_reason: '超量方向判断反了（步骤 3）' },
-        { question: '酸奶临期抽检', expected: '保质期剩余 ≤3 天下架', actual: '未给出', loss_reason: '临期损耗标准缺这个商品' },
-        { question: '门店指定 2024 版陈列标准', expected: '以门店为准', actual: '用了 2019 版', loss_reason: '缺少 6.3 条' },
-        { question: '临时加量 5 箱', expected: '需区域审批', actual: '直接下单', loss_reason: 'R-11 没有挂到操作' },
-      ],
-    }],
     [item('decision:q-merge-r09', 'decision', '安全库存测算：两条取严规则要不要合并？', {
       slice: sl('s2', '安全库存测算'), meta: '2 个选项', created_at: ago(2 * 60 * MIN), impact: imp(['规则', 'R-07、R-09']),
     }), question('q-merge-r09', '两条取严规则要不要合并？', 'R-07「安全库存取严」和 R-09「门店申请取严」判断条件一样，只是适用的品类不同。', [], [
       opt('A', '合并为 R-09，按品类列出适用范围', '规则少一条；安全库存测算的 3 个场景不受影响', { recommended: true }),
       opt('B', '保持两条', '两条规则的适用范围需要互斥说明'),
     ])],
-    [item('evidence_conflict:cf-std', 'evidence_conflict', '牛奶的适用标准：门店清单和品类表不一致', {
-      slice: sl('s1', '补货申请与门店需求'), meta: '05-门店清单 vs 06-商品品类表', source: 'materials', created_at: yesterday(),
-      impact: imp(['对象', '商品品类、门店特殊需求']),
-    }), {
-      question: question('cf-std', '牛奶的适用标准以哪边为准？', '', [], [
-        opt('A', '以门店清单为准（2024 版）', '门店指定的标准优先，品类表需要更新', { recommended: true }),
-        opt('B', '以品类表为准（2019 版）'),
-        custom('C'),
-      ]),
-      sides: [
-        { label: '05-门店清单.xlsx', type_label: '资料', value: '2024 版', note: '「A 门店」对牛奶指定的适用标准', anchor: A.stores, anchor_label: '05-门店清单 · 门店表 F7' },
-        { label: '06-商品品类表.xlsx', type_label: '资料', value: '2019 版', note: '品类表「适用标准」列，牛奶一行', anchor: A.cats, anchor_label: '06-商品品类表 · 品类表 D12' },
-      ],
-      writes_to: entryRef('goods_category'),
-    }],
   ];
   return { head, tail };
 }

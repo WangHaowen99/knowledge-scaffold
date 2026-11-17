@@ -288,24 +288,6 @@ def flow_with_extra_node(extra: dict) -> dict:
     return flow
 
 
-def test_review_5_follow_skips_versions_needing_missing_providers(env):
-    from app.services.packs import lockfile
-    from app.services.packs import service as pack_service
-    from tests.test_node_pack_lifecycle import EXTERNAL_NODE, node_ids
-
-    client, manager, project_id, tmp_path = env
-    root = manager.project_root(project_id)
-    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
-    install(manager, tmp_path, "0.1.0")
-    enable_and_apply(client, manager, project_id)
-    gate = {**EXTERNAL_NODE, "placement": "gate", "after": "core.research", "blocks": ["core.model"]}
-    install(manager, tmp_path, "0.2.0", flow=flow_with_extra_node(gate))
-    pack_service.prepare_for_message(manager, project_id)
-    assert lockfile.read(root).get("naming").version == "0.1.0"
-    assert "naming.fetch" not in node_ids(root)
-    assert nodes_of(root)["core.model"]["state"] != "blocked"
-
-
 def test_review_5_follow_waits_for_unconfirmed_assistant_changes_and_is_a_changeset(env):
     from app.kernel.changesets import service as changesets
     from app.services.packs import lockfile

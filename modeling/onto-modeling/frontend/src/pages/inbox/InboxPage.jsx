@@ -2,7 +2,6 @@
 // 接口：IN-01～IN-04；高置信合并项里单独改判走 AB-11 / AB-12；「运行结果」读 AB-16、回退走 AB-17。
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
-import { evidenceInProject } from '../../state/evidence.js';
 import { multiSlice, sliceName, unitTitle } from '../../state/flow.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
@@ -26,7 +25,6 @@ const DONE_TOAST = {
   keep_stale: ['先不管，保持过期', 'check'],
   resume: ['已续跑，进展在对话里', 'play'],
   abandon: ['已放弃', 'undo'],
-  send_to_evolution: ['已交给反馈演进处理，进展在对话里', 'refresh'],
   execute: ['清单已确认，开始按清单修改', 'check'],
   dismiss: ['已忽略', 'check'],
 };
@@ -41,12 +39,6 @@ function BgText({ text, anchors }) {
     }
     return <Fragment key={i}>{t.v}</Fragment>;
   });
-}
-
-function Highlight({ text, mark }) {
-  if (!mark || !text?.includes(mark)) return text || null;
-  const i = text.indexOf(mark);
-  return <>{text.slice(0, i)}<mark>{mark}</mark>{text.slice(i + mark.length)}</>;
 }
 
 function Opts({ options, sel, onPick, tagOf, text, setText, placeholder }) {
@@ -79,31 +71,6 @@ function DecisionBody({ q, ...p }) {
     <>
       {q.background_md ? <div className="sm muted mt12"><BgText text={q.background_md} anchors={q.anchors} /></div> : null}
       <Opts options={q.options || []} {...p} placeholder={q.custom_placeholder} tagOf={(o) => (o.recommended ? <Chip tone="blue" sm>推荐</Chip> : null)} />
-    </>
-  );
-}
-
-function Side({ s }) {
-  const icon = /^db:/.test(s.anchor || '') ? 'db' : /\.xlsx?$/i.test(s.label) ? 'table' : 'filetext';
-  const chip = s.type_label === '发布日期'
-    ? <Chip tone="line" sm>{s.date} 发布</Chip>
-    : <Chip tone={s.type_label === '系统元数据' ? 'teal' : 'line'} sm>{s.type_label}</Chip>;
-  return (
-    <div className="side">
-      <div className="row sm"><Icon name={icon} size={14} /><b>{s.label}</b><span className="sp" />{chip}</div>
-      <div className="big">{s.value}</div>
-      <div className="sm muted"><Highlight text={s.note} mark={s.highlight} /></div>
-      <div className="xs faint mt8">出处：<span data-ev={s.anchor || undefined} style={{ cursor: 'help' }}>{s.anchor_label || M.anchorLabel(s.anchor)}</span></div>
-    </div>
-  );
-}
-
-function ConflictBody({ d, ...p }) {
-  const [a, b] = d.sides || [];
-  return (
-    <>
-      <div className="g2-vs">{a ? <Side s={a} /> : <div />}<div className="ne">≠</div>{b ? <Side s={b} /> : <div />}</div>
-      <Opts options={d.question?.options || []} {...p} tagOf={(o) => (o.recommended ? <Chip tone="blue" sm>推荐</Chip> : null)} />
     </>
   );
 }
@@ -306,24 +273,6 @@ function ResumableBody({ d, act, busy }) {
   );
 }
 
-function FeedbackBody({ d, act, busy }) {
-  const { pid } = useProject();
-  return (
-    <>
-      <div className="tbl-wrap mt12">
-        <table className="tbl compact">
-          <thead><tr><th>用例</th><th>期望</th><th>实际</th><th>疑似原因</th></tr></thead>
-          <tbody>{(d.items || []).map((x, i) => <tr key={i}><td>{x.question}</td><td>{x.expected}</td><td>{x.actual}</td><td>{x.loss_reason}</td></tr>)}</tbody>
-        </table>
-      </div>
-      <div className="row mt16">
-        <Button size="sm" kind="primary" icon="refresh" disabled={busy} onClick={() => act('send_to_evolution')}>交给反馈演进处理</Button>
-        <Button size="sm" onClick={() => navigate(pagePath('resources', pid), { group: 'feedback', feedback: d.feedback_id })}>逐条查看</Button>
-      </div>
-    </>
-  );
-}
-
 const ACTION_LABEL = { dismiss: '忽略', discard: '撤回这一轮', migrate: '迁移', send_to_assistant: '交给助手处理', resolve: '去处理' };
 function GenericBody({ item, act, busy }) {
   return (
@@ -343,14 +292,12 @@ function Detail({ view, sub, ...p }) {
   let body = null;
   if (sub) body = <ReviewBody d={sub} item={item} sub {...p} />;
   else if (item.kind === 'decision') body = <DecisionBody q={d} {...p} />;
-  else if (item.kind === 'evidence_conflict') body = <ConflictBody d={d} {...p} />;
   else if (item.kind === 'change_list') body = <ChangeListBody key={item.id} d={d} act={p.act} batch={p.batch} busy={p.busy} />;
   else if (item.kind === 'review' && d?.group) body = <HighBody d={d} act={p.act} openSub={p.openSub} busy={p.busy} />;
   else if (item.kind === 'review') body = <ReviewBody d={d} item={item} {...p} />;
   else if (item.kind === 'suspension') body = <SuspensionBody d={d} item={item} {...p} />;
   else if (item.kind === 'stale') body = <StaleBody d={d} item={item} act={p.act} batch={p.batch} staleCount={p.staleCount} busy={p.busy} />;
   else if (item.kind === 'resumable') body = <ResumableBody d={d} act={p.act} busy={p.busy} />;
-  else if (item.kind === 'feedback') body = <FeedbackBody d={d} act={p.act} busy={p.busy} />;
   else body = <GenericBody item={item} act={p.act} busy={p.busy} />;
   return (
     <>
@@ -458,9 +405,7 @@ function SortButton({ sort, setSort }) {
 
 export default function InboxPage({ route }) {
   const { api } = useApp();
-  const project = useProject();
-  const { pid, subscribe } = project;
-  const evidenceOn = evidenceInProject(project);
+  const { pid, subscribe } = useProject();
   const q = route?.query || {};
   const validFilter = (f) => (M.FILTERS.some(([k]) => k === f) ? f : 'all');
   const [filter, setFilter] = useState(validFilter(q.filter));
@@ -489,7 +434,7 @@ export default function InboxPage({ route }) {
     if (q.item || q.entry) setWant({ item: q.item || null, entry: q.entry || null });
   }, [q.filter, q.item, q.entry]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const items = useMemo(() => M.sortItems(M.withoutEvidence(data?.items, evidenceOn), sort), [data, sort, evidenceOn]);
+  const items = useMemo(() => M.sortItems(data?.items, sort), [data, sort]);
 
   useEffect(() => {
     if (!data) return;
@@ -635,7 +580,7 @@ export default function InboxPage({ route }) {
     return () => document.removeEventListener('keydown', h);
   }, []);
 
-  const counts = M.countsWithoutEvidence(data?.counts, evidenceOn);
+  const counts = data?.counts;
   const today = data?.today;
   const summary = filter === 'autobuild_review' ? data?.autobuild_summary : null;
   const impact = sub ? [...(sliceName(sub.slice?.id, sub.slice?.name) ? [{ label: '分段', items: [sub.slice.name] }] : []), ...(sub.affected?.length ? [{ label: '条目', items: sub.affected.map((x) => x.name || x.title) }] : [])] : view?.item.impact || [];
@@ -653,7 +598,7 @@ export default function InboxPage({ route }) {
               <SortButton sort={sort} setSort={setSort} />
             </div>
             <div className="g2-fl">
-              {M.visibleFilters(counts, filter, evidenceOn).map(([k, t]) => (
+              {M.FILTERS.map(([k, t]) => (
                 <span key={k} className={k === filter ? 'on' : ''} onClick={() => setFilter(k)}>
                   {k === 'autobuild_review' ? <Icon name="bot" size={12} /> : null}{t} <i>{counts?.by_filter?.[k] ?? 0}</i>
                 </span>

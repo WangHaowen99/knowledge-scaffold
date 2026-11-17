@@ -73,7 +73,6 @@ function entry(i, at, e) {
 // 设计稿那 10 条（距最新一条的秒数），换成合成场景
 const RECENT = [
   [0, { actor: 'ops01', type: 'ops', action: 'ops.diagnostics_create', method: 'POST', path: '/api/v1/ops/diagnostics', summary: '导出诊断包 diag-20261101-1544.zip', trace_id: '5c2e9a14' }],
-  [831, { actor: 'zhangsan', type: 'evidence', action: 'evidence.collect', method: 'POST', path: `/api/v1/projects/${MAIN_PID}/evidence/collections`, project_id: MAIN_PID, summary: '发起采集 erp-prod（生产）· 已在确认卡同意 · 范围 erp.replenish_std 等 12 张表', trace_id: '8e41b07d' }],
   [1442, { actor: 'ops01', type: 'ops', action: 'ops.maintenance_enter', method: 'POST', path: '/api/v1/ops/maintenance', summary: '进入维护模式：拒绝新会话' }],
   [2725, { actor: 'agent', type: 'commit', action: 'agent.commit', project_id: MAIN_PID, summary: '门店补货单编制', trailer: { 'Onto-Source': 'agent', 'Onto-Changeset': 'cs-31', 'Onto-Packs': 'core@1.4.2', 'Onto-Node': 'core.operation@1.4.2' } }],
   [3173, { actor: 'admin02', type: 'plugin', action: 'pack.install', method: 'POST', path: '/api/v1/admin/packs/uploads/up-7c1e/publish', summary: '安装 core@1.5.0 到包仓库 · 通道 beta · 校验和通过' }],
@@ -127,12 +126,6 @@ const ERR_TEMPLATES = [
     friendly: '发布检查发现 1 个对象的数据来源对不上',
     stack: (p) => `PackageMappingError: object maps to missing table ${p === MAIN_PID ? 'erp.replenish_ledger' : tableOf(p)}\n  at package_mapping.resolve (core/1.4.2/publish/package_mapping.py)\n  at publish.render (kernel/publish)\ncontext: project=${p}`,
     auto: null, exec: null, session: null,
-  },
-  {
-    origin: 'collection', pack: 'rev@0.2.0', node: 'rev.evidence', older: true,
-    raw: 'connector-gateway: 1045 Access denied for user crm_ro（凭据引用 cred://crm-test/2）', friendly: '连接业务系统失败，请检查数据源配置',
-    stack: (p) => `ConnectorError: 1045 Access denied for user crm_ro (using password: ***)\n  at connector_gateway.connect (db-mysql)\n  at collector.run (rev/0.2.0)\ncontext: project=${p} source=crm-test cred=cred://crm-test/2`,
-    auto: null, exec: 'ex-0521', session: null,
   },
   {
     origin: 'assembly', pack: 'industry-property@1.2.0', node: null,

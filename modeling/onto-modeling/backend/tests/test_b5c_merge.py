@@ -69,7 +69,7 @@ def test_switch_while_assistant_changes_are_pending_is_a_revertible_changeset(en
     # 改流程的照旧 423（口径不变）
     blocked = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "naming"})
     assert blocked.status_code == 423 and blocked.json()["code"] == "write_scope_locked"
-    enabled = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "websearch"})
+    enabled = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "industry-retail"})
     assert enabled.status_code == 201, enabled.text
     cs = enabled.json()["changeset_id"]
     assert cs and cs != pending["id"] and trailer(root, "Onto-Changeset") == cs

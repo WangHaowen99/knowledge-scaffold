@@ -17,19 +17,13 @@ async def _lifespan(app: FastAPI):
 
     from .governance import startup as governance_startup
     from .governance import startup_recovery
-    from .services import background_jobs, backup
+    from .services import backup
     from .services.agent_sessions import manager
     from .services.model_context_presets import write_example
 
     # 治理平面（方案 E5、E6、E10）：结构化日志、配置校验、会话池覆盖、密钥目录与告警，最先做
     await asyncio.to_thread(governance_startup.before_recovery)
     # 后台任务只活在进程内：重启后仍标 running 的记录改判中断（启动恢复的「中断的执行」一步统一跑）
-    from .evidence import jobs as evidence_jobs
-    from .evidence import uploads as evidence_uploads
-
-    # 采集任务的线程只活在进程内（ADR-0082）：上次还在排队、运行的标失败；超过 24 小时没完成的上传清掉
-    background_jobs.register_startup_sweep("evidence_jobs", evidence_jobs.sweep_interrupted)
-    background_jobs.register_startup_sweep("evidence_uploads", evidence_uploads.cleanup)
     # 启动恢复（详设 8.3、方案 B8）：任何会话开始之前，按登记顺序跑完各模块的恢复步骤——清残留锁、
     # 补提交写入意图、存量迁移、核对装配目录、修对话历史、把没结束的执行改判中断——并留存报告（O-35）
     await asyncio.to_thread(startup_recovery.run, deps.workspaces, include_background=False)

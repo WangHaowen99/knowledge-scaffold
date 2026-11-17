@@ -188,7 +188,6 @@ export const AUDIT_TYPE = {
   mcp: ['MCP 写入', 'line'],
   commit: ['agent 提交', 'indigo'],
   plugin: ['插件', 'blue'],
-  evidence: ['证据采集', 'teal'],
   ops: ['运维操作', 'amber'],
   auth: ['登录认证', 'gray'],
   publish: ['发布', 'blue'],
@@ -242,7 +241,7 @@ export function exportName(format, now = Date.now()) {
 // ---------- 错误留档（O-50、O-51） ----------
 
 export const ORIGIN_LABEL = {
-  session: '会话', publish: '发布', collection: '采集', assembly: '装配', gate: '关卡', kernel: '内核',
+  session: '会话', publish: '发布', assembly: '装配', gate: '关卡', kernel: '内核',
 };
 
 // B2 第 23 条：pack、node 为 null，project 可能为 null 只有 project_id

@@ -145,12 +145,11 @@ export function register(ctx) {
     if (st && RUNNING.has(st.state)) return summaryOf(st.run());
     return db.abStarted.get(pid) || null;
   };
-  const sourceIds = () => F.evidenceSources().items.map((x) => x.id);
-  const sourceName = (id) => F.evidenceSources().items.find((x) => x.id === id)?.display_name || id;
 
   on('GET', '/projects/([^/]+)/autobuild/policy', ({ m }) => json(200, {
     ...policyOf(m[1]),
-    platform_limits: S.PLATFORM_LIMITS,
+    platform_limits: {},
+    not_enforced: [],
     last_run: lastRunOf(m[1]),
   })); // AB-01
   on('PUT', '/projects/([^/]+)/autobuild/policy', ({ m, body }) => {
@@ -158,11 +157,11 @@ export function register(ctx) {
     if (body.base_revision && body.base_revision !== cur.revision) return err(409, 'revision_conflict', '策略已被修改', { current_revision: cur.revision });
     const next = S.mergePolicy(cur, body);
     next.scope = S.normalizeScope(next.scope, ctx.flowOf(m[1]).slices.map((s) => s.id));
-    const bad = S.checkPolicy(next, sourceIds());
+    const bad = S.checkPolicy(next);
     if (bad) return err(...bad);
     next.revision = `p${uid()}`;
     db.abPolicy.set(m[1], next);
-    return json(200, { ...next, platform_limits: S.PLATFORM_LIMITS, last_run: lastRunOf(m[1]) });
+    return json(200, { ...next, platform_limits: {}, not_enforced: [], last_run: lastRunOf(m[1]) });
   }); // AB-02
   on('POST', '/projects/([^/]+)/autobuild/runs/preview', ({ m, body }) => {
     const pid = m[1];
@@ -170,9 +169,9 @@ export function register(ctx) {
     if (active) return err(409, 'autobuild_running', '自主构建运行中', { run_id: active.run_id });
     const policy = S.mergePolicy(policyOf(pid), body.policy_overrides);
     policy.scope = S.normalizeScope(policy.scope, ctx.flowOf(pid).slices.map((s) => s.id));
-    const bad = S.checkPolicy(policy, sourceIds());
+    const bad = S.checkPolicy(policy);
     if (bad) return err(...bad);
-    const pv = S.previewOf(policy, ctx.flowOf(pid).slices, sourceName);
+    const pv = S.previewOf(policy, ctx.flowOf(pid).slices);
     if (!pv.slices.some((s) => s.included)) return err(422, 'invalid_argument', '没有要做的步骤', { fields: { scope: 'empty' } });
     const token = `pv-${uid()}`;
     db.abPreview = { token, pid, policy };
@@ -184,7 +183,7 @@ export function register(ctx) {
     if (active) return err(409, 'autobuild_running', '自主构建运行中', { run_id: active.run_id });
     if (!body.preview_token) return err(410, 'preview_expired', '预览已过期');
     const policy = db.abPreview?.token === body.preview_token ? db.abPreview.policy : policyOf(pid);
-    const pv = S.previewOf(policy, ctx.flowOf(pid).slices, sourceName);
+    const pv = S.previewOf(policy, ctx.flowOf(pid).slices);
     const included = pv.slices.filter((s) => s.included);
     const n = (storeOf(pid)?.run().run_no || 0) + 1;
     const run = S.queuedRun(n, included.length);
@@ -200,8 +199,7 @@ export function register(ctx) {
       ev(2, 'card', {
         ...R.startCard(), card_id: `ab${n}-start`, title: `自主构建 · 运行 #${n}`, run_id: run.run_id, run_no: n,
         chips: [
-          { label: '范围', value: '全部没做完的步骤' },
-          { label: '生产库', value: pv.production }, { label: '拿不准时', value: pv.below_threshold_text },
+          { label: '范围', value: '全部没做完的步骤' }, { label: '拿不准时', value: pv.below_threshold_text },
         ],
       }),
       ev(3, 'notice', { kind: 'info', text: `运行 #${n} 已排队，轮到时自动开始`, version_label: null, changeset_id: null, align: 'center' }),

@@ -73,7 +73,7 @@ export function register(ctx) {
   });
   const noLock = () => ({ state: 'none', changeset_id: null, conversation_id: null, run_id: null, slice: null, node: null, entries: [], artifacts: [], paths: [], reason_text: '', since: null });
 
-  // 增量更新节点的状态跟着清单走（建模步骤抽屉）
+  // 增量更新节点的状态跟着清单走
   function setNode(pid, state, clearNotice = false) {
     const f = flowOf(pid);
     const n = (f.nodes || []).find((x) => /incremental|update$/.test(x.id));

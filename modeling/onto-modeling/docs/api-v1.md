@@ -15,7 +15,7 @@
 - 接口块里的「依据」写详设章节或接口编号（①～㊹），「页面」写设计稿页面 id。
 - 对象类型名（如 `ProjectCard`、`ScopeLock`）在第 7 章定义；接口里只写引用。
 - 只写契约，不写实现。实现位置以改造方案第 3 章为准。
-- 界面叫法：插件里的「证据源」「证据源提供方」在界面上叫「多源连接器」（F4a）；采回来的仍叫证据（证据快照、证据浏览器）。接口路径、字段、错误码里的 `evidence`、`provider` 不变。
+- 界面叫法：插件里的「证据源提供方」在界面上叫「多源连接器」（F4a），现在只有文档转换器；证据采集（数据源、证据快照、证据浏览器）已删除（ADR-0101）。接口路径、字段、错误码里的 `evidence`、`provider` 不变。
 
 ---
 
@@ -69,8 +69,8 @@
 
 | role | 界面叫法 | 能做什么 |
 |---|---|---|
-| `user` | 建模者 | 自己的项目全部操作；个人设置；浏览插件目录，把包启用到自己的项目；提交数据源登记申请、插件安装申请 |
-| `admin` | 管理员 | `user` 的全部能力，另加：系统设置（3.23）、用户管理、指定项目所有者、插件上传 / 审核 / 发布、平台安装提供方、证据源租户级登记与凭据、知识提名审核、服务令牌 |
+| `user` | 建模者 | 自己的项目全部操作；个人设置；浏览插件目录，把包启用到自己的项目 |
+| `admin` | 管理员 | `user` 的全部能力，另加：系统设置（3.23）、用户管理、指定项目所有者、插件上传 / 审核 / 发布、服务令牌 |
 | `ops` | 运维 | `user` 的全部能力，另加：运维管理面（3.24 中标 ops 的接口）、审计、错误留档、回收站 |
 
 - admin 也能调用运维管理面的只读接口和回收站（见各接口「调用方」）。
@@ -86,7 +86,7 @@
 **MCP token。** 只用于 `/api/v1/onto-mcp/*` 传输接口（M-05～M-07）。
 
 - 格式 `onto_pat_<urlsafe>`，只存 SHA-256 摘要，明文只在签发响应里出现一次。
-- 权限范围 `ontology.read`、`ontology.change.validate`、`ontology.change.apply`，新增 `evidence.read`（方案 E13）、`project.version.revert`（版本列表、回退预览与回退，read 和 change 两个工具集都认，ADR-0094）、`package.publish`（发布知识包版本，ADR-0098）。
+- 权限范围 `ontology.read`、`ontology.change.validate`、`ontology.change.apply`，新增 `project.version.revert`（版本列表、回退预览与回退，read 和 change 两个工具集都认，ADR-0094）、`package.publish`（发布知识包版本，ADR-0098）。`evidence.read` 随证据采集删除（ADR-0101）。
 - 含 `package.publish` 的 token 要统一账号登录签发，只能给登录用户本人签：签发时在 Hub 登记委托（不保存登录令牌），吊销时一并撤销；Hub 登记失败则不签发（`401 MCP_HUB_IDENTITY_REQUIRED`、`403 MCP_HUB_IDENTITY_MISMATCH`）。
 - token 绑定项目和签发人；签发人不再是项目所有者时立即失效。
 
@@ -102,7 +102,7 @@
 依据方案 A11、`services/ownership.py`。
 
 - 一个项目只有一个所有者（`owner` = 用户名），没有成员和评审人。
-- 项目内容接口（工作区文件、条目、对话、产物、报告、版本、变更集、证据快照等）只有所有者能调。
+- 项目内容接口（工作区文件、条目、对话、产物、报告、版本、变更集等）只有所有者能调。
   - 非所有者返回 `403 project_owner_only`；
   - 项目没有所有者时返回 `403 project_unowned`（等管理员用 `AD-07` 指定）。
 - 项目元数据接口（`P-01`、`P-04`）对 admin 和 ops 返回 `ProjectMetaView`：只有名称、所有者、阶段、构建方式、占用、最近活动，没有目标、资料、产物。
@@ -173,7 +173,7 @@
 | 普通用户的插件包（`PL-22`） | 20 MiB | `413` |
 | 知识包对比输入（`PC-01`） | 50 MiB，解压后 200 MiB、2000 个文件 | `413` |
 | MCP 请求体 | 1 MiB | `413 REQUEST_TOO_LARGE`（MCP 码） |
-| 证据锚点批量解析 | 一次 100 个 | `400 invalid_argument` |
+| 锚点批量解析（`EV-29`） | 一次 100 个 | `400 invalid_argument` |
 
 允许的资料类型：`.md .markdown .txt .doc .docx .xls .xlsx .xlsm .csv .pdf .drawio .html .htm .png .jpg .jpeg .webp`。图片只作为对话附件和资料附件。其他类型返回 `415 unsupported_media_type`（消息「不支持文件“X”的类型」），`details.allowed` 列出允许的扩展名；超限是 `413 payload_too_large`（消息「文件“X”超过 20 MB，无法上传」），文字与 develop 一致。资料进资料区的所有入口（U-01、R-02、新建项目、对话附件）在服务层再按同一份白名单与上限挡一次；前端按 C-01 的 `material_types`、`limits.material_upload_bytes` 先在本地挡，规则不另写一份。上传 `.doc`、`.xls` 照收，前端传完提示另存为 `.docx`、`.xlsx`（转不出文本，不能分析和预览）。
 
@@ -196,13 +196,10 @@
 | 变更集 | `cs-<n>` | `cs-31` |
 | 执行记录 | `ex-<n>` | `ex-0412` |
 | 自主构建运行 | `run-<n>`，界面显示「运行 #n」 | `run-3` |
-| 采集任务 | `job-<n>` | `job-0131` |
-| 证据快照 | `YYYYMMDD-HHMMSS-xxxx` | `20261030-221500-9c1d` |
-| 证据锚点 | `<scheme>:<源ID>/<路径>[#<片段>]`（详设 5.8.5，名字里的特殊字符百分号编码） | `db:mes-prod/mes.std_limit.limit_max` |
+| 证据锚点 | `<scheme>:<源ID>/<路径>[#<片段>]`（详设 5.8.5，名字里的特殊字符百分号编码）；ADR-0101 起只解析 `file:<资料路径>[#<片段>]` | `file:resource/text/others/合同.pdf.md#L40` |
 | 流程节点 | `<包>.<名>` | `core.model` |
 | 待处理事项 | `<kind>:<来源ID>`，来源不变 ID 就不变 | `decision:q-7f3a` |
 | 错误留档 | `err-<4～8 位 hex>` | `err-7f3a` |
-| 凭据引用 | `cred://<源ID>/<版本>` | `cred://mes-prod/3` |
 
 - 锚点放在查询参数里传（`?anchor=`），不放路径段，避免 `/` 和 `#` 被路由或浏览器截断。
 - 条目和产物引用的统一写法见第 7 章 `EntryRef`、`ArtifactRef`。
@@ -214,7 +211,7 @@
 | 流 | 接口 | 谁开 | 内容 |
 |---|---|---|---|
 | 对话流 | `S-13 GET /api/v1/projects/{id}/conversations/{cid}/events` | 工作台对话页 | 消息、卡片、决策、确认、进展、会话状态（4.2） |
-| 项目流 | `P-15 GET /api/v1/projects/{id}/events` | 进入任意项目页 | 流程、待处理、写入范围锁、变更集、产物、插件命令进度、采集、自主构建（4.3） |
+| 项目流 | `P-15 GET /api/v1/projects/{id}/events` | 进入任意项目页 | 流程、待处理、写入范围锁、变更集、产物、插件命令进度、自主构建（4.3） |
 | 用户流 | `A-12 GET /api/v1/me/events` | 全局页（我的项目、插件中心、个人设置） | 通知、项目卡片更新（4.4） |
 | 日志跟随 | `O-07 GET /api/v1/ops/logs/stream` | 可观测页「跟随」 | 结构化日志（4.5） |
 
@@ -263,8 +260,8 @@ data: {"id":"1532","type":"question.asked","ts":"2026-11-01T07:21:03.120Z","proj
 ### 1.12 审计
 
 - 业务面和运维管理面的每个写请求（POST、PUT、PATCH、DELETE）都在**响应之后**写一条审计（方案 E4）：`AuditEntry{ts, actor, actor_kind, type, method, path, status, project_id, summary, trace_id, ip}`。
-- 读请求不记，例外是证据检索（E 组的 `EV-25`～`EV-29`）和下载发布包（`PB-07`、`X-03`），这两类按详设 4.10.1 记录。
-- 另有几类不经 HTTP 的专项审计：agent 提交与合入、插件切换、采集访问、熔断等。事件类型见第 7 章 `AuditEntry.type`。
+- 读请求不记，例外是下载发布包（`PB-07`、`X-03`），按详设 4.10.1 记录。证据检索的专项审计随证据采集删除（ADR-0101），`EV-29` 不记。
+- 另有几类不经 HTTP 的专项审计：agent 提交与合入、插件切换、熔断等。事件类型见第 7 章 `AuditEntry.type`。
 - 审计不带项目内容：只记路径、条目 key、动作和结果，不记文件正文、对话正文、字段值。
 - 接口块里的「审计」一栏：
   - `是`：按本节默认规则记；
@@ -315,7 +312,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `endpoint_removed` | 410 | 旧接口已删除 | `successor` |
 | `payload_too_large` | 413 | 请求体或文件超限 | `limit_bytes` |
 | `unsupported_media_type` | 415 | 文件类型不支持 | `allowed[]` |
-| `confirmation_required` | 428 | 需要先确认（生产采集、强确认操作） | 各接口自定 |
+| `confirmation_required` | 428 | 需要先确认（强确认操作） | 各接口自定 |
 | `rate_limited` | 429 | 频率限制 | `retry_after_s` |
 | `quota_exceeded` | 429 | 超出配额 | `quota, scope(user\|project), limit, used, reset_at` |
 | `too_many_streams` | 429 | SSE 连接超限 | `limit` |
@@ -449,32 +446,19 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `artifact_schema_invalid` | 422 | 不符合登记的格式定义 | `errors[]: {field, message}` |
 | `artifact_readonly` | 403 | 只读产物（行业层知识、索引文件等） | `reason` |
 | `format_migration_required` | 409 | 产物还是旧格式版本，要先迁移 | `from, to` |
-| `knowledge_duplicate` | 409 | 入库查重发现同名或同范围条目 | `conflicts[]` |
-| `nomination_not_found` | 404 | 提名不存在 | — |
+
+`knowledge_duplicate`（K-03）、`nomination_not_found`（K-08）已删除（ADR-0101）。
 
 ### 2.8 证据源
 
+证据采集已删除（ADR-0101），本组只剩 `anchor_not_found`。删除的码：`source_not_found`、`source_id_taken`、`source_not_authorized`、
+`provider_not_installed`、`gateway_unavailable`、`connection_test_failed`、`outside_access_window`、`confirmation_expired`、`job_not_found`、
+`job_state_invalid`、`snapshot_not_found`、`snapshot_referenced`、`anchor_invalid`，以及目标程序分块上传的 `artifact_not_found`（422）、
+`upload_not_found`、`upload_incomplete`、`upload_hash_mismatch`、`upload_too_large`。2.3、2.7 里同名的 `upload_not_found`、`artifact_not_found` 不受影响。
+
 | code | 状态 | 含义 | details |
 |---|---|---|---|
-| `source_not_found` | 404 | 数据源不存在 | — |
-| `source_id_taken` | 409 | 数据源 ID 已被占用（ID 是锚点前缀，登记后不能改） | — |
-| `source_not_authorized` | 403 | 本项目没获授权使用该数据源 | — |
-| `provider_not_installed` | 409 | 提供方未安装 | `provider` |
-| `gateway_unavailable` | 503 | 连接器网关不可达 | — |
-| `connection_test_failed` | 422 | 测试连接或只读自检不通过 | `checks[]` |
-| `outside_access_window` | 409 | 不在访问时间窗口内（任务会排队，只在要求立即执行时报） | `window` |
-| `confirmation_expired` | 410 | 生产采集确认已过期（10 分钟） | — |
-| `job_not_found` | 404 | 采集任务不存在 | — |
-| `job_state_invalid` | 409 | 任务当前状态不允许该操作 | `state` |
-| `snapshot_not_found` | 404 | 快照不存在 | — |
-| `snapshot_referenced` | 409 | 快照被已确认产物引用，不能清理 | `references: int` |
-| `anchor_invalid` | 400 | 锚点格式不合法 | — |
-| `anchor_not_found` | 404 | 锚点在所声明的快照或资料里不存在 | — |
-| `artifact_not_found` | 422 | 登记或采集引用的目标程序不在 blob 仓里（F13） | — |
-| `upload_not_found` | 404 | 上传不存在、已过期或不是本人的（F13） | — |
-| `upload_incomplete` | 409 | 还有块没传（F13） | `missing: int[]` |
-| `upload_hash_mismatch` | 422 | 拼好的文件和声明的 sha256 不一致（F13） | — |
-| `upload_too_large` | 413 | 超过单文件上限（F13） | `max_bytes` |
+| `anchor_not_found` | 404 | `PB-02` 设数据库锚点时一律返回（没有证据快照可解析） | — |
 
 ### 2.9 发布与三份契约
 
@@ -485,7 +469,6 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `solver_contract_invalid` | 400 | 求解契约语法错误 | `findings[]` |
 | `release_not_found` | 404 | 发布记录不存在 | — |
 | `receipt_revision_unknown` | 422 | 回执里的契约修订号在本项目不存在 | `revision` |
-| `feedback_invalid` | 422 | 反馈载荷不符合反馈契约 | `errors[]` |
 | `login_required` | 401 | 评测要统一账号登录（本地模式没有），文案「个人 Hub 包需要统一账号登录」；不是 `unauthenticated`，前端不当成登录过期 | — |
 | `eval_unconfigured` | 503 | 没配评测服务地址或地址无效 | — |
 | `eval_unauthorized` | 401 | 评测服务没接受当前登录 | — |
@@ -494,11 +477,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `eval_invalid_response`、`eval_response_limit` | 502 | 评测服务响应格式错误或超过上限 | — |
 | `eval_conflict` 与评测服务自己的 409 码（如 `run_active`） | 409 | 评测服务拒绝了请求；评测服务给的说明原样作 `message` | — |
 | `artifacts_not_ready` | 409 | 评测报告还没生成 | — |
-| `artifacts_changed` | 409 | 读产物期间评测服务开始重新生成 | — |
-| `version_mismatch` | 409 | 评测的版本不是项目当前版本，不能评测优化 | — |
-| `optimization_not_supported` | 409 | 求解验证的轮次不能评测优化 | — |
 | `answer_not_found` | 404 | 报告附件里没有这条完整回答 | — |
-| `note_required` | 422 | 标记处理失败没写原因 | — |
 | `compare_cross_package` | 409 | 两侧是不同的知识包（manifest `id` 不同），没带 `allow_cross_package` | — |
 | `compare_not_ready` | 409 | 对比还没完成 | — |
 | `compare_input_in_use` | 409 | 对比输入还被对比任务用着 | — |
@@ -510,6 +489,8 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `compare_user_busy` / `compare_busy` / `compare_upload_busy` | 429 | 本人进行中的任务、全局队列、同时上传数满 | — |
 | `compare_user_storage_full` / `compare_storage_full` | 429 / 507 | 本人、全局临时空间满 | — |
 | `compare_service_unavailable` | 503 | 多进程部署时本进程没拿到对比服务锁 | — |
+
+`feedback_invalid`、`artifacts_changed`、`version_mismatch`、`optimization_not_supported`、`note_required` 随外部反馈与评测优化删除（ADR-0101）。
 
 门禁链里各项的 `Finding.code`（不作为 HTTP 错误码出现）：
 
@@ -586,7 +567,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 | `F-` | 文件与检索 | 3.5 |
 | `R-` | 资料与资料分析 | 3.6 |
 | `ST-` | Studio 条目 | 3.7 |
-| `K-` | 知识 | 3.8 |
+| `K-` | 知识（ADR-0101 起只读） | 3.8 |
 | `V-` | 版本与标签 | 3.9 |
 | `CS-` | 变更集与写入范围 | 3.10 |
 | `S-` | 会话、对话、执行记录、命令 | 3.11 |
@@ -597,7 +578,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 | `PL-` | 插件：目录、按项目启用、装配状态、上传审核 | 3.16 |
 | `AR-` | 插件产物与通用视图 | 3.17 |
 | `SC-`、`SV-` | 脚本、求解契约 | 3.18 |
-| `EV-` | 证据源 | 3.19 |
+| `EV-` | 证据源（ADR-0101 起只剩 `EV-29`） | 3.19 |
 | `PB-` | 发布 | 3.20 |
 | `PC-` | 知识包版本对比 | 3.20 |
 | `X-` | 三份契约（服务令牌） | 3.21 |
@@ -886,7 +867,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 |---|---|---|---|
 | `name` | string | 是 | 1–200 字符，去首尾空白；同一用户下唯一（含已归档） |
 | `goal` | string | 是 | 一句话目标，1–2000 字符 |
-| `starting_points` | string[] | 否 | 取 `upload\|connect_system\|industry_pack\|import_package\|example`，只用于欢迎卡的推荐顺序，不改变行为 |
+| `starting_points` | string[] | 否 | 取 `upload\|industry_pack\|import_package\|example`，只用于欢迎卡的推荐顺序，不改变行为 |
 | `materials` | `{upload_id, purpose?}`[] | 否 | 第 2 步上传的资料。`purpose` 取 `auto\|goal\|schema\|term\|evidence`，缺省 `auto` |
 | `industry_packs` | `{name, version?}`[] | 否 | 行业包，可多选；不写版本时取 stable 通道 |
 | `system_packs` | `{name, version?}`[] | 否 | 系统知识包 |
@@ -922,14 +903,13 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 
 #### P-05 修改项目
 
-`PATCH /api/v1/projects/{id}` · 所有者 · 旧：`PATCH /api/projects/{id}`（旧接口只能改名） · 审计：是 · 依据：4.9 · 页面：proj-settings、projects（重命名）、wb-materials（联网 / 仅本地）
+`PATCH /api/v1/projects/{id}` · 所有者 · 旧：`PATCH /api/projects/{id}`（旧接口只能改名） · 审计：是 · 依据：4.9 · 页面：proj-settings、projects（重命名）
 
-- 请求（字段都可选）：`{name?: string, goal?: string, research_mode?: "web"|"local"}`。
-- `research_mode=web` 要求「联网调研」包已启用，否则返回 `pack_not_enabled`。
+- 请求（字段都可选）：`{name?: string, goal?: string}`。`research_mode` 随联网调研包删除（ADR-0101），带了也忽略。
 - 改名不影响包名和版本历史。
 - 元数据不进工作区 git（方案 A13），不产生版本。
 - 响应 `200`：`ProjectMeta`。
-- 错误：`project_name_required`、`project_name_too_long`、`project_name_conflict`、`pack_not_enabled`、`project_archived`。
+- 错误：`project_name_required`、`project_name_too_long`、`project_name_conflict`、`project_archived`。
 
 #### P-06 删除项目
 
@@ -942,9 +922,8 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 - 效果：
   - 不论当前状态都直接删除；
   - 会话、排队消息、自主构建运行立即强制终止；
-  - 工作区、对话、版本历史、证据快照永久清除，不进回收站；
-  - 该项目的 MCP token 全部吊销；
-  - 数据源登记和凭据不受影响。
+  - 工作区、对话、版本历史永久清除，不进回收站；
+  - 该项目的 MCP token 全部吊销。
 - 响应 `202`：`{deleted: id}`。清扫在后台完成，进程中途重启会接着清。
 - 错误：`confirm_name_mismatch`、`project_busy`；一并删除 Hub 包时另有 `invalid_argument`（未确认使用情况）、
   Hub 删除失败或结果待确认（503 / 502，项目尚未删除）、`409`（发布状态不明确、项目知识包关联不一致）。
@@ -970,12 +949,10 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
   |---|---|---|
   | `name` | string? | 缺省为「原名（副本）」 |
   | `include_history` | bool | 默认 true：带 `.git` 历史 |
-  | `include_snapshots` | bool | 默认 true：带 `resource/systems/` |
   | `include_conversations` | bool | 默认 false：带对话记录 |
 
 - 新项目只归调用者。
 - 启用的能力和锁定版本与原项目一致。
-- 数据源授权不复制，凭据不复制。
 - 响应 `201`：`ProjectMeta`。
 - 错误：`project_name_conflict`、`project_name_too_long`、`quota_exceeded`。
 
@@ -986,8 +963,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 - 响应 `200`：`application/zip`，文件名 `{name}-transfer.zip`。
 - 包内：
   - 完整工作区，含 `.git` 版本历史；
-  - 项目元数据；
-  - 数据源的登记信息，不带凭据引用（详设 5.8.6）。
+  - 项目元数据。
 - 不含：`.ontology-state`、`.onto/run`、对话记录。
 
 #### P-10 检查导入包
@@ -1011,7 +987,6 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
   | `suggested_name` | string | 默认取包里的名称 |
   | `name_check` | object | 同 `P-03` 的响应 |
   | `after_import` | object | `{capabilities: {name, version}[]（按包里记录自动匹配）, start_node: string \| null, start_title: string \| null, mark_needs_review: bool}`；起点按包里的交付物套主流程的完成判定推算，越过的上游节点不算（ADR-0084），迁移包为 `null` |
-  | `evidence_sources` | `{id, display_name, needs_reauth: true}`[] | 包里登记的数据源 |
 
 - 错误：`upload_not_found`、`upload_expired`、`upload_purpose_mismatch`、`archive_invalid`。
 
@@ -1057,7 +1032,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 `GET /api/v1/projects/{id}/mcp-servers`、`PUT /api/v1/projects/{id}/mcp-servers` · 所有者 · 旧：`GET/PUT /api/projects/{id}/mcp` · 审计：PUT 记 · 依据：4.2 指纹 · 页面：proj-settings
 
 - GET 响应：`{items: [{name, transport: "stdio"|"http", target: string（地址或命令）, origin: "builtin"|"global"|"pack", read_only: bool, status: "running"|"stopped"|"error", tools: string[], enabled: bool, enabled_globally: bool}]}`。
-  - `origin=builtin` 的是内核内置的只读服务器：`evidence`（`evidence.search/show/where-used/lineage/diff`）、`flow`（`flow.get`）。
+  - `origin=builtin` 的是内核内置的只读服务器：`flow`（`flow.get`）。`evidence` 服务器随证据采集删除（ADR-0101）。
 - PUT 请求：`{disabled: string[]}`，即本项目停用的服务器名，最多 64 个。
 - 只影响新建的会话。
 - 响应：GET 的形状。
@@ -1174,7 +1149,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 
 ### 3.6 资料与资料分析
 
-资料区对 agent 只读，只能由用户上传、替换、删除，每次都保存版本（详设 4.5、4.8）。`resource/systems/`（证据快照）不出现在资料接口里。
+资料区对 agent 只读，只能由用户上传、替换、删除，每次都保存版本（详设 4.5、4.8）。`resource/systems/`（旧版本采集的证据快照，ADR-0101 起不再产生）不出现在资料接口里。
 
 资料的文本版（F4a，ADR-0073）：PDF、Word、Excel 上传后在后台经连接器网关转成 Markdown，放在 `resource/text/<分组>/<原文件名>.md`（第一行记原文件修订与转换器），走写入路径提交（`Onto-Source: plugin`），不在资料列表里出现、不能单独删除或改用途；替换、删除原文件时同一个提交里删掉旧的文本版。状态见 7.4 `MaterialText`，变化经 EP-25 推送；md、txt、csv 本身就是文本。
 
@@ -1182,8 +1157,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 
 `GET /api/v1/projects/{id}/resources` · 所有者 · 旧：`GET /api/projects/{id}/resource-meta` + `GET /files` · 审计：否 · 依据：4.5、ADR 0017 · 页面：resources、wb-materials
 
-- 响应 `200`：`{groups: [{key: "diagrams"|"excel"|"others", label, items: Material[]}], feedback_group: {enabled: bool, count: int}, purposes: PurposeOption[]}`。
-  - `feedback_group` 对应资料区的「外部反馈」分组：反馈演进包启用时 `enabled=true`，条目用 `R-11` 取。
+- 响应 `200`：`{groups: [{key: "diagrams"|"excel"|"others", label, items: Material[]}], purposes: PurposeOption[]}`。`feedback_group`（外部反馈分组）随反馈演进包删除（ADR-0101）。
   - `purposes` 是 5 种用途：`goal` 建模目标依据、`schema` 数据 Schema、`term` 术语表、`evidence` 通用业务依据、`auto` 由助手判断，每项带 `{value, label, description}`。
 - 不分页，单项目资料上限 500 份。
 
@@ -1266,8 +1240,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
   - 每份资料的用途、读取进度与状态、读到的位置、排队原因、矛盾提示、计数；
   - 总读取率；
   - 问题（资料矛盾、疑似缺失）；
-  - 核验摘要；
-  - 分析范围（联网 / 仅本地）。
+  - 核验摘要。
 - 增量变化经项目流 `materials.updated` 推送。
 
 #### R-08 资料分析候选
@@ -1296,21 +1269,13 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 - 响应 `200`：`{question_id, inbox_item_id|null}`。
 - 错误：`not_found`、`write_scope_locked`。
 
-#### R-11 外部反馈列表
+#### R-11 外部反馈列表（已删除，ADR-0101）
 
-`GET /api/v1/projects/{id}/feedback` · 所有者 · 旧：— · 审计：否 · 依据：㉔、5.3（反馈演进） · 页面：resources（外部反馈分组）、inbox（外部反馈详情）、incremental（外部反馈卡）
+`GET /api/v1/projects/{id}/feedback` 随反馈演进包删除；工作区已有的 `feedback/*.json` 不迁移、不删。
 
-- 查询参数：`state?: "open"|"handled"`；分页。
-- 响应：`{items: Feedback[], next_cursor}`。
-- 反馈演进包没启用时返回空列表，并带 `plugin_disabled: true`。
+#### R-12 标记外部反馈状态（已删除，ADR-0101）
 
-#### R-12 标记外部反馈状态
-
-`PATCH /api/v1/projects/{id}/feedback/{feedback_id}` · 所有者 · 旧：— · 审计：是 · 依据：㉔ · 页面：resources、inbox
-
-- 请求：`{state: "open"|"handled"|"dismissed"}`。
-- 响应：`Feedback`。
-- 「交给反馈演进处理」「在对话里处理」用 `S-20` 发命令，不经这里。
+`PATCH /api/v1/projects/{id}/feedback/{feedback_id}` 随反馈演进包删除。
 
 #### R-13 查看文本
 
@@ -1451,10 +1416,10 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### ST-06 证据侧栏
 
-`GET /api/v1/projects/{id}/studio/entries/{entry_id}/evidence` · 所有者 · 旧：— · 审计：专项 `evidence.query` · 依据：5.6（证据侧栏）、5.8.5 · 页面：studio（证据页签）、studio-table（属性表证据列悬停）
+`GET /api/v1/projects/{id}/studio/entries/{entry_id}/evidence` · 所有者 · 旧：— · 审计：否 · 依据：5.6（证据侧栏）、5.8.5 · 页面：studio（证据页签）、studio-table（属性表证据列悬停）
 
-- 响应：`{snapshot_basis: [{source_id, snapshot_id, collected_at}], items: [{anchor, scheme: "file"|"db"|"code"|"api"|"ui"|"cli"|"log"|"bin", title, confidence: "declared"|"observed"|"inferred"|null, used_for: string[]（属性名）, resolved: AnchorResolution}]}`。
-- 前端「查看原文」按 `scheme` 跳转：`db` 去 schema，`file` 去 resources。
+- 响应：`{snapshot_basis: [], items: [{anchor, scheme: "file", title, confidence: null, used_for: string[]（属性名）, resolved: AnchorResolution}]}`。
+- 只列条目正文里上传资料的出处（`file:` 锚点，解析同 `EV-29`）。业务系统证据随证据采集删除（ADR-0101），`snapshot_basis` 恒为空数组。「查看原文」去 resources。
 
 #### ST-07 草稿
 
@@ -1510,11 +1475,11 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 ### 3.8 知识
 
-知识条目的存放和加载在 core（详设 5.3、5.5），知识沉淀页由知识沉淀包带来。没启用知识沉淀包时，读接口照常可用，`K-07`、`K-08` 返回 `pack_not_enabled`。
+知识条目的存放和加载在 core（详设 5.3、5.5），条目由助手经工具箱 `knowledge_helper` 写入。知识沉淀包和它的页面已删除（ADR-0101），网页只留只读的 `K-01`、`K-02`。
 
 #### K-01 知识条目列表
 
-`GET /api/v1/projects/{id}/knowledge` · 所有者 · 旧：`GET /api/projects/{id}/knowledge` · 审计：否 · 依据：5.5 · 页面：knowledge
+`GET /api/v1/projects/{id}/knowledge` · 所有者 · 旧：`GET /api/projects/{id}/knowledge` · 审计：否 · 依据：5.5 · 页面：—（知识沉淀页已删除，ADR-0101）
 
 - 查询参数：
   - `layer?`：`all|project|industry`，默认 all；core 通用守则不展示；
@@ -1525,7 +1490,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### K-02 知识条目详情
 
-`GET /api/v1/projects/{id}/knowledge/{knowledge_id}` · 所有者 · 旧：— · 审计：否 · 依据：5.5 · 页面：knowledge
+`GET /api/v1/projects/{id}/knowledge/{knowledge_id}` · 所有者 · 旧：— · 审计：否 · 依据：5.5 · 页面：—（同 `K-01`）
 
 - 响应：`KnowledgeEntry`，加：
   - `background_md`、`rule_md`；
@@ -1533,69 +1498,29 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - `overrides: {pack, entry_title, note}|null`；
   - `used_by: (EntryRef|ArtifactRef)[]`。
 
-#### K-03 新增知识条目（确认入库）
+#### K-03 新增知识条目（已删除，ADR-0101）
 
-`POST /api/v1/projects/{id}/knowledge` · 所有者 · 旧：`POST /api/projects/{id}/knowledge` · 审计：是 · 依据：5.5 · 页面：knowledge（新增弹窗）、chat-states（第 12 项「沉淀为业务知识」）
+`POST /api/v1/projects/{id}/knowledge` 随知识沉淀包删除。
 
-- 请求：
+#### K-04 修改知识条目（已删除，ADR-0101）
 
-  | 字段 | 类型 | 必填 | 说明 |
-  |---|---|---|---|
-  | `title` | string | 是 | 1–60 字符 |
-  | `type` | string | 是 | `correction\|convention\|term\|domain_rule` |
-  | `scope` | object | 是 | `{kind: "global"}` 或 `{kind: "entries", entries: EntryRef[]}` |
-  | `background_md` | string | 否 | — |
-  | `rule_md` | string | 是 | — |
-  | `source` | object | 否 | `{conversation_id, message_id}`，从消息旁沉淀时带上 |
-  | `confidence` | string | 否 | `high\|medium\|low`，缺省 `medium` |
-  | `base_revision` | string | 否 | — |
+`PUT /api/v1/projects/{id}/knowledge/{knowledge_id}` 随知识沉淀包删除。
 
-- 入库前做确定性查重：同名、同范围、失效引用。
-- 需要语义判断的口径冲突，由知识沉淀包的命令发到对话复核，响应里带 `review_task`。
-- 保存为新版本。
-- 响应 `201`：`{entry: KnowledgeEntry, commit, version_label, conflicts: ConflictFinding[], review_task: CommandTask|null}`。
-- 错误：`knowledge_duplicate`（同名同范围）、`invalid_argument`、`write_scope_locked`。
+#### K-05 删除知识条目（已删除，ADR-0101）
 
-#### K-04 修改知识条目
+`DELETE /api/v1/projects/{id}/knowledge/{knowledge_id}` 随知识沉淀包删除。
 
-`PUT /api/v1/projects/{id}/knowledge/{knowledge_id}` · 所有者 · 旧：— · 审计：是 · 依据：5.5 · 页面：knowledge（「编辑」）
+#### K-06 知识冲突检查（已删除，ADR-0101）
 
-- 请求：同 `K-03`，`base_revision` 必填。
-- 行业层条目只读，返回 `artifact_readonly`；要覆盖就在项目层写一条同名条目。
-- 响应：同 `K-03`。
+`GET`、`POST /api/v1/projects/{id}/knowledge/conflicts` 随知识沉淀包删除。
 
-#### K-05 删除知识条目
+#### K-07 提名预览（已删除，ADR-0101）
 
-`DELETE /api/v1/projects/{id}/knowledge/{knowledge_id}` · 所有者 · 旧：`DELETE /api/projects/{id}/knowledge?path=` · 审计：是 · 依据：5.5 · 页面：knowledge
+`POST /api/v1/projects/{id}/knowledge/{knowledge_id}/nomination-preview` 随知识沉淀包删除。
 
-- 请求：`{base_revision}`。
-- 删除保存为新版本。被覆盖的行业条目重新生效。
-- 响应：`{commit, version_label, affected_artifacts: int, restored_industry_entry: string|null}`。
+#### K-08 提交提名（已删除，ADR-0101）
 
-#### K-06 知识冲突检查
-
-`GET /api/v1/projects/{id}/knowledge/conflicts`、`POST /api/v1/projects/{id}/knowledge/conflicts` · 所有者 · 旧：— · 审计：POST 记 · 依据：5.5 · 页面：knowledge（冲突卡、明细弹窗）、chat-states（第 12 项「入库前先查重」）
-
-- GET 返回最近一次结果；POST 立即跑一次确定性检查。
-- 响应：`{checked_at, duration_ms, total_entries, conflicts: [{kind: "scope_conflict"|"duplicate"|"broken_ref", project_entry, industry_entry?, note, effective: "project"}], consistent_with_materials: int, unsourced: int, duplicates: int, broken_refs: int}`。
-- 「在对话里复核」用 `S-20` 发命令。
-
-#### K-07 提名预览（脱敏检查）
-
-`POST /api/v1/projects/{id}/knowledge/{knowledge_id}/nomination-preview` · 所有者 · 旧：— · 审计：否 · 依据：5.5（回流与脱敏） · 页面：knowledge（提名弹窗）
-
-- 请求：`{industry_pack: string}`。
-- 响应：`{sanitized_text, highlights: [{start, end}], checks: [{item: "customer_name"|"internal_id"|"amount"|"secret_or_pii", found: int, action: string}], pack: {name, label}}`。
-- 错误：`pack_not_enabled`（知识沉淀包没启用，或项目没启用该行业包）。
-
-#### K-08 提交提名
-
-`POST /api/v1/projects/{id}/knowledge/{knowledge_id}/nominations` · 所有者 · 旧：— · 审计：是 · 依据：5.5 · 页面：knowledge
-
-- 请求：`{industry_pack, sanitized_text, confirm_general: true}`。`confirm_general` 必须为 true。
-- 响应 `201`：`{nomination_id, state: "pending_review"}`。
-- 审核结果出现在待处理（kind `notification`），并发用户通知。
-- 管理员审核接口见 `AD-09`、`AD-10`。
+`POST /api/v1/projects/{id}/knowledge/{knowledge_id}/nominations` 随知识沉淀包删除，管理员审核 `AD-08`～`AD-10` 一并删除。
 
 ---
 
@@ -1753,7 +1678,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### CS-06 写入范围锁
 
-`GET /api/v1/projects/{id}/scope` · 所有者 · 旧：Studio 租约 `POST/DELETE /api/projects/{id}/studio/lease`（删除） · 审计：否 · 依据：4.3、㊹、方案 C10 · 页面：studio、studio-table、flowchart、scenarios、scripts、knowledge、l4-run
+`GET /api/v1/projects/{id}/scope` · 所有者 · 旧：Studio 租约 `POST/DELETE /api/projects/{id}/studio/lease`（删除） · 审计：否 · 依据：4.3、㊹、方案 C10 · 页面：studio、studio-table、flowchart、scenarios、scripts、l4-run
 
 - 查询参数：`target?`（单个 `EntryId` 或 `<artifact_type>/<key>`，只问它锁没锁）。
 - 响应：`ScopeLock`。没锁时 `state="none"`、`entries=[]`。
@@ -1890,9 +1815,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 错误：`permission_request_gone`。
 - 只在系统设置为「逐操作确认」时出现；600 秒没回复按拒绝处理。
 
-#### S-11 回答问题（决策卡、分支、专家确认、采集确认）
+#### S-11 回答问题（决策卡、分支、专家确认）
 
-`POST /api/v1/projects/{id}/conversations/{cid}/questions/{question_id}/answer` · 所有者 · 旧：`POST .../permissions/{request_id}` 的 `answers`（AskUserQuestion） · 审计：是 · 依据：第 9 章建议 4、4.7 · 页面：wb-l2、wb-materials、chat-states（第 7、20 项）、inbox、reports（专家裁决）、snapshots（生产采集确认）
+`POST /api/v1/projects/{id}/conversations/{cid}/questions/{question_id}/answer` · 所有者 · 旧：`POST .../permissions/{request_id}` 的 `answers`（AskUserQuestion） · 审计：是 · 依据：第 9 章建议 4、4.7 · 页面：wb-l2、wb-materials、chat-states（第 7、20 项）、inbox、reports（专家裁决）
 
 - 请求：`{option_id?: string, option_ids?: string[], custom_text?: string}`。
   - 单选题传 `option_id`，多选题传 `option_ids`。
@@ -1963,14 +1888,14 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### S-19 页面命令任务
 
-`GET /api/v1/projects/{id}/commands/tasks` · 所有者 · 旧：— · 审计：否 · 依据：5.9.3 · 页面：scenarios、scripts、knowledge、reports、resources（刷新页面后恢复进度条）
+`GET /api/v1/projects/{id}/commands/tasks` · 所有者 · 旧：— · 审计：否 · 依据：5.9.3 · 页面：scenarios、scripts、reports、resources（刷新页面后恢复进度条）
 
 - 查询参数：`origin_page?`、`state?`（默认 `queued,running,waiting_user`）。
 - 响应：`{items: CommandTask[]}`，不分页，上限 50。
 
 #### S-20 发命令到对话
 
-`POST /api/v1/projects/{id}/commands` · 所有者 · 旧：— · 审计：是 · 依据：5.9.3「页面只发命令、不跑助手」、6.10 · 页面：scenarios、scripts、knowledge、reports、resources、snapshots、wb-materials、inbox、publish、wb-l2（建模步骤抽屉「开始」）、incremental
+`POST /api/v1/projects/{id}/commands` · 所有者 · 旧：— · 审计：是 · 依据：5.9.3「页面只发命令、不跑助手」、6.10 · 页面：scenarios、scripts、reports、resources、wb-materials、inbox、publish、incremental
 
 请求：
 
@@ -1980,7 +1905,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `command` | string | 与 `action` 二选一 | 内核或包的命令名，如 `/ontology-trace-batch` |
 | `args` | object | 否 | 命令参数，如 `{scenario: "s-03"}`、`{report_item: "RI-12"}` |
 | `text` | string | 否 | 附带的自然语言说明 |
-| `display_label` | string | 否 | 页面上按钮的叫法（建议条、建模步骤、命令面板、快捷项）。给了时 `text` 当作动作自带的参数、不在对话里显示 |
+| `display_label` | string | 否 | 页面上按钮的叫法（建议条、命令面板、快捷项）。给了时 `text` 当作动作自带的参数、不在对话里显示 |
 | `display_text` | string | 否 | 对话里显示的说明（F4b-paths）；不给时用 `text`（给了 `display_label` 时不用）。对话里显示「业务名 + 说明」：业务名是命令所属节点的标题加按钮叫法（叫法里已有节点标题时只写叫法），不出命令原文和 `args`，说明里的工作区路径换成业务名；自动标题也用它。发给助手的仍是命令、参数和 `text` 原文 |
 | `origin` | `{page, label}` | 是 | 对话里显示「来自「场景模拟」页」用 |
 | `conversation_id` | string | 否 | 缺省：引擎当前绑定的对话，没有就取最近更新的一条 |
@@ -2025,14 +1950,14 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### FL-01 流程
 
-`GET /api/v1/projects/{id}/flow` · 所有者 · 旧：— · 审计：否 · 依据：㊴、6.6、6.7 · 页面：全部工作台页（主线进度条、建模步骤抽屉）、projects（卡片分段进度，经 `P-01`）
+`GET /api/v1/projects/{id}/flow` · 所有者 · 旧：— · 审计：否 · 依据：㊴、6.6、6.7 · 页面：全部工作台页（主线进度条）、projects（卡片分段进度，经 `P-01`）
 
 - 查询参数：`conversation_id?`（带上时 `suggestions` 按这条对话的打断状态计算）。
 - 响应：`Flow`，即
   - `flow_hash`；
   - `nodes`：`FlowNode[]`，建模节点带 `slices`；
   - `edges`；
-  - `sections`：抽屉分组「必经步骤 / 发布前检查 / 可选步骤 / 有需要时」；
+  - `sections`：节点分组「必经步骤 / 发布前检查 / 可选步骤 / 有需要时」（建模步骤抽屉已删除，前端不再用，ADR-0101）；
   - `slices`：分段 × 步骤；
   - `suggestions`；
   - `notices`：如「1 份新资料」；
@@ -2083,7 +2008,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### FL-03 跳过节点
 
-`POST /api/v1/projects/{id}/flow/nodes/{node_id}/skip` · 所有者 · 旧：— · 审计：是 · 依据：6.9、features「跳过 / 补做 / 恢复」 · 页面：全部工作台页（建模步骤抽屉「跳过」）
+`POST /api/v1/projects/{id}/flow/nodes/{node_id}/skip` · 所有者 · 旧：— · 审计：是 · 依据：6.9、features「跳过 / 补做 / 恢复」 · 页面：—（建模步骤抽屉已删除，前端不再调用，ADR-0101）
 
 - 请求：`{slice_id?: string, reason?: string}`。
 - 主线和必经节点不能跳过。
@@ -2092,7 +2017,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### FL-04 恢复节点
 
-`POST /api/v1/projects/{id}/flow/nodes/{node_id}/restore` · 所有者 · 旧：— · 审计：是 · 依据：6.9 · 页面：建模步骤抽屉（「恢复」）
+`POST /api/v1/projects/{id}/flow/nodes/{node_id}/restore` · 所有者 · 旧：— · 审计：是 · 依据：6.9 · 页面：—（同 `FL-03`）
 
 - 请求：`{slice_id?}`。
 - 响应：同 `FL-03`。
@@ -2100,7 +2025,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### FL-05 开始节点（含补做）
 
-`POST /api/v1/projects/{id}/flow/nodes/{node_id}/start` · 所有者 · 旧：— · 审计：是 · 依据：6.3 `entry`、6.9 · 页面：建模步骤抽屉（「开始」「刷新」）、publish（合规检查「去运行」）、inbox（「刷新这个场景」）
+`POST /api/v1/projects/{id}/flow/nodes/{node_id}/start` · 所有者 · 旧：— · 审计：是 · 依据：6.3 `entry`、6.9 · 页面：wb-l2（建议条）、publish（合规检查「去运行」）、inbox（「刷新这个场景」）
 
 - 请求：`{slice_id?, args?: object, origin: {page, label}}`。
 - 等价于用节点声明的 `entry.command` 调 `S-20`。
@@ -2160,18 +2085,16 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | kind | 界面叫法 | 来源 | 可做的动作（`IN-03` 的 `action`） |
 |---|---|---|---|
 | `decision` | 决策 | 陪伴建模里没回答的决策卡 | `answer` |
-| `evidence_conflict` | 证据冲突 | 三方对账报告 | `arbitrate` |
 | `change_list` | 变更清单 | 增量更新的变更点清单 | `accept_points`、`rewrite_point`、`execute` |
 | `review` | 需复核 | 自主构建自动决定、节点升级、导入；`source` 分别为 `autobuild\|upgrade\|import` | `accept`、`rejudge`、`revert_slice` |
-| `suspension` | 挂起 | 自主构建挂起的问题，包括未授权的采集 | `answer`、`use_generic` |
+| `suspension` | 挂起 | 自主构建挂起的问题 | `answer`、`use_generic` |
 | `stale` | 过期 | 节点状态；已交给后面已确认的核对节点的过期不列（和建议条第 7 条同一判定 `flow_state.handed_down`，ADR-0090） | `refresh`、`keep_stale` |
 | `resumable` | 续跑 | 中断的执行；开始自主构建时交给运行收尾的不列（见 AB-04） | `resume`、`abandon` |
-| `feedback` | 外部反馈 | 评测服务回传（㉔） | `send_to_evolution`、`dismiss` |
 | `report` | 报告待处理 | 某份报告里还没处理的条目，一份报告合成一项 | `send_to_assistant` |
 | `changeset_conflict` | 合入冲突 | 这一轮合入时和你的修改改到同一条（F3 起唯一会出现的变更集事项；没有「修改待确认」） | `resolve`、`discard`（撤回这一轮） |
 | `check_findings` | 检查未过 | 助手这一轮没提交完、平台代存了版本，合入检查有错误（F8；最近一个合入的变更集才出，`impact` 列错误，最多 20 条） | `send_to_assistant`（发 `/ontology-validate` 修正，发出后算处理过） |
 | `format_migration` | 格式待迁移 | 插件升级改了产物格式（5.9.4） | `migrate` |
-| `notification` | 通知 | 提名审核结果等 | `dismiss` |
+| `notification` | 通知 | 暂无来源（提名审核随 `K-08` 删除，ADR-0101） | `dismiss` |
 
 所有事项都可以 `dismiss`，忽略后不计数。设计稿的筛选分段对应：
 
@@ -2180,18 +2103,18 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | 全部 | 全部 kind |
 | 自主构建复核 | `review`（`source=autobuild`）和 `suspension` |
 | 决策 | `decision` |
-| 证据冲突 | `evidence_conflict` |
 | 变更清单 | `change_list` |
 | 过期 | `stale` |
 | 续跑 | `resumable` |
-| 外部反馈 | `feedback` |
+
+外部反馈（kind 与筛选 `feedback`）和它的 `send_to_evolution` 动作随反馈演进包删除；证据冲突（kind 与筛选 `evidence_conflict`）和它的 `arbitrate` 动作随证据采集删除（ADR-0101）。
 
 #### IN-01 待处理列表
 
 `GET /api/v1/projects/{id}/inbox` · 所有者 · 旧：— · 审计：否 · 依据：4.7、㊴ · 页面：inbox、全部项目页（左栏工作台角标、顶栏「待处理 N」）、projects（卡片「待处理 N」，经 `P-01`）
 
 - 查询参数：
-  - `filter?`：`all|autobuild_review|decision|evidence_conflict|change_list|stale|resumable|feedback`；
+  - `filter?`：`all|autobuild_review|decision|change_list|stale|resumable`，其他取值回 `400 invalid_argument`（`fields.filter=enum`）；
   - `kind?`（多值）、`run_id?`、`pack?`（插件页角标用）；
   - 分页，默认 50。
 - 响应：
@@ -2200,7 +2123,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   |---|---|---|
   | `items` | `InboxItem[]` | — |
   | `next_cursor` | string \| null | — |
-  | `counts` | object | `{total, by_filter: {all, autobuild_review, decision, evidence_conflict, change_list, stale, resumable, feedback}, by_pack: {[pack]: int}}` |
+  | `counts` | object | `{total, by_filter: {all, autobuild_review, decision, change_list, stale, resumable}, by_pack: {[pack]: int}}` |
   | `today` | object | `{handled, total, eta_minutes, remaining_by_filter: {...}}`：「今天的进度」 |
   | `autobuild_summary` | object \| null | 只在 `filter=autobuild_review` 时有：`{run_id, run_no, started_at, ended_at, state, cost: Money, decisions, high_confidence, needs_look, suspended, assumptions}` |
 
@@ -2213,13 +2136,11 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   | kind | `detail` 结构 |
   |---|---|
   | `decision` | `Question` |
-  | `evidence_conflict` | `ConflictDetail`：左右两侧来源和取值、选项 |
   | `change_list` | `ChangeList` |
   | `review` | `LedgerEntry` 加选项 |
   | `suspension` | `Suspension` |
   | `stale` | `StaleDetail`：上游差异、对本项的影响 |
   | `resumable` | `ExecRecord` |
-  | `feedback` | `Feedback` |
   | `report` | 报告摘要 |
 
 #### IN-03 处理事项
@@ -2231,7 +2152,6 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | action | 用到的字段 | 等价接口 |
 |---|---|---|
 | `answer` | `option_id`、`custom_text` | `S-11` 或 `AB-15` |
-| `arbitrate` | `option_id`、`custom_text` | 写进对应对象的「证据」章节，两处出处都保留，经写入路径 |
 | `accept_points` | `point_ids` | `INC-03` |
 | `rewrite_point` | `point_id`、`text` | `INC-02` 的单行版 |
 | `execute` | — | `INC-04` |
@@ -2241,7 +2161,6 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `refresh` | — | `FL-05` |
 | `keep_stale` | — | 忽略并保持过期 |
 | `resume`、`abandon` | — | `S-16`、`S-17` |
-| `send_to_evolution` | — | 以反馈演进命令调 `S-20` |
 | `send_to_assistant` | — | 以报告修复命令调 `S-20` |
 | `discard` | — | `CS-05` |
 | `resolve` | `choices` | `CS-07` |
@@ -2395,7 +2314,12 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 依据详设 4.6、5.2、5.3、5.6、5.9、8.1、方案 D1～D7、D17。
 
 - 包有 6 类：能力包、行业包、系统知识包、多源连接器（`category=provider`，旧称证据源提供方）、节点包、导出器。
-- 多源连接器里列文档转换器（`PackCard.converter` 不为空，ADR-0073）；部署了连接器网关时还列网关里的采集类连接器（数据库、代码仓库、REA，`PackCard.collector` 不为空），它们不是包仓库里的包、不按项目启用，网关不通时不列。
+- 多源连接器里只列文档转换器（`PackCard.converter` 不为空，ADR-0073）；网关里的采集类连接器随证据采集删除（ADR-0101）。
+- 镜像里已移除的官方包启动时下架（ADR-0101）：
+  - 条件：全部版本都由镜像入库、没有 owner、不是 core，这次的 `assets/packs` 里没有它；`assets/packs` 整个不存在时不下架；
+  - 只在通道记录上记 `retired`，版本目录不删；目录、详情、缺省启用、跟随通道、插件运维（`O-25`）都不列，启用、试装配回 `pack_not_found`；
+  - 项目锁文件里的这一项在启动核对时去掉（一次系统提交），项目照常装配；
+  - 换回带这个包的镜像、或上传发布同名新版本时取消下架，已去掉的锁条目不加回来。
 - 包仓库里每个版本的目录不可修改。项目用 `.onto/packs.lock` 锁定版本。
 - 切换从下一条消息开始生效；正在进行的一轮按旧版本跑完；自主构建运行中时，在下一个安全点之后生效。
 
@@ -2418,7 +2342,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   |---|---|---|
   | `items` | `PackCard[]` | — |
   | `counts` | object | `{all, capability, industry, system, provider, node, exporter, enabled, updatable}` |
-  | `recommendations` | `[{pack: PackRef, reason: string, action: "enable"\|"upgrade"}]` | 只在带 `project_id` 时有，按资料、已登记的数据源和分段进度推荐，最多 3 条 |
+  | `recommendations` | `[{pack: PackRef, reason: string, action: "enable"\|"upgrade"}]` | 只在带 `project_id` 时有，按资料和分段进度推荐，最多 3 条 |
 
 - `PackCard.project_status` 取值：
 
@@ -2430,8 +2354,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   | `available` | — | 启用到本项目 |
   | `offline` | 离线部署不可用 | 启用（禁用） |
   | `not_applicable` | 本项目不适用 | 详情 |
-  | `platform_installed` | 平台已安装（多源连接器；转换器、装好的采集类连接器不论带不带项目都是这个） | 详情 |
-  | `platform_available` | 未安装（多源连接器；采集类连接器没装时也是这个，只能管理员部署，不出安装按钮） | 安装到平台（采集类：详情） |
+  | `platform_installed` | 平台已安装（多源连接器里的转换器，不论带不带项目都是这个） | 详情 |
   | `pending` | 已启用 · 下一条消息生效 | 详情 |
 
 #### PL-02 插件详情
@@ -2466,12 +2389,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   | `impact` | object | `{needs_review_after_upgrade: int, affected_artifacts: int, note}`：节点完成判定变化等 |
   | `blocked_reason` | string \| null | 如「需要先升级基础建模能力」 |
 
-#### PL-04 申请平台安装
+#### PL-04 申请平台安装（已删除，ADR-0101）
 
-`POST /api/v1/packs/{name}/install-requests` · 登录 · 旧：— · 审计：是 · 依据：5.8.3（提供方由管理员安装） · 页面：plugins（非管理员点「安装到平台」）
-
-- 请求：`{version?, note?: string}`。
-- 响应 `202`：`{request_id}`。管理员收到通知。
+`POST /api/v1/packs/{name}/install-requests` 原来只占位回 `501`，随证据采集删除。
 
 #### PL-05 本项目的能力
 
@@ -2535,13 +2455,13 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### PL-12 扩展项注册表
 
-`GET /api/v1/projects/{id}/extensions` · 所有者 · 旧：— · 审计：否 · 依据：⑥、5.6、5.9.2、5.9.7、方案 D17 · 页面：全部项目页（左栏）、resources（子页）、studio-table（条目类型）、chat-states（快捷操作）、scenarios、knowledge、scripts
+`GET /api/v1/projects/{id}/extensions` · 所有者 · 旧：— · 审计：否 · 依据：⑥、5.6、5.9.2、5.9.7、方案 D17 · 页面：全部项目页（左栏）、resources（子页）、studio-table（条目类型）、chat-states（快捷操作）、scenarios、scripts
 
 - 响应：`Extensions`，包括：
   - 左栏 `nav`：内核 4 项，加上插件页面，按声明顺序排，超过 5 个进「更多」；
-  - `subpages`；
+  - `subpages`：机制保留；内核内置的子页现在没有（资料页的数据源、采集与快照、证据浏览器随 ADR-0101 删除），包声明子页时静态检查不通过；
   - `pages`：页面声明，含 `data`、`actions`、`badge`；
-  - `entries`：界面入口，如快捷项、附加操作、数据源连接向导；
+  - `entries`：界面入口，如快捷项、附加操作；
   - `artifact_types`、`views`、`gates`、`config`；
   - `active_hash`、`pending_hash`；
   - `disabled_pages`：已停用插件的页面，打开旧链接显示「插件已停用」和重新启用按钮。
@@ -2607,13 +2527,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 响应：`PackUpload`（`state="rejected"`）。
 - 「暂不发布」不调接口，上传保持 `passed`。
 
-#### PL-19 平台安装提供方
+#### PL-19 平台安装提供方（已删除，ADR-0101）
 
-`POST /api/v1/admin/packs/{name}/install` · admin · 旧：— · 审计：专项 `pack.install` · 依据：5.8.3、H2 · 页面：plugins（管理员点「安装到平台」）
-
-- 请求：`{version}`。连接器和导出器装进网关或旁路容器，H2 级生效。
-- 响应 `202`：`{task_id}`，进度在 `O-40` 任务列表。
-- 本期 PL-04、PL-19 仍回 `501`：第三方转换器怎么装待定（不能有主容器往网关放代码的通道，ADR-0073 待定项）。
+`POST /api/v1/admin/packs/{name}/install` 原来只占位回 `501`，随证据采集删除。
 
 #### PL-20 转换器与默认
 
@@ -2688,7 +2604,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### AR-01 产物类型
 
-`GET /api/v1/projects/{id}/artifact-types` · 所有者 · 旧：— · 审计：否 · 依据：5.9.4 · 页面：scenarios、scripts、knowledge、studio-table（流程图）
+`GET /api/v1/projects/{id}/artifact-types` · 所有者 · 旧：— · 审计：否 · 依据：5.9.4 · 页面：scenarios、scripts、studio-table（流程图）
 
 - 响应：`{items: ArtifactType[]}`，每项含格式定义（字段与类型）、`refs`、`status` 映射和视图声明（`list`、`detail`、`card`）。
 - 只返回已启用包登记的类型。
@@ -2845,359 +2761,31 @@ ADR-0098：端到端验证在发布后的独立评测里做，onto 不再收回�
 
 ### 3.19 证据源
 
-依据详设 5.8、14#4、#5、方案 E11～E15。
-
-- 数据源在平台级登记（代码里没有租户概念，「租户级」即平台全局），项目级授权。
-- 凭据只写不读，明文只在连接器网关。
-- 采集由内核签发一次性票据，经网关只读执行，全程审计。
-- 资料页的 3 个子页（数据源、采集与快照、证据浏览器）由系统逆向建模包带来。包没启用时，项目侧接口返回 `pack_not_enabled`。
-- 界面叫法：「证据源」「证据源提供方」叫「多源连接器」，单个插件按它接什么起名（「PDF 转换」「业务数据库」）；本节接口路径不变。
-
-#### EV-01 数据源列表
-
-`GET /api/v1/evidence/sources` · 登录 · 旧：— · 审计：否 · 依据：5.8.7 · 页面：sources、wb-materials（「已登记 2 个数据源可用」）、create（第 2 步）、proj-settings（自主构建生产库授权）
-
-- 查询参数：`project_id?`（带上时返回 `authorized_for_project`）、`filter?`（`all|authorized|production`）。
-- 响应：`{items: EvidenceSource[], total, authorized_count, my_requests?}`。带 `project_id` 时多 `my_requests`：本人在这个项目提交、还没通过的登记申请 `[{id, source_id, display_name, provider, state: "pending"|"rejected", requested_at, note}]`（`note` 是退回原因）。
-- 普通用户只看到不敏感的登记字段；`secret_fields` 只有是否已设置的标记。
-
-#### EV-02 登记数据源
-
-`POST /api/v1/admin/evidence/sources` · admin；自助类提供方（`self_service=true`，如 REA）登录即可（F13） · 旧：— · 审计：专项 `evidence.source.register` · 依据：5.8.7、5.8.6 · 页面：sources（登记抽屉「保存登记并授权本项目」）
-
-- 请求：
-
-  | 字段 | 类型 | 必填 | 说明 |
-  |---|---|---|---|
-  | `id` | string | 是 | `^[a-z0-9][a-z0-9-]{1,40}$`，锚点前缀，登记后不能改 |
-  | `display_name` | string | 是 | — |
-  | `provider` | string | 是 | 已安装的提供方 id |
-  | `environment` | string | 是 | `production\|test` |
-  | `connection` | object | 是 | 不含密钥的连接参数，字段由提供方的 `cred_fields` 决定，如 `{host, port, database, username}` |
-  | `secret` | object | 否 | 如 `{password}`；内核立即转交网关 `PUT /v1/secrets`，不保存，日志只记引用 |
-  | `scope_allowlist` | string[] | 是 | 只采这些对象 |
-  | `egress` | `{host, port}[]` | 是 | 网关只连白名单里的主机和端口 |
-  | `access_window` | object | 否 | `{days: "daily"\|string[], start: "22:00", end: "06:00", tz}` |
-  | `budget` | object | 是 | `{max_rows, max_bytes, max_duration_s}` |
-  | `rate_limit` | object | 是 | `{concurrency, qps, query_timeout_s}` |
-  | `masking_policy` | string | 否 | 只能是提供方支持的：数据库 `mask-v1`，其他（REA、代码仓库）`none`；缺省按提供方，填别的回 400 `fields.masking_policy=unsupported`（F16） |
-  | `authorization_note` | string | REA 类必填 | — |
-  | `owner` | string | 是 | 负责人用户名 |
-  | `grant_project_id` | string | 否 | 登记后立即授权给这个项目 |
-
-- 自助类提供方（F13，ADR-0082）：`owner` 固定为本人；`connection` 是 `{artifact_sha256, artifact_filename, artifact_size}`（先用 `EV-31`～`EV-33`
-  上传目标程序）；`scope_allowlist`、`egress`、`access_window`、`rate_limit`、`budget`、`masking_policy` 可省略，按提供方缺省；`environment` 缺省 `test`；登记只有本人和管理员看得到。
-- 连接型提供方（`input=connection`，数据库、代码仓库，F16）：只有管理员能登记；`connection` 只收提供方 `cred_fields` 里的非密钥字段，
-  都必填，密钥字段放进来回 400（不回显值）；`port` 是 1～65535 的整数；`repo_url` 只认 https，不能带用户名和令牌。`egress` 必填，
-  且要含连接目标（数据库的 `host:port`，代码仓库的仓库主机 443 或地址里写的端口），不含回 400 `fields.egress=missing_target`；
-  `scope_allowlist` 数据库必填（写法 `crm.*`、`crm.customer`、`erp.store*`，`*` 只在末尾），代码仓库可空；`budget`、`rate_limit` 各项是正数。
-- 带 `secret` 时先登记、再转交网关写凭据；网关不通或拒绝时撤回登记，回 `gateway_unavailable` 或网关的错误码（见 `EV-06`）。
-- 响应 `201`：`EvidenceSource`（`cred_ref` 如 `cred://mes-prod/1`）。
-- 错误：`source_id_taken`、`provider_not_installed`、`gateway_unavailable`、`invalid_argument`、`artifact_not_found`（自助类，程序没上传完）、`forbidden`（非管理员登记要凭据的提供方）。
-
-#### EV-03 提交登记申请
-
-`POST /api/v1/evidence/source-requests` · 登录 · 旧：— · 审计：是 · 依据：5.8.7 · 页面：sources（非管理员「提交给管理员」）
-
-- 请求：同 `EV-02`，但不能带 `secret`；`project_id?` 是申请人的项目（要是所有者），管理员通过时登记并授权给它。
-- 响应 `202`：`{request_id}`。管理员收到 `request_pending` 通知（`action` 指向插件安装页的「申请」页签），在 `AD-09` 写入凭据后登记。
-
-#### EV-04 修改登记
-
-`PATCH /api/v1/admin/evidence/sources/{source_id}` · admin；自助类数据源的登记人（F13） · 旧：— · 审计：专项 `evidence.source.update` · 依据：5.8.7 · 页面：sources（⋯「编辑登记」）
-
-- 请求：`EV-02` 里除 `id`、`provider` 外的任意字段。自助类换版本就是把 `connection` 换成新上传的程序，旧快照不动。
-- 连接型（F16）按合并后的登记整体再核一遍 `EV-02` 的规则（换了主机，出口白名单要跟着换）；改 `connection` 时网关要通（要按它的
-  `cred_fields` 校验），否则 503。带 `secret`（只有管理员）时先改登记再写凭据，写不进去改动撤回。
-- 响应：`EvidenceSource`。
-
-#### EV-05 删除登记
-
-`DELETE /api/v1/admin/evidence/sources/{source_id}` · admin；自助类数据源的登记人（F13） · 旧：— · 审计：专项 `evidence.source.delete` · 依据：5.8.7 · 页面：sources（⋯「删除登记」）
-
-- 已有快照保留，锚点照常解析。
-- 响应 `204`。
-- 错误：`job_state_invalid`（有运行中的任务）。
-
-#### EV-06 写入或轮换凭据
-
-`PUT /api/v1/admin/evidence/sources/{source_id}/secret` · admin · 旧：— · 审计：专项 `evidence.secret.write`（只记引用） · 依据：5.8.6 · 页面：sources（「轮换」「写入新密码」）
-
-- 请求：`{fields: {password?: string, token?: string, ...}}`。字段名只能是提供方 `cred_fields` 里 `secret=true` 的，值是非空文字（最长 8192）。
-- 内核把明文立即转交网关 `PUT /v1/secrets/{源}`（票据 op `secret`），自己只存新的 `cred_ref` 和这一版各字段的写入时间；明文不进日志、
-  审计、任务文件、错误信息。新版本只含这次写的字段，`EvidenceSource.secret_fields` 按这一版标 `set`。
-- 新任务用新版本；旧版本等没有任务在用时由网关删除。
-- 响应：`{cred_ref: "cred://mes-prod/4", written_at}`。没有任何能读出明文的接口。
-- 错误：`gateway_unavailable`、`upstream_unavailable`（网关鉴权失败或 5xx，`details.gateway_error`）；网关回 400、404、409、413、422 时
-  原样带回它的错误码，消息里万一回显了明文换成「«已遮蔽»」；`invalid_argument`（字段不对，或这类数据源不用凭据）；`forbidden`。
-
-#### EV-07 删除凭据
-
-`DELETE /api/v1/admin/evidence/sources/{source_id}/secret` · admin · 旧：— · 审计：专项 `evidence.secret.delete` · 依据：5.8.6 · 页面：sources
-
-- 网关 `DELETE /v1/secrets/{源}` 删所有版本，`cred_ref` 置空；网关里本来就没有（404）也算删掉。`EV-05` 删有凭据的登记时也先删凭据，
-  网关不通就不删登记（503）。
-- 响应 `204`。
-
-#### EV-08 测试连接
-
-`POST /api/v1/evidence/sources/{source_id}/test` · admin，或已获授权项目的所有者（带 `project_id`） · 旧：— · 审计：专项 `evidence.test` · 依据：5.8.2（测试连接并自检只读） · 页面：sources（「测试已授权的连接」、⋯「测试连接」、抽屉「重新测试」）
-
-- 请求：`{project_id?: string}`。
-- 响应：`{ok: bool, checks: [{name: "connectivity"|"readonly_account"|"statement_allowlist", ok, detail, latency_ms?}], ticket: {id_prefix, expires_in_s: 600, consumed: true}}`。
-- 错误：`source_not_authorized`、`gateway_unavailable`、`connection_test_failed`（`ok=false` 时也可以直接返回 200，前端按 `ok` 判断；返回 422 只在网关报错时）。
-- 旁路容器类（REA，F13）：只查提供方装没装、目标程序在不在 blob 仓，`checks` 只有 `connectivity`，不签票据，`ticket` 为 `null`；自助类数据源的登记人不带 `project_id` 也能测。
-- 连接型（F16）：网关 `POST /v1/sources/{源}/test`（票据 op `test`，范围是 `TestSpec` 的哈希），`ok`、`checks` 原样带回（代码仓库不一定
-  三项都有，项里可能多 `code` 等字段）。
-  `ticket.id_prefix` 是票据 jti 的前 8 位。还没写凭据时不调网关，回 `ok=false`、`checks` 只有 `connectivity`（「还没写入凭据」）、`ticket=null`。
-  网关拒绝回 422 `connection_test_failed`（`details.gateway_error`），网关不通 503。
-
-#### EV-09 访问审计
-
-`GET /api/v1/evidence/sources/{source_id}/access-log` · admin，或已获授权项目的所有者（只看本项目的访问） · 旧：— · 审计：否 · 依据：5.8.2（每次访问业务系统都留记录） · 页面：sources（⋯「查看访问审计」）
-
-- 查询参数：`project_id?`；分页。
-- 响应：`{items: [{at, job_id, project_id, operation, statement_digest, rows, bytes, duration_ms}], next_cursor}`。
-- 连接型（F16）：每条是快照包清单 `access_log` 里的一次访问（`statement_digest` 如 `select:3f2a…`），`at` 没给时取任务开始时间；
-  上传类每个任务一条（`statement_digest` 是 `artifact:<sha256 前 12 位>`）。新的在前。
-
-#### EV-10 提供方列表
-
-`GET /api/v1/evidence/providers` · 登录 · 旧：— · 审计：否 · 依据：5.8.3 · 页面：sources（登记抽屉类型格）、snapshots（「已加载 N 个提供方」）
-
-- 响应：`{gateway: {status: "ok"|"slow"|"down", checked_at}, items: [{id, version, label, kind: "file"|"db"|"code"|"api"|"rea"|"ui"|"cli"|"log", evidence_types: string[], capabilities: ("discover"|"snapshot"|"sample"|"incremental")[], cred_fields: [{name, secret: bool, label}], readonly_method, runtime: "subprocess"|"sidecar"|"mcp", installed: bool, license_note, self_service: bool, input: "artifact"|"connection", max_artifact_bytes: int\|null}]}`。
-- `self_service`：不要凭据、不连业务网络，登录用户可以自助登记（F13）；`input=artifact` 表示要上传目标程序（`EV-31`～`EV-33`）。
-
-#### EV-11 本项目的授权
-
-`GET /api/v1/projects/{id}/evidence/grants`、`PUT /api/v1/projects/{id}/evidence/grants/{source_id}` · 所有者 · 旧：— · 审计：PUT 专项 `evidence.grant` · 依据：14#4 · 页面：sources（「授权本项目使用」开关、⋯「取消授权」）
-
-- GET 响应：`{items: [{source_id, authorized: bool, granted_at, granted_by}]}`。
-- PUT 请求：`{authorized: bool}`。
-  - 授权记录存数据目录，不放工作区（agent 能改工作区，方案 E11）。
-  - 自主构建的生产库采集授权另在 `AB-02` 设置。
-- 响应：GET 列表里的一项。
-
-#### EV-12 本项目在用
-
-`GET /api/v1/projects/{id}/evidence/summary` · 所有者 · 旧：— · 审计：否 · 依据：5.8.7 · 页面：sources（「本项目在用」卡）、snapshots（统计条）
-
-- 响应：`{authorized_sources: EvidenceSourceRef[], snapshots: {count, sources, referenced, last_at}, referenced_anchors: int, jobs_this_month: {total, succeeded, partial, failed, cancelled}, running_jobs: int, queued_jobs: int, gateway: {status, providers_loaded}}`。
-
-#### EV-13 采集预览
-
-`POST /api/v1/projects/{id}/evidence/jobs/preview` · 所有者 · 旧：— · 审计：否 · 依据：5.8.7、14#5 · 页面：snapshots（「发起采集」→ 生产采集确认弹窗）
-
-- 请求：`{source_id, operation: "discover"|"snapshot"|"sample", scope?: string[]（缺省沿用登记白名单）, incremental_base?: string（快照 ID）, budget?: object, sample?: {selector, limit ≤ 20}}`。
-- 响应：
-
-  | 字段 | 类型 | 说明 |
-  |---|---|---|
-  | `requires_confirmation` | bool | 生产环境为 true |
-  | `confirmation_token` | string \| null | 10 分钟有效 |
-  | `summary` | object | `{scope_text, tables, window, in_window_now, rate_limit, estimate: {rows, bytes}\|null, readonly_methods: string[], masking: {policy, sample_rows}, ticket: {ttl_s: 600, single_use: true}}` |
-
-- `scope` 逐条核对落在登记白名单里（`crm.customer`、`crm.c*` 都在 `crm.*` 里），不在回 400 `fields.scope=outside_allowlist`；登记没写白名单时不限。
-- `operation=sample`（F16）：`sample.selector` 是范围写法里的单个对象名 `库.表`（不带 `*`），要落在登记白名单和本次范围里，否则 400；
-  `sample.limit` 1～20，缺省 20。
-- `summary.window` 是 `EvidenceSource.access_window` 同形的对象或 `null`。
-- `summary.tables`、`summary.estimate` 来自这个源最近一次 `discover` 的清单（按本次范围筛），没做过 discover 为 `null`；
-  `masking.sample_rows` 数据库是每表样本行数（sample 时是 `limit`），其他为 0。
-- 错误：`source_not_authorized`、`provider_not_installed`、`invalid_argument`。
-
-#### EV-14 发起采集
-
-`POST /api/v1/projects/{id}/evidence/jobs` · 所有者 · 旧：— · 审计：专项 `evidence.collect`（含同意记录） · 依据：5.8.7、㉜、14#5 · 页面：snapshots（「同意并开始采集」）、chat-states（采集确认卡经 `S-11` 回答后由内核发起）
-
-- 请求：同 `EV-13`，加 `confirmation_token?`。
-- 生产环境没带有效 token 时返回 `428 confirmation_required`，`details` 同 `EV-13` 的响应。
-- 不在访问窗口内的任务进入排队，等窗口开启。
-- 连接型（F16）：任务说明带凭据引用、出口白名单、限流、脱敏策略和项目的盐（`design/evidence-collection.md` §8）；登记还没写凭据时任务
-  直接失败（`credential_missing`，动作有「联系管理员」）。`discover` 只存清单、不提交快照，`result` 没有 `snapshot_id`，有
-  `inventory: {items, skipped}`；`sample` 入库成补充快照（不完整，`scope` 是那张表），网关成功就是 `succeeded`。
-- 响应 `202`：`CollectionJob`。进度经项目流 `evidence.job.updated` 推送。
-- 错误：`confirmation_required`、`confirmation_expired`、`source_not_authorized`、`quota_exceeded`（采集频率）、`gateway_unavailable`。
-
-#### EV-15 采集任务列表
-
-`GET /api/v1/projects/{id}/evidence/jobs` · 所有者 · 旧：— · 审计：否 · 依据：5.8.2 · 页面：snapshots
-
-- 查询参数：`state?`（`active` 即排队和运行中、`finished`，或具体状态值）；分页。
-- 响应：`{items: CollectionJob[], next_cursor}`。
-
-#### EV-16 采集任务详情
-
-`GET /api/v1/projects/{id}/evidence/jobs/{job_id}` · 所有者 · 旧：— · 审计：否 · 依据：5.8.2 · 页面：snapshots
-
-- 响应：`CollectionJob`。
-
-#### EV-17 取消、续采、重试
-
-`POST /api/v1/projects/{id}/evidence/jobs/{job_id}/cancel`、`.../resume`、`.../retry` · 所有者 · 旧：— · 审计：专项 `evidence.collect` · 依据：5.8.2（按实体记断点，可续采） · 页面：snapshots
-
-- `cancel`：排队或运行中可用。
-- `resume`：部分完成可用，从断点续采，生成新任务，`resumed_from` 指向原任务。
-- `retry`：失败或已取消可用，生成新任务；生产环境要重新确认，返回 `428`。
-- 响应：`CollectionJob`。
-- 错误：`job_state_invalid`、`confirmation_required`。
-- 「联系管理员」（凭据过期）用 `EV-30`。
-
-#### EV-18 快照列表
-
-`GET /api/v1/projects/{id}/evidence/snapshots` · 所有者 · 旧：— · 审计：否 · 依据：5.8.4 · 页面：snapshots、schema（快照下拉）
-
-- 查询参数：`source_id?`；分页。
-- 响应：`{items: SnapshotSummary[], next_cursor}`。
-
-#### EV-19 快照详情
-
-`GET /api/v1/projects/{id}/evidence/snapshots/{snapshot_id}` · 所有者 · 旧：— · 审计：否 · 依据：5.8.4 · 页面：snapshots、schema
-
-- 响应：`SnapshotSummary`，加 `manifest: object`（`manifest.json` 去掉哈希和凭据引用之外的内容）、`inventory: {collected, skipped: [{object, reason}]}`。
-
-#### EV-20 清理快照
-
-`DELETE /api/v1/projects/{id}/evidence/snapshots/{snapshot_id}` · 所有者 · 旧：— · 审计：是 · 依据：5.8.4（被已确认产物引用的快照不能清理） · 页面：snapshots（「清理」）
-
-- 响应：`{removed: true, blob_retention_days: 90}`。
-- 「引用」只算已确认产物（`ontology/`）：frontmatter `evidence_snapshots` 声明了这份快照的；它是这个源最新的完整快照时，再加上引用这个源的锚点却没声明快照的（F13）。`SnapshotSummary.referenced`、`EV-21` 的 `touching_confirmed` 同一口径。
-- 错误：`snapshot_referenced`。
-
-#### EV-21 快照对比
-
-`GET /api/v1/projects/{id}/evidence/snapshots/diff` · 所有者 · 旧：— · 审计：专项 `evidence.query` · 依据：5.8.4（按记录 ID + 哈希比较）、`evidence.diff` · 页面：snapshots（对比卡）、schema（「对比快照」）
-
-- 查询参数：`from`、`to`（快照 ID，同一数据源）、`change?`（`added|removed|modified`）；分页。
-- 响应：`{from, to, counts: {added, removed, modified, touching_confirmed}, items: [{change, type, anchor, summary, affected: (EntryRef|ArtifactRef)[]}], next_cursor}`。
-
-#### EV-22 推送建议修订
-
-`POST /api/v1/projects/{id}/evidence/snapshots/diff/suggestions` · 所有者 · 旧：— · 审计：是 · 依据：5.8.8（快照差异驱动演进） · 页面：snapshots（「推送建议修订」）
-
-- 请求：`{from, to}`。
-- 变化的锚点进影响分析，生成建议修订，放进待处理。
-- 响应：`{created: int, inbox_item_ids: string[]}`。
-- 「在对话里分析影响」用 `S-20` 发命令。
-
-#### EV-23 分层摘要
-
-`GET /api/v1/projects/{id}/evidence/summary-tree` · 所有者 · 旧：— · 审计：专项 `evidence.query` · 依据：5.8.4（`summary.md`） · 页面：schema（左栏）
-
-- 查询参数：`snapshot`（必填）。
-- 响应：`{snapshot: SnapshotRef, domains: [{name, count, entities: [{anchor, name, label, mapped_to: EntryRef|null}]}]}`。
-- 数据库快照（F16）：`domains` 按 `<库>`（MySQL 的库、PostgreSQL 的 schema）分组，`entities` 是表和视图（按表名排），每项多 `type`（`entity`）和 `kind`（`table|view`），`label` 没有时取表注释。
-- 非数据库快照（如 REA，F13）：`domains` 按记录的 `attrs.module` 分组，`entities` 列这一组的实体和操作记录（模块记录本身就是组，不再列），每项多 `type`（`entity|operation`）。
-
-#### EV-24 证据检索（evidence.search）
-
-`GET /api/v1/projects/{id}/evidence/search` · 所有者 · 旧：— · 审计：专项 `evidence.query` · 依据：5.8.7、㉟ · 页面：schema（检索框）
-
-- 查询参数：`q`、`type?`（`entity|field|relation|constraint|operation|rule|flow|profile|sample|term`）、`source_id?`、`snapshot?`；分页（默认 50，上限 200）。
-- 响应：`{items: [{anchor, type, name, label, parent_anchor, snippet, confidence}], next_cursor, total}`。
-
-#### EV-25 记录详情（evidence.show）
-
-`GET /api/v1/projects/{id}/evidence/record` · 所有者 · 旧：— · 审计：专项 `evidence.query` · 依据：5.8.5 规则 4 · 页面：schema（右栏）、studio（证据卡「查看原文」）
-
-- 查询参数：`anchor`、`snapshot?`（缺省用产物声明的快照，没有则取最新完整快照）、`path?`（引用这个锚点的产物路径，按它 frontmatter 的 `evidence_snapshots` 取快照，F13）。
-- 响应：`EvidenceRecord`，即记录本身，加原始上下文：字段、DDL、脱敏样本（每表最多 20 行）、数据画像（低基数 top-k、数值统计量）。
-- 数据库记录（F16）：表和视图给 `fields`（全部列，按列序，最多 1000；`type` 取列记录顶层的 `data_type`，`note` 是列注释，`masked` 是
-  脱敏标记，多可选的 `pk`、`fk`、`nullable`：`pk` 来自列的标记或主键约束，`fk` 是这一列出现在本表声明外键的 `attrs.columns` 里；视图没有
-  列记录，按视图的 `attrs.columns` 列出，`anchor` 为空）、`ddl`（表是生成的建表语句，视图是定义）、`samples`、`profile`、`rows`。
-  `samples` 优先取这个源最新的补充样本（sample 任务），没有就用当前快照里的样本，多 `masked_columns`、`snapshot_id`（样本来自哪份快照）；
-  单元格都是文字，空值是空串。`profile` 的比例单位是**百分比**（一位小数）：记录里是整数比例（`attrs.pct_scale` 分之几，缺省千分之几），
-  `top_k` 记录里是 `{value, count}` 时按画像行数算；每项多 `null_pct`、`distinct`；有统计量时才给 `stats`（`min`、`max` 原样，可能是文字）。
-  `rows` 取画像的行数，没有画像取表的估算行数。列记录顶层多 `masked`、`data_type`、`nullable`。
-- 代码记录（F16）：同非数据库记录，`attrs` 原样带 `snippet`、`loc`；`fields` 列下级的字段、方法和校验规则（`rule`，按锚点的路径类型区分），
-  `type` 先取顶层 `data_type`，再取签名、`attrs.type`、`attrs.kind`；有 `nullable` 时带上。
-- 非数据库记录（F13）：`attrs` 带 `loc`、`module` 等（`design/evidence-collection.md` §1）；`fields` 列它的成员（类的字段和方法，最多 50 条，`type` 填签名或 `attrs.kind`）。
-  快照清单标了 `untrusted_content` 时，响应顶层带 `untrusted_content: true`（`EV-23`、`EV-24`、`EV-27` 同）。
-- 错误：`anchor_invalid`、`anchor_not_found`。
-
-#### EV-26 被谁引用（evidence.where-used）
-
-`GET /api/v1/projects/{id}/evidence/where-used` · 所有者 · 旧：— · 审计：专项 `evidence.query` · 依据：5.8.7 · 页面：schema（「被引用」）、studio（证据卡「被谁引用」）、snapshots（被引用数）
-
-- 查询参数：`anchor`、`prefix?: bool`（true 时匹配锚点前缀，如整张表）。
-- 响应：`{items: [{target: EntryRef|ArtifactRef, location, anchor}], total}`，不分页，上限 500。`location` 是 `<文件>:L<行号>`，`anchor` 是命中的锚点（`prefix=true` 时有用，F13）。
-
-#### EV-27 相邻记录（evidence.lineage）
-
-`GET /api/v1/projects/{id}/evidence/lineage` · 所有者 · 旧：— · 审计：专项 `evidence.query` · 依据：5.8.7 · 页面：schema（「相邻记录」）
-
-- 查询参数：`anchor`、`snapshot?`。
-- 响应：`{items: [{anchor, label, basis: string（如「外键邻居」「取值重合 98%」「代码调用方」）, confidence}]}`。
-- 数据库锚点（F16）：表给外键连着的表（`basis`「外键邻居」，被引用的一侧是「外键邻居（被引用）」）和推断关系连着的表（`basis`：有
-  `attrs.overlap_permille` 时「取值重合 98%」，否则按 `attrs.basis`：`naming`「命名推断」）；列先给所在的表（「上级」），再给它参与的
-  关系连着的表。每项多 `relation`（关系锚点）、`columns`（`[[本表列, 对方列]]`）。关系记录的 `name` 是 `references`（「引用」）。
-
-#### EV-28 ER 视图
-
-`GET /api/v1/projects/{id}/evidence/er` · 所有者 · 旧：— · 审计：专项 `evidence.query` · 依据：5.6（视图选择：Schema 浏览器、ER 视图） · 页面：schema（中栏）
-
-- 查询参数：`snapshot`、`focus?: anchor`、`depth?: 1–3`（默认 1）、`domain?`。
-- 响应：`{tables: [{anchor, name, label, fields: [{name, type, pk: bool, fk: bool, masked: bool}]}], relations: [{from_anchor, to_anchor, confidence: "declared"|"observed"|"inferred", basis}]}`，表数上限 60。
-- F16：只列表（不含视图）；`domain` 是 `<库>`；`focus` 可以是表或列的锚点，从它所在的表按关系走 `depth` 步（广度优先，近的在前），
-  不给 `focus` 时按表名排。`pk` 来自列的标记或主键约束，`fk` 只算声明的外键（推断关系不算）。响应多 `total`（截断前的表数）、
-  `truncated`；`relations` 每项多 `anchor`（关系锚点）、`columns`（`[[本表列, 对方列]]`，前端据此把连线落到列上），`basis` 同 `EV-27`，
-  只给两端都在本次表里的。非数据库快照回 `{tables: [], relations: []}`。
-- 错误：`snapshot_not_found`、`invalid_argument`（`depth` 不在 1～3）、`anchor_invalid`（`focus` 不是数据库锚点）、`anchor_not_found`（`focus` 的表不在快照里）。
+证据采集随系统逆向建模包删除（ADR-0101），本组只保留 `EV-29`。下面这些接口已删除，路径回 `404 not_found`：
+
+- `EV-01`～`EV-10`：数据源列表、登记、登记申请、修改、删除、凭据写入与删除、测试连接、访问审计、提供方列表
+  （`/api/v1/evidence/sources*`、`/api/v1/admin/evidence/sources*`、`/api/v1/evidence/providers`）；
+- `EV-11`、`EV-12`：本项目的授权与在用（`/api/v1/projects/{id}/evidence/grants*`、`…/evidence/summary`）；
+- `EV-13`～`EV-17`：采集预览、发起采集、任务列表与详情、取消续采重试（`…/evidence/jobs*`）；
+- `EV-18`～`EV-22`：快照列表、详情、清理、对比、推送建议修订（`…/evidence/snapshots*`）；
+- `EV-23`～`EV-28`：分层摘要、证据检索、记录详情、被谁引用、相邻记录、ER 视图（`…/evidence/summary-tree|search|record|where-used|lineage|er`）；
+- `EV-30`：通知管理员处理数据源；
+- `EV-31`～`EV-34`：目标程序分块上传（`/api/v1/evidence/uploads*`）。
+
+连接器网关的 `/v1/jobs*`、`/v1/secrets/*`、`/v1/sources/*/test` 一并删除；文档转换（ADR-0073、`convert-*` 包）不受影响。
+资料页的数据源、采集与快照、证据浏览器三个子页随包删除。
 
 #### EV-29 锚点解析
 
-`GET /api/v1/projects/{id}/anchors/resolve`、`POST /api/v1/projects/{id}/anchors/resolve` · 所有者 · 旧：— · 审计：`db`、`code` 等系统锚点记专项 `evidence.query`；`file` 锚点不记 · 依据：5.8.5 · 页面：全部出现出处角标的页面（wb-l2、wb-materials、inbox、l4-run、studio、studio-table、reports、incremental、scenarios、knowledge 等，悬停看原文）
+`GET /api/v1/projects/{id}/anchors/resolve`、`POST /api/v1/projects/{id}/anchors/resolve` · 所有者 · 旧：— · 审计：否 · 依据：5.8.5 · 页面：全部出现出处角标的页面（wb-l2、wb-materials、inbox、l4-run、studio、studio-table、reports、incremental、scenarios 等，悬停看原文）
 
-- GET 查询参数：`anchor`、`path?`。
-- POST 请求：`{anchors: string[], path?: string}`，最多 100 个。
-- `path`（F13）：引用这些锚点的产物；`bin:` 锚点先按它 frontmatter 声明的快照解析，没声明取这个源最新的完整快照。
-  `bin:` 锚点的 `source_label` 是数据源显示名，`location_label` 是记录的 `attrs.loc`（`文件:行号`），`text` 是记录摘要，`page="schema"`；
-  快照里没有时 `reason=not_in_snapshot`。`db`、`code` 锚点（F16）：工作区里有这个源的快照时同样走证据索引，`location_label` 数据库是
-  `<库>.<表>[.<列>]`、代码是 `文件:行号`；没有快照时仍回 `not_available`。其余系统锚点仍回 `not_available`。
+- GET 查询参数：`anchor`（必填）。
+- POST 请求：`{anchors: string[]}`，最多 100 个，按请求顺序返回。
+- 只解析 `file:` 锚点（上传资料与它的文本版）：来源名、位置、原文（前后各一段，带高亮区间）。
+- 其余 scheme（`db`、`code`、`bin` 等）回 `resolved=false`、`reason=not_available`。`file:` 锚点格式不对或不是资料区文件 `invalid`，
+  文件不在 `file_missing`，片段定位不到 `not_found`，抽取器读不了 `unreadable`。一个坏锚点不影响同批其他锚点。
 - 响应：`{items: AnchorResolution[]}`。
-  - 每项含：来源名、位置、原文（带高亮区间）、置信度、快照、是否可解析。
-  - 解析失败的锚点 `resolved=false`，并带 `reason`。
-
-#### EV-30 通知管理员处理数据源
-
-`POST /api/v1/evidence/sources/{source_id}/notify-admin` · 已获授权项目的所有者 · 旧：— · 审计：是 · 依据：5.8.6（凭据由管理员轮换） · 页面：snapshots（失败任务「联系管理员」）
-
-- 请求：`{project_id, job_id?: string, reason: "credential_expired"|"connection_failed"|"other", note?: string}`。
-- 管理员收到 `request_pending` 通知。
-- 响应 `202`：`{request_id}`。
-- 错误：`source_not_authorized`、`source_not_found`。
-
-#### EV-31 开始上传目标程序
-
-`POST /api/v1/evidence/uploads` · 登录 · 旧：— · 审计：否 · 依据：ADR-0082 · 页面：sources（登记抽屉「上传程序」、⋯「上传新版本」）
-
-- 请求：`{filename: string, size: int}`。
-- 响应 `201`：`{upload_id, chunk_bytes: 8388608, max_bytes}`。
-- 原样存进数据目录的 blob 仓，不进工作区，主容器不解析内容。每人同时最多 2 个没完成的上传，24 小时没完成自动清掉。
-- 错误：`upload_too_large`（413，`details.max_bytes`）、`quota_exceeded`（未完成的上传太多）、`invalid_argument`。
-
-#### EV-32 上传一块
-
-`PUT /api/v1/evidence/uploads/{upload_id}/chunks/{index}` · 上传人 · 旧：— · 审计：否 · 依据：ADR-0082
-
-- 请求体是第 `index` 块（从 0 开始）的字节，除最后一块外都是 `chunk_bytes`。同一块可以重传，以最后一次为准。
-- 响应：`{received_bytes, received_chunks}`。
-- 错误：`upload_not_found`（404）、`invalid_argument`（块大小不对、序号越界）。
-
-#### EV-33 完成上传
-
-`POST /api/v1/evidence/uploads/{upload_id}/complete` · 上传人 · 旧：— · 审计：是 · 依据：ADR-0082
-
-- 请求：`{sha256: string}`。
-- 响应：`{artifact: {sha256, size, filename}}`；同一内容已经在 blob 仓里就直接用。
-- 错误：`upload_not_found`、`upload_incomplete`（409，`details.missing: int[]`）、`upload_hash_mismatch`（422）。
-
-#### EV-34 取消上传
-
-`DELETE /api/v1/evidence/uploads/{upload_id}` · 上传人 · 旧：— · 审计：否 · 依据：ADR-0082 · 页面：sources（上传中「取消」）
-
-- 删掉没完成的上传的临时目录，释放「每人同时最多 2 个」的名额。
-- 响应 `204`。
-- 错误：`upload_not_found`（不存在、已过期、不是本人的，或已经完成）。
+- 错误：`invalid_argument`（`anchor` 为空、`anchors` 不是文字列表或超过 100 个）。
 
 ---
 
@@ -3243,10 +2831,10 @@ ADR-0098：端到端验证在发布后的独立评测里做，onto 不再收回�
 
 - 请求：`{kind: "table"|"anchor"|"none", value?: string, base_revision}`。
   - `table`：首行只写现有数据表名，逐字相同，大小写规范成原名；
-  - `anchor`：写数据库锚点，如 `db:pos-prod/pos.store_grade`，表名列名从快照解析；
+  - `anchor`：数据库锚点，如 `db:pos-prod/pos.store_grade`。证据快照已删除（ADR-0101），现在一律回 `anchor_not_found`；
   - `none`：确实不落库的对象。
 - 响应：`{entry: EntryRef, revision, commit, version_label, binding: BindingIssue|null}`。
-- 错误：`not_found`、`invalid_argument`（表名不在 Schema 资料和快照里）、`anchor_not_found`、`revision_conflict`、`write_scope_locked`。
+- 错误：`not_found`、`invalid_argument`（表名不在 Schema 资料里）、`anchor_not_found`、`revision_conflict`、`write_scope_locked`。
 
 #### PB-03 发布
 
@@ -3261,7 +2849,7 @@ ADR-0098：端到端验证在发布后的独立评测里做，onto 不再收回�
 - 响应 `201`：`ReleaseRecord`，另带 `hub: {ontology_id, release_id, package_digest, committed_at}`；Hub 已提交而本地标签没写成时
   为 `{project_id, version, local_record_pending: true, hub}`，后台恢复。
   另带 `hub_members`（同 HB-11 的 `hub_sync`）：项目第一次发布时初始化共享授权的结果，`status=failed` 时页面提示去「知识包共享」重试，发布照常成功。
-  评测服务配好时，发布后带着用户登录回写一次评测优化的结果，成功拿到状态的在响应里带 `evaluation_writeback`（ES-02 同结构），失败不影响发布。
+  发布后不再回写评测优化的结果，`evaluation_writeback` 随评测优化删除（ADR-0101）。
 - 错误：
   - `gate_blocked`（`details.gates` 列出不通过的项；consumer 导入规则不通过时 `details.reason=package_structure_invalid`）；
   - `modeling_stages_incomplete`（409）；
@@ -3439,8 +3027,8 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 
 #### X-05 提交外部反馈（已退役，ADR-0092）
 
-原 `POST /api/v1/projects/{id}/feedback`（服务令牌 `feedback.write`）没有调用方，已删除，`feedback.write` 不再签发。外部反馈批次改由 `ES-07` 评测优化写入，
-落盘格式仍是 `onto-feedback/v1`（见 `ES-07`），资料区外部反馈分组、待处理、增量更新的外部反馈卡照旧读它。
+原 `POST /api/v1/projects/{id}/feedback`（服务令牌 `feedback.write`）没有调用方，已删除，`feedback.write` 不再签发。外部反馈批次后来由 `ES-07` 评测优化写入，
+ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、待处理 `feedback`；工作区已有的 `feedback/*.json` 不迁移、不删。
 
 #### X-06 服务令牌管理
 
@@ -3455,9 +3043,9 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 
 ### 3.21a 独立评测（ADR-0092）
 
-评测在独立的评测服务里跑。onto 只做四件事：给浏览器入口（`ES-01`）、收完成通知（`ES-00`）、以当前用户自己的登录读回结果（`ES-02`～`ES-06`）、
-把一轮的结果整理成一批外部反馈交给反馈演进（`ES-07`）。评测记录按发起人私有：同一个 Hub 包由多人评测时，各人只看见自己的轮次。
-本地模式（没有统一账号）不能用评测：`ES-02`～`ES-08` 与 develop 一样返回 401（码 `login_required`），页面按「评测状态读取失败」显示为评测服务未配置。
+评测在独立的评测服务里跑。onto 只做三件事：给浏览器入口（`ES-01`）、收完成通知（`ES-00`）、以当前用户自己的登录读回结果（`ES-02`～`ES-06`）。
+评测优化（`ES-07`、`ES-08`、`ES-12`）随反馈演进包删除（ADR-0101）。评测记录按发起人私有：同一个 Hub 包由多人评测时，各人只看见自己的轮次。
+本地模式（没有统一账号）不能用评测：`ES-02`～`ES-06` 与 develop 一样返回 401（码 `login_required`），页面按「评测状态读取失败」显示为评测服务未配置。
 
 #### ES-00 完成通知（评测服务调用）
 
@@ -3480,10 +3068,10 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 
 `GET /api/v1/projects/{id}/evaluations` · 所有者 · 旧：`GET /api/projects/{id}/package/evaluations` · 审计：否 · 页面：publish
 
-- 查询参数：`reconcile?: 0|1`，1 时先补写未完成的建模回写，再向评测服务对账（评测服务连不上时 `reachable=false`，返回上次同步的状态）。
+- 查询参数：`reconcile?: 0|1`，1 时向评测服务对账（评测服务连不上时 `reachable=false`，返回上次同步的状态）。
 - 响应：`{configured, reachable: bool|null, message, ontology_id, current_release_id, current_version, active, releases, feedback, solver_releases,
-  solver_revisions, writeback, evolution}`。`evolution` 表示反馈演进包启用与否，没启用时页面不出评测优化。`releases`、`feedback`、`solver_releases` 按 `release_id` 给每个版本最近一次已生成报告的评测、用户反馈、求解验证轮次；
-  `writeback` 是最近一次评测优化与它的回写状态（`waiting|pending|done|refused`，`mine` 表示是不是当前用户做的）。
+  solver_revisions}`。`releases`、`feedback`、`solver_releases` 按 `release_id` 给每个版本最近一次已生成报告的评测、用户反馈、求解验证轮次。
+  `writeback`、`evolution` 随评测优化删除（ADR-0101）。
 
 #### ES-03 评测报告
 
@@ -3511,35 +3099,21 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 
 - 响应：评测服务的 `artifacts`（修订号加一、生成中）；本地索引同时标为生成中，结果随通知写入。
 
-#### ES-07 评测优化
+#### ES-07 评测优化（已删除，ADR-0101）
 
-`POST /api/v1/projects/{id}/evaluations/{run_id}/optimization` · 所有者（项目没有归档） · 旧：`…/optimization` · 审计：是 · 页面：publish
+`POST /api/v1/projects/{id}/evaluations/{run_id}/optimization` 随反馈演进包删除，发布后也不再回写评测服务。
 
-- 要求反馈演进包已启用，只对项目当前版本的数据评测或用户反馈轮次。以用户登录取同一修订的报告、完整回答、上下文与优化建议，写进工作区并整理成一批外部反馈：
-  - `reports/{stem}.md`、`reports/{stem}.answers.json`、`reports/optimization-{…}.md`（有建议时），和反馈批次 `feedback/{接收时间}-eval-{run_id}-r{修订}.json`
-    一起提交（只提交这几个文件）；
-  - 评测数据源的表头写成只有表头行的 csv，放 `.ontology-state/eval-service/tables/{stem}/`，上下文放 `.ontology-state/eval-service/{stem}.json`（都不进 git）；
-  - 批次格式 `onto-feedback/v1`：`source = {service: "评测服务"|"用户反馈", run: run_id}`，`release_version` 是被评测的版本，`summary` 取自评测汇总，
-    `items` 是失分（fail、partial、error）用例（标准答案、工具失败取自报告的逐用例明细），另带 `attachments: {report, answers, suggestions?, tables?}`（工作区相对路径）。
-  - 同一修订再点不重复下载、不重复成批；人工改判后修订号加一，再点成一批新的。
-- 响应：`{feedback_id, report, suggestions, command: "/ontology-evolution", args: {feedback_id}}`；页面拿 `command`、`args` 经 `S-20` 发到工作台对话。
-- 之后发布的第一个新版本，以做优化的用户登录回写给评测服务，作为这一轮的处理结果（发布时带登录就立即写，否则下次 `ES-02 reconcile=1` 时补写）。
-- 错误：`pack_not_enabled`（反馈演进包没启用）、`version_mismatch`、`artifacts_not_ready`、`artifacts_changed`、`optimization_not_supported`、`login_required`、`eval_*`。
+#### ES-08 标记处理失败（已删除，ADR-0101）
 
-#### ES-08 标记处理失败
-
-`POST /api/v1/projects/{id}/evaluations/{run_id}/modeling-result` · 所有者（项目没有归档） · 旧：`…/modeling-result` · 审计：是 · 页面：publish
-
-- 请求：`{note: string（1～1000 字）}`。告诉评测服务这一轮的建议没能落实；处理成功不用调，发布新版本自动回写。
-- 响应：`{optimization}`（评测服务记下的处理状态）。
+`POST /api/v1/projects/{id}/evaluations/{run_id}/modeling-result` 随评测优化删除。
 
 #### ES-09 旧版评测记录
 
 `GET /api/v1/projects/{id}/legacy-evaluations` · 所有者 · 旧：`GET /api/projects/{id}/eval/status`（410，successor 指这里） · 审计：否 · 页面：publish
 
-- 评测移出 onto 之前最近一轮的「评测执行详情」（develop 的 `GET /eval/status` 里的 `state`、`evolution`），只读；状态读 `.ontology-state/eval.json`，启动迁移不再删它。
-- 响应：`{state, evolution, evolution_enabled}`。`state` 没有旧记录时是 `{}`；仍是 `running` 的显示为 `interrupted`（旧运行器已删，不改盘上记录），`resumable` 恒为 false。
-  `evolution` 与 develop 的提示条件相同（得分低于 90 或有异常用例、报告出自最近一轮），`evolution_enabled` 是反馈演进包启用与否。
+- 评测移出 onto 之前最近一轮的「评测执行详情」（develop 的 `GET /eval/status` 里的 `state`），只读；状态读 `.ontology-state/eval.json`，启动迁移不再删它。
+- 响应：`{state}`。`state` 没有旧记录时是 `{}`；仍是 `running` 的显示为 `interrupted`（旧运行器已删，不改盘上记录），`resumable` 恒为 false。
+  `evolution`、`evolution_enabled` 随反馈演进包删除（ADR-0101）。
 
 #### ES-10 旧版评测报告
 
@@ -3553,12 +3127,9 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 
 - 读同名 `.answers.json` 附件（develop 报告预览的首选来源）。响应：同 `ES-05`。错误：`answer_not_found`（「完整回答证据不可用」或「完整回答证据不存在或不属于当前评测轮次」）、`not_found`。
 
-#### ES-12 旧版报告的评测优化
+#### ES-12 旧版报告的评测优化（已删除，ADR-0101）
 
-`POST /api/v1/projects/{id}/legacy-evaluations/{id}/optimization` · 所有者（项目没有归档） · 审计：是 · 页面：publish
-
-- 与 `ES-07` 同一做法：把旧报告和它的 `.answers.json` 整理成一批外部反馈 `legacy-{id}`（报告最近一轮时带上状态里的得分汇总），只提交这批；同一份报告只成一批。
-- 响应：同 `ES-07`（`suggestions` 为 null）。错误：`pack_not_enabled`、`answer_not_found`、`not_found`。
+`POST /api/v1/projects/{id}/legacy-evaluations/{id}/optimization` 随反馈演进包删除。
 
 ---
 
@@ -3576,7 +3147,8 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 `GET /api/v1/projects/{id}/autobuild/policy` · 所有者 · 旧：— · 审计：否 · 依据：8.5 策略表 · 页面：proj-settings（构建方式内嵌策略）、l4-run（开始时的策略说明）
 
 - 响应：`AutobuildPolicy`，加：
-  - `platform_limits: {max_duration_min, max_tokens, max_cost: Money, allow_production_collection: bool}`；
+  - `platform_limits: {}`（`allow_production_collection` 随证据采集删除，ADR-0101）；
+  - `not_enforced: []`；
   - `quota_remaining: {tokens, cost: Money}`；
   - `last_run: {run_id, run_no, ended_at, duration_ms, reviewed: bool}|null`；
   - `revision`。
@@ -3585,10 +3157,10 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 
 `PUT /api/v1/projects/{id}/autobuild/policy` · 所有者 · 旧：— · 审计：是 · 依据：8.5、4.10.1（预算只能设在配额之内） · 页面：proj-settings（「保存」「保存并开始自主构建」）
 
-- 请求：`AutobuildPolicy` 去掉只读字段，加 `base_revision`。
-- 硬性不做的几项（发布、删除已确认内容、改资料区、采集未授权的生产库）不在策略里，打不开。
+- 请求：`AutobuildPolicy` 去掉只读字段，加 `base_revision`。带 `production_collection` 时忽略（ADR-0101）。
+- 硬性不做的几项（发布、删除已确认内容、改资料区）不在策略里，打不开。
 - 响应：同 `AB-01`。
-- 错误：`budget_exceeds_quota`、`revision_conflict`、`invalid_argument`、`source_not_authorized`（生产库授权引用了本项目没授权的数据源）。
+- 错误：`budget_exceeds_quota`、`revision_conflict`、`invalid_argument`。
 
 #### AB-03 开始前预览
 
@@ -3599,7 +3171,6 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
   - `preview_token`（10 分钟有效）；
   - 范围：分段列表、每段现状；
   - 预算；
-  - 生产库授权；
   - 低于阈值时怎么处理；
   - `warnings`，如「有 1 个未决决策会被按策略决定」「建模蓝图里有 1 个问题没回答，运行不会替你答，会留在待处理里」（蓝图的问题按 BP-03 不代答）；
   - `queued`：平台同时运行数满了时为 true；
@@ -3767,7 +3338,7 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 
 `POST /api/v1/projects/{id}/mcp/tokens` · 所有者 · 旧：`POST /api/projects/{id}/modeling-mcp/tokens` · 审计：专项 `mcp.token.issue` · 依据：② · 页面：proj-settings（新建 Token 弹窗）
 
-- 请求：`{name: string 1–120, scopes: string[]（至少一个，取 ontology.read|ontology.change.validate|ontology.change.apply|evidence.read|project.version.revert|package.publish）, expires_in_s: int 300–2592000 | null（永不过期）}`。
+- 请求：`{name: string 1–120, scopes: string[]（至少一个，取 ontology.read|ontology.change.validate|ontology.change.apply|project.version.revert|package.publish）, expires_in_s: int 300–2592000 | null（永不过期）}`。
 - 响应 `201`：`{token: "onto_pat_...", summary: McpTokenSummary, client_config: {read, change, full}}`。`client_config` 已填入本次 token。明文只出现一次。
 - 管理员不能代所有者签发（方案 A11）。
 
@@ -3828,13 +3399,9 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 | `flow_get` | `ontology.read` | `FL-01` |
 | `artifact_list` | `ontology.read` | `AR-02` |
 | `artifact_get` | `ontology.read` | `AR-03` |
-| `evidence_search` | `evidence.read` | `EV-24` |
-| `evidence_show` | `evidence.read` | `EV-25` |
-| `evidence_where_used` | `evidence.read` | `EV-26` |
-| `evidence_lineage` | `evidence.read` | `EV-27` |
-| `evidence_diff` | `evidence.read` | `EV-21` |
 
-- 工具名用下划线，因为 MCP 客户端普遍不接受点号；文档和界面上写作 `flow.get`、`evidence.*`。
+- 工具名用下划线，因为 MCP 客户端普遍不接受点号；文档和界面上写作 `flow.get`。
+- evidence 工具（`evidence_search` 等 5 个）和 scope `evidence.read` 随证据采集删除（ADR-0101）。
 - 包贡献的只读工具按 `<包>_<名>` 命名，只读，写操作一律走写入路径。
 
 **版本回退工具（ADR-0094，scope 都是 `project.version.revert`）：**
@@ -3965,8 +3532,8 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 
 `GET /api/v1/admin/quotas`、`PUT /api/v1/admin/quotas` · admin · 旧：— · 审计：PUT 记 · 依据：4.10.1、方案 E9 · 页面：sys（配额与 L4 限制）
 
-- 对象：`{per_user: {concurrent_sessions: int, daily_tokens: int, collections_per_source_per_hour: int}, per_project: {online_engines: 1（只读）, monthly_tokens: int, snapshot_git_mb: int}, overrides: QuotaOverride[]}`。
-- PUT 只改 `per_user`、`per_project`，立即生效。
+- 对象：`{per_user: {concurrent_sessions: int, daily_tokens: int}, per_project: {online_engines: 1（只读）, monthly_tokens: int}, overrides: QuotaOverride[], not_enforced: []}`。
+- PUT 只改 `per_user`、`per_project`，立即生效。`collections_per_source_per_hour`、`snapshot_git_mb` 随证据采集删除（ADR-0101），PUT 带了回 `400 invalid_argument`（`fields` 记 `unknown`）。
 - token 按成本口径计：输入 + 缓存写 + 输出 + 缓存读 // 10（ADR-0088）。默认每人每天 10,000,000、每项目每月 100,000,000。
 
 #### SY-16 配额单独设置
@@ -3974,13 +3541,14 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 `POST /api/v1/admin/quotas/overrides`、`DELETE /api/v1/admin/quotas/overrides/{override_id}` · admin · 旧：— · 审计：是 · 依据：4.10.1 · 页面：sys（「单独设置」）
 
 - POST 请求：`{subject: {kind: "user"|"project", id}, item: string, value: int, reason: string}`。响应 `201`：`QuotaOverride`。
+- `item` 只能是 SY-15 里能改的项，`collections_per_source_per_hour`、`snapshot_git_mb` 回 `400 invalid_argument`（`fields.item=enum`）。
 - DELETE 响应 `204`。
 
 #### SY-17 自主构建平台限制
 
 `GET /api/v1/admin/autobuild-limits`、`PUT /api/v1/admin/autobuild-limits` · admin · 旧：— · 审计：PUT 记 · 依据：8.5、4.10.1 · 页面：sys（L4 自主构建限制）
 
-- 对象：`{max_concurrent_runs: int 0–16, max_duration_min, max_tokens, max_cost: Money, allow_production_collection: bool, night_priority: {enabled: bool, start: "20:00", end: "08:00"}, running: int（只读）}`。
+- 对象：`{max_concurrent_runs: int 0–16, max_duration_min, max_tokens, max_cost: Money, night_priority: {enabled: bool, start: "20:00", end: "08:00"}, running: int（只读）}`。
 - 立即生效。
 
 #### SY-18 模型单价表
@@ -4045,28 +3613,17 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 - 响应：`ProjectMetaView`。
 - 错误：`invalid_owner`、`project_not_found`。
 
-#### AD-08 待管理员处理的申请
+#### AD-08 待管理员处理的申请（已删除，ADR-0101）
 
-`GET /api/v1/admin/requests` · admin · 旧：— · 审计：否 · 依据：5.5（提名审核）、5.8.7、5.8.3 · 页面：plugin-upload（「申请」页签，经通知进入）
+`GET /api/v1/admin/requests` 随数据源登记申请和知识提名删除。
 
-- 查询参数：`kind?`（`pack_install|source_registration|knowledge_nomination`）、`state?`；分页。
-- 响应：`{items: [{id, kind, state: "pending"|"approved"|"rejected", requested_by, requested_at, project_id?, summary, payload}], next_cursor}`。
+#### AD-09 通过申请（已删除，ADR-0101）
 
-#### AD-09 通过申请
+`POST /api/v1/admin/requests/{request_id}/approve` 一并删除。
 
-`POST /api/v1/admin/requests/{request_id}/approve` · admin · 旧：— · 审计：是 · 依据：同上 · 页面：—
+#### AD-10 退回申请（已删除，ADR-0101）
 
-- 请求：`{note?: string, edits?: object, secret?: object}`。
-  - 知识提名通过后记下结论、通知提名人；进行业包下一个版本由行业包维护人做；
-  - 数据源申请：`secret` 是凭据（字段同 `EV-06`，提供方要凭据时必填，没带回 `400`，`fields.secret=required`）；按申请（叠加 `edits`）走 `EV-02` 的校验登记，授权给申请人的项目。登记没通过时原样回错，申请仍待处理。
-- 响应：申请对象。申请人收到通知。
-
-#### AD-10 退回申请
-
-`POST /api/v1/admin/requests/{request_id}/reject` · admin · 旧：— · 审计：是 · 依据：同上 · 页面：—
-
-- 请求：`{reason: string}`。
-- 响应：申请对象。
+`POST /api/v1/admin/requests/{request_id}/reject` 一并删除。
 
 ---
 
@@ -4115,7 +3672,6 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
   | `guard_denies` | 守卫拒绝 |
   | `check_failures` | 检查失败 |
   | `merges` | 合入 |
-  | `collections` | 证据采集 |
   | `reconnects` | 热更新与重连 |
 
 - Prometheus 抓取地址是运维监听上的 `/metrics`，不属于本契约。
@@ -4288,7 +3844,7 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 
 `GET /api/v1/ops/packs` · ops、admin · 旧：— · 审计：否 · 依据：4.10.3、㉙ · 页面：ops-ctl（插件运维）
 
-- 普通用户的私有包也列出来，能禁用（ADR-0079）。
+- 普通用户的私有包也列出来，能禁用（ADR-0079）。镜像里已移除、已下架的官方包不列、不能操作（ADR-0101，见 3.16）。
 - 响应：`{items: [{name, kind, version, channel: "stable"|"beta"|"retired", rollout_pct, rollout_by, error_rate_pct, breaker: "closed"|"half_open"|"open", projects_using: int}]}`。
 
 #### O-26 调整灰度
@@ -4392,16 +3948,16 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 
 #### O-40 任务列表
 
-`GET /api/v1/ops/tasks` · ops、admin · 旧：— · 审计：否 · 依据：4.10.3（证据采集、导出、备份、清扫） · 页面：ops-ctl（任务）
+`GET /api/v1/ops/tasks` · ops、admin · 旧：— · 审计：否 · 依据：4.10.3（导出、备份、清扫） · 页面：ops-ctl（任务）
 
-- 查询参数：`type?`（`collection|export|backup|sweep|pack_install|drill|pack_repo_backup`）、`state?`；分页。
+- 查询参数：`type?`（`export|backup|sweep|pack_install|drill|pack_repo_backup`）、`state?`；分页。取值不对回 `400 invalid_argument`；`collection` 随证据采集删除（ADR-0101）。
 - 响应：`{items: [{id, type, target: string, project: ProjectMetaView|null, initiator: string（用户名或 system）, state: "queued"|"running"|"succeeded"|"partial"|"failed"|"cancelled", progress_pct, started_at, finished_at, error: string|null}], next_cursor}`。
 
 #### O-41 任务操作
 
-`POST /api/v1/ops/tasks/{task_id}/cancel`、`.../retry`、`.../resume` · ops · 旧：— · 审计：是 · 依据：4.10.3 · 页面：ops-ctl
+`POST /api/v1/ops/tasks/{task_id}/cancel`、`.../retry` · ops · 旧：— · 审计：是 · 依据：4.10.3 · 页面：ops-ctl
 
-- 证据采集类任务转调 `EV-17`。生产环境的续采和重试仍要项目所有者确认，运维调用时返回 `428 confirmation_required`，并通知所有者。
+- `resume`（原来只给证据采集任务）随证据采集删除（ADR-0101），回 `404 not_found`。
 - 响应：任务对象。
 - 错误：`task_not_found`、`task_state_invalid`。
 
@@ -4410,20 +3966,20 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 `GET /api/v1/ops/versions` · ops、admin · 旧：— · 审计：否 · 依据：4.10.3 · 页面：ops-ctl（版本清单）
 
 - 响应：`{items: [{category: "kernel"|"capability"|"industry"|"system"|"provider"|"exporter"|"engine"|"data_format"|"lockfile", component, version, note}]}`。
-- 至少包括：onto-modeling、kernel_api、page_api、各包、引擎、ontology-package、operation-centric、evidence-snapshot、packs.lock 与 flow.lock 格式版本。
+- 至少包括：onto-modeling、kernel_api、page_api、各包、引擎、ontology-package、operation-centric、packs.lock 与 flow.lock 格式版本。
 
 #### O-43 数据保留
 
 `GET /api/v1/ops/retention` · ops、admin · 旧：— · 审计：否 · 依据：4.10.3 · 页面：ops-ctl（数据保留）
 
-- 响应：`{items: [{id: "session_history"|"snapshots"|"logs"|"audit"|"backups"|"trash"|"diagnostics"|"notifications", label, retention: {days?: int, keep_last?: int}, rule, next_run_at, editable: bool}]}`。
+- 响应：`{items: [{id: "session_history"|"logs"|"audit"|"backups"|"trash"|"diagnostics"|"notifications", label, retention: {days?: int, keep_last?: int}, rule, next_run_at, editable: bool}]}`。
 - 审计日志 365 天，只追加，`editable=false`。
 
 #### O-44 修改数据保留
 
 `PUT /api/v1/ops/retention` · ops · 旧：— · 审计：是 · 依据：4.10.3 · 页面：ops-ctl（「编辑」）
 
-- 请求：`{items: [{id, retention}]}`。被引用的快照无论保留期多短都不清理。
+- 请求：`{items: [{id, retention}]}`。
 - 响应：同 `O-43`。
 
 #### O-45 生成诊断包
@@ -4451,8 +4007,8 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 
 `GET /api/v1/ops/audit` · ops、admin · 旧：`GET /api/admin/audit`（旧接口固定 200 条） · 审计：否 · 依据：4.10.1、方案 E4 · 页面：ops-users（审计日志）
 
-- 查询参数：`type?`（`write|mcp|commit|plugin|evidence|ops|auth|publish|changeset|autobuild|user`，多值）、`q?`（操作者、项目、内容）、`from?`、`to?`；分页（默认 100）。
-- 响应：`{items: AuditEntry[], next_cursor}`。
+- 查询参数：`type?`（`write|mcp|commit|plugin|ops|auth|publish|changeset|autobuild|user|contract`，多值；未知类型回 `400 invalid_argument`）、`q?`（操作者、项目、内容）、`from?`、`to?`；分页（默认 100）。
+- 响应：`{items: AuditEntry[], next_cursor}`。类型 `evidence` 随证据采集删除（ADR-0101）：老记录照原样显示，不能再按它筛选。
 
 #### O-49 导出审计
 
@@ -4559,7 +4115,7 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 |---|---|---|---|---|
 | EC-30 | `permission.requested` | 是 | `{request_id, title: string（如「助手请求执行一个操作」）, description: string（业务话）, details_text: string（「查看技术细节」里的内容）, timeout_s: 600, expires_at}` | chat-states 第 6 项确认卡 |
 | EC-31 | `permission.resolved` | 是 | `{request_id, behavior: "allow"\|"deny", by: "user"\|"timeout"\|"autobuild_policy", message}` | 确认卡变为已处理 |
-| EC-32 | `question.asked` | 是 | `Question`（kind 见 4.6） | 决策卡、模拟分支、请专家确认、交互模拟、采集确认、资料用途确认 |
+| EC-32 | `question.asked` | 是 | `Question`（kind 见 4.6） | 决策卡、模拟分支、请专家确认、交互模拟、资料用途确认 |
 | EC-33 | `question.answered` | 是 | `{question_id, answer: {option_id?, option_ids?, custom_text?}, by: "user"\|"autobuild_policy", summary: string（如「步骤 2 选了 A：…」）, answered_at}` | 决策卡收起为一行 |
 | EC-34 | `question.withdrawn` | 是 | `{question_id, reason: string}` | 问题失效（撤回这一轮、重启等） |
 
@@ -4585,19 +4141,19 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 
 | 编号 | type | 载荷 | 用在哪 | 依据 |
 |---|---|---|---|---|
-| EP-01 | `flow.updated` | `{flow_hash, nodes: [{id, state, flags, progress}], slices: [{id, stages, note}], suggestions_changed: bool}`，只含变化的节点和分段 | 主线进度条、建模步骤抽屉、projects 卡片 | ㊴ |
+| EP-01 | `flow.updated` | `{flow_hash, nodes: [{id, state, flags, progress}], slices: [{id, stages, note}], suggestions_changed: bool}`，只含变化的节点和分段 | 主线进度条、projects 卡片 | ㊴ |
 | EP-02 | `inbox.updated` | `{counts: {total, by_filter, by_pack}, added: string[], removed: string[], changed: string[]}` | 左栏工作台角标、「待处理 N」、inbox 列表、插件页角标 | ㊴ |
-| EP-03 | `scope.updated` | `ScopeLock` | Studio、流程图弹窗、场景模拟、代码生成、知识沉淀页的锁定条和只读；两态「助手运行中 / 修改待确认」，自主构建下是「这一段自动合入为止」 | 4.3、方案 C10 |
+| EP-03 | `scope.updated` | `ScopeLock` | Studio、流程图弹窗、场景模拟、代码生成的锁定条和只读；两态「助手运行中 / 修改待确认」，自主构建下是「这一段自动合入为止」 | 4.3、方案 C10 |
 | EP-04 | `changeset.updated` | `{changeset_id, state: "open"\|"pending_confirm"\|"merged"\|"discarded"\|"conflict", source, conversation_id, version_label: string\|null}` | wb-l2「这一轮」卡、inbox | 8.2 |
 | EP-05 | `workspace.changed` | `{commit, version_label, source: "assistant"\|"web"\|"studio"\|"mcp"\|"autobuild"\|"import"\|"plugin"\|"revert", changeset_id, by, entries: EntryRef[], artifacts: ArtifactRef[], paths: string[≤200]}` | 外壳知识包版本、Studio 表格与图谱刷新、编辑器「文件已被助手修改」提示 | 方案 C2 |
-| EP-06 | `artifacts.updated` | `{type, change: "created"\|"updated"\|"deleted"\|"stale"\|"fresh", keys: string[]}` | 场景模拟、代码生成、知识沉淀页列表；Studio 流程图行 | 4.1、5.9.4 |
+| EP-06 | `artifacts.updated` | `{type, change: "created"\|"updated"\|"deleted"\|"stale"\|"fresh", keys: string[]}` | 场景模拟、代码生成列表；Studio 流程图行 | 4.1、5.9.4 |
 | EP-07 | `extensions.updated` | `{active_hash, pending_hash, changed: ("nav"\|"pages"\|"subpages"\|"entries"\|"artifact_types"\|"views"\|"gates")[]}` | 左栏插件页面出现或消失、资料子页、Studio 条目类型 | 5.9.6 |
 | EP-08 | `assembly.updated` | `{state: "pending"\|"applied"\|"failed", pending_changes: [{pack, from, to, kind}], effective, error_id: string\|null}` | proj-settings 待生效 chip；与对话流 EC-06 配合 | 8.1 |
 | EP-09 | `exec.updated` | `ExecRecord` | 续跑卡、inbox 续跑、插件页进度 | 8.4、㊶ |
 | EP-10 | `command.progress` | `CommandTask`（中间百分比瞬时，状态变化持久） | 插件页、报告页、资料页的进度条和「去对话里看」；完成后列表刷新 | 5.9.3 |
 | EP-11 | `materials.updated` | `{items: MaterialMapItem[]（只含变化的）, read_pct, problems_count}` | 资料地图卡与弹窗 | 第 9 章建议 5 |
 | EP-12 | `materials.candidate` | `{candidate: {id, kind, name, anchor, anchor_label}, total}` | 资料地图弹窗「候选实时流」 | 第 9 章 |
-| EP-13 | `evidence.job.updated` | `CollectionJob` | snapshots 采集任务表 | 5.8.7「通过 SSE 推送进度」 |
+| EP-13 | `evidence.job.updated` | — | 已删除（ADR-0101，随证据采集） | — |
 | EP-14 | `autobuild.run.updated` | `AutobuildRunSummary` | l4-run 运行条（进度、用时、token、费用、自动决定数、挂起数） | 8.5 |
 | EP-15 | `autobuild.safe_point` | `{run_id, slice_id, slice_name, version_label, next: "continue"\|"paused"\|"stopped"\|"converted"}` | l4-run | 8.5 |
 | EP-16 | `autobuild.budget_warning` | `{run_id, dimension: "duration"\|"tokens"\|"cost", used_pct: number}` | l4-run，到 80% 提醒 | 8.5 |
@@ -4607,7 +4163,7 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 | EP-20 | `project.updated` | `{fields: string[], meta: ProjectMeta}` | 外壳面包屑、构建方式胶囊、引擎、归档状态 | — |
 | EP-21 | `conversation.updated` | `{conversation: Conversation, deleted: bool}` | 会话切换菜单 | ADR 0013 |
 | EP-22 | `report.updated` | `{report_id, type, items_changed: bool}` | reports 条目状态（修复中 → 已修复） | 5.9.4 |
-| EP-23 | `knowledge.updated` | `{ids: string[], change: "created"\|"updated"\|"deleted"}` | 知识沉淀页 | 5.5 |
+| EP-23 | `knowledge.updated` | — | 已删除（ADR-0101，随知识沉淀包） | — |
 | EP-24 | `maintenance.updated` | `MaintenanceState` | 全局横幅 | 4.10.3 |
 | EP-25 | `materials.text.updated` | `{path, text: MaterialText}` | resources（列表行状态、预览） | ADR-0073 |
 
@@ -4633,12 +4189,10 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 | `needs_input` | 需要你回答问题或确认操作 |
 | `step_done` | 一步跑完 |
 | `session_error` | 构建出错 |
-| `evidence_conflict` | 需要你处理：证据冲突 |
 | `publish_done` | 发布完成 |
-| `nomination_reviewed` | 提名审核结果 |
-| `request_reviewed` | 数据源登记申请通过或退回 |
-| `request_pending` | 给管理员：待处理的申请 |
 | `upload_rejected` | 插件包被退回 |
+
+`evidence_conflict`、`nomination_reviewed`、`request_reviewed`、`request_pending` 随证据采集、知识提名、管理员申请删除（ADR-0101）。
 
 ### 4.5 日志跟随流
 
@@ -4658,7 +4212,7 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 | `branch` | 模拟分支选择卡（chat-states 第 7 项） | `scenario: ArtifactRef`、`context_text` | `S-11`，可带 `custom_text` |
 | `expert` | 请专家确认卡（chat-states 第 7 项、reports 专家裁决） | `options` 渲染为按钮，含 `dismiss` 型选项「不需要问这个」 | `S-11` |
 | `walkthrough` | 交互模拟卡（chat-states 第 20 项） | `scenario: ArtifactRef`、`inputs: [{name, value, type, source: "input"\|"example"}]`、`steps: [{n, label, text, ref: EntryRef\|null, source}]`、判断点 `prompt` | `S-11`；选择记进场景，下次批量验证按这条分支推演 |
-| `collection` | 采集确认（陪伴建模下要采生产库时） | `collection: {source: EvidenceSourceRef, summary}`（同 `EV-13` 的 `summary`） | `S-11` 选「同意」后内核发起采集，等价于带确认的 `EV-14` |
+| `collection` | 采集确认（已删除，ADR-0101） | — | — |
 | `confirm` | 一般的是 / 否确认 | 两个选项 | `S-11` |
 
 `Question` 的共有字段：
@@ -4700,7 +4254,7 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 
 | card_type | 设计稿名称 | 特有字段 | 出现在 |
 |---|---|---|---|
-| `upload_prompt` | 欢迎与上传卡 | `{accept: string[], max_bytes, sources_available: int, actions: ("upload"\|"connect_system"\|"import_package")[]}` | wb-materials（还没传资料） |
+| `upload_prompt` | 欢迎与上传卡 | `{accept: string[], max_bytes, actions: ("upload"\|"import_package")[]}` | wb-materials（还没传资料） |
 | `material_map` | 资料地图卡 | `{total, read_pct, items: MaterialMapItem[≤8], unverifiable: int, problems: {contradiction, missing}}`；`open={dialog, "material_map"}` | wb-materials、chat-states 产物卡 |
 | `research_summary` | 资料分析小结卡 | `{files, coverage_pct, verified_anchors: int, problems_carried: int, verified: bool, report_id}` | wb-blueprint |
 | `blueprint` | 建模蓝图卡 | `{version_label: "草案 v2", state: "draft"\|"confirmed", goal_md（项目的建模目标）, goal_anchor（恒为 null）, goal_question: {id, title, answered} \| null（F4b：没答时确认按钮置灰）, slices: BlueprintSlice[], terms: {aligned: int, ambiguous: int}, questions_pending: int, research_verified: bool}`；`open={dialog, "blueprint"}` | wb-blueprint、chat-states |
@@ -4711,7 +4265,7 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 | `change_list` | 变更点清单卡 | `{change_list_id, source: {path, label}, count, low_confidence: int, rows: ChangePoint[≤10], state: "editing"\|"confirmed"\|"executed"}`；`open={dialog, "change_list"}` | incremental、chat-states |
 | `impact` | 影响面卡 | `Impact` 加 `{change_list_id, executed: bool}` | incremental |
 | `regression` | 回归结果卡 | `{passed, total, rows: [{scenario: ArtifactRef, type: "affected"\|"guard", result: "pass"\|"fail", reason: string\|null}]}` | incremental |
-| `external_feedback` | 外部反馈卡 | `{feedback_id, source: {service, run}, items: [{question, loss_reason, artifacts: (EntryRef\|ArtifactRef)[], related: string\|null}]}`；`plugin={evolution}` | incremental；只在反馈演进包启用时出现 |
+| `external_feedback` | 外部反馈卡（已删除，ADR-0101） | — | — |
 | `pack_recommendation` | 助手推荐插件 | `{pack: PackRef, category_label, description, reason}` | chat-states 第 16 项 |
 | `resume` | 中断续跑卡 | `{exec_id, title: "上次没做完：操作提取在步骤 3 / 4 中断", reason, position: {step, total, label}, saved: {files, version_label}, resumable: bool, not_resumable_reason: string\|null}` | chat-states 第 5 项；按钮：`S-16`、`S-17` |
 | `autobuild_start` | 自主构建开始时的策略说明 | `{run_id, run_no, chips: [{label, value}]}`（范围、预算、生产库、拿不准时） | l4-run |
@@ -4719,7 +4273,7 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 | `auto_decision` | 自动决定卡 | `{run_id, ledger_id, at, question, chosen, anchors, confidence: number, threshold: number, assumption: bool, review_state: "pending"\|"accepted"\|"rejudged", recorded: true}` | l4-run；「改判」去 inbox |
 | `suspension` | 挂起卡 | `{run_id, suspension_id, title, reason, inbox_item_id}` | l4-run；「现在回答」去 inbox |
 | `run_report` | 运行报告卡 | `AutobuildReport` 摘要：`{run_id, run_no, state, started_at, ended_at, recovered_restarts: int, metrics: [...], slices: [...]}` | l4-run、chat-states 产物卡；按钮「去复核」「转为陪伴继续」 |
-| `knowledge_saved` | 沉淀入库结果 | `{knowledge_id, title, conflicts: int}` | chat-states 第 12 项「已入库，后续建模会自动应用」 |
+| `knowledge_saved` | 沉淀入库结果（已删除，ADR-0101） | — | — |
 
 ### 4.8 `chat-states` 页全部条目 → 事件与接口
 
@@ -4737,7 +4291,7 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 | 9 排队中 | EC-01（`queued`）、EC-02 | `S-12` |
 | 10 上下文占用与自动压缩、项目累计用量 | EC-51、EC-52 | `S-05`、`P-16` |
 | 11 重启会话 | EC-01（`closed`） | `S-09` |
-| 12 沉淀为业务知识 | EC-40 `knowledge_saved` | `K-06`（查重提示）、`K-03`（带 `source`） |
+| 12 沉淀为业务知识（已删除，ADR-0101） | — | — |
 | 13 复制 | — | 前端本地完成 |
 | 14 能力包升级提示（下一条消息生效） | EC-06、EC-07、EP-08 | `PL-11`；「查看更新内容」去 `PL-02` |
 | 15 出错时（友好提示 + 错误编号） | EC-04 | `S-14`（重试）；管理员看 `O-51` |
@@ -4761,7 +4315,7 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 | 写入范围只读（助手运行中 / 有冲突） | EP-03 | `CS-06` |
 | 这一轮改了什么卡（查看改动、撤回这一轮） | EC-40/41 `round_changes`、EP-04 | `CS-03`、`CS-05` |
 | 建议条三态（先做上面的决定 / 确认生效 / 提取这一段的规则） | EC-53 | `FL-02` |
-| 建模步骤抽屉（分段、必经、发布前检查、可选、有需要时；开始、跳过、恢复、调整分段） | EP-01 | `FL-01`、`FL-03`、`FL-04`、`FL-05` |
+| 建模步骤抽屉（已删除，ADR-0101；进度条只展示，不能点开） | — | — |
 | 输入框（拖入文件、粘贴截图、@ 引用条目、命令、发送；模式胶囊） | EC-10 | `U-01`、`S-07`、`S-18`、`F-07`（@ 搜条目）、`P-13` |
 
 ---
@@ -4777,10 +4331,10 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 | 启动 | `C-01`、`A-07`、`A-04`（无感刷新） | — |
 | 全局页外壳（顶栏：我的项目、插件中心、运维中心、铃铛、头像） | `A-13`、`A-14` | 用户流 EU-01～04 |
 | 项目页外壳（面包屑、知识包版本、左栏内核 4 项 + 插件页面、工作台角标、子导航） | `P-04`、`PL-12`、`IN-01`（只取 `counts`）、`ST-01`（只取 `version_label`） | 项目流 EP-01、EP-02、EP-07、EP-20、EP-24 |
-| ⌘K 命令面板 | `F-07`、`S-18`；「开始自主构建」走 `AB-03`；「上传资料」「连接业务系统」等跳页 | — |
+| ⌘K 命令面板 | `F-07`、`S-18`；「开始自主构建」走 `AB-03`；「上传资料」等跳页 | — |
 | 证据锚点悬停看原文（所有页） | `EV-29` | — |
 | 维护横幅 | `C-01` 的 `maintenance` | EP-24、EU-04 |
-| 工作台公共件（顶栏、建模步骤抽屉、输入框、建议条） | 见 4.9 | — |
+| 工作台公共件（顶栏、输入框、建议条） | 见 4.9 | — |
 
 ### 5.1 逐页对照
 
@@ -4789,29 +4343,29 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 | `login` | 登录与注册 | `C-01`、`A-01`、`A-02`、`A-03`、`A-04` | — |
 | `projects` | 我的项目 | `P-01`、`P-03`（重命名弹窗实时检查）、`P-05`、`P-06`、`P-07`、`P-08`、`P-09`、`A-13`、`A-14`、`FL-01`（卡片分段进度已含在 `ProjectCard`，不单独调） | EU-01、EU-02、EU-03 |
 | `import` | 导入项目 | `U-01`（`project_import`）、`U-03`、`P-10`、`P-03`、`P-11` | — |
-| `create` | 新建项目 | `P-03`、`U-01`（`material`）、`U-03`、`EV-01`（已登记数据源数）、`PL-01`（`category=industry,system,capability`）、`C-06`、`A-09`、`P-02` | — |
-| `wb-materials` | 建模初期 · 资料分析 | `S-01`、`S-05`、`S-06`、`S-07`、`S-08`、`S-11`、`U-01`、`R-02`、`R-03`、`R-06`、`R-07`、`R-08`、`R-09`、`R-10`、`P-05`（联网 / 仅本地）、`S-20`（追加分析、继续读取、让助手逐条修正）、`EV-01`、`FL-01`、`FL-02` | EC-01、EC-10、EC-12、EC-20/21、EC-32/33、EC-40/41（`upload_prompt`、`material_map`）、EC-51、EC-53；EP-01、EP-11、EP-12 |
-| `wb-blueprint` | 建模初期 · 分段规划 | `BP-01`、`BP-02`、`BP-03`、`RP-02`（资料分析小结）、`AB-03`、`AB-04`、`EV-01`（数据源提示）、`S-07`、`S-20`（重新划分、按章节拆分）、`FL-01`、`FL-02` | EC-40/41（`research_summary`、`blueprint`、`build_choice`）、EC-20、EC-53；EP-01 |
-| `wb-l2` | 建模中 · 陪伴（L2） | 见 4.9：`S-01`、`S-05`、`S-06`、`S-07`、`S-11`、`ST-04`、`AR-03`、`CS-02`～`CS-06`、`FL-01`～`FL-05`、`IN-01`、`EV-29`、`U-01`、`F-07`、`S-18`、`P-13` | 对话流全部；EP-01～EP-05 |
+| `create` | 新建项目 | `P-03`、`U-01`（`material`）、`U-03`、`PL-01`（`category=industry,system,capability`）、`C-06`、`A-09`、`P-02` | — |
+| `wb-materials` | 建模初期 · 资料分析 | `S-01`、`S-05`、`S-06`、`S-07`、`S-08`、`S-11`、`U-01`、`R-02`、`R-03`、`R-06`、`R-07`、`R-08`、`R-09`、`R-10`、`S-20`（追加分析、继续读取、让助手逐条修正）、`FL-01`、`FL-02` | EC-01、EC-10、EC-12、EC-20/21、EC-32/33、EC-40/41（`upload_prompt`、`material_map`）、EC-51、EC-53；EP-01、EP-11、EP-12 |
+| `wb-blueprint` | 建模初期 · 分段规划 | `BP-01`、`BP-02`、`BP-03`、`RP-02`（资料分析小结）、`AB-03`、`AB-04`、`S-07`、`S-20`（重新划分、按章节拆分）、`FL-01`、`FL-02` | EC-40/41（`research_summary`、`blueprint`、`build_choice`）、EC-20、EC-53；EP-01 |
+| `wb-l2` | 建模中 · 陪伴（L2） | 见 4.9：`S-01`、`S-05`、`S-06`、`S-07`、`S-11`、`ST-04`、`AR-03`、`CS-02`～`CS-06`、`FL-01`、`FL-02`、`FL-05`、`IN-01`、`EV-29`、`U-01`、`F-07`、`S-18`、`P-13` | 对话流全部；EP-01～EP-05 |
 | `flowchart` | 流程图编辑弹窗 | `AR-03`、`AR-05`、`AR-08`、`AR-10`、`CS-06`、`PL-12`（图示插件标记）、`S-08`（锁定条「回到对话里打断它」） | EC-40 `flowchart`、EP-03、EP-05、EP-06 |
 | `l4-run` | 建模中 · 自主构建（L4） | `AB-01`、`AB-03`、`AB-04`、`AB-05`～`AB-10`、`AB-14`、`AB-16`、`AB-17`、`V-02`（查看改动）、`S-05`、`S-06`、`S-07`（补充说明，`deferred`）、`CS-06`、`FL-01`、`FL-02` | EC-40/41（`autobuild_start`、`slice_progress`、`auto_decision`、`suspension`、`run_report`）、EC-53（`autobuild_controls`）；EP-03、EP-14～EP-17 |
-| `incremental` | 增量更新 | `INC-01`～`INC-05`、`R-11`、`R-12`、`CS-02`～`CS-05`、`S-07`、`S-20`（让助手分析、交给助手修）、`FL-01`、`FL-02` | EC-40/41（`change_list`、`impact`、`regression`、`external_feedback`、`round_changes`）、EC-20、EC-53；EP-18、EP-04 |
-| `inbox` | 待处理与复核 | `IN-01`～`IN-04`、`AB-10`～`AB-17`、`INC-01`～`INC-04`、`S-11`、`S-16`、`S-17`、`R-11`、`V-02`、`EV-29` | EP-02、EP-09、EP-17 |
+| `incremental` | 增量更新 | `INC-01`～`INC-05`、`CS-02`～`CS-05`、`S-07`、`S-20`（让助手分析、交给助手修）、`FL-01`、`FL-02` | EC-40/41（`change_list`、`impact`、`regression`、`round_changes`）、EC-20、EC-53；EP-18、EP-04 |
+| `inbox` | 待处理与复核 | `IN-01`～`IN-04`、`AB-10`～`AB-17`、`INC-01`～`INC-04`、`S-11`、`S-16`、`S-17`、`V-02`、`EV-29` | EP-02、EP-09、EP-17 |
 | `chat-states` | 对话卡片与状态 | 见 4.8 | 见 4.8 |
-| `studio` | 图谱 | `ST-01`、`ST-02`、`ST-04`、`ST-05`、`ST-06`、`CS-06`、`EV-26`（证据卡「被谁引用」）、`AR-09`（场景通过率，已含在 `ST-01`） | EP-03、EP-05 |
+| `studio` | 图谱 | `ST-01`、`ST-02`、`ST-04`、`ST-05`、`ST-06`、`CS-06`、`AR-09`（场景通过率，已含在 `ST-01`） | EP-03、EP-05 |
 | `studio-table` | 表格与条目编辑 | `ST-03`、`ST-04`、`ST-07`、`ST-08`、`ST-09`、`ST-10`、`F-02`、`F-03`（编辑原文）、`F-04`（大文件下载）、`V-04`（刷新后对比）、`AR-02`、`AR-03`、`AR-07`、`AR-08`（流程图条目）、`R-01`、`R-15`（证据列选出处）、`EV-29`、`CS-06`、`C-05`、`PL-12` | EP-03、EP-05、EP-06 |
 | `reports` | 报告评审 | `RP-01`～`RP-06`、`S-11`（专家裁决）、`R-09`（资料分析报告核验） | EP-22、EP-10 |
-| `resources` | 资料区 | `R-01`～`R-06`、`R-11`、`R-12`、`F-04`、`F-05`、`F-03`（drawio 保存）、`F-02`（drawio、文本）、`PL-12`（子页） | EP-05、EP-07 |
-| `sources` | 业务系统数据源 | `EV-01`～`EV-12`、`PL-01`（去插件中心安装提供方） | — |
-| `snapshots` | 采集与快照 | `EV-12`、`EV-13`～`EV-22`、`EV-30`（联系管理员）、`S-20`（在对话里分析影响） | EP-13 |
-| `schema` | 证据浏览器 | `EV-18`（快照下拉）、`EV-23`～`EV-28` | — |
+| `resources` | 资料区 | `R-01`～`R-06`、`F-04`、`F-05`、`F-03`（drawio 保存）、`F-02`（drawio、文本）、`PL-12`（子页） | EP-05、EP-07 |
+| `sources` | 业务系统数据源（已删除，ADR-0101） | — | — |
+| `snapshots` | 采集与快照（已删除，ADR-0101） | — | — |
+| `schema` | 证据浏览器（已删除，ADR-0101） | — | — |
 | `publish` | 发布知识包 | `PB-01`～`PB-07`、`HB-05`～`HB-09`、`P-09`、`FL-05`（合规检查「去运行」）、`RP-06`（修完重新检查）、`V-01`（版本下拉） | EP-19、EP-01 |
 | `versions` | 版本历史与对比 | `V-01`～`V-08`、`F-06`、`F-03` | EP-05 |
 | `scenarios` | 场景模拟（插件） | `AR-01`、`AR-02`、`AR-03`、`AR-04`、`AR-05`、`AR-06`、`AR-07`、`AR-09`（类型 `trace.scenario`、`trace.mock`）、`S-20`（批量验证、交互模拟、补齐过期场景、按场景补生成、行内 ▶）、`S-19`、`CS-06`、`IN-01`（`pack=trace` 角标）、`PL-12` | EP-03、EP-06、EP-10 |
-| `knowledge` | 知识沉淀（插件） | `K-01`～`K-08`、`S-20`（在对话里复核）、`CS-06` | EP-23、EP-03 |
+| `knowledge` | 知识沉淀（插件，已删除，ADR-0101） | — | — |
 | `scripts` | 代码生成与求解（插件） | `SC-01`、`SC-02`、`SC-03`、`SV-01`～`SV-03`、`ST-04`（脚本只读预览）、`S-20`（扫描、生成脚本、修复、重新生成、按模板重新生成）、`S-19`、`CS-06` | EP-03、EP-06、EP-10 |
-| `proj-settings` | 项目设置 | `P-04`、`P-05`、`P-06`、`P-07`、`P-12`、`P-13`、`P-14`、`C-06`、`A-09`、`AB-01`、`AB-02`、`AB-03`、`AB-18`、`BP-01`（范围里的分段清单）、`EV-01`（生产库授权行）、`PL-05`～`PL-11`、`M-01`～`M-04` | EP-08、EP-20 |
-| `plugins` | 插件中心 | `PL-01`、`PL-03`、`PL-04`、`PL-06`、`PL-07`、`PL-19`（管理员） | EU-01 |
+| `proj-settings` | 项目设置 | `P-04`、`P-05`、`P-06`、`P-07`、`P-12`、`P-13`、`P-14`、`C-06`、`A-09`、`AB-01`、`AB-02`、`AB-03`、`AB-18`、`BP-01`（范围里的分段清单）、`PL-05`～`PL-11`、`M-01`～`M-04` | EP-08、EP-20 |
+| `plugins` | 插件中心 | `PL-01`、`PL-03`、`PL-06`、`PL-07` | EU-01 |
 | `plugin-detail` | 插件详情 | `PL-02`、`PL-03`、`PL-07`、`PL-09`、`PL-05` | — |
 | `plugin-upload` | 上传与审核插件 | `PL-13`～`PL-18` | — |
 | `me` | 个人设置 | `A-05`～`A-11` | — |
@@ -4832,7 +4386,7 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 3. **本契约提供了接口、设计稿没有画入口的**（实现时由主控决定是否补页面，见 8.2）：
    - `X-06` 服务令牌管理；
    - `SY-18` 模型单价表；
-   - `AD-06`～`AD-10`：无主项目、指定所有者、管理员申请审核；
+   - `AD-06`、`AD-07`：无主项目、指定所有者；
    - `O-05` 链路检索。
 
 ---
@@ -4891,7 +4445,7 @@ ADR-0098：`POST /api/v1/projects/{id}/solver/receipts` 与求解验证候选包
 | `POST /api/projects/{id}/studio/submit` | `ST-08` | 改写 |
 | `GET /api/projects/{id}/report-items?path=` | `RP-02`、`RP-03` | 改写 |
 | `GET /api/projects/{id}/query` | `F-08` | 改写 |
-| `GET/POST/DELETE /api/projects/{id}/knowledge` | `K-01`、`K-03`、`K-05` | 改写；按路径改为按 `knowledge_id` |
+| `GET/POST/DELETE /api/projects/{id}/knowledge` | `K-01`（`K-03`、`K-05` 已删除，ADR-0101） | GET 改写；POST、DELETE 删除，回 `410 endpoint_removed`，`successor` 为 null |
 | `GET /api/projects/{id}/versions` | `V-01` | 改写 |
 | `POST /api/projects/{id}/versions/revert` | `V-06` | 改写 |
 | `POST /api/projects/{id}/versions/tag` | `V-07` | 改写 |
@@ -5049,16 +4603,16 @@ type AnchorResolution = {
   anchor: string;
   scheme: "file" | "db" | "code" | "bin" | "ui" | "api" | "cli" | "log";
   resolved: boolean;
-  reason?: string;                // resolved=false 时：not_in_snapshot | file_missing | invalid
-  source_label: string;           // 资料名（原文件名去扩展名，文本版映射回原资料）如 "02-配送规则说明"，或 "业务系统 订单库"
+  reason?: string;                // resolved=false 时：invalid | file_missing | not_found | unreadable | not_available（非 file 锚点）
+  source_label: string;           // 资料名（原文件名去扩展名，文本版映射回原资料）如 "02-配送规则说明"
   location_label: string;         // 如 "第 3 页"、"工作表 客户"、"§9.2 超量处理"、"补货标准表 · 标准上限"；
                                   // 行号锚点 L12[-L15] 按前面最近的位置标记（文本版）或小节标题（md 资料）算，都没有时为空串，不显示行号
   material?: { name: string; type: string; path: string } | null;   // file 锚点：原资料（F4b-paths）；type 如 "PDF"、"Word"
-  text: string;                   // 原文或记录摘要
+  text: string;                   // 原文
   highlights: { start: number; end: number }[];
   confidence: "declared" | "observed" | "inferred" | null;   // 界面叫法：系统元数据 / 数据观察 / 推断
-  snapshot_id: string | null;
-  page: "resources" | "schema" | null;   // 「查看原文」去哪
+  snapshot_id: string | null;     // 恒为 null（证据快照已删除，ADR-0101）
+  page: "resources" | null;      // 「查看原文」去哪：file 锚点为 resources
 };
 ```
 
@@ -5106,7 +4660,6 @@ type ProjectMeta = {
   owner: string; created_at: time; archived: boolean; archived_at: time | null;
   engine: string; engine_label: string;
   build_mode: "L2" | "L4";
-  research_mode: "web" | "local";
   version_label: string;          // 主线当前版本，如 "v0.12"
   head: string;
   last_release: { version: string; at: time } | null;
@@ -5204,7 +4757,6 @@ type MaterialMapItem = {
 
 type MaterialMap = {
   total: number; read_pct: number;
-  analysis_mode: "web" | "local"; web_available: boolean;
   items: MaterialMapItem[];
   problems: { id: string; kind: "contradiction" | "missing"; text_md: string;
               display_md: string;  // F4c：给人看的正文，资料路径换成「资料名 · 位置」，其余路径换业务名
@@ -5213,15 +4765,7 @@ type MaterialMap = {
   can_generate_blueprint: boolean;
 };
 
-type Feedback = {
-  id: string; source: { service: string; run: string };
-  release_version: string | null; received_at: time;
-  state: "open" | "handled" | "dismissed";
-  summary: string;                // 「评测失分用例 2 条 · 都和「临时放宽」有关」
-  items: { case_id: string; question: string; expected: string; actual: string;
-           loss_reason: string | null; suspected: (EntryRef | ArtifactRef)[]; related: string | null }[];
-  handled_version_label: string | null;
-};
+// Feedback（外部反馈批次）随反馈演进包删除（ADR-0101）
 ```
 
 ### 7.5 Studio 与知识
@@ -5255,8 +4799,7 @@ type Entry = {
   };
   backlinks: { source: EntryRef | ArtifactRef; relation: string; locked: boolean }[];
   data_source: { kind: "table" | "anchor" | "none" | "unset"; value: string | null; label: string };
-  evidence_snapshots: Record<string, string>;   // frontmatter 里的 evidence_snapshots
-  counts: { refs_out: number; refs_in: number; fields: number; evidence: number };
+  counts: { refs_out: number; refs_in: number; fields: number };   // evidence_snapshots、counts.evidence 随证据采集删除（ADR-0101）
   revision: string; head: string;
   lock: ScopeLock | null;
   draft: Draft | null;
@@ -5287,7 +4830,7 @@ type KnowledgeEntry = {
   revision: string; updated_at: time;
 };
 
-type ConflictFinding = { kind: "duplicate" | "scope_conflict" | "broken_ref"; with: string; note: string };
+// ConflictFinding 随 K-03 删除（ADR-0101）
 ```
 
 ### 7.6 版本、变更集、写入范围
@@ -5418,7 +4961,7 @@ type NodeState = "not_ready" | "ready" | "running" | "pending_confirm" | "confir
 
 type FlowNode = {
   id: string; title: string;      // core.validate 的 title 恒为「校验」（11-05 起场景模拟包不再改它的显示名）
-  kind: "agent" | "script" | "human" | "external";
+  kind: "agent" | "script" | "human";   // external 随证据采集删除（ADR-0101）
   placement: "spine" | "step" | "branch" | "gate" | "on_demand";
   section: "required" | "pre_publish" | "optional" | "on_demand";
   state: NodeState;
@@ -5427,7 +4970,7 @@ type FlowNode = {
   progress: { done: number; total: number; label: string } | null;   // 「3/5 段」
   version: string;                // "core@1.4.2"
   per_slice: boolean;
-  note: string | null;            // 「登记了业务系统数据源才有这一步」
+  note: string | null;
   blocks: string[];
   actions: { kind: "start" | "skip" | "restore" | "refresh" | "confirm"; label: string; target?: string }[];
   plugin: { name: string; label: string } | null;
@@ -5496,7 +5039,7 @@ type Blueprint = {
                options: { id: string; label: string }[];
                answer: { option_id?: string; custom_text?: string } | null }[];
   research: { verified: boolean; report_id: string | null };
-  evidence_hint: { sources: { id: string; label: string; environment: string }[]; text: string } | null;
+  evidence_hint: null;            // 恒为 null（证据采集已删除，ADR-0101）
   revision: string; updated_at: time;
 };
 ```
@@ -5506,14 +5049,14 @@ type Blueprint = {
 ```ts
 type InboxItem = {
   id: string;                     // "<kind>:<来源ID>"
-  kind: "decision" | "evidence_conflict" | "change_list" | "review" | "suspension" | "stale" | "resumable"
-      | "feedback" | "report" | "changeset_conflict" | "format_migration" | "notification"
+  kind: "decision" | "change_list" | "review" | "suspension" | "stale" | "resumable"
+      | "report" | "changeset_conflict" | "format_migration" | "notification"
       | "check_findings";             // F8：平台代存的那一轮检查没过（最近一个合入的变更集 collected 且有错误）
   kind_label: string;
   title: string; meta: string;    // 「4 个选项 · 推荐 A」「置信度 0.72 · 记为假设」
   slice: { id: string; name: string } | null;
   run: { run_id: string; run_no: number; at: time } | null;
-  source: "assistant" | "autobuild" | "upgrade" | "import" | "materials" | "restart" | "external" | "plugin";
+  source: "assistant" | "autobuild" | "upgrade" | "import" | "materials" | "restart" | "plugin";
   confidence: number | null; high_confidence: boolean;
   pack: string | null;            // 归属的插件，插件页角标用
   impact: { label: string; items: string[] }[];   // 右栏「影响范围」
@@ -5522,11 +5065,7 @@ type InboxItem = {
   batchable: boolean;             // 低把握、低置信条目为 false
 };
 
-type ConflictDetail = {
-  question: Question;
-  sides: { label: string; type_label: "资料" | "系统元数据" | "发布日期"; value: string; note: string; anchor: string; date?: string }[];
-  writes_to: EntryRef;            // 裁决写进这个对象的「证据」章节
-};
+// ConflictDetail 随 evidence_conflict 删除（ADR-0101）
 
 type StaleDetail = {
   upstream_diff: { title: string; lines: DiffLine[] };
@@ -5619,8 +5158,6 @@ type PackCard = {
   locked_version: string | null;
   usage_note: string | null;      // 「mes-prod 在用」
   converter: { types: string[]; default_for: string[]; license: string } | null;   // 多源连接器里的文档转换器（ADR-0073）
-  collector: { kind: string; evidence_types: string[]; input: "connection" | "artifact"; self_service: boolean;
-               installed: boolean; readonly_method: string; license_note: string } | null;   // 网关里的采集类连接器，包仓库里的包为 null
 };
 
 type CompatCheck = { id: "kernel_api" | "engines" | "depends" | "names" | "flow" | "page_api";
@@ -5669,7 +5206,7 @@ type Extensions = {
            data: { artifacts: string[]; reports: string[]; nodes: string[] };
            actions: { id: string; label: string; command: string; hint: string }[];
            pending: boolean }[];   // pending = 下一条消息生效前，按钮显示「下一条消息生效」
-  entries: { id: string; kind: "quick_action" | "extra_action" | "source_wizard"; label: string;
+  entries: { id: string; kind: "quick_action" | "extra_action"; label: string;
              where: string; command?: string; pack: string }[];
   artifact_types: string[];
   views: string[];
@@ -5772,77 +5309,8 @@ type Receipt = {
 
 ### 7.13 证据源
 
-```ts
-type EvidenceSourceRef = { id: string; display_name: string; environment: "production" | "test" };
-
-type EvidenceSource = EvidenceSourceRef & {
-  provider: { id: string; version: string; label: string };
-  connection: Record<string, string | number>;   // 不含密钥
-  cred_ref: string | null;        // "cred://mes-prod/3"
-  secret_fields: { name: string; set: boolean; written_at: time | null }[];
-  scope_allowlist: string[]; scope_summary: string;   // 「mes.* 42 表」
-  egress: { host: string; port: number }[];
-  access_window: { days: "daily" | string[]; start: string; end: string; tz: string } | null;
-  budget: { max_rows: number; max_bytes: number; max_duration_s: number };
-  rate_limit: { concurrency: number; qps: number; query_timeout_s: number };
-  masking_policy: string;
-  authorization_note: string | null; owner: string;
-  last_job: { at: time; state: CollectionJob["state"] } | null;
-  authorized_for_project: boolean | null;
-};
-
-type CollectionJob = {
-  id: string; project_id: string; source: EvidenceSourceRef;
-  operation: "discover" | "snapshot" | "sample";
-  scope_text: string; incremental_base: string | null;
-  state: "queued" | "running" | "succeeded" | "partial" | "failed" | "cancelled";
-  phase: string | null;           // 「采集字段与约束」
-  progress: { done: number; total: number; unit: string; pct: number } | null;
-  queue_reason: string | null;    // 「等待访问窗口 22:00，前面还有 1 个任务」
-  started_at: time | null; ended_at: time | null; duration_ms: number | null;
-  result: { snapshot_id?: string; message: string; commit?: string;
-            inventory?: { items: number; skipped: number } } | null;   // inventory：discover 的结果（F16）
-  error: { code: string; message: string } | null;   // 「401：凭据已过期」
-  resumed_from: string | null; checkpoint: boolean;
-  initiated_by: string; consent: { by: string; at: time } | null;
-  actions: ("cancel" | "browse" | "resume" | "retry" | "notify_admin")[];
-};
-
-// 详设 5.8.4 manifest.json 的投影
-type SnapshotSummary = {
-  id: string; source: EvidenceSourceRef;
-  provider: string;               // "db-mysql@1.0.0"
-  complete: boolean; coverage_pct: number;
-  records: Record<"entity" | "field" | "relation" | "constraint" | "operation" | "rule" | "flow" | "profile" | "sample" | "term", number>;
-  referenced: number;
-  masking_policy: string;
-  started_at: time; ended_at: time;
-  previous: string | null; job_id: string;
-  git_bytes: number;
-};
-
-type SnapshotRef = { id: string; source_id: string; complete: boolean };
-
-type EvidenceRecord = {
-  anchor: string; type: string; name: string; label: string | null;
-  parent_anchor: string | null;
-  confidence: "declared" | "observed" | "inferred";
-  evidence: { provider: string; method: string };
-  attrs: Record<string, any>;
-  fields?: { name: string; type: string; note: string; confidence: string; masked: boolean; anchor: string;
-             pk?: boolean; fk?: boolean; nullable?: boolean }[];   // pk、fk、nullable：数据库列（F16）
-  ddl?: string;
-  samples?: { columns: string[]; rows: string[][]; shown: number; max: 20;
-              masked_columns?: string[]; snapshot_id?: string };   // F16
-  profile?: { column: string; null_pct?: number | null; distinct?: number | null;   // F16
-              top_k?: { value: string; pct: number }[]; stats?: { min: number; max: number; null_pct: number } }[];
-  rows?: number;
-  masked?: boolean;               // 数据库列记录的脱敏标记（F16）
-  data_type?: string; nullable?: boolean;   // 数据库列记录（F16）
-  snapshot: SnapshotRef;
-  untrusted_content?: boolean;    // 快照内容来自目标程序（F13）
-};
-```
+证据采集已删除（ADR-0101），本节的 `EvidenceSourceRef`、`EvidenceSource`、`CollectionJob`、`SnapshotSummary`、`SnapshotRef`、`EvidenceRecord` 一并删除。
+锚点解析结果 `AnchorResolution` 见 7.1，属性表证据列 `EvidenceCell` 见 7.5。
 
 ### 7.14 发布
 
@@ -5876,7 +5344,6 @@ type ReleaseRecord = {
   gates: { all_passed: boolean; degraded: boolean; unbound_objects: string[] };
   manifest_attached: true;
   pulls: { at: time; by_token: string; variant: string }[];
-  feedback_count: number;
   size: number; sha256: string;
 };
 
@@ -5899,7 +5366,6 @@ type AutobuildPolicy = {
            refresh_stale_first: boolean; generate_scenarios: boolean; include_optional: boolean;
            until_node: string | null };   // 做到哪一步，如 "core.validate"
   budget: { max_duration_min: number; max_tokens: number; max_cost: Money };
-  production_collection: { source_id: string; allowed: boolean; window: { start: string; end: string } | null; scope: string[] }[];
   advanced: { confidence_threshold: number;            // 0.5–1.0，默认 0.80
               below_threshold: "conservative_assumption" | "suspend";
               must_suspend_kinds: string[];
@@ -5911,7 +5377,7 @@ type AutobuildPolicy = {
 type AutobuildPreview = {
   preview_token: string; expires_at: time;
   slices: { id: string; name: string; current: string; included: boolean }[];
-  budget: AutobuildPolicy["budget"]; production: string; below_threshold_text: string;
+  budget: AutobuildPolicy["budget"]; below_threshold_text: string;
   warnings: string[]; queued: boolean; queue_position: number | null;
   busy: { conversation_id: string; waiting: boolean } | null;
 };
@@ -5961,7 +5427,7 @@ type Suspension = {
   id: string; run_id: string; at: time;
   slice: { id: string; name: string };
   title: string; reason: string; handled_as: string;   // 「跳过这一项，先做下一步」
-  kind: "question" | "unauthorized_collection" | "unreadable_material";
+  kind: "question" | "unreadable_material";
   options: Option[]; allow_custom: boolean;
   actions: ("upload_text" | "use_generic")[];
   state: "open" | "answered" | "deferred";
@@ -6030,9 +5496,9 @@ type AuditEntry = {
   id: string; ts: time;
   actor: string;                  // 用户名、"agent"、"mcp:<token 名>"、"system"
   actor_kind: "user" | "agent" | "mcp" | "service" | "system";
-  type: "write" | "mcp" | "commit" | "plugin" | "evidence" | "ops" | "auth" | "publish" | "changeset"
-      | "autobuild" | "user" | "contract";
-  action: string;                 // 如 changeset.merge、pack.enable、evidence.collect
+  type: "write" | "mcp" | "commit" | "plugin" | "ops" | "auth" | "publish" | "changeset"
+      | "autobuild" | "user" | "contract";   // 老记录里可能还有 "evidence"（ADR-0101 前）
+  action: string;                 // 如 changeset.merge、pack.enable
   method: string | null; path: string | null; status: number | null;
   project_id: string | null;
   summary: string;                // 不含项目内容
@@ -6044,7 +5510,7 @@ type ErrorRecord = {
   id: string;                     // "err-7f3a"
   at: time;
   project: ProjectMetaView | null;
-  origin: "session" | "publish" | "collection" | "assembly" | "gate" | "kernel";
+  origin: "session" | "publish" | "assembly" | "gate" | "kernel";   // collection 随证据采集删除（ADR-0101）
   pack: string | null; node: string | null;
   raw_message: string;            // 已脱敏：去掉密钥、连接串、内容摘录
   friendly_message: string;       // 用户看到的那句
@@ -6122,7 +5588,7 @@ type ErrorRecord = {
 30. **Studio 提交的三路结果都返回 200 加 `result`，`rejected` 不算 422。** 编辑器把三种结果都当正常流程显示，与现有接口一致。
 31. **草稿 PUT 接受 `form`（结构化）或 `content`（原文），由服务端按元模型渲染 Markdown。** 前端重写；序列化放在后端，才能和校验器用同一份元模型（详设 4.4）。
 32. **流程图是图示包登记的插件产物 `diagram.flowchart`，Studio 经通用产物接口读写。** 理由见 9.1#2。
-33. **知识条目用专用的 `K-*` 接口，不走通用产物接口。** 分层、覆盖、提名是 core 的知识逻辑，通用视图表达不了；列表读法和 `core.knowledge` 产物等价。
+33. **知识条目用专用的 `K-*` 接口，不走通用产物接口。** 分层、覆盖、提名是 core 的知识逻辑，通用视图表达不了；列表读法和 `core.knowledge` 产物等价。（ADR-0101 起只剩只读的 `K-01`、`K-02`。）
 34. **`ST-10` 删除被引用的条目返回 `409 entry_referenced`，流程图例外。** 避免断链；设计稿删流程图时只提示「流程图缺失」。
 
 **流程、蓝图、待处理**
@@ -6138,9 +5604,9 @@ type ErrorRecord = {
 
 41. **自主构建先 `AB-03` 预览、拿 `preview_token`，再用 `AB-04` 启动。** 详设 8.5 要求开始前展示范围和预算，用户确认后才跑。
 42. **预算加 token 上限。** 设计稿有 token 上限；与配额口径（4.10.1）一致。
-43. **自主构建的生产库授权放在策略里（`AB-02`），和项目授权（`EV-11`）分开。** 详设 8.5 说「只能用项目设置里事先授权过的数据源」，设计稿也分两处。
+43. **自主构建的生产库授权放在策略里（`AB-02`），和项目授权（`EV-11`）分开。** 详设 8.5 说「只能用项目设置里事先授权过的数据源」，设计稿也分两处。（`EV-11` 已删除，ADR-0101。）
 
-**证据源**
+**证据源**（44～47 随证据采集删除，ADR-0101）
 
 44. **「租户级登记」就是平台全局登记。** 方案 E11 指出代码里没有租户概念。
 45. **数据源登记接口放在 admin 下，普通用户走 `EV-03` 提交申请。** 设计稿登记抽屉写「需要管理员权限，你可以先填好不含密钥的部分提交」。
@@ -6149,7 +5615,7 @@ type ErrorRecord = {
 
 **MCP 与三份契约**
 
-48. **MCP 新工具名用下划线（`flow_get`、`evidence_search`），文档写点号；evidence 工具 5 个，新增 scope `evidence.read`。** 现有 15 个工具都用下划线，MCP 客户端对点号兼容性差；工具数按详设 5.8.7。
+48. **MCP 新工具名用下划线（`flow_get`、`evidence_search`），文档写点号；evidence 工具 5 个，新增 scope `evidence.read`。** 现有 15 个工具都用下划线，MCP 客户端对点号兼容性差；工具数按详设 5.8.7。（evidence 工具和 `evidence.read` 已删除，ADR-0101。）
 49. **服务令牌前缀 `onto_svc_`，可以限定项目，由 admin 在 `X-06` 管理。** 方案第 6 章 #6 定了服务令牌和 MCP token 分开。
 50. **验证回执用方案 A2 给的路径 `/api/v1/projects/{id}/solver/receipts`；包清单和下载与所有者共用 `PB-06`、`PB-07`；另加跨项目列表 `/api/v1/contract/releases`。** A2 的路径已定；评测服务要按时间增量拉取。
 51. **图模式是 `PB-07` 的 `variant=graph`，按需渲染，不另打标签。** 方案第 6 章 #1：同一提交的格式变体。
@@ -6175,7 +5641,6 @@ type ErrorRecord = {
 | `X-06` | 服务令牌管理 | sys 页新增「对外契约」一节 |
 | `SY-18` | 模型单价表（费用计算） | sys 页「模型接入」卡里加单价 |
 | `AD-06`、`AD-07` | 无主项目列表、指定所有者 | ops-users「用户管理」加一个「无主项目」筛选 |
-| `AD-08`～`AD-10` | 管理员审核申请：插件安装、数据源登记、知识提名 | 通知进入；plugin-upload 加「申请」页签 |
 | `O-05` | 链路检索 | ops-obs 链路卡的搜索框 |
 
 ---
@@ -6189,10 +5654,10 @@ type ErrorRecord = {
 | 1 | 运维、管理员能看到多少项目信息 | 1.6、4.10.1：只看元数据（名称、所有者、阶段、占用） | ops-users 审计「内容」列有文件名、对象名、表名；错误留档有表名、凭据引用、规则文件行号 | 详设。只保留路径、条目 key 这类定位标识，不含正文；错误原文脱敏 |
 | 2 | 流程图归在哪 | 4.4「插件不能新增实体类型」；5.9.3 规则 3「本体条目只在 Studio 编辑，插件产物在插件页面编辑」 | 流程图是 Studio 的「条目类型」：表格筛选、新建、删除、编辑器面板，图示插件决定它出不出现 | 两边都保住。流程图是图示包登记的插件产物 `diagram.flowchart`（5.9.5 把流程图列为专用组件），不算本体实体，不进知识包；Studio 和流程图弹窗经通用产物接口读写 |
 | 3 | 节点状态有几种 | 6.6：8 种状态 + 需复核、已停用 2 个标记；6.9 又用了「可补做」 | core.js 状态表有 17 种：多了冲突、草稿、未开始、可补做、自主完成、失败、通过 | 详设。API 只用 8 种加 `flags`；`display_state` 给出设计稿的显示态。「可补做」是 `ready` 加 `backfill` 标记，「自主完成」是分段步骤的 `auto` |
-| 4 | evidence 工具有几个 | 5.8.7：search、show、where-used、lineage、diff 共 5 个 | proj-settings 写「evidence.*（6）」，同页 MCP 表列了 5 个 | 详设，5 个 |
+| 4 | evidence 工具有几个 | 5.8.7：search、show、where-used、lineage、diff 共 5 个 | proj-settings 写「evidence.*（6）」，同页 MCP 表列了 5 个 | 详设，5 个（已删除，ADR-0101） |
 | 5 | 待处理有哪些类型 | 4.7 列了「报告里的待处理条目」，8.2 有未确认的变更集提示 | inbox 筛选只有 8 类，没有报告条目 | 详设。保留这些类型，计入「全部」，不单设筛选 |
 | 6 | 自主构建预算有哪些维度 | 8.5：费用和时长上限 | 有时长、token、费用三项 | 设计稿。加上 token，与配额口径一致 |
-| 7 | 提名回流由谁审核 | 5.5：管理员审核、脱敏后发布 | knowledge 页只有提交，没有管理员审核入口 | 详设。提供 `AD-08`～`AD-10`，页面空缺列在 8.2 |
+| 7 | 提名回流由谁审核 | 5.5：管理员审核、脱敏后发布 | knowledge 页只有提交，没有管理员审核入口 | 详设。提供 `AD-08`～`AD-10`（提名与审核已删除，ADR-0101） |
 | 8 | 资料用途有几种 | ADR 0017 与现有代码：goal、schema、term、evidence、auto | features 写 4 种，资料菜单实际 5 种（多「由助手判断」） | 5 种（菜单与代码一致） |
 
 ### 9.2 设计稿内部不一致
@@ -6203,7 +5668,7 @@ type ErrorRecord = {
 | 2 | L4 平台上限：proj-settings 写「4 小时、10M、¥300」，sys 写「4 小时、8,000,000、¥600」 | 单一来源 `SY-17`，proj-settings 经 `AB-01.platform_limits` 读同一份 |
 | 3 | 场景模拟更新到 0.10.0：plugins 页直接提示成功，plugin-detail 弹「暂时不能更新」 | 两页都先调 `PL-03` 兼容检查，按结果显示 |
 | 4 | 会话池：sys 写「来自环境变量，改了要重建容器」，ops-ctl 却能编辑并保存 | 详设 4.10.3（运维可调整并发上限）。运维面可改（`O-16`）；sys 页只读显示当前值和来源 |
-| 5 | 提供方数量：features 写 8 个，插件目录 9 个（MySQL、PostgreSQL 分开），登记抽屉类型格另有 Oracle、达梦 | 按实现的提供方 ID 列出（`EV-10`）；`kind` 分组对应详设的 8 类 |
+| 5 | 提供方数量：features 写 8 个，插件目录 9 个（MySQL、PostgreSQL 分开），登记抽屉类型格另有 Oracle、达梦 | 按实现的提供方 ID 列出（`EV-10`）；`kind` 分组对应详设的 8 类（已删除，ADR-0101） |
 | 6 | 待处理和锁定条里的数字（如过期场景 2 / 3、通过 19 / 21）前后不一 | 示例数据问题，不影响契约 |
 
 ### 9.3 与代码或方案的出入

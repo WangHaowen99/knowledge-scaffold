@@ -71,36 +71,24 @@ def test_release_updated_on_publish(manager, monkeypatch, hub_login):
     assert events and events[-1]["data"]["release"]["version"] == response.json()["version"]
 
 
-def test_client_config_evidence_follows_connector_gateway(monkeypatch):
-    """C-01 features.evidence 跟着连接器网关走：没部署网关时 false（前端不调 EV-01、不出数据接入入口），部署了为 true。"""
-    from fastapi.testclient import TestClient
-
-    from app.main import app
-
-    monkeypatch.delenv("ONTO_WEB_CONNECTOR_GATEWAY_URL", raising=False)
-    features = TestClient(app).get("/api/v1/client-config").json()["features"]
-    assert features["evidence"] is False and "drawio" in features
-
-    monkeypatch.setenv("ONTO_WEB_CONNECTOR_GATEWAY_URL", "http://connector-gateway.invalid:8120")  # NOSONAR(S5332) 合成域名
-    assert TestClient(app).get("/api/v1/client-config").json()["features"]["evidence"] is True
-
-
-def test_web_research_action_needs_websearch_pack():
-    """联网资料分析要联网调研包：没启用时研究节点不出这个动作（用不了的入口不出现），启用了照常。"""
+def test_pack_gated_action_needs_its_pack():
+    """动作声明了 pack：没启用那个包时节点不出这个动作（用不了的入口不出现），启用了照常。"""
     import yaml
 
     from app.services.flow import assemble
 
     toolkit = Path(config.ASSETS_DIR) / "workspace-toolkit"
     core = yaml.safe_load((toolkit / "flow.yaml").read_text(encoding="utf-8"))
+    research = next(node for node in core["nodes"] if node["id"] == "core.research")
+    research["actions"].append({"label": "合成动作", "command": "/ontology-research ", "pack": "extra-notes"})
 
     def labels(*packs):
         contributions = [("core", "test", core)] + [(name, "test", {}) for name in packs]
         flow = assemble.assemble(contributions)
         return [action["label"] for action in next(n for n in flow["nodes"] if n["id"] == "core.research")["actions"]]
 
-    assert "联网资料分析" not in labels() and labels()[0] == "资料分析"
-    assert labels("websearch")[0] == "联网资料分析"
+    assert "合成动作" not in labels() and labels()[0] == "资料分析"
+    assert "合成动作" in labels("extra-notes")
 
 
 def test_template_object_sections_are_not_out_of_template(tmp_path: Path):

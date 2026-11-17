@@ -1,4 +1,3 @@
-import { ApiError } from './errors.js';
 import { withRequestId } from './requestIds.js';
 
 // 按契约编号组织的接口函数（F1～F4 用到的分组，后续阶段按同样写法补）
@@ -11,8 +10,7 @@ const OPS = { ops: true };
 export function createApi(client) {
   return {
     // 3.1 客户端配置、引擎
-    // C-01；features.evidence === false 时证据源接口不再探测（EV-01 直接按 501 返回，调用处照旧走失败分支）
-    clientConfig: () => client.get('/client-config').then((cfg) => { client.features = cfg?.features || {}; return cfg; }),
+    clientConfig: () => client.get('/client-config'), // C-01
     engines: () => client.get('/engines'), // C-06
 
     // 3.2 认证与个人
@@ -90,8 +88,6 @@ export function createApi(client) {
     materialCandidates: (id, query) => client.get(`${P(id)}/materials/candidates`, { query }), // R-08
     materialVerification: (id) => client.get(`${P(id)}/materials/verification`), // R-09
     promoteMaterialProblem: (id, problemId, body) => client.post(`${P(id)}/materials/problems/${enc(problemId)}/promote`, body || {}), // R-10
-    feedback: (id, query) => client.get(`${P(id)}/feedback`, { query }), // R-11
-    setFeedbackState: (id, feedbackId, body) => client.patch(`${P(id)}/feedback/${enc(feedbackId)}`, body), // R-12
 
     // 3.7 Studio 条目
     studioStats: (id) => client.get(`${P(id)}/studio/stats`), // ST-01
@@ -106,17 +102,6 @@ export function createApi(client) {
     submitStudioEntry: (id, entryId, body) => client.post(`${P(id)}/studio/entries/${enc(entryId)}/submit`, body || {}), // ST-08
     createStudioEntry: (id, body) => client.post(`${P(id)}/studio/entries`, body), // ST-09
     deleteStudioEntry: (id, entryId, base_revision) => client.del(`${P(id)}/studio/entries/${enc(entryId)}`, { base_revision }), // ST-10
-
-    // 3.8 知识
-    knowledge: (id, query) => client.get(`${P(id)}/knowledge`, { query }), // K-01
-    knowledgeEntry: (id, kid) => client.get(`${P(id)}/knowledge/${enc(kid)}`), // K-02
-    createKnowledge: (id, body) => client.post(`${P(id)}/knowledge`, body), // K-03
-    updateKnowledge: (id, kid, body) => client.put(`${P(id)}/knowledge/${enc(kid)}`, body), // K-04
-    deleteKnowledge: (id, kid, base_revision) => client.del(`${P(id)}/knowledge/${enc(kid)}`, base_revision ? { base_revision } : undefined), // K-05
-    knowledgeConflicts: (id) => client.get(`${P(id)}/knowledge/conflicts`), // K-06
-    checkKnowledgeConflicts: (id, body) => client.post(`${P(id)}/knowledge/conflicts`, body || {}), // K-06
-    nominationPreview: (id, kid, body) => client.post(`${P(id)}/knowledge/${enc(kid)}/nomination-preview`, body || {}), // K-07
-    nominateKnowledge: (id, kid, body) => client.post(`${P(id)}/knowledge/${enc(kid)}/nominations`, body), // K-08
 
     // 3.9 版本与标签
     versions: (id, query) => client.get(`${P(id)}/versions`, { query }), // V-01
@@ -169,8 +154,6 @@ export function createApi(client) {
     // 3.12 流程
     flow: (id, conversation_id) => client.get(`${P(id)}/flow`, { query: { conversation_id } }), // FL-01
     suggestions: (id, conversation_id) => client.get(`${P(id)}/flow/suggestions`, { query: { conversation_id } }), // FL-02
-    skipNode: (id, node, body) => client.post(`${P(id)}/flow/nodes/${enc(node)}/skip`, body || {}), // FL-03
-    restoreNode: (id, node, body) => client.post(`${P(id)}/flow/nodes/${enc(node)}/restore`, body || {}), // FL-04
     startNode: (id, node, body) => client.post(`${P(id)}/flow/nodes/${enc(node)}/start`, body), // FL-05
     blueprint: (id) => client.get(`${P(id)}/blueprint`), // BP-01
     saveBlueprint: (id, body) => client.put(`${P(id)}/blueprint`, body), // BP-02
@@ -201,7 +184,6 @@ export function createApi(client) {
     packs: (query) => client.get('/packs', { query }), // PL-01
     pack: (name, query) => client.get(`/packs/${enc(name)}`, { query }), // PL-02（project_id、version）
     packCompatibility: (name, version, query) => client.get(`/packs/${enc(name)}/versions/${enc(version)}/compatibility`, { query }), // PL-03
-    requestPackInstall: (name, body) => client.post(`/packs/${enc(name)}/install-requests`, body || {}), // PL-04
     projectPacks: (id) => client.get(`${P(id)}/packs`), // PL-05
     enablePack: (id, body) => client.post(`${P(id)}/packs`, body), // PL-06
     upgradePack: (id, name, body) => client.post(`${P(id)}/packs/${enc(name)}/upgrade`, body), // PL-07
@@ -227,7 +209,6 @@ export function createApi(client) {
     packUploadReportUrl: (uploadId) => client.withToken(client.url(`/admin/packs/uploads/${enc(uploadId)}/report`)), // PL-16
     publishPackUpload: (uploadId, body) => client.post(`/admin/packs/uploads/${enc(uploadId)}/publish`, body), // PL-17
     rejectPackUpload: (uploadId, body) => client.post(`/admin/packs/uploads/${enc(uploadId)}/reject`, body || {}), // PL-18
-    installPack: (name, body) => client.post(`/admin/packs/${enc(name)}/install`, body || {}), // PL-19
     // PL-22 上传自己用的包走 services.uploadPack（mine）
     myPackUploads: (query) => client.get('/me/pack-uploads', { query }), // PL-23
     myPackUpload: (uploadId) => client.get(`/me/pack-uploads/${enc(uploadId)}`), // PL-24
@@ -257,44 +238,8 @@ export function createApi(client) {
     saveSolverContract: (id, body) => client.put(`${P(id)}/solver/contract`, body), // SV-02
     checkSolverContract: (id, body) => client.post(`${P(id)}/solver/contract/check`, body), // SV-03
 
-    // 3.19 证据源
-    evidenceSources: (query) => (client.features?.evidence === false
-      ? Promise.reject(new ApiError({ status: 501, code: 'evidence_not_available', message: '这一版没有开放业务系统的连接器' }))
-      : client.get('/evidence/sources', { query })), // EV-01
-    registerEvidenceSource: (body) => client.post('/admin/evidence/sources', body), // EV-02
-    requestEvidenceSource: (body) => client.post('/evidence/source-requests', body), // EV-03
-    updateEvidenceSource: (sid, body) => client.patch(`/admin/evidence/sources/${enc(sid)}`, body), // EV-04
-    deleteEvidenceSource: (sid) => client.del(`/admin/evidence/sources/${enc(sid)}`), // EV-05
-    writeEvidenceSecret: (sid, body) => client.put(`/admin/evidence/sources/${enc(sid)}/secret`, body), // EV-06
-    deleteEvidenceSecret: (sid) => client.del(`/admin/evidence/sources/${enc(sid)}/secret`), // EV-07
-    testEvidenceSource: (sid, body) => client.post(`/evidence/sources/${enc(sid)}/test`, body || {}), // EV-08
-    evidenceAccessLog: (sid, query) => client.get(`/evidence/sources/${enc(sid)}/access-log`, { query }), // EV-09
-    evidenceProviders: () => client.get('/evidence/providers'), // EV-10
-    evidenceGrants: (id) => client.get(`${P(id)}/evidence/grants`), // EV-11
-    setEvidenceGrant: (id, sid, body) => client.put(`${P(id)}/evidence/grants/${enc(sid)}`, body), // EV-11
-    evidenceSummary: (id) => client.get(`${P(id)}/evidence/summary`), // EV-12
-    previewEvidenceJob: (id, body) => client.post(`${P(id)}/evidence/jobs/preview`, body), // EV-13
-    startEvidenceJob: (id, body) => client.post(`${P(id)}/evidence/jobs`, body), // EV-14
-    evidenceJobs: (id, query) => client.get(`${P(id)}/evidence/jobs`, { query }), // EV-15
-    evidenceJob: (id, jobId) => client.get(`${P(id)}/evidence/jobs/${enc(jobId)}`), // EV-16
-    evidenceJobAction: (id, jobId, op, body) => client.post(`${P(id)}/evidence/jobs/${enc(jobId)}/${op}`, body || {}), // EV-17：op = cancel | resume | retry；生产库 retry 带 confirmation_token
-    evidenceSnapshots: (id, query) => client.get(`${P(id)}/evidence/snapshots`, { query }), // EV-18
-    evidenceSnapshot: (id, snapId) => client.get(`${P(id)}/evidence/snapshots/${enc(snapId)}`), // EV-19
-    deleteEvidenceSnapshot: (id, snapId) => client.del(`${P(id)}/evidence/snapshots/${enc(snapId)}`), // EV-20
-    evidenceSnapshotDiff: (id, query) => client.get(`${P(id)}/evidence/snapshots/diff`, { query }), // EV-21
-    pushSnapshotSuggestions: (id, body) => client.post(`${P(id)}/evidence/snapshots/diff/suggestions`, body), // EV-22
-    evidenceSummaryTree: (id, query) => client.get(`${P(id)}/evidence/summary-tree`, { query }), // EV-23
-    evidenceSearch: (id, query) => client.get(`${P(id)}/evidence/search`, { query }), // EV-24
-    evidenceRecord: (id, anchor, snapshot) => client.get(`${P(id)}/evidence/record`, { query: { anchor, snapshot } }), // EV-25
-    evidenceWhereUsed: (id, anchor, prefix) => client.get(`${P(id)}/evidence/where-used`, { query: { anchor, prefix: prefix ? 'true' : undefined } }), // EV-26：prefix 匹配整张表
-    evidenceLineage: (id, anchor, snapshot) => client.get(`${P(id)}/evidence/lineage`, { query: { anchor, snapshot } }), // EV-27
-    evidenceEr: (id, query) => client.get(`${P(id)}/evidence/er`, { query }), // EV-28
+    // 3.19 出处
     resolveAnchors: (id, anchors) => client.post(`${P(id)}/anchors/resolve`, { anchors }), // EV-29
-    notifyEvidenceAdmin: (sid, body) => client.post(`/evidence/sources/${enc(sid)}/notify-admin`, body || {}), // EV-30
-    startEvidenceUpload: (body) => client.post('/evidence/uploads', body), // EV-31
-    putEvidenceUploadChunk: (uploadId, index, bytes, o) => client.put(`/evidence/uploads/${enc(uploadId)}/chunks/${index}`, bytes, o), // EV-32：请求体是这一块的字节
-    completeEvidenceUpload: (uploadId, body) => client.post(`/evidence/uploads/${enc(uploadId)}/complete`, body), // EV-33
-    cancelEvidenceUpload: (uploadId) => client.del(`/evidence/uploads/${enc(uploadId)}`), // EV-34：释放未完成上传的名额
 
     // 3.20 发布
     publishCheck: (id, query) => client.get(`${P(id)}/publish/check`, { query }), // PB-01
@@ -346,12 +291,10 @@ export function createApi(client) {
     evaluationSuggestions: (id, runId) => client.get(`${P(id)}/evaluations/${enc(runId)}/suggestions`), // ES-04
     evaluationAnswer: (id, runId, resultId) => client.get(`${P(id)}/evaluations/${enc(runId)}/answers/${enc(resultId)}`), // ES-05
     regenerateEvaluation: (id, runId) => client.post(`${P(id)}/evaluations/${enc(runId)}/regenerate`, {}), // ES-06
-    optimizeEvaluation: (id, runId) => client.post(`${P(id)}/evaluations/${enc(runId)}/optimization`, {}), // ES-07
     reportEvaluationFailure: (id, runId, note) => client.post(`${P(id)}/evaluations/${enc(runId)}/modeling-result`, { note }), // ES-08
     legacyEvaluations: (id) => client.get(`${P(id)}/legacy-evaluations`), // ES-09
     legacyEvaluation: (id, stem) => client.get(`${P(id)}/legacy-evaluations/${enc(stem)}`), // ES-10
     legacyEvaluationAnswer: (id, stem, resultId) => client.get(`${P(id)}/legacy-evaluations/${enc(stem)}/answers/${enc(resultId)}`), // ES-11
-    optimizeLegacyEvaluation: (id, stem) => client.post(`${P(id)}/legacy-evaluations/${enc(stem)}/optimization`, {}), // ES-12
 
     // 3.21 三份契约：服务令牌（X-06，设计稿没画入口，见 gaps F4）
     serviceTokens: () => client.get('/admin/service-tokens'), // X-06
@@ -411,7 +354,7 @@ export function createApi(client) {
     pricing: () => client.get('/admin/settings/pricing'), // SY-18（设计稿没画入口）
     savePricing: (body) => client.put('/admin/settings/pricing', body), // SY-18
 
-    // 3.24 管理员：用户、项目所有者、申请审核
+    // 3.24 管理员：用户、项目所有者
     adminUsers: (query) => client.get('/admin/users', { query }), // AD-01
     setUserRole: (username, role) => client.patch(`/admin/users/${enc(username)}`, { role }), // AD-02
     resetUserPassword: (username, body) => client.post(`/admin/users/${enc(username)}/reset-password`, body || {}), // AD-03
@@ -419,9 +362,6 @@ export function createApi(client) {
     userProjects: (username) => client.get(`/admin/users/${enc(username)}/projects`), // AD-05
     unownedProjects: (query) => client.get('/admin/projects/unowned', { query }), // AD-06（设计稿没画入口）
     setProjectOwner: (id, body) => client.put(`/admin/projects/${enc(id)}/owner`, body), // AD-07（设计稿没画入口）
-    adminRequests: (query) => client.get('/admin/requests', { query }), // AD-08（设计稿没画入口）
-    approveRequest: (requestId, body) => client.post(`/admin/requests/${enc(requestId)}/approve`, body || {}), // AD-09
-    rejectRequest: (requestId, body) => client.post(`/admin/requests/${enc(requestId)}/reject`, body || {}), // AD-10
 
     // 3.25 运维管理面（ops 读写，admin 只读；见 src/state/roles.js）
     ops: {
@@ -466,7 +406,7 @@ export function createApi(client) {
       startDrill: (body) => client.post('/backups/drills', body || {}, OPS), // O-38
       drills: () => client.get('/backups/drills', OPS), // O-39
       tasks: (query) => client.get('/tasks', { ...OPS, query }), // O-40
-      taskAction: (taskId, op) => client.post(`/tasks/${enc(taskId)}/${op}`, {}, OPS), // O-41：op = cancel | retry | resume
+      taskAction: (taskId, op) => client.post(`/tasks/${enc(taskId)}/${op}`, {}, OPS), // O-41：op = cancel | retry
       versions: () => client.get('/versions', OPS), // O-42
       retention: () => client.get('/retention', OPS), // O-43
       saveRetention: (body) => client.put('/retention', body, OPS), // O-44

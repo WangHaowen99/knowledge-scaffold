@@ -1,5 +1,5 @@
 // Studio 图谱（设计稿 studio）：顶部工具条与统计（ST-01）、关系图（ST-02，画布复用原版 WebGL 图谱）、
-// 左上图例、底部操作流程面板（ST-05）、右侧选中详情：属性 / 关系 / 证据（ST-04、ST-06、EV-26），锁标记（CS-06）
+// 左上图例、底部操作流程面板（ST-05）、右侧选中详情：属性 / 关系 / 证据（ST-04、ST-06），锁标记（CS-06）
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
@@ -7,7 +7,6 @@ import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import LegacyStudioGraphHost from '../../components/studio/LegacyStudioGraphHost.jsx';
 import { ShellP } from '../../shell/Shell.jsx';
-import { evidenceInProject } from '../../state/evidence.js';
 import { Button, Chip, Icon, Inp, Seg, St, Tabs, Toggle } from '../../ui/index.jsx';
 import { inlineTokens } from '../workbench/md.js';
 import '../../styles/studio.css';
@@ -136,32 +135,21 @@ function EvidenceCell({ cell }) {
   if (!cell) return null;
   if (cell.expert_confirmed) return <Chip tone="gray" sm>专家确认</Chip>;
   if (cell.missing || !cell.anchor) return <Chip tone="amber" sm>缺证据</Chip>;
-  const db = cell.scheme === 'db';
   return (
-    <span className={`ev${db ? ' db' : ''}`} data-ev={cell.anchor}>
-      <Icon name={db ? 'db' : cell.scheme === 'code' ? 'code' : 'quote'} />
+    <span className="ev" data-ev={cell.anchor}>
+      <Icon name={cell.scheme === 'code' ? 'code' : 'quote'} />
       {evidenceShortLabel(cell)}
     </span>
   );
 }
 
 function EvidenceCard({ item, pid, origin }) {
-  const { api } = useApp();
-  const project = useProject();
-  const [used, setUsed] = useState(null);
-  const db = item.scheme === 'db';
-  // 证据浏览器与「被谁引用」（EV-26）随系统逆向建模包出现；证据源本期只留接口（ADR-0056）
-  const evidenceOn = evidenceInProject(project);
   const [conf, tone] = CONFIDENCE_CHIP[item.confidence] || [];
-  const page = item.resolved?.page || (db ? 'schema' : 'resources');
-  const whereUsed = async () => {
-    if (used) { setUsed(null); return; }
-    try { setUsed(await api.evidenceWhereUsed(pid, item.anchor)); } catch (e) { toast(errorText(e), 'alert'); }
-  };
+  const page = item.resolved?.page || 'resources';
   return (
     <div className="card pad mb8" style={{ padding: '10px 12px' }}>
       <div className="row">
-        <span style={{ color: db ? 'var(--teal)' : 'var(--blue)' }}><Icon name={db ? 'db' : 'filetext'} size={14} /></span>
+        <span style={{ color: 'var(--blue)' }}><Icon name="filetext" size={14} /></span>
         <b className="sm grow">{item.title}</b>
         {conf ? <Chip tone={tone} sm>{conf}</Chip> : null}
       </div>
@@ -169,23 +157,10 @@ function EvidenceCard({ item, pid, origin }) {
       {item.used_for?.length ? <div className="xs muted mt4">用于属性{item.used_for.map((u) => `「${u}」`).join('、')}</div>
         : item.resolved?.location_label ? <div className="xs muted mt4">{item.resolved.location_label}</div> : null}
       <div className="row mt8">
-        {!db || evidenceOn ? <Button size="xs" onClick={() => navigate(pagePath(page, pid), { anchor: item.anchor, from: window.location.hash.replace(/^#/, ''), fromLabel: origin || '' })}>查看原文</Button> : null}
-        {evidenceOn ? <Button size="xs" kind="ghost" onClick={whereUsed}>被谁引用</Button> : null}
+        <Button size="xs" onClick={() => navigate(pagePath(page, pid), { anchor: item.anchor, from: window.location.hash.replace(/^#/, ''), fromLabel: origin || '' })}>查看原文</Button>
         <span className="sp" />
         <Button size="xs" kind="ghost" icon="copy" title="复制锚点" onClick={async () => toast((await copyText(item.anchor)) ? '已复制锚点' : '复制失败，请手动选择', 'copy')} />
       </div>
-      {used ? (
-        <div className="sd-wu">
-          {used.items?.length ? used.items.map((u, i) => {
-            const v = backlinkView(u.target);
-            return (
-              <div key={i} className="it" onClick={() => !v.artifact && gotoEntry(pid, u.target.id)}>
-                <Icon name={v.icon} size={12} /><b style={{ fontWeight: 600 }}>{v.name}</b><span className="muted">{v.kind} · {u.location}</span>
-              </div>
-            );
-          }) : <span className="muted">没有别的条目用到这个出处</span>}
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -231,7 +206,7 @@ function SidePanel({ entry, evidence, loading, onClose, onSelect }) {
         <div className="row mt4 xs muted"><span>Key</span><span className="mono">{entry.key}</span></div>
         {entry.description ? <p className="sm mt8" style={{ color: 'var(--ink2)' }}>{entry.description}</p> : null}
         <div className="mt8">
-          <Tabs items={[['attr', '属性', c.fields ?? 0], ['rel', '关系', backlinks.length + declared.length], ['ev', '证据', c.evidence ?? 0, 'quote']]} value={tab} onChange={setTab} />
+          <Tabs items={[['attr', '属性', c.fields ?? 0], ['rel', '关系', backlinks.length + declared.length], ['ev', '证据', evidence ? evItems.length : null, 'quote']]} value={tab} onChange={setTab} />
         </div>
       </div>
       {tab === 'attr' ? (

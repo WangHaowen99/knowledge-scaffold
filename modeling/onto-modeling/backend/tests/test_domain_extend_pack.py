@@ -1,11 +1,12 @@
-"""领域包扩展（ADR-0099）：列表与启用、主线位置、和增量构建互斥、导入项目走完锁定 → 新增 → 核对、
+"""领域包扩展（ADR-0099）：列表与启用、主线位置、和其他限定范围的包互斥、导入项目走完锁定 → 新增 → 核对、
 发布关卡、助手副本里底座只读、自主构建不做「新增功能」。
 
-用仓库里真实的资产和真实的导入流程。项目、条目、用户都是合成的。
+用仓库里真实的资产和真实的导入流程；另一个限定范围的包是合成的（tests/pack_helpers）。项目、条目、用户都是合成的。
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -27,6 +28,7 @@ from app.services.flow import assemble, view
 from app.services.packs import builtin, checks, lockfile
 from app.services.packs import service as pack_service
 from app.services.workspace import WorkspaceManager
+from tests.pack_helpers import ROUND_PACK, ROUND_PACK_FLOW, install_round_pack
 from tests.proc import git
 from tests.test_changesets import main_write, obj
 from tests.test_guard_bypass import denied, run_guard, write
@@ -168,12 +170,13 @@ def test_assembly_puts_the_nodes_after_modeling_and_the_check_blocks_publish():
     assert flow["commands"]["domain-extend-add"]["node"] == "domain-extend.add"
 
 
-def test_it_cannot_be_enabled_together_with_incremental(env, tmp_path):
+def test_it_cannot_be_enabled_together_with_another_confining_pack(env, tmp_path):
     with pytest.raises(assemble.FlowAssemblyError, match="只能有一个包声明 confine"):
-        assemble.assemble([_core(), _pack("incremental"), _pack()])
+        assemble.assemble([_core(), (ROUND_PACK, "0.1.0", copy.deepcopy(ROUND_PACK_FLOW)), _pack()])
     manager, client = env
     project_id, _root = _imported(manager, client, tmp_path)
-    assert _enable(manager, client, project_id, "incremental").status_code == 201
+    install_round_pack(manager, tmp_path)
+    assert _enable(manager, client, project_id, ROUND_PACK).status_code == 201
     response = _enable(manager, client, project_id)
     assert response.status_code == 422 and "confine" in response.text
 

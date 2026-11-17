@@ -6,7 +6,7 @@
 //   ev.hasSolver(rows) 时「求解验证」列：<SolverValidationCell ev={ev} release={row} />
 //   ev.hasFeedback 时「用户反馈」列：<FeedbackCell ev={ev} release={row} />
 //   操作列：<StartEvaluation ev={ev} release={row} />
-//   页面任意处：<EvaluationDialogs ev={ev} tasks={tasks} />（tasks 是页面的 useCommandTasks，评测优化经它发命令）
+//   页面任意处：<EvaluationDialogs ev={ev} />
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
@@ -15,8 +15,8 @@ import { useProjectEvent } from '../plugin/parts.jsx';
 import { ArtifactBody, message, useAnswerPreview, useLoad } from './EvaluationDoc.jsx';
 import { openEvaluation, prefetchEvaluationEntry } from './evaluationEntry.js';
 import {
-  EVALUATION_HINT, EVOLUTION_DISABLED, PACKAGE_PUBLISHED, POLL_INTERVAL_MS, RECONCILE_EVERY, SOLVER_VALIDATION_STATES, canReportFailure, hasFeedback,
-  mergeStatus, needsPolling, optimizationBlock, processingState, releaseEvaluation, releaseFeedback, releaseSolverValidation,
+  EVALUATION_HINT, PACKAGE_PUBLISHED, POLL_INTERVAL_MS, RECONCILE_EVERY, SOLVER_VALIDATION_STATES, canReportFailure, hasFeedback,
+  mergeStatus, needsPolling, processingState, releaseEvaluation, releaseFeedback, releaseSolverValidation,
   writebackNotice,
 } from './evaluationModel.js';
 import '../../styles/evaluation.css';
@@ -25,7 +25,6 @@ export { LegacyEvaluations } from './LegacyEvaluations.jsx';
 export { SolverValidationCard } from './SolverValidationCard.jsx';
 
 const REPORT_LIMIT_HINT = '报告较长，仅显示前 2 MiB';
-const REPORT_OPTIMIZE_HINT = '此处仅查看评测结果。如需据此优化知识包，请打开「优化建议」并点击「评测优化」。';
 // develop 的 antd 颜色 → 设计系统的标签色
 export const TONES = {
   gold: 'amber', green: 'teal', red: 'red', processing: 'blue', default: 'gray',
@@ -94,15 +93,10 @@ export function useReleaseEvaluations(pid, revision = 0) {
   };
 }
 
-// 不可用的按钮不消失，置灰并悬停说明原因（develop 的 ReasonButton）
+// 不可用的按钮不消失，置灰并悬停说明原因
 export function ReasonLink({ reason, children, onClick }) {
   if (reason) return <span className="ev-link is-disabled" data-pop={reason} aria-disabled="true">{children}</span>;
   return <span className="ev-link" role="button" tabIndex={0} onClick={onClick} onKeyDown={(e) => e.key === 'Enter' && onClick()}>{children}</span>;
-}
-
-function ReasonButton({ reason, children, ...props }) {
-  const button = <Button disabled={!!reason} {...props}>{children}</Button>;
-  return reason ? <span data-pop={reason}>{button}</span> : button;
 }
 
 export function EvaluationHint({ total }) {
@@ -174,7 +168,7 @@ function ReportModal({ ev, target, onClose }) {
   const preview = useAnswerPreview((resultId) => api.evaluationAnswer(ev.pid, target.runId, resultId));
   return (
     <Modal open onClose={onClose} w={WIDE} title={`${target.feedback ? '用户反馈报告' : '评测报告'} — 版本 ${target.version || ''}`}
-      foot={<><span className="sm muted grow">{REPORT_OPTIMIZE_HINT}</span><Button onClick={onClose}>关闭</Button></>}>
+      foot={<><span className="sp" /><Button onClick={onClose}>关闭</Button></>}>
       {state.data?.truncated ? <Note className="mb8">{REPORT_LIMIT_HINT}</Note> : null}
       <ArtifactBody state={state} onOpenAnswer={preview.open} />
       {preview.modal}
@@ -182,14 +176,12 @@ function ReportModal({ ev, target, onClose }) {
   );
 }
 
-function SuggestionsModal({ ev, target, tasks, onClose, onReportFailure }) {
+function SuggestionsModal({ ev, target, onClose, onReportFailure }) {
   const { api } = useApp();
   const state = useLoad(() => api.evaluationSuggestions(ev.pid, target.runId), target.runId);
   const preview = useAnswerPreview((resultId) => api.evaluationAnswer(ev.pid, target.runId, resultId));
   const [regenerating, setRegenerating] = useState(false);
-  const [optimizing, setOptimizing] = useState(false);
   const failed = state.data?.status === 'failed';
-  const blockReason = optimizationBlock(ev.status, target.releaseId, !!tasks) || (ev.status?.evolution ? '' : EVOLUTION_DISABLED);
 
   const regenerate = async () => {
     setRegenerating(true);
@@ -204,21 +196,6 @@ function SuggestionsModal({ ev, target, tasks, onClose, onReportFailure }) {
       setRegenerating(false);
     }
   };
-  // 评测优化：产物整理成一批外部反馈（ADR-0092），交给反馈演进在工作台对话里处理
-  const optimize = async () => {
-    setOptimizing(true);
-    try {
-      const result = await api.optimizeEvaluation(ev.pid, target.runId);
-      toast('已导入评测报告和优化建议，开始评测优化');
-      onClose();
-      await tasks.send({ command: result.command, args: result.args, text: `评测优化 — 版本 ${target.version || ''}` });
-    } catch (e) {
-      toast(message(e), 'alert');
-    } finally {
-      setOptimizing(false);
-    }
-  };
-
   return (
     <Modal open onClose={onClose} w={WIDE} title={`${target.feedback ? '用户反馈优化建议' : '优化建议'} — 版本 ${target.version || ''}`}
       foot={(
@@ -226,7 +203,6 @@ function SuggestionsModal({ ev, target, tasks, onClose, onReportFailure }) {
           <Button onClick={onClose}>关闭</Button>
           <span className="sp" />
           {onReportFailure ? <Button onClick={onReportFailure}>标记处理失败</Button> : null}
-          <ReasonButton kind="primary" reason={blockReason} disabled={optimizing || tasks?.sending} onClick={optimize}>评测优化</ReasonButton>
         </>
       )}>
       {failed ? (
@@ -270,7 +246,7 @@ function FailureModal({ ev, target, onClose, onReported }) {
   );
 }
 
-export function EvaluationDialogs({ ev, tasks }) {
+export function EvaluationDialogs({ ev }) {
   const { dialog, setDialog } = ev;
   if (!dialog) return null;
   const close = () => setDialog(null);
@@ -280,5 +256,5 @@ export function EvaluationDialogs({ ev, tasks }) {
     return <FailureModal ev={ev} target={target} onClose={() => setDialog({ kind: 'suggestions', target })} onReported={() => { close(); ev.refresh(); }} />;
   }
   const failure = canReportFailure(ev.status, target.releaseId, target.entry) ? () => setDialog({ kind: 'failure', target }) : null;
-  return <SuggestionsModal ev={ev} target={target} tasks={tasks} onClose={() => { close(); }} onReportFailure={failure} />;
+  return <SuggestionsModal ev={ev} target={target} onClose={() => { close(); }} onReportFailure={failure} />;
 }

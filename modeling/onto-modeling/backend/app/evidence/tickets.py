@@ -1,4 +1,4 @@
-"""连接器网关的一次性票据（详设 5.8.2「鉴权」；`gateway_client.Ticket` 的字段；ADR-0073 第 5 条）。
+"""连接器网关的一次性票据（详设 5.8.2「鉴权」；ADR-0073 第 5 条）。
 
 内核用 Ed25519 私钥签 JWT，网关只拿公钥验：网关手里没有能签票据的东西。票据写明任务、操作、范围哈希（转换时是
 原文件的 sha256）、预算，10 分钟过期；网关按 jti 记下用过的票据，同一张只认一次。
@@ -19,14 +19,12 @@ import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
-from .gateway_client import TICKET_TTL_S
-
 ISSUER = "onto-modeling"
 AUDIENCE = "connector-gateway"
 ALGORITHM = "EdDSA"
 KEY_FILE = "connector-ticket-key.pem"
-# job：查进度、取消、取快照包、清理一个已建的采集任务（范围是 spec.job_scope）；secret：写入、删除连接型提供方的凭据
-OPERATIONS = ("discover", "snapshot", "sample", "test", "convert", "job", "secret")
+TICKET_TTL_S = 600  # 10 分钟
+OPERATIONS = ("convert",)
 
 
 class TicketError(ValueError):

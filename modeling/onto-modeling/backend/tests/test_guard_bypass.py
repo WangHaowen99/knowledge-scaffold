@@ -182,7 +182,7 @@ def test_guard_bypass_scope(ws: Path, label, payload, expected):
     assert denied(run_guard(ws, "scope", payload)) is expected, label
 
 
-EVOLUTION_ALLOW = ["ontology/object/*", "ontology/operation/*", "ontology/logic/*", "ontology/rule/*",
+SCOPED_ALLOW = ["ontology/object/*", "ontology/operation/*", "ontology/logic/*", "ontology/rule/*",
                    "ontology/metric/*", "ontology/scripts/*", "ontology/testcase/*", "ontology/data-mock/*"]
 
 
@@ -200,11 +200,11 @@ def mark_active(ws: Path, commands: dict) -> None:
         (state / f"lock-{command}.json").write_text(json.dumps({"command": command}), encoding="utf-8")
 
 
-def test_scope_guard_evolution_only_allows_packaged_dirs(ws: Path):
-    """原来守卫里反馈演进的特判，改成反馈演进节点声明的写入范围（方案 D11）。"""
-    mark_active(ws, {"evolution": {"node": "evo.evolution", "allow": EVOLUTION_ALLOW}})
+def test_scope_guard_only_allows_declared_scope(ws: Path):
+    """原来守卫里反馈演进的特判，改成命令节点声明的写入范围（方案 D11）；这里用合成命令。"""
+    mark_active(ws, {"extra-review": {"node": "extra-review.review", "allow": SCOPED_ALLOW}})
     reason = run_guard(ws, "scope", write("ontology/knowledge/条目.md"))
-    assert denied(reason) and "evolution" in reason
+    assert denied(reason) and "extra-review" in reason
     assert not denied(run_guard(ws, "scope", write("ontology/rule/新规则.md")))
 
 

@@ -30,7 +30,7 @@ _LOCK = threading.Lock()
 
 TASKS_MAX = 200
 DRILLS_MAX = 50
-TASK_TYPES = ("collection", "export", "backup", "sweep", "pack_install", "drill", "pack_repo_backup")
+TASK_TYPES = ("export", "backup", "sweep", "pack_install", "drill", "pack_repo_backup")
 TASK_STATES = ("queued", "running", "succeeded", "partial", "failed", "cancelled")
 LIVE_STATES = ("queued", "running")
 DRILL_SAMPLE_DEFAULT = 5
@@ -151,7 +151,7 @@ def get_task(task_id: str) -> dict:
 
 
 def act(task_id: str, op: str, actor: str) -> dict:
-    """O-41：cancel 只对还在跑、能取消的任务；retry 只对失败的；resume 只有证据采集有（本期没有）。"""
+    """O-41：cancel 只对还在跑、能取消的任务；retry 只对失败的。"""
     record = get_task(task_id)
     state = record.get("status")
     if op == "cancel":
@@ -165,7 +165,7 @@ def act(task_id: str, op: str, actor: str) -> dict:
         if state not in ("failed", "partial") or handler is None:
             raise OpsCenterError("task_state_invalid", "这个任务不能重试", 409, {"state": state})
         return handler(record, actor)
-    raise OpsCenterError("task_state_invalid", "这个任务不能续跑", 409, {"state": state})
+    raise OpsCenterError("not_found", "没有这个操作", 404)
 
 
 def _sweep_interrupted() -> list[str]:

@@ -6,16 +6,14 @@ const FILTERS = {
   all: () => true,
   autobuild_review: (it) => (it.kind === 'review' && it.source === 'autobuild') || it.kind === 'suspension',
   decision: kind('decision'),
-  evidence_conflict: kind('evidence_conflict'),
   change_list: kind('change_list'),
   stale: kind('stale'),
   resumable: kind('resumable'),
-  feedback: kind('feedback'),
 };
 const RESOLVED_TEXT = {
-  answer: '已回答', arbitrate: '已裁决', execute: '清单已确认，开始修改', accept: '已接受', rejudge: '已改判，助手会重做受影响的部分',
+  answer: '已回答', execute: '清单已确认，开始修改', accept: '已接受', rejudge: '已改判，助手会重做受影响的部分',
   revert_slice: '已回退到运行前', use_generic: '先按通用要求处理', refresh: '已刷新', keep_stale: '保持过期', resume: '已续跑', abandon: '已放弃',
-  send_to_evolution: '已交给反馈演进处理', dismiss: '已忽略',
+  dismiss: '已忽略',
 };
 
 export function register(ctx) {
@@ -112,8 +110,7 @@ export function register(ctx) {
     const need = () => (!body.option_id && !body.custom_text ? err(400, 'answer_invalid', '先选一个选项，或写下你的方向') : null);
     if (!it.actions.includes(a)) return err(400, 'invalid_argument', '这个动作不适用于这一项', { fields: { action: 'not_allowed' } });
     switch (it.kind) {
-      case 'decision':
-      case 'evidence_conflict': {
+      case 'decision': {
         if (a !== 'dismiss') { const bad = need(); if (bad) return bad; }
         // 人工节点的决策卡只收选项（B5c 合并：后端回 400 answer_invalid）
         if (it.source === 'plugin' && a === 'answer' && !body.option_id) return err(400, 'answer_invalid', '人工节点要选一个选项');
@@ -185,8 +182,6 @@ export function register(ctx) {
       }
       case 'resumable':
         return { resolved: true, result: a === 'resume' ? { command_task: commandTask(pid, `续跑：${detail.command_label}`) } : {} };
-      case 'feedback':
-        return { resolved: true, result: a === 'send_to_evolution' ? { command_task: commandTask(pid, '反馈演进：评测服务回传的 4 个失分用例') } : {} };
       default:
         return { resolved: true, result: {} };
     }

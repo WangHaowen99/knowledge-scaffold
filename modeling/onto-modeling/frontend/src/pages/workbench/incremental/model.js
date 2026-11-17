@@ -1,4 +1,4 @@
-// 增量更新（设计稿 incremental，契约 3.14 INC-01～INC-05、4.7 change_list / impact / regression / external_feedback / round_changes）
+// 增量更新（设计稿 incremental，契约 3.14 INC-01～INC-05、4.7 change_list / impact / regression / round_changes）
 // 的纯逻辑：把握与只读判断、执行前的确认计划、弹窗的编辑行、卡片文字、进入页面时去哪条对话。
 
 export const CONFIDENCE = { high: ['高', 'teal'], medium: ['中', 'amber'], low: ['低', 'red'] };
@@ -163,19 +163,6 @@ export function roundLines(card) {
 export function remainingNote(card) {
   const n = card?.remaining_failures || 0;
   return n ? `不通过的 ${n} 个场景已留在待处理` : '';
-}
-
-// ---------- 外部反馈 ----------
-// 「来自评测服务 · 运行 eval-1101-0910」
-export function feedbackSource(source) {
-  if (!source) return '';
-  const run = String(source.run || '');
-  return `来自${source.service || '外部服务'}${run ? ` · ${/^运行/.test(run) ? run : `运行 ${run}`}` : ''}`;
-}
-
-// 「让助手分析」只分析还没有对上变更点的用例
-export function feedbackToAnalyze(card) {
-  return (card?.items || []).map((it, i) => ({ ...it, i: i + 1 })).filter((it) => !it.related);
 }
 
 // ---------- 进入增量更新时去哪条对话 ----------

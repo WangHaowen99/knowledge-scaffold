@@ -1,5 +1,5 @@
 """服务令牌接口（API 契约 3.20、3.21，ADR-0020、ADR-0098、ADR-0092）：发布记录、包清单与按版本下载、
-服务令牌鉴权，以及退役的 X-01、求解验证候选包、X-04、X-05 不再提供（外部反馈的写入见 test_feedback_inbox）。
+服务令牌鉴权，以及退役的 X-01、求解验证候选包、X-04、X-05 不再提供。
 发布走 conftest 的内存 Hub。
 
 经 HTTP 调真实路由；工作区、令牌、用户名与反馈内容全部为合成数据。
@@ -237,7 +237,7 @@ def test_retired_contract_routes_are_gone(client, manager):
 
 
 def test_feedback_contract_is_retired(client, manager):
-    """X-05 随 ADR-0092 退役：没有调用方，外部反馈改由评测优化（ES-07）写入；服务令牌、登录令牌都写不进来。"""
+    """X-05 随 ADR-0092 退役：没有调用方；服务令牌、登录令牌都写不进来。"""
     pid, root = owned_project(manager)
     url = f"/api/v1/projects/{pid}/feedback"
     assert client.post(url, headers=token("releases.read"), json={"feedback_id": "round-001"}).status_code == 401

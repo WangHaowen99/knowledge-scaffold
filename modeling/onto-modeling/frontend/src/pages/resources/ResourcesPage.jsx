@@ -1,6 +1,6 @@
 // 资料区（设计稿 resources）：资料列表与用途（R-01、R-03）、上传与替换（U-01 + R-02，可标为修订资料）、删除（R-04、R-05）、
-// 外部反馈分组（R-11、R-12，反馈演进包）、右侧预览（ResourcePreview.jsx）。
-// 别处跳来：?anchor=<file:… 锚点>（查看原文，定位并高亮那一段）、?path=<资料路径>（上传文本版）、?group=feedback&feedback=<id>（逐条查看）。
+// 右侧预览（ResourcePreview.jsx）。
+// 别处跳来：?anchor=<file:… 锚点>（查看原文，定位并高亮那一段）、?path=<资料路径>（上传文本版）。
 // 页面只发命令（S-20）：改用途后的重读、修订资料的增量更新、把资料读完，进度条显示在页头下。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
@@ -12,11 +12,11 @@ import { finishedTasks, mergeTask, pageTask } from '../../state/commandTask.js';
 import { Button, Check, Chip, Empty, Icon, Modal, Note, Prog, cx } from '../../ui/index.jsx';
 import { legacyOfficeHint, uploadRules } from '../../lib/resourceUpload.js';
 import { CommandRunBar, useCommandTasks, useProjectEvent } from '../plugin/parts.jsx';
-import { FeedbackPreview, MaterialPreview, useFullscreen } from './ResourcePreview.jsx';
+import { MaterialPreview, useFullscreen } from './ResourcePreview.jsx';
 import { useSheetScope } from './SheetScope.jsx';
 import { isSchemaTable, scopeLink } from './sheetScopeModel.js';
 import {
-  PURPOSE_FALLBACK, checkUpload, extOf, feedbackView, fileIcon, findMaterial, fmtSize, materialTitle, metaText, sortMaterials,
+  PURPOSE_FALLBACK, checkUpload, extOf, fileIcon, findMaterial, fmtSize, materialTitle, metaText, sortMaterials,
   pickDefault, purposeView, refSentence, replaceName, revisionBanner, routeTarget, targetKey, textChip,
 } from './resourcesModel.js';
 import '../../styles/evidence.css';
@@ -143,35 +143,6 @@ function UploadRow({ u, onDismiss }) {
   );
 }
 
-function FeedbackRow({ fb, picked, onPick, onHandle, onSetState }) {
-  const { pid } = useProject();
-  const v = feedbackView(fb);
-  const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
-  let link = null;
-  if (fb.state === 'open') link = <span className="evd-incl" onClick={stop(onHandle)}>在对话里处理 →</span>;
-  else if (fb.state === 'handled' && fb.handled_version_label) link = <span className="evd-incl" onClick={stop(() => navigate(pagePath('versions', pid), { v: fb.handled_version_label }))}>看对应版本 →</span>;
-  else link = <span className="evd-incl" onClick={stop(() => onSetState('open'))}>重新打开</span>;
-  return (
-    <div className={cx('evd-fb', 'rs-fb', picked && 'pick')} data-feedback={fb.id} onClick={() => onPick(fb)}>
-      <span
-        className="fi"
-        style={{
-          width: 30, height: 30, borderRadius: 9, display: 'grid', placeItems: 'center', flex: 'none',
-          background: v.open ? 'var(--a50)' : 'var(--panel3)', color: v.open ? 'var(--amber2)' : 'var(--ink3)',
-        }}
-      >
-        <Icon name={v.icon} size={14} />
-      </span>
-      <div className="grow" style={{ minWidth: 0 }}>
-        <div className="b ell">{v.title}</div>
-        <div className="xs muted ell">{v.meta}</div>
-      </div>
-      <Chip tone={v.state[1]} sm icon={v.state[2]}>{v.state[0]}</Chip>
-      {link}
-    </div>
-  );
-}
-
 // 删除弹窗（设计稿 evdDel）：先查被谁引用（R-05），再删（R-04）
 function DeleteDialog({ m, onClose, onDeleted }) {
   const { api } = useApp();
@@ -213,14 +184,12 @@ export default function ResourcesPage({ route }) {
   const rules = useMemo(() => uploadRules(config), [config]);
   const { pid } = useProject();
   const [data, setData] = useState(null);
-  const [feedback, setFeedback] = useState([]);
-  const [sel, setSel] = useState(null); // {kind: 'file', path, fragment} | {kind: 'feedback', id}
+  const [sel, setSel] = useState(null); // {kind: 'file', path, fragment}
   const [menu, setMenu] = useState(null);
   const [del, setDel] = useState(null);
   const [rev, setRev] = useState(false);
   const [ups, setUps] = useState([]);
   const [over, setOver] = useState(false);
-  const [fbBusy, setFbBusy] = useState(false);
   const [full, toggleFull] = useFullscreen();
   const inputRef = useRef(null);
   const pickMode = useRef(null); // 文件选择框的用途：null 上传 / {replaceOf} 替换
@@ -231,10 +200,6 @@ export default function ResourcesPage({ route }) {
     try {
       const r = await api.resources(pid);
       setData(r);
-      if (r.feedback_group?.enabled) {
-        const f = await api.feedback(pid).catch(() => ({ items: [] }));
-        setFeedback(f.items || []);
-      } else setFeedback([]);
     } catch (e) {
       setData((d) => d || { error: errorText(e) });
     }
@@ -250,7 +215,7 @@ export default function ResourcesPage({ route }) {
   const tracked = useTrackedTasks(onTaskDone);
   const running = pageTask([...tasks.tasks, ...tracked.list]);
 
-  // 资料有改动（上传、替换、删除、改用途、资料分析读到新位置）、扩展项变化（反馈分组）时重拉列表
+  // 资料有改动（上传、替换、删除、改用途、资料分析读到新位置）、扩展项变化（包启停）时重拉列表
   useProjectEvent(['workspace.changed', 'extensions.updated', 'materials.updated'], (d, env) => {
     if (env.type === 'workspace.changed' && (d.paths || []).length && !d.paths.some((x) => x.startsWith('resource/'))) return;
     load();
@@ -264,7 +229,7 @@ export default function ResourcesPage({ route }) {
     } : cur));
   });
 
-  // 别处跳来：按地址参数选中资料或反馈，并把那一行滚进视野
+  // 别处跳来：按地址参数选中资料，并把那一行滚进视野
   const target = routeTarget(route?.query || {});
   const tkey = targetKey(target);
   useEffect(() => { if (target) setSel(target); }, [tkey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -273,18 +238,14 @@ export default function ResourcesPage({ route }) {
     if (!data || !tkey || scrolledFor.current === tkey) return;
     scrolledFor.current = tkey;
     const root = listRef.current;
-    const el = target.kind === 'feedback'
-      ? (target.id && root?.querySelector(`[data-feedback="${CSS.escape(target.id)}"]`)) || root?.querySelector('.rs-fbgrp')
-      : root?.querySelector(`[data-path="${CSS.escape(target.path)}"]`);
+    const el = root?.querySelector(`[data-path="${CSS.escape(target.path)}"]`);
     el?.scrollIntoView({ block: 'center' });
-  }, [data, tkey, feedback]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [data, tkey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 不按工作区目录分组（F4b-paths）：一张表按资料名排，类型写在第二行
   const materials = useMemo(() => sortMaterials(data?.groups), [data]);
   const purposes = data?.purposes?.length ? data.purposes : PURPOSE_FALLBACK;
-  const fbOn = !!data?.feedback_group?.enabled;
-  const selFeedback = sel?.kind === 'feedback' ? feedback.find((x) => x.id === sel.id) || (sel.id ? null : feedback[0]) : null;
-  const selPath = sel?.kind === 'file' ? sel.path : sel?.kind === 'feedback' ? null : pickDefault(data?.groups);
+  const selPath = sel?.kind === 'file' ? sel.path : pickDefault(data?.groups);
   const selected = selPath ? findMaterial(data?.groups, selPath) : null;
   const banner = revisionBanner(data?.groups);
   const total = materials.length;
@@ -384,21 +345,6 @@ export default function ResourcesPage({ route }) {
     }
   };
 
-  // ---------- 外部反馈（R-12 标状态；在对话里处理走 S-20） ----------
-  const setFbState = async (fb, state) => {
-    setFbBusy(true);
-    try {
-      const r = await api.setFeedbackState(pid, fb.id, { state });
-      setFeedback((list) => list.map((x) => (x.id === fb.id ? r : x)));
-      toast({ handled: '已标为已处理', dismissed: '已忽略这条反馈', open: '已重新打开' }[state], 'check');
-    } catch (e) {
-      toast(errorText(e), 'alert');
-    } finally {
-      setFbBusy(false);
-    }
-  };
-  const handleFb = (fb) => tasks.send({ command: '/ontology-evolution', args: { feedback_id: fb.id }, text: `处理外部反馈：${feedbackView(fb).title}` });
-
   // ---------- 右侧 ----------
   // 从别的文档的出处芯片点进来（?from=）：预览上方「返回 <文档名>」回到那里（develop 的 onBackToOrigin）
   const back = sel?.source && route?.query?.from ? (
@@ -407,9 +353,7 @@ export default function ResourcesPage({ route }) {
     </Button>
   ) : null;
   let right;
-  if (sel?.kind === 'feedback' && selFeedback) {
-    right = <FeedbackPreview fb={selFeedback} busy={fbBusy || tasks.sending} onSetState={(s) => setFbState(selFeedback, s)} onHandle={() => handleFb(selFeedback)} />;
-  } else if (selected) {
+  if (selected) {
     right = (
       <MaterialPreview
         key={`${selected.path}:${sel?.n || ''}`} m={selected} purposes={purposes} fragment={sel?.kind === 'file' ? sel.fragment : null}
@@ -474,29 +418,10 @@ export default function ResourcesPage({ route }) {
               <div className="card">
                 {materials.map((m) => (
                   <FileRow
-                    key={m.path} m={m} picked={!!selected && selected.path === m.path && sel?.kind !== 'feedback'} purposes={purposes} menuOpen={menu === m.path}
+                    key={m.path} m={m} picked={!!selected && selected.path === m.path} purposes={purposes} menuOpen={menu === m.path}
                     onPick={pickFile} onMenu={setMenu} onPurpose={setPurpose} onReplace={(x) => choose({ replaceOf: x })} onDelete={setDel} onRevision={goIncremental} onScope={sheetScope.open}
                   />
                 ))}
-              </div>
-            </div>
-          ) : null}
-
-          {fbOn ? (
-            <div className="evd-grp rs-fbgrp">
-              <h4>
-                <Icon name="msg" size={14} />外部反馈<span className="faint" style={{ fontWeight: 500 }}>{feedback.length}</span><span className="sp" />
-                <span className="evd-plg" data-pop="由「反馈演进」插件提供" onClick={() => navigate(pagePath('plugin-detail'), { pack: 'evo' })}>
-                  <Icon name="puzzle" size={12} />
-                </span>
-              </h4>
-              <div className="card">
-                {feedback.length ? feedback.map((fb) => (
-                  <FeedbackRow
-                    key={fb.id} fb={fb} picked={selFeedback?.id === fb.id} onPick={(x) => setSel({ kind: 'feedback', id: x.id })}
-                    onHandle={() => handleFb(fb)} onSetState={(s) => setFbState(fb, s)}
-                  />
-                )) : <div className="evd-fb xs muted">还没有外部反馈</div>}
               </div>
             </div>
           ) : null}

@@ -10,7 +10,6 @@ import {
   mergeStatus,
   needsPolling,
   notifyPackagePublished,
-  optimizationBlock,
   processingState,
   releaseEvaluation,
   releaseFeedback,
@@ -81,28 +80,18 @@ test('polling runs only while an evaluation or its artifacts are in progress', (
   assert.equal(needsPolling(status({ releases: { 'release-a': entry({ suggestions: 'pending' }) } })), true);
 });
 
-test('optimization requires a chat and the current project version', () => {
-  assert.equal(optimizationBlock(status(), 'release-a', false), '请在项目内打开已发布版本后执行评测优化');
-  assert.equal(optimizationBlock(status(), 'release-b', true), '该版本与当前建模项目版本 0.1.0 不一致，不能评测优化');
-  assert.equal(optimizationBlock(status({ current_release_id: null, current_version: null }), 'release-a', true),
-    '该版本与当前建模项目版本 未发布 不一致，不能评测优化');
-  assert.equal(optimizationBlock(status(), 'release-a', true), '');
-});
-
 test('index-only refreshes keep the last reconciled reachability', () => {
   assert.equal(mergeStatus(status({ reachable: false }), status({ reachable: null })).reachable, false);
   assert.equal(mergeStatus(null, status({ reachable: null })).reachable, null);
 });
 
-test('status reads pass the reconcile flag and optimization posts to the run', async () => {
+test('status reads pass the reconcile flag', async () => {
   const { api, calls } = recordingApi();
   await api.evaluations('project-alpha', { reconcile: true });
   await api.evaluations('project-alpha');
-  await api.optimizeEvaluation('project-alpha', 'run-a');
   assert.deepEqual(calls, [
     { method: 'GET', path: '/projects/project-alpha/evaluations', query: { reconcile: 1 } },
     { method: 'GET', path: '/projects/project-alpha/evaluations', query: { reconcile: 0 } },
-    { method: 'POST', path: '/projects/project-alpha/evaluations/run-a/optimization', body: {} },
   ]);
 });
 
@@ -126,16 +115,6 @@ test('reports, answers and legacy records read their own routes', async () => {
     'GET /projects/project-alpha/legacy-evaluations/eval-20261001-090000/answers/r%201',
     'GET /evaluation/entry',
   ]);
-});
-
-test('a version mismatch surfaces the backend message and code', async () => {
-  const error = Object.assign(new Error('评测版本 0.1.0 与当前建模项目版本 0.1.1 不一致'), { code: 'version_mismatch' });
-  const { api } = recordingApi(error);
-  await assert.rejects(api.optimizeEvaluation('project-alpha', 'run-a'), (e) => {
-    assert.equal(e.message, '评测版本 0.1.0 与当前建模项目版本 0.1.1 不一致');
-    assert.equal(e.code, 'version_mismatch');
-    return true;
-  });
 });
 
 // 建模回写与消费反馈来源；版本和说明都是合成值

@@ -529,23 +529,6 @@ def test_changed_solver_revision_needs_acknowledgement_again(setup, monkeypatch)
     assert refused.status_code == 409 and refused.json()['code'] == 'solver_validation_acknowledgement_required'
 
 
-def test_publish_writes_back_to_the_evaluation_service_right_away(setup, monkeypatch):
-    from app.services import package_evaluations
-    _manager, plain, _, _, _ = setup
-    login(monkeypatch)
-    calls = []
-
-    def after_publish(pid, subject, token, receipt):
-        calls.append((pid, json.loads(subject), token, receipt['status'], receipt['release_id']))
-        return {'run_id': 'f' * 32, 'status': 'published'}
-    monkeypatch.setattr(package_evaluations, 'after_publish', after_publish)
-    published = client_for().post(f'/api/v1/projects/{plain}/releases', json={'request_id': 'writeback_demo'})
-    assert published.status_code == 201, published.text
-    assert calls == [(plain, ['https://example.com', 'operator_a'], 'synthetic-access', 'committed',
-                      published.json()['hub']['release_id'])]
-    assert published.json()['evaluation_writeback']['status'] == 'published'
-
-
 def test_publish_rechecks_the_verified_revision_when_freezing(setup, monkeypatch):
     manager, pid, _root, _app = solver_publish_client(setup, monkeypatch)
     subject = json.dumps(['https://example.com', 'operator_a'], ensure_ascii=False)

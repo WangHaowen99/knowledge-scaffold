@@ -6,7 +6,7 @@
 //   estate-empty     「物业报修工单处理」的落地页：和 materials-empty 同一屏，换成它自己的名称和目标
 import { ANCHORS, ANCHOR_RESOLUTIONS, MAIN_PID, projectCards } from './fixtures.js';
 import { catalogFor, materialView, previewBlocks, previewCoverage, textBlocksOf, textVersionOf, webCommit } from './resources-data.js';
-import { DB_SOURCE, ENTRIES, MATERIALS } from './scenario.js';
+import { ENTRIES, MATERIALS } from './scenario.js';
 
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
@@ -148,7 +148,7 @@ const avgPct = (items) => (items.length ? Math.round(items.reduce((n, x) => n + 
 
 function makeMap(kind) {
   if (kind === 'empty') {
-    return { total: 0, read_pct: 0, analysis_mode: 'local', web_available: false, items: [], problems: [], verification: { total: 0, passed: 0, unverifiable: 0, pending: 0, checked_at: null }, can_generate_blueprint: false };
+    return { total: 0, read_pct: 0, analysis_mode: 'local', items: [], problems: [], verification: { total: 0, passed: 0, unverifiable: 0, pending: 0, checked_at: null }, can_generate_blueprint: false };
   }
   const reading = kind === 'reading';
   const items = reading ? readingItems() : doneItems();
@@ -156,7 +156,6 @@ function makeMap(kind) {
     total: items.length,
     read_pct: reading ? 72 : 100,
     analysis_mode: 'local',
-    web_available: false,
     items,
     problems: problems().map((p) => (reading ? p : { ...p, state: 'promoted' })),
     verification: reading
@@ -253,10 +252,6 @@ function blueprintOf(confirmed = false) {
       { id: 'bq-b4', title: '样例补货单 B 用区域统一配额，算规则吗？', background: '与 §9.2 不一致', options: [{ id: 'A', label: '算，作为门店特例' }, { id: 'B', label: '不算，以 §9.2 为准' }], answer: null },
     ],
     research: { verified: true, report_id: RESEARCH_REPORT },
-    evidence_hint: {
-      sources: [{ id: DB_SOURCE.id, label: 'MySQL', environment: 'production' }],
-      text: '资料分析之后会出现「系统取证」节点：采集一次只读快照（生产环境要你确认），表结构和外键会作为对象和关系的候选，每条都带证据锚点。',
-    },
     revision: 'bp-r2',
     updated_at: atDaysAgo(0, 9, 33),
   };
@@ -326,7 +321,6 @@ export function emptySuggestions() {
     mode: 'normal', primary: null,
     secondary: [
       sg('sg-goal', '先聊聊目标', 'target', { type: 'send', text: '先聊聊目标' }),
-      sg('sg-sources', '连接业务系统', 'plug', { type: 'navigate', page: 'sources' }),
     ],
     all_commands: true,
   };
@@ -431,7 +425,6 @@ function blueprintHistory() {
 function stageFlow(base, research, bpState = 'none', modelReady = false) {
   const nodes = base.nodes.map((n) => {
     if (n.id === 'core.research') return { ...n, ...research };
-    if (n.id === 'evo.evolution') return n;
     const reset = { ...n, state: 'not_ready', display_state: 'not_ready', progress: null, flags: { ...n.flags, needs_review: false }, actions: [] };
     if (n.id === 'trace.trace') return { ...reset, note: '场景模拟 · 建模之后才有场景' };
     if (n.id === 'core.update') return { ...reset, note: '资料有修订时再用' };
@@ -743,7 +736,6 @@ export function register(ctx) {
       autobuild_preview: {
         preview_token: `pv-${uid()}`, expires_at: new Date(Date.now() + 10 * MIN).toISOString(),
         slices: bp.slices.map((x) => ({ id: x.id, name: x.name, current: '未开始', included: !x.excluded })),
-        production: `不采集生产库（${DB_SOURCE.id} 没授权给自主构建）`,
         below_threshold_text: '把握低于 0.80 时按保守假设先做，记进决策台账，结束后集中复核',
         warnings: [`蓝图里还有 ${bp.questions.filter((q) => !q.answer).length} 个待答问题，会按策略决定并记账`],
         queued: false, queue_position: null,

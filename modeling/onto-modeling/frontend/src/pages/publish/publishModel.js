@@ -1,11 +1,7 @@
-// 发布知识包的纯逻辑：门禁链里显示哪些关、数据绑定问题与修正选项、能不能降级、发布记录的说法（页面结论与检查项标记在 publishCheckModel）
-import { isEvidencePack } from '../../state/evidence.js';
+// 发布知识包的纯逻辑：数据绑定问题与修正选项、能不能降级、发布记录的说法（页面结论与检查项标记在 publishCheckModel）
 
 // 求解契约要端到端验证的包：发布时要确认「尚未验证」（验证在发布后的独立评测里做，ADR-0098）
 export const needsSolverAck = (check) => Boolean((check?.gates || []).find((g) => g.id === 'solver_contract')?.requires_acknowledgement);
-
-// 门禁链里显示哪些关：证据源不可用时，依赖证据源的包带来的门禁（如证据出处检查）不出现
-export const visibleGates = (check, evidenceOn) => (check?.gates || []).filter((g) => evidenceOn || !isEvidencePack(g.source?.pack));
 
 export const formatLabel = (check) => (check?.format === 'solver' ? '求解知识包' : '普通知识包');
 

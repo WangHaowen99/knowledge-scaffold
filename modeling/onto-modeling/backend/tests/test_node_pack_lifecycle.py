@@ -123,7 +123,7 @@ def test_unconfirmed_assistant_changes_block_flow_changes_only(env):
     assert lockfile.read(root).get("naming") is None
     # 不改流程的包照常启用，也记成插件变更集（store.record_closed），助手那组修改的位置不受影响
     assistant = changesets.current(manager, project_id)["id"]
-    plain = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "websearch"})
+    plain = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "industry-retail"})
     assert plain.status_code == 201, plain.text
     record = changesets.get(manager, project_id, plain.json()["changeset_id"])
     assert record["source"] == "plugin" and record["state"] == "merged" and not record.get("committing")
@@ -281,8 +281,6 @@ HUMAN_NODE = {"id": "naming.signoff", "title": "命名会签", "kind": "human", 
               "blocks": ["core.model"], "done": ["naming_signoff"], "produces": ["reports/signoff-naming.md"],
               "decision": {"title": "线下会签结果", "options": [{"id": "pass", "label": "已签署"}, {"id": "fail", "label": "未通过"}],
                            "record": "reports/signoff-naming.md"}}
-EXTERNAL_NODE = {"id": "naming.fetch", "title": "取系统命名表", "kind": "external", "placement": "on_demand",
-                 "done": [], "provider": {"kind": "db-generic"}}
 
 
 @pytest.fixture()
@@ -367,14 +365,3 @@ def test_human_node_only_asks_one_decision_card(env):
     assert client.post(url, json={"option_id": "pass"}).status_code == 410
     nodes = nodes_of(root)
     assert nodes["naming.signoff"]["state"] == "confirmed" and nodes["core.model"]["state"] == "running"
-
-
-def test_external_node_reports_missing_provider(env):
-    client, manager, project_id, tmp_path = env
-    install(manager, tmp_path, flow=kinds_flow(EXTERNAL_NODE))
-    compat = client.get(f"/api/v1/packs/naming/versions/0.1.0/compatibility?project_id={project_id}").json()
-    depends = next(check for check in compat["checks"] if check["id"] == "depends")
-    assert not compat["ok"] and not depends["ok"] and "db-generic" in depends["detail"]
-    enabled = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "naming"})
-    assert enabled.status_code == 409 and enabled.json()["code"] == "pack_unavailable"
-    assert enabled.json()["details"] == {"reason": "not_installed", "providers": ["db-generic"]}

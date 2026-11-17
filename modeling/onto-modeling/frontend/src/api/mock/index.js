@@ -1,7 +1,6 @@
 // mock 服务端：按契约路径响应，状态放在内存里；SSE 由 StreamHub 推送。
 // 只在 VITE_API_MOCK=1 的开发 / 测试构建里加载。
 // 演示状态用地址参数切换：?mock=login:fail,projects:empty,auth:local,maint:readonly,engine:missing,import:conflict,role:user,scope:running|pending
-// ?mock=evidence:off：证据源按本期后端不可用（EV-01 回 501、没有系统逆向建模包）
 // ?mock=flow:p1：/flow 按 P1 后端（B3a）的形状返回（4 种状态、命令文本 actions、没有分段），核对前端归一处理
 // ?mock=pm:draft|fail|installed|outdated：主示例项目带一条插件对话（工作台插件开发模式，F17），见 routes-plugin-dev.js
 // 项目所处阶段（工作台显示什么）：?mock=stage:materials 等，见 stageOf；各阶段的对话、流程由 routes-*.js 的 stages 提供。
@@ -15,9 +14,7 @@ import * as inboxRoutes from './routes-inbox.js';
 import * as materialRoutes from './routes-materials.js';
 import * as reportRoutes from './routes-reports.js';
 import * as studioRoutes from './routes-studio.js';
-import * as evidenceRoutes from './routes-evidence.js';
 import * as incrementalRoutes from './routes-incremental.js';
-import * as knowledgeRoutes from './routes-knowledge.js';
 import * as publishRoutes from './routes-publish.js';
 import * as resourceRoutes from './routes-resources.js';
 import * as scenarioRoutes from './routes-scenarios.js';
@@ -39,7 +36,7 @@ import * as packageCompareRoutes from './routes-package-compare.js';
 // 插件开发（F17）排最前：PL-09 停用先看是不是草稿装的包，不是再交给项目设置那一组
 const MODULES = [
   pluginDevRoutes, studioRoutes, reportRoutes, artifactRoutes, inboxRoutes, autobuildRoutes, materialRoutes,
-  knowledgeRoutes, scenarioRoutes, scriptRoutes, incrementalRoutes, versionRoutes, publishRoutes, resourceRoutes, evidenceRoutes, settingsRoutes,
+  scenarioRoutes, scriptRoutes, incrementalRoutes, versionRoutes, publishRoutes, resourceRoutes, settingsRoutes,
   opsObsRoutes, opsCtlRoutes, adminRoutes, pluginRoutes, packUploadRoutes, meRoutes, systemRoutes,
   packageCompareRoutes,
 ];
@@ -447,22 +444,8 @@ export function createMockServer() {
   on('GET', '/projects/([^/]+)/extensions', ({ m }) => json(200, db.extensionsOf ? db.extensionsOf(m[1]) : F.extensions()));
   on('GET', '/projects/([^/]+)/flow', ({ m }) => json(200, flowOf(m[1])));
   on('GET', '/projects/([^/]+)/flow/suggestions', () => json(200, F.suggestionsWaiting()));
-  on('POST', '/projects/([^/]+)/flow/nodes/([^/]+)/(skip|restore)', ({ m }) => {
-    const f = flowOf(m[1]);
-    const n = f.nodes.find((x) => x.id === m[2]);
-    if (!n) return err(404, 'node_not_found', '节点不存在');
-    if (m[3] === 'skip') {
-      if (n.section === 'required') return err(409, 'node_not_skippable', '主线不能跳过');
-      Object.assign(n, { state: 'skipped', display_state: 'skipped', actions: [{ kind: 'restore', label: '恢复' }] });
-    } else {
-      if (n.state !== 'skipped') return err(409, 'node_not_skipped', '没有被跳过');
-      Object.assign(n, { state: 'ready', display_state: 'ready', actions: [{ kind: 'start', label: '开始' }, { kind: 'skip', label: '跳过' }] });
-    }
-    emitProj(m[1], 'flow.updated', { flow_hash: f.flow_hash, nodes: [{ id: n.id, state: n.state, flags: n.flags, progress: n.progress }], slices: [], suggestions_changed: false });
-    return json(200, { node: n, flow_hash: f.flow_hash });
-  });
   on('POST', '/projects/([^/]+)/flow/nodes/([^/]+)/start', async ({ m, body }) => {
-    // 脚本节点（B5c）：同步跑完回 run，不发对话（契约 B5c 第 10 条）；建模步骤抽屉里展开看结果（R24）
+    // 脚本节点（B5c）：同步跑完回 run，不发对话（契约 B5c 第 10 条）
     const f = flowOf(m[1]);
     const sn = f.nodes.find((x) => x.id === m[2] && x.kind === 'script');
     if (sn) {
@@ -753,7 +736,7 @@ export function createMockServer() {
     const q = query.get('q') || '';
     const hit = (group, title, snippet, page) => ({ group, title, snippet, target: { kind: 'object', id: 'object:display_qty_std', key: 'display_qty_std', name: title }, page });
     const items = q ? [hit('entries', `「${q}」`, '知识包 3 处、资料 2 处、报告 1 处', 'studio')] : [];
-    return json(200, { q, groups: [{ group: 'entries', total: items.length, items }], term_summary: q ? [{ term: q, by_group: { entries: 3, materials: 2, reports: 1, knowledge: 0, artifacts: 0 }, referenced_by: 4 }] : [] });
+    return json(200, { q, groups: [{ group: 'entries', total: items.length, items }], term_summary: q ? [{ term: q, by_group: { entries: 3, materials: 2, reports: 1, artifacts: 0 }, referenced_by: 4 }] : [] });
   });
   on('POST', '/projects/([^/]+)/anchors/resolve', ({ body }) => json(200, {
     items: (body.anchors || []).map((a) => F.ANCHOR_RESOLUTIONS[a] || { anchor: a, scheme: a.split(':')[0], resolved: false, reason: 'not_in_snapshot', source_label: a, location_label: '', text: '', highlights: [], confidence: null, snapshot_id: null, page: null }),

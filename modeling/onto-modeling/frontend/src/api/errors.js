@@ -184,14 +184,9 @@ export const ERROR_MESSAGES = {
   artifact_schema_invalid: '内容不符合格式要求',
   artifact_readonly: '这个产物只读',
   format_migration_required: '产物还是旧格式，要先迁移',
-  knowledge_duplicate: '已有同名或同范围的知识条目',
-  // 2.8 证据源
-  source_not_found: '数据源不存在',
-  source_not_authorized: '本项目没有获授权使用这个数据源',
+  // 连接器网关
   gateway_unavailable: '连接器网关连不上',
-  connection_test_failed: '测试连接没有通过',
-  outside_access_window: '不在访问时间窗口内',
-  confirmation_expired: '确认已过期，请重新确认',
+  // 出处
   anchor_invalid: '出处格式不合法',
   anchor_not_found: '找不到这个出处',
   // 2.10 自主构建
