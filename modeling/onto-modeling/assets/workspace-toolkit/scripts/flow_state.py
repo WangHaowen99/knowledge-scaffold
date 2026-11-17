@@ -416,6 +416,9 @@ def _stale_items(nodes: list, state_of: dict, context: dict) -> list:
             continue
         entry = (node.get('entry') or {}).get('command') or next(
             (action['command'] for action in _node_actions(node, probes=context.get('probes')) if action.get('command')), None)
+        scoped = ((context.get('stale_scope') or {}).get(node['id']) or {}).get('command')
+        if entry and isinstance(scoped, str) and scoped.split()[:1] == entry.split()[:1]:
+            entry = scoped  # 声明了刷新范围：只查确认之后改动的条目（后端算好的同一条命令）
         if entry:
             (optional if lenient else required).append(
                 _item(f"refresh:{node['id']}", refresh_label(upstream.get(node['id']) or '', node['title']),
@@ -586,6 +589,8 @@ def suggest(flow: dict, states: dict, context: dict | None = None, check=None) -
     - slice_next：按段的节点这一段的下一步 {slice_id, slice_name, step, label, command, sliced}；
     - slice_stale：按段的节点过期的那几段那几步 [{slice_id, slice_name, step, step_label, command, sliced, upstream}]；
     - stale_upstream：其余过期节点 → 上游的说法（「对象、操作」）；
+    - stale_scope：声明了 refresh_scope 的过期节点 → {since, names, command}，第 7 条的刷新发这条只查改动条目的命令
+      （`/ontology-validate 门店 受理申请 --since <提交>`）；没有这一项的照旧发整条入口命令；
     - probes：探针结果 {名字: bool}，按动作的 `when` 筛动作（不给时不筛）；
     - confine_active：范围限定生效（增量构建一轮进行中），这时第 7 条不出；
     - awaiting_reply：这条对话里的命令停下来等你在对话里回复（锁在命令声明的等回复阶段）{id, label}：这时不推别的命令

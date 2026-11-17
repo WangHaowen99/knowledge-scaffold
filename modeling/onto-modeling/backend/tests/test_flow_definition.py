@@ -139,6 +139,20 @@ def test_flow_definition_assembles_and_references_real_commands():
     ]
 
 
+def test_refresh_scope_is_declared_on_validate_and_checked_at_assembly():
+    """校验过期后只查改动条目（refresh_scope: changed_entries）；不认识的取值、按段的节点声明它，装配都拒绝。"""
+    import copy
+
+    flow = assemble.assemble([("core", "test", FLOW)])
+    assert {node["id"]: node["refresh_scope"] for node in flow["nodes"] if node.get("refresh_scope")} == {
+        "core.validate": "changed_entries"}
+    for node_id, value in (("core.validate", "everything"), ("core.model", "changed_entries")):
+        broken = copy.deepcopy(FLOW)
+        next(node for node in broken["nodes"] if node["id"] == node_id)["refresh_scope"] = value
+        with pytest.raises(assemble.FlowAssemblyError, match="刷新范围"):
+            assemble.assemble([("core", "test", broken)])
+
+
 def test_assembled_flow_is_json_readable_by_stdlib(manager: WorkspaceManager):
     root = make_project(manager, {})
     text = (root / ".claude" / "flow.yaml").read_text(encoding="utf-8")

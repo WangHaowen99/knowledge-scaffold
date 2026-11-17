@@ -67,6 +67,10 @@ _AGENT_LABELS = {
 }
 _AGENT_DOC = re.compile(r"\.claude/agents/([A-Za-z0-9_-]+)\.md")
 _CJK = re.compile(r"[\u4e00-\u9fff]")
+# 语义检查分三部分派发（派发说明里带 `PART: operation|object|cross`）：三张卡片按部分取名，不看模型写的描述
+_SEMANTIC_CHECK_AGENT = "semantic-check-agent"
+_SEMANTIC_PART = re.compile(r"^[\s>*·•-]*PART\s*[:：=]\s*(operation|object|cross)\b", re.M | re.I)
+_SEMANTIC_PART_TITLES = {"operation": "语义检查 · 操作", "object": "语义检查 · 对象", "cross": "语义检查 · 跨文档"}
 
 
 def has_cjk(text) -> bool:
@@ -75,7 +79,11 @@ def has_cjk(text) -> bool:
 
 def subagent_title(description, brief=None, agent_type=None) -> str:
     """子任务的名称：中文的简短描述 → 说明里点名的子代理文档的中文名 → 中文的任务说明第一行 → 子代理类型（中文、
-    不是通用类型时）；都没有时叫「子任务」。模型写的英文描述不直接给用户看（端到端验证）。"""
+    不是通用类型时）；都没有时叫「子任务」。模型写的英文描述不直接给用户看（端到端验证）。
+    语义检查按部分派发时先按部分取名（「语义检查 · 操作」等），三张卡片才分得开。"""
+    part = _semantic_part(brief, agent_type)
+    if part:
+        return _SEMANTIC_PART_TITLES[part]
     text = " ".join(str(description or "").split())
     if text and has_cjk(text):
         return text[:60]
@@ -90,6 +98,14 @@ def subagent_title(description, brief=None, agent_type=None) -> str:
             break
     kind = str(agent_type or "").strip()
     return kind[:60] if kind not in _GENERIC_AGENT_TYPES and has_cjk(kind) else "子任务"
+
+
+def _semantic_part(brief, agent_type) -> str | None:
+    text = str(brief or "")
+    if _SEMANTIC_CHECK_AGENT not in [*_AGENT_DOC.findall(text), str(agent_type or "").strip()]:
+        return None
+    match = _SEMANTIC_PART.search(text)
+    return match.group(1).lower() if match else None
 
 
 def external_id(record: dict) -> int | None:
@@ -124,6 +140,11 @@ def _target_label(path) -> str:
 # 平台内部的状态维护（命令锁、进度、阶段）和助手读自己的说明、平台运行目录：不进给用户看的工作过程（端到端验证）
 _INTERNAL_SCRIPTS = ("state_helper.py",)
 _INTERNAL_DIRS = (".ontology-state", ".onto", ".claude")
+# 语义检查边查边记（semantic_issues.py）：子任务记问题、标一项查完是进度，给用户看；主命令建目录、看缺项、合并是内部维护
+_SEMANTIC_ISSUES_CMD = re.compile(r"semantic_issues\.py\s+(\w+)")
+_SEMANTIC_PROGRESS = ("add", "done")
+_SEMANTIC_STEP = re.compile(r"semantic_issues\.py\s+(add|done)\b(.*)")
+_CHECK_ARG = re.compile(r"--check(?:\s+|=)(\"[^\"]+\"|'[^']+'|\S+)")
 # 工作区脚本 → 步骤说法（模型给 Bash 写的描述常是英文、说内部机制，按脚本说）
 _SCRIPT_LABELS = {
     "knowledge_helper": "加载业务知识", "source_extract": "读取资料", "research_checker": "核验资料分析报告",
@@ -151,8 +172,12 @@ def internal_step(tool: str, data) -> bool:
     data = data if isinstance(data, dict) else {}
     if tool == "Bash":
         command = str(data.get("command") or "")
-        return any(name in command for name in _INTERNAL_SCRIPTS) or ".ontology-state" in command \
-            or ".onto/run" in command
+        if any(name in command for name in _INTERNAL_SCRIPTS):
+            return True
+        semantic = _SEMANTIC_ISSUES_CMD.findall(command)
+        if semantic:
+            return not any(sub in _SEMANTIC_PROGRESS for sub in semantic)
+        return ".ontology-state" in command or ".onto/run" in command
     if tool in ("Read", "Glob", "Grep", "LS"):
         target = data.get("file_path") or data.get("path") or data.get("pattern") or ""
         return any(part in _INTERNAL_DIRS for part in _path_parts(target))
@@ -162,6 +187,9 @@ def internal_step(tool: str, data) -> bool:
 def _bash_text(data: dict) -> str:
     """命令行的一步：认得出的工作区脚本按脚本说；模型写的中文描述照用；英文描述不给用户看。"""
     command = str(data.get("command") or "")
+    semantic = _semantic_step(command)
+    if semantic:
+        return semantic
     scripts = _SCRIPT_RE.findall(command)
     label = next((_SCRIPT_LABELS[name] for name in scripts if name in _SCRIPT_LABELS), "")
     if label:
@@ -170,6 +198,18 @@ def _bash_text(data: dict) -> str:
     if description and has_cjk(description):
         return description[:60]
     return "运行脚本"
+
+
+def _semantic_step(command: str) -> str:
+    """语义检查子任务的一步：记了哪一项的问题、查完哪一项（检查项名照 --check 说）。"""
+    match = _SEMANTIC_STEP.search(command)
+    if not match:
+        return ""
+    check = _CHECK_ARG.search(match.group(2))
+    name = check.group(1).strip("\"'") if check else ""
+    if match.group(1) == "add":
+        return f"记录「{name}」的问题" if name else "记录检查问题"
+    return f"查完「{name}」" if name else "检查做完"
 
 
 def step_text(tool: str, data) -> str:

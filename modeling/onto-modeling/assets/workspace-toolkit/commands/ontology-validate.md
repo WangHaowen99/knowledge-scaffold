@@ -42,7 +42,7 @@ If $ARGUMENTS is not empty, enter **incremental mode**:
    增量校验模式：检查 {TARGET_FILES joined by 、}
    相关文件未包含在本次校验中：{RELATED_FILES joined by 、}
    ```
-6. **只查改动（change-only）**：若取到了 `CHANGE_BASE`（/ontology-update 调用时传入改动前的版本），计算本次改动：
+6. **只查改动（change-only）**：若取到了 `CHANGE_BASE`（/ontology-update 传入改动前的版本；校验过期后点「刷新校验」时，平台传入上次确认校验时的版本和之后改过的条目名），计算本次改动。`git diff` 报错（版本不存在）时不进入只查改动模式，按普通增量模式校验：
 
    ```bash
    git diff {CHANGE_BASE} -- {TARGET_FILES 的路径，空格分隔}
@@ -280,42 +280,64 @@ git commit -m "fix: address rule check issues"
 
 ## Phase B: 语义检查
 
-### B1: Dispatch semantic-check agent
+### B1: Dispatch semantic-check agents
 
-Read `.claude/agents/semantic-check-agent.md`. Dispatch it as a subagent.
+语义检查的子任务边查边记：问题逐项记进问题目录，回复只有一句话小结，不再返回 JSON。
 
-在 dispatch prompt 顶部（在任何输入变量之前）插入：
+1. 建问题目录（`MODE` 取 `full` / `incremental` / `change`，对应全量、增量、只查改动）：
 
-```
-{若 KNOWLEDGE_BLOCK 非空：原样粘贴 KNOWLEDGE_BLOCK 在此处，紧跟一行分隔符 ---}
-```
+   ```bash
+   python3 .claude/scripts/semantic_issues.py init --mode {MODE}
+   ```
 
-If incremental mode: include in the dispatch prompt:
-- "TARGET_FILES: {space-separated stems from TARGET_FILES}"
-- "RELATED_FILES: {space-separated stems from RELATED_FILES}"
+   输出的路径记为 `ISSUES_DIR`。
 
-If change-only mode (Step 0.5 第 6 条): additionally include
-```
-CHANGE_DIFF: |
-{CHANGE_DIFF 原文，每行前加 2 个空格缩进}
-```
+2. 定要派的部分 `PARTS`：
+   - 全量模式：`operation`、`object`、`cross` 三个；
+   - 增量模式（有 TARGET_FILES、没有 CHANGE_DIFF）：TARGET_FILES 里有操作（`ontology/operation/`）才派 `operation`，有对象（`ontology/object/`）才派 `object`，`cross` 总是派；
+   - 只查改动模式（有 CHANGE_DIFF）：不拆，只派一个 `all`。
 
-在 dispatch prompt 底部（在已有的收尾指令之后）追加：
+3. Read `.claude/agents/semantic-check-agent.md`. 在**同一条消息里**一起派出 `PARTS` 的每个子任务（每部分一个），不要等前一个回来再派下一个。每个派发提示依次是：
+   - 第一行按工作区规则「子任务派发」写阅读 agent 文件那句；
+   - 紧接两行 `PART: {部分}`、`ISSUES_DIR: {ISSUES_DIR}`（写在知识区块前面：子任务卡片按派发提示前段取名）；
+   - {若 KNOWLEDGE_BLOCK 非空：原样粘贴 KNOWLEDGE_BLOCK 在此处，紧跟一行分隔符 ---}
+   - If incremental mode: "TARGET_FILES: {space-separated stems from TARGET_FILES}" 与 "RELATED_FILES: {space-separated stems from RELATED_FILES}"
+   - If change-only mode (Step 0.5 第 6 条): additionally include
+     ```
+     CHANGE_DIFF: |
+     {CHANGE_DIFF 原文，每行前加 2 个空格缩进}
+     ```
+   - 底部（在已有的收尾指令之后）追加：
 
-```
+     ```
 
----
+     ---
 
-请阅读并遵循 `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md` 的「业务知识识别守则」。
-```
+     请阅读并遵循 `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md` 的「业务知识识别守则」。
+     ```
 
-Wait for it to return a JSON array of issues.
+4. 子任务都回来后（出错、超时的也算回来）查进度：
+
+   ```bash
+   python3 .claude/scripts/semantic_issues.py status --dir {ISSUES_DIR} --parts {PARTS，逗号分隔}
+   ```
+
+   - 有缺项的部分（子任务出错、超时或漏标）**补派一次**：派发提示同第 3 步，另在 `ISSUES_DIR` 那行后加一行 `ONLY_CHECKS: {status 列出的缺项，顿号分隔}`；`all` 没标完成的原样补派一次。已记的问题保留，不要清空目录；几个部分都要补派时同样在同一条消息里一起派。
+   - 补派的都回来后再 `status` 一次；还缺的检查项记为 `UNFINISHED_CHECKS`（按部分列，如「对象类：关联合理性、业务合理性」），不再补派。
+
+5. 合并：
+
+   ```bash
+   python3 .claude/scripts/semantic_issues.py merge --dir {ISSUES_DIR}
+   ```
+
+   输出的 JSON 数组就是本轮语义检查的问题列表（已按文件、置信度、严重程度排好并去重），进入 B2。
 
 ### B2: Generate semantic check report
 
 Generate filename: `reports/{YYYYMMDD}-{HHMMSS}-{SCOPE}-semantic.md`（`SCOPE` 沿用 Step 0.5 的取值；日期时间使用 `Asia/Shanghai`）
 
-Parse the JSON array. Group issues by `file`. Within each file, sort by **`confidence` first (high → medium → low)**, then severity (错误 → 警告 → 建议). Remove exact duplicates.
+Parse the JSON array merged in B1 第 5 步. Group issues by `file`. Within each file, sort by **`confidence` first (high → medium → low)**, then severity (错误 → 警告 → 建议). Remove exact duplicates.
 
 Count totals: E = error count, W = warning count, S = suggestion count.
 Also count by confidence: H = high, M = medium, L = low.
@@ -348,6 +370,8 @@ Write the report:
 
 If the agent didn't provide `confidence`, default to `medium` and render 🟡. If no `evidence`, omit the 依据 line.
 
+`UNFINISHED_CHECKS`（B1 第 4 步）非空时，在标题行下面加一行 `未完成的检查项：{UNFINISHED_CHECKS，部分之间用「；」分隔}`。
+
 **只查改动模式**：先写 `origin = change` 的问题（按上面的文件、置信度规则排列），再写一节原有问题，编号接着往下排：
 
 ```markdown
@@ -357,7 +381,7 @@ If the agent didn't provide `confidence`, default to `medium` and render 🟡. I
 
 没有 `origin` 的问题按 `change` 处理。标题行的计数只算 `change` 问题，另起一行写「另有 {K} 个原有问题，见文末」。
 
-If no issues (N=0): write "（无问题，本体文档通过全部语义检查。）" — skip to B5.
+If no issues (N=0): write "（无问题，本体文档通过全部语义检查。）"；`UNFINISHED_CHECKS` 非空时改写「（已做的检查项没有发现问题。）」，并告诉用户哪些检查项没做完 — skip to B5.
 
 ### B3: Prompt user for review
 
@@ -377,6 +401,8 @@ Example (low-confidence group is default-collapsed — show only header + count,
 🔵 低置信（{L}）— 默认折叠，回复 **展开低置信** 查看
 （已保存至报告文件）
 ```
+
+`UNFINISHED_CHECKS` 非空时，在列表后加一行「未完成的检查项：{UNFINISHED_CHECKS}，这几项这次没查」。
 
 Then ask with a confirm card（INTERACTION_CONVENTIONS 第 2 条）「语义检查的 {N} 个问题要处理哪些？」，选项 **全部** / **高置信** / **跳过**；
 展开低置信、只处理几条编号让用户在对话里说。用户在对话里直接打这些关键词也照样推进。
@@ -411,7 +437,7 @@ Read `.claude/agents/semantic-fix-agent.md`. Dispatch it as a subagent with:
 ```
 {若 KNOWLEDGE_BLOCK 非空：原样粘贴 KNOWLEDGE_BLOCK 在此处，紧跟一行分隔符 ---}
 
-SEMANTIC_ISSUES = {把 B1 原始 issue 列表过滤为 B4_SELECTED 子集后的 JSON 数组，每条带上 B2 分配的 issue_id}
+SEMANTIC_ISSUES = {把 B1 合并出的 issue 列表（回归问题取 B5 合并出的列表）过滤为 B4_SELECTED 子集后的 JSON 数组，每条带上 B2 分配的 issue_id}
 ONTOLOGY_ROOT = ontology/
 ```
 
@@ -489,9 +515,17 @@ B4d 处理完毕后进入 B5。
 
 If B4_MODIFIED is empty (no files were modified), skip this step and proceed to B6.
 
-Re-dispatch the semantic-check-agent in **regression mode**（全量、增量、只查改动三种模式通用）。派发提示按工作区规则「子任务派发」第一行要求完整阅读 agent 文件，之后附：
+Re-dispatch the semantic-check-agent in **regression mode**（全量、增量、只查改动三种模式通用；不拆部分）。先另建一个问题目录：
+
+```bash
+python3 .claude/scripts/semantic_issues.py init --mode regression
+```
+
+输出的路径记为本轮的 `ISSUES_DIR`。派发提示按工作区规则「子任务派发」第一行要求完整阅读 agent 文件，之后附：
 
 ```
+PART: all
+ISSUES_DIR: {本轮 ISSUES_DIR}
 TARGET_FILES: {B4_MODIFIED 的 stem，空格分隔}
 REGRESSION_ISSUES: |
 {本轮修复的问题，每条一行：issue_id、file、message 原文}
@@ -499,7 +533,7 @@ CHANGE_DIFF: |
 {原样粘贴 `git diff -U3 -- {B4_MODIFIED 的路径}` 的输出（未暂存部分，即本轮修复的改动），每行前加 2 个空格缩进}
 ```
 
-CHANGE_DIFF 必须是命令输出原文，不要改写、概括或补充说明；不传 RELATED_FILES，也不要在派发提示里另加检查范围。Wait for it to return results. 回归发现的新问题照常列给用户选择，不要直接修。
+CHANGE_DIFF 必须是命令输出原文，不要改写、概括或补充说明；不传 RELATED_FILES，也不要在派发提示里另加检查范围。子任务回来后 `python3 .claude/scripts/semantic_issues.py merge --dir {本轮 ISSUES_DIR}`，输出的 JSON 数组就是回归结果。回归发现的新问题照常列给用户选择，不要直接修。
 
 Filter the new results: remove any issue whose `file` + `message` combination was already present in **any previous semantic-check run this session** (B1 results, plus any issues found by prior B5 loops). Only issues not previously seen count as regressions introduced by the fixes.
 

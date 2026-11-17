@@ -19,8 +19,12 @@
 知识包带进来的产物（`import`）、自主构建自动合入的段（`autobuild`，P3 经 `mark_needs_review` 标）。专家接受
 （待处理 `accept`）后去掉。
 
-状态的依据存在数据目录 `flow-state/<项目>.json`（不进 git）：每个已确认节点记下确认时的输入指纹与完成判定签名、
-需复核标记、跳过记录。第一次看到已经满足完成判定的节点（存量项目）直接记成基线，不算过期。
+状态的依据存在数据目录 `flow-state/<项目>.json`（不进 git）：每个已确认节点记下确认时的输入指纹、完成判定签名与
+主线提交（`rev`）、需复核标记、跳过记录。第一次看到已经满足完成判定的节点（存量项目）直接记成基线，不算过期。
+
+刷新范围（节点声明 `refresh_scope: changed_entries`）：过期后刷新只查确认之后改动的条目，命令写成
+`<入口命令> <条目名…> --since <确认时提交前 12 位>`；删了条目、改了条目目录以外的文件、只改了 index.md、
+找不到确认时的提交时算不出范围，照旧发整条入口命令（`refresh_scope`）。
 """
 
 from __future__ import annotations
@@ -156,11 +160,26 @@ def _git(root: Path, *args: str) -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
-def changed_since(root: Path, at, kinds: list[str]) -> list[str] | None:
-    """主线上从 at（确认时刻）那个提交到现在，哪几类的目录有改动；只沿主线走（不看合入进来的助手副本提交的时间）。"""
+def _head(root: Path) -> str | None:
+    return (_git(root, "rev-parse", "HEAD") or "").strip() or None
+
+
+def _rev_at(root: Path, at) -> str | None:
+    """at（确认时刻）那一刻主线上的提交；只沿主线走（不看合入进来的助手副本提交的时间）。"""
     if not isinstance(at, (int, float)):
         return None
-    base = (_git(root, "rev-list", "-1", "--first-parent", f"--before=@{int(at)}", "HEAD") or "").strip()
+    return (_git(root, "rev-list", "-1", "--first-parent", f"--before=@{int(at)}", "HEAD") or "").strip() or None
+
+
+def baseline_rev(root: Path, record: dict) -> str | None:
+    """确认记录对应的主线提交：记下的 rev；老记录没存 rev 时按确认时刻沿主线找。"""
+    rev = record.get("rev")
+    return rev if isinstance(rev, str) and rev else _rev_at(root, record.get("at"))
+
+
+def changed_since(root: Path, at, kinds: list[str]) -> list[str] | None:
+    """主线上从 at（确认时刻）那个提交到现在，哪几类的目录有改动；只沿主线走（不看合入进来的助手副本提交的时间）。"""
+    base = _rev_at(root, at)
     if not base:
         return None
     out = []
@@ -174,6 +193,100 @@ def changed_since(root: Path, at, kinds: list[str]) -> list[str] | None:
         if any(name not in FINGERPRINT_EXCLUDE for name in names.splitlines()):
             out.append(str(kind))
     return out
+
+
+# 刷新范围 changed_entries 认的目录：一个 .md 文件是一个条目，文件名（去掉 .md）是条目名
+ENTRY_DIRS = ("ontology/object/", "ontology/operation/", "ontology/rule/", "ontology/metric/")
+# 改动的条目多于这么多时不列名字，整条入口命令刷新：命令太长，查的量也接近全量
+SCOPE_NAMES_MAX = 100
+
+
+def _entry_name(path: str) -> str | None:
+    """条目路径 → 条目名；不是条目（目录外、不是 .md）返回 None，index.md 返回空串（跳过）。"""
+    if not path.startswith(ENTRY_DIRS) or not path.lower().endswith(".md"):
+        return None
+    name = path.rsplit("/", 1)[-1][:-3]
+    return "" if name.lower() == "index" else name
+
+
+def changed_entries(root: Path, record: dict, kinds: list[str]) -> dict | None:
+    """确认之后主线上改动（新增、修改）的条目：{since: 确认时的提交, names: [条目名]}。
+
+    算不出就返回 None（调用方整条刷新）：找不到确认时的提交、有删除、改到条目目录以外（如 ontology/logic/、
+    非 .md 文件）、条目名带空白或会被当成参数（以 - 开头、带 =）、只改了 index.md、改动多于 SCOPE_NAMES_MAX 个。"""
+    base = baseline_rev(root, record)
+    dirs = [directory for kind in kinds for directory in KIND_DIRS.get(str(kind), ())]
+    if not base or not dirs or _git(root, "cat-file", "-e", f"{base}^{{commit}}") is None:
+        return None
+    out = _git(root, "diff", "--name-status", "--no-renames", "-z", base, "HEAD", "--", *dirs)
+    if out is None:
+        return None
+    fields = out.split("\0")
+    if fields and fields[-1] == "":
+        fields.pop()
+    if len(fields) % 2:
+        return None
+    names = set()
+    for status, path in zip(fields[0::2], fields[1::2]):
+        if path in FINGERPRINT_EXCLUDE:
+            continue
+        name = _entry_name(path)
+        if status not in ("A", "M") or name is None:
+            return None
+        if not name:
+            continue
+        if any(char.isspace() for char in name) or name.startswith("-") or "=" in name:
+            return None
+        names.add(name)
+    if not names or len(names) > SCOPE_NAMES_MAX:
+        return None
+    return {"since": base, "names": sorted(names)}
+
+
+def refresh_entry(node: dict) -> str:
+    """节点的入口命令（没有时取第一个对话命令动作）；带参数的入口返回空串（不往后拼条目名）。"""
+    command = str((node.get("entry") or {}).get("command") or "").strip() or next(
+        (str(action["command"]).strip() for action in node.get("actions") or []
+         if str(action.get("command") or "").startswith("/")), "")
+    return command if command.startswith("/") and len(command.split()) == 1 else ""
+
+
+def refresh_scope(root: Path, node: dict, record: dict | None = None) -> dict | None:
+    """声明了 `refresh_scope: changed_entries` 的节点过期后的刷新范围：{since, names, command}，
+    command 是 `<入口命令> <条目名…> --since <确认时提交前 12 位>`。节点是否过期由调用方判断。
+
+    算不出范围、节点按段算、节点升级后待复核（判定变了，之前查过的也要按新判定重看）时返回 None：照旧整条刷新。"""
+    if node.get("refresh_scope") != "changed_entries" or node.get("per_slice"):
+        return None
+    entry = refresh_entry(node)
+    if not entry:
+        return None
+    root = Path(root)
+    if record is None:
+        record = load(root)["nodes"].get(node["id"])
+    if not isinstance(record, dict):
+        return None
+    review = record.get("needs_review")
+    if isinstance(review, dict) and review.get("source") == "upgrade":
+        return None
+    scope = changed_entries(root, record, list(node.get("stale_on") or []))
+    if scope is None:
+        return None
+    return {**scope, "command": f"{entry} {' '.join(scope['names'])} --since {scope['since'][:12]}"}
+
+
+def current_refresh_scope(root: Path, node: dict) -> dict | None:
+    """开始节点（FL-05、待处理里的刷新）用：节点此刻过期且算得出范围才给，否则 None（照旧发整条入口命令）。"""
+    from . import model
+
+    if node.get("refresh_scope") != "changed_entries" or node.get("per_slice"):
+        return None
+    root = Path(root)
+    flow = model.load_for(root)
+    hits = model.flow_state(root).node_hits(flow, root)
+    if (compute(root, flow, hits, persist=False).get(node["id"]) or {}).get("state") != "stale":
+        return None
+    return refresh_scope(root, node)
 
 
 def done_signature(flow: dict, node: dict) -> str:
@@ -258,7 +371,7 @@ def compute(root: Path, flow: dict, hits: dict[str, bool], *, project_id: str | 
                 signature = done_signature(flow, node)
                 if record is None:
                     record = {"fp": fp(node), "kinds": kind_fingerprints(root, list(node.get("stale_on") or [])),
-                              "sig": signature, "at": time.time()}
+                              "sig": signature, "at": time.time(), "rev": _head(root)}
                     stored["nodes"][node_id] = record
                     changed = True
                 elif record.get("sig") and record["sig"] != signature and not record.get("needs_review"):
@@ -328,7 +441,7 @@ def confirm(root: Path, flow: dict, node_ids: list[str]) -> None:
             # 人确认过（重做后确认生效）：需复核标记去掉（审查第 21 条）；补做完的可选节点不再算跳过
             kinds = list(node.get("stale_on") or [])
             stored["nodes"][node_id] = {"fp": fingerprint(root, kinds), "kinds": kind_fingerprints(root, kinds),
-                                        "sig": done_signature(flow, node), "at": time.time()}
+                                        "sig": done_signature(flow, node), "at": time.time(), "rev": _head(root)}
             stored["skipped"].pop(node_id, None)
         save(root, stored)
 

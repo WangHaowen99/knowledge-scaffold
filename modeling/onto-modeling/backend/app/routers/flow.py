@@ -1,7 +1,8 @@
 """流程（契约 3.12 FL-01～FL-05；详设 6.6、6.7、6.9、6.10；方案 D13、D14、D16）。
 
 节点状态由内核算（执行记录、变更集、产物指纹），下一步与 `state_helper suggest`、宿主注入同一份。
-跳过与恢复只对可选节点；开始节点等价于用节点声明的入口命令调 S-20。
+跳过与恢复只对可选节点；开始节点等价于用节点声明的入口命令调 S-20。声明了 `refresh_scope` 的节点此刻过期时，
+开始（刷新）发只查改动条目的命令（`<入口命令> <条目名…> --since <提交>`，见 services/flow/state.refresh_scope）。
 按段的节点（建模）带 `slice_id` 时：跳过、恢复的是这一段的可选步骤（缺省「规则」），开始的是这一段的下一步。
 """
 
@@ -109,7 +110,16 @@ async def restore_node(project_id: str, node_id: str, request: Request):
 @router.post("/nodes/{node_id}/start")
 async def start_node(project_id: str, node_id: str, request: Request):
     """FL-05：开始节点（含补做、刷新）。agent 节点用入口命令发到对话，等价于 S-20；脚本、人工、外部节点
-    由内核执行（详设 6.5，见 services/flow/node_kinds）。"""
+    由内核执行（详设 6.5，见 services/flow/node_kinds）。过期且声明了刷新范围的节点只查改动条目。"""
+    return await _start(project_id, node_id, request, scoped=True)
+
+
+async def redo_node(project_id: str, node_id: str, request: Request):
+    """待处理里需复核节点的「重做这一步」：整步重做，不按改动范围（节点升级、导入带进来的产物要全部重看）。"""
+    return await _start(project_id, node_id, request, scoped=False)
+
+
+async def _start(project_id: str, node_id: str, request: Request, *, scoped: bool):
     from . import sessions
 
     root = deps.require_writable(project_id, request)
@@ -135,6 +145,10 @@ async def start_node(project_id: str, node_id: str, request: Request):
     slice_id = str(body.get("slice_id") or "")
     if node.get("per_slice"):
         command, slice_id = await asyncio.to_thread(_slice_command, root, node, slice_id, body.get("step"), command)
+    elif scoped and node.get("refresh_scope"):
+        scope = await asyncio.to_thread(node_state.current_refresh_scope, root, node)
+        if scope and scope["command"].split()[0] == command:
+            command = scope["command"]
     payload = {"command": command, "args": body.get("args") or {}, "origin": origin,
                "conversation_id": body.get("conversation_id") or "-"}
     if slice_id:

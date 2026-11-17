@@ -2104,6 +2104,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 请求：`{slice_id?, args?: object, origin: {page, label}}`。
 - 等价于用节点声明的 `entry.command` 调 `S-20`。
+- 刷新过期节点：节点声明了 `refresh_scope: changed_entries`、此刻过期且算得出改动范围时，命令改为 `<entry.command> <条目名…> --since <确认时提交前 12 位>`（只查改动，ADR-0100）；算不出时照旧。
 - 响应 `202`：同 `S-20`。
 - 脚本节点（`kind: script`）当场在沙箱里跑完，响应 `200`：节点视图加 `run: {state, output, commit, version_label, duration_ms, runtime, warnings}`。`warnings: [{code: "pack_gate", level: "warning", message, gate, path}]` 是输出没过的包提交门禁：只提示，输出照常写进版本（F3b）。
 - 错误：`node_not_found`、`flow_assembly_failed`、`autobuild_running`。
@@ -2234,7 +2235,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `accept_points` | `point_ids` | `INC-03` |
 | `rewrite_point` | `point_id`、`text` | `INC-02` 的单行版 |
 | `execute` | — | `INC-04` |
-| `accept`、`rejudge` | `option_id`、`custom_text` | `AB-11`、`AB-12` |
+| `accept`、`rejudge` | `option_id`、`custom_text` | `AB-11`、`AB-12`；流程节点的需复核项 `rejudge` 为整步重做（不带改动范围的 `FL-05`） |
 | `revert_slice` | — | `AB-17` |
 | `use_generic` | — | 挂起问题「先按通用要求」 |
 | `refresh` | — | `FL-05` |

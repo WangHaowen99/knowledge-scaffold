@@ -343,6 +343,7 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
 
     script_runs = node_kinds.last_runs(root)
     stale_upstream = _stale_upstream(flow, states, states)
+    stale_scope = _stale_scope(root, flow, states)
     # F8 不再分段：蓝图草案不用确认，资料分析做完就是做完，不再停在「等你确认」
     nodes = []
     for node in flow.get("nodes") or []:
@@ -363,7 +364,9 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
             "actions": [] if item.get("broken") else _actions(node, item["state"], hooks.get(node["id"], []),
                                                               blueprint_draft=blueprint_context["state"] == "draft",
                                                               probes=probes, shown=getattr(state, "action_shown", None),
-                                                              cause=stale_upstream.get(node["id"], "")),
+                                                              cause=stale_upstream.get(node["id"], ""),
+                                                              refresh_target=(stale_scope.get(node["id"]) or {}).get(
+                                                                  "command", "")),
             "hooks": [{key: hook[key] for key in ("id", "title", "when", "command", "pack")}
                       for hook in hooks.get(node["id"], [])],
             "plugin": None if node.get("pack", "core") == "core" else _plugin_ref(node),
@@ -409,6 +412,7 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
                        "slice_next": (sliced or {}).get("slice_next"),
                        "slice_stale": (sliced or {}).get("slice_stale") or [],
                        "stale_upstream": _stale_upstream(flow, simple_states, states),
+                       "stale_scope": stale_scope,
                        "confine_active": _confine_active(flow, root),
                        **_session_context(root.name, conversation_id, root, flow, interrupted_exec),
                        **_run_context(root.name), **extra}
@@ -493,8 +497,20 @@ def _hooks_by_node(flow: dict) -> dict[str, list[dict]]:
     return out
 
 
+def _stale_scope(root: Path, flow: dict, states: dict) -> dict:
+    """过期且声明了 `refresh_scope` 的节点 → 只查改动条目的刷新 {since, names, command}（state.refresh_scope）。
+    算不出范围的不列：建议条、节点卡片的刷新照旧发整条入口命令。"""
+    out = {}
+    for node in flow.get("nodes") or []:
+        if node.get("refresh_scope") and (states.get(node["id"]) or {}).get("state") == "stale":
+            scope = node_state.refresh_scope(root, node)
+            if scope:
+                out[node["id"]] = scope
+    return out
+
+
 def _actions(node: dict, state: str, hooks: list[dict] | None = None, *, blueprint_draft: bool = False,
-             probes: dict | None = None, shown=None, cause: str = "") -> list[dict]:
+             probes: dict | None = None, shown=None, cause: str = "", refresh_target: str = "") -> list[dict]:
 
     def offered(action: dict) -> bool:
         has_target = bool(action.get("command") or action.get("page"))
@@ -512,8 +528,11 @@ def _actions(node: dict, state: str, hooks: list[dict] | None = None, *, bluepri
              for hook in hooks or [] if hook.get("when") != "before"]
     actions = before + actions + after
     if state == "stale" and actions and actions[0]["target"].startswith("/"):
-        # 和建议条同一个说法：「对象有变化，刷新校验」
-        actions = [{**actions[0], "kind": "refresh",
+        # 和建议条同一个说法：「对象有变化，刷新校验」；声明了刷新范围的只查改动条目（同一条命令），其余动作不变
+        target = actions[0]["target"]
+        if refresh_target and refresh_target.split()[0] == target.split()[0]:
+            target = refresh_target
+        actions = [{**actions[0], "kind": "refresh", "target": target,
                     "label": f"{cause}有变化，刷新{node['title']}" if cause else f"刷新{node['title']}"}, *actions]
     if node["id"] == "core.research" and blueprint_draft:
         actions = [{"kind": "confirm", "label": "去确认", "target": "wb-blueprint"}, *actions]
@@ -548,7 +567,7 @@ def _assembly_notice(root: Path) -> list[dict]:
 
 # 写给助手的 flow-state.json 里带的上下文字段
 _CONTEXT_KEYS = ("stage", "changeset", "autobuild", "blueprint", "slice_next", "slice_stale", "stale_upstream",
-                 "confine_active")
+                 "stale_scope", "confine_active")
 
 
 def _write_flow_state(root: Path, copy: Path, flow: dict, states: dict, context: dict, suggestions: dict) -> None:

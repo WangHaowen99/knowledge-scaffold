@@ -13,6 +13,7 @@
 按段的节点（详设 6.6，B4d）：`per_slice: true` 的节点带 `steps`（分段里的步骤）；包用 `slice_steps` 往这类节点的
 分段里加步骤（`[{node, step}]`，如 F8 之前场景模拟的「场景」），用 `node_titles` 改主线节点的显示名（`{节点: 名称}`，如
 F8 之前的「校验与走查」）。这两项和节点钩子（`hooks`）分开声明，各管各的。
+节点的 `refresh_scope`（可选）只能是 changed_entries，按段的节点不能写：过期后刷新只查确认之后改动的条目。
 core 的 `aliases` 把旧版节点编号映射到现在的节点：没升级的包写的锚点、钩子宿主、命令归属照样认。
 范围限定（ADR-0085）：包在 flow.yaml 顶层写 `confine: {scope_file: <路径>}`，范围文件里 status 是 active 时，
 基线里有、editable 里没有的本体条目助手不能写也不能删（内核守卫按组装结果执行）。最多一个包声明，
@@ -29,6 +30,8 @@ FLOW_API = 1
 PLACEMENTS = ("spine", "step", "branch", "gate", "on_demand")
 SECTIONS = ("required", "pre_publish", "optional", "on_demand")
 KINDS = ("agent", "script", "human", "external")
+# 节点过期后刷新的范围：changed_entries 只查确认之后改动的条目（state.refresh_scope）；不写时整条刷新
+REFRESH_SCOPES = ("changed_entries",)
 
 
 class FlowAssemblyError(ValueError):
@@ -50,6 +53,11 @@ def _node_problems(pack: str, node: dict) -> list[str]:
         problems.append(f"节点 {node_id} 的类型 {node.get('kind')} 不认识")
     if not node.get("title"):
         problems.append(f"节点 {node_id} 缺少 title")
+    if node.get("refresh_scope") is not None:
+        if node["refresh_scope"] not in REFRESH_SCOPES:
+            problems.append(f"节点 {node_id} 的刷新范围 {node['refresh_scope']} 不认识")
+        elif node.get("per_slice"):
+            problems.append(f"节点 {node_id} 按段算状态，不能声明刷新范围")
     return problems
 
 

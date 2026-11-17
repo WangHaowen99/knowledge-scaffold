@@ -72,6 +72,7 @@ contributes:
     - script_descriptor.py
     - script_verify.py
     - seed_example.py
+    - semantic_issues.py
     - solver_evaluator_contract.py
     - source_extract.py
     - state_helper.py

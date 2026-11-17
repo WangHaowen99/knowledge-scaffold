@@ -79,6 +79,42 @@ def test_subagent_title_keeps_chinese_descriptions():
     assert timeline.subagent_title("", "检查三个操作的口径") == "检查三个操作的口径"
 
 
+_SEMANTIC_READ = "请先完整阅读 .claude/agents/semantic-check-agent.md，严格按其中的规则与输出格式执行。\n"
+
+
+def test_semantic_check_parts_get_their_own_titles():
+    """全量校验同时派三个语义检查子任务：三张卡片按 PART 取名才分得开，模型写的描述（中英文）都不顶替。"""
+    dir_line = "ISSUES_DIR: .ontology-state/semantic/20260101-000000-abcd\n"
+    assert timeline.subagent_title("Semantic check", _SEMANTIC_READ + "PART: operation\n" + dir_line) == "语义检查 · 操作"
+    assert timeline.subagent_title("语义检查（对象）", _SEMANTIC_READ + "PART: object\n" + dir_line) == "语义检查 · 对象"
+    assert timeline.subagent_title("", _SEMANTIC_READ + "PART：cross\n" + dir_line) == "语义检查 · 跨文档"
+    assert timeline.subagent_title(None, "PART: object\n", "semantic-check-agent") == "语义检查 · 对象"
+    # 不拆的（只查改动、回归）和没写 PART 的照旧
+    assert timeline.subagent_title("Semantic check", _SEMANTIC_READ + "PART: all\n" + dir_line) == "语义检查"
+    assert timeline.subagent_title("Semantic check", _SEMANTIC_READ + dir_line) == "语义检查"
+    assert timeline.subagent_title("语义检查（只查改动）", _SEMANTIC_READ + "PART: all\n") == "语义检查（只查改动）"
+    # 别的子代理说明里出现 PART 不算；正文中间提到 PART 取值也不算
+    assert timeline.subagent_title("Fix", "请先完整阅读 .claude/agents/semantic-fix-agent.md。\nPART: operation\n") == "语义修复"
+    assert timeline.subagent_title("Rule check", "Read .claude/agents/rule-check-agent.md\nPART: object\n") == "规则检查"
+    assert timeline.subagent_title("Semantic check", _SEMANTIC_READ + "说明：PART: cross 只在全量时用\n") == "语义检查"
+
+
+def test_semantic_check_recording_shows_as_progress():
+    """语义检查子任务边查边记：记问题、查完一项给用户看（按检查项说）；主命令建目录、看缺项、合并不进工作过程。"""
+    run = ".ontology-state/semantic/20260101-000000-abcd"
+    script = "python3 .claude/scripts/semantic_issues.py"
+    add = f"{script} add --dir {run} --part operation --check 兜底完整性 <<'EOF'\n{{}}\nEOF"
+    done = f'{script} done --dir {run} --part operation --check "Data/Operation 内容边界与口径一致"'
+    whole = f"{script} done --dir {run} --part all"
+    assert not timeline.internal_step("Bash", _bash(add, "Record issues"))
+    assert not timeline.internal_step("Bash", _bash(done, "Mark done"))
+    assert timeline.step_text("Bash", _bash(add, "Record issues")) == "记录「兜底完整性」的问题"
+    assert timeline.step_text("Bash", _bash(done, "Mark done")) == "查完「Data/Operation 内容边界与口径一致」"
+    assert timeline.step_text("Bash", _bash(whole, "Mark done")) == "检查做完"
+    for sub in ("init --mode full", f"status --dir {run} --parts operation,object,cross", f"merge --dir {run}"):
+        assert timeline.internal_step("Bash", _bash(f"{script} {sub}", "x"))
+
+
 def test_step_duration_left_blank_under_a_second():
     """工具本身多在几十到几百毫秒，时间花在步骤之间的模型思考上：不满 1 秒不写耗时，免得满屏「0 秒」。"""
     assert timeline._duration_text(120) == ""

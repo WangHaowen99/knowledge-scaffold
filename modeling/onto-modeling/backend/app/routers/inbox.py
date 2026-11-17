@@ -176,7 +176,9 @@ async def _run_action(project_id: str, item: dict, action: str, request: Request
         # 自主构建的决定改判走 AB-12，不是流程节点的「重做这一步」（V 阶段：原来回 404 node_not_found）
         return await _autobuild_review(project_id, item, action, request, body)
     if action in ("refresh", "rejudge"):
-        response = await flow_routes.start_node(project_id, source_id, request)
+        # 刷新过期节点按改动范围（声明了 refresh_scope 的只查改动条目）；重做需复核的节点整步重做
+        start = flow_routes.start_node if action == "refresh" else flow_routes.redo_node
+        response = await start(project_id, source_id, request)
         return {"command_task": _json(response).get("task")}
     if item["kind"] == "suspension":
         from ..services.autobuild import review

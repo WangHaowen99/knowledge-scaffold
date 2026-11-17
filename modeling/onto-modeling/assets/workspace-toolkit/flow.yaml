@@ -20,7 +20,8 @@
 # - stale_on：这些类别的产物在主线上变了，已确认的节点退回「过期」（research、object、operation、rule、
 #   metric、script、mock、testcase、diagram、solver、knowledge）；
 # - per_slice + steps：按段算状态的节点和段里的步骤（详设 6.6），包可以用 hooks 往段里加步骤；
-# - blocks：没确认就挡住的节点（关卡挂在发布前面）；blocks_in: sliced 表示只在按段模式下挡。
+# - blocks：没确认就挡住的节点（关卡挂在发布前面）；blocks_in: sliced 表示只在按段模式下挡；
+# - refresh_scope: changed_entries：过期后的刷新只查确认之后改动的条目（见校验节点上的说明）。
 flow_api: 1
 title: 主流程
 
@@ -124,6 +125,11 @@ nodes:
     produces: ["reports/*-rule.md", "reports/*-semantic.md"]
     # 修复型节点：校验后的修复可能改到任何条目
     writes: ["ontology/*"]
+    # 过期后刷新（建议条、节点卡片、待处理、FL-05）发 `/ontology-validate <条目名…> --since <确认时提交前 12 位>`：
+    # 条目名是确认之后新增、修改的 object/operation/rule/metric 文件名（去掉 .md），空格分隔，对应命令 Step 0.5
+    # 的只查改动模式。删了条目、改了 ontology/logic/ 或非 .md 文件、只改了 index.md 时整条刷新；第一次校验、
+    # 点「运行质量检查」、在对话里要求校验照旧全量
+    refresh_scope: changed_entries
     entry: {command: /ontology-validate}
     actions:
       - {label: 运行质量检查, command: /ontology-validate}
