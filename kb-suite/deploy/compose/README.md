@@ -188,7 +188,7 @@ WeKnora 发布的 docreader 镜像（09-24 版）不返回原文定位，main �
 3. 用 `da/Dockerfile` 打镜像。它和 DA 的 `deploy-dev/Dockerfile` 一样，只是把 JRE 基础镜像做成了参数。部署机上拉 `eclipse-temurin:21` 很慢，所以设了 `DA_JRE_IMAGE=eclipse-temurin:17-jre`。
 4. 用 `da/make_kb_spec.py` 从这次构建的 DA 源码里取出 5 个知识库工具的契约（`kb_search`、`expand`、`doc_grep`、`wiki_browse`、`reprocess_document`），生成 `da/build/knowledge-service.json`。
 
-这次构建用的三仓提交号记录在镜像标签 `kb-suite.da-baseline` 里；`DA_CORE_REF` / `DA_RUNTIME_REF` / `DA_SOLUTION_REF` 可以锁定提交号重建。
+这次构建用的三仓提交号记录在镜像标签 `kb-suite.da-baseline` 里；`DA_CORE_REF` / `DA_RUNTIME_REF` / `DA_SOLUTION_REF` 可以锁定提交号重建。`DA_PATCHES="0001 0002 0004"` 只打列出的补丁（某个基线打不上其余补丁时用）；`DA_IMAGE_TAG=<标签>` 把第二个标签从 `:current` 换成别的，测试栈在 `deploy.env` 里写 `DA_TAG=<标签>` 先试，不影响按 `:current` 部署的环境。
 
 **本地补丁**：`da/patches/*.patch` 会在编译前打到导出的源码上，打了哪些记录在镜像标签 `kb-suite.da-patches` 里。上游修复之后就删掉对应的补丁。
 
@@ -197,6 +197,11 @@ WeKnora 发布的 docreader 镜像（09-24 版）不返回原文定位，main �
   - 回收：原来注册从不注销，每个团队成员会话都会留下一份注册和一条连接，直到 DA 重启。现在按 agent 视图计数，最后一个卸载时注销并断开连接。
 - `0002-keep-cancel-mark-while-busy`：DA 的 `/cancel` 会标记会话已取消，任务在下一次模型调用前收尾。但每个新请求在被内核以「会话忙」拒绝之前，都会先重新登记会话，顺手清掉这个标记，取消后紧接着重试（每个宿主的下一轮都会这样）就等于撤销了取消，任务一直跑到自然结束。现在会话还有任务在跑时不清标记。实测：修之前每秒重试，取消 90 秒后还在忙；修之后约 5 秒空出来。
 - `0003-push-content-confirm-every-type`：`actrule.yaml` 把 `push_content` 列为“需确认”，但 DA 的场景钩子对 file 以外的类型一律直接放行，表格、Markdown 卡片可能带出用户还没看到的内容。现在每种类型都按权限策略先确认。上游 2026-11-12 起改成了配置项，见下文“推送确认”。
+- `0004-session-output-download`：`push_file` 返回的 `downloadUrl`（`/api/sessions/{sessionId}/output/{fileName}`）原本由 DA 的 TS 后端提供，DA-java 单独部署时没人提供，链接打不开。现在 DA-java 自己提供这个 GET：
+  - 校验和 `/api/agents` 一样：`X-Engine-Secret`，以及 `X-Da-Session-Id` 必须等于路径里的会话 id；
+  - 只读会话 `output/` 下的一级文件，解开符号链接后仍须在里面；
+  - 以附件形式下载，中文文件名按 RFC 5987 编码，支持 Range。
+  - harness 拿到 `push_file` 的结果后用它把文件取回宿主（见 `harness/da-harness/README.md`）。没打这个补丁的镜像回 404，harness 只记日志。
 
 **DA 怎么接 kb-service**：通过 Spring 的附加配置 `da/kbs-tools.yml`（`SPRING_CONFIG_ADDITIONAL_LOCATION`）重定义 `deepanalyze.tool-services`。其中 `base_url` 指向 kb-api，描述文件用上面生成的那份，`auth-headers` 里带 `KBS_DA_KEY`。DA 的 jar 和源码都不改。
 
@@ -338,6 +343,7 @@ agent-solution 里的 `loop-forest` 是一个 Java 库：在 agent-core 的 ReAc
 
 **DA 本地补丁**（`da/patches/`）：
 - `0002`、`0003` 只适用于 `b70a00246` 基线。按更新的 common 构建时，要先移出这两个，否则 `build-da` 会因补丁打不上而中断。`0001` 在 2026-11-14 的 common 上仍能打上。
+- `0004` 能打在 `b70a00246`（在 0001～0003 之后）、`0eed3c7e0`（在 0001、0002 之后）和 2026-11-16 的 common 上。
 - 补丁必须是 LF 换行，仓库根目录的 `.gitattributes` 已经这样设置。
 
 **重启的顺序**：
