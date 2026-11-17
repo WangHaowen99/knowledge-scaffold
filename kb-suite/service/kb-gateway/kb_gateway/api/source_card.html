@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>出处</title>
+<style>
+  :root { --fg: #1f2329; --muted: #8a9099; --line: #e5e6eb; --mark: #fff3c4; --bg: #fff; }
+  :root[data-theme="dark"] { --fg: #e6e8eb; --muted: #8b929c; --line: #33373d; --mark: #4a3f14; --bg: #1e1f22; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.65 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .card { padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; }
+  .title { font-weight: 600; word-break: break-all; }
+  .where { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .text { margin-top: 10px; white-space: pre-wrap; word-break: break-word; }
+  .ctx { color: var(--muted); }
+  mark { background: var(--mark); color: inherit; padding: 1px 2px; border-radius: 2px; }
+  .empty { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="card" id="card"><div class="empty">…</div></div>
+<script>
+(() => {
+  // MCP Apps (io.modelcontextprotocol/ui), app side: initialize, then render the tool result.
+  let seq = 0;
+  const pending = new Map();
+  const post = (message) => window.parent.postMessage(message, "*");
+  const request = (method, params) => new Promise((resolve) => {
+    const id = ++seq;
+    pending.set(id, resolve);
+    post({ jsonrpc: "2.0", id, method, params });
+  });
+  const notify = (method, params) => post({ jsonrpc: "2.0", method, params: params || {} });
+
+  const applyTheme = (context) => {
+    const theme = context && context.theme;
+    if (theme === "dark" || theme === "light") document.documentElement.dataset.theme = theme;
+  };
+  const reportSize = () => {
+    const rect = document.getElementById("card").getBoundingClientRect();
+    notify("ui/notifications/size-changed", { width: Math.ceil(rect.width), height: Math.ceil(rect.height) + 2 });
+  };
+  const clip = (text, max, fromEnd) => {
+    const value = String(text || "");
+    if (value.length <= max) return value;
+    return fromEnd ? "…" + value.slice(value.length - max) : value.slice(0, max) + "…";
+  };
+  const el = (tag, cls, text) => {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text) node.textContent = text;
+    return node;
+  };
+  const place = (source) => {
+    const parts = [];
+    if (source.section_title) parts.push(source.section_title);
+    for (const loc of (source.locators || []).slice(0, 2)) {
+      if (loc.page) parts.push(`第 ${loc.page} 页`);
+      else if (loc.slide) parts.push(`第 ${loc.slide} 张`);
+      else if (loc.sheet) parts.push(loc.row_start ? `${loc.sheet} ${loc.row_start}–${loc.row_end || loc.row_start} 行` : loc.sheet);
+      else if (loc.time_start != null) parts.push(`${Math.floor(loc.time_start / 60)}:${String(Math.floor(loc.time_start % 60)).padStart(2, "0")}`);
+      else if (loc.line_start) parts.push(`第 ${loc.line_start} 行`);
+    }
+    return [...new Set(parts)].join(" · ");
+  };
+
+  const render = (result) => {
+    const source = (result && result.structuredContent && result.structuredContent.source) || null;
+    const card = document.getElementById("card");
+    card.textContent = "";
+    if (!source) {
+      const text = ((result && result.content) || []).map((c) => c.text || "").join("\n");
+      card.appendChild(el("div", "empty", text || "没有找到出处"));
+      reportSize();
+      return;
+    }
+    card.appendChild(el("div", "title", source.title || source.file_name || source.doc_id));
+    const where = place(source);
+    if (where) card.appendChild(el("div", "where", where));
+    const body = el("div", "text");
+    if (source.context_before) body.appendChild(el("span", "ctx", clip(source.context_before, 240, true) + "\n"));
+    body.appendChild(el("mark", "", source.text || ""));
+    if (source.context_after) body.appendChild(el("span", "ctx", "\n" + clip(source.context_after, 240, false)));
+    card.appendChild(body);
+    reportSize();
+  };
+
+  window.addEventListener("message", (event) => {
+    const message = event.data;
+    if (!message || message.jsonrpc !== "2.0") return;
+    if (message.id != null && !message.method && pending.has(message.id)) {
+      pending.get(message.id)(message.result);
+      pending.delete(message.id);
+      return;
+    }
+    if (message.method === "ui/notifications/tool-result") render(message.params);
+    else if (message.method === "ui/notifications/host-context-changed") applyTheme(message.params);
+    else if (message.id != null && message.method) post({ jsonrpc: "2.0", id: message.id, result: {} });
+  });
+  new ResizeObserver(reportSize).observe(document.getElementById("card"));
+
+  request("ui/initialize", {
+    appInfo: { name: "kb-source", version: "1.0.0" },
+    appCapabilities: {},
+    protocolVersion: "2026-01-26",
+  }).then((result) => {
+    applyTheme(result && result.hostContext);
+    notify("ui/notifications/initialized");
+  });
+})();
+</script>
+</body>
+</html>

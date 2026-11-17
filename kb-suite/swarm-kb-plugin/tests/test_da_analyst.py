@@ -6,6 +6,7 @@ Needs jiuwenswarm and openjiuwen (run inside the Swarm image, see deploy/compose
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib.util
 import json
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ def ext(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setenv("DA_ANALYST_HISTORY_DIR", str(tmp_path))
+    monkeypatch.setenv("DA_ANALYST_FILES_DIR", str(tmp_path / "pushed"))
     monkeypatch.setattr(module, "_provider_class", lambda engine: FakeProvider)
     FakeHarness.instances.clear()
     return module
@@ -196,6 +198,29 @@ async def test_transcript_folds_output_deltas_and_skips_unused_events(ext: Any) 
     assert loaded.events == transcript.events
     assert loaded.summary()["turns"] == 1
     assert loaded.kb_ids == ["kb1"]
+
+
+async def test_transcript_keeps_what_da_delivers_but_not_streamed_sub_agent_output(ext: Any) -> None:
+    transcript = ext.Transcript("s1", "deepanalyze")
+    transcript.add_user("c1", "合成问题", [])
+    long_card = "表" * (ext.MAX_TRANSCRIPT_OUTPUT + 10)
+    for wire in wires(
+        {"t": "provider", "turn_id": "t1", "event_type": "push_content",
+         "payload": {"type": "markdown", "title": "合成报告", "data": long_card}},
+        {"t": "provider", "turn_id": "t1", "event_type": "todo_update",
+         "payload": {"todos": [{"id": "1", "content": "检索", "status": "completed"}]}},
+        {"t": "provider", "turn_id": "t1", "event_type": "workflow_event",
+         "payload": {"type": "workflow_start", "workflowId": "w1", "agentCount": 2}},
+        {"t": "provider", "turn_id": "t1", "event_type": "workflow_event",
+         "payload": {"type": "workflow_agent_chunk", "workflowId": "w1", "agentId": "a1"}},
+        {"t": "provider", "turn_id": "t1", "event_type": "subagent_start", "payload": {}},
+    ):
+        transcript.record(wire)
+
+    kept = [(e["event_type"], e["payload"].get("type")) for e in transcript.events if e["t"] == "provider"]
+    assert kept == [("push_content", "markdown"), ("todo_update", None), ("workflow_event", "workflow_start")]
+    card = next(e for e in transcript.events if e.get("event_type") == "push_content")
+    assert len(card["payload"]["data"]) == ext.MAX_TRANSCRIPT_OUTPUT + 1  # clipped, marked with "…"
 
 
 async def test_transcript_without_a_question_is_not_saved(ext: Any) -> None:
@@ -709,3 +734,69 @@ async def test_hello_names_backends_whose_knowledge_bases_are_missing(ext, monke
                                      "knowledge_bases": [{"id": "wk_kb1", "name": "合成库二"}]}]
     # "every knowledge base" still names the ones on the backend that is down, so the tools report them
     assert [kb["id"] for kb in await ext._list_kbs()] == ["kb1", "wk_kb1"]
+
+
+# ---- files DA pushes ---------------------------------------------------------------------------------
+
+
+async def _reply(socket: FakeSocket, client_id: str) -> dict[str, Any]:
+    for _ in range(200):
+        found = [m for m in socket.out if m.get("client_id") == client_id]
+        if found:
+            return found[0]
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"no reply to {client_id}")
+
+
+async def test_pushed_files_reach_the_page_by_name_in_pieces(ext: Any) -> None:
+    from openjiuwen.harness_protocol import ItemEventKind, ItemLifecycleEvent
+
+    convo, _ = await ext.open_conversation("sess-f", "deepanalyze")
+    files = Path(FakeHarness.instances[-1].context.cwd)
+    assert files.is_dir() and files == ext._files_dir("sess-f")
+    payload = bytes(range(256)) * 5000  # 1.28 MB: three pieces
+    (files / "合成表.csv").write_bytes(payload)
+    item = ItemLifecycleEvent(kind=ItemEventKind.COMPLETED, item_type="file", data={
+        "path": str(files / "合成表.csv"), "name": "合成表.csv", "size": len(payload), "mime_type": "text/csv",
+        "title": "合成"})
+    wire = ext.event_to_wire(Envelope(event=item, turn_id="turn-1", item_id="i1:file"))
+    assert (wire["t"], wire["item_type"], wire["name"], wire["size"]) == ("item", "file", "合成表.csv", len(payload))
+    assert "path" not in wire  # where it lies on the host stays on the host
+    convo.transcript.record(wire)
+    assert convo.transcript.events[-1]["name"] == "合成表.csv"  # still downloadable after a reload
+
+    socket = FakeSocket()
+    task = serve(ext, socket)
+    got = b""
+    while True:
+        client_id = f"c{len(got)}"
+        socket.put(type="file", host_session_id="sess-f", name="合成表.csv", offset=len(got), client_id=client_id)
+        piece = await _reply(socket, client_id)
+        assert piece["t"] == "file_chunk" and piece["size"] == len(payload)
+        got += base64.b64decode(piece["data"])
+        if piece["eof"]:
+            break
+    assert got == payload
+    socket.put(type="file", host_session_id="sess-f", name="../sess-f.json", offset=0, client_id="bad")
+    assert (await _reply(socket, "bad"))["t"] == "error"
+    socket.leave()
+    await task
+    await ext.delete_conversation("sess-f")
+    assert not files.exists()
+
+
+def test_only_plain_names_of_files_in_the_conversation_are_served(ext: Any, tmp_path: Path) -> None:
+    files = ext._files_dir("sess-g")
+    files.mkdir(parents=True)
+    (files / "ok.txt").write_text("好", encoding="utf-8")
+    (files / ".ok.txt.1234.part").write_text("half", encoding="utf-8")
+    (files / "sub").mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("no", encoding="utf-8")
+    (files / "link.txt").symlink_to(outside)
+    assert base64.b64decode(ext.read_pushed_file("sess-g", "ok.txt", 0)["data"]).decode() == "好"
+    for name in ("../outside.txt", str(outside), ".ok.txt.1234.part", "link.txt", "sub", "", "missing.txt"):
+        with pytest.raises((ValueError, FileNotFoundError)):
+            ext.read_pushed_file("sess-g", name, 0)
+    with pytest.raises(ValueError):
+        ext.read_pushed_file("../sess-g", "ok.txt", 0)
