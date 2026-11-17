@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 import { rpc } from './rpc';
 import type { KnowledgeBase } from './types';
 
@@ -13,6 +13,28 @@ export interface JsonSchema {
   maximum?: number;
   maxLength?: number;
   properties?: Record<string, JsonSchema>;
+  /** write-only: read back as "******" when set, sending "******" keeps it */
+  'x-secret'?: boolean;
+}
+
+export type Scope = 'kb' | 'document';
+
+export interface ActionDecl {
+  id: string;
+  scope: Scope;
+  label: string;
+  description?: string;
+  params_schema?: JsonSchema | null;
+  confirm?: boolean;
+  job?: boolean;
+}
+
+export interface ViewDecl {
+  id: string;
+  scope: Scope;
+  label: string;
+  media_type: 'text/markdown' | 'application/json';
+  renderer?: 'timeline' | 'table' | 'kv';
 }
 
 export interface BackendInfo {
@@ -27,11 +49,46 @@ export interface BackendInfo {
   file_types: string[];
   limits: { max_upload_mb?: number; max_top_k?: number };
   config_schema: JsonSchema | null;
+  // contract section 9 declarations; absent from a gateway that predates them
+  actions?: ActionDecl[];
+  views?: ViewDecl[];
+  settings_schema?: JsonSchema | null;
+  search_options_schema?: JsonSchema | null;
+  export_formats?: string[];
 }
 
 /** A knowledge base without gateway annotations comes straight from kb-service, which supports everything. */
 export function has(kb: Pick<KnowledgeBase, 'features'> | null | undefined, feature: string): boolean {
   return !kb?.features || kb.features.includes(feature);
+}
+
+/**
+ * Strict check for the optional mechanisms of contract section 9: only a backend that says so has them,
+ * so kb-service reached directly (no gateway, no feature list) shows none of them.
+ */
+export function offers(kb: Pick<KnowledgeBase, 'features'> | null | undefined, feature: string): boolean {
+  return Boolean(kb?.features?.includes(feature));
+}
+
+export function declaredActions(backend: BackendInfo | undefined, kb: KnowledgeBase | null | undefined, scope: Scope): ActionDecl[] {
+  return offers(kb, 'actions') ? (backend?.actions ?? []).filter((a) => a.scope === scope) : [];
+}
+
+export function declaredViews(backend: BackendInfo | undefined, kb: KnowledgeBase | null | undefined, scope: Scope): ViewDecl[] {
+  return offers(kb, 'views') ? (backend?.views ?? []).filter((v) => v.scope === scope) : [];
+}
+
+/** The knowledge base on screen, its backend's declarations, and a way to tell the jobs list something started. */
+export interface KbScope {
+  kb: KnowledgeBase;
+  backend: BackendInfo | undefined;
+  refreshJobs: () => void;
+}
+
+export const KbScopeContext = createContext<KbScope | null>(null);
+
+export function useKbScope(): KbScope | null {
+  return useContext(KbScopeContext);
 }
 
 /** kb-service's own settings shape (sections such as chunking, wiki, retrieval) and its hand-written forms. */

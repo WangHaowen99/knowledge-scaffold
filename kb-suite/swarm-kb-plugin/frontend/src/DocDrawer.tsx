@@ -1,32 +1,46 @@
-import { Download, MessageSquareText, Pencil, RotateCcw, Square, Trash2, X } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { Crosshair, Download, MessageSquareText, Pencil, RotateCcw, Square, Trash2, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import FileView, { canPreview } from './FileView';
+import Markdown from './Markdown';
+import ActionButtons from './actions';
+import { locate } from './evidence';
+import { releaseFile } from './fileStore';
+import { focusView, linesOf, previewKind, textWindow, type Focus } from './preview';
 import { ENRICH_LABEL, enrichBusy, enrichItems, formatBytes, formatTime, locatorText, sourceLabel, statusOf, summaryBusy } from './format';
-import { has } from './backend';
+import { declaredActions, declaredViews, has, offers, useKbScope } from './backend';
 import { rpc } from './rpc';
 import { errorText, useToast } from './toast';
 import type { ChunkItem, DocumentItem } from './types';
-import { Badge, Button, Empty, Spinner, Tabs } from './ui';
+import { Badge, Button, Empty, Menu, Spinner, Tabs } from './ui';
+import { ViewPane } from './views';
 
-type View = 'summary' | 'content' | 'chunks' | 'info';
+type View = 'summary' | 'content' | 'file' | 'chunks' | 'info' | `view:${string}`;
 
 const L1_PREVIEW_CHARS = 60000;
 
-function Markdown({ text }: { text: string }) {
-  return (
-    <div className="markdown">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{ img: ({ alt }) => <span className="img-ph">[图片{alt ? `：${alt}` : ''}]</span> }}
-      >
-        {text}
-      </ReactMarkdown>
-    </div>
-  );
+type FilePayload = { content_type: string; data: string; file_name?: string | null };
+
+function save(file: FilePayload, name: string) {
+  const bytes = Uint8Array.from(window.atob(file.data), (c) => c.charCodeAt(0));
+  const url = URL.createObjectURL(new Blob([bytes], { type: file.content_type }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = file.file_name || name;
+  a.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
-function ChunkCard({ chunk, onSaved, editable }: { chunk: ChunkItem; onSaved: (questions: string[]) => void; editable: boolean }) {
+function ChunkCard({
+  chunk,
+  onSaved,
+  editable,
+  onLocate,
+}: {
+  chunk: ChunkItem;
+  onSaved: (questions: string[]) => void;
+  editable: boolean;
+  onLocate?: () => void;
+}) {
   const notify = useToast();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -55,6 +69,11 @@ function ChunkCard({ chunk, onSaved, editable }: { chunk: ChunkItem; onSaved: (q
         {chunk.line_start != null ? <span>第 {chunk.line_start} 行</span> : null}
         {where ? <span>· {where}</span> : null}
         {chunk.context_header ? <span className="chunk-header">· {chunk.context_header}</span> : null}
+        {onLocate ? (
+          <button className="link-btn chunk-locate" onClick={onLocate}>
+            <Crosshair size={11} /> 定位
+          </button>
+        ) : null}
       </div>
       <div className={`chunk-content ${open ? '' : 'clamp'}`}>{chunk.content}</div>
       {chunk.content.length > 240 ? (
@@ -104,16 +123,26 @@ export default function DocDrawer({
   onClose,
   onChanged,
   features,
+  focus: initialFocus,
 }: {
   docId: string;
   onClose: () => void;
   onChanged: () => void;
   features?: string[];
+  /** open at this place (evidence of a search hit): the original file where it can show it, else the text */
+  focus?: Focus;
 }) {
   const can = (feature: string) => has({ features }, feature);
   const notify = useToast();
+  // what the knowledge base's backend declares (contract section 9); nothing outside a knowledge base page
+  const scope = useKbScope();
+  const docActions = declaredActions(scope?.backend, scope?.kb, 'document');
+  const docViews = declaredViews(scope?.backend, scope?.kb, 'document');
+  const exportFormats = offers(scope?.kb, 'documents.export') ? scope?.backend?.export_formats ?? [] : [];
   const [doc, setDoc] = useState<DocumentItem | null>(null);
-  const [view, setView] = useState<View>('summary');
+  const [view, setView] = useState<View>(initialFocus ? 'content' : 'summary');
+  const [focus, setFocus] = useState<Focus | undefined>(initialFocus);
+  const ranged = offers(scope?.kb, 'documents.file.range');
   const [content, setContent] = useState<string | null>(null);
   const [chunks, setChunks] = useState<ChunkItem[]>([]);
   const [chunkTotal, setChunkTotal] = useState(0);
@@ -137,7 +166,20 @@ export default function DocDrawer({
     setContent(null);
     setChunks([]);
     setChunkTotal(0);
+    return () => releaseFile(docId);
   }, [docId]);
+
+  // a new place to show (from the caller, or a chunk's 定位)
+  useEffect(() => {
+    setFocus(initialFocus);
+    if (initialFocus) setView('content');
+  }, [initialFocus]);
+
+  const showsFile = Boolean(doc && can('documents.file') && canPreview(doc));
+  // once the document is known, the place goes to the original file when it can show it there
+  useEffect(() => {
+    if (doc && focus) setView(focusView(focus, previewKind(doc.file_type), showsFile));
+  }, [doc?.id, focus, showsFile]);
 
   const busy = doc ? statusOf(doc).busy || enrichBusy(doc) : false;
   useEffect(() => {
@@ -195,17 +237,46 @@ export default function DocDrawer({
   const download = async () => {
     if (!doc) return;
     try {
-      const res = await rpc.call<{ content_type: string; data: string }>('docs.file', { doc_id: docId }, 300000);
-      const bytes = Uint8Array.from(window.atob(res.data), (c) => c.charCodeAt(0));
-      const url = URL.createObjectURL(new Blob([bytes], { type: res.content_type }));
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = doc.file_name ?? 'file';
-      a.click();
-      window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+      save(await rpc.call<FilePayload>('docs.file', { doc_id: docId }, 300000), doc.file_name ?? 'file');
     } catch (err) {
       notify(errorText(err), true);
     }
+  };
+
+  const exportAs = async (format: string) => {
+    if (!doc) return;
+    try {
+      save(await rpc.call<FilePayload>('docs.export', { doc_id: docId, format }, 300000), `${doc.title}.${format}`);
+    } catch (err) {
+      notify(errorText(err), true);
+    }
+  };
+
+  const actionDone = () => {
+    onChanged();
+    setContent(null);
+    setChunks([]);
+    void loadDoc();
+  };
+
+  // the text around the place to show (its lines, or the evidence passage found in it) is what gets rendered
+  const shown = useMemo(() => {
+    if (content === null) return { text: '', firstLine: 1, truncated: false, highlight: null };
+    const range =
+      focus?.lineStart !== undefined
+        ? { from: focus.lineStart, to: focus.lineEnd ?? focus.lineStart }
+        : focus?.text
+          ? linesOf(content, focus.text)
+          : null;
+    const part = textWindow(content, L1_PREVIEW_CHARS, range?.from);
+    const shift = part.firstLine - 1;
+    return { ...part, highlight: range ? { from: range.from - shift, to: range.to - shift } : null };
+  }, [content, focus]);
+
+  const locateChunk = async (chunk: ChunkItem) => {
+    const place = await locate(chunk.anchor_id, { locators: chunk.source_locators, line_start: chunk.line_start }, offers(scope?.kb, 'evidence'));
+    if (Object.keys(place).length) setFocus(place);
+    else notify('无法定位', true);
   };
 
   const st = doc ? statusOf(doc) : null;
@@ -213,7 +284,7 @@ export default function DocDrawer({
   return (
     <>
       <div className="drawer-mask" onClick={onClose} />
-      <aside className="drawer" aria-label="文档详情">
+      <aside className={`drawer ${view === 'file' ? 'drawer-wide' : ''}`} aria-label="文档详情">
         {!doc ? (
           <div className="empty">
             <Spinner size={18} />
@@ -256,6 +327,17 @@ export default function DocDrawer({
                     下载原文件
                   </Button>
                 ) : null}
+                {exportFormats.length === 1 ? (
+                  <Button size="sm" icon={<Download size={13} />} onClick={() => void exportAs(exportFormats[0])}>
+                    导出 {exportFormats[0].toUpperCase()}
+                  </Button>
+                ) : exportFormats.length > 1 ? (
+                  <Menu
+                    label="导出"
+                    icon={<Download size={13} />}
+                    items={exportFormats.map((f) => ({ key: f, label: f.toUpperCase(), onSelect: () => void exportAs(f) }))}
+                  />
+                ) : null}
                 {can('documents.reprocess') ? (
                   <Button size="sm" icon={<RotateCcw size={13} />} onClick={() => void act('docs.reprocess', '已重新排队')}>
                     重新解析
@@ -271,6 +353,7 @@ export default function DocDrawer({
                     取消处理
                   </Button>
                 ) : null}
+                <ActionButtons actions={docActions} target={{ doc_id: docId }} onDone={actionDone} />
                 {can('documents.delete') ? (
                   <Button
                     size="sm"
@@ -290,8 +373,10 @@ export default function DocDrawer({
                 items={[
                   { key: 'summary', label: '摘要' },
                   { key: 'content', label: '正文' },
+                  ...(showsFile ? [{ key: 'file' as const, label: '原文' }] : []),
                   { key: 'chunks', label: '分块' },
                   { key: 'info', label: '解析信息' },
+                  ...docViews.map((v) => ({ key: `view:${v.id}` as View, label: v.label })),
                 ]}
               />
             </div>
@@ -314,15 +399,18 @@ export default function DocDrawer({
                   </div>
                 ) : (
                   <>
-                    <Markdown text={content.slice(0, L1_PREVIEW_CHARS)} />
-                    {content.length > L1_PREVIEW_CHARS ? (
+                    <Markdown text={shown.text} highlight={shown.highlight} />
+                    {shown.truncated ? (
                       <div className="muted" style={{ marginTop: 12 }}>
-                        正文共 {content.length} 字，这里只预览前 {L1_PREVIEW_CHARS} 字。
+                        {shown.firstLine > 1
+                          ? `正文共 ${content.length} 字，这里显示定位处附近。`
+                          : `正文共 ${content.length} 字，这里只预览前 ${L1_PREVIEW_CHARS} 字。`}
                       </div>
                     ) : null}
                   </>
                 )
               ) : null}
+              {view === 'file' && showsFile ? <FileView doc={doc} ranged={ranged} focus={focus} /> : null}
               {view === 'chunks' ? (
                 !completed ? (
                   <Empty title="文档还没有处理完成" />
@@ -333,6 +421,7 @@ export default function DocDrawer({
                         key={c.id}
                         chunk={c}
                         editable={can('questions')}
+                        onLocate={c.anchor_id ? () => void locateChunk(c) : undefined}
                         onSaved={(questions) => setChunks((cur) => cur.map((x) => (x.id === c.id ? { ...x, questions } : x)))}
                       />
                     ))}
@@ -345,6 +434,11 @@ export default function DocDrawer({
                   </>
                 )
               ) : null}
+              {docViews
+                .filter((v) => view === `view:${v.id}`)
+                .map((v) => (
+                  <ViewPane key={v.id} view={v} target={{ doc_id: docId }} />
+                ))}
               {view === 'info' ? (
                 <dl className="info-grid">
                   <dt>文档 ID</dt>

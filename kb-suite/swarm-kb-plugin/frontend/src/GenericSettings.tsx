@@ -1,8 +1,9 @@
 import { Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
+import BackendSettings from './BackendSettings';
 import SchemaForm, { schemaDefaults, schemaProblems } from './SchemaForm';
 import { ADJUSTED_NOTICE, saveKb } from './SettingsTab';
-import { has, type BackendInfo, type JsonSchema } from './backend';
+import { has, offers, type BackendInfo, type JsonSchema } from './backend';
 import { rpc } from './rpc';
 import { errorText, useToast } from './toast';
 import type { KnowledgeBase } from './types';
@@ -38,6 +39,7 @@ export default function GenericSettings({
   const writable = has(kb, 'kbs.write');
   const dirty = name !== base.name || description !== base.description || JSON.stringify(config) !== JSON.stringify(initial);
   const invalid = schemaProblems(schema, config).length > 0;
+  const backendSchema = offers(kb, 'settings') ? backend?.settings_schema ?? null : null;
 
   const save = async () => {
     setBusy(true);
@@ -72,9 +74,11 @@ export default function GenericSettings({
 
   return (
     <div className="settings-body">
-      <div className="field-hint" style={{ marginBottom: 12 }}>
-        这个知识库在「{kb.backend?.label ?? '外部知识后端'}」上，解析、分块和检索参数由该后端管理。
-      </div>
+      {backendSchema ? null : (
+        <div className="field-hint" style={{ marginBottom: 12 }}>
+          这个知识库在「{kb.backend?.label ?? '外部知识后端'}」上，解析、分块和检索参数由该后端管理。
+        </div>
+      )}
       <Field label="名称">
         <input className="input" value={name} maxLength={100} disabled={!writable} onChange={(e) => setName(e.target.value)} />
       </Field>
@@ -95,6 +99,11 @@ export default function GenericSettings({
       ) : (
         <div className="field-hint">这个知识后端以只读方式接入，不能在这里修改。</div>
       )}
+      {backend && backendSchema ? (
+        <div style={{ marginTop: 24 }}>
+          <BackendSettings backend={backend} schema={backendSchema} />
+        </div>
+      ) : null}
     </div>
   );
 }
