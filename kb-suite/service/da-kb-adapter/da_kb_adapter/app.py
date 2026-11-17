@@ -777,6 +777,17 @@ def _router() -> APIRouter:
     return router
 
 
+def _mentions(needle: str, *texts: str | None) -> bool:
+    return any(needle in (t or "").lower() for t in texts)
+
+
+def _needs_anchor(hit: dict) -> bool:
+    """A hit with text but no anchor, on a document page DA can read again."""
+    has_text = bool(str(hit.get("snippet") or "").strip())
+    on_page = bool(hit.get("docId") and hit.get("pageId") and hit.get("kbId"))
+    return has_text and on_page and not hit.get("anchorId")
+
+
 async def _fill_hits(results: list[dict], query: str) -> None:
     """Give hits without text (DA's full-text search keeps none) a passage of their page around the query.
 
@@ -787,8 +798,7 @@ async def _fill_hits(results: list[dict], query: str) -> None:
     """
 
     empty = [r for r in results if not str(r.get("snippet") or "").strip() and r.get("pageId") and r.get("kbId")]
-    anchorless = [r for r in results if str(r.get("snippet") or "").strip() and not r.get("anchorId")
-                  and r.get("docId") and r.get("pageId") and r.get("kbId")]
+    anchorless = [r for r in results if _needs_anchor(r)]
     pages: dict[str, dict] = {}
     gate = asyncio.Semaphore(SUMMARY_CONCURRENCY)
 
@@ -964,8 +974,7 @@ def _wiki_router() -> APIRouter:
         if q:
             needle = q.lower()
             summaries = await da().summaries(raw_kb, ready)
-            ready = [d for d in ready if needle in mapping.doc_title(d).lower()
-                     or needle in (summaries.get(d["id"]) or "").lower()]
+            ready = [d for d in ready if _mentions(needle, mapping.doc_title(d), summaries.get(d["id"]))]
             others = [o for o in others if needle in o[2].lower()]
         rows: list[tuple[str, dict]] = [("summary", d) for d in ready] + [(kind, page) for kind, page, _ in others]
         window = rows[offset:offset + limit]
@@ -993,8 +1002,8 @@ def _wiki_router() -> APIRouter:
             summary = (abstract or {}).get("content") or ""
             # entity extraction links a document's L1 page (overview or structure) to its entities
             l1 = await da().expand(raw_kb, item_id, "L1")
-            page_ids = list(dict.fromkeys(p for p in ((abstract or {}).get("pageId"), (overview or {}).get("id"),
-                                                      (l1 or {}).get("pageId")) if p))
+            candidates = ((abstract or {}).get("pageId"), (overview or {}).get("id"), (l1 or {}).get("pageId"))
+            page_ids = list(dict.fromkeys(p for p in candidates if p))
             own = mapping.summary_slug(item_id)
             links_to, linked_from = await _links(raw_kb, page_ids, own, titles)
             sources = [{"id": ids().out(item_id), "title": titles[item_id], "file_name": doc.get("filename")}]
@@ -1020,9 +1029,9 @@ def _wiki_router() -> APIRouter:
         elif kind != "report":
             # an entity's sources are the documents that mention it
             by_id = {d["id"]: d for d in docs}
+            mentioned = [r["slug"].split("/", 1)[1] for r in linked_from + links_to if r["page_type"] == "summary"]
             sources = [{"id": ids().out(doc_id), "title": titles[doc_id], "file_name": by_id[doc_id].get("filename")}
-                       for doc_id in (r["slug"].split("/", 1)[1] for r in linked_from + links_to
-                                      if r["page_type"] == "summary") if doc_id in by_id]
+                       for doc_id in mentioned if doc_id in by_id]
         content = page.get("content") or ""
         item = mapping.page_item(kind, page, ids(), summary=mapping.plain_snippet(content), sources=len(sources))
         return mapping.wiki_page(item, raw_kb, content, ids(), links_to=links_to, linked_from=linked_from,

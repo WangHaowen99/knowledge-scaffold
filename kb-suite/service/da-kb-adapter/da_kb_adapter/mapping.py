@@ -304,7 +304,8 @@ def page_slug(page_type: str, page_id: str) -> str:
 
 def parse_slug(slug: str) -> tuple[str, str] | None:
     kind, _, item = (slug or "").partition("/")
-    if kind not in SLUG_KINDS or not item or "/" in item or item in (".", ".."):
+    plain_item = bool(item) and "/" not in item and item not in (".", "..")
+    if kind not in SLUG_KINDS or not plain_item:
         return None
     return kind, item
 
@@ -646,7 +647,8 @@ def passage_at(text: str, snippet: str, query: str) -> int | None:
     body = snippet.strip().removeprefix("...").removeprefix("…").removesuffix("...").removesuffix("…")
     start = None
     for line in [ln.strip() for ln in body.splitlines() if ln.strip()][:3]:
-        if len(line) >= 4 and (found := text.find(line[:40])) != -1:
+        found = text.find(line[:40]) if len(line) >= 4 else -1
+        if found != -1:
             start = found
             break
     if start is None:

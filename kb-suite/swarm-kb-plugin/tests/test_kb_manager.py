@@ -57,7 +57,7 @@ class Gateway:
 def call(ext: Any) -> Any:
     gateway = Gateway()
     plugin = ext.KbManagerPlugin()
-    plugin._client = httpx.AsyncClient(base_url="http://gw", transport=httpx.MockTransport(gateway.handler))
+    plugin._client = httpx.AsyncClient(base_url="https://gw", transport=httpx.MockTransport(gateway.handler))
 
     def run(method: str, params: dict) -> Any:
         assert method in ext.METHODS

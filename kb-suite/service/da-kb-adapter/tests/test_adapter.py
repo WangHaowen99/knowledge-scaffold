@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import time
 from datetime import datetime, timezone
 from email.utils import format_datetime
@@ -146,7 +147,7 @@ class FakeDaExtras:
                      "enabled": True, "endpoint": "https://emb.example.com/v1", "dimension": 1024}]},
             "/docling-config": {"ocr": True, "ocr_engine": "rapidocr", "table_mode": "accurate", "use_vlm": False,
                                 "vlm_mode": "inline", "vlm_api_url": "", "parallelism": 5, "layout_model": "x"},
-            "/mineru-config": {"apiUrl": "http://mineru.example.com", "defaultBackend": "pipeline", "defaultLang": "ch",
+            "/mineru-config": {"apiUrl": "https://mineru.example.com", "defaultBackend": "pipeline", "defaultLang": "ch",
                                "formulaEnable": True, "tableEnable": True, "imageAnalysis": True, "timeout": 600,
                                "enabled": False},
             "/vlm-config": {"thinkingEnabled": False, "thinkingParamType": "chat_template_kwargs", "maxTokens": 0,
@@ -940,7 +941,7 @@ def test_settings_map_da_groups_and_mask_keys(client):
     assert values["providers"]["emb"]["dimension"] == 1024 and "dimension" not in values["providers"]["main-llm"]
     assert values["processing"] == {"auto_process": True, "parsing_mode": "quality"}
     assert values["pipelines"] == {"pdf": "mineru"}
-    assert values["vlm"]["timeout"] == 300 and values["mineru"]["api_url"] == "http://mineru.example.com"
+    assert values["vlm"]["timeout"] == 300 and values["mineru"]["api_url"] == "https://mineru.example.com"
     assert "layout_model" not in values["docling"]
 
 
@@ -965,8 +966,9 @@ def test_settings_put_writes_only_what_changed(client, fake):
 
 
 def test_settings_secrets_can_be_replaced_or_cleared(client, fake):
-    client.put("/v1/settings", json={"providers": {"emb": {"api_key": "sk-new-0001"}}})
-    assert fake.extras.writes[-1][1]["apiKey"] == "sk-new-0001"
+    new_key = secrets.token_hex(8)
+    client.put("/v1/settings", json={"providers": {"emb": {"api_key": new_key}}})
+    assert fake.extras.writes[-1][1]["apiKey"] == new_key
     assert client.get("/v1/settings").json()["providers"]["emb"]["api_key"] == "******"
     client.put("/v1/settings", json={"providers": {"emb": {"api_key": ""}}})
     assert fake.extras.writes[-1][1]["apiKey"] == ""

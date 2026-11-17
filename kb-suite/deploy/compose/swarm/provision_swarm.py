@@ -92,7 +92,7 @@ async def connect_when_ready() -> Any:
     while time.monotonic() < deadline:
         try:
             return await websockets.connect(WS_URL, max_size=None, origin=BASE, open_timeout=10)
-        except (OSError, asyncio.TimeoutError, websockets.exceptions.WebSocketException) as exc:
+        except (OSError, websockets.exceptions.WebSocketException) as exc:  # TimeoutError is an OSError
             last = exc
             await asyncio.sleep(3)
     raise RpcFailed(f"Swarm web channel not ready after {READY_TIMEOUT_S}s: {last}")

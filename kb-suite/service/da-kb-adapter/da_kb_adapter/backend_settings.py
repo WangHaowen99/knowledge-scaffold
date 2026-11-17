@@ -236,7 +236,9 @@ def _coerce(f: Field, value: Any, where: str) -> Any:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value:
             raise _bad(f"{where} 应为整数")
         value = int(value)
-        if (f.minimum is not None and value < f.minimum) or (f.maximum is not None and value > f.maximum):
+        below = f.minimum is not None and value < f.minimum
+        above = f.maximum is not None and value > f.maximum
+        if below or above:
             raise _bad(f"{where} 超出范围")
         return value
     if not isinstance(value, str):

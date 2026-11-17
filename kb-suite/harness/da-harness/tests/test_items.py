@@ -130,9 +130,10 @@ async def test_workflow_members_become_subagent_items(monkeypatch: pytest.Monkey
         (ItemEventKind.COMPLETED, f"{TASK}:sub:da-wf-1-biz"),
     ]
     started = subs[0].event.data
-    assert {k: started[k] for k in ("subagent_id", "sub_session_id", "subagent_type", "display_name", "role",
-                                    "task_description", "status", "turn_outcome", "closed_reason", "error",
-                                    "lifecycle", "can_send_input", "needs_resume", "revision", "closed_at")} == {
+    keys = ("subagent_id", "sub_session_id", "subagent_type", "display_name", "role", "task_description", "status",
+            "turn_outcome", "closed_reason", "error", "lifecycle", "can_send_input", "needs_resume", "revision",
+            "closed_at")
+    assert {k: started[k] for k in keys} == {
         "subagent_id": "da-wf-1-tech", "sub_session_id": "da-wf-1-tech", "subagent_type": "council",
         "display_name": "tech", "role": "技术专家", "task_description": "评估技术风险", "status": "running",
         "turn_outcome": None, "closed_reason": None, "error": None, "lifecycle": "live", "can_send_input": False,

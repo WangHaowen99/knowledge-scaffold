@@ -275,6 +275,13 @@ def _files_dir(host_session_id: str) -> Path:
     return (Path(explicit) if explicit else _history_dir().parent / "files") / host_session_id
 
 
+def _plain_file_name(name: str) -> bool:
+    """A bare name of a visible file: no directory part, no leading dot (hidden or partial), no NUL."""
+    if not name or name != Path(name).name:
+        return False
+    return not name.startswith(".") and "\x00" not in name
+
+
 def read_pushed_file(host_session_id: str, name: str, offset: int) -> dict[str, Any]:
     """One piece of a file DA pushed in a conversation (blocking; run it in a thread).
 
@@ -284,7 +291,7 @@ def read_pushed_file(host_session_id: str, name: str, offset: int) -> dict[str, 
 
     if not SESSION_ID_RE.fullmatch(host_session_id or ""):
         raise ValueError("会话不存在")
-    if not name or name != Path(name).name or name.startswith(".") or "\x00" in name:
+    if not _plain_file_name(name):
         raise ValueError("文件名不合法")
     directory = _files_dir(host_session_id)
     path = directory / name
