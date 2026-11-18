@@ -1,21 +1,21 @@
 """自主构建运行器（方案 B12、B13；详设 8.5、8.4；契约 AB-03～AB-09、AB-19、7.15、EP-14～EP-17）。
 
-按蓝图逐段执行，每段：
+按流程顺序一个节点一个单元（`plan`），每个单元：
 
 1. 新开上下文（关掉这条对话的模型上下文、历史里记一个分界），长上下文自动压缩不会丢掉台账；
-2. 先占一个变更集（`source=autobuild`、`build_mode=L4`），注入段说明与台账摘要，以项目所有者的身份发这一段的
-   每一步命令（`/ontology-extract-object slice=<段>` 等），按条件等这一轮出 result；
-3. 查执行记录：做完了就下一步；没做完也没挂起就说「继续」，最多 `CONTINUE_LIMIT` 次；出错按执行记录续跑；
+2. 先占一个变更集（`source=autobuild`、`build_mode=L4`），注入台账摘要，以项目所有者的身份发节点的主命令
+   （`/ontology-extract-object` 等），按条件等这一轮出 result；
+3. 查执行记录：做完了就往下走；没做完也没挂起就说「继续」，最多 `CONTINUE_LIMIT` 次；出错按执行记录续跑；
 4. 自动合入（`changesets.merge(source="autobuild", needs_review=True)`）；合入前检查有新错误时让助手修，最多策略
-   里的轮数，还有就照样合入（F3：检查只提示，发布时才拦），这一段标需复核；要删除已确认的内容时挂起这一段、撤回
-   这一段的修改；合入冲突停下（冲突进待处理）；
-5. 合入之后是安全点：停在安全点、转为陪伴在这里结束；暂停在一步做完之后生效。
+   里的轮数，还有就照样合入（F3：检查只提示，发布时才拦），标需复核；要删除已确认的内容时挂起这一步、撤回这一步的
+   修改；合入冲突停下（冲突进待处理）；
+5. 合入之后是安全点：暂停、停在安全点、转为陪伴在这里生效。
 
 运行只在做完、叫停、出错时结束，不按用量判停（F6）；发一步时配额用完就暂停在这一步，补足后续跑。
 
-分段之后主线上的几步（校验、场景模拟）各算一个单元，同样一步一个变更集、自动合入。运行状态与台账在
-数据目录（`store`），结束时台账与运行报告写进工作区 `reports/autobuild/<运行号>/`（进 git）。运行在自己的
-对话里（「自主构建 · 运行 #n」），进展、自动决定、挂起都显示成分段进展块。
+运行状态与台账在数据目录（`store`），结束时台账与运行报告写进工作区 `reports/autobuild/<运行号>/`（进 git）。运行在自己
+的对话里（「自主构建 · 运行 #n」），进展、自动决定、挂起都显示成每个单元一张进展块。老运行（这一版之前开始的）的单元是按段
+的「全部」× 几步，原样接着跑。
 
 重启：运行记录里的进度是检查点；启动恢复把在跑的运行改判中断（`register_steps`），启动后自动续跑
 （`resume_after_restart`），每一步按执行记录接着做。
@@ -77,25 +77,15 @@ def _publish(project_id: str, event_type: str, data: dict) -> None:
         _log.warning("项目流事件 %s 发不出去", event_type, exc_info=True)
 
 
-def _stage_ids(project_id: str) -> list[str]:
-    root = _ws().project_root(project_id)
-    node = plan.per_slice_node(plan.flow(root)) or {}
-    from ..flow import slices
-
-    return [stage["id"] for stage in slices.stage_defs(node)] if node else []
-
-
 def run_view(run: dict) -> dict:
-    return views.run_view(run, _stage_ids(run["project_id"]))
+    return views.run_view(run)
 
 
-def _ran_step(record: dict, run: dict, unit: dict, step: dict, started: float) -> bool:
-    """执行记录是这次运行在这一段（开始之后）跑的这一步；节点级的单元不看段。"""
+def _ran_step(record: dict, run: dict, step: dict, started: float) -> bool:
+    """执行记录是这次运行在这个单元开始之后跑的这一步。"""
     if record.get("run_id") != run["run_id"] or record.get("command") != step["command"]:
         return False
-    if float(record.get("started_at") or 0) < started:
-        return False
-    return (record.get("slice") or {}).get("id") in (unit["id"], None) or unit["kind"] == "node"
+    return float(record.get("started_at") or 0) >= started
 
 
 def _stopped_for_reply(record: dict, flow: dict) -> bool:
@@ -138,7 +128,7 @@ class AutobuildRunner:
         running = store.active(project_id)
         if running is not None:
             raise ApiError("autobuild_running", "这个项目有一次自主构建还没结束", 409, {"run_id": running["run_id"]})
-        # F8 不再分段：不要求先确认蓝图（没有蓝图时按全量模式建）
+        # 不要求先确认蓝图（F8）
         units, rows = plan.build(ws, project_id, policy_doc)
         if not units:
             raise ApiError("invalid_argument", "范围里没有要做的步骤", 400, {"fields": {"scope": "empty"}})
@@ -228,11 +218,8 @@ class AutobuildRunner:
             "project_id": project_id, "run_id": run_id, "run_no": run_no, "state": "queued",
             "conversation_id": conversation["id"], "owner": owner, "actor": actor,
             "created_at": now, "started_at": None, "ended_at": None, "policy": policy_doc,
-            "units": units, "before_rows": [{"id": row["id"], "name": row["name"], "group": row.get("group"),
-                                             "stages": row.get("stages") or {}}
-                                            for row in await asyncio.to_thread(plan.slice_rows, ws, project_id)],
-            "slices": {}, "cursor": {}, "flags": {}, "budget": budget.empty(), "ledger": [], "suspensions": [],
-            "notes": [], "cards": [], "recovered": 0, "resume_pending": False,
+            "units": units, store.UNITS_KEY: {}, "cursor": {}, "flags": {}, "budget": budget.empty(), "ledger": [],
+            "suspensions": [], "notes": [], "cards": [], "recovered": 0, "resume_pending": False,
             "base_commit": state.get("head"), "base_version_label": state.get("version_label"),
             "failure": None, "report": None, "pending_rejudges": [],
         }
@@ -259,7 +246,7 @@ class AutobuildRunner:
                 _answers, entries, suspensions = await asyncio.to_thread(
                     decide.record, project_id, run_id, [question for question, _ in pairs],
                     [raw for _, raw in pairs], handover.get("exec_id"),
-                    slice_ref=self._handover_slice(run, handover.get("exec_id")), handed_over=True)
+                    unit_ref=self._handover_unit(run, handover.get("exec_id")), handed_over=True)
                 await self.on_decisions(project_id, run_id, entries, suspensions)
             except Exception:  # noqa: BLE001 - 记台账失败不挡开始；问题已撤回，运行里助手会再问
                 _log.exception("接管时撤回的问题没记进台账（%s %s）", project_id, run_id)
@@ -287,9 +274,7 @@ class AutobuildRunner:
 
     @staticmethod
     def _unfinished_step(project_id: str, exec_id: str | None) -> dict:
-        """被接管打断、停在干活中途的那一步，运行要接着做完。
-
-        建模的一步返回 {段: {step, phase}}，主线节点返回 {节点: {step, phase}}。
+        """被接管打断、停在干活中途的那一步，运行要接着做完：{节点: {step, phase, command}}。
 
         合入时条目写了一半也按「条目在」算这一步做完（实测：「写入对象」中途接管，对象一步记成已确认，运行跳过对象）。
         停在「等你确认」「等你回复」的不算：活已经干完，只差回答，回答交给台账。"""
@@ -298,23 +283,23 @@ class AutobuildRunner:
         record = exec_records.get(project_id, exec_id) if exec_id else None
         if record is None or record.get("state") != "interrupted":
             return {}
-        if _stopped_for_reply(record, plan.flow(_ws().project_root(project_id))):
+        flow = plan.flow(_ws().project_root(project_id))
+        if _stopped_for_reply(record, flow):
             return {}
         phase = (record.get("phase") or {}).get("label") or ""
-        slice_ref, step = record.get("slice"), record.get("step")
-        if isinstance(slice_ref, dict) and slice_ref.get("id") and step:
-            return {slice_ref["id"]: {"step": step, "phase": phase}}
-        node_id = (record.get("node") or {}).get("id") or ""
-        return {} if not node_id or node_id.startswith("command.") else {node_id: {"step": node_id, "phase": phase}}
+        node_id = exec_records.node_of(record, flow) or ""
+        if not node_id or node_id.startswith("command."):
+            return {}
+        return {node_id: {"step": node_id, "phase": phase, "command": record.get("command")}}
 
     @staticmethod
-    def _handover_slice(run: dict, exec_id: str | None) -> dict:
-        """接管时撤回的问题记在哪一段：被打断的那一步所在的段，运行里没有这一段时记在第一段。"""
+    def _handover_unit(run: dict, exec_id: str | None) -> dict:
+        """接管时撤回的问题记在哪个单元：被打断的那一步的节点，运行里没有它时记在第一个单元。"""
         from ..session_host import exec_records
 
         units = run.get("units") or []
         record = exec_records.get(run["project_id"], exec_id) if exec_id else None
-        wanted = ((record or {}).get("slice") or {}).get("id") or ((record or {}).get("node") or {}).get("id")
+        wanted = exec_records.node_of(record, plan.flow(_ws().project_root(run["project_id"]))) if record else None
         unit = next((item for item in units if item["id"] == wanted), units[0] if units else None)
         return {"id": unit["id"], "name": unit["name"]} if unit else {"id": None, "name": ""}
 
@@ -334,21 +319,15 @@ class AutobuildRunner:
         if not candidates:
             return []
         flow = plan.flow(root)
-        rows = {row["id"]: row.get("stages") or {} for row in run.get("before_rows") or []}
         node_states: dict | None = None
         closed = []
         for record in candidates:
-            if not self._in_run(run, record):
+            if not self._in_run(run, record, flow):
                 if not _stopped_for_reply(record, flow):
                     continue
-                done = self._done_at_start(record, rows)
-                if done is None:
-                    if node_states is None:
-                        from ..flow import view
-
-                        node_states = {node["id"]: node["state"] for node in view.build(root)["nodes"]}
-                    done = node_states.get((record.get("node") or {}).get("id")) == "confirmed"
-                if not done:
+                if node_states is None:
+                    node_states = plan.node_states(root, flow)
+                if node_states.get(exec_records.node_of(record, flow)) != "confirmed":
                     continue
             self._close_exec(project_id, record["id"])
             updated = exec_records.update(project_id, record["id"],
@@ -360,23 +339,11 @@ class AutobuildRunner:
         return closed
 
     @staticmethod
-    def _in_run(run: dict, record: dict) -> bool:
-        """这次执行的那一步在运行计划里（建模的一步按段和步骤对，主线节点按节点对）。"""
-        units = run.get("units") or []
-        slice_ref, step = record.get("slice"), record.get("step")
-        if isinstance(slice_ref, dict) and slice_ref.get("id") and step:
-            return any(unit["kind"] == "slice" and unit["id"] == slice_ref["id"]
-                       and any(item["id"] == step for item in unit.get("steps") or []) for unit in units)
-        node_id = (record.get("node") or {}).get("id")
-        return any(unit["kind"] == "node" and unit["id"] == node_id for unit in units)
+    def _in_run(run: dict, record: dict, flow: dict) -> bool:
+        """这次执行的那一步在运行计划里：按它的节点对（老记录的建模按步骤认成提取对象、提取操作）。"""
+        from ..session_host import exec_records
 
-    @staticmethod
-    def _done_at_start(record: dict, rows: dict) -> bool | None:
-        """建模的一步开始时做完了没有（按分段的状态）；不是建模步骤返回 None，由调用方按节点状态判。"""
-        slice_ref, step = record.get("slice"), record.get("step")
-        if isinstance(slice_ref, dict) and slice_ref.get("id") and step:
-            return (rows.get(slice_ref["id"]) or {}).get(step) in plan.DONE_STATES
-        return None
+        return exec_records.node_of(record, flow) in {unit["id"] for unit in run.get("units") or []}
 
     # ------------------------------------------------------------------
     # 名额与驱动
@@ -447,10 +414,10 @@ class AutobuildRunner:
                 if run is None or run["state"] not in store.RUNNING:
                     return
                 unit = self._next_unit(run)
-                fresh = unit is not None and (run.get("slices") or {}).get(unit["id"], {}).get("state") in (None, "queued")
+                fresh = unit is not None and store.unit_info(run, unit["id"]).get("state") in (None, "queued")
                 ending = self._ending(run)
                 if unit is None or (fresh and ending):
-                    # 做完了；或者已经在安全点（这一段还没开始）又要停
+                    # 做完了；或者已经在安全点（这个单元还没开始）又要停
                     await self._finish(project_id, run_id, ending or "completed")
                     return
                 if fresh and run.get("flags", {}).get("pause"):
@@ -458,7 +425,7 @@ class AutobuildRunner:
                     return
                 outcome = await self._run_unit(project_id, run_id, unit)
                 if outcome == "quota" and self._ending(store.get(project_id, run_id) or run):
-                    # 叫停或转为陪伴之后撞上配额：这一段做不完，按叫停的方式结束（已有的修改照样合入）
+                    # 叫停或转为陪伴之后撞上配额：这个单元做不完，按叫停的方式结束（已有的修改照样合入）
                     await self._finish(project_id, run_id, self._ending(store.get(project_id, run_id) or run))
                     return
                 if outcome in ("paused", "quota"):
@@ -487,7 +454,7 @@ class AutobuildRunner:
     @staticmethod
     def _next_unit(run: dict) -> dict | None:
         for unit in run.get("units") or []:
-            if (run.get("slices") or {}).get(unit["id"], {}).get("state") not in ("done", "partial", "skipped"):
+            if store.unit_info(run, unit["id"]).get("state") not in ("done", "partial", "skipped"):
                 return unit
         return None
 
@@ -502,23 +469,22 @@ class AutobuildRunner:
         return None
 
     # ------------------------------------------------------------------
-    # 一段
+    # 一个单元
     # ------------------------------------------------------------------
 
     async def _run_unit(self, project_id: str, run_id: str, unit: dict) -> str:
         from ...kernel.changesets import service as changesets
 
         run = store.get(project_id, run_id)
-        fresh = (run.get("slices") or {}).get(unit["id"], {}).get("state") in (None, "queued")
+        fresh = store.unit_info(run, unit["id"]).get("state") in (None, "queued")
         if fresh:
-            from ..flow import slices
+            from ..flow import state as node_state
 
-            # 这一段各步运行前的确认记录：按段撤回时放回去（原来过期的仍是过期，审查 K）
-            before = (await asyncio.to_thread(slices.records_of, _ws().project_root(project_id), unit["id"])
-                      if unit["kind"] == "slice" else {})
+            # 运行前的确认记录（按节点）：撤回时放回去（原来过期的仍是过期，审查 K）
+            before = await asyncio.to_thread(node_state.records_of, _ws().project_root(project_id), plan.nodes_of(unit))
 
             def begin(record: dict) -> None:
-                info = record.setdefault("slices", {}).setdefault(unit["id"], {})
+                info = store.unit_entry(record, unit["id"])
                 info.update(state="running", started_at=time.time(), steps={step["id"]: "queued" for step in unit["steps"]},
                             decisions=info.get("decisions") or [], suspensions=info.get("suspensions") or [],
                             timeline=info.get("timeline") or [], fix_rounds=0, produced={}, checks={},
@@ -530,11 +496,11 @@ class AutobuildRunner:
         else:
             merged = self._merged_already(project_id, run, unit)
             if merged is not None:
-                # 合入刚做完就停了机（审查 C）：这一段已经在主线上，接回它的合入提交，不再另开变更集
+                # 合入刚做完就停了机（审查 C）：这个单元已经在主线上，接回它的合入提交，不再另开变更集
                 return self._unit_done(project_id, run_id, unit, record=merged,
                                        merged={"commit": (merged.get("merged") or {}).get("commit"),
                                                "version_label": (merged.get("merged") or {}).get("version_label")})
-        self._slice_card(run, unit)
+        self._unit_card(run, unit)
         ws = _ws()
         try:
             slot = await asyncio.to_thread(
@@ -547,10 +513,11 @@ class AutobuildRunner:
         if slot.get("source") != "autobuild" or slot.get("run_id") != run_id:
             self._fail(project_id, run_id, "changeset_in_progress")
             return "failed"
-        store.update(project_id, run_id, lambda record: record["slices"][unit["id"]].update(changeset_id=slot["id"]))
+        store.update(project_id, run_id,
+                     lambda record: store.unit_entry(record, unit["id"]).update(changeset_id=slot["id"]))
         for step in unit["steps"]:
             run = store.get(project_id, run_id)
-            if run["slices"][unit["id"]]["steps"].get(step["id"]) in ("done", "partial", "skipped"):
+            if (store.unit_info(run, unit["id"]).get("steps") or {}).get(step["id"]) in ("done", "partial", "skipped"):
                 continue
             try:
                 outcome = await self._run_step(project_id, run_id, unit, step)
@@ -577,14 +544,14 @@ class AutobuildRunner:
     def _merged_already(project_id: str, run: dict, unit: dict) -> dict | None:
         from ...kernel.changesets import store as changeset_store
 
-        changeset_id = ((run.get("slices") or {}).get(unit["id"]) or {}).get("changeset_id")
+        changeset_id = store.unit_info(run, unit["id"]).get("changeset_id")
         if not changeset_id:
             return None
         record = changeset_store.get(_ws().project_root(project_id), changeset_id)
         return record if record and record.get("state") == "merged" and record.get("run_id") == run["run_id"] else None
 
     async def _new_context(self, run: dict, unit: dict) -> None:
-        """每段新开上下文（方案 B12 第 1 步）：关掉模型上下文、历史里记分界（Jiuwen 回放从这里起）。"""
+        """每个单元新开上下文（方案 B12 第 1 步）：关掉模型上下文、历史里记分界（Jiuwen 回放从这里起）。"""
         from ..agent_sessions import CONTEXT_RESET
 
         manager = _manager()
@@ -598,16 +565,6 @@ class AutobuildRunner:
 
     def _write_hint(self, run: dict, unit: dict) -> dict:
         """发一步之前写注入；没送出的用户补充一起带上，记为已读。"""
-        from ..flow import blueprint
-
-        brief = ""
-        if unit["kind"] == "slice":
-            try:
-                doc = blueprint.effective_doc(_ws(), run["project_id"])
-                module = blueprint.script(_ws().project_root(run["project_id"]))
-                brief = module.brief(doc, unit["id"]) if doc is not None and unit["id"] != "all" else ""
-            except Exception:  # noqa: BLE001 - 段说明是增强信息
-                brief = ""
         notes = [item["text"] for item in run.get("notes") or [] if not item.get("read")]
         carried = []
         for ref in unit.get("carried") or []:
@@ -615,7 +572,7 @@ class AutobuildRunner:
             if found is not None and found[1].get("state") == "deferred":
                 carried.append(found[1])
         hint.write(run["project_id"], run["conversation_id"],
-                   hint.compose(run, unit, brief=brief, notes=notes, carried=carried))
+                   hint.compose(run, unit, notes=notes, carried=carried))
         if notes:
             def mark(record: dict) -> None:
                 for item in record.get("notes") or []:
@@ -625,7 +582,7 @@ class AutobuildRunner:
         return run
 
     async def _send(self, project_id: str, run_id: str, unit: dict, text: str, *, resume_exec: str | None = None) -> str | None:
-        """以项目所有者的身份发一步（不进对话流：进展在分段进展块里）；返回这一步的执行记录编号。"""
+        """以项目所有者的身份发一步（不进对话流：进展在单元的进展块里）；返回这一步的执行记录编号。"""
         from ...governance.quota import QuotaExceeded
         from ..agent_sessions import SessionError
 
@@ -682,7 +639,7 @@ class AutobuildRunner:
         started = time.time()
 
         def mark_running(record: dict) -> None:
-            info = record["slices"][unit["id"]]
+            info = store.unit_entry(record, unit["id"])
             info["steps"][step["id"]] = "running"
             info["current_step"] = step["id"]
             if not any(item.get("type") == "step" and item.get("id") == step["id"] for item in info["timeline"]):
@@ -691,9 +648,9 @@ class AutobuildRunner:
             record["cursor"] = {"unit": unit["id"], "step": step["id"], "exec_id": exec_id, "continues": continues}
 
         run = store.update(project_id, run_id, mark_running)
-        self._slice_card(run, unit)
+        self._unit_card(run, unit)
         self._updated(run)
-        suspended_before = len(run["slices"][unit["id"]].get("suspensions") or [])
+        suspended_before = len(store.unit_info(run, unit["id"]).get("suspensions") or [])
         if exec_id is None:
             command = " ".join([step["command"], *[f"{key}={value}" for key, value in step["args"].items()]])
             exec_id = await self._send(project_id, run_id, unit, command)
@@ -720,7 +677,7 @@ class AutobuildRunner:
                     self._fail(project_id, run_id, "engine")
                     return "failed"
             run = store.get(project_id, run_id)
-            suspended = len(run["slices"][unit["id"]].get("suspensions") or []) > suspended_before
+            suspended = len(store.unit_info(run, unit["id"]).get("suspensions") or []) > suspended_before
             if suspended or continues >= CONTINUE_LIMIT:
                 # 挂起了这一步的问题、或说了几次「继续」还没做完：这一步先到这里，接着做下一步
                 await asyncio.to_thread(self._close_exec, project_id, exec_id)
@@ -736,9 +693,9 @@ class AutobuildRunner:
     def _find_exec(project_id: str, run: dict, unit: dict, step: dict) -> str | None:
         from ..session_host import exec_records
 
-        started = float(((run.get("slices") or {}).get(unit["id"]) or {}).get("started_at") or 0)
+        started = float(store.unit_info(run, unit["id"]).get("started_at") or 0)
         for record in exec_records.query(project_id, conversation_id=run["conversation_id"]):
-            if _ran_step(record, run, unit, step, started):
+            if _ran_step(record, run, step, started):
                 return record["id"]
         return None
 
@@ -746,7 +703,7 @@ class AutobuildRunner:
         now = time.time()
 
         def mark(record: dict) -> None:
-            info = record["slices"][unit["id"]]
+            info = store.unit_entry(record, unit["id"])
             info["steps"][step["id"]] = state
             info["current_step"] = None
             for item in info["timeline"]:
@@ -757,7 +714,7 @@ class AutobuildRunner:
             record["cursor"] = {"unit": unit["id"], "step": None, "exec_id": None, "continues": 0}
 
         run = store.update(project_id, run_id, mark)
-        self._slice_card(run, unit)
+        self._unit_card(run, unit)
         self._updated(run)
         return state
 
@@ -786,36 +743,36 @@ class AutobuildRunner:
     # ------------------------------------------------------------------
 
     async def _merge(self, project_id: str, run_id: str, unit: dict) -> str:
-        """自动合入这一段；门禁不过让助手修（最多策略里的轮数）。返回 merged、failed。"""
+        """自动合入这个单元；门禁不过让助手修（最多策略里的轮数）。返回 merged、failed。"""
         from ...kernel.changesets import service as changesets
         from ...services.workspace.errors import WorkspaceError
         from ..session_host import exec_records
 
         ws = _ws()
         run = store.get(project_id, run_id)
-        info = run["slices"][unit["id"]]
-        changeset_id = info.get("changeset_id")
+        changeset_id = store.unit_info(run, unit["id"]).get("changeset_id")
         owner = run.get("owner") or run.get("actor") or ""
         records = exec_records.query(project_id, conversation_id=run["conversation_id"])
         last_exec = records[0] if records else None
-        # 这一段最后的样子再看一次（带检查）：一轮收尾时会话宿主已经看过，补上之后在副本里的改动
+        # 这个单元最后的样子再看一次（带检查）：一轮收尾时会话宿主已经看过，补上之后在副本里的改动
         await asyncio.to_thread(changesets.observe, ws, project_id, running=False,
                                 conversation_id=run["conversation_id"], exec_record=last_exec, checks=True)
         current = changesets.current(ws, project_id)
         if current is None or current["id"] != changeset_id or not current.get("tree"):
-            # 这一段没改出东西：先占的变更集关掉，版本不变
+            # 没改出东西：先占的变更集关掉，版本不变
             if current is not None and current["id"] == changeset_id:
                 await asyncio.to_thread(changesets.discard, ws, project_id, changeset_id, actor=owner)
             return self._unit_done(project_id, run_id, unit, record=None)
         limit = int(((run.get("policy") or {}).get("advanced") or {}).get("max_fix_rounds") or 0)
-        # 合入前检查有新错误（不含指向待建内容的链接）：让助手修，最多策略里的轮数；还有就照样合入，只提示（F3）
+        # 合入前检查有新错误：让助手修，最多策略里的轮数；还有就照样合入，只提示（F3）
         while True:
             checks = (changesets.current(ws, project_id) or {}).get("checks") or {}
             findings = [item for item in checks.get("findings") or [] if item.get("level") == "error"]
-            rounds = int(store.get(project_id, run_id)["slices"][unit["id"]].get("fix_rounds") or 0)
+            rounds = int(store.unit_info(store.get(project_id, run_id), unit["id"]).get("fix_rounds") or 0)
             if not findings or rounds >= limit:
                 break
-            store.update(project_id, run_id, lambda record: record["slices"][unit["id"]].update(fix_rounds=rounds + 1))
+            store.update(project_id, run_id,
+                         lambda record: store.unit_entry(record, unit["id"]).update(fix_rounds=rounds + 1))
             await self._fix(project_id, run_id, unit, findings)
             await asyncio.to_thread(changesets.observe, ws, project_id, running=False,
                                     conversation_id=run["conversation_id"], checks=True)
@@ -839,7 +796,7 @@ class AutobuildRunner:
 
     async def _fix(self, project_id: str, run_id: str, unit: dict, findings: list[dict]) -> None:
         lines = [f"- {item.get('message') or item.get('code')}（{item.get('path') or ''}）" for item in findings[:10]]
-        text = (f"合入前的检查发现 {len(findings)} 个新问题。只改「{unit['name']}」这一段的内容，把它们修好：\n"
+        text = (f"合入前的检查发现 {len(findings)} 个新问题。只改「{unit['name']}」这一步写的内容，把它们修好：\n"
                 + "\n".join(lines))
         run = store.get(project_id, run_id)
         await self._send(project_id, run_id, unit, text)
@@ -848,11 +805,11 @@ class AutobuildRunner:
 
     async def _give_up(self, project_id: str, run_id: str, unit: dict, changeset_id: str, owner: str, *,
                        title: str, flag: str, reason: str) -> str:
-        """这一段合入不了（要删除已确认的内容）：这一段的修改撤回，挂起一个问题（进待处理），接着做下一段。"""
+        """这个单元合入不了（要删除已确认的内容）：它的修改撤回，挂起一个问题（进待处理），接着做下一个。"""
         from ...kernel.changesets import service as changesets
 
         await asyncio.to_thread(changesets.discard, _ws(), project_id, changeset_id, actor=owner)
-        handled = "这一段没生效，先做下一段" if unit["kind"] == "slice" else "这一步没生效，接着做下一步"
+        handled = "这一步没生效，接着做下一步"
 
         def change(record: dict) -> None:
             item = {"id": f"sp-{uuid.uuid4().hex[:8]}", "run_id": run_id, "at": time.time(),
@@ -860,13 +817,13 @@ class AutobuildRunner:
                     "handled_as": handled, "kind": "question", "options": [], "allow_custom": True, "actions": [],
                     "state": "open", "step": None, "exec_id": None, flag: True}
             record.setdefault("suspensions", []).append(item)
-            info = record["slices"][unit["id"]]
+            info = store.unit_entry(record, unit["id"])
             info.setdefault("suspensions", []).append(item["id"])
             info.setdefault("timeline", []).append({"type": "suspension", "id": item["id"]})
             info.update({"state": "skipped", flag: True, "ended_at": time.time()})
 
         run = store.update(project_id, run_id, change)
-        self._slice_card(run, unit)
+        self._unit_card(run, unit)
         self._updated(run)
         self._suspended(run, 1)
         return "merged"
@@ -888,7 +845,7 @@ class AutobuildRunner:
         checks = (record or {}).get("checks") or {}
 
         def mark(run: dict) -> None:
-            info = run["slices"][unit["id"]]
+            info = store.unit_entry(run, unit["id"])
             partial = any(value == "partial" for value in (info.get("steps") or {}).values())
             info.update(state="partial" if partial else "done", ended_at=time.time(), produced=produced,
                         commit=(merged or {}).get("commit"),
@@ -897,13 +854,13 @@ class AutobuildRunner:
 
         run = store.update(project_id, run_id, mark)
         self._consume_carried(project_id, run_id, unit)
-        self._slice_card(run, unit)
+        self._unit_card(run, unit)
         self._updated(run)
         return "merged"
 
     @staticmethod
     def _consume_carried(project_id: str, run_id: str, unit: dict) -> None:
-        """之前留到这一次的挂起问题：这一段做完（带着回答补做过）就算回答过，待处理里不再列（审查 I）。"""
+        """之前留到这一次的挂起问题：这个单元做完（带着回答补做过）就算回答过，待处理里不再列（审查 I）。"""
         for ref in unit.get("carried") or []:
             def change(record: dict, ref=ref) -> None:
                 for item in record.get("suspensions") or []:
@@ -913,13 +870,13 @@ class AutobuildRunner:
             store.update(project_id, ref["run_id"], change)
 
     async def _safe_point(self, project_id: str, run_id: str, unit: dict) -> str:
-        """一段合入之后：EP-15；停在安全点、转为陪伴、在安全点暂停（维护）在这里生效。"""
+        """一个单元合入之后：EP-15；暂停、停在安全点、转为陪伴、在安全点暂停（维护）在这里生效。"""
         await self._account(project_id, run_id)
         run = store.get(project_id, run_id)
         flags = run.get("flags") or {}
         ending = self._ending(run)
         nxt = ending or ("paused" if flags.get("pause") or flags.get("safe_pause") else "continue")
-        info = run["slices"].get(unit["id"]) or {}
+        info = store.unit_info(run, unit["id"])
         _publish(project_id, "autobuild.safe_point", {
             "run_id": run_id, "slice_id": unit["id"], "slice_name": unit["name"],
             "version_label": info.get("version_label"),
@@ -999,7 +956,7 @@ class AutobuildRunner:
             budget.stop_clock(record, ended_at)
             if reason and not record.get("failure"):
                 record["failure"] = {"reason": reason, "at": ended_at}
-            for info in (record.get("slices") or {}).values():
+            for info in store.unit_infos(record).values():
                 if info.get("state") == "running":
                     info["state"] = "partial" if info.get("commit") else "queued"
             record["report"] = views.report(record, ended_at)
@@ -1013,8 +970,8 @@ class AutobuildRunner:
         if not marker.get("posted"):
             try:
                 for unit in final.get("units") or []:
-                    if unit["id"] in (final.get("slices") or {}):
-                        self._slice_card(final, unit)
+                    if unit["id"] in store.unit_infos(final):
+                        self._unit_card(final, unit)
                 self._post_card(final, views.report_card(final))
                 self._post(final, {"type": "notice", "payload": {
                     "kind": "info", "text": f"运行 #{final['run_no']} {END_NOTICE.get(state, '已结束')}",
@@ -1047,8 +1004,8 @@ class AutobuildRunner:
 
     @staticmethod
     def _settle_changeset(run: dict) -> None:
-        """停在一段中间（出错、停下）：这一段已有的改动照样合入成一个版本、标需复核（F3：不再留给用户确认）；
-        没改动就关掉；要删除已确认的内容时撤回这一段；合入冲突进待处理。都不挡之后的对话。"""
+        """停在一个单元中间（出错、停下）：已有的改动照样合入成一个版本、标需复核（F3：不再留给用户确认）；
+        没改动就关掉；要删除已确认的内容时撤回；合入冲突进待处理。都不挡之后的对话。"""
         from ...kernel.changesets import service as changesets
         from ...services.workspace.errors import WorkspaceError
 
@@ -1066,7 +1023,7 @@ class AutobuildRunner:
                 return
             try:
                 changesets.merge(ws, run["project_id"], record["id"], actor=owner, source="autobuild", needs_review=True,
-                                 auto=True, message=f"autobuild: 自主构建运行 #{run.get('run_no')} 停下时的这一段（{record['id']}）")
+                                 auto=True, message=f"autobuild: 自主构建运行 #{run.get('run_no')} 停下时的这一步（{record['id']}）")
             except WorkspaceError as exc:
                 if exc.code == "delete_forbidden":
                     changesets.discard(ws, run["project_id"], record["id"], actor=owner)
@@ -1157,7 +1114,7 @@ class AutobuildRunner:
             raise ApiError("autobuild_not_running", "运行不在可以控制的状态", 409, {"state": state})
         idle = state in ("paused", "interrupted") or orphan
         not_started = state == "queued" and op != "pause"
-        if not_started or (idle and not self._in_slice(run)):
+        if not_started or (idle and not self._in_unit(run)):
             # 还没开始、或已经停在安全点：直接结束
             await self._finish(project_id, run_id, "stopped" if op == "stop" else "converted")
             return run_view(store.get(project_id, run_id))
@@ -1181,7 +1138,7 @@ class AutobuildRunner:
         run = store.update(project_id, run_id, change)
         self._updated(run)
         if was_idle:
-            # 停在一段中间：接着把这一段做完，到安全点再停
+            # 停在一个单元中间：接着把它做完，到安全点再停
             def queue(record: dict) -> None:
                 record["resume_state"] = record["state"]
                 record["state"] = "queued"
@@ -1210,11 +1167,11 @@ class AutobuildRunner:
             return run_view(run)
 
     @staticmethod
-    def _in_slice(run: dict) -> bool:
-        return any(info.get("state") == "running" for info in (run.get("slices") or {}).values())
+    def _in_unit(run: dict) -> bool:
+        return any(info.get("state") == "running" for info in store.unit_infos(run).values())
 
     def pause_all_at_safe_point(self) -> int:
-        """进入维护模式（O-21 `autobuild=pause_at_safe_point`）：在跑的运行做完这一段就暂停。"""
+        """进入维护模式（O-21 `autobuild=pause_at_safe_point`）：在跑的运行做完当前单元就暂停。"""
         runs = store.all_runs(store.RUNNING)
         for run in runs:
             store.update(run["project_id"], run["run_id"],
@@ -1238,7 +1195,7 @@ class AutobuildRunner:
         return posted
 
     async def on_decisions(self, project_id: str, run_id: str, entries: list, suspensions: list) -> None:
-        """策略刚答了一组问题：分段进展块更新，挂起的进待处理。"""
+        """策略刚答了一组问题：单元的进展块更新，挂起的进待处理。"""
         from ...governance import telemetry
 
         run = store.get(project_id, run_id)
@@ -1246,7 +1203,7 @@ class AutobuildRunner:
             return
         unit = next((item for item in run.get("units") or [] if item["id"] == (run.get("cursor") or {}).get("unit")), None)
         if unit is not None:
-            self._slice_card(run, unit)
+            self._unit_card(run, unit)
         self._updated(run)
         if entries:
             telemetry.count("onto_autobuild_decisions_total", len(entries), project=project_id)
@@ -1288,9 +1245,9 @@ class AutobuildRunner:
             run.setdefault("cards", []).append(card["card_id"])
         self._post(run, {"type": "card_updated" if posted else "card", "payload": card})
 
-    def _slice_card(self, run: dict | None, unit: dict) -> None:
+    def _unit_card(self, run: dict | None, unit: dict) -> None:
         if run is not None:
-            self._post_card(run, views.slice_card(run, unit))
+            self._post_card(run, views.unit_card(run, unit))
 
     def _updated(self, run: dict | None) -> None:
         if run is not None:
@@ -1353,9 +1310,9 @@ class AutobuildRunner:
             except ApiError as exc:
                 if exc.code != "slice_reverted":
                     _log.exception("改判发不出去（%s %s）", project_id, item.get("entry_id"))
-                # 排队期间这一段撤回了：不再发，任务记为取消（审查 G）
+                # 排队期间这一步撤回了：不再发，任务记为取消（审查 G）
                 command_tasks.update(project_id, item.get("task_id") or "", state="cancelled",
-                                     result={"summary": "这一段已经撤回", "refs": []})
+                                     result={"summary": "这一步已经撤回", "refs": []})
             except Exception:  # noqa: BLE001 - 一条改判发不出去不挡别的
                 _log.exception("改判发不出去（%s %s）", project_id, item.get("entry_id"))
 
@@ -1397,7 +1354,7 @@ runner = AutobuildRunner()
 
 
 def _restore_state(record: dict) -> str:
-    """暂停中（pausing）重启：直接算暂停；停在安全点、转为陪伴的接着把这一段做完。"""
+    """暂停中（pausing）重启：直接算暂停；停在安全点、转为陪伴的接着把当前单元做完。"""
     return {"pausing": "paused"}.get(record["state"], record["state"])
 
 
@@ -1437,7 +1394,7 @@ def startup_sweep(manager) -> dict:
 
 
 def _repair_reverts() -> dict[str, int]:
-    """撤回到一半停了机的段（审查推断）：{项目: 补完的段数}；一个项目出错不挡别的。"""
+    """撤回到一半停了机的单元（审查推断）：{项目: 补完的单元数}；一个项目出错不挡别的。"""
     from . import review
 
     out = {}

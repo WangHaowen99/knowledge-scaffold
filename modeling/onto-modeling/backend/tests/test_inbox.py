@@ -91,7 +91,7 @@ def test_sources_counts_and_detail_shapes(env):
     main_write(root, "ontology/testcase/补货.md", "# 测试场景：补货\n\n## 场景 1：合成\n")
     assert inbox.collect(workspaces, project_id) is not None  # 记基线
     main_write(root, "ontology/object/仓库.md", obj("仓库", "上游变了"))
-    node_state.mark_needs_review(root, ["core.model"], "import", note="导入的知识包带进来的产物")
+    node_state.mark_needs_review(root, ["core.object"], "import", note="导入的知识包带进来的产物")
     main_write(root, "reports/20261102-rule.md", "# 校验\n\n- [ ] 门店缺少数据来源\n- [x] 已处理\n")
     (root / "feedback").mkdir(exist_ok=True)
     main_write(root, "feedback/20261102-fb1.json", json.dumps({"feedback_id": "fb1", "source": "评测服务",
@@ -105,8 +105,8 @@ def test_sources_counts_and_detail_shapes(env):
     body = client.get(f"/api/v1/projects/{project_id}/inbox").json()
     found = {item["id"]: item for item in body["items"]}
     assert "stale:trace.trace" in found and found["stale:trace.trace"]["pack"] == "trace"
-    assert found["stale:core.model"]["pack"] is None
-    assert found["review:core.model"]["source"] == "import"
+    assert found["stale:core.operation"]["pack"] is None and "stale:core.object" not in found
+    assert found["review:core.object"]["source"] == "import"
     assert found["report:20261102-rule"]["title"].endswith("1 条待处理")
     assert not [key for key in found if key.startswith("feedback:")]
     assert found[f"resumable:{record['id']}"]["actions"] == ["resume", "abandon", "dismiss"]
@@ -151,9 +151,9 @@ def test_actions_go_to_the_equivalent_endpoints(env):
                        json={"action": "resolve", "choices": []}).json()["code"] == "not_found"
     # 需复核：接受后去掉
     main_write(root, "ontology/operation/补货.md", "# 补货\n\n## 业务描述\n\n合成\n")
-    node_state.mark_needs_review(root, ["core.model"], "upgrade")
-    assert client.post(f"{base}/review:core.model/actions", json={"action": "discard"}).status_code == 400
-    accepted = client.post(f"{base}/review:core.model/actions", json={"action": "accept"})
+    node_state.mark_needs_review(root, ["core.object"], "upgrade")
+    assert client.post(f"{base}/review:core.object/actions", json={"action": "discard"}).status_code == 400
+    accepted = client.post(f"{base}/review:core.object/actions", json={"action": "accept"})
     assert accepted.json()["resolved"] is True and node_state.reviews(root) == []
     # 忽略：不再计数，当天处理数加一
     main_write(root, "reports/r.md", "- [ ] 一条\n")
@@ -185,36 +185,33 @@ def test_refresh_stale_and_resume_send_commands(env):
 def test_stale_handed_down_to_a_confirmed_check_is_not_listed(env, monkeypatch):
     """已交给已确认的校验的过期，待处理不列。
 
-    校验已确认、建模的规则补抽、指标过期：建议条按 ADR-0090 不推刷新，待处理也不列（实测：自主构建跑完
-    报「全部完成」，待处理却多出「建模过期了」「指标过期了」）。校验没跑过、跳过时照列。ADR-0102 起操作一步只在
-    资料变了、对象有增减时过期，校验补不出来，校验已确认也照列。"""
+    校验已确认、指标过期：建议条按 ADR-0090 不推刷新，待处理也不列（实测：自主构建跑完报「全部完成」，待处理却多出
+    「建模过期了」「指标过期了」）。校验没跑过、跳过时照列。ADR-0102 起提取操作只在资料变了、对象有增减时过期，
+    校验补不出来，校验已确认也照列。"""
     client, workspaces, manager, project_id, root = env
     from app.services.flow import view
 
     flow = flow_model.load_for(root)
     real = view.node_states
 
-    def fake(validate, step="rule"):
+    def fake(validate):
         def states(root_, flow_, hits):
-            _states, sliced, doc, context, broken = real(root_, flow_, hits)
+            _states, context, broken = real(root_, flow_, hits)
             out = {node["id"]: {"state": "confirmed", "flags": {}, "display_state": "confirmed"}
                    for node in flow["nodes"]}
-            for node_id in ("core.model", "core.metric"):
+            for node_id in ("core.operation", "core.metric"):
                 out[node_id] = {"state": "stale", "flags": {}, "display_state": "stale"}
             out["core.validate"] = {"state": validate, "flags": {}, "display_state": validate}
-            stale = {**(sliced or {}), "slice_stale": [{"slice_id": "all", "step": step}]}
-            return out, stale, doc, context, broken
+            return out, context, broken
         return states
 
     monkeypatch.setattr(view, "node_states", fake("confirmed"))
-    assert not [key for key in kinds(client, project_id) if key.startswith("stale:")]
-    monkeypatch.setattr(view, "node_states", fake("confirmed", "operation"))
-    assert [key for key in kinds(client, project_id) if key.startswith("stale:")] == ["stale:core.model"]
-    # 校验还没跑：必经的操作要你刷新；可选的指标交给之后的校验（ADR-0090 补充）。校验跳过了：两个都要你刷新
-    monkeypatch.setattr(view, "node_states", fake("ready", "operation"))
-    assert [key for key in kinds(client, project_id) if key.startswith("stale:")] == ["stale:core.model"]
-    monkeypatch.setattr(view, "node_states", fake("skipped", "operation"))
-    assert {"stale:core.model", "stale:core.metric"} <= set(kinds(client, project_id))
+    assert [key for key in kinds(client, project_id) if key.startswith("stale:")] == ["stale:core.operation"]
+    # 校验还没跑：必经的提取操作要你刷新；可选的指标交给之后的校验（ADR-0090 补充）。校验跳过了：两个都要你刷新
+    monkeypatch.setattr(view, "node_states", fake("ready"))
+    assert [key for key in kinds(client, project_id) if key.startswith("stale:")] == ["stale:core.operation"]
+    monkeypatch.setattr(view, "node_states", fake("skipped"))
+    assert {"stale:core.operation", "stale:core.metric"} <= set(kinds(client, project_id))
 
 
 def test_decision_items_come_from_the_live_session(env):

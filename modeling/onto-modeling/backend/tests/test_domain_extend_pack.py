@@ -158,7 +158,7 @@ def test_new_projects_do_not_get_it(env):
 def test_assembly_puts_the_nodes_after_modeling_and_the_check_blocks_publish():
     flow = assemble.assemble([_core(), _pack()])
     ids = [node["id"] for node in flow["nodes"]]
-    assert ids.index("core.model") < ids.index("domain-extend.bind") < ids.index("domain-extend.add") \
+    assert ids.index("core.operation") < ids.index("domain-extend.bind") < ids.index("domain-extend.add") \
         < ids.index("domain-extend.check") < ids.index("core.publish")
     nodes = {node["id"]: node for node in flow["nodes"]}
     assert nodes["domain-extend.add"]["autobuild"] is False
@@ -185,9 +185,10 @@ def test_autobuild_leaves_adding_features_to_the_user(env):
     manager, _client = env
     project_id = manager.create_project("自动建模")["id"]
     root = manager.project_root(project_id)
-    flow = assemble.assemble([_core(), _pack()])
+    # 官方包（镜像内置入库）：没写 autobuild 的节点自主构建照做
+    flow = assemble.assemble([_core(), _pack()], trusted={"domain-extend"})
     policy = {"scope": {"until_node": None, "include_optional": False}}
-    units = {unit.get("node_id") or unit.get("node") or unit.get("id") for unit in plan._tail(root, flow, policy)}
+    units = {unit["id"] for unit in plan.lay_out(root, flow, policy)[0]}
     assert "domain-extend.bind" in units and "domain-extend.check" in units
     assert "domain-extend.add" not in units
 

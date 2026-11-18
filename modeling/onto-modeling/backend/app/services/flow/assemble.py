@@ -10,14 +10,18 @@
 - 主流程的下一步建议（`next_steps`）里指向没启用的包的命令去掉，只列本项目能用的命令。
 节点钩子（详设 6.4，B5c）：包在 flow.yaml 的 `hooks` 里给某个节点之前或之后追加一步检查或补充，不新增节点：
 `{id: <包>.<名>, title, node: <宿主节点>, when: before|after, command: /<本包命令>}`；宿主节点要存在、命令要在本次装配里。
-按段的节点（详设 6.6，B4d）：`per_slice: true` 的节点带 `steps`（分段里的步骤）；包用 `slice_steps` 往这类节点的
-分段里加步骤（`[{node, step}]`，如 F8 之前场景模拟的「场景」），用 `node_titles` 改主线节点的显示名（`{节点: 名称}`，如
-F8 之前的「校验与走查」）。这两项和节点钩子（`hooks`）分开声明，各管各的。
-节点的 `refresh_scope`（可选）只能是 changed_entries，按段的节点不能写：过期后刷新只查确认之后改动的条目。
+不再分段（建模拆成提取对象、提取操作）：老版本的包或 core 里写的 `per_slice`、`steps`、`slice_steps`、`node_titles`
+照样能装配，只是不再起作用。
+节点什么时候需要做只看 `need`（required、optional、`{when: <条件>}`，见 need.py）：旧写法（placement、section、
+optional、progress、visible_if、preempt）装配时折算成 need，旧字段按 need 补齐（`normalize_node`）。第三方包的必需节点
+没写 autobuild 时不进自主构建。主命令是 actions 里第一个带 command 或 page 的动作，`entry` 只做兼容。
+`display_after` 留着：求解适配改成 `after: codegen.codegen` 的话，没做代码生成时要等场景模拟做完（原来等提取操作）才能
+开始；底座核对改成挂在新增功能后面也一样。
+节点的 `refresh_scope`（可选）只能是 changed_entries：过期后刷新只查确认之后改动的条目。
 core 的 `aliases` 把旧版节点编号映射到现在的节点：没升级的包写的锚点、钩子宿主、命令归属照样认。
 范围限定（ADR-0085）：包在 flow.yaml 顶层写 `confine: {scope_file: <路径>}`，范围文件里 status 是 active 时，
 基线里有、editable 里没有的本体条目助手不能写也不能删（内核守卫按组装结果执行）。最多一个包声明，
-路径要落在这个包某个节点的 produces 里；组装结果记下声明它的包、节点和入口命令，守卫的提示不用认识具体的包。
+路径要落在这个包某个节点的 produces 里；组装结果记下声明它的包、节点和主命令，守卫的提示不用认识具体的包。
 """
 
 from __future__ import annotations
@@ -26,9 +30,9 @@ import fnmatch
 import hashlib
 import json
 
+from .need import need_problems, normalize_node, primary_command, when_of
+
 FLOW_API = 1
-PLACEMENTS = ("spine", "step", "branch", "gate", "on_demand")
-SECTIONS = ("required", "pre_publish", "optional", "on_demand")
 KINDS = ("agent", "script", "human")
 # 节点过期后刷新的范围：changed_entries 只查确认之后改动的条目（state.refresh_scope）；不写时整条刷新
 REFRESH_SCOPES = ("changed_entries",)
@@ -45,19 +49,13 @@ def _node_problems(pack: str, node: dict) -> list[str]:
     node_id = str(node.get("id") or "")
     if not node_id.startswith(f"{pack}."):
         problems.append(f"节点 {node_id or '（空）'} 的编号要以包名 {pack}. 开头")
-    if node.get("placement", "spine") not in PLACEMENTS:
-        problems.append(f"节点 {node_id} 的挂法 {node.get('placement')} 不认识")
-    if node.get("section", "required") not in SECTIONS:
-        problems.append(f"节点 {node_id} 的分组 {node.get('section')} 不认识")
+    problems += need_problems(node)
     if node.get("kind", "agent") not in KINDS:
         problems.append(f"节点 {node_id} 的类型 {node.get('kind')} 不认识")
     if not node.get("title"):
         problems.append(f"节点 {node_id} 缺少 title")
-    if node.get("refresh_scope") is not None:
-        if node["refresh_scope"] not in REFRESH_SCOPES:
-            problems.append(f"节点 {node_id} 的刷新范围 {node['refresh_scope']} 不认识")
-        elif node.get("per_slice"):
-            problems.append(f"节点 {node_id} 按段算状态，不能声明刷新范围")
+    if node.get("refresh_scope") is not None and node["refresh_scope"] not in REFRESH_SCOPES:
+        problems.append(f"节点 {node_id} 的刷新范围 {node['refresh_scope']} 不认识")
     return problems
 
 
@@ -161,10 +159,12 @@ def _offered(item: dict, available: set[str]) -> bool:
     return not name or name in available
 
 
-def assemble(contributions: list[tuple[str, str, dict]], available_commands: set[str] | None = None) -> dict:
+def assemble(contributions: list[tuple[str, str, dict]], available_commands: set[str] | None = None,
+             trusted: set[str] | None = None) -> dict:
     """contributions：[(包名, 版本, 流程声明)]，core 必须在第一个并带主流程。
 
     available_commands：本次装配里所有包提供的命令名（不带 /）；给出时下一步建议只留这些命令。
+    trusted：官方包（镜像内置入库）的包名，core 总算；其余包的必需节点没写 autobuild 时不进自主构建。
     返回组装后的流程（含 edges 与 flow_hash）；不通过抛 FlowAssemblyError。
     """
     if not contributions or contributions[0][0] != "core":
@@ -196,14 +196,14 @@ def assemble(contributions: list[tuple[str, str, dict]], available_commands: set
                 problems.append(f"{pack} 的流程节点必须是映射")
                 continue
             problems += _node_problems(pack, node)
-            nodes.append({**node, "pack": pack, "version": f"{pack}@{version}"})
+            nodes.append(normalize_node({**node, "pack": pack, "version": f"{pack}@{version}"},
+                                        trusted=pack == "core" or pack in (trusted or ())))
     ids = [str(node.get("id")) for node in nodes]
     duplicates = sorted({node_id for node_id in ids if ids.count(node_id) > 1})
     problems += [f"节点编号重复：{node_id}" for node_id in duplicates]
     known = set(ids)
     aliases = {str(old): str(new) for old, new in (base.get("aliases") or {}).items() if str(new) in known}
     _apply_aliases(nodes, flow, aliases)
-    problems += _apply_slice_steps(contributions, nodes)
     edges: list[tuple[str, str]] = []
     for node in nodes:
         for key in ("after", "before"):
@@ -296,7 +296,8 @@ def _produces(node: dict, text: str) -> bool:
 
 
 def _activations(contributions: list[tuple[str, str, dict]], nodes: list[dict], flow: dict, problems: list[str]) -> None:
-    """包声明的触发（ADR-0091）：校验后写进组装结果的 `activations`（包 → 声明）；没有包声明时去掉。"""
+    """包声明的触发（ADR-0091）：校验后写进组装结果的 `activations`（包 → 声明）；没有包声明时去掉。
+    按触发出现的节点写 `need: {when: activated}`（旧写法 `visible_if: activated`）。"""
     from ..packs.manifest import ACTIVATION_EVENTS
 
     flow.pop("activations", None)
@@ -320,10 +321,8 @@ def _activations(contributions: list[tuple[str, str, dict]], nodes: list[dict], 
             problems.append(f"{pack} 的 activation.session 要是本包节点 produces 里的具体文件：{session or '（空）'}")
         out[pack] = {"event": spec["event"], "requires": requires or [], "session": session}
     for node in nodes:
-        if node.get("visible_if") == "activated" and node.get("pack") not in out:
-            problems.append(f"节点 {node['id']} 写了 visible_if: activated，它的包没有声明 activation")
-        if node.get("preempt") and node.get("visible_if") != "activated":
-            problems.append(f"节点 {node['id']} 的 preempt 只能用在 visible_if: activated 的节点上")
+        if when_of(node) == "activated" and node.get("pack") not in out:
+            problems.append(f"节点 {node['id']} 写了 need: {{when: activated}}，它的包没有声明 activation")
     if out:
         flow["activations"] = out
 
@@ -353,8 +352,7 @@ def _confine(contributions: list[tuple[str, str, dict]], nodes: list[dict], flow
     if owner is None:
         problems.append(f"{pack} 的 confine.scope_file {text} 不在本包任何节点的 produces 里")
         return
-    flow["confine"] = {"scope_file": text, "pack": pack, "node": owner["id"],
-                       "entry": str((owner.get("entry") or {}).get("command") or "").strip(),
+    flow["confine"] = {"scope_file": text, "pack": pack, "node": owner["id"], "entry": primary_command(owner),
                        **({"lock_on_activation": True} if lock else {})}
 
 
@@ -373,54 +371,19 @@ def _apply_aliases(nodes: list[dict], flow: dict, aliases: dict[str, str]) -> No
             if node.get(key):
                 node[key] = mapped(node[key])
         if node.get("before") and node.get("before") == node.get("after"):
-            # 原来插在对象提取与操作提取之间的（两者都并进了建模）：挂在建模之后
+            # 前后两个锚点映射到了同一个节点（如 0.3～0.5 的 core 把对象提取、操作提取都认成建模）：挂在它之后
             node.pop("before")
     for spec in (flow.get("commands") or {}).values():
         if isinstance(spec, dict) and spec.get("node"):
             spec["node"] = aliases.get(spec["node"], spec["node"])
 
 
-STEP_KEYS = ("id", "label")
-
-
-def _apply_slice_steps(contributions: list[tuple[str, str, dict]], nodes: list[dict]) -> list[str]:
-    """包往按段的节点里加步骤（`slice_steps`，step.after 指定放在哪一步后面），改节点的显示名（`node_titles`）。"""
-    problems: list[str] = []
-    by_id = {node["id"]: node for node in nodes}
-    for node in nodes:
-        if node.get("per_slice"):
-            steps = node.get("steps") or []
-            if not steps or not all(isinstance(step, dict) and all(step.get(key) for key in STEP_KEYS)
-                                    for step in steps):
-                problems.append(f"按段的节点 {node['id']} 要声明 steps（每一步有 id、label）")
-            node["steps"] = [{**step, "pack": node["pack"]} for step in steps if isinstance(step, dict)]
-    for pack, _version, declared in contributions[1:]:
-        titles = declared.get("node_titles") or {}
-        if not isinstance(titles, dict):
-            problems.append(f"{pack} 的 node_titles 要是「节点: 名称」的映射")
-            titles = {}
-        for node_id, title in titles.items():
-            if node_id not in by_id or not str(title or "").strip():
-                problems.append(f"{pack} 改名的节点 {node_id} 不存在或名称为空")
-                continue
-            by_id[node_id]["title"] = str(title).strip()
-        for item in declared.get("slice_steps") or []:
-            target = by_id.get(str((item or {}).get("node") or "")) if isinstance(item, dict) else None
-            if target is None:
-                problems.append(f"{pack} 加步骤的节点 {(item or {}).get('node') if isinstance(item, dict) else item} 不存在")
-                continue
-            step = item.get("step")
-            if not target.get("per_slice") or not isinstance(step, dict) or not all(step.get(k) for k in STEP_KEYS):
-                problems.append(f"{pack} 只能往按段的节点里加步骤（要有 id、label）")
-                continue
-            steps = target["steps"]
-            if any(existing["id"] == step["id"] for existing in steps):
-                problems.append(f"{pack} 加的步骤 {step['id']} 在 {target['id']} 里已经有了")
-                continue
-            position = next((index + 1 for index, existing in enumerate(steps) if existing["id"] == step.get("after")),
-                            len(steps))
-            steps.insert(position, {**step, "pack": pack})
-    return problems
+def normalize_flow(flow: dict) -> dict:
+    """读进来的组装结果再按 need 整理一遍节点（老装配格式的兜底；已整理过的原样）。flow_hash 不重算：它是装配时的摘要。"""
+    nodes = flow.get("nodes")
+    if not isinstance(nodes, list):
+        return flow
+    return {**flow, "nodes": [normalize_node(node) if isinstance(node, dict) else node for node in nodes]}
 
 
 def flow_hash(flow: dict) -> str:

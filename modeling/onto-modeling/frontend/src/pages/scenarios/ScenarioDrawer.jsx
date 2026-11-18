@@ -88,7 +88,7 @@ export function ScenarioDrawer({ row, type, lock, tasks, onClose, onChanged }) {
     <>
       <span data-pop={pop}><Button kind="danger" icon="trash" disabled={locked || !d} onClick={() => setConfirmDel(true)}>删除</Button></span>
       <span className="sp" />
-      <SendButton tasks={tasks} command={walk.command} args={walk.args} text={walk.text} icon="hand">交互模拟</SendButton>
+      <SendButton tasks={tasks} command={walk.command} args={walk.args} text={walk.text} label={walk.label} icon="hand">交互模拟</SendButton>
       <span data-pop={pop}>
         <Button
           kind="primary"

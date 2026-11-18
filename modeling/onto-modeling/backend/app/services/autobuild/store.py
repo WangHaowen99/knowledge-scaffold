@@ -24,7 +24,24 @@ ACTIVE = ("queued", "running", "pausing", "paused", "stopping", "converting", "i
 RUNNING = ("running", "pausing", "stopping", "converting")
 # budget_exhausted 是 F6 之前「预算用完」停下的老运行，之后不再产生
 ENDED = ("completed", "stopped", "budget_exhausted", "failed", "converted")
+# 运行记录里各单元的进度 {单元: {state, steps, timeline, changeset_id, commit, …}}。键名沿用按段建模时的：老运行就记在
+# 这里，回退到上一版时新运行也照样能读
+UNITS_KEY = "slices"
 _lock = threading.RLock()
+
+
+def unit_infos(run: dict) -> dict:
+    return run.get(UNITS_KEY) or {}
+
+
+def unit_info(run: dict, unit_id: str | None) -> dict:
+    """一个单元的进度（只读；还没开始时是空的）。"""
+    return unit_infos(run).get(unit_id) or {}
+
+
+def unit_entry(run: dict, unit_id: str) -> dict:
+    """一个单元的进度（要改时用：没有就建上）。"""
+    return run.setdefault(UNITS_KEY, {}).setdefault(unit_id, {})
 
 
 def root_dir() -> Path:

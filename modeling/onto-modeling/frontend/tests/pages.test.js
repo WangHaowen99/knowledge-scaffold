@@ -4,7 +4,7 @@ import { createBody } from '../src/pages/create/createBody.js';
 import { passwordRules } from '../src/pages/login/passwordRules.js';
 import { activityText, projectLook } from '../src/pages/projects/projectCard.js';
 import { layoutThumb } from '../src/pages/workbench/thumb.js';
-import { mergeFlow, trackNodes } from '../src/state/flow.js';
+import { mergeFlow, normalizeFlow, trackNodes } from '../src/state/flow.js';
 
 const NOW = new Date(2026, 10, 1, 15, 30).getTime();
 const at = (d, h, m) => new Date(2026, 10, d, h, m).toISOString();
@@ -47,11 +47,12 @@ test('新建项目请求体：只带上传完成的资料，示例项目带 exam
 });
 
 const node = (id, placement, display_state = 'not_ready') => ({ id, title: id, placement, display_state, state: display_state });
-test('主线进度条按边排序，只放主线、步骤、关卡', () => {
-  const flow = {
-    nodes: [node('a', 'spine'), node('gate', 'gate'), node('b', 'step'), node('pub', 'spine'), node('opt', 'branch')],
+test('导航栏按后端给的节点顺序（装配时已按 after、before 排好），老响应只放主线、步骤、关卡', () => {
+  // 老响应没有 nav：按 placement 推；连线不再参与排序（和全部命令菜单的分组顺序一致）
+  const flow = normalizeFlow({
+    nodes: [node('a', 'spine'), node('b', 'step'), node('gate', 'gate'), node('opt', 'branch'), node('pub', 'spine')],
     edges: [{ from: 'a', to: 'b' }, { from: 'b', to: 'gate' }, { from: 'gate', to: 'pub' }],
-  };
+  });
   assert.deepEqual(trackNodes(flow).map((n) => n.id), ['a', 'b', 'gate', 'pub']);
 });
 

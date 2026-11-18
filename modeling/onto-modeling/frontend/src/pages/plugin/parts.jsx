@@ -56,12 +56,13 @@ export function useCommandTasks(page, { onFinish } = {}) {
     if (task.origin?.page === page) apply((prev) => mergeTask(prev, task));
   });
 
-  // command 是命令名，text 是对话里显示的那句（也是进度条标题的来源）
-  const send = useCallback(async ({ command, args, text, action, conversationId }) => {
+  // command 是命令名，text 是对话里显示的那句（也是进度条标题的来源）；label 是按钮名，给了时对话里叫这个名字（display_label）
+  const send = useCallback(async ({ command, args, text, label, action, conversationId }) => {
     setSending(true);
     try {
       const r = await api.sendCommand(pid, {
-        ...(action ? { action } : { command }), args, text, origin: { page, label: PAGE_TITLES[page] || page }, conversation_id: conversationId,
+        ...(action ? { action } : { command }), args, text, ...(label ? { display_label: label } : {}),
+        origin: { page, label: PAGE_TITLES[page] || page }, conversation_id: conversationId,
       });
       apply((prev) => mergeTask(prev, r.task));
       toast(`已发到工作台对话：${text || command}`, 'msg');
@@ -88,14 +89,14 @@ export function PluginEyebrow({ pack, label }) {
 
 // 发命令的按钮：只往工作台对话发一条命令，页面上显示进度
 export function SendButton({
-  tasks, command, args, text, hint, children, disabled, ...rest
+  tasks, command, args, text, label, hint, children, disabled, ...rest
 }) {
   return (
     <Button
       {...rest}
       disabled={disabled || tasks?.sending}
       data-pop={sendHint(hint || text || command)}
-      onClick={() => tasks.send({ command, args, text: text || hint })}
+      onClick={() => tasks.send({ command, args, text: text || hint, label })}
     >
       {children}
     </Button>

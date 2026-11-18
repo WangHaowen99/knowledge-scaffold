@@ -7,8 +7,7 @@ State helper — 单一文件管理所有命令的执行锁与进度快照。
                             持有者为 owner（Web 后端托管的引擎实例）或 owner_pid）
     progress.json           各阶段完整进度快照（全体命令共用）
 另有 `.onto/run/active.json`：正在执行的命令所属节点与写入范围（节点声明的 produces、writes），
-acquire 时写、release 时删；内核守卫只放行这些路径（方案 D11）。分段建模时（后端在
-`.onto/run/exec.json` 记了这一段）另记 `protect`：这一段以外、已经有了的条目，守卫不让改（详设 4.3）。
+acquire 时写、release 时删；内核守卫只放行这些路径（方案 D11）。
 
 锁的持有者：Web 后端每次连接引擎时把实例标识写进 `.onto/run/engine.json`，本进程是
 该后端的子孙时，持有者就是这个引擎实例——同一实例的多次 Bash 调用可续写锁，实例换了
@@ -47,16 +46,12 @@ import time
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent))
-import blueprint
 import flow_state
-import onto_metamodel
 
 STATE_DIR = Path('.ontology-state')
 PROGRESS_FILE = STATE_DIR / 'progress.json'
 # Web 后端写入的在线引擎实例标识（见模块说明）
 ENGINE_MARKER = Path('.onto') / 'run' / 'engine.json'
-# Web 后端开始执行一条命令时写的标记（节点、分段、步骤）
-EXEC_MARKER = Path('.onto') / 'run' / 'exec.json'
 # 正在执行的命令与它们的写入范围（节点声明的 produces、writes）：内核守卫只放行这些路径（方案 D11）
 ACTIVE_FILE = Path('.onto') / 'run' / 'active.json'
 ANCESTOR_SCAN_LIMIT = 32
@@ -370,93 +365,23 @@ def _node_patterns(node: dict) -> list:
     return allow
 
 
-def _slice_node(flow: dict, command: str):
-    """后端开始执行时记的是按段的节点、这条命令是它的一步（如带分段的规则提取、场景模拟）时返回那个节点。"""
-    try:
-        marker = json.loads(EXEC_MARKER.read_text(encoding='utf-8'))
-    except (OSError, ValueError):
-        return None
-    node = next((item for item in flow.get('nodes') or [] if item.get('id') == (marker or {}).get('node')), None)
-    if node is None or not node.get('per_slice'):
-        return None
-    commands = {str(step.get('command') or '').lstrip('/').removeprefix('ontology-') for step in node.get('steps') or []}
-    return node if command in commands else None
-
-
 def _command_scope(command: str) -> tuple:
-    """命令所属节点与它的写入范围（produces + writes）；不属于任何节点时为 (None, None)：不限范围。
-
-    这一次是按段的节点的一步时，节点取按段的那个、范围是两者的并集（规则提取还会写指标，场景模拟写场景文件）。"""
+    """命令所属节点与它的写入范围（produces + writes）；不属于任何节点时为 (None, None)：不限范围。"""
     try:
         flow = _flow()
     except (OSError, ValueError):
         return None, None
     node_id = flow_state.command_node(flow, command)
     node = next((item for item in flow.get('nodes') or [] if item.get('id') == node_id), None)
-    sliced = _slice_node(flow, command)
-    if sliced is not None:
-        allow = _node_patterns(node) if node is not None else []
-        allow += [pattern for pattern in _node_patterns(sliced) if pattern not in allow]
-        return sliced['id'], allow
     if node is None:
         return None, None
     return node_id, _node_patterns(node)
-
-
-def _changed_here() -> set:
-    """这份副本里相对主线分叉点改过的文件（含没提交、没跟踪的）：这一轮自己建的、改的不算段外。"""
-    try:
-        head = str(json.loads(FLOW_STATE_FILE.read_text(encoding='utf-8')).get('mainline_head') or '')
-    except (OSError, ValueError):
-        head = ''
-    base = ((_git_quiet('merge-base', 'HEAD', head) or '').strip() if head else '') or 'HEAD'
-    changed = (_git_quiet('-c', 'core.quotepath=false', 'diff', '--name-only', base) or '').splitlines()
-    changed += (_git_quiet('-c', 'core.quotepath=false', 'ls-files', '--others', '--exclude-standard') or '').splitlines()
-    return {line.strip() for line in changed if line.strip()}
-
-
-def _slice_protect(node_id: str, allow: list) -> tuple:
-    """分段建模：(分段, 段外已有的条目)。不是按段的节点、全量模式、不知道哪一段时 (None, [])。"""
-    slice_id = blueprint.current_slice()
-    if not slice_id or slice_id == blueprint.FULL_SLICE_ID:
-        return None, []
-    try:
-        flow = _flow()
-        node = next((item for item in flow.get('nodes') or [] if item.get('id') == node_id), None)
-        doc = blueprint.load(Path('.'))
-    except (OSError, ValueError):
-        return None, []
-    item = blueprint.find_slice(doc, slice_id)
-    if node is None or not node.get('per_slice'):
-        return None, []
-    if blueprint.mode(doc) != 'sliced' or item is None:
-        return None, []
-    own = set(blueprint.member_paths(item))
-    # 这一段的场景（一个操作一份）也是这一段的
-    own |= {f'ontology/testcase/{onto_metamodel.encode_filename(name)}.md' for name in item.get('operations') or []}
-    changed = _changed_here()
-    protect = []
-    for pattern in allow:
-        directory = pattern.rsplit('/', 1)[0] if pattern.endswith('/*') else ''
-        if not directory.startswith('ontology/') or not Path(directory).is_dir():
-            continue
-        for path in sorted(Path(directory).glob('*.md')):
-            rel = path.as_posix()
-            if path.name.lower() == 'index.md':
-                continue
-            if rel not in own and rel not in changed and rel not in protect:
-                protect.append(rel)
-    return slice_id, protect
 
 
 def _mark_active(command: str, phase: str) -> None:
     node_id, allow = _command_scope(command)
     data = _load_active()
     spec = {'node': node_id, 'allow': allow, 'phase': phase, 'since': time.strftime('%Y-%m-%d %H:%M:%S')}
-    if node_id and allow:
-        slice_id, protect = _slice_protect(node_id, allow)
-        if slice_id:
-            spec.update(slice=slice_id, protect=protect)
     data['commands'][command] = spec
     try:
         _save_active(data)
@@ -647,6 +572,35 @@ def _locked_nodes(flow: dict) -> set:
     return nodes
 
 
+def _fill_missing(flow: dict, states: dict, hits: dict) -> None:
+    """flow-state.json 里没有的节点（core 刚升级、后端还没按新流程算过；没有这个文件）按这份副本里的完成判定兜底：
+    做完了算已确认，没做完时上游（after 链，没做的可选节点跳过）做完了算可开始。不兜底的话缺的节点按未就绪叠加，
+    已经有对象的项目会被推回「提取对象」。条件节点（need.when）出不出现只有后端算得出，没记的按不出现算。"""
+    nodes = flow.get('nodes') or []
+    by_id = {node['id']: node for node in nodes}
+
+    def after(node: dict):
+        # 工具箱源目录里的 flow.yaml 没组装过，after 可能是列表：取第一个在流程里的
+        value = node.get('after')
+        return next((item for item in value if item in by_id), None) if isinstance(value, list) else value
+
+    for node in nodes:
+        if node['id'] in states:
+            continue
+        if flow_state.need_kind(node) == 'when':
+            states[node['id']] = {'state': 'skipped', 'flags': {'hidden': True}}
+            continue
+        if hits.get(node['id']):
+            states[node['id']] = {'state': 'confirmed', 'flags': {}}
+            continue
+        anchor = after(node)
+        while anchor in by_id and flow_state.need_kind(by_id[anchor]) == 'optional' and (
+                states.get(anchor) or {}).get('state') not in ('confirmed', 'stale'):
+            anchor = after(by_id[anchor])
+        upstream = (states.get(anchor) or {}).get('state') if anchor else 'confirmed'
+        states[node['id']] = {'state': 'ready' if upstream in ('confirmed', 'stale') else 'not_ready', 'flags': {}}
+
+
 def suggest_payload() -> dict:
     """下一步建议（契约 7.8 Suggestions）：节点状态取后端写的 `.onto/run/flow-state.json`（执行记录、变更集、
     指纹算出的那份），再叠上这份副本里这一轮还没合入的改动；算法与后端、宿主注入是同一个 flow_state.suggest。"""
@@ -664,6 +618,8 @@ def suggest_payload() -> dict:
     # 内核探针（{kernel: …}）工作区里算不了，恒为否：不交给动作条件，按不知道处理
     context['probes'] = {name: hit for name, hit in probes.items()
                          if not (isinstance((flow.get('probes') or {}).get(name), dict) and flow['probes'][name].get('kernel'))}
+    context['produced'] = flow_state.produced(flow, root)
+    _fill_missing(flow, states, hits)
     changed = _local_changes(str(data.get('mainline_head') or ''))
     flow_state.overlay_pending(flow, states, hits if changed else {}, _locked_nodes(flow))
     if changed:
@@ -673,7 +629,7 @@ def suggest_payload() -> dict:
 
 
 def suggest() -> int:
-    """输出 JSON（1 个主推，最多 2 个次选）；命令收尾按它渲染「下一步建议」，最多 3 条。"""
+    """输出 JSON（1 个主推，最多 2 个次选）：和界面建议条同一份，助手只拿来判断接下来该做什么，不在回复里列出。"""
     print(json.dumps(suggest_payload(), ensure_ascii=False))
     return 0
 

@@ -237,7 +237,7 @@ def real(tmp_path: Path, monkeypatch):
 
 def hook_flow(**hook) -> dict:
     flow = copy.deepcopy(NODE_PACK_FLOW)
-    flow["hooks"] = [{"id": "naming.normalize", "title": "术语归一", "node": "core.model", "when": "after",
+    flow["hooks"] = [{"id": "naming.normalize", "title": "术语归一", "node": "core.object", "when": "after",
                       "command": "/naming-check 归一", **hook}]
     return flow
 
@@ -257,7 +257,7 @@ def test_node_hook_extends_a_node_without_adding_one(real):
     assert [hook["id"] for hook in flow["hooks"]] == ["naming.normalize"]
     built = {node["id"]: node for node in view.build(root)["nodes"]}
     assert "naming.normalize" not in built
-    host = built["core.model"]
+    host = built["core.object"]
     assert host["hooks"] == [{"id": "naming.normalize", "title": "术语归一", "when": "after",
                               "command": "/naming-check 归一", "pack": "naming"}]
     assert host["actions"][-1] == {"kind": "start", "label": "术语归一", "target": "/naming-check 归一",
@@ -281,14 +281,14 @@ def test_node_hook_assembly_checks(real, hook, word):
 
 
 def test_node_hook_written_against_0_2_nodes_still_assembles(real):
-    """还没升级的包挂在 0.2 的对象提取上（B4d 合并）：经 core 的 aliases 挂到建模节点，装配照常。"""
+    """还没升级的包挂在建模（core.model）上：经 core 的 aliases 挂到提取操作，装配照常。"""
     manager, project_id, tmp_path = real
     root = manager.project_root(project_id)
-    source = make_node_pack(tmp_path / "src", flow=hook_flow(node="core.object"))
+    source = make_node_pack(tmp_path / "src", flow=hook_flow(node="core.model"))
     manager.packs.repository.install(source, origin="upload", by="admin")
     manager.packs.repository.set_channel("naming", "stable", "0.1.0", by="admin")
     pack_service.enable(manager, project_id, "naming")
     pack_service.prepare_for_message(manager, project_id)
     flow = flow_model.load_for(root)
-    assert [hook["node"] for hook in flow["hooks"]] == ["core.model"]
-    assert {node["id"]: node for node in view.build(root)["nodes"]}["core.model"]["hooks"][0]["id"] == "naming.normalize"
+    assert [hook["node"] for hook in flow["hooks"]] == ["core.operation"]
+    assert {node["id"]: node for node in view.build(root)["nodes"]}["core.operation"]["hooks"][0]["id"] == "naming.normalize"

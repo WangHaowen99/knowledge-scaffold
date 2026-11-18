@@ -44,3 +44,18 @@
 ## 补充（2026-11-17，ADR-0101）
 
 增量构建包已删除。事件激活机制（`activation`、`materials_added`、`visible_if: activated`、`preempt`、`lock_on_activation`）保留，接下来改给内核的增量更新用；本 ADR 里关于增量构建三个节点的部分作废。
+
+## 补充（2026-11-18，节点模型重构 3）
+
+`activation` 机制现在给内核的 `core.update` 用：增量更新写 `need: {when: materials_added}`，条件由内核算（`flow/activation.materials_pending`），
+不要求有包声明 `activation`。
+
+- 记录：同一个 `.onto/run/activation.json` 里加内核项 `kernel:materials_added`（包名不带冒号，不会撞）。上传时主线上对象和操作都有了
+  （和增量更新命令的前置一致）就记下 `{commit, at, files}`；和包的触发一样在事件时刻判前提，先传资料再建模不算。
+- 这一轮处理完：上传之后开始的一次增量更新正常做完（走到过执行更新，确认卡上取消、中断、放弃的不算）、触发之后发布过（和
+  `round_open` 同一口径）、用户选了「这一轮不处理」（FL-03）。
+  内核没有包那样的状态文件可看，只能看执行记录，而执行记录会被修剪，所以处理完时在记录上写 `handled`，之后不再翻执行记录、不起 git。
+- 这一轮没处理完时再上传，文件累加、时间换成这一次的：这次的资料也要有一次增量更新看过。上传时已经在跑的那次不算。
+- 包级的 `activation`、`need: {when: activated}`、`lock_on_activation` 照旧支持，和内核项各记各的；`FL-03` 不能结束包的这一轮
+  （那由包自己的状态文件管）。
+- 内核项不锁定已有条目（没有 `lock_on_activation` 的对应物）：增量更新命令自己出变更清单让用户确认。

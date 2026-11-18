@@ -1958,6 +1958,386 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
 27. **随包删除的页面与入口**：资料子页 sources、snapshots、schema，知识沉淀页 knowledge；新建向导、上传卡、⌘K 的「连接业务系统」；
     资料区外部反馈分组；资料分析的联网 / 仅本地切换；发布页评测优化与标记处理失败；待处理的外部反馈、证据冲突筛选；对话里的采集确认、沉淀入库卡片。
 
+
+## 2026-11-17 · 建模拆成提取对象、提取操作，去掉分段（节点模型重构 1）
+
+用户定：建模拆成两个节点，分段遗留（按段的状态、步骤、写入范围、建议）整个去掉，「规则」一步删掉（和指标旁支是同一条命令）。
+这一批不动 `placement`、`section`、`optional` 等旧字段，不改名、不改菜单和推荐规则；自主构建的改写在下一批（1B），这一批留了
+兼容层让它照常跑。
+
+**节点编号与别名**
+
+1. core 的建模节点 `core.model` 拆成 `core.object`「提取对象」（`after: core.research`，`done: [object]`，`stale_on: [research]`，
+   `produces: ontology/object/*`）和 `core.operation`「提取操作」（`after: core.object`，`done: [operation]`，`stale_on: [object]`，
+   `produces: ontology/operation/*、ontology/rule/*`，`writes: ontology/logic/*、ontology/metric/*、ontology/object/*`）。
+   指标、校验、增量更新的锚点改成 `core.operation`，增量更新排到提取操作后面。
+2. 别名倒过来：`core.model → core.operation`（原来是 `core.object`、`core.operation → core.model`），`core.rule_metric → core.metric`、
+   `core.consistency → core.validate` 不变。没升级的包写的 `core.model` 锚点、钩子宿主、命令归属照样认；官方包（代码生成的求解适配、
+   领域包扩展的锁定底座）的锚点改成 `core.operation`。
+3. 命令归属：`extract-object → core.object`、`extract-operation → core.operation`、`extract-rule-metric → core.metric`。
+4. 写入范围随节点收窄：提取对象只能写 `ontology/object/*`；提取操作能写操作、规则、逻辑、指标、对象。
+5. 节点字段 `per_slice`、`steps` 去掉；包的 `slice_steps`、`node_titles` 和节点上的 `per_slice`、`steps` 装配时忽略（老版本的包、
+   锁定旧 core 的项目照样能装配，不报错）。`refresh_scope` 不再因为 `per_slice` 拒绝。`blocks_in: sliced` 的关卡一律不挡。
+
+**FL-01 等接口（只加不删）**
+
+6. FL-01 `slice_stages`、`slices` 恒为 `[]`；`nodes[].per_slice` 恒为 `false`、`progress` 恒为 null。EP-01 `flow.updated` 的 `slices`
+   恒为 `[]`。P-01 `ProjectCard.slices` 恒为 null。CS-06／EP-03 `ScopeLock.slice` 恒为 null，原因文案不再说「这一段」。
+7. FL-03、FL-04、FL-05：请求里的 `slice_id`、`step` 忽略，不报错；`node_id` 是旧编号时按别名认（`core.model` 认成提取操作，
+   必经，不能跳过；开始发 `/ontology-extract-operation`，不带分段）。FL-03 记的跳过不再带 `slice_id`。
+8. 建议条：建模不再按段推，提取对象、提取操作各自按节点推（主推是节点的动作，「提取对象」「提取操作」）；过期按钮写节点名
+   （「对象有变化，刷新提取操作」）。`flow_state.SUGGEST_RULES` 升到 8，`flow-state.json` 的上下文去掉 `slice_next`、`slice_stale`；
+   锁定旧 core 的项目（`SUGGEST_RULES` < 8）建议条和待处理的「已交给核对节点」判定都用平台镜像的 flow_state。
+
+**兼容规则**
+
+9. **节点状态记录迁移**（`state.migrate_split`，第一次按拆开的流程算状态或记确认时做，只做一次；流程里还有 `core.model` 的不做），
+   顺序不能乱：① 删掉 `nodes` 里残留的 0.2 时代 `core.object`、`core.operation` 记录；② 提取对象取 `slices.all.object`，没有就取
+   `core.model`；③ 提取操作取 `slices.all.operation`；④ 需复核标记、按类指纹、`rev` 一起带过来，判定签名不带旧的、按新节点记；
+   只有需复核没有基线的不搬；⑤ `slice_skips.all.rule` 转成跳过指标（指标已经跳过的保留原记录）；⑥ 删掉 `core.model`、`slices`、
+   `slice_skips`、`legacy_migrated`，记 `split_migrated: true`。
+10. **执行记录**：新增 `exec_records.node_of`。老记录的 `core.model` 按 `step` 认（对象 → 提取对象，操作 → 提取操作，规则 → 指标），
+    没有 `step` 时按命令名，再认不出按别名算提取操作；流程里还有 `core.model` 时原样。进行中、续跑前的检查都按它。`slice=` 参数
+    不再起作用；续跑（按新版重做）的命令不再拼 `slice=`；工作区 `.onto/run/exec.json` 不再写 `slice`、`step`。
+11. **变更集**：不再记 `slice_steps`，一轮结束不再把新条目记进蓝图的段；CS-05 撤回不再改蓝图、不再清分段记录。合入时节点列表里的
+    `core.model` 展开成新节点：有 `slice_steps` 时按做过的步骤（同第 10 条），没有时提取对象、提取操作都算。写入范围锁按别名认
+    `core.model`（提取操作的范围盖住原来建模的）。
+12. **守卫**：`.onto/run/active.json` 里分段时代记的 `protect`（段外已有的条目）不再看；`state_helper acquire` 不再记 `slice`、`protect`。
+13. **助手副本**：`state_helper suggest` 读到的 `flow-state.json` 里缺的节点（core 刚升级、后端还没按新流程算过）按副本里的完成判定
+    兜底：做完了算已确认，没做完时上游做完了算可开始，不会把已经有对象的项目推回「提取对象」。
+14. **自主构建（批次 1B 删除的兼容层）**：`flow/slices.py` 只剩自主构建还在调的接口，把两个节点包成一段「全部」× 两步（对象、操作），
+    每一步的状态、确认记录落在各自的节点上；`blueprint.run_slices`、`drop_added_members` 保留；提取对象、提取操作的执行记录照旧记
+    `slice`（「全部」）与 `step`。AB-01 等自主构建接口不变，策略的 `until_node` 要写 `core.operation`（这一批还不认别名）。
+
+## 2026-11-17 · 自主构建按节点排（节点模型重构 1B）
+
+用户定：自主构建不再按「段 × 步骤」排单元。这一批把 1A 留下的分段兼容层删掉；哪些节点能自主做沿用原来的规则（批次 3 再改成按
+`need` 判）。契约里 `slice`、`slice_id`、`slices` 这些字段名、AB-17 的路径、`slice_progress` 卡片类型、`slice_not_revertible` 等错误码
+都不变，装的是单元：新运行是节点编号与节点名，按段跑的老运行照旧是段。
+
+**单元与执行**
+
+1. 一个节点一个单元、一步：资料分析之后、到策略的 `until_node` 为止（含）的节点，按流程顺序，跑节点的主命令（`entry.command`）。
+   能做的节点：主线（`placement: spine`）、不是人工或面板节点、没写 `autobuild: false`、有主命令；可选的只在 `include_optional` 时做。
+   已确认、已跳过的不做；过期的按 `refresh_stale_first`（原来主线上的几步过期了总是重做，现在和建模一样听这个开关）。做没做完按
+   确认记录与完成判定算，不叠副本里的命令锁。
+2. 每个单元新开上下文、先占一个变更集、合入后是安全点：提取对象、提取操作各合入一次（原来「全部」一段合入一次）。暂停、停在
+   安全点、转为陪伴都在当前这一步合入之后生效（原来暂停停在段内一步之后，变更集开着、写入范围锁着）。合入提交说明是
+   `autobuild: 自主构建运行 #n「提取对象」（cs-…）`。
+3. 注入：开头是「自主构建 · 运行 #n · <节点名>（第几步/共几步）」；去掉段说明；「只改这一段的内容」改成「只做这一步」；合入前
+   修检查问题的提示写「只改「<节点名>」这一步写的内容」。
+4. 锁定旧 core 的项目（流程里还是 `core.model`，主命令只提取对象）：这个单元照原来做两步（提取对象、提取操作）。
+
+**接口**
+
+5. AB-01、AB-02：`scope.until_node` 写旧节点编号时按 core 的别名认，读出来、保存后都是现在的编号（`core.model` → `core.operation`；
+   原来开始运行回 400）；`core.consistency` 照旧当成跑完主线。`scope.slice_ids` 原样保存、不再起作用（原来只留现存的段）；
+   `mode: "selected"` 存成 `all_pending`；`generate_scenarios` 保存、不再起作用。
+6. AB-03 `slices`（键名不变）：一个节点一行 `{id: 节点, name: 节点名, current, included}`，`current` 是「已确认」「有过期」「已跳过」
+   「进行中」「待确认」「未开始」之一；原来只有「全部」一行。
+7. `AutobuildRun`（AB-04～AB-09）与 `AutobuildRunSummary`（AB-18、EP-14、P-01 `autobuild.slice_done/slice_total`、O-01）：
+   - `slices: {done, total}` 按全部单元算（原来只数段，校验等节点不算）；
+   - `current.slice_id/slice_name` 是节点编号、节点名，`step_label` 也是节点名；
+   - `matrix` 每个单元一行 `{slice_id, slice_name, state, cells, result}`，新加 `state`（`queued|running|done|partial|skipped`），
+     节点单元的 `cells` 为 `{}`；
+   - 新加 `stages: [{id, label}]`：按段的老运行的步骤列（对象、操作……），新运行为 `[]`；
+   - `tail_text` 恒为 `""`（节点单元都在 `matrix` 里，原来写「跑完全部分段后：校验 → …」）。
+8. AB-16 `AutobuildReport`：`slices` 每个单元一行（原来只有段），`metrics.slices`、`metrics.produced` 按全部单元算；节点单元合入过
+   就能撤回（`revertible`）。
+9. AB-17（路径 `/runs/{run_id}/slices/{单元}/revert` 不变）：撤回一个单元，节点单元也行（原来只有段）；这一步的节点的确认记录放回
+   运行前的；建模蓝图不跟着撤。错误码、专项审计 `autobuild.revert_slice` 不变。必须倒序撤回（用户定）：同一次运行里更靠后、用到了
+   这一步产出（它的节点的 `stale_on` 盖住这一步节点的产出类别，同流程过期的口径）、还没撤回的单元在，回 `409 slice_not_revertible`，
+   `message`「先撤回「提取操作」」，`details: {reason: "revert_later_first", slice_id, slice_name}` 是最靠后的那个；它撤回后这一步就能撤。
+   没用到的不挡（撤校验不看后面的场景模拟）。老运行按段的单元整体撤回，不受这条限制。
+10. AB-10～AB-15：`LedgerEntry.slice`、`Suspension.slice` 是单元 `{id, name}`；复核项 `summary` 以节点名开头（「提取操作：三级」）。
+    待处理里自主构建复核项的影响写「步骤：<节点名>」。改判、补上发那一步的命令，不再带 `slice=` 参数。
+11. 卡片：`autobuild_start` 的「范围」写「N 步」；`slice_progress` 每个单元一张；EP-15 `autobuild.safe_point` 每个单元合入后发一次。
+12. 「需复核」：一个单元里的自动决定都复核过（没有决定的单元，要整次运行都复核过）就去掉它合入时标在节点上的；整次运行都复核完时
+    去掉这次运行标的全部。原来按段清段内记录，节点上的标记要等整次运行复核完。
+13. 执行记录：不再记 `slice`、`step`；ExecRecord 的 `slice` 新记录为 null，老记录照读。
+14. 变更集检查：按段的「待建链接」（`pending_links`、`pending`）去掉，链接找不到一律算问题；`round_changes` 卡的 `checks.pending` 恒为 0，
+    提示不再有「N 处指向第 X 段待建的内容」（老变更集记着的也不再提示）。
+
+**老运行兼容**（运行记录不迁移，按记录里的单元原样认；运行记录里各单元的进度仍存在 `slices` 键下，回退到上一版也能读新运行）
+
+15. 详情（AB-05）：`stages` 从按段单元的步骤和开始时记下的各步状态得出；按段的一行按步骤填格子，跟在后面的节点单元一行、没有
+    格子；开始时就做完的段照旧一行「运行前已完成」。
+16. 报告、台账、挂起、待处理照旧按 `slice` 认单元；复核项的「全部」写「建模」，按好几段跑的才说「分段」「N 段」。
+17. 撤回（`slices/all/revert`）：按步骤记的运行前确认记录（`object`、`operation`）落到提取对象、提取操作上（同节点状态迁移：带指纹、
+    需复核标记，判定签名按现在的节点记）；「规则」一步的记录不放回。原来会去掉这一段合入时记进建模蓝图的条目，现在蓝图不动。
+18. 暂停中的老运行续跑：接着做这一段没做完的步骤（不重做做完的），再做后面的节点单元。
+19. 留到下一次的挂起问题按那一步落到节点（对象 → 提取对象，操作 → 提取操作，不知道哪一步时按这一段的第一步），下一次运行在那个
+    节点上补上。
+20. 策略里的 `slice_ids` 只保存不使用（第 5 条）。
+
+**删除**
+
+21. `flow/slices.py` 整个删除；`blueprint.run_slices`、`drop_added_members`，`revert_merged` 的 `rewrite` 参数删除；变更集检查的
+    待建链接（`gates._planned`、`link_target`）删除；`exec_records` 不再写 `slice`、`step`。
+
+## 2026-11-17 · 节点挂法收成 need 一个字段（节点模型重构 2a）
+
+用户定：节点什么时候要做只用一个字段 `need` 表达。这一批换声明方式，界面行为基本不变：改名、全部命令菜单、推荐五级、跳过入口、
+前端交互在 2b；增量更新的事件条件、自主构建按 `need` 判资格在批次 3。
+
+**声明**
+
+1. `need` 三种取值：`required`（上导航栏，计入进度，没做时推荐，自主构建做）、`optional`（不上导航栏，挂在它前面最近的必需节点下面，
+   可以跳过）、`{when: <内核条件>}`（条件成立时出现）。缺省 `required`。取值不对装配失败（「节点 X 的 need 只能是……」）。
+2. 旧写法装配时折算成 `need`，自上而下取第一条命中的：
+
+   | 旧写法 | 折算成 |
+   |---|---|
+   | `visible_if: X` | `{when: X}`，`preempt` 不带过来 |
+   | `placement` 或 `section` 是 `on_demand` | `optional`，没写 `autobuild` 时加 `autobuild: false` |
+   | `optional: true`、`section: optional`、`placement: branch`、`progress: false` | `optional` |
+   | `gate`、`pre_publish` | `required` |
+   | 其余（`spine`、`step`、什么都没写） | `required` |
+
+3. 同时写了 `need` 和旧字段时以 `need` 为准。旧字段不删，装配时按 `need` 补齐（锁定旧 core 的项目、助手副本里的旧脚本还读）：
+   - `required`：`placement` 是 spine、step、gate 的保留，否则 spine；`section` 是 required、pre_publish 的保留，否则 required；
+     去掉 `optional`、`progress`、`visible_if`、`preempt`；
+   - `optional`：`placement` 是 branch、on_demand 的保留，否则 branch；`section` 是 optional、on_demand 的保留，否则 optional；
+     `optional: true`、`progress: false`，去掉 `visible_if`、`preempt`；
+   - `{when: X}`：`visible_if: X`、`progress: false`，`preempt` 没写时补 `true`（旧脚本按它先推），去掉 `optional`；
+     `placement`、`section` 不合法时补 spine、required。
+
+   整理是幂等的：装配目录里的流程再整理一遍不变。
+4. 分段遗留的 `per_slice`、`steps`、`slice_steps`、`node_titles`、`blocks_in` 照旧不起作用（`blocks_in: sliced` 的关卡不挡），静态检查给警告。
+5. **主命令**：`actions` 里第一个带 `command` 或 `page` 的动作。`entry` 只做兼容：没写时装配补成主命令；只写了 `entry`、没有这样的动作的
+   老节点，装配时把 `entry` 补成第一个动作（叫法取节点标题）。内核不再读 `entry`：开始节点（FL-05）、范围限定的
+   `confine.entry`、自主构建、建议条和待处理的刷新、S-18 命令归组、节点钩子提示、静态检查都改读主命令。和原来不同的两处：
+   资料分析发 `/ontology-research 仅基于本地文档`（原来 `/ontology-research`，命令说明里这句话不改变做法）；场景模拟发
+   `/ontology-trace 全部`（原来 `/ontology-trace`，会先问做哪种；节点卡片上的刷新原来就发这一条）。
+6. **第三方包不进自主构建**：不是镜像内置入库、也不是 core 的包，节点没写 `autobuild` 时装配成 `autobuild: false`（自主构建无人值守，
+   第三方包的输入不可信）；要进写 `autobuild: true`，上传检查列出来。可选节点同样处理（批次 3 打开「包括可选步骤」时也不做）。
+7. **`display_after` 保留**：求解适配改成 `after: codegen.codegen` 的话，没做代码生成时要等场景模拟做完才能开始（原来等提取操作）；
+   底座核对改成挂在新增功能后面，没新增时核对不了。两处「可开始」都会变，所以这两个节点继续用 `display_after` 只管显示顺序，
+   锁定底座、新增功能的 `display_after` 和 `after` 相同，去掉。
+8. **触发**：`activation` 的节点写 `need: {when: activated}`（旧写法 `visible_if: activated` 照认）；`preempt` 不再校验、不再起作用。
+   条件节点出现且没做完时，建议条先推它（原来要写 `preempt`）；说明行不再取 `preempt` 的字符串，为空。
+9. 装配格式 `ASSEMBLY_FORMAT` 升到 2：装配哈希跟着变，所有项目启动核对时重新装配。读装配目录的流程时再整理一遍（还没重新装配的
+   老格式也有 `need`）。`flow.lock` 的节点只记 `need`，去掉 `placement`、`section`、`optional`（下次提交锁文件时改写一次）。
+
+**资产**
+
+10. core 升到 0.6.0，主流程节点改用 `need`，去掉 `placement`、`section`、`optional`、`progress`、`entry`：资料分析、提取对象、提取操作、
+    校验、发布是 `required`，指标是 `optional`；增量更新是 `{when: materials_added}`，这个条件内核还没有，按不成立算，**节点不出现**：
+    FL-01 里没有增量更新，`/ontology-update` 在 S-18 里没有节点、归到「其他」，手动输入照样能发。
+11. 官方包改用 `need`，`depends` 改成 `core: ">=0.6"`：trace 0.11.0（场景模拟 `required`）、diagram 0.7.0（流程图 `optional`）、
+    codegen 0.10.0（代码生成、求解适配 `optional`，代码生成加 `autobuild: false`）、domain-extend 0.2.0（三个节点 `required`）。
+
+**接口（只加不删）**
+
+12. FL-01 节点加 `need`、`nav`（必需节点为 true，已停用的为 false）、`under`（可选、条件节点挂在哪个必需节点下面：after 链上它前面
+    最近的必需节点，链上没有时取流程顺序里它前面最近的；必需节点为 null）。`section` 按 `need` 算（必需 required、可选 optional、
+    条件 on_demand，`pre_publish` 不再出现）；`optional` 按 `need`；`placement` 是补齐后的旧字段。
+13. **进度只算必需节点**（可补做的做完之前不算）：FL-01 `progress` 和 P-01 项目卡片的 x/N 由内核按 `need` 同一口径算，锁定旧 core
+    的项目也一样。默认几个包启用时分母从 10 变成 6（指标、流程图、代码生成、求解适配不再算）。
+14. FL-03 只能跳过 `need: optional` 的节点，必需、条件节点回 `409 node_not_skippable`（「只有可选节点能跳过」）。
+15. PL-15 等上传检查：`node_entry` 改查主命令是本包的命令；新增 `node_need`（`need` 写错失败，分段遗留字段警告，没问题时不出现）、
+    `autobuild`（上传的包有节点时出现：写了 `autobuild: true` 的节点列在说明里、结果为警告，没有时通过）；节点包的 `node_pack`
+    不再限制 `placement`（第三方包也能声明必需节点），锚点仍要写（旧写法的按需节点除外），agent 节点的主命令要是本包命令；
+    `activation` 不再查 `preempt`。插件开发 skill 的离线检查器带上 `services/flow/need.py`。
+16. 工作台插件开发的草稿内容（`contents.nodes`）加 `need`。
+17. S-18 命令按节点的 `need` 归组（必需「建模」、可选「可选能力」、条件「有需要时」），节点包的命令按主命令认节点。
+
+**助手副本（flow_state、state_helper）**
+
+18. `flow_state` 加 `need_of`、`need_kind`、`primary_command`（映射表和内核同一份，测试对齐）；`progress_nodes`、`_required_on_mainline`、
+    已交给核对节点的判定、过期刷新、主线下一步、`state_helper` 补缺的节点状态改读 `need`；过期刷新发主命令。`SUGGEST_RULES` 不变。
+
+## 2026-11-17 · 名字统一、全部命令按节点分组、推荐五级（节点模型重构 2b）
+
+这一批只改后端和资产；导航栏下拉、跳过入口、全部命令菜单和 ⌘K 的界面等交互方案确认后再做（见下面「2b 前端」一节）。前端只跟着新的响应形状：菜单和 ⌘K
+发条目的 `target`，增量更新页不再自己顶一个「开始增量更新」。
+
+**改名对照（节点名 = 主命令名，变体名单独拿出来也看得懂）**
+
+| 节点 | 原节点名 | 原主命令按钮 | 现在（节点名 / 主命令名） | 变体（原 → 现在） |
+|---|---|---|---|---|
+| `core.research` | 资料分析 | 资料分析 | 资料分析 | 追加分析 → 追加资料分析；核验报告 → 核验资料分析报告 |
+| `core.object` | 提取对象 | 提取对象 | 提取对象（不变） | |
+| `core.operation` | 提取操作 | 提取操作 | 提取操作（不变） | |
+| `core.update` | 增量更新 | 增量更新 | 增量更新（不变） | |
+| `core.metric` | 指标 | 提取规则与指标 | 提取规则与指标 | |
+| `core.validate` | 校验 | 运行质量检查 | 校验 | |
+| `core.publish` | 发布 | 去发布 | 发布（页面按钮） | |
+| `trace.trace` | 场景模拟 | 批量验证 | 场景模拟（`/ontology-trace 全部`） | 交互模拟、生成示例数据（不变） |
+| `diagram.flowchart` | 流程图 | 创建/打磨流程图 | 绘制流程图 | 全量刷新 → 全量刷新流程图；校验流程图（不变） |
+| `codegen.codegen` | 代码生成 | 扫描候选（排第一） | 生成脚本（主命令改成 `/ontology-codegen`） | 扫描候选 → 扫描脚本候选 |
+
+场景模拟页和 trace 清单里的「批量验证」也改叫「场景模拟」。过期的按钮原来叫「对象有变化，刷新提取操作」，现在叫节点名「提取操作」，
+「对象有变化」写在条目的 `reason`（建议条的说明行）。「全量刷新流程图」「校验流程图」加 `when: [flowchart]`，已有流程图时才出现
+（全部命令、建议条、节点动作同样）。版本：core 0.6.1、trace 0.11.1、diagram 0.7.1、codegen 0.10.1。
+
+**名字表（`flow/names.py`）**
+
+1. `name_for(flow, text)` 看 text 第一行，按顺序取名：动作文本完全匹配（后面带参数也算，取最长的）→ 某个节点的主命令（节点名）→
+   变体（变体名）→ 命令表里的节点（节点名）→ 调用方给的叫法 → 命令名。用条件过滤之前的流程（`model.assembled_for`），
+   没出现的增量更新手打也叫「增量更新」。
+2. 装配时主命令的 `label` 和节点 `title` 不一致的以 `title` 为准（`need.normalize_node`）。
+3. 接上名字表的地方：S-20（任务标题、对话气泡、排队条、执行记录）、手打的斜杠命令（排队条、执行记录）、执行记录 `command_label`
+   （发消息时取好的名字优先）、自主构建复核发的命令。`command_display_name`（「节点 · 按钮叫法」）删掉；页面传来的
+   `display_label` 只在名字表认不出这条命令时用。
+4. trace 的命令表补上 `trace-batch`、`trace-single`、`trace-interactive`，都指向 `trace.trace`：场景模拟页直接发的推演也算这一步
+   （有执行记录，节点显示进行中），名字叫「场景模拟」。
+
+**S-18 全部命令**
+
+5. 每个导航栏节点一组（`id` 节点编号、`label` 节点名），按导航顺序；组内先列本节点发到对话的按钮（主命令在前，动作的 `when` 照样
+   生效，节点钩子在后），再列挂在它下面的可选、条件节点发到对话的按钮。跳页面的按钮（发布）不列。**不设「其他」组**：整体视图、
+   影响分析、查询、版本历史、`/ontology`、场景模拟的子文档不进菜单。原来按 need 分的「建模 / 可选能力 / 有需要时 / 其他」四组去掉。
+6. 条目加 `target`（完整命令文本）、`primary`（是不是节点的主命令）；`node_id` 不再为 null；`label` 是按钮名；`description` 恒为空串；
+   `id` 是 `<节点>#<序号>`（同一条命令可能有几个按钮）。
+7. S-20 改认当前装配里装了的命令（`installed_commands`，`.claude/commands/<名>.md` 在）：不在菜单里的命令手动输入照样能发。
+
+**推荐五级（`flow_state.suggest`，`SUGGEST_RULES` 9）**
+
+8. 从上往下判，命中就停：1 对话状态（等回答含目标问题、出错、被打断、没收尾、合入冲突、等你打字回复、自主构建在跑）；2 条件已成立
+   没处理完的节点、过期且没交给下游核对的必需节点，取流程里最靠前的一个；3 第一个没做完的必需节点（在跑或待确认时为空）；4 必需都
+   做完时，没做也没跳过的可选节点、过期的可选节点、可补做的必需节点，取最靠前的一个；5 不显示。第 2～4 级一次只推一个节点：主推是
+   节点主命令，次选是同一节点的变体，最多 2 个。
+9. 去掉：写死的「查看整体视图」「扫描脚本候选」「继续校验」，关卡规则，`preempt`，目标问题后面跟主线下一步、合入冲突后面补主线下一步、
+   好几个过期节点一起推。「回答目标问题」并进第 1 级。
+10. 节点已有产出（`produces` 下有文件，上下文新增 `produced`）、还没完成时，`verify: true` 的动作排第一（资料分析报告待核验时先核验）；
+    核验动作加 `when: [research_report]`。`done` 为空的节点第 3、4 级不推；条件节点做没做完由条件说了算，照样推。
+11. 能执行的检查：第 1 级照旧整条不能执行时往下判；第 2～4 级选中的节点没有能执行的条目时建议条为空，不越过它推后面的。
+12. 说明行 `note`：第 2 级和第 4 级的过期项写哪类变了；条件节点出现的原因（「上传了新资料」）写在条目的 `reason`，不出说明行，
+    旧写法 `preempt` 的说法不再用；`priority` 是所在的级。
+13. 后端 `_suggest_module` 只用 `SUGGEST_RULES >= 9` 的 flow_state，锁定旧 core 的项目用镜像版本。后端、助手副本、注入三个出口同一份，
+    测试按几个典型状态核对。
+14. 前端 `incremental/model.js` 的 `withStartSuggestion`（用「开始增量更新」顶掉主推）和 `start_incremental` 动作删掉，统一交给第 2 级
+    （批次 3 接上 `materials_added` 之后推「增量更新」）。
+
+**给模型的说明**
+
+15. flow.yaml 的 `next_steps` 和命令文档里列的回复词换成统一的名字（validate、trace-batch、trace-single、codegen、/ontology）。
+16. 注入的「下一步建议」改成「仅供判断，不要在回复里列出」，和 INTERACTION_CONVENTIONS「不列下一步」一致；提到某一步时用界面上的名字。
+17. `/ontology-codegen` 不带目标时先扫描候选，再用确认卡让用户挑（原来让用户先选「扫描」或「选择」）。
+18. 插件开发指南：节点名就是主命令名，变体的按钮名单独拿出来也要看得懂。
+
+**行为变化**
+
+- 必需节点都做完（发布过）之后，建议条推可选节点（绘制流程图、提取规则与指标、生成脚本），没有可推的时候不显示；原来推「查看整体视图」。
+  可选节点要能「跳过」才不会一直被推，跳过入口要和这一批一起上线（批次 2b 前端）。
+- 目标问题没答时只推「回答目标问题」，不再跟着推主线下一步；合入冲突时只有「处理冲突」。
+- 菜单里同一条命令可能出现几次（资料分析、追加资料分析），前端按 `target` 发。
+
+## 2026-11-18 · 增量更新响应新资料、自主构建按 need（节点模型重构 3）
+
+内核的增量更新 `core.update`（`need: {when: materials_added}`）接上条件：已经建了一部分又上传新资料时出现、建议条推它，
+这一轮处理完就隐藏。自主构建做哪些节点改按 `need` 判，「包括可选步骤」的说法按启用的可选节点生成。
+
+**内核条件 materials_added**
+
+1. 上传资料（R-02，`save_resource`）时主线上对象和操作都有了（`ontology/object` 下有条目，`ontology/operation` 或 `ontology/logic`
+   下也有），就在主线工作区的 `.onto/run/activation.json` 记下 `kernel:materials_added`：`{event, commit, at, files}`。和增量更新
+   命令的前置 `[逻辑已提取, 对象已提取]` 一致：只有对象时上传不记，免得建议条推一条跑不了的命令、把「提取操作」挤下去。不要求有包
+   声明这个事件；包级的 `activation` 照旧（它的前提是包自己的探针），同一次上传各记一份。
+2. 这一轮处理完（满足一条就算），节点隐藏：
+   - 上传之后**开始**的一次增量更新正常做完：执行记录 `done`、`started_at` 晚于上传时间，而且命令锁走到过执行更新（`phases_seen`
+     有 `apply` 或 `validate`）。在确认卡上选「取消」的那次也是 `done`，但只到过 `analyze`、`confirm`，不算；前置不满足就停下的
+     （锁都没拿）不算；被打断（`interrupted`）、放弃（`abandoned`）的不算；上传时已经在跑的那次做完也不算。出错时命令锁还在，
+     记录停在等待或中断，同样不算；
+   - 触发那次提交之后发布过（最新的 `release/*` 标签包含触发时的提交，和 `round_open` 同一口径）；
+   - 用户选了「这一轮不处理」（FL-03）。
+   处理完时在记录上写 `handled: {by: update|release|skip, at, reason?}`，之后读流程不再翻执行记录、不起 git 进程（执行记录只留
+   最近 200 条，不能靠它记住这一轮结束过）。没有记录时也不起 git 进程。
+3. 这一轮没处理完时再上传：文件累加（最多 50 个），`commit`、`at` 换成这一次的（这次的资料也要有一次增量更新看过）；处理完之后
+   再上传开始新的一轮，文件从这次算起。
+4. 触发是附带动作：算不出来记日志，上传照常成功。内核和包分开算，一边出错不影响另一边。
+5. 隐藏时 `flow-state.json` 里记成 `{state: skipped, flags: {hidden: true}}`，助手副本的 `state_helper suggest` 不推它，和后端同一份。
+
+**接口**
+
+6. **FL-01**：条件成立时增量更新在 `nodes` 里（`need: {when: "materials_added"}`、`nav: false`、`under: "core.operation"`、
+   不计入进度），建议条第 2 级推「增量更新」（`reason`「上传了新资料」），S-18「提取操作」组里有它的按钮；处理完就不在了。
+   示例里的 `notices` 新资料提示去掉（后端没有这条提示，新资料由节点出现表达）。
+7. **FL-03** 对条件节点是「这一轮不处理」：结束这一轮、节点隐藏，不记跳过，下一轮照常出现；响应 `node` 为 null。只有内核条件
+   能这样结束（`conditions.ROUND_ENDERS`）；按插件触发的节点（`activated`）这一轮由插件的状态文件管，照旧回 `409 node_not_skippable`。
+   复用 FL-03 而不新开接口：界面上都是节点下拉里的「不做这一步」，语义差别（可选节点能恢复、条件节点下一轮自己回来）由节点的
+   `need` 决定，前端不用多认一个接口。前端按钮这一批不做（见「2b 前端」一节）。
+8. **FL-04** 只恢复跳过的可选节点；条件节点结束这一轮后不在流程里（`node_not_found`）。
+9. **R-02** `is_revision`、`batch_id` 收下不处理，`command_task` 恒为 null。原设计是整批发一条增量更新命令，和条件节点重复
+   （同一批资料会推一次、又自己跑一次）；现在一律由条件节点出现、用户点了才发。
+10. **AB-01** 加只读的 `optional_nodes: [{id, name, under, order}]`（启用的、资料分析之后、自主构建能做的可选节点，按流程顺序；
+    `under` 挂在哪个必需节点下，`order` 在流程里排第几）和 `until_order`（`until_node` 排第几，没设为 null）。AB-02 的响应同 AB-01。
+
+**自主构建**
+
+11. 做哪些节点按 `need` 判（`autobuild/plan.eligible`）：必需节点做；可选节点只在「包括可选步骤」时做；条件节点、`autobuild: false`、
+    人工、面板、没有主命令的不做；没整理过的流程里旧写法的按需节点也不做。去掉写死的「发布、增量更新不做」（发布是人工节点、
+    增量更新是条件节点）。第三方包的节点没写 `autobuild: true` 时装配已补成 `autobuild: false`（2a），这里不再另判。
+12. 行为变化：原来按 `placement: spine` 判，旁支（`branch`）的可选节点打开开关也不做，开关实际不起作用；现在打开后加上绘制流程图、
+    提取规则与指标，生成脚本（`autobuild: false`）、求解适配（面板）不加。旧写法 `step`、`gate` 的节点现在按必需节点做（官方包里没有这种写法，第三方包的默认不做）。
+13. `until_node` 之后的可选节点不做：自主构建按流程顺序走到 `until_node`（含）就停，原来就是这样，没有改。注意按的是流程顺序，
+    不是挂在哪个节点下：做到「提取操作」时，挂在它下面、排在它后面的「提取规则与指标」不做。
+
+**前端**
+
+14. 项目设置「范围」的开关文案按 `optional_nodes` 生成：「包括可选步骤：」后面列节点名，用「、」连接，只列 `order <= until_order`
+    的（做到哪一步之后的不列，和后端同一口径）；一个都不剩（或老后端没有这个字段）时不显示开关。做到哪一步在这个页面上不能改，
+    按已保存的策略算。mock 的 AB-01、AB-02 带上 `optional_nodes`、`until_order`。
+
+**资产与插件开发指南**
+
+15. core `flow.yaml` 增量更新节点的注释改成现在的出现、隐藏规则（内容摘要变，core 版本号的 `+摘要` 随之变）；插件开发指南里
+    `need.when` 的说明补上 `materials_added`。
+
+## 2026-11-18 · 导航栏节点下拉、全部命令菜单、建议条说明行（节点模型重构 2b 前端）
+
+2b 后端留下的界面：导航栏节点能点开，可选步骤、跳过 / 恢复、「这一轮不处理」都在下拉里；输入框「/」菜单和 ⌘K 用同一份 S-18；
+建议条按钮只写名字，原因放说明行。跳过入口和建议条第 4 级（必需节点都做完后推可选节点）一起上线。
+
+**后端**
+
+1. **FL-01**：条件节点出现在流程里（条件成立）时 `nav: true`（批次 3 是 false），导航栏把它排在 `under` 后面：增量更新排在提取操作
+   后面，这一轮处理完就从 `nodes` 里去掉，导航栏上也没有了。
+2. **名字表**（`flow/names.py`）第 4 条：调用方给了 `display_label`（页面按钮的叫法）时不再按命令表退回节点名，直接用它。场景页的
+   「交互模拟」「补齐过期场景」发的是场景模拟的子文档命令，原来都退回成「场景模拟」。第 1～3 条（动作完全匹配、节点主命令、变体）照旧优先。
+
+**导航栏（`NavTrack.jsx`；下拉里有什么由 `flow.navMenu` 算）**
+
+3. 只放 `nav` 为 true 的节点，按 FL-01 的顺序，条件节点排在它挂的节点后面。默认包：资料分析 → 提取对象 → 提取操作 →（增量更新）→
+   校验 → 场景模拟 → 发布。
+4. 点节点名展开下拉，展开时重取 FL-01。从上到下：
+   - 这个节点发到对话的按钮：FL-01 `actions` 里的 `start`，主命令在前、变体在后；过期时叫节点名的 `refresh` 顶替主命令，`reason`
+     放在悬停提示里。斜杠命令走 S-20（带 `display_label`），核验报告那句当普通消息发，页面编号跳页；
+   - 分隔线；
+   - 挂在它下面（`under`）的可选节点，每行「名字 + 状态 + 一个小按钮」。点名字开始：有斜杠命令的发主命令（过期发刷新那条），脚本、
+     人工节点调 FL-05。小按钮没跳过时是「跳过」（FL-03），已跳过时是「恢复」（FL-04）；不另放「开始」按钮。面板节点（求解适配）
+     没有小按钮，点名字去声明了它的插件页（PL-12 `pages[].data.nodes`，代码生成页带 `?node=codegen.solver` 打开求解契约页签），
+     没有这样的页时只显示状态；
+   - 条件节点多一项「这一轮不处理」（对它调 FL-03）。
+   跳过、恢复、「这一轮不处理」之后重取 FL-01。
+5. 只有一个跳页面按钮、下面没有可选节点的节点（发布）不做下拉，点节点名直接去；什么都没有的节点不能点。项目已归档、平台只读维护
+   （输入框不能用）时只留跳页面的节点，别的不展开。
+
+**全部命令菜单（输入框「/」）与 ⌘K（`state/commandMenu.js`）**
+
+6. 输入框打「/」或点「全部命令」打开，每次打开重取 S-18（原来进工作台取一次）。分组、条目和 S-18 一致，组名是节点名；去掉右侧
+   灰字（`description`）和「共 N 条」；`available: false` 的条目不列。
+7. 斜杠后面接着打字按名字筛（不分大小写），没有条目的组不显示；↑↓ 选，回车执行，Esc 只关菜单（不当成打断）；没有匹配时菜单收起，
+   回车按原文发送（S-20 认装了的全部命令）。从按钮打开、框里是别的字时列全部，只能点选，回车照常发框里的字。按键怎么处理由
+   `commandMenu.menuKey` 算，输入框只照做。
+8. 执行发条目的 `target`（`flow.catalogCommand` 拆成 `command`、`text`，带 `display_label`）；从「/」打开的执行后清空输入框。
+9. ⌘K 的命令用同一份 S-18、同一套筛法，组名、条目名和菜单一样；有输入时才列，最多 6 条。
+
+**建议条**
+
+10. 按钮是后端给的节点名或变体名，不拼原因；说明行是 `note`（过期项的「对象有变化」）。会话状态页（chat-states）的示例跟着改。
+
+**其他页面**
+
+11. 资料页「追加分析」改名「追加资料分析」，发 `/ontology-research 追加`，和资料分析节点的变体同一条命令文本、同一个名字。
+12. 场景页「场景模拟」「补齐过期场景」「交互模拟」发命令时带 `display_label`（按钮名），对话里叫按钮名。
+13. 工作台顶栏的「N 份新资料」去掉：后端从批次 3 起不再给 `new_materials` 提示，新资料由导航栏上出现的「增量更新」表达。
+    「全部命令」菜单只剩按钮名，宽度从 440px 收到 260px。
+14. mock：FL-01 节点带 `need`、`nav`、`under`（增量更新 `nav: true`），可选节点的动作最后是「跳过」或「恢复」；FL-03、FL-04 按
+    `need` 处理（条件节点从流程里拿掉、返回 `node: null`，必需节点回 `node_not_skippable`）；S-18 按导航栏节点分组，跟着当前项目的
+    流程算；AB-03 预览按 `need` 算；`routes-resources` 里 `is_revision` 造出来的 `revision_task` 删掉；FL-01 不再带 `new_materials` 提示。
+
 ## 2026-11-18 · 重新提取只盯来源和条目增减（ADR-0102）
 
 端到端实测校验确认后建模仍显示过期、自主构建会重跑提取，用户 11-18 定修过期逻辑。
@@ -1973,3 +2353,9 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
 5. **升级迁移**：节点或步骤的确认记录按另一套 `stale_on` 记的（分类指纹的类别不同；没存分类指纹的老记录按 ADR-0102 之前的定义认），
    第一次计算时按确认那一刻到现在主线上新上游有没有改动来定：没改或找不到那一刻的提交，按新定义重记基线；改了判过期、记下变了的类别。
    结果写回 `flow-state/<项目>.json`，不另做迁移脚本。
+
+**合进节点模型重构后（同日）**：上面第 2、3、5 条说的建模步骤、`slices` 状态随分段一起去掉了，对应落到节点上：
+`core.operation`「提取操作」`stale_on: [research, object_set]`（重构时是 `[object]`），`core.metric` 仍是 `[object_set, operation_set]`，
+「规则」一步已并进指标。老记录的旧定义（`STALE_ON_BEFORE_0102`）按节点认：提取操作 `[object]`，指标 `[object, operation]`；
+拆分迁移（`migrate_split`）带过来的按段记录存着分类指纹，同样走第 5 条。提取操作盯着资料分析，校验接不了手，过期了校验确认过也照推
+（建议条第 2 级、待处理同一判定）；对象只改内容时它不过期。

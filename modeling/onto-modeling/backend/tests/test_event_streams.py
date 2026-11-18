@@ -296,8 +296,10 @@ def test_flow_refresh_sends_only_changed_nodes(env):
     data = envelope["data"]
     assert set(data) == {"flow_hash", "nodes", "slices", "suggestions_changed"}
     assert data["nodes"] and all(set(node) >= {"id", "state", "flags", "progress"} for node in data["nodes"])
-    assert {"id": "core.model", "state": "confirmed"}.items() <= next(
-        node for node in data["nodes"] if node["id"] == "core.model").items()
+    for node_id in ("core.object", "core.operation"):
+        assert {"id": node_id, "state": "confirmed"}.items() <= next(
+            node for node in data["nodes"] if node["id"] == node_id).items()
+    assert data["slices"] == []
     assert len(data["nodes"]) < len(project_events._flow_cache[project_id]["nodes"])
 
 

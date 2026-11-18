@@ -25,8 +25,8 @@ from tests.test_session_host import EXEC, FakeEngine, lock, release, result
 
 TASK = {"task_id", "origin", "title", "state", "percent", "step_label", "conversation_id", "message_id", "exec_id",
         "started_at", "finished_at", "result"}
-COMMAND_ITEM = {"id", "label", "description", "command", "pack", "node_id", "args_schema", "available",
-                "unavailable_reason"}
+COMMAND_ITEM = {"id", "label", "description", "command", "target", "pack", "node_id", "primary", "args_schema",
+                "available", "unavailable_reason"}
 
 
 @pytest.fixture()
@@ -58,16 +58,17 @@ def wait(predicate, timeout: float = 5.0):
     raise AssertionError("等待超时")
 
 
-def test_catalog_lists_assembled_commands_by_business_group(api):
+def test_catalog_lists_assembled_commands_by_navigation_node(api):
     client, _, project_id, _ = api
     catalog = client.get(f"/api/v1/projects/{project_id}/commands/catalog").json()
     items = [item for group in catalog["groups"] for item in group["items"]]
     assert catalog["total"] == len(items) > 5
     assert all(set(item) == COMMAND_ITEM for item in items)
     by_command = {item["command"]: item for item in items}
-    assert by_command["/ontology-extract-object"]["node_id"] == "core.model"
+    assert by_command["/ontology-extract-object"]["node_id"] == "core.object"
+    assert by_command["/ontology-extract-operation"]["node_id"] == "core.operation"
     assert by_command["/ontology-research"]["label"] and by_command["/ontology-research"]["pack"] == "core"
-    assert catalog["groups"][0]["label"] == "建模"
+    assert catalog["groups"][0]["label"] == "资料分析" and catalog["groups"][0]["id"] == "core.research"
 
 
 def test_page_command_returns_task_and_tracks_exec_until_done(api):
@@ -97,8 +98,8 @@ def test_page_command_returns_task_and_tracks_exec_until_done(api):
     assert user["data"]["origin"] == {"kind": "page", "page": "reports", "label": "报告", "task_id": task_id}
     assert user["data"]["command"] == "/ontology-validate"
     assert user["data"]["message_id"] == body["message_id"]
-    # 对话里显示的那条不带命令原文和参数（F4b-paths、端到端验证）：业务名和说明文字
-    assert user["data"]["text"] == "校验 · 运行质量检查\n\n只看规则"
+    # 对话里显示的那条不带命令原文和参数（F4b-paths、端到端验证）：按钮名（节点名就是主命令名）和说明文字
+    assert user["data"]["text"] == "校验\n\n只看规则"
 
 
 def test_page_command_display_text_has_no_workspace_paths(api):
@@ -112,37 +113,27 @@ def test_page_command_display_text_has_no_workspace_paths(api):
     assert "resource/" in wait(lambda: FakeEngine.sent)[0]  # 发给助手的照旧带路径
     messages = client.get(f"/api/v1/projects/{project_id}/conversations/{response.json()['conversation_id']}/messages")
     user = next(item for item in messages.json()["items"] if item["type"] == "message.user")
-    assert user["data"]["text"] == "校验 · 运行质量检查\n\n修复报告 检查报告 里的条目，出处 资料「合成说明」"
+    assert user["data"]["text"] == "校验\n\n修复报告 检查报告 里的条目，出处 资料「合成说明」"
 
 
 def test_suggestion_command_shows_its_business_name_and_titles_the_conversation(api):
-    """点建议条发的命令：气泡和自动标题是「节点 · 按钮叫法」，不是命令原文；动作自带的参数照旧发给助手、不显示。"""
+    """点建议条发的命令：气泡和自动标题是按钮名（名字表认得出时不用页面给的叫法），不是命令原文；动作自带的参数照旧
+    发给助手、不显示。"""
     client, _manager, project_id, _ = api
     FakeEngine.scripts = [[result()]]
     response = client.post(f"/api/v1/projects/{project_id}/commands", json={
         "command": "/ontology-research", "text": "仅基于本地文档", "display_label": "仅本地资料",
         "origin": {"page": "wb-l2", "label": "下一步建议"}})
     assert response.status_code == 202, response.text
-    assert response.json()["task"]["title"] == "助手正在执行「资料分析 · 仅本地资料」"  # 和气泡同一个名字
+    assert response.json()["task"]["title"] == "助手正在执行「资料分析」"  # 和气泡同一个名字
     sent = wait(lambda: FakeEngine.sent)[0]
     assert sent.startswith("/ontology-research") and "仅基于本地文档" in sent
     cid = response.json()["conversation_id"]
     messages = client.get(f"/api/v1/projects/{project_id}/conversations/{cid}/messages").json()
     user = next(item for item in messages["items"] if item["type"] == "message.user")
-    assert user["data"]["text"] == "资料分析 · 仅本地资料" and user["data"]["command"] == "/ontology-research"
+    assert user["data"]["text"] == "资料分析" and user["data"]["command"] == "/ontology-research"
     listed = client.get(f"/api/v1/projects/{project_id}/conversations").json()["items"]
-    assert next(item for item in listed if item["id"] == cid)["title"] == "资料分析 · 仅本地资料"
-
-
-def test_command_display_name_writes_one_name_when_they_coincide():
-    from app.routers.sessions import command_display_name
-
-    item = {"description": "资料分析", "label": "资料分析", "command": "/ontology-research"}
-    assert command_display_name(item) == "资料分析"
-    assert command_display_name(item, "补充资料分析") == "补充资料分析"
-    assert command_display_name(item, "追加分析") == "资料分析 · 追加分析"
-    assert command_display_name({"description": "传播核对", "label": "传播核对"}) == "传播核对"
-    assert command_display_name({"description": "", "label": "整体视图", "command": "/ontology-overview"}) == "整体视图"
+    assert next(item for item in listed if item["id"] == cid)["title"] == "资料分析"
 
 
 @pytest.mark.parametrize("body,code", [
@@ -183,7 +174,7 @@ def test_exec_list_resume_and_abandon(api):
     body = resumed.json()
     assert body["exec"]["state"] == "running" and body["conversation_id"] == "default" and body["message_id"]
     assert wait(lambda: len(FakeEngine.sent) == 2 and FakeEngine.sent)[-1].startswith(
-        "/ontology-extract-object 继续上次没做完的「对象提取」")
+        "/ontology-extract-object 继续上次没做完的「提取对象」")
     wait(lambda: (exec_records.get(project_id, record["id"]) or {}).get("state") == "done")
 
     gone = client.post(f"/api/v1/projects/{project_id}/execs/{record['id']}/abandon")
@@ -231,7 +222,8 @@ def test_conversation_changes_reach_project_stream(api):
 
 
 def test_catalog_maps_node_pack_entry_command_to_its_node(tmp_path, monkeypatch):
-    """节点包只在节点上写 entry.command、没有 commands 映射（V 阶段：/naming-check 落在「其他」，pack 记成 core）。"""
+    """节点包只在节点上写 entry.command、没有 commands 映射（V 阶段：/naming-check 落在「其他」，pack 记成 core）：
+    按节点分组，按钮叫节点名。"""
     (tmp_path / ".claude" / "commands").mkdir(parents=True)
     (tmp_path / ".claude" / "commands" / "naming-check.md").write_text("检查 $ARGUMENTS\n", encoding="utf-8")
     flow = {"nodes": [{"id": "naming.check", "title": "命名一致性检查", "pack": "naming", "section": "required",
@@ -240,5 +232,6 @@ def test_catalog_maps_node_pack_entry_command_to_its_node(tmp_path, monkeypatch)
     monkeypatch.setattr(session_routes.turns, "_flow", lambda root: flow)
     catalog = session_routes.command_catalog(tmp_path)
     item = catalog["groups"][0]["items"][0]
-    assert catalog["groups"][0]["id"] == "required"
-    assert (item["command"], item["node_id"], item["pack"], item["label"]) == ("/naming-check", "naming.check", "naming", "运行命名检查")
+    assert (catalog["groups"][0]["id"], catalog["groups"][0]["label"]) == ("naming.check", "命名一致性检查")
+    assert (item["command"], item["node_id"], item["pack"], item["label"]) == ("/naming-check", "naming.check", "naming",
+                                                                              "命名一致性检查")

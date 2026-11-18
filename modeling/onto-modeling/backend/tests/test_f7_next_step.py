@@ -1,7 +1,7 @@
 """F7 下一步建议（详设 6.10）：规则表从上往下判、命中第一条就停；能显示就能执行；跟着会话状态重算并推送。
 
 - 第 1～4 条（运行中、等你回答、这一轮出错、刚被打断）走真实会话（假引擎），主推、次选都真的点一次接口；
-- 第 5～10 条用装配好的流程直接喂 flow_state.suggest，出来的命令再经 S-20 发一次，全部 2xx；
+- 按流程的几级（第 2～5 级，合入冲突也在这里）用装配好的流程直接喂 flow_state.suggest，出来的命令再经 S-20 发一次，全部 2xx；
 - 打断之后能力升级，「继续「X」」按新版重新执行，不再 409；
 - 看到按钮到点下去之间情况变了：409 suggestion_stale，带回重算后的建议。
 测试数据全部为合成内容。
@@ -163,7 +163,7 @@ def test_interrupted_offers_continue_and_abandon_both_executable(api):
     record = interrupted_exec(client, manager, project_id)
     sug = fl02(client, project_id)
     assert sug["mode"] == "interrupted"
-    assert sug["primary"]["label"] == "继续「操作提取」"
+    assert sug["primary"]["label"] == "继续「提取操作」"
     assert sug["primary"]["action"] == {"type": "resume_exec", "exec_id": record["id"]}
     assert [item["label"] for item in sug["secondary"]] == ["放弃这一步"]
     assert sug["note"].startswith("从「写入操作」接着做")
@@ -190,7 +190,7 @@ def test_continue_after_upgrade_reruns_with_new_version(api):
     assert exec_records.not_resumable_reason(exec_records.get(project_id, record["id"]), root,
                                              model.load_for(root)) == "node_upgraded"
     sug = fl02(client, project_id)
-    assert sug["mode"] == "interrupted" and sug["primary"]["label"] == "继续「操作提取」"
+    assert sug["mode"] == "interrupted" and sug["primary"]["label"] == "继续「提取操作」"
     assert sug["note"].startswith("能力已升级，按新版从头做")
     sent_before = len(FakeEngine.sent)
     response = click(client, project_id, sug["primary"])
@@ -199,7 +199,7 @@ def test_continue_after_upgrade_reruns_with_new_version(api):
     assert body["mode"] == "rerun" and body["replaced"]["id"] == record["id"]
     old = exec_records.get(project_id, record["id"])
     assert old["state"] == "abandoned" and old["replaced_by"] == body["exec"]["id"] != record["id"]
-    assert body["exec"]["command_label"] == "操作提取"
+    assert body["exec"]["command_label"] == "提取操作"
     prompt = FakeEngine.sent[sent_before]
     assert prompt.startswith("/ontology-extract-operation") and "已经保存的修改保留，不要重做" in prompt
     idle(manager, project_id)
@@ -221,19 +221,14 @@ def test_stale_click_returns_fresh_suggestions(api):
     assert error["details"]["suggestions"]["mode"] == "normal"
 
 
-# ---- 第 5～10 条：按流程 ----
+# ---- 按流程（推荐第 2～5 级）----
 
 
 def _suggest(root, states: dict, context: dict, check=None) -> dict:
     flow = model.load_for(root)
     module = model.flow_state(root)
-    assert getattr(module, "SUGGEST_RULES", 0) >= 5
+    assert getattr(module, "SUGGEST_RULES", 0) >= 9
     return module.suggest(flow, states, context, check)
-
-
-# 建模的下一步（F8 起只有「全部」一段，不带分段）
-FULL_NEXT = {"slice_id": "all", "slice_name": "全部", "step": "object", "label": "提取对象",
-             "command": "/ontology-extract-object", "sliced": False}
 
 
 def _states(root, **overrides) -> dict:
@@ -244,114 +239,106 @@ def _states(root, **overrides) -> dict:
 
 
 def test_flow_rules_in_order(api):
+    """推荐五级在项目装配好的流程上（每级的表驱动用例在 test_node_names_and_levels）：命中就停，一次只推一个节点。"""
     _, _, _, root = api
-    fresh = _states(root, core_research="ready", core_model="not_ready", core_validate="not_ready",
-                    core_publish="not_ready")
-    # 9：主线下一个必经步骤（资料分析的几个入口）
+    fresh = _states(root, core_research="ready", core_object="not_ready", core_operation="not_ready",
+                    core_validate="not_ready", core_publish="not_ready")
+    # 第 3 级：第一个没做完的必需节点（资料分析的几个入口）
     mainline = _suggest(root, fresh, {"blueprint": {"state": "none"}})
     assert mainline["mode"] == "normal" and mainline["primary"]["id"].startswith("core.research#")
     assert mainline["note"] is None
-    # 动作的条件 when：还没有资料分析报告时不出「追加分析」，有了才出
+    # 动作的条件 when：还没有资料分析报告时不出「追加资料分析」，有了才出
     no_report = _suggest(root, fresh, {"blueprint": {"state": "none"}, "probes": {"research_report": False}})
     assert [item["label"] for item in items(no_report)] == ["资料分析"]
     with_report = _suggest(root, fresh, {"blueprint": {"state": "none"}, "probes": {"research_report": True}})
-    assert [item["label"] for item in items(with_report)] == ["资料分析", "追加分析"]
-    # 5：合入冲突，其余按 6～10 补齐
+    assert [item["label"] for item in items(with_report)] == ["资料分析", "追加资料分析"]
+    # 第 1 级：合入冲突，命中就停（不再补主线下一步）
     conflict = _suggest(root, fresh, {"blueprint": {"state": "none"}, "changeset": {"id": "cs-1", "state": "conflict"}})
-    assert conflict["primary"]["label"] == "处理冲突"
-    assert [item["id"] for item in conflict["secondary"]] == [item["id"] for item in items(mainline)][:2]
-    # 6：目标问题没答：主推去回答，后面跟主线下一步（F8：蓝图草案不用确认，不拦着往下建）
-    goal = _suggest(root, _states(root, core_research="confirmed", core_model="not_ready"),
-                    {"blueprint": {"state": "draft", "goal_pending": True}, "slice_next": FULL_NEXT})
-    assert [item["label"] for item in items(goal)][:2] == ["回答目标问题", "提取对象"]
-    draft = _suggest(root, _states(root, core_research="confirmed", core_model="not_ready"),
-                     {"blueprint": {"state": "draft"}, "slice_next": FULL_NEXT})
+    assert conflict["primary"]["label"] == "处理冲突" and conflict["secondary"] == []
+    # 第 1 级：目标问题没答，和「去回答」同级，命中就停；没有目标问题时照常推下一步
+    modeling = _states(root, core_research="confirmed", core_object="ready", core_operation="not_ready")
+    goal = _suggest(root, modeling, {"blueprint": {"state": "draft", "goal_pending": True}})
+    assert [item["label"] for item in items(goal)] == ["回答目标问题"]
+    draft = _suggest(root, modeling, {"blueprint": {"state": "draft"}})
     assert draft["primary"]["label"] == "提取对象"
-    # 7：过期的步骤，按钮写清哪类变了、刷新哪一段哪一步（不再另起说明行）
-    stale_step = {"slice_id": "s1", "slice_name": "补货", "step": "rule", "step_label": "规则", "label": "提取规则",
-                  "command": "/ontology-extract-rule-metric", "sliced": True, "upstream": "对象、操作"}
-    second = {**stale_step, "slice_id": "s2", "slice_name": "退货"}
-    # 规则是可选的补抽：后面的校验还会跑（跑过、能跑、建模没做完还不能跑）就交给校验，不推补抽（端到端实测：规则与指标
-    # 提取补了回链，「规则」过期后建议条推的正是刚跑完的同一条命令）；没有能接手的核对节点时照旧推刷新
+    assert draft["primary"]["action"] == {"type": "send", "text": "/ontology-extract-object",
+                                          "command": "/ontology-extract-object"}
+    # 过期的节点：按钮叫节点名，哪类变了写在说明行。可选的（指标）后面的校验还会跑就交给校验，不推（ADR-0090）；
+    # 必需节点都做完、没有能接手的核对节点时，在第 4 级推
+    upstream = {"stale_upstream": {"core.metric": "对象、操作"}}
     for later in ("ready", "not_ready"):
-        deferred = _suggest(root, _states(root, core_model="stale", core_validate=later),
-                            {"blueprint": {"state": "confirmed"}, "slice_stale": [stale_step, second]})
+        deferred = _suggest(root, _states(root, core_metric="stale", core_validate=later),
+                            {"blueprint": {"state": "confirmed"}, **upstream})
         assert not any(item["id"].startswith("refresh:") for item in items(deferred))
-    stale = _suggest(root, _states(root, core_model="stale", core_validate="skipped"),
-                     {"blueprint": {"state": "confirmed"}, "slice_stale": [stale_step, second]})
-    assert [item["label"] for item in items(stale)] == ["对象、操作有变化，刷新「补货 · 规则」", "对象、操作有变化，刷新「退货 · 规则」"]
-    assert stale["primary"]["action"] == {"type": "send", "text": "", "command": "/ontology-extract-rule-metric",
-                                          "args": {"slice": "s1"}}
-    assert stale["note"] is None
-    # 必经的步骤（操作）过期、校验没跑过：照旧推刷新（新增对象可能要补提取操作，校验补不出来）
-    op_step = {**stale_step, "step": "operation", "step_label": "操作", "label": "提取操作",
-               "command": "/ontology-extract-operation", "upstream": "对象"}
-    required = _suggest(root, _states(root, core_model="stale", core_validate="ready"),
-                        {"blueprint": {"state": "confirmed"}, "slice_stale": [op_step]})
-    assert items(required)[0]["label"] == "对象有变化，刷新「补货 · 操作」"
+    stale = _suggest(root, _states(root, core_metric="stale", core_validate="skipped"),
+                     {"blueprint": {"state": "confirmed"}, **upstream})
+    assert [item["label"] for item in items(stale)] == ["提取规则与指标"]
+    assert stale["primary"]["action"] == {"type": "send", "text": "/ontology-extract-rule-metric",
+                                          "command": "/ontology-extract-rule-metric"}
+    assert stale["note"] == "对象、操作有变化"
+    # 必需的节点（提取操作）过期、校验没跑过：第 2 级推它（新增对象可能要补提取操作，校验补不出来）
+    required = _suggest(root, _states(root, core_operation="stale", core_validate="ready"),
+                        {"blueprint": {"state": "confirmed"}, "stale_upstream": {"core.operation": "对象清单"}})
+    assert (items(required)[0]["label"], required["note"]) == ("提取操作", "对象清单有变化")
+    assert items(required)[0]["action"]["command"] == "/ontology-extract-operation"
     whole = _suggest(root, _states(root, core_validate="stale"), {"stale_upstream": {"core.validate": "对象、操作"}})
-    assert whole["primary"]["label"] == "对象、操作有变化，刷新校验" and whole["note"] is None
+    assert (whole["primary"]["label"], whole["note"]) == ("校验", "对象、操作有变化")
     unknown = _suggest(root, _states(root, core_validate="stale"), {})
-    assert unknown["primary"]["label"] == "刷新校验"  # 说不清哪类变了（老记录）时只写刷新什么
-    # 7 不推上游：后面已确认的校验能核对并修复同一批改动（stale_on 盖住、写入范围盖住）。指标（盯对象、操作清单）
-    # 过期、校验已确认 → 交给校验，主线往下走。ADR-0102 起「操作」一步只在资料变了、对象有增减时过期，这两种校验
-    # 都补不出来，校验已确认也照旧推刷新；资料变了照旧推刷新建模；校验也过期（改动在校验之后）时两个都推
-    op_step = {"slice_id": "all", "slice_name": "全部", "step": "operation", "step_label": "操作",
-               "command": "/ontology-extract-operation", "sliced": False, "upstream": "对象清单"}
-    checked = _suggest(root, _states(root, core_model="confirmed", core_metric="stale", trace_trace="ready",
-                                     core_publish="not_ready"), {"stale_upstream": {"core.metric": "对象清单、操作清单"}})
+    assert (unknown["primary"]["label"], unknown["note"]) == ("校验", "前面的内容有变化")  # 老记录说不清哪类变了
+    # 不推上游：后面已确认的校验能核对并修复同一批改动（stale_on 盖住、写入范围盖住）。指标（盯对象、操作清单）过期、
+    # 校验已确认 → 交给校验，主线往下走。ADR-0102 起提取操作只在资料变了、对象有增减时过期，这两种校验都补不出来，
+    # 校验已确认也照旧推；资料变了（校验不看资料）照旧推提取对象；两个都过期时只推流程里靠前的那个
+    checked = _suggest(root, _states(root, core_metric="stale", trace_trace="ready", core_publish="not_ready"),
+                       {"stale_upstream": {"core.metric": "对象清单、操作清单"}})
     assert not any(item["id"].startswith("refresh:") for item in items(checked))
     assert checked["primary"]["id"].startswith("trace.trace")
-    added = _suggest(root, _states(root, core_model="stale", trace_trace="ready", core_publish="not_ready"),
-                     {"slice_stale": [op_step]})
-    assert items(added)[0]["id"] == "refresh:core.model:all:operation"
-    obj_step = {**op_step, "step": "object", "step_label": "对象", "command": "/ontology-extract-object", "upstream": "资料"}
-    research = _suggest(root, _states(root, core_model="stale"), {"slice_stale": [obj_step]})
-    assert research["primary"]["id"] == "refresh:core.model:all:object"
-    both = _suggest(root, _states(root, core_model="stale", core_validate="stale"),
-                    {"slice_stale": [op_step], "stale_upstream": {"core.validate": "对象、操作"}})
-    assert [item["id"] for item in items(both)] == ["refresh:core.model:all:operation", "refresh:core.validate"]
-    # 7 不出：限定范围的包这一轮进行中（范围限定生效），传播交给那一轮的核对，不推整段重新提取（会写范围外的条目）
-    confined = _suggest(root, _states(root, core_model="stale", core_validate="ready", core_publish="not_ready"),
-                        {"slice_stale": [stale_step], "confine_active": True})
+    added = _suggest(root, _states(root, core_operation="stale", trace_trace="ready", core_publish="not_ready"),
+                     {"stale_upstream": {"core.operation": "对象清单"}})
+    assert (items(added)[0]["id"], added["note"]) == ("refresh:core.operation", "对象清单有变化")
+    research = _suggest(root, _states(root, core_object="stale"), {"stale_upstream": {"core.object": "资料"}})
+    assert research["primary"]["id"] == "refresh:core.object"
+    both = _suggest(root, _states(root, core_operation="stale", core_validate="stale"),
+                    {"stale_upstream": {"core.operation": "对象清单", "core.validate": "对象、操作"}})
+    assert [item["id"] for item in items(both)] == ["refresh:core.operation"]
+    # 范围限定生效（限定范围的包这一轮进行中）时不推过期的，传播交给那一轮的核对
+    confined = _suggest(root, _states(root, core_operation="stale", core_validate="ready", core_publish="not_ready"),
+                        {"confine_active": True})
     assert not any(item["id"].startswith("refresh:") for item in items(confined))
     assert confined["primary"]["id"].startswith("core.validate")
     # 命令停下来等你在对话里打字回复：不推别的命令（点了会把命令丢在半路），只留说明；有确认卡时照旧主推去回答
-    waiting = _suggest(root, _states(root, core_model="stale"),
-                       {"slice_stale": [stale_step], "awaiting_reply": {"id": "ex-1", "label": "校验"}})
+    waiting = _suggest(root, _states(root, core_operation="stale"),
+                       {"awaiting_reply": {"id": "ex-1", "label": "校验"}})
     assert waiting["primary"] is None and waiting["secondary"] == []
     assert waiting["note"] == "「校验」在等你回复上面的问题"
-    asked = _suggest(root, _states(root, core_model="stale"),
+    asked = _suggest(root, _states(root, core_operation="stale"),
                      {"awaiting_reply": {"id": "ex-1", "label": "校验"}, "question": {"id": "q1", "kind": "question"}})
     assert asked["mode"] == "waiting_decision"
-    # 8：报告里还有待处理的问题
-    report = _suggest(root, _states(root), {"stage": "校验待审阅"})
-    assert report["primary"]["label"] == "继续校验"
-    # 9（按段）：带段名
-    sliced = _suggest(root, _states(root, core_model="running"), {
+    # 报告里还有待处理的问题：校验没完成，就是第 3 级的「校验」（不再有写死的「继续校验」）
+    report = _suggest(root, _states(root, core_validate="ready", trace_trace="not_ready", core_publish="not_ready"),
+                      {"stage": "校验待审阅"})
+    assert [item["label"] for item in items(report)] == ["校验"]
+    # 提取操作在跑时建议条为空；对象做完、操作还没做时推提取操作（上下文里老的 slice_next 不再起作用）
+    running = _suggest(root, _states(root, core_operation="running"), {
         "blueprint": {"state": "confirmed"},
         "slice_next": {"slice_id": "s1", "slice_name": "补货", "step": "operation", "label": "提取操作",
                        "command": "/ontology-extract-operation", "sliced": True}})
-    sliced_model = _suggest(root, _states(root, core_model="not_ready"), {
-        "blueprint": {"state": "confirmed"},
-        "slice_next": {"slice_id": "s1", "slice_name": "补货", "step": "operation", "label": "提取操作",
-                       "command": "/ontology-extract-operation", "sliced": True}})
-    assert sliced["mode"] == "normal"
-    assert sliced_model["primary"]["label"] == "提取操作「补货」"
-    # 10：必经都做完
+    assert running["mode"] == "normal" and running["primary"] is None
+    next_operation = _suggest(root, _states(root, core_operation="ready"), {"blueprint": {"state": "confirmed"}})
+    assert next_operation["primary"]["label"] == "提取操作"
+    # 全部做完：不显示（不再推写死的「查看整体视图」「扫描脚本候选」）
     done = _suggest(root, _states(root), {})
-    assert done["primary"]["label"] == "查看整体视图"
-    # 能执行的检查：整条规则都不能执行时往下一条判
-    blocked = _suggest(root, _states(root, core_model="stale"), {"slice_stale": [stale_step], "stage": "校验待审阅"},
+    assert done["primary"] is None and done["secondary"] == []
+    # 能执行的检查：选中的节点此刻都不能执行时建议条为空，不越过它推别的
+    blocked = _suggest(root, _states(root, core_metric="stale", core_validate="skipped"), {"stage": "校验待审阅"},
                        check=lambda action: action.get("command") != "/ontology-extract-rule-metric")
-    assert blocked["primary"]["label"] == "继续校验"
+    assert blocked["primary"] is None
 
 
 def test_handed_down_matches_rule_7(api):
     """待处理和建议条第 7 条用同一个判定（flow_state.handed_down）。
 
-    校验已确认时指标、规则补抽过期交给它，不要你刷新；资料变了（对象一步过期）、对象有增减（操作一步过期，ADR-0102）、
-    校验没跑过时要你刷新。按段的节点要过期的每一步都交出去才算。"""
+    校验已确认时指标过期交给它，不要你刷新；资料变了（提取对象过期）、对象有增减（提取操作过期，ADR-0102）、
+    校验没跑过时要你刷新。老调用方传的按段参数不再起作用。"""
     _, _, _, root = api
     flow = model.load_for(root)
     module = model.flow_state(root)
@@ -361,36 +348,37 @@ def test_handed_down_matches_rule_7(api):
     def state_of(**overrides):
         return {node_id: item["state"] for node_id, item in _states(root, **overrides).items()}
 
-    op_step = {"slice_id": "all", "step": "operation"}
-    obj_step = {"slice_id": "all", "step": "object"}
-    rule_step = {"slice_id": "all", "step": "rule"}
-    checked = state_of(core_model="stale", core_metric="stale")
-    assert module.handed_down(by_id["core.model"], nodes, checked, [rule_step])
-    assert not module.handed_down(by_id["core.model"], nodes, checked, [op_step, rule_step])
+    checked = state_of(core_operation="stale", core_metric="stale")
+    assert not module.handed_down(by_id["core.operation"], nodes, checked)  # 盯资料和对象清单，校验补不出来
     assert module.handed_down(by_id["core.metric"], nodes, checked)
-    assert not module.handed_down(by_id["core.model"], nodes, checked, [op_step, obj_step])
-    unchecked = state_of(core_model="stale", core_validate="ready")
-    assert not module.handed_down(by_id["core.model"], nodes, unchecked, [op_step])
-    # 可选的一步（规则）：后面的校验还会跑就交给它
-    assert module.handed_down(by_id["core.model"], nodes, unchecked, [rule_step])
-    assert not module.handed_down(by_id["core.model"], nodes, checked, [])
+    assert not module.handed_down(by_id["core.object"], nodes, state_of(core_object="stale"))
+    unchecked = state_of(core_operation="stale", core_metric="stale", core_validate="ready")
+    assert not module.handed_down(by_id["core.operation"], nodes, unchecked)
+    # 可选的（指标）：后面的校验还会跑就交给它
+    assert module.handed_down(by_id["core.metric"], nodes, unchecked)
+    old = [{"slice_id": "all", "step": "operation"}]
+    assert module.handed_down(by_id["core.metric"], nodes, checked, old)
+    assert not module.handed_down(by_id["core.operation"], nodes, checked, old)
 
 
 def test_flow_rule_commands_are_accepted_by_the_api(api):
-    """第 5～10 条给出的命令按建议条的方式发一次（S-20，带 from_suggestion），都收下（2xx）。"""
+    """按流程给出的命令按建议条的方式发一次（S-20，带 from_suggestion），都收下（2xx）。"""
     client, manager, project_id, root = api
-    stale_step = {"slice_id": "all", "slice_name": "全部", "step": "rule", "step_label": "规则", "label": "提取规则",
-                  "command": "/ontology-extract-rule-metric", "sliced": False, "upstream": "对象、操作"}
-    fresh = _states(root, core_research="ready", core_model="not_ready", core_validate="not_ready",
-                    core_publish="not_ready")
+    fresh = _states(root, core_research="ready", core_object="not_ready", core_operation="not_ready",
+                    core_validate="not_ready", core_publish="not_ready")
     produced = [
         _suggest(root, fresh, {"blueprint": {"state": "none"}, "changeset": {"id": "cs-1", "state": "conflict"}}),
-        _suggest(root, _states(root, core_research="confirmed", core_model="not_ready"),
-                 {"blueprint": {"state": "draft", "goal_pending": True}, "slice_next": FULL_NEXT}),
-        _suggest(root, _states(root, core_model="stale"), {"slice_stale": [stale_step]}),
-        _suggest(root, _states(root), {"stage": "校验待审阅"}),
+        _suggest(root, _states(root, core_research="confirmed", core_object="ready", core_operation="not_ready"),
+                 {"blueprint": {"state": "draft", "goal_pending": True}}),
+        _suggest(root, _states(root, core_metric="stale", core_validate="skipped"),
+                 {"stale_upstream": {"core.metric": "对象、操作"}}),
+        _suggest(root, _states(root, core_operation="stale", core_validate="ready"),
+                 {"stale_upstream": {"core.operation": "对象"}}),
+        _suggest(root, _states(root, core_validate="ready", trace_trace="not_ready", core_publish="not_ready"),
+                 {"stage": "校验待审阅"}),
         _suggest(root, fresh, {"blueprint": {"state": "none"}}),
-        _suggest(root, _states(root), {}),
+        _suggest(root, _states(root, trace_trace="ready", core_publish="not_ready"), {}),
+        _suggest(root, _states(root, diagram_flowchart="ready"), {}),
     ]
     check = next_step.allowed
     for sug in produced:

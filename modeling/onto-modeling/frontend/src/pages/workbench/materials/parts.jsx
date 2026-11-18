@@ -30,10 +30,12 @@ export function AnchorText({ text, anchors }) {
   });
 }
 
-// 页面按钮发命令到对话（S-20）：对话里出现一条「来自…」的消息
-export async function pageCommand(api, pid, { command, args, text, page = 'wb-materials', label = '资料地图', done }) {
+// 页面按钮发命令到对话（S-20）：对话里出现一条「来自…」的消息；给了 displayLabel（按钮名）时对话里叫这个名字、不显示 text
+export async function pageCommand(api, pid, {
+  command, args, text, displayLabel, page = 'wb-materials', label = '资料地图', done,
+}) {
   try {
-    await api.sendCommand(pid, { command, args, text, origin: { page, label } });
+    await api.sendCommand(pid, { command, args, text, ...(displayLabel ? { display_label: displayLabel } : {}), origin: { page, label } });
     if (done) toast(done, 'send');
     return true;
   } catch (e) {

@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from ..flow import need as node_need
 from . import manifest as mf
 from .manifest import Manifest, ManifestError
 from .repository import PackRepository, pack_files, symlinks, verify_checksums
@@ -267,7 +268,8 @@ def in_scope(target: str, patterns: list[str]) -> bool:
 
 
 def _node_problems(directory: Path, manifest: Manifest) -> tuple[list[str], list[str]]:
-    """节点声明：写入范围不碰受保护目录；入口命令确实存在（详设 6.9）。"""
+    """节点声明：写入范围不碰受保护目录；主命令（actions 里第一个带 command 或 page 的动作，老包只写了 entry 的按 entry）
+    是本包的命令（详设 6.9）。"""
     protected, missing_commands = [], []
     commands = {f"/{name}" for name in declared_names(manifest, directory)["commands"]}
     nodes, broken = _declared_nodes(directory, manifest)
@@ -278,9 +280,9 @@ def _node_problems(directory: Path, manifest: Manifest) -> tuple[list[str], list
         for label, target in _output_paths(node):
             if not in_scope(target, _scope_patterns(node)):
                 protected.append(f"{rel}: {label} {target} 不在节点的写入范围里，或碰到受保护目录")
-        entry = (node.get("entry") or {}).get("command")
-        if entry and entry.split()[0] not in commands:
-            missing_commands.append(f"{rel}: {entry}")
+        command = node_need.primary_command(node_need.normalize_node(node))
+        if command and command.split()[0] not in commands:
+            missing_commands.append(f"{rel}: 主命令 {command} 不是本包的命令")
     # 节点钩子（详设 6.4）的命令也要是本包的
     for hook in (_flow_data(directory, manifest) or {}).get("hooks") or []:
         command = str((hook or {}).get("command") or "") if isinstance(hook, dict) else ""
@@ -292,7 +294,6 @@ def _node_problems(directory: Path, manifest: Manifest) -> tuple[list[str], list
 # 节点包（kind: node，详设 6.9；用户 2026-11-02 定：能力包的特例）只带节点声明和节点要用的命令、子代理、
 # 脚本、模板（参考指南随子代理一起允许）；hooks、skill、页面、产物登记、界面代码等一律不能带
 NODE_PACK_ALLOWED = ("commands", "agents", "scripts", "templates", "reference", "nodes", "flow", "readme", "docs")
-NODE_PLACEMENTS = ("step", "branch", "gate", "on_demand")
 
 
 def _flow_probes(directory: Path, manifest: Manifest) -> set[str]:
@@ -314,7 +315,8 @@ def _core_probes(repository: PackRepository | None) -> set[str] | None:
 
 def _node_pack_problems(directory: Path, manifest: Manifest, files: list[str],
                         repository: PackRepository | None) -> list[str]:
-    """kind: node 的附加检查：只带允许的组成；节点挂法、编号、四类节点各自的声明；不新增产物类别。"""
+    """kind: node 的附加检查：只带允许的组成；节点编号、锚点、四类节点各自的声明；不新增产物类别。
+    什么时候要做（need）的写法所有包都查（`_need_problems`）：第三方包也能声明必需节点。"""
     from ..flow.state import KIND_DIRS
 
     problems = []
@@ -340,10 +342,9 @@ def _node_pack_problems(directory: Path, manifest: Manifest, files: list[str],
         where = f"{rel}"
         if not node_id.startswith(f"{manifest.name}."):
             problems.append(f"{where}: 节点编号要以 {manifest.name}. 开头")
-        placement = node.get("placement")
-        if placement not in NODE_PLACEMENTS:
-            problems.append(f"{where}: 挂法只能是 {' / '.join(NODE_PLACEMENTS)}（主线节点只能随基础建模能力发布）")
-        if placement != "on_demand" and not (node.get("after") or node.get("before")):
+        # 旧写法的按需节点（on_demand）随时可跑，不用锚点
+        on_demand = "need" not in node and node_need.legacy_need(node)[1]
+        if not on_demand and not (node.get("after") or node.get("before")):
             problems.append(f"{where}: 要写锚点 after 或 before")
         for key in ("stale_on", "requires"):
             for item in node.get(key) or []:
@@ -360,12 +361,12 @@ def _node_pack_problems(directory: Path, manifest: Manifest, files: list[str],
                 if probe not in probes and (core_probes is not None and probe not in core_probes):
                     problems.append(f"{where}: 动作的条件用到的探针 {probe} 没有声明")
         kind = node.get("kind", "agent")
-        entry = str((node.get("entry") or {}).get("command") or "").split(" ")[0]
+        command = node_need.primary_command(node_need.normalize_node(node)).split(" ")[0]
         if kind == "agent":
-            if not entry:
-                problems.append(f"{where}: agent 节点要有入口命令 entry.command")
-            elif entry not in own_commands:
-                problems.append(f"{where}: 入口命令 {entry} 不是本包声明的命令")
+            if not command:
+                problems.append(f"{where}: agent 节点的主命令（actions 里第一个动作）要是一条 / 开头的命令")
+            elif command not in own_commands:
+                problems.append(f"{where}: 主命令 {command} 不是本包声明的命令")
         elif kind == "script":
             script = node.get("script") if isinstance(node.get("script"), dict) else {}
             if str(script.get("name") or "") not in own_scripts:
@@ -424,14 +425,36 @@ def _confine_problems(directory: Path, manifest: Manifest, spec) -> list[str]:
     return []
 
 
+def _need_problems(directory: Path, manifest: Manifest, flow_data: dict) -> tuple[list[str], list[str]]:
+    """节点的 need（required、optional、{when: <条件>}）写法；分段遗留的字段装配时不起作用，给警告。返回（失败项, 警告项）。"""
+    nodes, _ = _declared_nodes(directory, manifest)
+    hard = [problem for _, node in nodes for problem in node_need.need_problems(node)]
+    soft = [f"{rel}: {key} 不再起作用" for rel, node in nodes for key in node_need.LEGACY_DROPPED if key in node]
+    soft += [f"flow.yaml: {key} 不再起作用" for key in node_need.LEGACY_DROPPED if key in flow_data]
+    return hard, soft
+
+
+def _autobuild_item(directory: Path, manifest: Manifest) -> dict | None:
+    """第三方包哪些节点会被自主构建执行：没写 autobuild 的默认不进（自主构建无人值守，第三方包的输入不可信），
+    写了 `autobuild: true` 的列出来给审核的人看。包里没有节点时没有这一项。"""
+    nodes, _ = _declared_nodes(directory, manifest)
+    if not nodes:
+        return None
+    opted = [f"{node.get('id')}（{node.get('title') or node.get('id')}）" for _, node in nodes
+             if node.get("autobuild") is True]
+    if opted:
+        return _check("autobuild", "自主构建会执行的节点", "warn", "自主构建会执行：" + "、".join(opted[:10]))
+    return _check("autobuild", "自主构建会执行的节点", "pass", "没有：节点没写 autobuild: true 时自主构建不做")
+
+
 def _activation_problems(directory: Path, manifest: Manifest, flow_data: dict) -> list[str]:
-    """flow.yaml 顶层的 activation 和节点的 visible_if: activated、preempt（ADR-0091）。"""
+    """flow.yaml 顶层的 activation 和按触发出现的节点 `need: {when: activated}`（旧写法 visible_if: activated，ADR-0091）。"""
     nodes, _ = _declared_nodes(directory, manifest)
     spec = flow_data.get("activation")
     problems = []
     if spec in (None, {}):
-        problems += [f"节点 {node.get('id')} 写了 visible_if: activated，但没有声明 activation"
-                     for _, node in nodes if node.get("visible_if") == "activated"]
+        problems += [f"节点 {node.get('id')} 写了 need: {{when: activated}}，但没有声明 activation"
+                     for _, node in nodes if node_need.when_of(node) == "activated"]
     elif not isinstance(spec, dict) or set(spec) != {"event", "requires", "session"}:
         return ["activation 要写 event、requires、session，不能有别的"]
     else:
@@ -447,8 +470,6 @@ def _activation_problems(directory: Path, manifest: Manifest, flow_data: dict) -
                     for _, node in nodes for item in node.get("produces") or []]
         if not _produced_file(rel, spec["session"], produces):
             problems.append(f"activation.session 要是本包节点 produces 里的具体文件：{spec['session']}")
-    problems += [f"节点 {node.get('id')} 的 preempt 只能用在 visible_if: activated 的节点上"
-                 for _, node in nodes if node.get("preempt") and node.get("visible_if") != "activated"]
     return problems
 
 
@@ -553,8 +574,15 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
 
     protected, missing_entry = _node_problems(directory, manifest)
     checks.append(_check("write_scope", "写入范围不碰受保护目录", "fail" if protected else "pass", "；".join(protected[:10])))
-    checks.append(_check("node_entry", "节点入口命令存在", "fail" if missing_entry else "pass", "；".join(missing_entry[:10])))
+    checks.append(_check("node_entry", "节点主命令是本包的命令", "fail" if missing_entry else "pass", "；".join(missing_entry[:10])))
     flow_data = _flow_data(directory, manifest) or {}
+    need_hard, need_soft = _need_problems(directory, manifest, flow_data)
+    if need_hard or need_soft:
+        checks.append(_check("node_need", "节点的 need 写法正确", "fail" if need_hard else "warn",
+                             "；".join((need_hard or need_soft)[:10])))
+    autobuild = None if official or manifest.name == "core" else _autobuild_item(directory, manifest)
+    if autobuild is not None:
+        checks.append(autobuild)
     if "confine" in flow_data:
         confine = _confine_problems(directory, manifest, flow_data["confine"])
         checks.append(_check("confine", "范围限定声明正确", "fail" if confine else "pass", "；".join(confine)))

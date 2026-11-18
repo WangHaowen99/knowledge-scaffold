@@ -78,12 +78,14 @@ test('行状态、筛选、计数、统计卡文字', () => {
 });
 
 test('页面命令：只发 S-20，文字就是对话里那句', () => {
-  assert.deepEqual(batchCommand(23), { command: '/ontology-trace-batch', args: { scope: 'all' }, text: '批量推演 23 个场景' });
+  // label 是按钮名，作为 display_label 发：子文档命令在对话里叫按钮名，不退回节点名「场景模拟」
+  assert.deepEqual(batchCommand(23), { command: '/ontology-trace-batch', args: { scope: 'all' }, text: '批量推演 23 个场景', label: '场景模拟' });
   assert.deepEqual(refreshCommand([row('s-03', 'stale'), row('s-04', 'stale'), row('s-06', 'stale')]).text, '补齐 3 个过期场景');
   // 后端命令名（contract-changes B4c 映射表）：补齐过期也是 /ontology-trace-batch，只带 keys
   assert.deepEqual(refreshCommand([row('s-03', 'stale')]).command, '/ontology-trace-batch');
   assert.deepEqual(refreshCommand([row('s-03', 'stale')]).args, { keys: ['s-03'] });
-  assert.deepEqual(walkCommand({ key: 's-21', title: '门店申请严于标准，按门店执行' }), { command: '/ontology-trace-interactive', args: { scenario: 's-21' }, text: '交互模拟「门店申请严于标准，按门店执行」' });
+  assert.equal(refreshCommand([row('s-03', 'stale')]).label, '补齐过期场景');
+  assert.deepEqual(walkCommand({ key: 's-21', title: '门店申请严于标准，按门店执行' }), { command: '/ontology-trace-interactive', args: { scenario: 's-21' }, text: '交互模拟「门店申请严于标准，按门店执行」', label: '交互模拟' });
   assert.equal(mockCommand().text, '按场景补生成示例数据');
   const rows = [row('a', 'pass'), row('b', 'fail')];
   assert.equal(walkTarget(rows, 'a').key, 'a');

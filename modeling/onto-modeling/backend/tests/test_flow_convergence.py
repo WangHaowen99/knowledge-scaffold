@@ -1,7 +1,7 @@
 """建议条能把建模带到发布：用户一直点主推，不会在两步之间来回兜圈子（端到端实测后补的模拟）。
 
 每条命令按节点声明的写入范围改主线上的条目、合入时确认这个节点（和变更集合入一样），再按建议条取下一步；
-中途绕道跑一次旁支命令（规则与指标提取、代码生成、追加资料分析），之后照样一直点主推。走到「去发布」算通过。
+中途绕道跑一次旁支命令（规则与指标提取、代码生成、追加资料分析），之后照样一直点主推。走到「发布」算通过。
 
 测试数据全部为合成内容。
 """
@@ -24,16 +24,16 @@ FILES = {
     "testcase": "ontology/testcase/受理申请.md",
     "scripts": "ontology/scripts/受理申请.py",
 }
-# 命令 → (节点, 建模步骤, 这条命令总会改的类别)
+# 命令 → (节点, 这条命令总会改的类别)
 COMMANDS = {
-    "/ontology-research": ("core.research", None, ["research"]),
-    "/ontology-extract-object": ("core.model", "object", ["object"]),
-    "/ontology-extract-operation": ("core.model", "operation", ["operation", "rule", "metric"]),
-    "/ontology-extract-rule-metric": ("core.metric", None, ["rule", "metric"]),
-    "/ontology-validate": ("core.validate", None, ["report"]),
-    "/ontology-trace": ("trace.trace", None, ["testcase"]),
-    "/ontology-codegen-scan": ("codegen.codegen", None, ["scripts"]),
-    "/ontology-codegen": ("codegen.codegen", None, ["scripts"]),
+    "/ontology-research": ("core.research", ["research"]),
+    "/ontology-extract-object": ("core.object", ["object"]),
+    "/ontology-extract-operation": ("core.operation", ["operation", "rule", "metric"]),
+    "/ontology-extract-rule-metric": ("core.metric", ["rule", "metric"]),
+    "/ontology-validate": ("core.validate", ["report"]),
+    "/ontology-trace": ("trace.trace", ["testcase"]),
+    "/ontology-codegen-scan": ("codegen.codegen", ["scripts"]),
+    "/ontology-codegen": ("codegen.codegen", ["scripts"]),
 }
 
 
@@ -61,14 +61,14 @@ class Project:
             main_write(self.root, FILES[kind], f"# 合成\n\n[[门店]]{mark}")
 
     def run(self, command: str) -> None:
-        node, step, kinds = COMMANDS[command]
+        node, kinds = COMMANDS[command]
         for kind in kinds + self.extra.get(command, []):
             self.write(kind)
-        wiring._confirm_nodes(self.project_id, [node], {"slice_steps": [["all", step]]} if step else {})
+        wiring._confirm_nodes(self.project_id, [node], {})
 
 
 def follow(project: Project, *, detour: tuple[int, str] | None = None, limit: int = 20) -> list[str]:
-    """一直点主推，直到「去发布」；返回点过的按钮。绕道 (第几步之前, 命令)。"""
+    """一直点主推，直到「发布」；返回点过的按钮。绕道 (第几步之前, 命令)。"""
     clicked: list[str] = []
     for _ in range(limit):
         if detour and len(clicked) == detour[0]:
@@ -93,7 +93,7 @@ EXTRA = {"/ontology-validate": ["object", "operation"], "/ontology-extract-rule-
 
 def test_mainline_reaches_publish(env):
     clicked = follow(Project(env, EXTRA))
-    assert clicked == ["资料分析", "提取对象", "提取操作", "运行质量检查", "批量验证", "去发布"]
+    assert clicked == ["资料分析", "提取对象", "提取操作", "校验", "场景模拟", "发布"]
 
 
 @pytest.mark.parametrize("at", [1, 2, 3, 4, 5])
@@ -101,5 +101,5 @@ def test_mainline_reaches_publish(env):
 def test_detour_still_reaches_publish(env, at, command):
     """原来规则与指标提取补了对象的关联之后，建议条在「刷新操作」「刷新指标」之间来回推，走不到发布。"""
     clicked = follow(Project(env, EXTRA), detour=(at, command))
-    assert clicked[-1] == "去发布"
-    assert not any(label.endswith("刷新指标") for label in clicked)
+    assert clicked[-1] == "发布"
+    assert "提取规则与指标" not in clicked  # 过期的指标交给校验，不来回推（过期按钮叫节点名）

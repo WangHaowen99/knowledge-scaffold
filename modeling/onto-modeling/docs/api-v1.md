@@ -156,7 +156,7 @@
 - `base_revision` 为空串或省略时不做冲突检查。只有新建文件，或明确要覆盖时才这样传。
 - **写入范围锁**（详设 4.3、方案 C10）：
   - 写到助手写入范围内的条目，所有写接口统一返回 `423 write_scope_locked`，`details` 为 `ScopeLock`；
-  - 锁的状态有两态：`assistant_running`（助手运行中，到这一轮结束合入为止）、`pending_confirm`（F3 起只在这一轮和你的修改合入冲突时出现，到在待处理里选好为止；界面叫「有冲突」）。自主构建下是 `autobuild_slice`，持续到这一段自动合入；
+  - 锁的状态有两态：`assistant_running`（助手运行中，到这一轮结束合入为止）、`pending_confirm`（F3 起只在这一轮和你的修改合入冲突时出现，到在待处理里选好为止；界面叫「有冲突」）。自主构建下是 `autobuild_slice`，持续到当前这一步自动合入；
   - 范围外照常写，保存即合入主线。
 - 网页、Studio、MCP、导入的写入都经内核写入路径（⑤），成功响应带 `commit` 和 `version_label`。
 
@@ -197,7 +197,7 @@
 | 执行记录 | `ex-<n>` | `ex-0412` |
 | 自主构建运行 | `run-<n>`，界面显示「运行 #n」 | `run-3` |
 | 证据锚点 | `<scheme>:<源ID>/<路径>[#<片段>]`（详设 5.8.5，名字里的特殊字符百分号编码）；ADR-0101 起只解析 `file:<资料路径>[#<片段>]` | `file:resource/text/others/合同.pdf.md#L40` |
-| 流程节点 | `<包>.<名>` | `core.model` |
+| 流程节点 | `<包>.<名>` | `core.object` |
 | 待处理事项 | `<kind>:<来源ID>`，来源不变 ID 就不变 | `decision:q-7f3a` |
 | 错误留档 | `err-<4～8 位 hex>` | `err-7f3a` |
 
@@ -516,7 +516,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `budget_exceeds_quota` | 422 | 预算超出平台上限或剩余配额 | `dimension, max` |
 | `ledger_entry_not_found` | 404 | 台账条目不存在 | — |
 | `suspension_not_found` | 404 | 挂起问题不存在或已回答 | — |
-| `slice_not_revertible` | 409 | 这一段不能撤回（未合入、已撤回，或后续段依赖它的改动） | `reason` |
+| `slice_not_revertible` | 409 | 自主构建的这一步（老运行是这一段）不能撤回（未合入、已撤回、后面的修改改到了它的条目，或后面用到它的一步还没撤回） | `reason`；`revert_later_first` 时另带 `slice_id`、`slice_name`（要先撤的那一步） |
 | `preview_expired` | 410 | 开始前预览已过期（10 分钟），要重新预览 | — |
 
 ### 2.11 运维
@@ -1173,13 +1173,15 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
   | `subdir` | string | 否 | `diagrams\|excel\|others`，缺省按扩展名归类 |
   | `purpose` | string | 否 | 5 种用途之一，缺省 `auto` |
   | `reading_mode` | string | 否 | `on_demand\|full`，缺省 `on_demand` |
-  | `is_revision` | bool | 否 | 「这批是修订 / 变更资料」 |
-  | `batch_id` | string | 否 | 同一批多个文件共用；`is_revision=true` 时整批只发起一次增量更新 |
+  | `is_revision` | bool | 否 | 「这批是修订 / 变更资料」：收下不处理（见下） |
+  | `batch_id` | string | 否 | 同一批多个文件共用：收下不处理 |
 
 - 同名文件直接替换（`replaced=true`）。上传即经写入路径提交，`Onto-Source: web`。
 - 上传立即返回，`material.text.state` 是 `converting`（网关没部署时 `waiting`）；转换在后台做，结果经 EP-25 推送。
-- `is_revision=true` 时，整批上传完成后往工作台对话发一条增量更新命令（`core.update`），响应里带 `command_task`。
-- 响应 `201`：`{material: Material, replaced: bool, commit, version_label, detected: {purpose, tables[]}|null, command_task: CommandTask|null}`。
+- 新资料和增量更新（节点模型重构 3）：主线上对象和操作都有了以后（同增量更新命令的前置），每次上传都记进「新资料」这一轮（内核条件 `materials_added`），
+  增量更新 `core.update` 出现在 `FL-01`、建议条第 2 级推它，由用户点了才发命令。`is_revision` 不再另外发增量更新命令（原来的
+  设计是整批发一条，和条件节点重复），`command_task` 恒为 null；同一轮里传几份都只出现一个增量更新，文件累加。触发算不出来不影响上传。
+- 响应 `201`：`{material: Material, replaced: bool, commit, version_label, detected: {purpose, tables[]}|null, command_task: null}`。
 - 错误：`payload_too_large`、`unsupported_media_type`、`invalid_filename`、`project_archived`、`upload_expired`。
 
 #### R-03 改资料用途
@@ -1884,7 +1886,18 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `GET /api/v1/projects/{id}/commands/catalog` · 所有者 · 旧：— · 审计：否 · 依据：5.6（界面入口）、6.10（全部命令下拉） · 页面：chat-states（第 2 项）、全部工作台页（「全部命令」、⌘K）
 
 - 响应：`{groups: [{id, label, items: CommandItem[]}], total}`。
-- 按业务名分组，只列已启用包的命令。命令名只在 `command` 字段里，界面不显示。
+- 每个导航栏节点（必需节点）一组：`id` 是节点编号，`label` 是节点名，按导航顺序（节点模型重构 2b）。组内先列这个节点发到对话的
+  按钮（主命令在前，动作的 `when` 照样生效，节点钩子跟在后面），再列挂在它下面（FL-01 的 `under`）的可选、条件节点发到对话的按钮。
+  只列当前装配里装了的命令；同一条命令文本只列一次；没有按钮的节点不出组。
+- 跳页面的按钮（发布）不列。不在任何节点上的命令（整体视图、影响分析、查询、版本历史、`/ontology`、场景模拟的子文档
+  `/ontology-trace-batch` 等）不进菜单，也不设「其他」组；手动输入照样能发（S-20 认装了的全部命令）。
+- 条目：`label` 是按钮名（主命令叫节点名，和 FL-01 节点动作、建议条、对话气泡、排队条、执行记录同一个叫法）；`target` 是完整命令
+  文本（`/ontology-research 追加`），前端发 S-20 时拆成 `command`、`text` 并带 `display_label`；`node_id` 是按钮所在的节点；
+  `primary` 表示是这个节点的主命令；`command` 是命令名（`target` 的第一个词），界面不显示；`description` 恒为空串。
+- 界面（节点模型重构 2b 前端）：输入框打「/」或点「全部命令」打开菜单，每次打开重取一次。分组、条目和响应一致，组名就是节点名，
+  只显示按钮名（不显示 `description`、命令名和条数）。斜杠后面接着打字按 `label` 筛（不分大小写），↑↓ 选、回车执行、Esc 只关菜单；
+  没有匹配时菜单收起，回车按原文发送。⌘K 用同一份数据、同一套筛法，叫法一样。执行发 `S-20`：`target` 拆成 `command`、`text`，
+  带 `display_label`。
 
 #### S-19 页面命令任务
 
@@ -1902,16 +1915,19 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `action` | `{pack, page, action_id}` | 与 `command` 二选一 | 包页面声明里的按钮（详设 5.9.2 `actions`） |
-| `command` | string | 与 `action` 二选一 | 内核或包的命令名，如 `/ontology-trace-batch` |
+| `command` | string | 与 `action` 二选一 | 内核或包的命令名，如 `/ontology-trace-batch`；当前装配里装了的命令（`.claude/commands/<名>.md` 在）都能发，不在全部命令菜单里的也能发 |
 | `args` | object | 否 | 命令参数，如 `{scenario: "s-03"}`、`{report_item: "RI-12"}` |
 | `text` | string | 否 | 附带的自然语言说明 |
-| `display_label` | string | 否 | 页面上按钮的叫法（建议条、命令面板、快捷项）。给了时 `text` 当作动作自带的参数、不在对话里显示 |
-| `display_text` | string | 否 | 对话里显示的说明（F4b-paths）；不给时用 `text`（给了 `display_label` 时不用）。对话里显示「业务名 + 说明」：业务名是命令所属节点的标题加按钮叫法（叫法里已有节点标题时只写叫法），不出命令原文和 `args`，说明里的工作区路径换成业务名；自动标题也用它。发给助手的仍是命令、参数和 `text` 原文 |
+| `display_label` | string | 否 | 页面上按钮的叫法（建议条、命令面板、快捷项）。名字表认不出这条命令时才用作对话里的名字；给了时 `text` 当作动作自带的参数、不在对话里显示 |
+| `display_text` | string | 否 | 对话里显示的说明（F4b-paths）；不给时用 `text`（给了 `display_label` 时不用）。对话里显示「名字 + 说明」，不出命令原文和 `args`，说明里的工作区路径换成业务名；任务标题、自动标题、排队条、执行记录 `command_label` 用同一个名字。发给助手的仍是命令、参数和 `text` 原文 |
 | `origin` | `{page, label}` | 是 | 对话里显示「来自「场景模拟」页」用 |
 | `conversation_id` | string | 否 | 缺省：引擎当前绑定的对话，没有就取最近更新的一条 |
 | `replace` | bool | 否 | 同 S-07（F7） |
 | `from_suggestion` | bool | 否 | 同 S-07（F7） |
 
+- 名字（节点模型重构 2b，`flow/names.py`）：看 `command` 连同 `text` 的第一行，按顺序取，命中就停：动作文本完全匹配（动作文本后面
+  带参数也算，取最长的）→ 某个节点的主命令（取节点名）→ 变体（取变体名）→ 命令表里的节点（取节点名）→ `display_label` → 命令名。
+  用条件过滤之前的流程，没出现的增量更新也叫「增量更新」。手打的斜杠命令（S-07）按同一张表取名。
 - 响应 `202`：`{task: CommandTask, conversation_id, message_id: string|null, delivery: "immediate"|"next"|"queued", next: NextCommand|null}`。
   - 助手正在跑时命令由平台代存（`delivery="next"`，同 S-07），这一轮结束后开始；被替换的那条的页面命令任务记为 `cancelled`。
   - 对话里出现一条带 `origin` 的用户消息；
@@ -1955,33 +1971,44 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 查询参数：`conversation_id?`（带上时 `suggestions` 按这条对话的打断状态计算）。
 - 响应：`Flow`，即
   - `flow_hash`；
-  - `nodes`：`FlowNode[]`，建模节点带 `slices`；
+  - `nodes`：`FlowNode[]`；建模是提取对象 `core.object`、提取操作 `core.operation` 两个节点（节点模型重构 1）。
+    每个节点带 `need`（什么时候要做：`"required"`、`"optional"` 或 `{when: <条件>}`）、`nav`（上不上导航栏：必需节点为 true；
+    条件节点出现在流程里就是条件成立了，也为 true，导航栏把它排在 `under` 后面（2b 前端））、
+    `under`（可选、条件节点挂在哪个必需节点下面：after 链上它前面最近的必需节点；必需节点为 null）（节点模型重构 2a）。
+    条件节点只在条件成立时出现：增量更新 `core.update` 是 `{when: "materials_added"}`，主线上对象和操作都有了以后上传了资料才出现，
+    `under` 是 `core.operation`、`nav` 为 true（导航栏上排在提取操作后面）、不计入进度；这一轮处理完（上传之后开始的一次增量更新正常做完——走到过执行更新，
+    在确认卡上取消、中断、放弃的不算；触发之后发布过；`FL-03`「这一轮不处理」）就不在 `nodes` 里，再上传又出现（节点模型重构 3）。
+    节点动作的 `label` 是按钮名：主命令叫节点名；过期时排在最前的 `kind: "refresh"` 那条也叫节点名，哪类变了写在它的 `reason`
+    （「对象有变化」）（节点模型重构 2b）；
   - `edges`；
-  - `sections`：节点分组「必经步骤 / 发布前检查 / 可选步骤 / 有需要时」（建模步骤抽屉已删除，前端不再用，ADR-0101）；
-  - `slices`：分段 × 步骤；
-  - `suggestions`；
-  - `notices`：如「1 份新资料」；
+  - `sections`：节点分组按 `need` 分：必需进「必经步骤」、可选进「可选步骤」、条件进「有需要时」；「发布前检查」为兼容留着，
+    不再有节点（建模步骤抽屉已删除，前端不再用，ADR-0101）；
+  - `progress`：`{done, total}`，只算必需节点，可补做的做完之前不算；项目卡片的 x/N 同一口径；
+  - `slice_stages`、`slices`：恒为 `[]`（不再分段，字段只为兼容留着）；
+  - `suggestions`：同 FL-02（推荐五级）；
+  - `notices`：合入冲突、插件变更下一条消息生效（新资料不另给提示，由增量更新节点出现、建议条推它）；
   - `autobuild`：运行中时给运行控制。
 
 返回示例：
 
 ```json
 {"flow_hash": "b41e09…",
- "nodes": [{"id": "core.model", "title": "建模", "kind": "agent", "placement": "spine",
-            "state": "running", "flags": {"needs_review": false, "disabled": false, "backfill": false},
-            "progress": {"done": 3, "total": 5, "label": "3/5 段"}, "version": "core@1.4.2",
-            "section": "required", "actions": [], "per_slice": true}],
- "edges": [{"from": "core.research", "to": "core.model"}],
- "slice_stages": [{"id": "object", "label": "对象"}, {"id": "operation", "label": "操作"},
-                  {"id": "rule", "label": "规则"}, {"id": "check", "label": "写入即查"},
-                  {"id": "scenario", "label": "场景", "plugin": "trace"}],
- "slices": [{"id": "s5", "name": "超量与审批提示", "group": "now",
-             "stages": {"object": "confirmed", "operation": "pending_confirm", "rule": "draft",
-                        "check": "running", "scenario": "not_ready"},
-             "note": "正在做 · 停在「操作」"}],
+ "nodes": [{"id": "core.object", "title": "提取对象", "kind": "agent", "placement": "spine",
+            "need": "required", "nav": true, "under": null,
+            "state": "confirmed", "flags": {"needs_review": false, "disabled": false, "backfill": false},
+            "progress": null, "version": "core@1.4.2", "section": "required",
+            "actions": [{"kind": "start", "label": "提取对象", "target": "/ontology-extract-object"}], "per_slice": false},
+           {"id": "core.metric", "title": "提取规则与指标", "kind": "agent", "placement": "branch",
+            "need": "optional", "nav": false, "under": "core.operation",
+            "state": "ready", "flags": {"needs_review": false, "disabled": false, "backfill": false},
+            "progress": null, "version": "core@1.4.2", "section": "optional",
+            "actions": [{"kind": "start", "label": "提取规则与指标", "target": "/ontology-extract-rule-metric"},
+                        {"kind": "skip", "label": "跳过"}], "per_slice": false}],
+ "edges": [{"from": "core.research", "to": "core.object"}, {"from": "core.object", "to": "core.operation"}],
+ "slice_stages": [],
+ "slices": [],
  "suggestions": {"mode": "normal", "primary": {...}, "secondary": [...]},
- "notices": [{"kind": "new_materials", "count": 1, "files": ["resource/others/09-修订通知.docx"],
-              "action": {"type": "navigate", "page": "incremental"}}]}
+ "notices": []}
 ```
 
 #### FL-02 统一下一步
@@ -1989,47 +2016,63 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `GET /api/v1/projects/{id}/flow/suggestions` · 所有者 · 旧：— · 审计：否 · 依据：6.10、㊸（`state_helper suggest` 同源） · 页面：全部工作台页（建议条）、chat-states（第 18 项）
 
 - 查询参数：`conversation_id?`。
-- 响应：`Suggestions`。规则（F7，详设 6.10）：从上往下判，命中第一条就停；1 个主推，最多 2 个次选。
-  1. 这条对话在跑：`mode="running"`，不给建议；
-  2. 有等你回答的问题：`mode="waiting_decision"`，主推「去回答」（`focus_question`，可点）；
-  3. 这一轮出错：`mode="failed"`，主推「重试这一轮」（`retry`）；
-  4. 刚被打断且有执行记录：`mode="interrupted"`，主推「继续「命令名」」（`resume_exec`，能力升级时按新版重新做），次选「放弃这一步」（`abandon_exec`）；
-     这一轮结束了、命令没收尾时同样两项（主推发「继续」）；
-  5. 合入冲突：主推「处理冲突」，其余按 6～10 补齐；
-  6. 目标问题没答（F8）：主推「回答目标问题」，次选是主线下一步，不拦着开始建模（蓝图草案不用确认）；
-  7. 过期的步骤：「对象有变化，刷新操作」——前半句是确认之后真变了的那几类（多于两类写「对象、操作等」；老记录按主线提交反查，还说不清时只写「刷新X」），后半句是刷新哪一步（按段时写「段名 · 步骤名」）；必经的排在可选的前面，可选的（规则补抽、指标）后面的校验还会跑时交给校验、不单独推；
-  8. 报告里有待处理问题、挡住发布的关卡没过：继续校验或关卡的操作；
-  9. 主线下一个必经步骤（按段时按钮带段名）；
-  10. 必经都做完：查看整体视图，次选扫描脚本候选、补做插件步骤。
-  - 自主构建运行中 `mode="autobuild_controls"`，返回运行控制，不推荐下一步。
-  - 能显示就能执行：每个条目的动作先过「此刻能不能执行」的检查（与接口收到 `from_suggestion` 请求时同一份），不能的不出现，整条规则没有能执行的就往下一条判。
-  - 第 3、4 条带说明行 `note`（主推的 `reason`），其余为 null（第 7 条的原因已经写在按钮上）。
+- 响应：`Suggestions`。规则（推荐五级，节点模型重构 2b；后端、助手副本 `state_helper suggest`、注入给模型的同一份）：从上往下判，
+  命中就停；1 个主推，最多 2 个次选。
+  1. 对话状态（`priority` 1）：
+     - 这条对话在跑：`mode="running"`，不给建议；自主构建运行中：`mode="autobuild_controls"`，返回运行控制；
+     - 有等你回答的问题：`mode="waiting_decision"`，主推「去回答」（`focus_question`），目标问题没答时次选「回答目标问题」；
+     - 这一轮出错：`mode="failed"`，主推「重试这一轮」（`retry`）；
+     - 刚被打断且有执行记录：`mode="interrupted"`，主推「继续「名字」」（`resume_exec`，能力升级时按新版重新做），次选「放弃这一步」；
+       这一轮结束了、命令没收尾时同样两项（主推发「继续」）；
+     - 合入冲突：只有「处理冲突」；
+     - 命令停下来等你在对话里打字回复：不给按钮，只有说明行；
+     - 只有目标问题没答：只有「回答目标问题」（`mode="normal"`）。
+  2. 条件已成立、没处理完的节点（`need: {when}`，条目的 `reason` 是出现的原因，如「上传了新资料」），以及过期、没交给下游核对的必需节点
+     （ADR-0090，说明行是哪类变了，如「对象有变化」），取流程里最靠前的一个；范围限定生效时不出过期项。选中的条件节点在跑时为空。
+  3. 第一个没做完的必需节点（`done` 为空、可补做的不算）；它在跑或待确认时建议条为空。
+  4. 必需节点都做完时：没做也没跳过的可选节点、过期且没交给下游核对的可选节点（说明行是哪类变了）、可补做的必需节点，取流程里最靠前的一个。
+  5. 不显示。
+  - 第 2～4 级一次只推一个节点：主推是节点主命令（按钮叫节点名，和全部命令、对话气泡同一个叫法），次选是同一节点的变体；
+    节点已有产出（`produces` 下有文件）、还没完成时，核验动作（`verify: true`）排第一。`done` 为空的节点判断不了做没做完，第 3、4 级不推
+    （条件节点做没做完由条件说了算）。条目的 `priority` 是所在的级。
+  - 不再有写死的「查看整体视图」「扫描脚本候选」「继续校验」，关卡规则、`preempt` 不再起作用。
+  - 能显示就能执行：每个条目的动作先过「此刻能不能执行」的检查（与接口收到 `from_suggestion` 请求时同一份），不能的不出现；
+    第 1 级整条没有能执行的往下判，第 2～4 级选中的节点没有能执行的条目时建议条为空（不越过它推后面的）。
+  - 说明行 `note`：出错、被打断、没收尾、等你打字回复，以及第 2 级和第 4 级的过期项（主推的 `reason`，哪类变了）；其余为 null。
   - 会话变为运行中、回到空闲、出现等你回答的问题、出错、打断时，对话流推新的一份（EC-53）；`rev` 递增，界面取 `rev` 大的那份。
 
 #### FL-03 跳过节点
 
-`POST /api/v1/projects/{id}/flow/nodes/{node_id}/skip` · 所有者 · 旧：— · 审计：是 · 依据：6.9、features「跳过 / 补做 / 恢复」 · 页面：—（建模步骤抽屉已删除，前端不再调用，ADR-0101）
+`POST /api/v1/projects/{id}/flow/nodes/{node_id}/skip` · 所有者 · 旧：— · 审计：是 · 依据：6.9、features「跳过 / 补做 / 恢复」 · 页面：wb-l2（导航栏节点下拉：可选节点那一行的「跳过」、条件节点的「这一轮不处理」）
 
-- 请求：`{slice_id?: string, reason?: string}`。
-- 主线和必经节点不能跳过。
-- 响应：`{node: FlowNode, flow_hash}`。
-- 错误：`node_not_found`、`node_not_skippable`。
+- 请求：`{reason?: string}`。不再分段：带了 `slice_id`、`step` 一律忽略，不报错。
+- `node_id` 可以是旧编号，按 core 的别名认成现在的节点（`core.model` → `core.operation`、`core.rule_metric` → `core.metric`）；响应里的 `node.id` 是现在的编号。
+- 可选节点（`need: "optional"`）：跳过，节点留在流程里、状态 `skipped`，能用 `FL-04` 恢复。
+- 条件节点（`need: {when}`）：「这一轮不处理」（节点模型重构 3）。结束这一轮，节点隐藏，不记跳过；条件下次成立时照常出现
+  （增量更新：再上传资料开始新的一轮）。`reason` 记在这一轮的记录上。只有内核条件能这样结束（现在是 `materials_added`）；
+  按插件触发出现的节点（`{when: "activated"}`）这一轮由插件自己的状态文件管，回 `node_not_skippable`。
+- 必需节点回 `node_not_skippable`。
+- 响应：`{node: FlowNode|null, flow_hash}`；条件节点结束这一轮后不在流程里，`node` 为 null。
+- 错误：`node_not_found`（含条件不成立、节点没出现）、`node_not_skippable`。
 
 #### FL-04 恢复节点
 
-`POST /api/v1/projects/{id}/flow/nodes/{node_id}/restore` · 所有者 · 旧：— · 审计：是 · 依据：6.9 · 页面：—（同 `FL-03`）
+`POST /api/v1/projects/{id}/flow/nodes/{node_id}/restore` · 所有者 · 旧：— · 审计：是 · 依据：6.9 · 页面：wb-l2（导航栏节点下拉：已跳过的可选节点那一行的「恢复」）
 
-- 请求：`{slice_id?}`。
+- 请求：`{}`；带了 `slice_id`、`step` 忽略。旧节点编号同 `FL-03`。
+- 只恢复跳过的可选节点；条件节点「这一轮不处理」之后不在流程里（`node_not_found`），没有恢复，再次满足条件时自己出现。
 - 响应：同 `FL-03`。
-- 错误：`node_not_skipped`。
+- 错误：`node_not_skipped`、`node_not_found`。
 
 #### FL-05 开始节点（含补做）
 
-`POST /api/v1/projects/{id}/flow/nodes/{node_id}/start` · 所有者 · 旧：— · 审计：是 · 依据：6.3 `entry`、6.9 · 页面：wb-l2（建议条）、publish（合规检查「去运行」）、inbox（「刷新这个场景」）
+`POST /api/v1/projects/{id}/flow/nodes/{node_id}/start` · 所有者 · 旧：— · 审计：是 · 依据：6.3 `entry`、6.9 · 页面：wb-l2（建议条；导航栏下拉里点没有斜杠命令的可选节点名）、publish（合规检查「去运行」）、inbox（「刷新这个场景」）
 
-- 请求：`{slice_id?, args?: object, origin: {page, label}}`。
-- 等价于用节点声明的 `entry.command` 调 `S-20`。
-- 刷新过期节点：节点声明了 `refresh_scope: changed_entries`、此刻过期且算得出改动范围时，命令改为 `<entry.command> <条目名…> --since <确认时提交前 12 位>`（只查改动，ADR-0100）；算不出时照旧。
+- 请求：`{args?: object, origin: {page, label}}`；带了 `slice_id`、`step` 忽略，命令不带分段。旧节点编号同 `FL-03`（`core.model` 开始的是提取操作）。
+- 等价于用节点的主命令（`actions` 里第一个带 `command` 或 `page` 的动作）调 `S-20`；主命令是页面动作（发布）时回 `400`。
+  `entry.command` 只做兼容，不再读（节点模型重构 2a）：资料分析发 `/ontology-research 仅基于本地文档`，场景模拟发
+  `/ontology-trace 全部`（原来 `/ontology-trace`，会先问做哪种）。
+- 刷新过期节点：节点声明了 `refresh_scope: changed_entries`、此刻过期且算得出改动范围时，命令改为 `<主命令> <条目名…> --since <确认时提交前 12 位>`（只查改动，ADR-0100）；算不出时照旧。
 - 响应 `202`：同 `S-20`。
 - 脚本节点（`kind: script`）当场在沙箱里跑完，响应 `200`：节点视图加 `run: {state, output, commit, version_label, duration_ms, runtime, warnings}`。`warnings: [{code: "pack_gate", level: "warning", message, gate, path}]` 是输出没过的包提交门禁：只提示，输出照常写进版本（F3b）。
 - 错误：`node_not_found`、`flow_assembly_failed`、`autobuild_running`。
@@ -2088,7 +2131,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `change_list` | 变更清单 | 增量更新的变更点清单 | `accept_points`、`rewrite_point`、`execute` |
 | `review` | 需复核 | 自主构建自动决定、节点升级、导入；`source` 分别为 `autobuild\|upgrade\|import` | `accept`、`rejudge`、`revert_slice` |
 | `suspension` | 挂起 | 自主构建挂起的问题 | `answer`、`use_generic` |
-| `stale` | 过期 | 节点状态；已交给后面已确认的核对节点的过期不列（和建议条第 7 条同一判定 `flow_state.handed_down`，ADR-0090） | `refresh`、`keep_stale` |
+| `stale` | 过期 | 节点状态；已交给后面已确认的核对节点的过期不列（和建议条推荐第 2、4 级同一判定 `flow_state.handed_down`，ADR-0090） | `refresh`、`keep_stale` |
 | `resumable` | 续跑 | 中断的执行；开始自主构建时交给运行收尾的不列（见 AB-04） | `resume`、`abandon` |
 | `report` | 报告待处理 | 某份报告里还没处理的条目，一份报告合成一项 | `send_to_assistant` |
 | `changeset_conflict` | 合入冲突 | 这一轮合入时和你的修改改到同一条（F3 起唯一会出现的变更集事项；没有「修改待确认」） | `resolve`、`discard`（撤回这一轮） |
@@ -2500,6 +2543,11 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - hooks 只追加拒绝型；
   - 页面只选用平台内置、没有前端代码；
   - 流程声明了范围限定（`confine`）时：只有一个范围文件，在本包节点的 `produces` 里，不在 `ontology/` 和受保护目录下（检查项 `confine`，ADR-0085）；
+  - 节点的主命令（`actions` 里第一个带 `command` 的动作）是本包的命令（检查项 `node_entry`）；
+  - 节点的 `need` 只能是 `required`、`optional`、`{when: <条件>}`，写错失败；带了分段遗留字段（`per_slice`、`steps`、`slice_steps`、
+    `node_titles`、`blocks_in`）给警告（检查项 `node_need`，只在有问题时出现）。第三方包也能声明必需节点；
+  - 包里有节点时，列出自主构建会执行的节点（检查项 `autobuild`）：上传的包的节点没写 `autobuild` 时不进自主构建，写了
+    `autobuild: true` 的列在说明里、结果为警告，让审核的人看到；
   - 提示词体积预算。
 
 #### PL-16 下载检查报告
@@ -3137,8 +3185,13 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 依据详设 8.5、1.6#2、方案 B12～B14、C8。
 
-- 运行由会话宿主托管，每段一个变更集，检查通过自动合入，产出标「需复核」。
-- 每段合入之后是安全点。
+- 按流程顺序一个节点一个单元（资料分析之后、到 `until_node` 为止），每个单元一步，跑节点的主命令（节点模型重构 1B）。
+- 做哪些节点按 `need` 判（节点模型重构 3）：必需节点做；可选节点只在 `scope.include_optional` 打开时做；条件节点（增量更新）、
+  `autobuild: false`（生成脚本；第三方包没写 `autobuild: true` 的节点装配时补成 false）、人工（发布）、面板（求解适配）、
+  没有主命令的节点不做。
+- 运行由会话宿主托管，每个单元一个变更集，检查通过自动合入，产出标「需复核」。
+- 每个单元合入之后是安全点。
+- 契约里 `slice`、`slice_id`、`slices` 等字段名不变，装的是单元（节点编号、节点名）；按段跑的老运行照旧是段。
 - 运行在自己的对话里进行（会话名「自主构建 · 运行 #n」）。
 - 运行中用户发的消息按 `deferred` 处理，下一步开始前读取。
 
@@ -3147,17 +3200,27 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 `GET /api/v1/projects/{id}/autobuild/policy` · 所有者 · 旧：— · 审计：否 · 依据：8.5 策略表 · 页面：proj-settings（构建方式内嵌策略）、l4-run（开始时的策略说明）
 
 - 响应：`AutobuildPolicy`，加：
+  - `scope.until_node` 存的是旧节点编号时按 core 的别名返回现在的节点（`core.model` → `core.operation`）；`scope.slice_ids`
+    是按段时代存的，原样返回、不再起作用；
   - `platform_limits: {}`（`allow_production_collection` 随证据采集删除，ADR-0101）；
   - `not_enforced: []`；
   - `quota_remaining: {tokens, cost: Money}`；
   - `last_run: {run_id, run_no, ended_at, duration_ms, reviewed: bool}|null`；
-  - `revision`。
+  - `revision`；
+  - `optional_nodes: [{id, name, under, order}]`（只读，节点模型重构 3）：打开「包括可选步骤」时可能多做的节点，即启用的、资料分析之后、
+    自主构建能做的可选节点，按流程顺序，不看做没做完。`under` 是它挂在哪个必需节点下面，`order` 是它在流程里排第几（从 0 起）。
+    默认几个官方包启用时是绘制流程图、提取规则与指标；
+  - `until_order: int|null`（只读）：`scope.until_node` 在流程里排第几，没设或不在流程里为 null。自主构建走到 `until_node` 就停，
+    `order` 大于它的可选节点不做。开关的说法只列 `order <= until_order` 的（「包括可选步骤：绘制流程图、提取规则与指标」），一个都
+    不剩时不显示开关。
 
 #### AB-02 保存策略
 
 `PUT /api/v1/projects/{id}/autobuild/policy` · 所有者 · 旧：— · 审计：是 · 依据：8.5、4.10.1（预算只能设在配额之内） · 页面：proj-settings（「保存」「保存并开始自主构建」）
 
 - 请求：`AutobuildPolicy` 去掉只读字段，加 `base_revision`。带 `production_collection` 时忽略（ADR-0101）。
+- `until_node` 按别名认（写 `core.model` 存成 `core.operation`），不能是发布、资料分析、增量更新；`slice_ids` 原样保存、不起作用，
+  `mode: "selected"` 存成 `all_pending`；`generate_scenarios` 保存、不起作用。
 - 硬性不做的几项（发布、删除已确认内容、改资料区）不在策略里，打不开。
 - 响应：同 `AB-01`。
 - 错误：`budget_exceeds_quota`、`revision_conflict`、`invalid_argument`。
@@ -3169,7 +3232,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 - 请求：`{policy_overrides?: Partial<AutobuildPolicy>}`。开始前可以临时改。
 - 响应：`AutobuildPreview`，即：
   - `preview_token`（10 分钟有效）；
-  - 范围：分段列表、每段现状；
+  - 范围 `slices`：一个节点一行 `{id: 节点, name: 节点名, current: "已确认"|"有过期"|"已跳过"|"进行中"|"待确认"|"未开始", included}`；
   - 预算；
   - 低于阈值时怎么处理；
   - `warnings`，如「有 1 个未决决策会被按策略决定」「建模蓝图里有 1 个问题没回答，运行不会替你答，会留在待处理里」（蓝图的问题按 BP-03 不代答）；
@@ -3195,9 +3258,10 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 `GET /api/v1/projects/{id}/autobuild/runs/{run_id}` · 所有者 · 旧：— · 审计：否 · 依据：8.5 · 页面：l4-run（运行条、运行详情抽屉、流水线矩阵）
 
 - 响应：`AutobuildRun`，包括：
-  - 状态、当前分段与步骤；
+  - 状态、当前单元与步骤；
   - 指标：用时与预计、token、费用、写入即查错误与提醒、场景通过、修复轮次；
-  - `slices`：每段状态、摘要、版本、矩阵单元格；
+  - `slices: {done, total}` 按全部单元算；`matrix` 每个单元一行（新加 `state`），`stages` 是按段的老运行的步骤列（新运行为 `[]`），
+    节点单元的 `cells` 为 `{}`；`tail_text` 恒为 `""`；
   - 自动决定数、挂起数；
   - `recovered_from_checkpoint: int`（崩溃后自动续跑次数）；
   - `report_available`。
@@ -3207,7 +3271,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 `POST /api/v1/projects/{id}/autobuild/runs/{run_id}/pause` · 所有者 · 旧：— · 审计：专项 `autobuild.control` · 依据：8.5 安全点 · 页面：l4-run（「暂停」）
 
-- 停在当前步骤，以后可以续跑。
+- 当前这一步做完、合入之后停下（安全点），以后可以续跑；按段的老运行在这一段的当前步骤做完后停。
 - 响应：`AutobuildRun`（`state="pausing"`，到点后变 `paused`）。
 - 错误：`autobuild_not_running`。
 
@@ -3215,7 +3279,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 `POST /api/v1/projects/{id}/autobuild/runs/{run_id}/stop-at-safe-point` · 所有者 · 旧：— · 审计：专项 `autobuild.control` · 依据：8.5 · 页面：l4-run（「停在安全点」）
 
-- 做完这一段再停。
+- 做完当前这一步再停。
 - 响应：`AutobuildRun`（`state="stopping"`）。
 
 #### AB-08 转为陪伴
@@ -3278,19 +3342,21 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 #### AB-16 运行报告
 
-`GET /api/v1/projects/{id}/autobuild/runs/{run_id}/report` · 所有者 · 旧：— · 审计：否 · 依据：8.5「运行报告卡」 · 页面：l4-run（报告卡）、inbox（「按段结果」弹窗）
+`GET /api/v1/projects/{id}/autobuild/runs/{run_id}/report` · 所有者 · 旧：— · 审计：否 · 依据：8.5「运行报告卡」 · 页面：l4-run（报告卡）、inbox（「运行结果」弹窗）
 
 - 响应：`AutobuildReport`，即：
   - 起止时间、重启续跑说明；
   - 指标：用时与预算、分段、产出（对象 / 操作 / 规则）、检查、场景推演、自动决策、挂起、费用与 token；
-  - 按段结果：结果、产出、场景、运行后版本、能否撤回；
+  - 每个单元的结果：结果、产出、场景、运行后版本、能否撤回（`slices`，`metrics.slices` 按全部单元算）；
   - 提示文案。
 
-#### AB-17 按段撤回
+#### AB-17 撤回一步
 
-`POST /api/v1/projects/{id}/autobuild/runs/{run_id}/slices/{slice_id}/revert` · 所有者 · 旧：— · 审计：专项 `autobuild.revert_slice` · 依据：8.5、方案 C8（反向提交） · 页面：inbox（「回退到运行前」）、l4-run（报告卡「回退这一段」）
+`POST /api/v1/projects/{id}/autobuild/runs/{run_id}/slices/{slice_id}/revert` · 所有者 · 旧：— · 审计：专项 `autobuild.revert_slice` · 依据：8.5、方案 C8（反向提交） · 页面：inbox（「回退到运行前」）、l4-run（报告卡「回退到运行前」）
 
-- 只动这一段：恢复成运行开始前的样子，另存为新版本，其他分段不受影响。
+- `slice_id` 是单元：节点编号（老运行是段，如 `all`）。
+- 只动这一步：恢复成运行开始前的样子，另存为新版本，其他单元不受影响；这一步的节点的确认记录放回运行前的（老运行按步骤记的落到提取对象、提取操作上）。建模蓝图不跟着撤。
+- 倒序撤回：同一次运行里更靠后的单元用到了这一步的产出（它的节点的 `stale_on` 盖住这一步节点的产出类别，同流程过期的口径）、还没撤回时，回 `409 slice_not_revertible`，`message` 是「先撤回「提取操作」」，`details` 为 `{reason: "revert_later_first", slice_id, slice_name}`（最靠后的那个单元）；它撤回以后这一步就能撤。老运行按段的单元整体撤回，不受这条限制。
 - 响应：`{commit, version_label, reverted_to_version_label}`。
 - 错误：`slice_not_revertible`、`autobuild_running`（本次运行还在跑）。
 
@@ -4141,9 +4207,9 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 | 编号 | type | 载荷 | 用在哪 | 依据 |
 |---|---|---|---|---|
-| EP-01 | `flow.updated` | `{flow_hash, nodes: [{id, state, flags, progress}], slices: [{id, stages, note}], suggestions_changed: bool}`，只含变化的节点和分段 | 主线进度条、projects 卡片 | ㊴ |
+| EP-01 | `flow.updated` | `{flow_hash, nodes: [{id, state, flags, progress}], slices: [], suggestions_changed: bool}`，只含变化的节点（`slices` 不再分段，恒为空） | 主线进度条、projects 卡片 | ㊴ |
 | EP-02 | `inbox.updated` | `{counts: {total, by_filter, by_pack}, added: string[], removed: string[], changed: string[]}` | 左栏工作台角标、「待处理 N」、inbox 列表、插件页角标 | ㊴ |
-| EP-03 | `scope.updated` | `ScopeLock` | Studio、流程图弹窗、场景模拟、代码生成的锁定条和只读；两态「助手运行中 / 修改待确认」，自主构建下是「这一段自动合入为止」 | 4.3、方案 C10 |
+| EP-03 | `scope.updated` | `ScopeLock` | Studio、流程图弹窗、场景模拟、代码生成的锁定条和只读；两态「助手运行中 / 修改待确认」，自主构建下是「当前这一步自动合入为止」 | 4.3、方案 C10 |
 | EP-04 | `changeset.updated` | `{changeset_id, state: "open"\|"pending_confirm"\|"merged"\|"discarded"\|"conflict", source, conversation_id, version_label: string\|null}` | wb-l2「这一轮」卡、inbox | 8.2 |
 | EP-05 | `workspace.changed` | `{commit, version_label, source: "assistant"\|"web"\|"studio"\|"mcp"\|"autobuild"\|"import"\|"plugin"\|"revert", changeset_id, by, entries: EntryRef[], artifacts: ArtifactRef[], paths: string[≤200]}` | 外壳知识包版本、Studio 表格与图谱刷新、编辑器「文件已被助手修改」提示 | 方案 C2 |
 | EP-06 | `artifacts.updated` | `{type, change: "created"\|"updated"\|"deleted"\|"stale"\|"fresh", keys: string[]}` | 场景模拟、代码生成列表；Studio 流程图行 | 4.1、5.9.4 |
@@ -4155,7 +4221,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | EP-12 | `materials.candidate` | `{candidate: {id, kind, name, anchor, anchor_label}, total}` | 资料地图弹窗「候选实时流」 | 第 9 章 |
 | EP-13 | `evidence.job.updated` | — | 已删除（ADR-0101，随证据采集） | — |
 | EP-14 | `autobuild.run.updated` | `AutobuildRunSummary` | l4-run 运行条（进度、用时、token、费用、自动决定数、挂起数） | 8.5 |
-| EP-15 | `autobuild.safe_point` | `{run_id, slice_id, slice_name, version_label, next: "continue"\|"paused"\|"stopped"\|"converted"}` | l4-run | 8.5 |
+| EP-15 | `autobuild.safe_point` | `{run_id, slice_id, slice_name, version_label, next: "continue"\|"paused"\|"stopped"\|"converted"}`（每个单元合入后一次，`slice_*` 是单元） | l4-run | 8.5 |
 | EP-16 | `autobuild.budget_warning` | `{run_id, dimension: "duration"\|"tokens"\|"cost", used_pct: number}` | l4-run，到 80% 提醒 | 8.5 |
 | EP-17 | `autobuild.finished` | `{run_id, run_no, state: "completed"\|"stopped"\|"budget_exhausted"\|"failed"\|"converted", report_available: bool}` | l4-run、inbox 汇总条 | 8.5 |
 | EP-18 | `change_list.updated` | `{change_list_id, revision, impact_ms}` | incremental 清单卡、影响面卡 | 第 9 章建议 6 |
@@ -4211,7 +4277,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | `decision` | 结构化决策卡（wb-l2、wb-materials 资料用途确认、inbox 决策） | `options[].consequence`；`options[].preview: DiffLine[]`（选中后卡内显示「选 X 会这样改」）；最后一项「其他，我来说」`allow_custom_on` | `S-11`；没选不能确认；键盘 1–4、↵ |
 | `branch` | 模拟分支选择卡（chat-states 第 7 项） | `scenario: ArtifactRef`、`context_text` | `S-11`，可带 `custom_text` |
 | `expert` | 请专家确认卡（chat-states 第 7 项、reports 专家裁决） | `options` 渲染为按钮，含 `dismiss` 型选项「不需要问这个」 | `S-11` |
-| `walkthrough` | 交互模拟卡（chat-states 第 20 项） | `scenario: ArtifactRef`、`inputs: [{name, value, type, source: "input"\|"example"}]`、`steps: [{n, label, text, ref: EntryRef\|null, source}]`、判断点 `prompt` | `S-11`；选择记进场景，下次批量验证按这条分支推演 |
+| `walkthrough` | 交互模拟卡（chat-states 第 20 项） | `scenario: ArtifactRef`、`inputs: [{name, value, type, source: "input"\|"example"}]`、`steps: [{n, label, text, ref: EntryRef\|null, source}]`、判断点 `prompt` | `S-11`；选择记进场景，下次场景模拟按这条分支推演 |
 | `collection` | 采集确认（已删除，ADR-0101） | — | — |
 | `confirm` | 一般的是 / 否确认 | 两个选项 | `S-11` |
 
@@ -4268,8 +4334,8 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | `external_feedback` | 外部反馈卡（已删除，ADR-0101） | — | — |
 | `pack_recommendation` | 助手推荐插件 | `{pack: PackRef, category_label, description, reason}` | chat-states 第 16 项 |
 | `resume` | 中断续跑卡 | `{exec_id, title: "上次没做完：操作提取在步骤 3 / 4 中断", reason, position: {step, total, label}, saved: {files, version_label}, resumable: bool, not_resumable_reason: string\|null}` | chat-states 第 5 项；按钮：`S-16`、`S-17` |
-| `autobuild_start` | 自主构建开始时的策略说明 | `{run_id, run_no, chips: [{label, value}]}`（范围、预算、生产库、拿不准时） | l4-run |
-| `slice_progress` | 按段的进展块 | `{run_id, slice: {id, name}, state: "done"\|"running"\|"queued"\|"partial", summary, version_label: string\|null, timeline: ProgressStep[], decision_ids: string[], suspension_ids: string[]}` | l4-run |
+| `autobuild_start` | 自主构建开始时的策略说明 | `{run_id, run_no, chips: [{label, value}]}`（范围「N 步」、拿不准时） | l4-run |
+| `slice_progress` | 每个单元（节点；老运行是段）一张进展块 | `{run_id, slice: {id, name}, state: "done"\|"running"\|"queued"\|"partial", summary, version_label: string\|null, timeline: ProgressStep[], decision_ids: string[], suspension_ids: string[]}` | l4-run |
 | `auto_decision` | 自动决定卡 | `{run_id, ledger_id, at, question, chosen, anchors, confidence: number, threshold: number, assumption: bool, review_state: "pending"\|"accepted"\|"rejudged", recorded: true}` | l4-run；「改判」去 inbox |
 | `suspension` | 挂起卡 | `{run_id, suspension_id, title, reason, inbox_item_id}` | l4-run；「现在回答」去 inbox |
 | `run_report` | 运行报告卡 | `AutobuildReport` 摘要：`{run_id, run_no, state, started_at, ended_at, recovered_restarts: int, metrics: [...], slices: [...]}` | l4-run、chat-states 产物卡；按钮「去复核」「转为陪伴继续」 |
@@ -4281,7 +4347,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 |---|---|---|
 | 0 产物卡一览：资料地图、建模蓝图、本步产出、流程图、变更点清单、运行报告 | EC-40/41：`material_map`、`blueprint`、`step_output`、`flowchart`、`change_list`、`run_report` | `R-07`、`BP-01`、`ST-04`、`AR-03`、`INC-01`、`AB-16` |
 | 1 会话切换菜单（新建、续聊、重命名、删除；运行中禁止） | EC-01、EP-21 | `S-01`～`S-04` |
-| 2 全部命令（按业务名分组） | — | `S-18`；选中后 `S-07` 或 `S-20` |
+| 2 全部命令（按导航栏节点分组） | — | `S-18`；选中后 `S-20`（发条目的 `target`） |
 | 3 运行中：子代理进度与打断 | EC-01、EC-20/21、EC-22 | `S-08` |
 | 4 打断之后（继续 / 从打断处继续 / 换个方向） | EC-05、EC-53（`mode="interrupted"`） | 继续：`S-07`；从打断处继续：`S-16`；换个方向：前端清空输入框 |
 | 5 中断续跑卡 | EC-40 `resume`、EP-09 | `S-16`、`S-17` |
@@ -4305,7 +4371,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 | 界面元素 | 事件 | 接口 |
 |---|---|---|
-| 顶栏会话名、主线进度条、「1 份新资料」、「待处理 18」、上下文环 | EP-01、EP-02、EC-51 | `S-01`、`FL-01`、`IN-01`、`S-05` |
+| 顶栏会话名、导航栏、「待处理 18」、上下文环（新资料不另给提示，由导航栏上出现的「增量更新」表达） | EP-01、EP-02、EC-51 | `S-01`、`FL-01`、`IN-01`、`S-05` |
 | 系统提示行「分段已确认生效 · 版本 v0.12」 | EC-13 | — |
 | 用户消息、助手消息、出处角标 | EC-10、EC-12 | `EV-29`（悬停看原文） |
 | 工作过程（已完成 3 步） | EC-20/21 | — |
@@ -4314,9 +4380,10 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | 决策卡（单选 + 后果 + 改动预览，稍后决定，确认这个方向） | EC-32、EC-33、EC-13 | `S-11`；「稍后决定」去 inbox |
 | 写入范围只读（助手运行中 / 有冲突） | EP-03 | `CS-06` |
 | 这一轮改了什么卡（查看改动、撤回这一轮） | EC-40/41 `round_changes`、EP-04 | `CS-03`、`CS-05` |
-| 建议条三态（先做上面的决定 / 确认生效 / 提取这一段的规则） | EC-53 | `FL-02` |
-| 建模步骤抽屉（已删除，ADR-0101；进度条只展示，不能点开） | — | — |
-| 输入框（拖入文件、粘贴截图、@ 引用条目、命令、发送；模式胶囊） | EC-10 | `U-01`、`S-07`、`S-18`、`F-07`（@ 搜条目）、`P-13` |
+| 导航栏节点下拉：节点的按钮（主命令在前）；挂在下面的可选节点（点名字开始，「跳过」/「恢复」）；条件节点「这一轮不处理」；发布直接跳页 | EP-01 | `FL-01`（展开时重取）、`S-20`、`FL-05`、`FL-03`、`FL-04` |
+| 建议条（按钮是节点名或变体名，原因在说明行 `note`） | EC-53 | `FL-02` |
+| 建模步骤抽屉（已删除，ADR-0101；可选步骤和跳过、恢复挪到导航栏节点下拉） | — | — |
+| 输入框（拖入文件、粘贴截图、@ 引用条目、「/」全部命令、发送；模式胶囊） | EC-10 | `U-01`、`S-07`、`S-18`（界面见 `S-18`）、`F-07`（@ 搜条目）、`P-13` |
 
 ---
 
@@ -4361,7 +4428,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | `schema` | 证据浏览器（已删除，ADR-0101） | — | — |
 | `publish` | 发布知识包 | `PB-01`～`PB-07`、`HB-05`～`HB-09`、`P-09`、`FL-05`（合规检查「去运行」）、`RP-06`（修完重新检查）、`V-01`（版本下拉） | EP-19、EP-01 |
 | `versions` | 版本历史与对比 | `V-01`～`V-08`、`F-06`、`F-03` | EP-05 |
-| `scenarios` | 场景模拟（插件） | `AR-01`、`AR-02`、`AR-03`、`AR-04`、`AR-05`、`AR-06`、`AR-07`、`AR-09`（类型 `trace.scenario`、`trace.mock`）、`S-20`（批量验证、交互模拟、补齐过期场景、按场景补生成、行内 ▶）、`S-19`、`CS-06`、`IN-01`（`pack=trace` 角标）、`PL-12` | EP-03、EP-06、EP-10 |
+| `scenarios` | 场景模拟（插件） | `AR-01`、`AR-02`、`AR-03`、`AR-04`、`AR-05`、`AR-06`、`AR-07`、`AR-09`（类型 `trace.scenario`、`trace.mock`）、`S-20`（场景模拟、交互模拟、补齐过期场景、按场景补生成、行内 ▶）、`S-19`、`CS-06`、`IN-01`（`pack=trace` 角标）、`PL-12` | EP-03、EP-06、EP-10 |
 | `knowledge` | 知识沉淀（插件，已删除，ADR-0101） | — | — |
 | `scripts` | 代码生成与求解（插件） | `SC-01`、`SC-02`、`SC-03`、`SV-01`～`SV-03`、`ST-04`（脚本只读预览）、`S-20`（扫描、生成脚本、修复、重新生成、按模板重新生成）、`S-19`、`CS-06` | EP-03、EP-06、EP-10 |
 | `proj-settings` | 项目设置 | `P-04`、`P-05`、`P-06`、`P-07`、`P-12`、`P-13`、`P-14`、`C-06`、`A-09`、`AB-01`、`AB-02`、`AB-03`、`AB-18`、`BP-01`（范围里的分段清单）、`PL-05`～`PL-11`、`M-01`～`M-04` | EP-08、EP-20 |
@@ -4678,13 +4745,13 @@ type ProjectMetaView = {
 
 type ProjectCard = ProjectMeta & {
   industry_label: string | null;
-  slices: { total: number; confirmed: number; cells: DisplayState[] } | null;   // null = 分段待规划
+  slices: { total: number; confirmed: number; cells: DisplayState[] } | null;   // 恒为 null（不再分段）
   inbox_count: number;
   status: ("active" | "autobuild" | "autobuild_done" | "publishable" | "archived")[];
   autobuild: {
     run_id: string; run_no: number;
     state: "queued" | "running" | "pausing" | "paused" | "completed" | "stopped";
-    slice_done: number; slice_total: number; progress_pct: number; eta_ms: number | null;
+    slice_done: number; slice_total: number; progress_pct: number; eta_ms: number | null;   // 按单元（一个节点一步）算
     decisions: number; suspended: number; budget_used_pct: number;
     needs_review: number; duration_ms: number;
   } | null;
@@ -4867,7 +4934,7 @@ type Changeset = {
 type ScopeLock = {
   state: "none" | "assistant_running" | "pending_confirm" | "autobuild_slice";
   changeset_id: string | null; conversation_id: string | null; run_id: string | null;
-  slice: { id: string; name: string } | null;
+  slice: { id: string; name: string } | null;   // 恒为 null（不再分段）
   node: { id: string; version: string } | null;
   entries: EntryRef[];            // 范围内的本体条目
   artifacts: ArtifactRef[];       // 范围内的插件产物（场景、求解契约、流程图……）
@@ -4932,9 +4999,11 @@ type ExecRecord = {
 };
 
 type CommandItem = {
-  id: string; label: string; description: string;
-  command: string;                // 不在界面显示
-  pack: string; node_id: string | null;
+  id: string; label: string; description: string;   // label 是按钮名（主命令叫节点名）；description 恒为空串
+  command: string;                // 命令名，不在界面显示
+  target: string;                 // 节点模型重构 2b：完整命令文本，如「/ontology-research 追加」
+  pack: string; node_id: string;  // 按钮所在的节点
+  primary: boolean;               // 节点模型重构 2b：是不是这个节点的主命令
   args_schema: object | null;
   available: boolean; unavailable_reason: string | null;
 };
@@ -4962,14 +5031,17 @@ type NodeState = "not_ready" | "ready" | "running" | "pending_confirm" | "confir
 type FlowNode = {
   id: string; title: string;      // core.validate 的 title 恒为「校验」（11-05 起场景模拟包不再改它的显示名）
   kind: "agent" | "script" | "human";   // external 随证据采集删除（ADR-0101）
-  placement: "spine" | "step" | "branch" | "gate" | "on_demand";
-  section: "required" | "pre_publish" | "optional" | "on_demand";
+  need: "required" | "optional" | { when: string };   // 什么时候要做（节点模型重构 2a）
+  nav: boolean;                   // 上不上导航栏：必需节点、出现在流程里的条件节点为 true，已停用的为 false
+  under: string | null;           // 可选、条件节点挂在哪个必需节点下面（after 链上它前面最近的必需节点）
+  placement: "spine" | "step" | "branch" | "gate" | "on_demand";   // 旧字段，按 need 补齐
+  section: "required" | "pre_publish" | "optional" | "on_demand";   // 按 need 算，pre_publish 不再出现
   state: NodeState;
   flags: { needs_review: boolean; review_source?: "autobuild" | "upgrade" | "import"; disabled: boolean; backfill: boolean };
   display_state: DisplayState;
-  progress: { done: number; total: number; label: string } | null;   // 「3/5 段」
+  progress: { done: number; total: number; label: string } | null;   // 恒为 null（不再分段）
   version: string;                // "core@1.4.2"
-  per_slice: boolean;
+  per_slice: boolean;             // 恒为 false（不再分段）
   note: string | null;
   blocks: string[];
   actions: { kind: "start" | "skip" | "restore" | "refresh" | "confirm"; label: string; target?: string }[];
@@ -4982,8 +5054,8 @@ type Flow = {
   flow_hash: string;
   nodes: FlowNode[];
   edges: { from: string; to: string }[];
-  slice_stages: { id: "object" | "operation" | "rule" | "check" | "scenario"; label: string; plugin?: string }[];
-  slices: { id: string; name: string; core_flow: string;
+  slice_stages: { id: "object" | "operation" | "rule" | "check" | "scenario"; label: string; plugin?: string }[];   // 恒为 []
+  slices: { id: string; name: string; core_flow: string;   // 恒为 []
             group: "done" | "now" | "wait" | "todo";
             stages: Record<string, SliceStageState>;
             note: string; no_rules: boolean }[];
@@ -5004,14 +5076,16 @@ type SuggestionAction =
   | { type: "clear_input" };
 
 type Suggestion = { id: string; label: string; icon?: string; primary: boolean; disabled: boolean;
-                    reason: string; priority: 1 | 2 | 3 | 4 | 5; action: SuggestionAction };
+                    reason: string;                // 说明（过期项是「对象有变化」这类）
+                    priority: 1 | 2 | 3 | 4 | 5;   // 推荐五级里所在的级
+                    action: SuggestionAction };
 
 type Suggestions = {
   mode: "normal" | "running" | "failed" | "interrupted" | "waiting_decision" | "autobuild_controls";   // F3 起没有 pending_confirm；历史里留下的前端不画「确认生效」
   primary: Suggestion | null;
   secondary: Suggestion[];        // 最多 2 个
   all_commands: true;             // 末尾固定有「全部命令」
-  note: string | null;            // F7：主推下面的一行说明（出错原因、能力升级后按新版从头做、上游哪里改过）
+  note: string | null;            // F7：主推下面的一行说明（出错原因、能力升级后按新版从头做、过期的节点哪类变了）
   rev: number;                    // F7：越大越新；F7 之前的历史记录没有，按 0 算
 };
 
@@ -5362,9 +5436,10 @@ type ReleaseManifest = {
 
 ```ts
 type AutobuildPolicy = {
-  scope: { mode: "all_pending" | "selected"; slice_ids: string[];
-           refresh_stale_first: boolean; generate_scenarios: boolean; include_optional: boolean;
-           until_node: string | null };   // 做到哪一步，如 "core.validate"
+  scope: { mode: "all_pending" | "selected"; slice_ids: string[];   // selected 存成 all_pending；slice_ids 按段时代的，不起作用
+           refresh_stale_first: boolean; generate_scenarios: boolean;   // generate_scenarios 不起作用
+           include_optional: boolean;   // 做不做 optional_nodes 里的可选节点
+           until_node: string | null };   // 做到哪一步，如 "core.validate"；旧编号按别名认
   budget: { max_duration_min: number; max_tokens: number; max_cost: Money };
   advanced: { confidence_threshold: number;            // 0.5–1.0，默认 0.80
               below_threshold: "conservative_assumption" | "suspend";
@@ -5372,11 +5447,13 @@ type AutobuildPolicy = {
               source_priority: string[];                // 资料与证据冲突时的取值顺序
               max_fix_rounds: 1 | 2 | 3 };
   boundary_text: string;          // 硬性不做，只读
+  optional_nodes: { id: string; name: string; under: string | null; order: number }[];   // AB-01 只读：「包括可选步骤」可能多做的节点
+  until_order: number | null;     // AB-01 只读：until_node 排第几；order 比它大的不做，开关只列剩下的，不剩时不显示
 };
 
 type AutobuildPreview = {
   preview_token: string; expires_at: time;
-  slices: { id: string; name: string; current: string; included: boolean }[];
+  slices: { id: string; name: string; current: string; included: boolean }[];   // 一个节点一行
   budget: AutobuildPolicy["budget"]; below_threshold_text: string;
   warnings: string[]; queued: boolean; queue_position: number | null;
   busy: { conversation_id: string; waiting: boolean } | null;
@@ -5386,11 +5463,11 @@ type AutobuildRunSummary = {
   run_id: string; run_no: number;
   state: "queued" | "running" | "pausing" | "paused" | "stopping" | "converting" | "converted"
        | "completed" | "stopped" | "budget_exhausted" | "failed" | "interrupted";
-  current: { slice_id: string; slice_name: string; step_label: string } | null;
+  current: { slice_id: string; slice_name: string; step_label: string } | null;   // 当前单元（节点）
   elapsed_ms: number; est_total_ms: number | null;
   tokens: { used: number; limit: number };
   cost: { used: Money; budget: Money };
-  slices: { done: number; total: number };
+  slices: { done: number; total: number };   // 全部单元
   decisions: number; suspended: number; needs_review: number;
   started_at: time; ended_at: time | null;
 };
@@ -5401,10 +5478,12 @@ type AutobuildRun = AutobuildRunSummary & {
   checks: { errors: number; warnings: number };
   scenarios: { passed: number; total: number };
   fix_rounds: { used: number; limit: number };
-  matrix: { slice_id: string; slice_name: string;
-            cells: Record<"object" | "operation" | "rule" | "check" | "scenario", "confirmed" | "auto" | "running" | "queued" | "skipped">;
+  matrix: { slice_id: string; slice_name: string;   // 每个单元一行
+            state: "queued" | "running" | "done" | "partial" | "skipped";
+            cells: Record<string, "confirmed" | "auto" | "running" | "queued" | "skipped">;   // 只有按段的老运行有，键是 stages 的 id
             result: string }[];
-  tail_text: string;              // 「跑完全部分段后：合规检查（发布前，留给你）」
+  stages: { id: string; label: string }[];   // 按段的老运行的步骤列（对象、操作…）；新运行为 []
+  tail_text: string;              // 恒为 ""（节点都在 matrix 里）
   scope_lock_text: string;
   recovered_from_checkpoint: number;
   report_available: boolean;
@@ -5438,13 +5517,13 @@ type AutobuildReport = {
   started_at: time; ended_at: time;
   recovered_restarts: number;     // 「中途服务重启 1 次，已从检查点自动续跑」
   metrics: { duration_ms: number; budget_duration_ms: number;
-             slices: { done: number; total: number; partial: string[] };
+             slices: { done: number; total: number; partial: string[] };   // 全部单元
              produced: { objects: number; operations: number; rules: number };
              checks: { errors: number; warnings: number };
              scenarios: { passed: number; total: number; suspended_failures: number };
              decisions: { total: number; high_confidence: number; needs_look: number };
              suspended: number; cost: Money; tokens: number; budget: Money };
-  slices: { slice_id: string; name: string; result: "done" | "partial" | "skipped"; result_text: string;
+  slices: { slice_id: string; name: string; result: "done" | "partial" | "skipped"; result_text: string;   // 每个单元一行
             produced_text: string; scenarios: { passed: number; total: number };
             version_label: string; revertible: boolean }[];
   note: string;                   // 「产出已确认生效并标「需复核」；复核完之前，发布检查会提醒你」

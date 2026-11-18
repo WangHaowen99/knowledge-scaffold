@@ -117,7 +117,7 @@ def test_template_placeholders_are_not_unresolved_links(tmp_path: Path):
 
 
 def test_action_conditions_must_use_declared_probes():
-    """动作的条件 when 用到的探针要声明：装配时没声明的报问题（端到端验证：「追加分析」只在有资料分析报告时出现）。"""
+    """动作的条件 when 用到的探针要声明：装配时没声明的报问题（端到端验证：「追加资料分析」只在有资料分析报告时出现）。"""
     import yaml
 
     from app.services.flow import assemble
@@ -125,7 +125,8 @@ def test_action_conditions_must_use_declared_probes():
     toolkit = Path(config.ASSETS_DIR) / "workspace-toolkit"
     core = yaml.safe_load((toolkit / "flow.yaml").read_text(encoding="utf-8"))
     research = next(node for node in core["nodes"] if node["id"] == "core.research")
-    assert next(action for action in research["actions"] if action["label"] == "追加分析")["when"] == ["research_report"]
+    assert next(action for action in research["actions"] if action["label"] == "追加资料分析")["when"] == ["research_report"]
+    assert next(action for action in research["actions"] if action.get("verify"))["when"] == ["research_report"]
     bad = {"nodes": [{"id": "sample.check", "title": "合成检查", "kind": "agent", "placement": "on_demand",
                       "section": "on_demand", "entry": {"command": "/sample-check"},
                       "actions": [{"label": "检查", "command": "/sample-check", "when": ["no_such_probe"]}]}]}

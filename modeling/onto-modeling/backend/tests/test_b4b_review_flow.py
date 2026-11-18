@@ -94,16 +94,14 @@ def test_15_dismissing_an_item_does_not_hide_the_next_occurrence(env):
     main_write(root, "ontology/operation/补货.md", "# 补货\n\n## 业务描述\n\n合成\n")
     view.build(root)
     main_write(root, "ontology/object/仓库.md", obj("仓库", "上游变了"))
-    item = inbox.find(workspaces, project_id, "stale:core.model")
+    item = inbox.find(workspaces, project_id, "stale:core.operation")
     inbox.dismiss(root, item["id"], by="employee_0001", fingerprint=item["_fp"])
-    assert inbox.find(workspaces, project_id, "stale:core.model")["_dismissed"] is True
-    from app.services.flow import slices
-
-    slices.confirm(root, flow_model.load_for(root), [["all", "operation"]], doc=None)
-    assert inbox.find(workspaces, project_id, "stale:core.model") is None
+    assert inbox.find(workspaces, project_id, "stale:core.operation")["_dismissed"] is True
+    node_state.confirm(root, flow_model.load_for(root), ["core.operation"])
+    assert inbox.find(workspaces, project_id, "stale:core.operation") is None
     main_write(root, "ontology/object/客户.md", obj("客户", "上游又变了"))
     items, _counts, _today = inbox.listing(workspaces, project_id)
-    assert "stale:core.model" in [entry["id"] for entry in items]
+    assert "stale:core.operation" in [entry["id"] for entry in items]
 
 
 # ---- 18 IN-04 刷新过期节点选成了最下游 ----
@@ -129,7 +127,7 @@ def test_18_refresh_stale_starts_the_most_upstream_node(env, monkeypatch):
     monkeypatch.setattr(flow_routes, "start_node", fake_start)
     monkeypatch.setattr(inbox.time, "time", lambda: 1_800_000_000.0)
     response = client.post(f"/api/v1/projects/{project_id}/inbox/batch", json={"action": "refresh_stale"}).json()
-    assert started == ["core.model"], response
+    assert started == ["core.operation"], response
 
 
 # ---- 21 重做并确认生效后需复核标记不去掉 ----
@@ -141,9 +139,9 @@ def test_21_confirming_a_redone_node_clears_its_review_flag(env):
     main_write(root, "ontology/operation/补货.md", "# 补货\n\n## 业务描述\n\n合成\n")
     flow = flow_model.load_for(root)
     node_state.compute(root, flow, flow_model.flow_state(root).node_hits(flow, root))
-    node_state.mark_needs_review(root, ["core.model"], "import", note="导入")
+    node_state.mark_needs_review(root, ["core.object"], "import", note="导入")
     main_write(root, "ontology/object/门店.md", obj("门店", "重做后的门店"))
-    node_state.confirm(root, flow, ["core.model"])
+    node_state.confirm(root, flow, ["core.object"])
     assert node_state.reviews(root) == []
 
 
@@ -169,8 +167,8 @@ def test_22_review_actions_and_change_list_metamodel(env, monkeypatch):
     # 不是自主构建的需复核项没有「撤回这一段」
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))
     main_write(root, "ontology/operation/补货.md", "# 补货\n\n## 业务描述\n\n合成\n")
-    node_state.mark_needs_review(root, ["core.model"], "import")
-    review = inbox.find(workspaces, project_id, "review:core.model")
+    node_state.mark_needs_review(root, ["core.object"], "import")
+    review = inbox.find(workspaces, project_id, "review:core.object")
     assert "revert_slice" not in review["actions"]
     # 变更清单的影响条目按项目锁定版本的元模型认目录
     from app.kernel import metamodel

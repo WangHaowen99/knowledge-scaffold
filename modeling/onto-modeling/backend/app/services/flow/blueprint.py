@@ -331,62 +331,8 @@ def mark_confirmed(manager, project_id: str, *, actor: str) -> dict:
 
 
 def first_command(manager, project_id: str) -> tuple[str, dict]:
-    """「开始第一段」：第一段（全量模式不带分段）的对象提取。"""
-    doc = load_doc(manager.project_root(project_id))
-    module = script(manager.project_root(project_id))
-    live = module.live_slices(doc)
-    if module.mode(doc) == "sliced" and live:
-        return "/ontology-extract-object", {"slice": live[0]["id"]}
+    """蓝图卡上的「开始建模」：提取对象（不再分段，不带分段参数）。"""
     return "/ontology-extract-object", {}
-
-
-def run_slices(manager, project_id: str) -> list[dict]:
-    """按段执行用的分段列表（自主构建 B5b）：按建议顺序、没排除的段，带依赖、这一段的说明与现在的进度。
-
-    [{id, name, core_flow, depends_on, brief, group, stages}]；没有蓝图或全量模式时是一段「全部」。
-    说明（brief）与建模命令在工作区里 `blueprint.py brief <段>` 输出的是同一份。"""
-    from . import model, slices
-
-    root = manager.project_root(project_id)
-    doc = effective_doc(manager, project_id)
-    module = script(root)
-    computed = slices.compute(root, model.load_for(root), doc=doc, persist=False) or {}
-    states = {item["id"]: item for item in computed.get("slices") or []}
-    items = module.live_slices(doc) if module.mode(doc) == "sliced" else [dict(slices.FULL_SLICE)]
-    out = []
-    for item in items:
-        state = states.get(item["id"]) or {}
-        out.append({"id": item["id"], "name": item["name"], "core_flow": item.get("core_flow") or "",
-                    "depends_on": list(item.get("depends_on") or []), "brief": module.brief(doc, item["id"]),
-                    "group": state.get("group") or "todo", "stages": state.get("stages") or {}})
-    return out
-
-
-def drop_added_members(root: Path, slice_id: str, parent: bytes | None, merged: bytes | None,
-                       current: bytes | None) -> bytes | None:
-    """按段撤回（审查 L）：这一段合入时新记进蓝图的条目（合入提交比它的上一版多出来的）从现在的蓝图里去掉，
-    别的不动。没有要去掉的、蓝图读不出时返回 None（蓝图不动）。"""
-    if not merged or not current:
-        return None
-    module = script(root)
-    try:
-        before = module.find_slice(module.parse(parent.decode("utf-8")), slice_id) if parent else None
-        after = module.find_slice(module.parse(merged.decode("utf-8")), slice_id)
-        doc = module.parse(current.decode("utf-8"))
-    except (AttributeError, UnicodeDecodeError, module.BlueprintError):
-        _log.warning("撤回分段 %s 时蓝图读不出，蓝图不动", slice_id, exc_info=True)
-        return None
-    target = module.find_slice(doc, slice_id)
-    if after is None or target is None:
-        return None
-    changed = False
-    for field in module.MEMBER_FIELDS.values():
-        added = set(after.get(field) or []) - set((before or {}).get(field) or [])
-        kept = [name for name in target.get(field) or [] if name not in added]
-        if added and kept != list(target.get(field) or []):
-            target[field] = kept
-            changed = True
-    return module.dumps(doc).encode("utf-8") if changed else None
 
 
 def autobuild_preview(manager, project_id: str, blueprint_view: dict, *, actor: str) -> dict:

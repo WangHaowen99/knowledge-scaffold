@@ -194,7 +194,7 @@ test('R-01：按流程图 / 表格 / 其他资料分组，含修订通知和扫�
   assert.ok(names.includes('09-修订通知.docx') && names.includes('07-门店C特殊需求.pdf'));
   const rev = all(r).find((x) => x.name === '09-修订通知.docx');
   assert.equal(rev.is_revision, true);
-  assert.equal(rev.revision_task.conversation_id, 'c7a1e2f03b44');
+  assert.equal(rev.revision_task, null, '后端从不给 revision_task');
   assert.ok(!('scanned' in rev), '不把 mock 自用字段漏给页面');
   assert.equal(all(r).find((x) => x.path === R02).referenced, 13);
   assert.equal(r.body.purposes.length, 5);
@@ -210,7 +210,7 @@ test('读资料中只有最早那 7 份、没有引用；还没传资料时为�
   assert.equal(all(fakeServer('materials-empty').call('GET', '/resources')).length, 0);
 });
 
-test('R-02：修订资料发起增量更新（同一批只一次），跑完挂上变更点；同名替换保留原路径和用途；格式不对 415', () => {
+test('R-02：修订资料收下不处理（同后端：不另外发增量更新命令、不挂变更点）；同名替换保留原路径和用途；格式不对 415', () => {
   mock.timers.enable({ apis: ['setTimeout'] });
   try {
     const s = fakeServer();
@@ -221,14 +221,14 @@ test('R-02：修订资料发起增量更新（同一批只一次），跑完挂�
     assert.equal(a.status, 201);
     assert.equal(a.body.material.path, 'resource/others/13-配额调整通知.docx');
     assert.equal(a.body.version_label, 'v0.13');
-    assert.equal(a.body.command_task.origin.page, 'resources');
-    assert.equal(b.body.command_task.task_id, a.body.command_task.task_id);
+    assert.equal(a.body.command_task, null);
+    assert.equal(b.body.command_task, null);
     assert.ok(s.events.some((e) => e.type === 'workspace.changed' && e.data.source === 'web'));
-    assert.ok(s.events.some((e) => e.type === 'message.user' && /发起增量更新/.test(e.data.text)));
+    assert.ok(!s.events.some((e) => e.type === 'message.user'), '不往对话里发命令');
     mock.timers.tick(3000);
-    assert.equal(s.tasks.at(-1).state, 'done');
+    assert.equal(s.tasks.length, 0);
     const rev = all(s.call('GET', '/resources')).find((x) => x.name === '13-配额调整通知.docx');
-    assert.match(rev.revision_task.label, /变更点/);
+    assert.equal(rev.revision_task, null);
     assert.ok(s.call('GET', '/materials/map').body.items.some((x) => x.name === '13-配额调整通知.docx'), '资料地图同步加一份');
 
     s.ctx.db.uploads.set('up-3', { filename: '06-商品品类表.xlsx', size: 4096 });

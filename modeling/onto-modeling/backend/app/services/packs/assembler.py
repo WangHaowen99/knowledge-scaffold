@@ -42,7 +42,8 @@ from .repository import PackRepository, file_sha256, pack_files, verify_checksum
 MANIFEST_JSON = "MANIFEST.json"
 # 纯数据包（行业包、系统知识包）在装配目录里的子目录
 DATA_PACK_DIR = "industry"
-ASSEMBLY_FORMAT = 1
+# 装配目录的格式；改了它哈希跟着变，所有项目在启动核对时重新装配。2：节点带 need（节点模型重构 2a）
+ASSEMBLY_FORMAT = 2
 CORE = "core"
 
 
@@ -240,8 +241,9 @@ class Assembler:
         flow = None
         if flows:
             available = {name for _, manifest, _ in plan.packs for name in manifest.items("commands")}
+            official = {entry.name for entry, _, _ in plan.packs if self.repository.is_builtin(entry.name, entry.version)}
             try:
-                flow = flow_assemble.assemble(flows, available_commands=available)
+                flow = flow_assemble.assemble(flows, available_commands=available, trusted=official)
             except flow_assemble.FlowAssemblyError as exc:
                 raise AssemblyError("flow", exc.problems) from exc
             _fsync_write(staging / "flow.yaml", flow_assemble.render(flow))

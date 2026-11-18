@@ -94,9 +94,9 @@ def test_core_no_longer_carries_split_out_commands_and_keeps_knowledge_loading()
     assert (toolkit / "scripts" / "knowledge_helper.py").is_file()
     assert not (toolkit / "agents" / "knowledge-conflict-agent.md").exists()
     assert "KNOWLEDGE_SEDIMENTATION.md" not in (toolkit / "BUSINESS_KNOWLEDGE_SNIPPET.md").read_text(encoding="utf-8")
-    # 增量更新留在 core，作为按需节点（第 16 项）
+    # 增量更新留在 core（第 16 项），是上传了新资料时出现的条件节点（节点模型重构 2a）
     flow = (toolkit / "flow.yaml").read_text(encoding="utf-8")
-    assert "id: core.update" in flow and "placement: on_demand" in flow
+    assert "id: core.update" in flow and "need: {when: materials_added}" in flow
     for dead in ("generate_overview.py", "split_drawio.py", "summary_to_drawio.py"):
         assert not (toolkit / "scripts" / dead).exists()
 
@@ -112,8 +112,8 @@ def test_new_project_enables_default_capabilities(env):
     assert "domain-extend-add" not in commands  # 可选包不默认启用
     flow = json.loads((root / ".claude" / "flow.yaml").read_text(encoding="utf-8"))
     assert [node["id"] for node in flow["nodes"]] == [
-        "core.research", "diagram.flowchart", "core.model", "core.metric", "core.validate", "trace.trace",
-        "codegen.codegen", "codegen.solver", "core.publish", "core.update"]
+        "core.research", "diagram.flowchart", "core.object", "core.operation", "core.update", "core.metric",
+        "core.validate", "trace.trace", "codegen.codegen", "codegen.solver", "core.publish"]
     assert flow["commands"]["trace"]["node"] == "trace.trace" and flow["commands"]["flowchart"]["node"] == "diagram.flowchart"
     assert "ontology-codegen-scan" in flow["available_commands"]
 
@@ -127,10 +127,9 @@ def test_core_only_project_assembles_and_filters_suggestions(env):
                                "ontology-update", "ontology-impact", "ontology-query", "ontology-overview", "version"}
     flow = json.loads((root / ".claude" / "flow.yaml").read_text(encoding="utf-8"))
     assert [node["id"] for node in flow["nodes"]] == [
-        "core.research", "core.model", "core.metric", "core.validate", "core.publish",
-        "core.update"]
-    model = next(node for node in flow["nodes"] if node["id"] == "core.model")
-    assert [step["id"] for step in model["steps"]] == ["object", "operation", "rule", "check"]  # 没有「场景」
+        "core.research", "core.object", "core.operation", "core.update", "core.metric", "core.validate",
+        "core.publish"]
+    assert not any(node.get("steps") or node.get("per_slice") for node in flow["nodes"])  # 不再分段，也没有「场景」一步
     suggested = {item.get("command") for items in flow["next_steps"].values() for item in items}
     assert not suggested & {"/ontology-mock", "/ontology-trace", "/ontology-codegen", "/ontology-flowchart"}
     # 「完成」之后不再推荐扫描脚本候选（代码生成与求解包没启用）
@@ -143,10 +142,11 @@ def test_core_only_project_assembles_and_filters_suggestions(env):
     # 主线下一步是发布
     assert body["suggestions"]["primary"]["action"] == {"type": "navigate", "page": "publish"}
     assert next(node for node in body["nodes"] if node["id"] == "core.validate")["title"] == "校验"
-    # 发布做完：整体视图，不推荐扫描脚本候选
+    # 发布做完：推可选节点（只有 core 的提取规则与指标），不推荐扫描脚本候选（代码生成没启用），也不再推整体视图
     proc.run(["git", "tag", "release/0.1.0"], cwd=root, check=True, capture_output=True)
     body = client.get(f"/api/v1/projects/{root.name}/flow").json()
-    assert body["suggestions"]["primary"]["action"]["command"] == "/ontology-overview"
+    assert body["suggestions"]["primary"]["action"]["command"] == "/ontology-extract-rule-metric"
+    assert body["suggestions"]["primary"]["label"] == "提取规则与指标"
     assert body["suggestions"]["secondary"] == []
     # 场景模拟没启用：代码生成挂在质量检查之后
     enabled = client.post(f"/api/v1/projects/{root.name}/packs", json={"name": "codegen"})

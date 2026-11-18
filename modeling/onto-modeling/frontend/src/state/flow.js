@@ -21,9 +21,16 @@ export function normalizeFlow(raw) {
   (sections || []).forEach((s) => (s.nodes || []).forEach((id) => { sectionOf[id] = s.id; }));
   const nodes = (raw.nodes || []).map((n) => {
     const state = n.state || 'not_ready';
+    // 节点什么时候要做（need）、上不上导航栏（nav）、挂在哪个必需节点下（under）：老响应没有时按 optional、placement 推；
+    // 条件节点出现在流程里就是条件成立了，上导航栏
+    const need = n.need || (n.optional ? 'optional' : 'required');
+    const mainline = need === 'required' && ['spine', 'step', 'gate'].includes(n.placement || 'spine');
     return {
       kind: 'agent',
       placement: 'spine',
+      need,
+      nav: (mainline || isWhen(need)) && !n.flags?.disabled,
+      under: null,
       flags: { needs_review: false, disabled: false, backfill: false },
       progress: null,
       version: '',
@@ -71,9 +78,6 @@ export function mergeFlow(flow, patch) {
   return { ...flow, flow_hash: patch.flow_hash || flow.flow_hash, nodes, slices };
 }
 
-// 主线节点按边的顺序排（只放 spine / step / gate；已停用的包的节点不进进度条）。
-// 同一锚点后面挂了两个以上主线节点（节点包串入的一步和场景模拟都挂在质量检查之后）时连线排不出唯一顺序，
-// 按后端给的节点顺序（组装时已按锚点与包顺序排好）
 // 顶栏轨迹的样式：已完成的几种显示态（需复核、自主完成、通过）都打勾；可补做（导入后越过的资料分析等，ADR-0084）不算待办，淡显；
 // 过期是做过、上游改了要重跑，和没做过的空圈分开（原来画成空圈，看着像流程往回退）
 const TRACK_CLASS = {
@@ -82,24 +86,84 @@ const TRACK_CLASS = {
 };
 export const trackClass = (displayState) => TRACK_CLASS[displayState] || '';
 
+export const isWhen = (need) => !!need && typeof need === 'object' && !!need.when;
+
+// 导航栏：上导航栏（nav）的节点按流程顺序（后端按 after、before 排好的节点顺序）；条件节点（条件成立时才在流程里）
+// 排在它挂的节点（under）后面。已停用的包的节点不上
 export function trackNodes(flow) {
   if (!flow) return [];
-  const spine = flow.nodes.filter((n) => ['spine', 'step', 'gate'].includes(n.placement) && !n.flags?.disabled);
-  const ids = new Set(spine.map((n) => n.id));
-  const next = new Map();
-  const hasIn = new Set();
-  let forked = false;
-  (flow.edges || []).forEach((e) => {
-    if (!ids.has(e.from) || !ids.has(e.to)) return;
-    if (next.has(e.from) && next.get(e.from) !== e.to) forked = true;
-    next.set(e.from, e.to); hasIn.add(e.to);
+  const nav = flow.nodes.filter((n) => n.nav && !n.flags?.disabled);
+  const ids = new Set(nav.map((n) => n.id));
+  const hangs = (n) => isWhen(n.need) && !!n.under && ids.has(n.under) && n.under !== n.id;
+  const out = [];
+  nav.filter((n) => !hangs(n)).forEach((n) => {
+    out.push(n);
+    nav.filter((x) => hangs(x) && x.under === n.id).forEach((x) => out.push(x));
   });
-  if (forked) return spine;
-  const order = [];
-  let cur = spine.find((n) => !hasIn.has(n.id))?.id;
-  while (cur && !order.includes(cur)) { order.push(cur); cur = next.get(cur); }
-  spine.forEach((n) => { if (!order.includes(n.id)) order.push(n.id); });
-  return order.map((id) => spine.find((n) => n.id === id));
+  return out;
+}
+
+// 动作的去处：斜杠命令发到对话（S-20）；页面编号（「发布」的 publish）跳页；别的文字（「核验资料分析报告」那句指令）当普通消息发
+export function actionKind(action) {
+  const target = String(action?.target || '').trim();
+  if (target.startsWith('/')) return 'command';
+  if (!action?.verify && /^[a-z][a-z0-9-]*$/.test(target)) return 'page';
+  return 'message';
+}
+
+// 节点下拉里这个节点自己的按钮（FL-01 actions，动作的 when 后端已经筛过）：主命令在前、变体在后。
+// 过期时后端在最前面多给一条 refresh（叫节点名，发只查改动条目的命令），它顶替主命令；跳过、恢复、旧的「去确认」不在这里
+export function nodeButtons(node) {
+  const acts = (node?.actions || []).filter((a) => ['start', 'refresh'].includes(a.kind) && String(a.target || '').trim());
+  const refresh = acts.find((a) => a.kind === 'refresh');
+  const starts = acts.filter((a) => a.kind === 'start');
+  const primary = refresh || starts.find((a) => !a.hook && a.label === node.title) || starts[0];
+  if (!primary) return [];
+  const rest = starts.filter((a) => a !== primary && !(a.label === primary.label && !a.hook));
+  return [primary, ...rest].map((a) => ({
+    label: a.label, target: String(a.target).trim(), kind: actionKind(a), primary: a === primary, reason: a.reason || '',
+  }));
+}
+
+// 可选节点「点名字就开始」：面板节点（求解适配，没有对话入口）去声明了这个节点的插件页；有斜杠命令的发它的主命令
+// （过期时发 refresh 那条）；其余（脚本、人工节点）调 FL-05
+export function optionalStart(node, pages = []) {
+  if (node.panel) {
+    const page = (pages || []).find((p) => (p.data?.nodes || []).includes(node.id));
+    return page ? { kind: 'page', page: page.id, params: { node: node.id } } : null;
+  }
+  const [first] = nodeButtons(node);
+  if (first?.kind === 'command') return { kind: 'command', label: node.title, target: first.target };
+  return { kind: 'node', id: node.id };
+}
+
+/**
+ * 导航栏节点的下拉（FL-01）：
+ * - buttons：这个节点的按钮（nodeButtons）；
+ * - optional：挂在它下面（under）的可选节点，每行名字、状态、一个小按钮（没跳过时「跳过」FL-03，跳过了「恢复」FL-04）；
+ *   面板节点只给状态，没有小按钮；
+ * - endRound：条件节点多一项「这一轮不处理」（FL-03）；
+ * - direct：只有一个跳页面的按钮、别的都没有（发布）时不做下拉，点节点名直接去；
+ * - empty：什么都没有，不做下拉。
+ */
+export function navMenu(flow, node, pages = []) {
+  const buttons = nodeButtons(node);
+  const optional = (flow?.nodes || [])
+    .filter((n) => n.need === 'optional' && !n.nav && n.under === node.id && !n.flags?.disabled)
+    .map((n) => ({
+      id: n.id,
+      title: n.title,
+      display_state: n.display_state,
+      op: n.panel ? null : n.state === 'skipped' ? 'restore' : 'skip',
+      start: optionalStart(n, pages),
+    }));
+  const endRound = isWhen(node.need);
+  const lone = buttons.length === 1 && buttons[0].kind === 'page' && !optional.length && !endRound;
+  return {
+    buttons, optional, endRound,
+    direct: lone ? buttons[0] : null,
+    empty: !buttons.length && !optional.length && !endRound,
+  };
 }
 
 // 命令文本 → S-20 的 {command, args, text}：`键=值` 进 args，其余词是 text；
@@ -115,6 +179,12 @@ export function commandFromTarget(target) {
     else words.push(w);
   });
   return { command: parts[0], ...(Object.keys(args).length ? { args } : {}), text: words.join(' ') };
+}
+
+// 全部命令（S-18）的条目 → S-20 请求体：发条目的完整命令文本（target，「/ontology-research 追加」），带上按钮名；
+// 对话里的名字由服务端按名字表取。老响应没有 target 时发命令名
+export function catalogCommand(item) {
+  return { ...commandFromTarget(item?.target || item?.command), display_label: item?.label || '' };
 }
 
 // 建议条的 send 动作 → S-20 请求体：建模的下一步给 command + args、text 为空串（contract-changes B4d 第 14 条），
@@ -148,10 +218,12 @@ export function overlayRunning(flow, nodeId) {
   return { ...flow, nodes: flow.nodes.map((n) => (n.id === nodeId ? { ...n, state: 'running', display_state: 'running' } : n)) };
 }
 
-// F8 起不分段：建模只有一段「全部」（id all），界面上不提它，要有个叫法时叫「建模」。
-// F8 之前按段跑的运行记录、锁里还带着分段名，照原名显示
+// 自主构建的单元（契约里的 slice_id、slice）：现在一个节点一个单元，编号带包名前缀（core.object）；老运行按段，
+// F8 之后只有一段「全部」（id all），之前是 s1、s2……。「全部」界面上不提，要有个叫法时叫「建模」；真的分段照原名显示
 export const FULL_SLICE_ID = 'all';
-export const sliceName = (id, name) => (id === FULL_SLICE_ID ? '' : name || '');
+export const isNodeUnit = (id) => !!id && id.includes('.');
+// 这是老运行里真的一段时给段名（用在「这一段」「分段」的说法上），全部、节点都给空
+export const sliceName = (id, name) => (id === FULL_SLICE_ID || isNodeUnit(id) ? '' : name || '');
 export const unitTitle = (id, name) => (id === FULL_SLICE_ID ? '建模' : name || '');
 // 一组行里有两段以上真的分段（老运行）时才出「分段」的列和说法
-export const multiSlice = (ids) => (ids || []).filter((id) => id && id !== FULL_SLICE_ID).length > 1;
+export const multiSlice = (ids) => (ids || []).filter((id) => sliceName(id, id)).length > 1;

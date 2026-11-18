@@ -11,7 +11,7 @@
 - 合入（`merge`）：`merge-tree --write-tree` 叠到最新主线 → 按实体检测冲突 → 合成树上跑检查（只看新增问题，
   只记录不拦，发布时才拦）→ 经写入事务（ChangeTx）在主线写一个 squash 提交，trailer 写在这个合入提交上；
 - 撤回这一轮（`revert_round`）：合入过的写反向提交（之后又被改过的不硬撤）；冲突中还没合入的重置副本；
-- 撤回已合入的变更集（`revert_merged`，也给 P3 自主构建撤回单段）：在主线上写反向提交；
+- 撤回已合入的变更集（`revert_merged`，也给 P3 自主构建撤回一步）：在主线上写反向提交；
 - 写入范围锁（`scope_lock`）：助手在跑时节点声明的 `produces`，加副本里已改的实体与产物，加等你决定的
   决策卡改动预览里列出的条目，持续到这一轮合入（冲突时到选好保留哪边）。
 
@@ -251,15 +251,10 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
         snap = worktree.snapshot(copy)
         changes = [(status, rel) for status, rel in (worktree.diff(root, base, snap) if base else [])
                    if not worktree.is_protected(rel)]
-        if not running and changes and _assign_to_slice(copy, exec_record, changes):
-            # 这一段新建的条目记进蓝图的这一段（B4d）：蓝图也改了，重新取一次快照
-            snap = worktree.snapshot(copy)
-            changes = [(status, rel) for status, rel in worktree.diff(root, base, snap)
-                       if not worktree.is_protected(rel)]
         record = store.current(root)
         if not changes:
             if record is not None and record["state"] in ("open", "pending_confirm") and record.get("tree"):
-                # 助手把改动又改回去了：这个变更集是空的，悄悄关掉。先占着、还没改过的（自主构建的一段）不关
+                # 助手把改动又改回去了：这个变更集是空的，悄悄关掉。先占着、还没改过的（自主构建的一步）不关
                 closed = store.update(root, record["id"], state="discarded", closed_at=time.time(), empty=True)
                 _notify(project_id, "changeset", closed)
             return None
@@ -291,15 +286,6 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
             updates = {"nodes": nodes, "execs": execs, "node_trailer": _node_trailer(exec_record)}
             if not record.get("purpose"):
                 updates["purpose"] = _purpose(exec_record)
-            slice_ref, step = exec_record.get("slice"), exec_record.get("step")
-            if isinstance(slice_ref, dict) and slice_ref.get("id") and step:
-                # 按段的节点：记下这个变更集做了哪一段哪一步（合入时这一段这一步记为确认过）
-                pairs = [list(pair) for pair in record.get("slice_steps") or []]
-                if [slice_ref["id"], step] not in pairs:
-                    pairs.append([slice_ref["id"], step])
-                updates["slice_steps"] = pairs
-                if not record.get("slice_id"):
-                    updates["slice_id"] = slice_ref["id"]
             record = store.update(root, record["id"], **updates)
     if checks and (record.get("checks") or {}).get("tree") != snap:
         try:
@@ -313,40 +299,10 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
     return record
 
 
-def _assign_to_slice(copy: Path, exec_record: dict | None, changes: list[tuple[str, str]]) -> bool:
-    """分段建模时，这一轮新建、还不属于任何一段的对象、操作、规则记进这一段（副本里的蓝图）。"""
-    slice_ref = (exec_record or {}).get("slice")
-    if not isinstance(slice_ref, dict) or not slice_ref.get("id") or slice_ref["id"] == "all":
-        return False
-    from ...services.flow import blueprint
-
-    model = _model(copy)
-    entries = []
-    for status, rel in changes:
-        key = model.entry_key(rel) if status == "A" else None
-        if key and key.split(":", 1)[0] in ("object", "operation", "rule"):
-            kind, _, stem = key.partition(":")
-            entries.append((kind, model.decode_filename(stem)))
-    if not entries:
-        return False
-    module = blueprint.script(copy)
-    try:
-        doc = module.load(copy)
-        if doc is None or module.mode(doc) != "sliced":
-            return False
-        doc, added = module.assign(doc, slice_ref["id"], entries)
-        if added:
-            module.save(copy, doc)
-        return bool(added)
-    except (OSError, module.BlueprintError):
-        _log.warning("新条目记进分段 %s 失败", slice_ref.get("id"), exc_info=True)
-        return False
-
-
 def open_changeset(manager, project_id: str, *, source: str = "assistant", build_mode: str = "L2",
                    purpose: str = "", conversation_id: str | None = None, run_id: str | None = None,
                    slice_id: str | None = None) -> dict:
-    """先占一个变更集（P3 自主构建每段开始前调：source="autobuild"、build_mode="L4"、run_id、slice_id）。
+    """先占一个变更集（P3 自主构建每个单元开始前调：source="autobuild"、build_mode="L4"、run_id、slice_id 记单元）。
 
     已有没关闭的变更集时返回它（同一项目同一时刻只有一个）；之后 `observe` 往里记改动。
     """
@@ -553,8 +509,9 @@ def round_card(manager, project_id: str, record: dict, card_id: str) -> dict:
         "open": None,
         "changeset_id": record["id"],
         "change_list_id": record.get("change_list_id"),
+        # pending（指向按段规划、还没建的内容的链接数）随分段去掉，恒为 0
         "checks": {"errors": int(checks.get("errors") or 0), "warnings": int(checks.get("warnings") or 0),
-                   "pending": int(checks.get("pending") or 0)},
+                   "pending": 0},
         "hints": ([{"tone": "warn", "text": "助手没提交完，平台代存了这一轮，检查没过的在待处理里"}]
                   if record.get("collected") and int(checks.get("errors") or 0) else []) + check_hints(checks),
         "groups": [{"kind": kind, "label": GROUP_LABELS[kind], "items": groups[kind]}
@@ -569,13 +526,8 @@ def round_card(manager, project_id: str, record: dict, card_id: str) -> dict:
 
 
 def check_hints(checks: dict) -> list[dict]:
-    """检查结果 → 卡片上的提示 [{tone: info|warn, text}]：待建的链接（info）、找不到对象的链接、其余按类别数错误。"""
+    """检查结果 → 卡片上的提示 [{tone: warn, text}]：找不到对象的链接、其余按类别数错误。"""
     hints = []
-    pending = checks.get("pending_links") or []
-    if pending:
-        numbers = sorted({int(item.get("slice_no") or 0) for item in pending if item.get("slice_no")})
-        where = f"第 {'、'.join(str(number) for number in numbers)} 段" if numbers else ""
-        hints.append({"tone": "info", "text": f"{len(pending)} 处指向{where}待建的内容"})
     findings = checks.get("findings") or []
     links = [item for item in findings if item.get("code") == gates.LINK_CATEGORY]
     if links:
@@ -696,7 +648,7 @@ def merge(manager, project_id: str, changeset_id: str, *, actor: str, expected_h
           choices: dict[str, str] | None = None, source: str | None = None, needs_review: bool = False,
           message: str | None = None, auto: bool = False) -> dict:
     """合入：一轮结束时的自动合入（`settle`，auto=True：会话宿主在这一轮收尾时调，不再查助手在不在跑）、
-    选好冲突后重试（CS-07）、自主构建按段自动合入（source="autobuild"、needs_review=True）。
+    选好冲突后重试（CS-07）、自主构建每一步自动合入（source="autobuild"、needs_review=True）。
 
     choices：合入冲突时用户选的 {路径或条目 ID: "mainline"|"changeset"}（CS-07）。
     检查（规则检查、插件声明的提交门禁）只记进变更集的 checks，不挡合入（F3）。
@@ -765,7 +717,7 @@ def _merged_tree(manager, project_id: str, root: Path, record: dict, main: str, 
             picks[rel] = main
     merged_tree = _tree_with(root, merged_tree, picks)
     if forbid_deletes:
-        # 自主构建硬性不做「删除已确认的内容」（详设 1.6 #2、8.5）：主线上已有的本体文件被删、被改名，这一段不合入
+        # 自主构建硬性不做「删除已确认的内容」（详设 1.6 #2、8.5）：主线上已有的本体文件被删、被改名，这一步不合入
         removed = [rel for status, rel in worktree.diff(root, main, merged_tree)
                    if status == "D" and rel.startswith("ontology/") and not _derived(rel)]
         if removed:
@@ -774,7 +726,7 @@ def _merged_tree(manager, project_id: str, root: Path, record: dict, main: str, 
         result = gates.compare(root, worktree.tree_of(root, main), merged_tree)
     except Exception:  # noqa: BLE001 - 检查跑不起来不挡合入（只提示），记一笔
         _log.warning("项目 %s 合入 %s 时检查没跑起来", project_id, record["id"], exc_info=True)
-        result = {"errors": 0, "warnings": 0, "findings": [], "pending": 0, "pending_links": [], "unavailable": True}
+        result = {"errors": 0, "warnings": 0, "findings": [], "unavailable": True}
     return merged_tree, result
 
 
@@ -853,8 +805,8 @@ def settle(manager, project_id: str, *, actor: str | None = None, announce: bool
            turn_over: bool = False) -> dict | None:
     """把没关闭的变更集合入成一个版本（F3：一轮结束、出错、被打断都合入，下一轮开始前、启动时补合遗留的）。
 
-    只管助手的变更集，和自主构建已经结束的运行留下的那一段（按段合入的口径：需复核、不许删已确认的内容）；运行没结束
-    的一段归运行器。冲突时记 conflict（进待处理）、不抛。返回 {state, record, version_label}；没有要合入的返回 None。
+    只管助手的变更集，和自主构建已经结束的运行留下的那一步（按它合入的口径：需复核、不许删已确认的内容）；运行没结束
+    的归运行器。冲突时记 conflict（进待处理）、不抛。返回 {state, record, version_label}；没有要合入的返回 None。
     announce 时合入后交给登记的通告方更新对话里的卡片（启动时用；会话宿主自己出卡）。
     turn_over：调用方知道这一轮已经结束（会话宿主收尾、下一轮开始前）；否则助手还在跑时不动（Studio 复核、执行清单
     这类入口也会经 `copy_for_turn` 走到这里，不能把跑到一半的修改合进去）。
@@ -871,7 +823,7 @@ def settle(manager, project_id: str, *, actor: str | None = None, announce: bool
     if autobuild and _run_active(project_id, record.get("run_id")):
         return None
     if not record.get("tree"):
-        # 先占着、还没改出东西（自主构建的一段）：关掉，版本不变
+        # 先占着、还没改出东西（自主构建的一步）：关掉，版本不变
         if autobuild:
             store.update(root, record["id"], state="discarded", closed_at=time.time(), empty=True)
         return None
@@ -917,17 +869,14 @@ def revert_round(manager, project_id: str, changeset_id: str, *, actor: str) -> 
         raise WorkspaceError("助手还在跑，先打断或等它停下", 409, "changeset_in_progress",
                              {"conversation_id": activity(project_id).get("conversation_id")})
     root = manager.project_root(project_id)
-    keep, rewrite = _blueprint_members_rewrite(root, record)
     try:
-        out = revert_merged(manager, project_id, changeset_id, actor=actor, source="revert", keep=keep,
-                            rewrite=rewrite)
+        out = revert_merged(manager, project_id, changeset_id, actor=actor, source="revert")
     except WorkspaceError as exc:
         if exc.code != "merge_conflict":
             raise
         names = "、".join(str(item.get("name") or item.get("key")) for item in (exc.details or {}).get("entities") or [])
         raise WorkspaceError(f"「{names}」在这一轮之后又改过，撤回会连同后来的修改一起撤掉，这一轮没有撤回", 409,
                              "merge_conflict", exc.details) from exc
-    _forget_slice_steps(root, record)
     try:
         from ...services.flow import change_lists
 
@@ -939,44 +888,8 @@ def revert_round(manager, project_id: str, changeset_id: str, *, actor: str) -> 
     return {"state": "reverted", "commit": out["commit"], "version_label": out["version_label"], "record": record}
 
 
-def _blueprint_members_rewrite(root: Path, record: dict) -> tuple[tuple[str, ...], dict]:
-    """按段建模的一轮会把新建的条目记进蓝图的这一段：撤回时只去掉这一轮记进去的，蓝图别的修改不动（同自主构建
-    按段撤回）；建出蓝图的那一轮（资料分析）整份撤回。"""
-    from ...services.flow import blueprint
-
-    steps = record.get("slice_steps") or []
-    commit = (record.get("merged") or {}).get("commit")
-    if not steps or not commit or worktree.read_blob(root, f"{commit}^", blueprint.BLUEPRINT_REL) is None:
-        return (), {}
-    slice_ids = list(dict.fromkeys(slice_id for slice_id, _step in steps if slice_id and slice_id != "all"))
-    if not slice_ids:
-        return (), {}
-
-    def members(parent: bytes | None, merged: bytes | None, current: bytes | None) -> bytes | None:
-        out = current
-        for slice_id in slice_ids:
-            out = blueprint.drop_added_members(root, slice_id, parent, merged, out) or out
-        return out if out != current else None
-
-    return (blueprint.BLUEPRINT_REL,), {blueprint.BLUEPRINT_REL: members}
-
-
-def _forget_slice_steps(root: Path, record: dict) -> None:
-    """撤回之后这一轮记过的段、步骤作废，按主线现状重算（条目没了就回到可开始）。"""
-    from ...services.flow import slices
-
-    by_slice: dict[str, list[str]] = {}
-    for slice_id, step in record.get("slice_steps") or []:
-        by_slice.setdefault(slice_id, []).append(step)
-    for slice_id, steps in by_slice.items():
-        try:
-            slices.forget(root, slice_id, steps)
-        except Exception:  # noqa: BLE001
-            _log.warning("撤回 %s 后段 %s 的记录没清掉", record["id"], slice_id, exc_info=True)
-
-
 def discard(manager, project_id: str, changeset_id: str, *, actor: str) -> dict:
-    """撤回还没合入的修改（合入冲突时、自主构建放弃一段）：副本分支与副本重置到主线，主线不受影响。"""
+    """撤回还没合入的修改（合入冲突时、自主构建放弃一步）：副本分支与副本重置到主线，主线不受影响。"""
     root = manager.project_root(project_id)
     with manager._project_lock(project_id):
         record = _require_open(manager, project_id, changeset_id)  # 锁里重读：合入可能刚做完（审查第 5 条）
@@ -995,12 +908,11 @@ REVERT_PREFIX = "revert: 撤回 "
 
 
 def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, source: str = "revert",
-                  keep: tuple[str, ...] = (), rewrite: dict | None = None) -> dict:
-    """撤回一个已经合入的变更集（P3 自主构建「按段撤回」）：在主线上写它的反向提交。
+                  keep: tuple[str, ...] = ()) -> dict:
+    """撤回一个已经合入的变更集（P3 自主构建撤回一步）：在主线上写它的反向提交。
 
     合入之后别的提交又改到了同一实体时不撤（`merge_conflict`，details 列出实体），免得把后来的修改一起撤掉。
-    keep 里的路径不整个撤（自主构建撤回一段时的建模蓝图：后面的段合入时也会改它）；rewrite 给这类路径算撤回后的内容
-    （`{路径: f(合入前, 合入后, 现在) -> bytes | None}`，None 表示不动），写在同一个反向提交里。
+    keep 里的路径不撤（自主构建撤回一步时的建模蓝图：它是资料分析的产物）。
     反向提交已经在主线上、记录还没标撤回（写完提交就出错）时补标，不再写一次。返回 {commit, version_label}。
     """
     from ..writepath import ChangeTx, Origin
@@ -1036,11 +948,6 @@ def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, so
             if data is None:
                 tx.remove(rel)
             else:
-                tx.write(rel, data)
-        for rel, compute in (rewrite or {}).items():
-            data = compute(worktree.read_blob(root, parent, rel), worktree.read_blob(root, commit, rel),
-                           worktree.read_blob(root, tx.base_head, rel))
-            if data is not None:
                 tx.write(rel, data)
         # 派生文件（index.md、脚本描述符）不按旧版本恢复：写入事务按撤回后的条目重新生成
         result = tx.commit(f"{REVERT_PREFIX}{record['id']}（{record.get('purpose') or '助手的修改'}）")
@@ -1088,7 +995,7 @@ def reconcile_merged(manager, root: Path) -> str | None:
         worktree.collect_state(root, copy)
         worktree.reset(root, copy, worktree.rev(root))
     now = time.time()
-    # 自主构建的一段：合入时本该带的「需复核」一起补上，并照常通知（节点、分段记成确认过并标需复核，审查 C）
+    # 自主构建的一步：合入时本该带的「需复核」一起补上，并照常通知（节点记成确认过并标需复核，审查 C）
     updated = store.update(root, record["id"], state="merged", closed_at=now, conflict=None,
                            needs_review=record.get("source") == "autobuild",
                            merged={"commit": commit, "version_label": _label(root, commit), "at": now})
@@ -1212,13 +1119,16 @@ def empty_scope() -> dict:
 
 
 def node_patterns(root: Path, node_ids: list[str]) -> list[str]:
-    """节点声明的输出与写入范围（produces、writes），按 fnmatch 用（`**` 当 `*`）。"""
+    """节点声明的输出与写入范围（produces、writes），按 fnmatch 用（`**` 当 `*`）。旧节点编号按 core 的别名认
+    （拆开之前的建模 core.model 认成提取操作，它的范围盖住原来建模的）。"""
     from ...services.flow import model as flow_model
 
     try:
         flow = flow_model.load_for(root)
     except Exception:  # noqa: BLE001
         return []
+    aliases = flow.get("aliases") or {}
+    node_ids = [aliases.get(node_id, node_id) for node_id in node_ids]
     patterns = []
     for node in flow.get("nodes") or []:
         if node.get("id") not in node_ids:
@@ -1231,48 +1141,11 @@ def node_patterns(root: Path, node_ids: list[str]) -> list[str]:
     return patterns
 
 
-def _slice_scope(manager, project_id: str, root: Path, node_ids: list[str], slice_ids: dict[str, set]) -> tuple:
-    """按段的节点落到这几段的条目上（详设 4.3）：返回 (仍按声明范围的节点, 段的路径模式, 段的条目, 蓝图)。
-
-    全量模式（没有蓝图或只有一段）、或不知道在哪一段时，按节点声明的整类条目。"""
-    from ...services.flow import blueprint, model as flow_model
-
-    wanted = {node_id: ids - {"all"} for node_id, ids in slice_ids.items() if ids - {"all"}}
-    if not wanted:
-        return node_ids, [], [], None
-    try:
-        flow = flow_model.load_for(root)
-        doc = blueprint.effective_doc(manager, project_id)
-        module = blueprint.script(root)
-    except Exception:  # noqa: BLE001 - 读不出蓝图按整类条目锁，宁宽勿漏
-        return node_ids, [], [], None
-    if module.mode(doc) != "sliced":
-        return node_ids, [], [], None
-    per_slice = {node["id"] for node in flow.get("nodes") or [] if node.get("per_slice")}
-    model = _model(root)
-    paths, entries, rest = [], [], []
-    for node_id in node_ids:
-        ids = wanted.get(node_id)
-        if node_id not in per_slice or not ids:
-            rest.append(node_id)
-            continue
-        for slice_id in sorted(ids):
-            item = module.find_slice(doc, slice_id)
-            if item is None:
-                continue
-            paths += [_escape(rel) for rel in module.member_paths(item)]
-            # 这一段的场景（场景模拟一个操作一份，段里的「场景」一步写它们）
-            paths += [_escape(f"ontology/testcase/{model.encode_filename(name)}.md") for name in item.get("operations") or []]
-            for kind, names in module.members(item).items():
-                entries += [{**_entry_ref(kind, model.encode_filename(name)), "name": name} for name in names]
-    return rest, paths, entries, doc
-
-
 def scope_lock(manager, project_id: str) -> dict:
     """当前的写入范围锁；没有助手变更集、助手也没在跑时是 state="none" 的空锁。
 
-    按段的节点（建模）只锁这一段的条目，不再锁整类（详设 4.3「落到当前分段」）：助手在跑时取执行记录的分段，
-    这一轮结束后取变更集里做过的那几段；再加上这一轮已经改过的、等你决定的决策卡预览列出的。"""
+    锁节点声明的范围（produces、writes），再加上这一轮已经改过的、等你决定的决策卡预览列出的。`slice` 恒为 null
+    （不再分段，契约只加不删）。"""
     try:
         root = manager.project_root(project_id)
     except Exception:  # noqa: BLE001 - 项目不在
@@ -1287,34 +1160,20 @@ def scope_lock(manager, project_id: str) -> dict:
     node_ids = list((record or {}).get("nodes") or [])
     if running and node.get("id") and node["id"] not in node_ids:
         node_ids.append(node["id"])
-    slice_ids: dict[str, set] = {}
-    for slice_id, _step in (record or {}).get("slice_steps") or []:
-        for node_id in node_ids:
-            slice_ids.setdefault(node_id, set()).add(slice_id)
-    current_slice = exec_record.get("slice") if isinstance(exec_record.get("slice"), dict) else None
-    running_slice = (current_slice or {}).get("id")
-    if running and node.get("id") and running_slice:
-        slice_ids.setdefault(node["id"], set()).add(running_slice)
-    whole, slice_paths, slice_entries, doc = _slice_scope(manager, project_id, root, node_ids, slice_ids)
     entries = list((record or {}).get("entries") or [])
     artifacts = list((record or {}).get("artifacts") or [])
-    for ref in [*slice_entries, *(state.get("affected") or [])]:
+    for ref in state.get("affected") or []:
         bucket = entries if "id" in ref else artifacts
         if not any(existing.get("id", (existing.get("type"), existing.get("key"))) ==
                    ref.get("id", (ref.get("type"), ref.get("key"))) for existing in bucket):
             bucket.append(ref)
-    paths = node_patterns(root, whole) + slice_paths + [_escape(rel) for rel in (record or {}).get("paths") or []]
+    paths = node_patterns(root, node_ids) + [_escape(rel) for rel in (record or {}).get("paths") or []]
     nothing_recorded = not entries and not artifacts and not paths
     if nothing_recorded and not running:
         return empty_scope()
-    if current_slice is None and doc is not None and (record or {}).get("slice_id"):
-        found = next((item for item in doc.get("slices") or [] if item.get("id") == record["slice_id"]), None)
-        current_slice = {"id": found["id"], "name": found["name"]} if found else None
-    sliced = doc is not None and current_slice is not None
     if running:
         label = node.get("title") or "这一步"
-        reason = (f"助手正在改「{current_slice['name']}」这一段，这一轮结束后才能编辑" if sliced else
-                  f"助手正在{('执行「' + label + '」') if node.get('title') else '改这个项目'}，这一轮结束后才能编辑")
+        reason = f"助手正在{('执行「' + label + '」') if node.get('title') else '改这个项目'}，这一轮结束后才能编辑"
         lock_state = "assistant_running"
     else:
         # 一轮结束就合入：只剩合入冲突（等你在待处理里选）和合入前的一瞬
@@ -1322,17 +1181,16 @@ def scope_lock(manager, project_id: str) -> dict:
                   if (record or {}).get("state") == "conflict" else "这一轮的修改正在保存")
         lock_state = "pending_confirm"
     if _autobuild_unmerged(record) and _run_active(project_id, record.get("run_id")):
-        # 自主构建的一段（契约 2.4、EP-03）：锁到这一段自动合入为止
+        # 自主构建的一步（契约 2.4、EP-03）：锁到它自动合入为止
         lock_state = "autobuild_slice"
-        name = (current_slice or {}).get("name") or (node.get("title") if running else "") or ""
-        reason = f"自主构建正在做「{name}」这一段" if sliced else "自主构建正在做这一步"
+        reason = "自主构建正在做这一步"
     since = (record or {}).get("created_at") or exec_record.get("started_at")
     return {
         "state": lock_state,
         "changeset_id": (record or {}).get("id"),
         "conversation_id": (record or {}).get("conversation_id") or state.get("conversation_id"),
         "run_id": (record or {}).get("run_id") if lock_state == "autobuild_slice" else None,
-        "slice": current_slice if sliced else None,
+        "slice": None,
         "node": {"id": node["id"], "version": node.get("version") or ""} if running and node.get("id") else None,
         "entries": entries,
         "artifacts": artifacts,
@@ -1343,12 +1201,12 @@ def scope_lock(manager, project_id: str) -> dict:
 
 
 def _autobuild_unmerged(record: dict | None) -> bool:
-    """自主构建的一段，还没合入（开着或等确认）。"""
+    """自主构建的一步，还没合入（开着或等确认）。"""
     return record is not None and record.get("source") == "autobuild" and record.get("state") in ("open", "pending_confirm")
 
 
 def _run_active(project_id: str, run_id: str | None) -> bool:
-    """自主构建的这次运行还没结束（运行结束后遗留的那一段由 `settle` 合入）。"""
+    """自主构建的这次运行还没结束（运行结束后遗留的那一步由 `settle` 合入）。"""
     from ...services.autobuild import store as runs
 
     active = runs.active(project_id)

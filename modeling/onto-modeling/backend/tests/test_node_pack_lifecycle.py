@@ -136,14 +136,14 @@ def test_unconfirmed_assistant_changes_block_flow_changes_only(env):
 # ---- 可补做、停用解除关卡、升级标需复核、熔断 ----
 
 def flow_before_model(**fields) -> dict:
-    """节点挂在资料分析之后（建模之前，0.3.0 的主流程）：建模已经做完的项目越过了它。"""
+    """节点挂在资料分析之后、提取对象之前：对象已经提取的项目越过了它。"""
     flow = copy.deepcopy(NODE_PACK_FLOW)
-    flow["nodes"][0].update({"after": "core.research", "before": "core.model", **fields})
+    flow["nodes"][0].update({"after": "core.research", "before": "core.object", **fields})
     return flow
 
 
 def research_and_object(root: Path) -> None:
-    """资料分析算完成（有报告、对象已经提取），建模做了一部分（只有对象）。"""
+    """资料分析算完成（有报告、对象已经提取），提取对象做完，提取操作还没做。"""
     main_write(root, "research/20260101-合成.md", "# 合成资料分析\n")
     main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
 
@@ -164,7 +164,7 @@ def test_backfill_when_project_already_passed_the_insertion_point(env):
     main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
     main_write(root, "ontology/operation/借书.md", "# 借书\n\n合成操作\n")
     before = view.build(root)
-    assert before["nodes"][[n["id"] for n in before["nodes"]].index("core.model")]["state"] == "confirmed"
+    assert before["nodes"][[n["id"] for n in before["nodes"]].index("core.object")]["state"] == "confirmed"
     install(manager, tmp_path, flow=flow_before_model())
     enable_and_apply(client, manager, project_id)
 
@@ -173,8 +173,8 @@ def test_backfill_when_project_already_passed_the_insertion_point(env):
     assert node["flags"]["backfill"] is True and node["display_state"] == "backfill"
     assert node["counts_in_progress"] is False and node["plugin"]["name"] == "naming"
     # 主线状态不往回退：做过的照旧已确认，进度分母不变
-    assert next(item for item in built["nodes"] if item["id"] == "core.model")["state"] == "confirmed"
-    assert built["slices"][0]["stages"]["operation"] == "confirmed"  # 全量模式那一段照旧
+    assert next(item for item in built["nodes"] if item["id"] == "core.object")["state"] == "confirmed"
+    assert next(item for item in built["nodes"] if item["id"] == "core.operation")["state"] == "confirmed"
     assert built["progress"] == before["progress"]
     from app.services.flow import model as flow_model
 
@@ -184,10 +184,11 @@ def test_backfill_when_project_already_passed_the_insertion_point(env):
 
 
 def test_new_step_without_progress_beyond_is_plainly_ready(env):
+    """插在提取对象、提取操作之间：对象有了、操作还没做，后面没有做完的节点，不算越过。"""
     client, manager, project_id, tmp_path = env
     root = manager.project_root(project_id)
     research_and_object(root)
-    install(manager, tmp_path, flow=flow_before_model())
+    install(manager, tmp_path, flow=flow_before_model(after="core.object", before="core.operation"))
     enable_and_apply(client, manager, project_id)
     node = nodes_of(root)["naming.check"]
     assert node["state"] == "ready" and node["flags"]["backfill"] is False
@@ -197,15 +198,15 @@ def test_disable_keeps_artifacts_marks_disabled_and_releases_gate(env):
     client, manager, project_id, tmp_path = env
     root = manager.project_root(project_id)
     research_and_object(root)
-    install(manager, tmp_path, flow=flow_before_model(placement="gate", blocks=["core.model"], before=None))
+    install(manager, tmp_path, flow=flow_before_model(placement="gate", blocks=["core.operation"], before=None))
     enable_and_apply(client, manager, project_id)
-    assert nodes_of(root)["core.model"]["state"] == "blocked"  # 做了一部分也显示被挡住
+    assert nodes_of(root)["core.operation"]["state"] == "blocked"
     main_write(root, "reports/naming-1.md", "# 命名检查\n\n合成报告\n")
 
     assert client.post(f"/api/v1/projects/{project_id}/packs/naming/disable").status_code == 200
     pack_service.prepare_for_message(manager, project_id)
     nodes = nodes_of(root)
-    assert nodes["core.model"]["state"] == "running"  # 关卡解除：建模按各段汇总（做了一部分）
+    assert nodes["core.operation"]["state"] == "ready"  # 关卡解除：对象做完了，可以提取操作
     gate = nodes["naming.check"]
     assert gate["flags"]["disabled"] is True and gate["display_state"] == "disabled"
     assert gate["actions"] == [] and gate["counts_in_progress"] is False
@@ -239,16 +240,16 @@ def test_breaker_skips_nodes_and_releases_gates(env):
     client, manager, project_id, tmp_path = env
     root = manager.project_root(project_id)
     research_and_object(root)
-    install(manager, tmp_path, flow=flow_before_model(placement="gate", blocks=["core.model"], before=None))
+    install(manager, tmp_path, flow=flow_before_model(placement="gate", blocks=["core.operation"], before=None))
     enable_and_apply(client, manager, project_id)
-    assert nodes_of(root)["core.model"]["state"] == "blocked"
+    assert nodes_of(root)["core.operation"]["state"] == "blocked"
     from app.governance import ops_state
 
     ops_state.set_breaker("naming", "0.1.0", "open", "ops")
     try:
         nodes = nodes_of(root)
         assert nodes["naming.check"]["state"] == "skipped" and nodes["naming.check"]["actions"] == []
-        assert nodes["core.model"]["state"] == "running"  # 关卡解除
+        assert nodes["core.operation"]["state"] == "ready"  # 关卡解除
     finally:
         ops_state.set_breaker("naming", "0.1.0", "close", "ops")
         ops_state.set_breaker("naming", "0.1.0", "close", "ops")
@@ -275,10 +276,10 @@ def kinds_flow(*extra_nodes: dict, probes: dict | None = None) -> dict:
 
 
 SCRIPT_NODE = {"id": "naming.lint", "title": "命名格式检查", "kind": "script", "placement": "branch",
-               "after": "core.model", "done": ["naming_lint"], "produces": ["reports/lint-naming.md"],
+               "after": "core.operation", "done": ["naming_lint"], "produces": ["reports/lint-naming.md"],
                "script": {"name": "naming_lint.py", "inputs": ["ontology/object/*.md"], "output": "reports/lint-naming.md"}}
 HUMAN_NODE = {"id": "naming.signoff", "title": "命名会签", "kind": "human", "placement": "gate", "after": "core.research",
-              "blocks": ["core.model"], "done": ["naming_signoff"], "produces": ["reports/signoff-naming.md"],
+              "blocks": ["core.operation"], "done": ["naming_signoff"], "produces": ["reports/signoff-naming.md"],
               "decision": {"title": "线下会签结果", "options": [{"id": "pass", "label": "已签署"}, {"id": "fail", "label": "未通过"}],
                            "record": "reports/signoff-naming.md"}}
 
@@ -343,7 +344,7 @@ def test_human_node_only_asks_one_decision_card(env):
     research_and_object(root)
     install(manager, tmp_path, flow=kinds_flow(HUMAN_NODE, probes={"naming_signoff": {"files": ["reports"], "glob": "signoff-naming.md"}}))
     enable_and_apply(client, manager, project_id)
-    assert nodes_of(root)["core.model"]["state"] == "blocked"
+    assert nodes_of(root)["core.operation"]["state"] == "blocked"
 
     started = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.signoff/start", json={})
     assert started.status_code == 200, started.text
@@ -364,4 +365,4 @@ def test_human_node_only_asks_one_decision_card(env):
     assert "结论：已签署" in (root / "reports" / "signoff-naming.md").read_text(encoding="utf-8")
     assert client.post(url, json={"option_id": "pass"}).status_code == 410
     nodes = nodes_of(root)
-    assert nodes["naming.signoff"]["state"] == "confirmed" and nodes["core.model"]["state"] == "running"
+    assert nodes["naming.signoff"]["state"] == "confirmed" and nodes["core.operation"]["state"] == "ready"

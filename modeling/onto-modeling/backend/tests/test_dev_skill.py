@@ -20,8 +20,7 @@ import yaml
 
 from app import config
 from app.kernel.artifacts import registry as artifact_registry
-from app.services.flow import view
-from app.services.flow.assemble import SECTIONS
+from app.services.flow import need, view
 from app.services.flow.state import KIND_DIRS
 from app.services.onto_mcp.definitions import TOOLS
 from app.services.packs import checks, dev_skill
@@ -177,7 +176,7 @@ def test_protocol_comes_from_backend_constants(real_flow_env):
     client, _manager, tmp_path = real_flow_env
     text = (skill_dir(client, tmp_path, "capability") / "references" / "protocol.md").read_text(encoding="utf-8")
     for values in (mf.KINDS, mf.CATEGORIES, mf.LIST_FIELDS, mf.NAV_ICONS, mf.BUILTIN_PAGES, mf.PROTECTED_DIRS,
-                   checks.NODE_PLACEMENTS, checks.RESERVED_PACK_NAMES, SECTIONS,
+                   (need.REQUIRED, need.OPTIONAL), need.LEGACY_DROPPED, checks.RESERVED_PACK_NAMES,
                    artifact_registry.FORMATS, artifact_registry.FIELD_TYPES, ("object", "released")):
         for value in values:
             assert f"`{value}`" in text, value
@@ -275,12 +274,13 @@ CASES = {
     "提示词超预算": (lambda b: _plain(b, files={"commands/my-pack-run.md": "字" * (checks.PROMPT_HARD_BYTES // 3 + 1)}), {"prompt_budget"}),
     "写入范围碰受保护目录": (lambda b: make_node_pack(b, flow=_flow(produces=[{"path": ".onto/flow.lock"}]), tenant=True), {"write_scope"}),
     "写入范围碰资料目录": (lambda b: make_node_pack(b, flow=_flow(writes=["resource/x/*"]), tenant=True), {"write_scope"}),
-    "节点入口命令不存在": (lambda b: make_node_pack(b, flow=_flow(entry={"command": "/naming-gone"}), tenant=True), {"node_entry", "node_pack"}),
+    "节点主命令不存在": (lambda b: make_node_pack(b, flow=_flow(actions=[{"label": "运行", "command": "/naming-gone"}]), tenant=True), {"node_entry", "node_pack"}),
     "节点包合格": (lambda b: make_node_pack(b, tenant=True), set()),
     "节点新增产物类别": (lambda b: make_node_pack(b, flow=_flow(stale_on=["mine"]), tenant=True), {"node_pack"}),
     "节点探针没声明": (lambda b: make_node_pack(b, flow=_flow(done=["nope"]), tenant=True), {"node_pack"}),
     "节点用基础能力的探针": (lambda b: make_node_pack(b, flow=_flow(done=["object"]), tenant=True), set()),
-    "节点挂法不对": (lambda b: make_node_pack(b, flow=_flow(placement="main"), tenant=True), {"node_pack"}),
+    "节点挂法不对": (lambda b: make_node_pack(b, flow=_flow(placement="main"), tenant=True), {"node_need"}),
+    "节点 need 写错": (lambda b: make_node_pack(b, flow=_flow(need="sometimes"), tenant=True), {"node_need"}),
     "节点要的基础能力版本没有": (lambda b: make_node_pack(b, flow={**_flow(), "requires_flow": "core>=99"}, tenant=True), {"node_pack"}),
 }
 

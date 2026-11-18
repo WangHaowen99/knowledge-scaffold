@@ -1,8 +1,8 @@
 """校验过期后只查改动条目（flow.yaml 节点字段 `refresh_scope: changed_entries`；state.refresh_scope）。
 
 - 确认记录记下主线提交 `rev`；老记录没有 rev 时按确认时刻沿主线找；
-- 校验确认之后改了对象、操作：建议条第 7 条、节点卡片的刷新、待处理的刷新、FL-05 都发
-  `/ontology-validate <条目名…> --since <确认时提交前 12 位>`，「运行质量检查」照旧全量；
+- 校验确认之后改了对象、操作：建议条（推荐第 2 级）、节点卡片的刷新、待处理的刷新、FL-05 都发
+  `/ontology-validate <条目名…> --since <确认时提交前 12 位>`，节点上的「校验」照旧全量；
 - 删了条目、改了 ontology/logic/、只改了 index.md：照旧发整条命令；改了又改回去：回到已确认，不推刷新；
 - 没声明刷新范围的节点（指标）刷新命令不变；节点升级待复核、待处理里「重做这一步」整条重做。
 
@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from app.services.flow import model as flow_model
-from app.services.flow import slices, view
+from app.services.flow import view
 from app.services.flow import state as node_state
 from tests import proc
 from tests.test_changesets import git, main_write, obj
@@ -43,8 +43,7 @@ def _validated(root: Path) -> str:
     main_write(root, "ontology/metric/达标率.md", "# 达标率\n\n合成指标\n")
     main_write(root, "reports/20260101-rule.md", "# 合成检查报告\n\n- [x] 已处理\n")
     flow = flow_model.load_for(root)
-    node_state.confirm(root, flow, ["core.research", "core.model", "core.metric", "core.validate"])
-    slices.confirm(root, flow, [["all", "object"], ["all", "operation"], ["all", "rule"]], doc=None)
+    node_state.confirm(root, flow, ["core.research", "core.object", "core.operation", "core.metric", "core.validate"])
     return git(root, "rev-parse", "HEAD").strip()
 
 
@@ -79,6 +78,11 @@ def _sent_after(count: int) -> str:
     raise AssertionError("命令没有发到对话")
 
 
+def _operation_refreshed(root: Path) -> None:
+    """提取操作已经按改动刷新过：过期的必需节点只剩校验（推荐第 2 级只推流程里最靠前的那个）。"""
+    node_state.confirm(root, flow_model.load_for(root), ["core.operation"])
+
+
 def _frontend_body(text: str) -> dict:
     """前端 suggestionCommand / commandFromTarget：第一个词是命令，`键=值` 进 args，其余词拼成 text。"""
     words = text.split()
@@ -108,13 +112,14 @@ def test_stale_validate_refreshes_only_changed_entries_everywhere(env):
     scope = node_state.refresh_scope(root, _flow_node(root, "core.validate"))
     assert scope == {"since": base, "names": names, "command": expected}
 
+    _operation_refreshed(root)
     built = view.build(root)
     assert _node(built, "core.validate")["state"] == "stale"
-    # 节点卡片：刷新只查改动条目，「运行质量检查」照旧全量
+    # 节点卡片：刷新只查改动条目，按钮也叫「校验」；开始节点的「校验」照旧全量
     actions = _node(built, "core.validate")["actions"]
-    assert actions[0]["kind"] == "refresh" and actions[0]["target"] == expected
-    assert [action["target"] for action in actions if action["label"] == "运行质量检查"] == [VALIDATE]
-    # 建议条第 7 条与写给助手的 flow-state.json（state_helper suggest）同一条命令
+    assert actions[0]["kind"] == "refresh" and actions[0]["target"] == expected and actions[0]["label"] == "校验"
+    assert [action["target"] for action in actions if action["kind"] == "start" and action["label"] == "校验"] == [VALIDATE]
+    # 建议条（推荐第 2 级）与写给助手的 flow-state.json（state_helper suggest）同一条命令
     item = _suggestions(built)["refresh:core.validate"]
     assert item["action"] == {"type": "send", "text": expected, "command": VALIDATE}
     copy_state = root / view.FLOW_STATE_REL
@@ -149,6 +154,7 @@ def test_unscoped_changes_fall_back_to_the_full_command(env, change):
     else:
         main_write(root, "ontology/object/Index.md", "# 对象索引\n\n- [[门店]]\n")
     assert node_state.refresh_scope(root, _flow_node(root, "core.validate")) is None
+    _operation_refreshed(root)
     built = view.build(root)
     assert _node(built, "core.validate")["state"] == "stale"
     assert _refresh_action(built, "core.validate")["target"] == VALIDATE

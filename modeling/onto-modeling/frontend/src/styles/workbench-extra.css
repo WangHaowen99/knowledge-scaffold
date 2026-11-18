@@ -14,9 +14,19 @@
 .wb-conv-menu{top:48px;left:14px;width:340px}
 .wb-more-menu{top:48px;right:12px}
 .wb-ctx-pop{top:48px;right:46px;width:380px}
-.wb-cmd-pop{bottom:calc(100% + 8px);left:0;width:440px;max-height:360px;overflow:auto}
+.wb-cmd-pop{bottom:calc(100% + 8px);left:0;width:260px;max-height:360px;overflow:auto}
 .wb-ref-pop{bottom:calc(100% + 8px);left:0;width:380px}
 .wb-mode-pop{bottom:calc(100% + 8px);right:40px;width:180px;min-width:0}
+/* 导航栏节点的下拉（节点模型重构 2b）：节点名可点，下拉沿用 .menu */
+.wx-nd{position:relative;display:flex;align-items:center}
+.wx-st.act{cursor:pointer;border-radius:8px;padding:4px 6px;margin:-4px -6px;transition:background .15s}
+.wx-st.act:hover,.wx-st.act.on{background:rgba(15,23,42,.05)}
+.wx-st .cv{color:var(--faint);margin-left:-3px;flex:none}
+.wx-nav-pop{top:calc(100% + 12px);left:-10px;min-width:220px;cursor:default}
+.wx-nav-opt{gap:8px}
+.wx-nav-opt .btn{margin:-4px -6px -4px 0}
+.wx-nav-opt.off{cursor:default}
+.wx-nav-opt.off:hover{background:none}
 .wb-atts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
 .wbc-main.drag{outline:2px dashed var(--blue3);outline-offset:-10px}
 .wb-dropmask{position:absolute;inset:66px 24px 120px;border:2px dashed var(--blue3);border-radius:14px;background:rgba(240,246,255,.94);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:var(--blue2);z-index:5;text-align:center;pointer-events:none}

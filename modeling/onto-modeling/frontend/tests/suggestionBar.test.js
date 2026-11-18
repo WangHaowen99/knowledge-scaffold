@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { needsRefetch, pickSuggestions, staleSuggestions, suggestionBarHidden } from '../src/pages/workbench/suggestionModel.js';
-import { withStartSuggestion } from '../src/pages/workbench/incremental/model.js';
+import {
+  barItems, needsRefetch, pickSuggestions, staleSuggestions, suggestionBarHidden,
+} from '../src/pages/workbench/suggestionModel.js';
 
 const sug = (mode, rev, primary = null) => ({ mode, primary, secondary: [], all_commands: true, note: null, rev });
 
@@ -36,10 +37,17 @@ test('建议条：点下去之前情况变了（suggestion_stale），换上接�
   assert.equal(staleSuggestions(null), null);
 });
 
-test('增量更新页：出错（重试这一轮）、等你回答（去回答）、运行中时不把「开始增量更新」顶到主推', () => {
-  const retry = sug('failed', 1, { id: 'retry', label: '重试这一轮', primary: true, action: { type: 'retry' } });
-  assert.equal(withStartSuggestion(retry, null).primary.id, 'retry');
-  const answer = sug('waiting_decision', 1, { id: 'answer', label: '去回答', primary: true, disabled: false, action: { type: 'focus_question', question_id: 'q-1' } });
-  assert.equal(withStartSuggestion(answer, null).primary.id, 'answer');
-  assert.equal(withStartSuggestion(sug('running', 1), null).mode, 'running');
+
+test('建议条：按钮就是节点名或变体名，原因只在说明行；最多 2 个次选，历史里的「确认生效」不画', () => {
+  const item = (id, label, extra = {}) => ({ id, label, action: { type: 'send', command: '/x' }, reason: '对象有变化', ...extra });
+  const bar = barItems({
+    ...sug('normal', 3, item('trace', '场景模拟')),
+    secondary: [item('interactive', '交互模拟'), item('merge', '确认生效', { action: { type: 'merge_changeset' } }), item('mock', '生成示例数据'), item('more', '多出来的')],
+    note: '对象有变化',
+  });
+  assert.deepEqual(bar.items.map((x) => [x.label, !!x.isPrimary]), [['场景模拟', true], ['交互模拟', false], ['生成示例数据', false]]);
+  assert.ok(bar.items.every((x) => !x.label.includes('对象有变化')));
+  assert.equal(bar.note, '对象有变化');
+  assert.deepEqual(barItems(null), { items: [], note: null });
+  assert.deepEqual(barItems(sug('normal', 1, item('m', '确认生效', { action: { type: 'merge_changeset' } }))).items, []);
 });

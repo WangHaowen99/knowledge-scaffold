@@ -45,7 +45,9 @@ def image_flow() -> dict:
     with _LOCK:
         if _IMAGE_FLOW is None:
             data = yaml.safe_load(_IMAGE_FLOW_FILE.read_text(encoding="utf-8")) or {}
-            _IMAGE_FLOW = assemble.assemble([("core", "image", data), *_image_pack_flows()])
+            packs = _image_pack_flows()
+            _IMAGE_FLOW = assemble.assemble([("core", "image", data), *packs],
+                                            trusted={name for name, _version, _flow in packs})
         return _IMAGE_FLOW
 
 
@@ -56,6 +58,11 @@ def load_for(root: Path) -> dict:
     return conditions.apply(_assembled(root), root)
 
 
+def assembled_for(root: Path) -> dict:
+    """本项目装配的主流程，条件不成立的节点也在（取名字用：手打隐藏节点的命令也认得出，`names.py`）。"""
+    return _assembled(root)
+
+
 def _assembled(root: Path) -> dict:
     link = Path(root) / ".claude"
     if os.path.lexists(link):
@@ -63,7 +70,8 @@ def _assembled(root: Path) -> dict:
         path = real / "flow.yaml"
         if real.parent.name == "assembled" and path.is_file():
             try:
-                return json.loads(path.read_text(encoding="utf-8"))
+                # 老装配格式（还没重新装配）的节点没有 need：读进来补上
+                return assemble.normalize_flow(json.loads(path.read_text(encoding="utf-8")))
             except (OSError, ValueError):
                 pass
     return image_flow()
@@ -78,53 +86,14 @@ def flow_state(root: Path):
 
 
 def progress(root: Path) -> dict:
-    """项目列表上的阶段进度：{done, total, hits, stage, probes}。分段建模时建模节点要全部段做完才算（同 FL-01）。"""
+    """项目列表上的阶段进度：{done, total, hits, stage, probes}，和 FL-01 的进度同一口径（`overlay.progress_ids`）：
+    只算必需节点，可补做的不算。内核自己算，锁定旧 core 的项目也一样（旧版 flow_state 还把可选节点算进去）。"""
+    from .overlay import progress_ids
+
     flow = load_for(root)
     state = flow_state(root)
     probes = state.evaluate(flow, root)
-    info = state.progress(flow, root, probes)
-    sliced = _sliced(root, flow)
-    if sliced is not None and sliced["node_id"] in info["hits"]:
-        before = info["hits"][sliced["node_id"]]
-        info["hits"][sliced["node_id"]] = sliced["hit"]
-        counted = any(node["id"] == sliced["node_id"] for node in state.progress_nodes(flow))
-        info["done"] += (int(sliced["hit"]) - int(before)) if counted else 0
-    # 越过插入位置的插件节点（可补做）做完之前不计入分母，和 FL-01 的进度同一口径（按段覆盖之后再判越没越过）
-    from .overlay import backfill_ids
-
-    progress_ids = {node["id"] for node in state.progress_nodes(flow)}
-    info["total"] -= len(backfill_ids(flow, info["hits"]) & progress_ids)
-    info["stage"] = state.legacy_stage(flow, root, probes)
-    info["probes"] = probes
-    return info
-
-
-def _sliced(root: Path, flow: dict) -> dict | None:
-    """按段模式时建模节点按段的汇总；全量模式（没有蓝图或只有一段）时 None。"""
-    from . import blueprint, slices
-
-    doc = blueprint.load_doc(root)
-    if blueprint.script(root).mode(doc) != "sliced":
-        return None
-    try:
-        return slices.compute(root, flow, doc=doc, persist=False)
-    except Exception:  # noqa: BLE001 - 进度是概览，算不出时按完成判定
-        return None
-
-
-_CELLS = {"done": "confirmed", "now": "running", "wait": "pending", "todo": "ready"}
-
-
-def slice_summary(root: Path) -> dict | None:
-    """项目卡片上的分段进度（契约 7.3 ProjectCard.slices）：按段建模时 {total, confirmed, cells}，每段一格；
-    全量模式（没有蓝图或只有一段）时 None（分段待规划）。"""
-    flow = load_for(root)
-    sliced = _sliced(root, flow)
-    if sliced is None:
-        return None
-    items = sliced["slices"]
-    cells = []
-    for item in items:
-        stale = any(value == "stale" for value in item["stages"].values())
-        cells.append("stale" if stale else _CELLS.get(item["group"], "ready"))
-    return {"total": len(items), "confirmed": sum(1 for item in items if item["group"] == "done"), "cells": cells}
+    hits = state.node_hits(flow, root, probes)
+    counted = progress_ids(flow, hits)
+    return {"done": sum(1 for node_id in counted if hits.get(node_id)), "total": len(counted), "hits": hits,
+            "stage": state.legacy_stage(flow, root, probes), "probes": probes}

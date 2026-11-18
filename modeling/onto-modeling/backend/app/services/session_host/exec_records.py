@@ -19,9 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import os
-import re
 import subprocess
 import threading
 import time
@@ -30,7 +28,6 @@ from pathlib import Path
 
 from ... import config
 
-_log = logging.getLogger(__name__)
 
 STATES = ("running", "waiting", "interrupted", "done", "abandoned")
 OPEN_STATES = ("running", "waiting")
@@ -288,44 +285,33 @@ def _wrapped_up(root: Path, record: dict, flow: dict | None, phase: str | None) 
 # ---------------------------------------------------------------------------
 
 
-_SLICE_ARG_RE = re.compile(r"(?:^|\s)slice=([A-Za-z0-9_-]{1,40})(?=\s|$)")
+# 建模拆成提取对象、提取操作之前的执行记录：节点记的是 core.model，按步骤（没记步骤时按命令）认到新节点
+LEGACY_MODEL = "core.model"
+LEGACY_STEPS = {"object": "core.object", "operation": "core.operation", "rule": "core.metric"}
+_LEGACY_COMMANDS = {"extract-object": "core.object", "extract-operation": "core.operation",
+                    "extract-rule-metric": "core.metric"}
 
 
-def slice_of(flow: dict, command: str, text: str, root: Path) -> tuple[dict | None, dict | None, str | None]:
-    """命令属于按段的节点时 → (节点, 分段 {id, name}, 步骤)；不是时 (None, None, None)。
-
-    带 `slice=<分段>` 的命令按节点的 steps 归到按段的节点（`/ontology-extract-rule-metric slice=s2` 是建模的
-    「规则」一步，不带是指标旁支）；不带分段的建模命令取这一步还没做完的第一段；全量模式是「全部」那一段。
-    """
-    from ..flow import slices
-
-    node = slices.per_slice_node(flow)
-    if node is None:
-        return None, None, None
-    step = next((item for item in node.get("steps") or [] if item.get("command") == command), None)
-    if step is None:
-        return None, None, None
-    match = _SLICE_ARG_RE.search(text or "")
-    owner = (flow.get("commands") or {}).get(command.lstrip("/").removeprefix("ontology-"), {}).get("node")
-    if match is None and owner != node["id"]:
-        return None, None, None
-    try:
-        return node, slices.slice_for_command(Path(root), flow, step["id"], match.group(1) if match else None), step["id"]
-    except Exception:  # noqa: BLE001 - 蓝图读不出时不带分段（写入范围按整类条目）
-        _log.warning("执行记录取分段失败", exc_info=True)
-        return node, None, step["id"]
+def node_of(record: dict, flow: dict | None = None) -> str | None:
+    """执行记录所属的节点。老记录的 core.model 按步骤认成提取对象、提取操作（规则补抽算指标），认不出时按别名算
+    提取操作；给了流程、流程里还有 core.model（项目锁定旧 core）时原样返回。"""
+    node_id = (record.get("node") or {}).get("id")
+    if node_id != LEGACY_MODEL:
+        return node_id
+    if flow is not None and any(node.get("id") == node_id for node in flow.get("nodes") or []):
+        return node_id
+    return (LEGACY_STEPS.get(str(record.get("step") or "")) or _LEGACY_COMMANDS.get(str(record.get("command_name") or ""))
+            or "core.operation")
 
 
 def start(project_id: str, conversation_id: str, *, root: Path, flow: dict, command: str, command_name: str,
-          engine_instance: str = "", task_id: str | None = None, text: str = "") -> dict:
+          engine_instance: str = "", task_id: str | None = None, text: str = "", label: str | None = None) -> dict:
+    """开一份执行记录。command_label 和对话气泡、排队条同一个名字：发消息时已经按名字表取好的（label）优先，
+    没有时按这条消息取（`names.py`，「/ontology-research 追加」叫追加资料分析）。"""
+    from ..flow import names
+
     node = _node(flow, (flow.get("commands") or {}).get(command_name, {}).get("node")) or {}
-    sliced_node, slice_ref, step = slice_of(flow, command, text, root)
-    label = node.get("title") or command_name
-    if sliced_node is not None:
-        node = sliced_node
-        # 按段的节点：业务名取这一步的（「对象提取」「操作提取」），节点名「建模」太笼统
-        step_spec = next((item for item in node.get("steps") or [] if item.get("id") == step), {})
-        label = step_spec.get("title") or step_spec.get("label") or node.get("title") or command_name
+    label = label or names.lookup(flow, text or command) or node.get("title") or command_name
     now = time.time()
     record = {
         "id": f"ex-{uuid.uuid4().hex[:8]}",
@@ -337,8 +323,6 @@ def start(project_id: str, conversation_id: str, *, root: Path, flow: dict, comm
         "command_label": label,
         "node": {"id": node.get("id") or f"command.{command_name}", "version": node.get("version") or "",
                  "title": node.get("title") or command_name},
-        "slice": slice_ref,
-        "step": step,
         "run_id": None,
         "phase": {"index": 0, "total": 0, "label": "", "raw": None},
         "phases_seen": [],
@@ -465,7 +449,7 @@ def interrupt(project_id: str, exec_id: str, reason: str, *, root: Path | None =
                 _set_phase(record, raw)
             record["saved"] = saved(root, record.get("base_commit") or "")
             if flow is not None:
-                record["input_fingerprint"] = input_fingerprint(root, flow, (record.get("node") or {}).get("id"))
+                record["input_fingerprint"] = input_fingerprint(root, flow, node_of(record, flow))
         _write(record)
         return record
 
@@ -476,12 +460,12 @@ def not_resumable_reason(record: dict, root: Path | None, flow: dict | None) -> 
         return "already_finished"
     if record.get("state") != "interrupted" or root is None or flow is None:
         return None
-    node = _node(flow, (record.get("node") or {}).get("id"))
+    node = _node(flow, node_of(record, flow))
     recorded = (record.get("node") or {}).get("version") or ""
     if node is not None and recorded and (node.get("version") or "") != recorded:
         return "node_upgraded"
     fingerprint = record.get("input_fingerprint") or ""
-    if fingerprint and input_fingerprint(root, flow, (record.get("node") or {}).get("id")) != fingerprint:
+    if fingerprint and input_fingerprint(root, flow, node_of(record, flow)) != fingerprint:
         return "inputs_changed"
     return None
 
@@ -527,7 +511,7 @@ def view(record: dict, *, root: Path | None = None, flow: dict | None = None) ->
         "conversation_id": record.get("conversation_id") or "",
         "engine_instance": record.get("engine_instance") or "",
         "node": {key: (record.get("node") or {}).get(key) or "" for key in ("id", "version", "title")},
-        "slice": record.get("slice"),
+        "slice": record.get("slice"),  # 按段建模时的老记录才有；新记录不再记，恒为 null
         "run_id": record.get("run_id"),
         "command_label": record.get("command_label") or "",
         "phase": {"index": int(phase.get("index") or 0), "total": int(phase.get("total") or 0),

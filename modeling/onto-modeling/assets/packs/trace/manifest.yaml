@@ -2,7 +2,7 @@
 # 官方包保留原命令名（方案第 6 章第 7 项）。存量产物还在原目录（ontology/testcase、ontology/data-mock），
 # 登记成插件产物供「场景模拟」页读；推演结论由 trace_index.py 写进 ext/trace/index/ 的标准索引。
 name: trace
-version: 0.10.0
+version: 0.11.1
 kind: capability
 category: capability
 label: 场景模拟
@@ -15,8 +15,8 @@ badges: [recommended]
 kernel_api: ">=1.0 <2.0"
 page_api: ">=1.0 <2.0"
 engines: [claude, jiuwen]
-depends: {core: ">=0.3"}  # 0.3.0 起的主流程节点（core.model、core.validate）
-changelog: 改名「场景模拟」，串在校验之后；建模里不再有按段的「场景」一步，示例数据按场景生成。
+depends: {core: ">=0.6"}  # 0.6.0 起节点用 need 写法
+changelog: 「批量验证」改叫「场景模拟」，和节点同名；场景模拟页直接发的批量、单个、交互推演也算场景模拟这一步。
 contributes:
   commands: [ontology-mock, ontology-trace, ontology-trace-single, ontology-trace-batch, ontology-trace-interactive]
   agents: [trace-agent, mock-data-agent]
@@ -33,7 +33,7 @@ contributes:
       badge: inbox
       data: {artifacts: [trace.scenario, trace.mock], reports: [], nodes: [trace.trace]}
       actions:
-        - {id: batch, label: 批量验证, command: /ontology-trace-batch}
+        - {id: batch, label: 场景模拟, command: /ontology-trace-batch}
         - {id: walk, label: 交互模拟, command: /ontology-trace-interactive}
         - {id: refresh, label: 补齐过期场景, command: /ontology-trace-batch, hint: 带上过期场景的编号}
         - {id: mock, label: 按场景补生成示例数据, command: /ontology-mock}

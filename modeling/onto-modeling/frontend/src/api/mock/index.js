@@ -444,6 +444,39 @@ export function createMockServer() {
   on('GET', '/projects/([^/]+)/extensions', ({ m }) => json(200, db.extensionsOf ? db.extensionsOf(m[1]) : F.extensions()));
   on('GET', '/projects/([^/]+)/flow', ({ m }) => json(200, flowOf(m[1])));
   on('GET', '/projects/([^/]+)/flow/suggestions', () => json(200, F.suggestionsWaiting()));
+  // FL-03 / FL-04：可选节点跳过、恢复；条件节点（need.when）跳过是「这一轮不处理」：节点从流程里拿掉，返回的 node 为 null，
+  // flow_hash 变了前端重取 FL-01；必需节点不能跳过
+  const nodeFlowUpdated = (pid, f, n) => emitProj(pid, 'flow.updated', {
+    flow_hash: f.flow_hash, nodes: n ? [{ id: n.id, state: n.state, display_state: n.display_state, flags: n.flags, progress: n.progress }] : [], slices: [], suggestions_changed: true,
+  });
+  const setSkipped = (n, skipped) => Object.assign(n, {
+    state: skipped ? 'skipped' : 'ready', display_state: skipped ? 'skipped' : 'ready',
+    actions: [...n.actions.filter((a) => !['skip', 'restore'].includes(a.kind)), skipped ? { kind: 'restore', label: '恢复' } : { kind: 'skip', label: '跳过' }],
+  });
+  on('POST', '/projects/([^/]+)/flow/nodes/([^/]+)/skip', ({ m }) => {
+    const f = flowOf(m[1]);
+    const n = f.nodes.find((x) => x.id === m[2]);
+    if (!n) return err(404, 'node_not_found', '节点不存在或没有出现在本项目的流程里');
+    if (n.need && typeof n.need === 'object') {
+      f.nodes = f.nodes.filter((x) => x !== n);
+      f.flow_hash = `${f.flow_hash}-r`;
+      nodeFlowUpdated(m[1], f, null);
+      return json(200, { node: null, flow_hash: f.flow_hash });
+    }
+    if (n.need !== 'optional') return err(409, 'node_not_skippable', '只有可选节点能跳过');
+    setSkipped(n, true);
+    nodeFlowUpdated(m[1], f, n);
+    return json(200, { node: n, flow_hash: f.flow_hash });
+  });
+  on('POST', '/projects/([^/]+)/flow/nodes/([^/]+)/restore', ({ m }) => {
+    const f = flowOf(m[1]);
+    const n = f.nodes.find((x) => x.id === m[2]);
+    if (!n) return err(404, 'node_not_found', '节点不存在或没有出现在本项目的流程里');
+    if (n.state !== 'skipped') return err(409, 'node_not_skipped', '节点没有被跳过');
+    setSkipped(n, false);
+    nodeFlowUpdated(m[1], f, n);
+    return json(200, { node: n, flow_hash: f.flow_hash });
+  });
   on('POST', '/projects/([^/]+)/flow/nodes/([^/]+)/start', async ({ m, body }) => {
     // 脚本节点（B5c）：同步跑完回 run，不发对话（契约 B5c 第 10 条）
     const f = flowOf(m[1]);
@@ -649,7 +682,7 @@ export function createMockServer() {
   });
   on('POST', '/projects/([^/]+)/conversations/([^/]+)/retry', () => err(409, 'nothing_to_retry', '没有可重试的一轮'));
   on('POST', '/projects/([^/]+)/execs/([^/]+)/(resume|abandon)', ({ m }) => json(m[3] === 'resume' ? 202 : 200, { ...(m[3] === 'resume' ? { mode: 'resume' } : {}), exec: { id: m[2], state: m[3] === 'resume' ? 'running' : 'abandoned' }, message_id: `m-${uid()}`, conversation_id: convsOf(m[1])[0].id }));
-  on('GET', '/projects/([^/]+)/commands/catalog', () => json(200, F.commandCatalog()));
+  on('GET', '/projects/([^/]+)/commands/catalog', ({ m }) => json(200, F.commandCatalog(flowOf(m[1]))));
   // ---------- 页面命令（S-19 / S-20，契约 5.9.3：页面只发命令，进度经项目流 command.progress） ----------
   // routes-*.js 往 ctx.commandHooks 里放 { match(body) → bool, title?(body), steps?: string[], start?(pid, body, task), doneText?(body, task), finish?(pid, body, task) }：
   // 命中的命令按 steps 推进进度，开始时调 start（如改写入范围锁），跑完调 finish（改 mock 数据、发 artifacts.updated 等）；
@@ -693,7 +726,7 @@ export function createMockServer() {
       // 运行中发的命令：平台代存，这一轮结束后开始（最多一条）
       const cur = db.next.get(`${pid}:${cid}`);
       if (cur && !body.replace) return err(409, 'next_occupied', '已经排着一条命令', { label: cur.label });
-      const next = { id: `nx-${uid()}`, label: (body.text || body.command || '').replace(/^\//, ''), command: body.command || null, text: body.text || '', origin: body.origin, created_at: new Date().toISOString(), paused: false, body };
+      const next = { id: `nx-${uid()}`, label: body.display_label || (body.text || body.command || '').replace(/^\//, ''), command: body.command || null, text: body.text || '', origin: body.origin, created_at: new Date().toISOString(), paused: false, body };
       setNext(pid, cid, next);
       const { body: _b, ...view } = next;
       return json(202, { task: null, conversation_id: cid, message_id: null, delivery: 'next', next: view });

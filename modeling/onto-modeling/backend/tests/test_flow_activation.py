@@ -1,5 +1,6 @@
 """包的节点按事件触发（ADR-0091）：启用带 activation 的包后，已经建了一部分又上传新资料才出现、抢先推荐，
-范围确认前已有条目只读，这一轮结束或发布后消失；组装和上传时校验声明。
+范围确认前已有条目只读，这一轮结束或发布后消失；组装和上传时校验声明。内核的增量更新（条件 materials_added，
+节点模型重构 3）同一次上传也记一份，两边各管各的。
 
 用 tests/pack_helpers 里合成的触发包（圈定范围 → 范围内修改 → 核对，核对挡发布，带 confine.lock_on_activation），
 其余用仓库里真实的资产。项目、条目、资料都是合成的。
@@ -22,7 +23,15 @@ from app.services.autobuild import plan
 from app.services.flow import activation, assemble, conditions, view
 from app.services.packs import checks
 from app.services.packs import service as pack_service
-from tests.pack_helpers import ROUND_PACK, ROUND_PACK_FLOW, ROUND_SCOPE_FILE, ROUND_STEPS, make_pack, make_round_pack
+from tests.pack_helpers import (
+    ROUND_PACK,
+    ROUND_PACK_FLOW,
+    ROUND_PACK_FLOW_LEGACY,
+    ROUND_SCOPE_FILE,
+    ROUND_STEPS,
+    make_pack,
+    make_round_pack,
+)
 from tests.test_changesets import main_write, obj
 from tests.test_dev_skill import pack_tool, skill_dir
 from tests.test_flow_confine import (  # noqa: F401 - 共用 fixture 与工具
@@ -40,11 +49,11 @@ STEPS = ROUND_STEPS
 OBJECT = "ontology/object/订单.md"
 OPERATION = "ontology/operation/下单.md"
 SCOPE_FILE = ROUND_SCOPE_FILE
-ORDER_WITH_PACK = ["core.research", "diagram.flowchart", "core.model", "intake.scope", "intake.apply", "intake.check",
-                   "core.metric", "core.validate", "trace.trace", "codegen.codegen", "codegen.solver", "core.publish",
-                   "core.update"]
-MAINLINE = ["core.research", "core.model", "intake.scope", "intake.apply", "intake.check", "core.validate",
-            "trace.trace", "core.publish"]
+ORDER_WITH_PACK = ["core.research", "diagram.flowchart", "core.object", "core.operation", "intake.scope", "intake.apply",
+                   "intake.check", "core.update", "core.metric", "core.validate", "trace.trace", "codegen.codegen",
+                   "codegen.solver", "core.publish"]
+MAINLINE = ["core.research", "core.object", "core.operation", "intake.scope", "intake.apply", "intake.check",
+            "core.validate", "trace.trace", "core.publish"]
 
 
 def _yaml(rel: str) -> dict:
@@ -82,7 +91,7 @@ def _enable(client, manager, project_id) -> None:
 def test_assembly_puts_the_nodes_between_modeling_and_validation():
     flow = assemble.assemble([_core(), _round()])
     ids = [node["id"] for node in flow["nodes"]]
-    assert ids.index("core.model") < ids.index("intake.scope") < ids.index("intake.apply") \
+    assert ids.index("core.object") < ids.index("core.operation") < ids.index("intake.scope") < ids.index("intake.apply") \
         < ids.index("intake.check") < ids.index("core.validate") < ids.index("core.publish")
     nodes = {node["id"]: node for node in flow["nodes"]}
     for step in STEPS:
@@ -99,9 +108,9 @@ def test_autobuild_leaves_the_nodes_to_the_user(project):  # noqa: F811
     _client, _manager, _project_id, root = project
     flow = assemble.assemble([_core(), _round(), ("trace", "0.1.0", _yaml("packs/trace/flow.yaml"))])
     policy = {"scope": {"until_node": None, "include_optional": False}}
-    titles = {unit.get("node_id") or unit.get("node") or unit.get("id") for unit in plan._tail(root, flow, policy)}
+    titles = {unit["id"] for unit in plan.lay_out(root, flow, policy)[0]}
     assert not {name for name in titles if str(name).startswith("intake.")}
-    assert "core.validate" in titles
+    assert {"core.object", "core.operation", "core.validate"} <= titles
 
 
 # ---- 真实项目：触发、抢先推荐、发布关卡 ----
@@ -237,7 +246,7 @@ def test_upload_after_modeling_triggers_and_locks_existing_entries(project):  # 
     body = client.get(f"/api/v1/projects/{project_id}/flow").json()
     assert body["flow_hash"] != before and _visible(root)
     assert body["suggestions"]["primary"]["action"]["command"].strip() == "/intake-scope"
-    assert "新资料" in body["suggestions"]["note"]
+    assert body["suggestions"]["note"] is None  # 抢先推荐认 need.when，不再拿 preempt 的字符串当说明行（节点模型重构 2a）
     assert _gate(client, project_id)["blocking"]
     assert activation.load(root)[ROUND_PACK]["files"] == ["resource/others/新资料.md"]
 
@@ -262,7 +271,7 @@ def test_upload_before_enabling_the_pack_does_not_trigger(project):  # noqa: F81
     _modeled(root)
     _upload(manager, project_id)
     _enable(client, manager, project_id)
-    assert activation.load(root) == {} and not _visible(root)
+    assert ROUND_PACK not in activation.load(root) and not _visible(root)
 
 
 def test_confirmed_scope_takes_over_and_closing_ends_the_round(project):  # noqa: F811
@@ -342,10 +351,26 @@ def test_disabling_the_pack_lifts_everything(project):  # noqa: F811
 
 
 def test_projects_without_the_pack_never_record_a_trigger(project):  # noqa: F811
+    """没启用包：不记包的触发，只有内核的增量更新那一份。"""
     _client, manager, project_id, root = project
     _modeled(root)
     _upload(manager, project_id)
-    assert activation.load(root) == {}
+    assert set(activation.load(root)) == {activation.KERNEL_MATERIALS}
+
+
+def test_kernel_update_and_the_round_pack_both_answer_new_materials(project):  # noqa: F811
+    """同一次上传，包的触发和内核的增量更新各记一份；包的这一轮在流程里靠前，先推它，结束后推增量更新。"""
+    client, manager, project_id, root = project
+    _modeled(root)
+    _enable(client, manager, project_id)
+    _upload(manager, project_id)
+    assert set(activation.load(root)) == {ROUND_PACK, activation.KERNEL_MATERIALS}
+    ids = {node["id"] for node in view.build(root)["nodes"]}
+    assert _visible(root) and "core.update" in ids
+    assert _next_command(client, project_id) == "/intake-scope"
+    _confirm_scope(root, status="closed")
+    assert not _visible(root)
+    assert _next_command(client, project_id) == "/ontology-update"
 
 
 # ---- 声明的校验：组装和上传检查 ----
@@ -364,25 +389,36 @@ def _changed(edit) -> tuple:
     (lambda d: d["activation"].update(session="intake/没有这个.json"), "activation.session"),
     (lambda d: d["activation"].update(extra=1), "activation 要写"),
     (lambda d: d.pop("activation"), "没有声明 activation"),
-    (lambda d: d["nodes"][0].pop("visible_if"), "preempt 只能用在"),
-    (lambda d: (d.pop("activation"), [node.pop("visible_if") for node in d["nodes"]],
-                [node.pop("preempt") for node in d["nodes"]]), "lock_on_activation"),
-], ids=["事件", "探针", "状态文件", "多余的键", "没声明", "preempt", "锁定没声明"])
+    (lambda d: (d.pop("activation"), [node.pop("need") for node in d["nodes"]]), "lock_on_activation"),
+], ids=["事件", "探针", "状态文件", "多余的键", "没声明", "锁定没声明"])
 def test_assembly_refuses_a_bad_activation(edit, message):
     with pytest.raises(assemble.FlowAssemblyError, match=message):
         assemble.assemble([_core(), _changed(edit)])
 
 
+def test_assembly_reads_the_legacy_visible_if_and_no_longer_checks_preempt():
+    """旧写法 visible_if: activated 照认（包没声明 activation 时拒绝）；preempt 不再校验（节点模型重构 2a）。"""
+    legacy = copy.deepcopy(ROUND_PACK_FLOW_LEGACY)
+    legacy.pop("activation")
+    with pytest.raises(assemble.FlowAssemblyError, match="没有声明 activation"):
+        assemble.assemble([_core(), (ROUND_PACK, "0.1.0", legacy)])
+    ordinary = copy.deepcopy(ROUND_PACK_FLOW)
+    ordinary["nodes"][0] = {**{key: value for key, value in ordinary["nodes"][0].items() if key != "need"},
+                            "preempt": True}
+    assemble.assemble([_core(), (ROUND_PACK, "0.1.0", ordinary)])
+
+
 GOOD = {"event": "materials_added", "requires": ["my_built"], "session": "my-scope/scope.json"}
 
 
-def _pack(base, activation_spec, *, visible="activated", preempt=True, confine=None):
-    node = {"id": "my-scope.scope", "title": "合成范围", "kind": "agent", "placement": "step", "section": "required",
-            "after": "core.model", "done": [], "produces": ["my-scope/scope.json"], "entry": {"command": "/my-scope-run"}}
-    if visible:
-        node["visible_if"] = visible
-    if preempt:
-        node["preempt"] = preempt
+def _pack(base, activation_spec, *, when="activated", legacy=False, confine=None):
+    """legacy：按触发出现写成旧写法 visible_if（再带上 preempt）。"""
+    node = {"id": "my-scope.scope", "title": "合成范围", "kind": "agent", "after": "core.operation", "done": [],
+            "produces": ["my-scope/scope.json"], "actions": [{"label": "圈定范围", "command": "/my-scope-run"}]}
+    if when and legacy:
+        node.update(visible_if=when, preempt=True)
+    elif when:
+        node["need"] = {"when": when}
     flow = {"probes": {"my_built": {"files": ["ontology/object"]}}, "nodes": [node]}
     if activation_spec is not None:
         flow["activation"] = activation_spec
@@ -401,21 +437,31 @@ def _pack(base, activation_spec, *, visible="activated", preempt=True, confine=N
     ({**GOOD, "session": "my-scope/other.json"}, "fail"),
     ({**GOOD, "session": "my-scope/*.json"}, "fail"),
     ({**GOOD, "extra": 1}, "fail"),
-    (None, "fail"),  # 节点写了 visible_if: activated，没声明 activation
+    (None, "fail"),  # 节点写了 need: {when: activated}，没声明 activation
 ], ids=["正确", "事件", "探针不是本包的", "requires 不是列表", "状态文件", "通配", "多余的键", "没声明"])
-def test_upload_check_reads_activation(tmp_path, spec, result):
-    _, items = checks.run(_pack(tmp_path, spec), core_names={})
+@pytest.mark.parametrize("legacy", [False, True], ids=["need", "旧写法 visible_if"])
+def test_upload_check_reads_activation(tmp_path, spec, result, legacy):
+    _, items = checks.run(_pack(tmp_path, spec, legacy=legacy), core_names={})
     assert next(item for item in items if item["id"] == "activation")["result"] == result
 
 
-def test_upload_check_refuses_preempt_on_an_ordinary_node(tmp_path):
-    _, items = checks.run(_pack(tmp_path, None, visible=None), core_names={})
-    assert next(item for item in items if item["id"] == "activation")["result"] == "fail"
-
-
 def test_upload_check_has_no_item_without_the_declaration(tmp_path):
-    _, items = checks.run(_pack(tmp_path, None, visible=None, preempt=None), core_names={})
+    _, items = checks.run(_pack(tmp_path, None, when=None), core_names={})
     assert not [item for item in items if item["id"] == "activation"]
+
+
+def test_upload_check_no_longer_reads_preempt(tmp_path):
+    """preempt 写在普通节点上原来不通过；节点模型重构 2a 起不再起作用，也不再查。"""
+    from app.services.packs.repository import write_checksums
+
+    directory = _pack(tmp_path, None, when=None)
+    flow = yaml.safe_load((directory / "flow.yaml").read_text(encoding="utf-8"))
+    flow["nodes"][0]["preempt"] = True
+    (directory / "flow.yaml").write_text(yaml.safe_dump(flow, allow_unicode=True), encoding="utf-8")
+    write_checksums(directory)
+    _, items = checks.run(directory, core_names={})
+    assert not [item for item in items if item["id"] == "activation"]
+    assert not [item for item in items if item["result"] == "fail"], items
 
 
 @pytest.mark.parametrize("spec, confine, result", [
@@ -424,8 +470,8 @@ def test_upload_check_has_no_item_without_the_declaration(tmp_path):
     (GOOD, {"scope_file": "my-scope/scope.json", "lock_on_activation": "yes"}, "fail"),
 ], ids=["正确", "没声明 activation", "不是布尔值"])
 def test_upload_check_reads_lock_on_activation(tmp_path, spec, confine, result):
-    _, items = checks.run(_pack(tmp_path, spec, visible=None if spec is None else "activated",
-                                preempt=None if spec is None else True, confine=confine), core_names={})
+    _, items = checks.run(_pack(tmp_path, spec, when=None if spec is None else "activated", confine=confine),
+                          core_names={})
     assert next(item for item in items if item["id"] == "confine")["result"] == result
 
 
@@ -449,7 +495,7 @@ def test_hidden_node_reanchors_followers():
 
 
 def test_pack_tool_builds_it_and_user_upload_passes(real_flow_env):  # noqa: F811
-    """带 activation、visible_if、preempt、confine.lock_on_activation、kernel 探针和提示规则的包，开发 skill 能打包，
+    """带 activation、need.when、confine.lock_on_activation、kernel 探针和提示规则的包，开发 skill 能打包，
     用户上传能过检查。"""
     client, _manager, tmp_path = real_flow_env
     make_project(client)  # core 入库，依赖和 requires_flow 要比对它

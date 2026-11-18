@@ -12,7 +12,7 @@ import {
   previewScope, startErrorText, startLabel, takeOverText,
 } from '../workbench/autobuildModel.js';
 import {
-  advancedSummary, isRecommended, lastRunText, moveItem, policyBody, policyDirty, policyForm,
+  advancedSummary, isRecommended, lastRunText, moveItem, optionalStepsText, policyBody, policyDirty, policyForm,
   runStateText, startBlocker, thresholdAt, thresholdPos,
 } from './settingsModel.js';
 
@@ -208,6 +208,7 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
   };
 
   const scope = form.scope || {};
+  const optionalText = optionalStepsText(policy);
   const a = form.advanced || {};
   const last = policy?.last_run;
 
@@ -246,12 +247,12 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
         <div className="ps-sech"><Icon name="sliders" size={15} /><h3>自主构建策略</h3></div>
         {!policy ? <Note tone="red">自主构建策略没有读出来，刷新页面再试。</Note> : (
           <div className="g2s">
-            {/* F8 起不分段：范围就是全部没做完的步骤，这里只选带不带过期、可选步骤（老策略里选的分段由服务端按全部处理） */}
+            {/* F8 起不分段：范围就是全部没做完的步骤，这里只选带不带过期、可选步骤（老策略里选的分段由服务端按全部处理）；可选步骤按 AB-01 optional_nodes 列名字，没有时不显示开关 */}
             <Card title="范围" icon="layers">
               <div className="sm">全部没做完的步骤</div>
               <div className="row wrap mt12" style={{ gap: 18 }}>
                 <span className="row sm"><Toggle on={scope.refresh_stale_first} disabled={locked} onChange={(v) => setScope({ refresh_stale_first: v })} />先处理过期的内容</span>
-                <span className="row sm"><Toggle on={scope.include_optional} disabled={locked} onChange={(v) => setScope({ include_optional: v })} />包括可选步骤：规则与指标、流程图</span>
+                {optionalText ? <span className="row sm"><Toggle on={scope.include_optional} disabled={locked} onChange={(v) => setScope({ include_optional: v })} />{optionalText}</span> : null}
               </div>
             </Card>
 

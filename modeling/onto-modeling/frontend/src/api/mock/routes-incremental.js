@@ -73,14 +73,18 @@ export function register(ctx) {
   });
   const noLock = () => ({ state: 'none', changeset_id: null, conversation_id: null, run_id: null, slice: null, node: null, entries: [], artifacts: [], paths: [], reason_text: '', since: null });
 
-  // 增量更新节点的状态跟着清单走
-  function setNode(pid, state, clearNotice = false) {
+  // 增量更新节点的状态跟着清单走；处理完（这一轮结束）条件不再成立，节点从流程里拿掉，flow_hash 变了前端重取 FL-01
+  const dropUpdate = (f, n) => {
+    f.nodes = f.nodes.filter((x) => x !== n);
+    f.flow_hash = `${f.flow_hash}-u`;
+  };
+  function setNode(pid, state) {
     const f = flowOf(pid);
     const n = (f.nodes || []).find((x) => /incremental|update$/.test(x.id));
     if (!n) return;
     Object.assign(n, { state, display_state: state === 'pending_confirm' ? 'pending' : state });
-    if (clearNotice) f.notices = (f.notices || []).filter((x) => x.kind !== 'new_materials');
-    emitProj(pid, 'flow.updated', { flow_hash: f.flow_hash, nodes: [{ id: n.id, state: n.state, display_state: n.display_state, flags: n.flags, progress: n.progress }], slices: [], suggestions_changed: true });
+    if (state === 'confirmed') dropUpdate(f, n);
+    emitProj(pid, 'flow.updated', { flow_hash: f.flow_hash, nodes: state === 'confirmed' ? [] : [{ id: n.id, state: n.state, display_state: n.display_state, flags: n.flags, progress: n.progress }], slices: [], suggestions_changed: true });
   }
 
   // 这条对话第一次被问到时放进对话列表（主示例项目的其他阶段）
@@ -127,8 +131,7 @@ export function register(ctx) {
     if (c) c.version_label = st.version;
     const f = flowOf(pid);
     const n = (f.nodes || []).find((x) => /incremental|update$/.test(x.id));
-    if (n) Object.assign(n, { state: 'confirmed', display_state: 'confirmed' });
-    f.notices = (f.notices || []).filter((x) => x.kind !== 'new_materials');
+    if (n) dropUpdate(f, n);
   }
   // 增量更新阶段：现在就生成对话列表和历史（stages.history 读的是 current，也就是正在登记的这个服务端）
   if (stageOf(F.MAIN_PID) === 'incremental') convsOf(F.MAIN_PID);
@@ -277,7 +280,7 @@ export function register(ctx) {
     if (c) c.version_label = st.version;
     emitConv(pid, cid, 'suggestions.updated', D.mergedSuggestions(st.version, othersOf(pid), st.fixed));
     setScope(pid, noLock());
-    setNode(pid, 'confirmed', true);
+    setNode(pid, 'confirmed');
     emitProj(pid, 'changeset.updated', { changeset_id: csId, state: 'merged', source: 'assistant', conversation_id: cid, version_label: st.version });
     emitProj(pid, 'workspace.changed', {
       commit: 'c0ffee14', version_label: st.version, source: 'assistant', changeset_id: csId, by: 'zhangsan',

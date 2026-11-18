@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/v1/projects/{project_id}", tags=["changesets"])
 
 
 def _not_in_run(project_id: str, changeset_id: str) -> None:
-    """自主构建这一段的变更集由运行器自动合入：运行没结束时不能手动确认、撤回（409 autobuild_running）。"""
+    """自主构建的变更集由运行器自动合入：运行没结束时不能手动确认、撤回（409 autobuild_running）。"""
     from ..services.autobuild import store as autobuild_store
 
     record = service.get(deps.workspaces, project_id, changeset_id)

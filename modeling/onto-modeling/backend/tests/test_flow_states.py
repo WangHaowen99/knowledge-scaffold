@@ -62,13 +62,15 @@ def states(root: Path) -> dict:
 def test_states_follow_exec_records_changesets_and_mainline(env, monkeypatch):
     _client, workspaces, _manager, project_id, root = env
     first = states(root)
-    assert first["core.research"] == "ready" and first["core.model"] == "not_ready"
-    # 进行中：有没结束的执行记录（建模命令记在建模节点、全量模式那一段上）
+    assert first["core.research"] == "ready" and first["core.object"] == "not_ready"
+    assert first["core.operation"] == "not_ready"
+    # 进行中：有没结束的执行记录（提取对象的命令记在提取对象上；不再记分段与步骤）
     flow = flow_model.load_for(root)
     record = exec_records.start(project_id, "default", root=root, flow=flow, command="/ontology-extract-object",
                                 command_name="extract-object")
-    assert record["slice"] == {"id": "all", "name": "全部"} and record["step"] == "object"
-    assert states(root)["core.model"] == "running"
+    assert record["node"]["id"] == "core.object" and record["command_label"] == "提取对象"
+    assert not {"slice", "step"} & set(record)
+    assert states(root)["core.object"] == "running" and states(root)["core.operation"] == "not_ready"
     exec_records.update(project_id, record["id"], state="done")
     # 待确认：节点的改动在这一轮还没合入的变更集里（合入前的一瞬）；主线上还没有，进度不打勾
     copy = changesets.copy_for_turn(workspaces, project_id, root)
@@ -76,7 +78,7 @@ def test_states_follow_exec_records_changesets_and_mainline(env, monkeypatch):
     agent_write(copy, "ontology/operation/补货.md", "# 补货\n\n## 业务描述\n\n合成\n", commit="agent: 补货")
     changesets.observe(workspaces, project_id, running=False, conversation_id="default", exec_record=record)
     built = view.build(root)
-    node = next(item for item in built["nodes"] if item["id"] == "core.model")
+    node = next(item for item in built["nodes"] if item["id"] == "core.object")
     assert node["state"] == "pending_confirm" and node["display_state"] == "pending"
     progress_before = built["progress"]["done"]
     # F3：没有「修改待确认」的提示，建议条也不出「确认生效」
@@ -88,57 +90,64 @@ def test_states_follow_exec_records_changesets_and_mainline(env, monkeypatch):
     changesets.merge(workspaces, project_id, "cs-1", actor="employee_0001")
     from app import wiring
 
-    wiring._confirm_nodes(project_id, ["core.model"], changesets.get(workspaces, project_id, "cs-1"))
+    merged = changesets.get(workspaces, project_id, "cs-1")
+    assert merged["nodes"] == ["core.object"] and "slice_steps" not in merged
+    wiring._confirm_nodes(project_id, merged["nodes"], merged)
     after = view.build(root)
-    assert next(item for item in after["nodes"] if item["id"] == "core.model")["state"] == "confirmed"
-    assert after["slices"][0]["stages"]["object"] == "confirmed"
-    assert after["progress"]["done"] == progress_before + 1
+    found = {item["id"]: item["state"] for item in after["nodes"]}
+    # 这一轮顺带写的操作也在主线上了：提取操作第一次看到就记基线
+    assert found["core.object"] == "confirmed" and found["core.operation"] == "confirmed"
+    assert after["slices"] == []
+    assert after["progress"]["done"] == progress_before + 2
 
 
 def test_stale_when_upstream_fingerprint_changes(env):
     _client, workspaces, _manager, project_id, root = env
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))
     main_write(root, "ontology/operation/补货.md", "# 补货\n\n## 业务描述\n\n合成\n")
-    assert states(root)["core.model"] == "confirmed"  # 存量：第一次看到直接记基线
+    assert states(root)["core.operation"] == "confirmed"  # 存量：第一次看到直接记基线
     main_write(root, "ontology/object/仓库.md", obj("仓库", "上游变了"))
     built = view.build(root)
-    model = next(item for item in built["nodes"] if item["id"] == "core.model")
+    model = next(item for item in built["nodes"] if item["id"] == "core.operation")
     assert model["state"] == "stale" and model["actions"][0]["kind"] == "refresh"
-    assert built["slices"][0]["stages"]["operation"] == "stale"
+    # 过期的按钮也叫节点名（和建议条、全部命令一个叫法），哪类变了写在 reason
+    assert (model["actions"][0]["label"], model["actions"][0]["reason"]) == ("提取操作", "对象清单有变化")
+    assert next(item for item in built["nodes"] if item["id"] == "core.object")["state"] == "confirmed"
     stale = [item for item in [built["suggestions"]["primary"], *built["suggestions"]["secondary"]]
-             if item["id"].startswith("refresh:core.model")]
+             if item["id"].startswith("refresh:core.operation")]
     assert stale and stale[0]["priority"] == 2
-    assert stale[0]["action"]["command"] == "/ontology-extract-operation"  # 刷新过期的那一步
-    assert stale[0]["label"] == "对象清单有变化，刷新操作" and built["suggestions"]["note"] is None  # 写清哪类变了、刷新哪一步
-    # 重新跑过（这一步的变更集确认生效）：按新的上游重记基线
-    from app.services.flow import slices
-
-    slices.confirm(root, flow_model.load_for(root), [["all", "operation"]], doc=None)
-    assert states(root)["core.model"] == "confirmed"
+    assert stale[0]["action"]["command"] == "/ontology-extract-operation"  # 刷新过期的节点
+    # 按钮叫节点名，哪类变了写在说明行；新增对象是对象清单变了（ADR-0102）
+    assert stale[0]["label"] == "提取操作" and built["suggestions"]["note"] == stale[0]["reason"] == "对象清单有变化"
+    # 重新跑过（这一轮合入）：按新的上游重记基线
+    node_state.confirm(root, flow_model.load_for(root), ["core.operation"])
+    assert states(root)["core.operation"] == "confirmed"
 
 
 def test_validation_fixing_an_object_does_not_push_re_extraction(env):
-    """端到端验证发现：校验自动修复改了对象，建模的「操作」一步过期，建议条主推「刷新『操作』」（整段重新提取）而不是主线下一步。
+    """端到端验证发现：校验自动修复改了对象，提取操作过期，建议条主推刷新提取操作（整段重新提取）而不是主线下一步。
     校验在改动之后确认（报告写完、没有待处理），说明这批改动核对过了：不再推上游刷新。
-    ADR-0102 起只改对象内容不再让「操作」一步过期，建模保持已确认。"""
+    ADR-0102 起只改对象内容不再让提取操作过期。"""
     _client, _workspaces, _manager, _project_id, root = env
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))
     main_write(root, "ontology/operation/补货.md", "# 补货\n\n## 业务描述\n\n合成\n")
-    assert states(root)["core.model"] == "confirmed"
+    assert states(root)["core.operation"] == "confirmed"
     main_write(root, "ontology/object/门店.md", obj("门店", "校验补了单位字段"), "fix: address rule check issues")
     main_write(root, "reports/20261102-120000-all-rule.md", "## 规则检查结果\n\n- ✅ ❌ [结构缺失] 门店缺单位\n",
                "fix: address rule check issues")
     built = view.build(root)
     got = {item["id"]: item["state"] for item in built["nodes"]}
-    assert got["core.model"] == "confirmed" and got["core.validate"] == "confirmed"
+    assert got["core.operation"] == "confirmed" and got["core.validate"] == "confirmed"
+    assert got["core.object"] == "confirmed"  # 提取对象的上游是资料，校验改对象不让它过期
     suggested = [item["id"] for item in [built["suggestions"]["primary"], *built["suggestions"]["secondary"]] if item]
-    assert not any(item.startswith("refresh:core.model") for item in suggested), suggested
+    assert not any(item.startswith("refresh:core.") and item != "refresh:core.validate" for item in suggested), suggested
 
 
 def test_skip_restore_and_start_nodes(env):
     client, _workspaces, _manager, project_id, root = env
     base = f"/api/v1/projects/{project_id}/flow/nodes"
-    assert client.post(f"{base}/core.model/skip", json={}).json()["code"] == "node_not_skippable"
+    assert client.post(f"{base}/core.object/skip", json={}).json()["code"] == "node_not_skippable"
+    assert client.post(f"{base}/core.operation/skip", json={}).json()["code"] == "node_not_skippable"
     assert client.post(f"{base}/nope/skip", json={}).json()["code"] == "node_not_found"
     skipped = client.post(f"{base}/core.metric/skip", json={"reason": "没有指标"})
     assert skipped.status_code == 200 and skipped.json()["node"]["state"] == "skipped"
@@ -173,24 +182,24 @@ def test_needs_review_after_upgrade_and_import(env):
     main_write(root, "ontology/operation/补货.md", "# 补货\n\n## 业务描述\n\n合成\n")
     flow = flow_model.load_for(root)
     hits = flow_model.flow_state(root).node_hits(flow, root)
-    assert node_state.compute(root, flow, hits)["core.model"]["flags"]["needs_review"] is False
+    assert node_state.compute(root, flow, hits)["core.operation"]["flags"]["needs_review"] is False
     # 节点升级：完成判定变了，旧的「已确认」标需复核
     upgraded = json.loads(json.dumps(flow))
-    next(node for node in upgraded["nodes"] if node["id"] == "core.model")["done"] = ["object", "operation", "rule"]
-    upgraded_hits = {**hits, "core.model": True}
-    item = node_state.compute(root, upgraded, upgraded_hits)["core.model"]
+    next(node for node in upgraded["nodes"] if node["id"] == "core.operation")["done"] = ["operation", "rule"]
+    upgraded_hits = {**hits, "core.operation": True}
+    item = node_state.compute(root, upgraded, upgraded_hits)["core.operation"]
     assert item["flags"] == {"needs_review": True, "review_source": "upgrade", "disabled": False, "backfill": False}
     assert item["display_state"] == "needs_review"
     assert node_state.reviews(root)[0]["source"] == "upgrade"
-    assert node_state.accept_review(root, "core.model") is True
+    assert node_state.accept_review(root, "core.operation") is True
     # 导入的产物
-    assert node_state.mark_imported(root) == ["core.model"]
+    assert node_state.mark_imported(root) == ["core.object", "core.operation"]
     assert node_state.reviews(root)[0]["source"] == "import"
     # 自主构建（P3 调）：显示为「自主完成」
-    node_state.mark_needs_review(root, ["core.model"], "autobuild", run_id="run-1", slice_id="s1")
-    assert node_state.compute(root, flow, hits)["core.model"]["display_state"] == "auto"
+    node_state.mark_needs_review(root, ["core.operation"], "autobuild", run_id="run-1", slice_id="s1")
+    assert node_state.compute(root, flow, hits)["core.operation"]["display_state"] == "auto"
     with pytest.raises(ValueError):
-        node_state.mark_needs_review(root, ["core.model"], "bogus")
+        node_state.mark_needs_review(root, ["core.operation"], "bogus")
 
 
 def test_state_helper_suggest_matches_flow_and_host_injection(env):

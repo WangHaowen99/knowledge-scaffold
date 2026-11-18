@@ -1,16 +1,14 @@
 """自主构建测试共用的假引擎、项目与等待（测试数据全部为合成内容）。
 
-F8 起不分段：项目是全量模式，一次运行只有一段「全部」（后面可以再跟校验等主线节点）。假引擎按收到的消息现做：
-对象提取一次写全部合成对象、操作提取写全部操作、场景模拟写场景文件，命令锁开、放都按工具箱的样子；测试可以往
-`AutoEngine.hooks` 里放「在某条命令里先做的动作」（提问、等测试放行），键是「命令:段」（`/ontology-extract-object:all`）
-或只写命令。不起真实 CLI。
+自主构建按节点排：一个节点一个单元（提取对象、提取操作、校验……）。假引擎按收到的消息现做：对象提取一次写全部合成
+对象、操作提取写全部操作、场景模拟写场景文件，命令锁开、放都按工具箱的样子；测试可以往 `AutoEngine.hooks` 里放「在某条
+命令里先做的动作」（提问、等测试放行），键是命令（`/ontology-extract-object`）。不起真实 CLI。
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import re
 import threading
 import time
 from pathlib import Path
@@ -36,7 +34,6 @@ OBJECTS = [f"对象{n}" for n in range(1, ENTRIES + 1)]
 OPERATIONS = [f"操作{n}" for n in range(1, ENTRIES + 1)]
 # 草稿写成老样子的多段也行：from_draft 合成一段「全部」（F8）
 DRAFT = {"goal_md": "合成目标", "slices": [{"name": "合成业务", "objects": OBJECTS, "operations": OPERATIONS}]}
-UNIT = "all"
 COMMANDS = {"/ontology-extract-object": "extract-object", "/ontology-extract-operation": "extract-operation",
             "/ontology-trace": "trace", "/ontology-validate": "validate"}
 
@@ -121,15 +118,10 @@ class AutoEngine:
 
         AutoEngine.hints.append(injection.autobuild_hint(Path(self.ctx.cwd), self.ctx.conversation_id))
         head = text.split()[0] if text.strip() else ""
-        found = re.search(r"slice=(s\d+|all)", text)
-        unit = found.group(1) if found else self._marker_slice()
         command = COMMANDS.get(head)
-        key = f"{head}:{unit}"
-        items = list(AutoEngine.hooks.pop(key, [])) + list(AutoEngine.hooks.pop(head, []))
-        for name in (key, head):
-            if name in AutoEngine.gates:
-                items.insert(0, AutoEngine.gates.pop(name))
-                break
+        items = list(AutoEngine.hooks.pop(head, []))
+        if head in AutoEngine.gates:
+            items.insert(0, AutoEngine.gates.pop(head))
         if command is None:
             return [*items, _release_all, result()]
         writes = {"extract-object": [(f"ontology/object/{name}.md", obj(name, "合成对象")) for name in OBJECTS],
@@ -138,17 +130,9 @@ class AutoEngine:
                             for name in OPERATIONS],
                   "validate": [("reports/20260101-rule.md", "# 规则检查\n\n- [x] 合成\n")]}[command]
         steps = [_lock(command), *items, *(_write(rel, body) for rel, body in writes)]
-        if key not in AutoEngine.leave_open:
+        if head not in AutoEngine.leave_open:
             steps.append(_release_all)
         return [*steps, result()]
-
-    def _marker_slice(self) -> str:
-        """指令不带分段：按执行标记里的这一段（全量模式是「全部」，与工具箱 blueprint.py brief 一样）。"""
-        try:
-            marker = json.loads((Path(self.ctx.cwd) / ".onto" / "run" / "exec.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return UNIT
-        return str((marker.get("slice") or {}).get("id") or UNIT)
 
     async def send(self, text: str, context: str | None = None) -> None:
         AutoEngine.sent.append(text)
@@ -245,7 +229,7 @@ def _no_gate(*args, **kwargs):
 
 @pytest.fixture()
 def ab(tmp_path: Path, monkeypatch):
-    """一个有蓝图（全量模式，一段「全部」）的项目；门禁放行（合成文档不全，门禁另有用例）。"""
+    """一个有蓝图草案的项目；门禁放行（合成文档不全，门禁另有用例）。"""
     from app import wiring
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")

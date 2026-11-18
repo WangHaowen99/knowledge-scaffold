@@ -54,11 +54,26 @@ def test_good_node_pack_passes_and_is_a_capability(tmp_path, repo):
     assert mf.parse({**manifest.raw, "category": "node"}).category == "capability"
 
 
-def test_entry_command_must_exist_in_the_pack(tmp_path, repo):
-    flow = flow_with(entry={"command": "/naming-missing"})
+def test_primary_command_must_exist_in_the_pack(tmp_path, repo):
+    """主命令是 actions 里第一个动作（节点模型重构 2a）；entry 只做兼容，有动作时不看它。"""
+    flow = flow_with(actions=[{"label": "运行", "command": "/naming-missing"}])
     result = run(make_node_pack(tmp_path / "src", flow=flow, tenant=True), repo)
     assert {"node_entry", "node_pack"} <= failed(result)
-    assert "/naming-missing" in result["node_pack"]["detail"]
+    assert "/naming-missing" in result["node_pack"]["detail"] and "/naming-missing" in result["node_entry"]["detail"]
+    stale_entry = flow_with(entry={"command": "/naming-missing"})
+    assert not failed(run(make_node_pack(tmp_path / "src2", flow=stale_entry, tenant=True), repo))
+
+
+def test_third_party_node_pack_may_declare_required_nodes(tmp_path, repo):
+    """第三方包也能声明必需节点（原来 placement: spine 只给 core）；没写 autobuild 的不进自主构建，上传检查列出来。"""
+    for name, fields in (("need", {"need": "required"}), ("spine", {"placement": "spine"})):
+        flow = flow_with(**fields)
+        if name == "need":
+            for key in ("placement", "section", "entry"):
+                flow["nodes"][0].pop(key)
+        result = run(make_node_pack(tmp_path / name, flow=flow, tenant=True), repo)
+        assert not failed(result), result
+        assert result["autobuild"]["result"] == "pass"
 
 
 @pytest.mark.parametrize("field,value", [
@@ -102,7 +117,7 @@ def test_node_pack_cannot_carry_hooks_skills_pages_artifacts_or_ui(tmp_path, rep
 
 
 @pytest.mark.parametrize("fields,word", [
-    ({"placement": "spine"}, "挂法"),
+    ({"actions": [], "entry": None}, "主命令"),
     ({"after": None}, "锚点"),
     ({"id": "other.check"}, "编号"),
     ({"done": ["unknown_probe"]}, "探针"),

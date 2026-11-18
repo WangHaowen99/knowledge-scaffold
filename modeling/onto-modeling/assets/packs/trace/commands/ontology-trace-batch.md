@@ -3,7 +3,7 @@ Trace all operation files in batch mode. Loaded by `.claude/commands/ontology-tr
 ## Mode Inputs
 
 - `TRACE_MODE=batch`
-- 页面「批量验证」发来的 `scope=all` 就是全量批量推演（同不带参数）。
+- 场景模拟页「场景模拟」按钮发来的 `scope=all` 就是全量批量推演（同不带参数）。
 
 ## <a id="batch-mode"></a>Batch Mode
 
@@ -13,7 +13,7 @@ List `.md` files in `ontology/operation/`. Let `OPERATION_FILES` = this list.
 
 If empty: "未找到任何逻辑文档。" 然后 `python3 .claude/scripts/state_helper.py release trace`，Stop.
 
-不问用户（点了「批量验证」就是要做），说一句: "对 {N} 个逻辑做批量追踪：{逻辑名}。
+不问用户（点了「场景模拟」就是要做），说一句: "对 {N} 个逻辑做批量追踪：{逻辑名}。
 
 💡 可选参考：现有批量追踪默认更适合 SOP 流程型；若本批 Operation 包含规则引擎、红线拦截、连续阈值、多判定器组合或审计链，可先对照 Operation 范式。
 可参阅 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §三 / §四核对范式；若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §三 / §八，补充规则覆盖、约束边界、退化逻辑和跳过审计的负面 Case。无需中断当前流程。"
@@ -189,11 +189,11 @@ Also write a combined summary to `reports/{BATCH_TS}-trace-batch.md`：
 逐个逻辑的详细结果见批量追踪汇总报告。
 新保存了 {M} 个逻辑的测试场景，下次追踪自动复用。（{M} = JOB_SUMMARIES 中 `generated_testcase: true` 的数量，若为 0 则省略本行）"
 
-不列下一步菜单（界面的建议条会给出）。用户之后在对话里说「修复 {逻辑名}」「再追踪 {逻辑名}」「扫描候选」「代码生成」，按下面的分支做。
+不列下一步菜单（界面的建议条会给出）。用户之后在对话里说「修复 {逻辑名}」「再追踪 {逻辑名}」「扫描脚本候选」「生成脚本」（后两个和界面按钮同名），按下面的分支做。
 
 **If user replies 完成:** `python3 .claude/scripts/state_helper.py release trace`，Stop.
 （**修复** / **再追踪** 仍在本命令内继续：先 `acquire trace start`，处理完再 release 并小结）
 
-**If user replies 扫描候选:** `python3 .claude/scripts/state_helper.py release trace`，然后 read `.claude/commands/ontology-codegen-scan.md` and follow its instructions.
+**If user replies 扫描脚本候选:** `python3 .claude/scripts/state_helper.py release trace`，然后 read `.claude/commands/ontology-codegen-scan.md` and follow its instructions.
 
-**If user replies 代码生成:** `python3 .claude/scripts/state_helper.py release trace`，然后 read `.claude/commands/ontology-codegen.md` and follow its instructions.
+**If user replies 生成脚本:** `python3 .claude/scripts/state_helper.py release trace`，然后 read `.claude/commands/ontology-codegen.md` and follow its instructions.

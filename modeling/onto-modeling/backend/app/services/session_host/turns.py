@@ -57,9 +57,7 @@ def _write_marker(root: Path | None, record: dict | None) -> None:
         tmp = path.with_name(f".exec.{uuid.uuid4().hex[:8]}.tmp")
         tmp.write_text(json.dumps({"exec_id": record["id"], "node": node.get("id") or "",
                                    "node_version": node.get("version") or "",
-                                   "conversation_id": record.get("conversation_id") or "",
-                                   # 按段的命令：当前这一段（blueprint.py brief、state_helper acquire 读它）
-                                   "slice": record.get("slice"), "step": record.get("step")}), encoding="utf-8")
+                                   "conversation_id": record.get("conversation_id") or ""}), encoding="utf-8")
         os.replace(tmp, path)
     except OSError:
         pass
@@ -78,9 +76,10 @@ def publish_exec(project_id: str, record: dict, root: Path | None, flow: dict | 
 # ---------------------------------------------------------------------------
 
 
-def begin(session, text: str, *, task_id: str | None = None, resume_exec: str | None = None) -> None:
+def begin(session, text: str, *, task_id: str | None = None, resume_exec: str | None = None,
+          label: str | None = None) -> None:
     """消息开始交给引擎时：斜杠命令开一份执行记录；普通消息接着这条对话里等待中的执行；
-    续跑（S-16）接着原来那份记录。"""
+    续跑（S-16）接着原来那份记录。label：发消息时取好的命令名字（气泡、排队条用的那个），执行记录照用。"""
     if getattr(session, "kind", "chat") == "plugin":
         # 插件对话（ADR-0087）不跑建模命令：不建执行记录、不取命令锁，斜杠命令按普通消息交给引擎
         session.exec_id = None
@@ -89,7 +88,7 @@ def begin(session, text: str, *, task_id: str | None = None, resume_exec: str | 
     if resume_exec:
         _safe("续跑执行记录", _resume, session, resume_exec)
     else:
-        _safe("开始执行记录", _begin, session, text, task_id)
+        _safe("开始执行记录", _begin, session, text, task_id, label)
     title = ""
     if session.exec_id:
         record = exec_records.get(session.project_id, session.exec_id)
@@ -99,7 +98,7 @@ def begin(session, text: str, *, task_id: str | None = None, resume_exec: str | 
         _safe("任务开始", command_tasks.start_running, session.project_id, task_id)
 
 
-def _begin(session, text: str, task_id: str | None) -> None:
+def _begin(session, text: str, task_id: str | None, label: str | None = None) -> None:
     root = session.cwd
     flow = _flow(root)
     parsed = exec_records.parse_command(text, flow)
@@ -110,7 +109,7 @@ def _begin(session, text: str, task_id: str | None) -> None:
         slash, name = parsed
         record = exec_records.start(session.project_id, session.conversation_id, root=root, flow=flow,
                                     command=slash, command_name=name, engine_instance=session.engine_instance,
-                                    task_id=task_id, text=text)
+                                    task_id=task_id, text=text, label=label)
         if getattr(session, "run_id", None):
             # 自主构建的一步（契约 ExecRecord.run_id）：重启后由运行器续跑，不放续跑卡、不进待处理
             record = exec_records.update(session.project_id, record["id"], run_id=session.run_id) or record
@@ -282,11 +281,8 @@ RERUN_WHY = {"node_upgraded": "这一步的能力升级了", "inputs_changed": "
 
 
 def rerun_text(record: dict, reason: str) -> str:
-    """按新版重新执行（不能续跑时的「继续」）：带上原命令与分段，说明为什么从头做、已经保存的不要重做。"""
-    slice_ref = record.get("slice") or {}
+    """按新版重新执行（不能续跑时的「继续」）：带上原命令，说明为什么从头做、已经保存的不要重做。"""
     command = record.get("command") or ""
-    if slice_ref.get("id") and slice_ref["id"] != "all":
-        command = f"{command} slice={slice_ref['id']}"
     why = RERUN_WHY.get(reason, "上次的进度接不上了")
     return (f"{command} {why}，按新版重新做「{record.get('command_label') or '命令'}」："
             f"已经保存的修改保留，不要重做。").strip()

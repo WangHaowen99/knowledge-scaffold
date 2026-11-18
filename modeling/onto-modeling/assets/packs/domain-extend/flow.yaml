@@ -13,39 +13,33 @@ nodes:
   - id: domain-extend.bind
     title: 锁定底座
     kind: agent
-    placement: spine
-    section: required
-    after: core.model
-    display_after: [core.model]
+    need: required
+    after: core.operation
     done: [domain_extend_bound]
     produces:
       - ext/domain-extend/scope.json
       - ext/domain-extend/base.json
       - ext/domain-extend/base.md
-    entry: {command: /domain-extend-bind}
     actions:
       - {label: 锁定底座, command: /domain-extend-bind}
   # 新增什么要用户说，自主构建不做
   - id: domain-extend.add
     title: 新增功能
     kind: agent
-    placement: spine
-    section: required
+    need: required
     autobuild: false
     after: domain-extend.bind
-    display_after: [domain-extend.bind]
     done: [domain_extend_added]
     produces: [ext/domain-extend/added.json, ext/domain-extend/plan.md]
     writes: ["ontology/object/*", "ontology/operation/*", "ontology/logic/*", "ontology/rule/*", "ontology/metric/*", "ontology/action/*", "ontology/scripts/*", "ontology/testcase/*", "ontology/data-mock/*", "ontology/knowledge/*"]
-    entry: {command: /domain-extend-add}
     actions:
       - {label: 新增功能, command: "/domain-extend-add "}
   # 撤回底座改动时要把条目写回导入时的内容，所以带 writes
+  # 锁定底座之后就能核对；显示排在新增功能后面（改成 after 新增功能的话，没新增时核对不了）
   - id: domain-extend.check
     title: 底座核对
     kind: agent
-    placement: spine
-    section: required
+    need: required
     after: domain-extend.bind
     display_after: [domain-extend.add]
     done: [domain_extend_checked, "!domain_extend_pending", domain_extend_bound]
@@ -53,7 +47,6 @@ nodes:
     blocks: [core.publish]
     produces: [ext/domain-extend/check.md, ext/domain-extend/check.json]
     writes: ["ontology/*"]
-    entry: {command: /domain-extend-check}
     actions:
       - {label: 底座核对, command: /domain-extend-check}
 commands:

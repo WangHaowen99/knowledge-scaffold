@@ -1,9 +1,10 @@
 """自主构建的复核、挂起与撤回（详设 8.5、4.7、13 章 P3 验收；契约 AB-10～AB-17、IN-01～IN-04）。
 
-F8 起不分段：一次运行只有一段「全部」，撤回就是撤回这次运行合入的修改。
+一个节点一个单元（提取对象、提取操作……），撤回按单元：
 - 挂起的问题与需复核的产出都进待处理（自主构建复核）：低于阈值的一条一项，高置信的合成一项，挂起的一个一项；
-- 接受、一键接受高置信、改判、回答挂起问题；复核完去掉「需复核」；
-- 撤回这一段：反向提交，运行前已有的条目不受影响；合入之后又被改过的条目挡住撤回；
+- 接受、一键接受高置信、改判、回答挂起问题；复核完去掉「需复核」，一个单元复核完就去掉它标的；
+- 撤回一步：反向提交，运行前已有的条目不受影响；合入之后又被改过的条目挡住撤回；后面用到它的产出的一步没撤回时
+  先撤后面的（倒序撤回）；
 - 检查修了几轮还不过：照样合入、标需复核，不挂起（F3）。
 
 假引擎按消息现做（tests/autobuild_helpers.py），等待一律按条件。测试数据全部为合成内容。
@@ -15,7 +16,7 @@ from app.kernel.changesets import gates
 from tests.autobuild_helpers import (AutoEngine, ab, ask, history, op, start, wait_state, wait_until)  # noqa: F401
 from tests.test_changesets import git, main_write, obj
 
-MODEL_ONLY = {"scope": {"until_node": "core.model"}, "advanced": {"must_suspend_kinds": ["新增对象"]}}
+MODEL_ONLY = {"scope": {"until_node": "core.operation"}, "advanced": {"must_suspend_kinds": ["新增对象"]}}
 
 
 def _inbox(client, project_id: str, **params) -> dict:
@@ -24,14 +25,14 @@ def _inbox(client, project_id: str, **params) -> dict:
 
 def test_suspensions_and_reviews_go_to_the_inbox_and_get_resolved(ab):
     client, _workspaces, project_id, _root = ab
-    AutoEngine.hooks["/ontology-extract-operation:all"] = [ask([
+    AutoEngine.hooks["/ontology-extract-operation"] = [ask([
         {"question": "审批提示交给谁", "header": "新增对象 · 置信度 0.9", "options": [{"label": "新增区域审批单（推荐）"},
                                                                          {"label": "挂到补货台账"}]},
         {"question": "临期按几级分", "header": "置信度 0.6", "options": [{"label": "四级（推荐）"},
                                                                      {"label": "三级（保守）"}]},
         {"question": "同一商品多类出现时取哪个", "header": "置信度 0.95", "options": [{"label": "取最严（推荐）"},
                                                                               {"label": "取第一个"}]}])]
-    AutoEngine.hooks["/ontology-extract-object:all"] = [ask([
+    AutoEngine.hooks["/ontology-extract-object"] = [ask([
         {"question": "超量比较用哪个上限", "header": "置信度 0.85", "options": [{"label": "逐类取（推荐）"},
                                                                          {"label": "统一配额"}]}])]
     run = start(client, project_id, **MODEL_ONLY)
@@ -46,7 +47,8 @@ def test_suspensions_and_reviews_go_to_the_inbox_and_get_resolved(ab):
     low, = [item for item in reviews if not item.get("high_confidence")]
     high, = [item for item in reviews if item.get("high_confidence")]
     suspended, = by_kind.get("suspension", [])
-    assert low["title"] == "全部：三级" and low["source"] == "autobuild" and low["slice"]["id"] == "all"
+    assert low["title"] == "提取操作：三级" and low["source"] == "autobuild" and low["slice"]["id"] == "core.operation"
+    assert low["impact"] == [{"label": "步骤", "items": ["提取操作"]}]
     assert low["actions"] == ["accept", "rejudge", "revert_slice", "dismiss"]
     assert high["id"] == f"review:{run['run_id']}:high" and high["actions"] == ["accept", "dismiss"]
     assert suspended["title"] == "审批提示交给谁" and suspended["actions"] == ["answer", "use_generic", "dismiss"]
@@ -64,23 +66,28 @@ def test_suspensions_and_reviews_go_to_the_inbox_and_get_resolved(ab):
         "新增区域审批单（推荐）", "挂到补货台账"]
     # 「自主完成」：复核之前建模节点显示 auto
     flow = client.get(f"/api/v1/projects/{project_id}/flow").json()
-    assert next(node for node in flow["nodes"] if node["id"] == "core.model")["display_state"] == "auto"
+    states = {node["id"]: node["display_state"] for node in flow["nodes"]}
+    assert states["core.object"] == states["core.operation"] == "auto"
     rows = {row["name"]: row for row in client.get(f"/api/v1/projects/{project_id}/studio/entries").json()["items"]}
     assert rows["操作2"]["needs_review"] is True and rows["对象2"]["needs_review"] is True
     detail_entry = client.get(f"/api/v1/projects/{project_id}/studio/entries/{rows['操作2']['id']}").json()
     assert detail_entry["needs_review"] == {"source": "autobuild", "run_id": run["run_id"]}
-    # 一键接受高置信（IN-04）
+    # 一键接受高置信（IN-04）：提取对象那一步的决定都复核完了，它标的「需复核」先去掉；提取操作还有一项没复核
     accepted = client.post(f"/api/v1/projects/{project_id}/inbox/batch", json={"action": "accept_high_confidence"}).json()
     assert accepted["accepted"] == 2
+    flow = client.get(f"/api/v1/projects/{project_id}/flow").json()
+    states = {node["id"]: node["display_state"] for node in flow["nodes"]}
+    assert states["core.object"] != "auto" and states["core.operation"] == "auto"
     # 接受低于阈值的那一条（IN-03 → AB-11）：都复核完，「需复核」去掉
     done = client.post(f"/api/v1/projects/{project_id}/inbox/{low['id']}/actions", json={"action": "accept"}).json()
     assert done["resolved"] is True and done["result"]["entry"]["review_state"] == "accepted"
     flow = client.get(f"/api/v1/projects/{project_id}/flow").json()
-    model = next(node for node in flow["nodes"] if node["id"] == "core.model")
-    assert model["flags"]["needs_review"] is False and model["display_state"] != "auto"
+    for node_id in ("core.object", "core.operation"):
+        model = next(node for node in flow["nodes"] if node["id"] == node_id)
+        assert model["flags"]["needs_review"] is False and model["display_state"] != "auto"
     rows = {row["name"]: row for row in client.get(f"/api/v1/projects/{project_id}/studio/entries").json()["items"]}
     assert not any(row["needs_review"] for row in rows.values())
-    # 回答挂起的问题（IN-03 → AB-15）：运行结束了，往运行对话发这一步的命令补上（全量模式不带分段）
+    # 回答挂起的问题（IN-03 → AB-15）：运行结束了，往运行对话发这一步的命令补上
     answered = client.post(f"/api/v1/projects/{project_id}/inbox/{suspended['id']}/actions",
                            json={"action": "answer", "option_id": sus["options"][1]["id"]}).json()
     assert answered["resolved"] is True and answered["result"]["suspension"]["state"] == "answered"
@@ -97,10 +104,10 @@ def test_rejudge_during_a_run_is_queued_until_it_ends(ab):
     client, _workspaces, project_id, _root = ab
     from tests.autobuild_helpers import gate
 
-    AutoEngine.hooks["/ontology-extract-object:all"] = [ask([
+    AutoEngine.hooks["/ontology-extract-object"] = [ask([
         {"question": "门店编号几位", "header": "置信度 0.7", "options": [{"label": "四位（推荐）"}, {"label": "六位"}]},
         {"question": "要不要新增门店分组", "header": "新增对象", "options": [{"label": "要"}, {"label": "不要"}]}])]
-    release = gate("/ontology-extract-operation:all")
+    release = gate("/ontology-extract-operation")
     run = start(client, project_id, **MODEL_ONLY)
     entry = wait_until(lambda: client.get(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/ledger")
                        .json()["items"])[0]
@@ -123,21 +130,23 @@ def test_rejudge_during_a_run_is_queued_until_it_ends(ab):
     assert bad.status_code == 404 and bad.json()["code"] == "ledger_entry_not_found"
 
 
-def test_reverting_the_run_restores_what_was_there_before(ab):
-    """按段撤回在全量模式下就是撤回这次运行合入的那一段：运行前已有的条目不动；合入后又被改过的条目挡住撤回。"""
+def test_reverting_a_step_restores_what_was_there_before(ab):
+    """撤回一步：撤回这次运行在这一步合入的修改，运行前已有的条目不动；合入后又被改过的条目挡住撤回。"""
     client, _workspaces, project_id, root = ab
     # 运行前已有对象：对象那一步算做过，这次运行只做操作
     main_write(root, "ontology/object/对象9.md", obj("对象9", "运行前就有的合成对象"))
-    run = start(client, project_id, scope={"until_node": "core.model"})
+    run = start(client, project_id, scope={"until_node": "core.operation"})
     wait_state(client, project_id, run["run_id"], "completed")
     base = f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}"
-    # 合入之后这一段的条目又被改过：不能撤回；改回原样后可以
+    # 运行前就有对象：提取对象不在这次运行里，只有提取操作
+    assert [row["slice_id"] for row in client.get(base).json()["matrix"]] == ["core.operation"]
+    # 合入之后这一步的条目又被改过：不能撤回；改回原样后可以
     main_write(root, "ontology/operation/操作2.md", "# 操作2\n\n## 业务描述\n\n人改过的合成操作\n")
-    blocked = client.post(f"{base}/slices/all/revert")
+    blocked = client.post(f"{base}/slices/core.operation/revert")
     assert blocked.status_code == 409 and blocked.json()["details"]["reason"] == "later_changes"
     main_write(root, "ontology/operation/操作2.md", op("操作2"))
     before = git(root, "rev-list", "--first-parent", "--count", "HEAD").strip()
-    reverted = client.post(f"{base}/slices/all/revert")
+    reverted = client.post(f"{base}/slices/core.operation/revert")
     assert reverted.status_code == 200, reverted.text
     body = reverted.json()
     assert body["reverted_to_version_label"] == run["base_version_label"] and body["commit"]
@@ -147,18 +156,55 @@ def test_reverting_the_run_restores_what_was_there_before(ab):
     assert not any((root / "ontology" / "operation" / f"操作{n}.md").exists() for n in range(1, 6))
     assert (root / "ontology" / "object" / "对象9.md").is_file()
     report = client.get(f"{base}/report").json()
-    row = next(item for item in report["slices"] if item["slice_id"] == "all")
+    row = next(item for item in report["slices"] if item["slice_id"] == "core.operation")
     assert row["reverted"] is True and row["revertible"] is False and row["result_text"].startswith("已回退到运行前")
-    again = client.post(f"{base}/slices/all/revert")
+    again = client.post(f"{base}/slices/core.operation/revert")
     assert again.status_code == 409 and again.json()["details"]["reason"] == "already_reverted"
-    assert client.post(f"{base}/slices/s3/revert").json()["details"]["reason"] == "not_in_run"
+    assert client.post(f"{base}/slices/core.object/revert").json()["details"]["reason"] == "not_in_run"
+    # 提取操作的确认记录放回运行前（那时没有记录：按主线现状重算，操作没了就回到可开始）
+    flow = client.get(f"/api/v1/projects/{project_id}/flow").json()
+    assert next(node for node in flow["nodes"] if node["id"] == "core.operation")["state"] == "ready"
     cards = [item["data"] for item in history(client, project_id, run["conversation_id"]) if item["type"] == "card"]
     report_card = next(card for card in cards if card["card_type"] == "run_report")
-    assert next(row for row in report_card["slices"] if row["slice_id"] == "all")["reverted"] is True
+    assert next(row for row in report_card["slices"] if row["slice_id"] == "core.operation")["reverted"] is True
+
+
+def test_steps_are_reverted_from_the_back(ab):
+    """倒序撤回：提取操作用到了提取对象的产出（stale_on 盖住对象），没撤提取操作时撤提取对象回 409、说先撤哪一步；
+    撤了提取操作，提取对象就能撤。"""
+    client, _workspaces, project_id, root = ab
+    run = start(client, project_id, scope={"until_node": "core.operation"})
+    wait_state(client, project_id, run["run_id"], "completed")
+    base = f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}"
+    blocked = client.post(f"{base}/slices/core.object/revert")
+    assert blocked.status_code == 409 and blocked.json()["code"] == "slice_not_revertible"
+    assert blocked.json()["message"] == "先撤回「提取操作」"
+    assert blocked.json()["details"] == {"reason": "revert_later_first", "slice_id": "core.operation",
+                                         "slice_name": "提取操作"}
+    assert (root / "ontology" / "object" / "对象1.md").is_file()  # 没撤
+    assert client.post(f"{base}/slices/core.operation/revert").status_code == 200
+    reverted = client.post(f"{base}/slices/core.object/revert")
+    assert reverted.status_code == 200, reverted.text
+    assert not (root / "ontology" / "object" / "对象1.md").exists()
+    assert not (root / "ontology" / "operation" / "操作1.md").exists()
+
+
+def test_a_later_step_that_does_not_use_the_output_does_not_block(ab):
+    """后面的一步没用到它的产出（场景模拟不看校验报告）：校验照样能撤；提取操作被校验、场景模拟用着，先撤最后那个。"""
+    client, _workspaces, project_id, _root = ab
+    run = start(client, project_id, scope={"until_node": "trace.trace"})
+    done = wait_state(client, project_id, run["run_id"], "completed")
+    assert [row["slice_id"] for row in done["matrix"]] == ["core.object", "core.operation", "core.validate", "trace.trace"]
+    base = f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}"
+    trace_name = done["matrix"][3]["slice_name"]
+    blocked = client.post(f"{base}/slices/core.operation/revert").json()
+    assert blocked["message"] == f"先撤回「{trace_name}」" and blocked["details"]["slice_id"] == "trace.trace"
+    validated = client.post(f"{base}/slices/core.validate/revert")
+    assert validated.status_code == 200, validated.text
 
 
 def test_check_errors_are_fixed_a_few_rounds_then_merged_anyway(ab, monkeypatch):
-    """F3：检查只提示不拦——合入前有新错误先让助手修（最多策略里的轮数），还有就照样合入、标需复核，不再挂起这一段。"""
+    """F3：检查只提示不拦——合入前有新错误先让助手修（最多策略里的轮数），还有就照样合入、标需复核，不再挂起这一步。"""
     client, _workspaces, project_id, root = ab
     finding = {"level": "error", "code": "RULE-01", "message": "合成错误", "path": "ontology/object/对象1.md"}
     calls = {"n": 0}
@@ -167,23 +213,23 @@ def test_check_errors_are_fixed_a_few_rounds_then_merged_anyway(ab, monkeypatch)
         from app.services.autobuild import store
 
         calls["n"] += 1
-        if (store.get(project_id, "run-1") or {}).get("cursor", {}).get("unit") == "all":
+        if (store.get(project_id, "run-1") or {}).get("cursor", {}).get("unit") == "core.object":
             return {"errors": 1, "warnings": 0, "findings": [finding]}
         return {"errors": 0, "warnings": 0, "findings": []}
 
     monkeypatch.setattr(gates, "compare", compare)
-    run = start(client, project_id, scope={"until_node": "core.model"}, advanced={"max_fix_rounds": 2})
+    run = start(client, project_id, scope={"until_node": "core.operation"}, advanced={"max_fix_rounds": 2})
     done = wait_state(client, project_id, run["run_id"], "completed")
     fixes = [text for text in AutoEngine.sent if text.startswith("合入前的检查发现 1 个新问题")]
-    assert len(fixes) == 2 and "合成错误" in fixes[0]
-    assert done["slices"] == {"done": 1, "total": 1}
+    assert len(fixes) == 2 and "合成错误" in fixes[0] and "只改「提取对象」这一步写的内容" in fixes[0]
+    assert done["slices"] == {"done": 2, "total": 2}
     assert (root / "ontology" / "object" / "对象1.md").is_file() and (root / "ontology" / "object" / "对象2.md").is_file()
     suspensions = client.get(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/suspensions").json()["items"]
     assert suspensions == []
 
 
-def test_a_failed_run_does_not_leave_the_slice_waiting_for_confirmation(ab, monkeypatch):
-    """F3：停在一段中间时这一段照样合入；合不进去（这里是合入本身出错）的留在变更集里，下一次收尾时合入，
+def test_a_failed_run_does_not_leave_the_step_waiting_for_confirmation(ab, monkeypatch):
+    """F3：停在一步中间时这一步照样合入；合不进去（这里是合入本身出错）的留在变更集里，下一次收尾时合入，
     不进待处理的「修改待确认」。"""
     client, workspaces, project_id, root = ab
     from app.services.workspace.errors import WorkspaceError
@@ -195,7 +241,7 @@ def test_a_failed_run_does_not_leave_the_slice_waiting_for_confirmation(ab, monk
 
     real_merge = changeset_service.merge
     monkeypatch.setattr("app.kernel.changesets.service.merge", unavailable)
-    run = start(client, project_id, scope={"until_node": "core.model"})
+    run = start(client, project_id, scope={"until_node": "core.operation"})
     failed = wait_state(client, project_id, run["run_id"], "failed")
     assert failed["matrix"][0]["result"] in ("未开始", "部分完成")
     assert not [item for item in _inbox(client, project_id)["items"] if item["kind"] == "pending_changeset"]

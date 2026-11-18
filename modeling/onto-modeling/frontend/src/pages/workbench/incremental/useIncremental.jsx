@@ -1,7 +1,7 @@
 // 工作台里的增量更新（设计稿 incremental，内核能力，不单设页面）：
 // - 进入 incremental 时落到哪条对话：地址带 ?c= 的 > 待处理里进行中的变更清单所在的对话（IN-01 → INC-01 的 conversation_id）
-//   > 已执行未确认的清单所在的对话（待确认的助手变更集，CS-01）> 当前对话；
-//   都没有时建议条主推「开始增量更新」：新开一条对话发 /ontology-update（S-02 + S-20）。
+//   > 已执行未确认的清单所在的对话（待确认的助手变更集，CS-01）> 当前对话。
+//   建议条照服务端给的显示：上传了新资料要增量更新时由推荐第 2 级推「增量更新」（节点模型重构 2b），这里不另起一份。
 // - 变更点清单弹窗（?dialog=change_list 或卡片双击）、「确认清单并执行」（INC-03 补接受 + INC-04）。
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { useApp, useProject } from '../../../app/context.js';
@@ -43,7 +43,7 @@ export function useIncrementalTarget(route) {
   return target;
 }
 
-export function useIncremental({ route, target, conv, state, flow, mainRef }) {
+export function useIncremental({ route, target, conv, state, mainRef }) {
   const { api } = useApp();
   const { pid } = useProject();
   const on = route.page === 'incremental';
@@ -87,36 +87,13 @@ export function useIncremental({ route, target, conv, state, flow, mainRef }) {
     }
   }, [api, pid, mainRef]);
 
-  // 开始增量更新：新开一条以变更资料命名的对话，发 /ontology-update
-  const { reloadList, setCid } = conv;
-  const start = useCallback(async (reference) => {
-    try {
-      const c = await api.createConversation(pid, M.conversationTitleFor(reference));
-      const name = reference ? reference.split('/').pop().replace(/\.[^.]+$/, '') : null; // 资料名，不带扩展名
-      await api.sendCommand(pid, {
-        command: '/ontology-update', args: reference ? { reference } : undefined, text: name ? `${name} 到了，按它增量更新` : '增量更新',
-        origin: { page: 'wb-l2', label: '增量更新' }, conversation_id: c.id,
-      });
-      await reloadList();
-      setCid(c.id);
-    } catch (e) {
-      toast(errorText(e), 'alert');
-    }
-  }, [api, pid, reloadList, setCid]);
-
   const onAction = useCallback(async (a) => {
     if (a.type === 'execute_change_list') { await execute(a.change_list_id); return true; }
-    if (a.type === 'start_incremental') { await start(a.reference); return true; }
     return false;
-  }, [execute, start]);
+  }, [execute]);
 
   // 落到清单所在的对话之前不画时间线；用户自己切走了不再拦
   const hideTimeline = on && (!target.ready || (!!target.cid && arrived.current !== target.cid));
-
-  // 没有进行中的清单：建议条主推「开始增量更新」
-  const notice = (flow?.notices || []).find((n) => n.kind === 'new_materials');
-  const offerStart = on && target.ready && !target.changeListId && state.lastSeq > 0 && !M.hasChangeListCard(state);
-  const decorate = useCallback((sug) => (offerStart ? M.withStartSuggestion(sug, notice) : sug), [offerStart, notice]);
 
   // 打开时停在等确认的清单卡上（设计稿默认态：卡片顶端离对话区顶部 64px）；只在落到这条对话时做一次
   const scrollKey = on && !hideTimeline && state.lastSeq && scrolled.current !== conv.cid ? conv.cid : null;
@@ -137,5 +114,5 @@ export function useIncremental({ route, target, conv, state, flow, mainRef }) {
   }, [scrollKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const element = dialog ? <Suspense fallback={null}><ChangeListDialog key={dialog.id} id={dialog.id} onClose={closeDialog} /></Suspense> : null;
-  return { hideTimeline, decorate, onAction, openChangeList, execute, element };
+  return { hideTimeline, onAction, openChangeList, execute, element };
 }

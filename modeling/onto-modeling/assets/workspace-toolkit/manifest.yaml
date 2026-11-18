@@ -1,17 +1,17 @@
 # 基础建模能力（core 包，详设 5.3；方案 D7）。
 # 工作区工具箱迁成的官方包，命令名不变（方案第 6 章第 7 项）。0.2.0 起拆出可选包（D7 后半）：
 # 场景模拟 trace、代码生成与求解 codegen、图示 diagram，源目录在 assets/packs/<名>/。知识条目的存放与加载、
-# 增量更新（按需节点）、共享契约库留在 core（第 14 章第 15、16 项）。守卫与 hooks 基线不在包里，
+# 增量更新（条件节点）、共享契约库留在 core（第 14 章第 15、16 项）。守卫与 hooks 基线不在包里，
 # 由内核注入（backend/app/kernel_guards）。镜像启动时把本目录导入包仓库，版本号加内容摘要后缀
 # （如 0.1.0+3f9a1c2d）：内容变了就是新版本，包仓库里的版本目录永不改写。
 # 新增命令、子代理、脚本时同步下面的清单（静态检查核对「声明的都存在、存在的都声明」）。
 name: core
-version: 0.5.0
+version: 0.6.1
 kind: capability
 category: capability
 label: 基础建模能力
 description: 资料分析、建模、指标、校验、发布、增量更新、影响分析、业务知识的存放与加载、共享契约库。
-changelog: 流程声明支持按事件触发（activation、visible_if activated、preempt、confine.lock_on_activation），用到这些声明的包要 0.5 以上。
+changelog: 节点名统一成主命令名：校验、发布、提取规则与指标，变体叫追加资料分析、核验资料分析报告；下一步建议按五级推荐重写（等你处理的、条件成立或过期的、下一个必需步骤、可选步骤），不再推整体视图。
 publisher:
   kind: official
   label: 平台

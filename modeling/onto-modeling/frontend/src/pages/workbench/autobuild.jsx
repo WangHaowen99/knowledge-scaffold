@@ -189,7 +189,7 @@ function ResultChip({ row }) {
 
 export function RunDrawer({ ab }) {
   const { api } = useApp();
-  const { pid, flow } = useProject();
+  const { pid } = useProject();
   const [ledger, setLedger] = useState(null);
   const [sus, setSus] = useState(null);
   const run = ab.run;
@@ -202,12 +202,9 @@ export function RunDrawer({ ab }) {
     api.autobuildSuspensions(pid, runId).then((r) => setSus((r.items || []).filter((x) => x.state === 'open'))).catch(() => setSus([]));
   }, [api, pid, runId, drawer]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!run) return null;
-  // 步骤的列由 FL-01 的 slice_stages 决定（场景模拟未启用时没有「场景」列）；流程还没给时按矩阵里出现的步骤排。
-  // F8 起只有一行「全部」，叫「建模」；F8 之前按段跑的老运行才是「分段流水线」
-  const multi = multiSlice((run.matrix || []).map((row) => row.slice_id));
-  const stageDefs = flow?.slice_stages?.length ? flow.slice_stages : Object.keys(run.matrix?.[0]?.cells || {}).map((id) => ({ id, label: id }));
-  const keys = stageDefs.map((s) => [s.id, s.label]);
-  const [tail1, tail2] = (run.tail_text || '').split(' → ');
+  // 一个单元一行：现在是一个节点一行（名字 + 结果）；老运行按段跑，才有步骤的列（AB-05 stages），按好几段跑的才叫「分段流水线」
+  const keys = (run.stages || []).map((s) => [s.id, s.label]);
+  const multi = keys.length > 0 && multiSlice((run.matrix || []).map((row) => row.slice_id));
   const toInbox = (q) => { ab.closeDetails(); navigate(pagePath('inbox', pid), q); };
   return (
     <Drawer
@@ -221,7 +218,7 @@ export function RunDrawer({ ab }) {
       <div className="sec-t mt16">
         <Icon name="layers" size={14} />{multi ? '分段流水线' : '流水线'}
       </div>
-      <div className="g2-pipe" style={{ gridTemplateColumns: `150px repeat(${keys.length},1fr) 128px` }}>
+      <div className="g2-pipe" style={{ gridTemplateColumns: keys.length ? `150px repeat(${keys.length},1fr) 128px` : '1fr 128px' }}>
         <span />
         {keys.map(([k, t]) => <span key={k} className="h">{t}</span>)}
         <span className="h">结果</span>
@@ -231,12 +228,6 @@ export function RunDrawer({ ab }) {
           <span key={`${row.slice_id}-r`}><ResultChip row={row} /></span>,
         ])}
       </div>
-      {tail1 ? (
-        <div className="row mt12 sm ab-tail">
-          <Icon name="flow" size={14} /><span>{tail1}</span>
-          {tail2 ? <><span className="faint">→</span><Icon name="gate" size={14} /><span>{tail2}</span></> : null}
-        </div>
-      ) : null}
       <div className="sec-t mt16">
         <Icon name="book" size={14} />自动决策台账<span className="sp" />
         <Button size="xs" kind="ghost" onClick={() => toInbox({ filter: 'autobuild_review' })}>全部在待处理里复核</Button>

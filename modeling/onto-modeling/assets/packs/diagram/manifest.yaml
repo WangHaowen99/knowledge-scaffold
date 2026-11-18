@@ -3,7 +3,7 @@
 # 存量流程图还在 ontology/diagrams/。流程图格式检查 check_diagrams 随提交检查留在 core。
 # 流程图编辑器是包自带的界面代码（ui/flowchart/，ADR-0055）：官方包随平台一起编译，图示包没启用时不加载。
 name: diagram
-version: 0.6.0
+version: 0.7.1
 kind: capability
 category: capability
 label: 图示
@@ -14,8 +14,8 @@ default_on: true
 batch: first
 kernel_api: ">=1.0 <2.0"
 engines: [claude, jiuwen]
-depends: {core: ">=0.2"}  # 拆分后的 core（0.2.0 起）：拆出去的命令、行业知识分层都要它
-changelog: 流程图编辑器随包发布（ui/flowchart/），对话里的流程图卡按包的卡片声明选用。
+depends: {core: ">=0.6"}  # 0.6.0 起节点用 need 写法
+changelog: 节点改名「绘制流程图」，和主命令同名；变体叫「全量刷新流程图」「校验流程图」，已有流程图时才出现。
 contributes:
   commands: [ontology-flowchart, ontology-validate-diagrams]
   skills: [mermaid-flowchart]

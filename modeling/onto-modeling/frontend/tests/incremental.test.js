@@ -88,7 +88,7 @@ test('影响面、回归、这一轮的文字', () => {
   assert.deepEqual(fix, { command: '/ontology-update', args: { change_list_id: 'cl-09', fix_scenarios: ['s-06'] }, text: '修复场景 6', origin: { page: 'wb-l2', label: '增量更新' }, conversation_id: 'c1' });
 });
 
-test('进入增量更新：从待处理找清单、新对话的名字、没有清单时主推「开始增量更新」', () => {
+test('进入增量更新：从待处理找清单、落到所在的对话；建议条不另起一份（增量更新由服务端推荐第 2 级给）', () => {
   assert.equal(M.changeListIdFromInbox([{ id: 'decision:q', kind: 'decision' }, { id: 'change_list:cl-09', kind: 'change_list' }]), 'cl-09');
   assert.equal(M.changeListIdFromInbox([]), null);
   // 已执行未确认的清单：落到待确认的助手变更集所在的对话（还在对话列表里的）
@@ -96,18 +96,12 @@ test('进入增量更新：从待处理找清单、新对话的名字、没有�
   assert.equal(M.pendingChangesetConversation([{ id: 'cs-2', source: 'assistant', conversation_id: 'c-inc', state: 'pending_confirm' }], convs), 'c-inc');
   assert.equal(M.pendingChangesetConversation([{ id: 'cs-2', source: 'assistant', conversation_id: 'gone' }], convs), null);
   assert.equal(M.pendingChangesetConversation([], convs), null);
-  assert.equal(M.conversationTitleFor('resource/others/09-修订通知.docx'), '09 修订通知');
-  assert.equal(M.conversationTitleFor(null), '增量更新');
-  const server = { mode: 'waiting_decision', primary: { id: 'w', label: '先做上面的决定', disabled: true }, secondary: [{ id: 'i', label: '其他待处理 17', primary: false, action: { type: 'navigate', page: 'inbox' } }], all_commands: true };
-  const notice = { kind: 'new_materials', files: ['resource/others/09-修订通知.docx'], text: '资料区有 1 个新文件' };
-  const s = M.withStartSuggestion(server, notice);
-  assert.equal(s.mode, 'normal');
-  assert.deepEqual(s.primary.action, { type: 'start_incremental', reference: 'resource/others/09-修订通知.docx' });
-  assert.deepEqual(s.secondary.map((x) => x.id), ['i'], '禁用的主推不留');
+  // 不再用「开始增量更新」顶掉服务端的主推（节点模型重构 2b）
+  assert.equal(M.withStartSuggestion, undefined);
+  assert.equal(M.conversationTitleFor, undefined);
   const state = { order: ['a', 'b'], items: { a: { kind: 'card', card: { card_type: 'impact' } }, b: { kind: 'card', card: { card_type: 'change_list', change_list_id: 'cl-09' } } } };
-  assert.equal(M.hasChangeListCard(state), true);
   assert.equal(M.latestChangeListCard(state).change_list_id, 'cl-09');
-  assert.equal(M.hasChangeListCard({ order: [], items: {} }), false);
+  assert.equal(M.latestChangeListCard({ order: [], items: {} }), null);
 });
 
 // ---------- mock 数据 ----------
@@ -230,7 +224,7 @@ test('mock：增量更新阶段从接受到执行完存成版本走一遍', asyn
   assert.equal(last.state, 'merged');
   assert.equal(last.merged_version_label, 'v0.13');
   assert.equal(s.db.cards.find((c) => c.id === PID).version_label, 'v0.13');
-  assert.equal(s.db.flows.get(PID).notices.length, 0, '新资料已经处理完');
+  assert.ok(!s.db.flows.get(PID).nodes.some((n) => n.id === 'core.update'), '这一轮处理完，增量更新从流程里去掉');
 });
 
 test('mock：执行后撤回这一轮，清单回到可编辑并回到待处理；交给助手修会重跑场景', async () => {
@@ -270,19 +264,6 @@ test('mock：其他阶段打开 incremental，第一次取清单时把它所在�
   assert.ok(hist.some((e) => e.type === 'card' && e.data.card_type === 'change_list'));
   assert.equal((await call('GET', '/change-lists/cl-09/impact')).body.stale.length, 6);
   assert.equal((await call('GET', '/change-lists/nope')).status, 404);
-});
-
-test('增量更新页：这一轮的修改还等你确认时，不把「开始增量更新」顶到主推（V 阶段截图：主推是开始增量更新、确认生效退到次选）', () => {
-  const server = { mode: 'pending_confirm', primary: { id: 'merge', label: '确认生效', primary: true, action: { type: 'merge_changeset', changeset_id: 'cs-13' } }, secondary: [], all_commands: true };
-  const s = M.withStartSuggestion(server, null);
-  assert.equal(s.primary.id, 'merge');
-});
-
-test('增量更新页：助手没收尾（主推「继续」）、打断或出错后（从打断处继续）时，不把「开始增量更新」顶到主推', () => {
-  const cont = { mode: 'normal', primary: { id: 'continue', label: '继续', primary: true, reason: '这一步还没收尾', action: { type: 'send', text: '继续' } }, secondary: [], all_commands: true };
-  assert.equal(M.withStartSuggestion(cont, null).primary.id, 'continue');
-  const resume = { mode: 'interrupted', primary: { id: 'resume', label: '从打断处继续', primary: true, action: { type: 'resume_exec', exec_id: 'ex-1' } }, secondary: [], all_commands: true };
-  assert.equal(M.withStartSuggestion(resume, null).primary.id, 'resume');
 });
 
 test('变更点清单弹窗：没有锚点的条目「出处」一栏空着，不写「手动补充」', () => {

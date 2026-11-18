@@ -28,7 +28,7 @@ def test_script_node_last_run_survives_refresh(env, fake_sandbox):
     enable_and_apply(client, manager, project_id)
     nodes = {node["id"]: node for node in view.build(root)["nodes"]}
     assert nodes["naming.lint"]["last_run"] is None  # 还没跑过
-    assert "last_run" not in nodes["core.model"]  # 只有脚本节点带
+    assert "last_run" not in nodes["core.object"]  # 只有脚本节点带
     assert all("note" not in node for node in nodes.values())  # 节点说明不再下发
 
     started = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.lint/start", json={})

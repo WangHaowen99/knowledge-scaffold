@@ -180,36 +180,6 @@ export function pendingChangesetConversation(changesets, conversations) {
   return hit ? hit.conversation_id : null;
 }
 
-// 新开的增量更新对话叫什么：「09-修订通知.docx」→「09 修订通知」
-export function conversationTitleFor(path) {
-  const name = String(path || '').split('/').pop().replace(/\.[^.]+$/, '');
-  if (!name) return '增量更新';
-  return name.replace(/^(\d+)-/, '$1 ');
-}
-
-// 没有进行中的变更清单时，建议条的主推换成「开始增量更新」，服务端给的建议退到次选
-const KEEP_MODES = ['pending_confirm', 'autobuild_controls', 'interrupted', 'failed', 'running'];
-
-export function withStartSuggestion(sug, notice) {
-  // 这一轮的修改还没确认：先确认或撤回，不另起一轮增量更新；助手没收尾、打断或出错后：先接着做完；
-  // 运行中、等你回答（「去回答」能点）时也不顶
-  if (KEEP_MODES.includes(sug?.mode)) return sug;
-  if (sug?.mode === 'waiting_decision' && sug.primary && !sug.primary.disabled) return sug;
-  if (sug?.primary?.id === 'continue') return sug;
-  const file = notice?.files?.[0] || null;
-  const start = {
-    id: 'sg-inc-start', label: '开始增量更新', icon: 'refresh', primary: true, disabled: false, priority: 2,
-    reason: notice?.text || null,
-    action: { type: 'start_incremental', reference: file },
-  };
-  const rest = [sug?.primary, ...(sug?.secondary || [])].filter((s) => s && !s.disabled && s.id !== start.id).map((s) => ({ ...s, primary: false }));
-  return { mode: 'normal', primary: start, secondary: rest.slice(0, 2), all_commands: true };
-}
-
-export function hasChangeListCard(state) {
-  return (state?.order || []).some((k) => state.items[k]?.kind === 'card' && state.items[k].card?.card_type === 'change_list');
-}
-
 // 对话里最近一张变更点清单卡
 export function latestChangeListCard(state) {
   const keys = state?.order || [];

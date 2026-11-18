@@ -27,6 +27,7 @@ import yaml
 
 from . import DRAFTS_DIR
 from .. import conversation_store
+from ..flow.need import need_of
 from ..packs import checks, lockfile
 from ..packs import manifest as mf
 from ..packs.lockfile import PackLock
@@ -229,7 +230,7 @@ def contents(root: Path, directory: Path, manifest) -> dict:
         after, before = node.get("after"), node.get("before")
         nodes.append({
             "id": node.get("id"), "title": node.get("title"), "kind": node.get("kind") or "agent",
-            "placement": node.get("placement"), "section": node.get("section"),
+            "need": need_of(node), "placement": node.get("placement"), "section": node.get("section"),
             "after": after, "after_title": titles.get(str(after)) or None if after else None,
             "before": before, "before_title": titles.get(str(before)) or None if before else None,
             "blocks_publish": "core.publish" in (node.get("blocks") or []),

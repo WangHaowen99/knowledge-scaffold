@@ -1,14 +1,17 @@
 """`GET /api/v1/projects/{id}/flow` 的响应（契约 FL-01、FL-02；详设 6.6、6.7 第 6 项、6.10）。
 
-- 节点、连线、分组来自装配好的 flow.yaml；
+- 节点、连线、分组来自装配好的 flow.yaml；节点什么时候要做看 `need`（need.py）：`nav` 是上不上导航栏（必需节点；
+  条件节点条件成立、出现在流程里时也上，排在它挂的节点后面），`under` 是可选、条件节点挂在哪个必需节点下面（after 链上
+  它前面最近的必需节点），分组 `sections` 按 need 分，
+  进度只算必需节点（`overlay.progress_ids`，项目列表同一口径）；
 - 节点状态由内核算（`flow/state.py`，方案 D13）：执行记录 + 变更集 + 产物指纹 → 8 种状态与需复核标记，
   完成判定只看主线；
-- 下一步建议由 core 的 `flow_state.suggest` 算（方案 D15、D16）：后端（FL-01/FL-02、对话里的建议条）、
-  宿主注入、助手命令收尾的 `state_helper.py suggest` 三处同一份算法、同一份输入——后端每算一次就把节点状态
-  与上下文写进助手副本的 `.onto/run/flow-state.json`，`state_helper suggest` 读它。
+- 下一步建议由 core 的 `flow_state.suggest` 算（方案 D15、D16；推荐五级，节点模型重构 2b）：后端（FL-01/FL-02、
+  对话里的建议条）、宿主注入、助手命令收尾的 `state_helper.py suggest` 三处同一份算法、同一份输入——后端每算一次
+  就把节点状态与上下文写进助手副本的 `.onto/run/flow-state.json`，`state_helper suggest` 读它；
+- 节点动作的名字：主命令叫节点名，过期时那一条也叫节点名，哪类变了写在 `reason`（`names.py` 同一个叫法）。
 
-建模节点按段算（`slices.py`）：`slice_stages` 是段里的步骤，`slices` 是每段每步的状态；没有蓝图或只有一段时是
-全量模式，只有一段「全部」。建模蓝图草案等你确认时资料分析显示「待确认」、下一步主推「确认蓝图」。
+建模拆成提取对象、提取操作两个节点，不再分段：`slice_stages`、`slices`、节点的 `per_slice` 只为兼容留着，恒为空。
 """
 
 from __future__ import annotations
@@ -22,8 +25,9 @@ import time
 import uuid
 from pathlib import Path
 
-from . import model, overlay, slices
+from . import model, overlay
 from . import state as node_state
+from .need import OPTIONAL, REQUIRED, SECTION_OF_NEED, WHEN, need_kind, need_of
 
 _log = logging.getLogger(__name__)
 
@@ -63,8 +67,8 @@ def _lock_alive(root: Path, command: str) -> bool:
 
 def _suggest_module(root: Path, state):
     """本项目锁定版本的 flow_state 支持这一版建议条判定（SUGGEST_RULES）就用它，旧 core 版本用镜像版本：
-    规则表、能否执行的检查与说明行（F7）三处要同一份，升级前的项目不能还按旧的判。"""
-    if getattr(state, "SUGGEST_RULES", 0) >= 7:
+    规则表、能否执行的检查与说明行（F7）三处要同一份，升级前的项目不能还按旧的判（9 起按推荐五级，一次只推一个节点）。"""
+    if getattr(state, "SUGGEST_RULES", 0) >= 9:
         return state
     from ..packs import contracts
 
@@ -255,13 +259,13 @@ def _confine_active(flow: dict, root: Path) -> bool:
 
 
 def _stale_upstream(flow: dict, states: dict, computed: dict | None = None) -> dict:
-    """过期的节点（按段的除外）→ 确认之后变了的那几类的说法：「对象、操作」（computed 是 node_state.compute 的结果，
+    """过期的节点 → 确认之后变了的那几类的说法：「对象、操作」（computed 是 node_state.compute 的结果，
     带 changed；没有时按 stale_on 全列）。"""
     from .. import workspace_labels
 
     out = {}
     for node in flow.get("nodes") or []:
-        if node.get("per_slice") or (states.get(node["id"]) or {}).get("state") != "stale":
+        if (states.get(node["id"]) or {}).get("state") != "stale":
             continue
         kinds = ((computed or {}).get(node["id"]) or {}).get("changed")
         text = workspace_labels.kinds_text(node.get("stale_on") or [] if kinds is None else kinds)
@@ -294,30 +298,14 @@ def _blueprint(root: Path) -> tuple[dict | None, dict]:
     return doc, {"state": doc.get("state") or "draft", "where": where, "next": build_mode, "goal_pending": goal_pending}
 
 
-def _apply_slices(states: dict, sliced: dict | None) -> None:
-    """建模节点的状态按各段汇总：全部段确认才算确认，任何一段过期就是过期，其余显示进行中（详设 6.6）。"""
-    if not sliced or sliced["node_id"] not in states:
-        return
-    item = states[sliced["node_id"]]
-    if item["state"] == "blocked" and sliced["state"] in (None, "running") and not sliced.get("running_exec"):
-        return  # 挡住它的关卡没过：做了一部分也显示被挡住（在跑、待确认、过期、做完的照常汇总）
-    if sliced["state"] and item["state"] != "running":
-        item["state"] = sliced["state"]
-        item["display_state"] = node_state.display(sliced["state"], item["flags"])
-
-
-def node_states(root: Path, flow: dict, hits: dict) -> tuple[dict, dict | None, dict | None, dict, set[str]]:
-    """节点状态（含建模节点按段的汇总）：(states, 按段的结果, 蓝图, 蓝图上下文, 熔断的节点)。FL-01 与待处理同一份。
+def node_states(root: Path, flow: dict, hits: dict) -> tuple[dict, dict, set[str]]:
+    """节点状态：(states, 蓝图上下文, 熔断的节点)。FL-01 与待处理同一份。
 
     熔断的节点（O-29）不再挡别的节点：按拿掉它们 `blocks` 的流程算；熔断、可补做的标记由调用方在算完之后补。"""
-    doc, blueprint_context = _blueprint(root)
-    sliced = slices.compute(root, flow, doc=doc)
-    if sliced is not None and sliced["sliced"]:
-        hits[sliced["node_id"]] = sliced["hit"]  # 按段模式：全部段做完建模节点才算完成
+    _doc, blueprint_context = _blueprint(root)
     broken = overlay.broken_nodes(flow)
-    states = node_state.compute(root, overlay.released(flow, broken), hits, sliced=bool(sliced and sliced["sliced"]))
-    _apply_slices(states, sliced)
-    return states, sliced, doc, blueprint_context, broken
+    states = node_state.compute(root, overlay.released(flow, broken), hits)
+    return states, blueprint_context, broken
 
 
 def build(root: Path, *, conversation_id: str | None = None, context: dict | None = None) -> dict:
@@ -330,53 +318,60 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     from ...kernel.changesets import worktree
 
     copy = worktree.copy_path(root)
-    states, sliced, _doc, blueprint_context, broken = node_states(root, flow, hits)
+    states, blueprint_context, broken = node_states(root, flow, hits)
     for node_id in _lock_running(flow, [root, copy], state):
         if node_id in states and states[node_id]["state"] not in ("running", "pending_confirm"):
             states[node_id]["state"] = "running"
             states[node_id]["display_state"] = node_state.display("running", states[node_id]["flags"])
     overlay.mark_broken(states, broken)
     overlay.mark_backfill(flow, states, hits)
-    passed = overlay.backfill_ids(flow, hits)
+    counted = overlay.progress_ids(flow, hits)
+    by_id = {node["id"]: node for node in flow.get("nodes") or []}
+    order = list(by_id)
     hooks = _hooks_by_node(flow)
     from . import node_kinds
 
     script_runs = node_kinds.last_runs(root)
     stale_upstream = _stale_upstream(flow, states, states)
     stale_scope = _stale_scope(root, flow, states)
+    suggester = _suggest_module(root, state)
     # F8 不再分段：蓝图草案不用确认，资料分析做完就是做完，不再停在「等你确认」
     nodes = []
     for node in flow.get("nodes") or []:
         item = states[node["id"]]
+        kind = need_kind(node)
         nodes.append({
             "id": node["id"],
             "title": node["title"],
             "kind": node.get("kind", "agent"),
             "placement": node.get("placement", "spine"),
-            "section": node.get("section", "required"),
+            "section": SECTION_OF_NEED[kind],
+            "need": need_of(node),
+            "nav": kind in (REQUIRED, WHEN),
+            "under": under(node, by_id, order),
             "state": item["state"],
             "flags": item["flags"],
             "display_state": item["display_state"],
-            "progress": sliced["progress"] if sliced and sliced["sliced"] and node["id"] == sliced["node_id"] else None,
+            "progress": None,
             "version": node.get("version") or "",
-            "per_slice": bool(node.get("per_slice")),
+            "per_slice": False,
             "blocks": list(node.get("blocks") or []),
             "actions": [] if item.get("broken") else _actions(node, item["state"], hooks.get(node["id"], []),
                                                               blueprint_draft=blueprint_context["state"] == "draft",
                                                               probes=probes, shown=getattr(state, "action_shown", None),
-                                                              cause=stale_upstream.get(node["id"], ""),
+                                                              reason=suggester.stale_reason(
+                                                                  stale_upstream.get(node["id"], "")),
                                                               refresh_target=(stale_scope.get(node["id"]) or {}).get(
                                                                   "command", "")),
             "hooks": [{key: hook[key] for key in ("id", "title", "when", "command", "pack")}
                       for hook in hooks.get(node["id"], [])],
             "plugin": None if node.get("pack", "core") == "core" else _plugin_ref(node),
-            "optional": bool(node.get("optional")),
+            "optional": kind == OPTIONAL,
             "panel": bool(node.get("panel")),
-            # 可补做的节点做完之前不计入进度：越过插入位置的项目，主线进度不往回退（详设 6.9 第 4 步）
-            "counts_in_progress": bool(node.get("progress", True)) and node["id"] not in passed,
+            "counts_in_progress": node["id"] in counted,
             **({"last_run": script_runs.get(node["id"])} if node.get("kind") == "script" else {}),
         })
-    nodes += [_disabled_view(node) for node in overlay.disabled_nodes(root, flow)]
+    nodes += [_disabled_view(node, by_id) for node in overlay.disabled_nodes(root, flow)]
     sections = [
         {"id": key, "title": title, "nodes": [node["id"] for node in nodes if node["section"] == key]}
         for key, title in SECTION_TITLES.items()
@@ -387,11 +382,12 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     }
     changeset = _changeset_context(root)
     simple_states = {node_id: {"state": item["state"], "flags": item["flags"]} for node_id, item in states.items()}
-    suggester = _suggest_module(root, state)
     suggest_stage = stage
     suggest_probes = probes
+    suggest_root = root
     if changeset and (copy / ".git").is_file():
         # 有没确认的变更集：下一步按助手副本里的样子算（和助手收尾时 state_helper suggest 看到的一样）
+        suggest_root = copy
         copy_probes = state.evaluate(flow, copy)
         suggest_stage = state.legacy_stage(flow, copy, copy_probes)
         suggest_probes = copy_probes
@@ -405,9 +401,9 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
                 node["display_state"] = node_state.display(changed, node["flags"])
     extra = dict(context or {})
     interrupted_exec = extra.pop("interrupted_exec", None)
-    suggest_context = {"stage": suggest_stage, "probes": suggest_probes, "changeset": changeset, "blueprint": blueprint_context,
-                       "slice_next": (sliced or {}).get("slice_next"),
-                       "slice_stale": (sliced or {}).get("slice_stale") or [],
+    suggest_context = {"stage": suggest_stage, "probes": suggest_probes,
+                       "produced": suggester.produced(flow, suggest_root),
+                       "changeset": changeset, "blueprint": blueprint_context,
                        "stale_upstream": _stale_upstream(flow, simple_states, states),
                        "stale_scope": stale_scope,
                        "confine_active": _confine_active(flow, root),
@@ -437,12 +433,12 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
         "sections": sections,
         # 有没有建模蓝图：没有时建模步骤抽屉的「调整分段」改为发起分段规划（设计调整，gaps B4d 合并）
         "blueprint": {"state": blueprint_context["state"]},
-        "slice_stages": (sliced or {}).get("stages") or [],
-        "slices": (sliced or {}).get("slices") or [],
+        "slice_stages": [],
+        "slices": [],
         "suggestions": suggestions,
         "notices": _notices(suggest_context) + _assembly_notice(root),
         "stage": stage,
-        # 进度：主线上满足完成判定的节点（已确认与过期都算做过）；助手副本里的改动要这一轮合入才算
+        # 进度：必需节点里主线上满足完成判定的（已确认与过期都算做过）；助手副本里的改动要这一轮合入才算
         "progress": {
             "done": sum(1 for node in progress_nodes if hits.get(node["id"])),
             "total": len(progress_nodes),
@@ -474,12 +470,37 @@ def _plugin_ref(node: dict) -> dict:
     return {"name": pack, "label": _pack_label(data_dir, pack, version) if version else pack}
 
 
-def _disabled_view(node: dict) -> dict:
-    """停用了的包的节点：产物保留，列出来标「已停用」，不进进度、没有动作（详设 6.9 第 5 步）。"""
+def under(node: dict, by_id: dict, order: list[str]) -> str | None:
+    """可选、条件节点挂在哪个必需节点下面：after 链上它前面最近的必需节点；链上没有时（只写了 before、display_after）
+    取流程顺序里它前面最近的必需节点。必需节点自己为 None。"""
+    if need_kind(node) == REQUIRED:
+        return None
+    seen = {node["id"]}
+    anchor = _anchor(node.get("after"), by_id)
+    while anchor is not None and anchor not in seen:
+        if need_kind(by_id[anchor]) == REQUIRED:
+            return anchor
+        seen.add(anchor)
+        anchor = _anchor(by_id[anchor].get("after"), by_id)
+    if node["id"] not in order:
+        return None
+    before = order[:order.index(node["id"])]
+    return next((other for other in reversed(before) if need_kind(by_id[other]) == REQUIRED), None)
+
+
+def _anchor(value, by_id: dict) -> str | None:
+    """after 写的锚点里第一个在流程里的（组装后是一个编号，停用包的原始声明可能是列表）。"""
+    candidates = value if isinstance(value, list) else [value]
+    return next((str(item) for item in candidates if item and str(item) in by_id), None)
+
+
+def _disabled_view(node: dict, by_id: dict) -> dict:
+    """停用了的包的节点：产物保留，列出来标「已停用」，不进进度、不上导航栏、没有动作（详设 6.9 第 5 步）。"""
     flags = {"needs_review": False, "disabled": True, "backfill": False}
     return {
         "id": node["id"], "title": str(node.get("title") or node["id"]), "kind": node.get("kind", "agent"),
-        "placement": node.get("placement", "step"), "section": node.get("section", "optional"),
+        "placement": node.get("placement", "step"), "section": SECTION_OF_NEED[need_kind(node)],
+        "need": need_of(node), "nav": False, "under": under(node, by_id, []),
         "state": "skipped", "flags": flags, "display_state": node_state.display("skipped", flags),
         "progress": None, "version": node.get("version") or "", "per_slice": False, "blocks": [],
         "actions": [], "plugin": _plugin_ref(node), "optional": True, "panel": False,
@@ -496,7 +517,7 @@ def _hooks_by_node(flow: dict) -> dict[str, list[dict]]:
 
 def _stale_scope(root: Path, flow: dict, states: dict) -> dict:
     """过期且声明了 `refresh_scope` 的节点 → 只查改动条目的刷新 {since, names, command}（state.refresh_scope）。
-    算不出范围的不列：建议条、节点卡片的刷新照旧发整条入口命令。"""
+    算不出范围的不列：建议条、节点卡片的刷新照旧发整条主命令。"""
     out = {}
     for node in flow.get("nodes") or []:
         if node.get("refresh_scope") and (states.get(node["id"]) or {}).get("state") == "stale":
@@ -507,7 +528,7 @@ def _stale_scope(root: Path, flow: dict, states: dict) -> dict:
 
 
 def _actions(node: dict, state: str, hooks: list[dict] | None = None, *, blueprint_draft: bool = False,
-             probes: dict | None = None, shown=None, cause: str = "", refresh_target: str = "") -> list[dict]:
+             probes: dict | None = None, shown=None, reason: str = "", refresh_target: str = "") -> list[dict]:
 
     def offered(action: dict) -> bool:
         has_target = bool(action.get("command") or action.get("page"))
@@ -525,15 +546,15 @@ def _actions(node: dict, state: str, hooks: list[dict] | None = None, *, bluepri
              for hook in hooks or [] if hook.get("when") != "before"]
     actions = before + actions + after
     if state == "stale" and actions and actions[0]["target"].startswith("/"):
-        # 和建议条同一个说法：「对象有变化，刷新校验」；声明了刷新范围的只查改动条目（同一条命令），其余动作不变
+        # 和建议条同一个说法：按钮叫节点名，哪类变了写在 reason（「对象有变化」）；声明了刷新范围的只查改动条目
         target = actions[0]["target"]
         if refresh_target and refresh_target.split()[0] == target.split()[0]:
             target = refresh_target
-        actions = [{**actions[0], "kind": "refresh", "target": target,
-                    "label": f"{cause}有变化，刷新{node['title']}" if cause else f"刷新{node['title']}"}, *actions]
+        actions = [{**actions[0], "kind": "refresh", "target": target, "label": node["title"], "reason": reason},
+                   *actions]
     if node["id"] == "core.research" and blueprint_draft:
         actions = [{"kind": "confirm", "label": "去确认", "target": "wb-blueprint"}, *actions]
-    if node.get("optional"):
+    if need_kind(node) == OPTIONAL:
         actions.append({"kind": "restore" if state == "skipped" else "skip",
                         "label": "恢复" if state == "skipped" else "跳过"})
     return actions
@@ -563,8 +584,7 @@ def _assembly_notice(root: Path) -> list[dict]:
 
 
 # 写给助手的 flow-state.json 里带的上下文字段
-_CONTEXT_KEYS = ("stage", "changeset", "autobuild", "blueprint", "slice_next", "slice_stale", "stale_upstream",
-                 "stale_scope", "confine_active")
+_CONTEXT_KEYS = ("stage", "changeset", "autobuild", "blueprint", "stale_upstream", "stale_scope", "confine_active")
 
 
 def _write_flow_state(root: Path, copy: Path, flow: dict, states: dict, context: dict, suggestions: dict) -> None:
@@ -597,19 +617,18 @@ PUBLISH_NODE = "core.publish"
 
 def publish_gates(root: Path) -> list[dict]:
     """发布前的流程关卡（契约 PB-01 `gates` 里 `source.kind=flow` 的几道，7.14 GateResult）：`blocks` 指向发布节点
-    的节点；声明 `blocks_in: sliced` 的只在按段建模时挡。没确认就挡住发布，动作是去做这一步。"""
+    的节点；老包声明 `blocks_in: sliced` 的只在按段建模时挡，不再分段就不挡。没确认就挡住发布，动作是去做这一步。"""
     root = Path(root)
     flow = model.load_for(root)
     declared = {node["id"]: node for node in flow.get("nodes") or []
-                if PUBLISH_NODE in (node.get("blocks") or [])}
+                if PUBLISH_NODE in (node.get("blocks") or []) and node.get("blocks_in") != "sliced"}
     if not declared:
         return []
     built = build(root)
-    sliced = any(item["id"] != slices.FULL_SLICE["id"] for item in built["slices"])
     gates = []
     for node in built["nodes"]:
         spec = declared.get(node["id"])
-        if spec is None or (spec.get("blocks_in") == "sliced" and not sliced):
+        if spec is None:
             continue
         passed = node["state"] in ("confirmed", "skipped")
         plugin = node.get("plugin")

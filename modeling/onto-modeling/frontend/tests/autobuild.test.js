@@ -71,6 +71,13 @@ test('流水线结果列的颜色', () => {
   assert.equal(matrixTone(row(['confirmed', 'confirmed', 'skipped', 'confirmed', 'confirmed'], '运行前已完成')), 'gray');
   assert.equal(matrixTone(row(['auto', 'auto', 'auto', 'auto', 'auto'], '部分完成 · 挂起 2 项')), 'amber');
   assert.equal(matrixTone(row(['confirmed', 'auto', 'auto', 'auto', 'auto'], '已刷新过期 3 项')), 'indigo');
+  // 一个节点一行（没有步骤格子）：按单元状态与结果
+  const node = (state, result) => ({ slice_id: 'core.object', state, cells: {}, result });
+  assert.equal(matrixTone(node('running', '进行中')), 'running');
+  assert.equal(matrixTone(node('queued', '排队')), 'gray');
+  assert.equal(matrixTone(node('done', '完成 · 挂起 1 项')), 'indigo');
+  assert.equal(matrixTone(node('partial', '部分完成')), 'amber');
+  assert.equal(matrixTone(node('done', '已回退到运行前 · v0.12')), 'gray');
 });
 
 test('按段的进展块：连续步骤合成一段，自动决定、挂起按原顺序穿插', () => {
@@ -89,7 +96,7 @@ test('运行详情六格与报告卡八格', () => {
   const m = reportMetrics(r);
   assert.equal(m.length, 8);
   assert.deepEqual(m[0], ['用时', '1 小时 52 分', '']);
-  assert.deepEqual(m[1], ['分段', '5 / 5', '临期与损耗检查部分完成']);
+  assert.deepEqual(m[1], ['步骤', '5 / 5', '临期与损耗检查部分完成']);
   assert.deepEqual(m[5], ['自动决策', '17 项', '高置信 13 · 需看 4']);
   assert.ok(!m.some(([label]) => label === '费用')); // 工作区不显示金额
   // F8 起建模里没有场景这一步：没有数据时不占格
@@ -144,11 +151,17 @@ test('运行对话在自主构建运行中不给「打断」（S-08 回 409 auto
   assert.equal(canInterrupt(false, { running: false }), false);
 });
 
-test('F8 起不分段：运行条把「全部」叫「建模」；开始前预览的范围只说做到哪', () => {
-  const run = { ...runOf('running'), current: { slice_id: 'all', slice_name: '全部', step_label: '提取操作' } };
-  assert.equal(stripTitle(run).sub, '当前：建模 › 提取操作');
-  assert.match(stripTitle({ ...run, state: 'stopping' }).sub, /「建模」做完后停下/);
-  assert.equal(stripTitle({ ...run, state: 'converting', current: null }).sub, '到下一个安全点转为逐个确认');
-  assert.equal(previewScope({ slices: [{ id: 'all', name: '全部', current: '未完成', included: true }] }), '全部没做完的步骤 · 建模未完成');
+test('按节点排：运行条写节点名（老运行的「全部」叫「建模」）；开始前预览的范围列出要做的几步', () => {
+  const old = { ...runOf('running'), current: { slice_id: 'all', slice_name: '全部', step_label: '提取操作' } };
+  assert.equal(stripTitle(old).sub, '当前：建模 › 提取操作');
+  assert.match(stripTitle({ ...old, state: 'stopping' }).sub, /「建模」做完后停下/);
+  assert.equal(stripTitle({ ...old, state: 'converting', current: null }).sub, '到下一个安全点转为逐个确认');
+  const run = { ...runOf('running'), current: { slice_id: 'core.object', slice_name: '提取对象', step_label: '提取对象' } };
+  assert.equal(stripTitle(run).sub, '当前：提取对象');
+  assert.match(stripTitle({ ...run, state: 'stopping' }).sub, /「提取对象」做完后停下/);
+  const rows = [{ id: 'core.object', name: '提取对象', current: '已确认', included: false },
+    { id: 'core.operation', name: '提取操作', current: '有过期', included: true },
+    { id: 'core.validate', name: '校验', current: '未开始', included: true }];
+  assert.equal(previewScope({ slices: rows }), '提取操作 → 校验');
   assert.equal(previewScope({ slices: [] }), '全部没做完的步骤');
 });

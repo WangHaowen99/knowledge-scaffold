@@ -6,7 +6,7 @@
 - **熔断**：运维把某个包的某个版本熔断（O-29）后，它的节点暂时跳过，它挡住的关卡解除——算状态前把这些节点的
   `blocks` 拿掉，算完标成已跳过；
 - **可补做**：项目已经越过了还没做的节点（插件节点后面的主线节点已经完成，或主线节点的产出已被后面完成的节点
-  用上，比如导入知识包后的资料分析），标 `backfill`，不计入进度的分母，下一步建议不推它；
+  用上，比如导入知识包后的资料分析），标 `backfill`，不计入进度的分母，下一步建议只在必需节点都做完后推它（第 4 级）；
 - **已停用**：锁文件里停用了的包（enabled=false），它的节点不在组装后的流程里、挡不住任何节点；产物保留，
   节点以「已停用」列出（不进进度、没有动作）。
 """
@@ -17,9 +17,9 @@ import copy
 import logging
 from pathlib import Path
 
-_log = logging.getLogger(__name__)
+from .need import REQUIRED, need_kind, when_of
 
-MAINLINE = ("spine", "step", "gate")
+_log = logging.getLogger(__name__)
 
 
 def _pack_version(node: dict) -> tuple[str, str]:
@@ -61,8 +61,9 @@ def mark_broken(states: dict, broken: set[str]) -> None:
         item["broken"] = True
 
 
-def _kinds(node: dict) -> set[str]:
-    """节点产出落在哪些产物类别里（produces 的目录对 `state.KIND_DIRS`）。"""
+def produced_kinds(node: dict) -> set[str]:
+    """节点产出落在哪些产物类别里（produces 的目录对 `state.KIND_DIRS`）：别的节点的 `stale_on` 盖住它们，就是用到了它的
+    产出（可补做、自主构建倒序撤回同一口径）。"""
     from .state import KIND_DIRS
 
     patterns = [str(item.get("path") if isinstance(item, dict) else item) for item in node.get("produces") or []]
@@ -74,20 +75,19 @@ def _kinds(node: dict) -> set[str]:
 
 
 def backfill_ids(flow: dict, hits: dict) -> set[str]:
-    """节点自己还没完成、项目已经越过了它（可补做）。两种越过：
+    """必需节点自己还没完成、项目已经越过了它（可补做）。两种越过：
 
-    - 串入、关卡这类插件节点：后面的主线节点已经在主线上完成，越过了插入位置；
-    - 主线位置（spine）的节点：后面已完成的节点用的正是它的产出（`stale_on` 里有它产出的类别）。导入知识包后建模已经
+    - 旧写法串入、关卡这类插件节点（`placement: step|gate`）：后面的必需节点已经在主线上完成，越过了插入位置；
+    - 其余必需节点：后面已完成的节点用的正是它的产出（`stale_on` 里有它产出的类别）。导入知识包后建模已经
       完成，资料分析就是这样被越过的（ADR-0084）。后面完成的节点不用它的产出时不算（场景模拟做了、校验没做），没做就是没做。"""
-    order = [node for node in flow.get("nodes") or []
-             if node.get("placement", "spine") in MAINLINE and not node.get("optional")]
+    order = [node for node in flow.get("nodes") or [] if need_kind(node) == REQUIRED]
     out = set()
     for index, node in enumerate(order):
         later = [item for item in order[index + 1:] if hits.get(item["id"])]
         if hits.get(node["id"]) or not later:
             continue
         if node.get("placement", "spine") == "spine":
-            kinds = _kinds(node)
+            kinds = produced_kinds(node)
             if any(kinds & set(item.get("stale_on") or []) for item in later):
                 out.add(node["id"])
         elif node.get("pack", "core") != "core":
@@ -95,12 +95,19 @@ def backfill_ids(flow: dict, hits: dict) -> set[str]:
     return out
 
 
+def progress_ids(flow: dict, hits: dict) -> set[str]:
+    """计入进度（x/N）的节点：必需节点，可补做的做完之前不算（越过插入位置的项目，进度不往回退，详设 6.9 第 4 步）。
+    FL-01 与项目列表同一口径。"""
+    passed = backfill_ids(flow, hits)
+    return {node["id"] for node in flow.get("nodes") or [] if need_kind(node) == REQUIRED and node["id"] not in passed}
+
+
 def first_open(flow: dict, hits: dict) -> dict | None:
-    """主线上第一个要做的必经节点：没完成、也没被越过（导入预览的起点，与下一步建议第 9 条同一口径）。"""
+    """第一个要做的必需节点：没完成、也没被越过（导入预览的起点，与下一步建议第 3 级同一口径：`done` 为空的不算）。"""
     passed = backfill_ids(flow, hits)
 
     def open_required(node: dict) -> bool:
-        if node.get("section", "required") != "required" or node.get("optional"):
+        if need_kind(node) != REQUIRED or not node.get("done"):
             return False
         return not hits.get(node["id"]) and node["id"] not in passed
 
@@ -145,7 +152,8 @@ def disabled_nodes(root: Path, flow: dict) -> list[dict]:
         for node in declared:
             if not node.get("id") or node["id"] in present:
                 continue
-            if node.get("visible_if") and not conditions.holds(node["visible_if"], root):
+            condition = when_of(node)
+            if condition and not conditions.holds(condition, root):
                 continue
             out.append({**node, "pack": entry.name, "version": f"{entry.name}@{entry.version}"})
     return out

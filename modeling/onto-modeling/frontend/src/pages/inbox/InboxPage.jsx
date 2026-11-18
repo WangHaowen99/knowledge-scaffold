@@ -2,7 +2,7 @@
 // 接口：IN-01～IN-04；高置信合并项里单独改判走 AB-11 / AB-12；「运行结果」读 AB-16、回退走 AB-17。
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
-import { multiSlice, sliceName, unitTitle } from '../../state/flow.js';
+import { isNodeUnit, multiSlice, sliceName, unitTitle } from '../../state/flow.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
@@ -583,7 +583,8 @@ export default function InboxPage({ route }) {
   const counts = data?.counts;
   const today = data?.today;
   const summary = filter === 'autobuild_review' ? data?.autobuild_summary : null;
-  const impact = sub ? [...(sliceName(sub.slice?.id, sub.slice?.name) ? [{ label: '分段', items: [sub.slice.name] }] : []), ...(sub.affected?.length ? [{ label: '条目', items: sub.affected.map((x) => x.name || x.title) }] : [])] : view?.item.impact || [];
+  const subUnit = sub && (sliceName(sub.slice?.id, sub.slice?.name) ? '分段' : isNodeUnit(sub.slice?.id) ? '步骤' : '');
+  const impact = sub ? [...(subUnit ? [{ label: subUnit, items: [sub.slice.name] }] : []), ...(sub.affected?.length ? [{ label: '条目', items: sub.affected.map((x) => x.name || x.title) }] : [])] : view?.item.impact || [];
   const doneTotal = today ? today.total : 0;
   const pctDone = doneTotal ? Math.round((today.handled / doneTotal) * 100) : 0;
 

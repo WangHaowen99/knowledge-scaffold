@@ -48,7 +48,7 @@ List files in `ontology/operation/`. If empty: "未找到逻辑文档，请先�
 
 ## Step 2: Determine scope
 
-**强制规则**：codegen 必须显式指定目标 operation，**不接受"对全部 operation 一键生成"**。理由：盲跑会把不适合脚本化的 operation（人工决策、政策陈述等）也生成空壳脚本，污染 `ontology/scripts/`。要批量处理请先走 `/ontology-codegen-scan` 由人工评审候选。
+**强制规则**：codegen 只给选定的 operation 生成，**不接受"对全部 operation 一键生成"**。理由：盲跑会把不适合脚本化的 operation（人工决策、政策陈述等）也生成空壳脚本，污染 `ontology/scripts/`。不带目标时先扫描候选、由用户在确认卡里挑（见下面「If $ARGUMENTS empty」）。
 
 ### 按流程生成：一个完整流程一个脚本
 
@@ -82,20 +82,17 @@ consumer 只按 operation 调用脚本：选中哪个 operation，就执行绑�
 
 > 若 `$ARGUMENTS` 仅包含 `全部` / `all` / `*` 等通配词，**拒绝并提示**："代码生成不接受全量目标，请改用 `/ontology-codegen 逻辑1 逻辑2` 形式，或先跑 `/ontology-codegen-scan` 评估候选。"
 
-**If $ARGUMENTS empty:**
-List all operation files，`python3 .claude/scripts/state_helper.py acquire codegen confirm` 后 ask（「选择 …」回复后切回 `start`）:
-"发现 {N} 个逻辑文档。请指定要生成代码的范围（不支持一键全部）：
+**If $ARGUMENTS empty**（界面上点「生成脚本」就是这种）：先扫描候选，再用确认卡让用户挑。
 
-- 回复 **扫描**（/ontology-codegen-scan）→ 先扫一遍候选清单挑（推荐）
-- 回复 **选择 逻辑1 逻辑2** → 只生成指定逻辑的代码（子操作按上面的规则并入主操作脚本）
-"
+1. 按 `.claude/commands/ontology-codegen-scan.md` 的 Step 1～Step 3 扫描（派发 script-candidate-agent、写候选报告），拿到 agent 返回的 JSON 数组和 `REPORT_PATH`。codegen 的锁照常拿着；扫描命令的 Step 0、Step 4（摘要和「生成 …」分支）不做。
+2. 没有 `verdict == 适合` 的候选：说明扫描结果（适合、部分适合、不适合各几条，已记入候选报告；部分适合的要先拆成子操作再生成），然后 `release codegen`，Stop。
+3. 有候选：先 `python3 .claude/scripts/state_helper.py acquire codegen confirm`，正文按编号列出适合的候选（编号即 JSON 的 `id`；每条写逻辑名、覆盖的子操作、一句判定理由），再用确认卡（`.claude/INTERACTION_CONVENTIONS.md` 第 2 条）问「生成哪些？」，选项 **全部**（全部适合的候选）/ **取消**；只要其中几个的，让用户在对话里说编号或逻辑名（支持 `1,3`、`1-5`）。用户在对话里直接打这些也照样推进。
+4. 用户回复后 `acquire codegen start`：
+   - **全部** → 取全部 `verdict == 适合` 的 `operation`；
+   - **编号 / 逻辑名** → 按扫描命令 Step A 翻译成 operation 名（非法编号回「编号 X 不存在，已忽略」）；
+   - **取消** → `release codegen`，Stop。
 
-**Handler 路径：**
-
-- **扫描** → `python3 .claude/scripts/state_helper.py release codegen`，然后 read `.claude/commands/ontology-codegen-scan.md` and follow its instructions（scan 走完会自动回到 codegen 并带回 `$ARGUMENTS`）。
-- **选择 …** → 把 `选择` 后的内容当作 `$ARGUMENTS`，回到 Step 2 顶部的 "$ARGUMENTS provided" 分支重新解析。
-- **取消** → `python3 .claude/scripts/state_helper.py release codegen`，Stop。
-- **全部** / **all** / ***** → 复述强制规则并重新提示上述三选项，不进入生成流程。
+   结果去重后按空格拼成 `$ARGUMENTS`，回到 Step 2 顶部的「$ARGUMENTS provided」分支接着做。
 
 > 若不确定哪些 operation 适合脚本化，`/ontology-codegen-scan` 会按流程输出带编号的候选报告（含每个流程覆盖的子操作、输入输出概要、判定理由）。
 
@@ -453,4 +450,4 @@ git commit -m "codegen: {TOPIC}"
 
 先 `python3 .claude/scripts/state_helper.py release codegen` 与 `update-progress`，再用两三句话小结：生成了哪些脚本、还有什么要用户定；不列下一步菜单（界面的建议条会给出）。
 
-用户之后在对话里说「追踪」「整体视图」「扫描候选」，分别读 `.claude/commands/ontology-trace.md`、`ontology-overview.md`、`ontology-codegen-scan.md` 照做。
+用户之后在对话里说「场景模拟」「整体视图」「扫描脚本候选」（和界面按钮同名），分别读 `.claude/commands/ontology-trace.md`、`ontology-overview.md`、`ontology-codegen-scan.md` 照做。

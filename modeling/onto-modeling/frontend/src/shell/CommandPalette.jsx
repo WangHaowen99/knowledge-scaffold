@@ -1,4 +1,4 @@
-// ⌘K 命令面板：跳转、全文搜索（F-07）、全部命令（S-18，选中经 S-20 发到对话）
+// ⌘K 命令面板：跳转、全文搜索（F-07）、全部命令（S-18，组名、条目名和输入框「/」菜单一样；每次打开重取，选中经 S-20 发条目的 target）
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../app/context.js';
 import { navigate, pagePath } from '../app/router.js';
@@ -6,6 +6,8 @@ import { toast } from '../app/toast.jsx';
 import { errorText } from '../api/errors.js';
 import { Icon, Kbd } from '../ui/index.jsx';
 import { contentHits, paletteList, staticItems } from './paletteModel.js';
+import { catalogCommand } from '../state/flow.js';
+import { filterCatalog } from '../state/commandMenu.js';
 
 const listeners = new Set();
 export function openPalette() { listeners.forEach((fn) => fn()); }
@@ -24,9 +26,9 @@ export function CommandPalette({ projectId, inboxCount, extensions, conversation
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const [sel, setSel] = useState(0);
-  const [remote, setRemote] = useState({ hits: [], commands: [] });
+  const [remote, setRemote] = useState({ hits: [] });
   const inputRef = useRef(null);
-  const catalog = useRef(null);
+  const [catalog, setCatalog] = useState(null);
 
   useEffect(() => {
     const fn = () => { setOpen(true); setQ(''); setSel(0); setTimeout(() => inputRef.current?.focus(), 20); };
@@ -40,17 +42,21 @@ export function CommandPalette({ projectId, inboxCount, extensions, conversation
   }, []);
 
   useEffect(() => {
+    if (!open || !projectId) { setCatalog(null); return undefined; }
+    let alive = true;
+    api.commandCatalog(projectId).then((c) => { if (alive) setCatalog(c); }).catch(() => {});
+    return () => { alive = false; };
+  }, [open, projectId, api]);
+
+  useEffect(() => {
     if (!open || !projectId) return undefined;
     let alive = true;
     const t = setTimeout(async () => {
       try {
-        if (!catalog.current) catalog.current = await api.commandCatalog(projectId);
-        const cmds = q ? catalog.current.groups.flatMap((g) => g.items).filter((c) => c.available && (c.label.includes(q) || c.description.includes(q))) : [];
         const res = q ? await api.search(projectId, q) : null;
-        if (!alive) return;
-        setRemote({ hits: contentHits(res), commands: cmds.slice(0, 6) });
+        if (alive) setRemote({ hits: contentHits(res) });
       } catch {
-        if (alive) setRemote({ hits: [], commands: [] });
+        if (alive) setRemote({ hits: [] });
       }
     }, 180);
     return () => { alive = false; clearTimeout(t); };
@@ -59,14 +65,14 @@ export function CommandPalette({ projectId, inboxCount, extensions, conversation
   const hasPlugin = useCallback((id) => (extensions?.nav || []).some((n) => n.id === id), [extensions]);
 
   const list = useMemo(() => paletteList({
-    q, hits: remote.hits, commands: remote.commands, statics: staticItems({ projectId, inboxCount, hasPlugin, user }),
-  }), [remote, projectId, inboxCount, hasPlugin, user, q]);
+    q, hits: remote.hits, commands: q ? filterCatalog(catalog, q) : [], statics: staticItems({ projectId, inboxCount, hasPlugin, user }),
+  }), [remote, catalog, projectId, inboxCount, hasPlugin, user, q]);
 
   const pick = async (it) => {
     setOpen(false);
     if (it.command) {
       try {
-        await api.sendCommand(projectId, { command: it.command.command, display_label: it.command.label, origin: { page: 'palette', label: '命令面板' }, conversation_id: conversationId || undefined });
+        await api.sendCommand(projectId, { ...catalogCommand(it.command), origin: { page: 'palette', label: '命令面板' }, conversation_id: conversationId || undefined });
         navigate(pagePath('wb-l2', projectId));
       } catch (e) {
         toast(errorText(e), 'alert');
@@ -104,7 +110,7 @@ export function CommandPalette({ projectId, inboxCount, extensions, conversation
                 {head}
                 <div className={`it ${i === sel ? 'on' : ''}`} onMouseEnter={() => setSel(i)} onClick={() => pick(it)}>
                   <Icon name={it.icon} size={14} />{it.label}
-                  <span className="d">{it.desc || PAGE_TITLES[it.page] || ''}</span>
+                  <span className="d">{PAGE_TITLES[it.page] || ''}</span>
                 </div>
               </div>
             );

@@ -20,7 +20,6 @@ import zipfile
 from pathlib import Path
 
 from ...kernel.artifacts import registry as artifact_registry
-from ..flow.assemble import SECTIONS
 from ..flow.state import KIND_DIRS
 from ..uploads import LIMITS
 from . import builtin, checks
@@ -35,7 +34,7 @@ SNAPSHOT_MAX_NAMES = 100
 # 原样进 zip 的后端代码：路径相对 app/，在 zip 里保持同样的层级，相对导入不用改
 CHECKER_SOURCES = (
     "services/packs/manifest.py", "services/packs/repository.py", "services/packs/checks.py",
-    "services/packs/extensions.py", "kernel/artifacts/registry.py",
+    "services/packs/extensions.py", "services/flow/need.py", "kernel/artifacts/registry.py",
 )
 _CHECKER_PACKAGES = ("", "services/", "services/packs/", "services/flow/", "services/onto_mcp/", "kernel/",
                      "kernel/artifacts/")
@@ -89,11 +88,13 @@ _CHECK_NOTES = (
     ("names", "命令带 `<包名>-` 前缀，不和基础建模能力重名，不和已有的包的命令重名，脚本不占内核保留名，同名同版本没有入库"),
     ("entity_types", "产物类型带包名前缀，不用五元组实体类型的名字"),
     ("views", "视图声明格式正确"),
-    ("node_pack", "只有 `kind: node` 有这一项：只带允许的组成，节点编号、挂法、四类节点各自的声明都对"),
+    ("node_pack", "只有 `kind: node` 有这一项：只带允许的组成，节点编号、锚点、四类节点各自的声明都对"),
     ("write_scope", "节点写入范围不碰受保护目录，脚本节点的输出、人工节点的记录落在写入范围里"),
-    ("node_entry", "节点入口命令、节点钩子的命令是本包的"),
+    ("node_entry", "节点的主命令（`actions` 里第一个带 `command` 的动作）、节点钩子的命令是本包的"),
+    ("node_need", "节点写错 `need` 或带了分段遗留字段时才有这一项：`need` 只能是 `required`、`optional`、`{when: <条件>}`；`per_slice`、`steps`、`slice_steps`、`node_titles`、`blocks_in` 不再起作用，给警告"),
+    ("autobuild", "包里有节点时才有这一项：列出写了 `autobuild: true`、自主构建会执行的节点（有就给警告，让审核的人看到）；没写的不进自主构建"),
     ("confine", "`flow.yaml` 声明了 `confine` 时才有这一项：只写 `scope_file`，是具体文件，不在 `ontology/` 和受保护目录下，落在本包节点的 `produces` 里"),
-    ("activation", "`flow.yaml` 声明了 `activation` 或节点写了 `visible_if: activated` 时才有这一项：`event` 是内核给的事件（现在只有 `materials_added`），`requires` 是本包声明的探针，`session` 是本包节点 produces 里的具体文件；`preempt` 只能用在 `visible_if: activated` 的节点上"),
+    ("activation", "`flow.yaml` 声明了 `activation` 或节点写了 `need: {when: activated}` 时才有这一项：`event` 是内核给的事件（现在只有 `materials_added`），`requires` 是本包声明的探针，`session` 是本包节点 produces 里的具体文件"),
     ("hooks", "不带 `settings.json`，只能追加 `PreToolUse` 守卫，守卫引用的脚本要存在"),
     ("frontend", "页面只从平台内置里选，前端代码只放 `ui/` 下"),
     ("ui", "`ui/` 只能是构建好的静态资源，编辑器入口是 `ui/<id>/index.html`"),
@@ -227,12 +228,13 @@ def protocol_markdown(snapshot: dict) -> str:
 
 ## 节点
 
-- 节点挂法 `placement`：{_code(checks.NODE_PLACEMENTS)}；节点包不能挂主线 `spine`，能力包可以。除 `on_demand` 外要写锚点 `after` 或 `before`。
+- 什么时候要做 `need`：`required`（上导航栏、计入进度、没做时推荐）、`optional`（挂在前面最近的必需节点下面，可以跳过，不计入进度）、`{{when: <内核条件>}}`（条件成立时出现：`activated` 按本包的触发；`materials_added` 是上传了新资料、内核增量更新这一轮还没处理完，做完一次增量更新、发布过或用户选了「这一轮不处理」就不成立）。缺省 `required`。旧写法 `placement`、`section`、`optional`、`progress`、`visible_if` 还能装配，按映射折算成 `need`，新包不要再写。节点要写锚点 `after` 或 `before`。
+- 主命令：`actions` 里第一个带 `command`（或 `page`）的动作，开始节点、自主构建都用它；`agent` 节点的主命令要是本包的命令。`entry` 不用再写。
+- 节点名就是主命令名：主命令的叫法装配时换成节点 `title`，导航栏、全部命令、建议条、对话气泡都叫这一个名字。其余动作是变体，按钮名单独拿出来也要看得懂（写「追加资料分析」，不写「追加」），界面上不加节点名前缀。
 - 范围限定 `confine`（`flow.yaml` 顶层，可选）：`{{scope_file: <路径>}}`。范围文件合入主线、`status` 是 `active` 时，基线提交里有、`editable` 里没有的本体条目助手不能写也不能删，新增条目不限；范围文件只能在它所属节点的命令运行时写。一次装配最多一个包声明。
-- 触发 `activation`（`flow.yaml` 顶层，可选）：`{{event: materials_added, requires: [<本包探针>], session: <这一轮的状态文件>}}`。用户上传资料时前提成立就算触发，节点写 `visible_if: activated` 只在触发后、这一轮开着时出现，写 `preempt` 时下一步先推它；`session` 文件的 `status` 是 active 算这一轮开着，`covers`（确认时的主线提交）包含触发时的提交算处理过，基线（`baseline.commit`）之后发布过算这一轮结束。`confine` 加 `lock_on_activation: true`：触发后、范围确认前已有条目全部只读。
-- `autobuild: false`：自主构建跳过这个节点（要用户给输入才能做的节点）。
+- 触发 `activation`（`flow.yaml` 顶层，可选）：`{{event: materials_added, requires: [<本包探针>], session: <这一轮的状态文件>}}`。用户上传资料时前提成立就算触发，节点写 `need: {{when: activated}}` 只在触发后、这一轮开着时出现，出现且没做完时下一步先推它；`session` 文件的 `status` 是 active 算这一轮开着，`covers`（确认时的主线提交）包含触发时的提交算处理过，基线（`baseline.commit`）之后发布过算这一轮结束。`confine` 加 `lock_on_activation: true`：触发后、范围确认前已有条目全部只读。
+- `autobuild`：上传的包的节点缺省不进自主构建，要进写 `autobuild: true`，上传检查会列出来给审核的人看；`autobuild: false` 让节点总不进自主构建（要用户给输入才能做的节点）。
 - 节点类型 `kind`：`agent`（缺省）、`script`、`human`。
-- 面板分组 `section`：{_code(SECTIONS)}。
 - `stale_on`、`requires` 里的产物类别：{_code(KIND_DIRS)}。
 - `done` 能用本包的探针和基础建模能力的探针：{_code(snapshot['core']['probes'])}。
 - `kind: node` 的 `contributes` 只能有：{_code(checks.NODE_PACK_ALLOWED)}。

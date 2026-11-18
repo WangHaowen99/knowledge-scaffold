@@ -58,31 +58,34 @@ def _default_flow() -> dict:
 
 
 DEFAULT_FLOW = _default_flow()
+# 项目里实际出现的节点：增量更新的条件（上传了新资料）内核还没有，按不成立算，不出现
+SHOWN_IDS = [node["id"] for node in DEFAULT_FLOW["nodes"] if node["id"] != "core.update"]
 
-# 场景：要建的文件 → 期望的旧版阶段、计入进度的完成数（0.3.0 起对象与操作合成「建模」一个节点，详设 6.8）
+# 场景：要建的文件 → 期望的旧版阶段、计入进度的完成数（只算必需节点：资料分析、提取对象、提取操作、校验、场景模拟、
+# 发布；流程图、代码生成这类可选节点做完不算，节点模型重构 2a）
 SCENARIOS = {
     "empty": ({}, "未开始", 0),
     "research_pending": ({"research/20260101-订单.md": "# 报告\n"}, "资料分析待核验", 0),
-    "diagram": ({"research/r.md": "# 报告\n", "ontology/diagrams/下单.drawio": "<mxfile/>"}, "流程图就绪", 1),
-    # 只有对象：建模还没做完（全量模式那一段停在「操作」）
-    "objects": ({"ontology/object/订单.md": "# 订单\n"}, "对象已提取", 0),
-    "operations": ({"ontology/object/订单.md": "# 订单\n", "ontology/operation/下单.md": "# 下单\n"}, "逻辑已提取", 1),
+    "diagram": ({"research/r.md": "# 报告\n", "ontology/diagrams/下单.drawio": "<mxfile/>"}, "流程图就绪", 0),
+    # 只有对象：提取对象做完，提取操作还没做
+    "objects": ({"ontology/object/订单.md": "# 订单\n"}, "对象已提取", 1),
+    "operations": ({"ontology/object/订单.md": "# 订单\n", "ontology/operation/下单.md": "# 下单\n"}, "逻辑已提取", 2),
     # 只有场景验证报告：不算质量检查完成（统一口径前后端会算完成）
     "trace_report_only": ({"ontology/object/a.md": "x", "ontology/operation/b.md": "x",
-                           "reports/20260101-000000-trace.md": "- [x] 通过\n"}, "逻辑已提取", 1),
+                           "reports/20260101-000000-trace.md": "- [x] 通过\n"}, "逻辑已提取", 2),
     "validated": ({"ontology/object/a.md": "x", "ontology/operation/b.md": "x",
-                   "reports/20260101-000000-all-rule.md": "- [x] 已修\n"}, "完成", 2),
+                   "reports/20260101-000000-all-rule.md": "- [x] 已修\n"}, "完成", 3),
     "validate_pending": ({"ontology/object/a.md": "x", "ontology/operation/b.md": "x",
-                          "reports/20260101-000000-all-rule.md": "- [ ] 待修\n"}, "校验待审阅", 1),
+                          "reports/20260101-000000-all-rule.md": "- [ ] 待修\n"}, "校验待审阅", 2),
     # 处理过的条目说明里写着 `[[ ]]` 不算待处理：只认列表项开头的 `[ ]`（实测：校验因此一直没做完）
     "validated_with_brackets": ({"ontology/object/a.md": "x", "ontology/operation/b.md": "x",
                                  "reports/20260101-000000-all-rule.md": "- ✅ ⚠️ 归属操作名补 `[[ ]]` 包裹\n"},
-                                "完成", 2),
-    # 建模、流程图、校验、场景模拟、代码生成；发布还没做
+                                "完成", 3),
+    # 提取对象、提取操作、校验、场景模拟（流程图、代码生成也做了，可选的不算）；发布还没做
     "full": ({"ontology/object/a.md": "x", "ontology/operation/b.md": "x", "ontology/rule/r.md": "x",
               "reports/20260101-000000-all-semantic.md": "ok\n", "ontology/data-mock/m.md": "x",
               "ontology/testcase/t.md": "x", "ontology/scripts/s.py": "x", "ontology/diagrams/d.drawio": "x"},
-             "完成", 5),
+             "完成", 4),
 }
 
 
@@ -139,17 +142,22 @@ def test_flow_definition_assembles_and_references_real_commands():
 
 
 def test_refresh_scope_is_declared_on_validate_and_checked_at_assembly():
-    """校验过期后只查改动条目（refresh_scope: changed_entries）；不认识的取值、按段的节点声明它，装配都拒绝。"""
+    """校验过期后只查改动条目（refresh_scope: changed_entries）；不认识的取值装配拒绝。不再分段：老 core 里按段的节点
+    写了也照常装配（`per_slice` 不再起作用）。"""
     import copy
 
     flow = assemble.assemble([("core", "test", FLOW)])
     assert {node["id"]: node["refresh_scope"] for node in flow["nodes"] if node.get("refresh_scope")} == {
         "core.validate": "changed_entries"}
-    for node_id, value in (("core.validate", "everything"), ("core.model", "changed_entries")):
-        broken = copy.deepcopy(FLOW)
-        next(node for node in broken["nodes"] if node["id"] == node_id)["refresh_scope"] = value
-        with pytest.raises(assemble.FlowAssemblyError, match="刷新范围"):
-            assemble.assemble([("core", "test", broken)])
+    broken = copy.deepcopy(FLOW)
+    next(node for node in broken["nodes"] if node["id"] == "core.validate")["refresh_scope"] = "everything"
+    with pytest.raises(assemble.FlowAssemblyError, match="刷新范围"):
+        assemble.assemble([("core", "test", broken)])
+    legacy = copy.deepcopy(FLOW)
+    node = next(node for node in legacy["nodes"] if node["id"] == "core.operation")
+    node.update(per_slice=True, steps=[{"id": "operation", "label": "操作"}], refresh_scope="changed_entries")
+    assembled = assemble.assemble([("core", "test", legacy)])
+    assert next(item for item in assembled["nodes"] if item["id"] == "core.operation")["refresh_scope"] == "changed_entries"
 
 
 def test_assembled_flow_is_json_readable_by_stdlib(manager: WorkspaceManager):
@@ -172,7 +180,7 @@ def test_backend_state_helper_and_api_agree(manager: WorkspaceManager, scenario:
     progress = manager._project_progress(root)
     # 建模完成而资料分析没做：资料分析算越过，不计入分母（ADR-0084）
     hits = flow_state.node_hits(DEFAULT_FLOW, root)
-    total = len(flow_state.progress_nodes(DEFAULT_FLOW)) - int(hits["core.model"] and not hits["core.research"])
+    total = len(flow_state.progress_nodes(DEFAULT_FLOW)) - int(hits["core.object"] and not hits["core.research"])
     assert (progress["stages_done"], progress["stages_total"]) == (done, total)
     # ② state_helper（工作区里实际跑的那份）
     assert state_helper(root, "detect-stage") == stage
@@ -186,7 +194,7 @@ def test_backend_state_helper_and_api_agree(manager: WorkspaceManager, scenario:
     body = TestClient(app).get(f"/api/v1/projects/{root.name}/flow").json()
     assert body["stage"] == stage
     assert body["progress"] == {"done": done, "total": progress["stages_total"]}
-    assert [node["id"] for node in body["nodes"]] == [node["id"] for node in DEFAULT_FLOW["nodes"]]
+    assert [node["id"] for node in body["nodes"]] == SHOWN_IDS
     confirmed = {node["id"] for node in body["nodes"] if node["state"] == "confirmed"}
     assert confirmed == {node_id for node_id, hit in hits.items() if hit}
 
@@ -230,14 +238,16 @@ def test_flow_api_suggests_mainline_next_step(manager: WorkspaceManager, monkeyp
     monkeypatch.setattr(auth, "ENABLED", False)
     client = TestClient(app)
     body = client.get(f"/api/v1/projects/{root.name}/flow").json()
-    assert body["suggestions"]["primary"]["action"]["command"] == "/ontology-research"
+    # 资料分析没做、对象已经有了：资料分析算越过（可补做），主线下一步是提取操作
+    assert body["suggestions"]["primary"]["action"]["command"] == "/ontology-extract-operation"
     assert len(body["suggestions"]["secondary"]) <= 2 and body["suggestions"]["all_commands"] is True
     again = client.get(f"/api/v1/projects/{root.name}/flow/suggestions").json()
     assert again["rev"] > body["suggestions"]["rev"]  # 每算一次版本号都往上走，界面取大的那份
     assert {**again, "rev": 0} == {**body["suggestions"], "rev": 0}
     sections = {section["id"]: section["nodes"] for section in body["sections"]}
-    assert "core.update" in sections["on_demand"] and "diagram.flowchart" in sections["optional"]
-    assert body["commands"]["extract-object"] == "core.model"
+    assert sections["on_demand"] == [] and "diagram.flowchart" in sections["optional"]  # 增量更新的条件还没有
+    assert body["commands"]["extract-object"] == "core.object"
+    assert body["commands"]["extract-operation"] == "core.operation"
 
 
 def test_running_command_marks_node_running(manager: WorkspaceManager, monkeypatch):
@@ -247,14 +257,18 @@ def test_running_command_marks_node_running(manager: WorkspaceManager, monkeypat
     monkeypatch.setattr(deps, "workspaces", manager)
     monkeypatch.setattr(auth, "ENABLED", False)
     body = TestClient(app).get(f"/api/v1/projects/{root.name}/flow").json()
-    assert next(node for node in body["nodes"] if node["id"] == "core.model")["state"] == "running"
+    assert next(node for node in body["nodes"] if node["id"] == "core.object")["state"] == "running"
 
 
 def test_flow_follows_project_locked_core_version(manager: WorkspaceManager):
     root = make_project(manager, {})
-    assert flow_model.load_for(root)["flow_hash"] == json.loads((root / ".claude" / "flow.yaml").read_text())["flow_hash"]
+    assembled = json.loads((root / ".claude" / "flow.yaml").read_text())
+    assert flow_model._assembled(root) == assembled
+    # 本项目生效中的流程去掉了条件不成立的节点，摘要跟着换
+    effective = flow_model.load_for(root)
+    assert effective["hidden_nodes"] == ["core.update"] and effective["flow_hash"] != assembled["flow_hash"]
     (root / ".claude").unlink()
-    assert flow_model.load_for(root) == flow_model.image_flow()
+    assert flow_model._assembled(root) == flow_model.image_flow()
 
 
 

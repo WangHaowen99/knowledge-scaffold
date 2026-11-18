@@ -1,7 +1,8 @@
 """运行记录 → 契约形状（7.15 AutobuildRunSummary / AutobuildRun / AutobuildReport / LedgerEntry / Suspension）与
-对话里的四种卡片（4.7 autobuild_start、slice_progress、run_report；自动决定、挂起嵌在分段进展块的时间线里）。
+对话里的四种卡片（4.7 autobuild_start、slice_progress、run_report；自动决定、挂起嵌在单元进展块的时间线里）。
 
-界面文字只给功能必需的：状态标签、数字、段名、问题与选择本身。
+一个单元一行：新运行的单元是节点，老运行（这一版之前开始的）还有按段的「全部」× 几步，只有它们的流水线有步骤列
+（`stages`）。契约里的 `slice*` 字段名不变，装的是单元。界面文字只给功能必需的：状态标签、数字、单元名、问题与选择本身。
 """
 
 from __future__ import annotations
@@ -21,6 +22,8 @@ SUSPENSION_FIELDS = ("id", "run_id", "at", "slice", "title", "reason", "handled_
 UNRESOLVED = ("open", "deferred")
 KINDS = {"object": "objects", "operation": "operations", "rule": "rules"}
 KIND_LABELS = {"objects": "对象", "operations": "操作", "rules": "规则"}
+# 老运行按段的流水线的列：按这个顺序排，名字按这个叫（F8 之前还有规则、写入即查、场景）
+STAGE_LABELS = {"object": "对象", "operation": "操作", "rule": "规则", "check": "写入即查", "scenario": "场景"}
 
 
 def iso(value) -> str | None:
@@ -39,14 +42,18 @@ def currency_of(run: dict) -> str:
     return old.get("currency") or model_pricing.load()["currency"]
 
 
+def _reverted(run: dict) -> set[str]:
+    return {unit_id for unit_id, info in store.unit_infos(run).items() if info.get("reverted")}
+
+
 def live_ledger(run: dict) -> list[dict]:
-    """撤回了的段上的决定不再算。"""
-    reverted = {unit_id for unit_id, info in (run.get("slices") or {}).items() if info.get("reverted")}
+    """撤回了的单元上的决定不再算。"""
+    reverted = _reverted(run)
     return [entry for entry in run.get("ledger") or [] if (entry.get("slice") or {}).get("id") not in reverted]
 
 
 def live_suspensions(run: dict) -> list[dict]:
-    reverted = {unit_id for unit_id, info in (run.get("slices") or {}).items() if info.get("reverted")}
+    reverted = _reverted(run)
     return [item for item in run.get("suspensions") or [] if (item.get("slice") or {}).get("id") not in reverted]
 
 
@@ -69,7 +76,7 @@ def _units(run: dict, kind: str | None = None) -> list[dict]:
 
 
 def _info(run: dict, unit_id: str) -> dict:
-    return (run.get("slices") or {}).get(unit_id) or {}
+    return store.unit_info(run, unit_id)
 
 
 def _checks(run: dict, infos: list[dict]) -> dict:
@@ -105,8 +112,8 @@ def summary(run: dict, now: float | None = None) -> dict:
     """AutobuildRunSummary（EP-14 的载荷、AB-18 的一行）。"""
     now = now or time.time()
     currency = currency_of(run)
-    slices = _units(run, "slice")
-    done_slices = sum(1 for unit in slices if _info(run, unit["id"]).get("state") in ("done", "partial"))
+    units = _units(run)
+    done_units = sum(1 for unit in units if _info(run, unit["id"]).get("state") in ("done", "partial"))
     elapsed = budget.elapsed_ms(run, now)
     steps_done, steps_total = _step_counts(run)
     estimate = None
@@ -118,7 +125,7 @@ def summary(run: dict, now: float | None = None) -> dict:
         "elapsed_ms": elapsed, "est_total_ms": estimate,
         "tokens": {"used": int((run.get("budget") or {}).get("tokens") or 0)},
         "cost": {"used": money((run.get("budget") or {}).get("cost") or 0, currency)},
-        "slices": {"done": done_slices, "total": len(slices)},
+        "slices": {"done": done_units, "total": len(units)},
         "decisions": len(ledger),
         "suspended": sum(1 for item in live_suspensions(run) if item.get("state") in UNRESOLVED),
         "needs_review": sum(1 for entry in ledger if entry.get("review_state") == "pending"),
@@ -129,12 +136,34 @@ def summary(run: dict, now: float | None = None) -> dict:
     }
 
 
+def stages(run: dict) -> list[dict]:
+    """老运行按段的流水线的列 [{id, label}]：按段的单元里的步骤，加上开始时记下的各段各步的状态（`before`、
+    `before_rows`，只有老运行记）里出现的；新运行没有。"""
+    labels: dict[str, str] = {}
+    for unit in _units(run, "slice"):
+        for step in unit.get("steps") or []:
+            labels.setdefault(step["id"], STAGE_LABELS.get(step["id"]) or step.get("label") or step["id"])
+        for key in unit.get("before") or {}:
+            labels.setdefault(key, STAGE_LABELS.get(key, key))
+    for row in run.get("before_rows") or []:
+        for key in row.get("stages") or {}:
+            labels.setdefault(key, STAGE_LABELS.get(key, key))
+    order = list(STAGE_LABELS)
+    keys = sorted(labels, key=lambda key: order.index(key) if key in order else len(order))
+    return [{"id": key, "label": labels[key]} for key in keys]
+
+
 def _row(run: dict, unit: dict, stage_ids: list[str]) -> dict:
+    """一个单元一行；按段的单元按步骤列填格子，节点单元没有格子。"""
     info = _info(run, unit["id"])
+    row = {"slice_id": unit["id"], "slice_name": unit["name"], "state": info.get("state") or "queued", "cells": {},
+           "result": result_text(run, unit["id"])}
+    if unit["kind"] != "slice":
+        return row
     steps = {step["id"]: (info.get("steps") or {}).get(step["id"], "queued") for step in unit["steps"]}
     before = unit.get("before") or {}
     merged = bool(info.get("commit"))
-    cells = {}
+    cells = row["cells"]
     for stage in stage_ids:
         if stage in steps:
             value = STEP_CELL.get(steps[stage], "queued")
@@ -147,7 +176,7 @@ def _row(run: dict, unit: dict, stage_ids: list[str]) -> dict:
             cells[stage] = "auto"
         else:
             cells[stage] = "queued"
-    return {"slice_id": unit["id"], "slice_name": unit["name"], "cells": cells, "result": result_text(run, unit["id"])}
+    return row
 
 
 def result_text(run: dict, unit_id: str) -> str:
@@ -168,21 +197,24 @@ def result_text(run: dict, unit_id: str) -> str:
     return f"{text} · 挂起 {suspended} 项" if suspended else text
 
 
-def run_view(run: dict, stage_ids: list[str], now: float | None = None) -> dict:
-    """AutobuildRun（AB-04、AB-05、AB-06～AB-09 的响应）。"""
-    info = list((run.get("slices") or {}).values())
-    tail = [unit["name"] for unit in _units(run, "node")]
+def run_view(run: dict, now: float | None = None) -> dict:
+    """AutobuildRun（AB-04、AB-05、AB-06～AB-09 的响应）：`matrix` 一个单元一行；`stages` 只有老运行有。"""
+    info = list(store.unit_infos(run).values())
+    columns = stages(run)
+    stage_ids = [stage["id"] for stage in columns]
     in_run = {unit["id"] for unit in _units(run)}
     rows = []
     for row in run.get("before_rows") or []:
-        if row.get("group") != "done" or row["id"] in in_run:
+        # 老运行开始时就做完、没在这次运行里的段
+        if not stage_ids or row.get("group") != "done" or row["id"] in in_run:
             continue
-        stages = row.get("stages") or {}
-        cells = {stage: ("confirmed" if stages.get(stage) in ("confirmed", "auto") else
-                         "skipped" if stages.get(stage) == "skipped" else "queued")
+        done = row.get("stages") or {}
+        cells = {stage: ("confirmed" if done.get(stage) in ("confirmed", "auto") else
+                         "skipped" if done.get(stage) == "skipped" else "queued")
                  for stage in stage_ids}
-        rows.append({"slice_id": row["id"], "slice_name": row["name"], "result": "运行前已完成", "cells": cells})
-    rows += [_row(run, unit, stage_ids) for unit in _units(run, "slice")]
+        rows.append({"slice_id": row["id"], "slice_name": row["name"], "state": "done", "result": "运行前已完成",
+                     "cells": cells})
+    rows += [_row(run, unit, stage_ids) for unit in _units(run)]
     return {
         **summary(run, now),
         "conversation_id": run["conversation_id"],
@@ -192,7 +224,8 @@ def run_view(run: dict, stage_ids: list[str], now: float | None = None) -> dict:
         "fix_rounds": {"used": sum(int(item.get("fix_rounds") or 0) for item in info),
                        "limit": int(((run.get("policy") or {}).get("advanced") or {}).get("max_fix_rounds") or 0)},
         "matrix": rows,
-        "tail_text": f"跑完全部分段后：{' → '.join(tail)}" if tail else "",
+        "stages": columns,
+        "tail_text": "",
         "scope_lock_text": "",
         "recovered_from_checkpoint": int(run.get("recovered") or 0),
         "report_available": bool(run.get("report")),
@@ -211,14 +244,14 @@ def produced_text(produced: dict) -> str:
 
 
 def report(run: dict, now: float | None = None) -> dict:
-    """AutobuildReport：按段结果、能否撤回随复核与撤回变化，每次现算。"""
+    """AutobuildReport：每个单元的结果、能否撤回随复核与撤回变化，每次现算。"""
     currency = currency_of(run)
     ledger = live_ledger(run)
     threshold = float(((run.get("policy") or {}).get("advanced") or {}).get("confidence_threshold") or 0.8)
     produced = {key: 0 for key in KIND_LABELS}
-    slices, partial = [], []
+    rows, partial = [], []
     ended = run.get("state") in store.ENDED
-    for unit in _units(run, "slice"):
+    for unit in _units(run):
         info = _info(run, unit["id"])
         for key in produced:
             produced[key] += int((info.get("produced") or {}).get(key) or 0)
@@ -226,7 +259,7 @@ def report(run: dict, now: float | None = None) -> dict:
         result = state if state in ("done", "partial") else "skipped"
         if result == "partial":
             partial.append(unit["name"])
-        slices.append({
+        rows.append({
             "slice_id": unit["id"], "name": unit["name"], "result": result, "result_text": result_text(run, unit["id"]),
             "produced_text": produced_text(info.get("produced") or {}), "scenarios": {"passed": 0, "total": 0},
             "version_label": info.get("version_label") or run.get("base_version_label") or "",
@@ -242,7 +275,7 @@ def report(run: dict, now: float | None = None) -> dict:
         "base_version_label": run.get("base_version_label"),
         "metrics": {
             "duration_ms": budget.elapsed_ms(run, now),
-            "slices": {"done": sum(1 for row in slices if row["result"] != "skipped"), "total": len(slices),
+            "slices": {"done": sum(1 for row in rows if row["result"] != "skipped"), "total": len(rows),
                        "partial": partial},
             "produced": produced,
             "checks": _checks(run, infos),
@@ -252,7 +285,7 @@ def report(run: dict, now: float | None = None) -> dict:
             "cost": money((run.get("budget") or {}).get("cost") or 0, currency),
             "tokens": int((run.get("budget") or {}).get("tokens") or 0),
         },
-        "slices": slices,
+        "slices": rows,
         "note": "",
     }
 
@@ -269,11 +302,8 @@ def _card(card_id: str, card_type: str, title: str, open_=None) -> dict:
 
 def start_card(run: dict) -> dict:
     pol = run.get("policy") or {}
-    scope = pol.get("scope") or {}
-    slices = len(_units(run, "slice"))
     chips = [
-        {"label": "范围", "value": f"{'选中的' if scope.get('mode') == 'selected' else '未完成的'} {slices} 段"
-         if slices > 1 else "未完成的步骤"},
+        {"label": "范围", "value": f"{len(_units(run))} 步"},
         {"label": "拿不准时", "value": policy.BELOW_TEXT.get((pol.get("advanced") or {}).get("below_threshold"), "")},
     ]
     return {**_card(f"ab{run['run_no']}-start", "autobuild_start", f"自主构建 · 运行 #{run['run_no']}",
@@ -297,7 +327,7 @@ def suspension_card(run: dict, item: dict) -> dict:
             "reason": item.get("reason") or "", "inbox_item_id": f"suspension:{item['id']}"}
 
 
-def _slice_summary(run: dict, unit: dict) -> str:
+def _unit_summary(run: dict, unit: dict) -> str:
     info = _info(run, unit["id"])
     state = info.get("state") or "queued"
     if state == "running":
@@ -315,7 +345,8 @@ def _slice_summary(run: dict, unit: dict) -> str:
     return " · ".join(parts)
 
 
-def slice_card(run: dict, unit: dict) -> dict:
+def unit_card(run: dict, unit: dict) -> dict:
+    """一个单元的进展块（卡片类型沿用 `slice_progress`）。"""
     info = _info(run, unit["id"])
     entries = {entry["id"]: entry for entry in run.get("ledger") or []}
     suspended = {item["id"]: item for item in run.get("suspensions") or []}
@@ -330,7 +361,7 @@ def slice_card(run: dict, unit: dict) -> dict:
                              "state": item.get("state") or "done", "duration_ms": item.get("duration_ms")})
     return {**_card(f"ab{run['run_no']}-{unit['id']}", "slice_progress", unit["name"]),
             "run_id": run["run_id"], "slice": {"id": unit["id"], "name": unit["name"]},
-            "state": CARD_STATE.get(info.get("state") or "queued", "queued"), "summary": _slice_summary(run, unit),
+            "state": CARD_STATE.get(info.get("state") or "queued", "queued"), "summary": _unit_summary(run, unit),
             "version_label": info.get("version_label"), "timeline": timeline,
             "decision_ids": list(info.get("decisions") or []), "suspension_ids": list(info.get("suspensions") or [])}
 

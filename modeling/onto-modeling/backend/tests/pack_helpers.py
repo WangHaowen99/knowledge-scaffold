@@ -124,9 +124,8 @@ _ROUND_WRITES = ["ontology/object/*", "ontology/operation/*", "ontology/logic/*"
 
 
 def _round_node(step: str, title: str, **fields) -> dict:
-    return {"id": f"intake.{step}", "title": title, "kind": "agent", "placement": "spine", "section": "required",
-            "autobuild": False, "visible_if": "activated", **fields, "entry": {"command": f"/intake-{step}"},
-            "actions": [{"label": title, "command": f"/intake-{step}"}]}
+    return {"id": f"intake.{step}", "title": title, "kind": "agent", "need": {"when": "activated"},
+            "autobuild": False, **fields, "actions": [{"label": title, "command": f"/intake-{step}"}]}
 
 
 ROUND_PACK_FLOW = {
@@ -140,17 +139,25 @@ ROUND_PACK_FLOW = {
         "intake_pending": {"pending": ["intake"], "glob": "check.md"},
     },
     "nodes": [
-        _round_node("scope", "圈定范围", preempt="上传了新资料，先圈定这次要改的范围", display_after=["core.model"],
+        _round_node("scope", "圈定范围", display_after=["core.operation"],
                     done=["intake_session"], produces=[ROUND_SCOPE_FILE, "intake/scope.md"]),
-        _round_node("apply", "范围内修改", preempt=True, after="intake.scope", display_after=["intake.scope"],
+        _round_node("apply", "范围内修改", after="intake.scope",
                     done=["intake_applied", "intake_session"], produces=["intake/applied.json"], writes=_ROUND_WRITES),
-        _round_node("check", "核对", preempt=True, after="intake.apply", display_after=["intake.apply"],
+        _round_node("check", "核对", after="intake.apply",
                     done=["intake_checked", "!intake_pending", "intake_session"],
                     stale_on=["object", "operation", "rule", "metric"], blocks=["core.publish"],
                     produces=["intake/check.md", "intake/check.json"], writes=_ROUND_WRITES),
     ],
     "commands": {f"intake-{step}": {"node": f"intake.{step}", "requires": ["对象已提取"], "lock_waits": ["confirm"]}
                  for step in ("scope", "apply", "check")},
+}
+# 同一个包的旧写法（visible_if、preempt、placement、section、entry）：装配时折算成和上面一样的 need，测兼容用
+ROUND_PACK_FLOW_LEGACY = {
+    **ROUND_PACK_FLOW,
+    "nodes": [{**{key: value for key, value in node.items() if key != "need"}, "placement": "spine", "section": "required",
+               "visible_if": "activated", "entry": {"command": node["actions"][0]["command"]},
+               "preempt": "上传了新资料，先圈定这次要改的范围" if node["id"] == "intake.scope" else True}
+              for node in ROUND_PACK_FLOW["nodes"]],
 }
 # 用户要结束这一轮时提示助手走圈定范围的命令
 ROUND_PACK_PROMPT = {"id": "intake-close-round", "match": ["结束本轮"],
@@ -170,8 +177,8 @@ def make_round_pack(base: Path, version: str = "0.1.0", *, flow: dict | None = N
                                   "prompts": [ROUND_PACK_PROMPT]})
 
 
-def install_round_pack(manager, base: Path, version: str = "0.1.0") -> None:
-    """合成的触发包入库、stable 指向它，项目里就能按名字启用。"""
-    source = make_round_pack(Path(base) / "round-pack-src", version)
+def install_round_pack(manager, base: Path, version: str = "0.1.0", *, flow: dict | None = None) -> None:
+    """合成的触发包入库、stable 指向它，项目里就能按名字启用。flow 给 ROUND_PACK_FLOW_LEGACY 时装旧写法的那份。"""
+    source = make_round_pack(Path(base) / "round-pack-src", version, flow=flow)
     manager.packs.repository.install(source, origin="upload", by="admin")
     manager.packs.repository.set_channel(ROUND_PACK, "stable", version, by="admin")

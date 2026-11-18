@@ -65,4 +65,3 @@
 .g2-ck:last-child{border-bottom:0}
 .g2-ck .ic{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;flex:none}
 .g2-ck .ic.warn{background:var(--a50);color:var(--amber2)}
-.ab-tail{padding:9px 12px;border-radius:10px;background:var(--panel2)}

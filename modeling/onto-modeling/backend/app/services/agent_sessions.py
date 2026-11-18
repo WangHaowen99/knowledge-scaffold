@@ -1050,7 +1050,7 @@ class SessionManager:
                 session.project_id, session.conversation_id, meta.get("display_text") or text
             )
         await asyncio.to_thread(turns.begin, session, text, task_id=meta.get("task_id"),
-                                resume_exec=meta.get("resume_exec"))
+                                resume_exec=meta.get("resume_exec"), label=meta.get("command_label"))
         session.turn = timeline.Turn.new(session.turn_title)
         session.last_prompt = text
         project_events.scope_changed(session.project_id)
@@ -2229,7 +2229,7 @@ class SessionManager:
                 if not _is_plugin(session):
                     record = await asyncio.to_thread(_capture_change_list, session, record) or record
             if running or record is None or session.run_id:
-                # 自主构建的一段不出「这一轮改了什么」卡：运行器按段合入，进展在段进展块里
+                # 自主构建的一步不出「这一轮改了什么」卡：运行器自己合入，进展在单元的进展块里
                 return
             if session.turns_in_flight and not force:
                 return  # 引擎里还排着下一条：等它收尾时一起合入、出卡

@@ -18,7 +18,7 @@ from app.services.autobuild import prerun, store
 from tests.autobuild_helpers import (AutoEngine, ab, ask, history, start, wait_state,  # noqa: F401
                                      wait_until)
 
-SLICES_ONLY = {"scope": {"until_node": "core.model"}}
+SLICES_ONLY = {"scope": {"until_node": "core.operation"}}
 OWNER = "employee_0001"
 CONFIRM = {"question": "对象产物已生成，共 3 个，验收结果如上。确认无误吗？",
            "options": [{"label": "确认"}, {"label": "需要修改"}]}
@@ -32,7 +32,7 @@ def _needs_input(project_id: str) -> list[dict]:
 def test_template_confirmation_in_a_run_is_confirmed_without_a_ledger_entry(ab):
     client, _workspaces, project_id, _root = ab
     answers: list = []
-    AutoEngine.hooks["/ontology-extract-object:all"] = [
+    AutoEngine.hooks["/ontology-extract-object"] = [
         ask([CONFIRM, {"question": "门店编号沿用资料里的四位码吗", "header": "置信度 0.9",
                        "options": [{"label": "沿用（推荐）"}, {"label": "重新编号"}]}], into=answers),
         ask([], into=answers, tool="Write")]
@@ -95,7 +95,7 @@ def test_prerun_applies_only_to_research_in_an_autobuild_project_without_a_run(a
     client, workspaces, project_id, root = ab
     cid = client.get(f"/api/v1/projects/{project_id}/conversations").json()["items"][0]["id"]
     research = {"id": "ex-1", "conversation_id": cid, "node": {"id": "core.research"}, "state": "running"}
-    model = {**research, "node": {"id": "core.model"}}
+    model = {**research, "node": {"id": "core.object"}}
     # 陪伴建模的项目：照常等人
     assert prerun.applies(root, research) is False
     workspaces._update_meta(project_id, build_mode="L4")

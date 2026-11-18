@@ -8,6 +8,8 @@ import { isLocked, lockState } from '../../state/readonly.js';
 
 export const SOLVER_TYPE = 'codegen.solver_contract';
 export const SOLVER_DIR = 'ontology/solver/';
+// 页签：?tab=sv 是求解契约；从导航栏下拉点「求解适配」（面板节点）过来带 ?node=codegen.solver，也开求解契约
+export const pageTab = (query) => (query?.tab === 'sv' || query?.node === 'codegen.solver' ? 'sv' : 'sc');
 
 // 插件命令（命令名不带参数；参数放 args）
 export const COMMANDS = {

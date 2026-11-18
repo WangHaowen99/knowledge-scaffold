@@ -23,7 +23,8 @@ from ..governance.http import reject_new_session
 from ..services import conversation_store, project_events, streams, uploads, workspace_labels
 from ..services.agent_sessions import SessionError, manager
 from ..services.autobuild import store as autobuild_store
-from ..services.flow import next_step
+from ..services.flow import names, next_step
+from ..services.flow.need import REQUIRED, need_kind, primary_action
 from ..services.session_host import command_tasks, exec_records, subagents, timeline, turns
 from ..services.session_host import views as session_views
 
@@ -332,15 +333,10 @@ def _send_view(project_id: str, session, outcome: dict) -> dict:
 
 
 def _command_label(root: Path, text: str) -> str | None:
-    """手打的斜杠命令在命令目录里的业务名（代存时排队条显示它）。"""
-    head = timeline._leading_command(text)
-    if not head:
+    """手打的斜杠命令的名字（排队条、执行记录、建议条同一个叫法，`names.py`）；不是斜杠命令时 None。"""
+    if not timeline._leading_command(text):
         return None
-    for group in command_catalog(root)["groups"]:
-        for item in group["items"]:
-            if item["command"] == head:
-                return item["label"]
-    return None
+    return names.name_at(root, text)
 
 
 @router.post("/conversations/{cid}/messages")
@@ -726,63 +722,69 @@ def _update_resume_card(project_id: str, conversation_id: str, record: dict, roo
 
 # ---- S-18～S-20 命令 ----
 
-_SECTION_GROUPS = (("required", "建模"), ("pre_publish", "发布前检查"), ("optional", "可选能力"),
-                   ("on_demand", "有需要时"))
+
+def installed_commands(root: Path) -> set[str]:
+    """当前装配里装了的命令（`.claude/commands/<名>.md` 在）：S-20 认这些。不在全部命令菜单（S-18）里的命令
+    （整体视图、查询、版本历史、场景模拟的子文档……）手动输入照样能发。"""
+    try:
+        return {f"/{path.stem}" for path in (Path(root) / ".claude" / "commands").glob("*.md")}
+    except OSError:
+        return set()
 
 
 def command_catalog(root: Path) -> dict:
-    """S-18：当前装配里的命令（只列已启用包带来的），按流程节点所在分组，业务名优先取节点里按钮的叫法。"""
+    """S-18：每个导航栏节点（必需节点）一组，组名是节点名，按导航顺序。组内先列这个节点发到对话的按钮（主命令在前，
+    动作的 `when` 照样生效），再列挂在它下面（`under`）的可选、条件节点发到对话的按钮。按钮的名字和导航栏、建议条同一个
+    （主命令叫节点名，`names.py`）。跳页面的按钮（发布）不列；不在任何节点上的命令不进菜单，也不设「其他」组。"""
+    from ..services.flow import model
+    from ..services.flow.view import under
+
     flow = turns._flow(root)
-    nodes = {node["id"]: node for node in flow.get("nodes") or []}
-    labels: dict[str, str] = {}
-    for node in nodes.values():
-        for action in node.get("actions") or []:
-            command = str(action.get("command") or "").strip()
-            if command.startswith("/") and " " not in command:
-                labels.setdefault(command, action.get("label") or "")
-    for items in (flow.get("next_steps") or {}).values():
-        for item in items or []:
-            command = str(item.get("command") or "").strip()
-            if command.startswith("/") and " " not in command:
-                labels.setdefault(command, item.get("reply") or "")
-    commands_dir = Path(root) / ".claude" / "commands"
+    installed = installed_commands(root)
     try:
-        names = sorted(path.stem for path in commands_dir.glob("*.md"))
-    except OSError:
-        names = []
-    # 节点包只在节点上写入口命令（entry.command），没有 commands 映射
-    entries = {str((node.get("entry") or {}).get("command") or "").strip(): node for node in nodes.values()}
-    groups: dict[str, list] = {key: [] for key, _ in _SECTION_GROUPS}
-    groups["other"] = []
-    for name in names:
-        command = f"/{name}"
-        short = name[len("ontology-"):] if name.startswith("ontology-") else name
-        spec = (flow.get("commands") or {}).get(short) or {}
-        node = nodes.get(spec.get("node") or "") or entries.get(command)
-        label = labels.get(command) or (node or {}).get("title") or short
-        item = {
-            "id": short, "label": label,
-            "description": (node or {}).get("title") or "",
-            "command": command, "pack": (node or {}).get("pack") or "core", "node_id": (node or {}).get("id"),
-            "args_schema": None, "available": True, "unavailable_reason": None,
-        }
-        groups[(node or {}).get("section") if node and (node.get("section") in groups) else "other"].append(item)
-    result = [{"id": key, "label": label, "items": groups[key]} for key, label in _SECTION_GROUPS if groups[key]]
-    if groups["other"]:
-        result.append({"id": "other", "label": "其他", "items": groups["other"]})
-    return {"groups": result, "total": sum(len(group["items"]) for group in result)}
+        module = model.flow_state(root)
+        probes, shown = module.evaluate(flow, root), module.action_shown
+    except Exception:  # noqa: BLE001 - 探针算不出来：动作的条件不过滤
+        probes, shown = None, (lambda action, found: True)
+    nodes = [node for node in flow.get("nodes") or [] if isinstance(node, dict) and node.get("id")]
+    by_id = {node["id"]: node for node in nodes}
+    order = list(by_id)
+    hooks: dict[str, list[dict]] = {}
+    for hook in flow.get("hooks") or []:
+        hooks.setdefault(str(hook.get("node") or ""), []).append(hook)
+    seen: set[str] = set()
+    groups = []
+    for nav in nodes:
+        if need_kind(nav) != REQUIRED:
+            continue
+        members = [nav, *(node for node in nodes if node is not nav and under(node, by_id, order) == nav["id"])]
+        items = [item for node in members
+                 for item in _catalog_items(node, hooks.get(node["id"], []), installed, probes, shown, seen)]
+        if items:
+            groups.append({"id": nav["id"], "label": str(nav.get("title") or nav["id"]), "items": items})
+    return {"groups": groups, "total": sum(len(group["items"]) for group in groups)}
 
 
-def command_display_name(item: dict, page_label: str = "") -> str:
-    """命令在对话里的业务名：节点标题加按钮叫法，叫法里已经有节点标题（或两者相同）时只写叫法。
-    没有节点的命令（整体视图、影响分析等）用目录里的业务名。"""
-    base = str(item.get("description") or "").replace("（按段）", "").strip()
-    action = page_label or str(item.get("label") or "").strip()
-    if not base:
-        return action or str(item.get("command") or "")
-    if not action or action == base or base in action:
-        return action or base
-    return f"{base} · {action}"
+def _catalog_items(node: dict, hooks: list[dict], installed: set[str], probes, shown, seen: set[str]) -> list[dict]:
+    """一个节点发到对话的按钮：自己的动作（主命令叫节点名），再是节点钩子；装了的斜杠命令才列，同一条命令文本只列一次。"""
+    primary = primary_action(node)
+    buttons = [(action, action is primary) for action in node.get("actions") or [] if isinstance(action, dict)]
+    buttons += [({"label": hook.get("title"), "command": hook.get("command")}, False) for hook in hooks]
+    out = []
+    for index, (action, is_primary) in enumerate(buttons):
+        target = str(action.get("command") or "").strip()
+        if not target.startswith("/") or target.split()[0] not in installed or target in seen:
+            continue
+        if not shown(action, probes):
+            continue
+        seen.add(target)
+        label = str((node.get("title") if is_primary else action.get("label")) or target)
+        out.append({
+            "id": f"{node['id']}#{index}", "label": label, "description": "",
+            "command": target.split()[0], "target": target, "pack": node.get("pack") or "core", "node_id": node["id"],
+            "primary": is_primary, "args_schema": None, "available": True, "unavailable_reason": None,
+        })
+    return out
 
 
 @router.get("/commands/catalog")
@@ -856,10 +858,8 @@ async def dispatch_command(project_id: str, root: Path, request: Request, body: 
                                   str(body.get("text") or ""))
         except pack_ui.PackUiError as exc:
             raise ApiError(exc.code, str(exc), exc.status, exc.details) from exc
-    catalog = command_catalog(root)
-    known = {item["command"]: item for group in catalog["groups"] for item in group["items"]}
     name = command.split()[0]
-    if name not in known:
+    if name not in installed_commands(root):
         from ..services.packs import service as packs_service
 
         pending = packs_service.assembly_view(deps.workspaces, project_id).get("state") == "pending"
@@ -870,10 +870,11 @@ async def dispatch_command(project_id: str, root: Path, request: Request, body: 
         await asyncio.to_thread(next_step.guard, project_id, conversation_id, {"type": "send", "command": name}, root)
     _ensure_not_busy(project_id, conversation_id)
     text = _render_command(command, args, str(body.get("text") or ""))
-    label = known[name]["label"]
-    # 对话里显示业务名、不出命令原文和参数（F4b-paths；端到端验证）：「节点 · 按钮叫法」，页面另给的说明另起一段。
-    # 任务标题用同一个名字：同一条命令有几个按钮时（资料分析、追加资料分析），目录里只记了其中一个叫法
-    head = command_display_name(known[name], str(body.get("display_label") or "").strip())
+    # 对话里显示名字、不出命令原文和参数（F4b-paths；端到端验证），页面另给的说明另起一段。名字按名字表取（命令连同
+    # 动作自带的参数，「/ontology-research 追加」叫追加资料分析），认不出时才用页面给的按钮叫法；任务标题、排队条、
+    # 执行记录都用这一个
+    line = " ".join(part for part in (command, str(body.get("text") or "").strip().split("\n")[0].strip()) if part)
+    head = names.name_at(root, line, str(body.get("display_label") or "").strip() or None)
     task = command_tasks.create(project_id, origin=origin, title=f"助手正在执行「{head}」",
                                 conversation_id=conversation_id, command=name)
     # 页面给了 display_label（按钮叫法）时 text 是动作自带的参数，不当说明显示
@@ -883,7 +884,7 @@ async def dispatch_command(project_id: str, root: Path, request: Request, body: 
     display = f"{head}\n\n{workspace_labels.humanize(shown)}" if shown else head
     meta = {"display_text": display, "origin": {"kind": "page", "page": str(origin.get("page")),
                                              "label": str(origin.get("label") or ""), "task_id": task["task_id"]},
-            "task_id": task["task_id"], "command": name, "command_label": label, "replace": bool(body.get("replace"))}
+            "task_id": task["task_id"], "command": name, "command_label": head, "replace": bool(body.get("replace"))}
     try:
         result = await _send(project_id, root, conversation_id, request, text, meta)
     except ApiError as exc:

@@ -122,21 +122,21 @@ def test_writing_a_new_goal_as_the_answer_sets_the_project_goal_and_unblocks_con
 
 
 def test_goal_question_goes_first_without_blocking_the_next_step(env):
-    """F8：蓝图不用确认；目标问题没答时主推「回答目标问题」，后面跟主线下一步（没回答按原目标建，不拦着）。"""
+    """F8：蓝图不用确认；目标问题没答时只推「回答目标问题」（推荐第 1 级，和「去回答」同级，命中就停）。没回答按原目标建，
+    不拦着：手动发命令照样能做，答完照常推主线下一步。"""
     _client, _workspaces, _manager, _project_id, root = env
     from app.services.flow import model
 
     flow, module = model.load_for(root), model.flow_state(root)
     states = {node["id"]: {"state": "confirmed", "flags": {}} for node in flow["nodes"]}
-    states["core.model"] = {"state": "not_ready", "flags": {}}
-    following = {"slice_id": "all", "slice_name": "全部", "step": "object", "label": "提取对象",
-                 "command": "/ontology-extract-object", "sliced": False}
-    pending = module.suggest(flow, states, {"blueprint": {"state": "draft", "goal_pending": True},
-                                            "slice_next": following})
+    states["core.object"] = {"state": "ready", "flags": {}}
+    states["core.operation"] = {"state": "not_ready", "flags": {}}
+    pending = module.suggest(flow, states, {"blueprint": {"state": "draft", "goal_pending": True}})
     assert pending["primary"]["id"] == "answer_goal" and pending["primary"]["action"]["params"] == {"dialog": "blueprint"}
-    assert pending["secondary"][0]["action"]["command"] == "/ontology-extract-object"
-    answered = module.suggest(flow, states, {"blueprint": {"state": "draft"}, "slice_next": following})
+    assert pending["secondary"] == []
+    answered = module.suggest(flow, states, {"blueprint": {"state": "draft"}})
     assert answered["primary"]["action"]["command"] == "/ontology-extract-object"
+    assert answered["primary"]["label"] == "提取对象"
     every = [pending["primary"], *pending["secondary"], answered["primary"], *answered["secondary"]]
     assert not {"confirm_blueprint", "adjust_blueprint", "replan", "plan_slices"} & {item["id"] for item in every}
 

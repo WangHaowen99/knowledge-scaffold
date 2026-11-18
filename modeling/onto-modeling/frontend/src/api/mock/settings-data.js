@@ -146,24 +146,55 @@ export function checkPolicy(p) {
 
 const BELOW = { conservative_assumption: '先按最稳妥的做法往下做，做完列出来给你复核', suspend: '先跳过这一项，留给你来定' };
 
-// F8 起不分段：策略里不认识的分段编号丢掉，「只跑选中的」一个不剩时按全部没做完的（同后端 autobuild/policy normalize）
-export function normalizeScope(scope, sliceIds) {
+// 不再分段：按段时代的 slice_ids 原样存着、不再起作用，「只跑选中的段」按全部没做完的（同后端 autobuild/policy normalize）
+export function normalizeScope(scope) {
   const s = { ...(scope || {}) };
-  const kept = (s.slice_ids || []).filter((id) => sliceIds.includes(id));
-  if (s.mode === 'selected' && !kept.length) return { ...s, mode: 'all_pending', slice_ids: [] };
-  return { ...s, slice_ids: kept };
+  return s.mode === 'selected' ? { ...s, mode: 'all_pending' } : s;
 }
 
-// AB-03：按策略算这次的范围（flow 里没完成的；F8 起只有「全部」）、警告
-export function previewOf(policy, flowSlices) {
+// AB-01 的 optional_nodes、until_order：默认启用的官方包里自主构建能做的可选节点（同后端 autobuild/plan.optional_nodes；
+// 生成脚本 autobuild: false、求解适配是面板节点，不在里面），order 是在下面这个默认流程里排第几
+const NODE_ORDER = ['core.research', 'diagram.flowchart', 'core.object', 'core.operation', 'core.update', 'core.metric',
+  'core.validate', 'trace.trace', 'codegen.codegen', 'codegen.solver', 'core.publish'];
+export const OPTIONAL_NODES = [
+  { id: 'diagram.flowchart', name: '绘制流程图', under: 'core.research', order: NODE_ORDER.indexOf('diagram.flowchart') },
+  { id: 'core.metric', name: '提取规则与指标', under: 'core.operation', order: NODE_ORDER.indexOf('core.metric') },
+];
+export function untilOrder(policy) {
+  const at = NODE_ORDER.indexOf(policy?.scope?.until_node);
+  return at < 0 ? null : at;
+}
+
+const CURRENT = { confirmed: '已确认', stale: '有过期', skipped: '已跳过', running: '进行中', pending_confirm: '待确认' };
+const OPTIONAL_IDS = new Set(OPTIONAL_NODES.map((n) => n.id));
+const hasCommand = (n) => (n.actions || []).some((a) => a.kind === 'start' && String(a.target || '').startsWith('/'));
+
+// 自主构建能不能做这个节点（同后端 autobuild/plan.eligible，按 need）：必需节点做；可选节点只在「包括可选步骤」时做，
+// 而且要是自主构建能做的（OPTIONAL_NODES：生成脚本 autobuild: false、求解适配是面板节点）；条件节点、人工节点、面板节点、
+// 没有对话入口的不做
+export function eligibleNode(n, includeOptional) {
+  const need = n.need || 'required';
+  if (typeof need === 'object' || (need === 'optional' && !(includeOptional && OPTIONAL_IDS.has(n.id)))) return false;
+  return n.kind !== 'human' && !n.panel && hasCommand(n);
+}
+
+// AB-03：一个节点一行（资料分析之后能自主做的节点，到 until_node 为止；同后端 autobuild/plan），没做完的在范围里
+export function previewOf(policy, flow) {
   const scope = policy.scope || {};
-  const slices = (flowSlices || []).map((s) => {
-    const open = s.group !== 'done';
-    return { id: s.id, name: s.name, current: open ? '未完成' : '已确认', included: open && (scope.mode !== 'selected' || (scope.slice_ids || []).includes(s.id)), group: s.group };
-  });
-  const warnings = slices.some((s) => s.included && s.group === 'now') ? ['有 1 个未决决策会被按策略决定'] : [];
+  const nodes = flow?.nodes || [];
+  const start = nodes.findIndex((n) => n.id === 'core.research') + 1;
+  const rows = [];
+  for (const n of nodes.slice(start)) {
+    const eligible = eligibleNode(n, !!scope.include_optional);
+    if (eligible) {
+      const todo = !['confirmed', 'skipped'].includes(n.state) && (n.state !== 'stale' || scope.refresh_stale_first !== false);
+      rows.push({ id: n.id, name: n.title, current: CURRENT[n.state] || '未开始', included: todo, running: n.state === 'running' });
+    }
+    if (n.id === scope.until_node) break;
+  }
+  const warnings = rows.some((s) => s.included && s.running) ? ['有 1 个未决决策会被按策略决定'] : [];
   return {
-    slices: slices.map(({ group, ...s }) => s),
+    slices: rows.map(({ running, ...s }) => s),
     below_threshold_text: BELOW[policy.advanced?.below_threshold] || BELOW.conservative_assumption,
     warnings, queued: false, queue_position: null,
   };

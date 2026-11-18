@@ -41,7 +41,7 @@ python3 .claude/scripts/state_helper.py next-step <阶段名>
 
 After showing, listen for the user's next reply:
 - **资料分析** → read `.claude/commands/ontology-research.md` and follow it (ask for TOPIC if not given)
-- **流程图** → read `.claude/commands/ontology-flowchart.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow it
+- **绘制流程图** → read `.claude/commands/ontology-flowchart.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow it
 - other → treat as normal input
 
 **资料分析待核验:**
@@ -65,7 +65,7 @@ python3 .claude/scripts/research_checker.py check
 
 Handle reply:
 - **修正** / **人工确认** → 按 `.claude/commands/ontology-research.md` 的 Step 4.5 处理
-- **重新做资料分析** → read `.claude/commands/ontology-research.md` and follow it
+- **资料分析** → read `.claude/commands/ontology-research.md` and follow it
 - **提取对象** → 用户坚持时按 `.claude/STEP0_TEMPLATE.md` 的 **跳步守卫** 先提示后果，
   再由用户决定；不要主动推荐这条路。
 
@@ -81,7 +81,7 @@ Find the latest file in `research/`. Show:
 ```
 
 Handle reply:
-- **流程图** → read `.claude/commands/ontology-flowchart.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow it
+- **绘制流程图** → read `.claude/commands/ontology-flowchart.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow it
 - **提取对象** → read `.claude/commands/ontology-extract-object.md` and follow it（Step 1 会识别到只有研究报告，进入模式 C）
 - **追加资料分析** → read `.claude/commands/ontology-research.md` (it will detect existing report and prompt for append mode)
 - **完成** → stop
@@ -114,7 +114,7 @@ Count .md files in `ontology/object/`. Show:
 ```
 
 Handle reply:
-- **提取逻辑** → read `.claude/commands/ontology-extract-operation.md` and follow it
+- **提取操作** → read `.claude/commands/ontology-extract-operation.md` and follow it
 - **完成** → stop
 
 **逻辑已提取:**
@@ -130,9 +130,9 @@ Count .md files in `ontology/object/`、`ontology/operation/`、`ontology/rule/`
 
 Handle reply:
 - **校验** → read `.claude/commands/ontology-validate.md` and follow it
-- **规则与指标** → read `.claude/commands/ontology-extract-rule-metric.md` and follow it
+- **提取规则与指标** → read `.claude/commands/ontology-extract-rule-metric.md` and follow it
 - **整体视图** → read `.claude/commands/ontology-overview.md` and follow it
-- **更新** → read `.claude/commands/ontology-update.md` and follow it
+- **增量更新** → read `.claude/commands/ontology-update.md` and follow it
 - **完成** → stop
 
 **校验待审阅:**
@@ -147,7 +147,7 @@ Find the latest file in `reports/`. Count remaining `[ ]` items. Show:
 ```
 
 Handle reply:
-- **继续校验** → read `.claude/commands/ontology-validate.md` and follow it
+- **校验** → read `.claude/commands/ontology-validate.md` and follow it
 - **完成** → stop
 
 **完成:**

@@ -2,6 +2,7 @@
 
 - 没有预算（F6）：老请求带的 `budget` 忽略，策略和平台限制里都不再有单次上限；
 - 生产库采集授权随证据采集删除：老请求带的忽略；做到哪一步不能是发布；
+- 按节点排（节点模型重构 1B）：做到哪一步写旧节点编号按别名认；按段时代的 `slice_ids` 存着不用；
 - 同时运行数上限是配置项（设置页保存的优先于环境变量）；
 - 费用 = token × 单价；没有单价时用引擎报的费用（单价表是美元时），都没有记 0 并标估算。
 
@@ -22,7 +23,13 @@ def _url(project_id: str, tail: str = "policy") -> str:
 def test_policy_defaults_and_save(env):
     client, _workspaces, _manager, project_id, _root = env
     first = client.get(_url(project_id)).json()
-    assert set(first) == {"scope", "advanced", "platform_limits", "last_run", "revision", "not_enforced"}
+    assert set(first) == {"scope", "advanced", "platform_limits", "last_run", "revision", "not_enforced", "optional_nodes",
+                          "until_order"}
+    # 「包括可选步骤」多做的节点：默认启用的官方包里能自主做的可选节点（生成脚本 autobuild: false、求解适配是面板，不在里面），
+    # 带挂在哪个必需节点下、排第几；没设做到哪一步时 until_order 为 null
+    assert [(item["id"], item["name"], item["under"]) for item in first["optional_nodes"]] == [
+        ("diagram.flowchart", "绘制流程图", "core.research"), ("core.metric", "提取规则与指标", "core.operation")]
+    assert first["optional_nodes"][0]["order"] < first["optional_nodes"][1]["order"] and first["until_order"] is None
     assert first["scope"]["mode"] == "all_pending" and first["advanced"]["confidence_threshold"] == 0.8
     assert first["platform_limits"] == {} and first["last_run"] is None
     assert first["not_enforced"] == []
@@ -33,7 +40,7 @@ def test_policy_defaults_and_save(env):
     assert "budget" not in saved and saved["advanced"]["below_threshold"] == "suspend"  # 老客户端带的预算忽略
     assert saved["advanced"]["confidence_threshold"] == 0.8  # 没给的项保留
     assert "production_collection" not in saved  # 老客户端带的生产库采集授权忽略
-    assert saved["revision"] != first["revision"]
+    assert saved["revision"] != first["revision"] and saved["optional_nodes"] == first["optional_nodes"]
     stale = client.put(_url(project_id), json={**body, "base_revision": first["revision"]})
     assert stale.status_code == 409 and stale.json()["code"] == "revision_conflict"
 
@@ -48,16 +55,36 @@ def test_policy_validation(env):
                        ({"scope": {"slice_ids": "s1"}}, "scope.slice_ids")):
         response = client.put(_url(project_id), json=bad)
         assert response.status_code == 400 and field in response.json()["details"]["fields"], bad
-    # F8 不再分段：老策略里存的段（s1…）都不在了，「选定的段」按「全部没做完的」存，不报错
+    # 不再分段：「选定的段」按「全部没做完的」存，不报错；按段时代的 slice_ids 原样存着、不再起作用
     for scope in ({"mode": "selected", "slice_ids": []}, {"mode": "selected", "slice_ids": ["s9"]}):
         saved = client.put(_url(project_id), json={"scope": scope})
         assert saved.status_code == 200 and saved.json()["scope"]["mode"] == "all_pending", scope
-        assert saved.json()["scope"]["slice_ids"] == []
+        assert saved.json()["scope"]["slice_ids"] == scope["slice_ids"]
     ok = client.put(_url(project_id), json={"scope": {"until_node": "core.validate"}})
     assert ok.status_code == 200 and ok.json()["scope"]["until_node"] == "core.validate"
     # 全局一致性节点删了：老策略写到它等于跑完主线，不报错
     old = client.put(_url(project_id), json={"scope": {"until_node": "core.consistency"}})
     assert old.status_code == 200 and old.json()["scope"]["until_node"] is None
+
+
+def test_old_policy_with_slices_and_the_old_model_node_still_previews(env):
+    """建模拆开、按节点排之前存的策略：做到「建模」（core.model）按别名认成提取操作，不回 400；选定的段、不生成场景
+    存着不用，预览按节点出行，提取对象、提取操作都在范围里。"""
+    from app.services.autobuild import policy, store
+
+    client, _workspaces, _manager, project_id, _root = env
+    old = policy.defaults()
+    old["scope"].update(mode="selected", slice_ids=["s1", "s2"], generate_scenarios=False, until_node="core.model")
+    store.write_json(policy._path(project_id), old)
+    shown = client.get(_url(project_id)).json()["scope"]
+    assert shown["until_node"] == "core.operation" and shown["slice_ids"] == ["s1", "s2"]
+    preview = client.post(_url(project_id, "runs/preview"), json={})
+    assert preview.status_code == 200, preview.text
+    assert [(row["id"], row["included"]) for row in preview.json()["slices"]] == [
+        ("core.object", True), ("core.operation", True)]
+    saved = client.put(_url(project_id), json={"scope": {"until_node": "core.model"}}).json()["scope"]
+    assert saved["until_node"] == "core.operation" and saved["mode"] == "all_pending"
+    assert saved["slice_ids"] == ["s1", "s2"] and saved["generate_scenarios"] is False
 
 
 def test_platform_limits_and_config_item(env):
