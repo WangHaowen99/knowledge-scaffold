@@ -617,7 +617,9 @@ def migrate_split(stored: dict, flow: dict) -> bool:
     1. 删掉 nodes 里残留的 0.2 时代 core.object、core.operation 记录：0.3 起它们并进了建模，记录没删，指纹早就过时；
     2. 提取对象取 `slices.all.object`，没有就取 core.model：两者的上游都是资料分析，指纹算法相同；
     3. 提取操作取 `slices.all.operation`：上游是对象，指纹算法也相同；
-    4. 需复核标记、按类指纹、确认时的主线提交（rev）一起带过来，判定签名按新节点现记（`carried`）；
+    4. 需复核标记、按类指纹、确认时的主线提交（rev）一起带过来，判定签名按新节点现记（`carried`）；需复核标记只记在
+       建模节点上的（F8 之前按段自主构建标的，F8 迁移补的按段记录没带），两个新节点有记录、自己又没标时都带上：
+       升级前建模显示「需复核」，升级后提取对象、提取操作照样显示；
     5. `slice_skips.all.rule`（跳过了「规则」补抽）转成跳过指标：两者是同一条命令；
     6. 删掉 core.model、slices、slice_skips、legacy_migrated，记 split_migrated。"""
     by_id = {node["id"]: node for node in flow.get("nodes") or []}
@@ -627,10 +629,13 @@ def migrate_split(stored: dict, flow: dict) -> bool:
     for node_id in SPLIT_NODES:
         nodes.pop(node_id, None)
     full = ((stored.get("slices") or {}).get("all") or {}) if isinstance(stored.get("slices"), dict) else {}
-    sources = {"core.object": full.get("object") or nodes.get(LEGACY_MODEL), "core.operation": full.get("operation")}
+    legacy = nodes.get(LEGACY_MODEL) if isinstance(nodes.get(LEGACY_MODEL), dict) else {}
+    sources = {"core.object": full.get("object") or legacy or None, "core.operation": full.get("operation")}
     for node_id, source in sources.items():
         record = carried(flow, node_id, source)
         if record is not None:  # 没有记录、或只有需复核没有基线的：按主线现状重记
+            if legacy.get("needs_review") and not record.get("needs_review"):
+                record["needs_review"] = legacy["needs_review"]
             nodes[node_id] = record
     rule_skip = ((stored.get("slice_skips") or {}).get("all") or {}).get("rule") \
         if isinstance(stored.get("slice_skips"), dict) else None

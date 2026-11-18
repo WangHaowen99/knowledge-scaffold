@@ -267,6 +267,28 @@ def test_migrate_keeps_needs_review_but_not_the_old_signature():
     assert "core.object" not in stored["nodes"]
 
 
+def test_migrate_carries_the_model_review_onto_both_steps():
+    """F8 之前按段自主构建标的需复核只记在建模节点上，F8 迁移补的按段记录没带：升级前建模显示「自主完成 · 需复核」，
+    升级后提取对象、提取操作都要带上；按段记录自己标过的照旧用自己的。"""
+    flow = _flow()
+    old_run = {"source": "autobuild", "at": 1.0, "run_id": "run-1", "slice_id": "s3", "note": "自主构建「第三段」"}
+    stored = {"nodes": {"core.model": {"fp": "a" * 16, "sig": "m", "at": 1.0, "needs_review": old_run}}, "skipped": {},
+              "slices": {"all": {"object": {"fp": "a" * 16, "kinds": {"research": "a" * 16}, "at": 5.0},
+                                 "operation": {"fp": "b" * 16, "kinds": {"object": "b" * 16}, "at": 5.0}}},
+              "legacy_migrated": True}
+    node_state.migrate_split(stored, flow)
+    assert stored["nodes"]["core.object"]["needs_review"] == old_run
+    assert stored["nodes"]["core.operation"]["needs_review"] == old_run
+    assert stored["nodes"]["core.object"]["fp"] == "a" * 16 and stored["nodes"]["core.operation"]["fp"] == "b" * 16
+    # 按段记录自己有标记：用自己的；提取操作没有记录时不凭空造一条
+    own = _review()
+    stored = {"nodes": {"core.model": {"fp": "a" * 16, "sig": "m", "at": 1.0, "needs_review": old_run}}, "skipped": {},
+              "slices": {"all": {"object": {"fp": "a" * 16, "at": 5.0, "needs_review": own}}}}
+    node_state.migrate_split(stored, flow)
+    assert stored["nodes"]["core.object"]["needs_review"] == own
+    assert "core.operation" not in stored["nodes"]
+
+
 def test_migrate_turns_a_skipped_rule_step_into_a_skipped_metric():
     flow = _flow()
     skip = {"at": 1.0, "reason": "资料里没有规则"}
