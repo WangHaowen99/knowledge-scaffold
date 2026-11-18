@@ -2438,7 +2438,8 @@ def main():
         description='Check business knowledge ontology docs for quality issues.'
     )
     parser.add_argument('ontology_dir', help='Ontology root directory (contains object/, operation/, action/)')
-    parser.add_argument('--output', default=None, help='Report output path (default: report_YYYYMMDD_HHMMSS.md)')
+    parser.add_argument('--output', default=None,
+                        help='Report output path (default: tmp/ontology-check/report_YYYYMMDD_HHMMSS.md, not versioned)')
     parser.add_argument('--json', action='store_true', help='Output issues as JSON array to stdout, skip file report')
     parser.add_argument('--files', nargs='*', default=None,
                         help='Only check these file stems (e.g. 订单 创建订单). Loads all docs for cross-ref.')
@@ -2465,7 +2466,9 @@ def main():
         ))
         return
 
-    output_path = args.output or f"report_{datetime.now(REPORT_TZ).strftime('%Y%m%d_%H%M%S')}.md"
+    # 默认写进不进版本的 tmp/：写在工作区根目录会被下一次 `git add -A` 带进提交
+    output_path = args.output or f"tmp/ontology-check/report_{datetime.now(REPORT_TZ).strftime('%Y%m%d_%H%M%S')}.md"
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     Path(output_path).write_text(generate_report(issues, str(ontology_dir)), encoding='utf-8')
 
     rule_errors = sum(1 for i in issues if i.severity == '错误')

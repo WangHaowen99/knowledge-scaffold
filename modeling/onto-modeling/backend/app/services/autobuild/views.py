@@ -193,6 +193,8 @@ def result_text(run: dict, unit_id: str) -> str:
         if info.get("delete_forbidden"):
             return "要删除已确认的内容"
         return "检查没通过" if info.get("gate_failed") else "未开始"
+    if info.get("already_done"):
+        return "上一步已做完"
     text = "部分完成" if state == "partial" else "完成"
     return f"{text} · 挂起 {suspended} 项" if suspended else text
 
@@ -336,7 +338,7 @@ def _unit_summary(run: dict, unit: dict) -> str:
     decisions = sum(1 for entry in live_ledger(run) if (entry.get("slice") or {}).get("id") == unit["id"])
     parts = [result_text(run, unit["id"])]
     if state in ("done", "partial"):
-        parts[0] = "自主完成" if state == "done" and not info.get("reverted") else parts[0]
+        parts[0] = "自主完成" if state == "done" and not info.get("reverted") and not info.get("already_done") else parts[0]
         text = produced_text(info.get("produced") or {})
         if text != "—":
             parts.append(text)

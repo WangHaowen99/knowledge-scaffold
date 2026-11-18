@@ -367,6 +367,8 @@ declare(
       description="内测引擎单次输出上限"),
     C("ONTO_WEB_JIUWEN_MAX_ITERATIONS", "60", "int", minimum=1, maximum=1000, effect="new_session",
       description="内测引擎单轮最大迭代"),
+    C("ONTO_WEB_JIUWEN_EXTRA_BODY", '{"thinking_budget": 16000}', effect="new_session",
+      description="内测引擎每次调用附带的请求参数（JSON；默认给思考封顶 16000 token，空 = 不附带）"),
     C("ONTO_WEB_JIUWEN_QUIET_EXTRA_BODY", '{"enable_thinking": false}', effect="new_session",
       description="内测引擎关闭思考时附带的请求参数（JSON；agent 文件标了不思考的子任务用，空 = 不关）"),
     C("ONTO_WEB_JIUWEN_STALL_SECONDS", "900", "int", minimum=0, maximum=86_400, effect="new_session",
