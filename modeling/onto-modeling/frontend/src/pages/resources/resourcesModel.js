@@ -55,7 +55,7 @@ export function scaleText(m) {
   return fmtSize(m.size);
 }
 
-// 行的第二行：类型 · 规模 · 上传时间 · 被引用（修订资料的「去对话里确认 →」由页面另画）
+// 行的第二行：类型 · 规模 · 上传时间 · 被引用
 export function metaText(m, now = Date.now()) {
   const parts = [...(m.type_label ? [m.type_label] : []), scaleText(m), `${shortTime(m.uploaded_at, now)} 上传`];
   if (m.referenced) parts.push(`被引用 ${m.referenced} 处`);
@@ -112,13 +112,6 @@ export function pickDefault(groups = []) {
   if (!all.length) return null;
   const best = all.reduce((a, b) => ((b.referenced || 0) > (a.referenced || 0) ? b : a), all[0]);
   return best.path;
-}
-
-// 正在发起增量更新的修订资料（横幅）：取最近上传的那份
-export function revisionBanner(groups = []) {
-  const list = allMaterials(groups).filter((m) => m.is_revision && m.revision_task);
-  if (!list.length) return null;
-  return list.reduce((a, b) => (String(b.uploaded_at) > String(a.uploaded_at) ? b : a));
 }
 
 // ---------- 跳转（Studio「查看原文」、待处理「上传文本版」「逐条查看」、资料分析「补传资料」） ----------
