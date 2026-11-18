@@ -41,7 +41,7 @@ These rules apply to all work in this repository.
 
 命令里写「Read `.claude/agents/X.md`. Dispatch it …」时，agent 文件就是子任务的完整指令：
 
-- 派发提示第一行固定写：`请先完整阅读 .claude/agents/X.md，严格按其中的规则与输出格式执行。`，之后再接命令要求的输入（如 TARGET_FILES、CHANGE_DIFF）。
+- 派发提示第一行固定写：`请先完整阅读 .claude/agents/X.md，严格按其中的规则与输出格式执行。`，之后再接命令要求的输入（如 TARGET_FILES、CHANGE_DIFF_CMD）。命令输出、问题清单这类已经在文件里或能用命令取到的内容，给路径或命令让子任务自己读，不要整段抄进派发提示。
 - 不要把 agent 文件改写成摘要或几句话代替，也不要在派发提示里另加 agent 文件没有的检查范围或任务。
 - 子任务不得再派发子任务；需要别的检查时，结束并把结果交回主对话。
 

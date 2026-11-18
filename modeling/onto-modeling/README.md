@@ -180,6 +180,9 @@ resume 续接模型上下文，界面无感。运行中的会话连续 `ONTO_WEB
 后端，同时在线的内测引擎会话一起结束、下一条消息重拉；设 `false` 退回在后端进程内运行（ADR-0038）。
 一轮里超过 `ONTO_WEB_JIUWEN_STALL_SECONDS`（默认 900 秒，0 关闭）没有任何动静（流事件、模型调用、子任务进展；
 等确认卡不算）时按出错结束这一轮，执行记为中断，建议条主推「从打断处继续」。
+同一条消息里的多个工具调用并行执行（语义检查的几个部分同时跑）。agent 文件第一行写了
+`<!-- onto: thinking=off -->` 的子任务（规则检查、覆盖检查）派发时关闭思考，请求里带上
+`ONTO_WEB_JIUWEN_QUIET_EXTRA_BODY`（默认 `{"enable_thinking": false}`；网关不认这个字段时改成它认的写法，留空 = 不关）。
 
 agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githooks/`，各项目 `core.hooksPath` 指向它）：
 提交那一刻检查真实暂存区（`git add -A && git commit` 写在一行也查得到），提交说明带 `Onto-Source: agent`、
