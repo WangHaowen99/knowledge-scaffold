@@ -128,6 +128,8 @@ def model_config(owner: str = "") -> dict:
             "model": personal["model"] or cfg["model"],
         }
     cfg["context"] = model_settings.jiuwen_effective_context()
+    # 思考开关计入配置指纹：管理员改了，会话在下一条消息前按新配置重建
+    cfg["thinking"] = model_settings.thinking_enabled()
     return cfg
 
 
@@ -448,15 +450,20 @@ def _json_body(raw: Any, name: str) -> dict | None:
     return body if isinstance(body, dict) and body else None
 
 
-def call_extra_body() -> dict | None:
-    """每次调用都附带的请求参数（ONTO_WEB_JIUWEN_EXTRA_BODY）：默认给思考封顶，一次调用不会再思考到输出上限。"""
-    return _json_body(config.JIUWEN_EXTRA_BODY, "ONTO_WEB_JIUWEN_EXTRA_BODY")
+def call_extra_body(thinking: bool = True) -> dict | None:
+    """每次调用附带的请求参数。思考关（SY-19，默认）= 和关思考的子任务一样（`quiet_extra_body`）；
+    思考开 = ONTO_WEB_JIUWEN_EXTRA_BODY（默认给思考封顶，一次调用不会再思考到输出上限）。"""
+    base = _json_body(config.JIUWEN_EXTRA_BODY, "ONTO_WEB_JIUWEN_EXTRA_BODY")
+    if thinking:
+        return base
+    return quiet_extra_body() or base
 
 
 def quiet_extra_body() -> dict | None:
-    """关闭思考的子任务附带的请求参数（ONTO_WEB_JIUWEN_QUIET_EXTRA_BODY 叠在每次都带的参数上）；没配 = 不关。"""
+    """关闭思考时附带的请求参数（ONTO_WEB_JIUWEN_QUIET_EXTRA_BODY 叠在 ONTO_WEB_JIUWEN_EXTRA_BODY 上）；没配 = 不关。"""
     quiet = _json_body(config.JIUWEN_QUIET_EXTRA_BODY, "ONTO_WEB_JIUWEN_QUIET_EXTRA_BODY")
-    return {**(call_extra_body() or {}), **quiet} if quiet else None
+    base = _json_body(config.JIUWEN_EXTRA_BODY, "ONTO_WEB_JIUWEN_EXTRA_BODY")
+    return {**(base or {}), **quiet} if quiet else None
 
 
 def _install_dispatch_brief_capture() -> None:
@@ -978,7 +985,7 @@ class JiuwenEngine(ObservableEngine):
         # 助手副本顶层的 resource 链接（指向主线资料区）文件工具只读放行（F2 第 9 条）
         jiuwen_sandbox.install()
         context = cfg["context"]
-        call_body = call_extra_body()
+        call_body = call_extra_body(bool(cfg.get("thinking")))
         model = init_model(
             provider="OpenAI",
             model_name=cfg["model"],

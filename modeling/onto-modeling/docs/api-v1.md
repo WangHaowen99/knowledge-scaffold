@@ -3492,7 +3492,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 `GET /api/v1/admin/settings/model` · admin · 旧：`GET /api/settings/model` · 审计：否 · 依据：⑧ · 页面：sys（模型接入）
 
-- 响应：`{engines: {[engine]: {label, channel, installed, runtime_version, base_url, api_key_masked, api_key_set: bool, model, context: {window, max_output, compact_at_pct}, context_defaults: {...}}}, default_engine, personal_key_allowed: bool}`。
+- 响应：`{engines: {[engine]: {label, channel, installed, runtime_version, base_url, api_key_masked, api_key_set: bool, model, context: {window, max_output, compact_at_pct}, context_defaults: {...}}}, default_engine, personal_key_allowed: bool, thinking: bool}`。`thinking` 见 `SY-19`。
   - `deploy: {configured: bool, model: string}`：界面没配时在用的部署环境变量（稳定引擎看 `ANTHROPIC_BASE_URL`／`ANTHROPIC_AUTH_TOKEN`／`ANTHROPIC_API_KEY`，内测引擎看 `ONTO_WEB_JIUWEN_BASE_URL`／`ONTO_WEB_JIUWEN_API_KEY`）；只给有没有和模型名，网关地址与 Key 不出接口。
 
 #### SY-02 保存引擎模型配置
@@ -3622,6 +3622,16 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 `GET /api/v1/admin/settings/pricing`、`PUT /api/v1/admin/settings/pricing` · admin · 旧：— · 审计：PUT 记 · 依据：方案 B14 · 页面：—（设计稿没有画，见 8.2）
 
 - 对象：`{currency, items: [{engine, model, input_per_mtok, output_per_mtok, cache_read_per_mtok}]}`。
+
+#### SY-19 思考开关
+
+`PUT /api/v1/admin/settings/thinking` · admin · 旧：— · 审计：是 · 依据：自主构建提速（11-18 用户定） · 页面：sys（模型接入）
+
+- 请求：`{on: bool}`。模型先思考再回答，两个引擎都管；没设过 = 关。
+- 关：稳定引擎 `MAX_THINKING_TOKENS=0`；内测引擎每次请求带 `ONTO_WEB_JIUWEN_QUIET_EXTRA_BODY`（默认 `{"enable_thinking": false}`）。
+  开：稳定引擎沿用 `ONTO_WEB_MAX_THINKING_TOKENS`（没配 = CLI 默认）；内测引擎带 `ONTO_WEB_JIUWEN_EXTRA_BODY`（默认给思考封顶 16000 token）。
+- 计入会话配置指纹：在线会话在下一条消息前重连，自主构建从下一步起生效。
+- 响应：`{on}`。
 
 #### AD-01 用户列表
 
@@ -4436,7 +4446,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | `plugin-detail` | 插件详情 | `PL-02`、`PL-03`、`PL-07`、`PL-09`、`PL-05` | — |
 | `plugin-upload` | 上传与审核插件 | `PL-13`～`PL-18` | — |
 | `me` | 个人设置 | `A-05`～`A-11` | — |
-| `sys` | 系统设置 | `SY-01`～`SY-17`、`C-06` | — |
+| `sys` | 系统设置 | `SY-01`～`SY-17`、`SY-19`、`C-06` | — |
 | `ops` | 运维总览 | `O-01`、`O-08`（全部规则）、`O-35`（完整报告） | — |
 | `ops-obs` | 可观测 | `O-02`～`O-12` | EO-01 |
 | `ops-ctl` | 运维管控与健康 | `O-13`～`O-47`、`C-03`、`C-04`（显示路径） | — |

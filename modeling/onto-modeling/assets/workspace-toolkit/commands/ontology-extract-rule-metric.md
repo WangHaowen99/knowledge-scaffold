@@ -37,7 +37,7 @@ METRIC_TEMPLATE=.claude/templates/metric-template.md
 Wait for the agent to return a JSON summary:
 `{"rules": [名称列表], "metrics": [名称列表], "backlinks_added": 数量, "skipped": [说明]}`
 
-## Step 2: 呈现摘要 + 用户确认
+## Step 2: 呈现摘要 + 用户确认〔自主构建跳过，直接进 Step 3〕
 
 先 `python3 .claude/scripts/state_helper.py acquire extract-rule-metric confirm`，再输出：
 

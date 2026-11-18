@@ -124,6 +124,7 @@ def model_settings_view() -> dict:
         "engines": {engine: engine_view(engine, masked) for engine in ENGINE_NAMES},
         "default_engine": masked["default_engine"],
         "personal_key_allowed": bool(masked.get("allow_personal")),
+        "thinking": bool(masked.get("thinking")),
     }
 
 
@@ -219,6 +220,18 @@ def put_personal_policy(body: PersonalPolicyBody, request: Request):
     _admin(request)
     saved = model_settings.save_personal_policy(body.allow)
     return {"allow": bool(saved.get("allow_personal"))}
+
+
+class ThinkingBody(BaseModel):
+    on: bool
+
+
+@router.put(f"{BASE}/thinking")
+def put_thinking(body: ThinkingBody, request: Request):
+    """SY-19：模型先思考再回答，两个引擎都管；默认关。会话在下一条消息前因配置指纹变化重连，自主构建从下一步起生效。"""
+    _admin(request)
+    saved = model_settings.save_thinking(body.on)
+    return {"on": bool(saved.get("thinking"))}
 
 
 # ---- SY-05～SY-08 上下文推荐表 ----

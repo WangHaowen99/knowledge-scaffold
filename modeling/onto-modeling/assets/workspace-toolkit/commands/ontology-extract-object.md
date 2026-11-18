@@ -210,9 +210,9 @@ OBJECTS_DIR: ontology/object/
 CHECK_TYPE: object
 ```
 
-Display coverage results. Handle gaps（全部补充 / 选择性补充 / 跳过），with one-retry limit；问用户前 `acquire extract-object confirm`，回复后切回 `objects`。
+Display coverage results〔自主构建跳过：不展示，只处理缺口〕. Handle gaps（全部补充 / 选择性补充 / 跳过），with one-retry limit；问用户前 `acquire extract-object confirm`，回复后切回 `objects`。
 
-**BFO 参考提醒（可选）**：按 `.claude/reference/BFO_MODELING_GUIDE.md` §10 评估是否触发：
+**BFO 参考提醒（可选）**〔自主构建跳过〕：按 `.claude/reference/BFO_MODELING_GUIDE.md` §10 评估是否触发：
 - 用 §10.2 的对象关键词列表对本批次对象文件名做子串匹配，得到 `matched_keywords`（去重，最多取 5 个）。
 - 命中 → 按 §10.3「带匹配项的形式」输出提示；本次执行只触发一次。
 - 未命中 → 不输出。
@@ -225,7 +225,7 @@ Display coverage results. Handle gaps（全部补充 / 选择性补充 / 跳过�
 
 **确认前验收（四项分开展示，不合并成一个「完成度」）：**
 运行 `python3 .claude/scripts/field_semantics.py types --files {本轮对象文件路径，逐项加引号}`
-（退出码 0 无冲突；1 有冲突或非法类型；2 无法核验），按下表展示：
+（退出码 0 无冲突；1 有冲突或非法类型；2 无法核验），按下表展示〔自主构建跳过展示：只看退出码，`failed` 照下方候选修订修正〕：
 
 | 验收项 | 依据 | 展示内容 |
 | --- | --- | --- |
@@ -240,7 +240,7 @@ Display coverage results. Handle gaps（全部补充 / 选择性补充 / 跳过�
 - `unverifiable` 且带 `missing_text` 时，类型验收显示「无法核验：{reason}」，同 Step 1.6 点名这些还没有文本版的资料，不请用户标 Schema。
 - `items` 只列前 80 条；`omitted` 非零时注明「另有 N 条未列出」。
 
-`python3 .claude/scripts/state_helper.py acquire extract-object confirm`，then ask: "对象产物已生成，共 {N} 个，验收结果如上。如需修改请直接说明；确认无误请回复 **确认**。"
+`python3 .claude/scripts/state_helper.py acquire extract-object confirm`，then ask: "对象产物已生成，共 {N} 个，验收结果如上。如需修改请直接说明；确认无误请回复 **确认**。"〔自主构建跳过：不拿确认锁、不问，直接提交〕
 
 **修改已生成或已确认的对象文档（候选修订，不直接覆盖）：**
 用户要求修改时，不直接编辑 `ontology/object/` 下的文件：

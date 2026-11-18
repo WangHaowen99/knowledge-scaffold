@@ -428,6 +428,20 @@ def test_model_settings_shape_and_partial_update(client):
     assert legacy_put.json()["model"] == "j2"
 
 
+def test_thinking_is_off_by_default_and_admin_can_turn_it_on(client):
+    """SY-19：思考默认关（自主构建快约三倍）；管理员打开后两个引擎从下一条消息起思考。"""
+    from app.services.engines import claude, jiuwen
+
+    assert client.get("/api/v1/admin/settings/model", headers=_h("admin-token")).json()["thinking"] is False
+    assert claude._session_env()["MAX_THINKING_TOKENS"] == "0"
+    off = jiuwen._fingerprint(jiuwen.model_config())
+    _assert_error(client.put("/api/v1/admin/settings/thinking", headers=_h("user-token"), json={"on": True}), 403, "forbidden")
+    assert client.put("/api/v1/admin/settings/thinking", headers=_h("admin-token"), json={"on": True}).json() == {"on": True}
+    assert client.get("/api/v1/admin/settings/model", headers=_h("admin-token")).json()["thinking"] is True
+    assert claude._session_env().get("MAX_THINKING_TOKENS") != "0"
+    assert jiuwen._fingerprint(jiuwen.model_config()) != off  # 在线会话下一条消息前重连
+
+
 def test_default_engine_personal_policy_and_session(client, monkeypatch):
     from app.services import engines
 

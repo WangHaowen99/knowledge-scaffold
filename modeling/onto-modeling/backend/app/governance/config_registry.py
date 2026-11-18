@@ -339,7 +339,7 @@ declare(
     C("ONTO_WEB_PERMISSION_MODE", "bypassPermissions", "enum",
       choices=("bypassPermissions", "default", "acceptEdits", "plan"), effect="new_session", edit_page="sys",
       precedence=UI_FIRST, data_dir=_runtime_value("permission_mode"), description="会话权限模式"),
-    C("ONTO_WEB_MAX_THINKING_TOKENS", "", effect="new_session", description="扩展思考 token 上限，0 关闭"),
+    C("ONTO_WEB_MAX_THINKING_TOKENS", "", effect="new_session", description="扩展思考 token 上限（系统设置打开「思考」时用；思考关着时一律为 0）"),
     C("ONTO_WEB_MAX_SESSIONS", "12", "int", minimum=1, maximum=64, effect="new_session", edit_page="ops-ctl",
       precedence=UI_FIRST, data_dir=_pool_value("max_sessions"), description="活跃会话上限"),
     C("ONTO_WEB_SESSION_IDLE_TTL", "600", "int", minimum=60, maximum=86400, allow_zero=True, effect="immediate",

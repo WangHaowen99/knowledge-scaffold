@@ -178,9 +178,13 @@ def _session_env(owner: str = "") -> dict:
     # 主轮结束不代表任务结束。2.1.269 之前的 CLI 每轮结束都报 idle，须设 1 才在后台工作期间保持 running
     env["CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS"] = "1"
     env["CLAUDE_CODE_BG_TASKS_REPORT_RUNNING"] = "1"
-    if config.MAX_THINKING_TOKENS:
-        env["MAX_THINKING_TOKENS"] = config.MAX_THINKING_TOKENS
     from .. import model_settings
+
+    # 思考开关（SY-19，默认关）：关时 0；开时沿用部署配置（没配 = CLI 默认）。计入会话指纹，改了下一条消息前重连
+    if not model_settings.thinking_enabled():
+        env["MAX_THINKING_TOKENS"] = "0"
+    elif config.MAX_THINKING_TOKENS:
+        env["MAX_THINKING_TOKENS"] = config.MAX_THINKING_TOKENS
 
     if owner:
         # 个人配置出错要让本次连接失败，吞掉会悄悄改用部署机的 Key
