@@ -155,7 +155,7 @@ export function catalogFor(stage, { cid = null, map = null } = {}) {
     doc('03-样例补货单-B.docx'),
     doc('04-商品陈列说明.pdf', { purpose_auto: true }),
     doc('07-门店C特殊需求.pdf', { uploaded_at: atDaysAgo(3, 15, 2), purpose_auto: true }),
-    doc('09-修订通知.docx', { uploaded_at: atDaysAgo(1, 21, 40), purpose_auto: true, is_revision: true }),
+    doc('09-修订通知.docx', { uploaded_at: atDaysAgo(1, 21, 40), purpose_auto: true }),
     fileRecord({ path: REPORT_PATH, name: '11-补货周报.html', size: 68 * KB, uploaded_at: atDaysAgo(5, 11, 30), purpose: 'auto', purpose_auto: false }),
   ];
   return syncPurpose(list, map);

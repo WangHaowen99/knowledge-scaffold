@@ -8,7 +8,7 @@ import { DRAWIO, RES_PATHS } from '../src/api/mock/resources-data.js';
 import {
   blockBody, blockLabel, cellPos, checkUpload, columnLetter, coverageChip, csvText, drawioLayout, fmtSize, metaText,
   parseDrawio, parseFileAnchor, parseFragment, pickDefault, purposeView, refCount, refRows, refSentence, refTarget, replaceName,
-  revisionBanner, routeTarget, scaleText, sheetGrid, locateSheetCell, shortTime, splitHighlights, textChip, textSections, hasTextTab,
+  routeTarget, scaleText, sheetGrid, locateSheetCell, shortTime, splitHighlights, textChip, textSections, hasTextTab,
 } from '../src/pages/resources/resourcesModel.js';
 
 const R02 = 'resource/others/02-门店补货规则.docx';
@@ -43,9 +43,6 @@ test('默认选中被引用最多的资料；修订横幅取最近上传的那�
   assert.equal(pickDefault(groups), 'c.docx');
   assert.equal(pickDefault([{ key: 'excel', items: [{ path: 'a.xlsx' }] }]), 'a.xlsx');
   assert.equal(pickDefault([]), null);
-  const rev = (path, at, task) => ({ path, is_revision: true, uploaded_at: at, revision_task: task });
-  assert.equal(revisionBanner([{ key: 'others', items: [rev('x', '2026-10-30', { label: 'a' }), rev('y', '2026-10-31', { label: 'b' }), rev('z', '2026-11-01', null)] }]).path, 'y');
-  assert.equal(revisionBanner(groups), null);
 });
 
 test('跳转参数：查看原文的锚点（含百分号编码）、上传文本版的路径', () => {
@@ -193,7 +190,7 @@ test('R-01：按流程图 / 表格 / 其他资料分组，含修订通知和扫�
   const names = all(r).map((x) => x.name);
   assert.ok(names.includes('09-修订通知.docx') && names.includes('07-门店C特殊需求.pdf'));
   const rev = all(r).find((x) => x.name === '09-修订通知.docx');
-  assert.equal(rev.is_revision, true);
+  assert.equal(rev.is_revision, false, '同后端：is_revision 恒为 false');
   assert.equal(rev.revision_task, null, '后端从不给 revision_task');
   assert.ok(!('scanned' in rev), '不把 mock 自用字段漏给页面');
   assert.equal(all(r).find((x) => x.path === R02).referenced, 13);

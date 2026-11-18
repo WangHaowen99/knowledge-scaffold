@@ -1,7 +1,8 @@
-// 资料区（设计稿 resources）：资料列表与用途（R-01、R-03）、上传与替换（U-01 + R-02，可标为修订资料）、删除（R-04、R-05）、
+// 资料区（设计稿 resources）：资料列表与用途（R-01、R-03）、上传与替换（U-01 + R-02）、删除（R-04、R-05）、
 // 右侧预览（ResourcePreview.jsx）。
 // 别处跳来：?anchor=<file:… 锚点>（查看原文，定位并高亮那一段）、?path=<资料路径>（上传文本版）。
-// 页面只发命令（S-20）：改用途后的重读、修订资料的增量更新、把资料读完，进度条显示在页头下。
+// 页面只发命令（S-20）：改用途后的重读、把资料读完，进度条显示在页头下。
+// 新资料不在这里发增量更新：建模之后传了资料，流程里自己出现增量更新节点（R-02、节点模型重构 3）。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
@@ -9,7 +10,7 @@ import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import { PageHead, ShellP } from '../../shell/Shell.jsx';
 import { finishedTasks, mergeTask, pageTask } from '../../state/commandTask.js';
-import { Button, Check, Chip, Empty, Icon, Modal, Note, Prog, cx } from '../../ui/index.jsx';
+import { Button, Chip, Empty, Icon, Modal, Note, Prog, cx } from '../../ui/index.jsx';
 import { legacyOfficeHint, uploadRules } from '../../lib/resourceUpload.js';
 import { CommandRunBar, useCommandTasks, useProjectEvent } from '../plugin/parts.jsx';
 import { MaterialPreview, useFullscreen } from './ResourcePreview.jsx';
@@ -17,14 +18,14 @@ import { useSheetScope } from './SheetScope.jsx';
 import { isSchemaTable, scopeLink } from './sheetScopeModel.js';
 import {
   PURPOSE_FALLBACK, checkUpload, extOf, fileIcon, findMaterial, fmtSize, materialTitle, metaText, sortMaterials,
-  pickDefault, purposeView, refSentence, replaceName, revisionBanner, routeTarget, targetKey, textChip,
+  pickDefault, purposeView, refSentence, replaceName, routeTarget, targetKey, textChip,
 } from './resourcesModel.js';
 import '../../styles/evidence.css';
 import '../../styles/resources.css';
 
 const PAGE = 'resources';
 
-// R-02 / R-03 返回的任务（修订资料的增量更新、改用途后的重读）：按 task_id 跟项目流 command.progress
+// R-03 返回的任务（改用途后的重读）：按 task_id 跟项目流 command.progress
 function useTrackedTasks(onFinish) {
   const [list, setList] = useState([]);
   const ref = useRef([]);
@@ -71,7 +72,7 @@ function PurposeMenu({ value, auto, purposes, onPick, onClose }) {
   );
 }
 
-function FileRow({ m, picked, purposes, menuOpen, onPick, onMenu, onPurpose, onReplace, onDelete, onRevision, onScope }) {
+function FileRow({ m, picked, purposes, menuOpen, onPick, onMenu, onPurpose, onReplace, onDelete, onScope }) {
   const ic = fileIcon(m.kind);
   const p = purposeView(m, purposes);
   const tc = textChip(m);
@@ -84,12 +85,10 @@ function FileRow({ m, picked, purposes, menuOpen, onPick, onMenu, onPurpose, onR
       <div style={{ minWidth: 0 }}>
         <div className="row g4">
           <span className="b ell" title={materialTitle(m)}>{materialTitle(m)}</span>
-          {m.is_revision ? <Chip tone="amber" sm icon="refresh">修订资料</Chip> : null}
           {tc ? <Chip tone={tc.tone} sm icon={tc.icon} title={tc.title} data-text-state={m.text.state}>{tc.text}</Chip> : null}
         </div>
         <div className="xs muted ell">
           {metaText(m)}
-          {m.is_revision && m.revision_task ? <> · <span className="evd-incl" onClick={stop(() => onRevision(m))}>去对话里确认 →</span></> : null}
           {scope ? <> · <span className={cx('evd-incl', scope.danger && 'danger')} onClick={stop(() => onScope(m))}>{scope.text}</span></> : null}
           {cand ? (
             <> · <span className="evd-incl" title={`表头像数据库列名，识别出 ${cand.tables.length} 张表：${cand.tables.slice(0, 8).join('、')}`} onClick={stop(() => onPurpose(m, 'schema'))}>疑似数据表 · 设为 Schema</span></>
@@ -187,7 +186,6 @@ export default function ResourcesPage({ route }) {
   const [sel, setSel] = useState(null); // {kind: 'file', path, fragment}
   const [menu, setMenu] = useState(null);
   const [del, setDel] = useState(null);
-  const [rev, setRev] = useState(false);
   const [ups, setUps] = useState([]);
   const [over, setOver] = useState(false);
   const [full, toggleFull] = useFullscreen();
@@ -247,22 +245,18 @@ export default function ResourcesPage({ route }) {
   const purposes = data?.purposes?.length ? data.purposes : PURPOSE_FALLBACK;
   const selPath = sel?.kind === 'file' ? sel.path : pickDefault(data?.groups);
   const selected = selPath ? findMaterial(data?.groups, selPath) : null;
-  const banner = revisionBanner(data?.groups);
   const total = materials.length;
 
   const pickFile = (m, toPreview) => {
     setSel({ kind: 'file', path: m.path, fragment: null, n: toPreview ? Date.now() : undefined });
     setMenu(null);
   };
-  const goIncremental = (m) => navigate(pagePath('incremental', pid), m.revision_task?.conversation_id ? { c: m.revision_task.conversation_id } : undefined);
 
   // ---------- 上传 ----------
   const patchUp = (key, patch) => setUps((u) => u.map((x) => (x.key === key ? { ...x, ...patch } : x)));
   const upload = async (files, { replaceOf = null } = {}) => {
     const list = [...(files || [])];
     if (!list.length) return;
-    const revision = !replaceOf && rev;
-    const batch = revision ? `batch-${Date.now().toString(36)}` : undefined;
     // 先在本地挡掉格式不对、太大的（立刻显示红条），其余按顺序上传
     const rows = [];
     list.forEach((raw) => {
@@ -282,10 +276,9 @@ export default function ResourcesPage({ route }) {
       try {
         const up = await services.upload(file, 'material', { projectId: pid, onProgress: (p) => patchUp(key, { pct: p }) });
         if (cancelled.current.has(key)) { api.deleteUpload(up.upload_id).catch(() => {}); continue; }
-        const r = await api.addResources(pid, { upload_id: up.upload_id, ...(revision ? { is_revision: true, batch_id: batch } : {}) });
+        const r = await api.addResources(pid, { upload_id: up.upload_id });
         setUps((u) => u.filter((x) => x.key !== key));
         done.push(r);
-        if (r.command_task) tracked.track(r.command_task);
       } catch (e) {
         if (!cancelled.current.has(key)) patchUp(key, { state: 'error', error: errorText(e) });
       }
@@ -302,8 +295,7 @@ export default function ResourcesPage({ route }) {
     const detected = one?.detected
       ? `，识别为数据表（${one.detected.tables.length} 张），用途已设为「数据 Schema」，可在资料列表修改` : '';
     const head = one ? `${one.replaced ? '已替换' : '已上传'} ${one.material.name}${detected}` : `已上传 ${done.length} 份资料（${last.version_label}）`;
-    toast(`${head}${revision ? '；已发起增量更新' : ''}`, 'upload');
-    if (revision) setRev(false);
+    toast(head, 'upload');
     setSel({ kind: 'file', path: last.material.path, fragment: null });
     load();
   };
@@ -377,13 +369,6 @@ export default function ResourcesPage({ route }) {
         title="资料区"
         actions={<Button kind="primary" icon="upload" onClick={() => choose()}>上传资料</Button>}
       />
-      {banner ? (
-        <div className="evd-banner">
-          <span className="ic"><Icon name="refresh" size={14} /></span>
-          <div className="grow"><b>{materialTitle(banner)}</b><span className="muted">：{banner.revision_task.label}</span></div>
-          <Button size="sm" kind="primary" icon="arrow" onClick={() => goIncremental(banner)}>去对话里确认</Button>
-        </div>
-      ) : null}
       <CommandRunBar task={running} className="rs-run" />
       <div className="evd-rg">
         <div ref={listRef}>
@@ -399,9 +384,6 @@ export default function ResourcesPage({ route }) {
               <div className="muted sm">支持 Markdown、TXT、PDF、Word、Excel、CSV、Drawio、HTML 和常见图片；单个文件不超过 20 MB</div>
             </div>
             <Button icon="folder" onClick={() => choose()}>选择文件</Button>
-          </div>
-          <div className="evd-rev">
-            <Check on={rev} onChange={setRev} label={<>作为<b>修订资料</b>上传（发起增量更新）</>} />
           </div>
           {ups.length ? <div className="col mt8" style={{ gap: 6 }}>{ups.map((u) => <UploadRow key={u.key} u={u} onDismiss={() => dismissUp(u)} />)}</div> : null}
 
@@ -419,7 +401,7 @@ export default function ResourcesPage({ route }) {
                 {materials.map((m) => (
                   <FileRow
                     key={m.path} m={m} picked={!!selected && selected.path === m.path} purposes={purposes} menuOpen={menu === m.path}
-                    onPick={pickFile} onMenu={setMenu} onPurpose={setPurpose} onReplace={(x) => choose({ replaceOf: x })} onDelete={setDel} onRevision={goIncremental} onScope={sheetScope.open}
+                    onPick={pickFile} onMenu={setMenu} onPurpose={setPurpose} onReplace={(x) => choose({ replaceOf: x })} onDelete={setDel} onScope={sheetScope.open}
                   />
                 ))}
               </div>
