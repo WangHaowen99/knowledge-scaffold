@@ -12,6 +12,10 @@ agent 仍在工作区里自己 `git commit`（变更集副本在 B4b），内核
 `-c core.hooksPath=/dev/null`（gitops._run_git），写入事务用 commit-tree，都不经钩子。
 绕过写法（`--no-verify`、改 hooksPath）由 PreToolUse 的提交检查拦；防不住有意绕过，真正改不了靠
 进程隔离（详设 4.8 第 4 层）。
+
+agent 以独立用户运行时（方案 E10），它的提交要往主线仓库的对象库里写：仓库设成按组共享
+（`core.sharedRepository=group`），之后不论谁、以什么 umask 跑 git，新建的目录都对 agent 组可写；
+之前已经写不进的目录在装钩子时一并修好。
 """
 
 from __future__ import annotations
@@ -65,15 +69,35 @@ def installed(root: Path) -> bool:
     return result.returncode == 0 and result.stdout.strip() == str(hooks_dir())
 
 
+def share_with_agent(root: Path) -> bool:
+    """agent 以独立用户运行时：仓库按组共享，写不进的目录修好。返回是否改了什么。"""
+    from ...governance import agent_identity
+
+    if not agent_identity.switching():
+        return False
+    changed = False
+    current = _run_git(root, ("config", "--local", "--get", "core.sharedRepository"))
+    if current.returncode != 0 or current.stdout.strip() != "group":
+        result = _run_git(root, ("config", "--local", "core.sharedRepository", "group"))
+        if result.returncode != 0:
+            _log.warning("项目 %s 设置按组共享失败：%s", root.name, result.stderr.strip())
+        changed = result.returncode == 0
+    fixed = agent_identity.share_git_dir(root / ".git")
+    if fixed:
+        _log.info("项目 %s 的版本库有 %d 处 agent 写不进，已修好", root.name, fixed)
+    return changed or fixed > 0
+
+
 def install(root: Path) -> bool:
-    """项目的 git 指向内核钩子；已经指向就不动。返回是否改了配置。"""
+    """项目的 git 指向内核钩子、对 agent 组可写；已经这样就不动。返回是否改了什么。"""
     root = Path(root)
     if not (root / ".git").is_dir():
         return False
+    shared = share_with_agent(root)
     if not (hooks_dir() / HOOK_NAMES[0]).is_file():
         prepare()
     if installed(root):
-        return False
+        return shared
     result = _run_git(root, ("config", "--local", "core.hooksPath", str(hooks_dir())))
     if result.returncode != 0:
         _log.warning("项目 %s 设置提交钩子失败：%s", root.name, result.stderr.strip())

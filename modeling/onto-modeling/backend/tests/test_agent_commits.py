@@ -80,6 +80,29 @@ def test_hooks_published_and_installed(project):
     assert agent_commits.install(root) is False  # 已经指向就不动
 
 
+def test_repository_shared_with_agent_group_only_when_switching(project, monkeypatch):
+    """agent 以独立用户运行时仓库按组共享、写不进的目录交给 share_git_dir 修；不切用户时什么都不动。"""
+    from app.governance import agent_identity
+
+    _, _, root = project
+
+    def shared() -> str:
+        return _run_git(root, ("config", "--local", "--get", "core.sharedRepository")).stdout.strip()
+
+    _run_git(root, ("config", "--local", "--unset", "core.sharedRepository"))  # 以 root + agent 用户跑时夹具已设过
+    monkeypatch.setattr(agent_identity, "switching", lambda: False)
+    agent_commits.install(root)
+    assert shared() == ""
+    repaired = []
+    monkeypatch.setattr(agent_identity, "switching", lambda: True)
+    monkeypatch.setattr(agent_identity, "share_git_dir", lambda git_dir: repaired.append(git_dir) or 0)
+    assert agent_commits.install(root) is True
+    assert shared() == "group" and repaired == [root / ".git"]
+    assert agent_commits.install(root) is False  # 已经共享、没有要修的
+    monkeypatch.setattr(agent_identity, "share_git_dir", lambda git_dir: 3)
+    assert agent_commits.install(root) is True  # 修了几处也算改动
+
+
 def test_agent_commit_carries_source_trailers_and_drops_forged_ones(project):
     _, _, root = project
     (root / ".onto" / "run" / "exec.json").write_text(
