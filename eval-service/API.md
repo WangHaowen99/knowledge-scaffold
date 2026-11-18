@@ -108,7 +108,7 @@ Neo4j 导入使用配置的 Workspace 值与知识包 Ontology 值同时匹配�
 
 ### 关系结构检查（Issue #367）
 
-`POST /package-preparations`、使用旧准备结果创建 `POST /runs`、包拉取及映射生成均检查原始对象关系。关系名保持读取兼容，自关联允许；重复身份由源对象、关系名、目标对象及两端关联字段组成。结构错误返回 HTTP 422，`code=EVALUATION_PACKAGE_INVALID`、`phase=package_validation`；`details.problems` 含对象文档路径、行号及原因（最多 100 项），`details.total` 为总数。准备结果中的 `relation_validation` 包含 `rule_version` 和 `package_digest`。该记录仅由服务端生成，不接受客户端声明已校验。
+`POST /package-preparations`、使用旧准备结果创建 `POST /runs`、包拉取及映射生成均检查原始对象关系。关系名保持读取兼容，自关联允许；重复身份由源对象、关系名、目标对象及两端关联字段组成，只在同一对象文档内重复时报错；源对象和目标对象文档各声明一次视为同一关系，合并为一条。结构错误返回 HTTP 422，`code=EVALUATION_PACKAGE_INVALID`、`phase=package_validation`；`details.problems` 含对象文档路径、行号及原因（最多 100 项），`details.total` 为总数。准备结果中的 `relation_validation` 包含 `rule_version` 和 `package_digest`。该记录仅由服务端生成，不接受客户端声明已校验。
 
 ### 查询题执行依据校验（Issue #382）
 

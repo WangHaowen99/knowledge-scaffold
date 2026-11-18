@@ -678,6 +678,26 @@ def test_legacy_relation_name_is_exported_without_rewriting(tmp_path, monkeypatc
     assert report.get('relations_exported') == 2 and report.get('relations_skipped') == 0
 
 
+@pytest.mark.parametrize("graph", [False, True])
+def test_relation_declared_in_both_endpoint_files_exports_once(tmp_path, monkeypatch, graph):
+    """Issue 419：发布和发布前结构检查都走导出；两端各写一次的同一关系只导出一条。"""
+    manager, pid, root = _export(tmp_path, monkeypatch, {}, graph)
+    _objects(root)
+    (root / "ontology" / "object" / "客户.md").write_text(
+        CUSTOMER_DOC + "\n# 关联对象\n- [[订单]] → 属于 → 当前对象\n", encoding="utf-8",
+    )
+    plan = eval_import.prepare(root, {"files": [_business_data(root)]}, graph=True)
+    dest = io.BytesIO()
+
+    manager.export_package_zip(pid, dest, plan["binding"], graph=graph)
+
+    with zipfile.ZipFile(dest) as archive:
+        order = archive.read(f"{pid}/objects/订单.md").decode("utf-8")
+        customer = archive.read(f"{pid}/objects/客户.md").decode("utf-8")
+    assert order.count("| 属于 | 客户 |") == 1
+    assert "属于" not in customer
+
+
 def test_relations_to_concept_objects_do_not_block_graph_import(tmp_path, monkeypatch):
     manager, pid, root = _export(tmp_path, monkeypatch, {}, True)
     _objects(root)

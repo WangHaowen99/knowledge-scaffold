@@ -376,11 +376,6 @@ def test_package_relations_merges_only_matching_fields_across_formats():
         "ontology/object/object_a.md 第 6 行",
     ),
     (
-        "# 关联对象\n- 当前对象 → references → [[object_b]]\n",
-        "# 关联对象\n- [[object_a]] → references → 当前对象\n",
-        "ontology/object/object_b.md 第 2 行",
-    ),
-    (
         "# 关联对象\n- 当前对象 → caf\u00e9 → [[object_b]]\n"
         "- 当前对象 → cafe\u0301 → [[object_b]]\n",
         "",
@@ -450,6 +445,52 @@ def test_each_duplicate_reports_the_first_declaration_not_the_previous_duplicate
     assert "object_a.md 第 4 行" in problems[1]
 
 
+@pytest.mark.parametrize("target_first", [False, True])
+@pytest.mark.parametrize("note", ["", "（fk → id）"])
+def test_relation_declared_once_in_each_endpoint_file_is_one_relation(target_first, note):
+    """Issue 419：源、目标两端文件各写一次是同一关系的两端描述，评测和导出都不算重复。"""
+    texts = _related_pair(note, ["fk"], ["id"])
+    texts["object_b"] = texts["object_b"].replace("→ references →", f"→ references{note} →")
+    # 名称不同的关系（如买方、卖方）同样两端各写一次，各自保留
+    texts["object_a"] += f"\n- 当前对象 → awarded{note} → [[object_b]]\n"
+    texts["object_b"] += f"\n- [[object_a]] → awarded{note} → 当前对象\n"
+    if target_first:
+        texts = dict(reversed(texts.items()))
+
+    relations, problems = package_mapping.package_relations(
+        texts, reject_duplicate_relations=True, strict_fields=True,
+    )
+
+    assert problems == []
+    assert list(relations) == ["object_a"]
+    assert [(item["relation"], item["target"]) for item in relations["object_a"]] == [
+        ("references", "object_b"), ("awarded", "object_b"),
+    ]
+    expected = ("fk", "id") if note else (None, None)
+    assert all((item.get("sourceJoinProperty"), item.get("targetJoinProperty")) == expected
+               for item in relations["object_a"])
+
+
+@pytest.mark.parametrize("repeated", ["object_a", "object_b"])
+def test_repeat_in_one_endpoint_file_is_still_rejected_at_its_own_lines(repeated):
+    # 目标端文件排在前面，确认首次声明取的是同一文件里的那一行
+    declarations = (
+        ("object_b", "- [[object_a]] → references → 当前对象\n"),
+        ("object_a", "- 当前对象 → references → [[object_b]]\n"),
+    )
+    texts = {}
+    for key, line in declarations:
+        repeat = 2 if key == repeated else 1
+        texts[key] = "# 关联对象\n" + line * repeat
+
+    relations, problems = package_mapping.package_relations(texts, reject_duplicate_relations=True)
+
+    assert sum(map(len, relations.values())) == 1
+    assert len(problems) == 1
+    assert problems[0].startswith(f"ontology/object/{repeated}.md 第 3 行：重复关系")
+    assert problems[0].endswith(f"首次声明于 ontology/object/{repeated}.md 第 2 行")
+
+
 @pytest.mark.parametrize("graph", [False, True])
 def test_same_named_relations_keep_distinct_join_field_pairs(graph):
     texts = _related_pair("（fk → id）", ["fk", "other_fk", "id"], ["id", "other_id"])
@@ -490,6 +531,19 @@ def test_evaluation_accepts_self_relations_with_different_join_fields(tmp_path):
         "- 当前对象 → references（manager_id → employee_id） → 当前对象\n"
         "- 当前对象 → references（employee_id → manager_id） → 当前对象\n"
     )
+    directory = tmp_path / "ontology" / "object"
+    directory.mkdir(parents=True)
+    for key, text in texts.items():
+        (directory / f"{key}.md").write_text(text, encoding="utf-8")
+
+    assert modeling_eval.evaluation_object_snapshot(tmp_path) == texts
+
+
+def test_evaluation_accepts_relation_declared_in_both_endpoint_files(tmp_path):
+    from app.services import modeling_eval
+
+    texts = _related_pair("（fk → id）", ["fk"], ["id"])
+    texts["object_b"] = texts["object_b"].replace("→ references →", "→ references（fk → id） →")
     directory = tmp_path / "ontology" / "object"
     directory.mkdir(parents=True)
     for key, text in texts.items():
