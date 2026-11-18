@@ -833,11 +833,12 @@ def package_relations(
             triple = (source_id, _relation_identity(item["relation"]), target_id, source_join, target_join)
             # 声明写在哪一端的文件里；自关联两端是同一个文件，按源端计
             declaration = triple + (source_id == _relation_identity(key),)
-            if reject_duplicate_relations and declaration in first_declarations:
+            first_label = first_declarations.get(declaration)
+            if reject_duplicate_relations and first_label:
                 problems.append(
                     f"{label}：重复关系「{source} -{item['relation']}→ {target}」；"
                     f"关联字段：{_join_text(relation)}；"
-                    f"首次声明于 {first_declarations[declaration]}"
+                    f"首次声明于 {first_label}"
                 )
                 continue
             first_declarations.setdefault(declaration, label)

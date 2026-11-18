@@ -85,8 +85,11 @@ def test_relation_repeated_in_one_file_is_flagged_with_both_lines(checker, tmp_p
           "- 当前对象 → 属于 → [[客户]]")
     write(ontology, "客户", "客户表", CUSTOMER_ROWS)
     issues = duplicate_issues(checker, ontology)
-    assert len(issues) == 1 and issues[0]["severity"] == "错误" and "订单" in issues[0]["file"]
-    first, second = map(int, re.search(r"第 (\d+) 行和第 (\d+) 行", issues[0]["message"]).groups())
+    assert len(issues) == 1
+    issue = issues[0]
+    assert issue["severity"] == "错误"
+    assert "订单" in issue["file"]
+    first, second = map(int, re.search(r"第 (\d+) 行和第 (\d+) 行", issue["message"]).groups())
     assert second == first + 1
 
 

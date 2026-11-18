@@ -473,13 +473,15 @@ def test_relation_declared_once_in_each_endpoint_file_is_one_relation(target_fir
 
 @pytest.mark.parametrize("repeated", ["object_a", "object_b"])
 def test_repeat_in_one_endpoint_file_is_still_rejected_at_its_own_lines(repeated):
-    lines = {
-        "object_a": "- 当前对象 → references → [[object_b]]\n",
-        "object_b": "- [[object_a]] → references → 当前对象\n",
-    }
     # 目标端文件排在前面，确认首次声明取的是同一文件里的那一行
-    texts = {key: "# 关联对象\n" + lines[key] * (2 if key == repeated else 1)
-             for key in ("object_b", "object_a")}
+    declarations = (
+        ("object_b", "- [[object_a]] → references → 当前对象\n"),
+        ("object_a", "- 当前对象 → references → [[object_b]]\n"),
+    )
+    texts = {}
+    for key, line in declarations:
+        repeat = 2 if key == repeated else 1
+        texts[key] = "# 关联对象\n" + line * repeat
 
     relations, problems = package_mapping.package_relations(texts, reject_duplicate_relations=True)
 
