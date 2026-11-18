@@ -74,6 +74,17 @@ def test_shell_shim_runs_command_with_minimal_env():
     assert not any(name.startswith("ONTO_WEB_") for name in names)
 
 
+def test_shell_shim_runs_bash_syntax():
+    """命令资产按 bash 写（数组、进程替换）：交给 dash 会先报语法错，模型再改写重试。"""
+    if not os.access(agent_exec.BASH, os.X_OK):
+        pytest.skip("没有 /bin/bash")
+    command = 'ARGS=(--scope global); while read -r f; do ARGS+=(--scope "$f"); done < <(printf "a\\nb\\n"); echo "${ARGS[@]}"'
+    result = proc.run([str(agent_identity.SHELL_SHIM), command], capture_output=True, text=True, timeout=30,
+                      env={**os.environ, "ONTO_AGENT_PYTHON": sys.executable})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "--scope global --scope a --scope b"
+
+
 def test_claude_cli_wrapper_hands_cli_only_gateway_env_and_shell_prefix(tmp_path):
     """SDK 起 CLI 时并进后端的完整环境；包装之后 CLI 只拿到模型网关配置，bash 前缀指向 shell 包装。"""
     fake_cli = tmp_path / "fake-claude"

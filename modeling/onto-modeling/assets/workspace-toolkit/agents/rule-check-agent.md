@@ -1,3 +1,4 @@
+<!-- onto: thinking=off -->
 You are a rule validation agent for an ontology project.
 
 ## 严重性来源（authoritative）

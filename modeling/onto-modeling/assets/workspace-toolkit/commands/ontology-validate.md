@@ -236,7 +236,9 @@ If no complex issues, skip to A5.5.
 
 Re-dispatch the rule-check-agent (same as A1, with the same TARGET_FILES if in incremental mode). Wait for it to return results.
 
-Filter the new results: remove any issue whose `file` + `message` combination was already present in **any previous rule-check run this session** (A1 results, plus any issues found by prior A5.5 loops). Only issues not previously seen count as regressions introduced by the fixes.
+Filter the new results: remove any issue whose `file` + `message` combination was already present in the A1 results. Only issues not previously seen count as regressions introduced by the fixes.
+
+回归检查只做这一轮：查出的新问题写进报告留待处理，这一轮不再修、不再复查。
 
 **If regressions found:**
 
@@ -249,11 +251,9 @@ Append them to `reports/{rule-filename}` under a new section:
 ```
 
 Tell the user:
-"修复后发现 {N} 个新问题（可能由本次修改引入），已追加至报告。"
+"修复后发现 {N} 个新问题（可能由本次修改引入），已追加至报告，留待处理。"
 
-Then handle these regression issues using the same A3→A4→A5 flow (auto-classify, auto-fix simple with summary, handle complex via terminal). After fixes, repeat A5.5.
-
-If user chooses "跳过" at any point during regression handling: the regression issues listed this round count as skipped (`⏭️` in A6); proceed to A6.
+不问用户、不进 A3→A5，直接进入 A6（这些行保持 `[ ]`，算待处理）。
 
 **If no regressions:** Tell user "回归检查通过，未发现新问题。" and proceed to A6.
 
@@ -302,11 +302,7 @@ git commit -m "fix: address rule check issues"
    - 紧接两行 `PART: {部分}`、`ISSUES_DIR: {ISSUES_DIR}`（写在知识区块前面：子任务卡片按派发提示前段取名）；
    - {若 KNOWLEDGE_BLOCK 非空：原样粘贴 KNOWLEDGE_BLOCK 在此处，紧跟一行分隔符 ---}
    - If incremental mode: "TARGET_FILES: {space-separated stems from TARGET_FILES}" 与 "RELATED_FILES: {space-separated stems from RELATED_FILES}"
-   - If change-only mode (Step 0.5 第 6 条): additionally include
-     ```
-     CHANGE_DIFF: |
-     {CHANGE_DIFF 原文，每行前加 2 个空格缩进}
-     ```
+   - If change-only mode (Step 0.5 第 6 条): additionally include `CHANGE_DIFF_CMD: git diff {CHANGE_BASE} -- {TARGET_FILES 的路径，空格分隔}`（子任务自己运行它取 CHANGE_DIFF；不要把 diff 原文抄进派发提示）
    - 底部（在已有的收尾指令之后）追加：
 
      ```
@@ -437,7 +433,7 @@ Read `.claude/agents/semantic-fix-agent.md`. Dispatch it as a subagent with:
 ```
 {若 KNOWLEDGE_BLOCK 非空：原样粘贴 KNOWLEDGE_BLOCK 在此处，紧跟一行分隔符 ---}
 
-SEMANTIC_ISSUES = {把 B1 合并出的 issue 列表（回归问题取 B5 合并出的列表）过滤为 B4_SELECTED 子集后的 JSON 数组，每条带上 B2 分配的 issue_id}
+SEMANTIC_ISSUES = {把 B1 合并出的 issue 列表过滤为 B4_SELECTED 子集后的 JSON 数组，每条带上 B2 分配的 issue_id}
 ONTOLOGY_ROOT = ontology/
 ```
 
@@ -529,13 +525,14 @@ ISSUES_DIR: {本轮 ISSUES_DIR}
 TARGET_FILES: {B4_MODIFIED 的 stem，空格分隔}
 REGRESSION_ISSUES: |
 {本轮修复的问题，每条一行：issue_id、file、message 原文}
-CHANGE_DIFF: |
-{原样粘贴 `git diff -U3 -- {B4_MODIFIED 的路径}` 的输出（未暂存部分，即本轮修复的改动），每行前加 2 个空格缩进}
+CHANGE_DIFF_CMD: git diff -U3 -- {B4_MODIFIED 的路径，空格分隔}
 ```
 
-CHANGE_DIFF 必须是命令输出原文，不要改写、概括或补充说明；不传 RELATED_FILES，也不要在派发提示里另加检查范围。子任务回来后 `python3 .claude/scripts/semantic_issues.py merge --dir {本轮 ISSUES_DIR}`，输出的 JSON 数组就是回归结果。回归发现的新问题照常列给用户选择，不要直接修。
+`CHANGE_DIFF_CMD` 由子任务自己运行，拿到的是未暂存部分（B4 开始前已暂存，即本轮修复的改动）的原文；不要自己运行后把输出抄进派发提示。不传 RELATED_FILES，也不要在派发提示里另加检查范围。子任务回来后 `python3 .claude/scripts/semantic_issues.py merge --dir {本轮 ISSUES_DIR}`，输出的 JSON 数组就是回归结果。
 
-Filter the new results: remove any issue whose `file` + `message` combination was already present in **any previous semantic-check run this session** (B1 results, plus any issues found by prior B5 loops). Only issues not previously seen count as regressions introduced by the fixes.
+Filter the new results: remove any issue whose `file` + `message` combination was already present in the B1 results. Only issues not previously seen count as regressions introduced by the fixes.
+
+回归检查只做这一轮：查出的新问题写进报告留待处理，这一轮不再修、不再复查，也不问用户。
 
 **If regressions found:**
 
@@ -547,14 +544,7 @@ Append them to `reports/{semantic-filename}` under a new section:
 {next_id+1}. ⚠️ [{category}] {message}
 ```
 
-先 `python3 .claude/scripts/state_helper.py acquire validate confirm`，再 tell the user（用户回复后 `acquire validate start`）:
-"语义修复后发现 {N} 个新问题（可能由本次修改引入），已追加至报告。
-
-下面列出了新增问题编号。"，再用确认卡问「新增的 {N} 个问题要处理哪些？」，选项 **全部** / **跳过**（只处理几条让用户在对话里说编号）。
-
-- Show the regression issues in the terminal using the same numbered summary format as B3, and ensure the numbers match the appended report entries exactly.
-- If user selects issues: set `B4_SELECTED` to those regression issue IDs, go back to B4（重新进入 B4a 批量修复路径，未应用的会经 B4d 逐条处理），then repeat B5.
-- If user replies "跳过": add the regression issue IDs to `B4_SKIPPED`, proceed to B6.
+Tell the user "语义修复后发现 {N} 个新问题（可能由本次修改引入），已追加至报告，留待处理。"，用和 B3 相同的编号格式列出这些问题（编号与报告里追加的一致），然后进入 B6（这些编号行保持原样，算待处理）。
 
 **If no regressions:** Tell user "回归检查通过，未发现新问题。" and proceed to B6.
 

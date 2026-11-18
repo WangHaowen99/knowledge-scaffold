@@ -43,6 +43,8 @@ REAL_CLI_ENV = "ONTO_AGENT_REAL_CLI"
 AGENT_USER_ENV = "ONTO_AGENT_USER"
 SHELL_PREFIX_ENV = "CLAUDE_CODE_SHELL_PREFIX"
 CONTROL = (REAL_CLI_ENV, AGENT_USER_ENV, "ONTO_AGENT_PYTHON")
+# agent 的命令按 bash 写；镜像里有它，没有时退回 /bin/sh
+BASH = "/bin/bash"
 
 
 def _base(name: str) -> bool:
@@ -116,8 +118,10 @@ def main(argv: list[str]) -> int:
     clean = shell_env(env)
     drop_privileges(agent_user)
     if len(args) == 1:
-        # CLI 的 shell 前缀与 Jiuwen 都把整条命令作为一个参数传进来
-        os.execve("/bin/sh", ["/bin/sh", "-c", args[0]], clean)  # NOSONAR(S4721) 助手的 shell 前缀，降权后交给 sh
+        # CLI 的 shell 前缀与 Jiuwen 都把整条命令作为一个参数传进来。命令资产按 bash 写（数组、`< <(…)`），
+        # 镜像里 /bin/sh 是 dash，交给它会先报语法错、模型再改写重试；有 bash 就用 bash
+        shell = BASH if os.access(BASH, os.X_OK) else "/bin/sh"
+        os.execve(shell, [shell, "-c", args[0]], clean)  # NOSONAR(S4721) 助手的 shell 前缀，降权后交给 bash
     if not args:
         _complain("onto-agent-shell: 没有要执行的命令")
         return 2

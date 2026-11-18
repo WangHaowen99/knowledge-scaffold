@@ -27,10 +27,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import importlib.util
 import json
 import logging
+import re
 import time
 import uuid
 from collections import deque
@@ -180,8 +182,8 @@ async def _ensure_runner_started(log_error: Callable[[str, str], None]) -> None:
 class _ChunkBridge:
     """openjiuwen chunk 流 → 平台事件（契约见 engines/base.py 模块文档）。
 
-    优先使用进度 Rail 携带的原生调用 id；旧 chunk 无 id 时保留 FIFO 配对
-    （主引擎以 parallel_tool_calls=False 运行）。
+    按进度 Rail 携带的原生调用 id 配对（主引擎并行执行同一条消息里的调用）；
+    chunk 没有 id 时退回 FIFO 配对（只有串行执行时才准）。
 
     子代理的 chunk 留在 task_tool 内部不进主流，这里的上下文用量与压缩都属于主 agent。
     """
@@ -410,7 +412,72 @@ def _general_purpose_spec(
     )
 
 
-def _bind_subagent_workspace_rotation(agent: Any, spec: Any, root: Path) -> None:
+# 子代理的 agent 文件第一行写这句，派发时这个子代理关闭思考（只跑脚本、对清单的机械型子任务）。
+# 用 HTML 注释不用 frontmatter：`.claude/agents/*.md` 带 frontmatter 会被稳定引擎当成自定义子代理
+QUIET_MARKER = "<!-- onto: thinking=off -->"
+_AGENT_FILE = re.compile(r"\.claude/agents/([A-Za-z0-9_.-]+\.md)")
+# 这次派发的任务说明：TaskTool 派发入口记下，create_subagent（拿不到说明）据此挑模型。
+# 并行派发时每个工具调用在各自的 asyncio 任务里跑，ContextVar 互不串
+_DISPATCH_BRIEF: contextvars.ContextVar[str] = contextvars.ContextVar("onto_jiuwen_dispatch_brief", default="")
+_brief_capture_installed = False
+
+
+def quiet_dispatch(brief: str, cwd: Path) -> bool:
+    """任务说明开头引用的 agent 文件第一行是 QUIET_MARKER → 这次派发关闭思考。"""
+    head = "\n".join(str(brief or "").splitlines()[:3])
+    match = _AGENT_FILE.search(head)
+    if not match:
+        return False
+    try:
+        with (Path(cwd) / ".claude" / "agents" / match.group(1)).open(encoding="utf-8") as handle:
+            return handle.readline().strip() == QUIET_MARKER
+    except OSError:
+        return False
+
+
+def quiet_extra_body() -> dict | None:
+    """关闭思考时附带的请求参数（配置 ONTO_WEB_JIUWEN_QUIET_EXTRA_BODY，JSON 对象）；空或写错 = 不关。"""
+    raw = str(config.JIUWEN_QUIET_EXTRA_BODY or "").strip()
+    if not raw:
+        return None
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        logging.getLogger(__name__).warning("ONTO_WEB_JIUWEN_QUIET_EXTRA_BODY 不是 JSON，子任务照常思考")
+        return None
+    return body if isinstance(body, dict) and body else None
+
+
+def _install_dispatch_brief_capture() -> None:
+    """包一层 TaskTool 的派发入口，记下这次的任务说明。幂等。"""
+    global _brief_capture_installed
+    if _brief_capture_installed:
+        return
+    from openjiuwen.harness.tools.subagent.task_tool import TaskTool
+
+    def brief_of(inputs: Any) -> str:
+        getter = getattr(inputs, "get", None)
+        return str(getter("task_description") or "") if callable(getter) else ""
+
+    original_invoke, original_stream = TaskTool.invoke, TaskTool.stream
+
+    async def invoke(self, inputs, **kwargs):
+        _DISPATCH_BRIEF.set(brief_of(inputs))
+        return await original_invoke(self, inputs, **kwargs)
+
+    async def stream(self, inputs, **kwargs):
+        _DISPATCH_BRIEF.set(brief_of(inputs))
+        async for item in original_stream(self, inputs, **kwargs):
+            yield item
+
+    invoke.__wrapped__ = original_invoke  # type: ignore[attr-defined]
+    stream.__wrapped__ = original_stream  # type: ignore[attr-defined]
+    TaskTool.invoke, TaskTool.stream = invoke, stream
+    _brief_capture_installed = True
+
+
+def _bind_subagent_workspace_rotation(agent: Any, spec: Any, root: Path, *, quiet_model: Any = None,
+                                      cwd: Path | None = None) -> None:
     """每次派发都给子代理一个独立工件目录（不能复用同一个根）。
 
     openjiuwen 的文件锁按"目标路径哈希"建 SQLite 锁库，而租约释放后进程内的
@@ -422,15 +489,20 @@ def _bind_subagent_workspace_rotation(agent: Any, spec: Any, root: Path) -> None
     也挂在这里），派发前把 spec 的 workspace 换成按 subsession 命名的目录即可。
     赋值与调用之间没有 await，并发派发也不会互相串台；spec.workspace 必须保持
     非空，否则 SDK 不采纳我们的 sys_operation（沙箱三根会丢）。
+
+    给了 quiet_model 时同一处顺带挑模型：任务说明引用的 agent 文件标了不思考就用它，否则用原模型。
     """
     from openjiuwen.harness.workspace.workspace import Workspace
 
     original = agent.create_subagent
+    default_model = spec.model
 
     def create_subagent(subagent_type: str, subsession_id: str, *args: Any, **kwargs: Any):
         spec.workspace = Workspace(
             root_path=str(root / str(subsession_id)), language="cn"
         )
+        if quiet_model is not None and cwd is not None:
+            spec.model = quiet_model if quiet_dispatch(_DISPATCH_BRIEF.get(), cwd) else default_model
         return original(subagent_type, subsession_id, *args, **kwargs)
 
     agent.create_subagent = create_subagent
@@ -905,6 +977,18 @@ class JiuwenEngine(ObservableEngine):
             context_window=context["max_context_tokens"],
             timeout=300.0,
         )
+        quiet_body = quiet_extra_body()
+        quiet_model = init_model(
+            provider="OpenAI",
+            model_name=cfg["model"],
+            api_key=cfg["api_key"],
+            api_base=cfg["base_url"],
+            max_tokens=context["max_output_tokens"],
+            context_window=context["max_context_tokens"],
+            timeout=300.0,
+            extra_body=quiet_body,
+        ) if quiet_body else None
+        _install_dispatch_brief_capture()
         # 框架私有工件区与项目 git 工作区分离（官方 cwd/workspace 分层）
         shadow = shadow_dir(self._ctx.project_id)
         shadow.mkdir(parents=True, exist_ok=True)
@@ -975,13 +1059,14 @@ class JiuwenEngine(ObservableEngine):
             # 真实模型下资料分析、对象提取常超过 10 分钟。一轮的长短由最大迭代数、用户打断与无响应判定兜底
             completion_timeout=None,
             language="cn",
-            # tool_call chunk 无调用 id，串行执行保证桥接层 FIFO 配对正确
-            parallel_tool_calls=False,
+            # 同一条消息里的多个调用（如语义检查三个部分的子任务）并行执行：桥接层按调用的原生 id 配对，
+            # 进度 Rail 按子任务 id 分开记；串行时三个部分只能一个接一个跑
+            parallel_tool_calls=True,
             cwd=str(self._ctx.cwd),
             project_root=str(self._ctx.cwd),
         )
         # 每次派发再换一个独立子目录，避免第二个子任务撞上第一个留下的文件锁
-        _bind_subagent_workspace_rotation(agent, gp_spec, subagent_root)
+        _bind_subagent_workspace_rotation(agent, gp_spec, subagent_root, quiet_model=quiet_model, cwd=self._ctx.cwd)
         return agent, tracker
 
     async def send(self, text: str, context: str | None = None, message_id: str | None = None) -> None:
