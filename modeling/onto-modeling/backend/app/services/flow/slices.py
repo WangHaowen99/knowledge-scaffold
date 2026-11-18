@@ -10,7 +10,7 @@
 | running | 有没结束的执行记录，分段与步骤是这一段这一步 |
 | pending_confirm | 没确认的变更集里执行过这一段这一步，或改到了这一段这一步的条目 |
 | confirmed | 这一段这一步的条目在主线上都有了，或这一步的变更集合入过（记下了）；需复核（自主构建）显示 auto |
-| stale | 确认之后，这一步 `stale_on` 的上游（这一段的条目、资料分析）在主线上变了 |
+| stale | 确认之后，这一步 `stale_on` 的上游在主线上变了：资料分析、上一步条目的增减（ADR-0102，内容修改交给校验） |
 | skipped | 可选步骤（规则）被跳过，或按段模式下这一段没规划规则（资料里没有就跳过，不挡这一段确认） |
 | ready / not_ready | 前面的必经步骤都做了就可开始 |
 
@@ -148,7 +148,8 @@ class _Inputs:
                 wanted |= {rel for paths in self._entity_paths(item, kind) for rel in paths}
         prefixes = tuple(dirs or ["\0"])
         selected = [line for line in self.lines if _selected_line(line, wanted, prefixes)]
-        return hashlib.sha256("".join(f"{line}\n" for line in selected).encode("utf-8")).hexdigest()[:16]
+        text = node_state.render_tree(selected, node_state.set_prefixes(kinds))
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def _selected_line(line: str, wanted: set[str], prefixes: tuple[str, ...]) -> bool:
@@ -246,9 +247,13 @@ def _step_state(inputs: _Inputs, item: dict, step: dict, stored: dict, cells: di
         if record is None:
             records[step["id"]] = {"fp": fingerprint, "kinds": _kind_fps(inputs, item, step), "at": now}
             return "confirmed", True
+        kinds = [str(kind) for kind in step.get("stale_on") or []]
+        rebased = node_state.rebaseline_redefined(
+            inputs.root, record, kinds, fingerprint, lambda: _kind_fps(inputs, item, step),
+            node_state.STALE_ON_BEFORE_0102.get(f"{inputs.node['id']}/{step['id']}"))
         if record.get("fp") is not None and record.get("fp") != fingerprint:
-            return "stale", False
-        return ("auto" if (record.get("needs_review") or {}).get("source") == "autobuild" else "confirmed"), False
+            return "stale", rebased
+        return ("auto" if (record.get("needs_review") or {}).get("source") == "autobuild" else "confirmed"), rebased
     changed = False
     if record is not None and not record.get("merged"):
         records.pop(step["id"])  # 主线上不再满足（回退、删了）：基线作废

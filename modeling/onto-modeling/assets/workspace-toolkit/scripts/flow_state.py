@@ -333,6 +333,15 @@ def _outputs(node: dict) -> list:
 LENIENT_STATES = ('confirmed', 'stale', 'ready', 'running', 'pending_confirm', 'not_ready', 'blocked')
 
 
+# 盯着条目内容的类别也盖住同一目录只看清单的类别：条目增删改名时内容指纹一定变（ADR-0102）
+SET_OF = {'object': 'object_set', 'operation': 'operation_set'}
+
+
+def _watched(kinds) -> set:
+    kinds = {str(kind) for kind in kinds or []}
+    return kinds | {SET_OF[kind] for kind in kinds if kind in SET_OF}
+
+
 def _checked_downstream(node: dict, stale_on: list, nodes: list, state_of: dict, states=('confirmed',)) -> bool:
     """过期的 node（或它的某一步，stale_on 是那一步的）后面有已确认的必经节点 M 能核对并修复同一批改动：M.stale_on 盖住
     这些类别、M 的写入范围盖住 node 的产出。M 已确认说明它是在这批改动之后跑的、核对过了（典型：校验自己的修复改了对象），
@@ -346,7 +355,7 @@ def _checked_downstream(node: dict, stale_on: list, nodes: list, state_of: dict,
             continue
         if not after or state_of.get(other['id']) not in states or not _required_on_mainline(other):
             continue
-        if set(stale_on) <= set(other.get('stale_on') or []) and _covers(_outputs(other), _outputs(node)):
+        if set(stale_on) <= _watched(other.get('stale_on')) and _covers(_outputs(other), _outputs(node)):
             return True
     return False
 

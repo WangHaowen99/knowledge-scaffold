@@ -7,7 +7,7 @@
 | running 进行中 | 有没结束的执行记录（运行中、等你回答） |
 | pending_confirm 待确认 | 执行结束了，节点的改动在没确认的变更集里 |
 | confirmed 已确认 | 完成判定在主线上满足，且记下的输入指纹没变 |
-| stale 过期 | 已确认之后，`stale_on` 声明的产物在主线上的指纹变了 |
+| stale 过期 | 已确认之后，`stale_on` 声明的产物在主线上的指纹变了（`object_set`、`operation_set` 只看条目增删改名，ADR-0102） |
 | skipped 已跳过 | 可选节点被你跳过（FL-03） |
 | blocked 被挡住 | 挡住它的关卡（`blocks` 指向它的节点）还没确认 |
 | ready 可开始 | 输入都已确认（锚点链上的上游节点已确认或过期） |
@@ -44,6 +44,9 @@ KIND_DIRS = {
     "research": ("research",),
     "object": ("ontology/object",),
     "operation": ("ontology/operation", "ontology/logic"),
+    # 只看有哪些条目（新增、删除、改名），不看内容（ADR-0102）：内容修改是一致性问题，交给校验
+    "object_set": ("ontology/object",),
+    "operation_set": ("ontology/operation", "ontology/logic"),
     "rule": ("ontology/rule",),
     "metric": ("ontology/metric",),
     "script": ("ontology/scripts",),
@@ -53,6 +56,10 @@ KIND_DIRS = {
     "solver": ("ontology/solver",),
     "knowledge": ("ontology/knowledge",),
 }
+SET_KINDS = frozenset({"object_set", "operation_set"})
+# ADR-0102 之前的 stale_on：没存分类指纹的老记录按它判断定义变没变（键：节点，或「建模节点/步骤」）
+STALE_ON_BEFORE_0102 = {"core.metric": ("object", "operation"), "core.model/operation": ("object",),
+                        "core.model/rule": ("object", "operation")}
 REVIEW_SOURCES = ("autobuild", "upgrade", "import")
 DISPLAY = {"not_ready": "not_ready", "ready": "ready", "running": "running", "pending_confirm": "pending",
            "confirmed": "confirmed", "stale": "stale", "skipped": "skipped", "blocked": "blocked"}
@@ -129,12 +136,31 @@ def tree_listing(root: Path) -> list[str]:
     return _ls_tree(root, ["ontology", "research"]).splitlines()
 
 
+def set_prefixes(kinds) -> tuple[str, ...]:
+    """只看条目清单的类别（SET_KINDS）占的目录前缀；同一目录也按内容看时（同时声明了 object）以内容为准。"""
+    content = {directory for kind in kinds if str(kind) not in SET_KINDS for directory in KIND_DIRS.get(str(kind), ())}
+    return tuple(f"{directory}/" for kind in kinds if str(kind) in SET_KINDS
+                 for directory in KIND_DIRS.get(str(kind), ()) if directory not in content)
+
+
+def render_tree(lines, prefixes: tuple[str, ...]) -> str:
+    """ls-tree 的行 → 参与摘要的文本：prefixes 下的行只留路径（条目增删改名才变），其余行原样（内容一改就变）。
+
+    没有只看清单的类别时和原来逐字相同，已有的确认记录接着用。"""
+    out = []
+    for line in lines:
+        path = line.split("\t", 1)[-1]
+        out.append(path if prefixes and path.startswith(prefixes) else line)
+    return "".join(f"{line}\n" for line in out)
+
+
 def fingerprint(root: Path, kinds: list[str]) -> str:
     """stale_on 里各类产物在主线上的树摘要；没有声明 stale_on 时为空串（不会过期）。"""
     dirs = [directory for kind in kinds for directory in KIND_DIRS.get(str(kind), ())]
     if not dirs:
         return ""
-    return hashlib.sha256(_ls_tree(root, dirs).encode("utf-8")).hexdigest()[:16]
+    text = render_tree(_ls_tree(root, list(dict.fromkeys(dirs))).splitlines(), set_prefixes(kinds))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def kind_fingerprints(root: Path, kinds: list[str]) -> dict[str, str]:
@@ -177,6 +203,26 @@ def baseline_rev(root: Path, record: dict) -> str | None:
     return rev if isinstance(rev, str) and rev else _rev_at(root, record.get("at"))
 
 
+def rebaseline_redefined(root: Path, record: dict, kinds: list[str], fingerprint_now: str, kinds_now,
+                         before=None) -> bool:
+    """记录是按另一套 stale_on 记的（ADR-0102 换了定义，或包升级改了声明）：两边指纹没法直接比。
+
+    按确认那一刻到现在主线上「现在声明的上游」有没有改动来定：没改、或找不到那一刻的提交，按现在的定义重记基线
+    （找不到时不判过期：旧指纹本来就比不了，资料变了建模的对象一步照样会过期）；改了的类别指纹记空，判过期并说得出
+    是哪几类。before：老记录没存分类指纹时当时的定义（STALE_ON_BEFORE_0102），不知道就不动。返回记录改没改。"""
+    saved = record.get("kinds")
+    previous = set(saved) if isinstance(saved, dict) else set(before) if before is not None else None
+    if previous is None or previous == {str(kind) for kind in kinds}:
+        return False
+    current = kinds_now()
+    changed = changed_since(root, record.get("at"), kinds) or []
+    if changed:
+        record.update(fp="", kinds={kind: ("" if kind in changed else value) for kind, value in current.items()})
+    else:
+        record.update(fp=fingerprint_now, kinds=current)
+    return True
+
+
 def changed_since(root: Path, at, kinds: list[str]) -> list[str] | None:
     """主线上从 at（确认时刻）那个提交到现在，哪几类的目录有改动；只沿主线走（不看合入进来的助手副本提交的时间）。"""
     base = _rev_at(root, at)
@@ -187,7 +233,9 @@ def changed_since(root: Path, at, kinds: list[str]) -> list[str] | None:
         dirs = KIND_DIRS.get(str(kind), ())
         if not dirs:
             continue
-        names = _git(root, "diff", "--name-only", base, "HEAD", "--", *dirs)
+        # 只看清单的类别：只算新增、删除、改名
+        only = ("--diff-filter=ADR",) if str(kind) in SET_KINDS else ()
+        names = _git(root, "diff", "--name-only", *only, base, "HEAD", "--", *dirs)
         if names is None:
             return None
         if any(name not in FINGERPRINT_EXCLUDE for name in names.splitlines()):
@@ -378,6 +426,10 @@ def compute(root: Path, flow: dict, hits: dict[str, bool], *, project_id: str | 
                     # 节点升级、完成判定变了：旧的「已确认」标需复核，判定签名换成新的
                     record.update(sig=signature, needs_review={"source": "upgrade", "at": time.time()})
                     flags.update(needs_review=True, review_source="upgrade")
+                    changed = True
+                stale_on = list(node.get("stale_on") or [])
+                if rebaseline_redefined(root, record, stale_on, fp(node), lambda: kind_fingerprints(root, stale_on),
+                                        STALE_ON_BEFORE_0102.get(node_id)):
                     changed = True
                 state = "stale" if record.get("fp", "") != fp(node) else "confirmed"
                 if state == "stale":

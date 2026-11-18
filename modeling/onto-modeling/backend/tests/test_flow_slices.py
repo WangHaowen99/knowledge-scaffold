@@ -195,8 +195,12 @@ def test_old_sliced_project_runs_as_one_full_slice(env, monkeypatch):
     assert rows["all"]["stages"]["operation"] == "confirmed" and rows["all"]["stages"]["check"] == "confirmed"
     assert rows["all"]["group"] == "done" and _node(built, "core.model")["state"] == "confirmed"
     assert node_state.load(root)["slices"]["all"]["operation"]["merged"] is True
-    # 过期：对象在主线上又改了，操作一步过期；节点显示过期
+    # 对象内容改了（校验修复、手工编辑）：一致性交给校验，操作一步不过期（ADR-0102）
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店（改了口径）"))
+    rows, built = _slices(root)
+    assert rows["all"]["stages"]["operation"] == "confirmed" and _node(built, "core.model")["state"] == "confirmed"
+    # 过期：对象有增减（可能要补提取操作），操作一步过期；节点显示过期
+    main_write(root, "ontology/object/库存标准.md", obj("库存标准", "合成库存标准"))
     rows, built = _slices(root)
     assert rows["all"]["stages"]["operation"] == "stale" and rows["all"]["group"] == "wait"
     assert rows["all"]["note"].endswith("步过期")
@@ -418,11 +422,13 @@ def _modeled_with_rules(root: Path) -> dict:
 
 
 def test_optional_rule_step_going_stale_does_not_roll_back_modeling(env):
-    """规则与指标提取在操作里补了一处回链：「规则」一步（可选补抽）过期，但建模的必经步骤都在，不算过期；
-    后面的校验能核对这批改动，建议条不推「刷新『规则』」（那是刚跑完的同一条命令）。"""
+    """规则与指标提取补了一个操作：「规则」一步（可选补抽，盯操作清单）过期，但建模的必经步骤都在，不算过期；
+    后面的校验能核对这批改动，建议条不推「刷新『规则』」（那是刚跑完的同一条命令）。只在操作里补回链不算过期（ADR-0102）。"""
     _client, _workspaces, _manager, _project_id, root = env
     _modeled_with_rules(root)
     main_write(root, "ontology/operation/受理申请.md", op("受理申请", "[[门店]]，按[[取严规则]]校验"))
+    assert _slices(root)[0]["all"]["stages"]["rule"] == "confirmed"
+    main_write(root, "ontology/operation/复核申请.md", op("复核申请", "[[门店]]，按[[取严规则]]复核"))
     rows, built = _slices(root)
     assert rows["all"]["stages"]["rule"] == "stale"
     assert _node(built, "core.model")["state"] == "confirmed"
@@ -434,7 +440,7 @@ def test_rule_metric_run_also_confirms_the_rule_step(env):
     """全量模式下合入「规则与指标提取」（记在指标旁支）时，建模里用同一条命令的「规则」一步一并确认。"""
     _client, _workspaces, _manager, project_id, root = env
     flow = _modeled_with_rules(root)
-    main_write(root, "ontology/operation/受理申请.md", op("受理申请", "[[门店]]，按[[取严规则]]校验"))
+    main_write(root, "ontology/operation/复核申请.md", op("复核申请", "[[门店]]，按[[取严规则]]复核"))
     assert _slices(root)[0]["all"]["stages"]["rule"] == "stale"
     assert slices.steps_done_by(root, flow, ["core.metric"], None) == [["all", "rule"]]
     assert slices.steps_done_by(root, flow, ["core.validate"], None) == []
@@ -470,11 +476,15 @@ def test_stale_label_names_what_changed_not_every_input(env):
 
 
 def test_optional_metric_going_stale_is_left_to_validation(env):
-    """指标（可选旁支）过期时交给后面的校验，不单独推：单独推会和建模来回兜圈子——指标补对象的关联让「操作」过期，
-    重抽操作又让指标过期。必经的刷新排在前面。"""
+    """指标（可选旁支）过期时交给后面的校验，不单独推：单独推会和建模来回兜圈子。必经的刷新排在前面。
+    ADR-0102 起指标只在资料变了、对象或操作有增减时过期，只改操作内容不过期。"""
     _client, _workspaces, _manager, _project_id, root = env
     _validated(root)
     main_write(root, "ontology/operation/受理申请.md", op("受理申请", "[[门店]]，补一句"))
+    built = view.build(root)
+    assert _node(built, "core.metric")["state"] == "confirmed"
+    assert _labels(built)[0] == "操作有变化，刷新校验"
+    main_write(root, "ontology/operation/复核申请.md", op("复核申请", "[[门店]]"))
     built = view.build(root)
     assert _node(built, "core.metric")["state"] == "stale"
     labels = _labels(built)
@@ -497,3 +507,101 @@ def test_old_records_find_what_changed_from_git(env):
     time.sleep(1.1)  # 下一个提交落在确认之后的那一秒
     main_write(root, "ontology/operation/受理申请.md", op("受理申请", "[[门店]]，补一句"))
     assert _labels(view.build(root))[0] == "操作有变化，刷新校验"
+
+
+# ---------------------------------------------------------------------------
+# ADR-0102：重新提取只盯来源和条目增减，内容修改交给校验
+# ---------------------------------------------------------------------------
+
+
+def test_validation_fix_keeps_modeling_and_metric_confirmed(env):
+    """校验修复改了对象、操作的内容（补字段、改说法）并确认：建模、指标不过期，建议条不推刷新建模、刷新指标。"""
+    _client, _workspaces, _manager, _project_id, root = env
+    _validated(root)
+    flow = flow_model.load_for(root)
+    main_write(root, "ontology/object/门店.md", obj("门店", "合成门店（校验补了说明）",
+                                                  rows=(("编号", "code", "主键编号", "是", "字符串"),
+                                                        ("名称", "name", "门店名称", "否", "字符串"))))
+    main_write(root, "ontology/operation/受理申请.md", op("受理申请", "[[门店]]，校验补了兜底"))
+    built = view.build(root)
+    assert _node(built, "core.validate")["state"] == "stale"
+    assert _node(built, "core.model")["state"] == "confirmed" and _node(built, "core.metric")["state"] == "confirmed"
+    node_state.confirm(root, flow, ["core.validate"])
+    built = view.build(root)
+    assert {_node(built, node)["state"] for node in ("core.model", "core.metric", "core.validate")} == {"confirmed"}
+    assert not any("刷新" in label for label in _labels(built))
+
+
+def test_new_object_or_research_change_still_asks_to_extract(env):
+    """新增对象：操作一步过期、说得出是对象清单变了；资料分析变了：对象、操作两步都过期。"""
+    _client, _workspaces, _manager, _project_id, root = env
+    _validated(root)
+    main_write(root, "ontology/object/商品.md", obj("商品", "合成商品"))
+    rows, built = _slices(root)
+    assert rows["all"]["stages"]["object"] == "confirmed" and rows["all"]["stages"]["operation"] == "stale"
+    assert any("对象清单有变化" in label for label in _labels(built))
+    main_write(root, "research/20260101-合成.md", "# 合成资料分析\n\n补了一段\n")
+    rows, built = _slices(root)
+    assert rows["all"]["stages"]["object"] == "stale" and rows["all"]["stages"]["operation"] == "stale"
+    assert _node(built, "core.model")["state"] == "stale" and _node(built, "core.metric")["state"] == "stale"
+
+
+def _old_definition(root: Path) -> None:
+    """把建模的操作、规则两步和指标节点的记录改回 ADR-0102 之前的定义记下的样子（盯对象、操作的内容）。"""
+    stored = node_state.load(root)
+    steps = stored["slices"]["all"]
+    steps["operation"].update(fp=node_state.fingerprint(root, ["object"]),
+                              kinds={"object": node_state.fingerprint(root, ["object"])})
+    steps["rule"].update(fp=node_state.fingerprint(root, ["object", "operation"]), kinds=None)
+    steps["rule"].pop("kinds")
+    stored["nodes"]["core.metric"].update(fp=node_state.fingerprint(root, ["object", "operation"]),
+                                          kinds={"object": "x", "operation": "y"})
+    node_state.save(root, stored)
+
+
+def test_records_from_old_definition_rebaseline_when_upstream_unchanged(env):
+    """升级前按旧定义确认的记录：确认之后资料、条目清单都没变，按新定义重记基线，不显示过期（存了分类指纹的、
+    没存的都认）；记录写回新定义。"""
+    _client, _workspaces, _manager, _project_id, root = env
+    _validated(root)
+    main_write(root, "ontology/object/门店.md", obj("门店", "合成门店（校验改过）"))  # 旧定义下这一笔会让操作过期
+    flow = flow_model.load_for(root)
+    node_state.confirm(root, flow, ["core.validate"])
+    _old_definition(root)
+    rows, built = _slices(root)
+    assert rows["all"]["stages"]["operation"] == "confirmed" and rows["all"]["stages"]["rule"] == "confirmed"
+    assert _node(built, "core.model")["state"] == "confirmed" and _node(built, "core.metric")["state"] == "confirmed"
+    stored = node_state.load(root)
+    assert set(stored["slices"]["all"]["operation"]["kinds"]) == {"research", "object_set"}
+    assert set(stored["nodes"]["core.metric"]["kinds"]) == {"object_set", "operation_set"}
+
+
+def test_records_from_old_definition_go_stale_when_research_changed(env):
+    """旧定义的记录、确认之后资料分析改过：操作一步判过期（记下是资料分析变了）；指标只盯清单，条目没增减照旧确认。"""
+    import time
+
+    _client, _workspaces, _manager, _project_id, root = env
+    _validated(root)
+    _old_definition(root)
+    time.sleep(1.1)  # 下一个提交落在确认之后的那一秒
+    main_write(root, "research/20260101-合成.md", "# 合成资料分析\n\n补了一段\n")
+    rows, built = _slices(root)
+    assert rows["all"]["stages"]["operation"] == "stale" and _node(built, "core.metric")["state"] == "confirmed"
+    stored = node_state.load(root)
+    assert stored["slices"]["all"]["operation"]["kinds"]["research"] == ""
+
+
+def test_set_kind_fingerprint_ignores_content_and_keeps_old_hashes(env):
+    """只看清单的类别：改内容不变、增删变；只有内容类别时指纹和原来逐字相同（已有记录接着用）。"""
+    import hashlib
+
+    _client, _workspaces, _manager, _project_id, root = env
+    main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))
+    listing = node_state._ls_tree(root, ["ontology/object"])
+    assert node_state.fingerprint(root, ["object"]) == hashlib.sha256(listing.encode("utf-8")).hexdigest()[:16]
+    before = node_state.fingerprint(root, ["object_set"])
+    main_write(root, "ontology/object/门店.md", obj("门店", "合成门店（改）"))
+    assert node_state.fingerprint(root, ["object_set"]) == before
+    main_write(root, "ontology/object/商品.md", obj("商品", "合成商品"))
+    assert node_state.fingerprint(root, ["object_set"]) != before
+    assert node_state.set_prefixes(["object", "object_set"]) == ()

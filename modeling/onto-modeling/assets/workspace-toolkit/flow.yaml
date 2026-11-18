@@ -18,7 +18,10 @@
 #   两者合起来是节点运行期间的写入范围——守卫只放行这些路径，编辑器里这些条目只读（方案 C10、D11）；
 #   按段的节点落到当前这一段的条目上（详设 4.3）；
 # - stale_on：这些类别的产物在主线上变了，已确认的节点退回「过期」（research、object、operation、rule、
-#   metric、script、mock、testcase、diagram、solver、knowledge）；
+#   metric、script、mock、testcase、diagram、solver、knowledge；object_set、operation_set 只看条目增删改名）。
+#   重新提取类的节点、步骤只盯来源（资料分析）和上游条目的增减：对象、操作的内容改了（校验修复、手工编辑）
+#   是一致性问题，由校验（它盯着对象、操作的内容）过期去查，不让提取过期（ADR-0102）。下游节点盯着 object 时
+#   也算盯着 object_set（增减时内容指纹一定变），交给核对节点的判定（flow_state.handed_down）按这个算；
 # - per_slice + steps：按段算状态的节点和段里的步骤（详设 6.6），包可以用 hooks 往段里加步骤；
 # - blocks：没确认就挡住的节点（关卡挂在发布前面）；blocks_in: sliced 表示只在按段模式下挡；
 # - refresh_scope: changed_entries：过期后的刷新只查确认之后改动的条目（见校验节点上的说明）。
@@ -93,8 +96,8 @@ nodes:
     entry: {command: /ontology-extract-object}
     steps:
       - {id: object, label: 对象, title: 对象提取, command: /ontology-extract-object, action: 提取对象, kinds: [object], done: [object], stale_on: [research]}
-      - {id: operation, label: 操作, title: 操作提取, command: /ontology-extract-operation, action: 提取操作, kinds: [operation], done: [operation], stale_on: [object]}
-      - {id: rule, label: 规则, title: 规则提取, command: /ontology-extract-rule-metric, action: 提取规则, kinds: [rule], done: [rule], stale_on: [object, operation], optional: true}
+      - {id: operation, label: 操作, title: 操作提取, command: /ontology-extract-operation, action: 提取操作, kinds: [operation], done: [operation], stale_on: [research, object_set]}
+      - {id: rule, label: 规则, title: 规则提取, command: /ontology-extract-rule-metric, action: 提取规则, kinds: [rule], done: [rule], stale_on: [object_set, operation_set], optional: true}
       - {id: check, label: 写入即查, derived: true}
     actions:
       - {label: 提取对象, command: /ontology-extract-object}
@@ -107,7 +110,8 @@ nodes:
     optional: true
     after: core.model
     done: [metric]
-    stale_on: [object, operation]
+    # 可选补抽：对象、操作有增减才可能要补；资料变了时必经的操作一步会过期，重抽操作连规则、指标一起抽（ADR-0102）
+    stale_on: [object_set, operation_set]
     produces: ["ontology/metric/*"]
     writes: ["ontology/rule/*", "ontology/operation/*", "ontology/logic/*", "ontology/object/*"]
     entry: {command: /ontology-extract-rule-metric}

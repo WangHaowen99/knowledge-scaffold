@@ -109,7 +109,7 @@ def test_stale_when_upstream_fingerprint_changes(env):
              if item["id"].startswith("refresh:core.model")]
     assert stale and stale[0]["priority"] == 2
     assert stale[0]["action"]["command"] == "/ontology-extract-operation"  # 刷新过期的那一步
-    assert stale[0]["label"] == "对象有变化，刷新操作" and built["suggestions"]["note"] is None  # 写清哪类变了、刷新哪一步
+    assert stale[0]["label"] == "对象清单有变化，刷新操作" and built["suggestions"]["note"] is None  # 写清哪类变了、刷新哪一步
     # 重新跑过（这一步的变更集确认生效）：按新的上游重记基线
     from app.services.flow import slices
 
@@ -119,7 +119,8 @@ def test_stale_when_upstream_fingerprint_changes(env):
 
 def test_validation_fixing_an_object_does_not_push_re_extraction(env):
     """端到端验证发现：校验自动修复改了对象，建模的「操作」一步过期，建议条主推「刷新『操作』」（整段重新提取）而不是主线下一步。
-    校验在改动之后确认（报告写完、没有待处理），说明这批改动核对过了：不再推上游刷新。"""
+    校验在改动之后确认（报告写完、没有待处理），说明这批改动核对过了：不再推上游刷新。
+    ADR-0102 起只改对象内容不再让「操作」一步过期，建模保持已确认。"""
     _client, _workspaces, _manager, _project_id, root = env
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))
     main_write(root, "ontology/operation/补货.md", "# 补货\n\n## 业务描述\n\n合成\n")
@@ -129,7 +130,7 @@ def test_validation_fixing_an_object_does_not_push_re_extraction(env):
                "fix: address rule check issues")
     built = view.build(root)
     got = {item["id"]: item["state"] for item in built["nodes"]}
-    assert got["core.model"] == "stale" and got["core.validate"] == "confirmed"
+    assert got["core.model"] == "confirmed" and got["core.validate"] == "confirmed"
     suggested = [item["id"] for item in [built["suggestions"]["primary"], *built["suggestions"]["secondary"]] if item]
     assert not any(item.startswith("refresh:core.model") for item in suggested), suggested
 

@@ -293,14 +293,18 @@ def test_flow_rules_in_order(api):
     assert whole["primary"]["label"] == "对象、操作有变化，刷新校验" and whole["note"] is None
     unknown = _suggest(root, _states(root, core_validate="stale"), {})
     assert unknown["primary"]["label"] == "刷新校验"  # 说不清哪类变了（老记录）时只写刷新什么
-    # 7 不推上游：后面已确认的校验能核对并修复同一批改动（stale_on 盖住、写入范围盖住）。校验的修复改了对象、校验已确认 →
-    # 不推重新提取操作，主线往下走；资料变了（校验不看资料）照旧推刷新建模；校验也过期（改动在校验之后）时两个都推
+    # 7 不推上游：后面已确认的校验能核对并修复同一批改动（stale_on 盖住、写入范围盖住）。指标（盯对象、操作清单）
+    # 过期、校验已确认 → 交给校验，主线往下走。ADR-0102 起「操作」一步只在资料变了、对象有增减时过期，这两种校验
+    # 都补不出来，校验已确认也照旧推刷新；资料变了照旧推刷新建模；校验也过期（改动在校验之后）时两个都推
     op_step = {"slice_id": "all", "slice_name": "全部", "step": "operation", "step_label": "操作",
-               "command": "/ontology-extract-operation", "sliced": False, "upstream": "对象"}
-    checked = _suggest(root, _states(root, core_model="stale", trace_trace="ready", core_publish="not_ready"),
-                       {"slice_stale": [op_step], "stale_upstream": {"core.metric": "对象、操作"}})
+               "command": "/ontology-extract-operation", "sliced": False, "upstream": "对象清单"}
+    checked = _suggest(root, _states(root, core_model="confirmed", core_metric="stale", trace_trace="ready",
+                                     core_publish="not_ready"), {"stale_upstream": {"core.metric": "对象清单、操作清单"}})
     assert not any(item["id"].startswith("refresh:") for item in items(checked))
     assert checked["primary"]["id"].startswith("trace.trace")
+    added = _suggest(root, _states(root, core_model="stale", trace_trace="ready", core_publish="not_ready"),
+                     {"slice_stale": [op_step]})
+    assert items(added)[0]["id"] == "refresh:core.model:all:operation"
     obj_step = {**op_step, "step": "object", "step_label": "对象", "command": "/ontology-extract-object", "upstream": "资料"}
     research = _suggest(root, _states(root, core_model="stale"), {"slice_stale": [obj_step]})
     assert research["primary"]["id"] == "refresh:core.model:all:object"
@@ -346,8 +350,8 @@ def test_flow_rules_in_order(api):
 def test_handed_down_matches_rule_7(api):
     """待处理和建议条第 7 条用同一个判定（flow_state.handed_down）。
 
-    校验已确认时它修对象让建模、指标过期，不要你刷新；资料变了（对象一步过期）、校验没跑过时要你刷新。
-    按段的节点要过期的每一步都交出去才算。"""
+    校验已确认时指标、规则补抽过期交给它，不要你刷新；资料变了（对象一步过期）、对象有增减（操作一步过期，ADR-0102）、
+    校验没跑过时要你刷新。按段的节点要过期的每一步都交出去才算。"""
     _, _, _, root = api
     flow = model.load_for(root)
     module = model.flow_state(root)
@@ -361,7 +365,8 @@ def test_handed_down_matches_rule_7(api):
     obj_step = {"slice_id": "all", "step": "object"}
     rule_step = {"slice_id": "all", "step": "rule"}
     checked = state_of(core_model="stale", core_metric="stale")
-    assert module.handed_down(by_id["core.model"], nodes, checked, [op_step, rule_step])
+    assert module.handed_down(by_id["core.model"], nodes, checked, [rule_step])
+    assert not module.handed_down(by_id["core.model"], nodes, checked, [op_step, rule_step])
     assert module.handed_down(by_id["core.metric"], nodes, checked)
     assert not module.handed_down(by_id["core.model"], nodes, checked, [op_step, obj_step])
     unchecked = state_of(core_model="stale", core_validate="ready")

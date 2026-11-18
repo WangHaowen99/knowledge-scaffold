@@ -190,12 +190,13 @@ def test_change_then_revert_returns_to_confirmed_without_refresh(env):
 def test_nodes_without_refresh_scope_keep_their_refresh_command(env):
     _client, _workspaces, _manager, _project_id, root = env
     _validated(root)
-    main_write(root, "ontology/object/门店.md", obj("门店", "合成门店，补了一句"))
+    # 指标只在对象、操作有增减时过期（ADR-0102）：新增一个对象
+    main_write(root, "ontology/object/商品.md", obj("商品", "合成商品"))
     built = view.build(root)
     assert _node(built, "core.metric")["state"] == "stale"
     assert _refresh_action(built, "core.metric")["target"] == "/ontology-extract-rule-metric"
     assert node_state.refresh_scope(root, _flow_node(root, "core.metric")) is None
-    assert _refresh_action(built, "core.validate")["target"].startswith(f"{VALIDATE} 门店 --since ")
+    assert _refresh_action(built, "core.validate")["target"].startswith(f"{VALIDATE} 商品 --since ")
 
 
 def test_upgrade_review_and_redo_run_the_full_check(env):
