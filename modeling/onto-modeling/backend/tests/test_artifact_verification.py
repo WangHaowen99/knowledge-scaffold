@@ -171,6 +171,28 @@ def test_operation_rule_metric_closeout(tmp_path, verifier):
     assert verifier.verify(tmp_path, 'operations')['status'] == 'failed'
 
 
+def test_link_to_not_yet_extracted_doc_is_a_warning(tmp_path, verifier):
+    """对象先于操作提取：对象里指向还没提取的操作的链接只报警告，本批核验照样通过。"""
+    put(tmp_path, 'ontology/object/EntityA.md', object_doc().replace('合成对象。', '合成对象，由 [[TaskLater]] 写入。'))
+    result = verifier.verify(tmp_path, 'objects')
+    assert result['status'] == 'passed', result
+    pending = [i for i in result['issues'] if i['category'] == '链接失效']
+    assert pending and all(i['severity'] == '警告' and '校验时按错误处理' in i['message'] for i in pending), result
+    # 全量检查（校验）照样按错误报
+    full = verifier.ontology_checker.run_checks(tmp_path / 'ontology')
+    assert any(i.category == '链接失效' and i.severity == '错误' for i in full)
+
+
+def test_checker_report_defaults_to_unversioned_tmp(tmp_path, monkeypatch):
+    """不带 --json/--output 跑检查器时报告写进 tmp/（工作区忽略），不落在根目录被 git add -A 带进提交。"""
+    put(tmp_path, 'ontology/object/EntityA.md', object_doc())
+    monkeypatch.chdir(tmp_path)
+    subprocess.run([sys.executable, str(SCRIPTS / 'ontology_checker.py'), 'ontology'], check=True,
+                   capture_output=True, text=True, timeout=60, env=child_environment(tmp_path))
+    assert not list(tmp_path.glob('report_*.md'))
+    assert len(list((tmp_path / 'tmp/ontology-check').glob('report_*.md'))) == 1
+
+
 def test_unloaded_nested_rule_is_not_a_passing_empty_check(tmp_path, verifier):
     put(tmp_path, 'ontology/object/Entity0.md', object_doc('Entity0'))
     put(tmp_path, 'ontology/rule/nested/RuleA.md', rule_doc())
@@ -515,6 +537,18 @@ def test_save_hook_blocks_missing_or_inconsistent_result(git_workspace, body):
     put(root, 'ontology/object/EntityA.md', object_doc())
     git('add', 'ontology/object')
     (root / '.claude/scripts/verify_artifacts.py').write_text(body)
+    assert 'block' in hook(root, 'pre_commit_check.sh').stdout
+
+
+def test_save_hook_lets_links_to_not_yet_extracted_docs_through(git_workspace):
+    root, git = git_workspace
+    put(root, 'ontology/object/EntityA.md', object_doc().replace('合成对象。', '合成对象，由 [[TaskLater]] 写入。'))
+    git('add', 'ontology/object')
+    result = hook(root, 'pre_commit_check.sh')
+    assert 'block' not in result.stdout, result.stdout
+    assert '不阻止提交' in result.stderr
+    put(root, 'ontology/object/EntityA.md', object_doc().replace('| 是 |', '| 否 |'))  # 没有主键这类错误照拦
+    git('add', 'ontology/object')
     assert 'block' in hook(root, 'pre_commit_check.sh').stdout
 
 

@@ -221,6 +221,7 @@ Display coverage results. Handle gaps（全部补充 / 选择性补充 / 跳过�
 运行 `python3 .claude/scripts/verify_artifacts.py objects --files {本轮应生成的文件路径，逐项加引号}`，
 清单取本轮提取计划和已有覆盖结果，不仅罗列当前已落盘文件；缺失不算通过。仅退出码 0 可进入确认；
 1 为确定性错误，2 为产物缺失、执行失败或文件变化。此步骤不调用模型、不替代原覆盖检查，提交复用同修订回执。
+指向还没提取的操作、规则的 `[[链接]]`（派生标记、关联）只报警告，保留原样，不要改成纯文本——提取操作后自然对上。
 
 **确认前验收（四项分开展示，不合并成一个「完成度」）：**
 运行 `python3 .claude/scripts/field_semantics.py types --files {本轮对象文件路径，逐项加引号}`

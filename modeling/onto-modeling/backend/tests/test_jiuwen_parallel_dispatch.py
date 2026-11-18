@@ -22,6 +22,7 @@ from app.services.engines.jiuwen import (
     _ChunkBridge,
     _general_purpose_spec,
     _install_dispatch_brief_capture,
+    call_extra_body,
     quiet_dispatch,
     quiet_extra_body,
 )
@@ -47,11 +48,26 @@ def test_quiet_dispatch_reads_marker_from_referenced_agent_file(tmp_path):
 
 
 def test_quiet_extra_body_parses_config(monkeypatch):
+    monkeypatch.setattr(config, "JIUWEN_EXTRA_BODY", "")
     monkeypatch.setattr(config, "JIUWEN_QUIET_EXTRA_BODY", '{"enable_thinking": false}')
     assert quiet_extra_body() == {"enable_thinking": False}
     for raw in ("", "   ", "not json", "[]", "{}"):
         monkeypatch.setattr(config, "JIUWEN_QUIET_EXTRA_BODY", raw)
         assert quiet_extra_body() is None, raw
+
+
+def test_every_call_caps_thinking_by_default(monkeypatch):
+    """思考失控时一次调用会写满输出上限（实测 32000 token、9 分钟）：默认每次调用都给思考封顶。"""
+    from app.governance import config_registry
+
+    monkeypatch.setattr(config, "JIUWEN_EXTRA_BODY", config_registry.item("ONTO_WEB_JIUWEN_EXTRA_BODY").default)
+    assert call_extra_body() == {"thinking_budget": 16000}
+    # 关思考的子任务两样都带，关思考的写法优先
+    monkeypatch.setattr(config, "JIUWEN_QUIET_EXTRA_BODY", '{"enable_thinking": false, "thinking_budget": 0}')
+    assert quiet_extra_body() == {"thinking_budget": 0, "enable_thinking": False}
+    for raw in ("", "not json", "[]"):
+        monkeypatch.setattr(config, "JIUWEN_EXTRA_BODY", raw)
+        assert call_extra_body() is None, raw
 
 
 def test_bridge_pairs_parallel_results_by_native_id():

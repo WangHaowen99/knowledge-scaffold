@@ -22,7 +22,11 @@ import check_diagrams
 import table_profile
 import ontology_checker
 
-VERSION = 1
+VERSION = 2
+# 指向还不存在的文档的链接：提取分步做（先对象、后操作与规则），中途必然有，增量更新时新对象引用新操作也一样。
+# 本批核验与提交只当警告，不拦；校验时 ontology_checker 全量检查照样按错误报，发布前要修掉。
+PENDING_LINK_CATEGORIES = ('链接失效', '引用失效')
+PENDING_LINK_NOTE = '（目标文档还没提取时正常，保留链接；校验时按错误处理）'
 GROUPS = {
     'objects': ('object',),
     'operations': ('operation', 'logic', 'rule', 'metric'),
@@ -112,7 +116,14 @@ def _check(root: Path, mode: str, paths: list[Path]) -> list[dict]:
     issues = ontology_checker.run_checks(
         root / 'ontology', target_files=[p.stem for p in paths], include_mock=True,
         tables=tables, strict_targets=True, profiles=profiles)
-    return [dataclasses.asdict(issue) for issue in issues]
+    return [defer_pending_link(dataclasses.asdict(issue)) for issue in issues]
+
+
+def defer_pending_link(issue: dict) -> dict:
+    """悬空链接降成警告（见 PENDING_LINK_CATEGORIES）；其余原样。"""
+    if issue.get('severity') == '错误' and issue.get('category') in PENDING_LINK_CATEGORIES:
+        return {**issue, 'severity': '警告', 'message': f"{issue.get('message', '')}{PENDING_LINK_NOTE}"}
+    return issue
 
 
 def _write_receipt(path: Path, data: dict) -> None:

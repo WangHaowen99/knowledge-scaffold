@@ -32,6 +32,7 @@ import uuid
 
 from ...api.errors import ApiError
 from .. import workspace_labels
+from ..flow.need import OPTIONAL, need_kind
 from . import budget, decide, hint, limits, plan, store, views
 
 _log = logging.getLogger(__name__)
@@ -45,6 +46,19 @@ WAIT_TICK_S = 5.0
 REPORT_DIR = "reports/autobuild"
 END_NOTICE = {"completed": "已完成", "stopped": "已在安全点停下", "converted": "已转为陪伴", "failed": "出错停下"}
 NOTIFY_KIND = {"completed": "autobuild_finished", "converted": "autobuild_finished"}
+
+
+def _done_by_upstream(project_id: str, unit: dict) -> bool:
+    """可选节点走到时已经是「已确认」：上游顺带做完了（提取操作连规则、指标一起抽），这一步不必再做。
+    开始时就已确认的节点不进运行；过期的、从别的对话接过来做到一半的、带着上次挂起问题补做的照做。"""
+    if unit.get("kind") != "node" or unit.get("carried") or any("resume_from" in step for step in unit["steps"]):
+        return False
+    root = _ws().project_root(project_id)
+    flow_doc = plan.flow(root)
+    node = next((item for item in flow_doc.get("nodes") or [] if item["id"] == unit["id"]), None)
+    if node is None or need_kind(node) != OPTIONAL:
+        return False
+    return plan.node_states(root, flow_doc).get(unit["id"]) == "confirmed"
 
 
 class _Stop(Exception):
@@ -477,6 +491,8 @@ class AutobuildRunner:
 
         run = store.get(project_id, run_id)
         fresh = store.unit_info(run, unit["id"]).get("state") in (None, "queued")
+        if fresh and await asyncio.to_thread(_done_by_upstream, project_id, unit):
+            return self._already_done(project_id, run_id, unit)
         if fresh:
             from ..flow import state as node_state
 
@@ -854,6 +870,19 @@ class AutobuildRunner:
 
         run = store.update(project_id, run_id, mark)
         self._consume_carried(project_id, run_id, unit)
+        self._unit_card(run, unit)
+        self._updated(run)
+        return "merged"
+
+    def _already_done(self, project_id: str, run_id: str, unit: dict) -> str:
+        """可选节点走到时上游已经顺带做完（`_done_by_upstream`）：不开上下文、不开变更集，记为做完接着往下。"""
+        def mark(run: dict) -> None:
+            now = time.time()
+            store.unit_entry(run, unit["id"]).update(
+                state="done", already_done=True, started_at=now, ended_at=now,
+                produced={"objects": 0, "operations": 0, "rules": 0})
+
+        run = store.update(project_id, run_id, mark)
         self._unit_card(run, unit)
         self._updated(run)
         return "merged"

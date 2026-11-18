@@ -291,6 +291,9 @@ if [ "$CHECK_CODE" -gt 1 ]; then
     exit 0
 fi
 
+# 输出四个数：拦提交的错误、警告、建议、核验原样报的错误（含下面降级的，只用来核对退出状态）。
+# 指向还不存在的文档的链接（链接失效、引用失效）提交时只当警告：分步提取中途必然有，
+# 校验时全量检查照样按错误报（同 verify_artifacts.PENDING_LINK_CATEGORIES）。
 COUNTS=$(echo "$OUTPUT" | python3 -c '
 import json, sys
 try:
@@ -298,14 +301,20 @@ try:
     if not isinstance(issues, list) or not all(isinstance(i, dict) and i.get("severity") in ("错误", "警告", "建议") for i in issues):
         raise ValueError("invalid result")
 except Exception:
-    print("1 0 0")
+    print("1 0 0 1")
     sys.exit(0)
+pending = {"链接失效", "引用失效"}
+raw_errors = sum(1 for i in issues if i.get("severity") == "错误")
+for i in issues:
+    if i.get("severity") == "错误" and i.get("category") in pending:
+        i["severity"] = "警告"
 def c(s): return sum(1 for i in issues if i.get("severity") == s)
-print(c("错误"), c("警告"), c("建议"))
-' 2>/dev/null || echo '1 0 0')
+print(c("错误"), c("警告"), c("建议"), raw_errors)
+' 2>/dev/null || echo '1 0 0 1')
 
 ERRORS=$(echo "$COUNTS" | awk '{print $1+0}')
-if [ "$CHECK_CODE" -ne 0 ] && [ "$ERRORS" -eq 0 ]; then
+RAW_ERRORS=$(echo "$COUNTS" | awk '{print $4+0}')
+if [ "$CHECK_CODE" -ne 0 ] && [ "$RAW_ERRORS" -eq 0 ]; then
     echo '{"decision":"block","reason":"核验退出状态与结果不一致，不能按通过处理。"}'
     exit 0
 fi
@@ -313,12 +322,12 @@ WARNINGS=$(echo "$COUNTS" | awk '{print $2+0}')
 SUGGESTIONS=$(echo "$COUNTS" | awk '{print $3+0}')
 
 if [ "$WARNINGS" -gt 0 ] || [ "$SUGGESTIONS" -gt 0 ]; then
-    echo "⚠️ 待提交文档含 ${WARNINGS} 条警告 / ${SUGGESTIONS} 条建议（不阻止提交）。运行 /ontology-validate 查看详情。" >&2
+    echo "⚠️ 待提交文档含 ${WARNINGS} 条警告 / ${SUGGESTIONS} 条建议（不阻止提交；指向还没提取的文档的链接保留原样）。运行 /ontology-validate 查看详情。" >&2
 fi
 
 if [ "$ERRORS" -gt 0 ]; then
     FILES_LIST=$(printf '%s ' "${STEMS[@]}")
-    REASON=$(printf '待提交的文档含 %d 个规则错误，已阻止提交。\n\n排查方式（任选其一）：\n1. 在 Claude 对话中运行 /ontology-validate 走完整修复流程；\n2. 直接跑 python3 .claude/scripts/ontology_checker.py ontology --include-mock --files %s 看具体问题；\n3. /ontology-impact <文件> 查看该文件的下游影响面。\n\n修复后 git add + commit 即可。' "${ERRORS}" "${FILES_LIST}")
+    REASON=$(printf '待提交的文档含 %d 个规则错误，已阻止提交。\n\n排查方式（任选其一）：\n1. 在 Claude 对话中运行 /ontology-validate 走完整修复流程；\n2. 直接跑 python3 .claude/scripts/ontology_checker.py ontology --json --include-mock --files %s 看具体问题；\n3. /ontology-impact <文件> 查看该文件的下游影响面。\n\n修复后 git add + commit 即可。' "${ERRORS}" "${FILES_LIST}")
     python3 -c '
 import json, sys
 print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=False))

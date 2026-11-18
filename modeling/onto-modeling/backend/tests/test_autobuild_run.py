@@ -368,6 +368,38 @@ def test_units_are_the_nodes_after_research_up_to_until_node(tmp_path, monkeypat
     assert [(unit["id"], unit["carried"]) for unit in units] == [("core.object", [{"run_id": "run-1", "id": "sp-1"}])]
 
 
+def test_optional_node_done_upstream_is_not_redone(tmp_path, monkeypatch):
+    """提取操作连规则、指标一起抽：走到可选的「提取规则与指标」时它已经是已确认，这一步不再做、记为上一步已做完；
+    必需节点、过期的、接过来做到一半的、带着上次挂起问题的照做。"""
+    from types import SimpleNamespace
+
+    from app.services.autobuild import plan, views
+
+    flow_doc = _flow_doc()
+    states = {"core.metric": "confirmed", "core.validate": "confirmed", "diagram.flowchart": "stale"}
+    monkeypatch.setattr(plan, "flow", lambda root: flow_doc)
+    monkeypatch.setattr(plan, "node_states", lambda root, doc: states)
+    monkeypatch.setattr(runner_module, "_ws", lambda: SimpleNamespace(project_root=lambda project_id: tmp_path))
+
+    def unit(node_id, **extra):
+        return {"id": node_id, "name": node_id, "kind": "node", "steps": [{"id": node_id, "label": node_id}], **extra}
+
+    done = runner_module._done_by_upstream
+    assert done("p", unit("core.metric")) is True
+    assert done("p", unit("core.validate")) is False
+    assert done("p", unit("diagram.flowchart")) is False
+    assert done("p", unit("core.metric", carried=[{"run_id": "run-1", "id": "sp-1"}])) is False
+    taken_over = unit("core.metric")
+    taken_over["steps"][0]["resume_from"] = ""
+    assert done("p", taken_over) is False
+
+    record = {"run_id": "run-1", "run_no": 1, "state": "running", "units": [unit("core.metric")]}
+    store.unit_entry(record, "core.metric").update(state="done", already_done=True, produced={})
+    assert views.result_text(record, "core.metric") == "上一步已做完"
+    card = views.unit_card(record, unit("core.metric"))
+    assert (card["state"], card["summary"]) == ("done", "上一步已做完")
+
+
 def test_tail_redoes_a_node_taken_over_mid_work(tmp_path, monkeypatch):
     """被接管时停在干活中途的节点（校验写了一半的报告也满足完成判定）：已确认也排进运行，提示从哪停的。"""
     from app.services.autobuild import plan

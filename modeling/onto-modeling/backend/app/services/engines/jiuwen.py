@@ -435,17 +435,28 @@ def quiet_dispatch(brief: str, cwd: Path) -> bool:
         return False
 
 
-def quiet_extra_body() -> dict | None:
-    """关闭思考时附带的请求参数（配置 ONTO_WEB_JIUWEN_QUIET_EXTRA_BODY，JSON 对象）；空或写错 = 不关。"""
-    raw = str(config.JIUWEN_QUIET_EXTRA_BODY or "").strip()
-    if not raw:
+def _json_body(raw: Any, name: str) -> dict | None:
+    """配置里的 JSON 对象；空、写错或不是对象 = None（写错时记一条警告）。"""
+    text = str(raw or "").strip()
+    if not text:
         return None
     try:
-        body = json.loads(raw)
+        body = json.loads(text)
     except ValueError:
-        logging.getLogger(__name__).warning("ONTO_WEB_JIUWEN_QUIET_EXTRA_BODY 不是 JSON，子任务照常思考")
+        logging.getLogger(__name__).warning("%s 不是 JSON，按没配处理", name)
         return None
     return body if isinstance(body, dict) and body else None
+
+
+def call_extra_body() -> dict | None:
+    """每次调用都附带的请求参数（ONTO_WEB_JIUWEN_EXTRA_BODY）：默认给思考封顶，一次调用不会再思考到输出上限。"""
+    return _json_body(config.JIUWEN_EXTRA_BODY, "ONTO_WEB_JIUWEN_EXTRA_BODY")
+
+
+def quiet_extra_body() -> dict | None:
+    """关闭思考的子任务附带的请求参数（ONTO_WEB_JIUWEN_QUIET_EXTRA_BODY 叠在每次都带的参数上）；没配 = 不关。"""
+    quiet = _json_body(config.JIUWEN_QUIET_EXTRA_BODY, "ONTO_WEB_JIUWEN_QUIET_EXTRA_BODY")
+    return {**(call_extra_body() or {}), **quiet} if quiet else None
 
 
 def _install_dispatch_brief_capture() -> None:
@@ -967,6 +978,7 @@ class JiuwenEngine(ObservableEngine):
         # 助手副本顶层的 resource 链接（指向主线资料区）文件工具只读放行（F2 第 9 条）
         jiuwen_sandbox.install()
         context = cfg["context"]
+        call_body = call_extra_body()
         model = init_model(
             provider="OpenAI",
             model_name=cfg["model"],
@@ -976,6 +988,7 @@ class JiuwenEngine(ObservableEngine):
             # 只作上下文引擎的窗口元数据（压缩阈值按它算），不随请求发给网关
             context_window=context["max_context_tokens"],
             timeout=300.0,
+            **({"extra_body": call_body} if call_body else {}),
         )
         quiet_body = quiet_extra_body()
         quiet_model = init_model(
