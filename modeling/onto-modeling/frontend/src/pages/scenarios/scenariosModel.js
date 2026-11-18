@@ -135,9 +135,10 @@ export function rowLockPop(lock) {
 }
 
 // ---------- 页面命令（S-20）：只发命令，助手在工作台对话里跑 ----------
-export const batchCommand = (total) => ({ command: '/ontology-trace-batch', args: { scope: 'all' }, text: `批量推演 ${total} 个场景` });
-export const refreshCommand = (staleRows) => ({ command: '/ontology-trace-batch', args: { keys: staleRows.map((r) => r.key) }, text: `补齐 ${staleRows.length} 个过期场景` });
-export const walkCommand = (row) => ({ command: '/ontology-trace-interactive', args: { scenario: row.key }, text: `交互模拟「${row.title}」` });
+// label 是按钮名，作为 display_label 发：子文档命令名字表认不出动作，对话里叫按钮名，不退回节点名「场景模拟」
+export const batchCommand = (total) => ({ command: '/ontology-trace-batch', args: { scope: 'all' }, text: `批量推演 ${total} 个场景`, label: '场景模拟' });
+export const refreshCommand = (staleRows) => ({ command: '/ontology-trace-batch', args: { keys: staleRows.map((r) => r.key) }, text: `补齐 ${staleRows.length} 个过期场景`, label: '补齐过期场景' });
+export const walkCommand = (row) => ({ command: '/ontology-trace-interactive', args: { scenario: row.key }, text: `交互模拟「${row.title}」`, label: '交互模拟' });
 export const mockCommand = () => ({ command: '/ontology-mock', args: { by: 'scenario' }, text: '按场景补生成示例数据' });
 
 // 页头「交互模拟」走哪个场景：选中的，没有就第一个失败的，再没有就第一个

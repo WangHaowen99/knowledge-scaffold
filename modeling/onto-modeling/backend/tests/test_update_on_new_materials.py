@@ -102,7 +102,8 @@ def test_upload_after_modeling_shows_the_update_everywhere(env):  # noqa: F811
 
     body = client.get(f"{P}/{project_id}/flow").json()
     node = next(item for item in body["nodes"] if item["id"] == "core.update")
-    assert node["need"] == {"when": "materials_added"} and node["nav"] is False and node["under"] == "core.operation"
+    # 条件成立时上导航栏，排在它挂的提取操作后面
+    assert node["need"] == {"when": "materials_added"} and node["nav"] is True and node["under"] == "core.operation"
     assert node["section"] == "on_demand" and not node["counts_in_progress"]
     primary = body["suggestions"]["primary"]
     assert (primary["label"], primary["priority"], primary["reason"]) == ("增量更新", 2, "上传了新资料")

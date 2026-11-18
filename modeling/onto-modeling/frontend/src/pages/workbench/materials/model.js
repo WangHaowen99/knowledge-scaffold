@@ -3,6 +3,9 @@
 // 工作台地址里 ?dialog= 能直接打开的弹窗（next 只给 build 用：L4 是开始自主构建前的预览）
 export const MATERIAL_DIALOGS = ['material_map', 'verification', 'blueprint', 'build'];
 
+// 资料地图的「追加资料分析」：和资料分析节点的变体同一条命令文本、同一个名字（FL-01、S-18、对话气泡）
+export const APPEND_ANALYSIS = { label: '追加资料分析', command: '/ontology-research', text: '追加' };
+
 // ---------- 资料用途（契约 PurposeOption，R-01 不在时用这份） ----------
 export const PURPOSES = [
   { value: 'goal', label: '建模目标依据' },

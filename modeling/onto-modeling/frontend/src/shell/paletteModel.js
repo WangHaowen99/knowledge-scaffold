@@ -39,13 +39,19 @@ export function contentHits(res) {
   return hits.slice(0, 6);
 }
 
-/** 列表：对得上输入的跳转项在前（回车直接去），然后全文搜索、全部命令 */
+/**
+ * 列表：对得上输入的跳转项在前（回车直接去），然后全文搜索、全部命令。
+ * commands 是筛过的 S-18 组（commandMenu.filterCatalog）：组名、条目名和输入框「/」菜单一样，最多列 COMMAND_MAX 条
+ */
+export const COMMAND_MAX = 6;
 export function paletteList({ q, hits, commands, statics }) {
   const items = [];
   statics
     .filter(([g, t]) => !q || t.includes(q) || g.includes(q))
     .forEach(([g, t, i, page, params]) => items.push({ group: g, label: t, icon: i, page, params }));
   hits.forEach((h) => items.push({ group: '内容', label: h.label, icon: h.icon, page: h.page }));
-  commands.forEach((c) => items.push({ group: '命令', label: c.label, icon: 'cmd', command: c, desc: c.description }));
+  (commands || []).flatMap((g) => g.items.map((c) => ({ group: g.label, label: c.label, icon: 'cmd', command: c })))
+    .slice(0, COMMAND_MAX)
+    .forEach((c) => items.push(c));
   return items;
 }

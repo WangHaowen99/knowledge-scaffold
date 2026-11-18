@@ -6,7 +6,10 @@ import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, relativeTime } from '../../api/errors.js';
-import { catalogCommand, commandNode, suggestionCommand, overlayRunning, trackClass, trackNodes } from '../../state/flow.js';
+import { catalogCommand, commandNode, suggestionCommand, overlayRunning } from '../../state/flow.js';
+import {
+  filterCatalog, flatItems, menuKey, menuQuery,
+} from '../../state/commandMenu.js';
 import { composerState, lockPop, readonlyInfo } from '../../state/readonly.js';
 import { rejectedResourceMessage, uploadRules, validateResourceFiles } from '../../lib/resourceUpload.js';
 import { runStatus } from '../../state/conversation.js';
@@ -18,11 +21,14 @@ import { FLOWCHART_TYPE, latestFlowchartArtifact, pendingChangeset } from '../..
 import { AutobuildBar, AutobuildCtx, useAutobuild } from './autobuild.jsx';
 import { useModeSwitch } from './buildMode.jsx';
 import { canInterrupt } from './autobuildModel.js';
-import { needsRefetch, pickSuggestions, staleSuggestions, suggestionBarHidden } from './suggestionModel.js';
+import {
+  barItems, needsRefetch, pickSuggestions, staleSuggestions, suggestionBarHidden,
+} from './suggestionModel.js';
 import { ActionsCtx, ContextPanel, QueueCard } from './cards.jsx';
 import { WbCtx } from './parts.jsx';
 import { EarlierHistory, Timeline } from './Timeline.jsx';
 import { NextBar, RunLine } from './RunLine.jsx';
+import { NavTrack } from './NavTrack.jsx';
 import { SUBMITTING_TEXT, createSubmitGuard, likelyDuplicate, restoreText, sendButtonMode } from './composerModel.js';
 import { useConversation } from './useConversation.js';
 import { scrollFollow } from './scrollFollow.js';
@@ -40,28 +46,6 @@ import '../../styles/workbench-extra.css';
 const ArtifactOpener = lazy(() => import('../../components/packs/ArtifactOpener.jsx'));
 const MaterialsDialogs = lazy(() => import('./materials/MaterialsDialogs.jsx'));
 
-
-function Track({ flow }) {
-  const nodes = trackNodes(flow);
-  return (
-    <div className="wx-track">
-      {nodes.map((n, i) => {
-        const k = trackClass(n.display_state);
-        const prevOk = i > 0 && trackClass(nodes[i - 1].display_state) === 'ok';
-        return (
-          <span key={n.id} style={{ display: 'contents' }}>
-            {i ? <span className={cx('wx-ln', prevOk && 'ok')} /> : null}
-            <span className={cx('wx-st', k)}>
-              <span className="dt">{k === 'ok' ? <Icon name="check" /> : k === 'blocked' ? <Icon name="lock" /> : k === 'stale' ? <Icon name="refresh" /> : null}</span>
-              {n.title.replace('（按段）', '')}
-              {n.progress?.label ? <span className="x">{n.progress.label}</span> : null}
-            </span>
-          </span>
-        );
-      })}
-    </div>
-  );
-}
 
 // 时间线里最后一条用户消息的文字（命令按钮发出的消息带 command）
 function lastUserText(state) {
@@ -167,8 +151,9 @@ function StateChip({ session, queue }) {
 }
 
 const MODES = [['L2', 'users', '陪伴建模'], ['L4', 'rocket', '自主构建']];
-// plugin：插件对话（ADR-0087）——模式胶囊显示「插件开发」，没有命令弹层
-function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCommand, onStop, catalog, plugin }) {
+// plugin：插件对话（ADR-0087）——模式胶囊显示「插件开发」，没有命令弹层。
+// 全部命令（输入「/」）：每次打开都重取 S-18；斜杠后面接着打字按名字筛，↑↓ 选、回车执行、Esc 关；没有匹配时回车按原文发
+function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCommand, onStop, plugin }) {
   const { api, services, config } = useApp();
   const [text, setText] = useState('');
   const [atts, setAtts] = useState([]);
@@ -176,6 +161,9 @@ function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCom
   const [pop, setPop] = useState(null);
   const [refQ, setRefQ] = useState('');
   const [refHits, setRefHits] = useState([]);
+  const [catalog, setCatalog] = useState(null);
+  const [cmdSel, setCmdSel] = useState(0);
+  const cmdRefs = useRef([]);
   const fileRef = useRef(null);
   const taRef = useRef(null);
   const wrapRef = useRef(null);
@@ -205,6 +193,19 @@ function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCom
       addRef: (r) => { setRefs((x) => (x.some((y) => y.id === r.id) ? x : [...x, r])); taRef.current?.focus(); },
     };
   }, [addFiles, apiRef, plugin]);
+
+  useEffect(() => {
+    if (pop !== 'cmd') return undefined;
+    let alive = true;
+    api.commandCatalog(pid).then((c) => { if (alive) setCatalog(c); }).catch(() => {});
+    return () => { alive = false; };
+  }, [api, pid, pop]);
+  // 斜杠开头时按斜杠后面的字筛；从按钮打开、框里是别的字时列全部，回车照常发框里的字
+  const query = menuQuery(text);
+  const cmdGroups = useMemo(() => (pop === 'cmd' ? filterCatalog(catalog, query) : []), [pop, catalog, query]);
+  const cmdItems = flatItems(cmdGroups);
+  useEffect(() => { setCmdSel(0); }, [query, pop]);
+  useEffect(() => { cmdRefs.current[cmdSel]?.scrollIntoView?.({ block: 'nearest' }); }, [cmdSel]);
 
   useEffect(() => {
     if (pop !== 'ref' || !refQ.trim()) { setRefHits([]); return undefined; }
@@ -237,7 +238,29 @@ function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCom
   };
   const runCommand = (c) => {
     setPop(null);
+    if (query !== null) setText('');
     onCommand({ ...catalogCommand(c), origin: { page: 'wb-l2', label: '全部命令' } });
+  };
+  const onText = (value) => {
+    setText(value);
+    if (plugin) return;
+    if (value === '/') setPop('cmd');
+    else if (pop === 'cmd' && query !== null && !value.startsWith('/')) setPop(null);
+  };
+  const cmdKey = (e) => {
+    const a = menuKey(
+      { key: e.key, shift: e.shiftKey, composing: e.nativeEvent.isComposing },
+      { open: pop === 'cmd', filtering: query !== null, count: cmdItems.length, sel: cmdSel },
+    );
+    if (!a) return false;
+    e.preventDefault();
+    if (a.type === 'close') {
+      // 只关菜单，不让工作台把 Esc 当成打断
+      e.stopPropagation();
+      setPop(null);
+    } else if (a.type === 'move') setCmdSel(a.sel);
+    else runCommand(cmdItems[a.index]);
+    return true;
   };
   // 有字就发送（运行中：文字插进这一轮，命令排在这一轮之后）；没字时运行中是停止、空闲时灰掉
   const mode = sendButtonMode({ canStop: !!onStop, hasContent: !!text.trim() || atts.length > 0, disabled: st.disabled || uploading });
@@ -260,17 +283,22 @@ function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCom
         placeholder={st.placeholder}
         disabled={st.disabled}
         value={text}
-        onChange={(e) => { setText(e.target.value); if (e.target.value === '/' && !plugin) setPop('cmd'); }}
+        onChange={(e) => onText(e.target.value)}
         onPaste={(e) => { const fs = [...(e.clipboardData?.files || [])]; if (fs.length) { e.preventDefault(); addFiles(fs); } }}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
+          if (cmdKey(e)) return;
+          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            if (pop === 'cmd') setPop(null);
+            send();
+          }
         }}
       />
       <input ref={fileRef} type="file" multiple hidden accept={rules.accept} onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} />
       <div className="wx-cb">
         <span className="wx-tb" title="附件" onClick={() => fileRef.current?.click()}><Icon name="clip" size={16} /></span>
         <span className="wx-tb" title="引用知识包里的条目" onClick={() => setPop(pop === 'ref' ? null : 'ref')}><Icon name="at" size={16} /></span>
-        {plugin ? null : <span className="wx-tb" title="命令" onClick={() => setPop(pop === 'cmd' ? null : 'cmd')}><Icon name="cmd" size={16} /></span>}
+        {plugin ? null : <span className="wx-tb" title="全部命令" onClick={() => { if (pop === 'cmd') setPop(null); else { if (!text) setText('/'); setPop('cmd'); } }}><Icon name="cmd" size={16} /></span>}
         <span className="sp" />
         <span className={cx('wx-mode', plugin ? 'pm' : buildMode === 'L4' && 'l4')} onClick={() => !st.disabled && setPop(pop === 'mode' ? null : 'mode')}>
           <i />{modeLabel}
@@ -281,19 +309,21 @@ function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCom
           <span key={pressed} className={cx('wx-send', pressed && 'mo-press', mode === 'off' && 'off')} title="发送" onClick={send}><Icon name="arrow" size={16} /></span>
         )}
       </div>
-      {pop === 'cmd' ? (
+      {cmdItems.length ? (
         <div className="g2-cmd wb-pop wb-cmd-pop">
-          {(catalog?.groups || []).map((g) => (
+          {cmdGroups.map((g) => (
             <div key={g.id}>
               <div className="gt">{g.label}</div>
-              {g.items.map((c) => (
-                <div key={c.id} className="it" style={{ cursor: c.available ? 'pointer' : 'not-allowed', opacity: c.available ? 1 : 0.5 }} title={c.unavailable_reason || ''} onClick={() => c.available && runCommand(c)}>
-                  <b className="ell">{c.label}</b><span>{c.description}</span>
-                </div>
-              ))}
+              {g.items.map((c) => {
+                const i = cmdItems.indexOf(c);
+                return (
+                  <div key={c.id} ref={(el) => { cmdRefs.current[i] = el; }} className={cx('it', i === cmdSel && 'on')} style={{ cursor: 'pointer' }} onMouseEnter={() => setCmdSel(i)} onClick={() => runCommand(c)}>
+                    <b className="ell">{c.label}</b>
+                  </div>
+                );
+              })}
             </div>
           ))}
-          <div className="row xs muted" style={{ padding: '6px 6px 0', borderTop: '1px solid var(--line)', marginTop: 4 }}>共 {catalog?.total ?? 0} 条</div>
         </div>
       ) : null}
       {pop === 'mode' ? (
@@ -328,11 +358,7 @@ const INLINE_ALL = ['waiting_decision'];
 // lead：排在最前的芯片（从插件开发切回来时的「回到插件开发」）
 function SuggestionBar({ sug, quick = [], onAction, onAll, onQuick, lead }) {
   if (!sug && !quick.length && !lead) return null;
-  const items = [];
-  // 升级前留在历史里的建议条可能还带「确认生效」（F3 起一轮结束就合入）：不画
-  const live = (s) => s && s.action?.type !== 'merge_changeset';
-  if (live(sug?.primary)) items.push({ ...sug.primary, isPrimary: true });
-  (sug?.secondary || []).filter(live).slice(0, 2).forEach((s) => items.push(s));
+  const { items, note } = barItems(sug);
   const inline = !sug || INLINE_ALL.includes(sug.mode);
   const quickEls = quick.map((q) => <span key={q.id} className="s" onClick={() => onQuick(q)}><Icon name="zap" size={12} />{q.label}</span>);
   return (
@@ -351,7 +377,7 @@ function SuggestionBar({ sug, quick = [], onAction, onAll, onQuick, lead }) {
       {!inline ? <span className="sp" /> : null}
       {!inline ? quickEls : null}
       {sug?.all_commands !== false && !inline ? <span className="s" style={{ border: 0 }} onClick={onAll}><Icon name="cmd" size={12} />全部命令<Icon name="chevd" size={12} /></span> : null}
-      {sug?.note ? <div className="wb-sug-note">{sug.note}</div> : null}
+      {note ? <div className="wb-sug-note">{note}</div> : null}
     </div>
   );
 }
@@ -383,7 +409,6 @@ export default function WorkbenchPage({ route }) {
   useEffect(() => { if (plugin) pluginReturn.clear(window.sessionStorage, pid); }, [plugin, pid]);
   const [menu, setMenu] = useState(null);
   const [restart, setRestart] = useState(false);
-  const [catalog, setCatalog] = useState(null);
   const [usage, setUsage] = useState(null);
   const [drag, setDrag] = useState(false);
   const [suggestions, setSuggestions] = useState(null);
@@ -430,7 +455,6 @@ export default function WorkbenchPage({ route }) {
   const rounds = useRef(new Map());
   useOutside(headRef, () => setMenu(null), !!menu && menu !== 'ctx-hover');
 
-  useEffect(() => { api.commandCatalog(pid).then(setCatalog).catch(() => {}); }, [api, pid]);
   // FL-02：进对话时取一份；项目流说建议变了（别处改了主线、装配变了）时再取，推来的和取到的按版本号取新的
   const refetchSuggestions = useCallback(() => {
     if (cid) api.suggestions(pid, cid).then(setSuggestions).catch(() => {});
@@ -681,6 +705,29 @@ export default function WorkbenchPage({ route }) {
     }
   });
 
+  // 导航栏下拉（NavTrack）：按钮发到对话（斜杠命令走 S-20、核验那句当普通消息发）或跳页；可选节点点名字开始；
+  // 跳过、恢复、「这一轮不处理」调 FL-03 / FL-04，之后重取流程（项目流只推状态，不推动作）
+  const navOrigin = { page: 'wb-l2', label: '导航栏' };
+  const runNavButton = (b) => {
+    if (b.kind === 'page') navigate(pagePath(b.target, pid));
+    else if (b.kind === 'message') send({ text: b.target });
+    else sendCommand({ ...catalogCommand(b), origin: navOrigin });
+  };
+  const onNav = async (a) => {
+    try {
+      if (a.type === 'button') runNavButton(a.button);
+      else if (a.type === 'start') {
+        const go = a.row.start;
+        if (go.kind === 'page') navigate(pagePath(go.page, pid), go.params);
+        else if (go.kind === 'command') runNavButton({ ...go, kind: 'command' });
+        else await submitOnce(() => api.startNode(pid, go.id, { conversation_id: cid, origin: navOrigin }));
+      } else {
+        await (a.type === 'restore' ? api.restoreNode(pid, a.id) : api.skipNode(pid, a.id));
+        project.reloadFlow?.();
+      }
+    } catch (e) { fail(e); }
+  };
+
   const quickActions = useMemo(() => (extensions?.entries || []).filter((e) => e.kind === 'quick_action' && e.command), [extensions]);
   const runQuick = (q) => sendCommand({ command: q.command, display_label: q.label, origin: { page: 'wb-l2', label: q.label, pack: q.pack } });
 
@@ -715,11 +762,8 @@ export default function WorkbenchPage({ route }) {
   const viewFlow = useMemo(() => overlayRunning(flow, commandNode(flow, runningCmd)), [flow, runningCmd]);
   // 自主构建正在做的那一段由运行条和运行详情说明，顶栏不再放锁标记
   const lockInfo = scope && scope.state !== 'none' && !(ab.active && scope.state === 'autobuild_slice') ? readonlyInfo(scope) : null;
-  // 运行中、排队时顶栏多了状态，「新资料」先收起，避免挤出顶栏；自主构建的状态在运行条上
-  const busyHead = !ab.active && ['running', 'connecting', 'queued', 'error'].includes(state.session.state);
   const ctx = state.context;
   const ctxPct = Math.round(ctx?.pct ?? 0);
-  const notice = (flow?.notices || []).find((n) => n.kind === 'new_materials');
   const convTitle = convItem?.title || (plugin ? '新插件' : '对话');
   // 插件对话还没有消息时画起步卡片；有了消息，模式说明放在时间线最前面
   const hasMessages = state.order.some((k) => !['day', 'notice'].includes(state.items[k]?.kind));
@@ -743,10 +787,10 @@ export default function WorkbenchPage({ route }) {
       <div className="wx-sess" title={plugin ? '切换插件' : '切换会话'} onClick={() => setMenu(menu === 'conv' ? null : 'conv')}>
         <Icon name={plugin ? 'puzzle' : 'msg'} size={14} /><span className="nm ell">{convTitle}</span><Icon name="chevd" size={12} />
       </div>
-      {plugin ? <PluginTrack draft={boundDraft} /> : viewFlow ? <Track flow={viewFlow} /> : <span />}
+      {plugin ? <PluginTrack draft={boundDraft} /> : viewFlow ? <NavTrack flow={viewFlow} pages={extensions?.pages} onOpen={project.reloadFlow} onAct={onNav} readOnly={st.disabled} /> : <span />}
       <div className="wx-acts">
         {ab.active ? null : <StateChip session={state.session} queue={state.queue} />}
-        {/* 插件对话的顶栏只留上下文和更多：新资料、待处理属于建模 */}
+        {/* 插件对话的顶栏只留上下文和更多：待处理属于建模；新资料由导航栏上出现的「增量更新」表达 */}
         {plugin ? null : lockInfo ? (
           <span
             className="wx-ib nt"
@@ -754,11 +798,6 @@ export default function WorkbenchPage({ route }) {
             onClick={() => { if (scope.state === 'pending_confirm' && scope.changeset_id) rounds.current.get(scope.changeset_id)?.(); }}
           >
             <Icon name="lock" size={14} />
-          </span>
-        ) : null}
-        {notice && !busyHead && !plugin ? (
-          <span className="wx-ib nt" data-pop={notice.text} onClick={() => (notice.action?.type === 'navigate' ? navigate(pagePath(notice.action.page, pid)) : navigate(pagePath('incremental', pid)))}>
-            <i />{notice.count} 份新资料
           </span>
         ) : null}
         {plugin ? null : (
@@ -820,7 +859,7 @@ export default function WorkbenchPage({ route }) {
                     lead={returnId ? <span className="s" onClick={() => enterPlugin(returnId)}><Icon name="puzzle" size={12} />回到插件开发</span> : null}
                   />
                 )}
-                <Composer pid={pid} apiRef={comp} st={st} buildMode={modeSw.mode} modeLabel={plugin ? '插件开发' : modeSw.label} onMode={onMode} onSend={send} onCommand={sendCommand} onStop={canInterrupt(running, ab) ? interrupt : null} catalog={catalog} plugin={plugin} />
+                <Composer pid={pid} apiRef={comp} st={st} buildMode={modeSw.mode} modeLabel={plugin ? '插件开发' : modeSw.label} onMode={onMode} onSend={send} onCommand={sendCommand} onStop={canInterrupt(running, ab) ? interrupt : null} plugin={plugin} />
               </div>
             </div>
             {drag ? <div className="wb-dropmask"><Icon name="upload" size={24} /><b>松开以添加附件</b><span className="xs muted">Markdown、Word、Excel、PDF、Drawio、TXT · 单个不超过 20 MB</span></div> : null}

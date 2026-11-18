@@ -224,7 +224,7 @@ test('mock：增量更新阶段从接受到执行完存成版本走一遍', asyn
   assert.equal(last.state, 'merged');
   assert.equal(last.merged_version_label, 'v0.13');
   assert.equal(s.db.cards.find((c) => c.id === PID).version_label, 'v0.13');
-  assert.equal(s.db.flows.get(PID).notices.length, 0, '新资料已经处理完');
+  assert.ok(!s.db.flows.get(PID).nodes.some((n) => n.id === 'core.update'), '这一轮处理完，增量更新从流程里去掉');
 });
 
 test('mock：执行后撤回这一轮，清单回到可编辑并回到待处理；交给助手修会重跑场景', async () => {

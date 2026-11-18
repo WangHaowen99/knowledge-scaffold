@@ -119,12 +119,18 @@ test('mock 阶段 materials-empty / estate-empty / blueprint', () => {
   assert.equal(stages.blueprint.flow(F.flow()).blueprint.state, 'draft');
   assert.equal(stages['materials-empty'].flow(F.flow()).blueprint.state, 'none');
   assert.deepEqual(stages['materials-empty'].flow(F.flow()).slices.map((x) => x.id), ['all']);
-  // 资料分析之后不停：主推提取对象，蓝图里的问题在次选里去答
-  assert.equal(bp.suggestions.secondary.length, 1);
+  // 资料分析之后不停：主推提取对象（推荐第 3 级，同后端：叫节点名，提取对象没有变体，没有次选；蓝图的问题不挡建模）
+  assert.equal(bp.suggestions.secondary.length, 0);
+  assert.deepEqual([bp.suggestions.primary.label, bp.suggestions.primary.reason], ['提取对象', '下一步']);
   assert.equal(bp.suggestions.primary.action.command, '/ontology-extract-object');
   const node = trackNodes(stages.blueprint.flow(F.flow()))[0];
   assert.equal(node.state, 'confirmed');
-  assert.equal(stages.blueprint.flow(F.flow()).nodes.find((n) => n.id === 'core.model').state, 'ready');
+  assert.equal(stages.blueprint.flow(F.flow()).nodes.find((n) => n.id === 'core.object').state, 'ready');
+  // 还没建模：增量更新的条件不成立，不在流程里；资料分析做完才有追加、核验（动作的 when）
+  const bpFlow = stages.blueprint.flow(F.flow());
+  assert.ok(!bpFlow.nodes.some((n) => n.id === 'core.update'));
+  assert.deepEqual(bpFlow.nodes[0].actions.map((a) => a.label), ['资料分析', '追加资料分析', '核验资料分析报告']);
+  assert.deepEqual(stages['materials-empty'].flow(F.flow()).nodes[0].actions.map((a) => a.label), ['资料分析']);
   assert.deepEqual(stages.blueprint.flow(F.flow()).slices.map((x) => x.id), ['all']);
   assert.ok(MATERIAL_DIALOGS.includes('blueprint'));
 });

@@ -140,7 +140,7 @@ function Scenarios({ route }) {
           <>
             <ExtraActions page="scenarios" tasks={tasks} />
             <SendButton tasks={tasks} {...refresh} icon="refresh" kind="soft" disabled={!stale.length}>补齐过期场景 {stale.length}</SendButton>
-            <SendButton tasks={tasks} command={headWalk?.command} args={headWalk?.args} text={headWalk?.text} icon="hand" disabled={!headWalk}>交互模拟</SendButton>
+            <SendButton tasks={tasks} command={headWalk?.command} args={headWalk?.args} text={headWalk?.text} label={headWalk?.label} icon="hand" disabled={!headWalk}>交互模拟</SendButton>
             <SendButton tasks={tasks} {...batch} kind="primary" icon="play" disabled={!all.length}>场景模拟</SendButton>
           </>
         )}
@@ -254,7 +254,7 @@ function Row({ row, type, bySlice, lock, tasks, on, hit, onOpen }) {
       <td><span className="muted sm num">{lastRun(f.last_run_at)}</span></td>
       <td>{st === 'fail' ? <span data-pop={failHint(row)}><St k="fail" sm /></span> : <St k={st} sm />}</td>
       <td onClick={(e) => e.stopPropagation()}>
-        <SendButton tasks={tasks} command={walk.command} args={walk.args} text={walk.text} size="xs" kind="ghost" icon="play" />
+        <SendButton tasks={tasks} command={walk.command} args={walk.args} text={walk.text} label={walk.label} size="xs" kind="ghost" icon="play" />
       </td>
     </tr>
   );

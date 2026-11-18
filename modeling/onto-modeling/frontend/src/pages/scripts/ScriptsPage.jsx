@@ -15,7 +15,7 @@ import '../../styles/scripts.css';
 import ScriptsTab from './ScriptsTab.jsx';
 import SolverTab from './SolverTab.jsx';
 import {
-  SOLVER_DIR, SOLVER_TYPE, scanCommand,
+  SOLVER_DIR, SOLVER_TYPE, pageTab, scanCommand,
 } from './scriptsModel.js';
 
 const LABEL = '代码生成与求解';
@@ -24,8 +24,8 @@ export default function ScriptsPage({ route }) {
   const { api } = useApp();
   const { pid, scope } = useProject();
   const enabled = usePageEnabled('scripts');
-  const [tab, setTab] = useState(route.query?.tab === 'sv' ? 'sv' : 'sc');
-  useEffect(() => { if (route.query?.tab) setTab(route.query.tab === 'sv' ? 'sv' : 'sc'); }, [route.query?.tab]);
+  const [tab, setTab] = useState(pageTab(route.query));
+  useEffect(() => { if (route.query?.tab || route.query?.node) setTab(pageTab(route.query)); }, [route.query?.tab, route.query?.node]);
 
   const [scripts, setScripts] = useState(null);
   const [sandbox, setSandbox] = useState(null);

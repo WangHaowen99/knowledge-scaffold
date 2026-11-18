@@ -26,3 +26,13 @@ export function needsRefetch(sug, sessionState) {
 export function staleSuggestions(error) {
   return error?.code === 'suggestion_stale' ? error.details?.suggestions || null : null;
 }
+
+// 建议条上画什么：1 个主推、最多 2 个次选，按钮就是后端给的名字（节点名或变体名，不拼原因）；
+// 说明行是后端给的 note（过期那一条的原因「对象有变化」等）。升级前留在历史里的「确认生效」（F3 起一轮结束就合入）不画
+export function barItems(sug) {
+  const live = (s) => s && s.action?.type !== 'merge_changeset';
+  const items = [];
+  if (live(sug?.primary)) items.push({ ...sug.primary, isPrimary: true });
+  (sug?.secondary || []).filter(live).slice(0, 2).forEach((s) => items.push(s));
+  return { items, note: sug?.note || null };
+}

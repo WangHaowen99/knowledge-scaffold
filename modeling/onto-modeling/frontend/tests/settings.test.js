@@ -4,7 +4,7 @@ import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
 import { register as registerAutobuild } from '../src/api/mock/routes-autobuild.js';
 import { actionsOf, extensionState, register as registerSettings } from '../src/api/mock/routes-settings.js';
-import { projectPacks, remainingText } from '../src/api/mock/settings-data.js';
+import { previewOf, projectPacks, remainingText } from '../src/api/mock/settings-data.js';
 import {
   activeSection, advancedSummary, basicPatch, createdText, defaultConfigTab, engineCards,
   isRecommended, lastRunText, modelDisplayName, modelSourceText, moveItem, nameProblem, optionalStepsText, packToolsText,
@@ -314,6 +314,14 @@ test('mock P-12、P-14、M-01～M-04：引擎没装或运行中不能换；服�
   assert.equal((await h.call('DELETE', `${P}/mcp/tokens/${listed[0].id}`)).status, 404);
 });
 
+test('mock AB-03 预览按 need 判资格（同后端 autobuild/plan.eligible）：可选节点只在包括可选步骤时做，条件、人工、面板、autobuild: false 的不做', () => {
+  const rows = (includeOptional, untilNode = null) => previewOf({ scope: { include_optional: includeOptional, until_node: untilNode } }, F.flow()).slices.map((x) => x.id);
+  assert.deepEqual(rows(false), ['core.object', 'core.operation', 'core.validate', 'trace.trace']);
+  // 生成脚本 autobuild: false、求解适配是面板节点、增量更新是条件节点、发布是人工节点
+  assert.deepEqual(rows(true), ['diagram.flowchart', 'core.object', 'core.operation', 'core.metric', 'core.validate', 'trace.trace']);
+  assert.deepEqual(rows(true, 'core.object'), ['diagram.flowchart', 'core.object']);
+});
+
 test('mock AB-01～AB-04、AB-18：保存的策略决定预览；开始后开一条运行对话，再开始返回运行中', async () => {
   const { call, convs, seeded } = harness();
   const p0 = (await call('GET', `${P}/autobuild/policy`)).body;
@@ -349,10 +357,10 @@ test('mock AB-01～AB-04、AB-18：保存的策略决定预览；开始后开一
   assert.equal(optionalStepsText(until), '包括可选步骤：绘制流程图');
   await call('PUT', `${P}/autobuild/policy`, { scope: { until_node: null } });
 
-  // 一个节点一行：资料分析之后的主线节点，发布不在里面
+  // 一个节点一行：资料分析之后的必需节点，发布（人工）、增量更新（条件）不在里面；做完的列出来、不在范围里
   const pv = (await call('POST', `${P}/autobuild/runs/preview`, {})).body;
   assert.deepEqual(pv.slices.map((s) => [s.id, s.current, s.included]), [
-    ['core.model', '进行中', true], ['core.validate', '未开始', true], ['trace.trace', '有过期', true]]);
+    ['core.object', '已确认', false], ['core.operation', '进行中', true], ['core.validate', '未开始', true], ['trace.trace', '有过期', true]]);
   // 建模正做到一半（有待确认的一步）：会按策略决定
   assert.deepEqual(pv.warnings, ['有 1 个未决决策会被按策略决定']);
   assert.ok(pv.preview_token);
@@ -362,7 +370,7 @@ test('mock AB-01～AB-04、AB-18：保存的策略决定预览；开始后开一
   assert.equal(run.status, 201);
   assert.deepEqual([run.body.run_no, run.body.state, run.body.slices.total], [4, 'queued', 3]);
   assert.deepEqual([run.body.stages, run.body.matrix.map((row) => [row.slice_id, row.state])],
-    [[], [['core.model', 'queued'], ['core.validate', 'queued'], ['trace.trace', 'queued']]]);
+    [[], [['core.operation', 'queued'], ['core.validate', 'queued'], ['trace.trace', 'queued']]]);
   const conv = convs.get(F.MAIN_PID)[0];
   assert.deepEqual([conv.id, conv.title, conv.kind, conv.live], [run.body.conversation_id, '自主构建 · 运行 #4', 'autobuild', true]);
   const start = seeded.get(`${F.MAIN_PID}:${conv.id}`).find((e) => e.type === 'card').data;

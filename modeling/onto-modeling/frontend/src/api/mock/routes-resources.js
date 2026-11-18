@@ -24,12 +24,11 @@ function detectPurpose(name, kind) {
 }
 
 export function register(ctx) {
-  const { on, json, err, db, uid, convsOf, emitConv, emitProj, putTask } = ctx;
+  const { on, json, err, db, uid, emitProj } = ctx;
   db.files = db.files || new Map();
   Object.entries(DRAWIO).forEach(([path, content]) => {
     if (!db.files.has(path)) db.files.set(path, { content, revision: 'r-dio1' });
   });
-  const revisionTasks = new Map(); // batch_id → CommandTask（同一批修订资料只发起一次增量更新）
 
   const state = (pid) => ctx.materials.state(pid);
   const mapItemOf = (s, path) => s.map.items.find((x) => x.path === path);
@@ -48,7 +47,6 @@ export function register(ctx) {
     const m = { ...materialView(f, mapItemOf(s, f.path)), schema_scope: schemaTable(f) ? mockScope(f) : null, schema_candidate: null };
     return f.kind === 'drawio' && db.files.get(f.path) ? { ...m, revision: db.files.get(f.path).revision } : m;
   };
-  const cidOf = (pid) => convsOf(pid)[0]?.id;
   const nowIso = () => new Date().toISOString();
 
   // R-01 资料列表
@@ -61,27 +59,6 @@ export function register(ctx) {
       purposes: PURPOSES,
     });
   });
-
-  // 修订资料：整批传完后往工作台对话发一条增量更新命令，进度经项目流推给资料区
-  function revisionTask(pid, f, batchId) {
-    if (batchId && revisionTasks.has(batchId)) return revisionTasks.get(batchId);
-    const cid = cidOf(pid);
-    const text = `「${f.name}」是修订资料，发起增量更新：先列变更点，确认后只改受影响的内容`;
-    const t = {
-      task_id: `task-${uid()}`, origin: ORIGIN, title: `助手正在识别「${f.name}」的变更点`, state: 'running', percent: 0, step_label: '对比修订前后的资料',
-      conversation_id: cid, message_id: `m-${uid()}`, exec_id: null, started_at: nowIso(), finished_at: null, result: null,
-    };
-    if (batchId) revisionTasks.set(batchId, t);
-    emitConv(pid, cid, 'message.user', { message_id: t.message_id, text, command: '/ontology-update', attachments: [], references: [], origin: { kind: 'page', ...ORIGIN, task_id: t.task_id }, delivery: 'immediate' });
-    putTask?.(pid, t);
-    setTimeout(() => putTask?.(pid, { ...t, percent: 50, step_label: '列出变更点' }, { transient: true }), 900);
-    setTimeout(() => {
-      f.revision_task = { conversation_id: cid, label: '识别出 3 处变更点，等你确认清单' };
-      emitConv(pid, cid, 'message.assistant', { message_id: `m-${uid()}`, text_md: `「${f.name}」里识别出 3 处变更点，清单列在下面，确认后只改受影响的内容。`, anchors: [], entry_links: [], continued: false });
-      putTask?.(pid, { ...t, state: 'done', percent: 100, step_label: '列出变更点', finished_at: nowIso(), result: { summary: '识别出 3 处变更点，等你确认清单', refs: [] } });
-    }, 2700);
-    return t;
-  }
 
   // R-02 上传资料：同名直接替换；资料地图（资料分析）同步加一份
   on('POST', '/projects/([^/]+)/resources', ({ m, body, form }) => {
@@ -116,12 +93,8 @@ export function register(ctx) {
     if (kind === 'drawio') db.files.set(path, { content: db.files.get(path)?.content || EMPTY_DRAWIO, revision: `r-${uid()}` });
     ctx.materials.added(pid, { path, name, purpose, purpose_auto });
     const { commit, version_label } = webCommit(ctx, pid, [path]);
-    let command_task = null;
-    if (body.is_revision) {
-      f.is_revision = true;
-      command_task = revisionTask(pid, f, body.batch_id);
-    }
-    return json(201, { material: view(s, f), replaced: !!existing, commit, version_label, detected: { purpose, tables: [] }, command_task });
+    // is_revision 收下不处理（同后端 R-02）：不另外发增量更新命令，增量更新节点由「建模之后传了新资料」这个条件带出来
+    return json(201, { material: view(s, f), replaced: !!existing, commit, version_label, detected: { purpose, tables: [] }, command_task: null });
   });
 
   // 文本版（ADR-0073）：上传、重新转换后在「后台」转，1.2 秒后经项目流推 materials.text.updated（EP-25）

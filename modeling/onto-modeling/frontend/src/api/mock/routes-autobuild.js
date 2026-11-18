@@ -29,7 +29,7 @@ function l4Flow(base, state) {
   const keys = base.slice_stages.map((s) => s.id);
   return {
     ...base,
-    nodes: base.nodes.map((n) => (n.id === 'core.model' && state === 'completed'
+    nodes: base.nodes.map((n) => (['core.object', 'core.operation'].includes(n.id) && state === 'completed'
       ? { ...n, state: 'confirmed', display_state: 'confirmed', flags: { ...n.flags, needs_review: true }, progress: null }
       : n)),
     slices: base.slices.map((s) => {

@@ -165,18 +165,27 @@ export function untilOrder(policy) {
   return at < 0 ? null : at;
 }
 
-const SKIP = new Set(['core.publish', 'core.update']);
 const CURRENT = { confirmed: '已确认', stale: '有过期', skipped: '已跳过', running: '进行中', pending_confirm: '待确认' };
+const OPTIONAL_IDS = new Set(OPTIONAL_NODES.map((n) => n.id));
+const hasCommand = (n) => (n.actions || []).some((a) => a.kind === 'start' && String(a.target || '').startsWith('/'));
 
-// AB-03：一个节点一行（资料分析之后的主线节点，到 until_node 为止；同后端 autobuild/plan），没做完的在范围里
+// 自主构建能不能做这个节点（同后端 autobuild/plan.eligible，按 need）：必需节点做；可选节点只在「包括可选步骤」时做，
+// 而且要是自主构建能做的（OPTIONAL_NODES：生成脚本 autobuild: false、求解适配是面板节点）；条件节点、人工节点、面板节点、
+// 没有对话入口的不做
+export function eligibleNode(n, includeOptional) {
+  const need = n.need || 'required';
+  if (typeof need === 'object' || (need === 'optional' && !(includeOptional && OPTIONAL_IDS.has(n.id)))) return false;
+  return n.kind !== 'human' && !n.panel && hasCommand(n);
+}
+
+// AB-03：一个节点一行（资料分析之后能自主做的节点，到 until_node 为止；同后端 autobuild/plan），没做完的在范围里
 export function previewOf(policy, flow) {
   const scope = policy.scope || {};
   const nodes = flow?.nodes || [];
   const start = nodes.findIndex((n) => n.id === 'core.research') + 1;
   const rows = [];
   for (const n of nodes.slice(start)) {
-    const eligible = !SKIP.has(n.id) && (n.placement || 'spine') === 'spine' && n.kind !== 'human' && !n.panel && n.autobuild !== false
-      && !(n.optional && !scope.include_optional);
+    const eligible = eligibleNode(n, !!scope.include_optional);
     if (eligible) {
       const todo = !['confirmed', 'skipped'].includes(n.state) && (n.state !== 'stale' || scope.refresh_stale_first !== false);
       rows.push({ id: n.id, name: n.title, current: CURRENT[n.state] || '未开始', included: todo, running: n.state === 'running' });

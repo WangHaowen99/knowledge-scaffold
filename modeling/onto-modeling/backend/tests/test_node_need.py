@@ -462,7 +462,7 @@ def test_legacy_round_pack_still_appears_and_goes_first(legacy_round):
     body = client.get(f"/api/v1/projects/{project_id}/flow").json()
     nodes = {node["id"]: node for node in body["nodes"]}
     assert set(ROUND_STEPS) <= set(nodes)
-    assert all(nodes[step]["need"] == {"when": "activated"} and not nodes[step]["nav"] for step in ROUND_STEPS)
+    assert all(nodes[step]["need"] == {"when": "activated"} and nodes[step]["nav"] for step in ROUND_STEPS)
     assert nodes["intake.scope"]["under"] == "core.operation"
     assert body["suggestions"]["primary"]["action"]["command"].strip() == "/intake-scope"
     assert body["suggestions"]["note"] is None  # preempt 的字符串不再当说明行

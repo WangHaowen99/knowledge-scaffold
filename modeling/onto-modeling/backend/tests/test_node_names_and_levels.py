@@ -116,6 +116,13 @@ def test_name_table_takes_names_in_order():
     assert names.name_for(FLOW, "/ontology-overview", "整体视图") == "整体视图"  # 5 认不出才用页面给的叫法
     assert names.name_for(FLOW, "/ontology-overview") == "ontology-overview"  # 再没有就是命令名
     assert names.name_for(FLOW, "/ontology-validate", "运行质量检查") == "校验"  # 认得出时不用页面的叫法
+    assert names.name_for(FLOW, "/ontology-trace 交互 下单", "页面叫法") == "交互模拟"  # 1～3 条在页面叫法前面
+    assert names.name_for(FLOW, "/ontology-mock by=scenario", "按场景补生成") == "生成示例数据"
+    # 第 4 条要按命令表退回节点名时，页面给了叫法就用页面的：场景页的子文档命令叫原名，不都叫「场景模拟」
+    assert names.name_for(FLOW, "/ontology-trace-interactive scenario=s-01", "交互模拟") == "交互模拟"
+    assert names.name_for(FLOW, "/ontology-trace-batch keys=s-03", "补齐过期场景") == "补齐过期场景"
+    assert names.name_for(FLOW, "/ontology-trace-batch keys=s-03", "  ") == "场景模拟"  # 空白叫法当没给
+    assert names.lookup(FLOW, "/ontology-trace-batch scope=all") == "场景模拟"  # 执行记录兜底仍按命令表
     assert names.lookup(FLOW, "运行一下校验") is None  # 普通消息只认整行相同
 
 
@@ -209,9 +216,12 @@ def test_sub_documents_stay_out_of_the_menu_but_can_be_sent(api):  # noqa: F811
     assert not listed & off_menu
     assert all(group["id"] != "other" and group["label"] != "其他" for group in catalog["groups"])
     assert off_menu <= session_routes.installed_commands(root)
-    # 页面直接发子文档：命令表认得出，叫节点名；页面给的按钮叫法只在认不出时用
-    sent = [({"command": "/ontology-trace-batch", "args": {"scope": "all"}, "text": "批量推演 3 个场景",
-              "display_label": "场景页按钮"}, "场景模拟"),
+    # 页面直接发子文档：页面给了按钮叫法就叫它（名字表 1～3 条认不出），没给时按命令表叫节点名
+    sent = [({"command": "/ontology-trace-batch", "args": {"keys": ["s-03"]}, "text": "补齐 1 个过期场景",
+              "display_label": "补齐过期场景"}, "补齐过期场景"),
+            ({"command": "/ontology-trace-interactive", "args": {"scenario": "s-01"}, "text": "交互模拟「合成场景」",
+              "display_label": "交互模拟"}, "交互模拟"),
+            ({"command": "/ontology-trace-batch", "args": {"scope": "all"}, "text": "批量推演 3 个场景"}, "场景模拟"),
             ({"command": "/ontology-overview", "display_label": "整体视图"}, "整体视图"),
             ({"command": "/ontology-overview"}, "ontology-overview")]
     for body, name in sent:

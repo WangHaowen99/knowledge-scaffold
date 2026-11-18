@@ -1,5 +1,5 @@
 // 资料地图弹窗（设计稿 wb-materials #enMapM）：每份资料的用途、读取覆盖、候选实时流、问题区
-// R-07 资料地图、R-08 候选、R-03 改用途、R-10 问题转待答、R-06 原文、S-20 继续读取 / 追加分析
+// R-07 资料地图、R-08 候选、R-03 改用途、R-10 问题转待答、R-06 原文、S-20 继续读取 / 追加资料分析
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp, useProject } from '../../../app/context.js';
 import { navigate, pagePath } from '../../../app/router.js';
@@ -10,7 +10,7 @@ import {
 } from '../../../ui/index.jsx';
 import { AnchorText, MatIcon, pageCommand, useMaterialUpload } from './parts.jsx';
 import {
-  PURPOSES, countPairs, parseAnchor, purposeLabel, readState,
+  APPEND_ANALYSIS, PURPOSES, countPairs, parseAnchor, purposeLabel, readState,
 } from './model.js';
 import { VerificationDrawer } from './VerificationDrawer.jsx';
 import { useSheetScope } from '../../resources/SheetScope.jsx';
@@ -218,7 +218,9 @@ export function MaterialMapDialog({ onClose, initialVerify = false }) {
     command: '/ontology-research', args: { path: item.path, parts: item.blocked?.unread_parts || [] },
     text: `继续读取「${item.name}」：${(item.blocked?.unread_parts || []).join('、') || '没读完的部分'}`, done: '已发给助手',
   });
-  const appendAnalysis = () => pageCommand(api, pid, { command: '/ontology-research', args: { mode: 'append' }, text: '追加分析', done: '已开始追加分析' });
+  const appendAnalysis = () => pageCommand(api, pid, {
+    command: APPEND_ANALYSIS.command, text: APPEND_ANALYSIS.text, displayLabel: APPEND_ANALYSIS.label, done: `已开始${APPEND_ANALYSIS.label}`,
+  });
 
   const reading = !!map?.items.some((x) => ['reading', 'queued'].includes(x.status));
   const problems = map?.problems || [];
@@ -235,7 +237,7 @@ export function MaterialMapDialog({ onClose, initialVerify = false }) {
             <div className="row g8">
               <Chip tone="line">{map.total} 份资料 · 已读 {map.read_pct}%</Chip>
               <span className="sp" />
-              <Button size="sm" icon="plus" onClick={appendAnalysis}>追加分析</Button>
+              <Button size="sm" icon="plus" onClick={appendAnalysis}>{APPEND_ANALYSIS.label}</Button>
               <VerifyChip v={map.verification} onClick={() => setVerify(true)} />
             </div>
             <div className="en-mm mt12">

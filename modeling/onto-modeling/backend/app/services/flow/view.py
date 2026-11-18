@@ -1,7 +1,8 @@
 """`GET /api/v1/projects/{id}/flow` 的响应（契约 FL-01、FL-02；详设 6.6、6.7 第 6 项、6.10）。
 
-- 节点、连线、分组来自装配好的 flow.yaml；节点什么时候要做看 `need`（need.py）：`nav` 是上不上导航栏（必需节点），
-  `under` 是可选、条件节点挂在哪个必需节点下面（after 链上它前面最近的必需节点），分组 `sections` 按 need 分，
+- 节点、连线、分组来自装配好的 flow.yaml；节点什么时候要做看 `need`（need.py）：`nav` 是上不上导航栏（必需节点；
+  条件节点条件成立、出现在流程里时也上，排在它挂的节点后面），`under` 是可选、条件节点挂在哪个必需节点下面（after 链上
+  它前面最近的必需节点），分组 `sections` 按 need 分，
   进度只算必需节点（`overlay.progress_ids`，项目列表同一口径）；
 - 节点状态由内核算（`flow/state.py`，方案 D13）：执行记录 + 变更集 + 产物指纹 → 8 种状态与需复核标记，
   完成判定只看主线；
@@ -26,7 +27,7 @@ from pathlib import Path
 
 from . import model, overlay
 from . import state as node_state
-from .need import OPTIONAL, REQUIRED, SECTION_OF_NEED, need_kind, need_of
+from .need import OPTIONAL, REQUIRED, SECTION_OF_NEED, WHEN, need_kind, need_of
 
 _log = logging.getLogger(__name__)
 
@@ -346,7 +347,7 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
             "placement": node.get("placement", "spine"),
             "section": SECTION_OF_NEED[kind],
             "need": need_of(node),
-            "nav": kind == REQUIRED,
+            "nav": kind in (REQUIRED, WHEN),
             "under": under(node, by_id, order),
             "state": item["state"],
             "flags": item["flags"],

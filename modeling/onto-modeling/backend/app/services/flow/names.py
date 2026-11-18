@@ -8,7 +8,9 @@
 2. 某个节点的主命令（按命令名比，`/ontology-trace 订单` 认作场景模拟的主命令）→ 节点名；
 3. 变体（按命令名比）→ 变体名；
 4. 命令表（flow.yaml 的 `commands`）里登记的节点 → 节点名（场景模拟页直接发的 `/ontology-trace-batch`）；
-5. 都认不出：调用方给的 default（页面按钮的叫法），再没有就是命令名（去掉斜杠）。
+   调用方给了 default（页面按钮的叫法）时不走这一条、用 default：场景页的「交互模拟」「补齐过期场景」发的是子文档命令，
+   退回节点名就都叫「场景模拟」了；
+5. 都认不出：调用方给的 default，再没有就是命令名（去掉斜杠）。
 
 不以 `/` 开头的文本（「核验资料分析报告」那句指令）只认第 1 条的整行相同。
 流程要用条件过滤之前的那份（`model.assembled_for`）：没出现的增量更新，手打 `/ontology-update` 也叫「增量更新」。
@@ -55,8 +57,8 @@ def _buttons(flow: dict) -> list[tuple[dict, str, list[str], bool]]:
     return out
 
 
-def lookup(flow: dict, text: str) -> str | None:
-    """名字表认得出就返回名字（第 1～4 条），认不出返回 None。"""
+def lookup(flow: dict, text: str, *, by_table: bool = True) -> str | None:
+    """名字表认得出就返回名字（第 1～4 条；by_table 为 False 时只看 1～3 条），认不出返回 None。"""
     line = _line(text)
     words = line.split()
     if not words:
@@ -76,6 +78,8 @@ def lookup(flow: dict, text: str) -> str | None:
                       if primary is want_primary and tokens[0] == head), None)
         if found:
             return found
+    if not by_table:
+        return None
     name = head[len(STATE_HELPER_PREFIX):] if head.startswith(STATE_HELPER_PREFIX) else head[1:]
     spec = ((flow or {}).get("commands") or {}).get(name)
     node_id = spec.get("node") if isinstance(spec, dict) else None
@@ -87,12 +91,14 @@ def lookup(flow: dict, text: str) -> str | None:
 
 
 def name_for(flow: dict, text: str, default: str | None = None) -> str:
-    """按钮或命令的名字：名字表认不出时用 default（页面按钮的叫法），再没有就是命令名（去掉斜杠）。"""
-    found = lookup(flow, text)
+    """按钮或命令的名字：名字表第 1～3 条认得出就用；认不出时页面给了 default（按钮的叫法）就用它，没给才按命令表退回
+    节点名（第 4 条），再没有就是命令名（去掉斜杠）。"""
+    given = str(default or "").strip()
+    found = lookup(flow, text, by_table=not given)
     if found:
         return found
-    if default and str(default).strip():
-        return str(default).strip()
+    if given:
+        return given
     words = _line(text).split()
     return words[0].lstrip("/") if words else ""
 

@@ -63,12 +63,13 @@ function Item({ n, title, feat, children, head = true, headProps, comp, post }) 
   );
 }
 
-function SugStrip({ items }) {
+function SugStrip({ items, note }) {
   return (
     <div className="wb-sug" style={{ padding: '6px 0 0' }}>
-      {items.map(([t, i, p]) => <span key={t} className={cx('s', p && 'p')}><Icon name={i} size={12} />{t}</span>)}
+      {items.map(([t, i, p]) => <span key={t} className={cx('s', p && 'p')}>{i ? <Icon name={i} size={12} /> : null}{t}</span>)}
       <span className="sp" />
       <span className="s" style={{ border: 0, padding: '0 4px' }}><Icon name="cmd" size={12} />全部命令<Icon name="chevd" size={12} /></span>
+      {note ? <div className="wb-sug-note">{note}</div> : null}
     </div>
   );
 }
@@ -198,8 +199,8 @@ export default function ChatStatesPage() {
       <div style={{ height: 64 }} />
     </Item>,
     <Item key={18} n={18} title="下一步建议条 · 三种情况" feat="1 个主推 + 最多 2 个次选" head={false}>
-      {S.SUG_STRIPS.map(([t, r, its]) => (
-        <div key={t} className="g2-strip"><div className="row xs"><b>{t}</b><span className="faint">· {r}</span></div><SugStrip items={its} /></div>
+      {S.SUG_STRIPS.map(([t, r, its, note]) => (
+        <div key={t} className="g2-strip"><div className="row xs"><b>{t}</b><span className="faint">· {r}</span></div><SugStrip items={its} note={note} /></div>
       ))}
       <div className="xs faint mt8">和助手回复末尾的「下一步建议」同一个来源，不会两边说法不一</div>
     </Item>,

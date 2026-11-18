@@ -325,15 +325,14 @@ export function emptySuggestions() {
     all_commands: true,
   };
 }
-// F8：资料分析之后不停，主推下一步「提取对象」；蓝图里的问题不挡建模，次选里去回答
+// F8：资料分析之后不停，主推下一步「提取对象」（推荐第 3 级，同后端：叫节点名，提取对象没有变体，没有次选）
 export function blueprintSuggestions() {
   return {
     mode: 'normal',
-    primary: sg('core.model:object', '提取对象', 'cube', { type: 'send', text: '', command: '/ontology-extract-object', args: {} }, { primary: true, priority: 4 }),
-    secondary: [
-      sg('sg-blueprint', '建模蓝图', 'layers', { type: 'navigate', page: 'wb-blueprint', params: { dialog: 'blueprint' } }),
-    ],
+    primary: sg('core.object#0', '提取对象', null, { type: 'send', text: '/ontology-extract-object', command: '/ontology-extract-object' }, { primary: true, priority: 3, reason: '下一步' }),
+    secondary: [],
     all_commands: true,
+    note: null,
   };
 }
 
@@ -422,26 +421,31 @@ function blueprintHistory() {
 }
 
 // ---------- 流程（FL-01） ----------
+// 还没建模：增量更新的条件不成立（节点不在流程里），别的节点都没开始；可选节点带「跳过」；
+// 动作的 when 同后端：还没有资料分析报告时没有追加、核验，还没有流程图时没有全量刷新、校验流程图
+const ONLY_PRIMARY = new Set(['diagram.flowchart']);
 function stageFlow(base, research, bpState = 'none', modelReady = false) {
-  const nodes = base.nodes.map((n) => {
-    if (n.id === 'core.research') return { ...n, ...research };
-    const reset = { ...n, state: 'not_ready', display_state: 'not_ready', progress: null, flags: { ...n.flags, needs_review: false }, actions: [] };
-    if (n.id === 'trace.trace') return { ...reset, note: '场景模拟 · 建模之后才有场景' };
-    if (n.id === 'core.update') return { ...reset, note: '资料有修订时再用' };
-    if (n.section === 'optional') return { ...reset, actions: [{ kind: 'skip', label: '跳过' }] };
-    if (n.id === 'core.model' && modelReady) return { ...reset, state: 'ready', display_state: 'ready' };
+  const nodes = base.nodes.filter((n) => n.id !== 'core.update').map((n) => {
+    if (n.id === 'core.research') {
+      const reported = research.state === 'confirmed';
+      return { ...n, ...research, actions: reported ? n.actions : n.actions.slice(0, 1) };
+    }
+    const starts = n.actions.filter((a) => a.kind === 'start');
+    const actions = [...(ONLY_PRIMARY.has(n.id) ? starts.slice(0, 1) : starts), ...(n.need === 'optional' ? [{ kind: 'skip', label: '跳过' }] : [])];
+    const reset = { ...n, state: 'not_ready', display_state: 'not_ready', progress: null, flags: { ...n.flags, needs_review: false }, actions };
+    if (n.id === 'core.object' && modelReady) return { ...reset, state: 'ready', display_state: 'ready' };
     return reset;
   });
   // F8 起不分段：后端恒给一段「全部」；还没有蓝图时 blueprint.state=none，有草稿时 draft（不用确认，不挡后面的步骤）
   const all = [{ id: 'all', name: '全部', core_flow: '', group: 'todo', stages: Object.fromEntries(base.slice_stages.map((x) => [x.id, 'not_ready'])), note: '', no_rules: false }];
   return { ...base, flow_hash: `${base.flow_hash.slice(0, 6)}m${bpState}`, nodes, slices: all, blueprint: { state: bpState }, notices: [], suggestions: null };
 }
-const emptyResearch = { state: 'ready', display_state: 'pending', progress: { done: 0, total: 0, label: '等资料' }, actions: [] };
+const emptyResearch = { state: 'ready', display_state: 'pending', progress: { done: 0, total: 0, label: '等资料' } };
 export const stages = {
   materials: {
     conversations: () => conversation(atDaysAgo(0, 9, 12)),
     history: materialsHistory,
-    flow: (base) => stageFlow(base, { state: 'running', display_state: 'running', progress: { done: 5, total: 7, label: '读资料 5/7' }, actions: [] }),
+    flow: (base) => stageFlow(base, { state: 'running', display_state: 'running', progress: { done: 5, total: 7, label: '读资料 5/7' } }),
   },
   'materials-empty': {
     conversations: () => conversation(atDaysAgo(0, 9, 12)),
@@ -457,7 +461,7 @@ export const stages = {
     conversations: () => conversation(atDaysAgo(0, 9, 12)),
     history: blueprintHistory,
     // F8：资料分析之后不停，资料分析已确认，建模可开始
-    flow: (base) => stageFlow(base, { state: 'confirmed', display_state: 'confirmed', progress: null, actions: [] }, 'draft', true),
+    flow: (base) => stageFlow(base, { state: 'confirmed', display_state: 'confirmed', progress: null }, 'draft', true),
   },
 };
 
@@ -722,7 +726,7 @@ export function register(ctx) {
       emitConv(pid, cidOf(pid), 'card.updated', blueprintCard(bp));
       setResearch(pid, { state: 'confirmed', display_state: 'confirmed', progress: null, actions: [] });
       const f = flowOf(pid);
-      const model = f.nodes.find((x) => x.id === 'core.model');
+      const model = f.nodes.find((x) => x.id === 'core.object');
       Object.assign(model, { state: 'ready', display_state: 'ready', progress: null });
       emitProj(pid, 'flow.updated', { flow_hash: f.flow_hash, nodes: [{ id: model.id, state: model.state, display_state: model.display_state, flags: model.flags, progress: model.progress }], slices: [], suggestions_changed: true });
     }
