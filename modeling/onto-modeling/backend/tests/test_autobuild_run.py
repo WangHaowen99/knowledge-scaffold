@@ -508,10 +508,12 @@ def test_pause_then_stop_at_safe_point_then_convert(ab):
     # 续跑：接着做提取操作；做的时候叫停，这一步做完停在安全点，校验不再开始
     release2 = gate("/ontology-extract-operation")
     assert client.post(f"{base}/resume").json()["state"] in ("queued", "running")
-    wait_until(lambda: (run_of(client, project_id, run["run_id"])["current"] or {}).get("step_label") == "提取操作"
-               or "/ontology-extract-operation" in AutoEngine.sent)
-    scope = client.get(f"/api/v1/projects/{project_id}/scope").json()
-    assert scope["state"] == "autobuild_slice" and scope["run_id"] == run["run_id"]
+    # 写入范围在命令拿到命令锁后才归这次运行：新单元的变更集还没记东西，cursor 指到「提取操作」、引擎收到命令都早于拿锁，
+    # 只等这两样时负载一高就先读到 none
+    scope_url = f"/api/v1/projects/{project_id}/scope"
+    wait_until(lambda: client.get(scope_url).json()["state"] == "autobuild_slice", message="提取操作开跑后写入范围没归自主构建")
+    assert client.get(scope_url).json()["run_id"] == run["run_id"]
+    assert (run_of(client, project_id, run["run_id"])["current"] or {}).get("step_label") == "提取操作"
     assert client.post(f"{base}/stop-at-safe-point").json()["state"] == "stopping"
     release2.set()
     stopped = wait_state(client, project_id, run["run_id"], "stopped")
