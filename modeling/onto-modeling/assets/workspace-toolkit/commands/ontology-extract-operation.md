@@ -294,7 +294,7 @@ Handle gaps（全部补充 / 选择性补充 / 跳过），with one-retry limit�
 python3 .claude/scripts/report_reconcile.py check --reports {REPORT_PATHS，空格分隔} --summaries {SUMMARY_PATHS，空格分隔；为空时只写 --summaries} {ALIASES 里每一条写一个 --alias 文档名=流程图名}
 ```
 
-把脚本输出原样展示给用户，作为提取摘要里的「对账」一节。退出码 0 = 报告条目都已落在正确目录，
+把脚本输出原样展示给用户，作为提取摘要里的「对账」一节〔自主构建跳过展示，差异照样处理〕。退出码 0 = 报告条目都已落在正确目录，
 多出来的都有来源（流程图补充，或本轮没动的已有文档）。退出码 1 时逐类处理，处理完重跑本步骤：
 
 - **名称映射冲突**：先修正重复或无效的 `report_name` 记录并重跑；禁止以覆盖文档消除冲突。
@@ -309,7 +309,7 @@ python3 .claude/scripts/report_reconcile.py check --reports {REPORT_PATHS，空�
 每一处差异要么处理掉，要么由用户逐条确认原因；**未处理、也未确认的差异，不进入提交**。
 已确认的原因记为 `RECONCILE_NOTES`，提交时写进提交说明。
 
-**BFO 参考提醒（可选）**：按 `.claude/reference/BFO_MODELING_GUIDE.md` §10 评估：
+**BFO 参考提醒（可选）**〔自主构建跳过〕：按 `.claude/reference/BFO_MODELING_GUIDE.md` §10 评估：
 - 用 §10.2 的逻辑关键词列表（含"状态机型 / 计划规范"等）对本批次逻辑文件名做子串匹配。
 - 命中 → 按 §10.3「带匹配项的形式」输出提示；本次执行只触发一次。
 - 未命中 → 不输出。
@@ -328,7 +328,7 @@ python3 .claude/scripts/report_reconcile.py check --reports {REPORT_PATHS，空�
 `python3 .claude/scripts/state_helper.py acquire extract-operation confirm`，then ask: "逻辑产物已生成：操作 {N} 个、规则 {R} 条、指标 {M} 个。
 覆盖（按名称）：{结果}；轻量核验：{status}；字段关联：错误 {E} 条、待确认 {W} 条。
 {REPORT_PATHS 非空时附上对账结果；有流程图补充或合并时逐条列出}
-如需修改请直接说明；确认无误请回复 **确认**。"
+如需修改请直接说明；确认无误请回复 **确认**。"〔自主构建跳过：不拿确认锁、不问，直接提交〕
 
 **修改已生成或已确认的逻辑文档（候选修订，不直接覆盖）：**
 用户要求修改 operation / rule / metric 文档时，不直接编辑 `ontology/` 下的文件：

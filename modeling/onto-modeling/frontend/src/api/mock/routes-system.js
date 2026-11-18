@@ -102,6 +102,13 @@ export function register(ctx) {
     return json(200, { allow: !!body.allow });
   });
 
+  on('PUT', '/admin/settings/thinking', ({ user, body }) => {
+    const no = admin(user);
+    if (no) return no;
+    st.model.thinking = !!body.on;
+    return json(200, { on: !!body.on });
+  });
+
   // ---------- SY-05～SY-08 上下文推荐表 ----------
   const presetRows = () => mergePresets(S.BUILTIN_PRESETS, st.customState === 'ok' ? st.custom : []);
   const presetsView = () => {

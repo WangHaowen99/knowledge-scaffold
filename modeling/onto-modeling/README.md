@@ -183,8 +183,9 @@ resume 续接模型上下文，界面无感。运行中的会话连续 `ONTO_WEB
 同一条消息里的多个工具调用并行执行（语义检查的几个部分同时跑）。agent 文件第一行写了
 `<!-- onto: thinking=off -->` 的子任务（规则检查、覆盖检查）派发时关闭思考，请求里带上
 `ONTO_WEB_JIUWEN_QUIET_EXTRA_BODY`（默认 `{"enable_thinking": false}`；网关不认这个字段时改成它认的写法，留空 = 不关）。
-每次模型调用都带上 `ONTO_WEB_JIUWEN_EXTRA_BODY`（默认 `{"thinking_budget": 16000}`，给思考封顶，免得一次调用思考到输出上限；
-网关不认时改成它认的写法，留空 = 不附带）。
+模型默认不思考（系统设置 → 模型接入 →「思考」，两个引擎都管）：关时稳定引擎 `MAX_THINKING_TOKENS=0`，内测引擎每次请求带
+`ONTO_WEB_JIUWEN_QUIET_EXTRA_BODY`；打开后内测引擎每次请求带 `ONTO_WEB_JIUWEN_EXTRA_BODY`（默认 `{"thinking_budget": 16000}`，
+给思考封顶，免得一次调用思考到输出上限；网关不认时改成它认的写法，留空 = 不附带）。
 
 agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githooks/`，各项目 `core.hooksPath` 指向它）：
 提交那一刻检查真实暂存区（`git add -A && git commit` 写在一行也查得到），提交说明带 `Onto-Source: agent`、

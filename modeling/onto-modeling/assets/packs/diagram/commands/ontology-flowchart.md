@@ -84,7 +84,7 @@ Check these locations to determine mode:
 2. If no research reports, `python3 .claude/scripts/state_helper.py acquire flowchart confirm` 后 ask user（回复后 `acquire flowchart start`）: "未找到资料分析报告或现有流程图。请选择：
    - 描述你的业务流程，我来生成流程图
    - 先运行 `/ontology-research <领域>` 进行资料分析"
-3. Once business processes are identified (from research or user description), `acquire flowchart confirm`，list them and ask user to confirm which ones to create flowcharts for（回复后 `acquire flowchart start`）.
+3. Once business processes are identified (from research or user description), `acquire flowchart confirm`，list them and ask user to confirm which ones to create flowcharts for（回复后 `acquire flowchart start`）〔自主构建跳过：不问，全部画〕.
 4. For each confirmed process, generate a .drawio XML file:
    - Read the legend `.claude/reference/图示说明定义.drawio` (older projects may have their own copy at `resource/diagrams/图示说明定义.drawio`, which takes precedence) to understand node type conventions
    - Generate well-formed draw.io XML with proper node types (开始/结束, 业务活动, 判断, 子流程, 子流程判断, 动作, 说明, 递归)
@@ -95,7 +95,7 @@ Check these locations to determine mode:
    ```bash
    python3 .claude/scripts/batch_summarize.py ontology/diagrams
    ```
-6. Read summaries from `ontology/diagrams-summary/` and present to user.
+6. Read summaries from `ontology/diagrams-summary/` and present to user〔自主构建跳过〕.
 7. Proceed to Step 3 (commit).
 
 > 生成后复用确定性结构检查；深度语义校验仍由 `/ontology-validate-diagrams` 负责，不新增模型复核。

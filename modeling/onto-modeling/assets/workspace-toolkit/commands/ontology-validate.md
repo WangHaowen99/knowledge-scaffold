@@ -182,7 +182,7 @@ Wait for it to return a JSON array `APPLY_RESULTS`，按 `issue_id` 索引。
 
 > 不在这里 normalize `status:"fixed"` → `applied:true`：HARD CONTRACT 已明确禁字段名漂移，悄悄兜底等于把违规当合规，下次会复发。schema 违规 → 当作 missing 补 false 即可。
 
-#### A4b: Show summary table
+#### A4b: Show summary table〔自主构建跳过〕
 
 ```
 已批量应用 {APPLIED_COUNT} 条结构性修复，{SKIPPED_COUNT} 条未应用（需人工判断）：
@@ -447,7 +447,7 @@ Wait for it to return a JSON array of apply results。把返回结果按 `issue_
 
 > 不在这里 normalize `status:"fixed"` → `applied:true`：HARD CONTRACT 已明确禁字段名漂移，悄悄兜底等于把违规当合规，下次会复发。schema 违规 → 当作 missing 补 false 即可。
 
-#### B4b: Show summary table
+#### B4b: Show summary table〔自主构建跳过〕
 
 ```
 已批量应用 {APPLIED_COUNT} 条语义修复，{SKIPPED_COUNT} 条未应用（需人工判断）：

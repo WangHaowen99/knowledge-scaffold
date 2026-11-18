@@ -70,6 +70,8 @@ def masked() -> dict:
         "engines": available_engines(),
         # 是否允许用户用个人 Key 覆盖本页配置（默认允许；未配个人 Key 的用户不受影响）
         "allow_personal": personal_override_allowed(),
+        # 模型先思考再回答（两个引擎都管）；默认关：实测自主构建输出里九成以上是思考，关掉快约三倍
+        "thinking": thinking_enabled(),
         # Jiuwen 引擎（OpenAI 兼容）配置：与 Anthropic 网关配置并列的第二组
         "jiuwen": {
             "base_url": jiuwen.get("base_url", ""),
@@ -391,6 +393,18 @@ def personal_override_allowed() -> bool:
 def save_personal_policy(allow: bool) -> dict:
     data = load()
     data["allow_personal"] = bool(allow)
+    write_private_json(_file(), data)
+    return masked()
+
+
+def thinking_enabled() -> bool:
+    """模型思考开关（SY-19）：没设过 = 关。"""
+    return load().get("thinking") is True
+
+
+def save_thinking(on: bool) -> dict:
+    data = load()
+    data["thinking"] = bool(on)
     write_private_json(_file(), data)
     return masked()
 

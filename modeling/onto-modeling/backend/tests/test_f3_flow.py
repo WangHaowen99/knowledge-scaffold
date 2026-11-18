@@ -243,8 +243,9 @@ def test_new_check_errors_do_not_block_and_the_card_says_what_to_look_at(project
 
 
 def test_links_to_planned_content_are_problems_without_slicing(project):
-    """不分段：蓝图里规划了、还没建的内容不再算「待建」（F8 之前写下的两段蓝图也一样），链接找不到照常算问题；
-    按段时代区分待建链接的代码已经删了，检查结果里不再有 pending、pending_links。"""
+    """不分段：蓝图里规划了、还没建的内容不再算「待建」（F8 之前写下的两段蓝图也一样），链接找不到照常提示；
+    按段时代区分待建链接的代码已经删了，检查结果里不再有 pending、pending_links。分步提取时链接中途必然悬空，
+    合入检查只当警告（不让自主构建返工），校验时照样按错误报。"""
     workspaces, project_id, root = project
     from app.services.flow import blueprint
 
@@ -260,7 +261,8 @@ def test_links_to_planned_content_are_problems_without_slicing(project):
     _copy, record = _pending(workspaces, project_id, root, text=store_text)
     service.settle(workspaces, project_id, actor=OWNER)
     checks = store.get(root, record["id"])["checks"]
-    assert not {"pending", "pending_links"} & set(checks) and checks["errors"] >= 3
+    assert not {"pending", "pending_links"} & set(checks)
+    assert checks["errors"] == 0 and checks["warnings"] >= 3, checks
     card = service.round_card(workspaces, project_id, store.get(root, record["id"]), "rc-x")
     assert {hint["text"]: hint["tone"] for hint in card["hints"]} == {"3 处链接找不到对象": "warn"}
 

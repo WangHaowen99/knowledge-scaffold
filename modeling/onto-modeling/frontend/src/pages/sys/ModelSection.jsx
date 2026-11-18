@@ -178,6 +178,18 @@ export function ModelSection({ onGo }) {
       setBusy(false);
     }
   };
+  const setThinking = async (on) => {
+    setBusy(true);
+    try {
+      const r = await api.setThinking({ on });
+      setData((x) => ({ ...x, thinking: r.on }));
+      toast(r.on ? '已打开思考' : '已关闭思考', 'check');
+    } catch (err) {
+      toast(errorText(err), 'alert');
+    } finally {
+      setBusy(false);
+    }
+  };
   const setPolicy = async (allow) => {
     setBusy(true);
     try {
@@ -200,7 +212,7 @@ export function ModelSection({ onGo }) {
           {ids.map((id, i) => (
             <EngineCard key={id} id={id} e={data.engines[id]} onSaved={onSaved} onGo={onGo} className={i ? 'mt16' : undefined} />
           ))}
-          <div className="grid2 mt16">
+          <div className="grid3 mt16">
             <Card title="默认引擎" icon="star">
               <div className="seg">
                 {ids.map((id) => {
@@ -218,6 +230,10 @@ export function ModelSection({ onGo }) {
             <Card title="个人 API Key" icon="key" extra={<Toggle on={data.personal_key_allowed} disabled={busy} onChange={setPolicy} />}>
               <div className="sm">允许用户用自己的 Key</div>
               <div className="xs muted mt4">关闭后全部会话改用本页配置</div>
+            </Card>
+            <Card title="思考" icon="sparkle" extra={<Toggle on={!!data.thinking} disabled={busy} onChange={setThinking} />}>
+              <div className="sm">模型先思考再回答</div>
+              <div className="xs muted mt4">更准，但慢约三倍</div>
             </Card>
           </div>
         </>

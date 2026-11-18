@@ -26,6 +26,9 @@ _log = logging.getLogger(__name__)
 CHECK_TIMEOUT_SECONDS = 180
 EXPORT_DIRS = ("ontology", "research")
 LINK_CATEGORY = "链接失效"
+# 指向还不存在的文档的链接：提取分步做（先对象、后操作与规则），合入「提取对象」时必然悬空，合入检查只当警告，
+# 自主构建不为它让助手返工；校验时全量检查照样按错误报（同 verify_artifacts.PENDING_LINK_CATEGORIES、提交检查）
+PENDING_LINK_CATEGORIES = (LINK_CATEGORY, "引用失效")
 _cache: dict[tuple[str, str], list[dict]] = {}
 _cache_lock = threading.Lock()
 _CACHE_MAX = 64
@@ -115,6 +118,8 @@ def compare(root: Path, main_tree: str, candidate_tree: str) -> dict:
     before = run(root, main_tree)
     after = run(root, candidate_tree)
     new = _minus(root)([_normalized(item) for item in after], [_normalized(item) for item in before])
+    new = [{**item, "severity": "警告"} if item.get("severity") == "错误" and item.get("category") in PENDING_LINK_CATEGORIES
+           else item for item in new]
     errors = [item for item in new if item.get("severity") == "错误"]
     warnings = [item for item in new if item.get("severity") == "警告"]
     return {"errors": len(errors), "warnings": len(warnings),

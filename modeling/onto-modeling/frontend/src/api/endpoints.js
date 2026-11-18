@@ -336,6 +336,7 @@ export function createApi(client) {
     saveAdminModelSettings: (engine, body) => client.put(`/admin/settings/model/${enc(engine)}`, body), // SY-02
     setDefaultEngine: (engine) => client.put('/admin/settings/default-engine', { engine }), // SY-03
     setPersonalKeyPolicy: (body) => client.put('/admin/settings/personal-key-policy', body), // SY-04
+    setThinking: (body) => client.put('/admin/settings/thinking', body), // SY-19
     contextPresets: () => client.get('/admin/settings/context-presets'), // SY-05
     saveCustomContextPresets: (body) => client.put('/admin/settings/context-presets/custom', body), // SY-06
     disableCustomContextPresets: () => client.post('/admin/settings/context-presets/custom/disable', {}), // SY-07

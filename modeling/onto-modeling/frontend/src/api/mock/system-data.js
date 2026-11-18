@@ -41,6 +41,7 @@ export function modelSettings({ betaInstalled = true, personalAllowed = true } =
     engines: { claude: engine('claude'), jiuwen: engine('jiuwen', { installed: betaInstalled }) },
     default_engine: 'claude',
     personal_key_allowed: personalAllowed,
+    thinking: false,
   };
 }
 
