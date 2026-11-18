@@ -337,3 +337,52 @@ def test_agent_can_read_materials_uploaded_after_startup(agent_env):
     assert _as_agent("ls resource/others resource/excel", cwd=root).returncode == 0
     if (root / "resource" / "materials.json").exists():
         assert _as_agent("cat resource/materials.json", cwd=root).returncode == 0
+
+
+@linux_root
+def test_agent_can_commit_after_root_wrote_objects_with_default_umask(agent_env):
+    """验证栈发现：root 以默认 umask 022 跑过 git（运维 docker exec），建出的对象目录 0755，agent 之后提交时
+    对象落进这些目录就写不进，提交失败。装钩子时（启动、每次会话开始）仓库改成按组共享、写不进的目录修好；
+    之后 root 再以 022 写对象，新建的目录也对 agent 组可写。"""
+    from app.kernel.writepath import agent_commits
+
+    data, _home = agent_env
+    manager = WorkspaceManager(data, Path(config.ASSETS_DIR))
+    meta = manager.create_project("提交权限", owner="operator_a")
+    assert agent_identity.prepare_filesystem()["switching"]
+    root = manager.project_root(meta["id"])
+    objects = root / ".git" / "objects"
+    for prefix in range(256):  # 每个前缀目录都像是 root 以 022 建的：哪个对象都写不进
+        directory = objects / f"{prefix:02x}"
+        directory.mkdir(exist_ok=True)
+        directory.chmod(0o2755)
+    (root / "research").mkdir(exist_ok=True)
+
+    blocked = _as_agent("echo one > research/agent-commit.md && git add research/agent-commit.md", cwd=root)
+    assert blocked.returncode != 0  # 复现：写不进对象库
+
+    assert agent_commits.install(root)
+    done = _as_agent("echo two > research/agent-commit.md && git add research/agent-commit.md "
+                     "&& git commit -q -m 'agent edit'", cwd=root)
+    assert done.returncode == 0, done.stderr
+
+    for directory in objects.iterdir():  # 腾出空的前缀目录，看 root 再写时新建的目录
+        if len(directory.name) == 2 and not any(directory.iterdir()):
+            directory.rmdir()
+    previous = os.umask(0o022)
+    try:
+        for index in range(200):
+            content = f"root wrote {index}\n"
+            digest = proc.run(["git", "hash-object", "--stdin"], cwd=root, input=content, capture_output=True,
+                              text=True, check=True).stdout.strip()
+            if not (objects / digest[:2]).exists():
+                proc.run(["git", "hash-object", "-w", "--stdin"], cwd=root, input=content, capture_output=True,
+                         text=True, check=True)
+                break
+        else:
+            pytest.fail("没找到落进空前缀的内容")
+    finally:
+        os.umask(previous)
+    created = objects / digest[:2]
+    assert created.stat().st_mode & 0o070 == 0o070
+    assert _as_agent(f"touch '{created / 'agent-probe'}'").returncode == 0

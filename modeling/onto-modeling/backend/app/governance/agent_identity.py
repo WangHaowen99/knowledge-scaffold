@@ -229,6 +229,38 @@ def share_writable(path: Path) -> None:
         _group_tree(path, ids[1])
 
 
+def share_git_dir(git_dir: Path) -> int:
+    """项目版本库（`.git`）里 agent 组写不进的目录与文件补回组读写，返回修了几个；只在切用户时做。
+
+    agent 在副本里自己提交（方案 C11），对象写进主线仓库的 `.git/objects/<前两位>/`。root 以默认 umask 022
+    跑过的 git（运维 `docker exec` 等）建出的目录是 0755，之后哈希落进这些目录的对象 agent 写不进，提交失败。
+    对象文件本来就只读，只管目录；其余文件（索引、引用、日志）补组读写。"""
+    if not switching():
+        return 0
+    gid = _agent_ids()[1]
+    fixed = 0
+    git_dir = Path(git_dir)
+    objects = git_dir / "objects"
+    for root, dirs, files in os.walk(git_dir):
+        here = Path(root)
+        entries = [(here, True)] + [(here / name, False) for name in files if here != objects
+                                    and objects not in here.parents]
+        for item, is_dir in entries:
+            try:
+                info = item.lstat()
+                if stat.S_ISLNK(info.st_mode):
+                    continue
+                need = stat.S_IRWXG | stat.S_ISGID if is_dir else stat.S_IRGRP | stat.S_IWGRP
+                if info.st_gid == gid and info.st_mode & need == need:
+                    continue
+                os.chown(item, -1, gid)
+                os.chmod(item, stat.S_IMODE(info.st_mode) | need)
+                fixed += 1
+            except OSError:
+                continue
+    return fixed
+
+
 # agent 只读的目录：装配目录（插件运行时，见 services/packs/assembler）
 READ_ONLY_DIRS = ("assembled",)
 
