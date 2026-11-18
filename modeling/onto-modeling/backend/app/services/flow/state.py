@@ -668,7 +668,9 @@ def migrate_split(stored: dict, flow: dict) -> bool:
 
     1. 删掉 nodes 里残留的 0.2 时代 core.object、core.operation 记录：0.3 起它们并进了建模，记录没删，指纹早就过时；
     2. 提取对象取 `slices.all.object`，没有就取 core.model：两者的上游都是资料分析，指纹算法相同；
-    3. 提取操作取 `slices.all.operation`：上游是对象，指纹算法也相同；
+    3. 提取操作取 `slices.all.operation`：上游是对象，指纹算法也相同。按段记录一条都没有时（F8 之前；新代码在还没升级的
+       项目上合入建模也只记建模节点）同提取对象取 core.model：建模确认过就是对象、操作都做完了。指纹是建模那套口径，
+       算状态时按换了定义重记（`rebaseline_redefined`）；
     4. 需复核标记、按类指纹、确认时的主线提交（rev）一起带过来，判定签名按新节点现记（`carried`）；需复核标记只记在
        建模节点上的（F8 之前按段自主构建标的，F8 迁移补的按段记录没带），两个新节点有记录、自己又没标时都带上：
        升级前建模显示「需复核」，升级后提取对象、提取操作照样显示；
@@ -682,7 +684,8 @@ def migrate_split(stored: dict, flow: dict) -> bool:
         nodes.pop(node_id, None)
     full = ((stored.get("slices") or {}).get("all") or {}) if isinstance(stored.get("slices"), dict) else {}
     legacy = nodes.get(LEGACY_MODEL) if isinstance(nodes.get(LEGACY_MODEL), dict) else {}
-    sources = {"core.object": full.get("object") or legacy or None, "core.operation": full.get("operation")}
+    sources = {"core.object": full.get("object") or legacy or None,
+               "core.operation": full.get("operation") or (None if full else legacy or None)}
     for node_id, source in sources.items():
         record = carried(flow, node_id, source)
         if record is not None:  # 没有记录、或只有需复核没有基线的：按主线现状重记

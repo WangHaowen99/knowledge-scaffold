@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -234,10 +235,10 @@ def test_migrate_drops_leftover_0_2_records_first():
     # 提取对象取分段里「对象」那一步的（不取残留，也不取建模的）；提取操作没有「操作」那一步的记录：残留删了，不搬
     assert stored["nodes"]["core.object"]["fp"] == "b" * 16
     assert "core.operation" not in stored["nodes"]
-    # 分段里没有对象这一步：取建模的
+    # 没有按段记录：两步都取建模的（建模确认过就是对象、操作都做完了），不取残留
     stored = {"nodes": {**leftover, "core.model": {"fp": "a" * 16, "sig": "m", "at": 2.0}}, "skipped": {}}
     node_state.migrate_split(stored, flow)
-    assert stored["nodes"]["core.object"]["fp"] == "a" * 16 and "core.operation" not in stored["nodes"]
+    assert stored["nodes"]["core.object"]["fp"] == "a" * 16 and stored["nodes"]["core.operation"]["fp"] == "a" * 16
     # 停在 0.2、从没按分段算过的项目：残留删掉，按主线现状重记基线
     stored = {"nodes": dict(leftover), "skipped": {}}
     node_state.migrate_split(stored, flow)
@@ -287,6 +288,24 @@ def test_migrate_carries_the_model_review_onto_both_steps():
     node_state.migrate_split(stored, flow)
     assert stored["nodes"]["core.object"]["needs_review"] == own
     assert "core.operation" not in stored["nodes"]
+
+
+def test_migrate_carries_a_model_only_record_onto_both_steps():
+    """新代码在还没升级的项目上合入建模（锁定旧 core 的项目、旧运行换新代码续跑）只记建模节点，按段记录是空的：
+    升级后提取操作和提取对象一样取建模的记录和需复核标记，不按主线现状重记成「已确认」。"""
+    flow = _flow()
+    by_id = {node["id"]: node for node in flow["nodes"]}
+    review = _review()
+    model = {"fp": "a" * 16, "kinds": {"research": "a" * 16}, "sig": "m", "at": 2.0, "rev": "c" * 40,
+             "needs_review": review}
+    stored = {"nodes": {"core.model": model}, "skipped": {}, "slices": {"all": {}}}
+    node_state.migrate_split(stored, flow)
+    for node_id in ("core.object", "core.operation"):
+        record = stored["nodes"][node_id]
+        assert record["needs_review"] == review and record["rev"] == "c" * 40 and record["at"] == 2.0
+        assert record["sig"] == node_state.done_signature(flow, by_id[node_id])
+    # 指纹是建模那套口径（只盯资料分析）：算状态时按 ADR-0102 的换定义重记，不直接拿来比
+    assert stored["nodes"]["core.operation"]["kinds"] == {"research": "a" * 16}
 
 
 def test_migrate_turns_a_skipped_rule_step_into_a_skipped_metric():
@@ -347,6 +366,28 @@ def test_an_old_project_shows_the_same_progress_after_the_split(env):
     assert stored["split_migrated"] is True and "core.model" not in stored["nodes"]
     assert not {"slices", "slice_skips", "legacy_migrated"} & set(stored)
     assert set(stored["nodes"]["core.operation"]["kinds"]) == {"research", "object_set"}
+
+
+def test_a_model_merged_by_new_code_shows_review_on_both_steps_after_the_split(env):
+    """旧运行换新代码续跑、合入时项目还是旧 core：新代码只给建模记确认和需复核。升级拆开后提取对象、提取操作都是
+    「自主完成 · 需复核」；之后没动过对象清单，提取操作不算过期。"""
+    _client, _workspaces, _manager, _project_id, root = env
+    main_write(root, "research/20260101-合成.md", "# 合成资料分析\n")
+    main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))
+    main_write(root, "ontology/operation/受理申请.md", op("受理申请", "[[门店]]"))
+    research = node_state.fingerprint(root, ["research"])
+    with node_state._lock:
+        stored = node_state.load(root)
+        stored["nodes"] = {"core.model": {"fp": research, "kinds": {"research": research}, "sig": "model-sig",
+                                          "at": time.time(), "rev": node_state._head(root),
+                                          "needs_review": _review()}}
+        stored["slices"] = {"all": {}}
+        node_state.save(root, stored)
+    built = view.build(root)
+    for node_id in ("core.object", "core.operation"):
+        found = _node(built, node_id)
+        assert found["state"] == "confirmed" and found["display_state"] == "auto", node_id
+        assert found["flags"]["review_source"] == "autobuild"
 
 
 def test_a_merge_before_the_first_compute_is_not_taken_for_a_leftover(env):
