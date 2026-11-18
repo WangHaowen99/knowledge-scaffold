@@ -13,11 +13,11 @@ FIELDS = '# 字段\n| 英文名称 | 类型 | 主键 |\n| --- | --- | --- |\n| i
 TABLE = '# 关系\n| 关系 | 目标 | 源关联字段 | 目标关联字段 |\n| --- | --- | --- | --- |\n'
 
 
-def archive_with(relations, other=True, fields=FIELDS):
+def archive_with(relations, other=True, fields=FIELDS, other_relations=''):
     files, _ = packages.unpack(synthetic_package())
     files['objects/item.md'] = ('# 数据来源\nitems\n' + fields + relations).encode()
     if other:
-        files['objects/other.md'] = ('# 数据来源\nothers\n' + FIELDS).encode()
+        files['objects/other.md'] = ('# 数据来源\nothers\n' + FIELDS + other_relations).encode()
     result = io.BytesIO()
     with zipfile.ZipFile(result, 'w') as archive:
         for name, body in files.items():
@@ -144,6 +144,15 @@ def test_package_changed_after_preparation_is_rejected_before_workspace_creation
         engine._execute(owner, response.json()['id'])
     assert error.value.code == 'package_changed'
     assert not deps.workspaces and not deps.submissions
+
+
+def test_relation_declared_in_both_endpoint_documents_is_one_relation():
+    """Issue 419: one declaration in each endpoint document describes one relation."""
+    raw = archive_with('# 关联对象\n- 当前对象 → references（fk → id） → [[other]]\n',
+                       other_relations='# 关联对象\n- [[item]] → references（fk → id） → 当前对象\n')
+    packages.validate_relations(raw)
+    _, preview = packages.generate_mapping(raw, {'items': ['id', 'fk'], 'others': ['id', 'fk']}, True)
+    assert len(preview['relations']['item']) == 1
 
 
 def test_same_identity_duplicate_reports_both_declarations():

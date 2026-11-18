@@ -357,16 +357,19 @@ def test_eval_run_allows_normal_relation_with_legacy_name(tmp_path, monkeypatch)
     {"mode": "connection", "provider": "neo4j"},
 ])
 @pytest.mark.parametrize("allow_unbound", [False, True])
-@pytest.mark.parametrize("cross_file", [False, True])
+@pytest.mark.parametrize("repeated", ["object_a", "object_b"])
 def test_eval_run_rejects_duplicate_relations_with_both_locations(
-    tmp_path, monkeypatch, data_source, allow_unbound, cross_file,
+    tmp_path, monkeypatch, data_source, allow_unbound, repeated,
 ):
+    """两端文件各写一次是同一关系；只有同一文件里再写一遍才拒绝，并指出该文件的两处行号。"""
     projects, pid, request = eval_router(tmp_path, monkeypatch)
     object_dir = projects.workspaces.project_root(pid) / "ontology" / "object"
     source = "# 关联对象\n- 当前对象 → references → [[object_b]]\n"
-    target = "# 关联对象\n- [[object_a]] → references → 当前对象\n" if cross_file else ""
-    if not cross_file:
+    target = "# 关联对象\n- [[object_a]] → references → 当前对象\n"
+    if repeated == "object_a":
         source += "- 当前对象名 -> references -> [[object_b|合成别名]]\n"
+    else:
+        target += "- [[object_a|合成别名]] -> references -> 当前对象名\n"
     (object_dir / "object_a.md").write_text(source, encoding="utf-8")
     (object_dir / "object_b.md").write_text(target, encoding="utf-8")
     started = []
@@ -395,9 +398,8 @@ def test_eval_run_rejects_duplicate_relations_with_both_locations(
     assert len(payload["problems"]) == 1
     problem = payload["problems"][0]
     assert "重复关系" in problem
-    assert "首次声明于 ontology/object/object_a.md 第 2 行" in problem
-    duplicate_location = "object_b.md 第 2 行" if cross_file else "object_a.md 第 3 行"
-    assert f"ontology/object/{duplicate_location}" in problem
+    assert f"首次声明于 ontology/object/{repeated}.md 第 2 行" in problem
+    assert problem.startswith(f"ontology/object/{repeated}.md 第 3 行")
     assert started == []
 
 

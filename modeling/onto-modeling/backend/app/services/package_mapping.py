@@ -817,7 +817,11 @@ def package_relations(
     object_texts: dict[str, str], *, allow_self_relations: bool = True,
     reject_duplicate_relations: bool = False, strict_fields: bool = False,
 ) -> tuple[dict[str, list], list[str]]:
-    """检查包内关系结构；评测拒绝规范化后的重复声明，其他调用方可归并双端声明。"""
+    """检查包内关系结构，同一关系只输出一条。
+
+    源对象和目标对象的文件各声明一次，是同一关系的两端描述，直接归并。同一文件里再次声明
+    完整身份相同的关系才算重复：reject_duplicate_relations 时报出两处位置，否则归并。
+    """
     relations: dict[str, list] = {}
     problems: list[str] = []
     seen: dict[tuple, dict] = {}
@@ -860,21 +864,23 @@ def package_relations(
             if source_join and target_join:
                 relation.update(sourceJoinProperty=source_join, targetJoinProperty=target_join)
             triple = (source_id, _relation_identity(item["relation"]), target_id, source_join, target_join)
+            # 声明写在哪一端的文件里；自关联两端是同一个文件，按源端计
+            declaration = triple + (source_id == _relation_identity(key),)
+            if reject_duplicate_relations and declaration in first_declarations:
+                problems.append(
+                    f"{label}：重复关系「{source} -{item['relation']}→ {target}」；"
+                    f"关联字段：{_join_text(relation)}；"
+                    f"首次声明于 {first_declarations[declaration]}"
+                )
+                continue
+            first_declarations.setdefault(declaration, label)
             if triple in seen:
-                if reject_duplicate_relations:
-                    problems.append(
-                        f"{label}：重复关系「{source} -{item['relation']}→ {target}」；"
-                        f"关联字段：{_join_text(relation)}；"
-                        f"首次声明于 {first_declarations[triple]}"
-                    )
-                    continue
                 previous = seen[triple]
                 for field in ("note", "evidence"):
                     if not previous.get(field) and relation.get(field):
                         previous[field] = relation[field]
                 continue
             seen[triple] = relation
-            first_declarations[triple] = label
             relations.setdefault(source, []).append(relation)
     return relations, problems
 
