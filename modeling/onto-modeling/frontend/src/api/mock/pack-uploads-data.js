@@ -13,7 +13,7 @@ export const CHECK_LABELS = {
   write_scope: '写入范围不碰受保护目录',
   node_entry: '节点入口命令存在',
   hooks: 'hooks 只追加拒绝型',
-  frontend: '页面只选用平台内置、没有前端代码',
+  frontend: '页面是平台内置或本包的隔离页面，前端代码只在 ui/ 下',
   secrets: '不含凭据',
   syntax: '脚本语法',
   prompt_budget: '提示词体积预算',

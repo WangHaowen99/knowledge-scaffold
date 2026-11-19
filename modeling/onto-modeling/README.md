@@ -391,6 +391,12 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
     如实回 423）、`chat.command`（只能发本包清单里的命令，参数是短的单行值，5 秒一条）、`theme.get`。编辑器把自己导航到别的
     页面，平台就关掉它。编辑器的只读状态随写入范围变（`context.get` 给初值，之后推 `readonly.changed`）。包名不能叫
     `ontology` 这类保留名，命令不能和已入库的包重名。合成样例在 `backend/tests/fixtures/packs/sticky-notes/`。
+  - 上传包自己的页面（ADR-0103，界面接口 1.1）：清单 `pages: [{id, nav: {title, icon, order}, ui: <编辑器 id>}]`，左栏出现
+    `<包名>:<页面 id>`，整页就是这个编辑器的 iframe（`context.get` 里 `page` 有值、`artifact` 为空）。页面另能用
+    `artifact.list`（本包产物）、`upload.list / put / delete`（清单 `uploads: [{id, title, kind: knowledge-package, max}]` 声明的
+    上传位，文件落在 `ext/<包>/uploads/<上传位>/`，助手只读）、`file.download`（`ext/<包>/` 下已提交的文件，目录打 zip）、
+    `studio.open`（跳到 Studio 的条目）、`command.tasks`（本页发出、还在跑的命令），推送多 `upload.changed`、`command.progress`。
+    样例：`plugins/common-ontology/`（公共本体插件）。
   - `ui/` 不进装配目录。
   - 助手这一轮改到的产物，在「这一轮改了什么」之后各出一张卡，卡片内容按这一轮的树读（ADR-0046、0072）。
 - **节点包**（ADR-0065、0066）：清单 `kind: node`，插件目录里归进能力包；只带节点声明（`flow.yaml` 或 `nodes/*.yaml`）和节点要用的

@@ -118,7 +118,7 @@ def test_extensions_nav_lists_kernel_pages_then_enabled_plugin_pages(env):
     client, _, project_id = env
     before = client.get(f"/api/v1/projects/{project_id}/extensions").json()
     assert [item["id"] for item in before["nav"]] == ["wb-l2", "studio", "resources", "publish"]
-    assert all(item["kind"] == "kernel" for item in before["nav"]) and before["page_api"] == "1.0"
+    assert all(item["kind"] == "kernel" for item in before["nav"]) and before["page_api"] == "1.1"
     assert before["artifact_types"] == [] and before["disabled_pages"] == []
 
     _enable(client, project_id)
@@ -146,9 +146,11 @@ def test_page_not_in_builtin_pages_never_reaches_nav(env, tmp_path):
     _enable(client, project_id)
     view = registry.PackView("checklist", "1.0.0", manager.packs.repository.manifest("checklist", "1.0.0"),
                              manager.packs.repository.version_dir("checklist", "1.0.0"))
-    assert registry._page_ok({"id": "scenarios"}, view.manifest)
-    assert not registry._page_ok({"id": "my-own-page"}, view.manifest)
-    assert not registry._page_ok({"id": "scenarios", "page_api": ">=2.0"}, view.manifest)
+    assert registry._page_ok({"id": "scenarios"}, view)
+    assert not registry._page_ok({"id": "my-own-page"}, view)
+    # 自带页面（ADR-0103）要指向本包声明的编辑器
+    assert not registry._page_ok({"id": "my-own-page", "ui": "not-declared"}, view)
+    assert not registry._page_ok({"id": "scenarios", "page_api": ">=2.0"}, view)
 
 
 def test_disabling_page_pack_hides_page_and_keeps_artifacts(env):

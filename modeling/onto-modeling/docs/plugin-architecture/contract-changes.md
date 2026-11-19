@@ -2428,3 +2428,20 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
 2. **自主构建跳过给人看的步骤**：命令文档里标了〔自主构建跳过〕的步骤不做——BFO 提醒、确认前验收展示表、确认锁与「回复确认」、
    对账原样展示、校验 A4b/B4b 汇总表、流程图挑选与摘要展示；检查脚本照跑、没过照样修。自主构建每轮的说明里同时要求：互不依赖的
    调用一次发出，要派给子任务读的资料主对话不预读，写完的文档不回读展示，收尾一句话。陪伴模式不变。
+
+## 2026-11-19 · 插件自己的页面、上传位与下载（ADR-0103）
+
+公共本体插件要一个自己的页面：上传多个知识包、发抽取命令、看结果、下载。用户 11-19 定页面用插件自带的 iframe（不用平台按声明画）。
+
+1. **1.1 版本**：`PAGE_API` 1.0 → 1.1，`UI_API` 1.0 → 1.1（1.0 的方法与消息不变；协议只比主版本，1.0 的编辑器照常握手）。
+2. **清单**：`contributes.pages[]` 的 id 不是内置页时要带 `ui: <编辑器 id>`（本包 `contributes.editors` 里声明的），官方包暂不支持；
+   新增 `contributes.uploads: [{id, title, kind: knowledge-package, max: 1～20}]`。`ManifestSummary.contributes` 加 `uploads`。
+   PL-15 `frontend` 检查改为「页面是平台内置或本包的隔离页面，前端代码只在 ui/ 下」。
+3. **PL-12**：包自己的页面进 `nav`、`pages`、`disabled_pages`，`id` 是 `<包名>:<页面 id>`；`pages[]` 另带 `page`、`ui`。
+4. **PL-20（打开上传包编辑器）响应**加 `types`（本包登记的产物类型）、`uploads`（本包的上传位）。
+5. **新增 PL-28～PL-31**：往上传位放知识包、列表、删除、下载插件目录里已提交的文件（目录打 zip）；PL-31 可用 `?token=`。
+6. **窄接口 1.1**：页面模式 `context.get` 带 `page`、`uploads`，`artifact` 为空；新方法 `artifact.list`、`upload.list`、`upload.put`、
+   `upload.delete`、`file.download`、`studio.open`、`command.tasks`；新推送 `upload.changed`、`command.progress`。页面发的命令
+   `origin.page` 是 `<包名>:<页面 id>`。
+7. **变更集**：`ext/*/uploads/` 是受保护路径（同资料区），助手副本里的改动不进变更集。
+8. **前端路由**：`#/p/<项目>/<包名>:<页面 id>` 打开插件页（`pages/plugin/PluginFramePage.jsx`）。

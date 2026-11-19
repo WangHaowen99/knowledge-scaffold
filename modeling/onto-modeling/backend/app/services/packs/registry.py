@@ -107,11 +107,23 @@ def disabled_packs(manager, root: Path) -> list[PackView]:
     return _views(manager.packs.repository, [(entry.name, entry.version) for entry in lock.packs if not entry.enabled])
 
 
-def _page_ok(page: dict, manifest: Manifest) -> bool:
-    if page.get("id") not in mf.BUILTIN_PAGES:
+def _custom_page_ok(view: PackView, page: dict) -> bool:
+    """上传包自己的页面（ADR-0103）：id 合规、ui 指向本包声明的编辑器；官方包不走 iframe，暂不支持。"""
+    page_id, ui = page.get("id"), page.get("ui")
+    return (not view.official and isinstance(page_id, str) and bool(mf.PAGE_ID_RE.match(page_id))
+            and any(editor["id"] == ui for editor in view.manifest.editors()))
+
+
+def _page_ok(page: dict, view: PackView) -> bool:
+    if page.get("id") not in mf.BUILTIN_PAGES and not _custom_page_ok(view, page):
         return False
-    spec = str(page.get("page_api") or manifest.page_api or "")
+    spec = str(page.get("page_api") or view.manifest.page_api or "")
     return not spec or mf.satisfies(mf.PAGE_API, spec)
+
+
+def page_key(view: PackView, page: dict) -> str:
+    """左栏与路由里的页面 id：内置页就是页面 id，包自己的页面是「包名:页面 id」。"""
+    return page["id"] if page.get("id") in mf.BUILTIN_PAGES else f"{view.name}:{page['id']}"
 
 
 def _action_id(index: int, action: dict) -> str:
@@ -130,8 +142,10 @@ def page_view(view: PackView, page: dict, *, pending: bool) -> dict:
             "id": _action_id(index, action), "label": str(action.get("label") or action["command"]),
             "command": str(action["command"]), "hint": str(action.get("hint") or ""),
         })
+    custom = page.get("id") not in mf.BUILTIN_PAGES
     return {
-        "id": page["id"], "pack": view.name,
+        "id": page_key(view, page), "pack": view.name,
+        **({"page": page["id"], "ui": str(page["ui"])} if custom else {}),
         "page_api": str(page.get("page_api") or view.manifest.page_api or ""),
         "data": {key: [str(item) for item in data.get(key) or []] for key in ("artifacts", "reports", "nodes")},
         "actions": actions,
@@ -147,7 +161,7 @@ def nav_item(view: PackView, page: dict, index: int) -> dict:
         icon = PAGE_DEFAULTS.get(page["id"], (page["id"], "layers"))[1]
     order = nav.get("order")
     return {
-        "id": page["id"], "title": str(nav.get("title") or title), "icon": icon, "kind": "plugin",
+        "id": page_key(view, page), "title": str(nav.get("title") or title), "icon": icon, "kind": "plugin",
         "pack": view.name, "pack_label": view.manifest.label,
         "order": PLUGIN_ORDER_BASE + (int(order) if isinstance(order, int) else 100 + index),
         "overflow": False, **({"badge_source": page["badge"]} if page.get("badge") else {}),
@@ -188,9 +202,9 @@ def extensions(manager, project_id: str) -> dict:
     for view in desired:
         pending = (view.name, view.version) not in active
         for index, page in enumerate(view.manifest.pages()):
-            if not _page_ok(page, view.manifest) or page["id"] in seen_pages:
+            if not _page_ok(page, view) or page_key(view, page) in seen_pages:
                 continue
-            seen_pages.add(page["id"])
+            seen_pages.add(page_key(view, page))
             item = nav_item(view, page, index)
             if item.pop("badge_source", None):
                 if badges is None:
@@ -217,9 +231,10 @@ def extensions(manager, project_id: str) -> dict:
     disabled = []
     for view in disabled_packs(manager, root):
         for page in view.manifest.pages():
-            if page.get("id") in mf.BUILTIN_PAGES and page["id"] not in seen_pages:
+            if (page.get("id") in mf.BUILTIN_PAGES or _custom_page_ok(view, page)) and page_key(view, page) not in seen_pages:
                 title = (page.get("nav") or {}).get("title") or PAGE_DEFAULTS.get(page["id"], (page["id"],))[0]
-                disabled.append({"id": page["id"], "pack": view.name, "pack_label": view.manifest.label, "title": title})
+                disabled.append({"id": page_key(view, page), "pack": view.name, "pack_label": view.manifest.label,
+                                 "title": title})
     return {
         "active_hash": status.get("active_hash") or "",
         "pending_hash": status.get("pending_hash"),
@@ -289,7 +304,7 @@ def resolve_action(manager, project_id: str, action: dict) -> dict | None:
         if view.name != pack:
             continue
         for page in view.manifest.pages():
-            if page.get("id") != page_id or not _page_ok(page, view.manifest):
+            if page.get("id") != page_id or not _page_ok(page, view):
                 continue
             for item in page_view(view, page, pending=False)["actions"]:
                 if item["id"] == action_id:

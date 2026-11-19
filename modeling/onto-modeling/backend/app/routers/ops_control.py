@@ -28,6 +28,7 @@ from ..api import deps
 from ..api.errors import ApiError
 from ..governance import config_registry, ops_state, roles, telemetry
 from ..services import audit
+from ..services.packs.manifest import PAGE_API
 from . import ops
 
 router = APIRouter(prefix="/api/v1/ops", tags=["ops"])
@@ -582,7 +583,7 @@ def versions(request: Request):
     items = [
         {"category": "kernel", "component": "onto-modeling", "version": _app_version(), "note": None},
         {"category": "kernel", "component": "kernel_api", "version": "1", "note": "API v1"},
-        {"category": "kernel", "component": "page_api", "version": "1.0", "note": None},
+        {"category": "kernel", "component": "page_api", "version": PAGE_API, "note": None},
         {"category": "data_format", "component": "metamodel", "version": mm.METAMODEL_VERSION, "note": None},
         {"category": "data_format", "component": "ontology-package", "version": "0.1 / 0.2", "note": "启用求解契约时 0.2"},
         {"category": "engine", "component": "claude-agent-sdk", "version": ops._package_version("claude-agent-sdk") or None,

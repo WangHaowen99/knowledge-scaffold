@@ -6,11 +6,16 @@
 // 之后的请求、回应、推送都走这个端口。每个 iframe 只握手一次；iframe 再次 load（导航走了）就拆掉，
 // 端口随原页面一起失效，导航到的新页面接不上（审查第 2 条）。
 // 请求：{onto_ui: "1.0", id, method, params}；回应：{onto_ui, id, ok: true, result} 或 {onto_ui, id, ok: false, error}；
-// 平台主动推：{onto_ui, event: "artifact.changed" | "readonly.changed", data}。
+// 平台主动推：{onto_ui, event: "artifact.changed" | "readonly.changed" | "upload.changed" | "command.progress", data}。
+//
+// 1.1（ADR-0103）：插件自己的页面也走这里（页面模式：ctx.page 有值、ctx.artifact 为 null），加 artifact.list、
+// upload.list / put / delete（本包清单声明的上传位）、file.download（本包插件目录 ext/<包>/ 下的文件）、
+// studio.open（跳到 Studio 的条目）、command.tasks（本页发出的、还在跑的命令）。
 import { UI_API } from './packUi.js';
 
 export { UI_API };
-export const METHODS = ['context.get', 'artifact.read', 'artifact.save', 'chat.command', 'theme.get'];
+export const METHODS = ['context.get', 'artifact.read', 'artifact.save', 'chat.command', 'theme.get',
+  'artifact.list', 'upload.list', 'upload.put', 'upload.delete', 'file.download', 'studio.open', 'command.tasks'];
 // 主题变量：只给设计系统里的颜色、圆角、字体这几样
 export const THEME_VARS = ['--ink', '--sub', '--muted', '--faint', '--line', '--panel', '--panel2', '--bg', '--blue', '--blue3',
   '--teal', '--amber', '--red', '--green', '--radius', '--font'];
@@ -25,6 +30,14 @@ const ARG_KEY_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,39}$/;
 const CONTROL_RE = /[\u0000-\u001f\u007f]/;
 export const COMMAND_INTERVAL_MS = 5000;
 const SUMMARY_MAX = 200;
+// 1.1：上传与下载的限制（服务端另有一道：PL-28 校验知识包、PL-31 只认插件目录）
+export const UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
+const NAME_MAX = 200;
+const PATH_MAX = 512;
+const UPLOAD_ID_RE = /^[a-z0-9][a-z0-9-]{0,60}$/;
+const ENTRY_KINDS = ['object', 'operation', 'rule', 'metric'];
+const FILTER_MAX = 10;
+export const DOWNLOAD_INTERVAL_MS = 2000;
 const SAVE_KEYS = ['base_revision', 'fields', 'sections', 'content', 'summary'];
 
 export class BridgeError extends Error {
@@ -54,10 +67,10 @@ export function parseRequest(data) {
   return { id, method: data.method, params: data.params || {} };
 }
 
-// 只认本包登记的产物类型：类型前缀就是包名
+// 只认本包登记的产物类型：类型前缀就是包名。页面模式没有当前产物，type、key 要自己给
 function targetOf(params, ctx) {
-  const type = params.type === undefined ? ctx.artifact.type : params.type;
-  const key = params.key === undefined ? ctx.artifact.key : params.key;
+  const type = params.type === undefined ? ctx.artifact?.type : params.type;
+  const key = params.key === undefined ? ctx.artifact?.key : params.key;
   if (typeof type !== 'string' || !ctx.types.includes(type)) fail('forbidden', '只能读写本插件登记的产物');
   if (typeof key !== 'string' || !KEY_RE.test(key)) fail('invalid_argument', 'key 不合法');
   return { type, key };
@@ -94,6 +107,69 @@ function commandOf(params, ctx) {
   return { command, args, text: params.text };
 }
 
+function typeOf(params, ctx) {
+  if (typeof params.type !== 'string' || !ctx.types.includes(params.type)) fail('forbidden', '只能读本插件登记的产物');
+  return params.type;
+}
+
+const shortLine = (v, max) => typeof v === 'string' && v.length > 0 && v.length <= max && !CONTROL_RE.test(v);
+
+function listQuery(params) {
+  const query = {};
+  if (params.filter !== undefined) {
+    if (!isObject(params.filter) || Object.keys(params.filter).length > FILTER_MAX) fail('invalid_argument', 'filter 只能是少量「字段 → 值」');
+    for (const [k, v] of Object.entries(params.filter)) {
+      if (!ARG_KEY_RE.test(k) || !shortLine(String(v), ARG_CHARS)) fail('invalid_argument', 'filter 的值要是短的单行文字');
+      query[`filter[${k}]`] = String(v);
+    }
+  }
+  if (params.q !== undefined) {
+    if (!shortLine(params.q, ARG_CHARS)) fail('invalid_argument', 'q 要是短的单行文字');
+    query.q = params.q;
+  }
+  return query;
+}
+
+function slotOf(params, ctx) {
+  if (typeof params.slot !== 'string' || !(ctx.uploads || []).some((u) => u.id === params.slot)) fail('forbidden', '只能用本插件声明的上传位');
+  return params.slot;
+}
+
+function uploadOf(params) {
+  if (!shortLine(params.name, NAME_MAX) || /[/\\]/.test(params.name)) fail('invalid_argument', 'name 要是不带路径的文件名');
+  const data = params.data;
+  if (!(data instanceof ArrayBuffer)) fail('invalid_argument', 'data 要是 ArrayBuffer');
+  if (data.byteLength === 0) fail('invalid_argument', '文件是空的');
+  if (data.byteLength > UPLOAD_MAX_BYTES) fail('payload_too_large', '文件超过 50 MB');
+  return { name: params.name, data };
+}
+
+// 插件目录里的相对路径：不能是绝对路径，不能带 . / .. / 隐藏段 / 反斜杠 / 控制字符；空串是插件目录本身
+function pathOf(params) {
+  const path = params.path === undefined ? '' : params.path;
+  if (typeof path !== 'string' || path.length > PATH_MAX || CONTROL_RE.test(path) || path.includes('\\') || path.startsWith('/')) {
+    fail('invalid_argument', 'path 不合法');
+  }
+  const parts = path.split('/').filter(Boolean);
+  if (parts.some((p) => p === '.' || p === '..' || p.startsWith('.'))) fail('invalid_argument', 'path 不合法');
+  return parts.join('/');
+}
+
+function entryOf(params) {
+  if (!ENTRY_KINDS.includes(params.kind)) fail('invalid_argument', `kind 只能是 ${ENTRY_KINDS.join('、')}`);
+  if (typeof params.key !== 'string' || !KEY_RE.test(params.key)) fail('invalid_argument', 'key 不合法');
+  return { kind: params.kind, key: params.key };
+}
+
+function throttleDownload(ctx, deps) {
+  const state = ctx.state || (ctx.state = {});
+  const now = deps.now ? deps.now() : Date.now();
+  if (state.lastDownloadAt != null && now - state.lastDownloadAt < DOWNLOAD_INTERVAL_MS) fail('rate_limited', '下载太频繁，稍后再试');
+  state.lastDownloadAt = now;
+}
+
+const needPage = (ctx) => { if (!ctx.page) fail('method_unknown', '这个方法只在插件页面里能用'); };
+
 // 发命令限频：同一个编辑器（ctx.state）两条之间至少隔 COMMAND_INTERVAL_MS
 function throttle(ctx, deps) {
   const state = ctx.state || (ctx.state = {});
@@ -103,9 +179,12 @@ function throttle(ctx, deps) {
 }
 
 /**
- * 校验并执行一次调用。ctx：{pack, version, label, editor: {id, title}, artifact: {type, key, title}, types: string[],
- * commands: string[]（本包声明的命令）, readonly, state（限频用，可变）}；
- * deps：{readArtifact(type, key), saveArtifact(type, key, body), sendCommand({command, args, text}), theme(), now?()}。
+ * 校验并执行一次调用。ctx：{pack, version, label, editor: {id, title}, artifact: {type, key, title} | null,
+ * page: {id, title} | null（插件页面）, types: string[], commands: string[]（本包声明的命令）,
+ * uploads: [{id, title, kind, max}]（本包的上传位）, readonly, state（限频用，可变）}；
+ * deps：{readArtifact(type, key), saveArtifact(type, key, body), sendCommand({command, args, text}), theme(), now?(),
+ * 1.1 页面模式另有 listArtifacts(type, query), listUploads(slot), putUpload(slot, name, data), deleteUpload(slot, id),
+ * download(path), openStudio(kind, key), commandTasks()}。
  * 接口出错原样带回（code、message、status、details），比如写入范围锁的 423。
  */
 export async function handle(call, ctx, deps) {
@@ -114,8 +193,41 @@ export async function handle(call, ctx, deps) {
       case 'context.get':
         return {
           ui_api: UI_API, pack: { name: ctx.pack, version: ctx.version, label: ctx.label }, editor: ctx.editor,
-          artifact: ctx.artifact, readonly: !!ctx.readonly,
+          artifact: ctx.artifact || null, page: ctx.page || null, readonly: !!ctx.readonly,
+          uploads: (ctx.uploads || []).map((u) => ({ id: u.id, title: u.title, kind: u.kind, max: u.max })),
         };
+      case 'artifact.list':
+        return await deps.listArtifacts(typeOf(call.params, ctx), listQuery(call.params));
+      case 'upload.list':
+        needPage(ctx);
+        return await deps.listUploads(slotOf(call.params, ctx));
+      case 'upload.put': {
+        needPage(ctx);
+        const slot = slotOf(call.params, ctx);
+        const { name, data } = uploadOf(call.params);
+        return await deps.putUpload(slot, name, data);
+      }
+      case 'upload.delete': {
+        needPage(ctx);
+        const slot = slotOf(call.params, ctx);
+        if (typeof call.params.id !== 'string' || !UPLOAD_ID_RE.test(call.params.id)) fail('invalid_argument', 'id 不合法');
+        return await deps.deleteUpload(slot, call.params.id);
+      }
+      case 'file.download': {
+        needPage(ctx);
+        const path = pathOf(call.params);
+        throttleDownload(ctx, deps);
+        await deps.download(path);
+        return { ok: true };
+      }
+      case 'studio.open': {
+        const { kind, key } = entryOf(call.params);
+        await deps.openStudio(kind, key);
+        return { ok: true };
+      }
+      case 'command.tasks':
+        needPage(ctx);
+        return await deps.commandTasks();
       case 'artifact.read': {
         const { type, key } = targetOf(call.params, ctx);
         return await deps.readArtifact(type, key);

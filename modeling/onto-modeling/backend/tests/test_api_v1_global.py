@@ -158,7 +158,7 @@ def _assert_error(response, status: int, code: str):
 
 def test_client_config_shape_and_legacy_status(client):
     body = client.get("/api/v1/client-config").json()
-    assert body["api_version"] == "1" and body["page_api"] == "1.0"
+    assert body["api_version"] == "1" and body["page_api"] == "1.1"
     assert body["auth"] == {"enabled": True, "registration_enabled": True, "local_user": None}
     assert body["ops_base_url"] == "" and body["maintenance"] is None
     assert body["limits"]["material_upload_bytes"] == 20 * 1024 * 1024

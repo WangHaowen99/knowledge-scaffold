@@ -23,6 +23,7 @@ from ..api import deps
 from ..api.errors import ApiError
 from ..services import audit, auth, uploads
 from ..services.auth import AuthError
+from ..services.packs.manifest import PAGE_API  # 页面接口版本只有这一个来源（ADR-0103 升到 1.1）
 
 _log = logging.getLogger(__name__)
 
@@ -31,7 +32,6 @@ router = APIRouter(prefix="/api/v1", tags=["auth"])
 # 上传上限与资料类型白名单的唯一来源在暂存上传区（契约 1.8）
 LIMITS = uploads.LIMITS
 MATERIAL_TYPES = uploads.MATERIAL_TYPES
-PAGE_API = "1.0"
 # 金额币种：模型单价表（方案 B14）落地前，费用是引擎 SDK 报告的美元数
 BILLING_CURRENCY = "USD"
 

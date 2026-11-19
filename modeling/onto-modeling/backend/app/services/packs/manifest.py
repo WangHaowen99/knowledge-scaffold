@@ -17,18 +17,25 @@ CHECKSUMS_FILE = "checksums.sha256"
 
 # 内核接口版本：包清单 kernel_api 的比对对象，内核随版本发布（H3）时才会变
 KERNEL_API = "1.0"
-# 平台页面接口版本（详设 5.9.6）：包声明的 page_api 不满足时不让启用、升级
-PAGE_API = "1.0"
+# 平台页面接口版本（详设 5.9.6）：包声明的 page_api 不满足时不让启用、升级。
+# 1.1：上传包可以带自己的页面（pages[].ui 指向本包的编辑器，在隔离 iframe 里跑，ADR-0103）
+PAGE_API = "1.1"
 # 流程定义格式版本（flow.yaml 的 flow_api）
 FLOW_API = 1
-# 包自带界面的窄接口版本（ADR-0055）：上传包的 iframe 编辑器与平台之间 postMessage 协议的版本
-UI_API = "1.0"
+# 包自带界面的窄接口版本（ADR-0055）：上传包的 iframe 编辑器与平台之间 postMessage 协议的版本。
+# 1.1：加页面模式与 artifact.list、upload.*、file.download、studio.open（ADR-0103），1.0 的方法不变
+UI_API = "1.1"
 # 包自带界面的目录与编辑器入口（ADR-0055）：官方包（镜像内置）的编辑器随平台编译，入口是 ui/<id>/index.jsx；
 # 上传包只能是构建好的静态资源，经不同源的 iframe 加载，入口是 ui/<id>/index.html
 UI_DIR = "ui"
 EDITOR_ENTRY_BUNDLED = "index.jsx"
 EDITOR_ENTRY_IFRAME = "index.html"
 EDITOR_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
+# 包自己的页面（ADR-0103）：id 写法同编辑器；左栏和路由里的 id 是「包名:页面 id」，不会和内核页、内置页撞
+PAGE_ID_RE = EDITOR_ID_RE
+# 插件上传目录（ADR-0103）：清单 contributes.uploads 声明上传位，网页上传的文件落在 ext/<包名>/uploads/<上传位>/
+UPLOAD_KINDS = ("knowledge-package",)
+UPLOAD_MAX_ITEMS = 20
 
 KINDS = ("capability", "knowledge", "node", "provider", "exporter")
 CATEGORIES = ("capability", "industry", "system", "provider", "node", "exporter")
@@ -237,6 +244,16 @@ class Manifest:
     def subpages(self) -> list[dict]:
         return [dict(item) for item in self.contributes.get("subpages") or [] if isinstance(item, dict)]
 
+    def custom_pages(self) -> list[dict]:
+        """包自己的页面（ADR-0103）：不是内置页、带 ui 的那些。"""
+        return [page for page in self.pages() if page.get("id") not in BUILTIN_PAGES and page.get("ui")]
+
+    def uploads(self) -> list[dict]:
+        """上传位（ADR-0103）：`{id, title, kind, max}`。"""
+        return [{"id": str(item["id"]), "title": str(item.get("title") or item["id"]), "kind": str(item.get("kind") or ""),
+                 "max": int(item.get("max") or UPLOAD_MAX_ITEMS)}
+                for item in self.contributes.get("uploads") or [] if isinstance(item, dict) and item.get("id")]
+
     def editors(self) -> list[dict]:
         """包自带的编辑器（ADR-0055）：`{id, title, ui_api}`；视图 `detail.editor` 按 id 引用。"""
         return [{"id": str(item["id"]), "title": str(item.get("title") or item["id"]),
@@ -262,6 +279,7 @@ class Manifest:
                 "views": self.items("views"),
                 "reports": self.items("reports"),
                 "editors": [editor["id"] for editor in self.editors()],
+                "uploads": [item["id"] for item in self.uploads()],
             },
             "checksums_ok": checksums_ok, "size": size, "files": files,
         }
@@ -329,7 +347,7 @@ def parse(data: dict) -> Manifest:
         problems.append("contributes 必须是映射")
         contributes = {}
     normalized = dict(contributes)
-    for key in LIST_FIELDS + ("pages", "subpages", "editors"):
+    for key in LIST_FIELDS + ("pages", "subpages", "editors", "uploads"):
         normalized[key] = _as_list(contributes.get(key), problems, key)
     editor_ids = set()
     for item in normalized["editors"]:
@@ -342,6 +360,18 @@ def parse(data: dict) -> Manifest:
             editor_ids.add(editor_id)
             if item.get("ui_api") not in (None, "") and not valid_range(str(item["ui_api"])):
                 problems.append(f"编辑器 {editor_id} 的 ui_api 范围写法不合法：{item['ui_api']}")
+    upload_ids = set()
+    for item in normalized["uploads"]:
+        upload_id = item.get("id") if isinstance(item, dict) else None
+        if not isinstance(upload_id, str) or not EDITOR_ID_RE.match(upload_id) or upload_id in upload_ids:
+            problems.append(f"contributes.uploads 每项要有不重复的 id（小写字母开头，字母、数字、连字符）：{item!r}")
+            continue
+        upload_ids.add(upload_id)
+        if item.get("kind") not in UPLOAD_KINDS:
+            problems.append(f"上传位 {upload_id} 的 kind 只能是 {' | '.join(UPLOAD_KINDS)}")
+        limit = item.get("max")
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= UPLOAD_MAX_ITEMS):
+            problems.append(f"上传位 {upload_id} 的 max 要是 1～{UPLOAD_MAX_ITEMS} 的整数")
     for key in ("commands", "agents", "skills", "scripts", "templates", "reference", "rules"):
         for item in normalized[key]:
             if not isinstance(item, str) or not _ITEM_NAME_RE.match(item) or ".." in item:

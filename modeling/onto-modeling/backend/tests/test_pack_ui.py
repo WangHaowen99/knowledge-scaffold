@@ -189,7 +189,7 @@ def test_ui_session_serves_static_files_with_isolation_headers(env):
     opened = client.post(f"/api/v1/projects/{project_id}/packs/sticky-notes/ui-sessions", json={"editor": "note"})
     assert opened.status_code == 201, opened.text
     body = opened.json()
-    assert body["ui_api"] == "1.0" and body["url"].startswith("/api/v1/pack-ui/") and body["url"].endswith("/note/index.html")
+    assert body["ui_api"] == "1.1" and body["url"].startswith("/api/v1/pack-ui/") and body["url"].endswith("/note/index.html")
     page = client.get(body["url"])
     assert page.status_code == 200 and page.headers["content-type"].startswith("text/html")
     csp = page.headers["content-security-policy"]
