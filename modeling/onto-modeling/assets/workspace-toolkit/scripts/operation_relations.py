@@ -8,7 +8,7 @@
     - 可单独调用 > 是 / 否                        只对子操作有意义，缺省为「否」
 
 规则检查（ontology_checker.py）、脚本绑定规则（script_descriptor.py）与知识包导出
-（operation frontmatter 的 uses.operations）共用本模块。仅依赖标准库。
+（operation frontmatter 的 uses.operations、operations/index.md 的目录行）共用本模块。仅依赖标准库。
 """
 from __future__ import annotations
 
@@ -34,6 +34,8 @@ _CALL_SITE_LINK_RE = re.compile(r"调用\[\[([^\]]+)\]\]逻辑文档")
 _CALL_SITE_QUOTED_RE = re.compile(r'调用\s*"([^"]+)"\s*逻辑文档')
 # 规范写法「不满足前提时终止流程并输出异常说明」（OPERATION_STYLE_GUIDE 前置校验）；排除「结束日期」这类字段名
 _STOP_CONDITION_RE = re.compile(r"(终止|结束|停止)(?!日期|时间|日|时)|不再执行|跳过后续")
+_DIVIDER_CELL_RE = re.compile(r":?-{3,}:?")
+_EMPTY_PARAMETER_CELLS = {"", "无", "—", "-"}
 
 
 @dataclass(frozen=True)
@@ -205,3 +207,44 @@ def ancestors(key: str, parents: dict[str, set[str]]) -> list[str]:
             next_frontier += sorted(parents.get(parent, ()))
         frontier = next_frontier
     return found
+
+
+def index_row(
+    key: str, body: str, parents: list[str], *, package_key: str = "", execution: str | None = None,
+) -> str:
+    """知识包操作目录（operations/index.md）的一行；规则检查按它估算目录大小。
+
+    package_key 是包内 operation key（求解 operation 用 solver_key）；execution 不为 None 时
+    追加 execution 列（包里有求解契约时整张表都有这一列）。
+    """
+    found = sections(body)
+    inputs = "、".join(_parameter_names(found.get("输入", ""))) or "无"
+    outputs = "、".join(_parameter_names(found.get("输出", ""))) or "无"
+    if parents:
+        outputs += "（" + "、".join(f"「{parent}」" for parent in parents) + "流程中的一步）"
+    cells = [package_key or key, key, inputs, outputs]
+    if execution is not None:
+        cells.append(execution)
+    return "| " + " | ".join(_index_cell(cell) for cell in cells) + " |\n"
+
+
+def _parameter_names(section_text: str) -> list[str]:
+    """operation 文档输入/输出表的「参数名称」列；没有这一列时取第一列。"""
+    rows = [line.strip() for line in section_text.split("\n") if line.strip().startswith("|")]
+    if len(rows) < 2:
+        return []
+    headers = [cell.strip() for cell in rows[0].strip("|").split("|")]
+    column = headers.index("参数名称") if "参数名称" in headers else 0
+    names: list[str] = []
+    for row in rows[1:]:
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        if all(_DIVIDER_CELL_RE.fullmatch(cell.replace(" ", "")) for cell in cells if cell):
+            continue
+        name = cells[column] if column < len(cells) else ""
+        if name not in _EMPTY_PARAMETER_CELLS and name not in names:
+            names.append(name)
+    return names
+
+
+def _index_cell(text: str) -> str:
+    return " ".join(str(text or "").split()).replace("|", "，")

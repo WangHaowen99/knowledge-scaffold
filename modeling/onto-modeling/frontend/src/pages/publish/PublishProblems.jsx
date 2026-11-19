@@ -1,6 +1,7 @@
 // 发布页「需要处理」：没通过或有提醒的检查项各一张卡，标题说问题和后果，下面按对象列，底部是修复动作。
 // 元素照 develop PublishCheckDialog（ADR-0098）：数据绑定修正（PB-02）、表的来源、无法核对的对象与其他提示、求解契约
-// （静态检查、未验证确认）、结构自检、降级发布与「交给助手修复」；包与流程带来的门禁给「去运行 / 去处理」。
+// （静态检查、未验证确认）、结构自检与「交给助手修复」；包与流程带来的门禁给「去运行 / 去处理」。
+// 数据绑定不挡发布：只剩它没过时，发布卡的「发布」直接按降级发布，这里只给修复入口。
 // 文件路径与行号只用于「打开」和交给助手，不显示。
 import { useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
@@ -9,11 +10,11 @@ import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import { uploadRules, validateResourceFile } from '../../lib/resourceUpload.js';
 import { isLocked } from '../../state/readonly.js';
-import { Button, Check, Chip, Icon, Modal, cx } from '../../ui/index.jsx';
+import { Button, Check, Chip, Icon, cx } from '../../ui/index.jsx';
 import { ScopeLockBar } from '../plugin/parts.jsx';
 import { usePopMenu } from '../versions/popMenu.js';
 import {
-  DEGRADE_NOTE, FINDING_TITLES, KIND_TEXT, STRUCTURE_TITLES, assistantPrompt, degradeState, fileTarget, findingSource,
+  FINDING_TITLES, KIND_TEXT, STRUCTURE_TITLES, assistantPrompt, fileTarget, findingSource,
   gateMark, shortRevision, structurePrompt, structureRows, tableGroups,
 } from './publishCheckModel.js';
 
@@ -140,16 +141,14 @@ function TableSources({ check, busy, onMark, onUpload }) {
   );
 }
 
-function BindingSection({ gate, check, publishing, acknowledged, onRecheck, onDegrade, onChanged, onAssistant }) {
+function BindingSection({ gate, check, onRecheck, onChanged, onAssistant }) {
   const { api } = useApp();
   const { pid, scope } = useProject();
   const [busy, setBusy] = useState('');
-  const [confirmDegrade, setConfirmDegrade] = useState(false);
   const issues = check.binding?.issues || [];
   const blocking = issues.filter((issue) => issue.blocking);
   const pending = issues.filter((issue) => !issue.blocking);
   const warnings = check.binding?.warnings || [];
-  const degrade = degradeState(check, acknowledged);
   const tables = check.binding?.tables || [];
 
   const act = async (key, action, done) => {
@@ -186,13 +185,7 @@ function BindingSection({ gate, check, publishing, acknowledged, onRecheck, onDe
   return (
     <Section
       gate={gate}
-      foot={blocking.length ? (
-        <>
-          <Button size="sm" kind="primary" onClick={() => onAssistant(blocking)}>全部交给助手修复</Button>
-          <Button size="sm" kind="ghost" disabled={degrade.disabled || publishing} title={degrade.title || undefined}
-            onClick={() => setConfirmDegrade(true)}>忽略并降级发布</Button>
-        </>
-      ) : null}
+      foot={blocking.length ? <Button size="sm" kind="primary" onClick={() => onAssistant(blocking)}>全部交给助手修复</Button> : null}
     >
       {issues.some((x) => isLocked(scope, x.object)) ? <ScopeLockBar lock={scope} targets={issues.map((x) => x.object)} text={LOCK_TEXT} /> : null}
       {blocking.length ? <Folded items={blocking} render={row} /> : null}
@@ -200,11 +193,6 @@ function BindingSection({ gate, check, publishing, acknowledged, onRecheck, onDe
       {pending.length ? <Fold title={`无法核对、暂不绑定的对象（${pending.length}）`}>{pending.map(row)}</Fold> : null}
       {warnings.length ? <Fold title={`其他提示（${warnings.length}）`}>{warnings.map((w) => <div key={w} className="xs mt4">{w}</div>)}</Fold> : null}
       {check.binding?.truncated ? <div className="xs muted mt8">条目较多，只列出前一部分；修好后会重新检查。</div> : null}
-      <Modal open={confirmDegrade} onClose={() => setConfirmDegrade(false)} title={`${blocking.length} 个对象没通过检查`} w={460}
-        foot={<><span className="sp" /><Button onClick={() => setConfirmDegrade(false)}>取消</Button>
-          <Button kind="danger" disabled={publishing} onClick={() => { setConfirmDegrade(false); onDegrade(); }}>忽略并降级发布</Button></>}>
-        <div className="sm">{DEGRADE_NOTE}</div>
-      </Modal>
     </Section>
   );
 }
@@ -330,7 +318,7 @@ function PackSection({ gate, onGateAction, busy }) {
 }
 
 export default function PublishProblems({
-  check, gates, acknowledged, onAcknowledge, publishing, onRecheck, onDegrade, onChanged, onGateAction, busy,
+  check, gates, acknowledged, onAcknowledge, onRecheck, onChanged, onGateAction, busy,
 }) {
   const { api } = useApp();
   const { pid } = useProject();
@@ -351,8 +339,8 @@ export default function PublishProblems({
         if (g.id === 'modeling_stages') return <StagesSection key={g.id} gate={g} />;
         if (g.id === 'data_binding') {
           return (
-            <BindingSection key={g.id} gate={g} check={check} publishing={publishing} acknowledged={acknowledged}
-              onRecheck={onRecheck} onDegrade={onDegrade} onChanged={onChanged} onAssistant={askAssistant} />
+            <BindingSection key={g.id} gate={g} check={check}
+              onRecheck={onRecheck} onChanged={onChanged} onAssistant={askAssistant} />
           );
         }
         if (g.id === 'solver_contract') {

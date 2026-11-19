@@ -7,12 +7,15 @@ import { register as registerVersions } from '../src/api/mock/routes-versions.js
 import {
   degradeNote, fixOptions, formatLabel, gateBlockedText, issueView, mergeRelease, needsSolverAck, releaseGate, releasedText,
 } from '../src/pages/publish/publishModel.js';
-import { gateMark, problemGates, publishVerdict } from '../src/pages/publish/publishCheckModel.js';
+import { gateMark, problemGates, proceedState, publishVerdict } from '../src/pages/publish/publishCheckModel.js';
 
 // ---------- 纯逻辑 ----------
 
 test('检查项标记：挡住 / 还没运行 / 有提醒 / 通过；需要处理只列没通过和有提醒的，挡住的在前', () => {
-  assert.deepEqual(gateMark({ id: 'data_binding', status: 'fail', blocking: true }), { tone: 'bad', icon: 'x', text: '没通过' });
+  assert.deepEqual(gateMark({ id: 'package_structure', status: 'fail', blocking: true, degradable: false }), { tone: 'bad', icon: 'x', text: '没通过' });
+  // 数据绑定可降级：没通过也只算提醒，不算挡住
+  assert.deepEqual(gateMark({ id: 'data_binding', status: 'fail', blocking: true, degradable: true }), { tone: 'warn', icon: 'alert', text: '有提醒' });
+  assert.deepEqual(gateMark({ id: 'data_binding', status: 'pass', blocking: false, degradable: true }), { tone: 'ok', icon: 'check', text: '通过' });
   // 还没运行的流程关卡挡发布时算没通过，不挡时算提醒
   assert.equal(gateMark({ id: 'retail.compliance', status: 'not_run', blocking: true }).tone, 'bad');
   assert.deepEqual(gateMark({ id: 'retail.compliance', status: 'not_run', blocking: false }), { tone: 'warn', icon: 'alert', text: '还没运行' });
@@ -37,8 +40,33 @@ test('检查项标记：挡住 / 还没运行 / 有提醒 / 通过；需要处�
   const solver = { gates: [gates[2]], solver: { enabled: true, requires_validation_after_publish: true } };
   assert.equal(publishVerdict(solver).tone, 'warn');
   assert.equal(publishVerdict(solver, { acknowledged: true }).tone, 'ok');
+  // 可降级的数据绑定排在挡住的后面
+  const mixed = [
+    { id: 'data_binding', title: '数据绑定', status: 'fail', blocking: true, degradable: true },
+    { id: 'package_structure', title: '知识包结构', status: 'fail', blocking: true, degradable: false },
+  ];
+  assert.deepEqual(problemGates(mixed).map((g) => g.id), ['package_structure', 'data_binding']);
   assert.equal(formatLabel({ format: 'solver' }), '求解知识包');
   assert.equal(formatLabel({ format: 'ontology' }), '普通知识包');
+});
+
+test('结论：只有数据绑定没过时可以发布，交代不绑定数据表的对象数；还有挡住的照旧不能发布', () => {
+  const binding = {
+    id: 'data_binding', title: '数据绑定', status: 'fail', blocking: true, degradable: true,
+    findings: [{ level: 'error' }, { level: 'error' }, { level: 'warning' }],
+  };
+  // 门禁的 findings 不截断，按其中挡发布的条目计数
+  assert.deepEqual(publishVerdict({ gates: [binding] }, { versionLabel: 'v0.14' }), { tone: 'warn', title: '可以发布 v0.14', sub: '2 个对象不绑定数据表' });
+  // 门禁没带 findings 时按绑定条目计数
+  const issues = { gates: [{ ...binding, findings: [] }], binding: { issues: [{ blocking: true }, { blocking: false }] } };
+  assert.equal(publishVerdict(issues).sub, '1 个对象不绑定数据表');
+  // 求解能力没确认：先说确认，确认后再说降级的后果
+  const solver = { gates: [binding], solver: { enabled: true, requires_validation_after_publish: true } };
+  assert.equal(publishVerdict(solver).sub, '求解能力还没验证，在下面「求解契约」里勾选确认后才能发布');
+  assert.equal(publishVerdict(solver, { acknowledged: true }).sub, '2 个对象不绑定数据表');
+  // 结构问题加绑定问题：照旧不能发布，只点名降级绕不过的那几项
+  const structure = { id: 'package_structure', title: '知识包结构', status: 'fail', blocking: true, degradable: false };
+  assert.deepEqual(publishVerdict({ gates: [binding, structure] }, { versionLabel: 'v0.14' }), { tone: 'bad', title: '还不能发布 v0.14', sub: '知识包结构没通过' });
 });
 
 test('数据绑定：问题标签、说明与「改为现有表」的选项', () => {
@@ -192,6 +220,17 @@ test('PB-03：门禁不过 422；降级只放宽数据绑定；求解包要确�
   // 版本列表上标出已发布
   const versions = await call('GET', `${P}/versions`);
   assert.equal(versions.body.items[0].release, '0.1.2');
+});
+
+test('mock：只有数据绑定没过时，按「发布」给的参数（degrade）就能发布，记录注明降级', async () => {
+  const { call } = mockServer({ sc: { publish: 'degrade' } });
+  const check = (await call('GET', `${P}/publish/check`)).body;
+  const proceed = proceedState(check, true);
+  assert.deepEqual(proceed, { label: '发布', disabled: false, title: '', degrade: true });
+  assert.deepEqual(publishVerdict(check, { versionLabel: check.version_label, acknowledged: true }), { tone: 'warn', title: '可以发布 v0.19', sub: '3 个对象不绑定数据表' });
+  const r = await call('POST', `${P}/releases`, { degrade: proceed.degrade, solver_unverified_acknowledged: true });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.gates.degraded, true);
 });
 
 test('PB-02：改数据来源提交新版本，问题消失；表名不存在 400、锚点 404、锁住 423', async () => {

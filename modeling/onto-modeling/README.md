@@ -473,6 +473,12 @@ n 从 1 开始（建项目的基线提交是 v0.1），界面显示 `v0.{n}`；�
 发布不读，不算在内）。发布前四个建模阶段都要有内容：资料分析（`research/`，验收未通过且还没提取对象时不算）、
 对象提取（`ontology/object/`）、操作提取（`ontology/operation/` 或旧的 `ontology/logic/`）、质量检查（`reports/`），
 缺了返回 `409 modeling_stages_incomplete`，网页与 MCP 都不能绕过。求解验证不再是门禁，见「知识包 Hub 与独立评测」。
+网页发布时只有数据绑定没过，主「发布」按钮直接降级发布（对不上的对象不绑表，发布记录注明降级），不再另行确认。
+
+**发布就绪（ADR-0103）**：会挡发布、降级也绕不过的问题在校验这一步修掉。校验之后平台用发布检查同一份代码
+（`services/publish/readiness.py`，与 PB-01 共用 `content_checks`）再查一遍：自主构建在合入前的修复循环里交给助手，
+陪伴模式在校验命令做完后以「发布检查」的名义发修复消息（最多 2 轮，你发了别的消息就不再代发）。修不掉的写进
+`reports/publish-check.md`（平台维护，每条一个 `[ ]`），校验因此不算完成；之后的校验查干净了，平台删掉这份清单。
 
 包提交到知识包 Hub 留存，版本号由 Hub 分配，见「知识包 Hub 与独立评测」。Hub 提交成功后，本地再留一份上传的包
 （数据目录 `releases/`，按版本下载先读它，缺了用登录令牌从 Hub 取回），并打注释标签 `release/<Hub 版本>`，标签说明里记
@@ -543,7 +549,8 @@ Hub 的包与版本标识，版本页按它标出发布。旧项目已有同号�
   （规则副本在 `backend/app/services/consumer_package_rules/`，来源与同步步骤见其中的 `PROVENANCE.md`）。
   consumer 会拒绝的包列在发布检查的「知识包结构」一栏，不能降级发布。consumer 调整了数量上限时，在本服务
   设同名变量：`ONTOLOGY_OBJECT_MAX_COUNT`（默认 200）、`ONTOLOGY_OPERATION_MAX_COUNT`（100）、
-  `ENTITY_ATTRIBUTE_MAX_COUNT`（100）、`ONTOLOGY_OPERATION_MAX_CHARS`（15000）。
+  `ENTITY_ATTRIBUTE_MAX_COUNT`（100）、`ONTOLOGY_OPERATION_MAX_CHARS`（15000）。consumer 把 `objects/index.md` 目录也当一个
+  实体数属性，对象数实际不能超过 `ENTITY_ATTRIBUTE_MAX_COUNT`。
 - **求解验证**：迁到评测服务，发布只受求解契约静态检查与结构自检约束。当前求解契约修订没有通过的求解验证时，
   发布要确认「求解能力尚未经端到端验证」（MCP 发布带 `solver_unverified_acknowledged: true`），否则返回 409。
   发布后在评测页面以「求解验证」类型对该版本执行。
