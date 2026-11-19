@@ -1,8 +1,12 @@
-# 连接器包（provider）：文件转换器
+# 连接器包（provider）：文件转换器与数据源连接器
 
-**结论先说**：连接器包能打包、上传导入，导入后插件中心「多源连接器」里看得到它；但上传导入后转换器**不会运行**，资料不会因此被转换。转换器跑在连接器网关容器里，主服务不能往网关放代码，所以要由运维把包**打进连接器网关镜像**、重建网关后才会运行（第 9 节）。助手交付时必须把这一点和运维要做的事一起告诉用户（第 11 节）。
+**结论先说**：连接器包有两种，清单里二选一：
 
-目前连接器包只有一种：文件转换器。它把用户上传的资料（原文件字节）转成 Markdown 文本版，建模助手读的是文本版。
+- **文件转换器**（`converter` 段）：把用户上传的资料转成 Markdown 文本版；
+- **数据源连接器**（`source` 段，第 12 节）：连一种业务系统，把表结构、关系、样本采成一份资料的文本版。
+
+两种都跑在连接器网关的子进程里。包上传、安装后，要**平台管理员在插件中心「信任」这个版本**，平台才把它装进连接器网关，
+下一个任务就用上；不用重建镜像、不用重启。助手交付时必须把「要管理员信任」这一点告诉用户（第 11 节）。
 
 ## 1. 包结构
 
@@ -98,7 +102,7 @@ Markdown 的写法：
 
 ## 5. 网关怎样发现和调用转换器
 
-1. **发现（registry）**：网关启动时扫只读目录 `/opt/connector/converters/` 下每个子目录的 `manifest.yaml`，只读清单、不导入代码。`kind` 不是 provider、没有 `converter` 段、`name` 不等于目录名、入口文件不存在、`types` 不合法的，跳过（日志「转换器 … 的清单不完整，跳过」）。只在启动时扫，加包要重建并重启网关。
+1. **发现（plugins）**：网关读两处的清单，只读清单、不导入代码：镜像里的只读目录 `/opt/connector/converters/<名字>/`（官方包），和插件卷 `/var/lib/connector/plugins/<名字>/<版本>/`（管理员信任后平台交付的包）。同名取版本号最大的。`kind` 不是 provider、`converter` 和 `source` 不是二选一、`name` 不等于目录名、入口文件不存在、`types` 不合法的，跳过。信任、撤销信任当场生效，不用重启网关。
 2. **调度（server → runner）**：内核为每次转换签一张一次性票据（写明转换器 ID、文件名、原文件 sha256），`POST /v1/convert` 发给网关。网关验票后为这个任务起一个子进程 `python -m app.connector_gateway.worker`，工作目录 `/app`，环境变量只有 `PATH`、`LANG=C.UTF-8`、`PYTHONDONTWRITEBYTECODE=1`。
 3. **执行（worker）**：子进程从标准输入读一行 JSON 头（入口路径、文件名、limits、内存与 CPU 上限）和原文件字节，先给自己设资源上限，再按入口路径导入模块（模块名不是包名，`if __name__ == "__main__"` 不会执行），调用 `convert(data, filename, limits)`，把 `{"ok": true, "result": <to_dict()>}` 写到标准输出；`ConvertError` 写成 `{"ok": false, "error": {"code": …, "message": …}}`。
 4. **落盘（内核）**：网关回 converted 后，内核去掉伪造的文件头、加上自己的文件头，经写入路径存到 `resource/text/<分组>/<原文件名>.md`，资料状态推给前端。
@@ -142,7 +146,7 @@ env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
 - 不联网，不写 `/tmp` 以外的地方，不按 `filename` 去读文件。
 - 测试数据全部合成，不放进包里。
 
-## 8. 上传导入后会怎样
+## 8. 上传导入后会怎样（转换器）
 
 普通用户在插件中心上传 zip（`POST /api/v1/me/pack-uploads`），检查通过后安装。包只归上传者，`GET /api/v1/packs` 的目录里多一张卡片：
 
@@ -153,14 +157,15 @@ env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
 | `project_status` | `platform_installed`：平台级，不按项目启用 |
 | `publisher` | `{kind: private, label: 仅自己可见}` |
 
-资料不会被它转换：
+卡片上还有 `trust`：`{state: untrusted, installed: false}`。在它运行之前：
 
 - 私有包不进平台的转换器候选，`GET /api/v1/converters` 里没有它；这种类型的资料照旧，新类型显示「这种格式暂不支持」，已有类型继续用原来的转换器。
-- 管理员把它发布到全平台后，内核把它算作候选；网关里还没有它时，这种类型的资料会一直停在「等待转换」。所以先打进网关镜像，再发布。
+- 管理员把它发布到全平台，并在插件详情点「信任」（PL-28）后，平台把这个版本交给连接器网关；`trust` 变成 `{state: trusted, installed: true}`，
+  `GET /api/v1/converters` 里它的 `loaded` 为 true，这种类型的新资料就用它转。撤销信任（PL-29）后网关删掉这个版本。
 
-## 9. 运维：打进连接器网关镜像
+## 9. 随平台交付：打进连接器网关镜像
 
-在平台源码的 `modeling/onto-modeling/` 下：
+只有要把连接器作为官方包随平台交付时才这样做；第三方连接器走第 8 节的「信任」就够了。在平台源码的 `modeling/onto-modeling/` 下：
 
 1. **放入官方包目录**：把包目录放到 `assets/packs/<名字>/`（目录名等于包名；`checksums.sha256` 带不带都行，入库时重新生成）。主服务启动时把它作为官方包入库，内核才知道有这个转换器。
 2. **加 COPY**：`Dockerfile` 的 `connector-gateway` 段，在已有的几行转换器 COPY 后加一行：
@@ -201,11 +206,81 @@ env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
 助手收尾时照下面的意思说，替换尖括号里的内容：
 
 ```
-插件包 <名字>-<版本>.zip 已生成，在插件中心上传并安装后，「多源连接器」里能看到它。
-它现在不会转换资料：转换器要打进连接器网关镜像才运行。请把包目录交给运维，按下面几步做：
-1. 把 <名字>/ 放到 modeling/onto-modeling/assets/packs/<名字>/；
-2. Dockerfile 的 connector-gateway 段加 COPY assets/packs/<名字> /opt/connector/converters/<名字>；
-3. <依赖：无 / 把 xxx 加进 backend/connector-requirements.txt>；
-4. <扩展名：无需改动 / 把 .xxx 加进 backend/app/services/uploads.py 的 MATERIAL_TYPES 和新建项目页的 accept>；
-5. 重建主服务和连接器网关镜像，在 GET /api/v1/converters 里确认 <名字> 的 loaded 为 true。
+插件包 <名字>-<版本>.zip 已生成。在插件中心上传并安装后，「多源连接器」里能看到它。
+它要平台管理员在插件详情里点「信任」才会运行：信任后平台把它装进连接器网关，不用重建镜像。
+<转换器：之后上传的 .xxx 资料会用它转成文本；扩展名不在上传白名单里时，还要运维按第 9 节第 4 步放开。>
+<数据源连接器：之后项目成员在资料页「接入数据源」就能选它；业务库请给只读账号。>
 ```
+
+## 12. 数据源连接器
+
+决策见 ADR-0103。骨架是 `references/examples/sample-source/`（从一个返回 JSON 表结构的 HTTP 服务读表和外键，只用标准库），
+`pack_tool.py init <名字> --kind source` 复制它。
+
+### 12.1 清单的 `source` 段
+
+```yaml
+source:
+  entry: connector.py
+  license: 只用 Python 标准库
+  vendor: vendor            # 可选：随包带的纯 Python 依赖目录
+  fields:
+    - {key: host, label: 主机, type: host, required: true}
+    - {key: port, label: 端口, type: port, default: 8080}
+    - {key: token, label: 访问令牌, type: secret, required: true}
+    - {key: tables, label: 表范围, type: text, placeholder: "orders, customer*"}
+```
+
+- `fields` 是资料页「接入数据源」的表单，界面按它生成，包里不带前端代码。字段 `type` 取 `text`、`number`、`host`、`port`、`secret`、`select`
+  （`select` 要写 `options: [{value, label}]`）。
+- `secret` 类字段只进连接器网关的凭据库，助手、内核都看不到；其余字段写进数据源资料，助手看得到，不要把密钥设计成非 `secret` 字段。
+- `host`、`port` 各最多一个：网关只放行这一对主机端口，子进程连别处会被拦（`egress_denied`）。
+- 键名 `tables` 有约定：逗号分隔的表范围（`*` 只在末尾），`ctx.in_scope(表名)` 按它判断。
+- 依赖：只用标准库最好。要用第三方库时选纯 Python 的，把它解压进包里的 `vendor/`，在清单写 `vendor: vendor`；子进程把它放在
+  `sys.path` 最前。不要带编译过的扩展。
+
+### 12.2 两个函数
+
+```python
+from app.connector_gateway.source.sdk import SourceError
+
+def test(ctx):      # 连接、自检；每一项用 ctx.check(名称, 是否通过, 说明) 报
+    ...
+
+def collect(ctx):   # 发表和事实
+    ctx.table("orders", [{"name": "id", "type": "bigint", "key": "pk", "comment": "订单号"}, ...], rows, comment="订单")
+    ctx.fact("foreign_key", table="orders", columns=["customer_id"], ref_table="customer", ref_columns=["id"], name="fk_c")
+```
+
+`ctx` 的全部成员见平台文档 `design/data-sources.md` 第 1 节，常用的：
+
+| 成员 | 说明 |
+|---|---|
+| `ctx.config`、`ctx.secret` | 非密钥字段（已按类型转好、补了缺省值）、密钥字段 |
+| `ctx.table(name, columns, rows, comment)` | 一张表；`columns` 里 `key` 取 `pk`、`fk`、`uk` 或空；`rows` 给原始取值，最多 200 行 |
+| `ctx.fact(kind, …)` | `primary_key`、`foreign_key`、`reference`、`unique`、`check`、`values`、`view`、`routine`、`trigger` |
+| `ctx.throttle()`、`ctx.query_timeout_s()` | 每次查业务系统前调；单次请求的超时 |
+| `ctx.readonly(sql, dialect)` | 数据库类连接器：每条语句先过只读白名单 |
+| `ctx.in_scope(name)`、`ctx.progress(done, total)`、`ctx.limitation(text)` | 范围、进度、局限 |
+| `raise SourceError(code, message)` | 失败；常用 `connect_failed`、`auth_failed`、`account_not_readonly` |
+
+- 网关负责遮蔽（手机号、证件号、姓名等按列名和取值识别，关联键加盐哈希）、只留 20 行样本、渲染成文本版，插件不要自己遮蔽或拼 Markdown。
+- 数据库类连接器在 `test` 里自检账号权限：账号能写就报 `ctx.check("只读", False, …)`，`collect` 里 `raise SourceError("account_not_readonly")`。
+- 异常消息里不要写主机、账号、密码、连接串。
+- 插件的 `print` 进标准错误，不影响结果。
+
+### 12.3 本地自测
+
+```bash
+cd <平台源码>/modeling/onto-modeling/backend
+python - <<'PY'
+from pathlib import Path
+from app.connector_gateway.source import render, runner
+out = runner.run(Path("<包目录>/connector.py"), None, "collect", {"host": "127.0.0.1", "port": 8080, "tables": ""},
+                 {"token": "<测试令牌>"}, [{"host": "127.0.0.1", "port": 8080}], runner.SourceLimits(timeout_s=60))
+print(out.ok, out.error_code)
+print(render.render(out.collected, "salt")[0][:2000])
+PY
+```
+
+测试数据全部合成；测试服务、测试库只放在本机，不放进包里。

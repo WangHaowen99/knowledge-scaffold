@@ -386,11 +386,13 @@ class FilesMixin:
         reading_mode: str = "on_demand",
         author: str = "",
         commit: bool = True,
+        datasource: bool = False,
     ) -> dict:
         """上传即提交（与 Web 保存同口径）：发布按提交打包，没提交的资料进不了包。
 
         只提交本次的文件与用途清单，agent 别的未提交改动不带进这个提交。
         commit=False 时只落盘（调用方把一批资料合成一个提交，见 import_resources）。
+        datasource=True：数据源服务写数据源资料（ADR-0103），不走上传的类型白名单；purpose 为 keep 时不动用途。
         """
         if subdir not in RESOURCE_SUBDIRS:
             raise WorkspaceError(f"资料分类必须是 {sorted(RESOURCE_SUBDIRS)} 之一")
@@ -401,7 +403,12 @@ class FilesMixin:
         from .. import uploads
 
         # 资料进资料区都经过这里：类型白名单与 20 MiB 上限在服务层再挡一次，接口层漏了也绕不过去
-        uploads.check_type(safe_name, "material")
+        from ...evidence.sources import is_datasource
+
+        if datasource != is_datasource(safe_name):
+            raise WorkspaceError("数据源资料只能由数据源服务写")
+        if not datasource:
+            uploads.check_type(safe_name, "material")
         uploads.check_size(len(data), "material", safe_name)
         rel = f"resource/{subdir}/{safe_name}"
         with ChangeTx(self, project_id, Origin("web", author), summary=f"上传资料 {rel}") as tx:
@@ -414,10 +421,10 @@ class FilesMixin:
             if (root / stale_text).is_file():
                 tx.remove(stale_text)
             tx.touch(RESOURCE_DIRECTIVES)
-            detected = self._update_upload_directive(project_id, rel, purpose, reading_mode)
+            detected = None if purpose == "keep" else self._update_upload_directive(project_id, rel, purpose, reading_mode)
             # 变更提醒依据：前端对比该时间与派生产物版本，提示"资料已更新，可让助手增量刷新"
             self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
-            action = "替换资料" if replaced else "上传资料"
+            action = ("修改数据源" if replaced else "接入数据源") if datasource else ("替换资料" if replaced else "上传资料")
             commit_id = tx.commit(f"web: {action} {rel}{_by(author)}").commit if commit else ""
             if not commit:
                 tx.keep()  # 一批资料由调用方合成一个提交

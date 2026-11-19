@@ -215,6 +215,11 @@ def cmd_init(args) -> int:
 
     platform = _platform()
     kind = args.kind or platform["kinds"][0]
+    # 连接器包：--kind source 建数据源连接器（清单 kind 仍是 provider，ADR-0103），缺省建转换器
+    section = "source" if kind == "source" and "provider" in platform["kinds"] else (
+        "converter" if kind == "provider" else "")
+    if section == "source":
+        kind = "provider"
     if kind not in platform["kinds"]:
         raise ToolError(f"这个 skill 能建的 kind：{' / '.join(platform['kinds'])}")
     name = args.name
@@ -227,7 +232,7 @@ def cmd_init(args) -> int:
         raise ToolError(f"{target} 已存在，换个包名或先处理掉它")
     for manifest_path in sorted((SKILL / "references" / "examples").glob("*/manifest.yaml")):
         example = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-        if example.get("kind") == kind:
+        if example.get("kind") == kind and (not section or isinstance(example.get(section), dict)):
             break
     else:
         raise ToolError(f"skill 里没有 kind 为 {kind} 的样例")

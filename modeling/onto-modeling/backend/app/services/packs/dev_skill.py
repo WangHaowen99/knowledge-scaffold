@@ -35,9 +35,11 @@ SNAPSHOT_MAX_NAMES = 100
 CHECKER_SOURCES = (
     "services/packs/manifest.py", "services/packs/repository.py", "services/packs/checks.py",
     "services/packs/extensions.py", "services/flow/need.py", "kernel/artifacts/registry.py",
+    # 多源连接器的 source 段校验（ADR-0103），只用标准库
+    "evidence/sources.py",
 )
 _CHECKER_PACKAGES = ("", "services/", "services/packs/", "services/flow/", "services/onto_mcp/", "kernel/",
-                     "kernel/artifacts/")
+                     "kernel/artifacts/", "evidence/")
 _SKILLS = {
     "capability": {
         "label": "能力包",
@@ -69,12 +71,12 @@ _SKILLS = {
     "provider": {
         "label": "连接器包",
         "kinds": ("provider",),
-        "trigger": "要让平台能解析一种新的资料文件格式（转换器）",
-        "ask": "看不出要转换哪种文件格式",
-        "kind_choice": "固定写 `provider`，转换器写在清单顶层的 `converter` 段，不放进 `contributes`。",
-        "init_kind": "",
-        "closing": "   - **这个包导入后转换器不会运行。** 包能上传、能安装，也能在插件中心的「多源连接器」里看到，但转换器在连接器网关里运行，"
-                   "网关只认打进镜像的转换器。要真正跑起来，平台管理员得把转换器目录放进网关镜像并重新构建部署。这一条必须原样告诉开发者。",
+        "trigger": "要让平台能解析一种新的资料文件格式（转换器），或接入一种新的数据源（数据源连接器）",
+        "ask": "看不出要转换哪种文件格式，还是要连哪种系统",
+        "kind_choice": "固定写 `provider`。转换器写清单顶层的 `converter` 段，数据源连接器写 `source` 段，二选一，不放进 `contributes`。",
+        "init_kind": " [--kind source]",
+        "closing": "   - **上传后要管理员在插件中心「信任」才运行。** 连接器跑在连接器网关里，拿着凭据、连着业务网络；管理员信任这个版本后，"
+                   "平台把它装进网关，下一个任务就用上，不用重建镜像。这一条必须原样告诉开发者。",
     },
 }
 CATEGORIES = tuple(_SKILLS)

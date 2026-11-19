@@ -14,7 +14,9 @@ from fastapi.responses import JSONResponse
 
 from ..api import deps
 from ..api.errors import ApiError
-from ..services import mainline, material_conversion, material_refs, material_text, research_view, uploads, workspace_labels
+from ..services import (
+    datasources, mainline, material_conversion, material_refs, material_text, research_view, uploads, workspace_labels,
+)
 from ..services.workspace.layout import (
     RESOURCE_DIRECTIVES, RESOURCE_SUBDIRS, _content_revision, is_auto_detected, is_resource_text,
 )
@@ -66,7 +68,21 @@ def _material(project_id: str, root: Path, rel: str, directives: dict, reference
         # develop resource-meta 的 schema_scopes、schema_candidates，按资料给（ADR-0096）
         "schema_scope": scopes.get(rel),
         "schema_candidate": candidates.get(rel),
+        # 数据源资料（ADR-0103）：连接配置与字段，表数按文本版里的工作表数
+        "source": datasources.material_source(root, rel),
+        **({"sheets": _source_tables(root, rel)} if kind == "source" else {}),
     }
+
+
+def _source_tables(root: Path, rel: str) -> int | None:
+    markdown = material_conversion.text_markdown(root, rel)
+    return None if markdown is None else sum(1 for line in markdown.splitlines() if line.startswith("<!-- 工作表："))
+
+
+def material_view(project_id: str, root: Path, rel: str) -> dict:
+    """一份资料的 Material（数据源接口回资料用）。"""
+    return _material(project_id, root, rel, deps.workspaces.resource_directives(project_id),
+                     material_refs.counts(root, [rel]).get(rel, 0))
 
 
 def _schema_info(project_id: str) -> tuple[dict, dict]:
@@ -206,7 +222,10 @@ def delete_resource(project_id: str, request: Request, path: str = ""):
         raise ApiError("path_forbidden", "只能删除资料区的资料", 403, {"path": path})
     # 引用它的出处删除后变成「来源无法核验」：删之前数一遍
     broken = material_refs.counts(root, [path]).get(path, 0) if material_text.is_material(path) else 0
+    source = (root / path).read_bytes() if path.endswith(".datasource") and (root / path).is_file() else None
     result = deps.workspaces.delete_resource(project_id, path, author=deps.username(request))
+    if source is not None:
+        datasources.delete_secrets(project_id, path, source)
     state = mainline.state(root)
     return {
         "deleted": result["deleted"],
@@ -316,7 +335,8 @@ async def reconvert(project_id: str, request: Request):
     root = deps.require_writable(project_id, request)
     body = await deps.json_body(request)
     rel = _document(root, str(body.get("path") or ""))
-    if material_conversion.kind_of(rel) != "document" or not material_conversion.reconvert(project_id, rel):
+    if material_conversion.kind_of(rel) not in material_conversion.CONVERTIBLE \
+            or not material_conversion.reconvert(project_id, rel):
         raise ApiError("not_convertible", "这份资料不能转成文本", 409, {"path": rel})
     return JSONResponse(status_code=202, content={
         "material": _material(project_id, root, rel, deps.workspaces.resource_directives(project_id),

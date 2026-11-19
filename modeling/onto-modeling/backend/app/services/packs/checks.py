@@ -163,6 +163,30 @@ def _ui_problems(directory: Path, files: list[str], manifest: Manifest, *, offic
     return hard, soft
 
 
+def _provider_problems(directory: Path, manifest: Manifest) -> list[str]:
+    """多源连接器：`converter`、`source` 二选一（ADR-0073、ADR-0103），入口文件在、写法对。"""
+    from ...evidence.sources import SpecError, parse_spec
+
+    converter, source = manifest.raw.get("converter"), manifest.raw.get("source")
+    if isinstance(converter, dict) == isinstance(source, dict):
+        return ["converter 和 source 要写且只写一个"]
+    if isinstance(converter, dict):
+        entry = str(converter.get("entry") or "")
+        return [] if entry and (directory / entry).is_file() else ["converter.entry 指向的文件不存在"]
+    try:
+        info = parse_spec(manifest.raw)
+    except SpecError as exc:
+        return [str(exc)]
+    problems = []
+    if not (directory / info.entry).is_file():
+        problems.append("source.entry 指向的文件不存在")
+    else:
+        problems += _syntax_errors(directory, [info.entry])
+    if info.vendor and not (directory / info.vendor).is_dir():
+        problems.append("source.vendor 指向的目录不存在")
+    return problems
+
+
 def _secrets(directory: Path, files: list[str]) -> list[str]:
     hits = []
     for rel in files:
@@ -566,6 +590,10 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
     checks.append(_check("entity_types", "没有新增实体类型", "fail" if entity else "pass", "；".join(entity[:10])))
     views = artifact_registry.check_views(directory, manifest)
     checks.append(_check("views", "视图声明格式正确", "fail" if views else "pass", "；".join(views[:10])))
+
+    if manifest.kind == "provider":
+        provider = _provider_problems(directory, manifest)
+        checks.append(_check("provider", "多源连接器声明正确", "fail" if provider else "pass", "；".join(provider[:10])))
 
     if manifest.kind == "node":
         node_pack = _node_pack_problems(directory, manifest, files, repository)

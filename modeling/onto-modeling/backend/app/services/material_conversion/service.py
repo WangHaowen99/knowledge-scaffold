@@ -6,6 +6,7 @@
 - 状态：converting 转换中、converted 已转成文本、unsupported 暂不支持、failed 转换失败、waiting 等待转换（网关不可用）；
 - 触发：写入事件里有资料变了（上传、替换、恢复版本）就排队；资料上「重新转换」；启动时补转还没有文本版的（升级迁移）；
   等待中的每 30 秒看一次网关，恢复了就补转。
+- 数据源资料（`.datasource`，ADR-0103）也走这条队列：「转换」换成经网关采集，「重新转换」就是重新采集。
 """
 
 from __future__ import annotations
@@ -34,6 +35,9 @@ WORKERS = 2
 WAIT_RETRY_S = 30
 CONVERTERS_TTL_S = 30
 AUTHOR = "多源连接器"
+DATASOURCE_SUFFIX = ".datasource"
+# 要经网关出文本版的资料：文档（转换）和数据源（采集）
+CONVERTIBLE = ("document", "source")
 
 
 def _manager():
@@ -62,6 +66,8 @@ def kind_of(rel: str) -> str | None:
     suffix = suffix_of(rel)
     if suffix in NOT_DOCUMENT:
         return None
+    if suffix == DATASOURCE_SUFFIX:
+        return "source"
     return "native" if suffix in convert.NATIVE_TEXT_TYPES else "document"
 
 
@@ -206,7 +212,7 @@ def view(project_id: str, root: Path, rel: str, data: bytes | None = None, *, he
         converter, _, version = (head.get("converter") or "").partition("@")
         out.update(state="converted", converter=_converter_view(converter, version))
         return out
-    if not candidates(suffix_of(rel)):
+    if kind == "document" and not candidates(suffix_of(rel)):
         out.update(state="unsupported", reason=unsupported_reason(suffix_of(rel)))
         return out
     out["state"] = "waiting" if not gateway.base_url() else "converting"
@@ -226,7 +232,7 @@ def unready(project_id: str, root: Path, paths: list[str] | None = None, *, heal
     records = store.items(project_id)
     found = []
     for rel in material_paths(root) if paths is None else paths:
-        if kind_of(rel) != "document":
+        if kind_of(rel) not in CONVERTIBLE:
             continue
         if (records.get(rel) or {}).get("state") not in ACTIVE + ("failed", "unsupported") and text_header(root, rel):
             continue
@@ -287,14 +293,15 @@ def _record(project_id: str, rel: str, revision: str, state: str, **fields) -> N
 # ---------------------------------------------------------------------------
 
 
-def _write_text(project_id: str, rel: str, revision: str, markdown: str) -> bool:
+def _write_text(project_id: str, rel: str, revision: str, markdown: str, *, summary: str = "") -> bool:
     """经写入路径落盘；原文件这期间被换掉了就不写（换上来的那份会另外排队）。内容没变不出新版本。"""
     from ...kernel.writepath import ChangeTx, Origin
 
     manager = _manager()
     target = resource_text_path(rel)
     payload = markdown.encode("utf-8")
-    with ChangeTx(manager, project_id, Origin("plugin", AUTHOR), summary=f"转换资料 {rel}") as tx:
+    summary = summary or f"转换资料 {rel}"
+    with ChangeTx(manager, project_id, Origin("plugin", AUTHOR), summary=summary) as tx:
         source = tx.root / rel
         if not source.is_file() or _content_revision(source.read_bytes()) != revision:
             return False
@@ -309,7 +316,7 @@ def _write_text(project_id: str, rel: str, revision: str, markdown: str) -> bool
             manager.record_schema_scope(tx.root, rel)
         # 文本变了也是资料变了：前端「资料已更新」提示按这个时间比
         manager._update_meta_unlocked(tx.root, resource_updated_at=int(time.time()))
-        tx.commit(f"plugin: 转换资料 {rel}")
+        tx.commit(f"plugin: {summary}")
     return True
 
 
@@ -321,7 +328,8 @@ def process(project_id: str, rel: str, *, force: bool = False) -> str | None:
     except Exception:  # noqa: BLE001 - 项目已删除
         return None
     path = root / rel
-    if kind_of(rel) != "document" or not path.is_file() or path.is_symlink():
+    kind = kind_of(rel)
+    if kind not in CONVERTIBLE or not path.is_file() or path.is_symlink():
         store.drop(project_id, rel)
         return None
     data = path.read_bytes()
@@ -332,6 +340,8 @@ def process(project_id: str, rel: str, *, force: bool = False) -> str | None:
         converter, _, version = (head.get("converter") or "").partition("@")
         _record(project_id, rel, revision, "converted", converter=converter or None, version=version or None)
         return "converted"
+    if kind == "source":
+        return _collect(project_id, rel, path, data, revision)
     if not candidates(suffix):
         _record(project_id, rel, revision, "unsupported", reason=unsupported_reason(suffix))
         return "unsupported"
@@ -371,6 +381,37 @@ def process(project_id: str, rel: str, *, force: bool = False) -> str | None:
     return "failed"
 
 
+def _collect(project_id: str, rel: str, path: Path, data: bytes, revision: str) -> str | None:
+    """数据源资料：经网关采集，结果按文本版写（ADR-0103）。"""
+    from .. import datasources
+
+    document = datasources.spec.load_document(data)
+    connector = document["connector"] if document else None
+    _record(project_id, rel, revision, "converting", converter=connector)
+    try:
+        result = datasources.collect(project_id, data)
+    except gateway.GatewayUnavailable:
+        _record(project_id, rel, revision, "waiting", converter=connector)
+        return "waiting"
+    used = result.get("connector") if isinstance(result.get("connector"), dict) else {}
+    connector_id, version = used.get("id") or connector, used.get("version") or None
+    if result.get("state") == "converted":
+        body = convert.strip_forged_headers(str(result.get("markdown") or "")).strip("\n")
+        markdown = convert.header(path.name, revision, f"{connector_id}@{version or ''}") + "\n\n" + body + "\n"
+        if not _write_text(project_id, rel, revision, markdown, summary=f"采集数据源 {rel}"):
+            return None
+        stats = result.get("stats") if isinstance(result.get("stats"), dict) else {}
+        limitations = [str(item) for item in result.get("limitations") or []][:3]
+        note = "；".join(limitations) or None
+        _record(project_id, rel, revision, "converted", converter=connector_id, version=version, note=note,
+                tables=int(stats.get("tables") or 0))
+        return "converted"
+    code = str(result.get("error_code") or "crashed")
+    _record(project_id, rel, revision, "failed", converter=connector_id, version=version,
+            reason=datasources.failure_text(code, str(result.get("error_message") or "")))
+    return "failed"
+
+
 # ---------------------------------------------------------------------------
 # 队列与后台线程
 # ---------------------------------------------------------------------------
@@ -388,7 +429,7 @@ _stop = threading.Event()
 
 def enqueue(project_id: str, rel: str, *, force: bool = False, requested: str = "upload") -> bool:
     """排队转换；已经在排的不重复排，正在转的转完再来一次。返回是否新排进去。"""
-    if kind_of(rel) != "document":
+    if kind_of(rel) not in CONVERTIBLE:
         return False
     key = (project_id, rel)
     with _pending_lock:
@@ -525,7 +566,7 @@ def on_write(event) -> None:
     if getattr(event, "target", "mainline") != "mainline":
         return
     for rel in event.paths:
-        if kind_of(rel) == "document":
+        if kind_of(rel) in CONVERTIBLE:
             enqueue(event.project_id, rel)
 
 
@@ -534,7 +575,7 @@ def reconvert(project_id: str, rel: str) -> bool:
     root = _manager().project_root(project_id)
     data = (root / rel).read_bytes()
     revision = _content_revision(data)
-    if not candidates(suffix_of(rel)):
+    if kind_of(rel) == "document" and not candidates(suffix_of(rel)):
         return False
     store.put(project_id, rel, {"state": "converting", "sha": revision, "updated_at": time.time()})
     _publish(project_id, rel)
@@ -555,7 +596,7 @@ def migrate(manager) -> dict:
         try:
             records = store.items(project_id)
             for rel in material_paths(root):
-                if kind_of(rel) != "document":
+                if kind_of(rel) not in CONVERTIBLE:
                     continue
                 entry = records.get(rel) or {}
                 if entry.get("state") in ("failed", "unsupported"):

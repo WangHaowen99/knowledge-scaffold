@@ -29,6 +29,8 @@ KINDS = {
     ".drawio": ("drawio", "drawio"), ".html": ("html", "html"), ".htm": ("html", "html"),
     ".png": ("image", None), ".jpg": ("image", None), ".jpeg": ("image", None), ".webp": ("image", None),
     ".md": ("text", "text"), ".markdown": ("text", "text"), ".txt": ("text", "text"),
+    # 数据源资料（ADR-0103）：预览就是采集出的文本版
+    ".datasource": ("source", "text"),
 }
 _log = logging.getLogger(__name__)
 MATERIALS_MAX = 500

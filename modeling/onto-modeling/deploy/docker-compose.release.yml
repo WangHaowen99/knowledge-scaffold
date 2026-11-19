@@ -96,9 +96,11 @@ services:
       start_period: 10s
       retries: 3
 
-  # 连接器网关（ADR-0073）：文档转换（PDF、Word、Excel 转文本，转换器随本镜像交付）。单独的镜像，
-  # 不读 .env、不发布端口；非 root、只读根文件系统、无 capability；每个转换一个子进程，有超时和内存上限。
-  # 只接 internal 的 connector 网络，没有出口
+  # 连接器网关（ADR-0073、ADR-0103）：文档转换（PDF、Word、Excel 转文本）与数据源采集（MySQL、PostgreSQL，
+  # 以及管理员在插件中心信任的连接器）。单独的镜像，不读 .env、不发布端口；非 root、只读根文件系统、无 capability；
+  # 每个任务一个子进程，有超时和内存上限。connector 内部网络和主服务互通；biz-egress 连业务库，子进程只放行数据源
+  # 登记的主机端口。插件卷放信任后交付的连接器，凭据卷放数据源凭据（AES-GCM，主密钥默认在凭据卷里自动生成，
+  # 要分开存时挂主密钥文件并配 ONTO_CONNECTOR_MASTER_KEY_FILE）
   connector-gateway:
     image: ${CONNECTOR_GATEWAY_IMAGE:-onto-modeling-connector-gateway:latest}
     container_name: onto-modeling-connector-gateway
@@ -119,6 +121,11 @@ services:
       - ONTO_CONNECTOR_GATEWAY_PORT=8120
       # 内核签票据的公钥从这里取（网关自己不存任何能签票据的东西）
       - ONTO_CONNECTOR_ISSUER_KEY_URL=http://onto-modeling:8100/api/v1/connector/issuer-key
+      - ONTO_CONNECTOR_PLUGINS_DIR=/var/lib/connector/plugins
+      - ONTO_CONNECTOR_SECRETS_DIR=/var/lib/connector/secrets
+    volumes:
+      - onto-connector-plugins:/var/lib/connector/plugins
+      - onto-connector-secrets:/var/lib/connector/secrets
     healthcheck:
       test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8120/health', timeout=3).status == 200 else 1)"]
       interval: 30s
@@ -127,11 +134,16 @@ services:
       retries: 3
     networks:
       - connector
+      - biz-egress
 
 networks:
   connector:
     internal: true
+  # 数据源采集的出口（ADR-0103）：只有连接器网关接
+  biz-egress:
 
 volumes:
   onto-web-data:
+  onto-connector-plugins:
+  onto-connector-secrets:
   onto-web-auth-data:

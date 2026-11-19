@@ -274,3 +274,18 @@ def load_document(data: bytes | str) -> dict | None:
     fields = document.get("secret_fields") if isinstance(document.get("secret_fields"), list) else []
     return {"connector": connector, "config": config, "secret": secret if valid_secret_ref(secret) else "",
             "secret_fields": [str(item) for item in fields if isinstance(item, str)]}
+
+
+def info_from_dict(data: dict) -> SourceInfo | None:
+    """网关 /v1/providers 的 sources 一项 → SourceInfo（内核按网关里实际加载的那一版校验字段）；不合法时 None。"""
+    if not isinstance(data, dict):
+        return None
+    try:
+        fields = tuple(_field(item, index) for index, item in enumerate(data.get("fields") or []))
+    except SpecError:
+        return None
+    if not fields or not data.get("id"):
+        return None
+    return SourceInfo(id=str(data["id"]), version=str(data.get("version") or ""), label=str(data.get("label") or data["id"]),
+                      description=str(data.get("description") or ""), entry="", license_note=str(data.get("license") or ""),
+                      fields=fields, official=bool(data.get("official")))
