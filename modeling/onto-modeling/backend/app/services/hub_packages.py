@@ -11,6 +11,8 @@ import uuid
 from pathlib import Path
 
 from . import knowledge_hub as transport
+from .onto_mcp import documents
+from .onto_mcp.errors import McpError
 from .workspace import META_FILE, WorkspaceError, WorkspaceManager
 
 logger = logging.getLogger(__name__)
@@ -134,7 +136,19 @@ def download(package_id, release_id, token, dest, *, checkpoint=None, timeout=No
     return receipt
 
 
-def record(manager, pid, subject, receipt, options=None):
+def inputs_digest(files):
+    """One value for the package sources (the ontology documents): equal values mean the same content."""
+    return hashlib.sha256(json.dumps(files, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def workspace_inputs(manager, pid):
+    """The same value for the project's documents as they stand now."""
+    root = manager.project_root(pid)
+    return inputs_digest({p.relative_to(root).as_posix(): transport.file_digest(p) for p in transport.package_inputs(root)})
+
+
+def record(manager, pid, subject, receipt, options=None, inputs=None):
+    """``inputs``: inputs_digest of the published documents, so later work can tell what is still unpublished."""
     path = directory(pid, subject).parent / 'association.json'
     previous = transport.load(path, {})
     # A replay of an earlier publication must not rewind a newer base reference.
@@ -143,23 +157,35 @@ def record(manager, pid, subject, receipt, options=None):
     manager.project_root(pid)
     value = {k: receipt[k] for k in ('ontology_id', 'release_id', 'package_digest', 'version')}
     value['committed_at'] = receipt.get('committed_at', '')
+    # 谁发布了当前版本：评测优化据此判断这个版本是不是优化者本人的处理结果（package_evaluations.pin_release）
+    value['publisher'] = scope(subject)
+    if inputs:
+        value['inputs_digest'] = inputs
+    _pin(pid, receipt, value)
     transport.save(path, value)
 
 
-def freeze(manager, pid, folder, allow_unbound, binding=None, graph=False):
-    value, source_digest = transport.source_state(manager, pid, allow_unbound, binding, graph)
+def _pin(pid, receipt, linked):
+    # 先于写下关联：失败时关联不变，定期维护补记时一并重试。正式版本才可能是评测优化的处理结果，评测快照不是
+    if receipt.get('kind', 'release') == 'release':
+        from . import package_evaluations  # 互相引用，只在记下新版本时用到
+        package_evaluations.pin_release(pid, linked)
+
+
+def freeze(manager, pid, folder, allow_unbound, binding=None, graph=False, name=None):
+    value, source_digest = transport.source_state(manager, pid, allow_unbound, binding, graph, name)
     snapshot = WorkspaceManager(folder / 'input', manager.assets_dir)
     root = snapshot.workspaces_dir / pid
     root.mkdir(parents=True, exist_ok=True)
-    transport.save(root / META_FILE, {'id': pid, 'name': manager.get_project(pid)['name']})
+    transport.save(root / META_FILE, {'id': pid, 'name': value['name']})
     for rel, expected in value['files'].items():
         target = root / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(manager.project_root(pid) / rel, target)
         if transport.file_digest(target) != expected:
-            raise WorkspaceError('建模内容发生变化，请重试', 409)
-    if transport.source_state(manager, pid, allow_unbound, binding, graph)[1] != source_digest:
-        raise WorkspaceError('建模内容发生变化，请重试', 409)
+            raise WorkspaceError('建模内容发生变化，请重试', 409, 'publish_input_changed')
+    if transport.source_state(manager, pid, allow_unbound, binding, graph, name)[1] != source_digest:
+        raise WorkspaceError('建模内容发生变化，请重试', 409, 'publish_input_changed')
     # Receipts stay outside the package, but the frozen source needs its matching verification.
     verification = manager.project_root(pid) / '.ontology-state/script-verifications.json'
     if verification.is_file():
@@ -178,6 +204,13 @@ def validate_publish_intent(task, expected_input_digest, expected_base):
     if expected_base is not None and (payload.get('base_release_id'), payload.get('base_digest')) != expected_base:
         raise WorkspaceError('发布基础版本与当前预览不一致，请重新预览并使用新的 request_id',
                              409, 'publish_preview_stale')
+
+
+def _request_changed(task, allow_unbound, kind, expected_revision):
+    """Whether a repeated request_id now asks for a different publication than the one it saved."""
+    if task['allow_unbound'] != allow_unbound or task['payload']['kind'] != kind:
+        return True
+    return task.get('expected_revision') != expected_revision
 
 
 STRUCTURE_MESSAGES = 3
@@ -225,13 +258,48 @@ def ensure_importable(manager, pid, folder, value, allow_unbound, graph):
         raise WorkspaceError(f'知识包结构不符合 consumer 导入规则：{detail}', 400, 'package_structure_invalid')
 
 
+def content_revision(root):
+    """Revision of the ontology documents, the same value the MCP read tools report."""
+    try:
+        return documents.revision(documents.snapshot(root))
+    except McpError as exc:
+        raise WorkspaceError(str(exc), 409, 'revision_unavailable') from exc
+
+
+def revision_conflict(expected, actual):
+    error = WorkspaceError('本体内容已变化，请重新读取当前 revision', 409, 'revision_conflict')
+    error.revision = {'expected_revision': expected, 'actual_revision': actual}
+    return error
+
+
+def freeze_at_revision(manager, pid, folder, allow_unbound, expected_revision, binding=None, graph=False):
+    """Freeze exactly the ontology revision the caller checked.
+
+    The project lock serializes web writes; assistant sessions write without it, so the
+    frozen copy is checked again. get_project() locks too and must run before the lock.
+    """
+    name = manager.get_project(pid)['name']
+    with manager._project_lock(pid):
+        current = content_revision(manager.project_root(pid))
+        if current != expected_revision:
+            raise revision_conflict(expected_revision, current)
+        value, input_digest = freeze(manager, pid, folder, allow_unbound, binding, graph, name)
+    actual = content_revision(WorkspaceManager(folder / 'input', manager.assets_dir).project_root(pid))
+    if actual != expected_revision:
+        shutil.rmtree(folder / 'input', ignore_errors=True)
+        raise revision_conflict(expected_revision, actual)
+    return value, input_digest
+
+
 def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
             kind="release", binding=None, graph=False, relation_report=None, object_texts=None,
             delegated=None, expected_input_digest=None, expected_base=None, before_external=None,
-            acknowledged_by='', verified_revision=''):
+            acknowledged_by='', verified_revision='', expected_revision=None, progress=None):
+    """`progress(step)` is told 'frozen', 'uploading' and 'committing' as the publication advances."""
     transport.identifier(request_id)
     if not token and not delegated:
         raise WorkspaceError('Hub 需要登录用户身份', 401)
+    advance = progress or (lambda step: None)
     with transport.lock(pid):
         from . import hub_members
         hub_members.writable(pid)
@@ -239,13 +307,13 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
         folder = directory(pid, subject) / 'requests' / request_id
         task_file = folder / 'task.json'
         task = transport.load(task_file)
-        if task and (task['allow_unbound'] != allow_unbound or task['payload']['kind'] != kind):
-            raise WorkspaceError('发布请求参数发生变化', 409)
+        if task and _request_changed(task, allow_unbound, kind, expected_revision):
+            raise WorkspaceError('发布请求参数发生变化', 409, 'publish_request_conflict')
         saved_receipt = transport.load(folder / 'receipt.json')
         if saved_receipt:
             validate_publish_intent(task, expected_input_digest, expected_base)
             try:
-                record(manager, pid, subject, saved_receipt)
+                record(manager, pid, subject, saved_receipt, inputs=inputs_digest(task['files']) if task else None)
             except (OSError, WorkspaceError):
                 return {**saved_receipt, 'local_record_pending': True}
             sharing = hub_members.after_publish(manager, pid, token, task.get('first_project_publish', False))
@@ -257,7 +325,11 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
                 manager._ensure_package_publish_stages(pid)
                 manager._ensure_solver_publishable(pid)
             shutil.rmtree(folder / 'input', ignore_errors=True)
-            value, input_digest = freeze(manager, pid, folder, allow_unbound, binding, graph)
+            if expected_revision is None:
+                value, input_digest = freeze(manager, pid, folder, allow_unbound, binding, graph)
+            else:
+                value, input_digest = freeze_at_revision(manager, pid, folder, allow_unbound, expected_revision,
+                                                         binding, graph)
             if expected_input_digest is not None and input_digest != expected_input_digest:
                 raise WorkspaceError('建模内容发生变化，请重新预览发布', 409, 'publish_preview_stale')
             if object_texts is not None:
@@ -291,7 +363,10 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
                                              '发布后在「已发布版本（知识包评测）」中发起求解验证', 409,
                                              'solver_validation_acknowledgement_required')
                     task.update(solver_revision=check.revision, acknowledged_by=acknowledged_by)
+            if expected_revision is not None:
+                task['expected_revision'] = expected_revision
             transport.save(task_file, task)
+        advance('frozen')
         payload = task['payload']
         validate_publish_intent(task, expected_input_digest, expected_base)
         if delegated:
@@ -316,7 +391,7 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
         if receipt and receipt.get('status') == 'committed':
             transport.save(folder / 'receipt.json', receipt)
             try:
-                record(manager, pid, subject, receipt)
+                record(manager, pid, subject, receipt, inputs=inputs_digest(task['files']))
             except (OSError, WorkspaceError):
                 return {**receipt, 'local_record_pending': True}
             sharing = hub_members.after_publish(manager, pid, token, task.get('first_project_publish', False))
@@ -332,6 +407,7 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
         receipt = hub_call('POST', '/api/package-publish-requests', body=payload)
         archive = folder / 'package.zip'
         if receipt['status'] == 'pending':
+            advance('uploading')
             if not archive.exists():
                 snapshot = WorkspaceManager(folder / 'input', manager.assets_dir)
                 for rel, expected in task['files'].items():
@@ -350,13 +426,14 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
             hub_call('PUT', posixpath.join(base_path, 'content'), upload=archive,
                      headers={'X-Package-Digest': transport.file_digest(archive)},
                      upload_name=transport.package_filename(payload['ontology_id'], task['name'], receipt['version']))
+        advance('committing')
         if receipt['status'] != 'committed':
             if before_external:
                 before_external()
             receipt = hub_call('POST', posixpath.join(base_path, 'commit'))
         transport.save(folder / 'receipt.json', receipt)
         try:
-            record(manager, pid, subject, receipt)
+            record(manager, pid, subject, receipt, inputs=inputs_digest(task['files']))
         except (OSError, WorkspaceError):
             return {**receipt, 'local_record_pending': True}
         _record_solver_release(pid, receipt, task)
@@ -434,8 +511,11 @@ def maintain(manager):
                 current = transport.load(association_path, {})
                 for receipt_path in (user_scope / 'requests').glob('*/receipt.json'):
                     receipt = transport.load(receipt_path)
-                    if receipt['committed_at'] >= current.get('committed_at', ''):
-                        current = {k: receipt[k] for k in ASSOCIATION_FIELDS}
+                    # 只补记没写下的新版本：重写当前版本会丢掉发布时记下的内容指纹与发布人
+                    if (receipt['release_id'] != current.get('release_id')
+                            and receipt['committed_at'] >= current.get('committed_at', '')):
+                        current = {**{k: receipt[k] for k in ASSOCIATION_FIELDS}, 'publisher': user_scope.name}
+                        _pin(project.name, receipt, current)
                         transport.save(association_path, current)
                 for task_path in user_scope.glob('*/*/task.json'):
                     if (task_path.parent / 'receipt.json').exists() or time.time() - task_path.stat().st_mtime > ttl:

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { allPages, api, requestId } from './api.js';
 import {
   ACTIVE,
@@ -7,15 +7,28 @@ import {
   judgeMissingReason,
   modelOptionGroups,
   modelOptionLabel,
+  needsScope,
   packageReference,
+  previewStep,
   sourceSummary,
   sourceWorkspace,
 } from './domain.js';
 import { Alert, Badge, Button, Confirm, Empty, Field, Heading, Icon, Skeleton, useAction } from './ui.jsx';
 import { CaseEditor } from './CaseEditor.jsx';
 import { SolverCaseEditor } from './SolverCaseEditor.jsx';
-import { GraphScopeStatus, MappingConflicts, MappingPreview, SourceEditor } from './SourceEditor.jsx';
+import { GraphScopeStatus, MappingConflicts, MappingPreview, SourceEditor, SourcePreview } from './SourceEditor.jsx';
+import { SourceScope } from './SourceScope.jsx';
 
+// 选择数据源这一步，数据源卡片与底部操作栏之间留出的间隔（px）
+const FOOTER_GAP = 16;
+// 选中外部连接数据源后，隔离范围填好并保存才能进入下一步
+const SCOPE_BLOCKS = {
+  loading: '正在读取数据源配置',
+  error: '读取数据源配置失败，请重新选择该数据源',
+  missing: '请先填写本数据源的评测隔离范围',
+  dirty: '请先保存评测隔离范围的修改',
+  ready: '',
+};
 const STEPS = {
   data: [
     ['知识包版本', '固定本轮版本'],
@@ -88,7 +101,8 @@ export function Wizard({
     [changeSet, setChangeSet] = useState(null),
     [graphCheck, setGraphCheck] = useState(null),
     [replaceGraph, setReplaceGraph] = useState(null),
-    [preview, setPreview] = useState(null);
+    [preview, setPreview] = useState(null),
+    [scopeStatus, setScopeStatus] = useState('loading');
   const [packageSearch, setPackageSearch] = useState(''),
     [concurrency, setConcurrency] = useState(limits.default),
     [modelId, setModelId] = useState(''),
@@ -99,10 +113,13 @@ export function Wizard({
     sourceGeneration = useRef(0),
     pendingRun = useRef(null),
     init = useRef(false),
-    pageRef = useRef(null);
+    pageRef = useRef(null),
+    mainRef = useRef(null),
+    footerRef = useRef(null);
   const release = versions.find((r) => r.release_id === releaseId),
     source = sources.find((s) => s.id === sourceId);
   const currentRun = runs.find((r) => ACTIVE.has(r.status));
+  const scopeBlock = needsScope(source) ? SCOPE_BLOCKS[scopeStatus] : '';
   const registerDirtyRef = useRef(registerDirty);
   registerDirtyRef.current = registerDirty;
   useEffect(() => {
@@ -112,6 +129,24 @@ export function Wizard({
   useEffect(() => {
     pageRef.current?.scrollIntoView({ block: 'start' });
   }, [!!sourceEditor]);
+  // 选择数据源这一步，主栏向下延伸到底部操作栏上方并留一点间隔，数据源卡片占满这段高度：
+  // 选中数据源后在其下方展开的隔离范围有地方完整显示。高度写进 --fill-height，单栏布局时样式不采用；
+  // 主栏上方的提示出现或消失、窗口缩放时重新计算
+  useLayoutEffect(() => {
+    const main = mainRef.current,
+      footer = footerRef.current;
+    if (step !== 1 || !main || !footer) return undefined;
+    const fit = () => {
+      const top = main.getBoundingClientRect().top + (main.closest('.content')?.scrollTop || 0);
+      main.style.setProperty('--fill-height', `${Math.max(0, footer.getBoundingClientRect().top - FOOTER_GAP - top)}px`);
+    };
+    fit();
+    window.addEventListener('resize', fit);
+    return () => {
+      window.removeEventListener('resize', fit);
+      main.style.removeProperty('--fill-height');
+    };
+  }, [step, !!sourceEditor, loading, !!error, !!details, !!currentRun]);
   useEffect(() => {
     let live = true;
     (async () => {
@@ -273,10 +308,24 @@ export function Wizard({
     : null;
   const sourceUsesPackageMapping = source?.mode === 'connection'
     && ['nl2sql_http', 'nl2sql_template'].includes(source.provider);
-  const previewable = !!sourceId && !sourceUsesPackageMapping && (source?.mode === 'dataset' || !!source?.import_data);
+  // 数据源预览在哪一步显示（previewStep，NL2SQL 连接沿用知识包映射、不预览）；没选数据源时不预览
+  const previewAt = sourceId ? previewStep(source) : 0;
+  // 选择数据源这一步自动预览上传的数据一次。进入这一步的「下一步」本身也是一个操作，同一时间只能执行一个操作
+  // （useAction），所以等它结束（busy 变回 false）再开始；开始后才记为已尝试，失败不自动重试，可点「重新预览」。
+  // 图导入预览不在进入准备与确认时预取（会占住「准备知识包与映射」），随准备一起取回（prepare）
+  const previewTried = useRef('');
   useEffect(() => {
-    if (step === 1 && previewable && ref && !preview) act(loadPreview);
-  }, [step, sourceId, source?.revision, releaseId]);
+    if (previewAt !== 1 || step !== 1) {
+      previewTried.current = '';
+      return;
+    }
+    const key = `${sourceId}|${source?.revision}|${releaseId}`;
+    if (!ref || preview || busy || previewTried.current === key) return;
+    act(() => {
+      previewTried.current = key;
+      return loadPreview();
+    });
+  }, [step, sourceId, source?.revision, releaseId, !!ref, busy]);
   async function editSource(id = '') {
     const item = id ? await api(`/data-sources/${id}`) : null;
     setSourceEditor({ record: item });
@@ -305,6 +354,8 @@ export function Wizard({
     const result = await api('/package-preparations', { ...input, request_id: key.id });
     setPrep(result);
     key.done();
+    // 导入图数据的 Neo4j 连接：图导入预览（实体、实例与关系）随准备一起取回，与准备结果一同显示
+    if (previewAt === 3 && !preview) await loadPreview();
   }
   async function checkGraph(preparationId = '') {
     const check = await api('/graph-import-checks', {
@@ -371,11 +422,13 @@ export function Wizard({
   }
   const selectSource = (id) => {
     sourceGeneration.current += 1;
+    if (id !== sourceId) setScopeStatus('loading');
     setSourceId(id);
     setPreview(null);
   };
   async function next() {
     if (step === 0 && !release) throw new Error('请选择知识包与发布版本');
+    if (step === 1 && scopeBlock) throw new Error(scopeBlock);
     if (step === 2 && (!chosenSet?.id || caseDirty))
       throw new Error(`请选择并保存${solver ? '求解验证集' : '评测集'}后继续`);
     setStep(step + 1);
@@ -441,7 +494,7 @@ export function Wizard({
         <Skeleton />
       ) : (
         <div className="wizard-grid">
-          <div className="wizard-main">
+          <div className={`wizard-main ${step === 1 ? 'fill-to-footer' : ''}`} ref={mainRef}>
             {step === 0 && (
               <section className="panel">
                 <div className="section-title">
@@ -575,9 +628,10 @@ export function Wizard({
                     consumer 的求解评估器只从 Neo4j 取数。请选择 Neo4j 连接：开启图数据导入，或使用已有数据的 Workspace 范围。
                   </Alert>
                 )}
-                <div className="option-list" role="radiogroup" aria-label="数据源">
+                <div className="option-list source-options" role="radiogroup" aria-label="数据源">
                   {sources.map((s) => (
-                    <div className={`option-row ${sourceId === s.id ? 'selected' : ''}`} key={s.id}>
+                    <React.Fragment key={s.id}>
+                    <div className={`option-row ${sourceId === s.id ? 'selected' : ''}`}>
                       <button
                         type="button"
                         role="radio"
@@ -599,6 +653,17 @@ export function Wizard({
                         编辑
                       </Button>
                     </div>
+                    {sourceId === s.id && needsScope(s) && (
+                      <SourceScope
+                        key={s.id}
+                        sourceId={s.id}
+                        revision={s.revision}
+                        packageRef={ref}
+                        onSaved={() => refreshDefinitions()}
+                        onStatus={setScopeStatus}
+                      />
+                    )}
+                    </React.Fragment>
                   ))}
                   <div className={`option-row ${!sourceId ? 'selected' : ''}`}>
                     <button
@@ -620,21 +685,7 @@ export function Wizard({
                     </button>
                   </div>
                 </div>
-                {previewable && (
-                  <div className="preview-action">
-                    {!preview && (
-                      <p className="muted">
-                        {busy ? `正在预览${source?.provider === 'neo4j' ? '图导入' : '数据映射'}…` : '没有拿到预览结果。'}
-                        {!busy && (
-                          <Button variant="text" onClick={() => act(loadPreview)}>
-                            重新预览
-                          </Button>
-                        )}
-                      </p>
-                    )}
-                    <MappingPreview preview={preview} />
-                  </div>
-                )}
+                {previewAt === 1 && <SourcePreview preview={preview} busy={busy} onRetry={() => act(loadPreview)} />}
               </section>
             )}
             {step === 2 && solver && (
@@ -794,7 +845,11 @@ export function Wizard({
                   </Empty>
                 ) : (
                   <>
-                    {prep.mapping && <MappingPreview preview={prep.preview} />}
+                    {previewAt === 3 ? (
+                      <SourcePreview preview={preview} busy={busy} graph onRetry={() => act(loadPreview)} />
+                    ) : (
+                      prep.mapping && <MappingPreview preview={prep.preview} />
+                    )}
                     {prep.changed && (
                       <Alert title="本轮使用派生评测快照">
                         映射变化已保存到内部快照，正式发布 Hub 新版本需在结果页单独确认。
@@ -932,7 +987,7 @@ export function Wizard({
           </aside>
         </div>
       )}
-      <footer className="wizard-footer">
+      <footer className="wizard-footer" ref={footerRef}>
         <span>{step === 3 ? '任务创建成功后自动进入执行详情' : '已保存的配置可在后续评测中重复使用'}</span>
         <div className="actions">
           <Button disabled={busy || !step} onClick={() => setStep(step - 1)}>
@@ -948,8 +1003,10 @@ export function Wizard({
                 versionLoading ||
                 caseLoading ||
                 (step === 0 && !release) ||
+                (step === 1 && !!scopeBlock) ||
                 (step === 2 && (!chosenSet?.id || caseDirty))
               }
+              title={step === 1 && scopeBlock ? scopeBlock : undefined}
               onClick={() => act(next)}
             >
               下一步：{steps[step + 1][0]}

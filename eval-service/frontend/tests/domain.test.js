@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  needsScope,
+  previewStep,
+  scopeErrors,
+  scopeOf,
   parseRoute,
   parseCases,
   caseState,
@@ -22,6 +26,7 @@ import {
   artifactState,
   notificationState,
   optimizationState,
+  handledText,
   feedbackStatus,
   resultCounts,
   scoreText,
@@ -375,6 +380,11 @@ test('delivery content and transport are distinct from modeling completion', () 
   assert.equal(optimizationState({ ...run, delivery: { state: 'diagnose' } }).label, '需诊断');
   assert.equal(optimizationState({ ...run, delivery: { state: 'unknown' } }).label, '待核实优化内容');
   assert.equal(optimizationState({ ...run, optimization: { status: 'modeling_done', result: { version: '0.2.0' } } }).label, '已处理');
+  // 建模核对后最新版本已解决、没有发布新版本：同样是已处理，说明核对的版本
+  const resolved = { status: 'modeling_done', result: { outcome: 'resolved', version: '0.1.9' } };
+  assert.equal(optimizationState({ ...run, optimization: resolved }).label, '已处理');
+  assert.match(optimizationState({ ...run, optimization: resolved }).hint, /^最新版本已解决（核对 0\.1\.9）/);
+  assert.equal(handledText({ outcome: 'done', version: '0.2.0' }), '新版本 0.2.0');
   assert.deepEqual(parseRoute('#/new?run_type=solver'), { page: 'new', from: '', runType: 'solver' });
 });
 
@@ -382,4 +392,38 @@ test('synthetic query requirements survive JSON import without rewriting questio
   const item = { question: 'Synthetic query', reference: '2', execution_mode: 'business_query' };
   assert.deepEqual(parseCases(JSON.stringify([item])), [item]);
   assert.throws(() => parseCases(JSON.stringify([{ ...item, execution_mode: 'invalid' }])), /执行要求/);
+});
+
+test('the isolation scope of an external connection is read and checked like the backend', () => {
+  const graph = { mode: 'connection', provider: 'neo4j', import_data: false, connection_view: { workspace_value: 'workspace_demo' } };
+  assert.equal(needsScope(graph), true);
+  assert.equal(needsScope({ mode: 'dataset' }), false);
+  assert.deepEqual(scopeOf(graph), {
+    workspace_property: 'd2o_workspace_id',
+    workspace_value: 'workspace_demo',
+    ontology_property: 'd2o_ontology_id',
+  });
+  assert.deepEqual(scopeErrors(graph, scopeOf(graph)), {});
+  // 对应值的规则与后端一致；Ontology 隔离字段只有导入图数据时必填，且不能与 Workspace 隔离字段相同
+  assert.match(scopeErrors(graph, { ...scopeOf(graph), workspace_value: 'Invalid Value' }).workspace_value, /小写字母开头/);
+  assert.equal(scopeErrors(graph, { ...scopeOf(graph), workspace_value: '' }).workspace_value, '请填写 Workspace 对应值');
+  assert.deepEqual(scopeErrors(graph, { ...scopeOf(graph), ontology_property: '' }), {});
+  assert.ok(scopeErrors({ ...graph, import_data: true }, { ...scopeOf(graph), ontology_property: '' }).ontology_property);
+  assert.ok(scopeErrors(graph, { ...scopeOf(graph), ontology_property: 'd2o_workspace_id' }).ontology_property);
+  assert.equal(scopeErrors(graph, { ...scopeOf(graph), workspace_property: '评测空间' }).workspace_property, undefined);
+  const sql = { mode: 'connection', provider: 'nl2sql_http', connection_view: {} };
+  assert.deepEqual(scopeOf(sql), { evaluation_workspace_id: '' });
+  assert.equal(scopeErrors(sql, scopeOf(sql)).evaluation_workspace_id, '请填写评测工作空间 ID');
+  assert.deepEqual(scopeErrors(sql, { evaluation_workspace_id: 'workspace_sql_demo' }), {});
+});
+
+test('uploaded data is previewed when chosen, a graph import only when preparing the run', () => {
+  assert.equal(previewStep({ mode: 'dataset', provider: 'nl2sql_http' }), 1);
+  // 选择数据源时只填隔离范围，图导入预览（实体、实例与关系）到准备与确认时再看
+  assert.equal(previewStep({ mode: 'connection', provider: 'neo4j', import_data: true }), 3);
+  // 查询已有数据的连接没有可预览的数据
+  assert.equal(previewStep({ mode: 'connection', provider: 'neo4j', import_data: false }), 0);
+  assert.equal(previewStep({ mode: 'connection', provider: 'nl2sql_http', import_data: false }), 0);
+  assert.equal(previewStep({ mode: 'none' }), 0);
+  assert.equal(previewStep(undefined), 0);
 });

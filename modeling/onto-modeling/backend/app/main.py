@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config
 from .routers import admin, auth_routes, hub_packages, onto_mcp, projects, sessions, settings
-from .routers import package_evaluations
+from .routers import flywheel, package_evaluations
 from .services import auth, material_detect
 from .services.agent_sessions import SDK_AVAILABLE, SessionError
 from .services.auth import AuthError
@@ -60,6 +60,9 @@ async def _lifespan(app: FastAPI):
         asyncio.create_task(_package_compare_cleanup_loop(package_compare))
         if package_compare_owner else None
     )
+    # 用户离开页面后，凭开关打开时登记的委托继续推进数据飞轮
+    from .services.flywheel import background as flywheel_background
+    flywheel_task = asyncio.create_task(flywheel_background.scheduler_loop(projects.workspaces))
     # 上次删除项目时没删净的目录（文件被占用、删到一半停机）在后台清扫掉
     purge_task = asyncio.create_task(asyncio.to_thread(projects.workspaces.purge_leftovers))
     try:
@@ -68,6 +71,7 @@ async def _lifespan(app: FastAPI):
         hub_task.cancel()
         if package_compare_task:
             package_compare_task.cancel()
+        flywheel_task.cancel()
         backup_task.cancel()
         modeling_cleanup_task.cancel()
         purge_task.cancel()
@@ -76,6 +80,7 @@ async def _lifespan(app: FastAPI):
             modeling_cleanup_task,
             purge_task,
             hub_task,
+            flywheel_task,
             *([package_compare_task] if package_compare_task else []),
             return_exceptions=True,
         )
@@ -93,6 +98,7 @@ app.include_router(settings.router)
 app.include_router(admin.router)
 app.include_router(hub_packages.router)
 app.include_router(package_evaluations.router)
+app.include_router(flywheel.router)
 
 @app.middleware("http")
 async def retired_evaluation_mutations(request: Request, call_next):

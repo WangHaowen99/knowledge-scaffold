@@ -54,6 +54,27 @@ def test_a_later_result_replaces_the_earlier_one(service):
     assert [entry['outcome'] for entry in state['history']] == ['failed']
 
 
+def test_modeling_may_report_the_latest_version_already_resolves_the_problems(service):
+    client, app, deps, modeling, verdicts = service
+    record = start(client, preparation(client), [('Synthetic question', '2')], 'run_resolved')
+    rid = record['id']
+    settled(client, rid)
+    # 没有发布新版本：核对的版本可以就是被评测的版本，也要在 Hub 上存在
+    assert write_back(client, rid, outcome='resolved', release_id='release_missing').json()['code'] == 'release_not_found'
+    response = write_back(client, rid, outcome='resolved', release_id='release_demo', note='Synthetic check note')
+    assert response.status_code == 200, response.text
+    state = response.json()['optimization']
+    assert state['status'] == 'modeling_done' and state['result']['outcome'] == 'resolved'
+    assert state['result']['release_id'] == 'release_demo' and state['result']['version'] == deps.receipt['version']
+    # 同一请求重试返回原结果
+    assert write_back(client, rid, outcome='resolved', release_id='release_demo', note='Synthetic check note').status_code == 200
+    # 不带核对版本也可以记录
+    other = start(client, preparation(client), [('Synthetic question', '2')], 'run_resolved_plain')
+    settled(client, other['id'])
+    plain = write_back(client, other['id'], outcome='resolved', request_id='result_plain').json()['optimization']
+    assert plain['status'] == 'modeling_done' and 'release_id' not in plain['result']
+
+
 def test_invalid_results_are_refused(service):
     client, app, deps, modeling, verdicts = service
     record = start(client, preparation(client), [('Synthetic question', '2')], 'run_refused')

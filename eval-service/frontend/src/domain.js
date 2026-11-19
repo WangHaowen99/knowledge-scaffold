@@ -138,6 +138,11 @@ export function notificationState(n) {
   };
 }
 // How modeling handled a run's suggestions: written back after it changed the package and published a new version.
+// 建模回写的处理结果：发布的新版本，或核对后最新版本已解决（没有发布新版本）
+export function handledText(result = {}) {
+  if (result.outcome === 'resolved') return `最新版本已解决${result.version ? `（核对 ${result.version}）` : ''}`;
+  return `新版本 ${result.version || result.release_id || ''}`;
+}
 export function optimizationState(run, peers = []) {
   const o = run?.optimization;
   if (!o) return null;
@@ -167,7 +172,7 @@ export function optimizationState(run, peers = []) {
     return {
       label: '已处理',
       tone: 'green',
-      hint: [`新版本 ${result.version || result.release_id}`, when, result.note, count].filter(Boolean).join(' · '),
+      hint: [handledText(result), when, result.note, count].filter(Boolean).join(' · '),
       releaseId: result.release_id,
     };
   if (o.status === 'modeling_failed')
@@ -442,8 +447,50 @@ export function sourceSummary(source) {
   if (source.mode === 'dataset') return `上传数据 · ${source.input_ids?.length || 0} 个文件`;
   return `${source.provider === 'neo4j' ? 'Neo4j 图库' : 'NL2SQL 外部连接'}${source.import_data ? ' · 评测前导入图数据' : ' · 查询已有数据'}`;
 }
+// 新建评测中哪一步预览数据源：上传的数据在选择数据源时预览映射；导入图数据的 Neo4j 连接到准备与确认时
+// 再预览图导入（实体、实例与关系），选择数据源时只填隔离范围。0 表示不预览
+export function previewStep(source) {
+  if (source?.mode === 'dataset') return 1;
+  return source?.mode === 'connection' && source.provider === 'neo4j' && source.import_data ? 3 : 0;
+}
 // Same Neo4j scope properties as the consumer graph backend.
 export const GRAPH_SCOPE_DEFAULTS = { workspace_property: 'd2o_workspace_id', ontology_property: 'd2o_ontology_id' };
+// 外部连接的评测隔离范围：在新建评测选中数据源时填写，随数据源保存；规则与后端 source_config 一致
+const SCOPE_VALUE = /^[a-z][a-z0-9_-]{0,63}$/;
+const SCOPE_IDENTIFIER = /^[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]{0,63}$/;
+const SCOPE_VALUE_RULE = '须以小写字母开头，最多 64 个小写字母、数字、连字符或下划线';
+export const needsScope = (source) => source?.mode === 'connection';
+export function scopeOf(source) {
+  const view = source?.connection_view || {};
+  if (source?.provider === 'neo4j') {
+    return {
+      workspace_property: view.workspace_property || GRAPH_SCOPE_DEFAULTS.workspace_property,
+      workspace_value: view.workspace_value || '',
+      ontology_property: view.ontology_property ?? GRAPH_SCOPE_DEFAULTS.ontology_property,
+    };
+  }
+  return { evaluation_workspace_id: view.evaluation_workspace_id || '' };
+}
+// 字段 → 问题说明；空对象表示可以保存与评测
+export function scopeErrors(source, values) {
+  const errors = {};
+  const value = (key) => String(values[key] || '').trim();
+  if (source?.provider !== 'neo4j') {
+    if (!value('evaluation_workspace_id')) errors.evaluation_workspace_id = '请填写评测工作空间 ID';
+    else if (!SCOPE_VALUE.test(value('evaluation_workspace_id'))) errors.evaluation_workspace_id = SCOPE_VALUE_RULE;
+    return errors;
+  }
+  if (!value('workspace_property')) errors.workspace_property = '请填写 Workspace 隔离字段';
+  else if (!SCOPE_IDENTIFIER.test(value('workspace_property'))) errors.workspace_property = '字段名格式无效';
+  if (!value('workspace_value')) errors.workspace_value = '请填写 Workspace 对应值';
+  else if (!SCOPE_VALUE.test(value('workspace_value'))) errors.workspace_value = SCOPE_VALUE_RULE;
+  if (!value('ontology_property')) {
+    if (source.import_data) errors.ontology_property = '导入图数据需要 Ontology 隔离字段';
+  } else if (!SCOPE_IDENTIFIER.test(value('ontology_property'))) errors.ontology_property = '字段名格式无效';
+  else if (value('ontology_property') === value('workspace_property'))
+    errors.ontology_property = '不能与 Workspace 隔离字段相同';
+  return errors;
+}
 export function emptySource() {
   return {
     name: '',

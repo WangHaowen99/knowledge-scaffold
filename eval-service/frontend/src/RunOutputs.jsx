@@ -8,6 +8,7 @@ import {
   artifactState,
   carriedState,
   carryoverCounts,
+  handledText,
   isSolverRun,
   notificationState,
   optimizationState,
@@ -123,7 +124,9 @@ export function DeliveryCard({ run, onChanged, navigate }) {
     },
     {
       label: '在新版本上验证',
-      hint: done ? `可在新版本 ${run.optimization.result?.version || ''} 上再次评测` : '建模发布新版本后可用',
+      hint: !done ? '建模发布新版本后可用'
+        : run.optimization.result?.outcome === 'resolved' ? `可在最新版本 ${run.optimization.result?.version || ''} 上再次评测`
+          : `可在新版本 ${run.optimization.result?.version || ''} 上再次评测`,
       state: done ? 'current' : '',
     },
   ];
@@ -182,7 +185,7 @@ export function DeliveryCard({ run, onChanged, navigate }) {
           <ul>
             {earlier.map((item) => (
               <li key={item.reported_at}>
-                {item.outcome === 'done' ? `新版本 ${item.version || item.release_id}` : '处理失败'}
+                {item.outcome === 'failed' ? '处理失败' : handledText(item)}
                 {item.note && ` · ${item.note}`}
                 <small>{runStartTime({ created_at: item.reported_at })?.date}</small>
               </li>

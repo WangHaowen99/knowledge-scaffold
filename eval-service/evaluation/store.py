@@ -45,6 +45,11 @@ class Store:
           last_error TEXT, created REAL NOT NULL, delivered REAL);
         CREATE INDEX IF NOT EXISTS notifications_due ON notifications(status,next_attempt);
         CREATE INDEX IF NOT EXISTS notifications_run ON notifications(run_id,sequence);
+        CREATE TABLE IF NOT EXISTS delegations(
+          key TEXT PRIMARY KEY, owner TEXT NOT NULL, ontology_id TEXT NOT NULL,
+          created REAL NOT NULL, expires REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS delegation_logins(
+          key TEXT PRIMARY KEY, login TEXT NOT NULL, renewed REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS evidence(
           run_id TEXT NOT NULL, owner TEXT NOT NULL, case_index INTEGER NOT NULL,
           body TEXT NOT NULL, updated REAL NOT NULL, PRIMARY KEY(run_id,case_index));
@@ -127,6 +132,59 @@ class Store:
         if owner.startswith(FEEDBACK_OWNER) and 'sealed' in body:
             body.update(self.decrypt(body.pop('sealed')))
         return body
+
+    def put_delegation(self, key, owner, ontology_id, expires, login=None):
+        now = time.time()
+        with self.transaction():
+            self._purge_delegations(now)
+            self.db.execute('INSERT OR REPLACE INTO delegations VALUES(?,?,?,?,?)', (key, owner, ontology_id, now, expires))
+            if login:
+                self.db.execute('INSERT OR REPLACE INTO delegation_logins VALUES(?,?,?)', (key, self.encrypt(login), now))
+
+    def delegation(self, key):
+        with self.lock:
+            row = self.db.execute('SELECT * FROM delegations WHERE key=?', (key,)).fetchone()
+        return dict(row) if row else None
+
+    def extend_delegation(self, key, expires):
+        with self.transaction():
+            self.db.execute('UPDATE delegations SET expires=? WHERE key=?', (expires, key))
+
+    def drop_delegation(self, key):
+        with self.transaction():
+            self.db.execute('DELETE FROM delegations WHERE key=?', (key,))
+            self.db.execute('DELETE FROM delegation_logins WHERE key=?', (key,))
+
+    def _purge_delegations(self, now):
+        self.db.execute('DELETE FROM delegation_logins WHERE key IN (SELECT key FROM delegations WHERE expires<=?)', (now,))
+        self.db.execute('DELETE FROM delegations WHERE expires<=?', (now,))
+        # 没有委托的登录不再有用处
+        self.db.execute('DELETE FROM delegation_logins WHERE key NOT IN (SELECT key FROM delegations)')
+
+    def purge_delegations(self, now):
+        with self.transaction():
+            self._purge_delegations(now)
+
+    def delegation_login(self, key):
+        """The delegation's refresh token, decrypted; None when it has none."""
+        with self.lock:
+            row = self.db.execute('SELECT login FROM delegation_logins WHERE key=?', (key,)).fetchone()
+        return self.decrypt(row['login']) if row else None
+
+    def put_login(self, key, login):
+        with self.transaction():
+            if self.db.execute('SELECT 1 FROM delegations WHERE key=?', (key,)).fetchone():
+                self.db.execute('INSERT OR REPLACE INTO delegation_logins VALUES(?,?,?)', (key, self.encrypt(login), time.time()))
+
+    def drop_login(self, key):
+        with self.transaction():
+            self.db.execute('DELETE FROM delegation_logins WHERE key=?', (key,))
+
+    def logins(self):
+        """(key, decrypted refresh token, last renewal) of every stored login."""
+        with self.lock:
+            rows = self.db.execute('SELECT key, login, renewed FROM delegation_logins').fetchall()
+        return [(row['key'], self.decrypt(row['login']), row['renewed']) for row in rows]
 
     def lookup_request(self, owner, kind, request_id, identity):
         with self.lock:

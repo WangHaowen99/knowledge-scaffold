@@ -38,7 +38,7 @@ cd ..
 - `EVAL_HUB_URL`、`EVAL_HUB_SERVICE_TOKEN`：对应 Hub 的 evaluation 服务身份（Hub 的 `HUB_EVALUATION_SERVICE_TOKEN`），不复用 modeling 凭据。
 - `EVAL_CONSUMER_API_URL`、`EVAL_CONSUMER_SERVICE_TOKEN`：后者对应 consumer 的 `EVALUATION_SERVICE_TOKEN`，与其 modeling 密钥不同；用户身份仍必需。
 - `EVAL_DATA_DIR`：独立卷。默认 `.runtime/` 仅用于合成数据本地开发，部署必须使用外部运行卷。
-- `EVAL_ENCRYPTION_KEY`：Fernet 密钥，用于连接配置、页面保存的 Judge API Key、上传数据和执行数据快照。部署脚本首次部署时生成并保存在 `deploy/.env`，不在数据卷内；备份时须与数据卷分开、同样受控保管。变更或丢失密钥会导致已有加密数据无法解密：已有数据卷而缺少密钥时部署脚本拒绝生成新密钥。
+- `EVAL_ENCRYPTION_KEY`：Fernet 密钥，用于连接配置、页面保存的 Judge API Key、上传数据、执行数据快照，以及数据飞轮委托保存的后台评测登录。部署脚本首次部署时生成并保存在 `deploy/.env`，不在数据卷内；备份时须与数据卷分开、同样受控保管。变更或丢失密钥会导致已有加密数据无法解密：已有数据卷而缺少密钥时部署脚本拒绝生成新密钥。
 - `EVAL_JUDGE_BASE_URL`、`EVAL_JUDGE_API_KEY`、`EVAL_JUDGE_MODEL`、`EVAL_JUDGE_CONFIG_REVISION`：临时 Judge 部署配置。问答模型在发起评测时选择：consumer 全局模型池或当前用户个人模型池中已启用的模型，或 consumer 默认模型；记录其非敏感配置摘要。此方案标记 **MODEL-CONFIG-01，待 eval2 整改**。
 - 页面配置 Judge：登录后进入侧边“评测判分模型配置”。所有用户可查看生效来源、模型和配置版本，只有管理员（账号服务中 role 为 admin）可修改，因为该配置对所有用户的评测生效，并会收到题目、参考答案和回答。
   - 管理员填写网关地址、模型和 API Key，可先“测试连接”（与轮次预检相同的结构化判分检查）再保存。保存的配置整体替换部署配置，“恢复部署配置”删除它。
@@ -53,7 +53,7 @@ cd ..
 - dataset 可选配置：`EVAL_SQL_CONFIG` 为 MySQL 连接参数 JSON，`EVAL_NL2SQL_URL` 为 consumer 可达的评测查询入口，路径 `/evaluation/api/nl2sql`。每轮只管理 `eval_<run_id>` 数据库；查询使用绑定 scene 的 HMAC 凭据、SQL AST 检查及只读事务。数据库账号应按评测库前缀限定权限。
 - `EVAL_TRUSTED_ORIGINS`：可选，允许向评测页面交接登录的建模页面来源，逗号分隔（如 `https://modeling.example.com`）。留空时只信任与评测页面主机名相同的建模页面；`localhost`、`127.0.0.1` 与 `[::1]` 视为同一台本机。
 - `EVAL_MODELING_URL`：建模服务地址，用于发送评测完成通知，以及兼容接口 `GET /evaluation/api/modeling-projects` 按当前用户登录查询关联项目；「评测任务」与执行详情显示知识包名称时不调用该接口。置空则不查询、不发通知。
-- `EVAL_MODELING_SERVICE_TOKEN`：发送评测完成通知的服务凭据，与 onto-modeling 的 `ONTO_EVALUATION_SERVICE_TOKEN` 相同，整栈与分离部署自动传入；留空时只告警、不发通知。
+- `EVAL_MODELING_SERVICE_TOKEN`：发送评测完成通知的服务凭据，与 onto-modeling 的 `ONTO_EVALUATION_SERVICE_TOKEN` 相同，整栈与分离部署自动传入；留空时只告警、不发通知。建模服务登记和使用数据飞轮委托（`/delegations`、委托读取与 `/runs/{id}/reruns`）时也用它证明身份，留空时不接受委托。
 
 有效建模登录复用 `onto-access-token` 和 `onto-refresh-token`，刷新直连账号服务。不能通过 Onto 后端转发，也不能在跳转 URL 放 token。建模页面只通过独立地址打开评测，入口地址只由建模部署变量 `ONTO_WEB_EVAL_PUBLIC_URL` 决定：
 
@@ -78,7 +78,7 @@ cd ..
 
 数据源配置页面提供“不使用数据源”“上传数据”和“外部连接”，Neo4j 外部连接中的业务数据表导入仍可使用。
 
-Neo4j 按 Provider 展开 URL、Database、User、Password 与 Workspace / Ontology 隔离字段，隔离字段默认 `d2o_workspace_id`、`d2o_ontology_id`（与 consumer 图数据一致）。Ontology 值由本轮固定知识包自动带入；查询已有图库无需手填表结构。图导入支持“不导入 / 示例数据 / 业务数据表”，未接入示例种子时置灰。选择业务数据表后上传 CSV/XLSX，保存后预览实体、实例、关系与字段匹配；预览不发布包、不写图库。导入使用配置的 Workspace 字段与对应值、Ontology 字段与当前知识包 ID，两组条件同时匹配。可在向导中检查旧图数据；开始评测时必须重新检查，发现旧节点及范围内关系后，用户确认才删除旧数据并导入新数据，取消保留原数据。跨范围关系会阻止替换；清理和导入在同一事务中，导入失败回滚。每个范围在图库保存独立导入回执，响应丢失后恢复先核对回执，避免重复清理；后续导入已替换该范围时，旧任务不能继续查询新数据。同一范围的活动评测互斥。检查最多 10 万个节点、20 万条关系，确认有效期 10 分钟；范围节点或关系已变化时中断，需重新创建并确认。旧版本按 `eval_<run_id>` 写入的图数据不会迁移到配置范围。删除评测任务仍不清理外部图数据。连接回读只返回允许展示的字段与凭据已配置状态；地址或账号变化时不能沿用旧凭据。
+评测隔离范围不在数据源编辑页填写：在新建评测选中外部连接数据源后，卡片内展开隔离范围，Neo4j 为 Workspace 隔离字段与对应值、Ontology 隔离字段与对应值（对应值由本轮知识包自动带入、只读），NL2SQL 为评测工作空间 ID；保存后随数据源保存，之后选择它的评测沿用，填好并保存后才能进入下一步。保存连接时可暂不填写，准备评测时缺少则返回 scope_required。Neo4j 按 Provider 展开 URL、Database、User、Password，隔离字段默认 `d2o_workspace_id`、`d2o_ontology_id`（与 consumer 图数据一致）；查询已有图库无需手填表结构。图导入支持“不导入 / 示例数据 / 业务数据表”，未接入示例种子时置灰。选择业务数据表后上传 CSV/XLSX，保存后预览实体、实例、关系与字段匹配；预览不发布包、不写图库。导入使用配置的 Workspace 字段与对应值、Ontology 字段与当前知识包 ID，两组条件同时匹配。可在向导中检查旧图数据；开始评测时必须重新检查，发现旧节点及范围内关系后，用户确认才删除旧数据并导入新数据，取消保留原数据。跨范围关系会阻止替换；清理和导入在同一事务中，导入失败回滚。每个范围在图库保存独立导入回执，响应丢失后恢复先核对回执，避免重复清理；后续导入已替换该范围时，旧任务不能继续查询新数据。同一范围的活动评测互斥。检查最多 10 万个节点、20 万条关系，确认有效期 10 分钟；范围节点或关系已变化时中断，需重新创建并确认。旧版本按 `eval_<run_id>` 写入的图数据不会迁移到配置范围。删除评测任务仍不清理外部图数据。连接回读只返回允许展示的字段与凭据已配置状态；地址或账号变化时不能沿用旧凭据。
 
 原包 mapping 可被替换，仅派生副本改变。mapping 变化先提交 Hub 内部评测快照；同一基础版本加相同 mapping 复用已提交的快照。快照由 Hub 命名为 `<基础版本>-eval.<n>`（如 `0.1.10-eval.2`），不占用正式版本号；此前已提交的快照保留原版本号。任务列表“知识包版本”只显示所选发布版本，评测快照版本在执行详情中单独列出。正式“发布知识包版本”由用户显式触发，创建新版本，不重标历史快照，不自动激活。未修改 mapping 时直接运行原 Hub 版本。
 

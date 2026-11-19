@@ -146,7 +146,10 @@ export function processingState(entry) {
   const known = optimization && PROCESSING[optimization.status];
   if (!known) return entry && !optimization && generating(entry) ? { label: '生成中', color: 'processing', hint: '报告和优化建议生成中' } : null;
   const result = optimization.result || {};
-  const label = optimization.status === 'modeling_done' && result.version ? `已处理 → ${result.version}` : known[0];
+  // 核对后最新版本已解决：没有发布新版本，不写成“已处理 → 版本”
+  const resolved = optimization.status === 'modeling_done' && result.outcome === 'resolved';
+  const label = resolved ? '最新版本已解决'
+    : optimization.status === 'modeling_done' && result.version ? `已处理 → ${result.version}` : known[0];
   return { label, color: known[1], hint: result.note || optimization.reason || known[2] };
 }
 
