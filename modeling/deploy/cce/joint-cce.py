@@ -7,7 +7,7 @@ import argparse
 from datetime import datetime, timezone, timedelta
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
@@ -136,7 +136,7 @@ def prepare_auth_release(config: dict, destination: Path, *, expected_platform: 
     from common import bounded_archive_members, extract_regular_members
     import tarfile
     try:
-        with tarfile.open(auth["package"], "r:gz") as archive:
+        with tarfile.open(auth["package"], "r:gz") as archive:  # NOSONAR(S5042): bounded members before extraction
             members = bounded_archive_members(archive)
             names = [member.name for member in members]
             if len(names) != len(set(names)):
@@ -144,17 +144,23 @@ def prepare_auth_release(config: dict, destination: Path, *, expected_platform: 
             roots = {Path(name).parts[0] for name in names if name}
             if len(roots) != 1 or not re.fullmatch(r"onto-auth-[A-Za-z0-9_.-]+-(amd64|arm64)", next(iter(roots))):
                 raise ConfigError("Auth package root is invalid")
-            member = next((item for item in members if item.name == next(iter(roots)) + "/auth-release.json"
-                           and item.isfile()), None)
+            manifest_path = str(PurePosixPath(next(iter(roots))) / "auth-release.json")
+            member = None
+            for candidate in members:
+                if candidate.name == manifest_path and candidate.isfile():
+                    member = candidate
+                    break
             if member is None or member.size > 1024 * 1024:
                 raise ConfigError("Auth package manifest is missing")
             payload = archive.extractfile(member)
             if payload is None:
                 raise ConfigError("Auth package manifest is unreadable")
             manifest = json.loads(payload.read())
-            if (not isinstance(manifest, dict) or manifest.get("schema_version") != 1
-                    or manifest.get("contract") != "auth-v1"
-                    or not isinstance(manifest.get("files"), dict)):
+            if not isinstance(manifest, dict):
+                raise ConfigError("Auth package metadata is invalid")
+            if manifest.get("schema_version") != 1 or manifest.get("contract") != "auth-v1":
+                raise ConfigError("Auth package metadata is invalid")
+            if not isinstance(manifest.get("files"), dict):
                 raise ConfigError("Auth package metadata is invalid")
             if expected_platform not in ("linux-amd64", "linux-arm64") or \
                     manifest.get("architecture") != expected_platform.removeprefix("linux-"):
@@ -164,9 +170,11 @@ def prepare_auth_release(config: dict, destination: Path, *, expected_platform: 
         raise ConfigError("Auth package cannot be read or extracted") from exc
     root = destination / next(iter(roots))
     files = manifest.get("files", {})
-    if (manifest.get("schema_version") != 1 or manifest.get("contract") != "auth-v1"
-            or not isinstance(files, dict) or not files
-            or not re.fullmatch(r"sha256:[0-9a-f]{64}", manifest.get("image_id", ""))):
+    if manifest.get("schema_version") != 1 or manifest.get("contract") != "auth-v1":
+        raise ConfigError("Auth package metadata is invalid")
+    if not isinstance(files, dict) or not files:
+        raise ConfigError("Auth package metadata is invalid")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", manifest.get("image_id", "")):
         raise ConfigError("Auth package metadata is invalid")
     actual = {str(item.relative_to(root)) for item in root.rglob("*") if item.is_file()}
     if actual != set(files) | {"auth-release.json"}:
@@ -209,7 +217,8 @@ def invoke_auth(action: str, config: dict, package: Path | None, operation_id: s
         # The extracted Auth script and its hash were checked against the
         # package inventory before this point. Run the fixed interpreter argv
         # directly; the shared command runner only permits infrastructure CLIs.
-        result = subprocess.run(options, shell=False, text=True, capture_output=True, timeout=timeout)
+        result = subprocess.run(  # NOSONAR(S4721): verified package script and fixed argv
+            options, shell=False, text=True, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         raise ChildOperationError("auth", action, {"status": "failed", "errorCode": "TIMEOUT",
             "message": "Auth operation timed out; inspect owner state before recovery", "retryable": False}) from exc
@@ -315,8 +324,9 @@ def ensure_auth_migration(config: dict, package: Path, operation_id: str,
         raise ConfigError("Auth migration journal is completed but Consumer still owns Auth")
     if mode == "migrating":
         ownership = state["authOwnership"]
-        if (not resume or journal.get("phase") != "auth-migration-started"
-                or ownership.get("operationId") != operation_id
+        if not resume or journal.get("phase") != "auth-migration-started":
+            raise ConfigError("unfinished Auth ownership migration requires the original joint --resume")
+        if (ownership.get("operationId") != operation_id
                 or ownership.get("targetRelease") != config["auth"]["releaseName"]):
             raise ConfigError("unfinished Auth ownership migration requires the original joint --resume")
     elif resume and journal.get("phase") == "auth-migration-started":
@@ -336,10 +346,13 @@ def ensure_auth_migration(config: dict, package: Path, operation_id: str,
             "get", "deployment", legacy_service, "-o", "json"))
         annotations = service.get("metadata", {}).get("annotations", {})
         dep_annotations = deployment.get("metadata", {}).get("annotations", {})
-        if (not service.get("metadata", {}).get("uid")
-                or annotations.get("meta.helm.sh/release-name") != config["consumer"]["releaseName"]
-                or dep_annotations.get("meta.helm.sh/release-name") != config["consumer"]["releaseName"]
-                or 5056 not in [part.get("port") for part in service.get("spec", {}).get("ports", [])]):
+        consumer_release = config["consumer"]["releaseName"]
+        if not service.get("metadata", {}).get("uid"):
+            raise ConfigError("legacy Auth Service or Deployment owner differs from Consumer")
+        if (annotations.get("meta.helm.sh/release-name") != consumer_release
+                or dep_annotations.get("meta.helm.sh/release-name") != consumer_release):
+            raise ConfigError("legacy Auth Service or Deployment owner differs from Consumer")
+        if 5056 not in [part.get("port") for part in service.get("spec", {}).get("ports", [])]:
             raise ConfigError("legacy Auth Service or Deployment owner differs from Consumer")
     journal["phase"] = "auth-migration-started"
     write_journal(journal_path, journal)
@@ -372,9 +385,9 @@ def auth_release_state(config: dict) -> dict | None:
                             "--namespace", auth["namespace"], "get", "values",
                             auth["releaseName"], "-o", "json"))
     name = values.get("serviceName") if isinstance(values, dict) else None
-    if (not isinstance(values, dict) or values.get("authOnly") is not True
-            or not isinstance(name, str) or not name
-            or values.get("workloadName") != name):
+    if not isinstance(values, dict) or values.get("authOnly") is not True:
+        raise ConfigError("independent Auth installed values are invalid")
+    if not isinstance(name, str) or not name or values.get("workloadName") != name:
         raise ConfigError("independent Auth installed values are invalid")
     raw = json.loads(kubectl(config, "-n", auth["namespace"], "get", "configmap",
                              auth["releaseName"] + "-cce-state", "-o", "json"))
@@ -385,13 +398,19 @@ def auth_release_state(config: dict) -> dict | None:
     service = json.loads(kubectl(config, "-n", auth["namespace"], "get", "service", name, "-o", "json"))
     deployment = json.loads(kubectl(config, "-n", auth["namespace"], "get", "deployment", name, "-o", "json"))
     service_uid = service.get("metadata", {}).get("uid")
-    if (state.get("phase") != "ready" or not service_uid
-            or state.get("serviceUID") not in (None, service_uid)
-            or service.get("metadata", {}).get("annotations", {}).get("meta.helm.sh/release-name") != auth["releaseName"]
-            or service.get("metadata", {}).get("annotations", {}).get("meta.helm.sh/release-namespace") != auth["namespace"]
-            or 5056 not in [part.get("port") for part in service.get("spec", {}).get("ports", [])]
-            or deployment.get("metadata", {}).get("annotations", {}).get("meta.helm.sh/release-name") != auth["releaseName"]
-            or state.get("identity") != read_yaml(auth["values"]).get("global", {}).get("auth")
+    service_annotations = service.get("metadata", {}).get("annotations", {})
+    deployment_annotations = deployment.get("metadata", {}).get("annotations", {})
+    if state.get("phase") != "ready" or not service_uid:
+        raise ConfigError("independent Auth owner identity or Service changed")
+    if state.get("serviceUID") not in (None, service_uid):
+        raise ConfigError("independent Auth owner identity or Service changed")
+    if (service_annotations.get("meta.helm.sh/release-name") != auth["releaseName"]
+            or service_annotations.get("meta.helm.sh/release-namespace") != auth["namespace"]
+            or deployment_annotations.get("meta.helm.sh/release-name") != auth["releaseName"]):
+        raise ConfigError("independent Auth owner identity or Service changed")
+    if 5056 not in [part.get("port") for part in service.get("spec", {}).get("ports", [])]:
+        raise ConfigError("independent Auth owner identity or Service changed")
+    if (state.get("identity") != read_yaml(auth["values"]).get("global", {}).get("auth")
             or values.get("global", {}).get("auth") != state.get("identity")
             or state.get("authRelease", {}).get("step") not in (None, "completed", "aborted")):
         raise ConfigError("independent Auth owner identity or Service changed")
@@ -403,8 +422,11 @@ def auth_release_state(config: dict) -> dict | None:
 
 def require_auth_ready(config: dict, target: str | None = None) -> dict:
     owner = auth_release_state(config)
-    if (owner is None or (target and owner["image"] != target)
-            or owner["state"].get("authPin", {}).get("image") != owner["image"]):
+    if owner is None:
+        raise ConfigError("Auth release is not ready at the configured image")
+    if target and owner["image"] != target:
+        raise ConfigError("Auth release is not ready at the configured image")
+    if owner["state"].get("authPin", {}).get("image") != owner["image"]:
         raise ConfigError("Auth release is not ready at the configured image")
     return owner
 
@@ -454,9 +476,11 @@ def load_uninstall_config(path: Path) -> dict:
     result = {"cluster": cluster, "stateDir": absolute(path.parent, raw["stateDir"]), "timeoutSeconds": timeout}
     if raw.get("auth"):
         entry = raw["auth"]
-        if (not isinstance(entry, dict) or not isinstance(entry.get("releaseName"), str)
-                or not isinstance(entry.get("namespace"), str)
-                or set(entry) - {"releaseName", "namespace", "package", "values", "image"}):
+        if not isinstance(entry, dict):
+            raise ConfigError("joint uninstall Auth reference is invalid")
+        if not isinstance(entry.get("releaseName"), str) or not isinstance(entry.get("namespace"), str):
+            raise ConfigError("joint uninstall Auth reference is invalid")
+        if set(entry) - {"releaseName", "namespace", "package", "values", "image"}:
             raise ConfigError("joint uninstall Auth reference is invalid")
         validate_name(entry["releaseName"], "auth releaseName")
         validate_name(entry["namespace"], "auth namespace")
@@ -476,11 +500,14 @@ def load_uninstall_config(path: Path) -> dict:
         if len(entry["releaseName"]) > 49:
             raise ConfigError(f"{side} releaseName is too long for its operation Lease")
         result[side] = {"releaseName": entry["releaseName"], "namespace": entry["namespace"]}
-    if result.get("auth") and result["auth"]["namespace"] != result["consumer"]["namespace"]:
-        raise ConfigError("Auth and Consumer namespaces differ")
-    if result.get("auth") and (result["auth"] == result["consumer"] or
-            result["auth"] == result["modeling"]):
-        raise ConfigError("Auth release identity must differ from business releases")
+    auth_release = result.get("auth")
+    consumer_release = result.get("consumer")
+    modeling_release = result.get("modeling")
+    if auth_release:
+        if auth_release["namespace"] != consumer_release["namespace"]:
+            raise ConfigError("Auth and Consumer namespaces differ")
+        if auth_release in (consumer_release, modeling_release):
+            raise ConfigError("Auth release identity must differ from business releases")
     if result.get("modeling") == result.get("consumer"):
         raise ConfigError("Consumer and Modeling release identities must differ")
     return result
@@ -548,9 +575,10 @@ def validate_cross_side(config, packages, consumer_values, modeling_values, comb
             owner_ref = consumer_values.get("externalAuth", {})
             if (owner_ref.get("apiVersion") != "auth-v1"
                     or combination[api_field] != "auth-v1"
-                    or reference.get("apiVersion") != "auth-v1"
-                    or any(reference.get(key) != owner_ref.get(key)
-                           for key in ("serviceName", "namespace", "servicePort"))):
+                    or reference.get("apiVersion") != "auth-v1"):
+                raise ConfigError("Modeling Auth reference differs from independent Consumer contract")
+            if any(reference.get(key) != owner_ref.get(key)
+                   for key in ("serviceName", "namespace", "servicePort")):
                 raise ConfigError("Modeling Auth reference differs from independent Consumer contract")
             continue
         expected_name = f"{config['consumer']['releaseName']}-{suffix}"
@@ -695,7 +723,9 @@ def installed_consumer_contract(config: dict, installed: dict, target: dict) -> 
         if any(item.get(key) != value for key, value in expected.items()):
             raise CompatibilityError(f"installed Consumer {endpoint_id} endpoint contract is invalid")
         api_version = item.get("apiVersion")
-        if not isinstance(api_version, str) or not api_version or (endpoint_id == "auth" and external and api_version != "auth-v1"):
+        if not isinstance(api_version, str) or not api_version:
+            raise CompatibilityError(f"installed Consumer {endpoint_id} endpoint contract is invalid")
+        if endpoint_id == "auth" and external and api_version != "auth-v1":
             raise CompatibilityError(f"installed Consumer {endpoint_id} endpoint contract is invalid")
         service = json.loads(kubectl(config, "-n", expected["namespace"], "get", "service",
                                      item["serviceName"], "-o", "json"))
@@ -716,9 +746,10 @@ def installed_consumer_contract(config: dict, installed: dict, target: dict) -> 
             except (KeyError, ValueError, TypeError) as exc:
                 raise CompatibilityError("independent Auth owner state is unavailable") from exc
             consumer_identity = state.get("identity", {}).get("auth")
-            if (recorded.get("phase") != "ready" or recorded.get("identity") != consumer_identity
-                    or not service.get("metadata", {}).get("uid")
-                    or recorded.get("serviceUID") not in (None, service["metadata"]["uid"])):
+            service_uid = service.get("metadata", {}).get("uid")
+            if recorded.get("phase") != "ready" or recorded.get("identity") != consumer_identity:
+                raise CompatibilityError("independent Auth owner identity differs from Consumer")
+            if not service_uid or recorded.get("serviceUID") not in (None, service_uid):
                 raise CompatibilityError("independent Auth owner identity differs from Consumer")
             owner_status = json.loads(run("helm", "--kube-context", config["cluster"]["context"],
                                           "--namespace", expected["namespace"], "status", owner_release,
@@ -784,7 +815,10 @@ def prepare_compatibility(config: dict, *, upgrade: bool, confirmed: bool,
             root = safe_extract(config[side]["package"], Path(temporary), side)
             packages[side] = root, validate_release(root, side)
         if config.get("auth"):
-            prepare_auth_release(config, Path(temporary), expected_platform=packages["modeling"][1]["platform"])
+            modeling_package = packages.get("modeling")
+            if modeling_package is None:
+                raise ConfigError("Modeling package is missing")
+            prepare_auth_release(config, Path(temporary), expected_platform=modeling_package[1]["platform"])
         consumer_values = read_yaml(config["consumer"]["values"])
         modeling_values = read_yaml(config["modeling"]["values"])
         validate_auth_coordinates(config, consumer_values, modeling_values)
@@ -832,8 +866,9 @@ def prepare_compatibility(config: dict, *, upgrade: bool, confirmed: bool,
         elif not existing:
             manifest["transitions"].append(transition)
     validate_compatibility_manifest(manifest)
-    if confirmed and upgrade and migration == "none" and not no_migration_confirmed:
-        raise ConfigError("confirm that existing Modeling data needs no migration before writing upgrade transition")
+    if confirmed and upgrade and migration == "none":
+        if not no_migration_confirmed:
+            raise ConfigError("confirm that existing Modeling data needs no migration before writing upgrade transition")
     if confirmed:
         path.parent.mkdir(parents=True, exist_ok=True)
         output = yaml.safe_dump(manifest, allow_unicode=True, sort_keys=False)
@@ -1062,9 +1097,11 @@ def _delete_uninstall_state(config, side: str, operation_id: str) -> None:
 def _assert_uninstall_state_ready(config, side: str) -> None:
     state = _uninstall_cluster_state(config, side)
     if side == "auth":
-        if (not state or state.get("phase") != "ready" or
-                (state.get("authRelease") or {}).get("step") not in (None, "completed", "aborted") or
-                (state.get("freshInstall") or {}).get("step") not in (None, "completed")):
+        if not state or state.get("phase") != "ready":
+            raise ConfigError("finish or inspect the active Auth operation before uninstall")
+        if (state.get("authRelease") or {}).get("step") not in (None, "completed", "aborted"):
+            raise ConfigError("finish or inspect the active Auth operation before uninstall")
+        if (state.get("freshInstall") or {}).get("step") not in (None, "completed"):
             raise ConfigError("finish or inspect the active Auth operation before uninstall")
         values = json.loads(run("helm", "--kube-context", config["cluster"]["context"],
                                 "--namespace", config[side]["namespace"], "get", "values",
@@ -1080,9 +1117,10 @@ def _assert_uninstall_state_ready(config, side: str) -> None:
             annotations = resource.get("metadata", {}).get("annotations", {})
             return (annotations.get("meta.helm.sh/release-name") == config[side]["releaseName"] and
                     annotations.get("meta.helm.sh/release-namespace") == config[side]["namespace"])
-        if (not owned_by_auth(service) or not owned_by_auth(deployment) or
-                state.get("serviceUID") not in (None, service.get("metadata", {}).get("uid")) or
-                not state.get("authPin", {}).get("image")):
+        if not owned_by_auth(service) or not owned_by_auth(deployment):
+            raise ConfigError("independent Auth Service ownership or state changed")
+        if (state.get("serviceUID") not in (None, service.get("metadata", {}).get("uid"))
+                or not state.get("authPin", {}).get("image")):
             raise ConfigError("independent Auth Service ownership or state changed")
         return
     if not state:
@@ -1120,9 +1158,10 @@ def _assert_uninstall_manifest_safe(config, side: str) -> None:
         if state and state.get("sourceConsumer"):
             validate_name(state["sourceConsumer"], "Auth sourceConsumer")
             expected.add(state["sourceConsumer"][:40].rstrip("-") + "-auth")
-        if (not isinstance(values, dict) or values.get("authOnly") is not True or
-                values.get("workloadName") not in expected or
-                values.get("serviceName") != values.get("workloadName")):
+        if not isinstance(values, dict) or values.get("authOnly") is not True:
+            raise ConfigError("independent Auth release values or workload name are invalid")
+        if (values.get("workloadName") not in expected
+                or values.get("serviceName") != values.get("workloadName")):
             raise ConfigError("independent Auth release values or workload name are invalid")
         auth_names = {values["workloadName"]}
     seen = False
@@ -1137,12 +1176,14 @@ def _assert_uninstall_manifest_safe(config, side: str) -> None:
             metadata = item.get("metadata", {})
             prefix = (entry["releaseName"][:40].rstrip("-") if side == "consumer"
                       else entry["releaseName"])
-            if (not isinstance(metadata, dict) or not isinstance(metadata.get("name"), str) or
-                    (side == "auth" and (item["kind"] not in ("Deployment", "Service") or
-                                          metadata["name"] not in auth_names)) or
-                    (side != "auth" and not
-                     ((metadata["name"] == prefix and item["kind"] == "Ingress") or
-                      metadata["name"].startswith(prefix + "-")))):
+            if not isinstance(metadata, dict) or not isinstance(metadata.get("name"), str):
+                raise ConfigError(f"{side} release manifest ownership is unclear")
+            resource_name = metadata["name"]
+            if side == "auth":
+                if item["kind"] not in ("Deployment", "Service") or resource_name not in auth_names:
+                    raise ConfigError(f"{side} release manifest ownership is unclear")
+            elif not ((resource_name == prefix and item["kind"] == "Ingress")
+                      or resource_name.startswith(prefix + "-")):
                 raise ConfigError(f"{side} release manifest ownership is unclear")
             if side == "auth":
                 if item["kind"] in auth_kinds:
@@ -1685,8 +1726,11 @@ def main():
                 packages[side] = root, validate_release(root, side)
             auth_package = None
             if config.get("auth"):
+                modeling_package = packages.get("modeling")
+                if modeling_package is None:
+                    raise ConfigError("Modeling package is missing")
                 auth_package, _auth_manifest = prepare_auth_release(config, Path(temporary),
-                    expected_platform=packages["modeling"][1]["platform"])
+                    expected_platform=modeling_package[1]["platform"])
             combination = validate_combination(config, packages)
             if args.action == "upgrade":
                 installed_for_transition = {
@@ -1769,8 +1813,13 @@ def main():
                     current_lease = Lease(config, side, operation_id)
                     current_lease.acquire()
                     leases.append(current_lease)
-            if auth_package and args.action == "upgrade" and migration_kind == "migrated" \
-                    and "auth" not in journal.get("completed", []) and journal.get("phase") != "auth-started":
+            needs_post_migration_preflight = (
+                auth_package and args.action == "upgrade" and migration_kind == "migrated")
+            if needs_post_migration_preflight:
+                needs_post_migration_preflight = (
+                    "auth" not in journal.get("completed", [])
+                    and journal.get("phase") != "auth-started")
+            if needs_post_migration_preflight:
                 result["phase"] = "consumer-post-migration-preflight"
                 invoke("consumer", "preflight", config, packages["consumer"], operation_id,
                        image_files["consumer"], lock_holder=operation_id)
@@ -1804,15 +1853,19 @@ def main():
                 require_auth_ready(config, config["auth"]["image"] if args.action == "verify" else None)
                 result["results"]["auth"] = {"status": "succeeded", "phase": "ready"}
             if args.action == "upgrade":
-                if "consumer" not in journal["completed"] and journal.get("phase") != "consumer-started" \
-                        and not (auth_package and ("auth" in journal.get("completed", []) or
-                                               migration_kind == "migrated")):
+                auth_preflight_complete = bool(auth_package) and (
+                    "auth" in journal.get("completed", []) or migration_kind == "migrated")
+                consumer_needs_preflight = (
+                    "consumer" not in journal["completed"]
+                    and journal.get("phase") != "consumer-started")
+                if consumer_needs_preflight and not auth_preflight_complete:
                     result["phase"] = "consumer-preflight"
                     invoke("consumer", "preflight", config, packages["consumer"], operation_id,
                            image_files["consumer"], lock_holder=operation_id)
-                if "modeling" not in journal["completed"] and journal.get("phase") != "modeling-started" \
-                        and not (auth_package and ("auth" in journal.get("completed", []) or
-                                               migration_kind == "migrated")):
+                modeling_needs_preflight = (
+                    "modeling" not in journal["completed"]
+                    and journal.get("phase") != "modeling-started")
+                if modeling_needs_preflight and not auth_preflight_complete:
                     result["phase"] = "modeling-preflight"
                     invoke("modeling", "preflight", config, packages["modeling"], operation_id,
                            image_files["modeling"], backup_record=args.backup_record or "",
@@ -1853,8 +1906,9 @@ def main():
                 if journal:
                     if args.action == "upgrade" and journal.get("phase") == f"{side}-started":
                         raise ConfigError(f"{side} upgrade outcome is uncertain; inspect actual state before retry")
-                if (args.action == "install" and args.resume and journal and
-                        journal.get("phase") == f"{side}-started" and release_exists(config, side)):
+                resumed_install = args.action == "install" and args.resume and bool(journal)
+                if resumed_install and journal.get("phase") == f"{side}-started" \
+                        and release_exists(config, side):
                     if not completed_release_matches(config, side, side_package, operation_id, side_images):
                         raise ConfigError(f"installed {side} release differs from resumed operation")
                     result["phase"] = f"{side}-verify"
@@ -1920,7 +1974,7 @@ def main():
         elif result["errorCode"] in ("TIMEOUT", "CHILD_RESPONSE_INVALID"):
             result["nextAction"] = "inspect the child operation and actual cluster state before retry"
     except (ConfigError, RuntimeError, OSError, subprocess.TimeoutExpired, KeyError,
-            TypeError, ValueError, json.JSONDecodeError) as exc:
+            TypeError, ValueError) as exc:
         if isinstance(exc, CompatibilityError):
             code = "INCOMPATIBLE_VERSION"
         elif isinstance(exc, LockError):

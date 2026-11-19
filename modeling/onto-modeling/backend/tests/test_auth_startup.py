@@ -25,7 +25,7 @@ class Response:
 
 
 def test_auth_health_and_status_ready(monkeypatch):
-    monkeypatch.setenv("ONTO_WEB_AUTH_URL", "http://auth-server:5056")
+    monkeypatch.setenv("ONTO_WEB_AUTH_URL", "https://auth.example.com")
     status = json.dumps({"schemaVersion": 1, "service": "auth", "state": "ready"}).encode()
     with mock.patch.object(auth_startup.urllib.request, "urlopen",
                            side_effect=[Response(), Response(status)]) as request:
@@ -34,14 +34,14 @@ def test_auth_health_and_status_ready(monkeypatch):
 
 
 def test_legacy_health_without_status_is_accepted(monkeypatch):
-    monkeypatch.setenv("ONTO_WEB_AUTH_URL", "http://auth-server:5056")
+    monkeypatch.setenv("ONTO_WEB_AUTH_URL", "https://auth.example.com")
     with mock.patch.object(auth_startup.urllib.request, "urlopen",
                            side_effect=[Response(), urllib.error.HTTPError("/status", 404, "", {}, None)]):
         assert auth_startup.available()
 
 
 def test_wait_retries_until_auth_is_live(monkeypatch):
-    monkeypatch.setenv("ONTO_WEB_AUTH_URL", "http://auth-server:5056")
+    monkeypatch.setenv("ONTO_WEB_AUTH_URL", "https://auth.example.com")
     with mock.patch.object(auth_startup, "available", side_effect=[False, False, True]) as check, \
          mock.patch.object(auth_startup.asyncio, "sleep", new=mock.AsyncMock()):
         asyncio.run(auth_startup.wait_for_auth())

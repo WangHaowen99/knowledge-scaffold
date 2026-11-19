@@ -838,8 +838,10 @@ class CceContractTests(unittest.TestCase):
                 mock.patch.object(INSTALL.time, "monotonic", side_effect=lambda: next(clock)), \
                 mock.patch.object(INSTALL.time, "sleep") as pause:
             INSTALL.verify(args, self.base)
-        gateway_checks = [item for item in calls if "exec" in item and
-                          "deployment/modeling-onto" in item]
+        gateway_checks = []
+        for item in calls:
+            if "exec" in item and "deployment/modeling-onto" in item:
+                gateway_checks.append(item)
         self.assertEqual(len(gateway_checks), 2)
         pause.assert_called_once_with(2)
 
@@ -868,9 +870,12 @@ class CceContractTests(unittest.TestCase):
         with mock.patch.object(INSTALL, "validate_release", return_value=release):
             _, merged = INSTALL.load_inputs(args, package)
         self.assertEqual(merged["global"]["access"]["listeners"][1]["listenerPort"], 15180)
-        rendered = subprocess.run(
-            ["helm", "template", "modeling", str(ROOT / "chart"), "-f", str(values_path),
+        helm = shutil.which("helm")
+        self.assertIsNotNone(helm)
+        rendered = subprocess.run(  # NOSONAR(S4721): fixed Helm argv and synthetic values
+            [helm, "template", "modeling", str(ROOT / "chart"), "-f", str(values_path),
              "-f", str(images_path)], capture_output=True, text=True, check=True,
+            shell=False,
         )
         ingress = [item for item in yaml.safe_load_all(rendered.stdout)
                    if isinstance(item, dict) and item.get("kind") == "Ingress"]
@@ -1230,8 +1235,10 @@ class CceContractTests(unittest.TestCase):
         values = {"modeling-auth-client": "c2FtZS10b2tlbg==",
                   "auth-owner-token": "c2FtZS10b2tlbg=="}
         def secret(_args, name, namespace=None):
+            value = values.get(name)
+            self.assertIsNotNone(value)
             return {"type": "Opaque", "data": {"admin-token" if name == "modeling-auth-client"
-                                                  else "token": values[name]}}
+                                                  else "token": value}}
         with mock.patch.object(INSTALL, "_read_secret", side_effect=secret):
             INSTALL.validate_auth_admin_token(args, merged, "auth", "consumer-demo", owner_values)
             values["modeling-auth-client"] = "ZGlmZmVyZW50"
@@ -1489,7 +1496,9 @@ class CceContractTests(unittest.TestCase):
             objects = {("configmap", "auth-cce-state"): {"data": {"state.json": json.dumps(owner)}},
                        ("service", "consumer-auth"): service,
                        ("deployment", "consumer-auth"): deployment}
-            return json.dumps(objects[(kind, name)])
+            item = objects.get((kind, name))
+            self.assertIsNotNone(item)
+            return json.dumps(item)
 
         deployed = SimpleNamespace(returncode=0, stdout=json.dumps({"info": {"status": "deployed"}}), stderr="")
         with mock.patch.object(JOINT, "run_program", return_value=deployed), \

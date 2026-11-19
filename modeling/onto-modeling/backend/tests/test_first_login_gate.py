@@ -1,6 +1,7 @@
 """Synthetic first-login contract for Onto Modeling and independent Auth."""
 
 import json
+import secrets
 
 from fastapi.testclient import TestClient
 
@@ -11,7 +12,7 @@ from app.services import auth
 
 
 def test_auth_userinfo_is_authoritative(monkeypatch):
-    monkeypatch.setattr(auth, "AUTH_URL", "http://auth.example.com")
+    monkeypatch.setattr(auth, "AUTH_URL", "https://auth.example.com")
 
     class UserInfoResponse:
         def __enter__(self):
@@ -26,7 +27,7 @@ def test_auth_userinfo_is_authoritative(monkeypatch):
                                "password_change_required": True}).encode()
 
     def urlopen(request, timeout):
-        assert request.full_url == "http://auth.example.com/userinfo"
+        assert request.full_url == "https://auth.example.com/userinfo"
         assert request.get_header("Authorization") == "Bearer synthetic-token"
         return UserInfoResponse()
 
@@ -37,7 +38,7 @@ def test_auth_userinfo_is_authoritative(monkeypatch):
 
 
 def test_auth_userinfo_failure_does_not_grant_access(monkeypatch):
-    monkeypatch.setattr(auth, "AUTH_URL", "http://auth.example.com")
+    monkeypatch.setattr(auth, "AUTH_URL", "https://auth.example.com")
 
     def unavailable(request, timeout):
         raise auth.urllib.error.URLError("synthetic unavailable")
@@ -50,7 +51,7 @@ def test_auth_userinfo_failure_does_not_grant_access(monkeypatch):
 
 
 def test_auth_userinfo_rejects_mismatched_identity(monkeypatch):
-    monkeypatch.setattr(auth, "AUTH_URL", "http://auth.example.com")
+    monkeypatch.setattr(auth, "AUTH_URL", "https://auth.example.com")
 
     class UserInfoResponse:
         def __enter__(self):
@@ -101,9 +102,11 @@ def test_self_password_change_uses_auth_change_endpoint(monkeypatch):
         return 200, {"success": True}
 
     monkeypatch.setattr(admin, "_auth_admin_request", admin_request)
+    old_secret = secrets.token_urlsafe(24)
+    new_secret = secrets.token_urlsafe(24)
     response = auth_routes.change_password(auth_routes.PasswordBody(
-        username="operator_a", old_password="OldSynthetic123!", new_password="NewSynthetic123!"))
+        username="operator_a", old_password=old_secret, new_password=new_secret))
     assert response.status_code == 200
     assert calls == [("PUT", "/admin/change-password", {
-        "username": "operator_a", "old_password": "OldSynthetic123!",
-        "new_password": "NewSynthetic123!"})]
+        "username": "operator_a", "old_password": old_secret,
+        "new_password": new_secret})]

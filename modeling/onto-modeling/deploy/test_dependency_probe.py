@@ -17,8 +17,8 @@ spec.loader.exec_module(probe)
 
 def invoke(path, *extra):
     arguments = ["dependency_probe.py", "--image", "onto:test", "--network", "auth-net",
-                 "--auth-url", "http://auth-server:5056", "--issuer", "https://issuer",
-                 "--audience", "audience", "--consumer-url", "http://backend:5055",
+                 "--auth-url", "https://auth.example.com", "--issuer", "https://issuer.example.org",
+                 "--audience", "audience", "--consumer-url", "https://backend.example.net",
                  "--state-file", str(path), *extra]
     with mock.patch.object(sys, "argv", arguments):
         return probe.main()
@@ -44,7 +44,7 @@ def test_pending_verify_preserves_waiting_and_wrong_contract_fails(tmp_path):
         assert invoke(path, "--require-ready") == 2
     assert json.loads(path.read_text())["phase"] == "waiting-dependencies"
     content = json.loads(path.read_text())
-    content["authIssuer"] = "https://different-issuer"
+    content["authIssuer"] = "https://different-issuer.example.org"
     path.write_text(json.dumps(content))
     with mock.patch.object(probe, "probe") as network_probe:
         assert invoke(path, "--verify") == 2
@@ -76,14 +76,15 @@ def test_waiting_install_rejects_image_change(tmp_path):
         assert invoke(path) == 0
         original = path.read_bytes()
         with mock.patch.object(sys, "argv", ["dependency_probe.py", "--image", "onto:new",
-                                            "--network", "auth-net", "--auth-url", "http://auth-server:5056",
-                                            "--issuer", "https://issuer", "--audience", "audience",
-                                            "--consumer-url", "http://backend:5055", "--state-file", str(path)]):
+                                            "--network", "auth-net", "--auth-url", "https://auth.example.com",
+                                            "--issuer", "https://issuer.example.org", "--audience", "audience",
+                                            "--consumer-url", "https://backend.example.net", "--state-file", str(path)]):
             assert probe.main() == 2
     assert path.read_bytes() == original
 
 
 def test_probe_uses_existing_image_without_pulling():
-    with mock.patch.object(subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout='["auth"]')) as run:
-        assert probe.probe("onto:test", "auth-net", "http://auth", "issuer", "http://consumer") == ["auth"]
-    assert run.call_args.args[0][:6] == ["docker", "run", "--rm", "--pull", "never", "--network"]
+    with mock.patch.object(probe.shutil, "which", return_value="/usr/bin/docker"), \
+         mock.patch.object(subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout='["auth"]')) as run:
+        assert probe.probe("onto:test", "auth-net", "https://auth.example.com", "issuer", "https://consumer.example.net") == ["auth"]
+    assert run.call_args.args[0][:6] == ["/usr/bin/docker", "run", "--rm", "--pull", "never", "--network"]

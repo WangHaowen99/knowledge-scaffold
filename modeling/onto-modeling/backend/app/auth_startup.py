@@ -6,9 +6,18 @@ import asyncio
 import json
 import logging
 import os
+from urllib.parse import urljoin
 import urllib.request
 
 logger = logging.getLogger(__name__)
+
+
+def _ready_status(status: object) -> bool:
+    if not isinstance(status, dict):
+        return False
+    return (status.get("schemaVersion") == 1
+            and status.get("service") == "auth"
+            and status.get("state") == "ready")
 
 
 def available() -> bool:
@@ -16,14 +25,13 @@ def available() -> bool:
     if not base:
         return True  # Local development without remote authentication.
     try:
-        with urllib.request.urlopen(base + "/health", timeout=3) as response:
+        with urllib.request.urlopen(urljoin(base + "/", "health"), timeout=3) as response:
             if response.status != 200:
                 return False
         try:
-            with urllib.request.urlopen(base + "/status", timeout=3) as response:
+            with urllib.request.urlopen(urljoin(base + "/", "status"), timeout=3) as response:
                 status = json.load(response)
-            if (isinstance(status, dict) and status.get("schemaVersion") == 1
-                    and status.get("service") == "auth" and status.get("state") == "ready"):
+            if _ready_status(status):
                 for key, configured in (("issuer", os.environ.get("ONTO_WEB_AUTH_ISSUER")),
                                         ("audience", os.environ.get("ONTO_WEB_AUTH_AUDIENCE"))):
                     if configured and status.get(key) and configured != status[key]:
@@ -51,5 +59,4 @@ async def wait_for_auth(interval: int = 3) -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
     asyncio.run(wait_for_auth())

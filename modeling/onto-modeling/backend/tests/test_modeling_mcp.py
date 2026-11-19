@@ -105,8 +105,8 @@ def test_retired_core_allows_member_update_without_remote_sync(monkeypatch):
 
 def test_retired_core_disables_legacy_endpoints_even_with_saved_urls(monkeypatch):
     from app.services import modeling_eval
-    monkeypatch.setattr(modeling_mcp.config, "MODELING_URL", "http://core.example.com")
-    monkeypatch.setattr(modeling_mcp.config, "MODELING_ASSOCIATION_URL", "http://core.example.com")
+    monkeypatch.setattr(modeling_mcp.config, "MODELING_URL", "https://core.example.com")
+    monkeypatch.setattr(modeling_mcp.config, "MODELING_ASSOCIATION_URL", "https://core.example.com")
     monkeypatch.setattr(modeling_mcp.config, "MODELING_ASSOCIATION_TOKEN", "synthetic")
     monkeypatch.setattr(modeling_mcp.config, "MODELING_CORE_RETIRED", True)
     assert modeling_mcp.configured() is False

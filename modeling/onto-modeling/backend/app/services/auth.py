@@ -92,9 +92,13 @@ def current_user(token: str, claims: dict) -> dict:
         raise AuthError("认证服务暂不可用", 503) from exc
     except (urllib.error.URLError, TimeoutError, ValueError) as exc:
         raise AuthError("认证服务暂不可用", 503) from exc
-    if (not isinstance(user, dict) or user.get("sub") != claims.get("sub")
-            or user.get("role") not in ("admin", "user")
-            or not isinstance(user.get("password_change_required"), bool)):
+    if not isinstance(user, dict):
+        raise AuthError("账号状态无效", 401)
+    if user.get("sub") != claims.get("sub"):
+        raise AuthError("账号状态无效", 401)
+    if user.get("role") not in ("admin", "user"):
+        raise AuthError("账号状态无效", 401)
+    if not isinstance(user.get("password_change_required"), bool):
         raise AuthError("账号状态无效", 401)
     return user
 

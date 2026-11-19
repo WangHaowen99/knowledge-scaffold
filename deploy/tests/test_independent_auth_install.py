@@ -74,7 +74,7 @@ state['step'] = 'completed'
         'schema_version': 1, 'contract': 'auth-v1', 'version': 'test',
         'architecture': 'amd64', 'image_id': AUTH_IMAGE, 'files': files}))
     package = tmp_path / 'onto-auth-test-amd64.tar.gz'
-    with tarfile.open(package, 'w:gz') as archive:
+    with tarfile.open(package, 'w:gz') as archive:  # NOSONAR(S5042): synthetic test archive
         archive.add(root, arcname=root.name)
     return package
 
@@ -469,7 +469,7 @@ def test_tampered_auth_package_blocks_all_service_changes(tmp_path):
     package = setup['auth_package']
     stage = tmp_path / 'auth-stage/onto-auth-test-amd64'
     (stage / 'images/auth-server.tar').write_text('changed after manifest')
-    with tarfile.open(package, 'w:gz') as archive:
+    with tarfile.open(package, 'w:gz') as archive:  # NOSONAR(S5042): synthetic test archive
         archive.add(stage, arcname=stage.name)
     status, output = _run(setup, interactive=False)
     assert status != 0
@@ -514,9 +514,11 @@ if [ "$1 $2" = 'network inspect' ] && [ "$4" = '--format' ]; then echo true; exi
 if [ "$1" = run ]; then exit 1; fi
 exit 0
 ''')
-    result = subprocess.run(['bash', str(release / 'deploy.sh')],
+    bash = shutil.which('bash')
+    assert bash is not None
+    result = subprocess.run([bash, str(release / 'deploy.sh')],  # NOSONAR(S4721): fixed synthetic test script
                             env={**os.environ, 'PATH': f"{fake_bin}:{os.environ['PATH']}"},
-                            text=True, capture_output=True, check=False)
+                            text=True, capture_output=True, check=False, shell=False)
     assert result.returncode != 0
     assert 'Auth 或 Consumer 依赖配置无效' in result.stderr
     assert not (release / '.env').exists()
@@ -550,10 +552,12 @@ if [ "$1 $2" = 'network create' ]; then touch "$DOCKER_TEST_NETWORK_MARKER"; exi
 exit 0
 ''')
     marker = tmp_path / 'network-created'
-    result = subprocess.run(['bash', str(release / 'deploy.sh')],
+    bash = shutil.which('bash')
+    assert bash is not None
+    result = subprocess.run([bash, str(release / 'deploy.sh')],  # NOSONAR(S4721): fixed synthetic test script
                             env={**os.environ, 'PATH': f"{fake_bin}:{os.environ['PATH']}",
                                  'DOCKER_TEST_NETWORK_MARKER': str(marker)},
-                            text=True, capture_output=True, check=False)
+                            text=True, capture_output=True, check=False, shell=False)
     assert result.returncode == 0, result.stderr
     assert marker.exists()
     values = dict(line.split('=', 1) for line in (release / '.env').read_text().splitlines()

@@ -310,10 +310,12 @@ def validate_auth_owner(args, merged: dict, service: dict) -> None:
         consumer = merged["externalConsumer"]
         consumer_name = consumer["serviceName"].removesuffix("-backend")
         metadata = service.get("metadata", {})
-        if (not consumer_name or consumer_name == consumer["serviceName"]
-                or ref["serviceName"] != f"{consumer_name}-auth"
-                or ref["namespace"] != consumer["namespace"]
-                or not metadata.get("uid")
+        if not consumer_name or consumer_name == consumer["serviceName"]:
+            raise ConfigError("legacy Auth Service does not belong to Consumer")
+        if (ref["serviceName"] != f"{consumer_name}-auth"
+                or ref["namespace"] != consumer["namespace"]):
+            raise ConfigError("legacy Auth Service does not belong to Consumer")
+        if (not metadata.get("uid")
                 or metadata.get("annotations", {}).get("meta.helm.sh/release-name") != consumer_name):
             raise ConfigError("legacy Auth Service does not belong to Consumer")
         raw = kube(args, "get", "configmap", f"{consumer_name}-cce-state", "-n", consumer["namespace"])
@@ -323,10 +325,12 @@ def validate_auth_owner(args, merged: dict, service: dict) -> None:
             raise ConfigError("legacy Consumer Auth state is unavailable") from exc
         auth_endpoint = next((item for item in state.get("endpoints", []) if item.get("id") == "auth"), {})
         if (state.get("phase") != "ready" or state.get("externalAuth")
-                or state.get("identity", {}).get("auth") != merged["global"]["auth"]
-                or auth_endpoint.get("serviceName") != ref["serviceName"]
-                or auth_endpoint.get("namespace") != ref["namespace"]
-                or auth_endpoint.get("port") != ref["servicePort"]
+                or state.get("identity", {}).get("auth") != merged["global"]["auth"]):
+            raise ConfigError("legacy Consumer Auth contract differs from Modeling")
+        if (auth_endpoint.get("serviceName") != ref["serviceName"]
+                or auth_endpoint.get("namespace") != ref["namespace"]):
+            raise ConfigError("legacy Consumer Auth contract differs from Modeling")
+        if (auth_endpoint.get("port") != ref["servicePort"]
                 or auth_endpoint.get("apiVersion") != "v1"):
             raise ConfigError("legacy Consumer Auth contract differs from Modeling")
         validate_auth_admin_token(args, merged, consumer_name, consumer["namespace"])
@@ -346,9 +350,9 @@ def validate_auth_owner(args, merged: dict, service: dict) -> None:
         state = json.loads(raw["data"]["state.json"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError("independent Auth owner state is unavailable") from exc
-    if (state.get("phase") != "ready" or state.get("identity") != merged["global"]["auth"]
-            or state.get("serviceUID") not in (None, metadata.get("uid"))
-            or not metadata.get("uid")):
+    if state.get("phase") != "ready" or state.get("identity") != merged["global"]["auth"]:
+        raise ConfigError("independent Auth owner identity or Service UID differs")
+    if not metadata.get("uid") or state.get("serviceUID") not in (None, metadata.get("uid")):
         raise ConfigError("independent Auth owner identity or Service UID differs")
     owner_status = json.loads(run("helm", "--kube-context", args.context, "--namespace",
                                   ref["namespace"], "status", owner, "-o", "json"))
@@ -356,10 +360,12 @@ def validate_auth_owner(args, merged: dict, service: dict) -> None:
         raise ConfigError("independent Auth Helm release is not deployed")
     owner_values = json.loads(run("helm", "--kube-context", args.context, "--namespace",
                                   ref["namespace"], "get", "values", owner, "-o", "json"))
-    if (not isinstance(owner_values, dict) or owner_values.get("authOnly") is not True
-            or owner_values.get("serviceName") != ref["serviceName"]
-            or owner_values.get("workloadName") != ref["serviceName"]
-            or owner_values.get("global", {}).get("auth") != merged["global"]["auth"]):
+    if not isinstance(owner_values, dict) or owner_values.get("authOnly") is not True:
+        raise ConfigError("independent Auth installed values differ from Modeling reference")
+    if (owner_values.get("serviceName") != ref["serviceName"]
+            or owner_values.get("workloadName") != ref["serviceName"]):
+        raise ConfigError("independent Auth installed values differ from Modeling reference")
+    if owner_values.get("global", {}).get("auth") != merged["global"]["auth"]:
         raise ConfigError("independent Auth installed values differ from Modeling reference")
     validate_auth_admin_token(args, merged, owner, ref["namespace"], owner_values)
     deployment = kube(args, "get", "deployment", service["metadata"]["name"], "-n", ref["namespace"])
@@ -383,14 +389,15 @@ def validate_auth_admin_token(args, merged: dict, owner: str, namespace: str,
         raise ConfigError("Auth owner has no management token Secret reference")
     client = _read_secret(args, client_ref["name"])
     actual = _read_secret(args, owner_ref["name"], namespace)
-    if (not isinstance(client, dict) or not isinstance(actual, dict)
-            or client.get("type") != "Opaque" or actual.get("type") != "Opaque"):
+    if not isinstance(client, dict) or not isinstance(actual, dict):
+        raise ConfigError("Modeling or Auth management token Secret is invalid")
+    if client.get("type") != "Opaque" or actual.get("type") != "Opaque":
         raise ConfigError("Modeling or Auth management token Secret is invalid")
     client_value = client.get("data", {}).get(client_ref["key"])
     actual_value = actual.get("data", {}).get(owner_ref["key"])
-    if (not client_value or not actual_value or not isinstance(client_value, str)
-            or not isinstance(actual_value, str)
-            or not hmac.compare_digest(client_value, actual_value)):
+    if not isinstance(client_value, str) or not isinstance(actual_value, str):
+        raise ConfigError("Modeling Auth management token differs from Auth owner")
+    if not client_value or not actual_value or not hmac.compare_digest(client_value, actual_value):
         raise ConfigError("Modeling Auth management token differs from Auth owner")
 
 
@@ -644,12 +651,15 @@ def upgrade_precheck(args, root: Path, release: dict, merged: dict) -> dict:
         raise CompatibilityError("transition migration policy differs from installed workloads")
     if "core" in source_workloads:
         access = old_values.get("global", {}).get("access", {})
-        args.retired_ingress_names = tuple(
-            f"{args.release}-{item['id']}"[:63].rstrip("-")
-            for item in access.get("listeners", [])
-            if item.get("endpointId") in ("modeling-core", "modeling-mcp")
-            and isinstance(item.get("id"), str) and item["id"]
-        ) if access.get("mode") == "port" else ()
+        retired_names = []
+        if access.get("mode") == "port":
+            for item in access.get("listeners", []):
+                if item.get("endpointId") not in ("modeling-core", "modeling-mcp"):
+                    continue
+                listener_id = item.get("id")
+                if isinstance(listener_id, str) and listener_id:
+                    retired_names.append(f"{args.release}-{listener_id}"[:63].rstrip("-"))
+        args.retired_ingress_names = tuple(retired_names)
     if old_values.get("global", {}).get("targetArch") != merged["global"]["targetArch"]:
         raise CompatibilityError("target architecture differs from the installed release")
     if old_values.get("global", {}).get("auth", {}) != merged["global"]["auth"]:
@@ -1518,14 +1528,15 @@ def migrate_core_projects(args, merged: dict, before: dict) -> dict | None:
             containers[0].get(key) == expected_container[key]
             for key in ("name", "image", "command", "volumeMounts")
         ))
-        if (current.get("metadata", {}).get("namespace") != args.namespace
-                or any(labels.get(key) != value for key, value in expected_labels.items())
-                or current.get("spec", {}).get("backoffLimit") != 0
-                or current_spec.get("volumes") != pod["volumes"]
-                or not container_matches
-                or current_spec.get("restartPolicy") != "Never"
-                or current_spec.get("nodeSelector") != pod["nodeSelector"]
-                or current_spec.get("imagePullSecrets", []) != pod.get("imagePullSecrets", [])):
+        metadata_matches = (current.get("metadata", {}).get("namespace") == args.namespace
+                            and all(labels.get(key) == value for key, value in expected_labels.items()))
+        job_matches = (current.get("spec", {}).get("backoffLimit") == 0
+                       and current_spec.get("volumes") == pod["volumes"]
+                       and container_matches)
+        pod_matches = (current_spec.get("restartPolicy") == "Never"
+                       and current_spec.get("nodeSelector") == pod["nodeSelector"]
+                       and current_spec.get("imagePullSecrets", []) == pod.get("imagePullSecrets", []))
+        if not metadata_matches or not job_matches or not pod_matches:
             raise ConfigError("existing Core migration Job differs from this operation")
     else:
         _run_with_input(("kubectl", "--context", args.context, "-n", args.namespace,

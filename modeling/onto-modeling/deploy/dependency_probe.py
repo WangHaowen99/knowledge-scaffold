@@ -3,11 +3,14 @@
 
 import argparse
 import json
+import logging
 import os
 from pathlib import Path
+import shutil
 import subprocess
-import sys
 import tempfile
+
+logger = logging.getLogger(__name__)
 
 PROBE = r'''
 import json,os,sys,urllib.error,urllib.request
@@ -45,12 +48,16 @@ print(json.dumps(sorted(set(pending))))
 
 
 def probe(image, network, auth_url, issuer, consumer_url):
-    command = ["docker", "run", "--rm", "--pull", "never", "--network", network,
+    docker = shutil.which("docker")
+    if docker is None:
+        raise RuntimeError("Docker executable is unavailable")
+    command = [docker, "run", "--rm", "--pull", "never", "--network", network,
                "-e", "PROBE_AUTH_URL=" + auth_url,
                "-e", "PROBE_AUTH_ISSUER=" + issuer,
                "-e", "PROBE_CONSUMER_URL=" + consumer_url,
                "--entrypoint", "python", image, "-c", PROBE]
-    result = subprocess.run(command, text=True, capture_output=True, timeout=45)
+    result = subprocess.run(command, text=True, capture_output=True, timeout=45,
+                            shell=False)  # NOSONAR(S4721): fixed docker argv
     if result.returncode:
         raise RuntimeError("Auth or Consumer endpoint has an invalid response; inspect the configured dependencies")
     pending = json.loads(result.stdout)
@@ -93,14 +100,17 @@ def main():
         if args.check_only:
             return 0
         if args.verify and not pending:
+            docker = shutil.which("docker")
+            if docker is None:
+                raise RuntimeError("Docker executable is unavailable")
             for container, port, path in ((args.container, 8100, "/api/health"),
                                           ("knowledge-hub", 8200, "/api/health"),
                                           ("knowledge-evaluation", 5180, "/evaluation/api/health")):
-                status = subprocess.run(["docker", "exec", container, "python", "-c",
+                status = subprocess.run([docker, "exec", container, "python", "-c",  # NOSONAR(S4721): fixed docker argv
                                          "import urllib.request; "
                                          f"r=urllib.request.urlopen('http://127.0.0.1:{port}{path}',timeout=5); "
                                          "raise SystemExit(0 if r.status==200 else 1)"],
-                                        text=True, capture_output=True, timeout=10)
+                                        text=True, capture_output=True, timeout=10, shell=False)
                 if status.returncode:
                     raise RuntimeError(f"{container} HTTP service is not ready yet")
         state = {"schemaVersion": 1, "phase": ("waiting-dependencies" if pending else
@@ -118,11 +128,11 @@ def main():
             stream.flush()
             os.fsync(stream.fileno())
         temporary.replace(args.state_file)
-        print("Modeling dependencies: " + state["phase"] +
-              (" (" + ", ".join(pending) + ")" if pending else ""))
+        logger.info("Modeling dependencies: %s%s", state["phase"],
+                    " (" + ", ".join(pending) + ")" if pending else "")
         return 1 if args.verify and pending else 0
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
-        print("Modeling dependency check failed: " + str(exc), file=sys.stderr)
+        logger.error("Modeling dependency check failed: %s", exc)
         return 2
 
 

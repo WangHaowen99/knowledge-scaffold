@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from pathlib import Path
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
+
+logger = logging.getLogger(__name__)
 
 
 def prepare_source(source: Path, destination: Path) -> None:
@@ -45,16 +48,18 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="core-migration-", dir=args.summary_file.parent) as temporary:
         staged = Path(temporary)
         prepare_source(args.source, staged)
-        result = subprocess.run(
+        result = subprocess.run(  # NOSONAR(S4721): fixed interpreter and sibling migrator
             [sys.executable, str(Path(__file__).with_name("migrate_from_modeling.py")),
              "--source", str(staged), "--summary-file", str(args.summary_file)],
             check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            shell=False,
         )
         if result.returncode:
-            print("Core project migration failed; source and target volumes remain available", file=sys.stderr)
+            logger.error("Core project migration failed; source and target volumes remain available")
             return result.returncode
         summary = json.loads(args.summary_file.read_text(encoding="utf-8"))
-        print(json.dumps(summary, sort_keys=True))
+        # The CCE caller consumes this JSON line as a machine-readable result.
+        sys.stdout.write(json.dumps(summary, sort_keys=True) + "\n")
         return 0
 
 
