@@ -1,6 +1,7 @@
 """按项目数据算的内核条件（ADR-0083）：流程节点出不出现、内核探针、提示规则注不注入。
 
-条件名是内核给的固定集合，包只能引用、不能自己写判断（包代码不在内核里跑）。现在只有 `materials_added`：上传了新资料、
+条件名是内核给的固定集合，包只能引用、不能自己写判断（包代码不在内核里跑）。`data_sources`：项目里有数据源资料（ADR-0104）；
+`materials_added`：上传了新资料、
 这一轮还没处理完（`activation.materials_pending`，内核的增量更新用；节点模型重构 3）。不认识的条件一律不成立。
 
 三处用法：
@@ -32,12 +33,18 @@ def _materials_added(root: Path) -> bool:
     return activation.materials_pending(root)
 
 
+def _data_sources(root: Path) -> bool:
+    """项目里有数据源资料（ADR-0104）：能力包按它决定提示规则、节点出不出现。"""
+    folder = Path(root) / "resource"
+    return folder.is_dir() and any(path.is_file() for path in folder.glob("*/*.datasource"))
+
+
 def _end_materials_round(root: Path, reason: str) -> bool:
     return activation.end_materials_round(root, reason)
 
 
 # 条件名 → 按项目目录算是否成立；`activated` 与 `session_open` 另走 activation
-CONDITIONS: dict = {activation.MATERIALS_ADDED: _materials_added}
+CONDITIONS: dict = {activation.MATERIALS_ADDED: _materials_added, "data_sources": _data_sources}
 # 条件名 → 结束这一轮（「这一轮不处理」），结束了返回 True、这一轮已经结束返回 False
 ROUND_ENDERS: dict = {activation.MATERIALS_ADDED: _end_materials_round}
 

@@ -302,16 +302,20 @@ def test_catalog_lists_data_access_converters(env):
     client, _ws, pid, _root, _gw = env
     body = client.get("/api/v1/packs", params={"project_id": pid}).json()
     providers = {item["name"]: item for item in body["items"] if item["category"] == "provider"}
-    assert set(providers) == {"convert-pdf", "convert-docx", "convert-xlsx"}
-    assert body["counts"]["provider"] == 3
+    # 多源连接器：三个转换器（ADR-0073）+ 两个数据源连接器（ADR-0104）
+    assert set(providers) == {"convert-pdf", "convert-docx", "convert-xlsx", "db-mysql", "db-postgres"}
+    assert body["counts"]["provider"] == 5
     assert providers["convert-pdf"]["project_status"] == "platform_installed"
     assert providers["convert-pdf"]["converter"]["default_for"] == [".pdf"]
-    assert client.get("/api/v1/packs").json()["counts"]["provider"] == 3
-    # 运维的版本清单也列转换器，标上 converter（前端在证据采集不可用时照样显示它们）
+    assert providers["db-mysql"]["project_status"] == "platform_installed" and providers["db-mysql"]["source"]
+    assert providers["db-mysql"]["trust"]["state"] == "builtin"
+    assert client.get("/api/v1/packs").json()["counts"]["provider"] == 5
+    # 运维的版本清单也列多源连接器，转换器标上 converter
     from app.services.packs import governance
 
     rows = [row for row in governance.versions(_ws) if row["category"] == "provider"]
-    assert {row["component"] for row in rows} == set(providers) and all(row["converter"] for row in rows)
+    assert {row["component"] for row in rows} == set(providers)
+    assert {row["component"] for row in rows if row.get("converter")} == {"convert-pdf", "convert-docx", "convert-xlsx"}
 
 
 def test_health_and_issuer_key(env, monkeypatch):

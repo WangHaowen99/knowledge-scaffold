@@ -19,7 +19,8 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
-TABLE_SUFFIXES = (".xlsx", ".xlsm", ".csv")
+# 数据源资料（.datasource，ADR-0104）和 Excel 一样读文本版
+TABLE_SUFFIXES = (".xlsx", ".xlsm", ".csv", ".datasource")
 
 SAMPLE_ROWS = 30
 MAX_SHEETS = 200
@@ -331,7 +332,7 @@ def inspect_sheets(path: Path) -> list[dict]:
                     rows.append(row)
                 width = max(width, max((i + 1 for i, value in enumerate(row) if _clean(value)), default=0))
         return [_sheet_details(path.stem, rows, data_width=width)]
-    if path.suffix.lower() not in (".xlsx", ".xlsm"):
+    if path.suffix.lower() not in (".xlsx", ".xlsm", ".datasource"):
         return []
     text = text_path(path)
     try:
@@ -339,7 +340,8 @@ def inspect_sheets(path: Path) -> list[dict]:
     except (OSError, UnicodeDecodeError):
         markdown = None
     if markdown is None:
-        raise TextPending("表格还没有转成文本版，暂时无法检查 Sheet 范围，请稍后重试")
+        raise TextPending("表格还没有转成文本版，暂时无法检查 Sheet 范围，请稍后重试"
+                          if path.suffix.lower() != ".datasource" else "数据源还没有采集完，暂时无法检查 Sheet 范围，请稍后重试")
     sheets = text_sheets(markdown)
     if len(sheets) > MAX_SHEETS:
         raise SheetSelectionError(f"工作簿超过 {MAX_SHEETS} 个 Sheet，请拆分后使用")

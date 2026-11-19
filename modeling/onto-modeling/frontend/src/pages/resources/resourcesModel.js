@@ -1,5 +1,6 @@
 // 资料区（设计稿 resources）的纯逻辑：分组与行文字、跳转参数、出处编号、上传校验、被引用、表格与 drawio 预览
 import { validateResourceFile } from '../../lib/resourceUpload.js';
+import { SOURCE_STATE_TEXT, isSource } from './sourceModel.js';
 
 // R-01 拿不到 purposes 时用的兜底（说明文字同设计稿 EVD_PURPOSE）
 export const PURPOSE_FALLBACK = [
@@ -19,6 +20,7 @@ export function sortMaterials(groups = []) {
 
 // 行首图标：设计稿 .evd-f .fi 的三种底色（d 流程图、x 表格、w 文档）
 export function fileIcon(kind) {
+  if (kind === 'source') return { cls: 'x', icon: 'db' };
   if (kind === 'drawio') return { cls: 'd', icon: 'flow' };
   if (kind === 'xls' || kind === 'csv') return { cls: 'x', icon: 'table' };
   if (kind === 'html') return { cls: 'w', icon: 'globe' };
@@ -50,6 +52,8 @@ const num = (n) => Number(n || 0).toLocaleString('en-US');
 
 // 表格的规模：「3 个工作表 · 1,204 行」「412 行」；拿不到就用大小
 export function scaleText(m) {
+  // 数据源资料（ADR-0104）：采集出几张表；文件本身只是连接配置，大小没有意义
+  if (isSource(m)) return m.sheets ? `${m.sheets} 张表` : '';
   if (m.kind === 'xls' && m.sheets) return `${m.sheets} 个工作表 · ${num(m.rows)} 行`;
   if ((m.kind === 'xls' || m.kind === 'csv') && m.rows) return `${num(m.rows)} 行`;
   return fmtSize(m.size);
@@ -57,7 +61,7 @@ export function scaleText(m) {
 
 // 行的第二行：类型 · 规模 · 上传时间 · 被引用
 export function metaText(m, now = Date.now()) {
-  const parts = [...(m.type_label ? [m.type_label] : []), scaleText(m), `${shortTime(m.uploaded_at, now)} 上传`];
+  const parts = [...(m.type_label ? [m.type_label] : []), scaleText(m), `${shortTime(m.uploaded_at, now)} ${isSource(m) ? '接入' : '上传'}`].filter(Boolean);
   if (m.referenced) parts.push(`被引用 ${m.referenced} 处`);
   return parts.join(' · ');
 }
@@ -72,12 +76,16 @@ const TEXT_CHIPS = {
 };
 export function textChip(m) {
   const c = TEXT_CHIPS[m?.text?.state];
-  return c ? { text: c[0], tone: c[1], icon: c[2], title: m.text.reason || undefined } : null;
+  if (!c) return null;
+  // 数据源的「转换」是采集：叫法换成采集中、等待采集、采集失败
+  const text = (isSource(m) && SOURCE_STATE_TEXT[m.text.state]) || c[0];
+  return { text, tone: c[1], icon: c[2], title: m.text.reason || undefined };
 }
 // 要转的文档（PDF、Word、Excel、图片等），不含本身就是文本的和流程图
 export const isConvertible = (m) => !!m?.text && m.text.state !== 'native';
 // 预览卡多一个「文本」页签：原文另有预览（Word 段落、Excel 表格）且有文本版或转换状态可看；PDF 的预览就是文本
-export const hasTextTab = (m) => isConvertible(m) && m.kind !== 'pdf' && m.kind !== 'image';
+// 数据源资料同 PDF：预览就是采集出来的文本版
+export const hasTextTab = (m) => isConvertible(m) && m.kind !== 'pdf' && m.kind !== 'image' && !isSource(m);
 
 /**
  * 文本版按位置标记切段（<!-- 第 3 页 -->、<!-- 工作表：客户 -->），每段画一条分隔再画正文。

@@ -57,7 +57,21 @@ function converterCards() {
   return CONVERTER_CARDS.map(([name, label, description, types, license]) => ({
     name, label, description, category: 'provider', version: '1.0.0', latest: '1.0.0', channel: 'stable', publisher: { kind: 'official', label: '平台' },
     ui: null, batch: null, badges: [], meta: null, project_status: 'platform_installed', locked_version: null, usage_note: null, default_on: false,
-    converter: { types, default_for: types, license },
+    converter: { types, default_for: types, license }, source: null, trust: { state: 'builtin', installed: true },
+  }));
+}
+
+// 多源连接器里的数据源连接器（ADR-0104）：两个随镜像交付的官方连接器，加一个上传了、还没信任的租户连接器
+const SOURCE_CARDS = [
+  ['db-mysql', 'MySQL', '读取表结构、外键、约束和遮蔽后的样本。', 6, 'PyMySQL（MIT）', { kind: 'official', label: '平台' }, 'builtin'],
+  ['db-postgres', 'PostgreSQL', '读取表结构、外键、约束和遮蔽后的样本。', 6, 'pg8000（BSD-3-Clause）', { kind: 'official', label: '平台' }, 'builtin'],
+  ['src-http-sample', 'HTTP 接口示例', '按接口清单读取对象和字段（示例连接器）。', 3, '只用标准库', { kind: 'tenant', label: '示例租户' }, 'untrusted'],
+];
+function sourceCards() {
+  return SOURCE_CARDS.map(([name, label, description, fields, license, publisher, trust]) => ({
+    name, label, description, category: 'provider', version: '0.1.0', latest: '0.1.0', channel: 'stable', publisher,
+    ui: null, batch: null, badges: [], meta: null, project_status: 'platform_installed', locked_version: null, usage_note: null, default_on: false,
+    converter: null, source: { fields, license }, trust: { state: trust, installed: trust === 'untrusted' ? null : true },
   }));
 }
 
@@ -70,7 +84,7 @@ export function catalogCards(flags = new Set()) {
     ...p, meta: p.meta ?? META[p.name] ?? null, badges: [...new Set([...(p.badges || []), ...(BADGES[p.name] || [])])],
     ...(flags.has('ind') && p.name === 'industry-retail' ? { version: '1.1.0', latest: '1.1.0' } : null),
   }));
-  return [...base, ...TENANT_PACKS.map((p) => ({ ...p, badges: [...p.badges] })), ...converterCards()];
+  return [...base, ...TENANT_PACKS.map((p) => ({ ...p, badges: [...p.badges] })), ...converterCards(), ...sourceCards()];
 }
 
 const INSTALLED = ['required', 'enabled', 'update', 'pending'];
@@ -82,7 +96,7 @@ export const isInstalledStatus = (s) => INSTALLED.includes(s);
  * @param o {project: bool, enabledNames: string[]（本项目生效中的包）}
  */
 export function projectStatusOf(card, pp, o) {
-  if (card.converter) return 'platform_installed';
+  if (card.converter || card.source) return 'platform_installed';
   if (!o.project) return card.project_status ?? null; // 不带项目：core 必装、离线部署不可用照目录（契约变更 F1 第 3 条）
   if (pp?.status === 'required') return 'required';
   if (pp?.status === 'pending') return 'pending';

@@ -1,5 +1,5 @@
 // 资料区（设计稿 resources）：资料列表与用途（R-01、R-03）、上传与替换（U-01 + R-02）、删除（R-04、R-05）、
-// 右侧预览（ResourcePreview.jsx）。
+// 右侧预览（ResourcePreview.jsx）；接入数据源与修改连接（DS-01～DS-04，ADR-0104，SourceDrawer.jsx）。
 // 别处跳来：?anchor=<file:… 锚点>（查看原文，定位并高亮那一段）、?path=<资料路径>（上传文本版）。
 // 页面只发命令（S-20）：改用途后的重读、把资料读完，进度条显示在页头下。
 // 新资料不在这里发增量更新：建模之后传了资料，流程里自己出现增量更新节点（R-02、节点模型重构 3）。
@@ -15,6 +15,8 @@ import { legacyOfficeHint, uploadRules } from '../../lib/resourceUpload.js';
 import { CommandRunBar, useCommandTasks, useProjectEvent } from '../plugin/parts.jsx';
 import { MaterialPreview, useFullscreen } from './ResourcePreview.jsx';
 import { useSheetScope } from './SheetScope.jsx';
+import { SourceDrawer } from './SourceDrawer.jsx';
+import { connectorsReady, editTarget, isSource } from './sourceModel.js';
 import { isSchemaTable, scopeLink } from './sheetScopeModel.js';
 import {
   PURPOSE_FALLBACK, checkUpload, extOf, fileIcon, findMaterial, fmtSize, materialTitle, metaText, sortMaterials,
@@ -72,7 +74,7 @@ function PurposeMenu({ value, auto, purposes, onPick, onClose }) {
   );
 }
 
-function FileRow({ m, picked, purposes, menuOpen, onPick, onMenu, onPurpose, onReplace, onDelete, onScope }) {
+function FileRow({ m, picked, purposes, menuOpen, onPick, onMenu, onPurpose, onReplace, onEditSource, onDelete, onScope }) {
   const ic = fileIcon(m.kind);
   const p = purposeView(m, purposes);
   const tc = textChip(m);
@@ -100,7 +102,9 @@ function FileRow({ m, picked, purposes, menuOpen, onPick, onMenu, onPurpose, onR
       </div>
       <div className="evd-acts">
         <Button size="sm" kind="ghost" icon="eye" title="预览" onClick={stop(() => onPick(m, true))} />
-        <Button size="sm" kind="ghost" icon="upload" title="替换" onClick={stop(() => onReplace(m))} />
+        {isSource(m)
+          ? <Button size="sm" kind="ghost" icon="plug" title="修改连接" onClick={stop(() => onEditSource(m))} />
+          : <Button size="sm" kind="ghost" icon="upload" title="替换" onClick={stop(() => onReplace(m))} />}
         <Button size="sm" kind="ghost" icon="trash" title="删除" onClick={stop(() => onDelete(m))} />
       </div>
       {menuOpen ? <PurposeMenu value={m.purpose} auto={p.auto} purposes={purposes} onPick={(v) => onPurpose(m, v)} onClose={() => onMenu(null)} /> : null}
@@ -193,6 +197,8 @@ export default function ResourcesPage({ route }) {
   const pickMode = useRef(null); // 文件选择框的用途：null 上传 / {replaceOf} 替换
   const cancelled = useRef(new Set());
   const listRef = useRef(null);
+  const [connectors, setConnectors] = useState(null); // DS-01：网关不可用或没有连接器时不出「接入数据源」
+  const [srcOpen, setSrcOpen] = useState(null); // {connectors} 接入 / {edit} 修改连接
 
   const load = useCallback(async () => {
     try {
@@ -203,6 +209,17 @@ export default function ResourcesPage({ route }) {
     }
   }, [api, pid]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    let alive = true;
+    api.sourceConnectors().then((r) => alive && setConnectors(r)).catch(() => alive && setConnectors(null));
+    return () => { alive = false; };
+  }, [api]);
+  const openEdit = (m) => { const t = editTarget(m); if (t) setSrcOpen({ edit: t }); };
+  const sourceSaved = (material) => {
+    setSrcOpen(null);
+    if (material?.path) setSel({ kind: 'file', path: material.path, fragment: null });
+    load();
+  };
 
   const onTaskDone = useCallback((t) => {
     load();
@@ -351,6 +368,7 @@ export default function ResourcesPage({ route }) {
         key={`${selected.path}:${sel?.n || ''}`} m={selected} purposes={purposes} fragment={sel?.kind === 'file' ? sel.fragment : null}
         source={sel?.kind === 'file' && sel.source ? { textVersion: !!sel.textVersion } : null}
         full={full} onFull={toggleFull} onSaved={load} onUploadText={() => choose({ textOnly: true })} tasks={tasks}
+        onEditSource={isSource(selected) ? () => openEdit(selected) : undefined}
       />
     );
   } else if (data && !data.error && selPath) {
@@ -367,7 +385,12 @@ export default function ResourcesPage({ route }) {
     <ShellP active={PAGE}>
       <PageHead
         title="资料区"
-        actions={<Button kind="primary" icon="upload" onClick={() => choose()}>上传资料</Button>}
+        actions={(
+          <>
+            {connectorsReady(connectors) ? <Button icon="db" onClick={() => setSrcOpen({ connectors: connectors.items })}>接入数据源</Button> : null}
+            <Button kind="primary" icon="upload" onClick={() => choose()}>上传资料</Button>
+          </>
+        )}
       />
       <CommandRunBar task={running} className="rs-run" />
       <div className="evd-rg">
@@ -401,7 +424,7 @@ export default function ResourcesPage({ route }) {
                 {materials.map((m) => (
                   <FileRow
                     key={m.path} m={m} picked={!!selected && selected.path === m.path} purposes={purposes} menuOpen={menu === m.path}
-                    onPick={pickFile} onMenu={setMenu} onPurpose={setPurpose} onReplace={(x) => choose({ replaceOf: x })} onDelete={setDel} onScope={sheetScope.open}
+                    onPick={pickFile} onMenu={setMenu} onPurpose={setPurpose} onReplace={(x) => choose({ replaceOf: x })} onEditSource={openEdit} onDelete={setDel} onScope={sheetScope.open}
                   />
                 ))}
               </div>
@@ -421,6 +444,7 @@ export default function ResourcesPage({ route }) {
         onDeleted={(path) => { setDel(null); if (selPath === path) setSel(null); load(); }}
       />
       {sheetScope.dialog}
+      <SourceDrawer open={srcOpen} onClose={() => setSrcOpen(null)} onSaved={sourceSaved} />
     </ShellP>
   );
 }

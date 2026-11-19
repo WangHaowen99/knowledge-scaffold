@@ -2,11 +2,12 @@
 // 另有 F-04 原文件（资料区的路径）、F-05 表格预览，以及资料页发出的命令（S-20）的进度。
 // R-03 改用途、R-06 原文预览仍登记在 routes-materials.js（资料分析也在用）；两边共用 ctx.materials 的资料状态，
 // 合成资料本身在 resources-data.js。
-// 地址参数：?mock=task:resources（一打开就有一个重读任务在跑）
+// DS-01～DS-04 数据源（ADR-0104）也在这里：接入、修改连接、测试连接；R-14 对数据源资料就是重新采集。
+// 地址参数：?mock=task:resources（一打开就有一个重读任务在跑）；?mock=sources:down（连接器网关不可用，不出「接入数据源」）
 import * as F from './fixtures.js';
 import {
-  CONVERTERS, DRAWIO, EMPTY_DRAWIO, HTML_REPORT, PURPOSES, PURPOSE_VALUES, UPLOAD_EXTS, UPLOAD_LIMIT,
-  anchorCount, fileRecord, groupOf, kindOf, materialView, positionsOf, referencesOf, tableOf, textMarkdown, textState, webCommit,
+  CONVERTERS, DRAWIO, EMPTY_DRAWIO, HTML_REPORT, PURPOSES, PURPOSE_VALUES, SOURCE_CONNECTORS, UPLOAD_EXTS, UPLOAD_LIMIT,
+  anchorCount, connectorById, fileRecord, groupOf, kindOf, materialView, positionsOf, referencesOf, sourceInfo, tableOf, textMarkdown, textState, webCommit,
 } from './resources-data.js';
 
 const ORIGIN = { page: 'resources', label: '资料区' };
@@ -164,7 +165,8 @@ export function register(ctx) {
     const s = state(pid);
     const f = s.files.find((x) => x.path === body?.path);
     if (!f) return err(404, 'file_not_found', '资料不存在', { path: body?.path });
-    if (!f.text || f.text.state === 'native' || !converterOf(f.name)) return err(409, 'not_convertible', '这份资料不能转成文本', { path: f.path });
+    if (f.kind === 'source' && !connectorById(f.source?.connector?.id)) return err(409, 'connector_not_found', '没有这个连接器', { path: f.path });
+    if (!f.text || f.text.state === 'native' || (f.kind !== 'source' && !converterOf(f.name))) return err(409, 'not_convertible', '这份资料不能转成文本', { path: f.path });
     f.text = { ...f.text, state: 'converting', reason: null };
     emitProj(pid, 'materials.text.updated', { path: f.path, text: f.text });
     convertLater(pid, f.path);
@@ -190,6 +192,102 @@ export function register(ctx) {
     if (!CONVERTERS.some((c) => c.id === body?.converter && c.types.includes(body?.type))) return err(400, 'invalid_argument', '这种文件没有这个转换器', { fields: { converter: 'enum' } });
     defaults[body.type] = body.converter;
     return json(200, convertersView());
+  });
+
+  // ---------- 数据源（ADR-0104，契约 3.19a） ----------
+  const gatewayDown = () => ctx.sc?.sources === 'down';
+  // DS-01 连接器：网关不可用时 items 为空
+  on('GET', '/source-connectors', () => json(200, gatewayDown()
+    ? { gateway: { status: 'down' }, items: [] }
+    : { gateway: { status: 'ok' }, items: SOURCE_CONNECTORS }));
+
+  // 字段校验（同后端口径）：必填、数字类是整数、端口 1～65535；修改时密钥可以不填
+  const fieldErrors = (c, config = {}, secrets = {}, { editing = false } = {}) => {
+    const out = {};
+    c.fields.forEach((f) => {
+      const v = f.type === 'secret' ? secrets[f.key] : config[f.key];
+      const empty = v == null || String(v).trim() === '';
+      if (empty) { if (f.required && !(editing && f.type === 'secret')) out[f.key] = 'required'; return; }
+      if ((f.type === 'port' || f.type === 'number') && !Number.isInteger(Number(v))) out[f.key] = 'invalid';
+      if (f.type === 'port' && (Number(v) < 1 || Number(v) > 65535)) out[f.key] = 'invalid';
+    });
+    return out;
+  };
+  const sourceOf = (pid, path) => state(pid).files.find((x) => x.path === path);
+
+  // DS-02 接入数据源：凭据「进网关」（mock 不存），写一份数据源资料，后台采集
+  on('POST', '/projects/([^/]+)/sources', ({ m, body }) => {
+    const pid = m[1];
+    if (gatewayDown()) return err(503, 'gateway_unavailable', '连接器网关不可用');
+    const name = String(body?.name || '').trim();
+    if (!name || /[\\/:*?"<>|]|^\.|\.\./.test(name)) return err(400, 'invalid_argument', '名称不合法', { fields: { name: name ? 'invalid' : 'required' } });
+    const c = connectorById(body?.connector);
+    if (!c) return err(404, 'connector_not_found', '没有这个连接器');
+    const bad = fieldErrors(c, body.config, body.secrets);
+    if (Object.keys(bad).length) return err(400, 'invalid_argument', '连接字段不对', { fields: bad });
+    const s = state(pid);
+    const fileName = `${name}.datasource`;
+    if (s.files.some((x) => x.name === fileName)) return err(409, 'file_exists', '已有同名资料', { path: `resource/excel/${fileName}` });
+    const config = Object.fromEntries(c.fields.filter((f) => f.type !== 'secret').map((f) => [f.key, body.config?.[f.key] ?? '']));
+    const secretFields = c.fields.filter((f) => f.type === 'secret' && body.secrets?.[f.key]).map((f) => f.key);
+    const path = `resource/excel/${fileName}`;
+    const rec = fileRecord({
+      path, name: fileName, kind: 'source', size: 512, sheets: 3, uploaded_at: nowIso(), purpose: 'schema', purpose_auto: true,
+      coverage: null, text_state: 'converting', source: sourceInfo(c.id, config, secretFields),
+    });
+    s.files.push(rec);
+    ctx.materials.added(pid, { path, name: fileName, purpose: 'schema', purpose_auto: true });
+    webCommit(ctx, pid, [path]);
+    convertLater(pid, path);
+    return json(201, { material: view(s, rec) });
+  });
+
+  // DS-03 修改连接：config 整份替换，给了的密钥覆盖；改完重新采集
+  on('PATCH', '/projects/([^/]+)/sources', ({ m, body }) => {
+    const pid = m[1];
+    const f = sourceOf(pid, body?.path);
+    if (!f) return err(404, 'file_not_found', '资料不存在', { path: body?.path });
+    if (f.kind !== 'source') return err(409, 'not_a_source', '这份资料不是数据源', { path: f.path });
+    const c = connectorById(f.source?.connector?.id);
+    if (!c) return err(404, 'connector_not_found', '没有这个连接器');
+    const config = body.config || f.source.config;
+    const bad = fieldErrors(c, config, body.secrets || {}, { editing: true });
+    if (Object.keys(bad).length) return err(400, 'invalid_argument', '连接字段不对', { fields: bad });
+    const secretFields = [...new Set([...(f.source.secret_fields || []), ...Object.keys(body.secrets || {}).filter((k) => body.secrets[k])])];
+    f.source = sourceInfo(c.id, { ...config }, secretFields);
+    f.text = { ...f.text, state: 'converting', reason: null };
+    f.revision = `r-${uid()}`;
+    webCommit(ctx, pid, [f.path]);
+    emitProj(pid, 'materials.text.updated', { path: f.path, text: f.text });
+    convertLater(pid, f.path);
+    return json(200, { material: view(state(pid), f) });
+  });
+
+  // DS-04 测试连接：主机带 bad 连不上；密码 wrong 认证失败；账号 writer 能写（只读自检不过）
+  on('POST', '/projects/([^/]+)/sources/test', ({ m, body }) => {
+    if (gatewayDown()) return err(503, 'gateway_unavailable', '连接器网关不可用');
+    const c = connectorById(body?.connector);
+    if (!c) return err(404, 'connector_not_found', '没有这个连接器');
+    if (body.path) {
+      const f = sourceOf(m[1], body.path);
+      if (!f) return err(404, 'file_not_found', '资料不存在', { path: body.path });
+      if (f.kind !== 'source') return err(409, 'not_a_source', '这份资料不是数据源', { path: f.path });
+    }
+    const bad = fieldErrors(c, body.config, body.secrets || {}, { editing: !!body.path });
+    if (Object.keys(bad).length) return err(400, 'invalid_argument', '连接字段不对', { fields: bad });
+    const host = String(body.config?.host || '');
+    if (/bad/.test(host)) return json(200, { ok: false, checks: [{ name: '连接', ok: false, detail: `${host} 连不上` }], error: { code: 'connect_failed', message: '连不上数据库' } });
+    if (body.secrets?.password === 'wrong') return json(200, { ok: false, checks: [{ name: '连接', ok: false, detail: '账号或密码不对' }], error: { code: 'auth_failed', message: '账号或密码不对' } });
+    const writer = body.config?.user === 'writer';
+    return json(200, {
+      ok: !writer,
+      checks: [
+        { name: '连接', ok: true, detail: `${c.label} 8.0` },
+        { name: '只读账号', ok: !writer, detail: writer ? '账号有写权限' : '' },
+        ...(writer ? [] : [{ name: '可读的表', ok: true, detail: '3 张' }]),
+      ],
+      error: writer ? { code: 'account_not_readonly', message: '账号能写，换只读账号' } : null,
+    });
   });
 
   // R-04 删除资料：保存为新版本；引用它的出处变成「来源无法核验」

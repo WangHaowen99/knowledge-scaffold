@@ -123,10 +123,11 @@ export function contributesText(c) {
   return parts.join(' · ') || '没有声明贡献';
 }
 
-/** 生效时机：纯数据现读即生效；带命令、节点、守卫的从下一条消息开始；提供方、导出器要装到平台 */
+/** 生效时机：纯数据现读即生效；带命令、节点、守卫的从下一条消息开始；多源连接器要管理员信任（ADR-0104）；导出器要装到平台 */
 export function effectText(m) {
   if (!m) return '';
-  if (m.kind === 'provider' || m.kind === 'exporter') return '装进连接器网关或旁路容器后生效（由管理员安装到平台）';
+  if (m.kind === 'provider') return '管理员在插件中心信任后生效';
+  if (m.kind === 'exporter') return '装进旁路容器后生效（由管理员安装到平台）';
   const c = m.contributes || {};
   const runtime = ['commands', 'agents', 'skills', 'hooks', 'nodes'].some((k) => countOf(c[k]) > 0);
   if (m.kind === 'knowledge') return runtime ? '数据现读即生效；新增的步骤从下一条消息开始生效' : '数据现读即生效';

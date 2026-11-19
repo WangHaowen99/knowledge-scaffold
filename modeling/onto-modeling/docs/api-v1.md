@@ -2357,7 +2357,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 依据详设 4.6、5.2、5.3、5.6、5.9、8.1、方案 D1～D7、D17。
 
 - 包有 6 类：能力包、行业包、系统知识包、多源连接器（`category=provider`，旧称证据源提供方）、节点包、导出器。
-- 多源连接器里只列文档转换器（`PackCard.converter` 不为空，ADR-0073）；网关里的采集类连接器随证据采集删除（ADR-0101）。
+- 多源连接器里列文档转换器（`PackCard.converter` 不为空，ADR-0073）和数据源连接器（`PackCard.source` 不为空，ADR-0104）。
+  上传的多源连接器要管理员信任（PL-28）后才装进连接器网关；随镜像交付的官方连接器始终可用。
 - 镜像里已移除的官方包启动时下架（ADR-0101）：
   - 条件：全部版本都由镜像入库、没有 owner、不是 core，这次的 `assets/packs` 里没有它；`assets/packs` 整个不存在时不下架；
   - 只在通道记录上记 `retired`，版本目录不删；目录、详情、缺省启用、跟随通道、插件运维（`O-25`）都不列，启用、试装配回 `pack_not_found`；
@@ -2642,6 +2643,23 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 大小：现在约 70 KiB，最坏约 6 MiB（最多记 500 个公开包，每个包 50 个版本、每类 100 个名字，名字按 80 字符算）。
 - 错误：`404 not_found`（`exporter` 和不认识的分类）。
 
+#### PL-28 信任多源连接器
+
+`POST /api/v1/admin/packs/{name}/versions/{version}/trust` · admin · 旧：— · 审计：专项 `pack.trust` · 依据：ADR-0104 · 页面：plugin-detail（「信任」）
+
+- 只对上传的多源连接器（`category=provider`，非官方）有效。记下这个版本的 sha256（交付 tar 的哈希，见 `design/data-sources.md` 第 6 节），
+  马上交付给连接器网关；网关不可用时照样记下，恢复后对账补上。重复调用幂等。
+- 响应 `200`：`PackCard`（`trust.state="trusted"`）。
+- 错误：`pack_not_found`、`invalid_argument`（不是多源连接器，或是官方包）。
+
+#### PL-29 撤销信任
+
+`DELETE /api/v1/admin/packs/{name}/versions/{version}/trust` · admin · 旧：— · 审计：专项 `pack.trust` · 依据：ADR-0104 · 页面：plugin-detail（「撤销信任」）
+
+- 去掉信任，从连接器网关删掉这个版本。已接入的数据源保留，用到它的采集报「连接器不可用」。
+- 响应 `200`：`PackCard`（`trust.state="untrusted"`）。
+- 错误：同 PL-28。
+
 ### 3.17 插件产物与通用视图
 
 依据详设 5.9.4、5.9.5、方案 C13。
@@ -2821,6 +2839,7 @@ ADR-0098：端到端验证在发布后的独立评测里做，onto 不再收回�
 - `EV-31`～`EV-34`：目标程序分块上传（`/api/v1/evidence/uploads*`）。
 
 连接器网关的 `/v1/jobs*`、`/v1/secrets/*`、`/v1/sources/*/test` 一并删除；文档转换（ADR-0073、`convert-*` 包）不受影响。
+接数据库现在走 3.19a 数据源（ADR-0104）：采集结果是资料的文本版，不再有快照、证据浏览器；网关接口路径和语义都是新的。
 资料页的数据源、采集与快照、证据浏览器三个子页随包删除。
 
 #### EV-29 锚点解析
@@ -2836,6 +2855,45 @@ ADR-0098：端到端验证在发布后的独立评测里做，onto 不再收回�
 - 错误：`invalid_argument`（`anchor` 为空、`anchors` 不是文字列表或超过 100 个）。
 
 ---
+
+### 3.19a 数据源（ADR-0104）
+
+数据源是一份资料：`resource/excel/<名称>.datasource`（`Material.kind="source"`），里面只有连接配置和凭据引用。
+采集结果是它的文本版，采集、重新采集、状态都和资料转换同一套（R-13、R-14、EP-25，`MaterialText` 的 `converting` 即采集中）。
+凭据只进连接器网关，任何接口都不回凭据取值。格式见 `docs/plugin-architecture/design/data-sources.md`。
+
+#### DS-01 数据源连接器
+
+`GET /api/v1/source-connectors` · 登录 · 旧：— · 审计：否 · 依据：ADR-0104 · 页面：wb-materials（「接入数据源」）
+
+- 响应 `200`：`{gateway: {status: "ok"|"down"|"not_configured"}, items: SourceConnector[]}`，只列网关里已加载的；网关不可用时 `items` 为空。
+
+#### DS-02 接入数据源
+
+`POST /api/v1/projects/{id}/sources` · 所有者 · 旧：— · 审计：是（不记凭据） · 依据：ADR-0104 · 页面：wb-materials
+
+- 请求：`{name, connector, config: {key: value}, secrets: {key: value}}`。`config` 只放非密钥字段，`secrets` 只放 `secret` 类字段。
+- 先把凭据写进网关，再写数据源资料（用途预填「数据 Schema」），然后后台采集，状态经 EP-25 推送。
+- 响应 `201`：`{material: Material}`。
+- 错误：`invalid_argument`（`fields: {key: "required"|"invalid"}`，或名称不合法）、`file_exists`（重名）、`connector_not_found`、
+  `gateway_unavailable`（503，网关不可用时不接入）、`project_archived`。
+
+#### DS-03 修改连接
+
+`PATCH /api/v1/projects/{id}/sources` · 所有者 · 旧：— · 审计：是（不记凭据） · 依据：ADR-0104 · 页面：wb-materials（「修改连接」）
+
+- 请求：`{path, config?, secrets?}`。`config` 整份替换；`secrets` 里给了的字段覆盖，没给的不变。连接器不能换。改完自动重新采集。
+- 响应 `200`：`{material: Material}`。
+- 错误：同 DS-02，另有 `file_not_found`、`not_a_source`。
+
+#### DS-04 测试连接
+
+`POST /api/v1/projects/{id}/sources/test` · 所有者 · 旧：— · 审计：否 · 依据：ADR-0104 · 页面：wb-materials（「测试连接」）
+
+- 请求：`{connector, config, secrets?, path?}`。带 `path` 时用这份数据源已存的凭据，`secrets` 里给了的字段临时覆盖（不保存）。
+- 同步执行，最长 40 秒。
+- 响应 `200`：`{ok: boolean, checks: [{name, ok, detail}], error: {code, message} | null}`。连不上、账号能写也是 `200`，`ok=false`。
+- 错误：`invalid_argument`、`connector_not_found`、`file_not_found`、`not_a_source`、`gateway_unavailable`（503）。
 
 ### 3.20 发布
 
@@ -4788,7 +4846,7 @@ type PurposeOption = { value: "goal" | "schema" | "term" | "evidence" | "auto"; 
 type Material = {
   path: string; name: string; group: "diagrams" | "excel" | "others";
   title: string; type_label: string;   // 资料名（去扩展名）与类型（PDF、Word、Excel…），资料列表按它们列、不按 group 分组（F4b-paths）
-  kind: "doc" | "xls" | "csv" | "pdf" | "drawio" | "html" | "image" | "text";
+  kind: "doc" | "xls" | "csv" | "pdf" | "drawio" | "html" | "image" | "text" | "source";
   size: number; uploaded_at: time;
   sheets?: number; rows?: number;
   purpose: PurposeOption["value"]; purpose_auto: boolean;
@@ -4805,7 +4863,15 @@ type Material = {
   schema_scope: object | null;
   // 「疑似数据表」（develop 的 schema_candidates[path]）：用途仍是「由助手判断」、结构上像数据表的表格资料，否则 null
   schema_candidate: { tables: string[] } | null;
+  // 数据源资料（ADR-0104，kind="source"）的连接：connector.available=false 是网关里没有这个连接器；别的资料为 null
+  source: { connector: { id: string; label: string; version: string | null; available: boolean };
+            config: { [key: string]: string | number }; fields: SourceField[]; secret_fields: string[] } | null;
 };
+
+// 数据源连接器的连接字段（ADR-0104）：界面按它生成表单，secret 类只写不读
+type SourceField = { key: string; label: string; type: "text" | "number" | "host" | "port" | "secret" | "select";
+                     required: boolean; default: string | number | null; placeholder: string; options: { value: string; label: string }[] };
+type SourceConnector = { id: string; label: string; description: string; version: string; official: boolean; fields: SourceField[] };
 
 // 资料的文本版（ADR-0073）
 type MaterialText = {
@@ -5242,6 +5308,9 @@ type PackCard = {
   locked_version: string | null;
   usage_note: string | null;      // 「mes-prod 在用」
   converter: { types: string[]; default_for: string[]; license: string } | null;   // 多源连接器里的文档转换器（ADR-0073）
+  source: { fields: number; license: string } | null;                              // 多源连接器里的数据源连接器（ADR-0104）
+  // 多源连接器的信任（ADR-0104）：builtin 随镜像交付；installed 网关里装上了没有，网关不可用时为 null；别的包为 null
+  trust: { state: "builtin" | "trusted" | "untrusted"; installed: boolean | null } | null;
 };
 
 type CompatCheck = { id: "kernel_api" | "engines" | "depends" | "names" | "flow" | "page_api";

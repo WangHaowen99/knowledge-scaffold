@@ -105,7 +105,8 @@ export function register(ctx) {
 
   // 目录（带不带项目视角）。不带项目时不列只对某些项目适用的租户包：新建向导（不带项目）沿用 packs() 的结果
   async function cardsFor(pid, init) {
-    const all = [...catalogCards(flags), ...(db.privateCards || [])]; // 普通用户装的私有包（PL-26）
+    // 普通用户装的私有包（PL-26）；管理员改过信任的多源连接器（PL-28、PL-29）
+    const all = [...catalogCards(flags), ...(db.privateCards || [])].map((c) => (db.packTrust?.[c.name] ? { ...c, trust: db.packTrust[c.name] } : c));
     if (!pid) {
       const o = { project: false, enabledNames: [] };
       return { cards: all.filter((c) => !APPLIES_TO[c.name]).map((c) => projectCard(c, null, o)), items: null };
@@ -198,6 +199,19 @@ export function register(ctx) {
       effective: DATA_CATEGORIES.includes(card.category) ? 'immediate' : 'next_message',
     });
   });
+
+  // ---------- PL-28 信任 / PL-29 撤销信任（ADR-0104）：只对上传的多源连接器有效 ----------
+  const setTrust = (on) => async ({ m, init }) => {
+    const [name, version] = [decodeURIComponent(m[1]), decodeURIComponent(m[2])];
+    const r = await cardsFor('', init);
+    const card = r.cards?.find((c) => c.name === name);
+    if (!card || card.version !== version) return err(404, 'pack_not_found', `包 ${name}@${version} 不存在`);
+    if (card.category !== 'provider' || !card.trust || card.trust.state === 'builtin') return err(400, 'invalid_argument', '只能信任上传的多源连接器');
+    db.packTrust = { ...(db.packTrust || {}), [name]: on ? { state: 'trusted', installed: true } : { state: 'untrusted', installed: null } };
+    return json(200, { ...card, trust: db.packTrust[name] });
+  };
+  on('POST', '/admin/packs/([^/]+)/versions/([^/]+)/trust', setTrust(true));
+  on('DELETE', '/admin/packs/([^/]+)/versions/([^/]+)/trust', setTrust(false));
 
   // ---------- PL-03 兼容检查 ----------
   on('GET', '/packs/([^/]+)/versions/([^/]+)/compatibility', async ({ m, query, init }) => {

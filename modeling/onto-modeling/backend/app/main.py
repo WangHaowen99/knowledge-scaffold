@@ -32,6 +32,9 @@ async def _lifespan(app: FastAPI):
 
     # 资料转文本（ADR-0073）：资料变了就排队，后台线程经连接器网关转换，等待中的网关恢复后补转
     material_conversion.install()
+    from .services import datasources
+
+    datasources.install()
     material_conversion.start()
     from .services.autobuild.runner import runner as autobuild_runner
 

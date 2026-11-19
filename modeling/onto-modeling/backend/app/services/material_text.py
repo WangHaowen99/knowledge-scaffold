@@ -400,7 +400,7 @@ def positions(root: Path, rel: str, *, q: str = "", limit: int = 0, cursor: str 
     empty = {"name": name, "readable": False, "items": [], "next_cursor": None}
     kind = material_conversion.kind_of(rel)
     markers: dict[int, str] = {}
-    text = material_conversion.text_file(root, rel) if kind == "document" else None
+    text = material_conversion.text_file(root, rel) if kind in material_conversion.CONVERTIBLE else None
     if kind == "native":
         source = rel
     elif text is not None:

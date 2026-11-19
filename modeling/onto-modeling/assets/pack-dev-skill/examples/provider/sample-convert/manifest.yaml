@@ -1,4 +1,4 @@
-# 多源连接器：文件转换器。上传导入后只在插件目录里显示，不会运行；转换器要打进连接器网关镜像才运行（见 references/provider.md）。
+# 多源连接器：文件转换器。上传后由管理员在插件中心「信任」，连接器网关就会加载它（见 references/provider.md）。
 name: sample-convert
 version: 0.1.0
 kind: provider

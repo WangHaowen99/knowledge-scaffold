@@ -54,8 +54,10 @@ def card(manager, name: str, project: dict | None) -> dict | None:
         else:
             status = item["status"]
     converter = _converter(name, manifest)
-    if converter is not None:
-        status = "platform_installed"  # 转换器随连接器网关镜像交付，平台级，不按项目启用（ADR-0073）
+    source = _source(manifest)
+    if converter is not None or source is not None:
+        # 多源连接器跑在连接器网关里，平台级，不按项目启用（ADR-0073、ADR-0104）
+        status = "platform_installed"
     return {
         "name": name, "version": latest, "label": manifest.label, "description": manifest.description,
         "category": manifest.category, "publisher": _publisher(repository, name, latest, manifest), "ui": _ui(manifest),
@@ -66,7 +68,26 @@ def card(manager, name: str, project: dict | None) -> dict | None:
         # 必装（core）：不带项目时 project_status 为空，新建向导靠它锁住开关
         "required": bool(manifest.required),
         "converter": converter,
+        "source": source,
+        "trust": _trust(repository, name, latest) if converter is not None or source is not None else None,
     }
+
+
+def _source(manifest) -> dict | None:
+    """多源连接器里的数据源连接器（清单 `source` 段，ADR-0104）。"""
+    spec = manifest.raw.get("source")
+    if manifest.kind != "provider" or not isinstance(spec, dict):
+        return None
+    return {"fields": len(spec.get("fields") or []), "license": str(spec.get("license") or "")}
+
+
+def _trust(repository, name: str, version: str) -> dict | None:
+    from .. import datasources
+
+    try:
+        return datasources.trust_state(repository, name, version)
+    except Exception:  # noqa: BLE001 - 信任状态是附带信息
+        return None
 
 
 def _converter(name: str, manifest) -> dict | None:
@@ -95,10 +116,10 @@ def catalog(manager, *, category: str = "", q: str = "", project_id: str = "", v
     if wanted - set(CATEGORY_KEYS):
         raise PackError("invalid_argument", f"category 只能取 {'|'.join(CATEGORY_KEYS)}", 400,
                         {"fields": {"category": "enum"}})
-    # 多源连接器：包仓库里的只列转换器（ADR-0073）
+    # 多源连接器：包仓库里的只列转换器和数据源连接器（ADR-0073、ADR-0104）
     names = [*repository.names()[:500], *repository.private_names(viewer)]
     cards = [item for item in (card(manager, name, project) for name in names)
-             if item and (item["category"] != "provider" or item["converter"] is not None)]
+             if item and (item["category"] != "provider" or item["converter"] is not None or item["source"] is not None)]
     counts = {key: sum(1 for item in cards if item["category"] == key) for key in CATEGORY_KEYS}
     counts.update(all=len(cards),
                   enabled=sum(1 for item in cards if item["project_status"] in ("required", "enabled", "update", "pending")),

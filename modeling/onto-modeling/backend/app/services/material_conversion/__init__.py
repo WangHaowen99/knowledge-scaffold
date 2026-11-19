@@ -6,6 +6,7 @@
 """
 
 from .service import (  # noqa: F401
+    CONVERTIBLE,
     EVENT,
     candidates,
     drain,

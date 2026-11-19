@@ -179,7 +179,7 @@ def _ticket(issuer, data, converter="fake-ok", **claims):
 
 def test_http_health_providers_and_convert(gateway):
     url, issuer, _ = gateway
-    assert json.loads(OPENER.open(f"{url}/health").read()) == {"status": "ok", "converters": len(FAKES)}
+    assert json.loads(OPENER.open(f"{url}/health").read()) == {"status": "ok", "converters": len(FAKES), "sources": 0}
     items = json.loads(OPENER.open(f"{url}/v1/providers").read())["items"]
     assert {item["id"] for item in items} == set(FAKES)
     status, body = _post(url, b"abc", _ticket(issuer, b"abc"))

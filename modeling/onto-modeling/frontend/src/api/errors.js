@@ -186,6 +186,10 @@ export const ERROR_MESSAGES = {
   format_migration_required: '产物还是旧格式，要先迁移',
   // 连接器网关
   gateway_unavailable: '连接器网关连不上',
+  // 数据源（ADR-0104）
+  file_exists: '已有同名资料',
+  connector_not_found: '没有这个连接器',
+  not_a_source: '这份资料不是数据源',
   // 出处
   anchor_invalid: '出处格式不合法',
   anchor_not_found: '找不到这个出处',

@@ -39,7 +39,11 @@ from pathlib import Path
 import field_semantics
 import table_sources
 
-TABLE_SUFFIXES = (".xlsx", ".xlsm", ".xls", ".csv")
+# .datasource：数据源资料（ADR-0104），和 Excel 一样读采集出的文本版
+TABLE_SUFFIXES = (".xlsx", ".xlsm", ".xls", ".csv", ".datasource")
+DATASOURCE_SUFFIX = ".datasource"
+FACTS_HEAD = "<!-- onto:facts 1"
+FOREIGN_KEY_LIMIT = 2000
 PROFILE_ROW_LIMIT = field_semantics.PROFILE_ROW_LIMIT
 PROFILE_COLUMN_LIMIT = 400
 HEADERS_FILE = Path(".ontology-state") / "table-headers.json"
@@ -182,8 +186,11 @@ def write_headers(root: Path) -> dict:
     target = root / HEADERS_FILE
     target.parent.mkdir(parents=True, exist_ok=True)
     # 一列一行：读文件的工具按行截断超长的行，宽表的表头也不会被截掉
-    target.write_text(json.dumps({"tables": tables, "missing_text": missing}, ensure_ascii=False, indent=1) + "\n",
-                      encoding="utf-8")
+    foreign_keys = source_foreign_keys(root)
+    payload = {"tables": tables, "missing_text": missing}
+    if foreign_keys:
+        payload["foreign_keys"] = foreign_keys
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     names = list(tables)
     return {
         "status": schema_status(root),
@@ -191,7 +198,50 @@ def write_headers(root: Path) -> dict:
         "tables": {name: len(tables[name]) for name in names[:SUMMARY_TABLE_LIMIT]},
         "tables_omitted": max(len(names) - SUMMARY_TABLE_LIMIT, 0),
         "missing_text": missing[:MISSING_LIMIT],
+        # 只有数据源资料带外键（ADR-0104）；没有时不出这个键，摘要和以前一样
+        **({"foreign_keys": len(foreign_keys)} if foreign_keys else {}),
     }
+
+
+def source_facts(text: str) -> dict | None:
+    """数据源文本版末尾的 `onto:facts` 注释块（网关渲染，ADR-0104）→ dict；没有或坏了时 None。"""
+    start = text.rfind("\n" + FACTS_HEAD + "\n")
+    if start < 0:
+        return None
+    body = text[start + len(FACTS_HEAD) + 2:]
+    end = body.find("\n-->")
+    if end < 0:
+        return None
+    try:
+        data = json.loads(body[:end])
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def source_foreign_keys(root: Path) -> list[dict]:
+    """登记成 schema 的数据源资料里，库里声明的外键（declared）和按命名推断的关联（inferred）：
+    [{table, columns, ref_table, ref_columns, name, basis, source}]。只认数据源资料的文本版，别的文本版里同样的字样不认。"""
+    found: list[dict] = []
+    for rel in registered_table_files(root):
+        if not rel.lower().endswith(DATASOURCE_SUFFIX):
+            continue
+        text_file = resource_text(root / rel)
+        try:
+            text = text_file.read_text(encoding="utf-8") if text_file else ""
+        except (OSError, UnicodeDecodeError):
+            continue
+        facts = source_facts(text) or {}
+        for kind, basis in (("foreign_keys", "declared"), ("references", "inferred")):
+            for item in facts.get(kind) or []:
+                if not isinstance(item, dict) or not item.get("table") or not item.get("ref_table"):
+                    continue
+                found.append({"table": str(item["table"]), "columns": list(item.get("columns") or []),
+                              "ref_table": str(item["ref_table"]), "ref_columns": list(item.get("ref_columns") or []),
+                              "name": str(item.get("name") or ""), "basis": basis, "source": rel})
+                if len(found) >= FOREIGN_KEY_LIMIT:
+                    return found
+    return found
 
 
 def table_headers(root: Path) -> dict[str, list[str]]:

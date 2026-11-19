@@ -191,7 +191,8 @@ def extract(path: Path) -> dict:
 # 锚点注释的写法见后端 app/evidence/convert.py（anchor_index），两边同口径。
 # ---------------------------------------------------------------------------
 
-FROM_TEXT_VERSION = {'.docx', '.xlsx', '.xlsm', '.pdf'}
+# .datasource：数据源资料（ADR-0104），出处读采集出的文本版，锚点写法同 Excel
+FROM_TEXT_VERSION = {'.docx', '.xlsx', '.xlsm', '.pdf', '.datasource'}
 TEXT_HEADER_PREFIX = '<!-- onto:text '
 ANCHORS_HEAD = '<!-- onto:anchors 1'
 PAGE_MARKER = re.compile(r'^<!-- 第 (\d+) 页 -->$')

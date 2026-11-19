@@ -1,0 +1,21 @@
+# 多源连接器：数据源连接器（ADR-0104）。上传后由管理员在插件中心「信任」，连接器网关就会加载它，
+# 项目成员在资料页「接入数据源」选它（见 references/provider.md 第 12 节）。
+name: sample-source
+version: 0.1.0
+kind: provider
+category: provider
+label: JSON 表结构服务
+description: 从一个返回 JSON 表结构的 HTTP 服务读取表、外键和样本。
+publisher: {kind: tenant, label: ""}
+kernel_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+depends: {}
+source:
+  entry: connector.py
+  license: 只用 Python 标准库
+  fields:
+    - {key: host, label: 主机, type: host, required: true, placeholder: schema.example.invalid}
+    - {key: port, label: 端口, type: port, default: 8080}
+    - {key: token, label: 访问令牌, type: secret, required: true}
+    - {key: tables, label: 表范围, type: text, placeholder: "orders, customer*"}
+changelog: 首版。

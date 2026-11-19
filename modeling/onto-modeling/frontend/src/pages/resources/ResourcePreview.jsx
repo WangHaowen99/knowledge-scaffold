@@ -14,6 +14,7 @@ import { Button, Chip, Icon, Modal, Note, Seg, cx, useEscape } from '../../ui/in
 import { useProjectEvent } from '../plugin/parts.jsx';
 import { previewKind } from '../../lib/sourceLocation.js';
 import SourcePreview from './SourcePreview.jsx';
+import { isSource, sourceActions } from './sourceModel.js';
 import { SourceText, useKnownMaterials } from '../studio/SourceChips.jsx';
 import {
   PREVIEW_ICON, blockBody, isDocPreview, blockLabel, coverageChip, csvText, diamondPoints, drawioLayout, fmtSize,
@@ -176,14 +177,16 @@ function TextAtPane({ m, fragment }) {
   );
 }
 
-// ---------- 文本版（R-13 查看文本、R-14 重新转换；ADR-0073） ----------
-function TextPane({ m, onUploadText, onCoverage }) {
+// ---------- 文本版（R-13 查看文本、R-14 重新转换；ADR-0073）；数据源资料的文本版是采集结果，R-14 即重新采集（ADR-0104） ----------
+function TextPane({ m, onUploadText, onCoverage, onEditSource }) {
   const { api } = useApp();
   const { pid } = useProject();
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
   const t = m.text || {};
   const converted = t.state === 'converted';
+  const src = sourceActions(m);
+  const redo = src ? '重新采集' : '重新转换';
 
   // PDF 的预览就是文本版：资料分析读到哪（R-06 的 coverage）照旧显示在标题下
   useEffect(() => {
@@ -214,8 +217,15 @@ function TextPane({ m, onUploadText, onCoverage }) {
     }
   };
 
-  if (t.state === 'converting') return <div className="evd-paper rs-loading"><span className="spin" />正在转成文本…</div>;
-  if (t.state === 'waiting') return <Note tone="gray" icon="clock">等待转换</Note>;
+  // 数据源：连接器不在网关里时不能重新采集，只给「修改连接」
+  const sourceRow = src ? (
+    <>
+      {src.state ? <span className="xs muted" data-source-state>{src.state}</span> : null}
+      {onEditSource ? <Button size="xs" kind="ghost" icon="plug" onClick={onEditSource}>修改连接</Button> : null}
+    </>
+  ) : null;
+  if (t.state === 'converting') return <div className="evd-paper rs-loading"><span className="spin" />{src ? '正在采集…' : '正在转成文本…'}</div>;
+  if (t.state === 'waiting') return <Note tone="gray" icon="clock">{src ? '等待采集' : '等待转换'}</Note>;
   if (t.state === 'unsupported') {
     return (
       <Note tone="gray" icon="ban">
@@ -227,8 +237,11 @@ function TextPane({ m, onUploadText, onCoverage }) {
   if (t.state === 'failed') {
     return (
       <Note tone="red" icon="alert">
-        {t.reason || '转换失败'}
-        <div className="row mt8"><Button size="xs" icon="refresh" disabled={busy} onClick={reconvert}>重试</Button></div>
+        {t.reason || (src ? '采集失败' : '转换失败')}
+        <div className="row mt8">
+          <Button size="xs" icon="refresh" disabled={busy || (src && !src.recollect)} onClick={reconvert}>{src ? '重新采集' : '重试'}</Button>
+          {sourceRow}
+        </div>
       </Note>
     );
   }
@@ -248,7 +261,8 @@ function TextPane({ m, onUploadText, onCoverage }) {
       <div className="row mt8">
         {data.truncated ? <span className="xs muted">只显示前一部分</span> : null}
         <span className="sp" />
-        <Button size="xs" kind="ghost" icon="refresh" disabled={busy} onClick={reconvert}>重新转换</Button>
+        {sourceRow}
+        <Button size="xs" kind="ghost" icon="refresh" disabled={busy || (src && !src.recollect)} onClick={reconvert}>{redo}</Button>
       </div>
     </>
   );
@@ -555,7 +569,7 @@ function RefsPane({ m, onLocate }) {
 }
 
 // ---------- 预览卡 ----------
-export function MaterialPreview({ m, purposes, fragment, source = null, full, onFull, onSaved, onUploadText, tasks }) {
+export function MaterialPreview({ m, purposes, fragment, source = null, full, onFull, onSaved, onUploadText, onEditSource, tasks }) {
   const [tab, setTab] = useState('pv');
   const [focus, setFocus] = useState(fragment);
   const [coverage, setCoverage] = useState(null);
@@ -565,7 +579,7 @@ export function MaterialPreview({ m, purposes, fragment, source = null, full, on
   const onCoverage = useCallback((c) => setCoverage(c), []);
   const cov = isDocPreview(m) ? coverageChip(coverage) : null;
   const p = purposeView(m, purposes);
-  const scale = isDocPreview(m) || m.preview === 'drawio' || m.preview === 'html' ? fmtSize(m.size) : scaleText(m);
+  const scale = !isSource(m) && (isDocPreview(m) || m.preview === 'drawio' || m.preview === 'html') ? fmtSize(m.size) : scaleText(m);
 
   let pane;
   // 资料芯片、「查看原文」带锚点跳来（source）：照 develop 的来源预览——Word、文本分段定位，Excel 定位单元格，
@@ -576,6 +590,7 @@ export function MaterialPreview({ m, purposes, fragment, source = null, full, on
   else if (kind === 'excel') pane = <SheetPane key={`${m.path}:${focus || ''}`} m={m} fragment={focus} />;
   else if (['segments', 'pdf', 'image', 'download'].includes(kind)) pane = <SourcePreview path={m.path} kind={kind} anchor={focus || ''} />;
   else if (m.kind === 'pdf' && m.text) pane = <TextPane m={m} onUploadText={onUploadText} onCoverage={onCoverage} />;
+  else if (isSource(m)) pane = <TextPane m={m} onEditSource={onEditSource} />;
   else if (isDocPreview(m)) pane = <DocPane m={m} fragment={focus} onCoverage={onCoverage} onUploadText={onUploadText} tasks={tasks} />;
   else if (m.preview === 'xls') pane = <SheetPane key={`${m.path}:${focus || ''}`} m={m} fragment={focus} />;
   else if (m.preview === 'csv') pane = <CsvPane m={m} />;
@@ -586,7 +601,7 @@ export function MaterialPreview({ m, purposes, fragment, source = null, full, on
   return (
     <div className="card">
       <div className="card-h">
-        <span style={{ color: 'var(--blue)' }}><Icon name={PREVIEW_ICON[m.preview] || 'filetext'} /></span>
+        <span style={{ color: 'var(--blue)' }}><Icon name={isSource(m) ? 'db' : PREVIEW_ICON[m.preview] || 'filetext'} /></span>
         <h3 className="ell" title={materialTitle(m)}>{materialTitle(m)}</h3>
         <span className="sp" />
         <Button size="sm" kind="ghost" icon="download" title="下载原文件" onClick={download} />
@@ -596,7 +611,7 @@ export function MaterialPreview({ m, purposes, fragment, source = null, full, on
         <div className="row mb12">
           <span className="row g4">
             <Chip tone="blue">{p.label}</Chip>
-            <Chip tone="line">{scale}</Chip>
+            {scale ? <Chip tone="line">{scale}</Chip> : null}
             {cov ? <Chip tone={cov.tone} icon={cov.icon}>{cov.text}</Chip> : null}
           </span>
           <span className="sp" />

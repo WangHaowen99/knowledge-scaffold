@@ -292,7 +292,7 @@ test('mock PL-01 不带项目：新建向导的结果不变（名字、版本、
   assert.deepEqual(r.body.items.map(pick), F.packs().map(pick));
   assert.equal(r.body.recommendations, undefined);
   const all = await api('GET', '/api/v1/packs');
-  assert.equal(all.body.counts.provider, 3); // 3 个转换器（ADR-0073）
+  assert.equal(all.body.counts.provider, 6); // 3 个转换器（ADR-0073）+ 3 个数据源连接器（ADR-0104）
   assert.equal(all.body.items.find((p) => p.name === 'convert-pdf').project_status, 'platform_installed');
   assert.deepEqual([all.body.counts.enabled, all.body.counts.updatable], [0, 0]);
   assert.ok(!all.body.items.some((p) => p.name === 'property-compliance'));
@@ -312,7 +312,7 @@ test('mock PL-01 带项目：状态按项目设置的能力表算，计数、推
   assert.equal(r.body.items.find((p) => p.name === 'property-compliance').usage_note, '适用于物业服务项目');
   assert.equal(st['convert-pdf'], 'platform_installed');
   assert.equal(r.body.items.find((p) => p.name === 'convert-pdf').usage_note, null);
-  assert.deepEqual(r.body.counts, { all: 14, capability: 4, industry: 4, system: 3, provider: 3, node: 0, exporter: 0, enabled: 6, updatable: 1 });
+  assert.deepEqual(r.body.counts, { all: 17, capability: 4, industry: 4, system: 3, provider: 6, node: 0, exporter: 0, enabled: 6, updatable: 1 });
   assert.deepEqual(r.body.recommendations.map((x) => [x.pack.name, x.action]), [['diagram', 'upgrade']]);
   const inst = await api('GET', `/api/v1/packs?project_id=${P}&installed_only=true&q=模拟`);
   assert.deepEqual(inst.body.items.map((p) => p.name), ['trace']);
@@ -455,4 +455,18 @@ test('mock PL-27：四个分类给 zip 和文件名，导出器和不认识的�
   assert.ok((await res.arrayBuffer()).byteLength > 0);
   assert.equal((await ctx.self('/api/v1/packs/dev-skills/exporter')).status, 404);
   assert.equal((await ctx.self('/api/v1/packs/dev-skills/nope')).status, 404);
+});
+
+test('mock PL-28 / PL-29：上传的多源连接器信任、撤销信任；内置的和别的包不行', async () => {
+  const { api } = harness({ user: F.USERS.admin || F.USERS.zhangsan });
+  const card = async () => (await api('GET', '/api/v1/packs')).body.items.find((p) => p.name === 'src-http-sample');
+  assert.deepEqual((await card()).trust, { state: 'untrusted', installed: null });
+  const on = await api('POST', '/api/v1/admin/packs/src-http-sample/versions/0.1.0/trust');
+  assert.deepEqual([on.status, on.body.trust.state], [200, 'trusted']);
+  assert.equal((await card()).trust.state, 'trusted');
+  const off = await api('DELETE', '/api/v1/admin/packs/src-http-sample/versions/0.1.0/trust');
+  assert.deepEqual([off.status, off.body.trust.state], [200, 'untrusted']);
+  assert.equal((await api('POST', '/api/v1/admin/packs/db-mysql/versions/0.1.0/trust')).status, 400);
+  assert.equal((await api('POST', '/api/v1/admin/packs/core/versions/1.4.2/trust')).status, 400); // 不是多源连接器
+  assert.equal((await api('POST', '/api/v1/admin/packs/src-http-sample/versions/9.9.9/trust')).status, 404);
 });

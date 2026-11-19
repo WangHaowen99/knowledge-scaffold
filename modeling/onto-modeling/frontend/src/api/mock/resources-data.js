@@ -27,6 +27,7 @@ export const PURPOSES = [
 
 export function kindOf(name) {
   const ext = (String(name).split('.').pop() || '').toLowerCase();
+  if (ext === 'datasource') return 'source';
   if (/^xls[xm]?$/.test(ext)) return 'xls';
   if (ext === 'csv') return 'csv';
   if (ext === 'pdf') return 'pdf';
@@ -36,8 +37,8 @@ export function kindOf(name) {
   if (/^(png|jpe?g|gif|webp)$/.test(ext)) return 'image';
   return 'doc';
 }
-export const groupOf = (kind) => (kind === 'xls' || kind === 'csv' ? 'excel' : kind === 'drawio' ? 'diagrams' : 'others');
-const previewOfKind = (kind) => ({ xls: 'xls', csv: 'csv', drawio: 'drawio', html: 'html', image: null })[kind] ?? 'doc';
+export const groupOf = (kind) => (kind === 'xls' || kind === 'csv' || kind === 'source' ? 'excel' : kind === 'drawio' ? 'diagrams' : 'others');
+const previewOfKind = (kind) => ({ xls: 'xls', csv: 'csv', drawio: 'drawio', html: 'html', image: null, source: null })[kind] ?? 'doc';
 
 // 资料区上传白名单（契约 1.8、标注 resources-003）
 // 与真后端同一份白名单与上限（lib/resourceUpload.js，契约 1.8）
@@ -55,6 +56,12 @@ export function textState(name, kind, { scanned = false, state = null } = {}) {
   const base = { state: 'native', reason: null, note: null, converter: null, updated_at: null, has_text: true };
   if (kind === 'drawio') return null;
   if (kind === 'text' || kind === 'csv') return base;
+  // 数据源资料（ADR-0104）：文本版是连接器采集出来的
+  if (kind === 'source') {
+    const s = state || 'converted';
+    return { ...base, state: s, has_text: s === 'converted', converter: { id: 'db-mysql', label: 'MySQL', version: '0.1.0' },
+      reason: s === 'failed' ? '连不上数据库：账号或密码不对' : null, updated_at: new Date().toISOString() };
+  }
   const conv = CONVERTERS.find((c) => c.types.includes(ext));
   const unsupported = (reason) => ({ ...base, state: 'unsupported', reason, has_text: false });
   if (kind === 'image') return unsupported('图片暂不支持');
@@ -79,12 +86,13 @@ export function fileRecord(o) {
     preview: previewOfKind(kind), revision: `r-${seq.toString(16)}`,
     text: o.text !== undefined ? o.text : textState(o.name, kind, { scanned: o.scanned, state: o.text_state }),
     scanned: !!o.scanned, sections: o.sections || null,
+    source: o.source || null,
   };
 }
 
 // 给接口用的 Material：去掉 mock 自用字段；资料地图里有这份时，读取进度以资料地图为准
 // 同后端 workspace_labels：资料名是原文件名去扩展名，类型按扩展名
-const TYPE_LABEL = { pdf: 'PDF', doc: 'Word', docx: 'Word', xls: 'Excel', xlsx: 'Excel', xlsm: 'Excel', csv: 'CSV', drawio: '流程图', html: '网页', htm: '网页', png: '图片', jpg: '图片', jpeg: '图片', md: 'Markdown', markdown: 'Markdown', txt: '文本' };
+const TYPE_LABEL = { datasource: '数据源', pdf: 'PDF', doc: 'Word', docx: 'Word', xls: 'Excel', xlsx: 'Excel', xlsm: 'Excel', csv: 'CSV', drawio: '流程图', html: '网页', htm: '网页', png: '图片', jpg: '图片', jpeg: '图片', md: 'Markdown', markdown: 'Markdown', txt: '文本' };
 export function materialView(f, mapItem) {
   const { scanned, sections, ...rest } = f;
   const ext = (/\.([^.]+)$/.exec(rest.name || '') || [])[1]?.toLowerCase();
@@ -157,6 +165,10 @@ export function catalogFor(stage, { cid = null, map = null } = {}) {
     doc('07-门店C特殊需求.pdf', { uploaded_at: atDaysAgo(3, 15, 2), purpose_auto: true }),
     doc('09-修订通知.docx', { uploaded_at: atDaysAgo(1, 21, 40), purpose_auto: true }),
     fileRecord({ path: REPORT_PATH, name: '11-补货周报.html', size: 68 * KB, uploaded_at: atDaysAgo(5, 11, 30), purpose: 'auto', purpose_auto: false }),
+    fileRecord({
+      path: SOURCE_PATH, name: '门店业务库.datasource', kind: 'source', size: 1 * KB, sheets: SOURCE_TABLES.length, uploaded_at: atDaysAgo(2, 10, 5),
+      purpose: 'schema', purpose_auto: true, coverage: null, source: sourceInfo(),
+    }),
   ];
   return syncPurpose(list, map);
 }
@@ -275,6 +287,7 @@ export function previewBlocks(path, around, f) {
 
 // ---------- 文本版（R-13）：PDF 每 3 段一页、带页码标记；Word 按标题和段落；Excel 每个工作表一张表 ----------
 export function textMarkdown(f) {
+  if (f.kind === 'source') return sourceMarkdown();
   if (f.kind === 'xls') {
     return tableOf(f).map((sh) => {
       const rows = sh.rows || [];
@@ -549,4 +562,47 @@ export function webCommit(ctx, pid, paths) {
   ctx.emitProj(pid, 'workspace.changed', { commit, version_label, source: 'web', changeset_id: null, by: 'zhangsan', entries: [], artifacts: [], paths });
   if (c && ctx.F?.projectMeta) ctx.emitProj(pid, 'project.updated', { fields: ['version_label'], meta: ctx.F.projectMeta(c) });
   return { commit, version_label };
+}
+
+// ---------- 数据源（ADR-0104，契约 3.19a）：连接器（DS-01）、一份数据源资料、它的文本版（采集结果） ----------
+export const SOURCE_PATH = 'resource/excel/门店业务库.datasource';
+const MYSQL_FIELDS = [
+  { key: 'host', label: '主机', type: 'host', required: true, default: null, placeholder: '', options: [] },
+  { key: 'port', label: '端口', type: 'port', required: false, default: 3306, placeholder: '', options: [] },
+  { key: 'database', label: '数据库', type: 'text', required: true, default: null, placeholder: '', options: [] },
+  { key: 'user', label: '账号', type: 'text', required: true, default: null, placeholder: '', options: [] },
+  { key: 'password', label: '密码', type: 'secret', required: true, default: null, placeholder: '', options: [] },
+  { key: 'tables', label: '表范围', type: 'text', required: false, default: null, placeholder: 'orders, customer*', options: [] },
+];
+const PG_FIELDS = MYSQL_FIELDS.map((f) => (f.key === 'port' ? { ...f, default: 5432 } : f.key === 'tables' ? { ...f, placeholder: 'public.*' } : f));
+export const SOURCE_CONNECTORS = [
+  { id: 'db-mysql', label: 'MySQL', description: '读取表结构、外键、约束和遮蔽后的样本。', version: '0.1.0', official: true, fields: MYSQL_FIELDS },
+  { id: 'db-postgres', label: 'PostgreSQL', description: '读取表结构、外键、约束和遮蔽后的样本。', version: '0.1.0', official: true, fields: PG_FIELDS },
+];
+export const connectorById = (id) => SOURCE_CONNECTORS.find((c) => c.id === id) || null;
+export function sourceInfo(connectorId = 'db-mysql', config = null, secretFields = ['password']) {
+  const c = connectorById(connectorId);
+  return {
+    connector: { id: connectorId, label: c?.label || connectorId, version: c?.version || null, available: !!c },
+    config: config || { host: 'db.example.invalid', port: 3306, database: 'store_ops', user: 'reader', tables: '' },
+    fields: c?.fields || MYSQL_FIELDS,
+    secret_fields: secretFields,
+  };
+}
+const SOURCE_TABLES = [
+  { name: 'store', rows: [['id', 'store_code', 'store_name', 'region'], ['a1f0c2d9e4b7', 'S001', '门*', 'EAST'], ['5c3e9b0a7d21', 'S002', '门*', 'WEST']] },
+  { name: 'sku', rows: [['id', 'sku_code', 'category', 'unit'], ['0d7a4c1e9f32', 'K1001', 'DRINK', 'BOX'], ['8e2b6f0c4a95', 'K1002', 'SNACK', 'BAG']] },
+  { name: 'replenish_order', rows: [['id', 'store_id', 'sku_id', 'qty', 'status'], ['3b9d1e7a0c64', 'a1f0c2d9e4b7', '0d7a4c1e9f32', '1e1～1e2', 'SUBMITTED']] },
+];
+function sourceMarkdown() {
+  const line = (r) => `| ${r.join(' | ')} |`;
+  const sheets = SOURCE_TABLES.map((t) => `<!-- 工作表：${t.name} -->\n## ${t.name}\n\n${[line(t.rows[0]), `|${' --- |'.repeat(t.rows[0].length)}`, ...t.rows.slice(1).map(line)].join('\n')}`);
+  const facts = [
+    '<!-- 库表事实 -->',
+    '## 主键', '| 表 | 列 |', '| --- | --- |', '| store | id |', '| sku | id |', '| replenish_order | id |',
+    '', '## 外键', '| 表 | 列 | 引用表 | 引用列 | 名称 |', '| --- | --- | --- | --- | --- |',
+    '| replenish_order | store_id | store | id | fk_order_store |', '| replenish_order | sku_id | sku | id | fk_order_sku |',
+    '', '## 码值', '| 表 | 列 | 取值 |', '| --- | --- | --- |', '| replenish_order | status | DRAFT、SUBMITTED、APPROVED |',
+  ].join('\n');
+  return `${sheets.join('\n\n')}\n\n${facts}`;
 }

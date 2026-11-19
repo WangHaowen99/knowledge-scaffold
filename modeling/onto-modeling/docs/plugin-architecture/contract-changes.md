@@ -2442,3 +2442,30 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
 4. **检查器**：按发布包口径判错误——属性英文名称重复、发布包里有中文名或别名却没填英文名称（导出会丢掉英文名称为空或占位的行，
    只有一行都没填时原表照发），容量上限（对象实际最多 100 个、操作目录与单个操作含文件头）；合入检查带 `--include-scripts`。
 5. **发布页**：只有数据绑定没过时主「发布」按钮直接带 `degrade: true` 发布，去掉「忽略并降级发布」按钮和确认框。接口不变。
+
+## 2026-11-19 · 数据源热加载：连接器插件 + 数据源资料（ADR-0104）
+
+用户 11-19 要求内核搭好框架，以后接新的数据源只需上传多源连接器插件（需要时加能力包），不改内核、不重建镜像、不重启。
+用户定了四件事：信任方式是插件中心点「信任」；采集结果当作一份资料；项目成员自助接入；第一批交付 MySQL、PostgreSQL。
+
+1. **新增 3.19a 数据源**：DS-01 `GET /api/v1/source-connectors`、DS-02 `POST /api/v1/projects/{id}/sources`、
+   DS-03 `PATCH /api/v1/projects/{id}/sources`、DS-04 `POST /api/v1/projects/{id}/sources/test`。
+   - 数据源是资料 `resource/excel/<名称>.datasource`（`Material.kind="source"`、`type_label="数据源"`），新增字段 `Material.source`。
+   - 表数放在 `Material.sheets`，新增类型 `SourceField`、`SourceConnector`。
+   - 采集走资料转换的队列和状态（R-13、R-14、EP-25 不变，「重新转换」就是重新采集）。
+   - 用途预填「数据 Schema」，Sheet 范围和 Excel 同口径（ADR-0096）。
+2. **新增 PL-28、PL-29**：管理员信任、撤销信任上传的多源连接器，按版本记，存在通道记录的 `trusted` 上。
+   - `PackCard` 多 `source`（数据源连接器的字段数、许可证）和 `trust`（`builtin` / `trusted` / `untrusted`，网关里装上了没有）。
+   - 多源连接器分类里同时列转换器和数据源连接器。
+3. **连接器网关的新接口**（`design/data-sources.md` 第 5 节）：
+   - `PUT/DELETE /v1/plugins/{名}/{版本}`、`PUT/DELETE /v1/secrets/{项目}/{引用}`、`POST /v1/sources/test|collect`；
+   - `/v1/providers` 多 `sources`、`plugins`，`/health` 多 `sources`；
+   - 票据操作多 `plugin_install`、`plugin_remove`、`secret`、`source_test`、`source_collect`；
+   - 3.19 里「`/v1/secrets/*`、`/v1/sources/*/test` 一并删除」指的是证据采集那一版的接口，新接口路径和语义都不同。
+4. **内核条件** 多 `data_sources`（项目里有数据源资料），能力包、节点包的 `visible_if` / `need: {when}` 可用。
+5. **工具箱**：
+   - `table_sources` 把 `.datasource` 当表格资料、读文本版；
+   - `table_profile --headers` 的文件多 `foreign_keys`（库里声明的 `declared`、按命名推断的 `inferred`），摘要多 `foreign_keys` 条数；
+   - `source_extract` 认数据源的文本版，锚点同 Excel；
+   - 对象抽取守则：`declared` 的外键直接写「关联对象」的关联字段。
+6. **静态检查**：`kind: provider` 的包多一项 `provider`，要求 `converter`、`source` 二选一、写法合法、入口文件在。

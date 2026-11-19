@@ -13,9 +13,10 @@ import {
 } from '../../ui/index.jsx';
 import { UiChip } from './catalogCards.jsx';
 import { usePackActions } from './catalogDialogs.jsx';
-import { PACK_CATEGORIES, packIcon, publisherChip, versionOf } from './catalogModel.js';
+import { PACK_CATEGORIES, packIcon, publisherChip, trustChip, versionOf } from './catalogModel.js';
 import {
   contentGroups, contentTotal, converterDefaults, disableConfirm, flowCaption, flowLayout, heroActions, heroFacts, heroMenu, statCards,
+  untrustConfirm,
 } from './detailModel.js';
 import { Changelog, ContentsGrid, FlowMap } from './detailParts.jsx';
 import { usePluginProject } from './parts.jsx';
@@ -78,6 +79,9 @@ export default function PluginDetailPage({ route }) {
   const [tab, setTab] = useState('ov');
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmOff, setConfirmOff] = useState(false);
+  const [confirmUntrust, setConfirmUntrust] = useState(false);
+  const [trustBusy, setTrustBusy] = useState(false);
+  const admin = can(user, 'admin');
   const menuRef = useRef(null);
   useOutside(menuRef, () => setMenuOpen(false), menuOpen);
   const seq = useRef(0);
@@ -120,6 +124,27 @@ export default function PluginDetailPage({ route }) {
       } catch (e) { toast(errorText(e), 'alert'); }
     }
   };
+  // 多源连接器的信任（PL-28）与撤销（PL-29，先确认）
+  const setTrust = async (on) => {
+    setTrustBusy(true);
+    try {
+      const version = d.version || d.latest;
+      if (on) await api.trustPack(d.name, version); else await api.untrustPack(d.name, version);
+      setConfirmUntrust(false);
+      toast(on ? `已信任「${d.label}」` : `已撤销信任「${d.label}」`, 'check');
+      load();
+    } catch (e) {
+      toast(errorText(e), 'alert');
+    } finally {
+      setTrustBusy(false);
+    }
+  };
+  const heroAct = (action) => {
+    if (action === 'trust') setTrust(true);
+    else if (action === 'untrust') setConfirmUntrust(true);
+    else if (action) actions.act(action, d);
+  };
+
   const disable = async () => {
     try {
       const res = await api.disablePack(projectId, d.name);
@@ -138,7 +163,9 @@ export default function PluginDetailPage({ route }) {
     const cat = PACK_CATEGORIES[d.category] || [d.category, 'puzzle'];
     const pub = publisherChip(d);
     const off = disableConfirm(d);
-    const hero = heroActions(d, { pending, hasProject: !!projectId });
+    const hero = heroActions(d, { pending, hasProject: !!projectId, admin });
+    const trust = trustChip(d);
+    const untrust = untrustConfirm(d);
     const kernel = d.ui?.kind === 'kernel';
     const groups = contentGroups(d);
     const stats = statCards(d, { hasProject: !!projectId });
@@ -158,12 +185,13 @@ export default function PluginDetailPage({ route }) {
               <h1>{d.label} <span style={{ fontSize: 13, color: 'var(--ink3)', fontWeight: 500 }}>{versionOf(d)}</span></h1>
               <div className="row wrap g4 mt4">
                 {pub ? <Chip tone={pub.tone}>{pub.text}</Chip> : null}
+                {trust ? <Chip tone={trust.tone} icon={trust.icon}>{trust.text}</Chip> : null}
                 {d.badges?.includes('recommended') ? <Chip tone="teal" icon="star">推荐</Chip> : null}
                 {d.badges?.includes('new') ? <span className="badge-new">新</span> : null}
                 {d.category === 'capability' ? <UiChip ui={d.ui} sm={false} /> : null}
               </div>
               <div className="muted mt8" style={{ maxWidth: 640 }}>{d.description}</div>
-              <ConverterDefaults d={d} admin={can(user, 'admin')} />
+              <ConverterDefaults d={d} admin={admin} />
               <div className="row g16 mt12 sm muted">
                 {heroFacts(d).map(([k, v]) => <span key={k}>{k} <b style={{ color: 'var(--ink2)' }}>{v}</b></span>)}
               </div>
@@ -182,9 +210,9 @@ export default function PluginDetailPage({ route }) {
                   <Button
                     kind={hero.primary.kind ?? 'primary'}
                     icon={hero.primary.icon}
-                    disabled={hero.primary.disabled || actions.busy === d.name}
+                    disabled={hero.primary.disabled || actions.busy === d.name || trustBusy}
                     title={hero.primary.title}
-                    onClick={() => hero.primary.action && actions.act(hero.primary.action, d)}
+                    onClick={() => heroAct(hero.primary.action)}
                   >
                     {hero.primary.label}
                   </Button>
@@ -222,6 +250,17 @@ export default function PluginDetailPage({ route }) {
           foot={<><Button onClick={() => setConfirmOff(false)}>取消</Button><Button kind="danger" className="fill" onClick={disable}>停用</Button></>}
         >
           <div className="sm muted">{off.body}</div>
+        </Modal>
+        <Modal
+          open={confirmUntrust}
+          onClose={() => setConfirmUntrust(false)}
+          icon="ban"
+          danger
+          title={untrust.title}
+          w={440}
+          foot={<><Button onClick={() => setConfirmUntrust(false)}>取消</Button><Button kind="danger" className="fill" disabled={trustBusy} onClick={() => setTrust(false)}>撤销信任</Button></>}
+        >
+          <div className="sm muted">{untrust.body}</div>
         </Modal>
       </>
     );

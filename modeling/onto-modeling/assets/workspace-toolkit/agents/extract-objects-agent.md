@@ -14,7 +14,7 @@ dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自
 - `SUMMARY_PATHS`: paths to flowchart summary files in `ontology/diagrams-summary/`，**may be empty or absent** when the caller chose to extract from research reports alone.
 - `PAIRED_EXCEL_PATHS` (optional): same-name Excel supplements in `ontology/excel/`; these are provenance paths for `EXCEL_CONTEXT`.
 - `EXCEL_CONTEXT` (optional): markdown exported from the paired Excel 补充表. Treat it as detail for the same-name flowchart, not as a standalone global source.
-- `TABLE_HEADERS_FILE` (optional): path of the JSON file written by `table_profile.py --headers` (`{"tables": {Sheet 名: [表头列]}, "missing_text": [...]}`, from schema materials). Read the file yourself before extracting (one column per line; read it in parts when it is long) — its `tables` is what this document calls `TABLE_HEADERS`; `（无）` or absent means `TABLE_HEADERS` is empty. When present, it is the only source of table names and column names — copy them from the file verbatim, do not take them from data-dictionary documents, reports or any header list quoted elsewhere in the prompt. `missing_text` lists schema materials that have no text version yet: treat them as unread and never open their originals.
+- `TABLE_HEADERS_FILE` (optional): path of the JSON file written by `table_profile.py --headers` (`{"tables": {Sheet 名: [表头列]}, "missing_text": [...]}`, from schema materials). Read the file yourself before extracting (one column per line; read it in parts when it is long) — its `tables` is what this document calls `TABLE_HEADERS`; `（无）` or absent means `TABLE_HEADERS` is empty. When present, it is the only source of table names and column names — copy them from the file verbatim, do not take them from data-dictionary documents, reports or any header list quoted elsewhere in the prompt. `missing_text` lists schema materials that have no text version yet: treat them as unread and never open their originals. `foreign_keys` (only when the project has data-source materials, ADR-0104) lists relations read from the database: `basis: declared` is a foreign key declared in the database, `basis: inferred` is guessed from column names.
 - `TABLE_PROFILE` (optional): JSON from `table_profile.py --profile`, giving each column's value-kind counts (`kinds`: integer / decimal / zero_padded / boolean / boolean_short / date / text), `empty`, `long_integers`, `short_booleans`, `binary01`, `source_type` (the table's own type-description row, if any) and `inferred`. It contains counts only, never cell values. When present, it is the evidence for the 类型 column (see the type rules in Step 2).
 - `REPORT_PATHS` (optional): paths to research report files. When `SUMMARY_PATHS` is empty, these become the **primary source** instead of supplementary context.
 - `OBJECTS_DIR`: target directory for object docs (e.g. `ontology/object/`)
@@ -115,6 +115,8 @@ Rules:
      同一对字段、同一方向，不一致整条不导出；
   4. 关联字段通常是一端的主键 + 另一端指向它的外键列：先在 `TABLE_HEADERS` 两张表的列里找这
      一对列，**不要默认两端同名**，不同名才是常态（如 `lead_event_id` → `source_lead_id`）；
+     `TABLE_HEADERS_FILE` 里有 `foreign_keys` 时先查它：两端的表都有 `declared` 的外键就直接用它的列写括注
+     （方向「外键表的列 → 引用表的列」）；只有 `inferred` 的照样写上，但要在注意事项里列出，请用户确认；
   5. 括注里的字段必须出现在该端的属性清单里（存储属性，不是派生/非库字段）。两张表里确实找不到
      可用的关联字段时**不要臆造**：保留 `{待确认：未找到关联字段}`，并在返回摘要的注意事项里
      列出（关系 + 你认为缺哪一列），由主调命令交用户裁决；

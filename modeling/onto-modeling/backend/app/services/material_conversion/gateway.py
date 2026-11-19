@@ -13,6 +13,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 from ...evidence.tickets import Issuer, sha256_hex
 
@@ -100,19 +101,71 @@ def health(force: bool = False) -> dict:
     return _cached("health", HEALTH_TTL_S, load, force)
 
 
-def providers(force: bool = False) -> list[dict] | None:
-    """网关里已加载的转换器（GET /v1/providers）；网关不可用时 None。"""
+def catalog(force: bool = False) -> dict | None:
+    """GET /v1/providers 全文：转换器 items、数据源连接器 sources、插件 plugins（ADR-0104）；网关不可用时 None。"""
     def load():
         try:
-            return list(_get("/v1/providers").get("items") or [])
+            data = _get("/v1/providers")
         except GatewayUnavailable:
             return None
+        return {"items": list(data.get("items") or []), "sources": list(data.get("sources") or []),
+                "plugins": list(data.get("plugins") or [])}
 
     value = _cached("providers", PROVIDERS_TTL_S, load, force)
     if value is None:
         with _cache_lock:
             _cache.pop("providers", None)  # 不可用的结果不缓存，恢复后下一次就能取到
+    else:
+        for hook in list(_catalog_hooks):
+            try:
+                hook(value)
+            except Exception:  # noqa: BLE001 - 对账是附带的，不影响取清单
+                _log.exception("网关插件清单回调失败")
     return value
+
+
+_catalog_hooks: list = []
+
+
+def on_catalog(hook) -> None:
+    """每次（重新）取到网关清单后调 hook(清单)：内核按它对账已信任的插件（ADR-0104）。"""
+    if hook not in _catalog_hooks:
+        _catalog_hooks.append(hook)
+
+
+def providers(force: bool = False) -> list[dict] | None:
+    """网关里已加载的转换器（GET /v1/providers 的 items）；网关不可用时 None。"""
+    data = catalog(force)
+    return None if data is None else list(data["items"])
+
+
+def call(method: str, path: str, body: bytes | None, *, operation: str, scope: bytes, claims: dict,
+         timeout: float = 60) -> tuple[int, dict]:
+    """签一张票据调网关（ADR-0104 的插件、凭据、数据源接口）。网关不可达、繁忙、取不到公钥抛 GatewayUnavailable；
+    其余错误原样回 (状态码, 响应体)。"""
+    url = base_url()
+    if not url:
+        raise GatewayUnavailable("未配置")
+    token = issuer().issue(job_id=f"ds-{uuid.uuid4().hex[:12]}", operation=operation, scope_hash=sha256_hex(scope),
+                           budget={}, claims=claims)
+    headers = {"Authorization": f"Bearer {token}"}
+    if body is not None:
+        headers["Content-Type"] = "application/octet-stream" if operation == "plugin_install" else "application/json"
+    request = urllib.request.Request(f"{url}{path}", data=body, method=method, headers=headers)
+    try:
+        with _OPENER.open(request, timeout=timeout) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            payload = json.loads(exc.read().decode("utf-8"))
+        except (ValueError, OSError):
+            payload = {}
+        code = str(payload.get("error") or "")
+        if exc.code == 503 or code in ("busy", "issuer_unavailable"):
+            raise GatewayUnavailable(code or str(exc.code)) from None
+        return exc.code, payload if isinstance(payload, dict) else {}
+    except (OSError, ValueError) as exc:
+        raise GatewayUnavailable(type(exc).__name__) from None
 
 
 def convert(data: bytes, filename: str, converter: str, job_id: str, *,
