@@ -9,6 +9,7 @@ import { errorText } from '../../api/errors.js';
 import { createBridgeHost, handle, readTheme } from '../../app/packBridge.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { Button, Note } from '../../ui/index.jsx';
+import '../../styles/packs.css';
 
 // 要求 iframe 里的文档遵守的 CSP（Chromium 的 CSP 嵌入强制）：导航到别处的页面要么被拦，要么也只能用平台上包界面的
 // 静态资源、发不了请求。来源写平台的完整地址而不是 'self'，免得外站页面的 'self' 变成它自己
