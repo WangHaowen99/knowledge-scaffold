@@ -271,11 +271,8 @@ def test_trust_hot_loads_uploaded_connector(env, tmp_path):
     trusted = client.post(f"/api/v1/admin/packs/tenant-db/versions/{version}/trust")
     assert trusted.status_code == 200, trusted.text
     assert trusted.json()["trust"] == {"state": "trusted", "installed": True}
-    # 信任后触发的对账线程跑完，插件还在
-    for _ in range(30):
-        if not datasources._sync_lock.locked():
-            break
-        threading.Event().wait(0.1)
+    # 信任后触发的对账跑完，插件还在
+    assert datasources.wait_reconciled()
     assert any(p.name == "tenant-db" for p in gw.store.plugins())
     gateway.reset()
     assert sorted(item["id"] for item in client.get("/api/v1/source-connectors").json()["items"]) == [
@@ -285,14 +282,12 @@ def test_trust_hot_loads_uploaded_connector(env, tmp_path):
     gw.store.reload()
     gateway.reset()
     gateway.catalog(force=True)
-    for _ in range(50):
-        if any(p.name == "tenant-db" for p in gw.store.plugins()):
-            break
-        threading.Event().wait(0.1)
+    assert datasources.wait_reconciled()
     assert any(p.name == "tenant-db" for p in gw.store.plugins())
 
     untrusted = client.delete(f"/api/v1/admin/packs/tenant-db/versions/{version}/trust")
     assert untrusted.status_code == 200 and untrusted.json()["trust"]["state"] == "untrusted"
+    assert datasources.wait_reconciled()
     assert not any(p.name == "tenant-db" for p in gw.store.plugins())
     assert client.post("/api/v1/admin/packs/fake-db/versions/1.0.0/trust").status_code in (400, 404)
 

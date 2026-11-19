@@ -403,14 +403,38 @@ def _remove(name: str, version: str) -> None:
                  timeout=PLUGIN_TIMEOUT_S)
 
 
-_sync_lock = threading.Lock()
+_sync_guard = threading.Lock()
+_sync_state: dict = {"pending": None, "running": False}
+_sync_idle = threading.Event()
+_sync_idle.set()
 
 
 def reconcile(catalog: dict) -> None:
-    """网关清单刷新后对账：已信任的版本网关里没有就交付，网关里装着但已不信任的就删除。后台线程里做。"""
-    if not _sync_lock.acquire(blocking=False):
-        return
-    threading.Thread(target=_reconcile, args=(catalog,), daemon=True, name="connector-sync").start()
+    """网关清单刷新后对账：已信任的版本网关里没有就交付，网关里装着但已不信任的就删除。后台线程里做；
+    正在对账时来的新清单不丢，记下来，这一轮做完按最新的再做一轮。"""
+    with _sync_guard:
+        _sync_state["pending"] = catalog
+        if _sync_state["running"]:
+            return
+        _sync_state["running"] = True
+        _sync_idle.clear()
+    threading.Thread(target=_reconcile_loop, daemon=True, name="connector-sync").start()
+
+
+def _reconcile_loop() -> None:
+    while True:
+        with _sync_guard:
+            catalog, _sync_state["pending"] = _sync_state["pending"], None
+            if catalog is None:
+                _sync_state["running"] = False
+                _sync_idle.set()
+                return
+        _reconcile(catalog)
+
+
+def wait_reconciled(timeout: float = 30) -> bool:
+    """测试与运维脚本用：等对账做完。"""
+    return _sync_idle.wait(timeout)
 
 
 def _reconcile(catalog: dict) -> None:
@@ -435,8 +459,6 @@ def _reconcile(catalog: dict) -> None:
         pass
     except Exception:  # noqa: BLE001 - 对账失败只记日志，下一轮再试
         _log.exception("多源连接器对账失败")
-    finally:
-        _sync_lock.release()
 
 
 def install() -> None:

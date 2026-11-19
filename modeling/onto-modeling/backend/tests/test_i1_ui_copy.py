@@ -111,13 +111,13 @@ def test_release_manifest_gives_source_version_label(manager, monkeypatch, hub_l
     assert body["source_version_label"] == record["version_label"] and body["source_commit"] == record["commit"]
 
 
-def test_pack_catalog_has_no_meta_line_and_data_access_only_converters(env):
-    """多源连接器分类里只有转换器（F4a，ADR-0073）；没有转换器的提供方包不出现（见下一条）。"""
+def test_pack_catalog_has_no_meta_line_and_data_access_only_connectors(env):
+    """多源连接器分类里只有转换器和数据源连接器（ADR-0073、ADR-0103）；两样都没有的提供方包不出现（见下一条）。"""
     client, _manager, project_id, _tmp = env
     body = client.get("/api/v1/packs", params={"project_id": project_id}).json()
     assert body["items"] and all("meta" not in item for item in body["items"])
     providers = [item for item in body["items"] if item["category"] == "provider"]
-    assert providers and all(item["converter"] for item in providers)
+    assert providers and all(item["converter"] or item["source"] for item in providers)
     assert body["counts"]["provider"] == len(providers)
 
 
