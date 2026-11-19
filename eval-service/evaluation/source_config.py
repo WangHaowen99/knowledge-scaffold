@@ -9,6 +9,17 @@ from .data_sources import identifier
 SQL_KEYS = ('url', 'scene', 'evaluation_workspace_id', 'token')
 GRAPH_KEYS = ('uri', 'database', 'username', 'password', 'workspace_property', 'workspace_value', 'ontology_property')
 GRAPH_SCHEMES = ('bolt', 'neo4j', 'bolt+s', 'neo4j+s', 'bolt+ssc', 'neo4j+ssc')
+# 评测隔离范围：在新建评测选中数据源时填写，随数据源保存；保存连接时可以先空着，准备评测时必须已填写
+GRAPH_SCOPE_KEYS = ('workspace_property', 'workspace_value', 'ontology_property')
+SQL_SCOPE_KEYS = ('evaluation_workspace_id',)
+SCOPE_VALUE = re.compile(r'[a-z][a-z0-9_-]{0,63}')
+
+
+def scope_missing(provider, connection):
+    """Why the connection cannot be evaluated yet, or '' when its isolation scope is filled in."""
+    if provider == 'neo4j':
+        return '' if connection.get('workspace_value') else '请在新建评测中选中该数据源，填写 Workspace 对应值'
+    return '' if connection.get('evaluation_workspace_id') else '请在新建评测中选中该数据源，填写评测工作空间 ID'
 
 
 class SourceConfig:
@@ -51,7 +62,7 @@ class SourceConfig:
                 raise Failure('connection_invalid', '请填写图库账号与密码', 422)
             value['database'] = identifier(value['database'] or 'neo4j')
             value['workspace_property'] = identifier(value['workspace_property'] or 'd2o_workspace_id')
-            if not re.fullmatch(r'[a-z][a-z0-9_-]{0,63}', value['workspace_value']):
+            if value['workspace_value'] and not SCOPE_VALUE.fullmatch(value['workspace_value']):
                 raise Failure('connection_invalid', 'Workspace 值须以小写字母开头，最多 64 个小写字母、数字、连字符或下划线', 422)
             if value['ontology_property']:
                 identifier(value['ontology_property'])
@@ -60,9 +71,32 @@ class SourceConfig:
         else:
             if not re.fullmatch(r'[A-Za-z0-9_]{1,60}', value['scene']):
                 raise Failure('connection_invalid', 'Scene 须为 1-60 个英文字母、数字或下划线', 422)
-            if not re.fullmatch(r'[a-z][a-z0-9_-]{0,63}', value['evaluation_workspace_id']):
-                raise Failure('connection_invalid', '请填写有效的评测工作空间 ID', 422)
+            if value['evaluation_workspace_id'] and not SCOPE_VALUE.fullmatch(value['evaluation_workspace_id']):
+                raise Failure('connection_invalid', '评测工作空间 ID 须以小写字母开头，最多 64 个小写字母、数字、连字符或下划线', 422)
         return value
+
+    def scope(self, owner, record, values):
+        """The record's connection with only its isolation scope replaced; secrets and the rest stay as saved."""
+        provider = record.get('provider')
+        keys = GRAPH_SCOPE_KEYS if provider == 'neo4j' else SQL_SCOPE_KEYS
+        if any(value is not None for key, value in values.items() if key not in keys):
+            raise Failure('connection_invalid', '隔离范围包含该数据源不支持的字段', 422)
+        current = self.store.decrypt(record['connection'])
+        value = self.connection(owner, provider, {**current, **{k: values[k] for k in keys if values.get(k) is not None}}, record)
+        missing = scope_missing(provider, value)
+        if missing:
+            raise Failure('scope_required', missing, 422)
+        if provider == 'neo4j' and record.get('import_data') and not value['ontology_property']:
+            raise Failure('graph_scope_required', '导入图数据需要 Ontology 隔离字段', 422)
+        return value
+
+    def require_scope(self, source):
+        """An external connection evaluates in the scope chosen for it in the new-evaluation wizard."""
+        if source.get('mode') != 'connection' or not source.get('connection'):
+            return
+        missing = scope_missing(source.get('provider'), self.store.decrypt(source['connection']))
+        if missing:
+            raise Failure('scope_required', missing, 422)
 
     def view(self, owner, record):
         value = {k: v for k, v in record.items() if k != 'connection'}

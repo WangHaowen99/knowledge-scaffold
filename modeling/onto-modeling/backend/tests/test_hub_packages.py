@@ -440,7 +440,12 @@ def test_local_recovery_and_project_deletion_do_not_delete_hub_package(setup, mo
         m.setattr(hub_packages, 'record', lambda *a, **k: (_ for _ in ()).throw(OSError('synthetic failure')))
         receipt = hub_packages.publish(manager, pid, 'request_demo', 'actor_a', 'scope_a')
     hub_packages.maintain(manager)
-    assert hub_packages.association(pid, 'scope_a')['release_id'] == receipt['release_id']
+    linked = hub_packages.association(pid, 'scope_a')
+    assert linked['release_id'] == receipt['release_id'] and linked['publisher'] == hub_packages.scope('scope_a')
+    # 已记下的当前版本不重写：发布时记下的内容指纹与发布人不能被定期维护抹掉
+    hub_packages.record(manager, pid, 'scope_a', receipt, inputs='c' * 64)
+    hub_packages.maintain(manager)
+    assert hub_packages.association(pid, 'scope_a')['inputs_digest'] == 'c' * 64
     manager.delete_project(pid)
     hub_packages.maintain(manager)
     assert not hub_packages.directory(pid, 'scope_a').exists()

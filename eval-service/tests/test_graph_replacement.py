@@ -499,3 +499,104 @@ def test_cross_scope_relationship_after_import_is_not_reused(environment, graph)
                                                            'replace_existing_graph': confirmed})
         assert refused.status_code == 409 and refused.json()['code'] == 'graph_boundary_conflict'
     assert 'late_cross_edge' in graph.edges
+
+
+# ---- 重跑：数据飞轮沿用上一轮的评测配置评测新版本
+
+
+def first_import(client, app, deps):
+    consumer(deps)
+    query, intent = preparation(client)
+    inspected = check(client, query)
+    started = client.post('/evaluation/api/runs', json={**intent, 'graph_check_id': inspected['id'], 'replace_existing_graph': True}).json()
+    assert wait(client, started['id'])['status'] == 'completed'
+    for _ in range(100):
+        if not app.state.engine.active: break
+        time.sleep(.02)
+    return started['id'], query['package_ref']
+
+
+def rerun(client, rid, ref, **body):
+    return client.post(f'/evaluation/api/runs/{rid}/reruns', json={'request_id': 'rerun_graph', 'package_ref': ref, **body})
+
+
+def test_a_rerun_replaces_unasked_only_what_an_earlier_evaluation_imported(environment, graph):
+    client, app, deps, cfg = environment
+    rid, ref = first_import(client, app, deps)
+    assert graph.marker['snapshot']
+    response = rerun(client, rid, ref)
+    assert response.status_code == 202, response.text
+    assert wait(client, response.json()['id'])['status'] == 'completed'
+    assert graph.commits == 2 and graph.marker['run_id'] == response.json()['id']
+    assert set(graph.nodes) == {'other_workspace', 'other_ontology', 'new_item_0001'}
+    # 重复同一请求返回原评测，不再检查或改动图数据
+    calls = len(graph.calls)
+    assert rerun(client, rid, ref).json()['id'] == response.json()['id'] and len(graph.calls) == calls
+
+
+@pytest.mark.parametrize('change', ['added_node', 'receipt_without_fingerprint'])
+def test_a_rerun_asks_before_replacing_data_no_evaluation_left_as_is(environment, graph, change):
+    client, app, deps, cfg = environment
+    rid, ref = first_import(client, app, deps)
+    if change == 'added_node':
+        graph.nodes['late_node'] = {'evaluation_scope': 'workspace_demo', 'knowledge_package_id': 'knowledge_package_demo', 'id': 'late_0001'}
+    else:
+        graph.marker['snapshot'] = None  # 早先的导入回执没有数据指纹，无法证明数据没被动过
+    nodes = 2 if change == 'added_node' else 1
+    response = rerun(client, rid, ref)
+    assert response.status_code == 409 and response.json()['code'] == 'graph_confirmation_required'
+    assert f'已有 {nodes} 个节点、0 条关系' in response.json()['message']
+    assert graph.commits == 1 and client.get('/evaluation/api/runs').json()['total'] == 1
+    # 用户本人带着这次提示的确认码确认后，同一请求删除旧数据并重新导入
+    confirmed = rerun(client, rid, ref, replace_existing_graph=True, graph_confirmation_code=code_of(response))
+    assert confirmed.status_code == 202, confirmed.text
+    assert wait(client, confirmed.json()['id'])['status'] == 'completed'
+    assert 'late_node' not in graph.nodes and graph.commits == 2
+
+
+def test_a_rerun_still_refuses_cross_scope_relationships(environment, graph):
+    client, app, deps, cfg = environment
+    rid, ref = first_import(client, app, deps)
+    graph.edges['external_edge'] = ('new_item_0001', 'other_workspace')
+    response = rerun(client, rid, ref, replace_existing_graph=True)
+    assert response.status_code == 409 and response.json()['code'] == 'graph_boundary_conflict'
+    assert graph.commits == 1
+
+
+def scope_node(name):
+    return {'evaluation_scope': 'workspace_demo', 'knowledge_package_id': 'knowledge_package_demo',
+            'id': f'{name}_0001'}
+
+
+def code_of(response):
+    return response.json()['details']['confirmation_code']
+
+
+def test_a_rerun_confirmation_deletes_only_the_data_its_question_showed(environment, graph):
+    client, app, deps, cfg = environment
+    rid, ref = first_import(client, app, deps)
+    graph.nodes['late_node'] = scope_node('late')
+    shown = rerun(client, rid, ref)
+    assert shown.status_code == 409 and '已有 2 个节点' in shown.json()['message']
+    # 提示之后又写入了数据（或者又有一次提示没送到用户眼前）：用户看到的那次提示的确认码不能删掉这些数据
+    graph.nodes['later_node'] = scope_node('later')
+    again = rerun(client, rid, ref, replace_existing_graph=True, graph_confirmation_code=code_of(shown))
+    assert again.status_code == 409 and again.json()['code'] == 'graph_confirmation_required'
+    assert '提示后有变化：现有 3 个节点' in again.json()['message'] and code_of(again) != code_of(shown)
+    assert {'late_node', 'later_node'} <= set(graph.nodes) and graph.commits == 1
+    # 带着显示这份数据的提示的确认码再确认，删除的正是这份数据
+    confirmed = rerun(client, rid, ref, replace_existing_graph=True, graph_confirmation_code=code_of(again))
+    assert confirmed.status_code == 202, confirmed.text
+    assert wait(client, confirmed.json()['id'])['status'] == 'completed'
+    assert not {'late_node', 'later_node'} & set(graph.nodes) and graph.commits == 2
+
+
+def test_a_rerun_confirmed_without_its_questions_code_deletes_nothing(environment, graph):
+    client, app, deps, cfg = environment
+    rid, ref = first_import(client, app, deps)
+    graph.nodes['late_node'] = scope_node('late')
+    for code in ('', 'f' * 64):
+        response = rerun(client, rid, ref, replace_existing_graph=True, graph_confirmation_code=code)
+        assert response.status_code == 409 and response.json()['code'] == 'graph_confirmation_required'
+    assert 'late_node' in graph.nodes and graph.commits == 1 and client.get('/evaluation/api/runs').json()['total'] == 1
+    assert rerun(client, rid, ref, replace_existing_graph=True, graph_confirmation_code='NOT-HEX').status_code == 422

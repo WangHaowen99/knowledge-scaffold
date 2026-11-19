@@ -86,7 +86,7 @@ function ArtifactBody({ loading, error, retry, data, onOpenAnswer }) {
 }
 
 // 点击报告中的「完整回答」：按结果 ID 读取评测服务附件中的单条回答，在弹窗内预览
-function useAnswerPreview(projectId, runId) {
+function useAnswerPreview(projectId, runId, zIndex) {
   const [answer, setAnswer] = useState(null);
   const open = (resultId) => {
     api.packageEvaluationAnswer(projectId, runId, resultId)
@@ -95,7 +95,8 @@ function useAnswerPreview(projectId, runId) {
     return true; // 已处理，Markdown 不再回退到文件打开
   };
   const modal = (
-    <Modal title="完整回答" open={!!answer} footer={null} onCancel={() => setAnswer(null)} width={860} destroyOnHidden>
+    <Modal title="完整回答" open={!!answer} footer={null} onCancel={() => setAnswer(null)} width={860} destroyOnHidden
+      zIndex={zIndex ? zIndex + 10 : undefined}>
       {answer && (
         <>
           <div className="erd-full-answer-meta">
@@ -111,12 +112,13 @@ function useAnswerPreview(projectId, runId) {
   return { open, modal };
 }
 
-// target: { runId, version, feedback }；feedback 表示消费反馈来源
-export function EvaluationReportModal({ projectId, target, onClose }) {
+// target: { runId, version, feedback }；feedback 表示消费反馈来源；zIndex 供叠在其他弹层（如数据飞轮）之上时使用
+export function EvaluationReportModal({ projectId, target, onClose, zIndex }) {
   const artifact = useArtifact((t) => api.packageEvaluationReport(projectId, t.runId), target);
-  const preview = useAnswerPreview(projectId, target?.runId);
+  const preview = useAnswerPreview(projectId, target?.runId, zIndex);
   return (
     <Modal title={`${target?.feedback ? '用户反馈报告' : '评测报告'} — 版本 ${target?.version || ''}`} open={!!target} onCancel={onClose} width={MODAL_WIDTH} centered
+      zIndex={zIndex}
       footer={(
         <Space>
           <Typography.Text type="secondary">{REPORT_OPTIMIZE_HINT}</Typography.Text>
@@ -132,10 +134,13 @@ export function EvaluationReportModal({ projectId, target, onClose }) {
   );
 }
 
-// target: { runId, version, feedback }；blockReason 非空时评测优化置灰；onReportFailure 为空时不能标记处理失败
-export function EvaluationSuggestionsModal({ projectId, target, blockReason, onClose, onRegenerated, onOptimized, onReportFailure }) {
+// target: { runId, version, feedback }；blockReason 非空时评测优化置灰；onReportFailure 为空时不能标记处理失败；
+// onOptimize 替换默认的“导入产物并交给聊天区”，数据飞轮用它开始一次飞轮运行
+export function EvaluationSuggestionsModal({
+  projectId, target, blockReason, onClose, onRegenerated, onOptimized, onReportFailure, onOptimize, zIndex,
+}) {
   const artifact = useArtifact((t) => api.packageEvaluationSuggestions(projectId, t.runId), target);
-  const preview = useAnswerPreview(projectId, target?.runId);
+  const preview = useAnswerPreview(projectId, target?.runId, zIndex);
   const [regenerating, setRegenerating] = useState(false);
   const [optimizing, setOptimizing] = useState(false);
   const failed = artifact.data?.status === 'failed';
@@ -156,9 +161,9 @@ export function EvaluationSuggestionsModal({ projectId, target, blockReason, onC
   const optimize = async () => {
     setOptimizing(true);
     try {
-      const result = await api.optimizePackageEvaluation(projectId, target.runId);
+      const result = onOptimize ? await onOptimize() : await api.optimizePackageEvaluation(projectId, target.runId);
       message.success('已导入评测报告和优化建议，开始评测优化');
-      onOptimized?.(result.command);
+      onOptimized?.(result?.command);
     } catch (e) {
       message.error(e.message);
     } finally {
@@ -168,7 +173,7 @@ export function EvaluationSuggestionsModal({ projectId, target, blockReason, onC
 
   return (
     <Modal title={`${target?.feedback ? '用户反馈优化建议' : '优化建议'} — 版本 ${target?.version || ''}`} open={!!target} onCancel={onClose} width={MODAL_WIDTH} centered
-      destroyOnHidden
+      destroyOnHidden zIndex={zIndex}
       footer={(
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
           <Button onClick={onClose}>关闭</Button>

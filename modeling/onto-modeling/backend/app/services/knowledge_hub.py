@@ -70,6 +70,20 @@ def token_of(request):
     return header[7:] if header.lower().startswith('bearer ') else request.query_params.get('token', '')
 
 
+def hub_error_fields(data):
+    """Keep only Hub's machine-readable error fields; the message stays local."""
+    try:
+        value = json.loads(data)
+    except ValueError:
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    fields = {k: value[k] for k in ('code', 'phase') if isinstance(value.get(k), str) and len(value[k]) <= 64}
+    if isinstance(value.get('retryable'), bool):
+        fields['retryable'] = value['retryable']
+    return fields
+
+
 def call(method, path, token='', body=None, upload=None, headers=None, download=None,
          upload_name=None, checkpoint=None, timeout=None):
     """Bounded JSON responses; stream ZIP transfers without encoding them as JSON."""
@@ -197,8 +211,10 @@ def call(method, path, token='', body=None, upload=None, headers=None, download=
                         'delegation_target_mismatch': '知识包发布授权与目标不匹配',
                         'invalid_delegation': '知识包发布授权签名无效或已过期',
                         'delegation_replayed': '知识包发布授权请求已被使用'}
-            raise WorkspaceError(messages.get(code, f'知识包 Hub 请求失败（{response.status}）'),
-                                 response.status, code if code in messages else 'hub_error')
+            error = WorkspaceError(messages.get(code, f'知识包 Hub 请求失败（{response.status}）'),
+                                   response.status, code if code in messages else 'hub_error')
+            error.hub_error = hub_error_fields(raw_error)
+            raise error
         if download is not None:
             target = Path(download)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -272,15 +288,15 @@ def package_inputs(root):
     return paths
 
 
-def source_state(manager, pid, allow_unbound, binding=None, graph=False):
+def source_state(manager, pid, allow_unbound, binding=None, graph=False, name=None):
+    """`name` lets callers holding the project lock skip get_project(), which locks again."""
     root = manager.project_root(pid)
     resolved = binding if binding is not None else package_mapping.resolve_object_tables(
         root, strict_declared=not allow_unbound)
     if resolved.get('problems'):
         raise WorkspaceError('数据绑定无法发布：' + '；'.join(resolved['problems']), code='binding_problems')
     files = {p.relative_to(root).as_posix(): file_digest(p) for p in package_inputs(root)}
-    meta = manager.get_project(pid)
-    value = {'files': files, 'binding': resolved, 'name': meta['name'],
+    value = {'files': files, 'binding': resolved, 'name': name if name is not None else manager.get_project(pid)['name'],
              'allow_unbound': allow_unbound, 'graph': graph}
     digest = hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     return value, digest

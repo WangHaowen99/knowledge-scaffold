@@ -2,8 +2,9 @@
 
 A run's ``optimization`` starts when its report is first generated: runs of the evaluation wait for modeling
 (``notified``), runs built from consumer feedback first wait for a package owner to confirm them. Modeling
-reports a new release or a failure for the run whose suggestions it applied; the release is checked with Hub
-before it is recorded. Recording never starts an evaluation: verifying the new version is a new run.
+reports a new release or a failure for the run whose suggestions it applied, or that it checked the problems
+against its current version and found them gone (``resolved``, nothing published); a release is checked with
+Hub before it is recorded. Recording never starts an evaluation: verifying the new version is a new run.
 """
 import time
 from urllib.parse import quote
@@ -20,7 +21,8 @@ HISTORY = 10
 class ModelingResult(BaseModel):
     model_config = ConfigDict(extra='forbid')
     request_id: str = Field(min_length=1, max_length=100, pattern=r'^[a-zA-Z0-9_-]+$')
-    outcome: str = Field(pattern=r'^(done|failed)$')
+    # resolved: the current version no longer has the problems; release_id, optional, is the version checked
+    outcome: str = Field(pattern=r'^(done|failed|resolved)$')
     release_id: str = Field(default='', max_length=128, pattern=r'^(|[A-Za-z0-9_-]+)$')
     note: str = Field(default='', max_length=2000)
 
@@ -59,7 +61,7 @@ def record(store, jobs, packages, owner, run, body, token, actor):
         raise Failure('not_applicable', '求解验证没有优化建议，不需要回写处理结果', 409)
     current = state(store, jobs, owner, run) or {}
     note = body.note.strip()
-    release_id = body.release_id if body.outcome == 'done' else ''
+    release_id = body.release_id if body.outcome in ('done', 'resolved') else ''
     # A retried request is answered with what it recorded; a different result under the same ID is refused.
     for earlier in [current.get('result') or {}, *(current.get('history') or [])]:
         if earlier.get('request_id') == body.request_id:
@@ -75,6 +77,8 @@ def record(store, jobs, packages, owner, run, body, token, actor):
         evaluated = {(run.get(key) or {}).get('release_id') for key in ('base_ref', 'package_ref')}
         if release_id in evaluated:
             raise Failure('same_release', '回写的版本就是被评测的版本，请提供修改后发布的新版本', 422)
+    if release_id:
+        # 已解决时的核对版本可以就是被评测的版本：没有改动，也就没有新版本
         package = (run.get('base_ref') or run.get('package_ref') or {}).get('ontology_id', '')
         try:
             receipt = packages.call('GET', f"/api/packages/{quote(package, safe='')}/releases/{quote(release_id, safe='')}", token)
@@ -88,7 +92,7 @@ def record(store, jobs, packages, owner, run, body, token, actor):
     now = time.time()
     entry.update(reported_by=actor, reported_at=now)
     history = ([current['result']] if current.get('result') else []) + list(current.get('history') or [])
-    value = {**current, 'status': 'modeling_done' if body.outcome == 'done' else 'modeling_failed', 'updated_at': now,
+    value = {**current, 'status': 'modeling_failed' if body.outcome == 'failed' else 'modeling_done', 'updated_at': now,
              'result': entry, 'history': history[:HISTORY]}
     store.put_optimization(owner, run['id'], value)
     return value
