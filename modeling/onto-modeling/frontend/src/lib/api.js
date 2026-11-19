@@ -129,6 +129,8 @@ export function evalRunPayload(
   return payload;
 }
 
+const refreshHeader = () => (authStore.refreshToken ? { 'X-Refresh-Token': authStore.refreshToken } : {});
+
 function conversationQuery(conversationId) {
   return conversationId ? `?conversation=${encodeURIComponent(conversationId)}` : '';
 }
@@ -266,6 +268,29 @@ export const api = {
   reportPackageEvaluationFailure: (pid, runId, note) =>
     request(`/api/projects/${pid}/package/evaluations/${encodeURIComponent(runId)}/modeling-result`, {
       method: 'POST', body: JSON.stringify({ note }),
+    }),
+  // 知识包数据飞轮：读取状态的同时由后端推进本用户的飞轮；操作返回更新后的状态
+  flywheel: (pid, { reconcile = false } = {}) =>
+    request(`/api/projects/${pid}/flywheel?reconcile=${reconcile ? 1 : 0}`),
+  // 设置与确认评测时转交 refresh token：评测服务据此保存后台评测登录或跑完本次评测，modeling 不保存它
+  flywheelSettings: (pid, changes) =>
+    request(`/api/projects/${pid}/flywheel/settings`, {
+      method: 'PUT', body: JSON.stringify(changes), headers: refreshHeader(),
+    }),
+  flywheelEvaluate: (pid, runId, body = {}) =>
+    request(`/api/projects/${pid}/flywheel/runs/${encodeURIComponent(runId)}/evaluate`, {
+      method: 'POST', body: JSON.stringify(body), headers: refreshHeader(),
+    }),
+  // 运行记录与设置变更分批读取（从最新一条开始），只读，不推进飞轮
+  flywheelRuns: (pid, { offset = 0, limit = 20, filter = 'all' } = {}) =>
+    request(`/api/projects/${pid}/flywheel/runs?${new URLSearchParams({ offset, limit, filter })}`),
+  flywheelAudit: (pid, { offset = 0, limit = 20 } = {}) =>
+    request(`/api/projects/${pid}/flywheel/audit?${new URLSearchParams({ offset, limit })}`),
+  flywheelRun: (pid, runId) => request(`/api/projects/${pid}/flywheel/runs/${encodeURIComponent(runId)}`),
+  flywheelChanges: (pid, runId) => request(`/api/projects/${pid}/flywheel/runs/${encodeURIComponent(runId)}/changes`),
+  flywheelAction: (pid, runId, action, body = {}) =>
+    request(`/api/projects/${pid}/flywheel/runs/${encodeURIComponent(runId)}/${action}`, {
+      method: 'POST', body: JSON.stringify(body),
     }),
   downloadRelease: async (pid, releaseId) => {
     const send = () => fetch(`/api/projects/${pid}/package/releases/${releaseId}/download`, { headers: authHeaders() });

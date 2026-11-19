@@ -37,6 +37,7 @@ import { legacyOfficeHint } from '../lib/sourceLocation.js';
 import { EMPTY_HISTORY, appendHistoryPage, historyEntryKey, versionTitle } from '../lib/versionHistory.js';
 import { hasWorkspaceDirty } from '../lib/workspaceDirty.js';
 import EvalRunDetail from './EvalRunDetail.jsx';
+import { useFlywheelPanel } from './flywheel/FlywheelEntry.jsx';
 import { usePackagePublish } from './PublishCheckDialog.jsx';
 
 // 阶段定义：探测产物目录推断完成态（对应 CLI 版 detect-stage），
@@ -367,6 +368,8 @@ export default function LeftPane({
     onChanged: onRefresh,
     onOpenSolver: onSolver,
   });
+  // 数据飞轮在左栏顶层同步：切换页签时自动执行不中断，入口按钮只在「进度」页签显示
+  const flywheel = useFlywheelPanel(project.id, onRefresh);
   // 「历史」页签：后端合并迭代与发布版本并分页；打开页签或迭代刷新时从第一页重新读取
   const [history, setHistory] = useState(EMPTY_HISTORY);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -751,6 +754,7 @@ export default function LeftPane({
           <Button block style={{ marginBottom: 8 }} onClick={() => packagePublish.showVersions(project)}>
             已发布版本（知识包评测）
           </Button>
+          {flywheel.entry}
           <Button block style={{ marginBottom: 8 }} onClick={() => setEvalDetailOpen(true)}>
             旧版评测记录（历史链路）
           </Button>
@@ -1156,6 +1160,7 @@ export default function LeftPane({
         }}
       />
       {packagePublish.dialog}
+      {flywheel.dialog}
     </div>
   );
 }

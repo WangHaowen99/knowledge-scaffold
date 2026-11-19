@@ -74,6 +74,25 @@ export function MappingConflicts({ details }) {
   );
 }
 
+// 新建评测中的数据源预览：还没拿到结果时说明正在预览，或可以重新预览
+export function SourcePreview({ preview, busy, graph, onRetry }) {
+  return (
+    <div className="preview-action">
+      {!preview && (
+        <p className="muted">
+          {busy ? `正在预览${graph ? '图导入' : '数据映射'}…` : '没有拿到预览结果。'}
+          {!busy && (
+            <Button variant="text" onClick={onRetry}>
+              重新预览
+            </Button>
+          )}
+        </p>
+      )}
+      <MappingPreview preview={preview} />
+    </div>
+  );
+}
+
 export function MappingPreview({ preview }) {
   if (!preview) return null;
   const objects = Array.isArray(preview.objects)
@@ -157,6 +176,28 @@ export function MappingPreview({ preview }) {
       {preview.truncated && (
         <Alert tone="amber">预览已截断，仅展示部分对象或关系。完整执行以本轮映射为准。</Alert>
       )}
+    </div>
+  );
+}
+
+// 隔离范围不在这里编辑：在新建评测中选中数据源后填写，随数据源保存。这里只说明并显示已保存的值
+function ScopeNote({ connection, graph = false }) {
+  const saved = graph
+    ? connection.workspace_value &&
+      `${connection.workspace_property || GRAPH_SCOPE_DEFAULTS.workspace_property} = ${connection.workspace_value}`
+    : connection.evaluation_workspace_id && `评测工作空间 ${connection.evaluation_workspace_id}`;
+  return (
+    <div className="scope-note">
+      <Icon name="info" />
+      <div>
+        <strong>评测隔离范围在新建评测中填写</strong>
+        <span>
+          {graph
+            ? '选中本数据源后填写 Workspace 与 Ontology 隔离字段及对应值，随数据源保存。'
+            : '选中本数据源后填写评测工作空间 ID，随数据源保存。'}
+          {saved ? ` 当前：${saved}` : ' 当前尚未填写。'}
+        </span>
+      </div>
     </div>
   );
 }
@@ -416,35 +457,13 @@ export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, pa
                       placeholder: form.secret_configured ? '已配置；留空沿用' : '请输入访问凭据',
                     },
                   })}
-                  {configField('evaluation_workspace_id', '评测工作空间 ID *', {
-                    hint: '评测在同名 consumer 工作空间中执行，空间名称与 ID 一致',
-                  })}
                 </>
               )}
             </div>
+            {!graph && <ScopeNote connection={form.connection} />}
             {graph ? (
               <>
-                <div className="section-title">
-                  <h3>查询隔离范围</h3>
-                  <small>Workspace + Ontology 按 AND 匹配</small>
-                </div>
-                <div className="form-grid">
-                  {configField('workspace_property', 'Workspace 隔离字段 *')}
-                  {configField('workspace_value', 'Workspace 对应值 *', {
-                    hint: '小写字母开头，最多 64 个字符；也是评测所用 consumer 工作空间的 ID',
-                  })}
-                  {configField(
-                    'ontology_property',
-                    `Ontology 隔离字段${form.import_data ? ' *' : '（可选）'}`,
-                  )}
-                  <Field label="Ontology 对应值（自动带入）">
-                    <input
-                      readOnly
-                      value={packageRef?.ontology_id || ''}
-                      placeholder="由评测时选择的知识包自动带入"
-                    />
-                  </Field>
-                </div>
+                <ScopeNote connection={form.connection} graph />
                 <div className="section-title">
                   <h3>评测前导入图数据</h3>
                 </div>
@@ -468,19 +487,15 @@ export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, pa
                   </button>
                 </div>
                 {form.import_data && (
-                  <Alert title="本轮图导入范围">
-                    {form.connection.workspace_property || GRAPH_SCOPE_DEFAULTS.workspace_property} =
-                    {form.connection.workspace_value || '请填写 Workspace 对应值'}；
-                    {form.connection.ontology_property || GRAPH_SCOPE_DEFAULTS.ontology_property} ={' '}
-                    {packageRef?.ontology_id || '评测时选择的知识包'}。
-                    导入使用以上两个条件同时匹配的范围。发现旧数据时，开始评测前需要确认删除后再导入。
+                  <Alert title="评测前导入图数据">
+                    导入写入隔离范围内 Workspace 与 Ontology 两个条件同时匹配的数据。发现旧数据时，开始评测前需要确认删除后再导入。
                   </Alert>
                 )}
                 {form.import_data && packageRef && (
                   <>
                     <Button
                       busy={busy}
-                      disabled={dirty || !form.id || uploadLock.current}
+                      disabled={dirty || !form.id || !form.connection.workspace_value || uploadLock.current}
                       onClick={() => act(() => inspectGraph())}
                     >
                       检查旧图数据
@@ -492,9 +507,7 @@ export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, pa
                   <p className="help-text">在新建评测中选定知识包后，检查此范围的旧数据并确认替换。</p>
                 )}
                 {!form.import_data && (
-                  <p className="help-text">
-                    当前仅查询现有图库。两组隔离条件用于限定查询范围，Ontology 对应值固定为本轮知识包。
-                  </p>
+                  <p className="help-text">当前仅查询现有图库，查询限定在隔离范围内。</p>
                 )}
               </>
             ) : (

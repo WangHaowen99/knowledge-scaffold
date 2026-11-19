@@ -22,7 +22,16 @@ def release_of(row):
     return ref.get('release_id'), ref.get('version')
 
 
-def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_view, login, feedback):
+def scoped_run(store, owner, rid, scope):
+    """The run, within a delegation's package when the read is delegated."""
+    row = store.get(owner, rid, 'runs')
+    if scope and (row.get('base_ref') or row.get('package_ref') or {}).get('ontology_id') != scope:
+        raise Failure('not_found', '记录不存在', 404)
+    return row
+
+
+def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_view, login, feedback, reader, read_run):
+    """``reader`` and ``read_run`` also accept onto-modeling's delegation, for the reads the data flywheel needs."""
     access, pipeline = feedback['access'], feedback['pipeline']
 
     drafting = threading.Lock()
@@ -149,8 +158,11 @@ def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_vi
 
         ``releases`` holds data evaluations and ``solver_releases`` solver validations, at most 100 releases each.
         ``owner`` identifies the caller as notifications do, so onto-modeling files both under the same user.
-        ``origin=all`` adds, per release, the newest confirmed feedback run of the package when the caller may read it."""
-        owner, token = actor(request)
+        ``origin=all`` adds, per release, the newest confirmed feedback run of the package when the caller may read it;
+        a delegated read has no login to check that with and lists the user's own evaluation runs only."""
+        owner, token, scope = reader(request)
+        if scope and scope != ontology_id:
+            raise Failure('not_found', '记录不存在', 404)
         active, found = None, {'data': {}, 'solver': {}}
         for row in store.package_run_rows(owner, ontology_id, SCANNED_RUNS):
             release_id, version = release_of(row)
@@ -171,7 +183,7 @@ def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_vi
                                             solver_summary=meta.get('solver_summary'),
                                             origin='evaluation', optimization=modeling_result.public(state))
         listed = list(found['data'].values())
-        if origin == 'all' and access.visible(owner, token, ontology_id):
+        if origin == 'all' and not scope and access.visible(owner, token, ontology_id):
             seen = set()
             for run in feedback['store'].feedback_runs(ontology_id, ('completed',)):
                 state = modeling_result.state(store, jobs, run_owner(ontology_id), run)
@@ -215,7 +227,7 @@ def register(app, prefix, actor, load_run, store, engine, jobs, notifier, run_vi
     def artifact(rid: str, name: str, request: Request):
         if name not in LIMITS:
             raise Failure('not_found', '产物不存在', 404)
-        owner = load_run(request, rid)[0]
+        owner = read_run(request, rid)[0]
         meta = jobs.meta(owner, rid)
         revision, body = store.artifact(owner, rid, name)
         stale = not meta or body is None or revision != meta['revision']

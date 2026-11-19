@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import secrets
 import threading
 from types import SimpleNamespace
 
@@ -253,6 +254,36 @@ def test_an_owner_may_dismiss_a_feedback_run(flywheel):
     response = env.client.post(f'/evaluation/api/runs/{rid}/notifications/retry', json={'decision': 'dismiss', 'reason': 'Synthetic noise'})
     assert response.json()['optimization']['status'] == 'dismissed'
     assert env.client.post(f'/evaluation/api/runs/{rid}/notifications/retry', json={'decision': 'confirm'}).status_code == 409
+
+
+def test_the_flywheel_delegation_reads_feedback_runs_its_user_confirmed(flywheel):
+    env = flywheel
+    push(env, [signal(feedback={'comment': 'Synthetic wrong'}), signal(run='run_2', question='Synthetic two', feedback={'comment': 'x'}),
+               signal(run='run_3', question='Synthetic three', feedback={'comment': 'x'})])
+    rid = sealed(env)['id']
+
+    def delegation(user='synthetic-user-a', package=PACKAGE):
+        body = {'ontology_id': package, 'expires_in': 86400, 'delegation': secrets.token_urlsafe(32)}
+        response = env.client.post('/evaluation/api/delegations', json=body,
+                                   headers={'Authorization': f'Bearer {user}',
+                                            'X-Modeling-Service-Token': 'synthetic-notification-credential'})
+        assert response.status_code == 201, response.text
+        return {'Authorization': '', 'X-Modeling-Service-Token': 'synthetic-notification-credential',
+                'X-Evaluation-Delegation': response.json()['delegation']}
+    mine, other_user, other_package = delegation(), delegation('synthetic-user-b'), delegation(package='other_package_demo')
+    # 负责人确认交给建模之前，数据飞轮读不到这一轮
+    assert env.client.get(f'/evaluation/api/runs/{rid}', headers=mine).status_code == 404
+    assert env.client.post(f'/evaluation/api/runs/{rid}/notifications/retry', json={'decision': 'confirm'}).status_code == 200
+    # 确认后等优化建议写好、随同一知识包的待交付轮次一起交给建模
+    until(lambda: (env.client.get(f'/evaluation/api/runs/{rid}').json().get('optimization') or {}).get('status') == 'notified',
+          'feedback run was not handed over')
+    # 确认人登记的委托能读到这一轮和它的报告：用户不在时数据飞轮也能优化
+    assert env.client.get(f'/evaluation/api/runs/{rid}', headers=mine).json()['origin'] == 'consumer_feedback'
+    assert env.client.get(f'/evaluation/api/runs/{rid}/artifacts/report.md', headers=mine).status_code == 200
+    # 别人的委托、别的知识包的委托都读不到
+    for auth in (other_user, other_package):
+        assert env.client.get(f'/evaluation/api/runs/{rid}', headers=auth).status_code == 404
+        assert env.client.get(f'/evaluation/api/runs/{rid}/artifacts/report.md', headers=auth).status_code == 404
 
 
 def test_only_the_newest_vote_of_a_consumer_run_counts(flywheel):
