@@ -1,0 +1,15 @@
+# 术语表：概念相同、结构不同的对象（虚类），一个术语一份，记定义和各包叫法。不进知识包，从页面下载
+type: common-ontology.term
+title: 术语
+path: ext/common-ontology/result/glossary/{key}.md
+format: md-frontmatter
+key: filename
+readonly: generated
+schema:
+  version: "1"
+  fields:
+    - {name: title, type: text, label: 术语, required: true}
+    - {name: definition, type: text, label: 定义, required: true}
+    - {name: names, type: list, label: 各包叫法, required: true}
+    - {name: sources, type: list, label: 来源知识包, required: true}
+    - {name: source_count, type: number, label: 来源包数, required: true}

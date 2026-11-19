@@ -1,0 +1,32 @@
+# 核对结果：co_check.py 每次跑完写一份（门槛、输入包、各类数量、问题）。页面据此显示门槛、核对是否通过
+type: common-ontology.status
+title: 核对结果
+path: ext/common-ontology/result/{key}.json
+format: json
+key: filename
+readonly: generated
+schema:
+  version: "1"
+  fields:
+    - {name: title, type: text, label: 名称, required: true}
+    - name: state
+      type: enum
+      label: 核对
+      required: true
+      enum:
+        - {value: passed, label: 通过, tone: teal}
+        - {value: failed, label: 没通过, tone: red}
+    - {name: min, type: number, label: 门槛, required: true}
+    - {name: checked_at, type: date, label: 核对时间, required: true}
+    - {name: packs, type: list, label: 输入知识包, required: true}
+    - {name: real, type: list, label: 实类, required: false}
+    - {name: owned, type: list, label: 本插件建过的本体条目, required: false}
+    - {name: real_count, type: number, label: 实类数, required: true}
+    - {name: term_count, type: number, label: 术语数, required: true}
+    - {name: template_count, type: number, label: 规则模板数, required: true}
+    - {name: none_count, type: number, label: 没抽出的条目数, required: true}
+    - {name: entry_count, type: number, label: 输入条目数, required: true}
+    - {name: errors, type: number, label: 问题数, required: true}
+    - {name: warnings, type: number, label: 提醒数, required: true}
+    - {name: problems, type: list, label: 问题, required: false}
+status: {field: state, map: {passed: 通过, failed: 没通过}}

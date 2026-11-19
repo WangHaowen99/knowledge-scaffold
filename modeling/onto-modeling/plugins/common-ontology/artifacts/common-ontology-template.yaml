@@ -1,0 +1,16 @@
+# 规则模板：逻辑相同、只差数值或枚举的规则（虚规则），记模板、参数和各包的实例与参数值；不做实例化。不进知识包
+type: common-ontology.template
+title: 规则模板
+path: ext/common-ontology/result/rule-templates/{key}.md
+format: md-frontmatter
+key: filename
+readonly: generated
+schema:
+  version: "1"
+  fields:
+    - {name: title, type: text, label: 模板, required: true}
+    - {name: template, type: text, label: 模板内容, required: true}
+    - {name: params, type: list, label: 参数, required: true}
+    - {name: instances, type: list, label: 各包实例, required: true}
+    - {name: sources, type: list, label: 来源知识包, required: true}
+    - {name: source_count, type: number, label: 来源包数, required: true}

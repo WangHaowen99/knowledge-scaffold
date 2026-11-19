@@ -1,0 +1,29 @@
+# 实类清单：一个实类一份，co_check.py 按抽取决定和 ontology/ 里的条目生成。实类本身在 ontology/ 里，随发布进知识包；
+# 页面读不到 ontology/，「实类」页读这份清单
+type: common-ontology.real
+title: 实类
+path: ext/common-ontology/result/real/{key}.md
+format: md-frontmatter
+key: filename
+readonly: generated
+schema:
+  version: "1"
+  fields:
+    - {name: title, type: text, label: 名称, required: true}
+    - name: kind
+      type: enum
+      label: 类型
+      required: true
+      enum:
+        - {value: object, label: 对象, tone: blue}
+        - {value: operation, label: 操作, tone: indigo}
+        - {value: rule, label: 规则, tone: amber}
+    - {name: entry, type: text, label: 本体条目, required: true}
+    - {name: path, type: text, label: 文件, required: true}
+    - {name: summary, type: text, label: 内容, required: true}
+    - {name: attributes, type: number, label: 属性数, required: false}
+    - {name: relations, type: number, label: 关系数, required: false}
+    - {name: steps, type: number, label: 步骤数, required: false}
+    - {name: sources, type: list, label: 来源知识包, required: true}
+    - {name: source_count, type: number, label: 来源包数, required: true}
+    - {name: members, type: list, label: 各包条目, required: true}

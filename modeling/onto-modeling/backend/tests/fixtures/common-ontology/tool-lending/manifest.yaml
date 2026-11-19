@@ -1,0 +1,8 @@
+kind: ontology-package
+schema_version: '0.1'
+id: tool-lending
+name: "工具借用管理"
+description: "合成测试数据：工具间借用场景的本体"
+version: 0.4.0
+status: released
+language: zh-CN

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>公共本体</title>
+<link rel="stylesheet" href="page.css">
+</head>
+<body>
+<main class="pg">
+  <header class="page-h">
+    <div class="ttl">
+      <span class="ttl-ic" data-icon="layers"></span>
+      <h1>公共本体</h1>
+    </div>
+    <div class="acts">
+      <label class="sel" id="min-wrap">
+        <span data-icon="users"></span>
+        <select id="min" aria-label="门槛"></select>
+        <span class="sel-chev" data-icon="chevd"></span>
+      </label>
+      <button id="download" class="btn" type="button"><span data-icon="download"></span>下载结果</button>
+      <button id="extract" class="btn primary" type="button"><span id="extract-ic" data-icon="play"></span><span id="extract-label">抽取公共本体</span></button>
+    </div>
+  </header>
+
+  <section class="card" id="inputs">
+    <div class="card-h">
+      <h3>输入知识包</h3><span class="cnt" id="upload-count"></span>
+      <span class="sp"></span>
+      <button id="upload" class="btn sm" type="button"><span data-icon="upload"></span><span id="upload-label">上传 ZIP</span></button>
+      <input id="file" type="file" accept=".zip,application/zip" multiple hidden>
+    </div>
+    <div class="card-b">
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <colgroup><col><col class="w-ver"><col class="w-n"><col class="w-n"><col class="w-n"><col class="w-time"><col class="w-act"></colgroup>
+          <thead><tr><th>知识包</th><th>版本</th><th>对象</th><th>操作</th><th>规则</th><th>上传</th><th></th></tr></thead>
+          <tbody id="upload-rows"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="tabs-row">
+      <nav class="tabs" id="tabs" role="tablist"></nav>
+      <span class="sp"></span>
+      <span id="check-state"></span>
+    </div>
+    <div class="card-b" id="panel"></div>
+  </section>
+</main>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="page.js"></script>
+</body>
+</html>

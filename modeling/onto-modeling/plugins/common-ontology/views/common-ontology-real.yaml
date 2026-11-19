@@ -1,0 +1,4 @@
+artifact: common-ontology.real
+list: {columns: [title, kind, summary, sources, members, entry], filters: [kind]}
+detail: {layout: sections, side: [kind, summary, sources, path]}
+card: false  # 一轮会改很多份，只出「状态」一张卡
