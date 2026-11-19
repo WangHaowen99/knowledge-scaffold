@@ -249,3 +249,29 @@ def test_view_card_false_keeps_the_type_out_of_chat_cards():
     hidden = artifact_registry._view({"card": False, "list": {"columns": ["title"]}}, fields, None)
     assert hidden["card"].get("hidden") is True and hidden["list"]["columns"] == ["title"]
     assert not artifact_registry._view({"card": {"title": "title"}}, fields, None)["card"].get("hidden")
+
+
+class _RawNameInfo(zipfile.ZipInfo):
+    """按给定字节写文件名、不打 UTF-8 标志：模拟 macOS zip 命令（UTF-8 字节）和中文 Windows 压缩（GBK）。"""
+
+    raw = b""
+
+    def _encodeFilenameFlags(self):
+        return self.raw, self.flag_bits & ~0x800
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "gbk"])
+def test_upload_recovers_chinese_names_without_utf8_flag(env, encoding):
+    client, manager, project_id, tmp_path = env
+    _publish_and_enable(client, tmp_path, project_id)
+    manifest = yaml.safe_dump({"kind": "ontology-package", "schema_version": "0.1", "id": "room.booking",
+                               "version": "1.0.0", "name": "合成包", "description": "合成数据"}, allow_unicode=True)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("manifest.yaml", manifest)
+        info = _RawNameInfo("objects/x.md")
+        info.raw = "objects/会议室.md".encode(encoding)
+        zf.writestr(info, "# 会议室\n")
+    item = _put(client, project_id, buffer.getvalue()).json()
+    root = manager.project_root(project_id)
+    assert (root / f"ext/{PACK}/uploads/inputs/{item['id']}/objects/会议室.md").is_file()

@@ -151,6 +151,25 @@ def _kept(index: dict) -> list[tuple[str, str]]:
     return kept
 
 
+def _stored_name(zf: zipfile.ZipFile, member: str, rel: str) -> str:
+    """ZIP 里没标 UTF-8 的文件名，zipfile 按 CP437 解码，中文成了乱码：macOS 的 zip 命令、访达压缩写的是 UTF-8 字节
+    不打标志，中文 Windows 自带的压缩写的是 GBK。按原字节先试 UTF-8、再试 GBK，都不对就保持原样。"""
+    if zf.getinfo(member).flag_bits & 0x800 or rel.isascii():
+        return rel
+    try:
+        raw = rel.encode("cp437")
+    except UnicodeEncodeError:
+        return rel
+    for encoding in ("utf-8", "gbk"):
+        try:
+            fixed = raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if "\\" not in fixed and all(part not in ("", ".", "..") for part in fixed.split("/")):
+            return fixed
+    return rel
+
+
 def put_upload(manager, project_id: str, pack: str, slot: str, upload, filename: str, *, actor: str) -> dict:
     """PL-28：校验知识包，留下本体文本，写进上传位并提交到主线。同一个包（manifest id 相同）重传就替换。"""
     from ...kernel.writepath import ChangeTx, Origin
@@ -200,8 +219,9 @@ def put_upload(manager, project_id: str, pack: str, slot: str, upload, filename:
                              summary=f"上传知识包「{meta['package']['name']}」到插件 {pack}") as tx:
                 fresh = set()
                 for rel, member in kept:
-                    tx.write(f"{target}/{rel}", zf.read(member))
-                    fresh.add(f"{target}/{rel}")
+                    name = _stored_name(zf, member, rel)
+                    tx.write(f"{target}/{name}", zf.read(member))
+                    fresh.add(f"{target}/{name}")
                 for rel in stale - fresh - {f"{target}/{META_FILE}"}:
                     tx.remove(rel)
                 tx.write(f"{target}/{META_FILE}", json.dumps(meta, ensure_ascii=False, indent=2) + "\n")
