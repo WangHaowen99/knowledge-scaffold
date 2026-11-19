@@ -1,4 +1,4 @@
-"""网关里装了哪些转换器：读只读目录里每个连接器包的清单（`converter` 段），不导入转换器代码。
+"""转换器清单（`converter` 段）的读法；内置目录加插件卷的合并在 `plugins.Store`（ADR-0103）。不导入转换器代码。
 
 转换器代码只在任务子进程里按清单的入口导入（`worker`），网关进程本身不加载解析库。
 """
@@ -42,13 +42,14 @@ def _complete(directory: Path, entry: str, types: tuple) -> bool:
     return bool(types) and all(_TYPE_RE.match(item) for item in types)
 
 
-def _load(directory: Path) -> LoadedConverter | None:
+def load_converter(directory: Path, name: str | None = None) -> LoadedConverter | None:
+    """读一个转换器包目录；`name` 是包名（内置目录里就是目录名，插件卷里是上一级目录名）。"""
     data = yaml.safe_load((directory / "manifest.yaml").read_text(encoding="utf-8")) or {}
     spec = data.get("converter")
-    name = str(data.get("name") or "")
+    name = str(data.get("name") or "") if name is None else name
     if data.get("kind") != "provider" or not isinstance(spec, dict):
         return None
-    if name != directory.name or not _NAME_RE.match(name):
+    if str(data.get("name") or "") != name or not _NAME_RE.match(name):
         return None
     entry = str(spec.get("entry") or "")
     types = tuple(str(item).lower() for item in spec.get("types") or [])
@@ -70,7 +71,7 @@ def load(base: Path | str | None = None) -> dict[str, LoadedConverter]:
         if not directory.is_dir() or not (directory / "manifest.yaml").is_file():
             continue
         try:
-            item = _load(directory)
+            item = load_converter(directory, directory.name)
         except (OSError, ValueError, yaml.YAMLError) as exc:
             _log.warning("读不了转换器清单 %s：%s", directory.name, exc)
             continue

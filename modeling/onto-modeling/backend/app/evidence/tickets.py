@@ -24,7 +24,8 @@ AUDIENCE = "connector-gateway"
 ALGORITHM = "EdDSA"
 KEY_FILE = "connector-ticket-key.pem"
 TICKET_TTL_S = 600  # 10 分钟
-OPERATIONS = ("convert",)
+# 转换（ADR-0073）；插件交付、凭据、数据源测试与采集（ADR-0103）
+OPERATIONS = ("convert", "plugin_install", "plugin_remove", "secret", "source_test", "source_collect")
 
 
 class TicketError(ValueError):

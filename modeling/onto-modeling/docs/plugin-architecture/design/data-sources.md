@@ -66,7 +66,7 @@ def collect(ctx) -> None:   # 发表和事实，用 ctx.table、ctx.fact
 | `config` | 非密钥字段，已按字段类型转好（`port`、`number` 是整数），缺省值已补 |
 | `secret` | 密钥字段 `{key: 值}`；不要写进任何事件、异常消息 |
 | `check(name, ok, detail="")` | `test` 用：一项检查的结果；有任何一项 `ok=False` 就算测试没通过 |
-| `table(name, columns, rows=(), comment="")` | `collect` 用：一张表。`columns` 是 `[{name, type, nullable, key, comment}]`（`key` 取 `pk`、`fk`、`uk` 或空）；`rows` 是和 `columns` 对齐的原始取值列表，网关遮蔽、截断后才落盘 |
+| `table(name, columns, rows=(), comment="")` | `collect` 用：一张表。`columns` 是 `[{name, type, nullable, key, comment}]`（`key` 取 `pk`、`fk`、`uk` 或空）；`rows` 是和 `columns` 对齐的原始取值，最多送 200 行（宽表按 2 万格折算）供网关识别敏感列和码值，遮蔽后只留前 20 行落盘 |
 | `fact(kind, **fields)` | `collect` 用：一条库表事实，`kind` 见第 3 节 |
 | `progress(done, total)` | 进度 |
 | `limitation(text)` | 局限，原样写进文本版 |
@@ -104,6 +104,8 @@ def collect(ctx) -> None:   # 发表和事实，用 ctx.table、ctx.fact
 | 判断不了的文本 | 文本类型、取值不是短代码 | 掩码 |
 
 每张表丢弃了哪些列、遮蔽了哪些列，都写进库表事实里的「列」。之后所有单元格再过一遍个人信息正则，命中的整格换成 `«已遮蔽»`。
+
+不敏感、低基数（送来的行里不超过 20 个取值、重复过半、都不超过 32 字）的列，网关自动补一条「码值」事实；插件自己给了的不重复。
 
 ## 3. 文本版
 
