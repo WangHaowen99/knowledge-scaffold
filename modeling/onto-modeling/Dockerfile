@@ -13,8 +13,9 @@ COPY frontend/ ./
 COPY assets/packs /build/assets/packs
 RUN npm run build
 
-# 连接器网关（ADR-0073）：单独的镜像，`docker build --target connector-gateway`。只有转换库、网关代码与转换协议，
-# 不带助手 CLI 和后端其余代码；转换器在只读目录 /opt/connector/converters，跑在非 root 的子进程里。
+# 连接器网关（ADR-0073、ADR-0103）：单独的镜像，`docker build --target connector-gateway`。只有转换库、数据库驱动、
+# 网关代码与协议，不带助手 CLI 和后端其余代码；内置插件（转换器、数据源连接器）在只读目录 /opt/connector/converters，
+# 跑在非 root 的子进程里。
 # 放在主服务这一段前面：不带 --target 构建时仍是主服务镜像，也不会构建这一段
 FROM python:3.11-slim AS connector-gateway
 WORKDIR /app
@@ -29,6 +30,9 @@ COPY backend/app/connector_gateway ./app/connector_gateway
 COPY assets/packs/convert-pdf /opt/connector/converters/convert-pdf
 COPY assets/packs/convert-docx /opt/connector/converters/convert-docx
 COPY assets/packs/convert-xlsx /opt/connector/converters/convert-xlsx
+# 数据源连接器（ADR-0103）：和转换器同在内置插件目录，驱动经 connector-requirements.txt 装进本镜像
+COPY assets/packs/db-mysql /opt/connector/converters/db-mysql
+COPY assets/packs/db-postgres /opt/connector/converters/db-postgres
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     ONTO_CONNECTOR_CONVERTERS_DIR=/opt/connector/converters \

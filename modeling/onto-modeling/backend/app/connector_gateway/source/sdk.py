@@ -85,7 +85,7 @@ class SourceContext:
 
     # ---- 发事件 ----
 
-    def _emit(self, event: str, **fields) -> None:
+    def _emit(self, event: str, /, **fields) -> None:
         line = json.dumps({"event": event, **fields}, ensure_ascii=False, separators=(",", ":"))
         with self._lock:
             self._out.write(line + "\n")
@@ -121,9 +121,12 @@ class SourceContext:
         self._emit("table", name=_clip(name.strip(), 200), comment=_clip(str(comment or ""), 300), columns=cols,
                    rows=sent)
 
-    def fact(self, kind: str, **fields) -> None:
+    def fact(self, kind: str, /, **fields) -> None:
         if kind not in FACT_KINDS:
             raise SourceError("invalid_event", f"事实类型不对：{kind}")
+        if "kind" in fields:
+            # 事件里 kind 是事实类型；存储过程是过程还是函数写在 type 里
+            raise SourceError("invalid_event", "事实的字段不能叫 kind，存储过程的类型写 type")
         out: dict = {}
         for key, value in fields.items():
             if key in ("columns", "ref_columns"):
@@ -132,7 +135,8 @@ class SourceContext:
                 out[key] = [_clip(item, 200) for item in list(value or [])[:20]]
             else:
                 out[key] = _clip(value, SEND_TEXT_CHARS)
-        self._emit("fact", kind=kind, **out)
+        # 事实的字段单独放一层：字段名（如触发器的 event）不会和事件类型撞
+        self._emit("fact", fact={"kind": kind, **out})
 
     def progress(self, done: int, total: int = 0) -> None:
         self._emit("progress", done=int(done), total=int(total))
