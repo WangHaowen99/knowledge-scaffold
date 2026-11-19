@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  EVALUATION_HINT, assistantPrompt, degradeState, fileTarget, hardBlockers, iterationOptions, localReleaseRows,
+  EVALUATION_HINT, assistantPrompt, fileTarget, hardBlockers, iterationOptions, localReleaseRows,
   needsSolverAcknowledgement, proceedState, publishedText, releaseRows, releaseSource, stageNote, structurePrompt, structureRows,
   tableGroups, writebackText,
 } from '../src/pages/publish/publishCheckModel.js';
@@ -18,22 +18,57 @@ test('建模阶段：缺哪几个就照 develop 的句子提示，发布按钮�
   assert.equal(stageNote(clean), '');
   const missing = { ...clean, stages: { ready: false, missing_stages: [{ key: 'operation', title: '操作提取' }, { key: 'validate', title: '质量检查' }] } };
   assert.equal(stageNote(missing), '建模未完成，请先完成：操作提取、质量检查');
-  assert.deepEqual(proceedState(missing, false), { label: '发布', disabled: true, title: '建模未完成，请先完成：操作提取、质量检查' });
-  assert.deepEqual(proceedState(clean, false), { label: '发布', disabled: false, title: '' });
+  assert.deepEqual(proceedState(missing, false), { label: '发布', disabled: true, title: '建模未完成，请先完成：操作提取、质量检查', degrade: false });
+  assert.deepEqual(proceedState(clean, false), { label: '发布', disabled: false, title: '', degrade: false });
+});
+
+// 只有数据绑定没过：门禁挡着但可降级
+const bindingOnly = {
+  ...clean,
+  gates: [{ id: 'data_binding', title: '数据绑定', status: 'fail', blocking: true, degradable: true }],
+  binding: { issues: [{ blocking: true }], objects: 3, bound_objects: 2 },
+};
+
+test('只有数据绑定没过：「发布」照常可点，直接按降级发布', () => {
+  assert.deepEqual(proceedState(bindingOnly, false), { label: '发布', disabled: false, title: '', degrade: true });
+  // 门禁没挡、只有绑定条目标了 blocking（数据不一致）时照旧挡住
+  const stray = { ...clean, binding: bindingOnly.binding };
+  assert.deepEqual(proceedState(stray), { label: '发布（需先修复）', disabled: true, title: '', degrade: false });
 });
 
 test('发布按钮的三种说法与降级规则（develop 页脚）', () => {
-  const blocking = { ...clean, binding: { issues: [{ blocking: true }], objects: 3, bound_objects: 2 } };
-  assert.equal(proceedState(blocking).label, '发布（需先修复）');
   const solver = { ...clean, solver: { enabled: true, blocking: 0, requires_validation_after_publish: true } };
   assert.equal(needsSolverAcknowledgement(solver), true);
   assert.equal(proceedState(solver, false).label, '发布（需先确认）');
   assert.equal(proceedState(solver, true).disabled, false);
-  assert.equal(degradeState(solver, false).disabled, true);
+  // 求解能力没确认：只有数据绑定没过也要先确认，确认后按降级发布
+  const unconfirmed = { ...bindingOnly, solver: solver.solver };
+  assert.deepEqual(proceedState(unconfirmed, false), { label: '发布（需先确认）', disabled: true, title: '', degrade: true });
+  assert.deepEqual(proceedState(unconfirmed, true), { label: '发布', disabled: false, title: '', degrade: true });
   // 结构自检挡发布，降级也不能绕过
-  const structure = { ...blocking, structure: { blocking: 2 }, gates: [{ id: 'package_structure', title: '知识包结构', blocking: true, degradable: false }] };
+  const structure = {
+    ...bindingOnly,
+    structure: { blocking: 2 },
+    gates: [...bindingOnly.gates, { id: 'package_structure', title: '知识包结构', blocking: true, degradable: false }],
+  };
   assert.equal(hardBlockers(structure), 2);
-  assert.deepEqual(degradeState(structure, true), { disabled: true, title: '降级只放宽数据绑定，求解契约与知识包结构问题须先修正' });
+  assert.deepEqual(proceedState(structure, true), { label: '发布（需先修复）', disabled: true, title: '', degrade: false });
+  // 求解契约静态检查没过同样不能降级
+  const contract = {
+    ...bindingOnly,
+    solver: { enabled: true, blocking: 1 },
+    gates: [...bindingOnly.gates, { id: 'solver_contract', title: '求解契约', blocking: true, degradable: false }],
+  };
+  assert.deepEqual(proceedState(contract, true), { label: '发布（需先修复）', disabled: true, title: '', degrade: false });
+  // 建模阶段没做完、流程关卡没运行：照旧置灰，悬停说是哪一关
+  const stages = {
+    ...bindingOnly,
+    stages: { ready: false, missing_stages: [{ key: 'validate', title: '质量检查' }] },
+    gates: [{ id: 'modeling_stages', title: '建模阶段', blocking: true, degradable: false }, ...bindingOnly.gates],
+  };
+  assert.deepEqual(proceedState(stages, true), { label: '发布（需先修复）', disabled: true, title: '建模未完成，请先完成：质量检查', degrade: false });
+  const flow = { ...bindingOnly, gates: [...bindingOnly.gates, { id: 'retail.compliance', title: '合规检查', blocking: true, degradable: false }] };
+  assert.deepEqual(proceedState(flow, true), { label: '发布（需先修复）', disabled: true, title: '合规检查未通过', degrade: false });
 });
 
 test('渲染时才发现的结构问题（关系写法）只在门禁里，也挡发布、不能降级', () => {
@@ -41,7 +76,7 @@ test('渲染时才发现的结构问题（关系写法）只在门禁里，也�
   assert.equal(hardBlockers(render), 1);
   assert.equal(proceedState(render).disabled, true);
   assert.equal(proceedState(render).label, '发布（需先修复）');
-  assert.equal(degradeState(render).disabled, true);
+  assert.equal(proceedState(render).degrade, false);
 });
 
 test('结构问题按对象列（路径只给打开和助手），交给助手带文件与行号', () => {

@@ -78,31 +78,36 @@ export const hardBlockers = (check) => (check?.solver?.blocking || 0)
   + Math.max(check?.structure?.blocking || 0, gateBlocking(check, 'package_structure') ? 1 : 0);
 export const needsSolverAcknowledgement = (check) => Boolean(check?.solver?.requires_validation_after_publish);
 
-// 「发布」按钮：develop 的三种说法；建模阶段没做完时置灰，说明同 develop 的提示
+// 挡发布的门禁分两类：可降级的（degradable，就是数据绑定）不挡，发布时带 degrade 绕过；
+// 其余（求解契约、知识包结构、建模阶段、流程关卡）降级也绕不过，要先过
+const hardGate = (g) => Boolean(g.blocking && !g.degradable);
+const degradeOnly = (check) => {
+  const gates = check?.gates || [];
+  return gates.some((g) => g.blocking && g.degradable) && !gates.some(hardGate);
+};
+// 降级后不绑定数据表的对象数（同后端发布记录的 unbound_objects）：取门禁里挡发布的条目，binding.issues 超过 50 条会截断
+const unboundCount = (check) => {
+  const findings = (check?.gates || []).find((g) => g.id === 'data_binding')?.findings || [];
+  return findings.filter((f) => f.level === 'error').length
+    || (check?.binding?.issues || []).filter((issue) => issue.blocking).length;
+};
+
+// 「发布」按钮：develop 的三种说法；建模阶段没做完时置灰，说明同 develop 的提示。
+// 只剩可降级的门禁挡着时照常可点，degrade 为真：点了直接按降级发布
 export function proceedState(check, acknowledged) {
-  const blocking = (check?.binding?.issues || []).filter((issue) => issue.blocking).length;
+  const degrade = degradeOnly(check);
+  const blocking = degrade ? 0 : (check?.binding?.issues || []).filter((issue) => issue.blocking).length;
   const hard = hardBlockers(check);
   const awaiting = needsSolverAcknowledgement(check) && !acknowledged;
   const stages = stageNote(check);
-  const otherGates = (check?.gates || []).filter((g) => g.blocking && !['data_binding', 'solver_contract', 'package_structure', 'modeling_stages'].includes(g.id));
+  const otherGates = (check?.gates || []).filter((g) => hardGate(g) && !['solver_contract', 'package_structure', 'modeling_stages'].includes(g.id));
   let label = '发布';
   if (blocking || hard) label = '发布（需先修复）';
   else if (awaiting) label = '发布（需先确认）';
   const disabled = !check || !!stages || blocking > 0 || hard > 0 || awaiting || otherGates.length > 0;
   const title = stages || (otherGates.length ? `${otherGates.map((g) => g.title).join('、')}未通过` : '');
-  return { label, disabled, title };
+  return { label, disabled, title, degrade };
 }
-
-// 降级：只放宽数据绑定；求解契约、知识包结构、建模阶段与其他门禁要先过
-export function degradeState(check, acknowledged) {
-  const others = (check?.gates || []).filter((g) => g.blocking && !g.degradable);
-  const awaiting = needsSolverAcknowledgement(check) && !acknowledged;
-  return {
-    disabled: others.length > 0 || awaiting,
-    title: hardBlockers(check) > 0 ? '降级只放宽数据绑定，求解契约与知识包结构问题须先修正' : (others.length ? `${others.map((g) => g.title).join('、')}未通过` : ''),
-  };
-}
-export const DEGRADE_NOTE = '这些对象发布后不绑定数据表，发布记录会注明降级发布。';
 
 // 发布成功的提示（develop usePackagePublish）
 export function publishedText(release, { degrade = false, acknowledged = false } = {}) {
@@ -129,29 +134,30 @@ export function writebackText(release) {
 
 // ---------- 发布页：结论、检查项、需要处理 ----------
 
-// 页面顶上的一句结论：能不能发、卡在哪几项（门禁的 blocking 是唯一口径）
+// 页面顶上的一句结论：能不能发、卡在哪几项（门禁的 blocking 是唯一口径，可降级的不算挡）
 export function publishVerdict(check, { versionLabel = '', acknowledged = false } = {}) {
   if (!check) return { tone: 'idle', title: '正在检查…', sub: '' };
   const label = versionLabel ? ` ${versionLabel}` : '';
-  const blocking = (check.gates || []).filter((g) => g.blocking);
+  const blocking = (check.gates || []).filter(hardGate);
   if (blocking.length) return { tone: 'bad', title: `还不能发布${label}`, sub: `${blocking.map((g) => g.title).join('、')}没通过` };
   if (needsSolverAcknowledgement(check) && !acknowledged) {
     return { tone: 'warn', title: `可以发布${label}`, sub: '求解能力还没验证，在下面「求解契约」里勾选确认后才能发布' };
   }
+  if (degradeOnly(check)) return { tone: 'warn', title: `可以发布${label}`, sub: `${unboundCount(check)} 个对象不绑定数据表` };
   const notes = (check.gates || []).filter((g) => g.status !== 'pass');
   return { tone: 'ok', title: `可以发布${label}`, sub: notes.length ? `${notes.map((g) => g.title).join('、')}有提醒，不挡发布` : '' };
 }
 
-// 检查项小标签：通过 / 有提醒 / 挡住（还没运行的流程关卡算挡住或提醒，看它挡不挡发布）
+// 检查项小标签：通过 / 有提醒 / 挡住（还没运行的流程关卡算挡住或提醒，看它挡不挡发布；可降级的没通过也只算提醒）
 export function gateMark(g) {
-  if (g.blocking || g.status === 'fail') return { tone: 'bad', icon: 'x', text: '没通过' };
+  if (!g.degradable && (g.blocking || g.status === 'fail')) return { tone: 'bad', icon: 'x', text: '没通过' };
   if (g.status === 'pass') return { tone: 'ok', icon: 'check', text: '通过' };
-  return { tone: 'warn', icon: 'alert', text: g.status === 'warn' ? '有提醒' : '还没运行' };
+  return { tone: 'warn', icon: 'alert', text: g.status === 'warn' || g.degradable ? '有提醒' : '还没运行' };
 }
 
-// 「需要处理」列哪些检查项：没通过的在前，有提醒的在后
+// 「需要处理」列哪些检查项：挡住的在前，有提醒的（含可降级的）在后
 export const problemGates = (gates) => (gates || []).filter((g) => g.status !== 'pass')
-  .sort((a, b) => Number(b.blocking) - Number(a.blocking));
+  .sort((a, b) => Number(hardGate(b)) - Number(hardGate(a)));
 
 // 知识包结构的问题按对象列：对象名、问题、打开文档的路径（路径与行号只给「打开」和助手用，不显示）
 export function structureRows(findings) {

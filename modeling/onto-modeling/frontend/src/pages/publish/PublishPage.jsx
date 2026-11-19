@@ -3,7 +3,8 @@
 //    未确认改动、上次发布、发布后「去评测」；「⋯」里是重新检查、导出迁移包（P-09）、旧版评测记录（ES-09）。
 // 2. 需要处理：没通过或有提醒的检查项各一张卡（PublishProblems：数据绑定修正 PB-02、求解契约、结构自检、包门禁「去运行」FL-05）。
 // 3. 已发布版本：Hub 版本（HB-05，带评测 ES-02、对比 PC 组）与本地发布记录（PB-04～PB-07）合一张表，表头有共享（HB-11）。
-// 发布与降级发布走 PB-03（求解包要确认未验证）；项目流 release.updated（EP-19）、flow.updated（EP-01）、workspace.changed 实时刷新。
+// 发布走 PB-03（求解包要确认未验证；只剩数据绑定没过时直接按降级发布）；项目流 release.updated（EP-19）、flow.updated（EP-01）、
+// workspace.changed 实时刷新。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath, useRoute } from '../../app/router.js';
@@ -238,7 +239,8 @@ export default function PublishPage() {
       const r = await api.publishRelease(pid, {
         commit: check?.commit, ...(degrade ? { degrade: true } : {}), ...(acknowledged ? { solver_unverified_acknowledged: true } : {}),
       });
-      const done = publishedText(r, { degrade, acknowledged });
+      // 是否降级以发布记录为准：带了 degrade、但发布时已没有对不上的对象，记录就是正常发布
+      const done = publishedText(r, { degrade: Boolean(r.gates?.degraded), acknowledged });
       toast(done.text, done.tone === 'warning' ? 'alert' : 'upload');
       notifyPackagePublished(pid);
       setSolverNotice(done.evaluate && r.hub?.release_id ? { text: done.text, release: { ...r.hub, version: r.version } } : null);
@@ -314,7 +316,7 @@ export default function PublishPage() {
           onPickVersion={(c) => setCommit(c === head?.commit ? null : c)}
           proceed={proceed}
           publishing={publishing}
-          onPublish={() => publish(false)}
+          onPublish={() => publish(proceed.degrade)}
           menu={menu}
           solverNotice={solverNotice}
           onEvaluate={() => { ev.evaluate(solverNotice.release, 'solver'); setSolverNotice(null); }}
@@ -325,9 +327,7 @@ export default function PublishPage() {
             gates={problems}
             acknowledged={ack}
             onAcknowledge={setAck}
-            publishing={publishing}
             onRecheck={() => runCheck()}
-            onDegrade={() => publish(true)}
             onChanged={() => { setCommit(null); loadVersions(); }}
             onGateAction={gateAction}
             busy={starting}
