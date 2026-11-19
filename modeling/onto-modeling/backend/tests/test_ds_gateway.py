@@ -247,10 +247,10 @@ def test_table_sources_reads_rendered_text(tmp_path):
 
 def test_egress_forbids_internal_targets(monkeypatch):
     fake = {"db.example.invalid": {"192.0.2.10"}, "meta.example.invalid": {"169.254.169.254"},
-            "onto-modeling": {"172.30.0.5"}, "sneaky.example.invalid": {"172.30.0.5"}}
+            "onto-modeling": {"192.0.2.50"}, "sneaky.example.invalid": {"192.0.2.50"}}
     resolve = lambda host: fake.get(host, set())  # noqa: E731
     egress.ensure_allowed([{"host": "db.example.invalid", "port": 3306}], resolve=resolve)
-    egress.ensure_allowed([{"host": "10.1.2.3", "port": 3306}], resolve=resolve)
+    egress.ensure_allowed([{"host": "198.51.100.20", "port": 3306}], resolve=resolve)
     for host in ("127.0.0.1", "localhost", "::1", "169.254.169.254", "onto-modeling", "meta.example.invalid",
                  "sneaky.example.invalid", "0.0.0.0"):
         with pytest.raises(GatewayError) as caught:
