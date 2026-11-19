@@ -6,10 +6,13 @@ import tempfile
 import zipfile
 
 from . import modeling_mcp
+from .. import config
 from .workspace import WorkspaceError
 
 
 def sync_workspace_package(meta, request, workspaces):
+    if config.MODELING_CORE_RETIRED:
+        return {"synced": False, "detail": "Modeling Core 已退役"}
     if not modeling_mcp._modeling_project_id(meta):
         return {"synced": False, "detail": "项目尚未关联 Modeling"}
     # Status and token requests can arrive together. Serialize snapshot + receipt.

@@ -32,13 +32,7 @@ spec:
             pathType: {{ .pathType | quote }}
             backend:
               service:
-                {{- if eq .endpointId "modeling-core" }}
-                name: {{ $.Release.Name }}-core
-                port: {number: 5100}
-                {{- else if eq .endpointId "modeling-mcp" }}
-                name: {{ $.Release.Name }}-core
-                port: {number: 5188}
-                {{- else if eq .endpointId "onto-modeling" }}
+                {{- if eq .endpointId "onto-modeling" }}
                 name: {{ $.Release.Name }}-onto
                 port: {number: 8100}
                 {{- else if eq .endpointId "evaluation" }}
@@ -85,13 +79,7 @@ spec:
             pathType: {{ .pathType | quote }}
             backend:
               service:
-                {{- if eq .endpointId "modeling-core" }}
-                name: {{ $.Release.Name }}-core
-                port: {number: 5100}
-                {{- else if eq .endpointId "modeling-mcp" }}
-                name: {{ $.Release.Name }}-core
-                port: {number: 5188}
-                {{- else if eq .endpointId "onto-modeling" }}
+                {{- if eq .endpointId "onto-modeling" }}
                 name: {{ $.Release.Name }}-onto
                 port: {number: 8100}
                 {{- else if eq .endpointId "evaluation" }}

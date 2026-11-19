@@ -206,7 +206,7 @@ class Identity:
         if not isinstance(value, dict) or not isinstance(value.get('sub'), str) or not 0 < len(value['sub']) <= 256:
             raise Failure('invalid_identity', '身份验证失败', 401, 'authorization')
         if value.get('password_change_required'):
-            raise Failure('account_action_required', '请先完成账号操作', 403, 'authorization')
+            raise Failure('account_action_required', '请返回建模或消费页面修改初始密码，重新登录后再打开评测', 403, 'authorization')
         return {'subject': digest([self.config.issuer or self.config.auth_url.rstrip('/'), value['sub']]),
                 'username': value['sub'], 'role': value.get('role', '')}
 

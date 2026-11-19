@@ -263,7 +263,7 @@ def update_token(project_id: str, token: str) -> None:
 
 
 def enabled() -> bool:
-    return bool(config.MODELING_URL)
+    return bool(config.MODELING_URL) and not config.MODELING_CORE_RETIRED
 
 
 def reachable(timeout: float = 3.0) -> bool:

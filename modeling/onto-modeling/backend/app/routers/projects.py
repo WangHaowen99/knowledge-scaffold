@@ -404,9 +404,9 @@ async def _finish_delete(
         "工作区目录": asyncio.to_thread(workspaces.purge_staged, staged),
         "引擎工件区": asyncio.to_thread(remove_tree, jiuwen.shadow_dir(project_id)),
     }
-    if eval_round:
+    if eval_round and not config.MODELING_CORE_RETIRED:
         jobs["评测轮次取消"] = asyncio.to_thread(modeling_eval.cancel_round, *eval_round)
-    if meta.get("modeling_project_id"):
+    if meta.get("modeling_project_id") and not config.MODELING_CORE_RETIRED:
         jobs["modeling 侧项目"] = asyncio.to_thread(_cascade_modeling_delete, meta, request)
     results = await asyncio.gather(*jobs.values(), return_exceptions=True)
     for label, result in zip(jobs, results):
@@ -485,11 +485,12 @@ def put_members(project_id: str, body: MembersBody, request: Request):
         hub_members.writable(project_id)
         previous = workspaces.get_project(project_id)
         meta = workspaces.set_members(project_id, body.members)
-        try:
-            modeling_mcp.sync_members(meta, request)
-        except modeling_mcp.ModelingMcpError as exc:
-            workspaces._update_meta(project_id, members=previous.get("members") or {})
-            return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+        if not config.MODELING_CORE_RETIRED:
+            try:
+                modeling_mcp.sync_members(meta, request)
+            except modeling_mcp.ModelingMcpError as exc:
+                workspaces._update_meta(project_id, members=previous.get("members") or {})
+                return JSONResponse(status_code=exc.status, content={"error": str(exc)})
         if hub_packages.association(project_id):
             hub_members.queue(project_id, previous, meta)
         sharing = hub_members.sync(workspaces, project_id, knowledge_hub.token_of(request))

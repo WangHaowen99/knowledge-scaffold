@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package five local or digest-pinned Modeling, Hub, and Evaluation images."""
+"""Package Onto Modeling, Hub, and Evaluation images."""
 
 import argparse
 import hashlib
@@ -21,8 +21,6 @@ from common import ConfigError, bounded_archive_members, emit_stdout, extract_re
 
 
 LOCAL_NAMES = {
-    "modeling": "modeling",
-    "modelingAgent": "modeling-agent",
     "ontoModeling": "onto-modeling",
     "knowledgeHub": "knowledge-hub",
     "evaluation": "evaluation",
@@ -104,7 +102,7 @@ def main():
     parser.add_argument("--arch", choices=("amd64", "arm64"), required=True)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--local", action="store_true", help="archive images built locally by build-images.sh")
-    source.add_argument("--image", action="append", help="id=registry/repo@sha256:digest; repeat for all five images")
+    source.add_argument("--image", action="append", help="id=registry/repo@sha256:digest; repeat for all three images")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]*", args.version):
@@ -119,12 +117,12 @@ def main():
         for item in args.image:
             image_id, separator, reference = item.partition("=")
             if not separator or image_id in images:
-                parser.error("provide modeling, modelingAgent, ontoModeling, knowledgeHub and evaluation once each, pinned by digest")
+                parser.error("provide ontoModeling, knowledgeHub and evaluation once each, pinned by digest")
             if image_id not in IMAGE_IDS or not IMAGE_RE.fullmatch(reference):
-                parser.error("provide modeling, modelingAgent, ontoModeling, knowledgeHub and evaluation once each, pinned by digest")
+                parser.error("provide ontoModeling, knowledgeHub and evaluation once each, pinned by digest")
             images[image_id] = reference
         if images.keys() != IMAGE_IDS:
-            parser.error("all five owned images are required")
+            parser.error("all three owned images are required")
     root = Path(__file__).resolve().parents[2]
     chart_source = root / "deploy/cce/chart"
     chart_version = yaml.safe_load((chart_source / "Chart.yaml").read_text())["version"]

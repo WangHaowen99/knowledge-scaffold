@@ -42,7 +42,6 @@ def _run_build_release(
     drawio_index = project_root / "vendor" / "drawio" / "webapp" / "index.html"
     drawio_index.parent.mkdir(parents=True)
     drawio_index.write_text("<html></html>\n", encoding="utf-8")
-    (tmp_path / "repo" / "auth-server").mkdir()
 
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
@@ -106,11 +105,11 @@ printf '%s\\n' "$*" >> "${FAKE_LOG_DIR}/pip3.log"
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert (project_root / "dist" / "onto-modeling-v-test-linux-amd64.tar.gz").is_file()
-    _assert_packaged_association_helper(project_root / "dist" / "onto-modeling-v-test-linux-amd64.tar.gz")
+    _assert_packaged_release(project_root / "dist" / "onto-modeling-v-test-linux-amd64.tar.gz")
     return result, log_dir
 
 
-def _assert_packaged_association_helper(archive: Path, max_bytes: int = 8 * 1024 * 1024) -> None:
+def _assert_packaged_release(archive: Path, max_bytes: int = 8 * 1024 * 1024) -> None:
     # This fixture contains empty image stubs. Bound decompression before parsing
     # tar headers, and inspect metadata only; never extract files to disk.
     assert archive.stat().st_size <= max_bytes, "Compressed test package exceeds size limit"
@@ -121,9 +120,12 @@ def _assert_packaged_association_helper(archive: Path, max_bytes: int = 8 * 1024
         members = package.getmembers()
         assert len(members) <= 512, "Test package contains too many members"
         assert all(0 <= member.size <= max_bytes for member in members), "Invalid test member size"
-        helper = package.getmember("onto-modeling/configure-modeling-association.sh")
-        assert helper.isfile()
-        assert helper.mode & 0o111
+        names = {member.name for member in members}
+        assert "onto-modeling/deploy.sh" in names
+        assert "onto-modeling/dependency_probe.py" in names
+        assert "onto-modeling/docker-compose.release.yml" in names
+        assert "onto-modeling/configure-modeling-association.sh" not in names
+        assert not any(name.startswith("onto-modeling/images/onto-modeling-auth-server-") for name in names)
 
 
 def test_package_metadata_check_rejects_excessive_expansion(tmp_path: Path) -> None:
@@ -131,7 +133,7 @@ def test_package_metadata_check_rejects_excessive_expansion(tmp_path: Path) -> N
     with gzip.open(archive, "wb") as compressed:
         compressed.write(b"0" * 2048)
     with pytest.raises(AssertionError, match="Expanded test package exceeds size limit"):
-        _assert_packaged_association_helper(archive, max_bytes=1024)
+        _assert_packaged_release(archive, max_bytes=1024)
 
 
 def _onto_modeling_build_command(log_dir: Path) -> str:

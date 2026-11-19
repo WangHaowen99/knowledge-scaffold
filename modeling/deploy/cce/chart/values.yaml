@@ -6,8 +6,6 @@ global:
   imageDelivery:
     pullSecretNames: []
   resolvedImages:
-    modeling: ""
-    modelingAgent: ""
     ontoModeling: ""
     knowledgeHub: ""
     evaluation: ""
@@ -30,11 +28,10 @@ global:
     ingressClassName: ""
     routes: []
     listeners:
-      - {id: core, protocol: HTTP, listenerPort: 8100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-core}
       - {id: onto, protocol: HTTP, listenerPort: 5100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: onto-modeling}
-      - {id: mcp, protocol: HTTP, listenerPort: 5188, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-mcp}
       - {id: evaluation, protocol: HTTP, listenerPort: 5180, tlsSecretName: "", host: "", path: /evaluation/, pathType: Prefix, endpointId: evaluation}
 externalAuth:
+  apiVersion: auth-v1
   serviceName: ""
   namespace: ""
   servicePort: 5056
@@ -44,28 +41,11 @@ externalConsumer:
   servicePort: 5055
 modeling:
   config:
-    llmBaseUrl: ""
-    llmModel: ""
-    taskLlmBaseUrl: ""
-    taskLlmModel: ""
-    mcpPublicBaseUrl: ""
     ontoJiuwenBaseUrl: ""
     ontoJiuwenModel: ""
     ontoAnthropicBaseUrl: ""
     evalPublicUrl: ""
   workloads:
-    core:
-      replicas: 1
-      nodeSelector: {}
-      persistence:
-        existingClaim: ""
-      resources: {}
-    agent:
-      replicas: 1
-      nodeSelector: {}
-      persistence:
-        existingClaim: ""
-      resources: {}
     onto:
       replicas: 1
       nodeSelector: {}
@@ -79,13 +59,7 @@ modeling:
     sandboxGateway:
       resources: {requests: {cpu: 100m, memory: 256Mi}}
   secrets:
-    llmApiKey:
-      name: ""
-      key: ""
-    evalDbUrl:
-      name: ""
-      key: ""
-    cleanupToken:
+    authAdminToken:
       name: ""
       key: ""
     anthropicAuthToken:

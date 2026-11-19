@@ -2,6 +2,7 @@
 
 import logging
 import os
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -34,6 +35,9 @@ async def _package_compare_cleanup_loop(service):
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     import asyncio
+
+    from .auth_startup import wait_for_auth
+    await wait_for_auth()
 
     from .routers.admin import backup_scheduler_loop
     from .services.agent_sessions import manager
@@ -106,9 +110,9 @@ async def retired_evaluation_mutations(request: Request, call_next):
     return await call_next(request)
 
 
-# 白名单外的 /api 路由要求有效 access token；token 可来自
+# 白名单外的 /api 路由要求有效 access token 和当前账号状态；token 可来自
 # Authorization 头或 ?token=（EventSource / 导出下载链接无法带头）
-AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/onto-mcp/")
+AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/onto-mcp/")
 
 
 @app.middleware("http")
@@ -132,7 +136,13 @@ async def auth_middleware(request: Request, call_next):
     claims = auth.verify_access_token(token) if token else None
     if claims is None:
         return JSONResponse(status_code=401, content={"error": "未登录或登录已过期"})
-    request.state.user = claims
+    try:
+        user = await asyncio.to_thread(auth.current_user, token, claims)
+    except AuthError as exc:
+        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+    if user["password_change_required"]:
+        return JSONResponse(status_code=403, content={"error": "请先修改初始密码", "code": "password_change_required"})
+    request.state.user = {**claims, "role": user["role"]}
     auth.touch(claims.get("sub", ""))
     if request.method in ("POST", "PUT", "DELETE", "PATCH"):
         from .services import audit

@@ -18,7 +18,9 @@ router = APIRouter(prefix='/api/hub', tags=['hub-packages'])
 
 def identity(request):
     token = knowledge_hub.token_of(request)
-    claims = auth.verify_access_token(token) if token and auth.ENABLED else None
+    claims = getattr(request.state, 'user', None)
+    if claims is None:
+        claims = auth.verify_access_token(token) if token and auth.ENABLED else None
     if not claims or not claims.get('sub'):
         raise WorkspaceError('个人 Hub 包需要统一账号登录', 401)
     request.state.user = claims

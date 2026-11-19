@@ -18,11 +18,10 @@ global:
     protocol: HTTP
     listenerPort: 80
     listeners:
-      - {id: core, protocol: HTTP, listenerPort: 8100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-core}
       - {id: onto, protocol: HTTP, listenerPort: 5100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: onto-modeling}
-      - {id: mcp, protocol: HTTP, listenerPort: 5188, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-mcp}
       - {id: evaluation, protocol: HTTP, listenerPort: 5180, tlsSecretName: "", host: "", path: /evaluation/, pathType: Prefix, endpointId: evaluation}
 externalAuth:
+  apiVersion: auth-v1
   serviceName: consumer-auth
   namespace: onto-consumer
   servicePort: 5056
@@ -31,17 +30,8 @@ externalConsumer:
   namespace: onto-consumer
   servicePort: 5055
 modeling:
-  config:
-    llmBaseUrl: https://llm.example.com
-    llmModel: demo-model
-    mcpPublicBaseUrl: http://<ELB_IP>:5188
+  config: {}
   workloads:
-    core:
-      persistence: {existingClaim: modeling-core-data}
-      resources: {requests: {cpu: 500m, memory: 1Gi}}
-    agent:
-      persistence: {existingClaim: modeling-agent-data}
-      resources: {requests: {cpu: 500m, memory: 1Gi}}
     onto:
       persistence: {existingClaim: modeling-onto-data}
       resources: {requests: {cpu: 500m, memory: 2Gi}}
@@ -49,6 +39,8 @@ modeling:
       resources: {requests: {cpu: 500m, memory: 1Gi}}
     sandboxGateway:
       resources: {requests: {cpu: 100m, memory: 256Mi}}
+  secrets:
+    authAdminToken: {name: modeling-auth-client, key: admin-token} # 需在 Modeling namespace 预建，与 Auth 管理令牌同值。
 hub:
   persistence: {existingClaim: modeling-hub-data}
   resources: {requests: {cpu: 250m, memory: 512Mi}}

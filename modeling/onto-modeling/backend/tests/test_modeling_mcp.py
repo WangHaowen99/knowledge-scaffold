@@ -79,6 +79,51 @@ def test_admin_member_sync_failure_rolls_back_local_members(monkeypatch):
 
 
 
+def test_retired_core_allows_member_update_without_remote_sync(monkeypatch):
+    pytest.importorskip('fastapi')
+    from contextlib import nullcontext
+    from app.routers import projects
+    from app.services import hub_members, hub_packages
+
+    previous = {"id": "onto-1", "owner": "owner", "members": {"old": "viewer"},
+                "modeling_project_id": "retired-project"}
+    updated = {**previous, "members": {"new": "editor"}}
+    monkeypatch.setattr(modeling_mcp.config, "MODELING_CORE_RETIRED", True)
+    monkeypatch.setattr(projects, "ensure_owner", lambda *_args: None)
+    monkeypatch.setattr(projects.workspaces, "get_project", lambda *_args: previous)
+    monkeypatch.setattr(projects.workspaces, "set_members", lambda *_args: updated)
+    monkeypatch.setattr(modeling_mcp, "sync_members", lambda *_args: pytest.fail("retired Core called"))
+    monkeypatch.setattr(hub_packages, "association", lambda *_args: None)
+    monkeypatch.setattr(hub_members, "writable", lambda *_args: None)
+    monkeypatch.setattr(hub_members, "sync", lambda *_args, **_kwargs: {"synced": True})
+    monkeypatch.setattr(projects.knowledge_hub, "lock", lambda *_args: nullcontext())
+    request = SimpleNamespace(state=SimpleNamespace(user={"sub": "owner", "role": "admin"}),
+                              headers={}, query_params={})
+    response = projects.put_members("onto-1", projects.MembersBody(members={"new": "editor"}), request)
+    assert response["members"] == {"new": "editor"}
+
+
+def test_retired_core_disables_legacy_endpoints_even_with_saved_urls(monkeypatch):
+    from app.services import modeling_eval
+    monkeypatch.setattr(modeling_mcp.config, "MODELING_URL", "http://core.example.com")
+    monkeypatch.setattr(modeling_mcp.config, "MODELING_ASSOCIATION_URL", "http://core.example.com")
+    monkeypatch.setattr(modeling_mcp.config, "MODELING_ASSOCIATION_TOKEN", "synthetic")
+    monkeypatch.setattr(modeling_mcp.config, "MODELING_CORE_RETIRED", True)
+    assert modeling_mcp.configured() is False
+    assert modeling_mcp.association_configured() is False
+    assert modeling_eval.enabled() is False
+
+
+def test_retired_core_preserves_cleanup_queue(monkeypatch, tmp_path):
+    from app.services import modeling_cleanup
+    monkeypatch.setattr(modeling_cleanup.config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(modeling_cleanup.config, "MODELING_CORE_RETIRED", True)
+    modeling_cleanup.enqueue({"id": "synthetic-project", "modeling_project_id": "retired-project"},
+                             reason="synthetic", operation="project_delete")
+    assert modeling_cleanup.retry_due() == 0
+    assert modeling_cleanup.list_tasks()[0]["status"] == "pending"
+
+
 def test_ensure_project_association_persists_before_sync_and_retries_sync(monkeypatch):
     request = SimpleNamespace(headers={})
     meta = {"id": "onto-1", "name": "Synthetic project", "members": {}}

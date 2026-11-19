@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -25,6 +25,18 @@ class RefreshBody(BaseModel):
 @router.get("/status")
 def status():
     return {"enabled": auth.ENABLED}
+
+
+@router.get("/me")
+def current_user(request: Request):
+    if not auth.ENABLED:
+        raise auth.AuthError("鉴权未启用", 400)
+    header = request.headers.get("authorization", "")
+    token = header[7:] if header.lower().startswith("bearer ") else ""
+    claims = auth.verify_access_token(token) if token else None
+    if claims is None:
+        raise auth.AuthError("未登录或登录已过期", 401)
+    return {"user": auth.current_user(token, claims)}
 
 
 @router.post("/login")
@@ -62,7 +74,7 @@ class PasswordBody(BaseModel):
 
 @router.post("/password")
 def change_password(body: PasswordBody):
-    """自助改密：先用旧密码认证（与登录同强度），再经管理令牌代理重置。"""
+    """自助改密：Auth 核验旧密码并清除待改密标记，旧令牌随即失效。"""
     from .. import config
     from ..services.auth import AuthError
 
@@ -74,7 +86,9 @@ def change_password(body: PasswordBody):
                 "password": body.old_password,
             }
         )
-    except AuthError:
+    except AuthError as exc:
+        if exc.status != 401:
+            raise
         return JSONResponse(status_code=401, content={"error": "旧密码不正确"})
     if not config.AUTH_ADMIN_TOKEN:
         return JSONResponse(
@@ -84,6 +98,6 @@ def change_password(body: PasswordBody):
     from .admin import _auth_admin_request
 
     status_code, data = _auth_admin_request(
-        "PUT", f"/admin/users/{body.username}", {"password": body.new_password}
+        "PUT", "/admin/change-password", body.model_dump()
     )
     return JSONResponse(status_code=status_code, content=data)

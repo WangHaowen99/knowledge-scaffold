@@ -73,13 +73,21 @@ env_set "${ENV_FILE}" HUB_EVALUATION_SERVICE_TOKEN "${HUB_EVALUATION_SERVICE_TOK
 export HUB_EVALUATION_SERVICE_TOKEN
 log "Hub 服务凭据已就绪（值不输出）"
 
-# 网络以调用方注入或 .env 显式配置为准，不按命名规律猜：猜错 compose 会报 external network not found
+# 独立安装默认与 Onto、Auth 使用同一共享网络；已有配置与调用方注入优先。
 CONSUMER_NETWORK="${CONSUMER_NETWORK:-$(env_get "${ENV_FILE}" CONSUMER_NETWORK)}"
-[ -n "${CONSUMER_NETWORK}" ] || die \
-    "未指定共享 Docker 网络：设置 CONSUMER_NETWORK（整栈为 consumer 网络；单独部署 onto-modeling 时为其 compose 网络）"
+CONSUMER_NETWORK="${CONSUMER_NETWORK:-onto-auth-network}"
 docker network inspect "${CONSUMER_NETWORK}" >/dev/null 2>&1 \
-    || die "Docker 网络不存在：${CONSUMER_NETWORK}；请先部署 consumer 或 onto-modeling"
+    || die "Docker 网络不存在：${CONSUMER_NETWORK}；请先部署 onto-modeling，或设置实际的 CONSUMER_NETWORK"
+env_set "${ENV_FILE}" CONSUMER_NETWORK "${CONSUMER_NETWORK}"
 export CONSUMER_NETWORK
+
+HUB_AUTH_URL="${HUB_AUTH_URL:-$(env_get "${ENV_FILE}" HUB_AUTH_URL)}"
+HUB_AUTH_ISSUER="${HUB_AUTH_ISSUER:-$(env_get "${ENV_FILE}" HUB_AUTH_ISSUER)}"
+HUB_AUTH_URL="${HUB_AUTH_URL:-http://auth-server:5056}"
+HUB_AUTH_ISSUER="${HUB_AUTH_ISSUER:-http://auth-server:5056}"
+env_set "${ENV_FILE}" HUB_AUTH_URL "${HUB_AUTH_URL}"
+env_set "${ENV_FILE}" HUB_AUTH_ISSUER "${HUB_AUTH_ISSUER}"
+export HUB_AUTH_URL HUB_AUTH_ISSUER
 
 ENV_ARGS=(--env-file "${ENV_FILE}")
 if [ "${SOURCE_MODE}" = "0" ]; then

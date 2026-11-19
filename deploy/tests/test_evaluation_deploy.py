@@ -48,6 +48,12 @@ def deployment():
         shutil.copy2(ROOT / 'deploy/deploy.sh', root / 'deploy/deploy.sh')
         config = root / 'evaluation.config'
         config.write_text('# Synthetic configuration; no credentials.\n')
+        (root / 'consumer/backend').mkdir(parents=True)
+        (root / 'consumer/backend/.env').write_text(
+            'AUTH_SERVER_URL=http://auth-server:5056\n'
+            'AUTH_SERVER_ISSUER=https://auth.example.com\n'
+            'AUTH_SERVER_AUDIENCE=knowledge-scaffold\n'
+            'AUTH_SERVER_ADMIN_TOKEN=synthetic-admin-token-00000000000000000000\n')
         calls = root / 'calls.txt'
         env = {
             **{key: value for key, value in os.environ.items() if key not in INHERITED},
@@ -63,7 +69,17 @@ def deployment():
         script(root / 'knowledge-hub/deploy/deploy.sh', 'exit 0')
         script(root / 'onto-modeling/deploy.sh', 'exit 0')
         (root / 'modeling/onto-modeling').mkdir(parents=True)
-        script(root / 'bin/docker', 'exit 0')
+        script(root / 'bin/docker', '''
+if [ "$1" = ps ]; then printf 'onto-agent-auth-server-dev\\n'; exit 0; fi
+if [ "$1" = exec ] && [ "${3:-}" = -i ]; then
+    read -r token || :
+    [ "$token" = 'synthetic-admin-token-00000000000000000000' ]
+    exit $?
+fi
+if [ "$1" = exec ]; then
+    case "$*" in *audience*) printf 'knowledge-scaffold\\n' ;; *) printf 'https://auth.example.com\\n' ;; esac
+fi
+exit 0''')
         env['PATH'] = str(root / 'bin') + os.pathsep + os.environ['PATH']
         yield root, calls, env
 
@@ -80,7 +96,7 @@ def check_default_deploy_includes_evaluation_last(deployment, mode):
         expected = ['stack', 'evaluation']
     elif mode == 'release':
         (root / 'backend').mkdir()
-        (root / 'backend/.env.example').write_text('# Synthetic configuration\n')
+        (root / 'backend/.env.example').write_text((root / 'consumer/backend/.env').read_text())
         script(root / 'deploy/deploy-consumer.sh',
                'printf "consumer\\n" >> "$DEPLOY_CALLS_FILE"')
         script(root / 'deploy/modeling/deploy.sh',
@@ -140,8 +156,9 @@ def check_stack_hands_dependency_credentials_to_evaluation(deployment):
     hub, consumer = secrets.token_hex(32), secrets.token_hex(32)
     (root / 'knowledge-hub/deploy').mkdir(parents=True, exist_ok=True)
     (root / 'knowledge-hub/deploy/.env').write_text(f'HUB_EVALUATION_SERVICE_TOKEN={hub}\n')
-    (root / 'consumer/backend').mkdir(parents=True)
-    (root / 'consumer/backend/.env').write_text(f'EVALUATION_SERVICE_TOKEN={consumer}\n')
+    (root / 'consumer/backend').mkdir(parents=True, exist_ok=True)
+    with (root / 'consumer/backend/.env').open('a') as stream:
+        stream.write(f'EVALUATION_SERVICE_TOKEN={consumer}\n')
     result = run(root, env, '--eval-only')
     assert result.returncode == 0, result.stdout + result.stderr
     snapshot = lines(root / 'evaluation-snapshot.txt')
@@ -163,7 +180,7 @@ def check_stack_hands_dependency_credentials_to_evaluation(deployment):
 def check_release_generates_the_consumer_evaluation_token(deployment):
     root, _, env = deployment
     (root / 'backend').mkdir()
-    (root / 'backend/.env.example').write_text('# Synthetic configuration\n')
+    (root / 'backend/.env.example').write_text((root / 'consumer/backend/.env').read_text())
     script(root / 'deploy/deploy-consumer.sh', 'exit 0')
     result = run(root, env)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -230,8 +247,8 @@ DOCKER_STUB = '''printf '%s\\n' "$*" >> "$DOCKER_CALLS_FILE"
 case "$1" in
     volume) [ "${STUB_VOLUME_EXISTS:-0}" = 1 ]; exit $? ;;
     network) [ "$3" = "${STUB_NETWORK:-}" ]; exit $? ;;
-    compose) printf 'ENV_FILE=%s\\nPIP=%s\\nNPM=%s\\n' "$EVAL_ENV_FILE" "${PIP_INDEX_URL-<unset>}" \\
-                 "${NPM_REGISTRY-<unset>}" > "$COMPOSE_SNAPSHOT" ;;
+    compose) printf 'ENV_FILE=%s\\nPIP=%s\\nNPM=%s\\nISSUER=%s\\n' "$EVAL_ENV_FILE" "${PIP_INDEX_URL-<unset>}" \\
+                 "${NPM_REGISTRY-<unset>}" "$EVAL_AUTH_ISSUER" > "$COMPOSE_SNAPSHOT" ;;
 esac
 exit 0'''
 
@@ -252,6 +269,8 @@ def evaluation_service():
             'DOCKER_CALLS_FILE': str(root / 'docker-calls.txt'),
             'COMPOSE_SNAPSHOT': str(root / 'compose-snapshot.txt'),
             'STUB_NETWORK': 'synthetic-network',
+            'EVAL_AUTH_URL': 'http://auth-server:5056',
+            'EVAL_AUTH_ISSUER': 'https://auth.example.com',
         }
         yield root, deploy_dir, env
 
@@ -276,8 +295,10 @@ class EvaluationServiceDeployTests(unittest.TestCase):
             self.assertEqual(config.stat().st_mode & 0o777, 0o600)
             values = dict(line.split('=', 1) for line in lines(config))
             self.assertEqual(len(base64.urlsafe_b64decode(values['EVAL_ENCRYPTION_KEY'])), 32)
-            # Non-secret stack addresses default in the compose file, not in the local configuration.
-            for key in ('EVAL_AUTH_URL', 'EVAL_HUB_URL', 'EVAL_CONSUMER_API_URL'):
+            # The explicitly selected Auth identity is persisted with local runtime config.
+            self.assertEqual(values['EVAL_AUTH_URL'], 'http://auth-server:5056')
+            self.assertEqual(values['EVAL_AUTH_ISSUER'], 'https://auth.example.com')
+            for key in ('EVAL_HUB_URL', 'EVAL_CONSUMER_API_URL'):
                 self.assertNotIn(key, values)
             self.assertEqual(values['EVAL_HUB_SERVICE_TOKEN'], hub)
             self.assertEqual(values['EVAL_CONSUMER_SERVICE_TOKEN'], consumer)
@@ -291,7 +312,8 @@ class EvaluationServiceDeployTests(unittest.TestCase):
             self.assertIn('EVAL_JUDGE_CONFIG_REVISION is not configured', result.stderr)
             # Mirrors are not passed unless configured, so the Dockerfile defaults apply.
             self.assertEqual(lines(root / 'compose-snapshot.txt'),
-                             [f'ENV_FILE={config}', 'PIP=<unset>', 'NPM=<unset>'])
+                             [f'ENV_FILE={config}', 'PIP=<unset>', 'NPM=<unset>',
+                              'ISSUER=https://auth.example.com'])
             self.assertEqual(compose_calls(root),
                              [f'compose --env-file {config} -f {deploy_dir / EVAL_COMPOSE} up -d --build'])
 
@@ -325,7 +347,8 @@ class EvaluationServiceDeployTests(unittest.TestCase):
             result = run_service(deploy_dir, env)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(lines(root / 'compose-snapshot.txt')[1:],
-                             ['PIP=https://pypi.example.com/simple', 'NPM=https://npm.example.com'])
+                             ['PIP=https://pypi.example.com/simple', 'NPM=https://npm.example.com',
+                              'ISSUER=https://auth.example.com'])
 
     def test_existing_data_without_key_is_refused(self):
         with evaluation_service() as (root, deploy_dir, env):
@@ -347,6 +370,9 @@ class EvaluationServiceDeployTests(unittest.TestCase):
             self.assertEqual(external.read_text(), content + 'CONSUMER_NETWORK=synthetic-network\n')
             self.assertFalse((deploy_dir / '.env').exists())
             self.assertEqual(lines(root / 'compose-snapshot.txt')[0], f'ENV_FILE={external}')
+            self.assertIn('ISSUER=https://auth.example.com', lines(root / 'compose-snapshot.txt'))
+            assert 'EVAL_AUTH_ISSUER: ${EVAL_AUTH_ISSUER:-http://auth-server:5056}' in \
+                (deploy_dir / EVAL_COMPOSE).read_text()
             self.assertEqual(compose_calls(root),
                              [f'compose --env-file {external} -f {deploy_dir / EVAL_COMPOSE} up -d --build'])
 
@@ -354,7 +380,8 @@ class EvaluationServiceDeployTests(unittest.TestCase):
             self.assertNotEqual(run_service(deploy_dir, env).returncode, 0)
 
     def test_missing_or_unknown_network_fails_before_configuration(self):
-        for network, message in (('', 'CONSUMER_NETWORK is not set'), ('absent-network', 'Docker network not found')):
+        for network, message in (('', 'Docker network not found: onto-auth-network'),
+                                 ('absent-network', 'Docker network not found: absent-network')):
             with self.subTest(network=network), evaluation_service() as (root, deploy_dir, env):
                 env['CONSUMER_NETWORK'] = network
                 result = run_service(deploy_dir, env)
@@ -362,6 +389,20 @@ class EvaluationServiceDeployTests(unittest.TestCase):
                 self.assertIn(message, result.stderr)
                 self.assertEqual(compose_calls(root), [])
                 self.assertFalse((deploy_dir / '.env').exists())
+
+    def test_default_network_and_auth_contract(self):
+        with evaluation_service() as (root, deploy_dir, env):
+            env.pop('EVAL_AUTH_URL')
+            env.pop('EVAL_AUTH_ISSUER')
+            env['STUB_NETWORK'] = 'onto-auth-network'
+
+            result = run_service(deploy_dir, env)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            values = dict(line.split('=', 1) for line in lines(deploy_dir / '.env'))
+            self.assertEqual(values['CONSUMER_NETWORK'], 'onto-auth-network')
+            self.assertEqual(values['EVAL_AUTH_URL'], 'http://auth-server:5056')
+            self.assertEqual(values['EVAL_AUTH_ISSUER'], 'http://auth-server:5056')
 
 
 class EvaluationDeploymentTests(unittest.TestCase):

@@ -37,7 +37,7 @@ case "$1" in
             esac
         done
         case "${command_name}" in
-            node) node "${args[@]}" ;;
+            node) "${STUB_NODE}" "${args[@]}" ;;
             rm) rm "${args[@]}" ;;
             python3) cp -R "${root}/${container}/tmp/modeling-data" "${STUB_MIGRATED}" ;;
             *) exit 1 ;;
@@ -108,6 +108,7 @@ def test_migration_exports_committed_rows_still_in_wal(tmp_path: Path) -> None:
                 "PATH": f"{bin_dir}:/usr/local/bin:/usr/bin:/bin",
                 "STUB_DOCKER_ROOT": str(root),
                 "STUB_MIGRATED": str(migrated),
+                "STUB_NODE": str(Path(shutil.which("node")).resolve()),
             },
             text=True,
             capture_output=True,

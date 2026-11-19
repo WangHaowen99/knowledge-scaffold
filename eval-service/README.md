@@ -95,11 +95,11 @@ Neo4j 按 Provider 展开 URL、Database、User、Password 与 Workspace / Ontol
 bash deploy/deploy.sh --eval-only
 ```
 
-- 运行配置：未设置 `EVAL_ENV_FILE` 时，`deploy/deploy.sh` 读写 `deploy/.env`，只保存凭据和显式配置的值，取值顺序为 进程环境 > `.env` 已有值：
+- 运行配置：未设置 `EVAL_ENV_FILE` 时，`deploy/deploy.sh` 读写 `deploy/.env`，保存凭据、显式配置及选定的网络和 Auth 默认值；取值顺序为进程环境 > `.env` 已有值 > 默认值：
   - 首次部署生成 `EVAL_ENCRYPTION_KEY`。
   - 评测凭据沿用 Hub 的 `HUB_EVALUATION_SERVICE_TOKEN` 与 consumer 的 `EVALUATION_SERVICE_TOKEN`，由根目录 `deploy/deploy.sh` 读取后注入，两者分别由 Hub 部署脚本和 consumer 部署生成。
-- 默认地址：账号、Hub、consumer 地址的默认值 `http://auth-server:5056`、`http://knowledge-hub:8200`、`http://backend:5055` 写在 `deploy/docker-compose.eval-service.yml` 中，compose 文件不含任何凭据。部署脚本用 `--env-file` 把运行配置交给 compose，配置中写了同名地址时优先生效；手动执行 compose 并使用外部配置时，也需要加上 `--env-file <配置文件>`。
-- 网络：`CONSUMER_NETWORK` 必填，评测容器加入该网络，按服务名访问依赖。根目录部署脚本会自动探测并注入，本地 `.env` 会记住它，所以在 `deploy/` 下手动执行 `docker compose` 时无需另设变量。不在整栈旁部署时，指定任一已有网络，并在 `.env` 中把依赖地址改为该网络可达的地址。
+- Auth 身份：`EVAL_AUTH_URL` 和 `EVAL_AUTH_ISSUER` 缺失时均默认 `http://auth-server:5056`，已有运行配置或进程环境优先。Compose 将两者传入容器；使用 `EVAL_ENV_FILE` 时脚本不改外部文件，进程环境中的默认值仍会传入容器。实际 Auth 契约不同时应配置真实值。Hub、Consumer 地址的默认值 `http://knowledge-hub:8200`、`http://backend:5055` 写在 Compose 中。手动执行 Compose 并使用外部配置时，也需要加上 `--env-file <配置文件>`。
+- 网络：`CONSUMER_NETWORK` 缺失时默认 `onto-auth-network`，评测容器加入该网络，按服务名访问依赖。网络仍须已存在；根目录部署脚本会自动探测并注入，部署脚本会把实际网络名记入本地 `.env`。使用其他共享网络时，在进程环境或 `.env` 中配置实际网络名，并把依赖地址改为该网络可达的地址。
 - Judge：`EVAL_JUDGE_BASE_URL`、`EVAL_JUDGE_API_KEY`、`EVAL_JUDGE_MODEL`、`EVAL_JUDGE_CONFIG_REVISION` 是部署默认值（OpenAI 兼容 `/chat/completions`，需支持工具调用），已在 `deploy/docker-compose.eval-service.yml` 中声明但不含值。缺失时部署只告警；写入 `deploy/.env` 或进程环境后重新部署，或由管理员在评测页面保存 Judge 配置，即可开始评测。
 - 外部配置：设置 `EVAL_ENV_FILE` 指向仓库之外、仅运行账号可读的配置文件时，脚本原样使用、不改写，也不自动补齐凭据。
 - 镜像源：构建时 npm 默认 `registry.npmmirror.com`，PyPI 默认华为云镜像。可用 `EVAL_NPM_REGISTRY`、`EVAL_PIP_INDEX_URL`（或 `NPM_REGISTRY`、`PIP_INDEX_URL`）覆盖，源码部署和离线包构建都生效；未设置时不传构建参数，沿用 Dockerfile 中的默认值。基础镜像 `node:24-bookworm-slim`、`python:3.12-slim-bookworm` 仍从 Docker Hub 拉取，需要加速时在 Docker 守护进程中配置 registry mirror。

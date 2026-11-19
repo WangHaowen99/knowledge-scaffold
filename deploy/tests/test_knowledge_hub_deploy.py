@@ -65,10 +65,12 @@ def test_hub_compose_is_an_independent_project_on_the_shared_network() -> None:
     assert re.search(r"^name: knowledge-hub$", content, re.MULTILINE)
     assert "container_name: knowledge-hub" in content
     assert "knowledge-hub-data:/data" in content
-    # 网络与凭据缺失时失败关闭，不猜网络名、不发布宿主端口
-    assert "name: ${CONSUMER_NETWORK:?" in content
+    # 缺省网络与 Auth 契约对齐 Onto；服务凭据仍须提供，不发布宿主端口
+    assert "name: ${CONSUMER_NETWORK:-onto-auth-network}" in content
     assert "external: true" in content
     assert "HUB_SERVICE_TOKEN=${HUB_SERVICE_TOKEN:?" in content
+    assert "HUB_AUTH_URL=${HUB_AUTH_URL:-http://auth-server:5056}" in content
+    assert "HUB_AUTH_ISSUER=${HUB_AUTH_ISSUER:-http://auth-server:5056}" in content
     assert "ports:" not in content
     # 源码与离线包共用：镜像由部署脚本构建或加载，compose 不引用源码目录
     assert "build:" not in content
@@ -129,6 +131,7 @@ exit 0\
 
 
 _HUB_ENV_KEYS = ("HUB_SERVICE_TOKEN", "HUB_EVALUATION_SERVICE_TOKEN", "CONSUMER_NETWORK", "KNOWLEDGE_HUB_IMAGE",
+                 "HUB_AUTH_URL", "HUB_AUTH_ISSUER",
                  "KNOWLEDGE_HUB_APT_MIRROR", "KNOWLEDGE_HUB_PIP_INDEX_URL", "PIP_INDEX_URL")
 _MIRRORS = {"KNOWLEDGE_HUB_APT_MIRROR": "mirrors.example.com",
             "KNOWLEDGE_HUB_PIP_INDEX_URL": "https://pypi.example.com/simple"}
@@ -146,6 +149,8 @@ def _hub_source_layout(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
         "DOCKER_CALLS_FILE": str(tmp_path / "docker-calls.txt"),
         "STUB_NETWORK": "shared-net",
+        "HUB_AUTH_URL": "http://auth-server:5056",
+        "HUB_AUTH_ISSUER": "https://auth.example.com",
     }
     return deploy_dir, env
 
@@ -210,7 +215,8 @@ def test_hub_deploy_prefers_the_injected_token(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
     lines = _lines(deploy_dir / ".env")
     assert lines[0] == f"HUB_SERVICE_TOKEN={injected}"
-    assert [line.split("=", 1)[0] for line in lines] == ["HUB_SERVICE_TOKEN", "HUB_EVALUATION_SERVICE_TOKEN"]
+    assert [line.split("=", 1)[0] for line in lines] == ["HUB_SERVICE_TOKEN", "HUB_EVALUATION_SERVICE_TOKEN",
+                                                   "CONSUMER_NETWORK", "HUB_AUTH_URL", "HUB_AUTH_ISSUER"]
 
 
 def test_hub_deploy_generates_a_distinct_evaluation_token_and_keeps_it(tmp_path: Path) -> None:
@@ -264,16 +270,31 @@ def test_hub_deploy_rejects_a_short_token(tmp_path: Path) -> None:
     assert not any(call.startswith(("build", "compose --env-file")) for call in calls)
 
 
-@pytest.mark.parametrize("network", ["", "missing-net"])
-def test_hub_deploy_requires_an_existing_shared_network(tmp_path: Path, network: str) -> None:
+@pytest.mark.parametrize("network, expected", [("", "onto-auth-network"), ("missing-net", "missing-net")])
+def test_hub_deploy_requires_an_existing_shared_network(tmp_path: Path, network: str, expected: str) -> None:
     deploy_dir, env = _hub_source_layout(tmp_path)
 
     result = _run([str(deploy_dir / "deploy.sh")], {**env, "CONSUMER_NETWORK": network})
 
     assert result.returncode != 0
-    assert ("未指定共享 Docker 网络" if not network else "Docker 网络不存在") in result.stderr
+    assert f"Docker 网络不存在：{expected}" in result.stderr
     calls = _lines(tmp_path / "docker-calls.txt")
     assert not any(call.startswith(("build", "compose --env-file")) for call in calls)
+
+
+def test_hub_deploy_uses_default_network_and_auth_contract(tmp_path: Path) -> None:
+    deploy_dir, env = _hub_source_layout(tmp_path)
+    env.pop("HUB_AUTH_URL")
+    env.pop("HUB_AUTH_ISSUER")
+    env["STUB_NETWORK"] = "onto-auth-network"
+
+    result = _run([str(deploy_dir / "deploy.sh")], env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    config = _lines(deploy_dir / ".env")
+    assert "CONSUMER_NETWORK=onto-auth-network" in config
+    assert "HUB_AUTH_URL=http://auth-server:5056" in config
+    assert "HUB_AUTH_ISSUER=http://auth-server:5056" in config
 
 
 def test_hub_deploy_from_package_loads_only_the_release_image(tmp_path: Path) -> None:
@@ -294,7 +315,9 @@ def test_hub_deploy_from_package_loads_only_the_release_image(tmp_path: Path) ->
         "STUB_NETWORK": "shared-net",
     }
     # 离线包场景：网络由 .env 显式配置
-    (bundle / ".env").write_text("CONSUMER_NETWORK=shared-net\n")
+    (bundle / ".env").write_text("CONSUMER_NETWORK=shared-net\n"
+                                  "HUB_AUTH_URL=http://auth-server:5056\n"
+                                  "HUB_AUTH_ISSUER=https://auth.example.com\n")
 
     result = _run([str(bundle / "deploy.sh")], env)
 
@@ -311,7 +334,16 @@ def test_hub_deploy_from_package_loads_only_the_release_image(tmp_path: Path) ->
 _STACK_DOCKER_STUB = """\
 if [ "$1" = "inspect" ] && [ "$2" = "--type" ] && [ "$3" = "container" ]; then exit 0; fi
 if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then printf 'onto-agent_default\\n'; exit 0; fi
-if [ "$1" = "ps" ]; then printf 'onto-agent-backend\\n'; exit 0; fi
+if [ "$1" = "ps" ]; then printf 'onto-agent-backend\\nonto-agent-auth-server-dev\\n'; exit 0; fi
+if [ "$1" = "exec" ] && [ "${3:-}" = "-i" ]; then
+  read -r token || :
+  [ "$token" = 'synthetic-admin-token-00000000000000000000' ]
+  exit $?
+fi
+if [ "$1" = "exec" ]; then
+  case "$*" in *audience*) printf 'knowledge-scaffold\\n' ;; *) printf 'https://auth.example.com\\n' ;; esac
+  exit 0
+fi
 if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then [ "$3" = "onto-agent_default" ]; exit $?; fi
 if [ "$1" = "compose" ]; then printf 'onto-compose %s\\n' "$*" >> "$CALLS_FILE"; fi
 exit 0\
@@ -330,6 +362,12 @@ printf 'HUB_SERVICE_TOKEN=%s\\n' "${token:-$STUB_HUB_TOKEN}" > .env\
 def _stack_env(tmp_path: Path) -> dict[str, str]:
     config = tmp_path / "evaluation.config"
     config.write_text("# Synthetic configuration; no credentials.\n", encoding="utf-8")
+    (tmp_path / "consumer" / "backend").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "consumer" / "backend" / ".env").write_text(
+        "AUTH_SERVER_URL=http://auth-server:5056\n"
+        "AUTH_SERVER_ISSUER=https://auth.example.com\n"
+        "AUTH_SERVER_AUDIENCE=knowledge-scaffold\n"
+        "AUTH_SERVER_ADMIN_TOKEN=synthetic-admin-token-00000000000000000000\n")
     _write_executable(tmp_path / "bin" / "docker", _STACK_DOCKER_STUB)
     _write_executable(
         tmp_path / "eval-service" / "deploy" / "deploy.sh", 'printf "evaluation\\n" >> "$CALLS_FILE"'
@@ -375,6 +413,8 @@ def test_source_full_stack_deploys_hub_before_onto_modeling_and_aligns_the_token
     assert "CONSUMER_NETWORK=onto-agent_default" in _lines(tmp_path / "hub-snapshot.txt")
     onto_env = tmp_path / "modeling" / "onto-modeling" / ".env"
     assert f"ONTO_HUB_SERVICE_TOKEN={env['STUB_HUB_TOKEN']}" in _lines(onto_env)
+    assert "ONTO_WEB_AUTH_ISSUER=https://auth.example.com" in _lines(onto_env)
+    assert "ONTO_WEB_AUTH_ADMIN_TOKEN=synthetic-admin-token-00000000000000000000" in _lines(onto_env)
     assert onto_env.stat().st_mode & 0o777 == 0o600
     # 评测完成通知的入站凭据：首次部署生成，独立于 Hub 凭据，不输出
     evaluation_token = _evaluation_token(_lines(onto_env))
@@ -382,12 +422,26 @@ def test_source_full_stack_deploys_hub_before_onto_modeling_and_aligns_the_token
     assert evaluation_token not in result.stdout + result.stderr
     override = (tmp_path / "modeling" / "onto-modeling" / "docker-compose.stack.yml").read_text()
     assert "knowledge-hub" not in override.split("services:", 1)[1]
+    assert "ONTO_WEB_AUTH_URL=http://auth-server:5056" in override
     assert env["STUB_HUB_TOKEN"] not in result.stdout + result.stderr
 
     # 重新部署沿用已有凭据，评测侧无需重新对齐
     rerun = _run([str(deploy_dir / "deploy.sh")], env)
     assert rerun.returncode == 0, rerun.stdout + rerun.stderr
     assert _evaluation_token(_lines(onto_env)) == evaluation_token
+
+
+def test_stack_rejects_auth_identity_mismatch_before_hub_deployment(tmp_path: Path) -> None:
+    deploy_dir, env = _source_checkout(tmp_path)
+    consumer_env = tmp_path / "consumer" / "backend" / ".env"
+    consumer_env.write_text(consumer_env.read_text().replace(
+        "AUTH_SERVER_ISSUER=https://auth.example.com", "AUTH_SERVER_ISSUER=https://other.example.com"))
+
+    result = _run([str(deploy_dir / "deploy.sh"), "--knowledge-hub-only"], env)
+
+    assert result.returncode != 0
+    assert "签发身份与当前 Auth 容器不一致" in result.stderr
+    assert not (tmp_path / "calls.txt").exists()
 
 
 def test_source_hub_reuses_the_existing_onto_modeling_token(tmp_path: Path) -> None:
@@ -466,7 +520,11 @@ def _release_bundle(tmp_path: Path, *, with_hub: bool = True) -> tuple[Path, dic
     deploy_dir.mkdir()
     shutil.copy2(DEPLOY_ROOT / "deploy.sh", deploy_dir / "deploy.sh")
     (tmp_path / "backend").mkdir()
-    (tmp_path / "backend" / ".env.example").write_text("# Synthetic configuration\n")
+    (tmp_path / "backend" / ".env.example").write_text(
+        "AUTH_SERVER_URL=http://auth-server:5056\n"
+        "AUTH_SERVER_ISSUER=https://auth.example.com\n"
+        "AUTH_SERVER_AUDIENCE=knowledge-scaffold\n"
+        "AUTH_SERVER_ADMIN_TOKEN=synthetic-admin-token-00000000000000000000\n")
     _write_executable(deploy_dir / "deploy-consumer.sh", 'printf "consumer\\n" >> "$CALLS_FILE"')
     _write_executable(deploy_dir / "modeling" / "deploy.sh", 'printf "modeling\\n" >> "$CALLS_FILE"')
     if with_hub:

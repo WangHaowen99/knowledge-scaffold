@@ -36,6 +36,7 @@ import CenterPane from './components/CenterPane.jsx';
 import ChatPane from './components/ChatPane.jsx';
 import LeftPane from './components/LeftPane.jsx';
 import LoginPage from './components/LoginPage.jsx';
+import PasswordChangePage from './components/PasswordChangePage.jsx';
 import HubPackagesDialog from './components/HubPackagesDialog.jsx';
 import { useNameConflict } from './components/NameConflictDialog.jsx';
 import { usePackagePublish } from './components/PublishCheckDialog.jsx';
@@ -65,7 +66,7 @@ function parseHash() {
 }
 
 export default function App() {
-  const [auth, setAuth] = useState('unknown'); // unknown -> disabled | required | ok
+  const [auth, setAuth] = useState('unknown'); // unknown -> disabled | required | password-change | ok | unavailable
   const [route, setRoute] = useState(parseHash);
   const [projects, setProjects] = useState([]);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
@@ -240,11 +241,22 @@ export default function App() {
   useEffect(() => {
     api
       .authStatus()
-      .then((data) => {
+      .then(async (data) => {
         if (!data.enabled) setAuth('disabled');
-        else setAuth(authStore.token ? 'ok' : 'required');
+        else if (!authStore.token) setAuth('required');
+        else {
+          try {
+            const { user } = await api.currentUser();
+            setAuth(user.password_change_required ? 'password-change' : 'ok');
+          } catch (error) {
+            if (error.status === 401) {
+              authStore.clear();
+              setAuth('required');
+            } else setAuth('unavailable');
+          }
+        }
       })
-      .catch(() => setAuth('disabled'));
+      .catch(() => setAuth('unavailable'));
     api.health().then((data) => setDrawioAvailable(!!data.drawio)).catch(() => {});
     const onAuthRequired = () => {
       resetProjects();
@@ -252,7 +264,16 @@ export default function App() {
       setAuth('required');
     };
     window.addEventListener('onto-auth-required', onAuthRequired);
-    return () => window.removeEventListener('onto-auth-required', onAuthRequired);
+    const onPasswordChangeRequired = () => {
+      resetProjects();
+      nav('#/');
+      setAuth('password-change');
+    };
+    window.addEventListener('onto-password-change-required', onPasswordChangeRequired);
+    return () => {
+      window.removeEventListener('onto-auth-required', onAuthRequired);
+      window.removeEventListener('onto-password-change-required', onPasswordChangeRequired);
+    };
   }, [resetProjects]);
 
   useEffect(() => {
@@ -521,8 +542,15 @@ export default function App() {
   );
 
   if (auth === 'unknown') return null;
+  if (auth === 'unavailable') {
+    return <div className="lcard"><h2>暂时无法核对账号状态</h2>
+      <button className="lbtn" type="button" onClick={() => window.location.reload()}>重试</button></div>;
+  }
   if (auth === 'required') {
-    return <LoginPage onLogin={() => setAuth('ok')} />;
+    return <LoginPage onLogin={(user) => setAuth(user.password_change_required ? 'password-change' : 'ok')} />;
+  }
+  if (auth === 'password-change') {
+    return <PasswordChangePage onComplete={logout} onLogout={logout} />;
   }
   if (route.name === 'admin') {
     return <AdminPage onBack={() => window.history.back()} />;
@@ -533,6 +561,7 @@ export default function App() {
         project={project}
         isAdmin={isAdmin}
         authEnabled={auth === 'ok'}
+        onPasswordChanged={logout}
         initialSection={route.section || 'account'}
         onBack={() => (projectId ? nav(`#/p/${encodeURIComponent(projectId)}`) : window.history.back())}
         onOpenAdmin={() => nav('#/admin')}

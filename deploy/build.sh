@@ -86,7 +86,7 @@ bash "${REPO_ROOT}/consumer/build.sh" "${VERSION}" "${ARCH}"
 tar -C "${STAGE_ROOT}" -xzf "${CONSUMER_PACKAGE}"
 cp "${BUNDLE_DIR}/deploy/deploy.sh" "${BUNDLE_DIR}/deploy/deploy-consumer.sh"
 
-# Onto Modeling（引导式建模工作台）：独立子包并入 bundle，部署脚本自带零配置 auth
+# Onto Modeling：独立子包并入 bundle，复用 Consumer 当前 Auth
 chmod +x "${REPO_ROOT}/modeling/onto-modeling/build.sh" "${REPO_ROOT}/modeling/onto-modeling/deploy/"*.sh
 bash "${REPO_ROOT}/modeling/onto-modeling/build.sh" "${VERSION}" "${ARCH}"
 ONTO_MODELING_PACKAGE="${REPO_ROOT}/modeling/onto-modeling/dist/onto-modeling-${VERSION}-linux-${RELEASE_ARCH}.tar.gz"
@@ -133,7 +133,6 @@ cat > "${BUNDLE_DIR}/deploy/manifest.json" <<EOF
   "auth_server_image_tar": "images/onto-agent-auth-server-${VERSION}.tar",
   "jiuwenbox_image_tar": "images/onto-agent-jiuwenbox-${VERSION}.tar",
   "onto_modeling_image": "onto-modeling:${VERSION}",
-  "onto_modeling_auth_server_image": "onto-modeling-auth-server:${VERSION}",
   "onto_modeling_bundle_dir": "onto-modeling",
   "knowledge_hub_image": "knowledge-hub:${VERSION}",
   "knowledge_hub_image_tar": "knowledge-hub/images/knowledge-hub-${VERSION}.tar",

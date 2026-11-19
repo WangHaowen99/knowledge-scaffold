@@ -200,6 +200,13 @@ def test_delete_skips_cancel_for_finished_round(env):
     assert env.log == []
 
 
+def test_retired_core_skips_legacy_round_cancel(env, monkeypatch):
+    modeling_eval._write_state(env.root, status="interrupted", modeling_project="mp-1", round_id="r1")
+    monkeypatch.setattr(modeling_mcp.config, "MODELING_CORE_RETIRED", True)
+    _delete(env)
+    assert env.log == []
+
+
 def test_delete_cancels_eval_still_starting(env):
     """编排刚起步、状态还没写成 running：同样置取消标记，免得删除后它照常去 modeling 侧发起一轮。"""
     modeling_eval._running.add(PID)
@@ -264,6 +271,14 @@ def test_delete_cascades_to_modeling_project_after_response(env, monkeypatch, er
     assert cascaded == [(meta, "project_delete")]  # 元数据在移走工作区前读出
     assert queued == enqueued
     assert error_log.read() == []  # 已有重试队列兜底，不算未清理完成
+
+
+def test_retired_core_does_not_block_onto_project_delete(env, monkeypatch):
+    meta = {"id": PID, "name": "示例任务", "modeling_project_id": "mp-1"}
+    (env.root / META_FILE).write_text(json.dumps(meta), encoding="utf-8")
+    monkeypatch.setattr(modeling_mcp.config, "MODELING_CORE_RETIRED", True)
+    monkeypatch.setattr(modeling_mcp, "delete_project", lambda *_args, **_kwargs: pytest.fail("retired Core called"))
+    assert _delete(env) == {"deleted": PID}
 
 
 def test_delete_falls_back_to_in_place_purge_when_move_fails(env, monkeypatch):

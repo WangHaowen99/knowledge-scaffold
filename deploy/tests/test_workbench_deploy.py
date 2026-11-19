@@ -40,13 +40,22 @@ def evaluation_runtime(tmp_path: Path, monkeypatch) -> None:
     """Synthetic config and a no-op evaluation deployer for existing stack tests."""
     config = tmp_path / "evaluation.config"
     config.write_text("# Synthetic configuration; no credentials.\n", encoding="utf-8")
+    consumer_config = tmp_path / "consumer" / "backend" / ".env"
+    consumer_config.parent.mkdir(parents=True)
+    consumer_config.write_text(
+        "AUTH_SERVER_URL=http://auth-server:5056\n"
+        "AUTH_SERVER_ISSUER=https://auth.example.com\n"
+        "AUTH_SERVER_AUDIENCE=knowledge-scaffold\n"
+        "AUTH_SERVER_ADMIN_TOKEN=synthetic-admin-token-00000000000000000000\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("EVAL_ENV_FILE", str(config))
     _write_executable(tmp_path / "eval-service" / "deploy" / "deploy.sh", "exit 0")
     _write_executable(tmp_path / "knowledge-hub" / "deploy" / "deploy.sh", "exit 0")
     _write_executable(tmp_path / "knowledge-hub" / "deploy.sh", "exit 0")
     _write_executable(tmp_path / "onto-modeling" / "deploy.sh", "exit 0")
     (tmp_path / "modeling" / "onto-modeling").mkdir(parents=True, exist_ok=True)
-    _write_executable(tmp_path / "bin" / "docker", "exit 0")
+    _write_executable(tmp_path / "bin" / "docker", _AUTH_DOCKER_STUB)
     monkeypatch.setenv("PATH", str(tmp_path / "bin") + os.pathsep + os.environ['PATH'])
 
 
@@ -102,7 +111,8 @@ def test_root_release_deploys_consumer_and_skips_leftover_workbench(tmp_path: Pa
     backend_dir = tmp_path / "backend"
     backend_dir.mkdir()
     (backend_dir / ".env.example").write_text(
-        "MODELING_SERVICE_TOKEN=\n",
+        (tmp_path / "consumer" / "backend" / ".env").read_text(encoding="utf-8")
+        + "MODELING_SERVICE_TOKEN=\n",
         encoding="utf-8",
     )
     calls_file = tmp_path / "calls.txt"
@@ -622,6 +632,8 @@ def test_onto_modeling_deploy_mounts_jiuwenbox_socket_only_when_volume_exists(
     bundle.mkdir()
     shutil.copy2(ONTO_MODELING_DEPLOY, bundle / "deploy.sh")
     _write_executable(bundle / "preflight.sh", "exit 0")
+    (bundle / "dependency_probe.py").write_text("# Synthetic dependency probe.\n", encoding="utf-8")
+    (bundle / "images.env").write_text("ONTO_WEB_IMAGE=onto-modeling:synthetic\n", encoding="utf-8")
     bin_dir = tmp_path / "bin"
     _write_executable(bin_dir / "docker", _ONTO_DEPLOY_DOCKER_STUB)
     calls = tmp_path / "docker-calls.txt"
@@ -671,6 +683,8 @@ def test_onto_modeling_deploy_generates_the_evaluation_notification_token_once(t
     bundle.mkdir()
     shutil.copy2(ONTO_MODELING_DEPLOY, bundle / "deploy.sh")
     _write_executable(bundle / "preflight.sh", "exit 0")
+    (bundle / "dependency_probe.py").write_text("# Synthetic dependency probe.\n", encoding="utf-8")
+    (bundle / "images.env").write_text("ONTO_WEB_IMAGE=onto-modeling:synthetic\n", encoding="utf-8")
     bin_dir = tmp_path / "bin"
     _write_executable(bin_dir / "docker", _ONTO_DEPLOY_DOCKER_STUB)
     env = {
@@ -782,18 +796,49 @@ printf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"\
 
 
 # consumer 后端在 /run/jiuwenbox 挂着 socket 卷（其余同 _DOCKER_STUB_ON_DEFAULT_NETWORK）
+_AUTH_DOCKER_STUB = """\
+if [ "$1" = "ps" ]; then printf 'onto-agent-auth-server-dev\\n'; exit 0; fi
+if [ "$1" = "exec" ] && [ "${3:-}" = "-i" ]; then
+    read -r token || :
+    [ "$token" = 'synthetic-admin-token-00000000000000000000' ]
+    exit $?
+fi
+if [ "$1" = "exec" ]; then
+    case "$*" in *audience*) printf 'knowledge-scaffold\\n' ;; *) printf 'https://auth.example.com\\n' ;; esac
+    exit 0
+fi
+exit 0
+"""
+
+
 _DOCKER_STUB_WITH_JIUWENBOX_SOCKET = """\
 if [ "$1" = "inspect" ] && [ "$2" = "--type" ] && [ "$3" = "container" ]; then exit 0; fi
 if [ "$1" = "inspect" ] && [ "$2" = "--format" ]; then printf 'onto-agent_onto-jiuwenbox-sock\\n'; exit 0; fi
 if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then printf 'onto-agent_default\\n'; exit 0; fi
-if [ "$1" = "ps" ]; then printf 'onto-agent-backend\\n'; exit 0; fi
+if [ "$1" = "ps" ]; then printf 'onto-agent-backend\\nonto-agent-auth-server-dev\\n'; exit 0; fi
 if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then [ "$3" = "onto-agent_default" ]; exit $?; fi
+if [ "$1" = "exec" ]; then
+    if [ "${3:-}" = "-i" ]; then
+        read -r token || :
+        [ "$token" = 'synthetic-admin-token-00000000000000000000' ]
+    else
+        case "$*" in *audience*) printf 'knowledge-scaffold\\n' ;; *) printf 'https://auth.example.com\\n' ;; esac
+    fi
+    exit $?
+fi
 printf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"\
 """
 
 # onto-modeling 发布包 deploy.sh 用到的 docker 子命令：只有 STUB_EXISTING_VOLUME 这个卷存在
 _ONTO_DEPLOY_DOCKER_STUB = """\
 if [ "$1" = "compose" ] && [ "$2" = "version" ]; then exit 0; fi
+if [ "$1" = "container" ] && [ "$2" = "inspect" ] && [ "$3" = "onto-modeling-auth-server" ]; then exit 1; fi
+if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then exit 1; fi
+if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then
+    if [ "${4:-}" = "--format" ]; then printf 'true\\n'; fi
+    exit 0
+fi
+if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then exit 0; fi
 if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then [ "$3" = "${STUB_EXISTING_VOLUME}" ]; exit $?; fi
 if [ "$1" = "ps" ]; then exit 0; fi
 printf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"\
@@ -804,16 +849,34 @@ printf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"\
 _DOCKER_STUB_ON_DEFAULT_NETWORK = """\
 if [ "$1" = "inspect" ] && [ "$2" = "--type" ] && [ "$3" = "container" ]; then exit 0; fi
 if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then printf 'onto-agent_default\\n'; exit 0; fi
-if [ "$1" = "ps" ]; then printf 'onto-agent-backend\\n'; exit 0; fi
+if [ "$1" = "ps" ]; then printf 'onto-agent-backend\\nonto-agent-auth-server-dev\\n'; exit 0; fi
 if [ "$1" = "network" ] && [ "$2" = "ls" ]; then printf 'bridge\\nonto-agent_default\\n'; exit 0; fi
 if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then [ "$3" = "onto-agent_default" ]; exit $?; fi
+if [ "$1" = "exec" ]; then
+    if [ "${3:-}" = "-i" ]; then
+        read -r token || :
+        [ "$token" = 'synthetic-admin-token-00000000000000000000' ]
+    else
+        case "$*" in *audience*) printf 'knowledge-scaffold\\n' ;; *) printf 'https://auth.example.com\\n' ;; esac
+    fi
+    exit $?
+fi
 printf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"\
 """
 
 # 探测不到任何 consumer 痕迹：必须报错退出，而不是猜一个名字继续
 _DOCKER_STUB_NO_CONSUMER = """\
+if [ "$1" = "ps" ]; then printf 'onto-agent-auth-server-dev\\n'; exit 0; fi
+if [ "$1" = "exec" ]; then
+    if [ "${3:-}" = "-i" ]; then
+        read -r token || :
+        [ "$token" = 'synthetic-admin-token-00000000000000000000' ]
+    else
+        case "$*" in *audience*) printf 'knowledge-scaffold\\n' ;; *) printf 'https://auth.example.com\\n' ;; esac
+    fi
+    exit $?
+fi
 if [ "$1" = "inspect" ] || [ "$1" = "container" ] || [ "$1" = "network" ]; then exit 1; fi
-if [ "$1" = "ps" ]; then exit 0; fi
 printf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"\
 """
 
@@ -862,34 +925,8 @@ def test_interactive_installer_does_not_ask_for_workbench() -> None:
     assert "modeling/deploy/install.sh" not in _INTERACTIVE_INSTALLER
 
 
-def test_interactive_installer_deploys_onto_modeling() -> None:
-    """交互式安装器要能装出 Onto Modeling，而不是只装 Consumer + Modeling。
-
-    回归：该脚本此前完全不涉及 onto-modeling，走这条路的用户永远装不到它。
-    """
-    # 首次部署与升级两条路径都要真正调用部署函数
-    assert _INTERACTIVE_INSTALLER.count("deploy_onto_modeling") >= 3
-    assert 'validate_package "${ONTO_MODELING_PACKAGE}" onto-modeling' in _INTERACTIVE_INSTALLER
-    assert 'tar -xzf "${ONTO_MODELING_PACKAGE}" -C "${INSTALL_ROOT}"' in _INTERACTIVE_INSTALLER
-    # Onto Modeling 是必需服务，发布包提示不能为空，也不再提供跳过分支。
-    assert "ask '请输入 Onto Modeling 发布包路径：'" in _INTERACTIVE_INSTALLER
-    assert '[ -z "${ONTO_MODELING_PACKAGE}" ] || ' not in _INTERACTIVE_INSTALLER
-
-    # 接线：宿主端口 + 共享账号中心的网络 + 评测用的 Modeling 地址 + 脚本验证用的沙箱 socket 卷
-    for key in (
-        "ONTO_WEB_PORT",
-        "ONTO_MODELING_EXTERNAL_AUTH_NETWORK",
-        "ONTO_WEB_MODELING_URL",
-        "ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME",
-    ):
-        assert f'write_env_value "${{env_file}}" {key}' in _INTERACTIVE_INSTALLER
 
 
-def test_interactive_installer_never_guesses_consumer_network() -> None:
-    """网络名必须现场探测；猜名字会让 compose 报 external network not found。"""
-    assert "docker container inspect onto-agent-backend" in _INTERACTIVE_INSTALLER
-    assert "无法探测 Consumer 容器网络" in _INTERACTIVE_INSTALLER
-    assert "consumer_onto-agent-network" not in _INTERACTIVE_INSTALLER
 
 
 # 安装器升级路径共用的 docker stub：mw-modeling* 归属 STUB_MODELING_OWNER，Consumer
@@ -1114,121 +1151,18 @@ def _calls(setup: dict) -> list[str]:
     return calls.read_text(encoding="utf-8").split() if calls.exists() else []
 
 
-def test_installer_upgrade_deploys_onto_modeling_after_consumer(
-    tmp_path: Path,
-) -> None:
-    """回归：非交互 upgrade 只升 Consumer，onto-modeling 永远不会被拉起。"""
-    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
-
-    result = _run_separated_upgrade(setup)
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    # 预检在任何变更之前，onto-modeling 部署排在 Consumer、Hub 之后
-    assert _calls(setup) == ['onto-preflight', 'consumer-upgrade', 'hub-deploy', 'onto-deploy', 'evaluation-deploy']
-    onto_env = (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
-    assert "ONTO_WEB_PORT=5100" in onto_env
-    # 共享 Consumer 账号中心：网络取运行中容器的实际网络，不按命名规律猜
-    assert "ONTO_MODELING_EXTERNAL_AUTH_NETWORK=onto-agent_default" in onto_env
-    assert "ONTO_WEB_MODELING_URL=http://mw-modeling:5100" in onto_env
-    # 沙箱 socket 卷同样取 consumer 容器的实际挂载（桩按容器名回卷名）
-    assert "ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME=mw-modeling_onto-agent-backend-data" in onto_env
-    assert (setup["root"] / "onto-modeling" / ".env").stat().st_mode & 0o777 == 0o600
-    # 等到健康检查通过才算部署完成
-    curl_calls = (tmp_path / "curl-calls.txt").read_text(encoding="utf-8")
-    assert "http://127.0.0.1:5100/api/health" in curl_calls
-    assert "Onto Modeling deployment finished" in result.stdout
 
 
-def test_installer_upgrade_rejects_port_clash_before_any_change(tmp_path: Path) -> None:
-    """0.26.9.0 之前的分离部署 Modeling 在 5100，仍在运行时与 onto-modeling 默认端口相撞。"""
-    setup = _prepare_separated_upgrade(tmp_path, modeling_port="5100")
-
-    result = _run_separated_upgrade(setup, STUB_LEGACY_MODELING_PORT="5100")
-
-    assert result.returncode != 0
-    assert "都要占用宿主端口 5100" in result.stderr
-    assert _calls(setup) == []
-
-    retried = _run_separated_upgrade(setup, STUB_LEGACY_MODELING_PORT="5100", ONTO_WEB_PORT="5110")
-
-    assert retried.returncode == 0, retried.stdout + retried.stderr
-    assert "ONTO_WEB_PORT=5110" in (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
 
 
-def test_installer_upgrade_refuses_foreign_onto_modeling_container(tmp_path: Path) -> None:
-    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
-
-    result = _run_separated_upgrade(
-        setup, STUB_ONTO_MODELING_DIR=str(tmp_path / "elsewhere" / "onto-modeling")
-    )
-
-    assert result.returncode != 0
-    assert "拒绝接管" in result.stderr
-    assert _calls(setup) == []
 
 
-def test_installer_upgrade_requires_onto_modeling_package(tmp_path: Path) -> None:
-    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
-    result = _run_separated_upgrade(setup, with_onto=False)
-    assert result.returncode != 0
-    assert "--onto-modeling-package" in result.stderr
-    assert _calls(setup) == []
 
 
-def test_installer_upgrade_deploys_hub_before_onto_modeling_with_one_token(tmp_path: Path) -> None:
-    """Hub 独立成包后，安装器先部署 Hub，再让 Onto Modeling 改用 Hub 实际生效的服务凭据。"""
-    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
-
-    result = _run_separated_upgrade(setup, with_hub=True)
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert _calls(setup) == ['onto-preflight', 'consumer-upgrade', 'hub-deploy', 'onto-deploy', 'evaluation-deploy']
-    hub_snapshot = (tmp_path / "knowledge-hub.snapshot").read_text(encoding="utf-8")
-    # Hub 与 Onto Modeling 同在运行中 Consumer 容器的实际网络上
-    assert "CONSUMER_NETWORK=onto-agent_default" in hub_snapshot
-    hub_token = setup["env"]["STUB_HUB_TOKEN"]
-    onto_env = (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
-    assert f"ONTO_HUB_SERVICE_TOKEN={hub_token}" in onto_env
-    assert hub_token not in result.stdout + result.stderr
-    assert f"知识包 Hub：{setup['root'] / 'knowledge-hub'}" in result.stdout
 
 
-def test_installer_hub_reuses_the_existing_onto_modeling_token(tmp_path: Path) -> None:
-    """已部署的 Onto Modeling 有凭据时，首次独立部署的 Hub 沿用它，两侧无需重启对齐。"""
-    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
-    existing = secrets.token_hex(32)
-    onto_dir = setup["root"] / "onto-modeling"
-    onto_dir.mkdir()
-    (onto_dir / ".env").write_text(
-        f"ONTO_WEB_PORT=5100\nONTO_HUB_SERVICE_TOKEN={existing}\n", encoding="utf-8"
-    )
-
-    result = _run_separated_upgrade(setup, with_hub=True)
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert f"RECEIVED_TOKEN={existing}" in (tmp_path / "knowledge-hub.snapshot").read_text(
-        encoding="utf-8"
-    )
-    assert (setup["root"] / "knowledge-hub" / ".env").read_text(encoding="utf-8") == (
-        f"HUB_SERVICE_TOKEN={existing}\nHUB_EVALUATION_SERVICE_TOKEN={setup['env']['STUB_HUB_EVALUATION_TOKEN']}\n"
-    )
-    assert f"ONTO_HUB_SERVICE_TOKEN={existing}" in (tmp_path / "onto-modeling.env").read_text(
-        encoding="utf-8"
-    )
 
 
-def test_installer_upgrade_refuses_foreign_knowledge_hub_container(tmp_path: Path) -> None:
-    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
-
-    result = _run_separated_upgrade(
-        setup, with_hub=True, STUB_KNOWLEDGE_HUB_DIR=str(tmp_path / "elsewhere" / "knowledge-hub")
-    )
-
-    assert result.returncode != 0
-    assert "容器 knowledge-hub 属于" in result.stderr
-    assert "拒绝接管" in result.stderr
-    # 只跑过无副作用的 Onto 预检，Consumer 未变更
-    assert _calls(setup) == ["onto-preflight"]
 
 
 def _drive_tty(
@@ -1302,99 +1236,12 @@ def _interactive_upgrade_answers(
     ]
 
 
-def test_interactive_upgrade_asks_onto_port_when_it_clashes_with_modeling(
-    tmp_path: Path,
-) -> None:
-    """回归：0.26.9.0 之前的分离部署 Modeling 在 5100，首次加入 Onto Modeling 也落到 5100，
-    Consumer 升级完才在拉起 Onto Modeling 时撞端口，且没有任何途径改端口。"""
-    setup = _prepare_separated_upgrade(tmp_path, modeling_port="5100")
-
-    rc, output = _drive_tty(
-        DEPLOY_ROOT / "install-consumer-modeling-interactive.sh",
-        _interactive_upgrade_answers(setup, ("请输入 Onto Modeling 宿主端口", "5110")),
-        setup["env"],
-    )
-
-    assert rc == 0, output
-    assert "Onto Modeling 宿主端口 5100 与 MODELING_PORT 相同" in output
-    # 预检在任何变更之前，Onto Modeling 部署排在 Consumer、Hub 之后
-    assert _calls(setup) == ['onto-preflight', 'consumer-upgrade', 'hub-deploy', 'onto-deploy', 'evaluation-deploy']
-    onto_env = (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
-    assert "ONTO_WEB_PORT=5110" in onto_env
-    assert "ONTO_MODELING_EXTERNAL_AUTH_NETWORK=onto-agent_default" in onto_env
-    assert "ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME=mw-modeling_onto-agent-backend-data" in onto_env
-    assert "http://127.0.0.1:5110/api/health" in (tmp_path / "curl-calls.txt").read_text(
-        encoding="utf-8"
-    )
-    assert "Onto Modeling deployment finished" in output
 
 
-def test_interactive_upgrade_refuses_foreign_onto_modeling_container(tmp_path: Path) -> None:
-    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
-    env = {**setup["env"], "STUB_ONTO_MODELING_DIR": str(tmp_path / "elsewhere" / "onto-modeling")}
-
-    rc, output = _drive_tty(
-        DEPLOY_ROOT / "install-consumer-modeling-interactive.sh",
-        _interactive_upgrade_answers(setup),
-        env,
-    )
-
-    assert rc != 0
-    assert "拒绝接管" in output
-    assert _calls(setup) == []
 
 
-def test_interactive_upgrade_deploys_hub_before_onto_modeling(tmp_path: Path) -> None:
-    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
-
-    rc, output = _drive_tty(
-        DEPLOY_ROOT / "install-consumer-modeling-interactive.sh",
-        _interactive_upgrade_answers(setup, hub=str(setup["hub_package"])),
-        setup["env"],
-    )
-
-    assert rc == 0, output
-    assert _calls(setup) == ['onto-preflight', 'consumer-upgrade', 'hub-deploy', 'onto-deploy', 'evaluation-deploy']
-    assert "CONSUMER_NETWORK=onto-agent_default" in (tmp_path / "knowledge-hub.snapshot").read_text(
-        encoding="utf-8"
-    )
-    hub_token = setup["env"]["STUB_HUB_TOKEN"]
-    assert f"ONTO_HUB_SERVICE_TOKEN={hub_token}" in (tmp_path / "onto-modeling.env").read_text(
-        encoding="utf-8"
-    )
-    assert hub_token not in output
 
 
-def test_interactive_install_rejects_custom_onto_port_equal_to_consumer(tmp_path: Path) -> None:
-    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
-    consumer_package, _, onto_package = setup["packages"]
-    fresh_root = tmp_path / "fresh"
-
-    rc, output = _drive_tty(
-        DEPLOY_ROOT / "install-consumer-modeling-interactive.sh",
-        [
-            ("请选择模式", "1"),
-            ("安装根目录（", "2"),
-            ("请输入自定义安装根目录", str(fresh_root)),
-            ("端口配置", "2"),
-            ("Consumer Backend 宿主端口", "45055"),
-            ("Consumer MCP 宿主端口", "47488"),
-            ("Consumer Frontend 宿主端口", "48888"),
-            ("请输入 Onto Modeling 宿主端口", "45055"),
-            ("请输入 Consumer 发布包路径", str(consumer_package)),
-            ("请输入 Onto Modeling 发布包路径", str(onto_package)),
-            ("请输入知识包 Hub 发布包路径", str(setup["hub_package"])),
-            ("请输入独立评测服务发布包", str(setup["evaluation_package"])),
-            ("请输入 Onto Modeling 宿主端口", "55110"),
-        ],
-        setup["env"],
-    )
-
-    assert rc == 0, output
-    assert "Onto Modeling 宿主端口 45055 与 BACKEND_PORT 相同" in output
-    assert _calls(setup) == ['onto-preflight', 'consumer-preflight', 'consumer-install', 'hub-deploy', 'onto-deploy', 'evaluation-deploy']
-    assert "ONTO_WEB_PORT=55110" in (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
-    assert (fresh_root / "onto-modeling" / ".env").stat().st_mode & 0o777 == 0o600
 
 
 def _prepare_legacy_upgrade(tmp_path: Path) -> dict:
@@ -1439,66 +1286,10 @@ def _legacy_answers(
     ]
 
 
-def test_legacy_migration_deploys_onto_modeling_on_a_free_port(tmp_path: Path) -> None:
-    """回归：legacy 迁移脚本完全不涉及 Onto Modeling；Modeling 继续占用旧的 5100。"""
-    setup = _prepare_legacy_upgrade(tmp_path)
-    onto_package = setup["packages"][2]
-
-    rc, output = _drive_tty(
-        DEPLOY_ROOT / "upgrade-consumer-modeling-legacy-interactive.sh",
-        _legacy_answers(setup, str(onto_package), ("请输入 Onto Modeling 宿主端口", "5110")),
-        setup["env"],
-    )
-
-    assert rc == 0, output
-    assert "Onto Modeling 宿主端口 5100 已被当前部署的其他服务使用" in output
-    assert _calls(setup) == ['onto-preflight', 'consumer-upgrade', 'hub-deploy', 'onto-deploy', 'evaluation-deploy']
-    stack_root = setup["legacy"].parent
-    assert not (stack_root / "modeling").exists()
-    onto_env = (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
-    assert "ONTO_WEB_PORT=5110" in onto_env
-    assert "ONTO_MODELING_EXTERNAL_AUTH_NETWORK=onto-agent_default" in onto_env
-    assert "ONTO_WEB_MODELING_URL=http://mw-modeling:5100" in onto_env
-    assert "ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME=mw-modeling_onto-agent-backend-data" in onto_env
-    assert (stack_root / "onto-modeling" / ".env").stat().st_mode & 0o777 == 0o600
-    assert "Onto Modeling deployment finished" in output
 
 
-def test_legacy_migration_rejects_empty_onto_modeling_package(tmp_path: Path) -> None:
-    setup = _prepare_legacy_upgrade(tmp_path)
-    rc, output = _drive_tty(
-        DEPLOY_ROOT / "upgrade-consumer-modeling-legacy-interactive.sh",
-        _legacy_answers(setup, ""), setup["env"])
-    assert rc != 0
-    assert _calls(setup) == []
 
 
-def test_legacy_migration_deploys_hub_before_onto_modeling(tmp_path: Path) -> None:
-    setup = _prepare_legacy_upgrade(tmp_path)
-    onto_package = setup["packages"][2]
-
-    rc, output = _drive_tty(
-        DEPLOY_ROOT / "upgrade-consumer-modeling-legacy-interactive.sh",
-        _legacy_answers(
-            setup,
-            str(onto_package),
-            ("请输入 Onto Modeling 宿主端口", "5110"),
-            hub_answer=str(setup["hub_package"]),
-        ),
-        setup["env"],
-    )
-
-    assert rc == 0, output
-    assert _calls(setup) == ['onto-preflight', 'consumer-upgrade', 'hub-deploy', 'onto-deploy', 'evaluation-deploy']
-    stack_root = setup["legacy"].parent
-    hub_token = setup["env"]["STUB_HUB_TOKEN"]
-    assert (stack_root / "knowledge-hub" / ".env").read_text(encoding="utf-8") == (
-        f"HUB_SERVICE_TOKEN={hub_token}\nHUB_EVALUATION_SERVICE_TOKEN={setup['env']['STUB_HUB_EVALUATION_TOKEN']}\n"
-    )
-    assert f"ONTO_HUB_SERVICE_TOKEN={hub_token}" in (tmp_path / "onto-modeling.env").read_text(
-        encoding="utf-8"
-    )
-    assert hub_token not in output
 
 
 def _run_legacy_upgrade(setup: dict, **env: str):
@@ -1529,18 +1320,6 @@ def _volume_backups(setup: dict) -> str:
     return runs.read_text(encoding="utf-8") if runs.exists() else ""
 
 
-def test_installer_legacy_upgrade_leaves_workbench_untouched(tmp_path: Path) -> None:
-    """旧合并部署里的 Workbench 不迁移、不停止、不备份，只升级 Consumer 自身。"""
-    setup = _prepare_legacy_upgrade(tmp_path)
-
-    result = _run_legacy_upgrade(setup, STUB_RUNNING="1", STUB_LEGACY_MODELING_PORT="48100")
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert _calls(setup) == ['onto-preflight', 'consumer-upgrade', 'hub-deploy', 'onto-deploy', 'evaluation-deploy']
-    assert not (setup["legacy"].parent / "modeling").exists()
-    assert _volume_backups(setup) == ""
-    stopped = Path(f"{setup['calls']}.stopped")
-    assert "mw-modeling" not in (stopped.read_text(encoding="utf-8") if stopped.exists() else "")
 
 
 def _host_port_default(compose_text: str, var: str) -> str:

@@ -30,7 +30,7 @@ class ProvisionResult:
 
 
 def configured() -> bool:
-    return bool(config.MODELING_URL)
+    return bool(config.MODELING_URL) and not config.MODELING_CORE_RETIRED
 
 
 def _request_user_token(request) -> str:
@@ -222,7 +222,7 @@ def revoke_token(meta: dict, request, token_id: str) -> dict:
 
 
 def association_configured() -> bool:
-    return bool(config.MODELING_ASSOCIATION_URL and config.MODELING_ASSOCIATION_TOKEN)
+    return bool(config.MODELING_ASSOCIATION_URL and config.MODELING_ASSOCIATION_TOKEN) and not config.MODELING_CORE_RETIRED
 
 
 def _association_request(

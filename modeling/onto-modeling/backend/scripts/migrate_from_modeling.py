@@ -144,6 +144,7 @@ def main() -> int:
     parser.add_argument("--source", required=True, help="modeling 数据目录拷贝（含 modeling.db 与 artifacts/）")
     parser.add_argument("--owner", default="", help="覆盖迁移项目的所有者（默认沿用 modeling 记录）")
     parser.add_argument("--project", default="", help="只迁移指定的 modeling 项目 id")
+    parser.add_argument("--summary-file", default="", help="成功后写入迁移计数，供部署器核对")
     args = parser.parse_args()
 
     source = Path(args.source)
@@ -203,6 +204,15 @@ def main() -> int:
     if failed:
         print(f"失败项目可修复后单独重跑：--project <id>，失败列表：{', '.join(failed)}", file=sys.stderr)
         return 1
+    if args.summary_file:
+        summary = Path(args.summary_file)
+        summary.parent.mkdir(parents=True, exist_ok=True)
+        temporary = summary.with_name(summary.name + ".tmp")
+        temporary.write_text(json.dumps({"schemaVersion": "core-project-migration/v1",
+                                         "sourceProjects": done + skipped,
+                                         "migrated": done, "skipped": skipped}, sort_keys=True) + "\n",
+                             encoding="utf-8")
+        temporary.replace(summary)
     return 0
 
 
