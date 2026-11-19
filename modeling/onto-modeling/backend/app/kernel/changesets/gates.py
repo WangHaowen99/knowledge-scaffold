@@ -79,7 +79,8 @@ def run(root: Path, tree: str) -> list[dict]:
         _export(root, tree, workdir)
         try:
             result = subprocess.run(  # NOSONAR(S4721) 固定参数列表跑受信的检查脚本，不经 shell
-                ["python3", str(script), str(workdir / "ontology"), "--json", "--include-mock"],
+                # 脚本契约、绑定与安全和知识包导出同一份实现，合入时一并查，不等到发布才拦
+                ["python3", str(script), str(workdir / "ontology"), "--json", "--include-mock", "--include-scripts"],
                 cwd=workdir, capture_output=True, text=True, timeout=CHECK_TIMEOUT_SECONDS, env=minimal_env(),
             )
         except subprocess.TimeoutExpired as exc:

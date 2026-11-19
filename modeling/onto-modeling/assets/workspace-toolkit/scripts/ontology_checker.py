@@ -24,8 +24,11 @@ from script_descriptor import descriptor_issues
 from operation_relations import (
     called_operation_stems as _called_operation_stems,
     caller_operation_stems as _caller_operation_stems,
+    index_row as _operation_index_row,
     link_stems as _stems_in_section,
+    parent_map as _operation_parent_map,
     parse_relation,
+    relations_from_documents as _operation_relations,
     standalone_flag,
     stops_before_call,
     sub_operation_call_sites as _extract_sub_operation_refs,
@@ -482,7 +485,7 @@ def check_object_field_name_conflicts(doc: OntologyDoc) -> list:
     if doc.doc_type != 'object' or not doc.attribute_rows:
         return []
     claims_by_name: dict[str, list[tuple[str, str, str]]] = {}
-    for row in doc.attribute_rows:
+    for row in _exported_attribute_rows(doc):
         field_key = (row.get('英文名称') or '').strip()
         if not field_key:
             continue
@@ -522,6 +525,62 @@ def check_object_field_name_conflicts(doc: OntologyDoc) -> list:
                      f'原始声明：{declarations}。请根据字段语义将冲突别名改为准确且唯一的名称，禁止删除别名。'),
             source='规则检查',
         ))
+    return issues
+
+
+# 发布时「# 对象属性清单」整段换成「# 字段」表，只留英文名称有值的行（后端 package_mapping 的
+# parse_object_doc / rewrite_object_body，空值口径同其 _is_empty）；一行有值的都没有、或没有这一级
+# 标题时原表照发。consumer 导入时校验的是发布包里的这张表
+_EXPORT_EMPTY_FIELD_KEYS = {'', '无', '-', '—', '–', 'n/a'}
+_EXPORT_FIELDS_HEADING = '# 对象属性清单'
+
+
+def _export_drops_field(row: dict) -> bool:
+    key = (row.get('英文名称') or '').strip()
+    return key.lower() in _EXPORT_EMPTY_FIELD_KEYS or key.startswith('{')
+
+
+def _exported_attribute_rows(doc: OntologyDoc) -> list:
+    """发布包里该对象字段表的行。"""
+    kept = [row for row in doc.attribute_rows if not _export_drops_field(row)]
+    rewritten = bool(kept) and any(line.strip() == _EXPORT_FIELDS_HEADING for line in doc.raw.split('\n'))
+    return kept if rewritten else doc.attribute_rows
+
+
+def check_object_field_keys(doc: OntologyDoc) -> list:
+    """属性英文名称是知识包的字段 key：发布包里有中文名或别名却没填、或重复时，consumer 导入拒绝整包。
+
+    与 consumer validate_field_aliases 同一口径（重复按 NFC 规范化、ASCII 不区分大小写比较），
+    只看发布包里的行：英文名称留空的行有别的行带英文名称时，发布会把它丢掉，不拦，这里也不报。
+    """
+    if doc.doc_type != 'object' or not doc.attribute_rows:
+        return []
+    unnamed, keys_by_name = [], {}
+    for row in _exported_attribute_rows(doc):
+        key = (row.get('英文名称') or '').strip()
+        if key:
+            keys_by_name.setdefault(_normalize_field_name(key), []).append(key)
+            continue
+        label = (row.get('中文名称') or '').strip() or '、'.join(_field_alias_tokens(row.get('属性别名', '')))
+        if label:
+            unnamed.append(label)
+    issues = []
+    if unnamed:
+        shown = '、'.join(unnamed[:5]) + ('…' if len(unnamed) > 5 else '')
+        issues.append(Issue(
+            file=_rel(doc), severity='错误', category='命名约束',
+            message=f'{len(unnamed)} 个属性没填英文名称（{shown}）：英文名称是知识包的字段 key，留空时发布会被拒。'
+                    '补上英文名称（从库里读取的用真实列名），用不到的属性整行删掉',
+            source='规则检查'))
+    for keys in keys_by_name.values():
+        if len(keys) < 2:
+            continue
+        names = ''.join(f'「{key}」' for key in dict.fromkeys(keys))
+        issues.append(Issue(
+            file=_rel(doc), severity='错误', category='命名约束',
+            message=f'属性英文名称{names}出现 {len(keys)} 次（不区分大小写）：英文名称是知识包的字段 key，'
+                    '重复时发布会被拒。同一个属性合成一行，不同属性改用各自的英文名称',
+            source='规则检查'))
     return issues
 
 
@@ -1410,34 +1469,92 @@ CONSUMER_OBJECT_MAX = 200
 CONSUMER_OPERATION_MAX = 100
 CONSUMER_ATTRIBUTE_MAX = 100
 CONSUMER_OPERATION_MAX_CHARS = 15000
+# 发布包的 objects/index.md 每个对象一行，consumer 把它也当对象文件、按单个对象的属性上限数表格行，
+# 所以对象实际最多 min(对象上限, 属性上限) 个
+PACKAGE_OBJECT_MAX = min(CONSUMER_OBJECT_MAX, CONSUMER_ATTRIBUTE_MAX)
+# 发布包 operations/index.md 的文件头与表头（后端 ontology_package 的 index_md；求解包多一列 execution，不计）；
+# consumer 对它同样查单个操作的字符上限
+_OPERATION_INDEX_HEAD = ('---\nresource: operation_index\nkey: "operations"\ntitle: "操作目录"\n---\n\n'
+                         '| operation key | 标题 | 输入 | 输出 |\n|' + ' --- |' * 4 + '\n')
+
+
+def _strip_frontmatter(raw: str) -> str:
+    """去掉文档自带的文件头（同后端 workspace.layout._strip_frontmatter），发布时另补。"""
+    if raw.startswith('---\n'):
+        end = raw.find('\n---', 4)
+        if end != -1:
+            return raw[end + 4:].lstrip('\n')
+    return raw
+
+
+def _exported_operation_chars(key: str, raw: str, object_keys: set, callees: list) -> int:
+    """发布包里 operations/<key>.md 的字符数：发布补的文件头（后端 ontology_package 的 front）+ 正文。"""
+    body = _strip_frontmatter(raw)
+    used = sorted(set(mm.link_names(body, object_keys)) & object_keys)
+    name = json.dumps(key, ensure_ascii=False)
+    head = f'---\nresource: operation\nkey: {name}\ntitle: {name}\n'
+    # 原文件头里只有 report_name 会带进发布包
+    head += ''.join(f'{line}\n' for line in raw[:len(raw) - len(body)].split('\n') if line.startswith('report_name:'))
+    head += f'uses:\n  objects: {json.dumps(used, ensure_ascii=False)}\n'
+    if callees:
+        head += f'  operations: {json.dumps(callees, ensure_ascii=False)}\n'
+    return len(head + '---\n\n' + body)
 
 
 def check_package_limits(all_docs: dict, check_docs: dict) -> list:
-    """超出 consumer 容量上限的知识包导入时会被拒。数量按全量统计，单文件上限只查 check_docs。"""
-    objects = [doc for doc in all_docs.values() if doc.doc_type == 'object']
-    operations = [doc for doc in all_docs.values() if doc.doc_type == 'operation']
+    """按发布包查 consumer 容量上限（package_validation.validate_ontology_tree_limits），超出时发布被拒。
+
+    数量与目录大小按全量统计，单文件上限只查 check_docs；只算会导出的对象、操作目录下的顶层文档。
+    """
+    objects = {stem: doc for stem, doc in all_docs.items()
+               if doc.doc_type == 'object' and doc.path.parent.name == 'object'}
+    operations = {stem: doc for stem, doc in all_docs.items()
+                  if doc.doc_type == 'operation' and doc.path.parent.name in ('operation', 'logic')}
     issues = []
-    for subdir, label, docs, limit in (('object/', '对象', objects, CONSUMER_OBJECT_MAX),
-                                       ('operation/', '操作', operations, CONSUMER_OPERATION_MAX)):
-        if len(docs) > limit:
-            issues.append(Issue(
-                file=subdir, severity='警告', category='容量上限',
-                message=f'共有 {len(docs)} 个{label}，超过 consumer 单个知识包 {limit} 个的上限，'
-                        f'导入 consumer 时会被拒：合并重复或过细的{label}',
-                source='规则检查'))
-    for doc in check_docs.values():
-        if doc.doc_type == 'object' and len(doc.attribute_rows) > CONSUMER_ATTRIBUTE_MAX:
-            issues.append(Issue(
-                file=_rel(doc), severity='警告', category='容量上限',
-                message=f'对象有 {len(doc.attribute_rows)} 个属性，超过 consumer 单个对象 '
-                        f'{CONSUMER_ATTRIBUTE_MAX} 个的上限，导入 consumer 时会被拒：按业务拆分对象或去掉用不到的属性',
-                source='规则检查'))
-        elif doc.doc_type == 'operation' and len(doc.raw) > CONSUMER_OPERATION_MAX_CHARS:
-            issues.append(Issue(
-                file=_rel(doc), severity='警告', category='容量上限',
-                message=f'操作文档 {len(doc.raw)} 字符，超过 consumer 单个操作 {CONSUMER_OPERATION_MAX_CHARS} '
-                        '字符的上限，导入 consumer 时会被拒：拆成子操作，或把实现细节下沉到脚本',
-                source='规则检查'))
+    if len(objects) > PACKAGE_OBJECT_MAX:
+        issues.append(Issue(
+            file='object/', severity='错误', category='容量上限',
+            message=f'共有 {len(objects)} 个对象，超过 {PACKAGE_OBJECT_MAX} 个，发布会被拒：发布包的对象目录'
+                    f'（objects/index.md）每个对象占一行，consumer 按单个对象最多 {CONSUMER_ATTRIBUTE_MAX} 个属性查它。'
+                    '合并重复或过细的对象',
+            source='规则检查'))
+    if len(operations) > CONSUMER_OPERATION_MAX:
+        issues.append(Issue(
+            file='operation/', severity='错误', category='容量上限',
+            message=f'共有 {len(operations)} 个操作，超过 {CONSUMER_OPERATION_MAX} 个，'
+                    '发布会被拒：合并重复或过细的操作',
+            source='规则检查'))
+    bodies = {stem: _strip_frontmatter(doc.raw) for stem, doc in operations.items()}
+    relations = _operation_relations(bodies)
+    parents = _operation_parent_map(relations)
+    index_chars = len(_OPERATION_INDEX_HEAD) + sum(
+        len(_operation_index_row(stem, body, sorted(parent for parent in parents.get(stem, ()) if parent in relations)))
+        for stem, body in bodies.items())
+    if index_chars > CONSUMER_OPERATION_MAX_CHARS:
+        issues.append(Issue(
+            file='operation/', severity='错误', category='容量上限',
+            message=f'发布包的操作目录（operations/index.md）约 {index_chars} 字符，'
+                    f'超过 {CONSUMER_OPERATION_MAX_CHARS} 字符，发布会被拒：目录每个操作一行，列出输入、输出参数名。'
+                    '合并重复或过细的操作，或精简参数',
+            source='规则检查'))
+    for stem, doc in check_docs.items():
+        if stem in objects:
+            rows = len(_exported_attribute_rows(doc))
+            if rows > CONSUMER_ATTRIBUTE_MAX:
+                issues.append(Issue(
+                    file=_rel(doc), severity='错误', category='容量上限',
+                    message=f'对象有 {rows} 个属性，超过 {CONSUMER_ATTRIBUTE_MAX} 个，发布会被拒：'
+                            '按业务拆分对象或去掉用不到的属性',
+                    source='规则检查'))
+        elif stem in operations:
+            callees = [callee for callee in relations[stem].callees if callee in relations and callee != stem]
+            chars = _exported_operation_chars(stem, doc.raw, set(objects), callees)
+            if chars > CONSUMER_OPERATION_MAX_CHARS:
+                issues.append(Issue(
+                    file=_rel(doc), severity='错误', category='容量上限',
+                    message=f'操作文档发布后约 {chars} 字符（含发布补的文件头），超过 {CONSUMER_OPERATION_MAX_CHARS} '
+                            '字符，发布会被拒：拆成子操作，或把实现细节下沉到脚本',
+                    source='规则检查'))
     return issues
 
 
@@ -2378,6 +2495,7 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
             issues += check_object_source_candidates(doc, tables)
             issues += check_object_table(doc)
             issues += check_object_field_name_conflicts(doc)
+            issues += check_object_field_keys(doc)
             issues += check_object_primary_key(doc)
             issues += check_object_links(doc, all_docs)
             issues += check_object_relation_joins(doc, all_docs, tables)
