@@ -109,7 +109,7 @@ prompts:
 
 ## 7. 页面
 
-页面只能选内置页，id 和可用图标见 protocol.md。包里不能带自己的前端代码，`ui/` 之外出现前端文件直接 fail，租户包的 html 也不能带脚本。
+页面选内置页（id 和可用图标见 protocol.md），或者上传包用自带页面（见下面「自带页面」）。前端代码只能在 `ui/` 下，`ui/` 之外出现前端文件直接 fail，租户包的 html 也不能带脚本。
 
 ```yaml
 # manifest.yaml 的 contributes 追加（页面）
@@ -127,6 +127,32 @@ pages:
 - `badge: inbox` 显示待处理数。
 - 同一个页面 id 先到先得：两个启用的包都选 `scenarios` 时，后到的不显示，用之前要确认项目里没有别的包占用。
 - 子页写 `subpages: [{parent, id, title}]`，`parent` 和 `id` 都只能是内置值；现在没有内置子页可选，见 `protocol.md`。
+
+### 自带页面（上传包，页面接口 1.1）
+
+内置页不够用时，上传包可以带自己的页面：页面就是本包的一个编辑器，在不同源的 iframe 里跑，经窄接口和平台通信。
+
+```yaml
+# manifest.yaml
+page_api: ">=1.1 <2.0"
+contributes:
+  editors:
+    - {id: page, title: 术语整理, ui_api: ">=1.1 <2.0"}
+  pages:
+    - {id: terms, nav: {title: 术语整理, icon: book, order: 3}, ui: page}
+  uploads:   # 可选：页面上传的输入，落在 ext/<包名>/uploads/<id>/，助手只读
+    - {id: inputs, title: 输入知识包, kind: knowledge-package, max: 10}
+```
+
+- 入口 `ui/<编辑器 id>/index.html`，`ui/` 里只放 html、js、css、json、图片、字体；脚本写成外部文件，不能内联，不能 fetch。
+- 握手：页面往父窗口发 `{onto_ui: "1.1", connect: true}`，平台转交一个 MessagePort，之后请求 `{onto_ui, id, method, params}`、
+  回应 `{onto_ui, id, ok, result | error}`、推送 `{onto_ui, event, data}` 都走这个端口。
+- 方法：`context.get`、`theme.get`、`artifact.list / read / save`（只限本包登记的产物）、`chat.command`（只限本包命令，参数是
+  短的单行值，5 秒一条）、`upload.list / put / delete`（`put` 传 `{slot, name, data: ArrayBuffer}`，≤50 MB；知识包按平台的知识包
+  校验，只留本体文本）、`file.download {path}`（`ext/<包名>/` 下已提交的文件，目录打 zip）、`studio.open {kind, key}`、
+  `command.tasks`（本页发出、还在跑的命令）。推送：`artifact.changed`、`upload.changed`、`command.progress`、`readonly.changed`。
+- 页面读不到 `ontology/` 的条目；要在页面上列本体条目，让命令另写一份本包的产物当清单。
+- 样式自己画，配色用 `theme.get` 给的变量。
 
 ## 8. 产物登记
 
@@ -395,7 +421,7 @@ nodes:
 | 包名不可用或版本已入库 | `names`、`private_name` | 保留名、名字被占用，或改了内容没升版本 | 换名字，或升 `version` |
 | 缺少文件，或未声明（warn） | `declared` | 清单和实际文件对不上 | 对齐清单和文件 |
 | 校验和不一致 | `checksums` | 改完没重新生成 | 重跑 `pack_tool.py build` |
-| 前端文件不允许 | `frontend` | `ui/` 外有 `.js`、`.css`、`package.json` 等 | 删掉；页面选内置页 |
+| 前端文件不允许 | `frontend` | `ui/` 外有 `.js`、`.css`、`package.json` 等 | 删掉；页面选内置页，或放进 `ui/` 做自带页面 |
 | 带了 `settings.json` | `hooks` | 想改工作区设置 | 删掉；需要拦截时用清单 `hooks` |
 | 疑似凭据 | `secrets` | 正文或脚本里有密钥字面量 | 删掉，改成从环境变量读 |
 | 语法错误 | `syntax` | 脚本编译不过 | 本地 `python3 -m py_compile` 修好 |

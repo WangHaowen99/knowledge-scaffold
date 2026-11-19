@@ -186,7 +186,7 @@ test('审核记录：上传、静态检查（用时）、发布、退回，末�
 });
 
 test('退回原因：初稿列出失败项；必填、最多 500 字', () => {
-  assert.equal(rejectDraft({ checks: failedChecks('demo-trace-ext') }), '静态检查有 4 项失败：「没有新增实体类型」「写入范围不碰受保护目录」「hooks 只追加拒绝型」「页面只选用平台内置、没有前端代码」。请修改后重新上传。');
+  assert.equal(rejectDraft({ checks: failedChecks('demo-trace-ext') }), '静态检查有 4 项失败：「没有新增实体类型」「写入范围不碰受保护目录」「hooks 只追加拒绝型」「页面是平台内置或本包的隔离页面，前端代码只在 ui/ 下」。请修改后重新上传。');
   assert.equal(rejectDraft({ checks: passedChecks('industry-retail', '1.1.0') }), '');
   assert.equal(reasonProblem('  '), '请写明退回原因');
   assert.equal(reasonProblem('x'.repeat(501)), '退回原因最多 500 字');
@@ -256,7 +256,7 @@ test('mock：只有管理员能调；列表、详情、检查报告', async () =
   const report = await h.call('GET', `${U}/${id}/report`);
   assert.equal(report.status, 200);
   assert.match(report.headers.get('Content-Disposition'), /report\.md/);
-  assert.match(report.body, /\| 页面只选用平台内置、没有前端代码 \| 失败 \|/);
+  assert.match(report.body, /\| 页面是平台内置或本包的隔离页面，前端代码只在 ui\/ 下 \| 失败 \|/);
 });
 
 test('mock：上传校验类型、大小、清单；收下后是 checking', async () => {

@@ -239,6 +239,14 @@ export function createApi(client) {
     artifactSummary: (id, type, query) => client.get(`${P(id)}/artifacts/${enc(type)}/summary`, { query }), // AR-09
     artifactDrawio: (id, type, key, body) => client.post(`${P(id)}/artifacts/${enc(type)}/${enc(key)}/drawio`, body || {}), // AR-10
     openPackUi: (id, name, editor) => client.post(`${P(id)}/packs/${enc(name)}/ui-sessions`, { editor }), // PL-20：上传包编辑器的 iframe 地址
+    // 插件目录（ADR-0103）：上传位与下载；下载走 services.download（PL-31）
+    packSlotUploads: (id, name, slot) => client.get(`${P(id)}/packs/${enc(name)}/uploads/${enc(slot)}`), // PL-29
+    putPackSlotUpload(id, name, slot, blob, filename) { // PL-28
+      const fd = new FormData();
+      fd.append('file', blob, filename);
+      return client.post(`${P(id)}/packs/${enc(name)}/uploads/${enc(slot)}`, fd);
+    },
+    deletePackSlotUpload: (id, name, slot, uploadId) => client.del(`${P(id)}/packs/${enc(name)}/uploads/${enc(slot)}/${enc(uploadId)}`), // PL-30
 
     // 3.18 脚本与求解契约
     scripts: (id) => client.get(`${P(id)}/scripts`), // SC-01

@@ -42,6 +42,9 @@ const ReportsPage = routePage(() => import('../pages/reports/ReportsPage.jsx'));
 const InboxPage = routePage(() => import('../pages/inbox/InboxPage.jsx'));
 // F3：插件页（场景模拟、代码生成）与项目页（版本、发布、资料、项目设置）
 const ScenariosPage = routePage(() => import('../pages/scenarios/ScenariosPage.jsx'));
+// 插件自己的页面（ADR-0103）：页面 id 是「包名:页面 id」，不在内置页表里
+const PluginFramePage = routePage(() => import('../pages/plugin/PluginFramePage.jsx'));
+const projectPage = (page) => PROJECT_PAGES[page] || (String(page || '').includes(':') ? PluginFramePage : null);
 const ScriptsPage = routePage(() => import('../pages/scripts/ScriptsPage.jsx'));
 const VersionsPage = routePage(() => import('../pages/versions/VersionsPage.jsx'));
 const PublishPage = routePage(() => import('../pages/publish/PublishPage.jsx'));
@@ -129,7 +132,7 @@ function preloadInitialRoute() {
   if (typeof window === 'undefined') return;
   const r = parseHash(window.location.hash);
   let P;
-  if (r.name === 'project') P = PROJECT_PAGES[r.page];
+  if (r.name === 'project') P = projectPage(r.page);
   else if (r.name === 'login') P = LoginPage;
   else if (GLOBAL_PAGES.includes(r.name)) P = GLOBAL_PAGE_COMPONENTS[r.name];
   else P = ENTRY_PAGES[r.name] || ENTRY_PAGES.projects;
@@ -248,7 +251,7 @@ export default function App() {
   if (!user || route.name === 'login') {
     page = user ? <Splash /> : <LoginPage />;
   } else if (route.name === 'project') {
-    const P = PROJECT_PAGES[route.page];
+    const P = projectPage(route.page);
     page = (
       <ProjectArea key={route.projectId} pid={route.projectId}>
         {P ? <Suspense fallback={<ProjectSkeleton page={route.page} />}><P route={route} /></Suspense> : <Pending project projectId={route.projectId} page={route.page} />}

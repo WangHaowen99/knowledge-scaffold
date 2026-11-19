@@ -118,8 +118,9 @@ test('官方编辑器的键与界面接口版本范围', () => {
   assert.equal(packOfType('sticky-notes.note'), 'sticky-notes');
   assert.equal(uiApiSatisfies(''), true);
   assert.equal(uiApiSatisfies('>=1.0 <2.0'), true);
-  assert.equal(uiApiSatisfies('>=1.1'), false);
-  assert.equal(uiApiSatisfies('1.0'), true);
+  assert.equal(uiApiSatisfies('>=1.1'), true);
+  assert.equal(uiApiSatisfies('>=1.2'), false);
+  assert.equal(uiApiSatisfies('1.1'), true);
   assert.equal(uiApiSatisfies('>=abc'), false);
 });
 
@@ -168,7 +169,8 @@ test('窄接口消息：不是窄接口的消息忽略；版本、id、方法、
   assert.deepEqual(code({ ...req('artifact.read', {}), id: '' }), ['invalid_message', null]);
   assert.deepEqual(code({ ...req('artifact.read', {}), id: 'x'.repeat(65) }), ['invalid_message', null]);
   assert.deepEqual(code(req('artifact.read', ['n1'])), ['invalid_argument', 'r1']);
-  assert.deepEqual(METHODS, ['context.get', 'artifact.read', 'artifact.save', 'chat.command', 'theme.get']);
+  assert.deepEqual(METHODS, ['context.get', 'artifact.read', 'artifact.save', 'chat.command', 'theme.get',
+    'artifact.list', 'upload.list', 'upload.put', 'upload.delete', 'file.download', 'studio.open', 'command.tasks']);
 });
 
 test('窄接口读写：缺省是打开的那份；只能读写本包登记的产物，别的包、本体条目一律拒绝', async () => {
@@ -211,7 +213,7 @@ test('窄接口发命令：只能发本包的命令，参数只能是简单键�
 test('窄接口：上下文与主题变量；回应与推送的信封', async () => {
   const deps = fakeDeps();
   const c = await handle(parseRequest(req('context.get', {})), ctx, deps);
-  assert.deepEqual(c, { ui_api: UI_API, pack: { name: 'sticky-notes', version: '0.1.0', label: '便签' }, editor: ctx.editor, artifact: ctx.artifact, readonly: false });
+  assert.deepEqual(c, { ui_api: UI_API, pack: { name: 'sticky-notes', version: '0.1.0', label: '便签' }, editor: ctx.editor, artifact: ctx.artifact, page: null, readonly: false, uploads: [] });
   assert.equal('token' in c || 'auth' in c, false);
   assert.deepEqual(await handle(parseRequest(req('theme.get', {})), ctx, deps), { mode: 'light', vars: { '--ink': '#111' } });
   assert.deepEqual(readTheme((n) => (n === '--ink' ? ' #0F172A ' : n === '--token' ? 'x' : '')), { mode: 'light', vars: { '--ink': '#0F172A' } });
@@ -296,7 +298,7 @@ test('审查第 2 条：桥接走一次性 MessageChannel；iframe 第二次 loa
   host.onLoad();
   const reply = nextReply(port);
   port.postMessage({ onto_ui: '1.0', id: 'r1', method: 'theme.get', params: {} });
-  assert.deepEqual(await reply, { onto_ui: '1.0', id: 'r1', ok: true, result: { ok: 'theme.get' } });
+  assert.deepEqual(await reply, { onto_ui: UI_API, id: 'r1', ok: true, result: { ok: 'theme.get' } });
   // 再握手一次（比如导航后的新页面抢先发）不给第二个通道
   host.onWindowMessage({ source: target, data: { onto_ui: '1.0', connect: true } });
   assert.equal(posted.length, 1);
@@ -323,4 +325,80 @@ test('确认生效前双击产物卡：卡上的变更集还待确认（写入�
   assert.deepEqual(artifactQuery(opened, 'diagram.flowchart', 'borrow-flow'), { changeset: 'cs-3' });
   assert.equal(artifactQuery(opened, 'diagram.flowchart', 'other'), undefined);
   assert.equal(artifactQuery({ type: 'diagram.flowchart', key: 'borrow-flow' }, 'diagram.flowchart', 'borrow-flow'), undefined);
+});
+
+// ---------- 窄接口 1.1：插件自己的页面（ADR-0103） ----------
+
+const pageCtx = {
+  ...ctx, artifact: null, page: { id: 'board', key: 'sticky-notes:board', title: '便签板' },
+  uploads: [{ id: 'inputs', title: '输入知识包', kind: 'knowledge-package', max: 2 }],
+};
+
+function pageDeps() {
+  const calls = [];
+  return {
+    ...fakeDeps(),
+    calls,
+    listArtifacts: async (type, query) => { calls.push(['list', type, query]); return { items: [], total: 0 }; },
+    listUploads: async (slot) => { calls.push(['uploads', slot]); return { items: [] }; },
+    putUpload: async (slot, name, data) => { calls.push(['put', slot, name, data.byteLength]); return { id: 'u1' }; },
+    deleteUpload: async (slot, id) => { calls.push(['delete', slot, id]); return { deleted: true }; },
+    download: async (path) => { calls.push(['download', path]); },
+    openStudio: async (kind, key) => { calls.push(['studio', kind, key]); },
+    commandTasks: async () => ({ items: [] }),
+  };
+}
+
+const call = (method, params) => parseRequest(req(method, params));
+
+test('窄接口 1.1：页面模式的上下文带页面与上传位；列表只认本包的产物类型，筛选只收短值', async () => {
+  const deps = pageDeps();
+  const c = await handle(call('context.get', {}), pageCtx, deps);
+  assert.equal(c.artifact, null);
+  assert.deepEqual(c.page, pageCtx.page);
+  assert.deepEqual(c.uploads, pageCtx.uploads);
+  await handle(call('artifact.list', { type: 'sticky-notes.note', filter: { color: 'yellow' }, q: '借阅' }), pageCtx, deps);
+  assert.deepEqual(deps.calls[0], ['list', 'sticky-notes.note', { 'filter[color]': 'yellow', q: '借阅' }]);
+  await rejects(handle(call('artifact.list', { type: 'core.object' }), pageCtx, deps), 'forbidden');
+  await rejects(handle(call('artifact.list', { type: 'sticky-notes.note', filter: { color: 'a\nb' } }), pageCtx, deps), 'invalid_argument');
+  await rejects(handle(call('artifact.read', { key: 'n1' }), pageCtx, deps), 'forbidden');
+  await handle(call('artifact.list', { type: 'sticky-notes.note', cursor: 'c2', limit: 200 }), pageCtx, deps);
+  assert.deepEqual(deps.calls.at(-1), ['list', 'sticky-notes.note', { cursor: 'c2', limit: 200 }]);
+  await rejects(handle(call('artifact.list', { type: 'sticky-notes.note', limit: 500 }), pageCtx, deps), 'invalid_argument');
+});
+
+test('窄接口 1.1：上传只进本包声明的上传位，文件名不带路径、不超过 50 MB', async () => {
+  const deps = pageDeps();
+  await handle(call('upload.put', { slot: 'inputs', name: 'a.zip', data: new ArrayBuffer(8) }), pageCtx, deps);
+  assert.deepEqual(deps.calls[0], ['put', 'inputs', 'a.zip', 8]);
+  await rejects(handle(call('upload.put', { slot: 'other', name: 'a.zip', data: new ArrayBuffer(8) }), pageCtx, deps), 'forbidden');
+  await rejects(handle(call('upload.put', { slot: 'inputs', name: '../a.zip', data: new ArrayBuffer(8) }), pageCtx, deps), 'invalid_argument');
+  await rejects(handle(call('upload.put', { slot: 'inputs', name: 'a.zip', data: 'text' }), pageCtx, deps), 'invalid_argument');
+  await rejects(handle(call('upload.put', { slot: 'inputs', name: 'a.zip', data: new ArrayBuffer(0) }), pageCtx, deps), 'invalid_argument');
+  await rejects(handle(call('upload.delete', { slot: 'inputs', id: '../x' }), pageCtx, deps), 'invalid_argument');
+  await handle(call('upload.delete', { slot: 'inputs', id: 'lib-lending-1fb0ac' }), pageCtx, deps);
+  assert.deepEqual(deps.calls.at(-1), ['delete', 'inputs', 'lib-lending-1fb0ac']);
+  // 编辑器（不是页面）用不了上传
+  await rejects(handle(call('upload.list', { slot: 'inputs' }), ctx, deps), 'method_unknown');
+});
+
+test('窄接口 1.1：下载只认插件目录里的相对路径并限频；跳 Studio 只认本体条目', async () => {
+  const deps = pageDeps();
+  let now = 0;
+  deps.now = () => now;
+  const state = {};
+  const c = { ...pageCtx, state };
+  for (const bad of ['../x', '/etc/passwd', 'a/../b', '.git/config', 'a\\b']) {
+    await rejects(handle(call('file.download', { path: bad }), c, deps), 'invalid_argument');
+  }
+  assert.deepEqual(await handle(call('file.download', { path: 'out/' }), c, deps), { ok: true });
+  assert.deepEqual(deps.calls.at(-1), ['download', 'out']);
+  now = 500;
+  await rejects(handle(call('file.download', { path: 'glossary.md' }), c, deps), 'rate_limited');
+  now = 5000;
+  await handle(call('file.download', {}), c, deps);
+  assert.deepEqual(deps.calls.at(-1), ['download', '']);
+  await handle(call('studio.open', { kind: 'object', key: '借用人' }), c, deps);
+  assert.deepEqual(deps.calls.at(-1), ['studio', 'object', '借用人']);
+  await rejects(handle(call('studio.open', { kind: 'file', key: 'x' }), c, deps), 'invalid_argument');
 });

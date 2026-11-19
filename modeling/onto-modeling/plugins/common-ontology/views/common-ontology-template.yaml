@@ -1,0 +1,4 @@
+artifact: common-ontology.template
+list: {columns: [title, template, params, instances, sources]}
+detail: {layout: sections, side: [template, sources]}
+card: false  # 一轮会改很多份，只出「状态」一张卡

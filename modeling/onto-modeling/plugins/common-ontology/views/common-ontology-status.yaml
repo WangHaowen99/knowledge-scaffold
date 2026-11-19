@@ -1,0 +1,4 @@
+artifact: common-ontology.status
+list: {columns: [state, min, checked_at, real_count, term_count, template_count, none_count], filters: [state]}
+detail: {layout: sections, side: [state, min, checked_at, errors, warnings]}
+card: {title: title, chips: [state], fields: [real_count, term_count, template_count, errors]}

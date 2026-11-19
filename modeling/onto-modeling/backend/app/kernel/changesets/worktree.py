@@ -77,9 +77,21 @@ def main_root(path: Path | None) -> Path | None:
 
 
 def is_protected(rel: str) -> bool:
-    """受保护的路径（资料区、锁文件目录）：副本里的改动不进变更集、合入时一律取主线的版本。"""
-    first = str(rel).replace("\\", "/").lstrip("/").split("/", 1)[0]
-    return first in PROTECTED
+    """受保护的路径（资料区、锁文件目录、插件的上传目录 ext/<包>/uploads/，ADR-0103）：副本里的改动不进变更集、
+    合入时一律取主线的版本。"""
+    parts = str(rel).replace("\\", "/").lstrip("/").split("/")
+    return parts[0] in PROTECTED or (len(parts) >= 3 and parts[0] == "ext" and parts[2] == "uploads")
+
+
+def _protected_specs(copy: Path, env: dict | None) -> list[str]:
+    """受保护路径的 git 路径参数：固定的两个目录，加上 HEAD 里各插件的上传目录（ls-tree 不认通配，逐个列出）。"""
+    import subprocess
+
+    listed = subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
+        ["git", "-c", "core.hooksPath=/dev/null", "ls-tree", "-d", "-z", "--name-only", "HEAD", "--", "ext/"],
+        cwd=copy, capture_output=True, env=env or None, timeout=60)
+    packs = [name for name in listed.stdout.decode("utf-8", "replace").split("\0") if name.startswith("ext/")]
+    return [*PROTECTED, *(f"{name}/uploads" for name in packs)]
 
 
 def project_id_of(path: Path) -> str:
@@ -476,12 +488,13 @@ def _keep_protected(copy: Path, env: dict | None, *, mark_skip: bool = False) ->
 
     base = ["git", "-c", "core.hooksPath=/dev/null"]
     run_env = env or None
+    specs = _protected_specs(copy, env)
     listed = subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
-        [*base, "ls-tree", "-r", "-z", "HEAD", "--", *PROTECTED], cwd=copy, capture_output=True,
+        [*base, "ls-tree", "-r", "-z", "HEAD", "--", *specs], cwd=copy, capture_output=True,
         env=run_env, timeout=60)
     head_paths = {entry.split(b"\t", 1)[1] for entry in listed.stdout.split(b"\0") if b"\t" in entry}
     indexed = subprocess.run(  # NOSONAR(S4721) 固定 git 子命令，参数列表不经 shell
-        [*base, "ls-files", "-z", "--", *PROTECTED], cwd=copy, capture_output=True, env=run_env,
+        [*base, "ls-files", "-z", "--", *specs], cwd=copy, capture_output=True, env=run_env,
         timeout=60)
     extra = [path for path in indexed.stdout.split(b"\0") if path and path not in head_paths]
     if extra:

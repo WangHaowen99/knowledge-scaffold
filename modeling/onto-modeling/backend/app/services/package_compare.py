@@ -610,6 +610,20 @@ def _archive_index(path: Path) -> dict:
         output_path.unlink(missing_ok=True)
 
 
+def index_archive(path: Path) -> dict:
+    """别的上传入口复用知识包校验（插件上传位，ADR-0103）：子进程解析，限时、限大小、路径安全、manifest 合规。
+
+    返回 `{files: {包内相对路径: {path: ZIP 里的成员名, size, digest, category}}, file_count, uncompressed_size,
+    package_id, manifest}`；不合规抛 WorkspaceError（4xx）。
+    """
+    previous = getattr(_ACTIVE_TASK, "deadline", None)
+    _ACTIVE_TASK.deadline = time.monotonic() + TASK_TIMEOUT_SECONDS
+    try:
+        return _archive_index(path)
+    finally:
+        _ACTIVE_TASK.deadline = previous
+
+
 def _archive_meta(path: Path, index: dict) -> dict:
     manifest = index.pop("manifest")
     return {**index, "package_name": manifest["name"], "package_version": manifest["version"]}

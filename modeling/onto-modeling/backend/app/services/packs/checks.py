@@ -187,6 +187,29 @@ def _provider_problems(directory: Path, manifest: Manifest) -> list[str]:
     return problems
 
 
+def _page_problems(manifest: Manifest, *, official: bool) -> list[str]:
+    """清单里的页面：内置页照旧；别的页面要是上传包、id 合规、ui 指向本包声明的编辑器、包内不重复。"""
+    problems, seen = [], set()
+    editors = {editor["id"] for editor in manifest.editors()}
+    for page in manifest.pages():
+        page_id = page.get("id")
+        if page_id in seen:
+            problems.append(f"页面 {page_id} 声明了两次")
+        seen.add(page_id)
+        if page_id in mf.BUILTIN_PAGES:
+            continue
+        ui = page.get("ui")
+        if not ui:
+            problems.append(f"页面 {page_id} 不是平台内置页面，要用 ui 指向本包的编辑器")
+        elif official:
+            problems.append(f"页面 {page_id}：官方包的界面随平台编译，暂不支持自带页面")
+        elif not isinstance(page_id, str) or not mf.PAGE_ID_RE.match(page_id):
+            problems.append(f"页面 id 不合法（小写字母开头，字母、数字、连字符）：{page_id!r}")
+        elif ui not in editors:
+            problems.append(f"页面 {page_id} 的 ui {ui} 没有在 contributes.editors 里声明")
+    return problems
+
+
 def _secrets(directory: Path, files: list[str]) -> list[str]:
     hits = []
     for rel in files:
@@ -626,9 +649,8 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
               if not any(script in str(item.get("command")) for script in names["scripts"])]
     checks.append(_check("hooks", "hooks 只追加拒绝型", "fail" if hooks else "pass", "；".join(hooks)))
 
-    # 页面只选平台内置的，不带前端代码
-    pages = [f"页面 {page.get('id')} 不是平台内置页面" for page in manifest.pages()
-             if page.get("id") not in mf.BUILTIN_PAGES]
+    # 页面：选平台内置的，或者上传包用 ui 指向本包的编辑器、在隔离 iframe 里画（ADR-0103）
+    pages = _page_problems(manifest, official=official and not tenant)
     pages += [f"子页挂在非内核页面 {sub.get('parent')}" for sub in manifest.subpages()
               if sub.get("parent") not in mf.KERNEL_PAGES]
     pages += [f"子页 {sub.get('id')} 不是平台内置子页" for sub in manifest.subpages()
@@ -639,7 +661,7 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
     if frontend:
         pages.append("ui/ 之外有前端代码：" + "、".join(frontend[:10]))
     checks.append(_check(
-        "frontend", "页面只选用平台内置，前端代码只在 ui/ 下",
+        "frontend", "页面是平台内置或本包的隔离页面，前端代码只在 ui/ 下",
         "fail" if pages else ("warn" if frontend_soft else "pass"),
         "；".join(pages) if pages else ("报告模板含脚本：" + "、".join(frontend_soft[:5]) if frontend_soft else ""),
     ))

@@ -2504,12 +2504,13 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 响应：`Extensions`，包括：
   - 左栏 `nav`：内核 4 项，加上插件页面，按声明顺序排，超过 5 个进「更多」；
   - `subpages`：机制保留；内核内置的子页现在没有（资料页的数据源、采集与快照、证据浏览器随 ADR-0101 删除），包声明子页时静态检查不通过；
-  - `pages`：页面声明，含 `data`、`actions`、`badge`；
+  - `pages`：页面声明，含 `data`、`actions`、`badge`；包自己的页面（ADR-0103）另带 `page`（清单里的页面 id）与 `ui`（编辑器 id），
+    `id` 是 `<包名>:<页面 id>`；
   - `entries`：界面入口，如快捷项、附加操作；
   - `artifact_types`、`views`、`gates`、`config`；
   - `active_hash`、`pending_hash`；
   - `disabled_pages`：已停用插件的页面，打开旧链接显示「插件已停用」和重新启用按钮。
-- 左栏只列「声明的页面 ∩ 前端内置页面」，且通过 `page_api` 校验。
+- 左栏列「声明的页面 ∩ 前端内置页面」，加上上传包用 `ui` 指向本包编辑器的页面（id `<包名>:<页面 id>`，在隔离 iframe 里画，ADR-0103），且通过 `page_api` 校验。
 
 #### PL-13 上传插件包
 
@@ -2542,7 +2543,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - 没有新增实体类型、兼容范围对得上、名字不冲突；
   - 不含凭据；
   - hooks 只追加拒绝型；
-  - 页面只选用平台内置、没有前端代码；
+  - 页面是平台内置的，或者用 `ui` 指向本包编辑器的隔离页面（官方包暂不支持）；前端代码只在 `ui/` 下；
   - 流程声明了范围限定（`confine`）时：只有一个范围文件，在本包节点的 `produces` 里，不在 `ontology/` 和受保护目录下（检查项 `confine`，ADR-0085）；
   - 节点的主命令（`actions` 里第一个带 `command` 的动作）是本包的命令（检查项 `node_entry`）；
   - 节点的 `need` 只能是 `required`、`optional`、`{when: <条件>}`，写错失败；带了分段遗留字段（`per_slice`、`steps`、`slice_steps`、
@@ -2659,6 +2660,40 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 去掉信任，从连接器网关删掉这个版本。已接入的数据源保留，用到它的采集报「连接器不可用」。
 - 响应 `200`：`PackCard`（`trust.state="untrusted"`）。
 - 错误：同 PL-28。
+
+#### PL-28 往插件上传位放文件
+
+`POST /api/v1/projects/{id}/packs/{name}/uploads/{slot}`（multipart） · 所有者 · 旧：— · 审计：写请求通用审计 · 依据：ADR-0103 · 页面：插件自己的页面（窄接口 `upload.put`）
+
+- `slot` 要是本项目启用中的包在清单 `contributes.uploads` 里声明的上传位；现在只有 `kind: knowledge-package`。
+- 请求：`file`（知识包 ZIP，≤50 MiB）。校验同 PC-01：路径安全、ZIP 炸弹、manifest 合规（`kind: ontology-package`）。
+- 只留 `manifest.yaml` 与 `objects/ operations/ rules/ metrics/ scripts/` 的文本（不要各目录的 `index.md`，合计 ≤20 MiB），连同
+  `upload.json` 写进 `ext/<name>/uploads/<slot>/<id>/` 并提交到主线（来源 web）。`id` 由知识包 manifest 的 `id` 算出：同一个包重传就替换。
+- 助手读得到、改不了：变更集把 `ext/*/uploads/` 当受保护路径。
+- 响应 `201`：`PackUpload = {id, slot, filename, package: {id, name, version}, counts: {objects, operations, rules, metrics, scripts}, files, size, digest, uploaded_at, uploaded_by}`。
+- 错误：`pack_not_enabled`（409）、`not_found`（上传位不存在）、`invalid_argument`（空文件、上传位不收这一种）、`package_invalid` /
+  `compare_archive_invalid` 等（400，不是合规的知识包）、`payload_too_large`、`upload_slot_full`（409，超过清单的 `max`）、`rate_limited`、
+  `write_scope_locked`（423）。
+
+#### PL-29 插件上传位里的文件
+
+`GET /api/v1/projects/{id}/packs/{name}/uploads/{slot}` · 所有者 · 旧：— · 审计：否 · 依据：ADR-0103 · 页面：插件自己的页面（`upload.list`）
+
+- 响应：`{items: PackUpload[]}`，按上传时间倒序。
+
+#### PL-30 删除插件上传位里的一项
+
+`DELETE /api/v1/projects/{id}/packs/{name}/uploads/{slot}/{upload_id}` · 所有者 · 旧：— · 审计：写请求通用审计 · 依据：ADR-0103 · 页面：插件自己的页面（`upload.delete`）
+
+- 删掉整个目录并提交到主线。响应：`{deleted: true}`；不存在回 `404`。
+
+#### PL-31 下载插件目录里的文件
+
+`GET /api/v1/projects/{id}/packs/{name}/files?path=` · 所有者（可用 `?token=`） · 旧：— · 审计：否 · 依据：ADR-0103 · 页面：插件自己的页面（`file.download`）
+
+- `path` 是相对 `ext/<name>/` 的路径，空串是整个插件目录；不能越出插件目录、不能有隐藏段。
+- 只读主线已提交的内容：文件原样给，目录用 `git archive` 打成 `<目录名>.zip`；超过 100 MiB 回 `413`。
+- 响应 `200`，`Content-Disposition: attachment`。错误：`invalid_argument`、`not_found`、`pack_not_enabled`、`payload_too_large`。
 
 ### 3.17 插件产物与通用视图
 

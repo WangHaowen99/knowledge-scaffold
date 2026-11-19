@@ -1,0 +1,4 @@
+artifact: common-ontology.mapping
+list: {columns: [title, version, real, virtual, none, rows]}
+detail: {layout: sections, side: [version, real, virtual, none]}
+card: false  # 一轮会改很多份，只出「状态」一张卡

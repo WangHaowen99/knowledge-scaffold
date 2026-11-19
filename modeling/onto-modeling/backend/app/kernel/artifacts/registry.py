@@ -281,7 +281,7 @@ def view_problems(declared) -> list[str]:
     problems = []
     for part, keys in _VIEW_KEYS.items():
         spec = declared.get(part)
-        if spec is None:
+        if spec is None or (part == "card" and spec is False):  # card: false = 这类产物不在对话里出卡
             continue
         if not isinstance(spec, dict):
             problems.append(f"{part} 必须是映射")
@@ -337,6 +337,7 @@ def _view(declared: dict | None, fields: list[dict], status: dict | None, *, edi
     view = _default_view(fields, status)
     if not isinstance(declared, dict) or not declared:
         return view
+    no_card = declared.get("card") is False
     declared = _clean_view(declared)
     names = {item["name"] for item in fields} | {"title", "key", "updated", "updated_at"}
     for part in ("list", "detail", "card"):
@@ -359,6 +360,9 @@ def _view(declared: dict | None, fields: list[dict], status: dict | None, *, edi
         if editor is not None:
             detail["editor"] = editor
     view["card"] = _card(view["card"], names)
+    if no_card:
+        # 视图写 card: false（ADR-0103）：插件的汇总、清单类产物一轮改很多份，不逐份出卡
+        view["card"]["hidden"] = True
     return view
 
 

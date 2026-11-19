@@ -11,6 +11,7 @@ import asyncio
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -19,6 +20,7 @@ from ..api import deps
 from ..api.errors import ApiError
 from ..services import audit
 from ..services.packs import catalog, dev_skill, registry, service
+from ..services.packs import files as pack_files
 from ..services.packs import ui as pack_ui
 from ..services.packs.assembler import AssemblyError
 from ..services.packs.repository import RepositoryError
@@ -245,6 +247,64 @@ async def pack_ui_file(ticket: str, path: str):
     except pack_ui.PackUiError as exc:
         raise ApiError(exc.code, str(exc), exc.status, None) from exc
     return FileResponse(found, media_type=media, headers=pack_ui.ISOLATION_HEADERS)
+
+
+# ---- 插件目录：上传位与下载（ADR-0103） ----
+
+
+def _pack_file_errors(exc: pack_files.PackFileError) -> ApiError:
+    return ApiError(exc.code, str(exc), exc.status, exc.details)
+
+
+def _pack_upload_view(item: dict) -> dict:
+    return {**item, "uploaded_at": deps.iso(item.get("uploaded_at"))}
+
+
+@router.get("/api/v1/projects/{project_id}/packs/{name}/uploads/{slot}")
+def list_pack_uploads(project_id: str, name: str, slot: str, request: Request):
+    """PL-29：插件上传位里的文件。"""
+    deps.require_owner(project_id, request)
+    try:
+        items = pack_files.list_uploads(deps.workspaces, project_id, name, slot)
+    except pack_files.PackFileError as exc:
+        raise _pack_file_errors(exc) from exc
+    return {"items": [_pack_upload_view(item) for item in items]}
+
+
+@router.post("/api/v1/projects/{project_id}/packs/{name}/uploads/{slot}", status_code=201)
+def put_pack_upload(project_id: str, name: str, slot: str, request: Request, file: UploadFile = File(...)):
+    """PL-28：往插件上传位放一个知识包（校验同 PC-01），写进 ext/<包>/uploads/<上传位>/ 并提交到主线。"""
+    deps.require_owner(project_id, request)
+    try:
+        item = pack_files.put_upload(deps.workspaces, project_id, name, slot, file.file, file.filename or "",
+                                     actor=deps.actor(request))
+    except pack_files.PackFileError as exc:
+        raise _pack_file_errors(exc) from exc
+    return _pack_upload_view(item)
+
+
+@router.delete("/api/v1/projects/{project_id}/packs/{name}/uploads/{slot}/{upload_id}")
+def delete_pack_upload(project_id: str, name: str, slot: str, upload_id: str, request: Request):
+    """PL-30：删掉插件上传位里的一项。"""
+    deps.require_owner(project_id, request)
+    try:
+        pack_files.delete_upload(deps.workspaces, project_id, name, slot, upload_id, actor=deps.actor(request))
+    except pack_files.PackFileError as exc:
+        raise _pack_file_errors(exc) from exc
+    return {"deleted": True}
+
+
+@router.get("/api/v1/projects/{project_id}/packs/{name}/files")
+def download_pack_file(project_id: str, name: str, request: Request, path: str = ""):
+    """PL-31：下载插件目录 ext/<包>/ 下主线已提交的文件；目录打成 zip。"""
+    deps.require_owner(project_id, request)
+    try:
+        content, filename, media = pack_files.download(deps.workspaces, project_id, name, path)
+    except pack_files.PackFileError as exc:
+        raise _pack_file_errors(exc) from exc
+    return Response(content=content, media_type=media, headers={
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}", "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff"})
 
 
 # ---- 上传与审核（管理员） ----

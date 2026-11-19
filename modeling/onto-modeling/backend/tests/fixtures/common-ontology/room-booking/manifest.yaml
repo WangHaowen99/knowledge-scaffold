@@ -1,0 +1,8 @@
+kind: ontology-package
+schema_version: '0.1'
+id: room-booking
+name: "会议室预约"
+description: "合成测试数据：会议室预约场景的本体"
+version: 1.0.0
+status: released
+language: zh-CN

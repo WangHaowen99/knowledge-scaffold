@@ -1,0 +1,18 @@
+# 继承映射：一个输入知识包一份，列它的每个对象、操作、规则对应公共本体的哪一条、多出了什么；没抽出的也列（rows）
+type: common-ontology.mapping
+title: 继承映射
+path: ext/common-ontology/result/mapping/{key}.md
+format: md-frontmatter
+key: filename
+readonly: generated
+schema:
+  version: "1"
+  fields:
+    - {name: title, type: text, label: 知识包, required: true}
+    - {name: pack, type: text, label: 上传编号, required: true}
+    - {name: package_id, type: text, label: 知识包编号, required: true}
+    - {name: version, type: text, label: 版本, required: false}
+    - {name: real, type: number, label: 实类, required: true}
+    - {name: virtual, type: number, label: 虚类, required: true}
+    - {name: none, type: number, label: 没抽出, required: true}
+    - {name: rows, type: list, label: 条目, required: true}

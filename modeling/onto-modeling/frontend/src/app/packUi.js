@@ -2,7 +2,7 @@
 // 打开方式按 AR-01 的 view.detail：包自带编辑器（官方包随平台编译 bundled / 上传包 iframe）> 平台专用组件 > 通用详情。
 import { isLocked } from '../state/readonly.js';
 
-export const UI_API = '1.0';
+export const UI_API = '1.1';
 export const FLOWCHART_TYPE = 'diagram.flowchart';
 
 // 平台专用组件 → 随平台编译的官方包编辑器（旧版图示包写的是 detail.component: flowchart，契约保留兼容）

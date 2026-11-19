@@ -1,0 +1,44 @@
+# 公共本体（上传型插件，从插件中心安装）：页面上传多个知识包，抽取它们共有的对象、规则、操作，相当于代码里的父类。
+# 实类写成 ontology/ 里的普通条目，随发布进知识包，下游项目用领域包扩展（ADR-0099）继承；术语表、规则模板、继承映射、
+# 实类清单在 ext/common-ontology/result/，页面查看、下载（不进知识包）。页面是本包自带的隔离 iframe（ui/page/），
+# 只经窄接口 1.1 和平台通信；输入知识包放在本包的上传位 inputs（ext/common-ontology/uploads/inputs/，助手只读）。
+name: common-ontology
+version: 0.1.1
+kind: capability
+category: capability
+label: 公共本体
+description: 上传多个知识包，抽取共有的对象、规则、操作：结构一致的成为实类，概念相同结构不同的进术语表，只差参数的规则记成模板，并给出每个包的继承映射。
+publisher: {kind: tenant, label: ""}
+kernel_api: ">=1.0 <2.0"
+page_api: ">=1.1 <2.0"
+engines: [claude, jiuwen]
+depends: {core: ">=0.6"}  # 用 core 的条目模板、ontology_checker、state_helper
+changelog: 重跑时按公共叫法再比一次，没抽出的组里逐字一致又够门槛的操作、规则拆出来定为实类。
+contributes:
+  commands: [common-ontology-extract]
+  scripts: [co_inventory.py, co_check.py]
+  artifacts:
+    - artifacts/common-ontology-status.yaml
+    - artifacts/common-ontology-real.yaml
+    - artifacts/common-ontology-term.yaml
+    - artifacts/common-ontology-template.yaml
+    - artifacts/common-ontology-mapping.yaml
+  views:
+    - views/common-ontology-status.yaml
+    - views/common-ontology-real.yaml
+    - views/common-ontology-term.yaml
+    - views/common-ontology-template.yaml
+    - views/common-ontology-mapping.yaml
+  editors:
+    - {id: page, title: 公共本体, ui_api: ">=1.1 <2.0"}
+  pages:
+    - {id: common, nav: {title: 公共本体, icon: layers, order: 3}, ui: page}
+  uploads:
+    - {id: inputs, title: 输入知识包, kind: knowledge-package, max: 10}
+  prompts:
+    - id: common-ontology-extract-hint
+      match: ["抽取公共本体", "公共本体.*(抽|提取)"]
+      text: >-
+        抽取公共本体用 /common-ontology-extract（参数 min=N：至少 N 个包都有才算公共，缺省 2）。
+        输入知识包在「公共本体」页上传，ext/common-ontology/uploads/ 只读。
+checksums: checksums.sha256

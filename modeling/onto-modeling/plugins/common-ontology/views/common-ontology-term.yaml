@@ -1,0 +1,4 @@
+artifact: common-ontology.term
+list: {columns: [title, definition, names, sources]}
+detail: {layout: sections, side: [definition, sources]}
+card: false  # 一轮会改很多份，只出「状态」一张卡

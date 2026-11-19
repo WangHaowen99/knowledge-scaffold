@@ -156,6 +156,8 @@ def round_cards(manager, project_id: str, changes: dict, *, base: str = "", seed
     labels = {view.name: view.manifest.label for view in registry.desired_packs(manager, project_root)}
     cards: list[dict] = []
     for atype in types_for_project(manager, project_root):
+        if (atype.view.get("card") or {}).get("hidden"):
+            continue
         try:
             rows = index.rows_of(atype, source, added | modified)
         except Exception:  # noqa: BLE001 - 单个类型解析失败不影响别的卡

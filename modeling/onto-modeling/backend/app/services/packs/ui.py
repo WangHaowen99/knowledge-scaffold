@@ -134,7 +134,16 @@ def open_session(manager, project_id: str, pack: str, editor_id: str, *, user: s
         "editor": {"id": editor["id"], "title": editor["title"]},
         # 窄接口 chat.command 只能发这几条（本包清单声明的命令）
         "commands": [f"/{name}" for name in view.manifest.items("commands")],
+        # 窄接口 1.1（ADR-0103）：本包登记的产物类型（artifact.* 只认这些）与上传位（upload.* 只认这些）
+        "types": _pack_types(view),
+        "uploads": view.manifest.uploads(),
     }
+
+
+def _pack_types(view: registry.PackView) -> list[str]:
+    from ...kernel.artifacts import registry as artifact_registry
+
+    return [item.type for item in artifact_registry.types_for_packs([view])]
 
 
 # 来自包界面的命令（S-20 带 origin.pack）在服务端再按包校验一次：只认本包声明的命令，参数是短的单行值，限频
