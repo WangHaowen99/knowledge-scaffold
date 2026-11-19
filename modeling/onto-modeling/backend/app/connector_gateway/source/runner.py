@@ -64,8 +64,9 @@ def _absorb(outcome: Outcome, event: dict) -> bool:
             outcome.collected.tables.append({"name": str(event.get("name") or ""), "comment": str(event.get("comment") or ""),
                                              "columns": columns, "rows": rows})
     elif kind == "fact":
-        fact = {key: value for key, value in event.items() if key != "event"}
-        outcome.collected.facts.append(fact)
+        fact = event.get("fact")
+        if isinstance(fact, dict) and fact.get("kind"):
+            outcome.collected.facts.append(dict(fact))
     elif kind == "limitation":
         outcome.collected.limitations.append(str(event.get("text") or "")[:500])
     elif kind == "progress":

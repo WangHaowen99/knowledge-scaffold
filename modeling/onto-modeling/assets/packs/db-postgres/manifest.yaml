@@ -1,0 +1,23 @@
+# 多源连接器：PostgreSQL 数据源（ADR-0103）。连接器随连接器网关镜像交付，跑在网关的子进程里，内核不导入它。
+name: db-postgres
+version: 0.1.0
+kind: provider
+category: provider
+label: PostgreSQL
+description: 读取表结构、外键、约束和遮蔽后的样本。
+publisher: {kind: official, label: 平台}
+kernel_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+depends: {}
+source:
+  entry: connector.py
+  license: pg8000（BSD-3-Clause），随网关镜像
+  fields:
+    - {key: host, label: 主机, type: host, required: true}
+    - {key: port, label: 端口, type: port, default: 5432}
+    - {key: database, label: 数据库, type: text, required: true}
+    - {key: user, label: 账号, type: text, required: true}
+    - {key: password, label: 密码, type: secret, required: true}
+    - {key: tables, label: 表范围, type: text, placeholder: "public.*, sales.orders"}
+changelog: 首个版本。
+checksums: checksums.sha256

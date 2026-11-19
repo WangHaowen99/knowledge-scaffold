@@ -130,7 +130,7 @@ _SECTIONS = (
     ("码值", ("values",), ["表", "列", "取值"], lambda f: [f.get("table"), f.get("column"), _join(f.get("values"))]),
     ("视图", ("view",), ["名称", "定义"], lambda f: [f.get("name"), f.get("definition")]),
     ("存储过程", ("routine",), ["名称", "类型", "签名", "定义"],
-     lambda f: [f.get("name"), f.get("kind"), f.get("signature"), f.get("definition")]),
+     lambda f: [f.get("name"), f.get("type"), f.get("signature"), f.get("definition")]),
     ("触发器", ("trigger",), ["表", "名称", "时机", "事件", "定义"],
      lambda f: [f.get("table"), f.get("name"), f.get("timing"), f.get("event"), f.get("definition")]),
 )
