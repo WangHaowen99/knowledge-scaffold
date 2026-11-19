@@ -720,6 +720,9 @@ export default function LeftPane({
                           size="small"
                           type={statuses[index] === 'process' ? 'primary' : 'default'}
                           ghost={statuses[index] === 'process'}
+                          disabled={action.command === '/ontology-codegen-scan' && activeStage === 'codegen'}
+                          title={action.command === '/ontology-codegen-scan' && activeStage === 'codegen'
+                            ? '代码生成任务正在运行，请等待本轮完成' : undefined}
                           onClick={() => onCommand(action.command)}
                         >
                           {action.label}

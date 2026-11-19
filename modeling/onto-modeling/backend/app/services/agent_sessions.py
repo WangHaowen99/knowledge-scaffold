@@ -196,6 +196,7 @@ INTERRUPT_TIMEOUT_SECONDS = 10
 KILL_TIMEOUT_SECONDS = 5
 # 判定执行超时时 session_error 带的 reason，前端据此把子任务卡显示成“执行超时”
 STALL_TIMEOUT_REASON = "stall_timeout"
+CODEGEN_SCAN_COMMAND = "/ontology-codegen-scan"
 
 
 class SessionError(Exception):
@@ -295,6 +296,7 @@ class Session:
     awaiting_cli_idle: bool = False
     # 用户点了停止：之后的 result 直接置空闲，不再等 CLI
     interrupt_requested: bool = False
+    codegen_scan_active: bool = False
 
     @property
     def client(self) -> Any:
@@ -321,6 +323,8 @@ class Session:
             queue.put_nowait(event)
 
     def set_state(self, state: str) -> None:
+        if state in ("idle", "error", "closed"):
+            self.codegen_scan_active = False
         if self.state != state:
             self.state = state
             self.broadcast({"type": "session_state", "state": state})
@@ -594,8 +598,14 @@ class SessionManager:
         # 换绑要回收旧引擎（await 断开，且第一步就把旧 Session 移出字典）：不加锁时
         # 并发的 send 会各建一个 Session，被覆盖的那个带着引擎却不在字典里，无人回收
         owner = personal_model_settings.model_owner(username, engine_cls.name)
+        is_codegen_scan = text == CODEGEN_SCAN_COMMAND
         async with self._lock:
             session = await self._bind_session(project_id, conversation_id)
+            if is_codegen_scan and session.codegen_scan_active:
+                raise SessionError("扫描候选正在运行，请等待本轮完成", 409)
+            if is_codegen_scan and _busy_for_owner_switch(session):
+                # 现有任务的 result 可能先于排队扫描返回，届时 idle 会提前释放扫描占位。
+                raise SessionError("当前任务正在运行，请等待完成后再扫描候选", 409)
             await self._bind_model_owner(session, owner, engine_cls.name)
             if not _busy_for_owner_switch(session):
                 session.last_submitted_prompt = None
@@ -605,12 +615,16 @@ class SessionManager:
             session.last_submitted_prompt = text
             session.submission_version += 1
             submission_version = session.submission_version
+            if is_codegen_scan:
+                session.codegen_scan_active = True
             session.sending += 1
         try:
             await self._deliver(session, cwd, text)
         except BaseException:
             if session.submission_version == submission_version:
                 session.last_submitted_prompt = None
+            if is_codegen_scan:
+                session.codegen_scan_active = False
             raise
         finally:
             session.sending -= 1
