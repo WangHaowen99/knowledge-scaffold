@@ -102,6 +102,18 @@ export function cardTags(p) {
   return { tags };
 }
 
+/**
+ * 多源连接器的信任（ADR-0103，契约 PackCard.trust）：随镜像交付的（builtin）不标；
+ * 上传的标已信任 / 未信任，信任了但网关里没装上标「未装上」（网关不可用时 installed 为 null，按已信任算）
+ */
+export function trustChip(p) {
+  const t = p?.trust;
+  if (!t || t.state === 'builtin') return null;
+  if (t.state === 'untrusted') return { text: '未信任', tone: 'gray', icon: 'lock' };
+  if (t.installed === false) return { text: '未装上', tone: 'amber', icon: 'alert' };
+  return { text: '已信任', tone: 'teal', icon: 'shieldok' };
+}
+
 /** 卡片上的「包名@版本」：已启用的显示锁定版本 */
 export const versionOf = (p) => (isInstalled(p) && p.locked_version ? p.locked_version : p.version || p.latest);
 
@@ -112,6 +124,9 @@ export const versionOf = (p) => (isInstalled(p) && p.locked_version ? p.locked_v
 export function cardFoot(p, o = {}) {
   const chip = (text, tone, icon) => ({ type: 'chip', text, tone, icon: icon || null });
   const detail = { type: 'detail' };
+  // 上传的多源连接器：卡脚显示信任状态，信任与撤销在详情页（管理员）
+  const trust = trustChip(p);
+  if (trust) return { left: chip(trust.text, trust.tone, trust.icon), right: detail };
   switch (p.project_status) {
     case 'required': return { left: chip('必装 · 已启用', 'blue', 'lock'), right: detail };
     case 'enabled': return { left: chip('已启用', 'blue', 'check'), right: detail };
