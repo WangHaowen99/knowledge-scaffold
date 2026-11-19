@@ -24,13 +24,14 @@
    拦下。`PAGE_API` 升到 1.1。
 2. **窄接口 1.1**（`UI_API` 1.0 → 1.1，1.0 的方法不变）。页面模式下 `context.get` 带 `page` 与 `uploads`、`artifact`
    为空，新增方法：
-   - `artifact.list {type, filter?, q?}` → AR-02，只限本包登记的类型；
+   - `artifact.list {type, filter?, q?, cursor?, limit?}` → AR-02，只限本包登记的类型，`limit` ≤200；
    - `upload.list {slot}`、`upload.put {slot, name, data: ArrayBuffer}`（≤50 MB，经端口转交）、`upload.delete {slot, id}`
      → PL-29、PL-28、PL-30，只限本包声明的上传位；
    - `file.download {path}` → PL-31，只认插件目录 `ext/<包名>/` 下的相对路径，平台在父窗口触发下载，2 秒一次；
    - `studio.open {kind, key}`：平台跳到 Studio 的条目；
    - `command.tasks`：本页发出的、还在跑的命令（只给 `task_id、state、title、percent`）。
    新推送：`upload.changed {slot}`、`command.progress`。上传位与本包产物类型由 PL-20 一并返回。
+   页面模式的 `readonly` 恒为 false：上传、删除由服务端按写入范围锁判，锁着时如实回 423。
 3. **上传位**：清单 `contributes.uploads: [{id, title, kind, max}]`，`kind` 目前只有 `knowledge-package`，`max` 1～20。
    文件落在主线工作区 `ext/<包名>/uploads/<上传位>/<id>/`：`id` 由知识包 manifest 的 `id` 算出（同一个包重传就替换），
    只留 `manifest.yaml` 与 `objects/ operations/ rules/ metrics/ scripts/` 的文本（各目录的 `index.md` 不留，合计
@@ -38,8 +39,10 @@
    （来源 web）提交到主线；只有项目所有者能操作。
 4. **助手只读上传区**：变更集把 `ext/*/uploads/` 当受保护路径（和资料区同一处，`changesets/worktree.is_protected`），
    副本里的改动不进变更集、合入时取主线的版本。两个引擎同一口径，不靠守卫。
-5. **下载**：PL-31 `GET /projects/{id}/packs/{name}/files?path=`（所有者，可用 `?token=`）只读主线已提交的内容：
-   文件原样，目录用 `git archive` 打 zip；路径不能越出插件目录，不能有隐藏段。
+5. **视图 `card: false`**：插件的清单、汇总类产物一轮会改很多份，这类视图写 `card: false`，对话里不逐份出卡
+   （公共本体插件只留「状态」一张）。
+6. **下载**：PL-31 `GET /projects/{id}/packs/{name}/files?path=`（所有者，可用 `?token=`）只读主线已提交的内容：
+   文件原样，目录用 `git archive` 打成 `<包名>-<目录名>.zip`；路径不能越出插件目录，不能有隐藏段。
 
 ## Alternatives considered
 

@@ -37,6 +37,7 @@ const PATH_MAX = 512;
 const UPLOAD_ID_RE = /^[a-z0-9][a-z0-9-]{0,60}$/;
 const ENTRY_KINDS = ['object', 'operation', 'rule', 'metric'];
 const FILTER_MAX = 10;
+const LIST_LIMIT_MAX = 200;
 export const DOWNLOAD_INTERVAL_MS = 2000;
 const SAVE_KEYS = ['base_revision', 'fields', 'sections', 'content', 'summary'];
 
@@ -126,6 +127,15 @@ function listQuery(params) {
   if (params.q !== undefined) {
     if (!shortLine(params.q, ARG_CHARS)) fail('invalid_argument', 'q 要是短的单行文字');
     query.q = params.q;
+  }
+  // 分页（契约 1.6）：游标原样回传，每页最多 LIST_LIMIT_MAX 项
+  if (params.cursor !== undefined && params.cursor !== null) {
+    if (!shortLine(params.cursor, ARG_CHARS)) fail('invalid_argument', 'cursor 不合法');
+    query.cursor = params.cursor;
+  }
+  if (params.limit !== undefined) {
+    if (!Number.isInteger(params.limit) || params.limit < 1 || params.limit > LIST_LIMIT_MAX) fail('invalid_argument', `limit 要是 1～${LIST_LIMIT_MAX} 的整数`);
+    query.limit = params.limit;
   }
   return query;
 }

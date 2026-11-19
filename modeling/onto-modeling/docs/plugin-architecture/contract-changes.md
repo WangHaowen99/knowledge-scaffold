@@ -2444,4 +2444,5 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
    `upload.delete`、`file.download`、`studio.open`、`command.tasks`；新推送 `upload.changed`、`command.progress`。页面发的命令
    `origin.page` 是 `<包名>:<页面 id>`。
 7. **变更集**：`ext/*/uploads/` 是受保护路径（同资料区），助手副本里的改动不进变更集。
+9. **视图 `card: false`**：这类产物不在对话里出卡（AR-01 视图的 `card.hidden = true`）。`artifact.list` 收 `cursor`、`limit`（≤200）。
 8. **前端路由**：`#/p/<项目>/<包名>:<页面 id>` 打开插件页（`pages/plugin/PluginFramePage.jsx`）。

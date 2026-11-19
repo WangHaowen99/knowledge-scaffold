@@ -362,6 +362,9 @@ test('窄接口 1.1：页面模式的上下文带页面与上传位；列表只�
   await rejects(handle(call('artifact.list', { type: 'core.object' }), pageCtx, deps), 'forbidden');
   await rejects(handle(call('artifact.list', { type: 'sticky-notes.note', filter: { color: 'a\nb' } }), pageCtx, deps), 'invalid_argument');
   await rejects(handle(call('artifact.read', { key: 'n1' }), pageCtx, deps), 'forbidden');
+  await handle(call('artifact.list', { type: 'sticky-notes.note', cursor: 'c2', limit: 200 }), pageCtx, deps);
+  assert.deepEqual(deps.calls.at(-1), ['list', 'sticky-notes.note', { cursor: 'c2', limit: 200 }]);
+  await rejects(handle(call('artifact.list', { type: 'sticky-notes.note', limit: 500 }), pageCtx, deps), 'invalid_argument');
 });
 
 test('窄接口 1.1：上传只进本包声明的上传位，文件名不带路径、不超过 50 MB', async () => {

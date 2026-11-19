@@ -286,7 +286,9 @@ def download(manager, project_id: str, pack: str, rel: str) -> tuple[bytes, str,
             raise PackFileError("not_found", "目录不存在", 404)
         if len(archived.stdout) > MAX_DOWNLOAD_BYTES:
             raise PackFileError("payload_too_large", "内容太多，不能打包下载", 413)
-        return archived.stdout, f"{name}.zip", "application/zip"
+        # 下载文件名带上包名：result.zip 这类通用目录名放进下载目录里分不清是哪个插件的
+        zip_name = f"{pack}.zip" if not clean else f"{pack}-{name}.zip"
+        return archived.stdout, zip_name, "application/zip"
     raise PackFileError("not_found", "插件目录里没有这个文件", 404, {"path": clean})
 
 

@@ -229,6 +229,7 @@ def test_download_only_reads_committed_plugin_files(env):
     assert b"lib.lending" in one.content
     whole = client.get(url, params={"path": "uploads"})
     assert whole.status_code == 200 and whole.headers["content-type"] == "application/zip"
+    assert "sticky-notes-uploads.zip" in whole.headers["content-disposition"]
     with zipfile.ZipFile(io.BytesIO(whole.content)) as zf:
         assert f"uploads/inputs/{item['id']}/objects/会员.md" in zf.namelist()
     # 没提交的文件不给；路径越界、隐藏段都拒绝
@@ -237,3 +238,14 @@ def test_download_only_reads_committed_plugin_files(env):
     assert client.get(url, params={"path": "draft.md"}).status_code == 404
     for bad in ("../../.git/config", "a/../b", ".hidden", "/etc/passwd"):
         assert client.get(url, params={"path": bad}).status_code in (400, 404), bad
+
+
+def test_view_card_false_keeps_the_type_out_of_chat_cards():
+    from app.kernel.artifacts import registry as artifact_registry
+
+    assert artifact_registry.view_problems({"card": False}) == []
+    assert artifact_registry.view_problems({"card": "no"}) == ["card 必须是映射"]
+    fields = [{"name": "title", "type": "text"}]
+    hidden = artifact_registry._view({"card": False, "list": {"columns": ["title"]}}, fields, None)
+    assert hidden["card"].get("hidden") is True and hidden["list"]["columns"] == ["title"]
+    assert not artifact_registry._view({"card": {"title": "title"}}, fields, None)["card"].get("hidden")
