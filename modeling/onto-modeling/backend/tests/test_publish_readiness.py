@@ -19,6 +19,7 @@ from app.services.workspace import WorkspaceManager, _git
 from tests.publish_fixtures import complete_publish_stages
 from tests.test_changesets import agent_write, obj, project  # noqa: F401 - project 是 fixture
 from tests.test_publish_binding_gate import FIELDS_HEADER, write_object, write_schema
+from tests.test_session_host import FakeEngine, host, lock, release, result, settle  # noqa: F401 - host 是 fixture
 
 DUPLICATE_KEY_OBJECT = (
     "# 对象描述\n合成对象。\n\n# 英文名称\nRecord\n\n# 数据来源\n无\n\n" + FIELDS_HEADER
@@ -225,3 +226,60 @@ def test_companion_clean_check_removes_the_list(companion, monkeypatch):
     session.readiness_round = 1
     asyncio.run(manager._check_publish_readiness(session))
     assert recorder.sent == [] and recorder.leftovers == [[]] and session.readiness_round == 0
+
+
+# ---- 陪伴建模端到端：真实的会话收尾路径（假引擎） ----
+
+
+def _write_in_turn(rel: str, text: str):
+    def write(ctx):
+        path = Path(ctx.cwd) / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return write
+
+
+FIXED_OBJECT = DUPLICATE_KEY_OBJECT.replace("| 原编号 | record_id |", "| 原编号 | source_id |")
+
+
+def _validate_turn() -> list:
+    return [lock("validate", "validate"),
+            _write_in_turn("ontology/object/记录.md", DUPLICATE_KEY_OBJECT),
+            _write_in_turn("reports/20261119-100000-full-rule.md", "# 规则检查\n\n- ✅ 无问题\n"),
+            release("validate"), result()]
+
+
+def _run_validate(host, scripts: list, done) -> tuple[list, Path]:
+    """发 /ontology-validate，按脚本一轮轮跑；收尾后平台在后台查发布就绪、代发修复，等到 done(root) 成立。"""
+    manager, project_id, root = host
+    FakeEngine.scripts = scripts
+
+    async def scenario():
+        await manager.send(project_id, root, "/ontology-validate", username="employee_0001")
+        for _ in range(300):
+            await asyncio.sleep(0.1)
+            session = manager.get(project_id)
+            if done(root) and session is not None and session.state == "idle" and not session.sending:
+                break
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+    return list(FakeEngine.sent), root
+
+
+def test_validate_round_hands_publish_problems_to_the_assistant_until_fixed(host):
+    fixed = lambda root: "source_id" in (root / "ontology/object/记录.md").read_text(encoding="utf-8") \
+        if (root / "ontology/object/记录.md").is_file() else False  # noqa: E731
+    sent, root = _run_validate(host, [_validate_turn(),
+                                      [_write_in_turn("ontology/object/记录.md", FIXED_OBJECT), result()]], fixed)
+    assert sent[0] == "/ontology-validate" and len(sent) == 2
+    assert sent[1].startswith("发布检查发现") and "record_id" in sent[1]
+    assert fixed(root) and not (root / readiness.LEFTOVER_PATH).exists()
+
+
+def test_validate_round_records_what_the_assistant_could_not_fix(host):
+    sent, root = _run_validate(host, [_validate_turn(), *[[result()] for _ in range(readiness.ROUNDS)]],
+                               lambda root: (root / readiness.LEFTOVER_PATH).is_file())
+    assert len(sent) == 1 + readiness.ROUNDS and all(text.startswith("发布检查发现") for text in sent[1:])
+    leftover = (root / readiness.LEFTOVER_PATH).read_text(encoding="utf-8")
+    assert "- [ ] ❌ [发布检查]" in leftover and "record_id" in leftover
