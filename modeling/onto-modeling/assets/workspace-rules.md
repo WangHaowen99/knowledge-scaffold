@@ -100,6 +100,11 @@ These rules apply to all work in this repository.
    任何时候都不要用自己的总结代替这份检查结论，也不要在报告里写"检查无问题"；
    需要人工判断的条目列进「缺口与待决」，由用户确认后勾选。
 
+4.2 **校验之后平台会按发布规则再查一遍** — `/ontology-validate` 做完后，平台用发布检查同一份代码查会挡发布的问题
+   （知识包结构、脚本、求解契约；对象和数据表对不上不在内，发布时自动降级），有问题会以「发布检查」发来让你修，
+   改到哪个文档都可以。要业务判断才能定的，用确认卡问，选项里给「从文档里删掉这一条」。修过几轮还在的，平台写进
+   `reports/publish-check.md`；这份清单由平台维护，不要改它，修好后重新校验会更新。
+
 ## Git Rules
 
 5. **Phase-end commits only** — Do not commit ontology changes mid-phase. Commit only at the end of each completed phase.

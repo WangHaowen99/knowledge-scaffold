@@ -294,6 +294,8 @@ STALL_TIMEOUT_REASON = "stall_timeout"
 # 3 秒（run.py），这里再留 20 秒，合计控制在 25 秒内，不被宽限期后的 SIGKILL 截断
 SHUTDOWN_BUDGET_SECONDS = 20
 SHUTDOWN_INTERRUPT_MESSAGE = "服务停机，本轮未正常结束，已标记为中断"
+# 校验之后平台代发的修复消息在对话里显示「来自「发布检查」」（契约 EC-10 的 origin）
+READINESS_ORIGIN = {"kind": "report", "page": "publish", "label": "发布检查"}
 
 
 class SessionError(Exception):
@@ -384,6 +386,8 @@ class Session:
     last_day: str = ""
     # 刚被打断：这一轮随后出的 result 不覆盖「打断之后」的建议条
     keep_suggestions: bool = False
+    # 校验之后平台代发了几轮「发布检查」修复（ADR-0103）；你发了别的消息就归零，不再代发
+    readiness_round: int = 0
     # 自主构建（方案 B13）：这条对话正在跑的运行；运行中不驱逐、不回收，确认卡由策略作答，不出续跑卡
     run_id: str | None = None
     # 状态变了通知会话池（自主构建的运行器按条件等这一轮结束）
@@ -933,6 +937,8 @@ class SessionManager:
                 await asyncio.to_thread(quota.check_before_turn, project_id, username, "concurrency", self._sessions)
             session = await self._bind_session(project_id, conversation_id)
             self._bind_model_owner(session, owner, engine_cls.name)
+            if not (meta or {}).get("publish_readiness"):
+                session.readiness_round = 0
             # 连续重复提交（双击、连点同一入口）在受理前拦下；代存命令接着开始、自主构建的每一步是平台自己发的，不拦
             guarded = not autobuild_run and not (meta or {}).get("_chain")
             if guarded:
@@ -2383,6 +2389,7 @@ class SessionManager:
         """
         failed = bool(event.get("is_error")) or str(event.get("subtype") or "").startswith("error")
         session.finishing = True
+        exec_id = session.exec_id  # 收尾里执行做完会清掉，校验之后的发布检查要看它
         turn = session.turn
         if turn is not None and turn.steps and turn.state == "running":
             turn.finish("interrupted" if session.interrupting else "failed" if failed else "done")
@@ -2418,12 +2425,53 @@ class SessionManager:
                 continue
             session.broadcast(record)
         session.keep_suggestions = False
+        if not (engine_continues or chain or failed or stopping) and self._readiness_due(session, exec_id):
+            self._spawn(self._check_publish_readiness(session))
         if legacy_next is not None:
             await self._steer_turn(session, legacy_next)
         elif chain:
             session.chaining = True
             self._spawn(self._chain_next(session))
         return reload
+
+    @staticmethod
+    def _readiness_due(session: Session, exec_id: str | None) -> bool:
+        """这一轮之后要不要查发布就绪（ADR-0103）：校验做完的那一轮，或平台代发的修复轮。自主构建由运行器查。"""
+        from .publish import readiness
+        from .session_host import exec_records
+
+        if session.run_id or session.cwd is None or _is_plugin(session):
+            return False
+        if session.readiness_round:
+            return True
+        record = exec_records.get(session.project_id, exec_id) if exec_id else None
+        return bool(record) and record.get("state") == "done" and readiness.is_validate(record)
+
+    async def _check_publish_readiness(self, session: Session) -> None:
+        """校验之后按发布检查再查一遍：会挡发布的问题以「发布检查」的名义交给助手修，最多 ROUNDS 轮；
+        修不掉的记进待处理清单，查干净了删掉清单。你在这期间发了别的消息就不代发。"""
+        from ..api import deps
+        from .publish import readiness
+
+        project_id = session.project_id
+        found = await asyncio.to_thread(readiness.mainline_findings, deps.workspaces, project_id)
+        if found is None:
+            return
+        owner = project_owner(project_id)
+        idle = not (session.turns_in_flight or session.sending or session.chaining)
+        if found and session.readiness_round < readiness.ROUNDS and idle:
+            session.readiness_round += 1
+            try:
+                await self.send(project_id, deps.workspaces.project_root(project_id), readiness.fix_prompt(found),
+                                session.conversation_id, username=owner,
+                                meta={"origin": READINESS_ORIGIN, "publish_readiness": True})
+                return
+            except Exception:  # noqa: BLE001 - 发不出去（配额、引擎不可用）：修不了，记进待处理
+                _log.warning("项目 %s 发布检查的修复消息没发出去", project_id, exc_info=True)
+        if not idle:
+            return  # 你已经接着说别的了：不代发，也不在这时候改主线
+        session.readiness_round = 0
+        await asyncio.to_thread(readiness.record_leftover, deps.workspaces, project_id, found, owner)
 
     @staticmethod
     def _after_turn(session: Session, failed: bool) -> list[dict]:

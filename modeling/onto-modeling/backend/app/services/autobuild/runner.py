@@ -91,6 +91,15 @@ def _publish(project_id: str, event_type: str, data: dict) -> None:
         _log.warning("项目流事件 %s 发不出去", event_type, exc_info=True)
 
 
+def _record_publish_leftover(project_id: str, owner: str) -> None:
+    """校验这一步合入后：主线上还会挡发布的问题记进待处理清单，查干净了删掉清单（ADR-0103）。"""
+    from ..publish import readiness
+
+    found = readiness.mainline_findings(_ws(), project_id)
+    if found is not None:
+        readiness.record_leftover(_ws(), project_id, found, owner)
+
+
 def run_view(run: dict) -> dict:
     return views.run_view(run)
 
@@ -780,16 +789,18 @@ class AutobuildRunner:
                 await asyncio.to_thread(changesets.discard, ws, project_id, changeset_id, actor=owner)
             return self._unit_done(project_id, run_id, unit, record=None)
         limit = int(((run.get("policy") or {}).get("advanced") or {}).get("max_fix_rounds") or 0)
-        # 合入前检查有新错误：让助手修，最多策略里的轮数；还有就照样合入，只提示（F3）
+        # 合入前检查有新错误、校验这一步还有会挡发布的问题（ADR-0103）：让助手修，最多策略里的轮数；
+        # 还有就照样合入，只提示（F3），会挡发布的记进待处理清单
         while True:
             checks = (changesets.current(ws, project_id) or {}).get("checks") or {}
             findings = [item for item in checks.get("findings") or [] if item.get("level") == "error"]
+            publish = checks.get("publish") or []
             rounds = int(store.unit_info(store.get(project_id, run_id), unit["id"]).get("fix_rounds") or 0)
-            if not findings or rounds >= limit:
+            if not (findings or publish) or rounds >= limit:
                 break
             store.update(project_id, run_id,
                          lambda record: store.unit_entry(record, unit["id"]).update(fix_rounds=rounds + 1))
-            await self._fix(project_id, run_id, unit, findings)
+            await self._fix(project_id, run_id, unit, findings, publish)
             await asyncio.to_thread(changesets.observe, ws, project_id, running=False,
                                     conversation_id=run["conversation_id"], checks=True)
         while True:
@@ -808,12 +819,22 @@ class AutobuildRunner:
                     return self._unit_done(project_id, run_id, unit, record=None)
                 self._fail(project_id, run_id, exc.code or "merge")
                 return "failed"
+        if changesets.readiness_step(result["record"]):
+            await asyncio.to_thread(_record_publish_leftover, project_id, owner)
         return self._unit_done(project_id, run_id, unit, record=result["record"], merged=result)
 
-    async def _fix(self, project_id: str, run_id: str, unit: dict, findings: list[dict]) -> None:
-        lines = [f"- {item.get('message') or item.get('code')}（{item.get('path') or ''}）" for item in findings[:10]]
-        text = (f"合入前的检查发现 {len(findings)} 个新问题。只改「{unit['name']}」这一步写的内容，把它们修好：\n"
-                + "\n".join(lines))
+    async def _fix(self, project_id: str, run_id: str, unit: dict, findings: list[dict],
+                   publish: list[dict] | None = None) -> None:
+        from ..publish import readiness
+
+        parts = []
+        if findings:
+            lines = [f"- {item.get('message') or item.get('code')}（{item.get('path') or ''}）" for item in findings[:10]]
+            parts.append(f"合入前的检查发现 {len(findings)} 个新问题。只改「{unit['name']}」这一步写的内容，把它们修好：\n"
+                         + "\n".join(lines))
+        if publish:
+            parts.append(readiness.fix_prompt(publish))
+        text = "\n\n".join(parts)
         run = store.get(project_id, run_id)
         await self._send(project_id, run_id, unit, text)
         await self._wait_turn(project_id, run_id, run["conversation_id"])

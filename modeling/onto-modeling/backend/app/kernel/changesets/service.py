@@ -42,6 +42,7 @@ GROUP_LABELS = {"object": "对象", "operation": "操作", "rule": "规则", "me
                 "scenario": "场景", "artifact": "插件产物", "other": "其他"}
 GROUP_ORDER = tuple(GROUP_LABELS)
 OBSERVE_EVERY_SECONDS = 5.0
+PUBLISH_FINDINGS_MAX = 100
 _last_observed: dict[str, float] = {}
 
 
@@ -290,6 +291,8 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
     if checks and (record.get("checks") or {}).get("tree") != snap:
         try:
             result = gates.compare(root, worktree.tree_of(root, base), snap)
+            if readiness_step(record):
+                result["publish"] = _publish_findings(manager, project_id, snap)
             record = store.update(root, record["id"], checks={**result, "tree": snap})
         except Exception:  # noqa: BLE001 - 检查跑不起来不挡这一轮的收尾
             _log.warning("项目 %s 的变更集检查没跑起来", project_id, exc_info=True)
@@ -297,6 +300,24 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
     if previous_state != record["state"] or previous_scope != scope or checks:
         _notify(project_id, "changeset", record)
     return record
+
+
+def readiness_step(record: dict | None) -> bool:
+    """这个变更集属于校验这一步：一轮结束的检查里加上发布就绪检查（ADR-0103）。"""
+    from ...services.publish import readiness
+
+    return readiness.is_validate(record)
+
+
+def _publish_findings(manager, project_id: str, tree: str) -> list[dict]:
+    """副本的树上会挡发布的内容问题（全量，不只看新增）；跑不起来时当没有，不挡这一轮收尾。"""
+    from ...services.publish import readiness
+
+    try:
+        return readiness.findings_at(manager, project_id, tree)[:PUBLISH_FINDINGS_MAX]
+    except Exception:  # noqa: BLE001 - 检查跑不起来不挡这一轮的收尾
+        _log.warning("项目 %s 的发布就绪检查没跑起来", project_id, exc_info=True)
+        return []
 
 
 def open_changeset(manager, project_id: str, *, source: str = "assistant", build_mode: str = "L2",

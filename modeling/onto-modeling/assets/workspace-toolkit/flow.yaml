@@ -131,7 +131,8 @@ nodes:
     need: required
     after: core.operation
     done: [validation_report, "!reports_pending"]
-    stale_on: [object, operation, rule, metric]
+    # 脚本、求解契约也进发布检查（ADR-0103）：改了它们，校验之后的发布就绪检查要重查
+    stale_on: [object, operation, rule, metric, script, solver]
     produces: ["reports/*-rule.md", "reports/*-semantic.md"]
     # 修复型节点：校验后的修复可能改到任何条目
     writes: ["ontology/*"]

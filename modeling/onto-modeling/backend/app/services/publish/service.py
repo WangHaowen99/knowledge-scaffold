@@ -105,25 +105,10 @@ def package_binding_check(manager, project_id: str, commit: str | None = None) -
     started = time.time()
     root = manager.project_root(project_id)
     commit = resolve_commit(root, commit)
-    tree_error = None
-    binding = {"issues": [], "warnings": [], "tables": {}, "objects": {}, "problems": []}
-    table_resources, solver = [], {"enabled": False}
-    script_findings: list[dict] = []
-    structure = {"blocking": 0, "findings": [], "truncated": False, "skipped": None}
-    pack_gates: list[dict] = []
-    try:
-        with release_tree(root, commit) as tree:
-            binding = package_mapping.resolve_object_tables(tree, tables=package_mapping.read_source_tables(tree))
-            table_resources = unmarked_table_resources(tree, CHECK_LIMIT)
-            solver = solver_service.release_status_at(tree, root)
-            src = _source(manager, project_id, root, tree, commit, PREVIEW_VERSION)
-            script_findings = gates.render_findings(src)
-            structure = _structure_check(manager, project_id, tree, solver, bool(script_findings))
-        pack_gates = _pack_gates(manager, root, commit)
-    except WorkspaceError as exc:
-        if exc.code not in ("release_tree_unsafe", "release_tree_mismatch"):
-            raise
-        tree_error = {"code": exc.code, "level": "error", "message": str(exc)}
+    parts = content_checks(manager, project_id, root, commit)
+    binding, table_resources, solver = parts["binding"], parts["table_resources"], parts["solver"]
+    script_findings, structure = parts["script_findings"], parts["structure"]
+    pack_gates, tree_error = parts["pack_gates"], parts["tree_error"]
     issues = sorted(binding["issues"], key=lambda item: not item["blocking"])
     issue_messages = {item["message"] for item in issues}
     warnings = [w for w in binding["warnings"] if w not in issue_messages]
@@ -165,6 +150,35 @@ def package_binding_check(manager, project_id: str, commit: str | None = None) -
         "checked_at": time.time(),
         "duration_ms": int((time.time() - started) * 1000),
     }
+
+
+def content_checks(manager, project_id: str, root: Path, treeish: str) -> dict:
+    """发布检查里看内容的几道：数据绑定、求解契约、渲染时的结构问题、consumer 导入规则、包声明的门禁、发布树安全。
+
+    按 treeish（提交或树对象）导出的只读树算。发布检查（PB-01）和校验之后的发布就绪检查（ADR-0103）共用这一份，
+    两边结论一致；treeish 不限主线，校验时查的是助手副本的树。
+    """
+    parts = {
+        "binding": {"issues": [], "warnings": [], "tables": {}, "objects": {}, "problems": []},
+        "table_resources": [], "solver": {"enabled": False}, "script_findings": [],
+        "structure": {"blocking": 0, "findings": [], "truncated": False, "skipped": None},
+        "pack_gates": [], "tree_error": None,
+    }
+    try:
+        with release_tree(root, treeish) as tree:
+            parts["binding"] = package_mapping.resolve_object_tables(
+                tree, tables=package_mapping.read_source_tables(tree))
+            parts["table_resources"] = unmarked_table_resources(tree, CHECK_LIMIT)
+            parts["solver"] = solver = solver_service.release_status_at(tree, root)
+            src = _source(manager, project_id, root, tree, treeish, PREVIEW_VERSION)
+            parts["script_findings"] = gates.render_findings(src)
+            parts["structure"] = _structure_check(manager, project_id, tree, solver, bool(parts["script_findings"]))
+        parts["pack_gates"] = _pack_gates(manager, root, treeish)
+    except WorkspaceError as exc:
+        if exc.code not in ("release_tree_unsafe", "release_tree_mismatch"):
+            raise
+        parts["tree_error"] = {"code": exc.code, "level": "error", "message": str(exc)}
+    return parts
 
 
 def _structure_check(manager, project_id: str, tree: Path, solver: dict, render_failed: bool) -> dict:
