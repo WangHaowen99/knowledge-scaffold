@@ -558,7 +558,7 @@ bash deploy/install-consumer-modeling.sh cce status \
 
 1. `plan`：校验三份包、镜像映射、兼容性组合、三侧 Auth 引用与身份，并渲染检查；
 2. `preflight`：检查集群、Secret、PVC、节点、Consumer 端点和 ELB 端口；三方空环境的 Auth 尚不存在，先运行 `install`；
-3. `install`：三方配置先安装 Auth，再安装并验证 Consumer，最后安装 Modeling；两方配置沿用 Consumer → Modeling；
+3. `install`：三方配置先安装 Auth，再安装 Consumer；联合入口在配置的 `timeoutSeconds` 内等待 Consumer 工作负载就绪，通过严格验证后才安装 Modeling。超时会指出未就绪的 Deployment，核对 Pod 状态后使用原操作 ID 续跑；两方配置沿用 Consumer → Modeling；
 4. `verify`：验证两侧工作负载、内部健康接口和 JiuwenBox 连接；
 5. `status`：读取两侧 Helm release 的状态和 Chart；三方配置同时核对 Auth owner 状态。
 

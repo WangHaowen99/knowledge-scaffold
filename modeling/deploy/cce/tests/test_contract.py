@@ -1697,6 +1697,7 @@ class CceContractTests(unittest.TestCase):
                  mock.patch.object(JOINT, "consumer_release_exists", return_value=False), \
                  mock.patch.object(JOINT, "release_exists", return_value=False), \
                  mock.patch.object(JOINT, "Lease", FakeLease), \
+                 mock.patch.object(JOINT, "wait_for_consumer_rollout", side_effect=lambda *_: calls.append(("consumer", "rollout"))), \
                  mock.patch.object(JOINT, "invoke", side_effect=fake_invoke), \
                  mock.patch.object(JOINT, "ensure_auth_release", side_effect=lambda *_args, **_kwargs: (
                      calls.append(("auth", "install")) or {"status": "succeeded"})):
@@ -1704,10 +1705,54 @@ class CceContractTests(unittest.TestCase):
                 with redirect_stdout(StringIO()) as output:
                     self.assertEqual(JOINT.main(), 0, output.getvalue())
                 self.assertEqual(calls, [("auth", "install"), ("consumer", "install"),
+                                         ("consumer", "rollout"),
                                          ("consumer", "verify"),
                                          ("modeling", "preflight"), ("modeling", "install")])
         finally:
             sys.argv = original
+
+    def test_joint_install_waits_for_consumer_rollout_with_one_timeout_budget(self):
+        values = self.base / "consumer-values.yaml"
+        values.write_text(yaml.safe_dump({"solver": {"enabled": True}}))
+        config = {"cluster": {"context": "synthetic"}, "timeoutSeconds": 30,
+                  "consumer": {"releaseName": "consumer", "namespace": "consumer-demo",
+                               "values": values}}
+        calls = []
+        lease = SimpleNamespace(check=lambda: calls.append("lease"))
+
+        def rollout(command, **options):
+            calls.append((command, options["timeout"]))
+            return SimpleNamespace(returncode=0)
+
+        with mock.patch.object(JOINT, "run_program", side_effect=rollout), \
+             mock.patch.object(JOINT.time, "monotonic", side_effect=[0, 1, 11, 21]):
+            JOINT.wait_for_consumer_rollout(config, [lease])
+        commands = [item for item in calls if isinstance(item, tuple)]
+        self.assertEqual([item[0][-2] for item in commands],
+                         ["deployment/consumer-runtime", "deployment/consumer-frontend",
+                          "deployment/consumer-ortools-solver"])
+        self.assertEqual([item[0][-1] for item in commands],
+                         ["--timeout=29s", "--timeout=19s", "--timeout=9s"])
+        self.assertEqual(calls.count("lease"), 3)
+
+    def test_joint_install_rollout_timeout_blocks_consumer_verify(self):
+        values = self.base / "consumer-values.yaml"
+        values.write_text("solver: {enabled: false}\n")
+        config = {"cluster": {"context": "synthetic"}, "timeoutSeconds": 5,
+                  "consumer": {"releaseName": "consumer", "namespace": "consumer-demo",
+                               "values": values}}
+        failed = SimpleNamespace(returncode=1)
+        with mock.patch.object(JOINT, "run_program", return_value=failed), \
+             mock.patch.object(JOINT.time, "monotonic", side_effect=[0, 1]):
+            with self.assertRaises(JOINT.ChildOperationError) as caught:
+                JOINT.wait_for_consumer_rollout(config, [])
+        self.assertEqual(caught.exception.payload["errorCode"], "RESOURCE_NOT_READY")
+        self.assertIn("consumer-runtime", caught.exception.payload["message"])
+        with mock.patch.object(JOINT, "run_program") as command, \
+             mock.patch.object(JOINT.time, "monotonic", side_effect=[0, 6]):
+            with self.assertRaises(JOINT.ChildOperationError):
+                JOINT.wait_for_consumer_rollout(config, [])
+        command.assert_not_called()
 
     def test_three_release_auth_failure_blocks_business_install(self):
         config = {"stateDir": self.base, "cluster": {"context": "synthetic"},

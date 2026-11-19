@@ -7,12 +7,14 @@ import argparse
 from datetime import datetime, timezone, timedelta
 import hashlib
 import json
+import math
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 
 import jsonschema
@@ -980,6 +982,42 @@ def invoke(side, action, config, package, operation_id, image_file, resume="", b
     return payload
 
 
+def wait_for_consumer_rollout(config: dict, leases: list) -> None:
+    """Wait for the fresh Consumer workloads before the joint install verifies them."""
+    release = config["consumer"]["releaseName"][:40].rstrip("-")
+    namespace = config["consumer"]["namespace"]
+    timeout = config.get("timeoutSeconds", 900)
+    deadline = time.monotonic() + timeout
+    values = read_yaml(config["consumer"]["values"])
+    components = ["runtime", "frontend"]
+    if values.get("solver", {}).get("enabled", False):
+        components.append("ortools-solver")
+    for component in components:
+        for lease in leases:
+            lease.check()
+        name = f"{release}-{component}"
+        remaining = math.ceil(deadline - time.monotonic())
+        if remaining <= 0:
+            raise ChildOperationError("consumer", "verify", {
+                "status": "failed", "phase": "rollout", "errorCode": "RESOURCE_NOT_READY",
+                "message": f"Consumer deployment {name} did not become Available within {timeout}s; "
+                           "inspect its Pods and resume the joint install with the same operation ID",
+                "retryable": False})
+        try:
+            result = run_program(("kubectl", "--context", config["cluster"]["context"],
+                                  "-n", namespace, "rollout", "status", f"deployment/{name}",
+                                  f"--timeout={remaining}s"),
+                                 text=True, capture_output=True, timeout=remaining + 10)
+        except subprocess.TimeoutExpired:
+            result = None
+        if result is None or result.returncode:
+            raise ChildOperationError("consumer", "verify", {
+                "status": "failed", "phase": "rollout", "errorCode": "RESOURCE_NOT_READY",
+                "message": f"Consumer deployment {name} did not become Available within {timeout}s; "
+                           "inspect its Pods and resume the joint install with the same operation ID",
+                "retryable": False})
+
+
 def operation_fingerprint(config) -> str:
     identity = {"context": config["cluster"]["context"]}
     if config.get("auth"):
@@ -1912,6 +1950,8 @@ def main():
                     if not completed_release_matches(config, side, side_package, operation_id, side_images):
                         raise ConfigError(f"installed {side} release differs from resumed operation")
                     result["phase"] = f"{side}-verify"
+                    if auth_package and side == "consumer":
+                        wait_for_consumer_rollout(config, leases)
                     invoke(side, "verify", config, side_package, operation_id, side_images,
                            lock_holder=operation_id)
                     result["results"][side] = {"status": "succeeded", "phase": "already-installed"}
@@ -1940,6 +1980,7 @@ def main():
                     min_free_percent=args.min_free_percent)
                 if auth_package and args.action == "install" and side == "consumer":
                     result["phase"] = "consumer-verify"
+                    wait_for_consumer_rollout(config, leases)
                     invoke("consumer", "verify", config, side_package, operation_id, side_images,
                            lock_holder=operation_id)
                     result["phase"] = side
