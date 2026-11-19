@@ -166,6 +166,13 @@ export function heroFacts(d) {
  */
 export function heroActions(d, o = {}) {
   const st = d?.project_status;
+  // 上传的多源连接器（ADR-0103）：管理员在这里信任 / 撤销信任，别人只看状态（英雄区标签）
+  if (d?.trust && d.trust.state !== 'builtin') {
+    if (!o.admin) return {};
+    return d.trust.state === 'untrusted'
+      ? { primary: { label: '信任', icon: 'shieldok', action: 'trust' } }
+      : { primary: { label: '撤销信任', icon: 'ban', kind: '', action: 'untrust' } };
+  }
   if (!o.hasProject && d?.category !== 'provider') return { hint: '先在「我的项目」里建一个项目，才能启用到项目。' };
   switch (st) {
     case 'required': return { menu: { label: '必装 · 已启用', icon: 'lock' } };
@@ -204,6 +211,11 @@ export function heroMenu(d, o = {}) {
     '-',
     { key: 'settings', icon: 'gear', label: '在项目设置里查看' },
   ];
+}
+
+/** 撤销信任前的确认（PL-29）：后果只在这里说一次 */
+export function untrustConfirm(d) {
+  return { title: `撤销信任${d?.label || ''}？`, body: '连接器网关会删掉这个版本，用到它的数据源不能再采集。' };
 }
 
 /** 停用前的确认（R14）：后果只在这里说一次 */

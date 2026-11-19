@@ -82,8 +82,13 @@ export function createApi(client) {
     resourceText: (id, path) => client.get(`${P(id)}/resources/text`, { query: { path } }), // R-13
     resourcePositions: (id, path, query) => client.get(`${P(id)}/resources/positions`, { query: { path, ...query } }), // R-15
     resourceSchemaPreview: (id, path, force) => client.get(`${P(id)}/resources/schema-preview`, { query: { path, ...(force ? { force: true } : {}) } }), // R-16
-    reconvertResource: (id, path) => client.post(`${P(id)}/resources/convert`, { path }), // R-14
+    reconvertResource: (id, path) => client.post(`${P(id)}/resources/convert`, { path }), // R-14（数据源资料即重新采集）
     resourceSourcePreview: (id, path, anchor) => client.get(`${P(id)}/resources/source-preview`, { query: { path, anchor: anchor || undefined } }), // R-17
+    // 3.19a 数据源（ADR-0103）
+    sourceConnectors: () => client.get('/source-connectors'), // DS-01
+    addSource: (id, body) => client.post(`${P(id)}/sources`, body), // DS-02
+    updateSource: (id, body) => client.patch(`${P(id)}/sources`, body), // DS-03
+    testSource: (id, body) => client.post(`${P(id)}/sources/test`, body), // DS-04
     materialMap: (id) => client.get(`${P(id)}/materials/map`), // R-07
     materialCandidates: (id, query) => client.get(`${P(id)}/materials/candidates`, { query }), // R-08
     materialVerification: (id) => client.get(`${P(id)}/materials/verification`), // R-09
@@ -218,6 +223,8 @@ export function createApi(client) {
     installMyPackUpload: (uploadId) => client.post(`/me/pack-uploads/${enc(uploadId)}/install`, {}), // PL-26
     converters: () => client.get('/converters'), // PL-20
     setConverterDefault: (body) => client.put('/admin/converters/defaults', body), // PL-21
+    trustPack: (name, version) => client.post(`/admin/packs/${enc(name)}/versions/${enc(version)}/trust`, {}), // PL-28
+    untrustPack: (name, version) => client.del(`/admin/packs/${enc(name)}/versions/${enc(version)}/trust`), // PL-29
 
     // 3.17 插件产物
     artifactTypes: (id) => client.get(`${P(id)}/artifact-types`), // AR-01

@@ -186,7 +186,7 @@ const all = (r) => r.body.groups.flatMap((g) => g.items);
 test('R-01：按流程图 / 表格 / 其他资料分组，含修订通知和扫描件', () => {
   const s = fakeServer();
   const r = s.call('GET', '/resources');
-  assert.deepEqual(r.body.groups.map((g) => [g.key, g.items.length]), [['diagrams', 2], ['excel', 4], ['others', 8]]);
+  assert.deepEqual(r.body.groups.map((g) => [g.key, g.items.length]), [['diagrams', 2], ['excel', 5], ['others', 8]]); // excel 含一份数据源资料（ADR-0103）
   const names = all(r).map((x) => x.name);
   assert.ok(names.includes('09-修订通知.docx') && names.includes('07-门店C特殊需求.pdf'));
   const rev = all(r).find((x) => x.name === '09-修订通知.docx');

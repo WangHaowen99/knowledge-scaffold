@@ -97,7 +97,8 @@ test('清单摘要：kind、贡献、生效时机', () => {
   assert.equal(effectText(m), '数据现读即生效；新增的步骤从下一条消息开始生效');
   assert.equal(effectText({ kind: 'knowledge', contributes: { templates: 2 } }), '数据现读即生效');
   assert.equal(effectText({ kind: 'capability', contributes: { commands: 2 } }), '下一条消息生效');
-  assert.match(effectText({ kind: 'provider' }), /安装到平台/);
+  assert.equal(effectText({ kind: 'provider' }), '管理员在插件中心信任后生效'); // ADR-0103
+  assert.match(effectText({ kind: 'exporter' }), /安装到平台/);
 });
 
 // ---------- 发布 ----------
