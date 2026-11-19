@@ -43,6 +43,7 @@ export default function PackFrame({ editor, artifact = null, page = null, types,
   };
   // 本页发出的命令记在这个来源下（S-19 按它查还在跑的任务，项目流 command.progress 按它转给页面）
   const originPage = page ? page.key : 'artifact';
+  const pageTitle = page?.title || '';
 
   useEffect(() => {
     let live = true;
@@ -60,7 +61,7 @@ export default function PackFrame({ editor, artifact = null, page = null, types,
       readArtifact: (type, key) => api.artifact(pid, type, key, artifactQuery(ctx.current.artifact, type, key)),
       saveArtifact: (type, key, body) => api.saveArtifact(pid, type, key, body),
       // origin.pack：服务端据此按包再校验一次（只认本包的命令、参数短、限频）
-      sendCommand: ({ command, args, text }) => api.sendCommand(pid, { command, args, text, origin: { page: originPage, label: page?.title || editor.title, pack: editor.pack } }),
+      sendCommand: ({ command, args, text }) => api.sendCommand(pid, { command, args, text, origin: { page: originPage, label: pageTitle || editor.title, pack: editor.pack } }),
       listArtifacts: (type, query) => api.artifacts(pid, type, query),
       listUploads: (slot) => api.packSlotUploads(pid, editor.pack, slot),
       putUpload: async (slot, name, data) => {
@@ -92,7 +93,8 @@ export default function PackFrame({ editor, artifact = null, page = null, types,
       onNavigated: () => setLeft(true),
     });
     return host;
-  }, [session, api, services, pid, editor.title, editor.pack, page, originPage]);
+    // 依赖只放不变的值：宿主一重建，旧端口就关了，iframe 只握手一次，收不到后面的回应（页面对象每次渲染都是新的）
+  }, [session, api, services, pid, editor.title, editor.pack, pageTitle, originPage]);
 
   useEffect(() => {
     if (!host) return undefined;
@@ -113,7 +115,7 @@ export default function PackFrame({ editor, artifact = null, page = null, types,
       ? a.type === artifact.type && a.key === artifact.key
       : ctx.current.types.includes(a.type)));
     changed.slice(0, 50).forEach((a) => host?.send('artifact.changed', { type: a.type, key: a.key }));
-  }), [subscribe, host, artifact?.type, artifact?.key, page, originPage]);
+  }), [subscribe, host, artifact?.type, artifact?.key, page?.key, originPage]);
 
   useEffect(() => { host?.send('readonly.changed', { readonly: !!readonly }); }, [host, readonly]);
 

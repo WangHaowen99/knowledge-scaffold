@@ -12,15 +12,15 @@ export default function PluginFramePage({ route }) {
   const page = useMemo(() => (extensions?.pages || []).find((p) => p.id === key && p.ui), [extensions, key]);
   const nav = (extensions?.nav || []).find((n) => n.id === key);
   const off = (extensions?.disabled_pages || []).find((p) => p.id === key);
+  const title = nav?.title || page?.page || '';
+  // PackFrame 按这两个对象建桥接宿主：记住它们，免得项目流一推送就重建、断开 iframe 的端口
+  const editor = useMemo(() => (page ? { id: page.ui, pack: page.pack, title } : null), [page?.ui, page?.pack, title]);
+  const pageInfo = useMemo(() => (page ? { id: page.page, key, title } : null), [page?.page, key, title]);
   let body = null;
   if (extensions && !page) body = <PluginOff label={off?.title || off?.pack_label || key.split(':')[0]} />;
   else if (page) {
     body = (
-      <PackFrame
-        key={`${page.pack}:${page.ui}`}
-        editor={{ id: page.ui, pack: page.pack, title: nav?.title || page.page }}
-        page={{ id: page.page, key, title: nav?.title || page.page }}
-      />
+      <PackFrame key={`${page.pack}:${page.ui}`} editor={editor} page={pageInfo} />
     );
   }
   return (
