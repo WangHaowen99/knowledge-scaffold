@@ -149,7 +149,7 @@ def _hub_source_layout(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
         "DOCKER_CALLS_FILE": str(tmp_path / "docker-calls.txt"),
         "STUB_NETWORK": "shared-net",
-        "HUB_AUTH_URL": "http://auth-server:5056",
+        "HUB_AUTH_URL": "https://auth.example.com",
         "HUB_AUTH_ISSUER": "https://auth.example.com",
     }
     return deploy_dir, env

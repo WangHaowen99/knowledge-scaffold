@@ -8,6 +8,8 @@ import sys
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
+
 
 SCRIPT = Path(__file__).with_name("dependency_probe.py")
 spec = importlib.util.spec_from_file_location("modeling_dependency_probe", SCRIPT)
@@ -88,3 +90,14 @@ def test_probe_uses_existing_image_without_pulling():
          mock.patch.object(subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout='["auth"]')) as run:
         assert probe.probe("onto:test", "auth-net", "https://auth.example.com", "issuer", "https://consumer.example.net") == ["auth"]
     assert run.call_args.args[0][:6] == ["/usr/bin/docker", "run", "--rm", "--pull", "never", "--network"]
+
+
+def test_probe_rejects_docker_option_in_image_or_network():
+    with mock.patch.object(subprocess, "run") as run:
+        with pytest.raises(ValueError, match="image reference"):
+            probe.probe("--privileged", "auth-net", "https://auth.example.com", "issuer",
+                        "https://consumer.example.net")
+        with pytest.raises(ValueError, match="network name"):
+            probe.probe("onto:test", "--host", "https://auth.example.com", "issuer",
+                        "https://consumer.example.net")
+    run.assert_not_called()

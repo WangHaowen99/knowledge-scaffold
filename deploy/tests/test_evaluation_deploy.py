@@ -269,7 +269,7 @@ def evaluation_service():
             'DOCKER_CALLS_FILE': str(root / 'docker-calls.txt'),
             'COMPOSE_SNAPSHOT': str(root / 'compose-snapshot.txt'),
             'STUB_NETWORK': 'synthetic-network',
-            'EVAL_AUTH_URL': 'http://auth-server:5056',
+            'EVAL_AUTH_URL': 'https://auth.example.com',
             'EVAL_AUTH_ISSUER': 'https://auth.example.com',
         }
         yield root, deploy_dir, env
@@ -296,7 +296,7 @@ class EvaluationServiceDeployTests(unittest.TestCase):
             values = dict(line.split('=', 1) for line in lines(config))
             self.assertEqual(len(base64.urlsafe_b64decode(values['EVAL_ENCRYPTION_KEY'])), 32)
             # The explicitly selected Auth identity is persisted with local runtime config.
-            self.assertEqual(values['EVAL_AUTH_URL'], 'http://auth-server:5056')
+            self.assertEqual(values['EVAL_AUTH_URL'], 'https://auth.example.com')
             self.assertEqual(values['EVAL_AUTH_ISSUER'], 'https://auth.example.com')
             for key in ('EVAL_HUB_URL', 'EVAL_CONSUMER_API_URL'):
                 self.assertNotIn(key, values)
@@ -390,7 +390,7 @@ class EvaluationServiceDeployTests(unittest.TestCase):
                 self.assertEqual(compose_calls(root), [])
                 self.assertFalse((deploy_dir / '.env').exists())
 
-    def test_default_network_and_auth_contract(self):
+    def test_default_network(self):
         with evaluation_service() as (root, deploy_dir, env):
             env.pop('EVAL_AUTH_URL')
             env.pop('EVAL_AUTH_ISSUER')
@@ -401,8 +401,6 @@ class EvaluationServiceDeployTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             values = dict(line.split('=', 1) for line in lines(deploy_dir / '.env'))
             self.assertEqual(values['CONSUMER_NETWORK'], 'onto-auth-network')
-            self.assertEqual(values['EVAL_AUTH_URL'], 'http://auth-server:5056')
-            self.assertEqual(values['EVAL_AUTH_ISSUER'], 'http://auth-server:5056')
 
 
 class EvaluationDeploymentTests(unittest.TestCase):

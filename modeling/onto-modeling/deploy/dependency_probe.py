@@ -6,6 +6,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -48,6 +49,10 @@ print(json.dumps(sorted(set(pending))))
 
 
 def probe(image, network, auth_url, issuer, consumer_url):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", network):
+        raise ValueError("invalid Docker network name")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:@\[\]-]*", image):
+        raise ValueError("invalid Docker image reference")
     docker = shutil.which("docker")
     if docker is None:
         raise RuntimeError("Docker executable is unavailable")
@@ -56,8 +61,8 @@ def probe(image, network, auth_url, issuer, consumer_url):
                "-e", "PROBE_AUTH_ISSUER=" + issuer,
                "-e", "PROBE_CONSUMER_URL=" + consumer_url,
                "--entrypoint", "python", image, "-c", PROBE]
-    result = subprocess.run(command, text=True, capture_output=True, timeout=45,
-                            shell=False)  # NOSONAR(S4721): fixed docker argv
+    result = subprocess.run(command, text=True, capture_output=True, timeout=45,  # NOSONAR(S4721): validated Docker arguments, no shell
+                            shell=False)
     if result.returncode:
         raise RuntimeError("Auth or Consumer endpoint has an invalid response; inspect the configured dependencies")
     pending = json.loads(result.stdout)

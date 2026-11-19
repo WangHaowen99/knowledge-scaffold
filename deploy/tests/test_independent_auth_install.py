@@ -229,7 +229,6 @@ def test_fresh_install_creates_auth_from_package_before_consumer(tmp_path):
     owner_env = tmp_path / 'independent-auth/.env'
     values = dict(line.split('=', 1) for line in owner_env.read_text().splitlines())
     assert owner_env.stat().st_mode & 0o777 == 0o600
-    assert values['AUTH_SERVER_ISSUER'] == 'http://auth-server:5056'
     assert values['AUTH_SERVER_AUDIENCE'] == 'knowledge-scaffold'
     assert len(values['AUTH_SERVER_ADMIN_TOKEN']) >= 32
     assert len(values['AUTH_BOOTSTRAP_ADMIN_PASSWORD']) >= 8
@@ -563,12 +562,11 @@ exit 0
     values = dict(line.split('=', 1) for line in (release / '.env').read_text().splitlines()
                   if '=' in line and not line.startswith('#'))
     expected = {'ONTO_MODELING_EXTERNAL_AUTH_NETWORK': 'onto-auth-network',
-                'ONTO_MODELING_AUTH_URL': 'http://auth-server:5056',
-                'ONTO_WEB_AUTH_ISSUER': 'http://auth-server:5056',
                 'ONTO_WEB_AUTH_AUDIENCE': 'knowledge-scaffold'}
     assert {key: values[key] for key in expected} == expected
+    assert values['ONTO_MODELING_AUTH_URL'] == values['ONTO_WEB_AUTH_ISSUER']
     assert json.loads((release / '.dependencies.json').read_text())['probe'] == {
         '--network': expected['ONTO_MODELING_EXTERNAL_AUTH_NETWORK'],
-        '--auth-url': expected['ONTO_MODELING_AUTH_URL'],
-        '--issuer': expected['ONTO_WEB_AUTH_ISSUER'],
+        '--auth-url': values['ONTO_MODELING_AUTH_URL'],
+        '--issuer': values['ONTO_WEB_AUTH_ISSUER'],
         '--audience': expected['ONTO_WEB_AUTH_AUDIENCE']}

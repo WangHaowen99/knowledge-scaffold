@@ -59,7 +59,17 @@ def main() -> int:
             return result.returncode
         summary = json.loads(args.summary_file.read_text(encoding="utf-8"))
         # The CCE caller consumes this JSON line as a machine-readable result.
-        sys.stdout.write(json.dumps(summary, sort_keys=True) + "\n")
+        result_logger = logging.getLogger("modeling.cce.migration.result")
+        result_logger.setLevel(logging.INFO)
+        result_logger.propagate = False
+        output = logging.StreamHandler(sys.stdout)
+        output.setFormatter(logging.Formatter("%(message)s"))
+        result_logger.addHandler(output)
+        try:
+            result_logger.info("%s", json.dumps(summary, sort_keys=True))
+        finally:
+            result_logger.removeHandler(output)
+            output.close()
         return 0
 
 

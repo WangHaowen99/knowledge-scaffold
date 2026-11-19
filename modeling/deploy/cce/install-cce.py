@@ -407,7 +407,8 @@ def probe_auth_from_modeling(args, merged: dict) -> None:
     image = merged["global"]["resolvedImages"]["ontoModeling"]
     suffix = uuid.uuid4().hex[:10]
     name = f"{(args.release + '-auth-probe')[:52].rstrip('-')}-{suffix}"
-    address = f"http://{ref['serviceName']}.{ref['namespace']}.svc.cluster.local:{ref['servicePort']}"
+    # The internal Auth service has no TLS listener; these endpoints expose no credentials.
+    address = f"http://{ref['serviceName']}.{ref['namespace']}.svc.cluster.local:{ref['servicePort']}"  # NOSONAR(S5332)
     code = '''import json,os,urllib.request
 base=os.environ["AUTH_URL"]
 with urllib.request.urlopen(base+"/health",timeout=10) as response:
@@ -577,7 +578,8 @@ def verify(args, root: Path, *, pending_auth: bool = False):
 def verify_consumer_from_modeling(args, merged: dict) -> None:
     """Confirm the declared Backend is actually serving from Modeling's network."""
     ref = merged["externalConsumer"]
-    url = f"http://{ref['serviceName']}.{ref['namespace']}.svc.cluster.local:{ref['servicePort']}/ready"
+    # The internal Consumer service has no TLS listener; /ready is unauthenticated.
+    url = f"http://{ref['serviceName']}.{ref['namespace']}.svc.cluster.local:{ref['servicePort']}/ready"  # NOSONAR(S5332)
     run("kubectl", "--context", args.context, "-n", args.namespace, "exec",
         f"deployment/{args.release}-evaluation", "-c", "evaluation", "--",
         "python", "-c", "import urllib.request,sys; "
