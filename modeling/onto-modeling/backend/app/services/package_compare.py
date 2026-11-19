@@ -611,7 +611,7 @@ def _archive_index(path: Path) -> dict:
 
 
 def index_archive(path: Path) -> dict:
-    """别的上传入口复用知识包校验（插件上传位，ADR-0103）：子进程解析，限时、限大小、路径安全、manifest 合规。
+    """别的上传入口复用知识包校验（插件上传位，ADR-0105）：子进程解析，限时、限大小、路径安全、manifest 合规。
 
     返回 `{files: {包内相对路径: {path: ZIP 里的成员名, size, digest, category}}, file_count, uncompressed_size,
     package_id, manifest}`；不合规抛 WorkspaceError（4xx）。

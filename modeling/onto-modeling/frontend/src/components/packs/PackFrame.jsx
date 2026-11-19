@@ -1,7 +1,7 @@
 // 上传包编辑器的 iframe 宿主（ADR-0055）：不同源（sandbox 只给 allow-scripts，静态资源响应另有 CSP sandbox），
 // 只经窄接口（packBridge）读写本包登记的产物、往对话发本包的命令、取主题变量；拿不到登录态。
 // 桥接走握手时转交的 MessagePort；iframe 第二次 load 说明它把自己导航走了，立即拆掉桥接、卸掉 iframe（审查第 2 条）。
-// 页面模式（ADR-0103）：插件自己的页面也用它，page 有值、artifact 为空；产物类型、上传位以 PL-20 返回的为准。
+// 页面模式（ADR-0105）：插件自己的页面也用它，page 有值、artifact 为空；产物类型、上传位以 PL-20 返回的为准。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { artifactQuery } from '../../app/packUi.js';

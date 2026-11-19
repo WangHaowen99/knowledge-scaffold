@@ -2470,7 +2470,7 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
    - 对象抽取守则：`declared` 的外键直接写「关联对象」的关联字段。
 6. **静态检查**：`kind: provider` 的包多一项 `provider`，要求 `converter`、`source` 二选一、写法合法、入口文件在。
 
-## 2026-11-19 · 插件自己的页面、上传位与下载（ADR-0103）
+## 2026-11-19 · 插件自己的页面、上传位与下载（ADR-0105）
 
 公共本体插件要一个自己的页面：上传多个知识包、发抽取命令、看结果、下载。用户 11-19 定页面用插件自带的 iframe（不用平台按声明画）。
 
@@ -2480,10 +2480,10 @@ develop 新增了知识包版本对比，发布侧按 Hub 的 `release_id` 引�
    PL-15 `frontend` 检查改为「页面是平台内置或本包的隔离页面，前端代码只在 ui/ 下」。
 3. **PL-12**：包自己的页面进 `nav`、`pages`、`disabled_pages`，`id` 是 `<包名>:<页面 id>`；`pages[]` 另带 `page`、`ui`。
 4. **PL-20（打开上传包编辑器）响应**加 `types`（本包登记的产物类型）、`uploads`（本包的上传位）。
-5. **新增 PL-28～PL-31**：往上传位放知识包、列表、删除、下载插件目录里已提交的文件（目录打 zip）；PL-31 可用 `?token=`。
+5. **新增 PL-30～PL-33**：往上传位放知识包、列表、删除、下载插件目录里已提交的文件（目录打 zip）；PL-33 可用 `?token=`。
 6. **窄接口 1.1**：页面模式 `context.get` 带 `page`、`uploads`，`artifact` 为空；新方法 `artifact.list`、`upload.list`、`upload.put`、
    `upload.delete`、`file.download`、`studio.open`、`command.tasks`；新推送 `upload.changed`、`command.progress`。页面发的命令
    `origin.page` 是 `<包名>:<页面 id>`。
 7. **变更集**：`ext/*/uploads/` 是受保护路径（同资料区），助手副本里的改动不进变更集。
-9. **视图 `card: false`**：这类产物不在对话里出卡（AR-01 视图的 `card.hidden = true`）。`artifact.list` 收 `cursor`、`limit`（≤200）。
 8. **前端路由**：`#/p/<项目>/<包名>:<页面 id>` 打开插件页（`pages/plugin/PluginFramePage.jsx`）。
+9. **视图 `card: false`**：这类产物不在对话里出卡（AR-01 视图的 `card.hidden = true`）。`artifact.list` 收 `cursor`、`limit`（≤200）。

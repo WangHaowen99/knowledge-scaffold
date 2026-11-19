@@ -148,7 +148,7 @@ def test_page_not_in_builtin_pages_never_reaches_nav(env, tmp_path):
                              manager.packs.repository.version_dir("checklist", "1.0.0"))
     assert registry._page_ok({"id": "scenarios"}, view)
     assert not registry._page_ok({"id": "my-own-page"}, view)
-    # 自带页面（ADR-0103）要指向本包声明的编辑器
+    # 自带页面（ADR-0105）要指向本包声明的编辑器
     assert not registry._page_ok({"id": "my-own-page", "ui": "not-declared"}, view)
     assert not registry._page_ok({"id": "scenarios", "page_api": ">=2.0"}, view)
 

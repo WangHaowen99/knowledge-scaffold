@@ -108,7 +108,7 @@ def disabled_packs(manager, root: Path) -> list[PackView]:
 
 
 def _custom_page_ok(view: PackView, page: dict) -> bool:
-    """上传包自己的页面（ADR-0103）：id 合规、ui 指向本包声明的编辑器；官方包不走 iframe，暂不支持。"""
+    """上传包自己的页面（ADR-0105）：id 合规、ui 指向本包声明的编辑器；官方包不走 iframe，暂不支持。"""
     page_id, ui = page.get("id"), page.get("ui")
     return (not view.official and isinstance(page_id, str) and bool(mf.PAGE_ID_RE.match(page_id))
             and any(editor["id"] == ui for editor in view.manifest.editors()))

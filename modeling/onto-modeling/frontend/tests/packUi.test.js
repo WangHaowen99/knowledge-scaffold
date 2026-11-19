@@ -327,7 +327,7 @@ test('确认生效前双击产物卡：卡上的变更集还待确认（写入�
   assert.equal(artifactQuery({ type: 'diagram.flowchart', key: 'borrow-flow' }, 'diagram.flowchart', 'borrow-flow'), undefined);
 });
 
-// ---------- 窄接口 1.1：插件自己的页面（ADR-0103） ----------
+// ---------- 窄接口 1.1：插件自己的页面（ADR-0105） ----------
 
 const pageCtx = {
   ...ctx, artifact: null, page: { id: 'board', key: 'sticky-notes:board', title: '便签板' },

@@ -39,7 +39,7 @@ _QUERY_TOKEN_PATTERNS = (
     rf"^{_P}/transfer-package$",
     rf"^{_P}/releases/[^/]+/download$",
     rf"^{_P}/versions/[^/]+/files$",
-    rf"^{_P}/packs/[^/]+/files$",  # PL-31 插件目录下载（ADR-0103）
+    rf"^{_P}/packs/[^/]+/files$",  # PL-33 插件目录下载（ADR-0105）
     r"^/api/v1/admin/packs/uploads/[^/]+/report$",
     r"^/api/v1/ops/diagnostics/[^/]+/download$",
     r"^/api/v1/ops/audit/export$",

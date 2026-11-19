@@ -249,7 +249,7 @@ async def pack_ui_file(ticket: str, path: str):
     return FileResponse(found, media_type=media, headers=pack_ui.ISOLATION_HEADERS)
 
 
-# ---- 插件目录：上传位与下载（ADR-0103） ----
+# ---- 插件目录：上传位与下载（ADR-0105） ----
 
 
 def _pack_file_errors(exc: pack_files.PackFileError) -> ApiError:
@@ -262,7 +262,7 @@ def _pack_upload_view(item: dict) -> dict:
 
 @router.get("/api/v1/projects/{project_id}/packs/{name}/uploads/{slot}")
 def list_pack_uploads(project_id: str, name: str, slot: str, request: Request):
-    """PL-29：插件上传位里的文件。"""
+    """PL-31：插件上传位里的文件。"""
     deps.require_owner(project_id, request)
     try:
         items = pack_files.list_uploads(deps.workspaces, project_id, name, slot)
@@ -273,7 +273,7 @@ def list_pack_uploads(project_id: str, name: str, slot: str, request: Request):
 
 @router.post("/api/v1/projects/{project_id}/packs/{name}/uploads/{slot}", status_code=201)
 def put_pack_upload(project_id: str, name: str, slot: str, request: Request, file: UploadFile = File(...)):
-    """PL-28：往插件上传位放一个知识包（校验同 PC-01），写进 ext/<包>/uploads/<上传位>/ 并提交到主线。"""
+    """PL-30：往插件上传位放一个知识包（校验同 PC-01），写进 ext/<包>/uploads/<上传位>/ 并提交到主线。"""
     deps.require_owner(project_id, request)
     try:
         item = pack_files.put_upload(deps.workspaces, project_id, name, slot, file.file, file.filename or "",
@@ -285,7 +285,7 @@ def put_pack_upload(project_id: str, name: str, slot: str, request: Request, fil
 
 @router.delete("/api/v1/projects/{project_id}/packs/{name}/uploads/{slot}/{upload_id}")
 def delete_pack_upload(project_id: str, name: str, slot: str, upload_id: str, request: Request):
-    """PL-30：删掉插件上传位里的一项。"""
+    """PL-32：删掉插件上传位里的一项。"""
     deps.require_owner(project_id, request)
     try:
         pack_files.delete_upload(deps.workspaces, project_id, name, slot, upload_id, actor=deps.actor(request))
@@ -296,7 +296,7 @@ def delete_pack_upload(project_id: str, name: str, slot: str, upload_id: str, re
 
 @router.get("/api/v1/projects/{project_id}/packs/{name}/files")
 def download_pack_file(project_id: str, name: str, request: Request, path: str = ""):
-    """PL-31：下载插件目录 ext/<包>/ 下主线已提交的文件；目录打成 zip。"""
+    """PL-33：下载插件目录 ext/<包>/ 下主线已提交的文件；目录打成 zip。"""
     deps.require_owner(project_id, request)
     try:
         content, filename, media = pack_files.download(deps.workspaces, project_id, name, path)

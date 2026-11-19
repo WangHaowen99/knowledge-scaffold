@@ -134,7 +134,7 @@ def open_session(manager, project_id: str, pack: str, editor_id: str, *, user: s
         "editor": {"id": editor["id"], "title": editor["title"]},
         # 窄接口 chat.command 只能发这几条（本包清单声明的命令）
         "commands": [f"/{name}" for name in view.manifest.items("commands")],
-        # 窄接口 1.1（ADR-0103）：本包登记的产物类型（artifact.* 只认这些）与上传位（upload.* 只认这些）
+        # 窄接口 1.1（ADR-0105）：本包登记的产物类型（artifact.* 只认这些）与上传位（upload.* 只认这些）
         "types": _pack_types(view),
         "uploads": view.manifest.uploads(),
     }

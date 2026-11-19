@@ -23,7 +23,7 @@ from ..api import deps
 from ..api.errors import ApiError
 from ..services import audit, auth, uploads
 from ..services.auth import AuthError
-from ..services.packs.manifest import PAGE_API  # 页面接口版本只有这一个来源（ADR-0103 升到 1.1）
+from ..services.packs.manifest import PAGE_API  # 页面接口版本只有这一个来源（ADR-0105 升到 1.1）
 
 _log = logging.getLogger(__name__)
 

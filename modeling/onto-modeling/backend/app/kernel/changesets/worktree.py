@@ -77,7 +77,7 @@ def main_root(path: Path | None) -> Path | None:
 
 
 def is_protected(rel: str) -> bool:
-    """受保护的路径（资料区、锁文件目录、插件的上传目录 ext/<包>/uploads/，ADR-0103）：副本里的改动不进变更集、
+    """受保护的路径（资料区、锁文件目录、插件的上传目录 ext/<包>/uploads/，ADR-0105）：副本里的改动不进变更集、
     合入时一律取主线的版本。"""
     parts = str(rel).replace("\\", "/").lstrip("/").split("/")
     return parts[0] in PROTECTED or (len(parts) >= 3 and parts[0] == "ext" and parts[2] == "uploads")

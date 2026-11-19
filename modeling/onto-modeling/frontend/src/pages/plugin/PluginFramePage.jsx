@@ -1,4 +1,4 @@
-// 插件自己的页面（ADR-0103）：左栏 id 是「包名:页面 id」；整块就是插件的隔离 iframe（PackFrame 页面模式），
+// 插件自己的页面（ADR-0105）：左栏 id 是「包名:页面 id」；整块就是插件的隔离 iframe（PackFrame 页面模式），
 // 标题、按钮都由插件自己画。插件没启用、页面不在注册表里时显示和内置插件页一样的空状态。
 import { useMemo } from 'react';
 import { useProject } from '../../app/context.js';

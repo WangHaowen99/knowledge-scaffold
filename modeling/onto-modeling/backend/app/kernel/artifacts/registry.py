@@ -361,7 +361,7 @@ def _view(declared: dict | None, fields: list[dict], status: dict | None, *, edi
             detail["editor"] = editor
     view["card"] = _card(view["card"], names)
     if no_card:
-        # 视图写 card: false（ADR-0103）：插件的汇总、清单类产物一轮改很多份，不逐份出卡
+        # 视图写 card: false（ADR-0105）：插件的汇总、清单类产物一轮改很多份，不逐份出卡
         view["card"]["hidden"] = True
     return view
 

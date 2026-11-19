@@ -18,12 +18,12 @@ CHECKSUMS_FILE = "checksums.sha256"
 # 内核接口版本：包清单 kernel_api 的比对对象，内核随版本发布（H3）时才会变
 KERNEL_API = "1.0"
 # 平台页面接口版本（详设 5.9.6）：包声明的 page_api 不满足时不让启用、升级。
-# 1.1：上传包可以带自己的页面（pages[].ui 指向本包的编辑器，在隔离 iframe 里跑，ADR-0103）
+# 1.1：上传包可以带自己的页面（pages[].ui 指向本包的编辑器，在隔离 iframe 里跑，ADR-0105）
 PAGE_API = "1.1"
 # 流程定义格式版本（flow.yaml 的 flow_api）
 FLOW_API = 1
 # 包自带界面的窄接口版本（ADR-0055）：上传包的 iframe 编辑器与平台之间 postMessage 协议的版本。
-# 1.1：加页面模式与 artifact.list、upload.*、file.download、studio.open（ADR-0103），1.0 的方法不变
+# 1.1：加页面模式与 artifact.list、upload.*、file.download、studio.open（ADR-0105），1.0 的方法不变
 UI_API = "1.1"
 # 包自带界面的目录与编辑器入口（ADR-0055）：官方包（镜像内置）的编辑器随平台编译，入口是 ui/<id>/index.jsx；
 # 上传包只能是构建好的静态资源，经不同源的 iframe 加载，入口是 ui/<id>/index.html
@@ -31,9 +31,9 @@ UI_DIR = "ui"
 EDITOR_ENTRY_BUNDLED = "index.jsx"
 EDITOR_ENTRY_IFRAME = "index.html"
 EDITOR_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
-# 包自己的页面（ADR-0103）：id 写法同编辑器；左栏和路由里的 id 是「包名:页面 id」，不会和内核页、内置页撞
+# 包自己的页面（ADR-0105）：id 写法同编辑器；左栏和路由里的 id 是「包名:页面 id」，不会和内核页、内置页撞
 PAGE_ID_RE = EDITOR_ID_RE
-# 插件上传目录（ADR-0103）：清单 contributes.uploads 声明上传位，网页上传的文件落在 ext/<包名>/uploads/<上传位>/
+# 插件上传目录（ADR-0105）：清单 contributes.uploads 声明上传位，网页上传的文件落在 ext/<包名>/uploads/<上传位>/
 UPLOAD_KINDS = ("knowledge-package",)
 UPLOAD_MAX_ITEMS = 20
 
@@ -245,11 +245,11 @@ class Manifest:
         return [dict(item) for item in self.contributes.get("subpages") or [] if isinstance(item, dict)]
 
     def custom_pages(self) -> list[dict]:
-        """包自己的页面（ADR-0103）：不是内置页、带 ui 的那些。"""
+        """包自己的页面（ADR-0105）：不是内置页、带 ui 的那些。"""
         return [page for page in self.pages() if page.get("id") not in BUILTIN_PAGES and page.get("ui")]
 
     def uploads(self) -> list[dict]:
-        """上传位（ADR-0103）：`{id, title, kind, max}`。"""
+        """上传位（ADR-0105）：`{id, title, kind, max}`。"""
         return [{"id": str(item["id"]), "title": str(item.get("title") or item["id"]), "kind": str(item.get("kind") or ""),
                  "max": int(item.get("max") or UPLOAD_MAX_ITEMS)}
                 for item in self.contributes.get("uploads") or [] if isinstance(item, dict) and item.get("id")]

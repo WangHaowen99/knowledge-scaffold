@@ -1,4 +1,4 @@
-# 0103 插件自己的页面、上传位与下载：页面复用上传包编辑器的隔离 iframe
+# 0105 插件自己的页面、上传位与下载：页面复用上传包编辑器的隔离 iframe
 
 ## Context
 
@@ -26,8 +26,8 @@
    为空，新增方法：
    - `artifact.list {type, filter?, q?, cursor?, limit?}` → AR-02，只限本包登记的类型，`limit` ≤200；
    - `upload.list {slot}`、`upload.put {slot, name, data: ArrayBuffer}`（≤50 MB，经端口转交）、`upload.delete {slot, id}`
-     → PL-29、PL-28、PL-30，只限本包声明的上传位；
-   - `file.download {path}` → PL-31，只认插件目录 `ext/<包名>/` 下的相对路径，平台在父窗口触发下载，2 秒一次；
+     → PL-31、PL-30、PL-32，只限本包声明的上传位；
+   - `file.download {path}` → PL-33，只认插件目录 `ext/<包名>/` 下的相对路径，平台在父窗口触发下载，2 秒一次；
    - `studio.open {kind, key}`：平台跳到 Studio 的条目；
    - `command.tasks`：本页发出的、还在跑的命令（只给 `task_id、state、title、percent`）。
    新推送：`upload.changed {slot}`、`command.progress`。上传位与本包产物类型由 PL-20 一并返回。
@@ -41,7 +41,7 @@
    副本里的改动不进变更集、合入时取主线的版本。两个引擎同一口径，不靠守卫。
 5. **视图 `card: false`**：插件的清单、汇总类产物一轮会改很多份，这类视图写 `card: false`，对话里不逐份出卡
    （公共本体插件只留「状态」一张）。
-6. **下载**：PL-31 `GET /projects/{id}/packs/{name}/files?path=`（所有者，可用 `?token=`）只读主线已提交的内容：
+6. **下载**：PL-33 `GET /projects/{id}/packs/{name}/files?path=`（所有者，可用 `?token=`）只读主线已提交的内容：
    文件原样，目录用 `git archive` 打成 `<包名>-<目录名>.zip`；路径不能越出插件目录，不能有隐藏段。
 
 ## Alternatives considered
@@ -56,7 +56,7 @@
 
 ## Consequences
 
-- 契约新增 PL-28～PL-31、`contributes.pages[].ui`、`contributes.uploads`、`ManifestSummary.contributes.uploads`、
+- 契约新增 PL-30～PL-33、`contributes.pages[].ui`、`contributes.uploads`、`ManifestSummary.contributes.uploads`、
   PL-12 `pages[]` 的 `page`、`ui`，PL-20 响应的 `types`、`uploads`，窄接口 1.1（`docs/plugin-architecture/contract-changes.md`）。
 - 插件页面能看到的只有本包登记的产物、本包上传位里的文件清单，读不到 `ontology/` 的条目；要在页面上列本体条目，
   插件得自己写一份清单产物（公共本体插件的 `ext/common-ontology/real.md`）。

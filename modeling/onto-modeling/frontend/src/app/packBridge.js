@@ -8,7 +8,7 @@
 // 请求：{onto_ui: "1.0", id, method, params}；回应：{onto_ui, id, ok: true, result} 或 {onto_ui, id, ok: false, error}；
 // 平台主动推：{onto_ui, event: "artifact.changed" | "readonly.changed" | "upload.changed" | "command.progress", data}。
 //
-// 1.1（ADR-0103）：插件自己的页面也走这里（页面模式：ctx.page 有值、ctx.artifact 为 null），加 artifact.list、
+// 1.1（ADR-0105）：插件自己的页面也走这里（页面模式：ctx.page 有值、ctx.artifact 为 null），加 artifact.list、
 // upload.list / put / delete（本包清单声明的上传位）、file.download（本包插件目录 ext/<包>/ 下的文件）、
 // studio.open（跳到 Studio 的条目）、command.tasks（本页发出的、还在跑的命令）。
 import { UI_API } from './packUi.js';
@@ -30,7 +30,7 @@ const ARG_KEY_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,39}$/;
 const CONTROL_RE = /[\u0000-\u001f\u007f]/;
 export const COMMAND_INTERVAL_MS = 5000;
 const SUMMARY_MAX = 200;
-// 1.1：上传与下载的限制（服务端另有一道：PL-28 校验知识包、PL-31 只认插件目录）
+// 1.1：上传与下载的限制（服务端另有一道：PL-30 校验知识包、PL-33 只认插件目录）
 export const UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
 const NAME_MAX = 200;
 const PATH_MAX = 512;

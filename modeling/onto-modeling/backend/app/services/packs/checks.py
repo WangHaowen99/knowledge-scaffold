@@ -649,7 +649,7 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
               if not any(script in str(item.get("command")) for script in names["scripts"])]
     checks.append(_check("hooks", "hooks 只追加拒绝型", "fail" if hooks else "pass", "；".join(hooks)))
 
-    # 页面：选平台内置的，或者上传包用 ui 指向本包的编辑器、在隔离 iframe 里画（ADR-0103）
+    # 页面：选平台内置的，或者上传包用 ui 指向本包的编辑器、在隔离 iframe 里画（ADR-0105）
     pages = _page_problems(manifest, official=official and not tenant)
     pages += [f"子页挂在非内核页面 {sub.get('parent')}" for sub in manifest.subpages()
               if sub.get("parent") not in mf.KERNEL_PAGES]

@@ -42,7 +42,7 @@ const ReportsPage = routePage(() => import('../pages/reports/ReportsPage.jsx'));
 const InboxPage = routePage(() => import('../pages/inbox/InboxPage.jsx'));
 // F3：插件页（场景模拟、代码生成）与项目页（版本、发布、资料、项目设置）
 const ScenariosPage = routePage(() => import('../pages/scenarios/ScenariosPage.jsx'));
-// 插件自己的页面（ADR-0103）：页面 id 是「包名:页面 id」，不在内置页表里
+// 插件自己的页面（ADR-0105）：页面 id 是「包名:页面 id」，不在内置页表里
 const PluginFramePage = routePage(() => import('../pages/plugin/PluginFramePage.jsx'));
 const projectPage = (page) => PROJECT_PAGES[page] || (String(page || '').includes(':') ? PluginFramePage : null);
 const ScriptsPage = routePage(() => import('../pages/scripts/ScriptsPage.jsx'));

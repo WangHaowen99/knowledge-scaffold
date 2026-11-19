@@ -2504,13 +2504,13 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 响应：`Extensions`，包括：
   - 左栏 `nav`：内核 4 项，加上插件页面，按声明顺序排，超过 5 个进「更多」；
   - `subpages`：机制保留；内核内置的子页现在没有（资料页的数据源、采集与快照、证据浏览器随 ADR-0101 删除），包声明子页时静态检查不通过；
-  - `pages`：页面声明，含 `data`、`actions`、`badge`；包自己的页面（ADR-0103）另带 `page`（清单里的页面 id）与 `ui`（编辑器 id），
+  - `pages`：页面声明，含 `data`、`actions`、`badge`；包自己的页面（ADR-0105）另带 `page`（清单里的页面 id）与 `ui`（编辑器 id），
     `id` 是 `<包名>:<页面 id>`；
   - `entries`：界面入口，如快捷项、附加操作；
   - `artifact_types`、`views`、`gates`、`config`；
   - `active_hash`、`pending_hash`；
   - `disabled_pages`：已停用插件的页面，打开旧链接显示「插件已停用」和重新启用按钮。
-- 左栏列「声明的页面 ∩ 前端内置页面」，加上上传包用 `ui` 指向本包编辑器的页面（id `<包名>:<页面 id>`，在隔离 iframe 里画，ADR-0103），且通过 `page_api` 校验。
+- 左栏列「声明的页面 ∩ 前端内置页面」，加上上传包用 `ui` 指向本包编辑器的页面（id `<包名>:<页面 id>`，在隔离 iframe 里画，ADR-0105），且通过 `page_api` 校验。
 
 #### PL-13 上传插件包
 
@@ -2661,9 +2661,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 响应 `200`：`PackCard`（`trust.state="untrusted"`）。
 - 错误：同 PL-28。
 
-#### PL-28 往插件上传位放文件
+#### PL-30 往插件上传位放文件
 
-`POST /api/v1/projects/{id}/packs/{name}/uploads/{slot}`（multipart） · 所有者 · 旧：— · 审计：写请求通用审计 · 依据：ADR-0103 · 页面：插件自己的页面（窄接口 `upload.put`）
+`POST /api/v1/projects/{id}/packs/{name}/uploads/{slot}`（multipart） · 所有者 · 旧：— · 审计：写请求通用审计 · 依据：ADR-0105 · 页面：插件自己的页面（窄接口 `upload.put`）
 
 - `slot` 要是本项目启用中的包在清单 `contributes.uploads` 里声明的上传位；现在只有 `kind: knowledge-package`。
 - 请求：`file`（知识包 ZIP，≤50 MiB）。校验同 PC-01：路径安全、ZIP 炸弹、manifest 合规（`kind: ontology-package`）。
@@ -2675,21 +2675,21 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   `compare_archive_invalid` 等（400，不是合规的知识包）、`payload_too_large`、`upload_slot_full`（409，超过清单的 `max`）、`rate_limited`、
   `write_scope_locked`（423）。
 
-#### PL-29 插件上传位里的文件
+#### PL-31 插件上传位里的文件
 
-`GET /api/v1/projects/{id}/packs/{name}/uploads/{slot}` · 所有者 · 旧：— · 审计：否 · 依据：ADR-0103 · 页面：插件自己的页面（`upload.list`）
+`GET /api/v1/projects/{id}/packs/{name}/uploads/{slot}` · 所有者 · 旧：— · 审计：否 · 依据：ADR-0105 · 页面：插件自己的页面（`upload.list`）
 
 - 响应：`{items: PackUpload[]}`，按上传时间倒序。
 
-#### PL-30 删除插件上传位里的一项
+#### PL-32 删除插件上传位里的一项
 
-`DELETE /api/v1/projects/{id}/packs/{name}/uploads/{slot}/{upload_id}` · 所有者 · 旧：— · 审计：写请求通用审计 · 依据：ADR-0103 · 页面：插件自己的页面（`upload.delete`）
+`DELETE /api/v1/projects/{id}/packs/{name}/uploads/{slot}/{upload_id}` · 所有者 · 旧：— · 审计：写请求通用审计 · 依据：ADR-0105 · 页面：插件自己的页面（`upload.delete`）
 
 - 删掉整个目录并提交到主线。响应：`{deleted: true}`；不存在回 `404`。
 
-#### PL-31 下载插件目录里的文件
+#### PL-33 下载插件目录里的文件
 
-`GET /api/v1/projects/{id}/packs/{name}/files?path=` · 所有者（可用 `?token=`） · 旧：— · 审计：否 · 依据：ADR-0103 · 页面：插件自己的页面（`file.download`）
+`GET /api/v1/projects/{id}/packs/{name}/files?path=` · 所有者（可用 `?token=`） · 旧：— · 审计：否 · 依据：ADR-0105 · 页面：插件自己的页面（`file.download`）
 
 - `path` 是相对 `ext/<name>/` 的路径，空串是整个插件目录；不能越出插件目录、不能有隐藏段。
 - 只读主线已提交的内容：文件原样给，目录用 `git archive` 打成 `<目录名>.zip`；超过 100 MiB 回 `413`。

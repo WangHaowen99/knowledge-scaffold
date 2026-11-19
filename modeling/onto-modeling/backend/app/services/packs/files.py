@@ -1,4 +1,4 @@
-"""插件目录（ADR-0103）：网页往插件的上传位放文件、从插件目录下载产物。
+"""插件目录（ADR-0105）：网页往插件的上传位放文件、从插件目录下载产物。
 
 - 上传位在清单 `contributes.uploads` 里声明；文件落在主线工作区 `ext/<包名>/uploads/<上传位>/<id>/`，经写入事务提交，
   助手读得到（抽取要读），改不了（变更集把 `ext/*/uploads/` 当受保护路径，同资料区）；
@@ -113,7 +113,7 @@ def _read_meta(path: Path) -> dict | None:
 
 
 def list_uploads(manager, project_id: str, pack: str, slot: str) -> list[dict]:
-    """PL-29：上传位里的文件（按上传时间倒序）。"""
+    """PL-31：上传位里的文件（按上传时间倒序）。"""
     view = _view(manager, project_id, pack)
     _slot(view, slot)
     base = manager.project_root(project_id) / slot_dir(pack, slot)
@@ -171,7 +171,7 @@ def _stored_name(zf: zipfile.ZipFile, member: str, rel: str) -> str:
 
 
 def put_upload(manager, project_id: str, pack: str, slot: str, upload, filename: str, *, actor: str) -> dict:
-    """PL-28：校验知识包，留下本体文本，写进上传位并提交到主线。同一个包（manifest id 相同）重传就替换。"""
+    """PL-30：校验知识包，留下本体文本，写进上传位并提交到主线。同一个包（manifest id 相同）重传就替换。"""
     from ...kernel.writepath import ChangeTx, Origin
 
     view = _view(manager, project_id, pack)
@@ -233,7 +233,7 @@ def put_upload(manager, project_id: str, pack: str, slot: str, upload, filename:
 
 
 def delete_upload(manager, project_id: str, pack: str, slot: str, upload_id: str, *, actor: str) -> None:
-    """PL-30：删掉上传位里的一项（整个目录），提交到主线。"""
+    """PL-32：删掉上传位里的一项（整个目录），提交到主线。"""
     from ...kernel.writepath import ChangeTx, Origin
 
     view = _view(manager, project_id, pack)
@@ -282,7 +282,7 @@ def _git(root: Path, *args: str, timeout: int = 60) -> subprocess.CompletedProce
 
 
 def download(manager, project_id: str, pack: str, rel: str) -> tuple[bytes, str, str]:
-    """PL-31：插件目录里主线已提交的文件或目录 → (内容, 文件名, 媒体类型)。目录打成 zip。"""
+    """PL-33：插件目录里主线已提交的文件或目录 → (内容, 文件名, 媒体类型)。目录打成 zip。"""
     _view(manager, project_id, pack)
     clean = _clean_rel(rel)
     if clean is None:
