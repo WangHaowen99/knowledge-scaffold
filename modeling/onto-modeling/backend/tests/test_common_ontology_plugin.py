@@ -343,3 +343,31 @@ def test_new_package_joins_existing_decisions(tmp_path):
     assert "新加入：会议室预约/预约人" in (root / RESULT / "merge.yaml").read_text(encoding="utf-8")
     result = run(root, "co_check.py")
     assert result.returncode == 0, result.stdout
+
+
+def test_rerun_splits_identical_operations_out_of_a_none_group(tmp_path):
+    """助手把逐字一致的操作并进了不一致的组、整组判成没抽出（还写了自己的原因）：重跑时按公共叫法再比，
+    一致又够门槛的部分拆出来定为实类，其余留在原组。"""
+    root = make_project(tmp_path)
+    assert run(root, "co_inventory.py", "min=2").returncode == 0
+    fill_decisions(root)
+    path = root / RESULT / "merge.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    groups = data["groups"]
+    reminders = [g for g in groups if g["kind"] == "operation" and any(m["entry"] == "发送到期提醒" for m in g["members"])]
+    merged = {**reminders[0], "class": "none", "name": "发送到期提醒", "note": "查找条件和目标对象不同",
+              "members": [m for g in reminders for m in g["members"]]}
+    returns = next(g for g in groups if g["kind"] == "operation" and any(m["entry"] == "归还" for m in g["members"]))
+    returns.update({"class": "none", "note": "前置条件不一致"})
+    data["groups"] = [g for g in groups if g not in reminders] + [merged]
+    path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    result = run(root, "co_inventory.py", "min=2", "--apply")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "拆出实类「发送到期提醒」" in result.stdout and "拆出实类「归还」" in result.stdout
+    after = by_members(merge(root))
+    assert after[frozenset({(LIBRARY, "发送到期提醒"), (TOOLS, "发送到期提醒")})]["class"] == "real"
+    rest = after[frozenset({(ROOMS, "发送到期提醒")})]
+    assert rest["class"] == "none" and rest["note"] == "查找条件和目标对象不同"
+    assert after[frozenset({(LIBRARY, "归还"), (TOOLS, "归还")})]["class"] == "real"
+    assert (root / "ontology" / "operation" / "发送到期提醒.md").is_file()

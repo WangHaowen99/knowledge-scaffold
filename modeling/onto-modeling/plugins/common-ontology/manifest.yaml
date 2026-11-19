@@ -3,7 +3,7 @@
 # 实类清单在 ext/common-ontology/result/，页面查看、下载（不进知识包）。页面是本包自带的隔离 iframe（ui/page/），
 # 只经窄接口 1.1 和平台通信；输入知识包放在本包的上传位 inputs（ext/common-ontology/uploads/inputs/，助手只读）。
 name: common-ontology
-version: 0.1.0
+version: 0.1.1
 kind: capability
 category: capability
 label: 公共本体
@@ -13,7 +13,7 @@ kernel_api: ">=1.0 <2.0"
 page_api: ">=1.1 <2.0"
 engines: [claude, jiuwen]
 depends: {core: ">=0.6"}  # 用 core 的条目模板、ontology_checker、state_helper
-changelog: 首个版本。
+changelog: 重跑时按公共叫法再比一次，没抽出的组里逐字一致又够门槛的操作、规则拆出来定为实类。
 contributes:
   commands: [common-ontology-extract]
   scripts: [co_inventory.py, co_check.py]

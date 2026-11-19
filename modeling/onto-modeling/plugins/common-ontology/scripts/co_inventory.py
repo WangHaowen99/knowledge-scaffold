@@ -916,9 +916,40 @@ def build_groups(inventory: Inventory, existing: dict | None, minimum: int) -> t
             return match.group(0)
         return _LINK_RE.sub(repl, text or "")
 
+    def resplit(kind: str, signatures: Signatures) -> None:
+        """没抽出的操作、规则组里，按现在的公共叫法（对象组定下来以后）步骤和前置条件、或逻辑完全一致、又够门槛的那部分
+        拆出来定为实类，其余成员留在原组（原因照旧）。第一次预分组时对象还没合并，叫法不同的同一条逻辑比不上。"""
+        for group in [item for item in groups if item["kind"] == kind and item["class"] == "none"]:
+            entries = [inventory.get(member["pack"], kind, member["entry"]) for member in group["members"]]
+            if len(entries) < 2 or any(entry is None for entry in entries):
+                continue
+            key = (lambda entry: signatures.text(entry) + "\n" + signatures.trigger(entry)) if kind == "operation" \
+                else signatures.text
+            best = _partition(entries, key)[0]
+            if _distinct_packs(best) < minimum or _has_duplicate_pack(best):
+                continue
+            rest = [entry for entry in entries if entry not in best]
+            real = _downgrade_unresolved(new_group(kind, best, name=group["name"] or suggest_name(best), cls="real"),
+                                         inventory, groups, object_group)
+            if real["class"] != "real":
+                continue
+            names = "、".join(inventory.pack_name(entry["pack"]) for entry in best)
+            if rest:
+                group.update({"members": [member for member in group["members"]
+                                          if (member["pack"], member["entry"]) not in {(e["pack"], e["name"]) for e in best}],
+                              # 留下的成员另起名，不和拆出去的实类同名（继承映射按组名分组）
+                              "name": "" if len(rest) == 1 or suggest_name(rest) == real["name"] else suggest_name(rest)})
+                groups.append(real)
+            else:
+                group.update({"class": "real", "note": "", "name": real["name"]})
+            resplits.append(f"「{real['name']}」：{names}的{'步骤和前置条件' if kind == 'operation' else '逻辑'}一致，定为实类")
+
+    resplits: list[str] = []
     for kind in KINDS:
         register_objects()
         signatures = Signatures(object_group)
+        if kind != "object":
+            resplit(kind, signatures)
         fresh = [entry for entry in inventory.entries
                  if entry["kind"] == kind and (entry["pack"], kind, entry["name"]) not in covered]
         fresh = [entry for entry in fresh if not attach(entry, signatures)]
@@ -941,6 +972,8 @@ def build_groups(inventory: Inventory, existing: dict | None, minimum: int) -> t
                         label = "步骤或前置条件" if kind == "operation" else "逻辑"
                         group["note"] = f"{label}和「{clash}」不一致"
                     groups.append(group)
+    for line in resplits[:20]:
+        print(f"拆出实类{line}")
     order = sorted(range(len(groups)), key=lambda index: _group_sort_key(groups[index]))
     remap = {old: new for new, old in enumerate(order)}
     return [groups[index] for index in order], {remap[index]: names for index, names in joined.items()}
