@@ -36,7 +36,7 @@
 | `converter.types` | `[".kvtxt"]` | 至少一个；小写、带点、点后 1～8 位字母或数字 |
 | `converter.license` | 用到的库与许可证 | 只用 MIT、BSD、Apache 一类，不用 AGPL（如 PyMuPDF） |
 
-插件目录只列 `kind: provider` **且**带 `converter` 段的包；没有 `converter` 段的 provider 包能导入，但目录里不显示。
+插件目录只列 `kind: provider` **且**带 `converter` 或 `source` 段的包；两段都没有的 provider 包过不了静态检查。
 
 ## 3. 转换函数
 

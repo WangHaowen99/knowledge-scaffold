@@ -33,9 +33,15 @@ COPY assets/packs/convert-xlsx /opt/connector/converters/convert-xlsx
 # 数据源连接器（ADR-0103）：和转换器同在内置插件目录，驱动经 connector-requirements.txt 装进本镜像
 COPY assets/packs/db-mysql /opt/connector/converters/db-mysql
 COPY assets/packs/db-postgres /opt/connector/converters/db-postgres
+# 插件卷、凭据卷的挂载点（ADR-0103）：镜像里先建好、属主 65534，命名卷首次挂载时照这个属主初始化，网关写得进去
+RUN mkdir -p /var/lib/connector/plugins /var/lib/connector/secrets \
+    && chown 65534:65534 /var/lib/connector/plugins /var/lib/connector/secrets \
+    && chmod 0700 /var/lib/connector/secrets
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     ONTO_CONNECTOR_CONVERTERS_DIR=/opt/connector/converters \
+    ONTO_CONNECTOR_PLUGINS_DIR=/var/lib/connector/plugins \
+    ONTO_CONNECTOR_SECRETS_DIR=/var/lib/connector/secrets \
     ONTO_CONNECTOR_GATEWAY_PORT=8120
 USER 65534:65534
 EXPOSE 8120

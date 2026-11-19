@@ -27,7 +27,9 @@ MASKED = "«已遮蔽»"
 FACTS_HEAD = "<!-- onto:facts 1"
 FACTS_MARKER = "<!-- 库表事实 -->"
 
-_NUMERIC = re.compile(r"int|decimal|numeric|float|double|real|number|serial|money", re.IGNORECASE)
+# 整数类型按词首匹配：interval、point 里的 int 不算
+_NUMERIC = re.compile(r"^(?:tiny|small|medium|big)?int(?:eger)?\d*\b|decimal|numeric|float|double|real|number|serial|money",
+                      re.IGNORECASE)
 _TEMPORAL = re.compile(r"date|time|year|interval", re.IGNORECASE)
 _BOOL = re.compile(r"^(bool|boolean|bit(\(1\))?|tinyint\(1\))$", re.IGNORECASE)
 _BINARY = re.compile(r"blob|binary|bytea|image|varbinary|raw", re.IGNORECASE)
@@ -46,10 +48,10 @@ def type_class(raw_type: str) -> str:
         return "bool"
     if _BINARY.search(text):
         return "binary"
-    if _NUMERIC.search(text):
-        return "numeric"
     if _TEMPORAL.search(text):
         return "temporal"
+    if _NUMERIC.search(text):
+        return "numeric"
     return "text"
 
 
@@ -71,7 +73,8 @@ def _cell(value) -> str:
     return text
 
 
-def _mask_table(table: dict, masker: masking.Masker) -> tuple[list[dict], list[list[str]], list[dict]]:
+def _mask_table(table: dict, masker: masking.Masker, join_keys: frozenset = frozenset()
+                ) -> tuple[list[dict], list[list[str]], list[dict]]:
     """→ (带 sensitivity 的列, 遮蔽后的样本行, 自动识别的码值事实)。"""
     columns = table["columns"]
     rows = table["rows"]
@@ -81,7 +84,8 @@ def _mask_table(table: dict, masker: masking.Masker) -> tuple[list[dict], list[l
         values = [row[index] for row in rows if index < len(row) and row[index] is not None]
         kind = type_class(column.get("type", ""))
         category = masking.classify(column["name"], table=table["name"], comment=column.get("comment", ""),
-                                    type_class=kind, values=values, join_key=column.get("key") in ("pk", "fk"))
+                                    type_class=kind, values=values,
+                                    join_key=column.get("key") in ("pk", "fk") or (table["name"], column["name"]) in join_keys)
         categories.append(category)
         out_columns.append({**column, "sensitivity": category})
         texts = [str(masking.plain(value)) for value in values]
@@ -151,6 +155,10 @@ def render(collected: Collected, salt: str) -> tuple[str, dict, list[str]]:
         limitations.append(f"库表事实只留前 {MAX_FACTS} 条，共 {len(facts)} 条")
         facts = facts[:MAX_FACTS]
     masker = masking.Masker(salt=salt)
+    # 外键和推断关联两端的列都按关联键加盐哈希：同一个值在两张表里哈希相同，样本之间还能对上
+    join_keys = frozenset((fact.get(table), column) for fact in facts if fact.get("kind") in ("foreign_key", "reference")
+                          for table, columns in (("table", "columns"), ("ref_table", "ref_columns"))
+                          for column in fact.get(columns) or [])
     given_values = {(f.get("table"), f.get("column")) for f in facts if f.get("kind") == "values"}
     parts, anchors, cols = [], [], {}
     meta: dict[str, dict] = {}
@@ -163,7 +171,7 @@ def render(collected: Collected, salt: str) -> tuple[str, dict, list[str]]:
             limitations.append(f"表 {name} 重复，只留第一份")
             continue
         seen.add(name)
-        columns, rows, auto_values = _mask_table(table, masker)
+        columns, rows, auto_values = _mask_table(table, masker, join_keys)
         facts += [item for item in auto_values if (item["table"], item["column"]) not in given_values]
         rows_total += len(rows)
         header = [column["name"] for column in columns]

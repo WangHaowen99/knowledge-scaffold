@@ -185,8 +185,8 @@ def create(project_id: str, *, name, connector, config, secrets, author: str) ->
         raise _fields_error(errors)
     ref = _new_ref()
     stored = _put_secrets(project_id, ref, given) if given else []
+    # 写入事件会排队采集（material_conversion.on_write），这里不再另排，免得同一份资料连采两遍
     _write(manager, project_id, rel, spec.dump_document(info.id, clean, ref, stored), author, created=True)
-    _enqueue(project_id, rel, force=True)
     return rel
 
 
@@ -204,8 +204,12 @@ def update(project_id: str, *, path, config=None, secrets=None, author: str) -> 
     if errors:
         raise _fields_error(errors)
     stored = _put_secrets(project_id, ref, given) if given else list(stored_fields)
-    _write(manager, project_id, rel, spec.dump_document(info.id, clean, ref, stored), author, created=False)
-    _enqueue(project_id, rel, force=True)
+    data = spec.dump_document(info.id, clean, ref, stored)
+    if (root / rel).read_bytes() == data:
+        # 只换了凭据：资料内容没变、没有写入事件，强制重采一次
+        _enqueue(project_id, rel, force=True)
+    else:
+        _write(manager, project_id, rel, data, author, created=False)
     return rel
 
 
@@ -416,7 +420,8 @@ def _reconcile(catalog: dict) -> None:
         installed = {(item.get("name"), item.get("version"), item.get("sha256"))
                      for item in catalog.get("plugins") or [] if item.get("origin") == "installed"}
         wanted = set()
-        for name in repository.names():
+        # 私有包也要算：用户上传、管理员信任的连接器多半是私有包
+        for name in repository.names(private=True):
             for version, record in trusted(repository, name).items():
                 if not repository.has(name, version):
                     continue

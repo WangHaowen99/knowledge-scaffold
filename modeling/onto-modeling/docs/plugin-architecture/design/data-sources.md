@@ -158,10 +158,11 @@ def collect(ctx) -> None:   # 发表和事实，用 ctx.table、ctx.fact
   | `check` | `table`、`name`、`expression` |
   | `values` | `table`、`column`、`values`（≤ 20 个，低基数且不敏感的列） |
   | `view` | `name`、`definition` |
-  | `routine` | `name`、`kind`、`signature`、`definition`（截到 2000 字） |
+  | `routine` | `name`、`type`（`procedure` / `function`）、`signature`、`definition`（截到 2000 字） |
   | `trigger` | `table`、`name`、`timing`、`event`、`definition` |
 
-  其他 `kind` 网关拒收（`invalid_event`）。表注释用 `table(comment=…)`，列注释在 `columns` 里。
+  其他 `kind` 网关拒收（`invalid_event`）；字段里不能再有 `kind`。表注释用 `table(comment=…)`，列注释在 `columns` 里。
+  外键和推断关联两端的列，遮蔽时都按关联键加盐哈希。
 - `onto:facts` 注释块是给脚本读的同一份事实（JSON）。工具箱只从数据源资料的文本版里读它，别的文本版里出现同样字样不认。
 - 锚点同 Excel：`file:resource/excel/<名称>.datasource#sheet:orders!B2`。
 
@@ -227,7 +228,7 @@ def collect(ctx) -> None:   # 发表和事实，用 ctx.table、ctx.fact
 `python -m app.connector_gateway.source.worker`：
 
 - 标准输入：第一行 JSON 头 `{entry, vendor, operation, config, egress, limits}`，第二行凭据 JSON，然后关闭。
-- 标准输出：一行一个事件：`check`、`table`、`fact`、`progress`、`limitation`、`error`、`done`。
+- 标准输出：一行一个事件：`check`、`table`、`fact`（事实放在 `fact` 键下）、`progress`、`limitation`、`error`、`done`。
 - 启动顺序：设资源上限 → 解析出口主机 → 装审计钩子（只放行出口白名单里的主机端口，不许起子进程）→ 把 `vendor/` 放进 `sys.path`
   → 导入入口 → 调 `test` 或 `collect`。
 - 插件 `print` 的内容进标准错误。异常只报类型名；`SourceError` 报它的错误码，消息里的凭据取值遮掉。

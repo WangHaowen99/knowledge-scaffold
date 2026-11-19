@@ -258,8 +258,10 @@ def test_trust_hot_loads_uploaded_connector(env, tmp_path):
     from app.services.packs.repository import write_checksums
 
     write_checksums(source)
-    repository.install(source, origin="upload", by="admin")
-    repository.set_channel("tenant-db", "stable", "0.2.0", by="admin")
+    # 用户上传、装到自己名下的私有包（PL-26）：对账时也要算它，不能当成没信任删掉
+    repository.claim("tenant-db", "local")
+    repository.install(source, origin="upload", by="local")
+    repository.set_channel("tenant-db", "stable", "0.2.0", by="local")
     version = repository.latest("tenant-db", "stable")
     card = client.get("/api/v1/packs", params={"category": "provider"}).json()
     tenant = next(item for item in card["items"] if item["name"] == "tenant-db")
@@ -269,6 +271,12 @@ def test_trust_hot_loads_uploaded_connector(env, tmp_path):
     trusted = client.post(f"/api/v1/admin/packs/tenant-db/versions/{version}/trust")
     assert trusted.status_code == 200, trusted.text
     assert trusted.json()["trust"] == {"state": "trusted", "installed": True}
+    # 信任后触发的对账线程跑完，插件还在
+    for _ in range(30):
+        if not datasources._sync_lock.locked():
+            break
+        threading.Event().wait(0.1)
+    assert any(p.name == "tenant-db" for p in gw.store.plugins())
     gateway.reset()
     assert sorted(item["id"] for item in client.get("/api/v1/source-connectors").json()["items"]) == [
         "fake-db", "tenant-db"]
@@ -297,3 +305,18 @@ def test_pack_tar_is_deterministic(tmp_path):
     (folder / "__pycache__").mkdir()
     (folder / "__pycache__" / "x.pyc").write_bytes(b"x")
     assert datasources.pack_tar(folder) == first
+
+
+def test_create_collects_once_and_password_change_recollects(env, monkeypatch):
+    """接入只采一次（写入事件排的那次）；只改密码时资料内容不变，也要重采一次。"""
+    client, _ws, pid, _root, _gw = env
+    calls = []
+    original = datasources.collect
+    monkeypatch.setattr(datasources, "collect", lambda project_id, data: calls.append(1) or original(project_id, data))
+    _create(client, pid)
+    material_conversion.drain()
+    assert len(calls) == 1
+    rel = "resource/excel/订单库.datasource"
+    client.patch(f"/api/v1/projects/{pid}/sources", json={"path": rel, "secrets": {"password": "pw-1"}})
+    material_conversion.drain()
+    assert len(calls) == 2
