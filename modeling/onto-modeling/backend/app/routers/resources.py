@@ -68,7 +68,7 @@ def _material(project_id: str, root: Path, rel: str, directives: dict, reference
         # develop resource-meta 的 schema_scopes、schema_candidates，按资料给（ADR-0096）
         "schema_scope": scopes.get(rel),
         "schema_candidate": candidates.get(rel),
-        # 数据源资料（ADR-0103）：连接配置与字段，表数按文本版里的工作表数
+        # 数据源资料（ADR-0104）：连接配置与字段，表数按文本版里的工作表数
         "source": datasources.material_source(root, rel),
         **({"sheets": _source_tables(root, rel)} if kind == "source" else {}),
     }

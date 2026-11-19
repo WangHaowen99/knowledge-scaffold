@@ -84,7 +84,7 @@ export function createApi(client) {
     resourceSchemaPreview: (id, path, force) => client.get(`${P(id)}/resources/schema-preview`, { query: { path, ...(force ? { force: true } : {}) } }), // R-16
     reconvertResource: (id, path) => client.post(`${P(id)}/resources/convert`, { path }), // R-14（数据源资料即重新采集）
     resourceSourcePreview: (id, path, anchor) => client.get(`${P(id)}/resources/source-preview`, { query: { path, anchor: anchor || undefined } }), // R-17
-    // 3.19a 数据源（ADR-0103）
+    // 3.19a 数据源（ADR-0104）
     sourceConnectors: () => client.get('/source-connectors'), // DS-01
     addSource: (id, body) => client.post(`${P(id)}/sources`, body), // DS-02
     updateSource: (id, body) => client.patch(`${P(id)}/sources`, body), // DS-03

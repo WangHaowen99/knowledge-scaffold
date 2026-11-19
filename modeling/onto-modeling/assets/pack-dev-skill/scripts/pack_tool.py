@@ -215,7 +215,7 @@ def cmd_init(args) -> int:
 
     platform = _platform()
     kind = args.kind or platform["kinds"][0]
-    # 连接器包：--kind source 建数据源连接器（清单 kind 仍是 provider，ADR-0103），缺省建转换器
+    # 连接器包：--kind source 建数据源连接器（清单 kind 仍是 provider，ADR-0104），缺省建转换器
     section = "source" if kind == "source" and "provider" in platform["kinds"] else (
         "converter" if kind == "provider" else "")
     if section == "source":

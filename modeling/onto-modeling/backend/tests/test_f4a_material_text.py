@@ -302,7 +302,7 @@ def test_catalog_lists_data_access_converters(env):
     client, _ws, pid, _root, _gw = env
     body = client.get("/api/v1/packs", params={"project_id": pid}).json()
     providers = {item["name"]: item for item in body["items"] if item["category"] == "provider"}
-    # 多源连接器：三个转换器（ADR-0073）+ 两个数据源连接器（ADR-0103）
+    # 多源连接器：三个转换器（ADR-0073）+ 两个数据源连接器（ADR-0104）
     assert set(providers) == {"convert-pdf", "convert-docx", "convert-xlsx", "db-mysql", "db-postgres"}
     assert body["counts"]["provider"] == 5
     assert providers["convert-pdf"]["project_status"] == "platform_installed"

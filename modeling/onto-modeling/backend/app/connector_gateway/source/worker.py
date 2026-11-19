@@ -1,4 +1,4 @@
-"""数据源连接器的子进程（ADR-0103；design/data-sources.md 第 8 节）：`python -m app.connector_gateway.source.worker`。
+"""数据源连接器的子进程（ADR-0104；design/data-sources.md 第 8 节）：`python -m app.connector_gateway.source.worker`。
 
 标准输入：第一行 JSON 头 `{entry, vendor, operation, config, egress, limits}`，第二行凭据 JSON，然后关闭。
 标准输出：一行一个事件，只经 `SourceContext` 写；插件直接 print 的东西进标准错误，不会混进事件流。最后一个事件是 `done` 或 `error`。

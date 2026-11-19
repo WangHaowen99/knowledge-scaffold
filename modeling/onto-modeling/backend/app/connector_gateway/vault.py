@@ -1,4 +1,4 @@
-"""数据源凭据库（ADR-0103；design/data-sources.md 第 7 节）。凭据只存在网关里。
+"""数据源凭据库（ADR-0104；design/data-sources.md 第 7 节）。凭据只存在网关里。
 
 `ONTO_CONNECTOR_SECRETS_DIR`（卷 connector-secrets，只有网关挂）下 `<项目>/<引用>.bin`，AES-256-GCM 加密，附加数据绑定
 `<项目>/<引用>`，文件挪到别的项目、别的引用下解不开。主密钥来自 `ONTO_CONNECTOR_MASTER_KEY_FILE`（32 字节 base64）；

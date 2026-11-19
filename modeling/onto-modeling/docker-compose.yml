@@ -83,7 +83,7 @@ services:
       start_period: 10s
       retries: 3
 
-  # 连接器网关（ADR-0073、ADR-0103）：文档转换与数据源采集。单独的镜像（Dockerfile 的 connector-gateway 目标），不读 .env；
+  # 连接器网关（ADR-0073、ADR-0104）：文档转换与数据源采集。单独的镜像（Dockerfile 的 connector-gateway 目标），不读 .env；
   # connector 内部网络和主服务互通，biz-egress 连业务库（子进程只放行数据源登记的主机端口）；
   # 插件卷放管理员信任后交付的连接器，凭据卷放数据源凭据，两个卷只有网关挂
   connector-gateway:
@@ -128,7 +128,7 @@ services:
 networks:
   connector:
     internal: true
-  # 数据源采集的出口（ADR-0103）：只有连接器网关接
+  # 数据源采集的出口（ADR-0104）：只有连接器网关接
   biz-egress:
 
 volumes:

@@ -82,7 +82,7 @@ cd backend && ONTO_WEB_AUTH_URL=http://127.0.0.1:5056 ONTO_WEB_AUTH_ISSUER=http:
   本机单独起网关：`cd backend && pip install -r connector-requirements.txt && ONTO_CONNECTOR_CONVERTERS_DIR=../assets/packs
   ONTO_CONNECTOR_ISSUER_KEY_URL=http://127.0.0.1:8100/api/v1/connector/issuer-key python -m app.connector_gateway`，
   再给后端设 `ONTO_WEB_CONNECTOR_GATEWAY_URL=http://127.0.0.1:8120`。
-- 接入数据源（ADR-0103）也走这个网关：本机起网关时再设 `ONTO_CONNECTOR_PLUGINS_DIR`、`ONTO_CONNECTOR_SECRETS_DIR`
+- 接入数据源（ADR-0104）也走这个网关：本机起网关时再设 `ONTO_CONNECTOR_PLUGINS_DIR`、`ONTO_CONNECTOR_SECRETS_DIR`
   到可写的临时目录，装上 `PyMySQL`、`pg8000`。接口与格式见 `docs/plugin-architecture/design/data-sources.md`。
 
 模型接入通过环境变量注入（见 `.env.example`），不落盘、不进仓库。

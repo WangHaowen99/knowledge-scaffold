@@ -1,4 +1,4 @@
-// 接入数据源 / 修改连接（ADR-0103，契约 DS-01～DS-04）：抽屉里按连接器的字段（SourceField）生成表单，
+// 接入数据源 / 修改连接（ADR-0104，契约 DS-01～DS-04）：抽屉里按连接器的字段（SourceField）生成表单，
 // 测试连接（DS-04）、保存（接入 DS-02 / 修改 DS-03）。密钥字段只写不读：修改时空着就是不改。
 import { useEffect, useMemo, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';

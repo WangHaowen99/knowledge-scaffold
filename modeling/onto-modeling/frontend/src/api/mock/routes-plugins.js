@@ -200,7 +200,7 @@ export function register(ctx) {
     });
   });
 
-  // ---------- PL-28 信任 / PL-29 撤销信任（ADR-0103）：只对上传的多源连接器有效 ----------
+  // ---------- PL-28 信任 / PL-29 撤销信任（ADR-0104）：只对上传的多源连接器有效 ----------
   const setTrust = (on) => async ({ m, init }) => {
     const [name, version] = [decodeURIComponent(m[1]), decodeURIComponent(m[2])];
     const r = await cardsFor('', init);

@@ -123,7 +123,7 @@ def test_each_category_downloads_a_complete_skill(real_flow_env, category):
 
 
 def test_provider_skill_says_admin_must_trust_the_connector(real_flow_env):
-    """多源连接器上传后要管理员信任才运行（ADR-0103），连接器包的 skill 要原样交代。"""
+    """多源连接器上传后要管理员信任才运行（ADR-0104），连接器包的 skill 要原样交代。"""
     client, _manager, tmp_path = real_flow_env
     assert "「信任」才运行" in (skill_dir(client, tmp_path, "provider") / "SKILL.md").read_text(encoding="utf-8")
     assert "「信任」才运行" not in (skill_dir(client, tmp_path, "capability") / "SKILL.md").read_text(encoding="utf-8")
@@ -215,7 +215,7 @@ def test_static_assets_only_use_reserved_addresses():
 def test_examples_are_tenant_packs_at_first_version_without_checksums():
     root = Path(config.ASSETS_DIR) / dev_skill.ASSET_DIR / "examples"
     manifests = list(root.glob("*/*/manifest.yaml"))
-    assert len(manifests) == 6  # 含数据源连接器样例 sample-source（ADR-0103）
+    assert len(manifests) == 6  # 含数据源连接器样例 sample-source（ADR-0104）
     for path in manifests:
         parsed = mf.parse(yaml.safe_load(path.read_text(encoding="utf-8")))
         assert parsed.publisher["kind"] == "tenant" and parsed.version == "0.1.0", path

@@ -1,4 +1,4 @@
-"""数据源连接器的 SDK（ADR-0103；design/data-sources.md 第 1、8 节）：插件只经 `SourceContext` 往外发东西。
+"""数据源连接器的 SDK（ADR-0104；design/data-sources.md 第 1、8 节）：插件只经 `SourceContext` 往外发东西。
 
 运行在插件子进程里。一行一个 JSON 事件写到 `out`（子进程的 stdout）；这里只做基本的形状检查和粗限量，
 遮蔽、截断、渲染都在网关主进程（`runner`、`render`）里做，插件绕不过。凭据只在 `secret` 里，不进任何事件。

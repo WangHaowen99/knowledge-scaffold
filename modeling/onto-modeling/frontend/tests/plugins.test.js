@@ -292,7 +292,7 @@ test('mock PL-01 不带项目：新建向导的结果不变（名字、版本、
   assert.deepEqual(r.body.items.map(pick), F.packs().map(pick));
   assert.equal(r.body.recommendations, undefined);
   const all = await api('GET', '/api/v1/packs');
-  assert.equal(all.body.counts.provider, 6); // 3 个转换器（ADR-0073）+ 3 个数据源连接器（ADR-0103）
+  assert.equal(all.body.counts.provider, 6); // 3 个转换器（ADR-0073）+ 3 个数据源连接器（ADR-0104）
   assert.equal(all.body.items.find((p) => p.name === 'convert-pdf').project_status, 'platform_installed');
   assert.deepEqual([all.body.counts.enabled, all.body.counts.updatable], [0, 0]);
   assert.ok(!all.body.items.some((p) => p.name === 'property-compliance'));

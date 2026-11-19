@@ -1,7 +1,7 @@
-"""子进程的审计钩子与凭据遮蔽（ADR-0086、ADR-0103；design/data-sources.md 第 8 节）。
+"""子进程的审计钩子与凭据遮蔽（ADR-0086、ADR-0104；design/data-sources.md 第 8 节）。
 
 审计钩子是纵深防御，不是沙箱：它拦 Python 里白名单外的连接、域名解析和子进程；原生扩展、ctypes 绕得过去。
-信任插件的人要对它的代码负责（ADR-0103「信任方式的代价」）。
+信任插件的人要对它的代码负责（ADR-0104「信任方式的代价」）。
 """
 
 from __future__ import annotations

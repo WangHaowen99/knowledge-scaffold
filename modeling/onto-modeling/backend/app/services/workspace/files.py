@@ -392,7 +392,7 @@ class FilesMixin:
 
         只提交本次的文件与用途清单，agent 别的未提交改动不带进这个提交。
         commit=False 时只落盘（调用方把一批资料合成一个提交，见 import_resources）。
-        datasource=True：数据源服务写数据源资料（ADR-0103），不走上传的类型白名单；purpose 为 keep 时不动用途。
+        datasource=True：数据源服务写数据源资料（ADR-0104），不走上传的类型白名单；purpose 为 keep 时不动用途。
         """
         if subdir not in RESOURCE_SUBDIRS:
             raise WorkspaceError(f"资料分类必须是 {sorted(RESOURCE_SUBDIRS)} 之一")

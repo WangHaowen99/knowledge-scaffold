@@ -52,7 +52,7 @@ const num = (n) => Number(n || 0).toLocaleString('en-US');
 
 // 表格的规模：「3 个工作表 · 1,204 行」「412 行」；拿不到就用大小
 export function scaleText(m) {
-  // 数据源资料（ADR-0103）：采集出几张表；文件本身只是连接配置，大小没有意义
+  // 数据源资料（ADR-0104）：采集出几张表；文件本身只是连接配置，大小没有意义
   if (isSource(m)) return m.sheets ? `${m.sheets} 张表` : '';
   if (m.kind === 'xls' && m.sheets) return `${m.sheets} 个工作表 · ${num(m.rows)} 行`;
   if ((m.kind === 'xls' || m.kind === 'csv') && m.rows) return `${num(m.rows)} 行`;

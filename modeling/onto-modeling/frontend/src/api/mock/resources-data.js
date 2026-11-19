@@ -56,7 +56,7 @@ export function textState(name, kind, { scanned = false, state = null } = {}) {
   const base = { state: 'native', reason: null, note: null, converter: null, updated_at: null, has_text: true };
   if (kind === 'drawio') return null;
   if (kind === 'text' || kind === 'csv') return base;
-  // 数据源资料（ADR-0103）：文本版是连接器采集出来的
+  // 数据源资料（ADR-0104）：文本版是连接器采集出来的
   if (kind === 'source') {
     const s = state || 'converted';
     return { ...base, state: s, has_text: s === 'converted', converter: { id: 'db-mysql', label: 'MySQL', version: '0.1.0' },
@@ -564,7 +564,7 @@ export function webCommit(ctx, pid, paths) {
   return { commit, version_label };
 }
 
-// ---------- 数据源（ADR-0103，契约 3.19a）：连接器（DS-01）、一份数据源资料、它的文本版（采集结果） ----------
+// ---------- 数据源（ADR-0104，契约 3.19a）：连接器（DS-01）、一份数据源资料、它的文本版（采集结果） ----------
 export const SOURCE_PATH = 'resource/excel/门店业务库.datasource';
 const MYSQL_FIELDS = [
   { key: 'host', label: '主机', type: 'host', required: true, default: null, placeholder: '', options: [] },

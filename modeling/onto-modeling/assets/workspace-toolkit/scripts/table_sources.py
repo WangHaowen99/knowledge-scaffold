@@ -19,7 +19,7 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
-# 数据源资料（.datasource，ADR-0103）和 Excel 一样读文本版
+# 数据源资料（.datasource，ADR-0104）和 Excel 一样读文本版
 TABLE_SUFFIXES = (".xlsx", ".xlsm", ".csv", ".datasource")
 
 SAMPLE_ROWS = 30

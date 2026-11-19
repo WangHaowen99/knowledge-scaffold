@@ -2,7 +2,7 @@
 // 另有 F-04 原文件（资料区的路径）、F-05 表格预览，以及资料页发出的命令（S-20）的进度。
 // R-03 改用途、R-06 原文预览仍登记在 routes-materials.js（资料分析也在用）；两边共用 ctx.materials 的资料状态，
 // 合成资料本身在 resources-data.js。
-// DS-01～DS-04 数据源（ADR-0103）也在这里：接入、修改连接、测试连接；R-14 对数据源资料就是重新采集。
+// DS-01～DS-04 数据源（ADR-0104）也在这里：接入、修改连接、测试连接；R-14 对数据源资料就是重新采集。
 // 地址参数：?mock=task:resources（一打开就有一个重读任务在跑）；?mock=sources:down（连接器网关不可用，不出「接入数据源」）
 import * as F from './fixtures.js';
 import {
@@ -194,7 +194,7 @@ export function register(ctx) {
     return json(200, convertersView());
   });
 
-  // ---------- 数据源（ADR-0103，契约 3.19a） ----------
+  // ---------- 数据源（ADR-0104，契约 3.19a） ----------
   const gatewayDown = () => ctx.sc?.sources === 'down';
   // DS-01 连接器：网关不可用时 items 为空
   on('GET', '/source-connectors', () => json(200, gatewayDown()

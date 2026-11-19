@@ -1,4 +1,4 @@
-// 数据源（ADR-0103，契约 3.19a DS-01～DS-04）的纯逻辑：连接表单的初值、校验、拆成 config / secrets，
+// 数据源（ADR-0104，契约 3.19a DS-01～DS-04）的纯逻辑：连接表单的初值、校验、拆成 config / secrets，
 // 服务端错误标到字段，测试连接的结果，数据源资料上能做什么。页面（SourceDrawer.jsx、ResourcesPage.jsx）只负责画。
 
 export const isSource = (m) => m?.kind === 'source';

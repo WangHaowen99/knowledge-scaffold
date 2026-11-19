@@ -1,4 +1,4 @@
-"""PostgreSQL 数据源连接器（ADR-0103）。驱动 pg8000（纯 Python，BSD-3-Clause），随连接器网关镜像安装，只在网关子进程里导入。
+"""PostgreSQL 数据源连接器（ADR-0104）。驱动 pg8000（纯 Python，BSD-3-Clause），随连接器网关镜像安装，只在网关子进程里导入。
 
 方言之外的流程在平台的 `dbkit` 里。连接里的 `database` 是库名，表名前缀是 schema；范围里不带点的写法在全部 schema 里
 匹配表名；没填范围就采这个库里除系统 schema 外的全部。

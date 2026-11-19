@@ -251,7 +251,7 @@ def versions(manager) -> list[dict]:
             manifest = repository.manifest(name, version)
             if manifest.category == "provider" and not isinstance(manifest.raw.get("converter"), dict) \
                     and not isinstance(manifest.raw.get("source"), dict):
-                continue  # 多源连接器只列转换器（ADR-0073）和数据源连接器（ADR-0103）
+                continue  # 多源连接器只列转换器（ADR-0073）和数据源连接器（ADR-0104）
             item = {"category": manifest.category, "component": name, "version": version, "note": manifest.label}
             if isinstance(manifest.raw.get("converter"), dict):
                 item["converter"] = True

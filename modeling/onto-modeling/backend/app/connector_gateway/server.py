@@ -3,7 +3,7 @@
 - GET  /health        存活与已加载的转换器、数据源连接器数（容器健康检查、内核的健康探测）
 - GET  /v1/providers  已加载的转换器（items）、数据源连接器（sources）、插件（plugins）
 - POST /v1/convert    请求体是原文件字节，`Authorization: Bearer <票据>`；回 Markdown 与位置对照
-- PUT/DELETE /v1/plugins/{名}/{版本}、PUT/DELETE /v1/secrets/{项目}/{引用}、POST /v1/sources/test|collect（ADR-0103，
+- PUT/DELETE /v1/plugins/{名}/{版本}、PUT/DELETE /v1/secrets/{项目}/{引用}、POST /v1/sources/test|collect（ADR-0104，
   见 design/data-sources.md 第 5 节）
 
 票据由内核签发（`app.evidence.tickets`），网关从内核取公钥验签（ONTO_CONNECTOR_ISSUER_KEY_URL），核对操作、原文件的
@@ -177,7 +177,7 @@ class Gateway:
                      "converter": {"id": converter.info.id, "version": converter.info.version}}
 
 
-    # ---- 插件（ADR-0103）----
+    # ---- 插件（ADR-0104）----
 
     def _claims(self, token: str, operation: str, scope: str) -> dict:
         return self.verify(token, operation, scope)

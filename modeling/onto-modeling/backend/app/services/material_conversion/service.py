@@ -6,7 +6,7 @@
 - 状态：converting 转换中、converted 已转成文本、unsupported 暂不支持、failed 转换失败、waiting 等待转换（网关不可用）；
 - 触发：写入事件里有资料变了（上传、替换、恢复版本）就排队；资料上「重新转换」；启动时补转还没有文本版的（升级迁移）；
   等待中的每 30 秒看一次网关，恢复了就补转。
-- 数据源资料（`.datasource`，ADR-0103）也走这条队列：「转换」换成经网关采集，「重新转换」就是重新采集。
+- 数据源资料（`.datasource`，ADR-0104）也走这条队列：「转换」换成经网关采集，「重新转换」就是重新采集。
 """
 
 from __future__ import annotations
@@ -382,7 +382,7 @@ def process(project_id: str, rel: str, *, force: bool = False) -> str | None:
 
 
 def _collect(project_id: str, rel: str, path: Path, data: bytes, revision: str) -> str | None:
-    """数据源资料：经网关采集，结果按文本版写（ADR-0103）。"""
+    """数据源资料：经网关采集，结果按文本版写（ADR-0104）。"""
     from .. import datasources
 
     document = datasources.spec.load_document(data)

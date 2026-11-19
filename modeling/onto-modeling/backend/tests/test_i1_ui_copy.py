@@ -112,7 +112,7 @@ def test_release_manifest_gives_source_version_label(manager, monkeypatch, hub_l
 
 
 def test_pack_catalog_has_no_meta_line_and_data_access_only_connectors(env):
-    """多源连接器分类里只有转换器和数据源连接器（ADR-0073、ADR-0103）；两样都没有的提供方包不出现（见下一条）。"""
+    """多源连接器分类里只有转换器和数据源连接器（ADR-0073、ADR-0104）；两样都没有的提供方包不出现（见下一条）。"""
     client, _manager, project_id, _tmp = env
     body = client.get("/api/v1/packs", params={"project_id": project_id}).json()
     assert body["items"] and all("meta" not in item for item in body["items"])

@@ -1,4 +1,4 @@
-"""ADR-0103 数据源热加载 · 工具箱：table_profile 把数据源资料当表格读（表头、外键），source_extract 按工作表锚点取出处。"""
+"""ADR-0104 数据源热加载 · 工具箱：table_profile 把数据源资料当表格读（表头、外键），source_extract 按工作表锚点取出处。"""
 
 from __future__ import annotations
 

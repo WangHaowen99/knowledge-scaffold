@@ -1,4 +1,4 @@
-// 数据源（ADR-0103，契约 3.19a DS-01～DS-04、PL-28、PL-29）：资料页的纯逻辑、插件中心的信任状态、mock 接口
+// 数据源（ADR-0104，契约 3.19a DS-01～DS-04、PL-28、PL-29）：资料页的纯逻辑、插件中心的信任状态、mock 接口
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';

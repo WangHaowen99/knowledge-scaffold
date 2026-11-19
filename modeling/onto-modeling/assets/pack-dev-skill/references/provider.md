@@ -214,7 +214,7 @@ env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
 
 ## 12. 数据源连接器
 
-决策见 ADR-0103。骨架是 `references/examples/sample-source/`（从一个返回 JSON 表结构的 HTTP 服务读表和外键，只用标准库），
+决策见 ADR-0104。骨架是 `references/examples/sample-source/`（从一个返回 JSON 表结构的 HTTP 服务读表和外键，只用标准库），
 `pack_tool.py init <名字> --kind source` 复制它。
 
 ### 12.1 清单的 `source` 段

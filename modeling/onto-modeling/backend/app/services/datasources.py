@@ -1,4 +1,4 @@
-"""数据源（ADR-0103；design/data-sources.md 第 4、9 节）：数据源资料、凭据、采集，以及多源连接器的信任与网关对账。
+"""数据源（ADR-0104；design/data-sources.md 第 4、9 节）：数据源资料、凭据、采集，以及多源连接器的信任与网关对账。
 
 - 数据源是一份资料 `resource/excel/<名称>.datasource`，只有连接配置和凭据引用；采集结果是它的文本版，走资料转换的队列
   （`material_conversion` 里资料类型 `source`），「重新转换」就是重新采集。

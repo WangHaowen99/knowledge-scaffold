@@ -96,7 +96,7 @@ services:
       start_period: 10s
       retries: 3
 
-  # 连接器网关（ADR-0073、ADR-0103）：文档转换（PDF、Word、Excel 转文本）与数据源采集（MySQL、PostgreSQL，
+  # 连接器网关（ADR-0073、ADR-0104）：文档转换（PDF、Word、Excel 转文本）与数据源采集（MySQL、PostgreSQL，
   # 以及管理员在插件中心信任的连接器）。单独的镜像，不读 .env、不发布端口；非 root、只读根文件系统、无 capability；
   # 每个任务一个子进程，有超时和内存上限。connector 内部网络和主服务互通；biz-egress 连业务库，子进程只放行数据源
   # 登记的主机端口。插件卷放信任后交付的连接器，凭据卷放数据源凭据（AES-GCM，主密钥默认在凭据卷里自动生成，
@@ -139,7 +139,7 @@ services:
 networks:
   connector:
     internal: true
-  # 数据源采集的出口（ADR-0103）：只有连接器网关接
+  # 数据源采集的出口（ADR-0104）：只有连接器网关接
   biz-egress:
 
 volumes:

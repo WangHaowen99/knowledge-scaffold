@@ -103,7 +103,7 @@ export function cardTags(p) {
 }
 
 /**
- * 多源连接器的信任（ADR-0103，契约 PackCard.trust）：随镜像交付的（builtin）不标；
+ * 多源连接器的信任（ADR-0104，契约 PackCard.trust）：随镜像交付的（builtin）不标；
  * 上传的标已信任 / 未信任，信任了但网关里没装上标「未装上」（网关不可用时 installed 为 null，按已信任算）
  */
 export function trustChip(p) {

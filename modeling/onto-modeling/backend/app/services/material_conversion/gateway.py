@@ -102,7 +102,7 @@ def health(force: bool = False) -> dict:
 
 
 def catalog(force: bool = False) -> dict | None:
-    """GET /v1/providers 全文：转换器 items、数据源连接器 sources、插件 plugins（ADR-0103）；网关不可用时 None。"""
+    """GET /v1/providers 全文：转换器 items、数据源连接器 sources、插件 plugins（ADR-0104）；网关不可用时 None。"""
     def load():
         try:
             data = _get("/v1/providers")
@@ -128,7 +128,7 @@ _catalog_hooks: list = []
 
 
 def on_catalog(hook) -> None:
-    """每次（重新）取到网关清单后调 hook(清单)：内核按它对账已信任的插件（ADR-0103）。"""
+    """每次（重新）取到网关清单后调 hook(清单)：内核按它对账已信任的插件（ADR-0104）。"""
     if hook not in _catalog_hooks:
         _catalog_hooks.append(hook)
 
@@ -141,7 +141,7 @@ def providers(force: bool = False) -> list[dict] | None:
 
 def call(method: str, path: str, body: bytes | None, *, operation: str, scope: bytes, claims: dict,
          timeout: float = 60) -> tuple[int, dict]:
-    """签一张票据调网关（ADR-0103 的插件、凭据、数据源接口）。网关不可达、繁忙、取不到公钥抛 GatewayUnavailable；
+    """签一张票据调网关（ADR-0104 的插件、凭据、数据源接口）。网关不可达、繁忙、取不到公钥抛 GatewayUnavailable；
     其余错误原样回 (状态码, 响应体)。"""
     url = base_url()
     if not url:

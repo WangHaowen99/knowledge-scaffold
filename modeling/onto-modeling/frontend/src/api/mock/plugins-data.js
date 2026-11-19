@@ -61,7 +61,7 @@ function converterCards() {
   }));
 }
 
-// 多源连接器里的数据源连接器（ADR-0103）：两个随镜像交付的官方连接器，加一个上传了、还没信任的租户连接器
+// 多源连接器里的数据源连接器（ADR-0104）：两个随镜像交付的官方连接器，加一个上传了、还没信任的租户连接器
 const SOURCE_CARDS = [
   ['db-mysql', 'MySQL', '读取表结构、外键、约束和遮蔽后的样本。', 6, 'PyMySQL（MIT）', { kind: 'official', label: '平台' }, 'builtin'],
   ['db-postgres', 'PostgreSQL', '读取表结构、外键、约束和遮蔽后的样本。', 6, 'pg8000（BSD-3-Clause）', { kind: 'official', label: '平台' }, 'builtin'],

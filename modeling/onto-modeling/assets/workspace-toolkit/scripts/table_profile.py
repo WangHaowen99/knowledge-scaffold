@@ -39,7 +39,7 @@ from pathlib import Path
 import field_semantics
 import table_sources
 
-# .datasource：数据源资料（ADR-0103），和 Excel 一样读采集出的文本版
+# .datasource：数据源资料（ADR-0104），和 Excel 一样读采集出的文本版
 TABLE_SUFFIXES = (".xlsx", ".xlsm", ".xls", ".csv", ".datasource")
 DATASOURCE_SUFFIX = ".datasource"
 FACTS_HEAD = "<!-- onto:facts 1"
@@ -198,13 +198,13 @@ def write_headers(root: Path) -> dict:
         "tables": {name: len(tables[name]) for name in names[:SUMMARY_TABLE_LIMIT]},
         "tables_omitted": max(len(names) - SUMMARY_TABLE_LIMIT, 0),
         "missing_text": missing[:MISSING_LIMIT],
-        # 只有数据源资料带外键（ADR-0103）；没有时不出这个键，摘要和以前一样
+        # 只有数据源资料带外键（ADR-0104）；没有时不出这个键，摘要和以前一样
         **({"foreign_keys": len(foreign_keys)} if foreign_keys else {}),
     }
 
 
 def source_facts(text: str) -> dict | None:
-    """数据源文本版末尾的 `onto:facts` 注释块（网关渲染，ADR-0103）→ dict；没有或坏了时 None。"""
+    """数据源文本版末尾的 `onto:facts` 注释块（网关渲染，ADR-0104）→ dict；没有或坏了时 None。"""
     start = text.rfind("\n" + FACTS_HEAD + "\n")
     if start < 0:
         return None

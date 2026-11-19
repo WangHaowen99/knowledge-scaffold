@@ -56,7 +56,7 @@ def card(manager, name: str, project: dict | None) -> dict | None:
     converter = _converter(name, manifest)
     source = _source(manifest)
     if converter is not None or source is not None:
-        # 多源连接器跑在连接器网关里，平台级，不按项目启用（ADR-0073、ADR-0103）
+        # 多源连接器跑在连接器网关里，平台级，不按项目启用（ADR-0073、ADR-0104）
         status = "platform_installed"
     return {
         "name": name, "version": latest, "label": manifest.label, "description": manifest.description,
@@ -74,7 +74,7 @@ def card(manager, name: str, project: dict | None) -> dict | None:
 
 
 def _source(manifest) -> dict | None:
-    """多源连接器里的数据源连接器（清单 `source` 段，ADR-0103）。"""
+    """多源连接器里的数据源连接器（清单 `source` 段，ADR-0104）。"""
     spec = manifest.raw.get("source")
     if manifest.kind != "provider" or not isinstance(spec, dict):
         return None
@@ -116,7 +116,7 @@ def catalog(manager, *, category: str = "", q: str = "", project_id: str = "", v
     if wanted - set(CATEGORY_KEYS):
         raise PackError("invalid_argument", f"category 只能取 {'|'.join(CATEGORY_KEYS)}", 400,
                         {"fields": {"category": "enum"}})
-    # 多源连接器：包仓库里的只列转换器和数据源连接器（ADR-0073、ADR-0103）
+    # 多源连接器：包仓库里的只列转换器和数据源连接器（ADR-0073、ADR-0104）
     names = [*repository.names()[:500], *repository.private_names(viewer)]
     cards = [item for item in (card(manager, name, project) for name in names)
              if item and (item["category"] != "provider" or item["converter"] is not None or item["source"] is not None)]

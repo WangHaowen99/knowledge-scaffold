@@ -1,4 +1,4 @@
-"""数据库类连接器的通用件（ADR-0103；design/data-sources.md 第 1 节）。插件 import 它，第三方数据库连接器也能用。
+"""数据库类连接器的通用件（ADR-0104；design/data-sources.md 第 1 节）。插件 import 它，第三方数据库连接器也能用。
 
 插件只写方言（`Dialect` 子类：连接、元数据查询、取值表达式、错误映射），这里管：
 - 只读三重保证的串联：账号自检（`require_readonly`）、只读会话（`open_cursor`）、语句白名单（`GuardedCursor`，每条语句先过

@@ -177,7 +177,7 @@ function TextAtPane({ m, fragment }) {
   );
 }
 
-// ---------- 文本版（R-13 查看文本、R-14 重新转换；ADR-0073）；数据源资料的文本版是采集结果，R-14 即重新采集（ADR-0103） ----------
+// ---------- 文本版（R-13 查看文本、R-14 重新转换；ADR-0073）；数据源资料的文本版是采集结果，R-14 即重新采集（ADR-0104） ----------
 function TextPane({ m, onUploadText, onCoverage, onEditSource }) {
   const { api } = useApp();
   const { pid } = useProject();

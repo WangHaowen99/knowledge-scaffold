@@ -164,7 +164,7 @@ def _ui_problems(directory: Path, files: list[str], manifest: Manifest, *, offic
 
 
 def _provider_problems(directory: Path, manifest: Manifest) -> list[str]:
-    """多源连接器：`converter`、`source` 二选一（ADR-0073、ADR-0103），入口文件在、写法对。"""
+    """多源连接器：`converter`、`source` 二选一（ADR-0073、ADR-0104），入口文件在、写法对。"""
     from ...evidence.sources import SpecError, parse_spec
 
     converter, source = manifest.raw.get("converter"), manifest.raw.get("source")

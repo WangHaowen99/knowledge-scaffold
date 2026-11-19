@@ -166,7 +166,7 @@ export function heroFacts(d) {
  */
 export function heroActions(d, o = {}) {
   const st = d?.project_status;
-  // 上传的多源连接器（ADR-0103）：管理员在这里信任 / 撤销信任，别人只看状态（英雄区标签）
+  // 上传的多源连接器（ADR-0104）：管理员在这里信任 / 撤销信任，别人只看状态（英雄区标签）
   if (d?.trust && d.trust.state !== 'builtin') {
     if (!o.admin) return {};
     return d.trust.state === 'untrusted'

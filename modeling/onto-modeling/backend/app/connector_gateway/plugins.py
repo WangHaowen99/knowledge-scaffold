@@ -1,4 +1,4 @@
-"""网关的插件仓库（ADR-0103；design/data-sources.md 第 6 节）：内置目录（镜像里只读）+ 插件卷（内核交付、可写）。
+"""网关的插件仓库（ADR-0104；design/data-sources.md 第 6 节）：内置目录（镜像里只读）+ 插件卷（内核交付、可写）。
 
 - 内置目录 `ONTO_CONNECTOR_CONVERTERS_DIR`：随镜像交付的 `kind: provider` 包，布局 `<名>/`；
 - 插件卷 `ONTO_CONNECTOR_PLUGINS_DIR`：管理员信任后内核交付的包，布局 `<名>/<版本>/`，另有 `.sha256` 记交付 tar 的哈希。

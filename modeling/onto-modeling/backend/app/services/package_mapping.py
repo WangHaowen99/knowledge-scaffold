@@ -44,7 +44,7 @@ GRAPH_IDENTIFIER = re.compile(r"^[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]
 _IDENTIFIER_RE = re.compile(GRAPH_IDENTIFIER.pattern.strip("^$"))
 RELATIONS_SECTION = "关联对象"
 SOURCE_PURPOSES = ("schema",)
-# 数据源资料（ADR-0103）和 Excel 一样读文本版
+# 数据源资料（ADR-0104）和 Excel 一样读文本版
 TABLE_SUFFIXES = (".xlsx", ".xlsm", ".csv", ".datasource")
 
 SOURCE_SECTION = "数据来源"

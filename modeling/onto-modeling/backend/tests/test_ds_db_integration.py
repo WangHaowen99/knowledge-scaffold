@@ -1,4 +1,4 @@
-"""ADR-0103 数据源连接器连真库：测试床 `connectors/testbed/db`（合成的订单库），经网关子进程 + 渲染跑一遍。
+"""ADR-0104 数据源连接器连真库：测试床 `connectors/testbed/db`（合成的订单库），经网关子进程 + 渲染跑一遍。
 
 两种跑法：
 - 给了 `DS_DB_MYSQL_HOST`、`DS_DB_PG_HOST`（端口 `DS_DB_MYSQL_PORT`、`DS_DB_PG_PORT`）和账号密码 `DS_DB_RO_PASSWORD`、

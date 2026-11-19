@@ -35,7 +35,7 @@ SNAPSHOT_MAX_NAMES = 100
 CHECKER_SOURCES = (
     "services/packs/manifest.py", "services/packs/repository.py", "services/packs/checks.py",
     "services/packs/extensions.py", "services/flow/need.py", "kernel/artifacts/registry.py",
-    # 多源连接器的 source 段校验（ADR-0103），只用标准库
+    # 多源连接器的 source 段校验（ADR-0104），只用标准库
     "evidence/sources.py",
 )
 _CHECKER_PACKAGES = ("", "services/", "services/packs/", "services/flow/", "services/onto_mcp/", "kernel/",

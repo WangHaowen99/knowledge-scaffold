@@ -1,4 +1,4 @@
-"""ADR-0103 数据源连接器 db-mysql、db-postgres 与平台通用件 dbkit：用假连接测，不连真库。
+"""ADR-0104 数据源连接器 db-mysql、db-postgres 与平台通用件 dbkit：用假连接测，不连真库。
 
 真库的测试在 test_ds_db_integration.py。
 """
