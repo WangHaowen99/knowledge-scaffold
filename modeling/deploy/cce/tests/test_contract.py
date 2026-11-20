@@ -1397,7 +1397,7 @@ class CceContractTests(unittest.TestCase):
             def release(self): pass
 
         def fake_invoke(side, action, _config, package, *_args, **_kwargs):
-            calls.append((side, action))
+            calls.append((side, action, _args[0]))
             return {"schemaVersion": "cce-operation/v1", "status": "succeeded",
                     "releaseVersion": package[1]["releaseVersion"],
                     "chartVersion": package[1]["chartVersion"]}
@@ -1429,23 +1429,31 @@ class CceContractTests(unittest.TestCase):
                             "--config", str(self.base / "joint.yaml")]
                 with redirect_stdout(StringIO()) as output:
                     self.assertEqual(JOINT.main(), 0, output.getvalue())
-                self.assertEqual(calls, [("consumer", "preflight"), ("modeling", "preflight"),
-                                         ("auth", "upgrade"), ("consumer", "upgrade"),
-                                         ("consumer", "verify"), ("modeling", "upgrade"),
-                                         ("modeling", "verify")])
+                self.assertEqual([(side, action) for side, action, *_ in calls],
+                                 [("consumer", "preflight"), ("modeling", "preflight"),
+                                  ("auth", "upgrade"), ("consumer", "upgrade"),
+                                  ("consumer", "verify"), ("modeling", "upgrade"),
+                                  ("modeling", "verify")])
                 calls.clear()
                 def migrated(_config, _package, _operation_id, journal, _path, *, resume):
-                    calls.append(("auth", "migrate"))
+                    calls.append(("auth", "migrate", _operation_id))
                     journal["completed"].append("auth-migrated")
                     return {"status": "succeeded", "phase": "migrated"}
                 with mock.patch.object(JOINT, "ensure_auth_migration", side_effect=migrated):
                     with redirect_stdout(StringIO()) as output:
                         self.assertEqual(JOINT.main(), 0, output.getvalue())
-                self.assertEqual(calls, [("auth", "migrate"),
-                                         ("consumer", "preflight"), ("modeling", "preflight"),
-                                         ("auth", "upgrade"), ("consumer", "upgrade"),
-                                         ("consumer", "verify"), ("modeling", "upgrade"),
-                                         ("modeling", "verify")])
+                self.assertEqual([(side, action) for side, action, *_ in calls],
+                                 [("auth", "migrate"),
+                                  ("consumer", "preflight"), ("modeling", "preflight"),
+                                  ("auth", "upgrade"), ("consumer", "upgrade"),
+                                  ("consumer", "verify"), ("modeling", "upgrade"),
+                                  ("modeling", "verify")])
+                migration_id = calls[0][2]
+                self.assertEqual(calls[1][2], f"{migration_id}-consumer")
+                self.assertEqual(calls[4][2], f"{migration_id}-consumer")
+                self.assertEqual(calls[5][2], f"{migration_id}-consumer")
+                self.assertEqual(calls[2][2], migration_id)
+                self.assertEqual(calls[6][2], migration_id)
         finally:
             sys.argv = original
 

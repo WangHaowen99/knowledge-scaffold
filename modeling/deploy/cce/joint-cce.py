@@ -1859,7 +1859,11 @@ def main():
                     and journal.get("phase") != "auth-started")
             if needs_post_migration_preflight:
                 result["phase"] = "consumer-post-migration-preflight"
-                invoke("consumer", "preflight", config, packages["consumer"], operation_id,
+                # Auth migration writes a Consumer snapshot index under the
+                # joint operation ID. The subsequent Consumer upgrade needs
+                # its own ID so it can create its runtime backup group.
+                consumer_operation_id = f"{operation_id[:70]}-consumer"
+                invoke("consumer", "preflight", config, packages["consumer"], consumer_operation_id,
                        image_files["consumer"], lock_holder=operation_id)
                 result["phase"] = "modeling-post-migration-preflight"
                 invoke("modeling", "preflight", config, packages["modeling"], operation_id,
@@ -1928,16 +1932,20 @@ def main():
                         journal["phase"] = "auth-completed"
                         write_journal(journal_path, journal)
             defer_external_services = False
+            consumer_operation_id = (f"{operation_id[:70]}-consumer"
+                if args.action == "upgrade" and auth_package and migration_kind == "migrated"
+                else operation_id)
             for side in JOINT_SIDE_ORDER:
                 side_package = packages.get(side)
                 side_images = image_files.get(side)
+                side_operation_id = consumer_operation_id if side == "consumer" else operation_id
                 if side_package is None or side_images is None:
                     raise ConfigError(f"{side} package or image mapping is missing")
                 for current_lease in leases:
                     current_lease.check()
                 result["phase"] = side
                 if journal and side in journal.get("completed", []):
-                    if not completed_release_matches(config, side, side_package, operation_id, side_images):
+                    if not completed_release_matches(config, side, side_package, side_operation_id, side_images):
                         raise ConfigError(f"completed {side} release no longer matches operation journal")
                     result["results"][side] = {"status": "succeeded", "phase": "already-completed"}
                     continue
@@ -1947,7 +1955,7 @@ def main():
                 resumed_install = args.action == "install" and args.resume and bool(journal)
                 if resumed_install and journal.get("phase") == f"{side}-started" \
                         and release_exists(config, side):
-                    if not completed_release_matches(config, side, side_package, operation_id, side_images):
+                    if not completed_release_matches(config, side, side_package, side_operation_id, side_images):
                         raise ConfigError(f"installed {side} release differs from resumed operation")
                     result["phase"] = f"{side}-verify"
                     if auth_package and side == "consumer":
@@ -1969,15 +1977,23 @@ def main():
                 if journal:
                     journal["phase"] = f"{side}-started"
                     write_journal(journal_path, journal)
-                result["results"][side] = invoke(side, args.action, config, side_package, operation_id,
-                    side_images, args.resume if args.action == "install" else "",
-                    args.backup_record if side == "modeling" and args.backup_record else "",
-                    args.transition_id or "", operation_id if args.action in ("install", "upgrade") else "",
-                    transition_record_path if side == "modeling" and args.action == "upgrade" else "",
-                    defer_external_services=defer_external_services and side == "modeling",
-                    auto_backup=side == "modeling" and args.action == "upgrade" and not args.backup_record,
-                    snapshot_retention=args.snapshot_retention,
-                    min_free_percent=args.min_free_percent)
+                try:
+                    result["results"][side] = invoke(side, args.action, config, side_package, side_operation_id,
+                        side_images, args.resume if args.action == "install" else "",
+                        args.backup_record if side == "modeling" and args.backup_record else "",
+                        args.transition_id or "", operation_id if args.action in ("install", "upgrade") else "",
+                        transition_record_path if side == "modeling" and args.action == "upgrade" else "",
+                        defer_external_services=defer_external_services and side == "modeling",
+                        auto_backup=side == "modeling" and args.action == "upgrade" and not args.backup_record,
+                        snapshot_retention=args.snapshot_retention,
+                        min_free_percent=args.min_free_percent)
+                except ChildOperationError as exc:
+                    if journal and args.action == "upgrade" and exc.payload.get("phase") == "preflight":
+                        # The child has not begun an upgrade. Keep the joint
+                        # operation resumable after its inputs are repaired.
+                        journal["phase"] = f"{side}-preflight-failed"
+                        write_journal(journal_path, journal)
+                    raise
                 if auth_package and args.action == "install" and side == "consumer":
                     result["phase"] = "consumer-verify"
                     wait_for_consumer_rollout(config, leases)
@@ -1987,7 +2003,7 @@ def main():
                 if args.action == "upgrade":
                     for current_lease in leases:
                         current_lease.check()
-                    invoke(side, "verify", config, side_package, operation_id, side_images,
+                    invoke(side, "verify", config, side_package, side_operation_id, side_images,
                            lock_holder=operation_id)
                 if journal:
                     journal.setdefault("completed", []).append(side)
