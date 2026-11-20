@@ -2880,6 +2880,22 @@ class CceContractTests(unittest.TestCase):
                                   leaseDurationSeconds=1)
         self.assertEqual(released["spec"].get("renewTime"), "1970-01-01T00:00:00.000000Z")
 
+    def test_joint_lease_acquires_released_auth_migration_lease(self):
+        config = {"cluster": {"context": "synthetic"},
+                  "consumer": {"releaseName": "consumer", "namespace": "consumer-demo"}}
+        lease = JOINT.Lease(config, "consumer", "joint-operation")
+        released = {"metadata": {"resourceVersion": "7"},
+                    "spec": {"holderIdentity": "", "renewTime": JOINT.lease_timestamp(
+                        JOINT.datetime.now(JOINT.timezone.utc)), "leaseDurationSeconds": 30}}
+        with mock.patch.object(lease, "_get", return_value=released), \
+             mock.patch.object(JOINT, "kubectl") as replace, \
+             mock.patch.object(JOINT.threading, "Thread") as thread:
+            lease.acquire()
+        self.assertEqual(replace.call_args.args[3:6], ("replace", "-f", "-"))
+        self.assertEqual(json.loads(replace.call_args.kwargs["input_text"])["spec"]["holderIdentity"],
+                         "joint-operation")
+        thread.return_value.start.assert_called_once()
+
     def test_offline_package_layout_excludes_consumer_image(self):
         output = self.base / "release.tar.gz"
 

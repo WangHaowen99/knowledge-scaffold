@@ -1636,7 +1636,7 @@ class Lease:
 
     def acquire(self):
         current = self._get()
-        if current:
+        if current and current.get("spec", {}).get("holderIdentity"):
             renewed = current["spec"].get("renewTime") or current["spec"].get("acquireTime")
             expires = datetime.fromisoformat(renewed.replace("Z", "+00:00")) + timedelta(seconds=current["spec"].get("leaseDurationSeconds", 90))
             if expires > datetime.now(timezone.utc):
