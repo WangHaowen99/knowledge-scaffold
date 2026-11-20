@@ -109,7 +109,6 @@ services:
       # all knowledge access goes through kb-gateway (management API, MCP, DA tools)
       KB_SERVICE_URL: http://kb-gateway:8080
       KBS_MCP_URL: http://kb-gateway:8080/mcp/
-      KB_PLUGINS_DIR: /opt/kb-plugins
       DA_BASE_URL: http://da-engine:8192
       DA_TENANT_ID: ${DA_TENANT_ID:-default}
       # DA 作为团队成员时：检索范围取租户下全部知识库；团队 MCP 经本容器桥接给 DA
@@ -129,7 +128,15 @@ services:
       SWARM_ENDPOINT_PROFILE: dashscope
     volumes:
       - swarm-home:/root/.jiuwenswarm
-      - ../../swarm-kb-plugin/plugin:/opt/kb-plugins:ro
+      # the plugins go into the user plugin directory, read-only; Swarm builds differ on where that is
+      # (~/.jiuwenswarm/application_plugins or ~/.jiuwenswarm/domain/application_plugins), so each
+      # plugin is placed in both. KB_PLUGINS_SRC (deploy.env) is where `kbsuite.sh build-plugin`
+      # staged them: a release snapshot for a production stack, a scratch dir for a test stack, so
+      # rebuilding pages for one never changes what the other serves.
+      - ${KB_PLUGINS_SRC:-../../swarm-kb-plugin/plugin}/kb-manager:/root/.jiuwenswarm/application_plugins/kb-manager:ro
+      - ${KB_PLUGINS_SRC:-../../swarm-kb-plugin/plugin}/da-analyst:/root/.jiuwenswarm/application_plugins/da-analyst:ro
+      - ${KB_PLUGINS_SRC:-../../swarm-kb-plugin/plugin}/kb-manager:/root/.jiuwenswarm/domain/application_plugins/kb-manager:ro
+      - ${KB_PLUGINS_SRC:-../../swarm-kb-plugin/plugin}/da-analyst:/root/.jiuwenswarm/domain/application_plugins/da-analyst:ro
     depends_on:
       kb-gateway:
         condition: service_healthy
@@ -163,9 +170,8 @@ services:
     # The image's command with Spring Boot's PropertiesLauncher instead of JarLauncher (same
     # jar), so loader.path puts da/prompt-overlay first on the classpath: kb-suite's prompt
     # clause and subagent rules (see da/kbs-tools.yml). Recreate, not restart, after changes.
-    entrypoint: ["java", "-Dlogback.configurationFile=classpath:logback-da.xml",
-                 "-Dloader.path=/app/config/prompt-overlay", "-cp", "/app/app.jar",
-                 "org.springframework.boot.loader.launch.PropertiesLauncher"]
+    # The skills directory may be empty but has to exist: without it DA mounts no skill tools.
+    entrypoint: ["sh", "-c", "mkdir -p \"$$DA_SKILLS_LOCAL_DIR\" && exec java -Dlogback.configurationFile=classpath:logback-da.xml -Dloader.path=/app/config/prompt-overlay -cp /app/app.jar org.springframework.boot.loader.launch.PropertiesLauncher"]
     env_file:
       - ${KBS_SECRETS_DIR}/secrets.env
       - ${KBS_SECRETS_DIR}/keys.env
@@ -181,6 +187,10 @@ services:
       DA_SKILLS_LOCAL_DIR: /app/data/skills/local
       DA_WORKSPACE_ROOT: /app/data/sessions
       SKILLHUB_RUNTIME_ACCESS_ENABLED: "false"
+      # No jiuwenbox sandbox in kb-suite: file and command tools (write_file, edit_file, bash, ...) run in
+      # this container's session workspace, as in DA-java's own deploy/docker-compose.yml. Left on, the
+      # engine sends them to http://jiuwenbox-service:8321 and every one of them fails.
+      OPENJIUWEN_SERVICE_EXTERNAL_SANDBOX_ENABLED: "false"
       SPRING_CONFIG_ADDITIONAL_LOCATION: file:/app/config/kbs-tools.yml
     volumes:
       - da-data:/app/data
@@ -234,7 +244,8 @@ services:
       KBGW_KEYS: plugin=KBS_PLUGIN_KEY:manage,ingest,retrieve;mcp=KBS_MCP_KEY:retrieve;da=KBS_DA_KEY:retrieve,reprocess
       KBGW_TENANT: ${DA_TENANT_ID:-default}
     volumes:
-      - ./gateway/backends.yaml:/etc/kb-gateway/backends.yaml:ro
+      # a deployment can mount its own list (KBS_GATEWAY_BACKENDS in gateway.env), e.g. to pick another default
+      - ${KBS_GATEWAY_BACKENDS:-./gateway/backends.yaml}:/etc/kb-gateway/backends.yaml:ro
     ports:
       - "127.0.0.1:${KBGW_PORT:-5195}:8080"
     depends_on:
@@ -348,7 +359,9 @@ services:
   # its own network that only its database and the adapter join.
   da-kb-postgres:
     profiles: [da-kb]
-    image: paradedb/paradedb:v0.25.11-pg17
+    # DA_KB_PG_IMAGE=kb-suite/da-kb-postgres:zhparser (./kbsuite.sh build-da-kb-pg) adds the Chinese word
+    # segmentation DA's keyword search relies on; the same data directory works with either image
+    image: ${DA_KB_PG_IMAGE:-paradedb/paradedb:v0.25.11-pg17}
     environment:
       POSTGRES_USER: deepanalyze
       POSTGRES_PASSWORD: ${DA_KB_DB_PASSWORD:-}
@@ -404,7 +417,7 @@ services:
   # the schema and is stopped again, otherwise both would process the same documents.
   dap-postgres:
     profiles: [da-platform]
-    image: paradedb/paradedb:v0.25.11-pg17
+    image: ${DA_KB_PG_IMAGE:-paradedb/paradedb:v0.25.11-pg17}
     environment:
       POSTGRES_USER: deepanalyze
       POSTGRES_PASSWORD: ${DAP_DB_PASSWORD:-}
@@ -508,4 +521,6 @@ volumes:
   kbs-files:
   swarm-home:
     # 两个版本的工作区分开放，互不迁移
-    name: ${KBS_PROJECT:-kb-suite}_swarm-home${SWARM_HOME_SUFFIX--dev}
+    # follows the compose project name however it was given (-p, KBS_PROJECT), so a second
+    # stack never mounts another stack's workspace
+    name: ${COMPOSE_PROJECT_NAME}_swarm-home${SWARM_HOME_SUFFIX--dev}

@@ -9,15 +9,25 @@ DA endpoints used (all need X-Engine-Secret, X-Da-Tenant-Id, X-Da-Session-Id):
 * ``POST /answer/{taskId}``        reply to ``ask_user`` (question or permission)
 * ``POST /inject/{taskId}``        steer the running task
 * ``POST /cancel/{taskId}``        graceful abort
+* ``GET  /api/sessions/{sessionId}/output/{fileName}``  a file ``push_file``
+  delivered (the ``downloadUrl`` of its result), fetched into the host's
+  working directory; engines without that route keep the file to themselves
 """
 
 from __future__ import annotations
 
 import asyncio
+import filecmp
 import json
 import logging
+import mimetypes
+import os
+import shutil
 import time
+import uuid
+from pathlib import Path
 from typing import Any, AsyncIterator
+from urllib.parse import urlsplit
 
 import httpx
 from openjiuwen.harness_protocol import (
@@ -29,6 +39,8 @@ from openjiuwen.harness_protocol import (
     HarnessInput,
     HostCapability,
     InteractionResponseStatus,
+    ItemEventKind,
+    ItemLifecycleEvent,
     McpTransport,
     ResumePolicy,
     ToolApprovalDecision,
@@ -47,7 +59,7 @@ from openjiuwen.harness_providers.base import (
 
 from .bridge import McpBridge, passthrough
 from .config import DeepAnalyzeConfig
-from .mapping import DaTurnState, json_safe
+from .mapping import DaItemTracker, DaTurnState, FileFetch, json_safe
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +96,48 @@ DEEPANALYZE_CARD = HarnessCard(
 
 class _StreamBroken(Exception):
     """The SSE connection ended or stalled before ``done``."""
+
+
+class _FileRefused(Exception):
+    """A pushed file was not fetched (engine refused it, or it is over the size cap)."""
+
+
+def _local_file_name(name: str) -> str | None:
+    """The last path segment of an engine-supplied file name, without control characters."""
+
+    base = name.replace("\\", "/").rsplit("/", 1)[-1]
+    base = "".join(ch for ch in base if ch >= " " and ch != "\x7f").strip()
+    return None if base in ("", ".", "..") else base
+
+
+def _link_or_copy(source: Path, target: Path) -> None:
+    """Create ``target`` with ``source``'s bytes; FileExistsError when the name is taken."""
+
+    try:
+        os.link(source, target)
+    except FileExistsError:
+        raise
+    except OSError:  # no hard links on this file system
+        with source.open("rb") as src, target.open("xb") as dst:
+            shutil.copyfileobj(src, dst)
+
+
+def _publish(part: Path, directory: Path, name: str) -> Path:
+    """Name a downloaded file without overwriting anything: ``a.pdf``, ``a (1).pdf`` ...
+
+    A regular file with the same bytes already under a candidate name is reused.
+    """
+
+    stem, ext = os.path.splitext(name)
+    for index in range(1000):
+        candidate = directory / (name if index == 0 else f"{stem} ({index}){ext}")
+        try:
+            _link_or_copy(part, candidate)
+            return candidate
+        except FileExistsError:
+            if candidate.is_file() and not candidate.is_symlink() and filecmp.cmp(candidate, part, shallow=False):
+                return candidate
+    raise FileExistsError(name)
 
 
 def _option_labels(options: Any) -> list[str]:
@@ -132,6 +186,8 @@ class DeepAnalyzeHarness(SerializedTurnHarness):
         self._runtime_mcp: list[dict[str, Any]] = []
         self._system_prompt = ""  # sent once, ahead of the first turn of a new DA session
         self._kb_catalog: tuple[float, tuple[str, ...]] | None = None
+        self._items = DaItemTracker()  # workflow members, across turns
+        self._files_dir: Path | None = None  # where pushed files land (host working directory)
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -193,6 +249,8 @@ class DeepAnalyzeHarness(SerializedTurnHarness):
                              category="server_unavailable", retryable=True),
             )
         self._session_id = session_id
+        cwd = context.cwd or self._config.cwd
+        self._files_dir = Path(cwd).resolve() if cwd and Path(cwd).is_dir() else None
         prompt = "" if restored else (context.system_prompt or "").strip()
         self._system_prompt = f"{prompt}\n\n{REMOTE_RUNTIME_NOTE.format(engine=self.engine_name)}" if prompt else ""
         await self._mount_mcp_servers(context)
@@ -383,7 +441,7 @@ class DeepAnalyzeHarness(SerializedTurnHarness):
     ) -> tuple[TurnEventKind, TurnResult, DaTurnState]:
         """One DA task for this turn: run-stream, reconnects, interactions."""
 
-        state = DaTurnState(user_text=text, engine=self.engine_name)
+        state = DaTurnState(user_text=text, engine=self.engine_name, items=self._items)
         self._task_id = None
         self._last_event_id = None
         self._task_started.clear()
@@ -420,7 +478,12 @@ class DeepAnalyzeHarness(SerializedTurnHarness):
                             await self._cancel_task()
                         continue
                     for mapped in state.consume(name, data):
-                        await self._emit(mapped.payload, turn=turn, item_id=mapped.item_id)
+                        payload = mapped.payload
+                        if isinstance(payload, FileFetch):
+                            payload = await self._deliver_file(turn, payload)
+                            if payload is None:
+                                continue
+                        await self._emit(payload, turn=turn, item_id=mapped.item_id)
                     if name == "done":
                         break
                 if state.status is None:
@@ -478,6 +541,69 @@ class DeepAnalyzeHarness(SerializedTurnHarness):
         except (httpx.HTTPError, ValueError):
             return None
 
+    # -- pushed files --------------------------------------------------------
+
+    def _engine_url(self, url: str) -> str | None:
+        """``url`` if it points at this engine (the client sends the engine secret), else None."""
+
+        parts = urlsplit(url)
+        if parts.scheme or parts.netloc:
+            base = urlsplit(self._config.base_url)
+            return url if (parts.scheme, parts.netloc) == (base.scheme, base.netloc) else None
+        if not parts.path.startswith("/") or parts.path.startswith("//"):
+            return None
+        return parts.path + (f"?{parts.query}" if parts.query else "")
+
+    async def _deliver_file(self, turn: PendingTurn, fetch: FileFetch) -> ItemLifecycleEvent | None:
+        """Fetch a pushed file into the working directory; the ``file`` item, or None (logged) when it stays on DA."""
+
+        directory = self._files_dir
+        if directory is None or turn.abort_requested:
+            return None
+        url, name = self._engine_url(fetch.download_url), _local_file_name(fetch.file_name)
+        if url is None or name is None:
+            logger.warning("deepanalyze pushed file not fetched: unusable name or download URL")
+            return None
+        part = directory / f".{name}.{uuid.uuid4().hex}.part"
+        try:
+            size, content_type = await self._download(url, part)
+            path = await asyncio.to_thread(_publish, part, directory, name)
+        except _FileRefused as exc:
+            logger.warning("deepanalyze pushed file %s not fetched: %s", name, exc)
+            return None
+        except Exception as exc:  # noqa: BLE001 - a file DA could not hand over must not fail the turn
+            logger.warning("deepanalyze pushed file %s not fetched: %s", name, type(exc).__name__)
+            return None
+        finally:
+            part.unlink(missing_ok=True)
+        mime = fetch.mime_type or content_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        return ItemLifecycleEvent(kind=ItemEventKind.COMPLETED, item_type="file", data={
+            "path": str(path), "name": path.name, "size": size, "mime_type": mime, "title": fetch.title,
+        })
+
+    async def _download(self, url: str, part: Path) -> tuple[int, str]:
+        http = self._client()
+        limit = self._config.max_file_bytes
+        response = await http.send(http.build_request("GET", url, timeout=self._stream_timeout()), stream=True)
+        try:
+            if response.status_code == 404:
+                raise _FileRefused("HTTP 404 (engine without the session output download route?)")
+            if response.status_code >= 400:
+                raise _FileRefused(f"HTTP {response.status_code}")
+            declared = response.headers.get("content-length")
+            if declared and declared.isdigit() and int(declared) > limit:
+                raise _FileRefused(f"larger than {limit} bytes")
+            size = 0
+            with part.open("xb") as out:
+                async for chunk in response.aiter_bytes():
+                    size += len(chunk)
+                    if size > limit:
+                        raise _FileRefused(f"larger than {limit} bytes")
+                    out.write(chunk)
+            return size, response.headers.get("content-type", "").split(";")[0].strip()
+        finally:
+            await response.aclose()
+
     # -- interactions --------------------------------------------------------
 
     async def _post(self, path: str, body: dict[str, Any] | None = None) -> bool:
@@ -526,11 +652,12 @@ class DeepAnalyzeHarness(SerializedTurnHarness):
                 # is nothing for the host to approve about its own tools.
                 return await self._answer(state, ALLOW_ANSWER, tool_call_id)
             if HostCapability.TOOL_APPROVAL in caps and self._has_host_interactions():
-                arguments = data.get("arguments") or data.get("input") or {}
+                tool_name = str(data.get("toolName") or "unknown")
+                arguments = data.get("arguments") or data.get("input") or state.pending_arguments(tool_name)
                 response = await self._request_interaction(ToolApprovalRequest(
                     request_id=request_id,
                     call_id=str(tool_call_id or request_id),
-                    tool_name=str(data.get("toolName") or "unknown"),
+                    tool_name=tool_name,
                     arguments=json_safe(arguments if isinstance(arguments, dict) else {"value": arguments}),
                     provider_session_id=self._session_id,
                     turn_id=turn.turn_id,

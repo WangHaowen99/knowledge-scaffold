@@ -1,5 +1,8 @@
 """Plugin WebSockets follow Swarm's login: refused when Swarm's handshake check says no.
 
+Only da-analyst still has its own route; kb-manager's calls go through Swarm's web channel
+(register_method), which applies Swarm's login itself.
+
 Runs inside the Swarm image or, without Swarm installed, against a stand-in for its plugin SDK
 (the extensions import only that at module level). Synthetic data only.
 """
@@ -84,11 +87,10 @@ class Socket:
 
 def _serve(plugin: str, socket: Socket) -> None:
     module = _load(plugin)
-    cls = module.KbManagerPlugin if plugin == "kb-manager" else module.DaAnalystPlugin
-    asyncio.run(cls()._serve(socket))
+    asyncio.run(module.DaAnalystPlugin()._serve(socket))
 
 
-@pytest.mark.parametrize("plugin", ["kb-manager", "da-analyst"])
+@pytest.mark.parametrize("plugin", ["da-analyst"])
 @pytest.mark.parametrize("answer, allowed", [
     (None, True),  # Swarm login configured to let everyone in
     (types.SimpleNamespace(success=True, user_id="u1"), True),
@@ -104,8 +106,19 @@ def test_plugin_socket_follows_swarm_login(plugin: str, answer: Any, allowed: bo
                               "channel": "web"}]
 
 
-@pytest.mark.parametrize("plugin", ["kb-manager", "da-analyst"])
+@pytest.mark.parametrize("plugin", ["da-analyst"])
 def test_without_swarm_login_the_socket_opens(plugin: str) -> None:
     socket = Socket(None)
     _serve(plugin, socket)
     assert socket.accepted and socket.closed is None
+
+
+def test_kb_manager_has_no_socket_of_its_own() -> None:
+    module = _load("kb-manager")
+    plugin = module.KbManagerPlugin()
+    assert not hasattr(plugin, "_serve") and not hasattr(module, "handshake_denied")
+    registered: list[tuple[str, bool]] = []
+    channel = types.SimpleNamespace(register_method=lambda name, handler, local_only=False: registered.append((name, local_only)))
+    plugin.bind_web_channel(channel, None)
+    assert {name for name, _ in registered} == {f"plugin.kb_manager.{m}" for m in module.METHODS}
+    assert all(local for _, local in registered)

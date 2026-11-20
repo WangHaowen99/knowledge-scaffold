@@ -1,9 +1,9 @@
-import { FileText, Globe, RefreshCw, RotateCcw, Search, Settings2, Trash2, Type, Upload } from 'lucide-react';
+import { FileText, FolderX, Globe, RefreshCw, RotateCcw, Search, Settings2, Trash2, Type, Upload } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import DocDrawer from './DocDrawer';
 import { FILE_GROUPS } from './KbConfigForm';
 import { ENRICH_LABEL, enrichBusy, enrichItems, formatBytes, formatTime, sourceLabel, statusOf } from './format';
-import { has, nativeConfig, useBackends } from './backend';
+import { has, nativeConfig, offers, useBackends } from './backend';
 import { useConfigMeta } from './meta';
 import { rpc } from './rpc';
 import { errorText, useToast } from './toast';
@@ -135,6 +135,7 @@ function UploadOptionsModal({
 }
 
 type UploadState = { id: number; name: string; progress: number; error?: string; done?: boolean };
+type Folder = { path: string; documents: number };
 
 const STATUS_FILTERS = [
   ['', '全部状态'],
@@ -227,6 +228,8 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('');
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [folder, setFolder] = useState('');
   const [uploads, setUploads] = useState<UploadState[]>([]);
   const [dragging, setDragging] = useState(false);
   const [modal, setModal] = useState<'url' | 'text' | 'options' | null>(null);
@@ -246,6 +249,7 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
         kb_id: kb.id,
         q: query.trim() || undefined,
         status: status || undefined,
+        folder: folder || undefined,
         limit: 200,
       });
       setDocs(res.items);
@@ -258,7 +262,36 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
       setDocs((cur) => cur ?? []);
       notify(errorText(err), true);
     }
-  }, [kb.id, query, status, notify]);
+  }, [kb.id, query, status, folder, notify]);
+
+  // a backend with folders lists them with counts; they change when documents come and go
+  const withFolders = offers(kb, 'folders');
+  const loadFolders = useCallback(async () => {
+    if (!withFolders) return;
+    try {
+      setFolders((await rpc.call<{ items: Folder[] }>('folders.list', { kb_id: kb.id })).items);
+    } catch (err) {
+      notify(errorText(err), true);
+    }
+  }, [kb.id, withFolders, notify]);
+
+  useEffect(() => {
+    void loadFolders();
+  }, [loadFolders, kb.stats.documents]);
+
+  const removeFolder = async () => {
+    const count = folders.find((f) => f.path === folder)?.documents ?? 0;
+    if (!window.confirm(`删除文件夹「${folder}」及其中 ${count} 个文档？删除后不可恢复。`)) return;
+    try {
+      await rpc.call('folders.delete', { kb_id: kb.id, path: folder });
+      notify('已删除');
+      setFolder('');
+      void loadFolders();
+      onChanged();
+    } catch (err) {
+      notify(errorText(err), true);
+    }
+  };
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 200);
@@ -366,6 +399,21 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
           </Button>
         ) : null}
         <span className="grow" />
+        {folders.length || folder ? (
+          <div className="folder-filter">
+            <select className="select" value={folder} onChange={(e) => setFolder(e.target.value)} aria-label="文件夹">
+              <option value="">全部文件夹</option>
+              {folders.map((f) => (
+                <option key={f.path} value={f.path}>
+                  {f.path}（{f.documents}）
+                </option>
+              ))}
+            </select>
+            {folder && offers(kb, 'folders.delete') ? (
+              <Button variant="ghost" icon={<FolderX size={14} />} onClick={() => void removeFolder()} title="删除文件夹" />
+            ) : null}
+          </div>
+        ) : null}
         <div className="search-box">
           <Search size={14} />
           <input className="input" placeholder="按标题筛选" value={query} onChange={(e) => setQuery(e.target.value)} />
@@ -431,8 +479,8 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
       ) : docs.length === 0 ? (
         <Empty
           icon={<FileText size={36} />}
-          title={query || status ? '没有符合条件的文档' : '这个知识库还没有文档'}
-          hint={query || status ? undefined : '上传文件、导入网页或粘贴文本开始。'}
+          title={query || status || folder ? '没有符合条件的文档' : '这个知识库还没有文档'}
+          hint={query || status || folder ? undefined : '上传文件、导入网页或粘贴文本开始。'}
         />
       ) : (
         <>

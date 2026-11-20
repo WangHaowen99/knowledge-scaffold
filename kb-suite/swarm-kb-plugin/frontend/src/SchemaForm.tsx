@@ -1,5 +1,8 @@
+import { useState } from 'react';
 import type { JsonSchema } from './backend';
 import { Field, NumberField, Switch } from './ui';
+
+export const SECRET_SET = '******';
 
 type Value = Record<string, unknown>;
 
@@ -45,9 +48,16 @@ function FieldFor({ name, schema, value, onChange }: { name: string; schema: Jso
   const type = typeOf(schema);
   if (schema.enum) {
     const labels = schema['x-enum-labels'] ?? {};
+    // nothing set and no default: an empty choice, so what is shown is what will be sent (nothing)
+    const blank = (value === undefined || value === '') && schema.default === undefined && !schema.enum.includes('');
     return (
       <Field label={label} hint={hint}>
-        <select className="select" value={String(value ?? '')} onChange={(e) => onChange(type === 'string' ? e.target.value : Number(e.target.value))}>
+        <select
+          className="select"
+          value={String(value ?? '')}
+          onChange={(e) => onChange(e.target.value === '' && blank ? undefined : type === 'string' ? e.target.value : Number(e.target.value))}
+        >
+          {blank ? <option value="">—</option> : null}
           {schema.enum.map((option) => (
             <option key={String(option)} value={String(option)}>
               {labels[String(option)] ?? String(option)}
@@ -83,6 +93,7 @@ function FieldFor({ name, schema, value, onChange }: { name: string; schema: Jso
       </section>
     );
   }
+  if (schema['x-secret']) return <SecretField label={label} hint={hint} value={value} onChange={onChange} />;
   const long = (schema.maxLength ?? 0) > 200;
   return (
     <Field label={label} hint={hint}>
@@ -91,6 +102,23 @@ function FieldFor({ name, schema, value, onChange }: { name: string; schema: Jso
       ) : (
         <input className="input" value={String(value ?? '')} maxLength={schema.maxLength} onChange={(e) => onChange(e.target.value)} />
       )}
+    </Field>
+  );
+}
+
+/** Write-only: a value already set reads back as SECRET_SET and stays so (unchanged) until something is typed. */
+function SecretField({ label, hint, value, onChange }: { label: string; hint?: string; value: unknown; onChange: (v: unknown) => void }) {
+  const [wasSet] = useState(value === SECRET_SET);
+  return (
+    <Field label={label} hint={hint}>
+      <input
+        className="input"
+        type="password"
+        autoComplete="new-password"
+        placeholder={wasSet ? '已设置' : '未设置'}
+        value={value === SECRET_SET ? '' : String(value ?? '')}
+        onChange={(e) => onChange(e.target.value === '' ? (wasSet ? SECRET_SET : undefined) : e.target.value)}
+      />
     </Field>
   );
 }

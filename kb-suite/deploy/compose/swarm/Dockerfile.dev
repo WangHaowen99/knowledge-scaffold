@@ -1,7 +1,7 @@
 # JiuwenSwarm 开发版运行镜像：从 develop 源码构建（参照仓库自带的 docker/Dockerfile.claw），不改源码。
 # 构建上下文：
 #   swarm-src   git archive 导出的 jiuwenswarm 源码
-#   da-harness  本仓库的 DeepAnalyze harness provider，打成 wheel 供 Swarm「自定义 agent」安装
+#   da-harness  本仓库的 DeepAnalyze harness provider，打成 wheel，启动后经 Swarm 的自定义 agent 上传接口安装
 #   lf-harness  Loop Forest 的 provider（复用 da-harness 的实现），同样打成 wheel
 ARG NODE_IMAGE=docker.1ms.run/library/node:22-slim
 ARG PYTHON_IMAGE=docker.1ms.run/library/python:3.11-slim
@@ -40,7 +40,7 @@ RUN pip wheel --no-cache-dir --no-deps -w /opt/kb-suite/wheels /opt/src/lf-harne
  && rm -rf /opt/src/lf-harness
 
 COPY entrypoint.sh /usr/local/bin/swarm-entrypoint.sh
-COPY configure_swarm.py /usr/local/bin/configure_swarm.py
+COPY configure_swarm.py provision_swarm.py /usr/local/bin/
 RUN chmod +x /usr/local/bin/swarm-entrypoint.sh
 
 ENV FRONTEND_HOST=0.0.0.0

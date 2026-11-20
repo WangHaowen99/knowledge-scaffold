@@ -1,0 +1,50 @@
+# DeepAnalyze knowledge pipeline with its document parsers: the same backend as ./Dockerfile plus
+# what DA's own image ships for parsing (Python, CPU-only torch, docling with RapidOCR, LibreOffice
+# for legacy .doc/.ppt/.xls, ffmpeg for audio/video). DA starts docling itself as a subprocess
+# (docling-service/main.py); no GPU, no MinerU. The source is DA_TS_SRC, as for ./Dockerfile.
+FROM docker.1ms.run/oven/bun:1.3-slim
+
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+ENV BUN_CONFIG_REGISTRY=${NPM_REGISTRY} \
+    PIP_INDEX_URL=${PIP_INDEX_URL} \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN sed -i 's#deb.debian.org#mirrors.tuna.tsinghua.edu.cn#g' /etc/apt/sources.list.d/debian.sources \
+ && apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends python3 python3-pip libreoffice-writer libreoffice-impress \
+      libreoffice-calc ffmpeg libgl1 libglib2.0-0 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# CPU-only torch first, so docling does not pull the CUDA build
+RUN pip3 install --break-system-packages --no-cache-dir torch torchvision --index-url ${TORCH_INDEX_URL} \
+ && pip3 install --break-system-packages --no-cache-dir "docling>=2.89.0" rapidocr-onnxruntime onnxruntime \
+      opencv-python-headless \
+ && rm -rf /root/.cache/pip
+
+WORKDIR /app
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile --production --ignore-scripts \
+ && rm -rf node_modules/onnxruntime-node node_modules/onnxruntime-common node_modules/better-sqlite3 \
+ && rm -rf /root/.bun/install/cache
+
+COPY src ./src
+COPY da-assets ./da-assets
+COPY docling-service ./docling-service
+
+RUN mkdir -p /app/data /app/config
+# docling's layout and OCR models download on first use into the data volume, through the HF mirror
+ENV NODE_ENV=production \
+    PORT=21000 \
+    DATA_DIR=/app/data \
+    HF_HOME=/app/data/hf \
+    HF_ENDPOINT=https://hf-mirror.com \
+    DA_AUTH_MODE=none \
+    DA_SKIP_WIZARD=true
+EXPOSE 21000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=5 \
+  CMD bun -e "fetch('http://127.0.0.1:21000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["bun", "run", "src/main.ts"]

@@ -10,7 +10,9 @@
 #   ./kbsuite.sh build-swarm       plugin pages + Swarm 0.2.7 image (with the DA harness provider)
 #   ./kbsuite.sh build-swarm-dev   plugin pages + Swarm image from $SWARM_REPO@$SWARM_REF (develop)
 #   ./kbsuite.sh build-gateway     kb-gateway and the WeKnora / DA knowledge-pipeline adapters
-#   ./kbsuite.sh build-da-kb       DA knowledge pipeline image from $DA_TS_SRC (a DeepAnalyze source tree)
+#   ./kbsuite.sh build-da-kb       DA knowledge pipeline image from $DA_TS_SRC (a DeepAnalyze source tree);
+#                                  DA_KB_FULL=1 adds DA's document parsers (docling on CPU, LibreOffice, ffmpeg)
+#   ./kbsuite.sh build-da-kb-pg    Postgres image for DA with Chinese word segmentation (zhparser)
 #   ./kbsuite.sh build-weknora-config   WeKnora config.yaml from $WEKNORA_REPO@$WEKNORA_REF
 #   ./kbsuite.sh build-dap         platform knowledge service image from $PLATFORM_REPO@$PLATFORM_REF (DeepAnalyze platform repo)
 #   ./kbsuite.sh up         start everything, WeKnora (the default knowledge backend) included; bootstraps keys on first run
@@ -31,6 +33,7 @@
 #   da-kb.env    generated: DA_KB_DB_PASSWORD
 #   da-platform.env  generated: DAP_DB_PASSWORD; set DAP_MINERU_ENABLED=true, DAP_MINERU_API_URL and
 #                DAP_EXTRA_FILE_TYPES yourself when a MinerU of your own is available
+#   deploy.env   optional, not secret: SWARM_TAG, KB_PLUGINS_SRC (where build-plugin stages the plugins)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -41,7 +44,7 @@ KEYS="$KBS_SECRETS_DIR/keys.env"
 
 PROJECT="${KBS_PROJECT:-kb-suite}"
 export KBS_PROJECT="$PROJECT"
-ENV_FILES=(secrets.env gateway.env weknora.env da-kb.env da-platform.env)
+ENV_FILES=(secrets.env gateway.env weknora.env da-kb.env da-platform.env deploy.env)
 
 compose() {
   local args=() name
@@ -98,13 +101,25 @@ wait_healthy() {
 
 build_plugin() {
   # 一份前端工程出两个插件页面：kb-manager（知识库管理）和 da-analyst（知识求索）。
-  docker run --rm -v "$ROOT/swarm-kb-plugin:/src" docker.1ms.run/library/node:22-slim sh -c "
+  # 产物连同插件后端一起放到 $KB_PLUGINS_SRC（默认仓库里的 plugin 目录），swarm 从那里只读挂载；
+  # 线上用发布快照目录、测试栈用自己的目录，重建一边的页面不会改到另一边。
+  local repo="$ROOT/swarm-kb-plugin/plugin" out="${KB_PLUGINS_SRC:-$ROOT/swarm-kb-plugin/plugin}" p
+  case "$out" in /*) ;; *) out="$HERE/$out" ;; esac
+  mkdir -p "$out"
+  out="$(cd "$out" && pwd)"
+  if [ "$out" != "$repo" ]; then
+    for p in kb-manager da-analyst; do
+      mkdir -p "$out/$p"
+      cp "$repo/$p/extension.py" "$repo/$p/extension.yaml" "$out/$p/"
+    done
+  fi
+  docker run --rm -v "$ROOT/swarm-kb-plugin:/src:ro" -v "$out:/out" docker.1ms.run/library/node:22-slim sh -c "
     cp -r /src/frontend /work && cd /work &&
     npm ci --registry=https://registry.npmmirror.com --no-audit --no-fund --loglevel=error &&
     npx tsc --noEmit &&
-    KB_APP=kb npx vite build --outDir /src/plugin/kb-manager/frontend/dist --emptyOutDir &&
-    KB_APP=da npx vite build --outDir /src/plugin/da-analyst/frontend/dist --emptyOutDir &&
-    chown -R $(id -u):$(id -g) /src/plugin/kb-manager/frontend /src/plugin/da-analyst/frontend"
+    KB_APP=kb npx vite build --outDir /out/kb-manager/frontend/dist --emptyOutDir &&
+    KB_APP=da npx vite build --outDir /out/da-analyst/frontend/dist --emptyOutDir &&
+    chown -R $(id -u):$(id -g) /out/kb-manager /out/da-analyst"
 }
 
 build_docreader() {
@@ -163,8 +178,13 @@ build_gateway() {
 
 # DeepAnalyze's source is not in this repository; build from a checkout given by DA_TS_SRC.
 build_da_kb() {
-  local src="${DA_TS_SRC:?set DA_TS_SRC to a DeepAnalyze source tree}"
-  docker build -f "$HERE/da-kb/Dockerfile" -t kb-suite/da-kb:"${DA_KB_TAG:-current}" "$src"
+  local src="${DA_TS_SRC:?set DA_TS_SRC to a DeepAnalyze source tree}" file="Dockerfile"
+  [ "${DA_KB_FULL:-}" = 1 ] && file="Dockerfile.full"
+  docker build -f "$HERE/da-kb/$file" -t kb-suite/da-kb:"${DA_KB_TAG:-current}" "$src"
+}
+
+build_da_kb_pg() {
+  docker build -f "$HERE/da-kb/Dockerfile.postgres" -t kb-suite/da-kb-postgres:zhparser "$HERE/da-kb"
 }
 
 build_weknora_config() {
@@ -212,6 +232,8 @@ up_da_kb() {
   # DA reads its models only at start-up: write them, then restart
   (env_export "$SECRETS" KBS_LLM_BASE_URL KBS_LLM_API_KEY DA_KB_CHAT_MODEL DA_KB_EMBED_MODEL
    python3 "$HERE/da-kb/providers.py") | "${psql[@]}" >/dev/null
+  # Chinese keyword search: switch DA's text search configuration to zhparser when the image has it
+  "${psql[@]}" <"$HERE/da-kb/zhparser.sql" >/dev/null
   compose --profile da-kb restart da-kb
   compose --profile da-kb up -d da-kb-adapter
   compose up -d --force-recreate kb-gateway
@@ -259,6 +281,8 @@ up_dap() {
    python3 "$HERE/da-kb/providers.py") | "${psql[@]}" >/dev/null
   # settings.mineru_config outranks the platform's MINERU_* variables; DAP_MINERU_* is the only MinerU setting here
   "${psql[@]}" -c "DELETE FROM settings WHERE key = 'mineru_config'" >/dev/null
+  # same database image as DA's own backend (DA_KB_PG_IMAGE): Chinese keyword search when it has zhparser
+  "${psql[@]}" <"$HERE/da-kb/zhparser.sql" >/dev/null
   compose --profile da-platform up -d dap-knowledge
   wait_healthy dap-knowledge
   compose --profile da-platform up -d dap-adapter
@@ -307,6 +331,7 @@ case "$cmd" in
   build-lf) "$HERE/lf/build.sh" ;;
   build-gateway) build_gateway ;;
   build-da-kb) build_da_kb ;;
+  build-da-kb-pg) build_da_kb_pg ;;
   build-weknora-config) build_weknora_config ;;
   build-dap) build_dap ;;
   up-weknora) up_weknora ;;
@@ -316,5 +341,5 @@ case "$cmd" in
   logs) compose_all logs -f --tail=200 "$@" ;;
   restart) compose_all restart "$@" ;;
   down) compose_all down ;;
-  *) sed -n '2,26p' "$0"; exit 1 ;;
+  *) sed -n '2,25p' "$0"; exit 1 ;;
 esac

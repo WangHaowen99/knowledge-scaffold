@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
+import BackendSettings from './BackendSettings';
+import { offers, useKbScope } from './backend';
 import { EnrichSection, Group, ParsingSection, RetrievalSection, WikiSection, type ConfigPatch } from './KbConfigForm';
 import { formatTime } from './format';
 import { useConfigMeta } from './meta';
@@ -7,7 +9,7 @@ import { errorText, useToast } from './toast';
 import type { KbConfig, KnowledgeBase } from './types';
 import { Button, Field, Spinner } from './ui';
 
-type Section = 'basic' | 'parsing' | 'enrich' | 'wiki' | 'retrieval' | 'apply' | 'danger';
+type Section = 'basic' | 'parsing' | 'enrich' | 'wiki' | 'retrieval' | 'backend' | 'apply' | 'danger';
 
 const NAV: { key: Section; label: string; group: string }[] = [
   { key: 'basic', label: '基本信息', group: '基础' },
@@ -65,6 +67,10 @@ export default function SettingsTab({
   // what the server holds: the list's copy, or what was read back right after saving
   const [base, setBase] = useState<KnowledgeBase>(kb);
   useEffect(() => setBase(kb), [kb]);
+  // backend-wide settings, when the backend declares them (contract 9.4)
+  const backend = useKbScope()?.backend;
+  const backendSchema = offers(kb, 'settings') ? backend?.settings_schema ?? null : null;
+  const nav = backendSchema ? [...NAV.slice(0, 5), { key: 'backend' as const, label: backend?.label ?? '知识后端', group: '知识后端' }, ...NAV.slice(5)] : NAV;
 
   const dirty = useMemo(
     () => name !== base.name || description !== base.description || JSON.stringify(config) !== JSON.stringify(base.config),
@@ -125,7 +131,7 @@ export default function SettingsTab({
   };
 
   const queued = (res: unknown) => `已排队 ${(res as { queued?: number } | null)?.queued ?? 0} 项`;
-  const groups = Array.from(new Set(NAV.map((n) => n.group)));
+  const groups = Array.from(new Set(nav.map((n) => n.group)));
 
   return (
     <div className="settings">
@@ -133,7 +139,7 @@ export default function SettingsTab({
         {groups.map((g) => (
           <div key={g}>
             <div className="settings-nav-group">{g}</div>
-            {NAV.filter((n) => n.group === g).map((n) => (
+            {nav.filter((n) => n.group === g).map((n) => (
               <button key={n.key} className={`settings-nav-item ${section === n.key ? 'settings-nav-active' : ''}`} onClick={() => setSection(n.key)}>
                 {n.label}
               </button>
@@ -206,6 +212,7 @@ export default function SettingsTab({
             <RetrievalSection value={config.retrieval} onChange={(v) => patch('retrieval', v)} rerankModel={meta?.models.rerank} />
           </>
         ) : null}
+        {section === 'backend' && backend && backendSchema ? <BackendSettings backend={backend} schema={backendSchema} /> : null}
         {section === 'apply' ? (
           <Group title="应用到已有文档" hint="设置保存后只对新文档生效；要让已有文档也按新设置处理，在这里批量重跑。">
             <div className="apply-list">
@@ -251,7 +258,7 @@ export default function SettingsTab({
             </Button>
           </div>
         ) : null}
-        {section !== 'apply' && section !== 'danger' ? (
+        {section !== 'apply' && section !== 'danger' && section !== 'backend' ? (
           <div className="settings-foot">
             <Button
               disabled={!dirty || busy}

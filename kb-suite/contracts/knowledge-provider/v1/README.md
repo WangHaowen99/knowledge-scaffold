@@ -89,6 +89,8 @@
 | `config.meta` | `GET /v1/config/meta`（kb-service 专用的设置元数据） | |
 | `tools.da` | 后端自己实现 `POST /v1/tools/{kb_search,expand,doc_grep,wiki_browse,reprocess_document}` | |
 
+v1.1 新增的可选能力（动作、任务、派生视图、后端设置、检索参数、证据定位、原件分段读取、导出、文件夹）见第 9 节。
+
 gateway 只做转发、格式转换和多后端结果合并，不读取正文，也不自己实现知识能力：
 
 - 请求只转给声明了对应能力的后端，否则直接返回 501；一次查询涉及多个后端时，没有该能力的后端被跳过并在结果里注明。
@@ -217,3 +219,113 @@ v1 只固定字段，不实现路由。`capabilities` 里 `role: enhancement` �
 | `ui` | 自定义界面挂载点，如 `[{"slot": "kb.tab", "title": "…", "entry": "/ui/index.html"}]`，由知识库页用沙箱 iframe 加载 |
 
 预留的基础后端写入能力：`chunks.questions.write`、`documents.summary.write`，供增强服务写回会影响检索的数据。
+
+## 9. v1.1 新增的可选能力
+
+v1.1 只新增可选能力和 capabilities 字段，`contract` 仍是 `knowledge-provider/v1`，不声明这些能力的后端行为不变。设计原则：**按机制扩展，不按某个后端的接口逐个扩展**——后端在 capabilities 里声明自己有哪些动作、视图、设置项和检索参数，gateway 照声明转发、知识库页照声明渲染，新增一个后端的同类功能不用改 gateway 和页面。
+
+| 能力 | 接口 | capabilities 字段 |
+|---|---|---|
+| `actions` | `POST /v1/kbs/{kb_id}/actions/{action}`、`POST /v1/documents/{doc_id}/actions/{action}` | `actions` |
+| `jobs` | `GET /v1/jobs/{job_id}`、`POST /v1/jobs/{job_id}/cancel`、`GET /v1/kbs/{kb_id}/jobs` | |
+| `views` | `GET /v1/kbs/{kb_id}/views/{view}`、`GET /v1/documents/{doc_id}/views/{view}` | `views` |
+| `settings` | `GET /v1/settings`、`PUT /v1/settings` | `settings_schema` |
+| `search.options` | `POST /v1/search` 的 `options` | `search_options_schema` |
+| `evidence` | `GET /v1/evidence/{anchor_id}` | |
+| `documents.file.range` | `GET /v1/documents/{doc_id}/file` 支持 `Range` | |
+| `documents.export` | `GET /v1/documents/{doc_id}/export/{format}` | `export_formats` |
+| `folders` | `GET /v1/kbs/{kb_id}/folders` | |
+| `folders.delete` | `DELETE /v1/kbs/{kb_id}/folders?path=` | |
+
+### 9.1 动作（`actions`）
+
+后端自己的操作（整库重新处理、重新生成摘要、重建索引、深度预处理……）统一成「动作」，在 capabilities 里声明：
+
+```json
+"actions": [
+  {"id": "rebuild_embeddings", "scope": "kb", "label": "重建向量", "confirm": true, "job": true},
+  {"id": "regenerate_summary", "scope": "document", "label": "重新生成摘要", "job": false,
+   "params_schema": {"type": "object", "properties": {}}}
+]
+```
+
+| 字段 | 说明 |
+|---|---|
+| `id` | `^[a-z][a-z0-9_]*$` |
+| `scope` | `kb` 或 `document` |
+| `label`、`description` | 给人看的文字 |
+| `params_schema` | 参数的 JSON Schema，关键字范围同 `config_schema`；没有参数时省略 |
+| `confirm` | 为 true 时页面执行前要用户确认（会清掉数据、耗时长或花模型费用的动作） |
+| `job` | 为 true 时动作异步执行，响应带任务 |
+
+`POST /v1/{kbs|documents}/{id}/actions/{action}`：请求体 `{"params": {...}}`。响应 200：`{"job": Job}`（`job` 为 true）或 `{"result": 任意 JSON}`。未声明的动作、`scope` 不符的动作返回 501 `unsupported`。gateway 只转发声明过的动作，调用方要有 `manage` 权限；动作不开放给只读密钥（MCP、DA 工具），Agent 不能触发整库重建这类操作。
+
+### 9.2 任务（`jobs`）
+
+`Job`：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | string | 带后端前缀 |
+| `kb_id`、`doc_id` | string \| null | |
+| `action` | string | 产生它的动作 |
+| `status` | string | `queued` / `running` / `completed` / `failed` / `cancelled` |
+| `progress` | number \| null | 0–1，未知时为 null |
+| `message` | string \| null | 当前步骤或失败原因 |
+| `cancellable` | bool | |
+| `has_report` | bool | 有没有可读的报告 |
+| `started_at`、`finished_at` | string \| null | |
+
+- `GET /v1/jobs/{job_id}` → `Job`；`?report=true` 时另带 `report`（`{"media_type": "text/markdown" | "application/json", "content": ...}`）。
+- `POST /v1/jobs/{job_id}/cancel` → `Job`；不可取消时 409 `not_cancellable`。
+- `GET /v1/kbs/{kb_id}/jobs?status=` → `{"items": [Job]}`，最多返回最近 50 个。
+
+后端可以不保存任务表：任务 ID 只要能让后端自己找回状态即可（比如把知识库和动作编进 ID，状态从后端现有的进度接口推算）。
+
+### 9.3 派生视图（`views`）
+
+后端在 L0/L1/L2 之外的只读内容（LLM 概览、结构图、质量报告、时间线、媒体元数据……）：
+
+```json
+"views": [
+  {"id": "overview", "scope": "document", "label": "概览", "media_type": "text/markdown"},
+  {"id": "timeline", "scope": "kb", "label": "时间线", "media_type": "application/json"}
+]
+```
+
+`GET /v1/{kbs|documents}/{id}/views/{view}` 返回声明的 `media_type`。这篇文档或这个知识库还没有该视图时返回 404 `not_found`（不是错误，页面显示为空）。`application/json` 视图的形状由后端决定，页面只做通用展示（表格或键值）；需要专门展示的，在 `label` 之外加 `"renderer": "timeline" | "table" | "kv"` 提示。
+
+### 9.4 后端设置（`settings`）
+
+后端级（不是知识库级）的设置，比如模型、解析器地址、解析策略。`settings_schema` 用 `config_schema` 的关键字，另加 `"x-secret": true` 标记只写字段。
+
+- `GET /v1/settings` → 当前值；`x-secret` 字段已设置时返回 `"******"`，未设置时返回 null。
+- `PUT /v1/settings`：只带要改的字段；`x-secret` 字段传 `"******"` 表示不变。响应同 GET。需要 `manage` 权限。
+- 改动是否需要重启、会不会触发重建索引，由后端在字段 `description` 里写明。
+
+### 9.5 检索参数（`search.options`）
+
+`search_options_schema` 描述 `POST /v1/search` 里 `options` 能放什么（如检索模式、检索的层级、页面类型）。一次检索跨多个后端时，各后端忽略自己不认识的键。
+
+### 9.6 证据定位（`evidence`）
+
+`GET /v1/evidence/{anchor_id}`，锚点 ID 形如 `{docId}:{type}:{index}`，gateway 按冒号前的文档 ID 路由：
+
+```json
+{"anchor_id": "…", "doc_id": "…", "kb_id": "…", "title": "…", "file_name": "…",
+ "section_title": "…", "text": "锚点处的原文", "context_before": "…", "context_after": "…",
+ "locators": [{"page": 3, "bbox": [72.0, 140.5, 520.0, 188.0]}]}
+```
+
+`locators` 沿用 5.3 的形状，另加 `line_start` / `line_end`（在 L1 中的行号）、`time_start` / `time_end`（音视频，单位秒）。`bbox` 是 `[x0, y0, x1, y1]`，PDF 坐标，原点在页面左上。
+
+### 9.7 原件分段读取、导出
+
+- `documents.file.range`：`GET /v1/documents/{doc_id}/file` 支持 `Range: bytes=a-b`，返回 206 和 `Content-Range`；gateway 原样转发 `Range`、`Content-Range`、`Accept-Ranges`。页面靠它分段取原件预览，不用一次读完。
+- `documents.export`：`GET /v1/documents/{doc_id}/export/{format}`，`format` 取自 `export_formats`（如 `["md", "html", "json"]`），返回附件。
+
+### 9.8 文件夹（`folders` / `folders.delete`）
+
+- `GET /v1/kbs/{kb_id}/folders` → `{"items": [{"path": "a/b", "documents": 12}]}`，`path` 不带首尾 `/`，根目录不列出。
+- 声明 `folders` 的后端，`GET /v1/kbs/{kb_id}/documents` 还接受 `folder=a/b`：只列该目录（含子目录）下的文档，`total` 也按筛选后计数。
+- `DELETE /v1/kbs/{kb_id}/folders?path=a/b` → 204，删除该目录下（含子目录）的全部文档。

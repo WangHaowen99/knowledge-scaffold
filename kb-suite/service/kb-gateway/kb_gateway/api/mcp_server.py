@@ -1,6 +1,6 @@
 """MCP server (streamable HTTP) for the Swarm main agent and Loop Forest.
 
-Same seven tools and text formats as kb-service's MCP, answered across all
+The seven tools and text formats of kb-service's MCP plus show_source, answered across all
 backends. Callers authenticate with a retrieve key and may confine a
 connection to some knowledge bases with ``X-KB-Scope``. Results carry the
 gateway's notes (``kb_gateway.notes``): knowledge bases not searched because
@@ -13,9 +13,11 @@ import asyncio
 import contextvars
 import functools
 import json
+from importlib import resources
 from typing import Awaitable, Callable
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
 
 from .. import notes, ops
 from ..auth import CAP_RETRIEVE, AuthError, Principal, check_scope, extract_token, narrow, parse_scope_header
@@ -29,12 +31,16 @@ INSTRUCTIONS = (
     "需要上下文时用 read_document 按顺序阅读文档，精确查找原文用 grep_documents。"
     "开启了 Wiki 的知识库还有大模型整理好的实体、概念和文档摘要页：要概览或跨文档综合时先用 search_wiki，"
     "再用 read_wiki_page 读全文并顺着 [[链接]] 读相关页面；Wiki 是二次整理，结论要回到原文片段核对出处。"
-    "回答时引用片段末尾的出处（文档标题、章节、页码）。"
+    "回答时引用片段末尾的出处（文档标题、章节、页码）；用户要看某条出处的原文时用 show_source 展示出处卡片。"
     "回答里提到知识库个数时，直接引用 list_knowledge_bases 结果里的 total 和各后端的 count，不要自己数；"
     "用户要求列出知识库时，按后端分组逐个写出全部库名，不要只举例或只给个数。"
     "工具结果说某些知识库所在后端不可用、没有检索时，回答要告诉用户这些库没有查到；"
     "说文件没有可识别文字时，如实说明查不到，不要猜测。"
 )
+# MCP Apps (io.modelcontextprotocol/ui): hosts that support it render show_source's result as a card
+SOURCE_CARD_URI = "ui://kb-service/source"
+MCP_APP_MIME_TYPE = "text/html;profile=mcp-app"
+CONTEXT_CHARS = 600
 WIKI_PAGE_CHARS = 12000
 # list_knowledge_bases: at most this many knowledge bases are listed (the counts always cover all of them),
 # each description cut to this length; worst case about 200 x 400 characters
@@ -224,9 +230,10 @@ async def search_knowledge(query: str, kb_ids: list[str] | None = None, top_k: i
             continue
         where = " · ".join(x for x in (h.get("title"), h.get("context_header"), _location(h.get("locators"))) if x)
         note = f"，命中问题：{h['matched_question']}" if h.get("matched_question") else ""
+        anchor = f", anchor_id={h['anchor_id']}" if h.get("anchor_id") else ""
         blocks.append(
             f"[{i}] 出处：{where}\n知识库：{_kb_label(h['kb_id'])}\n"
-            f"(doc_id={h['doc_id']}, chunk_seq={h.get('seq')}, score={float(h.get('score') or 0):.3f}{note})\n"
+            f"(doc_id={h['doc_id']}, chunk_seq={h.get('seq')}{anchor}, score={float(h.get('score') or 0):.3f}{note})\n"
             + notes.instruction_line(h.get("content"), h.get("title"))
             + f"{h.get('content')}"
         )
@@ -337,6 +344,80 @@ async def read_document(doc_id: str, offset: int = 0, limit: int = 10) -> str:
     more = f"\n\n（还有更多，继续用 offset={offset + len(chunks)}）" if offset + len(chunks) < total else ""
     warning = notes.instruction_line(body + "\n" + (doc.get("summary") or ""), doc.get("title"))
     return f"{warning}{head}\n\n{body}{more}"
+
+
+@mcp.resource(SOURCE_CARD_URI, name="kb-source-card", title="出处", mime_type=MCP_APP_MIME_TYPE,
+              meta={"ui": {"prefersBorder": False}})
+def source_card() -> str:
+    return resources.files(__package__).joinpath("source_card.html").read_text(encoding="utf-8")
+
+
+def _source_text(source: dict) -> str:
+    where = " · ".join(x for x in (source.get("title"), source.get("section_title"), _location(source.get("locators"))) if x)
+    return f"出处：{where}\n{source.get('text') or ''}"
+
+
+async def _evidence_source(anchor_id: str) -> dict | None:
+    backend = registry().route(anchor_id.split(":", 1)[0])
+    if not backend.healthy or not backend.has("evidence"):
+        return None
+    try:
+        evidence = await backend.json("GET", f"/v1/evidence/{anchor_id}")
+    except UpstreamError as exc:
+        if exc.status == 404:
+            return None
+        raise
+    return evidence if isinstance(evidence, dict) else None
+
+
+async def _chunk_source(doc: dict, seq: int) -> dict | None:
+    """Any backend: the chunk itself plus its neighbours as context (core chunks API)."""
+
+    page = await ops.read_chunks(registry(), doc["id"], max(0, seq - 1), 3)
+    by_seq = {c.get("seq"): c for c in page.get("items") or []}
+    current = by_seq.get(seq)
+    if current is None:
+        return None
+    line = [{"line_start": current["line_start"]}] if current.get("line_start") else []
+    return {
+        "anchor_id": current.get("anchor_id"), "doc_id": doc["id"], "kb_id": doc.get("kb_id"),
+        "title": doc.get("title"), "file_name": doc.get("file_name"),
+        "section_title": current.get("context_header") or None, "text": current.get("content") or "",
+        "context_before": str((by_seq.get(seq - 1) or {}).get("content") or "")[-CONTEXT_CHARS:],
+        "context_after": str((by_seq.get(seq + 1) or {}).get("content") or "")[:CONTEXT_CHARS],
+        "locators": current.get("source_locators") or line,
+    }
+
+
+def _plain(text: str) -> CallToolResult:
+    return CallToolResult(content=[TextContent(type="text", text=text)])
+
+
+@mcp.tool(title="查看出处", annotations=ToolAnnotations(readOnlyHint=True),
+          meta={"ui": {"resourceUri": SOURCE_CARD_URI}}, structured_output=False)
+@_within_budget  # on timeout the result is the budget's plain-text note, which FastMCP passes on as text
+async def show_source(doc_id: str, chunk_seq: int | None = None, anchor_id: str | None = None) -> CallToolResult:
+    """给用户展示一条出处的原文（文档、章节、页码和前后文）。参数取自 search_knowledge 结果里的 doc_id、chunk_seq，有 anchor_id 时一并传入。"""
+
+    doc = await ops.get_document(registry(), doc_id)
+    principal = _caller()
+    if doc is None or (principal.kb_allowlist and doc.get("kb_id") not in principal.kb_allowlist):
+        return _plain(f"文档不存在或无权访问：{doc_id}")
+    try:
+        source = None
+        # an anchor is "{docId}:{type}:{index}"; only one of this document is followed
+        if anchor_id and anchor_id.split(":", 1)[0] == doc_id:
+            source = await _evidence_source(anchor_id)
+        if source is None and chunk_seq is not None:
+            source = await _chunk_source(doc, int(chunk_seq))
+    except UpstreamError as exc:
+        return _plain(_error(exc))
+    if source is None:
+        return _plain("没有找到这条出处：先用 search_knowledge 检索，再传入结果里的 doc_id 和 chunk_seq。")
+    source.setdefault("title", doc.get("title"))
+    source.setdefault("file_name", doc.get("file_name"))
+    return CallToolResult(content=[TextContent(type="text", text=_source_text(source))],
+                          structuredContent={"source": source})
 
 
 @mcp.tool()

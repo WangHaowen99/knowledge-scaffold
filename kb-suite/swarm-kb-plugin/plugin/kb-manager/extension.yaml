@@ -1,10 +1,12 @@
 id: kb-manager
 name: 知识库
 version: 0.1.0
-description: 知识库管理（kb-service）：建库、上传与解析进度、检索测试
+description: 知识库管理：建库、上传与解析进度、检索测试
 author: kb-suite
 min_jiuwenswarm_version: "0.2.5"
 package_type: application
+# web-channel plugin: the AgentServer process does not load it
+requires_transport: true
 dependencies: {}
 permissions:
   - outbound_network

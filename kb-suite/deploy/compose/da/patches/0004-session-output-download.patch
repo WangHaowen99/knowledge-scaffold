@@ -1,0 +1,573 @@
+DaSessionOutputController: serve the push_file download URL
+
+push_file stages a file into {workspace root}/{session segment}/output/ and
+returns downloadUrl from deepanalyze.push.download-url-template, by default
+/api/sessions/{sessionId}/output/{fileName}. Upstream, the TS backend serves
+that route from the shared volume; a standalone engine has no such route, so
+every link push_file returns is dead and a host cannot fetch the file.
+
+GET (and HEAD) /api/sessions/{sessionId}/output/{fileName} now streams it:
+
+1. Access as in DaCompatController. With deepanalyze.auth.enabled the
+   X-Engine-Secret header is compared in constant time (401
+   {"error":"unauthorized"}). X-Da-Session-Id (or ?sessionId=) must equal the
+   session in the path; when missing and require-session-binding is on -> 404.
+   X-Da-Tenant-Id is not checked: session workspaces are per session only.
+   The secret check is in the controller because DaServiceAuthFilter is
+   registered on /api/agents/* only (and was reworked on newer common);
+   upstream should add /api/sessions/ to the filter instead.
+
+2. Same directory as push_file. DaSessionWorkspace.sessionRoot applies the
+   session-segment rule (safeSegment) to the session id in the URL, so the URL
+   push_file returned resolves as is (e.g. session "t1:a" -> t1_a/output/).
+
+3. Containment. The name must be one segment (no / or \, not . or .., not a
+   *.staging temp of a publish in progress). After resolving links the file
+   must sit directly in the real output directory, output itself must not be
+   a link and the session directory must be inside the workspace root.
+   Anything else -> 404 {"error":"File not found"}, without saying why.
+
+4. Response. attachment with an ASCII filename plus an RFC 5987 filename*
+   (Chinese names survive), Content-Type by extension (text types get
+   charset=UTF-8), X-Content-Type-Options: nosniff and CSP sandbox so HTML or
+   SVG never runs under the engine's origin. Range requests (206 / 416) are
+   handled by Spring's Resource support.
+
+Applies to solution b70a00246 (after 0001-0003), 0eed3c7e0 (after 0001 and
+0002) and common as of 2026-11-16. Applied by deploy/compose/da/build.sh
+until fixed upstream (agent-solution common).
+
+diff --git a/common/agents/deepanalyze-java/engine/src/main/java/com/openjiuwen/da/compat/DaSessionOutputController.java b/common/agents/deepanalyze-java/engine/src/main/java/com/openjiuwen/da/compat/DaSessionOutputController.java
+new file mode 100644
+index 0000000..ae150af
+--- /dev/null
++++ b/common/agents/deepanalyze-java/engine/src/main/java/com/openjiuwen/da/compat/DaSessionOutputController.java
+@@ -0,0 +1,248 @@
++/*
++ * Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
++ */
++
++package com.openjiuwen.da.compat;
++
++import com.openjiuwen.da.config.DaInitResult;
++import com.openjiuwen.da.config.DaProperties;
++import com.openjiuwen.da.tools.DaEmbeddedTools;
++import com.openjiuwen.da.tools.DaSessionWorkspace;
++
++import org.springframework.beans.factory.ObjectProvider;
++import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
++import org.springframework.core.io.FileSystemResource;
++import org.springframework.http.HttpHeaders;
++import org.springframework.http.MediaType;
++import org.springframework.http.MediaTypeFactory;
++import org.springframework.http.ResponseEntity;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.RequestHeader;
++import org.springframework.web.bind.annotation.RequestParam;
++import org.springframework.web.bind.annotation.RestController;
++
++import java.io.IOException;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.security.MessageDigest;
++import java.util.Locale;
++import java.util.Map;
++import java.util.Optional;
++
++/**
++ * push_file 下载端点：按 {@code deepanalyze.push.download-url-template} 的缺省形态
++ * {@code /api/sessions/{sessionId}/output/{fileName}} 读出会话 output 目录里的文件。
++ *
++ * <p>push_file 把文件暂存到 {@code {workspace 基础根}/{会话段}/output/} 并回一个按模板拼的 downloadUrl，
++ * 原先由 TS 后端在共享卷上提供这个路由；引擎单独部署时没有人提供，链接是死的。本端点用同一份会话段规则
++ * （{@link DaSessionWorkspace#sessionRoot}）定位目录，所以 push_file 返回的链接原样可用。</p>
++ *
++ * <p>访问控制与 {@link DaCompatController} 一致：认证开启时校验 X-Engine-Secret（常量时间比对，
++ * 拒绝体 {error:"unauthorized"}）；属主校验同 /tasks/{sessionId}——X-Da-Session-Id（或 sessionId
++ * query）必须等于路径里的会话 id，require-session-binding=true 时未携带即 404。X-Da-Tenant-Id
++ * 不参与判定：会话工作区只按会话分目录，没有租户归属可比。认证在本类里做而不是放进
++ * DaServiceAuthFilter：那个过滤器只注册在 /api/agents/*。</p>
++ *
++ * <p>路径收口：文件名只能是 output 下的一级名字（不含分隔符、不是 . 或 ..、不是暂存中的临时文件）；
++ * 真实路径（解开符号链接后）必须仍在真实的 output 目录里、output 本身不能是指向别处的链接、
++ * 会话目录必须在基础根内。不满足一律 404，不区分原因。下载按 attachment 给出（RFC 5987 文件名，
++ * 中文名可用），带 nosniff 与 CSP sandbox，HTML/SVG 不会在引擎域下执行；Range 请求由 Spring 的
++ * Resource 处理（206/416）。</p>
++ *
++ * @since 0.1.3
++ */
++@RestController
++@ConditionalOnProperty(prefix = "deepanalyze.compat", name = "enabled", havingValue = "true", matchIfMissing = true)
++public class DaSessionOutputController {
++    /** 路由，与 download-url-template 的缺省值相同。 */
++    public static final String ROUTE = "/api/sessions/{sessionId}/output/{fileName}";
++
++    /** 会话下载目录名（与 DaSessionOutputChannel 暂存落点一致）。 */
++    static final String OUTPUT_DIR = "output";
++
++    /** push_file 发布前的暂存临时文件后缀（半成品，不对外）。 */
++    static final String STAGING_SUFFIX = ".staging";
++
++    private static final String NOT_FOUND = "File not found";
++
++    /** RFC 5987 attr-char 中除字母数字外原样保留的字符。 */
++    private static final String ATTR_CHAR_EXTRA = "!#$&+-.^_`|~";
++
++    private static final char[] HEX = "0123456789ABCDEF".toCharArray();
++
++    private static final Map<String, MediaType> EXTRA_TYPES = Map.of(
++            "md", MediaType.parseMediaType("text/markdown"),
++            "markdown", MediaType.parseMediaType("text/markdown"));
++
++    private final DaProperties properties;
++    private final DaCompatProperties compatProperties;
++    private final DaAuthProperties authProperties;
++    private final ObjectProvider<DaInitResult> initResultProvider;
++
++    /**
++     * 构造下载端点。
++     *
++     * @param properties DA 宿主配置（工作区基础根、会话段开关）
++     * @param compatProperties 兼容层配置（属主绑定开关）
++     * @param authProperties 服务间认证配置
++     * @param initResultProvider 初始化结果（未配置基础根时取 agent 工作区根，与 push_file 同口径）
++     */
++    public DaSessionOutputController(DaProperties properties, DaCompatProperties compatProperties,
++            DaAuthProperties authProperties, ObjectProvider<DaInitResult> initResultProvider) {
++        this.properties = properties;
++        this.compatProperties = compatProperties;
++        this.authProperties = authProperties;
++        this.initResultProvider = initResultProvider;
++    }
++
++    /**
++     * 读出会话 output 目录里的一个文件。
++     *
++     * @param sessionId 会话 id（与 push_file 时的会话 id 相同，未经安全化）
++     * @param fileName 下载文件名（push_file 结果里的 fileName）
++     * @param secret X-Engine-Secret header
++     * @param sessionIdHeader X-Da-Session-Id header（属主校验，优先）
++     * @param sessionIdQuery sessionId query（属主校验，兜底）
++     * @return 文件内容；401 认证失败；其余不可读一律 404
++     */
++    @GetMapping(ROUTE)
++    public ResponseEntity<?> download(@PathVariable String sessionId, @PathVariable String fileName,
++            @RequestHeader(value = DaServiceAuthFilter.SECRET_HEADER, required = false) String secret,
++            @RequestHeader(value = "X-Da-Session-Id", required = false) String sessionIdHeader,
++            @RequestParam(value = "sessionId", required = false) String sessionIdQuery) {
++        if (!isAuthenticated(secret)) {
++            return error(401, "unauthorized");
++        }
++        String presented = sessionIdHeader != null ? sessionIdHeader : sessionIdQuery;
++        boolean isDenied = presented == null ? compatProperties.isRequireSessionBinding()
++                : !sessionId.equals(presented);
++        if (isDenied) {
++            return error(404, NOT_FOUND);
++        }
++        Optional<Path> file = resolveOutputFile(sessionId, fileName);
++        if (file.isEmpty()) {
++            return error(404, NOT_FOUND);
++        }
++        Path path = file.orElseThrow();
++        return ResponseEntity.ok()
++                .contentType(mediaType(fileName))
++                .header(HttpHeaders.CONTENT_DISPOSITION, contentDisposition(fileName))
++                .header("X-Content-Type-Options", "nosniff")
++                .header("Content-Security-Policy", "sandbox")
++                .header(HttpHeaders.CACHE_CONTROL, "private")
++                .body(new FileSystemResource(path));
++    }
++
++    private boolean isAuthenticated(String presented) {
++        if (!authProperties.isEnabled()) {
++            return true;
++        }
++        String expected = authProperties.getEngineSecret();
++        if (expected == null || expected.isEmpty()) {
++            return false;
++        }
++        byte[] presentedBytes = presented == null ? new byte[0] : presented.getBytes(StandardCharsets.UTF_8);
++        return MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8), presentedBytes);
++    }
++
++    /**
++     * 解析可下载的文件（会话 output 下的一级普通文件，真实路径收口）。
++     *
++     * @param sessionId 会话 id
++     * @param fileName 文件名
++     * @return 真实路径；不可下载为空
++     */
++    Optional<Path> resolveOutputFile(String sessionId, String fileName) {
++        if (!isPlainName(fileName) || sessionId == null || sessionId.isBlank()) {
++            return Optional.empty();
++        }
++        Optional<Path> base = baseRoot();
++        if (base.isEmpty()) {
++            return Optional.empty();
++        }
++        Path sessionRoot = DaSessionWorkspace.sessionRoot(base.orElseThrow(), sessionId,
++                properties.getWorkspace().isSessionSegmentEnabled());
++        Path candidate = sessionRoot.resolve(OUTPUT_DIR).resolve(fileName).normalize();
++        try {
++            Path realBase = base.orElseThrow().toRealPath();
++            Path realSession = sessionRoot.toRealPath();
++            Path realOutput = sessionRoot.resolve(OUTPUT_DIR).toRealPath();
++            Path realFile = candidate.toRealPath();
++            boolean isContained = realSession.startsWith(realBase)
++                    && realOutput.equals(realSession.resolve(OUTPUT_DIR))
++                    && realOutput.equals(realFile.getParent());
++            return isContained && Files.isRegularFile(realFile) ? Optional.of(realFile) : Optional.empty();
++        } catch (IOException | SecurityException missing) {
++            return Optional.empty();
++        }
++    }
++
++    private Optional<Path> baseRoot() {
++        String configured = properties.getWorkspace().getRoot();
++        if (configured != null && !configured.isBlank()) {
++            return Optional.of(Path.of(configured).toAbsolutePath().normalize());
++        }
++        DaInitResult init = initResultProvider.getIfAvailable();
++        if (init == null || init.getDeepAgent() == null) {
++            return Optional.empty();
++        }
++        return Optional.of(DaEmbeddedTools.resolveBaseRoot(init.getDeepAgent(), properties));
++    }
++
++    private static boolean isPlainName(String fileName) {
++        return fileName != null && !fileName.isBlank() && !".".equals(fileName) && !"..".equals(fileName)
++                && fileName.indexOf('/') < 0 && fileName.indexOf('\\') < 0 && fileName.indexOf('\0') < 0
++                && !fileName.endsWith(STAGING_SUFFIX);
++    }
++
++    /**
++     * 按扩展名推断 Content-Type；文本类补 UTF-8（引擎写出的文本文件都是 UTF-8）。
++     *
++     * @param fileName 文件名
++     * @return 媒体类型
++     */
++    static MediaType mediaType(String fileName) {
++        int dot = fileName.lastIndexOf('.');
++        String extension = dot < 0 ? "" : fileName.substring(dot + 1).toLowerCase(Locale.ROOT);
++        MediaType type = Optional.ofNullable(EXTRA_TYPES.get(extension))
++                .or(() -> MediaTypeFactory.getMediaType(fileName))
++                .orElse(MediaType.APPLICATION_OCTET_STREAM);
++        boolean isText = "text".equals(type.getType()) || MediaType.APPLICATION_JSON.includes(type)
++                || MediaType.APPLICATION_XML.includes(type);
++        return isText && type.getCharset() == null ? new MediaType(type, StandardCharsets.UTF_8) : type;
++    }
++
++    /**
++     * attachment 形态的 Content-Disposition：filename 给 ASCII 兜底名，filename* 给 RFC 5987 的 UTF-8 原名。
++     *
++     * @param fileName 文件名
++     * @return 头值
++     */
++    static String contentDisposition(String fileName) {
++        StringBuilder fallback = new StringBuilder();
++        for (int i = 0; i < fileName.length(); i++) {
++            char current = fileName.charAt(i);
++            boolean isSafe = current >= 0x20 && current < 0x7f && current != '"' && current != '\\';
++            fallback.append(isSafe ? current : '_');
++        }
++        StringBuilder encoded = new StringBuilder();
++        for (byte raw : fileName.getBytes(StandardCharsets.UTF_8)) {
++            int value = raw & 0xff;
++            boolean isAttrChar = value < 0x80 && (Character.isLetterOrDigit(value)
++                    || ATTR_CHAR_EXTRA.indexOf(value) >= 0);
++            if (isAttrChar) {
++                encoded.append((char) value);
++            } else {
++                encoded.append('%').append(HEX[value >> 4]).append(HEX[value & 0x0f]);
++            }
++        }
++        return "attachment; filename=\"" + fallback + "\"; filename*=UTF-8''" + encoded;
++    }
++
++    private static ResponseEntity<Map<String, String>> error(int status, String message) {
++        return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON)
++                .body(Map.of("error", message));
++    }
++}
+diff --git a/common/agents/deepanalyze-java/engine/src/main/java/com/openjiuwen/da/tools/DaSessionWorkspace.java b/common/agents/deepanalyze-java/engine/src/main/java/com/openjiuwen/da/tools/DaSessionWorkspace.java
+index 2fdf335..3e8b952 100644
+--- a/common/agents/deepanalyze-java/engine/src/main/java/com/openjiuwen/da/tools/DaSessionWorkspace.java
++++ b/common/agents/deepanalyze-java/engine/src/main/java/com/openjiuwen/da/tools/DaSessionWorkspace.java
+@@ -147,6 +147,25 @@ public final class DaSessionWorkspace {
+         return sessionRoot.toString();
+     }
+ 
++    /**
++     * 指定会话的生效工作区根（不依赖工具调用窗口：下载端点按 URL 里的会话 id 定位 push_file 的落点）。
++     * 会话段安全化与 {@link #effectiveRoot(Path, boolean)} 同一规则；不创建目录。
++     *
++     * @param baseRoot 基础根（任意形态，内部规范化）
++     * @param sessionId 会话 id（未经安全化）
++     * @param sessionSegmentEnabled 会话段开关
++     * @return 生效根（绝对规范化路径，恒在基础根内）
++     */
++    public static Path sessionRoot(final Path baseRoot, final String sessionId,
++            final boolean sessionSegmentEnabled) {
++        Path normalized = baseRoot.toAbsolutePath().normalize();
++        if (!sessionSegmentEnabled) {
++            return normalized;
++        }
++        Path effective = normalized.resolve(safeSegment(sessionId)).normalize();
++        return effective.startsWith(normalized) ? effective : normalized;
++    }
++
+     private static String safeSegment(final String sessionId) {
+         StringBuilder safe = new StringBuilder();
+         for (int i = 0; i < sessionId.length(); i++) {
+diff --git a/common/agents/deepanalyze-java/engine/src/test/java/com/openjiuwen/da/compat/DaSessionOutputControllerTest.java b/common/agents/deepanalyze-java/engine/src/test/java/com/openjiuwen/da/compat/DaSessionOutputControllerTest.java
+new file mode 100644
+index 0000000..6b90013
+--- /dev/null
++++ b/common/agents/deepanalyze-java/engine/src/test/java/com/openjiuwen/da/compat/DaSessionOutputControllerTest.java
+@@ -0,0 +1,244 @@
++/*
++ * Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
++ */
++
++package com.openjiuwen.da.compat;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.mockito.Mockito.mock;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
++
++import com.openjiuwen.da.config.DaInitResult;
++import com.openjiuwen.da.config.DaProperties;
++import com.openjiuwen.da.push.DaSessionOutputChannel;
++import com.openjiuwen.da.toolcontext.DaToolContext;
++import com.openjiuwen.da.toolcontext.DaToolContextHolder;
++import com.openjiuwen.da.tools.DaSessionWorkspace;
++import com.openjiuwen.da.tools.env.PushFileRequest;
++import com.openjiuwen.da.tools.env.PushResult;
++
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Assumptions;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.springframework.beans.factory.ObjectProvider;
++import org.springframework.mock.web.MockHttpServletResponse;
++import org.springframework.test.web.servlet.MockMvc;
++import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
++import org.springframework.test.web.servlet.setup.MockMvcBuilders;
++
++import java.io.IOException;
++import java.net.URI;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.List;
++
++/**
++ * push_file 下载端点：push_file 返回的链接可直接下载、Range、认证与属主校验、路径收口。
++ *
++ * @since 0.1.3
++ */
++class DaSessionOutputControllerTest {
++    private static final String SESSION = "t1:host-1";
++
++    private static final String SECRET = "s3cret";
++
++    private static final byte[] CSV = "季度,收入\nQ1,10\nQ2,12\n".getBytes(StandardCharsets.UTF_8);
++
++    @TempDir
++    Path baseRoot;
++
++    @TempDir
++    Path outside;
++
++    private DaCompatProperties compat;
++
++    private DaAuthProperties auth;
++
++    private DaSessionOutputController controller;
++
++    private MockMvc mvc;
++
++    @BeforeEach
++    @SuppressWarnings("unchecked")
++    void setUp() {
++        DaProperties properties = new DaProperties();
++        properties.getWorkspace().setRoot(baseRoot.toString());
++        compat = new DaCompatProperties();
++        auth = new DaAuthProperties();
++        auth.setEnabled(true);
++        auth.setEngineSecret(SECRET);
++        controller = new DaSessionOutputController(properties, compat, auth, mock(ObjectProvider.class));
++        mvc = MockMvcBuilders.standaloneSetup(controller).build();
++    }
++
++    @AfterEach
++    void unbind() {
++        DaToolContextHolder.clear();
++    }
++
++    /**
++     * 经真实的 push_file 通道暂存（会话 id 带冒号、文件名带中文和空格），返回的 downloadUrl 原样能下载。
++     */
++    @Test
++    void downloadUrlFromPushFileServesTheStagedFile() throws Exception {
++        String url = pushFile("季度 报告.csv", CSV);
++
++        MockHttpServletResponse response = perform(request(url));
++
++        assertThat(response.getStatus()).isEqualTo(200);
++        assertThat(response.getContentAsByteArray()).isEqualTo(CSV);
++        assertThat(response.getContentType()).startsWith("text/csv").containsIgnoringCase("charset=UTF-8");
++        assertThat(response.getHeader("Content-Disposition")).isEqualTo(
++                "attachment; filename=\"__ __.csv\"; filename*=UTF-8''%E5%AD%A3%E5%BA%A6%20%E6%8A%A5%E5%91%8A.csv");
++        assertThat(response.getHeader("Accept-Ranges")).isEqualTo("bytes");
++        assertThat(response.getHeader("X-Content-Type-Options")).isEqualTo("nosniff");
++        assertThat(response.getHeader("Content-Security-Policy")).isEqualTo("sandbox");
++    }
++
++    @Test
++    void rangeRequestReturnsPartialContent() throws Exception {
++        String url = pushFile("data.csv", CSV);
++
++        MockHttpServletResponse response = perform(request(url).header("Range", "bytes=2-5"));
++
++        assertThat(response.getStatus()).isEqualTo(206);
++        assertThat(response.getHeader("Content-Range")).isEqualTo("bytes 2-5/" + CSV.length);
++        byte[] expected = new byte[4];
++        System.arraycopy(CSV, 2, expected, 0, 4);
++        assertThat(response.getContentAsByteArray()).isEqualTo(expected);
++    }
++
++    @Test
++    void secretIsCheckedWhenAuthIsEnabled() throws Exception {
++        String url = pushFile("data.csv", CSV);
++
++        MockHttpServletResponse missing = perform(get(URI.create(url)).header("X-Da-Session-Id", SESSION));
++        MockHttpServletResponse wrong = perform(get(URI.create(url)).header("X-Da-Session-Id", SESSION)
++                .header(DaServiceAuthFilter.SECRET_HEADER, "nope"));
++
++        assertThat(missing.getStatus()).isEqualTo(401);
++        assertThat(missing.getContentAsString()).contains("unauthorized");
++        assertThat(wrong.getStatus()).isEqualTo(401);
++        auth.setEnabled(false);
++        assertThat(perform(get(URI.create(url)).header("X-Da-Session-Id", SESSION)).getStatus()).isEqualTo(200);
++    }
++
++    @Test
++    void sessionMustMatchThePathLikeTheTaskEndpoints() throws Exception {
++        String url = pushFile("data.csv", CSV);
++
++        assertThat(perform(get(URI.create(url)).header(DaServiceAuthFilter.SECRET_HEADER, SECRET)
++                .header("X-Da-Session-Id", "t1:other")).getStatus()).isEqualTo(404);
++        assertThat(perform(get(URI.create(url)).header(DaServiceAuthFilter.SECRET_HEADER, SECRET))
++                .getStatus()).as("require-session-binding=true：未携带即拒绝").isEqualTo(404);
++        assertThat(perform(get(URI.create(url + "?sessionId=" + SESSION))
++                .header(DaServiceAuthFilter.SECRET_HEADER, SECRET)).getStatus()).isEqualTo(200);
++        compat.setRequireSessionBinding(false);
++        assertThat(perform(get(URI.create(url)).header(DaServiceAuthFilter.SECRET_HEADER, SECRET))
++                .getStatus()).isEqualTo(200);
++    }
++
++    @Test
++    void missingFileIsNotFound() throws Exception {
++        pushFile("data.csv", CSV);
++
++        MockHttpServletResponse response = perform(request("/api/sessions/" + SESSION + "/output/none.csv"));
++
++        assertThat(response.getStatus()).isEqualTo(404);
++        assertThat(response.getContentAsString()).contains("File not found");
++    }
++
++    @Test
++    void namesOutsideTheOutputDirectoryAreRefused() throws Exception {
++        pushFile("data.csv", CSV);
++        Path sessionRoot = DaSessionWorkspace.sessionRoot(baseRoot, SESSION, true);
++        Files.writeString(sessionRoot.resolve("notes.txt"), "not pushed");
++        Files.writeString(sessionRoot.resolve("output").resolve("x.csv-1.staging"), "half");
++
++        for (String name : List.of("../notes.txt", "..", ".", "", "sub/data.csv", "..\\notes.txt",
++                "x.csv-1.staging")) {
++            assertThat(controller.resolveOutputFile(SESSION, name)).as(name).isEmpty();
++        }
++        assertThat(controller.resolveOutputFile(SESSION, "data.csv")).isPresent();
++        assertThat(controller.resolveOutputFile("../" + SESSION, "data.csv"))
++                .as("会话段安全化后是另一个目录").isEmpty();
++    }
++
++    @Test
++    void symlinksMayNotLeaveTheOutputDirectory() throws Exception {
++        pushFile("data.csv", CSV);
++        Path output = DaSessionWorkspace.sessionRoot(baseRoot, SESSION, true).resolve("output");
++        Path secret = Files.writeString(outside.resolve("secret.txt"), "secret");
++        symlinkOrSkip(output.resolve("escape.txt"), secret);
++        symlinkOrSkip(output.resolve("alias.csv"), output.resolve("data.csv"));
++        Path otherSession = DaSessionWorkspace.sessionRoot(baseRoot, "t1:linked", true);
++        Files.createDirectories(otherSession);
++        symlinkOrSkip(otherSession.resolve("output"), outside);
++
++        assertThat(controller.resolveOutputFile(SESSION, "escape.txt")).isEmpty();
++        assertThat(controller.resolveOutputFile(SESSION, "alias.csv")).as("链到 output 内的文件").isPresent();
++        assertThat(controller.resolveOutputFile("t1:linked", "secret.txt")).as("output 本身是链接").isEmpty();
++    }
++
++    @Test
++    void sessionRootFollowsTheSegmentSwitch() {
++        assertThat(DaSessionWorkspace.sessionRoot(baseRoot, SESSION, true))
++                .isEqualTo(baseRoot.toAbsolutePath().normalize().resolve("t1_host-1"));
++        assertThat(DaSessionWorkspace.sessionRoot(baseRoot, "..", true).getParent())
++                .isEqualTo(baseRoot.toAbsolutePath().normalize());
++        assertThat(DaSessionWorkspace.sessionRoot(baseRoot, SESSION, false))
++                .isEqualTo(baseRoot.toAbsolutePath().normalize());
++    }
++
++    @Test
++    void contentDispositionKeepsAnAsciiFallbackAndTheUtf8Name() {
++        assertThat(DaSessionOutputController.contentDisposition("a\"b (1).txt"))
++                .isEqualTo("attachment; filename=\"a_b (1).txt\"; filename*=UTF-8''a%22b%20%281%29.txt");
++        assertThat(DaSessionOutputController.contentDisposition("报告.pdf"))
++                .isEqualTo("attachment; filename=\"__.pdf\"; filename*=UTF-8''%E6%8A%A5%E5%91%8A.pdf");
++    }
++
++    @Test
++    void mediaTypeFollowsTheExtension() {
++        assertThat(DaSessionOutputController.mediaType("r.md").toString()).isEqualTo("text/markdown;charset=UTF-8");
++        assertThat(DaSessionOutputController.mediaType("r.PDF").toString()).isEqualTo("application/pdf");
++        assertThat(DaSessionOutputController.mediaType("r.json").toString())
++                .isEqualTo("application/json;charset=UTF-8");
++        assertThat(DaSessionOutputController.mediaType("noext").toString()).isEqualTo("application/octet-stream");
++    }
++
++    private String pushFile(String name, byte[] content) throws IOException {
++        DaToolContextHolder.set(new DaToolContext(SESSION, "t1", List.of()));
++        try {
++            Path sessionRoot = DaSessionWorkspace.effectiveRoot(baseRoot, true);
++            Files.createDirectories(sessionRoot);
++            Files.write(sessionRoot.resolve(name), content);
++            PushResult result = new DaSessionOutputChannel(baseRoot, DaSessionOutputController.ROUTE, 1_000_000L)
++                    .pushFile(new PushFileRequest(name, "附件", null, false));
++            assertThat(result.isPushed()).as(String.valueOf(result.fields())).isTrue();
++            return String.valueOf(result.fields().get("downloadUrl"));
++        } finally {
++            DaToolContextHolder.clear();
++        }
++    }
++
++    private static MockHttpServletRequestBuilder request(String url) {
++        return get(URI.create(url)).header(DaServiceAuthFilter.SECRET_HEADER, SECRET)
++                .header("X-Da-Session-Id", SESSION);
++    }
++
++    private MockHttpServletResponse perform(MockHttpServletRequestBuilder request) throws Exception {
++        return mvc.perform(request).andReturn().getResponse();
++    }
++
++    private static void symlinkOrSkip(Path link, Path target) {
++        try {
++            Files.createSymbolicLink(link, target);
++        } catch (IOException | UnsupportedOperationException unsupported) {
++            Assumptions.abort("symbolic links unavailable: " + unsupported);
++        }
++    }
++}
