@@ -110,6 +110,9 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(projects, 'workspaces', manager)
     monkeypatch.setattr(auth, 'ENABLED', True)
     monkeypatch.setattr(auth, 'verify_access_token', lambda token: dict(USER) if token == 'user-token' else None)
+    monkeypatch.setattr(auth, 'current_user', lambda token, claims: {
+        'sub': claims['sub'], 'role': claims.get('role', 'user'), 'password_change_required': False,
+    })
     monkeypatch.setenv('ONTO_EVALUATION_SERVICE_TOKEN', SERVICE_TOKEN)
     stub = EvaluationStub()
     monkeypatch.setattr(eval_client, 'request', stub)

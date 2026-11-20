@@ -1,11 +1,10 @@
-{{- $nl2sql := .Values.modeling.nl2sql | default dict }}
-{{- range $component, $ports := dict "core" (list (dict "name" "http" "port" 5100) (dict "name" "mcp" "port" 5188)) "agent" (list (dict "name" "http" "port" 5110)) "onto" (list (dict "name" "http" "port" 8100)) "hub" (list (dict "name" "http" "port" 8200)) "evaluation" (list (dict "name" "http" "port" 5180)) }}
+{{- range $component, $ports := dict "onto" (list (dict "name" "http" "port" 8100)) "hub" (list (dict "name" "http" "port" 8200)) "evaluation" (list (dict "name" "http" "port" 5180)) }}
 apiVersion: v1
 kind: Service
 metadata:
   name: {{ $.Release.Name }}-{{ $component }}
 spec:
-  {{- if or (eq $component "core") (eq $component "onto") (eq $component "evaluation") }}
+  {{- if or (eq $component "onto") (eq $component "evaluation") }}
   # CCE ELB Ingress 通过节点端口接入对外 Modeling 服务。
   type: NodePort
   {{- else }}
@@ -17,16 +16,6 @@ spec:
     - {name: {{ .name }}, port: {{ .port }}, targetPort: {{ .port }}}
     {{- end }}
 ---
-{{- end }}
-{{- if $nl2sql.enabled }}
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ .Release.Name }}-nl2sql
-spec:
-  type: ClusterIP
-  selector: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: nl2sql}
-  ports: [{name: http, port: 5600, targetPort: 5600}]
 {{- end }}
 ---
 apiVersion: v1

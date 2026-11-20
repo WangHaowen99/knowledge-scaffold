@@ -9,25 +9,39 @@ from pathlib import Path
 from common import CompatibilityError, ConfigError, read_yaml, validate_compatibility_manifest
 
 
-WORKLOADS = ("core", "agent", "onto")
-EXPANDED_WORKLOADS = (*WORKLOADS, "hub", "evaluation")
+LEGACY_WORKLOADS = ("core", "agent", "onto")
+LEGACY_EXPANDED_WORKLOADS = (*LEGACY_WORKLOADS, "hub", "evaluation")
+WORKLOADS = ("onto", "hub", "evaluation")
+SOURCE_WORKLOAD_SETS = (LEGACY_WORKLOADS, LEGACY_EXPANDED_WORKLOADS, WORKLOADS)
 
 
 def installed_workloads(values: dict) -> tuple[str, ...]:
     """Only workloads present in the installed release need an old-data snapshot."""
+    modeling = values.get("modeling", {}).get("workloads", {})
+    legacy = bool(modeling.get("core", {}).get("persistence", {}).get("existingClaim"))
+    if legacy != bool(modeling.get("agent", {}).get("persistence", {}).get("existingClaim")):
+        raise ConfigError("installed Core and Agent PVC configuration is incomplete")
+    if not modeling.get("onto", {}).get("persistence", {}).get("existingClaim"):
+        raise ConfigError("installed Onto PVC configuration is incomplete")
     hub = bool(values.get("hub", {}).get("persistence", {}).get("existingClaim"))
     evaluation = bool(values.get("evaluation", {}).get("persistence", {}).get("existingClaim"))
     if hub != evaluation:
         raise ConfigError("installed Hub and Evaluation PVC configuration is incomplete")
+    if legacy and hub:
+        if values.get("hub", {}).get("replicas", 1) != 1 or values.get("evaluation", {}).get("replicas", 1) != 1:
+            raise ConfigError("installed Hub and Evaluation must run at one replica")
+        return LEGACY_EXPANDED_WORKLOADS
+    if legacy:
+        return LEGACY_WORKLOADS
     if hub:
         if values.get("hub", {}).get("replicas", 1) != 1 or values.get("evaluation", {}).get("replicas", 1) != 1:
             raise ConfigError("installed Hub and Evaluation must run at one replica")
-        return EXPANDED_WORKLOADS
-    return WORKLOADS
+        return WORKLOADS
+    raise ConfigError("installed Modeling workload set is incomplete")
 
 
 def target_claim(values: dict, workload: str) -> str:
-    if workload in WORKLOADS:
+    if workload in ("core", "agent", "onto"):
         return values["modeling"]["workloads"][workload]["persistence"]["existingClaim"]
     return values[workload]["persistence"]["existingClaim"]
 
@@ -69,8 +83,8 @@ def transition(path: Path, transition_id: str, installed: dict, target: dict) ->
         for key in ("consumerReleaseVersion", "consumerChartVersion"):
             if old.get(key) != new.get(key):
                 raise CompatibilityError("Modeling-only upgrade cannot change Consumer version")
-    if item.get("modelingDataMigration") != "none" or item.get("preserveModelingData") is not True:
-        raise CompatibilityError("transition must verify existing Modeling data is readable without migration")
+    if item.get("modelingDataMigration") not in ("none", "required") or item.get("preserveModelingData") is not True:
+        raise CompatibilityError("transition must preserve Modeling data and declare its migration policy")
     return item
 
 
@@ -91,8 +105,7 @@ def bindings(kube, args, merged: dict, *, stopped: bool, workloads: tuple[str, .
         if len(volumes) != 1:
             raise ConfigError(f"{workload} has no unique data volume")
         claim_name = volumes[0].get("persistentVolumeClaim", {}).get("claimName")
-        expected_claim = target_claim(merged, workload)
-        if claim_name != expected_claim:
+        if workload in WORKLOADS and claim_name != target_claim(merged, workload):
             raise ConfigError(f"{workload} would change its existing PVC")
         containers = template.get("containers", [])
         if not any(mount.get("name") == "data" and mount.get("mountPath") == mount_path(workload)
@@ -173,6 +186,15 @@ def assert_same_bindings(before: dict, after: dict) -> None:
         raise ConfigError("upgrade changed a Modeling PVC or its bound PV")
 
 
+def assert_no_retired_claim_reuse(target: dict, source_bindings: dict) -> None:
+    """New workloads must not mount a retired Core or Agent data claim."""
+    retired_claims = {item["claimName"] for name, item in source_bindings.items()
+                      if name in ("core", "agent")}
+    for name in WORKLOADS:
+        if target_claim(target, name) in retired_claims:
+            raise ConfigError(f"{name} target PVC belongs to a retired Core or Agent workload")
+
+
 DATA_COUNTS = {
     "core": ("node", "--experimental-sqlite", "-e",
              "const {DatabaseSync}=require('node:sqlite');const d=new DatabaseSync('/data/modeling.db',{readOnly:true});"
@@ -198,6 +220,8 @@ DATA_COUNTS = {
 def verify_persisted_data(run, args, backup_record: Path) -> None:
     record = json.loads(backup_record.read_text(encoding="utf-8"))
     for workload in record["dataEvidence"]:
+        if workload not in WORKLOADS:
+            continue
         output = run("kubectl", "--context", args.context, "-n", args.namespace,
                      "exec", f"deployment/{args.release}-{workload}", "-c", workload,
                      "--", *DATA_COUNTS[workload])

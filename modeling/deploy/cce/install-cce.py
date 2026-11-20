@@ -7,6 +7,7 @@ import argparse
 import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -23,7 +24,8 @@ import jsonschema
 
 from common import (CompatibilityError, ConfigError, checksum, emit_stdout, endpoint_results, read_yaml,
                     release_chart_from_list, run_program, validate_images, validate_name, validate_release)
-from upgrade import (DATA_COUNTS, WORKLOADS, EXPANDED_WORKLOADS, assert_same_bindings, bindings,
+from upgrade import (DATA_COUNTS, WORKLOADS, LEGACY_WORKLOADS, LEGACY_EXPANDED_WORKLOADS,
+                     SOURCE_WORKLOAD_SETS, assert_no_retired_claim_reuse, assert_same_bindings, bindings,
                      installed_workloads, mount_path, target_claim, transition, verified_snapshots,
                      verify_persisted_data)
 
@@ -252,15 +254,11 @@ def load_inputs(args, root: Path):
         for item in listeners:
             if item["protocol"] == "HTTPS" and not item["tlsSecretName"]:
                 raise ConfigError(f"HTTPS listener {item['id']} requires tlsSecretName")
-    if merged["modeling"]["workloads"]["core"]["nodeSelector"].keys() & merged["modeling"]["workloads"]["jiuwenbox"]["nodeSelector"].keys():
-        raise ConfigError("core and JiuwenBox nodeSelector keys must not overlap")
-    for key in ("llmApiKey", "evalDbUrl", "cleanupToken", "anthropicAuthToken"):
+    for key in ("authAdminToken", "anthropicAuthToken"):
         secret = merged["modeling"]["secrets"][key]
         if bool(secret["name"]) != bool(secret["key"]):
             raise ConfigError(f"incomplete {key} Secret reference")
-    if merged["modeling"].get("nl2sql", {}).get("enabled", False) and not merged["modeling"]["secrets"]["evalDbUrl"]["name"]:
-        raise ConfigError("NL2SQL requires the evalDbUrl Secret reference")
-    claims = [target_claim(merged, name) for name in EXPANDED_WORKLOADS]
+    claims = [target_claim(merged, name) for name in WORKLOADS]
     if len(set(claims)) != len(claims):
         raise ConfigError("stateful workloads require distinct PVCs")
     for section, keys in (("hub", ("consumerToken",)), ("evaluation", ("consumerToken", "judgeApiKey", "sqlConfig"))):
@@ -298,21 +296,158 @@ def load_inputs(args, root: Path):
     evaluation_routes = [item for item in routes if item["endpointId"] == "evaluation"]
     if len(evaluation_routes) != 1 or evaluation_routes[0]["path"] != "/evaluation/":
         raise ConfigError("Evaluation Ingress route is required")
-    if access["mode"] == "port" and evaluation_routes[0]["listenerPort"] != 5180:
-        raise ConfigError("Evaluation listener must use port 5180")
-    if any(merged["modeling"]["workloads"][name]["replicas"] != 1
-            for name in ("core", "agent", "onto")):
+    if merged["modeling"]["workloads"]["onto"]["replicas"] != 1:
         raise ConfigError("stateful workloads must run at one replica")
     if not images["jiuwenbox"]:
         raise ConfigError("JiuwenBox reference missing")
     return release, merged
 
 
-def preflight(args, merged: dict, *, check_external_services: bool = True) -> None:
+def validate_auth_owner(args, merged: dict, service: dict) -> None:
+    """Check the independently owned Auth Service against its durable owner record."""
+    ref = merged["externalAuth"]
+    if ref.get("apiVersion") == "v1":
+        consumer = merged["externalConsumer"]
+        consumer_name = consumer["serviceName"].removesuffix("-backend")
+        metadata = service.get("metadata", {})
+        if not consumer_name or consumer_name == consumer["serviceName"]:
+            raise ConfigError("legacy Auth Service does not belong to Consumer")
+        if (ref["serviceName"] != f"{consumer_name}-auth"
+                or ref["namespace"] != consumer["namespace"]):
+            raise ConfigError("legacy Auth Service does not belong to Consumer")
+        if (not metadata.get("uid")
+                or metadata.get("annotations", {}).get("meta.helm.sh/release-name") != consumer_name):
+            raise ConfigError("legacy Auth Service does not belong to Consumer")
+        raw = kube(args, "get", "configmap", f"{consumer_name}-cce-state", "-n", consumer["namespace"])
+        try:
+            state = json.loads(raw["data"]["state.json"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ConfigError("legacy Consumer Auth state is unavailable") from exc
+        auth_endpoint = next((item for item in state.get("endpoints", []) if item.get("id") == "auth"), {})
+        if (state.get("phase") != "ready" or state.get("externalAuth")
+                or state.get("identity", {}).get("auth") != merged["global"]["auth"]):
+            raise ConfigError("legacy Consumer Auth contract differs from Modeling")
+        if (auth_endpoint.get("serviceName") != ref["serviceName"]
+                or auth_endpoint.get("namespace") != ref["namespace"]):
+            raise ConfigError("legacy Consumer Auth contract differs from Modeling")
+        if (auth_endpoint.get("port") != ref["servicePort"]
+                or auth_endpoint.get("apiVersion") != "v1"):
+            raise ConfigError("legacy Consumer Auth contract differs from Modeling")
+        validate_auth_admin_token(args, merged, consumer_name, consumer["namespace"])
+        return
+    if ref.get("apiVersion") != "auth-v1":
+        raise ConfigError("unsupported Auth API contract")
+    metadata = service.get("metadata", {})
+    annotations = metadata.get("annotations", {})
+    owner = annotations.get("meta.helm.sh/release-name")
+    consumer_ref = merged["externalConsumer"]
+    consumer_name = consumer_ref["serviceName"].removesuffix("-backend")
+    if (not owner or owner == consumer_name
+            or annotations.get("meta.helm.sh/release-namespace") != ref["namespace"]):
+        raise ConfigError("external Auth Service has no independent Helm owner")
+    raw = kube(args, "get", "configmap", f"{owner}-cce-state", "-n", ref["namespace"])
+    try:
+        state = json.loads(raw["data"]["state.json"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigError("independent Auth owner state is unavailable") from exc
+    if state.get("phase") != "ready" or state.get("identity") != merged["global"]["auth"]:
+        raise ConfigError("independent Auth owner identity or Service UID differs")
+    if not metadata.get("uid") or state.get("serviceUID") not in (None, metadata.get("uid")):
+        raise ConfigError("independent Auth owner identity or Service UID differs")
+    owner_status = json.loads(run("helm", "--kube-context", args.context, "--namespace",
+                                  ref["namespace"], "status", owner, "-o", "json"))
+    if owner_status.get("info", {}).get("status") != "deployed":
+        raise ConfigError("independent Auth Helm release is not deployed")
+    owner_values = json.loads(run("helm", "--kube-context", args.context, "--namespace",
+                                  ref["namespace"], "get", "values", owner, "-o", "json"))
+    if not isinstance(owner_values, dict) or owner_values.get("authOnly") is not True:
+        raise ConfigError("independent Auth installed values differ from Modeling reference")
+    if (owner_values.get("serviceName") != ref["serviceName"]
+            or owner_values.get("workloadName") != ref["serviceName"]):
+        raise ConfigError("independent Auth installed values differ from Modeling reference")
+    if owner_values.get("global", {}).get("auth") != merged["global"]["auth"]:
+        raise ConfigError("independent Auth installed values differ from Modeling reference")
+    validate_auth_admin_token(args, merged, owner, ref["namespace"], owner_values)
+    deployment = kube(args, "get", "deployment", service["metadata"]["name"], "-n", ref["namespace"])
+    if deployment.get("metadata", {}).get("annotations", {}).get("meta.helm.sh/release-name") != owner:
+        raise ConfigError("independent Auth Deployment owner differs")
+
+
+def validate_auth_admin_token(args, merged: dict, owner: str, namespace: str,
+                              owner_values: dict | None = None) -> None:
+    """Check an enabled Modeling management token against the installed Auth owner."""
+    client_ref = merged.get("modeling", {}).get("secrets", {}).get("authAdminToken", {})
+    if not client_ref.get("name"):
+        return
+    if owner_values is None:
+        owner_values = json.loads(run("helm", "--kube-context", args.context, "--namespace",
+                                      namespace, "get", "values", owner, "-o", "json"))
+    if not isinstance(owner_values, dict):
+        raise ConfigError("Auth owner values are invalid")
+    owner_ref = owner_values.get("sharedAuth", {}).get("adminTokenSecret", {})
+    if not owner_ref.get("name") or not owner_ref.get("key"):
+        raise ConfigError("Auth owner has no management token Secret reference")
+    client = _read_secret(args, client_ref["name"])
+    actual = _read_secret(args, owner_ref["name"], namespace)
+    if not isinstance(client, dict) or not isinstance(actual, dict):
+        raise ConfigError("Modeling or Auth management token Secret is invalid")
+    if client.get("type") != "Opaque" or actual.get("type") != "Opaque":
+        raise ConfigError("Modeling or Auth management token Secret is invalid")
+    client_value = client.get("data", {}).get(client_ref["key"])
+    actual_value = actual.get("data", {}).get(owner_ref["key"])
+    if not isinstance(client_value, str) or not isinstance(actual_value, str):
+        raise ConfigError("Modeling Auth management token differs from Auth owner")
+    if not client_value or not actual_value or not hmac.compare_digest(client_value, actual_value):
+        raise ConfigError("Modeling Auth management token differs from Auth owner")
+
+
+def probe_auth_from_modeling(args, merged: dict) -> None:
+    """Reach Auth from the Modeling namespace before replacing application Pods."""
+    ref = merged["externalAuth"]
+    image = merged["global"]["resolvedImages"]["ontoModeling"]
+    suffix = uuid.uuid4().hex[:10]
+    name = f"{(args.release + '-auth-probe')[:52].rstrip('-')}-{suffix}"
+    # The internal Auth service has no TLS listener; these endpoints expose no credentials.
+    address = f"http://{ref['serviceName']}.{ref['namespace']}.svc.cluster.local:{ref['servicePort']}"  # NOSONAR(S5332)
+    code = '''import json,os,urllib.request
+base=os.environ["AUTH_URL"]
+with urllib.request.urlopen(base+"/health",timeout=10) as response:
+    assert response.status==200
+with urllib.request.urlopen(base+"/.well-known/openid-configuration",timeout=10) as response:
+    assert json.load(response)["issuer"]==os.environ["AUTH_ISSUER"]
+with urllib.request.urlopen(base+"/jwks.json",timeout=10) as response:
+    assert any(key.get("kty")=="RSA" and key.get("alg")=="RS256" for key in json.load(response)["keys"])
+'''
+    pod = {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": name, "namespace": args.namespace},
+           "spec": {"restartPolicy": "Never", "nodeSelector": {"kubernetes.io/arch": merged["global"]["targetArch"]},
+                    "containers": [{"name": "probe", "image": image, "imagePullPolicy": "IfNotPresent",
+                                    "command": ["python3", "-c", "import time; time.sleep(180)"],
+                                    "env": [{"name": "AUTH_URL", "value": address},
+                                            {"name": "AUTH_ISSUER", "value": merged["global"]["auth"]["issuer"]}]}]}}
+    secrets = merged["global"]["imageDelivery"]["pullSecretNames"]
+    if secrets:
+        pod["spec"]["imagePullSecrets"] = [{"name": item} for item in secrets]
+    _run_with_input(("kubectl", "--context", args.context, "-n", args.namespace,
+                     "create", "-f", "-"), json.dumps(pod))
+    try:
+        run("kubectl", "--context", args.context, "-n", args.namespace,
+            "wait", "--for=condition=ready", f"pod/{name}", "--timeout=60s")
+        result = run_program(("kubectl", "--context", args.context, "-n", args.namespace,
+                              "exec", name, "-c", "probe", "--", "python3", "-c", code),
+                             text=True, capture_output=True, timeout=60)
+        if result.returncode:
+            raise ConfigError("Auth network or identity probe failed")
+    finally:
+        run("kubectl", "--context", args.context, "-n", args.namespace,
+            "delete", "pod", name, "--ignore-not-found", "--wait=true")
+
+
+def preflight(args, merged: dict, *, check_external_services: bool = True,
+              allow_missing_dependencies: bool = False) -> list[str]:
     namespace = kube(args, "get", "namespace", args.namespace)
     if namespace["status"]["phase"] != "Active":
         raise ConfigError("namespace is not Active")
-    for workload in EXPANDED_WORKLOADS:
+    for workload in WORKLOADS:
         name = target_claim(merged, workload)
         pvc = kube(args, "get", "pvc", name, "-n", args.namespace)
         spec = pvc["spec"]
@@ -365,17 +500,38 @@ def preflight(args, merged: dict, *, check_external_services: bool = True) -> No
     for listener in merged["global"]["access"]["listeners"]:
         if listener["protocol"] == "HTTPS":
             kube(args, "get", "secret", listener["tlsSecretName"], "-n", args.namespace)
-    if check_external_services:
-        for field in ("externalAuth", "externalConsumer"):
+    pending = []
+    for field in ("externalAuth", "externalConsumer"):
+        if check_external_services or field == "externalAuth":
             target = merged[field]
-            service = kube(args, "get", "service", target["serviceName"], "-n", target["namespace"])
+            if allow_missing_dependencies:
+                target_namespace = kube(args, "get", "namespace", target["namespace"])
+                if target_namespace["status"]["phase"] != "Active":
+                    raise ConfigError(f"{field} namespace is not Active")
+            service = (_optional_json(args, "-n", target["namespace"], "get", "service",
+                                      target["serviceName"]) if allow_missing_dependencies else
+                       kube(args, "get", "service", target["serviceName"], "-n", target["namespace"]))
+            if service is None:
+                pending.append(field)
+                continue
             if target["servicePort"] not in [port["port"] for port in service["spec"]["ports"]]:
                 raise ConfigError(f"{field} service port mismatch")
+            if allow_missing_dependencies:
+                endpoints = _optional_json(args, "-n", target["namespace"], "get", "endpoints",
+                                           target["serviceName"])
+                if not endpoints or not any(group.get("addresses") for group in endpoints.get("subsets", [])):
+                    pending.append(field)
+                    continue
+            if field == "externalAuth":
+                validate_auth_owner(args, merged, service)
+                if check_external_services:
+                    probe_auth_from_modeling(args, merged)
     nodes = kube(args, "get", "nodes")
     arch = merged["global"]["targetArch"]
     if not any(node["metadata"]["labels"].get("kubernetes.io/arch") == arch and
                not node["spec"].get("unschedulable", False) for node in nodes["items"]):
         raise ConfigError(f"no schedulable {arch} node")
+    return pending
 
 
 def render(args, root: Path, release: dict) -> Path:
@@ -389,27 +545,62 @@ def render(args, root: Path, release: dict) -> Path:
     return output
 
 
-def verify(args, root: Path):
-    for component in ("agent", "core", "onto", "hub", "evaluation"):
+def verify(args, root: Path, *, pending_auth: bool = False):
+    for component in WORKLOADS:
+        if pending_auth and component == "onto":
+            continue
         run("kubectl", "--context", args.context, "-n", args.namespace, "rollout", "status",
             f"deployment/{args.release}-{component}", f"--timeout={args.timeout_seconds}s")
     run("kubectl", "--context", args.context, "-n", args.namespace, "rollout", "status",
         f"deployment/{args.release}-sandbox-gateway", f"--timeout={args.timeout_seconds}s")
-    run("kubectl", "--context", args.context, "-n", args.namespace, "exec",
-        f"deployment/{args.release}-onto", "-c", "onto", "--", "python", "-c",
-        "import urllib.request; r=urllib.request.urlopen('http://%s-sandbox-gateway:8110/health', timeout=5); raise SystemExit(0 if r.status == 200 else 1)" % args.release)
-    run("kubectl", "--context", args.context, "-n", args.namespace, "exec",
-        f"deployment/{args.release}-core", "-c", "core", "--", "node", "-e",
-        "const http=require('http');const q=http.request({socketPath:'/run/jiuwenbox/jiuwenbox.sock',path:'/health'},r=>process.exit(r.statusCode===200?0:1));q.on('error',()=>process.exit(1));q.end()")
+    if not pending_auth:
+        # The gateway Service can briefly have no endpoint while its Pod is
+        # recreated by Helm, even after its rollout reports ready.
+        deadline = time.monotonic() + min(args.timeout_seconds, 60)
+        while True:
+            try:
+                run("kubectl", "--context", args.context, "-n", args.namespace, "exec",
+                    f"deployment/{args.release}-onto", "-c", "onto", "--", "python", "-c",
+                    "import urllib.request; r=urllib.request.urlopen('http://%s-sandbox-gateway:8110/health', timeout=5); raise SystemExit(0 if r.status == 200 else 1)" % args.release)
+                break
+            except RuntimeError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(2)
     for component, port, path in (("hub", 8200, "/api/health"),
                                   ("evaluation", 5180, "/evaluation/api/health")):
         run("kubectl", "--context", args.context, "-n", args.namespace, "exec",
             f"deployment/{args.release}-{component}", "-c", component, "--",
             "python", "-c",
             f"import urllib.request; r=urllib.request.urlopen('http://127.0.0.1:{port}{path}', timeout=5); raise SystemExit(0 if r.status == 200 else 1)")
-    if read_yaml(args.values).get("modeling", {}).get("nl2sql", {}).get("enabled"):
-        run("kubectl", "--context", args.context, "-n", args.namespace, "rollout", "status",
-            f"deployment/{args.release}-nl2sql", f"--timeout={args.timeout_seconds}s")
+
+
+def verify_consumer_from_modeling(args, merged: dict) -> None:
+    """Confirm the declared Backend is actually serving from Modeling's network."""
+    ref = merged["externalConsumer"]
+    # The internal Consumer service has no TLS listener; /ready is unauthenticated.
+    url = f"http://{ref['serviceName']}.{ref['namespace']}.svc.cluster.local:{ref['servicePort']}/ready"  # NOSONAR(S5332)
+    run("kubectl", "--context", args.context, "-n", args.namespace, "exec",
+        f"deployment/{args.release}-evaluation", "-c", "evaluation", "--",
+        "python", "-c", "import urllib.request,sys; "
+        "r=urllib.request.urlopen(sys.argv[1],timeout=5); "
+        "raise SystemExit(0 if r.status==200 else 1)", url)
+
+
+def verify_retired_workloads(args) -> None:
+    """A successful legacy transition must leave no Core or Agent writers."""
+    for workload in ("core", "agent"):
+        for kind in ("deployment", "service"):
+            if _optional_json(args, "-n", args.namespace, "get", kind,
+                              f"{args.release}-{workload}") is not None:
+                raise ConfigError(f"retired {workload} {kind} still exists")
+        pods = kube(args, "get", "pods", "-n", args.namespace,
+                    "-l", f"app.kubernetes.io/instance={args.release},app.kubernetes.io/component={workload}")
+        if pods.get("items"):
+            raise ConfigError(f"retired {workload} Pods still exist")
+    for name in getattr(args, "retired_ingress_names", ()):
+        if _optional_json(args, "-n", args.namespace, "get", "ingress", name) is not None:
+            raise ConfigError(f"retired Core Ingress {name} still exists")
 
 
 def upgrade_precheck(args, root: Path, release: dict, merged: dict) -> dict:
@@ -448,7 +639,7 @@ def upgrade_precheck(args, root: Path, release: dict, merged: dict) -> dict:
                           and modeling_version(new) == target_version)
         policy_matches = (transition_entry.get("steps") in (["modeling"], ["consumer", "modeling"])
                           and transition_entry.get("requiresJointMaintenance") is True
-                          and transition_entry.get("modelingDataMigration") == "none"
+                          and transition_entry.get("modelingDataMigration") in ("none", "required")
                           and transition_entry.get("preserveModelingData") is True)
         if not versions_match or not policy_matches:
             raise CompatibilityError("delegated transition does not match installed or target Modeling")
@@ -456,16 +647,31 @@ def upgrade_precheck(args, root: Path, release: dict, merged: dict) -> dict:
         if not getattr(args, "standalone_upgrade", False):
             transition_entry = transition(root / "deploy/compatibility.yaml", args.transition_id, installed, release)
     old_values = installed_values(args)
+    source_workloads = installed_workloads(old_values)
+    if transition_entry and transition_entry["modelingDataMigration"] != (
+            "required" if "core" in source_workloads else "none"):
+        raise CompatibilityError("transition migration policy differs from installed workloads")
+    if "core" in source_workloads:
+        access = old_values.get("global", {}).get("access", {})
+        retired_names = []
+        if access.get("mode") == "port":
+            for item in access.get("listeners", []):
+                if item.get("endpointId") not in ("modeling-core", "modeling-mcp"):
+                    continue
+                listener_id = item.get("id")
+                if isinstance(listener_id, str) and listener_id:
+                    retired_names.append(f"{args.release}-{listener_id}"[:63].rstrip("-"))
+        args.retired_ingress_names = tuple(retired_names)
     if old_values.get("global", {}).get("targetArch") != merged["global"]["targetArch"]:
         raise CompatibilityError("target architecture differs from the installed release")
     if old_values.get("global", {}).get("auth", {}) != merged["global"]["auth"]:
         raise CompatibilityError("shared auth settings changed during Modeling upgrade")
+    workloads = source_workloads
     if any(old_values.get("modeling", {}).get("workloads", {}).get(name, {}).get("replicas", 1) != 1
-           for name in ("core", "agent", "onto")):
+           for name in ("core", "agent", "onto") if name in workloads):
         raise ConfigError("installed Modeling release must request one replica per stateful workload")
-    workloads = installed_workloads(old_values)
     args.backup_workloads = workloads
-    if len(workloads) == len(EXPANDED_WORKLOADS):
+    if "hub" in workloads:
         if any(old_values[name].get("replicas", 1) != 1 for name in ("hub", "evaluation")):
             raise ConfigError("installed Hub and Evaluation must request one replica")
         if _installed_internal_secret_specs(old_values, args) != _internal_secret_specs(merged):
@@ -474,12 +680,12 @@ def upgrade_precheck(args, root: Path, release: dict, merged: dict) -> dict:
         if old_values.get("evaluation", {}).get("secrets", {}).get("notificationToken") and \
                 old_notification != _notification_secret_ref(args, merged):
             raise ConfigError("notification Secret name and key cannot change during upgrade")
-    for component in ("core", "agent", "onto"):
+    for component in ("onto",):
         old_claim = old_values.get("modeling", {}).get("workloads", {}).get(component, {}).get("persistence", {}).get("existingClaim")
         target_claim = merged["modeling"]["workloads"][component]["persistence"]["existingClaim"]
         if old_claim != target_claim:
             raise ConfigError(f"{component} target PVC differs from installed values")
-    if len(workloads) == len(EXPANDED_WORKLOADS):
+    if "hub" in workloads:
         for component in ("hub", "evaluation"):
             if old_values[component]["persistence"]["existingClaim"] != merged[component]["persistence"]["existingClaim"]:
                 raise ConfigError(f"{component} target PVC differs from installed values")
@@ -492,6 +698,7 @@ def upgrade_precheck(args, root: Path, release: dict, merged: dict) -> dict:
         if not isinstance(recorded_uids, dict) or recorded_uids != _identity_record(args, merged):
             raise ConfigError("backup record Secret identities changed")
     before = bindings(kube, args, merged, stopped=True, workloads=workloads)
+    assert_no_retired_claim_reuse(merged, before)
     verified_snapshots(kube, args, args.backup_record, before)
     return before
 
@@ -601,6 +808,9 @@ def _identity_record(args, merged: dict) -> dict[str, str]:
     integration = merged.get("global", {}).get("integration", {}).get("serviceTokenSecret", {})
     if integration.get("name"):
         names.append(integration["name"])
+    auth_admin = merged.get("modeling", {}).get("secrets", {}).get("authAdminToken", {})
+    if auth_admin.get("name"):
+        names.append(auth_admin["name"])
     for section in ("hub", "evaluation"):
         names.extend(ref["name"] for key, ref in merged.get(section, {}).get("secrets", {}).items()
                      if key not in ("internal", "encryptionKey") and ref["name"])
@@ -754,8 +964,8 @@ def _count_persisted_data(args) -> dict:
 
 def _pvc_bindings(args, merged: dict) -> dict:
     result = {}
-    for workload in ("core", "agent", "onto"):
-        claim = merged["modeling"]["workloads"][workload]["persistence"]["existingClaim"]
+    for workload in WORKLOADS:
+        claim = target_claim(merged, workload)
         pvc = kube(args, "get", "pvc", claim, "-n", args.namespace)
         uid = pvc.get("metadata", {}).get("uid")
         pv = pvc.get("spec", {}).get("volumeName")
@@ -805,6 +1015,37 @@ def _write_cluster_state(args, document: dict) -> None:
                      "apply", "-f", "-"), json.dumps(manifest))
 
 
+def _record_dependencies(args, merged: dict, pending: list[str], *, service_verified: bool = True) -> None:
+    """Record a fresh install's expected clients without claiming they are usable."""
+    state = _cluster_operation_state(args) or {}
+    expected = {key: merged[key] for key in ("externalAuth", "externalConsumer")}
+    if state and state.get("schemaVersion") != "cce-modeling-dependencies/v1":
+        raise ConfigError("Modeling dependency record belongs to another operation")
+    if state and state.get("dependencies") != expected:
+        raise ConfigError("Modeling dependency record differs from this installation")
+    if state and state.get("operationId") != installed_values(args).get("global", {}).get("operationId"):
+        raise ConfigError("Modeling dependency record belongs to another installed release")
+    state.update(schemaVersion="cce-modeling-dependencies/v1",
+                 operationId=state.get("operationId", args.operation_id),
+                 stage="waiting-dependencies" if pending else
+                       "complete" if service_verified else "verifying-service",
+                 dependencies=expected, pendingDependencies=pending)
+    _write_cluster_state(args, state)
+
+
+def _verify_dependency_record(args, merged: dict) -> None:
+    state = _cluster_operation_state(args)
+    if state and state.get("schemaVersion") == "cce-modeling-dependencies/v1":
+        if state.get("dependencies") != {key: merged[key] for key in ("externalAuth", "externalConsumer")}:
+            raise ConfigError("Modeling dependency reference differs from installation")
+        current = merge(read_yaml(Path(__file__).resolve().parent / "chart/values.yaml"),
+                        installed_values(args))
+        if (current.get("global", {}).get("operationId") != state.get("operationId") or
+                current.get("externalAuth") != merged["externalAuth"] or
+                current.get("externalConsumer") != merged["externalConsumer"]):
+            raise ConfigError("installed Modeling dependency reference differs from its record")
+
+
 def _record_upgrade_stage(args, stage: str, **details) -> None:
     if getattr(args, "state_dir", None):
         path = _operation_state_path(args)
@@ -847,8 +1088,11 @@ def _diagnose(args, release: dict, merged: dict) -> dict:
         if (installed["releaseVersion"], installed["chartVersion"]) != (
                 release["releaseVersion"], release["chartVersion"]):
             issues.append("installed release differs from target")
-    if state and state.get("stage") not in ("complete", "old-service-restored", "preparing-backup"):
+    if state and state.get("stage") not in ("complete", "old-service-restored", "preparing-backup", "waiting-dependencies"):
         issues.append(f"unfinished Modeling operation at stage {state.get('stage', 'unknown')}")
+    if state and state.get("stage") == "waiting-dependencies":
+        issues.append("waiting for Auth and Consumer: " +
+                      ", ".join(state.get("pendingDependencies", [])))
     return {"ready": not issues, "issues": issues, "claims": claims,
             "installed": current is not None,
             "operationState": {"operationId": state.get("operationId"), "stage": state.get("stage")}
@@ -876,7 +1120,7 @@ def _uninstall(args, root: Path) -> dict:
     if installed != {"releaseVersion": release["releaseVersion"], "chartVersion": release["chartVersion"]}:
         raise ConfigError("installed Modeling release differs from uninstall package")
     state = _cluster_operation_state(args)
-    if state and state.get("stage") not in ("complete", "old-service-restored"):
+    if state and state.get("stage") not in ("complete", "old-service-restored", "waiting-dependencies", "verifying-service"):
         raise ConfigError("finish or inspect the active Modeling operation before uninstall")
     if not args.resume:
         _write_private_json(record, expected)
@@ -890,6 +1134,10 @@ def _uninstall(args, root: Path) -> dict:
 
 def _require_upgrade_state_ready(args) -> None:
     state = _cluster_operation_state(args)
+    if state and state.get("schemaVersion") == "cce-modeling-dependencies/v1":
+        if state.get("stage") != "complete":
+            raise ConfigError("verify Auth and Consumer dependencies before Modeling upgrade")
+        return
     if not state or state.get("stage") in ("complete", "old-service-restored"):
         return
     matching_resume = (getattr(args, "resume", None), state.get("action"), state.get("operationId")) == (
@@ -1078,7 +1326,7 @@ def _label_snapshot_group(args, status: str) -> None:
 
 
 def _cleanup_old_successful_snapshots(args) -> list[str]:
-    """Delete only complete, successful groups older than retention count."""
+    """Retain retired Core/Agent snapshots; prune complete active groups only."""
     if args.snapshot_retention < 1:
         raise ConfigError("snapshot-retention must be at least 1")
     snapshots = _optional_json(
@@ -1091,8 +1339,16 @@ def _cleanup_old_successful_snapshots(args) -> list[str]:
         group = labels.get("modeling.cce/backup-group")
         if group:
             groups.setdefault(group, []).append(item)
+    active_groups = []
+    for group, items in groups.items():
+        workloads = {
+            item.get("metadata", {}).get("labels", {}).get("modeling.cce/workload")
+            for item in items
+        }
+        if len(items) == len(WORKLOADS) and workloads == set(WORKLOADS):
+            active_groups.append((group, items))
     ordered = sorted(
-        groups.items(),
+        active_groups,
         key=lambda pair: max(
             item.get("metadata", {}).get("creationTimestamp", "") for item in pair[1]
         ),
@@ -1101,13 +1357,6 @@ def _cleanup_old_successful_snapshots(args) -> list[str]:
     stale = ordered[args.snapshot_retention:]
     warnings: list[str] = []
     for group, items in stale:
-        workloads = {
-            item.get("metadata", {}).get("labels", {}).get("modeling.cce/workload")
-            for item in items
-        }
-        if len(items) not in (3, 5) or workloads not in (set(WORKLOADS), set(EXPANDED_WORKLOADS)):
-            # Never delete a partial or externally modified snapshot group.
-            continue
         for item in items:
             name = item.get("metadata", {}).get("name")
             if not name:
@@ -1138,14 +1387,14 @@ def prepare_auto_backup(args, root: Path, release: dict, merged: dict) -> Path:
         if any(record.get(key) != value for key, value in expected_identity.items()):
             raise ConfigError("automatic backup record belongs to another operation or release")
         claims = record.get("claims")
-        if not isinstance(claims, dict) or set(claims) not in (set(WORKLOADS), set(EXPANDED_WORKLOADS)):
+        if not isinstance(claims, dict) or set(claims) not in map(set, SOURCE_WORKLOAD_SETS):
             raise ConfigError("automatic backup record has an invalid workload set")
         current_workloads = installed_workloads(installed_values(args))
         if set(claims) != set(current_workloads):
             raise ConfigError("automatic backup record workload set differs from installed release")
         if record.get("secretUids") and record["secretUids"] != _identity_record(args, merged):
             raise ConfigError("automatic backup record Secret identities changed")
-        args.backup_workloads = tuple(name for name in EXPANDED_WORKLOADS if name in claims)
+        args.backup_workloads = tuple(name for name in LEGACY_EXPANDED_WORKLOADS if name in claims)
         args.snapshot_claims = {name: {key: value for key, value in claims[name].items()
                                        if key in ("claimName", "claimUid", "volumeName")}
                                 for name in args.backup_workloads}
@@ -1159,7 +1408,7 @@ def prepare_auto_backup(args, root: Path, release: dict, merged: dict) -> Path:
     if old_values.get("global", {}).get("auth", {}) != merged["global"]["auth"]:
         raise CompatibilityError("shared auth settings changed during Modeling upgrade")
     args.backup_workloads = installed_workloads(old_values)
-    if args.backup_workloads == WORKLOADS and all(name in merged for name in ("hub", "evaluation")):
+    if args.backup_workloads == LEGACY_WORKLOADS:
         for component in ("hub", "evaluation"):
             claim_name = merged[component]["persistence"]["existingClaim"]
             pods = kube(args, "get", "pods", "-n", args.namespace)
@@ -1167,6 +1416,7 @@ def prepare_auto_backup(args, root: Path, release: dict, merged: dict) -> Path:
                    for item in pods.get("items", []) for volume in item.get("spec", {}).get("volumes", [])):
                 raise ConfigError(f"new {component} PVC is already mounted by a Pod")
     before = bindings(kube, args, merged, stopped=False, workloads=args.backup_workloads)
+    assert_no_retired_claim_reuse(merged, before)
     _check_capacity(args)
     args.snapshot_group = _snapshot_group(args)
     snapshot_classes = _optional_json(args, "get", "volumesnapshotclass")
@@ -1236,8 +1486,88 @@ def wait_old_pods_gone(args) -> None:
             time.sleep(2)
 
 
+def migrate_core_projects(args, merged: dict, before: dict) -> dict | None:
+    """Run the VM Onto migrator with both stopped CCE PVCs, before the target starts."""
+    if "core" not in before:
+        return None
+    source = before["core"]["claimName"]
+    target = before["onto"]["claimName"]
+    suffix = hashlib.sha256(args.operation_id.encode()).hexdigest()[:12]
+    prefix = f"{args.release}-core-migrate"
+    name = f"{prefix[:63 - len(suffix) - 1].rstrip('-')}-{suffix}"
+    expected_labels = {"app.kubernetes.io/instance": args.release,
+                       "app.kubernetes.io/component": "core-migration",
+                       "modeling.cce/operation": _snapshot_group(args)}
+    image = merged["global"]["resolvedImages"]["ontoModeling"]
+    report = f"/data/onto-web/.core-migration-{suffix}.json"
+    pod = {
+        "restartPolicy": "Never",
+        "nodeSelector": {"kubernetes.io/arch": merged["global"]["targetArch"],
+                         **merged["modeling"]["workloads"]["onto"]["nodeSelector"]},
+        "containers": [{"name": "migration", "image": image,
+                        "imagePullPolicy": "IfNotPresent",
+                        "command": ["python3", "scripts/migrate_cce_from_modeling.py",
+                                    "--source", "/source", "--summary-file", report],
+                        "volumeMounts": [{"name": "core", "mountPath": "/source", "readOnly": True},
+                                         {"name": "onto", "mountPath": "/data"}]}],
+        "volumes": [{"name": "core", "persistentVolumeClaim": {"claimName": source, "readOnly": True}},
+                    {"name": "onto", "persistentVolumeClaim": {"claimName": target}}],
+    }
+    pull_secrets = merged["global"]["imageDelivery"]["pullSecretNames"]
+    if pull_secrets:
+        pod["imagePullSecrets"] = [{"name": item} for item in pull_secrets]
+    job = {"apiVersion": "batch/v1", "kind": "Job",
+           "metadata": {"name": name, "namespace": args.namespace, "labels": expected_labels},
+           "spec": {"backoffLimit": 0, "activeDeadlineSeconds": args.timeout_seconds,
+                    "template": {"metadata": {"labels": expected_labels}, "spec": pod}}}
+    current = _optional_json(args, "-n", args.namespace, "get", "job", name)
+    if current is not None:
+        labels = current.get("metadata", {}).get("labels", {})
+        current_spec = current.get("spec", {}).get("template", {}).get("spec", {})
+        containers = current_spec.get("containers", [])
+        expected_container = pod["containers"][0]
+        container_matches = (len(containers) == 1 and all(
+            containers[0].get(key) == expected_container[key]
+            for key in ("name", "image", "command", "volumeMounts")
+        ))
+        metadata_matches = (current.get("metadata", {}).get("namespace") == args.namespace
+                            and all(labels.get(key) == value for key, value in expected_labels.items()))
+        job_matches = (current.get("spec", {}).get("backoffLimit") == 0
+                       and current_spec.get("volumes") == pod["volumes"]
+                       and container_matches)
+        pod_matches = (current_spec.get("restartPolicy") == "Never"
+                       and current_spec.get("nodeSelector") == pod["nodeSelector"]
+                       and current_spec.get("imagePullSecrets", []) == pod.get("imagePullSecrets", []))
+        if not metadata_matches or not job_matches or not pod_matches:
+            raise ConfigError("existing Core migration Job differs from this operation")
+    else:
+        _run_with_input(("kubectl", "--context", args.context, "-n", args.namespace,
+                         "create", "-f", "-"), json.dumps(job))
+    args.migration_job = name
+    run("kubectl", "--context", args.context, "-n", args.namespace,
+        "wait", "--for=condition=complete", f"job/{name}", f"--timeout={args.timeout_seconds}s")
+    output = run("kubectl", "--context", args.context, "-n", args.namespace,
+                 "logs", f"job/{name}", "--tail=1")
+    try:
+        summary = json.loads(output.strip())
+        evidence = json.loads(args.backup_record.read_text(encoding="utf-8"))["dataEvidence"]["core"]
+        valid = (summary.get("schemaVersion") == "core-project-migration/v1"
+                 and all(type(summary.get(key)) is int and summary[key] >= 0
+                         for key in ("sourceProjects", "migrated", "skipped"))
+                 and summary["migrated"] + summary["skipped"] == summary["sourceProjects"] == evidence)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise ConfigError("Core migration summary is missing or invalid") from exc
+    if not valid:
+        raise ConfigError("Core migration project count differs from the stopped source")
+    run("kubectl", "--context", args.context, "-n", args.namespace,
+        "delete", "job", name, "--cascade=foreground", "--wait=true", f"--timeout={args.timeout_seconds}s")
+    args.migration_job = None
+    return summary
+
+
 def apply_upgrade(args, root: Path, release: dict, merged: dict, before: dict) -> None:
     helm_args = (*helm_base(args), "upgrade", args.release, str(root / "deploy/chart"),
+                 "--reset-values",
                  "-f", str(args.values), "-f", str(args.resolved_images),
                  "--set-string", f"global.releaseVersion={release['releaseVersion']}",
                  "--set-string", f"global.operationId={args.operation_id}")
@@ -1246,17 +1576,23 @@ def apply_upgrade(args, root: Path, release: dict, merged: dict, before: dict) -
         raise ConfigError("backup snapshot PVC identities differ from upgrade precheck")
     args.helm_update_started = True
     _record_upgrade_stage(args, "helm-staging", backupRecord=str(args.backup_record))
-    run(*helm_args, "--set", "modeling.workloads.core.replicas=0",
-        "--set", "modeling.workloads.agent.replicas=0",
-        "--set", "modeling.workloads.onto.replicas=0",
+    run(*helm_args, "--set", "modeling.workloads.onto.replicas=0",
         "--set", "hub.replicas=0", "--set", "evaluation.replicas=0",
         f"--timeout={args.timeout_seconds}s")
     wait_old_pods_gone(args)
-    assert_same_bindings(before, bindings(kube, args, merged, stopped=True, workloads=tuple(before)))
+    retained = tuple(name for name in before if name in WORKLOADS)
+    assert_same_bindings({name: before[name] for name in retained},
+                         bindings(kube, args, merged, stopped=True, workloads=retained))
+    if "core" in before:
+        _record_upgrade_stage(args, "migrating-core", backupRecord=str(args.backup_record))
+        args.migration_summary = migrate_core_projects(args, merged, before)
     _record_upgrade_stage(args, "target-may-start", backupRecord=str(args.backup_record))
     run(*helm_args, "--wait", f"--timeout={args.timeout_seconds}s")
     verify(args, root)
-    assert_same_bindings(before, bindings(kube, args, merged, stopped=False, workloads=tuple(before)))
+    if "core" in before:
+        verify_retired_workloads(args)
+    assert_same_bindings({name: before[name] for name in retained},
+                         bindings(kube, args, merged, stopped=False, workloads=retained))
     verify_persisted_data(run, args, args.backup_record)
     _record_upgrade_stage(args, "target-verified", backupRecord=str(args.backup_record))
 
@@ -1269,6 +1605,14 @@ def restore_workloads_after_failed_upgrade(args) -> dict:
     Pods: scaling the staging revision would start unverified target images.
     """
     issues = []
+    if getattr(args, "migration_job", None):
+        cleanup = run_program(
+            ("kubectl", "--context", args.context, "-n", args.namespace,
+             "delete", "job", args.migration_job, "--ignore-not-found", "--cascade=foreground", "--wait=true"),
+            text=True, capture_output=True,
+        )
+        if cleanup.returncode:
+            return {"status": "degraded", "issues": ["Core migration Job could not be stopped"]}
     previous_revision = getattr(args, "previous_helm_revision", None)
     if getattr(args, "helm_update_started", False):
         try:
@@ -1366,6 +1710,10 @@ def main():
             result["releaseVersion"] = installed_values(args).get("global", {}).get("releaseVersion")
             result["chartVersion"] = release_chart(args).removeprefix("modeling-")
             result["message"] = current.get("info", {}).get("status", "unknown")
+            dependency = _cluster_operation_state(args)
+            if dependency and dependency.get("schemaVersion") == "cce-modeling-dependencies/v1":
+                result["dependencyStage"] = dependency.get("stage")
+                result["pendingDependencies"] = dependency.get("pendingDependencies", [])
         elif args.action == "uninstall":
             if not args.state_dir:
                 raise ConfigError("state-dir required")
@@ -1398,12 +1746,15 @@ def main():
                 # A standalone Modeling upgrade owns the same Lease used by
                 # joint-cce.py.  The joint entry passes --lock-holder and
                 # therefore keeps ownership outside this process.
+                standalone_install = args.action == "install" and not args.lock_holder
                 if args.action in ("install", "upgrade") and not args.lock_holder:
                     args.lock_holder = args.operation_id
                     args.standalone_upgrade = True
                     operation_lease = OperationLease(args, args.operation_id)
                     operation_lease.acquire()
-                preflight(args, merged, check_external_services=not args.defer_external_services)
+                pending = preflight(args, merged,
+                    check_external_services=standalone_install or not args.defer_external_services,
+                    allow_missing_dependencies=standalone_install)
                 if args.lock_holder and args.action in ("install", "upgrade"):
                     check_delegated_lease(args)
                 current = release_status(args)
@@ -1429,8 +1780,21 @@ def main():
                         "-f", str(args.values), "-f", str(args.resolved_images),
                         "--set-string", f"global.releaseVersion={release['releaseVersion']}",
                         "--set-string", f"global.operationId={args.operation_id}",
-                        "--wait", f"--timeout={args.timeout_seconds}s")
-                    verify(args, root)
+                        *([] if "externalAuth" in pending else ["--wait"]),
+                        f"--timeout={args.timeout_seconds}s")
+                    if standalone_install:
+                        _record_dependencies(args, merged, pending, service_verified=False)
+                    verify(args, root, pending_auth="externalAuth" in pending)
+                    if standalone_install:
+                        if "externalAuth" not in pending and "externalConsumer" not in pending:
+                            try:
+                                verify_consumer_from_modeling(args, merged)
+                            except RuntimeError:
+                                pending.append("externalConsumer")
+                        _record_dependencies(args, merged, pending)
+                        if pending:
+                            result["phase"] = "waiting-dependencies"
+                            result["pendingDependencies"] = pending
                 elif args.action == "upgrade":
                     if "hub" in merged and "evaluation" in merged:
                         _assert_unchanged_internal_secrets(args, merged)
@@ -1441,8 +1805,7 @@ def main():
                         result["artifacts"].append(str(backup_path))
                     result["phase"] = "upgrade-precheck"
                     before = upgrade_precheck(args, root, release, merged)
-                    if any(merged["modeling"]["workloads"][name]["replicas"] != 1
-                           for name in ("core", "agent", "onto")):
+                    if merged["modeling"]["workloads"]["onto"]["replicas"] != 1:
                         raise ConfigError("target values must request one replica per stateful workload")
                     result["phase"] = "upgrade"
                     if operation_lease:
@@ -1450,6 +1813,8 @@ def main():
                     else:
                         check_delegated_lease(args)
                     apply_upgrade(args, root, release, merged, before)
+                    if getattr(args, "migration_summary", None):
+                        result["migration"] = args.migration_summary
                     if operation_lease:
                         operation_lease.check()
                     else:
@@ -1462,8 +1827,13 @@ def main():
                 elif args.action == "verify":
                     if not current:
                         raise ConfigError("release absent")
+                    _verify_dependency_record(args, merged)
                     result["phase"] = "verify"
                     verify(args, root)
+                    state = _cluster_operation_state(args)
+                    if state and state.get("schemaVersion") == "cce-modeling-dependencies/v1":
+                        verify_consumer_from_modeling(args, merged)
+                        _record_dependencies(args, merged, [])
                 result["message"] = "completed"
         result["status"] = "succeeded"
     except OperationLockError as exc:

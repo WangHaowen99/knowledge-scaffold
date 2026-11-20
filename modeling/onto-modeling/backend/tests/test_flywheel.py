@@ -252,6 +252,10 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(auth, 'ENABLED', True)
     claims = {**USER, 'exp': time.time() + 3600}
     monkeypatch.setattr(auth, 'verify_access_token', lambda token: dict(claims) if token == 'user-token' else None)
+    monkeypatch.setattr(auth, 'current_user', lambda token, verified: {
+        'sub': verified['sub'], 'role': verified.get('role', 'user'),
+        'password_change_required': False,
+    })
     monkeypatch.setenv('ONTO_EVALUATION_SERVICE_TOKEN', SERVICE_TOKEN)
     evaluation = EvaluationStub()
     monkeypatch.setattr(eval_client, 'request', evaluation)

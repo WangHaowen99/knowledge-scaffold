@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api } from '../lib/api.js';
+import { api, authStore } from '../lib/api.js';
 
 // auth-server PASSWORD_POLICY_FAILED violations 代码 → 中文文案（与 modeling 服务一致）
 const VIOLATION_LABELS = {
@@ -51,10 +51,13 @@ export default function LoginPage({ onLogin }) {
     setBusy(true);
     setErr('');
     setNotice('');
+    authStore.clear();
     try {
       await api.login(username, password);
-      onLogin();
+      const { user } = await api.currentUser();
+      onLogin(user);
     } catch (e2) {
+      if (e2.status === 401) authStore.clear();
       setErr(e2.message || '登录失败');
     } finally {
       setBusy(false);
@@ -66,12 +69,15 @@ export default function LoginPage({ onLogin }) {
     if (!regUsername || !regPassword || regBusy) return;
     setRegBusy(true);
     setRegErr(NO_REG_ERROR);
+    authStore.clear();
     try {
       await api.register(regUsername, regPassword);
       // 注册成功直接登录进入，不再回登录页
       await api.login(regUsername, regPassword);
-      onLogin();
+      const { user } = await api.currentUser();
+      onLogin(user);
     } catch (e2) {
+      if (e2.status === 401) authStore.clear();
       setRegErr(parseRegisterError(e2));
     } finally {
       setRegBusy(false);

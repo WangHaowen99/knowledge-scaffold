@@ -1,6 +1,7 @@
 # Modeling CCE 单独部署与升级指导
 
-本文说明使用包含 Core、Agent、Onto、Hub、Evaluation 的 Modeling CCE 离线包完成单独部署、验证和数据保留升级。Consumer 由独立开源仓交付；Modeling 仍需其 Auth 和 Backend Service。
+本文说明使用包含 Onto、Hub、Evaluation 的 Modeling CCE 离线包单独安装、升级、验证和卸载 Modeling release。首次独立安装可先于 Auth 和 Consumer 完成；安装结果会标明待就绪的依赖。Onto 在 Auth 可用前保持等待，Hub 和 Evaluation 可先启动；完成业务验收前不要将健康探针视为鉴权和评测可用。联合安装与已有部署升级仍按[联合部署与升级指导](joint-deployment.md)执行。
+
 ## 1. 文件布局
 
 建议在客户 CCE 管理机准备独立目录：
@@ -27,11 +28,12 @@ cd modeling-cce-<版本>-<架构>
 在执行安装器前准备：
 
 - Modeling 命名空间；
-- 五个独立 PVC，分别给 Core、Agent、Onto、Hub、Evaluation；
+- Auth 与 Consumer 计划使用的命名空间须已创建并可查询；对应 Service 可以稍后创建。若复用一个 namespace，只需预建一次；
+- 三个独立 PVC，分别给 Onto、Hub、Evaluation；从旧版升级时原 Core、Agent PVC 继续保留；
 - Modeling 镜像拉取 Secret；
-- Modeling 服务令牌 Secret，或可受限读取的开源 Consumer 源 Secret；
+- Modeling 调用 Consumer Backend 的服务令牌 Secret。若 Modeling 先装，先在 Modeling namespace 准备并约定同值令牌；Consumer 装好后再核对。Consumer 已安装时也可受限读取其源 Secret；
 - 可选的 Consumer 评测令牌和 Judge Key 源 Secret；Hub 内部令牌和评测加密密钥由 Modeling 安装器创建；
-- Consumer Auth Service 和 Backend Service；
+- 填写计划使用的 Auth Service 和 Consumer Backend Service 名称、namespace、端口。首次独立安装时两者可以尚不存在；已有部署的升级、正式预检和 `verify` 仍要求它们就绪。使用用户管理、自助改密或 Hub 成员同步时，还须在 Modeling namespace 预建与实际 Auth 管理令牌同值的 `Opaque` Secret，并在 `modeling.secrets.authAdminToken` 填写名称和 key；
 - 目标架构可调度工作节点；
 - ELB 和端口模式或域名模式的 Ingress 能力；
 - 如果使用 HTTPS，准备 TLS Secret；
@@ -66,7 +68,7 @@ global:
 | `global.targetArch` | `amd64` 或 `arm64`，与工作节点一致 |
 | `global.imageDelivery.pullSecretNames` | Modeling 命名空间中的镜像拉取 Secret 名称列表 |
 
-### 3.2 共享认证和服务令牌
+### 3.2 Auth 身份和 Backend 服务令牌
 
 ```yaml
 global:
@@ -79,14 +81,17 @@ global:
       key: <TOKEN_KEY>
 ```
 
-示例文件中的 `global.auth.issuer` 为 `http://consumer-auth:5056`、`global.auth.audience` 为 `knowledge-scaffold`。部署前须确认这两个值与开源 Consumer 实际签发的 JWT `iss`、`aud` 完全一致；它们是验签参数，不是 Modeling Pod 访问 Auth Service 的地址。`serviceTokenSecret` 引用 Modeling 命名空间中的 Secret；目标对象不存在时可填写受限的 `sourceRef` 从开源 Consumer 所在 Namespace 导入。
+示例文件中的 `http://consumer-auth:5056` 和 `knowledge-scaffold` 只是默认示例。Auth 尚未安装时先约定 `global.auth.issuer/audience`，Auth 装好后必须与实际签发的 JWT `iss`、`aud` 一致。`issuer` 是验签身份，不是 Modeling Pod 访问 Auth Service 的地址。`global.integration.serviceTokenSecret` 是与 Consumer 预先约定的服务令牌引用；先装 Modeling 时目标 Secret 必须已在 Modeling namespace 存在，不要引用尚未创建的 Consumer 源 Secret。
 
-### 3.3 引用 Consumer Service
+Onto Modeling 使用 Auth 管理接口时，客户 values 示例默认引用 `authAdminToken: {name: modeling-auth-client, key: admin-token}`。Chart 将它注入为 `ONTO_WEB_AUTH_ADMIN_TOKEN`；该 Secret 必须预建在 Modeling namespace，值与 Auth owner 实际管理令牌相同，安装器不会自动创建。安装器会比较两侧 Secret 的值，不一致时在升级前停止。用户管理、自助改密和 Hub 成员同步依赖此令牌；普通登录和 JWT 验签无需该令牌。无需管理功能时可将 `name`、`key` 都改为空字符串。
+
+### 3.3 引用独立 Auth 与 Consumer Service
 
 ```yaml
 externalAuth:
-  serviceName: <CONSUMER_RELEASE>-auth
-  namespace: <CONSUMER_NAMESPACE>
+  apiVersion: auth-v1
+  serviceName: <AUTH_SERVICE>
+  namespace: <AUTH_NAMESPACE>
   servicePort: 5056
 
 externalConsumer:
@@ -97,12 +102,12 @@ externalConsumer:
 
 字段要求：
 
-- `externalAuth.serviceName` 必须是 Consumer release 生成的 Auth Service 名称；
+- `externalAuth` 按独立 Auth release 当前实际 Service 填写：新装通常是 `<AUTH_RELEASE>-auth`；旧 Consumer 内置 Auth 完成所有权迁移后，仍沿用原 `<CONSUMER_RELEASE>-auth` 名称和 UID。独立模式使用 `auth-v1`；若仅单独升级 Modeling、旧 Auth 尚未迁移且仍由 Consumer 管理，才使用 `v1` 和原 Service。三方联合升级的目标配置必须使用 `auth-v1`，由联合入口先迁移旧 Auth；
 - `externalConsumer.serviceName` 必须是 Consumer release 生成的 Backend Service 名称；
-- `namespace` 是 Consumer 所在命名空间，不是 Modeling 命名空间；
-- 端口固定分别为 `5056` 和 `5055`，并且必须与 Consumer 的 `deploy/endpoints.yaml` 一致。
+- `namespace` 是各 Service 实际所在的命名空间；
+- Auth Service 端口为 `5056`，以独立 Auth 实际 Service 为准；Consumer Backend 端口为 `5055`，按 Consumer 包的 `deploy/endpoints.yaml` 核对。
 
-示例文件使用 `onto-consumer` 作为 Consumer 命名空间。Chart 会据此生成跨命名空间 Service 地址，例如 `http://consumer-auth.onto-consumer.svc.cluster.local:5056`；须确认 Service 确实存在于该命名空间。
+Chart 使用填写的 Service 名和 namespace 生成跨命名空间地址。首次独立 `install` 允许两项 Service 缺席，并记录 `waiting-dependencies`；Onto Pod 的等待容器持续检查 Auth `/health` 与 `/status`，旧 Auth 没有 `/status` 时兼容 `/health`。Auth 上线后 Onto 自动启动。已存在的 Service 仍须通过端口及 Auth owner 身份检查；Service 存在但尚无可用端点时也记为待就绪。`preflight`、`verify`、`upgrade` 保持严格。后装 Consumer 与 Auth 可以按各自安装器支持的顺序执行；两者就绪后，先完成 Consumer 自身的 `verify`，再完成 Modeling 的 `verify`。旧 Auth 尚由 Consumer 管理时，单独升级 Modeling 继续使用 `v1` 契约。
 
 ### 3.4 对外访问
 
@@ -121,9 +126,7 @@ global:
     ingressClassName: ""
     routes: []
     listeners:
-      - {id: core, protocol: HTTP, listenerPort: 8100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-core}
       - {id: onto, protocol: HTTP, listenerPort: 5100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: onto-modeling}
-      - {id: mcp, protocol: HTTP, listenerPort: 5188, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-mcp}
       - {id: evaluation, protocol: HTTP, listenerPort: 5180, tlsSecretName: "", host: "", path: /evaluation/, pathType: Prefix, endpointId: evaluation}
 ```
 
@@ -136,29 +139,21 @@ global:
 | `global.access.elb.class` | 客户 ELB 类别；如果控制器不要求可按客户规范填写 |
 | `global.access.protocol` | `HTTP` 或 `HTTPS` |
 | `global.access.ingressClassName` | CCE Standard 没有对应 IngressClass 时留空 |
-| `global.access.listeners[*].listenerPort` | 每个端点的 ELB 监听端口，四者不能重复 |
-| `global.access.listeners[*].endpointId` | `modeling-core`、`onto-modeling`、`modeling-mcp`、`evaluation` |
+| `global.access.listeners[*].listenerPort` | 每个端点的 ELB 监听端口，两者不能重复；评测默认使用 5180，也可改为未占用的端口 |
+| `global.access.listeners[*].endpointId` | `onto-modeling`、`evaluation` |
 | `global.access.listeners[*].tlsSecretName` | HTTP 留空；HTTPS 填 TLS Secret 名称 |
 | `global.access.routes` | `port` 模式保持 `[]` |
 
-MCP 需要外部客户端接入时，填写：
+旧 Core MCP 的 5188 入口在目标版本下线。Onto 自有 MCP 使用 Onto Service 的现有入口，客户端须按其独立契约切换。
 
-```yaml
-modeling:
-  config:
-    mcpPublicBaseUrl: http://<ELB_IP>:5188
-```
-
-不需要外部 MCP 客户端时可以留空。`<ELB_IP>` 只能替换为客户实际 ELB 地址，不要提交到 Git。
-
-`modeling.config.evalPublicUrl` 不在客户 values 示例中；Chart 默认留空，Onto 页面会让浏览器尝试访问建模页面同主机的 HTTP 5180 端口及 `/evaluation/` 路径。若实际评测入口不同，可在包外 `modeling-values.yaml` 的 `modeling.config` 下手动添加浏览器可达的完整地址，或同源代理路径 `/evaluation/`：
+`modeling.config.evalPublicUrl` 不在客户 values 示例中；Chart 默认留空，Onto 页面会让浏览器尝试访问建模页面同主机的 HTTP 5180 端口及 `/evaluation/` 路径。若评测对外监听端口改为其他值，须在包外 `modeling-values.yaml` 的 `modeling.config` 中填写浏览器可达的完整评测地址。评测页面需要使用与 Onto 页面不同的来源；集群内 Evaluation Service 的端口仍为 5180：
 
 Onto 后端读取评测状态、报告和优化建议使用 Chart 内置的 `ONTO_WEB_EVAL_URL`，指向同一 release 的 Evaluation Service。这个集群内部地址与浏览器入口分开配置；不需要在客户 values 中填写。
 
 ```yaml
 modeling:
   config:
-    evalPublicUrl: https://eval.example.com/evaluation/
+    evalPublicUrl: https://eval.example.com:15180/evaluation/
 ```
 
 ### 3.5 LLM、工作负载、PVC 和 Secret
@@ -166,25 +161,10 @@ modeling:
 ```yaml
 modeling:
   config:
-    llmBaseUrl: <LLM_BASE_URL>
-    llmModel: <LLM_MODEL>
-    taskLlmBaseUrl: ""
-    taskLlmModel: ""
-    mcpPublicBaseUrl: ""
     ontoJiuwenBaseUrl: ""
     ontoJiuwenModel: ""
     ontoAnthropicBaseUrl: ""
   workloads:
-    core:
-      replicas: 1
-      nodeSelector: {}
-      persistence:
-        existingClaim: <CORE_PVC>
-    agent:
-      replicas: 1
-      nodeSelector: {}
-      persistence:
-        existingClaim: <AGENT_PVC>
     onto:
       replicas: 1
       nodeSelector: {}
@@ -211,9 +191,6 @@ evaluation:
 
 必须编辑：
 
-- `modeling.config.llmBaseUrl`、`llmModel`：实际模型服务配置；
-- `workloads.core.persistence.existingClaim`：Core PVC 名称；
-- `workloads.agent.persistence.existingClaim`：Agent PVC 名称；
 - `workloads.onto.persistence.existingClaim`：Onto Modeling PVC 名称；
 - `hub.persistence.existingClaim` 和 `evaluation.persistence.existingClaim`：两块新增 PVC；
 - `workloads.*.replicas`：单实例部署保持为 `1`。
@@ -223,9 +200,6 @@ evaluation:
 ```yaml
 modeling:
   secrets:
-    llmApiKey: {name: <SECRET_NAME_OR_EMPTY>, key: <KEY_OR_EMPTY>}
-    evalDbUrl: {name: <SECRET_NAME_OR_EMPTY>, key: <KEY_OR_EMPTY>}
-    cleanupToken: {name: <SECRET_NAME_OR_EMPTY>, key: <KEY_OR_EMPTY>}
     anthropicAuthToken: {name: <SECRET_NAME_OR_EMPTY>, key: <KEY_OR_EMPTY>}
 ```
 
@@ -236,6 +210,8 @@ modeling:
 `hub.secrets.internal` 配置同一个 Opaque Secret 的名称及 Modeling、Evaluation 各自使用的 key；`evaluation.secrets.encryptionKey` 配置另一个 Opaque Secret 的名称和 key。它们只填写引用，不填写密钥正文。安装器在 Helm 写入前自动创建缺失的内部 Secret，已有且完整的对象直接复用。如果安装器没有创建 Secret 的权限，平台管理员应先在 Modeling Namespace 创建与 values 中名称和 key 一致的对象；安装器仍需读取权限以校验和复用。创建失败且对象仍不存在时，安装会在 Helm 之前停止。升级已有 Hub/Evaluation 时不能更换内部 Secret 名称或 key；评测已有数据而原加密 Secret 缺失时，须恢复原密钥，不能重新生成。
 
 外部凭据通过 `hub.secrets.consumerToken`、`evaluation.secrets.consumerToken`、`evaluation.secrets.judgeApiKey` 或 `evaluation.secrets.sqlConfig` 的 `name/key` 引用 Modeling Namespace 中已存在的 Secret；目标 Secret 缺失时可补 `sourceRef: {namespace: ..., name: ..., key: ...}`，由安装器受限导入。当前开源 Consumer 不提供评测专用接口和令牌，只有部署新的 Consumer 包后才能完成评测调用验收。
+
+若先安装 Modeling，且后续要运行评测，应在 Modeling 安装前预建 `evaluation.secrets.consumerToken` 指向的 Secret；安装 Consumer 时，将同值令牌配置到其 `global.integration.evaluationTokenSecret`。两侧令牌值不同会导致评测请求失败，基础健康检查不能代替一条真实评测用例。
 
 `evaluation.trustedOrigins`、`evaluation.judge`、`evaluation.secrets.judgeApiKey` 和 `evaluation.secrets.sqlConfig` 不在客户 values 示例中，Chart 分别默认为空列表或空值。跨源登录、部署默认判分模型、查询类评测需要时，可在包外 values 手动添加，例如：
 
@@ -263,15 +239,13 @@ cp deploy/resolved-images.example.yaml ../modeling-images.yaml
 ```yaml
 global:
   resolvedImages:
-    modeling: <REGISTRY>/modeling@sha256:<64位digest>
-    modelingAgent: <REGISTRY>/modeling-agent@sha256:<64位digest>
     ontoModeling: <REGISTRY>/onto-modeling@sha256:<64位digest>
     knowledgeHub: <REGISTRY>/knowledge-hub@sha256:<64位digest>
     evaluation: <REGISTRY>/evaluation@sha256:<64位digest>
     jiuwenbox: <REGISTRY>/jiuwenbox@sha256:<64位digest>
 ```
 
-单独部署必须填写六个 key。不能填写 tag，例如 `repository:modeling-v2`。
+单独部署必须填写三个自有镜像和 JiuwenBox 共四个 key。不能填写 tag，例如 `repository:onto-v2`。先装 Modeling 时，JiuwenBox 镜像仍需预先推送到客户镜像仓库并填写 digest；它源自 Consumer 的交付镜像，但无需先安装 Consumer release。若尚未取得该镜像，先完成镜像交付后再执行 Modeling `install`。
 
 ## 5. 单独部署命令
 
@@ -301,7 +275,10 @@ bash deploy/install-cce.sh preflight \
   --operation-id modeling-install-<ID>
 ```
 
-预检会检查 PVC、Secret、Consumer Service、节点架构、Chart 配置和外部服务端口。
+预检会检查 PVC、Secret、Consumer Backend Service、节点架构、Chart 配置、旧 Consumer 内置 Auth 或独立 Auth 的 owner、Service UID 与 Helm release 状态，
+并从 Modeling namespace 中的临时 Pod 检查 Auth 健康、发现文档和 JWKS。临时 Pod 用后删除。
+该探针验证服务连通、签发身份与 JWKS；实际账号登录和历史会话连续性在业务验收时验证。
+从空环境先装 Modeling 时，正式 `preflight` 会因 Auth/Consumer 尚未就绪而失败；可先执行 `plan` 检查包和渲染，再执行首次独立 `install`。这项等待能力不适用于升级或旧 Auth 所有权迁移。
 
 ### 5.3 安装
 
@@ -316,7 +293,7 @@ bash deploy/install-cce.sh install \
   --timeout-seconds 900
 ```
 
-首次安装必须确认 release 不存在。已存在的 release 应使用 `upgrade`，不要重复执行首次安装。
+首次安装必须确认 release 不存在。若 Auth 或 Consumer 未就绪，安装返回成功并标记 `waiting-dependencies`，`pendingDependencies` 列出当前等待项；Hub 与 Evaluation 已启动，Onto 在 Auth 就绪前不提供页面。随后安装独立 Auth，再安装 Consumer 并完成 Consumer 自身的 `verify`，最后执行下节 Modeling `verify`；成功才转为 `complete`。Consumer 的评测令牌与 Modeling 中预备的令牌值需要核对；真正的评测可用性以一条业务用例验收。已存在的 release 应使用 `upgrade`，不要重复执行首次安装。
 
 ### 5.4 验证和状态
 
@@ -335,7 +312,7 @@ bash deploy/install-cce.sh status \
   --release <MODELING_RELEASE>
 ```
 
-`verify` 会等待 Core、Agent、Onto、Hub、Evaluation、sandbox-gateway（以及启用时的 NL2SQL）就绪，并检查 Onto 到 sandbox gateway、Core 到 JiuwenBox 的内部连通性。`status` 只读取 Helm release 状态和版本。
+`verify` 要求 Auth owner、签发身份、JWKS 与 Consumer Backend 已就绪；随后等待 Onto、Hub、Evaluation、sandbox-gateway，并从 Evaluation Pod 检查 Consumer `/ready`。成功后清空等待项；`status` 同时显示 `dependencyStage` 和 `pendingDependencies`。健康与端点检查完成后，仍需用测试账号验收登录、Hub 成员操作及一条真实评测用例。
 
 ## 6. 单独升级并保留数据
 
@@ -343,9 +320,11 @@ bash deploy/install-cce.sh status \
 
 - 新版本 Modeling 离线包；
 - 新的 `modeling-images.yaml`；
-- 保留原三个 PVC 名称、并填写 Hub/评测 PVC 的 `modeling-values.yaml`；五服务后续升级还须保留新增两卷名称；
+- 保留 Onto PVC 名称，并填写 Hub、评测 PVC 的 `modeling-values.yaml`；原 Core、Agent PVC 仍由运维保留；
 - VolumeSnapshot CRD、CSI 驱动、VolumeSnapshotClass；
 - 备份恢复权限和足够的 `/data` 剩余空间。
+
+Modeling 的 `global.auth.issuer/audience` 在升级时保持与已安装 release 一致，并继续匹配实际 Auth 签发身份。若旧 Auth 尚归 Consumer 管理，可按 3.3 节使用旧 `v1` 契约先单独升级 Modeling；后续迁移 Auth 时再把客户端切换到 `auth-v1`。联合升级的顺序和配置要求见[联合升级](joint-deployment.md#9-联合升级)。
 
 ### 6.1 自动创建快照（推荐）
 
@@ -363,7 +342,13 @@ bash deploy/install-cce.sh upgrade \
   --timeout-seconds 900
 ```
 
-旧三服务 release 首次扩展时，安装器只统计并快照已有的三卷；Hub/评测新 PVC 必须为空且未被其他工作负载使用。五服务后续升级时会停止并快照五卷，随后校验五卷身份与数据证据。安装器等待 CSI `VolumeAttachment` 完成卸载，再执行 Helm 升级并恢复单副本。若 EVS 暂时返回 `detaching`、`attaching` 或 `EVS.1070`，安装器只对当前操作创建的快照执行最多 5 次退避重试；非临时快照错误会立即失败。自动生成的备份记录保存在 `state-dir`，文件名类似：
+安装器从已安装的 Helm values 自动识别旧三服务、旧五服务或新三服务，无需额外退役参数。旧三服务首次升级时快照 Core、Agent、Onto 三卷；原五服务 release 升级时快照五卷；新三服务后续升级仅快照 Onto、Hub、Evaluation 三卷。旧三服务升级所需的 Hub、评测 PVC 必须预先创建且为 Bound 状态，并确保未被其他 Pod 挂载。安装器等待 CSI `VolumeAttachment` 完成卸载，再执行 Helm 升级并恢复单副本。原 Core、Agent PVC/PV 和快照不会自动删除，供必要时回退。旧 Core/MCP/Agent 入口随 Helm 升级删除，使用它们的客户端须先切换。
+
+检测到旧 Core 时，安装器在旧 Pod 停止并完成快照后，用新版 Onto 镜像创建临时迁移 Job，分别挂载只读 Core PVC 与可写 Onto PVC。Job 在 Onto 卷上生成一致的 SQLite 副本，调用与虚拟机相同的 `migrate_from_modeling.py`，迁移 Core 项目元数据、已解析资料及部分知识包文件；按 `migrated_from` 标记跳过已迁移项目。安装器核对源项目数与迁移/跳过数，删除 Job 及 Pod 并释放卷后才启动新版 Onto。Job 失败或数量不符时停止升级并尝试回滚；已写入 Onto 卷的项目不会由 Helm 回滚清除，重试依赖迁移标记避免重复创建。旧 Agent 运行记录、Core MCP Token 与旧评测历史不在此迁移范围，仍需按业务要求另行处理，旧卷和快照保留。
+
+新 CCE Chart 为 Onto 设置 `ONTO_WEB_MODELING_CORE_RETIRED=true`。旧项目的 `modeling_project_id` 等元数据不会自动删除；Onto 的成员修改与项目删除不再访问已退役的 Core，历史 Core 清理任务停止重试并保留记录。升级前盘点仍需使用旧 MCP Token、Agent 记录或旧评测数据的调用方，并安排这些数据的迁移或替代。
+
+自动生成的备份记录保存在 `state-dir`，文件名类似：
 
 ```text
 <state-dir>/<release>-<operation-id>-modeling-backup.json
@@ -383,7 +368,7 @@ bash deploy/install-cce.sh upgrade \
   --timeout-seconds 900
 ```
 
-备份记录必须覆盖升级前实际存在的三个或五个 workload 的 PVC/PV 身份、VolumeSnapshot 身份、停止写入时间和 `dataEvidence`。升级前后不能改变 `existingClaim`。
+备份记录必须覆盖升级前实际存在的工作负载 PVC/PV 身份、VolumeSnapshot 身份、停止写入时间和 `dataEvidence`。旧 Core 项目按上文迁移，Core 与 Agent 原卷及快照继续保留；目标版核对迁移数量及仍运行的 Onto、Hub、评测卷身份和数据。目标 values 不得继续包含旧 Core/Agent 字段及镜像映射；安装器执行 Helm 升级时使用 `--reset-values`，避免旧字段自动继承。
 
 升级失败时，安装器会尝试将升级前实际存在的三个或五个业务 Deployment 恢复为单副本。如果 Helm 已切换到新版本，会先尝试回滚原有 Helm revision，再恢复副本数；返回 JSON 的 `recovery.status` 为 `ready` 才表示原有 Deployment 已重新就绪。`degraded` 或 `failed` 时按 `recovery.issues` 排查，并立即检查实际副本数和 Pod 状态。Helm 回滚只恢复部署清单，不能替代数据卷恢复。
 
@@ -396,7 +381,9 @@ bash deploy/install-cce.sh upgrade \
 3. 确认升级前已有的三个或五个 Deployment 均为 `1/1`，项目数据仍可读取；
 4. 如自动备份只产生了部分快照，恢复服务后使用新的 operation ID 重试，以免复用失败的 VolumeSnapshot。
 
-## 7. 验收命令
+## 7. 部署验收命令
+
+安装或升级完成后执行以下检查：
 
 ```bash
 helm --kube-context <KUBE_CONTEXT> -n <MODELING_NAMESPACE> list --all
@@ -404,4 +391,19 @@ kubectl --context <KUBE_CONTEXT> -n <MODELING_NAMESPACE> get deployment,pod,svc,
 kubectl --context <KUBE_CONTEXT> -n <MODELING_NAMESPACE> get volumesnapshot
 ```
 
-还应从浏览器或合成测试客户端验证 Core、Onto Modeling 和需要时的 MCP 入口。Pod 就绪不代表业务流程已经验证。
+还应从浏览器或合成测试客户端验证 Onto、Hub、独立评测和 Onto 自有 MCP。旧 Core/MCP/Agent 入口在目标版不存在；Pod 就绪不代表业务流程已经验证。
+
+## 8. 单独卸载 Modeling
+
+使用**当前已安装版本**的 Modeling 解压包执行卸载；安装器会核对该包与集群中 Modeling release 的发布版本和 Chart 版本。`state-dir` 放在包外，并保留卸载操作记录：
+
+```bash
+bash deploy/install-cce.sh uninstall \
+  --context <KUBE_CONTEXT> \
+  --namespace <MODELING_NAMESPACE> \
+  --release <MODELING_RELEASE> \
+  --state-dir ../cce-state \
+  --operation-id modeling-uninstall-<ID>
+```
+
+卸载只移除 Modeling Helm release；Auth 和 Consumer release 不受影响，Modeling 的 PVC、Secret、快照和包外备份记录继续保留。若卸载中断，先核对 Helm 中的实际状态，再用相同解压包、`state-dir` 和 `operation-id` 追加 `--resume modeling-uninstall-<ID>`。若要连同 Consumer、独立 Auth 一起卸载，使用[联合卸载](joint-deployment.md#10-联合卸载)，其顺序为 Modeling → Consumer → Auth，且必须在卸载配置中填写 `auth`。卸载后检查 Modeling release 和工作负载已移除，并确认需要保留的 PVC、Secret、快照仍在。

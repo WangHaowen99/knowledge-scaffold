@@ -54,6 +54,7 @@ EVAL_PUBLIC_URL = os.environ.get("ONTO_WEB_EVAL_PUBLIC_URL", "").strip()
 # 留空时已发布版本不显示评测报告与优化建议
 EVAL_URL = os.environ.get("ONTO_WEB_EVAL_URL", "").rstrip("/")
 MODELING_URL = os.environ.get("ONTO_WEB_MODELING_URL", "").rstrip("/")
+MODELING_CORE_RETIRED = os.environ.get("ONTO_WEB_MODELING_CORE_RETIRED", "").lower() == "true"
 MODELING_TOKEN = os.environ.get("ONTO_WEB_MODELING_TOKEN", "")
 # 独立的导入/MCP 补关联通道；不影响新建项目的全局 Modeling 配置
 MODELING_ASSOCIATION_URL = os.environ.get("ONTO_WEB_MODELING_ASSOCIATION_URL", "").rstrip("/")

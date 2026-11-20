@@ -35,7 +35,7 @@ const ACCENT_LABELS = {
   graphite: '石墨',
 };
 
-function AccountSection({ authEnabled }) {
+function AccountSection({ authEnabled, onPasswordChanged }) {
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
 
@@ -59,7 +59,8 @@ function AccountSection({ authEnabled }) {
           try {
             await api.changePassword(authStore.username, values.old_password, values.new_password);
             form.resetFields();
-            message.success('密码已修改，下次登录使用新密码');
+            message.success('密码已修改，请使用新密码重新登录');
+            onPasswordChanged();
           } catch (error) {
             message.error(error.message);
           } finally {
@@ -192,6 +193,7 @@ export default function SettingsPage({
   project,
   isAdmin,
   authEnabled,
+  onPasswordChanged,
   initialSection = 'account',
   onBack,
   onOpenAdmin,
@@ -256,7 +258,7 @@ export default function SettingsPage({
         <Typography.Title level={4} style={{ marginTop: 0 }}>
           {SECTION_TITLES[section]}
         </Typography.Title>
-        {section === 'account' && <AccountSection authEnabled={authEnabled} />}
+        {section === 'account' && <AccountSection authEnabled={authEnabled} onPasswordChanged={onPasswordChanged} />}
         {section === 'appearance' && <AppearanceSection />}
         {section === 'notify' && <NotificationSection />}
         {section === 'myModel' && authEnabled && <PersonalModelSettings />}

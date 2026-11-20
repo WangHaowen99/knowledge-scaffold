@@ -237,10 +237,9 @@ def validate_release(root: Path, side: str) -> dict:
     if not isinstance(images, dict):
         raise ConfigError("release images missing")
     if side == "modeling":
-        legacy = {"modeling", "modelingAgent", "ontoModeling"}
-        expanded = legacy | {"knowledgeHub", "evaluation"}
-        if set(images) not in (legacy, expanded):
-            raise ConfigError("modeling release must contain the three legacy or five expanded owned images")
+        active = {"ontoModeling", "knowledgeHub", "evaluation"}
+        if set(images) != active:
+            raise ConfigError("modeling release must contain Onto, Hub and Evaluation images")
         components = release.get("components")
         if not isinstance(components, list) or set(components) != set(images):
             raise ConfigError("modeling release components must match owned images")

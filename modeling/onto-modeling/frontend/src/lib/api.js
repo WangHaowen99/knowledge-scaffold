@@ -74,10 +74,17 @@ export async function request(path, options = {}, retried = false) {
     ...options,
     headers: { ...baseHeaders, ...(options.headers || {}) },
   });
-  if (response.status === 401 && !retried && !path.startsWith('/api/auth/')) {
+  if (response.status === 401 && !retried
+      && (!path.startsWith('/api/auth/') || path === '/api/auth/me')) {
     if (await tryRefresh()) return request(path, options, true);
-    window.dispatchEvent(new Event('onto-auth-required'));
-    throw new Error('未登录或登录已过期');
+    if (path !== '/api/auth/me') window.dispatchEvent(new Event('onto-auth-required'));
+    throw await responseError(response);
+  }
+  if (response.status === 403 && !path.startsWith('/api/auth/')) {
+    const body = await response.clone().json().catch(() => ({}));
+    if (body.code === 'password_change_required') {
+      window.dispatchEvent(new Event('onto-password-change-required'));
+    }
   }
   if (!response.ok) throw await responseError(response);
   return response.json();
@@ -167,6 +174,7 @@ async function stableHubRequest(path, body) {
 export const api = {
   health: () => request('/api/health'),
   authStatus: () => request('/api/auth/status'),
+  currentUser: () => request('/api/auth/me'),
   login: async (username, password) => {
     const tokens = await request('/api/auth/login', {
       method: 'POST',

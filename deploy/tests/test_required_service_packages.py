@@ -1,4 +1,4 @@
-"""Four required service packages; synthetic release archives and local commands only."""
+"""Required service packages; synthetic release archives and local commands only."""
 import os
 import shutil
 import tarfile
@@ -6,11 +6,13 @@ import tarfile
 import pytest
 
 from test_knowledge_hub_deploy import _run as run_script, _write_executable
-from test_separated_evaluation_deploy import _prepare, _run
-from test_workbench_deploy import DEPLOY_ROOT, _calls, _drive_tty, _interactive_upgrade_answers, _legacy_answers
+from test_independent_auth_install import _auth_package, _run as run_with_auth, independent_setup
+from test_separated_evaluation_deploy import _prepare
+from test_workbench_deploy import DEPLOY_ROOT, _calls, _drive_tty
 
 
-REQUIRED = ('--consumer-package', '--onto-modeling-package', '--knowledge-hub-package', '--evaluation-package')
+REQUIRED = ('--consumer-package', '--auth-package', '--onto-modeling-package',
+            '--knowledge-hub-package', '--evaluation-package')
 EVAL_FILES = ('deploy/deploy.sh', 'deploy/docker-compose.eval-service.yml', 'evaluation-image.tar', 'IMAGE')
 
 
@@ -18,12 +20,14 @@ EVAL_FILES = ('deploy/deploy.sh', 'deploy/docker-compose.eval-service.yml', 'eva
 @pytest.mark.parametrize('missing', REQUIRED)
 def test_missing_required_package_fails_before_any_service_change(tmp_path, mode, missing):
     setup = _prepare(tmp_path, mode)
+    auth_package = _auth_package(tmp_path)
     args = [str(DEPLOY_ROOT / 'install-consumer-modeling.sh')]
     if mode == 'upgrade':
         args.append('upgrade')
     elif mode == 'legacy':
         args.extend(['--upgrade-from', str(setup['legacy'])])
-    packages = (setup['packages'][0], setup['packages'][2], setup['hub_package'], setup['evaluation_package'])
+    packages = (setup['packages'][0], auth_package, setup['packages'][2],
+                setup['hub_package'], setup['evaluation_package'])
     for option, package in zip(REQUIRED, packages):
         if option != missing:
             args.extend([option, str(package)])
@@ -34,37 +38,85 @@ def test_missing_required_package_fails_before_any_service_change(tmp_path, mode
 
 
 @pytest.mark.parametrize('mode', ['install', 'upgrade', 'legacy'])
-@pytest.mark.parametrize('missing', ['Consumer', 'Onto Modeling', 'Hub', 'evaluation'])
+@pytest.mark.parametrize('missing', ['Consumer', 'Auth', 'Onto Modeling', 'Hub', 'evaluation'])
 def test_interactive_deployment_rejects_empty_required_package(tmp_path, mode, missing):
     setup = _prepare(tmp_path, mode)
+    auth_package = _auth_package(tmp_path)
     if mode == 'legacy':
         script = DEPLOY_ROOT / 'upgrade-consumer-modeling-legacy-interactive.sh'
-        answers = _legacy_answers(setup, None)
+        answers = [('旧合并部署根目录', str(setup['legacy'])),
+                   ('请输入新版 Consumer 发布包路径', str(setup['packages'][0])),
+                   ('请输入独立 Auth 发布包路径', str(auth_package)),
+                   ('请输入 Onto Modeling 发布包路径', str(setup['packages'][2])),
+                   ('请输入 Knowledge Hub 发布包路径', str(setup['hub_package'])),
+                   ('请输入评测发布包路径', str(setup['evaluation_package']))]
     elif mode == 'upgrade':
         script = DEPLOY_ROOT / 'install-consumer-modeling-interactive.sh'
-        answers = _interactive_upgrade_answers(setup)
+        answers = [('请选择模式', '2'),
+                   ('请输入已分离部署的安装根目录', str(setup['root'])),
+                   ('请输入 Consumer 发布包路径', str(setup['packages'][0])),
+                   ('请输入独立 Auth 发布包路径', str(auth_package)),
+                   ('请输入 Onto Modeling 发布包路径', str(setup['packages'][2])),
+                   ('请输入知识包 Hub 发布包路径', str(setup['hub_package'])),
+                   ('请输入独立评测服务发布包', str(setup['evaluation_package']))]
     else:
         script = DEPLOY_ROOT / 'install-consumer-modeling-interactive.sh'
         answers = [('请选择模式', '1'), ('安装根目录（', '2'),
                    ('请输入自定义安装根目录', str(setup['target'])), ('端口配置', '1'),
                    ('请输入 Consumer 发布包路径', str(setup['packages'][0])),
+                   ('请输入独立 Auth 发布包路径', str(auth_package)),
                    ('请输入 Onto Modeling 发布包路径', str(setup['packages'][2])),
                    ('请输入知识包 Hub 发布包路径', str(setup['hub_package'])),
                    ('请输入独立评测服务发布包', str(setup['evaluation_package']))]
-    prompt = '独立评测服务' if missing == 'evaluation' else missing
+    prompt = '评测' if missing == 'evaluation' else missing
     answers = [(label, '' if prompt in label else value) for label, value in answers]
     status, output = _drive_tty(script, answers, setup['env'])
     assert status != 0, output
     assert _calls(setup) == []
 
 
+def _run_five_packages(setup, *, interactive, **overrides):
+    if not interactive:
+        return run_with_auth(setup, interactive=False, **overrides)
+    mode = setup['mode']
+    if mode == 'legacy':
+        script = DEPLOY_ROOT / 'upgrade-consumer-modeling-legacy-interactive.sh'
+        answers = [('旧合并部署根目录', str(setup['legacy'])),
+                   ('请输入新版 Consumer 发布包路径', str(setup['packages'][0])),
+                   ('请输入独立 Auth 发布包路径', str(setup['auth_package'])),
+                   ('请输入 Onto Modeling 发布包路径', str(setup['packages'][2])),
+                   ('请输入 Knowledge Hub 发布包路径', str(setup['hub_package'])),
+                   ('请输入评测发布包路径', str(setup['evaluation_package'])),
+                   ('请输入 Onto Modeling 宿主端口', '5110')]
+    else:
+        script = DEPLOY_ROOT / 'install-consumer-modeling-interactive.sh'
+        answers = [('请选择模式', '1' if mode == 'install' else '2')]
+        if mode == 'install':
+            answers += [('安装根目录（', '2'),
+                        ('请输入自定义安装根目录', str(setup['target'])),
+                        ('端口配置', '1')]
+        else:
+            answers.append(('请输入已分离部署的安装根目录', str(setup['root'])))
+        answers += [('请输入 Consumer 发布包路径', str(setup['packages'][0])),
+                    ('请输入独立 Auth 发布包路径', str(setup['auth_package'])),
+                    ('请输入 Onto Modeling 发布包路径', str(setup['packages'][2])),
+                    ('请输入知识包 Hub 发布包路径', str(setup['hub_package'])),
+                    ('请输入独立评测服务发布包', str(setup['evaluation_package']))]
+    env = {**setup['env'], **overrides}
+    if mode == 'install':
+        env['AUTH_OWNER_DIR'] = setup['env']['STUB_AUTH_OWNER']
+    elif mode == 'legacy':
+        env.pop('INSTALL_ROOT', None)
+    return _drive_tty(script, answers, env)
+
+
 @pytest.mark.parametrize('interactive', [True, False], ids=['interactive', 'noninteractive'])
 @pytest.mark.parametrize('mode', ['install', 'upgrade', 'legacy'])
-def test_all_four_services_are_deployed_without_touching_workbench(tmp_path, mode, interactive):
-    setup = _prepare(tmp_path, mode)
+def test_all_five_packages_are_deployed_without_touching_workbench(tmp_path, mode, interactive):
+    setup, _ = independent_setup(tmp_path, mode)
     workbench_env = setup['target'] / 'modeling/.env'
     before = workbench_env.read_bytes() if workbench_env.is_file() else None
-    status, output = _run(setup, interactive=interactive)
+    status, output = _run_five_packages(setup, interactive=interactive)
     assert status == 0, output
     calls = _calls(setup)
     consumer = 'consumer-install' if mode == 'install' else 'consumer-upgrade'
@@ -88,8 +140,8 @@ def test_all_four_services_are_deployed_without_touching_workbench(tmp_path, mod
 @pytest.mark.parametrize('mode', ['upgrade', 'legacy'])
 def test_consumer_upgrade_warning_still_deploys_remaining_services(tmp_path, mode, interactive):
     """Consumer upgrade.sh 返回 10 表示升级完成但验收有 WARN，Hub、Onto Modeling 和评测仍要部署。"""
-    setup = _prepare(tmp_path, mode)
-    status, output = _run(setup, interactive=interactive, STUB_CONSUMER_UPGRADE_RC='10')
+    setup, _ = independent_setup(tmp_path, mode)
+    status, output = _run_five_packages(setup, interactive=interactive, STUB_CONSUMER_UPGRADE_RC='10')
     assert status == 0, output
     calls = _calls(setup)
     assert calls.index('consumer-upgrade') < calls.index('hub-deploy') < calls.index('onto-deploy')
@@ -165,4 +217,5 @@ def test_full_build_keeps_standalone_packages_of_the_four_required_services(tmp_
         manifest = archive.extractfile('onto-agent/deploy/manifest.json').read().decode()
     assert {f'onto-agent/eval-service/{relative}' for relative in EVAL_FILES} <= bundled
     assert '"modeling_image"' not in manifest and '"modeling_agent_image"' not in manifest
+    assert '"onto_modeling_auth_server_image"' not in manifest
     assert not (repo / 'eval-service/dist/release-v-test-amd64').exists()

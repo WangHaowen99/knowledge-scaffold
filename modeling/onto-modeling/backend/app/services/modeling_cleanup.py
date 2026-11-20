@@ -99,6 +99,9 @@ def retry_task(task_id: str) -> bool:
 
 
 def retry_due(limit: int = 5) -> int:
+    if config.MODELING_CORE_RETIRED:
+        # Keep historical tasks for an explicit legacy rollback or data audit.
+        return 0
     with _TASKS_LOCK:
         tasks = _read()
         now = time.time()

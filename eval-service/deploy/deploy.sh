@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 部署独立评测服务（compose 项目 knowledge-evaluation，见 docker-compose.eval-service.yml）。
 # 运行配置：设置 EVAL_ENV_FILE 时原样使用该受保护文件；否则读写本目录 .env（权限 600，不入库），
-# 只保存凭据和显式配置的值（进程环境 > .env 已有值），首次部署生成加密密钥。非敏感的整栈默认地址
+# 保存凭据、显式配置和选定的网络及 Auth 默认值（进程环境 > .env 已有值 > 默认值），首次部署生成加密密钥。其他非敏感的整栈默认地址
 # 写在 compose 中；运行配置以 --env-file 传给 compose，其中的同名值优先于默认值。
 # 整栈 deploy.sh 注入 Hub 与 consumer 实际生效的评测凭据（HUB_EVALUATION_SERVICE_TOKEN、
 # EVALUATION_SERVICE_TOKEN）、onto-modeling 接收完成通知的凭据（EVAL_MODELING_SERVICE_TOKEN）、consumer 推送
@@ -55,13 +55,18 @@ else
     ENV_FILE="$SCRIPT_DIR/.env"
 fi
 
-# 网络先于配置校验：缺失时不生成密钥、不改写配置
+# 网络先于配置校验：缺失网络时不生成密钥、不改写配置
 CONSUMER_NETWORK="${CONSUMER_NETWORK:-$(env_get "$ENV_FILE" CONSUMER_NETWORK)}"
-[ -n "$CONSUMER_NETWORK" ] || die \
-    'CONSUMER_NETWORK is not set: deploy consumer first and run bash deploy/deploy.sh --eval-only from the repository root, or set CONSUMER_NETWORK to an existing Docker network'
+CONSUMER_NETWORK="${CONSUMER_NETWORK:-onto-auth-network}"
 docker network inspect "$CONSUMER_NETWORK" >/dev/null 2>&1 \
-    || die "Docker network not found: $CONSUMER_NETWORK; deploy consumer first"
+    || die "Docker network not found: $CONSUMER_NETWORK; deploy onto-modeling first or set CONSUMER_NETWORK to the actual shared network"
 export CONSUMER_NETWORK
+
+EVAL_AUTH_URL="${EVAL_AUTH_URL:-$(env_get "$ENV_FILE" EVAL_AUTH_URL)}"
+EVAL_AUTH_ISSUER="${EVAL_AUTH_ISSUER:-$(env_get "$ENV_FILE" EVAL_AUTH_ISSUER)}"
+EVAL_AUTH_URL="${EVAL_AUTH_URL:-http://auth-server:5056}"
+EVAL_AUTH_ISSUER="${EVAL_AUTH_ISSUER:-http://auth-server:5056}"
+export EVAL_AUTH_URL EVAL_AUTH_ISSUER
 
 if [ -n "${EVAL_ENV_FILE:-}" ]; then
     log 'Using EVAL_ENV_FILE as the runtime configuration (not modified)'

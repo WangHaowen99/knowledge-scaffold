@@ -66,7 +66,7 @@ class CceContractTests(unittest.TestCase):
         root = self.base / "modeling-cce-demo-amd64"
         (root / "images").mkdir(parents=True)
         records = {}
-        for image_id in ("modeling", "modelingAgent", "ontoModeling", "knowledgeHub", "evaluation"):
+        for image_id in ("ontoModeling", "knowledgeHub", "evaluation"):
             image = root / "images" / f"{image_id}.tar"
             image.write_bytes(b"synthetic image archive")
             records[image_id] = dict(archive=str(image.relative_to(root)), archiveSha256=checksum(image),
@@ -107,7 +107,7 @@ class CceContractTests(unittest.TestCase):
                     "modeling": (self.base, {"releaseVersion": "m2", "chartVersion": "2.0.0", "platform": "linux-amd64"})}
         return path, installed, packages
 
-    def test_upgrade_transition_requires_consumer_then_modeling_and_no_data_migration(self):
+    def test_upgrade_transition_requires_consumer_then_modeling_and_declared_migration(self):
         path, installed, packages = self.upgrade_fixture()
         config = {"compatibilityFile": path}
         JOINT.verified_joint_transition(config, packages, "upgrade-demo", installed)
@@ -118,6 +118,9 @@ class CceContractTests(unittest.TestCase):
             JOINT.verified_joint_transition(config, packages, "upgrade-demo", installed)
         manifest["transitions"][0]["steps"] = ["consumer", "modeling"]
         manifest["transitions"][0]["modelingDataMigration"] = "required"
+        path.write_text(yaml.safe_dump(manifest))
+        JOINT.verified_joint_transition(config, packages, "upgrade-demo", installed)
+        manifest["transitions"][0]["modelingDataMigration"] = "unknown"
         path.write_text(yaml.safe_dump(manifest))
         with self.assertRaises(ConfigError):
             JOINT.verified_joint_transition(config, packages, "upgrade-demo", installed)
@@ -136,6 +139,7 @@ class CceContractTests(unittest.TestCase):
              mock.patch.object(JOINT, "validate_release", return_value={}), \
              mock.patch.object(JOINT, "candidate_combination", return_value=fields), \
              mock.patch.object(JOINT, "validate_cross_side"), \
+             mock.patch.object(JOINT, "installed_modeling_workloads", return_value=UPGRADE.WORKLOADS), \
              mock.patch.object(JOINT, "installed_identity", side_effect=lambda _config, side: installed.get(side)):
             original = path.read_text()
             preview = JOINT.prepare_compatibility(config, upgrade=True, confirmed=False,
@@ -150,11 +154,18 @@ class CceContractTests(unittest.TestCase):
                                                    no_migration_confirmed=True)
             repeated = JOINT.prepare_compatibility(config, upgrade=True, confirmed=True,
                                                     no_migration_confirmed=True)
+            with mock.patch.object(JOINT, "installed_modeling_workloads", return_value=UPGRADE.LEGACY_WORKLOADS):
+                legacy_preview = JOINT.prepare_compatibility(config, upgrade=True, confirmed=False,
+                                                              no_migration_confirmed=False)
+                self.assertEqual(legacy_preview["modelingDataMigration"], "required")
+                JOINT.prepare_compatibility(config, upgrade=True, confirmed=True,
+                                            no_migration_confirmed=False)
         self.assertEqual(written["transitionId"], preview["transitionId"])
         self.assertEqual(repeated["transitionId"], written["transitionId"])
         transitions = yaml.safe_load(path.read_text())["transitions"]
         self.assertEqual(len(transitions), 2)
         same_transition = transitions[-1]
+        self.assertEqual(same_transition["modelingDataMigration"], "required")
         self.assertEqual((same_transition["from"], same_transition["intermediateCombinationId"],
                           same_transition["to"]), (old["id"],) * 3)
         packages["consumer"][1].update(releaseVersion="c1", chartVersion="1.0.0")
@@ -241,7 +252,8 @@ class CceContractTests(unittest.TestCase):
             installed = {"consumer": {"releaseVersion": "c1", "chartVersion": "1.0.0"},
                          "modeling": {"releaseVersion": "m1", "chartVersion": "1.0.0"}}
             original = compatibility.read_text()
-            with mock.patch.object(JOINT, "installed_identity", side_effect=lambda _config, side: installed.get(side)):
+            with mock.patch.object(JOINT, "installed_identity", side_effect=lambda _config, side: installed.get(side)), \
+                 mock.patch.object(JOINT, "installed_modeling_workloads", return_value=UPGRADE.WORKLOADS):
                 upgrade_preview = JOINT.prepare_compatibility(config, upgrade=True, confirmed=False,
                                                                no_migration_confirmed=False)
                 self.assertEqual(compatibility.read_text(), original)
@@ -307,6 +319,7 @@ class CceContractTests(unittest.TestCase):
              mock.patch.object(JOINT, "validate_release", side_effect=lambda _root, side: releases[side]), \
              mock.patch.object(JOINT, "validate_cross_side"), \
              mock.patch.object(JOINT, "installed_identity_without_manifest", side_effect=lambda _config, side: installed.get(side)), \
+             mock.patch.object(JOINT, "installed_modeling_workloads", return_value=UPGRADE.WORKLOADS), \
              mock.patch.object(JOINT, "kubectl", side_effect=cluster_resource):
             preview = JOINT.prepare_compatibility(config, upgrade=True, confirmed=False,
                                                   no_migration_confirmed=False)
@@ -365,6 +378,56 @@ class CceContractTests(unittest.TestCase):
         with mock.patch.object(JOINT, "kubectl", return_value=json.dumps({"data": {"state.json": json.dumps(state)}})):
             with self.assertRaisesRegex(ConfigError, "differs from Helm"):
                 JOINT.installed_consumer_contract(config, installed, target)
+
+    def test_rebuilding_external_auth_contract_uses_current_owner_uid_and_deployment_owner(self):
+        config = {"cluster": {"context": "synthetic"}, "consumer": {"namespace": "consumer-demo",
+                  "releaseName": "consumer"}}
+        installed = {"consumer": {"releaseVersion": "c2", "chartVersion": "2.0.0"},
+                     "modeling": {"releaseVersion": "m1", "chartVersion": "1.0.0"}}
+        auth_ref = {"apiVersion": "auth-v1", "serviceName": "auth-service",
+                    "namespace": "consumer-demo", "servicePort": 5056}
+        identity = {"issuer": "https://auth.example.com", "audience": "synthetic"}
+        state = {"releaseName": "consumer", "namespace": "consumer-demo", "releaseVersion": "c2",
+                 "chartVersion": "2.0.0", "platform": "linux-amd64", "phase": "ready",
+                 "externalAuth": auth_ref, "identity": {"auth": identity},
+                 "authOwnership": {"step": "completed", "serviceUID": "auth-uid",
+                                   "targetRelease": "independent-auth"},
+                 "endpoints": [
+                     {"id": "auth", "serviceName": "auth-service", "namespace": "consumer-demo",
+                      "port": 5056, "apiVersion": "auth-v1"},
+                     {"id": "consumer-api", "serviceName": "consumer-backend", "namespace": "consumer-demo",
+                      "port": 5055, "apiVersion": "v1"}]}
+        auth_state = {"phase": "ready", "identity": identity, "serviceUID": "auth-uid"}
+        owner = "independent-auth"
+        service_uid = "auth-uid"
+
+        def resource(_config, *command):
+            kind = command[command.index("get") + 1]
+            name = command[command.index("get") + 2]
+            if kind == "configmap":
+                body = auth_state if name == "independent-auth-cce-state" else state
+                return json.dumps({"data": {"state.json": json.dumps(body)}})
+            if kind == "service":
+                metadata = {"uid": service_uid, "annotations": {"meta.helm.sh/release-name": owner,
+                            "meta.helm.sh/release-namespace": "consumer-demo"}} if name == "auth-service" else {}
+                return json.dumps({"metadata": metadata, "spec": {"ports": [{"port": 5056 if name == "auth-service" else 5055}]}})
+            if kind == "deployment":
+                return json.dumps({"metadata": {"annotations": {"meta.helm.sh/release-name": owner}}})
+            raise AssertionError(command)
+
+        with mock.patch.object(JOINT, "kubectl", side_effect=resource), \
+             mock.patch.object(JOINT, "run", return_value=json.dumps({"info": {"status": "deployed"}})):
+            contract = JOINT.installed_consumer_contract(config, installed, {"platform": "linux-amd64"})
+            self.assertEqual(contract["authApiVersion"], "auth-v1")
+            service_uid = "replacement-uid"
+            with self.assertRaisesRegex(CompatibilityError, "owner identity"):
+                JOINT.installed_consumer_contract(config, installed, {"platform": "linux-amd64"})
+            auth_state["serviceUID"] = "replacement-uid"
+            self.assertEqual(JOINT.installed_consumer_contract(config, installed,
+                             {"platform": "linux-amd64"})["authApiVersion"], "auth-v1")
+            owner = "wrong-owner"
+            with self.assertRaisesRegex(CompatibilityError, "Service identity"):
+                JOINT.installed_consumer_contract(config, installed, {"platform": "linux-amd64"})
 
     def test_target_only_manifest_uses_cluster_old_contract(self):
         config = {"compatibilityFile": self.base / "compatibility.yaml"}
@@ -491,7 +554,7 @@ class CceContractTests(unittest.TestCase):
     def test_upgrade_rejects_changed_claim_and_requires_ready_snapshots(self):
         args = SimpleNamespace(release="modeling", namespace="demo", context="demo")
         merged = {"modeling": {"workloads": {name: {"persistence": {"existingClaim": f"{name}-data"}}
-                                           for name in UPGRADE.WORKLOADS}}}
+                                           for name in UPGRADE.LEGACY_WORKLOADS}}}
 
         def resource(_, action, kind, name, *rest):
             if kind == "deployment":
@@ -514,19 +577,21 @@ class CceContractTests(unittest.TestCase):
                         "status": {"readyToUse": True, "boundVolumeSnapshotContentName": f"content-{component}"}}
             raise AssertionError((action, kind, name, rest))
 
-        before = UPGRADE.bindings(resource, args, merged, stopped=True)
+        before = UPGRADE.bindings(resource, args, merged, stopped=True,
+                                  workloads=UPGRADE.LEGACY_WORKLOADS)
         record = {"schemaVersion": "cce-backup/v1", "context": "demo", "namespace": "demo",
                   "releaseName": "modeling", "stoppedAt": "2026-10-15T07:59:00Z",
                   "dataEvidence": {"core": 3, "agent": 2, "onto": 1},
                   "claims": {name: {**before[name], "snapshotName": f"{name}-snapshot",
-                                    "snapshotUid": f"snapshot-uid-{name}"} for name in UPGRADE.WORKLOADS}}
+                                    "snapshotUid": f"snapshot-uid-{name}"} for name in UPGRADE.LEGACY_WORKLOADS}}
         path = self.base / "backup.json"
         path.write_text(json.dumps(record))
         UPGRADE.verified_snapshots(resource, args, path, before)
         changed = json.loads(json.dumps(merged))
-        changed["modeling"]["workloads"]["core"]["persistence"]["existingClaim"] = "other-data"
+        changed["modeling"]["workloads"]["onto"]["persistence"]["existingClaim"] = "other-data"
         with self.assertRaises(ConfigError):
-            UPGRADE.bindings(resource, args, changed, stopped=True)
+            UPGRADE.bindings(resource, args, changed, stopped=True,
+                             workloads=UPGRADE.LEGACY_WORKLOADS)
         record["claims"]["core"]["snapshotUid"] = "wrong-uid"
         path.write_text(json.dumps(record))
         with self.assertRaises(ConfigError):
@@ -534,18 +599,20 @@ class CceContractTests(unittest.TestCase):
 
     def test_upgrade_data_counts_must_not_decrease(self):
         backup = self.base / "backup.json"
-        backup.write_text(json.dumps({"dataEvidence": {"core": 3, "agent": 2, "onto": 1}}))
+        backup.write_text(json.dumps({"dataEvidence": {"core": 3, "agent": 2, "onto": 1,
+                                                        "hub": 2, "evaluation": 4}}))
         args = SimpleNamespace(context="demo", namespace="demo", release="modeling")
         calls = []
 
         def command(*argv):
             workload = next(name for name in UPGRADE.WORKLOADS if f"deployment/modeling-{name}" in argv)
             calls.append(workload)
-            return {"core": "3\n", "agent": "2\n", "onto": "1\n"}[workload]
+            return {"onto": "1\n", "hub": "2\n", "evaluation": "4\n"}[workload]
 
         UPGRADE.verify_persisted_data(command, args, backup)
         self.assertEqual(calls, list(UPGRADE.WORKLOADS))
-        backup.write_text(json.dumps({"dataEvidence": {"core": 4, "agent": 2, "onto": 1}}))
+        backup.write_text(json.dumps({"dataEvidence": {"core": 4, "agent": 2, "onto": 2,
+                                                        "hub": 2, "evaluation": 4}}))
         with self.assertRaises(ConfigError):
             UPGRADE.verify_persisted_data(command, args, backup)
 
@@ -555,7 +622,7 @@ class CceContractTests(unittest.TestCase):
                                operation_id="synthetic-op", timeout_seconds=120,
                                backup_record=self.base / "backup.json")
         calls = []
-        before = {"core": {"volumeName": "pv-core"}}
+        before = {"onto": {"volumeName": "pv-onto"}}
 
         def fake_run(*command):
             calls.append(command)
@@ -569,7 +636,8 @@ class CceContractTests(unittest.TestCase):
             INSTALL.apply_upgrade(args, self.base, {"releaseVersion": "m2"}, {}, before)
         upgrade_calls = [command for command in calls if "upgrade" in command]
         self.assertEqual(len(upgrade_calls), 2)
-        self.assertIn("modeling.workloads.core.replicas=0", upgrade_calls[0])
+        self.assertIn("--reset-values", upgrade_calls[0])
+        self.assertIn("modeling.workloads.onto.replicas=0", upgrade_calls[0])
         self.assertIn("hub.replicas=0", upgrade_calls[0])
         self.assertIn("evaluation.replicas=0", upgrade_calls[0])
         self.assertIn("--wait", upgrade_calls[1])
@@ -579,7 +647,7 @@ class CceContractTests(unittest.TestCase):
         calls.clear()
         with mock.patch.object(INSTALL, "run", side_effect=fake_run), \
              mock.patch.object(INSTALL, "wait_old_pods_gone"), \
-             mock.patch.object(INSTALL, "bindings", return_value={"core": {"volumeName": "other-pv"}}), \
+             mock.patch.object(INSTALL, "bindings", return_value={"onto": {"volumeName": "other-pv"}}), \
              mock.patch.object(INSTALL, "verify"):
             with self.assertRaises(ConfigError):
                 INSTALL.apply_upgrade(args, self.base, {"releaseVersion": "m2"}, {}, before)
@@ -710,7 +778,7 @@ class CceContractTests(unittest.TestCase):
     def test_package_validates_and_detects_tampering(self):
         root = self.package()
         self.assertEqual(validate_release(root, "modeling")["platform"], "linux-amd64")
-        (root / "images/modeling.tar").write_bytes(b"changed")
+        (root / "images/ontoModeling.tar").write_bytes(b"changed")
         with self.assertRaises(ConfigError):
             validate_release(root, "modeling")
 
@@ -721,15 +789,100 @@ class CceContractTests(unittest.TestCase):
         self.assertIn("-sandbox-gateway", workloads)
         self.assertIn("app.sandbox_gateway", workloads)
         self.assertIn("ONTO_WEB_SANDBOX_GATEWAY_URL", workloads)
-        self.assertIn("ONTO_WEB_MODELING_ASSOCIATION_URL", workloads)
-        self.assertIn("ONTO_WEB_MODELING_ASSOCIATION_TOKEN", workloads)
+        self.assertNotIn("ONTO_WEB_MODELING_ASSOCIATION_URL", workloads)
+        self.assertNotIn("ONTO_WEB_MODELING_ASSOCIATION_TOKEN", workloads)
+        self.assertNotIn("name: {{ include \"modeling.name\" . }}-core", workloads)
         self.assertIn("-sandbox-gateway", services)
         self.assertEqual(values["modeling"]["workloads"]["sandboxGateway"]["resources"]["requests"]["memory"], "256Mi")
+
+    def test_modeling_auth_admin_secret_is_optional_and_injected_for_management(self):
+        defaults = yaml.safe_load((ROOT / "chart/values.yaml").read_text())
+        values = yaml.safe_load((ROOT / "values.customer.example.yaml").read_text())
+        schema = json.loads((ROOT / "chart/values.schema.json").read_text())
+        import jsonschema
+        merged = INSTALL.merge(defaults, values)
+        merged["global"]["resolvedImages"] = {name: "registry.example.com/app@sha256:" + "a" * 64
+            for name in ("ontoModeling", "knowledgeHub", "evaluation", "jiuwenbox")}
+        jsonschema.validate(merged, schema)
+        values["modeling"]["secrets"]["authAdminToken"] = {"name": "modeling-auth-client", "key": "admin-token"}
+        merged = INSTALL.merge(defaults, values)
+        merged["global"]["resolvedImages"] = {name: "registry.example.com/app@sha256:" + "a" * 64
+            for name in ("ontoModeling", "knowledgeHub", "evaluation", "jiuwenbox")}
+        jsonschema.validate(merged, schema)
+        template = (ROOT / "chart/templates/workloads.yaml").read_text()
+        self.assertIn("ONTO_WEB_AUTH_ADMIN_TOKEN", template)
+        self.assertIn(".Values.modeling.secrets.authAdminToken.name", template)
 
     def test_modeling_verify_checks_sandbox_gateway(self):
         source = (ROOT / "install-cce.py").read_text()
         self.assertIn("deployment/{args.release}-sandbox-gateway", source)
         self.assertIn("-sandbox-gateway:8110/health", source)
+
+    def test_modeling_verify_retries_gateway_during_endpoint_recreation(self):
+        args = SimpleNamespace(context="example", namespace="modeling-test", release="modeling",
+                               timeout_seconds=10)
+        calls = []
+        clock = iter((0, 1, 2))
+        attempts = 0
+
+        def command(*argv):
+            nonlocal attempts
+            calls.append(argv)
+            if "exec" in argv and "deployment/modeling-onto" in argv:
+                attempts += 1
+                if attempts == 1:
+                    raise RuntimeError("gateway endpoint not ready")
+            return ""
+
+        with mock.patch.object(INSTALL, "run", side_effect=command), \
+                mock.patch.object(INSTALL.time, "monotonic", side_effect=lambda: next(clock)), \
+                mock.patch.object(INSTALL.time, "sleep") as pause:
+            INSTALL.verify(args, self.base)
+        gateway_checks = []
+        for item in calls:
+            if "exec" in item and "deployment/modeling-onto" in item:
+                gateway_checks.append(item)
+        self.assertEqual(len(gateway_checks), 2)
+        pause.assert_called_once_with(2)
+
+    def test_evaluation_listener_can_use_a_custom_external_port(self):
+        package = self.base / "modeling-package"
+        chart = package / "deploy/chart"
+        chart.mkdir(parents=True)
+        for name in ("values.yaml", "values.schema.json"):
+            shutil.copy2(ROOT / "chart" / name, chart / name)
+        values = yaml.safe_load((ROOT / "values.customer.example.yaml").read_text())
+        listeners = values["global"]["access"]["listeners"]
+        self.assertEqual(listeners[1]["listenerPort"], 5180)
+        listeners[1]["listenerPort"] = 15180
+        values["modeling"]["config"]["evalPublicUrl"] = "https://eval.example.com:15180/evaluation/"
+        values_path = self.base / "modeling-values.yaml"
+        values_path.write_text(yaml.safe_dump(values))
+        images = {key: "registry.example.com/app@sha256:" + "a" * 64
+                  for key in ("ontoModeling", "knowledgeHub", "evaluation", "jiuwenbox")}
+        images_path = self.base / "modeling-images.yaml"
+        images_path.write_text(yaml.safe_dump({"global": {"resolvedImages": images}}))
+        release = {"platform": "linux-amd64", "images": {
+            key: {} for key in ("ontoModeling", "knowledgeHub", "evaluation")},
+            "imageDependencies": {"jiuwenbox": {}}}
+        args = SimpleNamespace(values=values_path, resolved_images=images_path,
+                               release="modeling", namespace="modeling-test")
+        with mock.patch.object(INSTALL, "validate_release", return_value=release):
+            _, merged = INSTALL.load_inputs(args, package)
+        self.assertEqual(merged["global"]["access"]["listeners"][1]["listenerPort"], 15180)
+        helm = shutil.which("helm")
+        self.assertIsNotNone(helm)
+        rendered = subprocess.run(  # NOSONAR(S4721): fixed Helm argv and synthetic values
+            [helm, "template", "modeling", str(ROOT / "chart"), "-f", str(values_path),
+             "-f", str(images_path)], capture_output=True, text=True, check=True,
+            shell=False,
+        )
+        ingress = [item for item in yaml.safe_load_all(rendered.stdout)
+                   if isinstance(item, dict) and item.get("kind") == "Ingress"]
+        evaluation = next(item for item in ingress if item["metadata"]["name"] == "modeling-evaluation")
+        self.assertEqual(evaluation["metadata"]["annotations"]["kubernetes.io/elb.port"], "15180")
+        self.assertEqual(evaluation["spec"]["rules"][0]["http"]["paths"][0]["backend"]["service"]["port"],
+                         {"number": 5180})
 
     def test_installer_bytecode_does_not_invalidate_extracted_package(self):
         root = self.package()
@@ -793,7 +946,7 @@ class CceContractTests(unittest.TestCase):
             with self.assertRaises(ConfigError):
                 validate_release(root, "modeling")
         release["platform"] = "linux-amd64"
-        release["images"]["modeling"]["platform"] = "linux/arm64"
+        release["images"]["ontoModeling"]["platform"] = "linux/arm64"
         release_path.write_text(yaml.safe_dump(release))
         self._refresh_checksums(root)
         with self.assertRaises(ConfigError):
@@ -837,12 +990,44 @@ class CceContractTests(unittest.TestCase):
             with self.assertRaises(ConfigError):
                 JOINT.validate_cross_side(config, package, consumer_values, bad, combo)
 
+    def test_joint_external_auth_uses_independent_service_reference(self):
+        root = self.base / "consumer-cce-external"
+        (root / "deploy").mkdir(parents=True)
+        (root / "deploy/endpoints.yaml").write_text(yaml.safe_dump({"schemaVersion": "cce-endpoints/v1",
+            "endpoints": [{"id": "auth", "port": 5056, "apiVersion": "v1"},
+                          {"id": "consumer-api", "port": 5055, "apiVersion": "v1"}]}))
+        packages = {"consumer": (root, {"releaseVersion": "c2", "chartVersion": "2.0.0",
+                                           "platform": "linux-amd64", "images": {"jiuwenbox": {}},
+                                           "authDeploymentMode": "external"}),
+                    "modeling": (self.base, {"releaseVersion": "m2", "chartVersion": "2.0.0",
+                                               "platform": "linux-amd64"})}
+        ref = {"apiVersion": "auth-v1", "serviceName": "auth-service",
+               "namespace": "consumer-demo", "servicePort": 5056}
+        consumer_values = {"sharedAuth": {"enabled": False}, "externalAuth": ref,
+                           "global": {"auth": {"issuer": "https://auth.example.com", "audience": "demo"}}}
+        modeling_values = {"global": {"auth": consumer_values["global"]["auth"]},
+                           "externalAuth": dict(ref),
+                           "externalConsumer": {"serviceName": "consumer-backend",
+                                                "namespace": "consumer-demo", "servicePort": 5055}}
+        config = {"consumer": {"releaseName": "consumer", "namespace": "consumer-demo"}}
+        candidate = JOINT.candidate_combination(packages, consumer_values)
+        self.assertEqual(candidate["authApiVersion"], "auth-v1")
+        JOINT.validate_cross_side(config, packages, consumer_values, modeling_values, candidate)
+        modeling_values["externalAuth"]["apiVersion"] = "v1"
+        with self.assertRaisesRegex(ConfigError, "independent Consumer contract"):
+            JOINT.validate_cross_side(config, packages, consumer_values, modeling_values, candidate)
+        modeling_values["externalAuth"]["apiVersion"] = "auth-v1"
+        modeling_values["externalAuth"]["serviceName"] = "other-auth"
+        with self.assertRaisesRegex(ConfigError, "independent Consumer contract"):
+            JOINT.validate_cross_side(config, packages, consumer_values, modeling_values, candidate)
+
     def test_modeling_preflight_checks_existing_resources_when_consumer_services_are_deferred(self):
         args = SimpleNamespace(context="synthetic", namespace="modeling-demo", release="modeling")
         merged = INSTALL.merge(
             yaml.safe_load((ROOT / "chart/values.yaml").read_text()),
             yaml.safe_load((ROOT / "values.customer.example.yaml").read_text()),
         )
+        merged["modeling"]["secrets"]["authAdminToken"] = {"name": "", "key": ""}
         def resource(_args, verb, kind, *rest):
             if kind == "namespace":
                 return {"status": {"phase": "Active"}}
@@ -855,15 +1040,19 @@ class CceContractTests(unittest.TestCase):
                 return {"items": [{"metadata": {"labels": {"kubernetes.io/arch": "amd64"}},
                                    "spec": {"unschedulable": False}}]}
             if kind == "service":
+                if rest[0] == "consumer-auth":
+                    return {"spec": {"ports": [{"port": 5056}]}}
                 raise ConfigError("Consumer Service is missing")
             raise AssertionError((verb, kind, rest))
         with mock.patch.object(INSTALL, "kube", side_effect=resource) as calls, \
+             mock.patch.object(INSTALL, "validate_auth_owner"), \
+             mock.patch.object(INSTALL, "probe_auth_from_modeling"), \
              mock.patch.object(INSTALL, "_optional_json", side_effect=lambda _args, *argv:
                                {"type": "Opaque", "data": {"service-token": "synthetic"}}
                                if argv[-1] == "modeling-integration" else None):
             INSTALL.preflight(args, merged, check_external_services=False)
-            self.assertFalse(any(call.args[1:3] == ("get", "service") for call in calls.call_args_list))
-            self.assertEqual(sum(call.args[2] == "pvc" for call in calls.call_args_list), 5)
+            self.assertTrue(any(call.args[1:3] == ("get", "service") for call in calls.call_args_list))
+            self.assertEqual(sum(call.args[2] == "pvc" for call in calls.call_args_list), 3)
             self.assertTrue(any(call.args[2] == "nodes" for call in calls.call_args_list))
             with self.assertRaises(ConfigError):
                 INSTALL.preflight(args, merged)
@@ -884,8 +1073,202 @@ class CceContractTests(unittest.TestCase):
                 return {"spec": {"ports": [{"port": 5056 if rest[0] == "consumer-auth" else 5055}]}}
             return resource(_args, verb, kind, *rest)
         with mock.patch.object(INSTALL, "kube", side_effect=ready_service), \
+             mock.patch.object(INSTALL, "validate_auth_owner"), \
+             mock.patch.object(INSTALL, "probe_auth_from_modeling"), \
              mock.patch.object(INSTALL, "_optional_json", side_effect=present_secret):
             INSTALL.preflight(args, merged)
+
+    def test_first_install_can_wait_for_missing_auth_and_consumer_services(self):
+        args = SimpleNamespace(context="synthetic", namespace="modeling-demo", release="modeling")
+        merged = INSTALL.merge(
+            yaml.safe_load((ROOT / "chart/values.yaml").read_text()),
+            yaml.safe_load((ROOT / "values.customer.example.yaml").read_text()),
+        )
+        merged["modeling"]["secrets"]["authAdminToken"] = {"name": "", "key": ""}
+
+        def resource(_args, verb, kind, *rest):
+            if kind == "namespace":
+                return {"status": {"phase": "Active"}}
+            if kind == "pvc":
+                return {"status": {"phase": "Bound"},
+                        "spec": {"volumeMode": "Filesystem", "accessModes": ["ReadWriteOnce"]}}
+            if kind == "secret":
+                return {"type": "kubernetes.io/dockerconfigjson"}
+            if kind == "nodes":
+                return {"items": [{"metadata": {"labels": {"kubernetes.io/arch": "amd64"}},
+                                   "spec": {"unschedulable": False}}]}
+            raise AssertionError((verb, kind, rest))
+
+        def optional(_args, *rest):
+            if rest[-1] == "modeling-integration":
+                return {"type": "Opaque", "data": {"service-token": "synthetic"}}
+            return None
+
+        with mock.patch.object(INSTALL, "kube", side_effect=resource), \
+             mock.patch.object(INSTALL, "_optional_json", side_effect=optional), \
+             mock.patch.object(INSTALL, "_evaluation_has_data", return_value=False):
+            self.assertEqual(INSTALL.preflight(args, merged, allow_missing_dependencies=True),
+                             ["externalAuth", "externalConsumer"])
+            with self.assertRaises(AssertionError):
+                INSTALL.preflight(args, merged)
+
+        def optional_wrong_port(_args, *rest):
+            if rest[-3:] == ("get", "service", "consumer-auth"):
+                return {"spec": {"ports": [{"port": 9090}]}}
+            return optional(_args, *rest)
+
+        with mock.patch.object(INSTALL, "kube", side_effect=resource), \
+             mock.patch.object(INSTALL, "_optional_json", side_effect=optional_wrong_port), \
+             mock.patch.object(INSTALL, "_evaluation_has_data", return_value=False):
+            with self.assertRaisesRegex(ConfigError, "service port mismatch"):
+                INSTALL.preflight(args, merged, allow_missing_dependencies=True)
+
+    def test_waiting_dependency_state_is_not_reported_ready_or_upgradeable(self):
+        args = SimpleNamespace(context="synthetic", namespace="modeling-demo",
+                               release="modeling", operation_id="install-demo")
+        state = {"schemaVersion": "cce-modeling-dependencies/v1",
+                 "stage": "waiting-dependencies", "pendingDependencies": ["externalAuth"]}
+        with mock.patch.object(INSTALL, "release_status", return_value={"info": {"status": "deployed"}}), \
+             mock.patch.object(INSTALL, "installed_release", return_value={
+                 "releaseVersion": "demo", "chartVersion": "0.1.0"}), \
+             mock.patch.object(INSTALL, "_cluster_operation_state", return_value=state), \
+             mock.patch.object(INSTALL, "_pvc_bindings", return_value={}):
+            result = INSTALL._diagnose(args, {"releaseVersion": "demo", "chartVersion": "0.1.0"}, {})
+            self.assertFalse(result["ready"])
+            self.assertIn("externalAuth", result["issues"][-1])
+            with self.assertRaisesRegex(ConfigError, "verify Auth and Consumer"):
+                INSTALL._require_upgrade_state_ready(args)
+
+    def test_dependency_record_moves_from_waiting_to_complete_only_after_verify(self):
+        args = SimpleNamespace(context="synthetic", namespace="modeling-demo",
+                               release="modeling", operation_id="install-demo")
+        merged = {"externalAuth": {"apiVersion": "auth-v1", "serviceName": "auth", "namespace": "shared", "servicePort": 5056},
+                  "externalConsumer": {"serviceName": "consumer", "namespace": "shared", "servicePort": 5055}}
+        state = None
+        installed = {**merged, "global": {"operationId": "install-demo"}}
+
+        def save(_args, document):
+            nonlocal state
+            state = json.loads(json.dumps(document))
+
+        with mock.patch.object(INSTALL, "_cluster_operation_state", side_effect=lambda _args: state), \
+             mock.patch.object(INSTALL, "installed_values", return_value=installed), \
+             mock.patch.object(INSTALL, "_write_cluster_state", side_effect=save):
+            INSTALL._record_dependencies(args, merged, ["externalAuth", "externalConsumer"],
+                                         service_verified=False)
+            self.assertEqual(state["stage"], "waiting-dependencies")
+            INSTALL._verify_dependency_record(args, merged)
+            INSTALL._record_dependencies(args, merged, [], service_verified=False)
+            self.assertEqual(state["stage"], "verifying-service")
+            INSTALL._record_dependencies(args, merged, [])
+            self.assertEqual(state["stage"], "complete")
+            self.assertEqual(state["pendingDependencies"], [])
+            INSTALL._require_upgrade_state_ready(args)
+
+    def test_independent_auth_owner_uses_current_owner_and_service_uid(self):
+        args = SimpleNamespace(context="synthetic", namespace="modeling-demo")
+        merged = {"global": {"auth": {"issuer": "https://auth.example.com", "audience": "demo"}},
+                  "externalAuth": {"apiVersion": "auth-v1", "serviceName": "auth-service",
+                                   "namespace": "consumer-demo", "servicePort": 5056},
+                  "externalConsumer": {"serviceName": "consumer-backend", "namespace": "consumer-demo",
+                                       "servicePort": 5055}}
+        service = {"metadata": {"name": "auth-service", "uid": "service-uid", "annotations": {
+            "meta.helm.sh/release-name": "auth-owner",
+            "meta.helm.sh/release-namespace": "consumer-demo"}}}
+        auth_state = {"phase": "ready", "identity": merged["global"]["auth"],
+                      "serviceUID": "service-uid"}
+        owner_values = {"authOnly": True, "serviceName": "auth-service", "workloadName": "auth-service",
+                        "global": {"auth": merged["global"]["auth"]}}
+
+        def resource(_args, verb, kind, name, *_rest):
+            if kind == "configmap":
+                if name != "auth-owner-cce-state":
+                    raise AssertionError("Modeling must not read Consumer Auth ownership state")
+                return {"data": {"state.json": json.dumps(auth_state)}}
+            if kind == "deployment":
+                return {"metadata": {"annotations": {"meta.helm.sh/release-name": "auth-owner"}}}
+            raise AssertionError((verb, kind, name))
+
+        with mock.patch.object(INSTALL, "kube", side_effect=resource), \
+             mock.patch.object(INSTALL, "run", side_effect=lambda *command: json.dumps(
+                 {"info": {"status": "deployed"}} if "status" in command else
+                 owner_values)):
+            INSTALL.validate_auth_owner(args, merged, service)
+            owner_values["serviceName"] = "other-service"
+            with self.assertRaisesRegex(ConfigError, "installed values differ"):
+                INSTALL.validate_auth_owner(args, merged, service)
+            owner_values["serviceName"] = "auth-service"
+            auth_state["serviceUID"] = "another-uid"
+            with self.assertRaisesRegex(ConfigError, "Service UID differs"):
+                INSTALL.validate_auth_owner(args, merged, service)
+            auth_state["serviceUID"] = "service-uid"
+            service["metadata"]["uid"] = "replacement-uid"
+            with self.assertRaisesRegex(ConfigError, "Service UID differs"):
+                INSTALL.validate_auth_owner(args, merged, service)
+            auth_state["serviceUID"] = "replacement-uid"
+            INSTALL.validate_auth_owner(args, merged, service)
+
+    def test_legacy_auth_reference_checks_consumer_ownership(self):
+        args = SimpleNamespace(context="synthetic", namespace="modeling-demo")
+        merged = {"global": {"auth": {"issuer": "https://auth.example.com", "audience": "demo"}},
+                  "externalAuth": {"apiVersion": "v1", "serviceName": "consumer-auth",
+                                   "namespace": "consumer-demo", "servicePort": 5056},
+                  "externalConsumer": {"serviceName": "consumer-backend", "namespace": "consumer-demo",
+                                       "servicePort": 5055}}
+        service = {"metadata": {"uid": "legacy-uid", "annotations": {
+            "meta.helm.sh/release-name": "consumer"}}}
+        state = {"phase": "ready", "identity": {"auth": merged["global"]["auth"]},
+                 "endpoints": [{"id": "auth", "serviceName": "consumer-auth",
+                                "namespace": "consumer-demo", "port": 5056, "apiVersion": "v1"}]}
+        with mock.patch.object(INSTALL, "kube", return_value={"data": {"state.json": json.dumps(state)}}):
+            INSTALL.validate_auth_owner(args, merged, service)
+            service["metadata"]["annotations"]["meta.helm.sh/release-name"] = "other"
+            with self.assertRaisesRegex(ConfigError, "does not belong"):
+                INSTALL.validate_auth_owner(args, merged, service)
+
+    def test_modeling_auth_admin_token_must_match_auth_owner(self):
+        args = SimpleNamespace(context="synthetic", namespace="modeling-demo")
+        merged = {"modeling": {"secrets": {"authAdminToken":
+            {"name": "modeling-auth-client", "key": "admin-token"}}}}
+        owner_values = {"sharedAuth": {"adminTokenSecret":
+            {"name": "auth-owner-token", "key": "token"}}}
+        values = {"modeling-auth-client": "c2FtZS10b2tlbg==",
+                  "auth-owner-token": "c2FtZS10b2tlbg=="}
+        def secret(_args, name, namespace=None):
+            value = values.get(name)
+            self.assertIsNotNone(value)
+            return {"type": "Opaque", "data": {"admin-token" if name == "modeling-auth-client"
+                                                  else "token": value}}
+        with mock.patch.object(INSTALL, "_read_secret", side_effect=secret):
+            INSTALL.validate_auth_admin_token(args, merged, "auth", "consumer-demo", owner_values)
+            values["modeling-auth-client"] = "ZGlmZmVyZW50"
+            with self.assertRaisesRegex(ConfigError, "differs from Auth owner"):
+                INSTALL.validate_auth_admin_token(args, merged, "auth", "consumer-demo", owner_values)
+
+    def test_auth_probe_uses_modeling_namespace_and_removes_temporary_pod(self):
+        args = SimpleNamespace(context="synthetic", namespace="modeling-demo", release="modeling")
+        merged = {"externalAuth": {"serviceName": "auth-service", "namespace": "consumer-demo",
+                                   "servicePort": 5056},
+                  "global": {"targetArch": "amd64", "resolvedImages": {"ontoModeling": "example/onto:demo"},
+                             "auth": {"issuer": "https://auth.example.com", "audience": "demo"},
+                             "imageDelivery": {"pullSecretNames": []}}}
+        pods = []
+        calls = []
+        def create(command, payload):
+            pods.append(json.loads(payload))
+        def execute(*command):
+            calls.append(command)
+            return ""
+        with mock.patch.object(INSTALL, "_run_with_input", side_effect=create), \
+             mock.patch.object(INSTALL, "run", side_effect=execute), \
+             mock.patch.object(INSTALL, "run_program", return_value=SimpleNamespace(returncode=0)) as probe:
+            INSTALL.probe_auth_from_modeling(args, merged)
+        self.assertEqual(pods[0]["metadata"]["namespace"], "modeling-demo")
+        self.assertIn("auth-service.consumer-demo.svc.cluster.local:5056",
+                      pods[0]["spec"]["containers"][0]["env"][0]["value"])
+        self.assertEqual([item[5] for item in calls], ["wait", "delete"])
+        self.assertNotIn("-i", probe.call_args.args[0])
+        self.assertNotIn("input", probe.call_args.kwargs)
 
     def test_deferred_preflight_flag_only_reaches_modeling(self):
         root = self.base / "modeling-cce-demo"
@@ -918,7 +1301,7 @@ class CceContractTests(unittest.TestCase):
             self.assertFalse(JOINT.defer_consumer_services(config))
             commands.assert_called_once()
         partial = SimpleNamespace(returncode=0, stdout=json.dumps({"items": [
-            {"metadata": {"name": "consumer-auth"}}]}), stderr="")
+            {"metadata": {"name": "consumer-backend"}}]}), stderr="")
         with mock.patch.object(JOINT.subprocess, "run", side_effect=(absent, partial)):
             with self.assertRaisesRegex(ConfigError, "without its Helm release"):
                 JOINT.defer_consumer_services(config)
@@ -991,8 +1374,438 @@ class CceContractTests(unittest.TestCase):
         finally:
             sys.argv = original
 
+    def test_three_release_upgrade_preflights_both_sides_before_auth_change(self):
+        config = {"stateDir": self.base, "cluster": {"context": "synthetic"},
+                  "compatibilityFile": self.base / "compatibility.yaml",
+                  "auth": {"package": self.base / "auth.tar.gz", "releaseName": "auth",
+                           "namespace": "consumer-demo", "values": self.base / "auth-values.yaml",
+                           "image": "registry.example.com/auth@sha256:" + "a" * 64}}
+        installed = {"consumer": {"releaseVersion": "old", "chartVersion": "0.1.0"},
+                     "modeling": {"releaseVersion": "old", "chartVersion": "0.1.0"}}
+        releases = {}
+        for side in JOINT.JOINT_SIDE_ORDER:
+            config[side] = {"package": self.base / f"{side}.tar.gz", "releaseName": side,
+                            "namespace": f"{side}-demo", "values": self.base / f"{side}-values.yaml",
+                            "resolvedImages": self.base / f"{side}-images.yaml"}
+            releases[side] = {"releaseVersion": "new", "chartVersion": "0.2.0", "platform": "linux-amd64"}
+        calls = []
+
+        class FakeLease:
+            def __init__(self, *_): pass
+            def acquire(self): pass
+            def check(self): pass
+            def release(self): pass
+
+        def fake_invoke(side, action, _config, package, *_args, **_kwargs):
+            calls.append((side, action, _args[0]))
+            return {"schemaVersion": "cce-operation/v1", "status": "succeeded",
+                    "releaseVersion": package[1]["releaseVersion"],
+                    "chartVersion": package[1]["chartVersion"]}
+
+        original = sys.argv
+        try:
+            with mock.patch.object(JOINT, "load_config", return_value=config), \
+                 mock.patch.object(JOINT, "safe_extract", side_effect=lambda path, *_: self.base / path.name), \
+                 mock.patch.object(JOINT, "prepare_auth_release", return_value=(self.base, {})), \
+                 mock.patch.object(JOINT, "validate_release", side_effect=lambda _root, side: releases[side]), \
+                 mock.patch.object(JOINT, "validate_combination", return_value={"id": "target"}), \
+                 mock.patch.object(JOINT, "validate_auth_coordinates"), \
+                 mock.patch.object(JOINT, "validate_cross_side"), \
+                 mock.patch.object(JOINT, "read_yaml", side_effect=lambda path: {"global": {
+                     "clusterFlavor": "standard", "access": {"elb": {"id": "synthetic"},
+                         "listenerPort": 80 if "consumer" in str(path) else 8080}}}), \
+                 mock.patch.object(JOINT, "effective_images", return_value=self.base / "effective.yaml"), \
+                 mock.patch.object(JOINT, "operation_fingerprint", return_value="synthetic"), \
+                 mock.patch.object(JOINT, "checksum", return_value="synthetic"), \
+                 mock.patch.object(JOINT, "installed_identity", side_effect=lambda _config, side: installed[side]), \
+                 mock.patch.object(JOINT, "unique_target_transition", return_value="transition-demo"), \
+                 mock.patch.object(JOINT, "verified_joint_transition", return_value=None), \
+                 mock.patch.object(JOINT, "ensure_auth_migration", return_value={"status": "succeeded", "phase": "already-independent"}), \
+                 mock.patch.object(JOINT, "Lease", FakeLease), \
+                 mock.patch.object(JOINT, "invoke", side_effect=fake_invoke), \
+                 mock.patch.object(JOINT, "ensure_auth_release", side_effect=lambda *_args, **_kwargs: (
+                     calls.append(("auth", "upgrade")) or {"status": "succeeded"})):
+                sys.argv = ["joint-cce.py", "upgrade", "--scope", "both",
+                            "--config", str(self.base / "joint.yaml")]
+                with redirect_stdout(StringIO()) as output:
+                    self.assertEqual(JOINT.main(), 0, output.getvalue())
+                self.assertEqual([(side, action) for side, action, *_ in calls],
+                                 [("consumer", "preflight"), ("modeling", "preflight"),
+                                  ("auth", "upgrade"), ("consumer", "upgrade"),
+                                  ("consumer", "verify"), ("modeling", "upgrade"),
+                                  ("modeling", "verify")])
+                calls.clear()
+                def migrated(_config, _package, _operation_id, journal, _path, *, resume):
+                    calls.append(("auth", "migrate", _operation_id))
+                    journal["completed"].append("auth-migrated")
+                    return {"status": "succeeded", "phase": "migrated"}
+                with mock.patch.object(JOINT, "ensure_auth_migration", side_effect=migrated):
+                    with redirect_stdout(StringIO()) as output:
+                        self.assertEqual(JOINT.main(), 0, output.getvalue())
+                self.assertEqual([(side, action) for side, action, *_ in calls],
+                                 [("auth", "migrate"),
+                                  ("consumer", "preflight"), ("modeling", "preflight"),
+                                  ("auth", "upgrade"), ("consumer", "upgrade"),
+                                  ("consumer", "verify"), ("modeling", "upgrade"),
+                                  ("modeling", "verify")])
+                migration_id = calls[0][2]
+                self.assertEqual(calls[1][2], f"{migration_id}-consumer")
+                self.assertEqual(calls[4][2], f"{migration_id}-consumer")
+                self.assertEqual(calls[5][2], f"{migration_id}-consumer")
+                self.assertEqual(calls[2][2], migration_id)
+                self.assertEqual(calls[6][2], migration_id)
+        finally:
+            sys.argv = original
+
+    def test_three_release_config_requires_matching_auth_coordinates(self):
+        auth_values = self.base / "auth-values.yaml"
+        auth_values.write_text(yaml.safe_dump({"global": {"auth": {"issuer": "https://auth.example.com",
+            "audience": "synthetic"}}, "sharedAuth": {"enabled": True}}))
+        config = {"auth": {"releaseName": "auth", "namespace": "consumer-demo",
+                           "values": auth_values}, "consumer": {"releaseName": "consumer"}}
+        reference = {"serviceName": "auth-auth", "namespace": "consumer-demo",
+                     "servicePort": 5056, "apiVersion": "auth-v1"}
+        consumer = {"global": {"auth": {"issuer": "https://auth.example.com", "audience": "synthetic"}},
+                    "sharedAuth": {"enabled": False}, "externalAuth": reference}
+        modeling = {"global": consumer["global"], "externalAuth": reference}
+        JOINT.validate_auth_coordinates(config, consumer, modeling)
+        modeling["externalAuth"] = {**reference, "serviceName": "another-auth"}
+        with self.assertRaisesRegex(ConfigError, "modeling externalAuth differs"):
+            JOINT.validate_auth_coordinates(config, consumer, modeling)
+        migrated = {**reference, "serviceName": "consumer-auth"}
+        consumer["externalAuth"] = migrated
+        modeling["externalAuth"] = migrated
+        config["consumer"] = {"releaseName": "consumer"}
+        JOINT.validate_auth_coordinates(config, consumer, modeling)
+
+    def test_auth_release_state_accepts_migrated_service_and_uses_owner_record(self):
+        image = "registry.example.com/auth@sha256:" + "a" * 64
+        identity = {"issuer": "https://auth.example.com", "audience": "synthetic"}
+        config = {"cluster": {"context": "synthetic"},
+                  "auth": {"releaseName": "auth", "namespace": "consumer-demo",
+                           "values": self.base / "auth-values.yaml", "image": image},
+                  "consumer": {"releaseName": "consumer", "namespace": "consumer-demo",
+                               "values": self.base / "consumer-values.yaml"}}
+        reference = {"serviceName": "consumer-auth", "namespace": "consumer-demo",
+                     "servicePort": 5056, "apiVersion": "auth-v1"}
+        (self.base / "auth-values.yaml").write_text(yaml.safe_dump({"global": {"auth": identity}}))
+        (self.base / "consumer-values.yaml").write_text(yaml.safe_dump({"externalAuth": reference}))
+        owner = {"phase": "ready", "identity": identity, "authPin": {"image": image}}
+        owner_values = {"authOnly": True, "serviceName": "consumer-auth",
+                        "workloadName": "consumer-auth", "global": {"auth": identity}}
+        service = {"metadata": {"uid": "original-service-uid", "annotations": {
+                    "meta.helm.sh/release-name": "auth", "meta.helm.sh/release-namespace": "consumer-demo"}},
+                   "spec": {"ports": [{"port": 5056}]}}
+        deployment = {"metadata": {"annotations": {"meta.helm.sh/release-name": "auth"}},
+                      "spec": {"template": {"spec": {"containers": [{"name": "auth-server", "image": image}]}}}}
+
+        def fake_kubectl(_config, *_args, **_kwargs):
+            kind, name = _args[3:5]
+            objects = {("configmap", "auth-cce-state"): {"data": {"state.json": json.dumps(owner)}},
+                       ("service", "consumer-auth"): service,
+                       ("deployment", "consumer-auth"): deployment}
+            item = objects.get((kind, name))
+            self.assertIsNotNone(item)
+            return json.dumps(item)
+
+        deployed = SimpleNamespace(returncode=0, stdout=json.dumps({"info": {"status": "deployed"}}), stderr="")
+        with mock.patch.object(JOINT, "run_program", return_value=deployed), \
+             mock.patch.object(JOINT, "run", side_effect=lambda *_: json.dumps(owner_values)), \
+             mock.patch.object(JOINT, "kubectl", side_effect=fake_kubectl):
+            self.assertEqual(JOINT.auth_release_state(config)["image"], image)
+            owner_values["serviceName"] = "other-service"
+            with self.assertRaisesRegex(ConfigError, "installed values are invalid"):
+                JOINT.auth_release_state(config)
+            owner_values["serviceName"] = "consumer-auth"
+            self.assertEqual(JOINT.require_auth_ready(config)["image"], image)
+            with self.assertRaisesRegex(ConfigError, "configured image"):
+                JOINT.require_auth_ready(config, "registry.example.com/auth@sha256:" + "b" * 64)
+            owner["serviceUID"] = "original-service-uid"
+            self.assertEqual(JOINT.auth_release_state(config)["image"], image)
+            service["metadata"]["uid"] = "replacement-service-uid"
+            with self.assertRaisesRegex(ConfigError, "Service changed"):
+                JOINT.auth_release_state(config)
+            owner["serviceUID"] = "replacement-service-uid"
+            self.assertEqual(JOINT.auth_release_state(config)["image"], image)
+            service["metadata"]["uid"] = ""
+            with self.assertRaisesRegex(ConfigError, "Service changed"):
+                JOINT.auth_release_state(config)
+
+    def test_auth_install_resume_accepts_only_completed_target_owner(self):
+        image = "registry.example.com/auth@sha256:" + "a" * 64
+        config = {"auth": {"image": image}}
+        owner = {"state": {"authPin": {"image": image}}, "image": image}
+        with mock.patch.object(JOINT, "auth_release_state", return_value=owner), \
+             mock.patch.object(JOINT, "invoke_auth") as invoke:
+            self.assertEqual(JOINT.ensure_auth_release("install", config, self.base, "operation-demo",
+                                                       resume=True)["phase"], "already-ready")
+            invoke.assert_not_called()
+            with self.assertRaisesRegex(ConfigError, "already exists"):
+                JOINT.ensure_auth_release("install", config, self.base, "new-operation")
+
+    def test_auth_migration_runs_once_and_journals_completed_owner(self):
+        config = {"cluster": {"context": "synthetic"},
+                  "auth": {"releaseName": "auth", "namespace": "consumer-demo"},
+                  "consumer": {"releaseName": "consumer", "namespace": "consumer-demo",
+                               "values": self.base / "consumer-values.yaml"}}
+        (self.base / "consumer-values.yaml").write_text(yaml.safe_dump({"externalAuth": {
+            "serviceName": "consumer-auth"}}))
+        journal = {"completed": [], "phase": "prepared"}
+        path = self.base / "joint-journal.json"
+        states = iter([("legacy", {"identity": {"authClaim": "auth-data"}}),
+                       ("independent", {"authOwnership": {"operationId": "joint-demo"}})])
+        absent = SimpleNamespace(returncode=1, stdout="", stderr="release: not found")
+        service = {"metadata": {"uid": "service-uid", "annotations": {
+            "meta.helm.sh/release-name": "consumer"}}, "spec": {"ports": [{"port": 5056}]}}
+        deployment = {"metadata": {"annotations": {"meta.helm.sh/release-name": "consumer"}}}
+        with mock.patch.object(JOINT, "consumer_auth_mode", side_effect=lambda _: next(states)), \
+             mock.patch.object(JOINT, "run_program", return_value=absent), \
+             mock.patch.object(JOINT, "kubectl", side_effect=[json.dumps(service), json.dumps(deployment)]), \
+             mock.patch.object(JOINT, "require_auth_ready"), \
+             mock.patch.object(JOINT, "invoke_auth", return_value={"status": "succeeded"}) as child:
+            self.assertEqual(JOINT.ensure_auth_migration(config, self.base, "joint-demo", journal,
+                                                          path, resume=False)["phase"], "migrated")
+        self.assertEqual(child.call_args.args[:2], ("migrate", config))
+        self.assertEqual(journal["completed"], ["auth-migrated"])
+        self.assertEqual(json.loads(path.read_text())["phase"], "auth-migration-completed")
+
+    def test_auth_migration_resume_uses_child_resume_only_for_recorded_flow(self):
+        config = {"auth": {"releaseName": "auth"}, "consumer": {"releaseName": "consumer",
+                  "values": self.base / "consumer-values.yaml"}}
+        (self.base / "consumer-values.yaml").write_text(yaml.safe_dump({"externalAuth": {
+            "serviceName": "consumer-auth"}}))
+        journal = {"completed": [], "phase": "auth-migration-started"}
+        path = self.base / "joint-journal.json"
+        state = {"authOwnership": {"operationId": "joint-demo", "targetRelease": "auth",
+                                   "step": "detaching"}}
+        states = iter([("migrating", state), ("independent", state)])
+        with mock.patch.object(JOINT, "consumer_auth_mode", side_effect=lambda _: next(states)), \
+             mock.patch.object(JOINT, "require_auth_ready"), \
+             mock.patch.object(JOINT, "invoke_auth", return_value={"status": "succeeded"}) as child:
+            JOINT.ensure_auth_migration(config, self.base, "joint-demo", journal, path, resume=True)
+        self.assertTrue(child.call_args.kwargs["resume"])
+        with mock.patch.object(JOINT, "consumer_auth_mode", return_value=("migrating", state)), \
+             mock.patch.object(JOINT, "invoke_auth") as child:
+            with self.assertRaisesRegex(ConfigError, "original joint --resume"):
+                JOINT.ensure_auth_migration(config, self.base, "another-demo",
+                                            {"completed": [], "phase": "prepared"}, path, resume=False)
+            child.assert_not_called()
+
+    def test_auth_child_migrate_uses_consumer_release_and_boolean_resume(self):
+        package = self.base / "onto-auth-test-amd64"
+        (package / "cce").mkdir(parents=True)
+        (package / "cce/auth-cce.py").write_text("# synthetic\n")
+        config = {"auth": {"releaseName": "auth", "namespace": "consumer-demo"},
+                  "consumer": {"releaseName": "consumer"},
+                  "cluster": {"context": "synthetic"}, "stateDir": self.base}
+        response = SimpleNamespace(returncode=0,
+            stdout="AUTH_OWNERSHIP_MIGRATION=PASS source-detached target-adopted\n", stderr="")
+        with mock.patch.object(JOINT.subprocess, "run", return_value=response) as command:
+            self.assertEqual(JOINT.invoke_auth("migrate", config, package, "joint-demo",
+                                               resume=True)["phase"], "migrated")
+        args = command.call_args.args[0]
+        self.assertEqual(args[args.index("--consumer-release") + 1], "consumer")
+        self.assertIn("--resume", args)
+        self.assertNotIn("--auth-image", args)
+
+    def test_auth_contract_change_requires_verified_intermediate(self):
+        transition = {"from": {"authApiVersion": "v1"},
+                      "intermediate": {"authApiVersion": "v1"},
+                      "to": {"authApiVersion": "auth-v1"}}
+        with self.assertRaisesRegex(CompatibilityError, "verified auth-v1 intermediate"):
+            JOINT.require_auth_contract_transition({"auth": {"releaseName": "auth"}}, transition)
+        transition["intermediate"]["authApiVersion"] = "auth-v1"
+        JOINT.require_auth_contract_transition({"auth": {"releaseName": "auth"}}, transition)
+
+    def test_three_release_config_loader_accepts_auth_package_and_rejects_wrong_namespace(self):
+        config = {"schemaVersion": "cce-joint/v1", "cluster": {"context": "synthetic"},
+                  "stateDir": "./state", "compatibilityFile": "./compatibility.yaml",
+                  "auth": {"package": "./auth.tar.gz", "releaseName": "auth", "namespace": "consumer-demo",
+                           "values": "./auth-values.yaml",
+                           "image": "registry.example.com/auth@sha256:" + "a" * 64},
+                  "consumer": {"package": "./consumer.tar.gz", "releaseName": "consumer",
+                               "namespace": "consumer-demo", "values": "./consumer-values.yaml",
+                               "resolvedImages": "./consumer-images.yaml"},
+                  "modeling": {"package": "./modeling.tar.gz", "releaseName": "modeling",
+                               "namespace": "modeling-demo", "values": "./modeling-values.yaml",
+                               "resolvedImages": "./modeling-images.yaml"}}
+        path = self.base / "joint.yaml"
+        path.write_text(yaml.safe_dump(config))
+        loaded = JOINT.load_config(path)
+        self.assertEqual(loaded["auth"]["package"], self.base / "auth.tar.gz")
+        config["auth"]["namespace"] = "another-demo"
+        path.write_text(yaml.safe_dump(config))
+        with self.assertRaisesRegex(ConfigError, "Consumer namespace"):
+            JOINT.load_config(path)
+
+    def test_auth_child_install_and_upgrade_use_distinct_output_contracts(self):
+        package = self.base / "onto-auth-test-amd64"
+        (package / "cce").mkdir(parents=True)
+        (package / "cce/auth-cce.py").write_text("# synthetic\n")
+        config = {"auth": {"releaseName": "auth", "namespace": "consumer-demo",
+                           "image": "registry.example.com/auth@sha256:" + "a" * 64,
+                           "values": self.base / "auth-values.yaml"},
+                  "cluster": {"context": "synthetic"}, "stateDir": self.base,
+                  "timeoutSeconds": 30}
+        response = SimpleNamespace(returncode=0, stdout="AUTH_CCE_FRESH_INSTALL=PASS ready\n", stderr="")
+        with mock.patch.object(JOINT.subprocess, "run", return_value=response) as command:
+            self.assertEqual(JOINT.invoke_auth("install", config, package, "operation-demo")["status"], "succeeded")
+            self.assertIn("--package-dir", command.call_args.args[0])
+            self.assertIn("--values", command.call_args.args[0])
+            self.assertFalse(command.call_args.kwargs["shell"])
+        response.stdout = json.dumps({"phase": "auth-ready"})
+        with mock.patch.object(JOINT.subprocess, "run", return_value=response) as command:
+            self.assertEqual(JOINT.invoke_auth("upgrade", config, package, "operation-demo")["phase"], "auth-ready")
+            self.assertNotIn("--values", command.call_args.args[0])
+        response.stdout = json.dumps({"status": "failed", "errorCode": "RESOURCE_NOT_READY"})
+        with mock.patch.object(JOINT.subprocess, "run", return_value=response):
+            with self.assertRaises(JOINT.ChildOperationError):
+                JOINT.invoke_auth("upgrade", config, package, "operation-demo")
+
+    def test_three_release_install_runs_auth_before_consumer_and_modeling(self):
+        config = {"stateDir": self.base, "cluster": {"context": "synthetic"},
+                  "compatibilityFile": self.base / "compatibility.yaml",
+                  "auth": {"package": self.base / "auth.tar.gz", "releaseName": "auth",
+                           "namespace": "consumer-demo", "values": self.base / "auth-values.yaml",
+                           "image": "registry.example.com/auth@sha256:" + "a" * 64}}
+        releases = {}
+        for side in JOINT.JOINT_SIDE_ORDER:
+            config[side] = {"package": self.base / f"{side}.tar.gz", "releaseName": side,
+                            "namespace": f"{side}-demo", "values": self.base / f"{side}-values.yaml",
+                            "resolvedImages": self.base / f"{side}-images.yaml"}
+            releases[side] = {"releaseVersion": "demo", "chartVersion": "0.1.0", "platform": "linux-amd64"}
+        calls = []
+
+        class FakeLease:
+            def __init__(self, *_): pass
+            def acquire(self): pass
+            def check(self): pass
+            def release(self): pass
+
+        def fake_invoke(side, action, _config, package, *_args, **_kwargs):
+            calls.append((side, action))
+            return {"schemaVersion": "cce-operation/v1", "status": "succeeded",
+                    "releaseVersion": package[1]["releaseVersion"],
+                    "chartVersion": package[1]["chartVersion"]}
+
+        original = sys.argv
+        try:
+            with mock.patch.object(JOINT, "load_config", return_value=config), \
+                 mock.patch.object(JOINT, "safe_extract", side_effect=lambda path, *_: self.base / path.name), \
+                 mock.patch.object(JOINT, "prepare_auth_release", return_value=(self.base, {})), \
+                 mock.patch.object(JOINT, "validate_release", side_effect=lambda _root, side: releases[side]), \
+                 mock.patch.object(JOINT, "validate_combination", return_value={}), \
+                 mock.patch.object(JOINT, "validate_auth_coordinates"), \
+                 mock.patch.object(JOINT, "validate_cross_side"), \
+                 mock.patch.object(JOINT, "read_yaml", side_effect=lambda path: {"global": {
+                     "clusterFlavor": "standard", "access": {"elb": {"id": "synthetic"},
+                         "listenerPort": 80 if "consumer" in str(path) else 8080}}}), \
+                 mock.patch.object(JOINT, "effective_images", return_value=self.base / "effective.yaml"), \
+                 mock.patch.object(JOINT, "operation_fingerprint", return_value="synthetic"), \
+                 mock.patch.object(JOINT, "consumer_release_exists", return_value=False), \
+                 mock.patch.object(JOINT, "release_exists", return_value=False), \
+                 mock.patch.object(JOINT, "Lease", FakeLease), \
+                 mock.patch.object(JOINT, "wait_for_consumer_rollout", side_effect=lambda *_: calls.append(("consumer", "rollout"))), \
+                 mock.patch.object(JOINT, "invoke", side_effect=fake_invoke), \
+                 mock.patch.object(JOINT, "ensure_auth_release", side_effect=lambda *_args, **_kwargs: (
+                     calls.append(("auth", "install")) or {"status": "succeeded"})):
+                sys.argv = ["joint-cce.py", "install", "--config", str(self.base / "joint.yaml")]
+                with redirect_stdout(StringIO()) as output:
+                    self.assertEqual(JOINT.main(), 0, output.getvalue())
+                self.assertEqual(calls, [("auth", "install"), ("consumer", "install"),
+                                         ("consumer", "rollout"),
+                                         ("consumer", "verify"),
+                                         ("modeling", "preflight"), ("modeling", "install")])
+        finally:
+            sys.argv = original
+
+    def test_joint_install_waits_for_consumer_rollout_with_one_timeout_budget(self):
+        values = self.base / "consumer-values.yaml"
+        values.write_text(yaml.safe_dump({"solver": {"enabled": True}}))
+        config = {"cluster": {"context": "synthetic"}, "timeoutSeconds": 30,
+                  "consumer": {"releaseName": "consumer", "namespace": "consumer-demo",
+                               "values": values}}
+        calls = []
+        lease = SimpleNamespace(check=lambda: calls.append("lease"))
+
+        def rollout(command, **options):
+            calls.append((command, options["timeout"]))
+            return SimpleNamespace(returncode=0)
+
+        with mock.patch.object(JOINT, "run_program", side_effect=rollout), \
+             mock.patch.object(JOINT.time, "monotonic", side_effect=[0, 1, 11, 21]):
+            JOINT.wait_for_consumer_rollout(config, [lease])
+        commands = [item for item in calls if isinstance(item, tuple)]
+        self.assertEqual([item[0][-2] for item in commands],
+                         ["deployment/consumer-runtime", "deployment/consumer-frontend",
+                          "deployment/consumer-ortools-solver"])
+        self.assertEqual([item[0][-1] for item in commands],
+                         ["--timeout=29s", "--timeout=19s", "--timeout=9s"])
+        self.assertEqual(calls.count("lease"), 3)
+
+    def test_joint_install_rollout_timeout_blocks_consumer_verify(self):
+        values = self.base / "consumer-values.yaml"
+        values.write_text("solver: {enabled: false}\n")
+        config = {"cluster": {"context": "synthetic"}, "timeoutSeconds": 5,
+                  "consumer": {"releaseName": "consumer", "namespace": "consumer-demo",
+                               "values": values}}
+        failed = SimpleNamespace(returncode=1)
+        with mock.patch.object(JOINT, "run_program", return_value=failed), \
+             mock.patch.object(JOINT.time, "monotonic", side_effect=[0, 1]):
+            with self.assertRaises(JOINT.ChildOperationError) as caught:
+                JOINT.wait_for_consumer_rollout(config, [])
+        self.assertEqual(caught.exception.payload["errorCode"], "RESOURCE_NOT_READY")
+        self.assertIn("consumer-runtime", caught.exception.payload["message"])
+        with mock.patch.object(JOINT, "run_program") as command, \
+             mock.patch.object(JOINT.time, "monotonic", side_effect=[0, 6]):
+            with self.assertRaises(JOINT.ChildOperationError):
+                JOINT.wait_for_consumer_rollout(config, [])
+        command.assert_not_called()
+
+    def test_three_release_auth_failure_blocks_business_install(self):
+        config = {"stateDir": self.base, "cluster": {"context": "synthetic"},
+                  "compatibilityFile": self.base / "compatibility.yaml",
+                  "auth": {"package": self.base / "auth.tar.gz", "releaseName": "auth",
+                           "namespace": "consumer-demo", "values": self.base / "auth-values.yaml",
+                           "image": "registry.example.com/auth@sha256:" + "a" * 64}}
+        releases = {}
+        for side in JOINT.JOINT_SIDE_ORDER:
+            config[side] = {"package": self.base / f"{side}.tar.gz", "releaseName": side,
+                            "namespace": f"{side}-demo", "values": self.base / f"{side}-values.yaml",
+                            "resolvedImages": self.base / f"{side}-images.yaml"}
+            releases[side] = {"releaseVersion": "demo", "chartVersion": "0.1.0", "platform": "linux-amd64"}
+        original = sys.argv
+        try:
+            with mock.patch.object(JOINT, "load_config", return_value=config), \
+                 mock.patch.object(JOINT, "safe_extract", side_effect=lambda path, *_: self.base / path.name), \
+                 mock.patch.object(JOINT, "prepare_auth_release", return_value=(self.base, {})), \
+                 mock.patch.object(JOINT, "validate_release", side_effect=lambda _root, side: releases[side]), \
+                 mock.patch.object(JOINT, "validate_combination", return_value={}), \
+                 mock.patch.object(JOINT, "validate_auth_coordinates"), \
+                 mock.patch.object(JOINT, "validate_cross_side"), \
+                 mock.patch.object(JOINT, "read_yaml", side_effect=lambda path: {"global": {
+                     "clusterFlavor": "standard", "access": {"elb": {"id": "synthetic"},
+                         "listenerPort": 80 if "consumer" in str(path) else 8080}}}), \
+                 mock.patch.object(JOINT, "effective_images", return_value=self.base / "effective.yaml"), \
+                 mock.patch.object(JOINT, "operation_fingerprint", return_value="synthetic"), \
+                 mock.patch.object(JOINT, "consumer_release_exists", return_value=False), \
+                 mock.patch.object(JOINT, "release_exists", return_value=False), \
+                 mock.patch.object(JOINT, "ensure_auth_release", side_effect=JOINT.ChildOperationError(
+                     "auth", "install", {"status": "failed", "errorCode": "RESOURCE_NOT_READY"})), \
+                 mock.patch.object(JOINT, "Lease"), \
+                 mock.patch.object(JOINT, "invoke") as business:
+                sys.argv = ["joint-cce.py", "install", "--config", str(self.base / "joint.yaml")]
+                with redirect_stdout(StringIO()) as output:
+                    self.assertEqual(JOINT.main(), 1)
+                business.assert_not_called()
+                self.assertEqual(json.loads(output.getvalue())["failedSide"], "auth")
+        finally:
+            sys.argv = original
     def test_upgrade_precheck_handles_delegated_and_packaged_transitions(self):
         path, installed, packages = self.upgrade_fixture()
+        manifest = yaml.safe_load(path.read_text())
+        manifest["transitions"][0]["modelingDataMigration"] = "required"
+        path.write_text(yaml.safe_dump(manifest))
         release = packages["modeling"][1]
         root = self.base / "modeling-cce-demo"
         (root / "deploy").mkdir(parents=True)
@@ -1004,11 +1817,20 @@ class CceContractTests(unittest.TestCase):
         backup_path = self.base / "backup.json"
         backup_path.write_text("{}")
         args = SimpleNamespace(backup_record=backup_path, transition_id="upgrade-demo",
-                               transition_record=record_path, lock_holder="operation-demo")
+                               transition_record=record_path, lock_holder="operation-demo", release="modeling")
         merged = {"global": {"targetArch": "amd64", "auth": {"issuer": "synthetic"}},
-                  "modeling": {"workloads": {name: {"persistence": {"existingClaim": f"{name}-data"}}
-                                             for name in UPGRADE.WORKLOADS}}}
+                  "modeling": {"workloads": {"onto": {"persistence": {"existingClaim": "onto-data"}}}},
+                  "hub": {"persistence": {"existingClaim": "hub-data"},
+                          "secrets": {"internal": {"name": "modeling-hub-internal",
+                                                   "modelingTokenKey": "modeling-token",
+                                                   "evaluationTokenKey": "evaluation-token"}}},
+                  "evaluation": {"persistence": {"existingClaim": "evaluation-data"},
+                                 "secrets": {"encryptionKey": {"name": "modeling-evaluation-internal",
+                                                               "key": "encryption-key"}}}}
         old_values = json.loads(json.dumps(merged))
+        for name in ("core", "agent"):
+            old_values["modeling"]["workloads"][name] = {
+                "persistence": {"existingClaim": f"{name}-data"}}
         def precheck():
             with mock.patch.object(INSTALL, "check_delegated_lease"), \
                  mock.patch.object(INSTALL, "installed_release", return_value=installed["modeling"]), \
@@ -1019,11 +1841,94 @@ class CceContractTests(unittest.TestCase):
         self.assertEqual(precheck(), {"synthetic": "binding"})
         args.transition_record = None
         self.assertEqual(precheck(), {"synthetic": "binding"})
-        manifest = yaml.safe_load(path.read_text())
-        manifest["transitions"][0]["modelingDataMigration"] = "required"
+        manifest["transitions"][0]["modelingDataMigration"] = "none"
         (root / "deploy/compatibility.yaml").write_text(yaml.safe_dump(manifest))
         with self.assertRaises(ConfigError):
             precheck()
+
+    def test_joint_compatibility_detects_core_migration_from_installed_values(self):
+        config = {"cluster": {"context": "synthetic"},
+                  "modeling": {"namespace": "modeling-demo", "releaseName": "modeling"}}
+        values = {"modeling": {"workloads": {"core": {"persistence": {"existingClaim": "core-data"}},
+                                              "agent": {"persistence": {"existingClaim": "agent-data"}},
+                                              "onto": {"persistence": {"existingClaim": "onto-data"}}}}}
+        with mock.patch.object(JOINT, "run", return_value=json.dumps(values)) as execute:
+            self.assertEqual(JOINT.installed_modeling_workloads(config), UPGRADE.LEGACY_WORKLOADS)
+        self.assertIn("get", execute.call_args.args)
+        values["modeling"]["workloads"].pop("agent")
+        with mock.patch.object(JOINT, "run", return_value=json.dumps(values)):
+            with self.assertRaisesRegex(ConfigError, "Core and Agent"):
+                JOINT.installed_modeling_workloads(config)
+
+    def test_core_migration_job_checks_source_count_and_releases_claim(self):
+        args = SimpleNamespace(context="synthetic", namespace="modeling-demo", release="modeling",
+                               operation_id="upgrade-demo", timeout_seconds=30,
+                               backup_record=self.base / "backup.json")
+        args.backup_record.write_text(json.dumps({"dataEvidence": {"core": 2}}))
+        merged = {"global": {"targetArch": "amd64", "resolvedImages": {"ontoModeling": "example/onto:demo"},
+                             "imageDelivery": {"pullSecretNames": []}},
+                  "modeling": {"workloads": {"onto": {"nodeSelector": {}}}}}
+        before = {"core": {"claimName": "core-data"}, "onto": {"claimName": "onto-data"}}
+        summary = {"schemaVersion": "core-project-migration/v1", "sourceProjects": 2,
+                   "migrated": 1, "skipped": 1}
+        created = []
+        calls = []
+
+        def create(_command, payload):
+            created.append(json.loads(payload))
+
+        def command(*argv):
+            calls.append(argv)
+            return json.dumps(summary) if "logs" in argv else ""
+
+        with mock.patch.object(INSTALL, "_optional_json", return_value=None), \
+             mock.patch.object(INSTALL, "_run_with_input", side_effect=create), \
+             mock.patch.object(INSTALL, "run", side_effect=command):
+            self.assertEqual(INSTALL.migrate_core_projects(args, merged, before), summary)
+        job = created[0]
+        pod = job["spec"]["template"]["spec"]
+        self.assertTrue(pod["volumes"][0]["persistentVolumeClaim"]["readOnly"])
+        self.assertEqual(pod["volumes"][1]["persistentVolumeClaim"]["claimName"], "onto-data")
+        self.assertIn("--summary-file", pod["containers"][0]["command"])
+        self.assertEqual([argv[5] for argv in calls], ["wait", "logs", "delete"])
+        self.assertIsNone(args.migration_job)
+
+        with mock.patch.object(INSTALL, "_optional_json", return_value=job), \
+             mock.patch.object(INSTALL, "_run_with_input") as create_again, \
+             mock.patch.object(INSTALL, "run", side_effect=command):
+            self.assertEqual(INSTALL.migrate_core_projects(args, merged, before), summary)
+        create_again.assert_not_called()
+
+        job["spec"]["template"]["spec"]["containers"] = []
+        with mock.patch.object(INSTALL, "_optional_json", return_value=job):
+            with self.assertRaisesRegex(ConfigError, "differs"):
+                INSTALL.migrate_core_projects(args, merged, before)
+
+        summary["sourceProjects"] = 1
+        with mock.patch.object(INSTALL, "_optional_json", return_value=None), \
+             mock.patch.object(INSTALL, "_run_with_input", side_effect=create), \
+             mock.patch.object(INSTALL, "run", side_effect=command):
+            with self.assertRaisesRegex(ConfigError, "count differs"):
+                INSTALL.migrate_core_projects(args, merged, before)
+        self.assertIsNotNone(args.migration_job)
+
+    def test_core_migration_failure_prevents_target_start(self):
+        args = SimpleNamespace(context="synthetic", namespace="modeling-demo", release="modeling",
+                               operation_id="upgrade-demo", timeout_seconds=30,
+                               backup_record=self.base / "backup.json", values=self.base / "values.yaml",
+                               resolved_images=self.base / "images.yaml")
+        merged = {"global": {"targetArch": "amd64"}}
+        before = {"core": {"claimName": "core-data"}, "onto": {"claimName": "onto-data"}}
+        with mock.patch.object(INSTALL, "run") as command, \
+             mock.patch.object(INSTALL, "wait_old_pods_gone"), \
+             mock.patch.object(INSTALL, "bindings", return_value=before), \
+             mock.patch.object(INSTALL, "assert_same_bindings"), \
+             mock.patch.object(INSTALL, "_record_upgrade_stage"), \
+             mock.patch.object(INSTALL, "migrate_core_projects", side_effect=ConfigError("migration failed")):
+            with self.assertRaisesRegex(ConfigError, "migration failed"):
+                INSTALL.apply_upgrade(args, self.base, {"releaseVersion": "m2"}, merged, before)
+        self.assertEqual(command.call_count, 1)
+        self.assertIn("modeling.workloads.onto.replicas=0", command.call_args.args)
 
     def test_standalone_upgrade_does_not_require_transition(self):
         release = {"releaseVersion": "m2", "chartVersion": "2.0.0", "platform": "linux-amd64"}
@@ -1031,7 +1936,7 @@ class CceContractTests(unittest.TestCase):
         backup_path.write_text("{}")
         args = SimpleNamespace(
             backup_record=backup_path, transition_id=None, transition_record=None,
-            lock_holder="operation-demo", standalone_upgrade=True,
+            lock_holder="operation-demo", standalone_upgrade=True, release="modeling",
         )
         merged = {
             "global": {"targetArch": "amd64", "auth": {"issuer": "synthetic"}},
@@ -1039,6 +1944,13 @@ class CceContractTests(unittest.TestCase):
                 name: {"persistence": {"existingClaim": f"{name}-data"}}
                 for name in UPGRADE.WORKLOADS
             }},
+            "hub": {"persistence": {"existingClaim": "hub-data"},
+                    "secrets": {"internal": {"name": "modeling-hub-internal",
+                                             "modelingTokenKey": "modeling-token",
+                                             "evaluationTokenKey": "evaluation-token"}}},
+            "evaluation": {"persistence": {"existingClaim": "evaluation-data"},
+                           "secrets": {"encryptionKey": {"name": "modeling-evaluation-internal",
+                                                         "key": "encryption-key"}}},
         }
         old_values = json.loads(json.dumps(merged))
         with mock.patch.object(INSTALL, "check_delegated_lease"), \
@@ -1062,7 +1974,10 @@ class CceContractTests(unittest.TestCase):
             state_dir=self.base, timeout_seconds=10, min_free_percent=15,
             backup_record=None,
         )
-        merged = {"global": {"targetArch": "amd64", "auth": {"issuer": "synthetic"}}}
+        merged = {"global": {"targetArch": "amd64", "auth": {"issuer": "synthetic"}},
+                  "modeling": {"workloads": {"onto": {"persistence": {"existingClaim": "onto-data"}}}},
+                  "hub": {"persistence": {"existingClaim": "hub-data"}},
+                  "evaluation": {"persistence": {"existingClaim": "evaluation-data"}}}
         claim_bindings = {
             name: {"claimName": f"{name}-data", "claimUid": f"uid-{name}",
                    "volumeName": f"pv-{name}"}
@@ -1072,9 +1987,10 @@ class CceContractTests(unittest.TestCase):
         with mock.patch.object(INSTALL, "installed_release", return_value={"releaseVersion": "m1"}), \
              mock.patch.object(INSTALL, "installed_values", return_value=old_values), \
              mock.patch.object(INSTALL, "bindings", return_value=claim_bindings), \
+             mock.patch.object(INSTALL, "_identity_record", return_value={}), \
              mock.patch.object(INSTALL, "_check_capacity"), \
              mock.patch.object(INSTALL, "_optional_json", return_value={"items": [{"metadata": {"name": "synthetic-class"}}]}), \
-             mock.patch.object(INSTALL, "_count_persisted_data", return_value={"core": 3, "agent": 2, "onto": 1}), \
+             mock.patch.object(INSTALL, "_count_persisted_data", return_value={"onto": 1, "hub": 2, "evaluation": 4}), \
              mock.patch.object(INSTALL, "_stop_for_backup"), \
              mock.patch.object(INSTALL, "_run_with_input", return_value=""), \
              mock.patch.object(INSTALL, "_ensure_volume_snapshot",
@@ -1083,7 +1999,7 @@ class CceContractTests(unittest.TestCase):
              mock.patch.object(INSTALL, "transition", side_effect=AssertionError("transition must not be read")):
             record_path = INSTALL.prepare_auto_backup(args, self.base, {"releaseVersion": "m2"}, merged)
         record = json.loads(record_path.read_text())
-        self.assertEqual(record["dataEvidence"], {"core": 3, "agent": 2, "onto": 1})
+        self.assertEqual(record["dataEvidence"], {"onto": 1, "hub": 2, "evaluation": 4})
         self.assertEqual(set(record["claims"]), set(UPGRADE.WORKLOADS))
         self.assertEqual(args.backup_record, record_path)
 
@@ -1091,7 +2007,10 @@ class CceContractTests(unittest.TestCase):
         args = SimpleNamespace(context="synthetic", namespace="modeling-demo", release="modeling",
                                operation_id="upgrade-demo", state_dir=self.base,
                                min_free_percent=15, backup_record=None)
-        merged = {"global": {"targetArch": "amd64", "auth": {"issuer": "synthetic"}}}
+        merged = {"global": {"targetArch": "amd64", "auth": {"issuer": "synthetic"}},
+                  "modeling": {"workloads": {"onto": {"persistence": {"existingClaim": "onto-data"}}}},
+                  "hub": {"persistence": {"existingClaim": "hub-data"}},
+                  "evaluation": {"persistence": {"existingClaim": "evaluation-data"}}}
         with mock.patch.object(INSTALL, "installed_release", return_value={"releaseVersion": "m1"}), \
              mock.patch.object(INSTALL, "installed_values", return_value=merged), \
              mock.patch.object(INSTALL, "bindings", return_value={}), \
@@ -1195,6 +2114,10 @@ class CceContractTests(unittest.TestCase):
                          name: {"replicas": 1} for name in UPGRADE.WORKLOADS}}})), \
                  mock.patch.object(INSTALL, "endpoint_results", return_value=[]), \
                  mock.patch.object(INSTALL, "preflight"), \
+                 mock.patch.object(INSTALL, "installed_values", return_value={
+                     "modeling": {"workloads": {"onto": {"persistence": {"existingClaim": "onto-data"}}}},
+                     "hub": {"persistence": {"existingClaim": "hub-data"}},
+                     "evaluation": {"persistence": {"existingClaim": "evaluation-data"}}}), \
                  mock.patch.object(INSTALL, "ensure_application_secrets"), \
                  mock.patch.object(INSTALL, "check_delegated_lease"), \
                  mock.patch.object(INSTALL, "_require_upgrade_state_ready"), \
@@ -1351,6 +2274,10 @@ class CceContractTests(unittest.TestCase):
                          name: {"replicas": 1} for name in UPGRADE.WORKLOADS}}})), \
                  mock.patch.object(INSTALL, "endpoint_results", return_value=[]), \
                  mock.patch.object(INSTALL, "preflight"), \
+                 mock.patch.object(INSTALL, "installed_values", return_value={
+                     "modeling": {"workloads": {"onto": {"persistence": {"existingClaim": "onto-data"}}}},
+                     "hub": {"persistence": {"existingClaim": "hub-data"}},
+                     "evaluation": {"persistence": {"existingClaim": "evaluation-data"}}}), \
                  mock.patch.object(INSTALL, "ensure_application_secrets"), \
                  mock.patch.object(INSTALL, "check_delegated_lease"), \
                  mock.patch.object(INSTALL, "_require_upgrade_state_ready"), \
@@ -1560,6 +2487,135 @@ class CceContractTests(unittest.TestCase):
         self.assertEqual(set(config["consumer"]), {"releaseName", "namespace"})
         self.assertEqual(set(config["modeling"]), {"releaseName", "namespace"})
 
+    def test_joint_uninstall_with_auth_removes_it_last_and_resumes(self):
+        config = {"stateDir": self.base, "cluster": {"context": "synthetic"}, "timeoutSeconds": 30,
+                  "auth": {"releaseName": "auth", "namespace": "consumer-demo"},
+                  "consumer": {"releaseName": "consumer", "namespace": "consumer-demo"},
+                  "modeling": {"releaseName": "modeling", "namespace": "modeling-demo"}}
+        existing = {side: True for side in ("auth", *JOINT.JOINT_SIDE_ORDER)}
+        calls = []
+        class FakeLease:
+            def __init__(self, *_):
+                pass
+            def acquire(self):
+                pass
+            def check(self):
+                pass
+            def release(self):
+                pass
+        def remove(_config, side):
+            calls.append(side)
+            if side == "auth" and calls.count("auth") == 1:
+                raise RuntimeError("synthetic Auth uninstall interruption")
+            existing[side] = False
+        with mock.patch.object(JOINT, "_uninstall_release_identity",
+                               side_effect=lambda _config, side: {"releaseVersion": side + "-v2",
+                               "chartVersion": "0.1.0"} if existing[side] else None), \
+             mock.patch.object(JOINT, "_assert_uninstall_state_ready"), \
+             mock.patch.object(JOINT, "_assert_uninstall_manifest_safe"), \
+             mock.patch.object(JOINT, "_assert_uninstall_release_chart"), \
+             mock.patch.object(JOINT, "_cleanup_uninstall_residuals"), \
+             mock.patch.object(JOINT, "_delete_uninstall_state"), \
+             mock.patch.object(JOINT, "_uninstall_side", side_effect=remove), \
+             mock.patch.object(JOINT, "Lease", FakeLease):
+            with self.assertRaisesRegex(RuntimeError, "synthetic Auth uninstall interruption"):
+                JOINT.uninstall_releases(config, "remove-with-auth", False, {"results": {}, "phase": "input"})
+            result = {"results": {}, "phase": "input"}
+            JOINT.uninstall_releases(config, "remove-with-auth", True, result)
+        self.assertEqual(calls, ["modeling", "consumer", "auth", "auth"])
+        self.assertEqual(json.loads((self.base / "remove-with-auth.json").read_text())["completed"],
+                         ["modeling", "consumer", "auth"])
+        self.assertEqual(result["results"]["auth"]["phase"], "uninstalled")
+
+    def test_joint_uninstall_resumes_after_auth_helm_release_was_removed(self):
+        config = {"stateDir": self.base, "cluster": {"context": "synthetic"}, "timeoutSeconds": 30,
+                  "auth": {"releaseName": "auth", "namespace": "consumer-demo"},
+                  "consumer": {"releaseName": "consumer", "namespace": "consumer-demo"},
+                  "modeling": {"releaseName": "modeling", "namespace": "modeling-demo"}}
+        existing = {side: True for side in ("auth", *JOINT.JOINT_SIDE_ORDER)}
+        calls = []
+        cleanup_attempts = []
+        class FakeLease:
+            def __init__(self, *_):
+                pass
+            def acquire(self):
+                pass
+            def check(self):
+                pass
+            def release(self):
+                pass
+        def remove(_config, side):
+            calls.append(side)
+            existing[side] = False
+        def cleanup(_config, side):
+            cleanup_attempts.append(side)
+            if side == "auth" and cleanup_attempts.count("auth") == 1:
+                raise RuntimeError("synthetic post-Helm interruption")
+        with mock.patch.object(JOINT, "_uninstall_release_identity",
+                               side_effect=lambda _config, side: {"releaseVersion": side + "-v2",
+                               "chartVersion": "0.1.0"} if existing[side] else None), \
+             mock.patch.object(JOINT, "_assert_uninstall_state_ready"), \
+             mock.patch.object(JOINT, "_assert_uninstall_manifest_safe"), \
+             mock.patch.object(JOINT, "_assert_uninstall_release_chart"), \
+             mock.patch.object(JOINT, "_cleanup_uninstall_residuals", side_effect=cleanup), \
+             mock.patch.object(JOINT, "_delete_uninstall_state"), \
+             mock.patch.object(JOINT, "_uninstall_side", side_effect=remove), \
+             mock.patch.object(JOINT, "Lease", FakeLease):
+            with self.assertRaisesRegex(RuntimeError, "synthetic post-Helm interruption"):
+                JOINT.uninstall_releases(config, "remove-auth-resume", False,
+                                         {"results": {}, "phase": "input"})
+            result = {"results": {}, "phase": "input"}
+            JOINT.uninstall_releases(config, "remove-auth-resume", True, result)
+        self.assertEqual(calls, ["modeling", "consumer", "auth"])
+        self.assertEqual(result["results"]["auth"]["phase"], "uninstalled")
+
+    def test_joint_uninstall_auth_manifest_requires_only_its_workload_and_service(self):
+        config = {"cluster": {"context": "synthetic"},
+                  "auth": {"releaseName": "auth", "namespace": "consumer-demo"},
+                  "consumer": {"releaseName": "consumer", "namespace": "consumer-demo"}}
+        manifest = ("kind: Deployment\nmetadata: {name: consumer-auth}\n"
+                    "spec: {template: {spec: {containers: [{name: auth-server}]}}}\n---\n"
+                    "kind: Service\nmetadata: {name: consumer-auth}\n"
+                    "spec: {ports: [{port: 5056}]}\n")
+        values = json.dumps({"authOnly": True, "workloadName": "consumer-auth",
+                             "serviceName": "consumer-auth"})
+        with mock.patch.object(JOINT, "run", side_effect=[manifest, values]), \
+             mock.patch.object(JOINT, "_uninstall_cluster_state", return_value={}):
+            JOINT._assert_uninstall_manifest_safe(config, "auth")
+        with mock.patch.object(JOINT, "run", side_effect=[manifest +
+                "---\nkind: PersistentVolumeClaim\nmetadata: {name: auth-data}\n", values]), \
+             mock.patch.object(JOINT, "_uninstall_cluster_state", return_value={}):
+            with self.assertRaisesRegex(ConfigError, "outside the uninstall allowlist"):
+                JOINT._assert_uninstall_manifest_safe(config, "auth")
+
+    def test_joint_auth_uninstall_requires_external_consumer(self):
+        config = {"cluster": {"context": "synthetic"},
+                  "auth": {"releaseName": "auth", "namespace": "consumer-demo"},
+                  "consumer": {"releaseName": "consumer", "namespace": "consumer-demo"}}
+        with mock.patch.object(JOINT, "_uninstall_cluster_state", return_value={"phase": "ready"}), \
+             mock.patch.object(JOINT, "run", return_value=json.dumps({"sharedAuth": {"enabled": True}})):
+            with self.assertRaisesRegex(ConfigError, "migrate Consumer-owned Auth"):
+                JOINT._assert_uninstall_state_ready(config, "consumer")
+
+    def test_joint_auth_uninstall_checks_independent_owner(self):
+        config = {"cluster": {"context": "synthetic"},
+                  "auth": {"releaseName": "auth", "namespace": "consumer-demo"}}
+        values = json.dumps({"authOnly": True, "workloadName": "auth-auth"})
+        owner = {"metadata": {"uid": "service-demo", "annotations": {
+            "meta.helm.sh/release-name": "auth", "meta.helm.sh/release-namespace": "consumer-demo"}}}
+        with mock.patch.object(JOINT, "_uninstall_cluster_state", return_value={
+                "phase": "ready", "serviceUID": "service-demo", "authPin": {"image": "synthetic"}}), \
+             mock.patch.object(JOINT, "run", return_value=values), \
+             mock.patch.object(JOINT, "kubectl", side_effect=[json.dumps(owner), json.dumps(owner)]):
+            JOINT._assert_uninstall_state_ready(config, "auth")
+        wrong_owner = {"metadata": {"annotations": {"meta.helm.sh/release-name": "other"}}}
+        with mock.patch.object(JOINT, "_uninstall_cluster_state", return_value={
+                "phase": "ready", "serviceUID": "service-demo", "authPin": {"image": "synthetic"}}), \
+             mock.patch.object(JOINT, "run", return_value=values), \
+             mock.patch.object(JOINT, "kubectl", side_effect=[json.dumps(owner), json.dumps(wrong_owner)]):
+            with self.assertRaisesRegex(ConfigError, "ownership or state changed"):
+                JOINT._assert_uninstall_state_ready(config, "auth")
+
     def test_joint_uninstall_modeling_version_comes_from_installed_values(self):
         config = {"cluster": {"context": "synthetic"},
                   "modeling": {"releaseName": "modeling", "namespace": "modeling-demo"}}
@@ -1635,6 +2691,18 @@ class CceContractTests(unittest.TestCase):
              mock.patch.object(JOINT, "run", side_effect=AssertionError("unexpected delete")):
             with self.assertRaisesRegex(ConfigError, "changed during uninstall"):
                 JOINT._delete_uninstall_state(config, "consumer", "remove-demo")
+
+    def test_joint_uninstall_can_remove_a_modeling_release_waiting_for_dependencies(self):
+        config = {"cluster": {"context": "synthetic"},
+                  "modeling": {"releaseName": "modeling", "namespace": "modeling-demo"}}
+        for stage in ("waiting-dependencies", "verifying-service"):
+            with mock.patch.object(JOINT, "_uninstall_cluster_state",
+                                   side_effect=[{"stage": stage}, {"stage": stage}, None]), \
+                 mock.patch.object(JOINT, "run") as command:
+                JOINT._assert_uninstall_state_ready(config, "modeling")
+                JOINT._delete_uninstall_state(config, "modeling", "remove-demo")
+                self.assertEqual(command.call_args.args[5:8],
+                                 ("delete", "configmap", "modeling-cce-state"))
 
     def test_joint_main_reports_failed_child_and_preserves_original_error_after_lease_warning(self):
         class FakeLease:
@@ -1739,9 +2807,9 @@ class CceContractTests(unittest.TestCase):
         digest = "registry.example.com/jiuwenbox@sha256:" + "c" * 64
         consumer_map.write_text(yaml.safe_dump({"global": {"resolvedImages": {"jiuwenbox": digest}}}))
         modeling_map.write_text(yaml.safe_dump({"global": {"resolvedImages": {
-            "modeling": "registry.example.com/modeling@sha256:" + "a" * 64,
-            "modelingAgent": "registry.example.com/agent@sha256:" + "a" * 64,
             "ontoModeling": "registry.example.com/onto@sha256:" + "a" * 64,
+            "knowledgeHub": "registry.example.com/hub@sha256:" + "a" * 64,
+            "evaluation": "registry.example.com/evaluation@sha256:" + "a" * 64,
         }}}))
         config = {"consumer": {"resolvedImages": consumer_map}, "modeling": {"resolvedImages": modeling_map}}
         result = JOINT.effective_images(config, self.base, "consumer", "operation-demo")
@@ -1812,6 +2880,22 @@ class CceContractTests(unittest.TestCase):
                                   leaseDurationSeconds=1)
         self.assertEqual(released["spec"].get("renewTime"), "1970-01-01T00:00:00.000000Z")
 
+    def test_joint_lease_acquires_released_auth_migration_lease(self):
+        config = {"cluster": {"context": "synthetic"},
+                  "consumer": {"releaseName": "consumer", "namespace": "consumer-demo"}}
+        lease = JOINT.Lease(config, "consumer", "joint-operation")
+        released = {"metadata": {"resourceVersion": "7"},
+                    "spec": {"holderIdentity": "", "renewTime": JOINT.lease_timestamp(
+                        JOINT.datetime.now(JOINT.timezone.utc)), "leaseDurationSeconds": 30}}
+        with mock.patch.object(lease, "_get", return_value=released), \
+             mock.patch.object(JOINT, "kubectl") as replace, \
+             mock.patch.object(JOINT.threading, "Thread") as thread:
+            lease.acquire()
+        self.assertEqual(replace.call_args.args[3:6], ("replace", "-f", "-"))
+        self.assertEqual(json.loads(replace.call_args.kwargs["input_text"])["spec"]["holderIdentity"],
+                         "joint-operation")
+        thread.return_value.start.assert_called_once()
+
     def test_offline_package_layout_excludes_consumer_image(self):
         output = self.base / "release.tar.gz"
 
@@ -1830,7 +2914,7 @@ class CceContractTests(unittest.TestCase):
         old = sys.argv
         try:
             sys.argv = ["package-cce.py", "--version", "demo", "--arch", "amd64", "--output", str(output)]
-            for image_id in ("modeling", "modelingAgent", "ontoModeling", "knowledgeHub", "evaluation"):
+            for image_id in ("ontoModeling", "knowledgeHub", "evaluation"):
                 sys.argv.extend(("--image", f"{image_id}=registry.example.com/{image_id}@sha256:" + "a" * 64))
             from contextlib import redirect_stdout
             from io import StringIO
@@ -1848,7 +2932,7 @@ class CceContractTests(unittest.TestCase):
             self.assertIn("modeling-cce-demo-amd64/images/evaluation.tar", names)
             release = yaml.safe_load(stream.extractfile("modeling-cce-demo-amd64/release.yaml"))
             chart = yaml.safe_load(stream.extractfile("modeling-cce-demo-amd64/deploy/chart/Chart.yaml"))
-        self.assertEqual(set(release["images"]), {"modeling", "modelingAgent", "ontoModeling", "knowledgeHub", "evaluation"})
+        self.assertEqual(set(release["images"]), {"ontoModeling", "knowledgeHub", "evaluation"})
         self.assertEqual(chart["appVersion"], release["releaseVersion"])
         self.assertEqual(release["imageDependencies"]["jiuwenbox"]["sourceSide"], "consumer")
         unpacked = self.base / "unpacked"
@@ -1886,13 +2970,12 @@ class CceContractTests(unittest.TestCase):
             sys.argv = old
         self.assertFalse(any(command[:2] == ("docker", "pull") for command in calls))
         self.assertFalse(any(command[:2] == ("docker", "tag") for command in calls))
-        self.assertEqual(len([command for command in calls if command[:2] == ("docker", "save")]), 5)
+        self.assertEqual(len([command for command in calls if command[:2] == ("docker", "save")]), 3)
         unpacked = self.base / "unpacked-local"
         unpacked.mkdir()
         release = validate_release(safe_extract(output, unpacked, "modeling"), "modeling")
         self.assertTrue(all(record["sourceManifestDigest"] is None for record in release["images"].values()))
         self.assertEqual({record["archiveRef"] for record in release["images"].values()}, {
-            "modeling-offline/modeling:demo", "modeling-offline/modeling-agent:demo",
             "modeling-offline/onto-modeling:demo", "modeling-offline/knowledge-hub:demo",
             "modeling-offline/evaluation:demo",
         })
@@ -2008,7 +3091,7 @@ class CceContractTests(unittest.TestCase):
         run_test_command(["bash", str(script_dir / "build-images.sh"), "demo", "amd64"],
                        env=environment, check=True, capture_output=True, text=True)
         local_calls = calls.read_text().splitlines()
-        self.assertEqual(sum("--load" in line for line in local_calls), 5)
+        self.assertEqual(sum("--load" in line for line in local_calls), 3)
         self.assertFalse(any("--push" in line or "imagetools" in line for line in local_calls))
         self.assertTrue(any("modeling-offline/onto-modeling:demo" in line for line in local_calls))
         self.assertTrue(any(f"--build-arg PIP_INDEX_URL={default_index}" in line
@@ -2017,8 +3100,8 @@ class CceContractTests(unittest.TestCase):
         run_test_command(["bash", str(script_dir / "build-images.sh"), "demo", "amd64", "registry.example.com/demo"],
                        env=environment, check=True, capture_output=True, text=True)
         registry_calls = calls.read_text().splitlines()
-        self.assertEqual(sum("--push" in line for line in registry_calls), 5)
-        self.assertEqual(sum("imagetools inspect" in line for line in registry_calls), 5)
+        self.assertEqual(sum("--push" in line for line in registry_calls), 3)
+        self.assertEqual(sum("imagetools inspect" in line for line in registry_calls), 3)
         self.assertFalse(any("--load" in line for line in registry_calls))
 
     def test_build_script_prepares_missing_dependencies_then_reuses_cache(self):
@@ -2059,7 +3142,7 @@ class CceContractTests(unittest.TestCase):
         self.assertEqual(sum(line.startswith("pip:") for line in first_calls), 1)
         self.assertTrue(any(line.startswith("pip:") and f"-i {index_url}" in line for line in first_calls))
         self.assertEqual(sum(line.startswith("npm:") for line in first_calls), 1)
-        self.assertEqual(sum(line.startswith("docker:buildx build") for line in first_calls), 5)
+        self.assertEqual(sum(line.startswith("docker:buildx build") for line in first_calls), 3)
         marker = root / "modeling/onto-modeling/vendor/wheels/.prepared-amd64"
         self.assertEqual(marker.read_text().strip(),
                          f"{checksum(requirements)}:{hashlib.sha256(index_url.encode()).hexdigest()}")
@@ -2069,7 +3152,7 @@ class CceContractTests(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr)
         second_calls = calls.read_text().splitlines()
         self.assertFalse(any(line.startswith("pip:") or line.startswith("npm:") for line in second_calls))
-        self.assertEqual(sum(line.startswith("docker:buildx build") for line in second_calls), 5)
+        self.assertEqual(sum(line.startswith("docker:buildx build") for line in second_calls), 3)
         requirements.write_text("synthetic-package==2.0\n")
         calls.unlink()
         third = run_test_command(command, env=environment, check=False, capture_output=True, text=True)
@@ -2111,13 +3194,13 @@ class CceContractTests(unittest.TestCase):
         self.assertFalse((root / "modeling/onto-modeling/vendor/drawio/webapp/index.html").exists())
         docker_calls = calls.read_text().splitlines()
         self.assertFalse(any(line.startswith("run") for line in docker_calls))
-        self.assertEqual(sum(line.startswith("buildx build") for line in docker_calls), 5)
+        self.assertEqual(sum(line.startswith("buildx build") for line in docker_calls), 3)
         calls.unlink()
         second = run_test_command(["bash", str(script_dir / "build-images.sh"), "demo", "amd64"],
                                 env=environment, capture_output=True, text=True)
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertIn("host npm unavailable", second.stderr)
-        self.assertEqual(sum(line.startswith("buildx build") for line in calls.read_text().splitlines()), 5)
+        self.assertEqual(sum(line.startswith("buildx build") for line in calls.read_text().splitlines()), 3)
 
         for name in ("mktemp", "rm"):
             (binary / name).symlink_to(shutil.which(name))
@@ -2129,7 +3212,7 @@ class CceContractTests(unittest.TestCase):
                                      env=environment, capture_output=True, text=True)
         self.assertEqual(failed_pack.returncode, 0, failed_pack.stderr)
         self.assertIn("drawio preparation failed", failed_pack.stderr)
-        self.assertEqual(sum(line.startswith("buildx build") for line in calls.read_text().splitlines()), 5)
+        self.assertEqual(sum(line.startswith("buildx build") for line in calls.read_text().splitlines()), 3)
 
     def test_build_offline_orchestrates_steps_and_default_output(self):
         script_dir = self.base / "modeling/deploy/cce"
@@ -2202,7 +3285,7 @@ class CceContractTests(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = calls.read_text().splitlines()
-        self.assertLess(lines.index("docker:image rm modeling-offline/modeling:demo modeling-offline/modeling-agent:demo modeling-offline/onto-modeling:demo modeling-offline/knowledge-hub:demo modeling-offline/evaluation:demo"),
+        self.assertLess(lines.index("docker:image rm modeling-offline/onto-modeling:demo modeling-offline/knowledge-hub:demo modeling-offline/evaluation:demo"),
                         len(lines))
 
     def test_hub_evaluation_chart_and_secret_contract(self):
@@ -2404,11 +3487,13 @@ class CceContractTests(unittest.TestCase):
                                operation_id="upgrade-demo", state_dir=self.base, timeout_seconds=10,
                                min_free_percent=15, backup_record=None)
         old = {"global": {"targetArch": "amd64", "auth": {"issuer": "synthetic"}},
+               "modeling": {"workloads": {name: {"persistence": {"existingClaim": name + "-pvc"}}
+                                          for name in UPGRADE.LEGACY_WORKLOADS}},
                "hub": {"persistence": {"existingClaim": "hub-pvc"}},
                "evaluation": {"persistence": {"existingClaim": "evaluation-pvc"}}}
         before = {name: {"claimName": name + "-pvc", "claimUid": name + "-uid",
-                         "volumeName": name + "-pv"} for name in UPGRADE.EXPANDED_WORKLOADS}
-        evidence = dict.fromkeys(UPGRADE.EXPANDED_WORKLOADS, 1)
+                         "volumeName": name + "-pv"} for name in UPGRADE.LEGACY_EXPANDED_WORKLOADS}
+        evidence = dict.fromkeys(UPGRADE.LEGACY_EXPANDED_WORKLOADS, 1)
         with mock.patch.object(INSTALL, "installed_release", return_value={"releaseVersion": "m1"}), \
              mock.patch.object(INSTALL, "installed_values", return_value=old), \
              mock.patch.object(INSTALL, "bindings", return_value=before), \
@@ -2420,19 +3505,88 @@ class CceContractTests(unittest.TestCase):
              mock.patch.object(INSTALL, "_ensure_volume_snapshot", side_effect=lambda _args, name, _claim, *_rest: {"snapshotName": name + "-snapshot", "snapshotUid": name + "-snapshot-uid"}):
             record = INSTALL.prepare_auto_backup(args, self.base, {"releaseVersion": "m2"}, old)
         saved = json.loads(record.read_text())
-        self.assertEqual(set(saved["claims"]), set(UPGRADE.EXPANDED_WORKLOADS))
+        self.assertEqual(set(saved["claims"]), set(UPGRADE.LEGACY_EXPANDED_WORKLOADS))
         self.assertEqual(saved["dataEvidence"], evidence)
         self.assertEqual(saved["secretUids"], {"modeling-evaluation-internal": "uid-1"})
 
     def test_installed_workload_selection_covers_first_and_later_upgrade(self):
         legacy = {"modeling": {"workloads": {name: {"persistence": {"existingClaim": name + "-pvc"}}
-                                            for name in UPGRADE.WORKLOADS}}}
-        self.assertEqual(UPGRADE.installed_workloads(legacy), UPGRADE.WORKLOADS)
+                                            for name in UPGRADE.LEGACY_WORKLOADS}}}
+        self.assertEqual(UPGRADE.installed_workloads(legacy), UPGRADE.LEGACY_WORKLOADS)
         expanded = {**legacy, "hub": {"persistence": {"existingClaim": "hub-pvc"}},
                     "evaluation": {"persistence": {"existingClaim": "evaluation-pvc"}}}
-        self.assertEqual(UPGRADE.installed_workloads(expanded), UPGRADE.EXPANDED_WORKLOADS)
+        self.assertEqual(UPGRADE.installed_workloads(expanded), UPGRADE.LEGACY_EXPANDED_WORKLOADS)
+        current = {"modeling": {"workloads": {"onto": legacy["modeling"]["workloads"]["onto"]}},
+                   "hub": expanded["hub"], "evaluation": expanded["evaluation"]}
+        self.assertEqual(UPGRADE.installed_workloads(current), UPGRADE.WORKLOADS)
         with self.assertRaises(ConfigError):
             UPGRADE.installed_workloads({**legacy, "hub": expanded["hub"]})
+
+    def test_legacy_upgrade_detects_retirement_without_extra_flag(self):
+        args = SimpleNamespace(backup_record=self.base / "backup.json", transition_id=None,
+                               transition_record=None, lock_holder="operation-demo",
+                               standalone_upgrade=True, release="modeling")
+        args.backup_record.write_text("{}")
+        target = {"global": {"targetArch": "amd64", "auth": {"issuer": "synthetic"}},
+                  "modeling": {"workloads": {"onto": {"persistence": {"existingClaim": "onto-data"}}}},
+                  "hub": {"persistence": {"existingClaim": "hub-data"}},
+                  "evaluation": {"persistence": {"existingClaim": "evaluation-data"}}}
+        old = {"global": target["global"],
+               "modeling": {"workloads": {name: {"persistence": {"existingClaim": name + "-data"}}
+                                          for name in UPGRADE.LEGACY_WORKLOADS}}}
+        source_bindings = {name: {"claimName": name + "-data"}
+                           for name in UPGRADE.LEGACY_WORKLOADS}
+        with mock.patch.object(INSTALL, "check_delegated_lease"), \
+             mock.patch.object(INSTALL, "installed_release", return_value={
+                 "releaseVersion": "old", "chartVersion": "0.1.0"}), \
+             mock.patch.object(INSTALL, "installed_values", return_value=old), \
+             mock.patch.object(INSTALL, "bindings", return_value=source_bindings), \
+             mock.patch.object(INSTALL, "verified_snapshots"):
+            result = INSTALL.upgrade_precheck(args, self.base, {"releaseVersion": "new"}, target)
+        self.assertEqual(result, source_bindings)
+        self.assertEqual(args.backup_workloads, UPGRADE.LEGACY_WORKLOADS)
+
+    def test_retired_claim_cannot_be_reused_for_hub_or_evaluation(self):
+        target = {"modeling": {"workloads": {"onto": {"persistence": {"existingClaim": "onto-data"}}}},
+                  "hub": {"persistence": {"existingClaim": "core-data"}},
+                  "evaluation": {"persistence": {"existingClaim": "evaluation-data"}}}
+        source = {"core": {"claimName": "core-data"}, "agent": {"claimName": "agent-data"},
+                  "onto": {"claimName": "onto-data"}}
+        with self.assertRaisesRegex(ConfigError, "hub target PVC belongs to a retired"):
+            UPGRADE.assert_no_retired_claim_reuse(target, source)
+
+    def test_retired_snapshot_groups_are_never_pruned(self):
+        args = SimpleNamespace(namespace="modeling-demo", release="modeling", context="synthetic",
+                               snapshot_retention=1)
+        snapshots = []
+        for group, workloads, created in (
+                ("legacy", UPGRADE.LEGACY_EXPANDED_WORKLOADS, "2026-01-01T00:00:00Z"),
+                ("newer", UPGRADE.WORKLOADS, "2026-01-03T00:00:00Z"),
+                ("older", UPGRADE.WORKLOADS, "2026-01-02T00:00:00Z")):
+            for workload in workloads:
+                snapshots.append({"metadata": {"name": f"{group}-{workload}",
+                    "creationTimestamp": created, "labels": {
+                        "modeling.cce/backup-group": group, "modeling.cce/workload": workload}}})
+        with mock.patch.object(INSTALL, "_optional_json", return_value={"items": snapshots}), \
+             mock.patch.object(INSTALL, "run_program", return_value=SimpleNamespace(returncode=0)) as delete:
+            self.assertEqual(INSTALL._cleanup_old_successful_snapshots(args), [])
+        names = [call.args[0][call.args[0].index("volumesnapshot") + 1]
+                 for call in delete.call_args_list]
+        self.assertEqual(set(names), {f"older-{name}" for name in UPGRADE.WORKLOADS})
+
+    def test_retired_workloads_must_be_absent_after_upgrade(self):
+        args = SimpleNamespace(namespace="modeling-demo", release="modeling",
+                               retired_ingress_names=("modeling-core-entry",))
+        with mock.patch.object(INSTALL, "_optional_json", return_value=None), \
+             mock.patch.object(INSTALL, "kube", return_value={"items": []}):
+            INSTALL.verify_retired_workloads(args)
+        with mock.patch.object(INSTALL, "_optional_json", side_effect=[{}, None, None, None]):
+            with self.assertRaisesRegex(ConfigError, "retired core deployment still exists"):
+                INSTALL.verify_retired_workloads(args)
+        with mock.patch.object(INSTALL, "_optional_json", side_effect=[None, None, None, None, {}]), \
+             mock.patch.object(INSTALL, "kube", return_value={"items": []}):
+            with self.assertRaisesRegex(ConfigError, "retired Core Ingress"):
+                INSTALL.verify_retired_workloads(args)
 
     def test_modeling_plan_accepts_verified_synthetic_release(self):
         root = self.package()
@@ -2469,7 +3623,7 @@ class CceContractTests(unittest.TestCase):
         result = json.loads(output.getvalue())
         self.assertEqual(code, 0, result)
         self.assertEqual(result["status"], "succeeded")
-        self.assertEqual(len(result["endpoints"]), 6)
+        self.assertEqual(len(result["endpoints"]), 3)
         self.assertEqual(Path(result["artifacts"][0]).read_text(), "apiVersion: v1\nkind: ConfigMap\n")
 
 

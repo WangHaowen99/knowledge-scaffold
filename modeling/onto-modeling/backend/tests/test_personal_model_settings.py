@@ -10,13 +10,14 @@
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from app import config
 from app.services import agent_sessions, auth, model_settings, personal_model_settings
 from app.services.agent_sessions import SessionError, SessionManager
-from app.services.engines import jiuwen
+from app.services.engines import claude, jiuwen
 from app.services.engines.base import CONFIG_ERROR, PERSONAL_CONFIG_ERROR, config_error_for
 from app.services.engines.claude import ClaudeEngine, _session_env
 
@@ -238,6 +239,9 @@ class FakeClient:
 def pool(data_dir, auth_on, monkeypatch):
     monkeypatch.setattr(config, "MAX_ACTIVE_SESSIONS", 4)
     monkeypatch.setattr(agent_sessions, "SDK_AVAILABLE", True)
+    if not claude.SDK_AVAILABLE:
+        monkeypatch.setattr(claude, "ClaudeAgentOptions",
+                            lambda **options: SimpleNamespace(**{"settings": None, **options}), raising=False)
     created = []
 
     def create_client(self, options):
@@ -246,6 +250,7 @@ def pool(data_dir, auth_on, monkeypatch):
         return client
 
     monkeypatch.setattr(ClaudeEngine, "_create_client", create_client)
+    monkeypatch.setattr(claude, "_mark_workspace_trusted", lambda _cwd: None)
     model_settings.save(ADMIN_URL, ADMIN_KEY, "")
     return SessionManager(), created
 
@@ -342,6 +347,9 @@ def client(data_dir, monkeypatch):
         "user-token": {"sub": "employee_0001", "role": "user"},
     }
     monkeypatch.setattr(auth, "verify_access_token", lambda token: users.get(token))
+    monkeypatch.setattr(auth, "current_user", lambda token, claims: {
+        "sub": claims["sub"], "role": claims["role"], "password_change_required": False,
+    })
     return TestClient(app)
 
 

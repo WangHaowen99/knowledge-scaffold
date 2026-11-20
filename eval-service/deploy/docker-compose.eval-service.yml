@@ -18,6 +18,7 @@ services:
       EVAL_PORT: '5180'
       # 整栈默认地址。deploy.sh 以 --env-file 传入运行配置，配置中的同名值优先；凭据只在运行配置中
       EVAL_AUTH_URL: ${EVAL_AUTH_URL:-http://auth-server:5056}
+      EVAL_AUTH_ISSUER: ${EVAL_AUTH_ISSUER:-http://auth-server:5056}
       EVAL_HUB_URL: ${EVAL_HUB_URL:-http://knowledge-hub:8200}
       EVAL_CONSUMER_API_URL: ${EVAL_CONSUMER_API_URL:-http://backend:5055}
       # 任务中心按当前用户登录查询 onto-modeling 显示项目名称，不可达时只隐藏名称，评测不受影响；
@@ -52,7 +53,7 @@ services:
 networks:
   consumer-net:
     external: true
-    name: ${CONSUMER_NETWORK:?Set CONSUMER_NETWORK to the Docker network shared with auth-server, knowledge-hub and consumer}
+    name: ${CONSUMER_NETWORK:-onto-auth-network}
 
 volumes:
   evaluation-data:

@@ -1,183 +1,3 @@
-{{- $nl2sql := .Values.modeling.nl2sql | default dict }}
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: {{ include "modeling.name" . }}-core
-spec:
-  replicas: {{ .Values.modeling.workloads.core.replicas }}
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: core}
-  template:
-    metadata:
-      labels: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: core}
-    spec:
-      {{- if .Values.global.imageDelivery.pullSecretNames }}
-      imagePullSecrets: {{ include "modeling.pullSecrets" . | nindent 8 }}
-      {{- end }}
-      nodeSelector:
-        {{- toYaml (merge (dict "kubernetes.io/arch" .Values.global.targetArch) .Values.modeling.workloads.core.nodeSelector .Values.modeling.workloads.jiuwenbox.nodeSelector) | nindent 8 }}
-      {{- if .Values.modeling.workloads.jiuwenbox.runtimeClassName }}
-      runtimeClassName: {{ .Values.modeling.workloads.jiuwenbox.runtimeClassName | quote }}
-      {{- end }}
-      containers:
-        - name: core
-          image: {{ .Values.global.resolvedImages.modeling | quote }}
-          imagePullPolicy: IfNotPresent
-          ports:
-            - {name: http, containerPort: 5100}
-            - {name: mcp, containerPort: 5188}
-          env:
-            - {name: PORT, value: "5100"}
-            - {name: DATA_DIR, value: /data}
-            - {name: MODELING_MCP_HOST, value: "0.0.0.0"}
-            - {name: MODELING_MCP_PORT, value: "5188"}
-            - {name: MODELING_MCP_PUBLIC_BASE_URL, value: {{ .Values.modeling.config.mcpPublicBaseUrl | quote }}}
-            - {name: MODELING_LLM_BASE_URL, value: {{ .Values.modeling.config.llmBaseUrl | quote }}}
-            - {name: MODELING_LLM_MODEL, value: {{ .Values.modeling.config.llmModel | quote }}}
-            - {name: MODELING_TASK_LLM_BASE_URL, value: {{ .Values.modeling.config.taskLlmBaseUrl | quote }}}
-            - {name: MODELING_TASK_LLM_MODEL, value: {{ .Values.modeling.config.taskLlmModel | quote }}}
-            {{- if $nl2sql.enabled }}
-            - {name: MODELING_EVAL_BINDING_URL, value: "http://{{ include "modeling.name" . }}-nl2sql:5600"}
-            {{- end }}
-            - {name: JIUWENBOX_SOCKET_PATH, value: /run/jiuwenbox/jiuwenbox.sock}
-            - {name: MODELING_AGENT_BASE_URL, value: "http://{{ include "modeling.name" . }}-agent:5110"}
-            - {name: AUTH_ISSUER_URL, value: {{ include "modeling.authUrl" . | quote }}}
-            - {name: AUTH_JWT_ISSUER, value: {{ .Values.global.auth.issuer | quote }}}
-            - {name: AUTH_JWT_AUDIENCE, value: {{ .Values.global.auth.audience | quote }}}
-            - {name: CONSUMER_API_URL, value: {{ include "modeling.consumerUrl" . | quote }}}
-            - name: MODELING_SERVICE_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.global.integration.serviceTokenSecret.name | quote }}
-                  key: {{ .Values.global.integration.serviceTokenSecret.key | quote }}
-            {{- if .Values.modeling.secrets.llmApiKey.name }}
-            - name: MODELING_LLM_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.modeling.secrets.llmApiKey.name | quote }}
-                  key: {{ .Values.modeling.secrets.llmApiKey.key | quote }}
-            {{- end }}
-            {{- if .Values.modeling.secrets.evalDbUrl.name }}
-            - name: EVAL_DB_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.modeling.secrets.evalDbUrl.name | quote }}
-                  key: {{ .Values.modeling.secrets.evalDbUrl.key | quote }}
-            {{- end }}
-            {{- if .Values.modeling.secrets.cleanupToken.name }}
-            - name: MODELING_MCP_CLEANUP_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.modeling.secrets.cleanupToken.name | quote }}
-                  key: {{ .Values.modeling.secrets.cleanupToken.key | quote }}
-            {{- end }}
-          volumeMounts:
-            - {name: data, mountPath: /data}
-            - {name: socket, mountPath: /run/jiuwenbox, readOnly: true}
-          startupProbe:
-            httpGet: {path: /health, port: http}
-            failureThreshold: 30
-            periodSeconds: 10
-          readinessProbe:
-            httpGet: {path: /health, port: http}
-            periodSeconds: 10
-          livenessProbe:
-            httpGet: {path: /health, port: http}
-            periodSeconds: 30
-          resources: {{ toYaml .Values.modeling.workloads.core.resources | nindent 12 }}
-        - name: jiuwenbox
-          image: {{ .Values.global.resolvedImages.jiuwenbox | quote }}
-          imagePullPolicy: IfNotPresent
-          securityContext:
-            privileged: true
-          env:
-            - {name: JIUWENBOX_LISTEN, value: "unix:///run/jiuwenbox/jiuwenbox.sock"}
-            - {name: JIUWENBOX_UDS_MODE, value: "0666"}
-            - {name: JIUWENBOX_POLICY_PATH, value: /app/jiuwenbox-policy.yaml}
-          volumeMounts:
-            - {name: socket, mountPath: /run/jiuwenbox}
-            - {name: runtime-attestation, mountPath: /run/onto-runtime-attestation}
-            - {name: policy, mountPath: /app/jiuwenbox-policy.yaml, subPath: jiuwenbox-policy.yaml, readOnly: true}
-            - {name: cgroup, mountPath: /sys/fs/cgroup}
-          startupProbe:
-            exec:
-              command: [python3, -c, "import socket,http.client;s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);s.connect('/run/jiuwenbox/jiuwenbox.sock');c=http.client.HTTPConnection('localhost');c.sock=s;c.request('GET','/health');exit(0 if c.getresponse().status==200 else 1)"]
-            failureThreshold: 30
-            periodSeconds: 10
-          readinessProbe:
-            exec:
-              command: [python3, -c, "import socket,http.client;s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);s.connect('/run/jiuwenbox/jiuwenbox.sock');c=http.client.HTTPConnection('localhost');c.sock=s;c.request('GET','/health');exit(0 if c.getresponse().status==200 else 1)"]
-            periodSeconds: 10
-          resources: {{ toYaml .Values.modeling.workloads.jiuwenbox.resources | nindent 12 }}
-      volumes:
-        - name: data
-          persistentVolumeClaim: {claimName: {{ .Values.modeling.workloads.core.persistence.existingClaim | quote }}}
-        - name: socket
-          emptyDir: {}
-        - name: runtime-attestation
-          emptyDir: {}
-        - name: policy
-          configMap: {name: {{ include "modeling.name" . }}-jiuwenbox-policy}
-        - name: cgroup
-          hostPath: {path: /sys/fs/cgroup, type: Directory}
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: {{ include "modeling.name" . }}-agent
-spec:
-  replicas: {{ .Values.modeling.workloads.agent.replicas }}
-  strategy: {type: Recreate}
-  selector:
-    matchLabels: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: agent}
-  template:
-    metadata:
-      labels: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: agent}
-    spec:
-      {{- if .Values.global.imageDelivery.pullSecretNames }}
-      imagePullSecrets: {{ include "modeling.pullSecrets" . | nindent 8 }}
-      {{- end }}
-      nodeSelector:
-        {{- toYaml (merge (dict "kubernetes.io/arch" .Values.global.targetArch) .Values.modeling.workloads.agent.nodeSelector) | nindent 8 }}
-      containers:
-        - name: agent
-          image: {{ .Values.global.resolvedImages.modelingAgent | quote }}
-          imagePullPolicy: IfNotPresent
-          ports: [{name: http, containerPort: 5110}]
-          env:
-            # 覆盖 Kubernetes 为 modeling-agent Service 自动注入的同名 URL 变量。
-            - {name: MODELING_AGENT_PORT, value: "5110"}
-            - {name: MODELING_AGENT_DATA_DIR, value: /data}
-            - {name: MODELING_CORE_BASE_URL, value: "http://{{ include "modeling.name" . }}-core:5100"}
-            - {name: MODELING_LLM_BASE_URL, value: {{ .Values.modeling.config.llmBaseUrl | quote }}}
-            - {name: MODELING_LLM_MODEL, value: {{ .Values.modeling.config.llmModel | quote }}}
-            - name: MODELING_SERVICE_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.global.integration.serviceTokenSecret.name | quote }}
-                  key: {{ .Values.global.integration.serviceTokenSecret.key | quote }}
-            {{- if .Values.modeling.secrets.llmApiKey.name }}
-            - name: MODELING_LLM_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.modeling.secrets.llmApiKey.name | quote }}
-                  key: {{ .Values.modeling.secrets.llmApiKey.key | quote }}
-            {{- end }}
-          volumeMounts: [{name: data, mountPath: /data}]
-          startupProbe:
-            httpGet: {path: /health, port: http}
-            failureThreshold: 30
-            periodSeconds: 10
-          readinessProbe:
-            httpGet: {path: /health, port: http}
-            periodSeconds: 10
-          resources: {{ toYaml .Values.modeling.workloads.agent.resources | nindent 12 }}
-      volumes:
-        - name: data
-          persistentVolumeClaim: {claimName: {{ .Values.modeling.workloads.agent.persistence.existingClaim | quote }}}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -197,6 +17,16 @@ spec:
       nodeSelector:
         {{- toYaml (merge (dict "kubernetes.io/arch" .Values.global.targetArch) .Values.modeling.workloads.onto.nodeSelector) | nindent 8 }}
       terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: wait-for-auth
+          image: {{ .Values.global.resolvedImages.ontoModeling | quote }}
+          imagePullPolicy: IfNotPresent
+          command: [python, -m, app.auth_startup]
+          env:
+            - {name: ONTO_WEB_AUTH_URL, value: {{ include "modeling.authUrl" . | quote }}}
+            - {name: ONTO_WEB_AUTH_ISSUER, value: {{ .Values.global.auth.issuer | quote }}}
+            - {name: ONTO_WEB_AUTH_AUDIENCE, value: {{ .Values.global.auth.audience | quote }}}
+            - {name: PYTHONDONTWRITEBYTECODE, value: "1"}
       containers:
         - name: onto
           image: {{ .Values.global.resolvedImages.ontoModeling | quote }}
@@ -205,10 +35,17 @@ spec:
           env:
             - {name: ONTO_WEB_HOST, value: "0.0.0.0"}
             - {name: ONTO_WEB_PORT, value: "8100"}
+            - {name: ONTO_WEB_MODELING_CORE_RETIRED, value: "true"}
             - {name: ONTO_WEB_AUTH_URL, value: {{ include "modeling.authUrl" . | quote }}}
             - {name: ONTO_WEB_AUTH_ISSUER, value: {{ .Values.global.auth.issuer | quote }}}
             - {name: ONTO_WEB_AUTH_AUDIENCE, value: {{ .Values.global.auth.audience | quote }}}
-            - {name: ONTO_WEB_MODELING_URL, value: "http://{{ include "modeling.name" . }}-core:5100"}
+            {{- if .Values.modeling.secrets.authAdminToken.name }}
+            - name: ONTO_WEB_AUTH_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.modeling.secrets.authAdminToken.name | quote }}
+                  key: {{ .Values.modeling.secrets.authAdminToken.key | quote }}
+            {{- end }}
             - {name: ONTO_HUB_URL, value: "http://{{ include "modeling.name" . }}-hub:8200"}
             - name: ONTO_HUB_SERVICE_TOKEN
               valueFrom:
@@ -219,23 +56,9 @@ spec:
             - {name: ONTO_WEB_EVAL_PUBLIC_URL, value: {{ .Values.modeling.config.evalPublicUrl | quote }}}
             - {name: ONTO_WEB_EVAL_URL, value: "http://{{ include "modeling.name" . }}-evaluation:5180"}
             - {name: ONTO_WEB_SANDBOX_GATEWAY_URL, value: "http://{{ include "modeling.name" . }}-sandbox-gateway:8110"}
-            - name: ONTO_WEB_MODELING_ASSOCIATION_URL
-              value: "http://{{ include "modeling.name" . }}-core:5100"
-            - name: ONTO_WEB_MODELING_ASSOCIATION_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.global.integration.serviceTokenSecret.name | quote }}
-                  key: {{ .Values.global.integration.serviceTokenSecret.key | quote }}
             - {name: ONTO_WEB_JIUWEN_BASE_URL, value: {{ .Values.modeling.config.ontoJiuwenBaseUrl | quote }}}
             - {name: ONTO_WEB_JIUWEN_MODEL, value: {{ .Values.modeling.config.ontoJiuwenModel | quote }}}
             - {name: ANTHROPIC_BASE_URL, value: {{ .Values.modeling.config.ontoAnthropicBaseUrl | quote }}}
-            {{- if .Values.modeling.secrets.cleanupToken.name }}
-            - name: ONTO_WEB_MODELING_CLEANUP_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.modeling.secrets.cleanupToken.name | quote }}
-                  key: {{ .Values.modeling.secrets.cleanupToken.key | quote }}
-            {{- end }}
             {{- if .Values.modeling.secrets.anthropicAuthToken.name }}
             - name: ANTHROPIC_AUTH_TOKEN
               valueFrom:
@@ -328,58 +151,6 @@ spec:
           configMap: {name: {{ include "modeling.name" . }}-jiuwenbox-policy}
         - name: cgroup
           hostPath: {path: /sys/fs/cgroup, type: Directory}
-{{- if $nl2sql.enabled }}
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: {{ include "modeling.name" . }}-nl2sql
-spec:
-  replicas: 1
-  strategy: {type: Recreate}
-  selector:
-    matchLabels: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: nl2sql}
-  template:
-    metadata:
-      labels: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: nl2sql}
-    spec:
-      {{- if .Values.global.imageDelivery.pullSecretNames }}
-      imagePullSecrets: {{ include "modeling.pullSecrets" . | nindent 8 }}
-      {{- end }}
-      nodeSelector:
-        {{- toYaml (merge (dict "kubernetes.io/arch" .Values.global.targetArch) .Values.modeling.workloads.core.nodeSelector) | nindent 8 }}
-      containers:
-        - name: nl2sql
-          image: {{ .Values.global.resolvedImages.modeling | quote }}
-          imagePullPolicy: IfNotPresent
-          command: [node, --experimental-sqlite, dist/nl2sql/server.js]
-          ports: [{name: http, containerPort: 5600}]
-          env:
-            - {name: NL2SQL_HOST, value: "0.0.0.0"}
-            - {name: NL2SQL_PORT, value: "5600"}
-            - {name: MODELING_LLM_BASE_URL, value: {{ .Values.modeling.config.llmBaseUrl | quote }}}
-            - {name: MODELING_LLM_MODEL, value: {{ .Values.modeling.config.llmModel | quote }}}
-            - name: EVAL_DB_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.modeling.secrets.evalDbUrl.name | quote }}
-                  key: {{ .Values.modeling.secrets.evalDbUrl.key | quote }}
-            {{- if .Values.modeling.secrets.llmApiKey.name }}
-            - name: MODELING_LLM_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.modeling.secrets.llmApiKey.name | quote }}
-                  key: {{ .Values.modeling.secrets.llmApiKey.key | quote }}
-            {{- end }}
-          startupProbe:
-            httpGet: {path: /health, port: http}
-            failureThreshold: 30
-            periodSeconds: 10
-          readinessProbe:
-            httpGet: {path: /health, port: http}
-            periodSeconds: 10
-          resources: {{ toYaml $nl2sql.resources | nindent 12 }}
-{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment

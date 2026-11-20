@@ -31,6 +31,10 @@ def evaluation_hub_archive(request, tmp_path, monkeypatch):
     lock = threading.Lock()
     monkeypatch.setattr(auth, 'ENABLED', True)
     monkeypatch.setattr(auth, 'verify_access_token', lambda token: {'sub': 'operator_a', 'iss': 'https://example.com'})
+    monkeypatch.setattr(auth, 'current_user', lambda token, claims: {
+        'sub': claims['sub'], 'role': claims.get('role', 'user'),
+        'password_change_required': False,
+    })
 
     def publish_request(request_id):
         row = requests.get(request_id)
