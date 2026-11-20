@@ -363,6 +363,45 @@ def test_within_consumer_limits_passes(checker, tmp_path: Path):
     assert issues(checker, ontology, "容量上限") == []
 
 
+def test_consumer_limit_defaults_match_publish_rules(checker, monkeypatch):
+    from app.services.consumer_package_rules.limits import LimitsConfig
+
+    for variable in ('ONTOLOGY_OBJECT_MAX_COUNT', 'ONTOLOGY_OPERATION_MAX_COUNT',
+                     'ENTITY_ATTRIBUTE_MAX_COUNT', 'ONTOLOGY_OPERATION_MAX_CHARS'):
+        monkeypatch.delenv(variable, raising=False)
+    limits = LimitsConfig.from_env()
+    assert checker.CONSUMER_OBJECT_MAX == limits.ontology_object_max_count == 1000
+    assert checker.CONSUMER_OPERATION_MAX == limits.ontology_operation_max_count == 500
+    assert checker.CONSUMER_ATTRIBUTE_MAX == limits.entity_attribute_max_count == 300
+    assert checker.CONSUMER_OPERATION_MAX_CHARS == limits.operation_max_chars == 30000
+
+
+@pytest.mark.parametrize('kind,limit_name', [
+    ('objects', 'CONSUMER_OBJECT_MAX'),
+    ('operations', 'CONSUMER_OPERATION_MAX'),
+    ('attributes', 'CONSUMER_ATTRIBUTE_MAX'),
+    ('characters', 'CONSUMER_OPERATION_MAX_CHARS'),
+])
+@pytest.mark.parametrize('extra', [0, 1])
+def test_consumer_limit_boundaries(checker, tmp_path, kind, limit_name, extra):
+    count = getattr(checker, limit_name) + extra
+    object_doc = checker.OntologyDoc(tmp_path / 'Item.md', 'object', '')
+    operation_doc = checker.OntologyDoc(tmp_path / 'Operation.md', 'operation', '')
+    if kind == 'objects':
+        documents = {f'Item{index}': object_doc for index in range(count)}
+    elif kind == 'operations':
+        documents = {f'Operation{index}': operation_doc for index in range(count)}
+    elif kind == 'attributes':
+        object_doc.attribute_rows = [{} for _ in range(count)]
+        documents = {'Item': object_doc}
+    else:
+        operation_doc.raw = '示' * count
+        documents = {'Operation': operation_doc}
+    found = checker.check_package_limits(documents, documents)
+    assert len(found) == extra
+    assert all(item.severity == '警告' for item in found)
+
+
 # --- 8. 主键必须是真实列 ---
 
 def test_primary_key_missing_from_table_columns_is_error(checker, tmp_path: Path, monkeypatch):

@@ -75,7 +75,7 @@ def _archives(manager, tmp_path) -> dict[str, Path]:
         archives[name] = export(name, cases._plain(manager, build))
     archives['solver_contract'] = export('solver_contract', solver_fixtures._with_contract(manager)[0])
     pid, root = solver_fixtures._with_contract(manager)
-    for index in range(101):
+    for index in range(501):
         (root / f'ontology/operation/合成操作{index}.md').write_text(f'# 合成操作{index}\n', encoding='utf-8')
     archives['solver_over_operation_limit'] = export('solver_over_operation_limit', pid)
     solver, prefix = cases._solver_archive(manager, tmp_path)

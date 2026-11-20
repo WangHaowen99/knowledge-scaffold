@@ -1364,10 +1364,10 @@ def check_entity_keys(doc: OntologyDoc) -> list:
 
 
 # consumer 导入知识包时的容量上限（consumer 后端 LimitsConfig 默认值，部署可通过环境变量调整）
-CONSUMER_OBJECT_MAX = 200
-CONSUMER_OPERATION_MAX = 100
-CONSUMER_ATTRIBUTE_MAX = 100
-CONSUMER_OPERATION_MAX_CHARS = 15000
+CONSUMER_OBJECT_MAX = 1000
+CONSUMER_OPERATION_MAX = 500
+CONSUMER_ATTRIBUTE_MAX = 300
+CONSUMER_OPERATION_MAX_CHARS = 30000
 
 
 def check_package_limits(all_docs: dict, check_docs: dict) -> list:

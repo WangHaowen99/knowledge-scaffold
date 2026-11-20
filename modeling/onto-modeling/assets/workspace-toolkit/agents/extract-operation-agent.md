@@ -106,7 +106,7 @@ For each candidate:
 
 Rules:
 - File name = operation/process name in Chinese，**不得以「规则」或「指标」结尾**：判定条款写进本文档的 `逻辑描述`，独立成文档的规则与指标属于 `ontology/rule/`、`ontology/metric/`。报告来源的操作保留 `OPERATION_CANDIDATES` 原名，实际文件路径与原名记录使用 `DOCUMENT_NAMES`，不要自行替换标点。文件名就是知识包里的操作 key：不超过 80 字符，不含 `/ \ # ? & |` 与 `..`。
-- 单个操作文档不超过 15000 字符、全项目操作不超过 100 个（consumer 导入上限）；篇幅过长时拆成子操作。
+- 单个操作文档默认不超过 30000 字符、全项目操作默认不超过 500 个（consumer 默认导入上限，部署覆盖时以实际配置为准）；篇幅过长时拆成子操作。
 - 与operation的关联（双向强约束）：
   - `调用operation` 行的 `[[X]]` 集合必须**等于** `逻辑描述` 中所有 `调用[[X]]逻辑文档` 调用点的集合（多一个少一个都会被 rule-check 拦下）。
   - `被operation调用` 行**只在**本 operation 真的由某个父 operation 在其 `逻辑描述` 中显式 `调用[[本operation]]逻辑文档` 时才填父 operation；否则按下表填"无（…触发方式…）"。这是一个反向关系，写错会被规则层和语义层各拦一次。
