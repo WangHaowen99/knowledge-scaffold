@@ -7,7 +7,7 @@ import { compareVersions, satisfies } from '../src/api/mock/plugins-data.js';
 import { compatibilityOf, register as registerPlugins } from '../src/api/mock/routes-plugins.js';
 import { register as registerSettings } from '../src/api/mock/routes-settings.js';
 import {
-  blockedView, bringsView, cardFoot, cardTags, catOf, categoryOf, compatRows, compatView, devSkillOf, effectiveNote, enableToast, impactText, matchCard, recView,
+  blockedView, bringsView, cardFoot, cardTags, catOf, categoryOf, compatRows, compatView, dependencyInstruction, devSkillOf, effectiveNote, enableToast, impactText, matchCard, recView,
   PACK_CATEGORIES, sectionsOf, uiChip, uiEffectText, updateRoute, updateToast, versionOf,
 } from '../src/pages/plugins/catalogModel.js';
 import {
@@ -96,6 +96,8 @@ test('卡片标记：只标带页面的能力包、提供方批次、租户发�
   assert.deepEqual(prov.tags.map((t) => t.text), ['第二批']);
   const tenant = cardTags(card({ category: 'industry', publisher: { kind: 'tenant', label: '示例租户' }, ui: null }));
   assert.deepEqual(tenant.tags, [{ text: '租户 · 示例租户', tone: 'indigo' }]);
+  const dependent = cardTags(card({ name: 'deterministic-execution', requires: { depends: { codegen: '>=0.9' } } }));
+  assert.deepEqual(dependent.tags, [{ text: '依赖：代码生成与求解', tone: 'gray' }]);
   assert.equal(versionOf(card({ project_status: 'update', locked_version: '0.9.1', version: '0.10.0' })), '0.9.1');
   assert.equal(versionOf(card({ project_status: 'available', locked_version: '0.2.0', version: '0.2.1' })), '0.2.1');
 });
@@ -125,6 +127,13 @@ test('兼容检查到弹窗：通过的页面接口在不带页面的包上不�
   assert.equal(updateRoute(card({ category: 'industry' }), { ok: true, effective: 'immediate' }), 'confirm');
   assert.equal(updateRoute(card(), { ok: true, effective: 'next_message' }), 'direct');
   assert.equal(updateRoute(card({ category: 'industry' }), { ok: false }), 'blocked');
+});
+
+test('确定性执行缺少 codegen 时提示先启用依赖', () => {
+  const compatibility = { ok: false, checks: [{ id: 'depends', ok: false, detail: 'codegen >=0.9（本项目 未启用）' }] };
+  assert.equal(dependencyInstruction({ name: 'deterministic-execution' }, compatibility), '请先启用“代码生成与求解”，再启用“确定性执行”。');
+  assert.equal(dependencyInstruction({ name: 'trace' }, compatibility), '');
+  assert.equal(dependencyInstruction({ name: 'deterministic-execution' }, { ...compatibility, ok: true }), '');
 });
 
 test('兼容检查（R13）：全部通过折成一行可展开；有不通过的默认展开、只列不通过的', () => {

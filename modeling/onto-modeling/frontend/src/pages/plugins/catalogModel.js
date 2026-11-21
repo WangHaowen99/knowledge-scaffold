@@ -18,6 +18,7 @@ export const PACK_ICON_CLASS = { capability: 'cap', industry: 'ind', system: 'sy
 export const categoryOf = (p) => (p?.category === 'node' ? 'capability' : p?.category);
 // 详情页英雄区的大图标：能力包按包名（与新建向导第 3 步一致），其余按分类
 const PACK_ICON = { core: 'cube', trace: 'flask', codegen: 'code', diagram: 'branch' };
+const PACK_LABEL = { core: '基础建模', codegen: '代码生成与求解', 'deterministic-execution': '确定性执行' };
 export const packIcon = (p) => PACK_ICON[p?.name] || PACK_CATEGORIES[categoryOf(p)]?.[1] || 'puzzle';
 
 // 纯数据包（行业包、系统知识包）现读即生效，更新前先给看更新弹窗
@@ -97,6 +98,11 @@ export function cardTags(p) {
   if (pub) tags.push(pub);
   const ui = categoryOf(p) === 'capability' ? uiChip(p.ui) : null;
   if (ui && ui.text !== '无独立页面') tags.push(ui);
+  const dependencies = Object.entries(p?.requires?.depends || {}).filter(([name]) => name !== 'core');
+  if (dependencies.length) tags.push({
+    text: `依赖：${dependencies.map(([name]) => PACK_LABEL[name] || name).join('、')}`,
+    tone: 'gray',
+  });
   const batch = p.category === 'provider' ? BATCH[p.batch] : null;
   if (batch) tags.push({ text: batch[0], tone: batch[1] });
   return { tags };
@@ -190,6 +196,12 @@ export function uiEffectText(effect, ui) {
   if (ui?.kind === 'page') return `启用后左栏出现${(ui.pages || []).map((x) => `「${x.title}」`).join('')}`;
   if (ui?.kind === 'subpages') return ui.note || '';
   return stripNone(ui?.note) || '能力体现在助手对话和 Studio 里';
+}
+
+export function dependencyInstruction(pack, compatibility) {
+  if (compatibility?.ok || pack?.name !== 'deterministic-execution') return '';
+  const failed = (compatibility?.checks || []).find((check) => check.id === 'depends' && !check.ok);
+  return failed ? '请先启用“代码生成与求解”，再启用“确定性执行”。' : '';
 }
 
 /** 什么时候生效（契约 PL-03 effective），一行 */

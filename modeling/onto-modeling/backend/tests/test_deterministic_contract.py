@@ -458,6 +458,40 @@ def test_agent_proposal_returns_all_findings(manager: WorkspaceManager):
     assert all(any(f"test_vectors[{index}].expected_issues" in message for message in messages) for index in range(6))
 
 
+@pytest.mark.parametrize("issues,known,conflict", [
+    ([{"field": "intent", "message": "请分开提问，本次不执行"}], {}, False),
+    ([], {}, True),
+    ([{"field": "quantity", "message": "请提供数量"}], {"quantity": 2}, True),
+    ([{"field": " intent ", "message": "请分开提问"}], {}, False),
+    ([{}], {}, True),
+    (["invalid"], {}, True),
+    ([{"field": None}], {}, True),
+    ([{"field": " "}], {}, True),
+    (None, {}, True),
+    ([{"field": "intent"}], None, True),
+])
+def test_agent_preflight_preserves_compound_rejection_examples(issues, known, conflict):
+    from app.services.deterministic_drafts import _routing_findings
+
+    vector = {
+        "name": "复合原句", "text": "请报价并查询库存", "expected_matched": True,
+        "known_arguments": known, "expected_issues": issues,
+    }
+    candidates = [
+        SimpleNamespace(
+            operation=name, enabled=True, routing_all_terms=[], routing_any_terms=[term],
+            tests=json.dumps([vector]),
+        )
+        for name, term in [("费用核算", "报价"), ("数量查询", "库存")]
+    ]
+
+    findings = _routing_findings(candidates)
+
+    assert bool(findings) is conflict
+    if conflict:
+        assert all(item["code"] == "deterministic_draft_routing_ambiguous" for item in findings)
+
+
 def test_agent_preflight_detects_cross_operation_routes_without_executing_code():
     from app.services.deterministic_drafts import _routing_findings
 

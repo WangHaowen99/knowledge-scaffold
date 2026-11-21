@@ -45,6 +45,19 @@ def _routing_findings(contracts) -> list[dict]:
             text = _normalize_token(vector["text"])
             if not vector.get("expected_matched", True) or _NON_EXECUTION_MARKER.search(text):
                 continue
+            # Rejection examples do not promise a successful unique route. The
+            # Consumer rejects ambiguous requests before running either parser.
+            # Keep checking examples whose issues are resolved by known inputs.
+            known = vector.get("known_arguments", {})
+            issues = vector.get("expected_issues", [])
+            if isinstance(known, dict) and isinstance(issues, list) and any(
+                isinstance(issue, dict)
+                and isinstance(issue.get("field"), str)
+                and issue["field"].strip()
+                and issue["field"].strip() not in known
+                for issue in issues
+            ):
+                continue
             matches = []
             for candidate in enabled:
                 all_terms = [_normalize_token(term) for term in candidate.routing_all_terms]

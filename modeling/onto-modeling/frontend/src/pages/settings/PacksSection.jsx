@@ -4,7 +4,7 @@ import { useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
-import { errorText } from '../../api/errors.js';
+import { errorText, packActionErrorText } from '../../api/errors.js';
 import {
   Button, Chip, Icon, Menu, Note, Table, useOutside,
 } from '../../ui/index.jsx';
@@ -57,7 +57,8 @@ export function PacksSection({ d, reload, archived }) {
       toast(switchToast(op, p, res), op === 'cancel_pending' ? 'undo' : 'check');
     } catch (e) {
       const checks = e.details?.checks?.filter((c) => !c.ok).map((c) => c.label).join('、');
-      toast(checks ? `${errorText(e)}：${checks}` : errorText(e), 'alert');
+      const message = packActionErrorText(e);
+      toast(checks ? `${message}：${checks}` : message, 'alert');
     } finally {
       setBusy(null);
       reload('packs', 'assembly');

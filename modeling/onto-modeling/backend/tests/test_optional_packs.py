@@ -280,6 +280,9 @@ def test_catalog_marks_default_on_and_categories(env):
         "core", *DEFAULT_ON}
     assert items["trace"]["ui"]["kind"] == "page" and items["trace"]["ui"]["pages"] == [{"id": "scenarios", "title": "场景模拟"}]
     assert items["domain-extend"]["ui"]["kind"] == "none" and items["trace"]["badges"] == ["recommended"]
+    deterministic = items["deterministic-execution"]
+    assert deterministic["requires"]["depends"] == {"codegen": ">=0.9"}
+    assert deterministic["ui"] == {"kind": "none", "note": "启用后在“代码生成 → 确定性执行”中配置。"}
 
 
 def test_project_no_longer_carries_research_mode(env):

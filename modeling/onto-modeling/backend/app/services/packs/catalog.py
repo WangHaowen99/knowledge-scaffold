@@ -61,6 +61,7 @@ def card(manager, name: str, project: dict | None) -> dict | None:
     return {
         "name": name, "version": latest, "label": manifest.label, "description": manifest.description,
         "category": manifest.category, "publisher": _publisher(repository, name, latest, manifest), "ui": _ui(manifest),
+        "requires": {"depends": dict(manifest.depends)},
         "batch": manifest.raw.get("batch"), "badges": list(manifest.raw.get("badges") or []),
         "latest": latest, "channel": channel,
         "project_status": status, "locked_version": locked, "usage_note": None,

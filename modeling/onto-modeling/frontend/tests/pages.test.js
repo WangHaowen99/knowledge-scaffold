@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBody } from '../src/pages/create/createBody.js';
+import { deterministicDependency, deterministicDependencyMissing } from '../src/pages/create/deterministicDependency.js';
 import { passwordRules } from '../src/pages/login/passwordRules.js';
 import { activityText, projectLook } from '../src/pages/projects/projectCard.js';
 import { layoutThumb } from '../src/pages/workbench/thumb.js';
@@ -44,6 +45,23 @@ test('新建项目请求体：只带上传完成的资料，示例项目带 exam
   assert.deepEqual(body.industry_packs, [{ name: 'industry-retail' }]);
   assert.equal(body.build_mode, 'L4');
   assert.deepEqual(body.example, { id: 'seed_example' });
+});
+
+test('新建项目：确定性执行缺少 codegen 时只提示并阻止，不联动选择', () => {
+  const packs = [
+    { name: 'core', label: '基础建模', required: true },
+    { name: 'codegen', label: '代码生成与求解' },
+    { name: 'deterministic-execution', label: '确定性执行', requires: { depends: { codegen: '>=0.9' } } },
+  ];
+  const caps = { codegen: false, 'deterministic-execution': true };
+  const dependency = deterministicDependency(packs);
+  assert.deepEqual([dependency.pack.name, dependency.label, dependency.range], [
+    'deterministic-execution', '代码生成与求解', '>=0.9',
+  ]);
+  assert.equal(deterministicDependencyMissing(caps), true);
+  assert.equal(caps.codegen, false);
+  assert.equal(deterministicDependencyMissing({ ...caps, codegen: true }), false);
+  assert.equal(deterministicDependencyMissing({ codegen: false, 'deterministic-execution': false }), false);
 });
 
 const node = (id, placement, display_state = 'not_ready') => ({ id, title: id, placement, display_state, state: display_state });

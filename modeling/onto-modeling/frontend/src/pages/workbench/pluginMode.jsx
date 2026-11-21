@@ -4,7 +4,7 @@ import {
 } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
-import { errorText } from '../../api/errors.js';
+import { errorText, packActionErrorText } from '../../api/errors.js';
 import { Button, Chip, Drawer, Icon, cx } from '../../ui/index.jsx';
 import { CC, MSys } from './parts.jsx';
 import {
@@ -184,7 +184,7 @@ export function PluginDraftCard({ card, cardKey }) {
   const head = draftCardHead(draft, card, mode);
   const run = async (key, fn) => {
     setBusy(key);
-    try { await fn(); } catch (e) { toast(errorText(e), 'alert'); } finally { setBusy(null); }
+    try { await fn(); } catch (e) { toast(packActionErrorText(e), 'alert'); } finally { setBusy(null); }
   };
   const install = () => run('install', async () => {
     try {
