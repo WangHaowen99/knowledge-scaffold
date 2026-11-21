@@ -1395,6 +1395,11 @@ def _execution_declaration_owner(
             "Operation '{}' execution has conflicting type and mode discriminators.".format(path.name),
         )
     if has_type and str(execution.get("type") or "").strip().casefold() == "deterministic":
+        if package_schema_version not in (None, "0.1"):
+            raise DeterministicPackageError(
+                "execution_declaration_invalid",
+                "Operation '{}' deterministic execution requires package schema_version 0.1.".format(path.name),
+            )
         return _DETERMINISTIC_EXECUTION_OWNER
     execution_mode = str(execution.get("mode") or "").strip() if has_mode else ""
     if execution_mode == "solver_workflow":

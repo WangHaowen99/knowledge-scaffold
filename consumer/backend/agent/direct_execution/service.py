@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 from urllib.parse import quote, quote_plus
@@ -124,7 +125,11 @@ _INLINE_ARGUMENT_SEPARATOR = re.compile(r"^[,，:：;；]\s*")
 _INLINE_ARGUMENT_GROUP = re.compile(r"^[([]\s*")
 _NON_EXECUTION_MARKER = re.compile(
     r"(?:不(?:想|要|再|应|需|必)?|无需|禁止|别|请勿|不得)(?:再)?(?:执行|运行|调用)"
-    r"|\b(?:do\s+not|don't|dont|never)\s+(?:execute|run|invoke)\b",
+    r"|\b(?:do\s+not|don't|dont|never)\s+(?:execute|run|invoke)\b"
+    # Route explicit explanation-only clauses to reasoning before keyword
+    # ambiguity can reject them. Do not match negated or quoted mentions.
+    r"|(?:^|[，,。.!！?？;；:：])\s*(?:请\s*)?(?:只|仅|只需|只要|仅需)\s*(?:解释|说明|介绍)"
+    r"|(?:^|[,.!?;:])\s*(?:please\s+)?(?:only|just)\s+explain\b",
     re.IGNORECASE,
 )
 _OPEN_QUOTES = frozenset("\"'`“‘「『《〈")
@@ -495,6 +500,47 @@ class DeterministicExecutionService:
             )
             if checkpoint_error is not None:
                 return checkpoint_error
+            pending = request.checkpoint.get("missing_fields") or []
+            response_field = str(pending[0]) if pending else ""
+            response = (request.interaction_response or {}).get("value")
+            response_schema = self._root_property_schema(input_schema, response_field)
+            structured_clarification = (
+                response_schema.get("type") in ("array", "object")
+                and response_field not in request.arguments
+                and isinstance(response, str)
+                and isinstance(self._coerce_interaction_value(
+                    response, property_schema=response_schema,
+                ), str)
+            )
+            if (
+                spec.parser_path and response_field
+                and (response_field not in self._root_schema_argument_names(input_schema)
+                     or structured_clarification)
+            ):
+                # Natural-language clarification of a complex field belongs to
+                # the package parser, not directly in an array/object argument.
+                if not isinstance(response, str) or not response.strip():
+                    return Failed("missing_arguments", "Please provide a clarified business request.",
+                                  operation_key=spec.operation_key)
+                known = deterministic_business_arguments(request.checkpoint.get("arguments"))
+                if structured_clarification:
+                    unresolved = {response_field}
+                    unresolved.update(
+                        str(issue.get("field") or "")
+                        for issue in request.checkpoint.get("pending_parser_issues") or []
+                        if isinstance(issue, Mapping)
+                    )
+                    known = {key: value for key, value in known.items() if key not in unresolved}
+                clarified = replace(
+                    request, user_request=response, checkpoint=None, interaction_response=None,
+                    arguments={**known, **request.arguments},
+                    context={**request.context, "requested_operation_key": spec.operation_key},
+                )
+                return self.execute(
+                    clarified, enabled=enabled, project_root=project_root, timeout_seconds=timeout_seconds,
+                    artifact_writer=artifact_writer, observer=observer, cancel_event=cancel_event,
+                    ontology_manifest=ontology_manifest,
+                )
             checkpoint_arguments.update(
                 deterministic_business_arguments(
                     request.checkpoint.get("arguments")
@@ -508,6 +554,31 @@ class DeterministicExecutionService:
             )
             if response_error is not None:
                 return response_error
+            # A user's invalid answer is recoverable input, not a failed
+            # execution. Validate before advancing pending parser questions so
+            # the accepted fields and remaining questions are retained.
+            pending_fields = request.checkpoint.get("missing_fields") or []
+            response_field = str(pending_fields[0]) if pending_fields else ""
+            if response_field and response_field not in request.arguments:
+                try:
+                    response_errors = [
+                        error for error in self._schema_validator(input_schema).iter_errors(checkpoint_arguments)
+                        if list(error.absolute_path) and str(error.absolute_path[0]) == response_field
+                    ]
+                except Exception as exc:
+                    return Failed("execution_schema_invalid", "The deterministic input schema could not be resolved.",
+                                  operation_key=spec.operation_key, internal_detail=type(exc).__name__)
+                if response_errors:
+                    checkpoint_arguments.pop(response_field, None)
+                    return self._await_for_issue(
+                        issue={"field": response_field,
+                               "message": self._invalid_response_prompt(input_schema, response_field)},
+                        remaining_issues=list(request.checkpoint.get("pending_parser_issues") or []),
+                        request=request, spec=spec, ontology_id=ontology.id, ontology_version=ontology.version,
+                        arguments=checkpoint_arguments, current_runtime_revision=current_runtime_revision,
+                        provider_dependency=provider_dependency,
+                        input_schema=input_schema,
+                    )
 
         parser_arguments: dict[str, Any] = {}
         # A checkpoint already contains the accepted parser output. Re-running
@@ -536,6 +607,12 @@ class DeterministicExecutionService:
             )
             if runtime_failure is not None:
                 return runtime_failure
+            if isinstance(parser_result, NotApplicable):
+                try:
+                    verify_deterministic_package_lock(ontology_dir, cancel_event=cancel_event)
+                except DeterministicPackageError as exc:
+                    return Failed(exc.code, str(exc), internal_detail=str(exc))
+                return parser_result
             parser_arguments = dict(parser_result.get("arguments") or {})
             known_argument_names = set(checkpoint_arguments) | set(request.arguments)
             issues = []
@@ -560,6 +637,7 @@ class DeterministicExecutionService:
                     },
                     current_runtime_revision=current_runtime_revision,
                     provider_dependency=provider_dependency,
+                    input_schema=input_schema,
                 )
 
         arguments = {
@@ -588,6 +666,7 @@ class DeterministicExecutionService:
                 arguments=arguments,
                 current_runtime_revision=current_runtime_revision,
                 provider_dependency=provider_dependency,
+                input_schema=input_schema,
             )
         try:
             canonical_json_bytes(arguments)
@@ -1149,7 +1228,12 @@ class DeterministicExecutionService:
         if not matches:
             return NotApplicable("no_deterministic_match")
         if len(matches) > 1:
-            return Failed("operation_ambiguous", "Multiple deterministic operations matched.")
+            operation_names = "、".join(spec.operation_key for spec in matches)
+            return Failed(
+                "operation_ambiguous",
+                f"当前请求同时匹配多个操作：{operation_names}。"
+                "本次尚未执行，请拆成多条请求，每次只描述一个操作及其所需条件。",
+            )
         return matches[0]
 
     @staticmethod
@@ -1245,7 +1329,7 @@ class DeterministicExecutionService:
         known_arguments: Mapping[str, Any],
         runtime_argument_keys: frozenset[str],
         cancel_event: Any = None,
-    ) -> dict[str, Any] | Failed:
+    ) -> dict[str, Any] | Failed | NotApplicable:
         payload = {
             "text": request.user_request,
             "known_arguments": dict(known_arguments),
@@ -1372,6 +1456,18 @@ class DeterministicExecutionService:
                 internal_detail=",".join(parser_runtime_fields),
             )
         if parsed["matched"] is not True:
+            # Declared keywords only nominate a candidate. A valid, empty
+            # negative parser result can decline that implicit candidate;
+            # explicit commands and resumed operations remain fail-closed.
+            if (
+                not request.checkpoint
+                and not str(request.context.get("requested_operation_key") or "").strip()
+                and not self._request_matches_spec(request.user_request, spec)
+                and not known_arguments
+                and not parsed["arguments"]
+                and not parsed["issues"]
+            ):
+                return NotApplicable("parser_no_deterministic_match")
             return Failed(
                 "parser_input_not_applicable",
                 "The selected deterministic parser rejected the input.",
@@ -1638,6 +1734,28 @@ class DeterministicExecutionService:
                 missing.append(name)
         return missing
 
+    @classmethod
+    def _invalid_response_prompt(cls, schema: Mapping[str, Any], field: str) -> str:
+        """Describe declared constraints without echoing the rejected value."""
+        prop = cls._root_property_schema(schema, field)
+        label = str(prop.get("description") or prop.get("title") or field)
+        constraints = []
+        for key, title in (("type", "类型"), ("minimum", "最小值"), ("maximum", "最大值"),
+                           ("minLength", "最短长度"), ("maxLength", "最长长度"), ("format", "格式")):
+            if key in prop:
+                constraints.append(f"{title}：{prop[key]}")
+        detail = "；".join(constraints) or "请符合该字段的输入约束"
+        return f"{label}输入不符合要求（{detail}），请重新提供。" + cls._input_hint(prop)
+
+    @staticmethod
+    def _input_hint(property_schema: Mapping[str, Any]) -> str:
+        kind = property_schema.get("type")
+        if kind == "integer":
+            return "本次只填写该项的整数数值，不要附带字段名、单位或其他参数。"
+        if kind == "number":
+            return "本次只填写该项的数值，不要附带字段名、单位或其他参数。"
+        return ""
+
     def _await_for_missing(
         self,
         *,
@@ -1662,7 +1780,7 @@ class DeterministicExecutionService:
         property_schema = self._root_property_schema(schema, field)
         prompt = str(
             property_schema.get("description") or property_schema.get("title") or "Please provide '{}'.".format(field)
-        )
+        ) + self._input_hint(property_schema)
         enum_values = property_schema.get("enum")
         selectable_values = list(enum_values) if isinstance(enum_values, list) and enum_values else []
         interaction = {
@@ -1715,6 +1833,7 @@ class DeterministicExecutionService:
         arguments: Mapping[str, Any],
         current_runtime_revision: str,
         provider_dependency: Optional[LockedDependency],
+        input_schema: Optional[Mapping[str, Any]] = None,
     ) -> DeterministicOutcome:
         if not isinstance(issue, Mapping):
             return Failed(
@@ -1737,6 +1856,11 @@ class DeterministicExecutionService:
                 internal_detail=str(issue.get("message") or field),
             )
         options = [str(item) for item in (issue.get("options") or []) if str(item).strip()]
+        if not options and input_schema:
+            property_schema = self._root_property_schema(input_schema, field)
+            enum_values = property_schema.get("enum")
+            if isinstance(enum_values, list) and enum_values:
+                options = list(enum_values)
         interaction: dict[str, Any] = {
             "id": "det-{}-{}-{}".format(request.runtime_context.run_id, spec.operation_key, field),
             "type": "single_choice" if options else "input",
@@ -1748,9 +1872,14 @@ class DeterministicExecutionService:
                 "missing_fields": [field],
             },
         }
+        if input_schema:
+            hint = self._input_hint(self._root_property_schema(input_schema, field))
+            if hint and hint not in interaction["prompt"]:
+                interaction["prompt"] += hint
         if options:
             interaction["options"] = [
-                {"id": str(index), "label": value, "value": value} for index, value in enumerate(options, start=1)
+                {"id": str(index), "label": self._interaction_option_label(value), "value": value}
+                for index, value in enumerate(options, start=1)
             ]
         return AwaitingInput(
             interaction=interaction,

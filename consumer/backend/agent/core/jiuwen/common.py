@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from typing import Any, Dict, Optional
@@ -10,6 +11,13 @@ from typing import Any, Dict, Optional
 
 class JiuwenBackendUnavailable(RuntimeError):
     """Raised when the openJiuwen runtime dependency is unavailable."""
+
+
+def model_safe_tool_call_id(value: str) -> str:
+    """Keep paired call IDs stable within the model API's 64-character limit."""
+    if len(value) <= 64:
+        return value
+    return "call_" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:56]
 
 
 def format_jiuwen_import_error(exc: ImportError) -> str:

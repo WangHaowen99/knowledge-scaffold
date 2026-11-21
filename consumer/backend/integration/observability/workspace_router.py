@@ -202,8 +202,11 @@ class WorkspaceObservabilityRouter:
 
     @property
     def accepts_new_metric_recorders(self) -> bool:
-        with self._lock:
-            return not self._closed
+        # Metric admission can run while a workspace catalog lock is held.
+        # Exporter creation takes the router lock before reading that catalog;
+        # taking it here would invert the lock order and deadlock both paths.
+        # This is a single lifecycle flag read, not a compound state snapshot.
+        return not self._closed
 
     def stats_snapshot(self) -> dict[str, int]:
         """Return bounded pending-span buffer health without run identities."""

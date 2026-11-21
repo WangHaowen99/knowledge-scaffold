@@ -162,6 +162,48 @@ def test_solver_workflow_operation_keys_are_not_deterministic_protected(tmp_path
     assert protected_operation_keys(tmp_path) == frozenset()
 
 
+@pytest.mark.parametrize("schema_version", ["0.2", "0.3"])
+def test_deterministic_rejects_unsupported_package_schema(tmp_path, schema_version):
+    _write_package(tmp_path)
+    (tmp_path / "manifest.yaml").write_text(
+        'schema_version: "{}"\n'.format(schema_version), encoding="utf-8",
+    )
+    with pytest.raises(DeterministicPackageError, match="requires package schema_version 0.1"):
+        validate_and_lock_deterministic_operations(tmp_path)
+    assert not (tmp_path / DETERMINISTIC_LOCK_NAME).exists()
+
+
+def test_install_rejects_v02_deterministic_package_atomically(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_package(source)
+    (source / "manifest.yaml").write_text('schema_version: "0.2"\nid: demo\nversion: 1.0.0\n', encoding="utf-8")
+    destination = tmp_path / "ontologies" / "demo"
+    with pytest.raises(DeterministicPackageError, match="requires package schema_version 0.1"):
+        _install_ontology_version_package(
+            source_root=source, ontology_dir=destination, ontology_id="demo",
+            ontology_name="Demo", ontology_description="", target_version="1.0.0",
+            existed=False, workspace_id="default",
+        )
+    assert not destination.exists()
+    assert not list(destination.parent.glob(".demo.install-*"))
+
+
+def test_install_keeps_solver_v02_without_deterministic_lock(tmp_path):
+    source = tmp_path / "source"
+    _write_solver_only_package(source)
+    (source / "manifest.yaml").write_text(
+        'schema_version: "0.2"\nid: demo\nversion: 1.0.0\n', encoding="utf-8",
+    )
+    installed, _ = _install_ontology_version_package(
+        source_root=source, ontology_dir=tmp_path / "ontologies" / "demo", ontology_id="demo",
+        ontology_name="Demo", ontology_description="", target_version="1.0.0",
+        existed=False, workspace_id="default",
+    )
+    assert not (installed / DETERMINISTIC_LOCK_NAME).exists()
+    assert load_deterministic_operation_specs(installed, require_lock=False) == ()
+
+
 def test_validation_workflow_skips_deterministic_specs_but_stays_protected(tmp_path):
     _write_validation_only_package(tmp_path)
 

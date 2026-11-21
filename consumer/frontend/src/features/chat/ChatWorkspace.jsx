@@ -695,7 +695,7 @@ export default function ChatWorkspace({
       awaiting: '等待输入',
       cancelled: '已停止',
       cancel_error: streamState.error || '停止失败，运行仍在继续',
-      error: streamState.error || '连接异常',
+      error: streamState.error || (latestTurnStatus === 'error' ? '本轮运行失败' : '连接异常'),
     }[displayedStreamStatus] ||
     '';
   const liveStatusLabel =

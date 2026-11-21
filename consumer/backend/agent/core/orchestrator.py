@@ -217,6 +217,17 @@ class AgenticOrchestrator:
             or ""
         ).strip()
         stored_profile = str(metadata.get("model_profile_id") or "").strip() or None
+        pending_checkpoint = None
+        if context.get("interaction_response"):
+            pending_checkpoint = execution_store.get_pending_deterministic_checkpoint(normalized_session_id)
+        automatic_selection = not selected_ontology_id
+        if automatic_selection:
+            from ontology.ontologies import get_sole_enabled_ontology_id
+
+            selected_ontology_id = (
+                str(pending_checkpoint.get("ontology_id") or "") if pending_checkpoint
+                else get_sole_enabled_ontology_id(workspace_id) or ""
+            )
         if not selected_ontology_id:
             return None, "", "", stored_profile
         selected_version = str(
@@ -227,6 +238,13 @@ class AgenticOrchestrator:
             or request_arguments.get("selected_version")
             or ""
         ).strip()
+        if automatic_selection:
+            from ontology.ontologies import get_active_ontology_version
+
+            selected_version = (
+                str(pending_checkpoint.get("ontology_version") or "") if pending_checkpoint
+                else get_active_ontology_version(selected_ontology_id, workspace_id) or ""
+            )
         interaction_response = context.get("interaction_response")
         if interaction_response is not None and not isinstance(
             interaction_response,

@@ -6,6 +6,7 @@ import os
 import stat
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -569,6 +570,72 @@ def test_validation_only_package_bypasses_deterministic_preflight(
     assert outcome.reason == "no_deterministic_operations"
 
 
+def test_ambiguous_operations_explain_recovery_without_executing(tmp_path, monkeypatch):
+    ontology_dir = _write_package(tmp_path)
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    specs = service_module.load_deterministic_operation_specs(ontology_dir, require_lock=True)
+    second = replace(specs[0], operation_key="second_query", aliases=("Query Exact",))
+    monkeypatch.setattr(
+        service_module, "load_deterministic_operation_specs", lambda *_args, **_kwargs: (*specs, second),
+    )
+
+    def unexpected_execution(**_kwargs):
+        pytest.fail("An ambiguous request must not execute a script")
+
+    monkeypatch.setattr(service_module, "handle_execute_script_path", unexpected_execution)
+    outcome = DeterministicExecutionService().execute(
+        _request(key=None), enabled=True, project_root=str(tmp_path), timeout_seconds=30,
+    )
+
+    assert isinstance(outcome, Failed)
+    assert outcome.code == "operation_ambiguous"
+    assert "query、second_query" in outcome.message
+    assert "本次尚未执行" in outcome.message
+    assert "请拆成多条请求" in outcome.message
+
+
+@pytest.mark.parametrize(
+    ("text", "explanation_only"),
+    (
+        ("为什么租7天有优惠？只解释规则，不要报价，也不要查库存。", True),
+        ("请只说明报价和库存规则。", True),
+        ("报价和库存：仅需介绍规则。", True),
+        ("Only explain quote and stock rules.", True),
+        ("What are the rules? Please just explain quote and stock.", True),
+        ("不要只解释规则，请报价并查库存。", False),
+        ("报价并查库存，然后解释规则。", False),
+        ('报价并查库存，备注为“只解释规则”。', False),
+        ('Run quote and stock; note: "only explain".', False),
+    ),
+)
+def test_explanation_only_request_does_not_become_operation_ambiguity(
+    tmp_path, monkeypatch, text, explanation_only,
+):
+    ontology_dir = _write_package(tmp_path)
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    original = service_module.load_deterministic_operation_specs(ontology_dir, require_lock=True)[0]
+    specs = (
+        replace(original, routing_any_terms=("报价", "quote")),
+        replace(original, operation_key="stock", aliases=(), routing_any_terms=("库存", "stock")),
+    )
+    monkeypatch.setattr(service_module, "load_deterministic_operation_specs", lambda *_a, **_k: specs)
+
+    def unexpected_execution(**_kwargs):
+        pytest.fail("Neither explanation-only nor ambiguous requests should run a script")
+
+    monkeypatch.setattr(service_module, "handle_execute_script_path", unexpected_execution)
+    request = _request(key=None, user_request=text)
+    service = DeterministicExecutionService()
+    assert service.is_potentially_applicable(request) is (not explanation_only)
+    outcome = service.execute(request, enabled=True, project_root=str(tmp_path), timeout_seconds=30)
+    if explanation_only:
+        assert isinstance(outcome, NotApplicable)
+        assert outcome.reason == "no_deterministic_match"
+    else:
+        assert isinstance(outcome, Failed)
+        assert outcome.code == "operation_ambiguous"
+
+
 def test_declared_all_and_any_terms_route_natural_language_request(
     tmp_path,
     monkeypatch,
@@ -868,7 +935,8 @@ def test_natural_language_exact_alias_matches(tmp_path, monkeypatch):
     assert isinstance(outcome, Completed)
 
 
-def test_explicit_alias_stays_on_deterministic_path(tmp_path, monkeypatch):
+@pytest.mark.parametrize("user_request", ("Query Exact", "只解释规则，不要报价，也不要查库存。"))
+def test_explicit_alias_stays_on_deterministic_path(tmp_path, monkeypatch, user_request):
     ontology_dir = _write_package(tmp_path)
     service_module = _patch_manifest(monkeypatch, ontology_dir)
     monkeypatch.setattr(
@@ -878,7 +946,7 @@ def test_explicit_alias_stays_on_deterministic_path(tmp_path, monkeypatch):
     )
 
     outcome = DeterministicExecutionService().execute(
-        _request(key="Query Exact", arguments={"code": "A"}),
+        _request(key="Query Exact", user_request=user_request, arguments={"code": "A"}),
         enabled=True,
         project_root=str(tmp_path),
         timeout_seconds=30,
@@ -1078,6 +1146,79 @@ def test_operation_alias_with_explanatory_suffix_does_not_execute(
 
     assert isinstance(outcome, NotApplicable)
     assert outcome.reason == "no_deterministic_match"
+
+
+@pytest.mark.parametrize(
+    "key,text,arguments,parser_output,expected_code",
+    [
+        (None, "Explain monthly plan refinery unit load rules", {},
+         {"matched": False, "arguments": {}, "issues": []}, None),
+        ("query", "Explain monthly plan refinery unit load rules", {},
+         {"matched": False, "arguments": {}, "issues": []}, "parser_input_not_applicable"),
+        (None, "Query Exact", {},
+         {"matched": False, "arguments": {}, "issues": []}, "parser_input_not_applicable"),
+        (None, "Explain monthly plan refinery unit load rules", {"code": "A"},
+         {"matched": False, "arguments": {}, "issues": []}, "parser_input_not_applicable"),
+        (None, "Explain monthly plan refinery unit load rules", {},
+         {"matched": False, "arguments": {"code": "A"}, "issues": []}, "parser_input_not_applicable"),
+        (None, "Explain monthly plan refinery unit load rules", {},
+         {"matched": False, "arguments": {}, "issues": [{"field": "code", "message": "Invalid code"}]},
+         "parser_input_not_applicable"),
+        (None, "Explain monthly plan refinery unit load rules", {},
+         {"matched": "false", "arguments": {}, "issues": []}, "parser_invalid_output"),
+        (None, "Explain monthly plan refinery unit load rules", {},
+         {"matched": False, "arguments": {"selected_ontology_id": "forged"}, "issues": []}, "parser_invalid_output"),
+    ],
+)
+def test_parser_can_decline_only_an_implicit_empty_candidate(
+    tmp_path, monkeypatch, key, text, arguments, parser_output, expected_code,
+):
+    ontology_dir = _write_package(tmp_path, parser=True)
+    _add_natural_language_routing(ontology_dir)
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    calls = []
+
+    def execute(**kwargs):
+        calls.append(kwargs["caller"])
+        assert kwargs["caller"] == "deterministic_parser"
+        return json.dumps(parser_output)
+
+    monkeypatch.setattr(service_module, "handle_execute_script_path", execute)
+    outcome = DeterministicExecutionService().execute(
+        _request(key=key, user_request=text, arguments=arguments),
+        enabled=True, project_root=str(tmp_path), timeout_seconds=30,
+    )
+    if expected_code is None:
+        assert isinstance(outcome, NotApplicable)
+        assert outcome.reason == "parser_no_deterministic_match"
+    else:
+        assert isinstance(outcome, Failed)
+        assert outcome.code == expected_code
+    assert calls == ["deterministic_parser"]
+
+
+@pytest.mark.parametrize("changed_part", ["package", "runtime"])
+def test_negative_parser_result_cannot_hide_revision_change(tmp_path, monkeypatch, changed_part):
+    ontology_dir = _write_package(tmp_path, parser=True)
+    _add_natural_language_routing(ontology_dir)
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    revisions = iter(["runtime-a", "runtime-b"])
+    if changed_part == "runtime":
+        monkeypatch.setattr(service_module, "runtime_revision", lambda: next(revisions))
+
+    def execute(**kwargs):
+        assert kwargs["caller"] == "deterministic_parser"
+        if changed_part == "package":
+            (ontology_dir / "scripts" / "query_parser.py").write_text("# changed\n", encoding="utf-8")
+        return json.dumps({"matched": False, "arguments": {}, "issues": []})
+
+    monkeypatch.setattr(service_module, "handle_execute_script_path", execute)
+    outcome = DeterministicExecutionService().execute(
+        _request(key=None, user_request="Explain monthly plan refinery unit load rules"),
+        enabled=True, project_root=str(tmp_path), timeout_seconds=30,
+    )
+    assert isinstance(outcome, Failed)
+    assert outcome.code == ("package_integrity_mismatch" if changed_part == "package" else "runtime_revision_changed")
 
 
 def test_real_handler_executes_with_schema_mapped_arguments(tmp_path, monkeypatch):
@@ -1291,6 +1432,41 @@ def test_input_schema_format_is_enforced(tmp_path, monkeypatch):
     assert calls == []
 
 
+@pytest.mark.parametrize("bad_value", ["bad", "1.5", "true", "-1", "1000001", "null", "{}"])
+def test_invalid_interaction_answer_reprompts_then_executes_once(tmp_path, monkeypatch, bad_value):
+    ontology_dir = _write_package(tmp_path)
+    schema_path = ontology_dir / "schemas/query.input.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema["properties"]["code"] = {"type": "integer", "minimum": 0, "maximum": 1000000}
+    schema["properties"]["quantity"] = {"type": "integer"}
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    handler = ontology_dir / "scripts/query.py"
+    handler.write_text(handler.read_text(encoding="utf-8").replace(
+        "args = parser.parse_args()", "parser.add_argument('--quantity', type=int)\nargs = parser.parse_args()"),
+        encoding="utf-8")
+    descriptor = ontology_dir / "scripts/query.md"
+    descriptor.write_text(descriptor.read_text(encoding="utf-8") + "| quantity | --quantity | integer | 否 |\n",
+                          encoding="utf-8")
+    validate_and_lock_deterministic_operations(ontology_dir)
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    calls = []
+    monkeypatch.setattr(service_module, "handle_execute_script_path",
+                        lambda **kwargs: calls.append(kwargs) or json.dumps({"value": "ok"}))
+    service = DeterministicExecutionService()
+    options = {"enabled": True, "project_root": str(tmp_path), "timeout_seconds": 30}
+    awaiting = service.execute(_request(arguments={"quantity": 3}), **options)
+    invalid = service.execute(_request(checkpoint=awaiting.checkpoint, response={"value": bad_value}), **options)
+    assert isinstance(invalid, AwaitingInput)
+    assert invalid.checkpoint["arguments"] == {"quantity": 3}
+    assert invalid.interaction["metadata"]["field"] == "code"
+    assert "integer" in invalid.interaction["prompt"]
+    assert calls == []
+    valid = service.execute(_request(checkpoint=invalid.checkpoint, response={"value": "1200"}), **options)
+    assert isinstance(valid, Completed)
+    assert len(calls) == 1
+    assert valid.envelope["execution"]["handler_execution_count"] == 1
+
+
 def test_missing_argument_awaits_and_resume_executes_once(tmp_path, monkeypatch):
     ontology_dir = _write_package(tmp_path)
     service_module = _patch_manifest(monkeypatch, ontology_dir)
@@ -1418,6 +1594,48 @@ def test_missing_numeric_enum_uses_typed_single_choice(tmp_path, monkeypatch):
     assert isinstance(resumed, Completed)
 
 
+@pytest.mark.parametrize("enum_values", [["是", "否"], [5, 10], [True, False]])
+def test_parser_issue_uses_schema_choices_and_retains_typed_values(tmp_path, monkeypatch, enum_values):
+    ontology_dir = _write_package(tmp_path, parser=True)
+    schema_path = ontology_dir / "schemas" / "query.input.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    value_type = "boolean" if isinstance(enum_values[0], bool) else (
+        "integer" if isinstance(enum_values[0], int) else "string"
+    )
+    schema["properties"]["code"] = {"type": value_type, "enum": enum_values}
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    validate_and_lock_deterministic_operations(ontology_dir)
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    calls = []
+
+    def execute(**kwargs):
+        calls.append(kwargs["caller"])
+        if kwargs["caller"] == "deterministic_parser":
+            return json.dumps({"matched": True, "arguments": {},
+                               "issues": [{"field": "code", "message": "Please choose"}]})
+        return json.dumps({"value": "ok"})
+
+    monkeypatch.setattr(service_module, "handle_execute_script_path", execute)
+    service = DeterministicExecutionService()
+    execution_options = {"enabled": True, "project_root": str(tmp_path), "timeout_seconds": 30}
+    awaiting = service.execute(_request(), **execution_options)
+    assert isinstance(awaiting, AwaitingInput)
+    assert awaiting.interaction["type"] == "single_choice"
+    assert [option["value"] for option in awaiting.interaction["options"]] == enum_values
+    assert all(isinstance(option["label"], str) for option in awaiting.interaction["options"])
+    invalid = service.execute(
+        _request(checkpoint=awaiting.checkpoint, response={"value": "invalid-choice"}), **execution_options,
+    )
+    assert isinstance(invalid, AwaitingInput)
+    assert invalid.interaction["type"] == "single_choice"
+    assert invalid.interaction["options"] == awaiting.interaction["options"]
+    completed = service.execute(
+        _request(checkpoint=invalid.checkpoint, response={"value": enum_values[-1]}), **execution_options,
+    )
+    assert isinstance(completed, Completed)
+    assert calls == ["deterministic_parser", "deterministic_service"]
+
+
 def test_all_of_required_argument_awaits_input(tmp_path, monkeypatch):
     ontology_dir = _write_package(tmp_path)
     schema_path = ontology_dir / "schemas" / "query.input.json"
@@ -1495,6 +1713,100 @@ def test_checkpoint_resume_does_not_rerun_parser_or_override_confirmed_value(
         "deterministic_parser",
         "deterministic_service",
     ]
+
+
+@pytest.mark.parametrize("clarified_matches", [True, False])
+def test_parser_wide_clarification_reparses_without_inventing_schema_argument(
+    tmp_path, monkeypatch, clarified_matches,
+):
+    ontology_dir = _write_package(tmp_path, parser=True)
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    calls = []
+
+    def execute(**kwargs):
+        calls.append(kwargs["caller"])
+        if kwargs["caller"] == "deterministic_parser":
+            payload = json.loads(kwargs["args"][1])
+            if payload["text"] == "Query Exact":
+                return json.dumps({"matched": True, "arguments": {"code": "A"},
+                                   "issues": [{"field": "text", "message": "请说明具体业务请求"}]})
+            assert payload["text"] == "请查询刚才的编号"
+            assert payload["known_arguments"] == {"code": "A"}
+            return json.dumps({"matched": clarified_matches, "arguments": {"code": "A"}, "issues": []})
+        assert "--text" not in kwargs["args"]
+        return json.dumps({"value": "A"})
+
+    monkeypatch.setattr(service_module, "handle_execute_script_path", execute)
+    service = DeterministicExecutionService()
+    options = {"enabled": True, "project_root": str(tmp_path), "timeout_seconds": 30}
+    awaiting = service.execute(_request(user_request="Query Exact"), **options)
+    assert isinstance(awaiting, AwaitingInput)
+    resumed = service.execute(_request(
+        checkpoint=awaiting.checkpoint, response={"value": "请查询刚才的编号"},
+        user_request="请查询刚才的编号",
+    ), **options)
+    if clarified_matches:
+        assert isinstance(resumed, Completed)
+        assert resumed.envelope["structured_result"] == {"value": "A"}
+        assert calls == ["deterministic_parser", "deterministic_parser", "deterministic_service"]
+    else:
+        assert isinstance(resumed, Failed)
+        assert resumed.code == "parser_input_not_applicable"
+        assert calls == ["deterministic_parser", "deterministic_parser"]
+
+
+@pytest.mark.parametrize("kind, initial, answer, expected", [
+    ("array", [], "一件货物", [1]),
+    ("object", {}, "件数为一", {"count": 1}),
+])
+def test_complex_field_clarification_reparses_without_stale_value(
+    tmp_path, monkeypatch, kind, initial, answer, expected,
+):
+    ontology_dir = _write_package(tmp_path, parser=True)
+    schema_path = ontology_dir / "schemas" / "query.input.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema["properties"]["code"] = (
+        {"type": "array", "minItems": 1, "items": {"type": "integer"}}
+        if kind == "array" else
+        {"type": "object", "required": ["count"], "properties": {"count": {"type": "integer"}}}
+    )
+    schema["properties"]["region"] = {"type": "string"}
+    schema["required"].append("region")
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    descriptor = ontology_dir / "scripts" / "query.md"
+    descriptor.write_text(
+        descriptor.read_text(encoding="utf-8").replace("| string | 是 |", f"| {kind} | 是 |")
+        + "| region | --region | string | 是 |\n", encoding="utf-8",
+    )
+    validate_and_lock_deterministic_operations(ontology_dir)
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    calls = []
+
+    def execute(**kwargs):
+        calls.append(kwargs["caller"])
+        if kwargs["caller"] == "deterministic_parser":
+            payload = json.loads(kwargs["args"][1])
+            if payload["text"] == "Query Exact":
+                return json.dumps({"matched": True, "arguments": {"code": initial, "region": "north"},
+                                   "issues": [{"field": "code", "message": "请说明货物"}]})
+            assert payload["text"] == answer
+            assert payload["known_arguments"] == {"region": "north"}
+            return json.dumps({"matched": True, "arguments": {"code": expected}, "issues": []})
+        args = kwargs["args"]
+        assert json.loads(args[args.index("--code") + 1]) == expected
+        assert args[args.index("--region") + 1] == "north"
+        return json.dumps({"value": "ok"})
+
+    monkeypatch.setattr(service_module, "handle_execute_script_path", execute)
+    service = DeterministicExecutionService()
+    options = {"enabled": True, "project_root": str(tmp_path), "timeout_seconds": 30}
+    awaiting = service.execute(_request(user_request="Query Exact"), **options)
+    assert isinstance(awaiting, AwaitingInput)
+    resumed = service.execute(_request(
+        checkpoint=awaiting.checkpoint, response={"value": answer}, user_request=answer,
+    ), **options)
+    assert isinstance(resumed, Completed)
+    assert calls == ["deterministic_parser", "deterministic_parser", "deterministic_service"]
 
 
 def test_checkpoint_preserves_all_parser_issues_and_resumes_them_in_order(

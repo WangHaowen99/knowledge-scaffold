@@ -3006,8 +3006,7 @@ def _install_ontology_version_package_in_place(
             # Legacy packages remain unchanged because the validator removes a
             # stale lock and returns no specs when no deterministic operations
             # are declared.
-            if str(manifest.get("schema_version") or "").strip() != "0.2":
-                validate_and_lock_deterministic_operations(staged_version_dir)
+            validate_and_lock_deterministic_operations(staged_version_dir)
             save_ontology_manifest_data(staged_dir, manifest)
             _replace_ontology_dir(staged_dir=staged_dir, ontology_dir=ontology_dir)
         finally:

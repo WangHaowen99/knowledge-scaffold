@@ -390,7 +390,7 @@ def _deterministic_final_output(envelope: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(structured, Mapping):
         for key in ("text", "formatted_result", "message", "result"):
             value = structured.get(key)
-            if isinstance(value, str) and value.strip():
+            if len(structured) == 1 and isinstance(value, str) and value.strip():
                 text = value.strip()
                 break
     if not text:
@@ -1655,8 +1655,35 @@ class OrchestratorSessionAdapter:
             selected_ontology = None
             selected_ontology_id = locked_ontology_id or requested_ontology_id
             selected_ontology_version = locked_ontology_version or requested_ontology_version
+            automatic_selection = not selected_ontology_id
             preflight = context.preflight_snapshot
             preflight_workspace_matches = bool(preflight is not None and preflight.workspace_id == context.workspace_id)
+            if automatic_selection:
+                # Match the ordinary Agent's sole-package resolution before
+                # deterministic routing. Keep auto sessions unlocked; the
+                # admitted snapshot pins only this run, not future turns.
+                if preflight_workspace_matches and preflight is not None:
+                    selected_ontology_id = preflight.ontology_id
+                    selected_ontology_version = preflight.ontology_version
+                elif preflight is None:
+                    from ontology.ontologies import (
+                        get_active_ontology_version,
+                        get_sole_enabled_ontology_id,
+                    )
+
+                    pending = (
+                        execution_store.get_pending_deterministic_checkpoint(context.session_id)
+                        if context.interaction_response else None
+                    )
+                    if pending:
+                        selected_ontology_id = str(pending.get("ontology_id") or "")
+                        selected_ontology_version = str(pending.get("ontology_version") or "")
+                    else:
+                        selected_ontology_id = get_sole_enabled_ontology_id(context.workspace_id) or ""
+                        selected_ontology_version = (
+                            get_active_ontology_version(selected_ontology_id, context.workspace_id) or ""
+                            if selected_ontology_id else ""
+                        )
             if selected_ontology_id:
                 from ontology.ontologies import (
                     get_ontology_registry,
@@ -1684,17 +1711,17 @@ class OrchestratorSessionAdapter:
                     )
                     if selected_ontology is None:
                         raise ValueError("Locked selected ontology is unavailable: {}".format(locked_ontology_id))
-                elif requested_ontology_version:
+                elif selected_ontology_version:
                     selected_ontology = get_runtime_ontology_manifest(
                         selected_ontology_id,
-                        version=requested_ontology_version,
+                        version=selected_ontology_version,
                         workspace_id=context.workspace_id,
                     )
                     if selected_ontology is None:
                         raise ValueError(
                             "Invalid selected ontology version: {}@{}".format(
                                 selected_ontology_id,
-                                requested_ontology_version,
+                                selected_ontology_version,
                             )
                         )
                     if not selected_ontology.enabled:
@@ -1780,6 +1807,14 @@ class OrchestratorSessionAdapter:
                         interaction_response=interaction_response,
                     )
                 )
+            if automatic_selection and not deterministic_candidate:
+                # Preserve ordinary auto-selection and version-stamping
+                # semantics when this is not a deterministic request.
+                selected_ontology = None
+                selected_ontology_id = ""
+                selected_ontology_version = ""
+                for routing_field in ("selected_ontology_id", "selected_ontology_version", "selected_version"):
+                    arguments.pop(routing_field, None)
             selected_profile = None
             if hasattr(orchestrator, "agent_config") and not deterministic_candidate:
                 use_preflight_profile = preflight_matches and preflight is not None
@@ -1823,7 +1858,7 @@ class OrchestratorSessionAdapter:
                 metadata["model_profile_id"] = effective_profile_id
             if effective_profile_ref:
                 metadata["model_profile_ref"] = effective_profile_ref
-            if selected_ontology is not None:
+            if selected_ontology is not None and not automatic_selection:
                 metadata.update(
                     {
                         "selected_ontology_id": selected_ontology_id,
@@ -2256,6 +2291,7 @@ class OrchestratorSessionAdapter:
                     **execute_kwargs,
                 )
 
+            deterministic_started_at = datetime.now(timezone.utc).isoformat()
             if preflight is not None and selected_ontology_id:
                 manifest = preflight.ontology_manifest
                 revision_changed = preflight.workspace_id != context.workspace_id
@@ -2348,6 +2384,7 @@ class OrchestratorSessionAdapter:
                 events = [
                     RuntimeEvent(
                         event_type="turn.started",
+                        created_at=deterministic_started_at,
                         status="running",
                         run_id=context.run_id,
                         session_id=context.session_id,
@@ -2360,6 +2397,7 @@ class OrchestratorSessionAdapter:
                     ),
                     RuntimeEvent(
                         event_type="tool.started",
+                        created_at=deterministic_started_at,
                         status="running",
                         run_id=context.run_id,
                         session_id=context.session_id,
