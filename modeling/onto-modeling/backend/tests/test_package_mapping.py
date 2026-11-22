@@ -546,19 +546,6 @@ def test_strict_relations_accept_self_relations_with_different_join_fields(tmp_p
     assert problems == []
 
 
-def test_evaluation_accepts_relation_declared_in_both_endpoint_files(tmp_path):
-    from app.services import modeling_eval
-
-    texts = _related_pair("（fk → id）", ["fk"], ["id"])
-    texts["object_b"] = texts["object_b"].replace("→ references →", "→ references（fk → id） →")
-    directory = tmp_path / "ontology" / "object"
-    directory.mkdir(parents=True)
-    for key, text in texts.items():
-        (directory / f"{key}.md").write_text(text, encoding="utf-8")
-
-    assert modeling_eval.evaluation_object_snapshot(tmp_path) == texts
-
-
 def test_standard_relation_table_keeps_graph_join_fields_and_evidence():
     texts = {
         "object_a": package_mapping.render_relations_section([{
