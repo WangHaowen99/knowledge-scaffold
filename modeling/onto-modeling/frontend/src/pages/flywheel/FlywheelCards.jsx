@@ -1,71 +1,63 @@
 import {
-  EVALUATE_STEP, EVALUATE_STEPS, EVALUATION_REASONS, OPTIMIZE_STEPS, PUBLISH_STEPS, RECHECK_REASONS, canRollback,
-  earlierChangesNote, evaluateBlock, evaluationHint, feedbackNote, holdHint, isFeedback, loginMissing, nextVersion,
-  optimizeBlock, optimizeFocus, publishBlock, publishFocus, rate, reasonText, reasonTitle, switchWarning, version,
-} from '../../lib/flywheel.js';
-import Icon from './Icon.jsx';
+  Button, Chip, Icon, Note, Toggle, cx,
+} from '../../ui/index.jsx';
+import {
+  ACTIVE, EVALUATE_STEP, EVALUATE_STEPS, EVALUATION_REASONS, OPTIMIZE_STEPS, PUBLISH_STEPS, RECHECK_REASONS, canRollback,
+  chipTone, earlierChangesNote, evaluateBlock, evaluationHint, feedbackNote, holdHint, isFeedback, loginMissing, nextVersion,
+  optimizeBlock, optimizeFocus, publishBlock, publishFocus, rate, reasonText, reasonTitle, statusOf, switchWarning, version,
+} from './flywheelModel.js';
 
-export const Tag = ({ color = 'gray', live = false, children }) => (
-  <span className={`fw-tag ${color}`}>{live && <span className="fw-dot pulse" />}{children}</span>
+export const TextLink = ({ gray = false, className, children, ...props }) => (
+  <button type="button" className={cx('fw-link', gray && 'gray', className)} {...props}>{children}</button>
 );
 
-export const Link = ({ gray = false, children, ...props }) => (
-  <button type="button" className={`fw-link ${gray ? 'gray' : ''}`} {...props}>{children}</button>
+// 不能执行时置灰，悬停看原因
+export const ActionButton = ({ reason = '', disabled, ...props }) => (
+  <Button disabled={!!reason || disabled} title={reason || undefined} {...props} />
 );
 
-export const Button = ({ kind = '', reason = '', children, ...props }) => (
-  <button type="button" className={`fw-button ${kind}`} disabled={!!reason || props.disabled}
-    title={reason || undefined} {...props}>{children}</button>
-);
-
-const BANNER_ICONS = { amber: 'clock', green: 'circle-check', red: 'warning' };
-
-export function Banner({ color, children, extra, id }) {
-  return (
-    <div className={`fw-banner ${color}`} id={id}>
-      <Icon name={BANNER_ICONS[color] || 'info'} />
-      <div>{children}{extra && <div className="fw-banner-extra">{extra}</div>}</div>
-    </div>
-  );
+export function StatusChip({ run }) {
+  const [label, color] = statusOf(run);
+  const live = ACTIVE.includes(run.status);
+  return <Chip sm tone={chipTone(color)} dot={live} className={live ? 'fw-live' : undefined}>{label}</Chip>;
 }
 
-// 卡片头：序号、标题、一条关键事实与开关；开关有问题时下面多一行提示
-function CardHeading({ number, publish = false, title, meta, label, checked, disabled, onToggle, warning }) {
+export const Loading = ({ text }) => <div className="fw-loading" role="status"><span className="spin" aria-hidden="true" />{text}</div>;
+
+// 卡片头：标题、一条关键事实与开关；开关有问题时下面多一行提示
+function CardHeading({ title, meta, checked, disabled, onToggle, warning }) {
   return (
     <>
-      <div className="fw-card-heading">
-        <div className={`fw-stage-number ${publish ? 'publish' : ''}`}>{number}</div>
-        <h2 className="fw-card-title">{title}</h2>
-        <span className="fw-card-meta">{meta}</span>
-        <span className="fw-spacer" />
-        <button type="button" className="fw-switch" role="switch" aria-checked={checked} aria-label={label}
-          disabled={disabled} onClick={onToggle} />
+      <div className="card-h">
+        <h3>{title}</h3>
+        {meta ? <span className="xs muted">{meta}</span> : null}
+        <span className="sp" />
+        <Toggle on={checked} disabled={disabled} title={title} onChange={onToggle} />
       </div>
-      {warning && <div className="fw-card-warning"><Icon name="warning" size="small" /><span>{warning}</span></div>}
+      {warning ? <Note tone="amber" className="fw-card-note">{warning}</Note> : null}
     </>
   );
 }
 
 function Steps({ labels, index }) {
   return (
-    <div className="fw-run-steps">
+    <ol className="fw-steps">
       {labels.map((text, i) => (
-        <div key={text} className={`fw-run-step ${i < index ? 'done' : i === index ? 'current' : ''}`}>
-          <span className="fw-step-circle">{i < index ? '✓' : i + 1}</span>{text}
-        </div>
+        <li key={text} className={cx(i < index && 'done', i === index && 'cur')}>
+          <i>{i < index ? <Icon name="check" size={12} /> : i + 1}</i>{text}
+        </li>
       ))}
-    </div>
+    </ol>
   );
 }
 
-function Running({ title, run, labels, index, children }) {
+function Running({ title, labels, index, children }) {
   return (
-    <div className="fw-run">
-      <div className="fw-run-heading">
-        <span className="fw-spinner" aria-hidden="true" />{title}
-        <span className="fw-muted fw-mono">{run.id}</span>
-        <span className="fw-spacer" />
-        <div className="fw-row">{children}</div>
+    <div>
+      <div className="row g12">
+        <span className="spin" aria-hidden="true" /><span className="b">{title}</span>
+        <span className="sp" />
+        {children}
       </div>
       <Steps labels={labels} index={index} />
     </div>
@@ -84,53 +76,40 @@ function PendingOptimize({ run, state, onAction }) {
   const note = feedbackNote(run, state);
   return (
     <div className="fw-pending">
-      <div className="fw-pending-top">
-        <Tag color={queued ? 'blue' : 'amber'}>{queued ? '等待自动执行' : '待确认'}</Tag>
-        <strong>{version(run.version)} {feedback ? '用户反馈' : '评测完成'}</strong>
-        <span className="fw-muted fw-mono">{run.id}</span>
+      <div className="row">
+        <Chip sm tone={queued ? 'blue' : 'amber'}>{queued ? '等待自动执行' : '待确认'}</Chip>
+        <span className="b">{version(run.version)} {feedback ? '用户反馈' : '评测完成'}</span>
       </div>
-      <div className="fw-feedback-body">
+      <div className="fw-summary">
         <div className="fw-score">
-          {feedback ? (
-            <>
-              <span className="fw-score-number">{run.cases?.total ?? '—'}</span>
-              <div className="fw-score-label">反馈问题</div>
-            </>
-          ) : (
-            <>
-              <span className="fw-score-number">{rate(run.score)}</span>
-              <div className="fw-score-label">严格通过率{run.cases ? ` · ${run.cases.pass}/${run.cases.total}` : ''}</div>
-            </>
-          )}
+          <span className="num">{feedback ? run.cases?.total ?? '—' : rate(run.score)}</span>
+          <span className="xs muted">{feedback ? '反馈问题' : `严格通过率${run.cases ? ` · ${run.cases.pass}/${run.cases.total}` : ''}`}</span>
         </div>
-        <div className="fw-suggestion-summary">{suggestionText(run)}</div>
+        <span>{suggestionText(run)}</span>
       </div>
-      {note && <p className="fw-pending-hint">{note}</p>}
-      <div className="fw-feedback-bottom">
-        <div className="fw-row">
-          <Link onClick={() => onAction('suggestions', run)}>优化建议</Link>
-          <Link onClick={() => onAction('report', run)}>{feedback ? '反馈报告' : '评测报告'}</Link>
-        </div>
-        {!queued && (
-          <div className="fw-pending-actions">
-            {state.can_write && <Link gray onClick={() => onAction('ignore', run)}>忽略</Link>}
-            <Button kind="primary compact" reason={optimizeBlock(state, run)} onClick={() => onAction('confirm-optimize', run)}>
-              确认并优化
-            </Button>
-          </div>
-        )}
+      {note ? <p className="xs muted mb8">{note}</p> : null}
+      <div className="row g12">
+        <TextLink onClick={() => onAction('suggestions', run)}>优化建议</TextLink>
+        <TextLink onClick={() => onAction('report', run)}>{feedback ? '反馈报告' : '评测报告'}</TextLink>
+        <span className="sp" />
+        {!queued && state.can_write ? <TextLink gray onClick={() => onAction('ignore', run)}>忽略</TextLink> : null}
+        {!queued ? (
+          <ActionButton kind="primary" size="sm" reason={optimizeBlock(state, run)} onClick={() => onAction('confirm-optimize', run)}>
+            确认并优化
+          </ActionButton>
+        ) : null}
       </div>
     </div>
   );
 }
 
 // 没有待处理事项时的一行：说明现状，附最近一条的入口
-function Idle({ icon = 'circle-check', text, link }) {
+function Idle({ icon = 'check', text, link }) {
   return (
     <div className="fw-idle">
-      <Icon name={icon} />
+      <Icon name={icon} size={14} />
       <span>{text}</span>
-      <span className="fw-spacer" />
+      <span className="sp" />
       {link}
     </div>
   );
@@ -143,10 +122,10 @@ export function OptimizeCard({ state, onAction }) {
   let body;
   if (focus.kind === 'running') {
     body = (
-      <Running title="正在优化" run={run} labels={OPTIMIZE_STEPS} index={Math.min(run.step || 0, OPTIMIZE_STEPS.length - 1)}>
-        <Link onClick={() => onAction('chat', run)}>助手对话</Link>
-        <Link onClick={() => onAction('detail', run)}>详情</Link>
-        {state.can_write && <Link gray onClick={() => onAction('stop', run)}>中止并恢复</Link>}
+      <Running title="正在优化" labels={OPTIMIZE_STEPS} index={Math.min(run.step || 0, OPTIMIZE_STEPS.length - 1)}>
+        <TextLink onClick={() => onAction('chat', run)}>助手对话</TextLink>
+        <TextLink onClick={() => onAction('detail', run)}>详情</TextLink>
+        {state.can_write ? <TextLink gray onClick={() => onAction('stop', run)}>中止并恢复</TextLink> : null}
       </Running>
     );
   } else if (focus.kind === 'waiting') {
@@ -154,38 +133,38 @@ export function OptimizeCard({ state, onAction }) {
     body = (
       <>
         <PendingOptimize run={run} state={state} onAction={onAction} />
-        {(hint || focus.more > 0) && (
+        {hint || focus.more > 0 ? (
           <div className="fw-more">
-            <span>{hint}{focus.more > 0 && `${hint ? ' ' : ''}另有 ${focus.more} 条排队。`}</span>
-            {focus.more > 0 && <Link onClick={() => onAction('filter-pending')}>查看全部</Link>}
+            <span>{hint}{focus.more > 0 ? `${hint ? ' ' : ''}另有 ${focus.more} 条排队。` : ''}</span>
+            {focus.more > 0 ? <TextLink onClick={() => onAction('filter-pending')}>查看全部</TextLink> : null}
           </div>
-        )}
+        ) : null}
       </>
     );
   } else if (focus.kind === 'blocked') {
     const suggestions = run.reason === 'suggestions_failed';
     body = (
-      <Banner color="red" extra={(
-        <>{reasonText(run, { current: state.package?.version, maxRounds: settings.max_rounds })}{' '}
-          <Link onClick={() => onAction(suggestions ? 'suggestions' : 'detail', run)}>{suggestions ? '优化建议' : '处理'}</Link></>
-      )}>
-        <strong>{reasonTitle(run)}</strong> <span className="fw-mono">· {run.id}</span>
-      </Banner>
+      <Note tone="red">
+        <b>{reasonTitle(run)}</b>
+        <div className="mt4">
+          {reasonText(run, { current: state.package?.version, maxRounds: settings.max_rounds })}{' '}
+          <TextLink onClick={() => onAction(suggestions ? 'suggestions' : 'detail', run)}>{suggestions ? '优化建议' : '处理'}</TextLink>
+        </div>
+      </Note>
     );
   } else if (focus.kind === 'passed') {
     body = <Idle text={`${version(run.version)} 评测集全部通过，无需优化`}
-      link={<Link onClick={() => onAction('report', run)}>评测报告</Link>} />;
+      link={<TextLink onClick={() => onAction('report', run)}>评测报告</TextLink>} />;
   } else {
-    body = <Idle icon={run ? 'circle-check' : 'bell'} text={state.evaluation.evaluating ? '当前版本评测进行中' : '暂无待处理的优化建议'}
-      link={run && <Link onClick={() => onAction('changes', run)}>最近一次 {run.id}</Link>} />;
+    body = <Idle icon={run ? 'check' : 'bell'} text={state.evaluation.evaluating ? '当前版本评测进行中' : '暂无待处理的优化建议'}
+      link={run ? <TextLink onClick={() => onAction('changes', run)}>最近一次 {run.id}</TextLink> : null} />;
   }
   return (
-    <section className={`fw-card ${focus.kind === 'running' ? 'running' : ''}`} aria-labelledby="fw-optimize-heading">
-      <CardHeading number="01" title={<span id="fw-optimize-heading">自动化处理优化建议</span>}
-        meta={settings.max_rounds ? `最多连续 ${settings.max_rounds} 轮` : '连续处理不限轮数'}
-        label="自动化处理优化建议" checked={settings.optimize}
-        disabled={!state.can_write} onToggle={() => onAction('toggle', 'optimize')} warning={switchWarning(state, 'optimize')} />
-      <div className="fw-stage-content">{body}</div>
+    <section className={cx('card fw-card', focus.kind === 'running' && 'running')} aria-label="自动化处理优化建议">
+      <CardHeading title="自动化处理优化建议" meta={settings.max_rounds ? `最多连续 ${settings.max_rounds} 轮` : '不限轮数'}
+        checked={settings.optimize} disabled={!state.can_write} onToggle={() => onAction('toggle', 'optimize')}
+        warning={switchWarning(state, 'optimize')} />
+      <div className="card-b">{body}</div>
     </section>
   );
 }
@@ -195,25 +174,20 @@ function PendingPublish({ run, state, onAction }) {
   const note = earlierChangesNote(run, state);
   return (
     <div className="fw-pending">
-      <div className="fw-pending-top">
-        <Tag color="amber">待确认发布</Tag>
-        <span className="fw-muted fw-mono">{run.id}</span>
+      <div className="row g12">
+        <Chip sm tone="amber">待确认发布</Chip>
+        <span className="row g4 mono">
+          <span className="muted">{version(current)}</span><Icon name="arrow" size={12} />
+          <b>{nextVersion(current) ? version(nextVersion(current)) : '新版本'}</b>
+        </span>
+        <span className="muted">{run.kind === 'rollback' ? '恢复的建模内容' : `${run.changed ?? 0} 份文档已更新`}</span>
+        <span className="sp" />
+        <TextLink onClick={() => onAction('changes', run)}>对比改动</TextLink>
+        <ActionButton kind="primary" size="sm" reason={publishBlock(state, run)} onClick={() => onAction('confirm-publish', run)}>
+          确认并发布
+        </ActionButton>
       </div>
-      <div className="fw-candidate-row">
-        <div className="fw-candidate-versions">
-          <span className="fw-version-tile old fw-mono">{version(current)}</span>
-          <Icon name="arrow" size="small" />
-          <span className="fw-version-tile fw-mono">{nextVersion(current) ? version(nextVersion(current)) : '新版本'}</span>
-          <span className="fw-muted">{run.kind === 'rollback' ? '恢复的建模内容' : `${run.changed ?? 0} 份文档已更新`}</span>
-        </div>
-        <div className="fw-pending-actions">
-          <Link onClick={() => onAction('changes', run)}>对比改动</Link>
-          <Button kind="primary compact" reason={publishBlock(state, run)} onClick={() => onAction('confirm-publish', run)}>
-            确认并发布
-          </Button>
-        </div>
-      </div>
-      {note && <div className="fw-warning">{note}</div>}
+      {note ? <Note tone="amber" className="mt8">{note}</Note> : null}
     </div>
   );
 }
@@ -223,21 +197,18 @@ function PendingEvaluation({ run, state, onAction }) {
   const hint = evaluationHint(run, state);
   return (
     <div className="fw-pending">
-      <div className="fw-pending-top">
-        <Tag color={queued ? 'blue' : 'amber'}>{queued ? '等待自动评测' : '待确认评测'}</Tag>
-        <strong>{version(run.target_version)} 已发布</strong>
-        <span className="fw-muted fw-mono">{run.id}</span>
-        <span className="fw-spacer" />
-        {!queued && (
-          <div className="fw-pending-actions">
-            {state.can_write && <Link gray onClick={() => onAction('skip-evaluation', run)}>跳过</Link>}
-            <Button kind="primary compact" reason={evaluateBlock(state, run)} onClick={() => onAction('confirm-evaluate', run)}>
-              确认并评测
-            </Button>
-          </div>
-        )}
+      <div className="row g12">
+        <Chip sm tone={queued ? 'blue' : 'amber'}>{queued ? '等待自动评测' : '待确认评测'}</Chip>
+        <span className="b">{version(run.target_version)} 已发布</span>
+        <span className="sp" />
+        {!queued && state.can_write ? <TextLink gray onClick={() => onAction('skip-evaluation', run)}>跳过</TextLink> : null}
+        {!queued ? (
+          <ActionButton kind="primary" size="sm" reason={evaluateBlock(state, run)} onClick={() => onAction('confirm-evaluate', run)}>
+            确认并评测
+          </ActionButton>
+        ) : null}
       </div>
-      {hint && <p className="fw-pending-hint">{hint}</p>}
+      {hint ? <p className="xs muted mt8">{hint}</p> : null}
     </div>
   );
 }
@@ -250,18 +221,16 @@ function PublishBlocked({ run, state, onAction }) {
       : ['重试发布', 'retry-publish', publishBlock(state, run)];
   return (
     <div className="fw-pending">
-      <div className="fw-pending-top">
-        <Tag color="red">{reasonTitle(run)}</Tag>
-        <span className="fw-muted fw-mono">{run.id}</span>
-        <span className="fw-spacer" />
-        <div className="fw-pending-actions">
-          <Link onClick={() => onAction('detail', run)}>详情</Link>
-          {state.can_write && evaluate && <Link gray onClick={() => onAction('skip-evaluation', run)}>跳过</Link>}
-          {state.can_write && !evaluate && canRollback(run) && <Link gray onClick={() => onAction('rollback', run)}>恢复优化前内容</Link>}
-          <Button kind="compact" reason={reason} onClick={() => onAction(action, run)}>{label}</Button>
-        </div>
+      <div className="row g12">
+        <Chip sm tone="red">{reasonTitle(run)}</Chip>
+        <span className="sp" />
+        <TextLink onClick={() => onAction('detail', run)}>详情</TextLink>
+        {state.can_write && evaluate ? <TextLink gray onClick={() => onAction('skip-evaluation', run)}>跳过</TextLink> : null}
+        {state.can_write && !evaluate && canRollback(run)
+          ? <TextLink gray onClick={() => onAction('rollback', run)}>恢复优化前内容</TextLink> : null}
+        <ActionButton size="sm" reason={reason} onClick={() => onAction(action, run)}>{label}</ActionButton>
       </div>
-      <p className="fw-pending-hint">{reasonText(run, { current: state.package?.version })}</p>
+      <p className="xs muted mt8">{reasonText(run, { current: state.package?.version })}</p>
     </div>
   );
 }
@@ -269,8 +238,8 @@ function PublishBlocked({ run, state, onAction }) {
 function publishIdle(latest, state) {
   if (state.runs.some((run) => run.status === 'optimizing')) return ['clock', '等待上方优化完成'];
   const released = latest && latest.target_version === state.package?.version;
-  if (released && latest.evaluation?.passed) return ['circle-check', `${version(latest.target_version)} 评测集全部通过，循环结束`];
-  return ['package', '暂无待发布内容'];
+  if (released && latest.evaluation?.passed) return ['check', `${version(latest.target_version)} 评测集全部通过，循环结束`];
+  return ['pkg', '暂无待发布内容'];
 }
 
 export function PublishCard({ state, onAction }) {
@@ -281,15 +250,15 @@ export function PublishCard({ state, onAction }) {
   let body;
   if (running && run.status === 'evaluating') {
     body = (
-      <Running title={`正在评测 ${version(run.target_version)}`} run={run} labels={EVALUATE_STEPS} index={EVALUATE_STEP}>
-        {state.can_write && <Link gray onClick={() => onAction('skip-evaluation', run)}>不再等待</Link>}
-        <Link onClick={() => onAction('detail', run)}>详情</Link>
+      <Running title={`正在评测 ${version(run.target_version)}`} labels={EVALUATE_STEPS} index={EVALUATE_STEP}>
+        {state.can_write ? <TextLink gray onClick={() => onAction('skip-evaluation', run)}>不再等待</TextLink> : null}
+        <TextLink onClick={() => onAction('detail', run)}>详情</TextLink>
       </Running>
     );
   } else if (running) {
     body = (
-      <Running title="正在发布到 Hub" run={run} labels={PUBLISH_STEPS} index={Math.min(run.step || 0, PUBLISH_STEPS.length - 1)}>
-        <Link onClick={() => onAction('detail', run)}>详情</Link>
+      <Running title="正在发布到 Hub" labels={PUBLISH_STEPS} index={Math.min(run.step || 0, PUBLISH_STEPS.length - 1)}>
+        <TextLink onClick={() => onAction('detail', run)}>详情</TextLink>
       </Running>
     );
   } else if (focus.kind === 'waiting') body = <PendingPublish run={run} state={state} onAction={onAction} />;
@@ -297,18 +266,18 @@ export function PublishCard({ state, onAction }) {
   else if (focus.kind === 'blocked') body = <PublishBlocked run={run} state={state} onAction={onAction} />;
   else {
     const [icon, text] = publishIdle(run, state);
-    body = <Idle icon={icon} text={text} link={run && <Link onClick={() => onAction('detail', run)}>最近发布 {run.id}</Link>} />;
+    body = <Idle icon={icon} text={text} link={run ? <TextLink onClick={() => onAction('detail', run)}>最近发布 {run.id}</TextLink> : null} />;
   }
   const warning = switchWarning(state, 'publish');
   return (
-    <section className={`fw-card ${running ? 'running' : ''}`} aria-labelledby="fw-publish-heading">
-      <CardHeading number="02" publish title={<span id="fw-publish-heading">自动化确认发布与发起评测</span>}
-        meta="循环至评测集全部通过" label="自动化确认发布与发起评测" checked={settings.publish}
-        disabled={!state.can_write} onToggle={() => onAction('toggle', 'publish')}
-        warning={warning && (
-          <>{warning}{state.can_write && loginMissing(state) && <> <Link onClick={() => onAction('reauthorize')}>重新授权</Link></>}</>
-        )} />
-      <div className="fw-stage-content">{body}</div>
+    <section className={cx('card fw-card', running && 'running')} aria-label="自动化确认发布与发起评测">
+      <CardHeading title="自动化确认发布与发起评测" checked={settings.publish} disabled={!state.can_write}
+        onToggle={() => onAction('toggle', 'publish')}
+        warning={warning ? (
+          <>{warning}{state.can_write && loginMissing(state)
+            ? <> <TextLink onClick={() => onAction('reauthorize')}>重新授权</TextLink></> : null}</>
+        ) : null} />
+      <div className="card-b">{body}</div>
     </section>
   );
 }

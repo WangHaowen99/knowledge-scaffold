@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { RECORD_PAGE, RECORD_PAGE_MAX, appendRecords } from '../../lib/flywheel.js';
+import { errorText } from '../../api/errors.js';
+import { RECORD_PAGE, RECORD_PAGE_MAX, appendRecords } from './flywheelModel.js';
 
 // 记录列表分批读取：从最新一条开始，每批 RECORD_PAGE 条，more() 接着取下一批。
 // fetchPage 变化（换页签、换筛选）时从第一批重新开始；signature 变化（轮询发现记录有变）时
@@ -30,7 +31,7 @@ export function useRecordPages(fetchPage, keyOf, signature) {
       next.current = offset;
       setView({ items, total: batch.total, done: offset == null, loading: false, error: '' });
     } catch (e) {
-      if (id === generation.current) setView((value) => ({ ...value, loading: false, error: e.message }));
+      if (id === generation.current) setView((value) => ({ ...value, loading: false, error: errorText(e) }));
     } finally {
       if (id === generation.current) busy.current = false;
     }
@@ -58,7 +59,7 @@ export function useRecordPages(fetchPage, keyOf, signature) {
         return { items, total: batch.total, done: batch.next_offset == null, loading: false, error: '' };
       });
     } catch (e) {
-      if (id === generation.current) setView((value) => ({ ...value, loading: false, error: e.message }));
+      if (id === generation.current) setView((value) => ({ ...value, loading: false, error: errorText(e) }));
     } finally {
       if (id === generation.current) busy.current = false;
     }
@@ -76,7 +77,7 @@ export function useLoadMore(more, active, count) {
     if (!node || !active || typeof IntersectionObserver === 'undefined') return undefined;
     const observer = new IntersectionObserver((entries) => {
       if (entries.some((entry) => entry.isIntersecting)) more();
-    }, { root: node.closest('.fw-body'), rootMargin: '0px 0px 160px 0px' });
+    }, { root: node.closest('.modal-b'), rootMargin: '0px 0px 160px 0px' });
     observer.observe(node);
     return () => observer.disconnect();
   }, [more, active, count]);

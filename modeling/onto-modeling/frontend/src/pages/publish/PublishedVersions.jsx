@@ -46,7 +46,7 @@ function DownloadMenu({ row, busy, onHub, onLocal, onManifest }) {
 }
 
 export default function PublishedVersions({
-  projectId, projectName = '', ev, records, refreshKey, sharing, onCompare, onManifest, onDownloadLocal,
+  projectId, projectName = '', ev, records, refreshKey, sharing, actions, onCompare, onManifest, onDownloadLocal,
 }) {
   const { api, services } = useApp();
   const [page, setPage] = useState(1);
@@ -97,6 +97,7 @@ export default function PublishedVersions({
         <h3>已发布版本</h3>
         {total ? <span className="xs muted">{total} 个</span> : null}
         <span className="sp" />
+        {actions}
         {sharing}
         <Button size="sm" icon="split" disabled={!total} onClick={() => onCompare({})}>版本对比</Button>
       </div>

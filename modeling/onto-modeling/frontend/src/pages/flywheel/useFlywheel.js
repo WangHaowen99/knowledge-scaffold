@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api } from '../../lib/api.js';
-import { RECONCILE_EVERY, nextPoll } from '../../lib/flywheel.js';
+import { useApp } from '../../app/context.js';
+import { errorText } from '../../api/errors.js';
+import { RECONCILE_EVERY, nextPoll } from './flywheelModel.js';
 
-// 项目打开期间持续同步飞轮：每次读取都由后端用当前登录推进自动步骤。
-// 弹窗打开或有执行中的事项时密集轮询，空闲时低频；打开弹窗时先对账一次。
+// 发布页打开期间持续同步飞轮：每次读取都由后端用当前登录推进自动步骤。
+// 弹窗打开或有执行中的事项时密集轮询，空闲时低频；进入页面时先对账一次。
 export function useFlywheel(projectId, open) {
+  const { api } = useApp();
   const [state, setState] = useState(null);
   const [error, setError] = useState('');
   const latest = useRef(null);
@@ -22,11 +24,11 @@ export function useFlywheel(projectId, open) {
       apply(await api.flywheel(projectId, { reconcile }));
       setError('');
     } catch (e) {
-      setError(e.message);
+      setError(errorText(e));
     } finally {
       loading.current = false;
     }
-  }, [projectId, apply]);
+  }, [api, projectId, apply]);
 
   useEffect(() => {
     latest.current = null;

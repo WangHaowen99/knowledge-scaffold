@@ -162,7 +162,7 @@ export function StartEvaluation({ ev, release }) {
   return <ReasonLink onClick={() => ev.evaluate(release)}>发起评测</ReasonLink>;
 }
 
-function ReportModal({ ev, target, onClose }) {
+export function ReportModal({ ev, target, onClose }) {
   const { api } = useApp();
   const state = useLoad(() => api.evaluationReport(ev.pid, target.runId), target.runId);
   const preview = useAnswerPreview((resultId) => api.evaluationAnswer(ev.pid, target.runId, resultId));
@@ -176,11 +176,15 @@ function ReportModal({ ev, target, onClose }) {
   );
 }
 
-function SuggestionsModal({ ev, target, onClose, onReportFailure }) {
+// 数据飞轮也从这里打开：onOptimize 给出时底部多一个「评测优化」，blockReason 是它置灰的原因
+export function SuggestionsModal({
+  ev, target, onClose, onReportFailure, onOptimize, blockReason, onOptimized,
+}) {
   const { api } = useApp();
   const state = useLoad(() => api.evaluationSuggestions(ev.pid, target.runId), target.runId);
   const preview = useAnswerPreview((resultId) => api.evaluationAnswer(ev.pid, target.runId, resultId));
   const [regenerating, setRegenerating] = useState(false);
+  const [optimizing, setOptimizing] = useState(false);
   const failed = state.data?.status === 'failed';
 
   const regenerate = async () => {
@@ -196,6 +200,18 @@ function SuggestionsModal({ ev, target, onClose, onReportFailure }) {
       setRegenerating(false);
     }
   };
+  const optimize = async () => {
+    setOptimizing(true);
+    try {
+      await onOptimize();
+      toast('已导入评测报告和优化建议，开始评测优化');
+      onOptimized?.();
+    } catch (e) {
+      toast(message(e), 'alert');
+    } finally {
+      setOptimizing(false);
+    }
+  };
   return (
     <Modal open onClose={onClose} w={WIDE} title={`${target.feedback ? '用户反馈优化建议' : '优化建议'} — 版本 ${target.version || ''}`}
       foot={(
@@ -203,6 +219,11 @@ function SuggestionsModal({ ev, target, onClose, onReportFailure }) {
           <Button onClick={onClose}>关闭</Button>
           <span className="sp" />
           {onReportFailure ? <Button onClick={onReportFailure}>标记处理失败</Button> : null}
+          {onOptimize ? (
+            <Button kind="primary" icon="wand" disabled={!!blockReason || optimizing} title={blockReason || undefined} onClick={optimize}>
+              评测优化
+            </Button>
+          ) : null}
         </>
       )}>
       {failed ? (

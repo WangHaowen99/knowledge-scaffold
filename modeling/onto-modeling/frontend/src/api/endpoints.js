@@ -6,6 +6,8 @@ const P = (id) => `/projects/${enc(id)}`;
 const C = (id, cid) => `${P(id)}/conversations/${enc(cid)}`;
 // 运维管理面（契约 1.1）：请求 {ops_base_url}/api/v1/ops/...
 const OPS = { ops: true };
+// 确认评测、修改数据飞轮设置时转交 refresh token：评测服务用它登记后台评测登录
+const refreshHeader = (token) => (token ? { 'X-Refresh-Token': token } : {});
 
 export function createApi(client) {
   return {
@@ -313,6 +315,16 @@ export function createApi(client) {
     legacyEvaluations: (id) => client.get(`${P(id)}/legacy-evaluations`), // ES-09
     legacyEvaluation: (id, stem) => client.get(`${P(id)}/legacy-evaluations/${enc(stem)}`), // ES-10
     legacyEvaluationAnswer: (id, stem, resultId) => client.get(`${P(id)}/legacy-evaluations/${enc(stem)}/answers/${enc(resultId)}`), // ES-11
+
+    // 3.21b 知识包数据飞轮（develop !630）：评测建议 → 优化 → 发布 → 评测新版本
+    flywheel: (id, { reconcile = false } = {}) => client.get(`${P(id)}/flywheel`, { query: { reconcile: reconcile ? 1 : 0 } }), // FW-01
+    flywheelSettings: (id, changes, refresh) => client.put(`${P(id)}/flywheel/settings`, changes, { headers: refreshHeader(refresh) }), // FW-02
+    flywheelRuns: (id, { offset = 0, limit = 20, filter = 'all' } = {}) => client.get(`${P(id)}/flywheel/runs`, { query: { offset, limit, filter } }), // FW-03
+    flywheelAudit: (id, { offset = 0, limit = 20 } = {}) => client.get(`${P(id)}/flywheel/audit`, { query: { offset, limit } }), // FW-04
+    flywheelRun: (id, runId) => client.get(`${P(id)}/flywheel/runs/${enc(runId)}`), // FW-05
+    flywheelChanges: (id, runId) => client.get(`${P(id)}/flywheel/runs/${enc(runId)}/changes`), // FW-06
+    flywheelAction: (id, runId, action, body) => client.post(`${P(id)}/flywheel/runs/${enc(runId)}/${action}`, body || {}), // FW-07
+    flywheelEvaluate: (id, runId, body, refresh) => client.post(`${P(id)}/flywheel/runs/${enc(runId)}/evaluate`, body || {}, { headers: refreshHeader(refresh) }), // FW-08
 
     // 3.21 三份契约：服务令牌（X-06，设计稿没画入口，见 gaps F4）
     serviceTokens: () => client.get('/admin/service-tokens'), // X-06

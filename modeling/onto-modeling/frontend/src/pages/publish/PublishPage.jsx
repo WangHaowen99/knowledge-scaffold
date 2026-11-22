@@ -14,6 +14,7 @@ import { ShellP } from '../../shell/Shell.jsx';
 import { useProjectEvent } from '../plugin/parts.jsx';
 import { EvaluationDialogs, LegacyEvaluations, useReleaseEvaluations } from '../evaluation/ReleaseEvaluation.jsx';
 import { notifyPackagePublished } from '../evaluation/evaluationModel.js';
+import { useFlywheelPanel } from '../flywheel/FlywheelPanel.jsx';
 import PackageCompare from './PackageCompare.jsx';
 import PublishProblems from './PublishProblems.jsx';
 import PublishedVersions from './PublishedVersions.jsx';
@@ -201,6 +202,8 @@ export default function PublishPage() {
   }, [api, pid]);
 
   useEffect(() => { loadVersions(); loadRecords(); }, [loadVersions, loadRecords]);
+  // 数据飞轮改写工作区或发布新版本后：重读版本、发布记录、发布检查与「已发布版本」
+  const flywheel = useFlywheelPanel(pid, () => { loadVersions(); loadRecords(); runCheck(); setReleasesTick((n) => n + 1); });
   useEffect(() => { runCheck(); }, [runCheck, commit]);
   // 项目列表菜单「已发布版本」带 ?versions=1 进来：滚到已发布版本
   useEffect(() => {
@@ -334,6 +337,7 @@ export default function PublishPage() {
           />
         ) : null}
         <PublishedVersions
+          actions={flywheel.entry}
           projectId={pid}
           projectName={meta?.name || ''}
           ev={ev}
@@ -350,6 +354,7 @@ export default function PublishPage() {
       <PackageCompare open={!!compareFor} projectId={pid} projectName={meta?.name || ''} initialReleaseId={compareFor?.releaseId || ''}
         initialVersion={compareFor?.version || ''} onClose={() => setCompareFor(null)} />
       <ManifestDrawer rec={manifestFor} onClose={() => setManifestFor(null)} onDownload={download} />
+      {flywheel.dialog}
     </ShellP>
   );
 }

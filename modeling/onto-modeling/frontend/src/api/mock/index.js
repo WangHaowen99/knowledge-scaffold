@@ -30,6 +30,7 @@ import * as meRoutes from './routes-me.js';
 import * as systemRoutes from './routes-system.js';
 import * as pluginDevRoutes from './routes-plugin-dev.js';
 import * as packageCompareRoutes from './routes-package-compare.js';
+import * as flywheelRoutes from './routes-flywheel.js';
 
 // F3 的分组在后面：同一路径先登记的先匹配，F3 文件只补新接口
 // F4：运维（可观测、管控、用户与审计）、插件目录与上传、个人设置、系统设置；/me、/packs 已从本文件移到 routes-me、routes-plugins
@@ -38,7 +39,7 @@ const MODULES = [
   pluginDevRoutes, studioRoutes, reportRoutes, artifactRoutes, inboxRoutes, autobuildRoutes, materialRoutes,
   scenarioRoutes, scriptRoutes, incrementalRoutes, versionRoutes, publishRoutes, resourceRoutes, settingsRoutes,
   opsObsRoutes, opsCtlRoutes, adminRoutes, pluginRoutes, packUploadRoutes, meRoutes, systemRoutes,
-  packageCompareRoutes,
+  packageCompareRoutes, flywheelRoutes,
 ];
 // 写入范围锁额外覆盖的条目、产物、路径（routes-*.js 导出 lockScope）
 const LOCK_EXTRAS = { entries: [], artifacts: [], paths: [] };

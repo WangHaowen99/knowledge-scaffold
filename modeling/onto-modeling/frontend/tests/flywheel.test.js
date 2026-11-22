@@ -8,6 +8,7 @@ import {
   recordsSignature, runKey, switchWarning,
   earlierChangesNote, publishFocus, rate, reasonText, reauthorizeNotice, sourceLine, statusOf, toggleNotice, transitions,
   feedbackNote, isFeedback, ROUND_LIMITS, roundsLabel, canSkipEvaluation, confirmsPrompt, graphPrompt,
+  CHANGES_WORKSPACE, NOTICE_ICONS, chipTone, confirmPlan,
 } from '../src/pages/flywheel/flywheelModel.js';
 
 const run = (fields = {}) => ({
@@ -330,4 +331,29 @@ test('user feedback runs may concern an earlier version and end at publication',
 
 test('the round limit offers no limit as well', () => {
   assert.deepEqual(ROUND_LIMITS.map(roundsLabel), ['最多 1 轮', '最多 3 轮', '最多 5 轮', '无限次']);
+});
+
+test('status colors map onto PR555 chip tones and notice types onto toast icons', () => {
+  assert.equal(chipTone('green'), 'teal');
+  assert.equal(chipTone('amber'), 'amber');
+  assert.equal(chipTone('gray'), 'gray');
+  assert.equal(chipTone(statusOf(run({ status: 'published' }))[1]), 'teal');
+  assert.deepEqual(NOTICE_ICONS, { success: 'check', info: 'info', error: 'alert' });
+});
+
+test('confirm plan picks the run action, body and notice for each confirm kind', () => {
+  assert.deepEqual(confirmPlan({ kind: 'retry', run: run({ status: 'blocked', reason: 'hub_failed' }) }),
+    { name: 'publish', body: {}, notice: ['info', '已重新提交发布请求。'] });
+  assert.equal(confirmPlan({ kind: 'optimize', run: run() }).notice[0], 'success');
+  assert.deepEqual(confirmPlan({ kind: 'rollback', run: run({ status: 'published' }), scope: 'workspace' }).body, { scope: 'workspace' });
+  assert.match(confirmPlan({ kind: 'rollback', run: run(), scope: 'hub' }).notice[1], /发布新的恢复版本/);
+  assert.deepEqual(confirmPlan({ kind: 'evaluate', run: run({ status: 'waiting_evaluation' }) }).body,
+    { replace_graph: false, graph_confirmation_code: '' });
+  assert.deepEqual(confirmPlan({ kind: 'evaluate', run: run(), replaceGraph: { text: '删除旧图', code: 'c-1' } }).body,
+    { replace_graph: true, graph_confirmation_code: 'c-1' });
+  // 评测中的「跳过」是不再等待：提示不同，接口相同
+  assert.match(confirmPlan({ kind: 'skip-evaluation', run: run({ status: 'evaluating' }) }).notice[1], /不再等待/);
+  assert.match(confirmPlan({ kind: 'skip-evaluation', run: run({ status: 'waiting_evaluation' }) }).notice[1], /已跳过/);
+  assert.deepEqual(CHANGES_WORKSPACE, ['optimize', 'stop', 'rollback']);
+  assert.ok(CHANGES_WORKSPACE.includes(confirmPlan({ kind: 'stop', run: run({ status: 'optimizing' }) }).name));
 });

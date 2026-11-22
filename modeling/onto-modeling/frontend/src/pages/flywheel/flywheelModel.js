@@ -1,4 +1,4 @@
-// 知识包数据飞轮的展示逻辑：状态与原因文案、记录筛选、操作是否可用。状态由后端 /flywheel 给出。
+// 知识包数据飞轮的展示逻辑：状态与原因文案、记录筛选、操作是否可用、确认后的接口与提示。状态由后端 /flywheel 给出。
 
 export const POLL_ACTIVE_MS = 4000;
 export const POLL_IDLE_MS = 30000;
@@ -185,12 +185,12 @@ export function reasonText(run, { current, maxRounds } = {}) {
     publish_interrupted: '发布过程中断，尚未确认 Hub 回执。确认后重试同一发布请求。',
     authorization: 'Hub 未接受当前登录，请重新登录后重试同一发布请求。',
     solver_unverified: '当前求解契约修订尚未通过求解验证，飞轮不代为确认，未创建新版本。修订未改动求解契约时，'
-      + '可先在「已发布版本（知识包评测）」对当前版本完成求解验证后重试发布；否则请在发布检查中确认后手动发布。',
+      + '可先在发布页「已发布版本」对当前版本完成求解验证后重试发布；否则请在发布检查中确认后手动发布。',
     version_mismatch: `该通知基于 ${version(run.version)}，当前项目基于 ${version(current)}。请评测当前版本后再优化。`,
     suggestions_failed: '评测报告已完成，建议生成失败。重新生成成功前不会触发优化。',
     round_limit: `已连续自动处理 ${maxRounds} 轮，转为人工确认，防止无休止地优化与发布。`,
     optimization_interrupted: '建模助手本轮未正常结束，已保留执行前快照。可以恢复优化前内容，或重新确认优化。',
-    optimization_failed: '建模助手本轮执行出错，已保留执行前快照。可在右侧对话查看原因后重新确认优化。',
+    optimization_failed: '建模助手本轮执行出错，已保留执行前快照。可在工作台对话查看原因后重新确认优化。',
     assistant_unavailable: '建模助手暂不可用，未修改任何知识内容。可稍后重新确认优化。',
     no_changes: isFeedback(run) ? '建模助手没有修改知识包文档，也没有确认问题已在最新版本解决；请查看演进报告后处理或忽略。'
       : '建模助手没有修改知识包文档，无需发布新版本。',
@@ -198,7 +198,6 @@ export function reasonText(run, { current, maxRounds } = {}) {
   })[run.reason] || run.note || run.error || '请查看本次运行的详细记录。';
 }
 
-// 待确认的事项卡片上的说明：为什么开关开着却仍要人工确认
 // 开关开着却仍要人工确认的原因；没有特别原因时为空
 export function holdHint(run, maxRounds) {
   if (run.human_hold === false) return '';
@@ -207,7 +206,6 @@ export function holdHint(run, maxRounds) {
   return '';
 }
 
-// 已发布、等待评测的事项为什么还在等
 // 只说需要你知道的原因：图数据要确认删除、自动评测失败或缺少后台评测登录
 export function evaluationHint(run, state) {
   if (run.human_hold === false) return '';
@@ -426,4 +424,39 @@ export function transitions(previous, next) {
     .map((run) => (before.has(run.id) ? (before.get(run.id).status === run.status ? null : change(before.get(run.id), run))
       : arrival(run)))
     .filter(Boolean);
+}
+
+// 界面适配：状态颜色换成 Chip 色调（完成类用青绿），提示类型换成 toast 图标
+export const chipTone = (color) => (color === 'green' ? 'teal' : color);
+export const NOTICE_ICONS = { success: 'check', info: 'info', error: 'alert' };
+// 这些操作会改写工作区：完成后发布页重读版本、发布检查与发布记录
+export const CHANGES_WORKSPACE = ['optimize', 'stop', 'rollback'];
+
+const CONFIRMED = {
+  optimize: ['optimize', ['success', '已开始评测优化，修订过程可在工作台对话中查看。']],
+  publish: ['publish', ['info', '已开始发布到 Hub，完成后在此显示结果。']],
+  retry: ['publish', ['info', '已重新提交发布请求。']],
+  stop: ['stop', ['info', '本次优化已中止，执行前内容已恢复。']],
+  ignore: ['ignore', ['info', '已忽略本次建议，记录已保留。']],
+  evaluate: ['evaluate', ['success', '已发起新版本评测，评测结果到达后在此显示。']],
+  'skip-evaluation': ['skip-evaluation', ['info', '已跳过本次评测，记录已保留。']],
+};
+
+// 确认框点「确认」后调用的运行操作、请求体与成功提示；confirm 为 { kind, run, scope, replaceGraph }
+export function confirmPlan({ kind, run, scope, replaceGraph }) {
+  if (kind === 'rollback') {
+    return {
+      name: 'rollback',
+      body: { scope },
+      notice: scope === 'hub' ? ['info', '建模内容已恢复，正在检查并发布新的恢复版本。']
+        : ['success', '建模内容已恢复，已新增回退记录；两个自动化开关已暂停。'],
+    };
+  }
+  if (kind === 'skip-evaluation' && run?.status === 'evaluating') {
+    return { name: 'skip-evaluation', body: {}, notice: ['info', '已不再等待本次评测，评测服务中的评测照常进行。'] };
+  }
+  const [name, notice] = CONFIRMED[kind];
+  const body = kind === 'evaluate'
+    ? { replace_graph: !!replaceGraph, graph_confirmation_code: replaceGraph?.code || '' } : {};
+  return { name, body, notice };
 }
