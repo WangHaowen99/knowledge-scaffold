@@ -361,6 +361,8 @@ Update `CLAUDE.md` when:
 - Claude repeatedly makes the same mistake
 - new safety constraints are identified
 
+Update the affected context's `GLOSSARY.md` (listed in the root `GLOSSARY-MAP.md`) in the same change when a domain term is added, renamed, merged, or retired. New code, UI text, and ADRs use the glossary's canonical term.
+
 ## 14. Response Style
 
 When responding to the user, Claude should:
