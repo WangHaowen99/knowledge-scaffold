@@ -52,7 +52,7 @@ function ProjectCardView({ p, index = 0, onMenu, onRestore }) {
           <Icon name="more" />
         </button>
       </div>
-      <div className="goal">{p.goal}</div>
+      <div className="goal" title={p.goal || undefined}>{p.goal}</div>
       {live ? (
         <div className="en-live">
           <div className="row xs">

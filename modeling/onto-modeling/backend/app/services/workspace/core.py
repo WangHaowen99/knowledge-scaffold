@@ -430,7 +430,8 @@ class WorkspaceCore:
         """
         source_root = self.project_root(project_id)
         source_meta = self.get_project(project_id)
-        extra = {key: source_meta.get(key) for key in ("goal", "build_mode", "engine")}
+        # goal_status 是 develop 上的目标确认状态（develop !612），随目标一起带；插件化版本的确认在 research/blueprint.json 里
+        extra = {key: source_meta.get(key) for key in ("goal", "goal_status", "build_mode", "engine")}
         meta = self.create_project(
             name or self.clone_name(project_id), owner=owner, background=source_meta.get("background", ""),
             created_from="clone", **extra,

@@ -954,6 +954,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 
 - 新项目只归调用者。
 - 启用的能力和锁定版本与原项目一致。
+- 建模目标（`goal`、`background`）、目标的确认状态、建模模式和引擎与原项目一致；之后两边各自修改，互不影响。
 - 响应 `201`：`ProjectMeta`。
 - 错误：`project_name_conflict`、`project_name_too_long`、`quota_exceeded`。
 

@@ -138,6 +138,33 @@ def test_clone_copies_content_but_not_history(manager: WorkspaceManager):
     assert not (clone_root / ".onto-web.json").read_text(encoding="utf-8").count(meta["id"])
 
 
+@pytest.mark.parametrize("status", ["confirmed", "pending", None])
+def test_clone_preserves_goal_and_keeps_projects_independent(manager: WorkspaceManager, status):
+    """All names and goal content in this case are synthetic."""
+    goal = "Synthetic modeling goal.\nPreserve the complete text."
+    source = manager.create_project("project_alpha", background=goal, goal=goal)
+    if status:  # develop 上建的项目才有；PR555 里目标的确认在 research/blueprint.json
+        manager._update_meta(source["id"], goal_status=status)
+    blueprint = manager.project_root(source["id"]) / "research" / "blueprint.json"
+    blueprint.parent.mkdir(parents=True, exist_ok=True)
+    blueprint.write_text(json.dumps({"synthetic_goal_answer": status or ""}), encoding="utf-8")
+
+    clone = manager.clone_project(source["id"], owner="operator_a", name="project_copy")
+    persisted = manager.get_project(clone["id"])
+    assert clone["background"] == persisted["background"] == goal
+    assert clone["goal"] == persisted["goal"] == goal
+    assert clone.get("goal_status") == persisted.get("goal_status") == status
+    assert ("goal_status" in persisted) is bool(status)
+    cloned_blueprint = manager.project_root(clone["id"]) / "research" / "blueprint.json"
+    assert cloned_blueprint.read_bytes() == blueprint.read_bytes()
+    assert clone["id"] != source["id"]
+    assert clone["owner"] == "operator_a"
+    manager._update_meta(clone["id"], background="Synthetic copy revision.")
+    assert manager.get_project(source["id"])["background"] == goal
+    manager._update_meta(source["id"], background="Synthetic source revision.")
+    assert manager.get_project(clone["id"])["background"] == "Synthetic copy revision."
+
+
 def test_write_file_creates_commit_and_returns_revision(manager: WorkspaceManager):
     meta = manager.create_project("写入")
     result = manager.write_file(meta["id"], "notes.md", "v1", author="alice")

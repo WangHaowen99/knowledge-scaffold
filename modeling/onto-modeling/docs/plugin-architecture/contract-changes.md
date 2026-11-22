@@ -2527,3 +2527,6 @@ develop 在 !611（#407、#415、#416）和 !624 改了 Studio 的表格、关�
 4. **界面**：编辑原文、版本对比保存时，被拒列出每条错误（修改留在编辑器里），有告警列出位置（最多 5 条，再多只给数量）。
    develop 的 `lib/fileSaveFeedback.js` 移到 `api/fileSaveFeedback.js`，显示由 `components/SaveNote.jsx` 做。Studio 提交脚本走
    助手复核（ST-08 `needs_review`），不直接写文件，不受影响。
+5. **P-08 克隆**：除 `goal`、`background`、建模模式、引擎外，`meta.goal_status`（develop 上确认过或待确认的建模目标）也带过去；
+   原项目没有这个字段时新项目也没有。插件化版本里目标的确认记在 `research/blueprint.json`，本来就随工作区复制。
+   项目卡片上只显示两行的目标，悬停看全文。
