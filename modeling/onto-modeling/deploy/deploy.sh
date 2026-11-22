@@ -113,6 +113,25 @@ from pathlib import Path
 import sys
 import tempfile
 
+path = Path(sys.argv[1])
+defaults = dict(zip(("ONTO_MODELING_EXTERNAL_AUTH_NETWORK", "ONTO_MODELING_AUTH_URL",
+                     "ONTO_WEB_AUTH_ISSUER", "ONTO_WEB_AUTH_AUDIENCE"), sys.argv[2:]))
+lines = path.read_text().splitlines()
+seen = set()
+for index, line in enumerate(lines):
+    key, separator, value = line.partition("=")
+    if separator and key in defaults:
+        seen.add(key)
+        if not value:
+            lines[index] = key + "=" + defaults[key]
+lines.extend(key + "=" + value for key, value in defaults.items() if key not in seen)
+with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=".env-", delete=False) as stream:
+    os.fchmod(stream.fileno(), 0o600)
+    stream.write("\n".join(lines) + "\n")
+    temporary = Path(stream.name)
+temporary.replace(path)
+PY
+
 # 服务凭据缺失时生成一次（64 位十六进制），已有值原样保留，值不输出
 ensure_env_secret() { # <键>
     grep -q "^$1=..*" .env && return 0
@@ -125,38 +144,13 @@ ensure_env_secret() { # <键>
 ensure_env_secret ONTO_HUB_SERVICE_TOKEN
 # 评测完成通知的入站凭据：整栈 deploy.sh 与安装脚本部署评测时沿用这里的值，这里只补缺失
 ensure_env_secret ONTO_EVALUATION_SERVICE_TOKEN
-
-# auth-server 零配置直连：首次部署自动生成初始管理员密码，写入 .env 并在结尾提示。
-# 已有用户数据的部署（卷非空）该变量不再生效，保留无害。
-BOOTSTRAP_GENERATED=""
-if ! grep -q "^AUTH_BOOTSTRAP_ADMIN_PASSWORD=..*" .env; then
-    BOOTSTRAP_GENERATED="$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 16)"
-    sed -i '/^AUTH_BOOTSTRAP_ADMIN_PASSWORD=/d' .env
-    printf 'AUTH_BOOTSTRAP_ADMIN_PASSWORD=%s\n' "${BOOTSTRAP_GENERATED}" >> .env
-    chmod 600 .env
-fi
-
-# auth-server 管理 API 令牌（运维中心「用户与审计」要它）：没设时生成一个，auth-server 与后端读同一个值
-if ! grep -q "^ONTO_WEB_AUTH_ADMIN_TOKEN=..*" .env; then
-    sed -i '/^ONTO_WEB_AUTH_ADMIN_TOKEN=/d' .env
-    printf 'ONTO_WEB_AUTH_ADMIN_TOKEN=%s\n' "$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)" >> .env
-    chmod 600 .env
-fi
+# Auth 管理令牌不在这里生成：须与独立 Auth 的 AUTH_SERVER_ADMIN_TOKEN 相同，由整栈部署或运维写入
 
 if grep -q "replace-with-real-token-at-runtime" .env; then
     echo "提示：.env 未填模型网关令牌；部署后可在管理员「配置中心」里配置 Base URL / API Key。"
 fi
-
-COMPOSE="docker compose"
-docker compose version >/dev/null 2>&1 || COMPOSE="docker-compose"
-
-# 外接账号中心：.env 声明外部 auth 网络时，停用自带 auth-server 并加入该网络
-# （consumer 栈的服务名同为 auth-server，容器网络内地址无需变化）。独立部署的知识包 Hub、评测服务
-# 同样在该网络上，onto-modeling 经服务名 knowledge-hub、knowledge-evaluation 访问
-COMPOSE_FILES=(-f docker-compose.release.yml)
-EXTERNAL_AUTH_NETWORK="$(sed -n 's/^ONTO_MODELING_EXTERNAL_AUTH_NETWORK=//p' .env | head -1)"
-if [ -n "${EXTERNAL_AUTH_NETWORK}" ]; then
-    cat > docker-compose.external-auth.yml <<EOF2
+# 独立部署的知识包 Hub、评测服务同样在共享网络上，onto-modeling 经服务名 knowledge-hub、knowledge-evaluation 访问
+cat > docker-compose.external-auth.yml <<EOF2
 # 由 deploy.sh 生成：接入外部账号中心（勿手改，改 .env 后重跑 deploy.sh）
 services:
   onto-modeling:

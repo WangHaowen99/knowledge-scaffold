@@ -43,9 +43,6 @@ if [ "${NO_BUILD}" -eq 0 ]; then
     # 连接器网关（ADR-0073）：同一个 Dockerfile 的另一个目标，随主服务一起换
     (cd "${PROJECT_ROOT}" && ${BUILD_CMD} --target connector-gateway \
         -t "onto-modeling-connector-gateway:${VERSION}" -f Dockerfile .)
-    if [ "${WITH_AUTH}" -eq 1 ]; then
-        (cd "${REPOSITORY_ROOT}/auth-server" && ${BUILD_CMD} -t "onto-modeling-auth-server:${VERSION}" .)
-    fi
 else
     docker image inspect "onto-modeling:${VERSION}" >/dev/null 2>&1 || {
         echo "Error: 镜像 onto-modeling:${VERSION} 不在本机，去掉 --no-build 或先构建" >&2
@@ -60,9 +57,6 @@ if grep -q '^CONNECTOR_GATEWAY_IMAGE=' "${DEPLOY_DIR}/images.env"; then
     sed -i "s|^CONNECTOR_GATEWAY_IMAGE=.*|CONNECTOR_GATEWAY_IMAGE=onto-modeling-connector-gateway:${VERSION}|" "${DEPLOY_DIR}/images.env"
 else
     echo "CONNECTOR_GATEWAY_IMAGE=onto-modeling-connector-gateway:${VERSION}" >> "${DEPLOY_DIR}/images.env"
-fi
-if [ "${WITH_AUTH}" -eq 1 ]; then
-    sed -i "s|^AUTH_SERVER_IMAGE=.*|AUTH_SERVER_IMAGE=onto-modeling-auth-server:${VERSION}|" "${DEPLOY_DIR}/images.env"
 fi
 
 COMPOSE="docker compose"
@@ -80,7 +74,6 @@ SERVICES=(onto-modeling)
 grep -q '^  sandbox-gateway:' "${DEPLOY_DIR}/docker-compose.release.yml" && SERVICES+=(sandbox-gateway)
 # 连接器网关：部署目录的 compose 里有它（新版 compose）才一起起
 grep -q '^  connector-gateway:' "${DEPLOY_DIR}/docker-compose.release.yml" && SERVICES+=(connector-gateway)
-[ "${WITH_AUTH}" -eq 1 ] && SERVICES+=(auth-server)
 
 (cd "${DEPLOY_DIR}" && ${COMPOSE} --env-file .env --env-file images.env \
     "${COMPOSE_FILES[@]}" up -d --no-deps "${SERVICES[@]}")

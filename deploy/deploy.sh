@@ -91,7 +91,7 @@ ensure_release_modeling_service_token() {
     log "Modeling service token is ready (value is not printed)"
 }
 
-# onto-modeling 接入整栈（开箱即用）：共享 consumer 账号中心，与 Hub、评测服务同在 consumer 网络。
+# Onto Modeling 接入整栈：共享 Consumer 当前 Auth 和网络，与 Hub、评测服务同在 Consumer 网络。
 consumer_container() {
     # 限定 --type container：同名镜像也会被 docker inspect 命中
     if docker inspect --type container onto-agent-backend >/dev/null 2>&1; then
@@ -174,7 +174,7 @@ write_onto_modeling_stack_override() { # <onto-modeling 目录>
     fi
     cat > "${dir}/docker-compose.stack.yml" <<EOF2
 # 由 deploy.sh 生成（整栈部署形态，勿手改；单独部署 onto-modeling 时删除即可）：
-# 停用自带 dev auth-server，共享 consumer 账号中心；接入 consumer 网络（独立部署的知识包 Hub、评测服务也在此网络）；
+# 停用源码 Compose 的本地 Auth，共享 Consumer 当前 Auth；接入 Consumer 网络（独立部署的知识包 Hub、评测服务也在此网络）；
 # 把 consumer 的 jiuwenbox socket 只读挂给脚本验证网关。
 services:
   auth-server:
@@ -182,7 +182,7 @@ services:
   onto-modeling:
     depends_on: !override []
     environment:
-      - ONTO_WEB_AUTH_URL=http://auth-server:5056
+      - ONTO_WEB_AUTH_URL=${STACK_AUTH_URL}
     networks:
       - default
       - consumer-net

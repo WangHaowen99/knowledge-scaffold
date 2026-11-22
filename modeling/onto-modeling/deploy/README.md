@@ -6,10 +6,11 @@
 
 ```
 onto-modeling/
-  images/                     # 镜像 tar：onto-modeling、auth-server、连接器网关
+  images/                     # 镜像 tar：onto-modeling、连接器网关
   images.env                  # 镜像 tag 清单（deploy.sh 自动读取）
   docker-compose.release.yml
   deploy.sh                   # 预检 → 加载镜像 → 拉起
+  dependency_probe.py         # 探测 Auth 与 Consumer 依赖
   preflight.sh                # 可单独运行的部署预检
   .env.example                # 环境变量说明（复制为 .env 后填写）
   README.md
@@ -27,9 +28,11 @@ vi .env              # 默认 Auth 契约已填；实际契约不同时修改
 
 首次安装可以先于 Auth 和 Consumer。Auth URL、共享网络、issuer、audience 默认分别为 `http://auth-server:5056`、`onto-auth-network`、`http://auth-server:5056`、`knowledge-scaffold`；旧 `.env` 中缺失或留空时，脚本会补齐。若实际 Auth 契约不同，须在首次安装前改成真实值。`deploy.sh` 在共享网络尚不存在时建立带 `auth.shared=true` 标签的网络，并将依赖状态写到本目录 `.dependencies.json`；若 Auth 尚未上线，Onto 进程会持续等待，页面暂不可用。Auth 和 Consumer 上线后执行 `bash deploy.sh --verify-dependencies`；该命令检查依赖及 Onto、Hub、评测三个 HTTP 服务，不重建容器。Consumer 安装时设置相同的 `AUTH_SHARED_NETWORK`。Hub、评测包各自的 `deploy.sh` 使用 `CONSUMER_NETWORK` 指向同一网络，允许它们在 Consumer 之前安装。三包首次独立安装可依次部署 Onto、Hub、评测；需预先对齐 Onto 的 `ONTO_HUB_SERVICE_TOKEN` 与 Hub 的 `HUB_SERVICE_TOKEN`、评测的 `EVAL_HUB_SERVICE_TOKEN` 与 Hub 的 `HUB_EVALUATION_SERVICE_TOKEN`、评测的 `EVAL_MODELING_SERVICE_TOKEN` 与 Onto 的 `ONTO_EVALUATION_SERVICE_TOKEN`。Consumer 安装时把 `EVALUATION_SERVICE_TOKEN` 设成评测的 `EVAL_CONSUMER_SERVICE_TOKEN`，其值不能与 Consumer 的 `MODELING_SERVICE_TOKEN` 相同。等 Consumer 安装并完成自身验收后，再执行建模依赖验证和一条真实评测用例。已有 Onto 容器或数据卷的升级仍要求 Auth 和 Consumer 预先就绪。
 
-首次运行时 deploy.sh 在 `.env` 里生成四项，已有的值不动：初始管理员密码 `AUTH_BOOTSTRAP_ADMIN_PASSWORD`（登录名 admin）、
-auth-server 管理令牌 `ONTO_WEB_AUTH_ADMIN_TOKEN`（auth-server 与后端读同一个值，运维中心「用户与审计」靠它），
-以及下一节的 `ONTO_HUB_SERVICE_TOKEN`、`ONTO_EVALUATION_SERVICE_TOKEN`。
+首次运行时 deploy.sh 在 `.env` 里生成下一节的 `ONTO_HUB_SERVICE_TOKEN`、`ONTO_EVALUATION_SERVICE_TOKEN`，已有的值不动。
+Auth 管理令牌 `ONTO_WEB_AUTH_ADMIN_TOKEN` 不生成：它要与独立 Auth 的 `AUTH_SERVER_ADMIN_TOKEN` 相同，整栈部署会写入，
+单独部署时由运维填写；运维中心「用户与审计」和改密都靠它。初始管理员账号由独立 Auth 建立。
+
+访问 `http://<部署机地址>:5100`（端口可用 `ONTO_WEB_PORT` 覆盖）；Auth 未就绪时等待启动，不能仅凭安装命令成功判断页面可用。
 
 ### 对接知识包 Hub 与评测服务
 
@@ -122,8 +125,8 @@ SIGILL 崩溃。`preflight.sh` 会检查；未通过时按优先级整改：
 
 ## 数据与备份
 
-- 业务数据全部在 docker 卷 `onto-web-data`（项目 workspace、会话历史、设置）
-  与 `onto-web-auth-data`（用户账号）。
+- 业务数据全部在 docker 卷 `onto-web-data`（项目 workspace、会话历史、设置）；
+  用户账号由独立 Auth 保存，不在本服务的卷里。
 - 应用备份：运维中心可手动备份，另按 `ONTO_WEB_BACKUP_INTERVAL_HOURS`（默认 24 小时）定时备份，
   服务启动时距上次备份已超过间隔会先补一份；保留最近 3 份。备份默认写在数据卷内的
   `/data/onto-web/backups`，与数据同卷，卷坏了一起丢。建议在 compose 的 override 里给
@@ -138,7 +141,7 @@ SIGILL 崩溃。`preflight.sh` 会检查；未通过时按优先级整改：
   没有反代的单端口部署，运维中心经业务端口访问（运维接口仍要登录令牌与 ops 角色）。有反代时在 `.env` 设
   `ONTO_WEB_OPS_ON_MAIN=false`、`ONTO_WEB_OPS_HOST=0.0.0.0`，只在内部网络暴露 8101，由反代把
   `/api/v1/ops/` 转过去，业务端口上的运维接口返回 404。
-- 用户账号在 `onto-web-auth-data`，不在应用备份里；建议在主机侧对两个卷做定期快照。
+- 用户账号在独立 Auth 的数据卷，不在应用备份里；由 Auth 负责人单独备份。建议在主机侧对 `onto-web-data` 做定期快照。
 
 ## 升级与回滚
 
@@ -164,10 +167,10 @@ ONTO_WEB_AUTH_ISSUER=http://auth-server:5056
 ONTO_WEB_AUTH_AUDIENCE=knowledge-scaffold
 ```
 
-deploy.sh 会停用自带 auth-server、让应用容器加入 consumer 栈网络，直接复用其
-`auth-server` 服务（issuer/audience 一致，token 互认）。用户管理要外部 auth-server 的管理令牌：把它的
-`AUTH_SERVER_ADMIN_TOKEN` 填进 `ONTO_WEB_AUTH_ADMIN_TOKEN`。切换回自带模式：删除这
-两行重跑 deploy.sh 即可（自带 auth 数据卷始终保留）。需要 docker compose v2.24+。
+`deploy.sh` 先探测依赖：缺席时记录等待状态，已响应但身份或协议不匹配时停止部署。`--verify-dependencies` 会重新检查 Auth 健康、发现文档、RS256 JWKS、Consumer `/ready` 和 Onto、Hub、评测的 HTTP 服务；实际账号登录和历史会话连续性仍需业务验收。
+若旧 Onto 自带 Auth 容器仍存在，脚本会停止并要求先核对账号归属，保留旧账号卷。
+
+账号首次登录或管理员重置密码后，Onto 会查询 Auth 的 `/userinfo`。待改密账号只可进入强制改密页面，业务 API 返回 403；改密使用 Auth 自助接口，成功后须用新密码重新登录。账号状态查询失败时，业务 API 不放行。Onto 的「我的」里修改密码也会退出当前登录。两种改密都需要 Onto 配置与 Auth 相同的 `ONTO_WEB_AUTH_ADMIN_TOKEN`；普通登录及待改密状态检查不依赖此令牌。
 
 ## 脚本运行验证的沙箱（jiuwenbox）
 

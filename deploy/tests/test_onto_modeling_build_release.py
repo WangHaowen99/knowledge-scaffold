@@ -105,11 +105,11 @@ printf '%s\\n' "$*" >> "${FAKE_LOG_DIR}/pip3.log"
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert (project_root / "dist" / "onto-modeling-v-test-linux-amd64.tar.gz").is_file()
-    _assert_packaged_deploy_scripts(project_root / "dist" / "onto-modeling-v-test-linux-amd64.tar.gz")
+    _assert_packaged_release(project_root / "dist" / "onto-modeling-v-test-linux-amd64.tar.gz")
     return result, log_dir
 
 
-def _assert_packaged_deploy_scripts(archive: Path, max_bytes: int = 8 * 1024 * 1024) -> None:
+def _assert_packaged_release(archive: Path, max_bytes: int = 8 * 1024 * 1024) -> None:
     # This fixture contains empty image stubs. Bound decompression before parsing
     # tar headers, and inspect metadata only; never extract files to disk.
     assert archive.stat().st_size <= max_bytes, "Compressed test package exceeds size limit"
@@ -120,11 +120,16 @@ def _assert_packaged_deploy_scripts(archive: Path, max_bytes: int = 8 * 1024 * 1
         members = package.getmembers()
         assert len(members) <= 512, "Test package contains too many members"
         assert all(0 <= member.size <= max_bytes for member in members), "Invalid test member size"
+        names = {member.name for member in members}
         deploy = package.getmember("onto-modeling/deploy.sh")
         assert deploy.isfile()
         assert deploy.mode & 0o111
+        assert "onto-modeling/dependency_probe.py" in names
+        assert "onto-modeling/docker-compose.release.yml" in names
         # Modeling 关联随评测一起移出 onto-modeling（ADR-0020），关联脚本不再打包
-        assert "onto-modeling/configure-modeling-association.sh" not in package.getnames()
+        assert "onto-modeling/configure-modeling-association.sh" not in names
+        # 独立 Auth（ADR-0107）：发布包不再带 auth-server 镜像
+        assert not any(name.startswith("onto-modeling/images/onto-modeling-auth-server-") for name in names)
 
 
 def test_package_metadata_check_rejects_excessive_expansion(tmp_path: Path) -> None:
@@ -132,7 +137,7 @@ def test_package_metadata_check_rejects_excessive_expansion(tmp_path: Path) -> N
     with gzip.open(archive, "wb") as compressed:
         compressed.write(b"0" * 2048)
     with pytest.raises(AssertionError, match="Expanded test package exceeds size limit"):
-        _assert_packaged_deploy_scripts(archive, max_bytes=1024)
+        _assert_packaged_release(archive, max_bytes=1024)
 
 
 def _onto_modeling_build_command(log_dir: Path) -> str:
@@ -174,20 +179,21 @@ def test_build_release_vendors_wheels_from_overridable_index(
 
 
 def test_build_release_bundles_the_gateway_image(tmp_path: Path) -> None:
-    """离线包带齐 compose 里的三个镜像，images.env 给出各自的 tag，目标机 deploy.sh 才能全部加载并拉起；REA 旁路容器已去掉。"""
+    """离线包带齐 compose 里的两个镜像，images.env 给出各自的 tag，目标机 deploy.sh 才能全部加载并拉起；Auth 独立交付（ADR-0107），REA 旁路容器已去掉。"""
     _, log_dir = _run_build_release(tmp_path, "")
 
     saved = [line for line in (log_dir / "docker.log").read_text(encoding="utf-8").splitlines()
              if line.startswith("save ")]
-    for image in ("onto-modeling", "onto-modeling-auth-server", "onto-modeling-connector-gateway"):
+    for image in ("onto-modeling", "onto-modeling-connector-gateway"):
         assert any(line.endswith(f" {image}:v-test") for line in saved), image
-    assert len(saved) == 3
+    assert len(saved) == 2
     package_path = tmp_path / "repo" / "modeling" / "onto-modeling" / "dist" / "onto-modeling-v-test-linux-amd64.tar.gz"
     with tarfile.open(package_path) as package:  # NOSONAR(S5042) 合成的桩包，只读清单，不展开
         images_env = package.extractfile("onto-modeling/images.env").read().decode()
         names = set(package.getnames())
     assert "CONNECTOR_GATEWAY_IMAGE=onto-modeling-connector-gateway:v-test" in images_env
     assert "REA_SIDECAR_IMAGE" not in images_env
+    assert "AUTH_SERVER_IMAGE" not in images_env
     assert not any("rea-sidecar" in name for name in names)
 
 

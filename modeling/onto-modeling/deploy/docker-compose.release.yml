@@ -3,23 +3,6 @@
 name: onto-web
 
 services:
-  auth-server:
-    image: ${AUTH_SERVER_IMAGE:-onto-modeling-auth-server:latest}
-    container_name: onto-modeling-auth-server
-    restart: unless-stopped
-    # 只在 compose 网络内可达；issuer/audience 用镜像默认值（http://auth-server:5056 / knowledge-scaffold），
-    # 与 onto-modeling 容器内 ONTO_WEB_AUTH_URL 一致，改动时两边同步
-    expose:
-      - "5056"
-    environment:
-      # 首次启动（auth 数据卷为空）必须在 .env 里设初始管理员密码；已有用户数据后可移除
-      - AUTH_BOOTSTRAP_ADMIN_PASSWORD=${AUTH_BOOTSTRAP_ADMIN_PASSWORD:-}
-      # 管理 API 令牌：与 onto-modeling 的 ONTO_WEB_AUTH_ADMIN_TOKEN 同一个值（.env 里设），运维中心的用户管理靠它
-      - AUTH_SERVER_ADMIN_TOKEN=${ONTO_WEB_AUTH_ADMIN_TOKEN:-}
-    volumes:
-      - onto-web-auth-data:/data
-    mem_limit: 512m
-
   onto-modeling:
     image: ${ONTO_WEB_IMAGE:-onto-modeling:latest}
     container_name: onto-modeling
@@ -36,6 +19,7 @@ services:
     env_file:
       - ./.env
     environment:
+      # 独立 Auth：经共享网络按服务名访问，本包不带 Auth；Auth 未就绪时后端启动阶段等待（auth_startup）
       - ONTO_WEB_AUTH_URL=${ONTO_MODELING_AUTH_URL:?Set independent Auth URL}
       # 容器必须监听所有网卡，否则宿主机端口转发无法访问（environment 覆盖 env_file）。
       - ONTO_WEB_HOST=0.0.0.0
@@ -60,9 +44,6 @@ services:
     networks:
       - default
       - connector
-    depends_on:
-      auth-server:
-        condition: service_healthy
 
   # 脚本验证网关：唯一挂载 jiuwenbox 管理 socket 的容器（deploy.sh 生成的 docker-compose.jiuwenbox.yml
   # 加挂），按写死的策略在沙箱里运行脚本。与 onto-modeling 同一镜像，不读 .env、不挂数据卷、
@@ -144,4 +125,3 @@ volumes:
   onto-web-data:
   onto-connector-plugins:
   onto-connector-secrets:
-  onto-web-auth-data:

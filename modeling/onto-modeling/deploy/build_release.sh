@@ -132,17 +132,9 @@ fi
 (cd "${IMAGES_DIR}" && docker save -o "onto-modeling-connector-gateway-${VERSION}.tar" \
     "onto-modeling-connector-gateway:${VERSION}")
 
-AUTH_SERVER_SRC="${REPOSITORY_ROOT}/auth-server"
-[ -d "${AUTH_SERVER_SRC}" ] || {
-    echo "Error: auth-server source directory not found: ${AUTH_SERVER_SRC}" >&2
-    exit 1
-}
-(cd "${AUTH_SERVER_SRC}" && ${BUILD_CMD} -t "onto-modeling-auth-server:${VERSION}" .)
-(cd "${IMAGES_DIR}" && docker save -o "onto-modeling-auth-server-${VERSION}.tar" "onto-modeling-auth-server:${VERSION}")
-
-# 知识包 Hub、评测服务是独立交付包（knowledge-hub/build.sh、eval-service/build.sh），不随本包打入镜像
+# Auth、知识包 Hub、评测服务各自独立交付，不随本包打入镜像
 cp "${SCRIPT_DIR}/docker-compose.release.yml" "${BUNDLE_DIR}/"
-cp "${SCRIPT_DIR}/deploy.sh" "${SCRIPT_DIR}/preflight.sh" \
+cp "${SCRIPT_DIR}/deploy.sh" "${SCRIPT_DIR}/dependency_probe.py" "${SCRIPT_DIR}/preflight.sh" \
    "${SCRIPT_DIR}/migrate-from-modeling.sh" "${BUNDLE_DIR}/"
 cp "${SCRIPT_DIR}/README.md" "${BUNDLE_DIR}/README.md"
 cp "${PROJECT_ROOT}/.env.example" "${BUNDLE_DIR}/.env.example"
@@ -152,7 +144,6 @@ chmod +x "${BUNDLE_DIR}/deploy.sh" "${BUNDLE_DIR}/preflight.sh" \
 # 镜像清单：deploy.sh / compose 从这里取镜像 tag，目标机不需要再传参数
 cat > "${BUNDLE_DIR}/images.env" <<EOF
 ONTO_WEB_IMAGE=onto-modeling:${VERSION}
-AUTH_SERVER_IMAGE=onto-modeling-auth-server:${VERSION}
 CONNECTOR_GATEWAY_IMAGE=onto-modeling-connector-gateway:${VERSION}
 RELEASE_VERSION=${VERSION}
 RELEASE_ARCH=${RELEASE_ARCH}

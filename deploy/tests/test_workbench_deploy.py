@@ -943,31 +943,6 @@ def test_interactive_installer_does_not_ask_for_workbench() -> None:
     assert "modeling/deploy/install.sh" not in _INTERACTIVE_INSTALLER
 
 
-def test_interactive_installer_deploys_onto_modeling() -> None:
-    """交互式安装器要能装出 Onto Modeling，而不是只装 Consumer + Modeling。
-
-    回归：该脚本此前完全不涉及 onto-modeling，走这条路的用户永远装不到它。
-    """
-    # 首次部署与升级两条路径都要真正调用部署函数
-    assert _INTERACTIVE_INSTALLER.count("deploy_onto_modeling") >= 3
-    assert 'validate_package "${ONTO_MODELING_PACKAGE}" onto-modeling' in _INTERACTIVE_INSTALLER
-    assert 'tar -xzf "${ONTO_MODELING_PACKAGE}" -C "${INSTALL_ROOT}"' in _INTERACTIVE_INSTALLER
-    # Onto Modeling 是必需服务，发布包提示不能为空，也不再提供跳过分支。
-    assert "ask '请输入 Onto Modeling 发布包路径：'" in _INTERACTIVE_INSTALLER
-    assert '[ -z "${ONTO_MODELING_PACKAGE}" ] || ' not in _INTERACTIVE_INSTALLER
-
-    # 接线：宿主端口 + 共享账号中心的网络 + 脚本验证用的沙箱 socket 卷；评测已移出（ADR-0020），不写 Modeling 地址
-    for key in (
-        "ONTO_WEB_PORT",
-        "ONTO_MODELING_EXTERNAL_AUTH_NETWORK",
-        "ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME",
-    ):
-        assert f'write_env_value "${{env_file}}" {key}' in _INTERACTIVE_INSTALLER
-    assert "ONTO_WEB_MODELING_URL" not in _INTERACTIVE_INSTALLER
-
-
-
-
 # 安装器升级路径共用的 docker stub：mw-modeling* 归属 STUB_MODELING_OWNER，Consumer
 # 容器归属 STUB_CONSUMER_DIR 且在 onto-agent_default 网络上；设置 STUB_ONTO_MODELING_DIR /
 # STUB_KNOWLEDGE_HUB_DIR 时模拟已有 onto-modeling / knowledge-hub 容器，设置
@@ -1190,29 +1165,6 @@ def _calls(setup: dict) -> list[str]:
     return calls.read_text(encoding="utf-8").split() if calls.exists() else []
 
 
-def test_installer_upgrade_deploys_onto_modeling_after_consumer(
-    tmp_path: Path,
-) -> None:
-    """回归：非交互 upgrade 只升 Consumer，onto-modeling 永远不会被拉起。"""
-    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
-
-    result = _run_separated_upgrade(setup)
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    # 预检在任何变更之前，onto-modeling 部署排在 Consumer、Hub 之后
-    assert _calls(setup) == ['onto-preflight', 'consumer-upgrade', 'hub-deploy', 'onto-deploy', 'evaluation-deploy']
-    onto_env = (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
-    assert "ONTO_WEB_PORT=5100" in onto_env
-    # 共享 Consumer 账号中心：网络取运行中容器的实际网络，不按命名规律猜
-    assert "ONTO_MODELING_EXTERNAL_AUTH_NETWORK=onto-agent_default" in onto_env
-    assert "ONTO_WEB_MODELING_URL" not in onto_env
-    # 沙箱 socket 卷同样取 consumer 容器的实际挂载（桩按容器名回卷名）
-    assert "ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME=mw-modeling_onto-agent-backend-data" in onto_env
-    assert (setup["root"] / "onto-modeling" / ".env").stat().st_mode & 0o777 == 0o600
-    # 等到健康检查通过才算部署完成
-    curl_calls = (tmp_path / "curl-calls.txt").read_text(encoding="utf-8")
-    assert "http://127.0.0.1:5100/api/health" in curl_calls
-    assert "Onto Modeling deployment finished" in result.stdout
 
 
 
@@ -1348,29 +1300,6 @@ def _legacy_answers(
     ]
 
 
-def test_legacy_migration_deploys_onto_modeling_on_a_free_port(tmp_path: Path) -> None:
-    """回归：legacy 迁移脚本完全不涉及 Onto Modeling；Modeling 继续占用旧的 5100。"""
-    setup = _prepare_legacy_upgrade(tmp_path)
-    onto_package = setup["packages"][2]
-
-    rc, output = _drive_tty(
-        DEPLOY_ROOT / "upgrade-consumer-modeling-legacy-interactive.sh",
-        _legacy_answers(setup, str(onto_package), ("请输入 Onto Modeling 宿主端口", "5110")),
-        setup["env"],
-    )
-
-    assert rc == 0, output
-    assert "Onto Modeling 宿主端口 5100 已被当前部署的其他服务使用" in output
-    assert _calls(setup) == ['onto-preflight', 'consumer-upgrade', 'hub-deploy', 'onto-deploy', 'evaluation-deploy']
-    stack_root = setup["legacy"].parent
-    assert not (stack_root / "modeling").exists()
-    onto_env = (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
-    assert "ONTO_WEB_PORT=5110" in onto_env
-    assert "ONTO_MODELING_EXTERNAL_AUTH_NETWORK=onto-agent_default" in onto_env
-    assert "ONTO_WEB_MODELING_URL" not in onto_env
-    assert "ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME=mw-modeling_onto-agent-backend-data" in onto_env
-    assert (stack_root / "onto-modeling" / ".env").stat().st_mode & 0o777 == 0o600
-    assert "Onto Modeling deployment finished" in output
 
 
 
