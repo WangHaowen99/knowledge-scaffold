@@ -1,6 +1,6 @@
 // mock · 3.21b 知识包数据飞轮（FW-01～FW-08，形状照 develop !630 的后端）：每个已发布项目一份合成状态，
 // 一条待确认的评测优化加 23 条历史。优化约 6 秒、发布约 4 秒、评测约 8 秒，每次读取时按经过的时间推进。
-// ?mock=flywheel:off 未接统一账号（不可用），flywheel:readonly 只读评审角色
+// ?mock=flywheel:off 未接统一账号（不可用），flywheel:readonly 已归档项目（只读）
 import { releasesOf } from './publish-data.js';
 
 const UNAVAILABLE = '数据飞轮需要统一账号登录：评测结果和 Hub 发布都按账号隔离';
@@ -287,8 +287,8 @@ export function register({
     return { items: slice, total: items.length, next_offset: offset + slice.length < items.length ? offset + slice.length : null };
   };
   const guard = (write) => {
-    if (off) return err(409, 'flywheel_unavailable', UNAVAILABLE);
-    if (write && readonly) return err(403, 'forbidden', '只读评审角色不能修改数据飞轮');
+    if (off) return err(401, 'login_required', UNAVAILABLE);
+    if (write && readonly) return err(409, 'project_archived', '项目已归档，数据飞轮只能查看');
     return null;
   };
 
@@ -306,13 +306,13 @@ export function register({
     advance(fw);
     const changes = body || {};
     for (const key of ['optimize', 'publish']) {
-      if (key in changes && typeof changes[key] !== 'boolean') return err(422, 'flywheel_invalid', `${LABELS[key]}只能是开或关`);
+      if (key in changes && typeof changes[key] !== 'boolean') return err(400, 'invalid_argument', `${LABELS[key]}只能是开或关`);
     }
     if ('max_rounds' in changes && !ROUNDS.includes(changes.max_rounds)) {
-      return err(422, 'flywheel_invalid', '连续自动处理上限只能是 1、3、5 轮或无限次');
+      return err(400, 'invalid_argument', '连续自动处理上限只能是 1、3、5 轮或无限次');
     }
     if ('delegation_days' in changes && !DAYS.includes(changes.delegation_days)) {
-      return err(422, 'flywheel_invalid', '后台授权有效期只能是 1、3、7、30 天或无限制');
+      return err(400, 'invalid_argument', '后台授权有效期只能是 1、3、7、30 天或无限制');
     }
     Object.keys(LABELS).forEach((key) => {
       if (!(key in changes) || changes[key] === fw.settings[key]) return;
@@ -330,7 +330,7 @@ export function register({
     const blocked = guard(false);
     if (blocked) return blocked;
     const filter = query.get('filter') || 'all';
-    if (!(filter in FILTERS)) return err(422, 'flywheel_invalid', '运行记录筛选条件无效');
+    if (!(filter in FILTERS)) return err(400, 'invalid_argument', '运行记录筛选条件无效');
     const fw = stateOf(m[1]);
     advance(fw);
     const group = FILTERS[filter];
@@ -422,7 +422,7 @@ export function register({
       return null;
     },
     rollback: (fw, run, body, t, user) => {
-      if (!['workspace', 'hub'].includes(body.scope)) return err(422, 'flywheel_invalid', '回退范围无效');
+      if (!['workspace', 'hub'].includes(body.scope)) return err(400, 'invalid_argument', '回退范围无效');
       if (!run.snapshot) return '该运行没有可回退的执行前快照';
       if (!ROLLBACKABLE.includes(run.status)) return '该运行不能回退';
       if (fw.runs.some((item) => ACTIVE.includes(item.status))) return '请等待当前运行结束后再回退';
@@ -448,8 +448,8 @@ export function register({
     if (blocked) return blocked;
     const [fw, run] = find(m[1], m[2]);
     const handler = ACTIONS[m[3]];
-    if (!run || !handler) return err(404, 'not_found', run ? `不支持的操作：${m[3]}` : '运行记录不存在');
-    if (readonly) return err(403, 'forbidden', '只读评审角色不能修改数据飞轮');
+    if (!run || !handler) return (run ? err(404, 'not_found', `不支持的操作：${m[3]}`) : err(404, 'flywheel_run_not_found', '运行记录不存在'));
+    if (readonly) return err(409, 'project_archived', '项目已归档，数据飞轮只能查看');
     const result = handler(fw, run, body || {}, now(), user);
     if (result instanceof Response) return result;
     if (typeof result === 'string') return err(409, 'flywheel_blocked', result);

@@ -46,7 +46,7 @@ test('mock 飞轮：初始一条待确认优化，记录按 20 条分页，筛�
   assert.equal((await call('GET', '/runs?filter=waiting')).body.total, 1);
   const blocked = await call('GET', '/runs?filter=blocked');
   assert.ok(blocked.body.items.some((run) => run.status === 'interrupted'));
-  assert.equal((await call('GET', '/runs?filter=nope')).body.code, 'flywheel_invalid');
+  assert.equal((await call('GET', '/runs?filter=nope')).body.code, 'invalid_argument');
   assert.equal((await call('GET', '/audit')).body.items[0].action, '自动化确认发布与发起评测');
 });
 
@@ -104,7 +104,7 @@ test('mock 飞轮：回退校验范围；仅恢复建模内容时新增回退记
   const { call } = server();
   await call('PUT', '/settings', { optimize: true });
   const bad = await call('POST', '/runs/FW-023/rollback', { scope: 'all' });
-  assert.deepEqual([bad.status, bad.body.code], [422, 'flywheel_invalid']);
+  assert.deepEqual([bad.status, bad.body.code], [400, 'invalid_argument']);
   const noSnapshot = await call('POST', '/runs/FW-024/rollback', { scope: 'workspace' });
   assert.equal(noSnapshot.status, 409);
 
@@ -124,7 +124,7 @@ test('mock 飞轮：设置校验、未接统一账号、只读角色与不存在
   const { call } = server();
   for (const body of [{ max_rounds: 2 }, { delegation_days: 2 }, { optimize: 'yes' }]) {
     const res = await call('PUT', '/settings', body);
-    assert.deepEqual([res.status, res.body.code], [422, 'flywheel_invalid']);
+    assert.deepEqual([res.status, res.body.code], [400, 'invalid_argument']);
   }
   assert.equal((await call('GET', '/runs/FW-999')).status, 404);
   assert.equal((await call('POST', '/runs/FW-024/explode')).status, 404);
@@ -134,10 +134,10 @@ test('mock 飞轮：设置校验、未接统一账号、只读角色与不存在
   const { body: unavailable } = await off.call('GET', '');
   assert.equal(unavailable.available, false);
   assert.match(unavailable.message, /统一账号/);
-  assert.equal((await off.call('POST', '/runs/FW-024/ignore')).body.code, 'flywheel_unavailable');
+  assert.equal((await off.call('POST', '/runs/FW-024/ignore')).body.code, 'login_required');
 
   const readonly = server({ flywheel: 'readonly' });
   assert.equal((await readonly.call('GET', '')).body.can_write, false);
-  assert.equal((await readonly.call('PUT', '/settings', { optimize: true })).status, 403);
-  assert.equal((await readonly.call('POST', '/runs/FW-024/ignore')).status, 403);
+  assert.equal((await readonly.call('PUT', '/settings', { optimize: true })).status, 409);
+  assert.equal((await readonly.call('POST', '/runs/FW-024/ignore')).status, 409);
 });
