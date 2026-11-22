@@ -2548,3 +2548,24 @@ develop 在 !611（#407、#415、#416）和 !624 改了 Studio 的表格、关�
 4. **不搬**：develop 在旧接口 `POST .../permissions/{rid}` 上加的 `answer_details`、`permission_resolved.answers`。
    本线逐题走 S-11，EC-33 的 `answer` 已带选项 id 和文字。`docs/question-answer-contract.md` 并入 `api-v1.md` 的
    S-10、S-11、EC-33、EC-34、4.6，原文删除。
+
+## 2026-11-22 · 独立部署 Auth 与首登改密门禁（develop !638）
+
+develop !638 把 auth-server 从建模离线包里拆出去单独交付，并加了首登改密门禁。这里按 v1 结构吸收（ADR-0107）。
+
+1. **1.3 鉴权**：
+   - 验签通过后每个请求都向 auth-server 的 `/userinfo` 核对账号，不缓存；角色以 `/userinfo` 为准，令牌里的 `role` 只作提示。
+   - `/userinfo` 拒绝、`sub` 不一致、角色不合法时返回 `401 unauthenticated`。
+   - 查不到账号状态（连不上、超时、5xx）时返回 `503 service_unavailable`，`details.dependency = "auth_server"`。
+   - 本地模式不核对账号。
+2. **新增错误码 2.2 `password_change_required`（403）**：账号待改初始密码时只放行 `A-06`、`A-07` 和免鉴权接口。
+   - develop 放行的是整个 `/api/auth/*`；v1 里免鉴权的 `/api/v1/auth/*` 照旧放行，另放行 `A-06` 改密和 `A-07` 我的资料。
+   - 旧路径按改写后的 v1 路径判断。
+3. **`UserProfile` 加 `password_change_required: boolean`**：
+   - `A-07` 返回实时核对的值；
+   - `A-01`、`A-03`、`A-04` 的 `user` 取新令牌里的 `pwd_cr`；
+   - 本地模式恒为 `false`。
+4. **`A-06`**：门禁下可以调用，成功后这个账号的全部令牌作废（auth-server 递增令牌版本），要用新密码重新登录。
+5. **不加的兼容口**：develop 新增的 `/api/auth/me` 只给旧前端用，旧前端已删，v1 用 `A-07`，不在第 6 章登记。
+6. **配置**：新增 `ONTO_AUTH_STARTUP_WAIT_ENABLED`（默认 `true`），配了 `ONTO_WEB_AUTH_URL` 时启动先等 auth-server 就绪；
+   `ONTO_WEB_AUTH_ADMIN_TOKEN` 部署时不再自动生成，要和独立 Auth 的管理令牌相同。

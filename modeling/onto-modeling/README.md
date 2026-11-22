@@ -309,7 +309,11 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
   `POST /api/v1/admin/quotas/overrides` 管理（数据目录 `governance/quotas.json`，0 表示不限）。配额自身出错一律放行。
 - **健康检查**：`/api/health/live` 只看进程（容器 HEALTHCHECK 用它）；`/api/health/ready` 探测模型网关、
   auth-server（JWKS）、沙箱网关、磁盘、git 等，关键依赖失败返回 503；`/api/health` 不变。
-- **角色**：`user`、`admin`、`ops` 三种（auth-server 签发 `role` claim）。admin 管系统设置、用户、
+- **独立部署的 Auth**（ADR-0107）：auth-server 单独交付，配了 `ONTO_WEB_AUTH_URL` 时启动先等它就绪再恢复运行、接请求
+  （`ONTO_AUTH_STARTUP_WAIT_ENABLED`，默认开）。每个请求验签后向 `/userinfo` 核对账号，查不到返回 `503`、不放行；
+  首次登录或管理员重置密码后只能改密码、看自己的资料，其余接口返回 `403 password_change_required`，前端进改密页，
+  改完用新密码重新登录。改密走 auth-server 管理接口，要配 `ONTO_WEB_AUTH_ADMIN_TOKEN`。
+- **角色**：`user`、`admin`、`ops` 三种（auth-server 签发 `role` claim，每个请求以 `/userinfo` 返回的为准）。admin 管系统设置、用户、
   指定所有者、服务令牌；ops 管运维面的写操作；运维面只读接口 admin 也能看。admin、ops 都只能看
   别人项目的元数据。
 
@@ -643,8 +647,9 @@ docker compose up --build          # 本地从源码起本服务（onto-modeling
 
 本地单独起时连不到 Hub 与评测服务，发布和评测入口不可用；要联调就用仓库根 `deploy/deploy.sh` 起整栈。
 
-离线包里有三个镜像：onto-modeling、auth-server、连接器网关（`onto-modeling-connector-gateway`，同一个 Dockerfile 的
-`connector-gateway` 目标，只装 `backend/connector-requirements.txt` 里的转换库，见 ADR-0073）。Hub 与评测服务是各自独立的离线包，不在本包里。
+离线包里有两个镜像：onto-modeling、连接器网关（`onto-modeling-connector-gateway`，同一个 Dockerfile 的
+`connector-gateway` 目标，只装 `backend/connector-requirements.txt` 里的转换库，见 ADR-0073）。Auth、Hub 与评测服务各自独立交付，
+不在本包里（ADR-0107）；源码 compose 仍带一个 auth-server 供本地联调。
 
 依赖复用（需 BuildKit，Docker Desktop / buildx 默认开启）：
 

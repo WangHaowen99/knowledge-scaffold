@@ -65,7 +65,15 @@
 - 其余接口带 `?token=` 一律忽略。
 - 令牌过期返回 `401 token_expired`，无效返回 `401 unauthenticated`。前端用 `A-04` 无感刷新后重试一次。
 
-**角色。** JWT 的 `role` claim 取三个值之一（方案第 6 章 #2：auth-server 新增 `ops`）：
+**账号状态（ADR-0107）。** 验签通过后，鉴权中间件每个请求都拿同一个令牌向 auth-server 的 `/userinfo` 核对账号，不做缓存：
+
+- 角色以 `/userinfo` 返回的为准，令牌里的 `role` claim 只作提示；管理员改角色、删用户、用户改密码（令牌版本变了）都在下一个请求生效。
+- `/userinfo` 拒绝令牌、返回的 `sub` 与令牌不一致、角色不是下表三种之一时返回 `401 unauthenticated`。
+- auth-server 查不到（连不上、超时、5xx）时不放行，返回 `503 service_unavailable`，`details.dependency = "auth_server"`。
+- **首登改密门禁**：账号待改初始密码（首次登录或管理员重置密码后，`password_change_required = true`）时，只放行 `A-06`、`A-07` 和免鉴权接口，
+  其余接口返回 `403 password_change_required`；经旧路径进来的请求按改写后的 v1 路径判断。前端收到后转到改密页。
+
+**角色。** 取三个值之一，auth-server 签发在 JWT 的 `role` claim 里，鉴权时以 `/userinfo` 为准（方案第 6 章 #2：auth-server 新增 `ops`）：
 
 | role | 界面叫法 | 能做什么 |
 |---|---|---|
@@ -80,6 +88,7 @@
 
 - 所有请求视为本机用户 `local`，同时拥有 `user`、`admin`、`ops` 三种角色；
 - 所有权检查全部放行；
+- 不向 auth-server 核对账号，没有首登改密门禁；
 - 审计照常记录，`actor` 为 `local`；
 - `C-01` 返回 `auth.enabled=false`，登录页显示「本地模式」。
 
@@ -318,7 +327,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `too_many_streams` | 429 | SSE 连接超限 | `limit` |
 | `internal_error` | 500 | 未预期错误，原始错误已留档 | `error_id` |
 | `upstream_unavailable` | 502 | auth-server、连接器网关、沙箱网关不可达 | `upstream` |
-| `service_unavailable` | 503 | 依赖未就绪 | `dependency` |
+| `service_unavailable` | 503 | 依赖未就绪（鉴权时查不到账号状态为 `auth_server`，见 1.3） | `dependency` |
 | `maintenance_read_only` | 503 | 维护模式：只读 | `message, until` |
 | `maintenance_no_new_sessions` | 503 | 维护模式：拒绝新会话 | `message, until` |
 | `metadata_unavailable` | 503 | 项目元数据或资料用途清单暂时读不到（旧码 `project_metadata_unavailable`、`resource_metadata_unavailable`） | `which` |
@@ -334,6 +343,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `username_taken` | 409 | 用户名已存在 | — |
 | `weak_password` | 400 | 密码不满足规则 | `failed_rules[]`：取 `len, max, classes, contains_username, common, edge_space, same_as_old` |
 | `old_password_incorrect` | 400 | 旧密码不正确 | — |
+| `password_change_required` | 403 | 账号待改初始密码（首次登录或管理员重置后），只放行 `A-06`、`A-07`（1.3，ADR-0107） | — |
 | `user_admin_unavailable` | 503 | 没配置 auth-server 管理令牌 | — |
 | `user_not_found` | 404 | 用户不存在 | — |
 | `transfer_target_invalid` | 400 | 移交对象不是建模者或不存在 | — |
@@ -666,6 +676,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 
 - 请求：`{username: string 1–64, password: string 1–128}`。
 - 响应 `200`：`{access_token, refresh_token, token_type: "Bearer", expires_in: int（秒）, user: UserProfile}`。
+  `user.password_change_required` 取新令牌里的 `pwd_cr`，为 `true` 时前端直接进改密页。
 - 错误：`invalid_credentials`、`account_locked`、`rate_limited`、`upstream_unavailable`。
 
 #### A-02 本地模式进入
@@ -708,7 +719,9 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 `PUT /api/v1/me/password` · 登录（不能用于本地模式） · 旧：`POST /api/auth/password`（旧接口在请求体里带 `username`，v1 改为取令牌里的用户） · 审计：是 · 依据：③ · 页面：me
 
 - 请求：`{old_password, new_password}`。新密码规则同 `A-03`，另加「不能与旧密码相同」。
-- 响应 `204`。其他设备的刷新令牌全部作废。
+- 首登改密门禁下可以调用（1.3），改完清掉 `password_change_required`。
+- 响应 `204`。auth-server 递增令牌版本，这个账号的全部令牌（包括当前这个）作废，前端提示后回登录页用新密码登录。
+- 走 auth-server 管理接口，没配 `ONTO_WEB_AUTH_ADMIN_TOKEN` 返回 `user_admin_unavailable`。
 - 错误：`old_password_incorrect`、`weak_password`、`user_admin_unavailable`、`rate_limited`。
 
 #### A-07 我的资料
@@ -716,6 +729,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 `GET /api/v1/me` · 登录 · 旧：— · 审计：否 · 依据：4.10.1 · 页面：me、所有页面顶栏头像
 
 响应 `200`：`UserProfile` 加 `{last_login: {at, ip}|null, project_count, usage_this_month: {output_tokens, input_tokens, cost: Money}}`。
+`role`、`password_change_required` 是鉴权时向 auth-server 实时核对的值；首登改密门禁下可以调用（1.3）。
 
 #### A-08 我的偏好
 
@@ -4814,6 +4828,7 @@ type UserProfile = {
   role: "user" | "admin" | "ops";
   role_label: "建模者" | "管理员" | "运维";
   auth_source: "auth-server" | "local";
+  password_change_required: boolean;   // 待改初始密码（ADR-0107）；本地模式恒为 false
 };
 
 type Preferences = {
