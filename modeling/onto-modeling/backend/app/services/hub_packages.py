@@ -324,8 +324,9 @@ def content_revision(root):
 
 
 def revision_conflict(expected, actual):
+    # details 与 API 契约 2.4 的 revision_conflict 同形（target 恒为整份本体）
     return WorkspaceError('本体内容已变化，请重新读取当前 revision', 409, 'revision_conflict',
-                          {'expected_revision': expected, 'actual_revision': actual})
+                          {'target': 'ontology', 'expected': expected, 'actual': actual})
 
 
 def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,

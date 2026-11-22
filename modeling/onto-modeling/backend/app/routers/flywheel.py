@@ -14,6 +14,7 @@ from fastapi import APIRouter, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..api import deps
+from ..api.errors import ApiError
 from ..services import auth, ownership
 from ..services.flywheel import service, store
 from ..services.flywheel.assistant import Assistant
@@ -23,6 +24,7 @@ from .hub_packages import identity
 router = APIRouter(prefix="/api/v1/projects/{project_id}/flywheel", tags=["flywheel"])
 RUN_ID = Path(pattern=r"^FW-\d{3,6}$")
 REFRESH_LIMIT = 8192
+NEEDS_ACCOUNTS = "数据飞轮需要统一账号登录：评测结果和 Hub 发布都按账号隔离"
 
 
 class SettingsBody(BaseModel):
@@ -46,6 +48,10 @@ class RollbackBody(BaseModel):
 
 
 def _caller(project_id: str, request: Request, loop, write: bool) -> Caller:
+    if not auth.ENABLED:
+        (deps.require_writable if write else deps.require_owner)(project_id, request)
+        # 与 ES-02～ES-06 同码：不用 unauthenticated，免得前端当成登录过期去刷新
+        raise ApiError("login_required", NEEDS_ACCOUNTS, 401)
     token, subject, username = identity(request)
     (deps.require_writable if write else deps.require_owner)(project_id, request)
     claims = request.state.user
@@ -68,7 +74,7 @@ async def state(project_id: str, request: Request, reconcile: bool = False):
     """FW-01 飞轮状态（顺带推进）。"""
     if not auth.ENABLED:
         await asyncio.to_thread(deps.require_owner, project_id, request)
-        return service.unavailable("数据飞轮需要统一账号登录：评测结果和 Hub 发布都按账号隔离")
+        return service.unavailable(NEEDS_ACCOUNTS)
     return await _run(project_id, request, service.sync, reconcile, write=False)
 
 

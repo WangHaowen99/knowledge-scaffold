@@ -780,6 +780,12 @@ def test_flywheel_needs_unified_accounts(env, monkeypatch):
     monkeypatch.setattr(auth, 'ENABLED', False)
     value = env['client'].get(f"/api/v1/projects/{env['pid']}/flywheel").json()
     assert value == {'available': False, 'message': '数据飞轮需要统一账号登录：评测结果和 Hub 发布都按账号隔离'}
+    # 其他接口与 ES-02～ES-06 同码，前端不当成登录过期
+    for method, path, body in (('put', 'settings', {'optimize': True}), ('get', 'runs', None),
+                               ('post', 'runs/FW-001/optimize', None)):
+        response = getattr(env['client'], method)(f"/api/v1/projects/{env['pid']}/flywheel/{path}",
+                                                  **({'json': body} if body else {}))
+        assert response.status_code == 401 and response.json()['code'] == 'login_required'
 
 
 def test_state_without_hub_package_or_evaluation_service(env, monkeypatch):
@@ -799,6 +805,8 @@ def test_publish_with_expected_revision_refuses_drifted_content(env):
     with pytest.raises(WorkspaceError) as caught:
         hub_packages.publish(manager, pid, 'request_demo', 'user-token', SUBJECT, expected_revision=revision)
     assert caught.value.code == 'revision_conflict' and env['hub'].calls == []
+    assert caught.value.details == {'target': 'ontology', 'expected': revision,
+                                    'actual': hub_packages.content_revision(env['root'])}
     assert not (hub_packages.directory(pid, SUBJECT) / 'requests' / 'request_demo' / 'task.json').exists()
     steps = []
     receipt = hub_packages.publish(manager, pid, 'request_demo', 'user-token', SUBJECT,
