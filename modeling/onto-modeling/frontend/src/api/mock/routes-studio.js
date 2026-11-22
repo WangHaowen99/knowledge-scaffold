@@ -698,7 +698,7 @@ export function register(ctx) {
       if (body.base_revision && f.revision && body.base_revision !== f.revision) return err(409, 'revision_conflict', '版本号不一致', { target: body.path, expected: body.base_revision, actual: f.revision, kind: 'file' });
       Object.assign(f, { content: String(body.content || ''), revision: `r${uid()}` });
       const c = cardOf(pid);
-      return json(200, { path: body.path, size: f.content.length, revision: f.revision, commit: c?.head || 'a71e03c9', version_label: c?.version_label || 'v0.12' });
+      return json(200, { path: body.path, size: f.content.length, revision: f.revision, commit: c?.head || 'a71e03c9', version_label: c?.version_label || 'v0.12', warnings: [] });
     }
     const ref = { kind: e.kind, id: e.id, key: e.key, name: e.name };
     if (lockOf(pid, ref)) return err(423, 'write_scope_locked', '在助手写入范围内', scopeOf(pid));
@@ -709,6 +709,6 @@ export function register(ctx) {
     st.drafts.delete(e.id);
     st.rawChanged = false;
     const { commit, version_label } = committed(pid, e, [e.path]);
-    return json(200, { path: body.path, size: new TextEncoder().encode(e.raw).length, revision: e.revision, commit, version_label });
+    return json(200, { path: body.path, size: new TextEncoder().encode(e.raw).length, revision: e.revision, commit, version_label, warnings: [] });
   });
 }

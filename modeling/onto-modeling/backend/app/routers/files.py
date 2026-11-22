@@ -129,7 +129,7 @@ def read_file(project_id: str, request: Request, path: str = ""):
 
 @router.put("/files/content")
 def write_file(project_id: str, request: Request, body: dict = Body(...)):
-    """经写入路径保存为一个版本；写 .py 脚本时同步脚本描述符。"""
+    """经写入路径保存为一个版本；写 .py 脚本时先只编译检查契约（硬伤回 check_rejected），再同步脚本描述符。"""
     root = deps.require_writable(project_id, request)
     rel = _guard_path(str(body.get("path") or ""))
     content = body.get("content")
@@ -147,6 +147,8 @@ def write_file(project_id: str, request: Request, body: dict = Body(...)):
         "revision": saved["revision"],
         "commit": saved["commit"] or mainline.state(root)["head"],
         "version_label": mainline.state(root)["version_label"],
+        # 脚本保存的提示（注释里的 TODO/FIXME、输出未验证等），带文件与行列；其他文件为空
+        "warnings": saved.get("warnings", []),
     }
 
 

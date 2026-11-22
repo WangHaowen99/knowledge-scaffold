@@ -498,7 +498,8 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 - 求解契约：
   - `solver_contract_invalid`、`solver_contract_version_incompatible`、`solver_contract_reference_missing`、`solver_context_missing`、`solver_runtime_binding_forbidden`；
   - `solver_receipt_required`、`solver_receipt_stale`、`solver_receipt_failed`（旧码 `solver_contract_validation_required/_stale/_failed`）；
-- 脚本：`script_binding_conflict`、`script_argument_shape`；
+- 脚本：`script_binding_conflict`、`script_argument_shape`、`script_output_unverified`（发布时同码 422，`details.path`）：对外脚本的
+  输出静态确认不了，又没有和这次源码（连同同目录依赖）一致的 `script_verify.py run` 通过记录；Finding 带 `path`；
 - 对象关系：`relation_structure_invalid`（缺端点、显式关联字段不在两端属性清单里；发布时同码 422）。发布检查每个问题一条
   Finding，带 `path`（对象文档）、`line`、`target`（对象），`message` 不含位置；两端各写一次的同一条关系归并，不算重复；
 - 发布树：`release_tree_unsafe`、`release_tree_mismatch`；
@@ -1090,12 +1091,15 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 
 - 请求：`{path, content: string（≤4 MiB）, base_revision: string, summary?: string（≤80，写进版本说明）}`。
 - 经写入路径提交，trailer `Onto-Source: web`。
-- 写 `.py` 脚本时同步脚本描述符。
-- 响应 `200`：`{path, size, revision, commit, version_label}`。
+- 写 `ontology/scripts/*.py` 时先按项目锁定版本的契约库检查：只编译、不执行源码。语法错误、头部参数与 argparse 不一致、
+  能静态确定的输出字段与声明不一致，回 `check_rejected`，原脚本、描述符和版本历史不变；通过后同步脚本描述符。
+- 响应 `200`：`{path, size, revision, commit, version_label, warnings: Finding[]}`。`warnings` 只有脚本会有，带 `path`、`line`、`column`，
+  最多 50 条（超出的末尾一条 `code=warnings_truncated`）：`unfinished_marker`（注释或 docstring 里的 TODO/FIXME）、
+  `script_contract_warning`（输出未验证等）。保存成功只表示工作区修订已记录，不等于运行验收。
 - 错误：
   - `path_forbidden`、`managed_path`；
   - `revision_conflict`、`write_scope_locked`；
-  - `check_rejected`：确定性检查硬伤；
+  - `check_rejected`：脚本的契约硬伤，`details.errors` 一条 `Finding`（`code=script_contract`，带 `path`，语法错误另带 `line`、`column`）；
   - `project_archived`、`payload_too_large`。
 
 #### F-04 下载原文件
@@ -4759,6 +4763,8 @@ type Finding = {
   message: string;
   target?: EntryRef | ArtifactRef;
   path?: string;
+  line?: number;                  // 带位置的：脚本保存的提示、对象关系
+  column?: number;
   field?: string;
   hint?: string;
 };

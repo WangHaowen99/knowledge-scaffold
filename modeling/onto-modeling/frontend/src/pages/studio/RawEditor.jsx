@@ -1,11 +1,13 @@
 // 编辑原文（高级）：读 F-02、存 F-03；未保存的改动随手暂存进同一份草稿（ST-07 content，按顺序排队），
 // 打开时恢复草稿；草稿基于的版本和文件当前版本不一致（助手改过）时不载入、提示放弃旧草稿（develop !608）；
-// 保存时文件已被别人改过，提示刷新后对比（去版本历史 V-04）；大文件只读
+// 保存时文件已被别人改过，提示刷新后对比（去版本历史 V-04）；脚本检查没过（422）列出错误、修改留着；大文件只读
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
+import { fileSaveFeedback, fileSaveRejection } from '../../api/fileSaveFeedback.js';
+import SaveNote from '../../components/SaveNote.jsx';
 import CodeEditor from '../../components/cm/CodeEditor.jsx';
 import { enqueueLatestDraftSave } from '../../lib/studioDraftQueue.js';
 import { Button, Chip, Icon, Modal, Note } from '../../ui/index.jsx';
@@ -24,6 +26,7 @@ export default function RawEditor({ entry, lockInfo, lock, onBack, onSaved }) {
   const [gen, setGen] = useState(0);
   const [saved, setSaved] = useState(false);
   const [conflict, setConflict] = useState(null);
+  const [saveNote, setSaveNote] = useState(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [error, setError] = useState(null);
   const dirty = useRef(false);
@@ -43,6 +46,7 @@ export default function RawEditor({ entry, lockInfo, lock, onBack, onSaved }) {
       setText(restored ? d.content : f.content);
       setGen((g) => g + 1);
       setConflict(null);
+      setSaveNote(null);
       dirty.current = false;
     } catch (e) {
       setError(e);
@@ -74,16 +78,20 @@ export default function RawEditor({ entry, lockInfo, lock, onBack, onSaved }) {
   const save = async () => {
     dirty.current = false;
     await saveQueue.current; // 排着的暂存先落地
+    setSaveNote(null);
     try {
       const r = await api.saveFileContent(pid, { path: file.path, content: text, base_revision: baseRef.current });
       baseRef.current = r.revision;
       setSaved(true);
       setDraft(null);
       setFile((f) => ({ ...f, content: text, revision: r.revision }));
-      toast(`已保存并记录版本 ${r.version_label}`, 'check');
+      const feedback = fileSaveFeedback(r, `已保存并记录版本 ${r.version_label}`);
+      setSaveNote(feedback.note);
+      toast(feedback.text, feedback.icon);
       onSaved?.();
     } catch (e) {
       dirty.current = true;
+      setSaveNote(fileSaveRejection(e));
       if (e.isConflict) setConflict({ by: e.details?.changed_by, at: e.details?.changed_at, version_label: e.details?.version_label });
       else toast(errorText(e), e.isLocked ? 'lock' : 'alert');
     }
@@ -157,6 +165,7 @@ export default function RawEditor({ entry, lockInfo, lock, onBack, onSaved }) {
               <Button size="xs" kind="ghost" onClick={dropMine}>放弃我的修改</Button>
             </div>
           ) : null}
+          <SaveNote note={saveNote} />
         </div>
       )}
       <div className="fl-pb">

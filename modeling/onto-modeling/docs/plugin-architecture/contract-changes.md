@@ -2510,3 +2510,20 @@ develop 在 !611（#407、#415、#416）和 !624 改了 Studio 的表格、关�
 1. 流程图弹窗打开时、drawio 保存后、收到 `workspace.changed` 时，多调一次 AR-10 取原文做结构检查（`drawioStructureError`，规则同内核
    FLOW-ID、FLOW-EDGE-DANGLING）。能逐项修的（节点同号、连线端点悬空）在标准编辑器里出修复面板，修不了的只能进 drawio 高级编辑。
 2. 修好的原文走 AR-05 的 `content.drawio_xml` 保存，`base_revision` 用 AR-10 返回的 `revision`，期间有人改过会提示冲突。
+
+## 2026-11-22 · 脚本保存校验与克隆带建模目标（develop !616、!612）
+
+1. **F-03 写脚本**：写 `ontology/scripts/*.py` 前按项目锁定版本的契约库只编译检查，不执行源码。语法错误、头部参数与 argparse
+   不一致、能静态确定的输出字段与声明不一致，回 `422 check_rejected`，`details` 是 `{errors: Finding[], warnings: []}`，
+   Finding 的 `code` 是 `script_contract`，带 `path`，语法错误另带 `line`、`column`。develop 的码是 `script_validation_failed`，
+   这里用 F-03 已列的 `check_rejected`（2026-11-03 第 16 条「写入路径前不会出现」到此为止）。检查在事务里、版本号校验之后做，
+   拒绝时脚本、描述符、索引和历史都不动。
+2. **F-03 响应**加 `warnings: Finding[]`（TODO/FIXME 的文件与行列、输出未验证，最多 50 条）；非脚本文件恒为空数组。
+   `Finding` 加 `line?`、`column?`。
+3. **发布**：对外脚本的输出静态确认不了时，要有与本次源码（连同同目录依赖）一致的 `script_verify.py run` 通过记录，否则
+   `422 script_output_unverified`（`details.path`）；PB-01 的脚本一项同码 Finding 带 `path`。源码哈希按本次渲染的树算：
+   Hub 发布冻结（`hub_packages.freeze`）把验证记录一并复制进冻结树，之后工作区再改也不影响这次发布；按提交导出的只读树
+   不带记录，读工作区的。记录不算进发布输入摘要、不进知识包。项目锁定的旧契约库没有输出检查，不受影响。
+4. **界面**：编辑原文、版本对比保存时，被拒列出每条错误（修改留在编辑器里），有告警列出位置（最多 5 条，再多只给数量）。
+   develop 的 `lib/fileSaveFeedback.js` 移到 `api/fileSaveFeedback.js`，显示由 `components/SaveNote.jsx` 做。Studio 提交脚本走
+   助手复核（ST-08 `needs_review`），不直接写文件，不受影响。

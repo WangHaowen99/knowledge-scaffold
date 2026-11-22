@@ -69,6 +69,7 @@ contributes:
     - script_argument_shape.py
     - script_contract.py
     - script_descriptor.py
+    - script_output.py
     - script_verify.py
     - seed_example.py
     - semantic_issues.py

@@ -138,6 +138,26 @@ def _contract_modules(src: ReleaseSource):
     )
 
 
+def _output_verification_problem(src: ReleaseSource, key: str) -> str:
+    """对外脚本输出的运行验证（develop !616）：与 script_verify.verification_problem 同口径，源码哈希按本次渲染的树算。
+
+    Hub 发布冻结时把验证记录复制进冻结树（hub_packages.freeze），树里有就用它；按提交导出的只读树不带记录，读工作区的。
+    """
+    from ..packs import contracts
+
+    verify = contracts.module_for(Path(src.state_root), "script_verify")
+    tree = Path(src.tree)
+    script = tree / "ontology/scripts" / f"{key}.py"
+    if (tree / verify.RECORD_FILE).is_file():
+        return verify.verification_problem(tree, script)
+    record = verify.load_records(Path(src.state_root)).get(script.relative_to(tree).as_posix())
+    if not isinstance(record, dict) or record.get("output_contract_version") != verify.VERIFICATION_VERSION:
+        return "请使用 script_verify.py run 完成包含输出契约检查的运行验证"
+    if record.get("source_hash") != verify.sandbox.source_hash(script):
+        return "验证后脚本或依赖已修改，请重新运行验证"
+    return ""
+
+
 def resolve_binding(src: ReleaseSource) -> dict:
     """对象 ↔ 真实数据表的绑定（来源Sheet、`# 字段` 段与 mappings 三处同一份结果）。"""
     return src.binding or package_mapping.resolve_object_tables(
@@ -312,6 +332,14 @@ class OntologyPackageAdapter:
                 "脚本绑定不符合规则，无法发布：" + "；".join(script_bindings.messages()),
                 code="script_binding_conflict",
             )
+        # 对外脚本的输出静态确认不了时，要有与本次源码（连同同目录依赖）一致的运行验证记录；记录本身不进包
+        for key in script_bindings.bindings:
+            if getattr(script_contracts[key], "output_verified", True):  # 锁定的旧契约库没有这项检查
+                continue
+            problem = _output_verification_problem(src, key)
+            if problem:
+                raise WorkspaceError(f"脚本 {key} 输出尚未验证：{problem}", 422, "script_output_unverified",
+                                     {"path": f"ontology/scripts/{key}.py"})
         # 入参形态：会被 consumer 调用前的参数证据校验拒绝的脚本（一拒就可能终止整轮对话）不发布
         object_documents = dict(objects)
         shape_errors = _script_descriptor.argument_shape_errors(

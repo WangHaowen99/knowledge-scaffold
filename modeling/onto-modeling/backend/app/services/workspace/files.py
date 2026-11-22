@@ -19,6 +19,7 @@ from .layout import (
     _content_revision,
     _first_heading,
     _is_script_descriptor,
+    _is_workspace_script,
     is_auto_detected as _is_auto_detected,
     resource_text_path,
 )
@@ -28,6 +29,28 @@ UNREADABLE_TABLE = (
     "文件无法解析为数据表：可能已损坏、加密或编码不正确。请用表格软件确认可打开，取消密码保护并另存为 xlsx/xlsm；"
     "CSV 请使用 UTF-8 编码后重新上传。"
 )
+
+
+def _script_save_check(root: Path, rel: str, content: str) -> list[dict]:
+    """保存 ontology/scripts/*.py 前的检查（develop !616），按项目锁定版本的契约库，只编译、不执行源码。
+
+    语法错误和明确的输入/输出契约冲突拒绝保存（check_rejected），原脚本、描述符和历史都不动；
+    否则返回带行列的提示 Finding（注释或 docstring 里的 TODO/FIXME、输出未验证等，最多 50 条）。
+    """
+    module = _contracts.module_for(root, "script_contract")
+    try:
+        contract = module.parse_script(content)
+    except module.ScriptContractError as exc:
+        finding = {"code": "script_contract", "level": "error", "message": str(exc), "path": rel}
+        cause = exc.__cause__
+        if isinstance(cause, SyntaxError) and cause.lineno:
+            finding.update(line=cause.lineno, column=cause.offset or 1)
+        raise WorkspaceError(f"{rel}：{exc}", 422, "check_rejected", {"errors": [finding], "warnings": []}) from exc
+    script_warnings = getattr(module, "script_warnings", None)
+    if script_warnings is None:  # 项目锁定的旧契约库没有带位置的提示
+        return [{"code": "script_contract_warning", "level": "warning", "message": text, "path": rel, "line": 1, "column": 1}
+                for text in contract.warnings]
+    return [{**item, "level": "warning"} for item in script_warnings(content, rel, contract)]
 
 
 class FilesMixin:
@@ -595,6 +618,7 @@ class FilesMixin:
         with ChangeTx(self, project_id, Origin(source, author), summary=f"保存 {rel_posix}") as tx:
             # 乐观并发（方案 7.4 双写合并）：Web 编辑与 agent 写同一文件不互相静默覆盖
             tx.check_revision(rel_posix, base_revision, lambda: self._changed_by(root, rel_posix))
+            warnings = _script_save_check(root, rel_posix, content) if _is_workspace_script(rel) else []
             # 保存脚本时同名描述符由事务的派生步骤刷新，并进同一个提交
             tx.write(rel_posix, content)
             commit = tx.commit(f"{prefix}: 保存 {rel_posix}{note}{_by(author)}").commit
@@ -603,6 +627,7 @@ class FilesMixin:
             "size": len(content.encode("utf-8")),
             "revision": _content_revision(content.encode("utf-8")),
             "commit": commit,
+            "warnings": warnings,
         }
 
     def delete_resource(self, project_id: str, rel_path: str, author: str = "") -> dict:

@@ -15,7 +15,9 @@ from ..workspace.errors import WorkspaceError
 from .spi import ReleaseSource
 
 # 渲染时才能发现的结构问题：与发布同口径，按降级发布渲染一次（数据绑定单独成一道门禁）
-_RENDER_CODES = ("script_binding_conflict", "script_argument_shape", "relation_structure_invalid")
+_RENDER_CODES = (
+    "script_binding_conflict", "script_argument_shape", "script_output_unverified", "relation_structure_invalid",
+)
 _PLATFORM = {"kind": "platform", "label": "平台"}
 
 
@@ -38,7 +40,10 @@ def render_findings(src: ReleaseSource) -> list[dict]:
                     "target": {"kind": "object", "id": f"object:{item['object']}",
                                "key": item["object"], "name": item["object"]},
                 } for item in problems]
-            return [{"code": code, "level": "error", "message": str(exc)}]
+            finding = {"code": code, "level": "error", "message": str(exc)}
+            if code in _RENDER_CODES and (exc.details or {}).get("path"):
+                finding["path"] = exc.details["path"]  # 脚本输出未验证：指到脚本文件
+            return [finding]
     return []
 
 

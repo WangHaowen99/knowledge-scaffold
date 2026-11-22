@@ -180,6 +180,13 @@ def freeze(manager, pid, folder, allow_unbound, binding=None, graph=False, commi
     with release_tree(root, commit) as tree:
         shutil.copytree(tree, target)
     value, source_digest = transport.tree_state(manager, pid, target, allow_unbound, binding, graph)
+    # 脚本运行验证记录不进包、也不算进发布输入摘要，但冻结的源码要带上对应的记录（develop !616）：
+    # 之后再改工作区或重跑验证，不影响这次发布的校验
+    verification = root / '.ontology-state/script-verifications.json'
+    if verification.is_file() and not verification.is_symlink():
+        frozen_verification = target / '.ontology-state/script-verifications.json'
+        frozen_verification.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(verification, frozen_verification)
     return dict(value, commit=commit), source_digest
 
 

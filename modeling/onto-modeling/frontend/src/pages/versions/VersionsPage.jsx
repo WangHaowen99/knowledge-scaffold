@@ -9,6 +9,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
 import { describeConflict, errorText } from '../../api/errors.js';
+import { fileSaveFeedback, fileSaveRejection } from '../../api/fileSaveFeedback.js';
+import SaveNote from '../../components/SaveNote.jsx';
 import { ShellP } from '../../shell/Shell.jsx';
 import { ScopeLockBar, useProjectEvent } from '../plugin/parts.jsx';
 import {
@@ -191,6 +193,7 @@ export default function VersionsPage({ route }) {
   const [note, setNote] = useState('');
   const [conflict, setConflict] = useState(null);
   const [outside, setOutside] = useState(null);
+  const [saveNote, setSaveNote] = useState(null);
   const [saving, setSaving] = useState(false);
   const [tagFor, setTagFor] = useState(null);
   const [filesFor, setFilesFor] = useState(null);
@@ -332,7 +335,8 @@ export default function VersionsPage({ route }) {
       settled: () => {},
     });
   }, [api, pid, cmp, byCommit, items, diffReq]);
-  useEffect(() => { loadDiff(cmp); }, [cmp.path, cmp.from, cmp.to]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setSaveNote(null); loadDiff(cmp); }, [cmp.path, cmp.from, cmp.to]); // eslint-disable-line react-hooks/exhaustive-deps
+  const refreshDiff = () => { setSaveNote(null); loadDiff(cmp); };
 
   const selectVersion = (v) => {
     setSelected(v.commit);
@@ -408,12 +412,16 @@ export default function VersionsPage({ route }) {
 
   const save = async () => {
     setSaving(true);
+    setSaveNote(null);
     try {
       const r = await api.saveFileContent(pid, { path: diff.path, content: text, base_revision: diff.right_revision, summary: `版本对比里编辑 ${pathLabel(diff.path)}` });
-      toast(`已保存为版本 ${r.version_label}`, 'check');
+      const feedback = fileSaveFeedback(r, `已保存为版本 ${r.version_label}`);
+      setSaveNote(feedback.note);
+      toast(feedback.text, feedback.icon);
       await loadItems();
       await loadDiff(cmp);
     } catch (e) {
+      setSaveNote(fileSaveRejection(e));
       if (e.isConflict) setConflict(e.details || {});
       else toast(errorText(e), e.isLocked ? 'lock' : 'alert');
     } finally {
@@ -515,7 +523,7 @@ export default function VersionsPage({ route }) {
                     <Icon name="alert" />
                     <div className="grow">{describeConflict(conflict).replace('，请刷新对比后再保存', '')}</div>
                     <Button size="xs" icon="copy" onClick={copyMine}>复制我的修改</Button>
-                    <Button size="xs" kind="primary" onClick={() => loadDiff(cmp)}>刷新对比</Button>
+                    <Button size="xs" kind="primary" onClick={refreshDiff}>刷新对比</Button>
                   </div>
                 ) : null}
                 {outside && !conflict ? (
@@ -523,9 +531,10 @@ export default function VersionsPage({ route }) {
                     <Icon name="alert" />
                     <div className="grow">这个文件刚被{SOURCES.find(([k]) => k === outside.by)?.[1] || '别处'}修改（版本 {outside.version_label}）</div>
                     <Button size="xs" icon="copy" onClick={copyMine}>复制我的修改</Button>
-                    <Button size="xs" kind="primary" onClick={() => loadDiff(cmp)}>刷新对比</Button>
+                    <Button size="xs" kind="primary" onClick={refreshDiff}>刷新对比</Button>
                   </div>
                 ) : null}
+                <SaveNote note={saveNote} className="mb12" />
                 {diffErr ? <Note tone="gray">{diffErr}</Note> : null}
                 {!cmp.from && !diffErr ? <div className="sm muted">这是第一个版本，没有更早的版本可比</div> : null}
                 {diff && view ? (
@@ -551,7 +560,7 @@ export default function VersionsPage({ route }) {
                 {diff && !readOnly ? (
                   <div className="row mt12">
                     <span className="sp" />
-                    <Button size="sm" kind="ghost" disabled={!dirty || saving} onClick={() => { setText(diff.right); setGen((g) => g + 1); setConflict(null); }}>放弃修改</Button>
+                    <Button size="sm" kind="ghost" disabled={!dirty || saving} onClick={() => { setText(diff.right); setGen((g) => g + 1); setConflict(null); setSaveNote(null); }}>放弃修改</Button>
                     <Button size="sm" kind="primary" disabled={!dirty || saving} onClick={save}>保存为新版本</Button>
                   </div>
                 ) : null}
