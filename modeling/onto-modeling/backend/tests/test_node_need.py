@@ -210,7 +210,7 @@ def test_core_and_official_packs_declare_need_only():
     for name in ("trace", "diagram", "codegen", "domain-extend"):
         manifest = yaml.safe_load((ASSETS / "packs" / name / "manifest.yaml").read_text(encoding="utf-8"))
         assert manifest["depends"] == {"core": ">=0.6"}
-    assert yaml.safe_load((TOOLKIT / "manifest.yaml").read_text(encoding="utf-8"))["version"] == "0.6.1"
+    assert yaml.safe_load((TOOLKIT / "manifest.yaml").read_text(encoding="utf-8"))["version"] == "0.6.2"
 
 
 def test_update_stays_hidden_until_new_materials_arrive(tmp_path):

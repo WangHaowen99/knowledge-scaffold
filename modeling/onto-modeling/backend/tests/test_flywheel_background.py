@@ -13,7 +13,7 @@ import time
 import pytest
 
 from app import config
-from app.services import auth, eval_client, hub_packages, knowledge_hub
+from app.services import eval_client, hub_packages, knowledge_hub
 from app.services.delegated import Delegated
 from app.services.flywheel import background, grants, publish, snapshots, store
 from app.services.flywheel.caller import Caller
@@ -303,8 +303,8 @@ def test_no_limit_uses_the_longest_lifetime_the_services_accept(env):
 
 def test_a_lifetime_outside_the_choices_is_refused(env):
     for days in (2, -1, 31):
-        response = env['client'].put(f"/api/projects/{env['pid']}/flywheel/settings", json={'delegation_days': days})
-        assert response.status_code == 422
+        response = env['client'].put(f"/api/v1/projects/{env['pid']}/flywheel/settings", json={'delegation_days': days})
+        assert response.status_code == 400 and response.json()['code'] == 'invalid_argument'
     assert state(env)['settings']['delegation_days'] == 30
 
 
@@ -561,7 +561,7 @@ def test_stopping_and_rolling_back_revoke_what_the_switches_registered(env):
     assert state(env)['delegation'] == {}
 
 
-def test_background_skips_archived_projects_and_users_who_lost_write_access(env, monkeypatch):
+def test_background_skips_archived_projects_and_users_who_no_longer_own_them(env):
     sync(env)
     settings(env, optimize=True)
     notify(env)
@@ -569,29 +569,27 @@ def test_background_skips_archived_projects_and_users_who_lost_write_access(env,
     background_round(env)
     assert state(env)['runs'] == []
     env['manager'].set_archived(env['pid'], False)
-    monkeypatch.setattr(env['manager'], 'can_write', lambda meta, user, admin: False)
+    env['manager'].set_owner(env['pid'], 'operator_b')
     background_round(env)
     assert env['assistant'].sent == []  # 运行已建档，但不代为执行
 
 
-def test_background_acts_for_nobody_who_left_the_project(env, monkeypatch):
+def test_background_acts_for_nobody_who_no_longer_owns_the_project(env):
     sync(env)
     settings(env, optimize=True)
     notify(env)
     start = len(env['evaluation'].calls)
-    monkeypatch.setattr(env['manager'], 'can_access', lambda meta, user, admin: False)
+    env['manager'].set_owner(env['pid'], 'operator_b')
     background_round(env)
     # 只请评测服务删除登记，不再读取评测结果，也不建运行
     assert [path for _, path, _ in calls_since(env, start)] == ['/delegations/current'] and state(env)['runs'] == []
 
 
-@pytest.mark.parametrize('change', ['removed', 'read_only', 'archived', 'deleted'])
-def test_background_withdraws_the_delegations_of_users_it_no_longer_acts_for(env, monkeypatch, change):
+@pytest.mark.parametrize('change', ['transferred', 'archived', 'deleted'])
+def test_background_withdraws_the_delegations_of_users_it_no_longer_acts_for(env, change):
     settings(env, optimize=True, publish=True)
-    if change == 'removed':
-        monkeypatch.setattr(env['manager'], 'can_access', lambda meta, user, admin: False)
-    if change in ('removed', 'read_only'):
-        monkeypatch.setattr(env['manager'], 'can_write', lambda meta, user, admin: False)
+    if change == 'transferred':
+        env['manager'].set_owner(env['pid'], 'operator_b')
     elif change == 'archived':
         env['manager'].set_archived(env['pid'], True)
     elif change == 'deleted':
@@ -605,29 +603,30 @@ def test_background_withdraws_the_delegations_of_users_it_no_longer_acts_for(env
     start = len(env['evaluation'].calls)
     background_round(env)
     assert calls_since(env, start) == []
-    if change == 'read_only':
-        # 失去编辑权限的用户回来时，用其本人的登录补上 Hub 的撤销
+    if change == 'archived':
+        # 归档项目的所有者回来查看时，用其本人的登录补上 Hub 的撤销
         overdue(env)
         sync(env)
         assert env['hub'].revoked == env['hub'].ids and state(env)['revoking'] == []
 
 
-def test_an_administrator_outside_the_project_holds_no_delegations(env, monkeypatch):
+def test_an_archived_projects_owner_holds_no_delegations(env):
     settings(env, optimize=True, publish=True)
-    # 不是项目成员的全局管理员能打开项目，但后台只代项目成员执行：此前的登记撤销，之后也不再登记
-    claims = {**USER, 'role': 'admin', 'exp': time.time() + 3600}
-    monkeypatch.setattr(auth, 'verify_access_token', lambda token: dict(claims) if token == 'user-token' else None)
-    monkeypatch.setattr(env['manager'], 'can_access', lambda meta, user, admin: admin)
-    monkeypatch.setattr(env['manager'], 'can_write', lambda meta, user, admin: admin)
+    # 归档项目只读：所有者照样能看飞轮，但后台不再代为执行，下一轮后台撤销此前的登记（Hub 的由所有者回来查看时
+    # 用其本人的登录补上），之后也不再登记
+    env['manager'].set_archived(env['pid'], True)
+    assert sync(env)['delegation']['evaluation']['message'] == grants.NOT_ACTED_FOR
+    background_round(env)
+    overdue(env)
     view = sync(env)
     assert state(env)['delegation'] == {} and env['evaluation'].revoked == ['evaluation-handle-1']
     assert env['hub'].revoked == env['hub'].ids
     assert view['delegation']['evaluation'] == {'status': 'issue', 'expires_at': None, 'message': grants.NOT_ACTED_FOR}
-    assert view['delegation']['login'] == 'off' and view['delegation']['background'] is False
+    assert view['delegation']['login'] == 'off' and view['delegation']['background'] is False and not view['can_write']
     # 页面与后台口径一致：不会一边登记、一边撤销
     for _ in range(2):
-        settings(env, optimize=True, publish=True)
         background_round(env)
+        sync(env)
     assert env['evaluation'].issued == 1 and env['hub'].issued == 1 and state(env)['delegation'] == {}
 
 
@@ -636,12 +635,12 @@ def test_an_administrator_outside_the_project_holds_no_delegations(env, monkeypa
 def test_background_finishes_work_of_users_it_no_longer_acts_for(env, archived, status, ended):
     env['evaluation'].complete(RUN)
     sync(env)
-    # 已离开项目的成员，或归档项目里的成员：后台不再代为执行，但占用工作区的运行照样收尾，否则会一直挡住别人
-    snapshot = snapshots.take(env['manager'], env['pid'], 'synthetic snapshot')
-    another_member_is(env, status, member=archived, snapshot=snapshot, conversation_id='conversation_demo',
-                      history_start=0)
-    env['manager'].set_archived(env['pid'], archived)
+    # 已不是所有者的用户（项目换了所有者），或归档项目里的运行：后台不再代为执行，但占用工作区的运行照样收尾，
+    # 否则会一直挡住别人
+    snapshot = snapshots.take(env['manager'], env['pid'], 'chore: synthetic snapshot')
+    another_member_is(env, status, snapshot=snapshot, conversation_id='conversation_demo', history_start=0)
     assert act(env, 'FW-001', 'optimize').status_code == 409
+    env['manager'].set_archived(env['pid'], archived)
     start, hub_calls = len(env['evaluation'].calls), len(env['hub'].calls)
     background_round(env)
     other = store.load(env['pid'], OTHER_SUBJECT)['runs'][0]
@@ -649,6 +648,7 @@ def test_background_finishes_work_of_users_it_no_longer_acts_for(env, archived, 
     assert other['status'] == 'blocked' and other['reason'] == ended
     # 收尾都在本地：不调用评测服务和 Hub，也不启动下一步
     assert calls_since(env, start) == [] and len(env['hub'].calls) == hub_calls
+    env['manager'].set_archived(env['pid'], False)
     assert act(env, 'FW-001', 'optimize').status_code == 200
 
 

@@ -88,7 +88,7 @@ def test_core_no_longer_carries_split_out_commands_and_keeps_knowledge_loading()
     toolkit = ASSETS / "workspace-toolkit"
     commands = {path.stem for path in (toolkit / "commands").glob("*.md")}
     assert commands == {"ontology", "ontology-research", "ontology-extract-object", "ontology-extract-operation",
-                        "ontology-extract-rule-metric", "ontology-validate", "ontology-update",
+                        "ontology-extract-rule-metric", "ontology-validate", "ontology-update", "ontology-evolution",
                         "ontology-impact", "ontology-query", "ontology-overview", "version"}
     # 知识的存放与加载留在 core（第 14 章第 15 项）；新增条目的知识沉淀能力已删除，工作区说明不再指向它
     assert (toolkit / "scripts" / "knowledge_helper.py").is_file()
@@ -124,7 +124,8 @@ def test_core_only_project_assembles_and_filters_suggestions(env):
     assert set(_lock_names(root)) == {"core"}
     assert _commands(root) == {"ontology", "ontology-research", "ontology-extract-object", "ontology-extract-operation",
                                "ontology-extract-rule-metric", "ontology-validate",
-                               "ontology-update", "ontology-impact", "ontology-query", "ontology-overview", "version"}
+                               "ontology-update", "ontology-evolution", "ontology-impact", "ontology-query",
+                               "ontology-overview", "version"}
     flow = json.loads((root / ".claude" / "flow.yaml").read_text(encoding="utf-8"))
     assert [node["id"] for node in flow["nodes"]] == [
         "core.research", "core.object", "core.operation", "core.update", "core.metric", "core.validate",

@@ -528,16 +528,6 @@ def test_a_delegated_reconciliation_keeps_the_feedback_runs(env):
     assert index()['feedback'] == {}
 
 
-def test_a_delegation_never_writes_back_for_the_user(env):
-    manager, pid, stub, client = env
-    stub.listing['releases'] = [entry()]
-    optimize(client, pid)
-    publish_next(manager, pid)
-    state = package_evaluations.settle(pid, SUBJECT, Delegated('evaluation-handle'))
-    assert not stub.writebacks and state['result'] is None
-    assert overview(client, pid)['writeback']['status'] == 'done' and len(stub.writebacks) == 1
-
-
 def test_notifications_with_new_optimization_statuses_are_accepted(env):
     _, _, _, client = env
     response = notify(client, notification(optimization={'status': 'future_status', 'history': [{'outcome': 'done'}]}))

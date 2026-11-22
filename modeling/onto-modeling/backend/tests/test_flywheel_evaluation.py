@@ -31,7 +31,7 @@ def settle_publication(env, run_id):
 
 
 def history(env, run_id):
-    return [item['title'] for item in env['client'].get(f"/api/projects/{env['pid']}/flywheel/runs/{run_id}").json()['history']]
+    return [item['title'] for item in env['client'].get(f"/api/v1/projects/{env['pid']}/flywheel/runs/{run_id}").json()['history']]
 
 
 def test_the_loop_runs_until_every_case_passes(env):
@@ -84,7 +84,7 @@ def test_with_the_switch_off_the_new_version_is_evaluated_once_confirmed(env):
     optimized(env)
     run = run_of(published(env), 'FW-001')
     assert run['status'] == 'waiting_evaluation' and run['human_hold'] is True and env['evaluation'].reruns == []
-    response = env['client'].post(f"/api/projects/{env['pid']}/flywheel/runs/FW-001/evaluate",
+    response = env['client'].post(f"/api/v1/projects/{env['pid']}/flywheel/runs/FW-001/evaluate",
                                   headers={'X-Refresh-Token': 'browser-refresh'})
     assert response.status_code == 200, response.text
     run = run_of(response.json(), 'FW-001')
@@ -101,10 +101,10 @@ def test_skipping_the_evaluation_ends_the_run(env):
     sync(env)
     optimized(env)
     published(env)
-    response = env['client'].post(f"/api/projects/{env['pid']}/flywheel/runs/FW-001/skip-evaluation")
+    response = env['client'].post(f"/api/v1/projects/{env['pid']}/flywheel/runs/FW-001/skip-evaluation")
     run = run_of(response.json(), 'FW-001')
     assert run['status'] == 'published' and run['evaluation']['status'] == 'skipped'
-    assert env['client'].post(f"/api/projects/{env['pid']}/flywheel/runs/FW-001/evaluate").status_code == 409
+    assert env['client'].post(f"/api/v1/projects/{env['pid']}/flywheel/runs/FW-001/evaluate").status_code == 409
 
 
 def test_an_evaluation_that_stops_without_a_result_can_be_retried(env):
@@ -112,14 +112,14 @@ def test_an_evaluation_that_stops_without_a_result_can_be_retried(env):
     sync(env)
     optimized(env)
     published(env)
-    env['client'].post(f"/api/projects/{env['pid']}/flywheel/runs/FW-001/evaluate")
+    env['client'].post(f"/api/v1/projects/{env['pid']}/flywheel/runs/FW-001/evaluate")
     started = store.find(store.load(env['pid'], SUBJECT), 'FW-001')['evaluation']['run_id']
     env['evaluation'].statuses[started] = 'failed'
     with store.update(env['pid'], SUBJECT) as current:
         store.find(current, 'FW-001')['evaluation']['checked_at'] -= evaluation.STATUS_POLL_SECONDS + 1
     run = run_of(sync(env, reconcile=False), 'FW-001')
     assert run['status'] == 'blocked' and run['reason'] == 'evaluation_failed'
-    run = run_of(env['client'].post(f"/api/projects/{env['pid']}/flywheel/runs/FW-001/evaluate").json(), 'FW-001')
+    run = run_of(env['client'].post(f"/api/v1/projects/{env['pid']}/flywheel/runs/FW-001/evaluate").json(), 'FW-001')
     assert run['status'] == 'evaluating' and env['evaluation'].reruns[-1]['request_id'] == evaluation.request_id(
         env['pid'], {'id': 'FW-001'}, 2)
 
@@ -134,13 +134,13 @@ def test_an_evaluation_deleted_on_the_evaluation_page_can_be_retried_or_skipped(
     sync(env)
     optimized(env)
     published(env)
-    env['client'].post(f"/api/projects/{env['pid']}/flywheel/runs/FW-001/evaluate")
+    env['client'].post(f"/api/v1/projects/{env['pid']}/flywheel/runs/FW-001/evaluate")
     # 评测服务里已经没有这次评测（桩对未知的评测返回 404）：用户本人的登录也查不到时，不会再有结果
     status_due(env)
     run = run_of(sync(env, reconcile=False), 'FW-001')
     assert run['status'] == 'blocked' and run['reason'] == 'evaluation_failed'
     assert run['evaluation']['status'] == 'missing' and '评测任务已不存在' in history(env, 'FW-001')
-    run = run_of(env['client'].post(f"/api/projects/{env['pid']}/flywheel/runs/FW-001/evaluate").json(), 'FW-001')
+    run = run_of(env['client'].post(f"/api/v1/projects/{env['pid']}/flywheel/runs/FW-001/evaluate").json(), 'FW-001')
     assert run['status'] == 'evaluating'
     status_due(env)
     sync(env, reconcile=False)
@@ -170,7 +170,7 @@ def test_waiting_for_a_running_evaluation_can_end_and_its_result_still_arrives(e
     sync(env)
     optimized(env)
     published(env)
-    env['client'].post(f"/api/projects/{env['pid']}/flywheel/runs/FW-001/evaluate")
+    env['client'].post(f"/api/v1/projects/{env['pid']}/flywheel/runs/FW-001/evaluate")
     response = act(env, 'FW-001', 'skip-evaluation')
     assert response.status_code == 200, response.text
     run = run_of(response.json(), 'FW-001')
@@ -186,7 +186,7 @@ def test_waiting_for_a_running_evaluation_can_end_and_its_result_still_arrives(e
 
 def test_without_a_stored_login_the_automatic_evaluation_waits_for_confirmation(env):
     # 设置时没有转交刷新令牌：评测服务只登记读取，没有登录
-    response = env['client'].put(f"/api/projects/{env['pid']}/flywheel/settings", json={'publish': True})
+    response = env['client'].put(f"/api/v1/projects/{env['pid']}/flywheel/settings", json={'publish': True})
     view = response.json()
     assert view['delegation']['login'] == 'missing' and view['delegation']['background'] is False
     env['evaluation'].complete(RUN)
@@ -273,7 +273,7 @@ def test_old_graph_data_waits_for_the_users_own_confirmation_to_delete_it(env):
     assert run['status'] == 'waiting_evaluation' and run['human_hold'] is True and run['graph_confirmation'] == note
     assert run['graph_confirmation_code'] == 'ab12'
     env['evaluation'].rerun_failure = None
-    response = env['client'].post(f"/api/projects/{env['pid']}/flywheel/runs/FW-001/evaluate",
+    response = env['client'].post(f"/api/v1/projects/{env['pid']}/flywheel/runs/FW-001/evaluate",
                                   json={'replace_graph': True, 'graph_confirmation_code': 'ab12'},
                                   headers={'X-Refresh-Token': 'browser-refresh'})
     assert response.status_code == 200, response.text
@@ -298,15 +298,15 @@ def test_a_deletion_is_confirmed_only_with_the_questions_code(env, body):
     optimized(env)
     published(env)
     env['evaluation'].rerun_failure = graph_question('合成的图数据提示', 'ab12')
-    assert env['client'].post(f"/api/projects/{env['pid']}/flywheel/runs/FW-001/evaluate").status_code == 409
+    assert env['client'].post(f"/api/v1/projects/{env['pid']}/flywheel/runs/FW-001/evaluate").status_code == 409
     env['evaluation'].rerun_failure = None
-    response = env['client'].post(f"/api/projects/{env['pid']}/flywheel/runs/FW-001/evaluate", json=body)
+    response = env['client'].post(f"/api/v1/projects/{env['pid']}/flywheel/runs/FW-001/evaluate", json=body)
     assert response.status_code == 200, response.text
     # 没勾选、或没带确认码：不算确认删除，由评测服务重新提示
     rerun = env['evaluation'].reruns[-1]
     assert 'replace_existing_graph' not in rerun and 'graph_confirmation_code' not in rerun
     bad = {'replace_graph': True, 'graph_confirmation_code': 'NOT-HEX'}
-    assert env['client'].post(f"/api/projects/{env['pid']}/flywheel/runs/FW-001/evaluate", json=bad).status_code == 422
+    assert env['client'].post(f"/api/v1/projects/{env['pid']}/flywheel/runs/FW-001/evaluate", json=bad).status_code == 400
 
 
 def test_a_confirmation_without_the_graph_choice_does_not_delete_graph_data(env):
@@ -314,7 +314,7 @@ def test_a_confirmation_without_the_graph_choice_does_not_delete_graph_data(env)
     sync(env)
     optimized(env)
     published(env)
-    response = env['client'].post(f"/api/projects/{env['pid']}/flywheel/runs/FW-001/evaluate")
+    response = env['client'].post(f"/api/v1/projects/{env['pid']}/flywheel/runs/FW-001/evaluate")
     assert response.status_code == 200, response.text
     assert 'replace_existing_graph' not in env['evaluation'].reruns[-1]
 
@@ -372,7 +372,7 @@ def test_the_evaluation_record_reports_the_strict_pass_rate(env):
     env['evaluation'].complete(NEXT_RUN, release='release_2', version='0.1.2', finished=3000.0, cases=THREE_OF_FOUR)
     view = sync(env)
     assert run_of(view, 'FW-001')['evaluation']['score'] == 75 and run_of(view, 'FW-002')['score'] == 75
-    detail = env['client'].get(f"/api/projects/{env['pid']}/flywheel/runs/FW-001").json()
+    detail = env['client'].get(f"/api/v1/projects/{env['pid']}/flywheel/runs/FW-001").json()
     texts = [item['text'] for item in detail['history']]
     assert any(text.startswith('严格通过率 75%') for text in texts)
 

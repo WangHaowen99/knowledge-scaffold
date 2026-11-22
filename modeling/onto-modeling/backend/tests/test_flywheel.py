@@ -13,13 +13,15 @@ from fastapi.testclient import TestClient
 
 from app import config
 from app.main import app
-from app.routers import flywheel as flywheel_routes, projects
+from app.api import deps
+from app.routers import flywheel as flywheel_routes
 from app.services import auth, eval_client, hub_packages, knowledge_hub, package_evaluations, solver_contract
 from app.services.agent_sessions import SessionError
 from app.services.delegated import Delegated
-from app.services.flywheel import checks, grants, intake, optimize, publish, store
+from app.services.flywheel import assistant as assistant_module, checks, grants, intake, optimize, publish, store
 from app.services.flywheel.assistant import Assistant
-from app.services.workspace import WorkspaceError, WorkspaceManager, _git
+from app.services.solver import service as solver_service
+from app.services.workspace import WorkspaceError, WorkspaceManager, _commit_paths, _git
 
 SERVICE_TOKEN = 'synthetic-evaluation-service-token-000000'
 USER = {'sub': 'operator_a', 'iss': 'https://example.com'}
@@ -248,7 +250,7 @@ def env(tmp_path, monkeypatch):
     manager = WorkspaceManager(tmp_path / 'modeling', config.ASSETS_DIR)
     monkeypatch.setattr(config, 'DATA_DIR', tmp_path / 'modeling')
     monkeypatch.setattr(config, 'EVAL_URL', 'http://127.0.0.1:8090')
-    monkeypatch.setattr(projects, 'workspaces', manager)
+    monkeypatch.setattr(deps, 'workspaces', manager)
     monkeypatch.setattr(auth, 'ENABLED', True)
     claims = {**USER, 'exp': time.time() + 3600}
     monkeypatch.setattr(auth, 'verify_access_token', lambda token: dict(claims) if token == 'user-token' else None)
@@ -293,18 +295,18 @@ def env(tmp_path, monkeypatch):
 
 
 def sync(env, reconcile=True):
-    response = env['client'].get(f"/api/projects/{env['pid']}/flywheel", params={'reconcile': reconcile})
+    response = env['client'].get(f"/api/v1/projects/{env['pid']}/flywheel", params={'reconcile': reconcile})
     assert response.status_code == 200, response.text
     return response.json()
 
 
 def act(env, run_id, action, **body):
-    return env['client'].post(f"/api/projects/{env['pid']}/flywheel/runs/{run_id}/{action}", json=body or None)
+    return env['client'].post(f"/api/v1/projects/{env['pid']}/flywheel/runs/{run_id}/{action}", json=body or None)
 
 
 def settings(env, **changes):
     # 前端修改设置时总会转交刷新令牌，供评测服务登记后台评测登录
-    response = env['client'].put(f"/api/projects/{env['pid']}/flywheel/settings", json=changes,
+    response = env['client'].put(f"/api/v1/projects/{env['pid']}/flywheel/settings", json=changes,
                                  headers={'X-Refresh-Token': 'synthetic-refresh'})
     assert response.status_code == 200, response.text
     return response.json()
@@ -316,7 +318,8 @@ def run_of(view, run_id):
 
 def optimized(env, change=True):
     """Confirm the waiting run, let the synthetic assistant revise a document, and settle the turn."""
-    assert act(env, 'FW-001', 'optimize').status_code == 200
+    response = act(env, 'FW-001', 'optimize')
+    assert response.status_code == 200, response.text
     if change:
         (env['root'] / 'ontology/object/object_a.md').write_text(OBJECT + '\n- 合成字段：空值表示未知\n', encoding='utf-8')
     env['assistant'].finish()
@@ -386,8 +389,9 @@ def test_settings_changes_are_recorded_and_validated(env):
     assert view['settings'] == {'optimize': True, 'publish': False, 'max_rounds': 5, 'delegation_days': 30}
     assert [item['action'] for item in view['audit']] == ['后台授权', '自动优化规则', '自动化处理优化建议']
     assert view['audit'][2]['description'].startswith('关闭 → 开启') and view['audit'][0]['actor'] == 'operator_a'
-    response = env['client'].put(f"/api/projects/{env['pid']}/flywheel/settings", json={'max_rounds': 4})
-    assert response.status_code == 422
+    response = env['client'].put(f"/api/v1/projects/{env['pid']}/flywheel/settings", json={'max_rounds': 4})
+    assert response.status_code == 400 and response.json()['code'] == 'invalid_argument'
+    assert response.json()['details'] == {'fields': {'max_rounds': 'one_of'}}
 
 
 def test_confirmed_optimization_imports_snapshots_and_hands_over_to_the_assistant(env):
@@ -414,11 +418,11 @@ def test_finished_optimization_becomes_a_candidate_and_publishes(env):
     view = optimized(env)
     run = run_of(view, 'FW-001')
     assert run['status'] == 'waiting_publish' and run['publish_hold'] is True and view['candidate_id'] == 'FW-001'
-    detail = env['client'].get(f"/api/projects/{env['pid']}/flywheel/runs/FW-001").json()
+    detail = env['client'].get(f"/api/v1/projects/{env['pid']}/flywheel/runs/FW-001").json()
     assert detail['checks']['passed'] is True and detail['checks']['changed'] == ['ontology/object/object_a.md']
     assert {item['key'] for item in detail['checks']['items']} == {
-        'content', 'rules', 'generalization', 'binding', 'solver'}
-    changes = env['client'].get(f"/api/projects/{env['pid']}/flywheel/runs/FW-001/changes").json()
+        'content', 'rules', 'generalization', 'binding', 'solver', 'readiness'}
+    changes = env['client'].get(f"/api/v1/projects/{env['pid']}/flywheel/runs/FW-001/changes").json()
     assert [item['path'] for item in changes['files']] == ['ontology/object/object_a.md']
     assert {'kind': 'added', 'text': '- 合成字段：空值表示未知'} in changes['files'][0]['lines']
     view = published(env)
@@ -527,8 +531,8 @@ def solver_enabled(env, monkeypatch, verified):
     latest solver validation passed."""
     revision = {'value': SOLVER_REVISION}
     contract = SimpleNamespace(solver_key='solver_a', operation='operation_a', decision_model='model_a', enabled=True)
-    monkeypatch.setattr(env['manager'], 'solver_check',
-                        lambda pid: solver_contract.SolverCheck(contracts=[contract], revision=revision['value']))
+    monkeypatch.setattr(solver_service, 'solver_check_at',
+                        lambda root: solver_contract.SolverCheck(contracts=[contract], revision=revision['value']))
     monkeypatch.setattr(package_evaluations, 'verified_solver_release', lambda pid, subject, value: (
         {'release_id': 'release_one', 'version': '0.1.1'} if value in verified else None))
     return revision
@@ -569,7 +573,8 @@ def test_a_solver_contract_changed_before_freezing_waits_for_its_own_validation(
 
 
 @pytest.mark.parametrize('code', ['binding_problems', 'script_binding_conflict', 'script_argument_shape',
-                                  'script_output_unverified'])
+                                  'script_output_unverified', 'package_structure_invalid', 'release_tree_unsafe',
+                                  'invalid_commit'])
 def test_a_package_its_export_rejects_waits_for_the_content_to_be_fixed(code):
     # 导出知识包时因内容被拒（如助手改了脚本、输出还没验证）：重试同一请求没用，改好内容并重新检查后再发布
     run = {'history': []}
@@ -667,7 +672,7 @@ def test_rollback_waits_while_the_assistant_is_revising(env):
     (env['root'] / 'ontology/object/object_a.md').write_text(OBJECT + '\n- 助手未提交的合成修改\n', encoding='utf-8')
     (env['root'] / 'ontology/object/object_draft.md').write_text('# 助手新写的合成对象\n', encoding='utf-8')
     response = act(env, 'FW-001', 'rollback', scope='workspace')
-    assert response.status_code == 409 and '建模助手正在对话中' in response.json()['error']
+    assert response.status_code == 409 and '建模助手正在对话中' in response.json()['message']
     assert '助手未提交的合成修改' in (env['root'] / 'ontology/object/object_a.md').read_text(encoding='utf-8')
     assert (env['root'] / 'ontology/object/object_draft.md').exists()
     assert run_of(sync(env, reconcile=False), 'FW-001')['status'] == 'waiting_evaluation'
@@ -677,12 +682,12 @@ def test_rollback_waits_while_the_assistant_is_revising(env):
 
 
 @pytest.mark.parametrize('action', ['rollback', 'stop'])
-def test_restoring_a_snapshot_keeps_the_projects_members(env, action):
+def test_restoring_a_snapshot_keeps_the_projects_metadata(env, action):
     env['evaluation'].complete(RUN)
     sync(env)
     assert act(env, 'FW-001', 'optimize').status_code == 200
-    # 快照之后项目负责人调整了成员（合成成员）：恢复内容不能把成员与权限一并改回快照时的样子
-    env['manager'].set_members(env['pid'], {'operator_b': 'editor'})
+    # 快照之后所有者改了项目名称：恢复内容不能把项目元数据一并改回快照时的样子
+    env['manager'].rename_project(env['pid'], 'project_alpha_renamed')
     (env['root'] / 'ontology/object/object_a.md').write_text('# 合成修改\n', encoding='utf-8')
     if action == 'rollback':
         env['assistant'].finish()
@@ -691,7 +696,8 @@ def test_restoring_a_snapshot_keeps_the_projects_members(env, action):
     else:
         assert act(env, 'FW-001', 'stop').status_code == 200
     assert (env['root'] / 'ontology/object/object_a.md').read_text(encoding='utf-8') == OBJECT
-    assert env['manager'].get_project(env['pid']).get('members') == {'operator_b': 'editor'}
+    assert env['manager'].get_project(env['pid'])['name'] == 'project_alpha_renamed'
+    assert env['manager'].get_project(env['pid'])['owner'] == 'operator_a'
 
 
 def test_stopping_leaves_another_members_conversation_alone(env):
@@ -702,7 +708,7 @@ def test_stopping_leaves_another_members_conversation_alone(env):
     env['assistant'].ended = True
     (env['root'] / 'ontology/object/object_b.md').write_text('# 另一位成员的合成修改\n', encoding='utf-8')
     response = act(env, 'FW-001', 'stop')
-    assert response.status_code == 409 and '其他对话' in response.json()['error']
+    assert response.status_code == 409 and '其他对话' in response.json()['message']
     assert env['assistant'].interrupted == [] and (env['root'] / 'ontology/object/object_b.md').exists()
     assert run_of(sync(env, reconcile=False), 'FW-001')['status'] == 'optimizing'
     # 读不到对话记录、无从判断忙的是哪一轮时同样不打断
@@ -719,7 +725,7 @@ def test_stopping_does_not_restore_while_the_assistant_keeps_running(env, monkey
     monkeypatch.setattr(env['assistant'], 'interrupt', lambda pid, conversation: None)
     monkeypatch.setattr(optimize, 'STOP_WAIT_SECONDS', 0)
     response = act(env, 'FW-001', 'stop')
-    assert response.status_code == 409 and '仍在执行' in response.json()['error']
+    assert response.status_code == 409 and '仍在执行' in response.json()['message']
     assert (env['root'] / 'ontology/object/object_b.md').exists()
     assert run_of(sync(env, reconcile=False), 'FW-001')['status'] == 'optimizing'
 
@@ -761,10 +767,10 @@ def test_rollback_to_hub_publishes_the_restored_content(env):
     assert package_evaluations.writeback_view(env['pid'], SUBJECT)['release_id'] == 'release_2'
 
 
-def test_viewers_see_the_flywheel_but_cannot_act(env, monkeypatch):
-    monkeypatch.setattr(projects.workspaces, 'can_write', lambda meta, user, admin: False)
-    settings_response = env['client'].put(f"/api/projects/{env['pid']}/flywheel/settings", json={'optimize': True})
-    assert settings_response.status_code == 403
+def test_archived_projects_show_the_flywheel_but_cannot_act(env):
+    env['manager'].set_archived(env['pid'], True)
+    settings_response = env['client'].put(f"/api/v1/projects/{env['pid']}/flywheel/settings", json={'optimize': True})
+    assert settings_response.status_code == 409 and settings_response.json()['code'] == 'project_archived'
     env['evaluation'].complete(RUN)
     view = sync(env)
     assert view['can_write'] is False and run_of(view, 'FW-001')['status'] == 'waiting_optimize'
@@ -772,7 +778,7 @@ def test_viewers_see_the_flywheel_but_cannot_act(env, monkeypatch):
 
 def test_flywheel_needs_unified_accounts(env, monkeypatch):
     monkeypatch.setattr(auth, 'ENABLED', False)
-    value = env['client'].get(f"/api/projects/{env['pid']}/flywheel").json()
+    value = env['client'].get(f"/api/v1/projects/{env['pid']}/flywheel").json()
     assert value == {'available': False, 'message': '数据飞轮需要统一账号登录：评测结果和 Hub 发布都按账号隔离'}
 
 
@@ -787,7 +793,9 @@ def test_state_without_hub_package_or_evaluation_service(env, monkeypatch):
 def test_publish_with_expected_revision_refuses_drifted_content(env):
     manager, pid = env['manager'], env['pid']
     revision = hub_packages.content_revision(env['root'])
+    # 发布读主线最新提交：检查之后主线又进了一个修改
     (env['root'] / 'ontology/object/object_a.md').write_text(OBJECT + '\n- 合成漂移\n', encoding='utf-8')
+    _commit_paths(env['root'], ['ontology'], 'chore: 合成漂移')
     with pytest.raises(WorkspaceError) as caught:
         hub_packages.publish(manager, pid, 'request_demo', 'user-token', SUBJECT, expected_revision=revision)
     assert caught.value.code == 'revision_conflict' and env['hub'].calls == []
@@ -810,7 +818,7 @@ def test_records_load_in_batches_from_the_newest(env):
             store.new_run(current, status='ignored' if index % 2 else 'waiting_optimize')
         for index in range(30):
             store.audit(current, 'operator_a', '自动优化规则', f'合成变更 {index}')
-    url = f"/api/projects/{env['pid']}/flywheel"
+    url = f"/api/v1/projects/{env['pid']}/flywheel"
     first = env['client'].get(f'{url}/runs').json()
     assert [run['id'] for run in first['items'][:2]] == ['FW-025', 'FW-024'] and len(first['items']) == 20
     assert first['total'] == 25 and first['next_offset'] == 20 and 'history' not in first['items'][0]
@@ -822,8 +830,8 @@ def test_records_load_in_batches_from_the_newest(env):
     audit = env['client'].get(f'{url}/audit', params={'limit': 10}).json()
     assert audit['items'][0]['description'] == '合成变更 29' and audit['total'] == 30 and audit['next_offset'] == 10
     # 每批有上限，筛选只接受下拉框里的分组
-    assert env['client'].get(f'{url}/runs', params={'limit': 51}).status_code == 422
-    assert env['client'].get(f'{url}/runs', params={'filter': 'unknown'}).status_code == 422
+    assert env['client'].get(f'{url}/runs', params={'limit': 51}).status_code == 400
+    assert env['client'].get(f'{url}/runs', params={'filter': 'unknown'}).status_code == 400
 
 
 def test_runs_left_waiting_on_an_old_version_are_closed_and_stop_counting_as_pending(env):
@@ -885,10 +893,8 @@ def test_one_failed_reconciliation_does_not_report_the_evaluation_service_unavai
 OTHER_SUBJECT = json.dumps([USER['iss'], 'operator_b'], ensure_ascii=False)
 
 
-def another_member_is(env, status, member=True, **fields):
-    # 同一项目里另一位成员的飞轮：各自的状态分开存放
-    if member:
-        env['manager'].set_members(env['pid'], {'operator_b': 'editor'})
+def another_member_is(env, status, **fields):
+    # 同一项目里另一个用户的飞轮（如项目换所有者之前的所有者）：各自的状态分开存放
     with store.update(env['pid'], OTHER_SUBJECT) as other:
         other['identity'] = {'subject': OTHER_SUBJECT, 'username': 'operator_b'}
         store.new_run(other, status=status, **fields)
@@ -900,7 +906,7 @@ def test_another_members_optimization_or_publication_holds_the_optimization(env,
     sync(env)
     another_member_is(env, status)
     response = act(env, 'FW-001', 'optimize')
-    assert response.status_code == 409 and '另一位成员的数据飞轮正在优化或发布' in response.json()['error']
+    assert response.status_code == 409 and '另一位成员的数据飞轮正在优化或发布' in response.json()['message']
     assert env['assistant'].sent == []
 
 
@@ -926,12 +932,12 @@ def test_publication_recheck_and_rollback_wait_for_another_members_work(env, sta
     # 发布会发出对方改到一半的内容或让它白做，回退会抹掉它正在进行的修订
     for action, body in (('publish', {}), ('rollback', {'scope': 'workspace'})):
         response = act(env, 'FW-001', action, **body)
-        assert response.status_code == 409 and '另一位成员的数据飞轮正在优化或发布' in response.json()['error']
+        assert response.status_code == 409 and '另一位成员的数据飞轮正在优化或发布' in response.json()['message']
     with store.update(env['pid'], SUBJECT) as own:
         store.find(own, 'FW-001').update(status='blocked', reason='content_changed')
     # 重新检查会把工作区提交为候选内容，对方改到一半的内容会混进来
     response = act(env, 'FW-001', 'recheck')
-    assert response.status_code == 409 and '请等其完成后再重新检查' in response.json()['error']
+    assert response.status_code == 409 and '请等其完成后再重新检查' in response.json()['message']
     assert env['hub'].requests == {}
     assert (env['root'] / 'ontology/object/object_a.md').read_text(encoding='utf-8') != OBJECT
     with store.update(env['pid'], OTHER_SUBJECT) as other:
@@ -1256,3 +1262,41 @@ def test_the_round_limit_can_be_lifted(env):
     env['evaluation'].complete(RUN)
     run = run_of(sync(env), 'FW-001')
     assert run['status'] == 'optimizing' and run['mode'] == 'auto'
+
+
+def test_only_the_owner_uses_the_flywheel(env, monkeypatch):
+    # 单人所有权（契约 1.4）：别人（包括不是所有者的管理员）打不开项目内容，数据飞轮也一样
+    claims = {'sub': 'operator_b', 'iss': USER['iss'], 'role': 'admin', 'exp': time.time() + 3600}
+    monkeypatch.setattr(auth, 'verify_access_token', lambda token: dict(claims) if token == 'user-token' else None)
+    url = f"/api/v1/projects/{env['pid']}/flywheel"
+    for response in (env['client'].get(url), env['client'].put(f'{url}/settings', json={'optimize': True}),
+                     env['client'].post(f'{url}/runs/FW-001/optimize')):
+        assert response.status_code == 403 and response.json()['code'] == 'project_owner_only'
+    assert store.load(env['pid'], json.dumps([USER['iss'], 'operator_b'], ensure_ascii=False))['runs'] == []
+
+
+def test_projects_get_the_evolution_command_and_the_generalization_check(env):
+    assert (env['root'] / '.claude/commands/ontology-evolution.md').is_file()
+    assert (env['root'] / '.claude/scripts/check_eval_generalization.py').is_file()
+
+
+def test_the_assistant_needs_the_evolution_command(tmp_path):
+    class Sessions:
+        def resolve_conversation(self, pid):
+            raise AssertionError('不应发起对话')
+
+    with pytest.raises(WorkspaceError) as caught:
+        Assistant(None, Sessions()).start('pid_a', tmp_path, '/ontology-evolution eval-demo.md --flywheel', 'operator_a')
+    assert caught.value.status == 409 and caught.value.code == 'pack_not_enabled'
+
+
+def test_a_duplicate_submission_or_a_running_autobuild_counts_as_a_busy_assistant():
+    from app.api.errors import ApiError
+
+    duplicate = SessionError('合成的重复提交', 409)
+    duplicate.code = 'message_duplicate'
+    for exc in (duplicate, ApiError('autobuild_running', '合成的自主构建', 409)):
+        error = assistant_module._unavailable(exc)
+        assert error.status == 409 and error.code == store.ASSISTANT_BUSY_CODE
+    other = assistant_module._unavailable(SessionError('合成的引擎不可用', 503))
+    assert other.status == 503 and other.code == 'assistant_unavailable'
