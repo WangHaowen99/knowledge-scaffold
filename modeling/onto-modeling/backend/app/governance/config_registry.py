@@ -332,7 +332,9 @@ declare(
     C("ONTO_WEB_AUTH_URL", "", "url", description="auth-server 地址，空为本地模式"),
     C("ONTO_WEB_AUTH_ISSUER", lambda: os.environ.get("ONTO_WEB_AUTH_URL", "").rstrip("/"), description="JWT 签发方"),
     C("ONTO_WEB_AUTH_AUDIENCE", "knowledge-scaffold", description="JWT 受众"),
-    C("ONTO_WEB_AUTH_ADMIN_TOKEN", "", secret=True, description="auth-server 管理令牌（用户管理）"),
+    C("ONTO_WEB_AUTH_ADMIN_TOKEN", "", secret=True, description="auth-server 管理令牌（用户管理、自助改密）"),
+    C("ONTO_AUTH_STARTUP_WAIT_ENABLED", "true", "bool",
+      description="启动时等独立 Auth 就绪再接请求（配了 ONTO_WEB_AUTH_URL 才等，ADR-0107）"),
     # 会话与权限
     C("ONTO_WEB_PERMISSION_TIMEOUT", "600", "int", minimum=30, maximum=86400, effect="new_session",
       description="确认卡等待超时（秒）"),

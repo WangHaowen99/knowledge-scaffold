@@ -70,6 +70,7 @@ def user_profile(claims: dict | None) -> dict:
             "role_label": deps.ROLE_LABELS["admin"],
             "roles": ["user", "admin", "ops"],
             "auth_source": "local",
+            "password_change_required": False,
         }
     username = str(claims.get("sub") or "")
     role = claims.get("role") if claims.get("role") in deps.ROLE_LABELS else "user"
@@ -80,6 +81,8 @@ def user_profile(claims: dict | None) -> dict:
         "role_label": deps.ROLE_LABELS[role],
         "roles": sorted({"user", role}),
         "auth_source": "auth-server",
+        # 鉴权中间件按 Auth 实时状态写 pwd_cr；登录响应用令牌里的 pwd_cr（ADR-0107）
+        "password_change_required": bool(claims.get("pwd_cr")),
     }
 
 

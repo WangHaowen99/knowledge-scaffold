@@ -30,7 +30,10 @@ IDENTIFIER = r"^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,127}$"
 def identity(request: Request) -> tuple[str, str, str]:
     """(登录令牌, Hub 主体, 用户名)。主体 = [签发方, sub] 的 JSON，与 Hub 的授权口径一致。"""
     token = knowledge_hub.token_of(request)
-    claims = auth.verify_access_token(token) if token and auth.ENABLED else None
+    # 鉴权中间件已向 Auth 核对过账号（角色以 Auth 为准，ADR-0107）；没经过中间件时才自己验令牌
+    claims = getattr(request.state, "user", None)
+    if claims is None:
+        claims = auth.verify_access_token(token) if token and auth.ENABLED else None
     if not claims or not claims.get("sub"):
         raise WorkspaceError("知识包 Hub 需要统一账号登录", 401, "unauthenticated")
     request.state.user = claims

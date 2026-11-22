@@ -103,7 +103,7 @@ def current_user(token: str, claims: dict) -> dict:
         raise AuthError("账号状态无效", 401)
     if user.get("sub") != claims.get("sub"):
         raise AuthError("账号状态无效", 401)
-    if user.get("role") not in ("admin", "user"):
+    if user.get("role") not in ("admin", "user", "ops"):
         raise AuthError("账号状态无效", 401)
     if not isinstance(user.get("password_change_required"), bool):
         raise AuthError("账号状态无效", 401)

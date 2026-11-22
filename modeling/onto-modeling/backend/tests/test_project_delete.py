@@ -176,12 +176,12 @@ def test_cleanup_failure_is_logged_without_blocking_others(env, monkeypatch, out
     assert entry["raw"] == f"发布留存未清理完成：{message}"
 
 
-def test_retired_core_does_not_block_onto_project_delete(env, monkeypatch):
+def test_legacy_core_link_does_not_block_delete(env):
+    """旧项目元数据里还留着 Modeling Core 的 modeling_project_id：插件化后没有 Core 级联删除，照常删干净。"""
     meta = {"id": PID, "name": "示例任务", "modeling_project_id": "mp-1"}
     (env.root / META_FILE).write_text(json.dumps(meta), encoding="utf-8")
-    monkeypatch.setattr(modeling_mcp.config, "MODELING_CORE_RETIRED", True)
-    monkeypatch.setattr(modeling_mcp, "delete_project", lambda *_args, **_kwargs: pytest.fail("retired Core called"))
     assert _delete(env) == {"deleted": PID}
+    assert not env.root.exists() and error_log.read() == []
 
 
 def test_delete_falls_back_to_in_place_purge_when_move_fails(env, monkeypatch):

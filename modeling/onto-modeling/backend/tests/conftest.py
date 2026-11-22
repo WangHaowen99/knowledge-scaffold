@@ -109,6 +109,24 @@ class SyntheticHub:
         raise AssertionError(f'Unexpected synthetic Hub operation: {method} {path}')
 
 
+# 自己测 /userinfo 核对的模块：不替换 auth.current_user
+LIVE_USERINFO_MODULES = ('test_first_login_gate',)
+
+
+@pytest.fixture(autouse=True)
+def auth_userinfo_stub(request, monkeypatch):
+    """鉴权中间件每次都向 Auth 的 /userinfo 核对账号（ADR-0107）；测试里没有 Auth，默认按令牌身份放行、不待改密。"""
+    if request.module.__name__.split('.')[-1] in LIVE_USERINFO_MODULES:
+        return
+    from app.services import auth
+
+    def current_user(token, claims):
+        role = claims.get('role') if claims.get('role') in ('admin', 'user', 'ops') else 'user'
+        return {'sub': claims.get('sub'), 'role': role, 'password_change_required': False}
+
+    monkeypatch.setattr(auth, 'current_user', current_user)
+
+
 @pytest.fixture
 def synthetic_hub(tmp_path, monkeypatch):
     from app.services import hub_packages

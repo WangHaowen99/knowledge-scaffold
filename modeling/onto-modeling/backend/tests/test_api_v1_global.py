@@ -202,7 +202,7 @@ def test_login_returns_profile_and_audits_without_password(client, monkeypatch):
     assert body["access_token"] == "user-token" and body["expires_in"] == 900
     assert body["user"] == {
         "username": USER, "display_name": USER, "role": "user", "role_label": "建模者",
-        "roles": ["user"], "auth_source": "auth-server",
+        "roles": ["user"], "auth_source": "auth-server", "password_change_required": False,
     }
     _assert_error(client.post("/api/v1/auth/login", json={"username": USER, "password": password("wrong")}), 401, "invalid_credentials")
     _assert_error(client.post("/api/v1/auth/login", json={"username": "", "password": password("x")}), 400, "invalid_argument")

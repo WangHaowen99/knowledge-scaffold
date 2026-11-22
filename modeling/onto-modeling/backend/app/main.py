@@ -13,8 +13,6 @@ from .static_assets import PrecompressedStaticFiles
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    import asyncio
-
     from .governance import startup as governance_startup
     from .governance import startup_recovery
     from .services import backup
@@ -23,6 +21,8 @@ async def _lifespan(app: FastAPI):
 
     # 治理平面（方案 E5、E6、E10）：结构化日志、配置校验、会话池覆盖、密钥目录与告警，最先做
     await asyncio.to_thread(governance_startup.before_recovery)
+    # 独立部署的 Auth（ADR-0107）：配了 ONTO_WEB_AUTH_URL 就等它就绪，再恢复、接请求
+    await governance_startup.wait_for_dependencies()
     # 后台任务只活在进程内：重启后仍标 running 的记录改判中断（启动恢复的「中断的执行」一步统一跑）
     # 启动恢复（详设 8.3、方案 B8）：任何会话开始之前，按登记顺序跑完各模块的恢复步骤——清残留锁、
     # 补提交写入意图、存量迁移、核对装配目录、修对话历史、把没结束的执行改判中断——并留存报告（O-35）

@@ -50,7 +50,9 @@ def available() -> bool:
 async def wait_for_auth(interval: int = 3) -> None:
     if not os.environ.get("ONTO_WEB_AUTH_URL"):
         return
-    if os.environ.get("ONTO_AUTH_STARTUP_WAIT_ENABLED", "true") == "false":
+    from .governance import config_registry
+
+    if not config_registry.value("ONTO_AUTH_STARTUP_WAIT_ENABLED"):
         return
     logger.warning("Waiting for Auth availability before Onto Modeling startup")
     while not await asyncio.to_thread(available):

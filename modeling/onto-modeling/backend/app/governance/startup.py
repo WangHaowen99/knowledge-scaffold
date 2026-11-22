@@ -1,6 +1,6 @@
 """治理平面的启动与停机步骤（由 main 的 lifespan 调用）。
 
-启动恢复之前：结构化日志、配置校验、会话池覆盖、密钥目录迁移与告警、agent 身份的目录权限；
+启动恢复之前：结构化日志、配置校验、会话池覆盖、密钥目录迁移与告警、agent 身份的目录权限，再等独立部署的 Auth 就绪；
 启动恢复之后：标记就绪、起运维监听；停机：停运维监听、记下正常退出。
 """
 
@@ -36,6 +36,13 @@ def _register_gauges() -> None:
 
     telemetry.register_gauge("onto_autobuild_running", lambda: len(store.all_runs(store.RUNNING)))
     telemetry.register_gauge("onto_autobuild_rejudge_ratio", review.review_ratio)
+
+
+async def wait_for_dependencies() -> None:
+    """独立部署的依赖就绪之后再往下走：现在只有 Auth（ADR-0107），本地模式和关掉等待时直接返回。"""
+    from ..auth_startup import wait_for_auth
+
+    await wait_for_auth()
 
 
 async def after_recovery():

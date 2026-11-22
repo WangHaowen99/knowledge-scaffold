@@ -1,12 +1,13 @@
 """API v1 汇总（方案 A14、第 3 章目标代码布局）：挂全部 v1 路由与中间件。
 
 中间件从外到内：链路 ID → 治理（标签、链路、维护只读、响应后审计）→ 旧路径兼容（compat）
-→ 运维面守卫 → 鉴权 → 配额闸门 → 路由。兼容中间件必须在鉴权之前，旧路径改写成 v1 后才按 v1 的免鉴权前缀判断
+→ 运维面守卫 → 鉴权（验令牌、向 Auth 核对账号状态、首登改密门禁）→ 配额闸门 → 路由。兼容中间件必须在鉴权之前，旧路径改写成 v1 后才按 v1 的免鉴权前缀判断
 （契约 1.2）；运维面守卫在改写之后，旧的运维路径也一样 404。
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 from fastapi import FastAPI, Request
@@ -26,6 +27,8 @@ AUTH_EXEMPT_PREFIXES = (
     "/api/v1/pack-ui/",  # 上传包界面的静态资源：路径里的短期票据即授权，iframe 拿不到登录态（ADR-0055）
     "/api/internal/evaluation/notifications",  # 评测服务的完成通知：接口自己验服务凭据（ADR-0092）
 )
+# 待改密账号还能调的接口：A-06 改密、A-07 我的资料（契约 2.2 password_change_required）
+PASSWORD_CHANGE_ALLOWED = frozenset({("PUT", "/api/v1/me/password"), ("GET", "/api/v1/me")})
 # 允许用 ?token= 携带令牌的接口（契约 1.3：SSE 与文件下载），其余接口的 ?token= 一律忽略
 _P = r"/api/v1/projects/[^/]+"
 _QUERY_TOKEN_PATTERNS = (
@@ -152,7 +155,11 @@ def bearer(request: Request) -> str:
 
 
 async def auth_middleware(request: Request, call_next):
-    """白名单外的 /api 路由要求有效 access token；三份契约接口由接口自己验服务令牌。"""
+    """白名单外的 /api 路由要求有效 access token；三份契约接口由接口自己验服务令牌。
+
+    令牌验过之后向 Auth 的 /userinfo 核对当前账号（ADR-0107）：角色以 Auth 为准，查不到不放行；
+    待改密账号只能读资料（A-07）和改密（A-06），其余一律 403 password_change_required（契约 2.2）。
+    """
     from ..routers import contracts
 
     path = request.url.path
@@ -173,7 +180,15 @@ async def auth_middleware(request: Request, call_next):
         if expired:
             return errors.response("token_expired", "登录已过期，请重新登录", 401)
         return errors.response("unauthenticated", "未登录或登录已过期", 401)
-    request.state.user = claims
+    try:
+        user = await asyncio.to_thread(auth.current_user, token, claims)
+    except auth.AuthError as exc:
+        if exc.status == 401:
+            return errors.response("unauthenticated", str(exc), 401)
+        return errors.response("service_unavailable", "认证服务暂不可用，请稍后重试", 503, {"dependency": "auth_server"})
+    if user["password_change_required"] and (request.method, path) not in PASSWORD_CHANGE_ALLOWED:
+        return errors.response("password_change_required", "请先修改初始密码", 403)
+    request.state.user = {**claims, "role": user["role"], "pwd_cr": user["password_change_required"]}
     auth.touch(claims.get("sub", ""))
     # 写请求的审计在响应之后由治理中间件记（带状态码，方案 E4）
     return await call_next(request)
