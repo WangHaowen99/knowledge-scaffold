@@ -197,8 +197,6 @@ def test_nl2sql_runs_use_the_evaluation_workspace_id_as_the_consumer_workspace(e
     def consumer(method, path, kwargs):
         calls.append((method, path, kwargs.get('workspace', '')))
         captured.append((method, path, kwargs))
-        if path == '/api/v1/sql':
-            return {'success': True, 'data': [{'table_name': 'items', 'column_name': 'id', 'data_type': 'varchar(64)', 'is_nullable': 'NO'}]}
         if path.endswith('/data-source'):
             return consumer_data_source(kwargs['json'])
         if path.endswith('/data-source/test'):
@@ -208,9 +206,8 @@ def test_nl2sql_runs_use_the_evaluation_workspace_id_as_the_consumer_workspace(e
     wrap(deps, consumer)
     connection = {'url': 'https://service.example.net', 'scene': 'scene_demo',
                   'evaluation_workspace_id': 'workspace_sql_demo', 'token': 'synthetic-invalid-token'}
-    inspected = client.post('/evaluation/api/data-source-inspections', json={'provider': 'nl2sql_http', 'connection': connection}).json()
     source = client.post('/evaluation/api/data-sources', json={'name': 'sql_demo', 'mode': 'connection', 'provider': 'nl2sql_http',
-                                                              'connection': connection, 'inspection_id': inspected['inspection_id']}).json()
+                                                              'connection': connection}).json()
     prep = client.post('/evaluation/api/package-preparations', json={
         'request_id': 'prepare_sql_demo', 'package_ref': {'ontology_id': 'knowledge_package_demo', 'release_id': 'release_demo'},
         'data_source_id': source['id']}).json()

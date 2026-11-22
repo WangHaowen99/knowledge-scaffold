@@ -1,7 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useViewState } from './viewState.js';
 import { allPages, api } from './api.js';
-import { VERDICTS, carriedState, feedbackStatus, minute, notificationState, optimizationState, runStartTime, shortId } from './domain.js';
+import {
+  VERDICTS, carriedState, feedbackStatus, handledText, minute, notificationState, optimizationState, runStartTime, shortId,
+} from './domain.js';
 import { ArtifactPanel, CarryoverNote, DeliveryContent, RecordNumber } from './RunOutputs.jsx';
 import { Alert, Badge, Button, Empty, Field, Heading, Icon, Modal, Progress, Segmented, Skeleton, Steps, Tabs, useAction } from './ui.jsx';
 
@@ -78,8 +80,8 @@ function Flow() {
 function resultText(result) {
   if (!result) return null;
   const outcome = result.result || {};
-  return outcome.outcome === 'done'
-    ? [`已处理`, 'green', `新版本 ${outcome.version || outcome.release_id || ''} · ${day(outcome.reported_at)}`]
+  return outcome.outcome !== 'failed'
+    ? [`已处理`, 'green', `${handledText(outcome)} · ${day(outcome.reported_at)}`]
     : ['处理失败', 'red', `${outcome.note || '建模处理失败'} · ${day(outcome.reported_at)}`];
 }
 
@@ -761,7 +763,7 @@ function recordState(run, peers = []) {
   if (o.status === 'notified') { const state = optimizationState(run, peers); return [state.label, state.tone, state.hint]; }
   const together = result.via ? `随 ${shortId(result.via)} 一起处理 · ` : '';
   if (o.status === 'modeling_done')
-    return ['已处理', 'green', `${together}新版本 ${result.version || result.release_id || ''} · ${day(result.reported_at)}`];
+    return ['已处理', 'green', `${together}${handledText(result)} · ${day(result.reported_at)}`];
   return ['处理失败', 'red', `${together}${via ? '' : result.note || '建模处理失败'}${via ? '' : ' · '}${day(result.reported_at)}`];
 }
 

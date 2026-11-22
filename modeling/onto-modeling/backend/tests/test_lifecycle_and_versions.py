@@ -552,6 +552,45 @@ def test_migrate_from_modeling_end_to_end(manager: WorkspaceManager, tmp_path: P
     assert sum(1 for p in manager.list_projects() if p.get("migrated_from") == "pj_test1") == 1
 
 
+def test_cce_migration_stages_wal_and_reports_counts(tmp_path: Path, monkeypatch, capsys):
+    import sqlite3
+    import subprocess
+    import sys
+
+    sys.path.append(str(Path(__file__).resolve().parents[1] / "scripts"))
+    import migrate_cce_from_modeling as wrapper
+
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    database = sqlite3.connect(source / "modeling.db")
+    database.execute("PRAGMA journal_mode=WAL")
+    database.execute("CREATE TABLE projects (id TEXT)")
+    database.commit()
+    database.execute("INSERT INTO projects VALUES ('project_alpha')")
+    database.commit()
+    (source / "artifacts").mkdir()
+    report = target / "onto-web" / "migration.json"
+
+    def execute(argv, **_kwargs):
+        staged = Path(argv[argv.index("--source") + 1])
+        with sqlite3.connect(staged / "modeling.db") as reader:
+            assert reader.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 1
+        assert (staged / "artifacts").is_symlink()
+        report.write_text(json.dumps({"schemaVersion": "core-project-migration/v1",
+                                      "sourceProjects": 1, "migrated": 1, "skipped": 0}))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(wrapper.subprocess, "run", execute)
+    monkeypatch.setattr(sys, "argv", ["wrapper", "--source", str(source), "--summary-file", str(report)])
+    try:
+        assert wrapper.main() == 0
+        assert json.loads(capsys.readouterr().out)["sourceProjects"] == 1
+    finally:
+        database.close()
+
+
 def test_migrate_render_excel_tables_skips_null_entries():
     import sys
 

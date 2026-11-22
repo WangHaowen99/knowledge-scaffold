@@ -9,7 +9,7 @@ combinations:
     platform: linux-amd64
     operationSchemaVersion: cce-operation/v1
     endpointSchemaVersion: cce-endpoints/v1
-    authApiVersion: v1
+    authApiVersion: auth-v1
     consumerApiVersion: v1
 # Add a transition only after its old, intermediate and target combinations are verified.
 transitions: []

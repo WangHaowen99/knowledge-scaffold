@@ -21,6 +21,8 @@ import base64
 import hashlib
 import http.client
 import io
+import importlib.util
+import inspect
 import json
 import os
 import secrets
@@ -30,6 +32,11 @@ import sys
 import zipfile
 from pathlib import Path
 from urllib.parse import urlsplit
+
+# This client is also loaded directly by the standalone gateway, without toolkit imports.
+_output_spec = importlib.util.spec_from_file_location("onto_script_output", Path(__file__).with_name("script_output.py"))
+_output_module = importlib.util.module_from_spec(_output_spec)
+_output_spec.loader.exec_module(_output_module)
 
 DEFAULT_SOCKET_PATH = "/run/jiuwenbox/jiuwenbox.sock"
 GATEWAY_URL_ENV = "ONTO_WEB_SANDBOX_GATEWAY_URL"
@@ -61,12 +68,15 @@ SCRIPT_ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "PYTHONIOENCODING": "utf-8
 
 # 在沙箱（或本机回退）里执行：解包脚本，逐个用例以子进程运行，只回传判定所需的事实。
 # 执行器自身用 -I（只用标准库），用例子进程继承 SCRIPT_ENV、不加隔离参数，与 consumer 相同。
-RUNNER = r'''
+RUNNER = inspect.getsource(_output_module.output_error) + r'''
 import base64, io, json, os, shutil, subprocess, sys, tempfile, time, zipfile
 
 bundle, entry, encoded_cases, limit, timeout = sys.argv[1:6]
 limit, timeout = int(limit), int(timeout)
 cases = json.loads(base64.b64decode(encoded_cases).decode("utf-8"))
+outputs = ()
+if isinstance(cases, dict):
+    outputs, cases = cases["outputs"], cases["argv_cases"]
 workdir = tempfile.mkdtemp(prefix="onto-script-verify-")
 zipfile.ZipFile(io.BytesIO(base64.b64decode(bundle))).extractall(workdir)
 
@@ -99,6 +109,9 @@ try:
             exit_code, timed_out = done.returncode, False
         except subprocess.TimeoutExpired as exc:
             stdout, stderr, exit_code, timed_out = as_text(exc.stdout), as_text(exc.stderr), None, True
+        contract_error = ""
+        if outputs and single_json(stdout):
+            contract_error = output_error(json.loads(stdout), outputs)
         results.append({
             "exit_code": exit_code,
             "timed_out": timed_out,
@@ -107,6 +120,7 @@ try:
             "stdout_truncated": len(stdout) > limit,
             "stderr": stderr[-limit:],
             "duration_ms": int((time.monotonic() - started) * 1000),
+            "output_contract_error": contract_error,
         })
 finally:
     shutil.rmtree(workdir, ignore_errors=True)
@@ -394,8 +408,9 @@ def _bundle(script: Path) -> str:
     return encoded
 
 
-def _encode_cases(argv_cases: list[list[str]]) -> str:
-    encoded = base64.b64encode(json.dumps(argv_cases, ensure_ascii=False).encode("utf-8")).decode("ascii")
+def _encode_cases(argv_cases: list[list[str]], outputs=()) -> str:
+    value = {"argv_cases": argv_cases, "outputs": outputs} if outputs else argv_cases
+    encoded = base64.b64encode(json.dumps(value, ensure_ascii=False).encode("utf-8")).decode("ascii")
     if len(encoded) > MAX_ARGUMENT_BYTES:
         raise BundleError(f"用例参数超过沙箱参数上限 {MAX_ARGUMENT_BYTES // 1024}KB，请缩小验证用的输入数据")
     return encoded
@@ -452,14 +467,14 @@ def _gateway_call(url: str, method: str, path: str, payload=None, timeout: float
     return data
 
 
-def run_cases(script: Path, argv_cases: list[list[str]], *, gateway: str | None = None) -> dict:
+def run_cases(script: Path, argv_cases: list[list[str]], *, gateway: str | None = None, outputs=()) -> dict:
     """经脚本验证网关在 jiuwenbox 沙箱里逐个用例运行脚本；网关或沙箱不可用时改在本机运行同一个 runner。
 
     返回 {runtime: "jiuwenbox" | "local", fallback_reason, results: [...]}，
     results 与 argv_cases 一一对应。
     """
     bundle = _bundle(script)
-    encoded_cases = _encode_cases(argv_cases)
+    encoded_cases = _encode_cases(argv_cases, outputs)
     timeout = exec_timeout(len(argv_cases))
     gateway = gateway if gateway is not None else gateway_url()
     try:
@@ -473,6 +488,8 @@ def run_cases(script: Path, argv_cases: list[list[str]], *, gateway: str | None 
             isinstance(item, dict) and RESULT_FIELDS <= set(item) for item in results
         ):
             raise SandboxError("脚本验证网关返回的用例结果不完整")
+        if outputs and any("output_contract_error" not in item for item in results):
+            raise SandboxError("脚本验证网关尚不支持输出契约检查，请升级网关")
         return {"runtime": "jiuwenbox", "fallback_reason": "", "results": results}
     except (SandboxUnavailable, SandboxError) as exc:
         reason = str(exc)

@@ -14,6 +14,7 @@ from app import config
 from app.main import app
 from app.api import deps
 from app.services import auth, eval_client, hub_packages, package_evaluations
+from app.services.delegated import Delegated
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 
 SERVICE_TOKEN = 'synthetic-evaluation-service-token-000000'
@@ -90,6 +91,9 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(deps, 'workspaces', manager)
     monkeypatch.setattr(auth, 'ENABLED', True)
     monkeypatch.setattr(auth, 'verify_access_token', lambda token: dict(USER) if token == 'user-token' else None)
+    monkeypatch.setattr(auth, 'current_user', lambda token, claims: {
+        'sub': claims['sub'], 'role': claims.get('role', 'user'), 'password_change_required': False,
+    })
     monkeypatch.setenv('ONTO_EVALUATION_SERVICE_TOKEN', SERVICE_TOKEN)
     stub = EvaluationStub()
     monkeypatch.setattr(eval_client, 'request', stub)
@@ -354,9 +358,12 @@ def evaluation_server(monkeypatch):
                 '/evaluation/api/ok': (200, b'{"value": 1}'),
                 '/evaluation/api/large': (200, b'x' * (eval_client.JSON_LIMIT + 1)),
                 '/evaluation/api/unauthenticated': (401, b'{}'),
+                '/evaluation/api/login-expired': (401, '{"code":"login_expired","message":"后台评测授权已失效"}'.encode()),
                 '/evaluation/api/forbidden': (403, b'{}'),
                 '/evaluation/api/missing': (404, b'{}'),
                 '/evaluation/api/active': (409, '{"code":"run_active","message":"评测进行中"}'.encode()),
+                '/evaluation/api/graph': (409, ('{"code":"graph_confirmation_required","message":"合成的图数据提示",'
+                                                '"details":{"confirmation_code":"ab12"}}').encode()),
                 '/evaluation/api/conflict': (409, b'<html>synthetic upstream page</html>'),
                 '/evaluation/api/broken': (500, b'synthetic upstream detail'),
                 '/evaluation/api/redirect': (302, b''),
@@ -406,6 +413,30 @@ def test_client_maps_failures_without_echoing_upstream_bodies(evaluation_server,
 def test_client_keeps_the_services_own_conflict_message(evaluation_server):
     with pytest.raises(WorkspaceError, match='评测进行中'):
         eval_client.call('GET', '/active', 'user-token')
+
+
+def test_client_keeps_the_details_of_a_conflict(evaluation_server):
+    # 删除旧图数据的提示带着确认码：飞轮记下它，用户确认时原样带回
+    with pytest.raises(WorkspaceError) as caught:
+        eval_client.call('GET', '/graph', 'user-token')
+    assert caught.value.code == 'graph_confirmation_required' and caught.value.details == {'confirmation_code': 'ab12'}
+
+
+def test_client_keeps_the_code_of_a_voided_background_login(evaluation_server):
+    # 数据飞轮据此只标记后台评测登录失效，而不是当作委托被拒、撤销整个委托
+    with pytest.raises(WorkspaceError) as caught:
+        eval_client.call('GET', '/login-expired', 'user-token')
+    assert (caught.value.status, caught.value.code, str(caught.value)) == (401, 'login_expired', '后台评测授权已失效')
+
+
+def test_client_tells_an_error_response_from_an_unreachable_service(evaluation_server, monkeypatch):
+    with pytest.raises(WorkspaceError) as caught:
+        eval_client.call('GET', '/broken', 'user-token')
+    assert str(caught.value) == '评测服务返回错误（HTTP 500），请稍后重试'
+    monkeypatch.setattr(config, 'EVAL_URL', 'http://127.0.0.1:9')
+    with pytest.raises(WorkspaceError) as caught:
+        eval_client.call('GET', '/ok', 'user-token')
+    assert str(caught.value) == '评测服务不可用，请稍后重试'
 
 
 def test_client_reports_an_unreachable_service(monkeypatch):
@@ -479,6 +510,32 @@ def test_data_solver_and_feedback_runs_of_one_release_share_the_index(env):
     assert after['solver_releases']['release_one']['artifacts']['status'] == 'generating'
     assert after['releases']['release_one']['artifacts']['status'] == 'ready'
     assert after['feedback']['release_one']['artifacts']['status'] == 'ready'
+
+
+def test_a_delegated_reconciliation_keeps_the_feedback_runs(env):
+    _, pid, stub, client = env
+    feedback = entry(run=OTHER_RUN, origin='consumer_feedback', summary={**SUMMARY, 'score': None},
+                     optimization={'status': 'notified', 'updated_at': 1500.0})
+    stub.listing['releases'] = [entry(), feedback]
+    overview(client, pid)
+    # 数据飞轮的委托读取只拿到用户本人的评测轮次：消费反馈轮次保留上次用登录对账的结果
+    stub.listing['releases'] = [entry(finished=2000.0)]
+    package_evaluations.reconcile(PACKAGE, SUBJECT, Delegated('evaluation-handle'))
+    assert index()['feedback']['release_one']['run_id'] == OTHER_RUN
+    assert index()['releases']['release_one']['finished_at'] == 2000.0
+    # 用登录对账时整份替换：评测服务已删掉的反馈轮次随之消失
+    overview(client, pid)
+    assert index()['feedback'] == {}
+
+
+def test_a_delegation_never_writes_back_for_the_user(env):
+    manager, pid, stub, client = env
+    stub.listing['releases'] = [entry()]
+    optimize(client, pid)
+    publish_next(manager, pid)
+    state = package_evaluations.settle(pid, SUBJECT, Delegated('evaluation-handle'))
+    assert not stub.writebacks and state['result'] is None
+    assert overview(client, pid)['writeback']['status'] == 'done' and len(stub.writebacks) == 1
 
 
 def test_notifications_with_new_optimization_statuses_are_accepted(env):

@@ -12,6 +12,8 @@ You are a semantic validation agent for a business knowledge ontology project.
 
 每条规则的 `severity` / `category` / 默认 `confidence` 以 `.claude/VALIDATION_BOUNDARIES.md` 的「权威严重性矩阵」为准。本文件内每条规则旁的字符串只是该矩阵的引用 — 若两边不一致，先去读 BOUNDARIES 表再修本文件，不要在 agent 输出中自由选择 severity。
 
+脚本语法、输入/输出字段契约及 TODO/FIXME 标记由确定性检查负责：明确契约冲突为 `错误 / 脚本契约`，输出未验证和注释/docstring 未完成标记为 `警告 / 脚本契约`；不要重复上报或把标记本身升级为错误。
+
 ## 已沉淀业务知识（自动加载）
 
 dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自动加载）` 区块（无内容时省略）。在执行语义检查前先扫描：

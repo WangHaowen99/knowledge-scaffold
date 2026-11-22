@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
 from .. import notes, ops
-from ..auth import CAP_INGEST, CAP_MANAGE, CAP_RETRIEVE, Principal, check_scope
+from ..auth import CAP_INGEST, CAP_MANAGE, CAP_RETRIEVE, AuthError, Principal, check_scope
 from ..deps import need, registry
 from ..registry import Backend, UpstreamError, require
 
@@ -129,9 +130,11 @@ async def list_docs(
     q: str | None = None,
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    folder: str | None = None,
     _: Principal = Depends(need(CAP_RETRIEVE)),
 ) -> Response:
-    params = {k: v for k, v in {"status": status, "q": q, "limit": limit, "offset": offset}.items() if v is not None}
+    params = {k: v for k, v in {"status": status, "q": q, "limit": limit, "offset": offset, "folder": folder}.items()
+              if v is not None}
     return _guarded(await _forward(_kb(kb_id), "GET", f"/v1/kbs/{kb_id}/documents", params=params))
 
 
@@ -198,12 +201,15 @@ async def get_structure(
     return await _forward(_kb(doc_id), "GET", f"/v1/documents/{doc_id}/structure", "content.structure", params=params)
 
 
-async def _stream(backend: Backend, path: str) -> StreamingResponse:
-    require(backend, "documents.file")
-    upstream = await backend.send("GET", path, stream=True, timeout=600)
-    # relayed as received (no decoding), so content-length and content-encoding stay true
-    passed = {"content-disposition", "content-length", "content-encoding"}
-    headers = {k: v for k, v in upstream.headers.items() if k.lower() in passed}
+# headers relayed from the backend's file response; content-length and -encoding stay true because
+# the body is relayed as received (no decoding)
+_FILE_HEADERS = {"content-disposition", "content-length", "content-encoding", "content-range", "accept-ranges"}
+
+
+async def _stream(backend: Backend, path: str, feature: str = "documents.file", headers: dict | None = None) -> StreamingResponse:
+    require(backend, feature)
+    upstream = await backend.send("GET", path, stream=True, timeout=600, headers=headers)
+    passed = {k: v for k, v in upstream.headers.items() if k.lower() in _FILE_HEADERS}
 
     async def body():
         try:
@@ -212,12 +218,18 @@ async def _stream(backend: Backend, path: str) -> StreamingResponse:
         finally:
             await upstream.aclose()
 
-    return StreamingResponse(body(), media_type=upstream.headers.get("content-type"), headers=headers)
+    return StreamingResponse(body(), status_code=upstream.status_code, media_type=upstream.headers.get("content-type"),
+                             headers=passed)
 
 
 @router.get("/documents/{doc_id}/file")
-async def get_file(doc_id: str, _: Principal = Depends(need(CAP_RETRIEVE))) -> StreamingResponse:
-    return await _stream(_kb(doc_id), f"/v1/documents/{doc_id}/file")
+async def get_file(
+    doc_id: str, range_header: str | None = Header(None, alias="Range"), _: Principal = Depends(need(CAP_RETRIEVE)),
+) -> StreamingResponse:
+    backend = _kb(doc_id)
+    # a backend without documents.file.range gets no Range and answers with the whole file (200)
+    headers = {"Range": range_header} if range_header and backend.has("documents.file.range") else None
+    return await _stream(backend, f"/v1/documents/{doc_id}/file", headers=headers)
 
 
 @router.get("/documents/{doc_id}/assets/{name:path}")
@@ -327,3 +339,119 @@ async def wiki(kb_id: str, rest: str, request: Request) -> Response:
         params=dict(request.query_params), content=body or None,
         headers={"Content-Type": request.headers.get("content-type", "application/json")} if body else None,
     )
+
+
+# ---- v1.1: actions, jobs, views, settings, evidence, export, folders (contract section 9) -------------
+
+_DECLARED_ID = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _declared(backend: Backend, key: str, entry_id: str, scope: str, feature: str) -> dict:
+    """Only what the backend declared is forwarded, so no other backend path is reachable through here."""
+
+    require(backend, feature)
+    entry = backend.entry(key, entry_id, scope) if _DECLARED_ID.match(entry_id) else None
+    if entry is None:
+        kind = "操作" if key == "actions" else "视图"
+        raise UpstreamError(501, "unsupported", f"{backend.config.label} 没有这个{kind}：{entry_id}", backend.id)
+    return entry
+
+
+async def _action(backend: Backend, scope: str, item_id: str, action: str, request: Request) -> Response:
+    _declared(backend, "actions", action, scope, "actions")
+    body = await request.body()
+    params = (await request.json() if body else {}).get("params") or {}
+    if not isinstance(params, dict):
+        raise UpstreamError(400, "bad_request", "params 必须是对象")
+    path = f"/v1/{'kbs' if scope == 'kb' else 'documents'}/{item_id}/actions/{action}"
+    return _relay(await backend.send("POST", path, json={"params": params}, timeout=600))
+
+
+@router.post("/kbs/{kb_id}/actions/{action}")
+async def kb_action(kb_id: str, action: str, request: Request, _: Principal = Depends(need(CAP_MANAGE))) -> Response:
+    return await _action(_kb(kb_id), "kb", kb_id, action, request)
+
+
+@router.post("/documents/{doc_id}/actions/{action}")
+async def document_action(doc_id: str, action: str, request: Request, _: Principal = Depends(need(CAP_MANAGE))) -> Response:
+    return await _action(_kb(doc_id), "document", doc_id, action, request)
+
+
+@router.get("/jobs/{job_id}")
+async def get_job(job_id: str, report: bool = False, _: Principal = Depends(need(CAP_RETRIEVE))) -> Response:
+    return await _forward(_kb(job_id), "GET", f"/v1/jobs/{job_id}", "jobs", params={"report": str(report).lower()})
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str, _: Principal = Depends(need(CAP_MANAGE))) -> Response:
+    return await _forward(_kb(job_id), "POST", f"/v1/jobs/{job_id}/cancel", "jobs")
+
+
+@router.get("/kbs/{kb_id}/jobs")
+async def list_jobs(kb_id: str, status: str | None = None, _: Principal = Depends(need(CAP_RETRIEVE))) -> Response:
+    return await _forward(_kb(kb_id), "GET", f"/v1/kbs/{kb_id}/jobs", "jobs", params={"status": status} if status else None)
+
+
+async def _view(backend: Backend, scope: str, item_id: str, view: str) -> Response:
+    _declared(backend, "views", view, scope, "views")
+    # views are written by the backend from the documents, like summaries
+    return _guarded(_relay(await backend.send("GET", f"/v1/{'kbs' if scope == 'kb' else 'documents'}/{item_id}/views/{view}")))
+
+
+@router.get("/kbs/{kb_id}/views/{view}")
+async def kb_view(kb_id: str, view: str, _: Principal = Depends(need(CAP_RETRIEVE))) -> Response:
+    return await _view(_kb(kb_id), "kb", kb_id, view)
+
+
+@router.get("/documents/{doc_id}/views/{view}")
+async def document_view(doc_id: str, view: str, _: Principal = Depends(need(CAP_RETRIEVE))) -> Response:
+    return await _view(_kb(doc_id), "document", doc_id, view)
+
+
+# backend-wide settings: same capability as creating knowledge bases, the values may name endpoints and models
+@router.get("/settings")
+async def get_backend_settings(backend: str | None = None, _: Principal = Depends(need(CAP_MANAGE))) -> Response:
+    return await _forward(registry().get(backend), "GET", "/v1/settings", "settings")
+
+
+@router.put("/settings")
+async def put_backend_settings(request: Request, backend: str | None = None,
+                               _: Principal = Depends(need(CAP_MANAGE))) -> Response:
+    values = await request.json()
+    if not isinstance(values, dict):
+        raise UpstreamError(400, "bad_request", "设置必须是对象")
+    return await _forward(registry().get(backend), "PUT", "/v1/settings", "settings", json=values)
+
+
+@router.get("/evidence/{anchor_id}")
+async def get_evidence(anchor_id: str, principal: Principal = Depends(need(CAP_RETRIEVE))) -> dict:
+    # anchors are "{docId}:{type}:{index}": the document id decides the backend
+    backend = _kb(anchor_id.split(":", 1)[0])
+    require(backend, "evidence")
+    evidence = await backend.json("GET", f"/v1/evidence/{anchor_id}")
+    if not isinstance(evidence, dict):
+        raise UpstreamError(502, "backend_error", f"{backend.config.label} 返回的证据格式不对", backend.id)
+    # a scoped connection only reads evidence from its own knowledge bases
+    if principal.kb_allowlist and evidence.get("kb_id") not in principal.kb_allowlist:
+        raise AuthError(403, "knowledge base outside this connection's scope")
+    return evidence
+
+
+@router.get("/documents/{doc_id}/export/{fmt}")
+async def export_doc(doc_id: str, fmt: str, _: Principal = Depends(need(CAP_RETRIEVE))) -> StreamingResponse:
+    backend = _kb(doc_id)
+    require(backend, "documents.export")
+    if fmt not in backend.declared("export_formats"):
+        raise UpstreamError(501, "unsupported", f"{backend.config.label} 不能导出为 {fmt}", backend.id)
+    return await _stream(backend, f"/v1/documents/{doc_id}/export/{fmt}", "documents.export")
+
+
+@router.get("/kbs/{kb_id}/folders")
+async def list_folders(kb_id: str, _: Principal = Depends(need(CAP_RETRIEVE))) -> Response:
+    return await _forward(_kb(kb_id), "GET", f"/v1/kbs/{kb_id}/folders", "folders")
+
+
+@router.delete("/kbs/{kb_id}/folders", status_code=204)
+async def delete_folder(kb_id: str, path: str = Query(..., min_length=1),
+                        _: Principal = Depends(need(CAP_INGEST))) -> Response:
+    return await _forward(_kb(kb_id), "DELETE", f"/v1/kbs/{kb_id}/folders", "folders.delete", params={"path": path})

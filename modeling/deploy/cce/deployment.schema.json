@@ -8,6 +8,13 @@
     "stateDir": {"type": "string", "minLength": 1},
     "compatibilityFile": {"type": "string", "minLength": 1},
     "timeoutSeconds": {"type": "integer", "minimum": 1},
+    "auth": {"type": "object", "additionalProperties": false,
+      "required": ["package", "releaseName", "namespace", "values", "image"],
+      "properties": {"package": {"type": "string", "minLength": 1},
+        "releaseName": {"type": "string", "minLength": 1},
+        "namespace": {"type": "string", "minLength": 1},
+        "values": {"type": "string", "minLength": 1},
+        "image": {"type": "string", "minLength": 1}}},
     "consumer": {"$ref": "#/definitions/side"},
     "modeling": {"$ref": "#/definitions/side"}
   },

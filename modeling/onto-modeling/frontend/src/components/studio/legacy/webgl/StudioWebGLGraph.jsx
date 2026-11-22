@@ -5,20 +5,32 @@ import {
   useRef,
   useState,
 } from 'react';
-import { LocateFixed, Minus, Pin, PinOff, Plus } from 'lucide-react';
-import { WebGLGraphRuntime } from './StudioWebGLRuntime.js';
+import { LocateFixed, Minus, Pin, PinOff, Plus, RotateCw } from 'lucide-react';
+import { ThreeGraphRuntime as WebGLGraphRuntime } from './StudioThreeGraphRuntime.js';
+import './studio-three-ux.css';
+
+const GUIDE_STORAGE_KEY = 'studio.graph.3d.guide.v1';
+function needsGraphGuide() {
+  try { return localStorage.getItem(GUIDE_STORAGE_KEY) !== 'dismissed'; } catch { return true; }
+}
 
 const StudioWebGLGraph = forwardRef(({
   nodes,
   edges,
   routes,
   layoutMode,
+  onLayoutModeChange,
+  onExpandAll,
+  clustered,
+  allLabels = false,
+  onAllLabelsChange,
   selectedId,
   activeNodeIds,
   activeEdgeIds,
   hasHighlight,
-  motionEnabled,
-  reducedMotion,
+  previewKind = '',
+  motionEnabled = true,
+  reducedMotion = false,
   initialViewport,
   onNodeClick,
   onNodeDoubleClick,
@@ -40,6 +52,11 @@ const StudioWebGLGraph = forwardRef(({
   const [presented, setPresented] = useState(false);
   const [rendererName, setRendererName] = useState('WebGL');
   const [pinned, setPinned] = useState(false);
+  const [rotating, setRotating] = useState(false);
+  const [minimapExpanded, setMinimapExpanded] = useState(false);
+  const [minimapHover, setMinimapHover] = useState('');
+  const [showGuide, setShowGuide] = useState(needsGraphGuide);
+  const [presentation, setPresentation] = useState({ bloom: true, particles: false });
   selectedIdRef.current = selectedId;
 
   useEffect(() => {
@@ -64,6 +81,8 @@ const StudioWebGLGraph = forwardRef(({
       },
       onContextLost: onUnsupported,
       onZoomTierChange,
+      onMinimapHover: (name) => { if (active) setMinimapHover(name); },
+      onAutoRotateChange: (value) => { if (active) setRotating(value); },
     });
     runtimeRef.current = runtime;
     runtime.mount(hostRef.current, minimapRef.current).catch(() => {
@@ -105,11 +124,12 @@ const StudioWebGLGraph = forwardRef(({
       activeNodeIds,
       activeEdgeIds,
       hasHighlight,
+      previewKind,
       motionEnabled,
       reducedMotion,
     });
     setPinned(runtimeRef.current?.isPinned(selectedId) || false);
-  }, [activeEdgeIds, activeNodeIds, hasHighlight, motionEnabled, ready, reducedMotion, selectedId]);
+  }, [activeEdgeIds, activeNodeIds, hasHighlight, previewKind, motionEnabled, ready, reducedMotion, selectedId]);
 
   useEffect(() => {
     if (!ready) return;
@@ -123,10 +143,14 @@ const StudioWebGLGraph = forwardRef(({
   }, [layoutMode, ready]);
 
   useEffect(() => {
-    if (!ready || initialViewportAppliedRef.current) return;
+    if (ready) runtimeRef.current?.setPresentation({ ...presentation, labels: allLabels });
+  }, [allLabels, presentation, ready]);
+
+  useEffect(() => {
+    if (!ready || !nodes.length || initialViewportAppliedRef.current) return;
     initialViewportAppliedRef.current = true;
     if (initialViewport) runtimeRef.current?.setViewport(initialViewport);
-  }, [initialViewport, ready]);
+  }, [initialViewport, nodes.length, ready]);
 
   useImperativeHandle(ref, () => ({
     fitView: () => runtimeRef.current?.fitView(true),
@@ -143,6 +167,12 @@ const StudioWebGLGraph = forwardRef(({
     if (!selectedId) return;
     setPinned(runtimeRef.current?.togglePin(selectedId) || false);
   };
+  const togglePresentation = (key) => setPresentation((current) => ({ ...current, [key]: !current[key] }));
+  const toggleOrbit = () => setRotating(runtimeRef.current?.setAutoRotate(!rotating) || false);
+  const dismissGuide = () => {
+    setShowGuide(false);
+    try { localStorage.setItem(GUIDE_STORAGE_KEY, 'dismissed'); } catch { /* The guide still closes when storage is unavailable. */ }
+  };
 
   return (
     <div className="studio-webgl-graph" data-renderer={rendererName} data-layout-mode={layoutMode}>
@@ -157,7 +187,17 @@ const StudioWebGLGraph = forwardRef(({
         <button type="button" title="缩小" aria-label="缩小" onClick={() => runtimeRef.current?.zoomBy(1 / 1.2)}><Minus size={15} /></button>
         <button type="button" title="适配全部" aria-label="适配全部" onClick={() => runtimeRef.current?.fitView(true)}><LocateFixed size={15} /></button>
       </div>
-      <canvas ref={minimapRef} className="studio-webgl-minimap" aria-label="图谱小地图，点击可导航" />
+      <div className={`studio-three-minimap-panel${minimapExpanded ? ' is-expanded' : ''}`}>
+        <canvas ref={minimapRef} className="studio-webgl-minimap" aria-label="图谱小地图，点击可导航；选中节点显示强调色圆环" />
+        <button type="button" className="studio-three-minimap-size" aria-label={minimapExpanded ? '缩小小地图' : '放大小地图至两倍'} aria-pressed={minimapExpanded}
+          onClick={() => setMinimapExpanded((value) => !value)}>{minimapExpanded ? '1×' : '2×'}</button>
+        {minimapHover && <span className="studio-three-minimap-tooltip" role="status">{minimapHover}</span>}
+      </div>
+      {showGuide && presented && <aside className="studio-three-guide" aria-label="图谱操作引导">
+        <strong>探索 3D 图谱</strong>
+        <ol><li>拖动空白旋转，右键拖动平移。</li><li>滚轮缩放；找不到图时点“适配视图”。</li><li>单击选中看关联，双击节点进入编辑。</li></ol>
+        <button type="button" onClick={dismissGuide}>知道了</button>
+      </aside>}
       {!presented && <div className="studio-webgl-loading">正在初始化 WebGL 渲染器</div>}
     </div>
   );

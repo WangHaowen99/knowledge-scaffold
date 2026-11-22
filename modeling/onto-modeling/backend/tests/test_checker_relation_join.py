@@ -6,6 +6,7 @@
 
 import dataclasses
 import importlib
+import re
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,34 @@ CUSTOMER_ROWS = "| 客户编号 | CUST_NO | 客户主键 | 是 | 字符串 | 无
 def join_issues(checker, ontology: Path) -> list[str]:
     issues = [dataclasses.asdict(i) for i in checker.run_checks(ontology)]
     return [i["message"] for i in issues if i["category"] == "关联字段"]
+
+
+def duplicate_issues(checker, ontology: Path) -> list[dict]:
+    issues = [dataclasses.asdict(i) for i in checker.run_checks(ontology)]
+    return [i for i in issues if i["category"] == "重复关系"]
+
+
+def test_relation_written_once_in_each_endpoint_file_is_not_a_duplicate(checker, tmp_path: Path):
+    ontology = tmp_path / "ontology"
+    write(ontology, "订单", "订单表", ORDER_ROWS, "- 当前对象 → 属于（BUYER_NO → CUST_NO） → [[客户]]")
+    write(ontology, "客户", "客户表", CUSTOMER_ROWS, "- [[订单]] → 属于（BUYER_NO → CUST_NO） → 当前对象")
+    assert duplicate_issues(checker, ontology) == []
+
+
+def test_relation_repeated_in_one_file_is_flagged_with_both_lines(checker, tmp_path: Path):
+    ontology = tmp_path / "ontology"
+    write(ontology, "订单", "订单表", ORDER_ROWS,
+          "- 当前对象 → 属于（BUYER_NO → CUST_NO） → [[客户]]\n"
+          "- 当前对象 -> 属于（订单表.BUYER_NO -> CUST_NO） -> [[客户]]\n"
+          "- 当前对象 → 属于 → [[客户]]")
+    write(ontology, "客户", "客户表", CUSTOMER_ROWS)
+    issues = duplicate_issues(checker, ontology)
+    assert len(issues) == 1
+    issue = issues[0]
+    assert issue["severity"] == "错误"
+    assert "订单" in issue["file"]
+    first, second = map(int, re.search(r"第 (\d+) 行和第 (\d+) 行", issue["message"]).groups())
+    assert second == first + 1
 
 
 def test_cross_table_relation_without_join_is_flagged(checker, tmp_path: Path):

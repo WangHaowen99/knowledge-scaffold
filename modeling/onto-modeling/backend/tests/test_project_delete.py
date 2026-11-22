@@ -176,6 +176,14 @@ def test_cleanup_failure_is_logged_without_blocking_others(env, monkeypatch, out
     assert entry["raw"] == f"发布留存未清理完成：{message}"
 
 
+def test_retired_core_does_not_block_onto_project_delete(env, monkeypatch):
+    meta = {"id": PID, "name": "示例任务", "modeling_project_id": "mp-1"}
+    (env.root / META_FILE).write_text(json.dumps(meta), encoding="utf-8")
+    monkeypatch.setattr(modeling_mcp.config, "MODELING_CORE_RETIRED", True)
+    monkeypatch.setattr(modeling_mcp, "delete_project", lambda *_args, **_kwargs: pytest.fail("retired Core called"))
+    assert _delete(env) == {"deleted": PID}
+
+
 def test_delete_falls_back_to_in_place_purge_when_move_fails(env, monkeypatch):
     """目录移不走（Windows 上仍有进程开着其中的文件）：原地换上清除标记，对外同样立即消失。"""
     monkeypatch.setattr(workspace_core, "_DELETE_RETRY_SECONDS", 0)

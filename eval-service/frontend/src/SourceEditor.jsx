@@ -74,6 +74,25 @@ export function MappingConflicts({ details }) {
   );
 }
 
+// 新建评测中的数据源预览：还没拿到结果时说明正在预览，或可以重新预览
+export function SourcePreview({ preview, busy, graph, onRetry }) {
+  return (
+    <div className="preview-action">
+      {!preview && (
+        <p className="muted">
+          {busy ? `正在预览${graph ? '图导入' : '数据映射'}…` : '没有拿到预览结果。'}
+          {!busy && (
+            <Button variant="text" onClick={onRetry}>
+              重新预览
+            </Button>
+          )}
+        </p>
+      )}
+      <MappingPreview preview={preview} />
+    </div>
+  );
+}
+
 export function MappingPreview({ preview }) {
   if (!preview) return null;
   const objects = Array.isArray(preview.objects)
@@ -161,21 +180,44 @@ export function MappingPreview({ preview }) {
   );
 }
 
+// 隔离范围不在这里编辑：在新建评测中选中数据源后填写，随数据源保存。这里只说明并显示已保存的值
+function ScopeNote({ connection, graph = false }) {
+  const saved = graph
+    ? connection.workspace_value &&
+      `${connection.workspace_property || GRAPH_SCOPE_DEFAULTS.workspace_property} = ${connection.workspace_value}`
+    : connection.evaluation_workspace_id && `评测工作空间 ${connection.evaluation_workspace_id}`;
+  return (
+    <div className="scope-note">
+      <Icon name="info" />
+      <div>
+        <strong>评测隔离范围在新建评测中填写</strong>
+        <span>
+          {graph
+            ? '选中本数据源后填写 Workspace 与 Ontology 隔离字段及对应值，随数据源保存。'
+            : '选中本数据源后填写评测工作空间 ID，随数据源保存。'}
+          {saved ? ` 当前：${saved}` : ' 当前尚未填写。'}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, parentLabel = '数据源' }) {
   const [form, setForm] = useState(record ? sourceFromRecord(record) : emptySource());
-  const [selectedTable, setSelectedTable] = useState(''),
-    [preview, setPreview] = useState(null),
+  const [preview, setPreview] = useState(null),
     [graphCheck, setGraphCheck] = useState(null),
     [dirty, setDirty] = useState(false),
     [discard, setDiscard] = useState(false);
   const [uploads, setUploads] = useState([]),
-    [reading, setReading] = useState(false),
-    [readError, setReadError] = useState('');
+    [testing, setTesting] = useState(false),
+    [testResult, setTestResult] = useState(null),
+    [testError, setTestError] = useState('');
   const { busy, error, details, act } = useAction(),
     file = useRef(null),
     revision = useRef(0),
     mounted = useRef(true),
     uploadLock = useRef(false),
+    testController = useRef(null),
     onDirtyRef = useRef(onDirty);
   onDirtyRef.current = onDirty;
   useEffect(() => {
@@ -186,23 +228,22 @@ export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, pa
     mounted.current = true;
     return () => {
       mounted.current = false;
+      testController.current?.abort();
     };
   }, []);
-  const graph = form.provider === 'neo4j',
-    isSql = form.mode === 'connection' && !graph;
-  function change(patch, invalidate = false) {
+  const graph = form.provider === 'neo4j';
+  function change(patch) {
+    testController.current?.abort();
     revision.current += 1;
     setDirty(true);
     setPreview(null);
     setGraphCheck(null);
-    setForm((f) => ({
-      ...f,
-      ...patch,
-      ...(invalidate ? { inspection_id: '', schema: [], tables: {} } : {}),
-    }));
+    setTestResult(null);
+    setTestError('');
+    setForm((f) => ({ ...f, ...patch }));
   }
   function connection(key, value) {
-    change({ connection: { ...form.connection, [key]: value } }, !graph);
+    change({ connection: { ...form.connection, [key]: value } });
   }
   function provider(value) {
     change(
@@ -212,34 +253,34 @@ export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, pa
         secret_configured: false,
         connection: { ...form.connection, token: '', password: '' },
       },
-      true,
     );
   }
   function close() {
-    if (busy || reading || uploadLock.current) return;
+    if (busy || uploadLock.current) return;
     if (dirty) setDiscard(true);
     else onClose();
   }
-  async function readSchema() {
-    if (reading) return;
+  async function testConnection() {
+    if (testController.current) return;
+    const controller = new AbortController();
+    testController.current = controller;
     const version = revision.current;
-    setReading(true);
-    setReadError('');
+    setTesting(true);
+    setTestResult(null);
+    setTestError('');
     try {
-      const payload = sourcePayload(form);
-      const result = await api('/data-source-inspections', {
+      const result = await api('/data-source-tests', {
         provider: form.provider,
-        connection: payload.connection,
+        connection: sourcePayload(form).connection,
         data_source_id: form.id || '',
-      });
-      if (mounted.current && revision.current === version) {
-        setForm((f) => ({ ...f, ...result }));
-        setSelectedTable(result.schema[0]?.name || '');
-      }
-    } catch (e) {
-      if (mounted.current && revision.current === version) setReadError(e.message);
+      }, 'POST', true, 'json', undefined, { signal: controller.signal });
+      if (mounted.current && revision.current === version) setTestResult(result);
+    } catch (error) {
+      if (mounted.current && revision.current === version && !controller.signal.aborted)
+        setTestError(error.message);
     } finally {
-      if (mounted.current) setReading(false);
+      if (testController.current === controller) testController.current = null;
+      if (mounted.current) setTesting(false);
     }
   }
   async function upload(files) {
@@ -290,12 +331,13 @@ export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, pa
   }
   async function save(makePreview = false) {
     if (!form.name.trim()) throw new Error('请填写数据源名称');
-    if (isSql && !form.inspection_id) throw new Error('请先读取当前数据库的表与字段');
     if (
       (form.mode === 'dataset' || (form.mode === 'connection' && graph && form.import_data)) &&
       !form.input_ids.length
     )
       throw new Error('请至少上传一份数据表');
+    revision.current += 1;
+    testController.current?.abort();
     const result = await api(
       form.id ? `/data-sources/${form.id}` : '/data-sources',
       sourcePayload(form),
@@ -336,14 +378,13 @@ export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, pa
       />
     </Field>
   );
-  const table = form.schema.find((t) => t.name === selectedTable) || form.schema[0];
   return (
     <>
       <Breadcrumb
         parent={parentLabel}
         current={form.id ? '编辑数据源配置' : '新建数据源配置'}
         onBack={close}
-        disabled={busy || reading || uploadLock.current}
+        disabled={busy || uploadLock.current}
       />
       <Heading title={form.id ? '编辑数据源配置' : '新建数据源配置'}>
         配置连接与数据文件，保存后可在新建评测中复用。
@@ -416,35 +457,13 @@ export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, pa
                       placeholder: form.secret_configured ? '已配置；留空沿用' : '请输入访问凭据',
                     },
                   })}
-                  {configField('evaluation_workspace_id', '评测工作空间 ID *', {
-                    hint: '评测在同名 consumer 工作空间中执行，空间名称与 ID 一致',
-                  })}
                 </>
               )}
             </div>
+            {!graph && <ScopeNote connection={form.connection} />}
             {graph ? (
               <>
-                <div className="section-title">
-                  <h3>查询隔离范围</h3>
-                  <small>Workspace + Ontology 按 AND 匹配</small>
-                </div>
-                <div className="form-grid">
-                  {configField('workspace_property', 'Workspace 隔离字段 *')}
-                  {configField('workspace_value', 'Workspace 对应值 *', {
-                    hint: '小写字母开头，最多 64 个字符；也是评测所用 consumer 工作空间的 ID',
-                  })}
-                  {configField(
-                    'ontology_property',
-                    `Ontology 隔离字段${form.import_data ? ' *' : '（可选）'}`,
-                  )}
-                  <Field label="Ontology 对应值（自动带入）">
-                    <input
-                      readOnly
-                      value={packageRef?.ontology_id || ''}
-                      placeholder="由评测时选择的知识包自动带入"
-                    />
-                  </Field>
-                </div>
+                <ScopeNote connection={form.connection} graph />
                 <div className="section-title">
                   <h3>评测前导入图数据</h3>
                 </div>
@@ -468,19 +487,15 @@ export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, pa
                   </button>
                 </div>
                 {form.import_data && (
-                  <Alert title="本轮图导入范围">
-                    {form.connection.workspace_property || GRAPH_SCOPE_DEFAULTS.workspace_property} =
-                    {form.connection.workspace_value || '请填写 Workspace 对应值'}；
-                    {form.connection.ontology_property || GRAPH_SCOPE_DEFAULTS.ontology_property} ={' '}
-                    {packageRef?.ontology_id || '评测时选择的知识包'}。
-                    导入使用以上两个条件同时匹配的范围。发现旧数据时，开始评测前需要确认删除后再导入。
+                  <Alert title="评测前导入图数据">
+                    导入写入隔离范围内 Workspace 与 Ontology 两个条件同时匹配的数据。发现旧数据时，开始评测前需要确认删除后再导入。
                   </Alert>
                 )}
                 {form.import_data && packageRef && (
                   <>
                     <Button
                       busy={busy}
-                      disabled={dirty || !form.id || reading || uploadLock.current}
+                      disabled={dirty || !form.id || !form.connection.workspace_value || uploadLock.current}
                       onClick={() => act(() => inspectGraph())}
                     >
                       检查旧图数据
@@ -492,83 +507,20 @@ export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, pa
                   <p className="help-text">在新建评测中选定知识包后，检查此范围的旧数据并确认替换。</p>
                 )}
                 {!form.import_data && (
-                  <p className="help-text">
-                    当前仅查询现有图库。两组隔离条件用于限定查询范围，Ontology 对应值固定为本轮知识包。
-                  </p>
+                  <p className="help-text">当前仅查询现有图库，查询限定在隔离范围内。</p>
                 )}
               </>
             ) : (
               <>
                 <div className="section-title">
-                  <h3>
-                    数据库表与字段 <Badge>只读</Badge>
-                  </h3>
-                  <Button icon="refresh" busy={reading} disabled={busy} onClick={readSchema}>
-                    {form.schema.length ? '重新读取' : '读取数据库结构'}
+                  <h3>连接测试</h3>
+                  <Button icon="link" busy={testing} disabled={busy} onClick={testConnection}>
+                    测试连接
                   </Button>
                 </div>
-                {readError && (
-                  <Alert
-                    tone="red"
-                    action={
-                      <Button onClick={readSchema} busy={reading}>
-                        重试读取
-                      </Button>
-                    }
-                  >
-                    {readError}
-                  </Alert>
-                )}
-                {form.inspection_id ? (
-                  <>
-                    <p className="help-text success-text">
-                      已读取 {form.schema.length} 张表 /{' '}
-                      {form.schema.reduce((n, t) => n + t.columns.length, 0)} 个字段
-                    </p>
-                    <div className="schema-browser">
-                      <div className="schema-tables" role="tablist" aria-label="数据库表">
-                        {form.schema.map((t) => (
-                          <button
-                            type="button"
-                            role="tab"
-                            aria-selected={table?.name === t.name}
-                            key={t.name}
-                            onClick={() => setSelectedTable(t.name)}
-                            className={table?.name === t.name ? 'selected' : ''}
-                          >
-                            <Icon name="db" />
-                            {t.name}
-                            <small>{t.columns.length}</small>
-                          </button>
-                        ))}
-                      </div>
-                      <div className="table-scroll">
-                        <table>
-                          <caption>{table?.name}</caption>
-                          <thead>
-                            <tr>
-                              <th>字段名</th>
-                              <th>类型</th>
-                              <th>可空</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {table?.columns.map((c) => (
-                              <tr key={c.name}>
-                                <td>{c.name}</td>
-                                <td>{c.type}</td>
-                                <td>{c.nullable ? '是' : '否'}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <Alert>填写连接信息后读取 Scene 对应数据库结构。修改连接信息会使原读取结果失效。</Alert>
-                )}
-                <p className="help-text">只读展示数据库结构。字段变化请在数据库完成后重新读取。</p>
+                {testError && <Alert tone="red" title="连接测试失败">{testError}</Alert>}
+                {testResult && <Alert tone="green">{testResult.message}</Alert>}
+                <p className="help-text">测试当前连接的连通性。评测沿用所选知识包中的对象、表与字段映射。</p>
               </>
             )}
           </>
@@ -686,13 +638,13 @@ export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, pa
         <div className="editor-save">
           <span className="muted">{dirty ? '配置修改尚未保存' : form.id ? '已保存配置' : '配置尚未保存'}</span>
           <div className="actions">
-            <Button onClick={close} disabled={busy || reading || uploadLock.current}>
+            <Button onClick={close} disabled={busy || uploadLock.current}>
               取消
             </Button>
             <Button
               variant="primary"
               busy={busy}
-              disabled={reading || uploads.some((u) => u.state === 'uploading')}
+              disabled={uploads.some((u) => u.state === 'uploading')}
               onClick={() => act(() => save())}
             >
               保存并继续

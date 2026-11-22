@@ -327,6 +327,49 @@ def test_graph_drops_fallback_object_relation_when_explicit_relation_exists(env)
     ] == [("客户", "企业", "关联企业")]
 
 
+def test_graph_keeps_each_distinct_relation_between_two_objects(env):
+    def fields(*keys):
+        rows = "".join(f"| {key} | {key} | 合成字段 | 否 | 字符串 |\n" for key in keys)
+        return "# 对象属性清单\n\n| 中文名称 | 英文名称 | 描述 | 主键 | 类型 |\n|---|---|---|---|---|\n" + rows + "\n"
+
+    objects = env / "ontology" / "object"
+    (objects / "客户.md").write_text(
+        fields("customer_id", "owner_company_id", "payer_company_id")
+        + "# 关联对象\n\n"
+        "- 当前对象 → 关联企业（owner_company_id → company_id） → [[企业]]\n"
+        "- 当前对象 → 关联企业（payer_company_id → company_id） → [[企业]]\n"
+        "- 当前对象 → 隶属 → [[企业]]\n"
+        "- [[企业]]\n",
+        encoding="utf-8",
+    )
+    (objects / "企业.md").write_text(
+        fields("company_id")
+        + "# 关联对象\n\n- [[客户]] → 关联企业（owner_company_id → company_id） → 当前对象\n",
+        encoding="utf-8",
+    )
+    # 旧产物「# 文档名 + ## 章节」的声明导出不认，Studio 仍按逐行扫描显示
+    (objects / "供应商.md").write_text(
+        "# 供应商\n\n## 关联对象\n\n- 当前对象 → 供货给 → [[企业]]\n", encoding="utf-8"
+    )
+
+    data = studio.graph(env)
+    pairs = {}
+    for edge in data["edges"]:
+        pairs.setdefault((edge["source"], edge["target"]), []).append(edge["label"])
+
+    # 与导出同一身份：名称或字段不同的各成一条，同名多条在标签里注明字段；
+    # 两端重复声明只出一条，裸写的 [[企业]] 给有名字的关系让位
+    assert sorted(pairs.get(("客户", "企业"), [])) == [
+        "关联企业（owner_company_id → company_id）",
+        "关联企业（payer_company_id → company_id）",
+        "隶属",
+    ]
+    assert ("企业", "客户") not in pairs
+    assert pairs.get(("供应商", "企业")) == ["供货给"]
+    nodes = {node["id"]: node for node in data["nodes"]}
+    assert nodes["客户"]["out"] == 3 and nodes["企业"]["in"] == 4
+
+
 def test_operation_flow_projects_numbered_logic_steps(env):
     (env / "ontology" / "operation").mkdir(parents=True)
     (env / "ontology" / "operation" / "创建订单.md").write_text(

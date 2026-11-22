@@ -280,6 +280,33 @@ async def test_declined_question_cancels_the_task(monkeypatch: pytest.MonkeyPatc
     await harness.stop()
 
 
+async def test_approval_shows_the_arguments_of_the_call_it_is_about(monkeypatch: pytest.MonkeyPatch) -> None:
+    # DA's question carries the tool name and a call id of another numbering; the arguments
+    # come from the open tool_call of that tool (the oldest one not asked about yet)
+    fake = FakeDA()
+    fake.run_stream = sse([
+        ("start", {"taskId": TASK}),
+        ("tool_call", {"id": "da-tc-1", "toolName": "write_file", "input": {"path": "a.md", "content": "甲"}}),
+        ("tool_call", {"id": "da-tc-2", "toolName": "write_file", "input": {"path": "b.md", "content": "乙"}}),
+        ("ask_user", {"question": "Tool `write_file` requires permission", "kind": "permission_confirm",
+                      "toolName": "write_file", "toolCallId": "call_x1"}),
+        ("ask_user", {"question": "Tool `write_file` requires permission", "kind": "permission_confirm",
+                      "toolName": "write_file", "toolCallId": "call_x2"}),
+        ("tool_call", {"id": "da-tc-3", "toolName": "bash", "input": {"command": "ls"}}),
+        ("tool_result", {"id": "da-tc-3", "toolName": "bash", "output": "ok"}),
+        ("ask_user", {"question": "Tool `bash` requires permission", "kind": "permission_confirm",
+                      "toolName": "bash", "toolCallId": "call_x3"}),
+        ("done", {"status": "completed", "output": "done"}),
+    ])
+    handler = Handler(decision=ToolApprovalDecision.ALLOW)
+    harness = make(fake, monkeypatch)
+    await harness.start(context(handler))
+    await run_turn(harness)
+    assert [r.arguments for r in handler.requests] == [
+        {"path": "a.md", "content": "甲"}, {"path": "b.md", "content": "乙"}, {}]
+    await harness.stop()
+
+
 async def test_permission_confirm_maps_to_tool_approval(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeDA()
     fake.run_stream = sse([

@@ -15,6 +15,7 @@ from claude_agent_sdk import ResultMessage, SystemMessage
 from app import config
 from app.services import agent_sessions
 from app.services.agent_sessions import (
+    SessionError,
     SessionManager,
     _is_visible_chat_event,
     load_resume_id,
@@ -108,6 +109,96 @@ def test_send_connects_and_flushes_prompt(pool_env, tmp_path):
         assert session.client.queries == ["第一条"]
         assert session.state == "running"
         assert manager.active_count() == 1
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_duplicate_codegen_scan_is_rejected_while_running(pool_env, tmp_path):
+    manager, _created, _ = pool_env
+    command = "/ontology-codegen-scan"
+
+    async def scenario():
+        results = await asyncio.gather(
+            manager.send("p1", tmp_path / "w1", command),
+            manager.send("p1", tmp_path / "w1", command),
+            return_exceptions=True,
+        )
+        rejected = [result for result in results if isinstance(result, SessionError)]
+        assert len(rejected) == 1
+        assert rejected[0].status == 409
+        session = await _settle(manager, "p1")
+        assert session.client.queries == [command]
+        assert [event["text"] for event in session.events if event["type"] == "user_message"] == [command]
+
+        await manager.send("p1", tmp_path / "w1", "补充说明")
+        assert session.client.queries == [command, "补充说明"]
+        session.set_state("idle")
+        await manager.send("p1", tmp_path / "w1", command)
+        assert session.client.queries == [command, "补充说明", command]
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_duplicate_codegen_scan_is_rejected_while_queued(pool_env, tmp_path):
+    manager, _created, _ = pool_env
+    command = "/ontology-codegen-scan"
+
+    async def scenario():
+        await manager.send("p1", tmp_path / "w1", "长任务")
+        await _settle(manager, "p1")
+        await manager.send("p2", tmp_path / "w2", command)
+        queued = manager.get("p2")
+        assert queued.state == "queued"
+        with pytest.raises(SessionError, match="正在运行") as error:
+            await manager.send("p2", tmp_path / "w2", command)
+        assert error.value.status == 409
+        assert queued.pending_prompts == [command]
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_codegen_scan_waits_for_prior_turn_in_same_session(scripted_env, tmp_path):
+    manager, created, _ = scripted_env
+    command = "/ontology-codegen-scan"
+
+    async def scenario():
+        await manager.send("p1", tmp_path / "w1", "长任务")
+        session = await _settle(manager, "p1")
+        with pytest.raises(SessionError, match="当前任务正在运行") as error:
+            await manager.send("p1", tmp_path / "w1", command)
+        assert error.value.status == 409
+        assert session.client.queries == ["长任务"]
+        assert not session.codegen_scan_active
+
+        await _feed(created[0], _turn_result())
+        assert session.state == "idle"
+        await manager.send("p1", tmp_path / "w1", command)
+        assert session.client.queries == ["长任务", command]
+        with pytest.raises(SessionError, match="扫描候选正在运行"):
+            await manager.send("p1", tmp_path / "w1", command)
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_codegen_scan_rejects_prior_turn_queued_for_pool_slot(pool_env, tmp_path):
+    manager, _created, _ = pool_env
+    command = "/ontology-codegen-scan"
+
+    async def scenario():
+        await manager.send("p1", tmp_path / "w1", "占用会话池")
+        await _settle(manager, "p1")
+        await manager.send("p2", tmp_path / "w2", "排队任务")
+        queued = manager.get("p2")
+        assert queued.state == "queued"
+        with pytest.raises(SessionError, match="当前任务正在运行") as error:
+            await manager.send("p2", tmp_path / "w2", command)
+        assert error.value.status == 409
+        assert queued.pending_prompts == ["排队任务"]
+        assert not queued.codegen_scan_active
         await manager.shutdown()
 
     asyncio.run(scenario())

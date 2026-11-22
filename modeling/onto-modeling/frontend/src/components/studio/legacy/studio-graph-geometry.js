@@ -9,6 +9,10 @@ const ROUTE_OWNERSHIP_MARGIN = 4;
 const LABEL_MAX_WIDTH = 112;
 const LABEL_SECONDARY_OFFSET = 26;
 const RECIPROCAL_ROUTE_GAP = 18;
+const SELF_LOOP_SIZE = 56;
+const SELF_LOOP_GAP = 30;
+const SELF_LOOP_STEPS = 20;
+const PARALLEL_EDGE_SPACING = 56;
 
 export function buildStudioRoutePresentation(routes, labels = {}, nodes = []) {
   const segmentsByEdge = new Map(
@@ -73,6 +77,58 @@ export function studioRoutePoints(route, sourceX, sourceY, targetX, targetY) {
   return (route?.length >= 2 ? route : fallback)
     .filter((point, index, items) => index === 0 || point.x !== items[index - 1].x || point.y !== items[index - 1].y)
     .map((point) => ({ ...point }));
+}
+
+// Self relation loop: a cubic curve leaving the node's upper-left boundary and
+// returning to its upper-right boundary, so the arrow lands back on the node.
+// Several self relations on one node nest as progressively larger loops.
+export function studioSelfLoopPoints(start, end, loopIndex = 0, steps = SELF_LOOP_STEPS) {
+  const size = SELF_LOOP_SIZE + loopIndex * SELF_LOOP_GAP;
+  const first = { x: start.x - size * 0.6, y: start.y - size };
+  const second = { x: end.x + size * 0.6, y: end.y - size };
+  return Array.from({ length: steps + 1 }, (_, index) => {
+    const t = index / steps;
+    const u = 1 - t;
+    return {
+      x: u * u * u * start.x + 3 * u * u * t * first.x + 3 * u * t * t * second.x + t * t * t * end.x,
+      y: u * u * u * start.y + 3 * u * u * t * first.y + 3 * u * t * t * second.y + t * t * t * end.y,
+    };
+  });
+}
+
+export function studioSelfLoopIndexes(edges = []) {
+  const counts = new Map();
+  const indexes = new Map();
+  edges.forEach((edge) => {
+    if (edge.source !== edge.target) return;
+    const index = counts.get(edge.source) || 0;
+    counts.set(edge.source, index + 1);
+    indexes.set(edge.id, index);
+  });
+  return indexes;
+}
+
+// Curve offset per edge so parallel relations between the same two nodes fan
+// out instead of overlapping. Reciprocal directions already bend to opposite
+// sides, so each direction fans out on its own side; a lone direction is
+// centred, which keeps a single edge straight.
+export function studioParallelEdgeOffsets(edges = [], spacing = PARALLEL_EDGE_SPACING) {
+  const groups = new Map();
+  edges.forEach((edge) => {
+    if (edge.source === edge.target) return;
+    const key = `${edge.source}\u0000${edge.target}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(edge.id);
+  });
+  const offsets = new Map();
+  groups.forEach((ids, key) => {
+    const [source, target] = key.split('\u0000');
+    const reciprocal = groups.has(`${target}\u0000${source}`);
+    ids.forEach((id, index) => {
+      offsets.set(id, reciprocal ? spacing / 2 + index * spacing : (index - (ids.length - 1) / 2) * spacing);
+    });
+  });
+  return offsets;
 }
 
 export function studioRouteForNodePositions(

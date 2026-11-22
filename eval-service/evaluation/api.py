@@ -24,7 +24,7 @@ from .judge_settings import JudgeSettings, connection_test_failure
 from .modeling_projects import linked_projects
 from .nl2sql import QueryService
 from .source_config import SourceConfig
-from .graph_import import scope_target
+from .graph_import import check_names, scope_target
 from .artifact_jobs import ArtifactJobs, PUBLIC as ARTIFACT_FIELDS
 from .notifications import Notifier
 from .suggestions import Suggestions
@@ -34,10 +34,22 @@ from .feedback.intake import Intake
 from .feedback.pipeline import Assistant, Pipeline
 from .feedback.store import FeedbackStore, run_owner
 from . import carryover, delivery, execution_evidence, modeling_result, package_routes, solver_validation
+from .delegations import Delegations, MAX_SECONDS
 
 
 class Body(BaseModel):
     model_config=ConfigDict(extra='forbid')
+
+
+class DelegationBody(Body):
+    ontology_id:str=Field(min_length=1,max_length=128,pattern=r'^[A-Za-z0-9_-]+$')
+    expires_in:int=Field(ge=60,le=MAX_SECONDS)
+    # 建模生成并先行记下的句柄：登记的答复丢了，它仍能凭句柄撤销
+    delegation:str=Field(min_length=43,max_length=128,pattern=r'^[A-Za-z0-9_-]+$')
+
+
+class DelegationRenewal(Body):
+    expires_in:int=Field(ge=60,le=MAX_SECONDS)
 
 
 class Ref(Body):
@@ -69,6 +81,25 @@ class Start(Body):
     model_profile_id: str = Field(default='',max_length=200,pattern=r'^(|(global|user):\S{1,192})$')
 
 
+class SourceScope(Body):
+    """The isolation scope of an external connection, set in the new-evaluation wizard; each provider uses its own keys."""
+    revision:int
+    workspace_property:str|None=Field(default=None,max_length=64)
+    workspace_value:str|None=Field(default=None,max_length=64)
+    ontology_property:str|None=Field(default=None,max_length=64)
+    evaluation_workspace_id:str|None=Field(default=None,max_length=64)
+
+
+class Rerun(Body):
+    """Evaluate another release of the same package exactly as an earlier run did."""
+    request_id: str = Field(min_length=1,max_length=96,pattern=r'^[a-zA-Z0-9_-]+$')
+    package_ref: Ref
+    # 用户本人确认删除图范围内的旧数据；委托（用户不在）不能代为确认
+    replace_existing_graph: StrictBool = False
+    # 所确认的那次提示（graph_confirmation_required）给出的确认码：只删除那次提示显示的数据
+    graph_confirmation_code: str = Field(default='',max_length=64,pattern=r'^[0-9a-f]*$')
+
+
 class Publication(Body):
     request_id: str = Field(min_length=1,max_length=100,pattern=r'^[a-zA-Z0-9_-]+$')
     preparation_id: str
@@ -84,7 +115,7 @@ class JudgeSwitch(Body):
     enabled: bool
 
 
-class SourceInspection(Body):
+class SourceConnectionTest(Body):
     provider: str = Field(pattern=r'^(nl2sql_http|nl2sql_template)$')
     connection: dict | None = None
     data_source_id: str = Field(default='',max_length=128)
@@ -105,7 +136,7 @@ def release_ref(receipt):
 
 
 def public(record):
-    value={k:v for k,v in record.items() if k not in ('connection','tables_snapshot','content','source','cases','intent','mapping','preview','model','relations','schema_fingerprint','graph_confirmation')}
+    value={k:v for k,v in record.items() if k not in ('connection','tables_snapshot','content','source','cases','intent','mapping','preview','model','relations','graph_confirmation')}
     if 'cases' in record: value['case_count']=len(record['cases'])
     if 'mapping' in record:
         value['mapping']=bool(record['mapping'])
@@ -134,6 +165,7 @@ def create_app(config=None,transport=None):
     engine=Engine(store,identity,packages,sources,consumer,judge)
     notifier=Notifier(config,store,http)
     jobs=ArtifactJobs(store,Suggestions(judge,packages,http),notifier)
+    delegations=Delegations(config,store,identity)
     engine.on_stop=jobs.schedule
     package_access=PackageAccess(packages)
     # Consumer feedback (data flywheel): off unless EVAL_FEEDBACK_ENABLED; then a background thread processes it.
@@ -159,6 +191,10 @@ def create_app(config=None,transport=None):
                     await asyncio.sleep(60)
                     store.prune_inputs()
                     feedback_store.prune()
+                    try:
+                        await asyncio.to_thread(delegations.maintain)
+                    except Failure:
+                        pass  # 账号服务暂不可用时下一轮再续期
             sweeper=asyncio.create_task(maintenance())
             try:
                 yield
@@ -175,7 +211,7 @@ def create_app(config=None,transport=None):
             lock.close()
 
     app=FastAPI(title='Evaluation service',lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
-    app.state.store,app.state.engine,app.state.jobs,app.state.feedback=store,engine,jobs,pipeline
+    app.state.store,app.state.engine,app.state.jobs,app.state.feedback,app.state.delegations=store,engine,jobs,pipeline,delegations
     prefix='/evaluation/api'
 
     @app.exception_handler(Failure)
@@ -217,6 +253,11 @@ def create_app(config=None,transport=None):
         token=header[7:] if header.startswith('Bearer ') else ''
         return identity.verify(token),token
 
+    def reader(request):
+        """Owner, login and package scope of a read: a user's login, or onto-modeling's delegation for one package."""
+        grant=delegations.verify(request)
+        return (grant['owner'],'',grant['ontology_id']) if grant else (*actor(request),None)
+
     def refresh_of(request):
         """Refresh token handed over so a long run can renew its login; kept in engine memory only."""
         value=request.headers.get('x-refresh-token','')
@@ -233,6 +274,27 @@ def create_app(config=None,transport=None):
         elif owner!=caller:
             raise Failure('not_found','记录不存在或无权访问',404)
         return owner,caller,token,run
+
+    def read_run(request,rid):
+        """load_run for a user's login. onto-modeling's delegation reads only the user's own runs of its one package,
+        and that package's feedback runs this user confirmed for modeling (the data flywheel optimizes those too)."""
+        grant=delegations.verify(request)
+        if not grant:
+            owner,_,_,run=load_run(request,rid)
+            return owner,run
+        try:
+            return grant['owner'],package_routes.scoped_run(store,grant['owner'],rid,grant['ontology_id'])
+        except Failure as exc:
+            if exc.code!='not_found': raise
+        owner,run=store.find(rid,'runs')
+        handed=modeling_result.state(store,jobs,owner,run) or {}
+        package=(run.get('base_ref') or run.get('package_ref') or {}).get('ontology_id')
+        feedback_of_package=run.get('origin')=='consumer_feedback' and package==grant['ontology_id']
+        confirmed_by_owner=(handed.get('confirmed_by')==grant['owner']
+                            and handed.get('status') in modeling_result.REPORTABLE)
+        if not feedback_of_package or not confirmed_by_owner:
+            raise Failure('not_found','记录不存在',404)
+        return owner,run
 
     def evaluation_run(request,rid):
         """Only evaluation runs execute on consumer; runs built from feedback cannot be stopped or resumed."""
@@ -422,7 +484,7 @@ def create_app(config=None,transport=None):
                 execution_evidence.requirement(case['question'],requested)
                 normalized.append(dict(id=str(i),question=case['question'],reference=reference,**({'execution_mode':requested} if requested!='auto' else {})))
             return dict(name=body['name'],cases=normalized)
-        if set(body)-{'name','mode','provider','input_ids','connection','tables','import_data','revision','inspection_id'}:
+        if set(body)-{'name','mode','provider','input_ids','connection','tables','import_data','revision'}:
             raise Failure('definition_invalid','未知数据源字段',422)
         if 'import_data' in body and not isinstance(body['import_data'],bool):
             raise Failure('import_flag_invalid','导入选项必须是布尔值',422)
@@ -443,19 +505,14 @@ def create_app(config=None,transport=None):
         if any(not isinstance(cols,list) or len(cols)>256 or any(not isinstance(col,str) or len(col)>64 for col in cols) for cols in tables.values()):
             raise Failure('table_invalid','表字段定义无效',422)
         value=dict(name=body['name'],mode=mode,provider=provider,input_ids=ids,tables=body.get('tables',{}),import_data=bool(body.get('import_data')))
-        # Form payloads use a narrow connection schema; old API clients may still submit
-        # their existing connection/tables contract without the new inspection handle.
+        # Form payloads use a narrow connection schema; older API connections remain readable.
         form=body.get('connection',{})
         graph_form=provider=='neo4j' and 'workspace_value' in form
-        form_payload='inspection_id' in body or 'evaluation_workspace_id' in form or graph_form
+        form_payload='evaluation_workspace_id' in form or graph_form
         if mode=='connection' and form_payload:
             connection=source_config.connection(owner,provider,body.get('connection'),existing)
             value['connection']=store.encrypt(connection)
-            if provider!='neo4j':
-                inspection_id=body.get('inspection_id')
-                if not inspection_id: raise Failure('schema_required','请先读取对应数据库的表与字段',422,'schema')
-                value.update(source_config.apply_inspection(owner,provider,connection,inspection_id))
-            elif value['import_data'] and not connection.get('ontology_property'):
+            if provider=='neo4j' and value['import_data'] and not connection.get('ontology_property'):
                 raise Failure('graph_scope_required','导入图数据需要 Ontology 隔离字段',422)
         elif 'connection' in body:
             if not isinstance(body['connection'],dict): raise Failure('connection_invalid','连接配置需要对象',422)
@@ -464,12 +521,12 @@ def create_app(config=None,transport=None):
         if mode=='connection' and not value.get('connection'): raise Failure('connection_missing','需要连接配置',422)
         return value
 
-    @app.post(f'{prefix}/data-source-inspections')
-    def inspect_source(body:SourceInspection,request:Request):
+    @app.post(f'{prefix}/data-source-tests')
+    def test_source_connection(body:SourceConnectionTest,request:Request):
         owner,_=actor(request)
         existing=store.get(owner,body.data_source_id,'data-sources') if body.data_source_id else None
         connection=source_config.connection(owner,body.provider,body.connection,existing)
-        return source_config.inspect(owner,body.provider,connection)
+        return source_config.test_connection(body.provider,connection)
 
     @app.post(f'{prefix}/graph-import-checks')
     def inspect_graph(body:GraphInspection,request:Request):
@@ -574,6 +631,16 @@ def create_app(config=None,transport=None):
         app.add_api_route(prefix+'/'+kind+'/{rid}',delete,methods=['DELETE'])
     for kind in ('eval-sets','data-sources','solver-sets'): register_definitions(kind)
 
+    @app.put(f'{prefix}/data-sources/{{rid}}/scope')
+    def source_scope(rid:str,body:SourceScope,request:Request):
+        """Only the isolation scope changes; the connection and its secrets stay as saved."""
+        owner,_=actor(request)
+        record=store.get(owner,rid,'data-sources')
+        if record.get('mode')!='connection' or not record.get('connection'):
+            raise Failure('scope_unsupported','只有外部连接数据源需要隔离范围',422)
+        connection=source_config.scope(owner,record,body.model_dump(exclude={'revision'}))
+        return source_config.view(owner,store.save(owner,rid,{**record,'connection':store.encrypt(connection)},body.revision))
+
     @app.post(f'{prefix}/inputs')
     async def upload(request:Request,file:UploadFile=File(...)):
         owner,_=actor(request)
@@ -586,15 +653,21 @@ def create_app(config=None,transport=None):
     @app.post(f'{prefix}/package-preparations')
     def prepare(body:Prepare,request:Request):
         owner,token=actor(request)
+        return prepare_package(owner,token,body)
+
+    def prepare_package(owner,token,body):
         intent=body.model_dump()
         # Idempotency is checked before resolving mutable definitions again.
         prep=store.create(owner,'preparations',dict(status='pending',intent=intent),body.request_id,identity=intent)
         if prep['status']=='ready': return public(checked_preparation(owner,prep,token))
         if not prep.get('source'):
             source=store.get(owner,body.data_source_id,'data-sources') if body.data_source_id else {'mode':'none'}
+            source_config.require_scope(source)
             source,tables=sources.freeze(owner,source)
             raw,base=packages.fetch(body.package_ref.model_dump(),token)
             mapping,preview=generate_mapping(raw,{k:v['columns'] for k,v in tables.items()},source.get('provider')=='neo4j') if tables else (None,{})
+            # 导入图数据要用到的对象名、字段名与关系名，准备时就检查：不必等到评测开始导入才失败
+            if source.get('provider')=='neo4j' and source.get('import_data'): check_names(mapping,preview.get('relations',{}))
             files,_=unpack(raw)
             changed=mapping is not None and (MAPPING not in files or json.loads(files[MAPPING])!=mapping)
             prep=store.save(owner,prep['id'],dict(status='pending',intent=intent,base=base,source=source,
@@ -643,6 +716,55 @@ def create_app(config=None,transport=None):
     @app.post(f'{prefix}/runs',status_code=202)
     def start(body:Start,request:Request):
         owner,token=actor(request)
+        return start_run(owner,token,refresh_of(request),body)
+
+    @app.post(f'{prefix}/runs/{{rid}}/reruns',status_code=202)
+    def rerun(rid:str,body:Rerun,request:Request):
+        """The same evaluation set, data source, model and concurrency as data evaluation ``rid``, on another release.
+
+        With a user's login, or with onto-modeling's delegation for the package while the user is away: the
+        new run then runs on the login stored with the delegation. A Neo4j import checks the graph scope first:
+        old data that is not exactly what an earlier evaluation imported waits for the user's own confirmation."""
+        grant=delegations.verify(request)
+        if grant:
+            owner=grant['owner']
+            if body.package_ref.ontology_id!=grant['ontology_id']: raise Failure('not_found','记录不存在',404)
+            if body.replace_existing_graph:
+                raise Failure('forbidden','删除旧图数据需要用户本人确认',403,'authorization')
+        else:
+            owner,token=actor(request)
+        source=package_routes.scoped_run(store,owner,rid,body.package_ref.ontology_id)
+        if source.get('run_type','data')!='data':
+            raise Failure('not_applicable','只能沿用数据评测的配置重新评测',409)
+        previous=store.get(owner,source['preparation_id'],'preparations')
+        token,refresh=delegations.login(grant) if grant else (token,refresh_of(request))
+        prep=prepare_package(owner,token,Prepare(request_id=body.request_id+'-prep',package_ref=body.package_ref,
+                                                 data_source_id=previous['intent'].get('data_source_id','')))
+
+        def graph_consent(prep):
+            """Check the graph scope as the page would. Unchanged data is reused; other old data is replaced unasked
+            only when it is exactly what an earlier evaluation imported. Otherwise the user confirms deleting the
+            data with the code of the refusal that showed it: data changed since gives another code, asked again."""
+            check=sources.graph.inspect(owner,prep['source'],prep['package_ref']['ontology_id'],prep['id'],prep)
+            replacing=bool(check['node_count']) and check['import_state']!='unchanged'
+            if not replacing or sources.graph.imported_by(owner,check['id']):
+                return check['id'],replacing
+            # 确认码由提示时范围内的数据算出：确认只删除带着同一确认码的那次提示所显示的数据
+            code=digest([prep['id'],store.get(owner,check['id'],'graph_checks')['snapshot']])
+            if body.replace_existing_graph and body.graph_confirmation_code==code:
+                return check['id'],True
+            counts=f"{check['node_count']} 个节点、{check['relationship_count']} 条关系"
+            message=(f'评测图范围内的数据在提示后有变化：现有 {counts}，请重新确认是否删除'
+                     if body.replace_existing_graph and body.graph_confirmation_code
+                     else f'评测图范围内已有 {counts}，不是上一轮评测导入后的原样数据，确认删除后才会重新导入')
+            raise Failure('graph_confirmation_required',message,409,'data_import',details={'confirmation_code':code})
+
+        return start_run(owner,token,refresh,Start(request_id=body.request_id,preparation_id=prep['id'],
+                                                   eval_set_id=source['eval_set_id'],concurrency=source['concurrency'],
+                                                   model_profile_id=source.get('model_profile_id','')),graph_consent)
+
+    def start_run(owner,token,refresh,body,graph_consent=None):
+        """graph_consent: a rerun checks the graph scope itself, once no run exists yet for its request."""
         solver=body.run_type=='solver'
         limit,default=(solver_validation.MAX_CONCURRENCY,solver_validation.DEFAULT_CONCURRENCY) if solver else (MAX_CONCURRENCY,DEFAULT_CONCURRENCY)
         concurrency=body.concurrency or default
@@ -668,14 +790,18 @@ def create_app(config=None,transport=None):
                 raise Failure('revision_conflict','评测集已变更，请返回上一步重新加载并确认',409)
             cases=[dict(**c,status='pending',execution_requirement=execution_evidence.requirement(c['question'],c.get('execution_mode','auto')))
                    for c in definition_set['cases']]
+        importing=prep['source'].get('provider')=='neo4j' and prep['source'].get('import_data')
+        check_id,replace=body.graph_check_id,body.replace_existing_graph
+        if importing and graph_consent:
+            check_id,replace=graph_consent(prep)
         with engine.guard:
             package_idle(owner,prep['package_ref']['ontology_id'])
             if any(key[0]==owner for key in engine.active): raise Failure('evaluation_busy','已有活动评测，请先查看或停止当前任务',409)
             if len(engine.active)>=16: raise Failure('evaluation_busy','服务队列已满，请稍后再试',409)
             source=dict(prep['source'])
-            if source.get('provider')=='neo4j' and source.get('import_data'):
+            if importing:
                 graph_available(source,prep['package_ref']['ontology_id'])
-                source['graph_confirmation']=sources.graph.authorize(owner,prep,body.graph_check_id,body.replace_existing_graph)
+                source['graph_confirmation']=sources.graph.authorize(owner,prep,check_id,replace)
             elif body.graph_check_id or body.replace_existing_graph:
                 raise Failure('graph_import_required','当前评测未启用 Neo4j 图导入',422,'data_import')
             names=dict(solver_set_id=definition_set['id'],solver_set_name=definition_set['name']) if solver else \
@@ -688,7 +814,7 @@ def create_app(config=None,transport=None):
                 concurrency=concurrency,model_profile_id=body.model_profile_id,
                 created_at=time.time(),case_revision=definition_set['revision'],cases=cases),
                 body.request_id,identity=intent)
-            engine.start(owner,run['id'],token,refresh_of(request))
+            engine.start(owner,run['id'],token,refresh)
         return public(run)
 
     def solver_cases(owner,body,prep,token):
@@ -784,7 +910,7 @@ def create_app(config=None,transport=None):
 
     @app.get(f'{prefix}/runs/{{rid}}')
     def run(rid:str,request:Request):
-        owner,_,_,record=load_run(request,rid)
+        owner,record=read_run(request,rid)
         return run_view(owner,record)
 
     @app.get(f'{prefix}/runs/{{rid}}/results')
@@ -1014,8 +1140,26 @@ def create_app(config=None,transport=None):
         deliver(owner,run['package_ref']['ontology_id'])
         return store.optimization(run['id'])
 
+    @app.post(f'{prefix}/delegations',status_code=201)
+    def delegate(body:DelegationBody,request:Request):
+        """The user, present with a login, lets onto-modeling read one package's evaluations later."""
+        delegations.require_service(request)
+        owner,_=actor(request)
+        return delegations.register(owner,body.ontology_id,body.expires_in,body.delegation,refresh_of(request))
+
+    @app.post(f'{prefix}/delegations/current/renewal')
+    def renew_delegation(body:DelegationRenewal,request:Request):
+        """The user is back with a login: the delegation runs for the chosen period again."""
+        owner,_=actor(request)
+        return delegations.extend(request,owner,body.expires_in)
+
+    @app.delete(f'{prefix}/delegations/current')
+    def undelegate(request:Request):
+        return delegations.revoke(request)
+
     package_routes.register(app,prefix,actor,load_run,store,engine,jobs,notifier,run_view,login,
-                            dict(access=package_access,store=feedback_store,pipeline=pipeline,decide=decide,resolve=resolve_release))
+                            dict(access=package_access,store=feedback_store,pipeline=pipeline,decide=decide,resolve=resolve_release),
+                            reader,read_run)
 
     assets=Path(__file__).parents[1]/'frontend'/'dist'
     if assets.exists(): app.mount('/evaluation',StaticFiles(directory=assets,html=True),name='evaluation')

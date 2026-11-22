@@ -2,5 +2,5 @@ apiVersion: v2
 name: modeling
 description: Modeling workloads for CCE; shared auth and JiuwenBox image are external dependencies.
 type: application
-version: 0.1.1
+version: 0.2.0
 appVersion: "0.2.0"

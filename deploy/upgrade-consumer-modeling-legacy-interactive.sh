@@ -1,27 +1,15 @@
-#!/bin/bash
-
+#!/usr/bin/env bash
+# Upgrade a legacy directory and migrate merged Auth ownership when needed.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TMP_ROOT=""
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-log() { printf '[interactive-upgrade] %s\n' "$*"; }
-die() { printf '[interactive-upgrade][error] %s\n' "$*" >&2; exit 1; }
-
-cleanup() {
-    if [ -n "${TMP_ROOT:-}" ] && [ -d "${TMP_ROOT}" ]; then
-        find "${TMP_ROOT}" -mindepth 1 -delete 2>/dev/null || true
-        rmdir "${TMP_ROOT}" 2>/dev/null || true
-    fi
-}
-trap cleanup EXIT INT TERM
-
-prompt_value() {
-    prompt_text="$1"
-    printf '%s' "${prompt_text}" >/dev/tty || die "需要交互式终端"
-    IFS= read -r value </dev/tty || die "读取输入失败"
-    [ -n "${value}" ] || die "输入不能为空"
-    printf '%s' "${value}"
+ask() {
+    local prompt="$1" answer
+    printf '%s' "${prompt}" >/dev/tty
+    IFS= read -r answer </dev/tty || exit 1
+    [ -n "${answer}" ] || { printf '输入不能为空\n' >&2; exit 1; }
+    printf '%s' "${answer}"
 }
 
 prompt_port() {
@@ -363,103 +351,22 @@ if [ -f "${staged_root}/backend/.env.example" ]; then
     chmod 600 "${staged_root}/backend/.env"
 fi
 
-session_id="$(date -u +%Y%m%dT%H%M%SZ)-interactive-upgrade-$$"
-report_root="${old_install_dir}/.onto-runtime/opsctl/reports"
-preflight_log="${TMP_ROOT}/preflight.log"
-
-for port_spec in BACKEND_PORT:onto-agent-backend:5055 MCP_SERVER_PORT:onto-agent-mcp:7488 FRONTEND_PORT:onto-agent-frontend:80; do
-    IFS=: read -r port_key container_name container_port <<EOF_PORT
-${port_spec}
-EOF_PORT
-    host_port="$(legacy_host_port "${container_name}" "${container_port}" || true)"
-    [ -n "${host_port}" ] || continue
-    write_env_value "${old_install_dir}/backend/.env" "${port_key}" "${host_port}"
-done
-
-# Port values may have been recovered from the running legacy containers above;
-# refresh the staged env file after that synchronization so preflight reads the
-# actual published ports instead of release defaults.
-if [ -f "${staged_root}/backend/.env.example" ]; then
-    cp "${old_install_dir}/backend/.env" "${staged_root}/backend/.env"
-    chmod 600 "${staged_root}/backend/.env"
+if [ -n "${existing_port}" ]; then
+    onto_port="${existing_port}"
+    printf '沿用现有 Onto Modeling 宿主端口：%s\n' "${onto_port}" >/dev/tty
+else
+    onto_port="$(ask '请输入 Onto Modeling 宿主端口：')"
 fi
+case "${onto_port}" in
+    ''|*[!0-9]*) printf 'Onto Modeling 宿主端口必须为 1 到 65535 的整数\n' >&2; exit 1 ;;
+esac
+[ "${onto_port}" -ge 1 ] && [ "${onto_port}" -le 65535 ] \
+    || { printf 'Onto Modeling 宿主端口必须为 1 到 65535 的整数\n' >&2; exit 1; }
 
-lock_file="${old_install_dir}/.consumer-deploy.lock"
-exec 9>"${lock_file}" || die "无法打开部署锁：${lock_file}"
-flock -n 9 || die "旧部署正在执行其他部署事务"
-DEPLOY_TRANSACTION_LOCK_BACKEND=flock
-DEPLOY_TRANSACTION_LOCK_FD=9
-DEPLOY_TRANSACTION_LOCK_TOKEN="interactive-${session_id}"
-DEPLOY_TRANSACTION_LOCK_HELD=true
-export DEPLOY_TRANSACTION_LOCK_BACKEND DEPLOY_TRANSACTION_LOCK_FD
-export DEPLOY_TRANSACTION_LOCK_TOKEN DEPLOY_TRANSACTION_LOCK_HELD
-
-log "开始执行 Consumer 预检；将逐项显示依赖检查结果"
-set +e
-OPSCTL_SESSION_ID="${session_id}" \
-OPSCTL_REPORT_ROOT="${report_root}" \
-OPSCTL_MANAGED_BUNDLE_ROOT="${old_install_dir}" \
-OPSCTL_SKIP_DEPLOY_LOCK=1 \
-PREFLIGHT_ENV_FILE_OVERRIDE="${old_install_dir}/backend/.env" \
-PREFLIGHT_RUNTIME_ROOT_OVERRIDE="${old_install_dir}/.onto-runtime" \
-    "${opsctl}" preflight --manifest "${manifest}" --profile core 2>&1 \
-    | tee "${preflight_log}"
-preflight_status=${PIPESTATUS[0]}
-set -e
-preflight_report="${report_root}/${session_id}/01-preflight"
-if [ -f "${preflight_report}/summary.txt" ]; then
-    printf '%s\n' '--- Consumer 预检逐项结果 ---'
-    cat "${preflight_report}/summary.txt"
-    printf '%s\n' '--- Consumer 预检逐项结果结束 ---'
-fi
-if [ ! -s "${preflight_log}" ]; then
-    printf '[interactive-upgrade][error] 预检没有输出，详细报告：%s\n' \
-        "${preflight_report}" >&2
-fi
-
-if [ "${preflight_status}" -ge 20 ]; then
-    die "Consumer 预检存在 BLOCK/ERROR，已停止部署；报告：${preflight_report}"
-fi
-if [ "${preflight_status}" -eq 10 ]; then
-    log '预检存在 WARN，按要求继续升级'
-fi
-
-consumer_dir="${old_install_dir}"
-
-container_mount_volume() {
-    docker container inspect "$1" --format '{{range .Mounts}}{{if eq .Destination "'"$2"'"}}{{println .Name}}{{end}}{{end}}' 2>/dev/null | head -n 1
-}
-container_owner_matches() {
-    [ "$(docker container inspect "$1" --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null || true)" = "$2" ]
-}
-stop_owned_containers() {
-    install_dir="$1"; variable="$2"; names="$3"
-    for name in ${names}; do
-        docker container inspect "${name}" >/dev/null 2>&1 || continue
-        container_owner_matches "${name}" "${install_dir}" || die "容器 ${name} 不属于 ${install_dir}，拒绝停止"
-        running="$(docker container inspect "${name}" --format '{{.State.Running}}' 2>/dev/null || true)"
-        if [ "${running}" = true ]; then
-            docker stop "${name}" >/dev/null || die "停止容器失败：${name}"
-            eval "${variable}=\"\${${variable}:-} ${name}\""
-        fi
-    done
-}
-# 独立 Consumer 发布包的 upgrade.sh 只接受安装目录，传入其他参数会直接失败
-run_consumer_upgrade() {
-    release_root="$1"; install_dir="$2"
-    if bash "${release_root}/deploy/upgrade.sh" "${install_dir}"; then rc=0; else rc=$?; fi
-    case "${rc}" in 0) return 0 ;; 10) log 'Consumer 升级完成但存在 WARN，继续部署后续服务'; return 0 ;; *) return "${rc}" ;; esac
-}
-
-stage_dir="${TMP_ROOT}/packages"
-mkdir -p "${stage_dir}"
-tar -xzf "${consumer_package}" -C "${stage_dir}"
-ensure_evaluation_service_token "${consumer_dir}/backend/.env"
-stop_owned_containers "${consumer_dir}" STOPPED_CONSUMER_CONTAINERS \
-    'onto-agent-frontend onto-agent-mcp onto-agent-backend onto-agent-jiuwenbox onto-agent-auth-server'
-run_consumer_upgrade "${stage_dir}/onto-agent" "${consumer_dir}" || die 'Consumer 升级失败'
-deploy_knowledge_hub
-deploy_onto_modeling
-stage_evaluation_package
-deploy_evaluation
-log '旧版部署升级完成；未改动 Modeling Workbench'
+ONTO_WEB_PORT="${onto_port}" bash "${script_dir}/install-consumer-modeling.sh" \
+    --upgrade-from "${legacy_dir}" \
+    --consumer-package "${consumer_package}" \
+    --auth-package "${auth_package}" \
+    --onto-modeling-package "${onto_package}" \
+    --knowledge-hub-package "${hub_package}" \
+    --evaluation-package "${evaluation_package}"

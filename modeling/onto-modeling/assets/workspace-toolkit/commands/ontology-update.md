@@ -98,6 +98,8 @@ OPERATION_DIR: ontology/operation/
 MOCK_DIR: ontology/data-mock/
 TESTCASE_DIR: ontology/testcase/
 SCRIPTS_DIR: ontology/scripts/
+DIAGRAMS_DIR: ontology/diagrams/
+DIAGRAM_SUMMARIES_DIR: ontology/diagrams-summary/
 
 请按照你的指令完成影响分析，返回 JSON 数组。
 
@@ -125,6 +127,7 @@ Wait for it to return a JSON array of impact entries. 每条结构：
 - `operation ∈ {modify, create, delete}`
 - `kind ∈ {object, operation, mock, testcase, script}`
 - `cascading[].needs_change` = `true` 表示该级联文件也需要改动，会出现在变更清单里；`false` 仅作为提醒。
+- 流程图及摘要只作为 `cascading[]` 提醒：`needs_change=false`，`reason` 必须明确“需另行复核并同步，本次更新不自动修改”。这里的 false 只表示不由本次执行器修改，不能解释为无需同步。
 - `kind = script` 指 `ontology/scripts/*.py`：脚本与某个 operation 通过头部 docstring 的「关联operation」字段或首行 operation 名称绑定。若该 operation 的改动会影响脚本（如输入/输出参数变化、字段重命名、逻辑步骤改写），就出现一条 `kind=script` 的 modify 条目。纯数据结构变化（如 operation 文档措辞调整）不必涉及脚本。
   - 子操作（「可单独调用」为否）没有自己的脚本，它的逻辑写在所属主操作的脚本里：改了这类子操作的逻辑、输入或输出，要修改的是主操作的脚本（按「被operation调用」找到有脚本的上级）。
   - 改了「与operation的关联」（增删子操作、改「可单独调用」）也会改变哪个脚本覆盖哪一步，按 `/ontology-codegen` Step 2「按流程生成」同步合并或拆分脚本。
@@ -141,11 +144,22 @@ python3 .claude/scripts/impact_analysis.py "{ontology-relative-path}" --json
 
 把脚本返回里的 `operation_refs / called_by / object_refs / mock_refs / testcase_refs` 中**尚未出现在 agent cascading 里**的条目，补成一条 `{"file": "...", "needs_change": false, "reason": "downstream reference (impact_analysis)"}`。这一步纯静态字面引用，作用是兜底，不替换 agent 的语义判断。
 
+同时必须合并 `diagram_refs[]`：直接使用其 `file` 完整路径，保留 `reason`，补充“本次更新不自动修改”，作为 `needs_change=false` 的级联提醒。同一路径去重，已存在的语义理由不得被静态理由覆盖。
+
+- `diagram_scan.next_offset` 非空时，用 `--diagram-offset {next_offset} --diagram-limit {limit}` 继续读取，直到全部候选合并完再展示首次清单。新增图候选字段每页默认 50、最多 100 个路径和简短理由，不返回图正文；超页内容通过该脚本分页读取。
+- 命中规则包括同名图/摘要、对受影响操作的引用、目标文档旧公式。它们只是候选：对候选图节点和摘要做语义复核，说明具体需同步的公式或业务步骤；没有显式链接不代表没有影响。
+- 压缩、损坏、过大或不可读资源返回“无法完整扫描”提醒，必须展示并保留待复核状态；脚本失败时也必须明确“流程图影响尚未完成检查”，不得展示“无级联文件”或表示全部资源已同步。
+- 静态扫描未命中仍需完成 agent 的业务语义复核，不能仅凭字面结果断言没有图影响。
+
+将补全后的最终 plan 重新写入 `.ontology-state/update-plan.json`，再进入确认阶段；用户编辑清单后也要保存，使续执看到相同提醒。
+
 ---
 
 ## Step 3: 展示变更清单并确认
 
 把 plan 整理为人类可读的表格：
+
+流程图/摘要提醒必须逐项展示 `file` 完整路径和该项 `reason`，长清单可以分段，但不得以文件名区间、编号范围或“其余同上”代替独立条目。分类与数量从最终去重计划逐项计算；含旧公式、仅引用操作、无法完整扫描必须分别描述，不能将全部候选统称为含旧公式或已确认受影响。首次确认、编辑后再次确认、续执和最终摘要均沿用该规则。
 
 ```
 影响分析完成。共 {ROOT} 个直接变更，{CASCADE} 个级联文件。
@@ -158,9 +172,10 @@ python3 .claude/scripts/impact_analysis.py "{ontology-relative-path}" --json
 | 3 | ontology/object/手机号触达记录.md | 新建 | 参考内容中提到的新对象 |
 | 4 | ontology/scripts/cluster.py | 脚本 | `cluster()` 入参表同步新增 `phone` 字段说明 |
 
-### 级联提醒（不一定要改，仅供参考）
+### 级联提醒与另行同步事项
 - ontology/data-mock/客户.md：测试数据可能需要补一列 → 建议跑 /ontology-mock 重新生成
 - ontology/testcase/客群聚类.md：追踪场景包含该 operation，建议跑 /ontology-trace 回归
+- {图或摘要路径}：{相关公式/步骤或无法扫描的原因} → 需另行复核并同步，本次更新不自动修改
 
 ### 风险提示
 {若有删除操作：警告该文件被以下 N 个文档引用，删除前请确认}
@@ -170,6 +185,7 @@ python3 .claude/scripts/impact_analysis.py "{ontology-relative-path}" --json
 用户在对话里直接打这些关键词也照样推进。
 
 Handle reply:
+- 以上流程图提醒必须在**首次确认前**展示；只要存在图候选或未完成检查，不得只输出“无级联文件”。提醒必须保留到执行摘要，不能将“文档更新完成”表述为“流程图已同步”。
 - **确认** → `acquire update apply`，进入 Step 4。
 - **编辑** → 进入子循环：
   ```
@@ -180,6 +196,7 @@ Handle reply:
   调整完后直接说明已改完即可。
   ```
   逐条 patch 内存里的 plan，最后重新打印清单再次确认。
+  用户手动新增流程图路径时也只能转成另行同步提醒，不能作为本执行器会修改的直接条目。
 - **取消** → `release update` 后 Stop。
 
 ---
@@ -215,6 +232,8 @@ TEMPLATES_DIR: .claude/templates/
 ```
 
 Wait for completion. Display 执行摘要：
+
+若计划包含图/摘要提醒，摘要同时列出尚需另行同步的路径及原因；确认执行文档更新不会清除该待办。
 
 ```
 更新完成：

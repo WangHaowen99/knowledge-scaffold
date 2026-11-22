@@ -897,6 +897,17 @@ def package_relations(
             if source_join and target_join:
                 relation.update(sourceJoinProperty=source_join, targetJoinProperty=target_join)
             triple = (source_id, _relation_identity(item["relation"]), target_id, source_join, target_join)
+            # 声明写在哪一端的文件里；自关联两端是同一个文件，按源端计
+            declaration = triple + (source_id == _relation_identity(key),)
+            first_label = first_declarations.get(declaration)
+            if reject_duplicate_relations and first_label:
+                problems.append(
+                    f"{label}：重复关系「{source} -{item['relation']}→ {target}」；"
+                    f"关联字段：{_join_text(relation)}；"
+                    f"首次声明于 {first_label}"
+                )
+                continue
+            first_declarations.setdefault(declaration, label)
             if triple in seen:
                 if reject_duplicate_relations:
                     report(key, line, f"重复关系「{source} -{item['relation']}→ {target}」；"

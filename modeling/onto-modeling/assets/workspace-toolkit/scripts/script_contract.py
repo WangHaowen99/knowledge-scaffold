@@ -12,9 +12,13 @@ bool / json。仅依赖标准库。
 from __future__ import annotations
 
 import ast
+import io
 import json
 import re
+import tokenize
 from dataclasses import dataclass
+
+from script_output import static_outputs
 
 # 头部「输入参数」「输出」里的类型写法 → consumer 类型；json 是旧写法，consumer 只能当字符串传
 TYPE_ALIASES = {
@@ -63,6 +67,7 @@ class ScriptContract:
     outputs: tuple[dict, ...]  # 头部「输出」逐行声明的字段：name / type / desc
     output_text: str  # 头部「输出」里没写成字段行的原文
     warnings: tuple[str, ...]  # 不阻断导出、但 consumer 调用会吃亏的写法
+    output_verified: bool  # CLI 输出字段是否能静态确认；否则导出须有当前源码的运行验证
 
 
 def _script_header(code: str) -> str:
@@ -96,9 +101,12 @@ def parse_script(code: str) -> ScriptContract:
     documented = _documented_params(blocks.get("输入参数", []))
 
     try:
+        compile(code, "<script>", "exec", dont_inherit=True)  # Only compile; never execute user code.
         tree = ast.parse(code)
-    except SyntaxError as exc:
-        raise ScriptContractError(f"脚本语法错误：{exc.msg}（第 {exc.lineno} 行）") from exc
+    except (SyntaxError, ValueError) as exc:
+        line, column = getattr(exc, "lineno", 1) or 1, getattr(exc, "offset", 1) or 1
+        reason = exc.msg if isinstance(exc, SyntaxError) else "源码含无效字符"
+        raise ScriptContractError(f"脚本语法错误：{reason}（第 {line} 行，第 {column} 列）") from exc
 
     argument_calls = []
     for node in ast.walk(tree):
@@ -153,6 +161,11 @@ def parse_script(code: str) -> ScriptContract:
         })
 
     outputs, output_text = _outputs(blocks.get("输出", []))
+    output_errors, output_verified = static_outputs(tree, tuple(outputs))
+    if output_errors:
+        raise ScriptContractError(output_errors[0])
+    if not output_verified:
+        warnings.append("输出结构无法静态确认，尚未验证；发布前须完成当前源码的运行验证")
     title = next(iter(blocks.get("功能描述", [])), "")
     return ScriptContract(
         bound=bound,
@@ -162,7 +175,35 @@ def parse_script(code: str) -> ScriptContract:
         outputs=tuple(outputs),
         output_text=output_text,
         warnings=tuple(warnings),
+        output_verified=output_verified,
     )
+
+
+def script_warnings(code: str, path: str, contract: ScriptContract) -> list[dict]:
+    """Bounded save diagnostics; report marker locations without returning comment contents."""
+    warnings = [{"path": path, "line": 1, "column": 1, "code": "script_contract_warning", "message": text}
+                for text in contract.warnings]
+    texts = [(token.string, *token.start) for token in tokenize.generate_tokens(io.StringIO(code).readline)
+             if token.type == tokenize.COMMENT]
+    for node in ast.walk(ast.parse(code)):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+                texts.append((ast.get_source_segment(code, first.value) or "", first.lineno, first.col_offset))
+    for text, line, column in texts:
+        for offset, part in enumerate(text.splitlines()):
+            for marker in re.finditer(r"\b(?:TODO|FIXME)\b", part, re.IGNORECASE):
+                name = marker.group().upper()
+                warnings.append({"path": path, "line": line + offset,
+                                 "column": (column if offset == 0 else 0) + marker.start() + 1,
+                                 "code": "unfinished_marker", "message": f"存在 {name} 未完成标记"})
+                if len(warnings) >= 50:
+                    return warnings[:49] + [{"path": path, "line": 1, "column": 1,
+                                            "code": "warnings_truncated", "message": "告警过多，其余未完成标记已省略"}]
+    if len(warnings) > 50:
+        warnings = warnings[:49] + [{"path": path, "line": 1, "column": 1,
+                                    "code": "warnings_truncated", "message": "告警过多，其余告警已省略"}]
+    return sorted(warnings, key=lambda item: (item["line"], item["column"]))
 
 
 def _header_blocks(header: str) -> dict[str, list[str]]:

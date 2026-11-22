@@ -9,6 +9,7 @@
 """
 import hashlib
 import json
+import logging
 import re
 import time
 from typing import Literal
@@ -18,6 +19,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from . import eval_client, hub_packages, knowledge_hub
 from .workspace import WorkspaceError
+
+logger = logging.getLogger(__name__)
 
 ID_PATTERN = r'^[A-Za-z0-9_-]{1,128}$'
 RUN_PATTERN = r'^[a-f0-9]{32}$'
@@ -223,6 +226,7 @@ def receive(notification):
 def reconcile(package_id, subject, token):
     """把调用者的索引整份换成评测服务的视图，评测服务里删掉的轮次随之消失。"""
     started = time.time()
+    covered = ('releases', 'solver_releases') if isinstance(token, Delegated) else SECTIONS
     # 两种来源都要：评测轮次，以及包负责人确认过的消费反馈轮次；旧版评测服务忽略 origin，只返回评测轮次
     query = urllib.parse.urlencode({'ontology_id': package_id, 'origin': 'all'})
     value = eval_client.call('GET', f'/package-evaluations?{query}', token)
@@ -245,10 +249,10 @@ def reconcile(package_id, subject, token):
         knowledge_hub.save(_owner_path(subject), {'owner': owner})
     with _index_lock(package_id, owner):
         index = _read_index(package_id, owner)
-        sections = {section: {} for section in SECTIONS}
+        sections = {section: {} for section in covered}
         for entry in fetched:
             section = bucket(entry['origin'], entry['run_type'])
-            if not section:
+            if section not in sections:
                 continue
             stored = index[section].get(entry['release_id'])
             same = bool(stored) and stored['run_id'] == entry['run_id']
@@ -317,7 +321,9 @@ def overview(pid, subject, token, refresh=False):
         try:
             index = reconcile(linked['ontology_id'], subject, token)
             result['reachable'] = True
-        except WorkspaceError:
+        except WorkspaceError as exc:
+            # 只记状态码与错误码：消息可能带上游内容
+            logger.warning('Evaluation reconciliation failed status=%s code=%s', exc.status, exc.code)
             result.update(reachable=False, message='评测服务暂不可用，显示的是最近一次同步的评测状态')
 
     def shown(section):

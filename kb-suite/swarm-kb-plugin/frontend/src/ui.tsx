@@ -1,5 +1,5 @@
-import { X } from 'lucide-react';
-import { useEffect, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { ChevronDown, X } from 'lucide-react';
+import { useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import type { Tone } from './format';
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -179,5 +179,53 @@ export function NumberField({
         onChange={(e) => onChange(e.target.value === '' ? Number.NaN : Number(e.target.value))}
       />
     </Field>
+  );
+}
+
+/** A small button that opens a list of choices. */
+export function Menu({
+  label,
+  icon,
+  items,
+  align = 'left',
+}: {
+  label: string;
+  icon?: ReactNode;
+  items: { key: string; label: string; title?: string; onSelect: () => void }[];
+  align?: 'left' | 'right';
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+  return (
+    <div className="menu" ref={ref}>
+      <Button size="sm" icon={icon} aria-expanded={open} onClick={() => setOpen(!open)}>
+        {label}
+        <ChevronDown size={12} className="menu-caret" />
+      </Button>
+      {open ? (
+        <div className={`menu-list ${align === 'right' ? 'menu-list-right' : ''}`} role="menu">
+          {items.map((item) => (
+            <button
+              key={item.key}
+              role="menuitem"
+              title={item.title}
+              className="menu-item"
+              onClick={() => {
+                setOpen(false);
+                item.onSelect();
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }

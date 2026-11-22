@@ -1,9 +1,12 @@
-import { BookOpen, Search, SlidersHorizontal } from 'lucide-react';
+import { BookOpen, Crosshair, Search, SlidersHorizontal } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import DocDrawer from './DocDrawer';
 import { RetrievalSection } from './KbConfigForm';
-import { has, nativeConfig } from './backend';
+import SchemaForm, { schemaDefaults } from './SchemaForm';
+import { has, nativeConfig, offers, useKbScope } from './backend';
+import { locate } from './evidence';
 import { locatorText } from './format';
+import type { Focus } from './preview';
 import { useConfigMeta } from './meta';
 import { rpc } from './rpc';
 import { errorText, useToast } from './toast';
@@ -59,7 +62,7 @@ export default function SearchTab({ kb }: { kb: KnowledgeBase }) {
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [trace, setTrace] = useState<SearchTrace | null>(null);
   const [busy, setBusy] = useState(false);
-  const [openDoc, setOpenDoc] = useState<string | null>(null);
+  const [openDoc, setOpenDoc] = useState<{ id: string; focus?: Focus } | null>(null);
   const [openWiki, setOpenWiki] = useState<string | null>(null);
   const [showParams, setShowParams] = useState(false);
   const [overrides, setOverrides] = useState<Partial<RetrievalConfig>>({});
@@ -67,9 +70,22 @@ export default function SearchTab({ kb }: { kb: KnowledgeBase }) {
   const native = nativeConfig(kb);
   const baseRetrieval = native ? kb.config.retrieval : undefined;
   const params = useMemo(() => ({ ...baseRetrieval, ...overrides }) as RetrievalConfig, [baseRetrieval, overrides]);
-  const changed = Object.keys(overrides).filter(
+  const nativeChanged = Object.keys(overrides).filter(
     (k) => overrides[k as keyof RetrievalConfig] !== baseRetrieval?.[k as keyof RetrievalConfig],
   );
+  // another backend may declare what its search accepts in ``options`` (contract 9.5)
+  const backend = useKbScope()?.backend;
+  const optionsSchema = !native && offers(kb, 'search.options') ? backend?.search_options_schema ?? null : null;
+  const optionDefaults = useMemo(() => schemaDefaults(optionsSchema), [optionsSchema]);
+  const [optionEdits, setOptionEdits] = useState<Record<string, unknown> | null>(null);
+  const optionValues = optionEdits ?? optionDefaults;
+  const optionChanged = Object.keys(optionValues).filter(
+    (k) => optionValues[k] !== undefined && JSON.stringify(optionValues[k]) !== JSON.stringify(optionDefaults[k]),
+  );
+  const changed = optionsSchema ? optionChanged : nativeChanged;
+  const options = optionsSchema
+    ? Object.fromEntries(optionChanged.map((k) => [k, optionValues[k]]))
+    : Object.fromEntries(nativeChanged.map((k) => [k, overrides[k as keyof RetrievalConfig]]));
 
   const run = async () => {
     if (!query.trim()) return;
@@ -80,7 +96,7 @@ export default function SearchTab({ kb }: { kb: KnowledgeBase }) {
         kb_ids: [kb.id],
         top_k: topK,
         include_wiki: includeWiki,
-        options: changed.length ? Object.fromEntries(changed.map((k) => [k, overrides[k as keyof RetrievalConfig]])) : undefined,
+        options: changed.length ? options : undefined,
         trace: true,
       });
       setHits(res.items);
@@ -90,6 +106,13 @@ export default function SearchTab({ kb }: { kb: KnowledgeBase }) {
     } finally {
       setBusy(false);
     }
+  };
+
+  // the anchored passage in the original file (or the text), via the backend's evidence when it has it
+  const locateHit = async (hit: SearchHit) => {
+    const focus = await locate(hit.anchor_id, { locators: hit.locators, line_start: hit.line_start }, offers(kb, 'evidence'));
+    if (Object.keys(focus).length) setOpenDoc({ id: hit.doc_id, focus });
+    else notify('无法定位', true);
   };
 
   return (
@@ -119,17 +142,28 @@ export default function SearchTab({ kb }: { kb: KnowledgeBase }) {
 
       {showParams ? (
         <div className="param-panel">
-          <div className="param-panel-head">
-            <span className="field-hint">这里的修改只用于本页测试，不会保存；满意后到「设置 → 检索策略」里改。</span>
-            <Button size="sm" disabled={!changed.length} onClick={() => setOverrides({})}>
-              恢复知识库设置
-            </Button>
-          </div>
+          {optionsSchema ? (
+            <div className="param-panel-head">
+              <span />
+              <Button size="sm" disabled={!changed.length} onClick={() => setOptionEdits(null)}>
+                恢复默认
+              </Button>
+            </div>
+          ) : (
+            <div className="param-panel-head">
+              <span className="field-hint">这里的修改只用于本页测试，不会保存；满意后到「设置 → 检索策略」里改。</span>
+              <Button size="sm" disabled={!changed.length} onClick={() => setOverrides({})}>
+                恢复知识库设置
+              </Button>
+            </div>
+          )}
           {has(kb, 'wiki.read') && (!native || kb.config.wiki.enabled) ? (
             <Switch checked={includeWiki} onChange={setIncludeWiki} label="包含 Wiki 页面" />
           ) : null}
           {native ? (
             <RetrievalSection value={params} onChange={(v) => setOverrides((cur) => ({ ...cur, ...v }))} rerankModel={meta?.models.rerank} />
+          ) : optionsSchema ? (
+            <SchemaForm schema={optionsSchema} value={optionValues} onChange={setOptionEdits} />
           ) : (
             <div className="field-hint">检索参数由 {kb.backend?.label ?? '知识后端'} 自己的设置决定。</div>
           )}
@@ -162,7 +196,7 @@ export default function SearchTab({ kb }: { kb: KnowledgeBase }) {
               <div className="hit-head">
                 <span className="hit-rank">#{index + 1}</span>
                 {wiki ? <BookOpen size={14} className="muted" /> : null}
-                <span className="hit-title" onClick={() => (wiki ? setOpenWiki(hit.wiki_slug ?? null) : setOpenDoc(hit.doc_id))}>
+                <span className="hit-title" onClick={() => (wiki ? setOpenWiki(hit.wiki_slug ?? null) : setOpenDoc({ id: hit.doc_id }))}>
                   {hit.title}
                 </span>
                 <Badge tone="info" title="排序分">
@@ -171,6 +205,11 @@ export default function SearchTab({ kb }: { kb: KnowledgeBase }) {
                 {(hit.matched_by ?? []).map((m) => (
                   <Badge key={m}>{MATCH_LABEL[m] ?? m}</Badge>
                 ))}
+                {!wiki && hit.anchor_id ? (
+                  <button className="link-btn hit-locate" onClick={() => void locateHit(hit)}>
+                    <Crosshair size={12} /> 定位
+                  </button>
+                ) : null}
               </div>
               <div className="hit-where">
                 {wiki
@@ -198,7 +237,9 @@ export default function SearchTab({ kb }: { kb: KnowledgeBase }) {
           );
         })
       )}
-      {openDoc ? <DocDrawer docId={openDoc} features={kb.features} onClose={() => setOpenDoc(null)} onChanged={() => undefined} /> : null}
+      {openDoc ? (
+        <DocDrawer docId={openDoc.id} focus={openDoc.focus} features={kb.features} onClose={() => setOpenDoc(null)} onChanged={() => undefined} />
+      ) : null}
       {openWiki ? (
         <WikiPageDrawer kbId={kb.id} slug={openWiki} canEdit={has(kb, 'wiki.write')} features={kb.features} onClose={() => setOpenWiki(null)} />
       ) : null}

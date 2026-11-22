@@ -59,9 +59,14 @@ def test_graph_relations_match_modeling(modeling, lines):
     assert mapping_rules.graph_relations(texts, mapped) == modeling.graph_relations(texts, mapped)
 
 
-def test_package_relations_match_modeling(modeling):
-    texts = employee('- 当前对象 → references（manager_id → employee_id） → 当前对象\n'
-                     '- 当前对象 → references（manager_id → employee_id） → 当前对象\n')
+@pytest.mark.parametrize('lines', [
+    '- 当前对象 → references（manager_id → employee_id） → 当前对象\n'
+    '- 当前对象 → references（manager_id → employee_id） → 当前对象\n',
+    # Declared once on each end: one relation, not a duplicate.
+    '- 当前对象 → belongs_to（department_id → department_id） → [[department]]\n',
+])
+def test_package_relations_match_modeling(modeling, lines):
+    texts = employee(lines)
     for duplicates in (False, True):
         assert mapping_rules.package_relations(texts, reject_duplicate_relations=duplicates) == \
             modeling.package_relations(texts, reject_duplicate_relations=duplicates)

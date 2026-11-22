@@ -111,7 +111,7 @@ def test_independent_deploy_compose():
     root=Path(__file__).resolve().parents[2]
     compose=(root/'eval-service/deploy/docker-compose.eval-service.yml').read_text()
     assert 'container_name: knowledge-evaluation' in compose
-    assert 'name: ${CONSUMER_NETWORK:?' in compose and 'external: true' in compose
+    assert 'name: ${CONSUMER_NETWORK:-onto-auth-network}' in compose and 'external: true' in compose
     # Only non-secret stack addresses default here; credentials stay in the runtime configuration.
     assert 'EVAL_HUB_URL: ${EVAL_HUB_URL:-http://knowledge-hub:8200}' in compose
     assert 'TOKEN' not in compose and 'ENCRYPTION_KEY' not in compose

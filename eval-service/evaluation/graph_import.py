@@ -1,7 +1,13 @@
-"""Read-only graph scope checks and explicitly confirmed, atomic replacement."""
+"""Read-only graph scope checks and confirmed, atomic replacement.
+
+The user confirms replacing old data in the scope. A rerun of an earlier evaluation needs no confirmation when
+the scope holds exactly what an evaluation of the same user imported: the receipt keeps a fingerprint of the
+imported data, so anything added or removed since makes the rerun ask again.
+"""
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 
@@ -14,6 +20,46 @@ MAX_RELATIONSHIPS = 200000
 CHECK_SECONDS = 600
 RECEIPT_LABEL = '_EvaluationGraphImport'
 logger = logging.getLogger(__name__)
+# 图里的对象名、字段名与 consumer 查询时同一规则：语句中一律用反引号引用，所以「合成对象（甲类）」这类带全角标点
+# 的业务名也能导入。禁止反引号、控制字符和首尾空白；反斜杠可能在解析名称前构成 Cypher 的 Unicode 转义（如 \u0060
+# 即反引号），同样禁止。关系名按 relation_type 的规则；Workspace / Ontology 隔离字段仍按严格的标识符检查
+GRAPH_NAME_LIMIT = 128
+_CONTROL = re.compile(r'[\x00-\x1f\x7f]')
+
+
+def _usable_graph_name(value):
+    if not isinstance(value, str) or not value or len(value) > GRAPH_NAME_LIMIT:
+        return False
+    if value != value.strip() or _CONTROL.search(value):
+        return False
+    return '`' not in value and chr(92) not in value
+
+
+def graph_name(value, kind):
+    if not _usable_graph_name(value):
+        shown = _CONTROL.sub('', str(value or ''))[:64]
+        raise Failure('invalid_graph_name', f'{kind}「{shown}」不能用于图数据：不能为空、不能含反引号、反斜杠或控制字符、'
+                      f'首尾不能有空格，最多 {GRAPH_NAME_LIMIT} 个字符', 422, 'data_import')
+    return value
+
+
+def check_names(mapping, relations):
+    """Every name the import writes into the graph; run before importing, and when preparing, so it fails early."""
+    for label, item in (mapping or {}).get('objects', {}).items():
+        graph_name(label, '对象名')
+        for source in item.get('sources', [])[:1]:
+            for field in source.get('fields', {}):
+                graph_name(field, f'对象「{label}」的字段名')
+        for key in item.get('primary_key', []):
+            graph_name(key, f'对象「{label}」的主键')
+    for source, items in (relations or {}).items():
+        graph_name(source, '关系的源对象')
+        for edge in items:
+            graph_name(edge.get('target'), '关系的目标对象')
+            relation_type(edge.get('relation'))
+            for key in ('sourceJoinProperty', 'targetJoinProperty'):
+                if edge.get(key):
+                    graph_name(edge[key], '关系的关联字段')
 
 
 def relation_type(value):
@@ -151,16 +197,19 @@ class GraphImports:
                     with session.begin_transaction(timeout=30) as tx:
                         counts = snapshot(tx, scope)
                         marker = tx.run('MATCH (m:`' + RECEIPT_LABEL + '` {scope_fingerprint:$target}) '
-                                        'RETURN m.import_fingerprint AS fingerprint, m.data_fingerprint AS data_fingerprint, '
-                                        'm.graph_snapshot AS snapshot',
+                                        'RETURN m.run_id AS run_id, m.import_fingerprint AS fingerprint, '
+                                        'm.data_fingerprint AS data_fingerprint, m.graph_snapshot AS snapshot',
                                         target=scope_target(connection)).single()
         except (DriverError, Neo4jError, OSError) as exc:
             raise Failure('graph_check_unavailable', '无法检查旧图数据，请检查图库连接与读取权限后重试', 503, 'data_import') from exc
         checked_at = time.time()
+        # 范围里正好是某轮评测导入后的原样数据时记下那一轮：沿用评测配置的重跑据此自动替换，其余情况仍要用户确认
+        untouched = marker and marker['snapshot'] and marker['snapshot'] == counts['snapshot']
         record = self.store.create(owner, 'graph_checks', {
             **counts, 'import_state': import_state(counts, marker, expected, expected_data),
             'fingerprint': self.fingerprint(source, connection), 'preparation_id': preparation_id,
             'checked_at': checked_at, 'expires_at': checked_at + CHECK_SECONDS,
+            'imported_by': marker['run_id'] if untouched else '',
         })
         public = ('id', 'node_count', 'relationship_count', 'boundary_relationship_count', 'expires_at', 'import_state')
         return {key: record[key] for key in public} | {'scope': scope}
@@ -189,6 +238,17 @@ class GraphImports:
                         return tx.run(query, **parameters(scope)).single()['total']
         except (DriverError, Neo4jError, OSError) as exc:
             raise Failure('graph_check_unavailable', '无法检查图中已有数据，请检查图库连接与读取权限后重试', 503, 'data_import') from exc
+
+    def imported_by(self, owner, check_id):
+        """True when the checked scope holds exactly what an evaluation of this owner imported, nothing else."""
+        run_id = self.store.get(owner, check_id, 'graph_checks').get('imported_by')
+        if not run_id:
+            return False
+        try:
+            self.store.get(owner, run_id, 'runs')
+        except Failure:
+            return False
+        return True
 
     def authorize(self, owner, prep, check_id, replace_existing):
         if not check_id:
@@ -306,33 +366,31 @@ class GraphImports:
     def plan(scope, tables, mapping, relations):
         if not mapping or not mapping.get('objects'):
             raise Failure('mapping_required', '图导入缺少对象映射', 422, 'data_import')
+        check_names(mapping, relations)
         objects, edges = [], []
         for label, item in mapping['objects'].items():
-            identifier(label)
             if label == RECEIPT_LABEL:
                 raise Failure('graph_scope_conflict', '对象名与图导入回执保留名称冲突', 422, 'data_import')
             table = tables[item['sources'][0]['resource']]
             fields = item['sources'][0]['fields']
             if any(key in fields for key in (scope['workspace_property'], scope['ontology_property'])):
                 raise Failure('graph_scope_conflict', '图隔离属性不能与业务字段重名', 422, 'data_import')
-            for field in fields:
-                identifier(field)
             rows = [{field: row[table['columns'].index(rule['source_column'])] for field, rule in fields.items()}
                     for row in table['rows']]
             keys = item['primary_key']
             if not keys or any(any(row.get(key) is None or row.get(key) == '' for key in keys) for row in rows):
                 raise Failure('graph_key_missing', '图数据缺少主键', 422, 'data_import')
             key_expr = ('`' + scope['workspace_property'] + '`:$workspace,`' + scope['ontology_property'] + '`:$ontology,' +
-                        ','.join('`' + identifier(key) + '`:row.`' + key + '`' for key in keys))
+                        ','.join('`' + key + '`:row.`' + key + '`' for key in keys))
             objects.append(('UNWIND $rows AS row MERGE (n:`' + label + '` {' + key_expr + '}) SET n += row', rows))
         if not any(rows for _, rows in objects):
             raise Failure('empty_data', '没有可导入的图数据，请检查上传文件', 422, 'data_import')
         for source, items in relations.items():
             for edge in items:
-                target = identifier(edge['target'])
-                left = identifier(edge.get('sourceJoinProperty') or mapping['objects'][source]['primary_key'][0])
-                right = identifier(edge.get('targetJoinProperty') or mapping['objects'][target]['primary_key'][0])
-                edges.append('MATCH (a:`' + identifier(source) + '`), (b:`' + target + '`) WHERE ' + predicate('a', scope) +
+                target = edge['target']
+                left = edge.get('sourceJoinProperty') or mapping['objects'][source]['primary_key'][0]
+                right = edge.get('targetJoinProperty') or mapping['objects'][target]['primary_key'][0]
+                edges.append('MATCH (a:`' + source + '`), (b:`' + target + '`) WHERE ' + predicate('a', scope) +
                              ' AND ' + predicate('b', scope) + ' AND a.`' + left + '`=b.`' + right +
                              '` MERGE (a)-[:`' + relation_type(edge['relation']) + '`]->(b)')
         return objects, edges

@@ -36,9 +36,7 @@ services:
     env_file:
       - ./.env
     environment:
-      # 默认连自带 auth-server；接入既有 consumer 栈 auth 时在 .env 覆盖
-      # ONTO_MODELING_AUTH_URL（配合 ONTO_MODELING_EXTERNAL_AUTH_NETWORK，见 README）
-      - ONTO_WEB_AUTH_URL=${ONTO_MODELING_AUTH_URL:-http://auth-server:5056}
+      - ONTO_WEB_AUTH_URL=${ONTO_MODELING_AUTH_URL:?Set independent Auth URL}
       # 容器必须监听所有网卡，否则宿主机端口转发无法访问（environment 覆盖 env_file）。
       - ONTO_WEB_HOST=0.0.0.0
       # 容器内固定监听 8100（environment 覆盖 env_file），

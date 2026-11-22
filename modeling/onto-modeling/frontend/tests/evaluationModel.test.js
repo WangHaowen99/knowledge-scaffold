@@ -138,6 +138,10 @@ test('processing state shows what modeling did with the suggestions', () => {
   const done = processingState({ optimization: { status: 'modeling_done', result: { version: '0.1.2', note: '合成说明' } } });
   assert.deepEqual(done, { label: '已处理 → 0.1.2', color: 'green', hint: '合成说明' });
   assert.equal(processingState({ optimization: { status: 'modeling_failed', result: { note: '合成原因' } } }).color, 'red');
+  // 核对后最新版本已解决、没有发布新版本：不显示成“已处理 → 版本”
+  const resolved = processingState({ optimization: { status: 'modeling_done',
+    result: { outcome: 'resolved', version: '0.1.9', note: '合成核对说明' } } });
+  assert.deepEqual(resolved, { label: '最新版本已解决', color: 'green', hint: '合成核对说明' });
 });
 
 test('a version without a run says why its cell is empty', () => {

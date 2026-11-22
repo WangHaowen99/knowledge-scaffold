@@ -83,6 +83,33 @@ def check_access_token(token: str) -> tuple[dict | None, str]:
     return claims, ""
 
 
+def current_user(token: str, claims: dict) -> dict:
+    """向 Auth 核对当前账号状态；JWT 中的角色和改密标记不能替代实时状态。"""
+    if not AUTH_URL:
+        raise AuthError("认证服务地址未配置", 503)
+    request = urllib.request.Request(
+        f"{AUTH_URL}/userinfo", headers={"Authorization": f"Bearer {token}"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            user = json.loads(response.read(16385))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise AuthError("未登录或登录已过期", 401) from exc
+        raise AuthError("认证服务暂不可用", 503) from exc
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        raise AuthError("认证服务暂不可用", 503) from exc
+    if not isinstance(user, dict):
+        raise AuthError("账号状态无效", 401)
+    if user.get("sub") != claims.get("sub"):
+        raise AuthError("账号状态无效", 401)
+    if user.get("role") not in ("admin", "user"):
+        raise AuthError("账号状态无效", 401)
+    if not isinstance(user.get("password_change_required"), bool):
+        raise AuthError("账号状态无效", 401)
+    return user
+
+
 def register_request(payload: dict) -> tuple[int, dict]:
     """代理 auth-server /register；4xx/5xx 原样透传（含密码策略 violations）。"""
     if not ENABLED:

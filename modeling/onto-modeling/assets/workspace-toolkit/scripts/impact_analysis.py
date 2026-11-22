@@ -6,22 +6,90 @@ Reuses ontology_checker's link index to answer:
 - Which action docs / mock-data files are related to this object?
 - Which operation docs call this sub-operation?
 - Which operation docs invoke this action?
+- Which diagrams/summaries need separate review (same name, links or literal formulas)?
 
 Usage:
     python3 .claude/scripts/impact_analysis.py <file_path>
     python3 .claude/scripts/impact_analysis.py <stem>           # e.g. 订单
     python3 .claude/scripts/impact_analysis.py <file_path> --json
+    python3 .claude/scripts/impact_analysis.py <file_path> --json --diagram-offset 50
 """
 
 import argparse
+import html
 import json
 import re
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
 
 from ontology_checker import load_ontology, _parse_mock_tables, _extract_object_refs
 import onto_metamodel as mm
+
+
+MAX_DIAGRAM_BYTES = 2 * 1024 * 1024
+MAX_DIAGRAM_PAGE = 100
+
+
+def _normalized_text(text: str) -> str:
+    return re.sub(r'\s+', '', html.unescape(re.sub(r'<[^>]+>', ' ', text)))
+
+
+def _formula_fragments(text: str) -> set[str]:
+    """Collect literal formula evidence, without evaluating expressions."""
+    fragments = re.findall(r'`([^`\n]+)`', text)
+    # Also cover plain-text formulas with nested calls, without requiring backticks.
+    for match in re.finditer(r'\b(?:max|min|abs|round|ceil|floor)\s*\(', text):
+        depth = 1
+        end = match.end()
+        while end < len(text) and depth:
+            depth += (text[end] == '(') - (text[end] == ')')
+            end += 1
+        if depth == 0:
+            fragments.append(text[match.start():end])
+    return {
+        _normalized_text(fragment) for fragment in fragments
+        if re.search(r'[+*/<>=-]', fragment) and len(fragment.strip()) >= 7
+    }
+
+
+def _diagram_impact(related_stems: set[str], target_doc, ontology_dir: Path) -> list[dict]:
+    """Return file handles and short reasons; never include diagram/source contents."""
+    formulas = _formula_fragments(target_doc.raw) if target_doc else set()
+    entries = []
+    for subdir, suffix in (('diagrams', '*.drawio'), ('diagrams-summary', '*.md')):
+        for path in sorted((ontology_dir / subdir).rglob(suffix)):
+            reason = '同名流程图或摘要，需另行同步' if path.stem in related_stems else ''
+            warning = ''
+            try:
+                if path.stat().st_size > MAX_DIAGRAM_BYTES:
+                    raise ValueError('文件超过扫描上限')
+                text = path.read_text(encoding='utf-8-sig')
+                if subdir == 'diagrams':
+                    root = ET.fromstring(text)
+                    if not any(True for _ in root.iter('mxGraphModel')):
+                        raise ValueError('压缩图或缺少可读取的图模型')
+                    if any(not list(page) and (page.text or '').strip() for page in root.iter('diagram')):
+                        warning = '部分图页无法完整扫描，需人工复核并另行同步'
+                    text = '\n'.join(
+                        node.get('value', '') or node.get('label', '') for node in root.iter()
+                    )
+                if not reason and any(
+                    f'[[{name}]]' in html.unescape(text) for name in related_stems
+                ):
+                    reason = '引用受影响文档，需另行复核并同步'
+                normalized = _normalized_text(text)
+                if not reason and any(formula in normalized for formula in formulas):
+                    reason = '包含目标文档中的公式，需另行复核并同步'
+            except (OSError, ET.ParseError, ValueError):
+                warning = '无法完整扫描，需人工复核并另行同步'
+            if reason or warning:
+                entries.append({
+                    'file': (Path('ontology') / path.relative_to(ontology_dir)).as_posix(),
+                    'reason': '；'.join(filter(None, (reason, warning))),
+                })
+    return entries
 
 
 def resolve_target(input_arg: str, ontology_dir: Path) -> tuple:
@@ -48,7 +116,8 @@ def resolve_target(input_arg: str, ontology_dir: Path) -> tuple:
     return input_arg, 'unknown'
 
 
-def analyze_impact(stem: str, category: str, all_docs: dict, mock_dir: Path, testcase_dir: Optional[Path] = None) -> dict:
+def analyze_impact(stem: str, category: str, all_docs: dict, mock_dir: Path, testcase_dir: Optional[Path] = None,
+                   *, diagram_offset: int = 0, diagram_limit: int = 50) -> dict:
     """Return a dict of downstream references grouped by type."""
     result = {
         'target': stem,
@@ -60,6 +129,7 @@ def analyze_impact(stem: str, category: str, all_docs: dict, mock_dir: Path, tes
         'called_by': [],        # for sub-operation: which operation calls this
         'invokes_action': [],   # for action: which operation invokes this
         'testcase_refs': [],    # operation stems whose saved testcase may need re-running
+        'diagram_refs': [],     # read-only diagram/summary handles requiring separate review
         'notes': [],
     }
 
@@ -142,6 +212,17 @@ def analyze_impact(stem: str, category: str, all_docs: dict, mock_dir: Path, tes
             if hit:
                 result['mock_refs'].append(f.stem)
 
+    related_stems = {stem, *result['operation_refs'], *result['called_by'], *result['invokes_action']}
+    diagram_entries = _diagram_impact(related_stems, all_docs.get(stem), mock_dir.parent)
+    diagram_offset = max(0, diagram_offset)
+    diagram_limit = min(MAX_DIAGRAM_PAGE, max(1, diagram_limit))
+    result['diagram_refs'] = diagram_entries[diagram_offset:diagram_offset + diagram_limit]
+    result['diagram_scan'] = {
+        'total': len(diagram_entries), 'offset': diagram_offset, 'limit': diagram_limit,
+        'next_offset': diagram_offset + diagram_limit
+        if diagram_offset + diagram_limit < len(diagram_entries) else None,
+    }
+
     # Advisory notes based on category
     if category == 'object':
         if result['operation_refs'] or result['action_refs']:
@@ -212,11 +293,20 @@ def format_report(result: dict) -> str:
             '这些测试数据文件字面出现了目标名，修改后可能需同步更新。')
     section('相关追踪场景', result['testcase_refs'],
             '这些逻辑已保存追踪场景（ontology/testcase/），修改目标后建议重新运行 /ontology-trace 验证场景仍然有效。')
+    section('流程图及摘要（需另行同步）',
+            [f"{entry['file']}：{entry['reason']}" for entry in result['diagram_refs']],
+            '本次更新不会自动修改这些资源；应用文档变更前请确认单独同步安排。')
+    scan = result['diagram_scan']
+    if scan['next_offset'] is not None:
+        lines.extend([
+            f"流程图候选共 {scan['total']} 项，请使用 --diagram-offset {scan['next_offset']} "
+            f"--diagram-limit {scan['limit']} 继续读取。", '',
+        ])
 
     ref_keys = ('operation_refs', 'action_refs', 'object_refs', 'mock_refs',
                 'called_by', 'invokes_action', 'testcase_refs')
-    if not any(result[k] for k in ref_keys):
-        lines.append('**无任何下游引用。** 可以安全修改。')
+    if not any(result[k] for k in ref_keys) and not scan['total']:
+        lines.append('**静态扫描未发现下游引用。** 仍需复核流程图中的业务语义关联。')
         lines.append('')
 
     if result['notes']:
@@ -235,6 +325,8 @@ def main():
     parser.add_argument('target', help='File path or stem (e.g. ontology/object/订单.md or 订单)')
     parser.add_argument('--ontology-dir', default='ontology', help='Ontology root directory')
     parser.add_argument('--json', action='store_true', help='Output JSON instead of markdown')
+    parser.add_argument('--diagram-offset', type=int, default=0, help='Diagram candidate offset')
+    parser.add_argument('--diagram-limit', type=int, default=50, help='Diagram page size (1-100)')
     args = parser.parse_args()
 
     ontology_dir = Path(args.ontology_dir)
@@ -247,7 +339,8 @@ def main():
     mock_dir = ontology_dir / 'data-mock'
     testcase_dir = ontology_dir / 'testcase'
 
-    result = analyze_impact(stem, category, all_docs, mock_dir, testcase_dir=testcase_dir)
+    result = analyze_impact(stem, category, all_docs, mock_dir, testcase_dir=testcase_dir,
+                            diagram_offset=args.diagram_offset, diagram_limit=args.diagram_limit)
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))

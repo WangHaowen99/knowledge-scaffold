@@ -17,7 +17,10 @@ CONTRACT = "knowledge-provider/v1"
 WRITE_FEATURES = frozenset({
     "kbs.write", "kbs.reprocess", "ingest.file", "ingest.text", "ingest.url", "documents.delete",
     "documents.reprocess", "documents.cancel", "wiki.write", "questions", "profile", "uploads",
+    "actions", "settings", "folders.delete",
 })
+# what a backend declares about its v1.1 mechanisms; handed to the knowledge-base page as is
+DECLARATIONS = ("actions", "views", "settings_schema", "search_options_schema", "export_formats")
 
 
 class UpstreamError(Exception):
@@ -83,7 +86,30 @@ class Backend:
             "file_types": self.capabilities.get("file_types") or [],
             "limits": self.capabilities.get("limits") or {},
             "config_schema": self.capabilities.get("config_schema"),
+            **{key: self.declared(key) for key in DECLARATIONS},
         }
+
+    def declared(self, key: str) -> Any:
+        """A v1.1 declaration (contract section 9); empty when the feature it belongs to is not offered."""
+
+        value = self.capabilities.get(key)
+        if key == "actions" and not self.has("actions"):
+            return []
+        if key == "settings_schema" and not self.has("settings"):
+            return None
+        if key == "search_options_schema" and not self.has("search.options"):
+            return None
+        if key in {"actions", "views", "export_formats"}:
+            return value if isinstance(value, list) else []
+        return value if isinstance(value, dict) else None
+
+    def entry(self, key: str, entry_id: str, scope: str) -> dict | None:
+        """The declared action or view with this id for this scope (``kb`` or ``document``)."""
+
+        for item in self.declared(key):
+            if isinstance(item, dict) and item.get("id") == entry_id and item.get("scope") == scope:
+                return item
+        return None
 
     def ref(self) -> dict:
         return {"id": self.id, "label": self.config.label, "type": self.type}

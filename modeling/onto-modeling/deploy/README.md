@@ -20,12 +20,12 @@ onto-modeling/
 ```bash
 tar -xzf onto-modeling-<version>-linux-<arch>.tar.gz
 cd onto-modeling
-./deploy.sh          # 首次运行会生成 .env 并提示填写模型网关配置
-vi .env              # 填 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN
-./deploy.sh          # 再次运行完成部署
+cp .env.example .env
+vi .env              # 默认 Auth 契约已填；实际契约不同时修改
+./deploy.sh
 ```
 
-访问 `http://<部署机地址>:5100`（端口可用 `ONTO_WEB_PORT` 覆盖）。
+首次安装可以先于 Auth 和 Consumer。Auth URL、共享网络、issuer、audience 默认分别为 `http://auth-server:5056`、`onto-auth-network`、`http://auth-server:5056`、`knowledge-scaffold`；旧 `.env` 中缺失或留空时，脚本会补齐。若实际 Auth 契约不同，须在首次安装前改成真实值。`deploy.sh` 在共享网络尚不存在时建立带 `auth.shared=true` 标签的网络，并将依赖状态写到本目录 `.dependencies.json`；若 Auth 尚未上线，Onto 进程会持续等待，页面暂不可用。Auth 和 Consumer 上线后执行 `bash deploy.sh --verify-dependencies`；该命令检查依赖及 Onto、Hub、评测三个 HTTP 服务，不重建容器。Consumer 安装时设置相同的 `AUTH_SHARED_NETWORK`。Hub、评测包各自的 `deploy.sh` 使用 `CONSUMER_NETWORK` 指向同一网络，允许它们在 Consumer 之前安装。三包首次独立安装可依次部署 Onto、Hub、评测；需预先对齐 Onto 的 `ONTO_HUB_SERVICE_TOKEN` 与 Hub 的 `HUB_SERVICE_TOKEN`、评测的 `EVAL_HUB_SERVICE_TOKEN` 与 Hub 的 `HUB_EVALUATION_SERVICE_TOKEN`、评测的 `EVAL_MODELING_SERVICE_TOKEN` 与 Onto 的 `ONTO_EVALUATION_SERVICE_TOKEN`。Consumer 安装时把 `EVALUATION_SERVICE_TOKEN` 设成评测的 `EVAL_CONSUMER_SERVICE_TOKEN`，其值不能与 Consumer 的 `MODELING_SERVICE_TOKEN` 相同。等 Consumer 安装并完成自身验收后，再执行建模依赖验证和一条真实评测用例。已有 Onto 容器或数据卷的升级仍要求 Auth 和 Consumer 预先就绪。
 
 首次运行时 deploy.sh 在 `.env` 里生成四项，已有的值不动：初始管理员密码 `AUTH_BOOTSTRAP_ADMIN_PASSWORD`（登录名 admin）、
 auth-server 管理令牌 `ONTO_WEB_AUTH_ADMIN_TOKEN`（auth-server 与后端读同一个值，运维中心「用户与审计」靠它），
@@ -154,12 +154,14 @@ SIGILL 崩溃。`preflight.sh` 会检查；未通过时按优先级整改：
 
 ## 接入既有账号中心（单点账号）
 
-onto-modeling 默认自带独立 auth-server。若要与 consumer / modeling 栈共用同一
-用户库（账号密码即刻通用），在 `.env` 里加两行后重跑 `./deploy.sh`：
+Onto 包不包含 Auth。先装 Onto 时可沿用默认契约；Auth 装好后实际签发身份必须与预期值一致。自定义网络或签发身份须在首次安装前修改 `.env`；升级时沿用原身份值：
 
 ```
 ONTO_MODELING_AUTH_URL=http://auth-server:5056
-ONTO_MODELING_EXTERNAL_AUTH_NETWORK=consumer_onto-agent-network
+ONTO_MODELING_EXTERNAL_AUTH_NETWORK=onto-auth-network
+ONTO_MODELING_CONSUMER_URL=http://backend:5055
+ONTO_WEB_AUTH_ISSUER=http://auth-server:5056
+ONTO_WEB_AUTH_AUDIENCE=knowledge-scaffold
 ```
 
 deploy.sh 会停用自带 auth-server、让应用容器加入 consumer 栈网络，直接复用其

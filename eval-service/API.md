@@ -22,7 +22,8 @@
 | `GET /packages/{id}/releases/{rid}/solver-operations` | 该版本启用的求解操作：solver_key、title、decision_model、profile_id、input_schema（不超过 16 KiB，超出时只给 input_schema_truncated）；最多 64 项，供编辑求解验证集 |
 | `GET/POST /eval-sets`、`/data-sources`、`/solver-sets` | 用户定义列表和创建 |
 | `GET/PUT/DELETE /eval-sets/{id}`、`/data-sources/{id}`、`/solver-sets/{id}` | 读取、带 revision 更新、删除定义；不改历史快照。数据源读取额外返回 connection_view、secret_configured 和 inputs 文件元数据，不返回凭据值 |
-| `POST /data-source-inspections` | provider、connection、可选 data_source_id；从 Scene 对应数据库读取表字段，返回 inspection_id、schema、tables、read_at。固定只读元数据查询，不接受客户端 SQL |
+| `POST /data-source-tests` | provider 为 nl2sql_http 或 nl2sql_template，connection、可选 data_source_id；使用固定 SELECT 1 测试连接，返回 success、message、tested_at，不保存配置 |
+| `PUT /data-sources/{id}/scope` | revision 及该 Provider 的隔离范围：Neo4j 为 workspace_property、workspace_value、ontology_property，NL2SQL 为 evaluation_workspace_id。只改这几项，其余配置与凭据不变，修订号加一；对应值须小写字母开头、最多 64 个字符；导入图数据时 Ontology 隔离字段必填；非外部连接返回 scope_unsupported（422）。保存数据源时这几项可暂空，准备评测时缺少返回 scope_required（422） |
 | `POST /data-source-previews` | data_source_id、package_ref；只读预览对象绑定、实体实例与关系数量、缺失列、警告和截断标志；不发布或写入外部数据 |
 | `POST /graph-import-checks` | data_source_id、package_ref、可选 preparation_id；只读检查 Workspace 与 Ontology 同时匹配的节点、范围内关系和跨范围关系，返回 id、scope、计数、expires_at、import_state；启动用检查必须绑定 preparation_id |
 | `POST /inputs` | multipart file，CSV/XLSX，返回受控句柄和摘要 |
@@ -49,9 +50,15 @@
 | `GET /runs/{id}/carryover` | 本轮文件带上的历史轮次（`preview=false`）；反馈轮次待负责人确认时，返回现在确认会带上的轮次（`preview=true`）。`carryover` 含 `rounds[{run_id,version,handed_at,cases,items,legacy}]` 与 `slid_out[{run_id,version}]`，没有时为 null |
 | `POST /runs/{id}/artifacts/regenerate` | 已停止且有用例结果的任务重新生成报告与优化建议，修订号加一；执行中返回 run_active（409）。可带 `X-Refresh-Token`，排队中的优化建议到期前自动续期。反馈轮次收集中时先封板；用调用者登录读取知识包生成建议，判分模型为默认配置；版本未发布到 Hub 时返回 release_unpublished（409） |
 | `POST /runs/{id}/notifications/retry` | 立即重发该任务最新一条完成通知（含已被拒收和已失败的），重新计数；已送达的只返回状态；未配置通知凭据返回 notification_disabled（409）。反馈轮次待负责人确认时，请求体 `{"decision":"confirm"}` 确认并通知建模（向 Hub 查出该版本的 release_id），`{"decision":"dismiss","reason":"…"}` 驳回。确认时若优化建议还没生成或已过期，先重新生成并在 `optimization.handover` 记下交付请求，返回的状态仍为 `awaiting_review`；同一知识包所有提交了交付的轮次都生成完后，按收到先后自动交付。交付时若有同一知识包已交付、建模还未处理的反馈轮次，报告、回答、上下文和建议拼接后以新修订重写，再通知建模 |
-| `POST /runs/{id}/modeling-result` | 建模回写处理结果：request_id、outcome（done / failed）、done 时 release_id、可选 note（≤2000 字）。done 时用调用者登录向 Hub 核对版本存在且不是被评测的版本（release_not_found / same_release，422）；轮次须已交给建模（invalid_state，409）；同一 request_id 重试返回原结果。本轮推送带上的、仍待处理的历史轮次记为同样的结果（`result.via` 为本轮 ID，note 注明“随某轮一起处理”），重试时补齐未完成的部分。只记录，不触发评测 |
+| `POST /runs/{id}/modeling-result` | 建模回写处理结果：request_id、outcome（done / failed / resolved）、done 时 release_id、可选 note（≤2000 字）。done 时用调用者登录向 Hub 核对版本存在且不是被评测的版本（release_not_found / same_release，422）；resolved 表示建模核对后最新版本已不存在这些问题、没有发布新版本，可带核对的版本 release_id（可以就是被评测的版本，同样向 Hub 核对存在），与 done 一样记为 `modeling_done`；轮次须已交给建模（invalid_state，409）；同一 request_id 重试返回原结果。本轮推送带上的、仍待处理的历史轮次记为同样的结果（`result.via` 为本轮 ID，note 注明“随某轮一起处理”），重试时补齐未完成的部分。只记录，不触发评测 |
 | `GET /internal/feedback-signals/health` | 消费侧连通性检查：令牌要求同 `/internal/feedback-signals`；先校验服务令牌（不符 403 `service_forbidden`，此时不调用账号服务），再校验用户令牌（无效 401 `invalid_identity`，需先改密码 403 `account_action_required`，账号服务不可用 503 `dependency_unavailable`）；反馈接收关闭时也返回 200，`feedback_enabled=false`；返回 `status`、`feedback_enabled`、认得的信号格式 `accepted_schemas` 和 `server_time`（UTC）；不加跨域头 |
 | `POST /internal/feedback-signals` | 消费推送反馈：`Authorization` 为提交者的用户令牌，`X-Eval-Service-Token` 为消费服务凭据（`EVAL_FLYWHEEL_SERVICE_TOKEN`，错误返回 service_forbidden 403）。请求体 `{"schema":"consumer-feedback-signal-batch.v1","signals":[…]}`，每批 1–50 条 FeedbackSignal v1（未知字段忽略，单条 ≤256 KB）。返回 202 与逐条 `accepted` / `duplicate` / `rejected`（schema_invalid、actor_mismatch、signal_too_large）/ `conflict`（payload_mismatch）。`EVAL_FEEDBACK_ENABLED` 未开启时 feedback_disabled（503）；用户令牌无效 invalid_identity（401） |
+| `POST /delegations` | 建模服务为数据飞轮登记委托：同时带 `X-Modeling-Service-Token` 与用户登录。ontology_id、expires_in（60 秒到 3650 天）、delegation（建模生成的随机句柄，43 到 128 个 URL 安全字符；建模在登记前先记下它，答复丢失时仍能凭它撤销；已登记的句柄不能再次登记，返回 delegation_conflict（409））；可带 `X-Refresh-Token`，评测服务据此换出一份本委托专用的登录，用 `EVAL_ENCRYPTION_KEY` 加密保存，转交的令牌本身不落盘；刷新令牌不属于当前登录账号时返回 identity_mismatch（401）。返回 delegation（即该句柄，服务端只存摘要）、expires_at、login（是否保存了登录） |
+| `POST /delegations/current/renewal` | 服务凭据、`X-Evaluation-Delegation` 及登记时同一账号的登录；expires_in。从现在起重新计算有效期，保留已保存的登录 |
+| `DELETE /delegations/current` | 服务凭据与 `X-Evaluation-Delegation`；幂等销毁委托及其保存的登录 |
+| `POST /runs/{id}/reruns` | request_id（不超过 96 字符，准备请求用 request_id 加 `-prep`）、package_ref、可选 replace_existing_graph 与 graph_confirmation_code。沿用该数据评测的评测集、数据源、模型与并发评测同一知识包的另一版本；求解验证返回 not_applicable（409）。可用用户登录（可带 `X-Refresh-Token`）或委托发起：委托发起时以保存的登录执行，未保存返回 login_missing（401），登录已作废返回 login_expired（401）。Neo4j 导入先检查图范围：`import_state` 为 unchanged 时直接沿用；范围内正是该用户某轮评测导入后的原样数据（图快照与导入回执一致）时自动替换；否则返回 graph_confirmation_required（409，消息含节点与关系数量），提示的 `details.confirmation_code` 是由当时范围内数据算出的确认码；由用户本人用同一 request_id 带 replace_existing_graph=true 与所确认提示的 graph_confirmation_code 确认，委托带 replace_existing_graph 返回 403。确认只删除那次提示显示的数据：缺少确认码或此后范围内数据有变化时再次返回 graph_confirmation_required 与新的确认码，按新的数量重新确认；跨范围关系仍返回 graph_boundary_conflict |
+
+数据飞轮的委托读取不带用户令牌，只带服务凭据与 `X-Evaluation-Delegation`。只有 `GET /runs/{id}`、`GET /package-evaluations`、`GET /runs/{id}/artifacts/{name}` 接受委托读取，并且只能读委托登记的知识包里用户本人的评测轮次，以及该知识包中由本人确认交给建模的消费反馈轮次（`GET /runs/{id}` 与产物，供数据飞轮在用户不在时优化）；`origin=all` 的列表仍不返回消费反馈轮次（要用用户登录向 Hub 核对可见性）。其他接口仍要求用户登录。委托到期由每分钟一次的维护清理；保存的登录每 12 小时或剩余有效期过半时续期，账号服务拒绝续期时删除该登录，后台不再发起评测，委托读取照常。账号服务退出登录时吊销该用户已签发的全部刷新令牌，所以用户在任一设备退出登录、改密码或账号被删除，都会让这份登录作废，用户重新授权后恢复。账号服务不能单独作废某个刷新令牌：销毁委托后，此前若已泄露的副本仍会在其有效期内有效，直到用户退出登录或改密码。
 
 评测停止、人工改判或重新生成后，评测服务按修订号生成报告与优化建议（只保留最新修订）：报告、回答和上下文立即生成，优化建议在单独的队列排队（`artifacts.queue` 为前面还有几个），不会挡住其他轮次的报告。完成后向建模服务 `POST /api/internal/evaluation/notifications` 发送完成通知，服务凭据放在 `X-Evaluation-Service-Token` 头。通知先写入本地发件箱再投递，失败按指数退避重试（最长 1 小时），400/413/422 视为拒收不再自动重试；401/403/404 重试 3 次、其他错误累计 `EVAL_NOTIFICATION_MAX_ATTEMPTS`（默认 30）次后置为 failed，页面提示检查建模地址和通知凭据；建模服务按 run_id 与 sequence 去重。通知只含版本、状态、得分汇总、`origin` 与 `optimization`，不含报告正文，建模服务查看时以用户自己的登录读取。通知带 run_type（data / solver）；求解验证另带 solver_summary（total、passed、failed、first_failure_code、first_failure_message），只生成确定性的修复指引，不排队生成优化建议。反馈轮次在负责人确认后才通知，`owner` 为确认人，且须开启 `EVAL_NOTIFY_FEEDBACK_RUNS`。
 
@@ -65,7 +72,9 @@
 
 Hub 查询默认每页 20、最多 100；本地列表每页 20，按 next_offset 翻页。用例列表截短问题/理由，完整答案单独读取。映射预览最多 20 个对象，有 truncated 标志。consumer 单次响应最多 2 MiB、事件索引源最多 1 MiB/输出最多 100 项；超限明确失败，不伪装成完整结果。
 
-新表单的 NL2SQL 数据源保存传 inspection_id，结构由服务端读取结果填入；句柄须属于当前主体且与 Provider / 连接指纹一致，不能把旧库结构套用到新连接。每次读取最多 100 张表、每表 256 字段，每批响应最多 1 MiB；空结构、权限失败、重复分页或超限明确报错。外部服务地址和凭据不进入错误正文。旧客户端的 connection / tables 请求仍按原契约处理。
+两类 NL2SQL Provider 通过 `POST /data-source-tests` 测试当前连接：请求体仅接受 `provider`、`connection` 和可选的自有 `data_source_id`。编辑已有配置时，Token 留空沿用已保存值；地址变化时不能沿用旧凭据。服务向规范化后的地址调用 `POST /api/v1/sql`，请求体固定为 `{"scene":"<当前 Scene>","sql":"SELECT 1"}`，超时 10 秒、响应上限 64 KiB。仅对端明确返回 `success: true` 视为通过；网络或 HTTP 失败返回 `connection_unavailable`（503），业务拒绝或协议异常返回 `connection_test_failed`（422）。错误不回显对端正文、地址或凭据。测试不创建数据源、不保存结构，也不修改配置。
+
+NL2SQL 外部连接在预览和准备阶段始终沿用知识包既有映射，忽略旧记录或客户端携带的 `tables` 与旧文件选择；不生成派生评测快照。外部 SQL 导入仍被拒绝。已有 dataset 和 Neo4j 图导入按其数据表生成映射。
 
 Neo4j 查询模式允许无 tables；导入模式需要文件和明确的 import_data。表单支持 workspace_property / workspace_value / ontology_property，ontology_value 在执行时由固定知识包补入。新建表单默认 `d2o_workspace_id` / `d2o_ontology_id`，与 consumer 图数据的范围字段一致；保存时 workspace_property 留空按 `d2o_workspace_id` 处理。图导入预览最多 100 个对象、100 条关系与 20 条提示，truncated 标记不完整结果。节点实例按主键去重；关系按源 / 目标主键与关联字段统计，预览不提交任何图写入。
 
@@ -73,7 +82,8 @@ Neo4j 查询模式允许无 tables；导入模式需要文件和明确的 import
 
 导入完成后在图中的回执节点记录本次数据与映射的指纹及导入后的节点、关系快照（含标签、关系类型与属性的摘要，属性只参与计算，不保存也不返回）。`import_state` 对比准备结果与回执：`empty` 范围为空；`unchanged` 数据、映射与图快照均一致，启动时不删除也不导入；`data_changed` 上传文件变化；`mapping_changed` 文件未变而对象映射或关系变化；`graph_changed` 导入后图数据被增删或属性被修改、出现跨范围关系，或无法确认未被修改；`unrecorded` 范围内数据没有导入回执；`unknown` 检查未绑定准备结果。除 `empty`、`unchanged` 外须确认替换（`replace_existing_graph`），不能沿用图中现有数据。
 
-Neo4j 导入使用配置的 Workspace 值与知识包 Ontology 值同时匹配。`graph-import-checks` 使用固定只读查询，不接受客户端 Cypher，返回值只有范围、计数和受控检查句柄，不返回节点属性或凭据。检查最多 10 万个节点、20 万条关系，有效期 10 分钟；句柄绑定当前用户、准备结果和冻结数据源。存在跨范围关系时拒绝替换，未确认时不删除也不导入。执行前核对图范围指纹，变化时返回 graph_scope_changed 并中断；清理范围内关系、删除节点和导入在同一事务中完成。导入回执与数据同事务保存，恢复先查回执，避免因提交响应丢失再次删除新数据。旧的 eval_<run_id> 图范围保持原样，不纳入配置范围的替换。缺检查、未确认、过期、范围冲突分别返回 graph_check_required、graph_confirmation_required、graph_check_expired、graph_boundary_conflict（409）。
+Neo4j 导入使用配置的 Workspace 值与知识包 Ontology 值同时匹配。导入写入图中的对象名、字段名与主键与 consumer 查询规则一致：语句中一律用反引号引用，可含中文与全角标点，禁止反引号、反斜杠（可能构成 Cypher Unicode 转义）、控制字符与首尾空白，最多 128 个字符；准备评测时即检查，不合规返回 invalid_graph_name（422）并指出是哪一个名称。关系名中的反引号转义后照常导入，含反斜杠、控制字符或超过 256 个字符时返回 invalid_relation_type（422）。Workspace / Ontology 隔离字段仍须为字母、数字、下划线或汉字。`graph-import-checks` 使用固定只读查询，不接受客户端 Cypher，返回值只有范围、计数和受控检查句柄，不返回节点属性或凭据。检查最多 10 万个节点、20 万条关系，有效期 10 分钟；句柄绑定当前用户、准备结果和冻结数据源。存在跨范围关系时拒绝替换，未确认时不删除也不导入。执行前核对图范围指纹，变化时返回 graph_scope_changed 并中断；清理范围内关系、删除节点和导入在同一事务中完成。导入回执与数据同事务保存，恢复先查回执，避免因提交响应丢失再次删除新数据。旧的 eval_<run_id> 图范围保持原样，不纳入配置范围的替换。缺检查、未确认、过期、范围冲突分别返回 graph_check_required、graph_confirmation_required、graph_check_expired、graph_boundary_conflict（409）。
+
 
 同一图数据范围的活动导入评测互斥，冲突返回 graph_scope_busy（409），提示不暴露其他账号或任务身份。恢复已完成图导入的任务时还会核对当前范围的导入回执；被后续任务替换时要求重新创建评测，避免旧任务继续读取新一轮的数据。
 
@@ -106,7 +116,7 @@ Neo4j 导入使用配置的 Workspace 值与知识包 Ontology 值同时匹配�
 
 ### 关系结构检查（Issue #367）
 
-`POST /package-preparations`、使用旧准备结果创建 `POST /runs`、包拉取及映射生成均检查原始对象关系。关系名保持读取兼容，自关联允许；重复身份由源对象、关系名、目标对象及两端关联字段组成。结构错误返回 HTTP 422，`code=EVALUATION_PACKAGE_INVALID`、`phase=package_validation`；`details.problems` 含对象文档路径、行号及原因（最多 100 项），`details.total` 为总数。准备结果中的 `relation_validation` 包含 `rule_version` 和 `package_digest`。该记录仅由服务端生成，不接受客户端声明已校验。
+`POST /package-preparations`、使用旧准备结果创建 `POST /runs`、包拉取及映射生成均检查原始对象关系。关系名保持读取兼容，自关联允许；重复身份由源对象、关系名、目标对象及两端关联字段组成，只在同一对象文档内重复时报错；源对象和目标对象文档各声明一次视为同一关系，合并为一条。结构错误返回 HTTP 422，`code=EVALUATION_PACKAGE_INVALID`、`phase=package_validation`；`details.problems` 含对象文档路径、行号及原因（最多 100 项），`details.total` 为总数。准备结果中的 `relation_validation` 包含 `rule_version` 和 `package_digest`。该记录仅由服务端生成，不接受客户端声明已校验。
 
 ### 查询题执行依据校验（Issue #382）
 

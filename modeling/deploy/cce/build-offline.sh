@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   echo 'Usage: build-offline.sh <version> <amd64|arm64> [output.tar.gz] [--cleanup-images]' >&2
-  echo '  --cleanup-images removes only the five local images built for this version after packaging.' >&2
+  echo '  --cleanup-images removes only the three local images built for this version after packaging.' >&2
 }
 
 if [ "${1:-}" = '-h' ] || [ "${1:-}" = '--help' ]; then
@@ -42,10 +42,8 @@ python3 "$script_dir/package-cce.py" \
 
 if [ "$cleanup_images" -eq 1 ]; then
   docker image rm \
-    "modeling-offline/modeling:$version" \
-    "modeling-offline/modeling-agent:$version" \
     "modeling-offline/onto-modeling:$version" \
     "modeling-offline/knowledge-hub:$version" \
     "modeling-offline/evaluation:$version"
-  echo "Removed only the five local CCE images for version $version."
+  echo "Removed only the three local CCE images for version $version."
 fi

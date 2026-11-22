@@ -3,6 +3,14 @@ cluster:
   context: customer-demo
 stateDir: ./customer-state
 compatibilityFile: ./compatibility-verified.yaml
+# 三方联合部署按 Auth → Consumer → Modeling 执行；仅部署两方时删除整个 auth 段。
+# image 必须替换为上传仓库后的真实 manifest digest。
+auth:
+  package: ./onto-auth-example-amd64.tar.gz
+  releaseName: auth
+  namespace: onto-consumer
+  values: ./auth-values.yaml
+  image: registry.example.com/auth@sha256:0000000000000000000000000000000000000000000000000000000000000000
 consumer:
   package: ./consumer-cce-example-amd64.tar.gz
   releaseName: consumer

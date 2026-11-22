@@ -7,23 +7,20 @@
 # 用法：
 #   deploy/redeploy-app.sh v0.13.4              # 构建 onto-modeling:v0.13.4 并替换容器
 #   deploy/redeploy-app.sh v0.13.3 --no-build   # 镜像已存在，只替换容器
-#   deploy/redeploy-app.sh v0.13.4 --with-auth  # auth-server 有改动时一并重建
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-REPOSITORY_ROOT="$(cd "${PROJECT_ROOT}/../.." && pwd)"
 # 默认指向本机解包出的部署目录；其他位置经环境变量覆盖
 DEPLOY_DIR="${ONTO_MODELING_DEPLOY_DIR:-${PROJECT_ROOT}/dist/deploy/onto-modeling}"
 
-[ -n "${1:-}" ] || { echo "Usage: $(basename "$0") <version-tag> [--no-build] [--with-auth]" >&2; exit 1; }
+[ -n "${1:-}" ] || { echo "Usage: $(basename "$0") <version-tag> [--no-build]" >&2; exit 1; }
 VERSION="$1"; shift
-NO_BUILD=0; WITH_AUTH=0
+NO_BUILD=0
 for arg in "$@"; do
     case "${arg}" in
         --no-build) NO_BUILD=1 ;;
-        --with-auth) WITH_AUTH=1 ;;
         *) echo "Unknown option: ${arg}" >&2; exit 1 ;;
     esac
 done
@@ -56,7 +53,7 @@ else
     }
 fi
 
-# 更新部署目录镜像清单；auth-server 仅在 --with-auth 时跟进
+# 更新部署目录镜像清单
 sed -i "s|^ONTO_WEB_IMAGE=.*|ONTO_WEB_IMAGE=onto-modeling:${VERSION}|" "${DEPLOY_DIR}/images.env"
 sed -i "s|^RELEASE_VERSION=.*|RELEASE_VERSION=${VERSION}|" "${DEPLOY_DIR}/images.env"
 if grep -q '^CONNECTOR_GATEWAY_IMAGE=' "${DEPLOY_DIR}/images.env"; then

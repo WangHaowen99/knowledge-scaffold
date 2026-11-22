@@ -199,3 +199,49 @@
 .da-history-meta { display: flex; gap: 6px; align-items: center; font-size: var(--font-size-xs); color: var(--color-text-secondary); margin-top: 2px; }
 .da-history-del { position: absolute; right: 4px; top: 6px; visibility: hidden; }
 .da-history-item:hover .da-history-del { visibility: visible; }
+
+/* what DA delivers or reports inside a turn: todo list, sub-agent progress, pushed cards and files */
+.da-panel { border: 1px solid var(--color-border-default); border-radius: var(--radius-md); padding: 6px 10px; margin-bottom: 6px; }
+.da-panel-head { display: flex; align-items: center; gap: 6px; font-size: var(--font-size-xs); color: var(--color-text-secondary); }
+.da-panel-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text-primary); font-weight: 500; }
+.da-todo, .da-flow { list-style: none; margin: 6px 0 2px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.da-todo li, .da-flow li { display: flex; align-items: center; gap: 7px; font-size: var(--font-size-sm); min-width: 0; }
+.da-todo li svg, .da-flow li svg, .da-todo li .spinner, .da-flow li .spinner { flex: none; }
+.da-todo-completed span { color: var(--color-text-secondary); }
+.da-todo-cancelled span { color: var(--color-text-secondary); text-decoration: line-through; }
+.da-st-done { color: var(--color-feedback-success); }
+.da-st-failed { color: var(--color-feedback-danger); }
+.da-st-off { color: var(--color-text-secondary); }
+.da-flow-agent { flex: none; font-weight: 500; }
+.da-flow-task { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text-secondary); font-size: var(--font-size-xs); }
+.da-flow code { font-family: var(--font-mono); font-size: 11px; color: var(--color-text-secondary); }
+.da-push { border: 1px solid var(--color-border-default); border-radius: var(--radius-md); margin: 8px 0; overflow: hidden; }
+.da-push-head {
+  display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: var(--font-size-xs); color: var(--color-text-secondary);
+  background: var(--color-surface-page); border-bottom: 1px solid var(--color-border-default);
+}
+.da-push-body { padding: 8px 12px; position: relative; }
+.da-push-folded { max-height: 320px; overflow: hidden; }
+.da-push-folded::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 48px;
+  background: linear-gradient(transparent, var(--color-surface-card));
+}
+.da-push-toggle { display: block; padding: 0 12px 8px; }
+.da-push-text { white-space: pre-wrap; word-break: break-word; font-size: var(--font-size-sm); line-height: 1.7; }
+.da-push-code {
+  margin: 0; font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; word-break: break-word;
+  background: var(--color-surface-muted); border-radius: var(--radius-sm); padding: 8px;
+}
+.da-push-img { max-width: 100%; border-radius: var(--radius-sm); }
+.da-push-table { overflow-x: auto; }
+.da-push-table table { border-collapse: collapse; font-size: var(--font-size-sm); }
+.da-push-table th, .da-push-table td { border: 1px solid var(--color-border-default); padding: 4px 8px; text-align: left; vertical-align: top; }
+.da-push-table th { background: var(--color-surface-muted); font-weight: 500; }
+.da-files { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+.da-file {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: var(--font-size-sm);
+  border: 1px solid var(--color-border-default); border-radius: var(--radius-md);
+}
+.da-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.da-file .muted { font-size: var(--font-size-xs); }
+.da-file .icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }

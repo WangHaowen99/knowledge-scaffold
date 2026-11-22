@@ -38,9 +38,10 @@
   这三把密钥同时是调用 kb-gateway 的密钥（`KBGW_KEYS` 按变量名引用，能力相同）；gateway 调 kb-service 时用 `KBS_PLUGIN_KEY`，原样转发 DA 工具时用 `KBS_DA_KEY`。
 
   密钥绑定的租户取 `DA_TENANT_ID`（默认 `default`），gateway、DA 和 Loop Forest 也用同一个值。第一次 `up` 之后再改它，要先删掉 `keys.env` 重新生成，否则 kb-service 会拒绝 gateway 的请求。
-- **`gateway.env`**：`up` 时生成，`KBGW_WEKNORA_ADAPTER_KEY`、`KBGW_DA_ADAPTER_KEY` 是 gateway 访问两个适配服务的密钥。
+- **`gateway.env`**：`up` 时生成，`KBGW_WEKNORA_ADAPTER_KEY`、`KBGW_DA_ADAPTER_KEY` 是 gateway 访问两个适配服务的密钥。可选的 `KBS_GATEWAY_BACKENDS` 指向本部署自己的后端清单（绝对路径），不设时用仓库里的 `gateway/backends.yaml`；要换默认后端又不想影响同一工作树的其他部署时用它。
 - **`weknora.env`**：`up`（或单独的 `up-weknora`）生成 WeKnora 实例的数据库、Redis、加密密钥和管理员密码，初始化后再写入 `WEKNORA_API_KEY` 和两个模型 id。
 - **`da-kb.env`**：`up-da-kb` 生成 DA 知识管线的数据库密码。DA 的模型地址和密钥写在它自己的数据库里（`da-kb/providers.py`）。
+- **`deploy.env`**（可选，不含密钥）：这套环境用哪个 Swarm 镜像（`SWARM_TAG`），插件从哪个目录挂载（`KB_PLUGINS_SRC`）。`./kbsuite.sh build-plugin` 把插件后端和构建好的页面放进 `KB_PLUGINS_SRC`。线上指向发布快照目录，测试栈指向自己的目录，开发时重建页面不会改到线上正在用的那份。不设置时用仓库里的插件目录。
 
 ## 操作
 
@@ -83,7 +84,7 @@ export PATH=/usr/bin:$PATH      # 让 docker 指向 /usr/bin/docker（Docker Des
 设计和取舍见 `docs/decisions/knowledge-gateway.md`，后端要实现的接口见 `contracts/knowledge-provider/v1/README.md`。
 
 - **谁连 gateway**：Swarm 的两个插件（`KB_SERVICE_URL`）、主 agent 的 MCP 连接器（`KBS_MCP_URL`）、DA-java 的知识服务插槽（`da/kbs-tools.yml`）、Loop Forest（`LF_KB_MCP_URL`），以及 DA、Loop Forest 作为团队成员时取知识库清单的地址，都指向 `kb-gateway:8080`。
-- **后端清单**：`gateway/backends.yaml`，静态配置。WeKnora 是默认后端：新建知识库不选后端时建在 WeKnora，页面上也默认选它。kb-service 的 ID 不带前缀，换默认后端不影响它已有的知识库；WeKnora 的 ID 以 `wk_` 开头，DA 知识管线以 `da_` 开头。DA 知识管线标了 `optional: true`：没部署时不出现在页面上；部署后只要连上过一次，之后再断开就会在知识库页提示「暂不可用」。
+- **后端清单**：`gateway/backends.yaml`（或 `KBS_GATEWAY_BACKENDS` 指定的文件），静态配置。WeKnora 是默认后端：新建知识库不选后端时建在 WeKnora，页面上也默认选它。kb-service 的 ID 不带前缀，换默认后端不影响它已有的知识库；WeKnora 的 ID 以 `wk_` 开头，DA 知识管线以 `da_` 开头。DA 知识管线标了 `optional: true`：没部署时不出现在页面上；部署后只要连上过一次，之后再断开就会在知识库页提示「暂不可用」。
 - **跨后端**：知识库页新建知识库时可以选后端；「知识求索」页和 MCP 可以同时选不同后端的知识库，检索时 gateway 并行查询、按排名融合，某个后端失败时其余结果照常返回。
 - **gateway 不读正文**：逐行查找、按标题取章节和锚点、分块上传都由各后端实现（统一接口集的 `grep`、`content.structure`、`uploads`），gateway 只转发、换算数据格式、合并多个后端的结果。
 - **前端按能力显示**：每个知识库带 `backend` 和 `features`。不支持的页签（如 Wiki）、按钮（如取消、问题生成、导入网页）不显示；上传提示和可选文件类型取自后端声明；非 kb-service 后端的设置页按它的 `config_schema` 生成。
@@ -112,14 +113,21 @@ WEKNORA_REPO=<WeKnora 克隆> ./kbsuite.sh build-weknora-config   # 导出 WeKno
 DeepAnalyze 原版（TypeScript）的源码不在本仓库，镜像从外部源码目录构建，只跑后端：
 
 ```bash
-DA_TS_SRC=<DeepAnalyze 源码目录> ./kbsuite.sh build-da-kb
+DA_TS_SRC=<DeepAnalyze 源码目录> DA_KB_FULL=1 DA_KB_TAG=full ./kbsuite.sh build-da-kb   # 带解析器的完整版
+./kbsuite.sh build-da-kb-pg                                                              # 带中文分词的数据库
 ./kbsuite.sh up-da-kb
 ```
 
-`up-da-kb` 等 DA 建好库表后，把模型配置写进它的 `settings` 表（对话 `qwen-plus`，向量 `text-embedding-v4`），再重启一次。DA 只在启动时读模型配置，改了配置要重启。
+`deploy.env` 里写 `DA_KB_TAG=full` 和 `DA_KB_PG_IMAGE=kb-suite/da-kb-postgres:zhparser`，compose 就用这两个镜像；不写时用不带解析器的后端和原来的 paradedb 数据库。
+
+用完整版时还要在 `deploy.env` 里写 `DA_KB_EXTRA_FILE_TYPES=pdf,docx,pptx,doc,ppt`。DA 报告不出 docling 和 LibreOffice 能不能用，适配服务默认不声明这几种格式，知识库页上传时就选不了这些文件。
+
+`up-da-kb` 等 DA 建好库表后，把模型配置写进它的 `settings` 表（对话 `qwen-plus`，向量 `text-embedding-v4`），切换中文分词（`da-kb/zhparser.sql`），再重启一次。DA 只在启动时读模型配置，改了配置要重启；模型和解析设置也可以在知识库页的后端设置里改。
 
 - **认证**：DA 后端以 `DA_AUTH_MODE=none` 运行，只挂在 `da-kb` 网络上，这个网络里只有它的数据库和适配服务。
-- **格式**：不带 docling 和 MinerU，只能解析 txt、md、html、xlsx、csv、json、xml、yaml；pdf、docx、pptx 会处理失败。要支持它们，在 DA 里配置一个 MinerU 服务，再用 `DA_KB_EXTRA_FILE_TYPES=pdf,docx,pptx` 告诉适配服务。
+- **完整版**（`da-kb/Dockerfile.full`）：和 DA 自己的镜像一样，带 CPU 版 torch、docling（RapidOCR）、LibreOffice、ffmpeg，DA 把 docling 作为子进程启动，可以解析 pdf、docx、pptx，以及经 LibreOffice 转换的旧版 Office。不带 MinerU 和 GPU；有 MinerU 服务时在后端设置里填地址即可。第一次解析时 docling 从 HF 镜像下载版面和 OCR 模型到数据卷（`/app/data/hf`），可能超过 DA 默认的 120 秒而被重试一次，之后单篇几十秒。解析时内存约 1–3 GB。
+- **中文分词**（`da-kb/Dockerfile.postgres`）：在 paradedb 镜像上加 DA 自己镜像带的 scws + zhparser，同一个数据目录两个镜像都能用。DA 只在建库时创建 `chinese` 分词配置，缺 zhparser 时退回默认分词（中文关键词检索查不到东西）；`zhparser.sql` 把已有库切到 zhparser 并重算全文向量，可以重复执行，没有 zhparser 时什么都不做。
+- **格式**：不带解析器时只能解析 txt、md、html、xlsx、csv、json、xml、yaml。
 
 适配方式（`service/da-kb-adapter`）：
 - L1 取 DA 的结构化正文页（`structure_md`）；没有时（不经 docling 的文档，DA 的 L1 只是模型写的概览）取 L2 全文，保证读取和逐行查找看到的是完整正文。L0 是 DA 的摘要页。
@@ -139,7 +147,18 @@ PLATFORM_REPO=<平台仓克隆> PLATFORM_REF=<提交，缺省 HEAD> ./kbsuite.sh
 - **建表**：平台知识服务不建表。`up-dap` 先用 DA 原版镜像（`kb-suite/da-kb`，要先 `build-da-kb`）起一次 `dap-migrate` 迁移表结构，等 `settings` 表就绪后停掉它，否则两边会各自处理同一批文档。然后写入模型配置（同 `da-kb/providers.py`），再起知识服务和适配服务、重建 gateway。
 - **MinerU**：pdf、docx、pptx 和 OCR 交给 MinerU（3.x、4.x 都可以）。平台在没有配置时缺省用 MinerU 官方公共服务，文档会发往外网，所以这里缺省 `MINERU_ENABLED=false`。有自己的 MinerU 时，在 `$KBS_SECRETS_DIR/da-platform.env` 里写 `DAP_MINERU_ENABLED=true`、`DAP_MINERU_API_URL=<地址>`，并用 `DAP_EXTRA_FILE_TYPES=pdf,docx,pptx,doc,ppt` 告诉适配服务。`settings.mineru_config` 优先于这些变量，`up-dap` 会删掉它。
 - **实体抽取**：缺省开（与平台部署缺省一致），每份文档要多调几次模型，耗时可能超过文档本身的解析；不需要时设 `DAP_ENTITY_EXTRACTION=off`。
-- **中文全文检索**：数据库没有 zhparser，平台的全文检索按默认分词，这一点与 DA 原版相同。
+- **中文全文检索**：数据库镜像和 DA 原版后端用同一个（`DA_KB_PG_IMAGE`），`up-dap` 同样执行 `da-kb/zhparser.sql`；用不带 zhparser 的镜像时按默认分词，中文关键词查不到东西。
+- **比 DA 原版少的能力**：平台知识服务对下面这些接口回 501（本期未迁移），也没有 `/api/settings`。适配服务按探测结果声明能力，知识库页对这个后端不显示对应的按钮和设置。
+
+  | 能力 | DA 原版接口 | 平台 |
+  |---|---|---|
+  | 重新生成摘要（单篇、全库补缺） | `POST /kbs/{kb}/documents/{doc}/regenerate-abstract`、`POST /kbs/{kb}/regenerate-abstracts` | 501 |
+  | 文档导出（Markdown、JSON 等） | `GET /kbs/{kb}/documents/{doc}/export/{format}` | 501 |
+  | 质量审计与报告 | `POST …/documents/{doc}/quality-audit`、`GET /kbs/{kb}/quality-report` | 501 |
+  | 深度预处理（全局概览、跨页表格、图片核查） | `/kbs/{kb}/preprocess`、`/status`、`/cancel`、`/report` | 501 |
+  | 后端设置（模型、解析策略、docling / MinerU / VLM、自动处理、解析优先级） | `/api/settings/*` | 没有；模型由 `up-dap` 写库，MinerU 用 `DAP_MINERU_*` |
+
+  其余接口（检索、展开、Wiki、原文、媒体信息、锚点与结构视图、重新处理、重建向量、时间线、图谱、报告）两边都有。
 - **能力**：与 DA 原版后端相同（9 项）；导入网页、取消处理、Wiki、L2 不支持。
 
 ### 在旁边起一套测试环境
@@ -187,7 +206,7 @@ WeKnora 发布的 docreader 镜像（09-24 版）不返回原文定位，main �
 3. 用 `da/Dockerfile` 打镜像。它和 DA 的 `deploy-dev/Dockerfile` 一样，只是把 JRE 基础镜像做成了参数。部署机上拉 `eclipse-temurin:21` 很慢，所以设了 `DA_JRE_IMAGE=eclipse-temurin:17-jre`。
 4. 用 `da/make_kb_spec.py` 从这次构建的 DA 源码里取出 5 个知识库工具的契约（`kb_search`、`expand`、`doc_grep`、`wiki_browse`、`reprocess_document`），生成 `da/build/knowledge-service.json`。
 
-这次构建用的三仓提交号记录在镜像标签 `kb-suite.da-baseline` 里；`DA_CORE_REF` / `DA_RUNTIME_REF` / `DA_SOLUTION_REF` 可以锁定提交号重建。
+这次构建用的三仓提交号记录在镜像标签 `kb-suite.da-baseline` 里；`DA_CORE_REF` / `DA_RUNTIME_REF` / `DA_SOLUTION_REF` 可以锁定提交号重建。`DA_PATCHES="0001 0002 0004"` 只打列出的补丁（某个基线打不上其余补丁时用）；`DA_IMAGE_TAG=<标签>` 把第二个标签从 `:current` 换成别的，测试栈在 `deploy.env` 里写 `DA_TAG=<标签>` 先试，不影响按 `:current` 部署的环境。
 
 **本地补丁**：`da/patches/*.patch` 会在编译前打到导出的源码上，打了哪些记录在镜像标签 `kb-suite.da-patches` 里。上游修复之后就删掉对应的补丁。
 
@@ -196,20 +215,38 @@ WeKnora 发布的 docreader 镜像（09-24 版）不返回原文定位，main �
   - 回收：原来注册从不注销，每个团队成员会话都会留下一份注册和一条连接，直到 DA 重启。现在按 agent 视图计数，最后一个卸载时注销并断开连接。
 - `0002-keep-cancel-mark-while-busy`：DA 的 `/cancel` 会标记会话已取消，任务在下一次模型调用前收尾。但每个新请求在被内核以「会话忙」拒绝之前，都会先重新登记会话，顺手清掉这个标记，取消后紧接着重试（每个宿主的下一轮都会这样）就等于撤销了取消，任务一直跑到自然结束。现在会话还有任务在跑时不清标记。实测：修之前每秒重试，取消 90 秒后还在忙；修之后约 5 秒空出来。
 - `0003-push-content-confirm-every-type`：`actrule.yaml` 把 `push_content` 列为“需确认”，但 DA 的场景钩子对 file 以外的类型一律直接放行，表格、Markdown 卡片可能带出用户还没看到的内容。现在每种类型都按权限策略先确认。上游 2026-11-12 起改成了配置项，见下文“推送确认”。
+- `0004-session-output-download`：`push_file` 返回的 `downloadUrl`（`/api/sessions/{sessionId}/output/{fileName}`）原本由 DA 的 TS 后端提供，DA-java 单独部署时没人提供，链接打不开。现在 DA-java 自己提供这个 GET：
+  - 校验和 `/api/agents` 一样：`X-Engine-Secret`，以及 `X-Da-Session-Id` 必须等于路径里的会话 id；
+  - 只读会话 `output/` 下的一级文件，解开符号链接后仍须在里面；
+  - 以附件形式下载，中文文件名按 RFC 5987 编码，支持 Range。
+  - harness 拿到 `push_file` 的结果后用它把文件取回宿主（见 `harness/da-harness/README.md`）。没打这个补丁的镜像回 404，harness 只记日志。
 
 **DA 怎么接 kb-service**：通过 Spring 的附加配置 `da/kbs-tools.yml`（`SPRING_CONFIG_ADDITIONAL_LOCATION`）重定义 `deepanalyze.tool-services`。其中 `base_url` 指向 kb-api，描述文件用上面生成的那份，`auth-headers` 里带 `KBS_DA_KEY`。DA 的 jar 和源码都不改。
+
+**文件与命令工具**：kb-suite 不部署 jiuwenbox 沙箱，compose 给 da-engine 设了 `OPENJIUWEN_SERVICE_EXTERNAL_SANDBOX_ENABLED=false`，和 DA-java 自己的参考部署一样：`write_file`、`edit_file`、`bash` 等在引擎容器的会话工作区（`/app/data/sessions/<会话>`）里执行，镜像自带 bash、Python 和 pandas。不设时引擎按沙箱模式启动，把这些工具都发给 `jiuwenbox-service:8321`，每次都失败（报错 `file system operation execution error`，原因为空）。本地模式没有沙箱的隔离：路径越出会话目录由 DA 的工作区守卫拒绝，命令首词要在白名单里，`bash` 每次都要用户确认。启动日志里 `da sysOperation configured mode=LOCAL` 即生效。
 
 **调用方式**：DA 的 `/api/agents/**` 要带三个请求头：`X-Engine-Secret`（取 `DA_ENGINE_SECRET`）、`X-Da-Tenant-Id: default`、`X-Da-Session-Id`；知识库范围放在请求体的 `scope.kbIds`。验证脚本：`python3 da/smoke.py "<问题>" [--tools kb_search]`，会打印工具调用和最终回答。
 
 **一个坑**：Java 的 HttpClient 发出的 POST 会带 `Upgrade: h2c` 请求头，uvicorn 默认的 httptools 实现会在协议层直接回 400。所以 kb-api 改用 `--http h11` 启动。
 
-## Swarm 侧的配置（由 `swarm/configure_swarm.py` 在容器启动时完成）
+## Swarm 侧的配置（只用 Swarm 文档里的配置项和它对外的接口）
 
+启动前，`swarm/configure_swarm.py` 只写 Swarm 文档里列出的用户配置：
+
+- 首次启动跑 `jiuwenswarm-init`。
 - 模型配置写进 `~/.jiuwenswarm/config/.env`。Swarm 加载 `.env` 时会覆盖环境变量，所以只设容器环境变量不生效。
-- kb-service 登记成「已连接的连接器」，写在 `<workspace>/mcp/state.json`。密钥通过 Swarm 自带的 `CredentialStore` 加密保存。
-- 用 Swarm 自己的 `create_agent_template` / `install_equipment_gated` 创建并安装「知识库问答」专家（id `kb-qa`），这个专家绑定了 kb-service 连接器。
-- `swarm-kb-plugin/plugin/` 下每个带 `frontend/dist` 的插件目录（kb-manager、da-analyst）都复制到 `~/.jiuwenswarm/application_plugins/`。
-- 开发版：把镜像里的 `deepanalyze_harness-*.whl` 用 Swarm 的 `install_custom_agent` 装成「三方 Agent」，和设置页上传走的是同一段代码；再把它写进默认团队的 `external_cli_agents`，同时配上 hybrid transport。这个开发版的设置页能上传 wheel，但「三方 Agent」开关列表里不显示自定义 agent，所以开关由脚本代为打开。
+- 清掉旧版本写进 `config.yaml` 的条目（一个 Web 端不读的 MCP 配置）。
+
+插件按文档的方式放进用户插件目录：compose 把 kb-manager、da-analyst 两个目录只读挂进去，前端重新构建后刷新页面就生效，不用复制。不同版本的 Swarm 用户插件目录不同（`~/.jiuwenswarm/application_plugins/` 或 `~/.jiuwenswarm/domain/application_plugins/`），所以两处都挂。
+
+启动后，`swarm/provision_swarm.py` 在后台等服务就绪，再用 Web 界面用的同一套接口完成登记（每一步都可以重复执行，失败只记日志）：
+
+- 关掉首次打开时的模型配置向导（`config.set setup_guide_enabled=false`，和向导自己的关闭按钮同一个调用）：模型已由部署配好。
+- 知识库 MCP：`mcp.register_custom` 登记成自定义连接器 `kb-service`，`mcp.save_credentials` 把密钥存进 Swarm 的凭据库，`mcp.connect` 探活通过后才算已连接。
+- 「知识库问答」专家（id `kb-qa`，绑定 `kb-service` 连接器）：`agent_templates.create`（已存在时 `.update`），再 `agent_templates.install`。
+- 镜像里的 provider wheel（deepanalyze、loopforest）：走设置页的上传接口 `POST /file-api/external-cli/custom-agents` 装成自定义 agent，再用 `config.set external_cli_agent_<name>_enabled=true` 打开开关，团队 leader 就能 `spawn_teammate` 它们。
+
+登记结果在容器日志里，以 `[provision]` 开头。
 
 **怎么在对话里用知识库**：
 
@@ -326,6 +363,7 @@ agent-solution 里的 `loop-forest` 是一个 Java 库：在 agent-core 的 ReAc
 
 **DA 本地补丁**（`da/patches/`）：
 - `0002`、`0003` 只适用于 `b70a00246` 基线。按更新的 common 构建时，要先移出这两个，否则 `build-da` 会因补丁打不上而中断。`0001` 在 2026-11-14 的 common 上仍能打上。
+- `0004` 能打在 `b70a00246`（在 0001～0003 之后）、`0eed3c7e0`（在 0001、0002 之后）和 2026-11-16 的 common 上。
 - 补丁必须是 LF 换行，仓库根目录的 `.gitattributes` 已经这样设置。
 
 **重启的顺序**：

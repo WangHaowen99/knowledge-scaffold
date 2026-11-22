@@ -116,6 +116,49 @@ def test_run_falls_back_to_local_and_records_verification(workspace, capsys):
     assert [case["name"] for case in record["cases"]] == ["正常", "缺少必填参数", "业务错误"]
 
 
+@pytest.mark.parametrize("sandboxed", [False, True])
+@pytest.mark.parametrize("expression, valid", [
+    ('dict(total=args.quantity * unit_price())', True),
+    ('dict(other=args.quantity)', False),
+    ('dict(total="synthetic")', False),
+    ('dict(total="x" * 10000)', False),  # Check full output before truncation.
+])
+def test_run_checks_actual_output_contract(workspace, capsys, monkeypatch, sandboxed, expression, valid):
+    """Synthetic dynamic results are checked in both local and sandbox execution."""
+    script = workspace / "ontology/scripts/quote.py"
+    source = QUOTE.replace('    JSON 对象：{"total": 总价}', '    total    integer    合成总量')
+    source = source.replace('{"total": args.quantity * unit_price()}', expression)
+    script.write_text(source, encoding="utf-8")
+    if sandboxed:
+        with FakeJiuwenbox() as box, RunningGateway(box.url) as gateway:
+            monkeypatch.setattr(client, "gateway_url", lambda: gateway.url)
+            code, report, _out = verify_quote(workspace, capsys)
+    else:
+        code, report, _out = verify_quote(workspace, capsys)
+    assert (code == 0) is valid
+    assert report["recorded"] is valid
+    if not valid:
+        assert "输出" in report["cases"][0]["reason"]
+        assert not (workspace / ".ontology-state/script-verifications.json").exists()
+
+
+def test_run_reports_compile_error_without_execution(workspace, capsys):
+    script = workspace / "ontology/scripts/quote.py"
+    script.write_text(QUOTE + "\nreturn 1\n", encoding="utf-8")
+    code, _report, out = verify_quote(workspace, capsys)
+    assert code == 2 and "脚本语法错误" in out.err
+
+
+def test_old_gateway_result_cannot_skip_output_validation(workspace, monkeypatch):
+    old_result = {"exit_code": 0, "timed_out": False, "stdout_is_json": True,
+                  "stdout": '{"total": 6}', "stderr": "", "duration_ms": 1}
+    monkeypatch.setattr(client, "_gateway_call", lambda *_args, **_kwargs: {"results": [old_result]})
+    outcome = client.run_cases(workspace / "ontology/scripts/quote.py", [["--quantity", "2"]],
+                               gateway="http://localhost", outputs=({"name": "total", "type": "integer"},))
+    assert outcome["runtime"] == "local" and "升级网关" in outcome["fallback_reason"]
+    assert outcome["results"][0]["output_contract_error"] == ""
+
+
 def test_check_requires_passing_record_for_current_source(workspace, capsys):
     code, out = run_cli(workspace, capsys, "check", "ontology/scripts/quote.py")
     assert code == 1 and "还没有通过运行验证" in out.out

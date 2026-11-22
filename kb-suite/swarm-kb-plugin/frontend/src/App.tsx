@@ -1,20 +1,23 @@
 import { Database, Library, Plus } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import DocumentsTab from './DocumentsTab';
+import ActionButtons from './actions';
 import GenericSettings from './GenericSettings';
 import { EnrichSection, ParsingSection, WikiSection } from './KbConfigForm';
 import SchemaForm, { schemaDefaults, schemaProblems } from './SchemaForm';
 import SearchTab from './SearchTab';
 import SettingsTab, { useConfigDraft } from './SettingsTab';
 import WikiTab from './WikiTab';
-import { has, nativeConfig, useBackends, type BackendInfo } from './backend';
+import { JobsTab, useJobs } from './jobs';
+import { KbScopeContext, declaredActions, declaredViews, has, nativeConfig, offers, useBackends, type BackendInfo } from './backend';
 import { useConfigMeta } from './meta';
 import { rpc } from './rpc';
 import { ToastProvider, errorText, useToast } from './toast';
 import type { ConfigMeta, KnowledgeBase } from './types';
-import { Button, Empty, Field, Modal, Spinner, Switch, Tabs } from './ui';
+import { Badge, Button, Empty, Field, Modal, Spinner, Switch, Tabs } from './ui';
+import { ViewPane } from './views';
 
-type Tab = 'docs' | 'wiki' | 'search' | 'settings';
+type Tab = 'docs' | 'wiki' | 'jobs' | 'search' | 'settings' | `view:${string}`;
 type CreateSection = 'parsing' | 'enrich' | 'wiki';
 
 function BackendPicker({ backends, value, onChange }: { backends: BackendInfo[]; value: string; onChange: (id: string) => void }) {
@@ -243,8 +246,16 @@ function Shell() {
 
   const kb = useMemo(() => kbs?.find((k) => k.id === selected) ?? null, [kbs, selected]);
   const manyBackends = (backends?.length ?? 0) > 1;
-  const shownTab: Tab = tab === 'wiki' && !has(kb, 'wiki.read') ? 'docs' : tab;
   const native = nativeConfig(kb);
+  // what the knowledge base's backend declares (contract section 9) decides the extra tabs and buttons
+  const backend = backends?.find((b) => b.id === kb?.backend?.id);
+  const kbActions = declaredActions(backend, kb, 'kb');
+  const kbViews = declaredViews(backend, kb, 'kb');
+  const jobs = useJobs(kb, loadKbs);
+  const available = (t: Tab) =>
+    t === 'wiki' ? has(kb, 'wiki.read') : t === 'jobs' ? offers(kb, 'jobs') : t.startsWith('view:') ? kbViews.some((v) => `view:${v.id}` === t) : true;
+  const shownTab: Tab = available(tab) ? tab : 'docs';
+  const scope = useMemo(() => (kb ? { kb, backend, refreshJobs: jobs.refresh } : null), [kb, backend, jobs.refresh]);
 
   return (
     <div className="app">
@@ -299,94 +310,111 @@ function Shell() {
         </div>
       </aside>
 
-      <main className="main">
-        {!kb ? (
-          <Empty
-            icon={<Database size={40} />}
-            title={kbs && kbs.length === 0 ? '先建一个知识库' : '选择一个知识库'}
-            hint="上传文档后会自动解析、切分并建立索引，Swarm 的 agent 可以通过 MCP 检索这些内容。"
-            action={
-              <Button variant="primary" icon={<Plus size={14} />} onClick={() => setCreating(true)}>
-                新建知识库
-              </Button>
-            }
-          />
-        ) : (
-          <>
-            <div className="main-head">
-              <div className="main-title-row">
-                <div style={{ minWidth: 0 }}>
-                  <h1 className="main-title">
-                    {kb.name}
-                    {manyBackends && kb.backend ? <span className="kb-backend-tag">{kb.backend.label}</span> : null}
-                  </h1>
-                  {kb.description ? <div className="main-desc">{kb.description}</div> : null}
-                </div>
-              </div>
-              <div className="stats">
-                {[
-                  ['文档', kb.stats.documents],
-                  ['已完成', kb.stats.completed],
-                  ['处理中', kb.stats.processing],
-                  ['失败', kb.stats.failed],
-                  ...(kb.stats.chunks !== undefined ? [['分块', kb.stats.chunks]] : []),
-                  ...((native && kb.config.questions.enabled) || kb.stats.questions ? [['生成问题', kb.stats.questions ?? 0]] : []),
-                  ...((native && kb.config.wiki.enabled) || kb.stats.wiki_pages ? [['Wiki 页', kb.stats.wiki_pages ?? 0]] : []),
-                  ...(kb.stats.enriching ? [['增强处理中', kb.stats.enriching]] : []),
-                ].map(([label, value]) => (
-                  <div key={label as string}>
-                    <div className="stat-value num">{value}</div>
-                    <div className="stat-label">{label}</div>
+      <KbScopeContext.Provider value={scope}>
+        <main className="main">
+          {!kb ? (
+            <Empty
+              icon={<Database size={40} />}
+              title={kbs && kbs.length === 0 ? '先建一个知识库' : '选择一个知识库'}
+              hint="上传文档后会自动解析、切分并建立索引，Swarm 的 agent 可以通过 MCP 检索这些内容。"
+              action={
+                <Button variant="primary" icon={<Plus size={14} />} onClick={() => setCreating(true)}>
+                  新建知识库
+                </Button>
+              }
+            />
+          ) : (
+            <>
+              <div className="main-head">
+                <div className="main-title-row">
+                  <div style={{ minWidth: 0 }}>
+                    <h1 className="main-title">
+                      {kb.name}
+                      {manyBackends && kb.backend ? <span className="kb-backend-tag">{kb.backend.label}</span> : null}
+                    </h1>
+                    {kb.description ? <div className="main-desc">{kb.description}</div> : null}
                   </div>
-                ))}
+                  {kbActions.length ? (
+                    <div className="row-inline main-actions">
+                      <ActionButtons actions={kbActions} target={{ kb_id: kb.id }} onDone={loadKbs} inline={2} />
+                    </div>
+                  ) : null}
+                </div>
+                <div className="stats">
+                  {[
+                    ['文档', kb.stats.documents],
+                    ['已完成', kb.stats.completed],
+                    ['处理中', kb.stats.processing],
+                    ['失败', kb.stats.failed],
+                    ...(kb.stats.chunks !== undefined ? [['分块', kb.stats.chunks]] : []),
+                    ...((native && kb.config.questions.enabled) || kb.stats.questions ? [['生成问题', kb.stats.questions ?? 0]] : []),
+                    ...((native && kb.config.wiki.enabled) || kb.stats.wiki_pages ? [['Wiki 页', kb.stats.wiki_pages ?? 0]] : []),
+                    ...(kb.stats.enriching ? [['增强处理中', kb.stats.enriching]] : []),
+                  ].map(([label, value]) => (
+                    <div key={label as string}>
+                      <div className="stat-value num">{value}</div>
+                      <div className="stat-label">{label}</div>
+                    </div>
+                  ))}
+                </div>
+                <Tabs<Tab>
+                  value={shownTab}
+                  onChange={setTab}
+                  items={[
+                    { key: 'docs', label: '文档' },
+                    ...(has(kb, 'wiki.read') ? [{ key: 'wiki' as const, label: 'Wiki' }] : []),
+                    ...kbViews.map((v) => ({ key: `view:${v.id}` as Tab, label: v.label })),
+                    ...(offers(kb, 'jobs')
+                      ? [{ key: 'jobs' as const, label: '任务', extra: jobs.running ? <Badge tone="info">{jobs.running}</Badge> : undefined }]
+                      : []),
+                    { key: 'search', label: '检索测试' },
+                    { key: 'settings', label: '设置' },
+                  ]}
+                />
               </div>
-              <Tabs<Tab>
-                value={shownTab}
-                onChange={setTab}
-                items={[
-                  { key: 'docs', label: '文档' },
-                  ...(has(kb, 'wiki.read') ? [{ key: 'wiki' as const, label: 'Wiki' }] : []),
-                  { key: 'search', label: '检索测试' },
-                  { key: 'settings', label: '设置' },
-                ]}
-              />
-            </div>
-            <div className="main-body">
-              {shownTab === 'docs' ? <DocumentsTab key={kb.id} kb={kb} onChanged={loadKbs} /> : null}
-              {shownTab === 'wiki' ? <WikiTab key={kb.id} kb={kb} onOpenSettings={() => setTab('settings')} /> : null}
-              {shownTab === 'search' ? <SearchTab key={kb.id} kb={kb} /> : null}
-              {shownTab === 'settings' && !native ? (
-                <GenericSettings
-                  // remounted once the backend's schema arrives, so its defaults fill the form
-                  key={`${kb.id}:${Boolean(backends?.find((b) => b.id === kb.backend?.id)?.config_schema)}`}
-                  kb={kb}
-                  backend={backends?.find((b) => b.id === kb.backend?.id)}
-                  onSaved={loadKbs}
-                  onDeleted={async () => {
-                    // land on the next knowledge base's documents, never on its settings (delete button)
-                    setTab('docs');
-                    setSelected(null);
-                    await loadKbs();
-                  }}
-                />
-              ) : null}
-              {shownTab === 'settings' && native ? (
-                <SettingsTab
-                  key={kb.id}
-                  kb={kb}
-                  onSaved={loadKbs}
-                  onDeleted={async () => {
-                    // land on the next knowledge base's documents, never on its settings (delete button)
-                    setTab('docs');
-                    setSelected(null);
-                    await loadKbs();
-                  }}
-                />
-              ) : null}
-            </div>
-          </>
-        )}
-      </main>
+              <div className="main-body">
+                {shownTab === 'docs' ? <DocumentsTab key={kb.id} kb={kb} onChanged={loadKbs} /> : null}
+                {shownTab === 'wiki' ? <WikiTab key={kb.id} kb={kb} onOpenSettings={() => setTab('settings')} /> : null}
+                {kbViews
+                  .filter((v) => shownTab === `view:${v.id}`)
+                  .map((v) => (
+                    <ViewPane key={`${kb.id}:${v.id}`} view={v} target={{ kb_id: kb.id }} />
+                  ))}
+                {shownTab === 'jobs' ? <JobsTab key={kb.id} kb={kb} backend={backend} jobs={jobs} /> : null}
+                {shownTab === 'search' ? <SearchTab key={kb.id} kb={kb} /> : null}
+                {shownTab === 'settings' && !native ? (
+                  <GenericSettings
+                    // remounted once the backend's schema arrives, so its defaults fill the form
+                    key={`${kb.id}:${Boolean(backends?.find((b) => b.id === kb.backend?.id)?.config_schema)}`}
+                    kb={kb}
+                    backend={backends?.find((b) => b.id === kb.backend?.id)}
+                    onSaved={loadKbs}
+                    onDeleted={async () => {
+                      // land on the next knowledge base's documents, never on its settings (delete button)
+                      setTab('docs');
+                      setSelected(null);
+                      await loadKbs();
+                    }}
+                  />
+                ) : null}
+                {shownTab === 'settings' && native ? (
+                  <SettingsTab
+                    key={kb.id}
+                    kb={kb}
+                    onSaved={loadKbs}
+                    onDeleted={async () => {
+                      // land on the next knowledge base's documents, never on its settings (delete button)
+                      setTab('docs');
+                      setSelected(null);
+                      await loadKbs();
+                    }}
+                  />
+                ) : null}
+              </div>
+            </>
+          )}
+        </main>
+      </KbScopeContext.Provider>
 
       {creating ? (
         <CreateKbModal

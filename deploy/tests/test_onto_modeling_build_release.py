@@ -42,7 +42,6 @@ def _run_build_release(
     drawio_index = project_root / "vendor" / "drawio" / "webapp" / "index.html"
     drawio_index.parent.mkdir(parents=True)
     drawio_index.write_text("<html></html>\n", encoding="utf-8")
-    (tmp_path / "repo" / "auth-server").mkdir()
 
     log_dir = tmp_path / "logs"
     log_dir.mkdir()

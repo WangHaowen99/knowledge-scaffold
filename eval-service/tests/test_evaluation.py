@@ -455,7 +455,8 @@ def test_connection_data_source_failure_never_starts_question(environment,monkey
         return original(method,base,path,**kwargs)
     monkeypatch.setattr(deps,'json',call)
     source=client.post('/evaluation/api/data-sources',json={'name':'Synthetic graph','mode':'connection','provider':'neo4j',
-        'connection':{'uri':'bolt://localhost:7687','username':'operator_a','password':'synthetic-invalid-password'},'tables':{'items':['id','value']}}).json()
+        'connection':{'uri':'bolt://localhost:7687','username':'operator_a','password':'synthetic-invalid-password',
+                      'workspace_value':'workspace_demo'},'tables':{'items':['id','value']}}).json()
     p=client.post('/evaluation/api/package-preparations',json={'request_id':'connection_demo','package_ref':{'ontology_id':'knowledge_package_demo','release_id':'release_demo'},'data_source_id':source['id']})
     assert p.status_code==200,p.text
     record=run(client,p.json())

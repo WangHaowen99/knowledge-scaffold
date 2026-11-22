@@ -223,14 +223,71 @@ seed_onto_modeling_bundle_env() { # <bundle 的 onto-modeling 目录>
     chmod 600 "${env_file}"
 }
 
+load_stack_auth_contract() {
+    local root="${SCRIPT_DIR}/.." file auth_container actual_issuer actual_audience
+    local -a auth_files
+    if [ -f "${SCRIPT_DIR}/deploy-consumer.sh" ]; then
+        auth_files=("${root}/backend/.env" "${INSTALL_DIR}/backend/.env")
+    else
+        auth_files=("${root}/consumer/backend/.env" "${INSTALL_DIR}/backend/.env")
+    fi
+    for file in "${auth_files[@]}"; do
+        [ -f "${file}" ] || continue
+        STACK_AUTH_URL="$(env_get "${file}" AUTH_SERVER_URL)"
+        STACK_AUTH_ADMIN_TOKEN="$(env_get "${file}" AUTH_SERVER_ADMIN_TOKEN)"
+        STACK_AUTH_ISSUER="$(env_get "${file}" AUTH_SERVER_ISSUER)"
+        STACK_AUTH_AUDIENCE="$(env_get "${file}" AUTH_SERVER_AUDIENCE)"
+        [ -n "${STACK_AUTH_URL}" ] && [ -n "${STACK_AUTH_ADMIN_TOKEN}" ] \
+            || die "Consumer Auth 客户端配置不完整：${file}"
+        auth_container="$(consumer_auth_container)"
+        [ -n "${auth_container}" ] || die '当前 Auth 容器不存在，无法核对签发身份'
+        actual_issuer="$(docker exec "${auth_container}" python3 -c \
+            'from auth_server.config import AuthServerConfig; print(AuthServerConfig.from_env().issuer)' 2>/dev/null)" \
+            || die '无法读取当前 Auth issuer'
+        actual_audience="$(docker exec "${auth_container}" python3 -c \
+            'from auth_server.config import AuthServerConfig; print(AuthServerConfig.from_env().audience)' 2>/dev/null)" \
+            || die '无法读取当前 Auth audience'
+        printf '%s' "${STACK_AUTH_ADMIN_TOKEN}" | docker exec -i "${auth_container}" python3 -c \
+            'import hmac, sys; from auth_server.config import AuthServerConfig; token = AuthServerConfig.from_env().admin_token or ""; sys.exit(0 if token and hmac.compare_digest(sys.stdin.read(), token) else 1)' \
+            >/dev/null 2>&1 || die 'Consumer Auth 管理令牌与当前 Auth 容器不一致'
+        STACK_AUTH_ISSUER="${STACK_AUTH_ISSUER:-${actual_issuer}}"
+        STACK_AUTH_AUDIENCE="${STACK_AUTH_AUDIENCE:-${actual_audience}}"
+        [ "${STACK_AUTH_ISSUER}" = "${actual_issuer}" ] && \
+            [ "${STACK_AUTH_AUDIENCE}" = "${actual_audience}" ] \
+            || die 'Consumer 客户端的 Auth 签发身份与当前 Auth 容器不一致'
+        return 0
+    done
+    die '找不到 Consumer backend/.env，无法读取当前 Auth 身份和管理令牌'
+}
+
+consumer_auth_container() {
+    if [ -f "${SCRIPT_DIR}/deploy-consumer.sh" ]; then
+        if docker inspect --type container onto-agent-auth-server >/dev/null 2>&1; then
+            printf 'onto-agent-auth-server\n'
+        fi
+        return
+    fi
+    docker ps --format '{{.Names}}' | grep -E '^onto-agent-auth-server($|-)' | head -n 1 || true
+}
+
+configure_onto_stack_auth() { # <Onto .env>
+    load_stack_auth_contract
+    env_set "$1" ONTO_MODELING_AUTH_URL "${STACK_AUTH_URL}"
+    env_set "$1" ONTO_WEB_AUTH_ISSUER "${STACK_AUTH_ISSUER}"
+    env_set "$1" ONTO_WEB_AUTH_AUDIENCE "${STACK_AUTH_AUDIENCE}"
+    env_set "$1" ONTO_WEB_AUTH_ADMIN_TOKEN "${STACK_AUTH_ADMIN_TOKEN}"
+}
+
 # 知识包 Hub 与 onto-modeling 分属两个 compose 项目，经 consumer 网络互通。Hub 沿用 onto-modeling
 # 已有的服务凭据（都没有时由 Hub 部署脚本生成）；值只经子进程环境传递，不输出。
 deploy_knowledge_hub() { # <Hub 部署脚本> <onto-modeling 目录>
     local network onto_token
+    load_stack_auth_contract
     network="$(require_consumer_network)"
     onto_token="$(env_get "$2/.env" ONTO_HUB_SERVICE_TOKEN)"
     log "Deploying Knowledge Package Hub (independent compose project)"
-    CONSUMER_NETWORK="${network}" HUB_SERVICE_TOKEN="${onto_token:-${HUB_SERVICE_TOKEN:-}}" bash "$1"
+    CONSUMER_NETWORK="${network}" HUB_SERVICE_TOKEN="${onto_token:-${HUB_SERVICE_TOKEN:-}}" \
+    HUB_AUTH_URL="${STACK_AUTH_URL}" HUB_AUTH_ISSUER="${STACK_AUTH_ISSUER}" bash "$1"
 }
 
 # onto-modeling 部署前改用 Hub 实际生效的服务凭据；Hub 未部署过时保持原值。
@@ -359,8 +416,10 @@ fi
 deploy_evaluation() {
     local root="${SCRIPT_DIR}/.."
     [ "$DEPLOY_EVALUATION" = "1" ] || return 0
+    load_stack_auth_contract
     log "Deploying independent evaluation service"
     CONSUMER_NETWORK="$(detect_consumer_network)" \
+    EVAL_AUTH_URL="${STACK_AUTH_URL}" EVAL_AUTH_ISSUER="${STACK_AUTH_ISSUER}" \
     HUB_EVALUATION_SERVICE_TOKEN="$(first_env_value HUB_EVALUATION_SERVICE_TOKEN \
         "${root}/knowledge-hub/deploy/.env" "${root}/knowledge-hub/.env" "${INSTALL_DIR}/knowledge-hub/.env")" \
     EVALUATION_SERVICE_TOKEN="$(first_env_value EVALUATION_SERVICE_TOKEN \
@@ -389,6 +448,7 @@ deploy_bundle_hub_and_onto_modeling() {
     if [ -f "${onto_dir}/deploy.sh" ]; then
         log "Deploying Onto Modeling (guided modeling workbench)"
         seed_onto_modeling_bundle_env "${onto_dir}"
+        configure_onto_stack_auth "${onto_dir}/.env"
         adopt_hub_service_token "${hub_dir}/.env" "${onto_dir}/.env"
         ensure_onto_evaluation_service_token "${onto_dir}/.env"
         bash "${onto_dir}/deploy.sh"
@@ -476,6 +536,7 @@ elif [ -f "${SCRIPT_DIR}/deploy-stack.sh" ]; then
             if [ -d "${ONTO_MODELING_SOURCE}" ]; then
                 log "Deploying Onto Modeling (source, docker compose, joined to consumer stack)"
                 adopt_hub_service_token "${SCRIPT_DIR}/../knowledge-hub/deploy/.env" "${ONTO_MODELING_SOURCE}/.env"
+                configure_onto_stack_auth "${ONTO_MODELING_SOURCE}/.env"
                 ensure_onto_evaluation_service_token "${ONTO_MODELING_SOURCE}/.env"
                 write_onto_modeling_stack_override "${ONTO_MODELING_SOURCE}"
                 # --remove-orphans 清掉旧版本随 onto-modeling 部署的 Hub 容器，避免与独立 Hub 抢同一服务名

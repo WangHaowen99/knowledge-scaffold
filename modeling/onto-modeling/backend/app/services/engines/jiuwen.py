@@ -733,7 +733,16 @@ def _interaction_to_permission(request: Any) -> tuple[str, dict]:
             else:
                 text = args.get("query") or args.get("prompt") or args.get("message") or ""
                 questions = [{"question": str(text or "请确认"), "options": []}]
-        return "AskUserQuestion", {"questions": safe_json(list(questions))}
+        if isinstance(questions, list):
+            questions = [
+                {**question, "options": [
+                    {"label": option} if isinstance(option, str) else option
+                    for option in question["options"]
+                ]} if isinstance(question, dict) and isinstance(question.get("options"), list)
+                else question
+                for question in questions
+            ]
+        return "AskUserQuestion", {"questions": safe_json(questions)}
     args = _req_get(request, "tool_args")
     if isinstance(args, str):
         try:
@@ -748,10 +757,17 @@ def _fill_interactive_input(ii: Any, iid: str, request: Any, decision: dict) -> 
     tool_name = str(_req_get(request, "tool_name", "") or "")
     if tool_name == "ask_user":
         answers = (decision.get("updated_input") or {}).get("answers") or {}
-        if decision.get("behavior") != "allow":
-            # 拒绝提问 = 明确告知不再追问
-            answers = {"__declined__": decision.get("message") or "用户取消了该提问"}
         questions = _req_get(request, "questions")
+        if decision.get("behavior") != "allow":
+            reason = decision.get("message") or "用户取消了该提问"
+            if isinstance(questions, list) and questions:
+                keys = [q.get("question") for q in questions if isinstance(q, dict)]
+                ii.update(iid, {"answers": {
+                    key: reason for key in keys if isinstance(key, str) and key
+                } or {"__declined__": reason}})
+            else:
+                ii.update(iid, {"answer": reason})
+            return
         if questions:
             filled = {}
             for q in questions:

@@ -9,8 +9,8 @@ import pytest
 
 from test_knowledge_hub_deploy import _run as _run_script
 from test_workbench_deploy import (
-    DEPLOY_ROOT, REPO_ROOT, _calls, _drive_tty, _interactive_upgrade_answers,
-    _legacy_answers, _prepare_legacy_upgrade, _prepare_separated_upgrade,
+    DEPLOY_ROOT, REPO_ROOT, _calls, _drive_tty,
+    _prepare_legacy_upgrade, _prepare_separated_upgrade,
     _write_executable, _write_release_package,
 )
 
@@ -19,6 +19,13 @@ def _repack(package):
     stage = package.parent / (package.name + '.stage')
     # Without files, the package helper archives its stage directory as edited by the test.
     _write_release_package(package, next(stage.iterdir()).name, {})
+
+
+def _independent_setup(tmp_path, mode='upgrade'):
+    from test_independent_auth_install import independent_setup
+
+    setup, _ = independent_setup(tmp_path, mode)
+    return setup
 
 
 def _prepare(tmp_path, mode='upgrade'):
@@ -111,6 +118,7 @@ def _run(setup, *, package=None, hub=True, interactive=True, **overrides):
         elif mode == 'legacy':
             args.extend(['--upgrade-from', str(setup['legacy'])])
         args.extend(['--consumer-package', str(setup['packages'][0]),
+                     '--auth-package', str(setup['auth_package']),
                      '--onto-modeling-package', str(setup['packages'][2])])
         if hub:
             args.extend(['--knowledge-hub-package', str(setup['hub_package'])])
@@ -121,25 +129,38 @@ def _run(setup, *, package=None, hub=True, interactive=True, **overrides):
         return result.returncode, result.stdout + result.stderr
     if mode == 'legacy':
         script = DEPLOY_ROOT / 'upgrade-consumer-modeling-legacy-interactive.sh'
-        answers = _legacy_answers(setup, None, hub_answer=str(setup['hub_package']) if hub else '',
-                                  evaluation=str(package))
+        answers = [('旧合并部署根目录', str(setup['legacy'])),
+                   ('请输入新版 Consumer 发布包路径', str(setup['packages'][0])),
+                   ('请输入独立 Auth 发布包路径', str(setup['auth_package'])),
+                   ('请输入 Onto Modeling 发布包路径', str(setup['packages'][2])),
+                   ('请输入 Knowledge Hub 发布包路径', str(setup['hub_package']) if hub else ''),
+                   ('请输入评测发布包路径', str(package))]
     elif mode == 'install':
         script = DEPLOY_ROOT / 'install-consumer-modeling-interactive.sh'
         answers = [
             ('请选择模式', '1'), ('安装根目录（', '2'),
             ('请输入自定义安装根目录', str(setup['target'])), ('端口配置', '1'),
             ('请输入 Consumer 发布包路径', str(setup['packages'][0])),
+            ('请输入独立 Auth 发布包路径', str(setup['auth_package'])),
             ('请输入 Onto Modeling 发布包路径', str(setup['packages'][2])),
             ('请输入知识包 Hub 发布包路径', str(setup['hub_package']) if hub else ''),
             ('请输入独立评测服务发布包', str(package)),
         ]
     else:
         script = DEPLOY_ROOT / 'install-consumer-modeling-interactive.sh'
-        answers = _interactive_upgrade_answers(
-            setup, hub=str(setup['hub_package']) if hub else '', evaluation=str(package))
+        answers = [('请选择模式', '2'),
+                   ('请输入已分离部署的安装根目录', str(setup['root'])),
+                   ('请输入 Consumer 发布包路径', str(setup['packages'][0])),
+                   ('请输入独立 Auth 发布包路径', str(setup['auth_package'])),
+                   ('请输入 Onto Modeling 发布包路径', str(setup['packages'][2])),
+                   ('请输入知识包 Hub 发布包路径', str(setup['hub_package']) if hub else ''),
+                   ('请输入独立评测服务发布包', str(package))]
     if mode == 'legacy':
         answers.append(('请输入 Onto Modeling 宿主端口', '5110'))
-    return _drive_tty(script, answers, {**setup['env'], **overrides})
+    env = {**setup['env'], **overrides}
+    if mode == 'legacy':
+        env.pop('INSTALL_ROOT', None)
+    return _drive_tty(script, answers, env)
 
 
 def _configuration(tmp_path):
@@ -150,7 +171,7 @@ def _configuration(tmp_path):
 @pytest.mark.parametrize('interactive', [True, False], ids=['interactive', 'noninteractive'])
 @pytest.mark.parametrize('mode', ['install', 'upgrade', 'legacy'])
 def test_evaluation_uses_dependencies_after_consumer_restart(tmp_path, mode, interactive):
-    setup = _prepare(tmp_path, mode)
+    setup = _independent_setup(tmp_path, mode)
     rc, output = _run(setup, interactive=interactive)
     assert rc == 0, output
     calls = _calls(setup)
@@ -179,7 +200,7 @@ def test_evaluation_uses_dependencies_after_consumer_restart(tmp_path, mode, int
 @pytest.mark.parametrize('interactive', [True, False], ids=['interactive', 'noninteractive'])
 @pytest.mark.parametrize('mode', ['upgrade', 'legacy'])
 def test_evaluation_preserves_key_port_and_consumer_credential(tmp_path, mode, interactive):
-    setup = _prepare(tmp_path, mode)
+    setup = _independent_setup(tmp_path, mode)
     deploy = setup['target'] / 'eval-service/deploy'
     deploy.mkdir(parents=True)
     encryption_key = base64.urlsafe_b64encode(b'S' * 32).decode()
@@ -202,7 +223,7 @@ def test_evaluation_preserves_key_port_and_consumer_credential(tmp_path, mode, i
 @pytest.mark.parametrize('interactive', [True, False], ids=['interactive', 'noninteractive'])
 @pytest.mark.parametrize('problem', ['missing-image', 'foreign-container', 'missing-hub', 'missing-env'])
 def test_evaluation_prechecks_before_changing_services(tmp_path, problem, interactive):
-    setup = _prepare(tmp_path)
+    setup = _independent_setup(tmp_path)
     before = (setup['target'] / 'onto-agent/backend/.env').read_bytes()
     overrides = {}
     if problem == 'missing-image':
@@ -219,7 +240,7 @@ def test_evaluation_prechecks_before_changing_services(tmp_path, problem, intera
 
 
 def test_upgrading_four_services_generates_consumer_evaluation_credential(tmp_path):
-    setup = _prepare(tmp_path)
+    setup = _independent_setup(tmp_path)
     rc, output = _run(setup)
     assert rc == 0, output
     assert 'consumer-upgrade' in _calls(setup)
@@ -228,7 +249,7 @@ def test_upgrading_four_services_generates_consumer_evaluation_credential(tmp_pa
 
 
 def test_upgrade_keeps_consumer_credential_and_deploys_hub(tmp_path):
-    setup = _prepare(tmp_path)
+    setup = _independent_setup(tmp_path)
     token = secrets.token_hex(32)
     consumer_config = setup['target'] / 'onto-agent/backend/.env'
     with consumer_config.open('a') as stream:
@@ -241,13 +262,17 @@ def test_upgrade_keeps_consumer_credential_and_deploys_hub(tmp_path):
     assert rc == 0, output
     assert 'consumer-upgrade' in _calls(setup)
     assert _calls(setup)[-3:] == ['hub-deploy', 'onto-deploy', 'evaluation-compose']
-    assert consumer_config.read_bytes() == before
+    current = consumer_config.read_bytes()
+    assert f'EVALUATION_SERVICE_TOKEN={token}\n'.encode() in current
+    for line in before.splitlines():
+        if not line.startswith(b'EVALUATION_SERVICE_TOKEN='):
+            assert line in current.splitlines()
     assert _configuration(tmp_path)['EVAL_CONSUMER_SERVICE_TOKEN'] == token
 
 
 @pytest.mark.parametrize('interactive', [True, False], ids=['interactive', 'noninteractive'])
 def test_evaluation_external_config_is_resolved_before_directory_changes(tmp_path, interactive):
-    setup = _prepare(tmp_path)
+    setup = _independent_setup(tmp_path)
     token = secrets.token_hex(32)
     with (setup['target'] / 'onto-agent/backend/.env').open('a') as stream:
         stream.write(f'EVALUATION_SERVICE_TOKEN={token}\n')
@@ -267,7 +292,7 @@ def test_evaluation_external_config_is_resolved_before_directory_changes(tmp_pat
 @pytest.mark.parametrize('interactive', [True, False], ids=['interactive', 'noninteractive'])
 @pytest.mark.parametrize('failure', ['compose', 'health'])
 def test_evaluation_failure_does_not_report_completion(tmp_path, failure, interactive):
-    setup = _prepare(tmp_path)
+    setup = _independent_setup(tmp_path)
     rc, output = _run(setup, interactive=interactive, **{'STUB_EVALUATION_' + failure.upper() + '_EXIT': '1'})
     assert rc != 0
     assert '交互部署完成' not in output
@@ -277,11 +302,11 @@ def test_evaluation_failure_does_not_report_completion(tmp_path, failure, intera
 
 @pytest.mark.parametrize('interactive', [True, False], ids=['interactive', 'noninteractive'])
 def test_evaluation_package_cannot_be_omitted(tmp_path, interactive):
-    setup = _prepare(tmp_path, 'install')
+    setup = _independent_setup(tmp_path, 'install')
     rc, output = _run(setup, interactive=interactive, package='')
     assert rc != 0
     assert _calls(setup) == []
-    assert not setup['target'].exists()
+    assert not (setup['target'] / 'eval-service').exists()
 
 
 def _tar_package(setup, *, top='eval-service', skip=()):
@@ -300,7 +325,7 @@ def _tar_package(setup, *, top='eval-service', skip=()):
 @pytest.mark.parametrize('interactive', [True, False], ids=['interactive', 'noninteractive'])
 @pytest.mark.parametrize('mode', ['install', 'upgrade', 'legacy'])
 def test_evaluation_tar_package_is_unpacked_like_other_components(tmp_path, mode, interactive):
-    setup = _prepare(tmp_path, mode)
+    setup = _independent_setup(tmp_path, mode)
     rc, output = _run(setup, interactive=interactive, package=_tar_package(setup))
     assert rc == 0, output
     assert _calls(setup)[-1] == 'evaluation-compose'
@@ -313,7 +338,7 @@ def test_evaluation_tar_package_is_unpacked_like_other_components(tmp_path, mode
 @pytest.mark.parametrize('interactive', [True, False], ids=['interactive', 'noninteractive'])
 @pytest.mark.parametrize('problem', ['wrong-top', 'missing-image'])
 def test_invalid_evaluation_tar_package_fails_before_changes(tmp_path, problem, interactive):
-    setup = _prepare(tmp_path)
+    setup = _independent_setup(tmp_path)
     before = (setup['target'] / 'onto-agent/backend/.env').read_bytes()
     package = (_tar_package(setup, top='evaluation') if problem == 'wrong-top'
                else _tar_package(setup, skip=('evaluation-image.tar',)))
@@ -325,7 +350,7 @@ def test_invalid_evaluation_tar_package_fails_before_changes(tmp_path, problem, 
 
 
 def test_running_consumer_does_not_replace_the_required_consumer_package(tmp_path):
-    setup = _prepare(tmp_path)
+    setup = _independent_setup(tmp_path)
     args = [str(DEPLOY_ROOT / 'install-consumer-modeling.sh'),
             '--onto-modeling-package', str(setup['packages'][2]),
             '--knowledge-hub-package', str(setup['hub_package']),

@@ -121,6 +121,21 @@ export function shouldSubmitStudioSearch(event) {
     && !event?.nativeEvent?.isComposing;
 }
 
+/** Reveal a search/neighbor target and request focus even when it is already selected. */
+export function locateStudioGraphElement(session, elementId) {
+  const node = session?.graph?.nodes?.find((item) => item.id === elementId);
+  if (!node || !Object.prototype.hasOwnProperty.call(KIND_META, node.kind)) return session;
+  return {
+    ...session,
+    selectedElementId: node.id,
+    query: '',
+    kind: '',
+    hiddenKinds: (session.hiddenKinds || []).filter((kind) => kind !== node.kind),
+    graphHighlight: 'all',
+    graphFocusRequest: (session.graphFocusRequest || 0) + 1,
+  };
+}
+
 export function studioTextMatchesQuery(text, query) {
   const normalizedText = String(text ?? '').normalize('NFKC').toLocaleLowerCase('zh-CN');
   const normalizedQuery = String(query ?? '').normalize('NFKC').trim().toLocaleLowerCase('zh-CN');
@@ -221,7 +236,8 @@ export function filterStudioGraph(graph, kind, query, elements = [], hiddenKinds
     `${element.id} ${element.title} ${element.description}`,
   ]));
   const eligibleNodes = (graph?.nodes || []).filter((node) => (
-    (!kind || node.kind === kind)
+    Object.prototype.hasOwnProperty.call(KIND_META, node.kind)
+    && (!kind || node.kind === kind)
     && !hidden.has(node.kind)
   ));
   const eligibleIds = new Set(eligibleNodes.map((node) => node.id));
@@ -232,7 +248,7 @@ export function filterStudioGraph(graph, kind, query, elements = [], hiddenKinds
     return { nodes: eligibleNodes, edges };
   }
   const matchedIds = new Set(eligibleNodes.filter((node) => (
-    studioTextMatchesQuery(searchable.get(node.id) || `${node.id} ${node.label}`, normalized)
+    studioTextMatchesQuery(`${node.id} ${node.label || ''} ${node.key || ''} ${searchable.get(node.id) || ''}`, normalized)
   )).map((node) => node.id));
   const visibleIds = new Set(matchedIds);
   const edges = (graph?.edges || []).filter((edge) => {
@@ -343,7 +359,9 @@ export function projectStudioLargeGraph(graph, {
   edges.forEach((edge) => {
     const source = displayIdByNode.get(edge.source);
     const target = displayIdByNode.get(edge.target);
-    if (!source || !target || source === target) return;
+    if (!source || !target) return;
+    // 两端折叠进同一个簇时簇内连线不画；未折叠节点的对象自关联保留
+    if (source === target && source !== edge.source) return;
     const collapsedEdge = source.startsWith('cluster:') && target.startsWith('cluster:');
     const key = collapsedEdge ? `${source}|${target}` : `${source}|${target}|${edge.kind}`;
     const current = aggregatedEdges.get(key);
@@ -458,6 +476,50 @@ export function studioGraphNeighborhood(nodeId, edges = []) {
     edgeIds.add(edge.id);
   }
   return { nodes, edges: edgeIds };
+}
+
+/** Breadth-first neighborhood up to `hops` levels; hop 1 equals studioGraphNeighborhood. */
+export function studioGraphNeighborhoodHops(nodeId, edges = [], hops = 1) {
+  if (!nodeId || !(hops >= 1)) return { nodes: new Set(), edges: new Set() };
+  const levels = new Map([[nodeId, 0]]);
+  for (let level = 1; level <= hops; level += 1) {
+    for (const edge of edges) {
+      if (levels.get(edge.source) === level - 1 && !levels.has(edge.target)) levels.set(edge.target, level);
+      if (levels.get(edge.target) === level - 1 && !levels.has(edge.source)) levels.set(edge.source, level);
+    }
+  }
+  const nodes = new Set(levels.keys());
+  const edgeIds = new Set();
+  for (const edge of edges) {
+    if (nodes.has(edge.source) && nodes.has(edge.target)
+      && Math.min(levels.get(edge.source), levels.get(edge.target)) < hops) edgeIds.add(edge.id);
+  }
+  return { nodes, edges: edgeIds };
+}
+
+/** Ranked search suggestions for the in-graph search box: name/Key first, description last. */
+export function studioSearchCandidates(nodes = [], query = '', elements = [], limit = 8) {
+  const normalized = String(query || '').trim();
+  if (!normalized) return [];
+  const lowered = normalized.normalize('NFKC').toLocaleLowerCase('zh-CN');
+  const byId = new Map((elements || []).map((element) => [element.id, element]));
+  const matches = [];
+  for (const node of nodes || []) {
+    if (!Object.prototype.hasOwnProperty.call(KIND_META, node.kind)) continue;
+    const element = byId.get(node.id) || {};
+    const label = String(node.label || node.id);
+    const nameText = `${label} ${node.id} ${node.key || ''} ${element.key || ''}`.normalize('NFKC').toLocaleLowerCase('zh-CN');
+    const descriptionText = `${element.title || ''} ${element.description || ''}`.normalize('NFKC').toLocaleLowerCase('zh-CN');
+    let score = -1;
+    if (nameText.includes(lowered)) score = nameText.startsWith(lowered) ? 0 : 1;
+    else if (descriptionText.includes(lowered)) score = 2;
+    else if (studioTextMatchesQuery(nameText, normalized)
+      || studioTextMatchesQuery(descriptionText, normalized)) score = 3;
+    if (score < 0) continue;
+    matches.push({ id: node.id, label, kind: node.kind, score });
+  }
+  matches.sort((a, b) => a.score - b.score || a.label.localeCompare(b.label, 'zh-CN'));
+  return matches.slice(0, Math.min(8, Math.max(1, Number(limit) || 8)));
 }
 
 export function studioGraphChain(kind, nodes = [], edges = []) {

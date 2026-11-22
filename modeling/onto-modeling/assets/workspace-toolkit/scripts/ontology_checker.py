@@ -1236,6 +1236,38 @@ def check_object_relation_joins(doc: OntologyDoc, all_docs: dict, tables: dict) 
     return issues
 
 
+def check_object_duplicate_relations(doc: OntologyDoc, all_docs: dict, tables: dict) -> list:
+    """同一文件里把同一条关系写了两遍：发布和数据评测都会拒绝，这里提前指出两处行号。
+
+    同一条关系指源对象、关系名、目标对象和两端关联字段都相同。源对象和目标对象的文件各写
+    一次是同一关系的两端描述，后端合并为一条，不在这里报。
+    """
+    by_lower = {name.lower(): name for name in tables}
+    stem = doc.path.stem
+    first_lines: dict = {}
+    issues = []
+    for lineno, source, name, target, note in _object_relations(doc):
+        source_doc = doc if source == stem else all_docs.get(source)
+        target_doc = doc if target == stem else all_docs.get(target)
+        if source_doc is None or target_doc is None:
+            continue  # 链接失效另有检查负责
+        source_join, target_join, error = _parse_join_note(
+            note, _field_keys(source_doc), _field_keys(target_doc),
+            _relation_names(source_doc, by_lower), _relation_names(target_doc, by_lower))
+        if error:
+            continue  # 括注写错由 check_object_relation_joins 报
+        identity = tuple(unicodedata.normalize('NFC', part).strip() for part in (source, name, target))
+        first = first_lines.setdefault(identity + (source_join, target_join), lineno)
+        if first != lineno:
+            issues.append(Issue(
+                file=_rel(doc), severity='错误', category='重复关系',
+                message=f'关系「{source} -{name}→ {target}」在第 {first} 行和第 {lineno} 行重复声明，'
+                        f'关联字段也相同：发布和数据评测都会拒绝，请删掉第 {lineno} 行。'
+                        f'源对象和目标对象的文件各写一次不算重复',
+                source='规则检查'))
+    return issues
+
+
 def check_object_self_relations(doc: OntologyDoc, tables: dict) -> list:
     """自关联（源对象 = 目标对象）必须用括注写出关联字段。
 
@@ -2499,6 +2531,7 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
             issues += check_object_primary_key(doc)
             issues += check_object_links(doc, all_docs)
             issues += check_object_relation_joins(doc, all_docs, tables)
+            issues += check_object_duplicate_relations(doc, all_docs, tables)
             issues += check_object_relation_names(doc)
             issues += check_object_self_relations(doc, tables)
             issues += check_graph_identifiers(doc, tables)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Coordinate two independent CCE release packages using their stable command interface."""
+"""Coordinate independent Auth, Consumer, and Modeling CCE releases."""
 
 from __future__ import annotations
 
@@ -7,11 +7,14 @@ import argparse
 from datetime import datetime, timezone, timedelta
 import hashlib
 import json
-from pathlib import Path
+import math
+from pathlib import Path, PurePosixPath
+import re
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 
 import jsonschema
@@ -21,9 +24,10 @@ from common import (CompatibilityError, ConfigError, LockError, MigrationUnavail
                     checksum, emit_stdout, read_yaml, safe_extract, validate_name,
                     run_program, validate_release, validate_compatibility_manifest,
                     release_chart_from_list, IMAGE_REF)
-from upgrade import transition as modeling_transition
+from upgrade import installed_workloads, transition as modeling_transition
 
 JOINT_SIDE_ORDER = ("consumer", "modeling")
+AUTH_IMAGE_REF = re.compile(r"^[^/\s]+/[^\s@]+@sha256:[0-9a-f]{64}$")
 
 
 class ChildOperationError(RuntimeError):
@@ -63,6 +67,23 @@ def load_config(path: Path):
         raise ConfigError(f"joint config invalid: {exc.message}") from exc
     if raw["consumer"]["releaseName"] == raw["modeling"]["releaseName"] and raw["consumer"]["namespace"] == raw["modeling"]["namespace"]:
         raise ConfigError("Consumer and Modeling release identities must differ")
+    if raw.get("auth"):
+        auth = raw["auth"]
+        validate_name(auth["releaseName"], "auth releaseName")
+        validate_name(auth["namespace"], "auth namespace")
+        if len(auth["releaseName"]) > 40:
+            raise ConfigError("Auth releaseName is too long")
+        if auth["namespace"] != raw["consumer"]["namespace"]:
+            raise ConfigError("independent Auth must use the Consumer namespace")
+        if auth["releaseName"] == raw["consumer"]["releaseName"]:
+            raise ConfigError("Auth and Consumer Helm releases must differ")
+        if auth["releaseName"] == raw["modeling"]["releaseName"] and \
+                auth["namespace"] == raw["modeling"]["namespace"]:
+            raise ConfigError("Auth and Modeling Helm releases must differ")
+        if not AUTH_IMAGE_REF.fullmatch(auth["image"]):
+            raise ConfigError("Auth image must be pinned by registry manifest digest")
+        for field in ("package", "values"):
+            auth[field] = absolute(path.parent, auth[field])
     for side in JOINT_SIDE_ORDER:
         validate_name(raw[side]["releaseName"], "releaseName")
         validate_name(raw[side]["namespace"], "namespace")
@@ -75,10 +96,372 @@ def load_config(path: Path):
     return raw
 
 
+def validate_auth_coordinates(config: dict, consumer_values: dict, modeling_values: dict) -> None:
+    auth = config.get("auth")
+    if not auth:
+        return
+    reference = consumer_values.get("externalAuth", {})
+    if not isinstance(reference, dict):
+        raise ConfigError("consumer externalAuth must be a mapping")
+    service_name = reference.get("serviceName")
+    legacy_service = config["consumer"]["releaseName"][:40].rstrip("-") + "-auth"
+    supported = {auth["releaseName"] + "-auth", legacy_service}
+    if service_name not in supported:
+        raise ConfigError("independent Auth Service name is not a supported fresh or migrated name")
+    expected = {"serviceName": service_name,
+                "namespace": auth["namespace"], "servicePort": 5056, "apiVersion": "auth-v1"}
+    if consumer_values.get("sharedAuth", {}).get("enabled") is not False:
+        raise ConfigError("three-release joint operation requires external Consumer Auth")
+    for side, values in (("consumer", consumer_values), ("modeling", modeling_values)):
+        reference = values.get("externalAuth", {})
+        if not isinstance(reference, dict):
+            raise ConfigError(f"{side} externalAuth must be a mapping")
+        if any(reference.get(key) != value for key, value in expected.items()):
+            raise ConfigError(f"{side} externalAuth differs from the independent Auth release")
+    identity = consumer_values.get("global", {}).get("auth")
+    if (not isinstance(identity, dict)
+            or not all(isinstance(identity.get(key), str) and identity[key] for key in ("issuer", "audience"))
+            or identity != modeling_values.get("global", {}).get("auth")):
+        raise ConfigError("Consumer and Modeling Auth issuer/audience differ")
+    auth_values = read_yaml(auth["values"])
+    if not isinstance(auth_values, dict):
+        raise ConfigError("Auth values must be a mapping")
+    auth_identity = auth_values.get("global", {}).get("auth", {})
+    if any(auth_identity.get(key) != identity.get(key) for key in ("issuer", "audience")):
+        raise ConfigError("Auth release issuer/audience differ from Consumer and Modeling")
+    if auth_values.get("sharedAuth", {}).get("enabled") is not True:
+        raise ConfigError("independent Auth values must enable its Auth workload")
+
+
+def prepare_auth_release(config: dict, destination: Path, *, expected_platform: str) -> tuple[Path, dict]:
+    auth = config["auth"]
+    from common import bounded_archive_members, extract_regular_members
+    import tarfile
+    try:
+        with tarfile.open(auth["package"], "r:gz") as archive:  # NOSONAR(S5042): bounded members before extraction
+            members = bounded_archive_members(archive)
+            names = [member.name for member in members]
+            if len(names) != len(set(names)):
+                raise ConfigError("Auth package contains duplicate entries")
+            roots = {Path(name).parts[0] for name in names if name}
+            if len(roots) != 1 or not re.fullmatch(r"onto-auth-[A-Za-z0-9_.-]+-(amd64|arm64)", next(iter(roots))):
+                raise ConfigError("Auth package root is invalid")
+            manifest_path = str(PurePosixPath(next(iter(roots))) / "auth-release.json")
+            member = None
+            for candidate in members:
+                if candidate.name == manifest_path and candidate.isfile():
+                    member = candidate
+                    break
+            if member is None or member.size > 1024 * 1024:
+                raise ConfigError("Auth package manifest is missing")
+            payload = archive.extractfile(member)
+            if payload is None:
+                raise ConfigError("Auth package manifest is unreadable")
+            manifest = json.loads(payload.read())
+            if not isinstance(manifest, dict):
+                raise ConfigError("Auth package metadata is invalid")
+            if manifest.get("schema_version") != 1 or manifest.get("contract") != "auth-v1":
+                raise ConfigError("Auth package metadata is invalid")
+            if not isinstance(manifest.get("files"), dict):
+                raise ConfigError("Auth package metadata is invalid")
+            if expected_platform not in ("linux-amd64", "linux-arm64") or \
+                    manifest.get("architecture") != expected_platform.removeprefix("linux-"):
+                raise CompatibilityError("Auth and Modeling package architectures differ")
+            extract_regular_members(archive, members, destination)
+    except (OSError, tarfile.TarError, ValueError) as exc:
+        raise ConfigError("Auth package cannot be read or extracted") from exc
+    root = destination / next(iter(roots))
+    files = manifest.get("files", {})
+    if manifest.get("schema_version") != 1 or manifest.get("contract") != "auth-v1":
+        raise ConfigError("Auth package metadata is invalid")
+    if not isinstance(files, dict) or not files:
+        raise ConfigError("Auth package metadata is invalid")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", manifest.get("image_id", "")):
+        raise ConfigError("Auth package metadata is invalid")
+    actual = {str(item.relative_to(root)) for item in root.rglob("*") if item.is_file()}
+    if actual != set(files) | {"auth-release.json"}:
+        raise ConfigError("Auth package inventory differs from its manifest")
+    for name, expected in files.items():
+        if not isinstance(name, str) or not isinstance(expected, str):
+            raise ConfigError("Auth package file hash is invalid")
+        item = root / name
+        if not item.is_file() or root not in item.resolve().parents or checksum(item) != expected:
+            raise ConfigError("Auth package file hash differs")
+    for required in ("cce/auth-cce.py", "cce/chart/Chart.yaml", "images/auth-server.tar"):
+        if required not in files:
+            raise ConfigError(f"Auth package is missing {required}")
+    return root, manifest
+
+
+def invoke_auth(action: str, config: dict, package: Path | None, operation_id: str,
+                *, resume: bool = False) -> dict:
+    auth = config["auth"]
+    script = package / "cce/auth-cce.py" if package else None
+    if not script or not script.is_file():
+        raise ConfigError("Auth release package has no cce/auth-cce.py")
+    options = ["python3", "-B", str(script), action,
+               "--context", config["cluster"]["context"], "--namespace", auth["namespace"],
+               "--auth-release", auth["releaseName"], "--operation-id", operation_id,
+               "--state-dir", str(config["stateDir"]),
+               "--timeout-seconds", str(config.get("timeoutSeconds", 900))]
+    if action in ("install", "upgrade"):
+        options.extend(("--auth-image", auth["image"]))
+    if action == "install":
+        options.extend(("--package-dir", str(package), "--values", str(auth["values"])))
+    if action == "migrate":
+        options.extend(("--consumer-release", config["consumer"]["releaseName"]))
+        timeout = config.get("timeoutSeconds", 900) * 4 + 30
+    else:
+        timeout = config.get("timeoutSeconds", 900) + 30
+    if resume:
+        options.append("--resume")
+    try:
+        # The extracted Auth script and its hash were checked against the
+        # package inventory before this point. Run the fixed interpreter argv
+        # directly; the shared command runner only permits infrastructure CLIs.
+        result = subprocess.run(  # NOSONAR(S4721): verified package script and fixed argv
+            options, shell=False, text=True, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise ChildOperationError("auth", action, {"status": "failed", "errorCode": "TIMEOUT",
+            "message": "Auth operation timed out; inspect owner state before recovery", "retryable": False}) from exc
+    lines = result.stdout.strip().splitlines()
+    output = lines[-1] if lines else ""
+    if action == "install" and result.returncode == 0 and \
+            output.startswith("AUTH_CCE_FRESH_INSTALL=PASS"):
+        return {"status": "succeeded", "phase": "installed"}
+    if action == "migrate" and result.returncode == 0 and \
+            output.startswith("AUTH_OWNERSHIP_MIGRATION=PASS"):
+        return {"status": "succeeded", "phase": "migrated"}
+    try:
+        payload = json.loads(output)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ChildOperationError("auth", action, {"status": "failed", "errorCode": "CHILD_RESPONSE_INVALID",
+            "message": "Auth tool returned invalid JSON", "retryable": False}) from exc
+    if not isinstance(payload, dict):
+        raise ChildOperationError("auth", action, {"status": "failed", "errorCode": "CHILD_RESPONSE_INVALID",
+            "message": "Auth tool returned an invalid response", "retryable": False})
+    if result.returncode or payload.get("status") in ("failed", "interrupted"):
+        raise ChildOperationError("auth", action, {"status": "failed",
+            "errorCode": payload.get("errorCode") or "CHILD_OPERATION_FAILED",
+            "message": "independent Auth operation failed; inspect Auth owner state",
+            "retryable": False})
+    if action == "upgrade" and payload.get("status") not in (None, "succeeded"):
+        raise ChildOperationError("auth", action, {"status": "failed", "errorCode": "CHILD_RESPONSE_INVALID",
+            "message": "Auth upgrade returned an unexpected status", "retryable": False})
+    if action in ("install", "migrate"):
+        raise ChildOperationError("auth", action, {"status": "failed", "errorCode": "CHILD_RESPONSE_INVALID",
+            "message": "Auth operation did not report completion", "retryable": False})
+    if action == "upgrade" and payload.get("phase") != "auth-ready":
+        raise ChildOperationError("auth", action, {"status": "failed", "errorCode": "CHILD_RESPONSE_INVALID",
+            "message": "Auth upgrade did not report ready", "retryable": False})
+    return {"status": "succeeded", "phase": "auth-ready"}
+
+
+def consumer_auth_mode(config: dict) -> tuple[str, dict]:
+    """Classify the installed Consumer Auth owner before running a three-release upgrade."""
+    consumer = config["consumer"]
+    raw = json.loads(kubectl(config, "-n", consumer["namespace"], "get", "configmap",
+                             consumer["releaseName"] + "-cce-state", "-o", "json"))
+    try:
+        state = json.loads(raw["data"]["state.json"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigError("Consumer Auth ownership state is unavailable") from exc
+    if not isinstance(state, dict):
+        raise ConfigError("Consumer Auth ownership state is invalid")
+    ownership = state.get("authOwnership", {})
+    if (not isinstance(ownership, dict) or not isinstance(state.get("identity"), dict)
+            or state.get("identity", {}).get("auth") !=
+            read_yaml(consumer["values"]).get("global", {}).get("auth")):
+        raise ConfigError("Consumer Auth ownership state is invalid")
+    if ownership.get("step") not in (None, "completed"):
+        return "migrating", state
+    if state.get("phase") != "ready":
+        raise ConfigError("Consumer must be ready before Auth ownership migration or upgrade")
+    if state.get("externalAuth"):
+        if (ownership.get("step") != "completed" or
+                state["externalAuth"] != read_yaml(consumer["values"]).get("externalAuth")):
+            raise ConfigError("Consumer external Auth ownership is incomplete or differs from target values")
+        return "independent", state
+    if ownership.get("step") == "completed":
+        raise ConfigError("Consumer Auth migration is marked complete without external ownership")
+    if (state.get("identity", {}).get("authClaim") and
+            state.get("identity", {}).get("auth") == read_yaml(consumer["values"]).get("global", {}).get("auth")):
+        return "legacy", state
+    raise ConfigError("Consumer legacy Auth identity or account PVC is unavailable")
+
+
+def ensure_auth_migration(config: dict, package: Path, operation_id: str,
+                          journal: dict, journal_path: Path, *, resume: bool) -> dict:
+    """Adopt a legacy Consumer Auth once, then verify the stable independent owner."""
+    mode, state = consumer_auth_mode(config)
+    completed = "auth-migrated" in journal.get("completed", [])
+    if journal.get("phase") == "auth-migration-started" and not resume:
+        raise ConfigError("unfinished Auth ownership migration requires the original joint --resume")
+    if mode == "migrating" and not resume:
+        raise ConfigError("unfinished Auth ownership migration requires the original joint --resume")
+    legacy_service = config["consumer"]["releaseName"] + "-auth"
+    if mode in ("legacy", "migrating") or completed:
+        if len(config["consumer"]["releaseName"]) > 40:
+            raise ConfigError("legacy Auth migration requires a Consumer release name of at most 40 characters")
+        if read_yaml(config["consumer"]["values"]).get("externalAuth", {}).get("serviceName") != legacy_service:
+            raise ConfigError("legacy Auth migration must preserve the original Consumer Service name")
+    if mode == "independent":
+        if not completed and journal.get("phase") != "auth-migration-started" and \
+                state.get("authOwnership", {}).get("operationId") == operation_id:
+            raise ConfigError("Auth migration completed without the joint migration journal stage")
+        if completed and state.get("authOwnership", {}).get("operationId") != operation_id:
+            raise ConfigError("Auth migration operation differs from joint journal")
+        if journal.get("phase") == "auth-migration-started" and not completed:
+            ownership = state.get("authOwnership", {})
+            if ownership.get("operationId") != operation_id:
+                raise ConfigError("Auth migration completed outside this joint operation; inspect ownership")
+        require_auth_ready(config)
+        if journal.get("phase") == "auth-migration-started" and not completed:
+            journal["completed"].append("auth-migrated")
+            journal["phase"] = "auth-migration-completed"
+            write_journal(journal_path, journal)
+        return {"status": "succeeded", "phase": "migrated" if completed or
+                journal.get("phase") == "auth-migration-completed" else "already-independent"}
+    if completed:
+        raise ConfigError("Auth migration journal is completed but Consumer still owns Auth")
+    if mode == "migrating":
+        ownership = state["authOwnership"]
+        if not resume or journal.get("phase") != "auth-migration-started":
+            raise ConfigError("unfinished Auth ownership migration requires the original joint --resume")
+        if (ownership.get("operationId") != operation_id
+                or ownership.get("targetRelease") != config["auth"]["releaseName"]):
+            raise ConfigError("unfinished Auth ownership migration requires the original joint --resume")
+    elif resume and journal.get("phase") == "auth-migration-started":
+        # The child may have failed before writing a migration step. Reuse its ID.
+        pass
+    elif resume and journal.get("phase") != "prepared":
+        raise ConfigError("Auth migration journal and installed Consumer mode differ")
+    if mode == "legacy":
+        result = run_program(("helm", "--kube-context", config["cluster"]["context"],
+            "--namespace", config["auth"]["namespace"], "status", config["auth"]["releaseName"],
+            "-o", "json"), text=True, capture_output=True)
+        if result.returncode == 0 or "not found" not in result.stderr.lower():
+            raise ConfigError("independent Auth release exists or cannot be inspected while Consumer owns Auth")
+        service = json.loads(kubectl(config, "-n", config["consumer"]["namespace"],
+            "get", "service", legacy_service, "-o", "json"))
+        deployment = json.loads(kubectl(config, "-n", config["consumer"]["namespace"],
+            "get", "deployment", legacy_service, "-o", "json"))
+        annotations = service.get("metadata", {}).get("annotations", {})
+        dep_annotations = deployment.get("metadata", {}).get("annotations", {})
+        consumer_release = config["consumer"]["releaseName"]
+        if not service.get("metadata", {}).get("uid"):
+            raise ConfigError("legacy Auth Service or Deployment owner differs from Consumer")
+        if (annotations.get("meta.helm.sh/release-name") != consumer_release
+                or dep_annotations.get("meta.helm.sh/release-name") != consumer_release):
+            raise ConfigError("legacy Auth Service or Deployment owner differs from Consumer")
+        if 5056 not in [part.get("port") for part in service.get("spec", {}).get("ports", [])]:
+            raise ConfigError("legacy Auth Service or Deployment owner differs from Consumer")
+    journal["phase"] = "auth-migration-started"
+    write_journal(journal_path, journal)
+    invoke_auth("migrate", config, package, operation_id, resume=mode == "migrating")
+    after_mode, after_state = consumer_auth_mode(config)
+    if (after_mode != "independent" or
+            after_state.get("authOwnership", {}).get("operationId") != operation_id):
+        raise ConfigError("Auth migration returned without independent Consumer ownership state")
+    require_auth_ready(config)
+    journal["completed"].append("auth-migrated")
+    journal["phase"] = "auth-migration-completed"
+    write_journal(journal_path, journal)
+    return {"status": "succeeded", "phase": "migrated"}
+
+
+def auth_release_state(config: dict) -> dict | None:
+    """Read the installed independent owner without treating a missing release as ready."""
+    auth = config["auth"]
+    response = run_program(("helm", "--kube-context", config["cluster"]["context"],
+        "--namespace", auth["namespace"], "status", auth["releaseName"], "-o", "json"),
+        text=True, capture_output=True)
+    if response.returncode:
+        if "not found" in response.stderr.lower():
+            return None
+        raise RuntimeError("cannot inspect independent Auth Helm release")
+    status = json.loads(response.stdout)
+    if status.get("info", {}).get("status") != "deployed":
+        raise ConfigError("independent Auth Helm release is not deployed")
+    values = json.loads(run("helm", "--kube-context", config["cluster"]["context"],
+                            "--namespace", auth["namespace"], "get", "values",
+                            auth["releaseName"], "-o", "json"))
+    name = values.get("serviceName") if isinstance(values, dict) else None
+    if not isinstance(values, dict) or values.get("authOnly") is not True:
+        raise ConfigError("independent Auth installed values are invalid")
+    if not isinstance(name, str) or not name or values.get("workloadName") != name:
+        raise ConfigError("independent Auth installed values are invalid")
+    raw = json.loads(kubectl(config, "-n", auth["namespace"], "get", "configmap",
+                             auth["releaseName"] + "-cce-state", "-o", "json"))
+    try:
+        state = json.loads(raw["data"]["state.json"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigError("independent Auth owner state is unavailable") from exc
+    service = json.loads(kubectl(config, "-n", auth["namespace"], "get", "service", name, "-o", "json"))
+    deployment = json.loads(kubectl(config, "-n", auth["namespace"], "get", "deployment", name, "-o", "json"))
+    service_uid = service.get("metadata", {}).get("uid")
+    service_annotations = service.get("metadata", {}).get("annotations", {})
+    deployment_annotations = deployment.get("metadata", {}).get("annotations", {})
+    if state.get("phase") != "ready" or not service_uid:
+        raise ConfigError("independent Auth owner identity or Service changed")
+    if state.get("serviceUID") not in (None, service_uid):
+        raise ConfigError("independent Auth owner identity or Service changed")
+    if (service_annotations.get("meta.helm.sh/release-name") != auth["releaseName"]
+            or service_annotations.get("meta.helm.sh/release-namespace") != auth["namespace"]
+            or deployment_annotations.get("meta.helm.sh/release-name") != auth["releaseName"]):
+        raise ConfigError("independent Auth owner identity or Service changed")
+    if 5056 not in [part.get("port") for part in service.get("spec", {}).get("ports", [])]:
+        raise ConfigError("independent Auth owner identity or Service changed")
+    if (state.get("identity") != read_yaml(auth["values"]).get("global", {}).get("auth")
+            or values.get("global", {}).get("auth") != state.get("identity")
+            or state.get("authRelease", {}).get("step") not in (None, "completed", "aborted")):
+        raise ConfigError("independent Auth owner identity or Service changed")
+    containers = deployment.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+    if len(containers) != 1 or containers[0].get("name") != "auth-server":
+        raise ConfigError("independent Auth Deployment shape changed")
+    return {"state": state, "image": containers[0].get("image")}
+
+
+def require_auth_ready(config: dict, target: str | None = None) -> dict:
+    owner = auth_release_state(config)
+    if owner is None:
+        raise ConfigError("Auth release is not ready at the configured image")
+    if target and owner["image"] != target:
+        raise ConfigError("Auth release is not ready at the configured image")
+    if owner["state"].get("authPin", {}).get("image") != owner["image"]:
+        raise ConfigError("Auth release is not ready at the configured image")
+    return owner
+
+
+def ensure_auth_release(action: str, config: dict, package: Path, operation_id: str,
+                        *, resume: bool = False) -> dict:
+    """Complete Auth before either business release starts its operation."""
+    current = auth_release_state(config)
+    target = config["auth"]["image"]
+    if action == "install" and current:
+        if (resume and current["image"] == target
+                and current["state"].get("authPin", {}).get("image") == target):
+            return {"status": "succeeded", "phase": "already-ready", "image": target}
+        raise ConfigError("Auth release already exists; use joint upgrade or omit auth from the install config")
+    if action == "install" and read_yaml(config["consumer"]["values"]).get("externalAuth", {}).get("serviceName") != config["auth"]["releaseName"] + "-auth":
+        raise ConfigError("fresh Auth install requires the Auth release Service name")
+    if current and current["image"] == target and current["state"].get("authPin", {}).get("image") == target:
+        return {"status": "succeeded", "phase": "already-ready", "image": target}
+    if action == "upgrade" and not current:
+        raise ConfigError("independent Auth release is missing; install or migrate it first")
+    if resume:
+        raise ConfigError("Auth outcome differs from target; inspect owner state before joint resume")
+    invoke_auth(action, config, package, operation_id)
+    after = auth_release_state(config)
+    if not after or after["image"] != target or after["state"].get("authPin", {}).get("image") != target:
+        raise ConfigError("Auth operation returned without the target image and ready owner state")
+    return {"status": "succeeded", "phase": "ready", "image": target}
+
+
 def load_uninstall_config(path: Path) -> dict:
     """The uninstall entry needs only release coordinates and a writable journal directory."""
     raw = read_yaml(path)
-    allowed = {"schemaVersion", "cluster", "stateDir", "consumer", "modeling", "timeoutSeconds",
+    allowed = {"schemaVersion", "cluster", "stateDir", "auth", "consumer", "modeling", "timeoutSeconds",
                "compatibilityFile"}
     if not isinstance(raw, dict) or raw.get("schemaVersion") != "cce-joint/v1" or set(raw) - allowed:
         raise ConfigError("invalid joint uninstall config")
@@ -93,6 +476,19 @@ def load_uninstall_config(path: Path) -> dict:
     if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout < 1:
         raise ConfigError("joint uninstall requires a positive timeoutSeconds")
     result = {"cluster": cluster, "stateDir": absolute(path.parent, raw["stateDir"]), "timeoutSeconds": timeout}
+    if raw.get("auth"):
+        entry = raw["auth"]
+        if not isinstance(entry, dict):
+            raise ConfigError("joint uninstall Auth reference is invalid")
+        if not isinstance(entry.get("releaseName"), str) or not isinstance(entry.get("namespace"), str):
+            raise ConfigError("joint uninstall Auth reference is invalid")
+        if set(entry) - {"releaseName", "namespace", "package", "values", "image"}:
+            raise ConfigError("joint uninstall Auth reference is invalid")
+        validate_name(entry["releaseName"], "auth releaseName")
+        validate_name(entry["namespace"], "auth namespace")
+        if len(entry["releaseName"]) > 40:
+            raise ConfigError("Auth releaseName is too long")
+        result["auth"] = {"releaseName": entry["releaseName"], "namespace": entry["namespace"]}
     for side in JOINT_SIDE_ORDER:
         entry = raw.get(side)
         if not isinstance(entry, dict):
@@ -106,6 +502,14 @@ def load_uninstall_config(path: Path) -> dict:
         if len(entry["releaseName"]) > 49:
             raise ConfigError(f"{side} releaseName is too long for its operation Lease")
         result[side] = {"releaseName": entry["releaseName"], "namespace": entry["namespace"]}
+    auth_release = result.get("auth")
+    consumer_release = result.get("consumer")
+    modeling_release = result.get("modeling")
+    if auth_release:
+        if auth_release["namespace"] != consumer_release["namespace"]:
+            raise ConfigError("Auth and Consumer namespaces differ")
+        if auth_release in (consumer_release, modeling_release):
+            raise ConfigError("Auth release identity must differ from business releases")
     if result.get("modeling") == result.get("consumer"):
         raise ConfigError("Consumer and Modeling release identities must differ")
     return result
@@ -115,6 +519,8 @@ def validate_combination(config, packages):
     document = validate_compatibility_manifest(read_yaml(config["compatibilityFile"]))
     consumer = packages["consumer"][1]
     modeling = packages["modeling"][1]
+    if config.get("auth") and consumer.get("authDeploymentMode") != "external":
+        raise CompatibilityError("three-release joint operation requires an external-only Consumer package")
     if "jiuwenbox" not in consumer["images"]:
         raise ConfigError("Consumer release does not contain the JiuwenBox image archive")
     expected = {
@@ -126,6 +532,9 @@ def validate_combination(config, packages):
         "operationSchemaVersion": "cce-operation/v1",
         "endpointSchemaVersion": "cce-endpoints/v1",
     }
+    if "values" in config.get("consumer", {}):
+        consumer_values = read_yaml(config["consumer"]["values"])
+        expected["authApiVersion"] = candidate_combination(packages, consumer_values)["authApiVersion"]
     if consumer["platform"] != modeling["platform"]:
         raise CompatibilityError("Consumer and Modeling platforms differ")
     combinations = document.get("combinations", [])
@@ -153,24 +562,41 @@ def validate_cross_side(config, packages, consumer_values, modeling_values, comb
     by_id = {item["id"]: item for item in items}
     if len(by_id) != len(items):
         raise ConfigError("duplicate Consumer endpoint ID")
+    external = consumer_values.get("sharedAuth", {}).get("enabled", True) is False
     for field, endpoint_id, suffix, port, api_field in (
             ("externalAuth", "auth", "auth", 5056, "authApiVersion"),
             ("externalConsumer", "consumer-api", "backend", 5055, "consumerApiVersion")):
         item = by_id.get(endpoint_id)
         if not item:
             raise ConfigError(f"Consumer endpoint {endpoint_id} missing")
-        if item.get("apiVersion") != combination[api_field] or item.get("port") != port:
+        expected_api = "auth-v1" if field == "externalAuth" and external else item.get("apiVersion")
+        if expected_api != combination[api_field] or item.get("port") != port:
             raise CompatibilityError(f"Consumer endpoint {endpoint_id} interface differs from verified combination")
         reference = modeling_values.get(field, {})
+        if field == "externalAuth" and external:
+            owner_ref = consumer_values.get("externalAuth", {})
+            if (owner_ref.get("apiVersion") != "auth-v1"
+                    or combination[api_field] != "auth-v1"
+                    or reference.get("apiVersion") != "auth-v1"):
+                raise ConfigError("Modeling Auth reference differs from independent Consumer contract")
+            if any(reference.get(key) != owner_ref.get(key)
+                   for key in ("serviceName", "namespace", "servicePort")):
+                raise ConfigError("Modeling Auth reference differs from independent Consumer contract")
+            continue
         expected_name = f"{config['consumer']['releaseName']}-{suffix}"
+        if field == "externalAuth" and reference.get("apiVersion", "v1") != "v1":
+            raise ConfigError("Modeling Auth API version differs from legacy Consumer contract")
         if reference.get("serviceName") != expected_name or reference.get("namespace") != config["consumer"]["namespace"] or reference.get("servicePort") != item["port"]:
             raise ConfigError(f"Modeling {field} does not match Consumer endpoint {endpoint_id}")
 
 
-def candidate_combination(packages: dict) -> dict:
+def candidate_combination(packages: dict, consumer_values: dict | None = None) -> dict:
     """Derive version and interface fields from checked release archives."""
     consumer = packages["consumer"][1]
     modeling = packages["modeling"][1]
+    if (consumer_values or {}).get("sharedAuth", {}).get("enabled") is False and \
+            consumer.get("authDeploymentMode") != "external":
+        raise CompatibilityError("external Auth requires an external-only Consumer package")
     if consumer["platform"] != modeling["platform"]:
         raise CompatibilityError("Consumer and Modeling platforms differ")
     if "jiuwenbox" not in consumer["images"]:
@@ -198,7 +624,8 @@ def candidate_combination(packages: dict) -> dict:
         "platform": modeling["platform"],
         "operationSchemaVersion": "cce-operation/v1",
         "endpointSchemaVersion": endpoints["schemaVersion"],
-        "authApiVersion": by_id["auth"]["apiVersion"],
+        "authApiVersion": ("auth-v1" if (consumer_values or {}).get("sharedAuth", {}).get("enabled", True) is False
+                           else by_id["auth"]["apiVersion"]),
         "consumerApiVersion": by_id["consumer-api"]["apiVersion"],
     }
 
@@ -228,6 +655,14 @@ def matches_installed_combination(combination: dict, installed: dict) -> bool:
         combination.get(f"{side}ChartVersion") == installed[side]["chartVersion"]
         for side in JOINT_SIDE_ORDER
     )
+
+
+def installed_modeling_workloads(config: dict) -> tuple[str, ...]:
+    entry = config["modeling"]
+    values = json.loads(run("helm", "--kube-context", config["cluster"]["context"],
+                            "--namespace", entry["namespace"], "get", "values",
+                            entry["releaseName"], "-o", "json"))
+    return installed_workloads(values)
 
 
 def installed_identity_without_manifest(config: dict, side: str) -> dict:
@@ -272,22 +707,61 @@ def installed_consumer_contract(config: dict, installed: dict, target: dict) -> 
             raise CompatibilityError("installed Consumer endpoint contract is invalid or ambiguous")
         by_id[item["id"]] = item
     versions = {}
+    external = state.get("externalAuth")
+    ownership = state.get("authOwnership", {})
+    if external:
+        if (external.get("apiVersion") != "auth-v1" or ownership.get("step") != "completed"):
+            raise CompatibilityError("installed Consumer external Auth ownership is incomplete")
+        if (not isinstance(external.get("servicePort"), int) or isinstance(external.get("servicePort"), bool)
+                or external["servicePort"] != 5056):
+            raise CompatibilityError("installed Consumer external Auth port differs from supported contract")
     for endpoint_id, suffix, port, field in (("auth", "auth", 5056, "authApiVersion"),
                                              ("consumer-api", "backend", 5055, "consumerApiVersion")):
         item = by_id.get(endpoint_id, {})
-        expected = {"serviceName": f"{entry['releaseName']}-{suffix}",
-                    "namespace": entry["namespace"], "port": port}
+        expected = ({"serviceName": external["serviceName"], "namespace": external["namespace"],
+                     "port": external["servicePort"]} if endpoint_id == "auth" and external else
+                    {"serviceName": f"{entry['releaseName']}-{suffix}",
+                     "namespace": entry["namespace"], "port": port})
         if any(item.get(key) != value for key, value in expected.items()):
             raise CompatibilityError(f"installed Consumer {endpoint_id} endpoint contract is invalid")
         api_version = item.get("apiVersion")
         if not isinstance(api_version, str) or not api_version:
             raise CompatibilityError(f"installed Consumer {endpoint_id} endpoint contract is invalid")
-        service = json.loads(kubectl(config, "-n", entry["namespace"], "get", "service",
+        if endpoint_id == "auth" and external and api_version != "auth-v1":
+            raise CompatibilityError(f"installed Consumer {endpoint_id} endpoint contract is invalid")
+        service = json.loads(kubectl(config, "-n", expected["namespace"], "get", "service",
                                      item["serviceName"], "-o", "json"))
         actual_ports = service.get("spec", {}).get("ports", [])
-        if not isinstance(actual_ports, list) or port not in [part.get("port") for part in actual_ports
+        if not isinstance(actual_ports, list) or expected["port"] not in [part.get("port") for part in actual_ports
                                                                 if isinstance(part, dict)]:
             raise CompatibilityError(f"installed Consumer {endpoint_id} Service port differs from recorded contract")
+        if endpoint_id == "auth" and external:
+            annotations = service.get("metadata", {}).get("annotations", {})
+            owner_release = ownership.get("targetRelease")
+            if (annotations.get("meta.helm.sh/release-name") != owner_release
+                    or annotations.get("meta.helm.sh/release-namespace") != expected["namespace"]):
+                raise CompatibilityError("independent Auth Service identity differs from Consumer record")
+            owner_state = json.loads(kubectl(config, "-n", expected["namespace"], "get", "configmap",
+                                            f"{owner_release}-cce-state", "-o", "json"))
+            try:
+                recorded = json.loads(owner_state["data"]["state.json"])
+            except (KeyError, ValueError, TypeError) as exc:
+                raise CompatibilityError("independent Auth owner state is unavailable") from exc
+            consumer_identity = state.get("identity", {}).get("auth")
+            service_uid = service.get("metadata", {}).get("uid")
+            if recorded.get("phase") != "ready" or recorded.get("identity") != consumer_identity:
+                raise CompatibilityError("independent Auth owner identity differs from Consumer")
+            if not service_uid or recorded.get("serviceUID") not in (None, service_uid):
+                raise CompatibilityError("independent Auth owner identity differs from Consumer")
+            owner_status = json.loads(run("helm", "--kube-context", config["cluster"]["context"],
+                                          "--namespace", expected["namespace"], "status", owner_release,
+                                          "-o", "json"))
+            if owner_status.get("info", {}).get("status") != "deployed":
+                raise CompatibilityError("independent Auth Helm release is not deployed")
+            deployment = json.loads(kubectl(config, "-n", expected["namespace"], "get", "deployment",
+                                            item["serviceName"], "-o", "json"))
+            if deployment.get("metadata", {}).get("annotations", {}).get("meta.helm.sh/release-name") != owner_release:
+                raise CompatibilityError("independent Auth Deployment owner differs from Consumer record")
         versions[field] = api_version
     return {"consumerReleaseVersion": installed["consumer"]["releaseVersion"],
             "consumerChartVersion": installed["consumer"]["chartVersion"],
@@ -295,6 +769,19 @@ def installed_consumer_contract(config: dict, installed: dict, target: dict) -> 
             "modelingChartVersion": installed["modeling"]["chartVersion"],
             "platform": target["platform"], "operationSchemaVersion": "cce-operation/v1",
             "endpointSchemaVersion": "cce-endpoints/v1", **versions}
+
+
+def require_auth_contract_transition(config: dict, transition_record: dict | None) -> None:
+    """Require a verified intermediate Auth contract before ownership changes."""
+    if not transition_record or not config.get("auth"):
+        return
+    old = transition_record["from"]
+    middle = transition_record["intermediate"]
+    target = transition_record["to"]
+    if (middle["authApiVersion"] != target["authApiVersion"] or
+            (old["authApiVersion"] != target["authApiVersion"] and
+             (old["authApiVersion"], target["authApiVersion"]) != ("v1", "auth-v1"))):
+        raise CompatibilityError("Auth ownership migration requires a verified auth-v1 intermediate combination")
 
 
 def _installed_for_compatibility(config: dict, existing_manifest: bool) -> dict:
@@ -329,9 +816,16 @@ def prepare_compatibility(config: dict, *, upgrade: bool, confirmed: bool,
         for side in JOINT_SIDE_ORDER:
             root = safe_extract(config[side]["package"], Path(temporary), side)
             packages[side] = root, validate_release(root, side)
-        target = candidate_combination(packages)
-        validate_cross_side(config, packages, read_yaml(config["consumer"]["values"]),
-                            read_yaml(config["modeling"]["values"]), target)
+        if config.get("auth"):
+            modeling_package = packages.get("modeling")
+            if modeling_package is None:
+                raise ConfigError("Modeling package is missing")
+            prepare_auth_release(config, Path(temporary), expected_platform=modeling_package[1]["platform"])
+        consumer_values = read_yaml(config["consumer"]["values"])
+        modeling_values = read_yaml(config["modeling"]["values"])
+        validate_auth_coordinates(config, consumer_values, modeling_values)
+        target = candidate_combination(packages, consumer_values)
+        validate_cross_side(config, packages, consumer_values, modeling_values, target)
     verified_before_candidate = list(manifest["combinations"])
     target_id = include_combination(manifest, target)
     transition_id = None
@@ -360,18 +854,23 @@ def prepare_compatibility(config: dict, *, upgrade: bool, confirmed: bool,
         middle_combination = next(item for item in manifest["combinations"] if item["id"] == middle_id)
         transition_id = "transition-" + hashlib.sha256(
             f"{old_combination['id']}:{target_id}".encode("utf-8")).hexdigest()[:12]
+        migration = "required" if "core" in installed_modeling_workloads(config) else "none"
         transition = {"id": transition_id, "from": old_combination["id"], "to": target_id,
                       "intermediateCombinationId": middle_id, "steps": list(JOINT_SIDE_ORDER),
-                      "requiresJointMaintenance": True, "modelingDataMigration": "none",
+                      "requiresJointMaintenance": True, "modelingDataMigration": migration,
                       "preserveModelingData": True}
         existing = [item for item in manifest["transitions"] if item.get("id") == transition_id]
-        if existing and existing != [transition]:
+        if len(existing) == 1 and existing[0] != transition and (
+                {**existing[0], "modelingDataMigration": migration} == transition):
+            manifest["transitions"][manifest["transitions"].index(existing[0])] = transition
+        elif existing and existing != [transition]:
             raise CompatibilityError("generated transition ID conflicts with existing manifest")
-        if not existing:
+        elif not existing:
             manifest["transitions"].append(transition)
     validate_compatibility_manifest(manifest)
-    if confirmed and upgrade and not no_migration_confirmed:
-        raise ConfigError("confirm that existing Modeling data needs no migration before writing upgrade transition")
+    if confirmed and upgrade and migration == "none":
+        if not no_migration_confirmed:
+            raise ConfigError("confirm that existing Modeling data needs no migration before writing upgrade transition")
     if confirmed:
         path.parent.mkdir(parents=True, exist_ok=True)
         output = yaml.safe_dump(manifest, allow_unicode=True, sort_keys=False)
@@ -393,11 +892,12 @@ def prepare_compatibility(config: dict, *, upgrade: bool, confirmed: bool,
             "targetCombinationId": target_id, "targetCombination": {"id": target_id, **target},
             "oldCombination": old_combination, "intermediateCombination": middle_combination,
             "transitionId": transition_id,
+            "modelingDataMigration": migration if upgrade else "none",
             "reconstructedOldCombination": reconstructed_old,
             "oldCombinationSource": "installed Consumer state and Helm" if reconstructed_old else "verified manifest" if upgrade else None,
             "sameVersion": bool(old_combination and old_combination["id"] == target_id),
-            "confirmationsRequired": (["joint-compatibility", "modeling-data-no-migration"] if upgrade
-                                      else ["joint-compatibility"])}
+            "confirmationsRequired": (["joint-compatibility", "modeling-data-no-migration"]
+                                      if upgrade and migration == "none" else ["joint-compatibility"])}
 
 
 def effective_images(config, state: Path, source: str, operation_id: str) -> Path:
@@ -414,7 +914,7 @@ def effective_images(config, state: Path, source: str, operation_id: str) -> Pat
         raise ConfigError("JiuwenBox requires an immutable Consumer image reference")
     if modeling_images.get("jiuwenbox") not in (None, digest):
         raise ConfigError("Modeling JiuwenBox reference conflicts with selected Consumer digest")
-    if set(modeling_images) - {"modeling", "modelingAgent", "ontoModeling", "knowledgeHub", "evaluation", "jiuwenbox"}:
+    if set(modeling_images) - {"ontoModeling", "knowledgeHub", "evaluation", "jiuwenbox"}:
         raise ConfigError("unexpected Modeling image ID")
     modeling_images["jiuwenbox"] = digest
     effective = state / f"{operation_id}-modeling-effective-images.yaml"
@@ -482,8 +982,50 @@ def invoke(side, action, config, package, operation_id, image_file, resume="", b
     return payload
 
 
+def wait_for_consumer_rollout(config: dict, leases: list) -> None:
+    """Wait for the fresh Consumer workloads before the joint install verifies them."""
+    release = config["consumer"]["releaseName"][:40].rstrip("-")
+    namespace = config["consumer"]["namespace"]
+    timeout = config.get("timeoutSeconds", 900)
+    deadline = time.monotonic() + timeout
+    values = read_yaml(config["consumer"]["values"])
+    components = ["runtime", "frontend"]
+    if values.get("solver", {}).get("enabled", False):
+        components.append("ortools-solver")
+    for component in components:
+        for lease in leases:
+            lease.check()
+        name = f"{release}-{component}"
+        remaining = math.ceil(deadline - time.monotonic())
+        if remaining <= 0:
+            raise ChildOperationError("consumer", "verify", {
+                "status": "failed", "phase": "rollout", "errorCode": "RESOURCE_NOT_READY",
+                "message": f"Consumer deployment {name} did not become Available within {timeout}s; "
+                           "inspect its Pods and resume the joint install with the same operation ID",
+                "retryable": False})
+        try:
+            result = run_program(("kubectl", "--context", config["cluster"]["context"],
+                                  "-n", namespace, "rollout", "status", f"deployment/{name}",
+                                  f"--timeout={remaining}s"),
+                                 text=True, capture_output=True, timeout=remaining + 10)
+        except subprocess.TimeoutExpired:
+            result = None
+        if result is None or result.returncode:
+            raise ChildOperationError("consumer", "verify", {
+                "status": "failed", "phase": "rollout", "errorCode": "RESOURCE_NOT_READY",
+                "message": f"Consumer deployment {name} did not become Available within {timeout}s; "
+                           "inspect its Pods and resume the joint install with the same operation ID",
+                "retryable": False})
+
+
 def operation_fingerprint(config) -> str:
     identity = {"context": config["cluster"]["context"]}
+    if config.get("auth"):
+        identity["auth"] = {"releaseName": config["auth"]["releaseName"],
+                            "namespace": config["auth"]["namespace"],
+                            "image": config["auth"]["image"],
+                            "package": checksum(config["auth"]["package"]),
+                            "values": checksum(config["auth"]["values"])}
     for side in JOINT_SIDE_ORDER:
         identity[side] = {"releaseName": config[side]["releaseName"], "namespace": config[side]["namespace"]}
         for field in ("package", "values", "resolvedImages"):
@@ -497,6 +1039,9 @@ def uninstall_fingerprint(config) -> str:
     identity = {"context": config["cluster"]["context"]}
     for side in JOINT_SIDE_ORDER:
         identity[side] = {"releaseName": config[side]["releaseName"], "namespace": config[side]["namespace"]}
+    if config.get("auth"):
+        identity["auth"] = {"releaseName": config["auth"]["releaseName"],
+                            "namespace": config["auth"]["namespace"]}
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 
 
@@ -522,7 +1067,7 @@ def _uninstall_release_identity(config, side: str) -> dict | None:
             raise ValueError
     except (ValueError, TypeError) as exc:
         raise ConfigError(f"{side} Helm release identity is invalid") from exc
-    if side == "consumer":
+    if side in ("consumer", "auth"):
         version = metadata.get("appVersion")
     else:
         values = json.loads(run("helm", "--kube-context", config["cluster"]["context"], "--namespace",
@@ -535,7 +1080,7 @@ def _uninstall_release_identity(config, side: str) -> dict | None:
 
 def _assert_uninstall_release_chart(config, side: str, version: str) -> None:
     chart = release_chart(config, side)
-    prefix = "modeling-" if side == "modeling" else "consumer-cce-"
+    prefix = {"modeling": "modeling-", "consumer": "consumer-cce-", "auth": "auth-server-"}[side]
     if chart != prefix + version:
         raise ConfigError(f"{side} Helm Chart identity differs from expected release")
 
@@ -573,7 +1118,10 @@ def _delete_uninstall_state(config, side: str, operation_id: str) -> None:
         return
     if side == "consumer" and state.get("phase") not in ("ready", "uninstalling"):
         raise ConfigError("Consumer installation state changed during uninstall")
-    if side == "modeling" and state.get("stage") not in (None, "complete", "old-service-restored"):
+    if side == "auth" and state.get("phase") != "ready":
+        raise ConfigError("Auth installation state changed during uninstall")
+    if side == "modeling" and state.get("stage") not in (
+            None, "complete", "old-service-restored", "waiting-dependencies", "verifying-service"):
         raise ConfigError("Modeling operation state changed during uninstall")
     recorded_operation = state.get("operationId") if side == "consumer" and state.get("phase") == "uninstalling" else None
     if recorded_operation and recorded_operation != operation_id:
@@ -586,17 +1134,50 @@ def _delete_uninstall_state(config, side: str, operation_id: str) -> None:
 
 def _assert_uninstall_state_ready(config, side: str) -> None:
     state = _uninstall_cluster_state(config, side)
+    if side == "auth":
+        if not state or state.get("phase") != "ready":
+            raise ConfigError("finish or inspect the active Auth operation before uninstall")
+        if (state.get("authRelease") or {}).get("step") not in (None, "completed", "aborted"):
+            raise ConfigError("finish or inspect the active Auth operation before uninstall")
+        if (state.get("freshInstall") or {}).get("step") not in (None, "completed"):
+            raise ConfigError("finish or inspect the active Auth operation before uninstall")
+        values = json.loads(run("helm", "--kube-context", config["cluster"]["context"],
+                                "--namespace", config[side]["namespace"], "get", "values",
+                                config[side]["releaseName"], "-o", "json"))
+        name = values.get("workloadName") if isinstance(values, dict) else None
+        if not isinstance(values, dict) or values.get("authOnly") is not True or not isinstance(name, str):
+            raise ConfigError("independent Auth release values are invalid")
+        service = json.loads(kubectl(config, "-n", config[side]["namespace"],
+                                     "get", "service", name, "-o", "json"))
+        deployment = json.loads(kubectl(config, "-n", config[side]["namespace"],
+                                        "get", "deployment", name, "-o", "json"))
+        def owned_by_auth(resource):
+            annotations = resource.get("metadata", {}).get("annotations", {})
+            return (annotations.get("meta.helm.sh/release-name") == config[side]["releaseName"] and
+                    annotations.get("meta.helm.sh/release-namespace") == config[side]["namespace"])
+        if not owned_by_auth(service) or not owned_by_auth(deployment):
+            raise ConfigError("independent Auth Service ownership or state changed")
+        if (state.get("serviceUID") not in (None, service.get("metadata", {}).get("uid"))
+                or not state.get("authPin", {}).get("image")):
+            raise ConfigError("independent Auth Service ownership or state changed")
+        return
     if not state:
         if side == "consumer":
             raise ConfigError("Consumer installation state is missing; inspect release before uninstall")
         return
     if side == "modeling":
-        if state.get("stage") not in (None, "complete", "old-service-restored"):
+        if state.get("stage") not in (None, "complete", "old-service-restored", "waiting-dependencies", "verifying-service"):
             raise ConfigError("finish or inspect the active Modeling operation before uninstall")
     elif (state.get("maintenance") or
           (state.get("recovery") or {}).get("step") not in (None, "completed", "aborted") or
           state.get("phase") not in (None, "ready", "uninstalling")):
         raise ConfigError("finish the active Consumer operation before uninstall")
+    if side == "consumer" and config.get("auth"):
+        values = json.loads(run("helm", "--kube-context", config["cluster"]["context"],
+                                "--namespace", config[side]["namespace"], "get", "values",
+                                config[side]["releaseName"], "-o", "json"))
+        if not isinstance(values, dict) or values.get("sharedAuth", {}).get("enabled") is not False:
+            raise ConfigError("migrate Consumer-owned Auth before joint Auth uninstall")
 
 
 def _assert_uninstall_manifest_safe(config, side: str) -> None:
@@ -604,7 +1185,26 @@ def _assert_uninstall_manifest_safe(config, side: str) -> None:
     manifest = run("helm", "--kube-context", config["cluster"]["context"], "--namespace", entry["namespace"],
                    "get", "manifest", entry["releaseName"])
     allowed = {"Deployment", "Service", "Ingress", "ConfigMap", "Job"}
+    auth_names = None
+    if side == "auth":
+        values = json.loads(run("helm", "--kube-context", config["cluster"]["context"],
+                                "--namespace", entry["namespace"], "get", "values",
+                                entry["releaseName"], "-o", "json"))
+        state = _uninstall_cluster_state(config, "auth")
+        expected = {entry["releaseName"] + "-auth",
+                    config["consumer"]["releaseName"][:40].rstrip("-") + "-auth"}
+        if state and state.get("sourceConsumer"):
+            validate_name(state["sourceConsumer"], "Auth sourceConsumer")
+            expected.add(state["sourceConsumer"][:40].rstrip("-") + "-auth")
+        if not isinstance(values, dict) or values.get("authOnly") is not True:
+            raise ConfigError("independent Auth release values or workload name are invalid")
+        if (values.get("workloadName") not in expected
+                or values.get("serviceName") != values.get("workloadName")):
+            raise ConfigError("independent Auth release values or workload name are invalid")
+        auth_names = {values["workloadName"]}
     seen = False
+    auth_kinds = set()
+    auth_service = None
     try:
         for item in yaml.safe_load_all(manifest):
             if not item:
@@ -614,20 +1214,49 @@ def _assert_uninstall_manifest_safe(config, side: str) -> None:
             metadata = item.get("metadata", {})
             prefix = (entry["releaseName"][:40].rstrip("-") if side == "consumer"
                       else entry["releaseName"])
-            if not isinstance(metadata, dict) or not isinstance(metadata.get("name"), str) or \
-                    not ((metadata["name"] == prefix and item["kind"] == "Ingress") or
-                         metadata["name"].startswith(prefix + "-")):
+            if not isinstance(metadata, dict) or not isinstance(metadata.get("name"), str):
                 raise ConfigError(f"{side} release manifest ownership is unclear")
+            resource_name = metadata["name"]
+            if side == "auth":
+                if item["kind"] not in ("Deployment", "Service") or resource_name not in auth_names:
+                    raise ConfigError(f"{side} release manifest ownership is unclear")
+            elif not ((resource_name == prefix and item["kind"] == "Ingress")
+                      or resource_name.startswith(prefix + "-")):
+                raise ConfigError(f"{side} release manifest ownership is unclear")
+            if side == "auth":
+                if item["kind"] in auth_kinds:
+                    raise ConfigError("independent Auth manifest contains duplicate workloads")
+                if (item["kind"] == "Deployment" and
+                        (len(item.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])) != 1 or
+                         item["spec"]["template"]["spec"]["containers"][0].get("name") != "auth-server")):
+                    raise ConfigError("independent Auth Deployment has unexpected containers")
+                if item["kind"] == "Service":
+                    auth_service = item
+                auth_kinds.add(item["kind"])
             seen = True
     except yaml.YAMLError as exc:
         raise ConfigError(f"{side} release manifest is invalid") from exc
     if not seen:
         raise ConfigError(f"{side} release manifest is empty")
+    if side == "auth" and auth_kinds != {"Deployment", "Service"}:
+        raise ConfigError("independent Auth manifest must contain one Deployment and Service")
+    if side == "auth":
+        ports = auth_service.get("spec", {}).get("ports", [])
+        if not isinstance(ports, list) or 5056 not in [port.get("port") for port in ports if isinstance(port, dict)]:
+            raise ConfigError("independent Auth Service port is invalid")
 
 
 def _owned_resource_items(config, side: str, kind: str) -> list[dict]:
     entry = config[side]
     prefix = entry["releaseName"][:40].rstrip("-") if side == "consumer" else entry["releaseName"]
+    permitted_auth_names = ({entry["releaseName"] + "-auth",
+                             config["consumer"]["releaseName"][:40].rstrip("-") + "-auth"}
+                            if side == "auth" else set())
+    if side == "auth":
+        state = _uninstall_cluster_state(config, "auth")
+        if state and state.get("sourceConsumer"):
+            validate_name(state["sourceConsumer"], "Auth sourceConsumer")
+            permitted_auth_names.add(state["sourceConsumer"][:40].rstrip("-") + "-auth")
     response = run_program(("kubectl", "--context", config["cluster"]["context"], "-n", entry["namespace"],
                             "get", kind, "-o", "json"), text=True, capture_output=True)
     if response.returncode:
@@ -645,11 +1274,20 @@ def _owned_resource_items(config, side: str, kind: str) -> list[dict]:
         metadata = item.get("metadata", {}) if isinstance(item, dict) else {}
         labels = metadata.get("labels", {}) if isinstance(metadata, dict) else {}
         annotations = metadata.get("annotations", {}) if isinstance(metadata, dict) else {}
-        owned = labels.get("app.kubernetes.io/instance") == entry["releaseName"] or \
-                annotations.get("meta.helm.sh/release-name") == entry["releaseName"]
+        # Migrated Auth can retain its former Consumer instance label. Its
+        # Helm owner annotation takes precedence when identifying residuals.
+        helm_owner = annotations.get("meta.helm.sh/release-name")
+        owned = (helm_owner == entry["releaseName"] if helm_owner else
+                 labels.get("app.kubernetes.io/instance") == entry["releaseName"])
         if owned:
-            if metadata.get("namespace", entry["namespace"]) != entry["namespace"] or \
-                    not isinstance(metadata.get("name"), str) or not metadata["name"].startswith(prefix + "-"):
+            name = metadata.get("name")
+            auth_name_ok = (name in permitted_auth_names if kind in ("deployments", "services")
+                            else isinstance(name, str) and
+                            (any(name.startswith(workload + "-") for workload in permitted_auth_names)
+                             or name.startswith(entry["releaseName"] + "-")))
+            if (metadata.get("namespace", entry["namespace"]) != entry["namespace"] or
+                    not isinstance(name, str) or
+                    (not auth_name_ok if side == "auth" else not name.startswith(prefix + "-"))):
                 raise ConfigError(f"residual {side} {kind} ownership is ambiguous")
             selected.append(item)
     return selected
@@ -674,7 +1312,7 @@ def _uninstall_side(config, side: str) -> None:
 
 
 def uninstall_releases(config, operation_id: str, resume: bool, result: dict) -> None:
-    """Remove the two verified Helm releases in dependency order, retaining external data."""
+    """Remove configured Helm releases in dependency order, retaining external data."""
     journal_path = config["stateDir"] / f"{operation_id}.json"
     fingerprint = uninstall_fingerprint(config)
     if resume:
@@ -688,9 +1326,11 @@ def uninstall_releases(config, operation_id: str, resume: bool, result: dict) ->
             raise ConfigError("uninstall resume journal is invalid")
         if not isinstance(journal.get("identities"), dict) or not isinstance(journal.get("completed"), list):
             raise ConfigError("uninstall resume journal is invalid")
-        if (not set(journal["completed"]).issubset(JOINT_SIDE_ORDER) or
+        order = (*reversed(JOINT_SIDE_ORDER), *(("auth",) if config.get("auth") else ()))
+        if (not set(journal["completed"]).issubset(order) or
                 journal.get("phase") not in ("prepared", "modeling-started", "modeling-completed",
-                                             "consumer-started", "consumer-completed")):
+                                             "consumer-started", "consumer-completed",
+                                             *(("auth-started", "auth-completed") if config.get("auth") else ()))):
             raise ConfigError("uninstall resume journal is invalid")
         if any(not isinstance(journal["identities"].get(side), dict) or
                not all(isinstance(journal["identities"][side].get(key), str) and
@@ -702,7 +1342,7 @@ def uninstall_releases(config, operation_id: str, resume: bool, result: dict) ->
             raise ConfigError("operation ID already exists")
         journal = {"operationId": operation_id, "action": "uninstall", "fingerprint": fingerprint,
                    "identities": {}, "completed": [], "phase": "prepared"}
-    order = tuple(reversed(JOINT_SIDE_ORDER))
+    order = (*reversed(JOINT_SIDE_ORDER), *(("auth",) if config.get("auth") else ()))
     leases = []
     try:
         for _, _, side in sorted((config[side]["namespace"], config[side]["releaseName"], side) for side in order):
@@ -863,7 +1503,7 @@ def defer_consumer_services(config) -> bool:
     items = json.loads(result.stdout).get("items", [])
     if not isinstance(items, list):
         raise ConfigError("Consumer Service list is invalid")
-    expected = {f"{entry['releaseName']}-auth", f"{entry['releaseName']}-backend"}
+    expected = {f"{entry['releaseName']}-backend"}
     existing = {item.get("metadata", {}).get("name") for item in items if isinstance(item, dict)}
     if expected & existing:
         raise ConfigError("Consumer Service exists without its Helm release; inspect cluster state")
@@ -996,7 +1636,7 @@ class Lease:
 
     def acquire(self):
         current = self._get()
-        if current:
+        if current and current.get("spec", {}).get("holderIdentity"):
             renewed = current["spec"].get("renewTime") or current["spec"].get("acquireTime")
             expires = datetime.fromisoformat(renewed.replace("Z", "+00:00")) + timedelta(seconds=current["spec"].get("leaseDurationSeconds", 90))
             if expires > datetime.now(timezone.utc):
@@ -1098,6 +1738,10 @@ def main():
         state = config["stateDir"]
         state.mkdir(parents=True, exist_ok=True)
         if args.action == "status":
+            if config.get("auth"):
+                owner = auth_release_state(config)
+                result["results"]["auth"] = {"status": "deployed" if owner else "absent",
+                    "image": owner["image"] if owner else None}
             for side in JOINT_SIDE_ORDER:
                 entry = config[side]
                 output = run("helm", "--kube-context", config["cluster"]["context"],
@@ -1118,6 +1762,13 @@ def main():
             for side in JOINT_SIDE_ORDER:
                 root = safe_extract(config[side]["package"], Path(temporary), side)
                 packages[side] = root, validate_release(root, side)
+            auth_package = None
+            if config.get("auth"):
+                modeling_package = packages.get("modeling")
+                if modeling_package is None:
+                    raise ConfigError("Modeling package is missing")
+                auth_package, _auth_manifest = prepare_auth_release(config, Path(temporary),
+                    expected_platform=modeling_package[1]["platform"])
             combination = validate_combination(config, packages)
             if args.action == "upgrade":
                 installed_for_transition = {
@@ -1129,6 +1780,7 @@ def main():
                 result["transitionId"] = args.transition_id
             consumer_values = read_yaml(config["consumer"]["values"])
             modeling_values = read_yaml(config["modeling"]["values"])
+            validate_auth_coordinates(config, consumer_values, modeling_values)
             validate_cross_side(config, packages, consumer_values, modeling_values, combination)
             if consumer_values.get("global", {}).get("clusterFlavor") != modeling_values.get("global", {}).get("clusterFlavor"):
                 raise ConfigError("clusterFlavor differs between releases")
@@ -1164,6 +1816,7 @@ def main():
                         if not isinstance(installed, dict):
                             raise ConfigError("upgrade journal lacks the original installed versions")
                         transition_record = verified_joint_transition(config, packages, args.transition_id, installed)
+                        require_auth_contract_transition(config, transition_record)
                         if isinstance(transition_record, dict):
                             transition_record_path.write_text(json.dumps(transition_record, sort_keys=True), encoding="utf-8")
                         for side in JOINT_SIDE_ORDER:
@@ -1180,10 +1833,17 @@ def main():
                     if args.action == "upgrade":
                         installed = {side: installed_identity(config, side) for side in JOINT_SIDE_ORDER}
                         transition_record = verified_joint_transition(config, packages, args.transition_id, installed)
+                        require_auth_contract_transition(config, transition_record)
                         if isinstance(transition_record, dict):
                             transition_record_path.write_text(json.dumps(transition_record, sort_keys=True), encoding="utf-8")
                         journal["installed"] = installed
                     write_journal(journal_path, journal)
+            migration_kind = "none"
+            if auth_package and args.action == "upgrade":
+                result["phase"] = "auth-migration"
+                result["results"]["authMigration"] = ensure_auth_migration(
+                    config, auth_package, operation_id, journal, journal_path, resume=bool(args.resume))
+                migration_kind = result["results"]["authMigration"]["phase"]
             if args.action in ("install", "upgrade"):
                 lock_identities = sorted((config[side]["namespace"], config[side]["releaseName"], side)
                                          for side in JOINT_SIDE_ORDER)
@@ -1191,35 +1851,122 @@ def main():
                     current_lease = Lease(config, side, operation_id)
                     current_lease.acquire()
                     leases.append(current_lease)
+            needs_post_migration_preflight = (
+                auth_package and args.action == "upgrade" and migration_kind == "migrated")
+            if needs_post_migration_preflight:
+                needs_post_migration_preflight = (
+                    "auth" not in journal.get("completed", [])
+                    and journal.get("phase") != "auth-started")
+            if needs_post_migration_preflight:
+                result["phase"] = "consumer-post-migration-preflight"
+                # Auth migration writes a Consumer snapshot index under the
+                # joint operation ID. The subsequent Consumer upgrade needs
+                # its own ID so it can create its runtime backup group.
+                consumer_operation_id = f"{operation_id[:70]}-consumer"
+                invoke("consumer", "preflight", config, packages["consumer"], consumer_operation_id,
+                       image_files["consumer"], lock_holder=operation_id)
+                result["phase"] = "modeling-post-migration-preflight"
+                invoke("modeling", "preflight", config, packages["modeling"], operation_id,
+                       image_files["modeling"], backup_record=args.backup_record or "",
+                       transition_id=args.transition_id if args.backup_record else "",
+                       lock_holder=operation_id,
+                       transition_record=transition_record_path if args.backup_record else "")
+            if auth_package and args.action == "install":
+                result["phase"] = "auth"
+                if not args.resume and (consumer_release_exists(config) or release_exists(config, "modeling")):
+                    raise ConfigError("joint install requires absent Consumer and Modeling releases")
+                if "auth" in journal.get("completed", []):
+                    result["results"]["auth"] = ensure_auth_release("install", config, auth_package,
+                        operation_id, resume=True)
+                else:
+                    if args.resume and journal.get("phase") == "auth-started":
+                        result["results"]["auth"] = ensure_auth_release("install", config, auth_package,
+                            operation_id, resume=True)
+                    else:
+                        journal["phase"] = "auth-started"
+                        write_journal(journal_path, journal)
+                        result["results"]["auth"] = ensure_auth_release("install", config, auth_package,
+                            operation_id)
+                    journal.setdefault("completed", []).append("auth")
+                    journal["phase"] = "auth-completed"
+                    write_journal(journal_path, journal)
+            elif auth_package and args.action in ("preflight", "verify"):
+                result["phase"] = "auth"
+                require_auth_ready(config, config["auth"]["image"] if args.action == "verify" else None)
+                result["results"]["auth"] = {"status": "succeeded", "phase": "ready"}
             if args.action == "upgrade":
-                if "consumer" not in journal["completed"] and journal.get("phase") != "consumer-started":
+                auth_preflight_complete = bool(auth_package) and (
+                    "auth" in journal.get("completed", []) or migration_kind == "migrated")
+                consumer_needs_preflight = (
+                    "consumer" not in journal["completed"]
+                    and journal.get("phase") != "consumer-started")
+                if consumer_needs_preflight and not auth_preflight_complete:
                     result["phase"] = "consumer-preflight"
                     invoke("consumer", "preflight", config, packages["consumer"], operation_id,
                            image_files["consumer"], lock_holder=operation_id)
-                if "modeling" not in journal["completed"] and journal.get("phase") != "modeling-started":
+                modeling_needs_preflight = (
+                    "modeling" not in journal["completed"]
+                    and journal.get("phase") != "modeling-started")
+                if modeling_needs_preflight and not auth_preflight_complete:
                     result["phase"] = "modeling-preflight"
                     invoke("modeling", "preflight", config, packages["modeling"], operation_id,
                            image_files["modeling"], backup_record=args.backup_record or "",
                            transition_id=args.transition_id if args.backup_record else "",
                            lock_holder=operation_id,
                            transition_record=transition_record_path if args.backup_record else "")
+                if auth_package:
+                    result["phase"] = "auth"
+                    if "auth" in journal.get("completed", []):
+                        result["results"]["auth"] = ensure_auth_release("upgrade", config, auth_package,
+                            operation_id, resume=True)
+                    else:
+                        if args.resume and journal.get("phase") == "auth-started":
+                            result["results"]["auth"] = ensure_auth_release("upgrade", config, auth_package,
+                                operation_id, resume=True)
+                        else:
+                            journal["phase"] = "auth-started"
+                            write_journal(journal_path, journal)
+                            result["results"]["auth"] = ensure_auth_release("upgrade", config, auth_package,
+                                operation_id)
+                        journal.setdefault("completed", []).append("auth")
+                        journal["phase"] = "auth-completed"
+                        write_journal(journal_path, journal)
             defer_external_services = False
+            consumer_operation_id = (f"{operation_id[:70]}-consumer"
+                if args.action == "upgrade" and auth_package and migration_kind == "migrated"
+                else operation_id)
             for side in JOINT_SIDE_ORDER:
                 side_package = packages.get(side)
                 side_images = image_files.get(side)
+                side_operation_id = consumer_operation_id if side == "consumer" else operation_id
                 if side_package is None or side_images is None:
                     raise ConfigError(f"{side} package or image mapping is missing")
                 for current_lease in leases:
                     current_lease.check()
                 result["phase"] = side
                 if journal and side in journal.get("completed", []):
-                    if not completed_release_matches(config, side, side_package, operation_id, side_images):
+                    if not completed_release_matches(config, side, side_package, side_operation_id, side_images):
                         raise ConfigError(f"completed {side} release no longer matches operation journal")
                     result["results"][side] = {"status": "succeeded", "phase": "already-completed"}
                     continue
                 if journal:
                     if args.action == "upgrade" and journal.get("phase") == f"{side}-started":
                         raise ConfigError(f"{side} upgrade outcome is uncertain; inspect actual state before retry")
+                resumed_install = args.action == "install" and args.resume and bool(journal)
+                if resumed_install and journal.get("phase") == f"{side}-started" \
+                        and release_exists(config, side):
+                    if not completed_release_matches(config, side, side_package, side_operation_id, side_images):
+                        raise ConfigError(f"installed {side} release differs from resumed operation")
+                    result["phase"] = f"{side}-verify"
+                    if auth_package and side == "consumer":
+                        wait_for_consumer_rollout(config, leases)
+                    invoke(side, "verify", config, side_package, operation_id, side_images,
+                           lock_holder=operation_id)
+                    result["results"][side] = {"status": "succeeded", "phase": "already-installed"}
+                    journal.setdefault("completed", []).append(side)
+                    journal["phase"] = f"{side}-completed"
+                    write_journal(journal_path, journal)
+                    continue
                 if args.action == "preflight" and side == "modeling":
                     defer_external_services = defer_consumer_services(config)
                 if args.action == "install" and side == "modeling":
@@ -1230,19 +1977,33 @@ def main():
                 if journal:
                     journal["phase"] = f"{side}-started"
                     write_journal(journal_path, journal)
-                result["results"][side] = invoke(side, args.action, config, side_package, operation_id,
-                    side_images, args.resume if args.action == "install" else "",
-                    args.backup_record if side == "modeling" and args.backup_record else "",
-                    args.transition_id or "", operation_id if args.action in ("install", "upgrade") else "",
-                    transition_record_path if side == "modeling" and args.action == "upgrade" else "",
-                    defer_external_services=defer_external_services and side == "modeling",
-                    auto_backup=side == "modeling" and args.action == "upgrade" and not args.backup_record,
-                    snapshot_retention=args.snapshot_retention,
-                    min_free_percent=args.min_free_percent)
+                try:
+                    result["results"][side] = invoke(side, args.action, config, side_package, side_operation_id,
+                        side_images, args.resume if args.action == "install" else "",
+                        args.backup_record if side == "modeling" and args.backup_record else "",
+                        args.transition_id or "", operation_id if args.action in ("install", "upgrade") else "",
+                        transition_record_path if side == "modeling" and args.action == "upgrade" else "",
+                        defer_external_services=defer_external_services and side == "modeling",
+                        auto_backup=side == "modeling" and args.action == "upgrade" and not args.backup_record,
+                        snapshot_retention=args.snapshot_retention,
+                        min_free_percent=args.min_free_percent)
+                except ChildOperationError as exc:
+                    if journal and args.action == "upgrade" and exc.payload.get("phase") == "preflight":
+                        # The child has not begun an upgrade. Keep the joint
+                        # operation resumable after its inputs are repaired.
+                        journal["phase"] = f"{side}-preflight-failed"
+                        write_journal(journal_path, journal)
+                    raise
+                if auth_package and args.action == "install" and side == "consumer":
+                    result["phase"] = "consumer-verify"
+                    wait_for_consumer_rollout(config, leases)
+                    invoke("consumer", "verify", config, side_package, operation_id, side_images,
+                           lock_holder=operation_id)
+                    result["phase"] = side
                 if args.action == "upgrade":
                     for current_lease in leases:
                         current_lease.check()
-                    invoke(side, "verify", config, side_package, operation_id, side_images,
+                    invoke(side, "verify", config, side_package, side_operation_id, side_images,
                            lock_holder=operation_id)
                 if journal:
                     journal.setdefault("completed", []).append(side)
@@ -1269,7 +2030,8 @@ def main():
             result["nextAction"] = "inspect the child operation and cluster recovery state before retry"
         elif result["errorCode"] in ("TIMEOUT", "CHILD_RESPONSE_INVALID"):
             result["nextAction"] = "inspect the child operation and actual cluster state before retry"
-    except (ConfigError, RuntimeError, OSError, subprocess.TimeoutExpired, KeyError, json.JSONDecodeError) as exc:
+    except (ConfigError, RuntimeError, OSError, subprocess.TimeoutExpired, KeyError,
+            TypeError, ValueError) as exc:
         if isinstance(exc, CompatibilityError):
             code = "INCOMPATIBLE_VERSION"
         elif isinstance(exc, LockError):

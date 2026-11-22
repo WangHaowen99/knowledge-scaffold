@@ -91,10 +91,6 @@ fi
 docker buildx version >/dev/null
 
 docker buildx build --platform "linux/$arch" "${output[@]}" \
-  -t "$registry/modeling:$version" "$root/modeling"
-docker buildx build --platform "linux/$arch" "${output[@]}" --target runtime \
-  -t "$registry/modeling-agent:$version" "$root/modeling/modeling-agent"
-docker buildx build --platform "linux/$arch" "${output[@]}" \
   --build-arg "PIP_INDEX_URL=$onto_pip_index" -f "$project/Dockerfile" \
   -t "$registry/onto-modeling:$version" "$project"
 
@@ -123,7 +119,7 @@ docker buildx build --platform "linux/$arch" "${output[@]}" "${eval_build_args[@
 
 if [ "$#" -eq 3 ]; then
   echo 'Record and verify the immutable manifest digest for each pushed tag before packaging:'
-  for component in modeling modeling-agent onto-modeling knowledge-hub evaluation; do
+  for component in onto-modeling knowledge-hub evaluation; do
     docker buildx imagetools inspect "$registry/$component:$version"
   done
 else

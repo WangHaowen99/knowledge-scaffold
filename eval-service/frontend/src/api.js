@@ -82,7 +82,8 @@ async function refresh(original, session) {
   }
 }
 // read 'text' returns the body as text, for markdown artifacts; errors are still JSON.
-export async function api(path, body, method = body === undefined ? 'GET' : 'POST', retry = true, read = 'json', expectedSession) {
+export async function api(path, body, method = body === undefined ? 'GET' : 'POST', retry = true, read = 'json', expectedSession, options = {}) {
+  options.signal?.throwIfAborted();
   const session = loginSession();
   if (expectedSession !== undefined && session !== expectedSession) throw identityChanged();
   const token = localStorage.getItem(TOKEN) || '';
@@ -95,6 +96,7 @@ export async function api(path, body, method = body === undefined ? 'GET' : 'POS
   const upload = body instanceof FormData;
   const response = await fetch(prefix + path, {
     method,
+    signal: options.signal,
     headers: {
       ...(upload ? {} : { 'Content-Type': 'application/json' }),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -108,11 +110,12 @@ export async function api(path, body, method = body === undefined ? 'GET' : 'POS
     const outcome = await refresh(token, session);
     if (loginSession() !== session || accountChanged(token, localStorage.getItem(TOKEN)) || outcome === 'changed')
       throw identityChanged();
-    if (outcome === 'updated') return api(path, body, method, false, read, session);
-    if (localStorage.getItem(TOKEN) !== token) return api(path, body, method, false, read, session);
+    if (outcome === 'updated') return api(path, body, method, false, read, session, options);
+    if (localStorage.getItem(TOKEN) !== token) return api(path, body, method, false, read, session, options);
     window.dispatchEvent(new CustomEvent('evaluation-auth-required', { detail: { session, token } }));
   }
   const data = read === 'text' && response.ok ? await response.text() : await response.json().catch(() => ({}));
+  options.signal?.throwIfAborted();
   if (!response.ok)
     throw Object.assign(new Error(data.message || `请求失败 (${response.status})`), {
       code: data.code,

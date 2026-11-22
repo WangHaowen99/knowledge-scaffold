@@ -1,14 +1,25 @@
-"""Safe connection forms and bounded, read-only database introspection."""
+"""Safe connection forms and bounded connectivity checks."""
 import re
 import time
 from urllib.parse import urlsplit
 
-from .core import Failure, digest, endpoint
+from .core import Failure, endpoint
 from .data_sources import identifier
 
 SQL_KEYS = ('url', 'scene', 'evaluation_workspace_id', 'token')
 GRAPH_KEYS = ('uri', 'database', 'username', 'password', 'workspace_property', 'workspace_value', 'ontology_property')
 GRAPH_SCHEMES = ('bolt', 'neo4j', 'bolt+s', 'neo4j+s', 'bolt+ssc', 'neo4j+ssc')
+# 评测隔离范围：在新建评测选中数据源时填写，随数据源保存；保存连接时可以先空着，准备评测时必须已填写
+GRAPH_SCOPE_KEYS = ('workspace_property', 'workspace_value', 'ontology_property')
+SQL_SCOPE_KEYS = ('evaluation_workspace_id',)
+SCOPE_VALUE = re.compile(r'[a-z][a-z0-9_-]{0,63}')
+
+
+def scope_missing(provider, connection):
+    """Why the connection cannot be evaluated yet, or '' when its isolation scope is filled in."""
+    if provider == 'neo4j':
+        return '' if connection.get('workspace_value') else '请在新建评测中选中该数据源，填写 Workspace 对应值'
+    return '' if connection.get('evaluation_workspace_id') else '请在新建评测中选中该数据源，填写评测工作空间 ID'
 
 
 class SourceConfig:
@@ -51,7 +62,7 @@ class SourceConfig:
                 raise Failure('connection_invalid', '请填写图库账号与密码', 422)
             value['database'] = identifier(value['database'] or 'neo4j')
             value['workspace_property'] = identifier(value['workspace_property'] or 'd2o_workspace_id')
-            if not re.fullmatch(r'[a-z][a-z0-9_-]{0,63}', value['workspace_value']):
+            if value['workspace_value'] and not SCOPE_VALUE.fullmatch(value['workspace_value']):
                 raise Failure('connection_invalid', 'Workspace 值须以小写字母开头，最多 64 个小写字母、数字、连字符或下划线', 422)
             if value['ontology_property']:
                 identifier(value['ontology_property'])
@@ -60,12 +71,35 @@ class SourceConfig:
         else:
             if not re.fullmatch(r'[A-Za-z0-9_]{1,60}', value['scene']):
                 raise Failure('connection_invalid', 'Scene 须为 1-60 个英文字母、数字或下划线', 422)
-            if not re.fullmatch(r'[a-z][a-z0-9_-]{0,63}', value['evaluation_workspace_id']):
-                raise Failure('connection_invalid', '请填写有效的评测工作空间 ID', 422)
+            if value['evaluation_workspace_id'] and not SCOPE_VALUE.fullmatch(value['evaluation_workspace_id']):
+                raise Failure('connection_invalid', '评测工作空间 ID 须以小写字母开头，最多 64 个小写字母、数字、连字符或下划线', 422)
         return value
 
+    def scope(self, owner, record, values):
+        """The record's connection with only its isolation scope replaced; secrets and the rest stay as saved."""
+        provider = record.get('provider')
+        keys = GRAPH_SCOPE_KEYS if provider == 'neo4j' else SQL_SCOPE_KEYS
+        if any(value is not None for key, value in values.items() if key not in keys):
+            raise Failure('connection_invalid', '隔离范围包含该数据源不支持的字段', 422)
+        current = self.store.decrypt(record['connection'])
+        value = self.connection(owner, provider, {**current, **{k: values[k] for k in keys if values.get(k) is not None}}, record)
+        missing = scope_missing(provider, value)
+        if missing:
+            raise Failure('scope_required', missing, 422)
+        if provider == 'neo4j' and record.get('import_data') and not value['ontology_property']:
+            raise Failure('graph_scope_required', '导入图数据需要 Ontology 隔离字段', 422)
+        return value
+
+    def require_scope(self, source):
+        """An external connection evaluates in the scope chosen for it in the new-evaluation wizard."""
+        if source.get('mode') != 'connection' or not source.get('connection'):
+            return
+        missing = scope_missing(source.get('provider'), self.store.decrypt(source['connection']))
+        if missing:
+            raise Failure('scope_required', missing, 422)
+
     def view(self, owner, record):
-        value = {k: v for k, v in record.items() if k not in ('connection', 'schema_fingerprint')}
+        value = {k: v for k, v in record.items() if k != 'connection'}
         if record.get('connection'):
             config = self.store.decrypt(record['connection'])
             secret = 'password' if record.get('provider') == 'neo4j' else 'token'
@@ -83,46 +117,17 @@ class SourceConfig:
                 value['inputs'].append({k: item[k] for k in ('id', 'name', 'size', 'tables')})
         return value
 
-    def inspect(self, owner, provider, connection):
+    def test_connection(self, provider, connection):
         if provider not in ('nl2sql_http', 'nl2sql_template'):
-            raise Failure('provider_invalid', '仅 NL2SQL 连接支持数据库表字段读取', 422)
-        schema, seen = {}, set()
-        # This fixed SELECT reads metadata only, scoped to the selected database.
-        for offset in range(0, 25601, 200):
-            sql = ("SELECT TABLE_NAME AS table_name, COLUMN_NAME AS column_name, "
-                   "COLUMN_TYPE AS data_type, IS_NULLABLE AS is_nullable "
-                   "FROM information_schema.columns WHERE TABLE_SCHEMA = '" + connection['scene'] +
-                   "' ORDER BY TABLE_NAME, ORDINAL_POSITION LIMIT 200 OFFSET " + str(offset))
-            try:
-                response = self.http.json('POST', connection['url'], '/api/v1/sql', token=connection.get('token', ''),
-                                          json={'scene': connection['scene'], 'sql': sql}, limit=1024*1024)
-            except Failure as exc:
-                raise Failure('schema_unavailable', '读取数据库结构失败，请检查连接、Scene 与元数据查询权限后重试', 503, 'schema') from exc
-            rows = response.get('data') if isinstance(response, dict) and response.get('success') is True else None
-            if not isinstance(rows, list) or len(rows) > 200:
-                raise Failure('schema_protocol', '数据服务未返回有效的数据库结构', 422, 'schema')
-            for row in rows:
-                if not isinstance(row, dict):
-                    raise Failure('schema_protocol', '数据库字段格式无效', 422, 'schema')
-                table, column = identifier(row.get('table_name')), identifier(row.get('column_name'))
-                if (table, column) in seen:
-                    raise Failure('schema_changed', '数据库结构读取不一致，请重新读取', 409, 'schema')
-                seen.add((table, column))
-                schema.setdefault(table, []).append({'name': column, 'type': str(row.get('data_type', ''))[:128], 'nullable': row.get('is_nullable') == 'YES'})
-                if len(schema) > 100 or len(schema[table]) > 256:
-                    raise Failure('schema_limit', '数据库结构超过 100 张表或每表 256 个字段的限制', 413, 'schema')
-            if len(rows) < 200: break
-        else:
-            raise Failure('schema_limit','数据库结构读取达到上限，请缩小数据源范围',413,'schema')
-        if not schema:
-            raise Failure('schema_empty', '此数据库没有可读取的数据表，请检查 Scene 与访问权限', 422, 'schema')
-        record = self.store.create(owner, 'source_inspections', {'provider': provider, 'fingerprint': digest([provider, connection]),
-                                  'schema': [{'name': name, 'columns': columns} for name, columns in schema.items()],
-                                  'tables': {name: [c['name'] for c in columns] for name, columns in schema.items()}, 'created_at': time.time()})
-        return {'inspection_id': record['id'], 'schema': record['schema'], 'tables': record['tables'], 'read_at': record['created_at']}
-
-    def apply_inspection(self, owner, provider, connection, inspection_id):
-        record = self.store.get(owner, inspection_id, 'source_inspections')
-        if record['fingerprint'] != digest([provider, connection]):
-            raise Failure('schema_stale', '连接信息已变化，请重新读取数据库结构', 409, 'schema')
-        return {'inspection_id': inspection_id, 'schema': record['schema'], 'tables': record['tables'], 'read_at': record['created_at']}
+            raise Failure('provider_invalid', '仅 NL2SQL 连接支持此连接测试', 422)
+        try:
+            response = self.http.json(
+                'POST', connection['url'], '/api/v1/sql', token=connection.get('token', ''),
+                json={'scene': connection['scene'], 'sql': 'SELECT 1'}, timeout=10, limit=64*1024)
+        except Failure as exc:
+            raise Failure('connection_unavailable', '连接测试失败，请检查服务地址、Scene、凭据与网络',
+                          503, 'connection_test') from exc
+        if not isinstance(response, dict) or response.get('success') is not True:
+            raise Failure('connection_test_failed', '数据服务未通过连接测试，请检查 Scene 与访问权限',
+                          422, 'connection_test')
+        return {'success': True, 'message': '连接测试通过', 'tested_at': time.time()}
