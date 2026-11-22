@@ -11,7 +11,7 @@
  */
 import { nodeSize } from './flowchartModel.js';
 
-const TYPE_STYLE = {
+export const TYPE_STYLE = {
   start: 'rounded=1;whiteSpace=wrap;html=1;shape=mxgraph.flowchart.terminator;fillColor=#EFF5FF;strokeColor=#2563EB;',
   end: 'rounded=1;whiteSpace=wrap;html=1;shape=mxgraph.flowchart.terminator;fillColor=#F1F0FF;strokeColor=#4F46E5;',
   step: 'rounded=1;whiteSpace=wrap;html=1;arcSize=20;strokeColor=#9BBEFB;',
@@ -41,7 +41,7 @@ const PROCESS_LISTS = ['roles', 'inputs', 'exceptions', 'handoffs'];
 const ANNOTATION_EDGE_ATTR = 'data-flowchart-annotation-edge';
 const EDGE_GEOMETRY = '<mxGeometry relative="1" as="geometry" />';
 // 样式里带 html=1，单元格文字按 HTML 显示：先转成 HTML 文本，和内核写出的一样
-const labelHtml = (label) => String(label ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+export const labelHtml = (label) => String(label ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
   .replaceAll('\n', '<br>');
 const attrsXml = (attrs) => Object.entries(attrs).map(([k, v]) => ` ${k}="${escapeXml(v)}"`).join('');
 
@@ -127,6 +127,22 @@ export function isCompressedDrawio(xml) {
   return !!m && !/<mxGraphModel\b/.test(m[1]) && m[1].trim().length > 0;
 }
 
+export function parseDrawio(xml) {
+  const dom = new DOMParser().parseFromString(xml, 'text/xml');
+  if (dom.getElementsByTagName('parsererror').length) throw new Error('drawio XML 解析失败');
+  return dom;
+}
+
+// 单元格可能包在用户对象（object / UserObject）里：id、文字和内核属性在外层，几何与样式在里面的 mxCell
+function readCells(graph) {
+  return elementsOf(graph.getElementsByTagName('root')[0]).flatMap((el) => {
+    if (el.tagName === 'mxCell') return [{ el, cell: el, label: el.getAttribute('value'), attrs: {} }];
+    if (el.tagName !== 'object' && el.tagName !== 'UserObject') return [];
+    const attrs = Object.fromEntries(Array.from(el.attributes).map((a) => [a.name, a.value]));
+    return [{ el, cell: el.getElementsByTagName('mxCell')[0] || el, label: attrs.label, attrs }];
+  });
+}
+
 function typeOf(style, inDegree) {
   const s = style || '';
   // 开始 / 结束只按入度判，不按文字猜（同 develop !547）
@@ -134,6 +150,11 @@ function typeOf(style, inDegree) {
   if (s.includes('rhombus')) return 'decision';
   if (s.includes('shape=card')) return 'data';
   return 'step';
+}
+
+export function nodeTypeOf(attrs, style, inDegree) {
+  const shaped = typeOf(style, inDegree);
+  return TYPE_STYLE[attrs.onto_type] && !['decision', 'data'].includes(shaped) ? attrs.onto_type : shaped;
 }
 
 // 单元格文字转纯文本，同内核 _plain：HTML 文字里换行类标签当空格、去掉其余标签、解开实体，空白压成一个。
@@ -209,7 +230,8 @@ function attachAnnotations(annotations, nodes, edges) {
   });
 }
 
-function edgeTypeOf(style) {
+export function edgeTypeOf(attrs, style) {
+  if (EDGE_STYLE[attrs.onto_type]) return attrs.onto_type;
   const s = style || '';
   if (s.includes('#DC2626')) return 'exc';
   if (s.includes('#0D9488')) return 'data';
@@ -217,22 +239,87 @@ function edgeTypeOf(style) {
   return 'seq';
 }
 
+// 样式里的名字：不带 = 的段，加上 shape= 的值
+const styleNames = (style) => style.split(';').map((s) => s.trim())
+  .flatMap((s) => (!s.includes('=') ? [s] : s.startsWith('shape=') ? [s.slice(6)] : [])).filter(Boolean);
+
+// 单元格的身份，同内核 flowchart.py 的 _build / _vertex_kind：连线上的文字、文字标注、泳道分组和批注都不是流程节点
+function cellKind({ cell, attrs, style, text }, edgeIds) {
+  if (cell.getAttribute('edge') === '1') return 'edge';
+  if (cell.getAttribute('vertex') !== '1') return 'other';
+  if (edgeIds.has(cell.getAttribute('parent') || '')) return 'label';
+  const names = styleNames(style);
+  if (names.includes('text') && !('onto_type' in attrs) && text) return 'annotation';
+  if (attrs.onto_type === 'note' || style.includes('swimlane')) return 'shape';
+  return names.some((n) => ['group', 'text', 'edgeLabel'].includes(n)) ? 'shape' : 'node';
+}
+
+/**
+ * 第一页的单元格（内核只认第一页），按文档顺序。attached(id)：连线的端点连在节点、泳道、分组或批注上。
+ * 没有明文 mxGraphModel 时抛 Error('compressed')。
+ */
+export function drawioPage(dom) {
+  const graph = dom.getElementsByTagName('mxGraphModel')[0];
+  if (!graph) throw new Error('compressed');
+  const raw = readCells(graph).map(({ el, cell, label, attrs }, index) => {
+    const style = cell.getAttribute('style') || '';
+    return {
+      index, el, cell, attrs, style,
+      id: el.getAttribute('id') || '',
+      text: textOf(label, style),
+      parent: cell.getAttribute('parent') || '',
+      source: cell.getAttribute('source') || '',
+      target: cell.getAttribute('target') || '',
+      annotationEdge: el.getAttribute(ANNOTATION_EDGE_ATTR) || cell.getAttribute(ANNOTATION_EDGE_ATTR) || '',
+    };
+  });
+  const edgeIds = new Set(raw.filter((c) => c.cell.getAttribute('edge') === '1' && c.id).map((c) => c.id));
+  const cells = raw.map((c) => ({ ...c, kind: cellKind(c, edgeIds) }));
+  const ids = new Set(cells.filter((c) => c.id && (c.kind === 'node' || c.kind === 'shape')).map((c) => c.id));
+  return {
+    root: graph.getElementsByTagName('root')[0] || null,
+    cells,
+    nodes: cells.filter((c) => c.kind === 'node'),
+    attached: (id) => ids.has(id),
+  };
+}
+
+/**
+ * 标准编辑器打不开的结构问题（develop !613），没有时返回空串。内核解析时同号的单元格只认第一个、指不到节点的连线直接略过，
+ * 照常打开的话这些内容在画布上看不见，所以先拦下来。
+ */
+export function drawioStructureError(xml) {
+  const { cells, nodes, attached } = drawioPage(parseDrawio(xml));
+  const seen = new Set();
+  for (const c of nodes) {
+    if (!c.id) return '存在缺少 ID 的节点';
+    if (seen.has(c.id)) return `节点 ID 重复：${c.id}`;
+    seen.add(c.id);
+  }
+  for (const c of cells.filter((item) => item.kind === 'edge')) {
+    if (c.id && seen.has(c.id)) return `单元格 ID 重复：${c.id}`;
+    if (c.id) seen.add(c.id);
+    if (!attached(c.source) || !attached(c.target)) return `连线 ${c.id || '（未编号）'} 指向不存在的节点`;
+  }
+  for (const c of cells.filter((item) => item.kind === 'annotation')) {
+    if (!c.id || seen.has(c.id)) return '文字标注 ID 缺失或重复';
+    seen.add(c.id);
+  }
+  for (const c of cells.filter((item) => item.id && !['node', 'edge', 'annotation'].includes(item.kind))) {
+    if (seen.has(c.id)) return `单元格 ID 重复：${c.id}`;
+    seen.add(c.id);
+  }
+  return '';
+}
+
 /**
  * 浏览器里把明文 drawio XML 解析成模型；base 里同 id 的节点保留业务说明、关联条目和待定标记。
  * 压缩存储抛 Error('compressed')。
  */
 export function drawioToModel(xml, base = null) {
-  const dom = new DOMParser().parseFromString(xml, 'text/xml');
-  if (dom.getElementsByTagName('parsererror').length) throw new Error('drawio XML 解析失败');
-  const graph = dom.getElementsByTagName('mxGraphModel')[0];
+  const graph = parseDrawio(xml).getElementsByTagName('mxGraphModel')[0];
   if (!graph) throw new Error('compressed');
-  // 单元格可能包在用户对象（object / UserObject）里：id、文字和内核属性在外层，几何与样式在里面的 mxCell
-  const cells = elementsOf(graph.getElementsByTagName('root')[0]).flatMap((el) => {
-    if (el.tagName === 'mxCell') return [{ el, cell: el, label: el.getAttribute('value'), attrs: {} }];
-    if (el.tagName !== 'object' && el.tagName !== 'UserObject') return [];
-    const attrs = Object.fromEntries(Array.from(el.attributes).map((a) => [a.name, a.value]));
-    return [{ el, cell: el.getElementsByTagName('mxCell')[0] || el, label: attrs.label, attrs }];
-  });
+  const cells = readCells(graph);
   const json = (v, fallback) => {
     try { return JSON.parse(v); } catch { return fallback; }
   };
@@ -266,10 +353,9 @@ export function drawioToModel(xml, base = null) {
       const w = Number(g?.getAttribute('width')) || 120;
       const h = Number(g?.getAttribute('height')) || 40;
       const prev = old.get(id);
-      const shaped = typeOf(style, inDeg.get(id) || 0);
       nodes.push({
         id,
-        type: TYPE_STYLE[attrs.onto_type] && !['decision', 'data'].includes(shaped) ? attrs.onto_type : shaped,
+        type: nodeTypeOf(attrs, style, inDeg.get(id) || 0),
         label: value,
         description: has('description') ? attrs.description : prev?.description || '',
         x: Math.round((Number(g?.getAttribute('x')) || 0) + w / 2),
@@ -282,7 +368,7 @@ export function drawioToModel(xml, base = null) {
       const prev = oldEdges.get(id);
       edges.push({
         id,
-        type: EDGE_STYLE[attrs.onto_type] ? attrs.onto_type : edgeTypeOf(style),
+        type: edgeTypeOf(attrs, style),
         from: c.getAttribute('source'),
         to: c.getAttribute('target'),
         label: value,

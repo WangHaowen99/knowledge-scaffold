@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
-import { parseDrawioToDocument } from '../src/components/flowchart/drawioConvert.js';
-import { canRepairDrawio, inspectDrawioRepair } from '../src/components/flowchart/drawioRepair.js';
+import { drawioStructureError } from '@packs/diagram/ui/flowchart/drawioConvert.js';
+import { canRepairDrawio, inspectDrawioRepair } from '@packs/diagram/ui/flowchart/drawioRepair.js';
 
 globalThis.DOMParser = DOMParser;
 globalThis.XMLSerializer = XMLSerializer;
@@ -11,7 +11,7 @@ globalThis.XMLSerializer = XMLSerializer;
 const fixtureRoot = new URL('../../fixtures/drawio-structure/', import.meta.url);
 const fixtureCases = new URL('cases.json', fixtureRoot);
 const fallbackCases = [
-  { name: 'valid-wrapped', frontend_error: 'unsupported wrapped cell', repair_issues: [], repairable: false },
+  { name: 'valid-wrapped', frontend_error: null, repair_issues: [], repairable: false },
   { name: 'duplicate-id', frontend_error: '节点 ID 重复', repair_issues: ['duplicate'], repairable: true },
   { name: 'dangling-edge', frontend_error: '指向不存在的节点', repair_issues: ['dangling'], repairable: true },
   { name: 'duplicate-edge-id', frontend_error: '单元格 ID 重复', repair_issues: [], repairable: false },
@@ -46,7 +46,9 @@ for (const item of cases) {
   test(`共享图样例：${item.name}`, () => {
     const fixture = new URL(`${item.name}.drawio`, fixtureRoot);
     const xml = existsSync(fixture) ? readFileSync(fixture, 'utf8') : syntheticDiagram(item.name);
-    assert.throws(() => parseDrawioToDocument(xml), (error) => error.message.includes(item.frontend_error));
+    const message = drawioStructureError(xml);
+    if (item.frontend_error) assert.ok(message.includes(item.frontend_error), message);
+    else assert.equal(message, '');
     assert.deepEqual(inspectDrawioRepair(xml).map((issue) => issue.type), item.repair_issues);
     assert.equal(canRepairDrawio(xml), item.repairable);
   });

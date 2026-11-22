@@ -54,6 +54,18 @@
 .fc-dfb{position:absolute;inset:0}
 .fc-dfb>svg{position:absolute;inset:0;width:100%;height:100%}
 .fc-dfb .act{position:absolute;right:14px;top:12px}
+/* 结构修复面板：占画布和属性面板的位置，左边预览右边逐项修 */
+.fc-stage>.fc-repair{flex:1;min-width:0;display:flex}
+.fc-repair-cv{flex:1;min-width:0;position:relative;overflow:hidden;background:radial-gradient(circle at 1px 1px,#D9E2EE 1px,transparent 1.2px) 0 0/20px 20px,#FAFBFE}
+.fc-repair-cv>svg{position:absolute;inset:0;width:100%;height:100%}
+.fc-repair-cv text{font-family:var(--font)}
+.fc-repair-cv .fc-hint{bottom:14px}
+.fc-repair-list{width:330px;flex:none;border-left:1px solid var(--line);background:#fff;overflow:auto;padding:14px 16px;display:flex;flex-direction:column;gap:12px}
+.fc-repair-it{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--line);border-radius:12px}
+.fc-repair-it.on{border-color:var(--blue3);background:var(--b50)}
+.fc-repair-it>.btn{align-self:flex-end}
+.fc-repair-t{text-align:left;font-size:12.5px;font-weight:600;line-height:1.5;color:var(--ink)}
+.fc-repair-t:hover{color:var(--blue)}
 /* 设计稿标题行里有一个 42px 高的演示切换（原型控件，产品不要），保留它撑出的行高 */
 .fcm-h{min-height:69px}
 

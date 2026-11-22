@@ -1,12 +1,12 @@
 // develop tests/drawioConvert.test.js（!547）按原断言移植到本分支对应的函数：
 // develop 的 serializeDocumentToDrawio → 图示包的 modelToDrawio（流程说明、过程元数据、节点详情、连线文字与条件写成内核属性）；
-// parseDrawioToDocument → 图示包的 drawioToModel（develop !607 的文字标注用例）；
+// parseDrawioToDocument → 图示包的 drawioToModel（develop !607 的文字标注用例）、drawioStructureError（!613 的结构校验）；
 // replace-document / update-diagram → 编辑会话的 replace-model / update-process。
 // 原用例里「原文件的连线样式、节点尺寸保留」在本分支由服务端把模型合进原文（AR-10），见后端 test_pack_review_fixes。
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DOMParser } from '@xmldom/xmldom';
-import { drawioToModel, modelToDrawio } from '@packs/diagram/ui/flowchart/drawioConvert.js';
+import { drawioStructureError, drawioToModel, modelToDrawio } from '@packs/diagram/ui/flowchart/drawioConvert.js';
 import { createFlowchartEditorSession, reduceFlowchartEditorSession } from '@packs/diagram/ui/flowchart/flowchartEditorState.js';
 import { normalizeModel } from '@packs/diagram/ui/flowchart/flowchartModel.js';
 
@@ -20,6 +20,50 @@ function cellsOf(xml) {
     return { id: el.getAttribute('id'), text: el.getAttribute(bare ? 'value' : 'label'), cell: bare ? el : el.getElementsByTagName('mxCell')[0] };
   });
 }
+
+function syntheticXml(cells) {
+  return `<mxfile><diagram name="合成流程"><mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>${cells}
+  </root></mxGraphModel></diagram></mxfile>`;
+}
+
+function syntheticNode(id, attrs = '') {
+  return `<object id="${id}" label="合成节点"${attrs}><mxCell vertex="1" parent="1">
+    <mxGeometry x="20" y="20" width="100" height="60" as="geometry"/>
+  </mxCell></object>`;
+}
+
+// develop 保存前再校验一次编辑器文档；本分支标准编辑器的保存由服务端校验（FLOW-ID-DUP、FLOW-EDGE-DANGLING）
+test('标准编辑器拒绝重复节点 ID、悬空边、重复连线 ID 和没有编号的文字标注', () => {
+  const edge = (id, target) => `<mxCell id="${id}" edge="1" parent="1" source="source" target="${target}"><mxGeometry relative="1" as="geometry"/></mxCell>`;
+  const pair = syntheticNode('source') + syntheticNode('target');
+  const invalid = [
+    [syntheticNode('same') + syntheticNode('same'), /^节点 ID 重复：same$/],
+    [syntheticNode(''), /^存在缺少 ID 的节点$/],
+    [syntheticNode('source') + edge('edge1', 'missing'), /^连线 edge1 指向不存在的节点$/],
+    [pair + edge('edge1', 'target') + edge('edge1', 'target'), /^单元格 ID 重复：edge1$/],
+    [pair + '<mxCell value="说明" style="text;html=1;" vertex="1" parent="1"><mxGeometry as="geometry"/></mxCell>', /^文字标注 ID 缺失或重复$/],
+  ];
+  for (const [cells, expected] of invalid) assert.match(drawioStructureError(syntheticXml(cells)), expected);
+  assert.equal(drawioStructureError(syntheticXml(pair + edge('edge1', 'target'))), '');
+  assert.equal(drawioStructureError(modelToDrawio(drawioToModel(syntheticXml(pair + edge('edge1', 'target'))))), '');
+});
+
+test('认不得的节点类型按样式定，不拦', () => {
+  const xml = syntheticXml(syntheticNode('node1', ' onto_type="invalid-test-kind"'));
+  assert.equal(drawioStructureError(xml), '');
+  assert.equal(drawioToModel(xml).nodes[0].type, 'step');
+});
+
+test('带链接或属性的外层对象照常打开，属性由内核写回时保留', () => {
+  const wrapped = `<UserObject id="wrapped" label="合成节点" link="https://example.com">
+    <mxCell vertex="1" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
+  </UserObject>`;
+  for (const cells of [wrapped, wrapped.replaceAll('UserObject', 'object')]) {
+    assert.equal(drawioStructureError(syntheticXml(cells)), '');
+    assert.deepEqual(drawioToModel(syntheticXml(cells)).nodes.map((n) => [n.id, n.label]), [['wrapped', '合成节点']]);
+  }
+});
 
 test('独立文字标注归入对应分支连线，保存后保持原图结构', () => {
   const xml = `<mxfile><diagram name="示例"><mxGraphModel><root>

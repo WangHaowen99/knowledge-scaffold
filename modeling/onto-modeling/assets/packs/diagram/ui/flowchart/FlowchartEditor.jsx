@@ -19,16 +19,17 @@ const isEditable = (t) => !!t?.closest?.('input, textarea, select, [contentedita
  * @param {'std'|'dio'} p.mode
  * @param {(m: 'std'|'dio') => void} p.onModeChange
  * @param {React.ReactNode} p.drawio drawio 高级编辑时盖在画布上的内容
+ * @param {React.ReactNode} p.repair 图有结构问题时占画布位置的修复面板；有它时不能编辑画布和属性
  * @param {boolean} p.readOnly 写入范围锁住时只读
  * @param {() => void} p.onValidate
  * @param {{errors: object[], warnings: object[]}|null} p.findings 校验没通过时的结果
  */
 export default function FlowchartEditor({
-  session, dispatch, mode = 'std', onModeChange, drawio, readOnly = false, onValidate, validating = false,
+  session, dispatch, mode = 'std', onModeChange, drawio, repair = null, readOnly = false, onValidate, validating = false,
   findings = null, onDismissFindings, fitKey = '',
 }) {
   const { model, selection } = session;
-  const editing = !readOnly && mode === 'std';
+  const editing = !readOnly && mode === 'std' && !repair;
   const [tab, setTab] = useState(() => (selection?.type === 'node' ? 'node' : selection?.type === 'edge' ? 'edge' : 'flow'));
   const [layouts, setLayouts] = useState(0);
 
@@ -77,7 +78,7 @@ export default function FlowchartEditor({
           <span className="sp" />
           {/* 画布手势（R5）：节点四边的圆点悬停即出现，这里给全四个手势 */}
           <Button size="sm" kind="ghost" aria-label="画布操作" data-pop={GESTURES}>?</Button>
-          <Button size="sm" kind="ghost" icon="shieldok" disabled={validating} onClick={onValidate}>校验</Button>
+          <Button size="sm" kind="ghost" icon="shieldok" disabled={validating || (mode === 'std' && !!repair)} onClick={onValidate}>校验</Button>
         </div>
         {findings?.errors?.length ? (
           <div className="fc-find">
@@ -100,11 +101,11 @@ export default function FlowchartEditor({
           </div>
         ) : null}
         <div className="fc-stage">
-          <FlowchartCanvas model={model} selection={selection} dispatch={dispatch} disabled={!editing} fitKey={`${fitKey}:${layouts}`} />
+          {repair || <FlowchartCanvas model={model} selection={selection} dispatch={dispatch} disabled={!editing} fitKey={`${fitKey}:${layouts}`} />}
           {mode === 'dio' ? <div className="fc-drawio">{drawio}</div> : null}
         </div>
       </section>
-      <FlowchartProps model={model} selection={selection} tab={tab} onTab={setTab} dispatch={dispatch} disabled={!editing} />
+      {repair ? null : <FlowchartProps model={model} selection={selection} tab={tab} onTab={setTab} dispatch={dispatch} disabled={!editing} />}
     </div>
   );
 }

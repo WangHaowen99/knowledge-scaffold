@@ -2502,3 +2502,11 @@ develop 在 !611（#407、#415、#416）和 !624 改了 Studio 的表格、关�
 5. **3D 图谱**：`LegacyStudioGraphHost` 的 props 和页面调用不变；`components/studio/legacy/` 换成 develop 的 3D 运行时、主题和语义图标，
    节点下方只显示类型图标。页面原来的静态图例去掉，改用图谱自带的图例（显示/隐藏、悬停预览）；「展示方式」面板加「再扩一跳」「收起扩展」。
    旧图谱的颜色变量在 `.legacy-studio-host` 上映射到本项目的变量。没有新增依赖（`three` 已在依赖里）。
+
+## 2026-11-22 · 流程图结构修复（develop !613）
+
+没有接口、清单变更。图示包界面（`assets/packs/diagram/ui/flowchart/`）新增 `drawioRepair.js`、`DrawioRepairPanel.jsx`：
+
+1. 流程图弹窗打开时、drawio 保存后、收到 `workspace.changed` 时，多调一次 AR-10 取原文做结构检查（`drawioStructureError`，规则同内核
+   FLOW-ID、FLOW-EDGE-DANGLING）。能逐项修的（节点同号、连线端点悬空）在标准编辑器里出修复面板，修不了的只能进 drawio 高级编辑。
+2. 修好的原文走 AR-05 的 `content.drawio_xml` 保存，`base_revision` 用 AR-10 返回的 `revision`，期间有人改过会提示冲突。

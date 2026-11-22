@@ -1,7 +1,7 @@
 [
   {
     "name": "valid-wrapped",
-    "frontend_error": "unsupported wrapped cell",
+    "frontend_error": null,
     "repair_issues": [],
     "repairable": false,
     "checker_issue": null

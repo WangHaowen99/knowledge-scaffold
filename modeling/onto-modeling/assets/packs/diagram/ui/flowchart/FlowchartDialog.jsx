@@ -3,7 +3,7 @@
 // artifact：{type, key, title?}；key 为空时打开 AR-02 的第一张。工作台的流程图卡和 Studio 表格的「打开编辑」打开的是同一个弹窗。
 // 只读两态由写入范围锁（CS-06）决定：助手运行中 → 「回到对话」；合入冲突 → 去待处理；编辑区变灰、保存禁用。
 import {
-  useCallback, useContext, useEffect, useReducer, useRef, useState,
+  useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useApp, useProject } from '@onto/app/context.js';
@@ -13,9 +13,11 @@ import { toast } from '@onto/app/toast.jsx';
 import { setWorkspaceDirty } from '@onto/lib/workspaceDirty.js';
 import { describeConflict, errorText } from '@onto/api/errors.js';
 import { DrawioEditorFrame, drawioStateText } from '@onto/components/DrawioView.jsx';
+import DrawioRepairPanel from './DrawioRepairPanel.jsx';
 import FlowchartEditor from './FlowchartEditor.jsx';
 import { FlowchartSvg } from './FlowShapes.jsx';
 import { modelToDrawio } from './drawioConvert.js';
+import { drawioSourceCheck, inspectDrawioRepair, validateRepairedDrawio } from './drawioRepair.js';
 import { createFlowchartEditorSession, reduceFlowchartEditorSession } from './flowchartEditorState.js';
 import { checkSummary, summarize } from './flowchartModel.js';
 import { isLocked, lockState, readonlyInfo } from '@onto/state/readonly.js';
@@ -27,6 +29,7 @@ import '@onto/styles/flowchart.css';
 
 const TYPE = 'diagram.flowchart';
 const PACK_LABEL = '图示';
+const repairEdited = (c) => c?.kind === 'repair' && c.xml !== c.original;
 
 function Overlay({ children }) {
   const host = useContext(OverlayHostCtx);
@@ -52,19 +55,33 @@ export default function FlowchartDialog({ artifact, onClose }) {
   const [findings, setFindings] = useState(null);
   const [conflict, setConflict] = useState(null);
   const [askClose, setAskClose] = useState(false);
+  // 文件原文的结构问题（drawioSourceCheck）：null 没有；repair 在标准编辑器的位置上逐项修；blocked 只能用 drawio 高级编辑。
+  // 模型里看不出来：内核解析时同号的节点只认第一个，没连上节点的连线略过
+  const [check, setCheck] = useState(null);
   const frame = useRef(null);
   const sessionRef = useRef(session);
   sessionRef.current = session;
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  const checkRef = useRef(check);
+  checkRef.current = check;
   const dioAsk = useRef(0);
+  const checkAsk = useRef(0);
+  const checkSeq = useRef(0);
+  const repairing = check?.kind === 'repair';
+  const repairDirty = repairEdited(check);
+  const repairLeft = useMemo(() => (repairing ? inspectDrawioRepair(check.xml).length : 0), [repairing, check?.xml]);
   const dirtyRef = useRef(false);
-  dirtyRef.current = session.dirty || dio.dirty || session.saveInFlight;
+  dirtyRef.current = session.dirty || dio.dirty || repairDirty || session.saveInFlight;
   // 流程图有没保存的修改或正在保存时挡住版本回退（develop 同）
   useEffect(() => {
     setWorkspaceDirty('flowchart-editor', session.dirty || session.saveStatus === 'saving');
     return () => setWorkspaceDirty('flowchart-editor', false);
   }, [session.dirty, session.saveStatus]);
+  useEffect(() => {
+    setWorkspaceDirty('flowchart-repair', repairDirty);
+    return () => setWorkspaceDirty('flowchart-repair', false);
+  }, [repairDirty]);
 
   // 有未保存修改时关页面、刷新先问一句
   useEffect(() => {
@@ -82,7 +99,7 @@ export default function FlowchartDialog({ artifact, onClose }) {
   // 只读按写入范围：锁里有这张图，或它的文件落在锁的路径里（和 AR-05 回 423 同一口径，同上传包编辑器的 editorReadonly）
   const lock = scope && key && isLocked(scope, art?.path ? { ...ref, path: art.path } : ref) ? scope : null;
   const ro = !!lock;
-  const dirty = session.dirty || dio.dirty;
+  const dirty = session.dirty || dio.dirty || repairDirty;
   const title = session.model.process.name || art?.title || artifact?.title || '流程图';
   const pluginOff = !!extensions && !hasArtifactType(type);
 
@@ -99,6 +116,28 @@ export default function FlowchartDialog({ artifact, onClose }) {
     return modelToDrawio(model, title);
   }, [api, pid, type, artifact?.changeset]);
 
+  // 看的是某一轮的版本时没有原文可查，按模型打开
+  const sourceCheck = useCallback(async (k) => {
+    if (!k || artifact?.changeset) return null;
+    const r = await api.artifactDrawio(pid, type, k, {});
+    const found = drawioSourceCheck(r?.xml);
+    return found ? { ...found, xml: r.xml, original: r.xml, revision: r.revision, seq: ++checkSeq.current } : null;
+  }, [api, pid, type, artifact?.changeset]);
+
+  const applyCheck = useCallback((found) => {
+    setCheck(found);
+    if (found?.kind !== 'blocked' || modeRef.current === 'dio') return;
+    setDio((d) => ({ ...d, key: d.key + 1, xml: found.xml, dirty: false, state: 'loading' }));
+    setMode('dio');
+  }, []);
+
+  const recheck = (k) => {
+    const asked = ++checkAsk.current;
+    sourceCheck(k).then((found) => {
+      if (asked === checkAsk.current && !sessionRef.current.dirty && !repairEdited(checkRef.current)) applyCheck(found);
+    }).catch(() => {});
+  };
+
   // 载入的代次：先发的请求后回来（换了图、又点了载入最新版本）时丢掉旧结果
   const loadGen = useRef(0);
   const load = useCallback(async () => {
@@ -112,16 +151,21 @@ export default function FlowchartDialog({ artifact, onClose }) {
         k = r.items?.[0]?.key || null;
         if (!k) { setEmpty(true); return; }
       }
-      const a = await api.artifact(pid, type, k, artifactQuery(artifact, type, k));
+      const [a, found] = await Promise.all([
+        api.artifact(pid, type, k, artifactQuery(artifact, type, k)),
+        sourceCheck(k).catch(() => null), // 取不到原文时按模型打开
+      ]);
       if (gen !== loadGen.current) return;
+      checkAsk.current += 1;
       setKey(k);
       setArt(a);
+      setCheck(found);
       dispatch({ type: 'replace-model', model: a.content, savedRevision: a.revision, force: true, selection: initialSelection(a.content) });
       setFitKey(`${k}:${a.revision}`);
-      // 压缩存储只能用 drawio 高级编辑；已经在 drawio 里时（载入最新版本）编辑器也换成新内容
+      // 压缩存储、结构问题修不了的图只能用 drawio 高级编辑；已经在 drawio 里时（载入最新版本）编辑器也换成新内容
       const packed = a.content?.storage === 'drawio_compressed';
-      if (packed || modeRef.current === 'dio') {
-        const xml = await dioXml(a.content, k, a.title, false);
+      if (packed || found?.kind === 'blocked' || modeRef.current === 'dio') {
+        const xml = found ? found.xml : await dioXml(a.content, k, a.title, false);
         if (gen !== loadGen.current) return;
         setDio((d) => ({ ...d, key: d.key + 1, xml, dirty: false }));
         setMode('dio');
@@ -138,38 +182,58 @@ export default function FlowchartDialog({ artifact, onClose }) {
     if (env.type !== 'workspace.changed' || !key) return;
     if (!(env.data?.artifacts || []).some((a) => a.type === type && a.key === key)) return;
     const s = sessionRef.current;
-    if (s.dirty || s.saveInFlight) return;
-    api.artifact(pid, type, key).then((a) => {
-      if (sessionRef.current.dirty || sessionRef.current.saveInFlight) return;
+    if (s.dirty || s.saveInFlight || repairEdited(checkRef.current)) return;
+    const asked = ++checkAsk.current;
+    Promise.all([api.artifact(pid, type, key), sourceCheck(key).catch(() => undefined)]).then(([a, found]) => {
+      if (sessionRef.current.dirty || sessionRef.current.saveInFlight || repairEdited(checkRef.current)) return;
       setArt(a);
       dispatch({ type: 'replace-model', model: a.content, savedRevision: a.revision });
+      if (found !== undefined && asked === checkAsk.current) applyCheck(found);
     }).catch(() => {});
-  }), [subscribe, api, pid, type, key]);
+  }), [subscribe, api, pid, type, key, sourceCheck, applyCheck]);
 
-  const persist = async (content, base) => {
+  const persist = async (content, base, how = {}) => {
     dispatch({ type: 'mark-saving' });
     try {
       const r = await api.saveArtifact(pid, type, key, {
-        base_revision: base ?? sessionRef.current.savedRevision, content, summary: '在流程图弹窗里修改',
+        base_revision: base ?? sessionRef.current.savedRevision, content, summary: how.summary || '在流程图弹窗里修改',
       });
       setArt(r.artifact);
       dispatch({ type: 'mark-saved', model: r.artifact?.content, savedRevision: r.artifact?.revision });
       setSavedVersion(r.version_label || null);
+      // 存的是整份 XML：修好了回标准编辑器，drawio 里改出来的结构问题也在这时发现
+      if (content.drawio_xml) {
+        if (checkRef.current?.kind === 'repair') setCheck(null);
+        recheck(key);
+      }
       // 包声明的检查只提示（F3b）：照常保存，没过的说一句
       const warn = r.warnings?.[0]?.message;
-      toast(`${r.version_label ? `已保存为版本 ${r.version_label}` : '已保存'}${warn ? ` · ${warn}` : ''}`, warn ? 'alert' : 'check');
+      const saved = r.version_label ? `已保存为版本 ${r.version_label}` : '已保存';
+      toast([how.done, saved, warn].filter(Boolean).join(' · '), warn ? 'alert' : 'check');
       return r;
     } catch (e) {
       dispatch({ type: 'mark-save-failed', message: errorText(e) });
-      if (e.isConflict) setConflict({ details: e.details, content });
+      if (e.isConflict) setConflict({ details: e.details, content, how });
       else if (e.isLocked) { toast(errorText(e), 'lock'); reloadScope?.(); } else toast(errorText(e), 'alert');
       throw e;
     }
   };
 
+  // 修复后的原文按修之前读到的修订存：期间文件被改过时走冲突提示，不会盖掉别人的修改
+  const saveRepair = () => {
+    try {
+      validateRepairedDrawio(check.xml);
+    } catch (e) {
+      toast(e.message, 'alert');
+      return;
+    }
+    persist({ ...session.model, drawio_xml: check.xml }, check.revision, { summary: '在流程图弹窗里修复结构', done: '结构已修复' }).catch(() => {});
+  };
+
   const save = () => {
     if (ro || session.saveInFlight) return;
     if (mode === 'dio' && frame.current?.ready) { frame.current.save(); return; }
+    if (repairDirty) { saveRepair(); return; }
     if (!session.dirty) return;
     persist({ ...session.model, drawio_xml: null }).catch(() => {});
   };
@@ -184,11 +248,25 @@ export default function FlowchartDialog({ artifact, onClose }) {
     if (m === 'std') {
       if (compressed) { toast('压缩格式只能在 drawio 里编辑', 'info'); return; }
       if (dio.dirty) { toast('先保存（Ctrl+S）再切回', 'alert'); return; }
-      dioAsk.current += 1;
-      setMode('std');
+      const asked = ++dioAsk.current;
+      if (check?.kind !== 'blocked') { setMode('std'); return; }
+      // 打不开的图切回时重新读一遍文件：已经改好了就打开
+      checkAsk.current += 1;
+      sourceCheck(key).then((found) => {
+        if (asked !== dioAsk.current) return;
+        setCheck(found);
+        if (found?.kind === 'blocked') toast(`标准编辑器无法打开：${found.message}`, 'alert');
+        else setMode('std');
+      }).catch((e) => toast(errorText(e), 'alert'));
       return;
     }
     const asked = ++dioAsk.current;
+    // 修到一半切过去，带着已经修好的部分
+    if (repairing) {
+      setDio((d) => ({ key: d.key + 1, xml: check.xml, dirty: false, state: 'loading' }));
+      setMode('dio');
+      return;
+    }
     dioXml(session.model, key, title, session.dirty).then((xml) => {
       if (asked !== dioAsk.current) return; // 等原文时又切走了
       setDio((d) => ({ key: d.key + 1, xml, dirty: false, state: 'loading' }));
@@ -212,9 +290,9 @@ export default function FlowchartDialog({ artifact, onClose }) {
 
   const requestClose = useCallback(() => {
     if (askClose || conflict) return;
-    if (sessionRef.current.dirty || dio.dirty) setAskClose(true);
+    if (sessionRef.current.dirty || dio.dirty || repairDirty) setAskClose(true);
     else onClose?.();
-  }, [askClose, conflict, dio.dirty, onClose]);
+  }, [askClose, conflict, dio.dirty, repairDirty, onClose]);
 
   useEffect(() => {
     const h = (e) => { if (e.key === 'Escape' && !e.defaultPrevented) requestClose(); };
@@ -247,6 +325,7 @@ export default function FlowchartDialog({ artifact, onClose }) {
         <span className="muted">{drawioStateText(dio.state)}</span>
       </div>
       {compressed ? <div style={{ padding: '12px 16px' }}><Note tone="amber" icon="info">压缩格式，只能在 drawio 里编辑</Note></div> : null}
+      {check?.kind === 'blocked' ? <div style={{ padding: '12px 16px' }}><Note tone="red">标准编辑器无法打开：{check.message}</Note></div> : null}
       <div className="fc-dcv">
         <DrawioEditorFrame
           key={dio.key} ref={frame} xml={dio.xml} title={title} available={config?.features?.drawio !== false}
@@ -287,6 +366,9 @@ export default function FlowchartDialog({ artifact, onClose }) {
         session={session} dispatch={dispatch} mode={mode} onModeChange={switchMode} drawio={drawioPane}
         readOnly={ro} onValidate={validate} validating={validating} findings={findings}
         onDismissFindings={() => setFindings(null)} fitKey={fitKey}
+        repair={repairing ? (
+          <DrawioRepairPanel key={check.seq} xml={check.xml} readOnly={ro} onChange={(xml) => setCheck((c) => (c ? { ...c, xml } : c))} />
+        ) : null}
       />
     );
   }
@@ -311,7 +393,12 @@ export default function FlowchartDialog({ artifact, onClose }) {
               <div className="xs muted">{art ? `${op ? `关联操作「${op.name}」· ` : ''}${sum.text}` : ' '}</div>
             </div>
             {status}
-            <Button size="sm" kind="primary" icon="check" disabled={ro || !art || session.saveInFlight || !dirty} onClick={save}>保存</Button>
+            <Button
+              size="sm" kind="primary" icon="check" onClick={save}
+              disabled={ro || !art || session.saveInFlight || !dirty || (mode === 'std' && repairLeft > 0)}
+            >
+              保存
+            </Button>
             <button type="button" className="icon-btn" title="关闭" aria-label="关闭" onClick={requestClose}><Icon name="x" /></button>
           </div>
           {info ? (
@@ -345,7 +432,7 @@ export default function FlowchartDialog({ artifact, onClose }) {
               onClick={() => {
                 const c = conflict;
                 setConflict(null);
-                persist(c.content, c.details?.actual).catch(() => {});
+                persist(c.content, c.details?.actual, c.how).catch(() => {});
               }}
               disabled={!conflict?.details?.actual}
             >
