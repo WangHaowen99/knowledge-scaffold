@@ -8,7 +8,7 @@ import {
   recordsSignature, runKey, switchWarning,
   earlierChangesNote, publishFocus, rate, reasonText, reauthorizeNotice, sourceLine, statusOf, toggleNotice, transitions,
   feedbackNote, isFeedback, ROUND_LIMITS, roundsLabel, canSkipEvaluation, confirmsPrompt, graphPrompt,
-} from '../src/lib/flywheel.js';
+} from '../src/pages/flywheel/flywheelModel.js';
 
 const run = (fields = {}) => ({
   id: 'FW-001', kind: 'evaluation', status: 'waiting_optimize', reason: 'automation_off', human_hold: true,
