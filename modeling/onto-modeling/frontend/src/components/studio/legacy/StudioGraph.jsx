@@ -1,4 +1,4 @@
-import { memo, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   Boxes,
   FileCode2,
@@ -49,7 +49,6 @@ import StudioWebGLGraph from './webgl/StudioWebGLGraph.jsx';
 import { boundedStudioClusterExpansion, studioLabelNodeIds } from './webgl/studio-three-presentation.js';
 import { resolveGraphTheme } from './webgl/graph-theme.js';
 import SemanticLegendIcon from './SemanticLegendIcon.jsx';
-import { ThemeCtx } from '../../../lib/theme-context.js';
 import {
   buildStudioRoutePresentation,
   studioPolylineLength,
@@ -82,9 +81,11 @@ export function studioGraphNodeAttributes(node, details = {}) {
   return Array.isArray(fields) ? fields : [];
 }
 
+// 插件化前端只有浅色外观，图谱固定用浅色主题
+const STUDIO_THEME_MODE = 'light';
+
 export default function StudioGraph({ projectId, session, update, onOpen, focus }) {
-  const { mode: themeMode } = useContext(ThemeCtx);
-  const graphTheme = resolveGraphTheme(themeMode);
+  const graphTheme = resolveGraphTheme(STUDIO_THEME_MODE);
   const instanceRef = useRef(null);
   const graphRef = useRef(null);
   const graphCanvasRef = useRef(null);
@@ -326,7 +327,7 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
   }, [active.edges, filtered.edges, filtered.nodes.length, hoveredEdgeIds, isNodeDragging, isViewportMoving, motionEnabled, session.graphHighlight, visibleSelectedElementId, webglUnavailable, zoomTier]);
 
   const projectedNodes = useMemo(() => (() => { if (webglUnavailable) return arrangedNodes.map((node) => {
-    const meta = studioGraphKindMeta(node.kind, themeMode);
+    const meta = studioGraphKindMeta(node.kind, STUDIO_THEME_MODE);
     const selected = node.id === visibleSelectedElementId;
     return {
       ...node,
@@ -349,7 +350,7 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
       },
       ariaLabel: `${meta.label}：${node.label}`,
     };
-  }); return []; })(), [active.nodes, arrangedNodes, hasHighlight, labelNodeIds, onOpen, previewNodeIds, selectGraphElement, session.nodePositions, visibleSelectedElementId, webglUnavailable, themeMode]);
+  }); return []; })(), [active.nodes, arrangedNodes, hasHighlight, labelNodeIds, onOpen, previewNodeIds, selectGraphElement, session.nodePositions, visibleSelectedElementId, webglUnavailable]);
   const [nodes, setNodes] = useState(projectedNodes);
   const graphScrollDecorations = useMemo(() => {
     if (!webglUnavailable) return [];
@@ -658,7 +659,7 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
                       aria-selected={index === searchCandidateIndex} onClick={() => chooseSearchCandidate(candidate)}
                       onMouseDown={(event) => event.preventDefault()}
                       title={`${candidate.label} · ${candidate.id}`}>
-                      <i style={{ background: studioGraphKindMeta(candidate.kind, themeMode).color }} aria-hidden="true" />
+                      <i style={{ background: studioGraphKindMeta(candidate.kind, STUDIO_THEME_MODE).color }} aria-hidden="true" />
                       <span>{candidate.label}<code>{candidate.id}</code></span>
                       <small>{KIND_META[candidate.kind]?.label || candidate.kind}</small>
                     </button>
@@ -766,7 +767,7 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
           onZoomOut={() => changeGraphFullscreenZoom(graphFullscreenZoom - 0.25)}
           onFitView={resetFullscreenGraph} />
           : <Controls showInteractive={false} position="top-right" />}
-        {!graphFullscreen && nodes.length <= 80 && <MiniMap pannable zoomable nodeColor={(node) => studioGraphKindMeta(node.data.kind, themeMode).color} />}
+        {!graphFullscreen && nodes.length <= 80 && <MiniMap pannable zoomable nodeColor={(node) => studioGraphKindMeta(node.data.kind, STUDIO_THEME_MODE).color} />}
         </ReactFlow> : <StudioWebGLGraph
           ref={instanceRef}
           nodes={webglNodes}
@@ -775,6 +776,8 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
           layoutMode={graphLayoutMode}
           onLayoutModeChange={setGraphLayoutMode}
           onExpandAll={expandGraph}
+          hopDepth={hopDepth}
+          onHopDepthChange={setHopDepth}
           clustered={filtered.clustered}
           allLabels={allLabels}
           onAllLabelsChange={setAllLabels}
@@ -832,7 +835,7 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
           <button type="button" className="studio-summary-close" title="关闭摘要" aria-label="关闭摘要"
             onClick={() => setDismissedSummaryElementId(visibleSelectedElementId)}><X size={14} /></button>
           <span className="studio-summary-kind"><SemanticLegendIcon kind={selectedNode.kind} className="studio-swatch"
-            color={studioGraphKindMeta(selectedNode.kind, themeMode).color} mode={graphTheme.mode} />
+            color={studioGraphKindMeta(selectedNode.kind, STUDIO_THEME_MODE).color} mode={graphTheme.mode} />
             {KIND_META[selectedNode.kind]?.label || selectedNode.kind}</span>
           <strong>{selectedNode.label}</strong>
           <code>{selectedNode.id}</code>
@@ -844,7 +847,7 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
                 <button type="button" key={neighbor.id} onClick={() => locateElement(neighbor.id)}
                   title={`定位${KIND_META[neighbor.kind]?.label || ''}：${neighbor.label}`}>
                   <SemanticLegendIcon kind={neighbor.kind} className="studio-swatch"
-                    color={studioGraphKindMeta(neighbor.kind, themeMode).color} mode={graphTheme.mode} />
+                    color={studioGraphKindMeta(neighbor.kind, STUDIO_THEME_MODE).color} mode={graphTheme.mode} />
                   <span>{neighbor.label}</span>
                 </button>
               ))}
@@ -899,8 +902,7 @@ const SCROLL_MINIMAP_HEIGHT = 126;
 const SCROLL_MINIMAP_PADDING = 8;
 
 function StudioGraphScrollMiniMap({ nodes, routes, zoom, surface, viewport, scroll, onNavigate }) {
-  const { mode } = useContext(ThemeCtx);
-  const colors = resolveGraphTheme(mode).colors;
+  const colors = resolveGraphTheme(STUDIO_THEME_MODE).colors;
   const projection = useMemo(() => {
     const width = Math.max(1, surface.width || 1);
     const height = Math.max(1, surface.height || 1);
@@ -965,9 +967,8 @@ function StudioGraphScrollMiniMap({ nodes, routes, zoom, surface, viewport, scro
 }
 
 const StudioNode = memo(({ data }) => {
-  const { mode } = useContext(ThemeCtx);
   const Icon = KIND_ICON[data.kind] || Boxes;
-  const meta = studioGraphKindMeta(data.kind, mode);
+  const meta = studioGraphKindMeta(data.kind, STUDIO_THEME_MODE);
   return (
     <div className={`studio-node ${meta.className}${data.selected ? ' selected' : ''}${data.highlighted ? ' highlighted' : ''}${data.dimmed ? ' dimmed' : ''}`}
       data-labels-visible={data.labelVisible}
@@ -982,7 +983,7 @@ const StudioNode = memo(({ data }) => {
       }}>
       <Handle id="target-left" type="target" position={Position.Left} isConnectable={false} />
       <Handle id="source-left" type="source" position={Position.Left} isConnectable={false} />
-      <div className="studio-node-meta"><Icon size={13} /><span>{meta.label}</span></div>
+      <div className="studio-node-meta" aria-hidden="true"><Icon size={13} /></div>
       <strong title={data.label}>{data.label}</strong>
       <Handle id="target-right" type="target" position={Position.Right} isConnectable={false} />
       <Handle id="source-right" type="source" position={Position.Right} isConnectable={false} />

@@ -49,19 +49,6 @@ function StatsBar({ stats, pid }) {
   );
 }
 
-function Legend() {
-  return (
-    <div className="sd-legend">
-      <div className="b" style={{ fontSize: 12, marginBottom: 4 }}>图例</div>
-      {SUM_KINDS.map(([k]) => (
-        <div className="r" key={k}><span style={kindDotStyle(k, 10)} />{kindLabel(k)}</div>
-      ))}
-      <div className="r" style={{ marginTop: 6 }}><svg width="22" height="4"><line x1="0" y1="2" x2="22" y2="2" stroke="#9DB0CA" strokeWidth="1.6" /></svg>关系声明</div>
-      <div className="r"><svg width="22" height="4"><line x1="0" y1="2" x2="22" y2="2" stroke="#B8C6DA" strokeWidth="1.4" strokeDasharray="4 3" /></svg>提及</div>
-    </div>
-  );
-}
-
 // 步骤正文：只认 [[条目]]，点了在图谱里选中它
 function StepText({ text, onPick }) {
   return inlineTokens(text).map((t, i) => {
@@ -372,7 +359,6 @@ function StudioGraphPage({ route }) {
             {graph ? (
               <LegacyStudioGraphHost graph={graph} query={query} highlight={hl} selectedId={selectedId} onSelect={select} onOpen={open} />
             ) : null}
-            <Legend />
             {operationId && !flowClosed ? (
               <FlowPanel
                 flow={flow}

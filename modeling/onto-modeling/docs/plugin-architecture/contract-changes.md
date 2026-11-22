@@ -2499,3 +2499,6 @@ develop 在 !611（#407、#415、#416）和 !624 改了 Studio 的表格、关�
    这里放到条目表，因为表格页只请求 ST-03。
 4. **Studio 表格**（`pages/studio/StudioTablePage.jsx`、`StudioTableFilters.jsx`、`studioTable.js`）：类型选「规则」时多两列，表头可多选
    （含「未填写」）；「最后更新时间」按日期范围筛选。表格在选中条目时不卸载，筛选和排序原样保留，不需要 develop 的返回视图状态。
+5. **3D 图谱**：`LegacyStudioGraphHost` 的 props 和页面调用不变；`components/studio/legacy/` 换成 develop 的 3D 运行时、主题和语义图标，
+   节点下方只显示类型图标。页面原来的静态图例去掉，改用图谱自带的图例（显示/隐藏、悬停预览）；「展示方式」面板加「再扩一跳」「收起扩展」。
+   旧图谱的颜色变量在 `.legacy-studio-host` 上映射到本项目的变量。没有新增依赖（`three` 已在依赖里）。

@@ -9,9 +9,6 @@
 .sd-main{flex:1;min-height:0;display:flex}
 .sd-canvas{flex:1;min-width:0;position:relative;overflow:hidden;background:radial-gradient(circle at 1px 1px,#DCE4F0 1px,transparent 1.2px) 0 0/22px 22px,linear-gradient(180deg,#FBFCFF,#F4F7FC)}
 .sd-canvas text{font-family:var(--font)}
-.sd-legend{position:absolute;left:14px;top:14px;background:rgba(255,255,255,.94);border:1px solid var(--line);border-radius:12px;padding:10px 12px;font-size:11.5px;box-shadow:var(--sh-soft);z-index:5}
-.sd-legend .r{display:flex;align-items:center;gap:7px;margin:3px 0;color:var(--ink2)}
-.sd-legend .d{width:10px;height:10px;border-radius:50%}
 .sd-flow{position:absolute;left:12px;right:12px;bottom:12px;height:226px;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 -10px 30px -22px rgba(15,35,80,.35);display:flex;flex-direction:column;z-index:5;transition:height .15s}
 .sd-flow .h{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line)}
 .sd-flow .b{flex:1;min-height:0;overflow:auto;padding:14px 16px}
@@ -33,13 +30,27 @@
 .sd-empty{flex:1;display:grid;place-items:center;color:var(--ink3);font-size:12.5px;padding:24px;text-align:center}
 .sd-canvas:fullscreen{background:radial-gradient(circle at 1px 1px,#DCE4F0 1px,transparent 1.2px) 0 0/22px 22px,linear-gradient(180deg,#FBFCFF,#F4F7FC)}
 
-/* 原版图谱只负责画布：它自带的工具条、图例、节点摘要由页面的工具条、左上图例、右侧详情代替 */
+/* 原版图谱只负责画布：它自带的工具条、节点摘要由页面的工具条、右侧详情代替。
+   图例在左上角竖排（可隐藏类型、悬停预览），展示方式在右上角、缩放按钮左边 */
 .sd-canvas .legacy-studio-host{position:absolute;inset:0;display:flex}
-.sd-canvas .legacy-studio-host.wb{background:transparent}
-.sd-canvas .legacy-studio-host .studio-graph{background:transparent}
+/* 图谱样式读的外观变量，对应到本项目的色板 */
+.legacy-studio-host{--surface-page:var(--bg);--surface-card:var(--panel);--surface-subtle:var(--panel2);--border-default:var(--line);--border-subtle:var(--panel3);--text-primary:var(--ink);--text-secondary:var(--ink2);--text-tertiary:var(--ink3);--color-primary:var(--blue);--color-primary-soft:var(--b50)}
+.sd-canvas .legacy-studio-host.wb,
+.sd-canvas .legacy-studio-host .studio-graph,
+.sd-canvas .legacy-studio-host .studio-graph-stars,
+.sd-canvas .legacy-studio-host .studio-webgl-stage{background:transparent}
 .sd-canvas .legacy-studio-host .studio-graph-tools,
-.sd-canvas .legacy-studio-host .studio-graph-legend,
 .sd-canvas .legacy-studio-host .studio-graph-summary{display:none!important}
+.sd-canvas .legacy-studio-host .studio-graph-legend{left:14px;top:14px;bottom:auto;right:auto;flex-direction:column;align-items:stretch;gap:1px;padding:6px;border-radius:12px;box-shadow:var(--sh-soft)}
+.sd-canvas .legacy-studio-host .studio-graph-legend button{height:26px;border-radius:7px;font-size:11.5px;color:var(--ink2)}
+.sd-canvas .legacy-studio-host .studio-graph-legend button:hover{background:var(--b50)}
+.sd-canvas .legacy-studio-host .studio-graph-legend small{margin-left:auto;padding-left:10px;font-variant-numeric:tabular-nums}
+.sd-canvas .legacy-studio-host .studio-webgl-navigation{top:14px;right:14px}
+.sd-canvas .legacy-studio-host .studio-three-presentation{top:14px;left:auto;right:54px;width:240px;border-radius:12px;box-shadow:var(--sh-soft)}
+.sd-canvas .legacy-studio-host .studio-three-option-row button{flex:1 1 auto;white-space:nowrap}
+.sd-canvas .legacy-studio-host .studio-three-guide{left:144px;top:14px;border-radius:12px}
+.sd-canvas:has(.sd-flow) .studio-three-minimap-panel{bottom:250px}
+.sd-canvas:has(.sd-flow.min) .studio-three-minimap-panel{bottom:70px}
 
 /* ---- Studio 表格 ---- */
 .stt{display:grid;grid-template-columns:minmax(0,1fr) 640px;gap:16px;height:100%;min-height:0}

@@ -21,6 +21,8 @@ const StudioWebGLGraph = forwardRef(({
   layoutMode,
   onLayoutModeChange,
   onExpandAll,
+  hopDepth = 0,
+  onHopDepthChange,
   clustered,
   allLabels = false,
   onAllLabelsChange,
@@ -177,6 +179,36 @@ const StudioWebGLGraph = forwardRef(({
   return (
     <div className="studio-webgl-graph" data-renderer={rendererName} data-layout-mode={layoutMode}>
       <div ref={hostRef} className="studio-webgl-stage" />
+      <details className="studio-three-presentation" open>
+        <summary>展示方式</summary>
+        <div className="studio-three-presentation-body">
+          <select aria-label="图谱布局" value={layoutMode} onChange={(event) => onLayoutModeChange?.(event.target.value)}>
+            <option value="force">3D 力导向 · 关系网络</option>
+            <option value="layered">分类层级 · 按元素类型</option>
+          </select>
+          <div className="studio-three-option-row" role="group" aria-label="显示效果">
+            <button type="button" aria-pressed={allLabels} title="仅显示元素名称；有高亮节点时仅显示高亮节点的名称" onClick={() => onAllLabelsChange?.(!allLabels)}>显示标签</button>
+            <button type="button" aria-pressed={presentation.bloom} onClick={() => togglePresentation('bloom')}>辉光</button>
+          </div>
+          <div className="studio-three-option-row" role="group" aria-label="展开内容">
+            <button type="button" title={clustered ? '大图保留部分关系簇，点击关系簇可继续展开' : undefined} onClick={onExpandAll}>全部展开</button>
+            {selectedId && hopDepth < 2 && (
+              <button type="button" title="把高亮范围再向外扩展一跳" onClick={() => onHopDepthChange?.(hopDepth + 1)}>再扩一跳</button>
+            )}
+            {selectedId && hopDepth > 0 && (
+              <button type="button" onClick={() => onHopDepthChange?.(0)}>收起扩展</button>
+            )}
+          </div>
+          <div className="studio-three-option-row" role="group" aria-label="视角控制">
+            <button type="button" aria-pressed={rotating} disabled={!ready || !motionEnabled}
+              title={rotating ? '停止环绕' : reducedMotion ? '系统减少动态效果：点击后临时环绕，再次点击停止' : '环绕图谱，再次点击停止'} onClick={toggleOrbit}><RotateCw size={13} />环绕</button>
+            <button type="button" title="切换到正面视角" onClick={() => runtimeRef.current?.setViewPreset('front')}>正视</button>
+            <button type="button" title="切换到顶部俯视视角" onClick={() => runtimeRef.current?.setViewPreset('top')}>俯视</button>
+            <button type="button" title="切换到侧面视角" onClick={() => runtimeRef.current?.setViewPreset('side')}>侧视</button>
+            <button type="button" onClick={() => runtimeRef.current?.fitView(true)}>适配视图</button>
+          </div>
+        </div>
+      </details>
       <div className="studio-webgl-navigation" aria-label="WebGL 图谱导航">
         {layoutMode === 'force' && selectedId && (
           <button type="button" title={pinned ? '取消固定选中节点' : '固定选中节点'} aria-label={pinned ? '取消固定选中节点' : '固定选中节点'} aria-pressed={pinned} onClick={togglePin}>
