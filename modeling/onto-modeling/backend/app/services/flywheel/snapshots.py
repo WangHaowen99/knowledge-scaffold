@@ -3,7 +3,7 @@
 The diff view stays bounded: at most DIFF_FILES files, DIFF_LINES lines of LINE_CHARS each per file
 and DIFF_BUDGET characters in total; counts report what was left out.
 """
-from ..workspace import ROLLBACK_EXCLUDED_TOP, _git
+from ..workspace import ROLLBACK_EXCLUDED_PREFIXES, ROLLBACK_EXCLUDED_TOP, _commit_paths, _git
 
 DIFF_FILES = 20
 DIFF_LINES = 80
@@ -11,9 +11,9 @@ LINE_CHARS = 300
 DIFF_BUDGET = 96 * 1024
 # 外部 diff 驱动与 textconv 由工作区 git 配置决定，可能随导入的项目带入：一律关闭
 DIFF = ('-c', 'core.quotepath=false', 'diff', '--no-ext-diff', '--no-textconv', '--no-color')
-# 恢复时保持当前值的路径，与版本回退（WorkspaceManager.revert_to）一致：项目元数据（成员、角色、归档）、
-# 运行状态与仓库配置不随内容回到过去
-KEPT = tuple(f':(exclude){name}' for name in sorted(ROLLBACK_EXCLUDED_TOP - {'.git'}))
+# 恢复时保持当前值的路径，与版本回退（ADR-0094 rollback_managed）一致：项目元数据（所有者、归档）、
+# 运行状态、助手装配与仓库配置不随内容回到过去
+KEPT = tuple(f':(exclude){name}' for name in (*sorted(ROLLBACK_EXCLUDED_TOP - {'.git'}), *ROLLBACK_EXCLUDED_PREFIXES))
 
 
 def _lines(text):
@@ -21,12 +21,13 @@ def _lines(text):
 
 
 def take(manager, pid, message):
-    """Commit pending changes, so the iteration is exactly the current content (before or after a run)."""
+    """Commit pending changes, so the iteration is exactly the current content (before or after a run).
+
+    Commits go through the write path (_commit_paths): source trailers by the message prefix and a WorkspaceChanged
+    event, like every other mainline commit. The assistant's own edits already arrive merged (changesets)."""
     root = manager.project_root(pid)
     with manager._project_lock(pid):
-        if _git(root, 'status', '--porcelain').strip():
-            _git(root, 'add', '-A')
-            _git(root, 'commit', '-m', message)
+        _commit_paths(root, ['.'], message)
         commit = _git(root, 'rev-parse', 'HEAD').strip()
         iteration = int(_git(root, 'rev-list', '--count', 'HEAD').strip())
     return {'commit': commit, 'iteration': iteration}
@@ -48,9 +49,7 @@ def restore(manager, pid, commit, message):
         for rel in _lines(_git(root, '-c', 'core.quotepath=false', 'ls-files', '--others', '--exclude-standard',
                                '--', 'ontology')):
             (root / rel).unlink(missing_ok=True)
-        if _git(root, 'status', '--porcelain').strip():
-            _git(root, 'add', '-A')
-            _git(root, 'commit', '-m', message)
+        _commit_paths(root, ['.'], message)
         iteration = int(_git(root, 'rev-list', '--count', 'HEAD').strip())
     return {'commit': _git(root, 'rev-parse', 'HEAD').strip(), 'iteration': iteration}
 

@@ -203,7 +203,7 @@ def _write_back(caller):
                                                 intake.base_release(run) or '', run.get('base_version') or '')
             results[run['id']] = ('done', '')
         except WorkspaceError as exc:
-            if exc.status in (404, 409, 422):
+            if exc.status in (400, 404, 409, 422):
                 results[run['id']] = ('refused', str(exc)[:store.TEXT_LIMIT])  # 评测服务不接受：不再重试
     if not results:
         return
@@ -272,7 +272,7 @@ def _automate(caller, release):
 
 def _attempt(caller, step, run, name, hold, delegate):
     """Automatic steps leave a failed run waiting for a confirmation instead of retrying forever."""
-    audit_log.log(caller.username, 'FLYWHEEL', f'/api/projects/{caller.pid}/flywheel/runs/{run["id"]}/{name}')
+    audit_log.log(caller.username, 'FLYWHEEL', f'/api/v1/projects/{caller.pid}/flywheel/runs/{run["id"]}/{name}')
     try:
         step(caller, run['id'], True)
     except WorkspaceError as exc:
@@ -316,14 +316,16 @@ def update_settings(caller, changes):
             limit = changes.get('max_rounds')
             if limit is not None and limit != settings['max_rounds']:
                 if limit not in store.ROUND_LIMITS:
-                    raise WorkspaceError('连续自动处理上限只能是 1、3、5 轮或无限次', 422)
+                    raise WorkspaceError('连续自动处理上限只能是 1、3、5 轮或无限次', 400, 'invalid_argument',
+                                         {'fields': {'max_rounds': 'one_of'}})
                 store.audit(state, caller.username, '自动优化规则',
                             f"连续自动处理上限：{store.rounds_label(settings['max_rounds'])} → {store.rounds_label(limit)}")
                 settings['max_rounds'] = limit
             days = changes.get('delegation_days')
             if days is not None and days != settings['delegation_days']:
                 if days not in store.DELEGATION_DAYS:
-                    raise WorkspaceError('后台授权有效期只能是 1、3、7、30 天或无限制', 422)
+                    raise WorkspaceError('后台授权有效期只能是 1、3、7、30 天或无限制', 400, 'invalid_argument',
+                                         {'fields': {'delegation_days': 'one_of'}})
                 store.audit(state, caller.username, '后台授权',
                             f"有效期：{grants.label(settings['delegation_days'])} → {grants.label(days)}")
                 settings['delegation_days'] = days
@@ -420,7 +422,7 @@ ROLLBACK_FROM = ('published', 'waiting_publish', 'waiting_evaluation', 'blocked'
 
 def rollback(caller, run_id, scope):
     if scope not in ('workspace', 'hub'):
-        raise WorkspaceError('回退范围无效', 422)
+        raise WorkspaceError('回退范围无效', 400, 'invalid_argument', {'fields': {'scope': 'one_of'}})
 
     def apply():
         pid, subject = caller.pid, caller.subject
@@ -438,7 +440,7 @@ def rollback(caller, run_id, scope):
                 if caller.assistant.busy(pid):
                     raise WorkspaceError('建模助手正在对话中修改内容，请等本轮对话结束后再回退', 409, 'flywheel_blocked')
                 snapshot = run['snapshot']
-            restored = snapshots.restore(caller.manager, pid, snapshot['commit'], f'flywheel: 回退 {run_id} 到执行前内容')
+            restored = snapshots.restore(caller.manager, pid, snapshot['commit'], f'revert: 数据飞轮回退 {run_id} 到执行前内容')
             # 快照之后的修改都已撤回：之后的发布（包括恢复版本）不是这期间评测优化的处理结果
             package_evaluations.forget_after_rollback(pid)
         linked = hub_packages.association(pid) or {}

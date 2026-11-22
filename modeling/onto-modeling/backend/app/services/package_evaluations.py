@@ -18,19 +18,22 @@ import urllib.parse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from . import eval_client, hub_packages, knowledge_hub
-from .workspace import WorkspaceError
+from .delegated import Delegated
+from .workspace import WorkspaceError, _commit_paths
 
 logger = logging.getLogger(__name__)
 
 ID_PATTERN = r'^[A-Za-z0-9_-]{1,128}$'
 RUN_PATTERN = r'^[a-f0-9]{32}$'
 STEM_PATTERN = r'^eval-\d{8}-\d{6}-[a-f0-9]{6}$'
+# 评测优化导入的评测上下文：工作区里不进 git 的状态目录
+STATE_DIR = ('.ontology-state', 'eval-service')
 # answers.json 中的结果 ID：报告里第 N 个用例为 case-N
 RESULT_PATTERN = r'^case-[1-9][0-9]{0,5}$'
 STATUS_PATTERN = r'^[a-z_]{1,32}$'
 VIEW_LIMIT = 2 * 1024 * 1024
 ARTIFACT_LIMITS = {'report.md': 8 * 1024 * 1024, 'suggestions.md': 256 * 1024,
-                   'answers.json': 8 * 1024 * 1024}
+                   'answers.json': 8 * 1024 * 1024, 'context.json': 2 * 1024 * 1024}
 
 
 class _Model(BaseModel):
@@ -224,7 +227,9 @@ def receive(notification):
 
 
 def reconcile(package_id, subject, token):
-    """把调用者的索引整份换成评测服务的视图，评测服务里删掉的轮次随之消失。"""
+    """把调用者的索引整份换成评测服务的视图，评测服务里删掉的轮次随之消失。
+
+    委托读取（用户不在时的数据飞轮，ADR-0108）只列得到用户本人的评测轮次，消费反馈部分保留上次用用户登录对账的结果。"""
     started = time.time()
     covered = ('releases', 'solver_releases') if isinstance(token, Delegated) else SECTIONS
     # 两种来源都要：评测轮次，以及包负责人确认过的消费反馈轮次；旧版评测服务忽略 origin，只返回评测轮次
@@ -315,6 +320,12 @@ def overview(pid, subject, token, refresh=False):
         return {**result, 'message': '未配置评测服务地址'}
     if not linked:
         return result
+    if refresh:
+        # 先补上未完成的回写（ADR-0108），随后的对账就能看到评测服务记下的处理结果；回写失败不影响查看
+        try:
+            settle(pid, subject, token)
+        except (OSError, ValueError, WorkspaceError):
+            pass
     # 还没对账过的用户不知道自己在评测服务的所有者标识，只能等对账，不能借用别人的索引
     index = _read_index(linked['ontology_id'], _owner_of(subject))
     if refresh:
@@ -442,3 +453,378 @@ def regenerate(pid, subject, token, run_id):
         if entries:
             knowledge_hub.save(_index_path(package_id, owner), index)
     return artifacts
+
+
+# ---- 评测优化：把产物拉入工作区 ----
+
+
+def _suggestions_name(stem):
+    # 不能落在 eval-*.md：评测优化命令与泛化校验按这个模式取最新评测报告
+    return 'optimization-' + stem.removeprefix('eval-') + '.md'
+
+
+def _previous_import(root, run_id, artifacts):
+    """The record of this exact artifact revision, unless its files are gone or suggestions arrived since."""
+    state = root.joinpath(*STATE_DIR)
+    record = knowledge_hub.load(state / 'imports.json', {}).get(run_id)
+    if not record or record['revision'] != artifacts.revision:
+        return None
+    if artifacts.suggestions == 'ready' and not record['suggestions']:
+        return None
+    reports = [f'{record["stem"]}.md', f'{record["stem"]}.answers.json'] + ([record['suggestions']] if record['suggestions'] else [])
+    if all((root / 'reports' / name).is_file() for name in reports) and (state / f'{record["stem"]}.json').is_file():
+        return record
+    return None
+
+
+def _fetch_import(run_id, artifacts, token):
+    """All artifacts of one consistent revision; regeneration may start between the requests."""
+    names = ['report.md', 'answers.json', 'context.json'] + (['suggestions.md'] if artifacts.suggestions == 'ready' else [])
+    responses = {name: _download(run_id, name, token) for name in names}
+    versions = {(revision, stem) for _, revision, stem in responses.values()}
+    if len(versions) != 1:
+        raise WorkspaceError('评测产物正在更新，请稍后重试', 409, 'artifacts_changed')
+    revision, stem = versions.pop()
+    if not revision.isdigit() or not re.fullmatch(STEM_PATTERN, stem):
+        raise _invalid_response()
+    try:
+        context = json.loads(responses['context.json'][0])
+    except ValueError as exc:
+        raise _invalid_response() from exc
+    if not isinstance(context, dict):
+        raise _invalid_response()
+    return int(revision), stem, {name: value[0] for name, value in responses.items()}, context
+
+
+def _store_import(root, run_id, reference, revision, stem, files):
+    report, answers = f'{stem}.md', f'{stem}.answers.json'
+    suggestions = _suggestions_name(stem) if 'suggestions.md' in files else None
+    written = {report: files['report.md'], answers: files['answers.json']}
+    if suggestions:
+        written[suggestions] = files['suggestions.md']
+    (root / 'reports').mkdir(exist_ok=True)  # 不带 parents：项目已删除时不重建工作区
+    for name, data in written.items():
+        (root / 'reports' / name).write_bytes(data)
+    state = root.joinpath(*STATE_DIR)  # .ontology-state 不进工作区 git
+    state.mkdir(parents=True, exist_ok=True)
+    (state / f'{stem}.json').write_bytes(files['context.json'])
+    # 只提交导入的报告，助手进行中的改动不混入这个版本点
+    _commit_paths(root, [f'reports/{name}' for name in written], f'feedback: 评测优化导入 {stem}')
+    record = dict(revision=revision, stem=stem, suggestions=suggestions, release_id=reference.get('release_id'),
+                  version=reference.get('version'), imported_at=time.time())
+    history = knowledge_hub.load(state / 'imports.json', {})
+    knowledge_hub.save(state / 'imports.json', {**history, run_id: record})
+    return record
+
+
+def optimize(manager, pid, subject, token, run_id, any_version=False, flywheel_run=None):
+    """把一轮评测的产物拉进工作区交给 /ontology-evolution 的飞轮模式（ADR-0108）；只对项目当前版本。
+
+    any_version：数据飞轮也优化较早版本的消费反馈，逐条先对照当前内容核对。flywheel_run：见 remember。"""
+    run, linked = _linked_run(pid, subject, token, run_id)
+    if run.get('run_type') == 'solver':
+        # 求解验证的修复指引由失败码确定性生成，按指引修改求解契约后发布新版本再验证
+        raise WorkspaceError('求解验证不支持评测优化：请按修复指引修改求解契约后发布新版本，再发起求解验证', 409,
+                             'optimization_not_supported')
+    base = _reference(run, 'base_ref')
+    earlier = base.get('release_id') != linked['release_id']
+    if base.get('ontology_id') != linked['ontology_id'] or (earlier and not any_version):
+        raise WorkspaceError(f"评测版本 {base.get('version') or '未知'} 与当前建模项目版本 {linked.get('version') or '未知'} 不一致，"
+                             '请评测当前版本后再优化', 409, 'version_mismatch')
+    artifacts = _artifacts(run)
+    if not artifacts or artifacts.report != 'ready':
+        raise WorkspaceError('评测报告尚未生成，请稍后再试', 409, 'artifacts_not_ready')
+    root = manager.project_root(pid)
+    with manager._project_lock(pid):
+        record = _previous_import(root, run_id, artifacts)
+    if not record:
+        revision, stem, files, _context = _fetch_import(run_id, artifacts, token)
+        with manager._project_lock(pid):
+            record = _store_import(root, run_id, base, revision, stem, files)
+    # 回写以优化开始时的版本为基线：反馈针对的旧版本之后已有的版本不是这次优化的结果
+    remember(pid, subject, run, linked if earlier else base, record['stem'], flywheel_run)
+    report = f'{record["stem"]}.md'
+    return {'report': report, 'suggestions': record['suggestions'], 'command': f'/ontology-evolution {report}'}
+
+
+# ---- 建模回写：数据飞轮优化后发布的新版本，告诉评测服务是哪一轮建议的处理结果（ADR-0108） ----
+
+WRITEBACK_NOTE = 1000
+# 被新的评测优化替换时还没写回的早先结果，最多留这么多条等其优化者回来写回
+EARLIER_LIMIT = 10
+
+
+def _optimization_path(pid):
+    # 与项目的 Hub 关联放在一起：项目删除时随之清理
+    return knowledge_hub.state_dir() / 'packages' / knowledge_hub.identifier(pid) / 'evaluation-optimization.json'
+
+
+def _optimization_lock(pid):
+    return knowledge_hub.lock('evaluation-optimization-' + hashlib.sha256(pid.encode()).hexdigest()[:32])
+
+
+def _save_optimization(pid, value):
+    path = _optimization_path(pid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    knowledge_hub.save(path, value)
+
+
+def remember(pid, subject, run, base, stem, flywheel_run=None):
+    """The run whose suggestions the project's latest evaluation optimization imported; a new one replaces it.
+
+    One whose pinned release is not written back yet is kept aside (``earlier``) for its optimizer's next visit:
+    background flywheel rounds go on while writing back waits for that user's login.
+    ``flywheel_run``: the data flywheel run that revises the workspace for it. Until that revision ends
+    (end_revision), releases do not count as its result: they carry half of the revision at most."""
+    flywheel = dict(flywheel_run=flywheel_run, optimizing=True) if flywheel_run else {}
+    with _optimization_lock(pid):
+        earlier = _earlier(_loaded(pid))
+        _save_optimization(pid, dict(run_id=run['id'] if isinstance(run.get('id'), str) else '', stem=stem,
+                                     origin=run.get('origin') or 'evaluation', base_release_id=base.get('release_id'),
+                                     base_version=base.get('version'), optimizer=hub_packages.scope(subject),
+                                     optimized_at=time.time(), result=None, **flywheel,
+                                     **({'earlier': earlier} if earlier else {})))
+
+
+def _loaded(pid):
+    try:
+        return knowledge_hub.load(_optimization_path(pid)) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _earlier(state):
+    """The results still to write back once ``state`` is replaced: its own pinned release among them."""
+    earlier = list(state.get('earlier') or [])
+    result = state.get('result') or {}
+    if state.get('run_id') and state.get('release') and result.get('status') not in ('done', 'refused'):
+        earlier.append({key: state.get(key) for key in ('run_id', 'origin', 'base_version', 'optimizer', 'release')})
+    return earlier[-EARLIER_LIMIT:]
+
+
+def _drop_current(pid, state):
+    """Forget the latest optimization; earlier results still to write back stay."""
+    if state.get('earlier'):
+        _save_optimization(pid, {'earlier': state['earlier']})
+    else:
+        _optimization_path(pid).unlink(missing_ok=True)
+
+
+def _unsettled(pid):
+    """The project's latest optimization while nothing was written back for it yet; None otherwise."""
+    try:
+        state = knowledge_hub.load(_optimization_path(pid))
+    except (OSError, ValueError):
+        return None  # 读不了的记录与没有记录一样：settle 也不会据此回写
+    return state if state and state.get('run_id') and not state.get('result') else None
+
+
+def _belongs(state, subject, run_id, flywheel_run):
+    """Whether the record is this user's optimization of this evaluation run, started by this flywheel run."""
+    return (bool(run_id) and state.get('run_id') == run_id and state.get('optimizer') == hub_packages.scope(subject)
+            and state.get('flywheel_run') == flywheel_run)
+
+
+def forget(pid, subject, run_id, flywheel_run):
+    """Drop the project's latest optimization when the flywheel run that started it stands for no release: its
+    changes were taken back (stopped), it needed none (passed, already resolved) or the user ignored it.
+
+    settle would otherwise write the next release back as this run's result, whoever made that release. A release
+    already pinned (pin_release) stays: it was published before and is the result."""
+    with _optimization_lock(pid):
+        state = _unsettled(pid)
+        if state and not state.get('release') and _belongs(state, subject, run_id, flywheel_run):
+            _drop_current(pid, state)
+
+
+def forget_after_rollback(pid):
+    """A rollback took back every change made since the run's snapshot: drop the project's latest optimization
+    unless a release already counts as its result (pin_release). Later releases, the restored content among them,
+    do not."""
+    with _optimization_lock(pid):
+        state = _unsettled(pid)
+        if state and not state.get('release'):
+            _drop_current(pid, state)
+
+
+def end_revision(pid, subject, run_id, flywheel_run, own_release):
+    """The flywheel run that started the project's latest optimization stopped revising the workspace; from now on
+    releases may count as its result.
+
+    ``own_release``: it ended without changing the package, leaving the suggestions to a person; only a release its
+    optimizer publishes then counts (they may finish them by hand), not one someone else publishes meanwhile."""
+    with _optimization_lock(pid):
+        state = _unsettled(pid)
+        if state and _belongs(state, subject, run_id, flywheel_run):
+            state['optimizing'] = False
+            state['own_release'] = own_release
+            if own_release and (state.get('release') or {}).get('publisher') != state['optimizer']:
+                state.pop('release', None)  # 此前钉住的别人的版本（如重新检查之前）同样不算
+            _save_optimization(pid, state)
+
+
+def _counted(state, linked):
+    """The release in ``linked`` when it counts as the optimization's result: published after the optimization
+    started, and by its optimizer when the optimization itself changed nothing."""
+    release_id = linked.get('release_id')
+    if not release_id or release_id == state.get('base_release_id'):
+        return None
+    if state.get('own_release') and linked.get('publisher') != state['optimizer']:
+        return None
+    return dict(release_id=release_id, version=linked.get('version') or '', publisher=linked.get('publisher'))
+
+
+def pin_release(pid, linked):
+    """Keep the first release that counts as the result of the project's latest optimization, as it is recorded.
+
+    settle writes that one back, not whatever is current by then: a later release or a rollback's restored
+    content would otherwise take its place."""
+    with _optimization_lock(pid):
+        state = _unsettled(pid)
+        release = state and not state.get('release') and not state.get('optimizing') and _counted(state, linked)
+        if release:
+            _save_optimization(pid, {**state, 'release': release})
+
+
+def _update_entry(package_id, subject, run_id, optimization):
+    """Show what the evaluation service recorded at once, without waiting for the next reconciliation."""
+    owner = _owner_of(subject)
+    if not owner:
+        return
+    with _index_lock(package_id, owner):
+        index = _read_index(package_id, owner)
+        changed = False
+        for section in SECTIONS:
+            for item in index[section].values():
+                if item['run_id'] == run_id:
+                    item['optimization'] = optimization
+                    changed = True
+        if changed:
+            knowledge_hub.save(_index_path(package_id, owner), index)
+
+
+def _report(run_id, token, body):
+    value = eval_client.call('POST', f'/runs/{run_id}/modeling-result', token, body=body)
+    try:
+        return Optimization.model_validate((value or {}).get('optimization')).model_dump()
+    except ValidationError as exc:
+        raise _invalid_response() from exc
+
+
+def _send(record, release, token):
+    """Write ``release`` back as the result of the optimization ``record``: (local result, recorded optimization).
+
+    The request ID is fixed per run and release, so a retry records it once. Refused (404, 409) is final;
+    anything else stays pending and is retried."""
+    release_id, version = release['release_id'], release['version']
+    body = dict(request_id='mr-' + hashlib.sha256(f"{record['run_id']}|{release_id}".encode()).hexdigest()[:32],
+                outcome='done', release_id=release_id,
+                note=f"建模按 {record.get('base_version') or '原版本'} 的优化建议修改后，发布新版本 {version}"[:WRITEBACK_NOTE])
+    try:
+        optimization = _report(record['run_id'], token, body)
+    except WorkspaceError as exc:
+        refused = exc.status in (404, 409)
+        return dict(status='refused' if refused else 'pending', release_id=release_id, version=version,
+                    message=str(exc)[:300], at=time.time()), None
+    return dict(status='done', release_id=release_id, version=version, message='', at=time.time()), optimization
+
+
+def _settle_earlier(pid, subject, token):
+    """Write back the results of this user's earlier optimizations a later one replaced (remember)."""
+    scope = hub_packages.scope(subject)
+    recorded = []
+    with _optimization_lock(pid):
+        state = _loaded(pid)
+        earlier = state.get('earlier') or []
+        if not any(item.get('optimizer') == scope for item in earlier):
+            return recorded
+        kept = []
+        for item in earlier:
+            if item.get('optimizer') != scope:
+                kept.append(item)
+                continue
+            item['result'], optimization = _send(item, item['release'], token)
+            if optimization:
+                recorded.append((item['run_id'], optimization))
+            elif item['result']['status'] == 'pending':
+                kept.append(item)
+        state['earlier'] = kept
+        _save_optimization(pid, state)
+    return recorded
+
+
+def settle(pid, subject, token):
+    """Write back the release published after the project's latest evaluation optimization, once; first those of
+    this user's earlier optimizations a later one replaced before they were written back.
+
+    Only the user who optimized may: the evaluation service lets only a run's owner, or for feedback runs a package
+    owner, record its result. A release the evaluation service cannot be reached for stays pending and is retried;
+    one it refuses is not retried. Returns the local write-back state."""
+    linked = hub_packages.association(pid, subject) or {}
+    if linked and token and not isinstance(token, Delegated):
+        for run_id, optimization in _settle_earlier(pid, subject, token):
+            _update_entry(linked['ontology_id'], subject, run_id, optimization)
+    with _optimization_lock(pid):
+        state = knowledge_hub.load(_optimization_path(pid))
+        mine = state and state.get('run_id') and state.get('optimizer') == hub_packages.scope(subject)
+        # 数据飞轮的后台委托不能代用户回写：留到用户本人带登录访问时
+        own_login = bool(token) and not isinstance(token, Delegated)
+        if not mine or not own_login or state.get('optimizing'):
+            return state  # 飞轮还在修订时，版本至多含一半修订，不是处理结果
+        result = state.get('result') or {}
+        release = state.get('release')  # 发布时记下的版本（pin_release）
+        if not release and result.get('status') == 'pending':
+            # 本功能之前开始的重试：沿用当时回写的版本
+            release = dict(release_id=result['release_id'], version=result.get('version') or '')
+        if not release and not linked.get('publisher'):
+            release = _counted(state, linked)  # 本功能之前记下的关联：按当前版本判断
+        if not release:
+            return state
+        release_id = release['release_id']
+        if result.get('status') in ('done', 'refused') and result.get('release_id') == release_id:
+            return state
+        if result.get('status') == 'done':
+            return state  # 同一次优化只回写第一个新版本；之后的发布要先重新评测、再评测优化
+        state['release'] = release
+        state['result'], optimization = _send(state, release, token)
+        _save_optimization(pid, state)
+        if not optimization:
+            return state
+    _update_entry(linked['ontology_id'], subject, state['run_id'], optimization)
+    return state
+
+
+def writeback_view(pid, subject):
+    """项目最近一次评测优化及其回写的状态（数据飞轮与测试查看用；ADR-0101 后界面不再展示）。"""
+    try:
+        state = knowledge_hub.load(_optimization_path(pid))
+    except (OSError, ValueError):
+        return None
+    if not state or not state.get('run_id'):
+        return None
+    result = state.get('result') or {}
+    return dict(run_id=state['run_id'], origin=state.get('origin') or 'evaluation', base_release_id=state.get('base_release_id'),
+                base_version=state.get('base_version'), optimized_at=state.get('optimized_at'),
+                mine=state.get('optimizer') == hub_packages.scope(subject), status=result.get('status') or 'waiting',
+                release_id=result.get('release_id'), version=result.get('version'), message=result.get('message') or '')
+
+
+def report_resolved(pid, subject, token, run_id, release_id, version):
+    """Tell the evaluation service the latest version no longer has this run's problems; nothing was published.
+
+    The request ID is fixed per run and checked release, so a retry records the result once. When the project's
+    latest optimization is still this run, it then has its answer: a later publication is not written back as its
+    result. (The flywheel drops that record as soon as the run concludes as already resolved, optimize.check.)"""
+    _, linked = _linked_run(pid, subject, token, run_id)
+    note = f'建模核对后，最新版本 {version or release_id} 已不存在这些问题，未修改知识包'[:WRITEBACK_NOTE]
+    body = dict(request_id='mr-' + hashlib.sha256(f'{run_id}|resolved|{release_id}'.encode()).hexdigest()[:32],
+                outcome='resolved', release_id=release_id, note=note)
+    optimization = _report(run_id, token, body)
+    with _optimization_lock(pid):
+        state = knowledge_hub.load(_optimization_path(pid))
+        if state and state.get('run_id') == run_id:
+            state['result'] = dict(status='done', outcome='resolved', release_id=release_id, version=version,
+                                   message='', at=time.time())
+            _save_optimization(pid, state)
+    _update_entry(linked['ontology_id'], subject, run_id, optimization)
+    return optimization

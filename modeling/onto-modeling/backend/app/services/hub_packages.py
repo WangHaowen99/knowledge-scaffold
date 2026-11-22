@@ -17,6 +17,8 @@ from pathlib import Path
 from . import knowledge_hub as transport
 from . import ownership
 from .workspace import WorkspaceError
+from .onto_mcp import documents
+from .onto_mcp.errors import McpError
 
 logger = logging.getLogger(__name__)
 
@@ -144,10 +146,16 @@ def inputs_digest(files):
     return hashlib.sha256(json.dumps(files, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
-def workspace_inputs(manager, pid):
-    """The same value for the project's documents as they stand now."""
+def workspace_inputs(manager, pid, commit=None):
+    """The same value for the package sources at a mainline commit (default the latest), computed over the read-only
+    tree publication exports (release_tree), so it equals the inputs_digest a publication of that commit records."""
+    from .publish.service import resolve_commit
+    from .publish.tree import release_tree
+
     root = manager.project_root(pid)
-    return inputs_digest({p.relative_to(root).as_posix(): transport.file_digest(p) for p in transport.package_inputs(root)})
+    with release_tree(root, resolve_commit(root, commit)) as tree:
+        return inputs_digest({p.relative_to(tree).as_posix(): transport.file_digest(p)
+                              for p in transport.package_inputs(tree)})
 
 
 def record(manager, pid, subject, receipt, options=None, inputs=None):
@@ -166,6 +174,13 @@ def record(manager, pid, subject, receipt, options=None, inputs=None):
         value['inputs_digest'] = inputs
     _pin(pid, receipt, value)
     transport.save(path, value)
+
+
+def _pin(pid, receipt, linked):
+    # 先于写下关联：失败时关联不变，定期维护补记时一并重试。正式版本才可能是评测优化的处理结果，评测快照不是
+    if receipt.get('kind', 'release') == 'release':
+        from . import package_evaluations  # 互相引用，只在记下新版本时用到
+        package_evaluations.pin_release(pid, linked)
 
 
 def freeze(manager, pid, folder, allow_unbound, binding=None, graph=False, commit=None):
@@ -300,11 +315,28 @@ def _record_local_release(manager, pid, receipt, task, archive):
         logger.warning('Failed to record a Hub release locally', exc_info=True)
 
 
+def content_revision(root):
+    """本体文档的 revision：与 MCP 读工具报的同一个值；发布时对提交导出的只读树算。"""
+    try:
+        return documents.revision(documents.snapshot(root))
+    except McpError as exc:
+        raise WorkspaceError(str(exc), 409, 'revision_unavailable') from exc
+
+
+def revision_conflict(expected, actual):
+    return WorkspaceError('本体内容已变化，请重新读取当前 revision', 409, 'revision_conflict',
+                          {'expected_revision': expected, 'actual_revision': actual})
+
+
 def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
             kind="release", binding=None, graph=False, relation_report=None, object_texts=None,
             delegated=None, expected_input_digest=None, expected_base=None, before_external=None,
-            acknowledged_by='', verified_revision='', commit=None, author=''):
-    """发布一个 Hub 版本。commit 缺省主线最新；relation_report 由发布适配器自己算，这里只为签名兼容保留。"""
+            acknowledged_by='', verified_revision='', commit=None, author='', expected_revision=None, progress=None):
+    """发布一个 Hub 版本。commit 缺省主线最新；relation_report 由发布适配器自己算，这里只为签名兼容保留。
+
+    expected_revision：调用方检查过的本体 revision（知识包数据飞轮，ADR-0108）；导出的只读树不是这个 revision 时
+    409 revision_conflict，不发布。progress(step) 在冻结、上传、等待提交时依次收到 'frozen'、'uploading'、'committing'。
+    """
     transport.identifier(request_id)
     if not token and not delegated:
         raise WorkspaceError('Hub 需要登录用户身份', 401)
@@ -339,6 +371,12 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
             if kind == 'release':
                 publish_stages.ensure(manager, pid)
             value, input_digest = freeze(manager, pid, folder, allow_unbound, binding, graph, commit)
+            if expected_revision is not None:
+                # 提交导出的树就是要发布的内容：检查之后主线又有提交（或检查的改动还没合入主线）时不发布
+                actual = content_revision(folder / 'input')
+                if actual != expected_revision:
+                    shutil.rmtree(folder / 'input', ignore_errors=True)
+                    raise revision_conflict(expected_revision, actual)
             if expected_input_digest is not None and input_digest != expected_input_digest:
                 raise WorkspaceError('建模内容发生变化，请重新预览发布', 409, 'publish_preview_stale')
             if object_texts is not None:

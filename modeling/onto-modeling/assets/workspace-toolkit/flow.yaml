@@ -177,6 +177,8 @@ commands:
   extract-rule-metric: {node: core.metric, requires: [], lock_waits: [confirm]}
   validate: {node: core.validate, requires: [逻辑已提取, 对象已提取], lock_waits: [confirm]}
   update: {node: core.update, requires: [逻辑已提取, 对象已提取], lock_waits: [confirm]}
+  # 评测优化（ADR-0108）：知识包数据飞轮发起，不挂节点
+  evolution: {requires: [对象已提取], lock_waits: [confirm]}
   overview: {requires: [对象已提取]}
   impact: {requires: [对象已提取]}
   query: {requires: [对象已提取]}

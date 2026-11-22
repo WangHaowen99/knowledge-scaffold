@@ -1,8 +1,8 @@
 """Pre-publication checks of flywheel candidate content; local only, no credentials.
 
-The web publication's gates (data binding, solver contract) plus the evolution command's own quality
-checks run again on the server: hard errors of the rule checker and the generalization check of the
-revised documents. Modeling stages only require object and operation content: projects imported from
+The web publication's gates (data binding, solver contract, publication readiness of ADR-0103) plus the
+evolution command's own quality checks run again on the server: hard errors of the rule checker and the
+generalization check of the revised documents. Modeling stages only require object and operation content: projects imported from
 Hub have no research or validation reports. Each check keeps at most DETAIL_LIMIT messages.
 """
 import json
@@ -14,6 +14,8 @@ import time
 
 from ... import config
 from .. import hub_packages
+from ..publish import readiness, service as publish_service
+from ..solver import service as solver_service
 from ..workspace import WorkspaceError, _git
 
 DETAIL_LIMIT = 5
@@ -87,7 +89,7 @@ def _generalization(root, base, report):
 
 
 def _binding(manager, pid):
-    check = manager.package_binding_check(pid)
+    check = publish_service.package_binding_check(manager, pid)
     blocking = [issue['message'] for issue in check['issues'] if issue['blocking']]
     return _item('binding', 'binding', '数据绑定', not check['blocking'],
                  f"{check['blocking']} 个对象的数据来源与数据表对不上" if check['blocking']
@@ -95,7 +97,7 @@ def _binding(manager, pid):
 
 
 def _solver(manager, pid):
-    status = manager.solver_release_status(pid)
+    status = solver_service.solver_release_status(manager, pid)
     if not status.get('enabled'):
         return _item('solver', 'binding', '求解契约', True, '未启用求解适配')
     # 只是契约静态检查；求解能力是否已验证在发布时另行核对（publish._verified_solver）
@@ -105,9 +107,19 @@ def _solver(manager, pid):
                  (item['message'] for item in blocking))
 
 
+def _readiness(manager, pid):
+    """发布就绪（ADR-0103）：主线最新提交上会挡发布、降级也绕不过的内容问题，与网页发布同一口径。"""
+    findings = readiness.mainline_findings(manager, pid)
+    if findings is None:
+        return _item('readiness', 'binding', '发布就绪', False, '发布就绪检查未能完成')
+    return _item('readiness', 'binding', '发布就绪', not findings,
+                 f'{len(findings)} 个会挡发布的问题' if findings else '没有会挡发布的问题',
+                 (readiness._line(item) for item in findings))
+
+
 def quick(manager, pid):
     """The checks repeated right before publication; the slow quality checks ran on the candidate."""
-    return [_binding(manager, pid), _solver(manager, pid)]
+    return [_binding(manager, pid), _solver(manager, pid), _readiness(manager, pid)]
 
 
 def evaluate(manager, pid, base=None, report=None):

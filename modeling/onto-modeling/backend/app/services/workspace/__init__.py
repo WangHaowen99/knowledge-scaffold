@@ -16,6 +16,7 @@ from .core import (  # noqa: F401
     remove_tree,
 )
 from .errors import NameConflictError, WorkspaceError  # noqa: F401
+from .versions import ROLLBACK_EXCLUDED_PREFIXES, ROLLBACK_EXCLUDED_TOP  # noqa: F401
 from .gitops import (  # noqa: F401
     STALE_GIT_LOCK_SECONDS,
     _changed_paths,

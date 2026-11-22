@@ -1,7 +1,8 @@
 """以当前用户自己的登录调用独立评测服务（ADR-0092），请求和响应都有上限。
 
-评测轮次与产物归评测服务所有，按调用者隔离；这里从不带服务身份。上游的响应体、地址和令牌一律不回显：
-失败映射成固定文案，只有评测服务自己写给用户的 409 说明原样转给用户。
+评测轮次与产物归评测服务所有，按调用者隔离。只有登记或使用用户本人做出的委托（知识包数据飞轮，ADR-0108）时
+才带建模的服务身份。上游的响应体、地址和令牌一律不回显：失败映射成固定文案，只有评测服务自己写给用户的
+409 说明原样转给用户。
 """
 import http.client
 import json
@@ -70,7 +71,28 @@ def _failure(status, raw):
     return WorkspaceError(f'评测服务返回错误（HTTP {status}），请稍后重试', 503, 'eval_unavailable')
 
 
-def request(method, path, token, body=None, limit=JSON_LIMIT):
+def _service_credential():
+    secret = os.environ.get('ONTO_EVALUATION_SERVICE_TOKEN', '')
+    if not secret:
+        raise WorkspaceError('未配置评测服务通知凭据', 503, 'eval_unconfigured')
+    return secret
+
+
+def _caller_headers(token, service, refresh, delegation):
+    if isinstance(token, Delegated):
+        return {'X-Modeling-Service-Token': _service_credential(), 'X-Evaluation-Delegation': token.handle}
+    headers = {'Authorization': f'Bearer {token}'}
+    if service:
+        headers['X-Modeling-Service-Token'] = _service_credential()
+    if delegation:
+        headers['X-Evaluation-Delegation'] = delegation
+    if refresh:
+        # 只在这次请求里转交给评测服务，建模侧不保存、不记录
+        headers['X-Refresh-Token'] = refresh
+    return headers
+
+
+def request(method, path, token, body=None, limit=JSON_LIMIT, service=False, refresh='', delegation=''):
     """2xx 响应的 (字节, 响应头)；path 相对 /evaluation/api。"""
     if not token:
         raise WorkspaceError('评测服务需要登录用户身份', 401, 'eval_unauthorized')

@@ -11,6 +11,7 @@ import threading
 import time
 
 from .. import hub_packages, package_evaluations
+from ..solver import service as solver_service
 from ..workspace import WorkspaceError
 from . import checks, evaluation, grants, intake, optimize, store
 
@@ -19,7 +20,7 @@ RETRYABLE = ('hub_failed', 'publish_interrupted', 'hub_expired', 'request_confli
              'solver_unverified')
 # 发布时因内容本身被拒（阶段产出、数据绑定、脚本契约、脚本输出未验证）：重试同一请求没用，改好内容并重新检查后再发布
 PUBLISH_CHECKS = ('modeling_stages_incomplete', 'binding_problems', 'script_binding_conflict', 'script_argument_shape',
-                  'script_output_unverified')
+                  'script_output_unverified', 'package_structure_invalid', 'release_tree_unsafe', 'invalid_commit')
 # 这些失败需要新的发布请求：原请求已过期，或同一请求 ID 已用于不同内容
 RENEW = ('hub_expired', 'request_conflict')
 # 飞轮不代用户确认求解能力尚未验证（网页与 MCP 发布由用户确认）：只发布已通过求解验证的求解契约修订
@@ -105,7 +106,7 @@ def _recheck(manager, pid, run):
 
 def _verified_solver(manager, pid, subject):
     """The solver revision to publish on: '' without enabled solver contracts, None when it is not verified."""
-    check = manager.solver_check(pid)
+    check = solver_service.solver_check(manager, pid)
     if not check.needs_validation:
         return ''
     return check.revision if package_evaluations.verified_solver_release(pid, subject, check.revision) else None
@@ -195,7 +196,7 @@ def _work(manager, pid, subject, token, delegated, username, run_id, rid, revisi
         try:
             receipt = hub_packages.publish(manager, pid, rid, token, subject, False, delegated=delegated,
                                            expected_revision=revision, verified_revision=verified,
-                                           progress=progress)
+                                           author=username, progress=progress)
         except Exception as exc:  # 任何失败都让运行停在可重试的阻断态
             if not isinstance(exc, WorkspaceError):
                 _log.warning('flywheel publication failed', exc_info=True)

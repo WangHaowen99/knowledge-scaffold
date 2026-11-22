@@ -54,6 +54,10 @@ async def _lifespan(app: FastAPI):
 
     # 知识包 Hub（ADR-0098）：定期恢复已提交但本地没记上的发布、清理过期的请求输入
     hub_task = asyncio.create_task(knowledge_hub.scheduler_loop(deps.workspaces))
+    from .services.flywheel import background as flywheel_background
+
+    # 知识包数据飞轮（ADR-0108）：用户不在时按其登记的后台授权推进飞轮，收尾已结束的助手修订
+    flywheel_task = asyncio.create_task(flywheel_background.scheduler_loop(deps.workspaces))
     from .services.onto_mcp import package_publish
 
     package_publish.recover(deps.workspaces)  # 停机时排队、在跑的 MCP 发布任务接着跑
@@ -68,7 +72,8 @@ async def _lifespan(app: FastAPI):
         backup_task.cancel()
         recovery_task.cancel()
         hub_task.cancel()
-        await asyncio.gather(backup_task, recovery_task, hub_task, return_exceptions=True)
+        flywheel_task.cancel()
+        await asyncio.gather(backup_task, recovery_task, hub_task, flywheel_task, return_exceptions=True)
         await autobuild_runner.shutdown()  # 运行停在检查点，下次启动接着跑
         await asyncio.to_thread(material_conversion.stop)
         await manager.shutdown()

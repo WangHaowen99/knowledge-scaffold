@@ -11,7 +11,7 @@ import threading
 import time
 
 from .. import hub_packages, package_evaluations
-from ..workspace import GOAL_PENDING, WorkspaceError
+from ..workspace import WorkspaceError
 from . import checks, intake, snapshots, store
 
 COMMAND = '/ontology-evolution {report} --flywheel'
@@ -69,14 +69,12 @@ def start(caller, run_id, automatic):
         if store.others_working(pid, caller.subject):
             # 别人正在修订或发布工作区：现在开始，两次修订会混进同一份快照和候选内容
             raise store.others_working_error('优化')
-        if manager.get_project(pid).get('goal_status') == GOAL_PENDING:
-            raise WorkspaceError('请先确认建模目标', 409, 'goal_confirmation_required')
         feedback = intake.is_feedback(run)
         earlier = run.get('release_id') != linked.get('release_id')
         imported = package_evaluations.optimize(manager, pid, caller.subject, caller.token, run['eval_run_id'],
                                                 any_version=feedback, flywheel_run=run_id)
         try:
-            taken = snapshots.take(manager, pid, f'flywheel: {run_id} 执行前快照')
+            taken = snapshots.take(manager, pid, f'chore: 数据飞轮 {run_id} 执行前快照')
             # 中断后重试沿用最初的快照：回退与泛化检查都以本次运行开始前的内容为准
             snapshot = run.get('snapshot') or taken
             # 优化开始前的内容指纹：与上次发布的不同，说明此前另有未发布的修改，会随本次一起发布
@@ -172,7 +170,7 @@ def conclude(state, run, result, hold, resolved=False):
 def check(caller, run, hold):
     """Commit the run's result as an iteration, check it, and record the outcome."""
     manager, pid = caller.manager, caller.pid
-    snapshots.take(manager, pid, f"flywheel: {run['id']} 评测优化结果")
+    snapshots.take(manager, pid, f"chore: 数据飞轮 {run['id']} 评测优化结果")
     base = (run.get('snapshot') or {}).get('commit') if run.get('kind') != 'rollback' else None
     result = checks.evaluate(manager, pid, base, run.get('report'))
     resolved = resolved_by_recheck(manager.project_root(pid), run)
@@ -218,7 +216,7 @@ def stop(caller, run_id):
     if caller.assistant.busy(pid):
         # 打断后仍在执行：现在恢复，之后写入的修改会落在恢复的内容上。本轮结束后运行转为已中断，可再回退
         raise WorkspaceError('建模助手仍在执行，暂未恢复执行前内容：本轮结束后可在运行详情中回退', 409, 'flywheel_blocked')
-    snapshots.restore(manager, pid, run['snapshot']['commit'], f'flywheel: 中止 {run_id}，恢复执行前内容')
+    snapshots.restore(manager, pid, run['snapshot']['commit'], f'revert: 数据飞轮中止 {run_id}，恢复执行前内容')
     with store.update(pid, caller.subject) as state:
         run = store.find(state, run_id)
         run.update(status='interrupted', reason='user_stopped')

@@ -15,7 +15,7 @@ service cannot be reached the registration is kept for that revocation alone and
 being renewed unused: in the background for the evaluation service, on the user's next visit for Hub, which
 deletes a registration only on the user's own login. The user chooses how long work goes on after their last
 visit: each visit starts that period again, so a user who stopped coming stops being acted for. Users the
-background rounds do not act for (acts_for: a deleted or archived project, no editing role of their own) hold
+background rounds do not act for (acts_for: a deleted or archived project, a user who is not its owner) hold
 no delegations: none are registered for them and those they had are withdrawn. Delegations are not tied to the
 login: changing a password does not end them, the switch does. The login the evaluation service keeps is: the
 account service voids all of a user's refresh tokens at once, so logging out on any device or changing the
@@ -26,7 +26,7 @@ import logging
 import secrets
 import time
 
-from .. import eval_client, hub_packages
+from .. import eval_client, hub_packages, ownership
 from ..delegated import Delegated
 from ..workspace import WorkspaceError
 from . import store
@@ -68,15 +68,14 @@ def login_wanted(state):
 
 
 # 后台不代其执行的用户在页面上看到的原因
-NOT_ACTED_FOR = '后台只代能编辑该项目的成员执行：项目已归档，或你不是有编辑权限的项目成员'
+NOT_ACTED_FOR = '后台只代项目所有者执行：项目已归档，或你不是该项目的所有者'
 
 
 def acts_for(manager, meta, username):
-    """Whether delegations may act for the user: background rounds go by the user's own role in a project that is
-    not archived, never by a global administrator's access. Registering and withdrawing both follow this rule,
-    otherwise one would undo the other on every visit."""
-    member = manager.can_access(meta, username, False) and manager.can_write(meta, username, False)
-    return member and not meta.get('archived')
+    """Whether delegations may act for the user: the project's owner (single ownership), in a project that is not
+    archived, never a global administrator's access. Registering and withdrawing both follow this rule, otherwise
+    one would undo the other on every visit."""
+    return ownership.owns(meta, username) and not meta.get('archived')
 
 
 def evaluation_login(state):

@@ -3,11 +3,13 @@
 Notifications land in the local evaluation index and assistant turns end on this server, so a periodic
 round is enough to pick both up. A run that is already optimizing is still settled without any
 delegation: finishing a turn and checking its result are local. That holds even for users the rounds no
-longer act for, since such a run keeps the other members' flywheels waiting (store.others_working).
+longer act for (a former owner after the project changed hands), since such a run keeps the other users'
+flywheels waiting (store.others_working).
 """
 import asyncio
 import logging
 
+from .. import ownership
 from ..workspace import WorkspaceError
 from . import grants, service, store
 from .assistant import Assistant
@@ -32,20 +34,19 @@ def _caller(manager, assistant, pid, state):
         if exc.status == 404 and any(delegated.values()):
             grants.withdraw(pid, identity['subject'], '项目已删除')
         return None  # 项目已删除：不再代为执行
-    # 不沿用全局管理员身份：后台代人执行时，只认用户在项目里的角色
+    # 不沿用全局管理员身份：后台只代项目所有者执行（单人所有权）
     if any(delegated.values()) and not grants.acts_for(manager, meta, identity['username']):
         # 不再代为执行就撤销登记：评测服务保存的登录不能一直续期到授权到期
-        grants.withdraw(pid, identity['subject'], '项目已归档' if meta.get('archived') else '你在该项目中已没有编辑权限')
+        grants.withdraw(pid, identity['subject'], '项目已归档' if meta.get('archived') else '你已不是该项目的所有者')
         delegated = dict.fromkeys(grants.SERVICES)
         if not running:
             return None
-    if meta.get('archived') or not manager.can_access(meta, identity['username'], False):
+    if meta.get('archived') or not ownership.owns(meta, identity['username']):
         if not store.holds_workspace(state):
             return None
         # 不再代为执行，但改动工作区的运行照样收尾：不带任何凭据，也不启动下一步
         return Caller(manager, pid, identity['subject'], identity['username'], None, False, assistant)
-    can_write = manager.can_write(meta, identity['username'], False)
-    return Caller(manager, pid, identity['subject'], identity['username'], delegated['evaluation'], can_write,
+    return Caller(manager, pid, identity['subject'], identity['username'], delegated['evaluation'], True,
                   assistant, hub_delegation=delegated['hub'])
 
 
