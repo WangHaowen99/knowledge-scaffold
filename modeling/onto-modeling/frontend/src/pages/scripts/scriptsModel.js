@@ -111,6 +111,8 @@ export function pickedOperations(candidates, picked) {
 }
 
 export const scanCommand = () => ({ command: COMMANDS.scan, text: '扫描可代码化的操作' });
+// 这一页的代码生成任务还在跑时扫描按钮置灰（同一会话重复扫描后端 409 scan_running），返回悬停说明
+export const scanLock = (active) => (active ? '代码生成任务正在运行，请等待本轮完成' : null);
 export function generateCommand(operations) {
   return { command: COMMANDS.codegen, args: { operations: operations.map((o) => o.key) }, text: `生成 ${operations.length} 个脚本并在沙箱里跑通` };
 }

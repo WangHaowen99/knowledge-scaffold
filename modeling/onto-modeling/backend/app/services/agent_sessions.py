@@ -296,6 +296,8 @@ SHUTDOWN_BUDGET_SECONDS = 20
 SHUTDOWN_INTERRUPT_MESSAGE = "服务停机，本轮未正常结束，已标记为中断"
 # 校验之后平台代发的修复消息在对话里显示「来自「发布检查」」（契约 EC-10 的 origin）
 READINESS_ORIGIN = {"kind": "report", "page": "publish", "label": "发布检查"}
+# 扫描可代码化的操作：同一会话同时只跑（或排着）一次，重复扫描会重写同一份候选报告
+CODEGEN_SCAN_COMMAND = "/ontology-codegen-scan"
 
 
 class SessionError(Exception):
@@ -399,6 +401,7 @@ class Session:
     sending: int = 0  # 处理中的 send() 数；期间不可回收或换绑，否则消息会落到已丢弃的会话上
     last_submitted_prompt: str | None = None  # 只拦截连续重复提交；切换消息后允许再次主动提交
     submission_version: int = 0  # 区分并发发送，旧请求失败时不能清除新请求的防重标记
+    codegen_scan_active: bool = False  # 这一轮（在跑、在连接或排队等名额）是扫描候选；回到空闲、出错、关闭时清掉
     # 引擎使用谁的模型配置：用户名 = 该用户的个人 Key；"" = 管理员配置（原行为）
     model_owner: str = ""
     # 已交给引擎、还没等到 result 的消息数（引擎内积压的也算）
@@ -478,6 +481,8 @@ class Session:
                                         owner=project_owner(self.project_id))
 
     def set_state(self, state: str, reason: str | None = None) -> None:
+        if state in ("idle", "closed", "error"):
+            self.codegen_scan_active = False
         if self.state != state:
             self.state = state
             if state == "running":
@@ -592,6 +597,10 @@ def _moved(base: str, head: str) -> bool:
 def _is_command(text: str, meta: dict) -> bool:
     """运行中发来的是命令（排到这一轮之后）还是文字（插进这一轮）：页面命令带 command，手打的以 / 开头。"""
     return bool(meta.get("command")) or str(text or "").lstrip().startswith("/")
+
+
+def _is_codegen_scan(text: str, meta: dict | None) -> bool:
+    return ((meta or {}).get("command") or timeline._leading_command(text)) == CODEGEN_SCAN_COMMAND
 
 
 def _unfinished(session: "Session") -> bool:
@@ -981,6 +990,7 @@ class SessionManager:
         from ..governance import quota
 
         await asyncio.to_thread(quota.check_before_turn, project_id, username, "tokens")
+        is_codegen_scan = _is_codegen_scan(text, meta)
         async with self._lock:
             if not autobuild_run:
                 # 自主构建的会话不算用户的并发会话（审查 F）：同时运行数由平台限制（SY-17）管
@@ -994,6 +1004,9 @@ class SessionManager:
             if guarded:
                 if not _submission_open(session):
                     session.last_submitted_prompt = None
+                    session.codegen_scan_active = False
+                if is_codegen_scan:
+                    self._ensure_no_scan(session)
                 if text == session.last_submitted_prompt:
                     error = SessionError("相同消息正在处理中，请等待完成或停止后再重试", 409)
                     error.code = "message_duplicate"
@@ -1002,7 +1015,9 @@ class SessionManager:
                 session.last_submitted_prompt = text
                 session.submission_version += 1
             submission_version = session.submission_version
-            if is_codegen_scan:
+            # 马上开始（或排队等名额）的扫描在锁里占位；在跑时发来的由平台代存，代存的那条就是占位
+            claimed = is_codegen_scan and ((meta or {}).get("_chain") or not _occupied(session))
+            if claimed:
                 session.codegen_scan_active = True
             session.sending += 1
         try:
@@ -1010,12 +1025,26 @@ class SessionManager:
         except BaseException:
             if guarded and session.submission_version == submission_version:
                 session.last_submitted_prompt = None
-            if is_codegen_scan:
+            if claimed:
                 session.codegen_scan_active = False
             raise
         finally:
             session.sending -= 1
         return session, outcome
+
+    def _ensure_no_scan(self, session: Session) -> None:
+        """同一会话已有扫描候选在跑、排队或代存着：再发一次扫描 409 scan_running（调用方持有 _lock）。
+        打断后暂停的那条不会自己开始，不算。"""
+        held = self._next.get((session.project_id, session.conversation_id))
+        if session.codegen_scan_active:
+            message = "扫描候选正在运行，请等待本轮完成"
+        elif held is not None and not held["view"]["paused"] and _is_codegen_scan(held["prompt"], held["meta"]):
+            message = "已经排着一次扫描候选，等它开始或先取消"
+        else:
+            return
+        error = SessionError(message, 409)
+        error.code = "scan_running"
+        raise error
 
     async def _bind_session(
         self, project_id: str, conversation_id: str | None
@@ -1104,6 +1133,7 @@ class SessionManager:
                     session.reader_task.cancel()
                 await session.engine.disconnect()
                 session.engine = None
+        session.codegen_scan_active = _is_codegen_scan(text, meta)  # 接着开始的下一条不是扫描就放开
         record = self._user_message(session, text, meta, delivery="immediate")
         if not session.discarded:  # 已删除项目再写标题会重建出会话索引
             conversation_store.note_message(
@@ -1312,6 +1342,7 @@ class SessionManager:
         if entry is None:
             return
         self._delivery(session, message_id, "new_turn")
+        session.codegen_scan_active = False  # 上一轮的扫描做完了，这一轮是插话
         await asyncio.to_thread(turns.begin, session, entry["prompt"])
         session.turn = timeline.Turn.new(session.turn_title)
         session.last_prompt = entry["prompt"]
@@ -1443,6 +1474,8 @@ class SessionManager:
         try:
             if entry is None:
                 raise SessionError("排着的命令已经取消了")
+            # 代存的那条出队到受理之间也算占位：这中间再发扫描同样拦下
+            session.codegen_scan_active = _is_codegen_scan(entry["prompt"], entry["meta"])
             self._publish_next(project_id, conversation_id)
             await self.submit(project_id, entry["root"], entry["prompt"], conversation_id, entry["username"],
                               meta={**entry["meta"], "_chain": True})
@@ -1453,6 +1486,7 @@ class SessionManager:
                 self._next.setdefault((project_id, conversation_id), entry)
                 self._publish_next(project_id, conversation_id)
             session.chaining = False
+            session.codegen_scan_active = False
             settled = not session.turns_in_flight and not session.pending_prompts
             if self._sessions.get(project_id) is session and session.state == "running" and settled:
                 self._return_steers(session, None)  # 这期间收下的插话没有一轮可插了

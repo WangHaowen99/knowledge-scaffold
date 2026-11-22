@@ -400,6 +400,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `not_queued` | 409 | 当前不在排队，无法取消排队 | — |
 | `next_occupied` | 409 | 运行中已经排着一条命令（F7，最多一条） | `label`；请求带 `replace: true` 时替换 |
 | `message_duplicate` | 409 | 这一轮还没结束（在跑、排队、连接中、代存着命令），又提交了和上一条相同的消息或命令（develop !596） | — |
+| `scan_running` | 409 | 同一条对话里已经有一次扫描可代码化的操作（`/ontology-codegen-scan`）在跑、连接中、排队或代存着，又提交一次（develop !629） | — |
 | `next_not_found` | 404 | 没有排着的命令 | — |
 | `subagent_not_found` | 404 | 这条对话里没有这个子任务的记录 | — |
 | `suggestion_stale` | 409 | 建议条发起的请求（带 `from_suggestion`）：看到按钮到点下去之间情况变了 | `reason`、`suggestions`（重算后的一份，界面直接换上） |
@@ -1796,7 +1797,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 错误：
 
-- `message_empty`、`session_busy`（另一条对话正在运行）、`next_occupied`、`message_duplicate`（连续提交同一条，见 2.5）、`suggestion_stale`；
+- `message_empty`、`session_busy`（另一条对话正在运行）、`next_occupied`、`message_duplicate`（连续提交同一条，见 2.5）、`scan_running`（扫描候选只排一次，见 2.5）、`suggestion_stale`；
 - `engine_not_installed`、`quota_exceeded`；
 - `maintenance_no_new_sessions`、`project_archived`；
 - `upload_expired`。
@@ -1946,7 +1947,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - 跑完结果回到页面列表（`artifacts.updated`）。
 - 错误：
   - `pack_not_enabled`：按钮所属的包没启用，或要等下一条消息才生效；这时 `details.effective="next_message"`；
-  - `autobuild_running`、`session_busy`、`invalid_argument`、`next_occupied`、`message_duplicate`（这条任务记为 `cancelled`）、`suggestion_stale`。
+  - `autobuild_running`、`session_busy`、`invalid_argument`、`next_occupied`、`message_duplicate`、`scan_running`（这两种这条任务都记为 `cancelled`）、`suggestion_stale`。
 
 #### S-21 子任务的步骤
 

@@ -442,6 +442,27 @@ def test_double_click_command_cancels_second_task(api):
     client.post(f"{base}/conversations/{cid}/interrupt")
 
 
+def test_double_click_codegen_scan_cancels_second_task(api):
+    client, manager, project_id = api
+    base = f"/api/v1/projects/{project_id}"
+    FakeEngine.scripts = [[lock("codegen-scan", "scan")]]
+    body = {"command": "/ontology-codegen-scan", "text": "扫描可代码化的操作", "origin": {"page": "scripts"}}
+    first = client.post(f"{base}/commands", json=body)
+    assert first.status_code == 202, first.text
+    cid = first.json()["conversation_id"]
+    wait(lambda: manager.get(project_id) and manager.get(project_id).state == "running")
+    # 按钮连点、对话里手打都拦下，说明写法不同也一样
+    again = client.post(f"{base}/commands", json={**body, "text": "再扫一次", "conversation_id": cid})
+    assert again.status_code == 409 and again.json()["code"] == "scan_running"
+    typed = client.post(f"{base}/conversations/{cid}/messages", json={"text": "/ontology-codegen-scan"})
+    assert typed.status_code == 409 and typed.json()["code"] == "scan_running"
+    tasks = [task for task in command_tasks.query(project_id, states=list(command_tasks.STATES))
+             if task["task_id"] != first.json()["task"]["task_id"]]
+    assert [(task["state"], task["result"]["summary"]) for task in tasks] == [("cancelled", "扫描候选正在运行")]
+    assert client.get(f"{base}/conversations/{cid}").json()["next"] is None
+    client.post(f"{base}/conversations/{cid}/interrupt")
+
+
 def test_send_while_running_api_shapes(api):
     client, manager, project_id = api
     base = f"/api/v1/projects/{project_id}"

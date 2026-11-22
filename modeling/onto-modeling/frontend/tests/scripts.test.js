@@ -10,7 +10,7 @@ import {
   SOLVER_TYPE, candidateView, checkLines, contractChip, contractLocked, contractProblems, contractTitle, defaultPicked, defaultScript,
   descriptorChip, draftOf, evaluatorCommand, evaluatorOptions, evaluatorTarget, familyOptions, fmtSecs, fmtStamp, generateCommand,
   lockText, modelOperation, moreItems, pickedOperations, removeUnit, revisionTag, rowAction, sandboxChip, sandboxView, savedToast,
-  saveErrorView, saveState, scanCommand, setUnit, templateCommand, toggleCapability, togglePicked, verificationView,
+  saveErrorView, saveState, scanCommand, scanLock, setUnit, templateCommand, toggleCapability, togglePicked, verificationView,
 } from '../src/pages/scripts/scriptsModel.js';
 
 const at = (m, d, h, mi) => new Date(2026, m - 1, d, h, mi).toISOString();
@@ -106,6 +106,9 @@ test('可代码化候选：标题、默认勾选、不建议代码化的说明�
   });
   assert.equal(candidateView({ scanned_at: null, items: [], unsuitable: [] }).scanned, false);
   assert.deepEqual(scanCommand(), { command: '/ontology-codegen-scan', text: '扫描可代码化的操作' });
+  // 这一页的代码生成任务在跑时扫描按钮置灰并说明原因，没在跑时可点
+  assert.equal(scanLock({ task_id: 't-1', state: 'running' }), '代码生成任务正在运行，请等待本轮完成');
+  assert.equal(scanLock(null), null);
 });
 
 test('沙箱：状态 chip 与验证输出', async () => {

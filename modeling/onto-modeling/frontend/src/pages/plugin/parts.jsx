@@ -36,6 +36,7 @@ export function useCommandTasks(page, { onFinish } = {}) {
   const finishRef = useRef(onFinish);
   finishRef.current = onFinish;
   const listRef = useRef([]);
+  const inflight = useRef(false);
   const apply = useCallback((fn) => {
     const prev = listRef.current;
     const next = fn(prev);
@@ -58,6 +59,9 @@ export function useCommandTasks(page, { onFinish } = {}) {
 
   // command 是命令名，text 是对话里显示的那句（也是进度条标题的来源）；label 是按钮名，给了时对话里叫这个名字（display_label）
   const send = useCallback(async ({ command, args, text, label, action, conversationId }) => {
+    // 双击、连点：上一次还没返回时不再发（按钮的 disabled 要等重画才生效）
+    if (inflight.current) return null;
+    inflight.current = true;
     setSending(true);
     try {
       const r = await api.sendCommand(pid, {
@@ -71,6 +75,7 @@ export function useCommandTasks(page, { onFinish } = {}) {
       toast(errorText(e), 'alert');
       return null;
     } finally {
+      inflight.current = false;
       setSending(false);
     }
   }, [api, pid, page, apply]);

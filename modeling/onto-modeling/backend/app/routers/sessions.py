@@ -309,7 +309,7 @@ async def _send(project_id: str, root: Path, conversation_id: str, request: Requ
                                                 username=deps.username(request), meta=meta)
     except SessionError as exc:
         code = getattr(exc, "code", "")
-        if code in ("next_occupied", "message_duplicate"):  # 页面命令（S-20）按 ApiError 收尾任务
+        if code in ("next_occupied", "message_duplicate", "scan_running"):  # 页面命令（S-20）按 ApiError 收尾任务
             raise ApiError(code, str(exc), 409, getattr(exc, "details", None)) from exc
         raise
     return _send_view(project_id, session, outcome)
@@ -888,10 +888,10 @@ async def dispatch_command(project_id: str, root: Path, request: Request, body: 
     try:
         result = await _send(project_id, root, conversation_id, request, text, meta)
     except ApiError as exc:
-        # 连点同一条命令：前一条照常在跑，这条任务算取消，不报失败
-        duplicate = exc.code == "message_duplicate"
-        command_tasks.update(project_id, task["task_id"], state="cancelled" if duplicate else "failed",
-                             result={"summary": "相同命令正在处理中" if duplicate else "没能发到对话里", "refs": []})
+        # 连点同一条命令、扫描候选已在跑：前一条照常在跑，这条任务算取消，不报失败
+        summary = {"message_duplicate": "相同命令正在处理中", "scan_running": "扫描候选正在运行"}.get(exc.code)
+        command_tasks.update(project_id, task["task_id"], state="cancelled" if summary else "failed",
+                             result={"summary": summary or "没能发到对话里", "refs": []})
         raise
     fields = {"message_id": result["message_id"]}
     if result["delivery"] != "immediate":

@@ -15,7 +15,7 @@ import '../../styles/scripts.css';
 import ScriptsTab from './ScriptsTab.jsx';
 import SolverTab from './SolverTab.jsx';
 import {
-  SOLVER_DIR, SOLVER_TYPE, pageTab, scanCommand,
+  SOLVER_DIR, SOLVER_TYPE, pageTab, scanCommand, scanLock,
 } from './scriptsModel.js';
 
 const LABEL = '代码生成与求解';
@@ -100,7 +100,9 @@ export default function ScriptsPage({ route }) {
         actions={(
           <>
             <ExtraActions page="scripts" tasks={tasks} />
-            <SendButton tasks={tasks} {...scanCommand()} icon="scan">扫描可代码化的操作</SendButton>
+            <SendButton tasks={tasks} {...scanCommand()} icon="scan" disabled={!!scanLock(tasks.active)} title={scanLock(tasks.active) || undefined}>
+              扫描可代码化的操作
+            </SendButton>
           </>
         )}
       />

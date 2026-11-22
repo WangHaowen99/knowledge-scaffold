@@ -114,28 +114,37 @@ def test_send_connects_and_flushes_prompt(pool_env, tmp_path):
     asyncio.run(scenario())
 
 
+SCAN = "/ontology-codegen-scan"
+
+
+async def _rejected_scan(manager, project_id, cwd, text=SCAN, match="扫描候选正在运行"):
+    with pytest.raises(SessionError, match=match) as error:
+        await manager.send(project_id, cwd, text)
+    assert error.value.status == 409 and error.value.code == "scan_running"
+
+
 def test_duplicate_codegen_scan_is_rejected_while_running(pool_env, tmp_path):
     manager, _created, _ = pool_env
-    command = "/ontology-codegen-scan"
 
     async def scenario():
         results = await asyncio.gather(
-            manager.send("p1", tmp_path / "w1", command),
-            manager.send("p1", tmp_path / "w1", command),
+            manager.send("p1", tmp_path / "w1", SCAN),
+            manager.send("p1", tmp_path / "w1", SCAN),
             return_exceptions=True,
         )
         rejected = [result for result in results if isinstance(result, SessionError)]
-        assert len(rejected) == 1
-        assert rejected[0].status == 409
+        assert [(error.status, error.code) for error in rejected] == [(409, "scan_running")]
         session = await _settle(manager, "p1")
-        assert session.client.queries == [command]
-        assert [event["text"] for event in session.events if event["type"] == "user_message"] == [command]
+        assert session.client.queries == [SCAN]
+        assert [event["text"] for event in session.events if event["type"] == "user_message"] == [SCAN]
 
+        # 换一种写法、中间插过别的话也算同一次扫描；插话照常收下
         await manager.send("p1", tmp_path / "w1", "补充说明")
-        assert session.client.queries == [command, "补充说明"]
+        await _rejected_scan(manager, "p1", tmp_path / "w1", f"{SCAN} 只看计算类操作")
+        assert manager.next_view("p1", session.conversation_id) is None
         session.set_state("idle")
-        await manager.send("p1", tmp_path / "w1", command)
-        assert session.client.queries == [command, "补充说明", command]
+        await manager.send("p1", tmp_path / "w1", SCAN)
+        assert session.client.queries[-1] == SCAN and session.client.queries.count(SCAN) == 2
         await manager.shutdown()
 
     asyncio.run(scenario())
@@ -143,50 +152,91 @@ def test_duplicate_codegen_scan_is_rejected_while_running(pool_env, tmp_path):
 
 def test_duplicate_codegen_scan_is_rejected_while_queued(pool_env, tmp_path):
     manager, _created, _ = pool_env
-    command = "/ontology-codegen-scan"
 
     async def scenario():
         await manager.send("p1", tmp_path / "w1", "长任务")
         await _settle(manager, "p1")
-        await manager.send("p2", tmp_path / "w2", command)
+        await manager.send("p2", tmp_path / "w2", SCAN)
         queued = manager.get("p2")
         assert queued.state == "queued"
-        with pytest.raises(SessionError, match="正在运行") as error:
-            await manager.send("p2", tmp_path / "w2", command)
-        assert error.value.status == 409
-        assert queued.pending_prompts == [command]
+        await _rejected_scan(manager, "p2", tmp_path / "w2")
+        assert queued.pending_prompts == [SCAN]
+        assert manager.next_view("p2", queued.conversation_id) is None
+        await manager.interrupt("p2")  # 取消排队后可以再发
+        await manager.send("p2", tmp_path / "w2", SCAN)
+        assert manager.get("p2").pending_prompts == [SCAN]
         await manager.shutdown()
 
     asyncio.run(scenario())
 
 
 def test_codegen_scan_waits_for_prior_turn_in_same_session(scripted_env, tmp_path):
+    """前一轮在跑：扫描由平台代存一次，再发被拦下；轮到它才交给引擎，跑的时候再发照样拦。"""
     manager, created, _ = scripted_env
-    command = "/ontology-codegen-scan"
 
     async def scenario():
         await manager.send("p1", tmp_path / "w1", "长任务")
         session = await _settle(manager, "p1")
-        with pytest.raises(SessionError, match="当前任务正在运行") as error:
-            await manager.send("p1", tmp_path / "w1", command)
-        assert error.value.status == 409
+        await manager.send("p1", tmp_path / "w1", SCAN)
         assert session.client.queries == ["长任务"]
+        assert manager.next_view("p1", session.conversation_id)["command"] == SCAN
         assert not session.codegen_scan_active
+        await _rejected_scan(manager, "p1", tmp_path / "w1", match="已经排着一次扫描候选")
 
         await _feed(created[0], _turn_result())
-        assert session.state == "idle"
-        await manager.send("p1", tmp_path / "w1", command)
-        assert session.client.queries == ["长任务", command]
-        with pytest.raises(SessionError, match="扫描候选正在运行"):
-            await manager.send("p1", tmp_path / "w1", command)
+        await _until(lambda: session.client.queries == ["长任务", SCAN])
+        assert session.codegen_scan_active and manager.next_view("p1", session.conversation_id) is None
+        await _rejected_scan(manager, "p1", tmp_path / "w1")
+
+        await _feed(created[0], _turn_result())
+        await _until(lambda: session.state == "idle")
+        assert not session.codegen_scan_active
+        await manager.send("p1", tmp_path / "w1", SCAN)
+        assert session.client.queries == ["长任务", SCAN, SCAN]
         await manager.shutdown()
 
     asyncio.run(scenario())
 
 
-def test_codegen_scan_rejects_prior_turn_queued_for_pool_slot(pool_env, tmp_path):
+def test_command_chained_after_codegen_scan_releases_it(scripted_env, tmp_path):
+    """扫描做完接着跑别的命令：扫描不再占着，再发扫描照常代存。"""
+    manager, created, _ = scripted_env
+
+    async def scenario():
+        await manager.send("p1", tmp_path / "w1", SCAN)
+        session = await _settle(manager, "p1")
+        await manager.send("p1", tmp_path / "w1", "/ontology-validate")
+        await _feed(created[0], _turn_result())
+        await _until(lambda: session.client.queries == [SCAN, "/ontology-validate"] and not session.chaining)
+        assert session.state == "running" and not session.codegen_scan_active
+        await manager.send("p1", tmp_path / "w1", SCAN)
+        assert manager.next_view("p1", session.conversation_id)["command"] == SCAN
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_paused_codegen_scan_does_not_block_a_new_one(scripted_env, tmp_path):
+    """打断后代存的扫描暂停、不会自己开始：空闲时再点扫描照常开始。"""
+    manager, created, _ = scripted_env
+
+    async def scenario():
+        await manager.send("p1", tmp_path / "w1", "长任务")
+        session = await _settle(manager, "p1")
+        await manager.send("p1", tmp_path / "w1", SCAN)
+        await manager.interrupt("p1")
+        await _feed(created[0], _turn_result())
+        await _until(lambda: session.state == "idle")
+        assert manager.next_view("p1", session.conversation_id)["paused"]
+        await manager.send("p1", tmp_path / "w1", SCAN)
+        assert session.client.queries == ["长任务", SCAN] and session.codegen_scan_active
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_codegen_scan_after_turn_queued_for_pool_slot_is_held(pool_env, tmp_path):
     manager, _created, _ = pool_env
-    command = "/ontology-codegen-scan"
 
     async def scenario():
         await manager.send("p1", tmp_path / "w1", "占用会话池")
@@ -194,11 +244,10 @@ def test_codegen_scan_rejects_prior_turn_queued_for_pool_slot(pool_env, tmp_path
         await manager.send("p2", tmp_path / "w2", "排队任务")
         queued = manager.get("p2")
         assert queued.state == "queued"
-        with pytest.raises(SessionError, match="当前任务正在运行") as error:
-            await manager.send("p2", tmp_path / "w2", command)
-        assert error.value.status == 409
-        assert queued.pending_prompts == ["排队任务"]
-        assert not queued.codegen_scan_active
+        await manager.send("p2", tmp_path / "w2", SCAN)
+        assert queued.pending_prompts == ["排队任务"] and not queued.codegen_scan_active
+        assert manager.next_view("p2", queued.conversation_id)["command"] == SCAN
+        await _rejected_scan(manager, "p2", tmp_path / "w2", match="已经排着一次扫描候选")
         await manager.shutdown()
 
     asyncio.run(scenario())
