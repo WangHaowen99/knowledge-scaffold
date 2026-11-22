@@ -34,6 +34,7 @@ const DECL = [
   ['safety_stock_calc', 'r05_by_category', 'uses_rule', '引用'],
   ['safety_stock_calc', 'r09_store_stricter', 'uses_rule', '引用'],
   ['display_qty_std', 'goods_category', 'object_relation', '按品类查'],
+  ['goods_category', 'goods_category', 'object_relation', '上级品类'],
   ['display_qty_std', 'delivery_cycle', 'object_relation', '按到货周期查'],
   ['display_qty_check', 'display_qty_std', 'operation_input_object', '读取陈列量标准'],
   ['display_qty_check', 'delivery_cycle', 'operation_input_object', '读取到货周期'],
@@ -70,6 +71,16 @@ const MENTION = [
   ['expiry_loss_std', 'goods_category', '在示例中提到'],
   ['overage_list', 'replenish_order', '在描述中提到'],
 ];
+// 规则的责任部门、维护人（ST-03 规则行）：[部门, 维护人]，没列的规则算未填写
+const OWNERS = {
+  r01_intake_scope: [['门店运营组'], ['测试员甲']],
+  r02_required: [['门店运营组'], ['测试员甲', '测试员乙']],
+  r05_by_category: [['商品计划组'], ['测试员乙']],
+  r07_display_max: [['商品计划组', '门店运营组'], ['测试员丙']],
+  r08_expiry_grade: [['品质管理组'], ['测试员丙']],
+  r09_store_stricter: [['门店运营组'], []],
+};
+
 // 被引用时的说法（「陈列量核定 · 被读取」）
 const PASSIVE = {
   operation_input_object: '被读取', operation_output_object: '由它输出', operation_support_object: '被参考',
@@ -384,6 +395,7 @@ export function register(ctx) {
       id: e.id, kind: e.kind, key: e.key, name: e.name,
       refs_out: v.counts.refs_out, refs_in: v.counts.refs_in,
       status: v.status, needs_review: false, locked: !!v.lock, plugin: null,
+      ...(e.kind === 'rule' ? { departments: OWNERS[e.key]?.[0] || [], maintainers: OWNERS[e.key]?.[1] || [] } : {}),
       // 最后更新时间：按 id 摊开的合成时间（脚本取不到，写 null）
       updated_at: e.kind === 'script' ? null : ago(([...e.id].reduce((n, c) => n + c.charCodeAt(0), 0) % 97) * 37 * MIN),
     };

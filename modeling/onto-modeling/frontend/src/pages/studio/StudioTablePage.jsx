@@ -1,5 +1,6 @@
 // Studio 表格与条目编辑（设计稿 studio-table）：左边条目表（ST-03，流程图行取 AR-02），右边条目编辑器或流程图面板；
 // 新建（ST-09）。写入范围锁（CS-06）在表格里带锁标记，编辑器里出锁定条。
+// 表头筛选（develop !611）：最后更新时间按日期范围；类型选规则时多出责任部门、维护人两列。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
@@ -13,6 +14,8 @@ import FlowchartPanel from './FlowchartPanel.jsx';
 import { KindChip, LockIcon, PlugMark, RowStatus, useLockCopy } from './parts.jsx';
 import { filterRows, kindSegments, mergeFlowchartRows, rowQuery } from './studioModel.js';
 import { compareUpdatedAt, formatUpdatedAt } from '../../lib/studioUpdates.js';
+import { ColumnFilter, OwnerFilter, UpdatedRangeFilter } from './StudioTableFilters.jsx';
+import { RULE_OWNER_COLUMNS, studioOwnerFilters, studioRuleColumnsVisible, studioTableFilters, studioTableMatches } from './studioTable.js';
 
 const NEW_KINDS = [['object', '对象'], ['operation', '操作'], ['rule', '规则'], ['metric', '指标']];
 
@@ -102,10 +105,18 @@ export default function StudioTablePage({ route }) {
   const selected = rows.find((r) => r.id === selectedId) || null;
   // 最后更新时间列（develop StudioView）：点表头 降序 → 升序 → 取消，取不到时间的两个方向都在最后
   const [order, setOrder] = useState(null);
+  // 表头筛选：{departments, maintainers, updated}；类型切走规则时清掉部门、维护人
+  const [filters, setFilters] = useState({});
+  const changeKind = (next) => { setKind(next); setFilters((f) => studioTableFilters(f, next)); };
+  const setFilter = (key, value) => setFilters((f) => ({ ...f, [key]: value }));
+  const ruleColumns = studioRuleColumnsVisible(kind);
+  const ownerOptions = useMemo(() => Object.fromEntries(RULE_OWNER_COLUMNS.map(([key]) => [key, studioOwnerFilters(rows, key)])), [rows]);
   const shown = useMemo(() => {
-    const list = filterRows(rows, kind, q).map((r) => ({ ...r, updatedAt: r.updated_at ? Date.parse(r.updated_at) / 1000 : undefined }));
+    const list = filterRows(rows, kind, q)
+      .map((r) => ({ ...r, updatedAt: r.updated_at ? Date.parse(r.updated_at) / 1000 : undefined }))
+      .filter((r) => studioTableMatches(r, filters, kind));
     return order ? list.sort((a, b) => (order === 'ascend' ? 1 : -1) * compareUpdatedAt(a, b, order)) : list;
-  }, [rows, kind, q, order]);
+  }, [rows, kind, q, order, filters]);
   const segs = kindSegments(data?.counts, { flowchartEnabled });
   const select = (id) => navigate(pagePath('studio-table', pid), rowQuery(route.query, id));
   // 从别处跳来（报告「定位」、对话里的条目链接）时，把选中的行滚进视野
@@ -136,14 +147,14 @@ export default function StudioTablePage({ route }) {
             <Seg
               items={segs.map((s) => [s.k, <>{s.label} {s.n}{s.plugin ? <PlugMark label="图示" /> : null}</>])}
               value={kind}
-              onChange={setKind}
+              onChange={changeKind}
             />
             <Inp className="grow" icon="search" placeholder="搜索元素名、Key" value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
           <div className="tw" style={{ padding: '0 16px 16px' }}>
             <div className="tbl-wrap">
               <table className="tbl compact">
-                <thead><tr><th style={{ width: 74 }}>类型</th><th>名称</th><th className="stt-sort" style={{ width: 170 }} aria-sort={order ? `${order}ing` : 'none'} onClick={() => setOrder((o) => ({ null: 'descend', descend: 'ascend' }[o] || null))}>最后更新时间{order ? <Icon name={order === 'descend' ? 'chevd' : 'chevu'} size={11} /> : null}</th><th style={{ width: 70 }}>引用</th><th style={{ width: 70 }}>被引</th><th style={{ width: 96 }}>状态</th></tr></thead>
+                <thead><tr><th style={{ width: 74 }}>类型</th><th>名称</th><th className="stt-sort" style={{ width: ruleColumns ? 164 : 190 }} aria-sort={order ? `${order}ing` : 'none'} onClick={() => setOrder((o) => ({ null: 'descend', descend: 'ascend' }[o] || null))}>最后更新时间{order ? <Icon name={order === 'descend' ? 'chevd' : 'chevu'} size={11} /> : null}<ColumnFilter label="最后更新时间" active={!!filters.updated}>{(close) => <UpdatedRangeFilter value={filters.updated} onChange={(v) => setFilter('updated', v)} close={close} />}</ColumnFilter></th>{ruleColumns ? RULE_OWNER_COLUMNS.map(([key, label]) => <th key={key} style={{ width: 92 }}>{label}<ColumnFilter label={label} active={!!filters[key]?.length}>{(close) => <OwnerFilter options={ownerOptions[key]} value={filters[key]} onChange={(v) => setFilter(key, v)} close={close} />}</ColumnFilter></th>) : null}<th style={{ width: ruleColumns ? 56 : 70 }}>引用</th><th style={{ width: ruleColumns ? 56 : 70 }}>被引</th><th style={{ width: 96 }}>状态</th></tr></thead>
                 <tbody ref={bodyRef}>
                   {shown.map((r) => {
                     const ref = r.kind === 'flowchart' ? { type: 'diagram.flowchart', key: r.key } : { id: r.id };
@@ -152,13 +163,17 @@ export default function StudioTablePage({ route }) {
                         <td><KindChip kind={r.kind} /></td>
                         <td className="b">{r.name}<LockIcon info={lockFor(ref, r.name)} /></td>
                         <td className="muted stt-time">{formatUpdatedAt(r.updatedAt)}</td>
+                        {ruleColumns ? RULE_OWNER_COLUMNS.map(([key]) => {
+                          const text = r[key]?.join('、') || '—';
+                          return <td key={key} className="stt-own" title={text}>{text}</td>;
+                        }) : null}
                         <td className="num">{r.refs_out}</td>
                         <td className="num">{r.refs_in}</td>
                         <td><RowStatus row={r} /></td>
                       </tr>
                     );
                   })}
-                  {data && !shown.length ? <tr><td colSpan={6} className="muted sm" style={{ textAlign: 'center', padding: 24 }}>{rows.length ? '没有匹配的条目' : '还没有条目'}</td></tr> : null}
+                  {data && !shown.length ? <tr><td colSpan={ruleColumns ? 8 : 6} className="muted sm" style={{ textAlign: 'center', padding: 24 }}>{rows.length ? '没有匹配的条目' : '还没有条目'}</td></tr> : null}
                 </tbody>
               </table>
             </div>

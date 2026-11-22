@@ -192,6 +192,8 @@ def entries(
             "status": "editing" if rel in drafts else "confirmed",
             "needs_review": f"{node['kind']}:{node['id']}" in marks,
             "locked": _locked(scope, f"{node['kind']}:{node['id']}", rel), "plugin": None,
+            # 规则的责任部门、维护人（develop !611），供表格按列筛选；其他类型不带
+            **({key: node.get(key) or [] for key in studio_service.RULE_OWNER_SECTIONS} if node["kind"] == "rule" else {}),
         })
     counts = {"all": len(rows), **{kind_: sum(1 for row in rows if row["kind"] == kind_) for kind_ in KINDS}, "flowchart": None}
     kinds = set(filter(None, kind.split(",")))

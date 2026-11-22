@@ -98,6 +98,8 @@ ENTITY_TYPES: tuple[EntityType, ...] = (
             _text("来源", False),
             _text("原始资料来源", False),
             _text("例外情况", False),
+            _text("责任部门", False),
+            _text("维护人", False),
         ),
     ),
     EntityType(

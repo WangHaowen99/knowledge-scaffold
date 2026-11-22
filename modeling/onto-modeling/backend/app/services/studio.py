@@ -13,7 +13,7 @@ import re
 import subprocess
 import threading
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from pathlib import Path
 
 from .. import config
@@ -700,6 +700,19 @@ OBJECT_SCHEMA = _schema("object")
 OPERATION_SCHEMA = _schema("operation")
 RULE_SCHEMA = _schema("rule")
 METRIC_SCHEMA = _schema("metric")
+
+# 规则的登记信息：图接口在规则节点上返回解析后的取值，供 Studio 表格筛选（ST-03 规则行带出）
+RULE_OWNER_SECTIONS = {"departments": "责任部门", "maintainers": "维护人"}
+# 正文里的登记行，如备注写「维护部门：合成仓储组；维护人：测试员甲」。标签前须是行首、空白或
+# 标点，避免把「设备维护人：」这类业务描述当成登记；取值到分号、句号或行尾为止
+_OWNER_LABEL_PREFIX = r"(?:^|(?<=[\s，,；;。：:（(*]))"
+_OWNER_LABEL_VALUE = r"\**\s*[：:]\s*([^；;。\n|]+)"
+RULE_OWNER_REGISTRATIONS = {
+    "departments": re.compile(_OWNER_LABEL_PREFIX + r"(?:责任部门|维护部门)" + _OWNER_LABEL_VALUE, re.MULTILINE),
+    "maintainers": re.compile(_OWNER_LABEL_PREFIX + r"维护人" + _OWNER_LABEL_VALUE, re.MULTILINE),
+}
+LISTED_VALUE_SEPARATORS = re.compile(r"[、,，;；]")
+EMPTY_LISTED_VALUES = {"无", "-", "—", "–"}
 
 
 def schema_for(rel_path: str) -> list[dict] | None:

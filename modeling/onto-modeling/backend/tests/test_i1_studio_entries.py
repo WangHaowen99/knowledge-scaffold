@@ -123,3 +123,20 @@ def test_entries_carry_updated_at_and_sort_by_it(api):
 
     ordered = [row["id"] for row in client.get(base, params={"sort": "updated"}).json()["items"]]
     assert ordered.index("rule:合成规则乙") < ordered.index("rule:合成规则甲")
+
+
+def test_rule_rows_carry_departments_and_maintainers(api):
+    """ST-03 规则行带责任部门、维护人（章节与正文登记行合并去重），其他类型不带。"""
+    client, pid, root = api
+    base = f"/api/v1/projects/{pid}/studio/entries"
+    assert client.post(base, json={"kind": "object", "name": "合成对象"}).status_code == 201
+    (root / "ontology/rule/合成规则甲.md").write_text(
+        "# 规则描述\n\n合成规则。备注：维护部门：合成部门乙；维护人：测试员乙\n\n"
+        "# 责任部门\n\n合成部门甲、合成部门乙\n\n# 维护人\n\n测试员甲\n", encoding="utf-8")
+    (root / "ontology/rule/合成规则乙.md").write_text("# 规则描述\n\n合成规则\n\n# 责任部门\n\n无\n", encoding="utf-8")
+
+    rows = {row["id"]: row for row in client.get(base).json()["items"]}
+    assert rows["rule:合成规则甲"]["departments"] == ["合成部门甲", "合成部门乙"]
+    assert rows["rule:合成规则甲"]["maintainers"] == ["测试员甲", "测试员乙"]
+    assert rows["rule:合成规则乙"]["departments"] == [] and rows["rule:合成规则乙"]["maintainers"] == []
+    assert "departments" not in rows["object:合成对象"]

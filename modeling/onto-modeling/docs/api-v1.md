@@ -643,7 +643,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 
 `GET /api/v1/metamodel` · 登录 · 旧：— · 审计：否 · 依据：4.4、方案 C3 · 页面：studio、studio-table（表单与链接渲染）
 
-响应 `200`：`Metamodel`，即实体类型、目录、只读别名、章节结构、链接语法、关系语法、文件名编码规则、属性表列定义（含「证据」列）。前端用它生成条目编辑表单、解析 `[[链接]]`。
+响应 `200`：`Metamodel`，即实体类型、目录、只读别名、章节结构、链接语法、关系语法、文件名编码规则、属性表列定义（含「证据」列）。前端用它生成条目编辑表单、解析 `[[链接]]`。规则的章节含可选的「责任部门」「维护人」。
 
 #### C-06 可用引擎
 
@@ -1374,12 +1374,16 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   |---|---|---|
   | `head` | string | 主线提交 |
   | `nodes` | `[{id: EntryId, kind, key, label, description, status, locked: bool, slice_ids: string[]}]` | — |
-  | `edges` | `[{id, source, target, kind: "declared"\|"mention", relation: string, label}]` | `declared` 是一级标题「关联对象」下的关系声明（实线）；`mention` 是正文里的提及（虚线） |
+  | `edges` | `[{id, source, target, kind: "declared"\|"mention", relation: string, label}]` | `declared` 是一级标题「关联对象」下的关系声明；`mention` 是正文里的提及 |
   | `clusters` | `[{id, label, slice_id, node_ids}]` | 按段分组的关系簇 |
   | `chains` | `{rule: EntryId[], metric: EntryId[]}` | 规则链、指标链高亮用 |
 
 - `relation` 沿用现有取值：`object_relation\|calls_operation\|operation_input_object\|operation_output_object\|operation_support_object\|uses_rule\|uses_metric\|applies_to_object\|uses_object\|script_uses_object\|uses_script\|references`。
 - 链接解析以统一的 `parse_links` 为准（方案 C4），对象名带 `#` 不再断边。
+- 对象之间的 `object_relation` 与发布导出用同一套身份：源对象、关系名、目标对象和两端关联字段都相同才算一条，两端重复声明只返回一条；
+  同一对对象的同名关系在 `label` 里注明字段，如 `上级仓区（parent_area_id → area_id）`。
+- 对象类型自关联（`source` 等于 `target`）只对声明的 `object_relation` 返回；导出不认的声明退回逐行扫描，同方向已有声明时不再返回；
+  正文里提到自己、操作调用自己等自引用不成边。
 
 #### ST-03 条目表
 
@@ -1395,6 +1399,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - `kinds` 里 `flowchart` 带插件标记（图示）。
   - `EntryRow.updated_at`（最后更新时间）：已提交的条目取最后一次改动它的提交时间，已写入工作区、未提交的取文件修改时间；纯移动或改名不算更新，
     Studio 草稿不算。git 不可用时为 null（ADR-0093）。
+  - `EntryRow.departments`、`EntryRow.maintainers`：只在规则行上有，取规则的「责任部门」「维护人」两节和正文里的登记行，
+    合并去重；写「无」或没填时为空数组。表格按它们筛选规则。
 
 #### ST-04 条目详情
 
@@ -4956,6 +4962,7 @@ type EntryRow = {
   needs_review: boolean; locked: boolean;
   plugin: { name: string; label: string } | null;
   updated_at: time | null;                     // 最后更新时间（ST-03）
+  departments?: string[]; maintainers?: string[];   // 仅规则：责任部门、维护人（ST-03）
 };
 
 type EvidenceCell = {
