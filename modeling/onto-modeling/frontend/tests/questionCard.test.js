@@ -1,297 +1,67 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
-import { runInThisContext } from 'node:vm';
-import { test } from 'node:test';
-import { transform } from 'esbuild';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import * as questionAnswers from '../src/lib/questionAnswers.js';
+import test from 'node:test';
+import { decisionView, initialDraft } from '../src/pages/workbench/questionAnswers.js';
 
-const source = await readFile(new URL('../src/components/QuestionCard.jsx', import.meta.url), 'utf8');
-const compiled = await transform(source, { loader: 'jsx', format: 'cjs', jsx: 'automatic' });
-const require = createRequire(import.meta.url);
-const componentModule = { exports: {} };
-runInThisContext(`(function(module, exports, require) { ${compiled.code}\n})`)(
-  componentModule, componentModule.exports,
-  (specifier) => specifier === '../lib/questionAnswers.js' ? questionAnswers : require(specifier),
-);
-const QuestionCard = componentModule.exports.default;
-
-// 合成题目与回答，以重新挂载组件验证历史回显，不从答案字符串推断勾选。
-const questions = [
-  { question: '合成单选', options: [{ label: '方案一' }, { label: '方案二' }] },
-  { question: '合成文字一', options: [{ label: '占位示例' }] },
-  { question: '合成文字二', options: [] },
+// 决策卡（questions.jsx DecisionCard）显示哪种样子：回答过的只读回显、失效的留着草稿、提交后锁住。合成题目
+const OPTIONS = [
+  { id: '0.0', key: 'A', label: '方案一' }, { id: '0.1', key: 'B', label: '方案二' }, { id: '0.2', key: 'C', label: '方案三' },
+  { id: '0.custom', key: 'D', label: '其他，我来说', custom: true },
 ];
-const render = (props) => renderToStaticMarkup(createElement(QuestionCard, {
-  req: { request_id: 'request_demo', tool_input: { questions } },
-  onAnswer: async () => {}, ...props,
-}));
+const single = { question_id: 'q-1', options: OPTIONS };
+const multi = { question_id: 'q-2', options: OPTIONS, multi: true };
 
-test('已答复卡保留正式选项和只读状态，同时展示每题答案', () => {
-  const html = render({
-    resolved: true,
-    resolution: { behavior: 'allow', answers: {
-      合成单选: '方案二', 合成文字一: '人工合成回答一', 合成文字二: '人工合成回答二',
-    } },
-  });
-  const options = [...html.matchAll(/<button\b[^>]*class="question-option[^>]*>/g)].map(([tag]) => tag);
-  assert.equal(options.length, 2);
-  assert.ok(options.every((tag) => tag.includes('disabled=""')));
-  assert.match(html, /方案一/);
-  assert.match(html, /方案二/);
-  assert.match(html, /人工合成回答一/);
-  assert.match(html, /人工合成回答二/);
-  assert.doesNotMatch(html, /占位示例|<textarea|type="submit"/);
+test('回答过的多选卡重新挂载后勾着当时选的两项，其余不勾，全部只读、没有提交', () => {
+  const view = decisionView(multi, { answer: { option_ids: ['0.0', '0.2'] } });
+  assert.equal(view.mode, 'answered');
+  assert.deepEqual(view.picks, ['0.0', '0.2']);
+  assert.equal(view.locked, true);
+  assert.equal(view.body, null);
 });
 
-test('未答复卡保持选项及逐题文字输入，允许统一提交', () => {
-  const html = render({ resolved: false });
-  assert.equal([...html.matchAll(/<textarea\b/g)].length, 3);
-  assert.equal([...html.matchAll(/aria-pressed="false"/g)].length, 2);
-  assert.doesNotMatch(html, /disabled=""/);
-  assert.match(html, /type="submit"/);
+test('回答过的单选卡勾实际选的那项，不默认第一项；只写了文字时勾「其他」并显示原文，不伪造正式选项', () => {
+  assert.deepEqual(decisionView(single, { answer: { option_id: '0.1' } }).picks, ['0.1']);
+  const text = decisionView(single, { answer: { option_id: '0.custom', custom_text: '方案二' } });
+  assert.deepEqual(text.picks, ['0.custom']);
+  assert.equal(text.custom, '方案二');
+  assert.deepEqual(decisionView(single, { answer: { custom_text: '方案一' } }).picks, ['0.custom']);
 });
 
-test('缺失历史答案时保留选项，仅在卡片级提示一次，不从原型属性取答案', () => {
-  const html = render({ resolved: true, resolution: { behavior: 'allow' } });
-  assert.equal([...html.matchAll(/aria-pressed="false"/g)].length, 2);
-  assert.equal([...html.matchAll(/此历史记录未保存完整答案/g)].length, 1);
-  assert.doesNotMatch(html, /class="question-answer"/);
-  const special = render({
-    req: { request_id: 'request_demo', tool_input: { questions: [{ question: '__proto__' }] } },
-    resolved: true, resolution: { behavior: 'allow', answers: {} },
-  });
-  assert.match(special, /此历史记录未保存完整答案/);
+test('新卡可作答：没选不能提交，选了得到答复体', () => {
+  const open = decisionView(single, { draft: initialDraft(single) });
+  assert.equal(open.mode, 'open');
+  assert.equal(open.locked, false);
+  assert.equal(open.body, null);
+  const picked = decisionView(single, { draft: { picks: ['0.2'], custom: '', expired: false } });
+  assert.deepEqual(picked.body, { option_id: '0.2', custom_text: undefined });
 });
 
-test('取消、超时和失效分别展示，逐题不重复渲染无答案提示', () => {
-  for (const [resolution, label] of [
-    [{ behavior: 'deny' }, '已取消'],
-    [{ behavior: 'deny', reason: 'timeout' }, '已超时'],
-    [{ behavior: 'expired' }, '已失效'],
-  ]) {
-    const html = render({ resolved: true, resolution });
-    assert.match(html, new RegExp(label));
-    assert.doesNotMatch(html, /class="question-answer"|未提交答案|此历史记录/);
-    assert.equal([...html.matchAll(/该问题已失效/g)].length, resolution.behavior === 'expired' ? 1 : 0);
-  }
+test('提交成功等回执期间锁住，不能再点', () => {
+  const view = decisionView(single, { draft: { picks: ['0.0'], custom: '', expired: false }, sent: true });
+  assert.equal(view.mode, 'sent');
+  assert.equal(view.locked, true);
 });
 
-test('补发后的历史卡显示已补发和保存答案，不再提示失效', () => {
-  const html = render({ resolved: true, resolution: { behavior: 'forwarded', answers: { 合成文字一: '合成补发答案' } } });
-  assert.match(html, /已补发/);
-  assert.match(html, /合成补发答案/);
-  assert.doesNotMatch(html, /已失效|未保存完整答案/);
+test('提交时问题已失效（410）：留着选的和写的，只读，说明没提交，不再给提交', () => {
+  const draft = { picks: ['0.0', '0.custom'], custom: '合成补充', expired: true };
+  const view = decisionView(multi, { draft });
+  assert.equal(view.mode, 'expired');
+  assert.deepEqual(view.picks, ['0.0', '0.custom']);
+  assert.equal(view.custom, '合成补充');
+  assert.equal(view.locked, true);
+  assert.equal(view.body, null);
+  assert.match(view.notice, /没有提交/);
 });
 
-test('异常问题和选项提供重新提问按钮，已结束的异常卡不提供操作', () => {
-  for (const malformed of [undefined, [], [null], [{ question: '合成问题', options: ['A', 'B'] }],
-    [{ question: '合成重复' }, { question: '合成重复' }]]) {
-    const req = { request_id: 'request_demo', tool_input: { questions: malformed } };
-    const html = render({ req, onReask: async () => {} });
-    assert.match(html, /让助手重新提问/);
-    assert.doesNotMatch(html, /<textarea|type="submit"/);
-    assert.doesNotMatch(render({ req, resolved: true }), /<button/);
-  }
+test('收到失效事件（超时、拒绝）也留着草稿，按原因说明', () => {
+  const view = decisionView(single, { draft: { picks: ['0.1'], custom: '', expired: false }, withdrawn: true, reason: '等待回答超时' });
+  assert.equal(view.mode, 'expired');
+  assert.deepEqual(view.picks, ['0.1']);
+  assert.match(view.notice, /^等待回答超时：填写的内容没有提交/);
+  assert.match(decisionView(single, { withdrawn: true }).notice, /^这个问题已失效/);
 });
 
-test('正常卡保留显式提交按钮和快捷键提示', () => {
-  const html = render({ resolved: false });
-  assert.match(html, /Ctrl\/⌘\+Enter/);
-  assert.match(html, /aria-keyshortcuts="Control\+Enter Meta\+Enter"/);
-  assert.match(html, /type="submit"/);
-});
-
-function interactiveHarness(onAnswer) {
-  const slots = [];
-  let cursor = 0;
-  const useSlot = (initial) => {
-    const index = cursor++;
-    if (!(index in slots)) slots[index] = typeof initial === 'function' ? initial() : initial;
-    return [slots[index], (value) => { slots[index] = typeof value === 'function' ? value(slots[index]) : value; }];
-  };
-  const interactiveModule = { exports: {} };
-  runInThisContext(`(function(module, exports, require) { ${compiled.code}\n})`)(
-    interactiveModule, interactiveModule.exports,
-    (specifier) => specifier === 'react' ? {
-      useState: useSlot, useRef: (initial) => useSlot(() => ({ current: initial }))[0], useId: () => 'synthetic-card',
-    } : specifier === '../lib/questionAnswers.js' ? questionAnswers : require(specifier),
-  );
-  const props = {
-    req: { request_id: 'request_demo', tool_input: { questions: [
-      { question: '合成单选', options: [{ label: '合成选项' }] },
-      { question: '合成文字甲' }, { question: '合成文字乙' },
-    ] } },
-    onAnswer,
-  };
-  const draw = () => { cursor = 0; return interactiveModule.exports.default(props); };
-  const find = (element, predicate) => {
-    if (!element || typeof element !== 'object') return null;
-    if (predicate(element)) return element;
-    return [element.props?.children].flat(Infinity).map((child) => find(child, predicate)).find(Boolean);
-  };
-  const fill = () => {
-    find(draw(), (node) => node.type === 'button' && node.props?.className?.startsWith('question-option')).props.onClick();
-    for (const [index, value] of [[1, '合成回答甲'], [2, '合成回答乙']]) {
-      find(draw(), (node) => node.props?.name === `answer-${index}`).props.onChange({ target: { value } });
-    }
-  };
-  return { props, draw, find, fill };
-}
-
-for (const status of [410, 404]) {
-  for (const expiredEventFirst of [false, true]) {
-    test(`${status} 失效后保留两题文字和所选项，关闭提交；失效事件先到=${expiredEventFirst}`, async () => {
-      let reject, attempts = 0;
-      const h = interactiveHarness(async () => {
-        attempts++;
-        await new Promise((_resolve, fail) => { reject = fail; });
-      });
-      h.fill();
-      const pending = h.draw().props.onSubmit({ preventDefault() {} });
-      if (expiredEventFirst) {
-        h.props.resolved = true;
-        h.props.resolution = { behavior: 'expired' };
-        assert.equal(h.find(h.draw(), (node) => node.props?.name === 'answer-1').props.value, '合成回答甲');
-      }
-      reject(Object.assign(new Error('合成问题失效'), { status }));
-      await pending;
-      const expired = h.draw();
-      for (const [index, value] of [[1, '合成回答甲'], [2, '合成回答乙']]) {
-        const input = h.find(expired, (node) => node.props?.name === `answer-${index}`);
-        assert.equal(input.props.value, value);
-        assert.equal(input.props.readOnly, true);
-        assert.equal(input.props.disabled, false);
-      }
-      const choice = h.find(expired, (node) => node.type === 'button' && node.props?.className?.startsWith('question-option'));
-      assert.equal(choice.props['aria-pressed'], true);
-      assert.equal(choice.props.disabled, true);
-      assert.ok(h.find(expired, (node) => node.props?.role === 'status' &&
-        typeof node.props.children === 'string' && node.props.children.includes('该问题已失效，请让助手重新提问')));
-      assert.equal(h.find(expired, (node) => node.props?.htmlType === 'submit'), undefined);
-      await expired.props.onSubmit({ preventDefault() {} });
-      assert.equal(attempts, 1);
-    });
-  }
-}
-
-test('主动收到失效事件也保留当前答案，不依赖提交失败才能保留', () => {
-  const h = interactiveHarness(async () => assert.fail('失效卡不得提交'));
-  h.fill();
-  h.props.resolved = true;
-  h.props.resolution = { behavior: 'expired' };
-  const expired = h.draw();
-  assert.equal(h.find(expired, (node) => node.props?.name === 'answer-1').props.value, '合成回答甲');
-  assert.equal(h.find(expired, (node) => node.props?.name === 'answer-2').props.value, '合成回答乙');
-  assert.equal(h.find(expired, (node) => node.props?.htmlType === 'submit'), undefined);
-});
-
-test('非失效错误保留可编辑答案并允许手动重试，成功后展示已保存答案', async () => {
-  let attempts = 0;
-  const h = interactiveHarness(async (_id, answers) => {
-    attempts++;
-    if (attempts === 1) throw Object.assign(new Error('合成 409 冲突'), { status: 409 });
-    return { behavior: 'allow', answers };
-  });
-  h.fill();
-  await h.draw().props.onSubmit({ preventDefault() {} });
-  const retry = h.draw();
-  const input = h.find(retry, (node) => node.props?.name === 'answer-1');
-  assert.equal(input.props.value, '合成回答甲');
-  assert.equal(input.props.disabled, false);
-  assert.equal(input.props.readOnly, false);
-  assert.ok(h.find(retry, (node) => node.props?.role === 'alert' && node.props.children === '合成 409 冲突'));
-  await retry.props.onSubmit({ preventDefault() {} });
-  const done = h.draw();
-  assert.ok(h.find(done, (node) => node.props?.className === 'question-answer' && node.props.children === '合成回答甲'));
-  assert.ok(h.find(done, (node) => node.props?.role === 'status' && node.props.children.includes('已答复')));
-  assert.equal(attempts, 2);
-});
-
-test('历史多选卡重新挂载后恢复两项选择，未选项仍未选，所有选项只读', () => {
-  const html = render({
-    req: { request_id: 'request_multiselect', tool_input: { questions: [{
-      question: '合成多选', multiSelect: true,
-      options: [{ label: '甲,乙' }, { label: '方案二' }, { label: '方案三' }],
-    }] } },
-    resolved: true,
-    resolution: {
-      behavior: 'allow', answers: { 合成多选: '甲,乙,方案二,人工合成补充' },
-      answer_details: { 合成多选: { selected_options: ['甲,乙', '方案二'], custom_text: '人工合成补充' } },
-    },
-  });
-  const options = [...html.matchAll(/<button\b[^>]*class="question-option[^>]*>/g)].map(([tag]) => tag);
-  assert.equal(options.length, 3);
-  assert.ok(options.every((tag) => tag.includes('disabled=""')));
-  assert.match(options[0], /aria-pressed="true"/);
-  assert.match(options[1], /aria-pressed="true"/);
-  assert.match(options[2], /aria-pressed="false"/);
-  assert.match(html, /甲,乙,方案二,人工合成补充/);
-  assert.doesNotMatch(html, /未保存选项状态|<textarea|type="submit"/);
-});
-
-test('历史单选恢复实际所选项，不默认首项；纯文字内容相同也不伪造勾选', () => {
-  const single = render({
-    resolved: true,
-    resolution: {
-      behavior: 'allow',
-      answers: { 合成单选: '方案二', 合成文字一: '人工合成回答一', 合成文字二: '人工合成回答二' },
-      answer_details: {
-        合成单选: { selected_options: ['方案二'], custom_text: '' },
-        合成文字一: { selected_options: [], custom_text: '人工合成回答一' },
-        合成文字二: { selected_options: [], custom_text: '人工合成回答二' },
-      },
-    },
-  });
-  assert.equal([...single.matchAll(/aria-pressed="true"/g)].length, 1);
-  const options = [...single.matchAll(/<button\b[^>]*class="question-option[^>]*>/g)].map(([tag]) => tag);
-  assert.match(options[0], /aria-pressed="false"/);
-  assert.match(options[1], /aria-pressed="true"/);
-
-  const custom = render({
-    resolved: true,
-    resolution: {
-      behavior: 'allow', answers: { 合成单选: '方案二' },
-      answer_details: { 合成单选: { selected_options: [], custom_text: '方案二' } },
-    },
-  });
-  assert.doesNotMatch(custom, /aria-pressed="true"/);
-  assert.match(custom, /class="question-answer">方案二/);
-});
-
-test('旧字符串答案、取消和失效记录不猜测历史选择', () => {
-  const legacy = render({ resolved: true, resolution: { behavior: 'allow', answers: { 合成单选: '方案二' } } });
-  assert.match(legacy, /此历史记录未保存选项状态/);
-  assert.match(legacy, /class="question-answer">方案二/);
-  assert.doesNotMatch(legacy, /aria-pressed="true"/);
-  for (const [behavior, expected] of [['deny', '已取消'], ['expired', '该问题已失效']]) {
-    const html = render({ resolved: true, resolution: { behavior } });
-    assert.ok(html.includes(expected));
-    assert.doesNotMatch(html, /aria-pressed="true"/);
-  }
-});
-
-test('成功提交的本地回显保留选择结构，后续有效历史答复优先于本地结果', async () => {
-  let sent;
-  const h = interactiveHarness(async (id, answers, details) => {
-    sent = { id, answers, details };
-  });
-  h.fill();
-  await h.draw().props.onSubmit({ preventDefault() {} });
-  assert.deepEqual(sent.details, {
-    合成单选: { selected_options: ['合成选项'], custom_text: '' },
-    合成文字甲: { selected_options: [], custom_text: '合成回答甲' },
-    合成文字乙: { selected_options: [], custom_text: '合成回答乙' },
-  });
-  const option = (tree) => h.find(tree, (node) => node.type === 'button' && node.props?.className?.startsWith('question-option'));
-  assert.equal(option(h.draw()).props['aria-pressed'], true);
-  assert.equal(option(h.draw()).props.disabled, true);
-  // 同名自由文字与选项是不同的选择结构；以服务端已接受事件为准。
-  h.props.resolved = true;
-  h.props.resolution = { behavior: 'allow', answers: sent.answers, answer_details: {
-    ...sent.details, 合成单选: { selected_options: [], custom_text: '合成选项' },
-  } };
-  assert.equal(option(h.draw()).props['aria-pressed'], false);
+test('有回答记录时以回答为准，不看本地草稿', () => {
+  const view = decisionView(single, { answer: { option_id: '0.2' }, draft: { picks: ['0.0'], custom: '', expired: true } });
+  assert.equal(view.mode, 'answered');
+  assert.deepEqual(view.picks, ['0.2']);
 });

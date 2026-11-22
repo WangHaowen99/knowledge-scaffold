@@ -306,56 +306,6 @@ class SessionError(Exception):
         self.status = status
 
 
-def _validate_question_answers(questions: Any, answers: Any) -> None:
-    if not isinstance(questions, list) or not questions:
-        raise SessionError("问题格式不完整，请让助手重新提问", 400)
-    keys = [q.get("question") if isinstance(q, dict) else None for q in questions]
-    if any(not isinstance(key, str) or not key.strip() for key in keys):
-        raise SessionError("问题格式不完整，请让助手重新提问", 400)
-    if len(set(keys)) != len(keys):
-        raise SessionError("问题重复，请让助手重新提问", 400)
-    if not isinstance(answers, dict) or set(answers) != set(keys) or any(
-        not isinstance(answer, str) or not answer.strip() for answer in answers.values()
-    ):
-        raise SessionError("请逐题选择选项或填写回答", 400)
-
-
-def _validate_answer_details(questions: list[dict], answers: dict, details: dict) -> dict:
-    """回显数据必须与工具实际收到的答案一致；旧客户端仍可仅提交字符串答案。"""
-    if not isinstance(details, dict) or set(details) != set(answers):
-        raise SessionError("答案回显信息不完整", 400)
-    normalized = {}
-    for question in questions:
-        key = question["question"]
-        detail = details[key]
-        if not isinstance(detail, dict):
-            raise SessionError("答案回显信息格式错误", 400)
-        choices = detail.get("selected_options")
-        text = detail.get("custom_text")
-        options = question.get("options") or []
-        if (
-            not isinstance(choices, list)
-            or not isinstance(text, str)
-            or not isinstance(options, list)
-        ):
-            raise SessionError("答案回显信息格式错误", 400)
-        if any(not isinstance(label, str) for label in choices):
-            raise SessionError("答案回显信息格式错误", 400)
-        labels = {option["label"] for option in options
-                  if isinstance(option, dict) and isinstance(option.get("label"), str)}
-        text = text.strip()
-        if len(set(choices)) != len(choices) or any(label not in labels for label in choices):
-            raise SessionError("答案包含无效选项", 400)
-        if not question.get("multiSelect"):
-            if len(choices) > 1 or (choices and text):
-                raise SessionError("单选答案只能选择一个选项或填写文字", 400)
-        answer = ",".join([*choices, *([text] if text else [])])
-        if not answer or answer != answers[key]:
-            raise SessionError("答案与回显信息不一致", 400)
-        normalized[key] = {"selected_options": list(choices), "custom_text": text}
-    return normalized
-
-
 @dataclass
 class PendingPermission:
     id: str
@@ -1964,7 +1914,6 @@ class SessionManager:
         behavior: str,
         message: str = "",
         answers: dict | None = None,
-        answer_details: dict | None = None,
     ) -> None:
         session = self._sessions.get(project_id)
         if not session:
@@ -1974,12 +1923,12 @@ class SessionManager:
         if not request or request.future.done():
             raise SessionError("确认请求不存在或已处理", 410)
         if behavior == "allow":
+            if request.questions and not answers:
+                # 决策卡逐题回答（S-11）；空的放行会让助手拿不到答案，请求留着等回答
+                error = SessionError("决策卡请逐题回答", 400)
+                error.code = "answer_invalid"
+                raise error
             updated_input = None
-            details = None
-            if request.tool_name == "AskUserQuestion":
-                _validate_question_answers(request.tool_input.get("questions"), answers)
-                if answer_details is not None:
-                    details = _validate_answer_details(request.tool_input["questions"], answers, answer_details)
             if answers:
                 # AskUserQuestion：答案经 updated_input.answers 回填（问题文本 → 选项文本）
                 updated_input = {**(request.full_input or request.tool_input), "answers": {**request.preset, **answers}}
@@ -2101,6 +2050,11 @@ class SessionManager:
         代答（autobuild/prerun）。登记的策略自己判断归不归它管，不归时返回 None。
         资料分析里「接下来怎么建」这类流程走向的问题（任何构建方式）不出卡、不代答，回答「停在蓝图确认」（F3）。
         """
+        if tool_name == timeline.ASK_TOOL:
+            problem = timeline.question_problem(tool_input)
+            if problem:
+                # 出不了卡（答案按问题文本交回，文本缺了或重复就对不上）：不等人，原因交还助手重新提问
+                return {"behavior": "deny", "message": f"{problem}，请修正后重新提问"}
         full_input, preset = None, {}
         if tool_name == timeline.ASK_TOOL and session.exec_id and isinstance(tool_input, dict):
             from .autobuild import prerun
@@ -2214,15 +2168,25 @@ class SessionManager:
                 break
         if request is None or request.future.done() or question_id in request.answers:
             raise SessionError("问题已回答、撤回或失效", 410)
-        chosen = [answer["option_id"]] if answer.get("option_id") else list(answer.get("option_ids") or [])
+        given = answer.get("option_ids")
+        chosen = [answer["option_id"]] if answer.get("option_id") else list(given) if isinstance(given, list) else []
         custom = str(answer.get("custom_text") or "").strip()
         by_id = {option["id"]: option for option in question["options"]}
+        if not isinstance(answer.get("custom_text"), (str, type(None))):
+            raise SessionError("custom_text 必须是文字", 400)
+        if given is not None and not isinstance(given, list):
+            raise SessionError("option_ids 必须是列表", 400)
         if not chosen and not custom:
             raise SessionError("没有选择任何选项", 400)
-        if any(option not in by_id for option in chosen):
+        if any(not isinstance(option, str) or option not in by_id for option in chosen):
             raise SessionError("选项不存在", 400)
+        if len(set(chosen)) != len(chosen):
+            raise SessionError("答案包含重复选项", 400)
         if any(by_id[option].get("custom") for option in chosen) and not custom:
             raise SessionError("选了「其他」要写上你的说法", 400)
+        if not question.get("multi") and (
+                len(chosen) > 1 or (custom and any(not by_id[option].get("custom") for option in chosen))):
+            raise SessionError("单选题只能选一个选项或填写文字", 400)
         labels = [by_id[option]["label"] for option in chosen if not by_id[option].get("custom")]
         if custom:
             labels.append(custom)

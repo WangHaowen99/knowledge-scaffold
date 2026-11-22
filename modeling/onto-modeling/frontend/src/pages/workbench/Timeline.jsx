@@ -14,7 +14,7 @@ import {
 import { SubagentCard } from './subagent.jsx';
 import { deliveryNote } from './composerModel.js';
 import { useTick } from './RunLine.jsx';
-import { DecidedRow, PermissionCard, QuestionCard } from './questions.jsx';
+import { AnsweredQuestion, PermissionCard, QuestionCard, WithdrawnQuestion } from './questions.jsx';
 
 // 正文按内容记忆：流式片段到达时只重画在流的那一条，不重新解析前面的 Markdown
 const sameText = (a, b) => a.item.text_md === b.item.text_md && a.item.streaming === b.item.streaming && a.item.anchors === b.item.anchors;
@@ -164,8 +164,8 @@ export function Timeline({ state, scope, lead }) {
       case 'day': return <MDay key={b.key} label={b.item.label} className={enter('mo-fade')} />;
       case 'notice': return <MSys key={b.key} left={b.item.align === 'left'} icon={NOTICE_ICON[b.item.notice_kind]} className={enter('mo-fade')}>{b.item.text}</MSys>;
       case 'user': return <UserMessage key={b.item.local_key || b.key} item={b.item} enter={fresh(b.key)} />;
-      case 'decided': return <DecidedRow key={b.key} item={b.item} />;
-      case 'withdrawn': return <MSys key={b.key} left className={enter('mo-fade')}>这个问题已失效：{b.item.withdrawn_reason || b.item.question.title}</MSys>;
+      case 'decided': return <AnsweredQuestion key={b.key} item={b.item} />;
+      case 'withdrawn': return <WithdrawnQuestion key={b.key} item={b.item} className={enter('mo-fade')} />;
       case 'question': return <MA key={b.key} className={enter('mo-ask')}><div data-qid={b.item.question.question_id}><QuestionCard q={b.item.question} active={b === lastOpenQ} /></div></MA>;
       case 'assistant': {
         // 新的一块整块上浮；已有的块里后到的条目各自入场

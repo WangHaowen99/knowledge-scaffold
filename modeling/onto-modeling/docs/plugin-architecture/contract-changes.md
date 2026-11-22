@@ -2538,3 +2538,13 @@ develop 在 !611（#407、#415、#416）和 !624 改了 Studio 的表格、关�
    - 先于 `message_duplicate` 检查，连点两次扫描回的是 `scan_running`。
    - 助手在跑别的任务时发来的扫描照旧由平台代存（`delivery="next"`）。develop 没有代存，这时回 409「当前任务正在运行」。
    - 打断后暂停的代存扫描不会自己开始，不算占着；自主构建的步骤不受这条限制。
+2. **追问作答**（!606）：
+   - S-11 从严：选项重复、类型不对、单选题选了多项或选项加文字都回 `answer_invalid`，问题留着可以改了再交。
+   - S-10 对决策卡的请求 `allow` 回 `answer_invalid`（直接放行，助手拿不到答案）；`deny` 照旧取消整次提问。
+   - 出不了卡的提问不发 `question.asked`，平台把原因退给助手重新提问。develop 出一张异常卡，由用户点「让助手重新提问」。
+   - 「Other」「占位示例」这类选项不进 `options`，卡片自带「其他，我来说」。
+   - 提交回 410 或收到 EC-34 时，决策卡上填过的内容只读留着并说明没有提交；草稿只在页面内存里，刷新后不保留。
+3. **答过的决策卡**（!623）：按 EC-33 的 `answer` 还原勾选和文字，整张只读；策略代答和没有结构化 `answer` 的旧记录仍收成一行。
+4. **不搬**：develop 在旧接口 `POST .../permissions/{rid}` 上加的 `answer_details`、`permission_resolved.answers`。
+   本线逐题走 S-11，EC-33 的 `answer` 已带选项 id 和文字。`docs/question-answer-contract.md` 并入 `api-v1.md` 的
+   S-10、S-11、EC-33、EC-34、4.6，原文删除。

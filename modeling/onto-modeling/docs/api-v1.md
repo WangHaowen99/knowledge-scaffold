@@ -396,7 +396,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `engine_not_installed` | 503 | 引擎运行时不可用 | `engine` |
 | `permission_request_gone` | 410 | 确认请求已处理、超时或会话已重启 | — |
 | `question_gone` | 410 | 问题已回答、撤回或失效 | `state` |
-| `answer_invalid` | 400 | 选项不存在，或要求自定义回答却为空 | — |
+| `answer_invalid` | 400 | 没选也没写、选项不存在或重复、单选题选了多项或选项加文字、要求自定义回答却为空；问题还在，改了可以再交 | — |
 | `not_queued` | 409 | 当前不在排队，无法取消排队 | — |
 | `next_occupied` | 409 | 运行中已经排着一条命令（F7，最多一条） | `label`；请求带 `replace: true` 时替换 |
 | `message_duplicate` | 409 | 这一轮还没结束（在跑、排队、连接中、代存着命令），又提交了和上一条相同的消息或命令（develop !596） | — |
@@ -1826,7 +1826,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 请求：`{behavior: "allow"|"deny", message?: string}`。
 - 响应：`{ok: true}`。
-- 错误：`permission_request_gone`。
+- 决策卡（助手提问）的请求不能用它放行：`allow` 回 `answer_invalid`，请求留着，逐题走 S-11；`deny` 取消整次提问。
+- 错误：`permission_request_gone`、`answer_invalid`。
 - 只在系统设置为「逐操作确认」时出现；600 秒没回复按拒绝处理。
 
 #### S-11 回答问题（决策卡、分支、专家确认）
@@ -1837,11 +1838,15 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - 单选题传 `option_id`，多选题传 `option_ids`。
   - 选「其他，我来说」时传对应 `option_id` 加 `custom_text`。
   - 没选不能确认：三项都空返回 `answer_invalid`。
+  - 单选题选一个选项，或只写文字（`custom_text`）；多选题可以选多项再加文字。选项不能重复。
+  - 一次问了多道题时逐题提交，全部答完才交给助手。
 - 响应：`{question: Question}`（`state="answered"`）。
   - 对话流发 `question.answered`；
   - 助手是陪伴建模的等待态时，随即继续；
   - 待处理里对应事项消失。
-- 错误：`question_gone`、`answer_invalid`、`conversation_not_found`。
+- 出不了卡的提问（没有问题列表、题目为空或重复、选项不是带名称的列表）不发 `question.asked`，平台把原因退给助手重新提问。
+- 助手写的「Other」「占位示例」这类选项不进 `options`，卡片自带「其他，我来说」；有实际含义的「其他…」照常列出。
+- 错误：`question_gone`（界面把填过的内容只读留在卡上，不自动补发）、`answer_invalid`、`conversation_not_found`。
 
 #### S-12 取消排队
 
@@ -4297,8 +4302,8 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 | EC-30 | `permission.requested` | 是 | `{request_id, title: string（如「助手请求执行一个操作」）, description: string（业务话）, details_text: string（「查看技术细节」里的内容）, timeout_s: 600, expires_at}` | chat-states 第 6 项确认卡 |
 | EC-31 | `permission.resolved` | 是 | `{request_id, behavior: "allow"\|"deny", by: "user"\|"timeout"\|"autobuild_policy", message}` | 确认卡变为已处理 |
 | EC-32 | `question.asked` | 是 | `Question`（kind 见 4.6） | 决策卡、模拟分支、请专家确认、交互模拟、资料用途确认 |
-| EC-33 | `question.answered` | 是 | `{question_id, answer: {option_id?, option_ids?, custom_text?}, by: "user"\|"autobuild_policy", summary: string（如「步骤 2 选了 A：…」）, answered_at}` | 决策卡收起为一行 |
-| EC-34 | `question.withdrawn` | 是 | `{question_id, reason: string}` | 问题失效（撤回这一轮、重启等） |
+| EC-33 | `question.answered` | 是 | `{question_id, answer: {option_id?, option_ids?, custom_text?}, by: "user"\|"autobuild_policy", summary: string（如「步骤 2 选了 A：…」）, answered_at}` | 用户答的决策卡留着整张、只读，按 `answer` 的选项 id 和文字还原勾选（刷新、切换对话、服务重启后一样）；策略代答、`answer` 里没有选项和文字的旧记录收成一行，不从 `summary` 猜选项 |
+| EC-34 | `question.withdrawn` | 是 | `{question_id, reason: string}` | 问题失效（撤回这一轮、重启等）；填过没交的决策卡只读留着，草稿只在页面内存里 |
 
 #### 卡片
 
@@ -4389,7 +4394,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 | kind | 界面 | 特有字段 | 回答 |
 |---|---|---|---|
-| `decision` | 结构化决策卡（wb-l2、wb-materials 资料用途确认、inbox 决策） | `options[].consequence`；`options[].preview: DiffLine[]`（选中后卡内显示「选 X 会这样改」）；最后一项「其他，我来说」`allow_custom_on` | `S-11`；没选不能确认；键盘 1–4、↵ |
+| `decision` | 结构化决策卡（wb-l2、wb-materials 资料用途确认、inbox 决策） | `options[].consequence`；`options[].preview: DiffLine[]`（选中后卡内显示「选 X 会这样改」）；最后一项「其他，我来说」`allow_custom_on` | `S-11`；没选不能确认；键盘 1–4、↵；提交一次后锁住；答过、失效后只读（EC-33、EC-34） |
 | `branch` | 模拟分支选择卡（chat-states 第 7 项） | `scenario: ArtifactRef`、`context_text` | `S-11`，可带 `custom_text` |
 | `expert` | 请专家确认卡（chat-states 第 7 项、reports 专家裁决） | `options` 渲染为按钮，含 `dismiss` 型选项「不需要问这个」 | `S-11` |
 | `walkthrough` | 交互模拟卡（chat-states 第 20 项） | `scenario: ArtifactRef`、`inputs: [{name, value, type, source: "input"\|"example"}]`、`steps: [{n, label, text, ref: EntryRef\|null, source}]`、判断点 `prompt` | `S-11`；选择记进场景，下次场景模拟按这条分支推演 |

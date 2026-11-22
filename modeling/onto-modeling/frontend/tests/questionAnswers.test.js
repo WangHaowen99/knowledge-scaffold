@@ -1,111 +1,51 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { buildQuestionSubmission, isCustomAnswerOption } from '../src/lib/questionAnswers.js';
+import test from 'node:test';
+import {
+  answerPicks, decisionAnswer, draftFilled, hasStructuredAnswer, initialDraft,
+} from '../src/pages/workbench/questionAnswers.js';
 
-// 全部为合成控件数据，无外部项目、账号或环境信息。
-const questions = [
-  { question: '合成单选', options: [{ label: '方案一' }, { label: '方案二' }] },
-  { question: '合成多选', multiSelect: true, options: [{ label: '渠道一' }, { label: '渠道二' }] },
-  { question: '合成文字一', options: [] },
-  { question: '合成文字二', options: [] },
-];
+// 合成决策卡：两个正式选项加「其他，我来说」（契约 4.6 Question）
+const OPTIONS = [{ id: '0.0', key: 'A', label: '甲,乙' }, { id: '0.1', key: 'B', label: '方案二' }, { id: '0.custom', key: 'C', label: '其他，我来说', custom: true }];
+const single = { question_id: 'q-1', options: OPTIONS };
+const multi = { question_id: 'q-2', options: OPTIONS, multi: true };
 
-test('混合题提交全部真实答案，文字逐题绑定', () => {
-  const result = buildQuestionSubmission(questions, { 0: ['方案二'], 1: ['渠道一', '渠道二'] },
-    { 2: '  人工合成回答一  ', 3: '人工合成回答二' });
-  assert.deepEqual(result, {
-    answers: { 合成单选: '方案二', 合成多选: '渠道一,渠道二', 合成文字一: '人工合成回答一', 合成文字二: '人工合成回答二' },
-    answerDetails: {
-      合成单选: { selected_options: ['方案二'], custom_text: '' },
-      合成多选: { selected_options: ['渠道一', '渠道二'], custom_text: '' },
-      合成文字一: { selected_options: [], custom_text: '人工合成回答一' },
-      合成文字二: { selected_options: [], custom_text: '人工合成回答二' },
-    },
-    missing: [], invalid: false,
-  });
+test('决策卡答复：单选传 option_id，多选题传 option_ids（原来多选题也只能选一项）', () => {
+  assert.deepEqual(decisionAnswer(single, ['0.1'], ''), { option_id: '0.1', custom_text: undefined });
+  assert.deepEqual(decisionAnswer(multi, ['0.0', '0.1'], ''), { option_ids: ['0.0', '0.1'], custom_text: undefined });
+  assert.equal(decisionAnswer(multi, [], ''), null);
 });
 
-test('清空一题不影响其他题，也不能提交缺失答案', () => {
-  const result = buildQuestionSubmission(questions, { 0: ['方案一'], 1: ['渠道二'] },
-    { 2: '  ', 3: '人工合成回答二' });
-  assert.deepEqual(result.missing, [2]);
-  assert.equal(result.answers.合成文字二, '人工合成回答二');
-  assert.equal(Object.hasOwn(result.answers, '合成文字一'), false);
+test('决策卡答复：选了「其他，我来说」要填文字才能提交', () => {
+  assert.equal(decisionAnswer(multi, ['0.0', '0.custom'], '  '), null);
+  assert.deepEqual(decisionAnswer(multi, ['0.0', '0.custom'], ' 先补字段 '), { option_ids: ['0.0', '0.custom'], custom_text: '先补字段' });
+  assert.deepEqual(decisionAnswer(single, ['0.custom'], '自己说'), { option_id: '0.custom', custom_text: '自己说' });
 });
 
-test('自定义文字替代单选，且不会遗漏多选中的补充文字', () => {
-  const result = buildQuestionSubmission(questions.slice(0, 2),
-    { 0: ['方案一'], 1: ['渠道一'] }, { 0: '自定义方案', 1: '自定义渠道' });
-  assert.deepEqual(result.answers, { 合成单选: '自定义方案', 合成多选: '渠道一,自定义渠道' });
-  assert.deepEqual(result.missing, []);
-  assert.deepEqual(result.answerDetails, {
-    合成单选: { selected_options: [], custom_text: '自定义方案' },
-    合成多选: { selected_options: ['渠道一'], custom_text: '自定义渠道' },
-  });
+test('还原勾选只认选项 ID：带逗号的选项保持一项，未知选项丢掉，只写文字时勾「其他」', () => {
+  assert.deepEqual(answerPicks(multi, { option_ids: ['0.0', '0.1'] }), ['0.0', '0.1']);
+  assert.deepEqual(answerPicks(single, { option_id: '0.1' }), ['0.1']);
+  assert.deepEqual(answerPicks(single, { option_id: '9.9' }), []);
+  assert.deepEqual(answerPicks(single, { custom_text: '方案二' }), ['0.custom']);
+  assert.deepEqual(answerPicks(single, {}), []);
+  assert.deepEqual(answerPicks(single, null), []);
 });
 
-test('结构化答案区分带逗号的选项和内容相同的自由文字', () => {
-  const list = [{ question: '合成多选', multiSelect: true, options: [{ label: '甲,乙' }] }];
-  const selected = buildQuestionSubmission(list, { 0: ['甲,乙'] });
-  const typed = buildQuestionSubmission(list, {}, { 0: '甲,乙' });
-  assert.deepEqual(selected.answers, typed.answers);
-  assert.deepEqual(selected.answerDetails.合成多选, { selected_options: ['甲,乙'], custom_text: '' });
-  assert.deepEqual(typed.answerDetails.合成多选, { selected_options: [], custom_text: '甲,乙' });
+test('结构化答案：选项或文字有一样才算，旧记录的空答案不算', () => {
+  assert.equal(hasStructuredAnswer({ option_id: '0.0' }), true);
+  assert.equal(hasStructuredAnswer({ option_ids: ['0.0'] }), true);
+  assert.equal(hasStructuredAnswer({ custom_text: '合成回答' }), true);
+  assert.equal(hasStructuredAnswer({}), false);
+  assert.equal(hasStructuredAnswer({ option_ids: [] }), false);
+  assert.equal(hasStructuredAnswer(null), false);
 });
 
-test('选项标签中的逗号保持完整，未知选项不作为有效答案', () => {
-  const list = [{ question: '合成选项', multiSelect: true, options: [{ label: '值一,值二' }] }];
-  assert.equal(buildQuestionSubmission(list, { 0: ['值一,值二'] }).answers.合成选项, '值一,值二');
-  assert.deepEqual(buildQuestionSubmission(list, { 0: ['不存在的选项'] }).missing, [0]);
-});
-
-test('不要求文字题选择占位项，文字优先于模型生成的选项', () => {
-  const list = [{ question: '合成文字', options: [{ label: '占位示例' }] }];
-  assert.equal(buildQuestionSubmission(list, {}, { 0: '人工合成回答' }).answers.合成文字, '人工合成回答');
-  assert.equal(buildQuestionSubmission(list, { 0: ['占位示例'] }, { 0: '人工合成回答' }).answers.合成文字, '人工合成回答');
-  assert.deepEqual(buildQuestionSubmission(list, { 0: ['占位示例'] }).missing, [0]);
-});
-
-test('Other 输入指引不能冒充答案，普通业务选项不被误判', () => {
-  for (const label of ['Other', '（点 Other 输入自由文本）', '占位示例一']) {
-    assert.equal(isCustomAnswerOption({ label }), true);
-  }
-  for (const label of ['方案一', '其他', '其它', '其他方案继续使用', 'Another option']) {
-    assert.equal(isCustomAnswerOption({ label }), false);
-  }
-});
-
-test('正常的其他选项与多选补充文字可以同时提交', () => {
-  const list = [{ question: '合成多选', multiSelect: true, options: [{ label: '其他' }, { label: '方案一' }] }];
-  assert.equal(buildQuestionSubmission(list, { 0: ['其他'] }, { 0: '人工合成说明' })
-    .answers.合成多选, '其他,人工合成说明');
-});
-
-test('非字符串选项说明不阻止填写正式选项或文字', () => {
-  const list = [{ question: '合成问题', options: [{ label: '方案一', description: 42 }] }];
-  assert.equal(buildQuestionSubmission(list, { 0: ['方案一'] }).answers.合成问题, '方案一');
-  assert.equal(buildQuestionSubmission(list, {}, { 0: '人工合成回答' }).answers.合成问题, '人工合成回答');
-});
-
-test('模型只在说明中标记占位时，也必须填写真实文字', () => {
-  const option = { label: '示例一', description: '占位示例选项，仅示意，实际请通过 Other 输入。' };
-  const list = [{ question: '合成文字', options: [option] }];
-  assert.equal(isCustomAnswerOption(option), true);
-  assert.deepEqual(buildQuestionSubmission(list, { 0: ['示例一'] }).missing, [0]);
-  assert.equal(buildQuestionSubmission(list, {}, { 0: '人工合成回答' }).answers.合成文字, '人工合成回答');
-  assert.equal(isCustomAnswerOption({ label: '方案一', description: '正式业务选择，不是占位选项。' }), false);
-});
-
-test('问题文本包含对象原型名称时仍能安全绑定自己的答案', () => {
-  const result = buildQuestionSubmission([{ question: '__proto__' }], {}, { 0: '人工合成回答' });
-  assert.deepEqual(result.answers, JSON.parse('{"__proto__":"人工合成回答"}'));
-});
-
-test('缺失题目、重复问题和非法选项明确标记为无效', () => {
-  for (const list of [undefined, [], [{ question: '' }], [null],
-    [{ question: '重复' }, { question: '重复' }],
-    [{ question: '合成问题', options: 'invalid' }],
-    [{ question: '合成问题', options: [null] }]]) {
-    assert.equal(buildQuestionSubmission(list).invalid, true);
-  }
+test('文字题（只剩「其他，我来说」）直接勾上，草稿没写字不算填过', () => {
+  const text = { question_id: 'q-3', options: [OPTIONS[2]] };
+  const draft = initialDraft(text);
+  assert.deepEqual(draft, { picks: ['0.custom'], custom: '', expired: false });
+  assert.equal(draftFilled(text, draft), false);
+  assert.equal(draftFilled(text, { ...draft, custom: '合成回答' }), true);
+  assert.deepEqual(initialDraft(single).picks, []);
+  assert.equal(draftFilled(single, { picks: ['0.1'], custom: '', expired: false }), true);
+  assert.equal(draftFilled(single, null), false);
 });

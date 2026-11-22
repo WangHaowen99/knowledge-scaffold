@@ -40,6 +40,11 @@ PASSTHROUGH = {
 STEPS_MAX = 30
 ASK_TOOL = "AskUserQuestion"
 CUSTOM_OPTION_LABEL = "其他，我来说"
+# 模型写进选项里的「Other / 占位」项不是真答案：卡片自带「其他，我来说」，这类选项不出卡、不能被选中
+_OTHER_LABEL = re.compile(r"^(other|其他回答|自定义回答)$", re.I)
+_OTHER_HINT = re.compile(r"(?:点|选).*\bother\b.*(?:输入|填写|回答|文本)", re.I | re.ASCII)
+_PLACEHOLDER_LABEL = re.compile(r"^占位(?:项|示例|选项|答案)(?:[一二三四\d]+)?$")
+_PLACEHOLDER_NOTE = re.compile(r"^(?:占位(?:示例|选项|答案|项)|仅(?:为|作)?占位)")
 
 # 旧版中断原因 → 契约 EC-05 的 by
 _INTERRUPT_BY = {
@@ -589,6 +594,38 @@ def question_ids(request_id: str, count: int) -> list[str]:
     return [request_id] if count <= 1 else [f"{request_id}-{index}" for index in range(count)]
 
 
+def _option_label(option) -> str:
+    label = option.get("label") if isinstance(option, dict) else option
+    return label.strip() if isinstance(label, str) else ""
+
+
+def _placeholder_option(option) -> bool:
+    label = _option_label(option)
+    note = option.get("description") if isinstance(option, dict) else None
+    note = note.strip() if isinstance(note, str) else ""
+    return bool(_OTHER_LABEL.match(label) or _OTHER_HINT.search(label) or _PLACEHOLDER_LABEL.match(label)
+                or _PLACEHOLDER_NOTE.match(note))
+
+
+def question_problem(tool_input) -> str:
+    """AskUserQuestion 的入参出不了卡的原因，没问题时为空：答案按问题文本交回，问题文本缺了、重复了就对不上。"""
+    raw = tool_input.get("questions") if isinstance(tool_input, dict) else None
+    if not isinstance(raw, list) or not raw:
+        return "缺少有效的问题列表"
+    seen = set()
+    for number, item in enumerate(raw, 1):
+        text = item.get("question") if isinstance(item, dict) else item
+        if not isinstance(text, str) or not text.strip():
+            return f"第 {number} 题缺少有效的问题文本"
+        if text in seen:
+            return f"第 {number} 题的问题文本重复"
+        seen.add(text)
+        options = item.get("options") if isinstance(item, dict) else None
+        if options is not None and (not isinstance(options, list) or not all(_option_label(o) for o in options)):
+            return f"第 {number} 题的选项必须是带有非空 label 的列表"
+    return ""
+
+
 def build_questions(request_id: str, tool_input: dict, *, conversation_id: str, exec_id: str | None = None,
                     step_label: str = "") -> list[dict]:
     raw = (tool_input or {}).get("questions") or []
@@ -598,8 +635,9 @@ def build_questions(request_id: str, tool_input: dict, *, conversation_id: str, 
     questions = []
     for index, item in enumerate(raw):
         item = item if isinstance(item, dict) else {"question": str(item)}
+        given = item.get("options") if isinstance(item.get("options"), list) else []
         options = []
-        for position, option in enumerate(item.get("options") or []):
+        for position, option in enumerate(o for o in given if not _placeholder_option(o)):
             option = option if isinstance(option, dict) else {"label": str(option)}
             label = str(option.get("label") or "")
             options.append({

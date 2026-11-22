@@ -2,34 +2,68 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button, Chip, Icon, Ring, cx } from '../../ui/index.jsx';
 import { useActions } from './cards.jsx';
-import { DiffBlock, Inline, MSys, Tli } from './parts.jsx';
-import { decisionAnswer } from './questionModel.js';
+import { DiffBlock, Inline, MA, MSys, Tli } from './parts.jsx';
+import { decisionView, draftFilled, hasStructuredAnswer, initialDraft } from './questionAnswers.js';
 
 function useAnswer(q) {
   const actions = useActions();
   const [busy, setBusy] = useState(false);
   const submit = async (body) => {
     setBusy(true);
-    try { await actions.answer(q.question_id, body); } finally { setBusy(false); }
+    try { await actions.answer(q.question_id, body); } catch (e) { actions.fail?.(e); } finally { setBusy(false); }
   };
   return [busy, submit];
 }
 
-// 结构化决策卡（wb-l2）：没选不能确认；键盘 1–4 选择、↵ 确认。多选题（q.multi）点选项是勾选 / 取消，答复传 option_ids
-export function DecisionCard({ q, active }) {
+// 决策卡的草稿记在页面的 actions.answerDrafts（按 question_id）：问题失效、卡片换成只读时还能显示填过的内容
+function useDraft(q) {
+  const store = useActions().answerDrafts;
+  const [draft, setDraft] = useState(() => store?.get(q.question_id) || initialDraft(q));
+  const update = (fn) => setDraft((cur) => {
+    const next = fn(cur);
+    store?.set(q.question_id, next);
+    return next;
+  });
+  return [draft, update];
+}
+
+// 结构化决策卡（wb-l2）：没选不能确认；键盘 1–4 选择、↵ 确认。多选题（q.multi）点选项是勾选 / 取消，答复传 option_ids。
+// 给了 answer 是回答过的卡：选项照常列出、勾着当时选的，只读；withdrawn 是失效的卡：只读显示没交上去的草稿
+export function DecisionCard({ q, active, answer = null, withdrawn = false, reason = '' }) {
   const actions = useActions();
-  const [picks, setPicks] = useState([]);
-  const [custom, setCustom] = useState('');
-  const [busy, submit] = useAnswer(q);
-  const toggle = (id) => setPicks((cur) => (q.multi ? (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]) : [id]));
+  const [draft, update] = useDraft(q);
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+  const inflight = useRef(false);
+  const view = decisionView(q, { answer, draft, withdrawn, reason, sent });
+  const { picks, custom, locked, body } = view;
+  const toggle = (id) => {
+    if (!locked) update((d) => ({ ...d, picks: q.multi ? (d.picks.includes(id) ? d.picks.filter((x) => x !== id) : [...d.picks, id]) : [id] }));
+  };
+  const setCustom = (text) => update((d) => ({ ...d, custom: text }));
+  // 连按回车、双击只提交一次；问题已失效（410）时留在卡上只读显示，不弹错
+  const submit = async (answerBody) => {
+    if (!answerBody || inflight.current) return;
+    inflight.current = true;
+    setBusy(true);
+    try {
+      await actions.answer(q.question_id, answerBody);
+      setSent(true);
+    } catch (e) {
+      if (e?.status === 410) update((d) => ({ ...d, expired: true }));
+      else actions.fail?.(e);
+    } finally {
+      inflight.current = false;
+      setBusy(false);
+    }
+  };
   const chosen = q.options.filter((o) => picks.includes(o.id));
   const opt = q.multi ? null : chosen[0];
-  const body = decisionAnswer(q, picks, custom);
   const ref = useRef({});
   ref.current = { body };
 
   useEffect(() => {
-    if (!active) return undefined;
+    if (!active || locked) return undefined;
     const h = (e) => {
       const tag = (document.activeElement?.tagName || '');
       if (/TEXTAREA|INPUT/.test(tag) || e.metaKey || e.ctrlKey) return;
@@ -42,24 +76,31 @@ export function DecisionCard({ q, active }) {
     };
     document.addEventListener('keydown', h);
     return () => document.removeEventListener('keydown', h);
-  }, [active, q.options, q.multi, busy]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [active, locked, q.options, q.multi, busy]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const label = q.multi
     ? (chosen.length ? `确认 ${chosen.map((o) => o.key).join('、')}` : '确认所选')
     : (opt ? `确认方向 ${opt.key}` : '确认这个方向');
   return (
     <div className="wb-dc">
-      <div className="wx-eb"><Icon name="hand" />{q.eyebrow || `需要你决定 · ${q.step_label}`}</div>
+      <div className="wx-eb">
+        <Icon name={view.mode === 'answered' ? 'check' : 'hand'} />
+        {view.mode === 'answered' ? '已回答' : view.mode === 'expired' ? '已失效' : q.eyebrow || `需要你决定 · ${q.step_label}`}
+      </div>
       <h4>{q.title}</h4>
       {q.background_md ? <div className="wx-ctx"><Inline text={q.background_md} anchors={q.anchors} /></div> : null}
       <div className="opts">
         {q.options.map((o, i) => (
-          <div key={o.id} className={cx('opt', picks.includes(o.id) && 'on')} onClick={() => toggle(o.id)} data-i={i + 1}>
+          <div
+            key={o.id} className={cx('opt', picks.includes(o.id) && 'on')} onClick={() => toggle(o.id)} data-i={i + 1}
+            aria-disabled={locked || undefined} style={locked ? { cursor: 'default' } : undefined}
+          >
             <span className="k">{o.key}</span>
             <div className="grow">
               <div className="t row g8"><span>{o.label}</span>{o.recommended ? <span className="chip blue sm">推荐</span> : null}</div>
               {o.consequence ? <div className="c">{o.consequence}</div> : null}
-              {o.custom && picks.includes(o.id) ? (
+              {o.custom && picks.includes(o.id) && locked ? <div className="c">{custom}</div> : null}
+              {o.custom && picks.includes(o.id) && !locked ? (
                 <div className="mt8" onClick={(e) => e.stopPropagation()}>
                   <div className="inp area" style={{ minHeight: 60 }}><textarea style={{ height: 44 }} autoFocus placeholder={q.custom_placeholder || '说说你的方向…'} value={custom} onChange={(e) => setCustom(e.target.value)} /></div>
                 </div>
@@ -68,19 +109,22 @@ export function DecisionCard({ q, active }) {
           </div>
         ))}
       </div>
-      {opt?.preview?.length ? (
+      {opt?.preview?.length && !locked ? (
         <div className="wb-prev">
           <div className="lb"><Icon name="eye" size={14} />选 {opt.key} 会这样改</div>
           <DiffBlock lines={opt.preview} />
         </div>
       ) : null}
-      <div className="wx-dcf">
-        <span className="sp" />
-        <Button size="sm" kind="ghost" onClick={() => actions.later?.(q)}>稍后决定</Button>
-        <Button kind="primary" size="sm" title={`1–${q.options.length} 选择 · ↵ 确认`} disabled={!body || busy} onClick={() => submit(body)}>
-          {label}
-        </Button>
-      </div>
+      {view.notice ? <div className="xs muted mt8">{view.notice}</div> : null}
+      {view.mode === 'open' || view.mode === 'sent' ? (
+        <div className="wx-dcf">
+          <span className="sp" />
+          <Button size="sm" kind="ghost" disabled={locked} onClick={() => actions.later?.(q)}>稍后决定</Button>
+          <Button kind="primary" size="sm" title={`1–${q.options.length} 选择 · ↵ 确认`} disabled={!body || busy || locked} onClick={() => submit(body)}>
+            {label}
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -192,6 +236,27 @@ export function QuestionCard({ q, active }) {
     case 'confirm': return <ConfirmCard q={q} />;
     default: return <DecisionCard q={q} active={active} />;
   }
+}
+
+const isDecision = (q) => !['branch', 'expert', 'walkthrough', 'collection', 'confirm'].includes(q.kind);
+
+// 用户回答过的问题：决策卡有选项或文字的回答时整张只读回显，刷新、重开对话也一样；旧记录只有一句、策略代答的收成一行
+export function AnsweredQuestion({ item }) {
+  const q = item.question;
+  const answer = item.answer || q.answer;
+  const byUser = !item.answered_by || item.answered_by === 'user';
+  if (!isDecision(q) || !byUser || !hasStructuredAnswer(answer)) return <DecidedRow item={item} />;
+  return <MA><div data-qid={q.question_id}><DecisionCard q={q} answer={answer} /></div></MA>;
+}
+
+// 失效的问题：决策卡上填过东西就只读留着（说明没提交），没填过只留一行
+export function WithdrawnQuestion({ item, className }) {
+  const q = item.question;
+  const draft = useActions().answerDrafts?.get(q.question_id);
+  if (!isDecision(q) || !draft || !(draft.expired || draftFilled(q, draft))) {
+    return <MSys left className={className}>这个问题已失效：{item.withdrawn_reason || q.title}</MSys>;
+  }
+  return <MA className={className}><div data-qid={q.question_id}><DecisionCard q={q} withdrawn reason={item.withdrawn_reason} /></div></MA>;
 }
 
 // 回答后收起成一行

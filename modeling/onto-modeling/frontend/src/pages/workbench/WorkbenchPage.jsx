@@ -608,9 +608,13 @@ export default function WorkbenchPage({ route }) {
   }, [running, ab.running, interrupt]);
 
   const fail = (e) => toast(errorText(e), 'alert');
+  // 决策卡草稿（question_id → 选了什么、写了什么）：问题失效后卡片只读留着这些内容
+  const answerDrafts = useRef(new Map());
   const actions = useMemo(() => ({
     fail,
-    answer: async (qid, body) => { try { await api.answerQuestion(pid, cid, qid, body); } catch (e) { fail(e); } },
+    answerDrafts: answerDrafts.current,
+    // 出错交给卡片处理：问题已失效（410）时卡片留着草稿只读显示，其他错误卡片提示后可再提交
+    answer: (qid, body) => api.answerQuestion(pid, cid, qid, body),
     later: () => navigate(pagePath('inbox', pid)),
     // 撤回这一轮（CS-05）：回到上一个版本，另存一个版本；之后又改过同一条时服务端说明原因、不撤
     discard: async (cs) => {
