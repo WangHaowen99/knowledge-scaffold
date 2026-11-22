@@ -501,7 +501,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `compare_user_storage_full` / `compare_storage_full` | 429 / 507 | 本人、全局临时空间满 | — |
 | `compare_service_unavailable` | 503 | 多进程部署时本进程没拿到对比服务锁 | — |
 
-`feedback_invalid`、`artifacts_changed`、`version_mismatch`、`optimization_not_supported`、`note_required` 随外部反馈与评测优化删除（ADR-0101）。
+`feedback_invalid`、`note_required` 随外部反馈与评测优化删除（ADR-0101）。`artifacts_changed`（评测产物在下载途中重新生成）、`version_mismatch`（评测的不是项目当前版本）、`optimization_not_supported`（求解验证轮次不能优化）随数据飞轮回来，只出现在 `FW-07`（ADR-0108），状态都是 409。
 
 门禁链里各项的 `Finding.code`（不作为 HTTP 错误码出现）：
 
@@ -517,6 +517,21 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 - 证据：`anchor_missing`（ERROR）、`property_unevidenced`（WARNING）；
 - 流程关卡：`node_blocked`（`details.node_id`）；
 - 包声明的门禁：`<包>.<规则ID>`，例如 `trace.pass_rate`。
+
+### 2.9a 数据飞轮（ADR-0108）
+
+| code | 状态 | 含义 | details |
+|---|---|---|---|
+| `flywheel_busy` | 409 | 同一用户在本项目的上一个飞轮操作 30 秒内没处理完 | — |
+| `flywheel_blocked` | 409 | 运行当前的状态不能做这个操作（已处理、版本不一致、有运行在跑、有别的待发布候选、没有可回退的快照、助手在对话中等），`message` 说明原因 | — |
+| `flywheel_run_not_found` | 404 | 运行记录不存在 | — |
+| `flywheel_others_working` | 409 | 同一项目另一位用户的飞轮正在优化或发布（项目转移前后才会出现） | — |
+| `flywheel_assistant_busy` | 409 | 建模助手正忙：对话、排队的消息、命令链、未合入的变更集、自主构建，或同一条命令刚提交过 | — |
+| `pack_not_enabled` | 409 | 工作区没装配 `/ontology-evolution`（基础建模能力 0.6.2 之前装配的项目），重新装配后可用 | `command` |
+| `assistant_unavailable` | 503（或会话宿主给的状态） | 命令没能交给助手 | — |
+
+`delegation_unresolved`、`delegation_invalid_response`、`evaluation_login_missing` 只记进飞轮状态（`delegation.<服务>.message`、运行的 `error`），
+不作为 HTTP 错误码出现。
 
 ### 2.10 自主构建
 
@@ -3216,7 +3231,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 ### 3.21a 独立评测（ADR-0092）
 
 评测在独立的评测服务里跑。onto 只做三件事：给浏览器入口（`ES-01`）、收完成通知（`ES-00`）、以当前用户自己的登录读回结果（`ES-02`～`ES-06`）。
-评测优化（`ES-07`、`ES-08`、`ES-12`）随反馈演进包删除（ADR-0101）。评测记录按发起人私有：同一个 Hub 包由多人评测时，各人只看见自己的轮次。
+评测优化（`ES-07`、`ES-08`、`ES-12`）随反馈演进包删除（ADR-0101），改由数据飞轮承接（3.21b，ADR-0108）。评测记录按发起人私有：同一个 Hub 包由多人评测时，各人只看见自己的轮次。
 本地模式（没有统一账号）不能用评测：`ES-02`～`ES-06` 与 develop 一样返回 401（码 `login_required`），页面按「评测状态读取失败」显示为评测服务未配置。
 
 #### ES-00 完成通知（评测服务调用）
@@ -3273,7 +3288,7 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 #### ES-07 评测优化（已删除，ADR-0101）
 
-`POST /api/v1/projects/{id}/evaluations/{run_id}/optimization` 随反馈演进包删除，发布后也不再回写评测服务。
+`POST /api/v1/projects/{id}/evaluations/{run_id}/optimization` 随反馈演进包删除。评测优化和发布后回写评测服务改由数据飞轮做（`FW-07`，ADR-0108）：只回写飞轮开始的优化，网页发布页和 MCP 发布不立即回写。
 
 #### ES-08 标记处理失败（已删除，ADR-0101）
 
@@ -3302,6 +3317,156 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 #### ES-12 旧版报告的评测优化（已删除，ADR-0101）
 
 `POST /api/v1/projects/{id}/legacy-evaluations/{id}/optimization` 随反馈演进包删除。
+
+---
+
+### 3.21b 数据飞轮（ADR-0108）
+
+数据飞轮按（项目，当前登录用户）承接评测服务的结果：「自动化处理优化建议」开关让建模助手按评测建议修订并检查，「自动化确认发布与发起评测」
+开关把通过检查的结果发布为 Hub 正式版本，再评测新版本。页面关闭后由用户登记的委托在后台继续，每 15 秒一轮。行为与 develop !630 一致，
+差异见 ADR-0108。界面由前端另接，页面 id 届时补上。
+
+- 鉴权：全部要项目所有者，全局管理员也不例外（`403 project_owner_only`）；写接口（`FW-02`、`FW-07`～`FW-14`）另要项目未归档
+  （`409 project_archived`），归档后状态与记录照样可读。要统一账号登录：本地模式 `FW-01` 返回 `{available: false, message}`，其他接口 `401 login_required`（与 `ES-02`～`ES-06` 同码，前端不当成登录过期）。
+- 旧路径：develop 的 `/api/projects/{id}/flywheel…`，子路径、查询参数、请求体与成功响应的字段不变，不进旧路径兼容层。
+- 浏览器可以在请求头 `X-Refresh-Token` 带刷新令牌（最多 8192 字节，超长按没带）：发布开关打开时转交评测服务换成委托专用的登录，
+  `FW-09` 用它发起评测。建模不保存。
+- 飞轮状态存在数据目录（`flywheel/<项目>/<用户>.json`），不进工作区 git。飞轮的修订、快照与回退会提交到主线（`chore: 数据飞轮 …`、`revert: 数据飞轮 …`）。
+
+**FlywheelView**（`FW-01`、`FW-02`、`FW-07`～`FW-14` 的响应）：
+
+```
+{available: true, message, can_write,
+ project: {id, name}, package: {ontology_id, release_id, version},
+ evaluation: {configured, reachable: bool|null, notifications, evaluating},
+ settings: {optimize, publish, max_rounds: 1|3|5|0, delegation_days: 1|3|7|30|0},   // 0 = 无限
+ auto_rounds,
+ delegation: {evaluation: Grant, hub: Grant, login: "off"|"active"|"missing", background: bool},
+ assistant_busy, active_id, candidate_id, pending,
+ runs: RunSummary[],   // 最新 50 条；可发布的运行另带 earlier_changes
+ total, audit: AuditEntry[]}   // 最新 50 条
+Grant = {status: "off"|"active"|"pending"|"unlinked"|"issue", expires_at, message}
+AuditEntry = {at, actor, action, description}
+```
+
+`RunSummary` 是运行里有值的这些字段：`id`（`FW-001`）、`kind`、`source_id`、`status`、`reason`、`note`、`error`、`mode`、`publish_mode`、
+`human_hold`、`publish_hold`、`step`、`eval_run_id`、`release_id`、`version`、`revision`、`score`、`after_score`、`suggestions`、`suggestions_error`、
+`received_at`、`started_at`、`published_at`、`target_version`、`published_release_id`、`snapshot`、`restored_iteration`、`local_record_pending`、
+`changed`、`check_groups`、`content_version`、`evaluation`、`trigger`、`cases`、`graph_confirmation`、`graph_confirmation_code`、`origin`、
+`base_release_id`、`base_version`。`status` 取 `waiting_optimize`、`optimizing`、`waiting_publish`、`publishing`、`waiting_evaluation`、`evaluating`、
+`published`、`passed`、`blocked`、`interrupted`、`ignored`、`expired`、`rolledback`、`restored`。检查项多一项 `readiness`（ADR-0103 的发布就绪，没能完成按未通过）。
+
+#### FW-01 飞轮状态
+
+`GET /api/v1/projects/{id}/flywheel` · 所有者 · 旧：`GET /api/projects/{id}/flywheel` · 审计：否（后台与读状态时自动执行的步骤记 `FLYWHEEL`） · 依据：ADR-0108 · 页面：—
+
+- 查询参数：`reconcile?: bool`，true 时向评测服务对账。
+- 读的同时用调用者的登录推进飞轮：承接新评测与用户反馈、登记或续期委托、重试撤销、回写评测优化的处理结果、按开关执行下一步。
+  前端轮询用这个 GET，轮询不刷审计。
+- 响应 `200`：`FlywheelView`。
+
+#### FW-02 开关与上限
+
+`PUT /api/v1/projects/{id}/flywheel/settings` · 所有者 · 旧：`PUT /api/projects/{id}/flywheel/settings` · 审计：是 · 依据：ADR-0108 · 页面：—
+
+- 请求：`{optimize?, publish?, max_rounds?: 1|3|5|0, delegation_days?: 1|3|7|30|0}`，没给的不变，未知字段 400。关开关时已在等待的事项不变，
+  之后的自动步骤停下；改完按新开关登记或撤销委托。变更记进飞轮自己的 `audit`。
+- 响应 `200`：`FlywheelView`。
+- 错误：`invalid_argument`（`fields: {max_rounds|delegation_days: "one_of"}`）、`flywheel_busy`。
+
+#### FW-03 运行记录
+
+`GET /api/v1/projects/{id}/flywheel/runs` · 所有者 · 旧：`GET /api/projects/{id}/flywheel/runs` · 审计：否 · 依据：ADR-0108 · 页面：—
+
+- 查询参数：`offset`（≥ 0，默认 0）、`limit`（1～50，默认 20）、`filter`：`all|waiting|running|success|blocked|rolledback`。只读，不推进飞轮。
+- 响应 `200`：`{items: RunSummary[], total, next_offset: int|null}`，最新在前。新运行加在前面，后一批可能与前一批重复但不会漏，前端去重。
+- 错误：`invalid_argument`（`limit` 超过 50、`filter` 不认识）。
+
+#### FW-04 设置变更记录
+
+`GET /api/v1/projects/{id}/flywheel/audit` · 所有者 · 旧：`GET /api/projects/{id}/flywheel/audit` · 审计：否 · 依据：ADR-0108 · 页面：—
+
+- 查询参数与分批同 `FW-03`（没有 `filter`）。响应 `200`：`{items: AuditEntry[], total, next_offset}`。
+
+#### FW-05 运行详情
+
+`GET /api/v1/projects/{id}/flywheel/runs/{run_id}` · 所有者 · 旧：同子路径 · 审计：否 · 依据：ADR-0108 · 页面：—
+
+- `run_id` 形如 `FW-001`（`^FW-\d{3,6}$`，不合格 400 `invalid_argument`）。
+- 响应 `200`：`RunSummary` 加 `{history: [{title, text, at, result: "done"|"fail"|"wait"}]（最多 40 条）, checks, candidate, report, hub_error, conversation_id}`。
+- 错误：`flywheel_run_not_found`。
+
+#### FW-06 改了哪些知识包文档
+
+`GET /api/v1/projects/{id}/flywheel/runs/{run_id}/changes` · 所有者 · 旧：同子路径 · 审计：否 · 依据：ADR-0108 · 页面：—
+
+- 对比执行前快照与候选内容（优化中或还没有候选时对比工作区，`head` 为 null），只看 `ontology/`。
+- 响应 `200`：`{base, head, files: [{path, status: "added"|"modified"|"deleted", added, removed, lines: [{kind, text}], truncated}], total, truncated}`，
+  最多 20 个文件、每个最多 80 行；没有快照时 `{base: null, head: null, files: [], total: 0, truncated: false}`。
+
+#### FW-07 确认评测优化
+
+`POST /api/v1/projects/{id}/flywheel/runs/{run_id}/optimize` · 所有者 · 旧：同子路径 · 审计：是 · 依据：ADR-0108 · 页面：—
+
+- 把这一轮的报告、完整回答和建议导入 `reports/`（单独提交，同一修订不重复导入），提交执行前快照，再经会话宿主（S-20 的同一套守卫）发
+  `/ontology-evolution <报告> --flywheel`；较早版本的用户反馈用 `--flywheel-recheck`，先核对当前内容。助手的变更集合入主线后执行检查。
+- 响应 `200`：`FlywheelView`，这次运行进入 `optimizing`。
+- 错误：`flywheel_blocked`、`flywheel_assistant_busy`、`flywheel_others_working`、`flywheel_busy`、`pack_not_enabled`、`assistant_unavailable`、
+  `version_mismatch`、`optimization_not_supported`、`artifacts_not_ready`、`artifacts_changed`，以及 `eval_*`。
+
+#### FW-08 确认发布
+
+`POST /api/v1/projects/{id}/flywheel/runs/{run_id}/publish` · 所有者 · 旧：同子路径 · 审计：是 · 依据：ADR-0108 · 页面：—
+
+- 复核检查后在后台发布 Hub 正式版本（重试发布也用这个）。发布按主线最新提交导出，带检查过的 `expected_revision`：之后主线又有提交时不发布，
+  运行停在 `content_changed`。启用了求解契约而当前修订没有通过的求解验证时，飞轮不代用户确认，停在 `solver_unverified`。
+- 响应 `200`：`FlywheelView`，运行进入 `publishing`。发布中的失败记进运行的 `reason`（`content_changed`、`checks_failed`、`solver_unverified`、
+  `request_conflict`、`hub_expired`、`authorization` 等），不作为本接口的错误。
+- 错误：`flywheel_blocked`、`flywheel_others_working`、`flywheel_busy`。
+
+#### FW-09 发起发布后的评测
+
+`POST /api/v1/projects/{id}/flywheel/runs/{run_id}/evaluate` · 所有者 · 旧：同子路径 · 审计：是 · 依据：ADR-0108 · 页面：—
+
+- 发布开关关闭时用。请求体可省略：`{replace_graph?: bool, graph_confirmation_code?: string}`（hex，最多 64 位）；评测服务要求确认删除
+  评测图范围内的旧数据时，带上提示里的确认码。用浏览器转交的 `X-Refresh-Token` 在评测服务发起，评测跑完不需要页面一直开着。
+- 响应 `200`：`FlywheelView`。错误：`flywheel_blocked`、`flywheel_busy`、`invalid_argument`，以及 `eval_*`。
+
+#### FW-10 跳过发布后的评测
+
+`POST /api/v1/projects/{id}/flywheel/runs/{run_id}/skip-evaluation` · 所有者 · 旧：同子路径 · 审计：是 · 依据：ADR-0108 · 页面：—
+
+- 等待评测和评测中的运行都能跳过；评测服务里的评测照常进行。响应 `200`：`FlywheelView`。错误：`flywheel_blocked`、`flywheel_busy`。
+
+#### FW-11 重新检查
+
+`POST /api/v1/projects/{id}/flywheel/runs/{run_id}/recheck` · 所有者 · 旧：同子路径 · 审计：是 · 依据：ADR-0108 · 页面：—
+
+- 只对停在 `checks_failed`、`content_changed` 的运行：把主线当前内容重新检查，作为候选。响应 `200`：`FlywheelView`。
+- 错误：`flywheel_blocked`（另有别的待发布候选时也是）、`flywheel_others_working`、`flywheel_busy`。
+
+#### FW-12 忽略
+
+`POST /api/v1/projects/{id}/flywheel/runs/{run_id}/ignore` · 所有者 · 旧：同子路径 · 审计：是 · 依据：ADR-0108 · 页面：—
+
+- `waiting_optimize`、`interrupted`，以及停在 `version_mismatch`、`suggestions_failed`、`no_changes`、`optimization_failed`、
+  `optimization_interrupted`、`assistant_unavailable` 的运行可以忽略，不改知识包。响应 `200`：`FlywheelView`。错误：`flywheel_blocked`、`flywheel_busy`。
+
+#### FW-13 中止
+
+`POST /api/v1/projects/{id}/flywheel/runs/{run_id}/stop` · 所有者 · 旧：同子路径 · 审计：是 · 依据：ADR-0108 · 页面：—
+
+- 打断飞轮自己正在优化的那一轮并恢复执行前快照（`revert:` 提交）。那一轮已结束、助手在处理别的对话时不中止；打断后助手仍在执行时不恢复，
+  之后可在 `FW-14` 回退。响应 `200`：`FlywheelView`。错误：`flywheel_blocked`、`flywheel_busy`。
+
+#### FW-14 回退
+
+`POST /api/v1/projects/{id}/flywheel/runs/{run_id}/rollback` · 所有者 · 旧：同子路径 · 审计：是 · 依据：ADR-0108 · 页面：—
+
+- 请求：`{scope: "workspace"|"hub"}`（默认 `workspace`）。把执行前快照恢复成新迭代（`revert:` 提交），两个开关暂停，其他待发布候选作废；
+  `hub` 时检查通过后再发布恢复版本。项目元数据、运行状态与仓库配置保持当前值。
+- 响应 `200`：`FlywheelView`。
+- 错误：`flywheel_blocked`（没有快照、有运行在跑、助手在对话中修改）、`flywheel_others_working`、`flywheel_busy`、`invalid_argument`。
 
 ---
 

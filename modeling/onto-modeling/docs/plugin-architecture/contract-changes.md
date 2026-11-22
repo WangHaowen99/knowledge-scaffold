@@ -2569,3 +2569,28 @@ develop !638 把 auth-server 从建模离线包里拆出去单独交付，并加
 5. **不加的兼容口**：develop 新增的 `/api/auth/me` 只给旧前端用，旧前端已删，v1 用 `A-07`，不在第 6 章登记。
 6. **配置**：新增 `ONTO_AUTH_STARTUP_WAIT_ENABLED`（默认 `true`），配了 `ONTO_WEB_AUTH_URL` 时启动先等 auth-server 就绪；
    `ONTO_WEB_AUTH_ADMIN_TOKEN` 部署时不再自动生成，要和独立 Auth 的管理令牌相同。
+
+## 2026-11-22 · 知识包数据飞轮（develop !630，ADR-0108）
+
+develop 的数据飞轮后端移植到插件化结构。新增 API 契约 3.21b `FW-01`～`FW-14` 与错误码表 2.9a。子路径、查询参数、请求体和成功响应的字段
+与 develop 一致，前端照用；下面是与 develop 形状不同的地方。
+
+1. **路径**：`/api/projects/{id}/flywheel…` 改为 `/api/v1/projects/{id}/flywheel…`，不进旧路径兼容层。
+2. **错误体**：v1 的 `{code, message, details, trace_id}`，前端读 `message`（develop 是 `detail`）。请求校验失败由 422 改为
+   `400 invalid_argument`：`max_rounds`、`delegation_days` 不在可选值里时 `details.fields` 为 `"one_of"`；`limit` 超过 50、`filter` 不认识、
+   `run_id` 不合格、`scope` 不认识也是 400。本地模式（没有统一账号）下 `FW-01` 照旧返回 `{available: false, message}`，其他接口回
+   `401 login_required`（与 ES-02～ES-06 同码，前端不当成登录过期去刷新）。
+3. **权限**：只有项目所有者能用，非所有者（含全局管理员）`403 project_owner_only`；归档项目写接口 `409 project_archived`，读照常。
+   develop 的「成员凭项目角色可编辑」「只读成员只能看」不再有；委托只替未归档项目的所有者登记，项目转移、归档或删除后由后台一轮撤销
+   旧所有者的委托（打开页面只重试撤销）。`delegation.<服务>.message` 的「不代执行」说明随之改为「后台只代项目所有者执行」。
+4. **新错误码**：`pack_not_enabled`（409，`details.command`：工作区没装配 `/ontology-evolution`）；重复提交同一命令或自主构建运行中，
+   开始优化回 `409 flywheel_assistant_busy`（与助手正忙同码，自动执行等下一轮）。
+5. **检查**：检查结果多一项 `readiness`（ADR-0103 发布就绪，归在数据绑定一组），检查没能完成按未通过；发布复核遇到发布门禁的码
+   （`script_output_unverified`、`package_structure_invalid` 等）停在 `checks_failed`。
+6. **发布**：按主线最新提交导出发布，`expected_revision` 比对导出树，不一致时运行停在 `content_changed`；`hub_packages.revision_conflict`
+   的 `details` 改为契约 2.4 的 `{target: "ontology", expected, actual}`（develop 是 `{expected_revision, actual_revision}`，只在飞轮内部用）。
+   飞轮的提交信息前缀是 `chore:`、`revert:`。
+7. **回写**：ES-02 不带 `writeback`，没有 ES-08 标记处理失败，网页发布不调 `after_publish`；评测优化的处理结果只在用户打开飞轮时回写。
+8. **能力包**：`/ontology-evolution` 与 `check_eval_generalization.py` 回到基础建模能力 0.6.2（ADR-0101 删除的反馈演进包不恢复）；
+   命令里的数据表对账用 `table_profile.py`，不写评测数据源的表头 CSV。
+9. **后台调度**：服务启动时开始每 15 秒一轮的飞轮后台任务。不新增部署变量。
