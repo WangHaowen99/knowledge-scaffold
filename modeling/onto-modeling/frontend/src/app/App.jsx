@@ -25,6 +25,8 @@ const GLOBAL_PAGES = ['plugins', 'plugin-detail', 'plugin-upload', 'me', 'sys', 
 // 登录、入口页、工作台（含 Markdown 渲染）也按路由拆包，主入口只留外壳、数据层与组件库；
 // 首屏之后在空闲时预取（PREFETCH），换页在 transition 里做，代码块没到之前保留上一页（F2：第一次切换页面白屏几秒）
 const LoginPage = routePage(() => import('../pages/login/LoginPage.jsx'));
+// 首登改密（ADR-0107）：账号待改初始密码时只渲染这一页
+const PasswordChangePage = routePage(() => import('../pages/login/PasswordChangePage.jsx'));
 const ProjectsPage = routePage(() => import('../pages/projects/ProjectsPage.jsx'));
 const CreatePage = routePage(() => import('../pages/create/CreatePage.jsx'));
 const ImportPage = routePage(() => import('../pages/import/ImportPage.jsx'));
@@ -158,12 +160,22 @@ function Splash() {
   return <div className="app" style={{ alignItems: 'center', justifyContent: 'center' }}><span className="spin" /></div>;
 }
 
+// 带着令牌启动、A-07 却不是 401 失败（多半是账号服务暂不可用，业务接口这时一律不放行）：不清令牌，等用户重试
+function AccountUnavailable() {
+  return (
+    <div className="app" style={{ alignItems: 'center', justifyContent: 'center' }}>
+      <Empty icon="alert" title="暂时无法核对账号状态" actions={<Button icon="refresh" onClick={() => window.location.reload()}>重试</Button>} />
+    </div>
+  );
+}
+
 export default function App() {
   const [route, routePending] = useRouteState();
   const [services, setServices] = useState(null);
   const [config, setConfig] = useState(null);
   const [user, setUser] = useState(undefined);
   const [maintenance, setMaintenance] = useState(null);
+  const [accountUnavailable, setAccountUnavailable] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -176,6 +188,8 @@ export default function App() {
           navigate('/login');
         },
         onMaintenance: (d) => setMaintenance((m) => ({ ...(m || {}), active: true, mode: m?.mode || 'read_only', message: d.message || m?.message || '' })),
+        // 管理员刚重置了密码：哪个请求先撞上 403，就切到首登改密页
+        onPasswordChangeRequired: () => setUser((u) => (u ? { ...u, password_change_required: true } : u)),
       });
       if (!alive) return;
       setServices(s);
@@ -201,10 +215,14 @@ export default function App() {
           const u = await (me || s.api.me());
           // 登录态一确认就把项目首屏的请求发出去，不等页面渲染完再由各组件自己取（这两个轻请求先回来，不和它们挤）
           const r = parseHash(window.location.hash);
-          if (r.name === 'project') primeProject(s.api, r.projectId);
+          if (r.name === 'project' && !u.password_change_required) primeProject(s.api, r.projectId);
           setUser(u);
           return;
-        } catch {
+        } catch (e) {
+          if (e?.status !== 401 && !s.tokens.localMode) {
+            setAccountUnavailable(true);
+            return;
+          }
           s.tokens.clear();
         }
       }
@@ -236,7 +254,8 @@ export default function App() {
     if (user && route.name === 'login') navigate('/projects');
   }, [user, route.name]);
 
-  const hasUser = !!user;
+  const mustChangePassword = !!user?.password_change_required;
+  const hasUser = !!user && !mustChangePassword;
   const opsReader = can(user, 'ops.read');
   const admin = can(user, 'admin');
   useEffect(() => {
@@ -245,10 +264,13 @@ export default function App() {
     return prefetchWhenIdle(pages.map((P) => P.preload));
   }, [hasUser, opsReader, admin]);
 
+  if (accountUnavailable) return <AccountUnavailable />;
   if (!ctx || user === undefined) return <Splash />;
 
   let page;
-  if (!user || route.name === 'login') {
+  if (mustChangePassword) {
+    page = <PasswordChangePage />;
+  } else if (!user || route.name === 'login') {
     page = user ? <Splash /> : <LoginPage />;
   } else if (route.name === 'project') {
     const P = projectPage(route.page);

@@ -259,6 +259,15 @@ test('mock A-06：本地模式 403、旧密码不对、弱密码带 failed_rules
   assert.equal((await harness({ sc: { me: 'noadmin' } }).call('PUT', '/api/v1/me/password', body)).body.code, 'user_admin_unavailable');
 });
 
+test('mock 首登改密（login:first）：A-06 失败时仍待改密，成功后清掉标记', async () => {
+  const { call, ctx } = harness();
+  ctx.db.pwdPending = true;
+  assert.equal((await call('PUT', '/api/v1/me/password', { old_password: 'wrong', new_password: 'Mango#2026' })).status, 400);
+  assert.equal(ctx.db.pwdPending, true);
+  assert.equal((await call('PUT', '/api/v1/me/password', { old_password: 'Oldpass#2025', new_password: 'Mango#2026' })).status, 204);
+  assert.equal(ctx.db.pwdPending, false);
+});
+
 test('mock A-08：读默认、整体替换并补齐；me:noprefs 两个方向都 404', async () => {
   const { call } = harness();
   assert.deepEqual((await call('GET', '/api/v1/me/preferences')).body, DEFAULT_PREFS);

@@ -93,6 +93,7 @@ export const ERROR_MESSAGES = {
   username_taken: '用户名已被占用，换一个试试',
   weak_password: '密码不满足规则',
   old_password_incorrect: '旧密码不正确',
+  password_change_required: '请先修改初始密码',
   user_admin_unavailable: '账号服务没有配置管理令牌，暂时不能修改',
   user_not_found: '用户不存在',
   transfer_target_invalid: '移交对象不是建模者或不存在',

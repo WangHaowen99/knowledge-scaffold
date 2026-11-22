@@ -1,6 +1,8 @@
 // mock 服务端：按契约路径响应，状态放在内存里；SSE 由 StreamHub 推送。
 // 只在 VITE_API_MOCK=1 的开发 / 测试构建里加载。
 // 演示状态用地址参数切换：?mock=login:fail,projects:empty,auth:local,maint:readonly,engine:missing,import:conflict,role:user,scope:running|pending
+// ?mock=login:first：账号待改初始密码（ADR-0107）——登录响应与 A-07 带 password_change_required，A-06 改密成功之前
+// 只放行登录一组、A-06、A-07，其余接口 403 password_change_required（契约 2.2）
 // ?mock=flow:p1：/flow 按 P1 后端（B3a）的形状返回（4 种状态、命令文本 actions、没有分段），核对前端归一处理
 // ?mock=pm:draft|fail|installed|outdated：主示例项目带一条插件对话（工作台插件开发模式，F17），见 routes-plugin-dev.js
 // 项目所处阶段（工作台显示什么）：?mock=stage:materials 等，见 stageOf；各阶段的对话、流程由 routes-*.js 的 stages 提供。
@@ -46,6 +48,9 @@ const LOCK_EXTRAS = { entries: [], artifacts: [], paths: [] };
 MODULES.forEach((mod) => ['entries', 'artifacts', 'paths'].forEach((k) => LOCK_EXTRAS[k].push(...(mod.lockScope?.[k] || []))));
 // ?mock=task:<页面 id> 时该页一打开就有的进行中任务（routes-*.js 导出 taskSeeds = { <页面 id>: () => CommandTask 部分字段 }）
 const TASK_SEEDS = Object.assign({}, ...MODULES.map((mod) => mod.taskSeeds || {}));
+
+// 待改初始密码时还能调的接口：A-06 改密、A-07 我的资料（同后端 PASSWORD_CHANGE_ALLOWED）
+const PASSWORD_CHANGE_OPEN = ['PUT /api/v1/me/password', 'GET /api/v1/me'];
 
 function readScenario() {
   const out = {};
@@ -93,6 +98,7 @@ export function createMockServer() {
     tasks: new Map(),
     seeded: new Set(),
     seq: 2000,
+    pwdPending: authEnabled && sc.login === 'first', // 待改初始密码，A-06 成功后清掉（routes-me.js）
   };
   const uid = () => (++db.seq).toString(16);
 
@@ -104,7 +110,7 @@ export function createMockServer() {
     const role = sc.role && name === 'zhangsan' ? sc.role : null;
     const base = F.USERS[name] || { username: name, display_name: name, role: 'user', role_label: '建模者', auth_source: 'auth-server' };
     const u = role ? { ...base, role, role_label: { user: '建模者', admin: '管理员', ops: '运维' }[role] } : base;
-    return { ...u, roles: [...new Set(['user', u.role])] };
+    return { ...u, roles: [...new Set(['user', u.role])], password_change_required: db.pwdPending };
   }
   const tokensFor = (user) => ({
     access_token: `mock.${user.username}.${Date.now()}`,
@@ -298,7 +304,7 @@ export function createMockServer() {
     if (sc.login === 'rate') return err(429, 'rate_limited', '请求过于频繁', { retry_after_s: 30 });
     if (sc.login === 'fail' || body.password === 'wrong') return err(401, 'invalid_credentials', '用户名或密码不正确', { remaining_attempts: 4 });
     const user = F.USERS[body.username] || { username: body.username, display_name: body.username, role: 'user', role_label: '建模者', auth_source: 'auth-server' };
-    return json(200, tokensFor(user));
+    return json(200, tokensFor({ ...user, password_change_required: db.pwdPending }));
   });
   on('POST', '/auth/local', () => (authEnabled ? err(404, 'not_found', '路径不存在') : json(200, { user: F.USERS.local })));
   on('POST', '/auth/register', async ({ body }) => {
@@ -807,6 +813,9 @@ export function createMockServer() {
     const open = ['/api/v1/client-config', '/api/v1/auth/login', '/api/v1/auth/local', '/api/v1/auth/register', '/api/v1/auth/refresh'];
     const user = userOf(init);
     if (!open.includes(path) && !user) return err(401, 'unauthenticated', '未登录');
+    if (db.pwdPending && !path.startsWith('/api/v1/auth/') && !PASSWORD_CHANGE_OPEN.includes(`${method} ${path}`)) {
+      return err(403, 'password_change_required', '请先修改初始密码');
+    }
     // 只读维护不拦运维面（B3b 第 12 条）：运维要能推进、退出维护
     if (maintenance?.mode === 'read_only' && method !== 'GET' && !path.startsWith('/api/v1/auth/') && !path.startsWith('/api/v1/ops/')) {
       return err(503, 'maintenance_read_only', maintenance.message, { message: maintenance.message, until: null });

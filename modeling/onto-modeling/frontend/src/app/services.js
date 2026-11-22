@@ -6,7 +6,7 @@ import { bindFileTransport } from '../api/files.js';
 import { EventStream } from '../api/sse.js';
 import { createTransport } from '../api/transport.js';
 
-export async function createServices({ onAuthRequired, onMaintenance }) {
+export async function createServices({ onAuthRequired, onMaintenance, onPasswordChangeRequired }) {
   const transport = await createTransport();
   const tokens = createTokenStore(window.localStorage);
   let opsBase = '';
@@ -16,7 +16,14 @@ export async function createServices({ onAuthRequired, onMaintenance }) {
     opsBaseUrl: () => opsBase,
     onAuthRequired,
     onMaintenance,
+    onPasswordChangeRequired,
   });
+  // 上传不经 client.request：待改初始密码的 403 也交给应用（契约 2.2）
+  const uploadError = async (res) => {
+    const err = await errorFromResponse(res);
+    if (err.code === 'password_change_required') onPasswordChangeRequired?.(err);
+    return err;
+  };
   const api = createApi(client);
   // 保留的预览 / 编辑组件（drawio）经 src/api/files.js 读写文件，也走这套传输层
   bindFileTransport({ client, fetch: transport.fetch, tokens });
@@ -36,7 +43,7 @@ export async function createServices({ onAuthRequired, onMaintenance }) {
       if (projectId) form.append('project_id', projectId);
       const headers = tokens.access ? { Authorization: `Bearer ${tokens.access}` } : {};
       const res = await transport.upload(`${API_PREFIX}/uploads`, form, headers, onProgress);
-      if (!res.ok) throw await errorFromResponse(res);
+      if (!res.ok) throw await uploadError(res);
       return res.json();
     },
 
@@ -47,7 +54,7 @@ export async function createServices({ onAuthRequired, onMaintenance }) {
       const headers = tokens.access ? { Authorization: `Bearer ${tokens.access}` } : {};
       const path = mine ? '/me/pack-uploads' : '/admin/packs/uploads';
       const res = await transport.upload(`${API_PREFIX}${path}`, form, headers, onProgress);
-      if (!res.ok) throw await errorFromResponse(res);
+      if (!res.ok) throw await uploadError(res);
       return res.json();
     },
 

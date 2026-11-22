@@ -7,6 +7,7 @@
 // - me:rate     改密太频繁（A-06 返回 429）
 // - me:noadmin  账号服务没配管理令牌（A-06 返回 503）
 // 改密时当前密码填 wrong 返回 old_password_incorrect；本地模式（auth:local）A-06 返回 403（B2 第 3 条）。
+// 首登改密（?mock=login:first，见 index.js）：A-06 成功后清掉 db.pwdPending，业务接口恢复。
 import { DEFAULT_PREFS, failedRules, normalizePrefs } from '../../pages/me/meModel.js';
 
 const URL_RE = /^https?:\/\/[^\s/]+/i;
@@ -57,6 +58,7 @@ export function register(ctx) {
     if (body.old_password === 'wrong') return err(400, 'old_password_incorrect', '旧密码不正确');
     const failed = failedRules(user.username, body.old_password, body.new_password);
     if (failed.length) return err(400, 'weak_password', '密码不满足规则', { failed_rules: failed });
+    db.pwdPending = false;
     return new Response(null, { status: 204 });
   });
 

@@ -105,6 +105,23 @@ test('维护模式错误交给 onMaintenance', async () => {
   assert.equal(got.message, '平台升级中');
 });
 
+test('403 password_change_required 交给 onPasswordChangeRequired，不当成登录失效；别的 403 不触发', async () => {
+  let pending = 0;
+  let relogin = 0;
+  let body = { code: 'password_change_required', message: '请先修改初始密码' };
+  const client = createClient({
+    tokens: createTokenStore(memoryStorage()),
+    onAuthRequired: () => { relogin += 1; },
+    onPasswordChangeRequired: () => { pending += 1; },
+    fetchImpl: async () => json(403, body),
+  });
+  await assert.rejects(client.get('/projects'), (e) => e.status === 403 && errorText(e) === '请先修改初始密码');
+  assert.deepEqual([pending, relogin], [1, 0]);
+  body = { code: 'forbidden', message: '没有权限' };
+  await assert.rejects(client.get('/admin/users'), (e) => e.code === 'forbidden');
+  assert.equal(pending, 1);
+});
+
 test('423 写入范围锁：isLocked，提示按两态区分', () => {
   const running = new ApiError({ status: 423, code: 'write_scope_locked', details: { state: 'assistant_running' } });
   const pending = new ApiError({ status: 423, code: 'write_scope_locked', details: { state: 'pending_confirm' } });

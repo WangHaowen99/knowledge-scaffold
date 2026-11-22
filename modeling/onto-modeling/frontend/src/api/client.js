@@ -49,8 +49,11 @@ export function buildQuery(query) {
  * @param {() => string} [o.opsBaseUrl] 运维管理面地址（C-01 的 ops_base_url），空串为同源
  * @param {() => void} [o.onAuthRequired] 刷新失败、需要重新登录
  * @param {(details: object) => void} [o.onMaintenance] 收到维护模式错误
+ * @param {(err: object) => void} [o.onPasswordChangeRequired] 账号待改初始密码（403 password_change_required，契约 2.2）
  */
-export function createClient({ fetchImpl, tokens, opsBaseUrl = () => '', onAuthRequired, onMaintenance }) {
+export function createClient({
+  fetchImpl, tokens, opsBaseUrl = () => '', onAuthRequired, onMaintenance, onPasswordChangeRequired,
+}) {
   let refreshing = null;
 
   async function refresh() {
@@ -115,6 +118,7 @@ export function createClient({ fetchImpl, tokens, opsBaseUrl = () => '', onAuthR
       if (!tokens.localMode) onAuthRequired?.(err);
     }
     if (err.isMaintenance) onMaintenance?.(err.details || {});
+    if (err.code === 'password_change_required') onPasswordChangeRequired?.(err);
     throw err;
   }
 
