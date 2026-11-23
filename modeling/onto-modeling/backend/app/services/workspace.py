@@ -281,7 +281,7 @@ class WorkspaceManager:
         (("ontology/scripts",), True),
         # 求解适配（可选）：受管目录 ontology/solver/<key>/
         (("ontology/solver",), True),
-        # 数据评测（可选，方案 eval-optimization-integration）：探针为报告文件 glob
+        # 数据评测（可选）：探针为报告文件 glob，独立评测导入优化时写入 reports/eval-*.md
         (("reports/eval-*.md",), True),
     )
     STAGE_TOTAL = len(STAGES)
@@ -392,20 +392,7 @@ class WorkspaceManager:
                 1 for f in directory.glob("*.md") if f.name.lower() != "index.md"
             )
 
-        eval_summary = {}
-        try:
-            eval_summary = json.loads(
-                (root / ".ontology-state" / "eval.json").read_text(encoding="utf-8")
-            )
-        except (OSError, json.JSONDecodeError):
-            pass
-        from .modeling_eval import evolution_hint
-
         return {
-            "eval_score": (eval_summary.get("summary") or {}).get("score"),
-            "eval_status": eval_summary.get("status"),
-            # 最近一轮有失分/异常用例时的 /ontology-evolution 提示（无则为 None）
-            "eval_evolution": evolution_hint(eval_summary),
             "stages_done": done,
             "stages_total": cls.STAGE_TOTAL,
             # 资料分析的验收状态（none/pending/failed/passed）+ 计数与下一步提示。
@@ -624,7 +611,7 @@ class WorkspaceManager:
 
     # ---- 知识包目录规范化（范式升级 ADR-0004）----
 
-    # 目录索引标题；index.md 采用 modeling 发布包风格的清单表格
+    # 目录索引标题；index.md 采用清单表格
     INDEX_DIRS = (
         ("ontology/object", "对象目录"),
         ("ontology/operation", "操作目录"),
@@ -780,8 +767,7 @@ class WorkspaceManager:
             "revision": _content_revision(target.read_bytes()),
         }
 
-    # 资料用途标签（对齐 modeling 的 material purpose 体系）。评测数据不再走资料区打标，
-    # 改在评测数据源里上传（eval_data_files）；存量 eval_data 标签读取时按 auto 处理
+    # 资料用途标签。评测数据不再走资料区打标，存量 eval_data 标签读取时按 auto 处理
     MATERIAL_PURPOSES = ("auto", "goal", "schema", "term", "evidence")
     MATERIAL_READING_MODES = ("on_demand", "full")
 
@@ -1352,8 +1338,7 @@ class WorkspaceManager:
         return dest_path
 
     # 属性表"属性别名"列的占位写法（模板约定无别名写"无"）在下游校验器里
-    # 可能被当作真实别名，引发"同名指向多字段"冲突（modeling 新版已过滤，
-    # consumer 与存量部署未必）；打包时统一清洗为空，单一出口治本。
+    # 可能被当作真实别名，引发"同名指向多字段"冲突；打包时统一清洗为空，单一出口治本。
     _ALIAS_HEADER_NAMES = {"属性别名", "别名", "aliases", "alias"}
     _ALIAS_EMPTY_MARKERS = {"无", "-", "—", "–", "n/a"}
 
@@ -1408,7 +1393,7 @@ class WorkspaceManager:
         manifest.yaml 六必填字段、objects/operations 目录 + frontmatter、
         operation 必须声明 uses.objects、index 首列与详情 key 逐字相等。
 
-        binding：评测导入时传入按本轮导入工作簿算出的绑定，mapping 与导入库同源；
+        binding：调用方已算好的数据绑定，缺省时按工作区资料现算；
         所有模式均将「关联对象」转为 `# 关系` 表，graph 模式额外补齐物理关联字段；
         结构错误在导出前拒绝；未绑定物理表的合法关系保留，图导入提示记进 relation_report["notes"]；
         allow_unbound：降级发布——声明对不上的对象不阻断，来源Sheet 写 UNBOUND、不进 mapping。
@@ -1556,7 +1541,6 @@ class WorkspaceManager:
             f"name: {q(meta['name'])}\n"
             f"description: {q('由 Onto Web 建模项目发布：' + meta['name'])}\n"
             f"version: {version}\n"
-            # modeling 包契约（package-contract MANIFEST_REQUIRED_FIELDS）必选；
             # consumer 按已知键读取，多余字段无害
             f"status: released\n"
             f"language: zh-CN\n"
@@ -1580,7 +1564,6 @@ class WorkspaceManager:
             headers: list[str],
             row: "callable",
         ) -> str:
-            # 表头对齐 modeling 知识包契约（knowledge-markdown-contract INDEX_CONFIG）；
             # consumer 按表头名取列、容忍多列，两端同一份索引
             head = "| " + " | ".join(headers) + " |\n" + "|" + " --- |" * len(headers) + "\n"
             rows = "".join(row(k) for k, _ in items)
@@ -1606,7 +1589,7 @@ class WorkspaceManager:
                 item = bound.get(key, {})
                 table = item.get("table")
                 # 绑定到真实表时补 mapping/sources frontmatter：mappings json 缺失或被裁剪时
-                # modeling 仍能从 sources 还原 sourceRefs
+                # 仍能从 sources 找回数据表
                 extra = (
                     f"mapping:\n  provider_alias: {package_mapping.PROVIDER_ALIAS}\n"
                     f"  resource: {q(key if graph else table)}\nsources: [{q('表格：' + table)}]\n"
@@ -1708,8 +1691,8 @@ class WorkspaceManager:
                 for key, code in scripts:
                     operation = script_bindings.bindings.get(key)
                     # 执行契约：对外脚本的描述符与工作区 ontology/scripts/<脚本>.md 同一渲染器，
-                    # 只把 entrypoint 换成包内 ASCII 文件名（modeling 按 scripts/<entrypoint> 取源码
-                    # 且只收 ASCII 文件名），bound_operation 换成包内 operation key（求解 operation 为
+                    # 只把 entrypoint 换成包内 ASCII 文件名（按 scripts/<entrypoint> 取源码），
+                    # bound_operation 换成包内 operation key（求解 operation 为
                     # solver_key）。求解评估器只带源码，求解契约按包内路径引用它（见 _package_scripts），
                     # 文件名须与之一致。「关联operation」为「无」或不是现有操作的脚本只是被复用的
                     # 库模块，不对外调用、没有描述符，保留原文件名，对外脚本按原名 import 它，回导时也还原得了。
@@ -2466,7 +2449,6 @@ class WorkspaceManager:
         state = root / ".ontology-state"
         failed = []
         for name in (
-            "eval.json",
             "progress.json",
             "research-review.json",
             "research-inventory.json",
@@ -2886,7 +2868,7 @@ def _is_script_descriptor(rel: Path) -> bool:
 
 
 def _package_script_filename(key: str) -> str:
-    """知识包内的脚本文件名，满足 modeling 的 entrypoint 契约 ^[A-Za-z0-9_.-]+\\.py$。
+    """知识包内的脚本文件名，满足 entrypoint 约束 ^[A-Za-z0-9_.-]+\\.py$。
 
     ASCII 脚本名原样沿用；中文等其他脚本名按 key 的哈希取稳定文件名，
     脚本 key 与标题仍保留原名。

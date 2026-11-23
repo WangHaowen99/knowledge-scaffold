@@ -132,25 +132,8 @@ def test_only_checks_packaged_dirs(tmp_path):
     assert "无需校验" in proc.stdout
 
 
-def test_reads_cases_from_eval_state(tmp_path):
-    """没有报告时退回 .ontology-state/eval.json 取用例语料。"""
-    ws = make_workspace(tmp_path)
-    (ws / "reports" / "eval-20260101-000000.md").unlink()
-    (ws / ".ontology-state").mkdir()
-    (ws / ".ontology-state" / "eval.json").write_text(
-        json.dumps({"cases": [{"question": QUESTION, "groundTruth": GROUND_TRUTH}]},
-                   ensure_ascii=False),
-        encoding="utf-8",
-    )
-    write_rule(ws, "抄答案.md", f"# 规则描述\n\n{GROUND_TRUTH}\n")
-
-    proc = run_script(ws, "--json")
-    assert proc.returncode == 1, proc.stdout + proc.stderr
-    assert json.loads(proc.stdout)[0]["category"] == "应试痕迹"
-
-
 def test_skips_without_case_corpus(tmp_path):
-    """既无报告也无 eval.json —— 跳过而非误报。"""
+    """没有评测报告 —— 跳过而非误报。"""
     ws = make_workspace(tmp_path)
     (ws / "reports" / "eval-20260101-000000.md").unlink()
     write_rule(ws, "任意规则.md", f"# 规则描述\n\n{GROUND_TRUTH}\n")

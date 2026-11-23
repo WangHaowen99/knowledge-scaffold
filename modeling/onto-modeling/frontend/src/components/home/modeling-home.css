@@ -1,8 +1,6 @@
-/* 项目列表/新建项目页 —— 逐字拷贝自 modeling 前端（styles.css / workbench base.css+app.css），
-   保持视觉完全一致；.mwr 与 .wb 作用域不影响应用其余部分。勿手改，改动应回源同步。 */
+/* 项目列表/新建项目页样式；.mwr 与 .wb 作用域不影响应用其余部分。 */
 
-/* ===== modeling styles.css 1-80 ===== */
-/* （原文件的全局 reset 规则被裁掉：onto-web 有自己的全局样式） */
+/* ===== 设计变量与基础样式（不含全局 reset：onto-web 有自己的全局样式） ===== */
 .mwr, .mwr * { box-sizing: border-box; }
 .mwr {
   --ink: #161c28; --ink2: #4c5464; --muted: #89909e;
@@ -79,12 +77,12 @@
 
 /* ---- 登录 ---- */
 
-/* ===== modeling styles.css .lerr ===== */
+/* ===== 登录提示 ===== */
 .mwr .lerr { color: var(--crit); font-size: 12.5px; margin-bottom: 10px; }
 .mwr .lerr ul { margin: 4px 0 0 18px; }
 .mwr .lok { color: var(--good); font-size: 12.5px; margin-bottom: 10px; }
 
-/* ===== modeling styles.css 155-312（shell/topbar/项目列表/modal）===== */
+/* ===== shell / topbar / 项目列表 / modal ===== */
 .mwr.shell { display: flex; flex-direction: column; height: 100vh; background: #f2f4f8; }
 .mwr .topbar {
   height: 56px; flex: none; background: rgba(255, 255, 255, .88);
@@ -244,7 +242,7 @@
 }
 .mwr .package-name-options label.selected { border-color: var(--blue-l); background: var(--blue-ll); }
 
-/* ===== modeling workbench/base.css（btn/input/dot/card 摘录）===== */
+/* ===== .wb 基础组件（btn / input / dot / card） ===== */
 .wb .t-sm   { font-size: var(--t-sm); }
 .wb .t-xs   { font-size: var(--t-xs); }
 .wb .muted  { color: var(--c-muted); }
@@ -302,7 +300,7 @@
 .wb textarea.input { resize: none; }
 
 
-/* ===== modeling workbench/app.css（wb-top / wb-create / wb-drop / wb-file）===== */
+/* ===== 新建项目页（wb-top / wb-create / wb-drop / wb-file） ===== */
 .wb-top {
   display: flex; align-items: center; gap: var(--s-5);
   height: var(--h-topbar); flex: none; padding: 0 var(--s-5);

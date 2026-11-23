@@ -436,7 +436,7 @@ OPERATION_INPUT_REQUIRED_COLUMNS = ['参数名称', '描述']
 OPERATION_OUTPUT_REQUIRED_COLUMNS = ['参数名称', '描述']
 ACTION_REQUIRED_SECTIONS = ['动作描述']
 
-# 范式升级（ADR-0004）：规则/指标为一等实体，元信息对齐 modeling 知识包模型
+# 范式升级（ADR-0004）：规则/指标为一等实体
 RULE_REQUIRED_SECTIONS = ['规则描述', '适用对象', '约束表达']
 METRIC_REQUIRED_SECTIONS = ['指标描述', '计算公式', '数据来源']
 
@@ -445,7 +445,7 @@ _EMPTY_FIELD_ALIAS_MARKERS = {'无', '-', '—', '–', 'n/a'}
 
 
 def _normalize_field_name(value: str) -> str:
-    """与 modeling/src/workflow/field-alias.ts 保持一致的比较口径。"""
+    """字段名的比较口径：NFC 归一化并去掉首尾空白，纯 ASCII 名称不区分大小写。"""
     text = unicodedata.normalize('NFC', (value or '').strip())
     return text.lower() if text.isascii() else text
 
@@ -462,9 +462,6 @@ def _field_alias_tokens(value: str) -> list[str]:
 
 def check_object_field_name_conflicts(doc: OntologyDoc) -> list:
     """检查对象内 key、中文名、别名是否指向多个不同字段。
-
-    该规则与 modeling 的 findFieldNameConflicts 保持同一归一化口径，
-    供质量检查提前发现评测启动时会阻断的问题。
     """
     if doc.doc_type != 'object' or not doc.attribute_rows:
         return []
@@ -1315,7 +1312,7 @@ def check_graph_identifiers(doc: OntologyDoc, tables: dict) -> list:
     return issues
 
 
-# 知识包 key 约束（与 modeling/src/workflow/keys.ts 同一口径）：对象/操作/规则/指标/脚本的 key
+# 知识包 key 约束：对象/操作/规则/指标/脚本的 key
 # 取自文件名 stem，对象字段的 key 取自属性英文名称；不合规时整包渲染被拒
 KEY_MAX_LENGTH = 80
 _KEY_FORBIDDEN_RE = re.compile(r'[/\\#?&|]')
@@ -1399,7 +1396,7 @@ def check_package_limits(all_docs: dict, check_docs: dict) -> list:
     return issues
 
 
-# --- 关联对象的关系名称（与建模工作台 modeling/src/workflow/relation-name.ts 同一口径）---
+# --- 关联对象的关系名称 ---
 
 _CARDINALITY_WORDS = {'一对一', '一对多', '多对一', '多对多',
                       'onetoone', 'onetomany', 'manytoone', 'manytomany'}
@@ -2081,9 +2078,8 @@ def check_scripts(ontology_dir: Path) -> list:
 
 
 
-# 脚本安全（与 modeling/src/workflow/script-safety.ts validateGeneratedScriptSecurity 同一组规则）：
-# 知识包渲染与评测打包前逐字匹配整份源码（含注释与字符串），命中即拒绝该脚本。
-# re.ASCII 让 \b 与 JS 正则一样只按 ASCII 判单词边界。
+# 脚本安全：逐字匹配整份源码（含注释与字符串），命中即拒绝该脚本。
+# re.ASCII 让 \b 只按 ASCII 判单词边界。
 SCRIPT_MAX_CHARS = 100_000
 _SCRIPT_FORBIDDEN_RULES = (
     (r'\b(?:import|from)\s+subprocess\b|\bsubprocess\s*\.', 'subprocess'),

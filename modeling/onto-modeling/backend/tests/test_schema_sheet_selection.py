@@ -11,7 +11,7 @@ import openpyxl
 import pytest
 
 from app import config
-from app.services import eval_import, material_detect, package_mapping
+from app.services import material_detect, package_mapping
 from app.services.workspace import WorkspaceManager, WorkspaceError, _git
 
 
@@ -180,13 +180,6 @@ def test_auto_scope_refresh_and_invalid_selection_rollback(manager):
     out = io.BytesIO(); wb.save(out); wb.close()
     manager.save_resource(pid, "excel", "sample.xlsx", out.getvalue())
     assert set(package_mapping.read_source_tables(root)) == {"table_a", "table_c"}
-
-
-def test_evaluation_excludes_reference_sheet_too(manager):
-    _, root, rel = setup_project(manager)
-    tables, warnings = eval_import.read_workbook(root / rel, "sample.xlsx")
-    assert {t.name for t in tables} == {"table_a", "table_b"}
-    assert any("总览" in w for w in warnings)
 
 
 def test_real_table_named_overview_and_chinese_manual_headers(tmp_path):

@@ -123,7 +123,6 @@ def test_broken_docx_is_unavailable_not_error(tmp_path: Path):
 def test_route_previews_and_reports_missing_file(tmp_path: Path, monkeypatch):
     workspaces = WorkspaceManager(tmp_path / "data", tmp_path / "assets")
     monkeypatch.setattr(projects, "workspaces", workspaces)
-    monkeypatch.setattr(config, "MODELING_URL", "")
     monkeypatch.setattr(auth, "ENABLED", False)
     meta = workspaces.create_project("synthetic-source")
     root = workspaces.project_root(meta["id"])

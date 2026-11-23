@@ -1,7 +1,6 @@
 """ontology_checker 对「# 关联对象」关系名的检查。
 
-与建模工作台 modeling/src/workflow/relation-name.ts 同一口径：关系名只写谓词，不含两端对象
-名称，也不只写基数。发布包里对象的 key 与标题都取文件名，所以端点名称就是文件名。
+关系名只写谓词，不含两端对象名称，也不只写基数。发布包里对象的 key 与标题都取文件名，所以端点名称就是文件名。
 """
 
 import dataclasses

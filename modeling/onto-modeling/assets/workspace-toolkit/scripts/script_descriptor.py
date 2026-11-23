@@ -4,7 +4,7 @@
 - 描述符是 .py 的派生物：由头部注释与 argparse 声明渲染，不要手改。工作区与导出的知识包
   共用 render_descriptor，导出时只把 entrypoint 换成包内 ASCII 文件名，建模时看到的就是
   consumer 拿到的那份。
-- 格式对齐 modeling 的 scriptMd（modeling/src/workflow/package-render.ts）：一级标题
+- 格式：一级标题
   「# 脚本用途 / # 输入参数 / # 输出 / # 执行边界」，参数表是正文第一张表（consumer 把第一张
   表当参数表），输出表三列（consumer 跳过列数不同的行）。
 - 绑定规则 resolve_script_bindings：consumer 只按 operation 调用脚本，同一 operation 只能有一个

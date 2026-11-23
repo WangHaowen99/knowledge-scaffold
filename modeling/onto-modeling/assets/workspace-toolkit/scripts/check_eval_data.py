@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """评测数据三方对账：数据表列 ↔ schema 资料字段 ↔ 对象属性英文名。
 
-用途（方案 docs/eval-optimization-integration.md P1）：
-- 用户在评测数据源里上传业务数据表后，在数据**导入评测库之前**暴露结构问题；
+用途：
+- 在对象提取与评测优化时暴露数据表、schema 资料与对象属性之间的结构问题；
 - 对账是确定性检查，不经模型。
 
 三方来源：
-1. 数据表：评测数据源上传的 Excel（.ontology-state/eval-data/<文件ID>/）、评测优化从独立评测服务导入的
+1. 数据表：旧版评测数据源上传的 Excel（.ontology-state/eval-data/<文件ID>/）、评测优化从独立评测服务导入的
    只有表头的 CSV（.ontology-state/eval-data/eval-service/），或命令行显式指定路径；
 2. schema：materials.json 中 purpose=schema 的表格资料的表头（结构契约）；
 3. 对象属性：ontology/object/*.md 的「对象属性清单」表格「英文名称」列。

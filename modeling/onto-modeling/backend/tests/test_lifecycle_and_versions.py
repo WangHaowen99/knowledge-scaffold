@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services import package_mapping
 from app.services.workspace import WorkspaceError, WorkspaceManager
 from app.services.workspace import ScriptContractError, _script_header_meta
 
@@ -297,14 +298,14 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         assert 'objects: ["订单"]' in op
         assert "old: front" not in op
         obj_index = zf.read(f"{pid}/objects/index.md").decode("utf-8")
-        # 对齐 modeling 知识包契约：四列且 来源Sheet 是真实表名（不是对象名回填）
+        # 四列且 来源Sheet 是真实表名（不是对象名回填）
         assert "| object key | 标题 | 说明 | 来源Sheet |" in obj_index
         assert "| 订单 | 订单 | 订单 | ORDER_TABLE |" in obj_index
         # 工作区占位 index.md 不应进包
         assert f"{pid}/objects/index.md" in names and "待生成" not in obj_index
         # 五元组：规则/指标/脚本各自成组导出（ADR-0004）
         obj = zf.read(f"{pid}/objects/订单.md").decode("utf-8")
-        # 「对象属性清单」按 modeling 契约转成 `# 字段`（前六列按位解析）
+        # 「对象属性清单」转成 `# 字段`（前六列按位解析）
         assert "| 字段 key | 中文名 | 类型 | 必填 | 业务说明 | 别名 | 属性规则 |" in obj
         assert "| ORDER_ID | 订单号 | 字符串 | 是 | 编号 | 单号, 订单编号 |" in obj
         assert "# 对象属性清单" not in obj
@@ -333,11 +334,11 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         script_doc = zf.read(f"{pid}/scripts/calc_price.md").decode("utf-8")
         assert "resource: script" in script_doc
         # consumer load_script_catalog 要求 entrypoint，缺失会被静默剔除；
-        # modeling 按 scripts/<entrypoint> 取源码，故只写文件名、不带 scripts/ 前缀
+        # 按 scripts/<entrypoint> 取源码，故只写文件名、不带 scripts/ 前缀
         assert "entrypoint: calc_price.py\n" in script_doc
         # 执行契约：绑定 operation + 参数表（consumer execute_script 按此组装 CLI）
         assert 'bound_operation: "创建订单"' in script_doc
-        # 一级标题与 modeling scriptMd 一致：modeling 只认 `# 输入参数`
+        # 参数表在一级标题 `# 输入参数` 下
         assert "\n# 输入参数\n" in script_doc and "## 输入参数" not in script_doc
         assert "| 参数 key | CLI 参数 | 类型 | 必填 | 默认值 | 说明 |" in script_doc
         assert "| orders | --orders | json | 是 |  | 订单列表，必填 | 否 |  |" in script_doc
@@ -346,8 +347,60 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         assert f"{pid}/metrics/index.md" in names
 
 
+CUSTOMER_DOC = """# 数据来源
+客户表
+
+# 对象属性清单
+| 中文名称 | 英文名称 | 描述 | 主键 | 类型 |
+| --- | --- | --- | --- | --- |
+| 客户编号 | CUSTOMER_ID | 合成客户编号 | 是 | 字符串 |
+| 客户名称 | NAME | 合成客户名称 | 否 | 字符串 |
+
+# 关联对象
+- [[订单]] → 属于 → 当前对象
+"""
+
+ORDER_DOC = """# 数据来源
+订单表
+
+# 对象属性清单
+| 中文名称 | 英文名称 | 描述 | 主键 | 类型 |
+| --- | --- | --- | --- | --- |
+| 订单号 | ORDER_ID | 合成订单号 | 是 | 字符串 |
+| 客户编号 | CUSTOMER_ID | 下单客户 | 否 | 字符串 |
+
+# 关联对象
+- 当前对象 → 属于 → [[客户]]
+"""
+
+
+@pytest.mark.parametrize("graph", [False, True])
+def test_export_writes_relation_declared_in_both_endpoint_files_once(
+    manager: WorkspaceManager, tmp_path: Path, graph: bool
+):
+    """Issue 419：发布和发布前结构检查都走导出；两端各写一次的同一关系只导出一条。"""
+    pid = manager.create_project("两端关系")["id"]
+    object_dir = manager.project_root(pid) / "ontology" / "object"
+    object_dir.mkdir(parents=True, exist_ok=True)
+    (object_dir / "客户.md").write_text(CUSTOMER_DOC, encoding="utf-8")
+    (object_dir / "订单.md").write_text(ORDER_DOC, encoding="utf-8")
+    binding = package_mapping.resolve_object_tables(
+        manager.project_root(pid),
+        tables={"客户表": ["CUSTOMER_ID", "NAME"], "订单表": ["ORDER_ID", "CUSTOMER_ID"]},
+    )
+    dest = tmp_path / "relations.zip"
+
+    manager.export_package_zip(pid, dest, binding, graph=graph)
+
+    with zipfile.ZipFile(dest) as archive:
+        order = archive.read(f"{pid}/objects/订单.md").decode("utf-8")
+        customer = archive.read(f"{pid}/objects/客户.md").decode("utf-8")
+    assert order.count("| 属于 | 客户 |") == 1
+    assert "属于" not in customer
+
+
 def test_export_package_zip_script_entrypoint_is_ascii_filename(manager: WorkspaceManager, tmp_path: Path):
-    """modeling 要求 entrypoint 满足 ^[A-Za-z0-9_.-]+\\.py$，并按 scripts/<entrypoint> 取源码。"""
+    """entrypoint 须满足 ^[A-Za-z0-9_.-]+\\.py$，并按 scripts/<entrypoint> 取源码。"""
     meta = manager.create_project("脚本入口")
     root = manager.project_root(meta["id"])
     for operation in ("计价", "折扣"):

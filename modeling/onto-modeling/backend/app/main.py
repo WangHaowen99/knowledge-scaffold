@@ -42,19 +42,12 @@ async def _lifespan(app: FastAPI):
     from .routers.admin import backup_scheduler_loop
     from .services.agent_sessions import manager
     from .services.model_context_presets import write_example
-    from .services.modeling_eval import sweep_interrupted
-    from .services.modeling_cleanup import retry_due, scheduler_loop
-    from .services.solver_validation_run import sweep_interrupted as sweep_solver_validations
     from .services.onto_mcp.package_publish import recover as recover_mcp_publishes
 
     manager.start_background()  # 空闲会话回收（方案 4.1.1）
     write_example()  # 内置推荐表副本，供管理员复制成自定义表
-    # 评测编排只活在进程内：重启后仍标 running 的工作区改判中断，否则前端永久锁死
-    sweep_interrupted()
-    sweep_solver_validations()
     recover_mcp_publishes(projects.workspaces)
     backup_task = asyncio.create_task(backup_scheduler_loop())  # workspace 定期备份
-    modeling_cleanup_task = asyncio.create_task(scheduler_loop())
     from .services import knowledge_hub, package_compare
     package_compare_owner = package_compare.start()
     if package_compare_owner:
@@ -77,11 +70,9 @@ async def _lifespan(app: FastAPI):
             package_compare_task.cancel()
         flywheel_task.cancel()
         backup_task.cancel()
-        modeling_cleanup_task.cancel()
         purge_task.cancel()
         await asyncio.gather(
             backup_task,
-            modeling_cleanup_task,
             purge_task,
             hub_task,
             flywheel_task,
@@ -103,18 +94,6 @@ app.include_router(admin.router)
 app.include_router(hub_packages.router)
 app.include_router(package_evaluations.router)
 app.include_router(flywheel.router)
-
-@app.middleware("http")
-async def retired_evaluation_mutations(request: Request, call_next):
-    path = request.url.path
-    eval_path = path.startswith("/api/projects/") and "/eval/" in path
-    mutation = request.method in {"POST", "PUT", "PATCH", "DELETE"}
-    if eval_path and mutation and not path.endswith(("/eval/stop", "/eval/resume")):
-        return JSONResponse({"code": "evaluation_moved",
-                             "message": "请在独立评测页面管理数据源和新评测", "url": "/evaluation/"},
-                            status_code=410)
-    return await call_next(request)
-
 
 # 白名单外的 /api 路由要求有效 access token 和当前账号状态；token 可来自
 # Authorization 头或 ?token=（EventSource / 导出下载链接无法带头）

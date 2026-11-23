@@ -1,5 +1,7 @@
 # deploy/ 只构建和部署四个必需服务
 
+> 后续变更：Modeling Workbench 的源码、构建和部署脚本已从仓库删除，`deploy/docker-compose.modeling.yml` 和 Onto Modeling 的 `ONTO_WEB_MODELING_URL` 一并移除；`install-consumer-modeling.sh cce` 入口保留，对应的 `modeling/deploy/cce/` 已改为部署 Onto Modeling、知识包 Hub 和独立评测；评测用的 NL2SQL 服务和 MySQL 改在 `modeling/nl2sql-service/` 单独部署，见 [remove-modeling-workbench.md](remove-modeling-workbench.md)。下文涉及 Workbench 的内容仅作历史参考。
+
 ## Context
 
 `deploy/` 下的构建和部署入口同时承担 Consumer、Modeling Workbench、知识包 Hub、Onto Modeling 和独立评测服务。Workbench 已是可选组件，却仍占用完整包的镜像、`deploy-stack.sh` 的大部分编排逻辑，以及三个安装脚本中最复杂的迁移和回滚分支。

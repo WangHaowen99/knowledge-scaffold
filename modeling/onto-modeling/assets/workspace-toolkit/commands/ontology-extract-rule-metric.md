@@ -2,8 +2,8 @@
 
 从已有的 `ontology/operation/*.md`（含旧目录 `ontology/logic/`）与 `ontology/object/*.md`
 的属性规则列中，把**规则（rule）**与**指标（metric）**抽取为一等实体文档，写入
-`ontology/rule/*.md` 与 `ontology/metric/*.md`。元信息对齐 modeling 知识包模型
-（object / operation / rule / metric / script 五元组，ADR-0004）。
+`ontology/rule/*.md` 与 `ontology/metric/*.md`。知识包模型为
+object / operation / rule / metric / script 五元组（ADR-0004）。
 
 本命令是可选增强阶段：不修改既有 object/operation 文档正文（只允许在其中补
 `[[规则名]]` / `[[指标名]]` 回链），产物可独立评审与回退。

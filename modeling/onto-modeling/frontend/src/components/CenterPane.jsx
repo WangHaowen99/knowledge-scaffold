@@ -61,7 +61,7 @@ import SourcePreview from './SourcePreview.jsx';
 
 const StudioView = lazy(() => import('./StudioView.jsx'));
 const SolverModelPanel = lazy(() => import('./SolverModelPanel.jsx'));
-// modeling 同款流程图编辑器（ReactFlow）；drawio iframe 只在高级编辑时加载
+// 流程图编辑器（ReactFlow）；drawio iframe 只在高级编辑时加载
 const FlowchartView = lazy(() => import('./flowchart/FlowchartView.jsx'));
 
 // mermaid 配色跟随应用主题（CSS 变量取值）；主题切换时重配并触发重渲染
@@ -828,8 +828,7 @@ export default function CenterPane({
 
   const openReportAnswer = async (resultId, attachmentPath) => {
     try {
-      // 报告可能不是最近一轮；优先读取报告同目录的 sidecar，避免把旧报告
-      // 的结果 ID 错配到当前轮次。旧报告没有 sidecar 时再回退到当前轮接口。
+      // 完整答案只从报告同目录的 sidecar 读取，按结果 ID 匹配，避免错配到其他轮次
       if (attachmentPath) {
         const attachment = await api.readFile(project.id, attachmentPath);
         const payload = JSON.parse(attachment.content || '{}');
@@ -850,7 +849,7 @@ export default function CenterPane({
           return;
         }
       }
-      setReportFullAnswer(await api.evalFullAnswer(project.id, resultId));
+      message.error('报告附件中没有该用例的完整答案');
     } catch (error) {
       message.error(error.message);
     }

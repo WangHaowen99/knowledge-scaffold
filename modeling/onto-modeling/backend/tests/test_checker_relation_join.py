@@ -1,7 +1,6 @@
 """ontology_checker 对「# 关联对象」关联字段的检查。
 
-与后端 package_mapping._relation_join、评测图导入 eval_import.graph_relation_mapping
-同一口径：同表按同一数据行关联不需要关联字段，跨表没声明又推断不出就是问题。
+与后端 package_mapping._relation_join 同一口径：同表按同一数据行关联不需要关联字段，跨表没声明又推断不出就是问题。
 """
 
 import dataclasses

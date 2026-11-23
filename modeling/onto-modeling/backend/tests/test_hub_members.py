@@ -110,7 +110,6 @@ def test_member_route_preserves_local_success_on_hub_failure(sharing, monkeypatc
         meta['members'] = values
         return meta
     monkeypatch.setattr(projects.workspaces, 'set_members', set_members)
-    monkeypatch.setattr(projects.modeling_mcp, 'sync_members', lambda *args: None)
     request = SimpleNamespace(headers={}, query_params={})
     result = projects.put_members('project_demo', projects.MembersBody(members={'operator_b': 'editor'}), request)
     assert result['members'] == {'operator_b': 'editor'}

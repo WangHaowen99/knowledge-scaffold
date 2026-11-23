@@ -107,35 +107,6 @@ async function responseError(response) {
   return error;
 }
 
-// 评测轮在 modeling 侧后台执行，常超 access token 有效期：带上 refresh token，
-// 由 modeling 为本轮续期凭据。未登录（无鉴权部署）时不带该字段。
-export function evalRunPayload(
-  {
-    cases,
-    dataSource,
-    dataSourceId = '',
-    evalSetId = '',
-    allowUnbound = false,
-    modelProfileId = '',
-    caseConcurrency,
-  },
-  refreshToken = authStore.refreshToken,
-) {
-  const payload = {
-    cases,
-    data_source: dataSource || { mode: 'none' },
-    data_source_id: dataSourceId,
-    eval_set_id: evalSetId,
-    allow_unbound: allowUnbound,
-  };
-  if (modelProfileId) payload.model_profile_id = modelProfileId;
-  if (Number.isSafeInteger(caseConcurrency) && caseConcurrency >= 1) {
-    payload.case_concurrency = caseConcurrency;
-  }
-  if (refreshToken) payload.refresh_token = refreshToken;
-  return payload;
-}
-
 const refreshHeader = () => (authStore.refreshToken ? { 'X-Refresh-Token': authStore.refreshToken } : {});
 
 function conversationQuery(conversationId) {
@@ -222,8 +193,7 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(background === undefined ? {} : { background }),
     }),
-  // 显式确认体：request() 一律带 application/json，空体在严格服务端/网关会被判为非法 JSON；
-  // 同时与 modeling 侧删除接口的 confirmed 契约保持一致
+  // 显式确认体：request() 一律带 application/json，空体在严格服务端/网关会被判为非法 JSON
   deleteProject: (pid, deleteHubPackage = false) =>
     request(`/api/projects/${pid}`, {
       method: 'DELETE',
@@ -569,78 +539,6 @@ export const api = {
       body: JSON.stringify({ engine }),
     }),
   getProjectEngine: (pid) => request(`/api/projects/${pid}/engine`),
-  evalStatus: (pid) => request(`/api/projects/${pid}/eval/status`),
-  evalFullAnswer: (pid, resultId) =>
-    request(`/api/projects/${pid}/eval/answers/${encodeURIComponent(resultId)}`),
-  evalCases: (pid) => request(`/api/projects/${pid}/eval/cases`),
-  evalDataSourceOptions: (pid) => request(`/api/projects/${pid}/eval/data-source`),
-  evalCasesTemplateUrl: (pid) =>
-    `/api/projects/${pid}/eval/cases/template?token=${encodeURIComponent(authStore.token)}`,
-  // 导入的用例默认同时保存为评测集（名称缺省取文件名）
-  evalCasesImport: (pid, file, { save = true, name = '' } = {}) => {
-    const form = new FormData();
-    form.append('file', file);
-    form.append('save', save ? 'true' : 'false');
-    if (name) form.append('name', name);
-    return request(`/api/projects/${pid}/eval/cases/import`, { method: 'POST', body: form });
-  },
-  // {cases, dataSourceId, evalSetId}；dataSource 为不落库的内联配置（none / dataset）；
-  // allowUnbound：用户已确认数据绑定对不上的对象按未绑定处理
-  evalRun: (pid, {
-    cases,
-    dataSource,
-    dataSourceId = '',
-    evalSetId = '',
-    allowUnbound = false,
-    modelProfileId = '',
-    caseConcurrency,
-  }) =>
-    request(`/api/projects/${pid}/eval/run`, {
-      method: 'POST',
-      body: JSON.stringify(evalRunPayload({
-        cases,
-        dataSource,
-        dataSourceId,
-        evalSetId,
-        allowUnbound,
-        modelProfileId,
-        caseConcurrency,
-      })),
-    }),
-  evalModelProfiles: (pid) => request(`/api/projects/${pid}/eval/model-profiles`),
-  evalDataSources: (pid) => request(`/api/projects/${pid}/eval/data-sources`),
-  // 数据源表单上传业务数据表（Excel）→ { file: { id, name, size } }
-  uploadEvalDataFile: (pid, file, onProgress) => {
-    const form = new FormData();
-    form.append('file', file);
-    return xhrUpload(`/api/projects/${pid}/eval/data-files`, form, onProgress);
-  },
-  // 一键导入预览：{data_source_id} 或 {resources, include_mock, graph}
-  evalImportPreview: (pid, payload) =>
-    request(`/api/projects/${pid}/eval/import-preview`, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
-  evalDataSourceCreate: (pid, payload) =>
-    request(`/api/projects/${pid}/eval/data-sources`, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
-  evalDataSourceUpdate: (pid, sid, payload) =>
-    request(`/api/projects/${pid}/eval/data-sources/${sid}`, {
-      method: 'PUT',
-      body: JSON.stringify(payload),
-    }),
-  evalDataSourceDelete: (pid, sid) =>
-    request(`/api/projects/${pid}/eval/data-sources/${sid}`, { method: 'DELETE' }),
-  evalSets: (pid) => request(`/api/projects/${pid}/eval/sets`),
-  evalSet: (pid, sid) => request(`/api/projects/${pid}/eval/sets/${sid}`),
-  evalSetCreate: (pid, payload) =>
-    request(`/api/projects/${pid}/eval/sets`, { method: 'POST', body: JSON.stringify(payload) }),
-  evalSetDelete: (pid, sid) =>
-    request(`/api/projects/${pid}/eval/sets/${sid}`, { method: 'DELETE' }),
-  evalStop: (pid) => request(`/api/projects/${pid}/eval/stop`, { method: 'POST' }),
-  evalResume: (pid) => request(`/api/projects/${pid}/eval/resume`, { method: 'POST' }),
   setProjectEngine: (pid, engine) =>
     request(`/api/projects/${pid}/engine`, {
       method: 'PUT',

@@ -448,7 +448,7 @@ def test_each_duplicate_reports_the_first_declaration_not_the_previous_duplicate
 @pytest.mark.parametrize("target_first", [False, True])
 @pytest.mark.parametrize("note", ["", "（fk → id）"])
 def test_relation_declared_once_in_each_endpoint_file_is_one_relation(target_first, note):
-    """Issue 419：源、目标两端文件各写一次是同一关系的两端描述，评测和导出都不算重复。"""
+    """Issue 419：源、目标两端文件各写一次是同一关系的两端描述，导出时不算重复。"""
     texts = _related_pair(note, ["fk"], ["id"])
     texts["object_b"] = texts["object_b"].replace("→ references →", f"→ references{note} →")
     # 名称不同的关系（如买方、卖方）同样两端各写一次，各自保留
@@ -522,34 +522,6 @@ def test_evaluation_rejects_only_matching_join_field_pairs_across_formats():
     assert "重复关系" in problems[0]
     assert "fk → id" in problems[0]
     assert "首次声明于" in problems[0]
-
-
-def test_evaluation_accepts_self_relations_with_different_join_fields(tmp_path):
-    from app.services import modeling_eval
-
-    texts = _self_object(
-        "- 当前对象 → references（manager_id → employee_id） → 当前对象\n"
-        "- 当前对象 → references（employee_id → manager_id） → 当前对象\n"
-    )
-    directory = tmp_path / "ontology" / "object"
-    directory.mkdir(parents=True)
-    for key, text in texts.items():
-        (directory / f"{key}.md").write_text(text, encoding="utf-8")
-
-    assert modeling_eval.evaluation_object_snapshot(tmp_path) == texts
-
-
-def test_evaluation_accepts_relation_declared_in_both_endpoint_files(tmp_path):
-    from app.services import modeling_eval
-
-    texts = _related_pair("（fk → id）", ["fk"], ["id"])
-    texts["object_b"] = texts["object_b"].replace("→ references →", "→ references（fk → id） →")
-    directory = tmp_path / "ontology" / "object"
-    directory.mkdir(parents=True)
-    for key, text in texts.items():
-        (directory / f"{key}.md").write_text(text, encoding="utf-8")
-
-    assert modeling_eval.evaluation_object_snapshot(tmp_path) == texts
 
 
 def test_standard_relation_table_keeps_graph_join_fields_and_evidence():

@@ -100,17 +100,13 @@ def list_versions(manager, project_id: str, limit: int = 50, cursor: str = "") -
 
 def _blocking_issues(project_id: str, root: Path) -> list[dict]:
     from .agent_sessions import manager as sessions
-    from . import modeling_eval, solver_validation_run, studio
+    from . import studio
 
     issues = []
     if sessions.workspace_busy(project_id):
         issues.append({"code": "PROJECT_EDITING_BUSY", "message": "助手正在修改该项目，请等待当前任务结束"})
     if studio.project_editing_status(project_id):
         issues.append({"code": "PROJECT_EDITING_BUSY", "message": "Studio 存在租约或未提交草稿，请先完成或放弃编辑"})
-    if modeling_eval.is_active(project_id):
-        issues.append({"code": "EVALUATION_ACTIVE", "message": "数据评测正在运行或排队，请等待完成或先停止"})
-    if solver_validation_run.is_active(project_id, root):
-        issues.append({"code": "SOLVER_VALIDATION_ACTIVE", "message": "求解验证正在运行，请等待完成"})
     if manager_for_dirty(root):
         issues.append({"code": "WORKSPACE_DIRTY", "message": "项目存在未提交或暂存的修改，请先完成当前编辑"})
     return issues
@@ -256,33 +252,26 @@ def _mark_preview(preview_id: str, state: str, result=None) -> None:
 
 
 async def _apply_commit(manager, project_id: str, commit: str, expected_head: str, sessions) -> dict:
-    from . import modeling_eval
+    async with sessions._lock:
+        root = manager.project_root(project_id)
+        _ensure_idle(project_id, root)
+        if sessions.workspace_busy(project_id):
+            raise _error("PROJECT_EDITING_BUSY", "助手正在修改该项目，请等待当前任务结束", 409)
+        if expected_head and _head(manager, project_id) != expected_head:
+            raise _error("REVISION_CONFLICT", "项目已产生新版本，请重新预览后再回退", 409)
 
-    result = None
-    try:
-        with modeling_eval.block_launch(project_id):
-            async with sessions._lock:
-                root = manager.project_root(project_id)
-                _ensure_idle(project_id, root)
-                if sessions.workspace_busy(project_id):
-                    raise _error("PROJECT_EDITING_BUSY", "助手正在修改该项目，请等待当前任务结束", 409)
-                if expected_head and _head(manager, project_id) != expected_head:
-                    raise _error("REVISION_CONFLICT", "项目已产生新版本，请重新预览后再回退", 409)
+        def ensure_idle(current_root: Path) -> None:
+            _ensure_idle(project_id, current_root)
 
-                def ensure_idle(current_root: Path) -> None:
-                    _ensure_idle(project_id, current_root)
-
-                result = await asyncio.to_thread(
-                    manager.revert_to, project_id, commit, expected_head, ensure_idle
-                )
-                session = sessions.get(project_id)
-                if session is not None:
-                    session.pending_prompts.clear()
-                    await sessions._recycle(session)
-                from . import conversation_store
-                conversation_store.clear_all_resume_tokens(project_id)
-    except modeling_eval.EvaluationLaunchBlocked as exc:
-        raise _error("EVALUATION_ACTIVE", str(exc), 409) from exc
+        result = await asyncio.to_thread(
+            manager.revert_to, project_id, commit, expected_head, ensure_idle
+        )
+        session = sessions.get(project_id)
+        if session is not None:
+            session.pending_prompts.clear()
+            await sessions._recycle(session)
+        from . import conversation_store
+        conversation_store.clear_all_resume_tokens(project_id)
     await sessions._drain_waiters()
     return result
 

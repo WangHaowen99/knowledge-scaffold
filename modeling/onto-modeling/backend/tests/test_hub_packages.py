@@ -532,5 +532,4 @@ def test_viewer_cannot_publish_or_resume_evaluation(setup, monkeypatch):
         headers = {'Authorization': 'Bearer synthetic-access'}
         assert client.post(f'/api/projects/{pid}/package/releases', headers=headers,
                            json={'request_id': 'viewer_demo'}).status_code == 403
-        assert client.post(f'/api/projects/{pid}/eval/resume', headers=headers).status_code == 403
     assert not calls

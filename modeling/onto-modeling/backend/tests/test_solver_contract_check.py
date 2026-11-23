@@ -706,6 +706,24 @@ def test_validation_records_no_longer_gate_publication(manager: WorkspaceManager
     manager.publish_package(pid, tmp_path / "ok.zip")
 
 
+def test_legacy_validation_cases_and_records_stay_readable(manager: WorkspaceManager, monkeypatch):
+    """建模侧不再执行验证：原有用例只读导出，当前修订的历史记录仍可查看。"""
+    from app.routers import projects
+
+    monkeypatch.setattr(projects, "workspaces", manager)
+    monkeypatch.setattr(projects, "ensure_access", lambda pid, *args, **kwargs: manager.project_root(pid))
+    pid, root = _with_contract(manager)
+    cases_path = root / solver_validation.CASES_FILE
+    cases_path.parent.mkdir(parents=True, exist_ok=True)
+    cases_path.write_text(json.dumps({"cases": [{"id": "n9"}, "broken"]}), encoding="utf-8")
+    request = SimpleNamespace(state=SimpleNamespace(user={"sub": "alice"}), headers={})
+
+    assert projects.get_solver_validation_cases(pid, request) == {"cases": [{"id": "n9"}]}
+    revision = _revision(manager, pid)
+    record = solver_validation.create(root, revision, ["plan_route"])
+    assert projects.latest_solver_validation(pid, request)["validation"]["id"] == record["id"]
+
+
 @pytest.mark.parametrize("edit", ["model", "operation", "evaluator"])
 def test_contract_edit_changes_revision(manager: WorkspaceManager, edit: str):
     pid, root = _with_contract(manager)

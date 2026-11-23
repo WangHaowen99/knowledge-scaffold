@@ -156,7 +156,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5180/evaluation/api/
 ## 10. 已知边界
 
 - 根部全栈发布包包含 consumer（backend / frontend / auth-server / JiuwenBox）、知识包 Hub、Onto Modeling 与独立评测服务；`consumer/build.sh` 仍只构建 consumer 单服务发布包。
-- Modeling Workbench 不在 `deploy/` 的构建和部署范围内：用 `bash modeling/build.sh <version> [amd|arm]` 单独打包，用 `modeling/deploy/` 下的脚本单独部署（`deploy/docker-compose.modeling.yml` 仅供其源码部署使用）。单独部署时 Workbench 须使用 consumer `backend/.env` 中的 `MODELING_SERVICE_TOKEN`。
+- Modeling Workbench 的源码、构建和部署脚本已从仓库删除，`deploy/` 也不构建或部署它。评测用的 NL2SQL 服务和 MySQL 在 [`modeling/nl2sql-service/`](../modeling/nl2sql-service/README.md) 单独一键部署，不在 `deploy/` 的范围内。
 - 已有的 Workbench 实例不受 `deploy/` 脚本影响；升级时脚本只读取它占用的宿主端口，避免 Onto Modeling 抢占。
 
 

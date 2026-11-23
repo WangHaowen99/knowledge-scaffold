@@ -29,9 +29,8 @@
 1. 确定评测报告（数据飞轮模式先去掉 `--flywheel` / `--flywheel-recheck` 标记）：
    - `$ARGUMENTS` 非空 → 使用 `reports/{$ARGUMENTS}`（容忍省略 `reports/` 前缀）；
    - 为空 → 取 `reports/eval-*.md` 中时间戳最新的一份。
-   - 一份都没有 → 终止并提示："尚无评测报告——请先在左栏「数据评测」阶段运行一轮评测。" 释放锁后结束。
-2. 读取总分与轮次号：旧链路报告取 `.ontology-state/eval.json`（若存在）；独立评测导入的报告取
-   `.ontology-state/eval-service/{报告文件名去掉 .md}.json` 的 `summary`、`run_id` 与 `version`（eval.json 只属于旧链路，不要混用）。
+   - 一份都没有 → 终止并提示："尚无评测报告——请先在「已发布版本（知识包评测）」中运行评测，再从评测结果发起评测优化。" 释放锁后结束。
+2. 读取总分与轮次号：取 `.ontology-state/eval-service/{报告文件名去掉 .md}.json` 的 `summary`、`run_id` 与 `version`。
    读取报告的「逐用例明细」，收集所有
    `⚠️ partial` / `❌ fail` / `🛑 error` 用例：问题、标准答案、智能体回答、判分理由，以及该用例的
    「工具失败」小节（若有）——每行是 `工具名 · 错误码 · 问题：问题码 字段路径 · 退出码 · 详情`，
@@ -162,7 +161,7 @@ stopped after a repeated failure."之类只说明运行被中止，真正原因�
 
 ## 预期与验证
 - 预期改善：{逐条对应失分用例，说明修订如何回应判分理由}
-- 验证方式：在「数据评测」阶段重跑同一批用例，对比分数（修订不保证提分，以实测为准）
+- 验证方式：发布新版本后，在「已发布版本（知识包评测）」中用同一评测集重新评测，对比分数（修订不保证提分，以实测为准）
 ```
 
 ## Step 6: 收尾
@@ -171,11 +170,11 @@ stopped after a repeated failure."之类只说明运行被中止，真正原因�
 2. `python3 .claude/scripts/state_helper.py update-progress evolution_last_run {timestamp}`
 3. `python3 .claude/scripts/state_helper.py release evolution`
 4. 结束语（用户词表话术）："演进完成：修订 {N} 处，报告见 reports/evolution-*.md。
-   请在左栏「数据评测」阶段重跑评测验证效果——分数以实测为准。"
+   请发布新版本后，在「已发布版本（知识包评测）」中重新评测验证效果——分数以实测为准。"
 
 ## 边界与守则
 
-- 本命令**只优化知识包与用例**，不改评测编排、不代跑评测（评测由平台「数据评测」阶段触发）；
+- 本命令**只优化知识包与用例**，不改评测编排、不代跑评测（评测由独立评测服务对已发布版本执行）；
 - 一轮演进只处理一份评测报告；专家想连续多轮时，每轮之间必须重跑评测拿新报告；
 - 与 /ontology-update 的分工：update 响应"资料变更"，evolution 响应"评测失分"——两者都改知识包，
   但归因输入不同，不要混用；
