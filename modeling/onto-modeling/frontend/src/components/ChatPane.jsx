@@ -151,20 +151,6 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
       command: '/ontology-update 资料区有新变更，请检查并刷新受影响的产物',
     });
   }
-  // 评测失分或出现异常用例 → 主推演进（报告错误修复优先级更高，不并列主推）。
-  // 判定在后端（modeling_eval.evolution_hint）：得分 <90、有异常用例、或轮次异常终止但已出报告
-  const evolution = meta?.eval_evolution;
-  if (!reportErrors && evolution) {
-    out.push({
-      key: 'evolution',
-      primary: out.length === 0,
-      label: evolution.errors
-        ? `评测优化（${evolution.errors} 条异常）`
-        : `评测优化（当前 ${evolution.score} 分）`,
-      tooltip: '根据最近一轮评测的失分与异常用例归因并优化知识包',
-      command: `/ontology-evolution ${evolution.report.split('/').pop()}`,
-    });
-  }
   // 下一步 = 第一个未完成阶段；用户已越过的可选阶段、只有面板入口的可选阶段不再主推。
   // 资料分析未验收且对象尚未提取时不算完成，不会主推对象提取（issue #362）
   const researchReview = meta?.research_review || null;

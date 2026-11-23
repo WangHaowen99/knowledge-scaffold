@@ -36,7 +36,6 @@ import { RESOURCE_FILE_ACCEPT, validateResourceFile } from '../lib/resourceUploa
 import { legacyOfficeHint } from '../lib/sourceLocation.js';
 import { EMPTY_HISTORY, appendHistoryPage, historyEntryKey, versionTitle } from '../lib/versionHistory.js';
 import { hasWorkspaceDirty } from '../lib/workspaceDirty.js';
-import EvalRunDetail from './EvalRunDetail.jsx';
 import { useFlywheelPanel } from './flywheel/FlywheelEntry.jsx';
 import { usePackagePublish } from './PublishCheckDialog.jsx';
 
@@ -191,8 +190,7 @@ export function researchBadge(review) {
     : '已生成，待核验';
 }
 
-// 资料用途（对齐 modeling 的 material purpose 体系）；schema/term 仅表格类可选。
-// 评测数据不在资料区打标，改在「数据评测」的数据源里上传
+// 资料用途；schema/term 仅表格类可选。评测数据不在资料区打标
 export const MATERIAL_PURPOSES = [
   { value: 'auto', label: '由助手判断' },
   { value: 'goal', label: '建模目标依据' },
@@ -359,9 +357,6 @@ export default function LeftPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section, project.id, tree]);
 
-  // Legacy results are loaded only when explicitly opened; new evaluations live independently.
-  const [evalInfo, setEvalInfo] = useState(null); // {enabled, reachable, state, evolution}
-  const [evalDetailOpen, setEvalDetailOpen] = useState(false);
   const packagePublish = usePackagePublish({
     onCommand,
     onOpenFile: onSelectFile,
@@ -413,79 +408,6 @@ export default function LeftPane({
       setDownloading('');
     }
   };
-
-  useEffect(() => {
-    if (!evalDetailOpen) return undefined;
-    let stop = false;
-    const pull = () =>
-      api.evalStatus(project.id).then((d) => {
-        if (!stop) setEvalInfo(d);
-      }).catch(() => {});
-    pull();
-    const timer = setInterval(() => {
-      // 运行中密集轮询，空闲时低频
-      if (evalInfo?.state?.status === 'running' || evalDetailOpen) pull();
-    }, 8000);
-    return () => {
-      stop = true;
-      clearInterval(timer);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [section, project.id, evalInfo?.state?.status, evalDetailOpen]);
-
-  // 评测进入终态：刷新文件树与项目 meta——报告出现在树里、阶段点亮，
-  // 聊天区的「评测优化」建议（依赖 meta.eval_evolution）才能及时出现
-  const evalStatusRef = useRef(null);
-  useEffect(() => {
-    const status = evalInfo?.state?.status;
-    if (evalStatusRef.current === 'running' && status && status !== 'running') onRefresh?.();
-    evalStatusRef.current = status;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [evalInfo?.state?.status]);
-
-  const [evalActing, setEvalActing] = useState(false); // 停止/续接请求进行中
-  const refreshEvalStatus = () =>
-    api.evalStatus(project.id).then(setEvalInfo).catch(() => {});
-
-  const stopEval = async () => {
-    setEvalActing(true);
-    try {
-      const res = await api.evalStop(project.id);
-      message.success(
-        res.cancelled ? '已停止评测，modeling 侧轮次已取消' : '已停止评测',
-      );
-    } catch (err) {
-      message.error(err.message || '停止评测失败');
-    } finally {
-      setEvalActing(false);
-      refreshEvalStatus();
-    }
-  };
-
-  const resumeEval = async () => {
-    setEvalActing(true);
-    try {
-      await api.evalResume(project.id);
-      message.info('正在续接上一轮：收取 modeling 侧已有结果，不重跑用例');
-      // 乐观置为运行中，让密集轮询立刻生效；随后的真实状态会覆盖它
-      setEvalInfo((prev) =>
-        prev
-          ? { ...prev, state: { ...prev.state, status: 'running', message: '续接上一轮…' } }
-          : prev,
-      );
-    } catch (err) {
-      message.error(err.message || '续接失败');
-      refreshEvalStatus();
-    } finally {
-      setEvalActing(false);
-    }
-  };
-
-
-  // 失分/异常用例 → /ontology-evolution 归因修订（与聊天区建议同一判定）
-  const evolution = evalInfo?.evolution;
-  const runEvolution = () =>
-    onCommand(`/ontology-evolution ${evolution.report.split('/').pop()}`);
 
   const openSheetScope = async (path, readingMode, saveIfValid = false, force = false) => {
     if (savingSheets) return;
@@ -758,13 +680,6 @@ export default function LeftPane({
             已发布版本（知识包评测）
           </Button>
           {flywheel.entry}
-          <Button block style={{ marginBottom: 8 }} onClick={() => setEvalDetailOpen(true)}>
-            旧版评测记录（历史链路）
-          </Button>
-          {evalDetailOpen && evalInfo?.state?.status === 'running' &&
-            <Button danger loading={evalActing} onClick={stopEval}>停止旧任务</Button>}
-          {evalDetailOpen && evalInfo?.state?.resumable &&
-            <Button loading={evalActing} onClick={resumeEval}>对账旧任务</Button>}
           <Space wrap size={4}>
             {EXTRA_ACTIONS.map((action) => (
               <Button key={action.label} size="small" onClick={() => onCommand(action.command)}>
@@ -1147,21 +1062,6 @@ export default function LeftPane({
         </>
       )}
 
-      <EvalRunDetail
-        open={evalDetailOpen}
-        projectId={project.id}
-        state={evalInfo?.state}
-        evolution={evolution}
-        onClose={() => setEvalDetailOpen(false)}
-        onOpenReport={(path) => {
-          setEvalDetailOpen(false);
-          onSelectFile(path);
-        }}
-        onEvolution={() => {
-          setEvalDetailOpen(false);
-          runEvolution();
-        }}
-      />
       {packagePublish.dialog}
       {flywheel.dialog}
     </div>

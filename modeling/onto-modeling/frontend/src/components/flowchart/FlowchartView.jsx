@@ -13,7 +13,7 @@ import { canRepairDrawio } from './drawioRepair.js';
 const DrawioView = lazy(() => import('../DrawioView.jsx'));
 const DrawioRepairPanel = lazy(() => import('./DrawioRepairPanel.jsx'));
 
-/* drawio 流程图视图：默认用 modeling 同款 ReactFlow 编辑器（秒开、样式统一），
+/* drawio 流程图视图：默认用 ReactFlow 编辑器（秒开、样式统一），
    保存时按资产节点样式约定回写 drawio XML；压缩存储或解析失败回退 drawio 编辑器。 */
 // 「AI 推荐新流程」交给助手：对照资料分析报告补画还没有的业务流程（ontology-flowchart Mode D）
 const RECOMMEND_FLOWCHART_COMMAND = '/ontology-flowchart 补充流程图';

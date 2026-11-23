@@ -1,4 +1,4 @@
-/* drawio XML ↔ FlowchartEditor 文档格式（modeling 流程图编辑器契约）双向转换。
+/* drawio XML ↔ FlowchartEditor 文档格式双向转换。
  *
  * 节点样式遵循提示词资产的 flowchart 约定：
  *   开始/结束 shape=mxgraph.flowchart.terminator | 业务活动 process（默认）

@@ -20,7 +20,7 @@ for parent in Path(__file__).resolve().parents:
 def evaluation_hub_archive(request, tmp_path, monkeypatch):
     """In-memory Hub so evaluation tests do not depend on the knowledge-hub source tree."""
     if request.module.__name__.split('.')[-1] not in (
-        'test_modeling_eval', 'test_publish_binding_gate', 'test_eval_import', 'test_eval_presets'
+        'test_publish_binding_gate',
     ):
         return
     from app.services import hub_packages, auth, knowledge_hub

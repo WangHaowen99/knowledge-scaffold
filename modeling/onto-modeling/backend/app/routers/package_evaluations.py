@@ -1,7 +1,4 @@
-"""Evaluation service notifications and the evaluation results of a project's Hub package.
-
-Project routes stay outside /api/projects/*/eval/: main.py retires mutations under that legacy prefix.
-"""
+"""Evaluation service notifications and the evaluation results of a project's Hub package."""
 import hmac
 import os
 

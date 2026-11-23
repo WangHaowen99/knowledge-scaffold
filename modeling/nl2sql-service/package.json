@@ -1,0 +1,25 @@
+{
+  "name": "nl2sql-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "评测用 NL2SQL HTTP 服务：把自然语言问题转成只读 SELECT，在 MySQL 评测库上执行",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx --env-file=.env src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "mysql2": "^3.22.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

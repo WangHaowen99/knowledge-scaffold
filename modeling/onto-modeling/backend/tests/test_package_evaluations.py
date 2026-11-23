@@ -356,7 +356,7 @@ def test_optimization_requires_a_ready_report(env):
 def test_optimization_imports_artifacts_once(env, monkeypatch):
     manager, pid, stub, client = env
     response = client.post(f'/api/projects/{pid}/package/evaluations/{RUN}/optimization', json={})
-    assert response.status_code == 200  # 不在已下线的 /eval/ 前缀下，未被 410 拦截
+    assert response.status_code == 200
     suggestions = 'optimization-20261031-101010-abc123.md'
     assert response.json() == {'report': f'{STEM}.md', 'suggestions': suggestions,
                                'command': f'/ontology-evolution {STEM}.md'}
@@ -392,11 +392,6 @@ def test_optimization_rejects_artifacts_of_mixed_revisions(env, monkeypatch):
     monkeypatch.setattr(eval_client, 'request', changing)
     response = client.post(f'/api/projects/{pid}/package/evaluations/{RUN}/optimization', json={})
     assert response.status_code == 409 and response.json()['code'] == 'artifacts_changed'
-
-
-def test_legacy_evaluation_mutations_stay_retired(env):
-    _, pid, _, client = env
-    assert client.post(f'/api/projects/{pid}/eval/run', json={}).status_code == 410
 
 
 @pytest.fixture

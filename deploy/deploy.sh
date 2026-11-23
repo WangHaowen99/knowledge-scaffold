@@ -101,7 +101,7 @@ consumer_container() {
     docker ps --format '{{.Names}}' | grep -E '^onto-agent-backend($|-)|^backend$' | head -n 1 || true
 }
 
-# 与 modeling/deploy/deploy.sh 同策略：显式覆盖 > 运行中 consumer 容器的实际
+# 探测顺序：显式覆盖 > 运行中 consumer 容器的实际
 # 网络 > 命名规律兜底。compose 项目名不同则网络名不同（onto-agent_default 即
 # 一例），只按 'onto-agent-network$' 匹配会漏。探测不到返回空、由调用方报错——
 # 不能猜名字，猜错会让 compose 以 declared as external, but could not be found 失败。
@@ -153,8 +153,8 @@ detect_jiuwenbox_socket_volume() {
         | grep -E '(^|_)onto-jiuwenbox-sock$' | head -n 1 || true
 }
 
-write_onto_modeling_stack_override() { # <onto-modeling 目录> <mw-modeling 地址>
-    local dir="$1" modeling_url="$2" network socket_volume sandbox_service="" sandbox_volume=""
+write_onto_modeling_stack_override() { # <onto-modeling 目录>
+    local dir="$1" network socket_volume sandbox_service="" sandbox_volume=""
     local hub_env="${dir}/.env" hub_secret
     # Hub 未部署过时补一个凭据，onto-modeling 才能启动；部署过 Hub 时调用方已对齐为 Hub 的值
     if ! grep -q '^ONTO_HUB_SERVICE_TOKEN=..*' "${hub_env}" 2>/dev/null; then
@@ -175,7 +175,7 @@ write_onto_modeling_stack_override() { # <onto-modeling 目录> <mw-modeling 地
     cat > "${dir}/docker-compose.stack.yml" <<EOF2
 # 由 deploy.sh 生成（整栈部署形态，勿手改；单独部署 onto-modeling 时删除即可）：
 # 停用源码 Compose 的本地 Auth，共享 Consumer 当前 Auth；接入 Consumer 网络；
-# 配置数据评测所需的 Modeling Workbench 地址；把 consumer 的 jiuwenbox socket 只读挂给脚本验证网关。
+# 把 consumer 的 jiuwenbox socket 只读挂给脚本验证网关。
 services:
   auth-server:
     profiles: ["disabled"]
@@ -183,7 +183,6 @@ services:
     depends_on: !override []
     environment:
       - ONTO_WEB_AUTH_URL=${STACK_AUTH_URL}
-      - ONTO_WEB_MODELING_URL=${modeling_url}
     networks:
       - default
       - consumer-net
@@ -201,8 +200,6 @@ seed_onto_modeling_bundle_env() { # <bundle 的 onto-modeling 目录>
     [ -f "${env_file}" ] || touch "${env_file}"
     chmod 600 "${env_file}"
     network="$(require_consumer_network)"
-    grep -q '^ONTO_WEB_MODELING_URL=..*' "${env_file}"         || printf 'ONTO_WEB_MODELING_URL=%s
-' 'http://mw-modeling:5100' >> "${env_file}"
     # 存量 .env 可能记着一个已不存在的网络（旧版探测失败时写入了固定猜测名），
     # 那样重跑部署也不会自愈——就地删掉失效值，让下面重新写入探测结果。
     current_network="$(sed -n 's/^ONTO_MODELING_EXTERNAL_AUTH_NETWORK=//p' "${env_file}" | head -n 1)"
@@ -541,7 +538,7 @@ elif [ -f "${SCRIPT_DIR}/deploy-stack.sh" ]; then
                 adopt_hub_service_token "${SCRIPT_DIR}/../knowledge-hub/deploy/.env" "${ONTO_MODELING_SOURCE}/.env"
                 configure_onto_stack_auth "${ONTO_MODELING_SOURCE}/.env"
                 ensure_onto_evaluation_service_token "${ONTO_MODELING_SOURCE}/.env"
-                write_onto_modeling_stack_override "${ONTO_MODELING_SOURCE}" "http://mw-modeling:5100"
+                write_onto_modeling_stack_override "${ONTO_MODELING_SOURCE}"
                 # --remove-orphans 清掉旧版本随 onto-modeling 部署的 Hub 容器，避免与独立 Hub 抢同一服务名
                 (cd "${ONTO_MODELING_SOURCE}" \
                     && docker compose -f docker-compose.yml -f docker-compose.stack.yml up -d --build --remove-orphans)

@@ -25,7 +25,7 @@ WIKILINK = re.compile(r"\[\[([^\]|#]+)")
 SECTION = re.compile(r"^(#{1,2})\s+(.+)$", re.MULTILINE)
 NUMBERED_STEP = re.compile(r"^\s*\d+[.)、．]\s*(.+)$")
 
-# 五元组元模型（对齐 modeling 知识包，ADR-0004）；ontology/logic 为旧目录兼容
+# 五元组元模型（ADR-0004）；ontology/logic 为旧目录兼容
 KIND_DIRS = (
     ("object", "ontology/object", "*.md"),
     ("operation", "ontology/operation", "*.md"),

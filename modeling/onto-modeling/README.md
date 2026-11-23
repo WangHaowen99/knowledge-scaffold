@@ -77,13 +77,6 @@ npm run dev
 未启用鉴权的部署，以及管理员关闭个人 Key 后，行为都与管理员统一配置时一致。个人配置不含
 上下文参数，两个引擎都沿用管理员配置页的窗口与最大输出；个人模型的窗口与之不同时，以管理员配置为准。
 
-数据评测的问答模型由评测向导选择 Consumer 全局模型池中的启用配置。判分模型按发起评测的
-用户和项目当前会话引擎，从 onto-modeling「我的模型配置」解析；未设置个人覆盖时沿用
-onto-modeling 管理员配置。判分不读取 mw-modeling 的模型设置，配置不完整时提示补齐后再评测。
-判分配置只在后端内存中随本轮传递，不返回前端，也不写入评测状态、报告或数据库。
-向导可选择 1～16 条用例并发，默认 4 条；结果按原用例顺序保存。支持异步运行协议的
-Consumer 会在停止评测时收到取消请求；较早版本沿用同步调用。
-
 ## 会话池（方案 4.1.1）
 
 每个活跃建模会话 = 一个 CLI 子进程（均值约 400MB）。会话池按
@@ -108,25 +101,20 @@ resume 续接模型上下文，界面无感。运行中的会话连续 `ONTO_WEB
 
 - 场景走查由 `trace_inputs.py` 统一读取已保存确认稿，保留字段类型与尾注，派遣前及报告前核对源文件修订和初始输入回执。解析或对账失败不计通过。
 - 来源核验使用 `source_extract.py` 抽取 UTF-8 文本、DOCX 正文/表格和 XLSX 单元格，返回原文件摘要与定位锚点；无法读取或定位时明确标记“无法核验”，不以新增 ID 声明或历史基线免检。
-- 页面及新报告不再展示覆盖率统计，仍展示具体缺项、推演通过率与数据评测分数；旧报告原文保留。
-- 数据评测区分有效判分与技术异常：无有效结果显示“未形成有效评测”，混合结果标明仅为有效子集得分，不把技术异常当业务零分。
+- 页面及新报告不再展示覆盖率统计，仍展示具体缺项与推演通过率；旧报告原文保留。
 
 升级时需匹配工作区工具箱版本；旧回执保留但须重新核验。实现与兼容边界见
 [`modeling-review-integrity.md`](../../docs/decisions/modeling-review-integrity.md)。
 
-## 数据评测前的对象关系检查
-
-启动数据评测前，服务检查包内关系的源对象、目标对象和重复声明。结构错误会返回 HTTP 422
-和 `EVALUATION_PACKAGE_INVALID`，并给出对象文件及行号，不创建后台评测任务或新轮次。
-检查适用于所有数据源模式，允许对象未绑定数据表也不能跳过关系结构检查。
+## 对象关系的身份与重复检查
 
 关系身份是规范化后的“源对象、关系名、目标对象、源关联字段、目标关联字段”。源对象和目标
 对象的文件各声明一次是同一关系的两端描述，合并为一条；同一文件里再次声明身份相同的关系
-才算重复，阻止启动，并同时提示首次声明和重复声明的源文件及行号。同一对对象允许存在同名
+才算重复，拒绝导出，并同时提示首次声明和重复声明的源文件及行号。同一对对象允许存在同名
 但关联字段不同的关系。箭头括注和标准表会解析为相同的字段对；未写字段按空字段对比较，
 不从其他声明补猜。知识包导出和发布前结构检查使用同一规则。
 
-评测允许自关联；自关联的重复声明同样按上述完整身份检查。图模式有明确字段时按字段值
+允许自关联；自关联的重复声明同样按上述完整身份检查。图模式有明确字段时按字段值
 建立关联，未写字段时沿用同表同一行的关联语义。
 
 Studio 图接口 `GET /api/projects/{pid}/studio/graph` 中对象之间的关系与导出用同一套身份：源对象、
@@ -137,8 +125,7 @@ Studio 图接口 `GET /api/projects/{pid}/studio/graph` 中对象之间的关系
 「# 文档名 + ## 关联对象」里的写法）退回逐行扫描：同方向已有正式关系时不再显示，否则显示一条；
 自关联不走这条退路。正文里提到对象自己、操作调用自己等自引用不成边。
 
-正常关系会在导出、导入后保留；存量关系名称包含端点名称或基数时仍允许评测。
-后台导出使用已检查的对象内容快照；对象内容变化后不会自动续接旧轮次。
+正常关系会在导出、导入后保留；存量关系名称包含端点名称或基数时仍可导出。
 实现和验证范围见 [issue #367 修复记录](../../docs/issue-367-regression-review.md)。
 
 ## 测试
@@ -152,7 +139,7 @@ cd frontend && npm test && npm run build
 
 完整安装和升级统一部署 Consumer、Onto Modeling、知识包 Hub、独立评测四个必需服务。
 分离安装脚本的 `--consumer-package`、`--onto-modeling-package`、`--knowledge-hub-package`、`--evaluation-package`
-四项必填。安装脚本不部署、不升级 Modeling Workbench。
+四项必填。
 部署顺序：Consumer → Hub → Onto Modeling → 评测。安装入口须与发布包版本一致。
 
 ```bash
@@ -169,7 +156,7 @@ docker compose up --build          # 本地从源码起全栈（onto-modeling + 
   索引不可达时兜底；宿主 Python 更低时环境标记无法按 3.11 求值、供应不完整，脚本跳过这一步，
   避免大包在宿主和镜像内各下一遍；
 - 运行镜像基于 `python:3.11-slim`、前端构建用 `node:22-slim`，与 auth-server /
-  consumer / modeling 同基础镜像，复用已拉取的层；
+  consumer 同基础镜像，复用已拉取的层；
 - npm 与 pip 均挂 BuildKit 缓存，同机重复构建不再重新下载。
 
 目标机部署流程与容量规划（含 AVX 预检、降级兼容包）见 `deploy/README.md`。
@@ -184,8 +171,7 @@ docker compose up --build          # 本地从源码起全栈（onto-modeling + 
 ## 项目级本地 MCP
 
 在项目设置的 MCP 页面创建 Token 并复制 Read / Change 地址。MCP 直接读写当前
-Onto 工作区，新建、导入和克隆项目无需创建 Modeling 关联。旧 Modeling MCP
-地址及 Token 不会自动迁移，请为本地端点重新创建 Token。
+Onto 工作区，新建、导入和克隆项目无需额外关联。
 
 - HTTP：`/api/onto-mcp/{project_id}/{read|change}/mcp`。
 - SSE：`/api/onto-mcp/{project_id}/{read|change}/sse`。
@@ -194,7 +180,6 @@ Onto 工作区，新建、导入和克隆项目无需创建 Modeling 关联。�
 - 写操作必须提供最新 `expected_revision`；修改保存到本项目的 Git 工作区。
 - 默认按访问工作台的地址生成 MCP 地址。反向代理部署可选用
   `ONTO_WEB_MCP_PUBLIC_BASE_URL` 指定公开地址，例如 `https://example.com`。
-- 本次独立化仅针对 MCP；原有 Modeling 评测配置仍按原流程使用。
 
 设计与兼容边界见 [本地 MCP 设计说明](docs/decisions/onto-local-mcp.md)。
 
@@ -301,13 +286,13 @@ Hub 不可用时发布失败；Hub 已提交、本地关联尚未写入时提示
 
 默认全栈 `bash deploy/deploy.sh` 包含评测；仅部署建模不会启动评测。也可从仓库根执行 `bash deploy/deploy.sh --eval-only` 独立部署评测，并按说明注入受保护的运行配置。健康检查返回 404 时检查路由，502/503 时检查评测上游，返回 HTML 时检查是否误入建模页面回退。正确响应应为 `{"status":"ok","service":"evaluation"}`。
 
-求解知识包（启用了求解契约）发布不再要求先通过端到端验证：发布只受求解契约静态检查与结构自检约束，发布检查中须勾选“求解能力尚未经端到端验证”的确认，后端未确认时返回 `solver_validation_acknowledgement_required`（409）；当前求解契约修订最近一次求解验证已通过时免确认。MCP 发布遵守同一规则：`preview_package_publish` 返回 `solver.requires_acknowledgement`，需要确认时 `publish_package_version` 须带 `solver_unverified_acknowledged: true`，否则返回 `SOLVER_VALIDATION_ACKNOWLEDGEMENT_REQUIRED`（409）。发布后在「已发布版本（知识包评测）」或求解模型面板点“去评测”，在评测页面以“求解验证”类型对该版本执行；版本列表显示每个版本的求解验证状态与验证报告。每次发布记下当时的求解契约修订（含对象的数据绑定），求解模型面板据此提示当前修改是否已发布并通过验证。建模侧原有的验证用例只读，可导出 JSON 后导入评测页面的求解验证集；保存用例与发起验证的接口返回 `solver_validation_moved`（410）。
+求解知识包（启用了求解契约）发布不再要求先通过端到端验证：发布只受求解契约静态检查与结构自检约束，发布检查中须勾选“求解能力尚未经端到端验证”的确认，后端未确认时返回 `solver_validation_acknowledgement_required`（409）；当前求解契约修订最近一次求解验证已通过时免确认。MCP 发布遵守同一规则：`preview_package_publish` 返回 `solver.requires_acknowledgement`，需要确认时 `publish_package_version` 须带 `solver_unverified_acknowledged: true`，否则返回 `SOLVER_VALIDATION_ACKNOWLEDGEMENT_REQUIRED`（409）。发布后在「已发布版本（知识包评测）」或求解模型面板点“去评测”，在评测页面以“求解验证”类型对该版本执行；版本列表显示每个版本的求解验证状态与验证报告。每次发布记下当时的求解契约修订（含对象的数据绑定），求解模型面板据此提示当前修改是否已发布并通过验证。建模侧原有的验证用例只读，可经 `GET /api/projects/{pid}/package/solver-validations/cases` 导出 JSON 后导入评测页面的求解验证集；建模侧不再保存用例或发起验证。
 
-进度栏不再提供“数据评测（可选）”和数据源编辑。项目「已发布版本」列表提供「评测」入口，仅携带 Hub 包/版本引用跳转生效的评测入口，不自动执行，URL 中不含令牌或项目 ID。未配置独立评测时明确提示，不回退到 Core。
+进度栏不再提供“数据评测（可选）”和数据源编辑。项目「已发布版本」列表提供「评测」入口，仅携带 Hub 包/版本引用跳转生效的评测入口，不自动执行，URL 中不含令牌或项目 ID。未配置独立评测时明确提示。
 
 评测服务自行管理用例、数据源、mapping 与运行结果，直接访问账号、Hub 和 consumer。任务中心与执行详情直接显示本轮知识包名称和本体标识。建模服务保留只读接口 `GET /api/hub/package-projects?ontology_id=...`（每次 1 到 20 个包），按当前用户登录返回本人可访问且关联到这些包的项目名称，每包最多 5 个并附总数。登录统一由建模窗口经跨源消息交接。评测地址必须为不同来源的完整 HTTP(S) 地址，HTTPS 建模页面必须配置 HTTPS 评测地址。部署见 `../../eval-service/README.md`，使用 `--eval-only`，不随 `--onto-modeling-only` 启动。
 
-旧版评测记录按明确的历史入口查看；旧任务停止和对账接口保留。新的旧评测创建、用例/数据源修改接口返回 410。旧工作台和 MCP 的 Core 调用仍保留，不能据此下线整个 Core。评测服务不接管历史项目成员关系，也不随建模项目删除独立记录。
+建模服务不提供数据评测接口；工作区里已有的 `reports/eval-*.md` 报告保留在文件树中。评测服务不接管历史项目成员关系，也不随建模项目删除独立记录。
 
 
 ### 项目成员共享与知识包删除
@@ -332,4 +317,4 @@ Hub 不可用时发布失败；Hub 已提交、本地关联尚未写入时提示
 
 评测数据源会导入 Neo4j 图数据时，只有评测图范围内正是上一轮评测导入后的原样数据，评测服务才自动删除并重新导入；否则评测停下，由用户在确认评测时一并确认删除，后台不会代为确认；提示之后范围内数据又有变化时会重新提示。
 
-接口前缀 `/api/projects/{pid}/flywheel`：`GET` 读取状态并推进本用户的飞轮，`PUT /settings` 修改开关与规则，`GET /runs?offset&limit&filter` 与 `GET /audit?offset&limit` 从最新一条开始分批读取运行记录和设置变更（每批最多 50 条，弹窗滚动到底部时取下一批，状态筛选在服务端进行），`GET /runs/{id}` 与 `/runs/{id}/changes` 读取执行过程和内容差异，`POST /runs/{id}/{optimize|publish|evaluate|skip-evaluation|recheck|ignore|stop|rollback}` 执行单项操作（重试发布也用 `publish`）。运行与设置记录保存在用户自己的飞轮状态中。启用了求解契约的知识包，飞轮只在当前求解契约修订已有通过的求解验证时发布，不代用户确认“求解能力尚未验证”：未验证时运行停在「求解能力尚未验证」，完成求解验证后重试，或在发布检查中确认后手动发布。同一项目里另一位成员的飞轮正在优化或发布时，不启动新的优化，也不发布、重新检查或回退，自动执行等其结束；对方等待确认发布的候选内容不阻止优化；网页发布页与 MCP 发布不受此约束。设计取舍见 [ADR](../docs/decisions/2026-11-05-knowledge-package-data-flywheel.md)。
+接口前缀 `/api/projects/{pid}/flywheel`：`GET` 读取状态并推进本用户的飞轮，`PUT /settings` 修改开关与规则，`GET /runs?offset&limit&filter` 与 `GET /audit?offset&limit` 从最新一条开始分批读取运行记录和设置变更（每批最多 50 条，弹窗滚动到底部时取下一批，状态筛选在服务端进行），`GET /runs/{id}` 与 `/runs/{id}/changes` 读取执行过程和内容差异，`POST /runs/{id}/{optimize|publish|evaluate|skip-evaluation|recheck|ignore|stop|rollback}` 执行单项操作（重试发布也用 `publish`）。运行与设置记录保存在用户自己的飞轮状态中。启用了求解契约的知识包，飞轮只在当前求解契约修订已有通过的求解验证时发布，不代用户确认“求解能力尚未验证”：未验证时运行停在「求解能力尚未验证」，完成求解验证后重试，或在发布检查中确认后手动发布。同一项目里另一位成员的飞轮正在优化或发布时，不启动新的优化，也不发布、重新检查或回退，自动执行等其结束；对方等待确认发布的候选内容不阻止优化；网页发布页与 MCP 发布不受此约束。设计取舍见 [ADR](../../docs/decisions/2026-11-05-knowledge-package-data-flywheel.md)。

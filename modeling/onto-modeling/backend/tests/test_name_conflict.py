@@ -14,7 +14,6 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from app import config
 from app.main import app
 from app.routers import projects
 from app.services import auth
@@ -36,7 +35,6 @@ from app.services.workspace import (
 def manager(tmp_path, monkeypatch) -> WorkspaceManager:
     workspaces = WorkspaceManager(tmp_path / "data", tmp_path / "assets")
     monkeypatch.setattr(projects, "workspaces", workspaces)
-    monkeypatch.setattr(config, "MODELING_URL", "")  # 不开通 modeling 侧项目
     return workspaces
 
 

@@ -19,6 +19,8 @@ from pathlib import Path
 from . import solver_contract
 
 VALIDATIONS_FILE = ".ontology-state/solver-validations.json"
+# 建模侧原有的验证用例：已停止维护，只读导出给独立评测的求解验证集
+CASES_FILE = ".ontology-state/solver-validation-cases.json"
 MAX_RECORDS = 50
 STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"
@@ -41,6 +43,15 @@ def list_records(root: Path) -> list[dict]:
         return []
     records = data.get("runs") if isinstance(data, dict) else None
     return [item for item in records or [] if isinstance(item, dict)]
+
+
+def list_cases(root: Path) -> list[dict]:
+    try:
+        data = json.loads((Path(root) / CASES_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    cases = data.get("cases") if isinstance(data, dict) else None
+    return [item for item in cases or [] if isinstance(item, dict)]
 
 
 def _save(root: Path, records: list[dict]) -> None:

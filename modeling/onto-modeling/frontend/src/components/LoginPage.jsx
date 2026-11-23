@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { api, authStore } from '../lib/api.js';
 
-// auth-server PASSWORD_POLICY_FAILED violations 代码 → 中文文案（与 modeling 服务一致）
+// auth-server PASSWORD_POLICY_FAILED violations 代码 → 中文文案
 const VIOLATION_LABELS = {
   min_length: '至少 8 位',
   max_length: '不超过 128 位',

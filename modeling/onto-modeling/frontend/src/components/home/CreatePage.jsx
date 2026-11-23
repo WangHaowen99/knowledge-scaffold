@@ -10,10 +10,10 @@ import { limitProjectName, projectNameLengthState } from '../../lib/projectName.
 import { MAX_NAME_LENGTH, useNameConflict } from '../NameConflictDialog.jsx';
 import './modeling-home.css';
 
-// 与 modeling 创建页一致；后端不再截断，长度只在输入阶段控制。
+// 后端不再截断，长度只在输入阶段控制。
 const GOAL_MAX_LENGTH = 2000;
 
-/* 全屏新建项目页 —— 结构与样式复刻 modeling workbench/pages/CreatePage.jsx。
+/* 全屏新建项目页。
    资料用途不在这里选：上传时平台按结构识别数据表、术语表，其余由助手按内容判断；
    识别结果在资料区可见可改。阅读方式由平台按资料类型决定。无数据源选择（onto-web 不区分）。 */
 export default function CreatePage({ onBack, onCreated }) {

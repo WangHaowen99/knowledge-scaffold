@@ -50,7 +50,7 @@ def normalize(text: str) -> str:
 
 
 def read_cases(workspace: Path, report: Path | None) -> list[str]:
-    """收集评测用例语料：优先指定报告，否则取最新 eval 报告 + eval.json。"""
+    """收集评测用例语料：优先指定报告，否则取最新 eval 报告。"""
     texts: list[str] = []
 
     report_path = report
@@ -67,18 +67,6 @@ def read_cases(workspace: Path, report: Path | None) -> list[str]:
             m = CASE_FIELD_PATTERN.match(line)
             if m:
                 texts.append(m.group(2).strip())
-
-    state = workspace / '.ontology-state' / 'eval.json'
-    if state.is_file():
-        try:
-            data = json.loads(state.read_text(encoding='utf-8'))
-        except Exception:
-            data = {}
-        for case in data.get('cases') or []:
-            for key in ('question', 'groundTruth', 'ground_truth'):
-                value = case.get(key)
-                if isinstance(value, str) and value.strip():
-                    texts.append(value.strip())
 
     return texts
 
@@ -213,7 +201,7 @@ def main() -> int:
     cases = read_cases(workspace, report)
 
     if not cases:
-        msg = '未找到评测用例语料（无 reports/eval-*.md 也无 .ontology-state/eval.json），跳过校验。'
+        msg = '未找到评测用例语料（无 reports/eval-*.md），跳过校验。'
         print(json.dumps({'skipped': msg}, ensure_ascii=False) if args.json else f'⚠️  {msg}')
         return 0
     if not docs:

@@ -121,11 +121,11 @@ These rules apply to all work in this repository.
    | `schema` | 数据 Schema | 选定范围内的 Sheet 是对象与属性的**事实来源**：对象属性清单的英文名称必须来自真实表头列，不得虚构或合并；未选中的 Sheet 仅作参考；类型与主键只能标注为推断，不得据样例行编造业务含义 |
    | `term` | 术语表 | 对象/操作/规则/指标的命名与别名必须与术语表对齐；冲突时以术语表为准并在文档标注 |
    | `evidence` | 通用业务依据 | 作为佐证材料按需引用，引用时注明出处文件 |
-   - **评测数据**（评测库导入用的业务数据表）不走资料区打标，由用户在「数据评测」的数据源里上传，存于 `.ontology-state/eval-data/<文件ID>/`。它**不是业务语义来源**——不得据样例行编造业务含义、枚举或规则；但它的 **Sheet 名与表头是表名、列名的依据**：没有 `schema` 资料时，对象「# 数据来源」写它的 Sheet 名，从库里读取的属性英文名称逐字取自该 Sheet 的表头（`python3 .claude/scripts/check_eval_data.py --headers` 列出全部表头）。文档形式的数据字典与真实表头冲突时以表头为准，并在资料分析报告或抽取结果里列出差异。其结构应与 `schema` 资料对账一致（`python3 .claude/scripts/check_eval_data.py` 默认检查这些上传文件）。旧项目 `materials.json` 里残留的 `eval_data` 标签同此处理。
+   - **评测数据**（评测库导入用的业务数据表）不走资料区打标，在独立评测服务的数据源中配置；旧项目已上传的数据表存于 `.ontology-state/eval-data/<文件ID>/`。它**不是业务语义来源**——不得据样例行编造业务含义、枚举或规则；但它的 **Sheet 名与表头是表名、列名的依据**：没有 `schema` 资料时，对象「# 数据来源」写它的 Sheet 名，从库里读取的属性英文名称逐字取自该 Sheet 的表头（`python3 .claude/scripts/check_eval_data.py --headers` 列出全部表头）。文档形式的数据字典与真实表头冲突时以表头为准，并在资料分析报告或抽取结果里列出差异。其结构应与 `schema` 资料对账一致（`python3 .claude/scripts/check_eval_data.py` 默认检查这些上传文件）。旧项目 `materials.json` 里残留的 `eval_data` 标签同此处理。
 
    `reading_mode`：由平台按资料类型决定，用户不再选择。条目显式写了 `full` / `on_demand`（存量项目）时照旧执行；没有写时：文档类资料（docx、doc、pdf、md、txt）全文读取后再使用，篇幅过长（如超过约 3 万字或 50 页）时可按需检索，但要在报告「信息来源」里注明哪些部分未通读；表格、图片、流程图按需检索（数据 Schema 与术语表的表头、术语由脚本读取）。该文件由平台维护，模型同样**不得修改**。
 
-   条目带 `auto_detected: true` 表示平台上传时按表格结构识别为数据表或术语表、预填了 `schema` / `term`，与人工标注同等对待。没有 `schema` 资料、但 `resource/` 里有像数据库表的表格（首行是英文列名）时，**不要让用户编辑 `materials.json`**：请用户在左侧资料列表把该表格的用途改为「数据 Schema」（平台会在疑似数据表旁给出「设为 Schema」按钮），或改在「数据评测」的数据源里上传；改完后重新读取清单再继续。
+   条目带 `auto_detected: true` 表示平台上传时按表格结构识别为数据表或术语表、预填了 `schema` / `term`，与人工标注同等对待。没有 `schema` 资料、但 `resource/` 里有像数据库表的表格（首行是英文列名）时，**不要让用户编辑 `materials.json`**：请用户在左侧资料列表把该表格的用途改为「数据 Schema」（平台会在疑似数据表旁给出「设为 Schema」按钮）；改完后重新读取清单再继续。
 
 ## Business Knowledge
 

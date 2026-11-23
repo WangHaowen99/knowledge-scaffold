@@ -25,7 +25,7 @@ import StudioEntryEditor from './StudioEntryEditor.jsx';
 import StudioUpdatedRangeFilter from './StudioUpdatedRangeFilter.jsx';
 import { studioTextMatchesQuery } from './studio/legacy/studio-model.js';
 
-// 图模式 = 原版 modeling Studio 图整体搬迁（含 WebGL 力导运行时），按需加载
+// 图模式（含 WebGL 力导运行时），按需加载
 const LegacyStudioGraphHost = lazy(() => import('./studio/LegacyStudioGraphHost.jsx'));
 
 // 表格视图的 kind 视觉沿用原版 KIND_META 的对象/操作用色

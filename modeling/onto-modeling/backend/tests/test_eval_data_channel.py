@@ -1,5 +1,4 @@
-"""评测数据通道测试（方案 eval-optimization-integration P1）：
-三方对账脚本、mock→评测种子转换器、资料区评测数据标签下线。
+"""评测数据通道测试：三方对账脚本、资料区评测数据标签下线。
 
 脚本走真实 subprocess 执行（与 agent/平台同一路径）。
 """
@@ -98,26 +97,6 @@ def test_check_eval_data_without_schema(tmp_path):
     data = json.loads(proc.stdout)
     assert data["status"] == "no_schema"
     assert proc.returncode == 0  # 无可对账不算失败
-
-
-def test_mock_to_eval_seed_builds_workbook(tmp_path):
-    ws = make_workspace(tmp_path)
-    mock = ws / "ontology" / "data-mock"
-    mock.mkdir(parents=True)
-    (mock / "订单.md").write_text(
-        "# 订单 测试数据\n\n| order_id | total_amount |\n|---|---|\n| o1 | 20 |\n| o2 | 35 |\n",
-        encoding="utf-8",
-    )
-    (mock / "index.md").write_text("# 目录\n", encoding="utf-8")
-    proc = run_script(ws, "mock_to_eval_seed.py")
-    assert proc.returncode == 0, proc.stderr
-    out = ws / "tmp" / "eval-seed.xlsx"
-    assert out.exists()
-    wb = openpyxl.load_workbook(out)
-    assert wb.sheetnames == ["订单"]
-    rows = list(wb["订单"].iter_rows(values_only=True))
-    assert rows[0] == ("order_id", "total_amount")
-    assert len(rows) == 3
 
 
 def test_eval_data_purpose_retired_from_materials(tmp_path, monkeypatch):

@@ -12,6 +12,7 @@ onto-modeling/
   deploy.sh                   # 预检 → 加载镜像 → 拉起
   dependency_probe.py         # 探测 Auth 与 Consumer 依赖
   preflight.sh                # 可单独运行的部署预检
+  migrate-from-modeling.sh    # 从原 Modeling Workbench 容器迁移项目数据
   .env.example                # 环境变量说明（复制为 .env 后填写）
   README.md
 ```
@@ -46,10 +47,6 @@ vi .env              # 默认 Auth 契约已填；实际契约不同时修改
 - 几十用户同时建模为目标时建议 16G 主机，并按比例调高 `ONTO_WEB_MAX_SESSIONS`
   与 compose 里的 `ONTO_WEB_MEM_LIMIT`。
 - 建议主机配置 2–4G swap 或 zram 吸收峰值。
-- 数据评测每轮在评测专用线程池里执行，`ONTO_WEB_EVAL_MAX_CONCURRENT_ROUNDS`
-  （默认 16）限制同时执行的轮数，超出的轮次排队并在状态里显示位次；评测不占用
-  上传、git、建模发消息共用的默认线程池。每轮在 modeling 侧按用例并发调用
-  consumer，调高上限前先确认 consumer 与模型网关的承载。
 - 空闲会话默认 10 分钟回收（`ONTO_WEB_SESSION_IDLE_TTL`），回收后靠 resume
   续接模型上下文，用户无感；会话 transcript 持久化在数据卷 `/data/home/.claude/`。
 - 运行中的会话连续 30 分钟没有任何模型或工具响应（`ONTO_WEB_SESSION_STALL_TIMEOUT`，
@@ -150,7 +147,9 @@ capability 运行，不读 `.env`、不挂数据卷、不发布端口；它只�
   容器内执行。
 - 管理员可在「配置中心 → 沙箱」查看是否已连接、沙箱内 Python 版本与包列表，并重新检测。
 
-## 从原 modeling 服务迁移数据
+## 从原 Modeling Workbench 迁移数据
+
+Modeling Workbench（容器 `mw-modeling`）的源码已从仓库删除，仓库不再构建或部署它；现场仍在运行的旧实例可以用下面的方式把数据迁入本服务。
 
 deploy.sh 部署完成后会自动检测 `mw-modeling` 容器（可用
 `ONTO_MODELING_MIGRATE_FROM=<容器名>` 覆盖），存在即执行
@@ -158,3 +157,5 @@ deploy.sh 部署完成后会自动检测 `mw-modeling` 容器（可用
 已迁移的项目自动跳过，也可随时手动重跑该脚本。
 Workbench 数据库处于 WAL 模式，脚本在 `mw-modeling` 容器内用 `VACUUM INTO` 导出一致性快照再迁移，
 因此需要该容器在运行中。迁移失败不影响 Onto Modeling 本身，deploy.sh 会打印 `[WARN]` 和重跑命令。
+
+升级到不含 Workbench 关联的版本后，Onto Modeling 不再维护与 Workbench 的项目关联：删除旧版本创建的项目时，不再级联删除 Workbench 中的对应项目，数据目录下 `modeling-cleanup-tasks.json` 里未完成的远端清理任务也不再执行。需要清理时，在 Workbench 侧手工删除对应项目，或在迁移完成后停用整个 Workbench 实例；`modeling-cleanup-tasks.json` 可在确认后删除。`.env` 里遗留的 `ONTO_WEB_MODELING_*` 配置不再读取，可以删除。

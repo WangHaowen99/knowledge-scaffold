@@ -1,4 +1,4 @@
-"""删除项目：不看项目状态，硬杀会话（含排队）与评测，工作区连同对话记录永久清除（不进回收站）。
+"""删除项目：不看项目状态，硬杀会话（含排队），工作区连同对话记录永久清除（不进回收站）。
 
 直接调用路由函数，并在同一事件循环里跑完响应之后的收尾任务；工作区用真实
 WorkspaceManager，手写元数据文件代替建项目流程。
@@ -7,7 +7,6 @@ WorkspaceManager，手写元数据文件代替建项目流程。
 import asyncio
 import json
 import os
-import threading
 from types import SimpleNamespace
 
 import pytest
@@ -19,9 +18,6 @@ from app.services import (
     agent_sessions,
     error_log,
     eval_data_sources,
-    modeling_cleanup,
-    modeling_eval,
-    modeling_mcp,
     studio,
     workspace,
 )
@@ -52,21 +48,12 @@ def env(tmp_path, monkeypatch):
     # 全局 manager 的锁会绑定首次使用的事件循环，逐用例换新实例
     manager = SessionManager()
     monkeypatch.setattr(agent_sessions, "manager", manager)
-    monkeypatch.setattr(modeling_eval, "_running", set())
-    monkeypatch.setattr(modeling_eval, "_stop_requested", set())
-    monkeypatch.setattr(modeling_eval, "_live_tokens", {})
 
     root = workspaces.workspaces_dir / PID
     root.mkdir()
     (root / META_FILE).write_text(json.dumps({"id": PID, "name": "示例任务"}), encoding="utf-8")
 
-    log = []  # 按发生顺序记录终止动作与发往 modeling 侧的请求
-
-    def fake_http(method, path, token, body=None, **kwargs):
-        log.append(("modeling", method, path, body, threading.get_ident()))
-        return {}
-
-    monkeypatch.setattr(modeling_eval, "_http", fake_http)
+    log = []  # 按发生顺序记录会话终止与工作区移动
     return SimpleNamespace(
         data=data,
         root=root,
@@ -101,7 +88,7 @@ def test_delete_removes_workspace_permanently(env):
     assert not staged[0].exists()  # 收尾时连同 git 历史一并清除
     assert not (env.data / "trash").exists()  # 不进回收站
     assert env.workspaces.list_projects() == []
-    assert env.log == []  # 没有会话和评测，不打扰 modeling 侧
+    assert env.log == []  # 没有会话，不触发终止动作
 
 
 def test_delete_kills_running_session_before_moving_workspace(env, monkeypatch):
@@ -168,117 +155,35 @@ def test_delete_purges_conversation_and_side_data(env):
 
 
 @pytest.mark.parametrize(
-    "status, in_process",
-    [("running", True), ("interrupted", False), ("failed", False), ("stopped", False)],
-)
-def test_delete_cancels_eval_round_after_response(env, status, in_process):
-    """评测进行中（本进程有编排）、已中断（重启后无编排），或失败/已停止但 modeling 侧
-    可能仍在跑：响应前只置取消标记，modeling 侧轮次的取消请求放到响应之后在线程里发，
-    不拖慢删除，也不堵事件循环。"""
-    modeling_eval._write_state(env.root, status=status, modeling_project="mp-1", round_id="r1")
-    if in_process:
-        modeling_eval._running.add(PID)
-    at_response = []
-
-    _delete(env, lambda: at_response.extend(env.log))
-
-    assert at_response == []
-    [cancel] = env.log
-    assert cancel[:4] == ("modeling", "POST", "/api/projects/mp-1/evaluate/cancel", {"roundId": "r1"})
-    assert cancel[4] != threading.get_ident()
-    assert (PID in modeling_eval._stop_requested) is in_process
-    # 编排晚于删除才收尾时的状态写入，不得在原位置重建工作区
-    modeling_eval._write_state(env.root, status="stopped")
-    assert not env.root.exists()
-
-
-def test_delete_skips_cancel_for_finished_round(env):
-    modeling_eval._write_state(env.root, status="done", modeling_project="mp-1", round_id="r1")
-
-    _delete(env)
-
-    assert env.log == []
-
-
-def test_retired_core_skips_legacy_round_cancel(env, monkeypatch):
-    modeling_eval._write_state(env.root, status="interrupted", modeling_project="mp-1", round_id="r1")
-    monkeypatch.setattr(modeling_mcp.config, "MODELING_CORE_RETIRED", True)
-    _delete(env)
-    assert env.log == []
-
-
-def test_delete_cancels_eval_still_starting(env):
-    """编排刚起步、状态还没写成 running：同样置取消标记，免得删除后它照常去 modeling 侧发起一轮。"""
-    modeling_eval._running.add(PID)
-
-    _delete(env)
-
-    assert PID in modeling_eval._stop_requested
-    assert env.log == []  # 还没有轮次，无需取消
-
-
-@pytest.mark.parametrize(
-    "outcome",
-    [RuntimeError("modeling 不可达"), (False, "modeling 不可达")],
+    "outcome, reason",
+    [(RuntimeError("磁盘不可写"), "磁盘不可写"), (False, "仍有文件被占用")],
     ids=["raises", "unconfirmed"],
 )
-def test_cleanup_failure_is_logged_without_blocking_others(env, monkeypatch, outcome):
-    """收尾各项互不拖累：评测轮次取消失败只记运维错误日志，工作区照样清除。"""
-    modeling_eval._write_state(env.root, status="running", modeling_project="mp-1", round_id="r1")
+def test_cleanup_failure_is_logged_without_blocking_others(env, monkeypatch, outcome, reason):
+    """收尾各项互不拖累：引擎工件区没删净只记运维错误日志，工作区照样清除。"""
 
-    def cancel_round(mp_project, round_id, token):
+    def remove_tree(path):
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
 
-    monkeypatch.setattr(modeling_eval, "cancel_round", cancel_round)
+    monkeypatch.setattr(projects, "remove_tree", remove_tree)
 
     _delete(env)
 
     assert not env.root.exists() and not any(env.workspaces.purge_dir().iterdir())
     [entry] = error_log.read()
     assert (entry["project_id"], entry["source"]) == (PID, "project_delete")
-    assert entry["raw"] == "评测轮次取消未清理完成：modeling 不可达"
+    assert entry["raw"] == f"引擎工件区未清理完成：{reason}"
 
 
-@pytest.mark.parametrize(
-    "error, enqueued",
-    [
-        (modeling_mcp.ModelingMcpError("modeling 侧项目不存在", 404), []),
-        (modeling_mcp.ModelingMcpError("modeling 侧删除失败", 502), ["project_delete"]),
-        (RuntimeError("连接被重置"), ["project_delete"]),
-    ],
-    ids=["already-gone", "modeling-error", "network-error"],
-)
-def test_delete_cascades_to_modeling_project_after_response(env, monkeypatch, error, enqueued):
-    """modeling 侧关联项目在响应之后级联删除；除"那边已不在"外，失败都转入持久化重试队列。"""
+def test_legacy_modeling_association_does_not_block_project_delete(env):
+    """旧版本留下的 modeling_project_id 不再触发远端级联删除，删除照常完成且不记清理失败。"""
     meta = {"id": PID, "name": "示例任务", "modeling_project_id": "mp-1"}
     (env.root / META_FILE).write_text(json.dumps(meta), encoding="utf-8")
-    cascaded, queued, at_response = [], [], []
-
-    def fail_delete(meta, request, operation):
-        cascaded.append((meta, operation))
-        raise error
-
-    monkeypatch.setattr(modeling_mcp, "delete_project", fail_delete)
-    monkeypatch.setattr(
-        modeling_cleanup, "enqueue", lambda meta, reason, operation: queued.append(operation)
-    )
-
-    _delete(env, lambda: at_response.extend(cascaded))
-
-    assert at_response == []  # 级联删除要等网络，不在响应前做
-    assert cascaded == [(meta, "project_delete")]  # 元数据在移走工作区前读出
-    assert queued == enqueued
-    assert error_log.read() == []  # 已有重试队列兜底，不算未清理完成
-
-
-def test_retired_core_does_not_block_onto_project_delete(env, monkeypatch):
-    meta = {"id": PID, "name": "示例任务", "modeling_project_id": "mp-1"}
-    (env.root / META_FILE).write_text(json.dumps(meta), encoding="utf-8")
-    monkeypatch.setattr(modeling_mcp.config, "MODELING_CORE_RETIRED", True)
-    monkeypatch.setattr(modeling_mcp, "delete_project", lambda *_args, **_kwargs: pytest.fail("retired Core called"))
     assert _delete(env) == {"deleted": PID}
+    assert not env.root.exists()
+    assert error_log.read() == []
 
 
 def test_delete_falls_back_to_in_place_purge_when_move_fails(env, monkeypatch):
