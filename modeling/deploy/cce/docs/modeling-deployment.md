@@ -1,6 +1,6 @@
 # Modeling CCE 单独部署与升级指导
 
-本文说明使用包含 Onto、Hub、Evaluation 的 Modeling CCE 离线包单独安装、升级、验证和卸载 Modeling release。首次独立安装可先于 Auth 和 Consumer 完成；安装结果会标明待就绪的依赖。Onto 在 Auth 可用前保持等待，Hub 和 Evaluation 可先启动；完成业务验收前不要将健康探针视为鉴权和评测可用。联合安装与已有部署升级仍按[联合部署与升级指导](joint-deployment.md)执行。
+本文说明使用包含 Onto、Hub、Evaluation 的 Modeling CCE 离线包单独安装、升级、验证和卸载 Modeling release。首次独立安装可先于 Auth 和 Consumer 完成；安装结果会标明待就绪的依赖。Onto 在 Auth 可用前保持等待，Hub 和 Evaluation 可先启动；完成业务验收前不要将健康探针视为鉴权和评测可用。本页中的单独安装器从 Modeling values 获取配置，不会读取 Consumer values 来自动补齐跨侧 Secret 引用；需要自动补齐时，使用[联合部署与升级指导](joint-deployment.md)。
 
 ## 1. 文件布局
 
@@ -31,8 +31,8 @@ cd modeling-cce-<版本>-<架构>
 - Auth 与 Consumer 计划使用的命名空间须已创建并可查询；对应 Service 可以稍后创建。若复用一个 namespace，只需预建一次；
 - 三个独立 PVC，分别给 Onto、Hub、Evaluation；从旧版升级时原 Core、Agent PVC 继续保留；
 - Modeling 镜像拉取 Secret；
-- Modeling 调用 Consumer Backend 的服务令牌 Secret。若 Modeling 先装，先在 Modeling namespace 准备并约定同值令牌；Consumer 装好后再核对。Consumer 已安装时也可受限读取其源 Secret；
-- 可选的 Consumer 评测令牌和 Judge Key 源 Secret；Hub 内部令牌和评测加密密钥由 Modeling 安装器创建；
+- Modeling 调用 Consumer Backend 的服务令牌 Secret。若 Modeling 先装，先在 Modeling namespace 准备并约定同值令牌；Consumer 装好后再核对。Consumer 已安装时也可用 `sourceRef` 导入其源 Secret；
+- 按启用的连接准备 Consumer → Hub、Evaluation → Consumer、Consumer → Evaluation 三种不同用途的令牌；Modeling 先装时在 Modeling namespace 预建目标 Secret，Consumer 已安装时可受限导入其源 Secret。未启用的连接不需要对应 Secret。Judge Key 按需准备；Hub 内部令牌和评测加密密钥由 Modeling 安装器创建；
 - 填写计划使用的 Auth Service 和 Consumer Backend Service 名称、namespace、端口。首次独立安装时两者可以尚不存在；已有部署的升级、正式预检和 `verify` 仍要求它们就绪。使用用户管理、自助改密或 Hub 成员同步时，还须在 Modeling namespace 预建与实际 Auth 管理令牌同值的 `Opaque` Secret，并在 `modeling.secrets.authAdminToken` 填写名称和 key；
 - 目标架构可调度工作节点；
 - ELB 和端口模式或域名模式的 Ingress 能力；
@@ -81,7 +81,7 @@ global:
       key: <TOKEN_KEY>
 ```
 
-示例文件中的 `http://consumer-auth:5056` 和 `knowledge-scaffold` 只是默认示例。Auth 尚未安装时先约定 `global.auth.issuer/audience`，Auth 装好后必须与实际签发的 JWT `iss`、`aud` 一致。`issuer` 是验签身份，不是 Modeling Pod 访问 Auth Service 的地址。`global.integration.serviceTokenSecret` 是与 Consumer 预先约定的服务令牌引用；先装 Modeling 时目标 Secret 必须已在 Modeling namespace 存在，不要引用尚未创建的 Consumer 源 Secret。
+示例文件中的 `global.auth.issuer/audience` 须按实际 Auth 签发身份核对。Auth 尚未安装时先约定这两项，Auth 装好后必须与实际签发的 JWT `iss`、`aud` 一致。`issuer` 是验签身份，不是 Modeling Pod 访问 Auth Service 的地址。`global.integration.serviceTokenSecret` 是与 Consumer 预先约定的服务令牌引用；先装 Modeling 时目标 Secret 必须已在 Modeling namespace 存在，不要引用尚未创建的 Consumer 源 Secret。Consumer 已安装时，可为该项添加实际源 Secret 的 `sourceRef`；单独安装器不会从 Consumer values 自动推导。
 
 Onto Modeling 使用 Auth 管理接口时，客户 values 示例默认引用 `authAdminToken: {name: modeling-auth-client, key: admin-token}`。Chart 将它注入为 `ONTO_WEB_AUTH_ADMIN_TOKEN`；该 Secret 必须预建在 Modeling namespace，值与 Auth owner 实际管理令牌相同，安装器不会自动创建。安装器会比较两侧 Secret 的值，不一致时在升级前停止。用户管理、自助改密和 Hub 成员同步依赖此令牌；普通登录和 JWT 验签无需该令牌。无需管理功能时可将 `name`、`key` 都改为空字符串。
 
@@ -183,10 +183,12 @@ hub:
     consumerToken: {name: "", key: ""}
 evaluation:
   persistence: {existingClaim: <EVALUATION_PVC>}
+  feedback: {enabled: false, notifyRuns: false}
   secrets:
     encryptionKey: {name: modeling-evaluation-internal, key: encryption-key}
     notificationToken: {name: modeling-notify, key: service-token}
     consumerToken: {name: "", key: ""}
+    flywheelToken: {name: "", key: ""}
 ```
 
 必须编辑：
@@ -209,11 +211,39 @@ modeling:
 
 `hub.secrets.internal` 配置同一个 Opaque Secret 的名称及 Modeling、Evaluation 各自使用的 key；`evaluation.secrets.encryptionKey` 配置另一个 Opaque Secret 的名称和 key。它们只填写引用，不填写密钥正文。安装器在 Helm 写入前自动创建缺失的内部 Secret，已有且完整的对象直接复用。如果安装器没有创建 Secret 的权限，平台管理员应先在 Modeling Namespace 创建与 values 中名称和 key 一致的对象；安装器仍需读取权限以校验和复用。创建失败且对象仍不存在时，安装会在 Helm 之前停止。升级已有 Hub/Evaluation 时不能更换内部 Secret 名称或 key；评测已有数据而原加密 Secret 缺失时，须恢复原密钥，不能重新生成。
 
-外部凭据通过 `hub.secrets.consumerToken`、`evaluation.secrets.consumerToken`、`evaluation.secrets.flywheelToken`、`evaluation.secrets.judgeApiKey` 或 `evaluation.secrets.sqlConfig` 的 `name/key` 引用 Modeling Namespace 中已存在的 Secret；目标 Secret 缺失时可补 `sourceRef: {namespace: ..., name: ..., key: ...}`，由安装器受限导入。前面三项分别对应 Consumer 的 `hub.tokenSecret`、`global.integration.evaluationTokenSecret`、`flywheel.tokenSecret`，必须使用各自用途的令牌。
+跨侧令牌在两侧 values 中各有一个引用，Secret 不能跨 namespace 直接引用：
 
-若先安装 Modeling，且后续要运行评测，应在 Modeling 安装前预建 `evaluation.secrets.consumerToken` 指向的 Secret；安装 Consumer 时，将同值令牌配置到其 `global.integration.evaluationTokenSecret`。两侧令牌值不同会导致评测请求失败，基础健康检查不能代替一条真实评测用例。
+| Modeling 中的目标引用 | 对应 Consumer 源引用 | 何时需要 |
+| --- | --- | --- |
+| `global.integration.serviceTokenSecret` | `global.integration.serviceTokenSecret` | Modeling 调用 Consumer Backend，必填 |
+| `hub.secrets.consumerToken` | `hub.tokenSecret` | Consumer 启用 Hub 时 |
+| `evaluation.secrets.consumerToken` | `global.integration.evaluationTokenSecret` | Consumer 配置评测调用令牌时 |
+| `evaluation.secrets.flywheelToken` | `flywheel.tokenSecret` | Modeling 开启 `evaluation.feedback.enabled`、接收 Consumer 反馈时 |
 
-需要消费反馈时，在 `evaluation.feedback` 中设置 `enabled: true`，并填写 `evaluation.secrets.flywheelToken`。该 Secret 的值必须与 Consumer 的 `flywheel.tokenSecret` 相同且至少 32 字符，并与其他服务令牌不同；`notifyRuns: true` 可额外向 Onto Modeling 通知已确认的反馈轮次。默认均关闭。若先安装 Modeling，应先预建同值令牌供未来 Consumer 复用；若 Consumer 已安装，可用 `sourceRef` 从其命名空间导入。Consumer 的 `flywheel.evaluationUrl` 填 Evaluation 的基础地址，由 Consumer 客户端追加 API 路径。
+后三项在客户 values 模板中是空引用，Chart 也默认为空；保持空值表示不使用该连接。仅把配置行注释掉也会采用 Chart 的空默认值，不会自动填入固定名称。**单独安装器不会读取 Consumer values 或推导这三项。**填写后，`name/key` 指向 Modeling namespace 中的目标 Secret；目标不存在时，可加完整 `sourceRef` 从 Consumer namespace 导入。导入要求部署身份能读取源 Secret、创建目标 Secret。目标已存在时，安装器会核对源、目标 key 的值；无源读取权限时，预建同值目标 Secret 并不填写 `sourceRef`。升级时沿用原引用和值。
+
+例如 Consumer 已在 `consumer-demo` namespace 中使用 `flywheel.tokenSecret: {name: consumer-flywheel-credentials, key: service-token}`，Modeling 可在包外 values 中填写：
+
+```yaml
+evaluation:
+  feedback: {enabled: true, notifyRuns: false}
+  secrets:
+    flywheelToken:
+      name: evaluation-flywheel-credentials
+      key: service-token
+      sourceRef:
+        namespace: consumer-demo
+        name: consumer-flywheel-credentials
+        key: service-token
+```
+
+这段只是需要接收反馈时的填写示例，不能覆盖其他 `evaluation` 配置；示例名称和 namespace 必须按 Consumer 实际配置替换。不要把它设为始终生效的默认值：即使反馈关闭，只要 `flywheelToken.name` 非空，安装器仍会检查、导入该 Secret，Chart 也会注入它。Consumer 未安装时不能引用尚不存在的源 Secret，应先在 Modeling namespace 预建目标令牌，并在 Consumer 首装前把同值令牌预建到其 `flywheel.tokenSecret` 指定的 Secret；Consumer 安装器会检查并复用已有值。Hub 和评测令牌也遵循相同的预建或导入规则，各用途使用不同令牌。
+
+Consumer → Hub 还需在 Consumer values 中设置 `hub.enabled: true`、`hub.baseUrl`、`hub.instanceId` 和 `hub.tokenSecret`。Evaluation → Consumer 需配置 Consumer 的 `global.integration.evaluationTokenSecret`，并在 Modeling 中填写相同用途的目标令牌引用。若先安装 Modeling 且之后要运行评测，应在安装前预建该目标 Secret；两侧值不同会导致业务调用失败。
+
+消费反馈由两侧分别控制：Consumer 的 `flywheel.evaluationUrl/tokenSecret` 配置连接，采集开关和工作空间范围由 Consumer 系统配置管理；Modeling 的 `evaluation.feedback.enabled: true` 允许 Evaluation 接收，`notifyRuns: true` 可额外通知 Onto Modeling 已确认的反馈轮次。建模侧两个开关默认均为 `false`，只配置 Consumer 地址不会开启 Evaluation 接收。`enabled: true` 必须有 `flywheelToken`；`notifyRuns: true` 要求同时开启 `enabled`。飞轮令牌至少 32 字符，须与 Consumer 的令牌同值，并与其他服务令牌不同。Consumer 的 `flywheel.evaluationUrl` 填 Evaluation Service 的基础地址，不追加 `/evaluation/api`，客户端会追加路径。
+
+`evaluation.secrets.judgeApiKey` 和 `evaluation.secrets.sqlConfig` 也是可选外部引用；未使用时保持空值，需要时按相同的目标 Secret / `sourceRef` 方式填写。
 
 `evaluation.trustedOrigins`、`evaluation.judge`、`evaluation.secrets.judgeApiKey` 和 `evaluation.secrets.sqlConfig` 不在客户 values 示例中，Chart 分别默认为空列表或空值。跨源登录、部署默认判分模型、查询类评测需要时，可在包外 values 手动添加，例如：
 
@@ -295,7 +325,7 @@ bash deploy/install-cce.sh install \
   --timeout-seconds 900
 ```
 
-首次安装必须确认 release 不存在。若 Auth 或 Consumer 未就绪，安装返回成功并标记 `waiting-dependencies`，`pendingDependencies` 列出当前等待项；Hub 与 Evaluation 已启动，Onto 在 Auth 就绪前不提供页面。随后安装独立 Auth，再安装 Consumer 并完成 Consumer 自身的 `verify`，最后执行下节 Modeling `verify`；成功才转为 `complete`。Consumer 的评测令牌与 Modeling 中预备的令牌值需要核对；真正的评测可用性以一条业务用例验收。已存在的 release 应使用 `upgrade`，不要重复执行首次安装。
+首次安装必须确认 release 不存在。若 Auth 或 Consumer 未就绪，安装返回成功并标记 `waiting-dependencies`，`pendingDependencies` 列出当前等待项；Hub 与 Evaluation 已启动，Onto 在 Auth 就绪前不提供页面。随后安装独立 Auth，再安装 Consumer 并完成 Consumer 自身的 `verify`，最后执行下节 Modeling `verify`；成功才转为 `complete`。先装 Modeling 时，须在 Consumer 首装前按其 values 引用预建与 Modeling 对应令牌同值的源 Secret，供 Consumer 安装器复用；需要启用 Hub、评测或飞轮而首装时尚未配置的，应在两侧配置及 Secret 就绪后升级 Modeling，再做业务验收。已存在的 release 应使用 `upgrade`，不要重复执行首次安装。
 
 ### 5.4 验证和状态
 
@@ -314,7 +344,7 @@ bash deploy/install-cce.sh status \
   --release <MODELING_RELEASE>
 ```
 
-`verify` 要求 Auth owner、签发身份、JWKS 与 Consumer Backend 已就绪；随后等待 Onto、Hub、Evaluation、sandbox-gateway，并从 Evaluation Pod 检查 Consumer `/ready`。成功后清空等待项；`status` 同时显示 `dependencyStage` 和 `pendingDependencies`。健康与端点检查完成后，仍需用测试账号验收登录、Hub 成员操作及一条真实评测用例。
+`verify` 要求 Auth owner、签发身份、JWKS 与 Consumer Backend 已就绪；随后等待 Onto、Hub、Evaluation、sandbox-gateway，并从 Evaluation Pod 检查 Consumer `/ready`。成功后清空等待项；`status` 同时显示 `dependencyStage` 和 `pendingDependencies`。健康与端点检查完成后，仍需用合成测试账号验收登录；启用相应连接时，分别验证 Consumer → Hub、Evaluation → Consumer 的调用，以及 Consumer → Evaluation 的反馈提交与接收状态。只有启用 `notifyRuns` 时还需验证轮次通知；未启用的连接不要求这些业务调用。
 
 ## 6. 单独升级并保留数据
 
