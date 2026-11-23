@@ -14,12 +14,62 @@ import time
 from .core import Failure, canonical, digest
 from .data_sources import identifier
 from .mapping_rules import valid_relation_type
+from .field_types import TYPE_RULE_VERSION, convert_value, field_kind
+from .declared_types import parse_declared_type
 
 MAX_NODES = 100000
 MAX_RELATIONSHIPS = 200000
 CHECK_SECONDS = 600
 RECEIPT_LABEL = '_EvaluationGraphImport'
 logger = logging.getLogger(__name__)
+
+
+def resolved_field_kinds(mapping, relations):
+    kinds, references = {}, set()
+    for label, item in mapping['objects'].items():
+        resource = item['sources'][0]['resource']
+        declarations = item.get('fields', {})
+        kinds[label] = {}
+        for field, rule in item['sources'][0]['fields'].items():
+            declared = declarations.get(field, {}).get('type') or rule.get('type')
+            kinds[label][field] = field_kind(declared, f'对象 {label}，表 {resource}，字段 {field}')
+            if parse_declared_type(declared)[0] == '对象引用':
+                references.add((label, field))
+    neighbors = {endpoint: set() for endpoint in references}
+    for source, items in relations.items():
+        for edge in items:
+            target = edge['target']
+            left = (source, edge.get('sourceJoinProperty') or mapping['objects'][source]['primary_key'][0])
+            right = (target, edge.get('targetJoinProperty') or mapping['objects'][target]['primary_key'][0])
+            if left in references or right in references:
+                neighbors.setdefault(left, set()).add(right)
+                neighbors.setdefault(right, set()).add(left)
+    visited = set()
+    for start in sorted(references):
+        if start in visited:
+            continue
+        component, pending, concrete = set(), [start], set()
+        while pending:
+            endpoint = pending.pop()
+            if endpoint in component:
+                continue
+            component.add(endpoint)
+            label, field = endpoint
+            kind = kinds[label].get(field)
+            if endpoint not in references and kind:
+                concrete.add(kind)
+            pending.extend(neighbors.get(endpoint, set()) - component)
+        visited.update(component)
+        if len(concrete) > 1 and concrete != {'integer', 'number'}:
+            label, field = start
+            raise Failure('graph_join_type_conflict', f'对象引用字段 {label}.{field} 的关联声明类型不一致',
+                          422, 'data_import')
+        resolved = 'integer' if 'integer' in concrete else next(iter(concrete), 'string')
+        for label, field in component & references:
+            kinds[label][field] = resolved
+    return kinds
+
+
 # 图里的对象名、字段名与 consumer 查询时同一规则：语句中一律用反引号引用，所以「合成对象（甲类）」这类带全角标点
 # 的业务名也能导入。禁止反引号、控制字符和首尾空白；反斜杠可能在解析名称前构成 Cypher 的 Unicode 转义（如 \u0060
 # 即反引号），同样禁止。关系名按 relation_type 的规则；Workspace / Ontology 隔离字段仍按严格的标识符检查
@@ -69,6 +119,8 @@ def relation_type(value):
 
 
 def graph_scope(connection):
+    if not isinstance(connection, dict):
+        raise Failure('connection_invalid', '连接配置需要对象', 422, 'data_import')
     workspace = identifier(connection.get('workspace_property'))
     ontology = identifier(connection.get('ontology_property'))
     if workspace == ontology or any(not isinstance(connection.get(key), str) or not connection[key].strip()
@@ -130,7 +182,7 @@ def snapshot(tx, scope, include_ids=False):
 
 def import_identity(connection, tables, mapping, relations):
     """Identifies what an import would write: the target scope, the data, the mapping and the relations."""
-    return digest([scope_target(connection), tables, mapping, relations])
+    return digest([TYPE_RULE_VERSION, scope_target(connection), tables, mapping, relations])
 
 
 def data_identity(tables):
@@ -171,7 +223,10 @@ class GraphImports:
     def connection(store, source, ontology_id):
         if source.get('mode') != 'connection' or source.get('provider') != 'neo4j' or not source.get('import_data'):
             raise Failure('graph_import_required', '请选择 Neo4j 连接并开启图数据导入', 422, 'data_import')
-        connection = {**store.decrypt(source['connection']), 'ontology_value': ontology_id}
+        connection = store.decrypt(source['connection']) if source.get('connection') else None
+        if not isinstance(connection, dict):
+            raise Failure('connection_invalid', '连接配置需要对象', 422, 'data_import')
+        connection = {**connection, 'ontology_value': ontology_id}
         graph_scope(connection)
         return connection
 
@@ -278,9 +333,13 @@ class GraphImports:
                 with driver.session(database=connection.get('database', 'neo4j'), default_access_mode=READ_ACCESS) as session:
                     with session.begin_transaction(timeout=30) as tx:
                         marker = tx.run('MATCH (m:`' + RECEIPT_LABEL + '` {scope_fingerprint:$target}) '
-                                        'RETURN m.run_id AS run_id', target=scope_target(connection)).single()
+                                        'RETURN m.run_id AS run_id, m.type_rule_version AS type_rule_version',
+                                        target=scope_target(connection)).single()
                         if not marker or marker['run_id'] != run_id:
                             raise Failure('graph_scope_changed', '本轮图数据已被后续导入替换，请重新创建评测并确认范围', 409, 'data_import')
+                        if marker.get('type_rule_version') != TYPE_RULE_VERSION:
+                            raise Failure('graph_type_rules_changed', '图数据未按当前字段类型规则导入，请重新创建评测并检查旧图；本次未修改数据',
+                                          409, 'data_import')
         except (DriverError, Neo4jError, OSError) as exc:
             raise Failure('graph_import_unavailable', '无法核对本轮图数据，请检查连接后恢复', 503, 'data_import') from exc
 
@@ -335,9 +394,10 @@ class GraphImports:
                             for statement in edges:
                                 tx.run(statement, **params).consume()
                             tx.run('MERGE (m:`' + RECEIPT_LABEL + '` {scope_fingerprint:$target}) '
-                                   'SET m.run_id=$run_id, m.import_fingerprint=$fingerprint, m.data_fingerprint=$data_fingerprint',
+                                   'SET m.run_id=$run_id, m.import_fingerprint=$fingerprint, m.data_fingerprint=$data_fingerprint, '
+                                   'm.type_rule_version=$type_rule_version',
                                    target=target, run_id=run_id, fingerprint=import_fingerprint,
-                                   data_fingerprint=data_identity(tables)).consume()
+                                   data_fingerprint=data_identity(tables), type_rule_version=TYPE_RULE_VERSION).consume()
                             tx.commit()
                         self.record_snapshot(session, scope, target, run_id, import_fingerprint)
         except (DriverError, Neo4jError, OSError) as exc:
@@ -363,28 +423,70 @@ class GraphImports:
             logger.warning('Could not record the graph snapshot of a committed import', exc_info=True)
 
     @staticmethod
-    def plan(scope, tables, mapping, relations):
+    def converted_rows(tables, mapping, relations, scope=None):
         if not mapping or not mapping.get('objects'):
             raise Failure('mapping_required', '图导入缺少对象映射', 422, 'data_import')
         check_names(mapping, relations)
-        objects, edges = [], []
+        objects = {}
         for label, item in mapping['objects'].items():
             if label == RECEIPT_LABEL:
                 raise Failure('graph_scope_conflict', '对象名与图导入回执保留名称冲突', 422, 'data_import')
-            table = tables[item['sources'][0]['resource']]
+            resource = item['sources'][0]['resource']
+            if resource not in tables:
+                raise Failure('mapping_table_missing', f'对象 {label}，表 {resource}：映射引用的数据表不存在',
+                              422, 'data_import')
             fields = item['sources'][0]['fields']
-            if any(key in fields for key in (scope['workspace_property'], scope['ontology_property'])):
+            if scope and any(key in fields for key in (scope.get('workspace_property'), scope.get('ontology_property'))):
                 raise Failure('graph_scope_conflict', '图隔离属性不能与业务字段重名', 422, 'data_import')
-            rows = [{field: row[table['columns'].index(rule['source_column'])] for field, rule in fields.items()}
-                    for row in table['rows']]
-            keys = item['primary_key']
-            if not keys or any(any(row.get(key) is None or row.get(key) == '' for key in keys) for row in rows):
+            if not item['primary_key']:
                 raise Failure('graph_key_missing', '图数据缺少主键', 422, 'data_import')
+        kinds = resolved_field_kinds(mapping, relations)
+        for label, item in mapping['objects'].items():
+            resource = item['sources'][0]['resource']
+            table = tables[resource]
+            fields = item['sources'][0]['fields']
+            rows, identities = [], {}
+            keys = item['primary_key']
+            for row_number, values in enumerate(table['rows'], 2):
+                raw = {field: values[table['columns'].index(rule['source_column'])] for field, rule in fields.items()}
+                row = {field: convert_value(value, kinds[label][field],
+                                           f'对象 {label}，表 {resource}，第 {row_number} 行，字段 {field}')
+                       for field, value in raw.items()}
+                if any(row.get(key) is None or row.get(key) == '' for key in keys):
+                    raise Failure('graph_key_missing', f'对象 {label}，表 {resource}，第 {row_number} 行：图数据缺少主键',
+                                  422, 'data_import')
+                identity = canonical([row[key] for key in keys])
+                payload = {field: (type(value), value) for field, value in row.items()}
+                previous = identities.get(identity)
+                if previous and previous[0] != payload:
+                    raise Failure('graph_key_collision', f'对象 {label}，表 {resource}，第 {row_number} 行：转换后的主键与第 {previous[1]} 行冲突',
+                                  422, 'data_import')
+                identities[identity] = (payload, row_number)
+                rows.append(row)
+            objects[label] = rows
+        if not any(objects.values()):
+            raise Failure('empty_data', '没有可导入的图数据，请检查上传文件', 422, 'data_import')
+        for source, items in relations.items():
+            for edge in items:
+                target = edge['target']
+                left = edge.get('sourceJoinProperty') or mapping['objects'][source]['primary_key'][0]
+                right = edge.get('targetJoinProperty') or mapping['objects'][target]['primary_key'][0]
+                left_kind, right_kind = kinds[source].get(left), kinds[target].get(right)
+                compatible_kinds = left_kind == right_kind or {left_kind, right_kind} == {'integer', 'number'}
+                if left_kind and right_kind and not compatible_kinds:
+                    raise Failure('graph_join_type_conflict', f'关联字段 {source}.{left} 与 {target}.{right} 的声明类型不一致',
+                                  422, 'data_import')
+        return objects
+
+    @staticmethod
+    def plan(scope, tables, mapping, relations):
+        converted = GraphImports.converted_rows(tables, mapping, relations, scope)
+        objects, edges = [], []
+        for label, rows in converted.items():
+            keys = mapping['objects'][label]['primary_key']
             key_expr = ('`' + scope['workspace_property'] + '`:$workspace,`' + scope['ontology_property'] + '`:$ontology,' +
                         ','.join('`' + key + '`:row.`' + key + '`' for key in keys))
             objects.append(('UNWIND $rows AS row MERGE (n:`' + label + '` {' + key_expr + '}) SET n += row', rows))
-        if not any(rows for _, rows in objects):
-            raise Failure('empty_data', '没有可导入的图数据，请检查上传文件', 422, 'data_import')
         for source, items in relations.items():
             for edge in items:
                 target = edge['target']
