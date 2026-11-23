@@ -209,9 +209,11 @@ modeling:
 
 `hub.secrets.internal` 配置同一个 Opaque Secret 的名称及 Modeling、Evaluation 各自使用的 key；`evaluation.secrets.encryptionKey` 配置另一个 Opaque Secret 的名称和 key。它们只填写引用，不填写密钥正文。安装器在 Helm 写入前自动创建缺失的内部 Secret，已有且完整的对象直接复用。如果安装器没有创建 Secret 的权限，平台管理员应先在 Modeling Namespace 创建与 values 中名称和 key 一致的对象；安装器仍需读取权限以校验和复用。创建失败且对象仍不存在时，安装会在 Helm 之前停止。升级已有 Hub/Evaluation 时不能更换内部 Secret 名称或 key；评测已有数据而原加密 Secret 缺失时，须恢复原密钥，不能重新生成。
 
-外部凭据通过 `hub.secrets.consumerToken`、`evaluation.secrets.consumerToken`、`evaluation.secrets.judgeApiKey` 或 `evaluation.secrets.sqlConfig` 的 `name/key` 引用 Modeling Namespace 中已存在的 Secret；目标 Secret 缺失时可补 `sourceRef: {namespace: ..., name: ..., key: ...}`，由安装器受限导入。当前开源 Consumer 不提供评测专用接口和令牌，只有部署新的 Consumer 包后才能完成评测调用验收。
+外部凭据通过 `hub.secrets.consumerToken`、`evaluation.secrets.consumerToken`、`evaluation.secrets.flywheelToken`、`evaluation.secrets.judgeApiKey` 或 `evaluation.secrets.sqlConfig` 的 `name/key` 引用 Modeling Namespace 中已存在的 Secret；目标 Secret 缺失时可补 `sourceRef: {namespace: ..., name: ..., key: ...}`，由安装器受限导入。前面三项分别对应 Consumer 的 `hub.tokenSecret`、`global.integration.evaluationTokenSecret`、`flywheel.tokenSecret`，必须使用各自用途的令牌。
 
 若先安装 Modeling，且后续要运行评测，应在 Modeling 安装前预建 `evaluation.secrets.consumerToken` 指向的 Secret；安装 Consumer 时，将同值令牌配置到其 `global.integration.evaluationTokenSecret`。两侧令牌值不同会导致评测请求失败，基础健康检查不能代替一条真实评测用例。
+
+需要消费反馈时，在 `evaluation.feedback` 中设置 `enabled: true`，并填写 `evaluation.secrets.flywheelToken`。该 Secret 的值必须与 Consumer 的 `flywheel.tokenSecret` 相同且至少 32 字符，并与其他服务令牌不同；`notifyRuns: true` 可额外向 Onto Modeling 通知已确认的反馈轮次。默认均关闭。若先安装 Modeling，应先预建同值令牌供未来 Consumer 复用；若 Consumer 已安装，可用 `sourceRef` 从其命名空间导入。Consumer 的 `flywheel.evaluationUrl` 填 Evaluation 的基础地址，由 Consumer 客户端追加 API 路径。
 
 `evaluation.trustedOrigins`、`evaluation.judge`、`evaluation.secrets.judgeApiKey` 和 `evaluation.secrets.sqlConfig` 不在客户 values 示例中，Chart 分别默认为空列表或空值。跨源登录、部署默认判分模型、查询类评测需要时，可在包外 values 手动添加，例如：
 

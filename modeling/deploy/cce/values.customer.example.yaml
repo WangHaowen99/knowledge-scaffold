@@ -46,13 +46,18 @@ hub:
   resources: {requests: {cpu: 250m, memory: 512Mi}}
   secrets:
     internal: {name: modeling-hub-internal, modelingTokenKey: modeling-token, evaluationTokenKey: evaluation-token}
+    # 联合部署启用 Consumer Hub 时，自动填入 modeling-hub-consumer 和 Consumer 源 Secret 引用。
     consumerToken: {name: "", key: ""}
 evaluation:
   persistence: {existingClaim: modeling-evaluation-data}
   resources: {requests: {cpu: 250m, memory: 512Mi}}
+  feedback: {enabled: false, notifyRuns: false}
   secrets:
     encryptionKey: {name: modeling-evaluation-internal, key: encryption-key}
     # Evaluation sends completion notices to Onto Modeling with this shared token.
     # Pre-create this Secret if the installer can read Secrets but cannot create them.
     notificationToken: {name: modeling-notify, key: service-token}
+    # 联合部署配置 Consumer 评测令牌时，自动填入 modeling-evaluation-consumer 和源 Secret 引用。
     consumerToken: {name: "", key: ""}
+    # 联合部署开启反馈接收时，自动填入 modeling-flywheel-consumer 和源 Secret 引用。
+    flywheelToken: {name: "", key: ""}

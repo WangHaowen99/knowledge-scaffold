@@ -261,7 +261,7 @@ def load_inputs(args, root: Path):
     claims = [target_claim(merged, name) for name in WORKLOADS]
     if len(set(claims)) != len(claims):
         raise ConfigError("stateful workloads require distinct PVCs")
-    for section, keys in (("hub", ("consumerToken",)), ("evaluation", ("consumerToken", "judgeApiKey", "sqlConfig"))):
+    for section, keys in (("hub", ("consumerToken",)), ("evaluation", ("consumerToken", "flywheelToken", "judgeApiKey", "sqlConfig"))):
         for key in keys:
             ref = merged[section]["secrets"][key]
             if bool(ref["name"]) != bool(ref["key"]):
@@ -290,6 +290,11 @@ def load_inputs(args, root: Path):
     if integration_source and any(bool(integration_source.get(field)) for field in ("namespace", "name", "key")):
         if not all(integration_source.get(field) for field in ("namespace", "name", "key")):
             raise ConfigError("incomplete Modeling integration sourceRef")
+    feedback = merged["evaluation"].get("feedback", {})
+    if feedback.get("enabled") and not merged["evaluation"]["secrets"]["flywheelToken"]["name"]:
+        raise ConfigError("enabled Evaluation feedback requires flywheelToken Secret")
+    if feedback.get("notifyRuns") and not feedback.get("enabled"):
+        raise ConfigError("feedback run notifications require Evaluation feedback")
     if any(merged[name]["replicas"] != 1 for name in ("hub", "evaluation")):
         raise ConfigError("Hub and Evaluation must run at one replica")
     routes = access["listeners"] if access["mode"] == "port" else access["routes"]
@@ -841,6 +846,36 @@ def _assert_distinct_internal_tokens(args, merged: dict) -> None:
         raise ConfigError("Hub and Modeling service tokens must be distinct")
 
 
+def _assert_distinct_flywheel_token(args, merged: dict) -> None:
+    flywheel = merged["evaluation"]["secrets"].get("flywheelToken", {})
+    if not flywheel.get("name"):
+        return
+    resource = _read_secret(args, flywheel["name"])
+    value = resource.get("data", {}).get(flywheel["key"]) if resource else None
+    if not value:
+        raise ConfigError("Evaluation flywheel token is missing")
+    try:
+        decoded = base64.b64decode(value, validate=True).decode()
+    except (ValueError, UnicodeError):
+        raise ConfigError("Evaluation flywheel token is invalid") from None
+    if len(decoded.strip()) < 32:
+        raise ConfigError("Evaluation flywheel token must contain at least 32 characters")
+    references = [merged["global"]["integration"]["serviceTokenSecret"],
+                  merged["hub"]["secrets"].get("consumerToken", {}),
+                  merged["evaluation"]["secrets"].get("consumerToken", {}),
+                  merged["evaluation"]["secrets"].get("notificationToken", {})]
+    for reference in references:
+        if reference.get("name"):
+            other = _read_secret(args, reference["name"])
+            if other and other.get("data", {}).get(reference["key"]) == value:
+                raise ConfigError("Evaluation flywheel token must differ from other service tokens")
+    internal = merged["hub"]["secrets"]["internal"]
+    hub = _read_secret(args, internal["name"])
+    if hub and value in (hub.get("data", {}).get(internal["modelingTokenKey"]),
+                         hub.get("data", {}).get(internal["evaluationTokenKey"])):
+        raise ConfigError("Evaluation flywheel token must differ from other service tokens")
+
+
 def _create_secret(args, name: str, values: dict[str, str]) -> None:
     document = {
         "apiVersion": "v1", "kind": "Secret",
@@ -945,6 +980,7 @@ def ensure_application_secrets(args, merged: dict) -> None:
             if current is None or current.get("type") != "Opaque" or current.get("data", {}).get(integration["key"]) != encoded:
                 raise ConfigError("unable to import Modeling integration Secret")
     _assert_distinct_internal_tokens(args, merged)
+    _assert_distinct_flywheel_token(args, merged)
 
 
 def _count_persisted_data(args) -> dict:

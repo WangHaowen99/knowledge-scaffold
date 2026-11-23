@@ -140,7 +140,7 @@ Auth 和 Consumer 是**同一 Consumer namespace 中的两个 Helm release**；M
 | Consumer 客户端凭据 | 在 Consumer namespace 准备管理接口令牌 `Opaque` Secret，填 `consumer.authAdminTokenSecret`；其值须与 Auth 管理令牌一致 | 保留引用与值 | 从旧配置核对并沿用；不得将 bootstrap 密码放入 Consumer 客户端 Secret |
 | Modeling 客户端凭据 | 使用建模用户管理、自助改密或 Hub 成员同步时，在 Modeling namespace 准备与独立 Auth 管理令牌同值的 `Opaque` Secret，填 `modeling.secrets.authAdminToken` | 保留与 Auth 管理令牌一致的值 | 沿用 Auth 实际管理令牌；如原 CCE 未注入，升级时补齐 Secret 引用并验证功能 |
 | 镜像拉取 Secret | Consumer namespace 中准备能拉取 Auth、Consumer 镜像的 `kubernetes.io/dockerconfigjson` Secret；Modeling namespace 另备可拉取 Modeling、JiuwenBox 镜像的同类 Secret | 保留并核对新 digest 可拉取 | 同左，另保留旧 Auth digest 供恢复 |
-| 业务 Secret | Consumer 服务令牌、MCP 令牌及启用 HTTPS 时的 TLS Secret；Modeling 所需的可选 Secret | 保留原引用与值 | 保留原引用与值 |
+| 业务 Secret | Consumer 安装器按需初始化建模调用、MCP、Hub、评测和飞轮令牌；提前准备 TLS Secret 与 Modeling 所需外部凭据 | 保留原引用与值 | 保留原引用与值 |
 | 节点和入口 | 与三份包架构一致的可调度节点；ELB 和互不冲突的监听端口 | 核对目标镜像架构和端口 | 核对旧 Auth 原 Service 名称、端口和 UID；迁移沿用它们 |
 | 快照能力 | 首装不创建升级快照；建议提前配置 Auth 的 `authSnapshotClass` 和 Consumer 的 `runtimeSnapshotClass` | Auth、Consumer、Modeling 升级前须有 VolumeSnapshot CRD、CSI 驱动、匹配源卷的 VolumeSnapshotClass 与权限 | **执行迁移前**原 Consumer 已安装 values 须有可用的 `authSnapshotClass`；业务升级还需 Consumer runtime、Modeling 各卷的快照能力 |
 
@@ -148,7 +148,7 @@ Auth 首装会用只读检查 Job 核对账号 PVC 为空，然后创建单副�
 
 部署身份须能访问目标集群并具备 Helm、Deployment/Service/PVC/Secret、ConfigMap、Lease、Job、Pod 查询与操作权限；迁移和升级还需创建及读取 VolumeSnapshot，并能检查 PVC/PV 身份。部署机需有 Python 3.11+、PyYAML、jsonschema、Helm、kubectl 和包校验工具。权限和快照类按 **Consumer 包** `docs/auth-release.md`、`docs/upgrade-and-recovery.md` 核对；独立 Auth 包提供 `cce/auth-cce.py`、`cce/chart/` 和 `cce/auth-values.example.yaml`。
 
-Secret 不能跨命名空间引用。Modeling 的 Auth 管理令牌以独立 Auth 实际使用的令牌为准，在 Modeling namespace 单独创建 Secret；Consumer 若调用 Auth 管理接口，也在其 namespace 中配置自己的客户端 Secret，两个客户端不需要使用同名 Secret。Consumer 安装器校验已存在的 Secret，不自动创建。Modeling 的 Auth 管理令牌 Secret 也须预先创建；Modeling 安装器会比较其值与 Auth owner 的管理令牌，缺失或不一致时停止。另有 Modeling 调用 Consumer Backend 的服务令牌，可按包外 `sourceRef` 从 Consumer 源 Secret 导入；安装器还会创建 Hub 内部令牌和 Evaluation 加密密钥。
+Secret 不能跨命名空间引用。Modeling 的 Auth 管理令牌以独立 Auth 实际使用的令牌为准，在 Modeling namespace 单独创建 Secret；Consumer 若调用 Auth 管理接口，也在其 namespace 中配置自己的客户端 Secret，两个客户端不需要使用同名 Secret。Auth 的管理令牌和初始化密码、Consumer 与 Modeling 的 Auth 客户端令牌均须预先准备；Consumer 安装器不会生成 Auth 凭据。Consumer 自有业务令牌由其 `preflight`、`install`、`upgrade` 首次生成并持续复用，`preflight` 失败后也可能已写入 Secret 和 `<Consumer release>-credentials` ConfigMap，重试时必须保留。Modeling 调用 Consumer Backend 的令牌可按包外 `sourceRef` 从 Consumer 源 Secret 导入；Modeling 安装器还会创建 Hub 内部令牌和 Evaluation 加密密钥。
 
 ### 2.1 编辑 `auth-values.yaml`
 
@@ -210,7 +210,7 @@ global:
 - Consumer 生成 Backend Service 的端口是 `5055`；
 - Consumer 的 ELB 监听端口不与 Modeling 共用 ELB 的端口重复。
 
-Consumer 模板中还需核对：`sharedAuth.enabled=false`、`externalAuth`、`consumer.authAdminTokenSecret`、`consumer.persistence.existingClaim`、`global.integration.serviceTokenSecret`、`consumer.mcp.tokenSecret` 及启用 HTTPS 时的 TLS Secret。`consumer.authAdminTokenSecret` 只供 Consumer 调用 Auth 管理接口，其值须匹配 Auth 的管理令牌；Auth 账号 PVC 和 bootstrap 密码只由 Auth owner 持有，不填入 Consumer 目标 values。`global.imageDelivery.pullSecretNames` 默认示例为 `default-secret`，须确认该 Secret 在 **Consumer namespace** 中确实可拉取目标镜像。当前 `consumer.environmentSecretName` 会同时注入 Backend 和 MCP，不要将 Hub/Evaluation 专用令牌通过该字段注入。
+Consumer 模板中还需核对：`sharedAuth.enabled=false`、`externalAuth`、`consumer.authAdminTokenSecret`、`consumer.persistence.existingClaim`、`global.integration.serviceTokenSecret`、`consumer.mcp.tokenSecret` 及启用 HTTPS 时的 TLS Secret。`consumer.authAdminTokenSecret` 只供 Consumer 调用 Auth 管理接口，其值须匹配 Auth 的管理令牌；Auth 账号 PVC 和 bootstrap 密码只由 Auth owner 持有，不填入 Consumer 目标 values。`global.imageDelivery.pullSecretNames` 默认示例为 `default-secret`，须确认该 Secret 在 **Consumer namespace** 中确实可拉取目标镜像。启用 Hub 时填写 `hub.enabled/baseUrl/instanceId/tokenSecret`；反馈连接填写 `flywheel.evaluationUrl/tokenSecret`，采集开关由消费侧系统配置管理。升级旧配置时，若 `consumer.environmentSecretName` 中含 Hub 或飞轮连接变量，先迁到显式 values 与 Secret 引用并保留原令牌；`hub.instanceId` 升级时保持稳定。
 
 Consumer 升级前，还要在同一 `consumer-values.yaml` 中填写其**自有数据卷**的快照类；启用独立求解器时填写 solver 项：
 
@@ -293,6 +293,10 @@ global:
 ```
 
 以上只是该字段的填写示例，不要用它覆盖整个 values。执行安装器的身份需要读取 Consumer namespace 中这个源 Secret、在 Modeling namespace 创建目标 Secret 的权限；没有读取权限时先在 Modeling namespace 手工创建同值目标 Secret，再删去 `sourceRef`。
+
+启用 Consumer → Hub、Evaluation → Consumer 或 Consumer → Evaluation 飞轮反馈时，联合入口会从 Consumer values 中的 `hub.tokenSecret`、`global.integration.evaluationTokenSecret`、`flywheel.tokenSecret` 推导建模侧引用，无需在模板中手工重复填写。默认在 Modeling namespace 使用 `<Modeling release>-hub-consumer`、`<Modeling release>-evaluation-consumer`、`<Modeling release>-flywheel-consumer`，并用 `sourceRef` 指向 Consumer namespace 的源 Secret。各用途使用不同令牌。模板保留空值是为了在对应连接关闭时不要求额外 Secret。已有显式配置的名称和 key 会保留，不自动增加 `sourceRef`；需要从 Consumer 导入时请显式配置，联合入口会核对其来源。若先单独部署 Modeling，仍须手工准备所需 Secret。Consumer 的 `hub.baseUrl` 和 `flywheel.evaluationUrl` 填 Hub、Evaluation Service 的基础地址；示意值可分别使用 `http://hub.example.net:8200` 与 `http://evaluation.example.net:5180`，部署时须替换为集群内实际可达的地址。不要在飞轮基础地址后追加 `/evaluation/api`。
+
+飞轮还需在 Modeling values 中设置 `evaluation.feedback.enabled: true`，使 Evaluation 接收反馈；可单独设置 `evaluation.feedback.notifyRuns: true` 以通知建模端反馈轮次。两项默认关闭。联合安装按 Consumer → Modeling 执行，启用后自动补全 `evaluation.secrets.flywheelToken` 并导入令牌；若先单独安装 Modeling，应先准备与未来 Consumer values 相同的令牌，由 Consumer 后续复用，不能让两边各自生成不同值。
 
 还要填写 Modeling 的三个 PVC，并核对 Secret 引用：
 
@@ -711,4 +715,4 @@ kubectl --context "$KUBE_CONTEXT" -n "$MODELING_NAMESPACE" get deployment,pod,sv
 | Consumer | `docs/auth-release.md`、`docs/install.md`、`docs/import-images.md`、`docs/upgrade-and-recovery.md`、`docs/command-interface.md` | Auth 所有权和快照条件、Consumer Secret/PVC、镜像上传与续跑 |
 | Modeling | `docs/modeling-deployment.md`、`docs/offline-package-build.md`、`docs/joint-deployment.md` | Modeling/Hub/Evaluation values、镜像及联合部署 |
 
-当前开源 Consumer 包尚未实现评测专用工作空间接口，以及 Consumer → Hub/Evaluation 的业务调用。Hub/Evaluation Deployment 和健康检查通过时，仍需单独确认这些跨仓业务能力是否已交付，不能将健康检查等同于完整评测链路验收。
+Hub/Evaluation Deployment 和健康检查通过后，仍须验收 Consumer → Hub、Evaluation → Consumer 及飞轮反馈的实际业务调用；健康检查不能证明跨服务令牌与用户鉴权均正确。

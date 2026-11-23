@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 from datetime import datetime, timezone, timedelta
 import hashlib
 import json
@@ -16,6 +17,7 @@ import tempfile
 import threading
 import time
 import uuid
+from urllib.parse import urlsplit
 
 import jsonschema
 import yaml
@@ -588,6 +590,94 @@ def validate_cross_side(config, packages, consumer_values, modeling_values, comb
             raise ConfigError("Modeling Auth API version differs from legacy Consumer contract")
         if reference.get("serviceName") != expected_name or reference.get("namespace") != config["consumer"]["namespace"] or reference.get("servicePort") != item["port"]:
             raise ConfigError(f"Modeling {field} does not match Consumer endpoint {endpoint_id}")
+    validate_integration_refs(config, consumer_values, modeling_values)
+
+
+def validate_integration_refs(config: dict, consumer_values: dict, modeling_values: dict) -> None:
+    """Check which Consumer credential each Modeling import reads."""
+    integration = consumer_values.get("global", {}).get("integration", {})
+    modeling_integration = modeling_values.get("global", {}).get("integration", {}).get("serviceTokenSecret", {})
+    expected = (
+        ("global.integration.serviceTokenSecret", integration.get("serviceTokenSecret", {}),
+         modeling_integration, bool(integration.get("serviceTokenSecret") or modeling_integration)),
+        ("hub.secrets.consumerToken", consumer_values.get("hub", {}).get("tokenSecret", {}),
+         modeling_values.get("hub", {}).get("secrets", {}).get("consumerToken", {}),
+         consumer_values.get("hub", {}).get("enabled", False)),
+        ("evaluation.secrets.consumerToken", integration.get("evaluationTokenSecret", {}),
+         modeling_values.get("evaluation", {}).get("secrets", {}).get("consumerToken", {}),
+         bool(integration.get("evaluationTokenSecret", {}).get("name"))),
+        ("evaluation.secrets.flywheelToken", consumer_values.get("flywheel", {}).get("tokenSecret", {}),
+         modeling_values.get("evaluation", {}).get("secrets", {}).get("flywheelToken", {}),
+         bool(modeling_values.get("evaluation", {}).get("feedback", {}).get("enabled"))),
+    )
+    for label, source, target, required in expected:
+        if required and (not source.get("name") or not source.get("key") or
+                         not target.get("name") or not target.get("key")):
+            raise ConfigError(f"{label} must reference the enabled Consumer credential")
+        if not target.get("name"):
+            continue
+        if not source.get("name") or not source.get("key"):
+            raise ConfigError(f"{label} has no Consumer source credential")
+        reference = target.get("sourceRef")
+        if reference and reference != {"namespace": config["consumer"]["namespace"],
+                                      "name": source["name"], "key": source["key"]}:
+            raise ConfigError(f"{label}.sourceRef differs from Consumer values")
+    feedback_enabled = modeling_values.get("evaluation", {}).get("feedback", {}).get("enabled", False)
+    if feedback_enabled and not consumer_values.get("flywheel", {}).get("evaluationUrl"):
+        raise ConfigError("Evaluation feedback requires Consumer flywheel.evaluationUrl")
+    for label, address, suffix, port, active in (
+        ("hub.baseUrl", consumer_values.get("hub", {}).get("baseUrl", ""), "hub", 8200,
+         consumer_values.get("hub", {}).get("enabled", False)),
+        ("flywheel.evaluationUrl", consumer_values.get("flywheel", {}).get("evaluationUrl", ""),
+         "evaluation", 5180, feedback_enabled),
+    ):
+        if not active or not address:
+            continue
+        parsed = urlsplit(address)
+        if parsed.hostname and parsed.hostname.endswith(".svc.cluster.local"):
+            expected = f"{config['modeling']['releaseName']}-{suffix}.{config['modeling']['namespace']}.svc.cluster.local"
+            if parsed.hostname != expected or parsed.port != port or parsed.path not in ("", "/"):
+                raise ConfigError(f"{label} differs from the Modeling Service")
+
+
+def default_consumer_secret_refs(config: dict, consumer_values: dict, modeling_values: dict) -> dict:
+    """Resolve local Secret references from Consumer values for a joint operation."""
+    result = copy.deepcopy(modeling_values)
+    integration = consumer_values.get("global", {}).get("integration", {})
+    references = (
+        (integration.get("serviceTokenSecret", {}), ("global", "integration", "serviceTokenSecret"),
+         "integration", True),
+        (consumer_values.get("hub", {}).get("tokenSecret", {}), ("hub", "secrets", "consumerToken"),
+         "hub-consumer", consumer_values.get("hub", {}).get("enabled", False)),
+        (integration.get("evaluationTokenSecret", {}), ("evaluation", "secrets", "consumerToken"),
+         "evaluation-consumer", bool(integration.get("evaluationTokenSecret", {}).get("name"))),
+        (consumer_values.get("flywheel", {}).get("tokenSecret", {}),
+         ("evaluation", "secrets", "flywheelToken"), "flywheel-consumer",
+         result.get("evaluation", {}).get("feedback", {}).get("enabled", False)),
+    )
+    for source, path, suffix, active in references:
+        if not active or not source.get("name") or not source.get("key"):
+            continue
+        target = result.setdefault(path[0], {}).setdefault(path[1], {}).setdefault(path[2], {})
+        if bool(target.get("name")) != bool(target.get("key")):
+            raise ConfigError(f"Modeling {suffix} Secret reference is incomplete")
+        if target.get("name"):
+            continue
+        release = config["modeling"]["releaseName"][:42].rstrip("-")
+        target.update(name=f"{release}-{suffix}", key=source["key"],
+                      sourceRef={"namespace": config["consumer"]["namespace"],
+                                 "name": source["name"], "key": source["key"]})
+    return result
+
+
+def effective_modeling_values(config: dict, consumer_values: dict, destination: Path) -> tuple[dict, dict]:
+    """Pass resolved values to the Modeling installer without changing user inputs."""
+    original = read_yaml(config["modeling"]["values"])
+    values = default_consumer_secret_refs(config, consumer_values, original)
+    if values == original:
+        return config, values
+    destination.write_text(yaml.safe_dump(values, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    return {**config, "modeling": {**config["modeling"], "values": destination}}, values
 
 
 def candidate_combination(packages: dict, consumer_values: dict | None = None) -> dict:
@@ -822,7 +912,8 @@ def prepare_compatibility(config: dict, *, upgrade: bool, confirmed: bool,
                 raise ConfigError("Modeling package is missing")
             prepare_auth_release(config, Path(temporary), expected_platform=modeling_package[1]["platform"])
         consumer_values = read_yaml(config["consumer"]["values"])
-        modeling_values = read_yaml(config["modeling"]["values"])
+        modeling_values = default_consumer_secret_refs(
+            config, consumer_values, read_yaml(config["modeling"]["values"]))
         validate_auth_coordinates(config, consumer_values, modeling_values)
         target = candidate_combination(packages, consumer_values)
         validate_cross_side(config, packages, consumer_values, modeling_values, target)
@@ -1778,8 +1869,10 @@ def main():
                     config, combination, installed_for_transition,
                 )
                 result["transitionId"] = args.transition_id
+            original_config = config
             consumer_values = read_yaml(config["consumer"]["values"])
-            modeling_values = read_yaml(config["modeling"]["values"])
+            config, modeling_values = effective_modeling_values(
+                config, consumer_values, Path(temporary) / "modeling-effective-values.yaml")
             validate_auth_coordinates(config, consumer_values, modeling_values)
             validate_cross_side(config, packages, consumer_values, modeling_values, combination)
             if consumer_values.get("global", {}).get("clusterFlavor") != modeling_values.get("global", {}).get("clusterFlavor"):
@@ -1799,7 +1892,7 @@ def main():
             transition_record = None
             transition_record_path = state / f"{operation_id}-transition.json"
             if args.action in ("install", "upgrade"):
-                fingerprint = operation_fingerprint(config)
+                fingerprint = operation_fingerprint(original_config)
                 if args.action == "upgrade":
                     backup_identity = (checksum(Path(args.backup_record)) if args.backup_record else
                                        f"auto:{args.snapshot_retention}:{args.min_free_percent}")

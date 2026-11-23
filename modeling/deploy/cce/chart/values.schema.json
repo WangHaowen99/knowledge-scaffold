@@ -63,8 +63,9 @@
     }},
     "evaluation": {"type": "object", "additionalProperties": false, "required": ["replicas", "persistence", "resources", "trustedOrigins", "judge", "secrets"], "properties": {
       "replicas": {"type": "integer", "minimum": 0, "maximum": 1}, "persistence": {"$ref": "#/definitions/persistence"}, "resources": {"type": "object"}, "trustedOrigins": {"type": "array", "items": {"type": "string"}},
+      "feedback": {"type": "object", "additionalProperties": false, "required": ["enabled", "notifyRuns"], "properties": {"enabled": {"type": "boolean"}, "notifyRuns": {"type": "boolean"}}},
       "judge": {"type": "object", "additionalProperties": false, "required": ["baseUrl", "model", "configRevision"], "properties": {"baseUrl": {"type": "string"}, "model": {"type": "string"}, "configRevision": {"type": "string"}}},
-      "secrets": {"type": "object", "additionalProperties": false, "required": ["encryptionKey", "notificationToken", "consumerToken", "judgeApiKey", "sqlConfig"], "properties": {"encryptionKey": {"$ref": "#/definitions/secretRef"}, "notificationToken": {"$ref": "#/definitions/optionalSecretRef"}, "consumerToken": {"$ref": "#/definitions/importableSecretRef"}, "judgeApiKey": {"$ref": "#/definitions/importableSecretRef"}, "sqlConfig": {"$ref": "#/definitions/importableSecretRef"}}}
+      "secrets": {"type": "object", "additionalProperties": false, "required": ["encryptionKey", "notificationToken", "consumerToken", "judgeApiKey", "sqlConfig"], "properties": {"encryptionKey": {"$ref": "#/definitions/secretRef"}, "notificationToken": {"$ref": "#/definitions/optionalSecretRef"}, "consumerToken": {"$ref": "#/definitions/importableSecretRef"}, "flywheelToken": {"$ref": "#/definitions/importableSecretRef"}, "judgeApiKey": {"$ref": "#/definitions/importableSecretRef"}, "sqlConfig": {"$ref": "#/definitions/importableSecretRef"}}}
     }}
   },
   "definitions": {

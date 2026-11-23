@@ -76,11 +76,13 @@ evaluation:
   replicas: 1
   persistence: {existingClaim: ""}
   resources: {}
+  feedback: {enabled: false, notifyRuns: false}
   trustedOrigins: []
   judge: {baseUrl: "", model: "", configRevision: ""}
   secrets:
     encryptionKey: {name: "", key: encryption-key}
     notificationToken: {name: "", key: service-token}
     consumerToken: {name: "", key: ""}
+    flywheelToken: {name: "", key: ""}
     judgeApiKey: {name: "", key: ""}
     sqlConfig: {name: "", key: ""}
