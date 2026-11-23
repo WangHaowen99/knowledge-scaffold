@@ -999,7 +999,8 @@ export default function LeftPane({
                           <Tag
                             key={t.name}
                             color="green"
-                            closable
+                            // 只读评审没有写权限，不给删除标记的入口（后端同样拒绝）
+                            closable={v.can_tag !== false}
                             onClose={(e) => {
                               e.preventDefault();
                               api.deleteTag(project.id, t.name).then(onRefresh).catch((err) =>
@@ -1012,13 +1013,15 @@ export default function LeftPane({
                           </Tag>
                         ))}
                         <Space size={4} style={{ marginTop: 2 }}>
-                          <Button
-                            size="small"
-                            type="text"
-                            onClick={() => setTagging({ commit: v.commit, label: '' })}
-                          >
-                            标记
-                          </Button>
+                          {v.can_tag !== false && (
+                            <Button
+                              size="small"
+                              type="text"
+                              onClick={() => setTagging({ commit: v.commit, label: '' })}
+                            >
+                              标记
+                            </Button>
+                          )}
                           {!v.current && v.can_revert !== false && (
                             <Button
                               size="small"
