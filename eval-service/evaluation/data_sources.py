@@ -1,12 +1,12 @@
 """Bounded spreadsheet input and isolated database adapters."""
 import csv
 import io
-import json
 import re
 import zipfile
 from itertools import islice
-from .core import Failure, endpoint
+from .core import Failure
 from .nl2sql import scene_token
+from .dataset_settings import DatasetSettings
 
 IDENTIFIER=re.compile(r'^[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]{0,63}$')
 # Evaluation-only connection keys. Consumer rejects unknown provider fields, so they never leave this service.
@@ -21,6 +21,30 @@ def identifier(value):
     if not isinstance(value,str) or not IDENTIFIER.fullmatch(value):
         raise Failure('invalid_identifier','表名和字段名格式无效',422,'data_import')
     return value
+
+
+def graph_keys(name, item, table):
+    """Validate the actual node key, not a parent reference; never include cell values in diagnostics."""
+    keys = item.get('primary_key') or []
+    fields = item['sources'][0]['fields']
+    columns = table.get('columns', [])
+    missing = [key for key in keys if key not in fields or fields[key].get('source_column') not in columns]
+    if not keys or missing:
+        raise Failure('graph_key_missing', f'对象「{name}」的主键未映射到数据列，请核对知识包主键定义与上传表头。', 422, 'data_import')
+    indices = [columns.index(fields[key]['source_column']) for key in keys]
+    bad = []
+    for number, row in enumerate(table.get('rows', []), 1):
+        empty = [key for key, index in zip(keys, indices) if row[index] is None or row[index] == '']
+        if empty:
+            bad.append({'data_row': number, 'fields': empty})
+            if len(bad) == 10:
+                break
+    if bad:
+        positions = '；'.join(f"第 {v['data_row']} 条：{'、'.join(v['fields'])}" for v in bad)
+        raise Failure('graph_key_missing', f'对象「{name}」在表「{item["sources"][0]["resource"]}」中存在空主键（{positions}）。'
+                      '编号按去除表头及全空行后的数据记录计算，最多列出 10 条。请补齐这些值，或修正知识包主键定义后重新发布；父级关联字段未作为主键时允许为空。',
+                      422, 'data_import', details={'object': name, 'primary_key': keys, 'rows': bad})
+    return indices
 
 
 def read_tables(raw, name):
@@ -77,6 +101,7 @@ def _read_tables(raw, name):
 class DataSources:
     def __init__(self, config, store):
         self.config,self.store=config,store
+        self.settings = DatasetSettings(config, store)
         from .graph_import import GraphImports
         self.graph = GraphImports(store)
 
@@ -127,39 +152,52 @@ class DataSources:
         if mode=='connection':
             # Never replace arbitrary external SQL tables. Read-only external connections are supported.
             raise Failure('external_import_denied','外部 SQL 连接仅支持查询，请使用 dataset 导入隔离评测库',422,'data_import')
-        try:
-            config=json.loads(self.config.sql_config)
-            endpoint(self.config.nl2sql_url)
-        except (ValueError,TypeError) as exc:
-            raise Failure('dataset_unconfigured','请配置隔离评测 MySQL 与 NL2SQL',503,'data_import') from exc
+        frozen = self.settings.unpack(source['dataset_storage']) if source.get('dataset_storage') else None
+        if frozen is None and self.config.sql_config:
+            # A pre-upgrade task may already have partially imported into its deployment database.
+            # Keep that target when it is valid; a missing/invalid old configuration never reached a write.
+            try:
+                frozen = self.settings.ready(self.settings.deployment())
+            except Failure:
+                pass
+        storage = self.settings.bind(run_id, frozen)
+        config = storage['sql']
         import pymysql
         schema='eval_'+run_id
-        with pymysql.connect(**config) as db:
-            with db.cursor() as cursor:
-                cursor.execute('CREATE DATABASE IF NOT EXISTS `'+schema+'`')
-                cursor.execute('USE `'+schema+'`')
-                for name,table in tables.items():
-                    identifier(name)
-                    cursor.execute('DROP TABLE IF EXISTS `'+name+'`')
-                    cols=table['columns']
-                    declarations=','.join('`'+identifier(c)+'` TEXT' for c in cols)
-                    cursor.execute('CREATE TABLE `'+name+'` ('+declarations+')')
-                    query='INSERT INTO `'+name+'` VALUES ('+','.join(['%s']*len(cols))+')'
-                    for offset in range(0,len(table['rows']),200):
-                        cursor.executemany(query,table['rows'][offset:offset+200])
-            db.commit()
+        try:
+            with pymysql.connect(**config) as db:
+                with db.cursor() as cursor:
+                    cursor.execute('CREATE DATABASE IF NOT EXISTS `'+schema+'`')
+                    cursor.execute('USE `'+schema+'`')
+                    for name,table in tables.items():
+                        identifier(name)
+                        cursor.execute('DROP TABLE IF EXISTS `'+name+'`')
+                        cols=table['columns']
+                        declarations=','.join('`'+identifier(c)+'` TEXT' for c in cols)
+                        cursor.execute('CREATE TABLE `'+name+'` ('+declarations+')')
+                        query='INSERT INTO `'+name+'` VALUES ('+','.join(['%s']*len(cols))+')'
+                        for offset in range(0,len(table['rows']),200):
+                            cursor.executemany(query,table['rows'][offset:offset+200])
+                db.commit()
+        except Failure:
+            raise
+        except Exception:
+            raise Failure('dataset_import_failed', '文件已保存，但导入评测 MySQL 失败。请管理员检查本轮数据库连接、写入权限与容量，修复后点击“恢复并继续”；无需重新上传文件。', 503, 'data_import') from None
         return dict(mode='direct_provider',provider='nl2sql_http',config={
-            'url':self.config.nl2sql_url,'scene':schema,'token':scene_token(self.config,schema)})
+            'url':storage['url'],'scene':schema,'token':scene_token(self.config,schema)})
 
     def cleanup(self, run_id, source):
         # Without an evaluation MySQL no run can have created its database, so there is nothing to drop.
-        if source.get('mode') != 'dataset' or source.get('provider') == 'neo4j' or not self.config.sql_config:
+        if source.get('mode') != 'dataset' or source.get('provider') == 'neo4j':
             return
         if not re.fullmatch(r'[a-f0-9]{32}',run_id):
             raise Failure('invalid_run','运行标识无效',422)
         import pymysql
-        config=json.loads(self.config.sql_config)
+        if not self.store.setting('dataset-run:' + run_id) and not self.config.sql_config:
+            return  # No import ever reached a MySQL write.
+        config=self.settings.for_run(run_id)['sql']
         with pymysql.connect(**config) as db:
             with db.cursor() as cursor:
                 cursor.execute('DROP DATABASE IF EXISTS `eval_'+run_id+'`')
             db.commit()
+        self.store.put_setting('dataset-run:' + run_id, None)

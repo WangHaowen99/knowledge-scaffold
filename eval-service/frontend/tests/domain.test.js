@@ -9,6 +9,8 @@ import {
   parseCases,
   caseState,
   canResume,
+  datasetIssue,
+  datasetFieldErrors,
   emptySource,
   sourceFromRecord,
   sourcePayload,
@@ -36,6 +38,26 @@ import {
   carriedState,
   carryoverCounts,
 } from '../src/domain.js';
+
+test('database form validates test and save fields and preserves a saved password', () => {
+  const form = { host: 'mysql.example.net', port: 3306, user: '', password: '', query_url: '' };
+  assert.deepEqual(Object.keys(datasetFieldErrors(form)), ['user', 'password']);
+  const saved = { ...form, user: 'synthetic_user', password_set: true };
+  assert.deepEqual(datasetFieldErrors({ ...form, user: saved.user }, saved), {});
+  assert.ok(datasetFieldErrors({ ...form, user: saved.user, host: 'other.example.net' }, saved).password);
+  assert.ok(datasetFieldErrors({ ...form, port: 0 }).port);
+  assert.ok(datasetFieldErrors({ ...form, query_url: 'ftp://example.net' }).query_url);
+});
+
+test('upload storage errors explain saved files and how to resume old interrupted tasks', () => {
+  const run = { status: 'interrupted', error: { code: 'dataset_unconfigured', message: 'legacy message' } };
+  assert.match(datasetIssue(run).message, /文件已保存/);
+  assert.match(datasetIssue(run).message, /上传数据存储设置/);
+  assert.ok(canResume(run));
+  assert.equal(datasetIssue({ error: { code: 'graph_key_missing' } }), null);
+  assert.equal(datasetIssue({ error: { code: 'dataset_import_failed', message: 'Synthetic connection failure' } }).message,
+    'Synthetic connection failure');
+});
 
 // Package identifiers and project names are synthetic.
 test('modeling project lookup asks once per package in bounded batches', () => {

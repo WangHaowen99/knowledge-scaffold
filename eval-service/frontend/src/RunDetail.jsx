@@ -12,6 +12,7 @@ import {
   canResume,
   caseState,
   duration,
+  datasetIssue,
   isSolverRun,
   packageName,
   packageVersions,
@@ -278,11 +279,11 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
         <Alert
           tone={run.error?.code === 'configuration_changed' ? 'red' : 'amber'}
           title={
-            run.error?.code === 'configuration_changed'
+            datasetIssue(run)?.title || (run.error?.code === 'configuration_changed'
               ? '模型配置已变化，请创建新评测'
               : run.status === 'waiting_auth'
                 ? '任务需要重新授权'
-                : '本轮执行暂时中断，进度已保存'
+                : '本轮执行暂时中断，进度已保存')
           }
           action={
             recoverable ? (
@@ -298,7 +299,8 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
             ) : undefined
           }
         >
-          {run.error?.message || '请确认有效登录与依赖后恢复，恢复后只继续未完成的题目。'}
+          {datasetIssue(run)?.message || run.error?.message || '请确认有效登录与依赖后恢复，恢复后只继续未完成的题目。'}
+          {datasetIssue(run) && <Button variant="text" onClick={() => navigate('/data-sources')}>查看上传数据存储设置</Button>}
         </Alert>
       )}
       {run.status === 'cancelling' && (
@@ -566,6 +568,12 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
             <dd>{run.data_source_name || '不使用数据源'}</dd>
             <dt>数据源修订</dt>
             <dd>{summary.inputs?.data_source_revision || '—'}</dd>
+            <dt>工作空间</dt>
+            <dd>
+              {run.workspace
+                ? (run.managed_workspace ? `Evaluation ${id.slice(0, 8)}` : run.workspace)
+                : '尚未分配工作空间'}
+            </dd>
             <dt>{solver ? '求解验证集' : '评测集'}</dt>
             <dd>{(solver ? run.solver_set_name : run.eval_set_name) || '快照'}</dd>
             <dt>用例修订</dt>

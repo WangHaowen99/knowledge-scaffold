@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { DatasetSettings } from './DatasetSettings.jsx';
 import { api, randomId } from './api.js';
 import { GRAPH_SCOPE_DEFAULTS, emptySource, packageReference, sourceFromRecord, sourcePayload } from './domain.js';
 import { Alert, Badge, Breadcrumb, Button, Confirm, Field, Heading, Icon, useAction } from './ui.jsx';
@@ -411,6 +412,7 @@ export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, pa
             </button>
           ))}
         </div>
+        {form.mode === 'dataset' && <DatasetSettings compact />}
         <div className="form-grid">
           <Field label="配置名称 *">
             <input maxLength={128} value={form.name} onChange={(e) => change({ name: e.target.value })} />

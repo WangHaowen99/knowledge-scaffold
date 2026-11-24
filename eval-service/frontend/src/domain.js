@@ -51,6 +51,37 @@ export function canResume(run) {
     'graph_confirmation_required',
   ].includes(run.error?.code);
 }
+export function datasetIssue(run) {
+  const code = run.error?.code || '';
+  if (!code.startsWith('dataset_')) return null;
+  const missing = ['dataset_unconfigured', 'dataset_query_unconfigured'].includes(code);
+  return {
+    title: missing ? '上传数据尚未具备执行条件' : '上传数据准备未完成',
+    message: missing
+      ? '文件已保存，尚未导入评测数据库。请管理员在“数据源 → 上传数据存储设置”中补齐 MySQL 与查询入口配置，保存后回到本任务点击“恢复并继续”，无需重新上传文件。'
+      : run.error.message,
+  };
+}
+
+export function datasetFieldErrors(form, saved = {}) {
+  const errors = {};
+  if (!form.host.trim()) errors.host = '请填写 MySQL 主机名或 IP';
+  else if (/[\s/@?#]/.test(form.host.trim())) errors.host = '主机地址不含协议、路径或空格';
+  const port = Number(form.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) errors.port = '端口必须是 1–65535 的整数';
+  if (!form.user.trim()) errors.user = '请填写 MySQL 用户名';
+  const unchanged = saved.host === form.host.trim() && Number(saved.port) === port && saved.user === form.user.trim();
+  if (!form.password && (!saved.password_set || !unchanged))
+    errors.password = saved.password_set ? '连接信息已变更，请重新填写密码' : '首次配置请填写 MySQL 密码';
+  if (form.query_url.trim()) {
+    try {
+      const url = new URL(form.query_url.trim());
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash ||
+          !url.pathname.replace(/\/+$/, '').endsWith('/evaluation/api/nl2sql')) throw new Error();
+    } catch { errors.query_url = '请填写有效的 HTTP(S) 查询地址，以 /evaluation/api/nl2sql 结尾；标准部署可留空'; }
+  }
+  return errors;
+}
 export function packageName(run) {
   return run.package_ref?.name || run.package_ref?.ontology_id || '知识包';
 }

@@ -9,6 +9,7 @@ import { RunDetail } from './RunDetail.jsx';
 import { CaseEditor } from './CaseEditor.jsx';
 import { SolverCaseEditor } from './SolverCaseEditor.jsx';
 import { SourceEditor } from './SourceEditor.jsx';
+import { DatasetSettings } from './DatasetSettings.jsx';
 import { JudgeSettings } from './JudgeSettings.jsx';
 import { UserMenu } from './UserMenu.jsx';
 
@@ -677,8 +678,9 @@ function Definitions({ kind, id, items, counts, refresh, navigate, registerDirty
           ? '管理可复用的求解验证用例，已有任务保留原用例快照。'
           : sets
             ? '管理可复用的问题与参考答案，已有任务保留原用例快照。'
-            : '保存并复用连接与数据文件，按 Provider 配置评测数据源。'}
+            : '管理评测使用的数据文件与外部连接。'}
       </Heading>
+      {!cases && <DatasetSettings />}
       <div className="list-toolbar">
         {cases ? (
           <Segmented

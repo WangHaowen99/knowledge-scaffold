@@ -12,7 +12,7 @@ import threading
 import time
 
 from .core import Failure, canonical, digest
-from .data_sources import identifier
+from .data_sources import identifier, graph_keys
 from .mapping_rules import valid_relation_type
 
 MAX_NODES = 100000
@@ -372,14 +372,13 @@ class GraphImports:
             if label == RECEIPT_LABEL:
                 raise Failure('graph_scope_conflict', '对象名与图导入回执保留名称冲突', 422, 'data_import')
             table = tables[item['sources'][0]['resource']]
+            graph_keys(label, item, table)
             fields = item['sources'][0]['fields']
             if any(key in fields for key in (scope['workspace_property'], scope['ontology_property'])):
                 raise Failure('graph_scope_conflict', '图隔离属性不能与业务字段重名', 422, 'data_import')
             rows = [{field: row[table['columns'].index(rule['source_column'])] for field, rule in fields.items()}
                     for row in table['rows']]
             keys = item['primary_key']
-            if not keys or any(any(row.get(key) is None or row.get(key) == '' for key in keys) for row in rows):
-                raise Failure('graph_key_missing', '图数据缺少主键', 422, 'data_import')
             key_expr = ('`' + scope['workspace_property'] + '`:$workspace,`' + scope['ontology_property'] + '`:$ontology,' +
                         ','.join('`' + key + '`:row.`' + key + '`' for key in keys))
             objects.append(('UNWIND $rows AS row MERGE (n:`' + label + '` {' + key_expr + '}) SET n += row', rows))

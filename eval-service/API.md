@@ -2,6 +2,10 @@
 
 前缀 `/evaluation/api`。除 health、client-config、账号登录/刷新及受 scene 凭据保护的 NL2SQL 外，均要求 `Authorization: Bearer <access-token>`；`/internal/feedback-signals` 另须消费服务凭据。身份在线验证并按 issuer/subject 隔离；不接受建模项目归属或请求体 owner。
 
+上传数据存储设置：`GET /dataset-settings` 返回 `editable/configured/message`；仅管理员还可读取 `host/port/user/query_url/password_set/revision/source/query_auto`，始终不返回密码。`PUT /dataset-settings` 和 `POST /dataset-settings/test` 仅管理员可用，请求为 `host/port/user/password`，可选 `query_url` 留空时自动使用部署默认入口；密码留空仅在连接身份未变化时沿用。保存加密配置并立即用于新任务，测试创建并清理合成临时数据库，不保存配置，不验证 Consumer 网络。查询入口须为 HTTP(S)、无账号/查询参数/片段，路径以 `/evaluation/api/nl2sql` 结尾。配置缺失返回 `dataset_unconfigured` 或 `dataset_query_unconfigured`（409）；导入连接或写入失败返回 `dataset_import_failed`（503），不回显驱动异常。
+
+创建上传数据评测前校验配置并冻结连接；导入前保存本轮绑定，内置查询和删除使用同一绑定。`source` 内部快照不返回客户端。升级前没有绑定的已导入任务继续使用部署 MySQL 配置。Neo4j 空主键返回 `graph_key_missing`（422），`details` 包含对象、主键字段和最多 10 条 `{data_row, fields}`，不包含数据值。
+
 | 接口 | 行为 |
 | --- | --- |
 | `GET /health` | 活性，不代表依赖就绪；允许任意来源读取 |
