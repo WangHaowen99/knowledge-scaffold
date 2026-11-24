@@ -25,7 +25,7 @@ from .judge_settings import JudgeSettings, connection_test_failure
 from .modeling_projects import linked_projects
 from .nl2sql import QueryService
 from .source_config import SourceConfig
-from .graph_import import check_names, scope_target
+from .graph_import import GraphImports, check_names, graph_scope, scope_target
 from .artifact_jobs import ArtifactJobs, PUBLIC as ARTIFACT_FIELDS
 from .notifications import Notifier
 from .suggestions import Suggestions
@@ -593,14 +593,22 @@ def create_app(config=None,transport=None):
         owner,token=actor(request)
         source=store.get(owner,body.data_source_id,'data-sources')
         _,tables=sources.freeze(owner,source)
-        raw,_=packages.fetch(body.package_ref.model_dump(),token)
+        raw,receipt=packages.fetch(body.package_ref.model_dump(),token)
         graph=source.get('provider')=='neo4j'
         mapping,preview=generate_mapping(raw,{k:v['columns'] for k,v in tables.items()},graph) if tables else (None,{'objects':{},'warnings':[]})
+        converted=None
+        if graph and source.get('import_data') and mapping:
+            if mapping.get('objects'):
+                connection=GraphImports.connection(store,source,receipt['ontology_id'])
+                converted=GraphImports.converted_rows(tables,mapping,preview.get('relations',{}),scope=graph_scope(connection))
         objects=[]
         for name,item in preview['objects'].items():
             table=tables.get(item.get('table'),{})
             count=len(table.get('rows',[]))
-            if graph and mapping and name in mapping['objects']:
+            if converted is not None and name in converted:
+                keys=mapping['objects'][name]['primary_key']
+                count=len({tuple(row[key] for key in keys) for row in converted[name]})
+            elif graph and mapping and name in mapping['objects']:
                 indices=graph_keys(name,mapping['objects'][name],table)
                 if indices:
                     count=len({tuple(row[i] for i in indices) for row in table.get('rows',[])})
@@ -611,22 +619,24 @@ def create_app(config=None,transport=None):
                 right=edge['target']
                 try:
                     l,r=mapping['objects'][left],mapping['objects'][right]
-                    lt,rt=tables[l['sources'][0]['resource']],tables[r['sources'][0]['resource']]
                     lk=edge.get('sourceJoinProperty') or l['primary_key'][0]
                     rk=edge.get('targetJoinProperty') or r['primary_key'][0]
-                    li=lt['columns'].index(l['sources'][0]['fields'][lk]['source_column'])
-                    ri=rt['columns'].index(r['sources'][0]['fields'][rk]['source_column'])
                     # Count distinct primary-key pairs without materializing a potentially
                     # quadratic join; matching MERGE semantics, nulls never join.
-                    def keyed(obj,table):
+                    def keyed(name,obj):
+                        if converted is not None:
+                            return [(row,tuple(row[key] for key in obj['primary_key'])) for row in converted[name]]
+                        table=tables[obj['sources'][0]['resource']]
                         indices=[table['columns'].index(obj['sources'][0]['fields'][k]['source_column']) for k in obj['primary_key']]
-                        return [(row,tuple(row[i] for i in indices)) for row in table['rows']]
+                        fields=obj['sources'][0]['fields']
+                        return [({field:row[table['columns'].index(rule['source_column'])] for field,rule in fields.items()},
+                                 tuple(row[i] for i in indices)) for row in table['rows']]
                     targets={}
-                    for row,key in keyed(r,rt):
-                        if row[ri] is not None: targets.setdefault(row[ri],set()).add(key)
+                    for row,key in keyed(right,r):
+                        if row[rk] is not None: targets.setdefault(row[rk],set()).add(key)
                     origins={}
-                    for row,key in keyed(l,lt):
-                        if row[li] is not None: origins.setdefault(row[li],set()).add(key)
+                    for row,key in keyed(left,l):
+                        if row[lk] is not None: origins.setdefault(row[lk],set()).add(key)
                     count=sum(len(keys)*len(targets.get(value,set())) for value,keys in origins.items())
                 except (KeyError,IndexError,ValueError):
                     count=None
