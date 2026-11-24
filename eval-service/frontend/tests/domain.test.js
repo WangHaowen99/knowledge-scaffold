@@ -46,7 +46,7 @@ test('database form validates test and save fields and preserves a saved passwor
   assert.deepEqual(datasetFieldErrors({ ...form, user: saved.user }, saved), {});
   assert.ok(datasetFieldErrors({ ...form, user: saved.user, host: 'other.example.net' }, saved).password);
   assert.ok(datasetFieldErrors({ ...form, port: 0 }).port);
-  assert.ok(datasetFieldErrors({ ...form, query_url: 'ftp://example.net' }).query_url);
+  assert.ok(datasetFieldErrors({ ...form, query_url: 'sftp://example.net' }).query_url);
   assert.equal(datasetFieldErrors({ ...form, query_url: 'https://example.net/query-adapter' }).query_url, undefined);
   assert.ok(datasetFieldErrors({ ...form, query_url: 'https://example.net:0' }).query_url);
 });

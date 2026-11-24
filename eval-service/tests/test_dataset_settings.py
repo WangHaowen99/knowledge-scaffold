@@ -69,7 +69,7 @@ def test_query_endpoint_defaults_to_container_port_and_explicit_override_wins(en
     assert response.json()['query_url'].startswith('https://service.example.net/')
 
 
-@pytest.mark.parametrize('endpoint', ['ftp://example.net', 'https://example.net:0',
+@pytest.mark.parametrize('endpoint', ['sftp://example.net', 'https://example.net:0',
                                      'https://example.net/path?mode=demo', 'https://example.net/path#demo'])
 def test_invalid_query_endpoint_still_rejected(endpoint):
     with pytest.raises(Failure) as error:
