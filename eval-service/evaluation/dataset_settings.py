@@ -29,7 +29,9 @@ class DatasetSettings:
     def default_url(self):
         # Standard compose exposes the evaluation service under this DNS alias.
         # EVAL_PORT is the process/container port, not the host's published port.
-        return self.config.nl2sql_url or 'http://evaluation:{}/evaluation/api/nl2sql'.format(
+        # Compose's internal listener has no TLS. For transport encryption, configure
+        # EVAL_NL2SQL_URL to an HTTPS gateway; changing only this scheme breaks queries.
+        return self.config.nl2sql_url or 'http://evaluation:{}/evaluation/api/nl2sql'.format(  # NOSONAR(S5332): internal Compose listener; deployment security exception.
             int(os.environ.get('EVAL_PORT', '5180')))
 
     def deployment(self):

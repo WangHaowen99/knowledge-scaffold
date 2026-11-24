@@ -1,5 +1,7 @@
 """Synthetic storage configurations and fake MySQL only; no external service access."""
 import json
+import secrets
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -10,7 +12,9 @@ from evaluation.nl2sql import QueryService, scene_token
 from test_evaluation import environment
 
 
-def settings(host='mysql.example.net', password='synthetic-password'):
+def settings(host='mysql.example.net', password=None):
+    if password is None:
+        password = secrets.token_urlsafe(24)
     return dict(host=host, port=3306, user='synthetic_user', password=password,
                 query_url='https://evaluation.example.net/evaluation/api/nl2sql')
 
@@ -18,14 +22,31 @@ def settings(host='mysql.example.net', password='synthetic-password'):
 def test_invalid_form_reports_fields_without_echoing_credentials(environment):
     client, app, deps, cfg = environment
     deps.roles['synthetic-user-a'] = 'admin'
-    for suffix in ('', '/test'):
-        response = client.request('POST' if suffix else 'PUT', '/evaluation/api/dataset-settings' + suffix,
-                                  json={**settings(), 'user': '', 'port': 0, 'password': 'synthetic-private-input'})
+    private_input = secrets.token_urlsafe(24)
+    for method, endpoint in (('PUT', '/evaluation/api/dataset-settings'),
+                             ('POST', '/evaluation/api/dataset-settings/test')):
+        response = client.request(method, endpoint,
+                                  json={**settings(password=private_input), 'user': '', 'port': 0})
         assert response.status_code == 422
         assert '请填写MySQL 用户名' in response.json()['message']
         assert '端口必须是' in response.json()['message']
         assert {v['field'] for v in response.json()['details']['fields']} == {'port', 'user'}
-        assert 'synthetic-private-input' not in response.text
+        assert private_input not in response.text
+
+
+@pytest.mark.parametrize(('field', 'value', 'message'), [
+    ('host', '', '请填写MySQL 主机'),
+    ('query_url', 'x' * 2049, '自定义查询入口过长，请缩短后重试'),
+    ('password', None, '密码格式不正确，请检查'),
+])
+def test_validation_uses_field_titles(environment, field, value, message):
+    client, app, deps, cfg = environment
+    deps.roles['synthetic-user-a'] = 'admin'
+    body = settings()
+    body[field] = value
+    response = client.put('/evaluation/api/dataset-settings', json=body)
+    assert response.status_code == 422
+    assert response.json()['details']['fields'] == [{'field': field, 'message': message}]
 
 
 def test_query_endpoint_defaults_to_container_port_and_explicit_override_wins(environment, monkeypatch):
@@ -36,7 +57,9 @@ def test_query_endpoint_defaults_to_container_port_and_explicit_override_wins(en
     del body['query_url']
     response = client.put('/evaluation/api/dataset-settings', json=body)
     assert response.status_code == 200
-    assert response.json()['query_url'] == 'http://evaluation:8090/evaluation/api/nl2sql'
+    endpoint = urlsplit(response.json()['query_url'])
+    assert (endpoint.scheme, endpoint.hostname, endpoint.port, endpoint.path) == (
+        'http', 'evaluation', 8090, '/evaluation/api/nl2sql')
     assert response.json()['query_auto'] is True
     cfg.nl2sql_url = 'https://evaluation.example.net/evaluation/api/nl2sql'
     response = client.put('/evaluation/api/dataset-settings', json=body)
@@ -50,14 +73,16 @@ def test_admin_only_encrypted_settings_and_secret_reuse(environment):
     client, app, deps, cfg = environment
     path = '/evaluation/api/dataset-settings'
     assert client.put(path, json=settings()).status_code == 403
-    assert client.post(path + '/test', json=settings()).status_code == 403
+    assert client.post('/evaluation/api/dataset-settings/test', json=settings()).status_code == 403
     assert client.get(path).json()['configured'] is False
     deps.roles['synthetic-user-a'] = 'admin'
-    response = client.put(path, json=settings())
+    body = settings()
+    secret = body.get('password')
+    response = client.put(path, json=body)
     assert response.status_code == 200 and response.json()['password_set']
-    assert 'synthetic-password' not in response.text
+    assert secret not in response.text
     raw = app.state.store.db.execute('SELECT body FROM settings WHERE key=?', ('dataset-settings',)).fetchone()[0]
-    assert 'synthetic-password' not in raw and 'mysql.example.net' not in raw
+    assert secret not in raw and 'mysql.example.net' not in raw
     assert client.put(path, json=settings(password='')).status_code == 200
     assert client.put(path, json=settings(host='other.example.net', password='')).status_code == 409
     deps.roles['synthetic-user-a'] = 'user'

@@ -117,11 +117,11 @@ class JudgeSwitch(Body):
 
 
 class DatasetConfig(Body):
-    host: str = Field(min_length=1, max_length=253)
-    port: int = Field(default=3306, ge=1, le=65535)
-    user: str = Field(min_length=1, max_length=128)
-    password: str = Field(default='', max_length=4096)
-    query_url: str = Field(default='', max_length=2048)
+    host: str = Field(title='MySQL 主机', min_length=1, max_length=253)
+    port: int = Field(title='端口', default=3306, ge=1, le=65535)
+    user: str = Field(title='MySQL 用户名', min_length=1, max_length=128)
+    password: str = Field(title='密码', default='', max_length=4096)
+    query_url: str = Field(title='自定义查询入口', default='', max_length=2048)
 
 
 class SourceConnectionTest(Body):
@@ -230,21 +230,22 @@ def create_app(config=None,transport=None):
     @app.exception_handler(RequestValidationError)
     async def validation_handler(request, exc):
         if request.url.path in (f'{prefix}/dataset-settings', f'{prefix}/dataset-settings/test'):
-            labels = {'host': 'MySQL 主机', 'port': '端口', 'user': 'MySQL 用户名',
-                      'password': '密码', 'query_url': '自定义查询入口'}
             issues = []
             for error in exc.errors():
-                field = error['loc'][-1] if error.get('loc') else ''
-                if field not in labels:
+                location = error.get('loc') or ()
+                field = location[-1] if location else ''
+                definition = DatasetConfig.model_fields.get(field)
+                if definition is None:
                     continue
-                kind = error['type']
+                label = definition.title or str(field)
+                kind = error.get('type', '')
                 message = ('端口必须是 1–65535 的整数' if field == 'port' else
-                           '请填写' + labels[field] if kind in ('missing', 'string_too_short') else
-                           labels[field] + '过长，请缩短后重试' if kind == 'string_too_long' else
-                           labels[field] + '格式不正确，请检查')
+                           '请填写' + label if kind in ('missing', 'string_too_short') else
+                           label + '过长，请缩短后重试' if kind == 'string_too_long' else
+                           label + '格式不正确，请检查')
                 issues.append({'field': field, 'message': message})
             # Never echo Pydantic input/context: it may contain the database password.
-            return JSONResponse({'code': 'invalid_input', 'message': '；'.join(v['message'] for v in issues) or '配置格式不正确，请检查表单',
+            return JSONResponse({'code': 'invalid_input', 'message': '；'.join(v.get('message', '') for v in issues) or '配置格式不正确，请检查表单',
                                  'details': {'fields': issues}}, status_code=422)
         return JSONResponse({'code':'invalid_input','message':'输入格式无效，请检查字段'},status_code=422)
 
