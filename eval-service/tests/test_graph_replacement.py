@@ -80,7 +80,8 @@ class Graph:
                     return Result([self.marker] if self.marker else [])
                 if 'MERGE (m:' in query:
                     self.marker = {'run_id': params['run_id'], 'fingerprint': params['fingerprint'],
-                                   'data_fingerprint': params['data_fingerprint']}
+                                   'data_fingerprint': params['data_fingerprint'],
+                                   'type_rule_version': params['type_rule_version']}
                     return Result()
                 scoped = {key for key, node in self.nodes.items()
                           if node.get('evaluation_scope') == params['workspace'] and node.get('knowledge_package_id') == params['ontology']}
@@ -377,6 +378,29 @@ def test_resuming_after_a_later_import_refuses_to_query_replaced_graph_data(envi
         time.sleep(.02)
     assert state['error']['code'] == 'graph_scope_changed'
     assert len(deps.submissions) == count and graph.commits == 1
+
+
+def test_resuming_legacy_typed_graph_requires_new_import_without_deleting(environment, graph):
+    client, app, deps, cfg = environment
+    consumer(deps)
+    query, intent = preparation(client)
+    started = client.post('/evaluation/api/runs', json={**intent, 'graph_check_id': check(client, query)['id'],
+                                                       'replace_existing_graph': True}).json()
+    assert wait(client, started['id'])['status'] == 'completed'
+    owner = Identity(cfg, deps).verify('synthetic-user-a')
+    run = app.state.store.get(owner, started['id'], 'runs')
+    app.state.store.save(owner, started['id'], {**run, 'status': 'interrupted'})
+    graph.marker.pop('type_rule_version')
+    submissions, calls = len(deps.submissions), len(graph.calls)
+    assert client.post(f"/evaluation/api/runs/{started['id']}/resume").status_code == 200
+    for attempt in range(100):
+        state = client.get(f"/evaluation/api/runs/{started['id']}").json()
+        if (state.get('error') or {}).get('code') == 'graph_type_rules_changed':
+            break
+        time.sleep(.02)
+    assert state['error']['code'] == 'graph_type_rules_changed'
+    assert len(deps.submissions) == submissions
+    assert not any('DELETE' in statement for statement, params in graph.calls[calls:])
 
 
 def finish_first_import(client, deps):

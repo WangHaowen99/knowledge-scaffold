@@ -273,7 +273,7 @@ Hub 不可用时发布失败；Hub 已提交、本地关联尚未写入时提示
 
 建模备份包含 `hub-tasks/` 中的主体包关联、冻结发布输入及恢复记录，不保存用户令牌；Hub 卷单独备份。发布门槛继续提示资料分析、对象提取、操作提取和质量检查；示例数据、场景验证及可选步骤不阻塞发布。带发布副作用的 GET `export?scope=package` 已取消，应先 POST 发布，再下载指定版本。
 
-发布前结构自检：发布检查和提交 Hub 前，都会按与正式发布相同的参数导出知识包，再用 consumer 自己的导入规则检查。consumer 导入时会拒绝的包（数量或大小超限、别名冲突、文件名只差大小写、求解布局错误等）列在发布检查的「知识包结构」一栏，不能降级发布；提交时发现问题则返回 `package_structure_invalid`，不会向 Hub 预留版本。规则是 consumer 上游代码的副本，位于 `backend/app/services/consumer_package_rules/`，由人工同步，来源与同步步骤见其中的 `PROVENANCE.md`。部署调整了 consumer 的数量上限时，要在本服务设置同名环境变量：`ONTOLOGY_OBJECT_MAX_COUNT`（默认 200）、`ONTOLOGY_OPERATION_MAX_COUNT`（默认 100）、`ENTITY_ATTRIBUTE_MAX_COUNT`（默认 100）、`ONTOLOGY_OPERATION_MAX_CHARS`（默认 15000）。
+发布前结构自检：发布检查和提交 Hub 前，都会按与正式发布相同的参数导出知识包，再用 consumer 自己的导入规则检查。consumer 导入时会拒绝的包（数量或大小超限、别名冲突、文件名只差大小写、求解布局错误等）列在发布检查的「知识包结构」一栏，不能降级发布；提交时发现问题则返回 `package_structure_invalid`，不会向 Hub 预留版本。规则是 consumer 上游代码的副本，位于 `backend/app/services/consumer_package_rules/`，由人工同步，来源与同步步骤见其中的 `PROVENANCE.md`。部署调整了 consumer 的数量上限时，要在本服务设置同名环境变量：`ONTOLOGY_OBJECT_MAX_COUNT`（默认 1000）、`ONTOLOGY_OPERATION_MAX_COUNT`（默认 500）、`ENTITY_ATTRIBUTE_MAX_COUNT`（默认 300）、`ONTOLOGY_OPERATION_MAX_CHARS`（默认 30000）。环境变量优先于默认值，显式配置的旧上限不会自动提高；建模不会读取 consumer 的 `ops_config.json`，两侧须分别确认生效值一致。Compose 部署可在实际使用的 `.env` 中设置，修改后须重新创建容器，仅 restart 不会更新容器环境。
 
 
 ## 独立评测入口（eval1）
