@@ -860,7 +860,7 @@ def _assert_distinct_flywheel_token(args, merged: dict) -> None:
         raise ConfigError("Evaluation flywheel token is missing")
     try:
         decoded = base64.b64decode(value, validate=True).decode()
-    except (ValueError, UnicodeError):
+    except ValueError:
         raise ConfigError("Evaluation flywheel token is invalid") from None
     if len(decoded.strip()) < 32:
         raise ConfigError("Evaluation flywheel token must contain at least 32 characters")

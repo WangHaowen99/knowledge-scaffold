@@ -608,12 +608,13 @@ def validate_integration_refs(config: dict, consumer_values: dict, modeling_valu
          bool(modeling_values.get("evaluation", {}).get("feedback", {}).get("enabled"))),
     )
     for label, source, target, required in expected:
-        if required and (not source.get("name") or not source.get("key") or
-                         not target.get("name") or not target.get("key")):
+        source_complete = bool(source.get("name") and source.get("key"))
+        target_complete = bool(target.get("name") and target.get("key"))
+        if required and not (source_complete and target_complete):
             raise ConfigError(f"{label} must reference the enabled Consumer credential")
         if not target.get("name"):
             continue
-        if not source.get("name") or not source.get("key"):
+        if not source_complete:
             raise ConfigError(f"{label} has no Consumer source credential")
         reference = target.get("sourceRef")
         if reference and reference != {"namespace": config["consumer"]["namespace"],

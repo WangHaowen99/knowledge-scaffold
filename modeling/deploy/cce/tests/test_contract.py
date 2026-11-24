@@ -1028,9 +1028,9 @@ class CceContractTests(unittest.TestCase):
         consumer = {"global": {"integration": {
             "serviceTokenSecret": {"name": "modeling-source", "key": "token"},
             "evaluationTokenSecret": {"name": "evaluation-source", "key": "token"}}},
-            "hub": {"enabled": True, "baseUrl": "http://modeling-hub.modeling-demo.svc.cluster.local:8200",
+            "hub": {"enabled": True, "baseUrl": "https://modeling-hub.modeling-demo.svc.cluster.local:8200",
                     "tokenSecret": {"name": "hub-source", "key": "token"}},
-            "flywheel": {"evaluationUrl": "http://modeling-evaluation.modeling-demo.svc.cluster.local:5180",
+            "flywheel": {"evaluationUrl": "https://modeling-evaluation.modeling-demo.svc.cluster.local:5180",
                          "tokenSecret": {"name": "feedback-source", "key": "token"}}}
         def local(name, source):
             return {"name": name, "key": "token", "sourceRef": {
@@ -3425,15 +3425,17 @@ class CceContractTests(unittest.TestCase):
         values["evaluation"]["feedback"] = {"enabled": True, "notifyRuns": True}
         values["evaluation"]["secrets"]["flywheelToken"] = {"name": "feedback-credential", "key": "token"}
         jsonschema.validate(values, schema)
-        rendered = subprocess.run(["helm", "template", "modeling-demo", str(ROOT / "chart"),
-                                   "-f", str(ROOT / "values.customer.example.yaml"),
-                                   "--set", "evaluation.feedback.enabled=true,evaluation.feedback.notifyRuns=true",
-                                   "--set", "evaluation.secrets.flywheelToken.name=feedback-credential,evaluation.secrets.flywheelToken.key=token",
-                                   "--set", "global.resolvedImages.ontoModeling=example/onto@sha256:" + "a" * 64,
-                                   "--set", "global.resolvedImages.knowledgeHub=example/hub@sha256:" + "a" * 64,
-                                   "--set", "global.resolvedImages.evaluation=example/eval@sha256:" + "a" * 64,
-                                   "--set", "global.resolvedImages.jiuwenbox=example/box@sha256:" + "a" * 64],
-                                  capture_output=True, text=True, check=True)
+        helm = shutil.which("helm")
+        self.assertIsNotNone(helm)
+        rendered = run_test_command([str(Path(helm).resolve()), "template", "modeling-demo", str(ROOT / "chart"),
+                                     "-f", str(ROOT / "values.customer.example.yaml"),
+                                     "--set", "evaluation.feedback.enabled=true,evaluation.feedback.notifyRuns=true",
+                                     "--set", "evaluation.secrets.flywheelToken.name=feedback-credential,evaluation.secrets.flywheelToken.key=token",
+                                     "--set", "global.resolvedImages.ontoModeling=example/onto@sha256:" + "a" * 64,
+                                     "--set", "global.resolvedImages.knowledgeHub=example/hub@sha256:" + "a" * 64,
+                                     "--set", "global.resolvedImages.evaluation=example/eval@sha256:" + "a" * 64,
+                                     "--set", "global.resolvedImages.jiuwenbox=example/box@sha256:" + "a" * 64],
+                                    capture_output=True, text=True, check=True)
         deployments = [item for item in yaml.safe_load_all(rendered.stdout)
                        if item and item.get("kind") == "Deployment" and item["metadata"]["name"].endswith("-evaluation")]
         env = {item["name"]: item for item in deployments[0]["spec"]["template"]["spec"]["containers"][0]["env"]}
@@ -3511,8 +3513,9 @@ class CceContractTests(unittest.TestCase):
                                              "consumerToken": {"name": "evaluation-consumer", "key": "token"},
                                              "notificationToken": {"name": "notification", "key": "token"}}}}
         other_token = base64.b64encode(b"d" * 40).decode()
-        values = {name: {"type": "Opaque", "data": {"token": other_token}} for name in
-                  ("hub-consumer", "evaluation-consumer", "notification")}
+        values = {}
+        for name in ("hub-consumer", "evaluation-consumer", "notification"):
+            values[name] = {"type": "Opaque", "data": {"token": other_token}}
         values["hub-internal"] = {"type": "Opaque", "data": {"onto": "other", "evaluation": "another"}}
         values["flywheel"] = {"type": "Opaque", "data": {"token": base64.b64encode(b"u" * 40).decode()}}
         with mock.patch.object(INSTALL, "_read_secret", side_effect=lambda _args, name: values[name]):
