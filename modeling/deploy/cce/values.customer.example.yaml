@@ -4,12 +4,9 @@ global:
   imageDelivery:
     pullSecretNames: [default-secret]
   auth:
-    issuer: http://consumer-auth:5056
+    # 独立 Auth 新装示例；issuer/audience 须与 Auth、Consumer values 完全一致。
+    issuer: http://auth-auth:5056
     audience: knowledge-scaffold
-  integration:
-    serviceTokenSecret:
-      name: modeling-integration
-      key: service-token
   access:
     mode: port
     elb:
@@ -22,7 +19,7 @@ global:
       - {id: evaluation, protocol: HTTP, listenerPort: 5180, tlsSecretName: "", host: "", path: /evaluation/, pathType: Prefix, endpointId: evaluation}
 externalAuth:
   apiVersion: auth-v1
-  serviceName: consumer-auth
+  serviceName: auth-auth # 独立 Auth releaseName 为 auth 时；旧内置 Auth 迁移后沿用原 Service 名称。
   namespace: onto-consumer
   servicePort: 5056
 externalConsumer:

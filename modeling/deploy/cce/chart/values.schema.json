@@ -6,7 +6,7 @@
   "properties": {
     "global": {
       "type": "object", "additionalProperties": false,
-      "required": ["clusterFlavor", "targetArch", "imageDelivery", "resolvedImages", "auth", "integration", "access"],
+      "required": ["clusterFlavor", "targetArch", "imageDelivery", "resolvedImages", "auth", "access"],
       "properties": {
         "releaseVersion": {"type": "string"},
         "operationId": {"type": "string"},
@@ -17,7 +17,6 @@
           "ontoModeling": {"$ref": "#/definitions/image"}, "knowledgeHub": {"$ref": "#/definitions/image"}, "evaluation": {"$ref": "#/definitions/image"}, "jiuwenbox": {"$ref": "#/definitions/image"}
         }},
         "auth": {"type": "object", "additionalProperties": false, "required": ["issuer", "audience"], "properties": {"issuer": {"type": "string", "minLength": 1}, "audience": {"type": "string", "minLength": 1}}},
-        "integration": {"type": "object", "additionalProperties": false, "required": ["serviceTokenSecret"], "properties": {"serviceTokenSecret": {"$ref": "#/definitions/importableSecretRef"}}},
         "access": {"type": "object", "additionalProperties": false, "required": ["mode", "elb", "protocol", "listenerPort", "tlsSecretName", "ingressClassName", "routes", "listeners"], "properties": {
           "mode": {"enum": ["host", "port"]},
           "elb": {"type": "object", "additionalProperties": false, "required": ["id"], "properties": {"id": {"type": "string", "minLength": 1}, "class": {"type": "string"}}},

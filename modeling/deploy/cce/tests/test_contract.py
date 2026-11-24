@@ -1035,8 +1035,7 @@ class CceContractTests(unittest.TestCase):
         def local(name, source):
             return {"name": name, "key": "token", "sourceRef": {
                 "namespace": "consumer-demo", "name": source, "key": "token"}}
-        modeling = {"global": {"integration": {"serviceTokenSecret": local("modeling", "modeling-source")}},
-                    "hub": {"secrets": {"consumerToken": local("hub", "hub-source")}},
+        modeling = {"hub": {"secrets": {"consumerToken": local("hub", "hub-source")}},
                     "evaluation": {"feedback": {"enabled": True}, "secrets": {
                         "consumerToken": local("evaluation", "evaluation-source"),
                         "flywheelToken": local("feedback", "feedback-source")}}}
@@ -1068,9 +1067,7 @@ class CceContractTests(unittest.TestCase):
             "evaluationTokenSecret": {"name": "evaluation-source", "key": "evaluation-token"}}},
             "hub": {"enabled": True, "tokenSecret": {"name": "hub-source", "key": "hub-token"}},
             "flywheel": {"tokenSecret": {"name": "flywheel-source", "key": "flywheel-token"}}}
-        original = {"global": {"integration": {"serviceTokenSecret": {
-                        "name": "modeling-integration", "key": "service-token"}}},
-                    "hub": {"secrets": {"consumerToken": {"name": "", "key": ""}}},
+        original = {"hub": {"secrets": {"consumerToken": {"name": "", "key": ""}}},
                     "evaluation": {"feedback": {"enabled": True}, "secrets": {
                         "consumerToken": {"name": "", "key": ""},
                         "flywheelToken": {"name": "", "key": ""}}}}
@@ -1079,17 +1076,13 @@ class CceContractTests(unittest.TestCase):
             config, consumer, self.base / "modeling-effective-values.yaml")
         self.assertEqual(yaml.safe_load(config["modeling"]["values"].read_text()), original)
         for path, local_name, source_name, source_key in (
-            (("global", "integration", "serviceTokenSecret"), "modeling-integration", "integration-source", "service-token"),
             (("hub", "secrets", "consumerToken"), "modeling-hub-consumer", "hub-source", "hub-token"),
             (("evaluation", "secrets", "consumerToken"), "modeling-evaluation-consumer", "evaluation-source", "evaluation-token"),
             (("evaluation", "secrets", "flywheelToken"), "modeling-flywheel-consumer", "flywheel-source", "flywheel-token"),
         ):
             reference = values[path[0]][path[1]][path[2]]
             self.assertEqual(reference["name"], local_name)
-            if path[0] == "global":
-                self.assertNotIn("sourceRef", reference)
-            else:
-                self.assertEqual(reference["sourceRef"], {"namespace": "consumer-demo", "name": source_name, "key": source_key})
+            self.assertEqual(reference["sourceRef"], {"namespace": "consumer-demo", "name": source_name, "key": source_key})
         self.assertEqual(read_yaml(effective["modeling"]["values"]), values)
         disabled = json.loads(json.dumps(original))
         disabled["evaluation"]["feedback"]["enabled"] = False
@@ -1098,6 +1091,31 @@ class CceContractTests(unittest.TestCase):
                          {"name": "", "key": ""})
         self.assertEqual(JOINT.default_consumer_secret_refs(config, consumer, disabled)["evaluation"]["secrets"]["flywheelToken"],
                          {"name": "", "key": ""})
+
+    def test_retired_integration_secret_is_optional_and_legacy_backup_remains_usable(self):
+        schema = json.loads((ROOT / "chart/values.schema.json").read_text())
+        values = INSTALL.merge(yaml.safe_load((ROOT / "chart/values.yaml").read_text()),
+                               yaml.safe_load((ROOT / "values.customer.example.yaml").read_text()))
+        values["global"]["resolvedImages"] = {name: "registry.example.com/app@sha256:" + "a" * 64
+            for name in ("ontoModeling", "knowledgeHub", "evaluation", "jiuwenbox")}
+        import jsonschema
+        jsonschema.validate(values, schema)
+        self.assertNotIn("integration", values["global"])
+        legacy_values = json.loads(json.dumps(values))
+        legacy_values["global"]["integration"] = {"serviceTokenSecret": {"name": "old", "key": "token"}}
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.validate(legacy_values, schema)
+        consumer = {"global": {"integration": {"serviceTokenSecret": {"name": "consumer-owned", "key": "token"}}}}
+        config = {"consumer": {"namespace": "consumer-demo"},
+                  "modeling": {"releaseName": "modeling", "namespace": "modeling-demo"}}
+        self.assertEqual(JOINT.default_consumer_secret_refs(config, consumer, values), values)
+        old = {"global": {"integration": {"serviceTokenSecret": {"name": "modeling-integration", "key": "token"}}}}
+        active = {"modeling-notify": "uid-notify", "modeling-hub-internal": "uid-hub"}
+        recorded = {**active, "modeling-integration": "uid-retired"}
+        self.assertTrue(INSTALL._secret_identities_match(recorded, active, old))
+        self.assertFalse(INSTALL._secret_identities_match({**recorded, "modeling-notify": "changed"}, active, old))
+        self.assertFalse(INSTALL._secret_identities_match({**recorded, "unrelated": "uid"}, active, old))
+        self.assertFalse(INSTALL._secret_identities_match(recorded, active, {}))
 
     def test_modeling_preflight_checks_existing_resources_when_consumer_services_are_deferred(self):
         args = SimpleNamespace(context="synthetic", namespace="modeling-demo", release="modeling")
@@ -1118,16 +1136,14 @@ class CceContractTests(unittest.TestCase):
                 return {"items": [{"metadata": {"labels": {"kubernetes.io/arch": "amd64"}},
                                    "spec": {"unschedulable": False}}]}
             if kind == "service":
-                if rest[0] == "consumer-auth":
+                if rest[0] == merged["externalAuth"]["serviceName"]:
                     return {"spec": {"ports": [{"port": 5056}]}}
                 raise ConfigError("Consumer Service is missing")
             raise AssertionError((verb, kind, rest))
         with mock.patch.object(INSTALL, "kube", side_effect=resource) as calls, \
              mock.patch.object(INSTALL, "validate_auth_owner"), \
              mock.patch.object(INSTALL, "probe_auth_from_modeling"), \
-             mock.patch.object(INSTALL, "_optional_json", side_effect=lambda _args, *argv:
-                               {"type": "Opaque", "data": {"service-token": "synthetic"}}
-                               if argv[-1] == "modeling-integration" else None):
+             mock.patch.object(INSTALL, "_optional_json", return_value=None):
             INSTALL.preflight(args, merged, check_external_services=False)
             self.assertTrue(any(call.args[1:3] == ("get", "service") for call in calls.call_args_list))
             self.assertEqual(sum(call.args[2] == "pvc" for call in calls.call_args_list), 3)
@@ -1139,8 +1155,6 @@ class CceContractTests(unittest.TestCase):
                 return {"spec": {"ports": [{"port": 9999}]}}
             return resource(_args, verb, kind, *rest)
         def present_secret(_args, *argv):
-            if argv[-1] == "modeling-integration":
-                return {"type": "Opaque", "data": {"service-token": "synthetic"}}
             return None
         with mock.patch.object(INSTALL, "kube", side_effect=wrong_port), \
              mock.patch.object(INSTALL, "_optional_json", side_effect=present_secret):
@@ -1148,7 +1162,7 @@ class CceContractTests(unittest.TestCase):
                 INSTALL.preflight(args, merged)
         def ready_service(_args, verb, kind, *rest):
             if kind == "service":
-                return {"spec": {"ports": [{"port": 5056 if rest[0] == "consumer-auth" else 5055}]}}
+                return {"spec": {"ports": [{"port": 5056 if rest[0] == merged["externalAuth"]["serviceName"] else 5055}]}}
             return resource(_args, verb, kind, *rest)
         with mock.patch.object(INSTALL, "kube", side_effect=ready_service), \
              mock.patch.object(INSTALL, "validate_auth_owner"), \
@@ -1178,8 +1192,6 @@ class CceContractTests(unittest.TestCase):
             raise AssertionError((verb, kind, rest))
 
         def optional(_args, *rest):
-            if rest[-1] == "modeling-integration":
-                return {"type": "Opaque", "data": {"service-token": "synthetic"}}
             return None
 
         with mock.patch.object(INSTALL, "kube", side_effect=resource), \
@@ -1191,7 +1203,7 @@ class CceContractTests(unittest.TestCase):
                 INSTALL.preflight(args, merged)
 
         def optional_wrong_port(_args, *rest):
-            if rest[-3:] == ("get", "service", "consumer-auth"):
+            if rest[-3:] == ("get", "service", merged["externalAuth"]["serviceName"]):
                 return {"spec": {"ports": [{"port": 9090}]}}
             return optional(_args, *rest)
 
@@ -3438,7 +3450,6 @@ class CceContractTests(unittest.TestCase):
         feedback_value = base64.b64encode(b"f" * 40).decode()
         source = {"type": "Opaque", "data": {"service-token": source_value}}
         merged = {
-            "global": {"integration": {"serviceTokenSecret": {"name": "integration", "key": "service-token"}}},
             "hub": {"secrets": {"internal": {"name": "hub-keys", "modelingTokenKey": "onto-key",
                                               "evaluationTokenKey": "eval-key"},
                                 "consumerToken": {"name": "", "key": ""}}},
@@ -3451,7 +3462,6 @@ class CceContractTests(unittest.TestCase):
                                        "judgeApiKey": {"name": "", "key": ""},
                                        "sqlConfig": {"name": "", "key": ""}}},
         }
-        saved[(args.namespace, "integration")] = {"type": "Opaque", "data": {"service-token": source_value}}
         def get_secret(_args, name, namespace=None):
             if (namespace or args.namespace, name) == ("consumer-demo", "source"):
                 return source
@@ -3469,6 +3479,7 @@ class CceContractTests(unittest.TestCase):
             first = dict(saved)
             INSTALL.ensure_application_secrets(args, merged)
         self.assertEqual(len(created), 5)
+        self.assertNotIn((args.namespace, "integration"), saved)
         self.assertEqual(saved, first)
         self.assertIn("notify-key", saved[(args.namespace, "custom-notify")]["data"])
         self.assertIn((args.namespace, "hub-keys"), saved)
@@ -3477,14 +3488,12 @@ class CceContractTests(unittest.TestCase):
         self.assertEqual(saved[(args.namespace, "consumer-evaluation")]["data"]["service-token"], source_value)
         self.assertEqual(saved[(args.namespace, "consumer-feedback")]["data"]["feedback-token"], feedback_value)
 
-    def test_hub_internal_tokens_cannot_reuse_modeling_token(self):
+    def test_hub_internal_tokens_must_be_distinct(self):
         args = SimpleNamespace(context="synthetic", namespace="modeling-demo", release="modeling")
-        merged = {"global": {"integration": {"serviceTokenSecret": {"name": "integration", "key": "service-token"}}},
-                  "hub": {"secrets": {"internal": {"name": "custom-hub", "modelingTokenKey": "onto-key",
+        merged = {"hub": {"secrets": {"internal": {"name": "custom-hub", "modelingTokenKey": "onto-key",
                                                     "evaluationTokenKey": "eval-key"}}}}
         def get_secret(_args, name, namespace=None):
-            values = {"custom-hub": {"onto-key": "same", "eval-key": "different"},
-                      "integration": {"service-token": "same"}}
+            values = {"custom-hub": {"onto-key": "same", "eval-key": "same"}}
             data = values.get(name)
             if data is None:
                 raise AssertionError(f"unexpected synthetic Secret: {name}")
@@ -3495,8 +3504,7 @@ class CceContractTests(unittest.TestCase):
 
     def test_flywheel_token_must_differ_from_other_service_tokens(self):
         args = SimpleNamespace(namespace="modeling-demo")
-        merged = {"global": {"integration": {"serviceTokenSecret": {"name": "modeling", "key": "token"}}},
-                  "hub": {"secrets": {"internal": {"name": "hub-internal", "modelingTokenKey": "onto",
+        merged = {"hub": {"secrets": {"internal": {"name": "hub-internal", "modelingTokenKey": "onto",
                                                     "evaluationTokenKey": "evaluation"},
                                       "consumerToken": {"name": "hub-consumer", "key": "token"}}},
                   "evaluation": {"secrets": {"flywheelToken": {"name": "flywheel", "key": "token"},
@@ -3504,7 +3512,7 @@ class CceContractTests(unittest.TestCase):
                                              "notificationToken": {"name": "notification", "key": "token"}}}}
         other_token = base64.b64encode(b"d" * 40).decode()
         values = {name: {"type": "Opaque", "data": {"token": other_token}} for name in
-                  ("modeling", "hub-consumer", "evaluation-consumer", "notification")}
+                  ("hub-consumer", "evaluation-consumer", "notification")}
         values["hub-internal"] = {"type": "Opaque", "data": {"onto": "other", "evaluation": "another"}}
         values["flywheel"] = {"type": "Opaque", "data": {"token": base64.b64encode(b"u" * 40).decode()}}
         with mock.patch.object(INSTALL, "_read_secret", side_effect=lambda _args, name: values[name]):
@@ -3526,7 +3534,6 @@ class CceContractTests(unittest.TestCase):
     def test_precreated_internal_secrets_are_reused_without_create_permission(self):
         args = SimpleNamespace(context="synthetic", namespace="modeling-demo", release="modeling")
         merged = {
-            "global": {"integration": {"serviceTokenSecret": {"name": "integration", "key": "service-token"}}},
             "hub": {"secrets": {"internal": {"name": "custom-hub", "modelingTokenKey": "onto-key",
                                               "evaluationTokenKey": "eval-key"},
                                 "consumerToken": {"name": "", "key": ""}}},
@@ -3540,7 +3547,6 @@ class CceContractTests(unittest.TestCase):
             "custom-hub": {"onto-key": "first", "eval-key": "second"},
             "custom-evaluation": {"fernet-key": "third"},
             "precreated-notify": {"notification-key": "fifth"},
-            "integration": {"service-token": "fourth"},
         }
         def get_secret(_args, name):
             data = secrets.get(name)
@@ -3554,7 +3560,6 @@ class CceContractTests(unittest.TestCase):
     def test_internal_secret_create_failure_requires_precreation(self):
         args = SimpleNamespace(context="synthetic", namespace="modeling-demo", release="modeling")
         merged = {
-            "global": {"integration": {"serviceTokenSecret": {"name": "integration", "key": "service-token"}}},
             "hub": {"secrets": {"internal": {"name": "custom-hub", "modelingTokenKey": "onto-key",
                                               "evaluationTokenKey": "eval-key"},
                                 "consumerToken": {"name": "", "key": ""}}},
@@ -3601,7 +3606,6 @@ class CceContractTests(unittest.TestCase):
     def test_evaluation_secret_source_mismatch_blocks_reuse(self):
         args = SimpleNamespace(context="synthetic", namespace="modeling-demo", release="modeling")
         merged = {
-            "global": {"integration": {"serviceTokenSecret": {"name": "integration", "key": "service-token"}}},
             "hub": {"secrets": {"internal": {"name": "modeling-hub-internal", "modelingTokenKey": "modeling-token",
                                               "evaluationTokenKey": "evaluation-token"},
                                 "consumerToken": {"name": "", "key": ""}}},
@@ -3614,7 +3618,7 @@ class CceContractTests(unittest.TestCase):
             data = {"modeling-hub-internal": {"modeling-token": "a", "evaluation-token": "b"},
                     "modeling-evaluation-internal": {"encryption-key": "c"},
                     "modeling-notify": {"service-token": "e"},
-                    "integration": {"service-token": "d"}, "consumer-evaluation": {"service-token": "old"},
+                    "consumer-evaluation": {"service-token": "old"},
                     "source": {"service-token": "new"}}[name]
             return {"type": "Opaque", "data": data}
         with mock.patch.object(INSTALL, "_read_secret", side_effect=get_secret):

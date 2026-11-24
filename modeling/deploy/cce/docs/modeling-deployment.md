@@ -31,7 +31,6 @@ cd modeling-cce-<版本>-<架构>
 - Auth 与 Consumer 计划使用的命名空间须已创建并可查询；对应 Service 可以稍后创建。若复用一个 namespace，只需预建一次；
 - 三个独立 PVC，分别给 Onto、Hub、Evaluation；从旧版升级时原 Core、Agent PVC 继续保留；
 - Modeling 镜像拉取 Secret；
-- 与 Consumer `global.integration.serviceTokenSecret` 对应的 Modeling Secret。若 Modeling 先装，先在 Modeling namespace 准备并约定同值令牌；Consumer 装好后再核对。Consumer 已安装时也可用 `sourceRef` 导入其源 Secret。当前 Chart 未将这一引用注入 Onto Pod，配置它只完成 Secret 校验与导入；
 - 按启用的连接准备 Consumer → Hub、Evaluation → Consumer、Consumer → Evaluation 三种不同用途的令牌；Modeling 先装时在 Modeling namespace 预建目标 Secret，Consumer 已安装时可受限导入其源 Secret。未启用的连接不需要对应 Secret。Judge Key 按需准备；Hub 内部令牌和评测加密密钥由 Modeling 安装器创建；
 - 填写计划使用的 Auth Service 和 Consumer Backend Service 名称、namespace、端口。首次独立安装时两者可以尚不存在；已有部署的升级、正式预检和 `verify` 仍要求它们就绪。使用用户管理、自助改密或 Hub 成员同步时，还须在 Modeling namespace 预建与实际 Auth 管理令牌同值的 `Opaque` Secret，并在 `modeling.secrets.authAdminToken` 填写名称和 key；
 - 目标架构可调度工作节点；
@@ -68,20 +67,18 @@ global:
 | `global.targetArch` | `amd64` 或 `arm64`，与工作节点一致 |
 | `global.imageDelivery.pullSecretNames` | Modeling 命名空间中的镜像拉取 Secret 名称列表 |
 
-### 3.2 Auth 身份和 Backend 服务令牌
+### 3.2 Auth 身份
 
 ```yaml
 global:
   auth:
     issuer: <AUTH_ISSUER>
     audience: <AUTH_AUDIENCE>
-  integration:
-    serviceTokenSecret:
-      name: <MODELING_SERVICE_TOKEN_SECRET>
-      key: <TOKEN_KEY>
 ```
 
-示例文件中的 `global.auth.issuer/audience` 须按实际 Auth 签发身份核对。Auth 尚未安装时先约定这两项，Auth 装好后必须与实际签发的 JWT `iss`、`aud` 一致。`issuer` 是验签身份，不是 Modeling Pod 访问 Auth Service 的地址。`global.integration.serviceTokenSecret` 是与 Consumer 预先约定的服务令牌引用；先装 Modeling 时目标 Secret 必须已在 Modeling namespace 存在，不要引用尚未创建的 Consumer 源 Secret。Consumer 已安装时，可为该项添加实际源 Secret 的 `sourceRef`；单独安装器不会从 Consumer values 自动推导。当前 Modeling Chart 没有把此令牌注入 Onto Pod；安装器对它进行校验或导入，不能将该配置视为 Modeling → Consumer 服务令牌调用已完成验收。
+示例文件中的 `global.auth.issuer/audience` 须按实际 Auth 签发身份核对。Auth 尚未安装时先约定这两项，Auth 装好后必须与实际签发的 JWT `iss`、`aud` 一致。`issuer` 是验签身份，不是 Modeling Pod 访问 Auth Service 的地址。Consumer 仍持有自己的 `global.integration.serviceTokenSecret`，用于保护其 Modeling 专用接口；当前 Onto 未调用这些接口，Modeling 部署不再需要该令牌的副本。
+
+从旧版 Modeling CCE 升级时，须从包外 `modeling-values.yaml` 删除原 `global.integration` 段；新 Chart 不再接受该字段。原 Modeling namespace 中的集成 Secret 不会被安装器删除，确认没有其他使用者后可按集群管理流程处理。
 
 Onto Modeling 使用 Auth 管理接口时，客户 values 示例默认引用 `authAdminToken: {name: modeling-auth-client, key: admin-token}`。Chart 将它注入为 `ONTO_WEB_AUTH_ADMIN_TOKEN`；该 Secret 必须预建在 Modeling namespace，值与 Auth owner 实际管理令牌相同，安装器不会自动创建。安装器会比较两侧 Secret 的值，不一致时在升级前停止。用户管理、自助改密和 Hub 成员同步依赖此令牌；普通登录和 JWT 验签无需该令牌。无需管理功能时可将 `name`、`key` 都改为空字符串。
 
@@ -211,16 +208,15 @@ modeling:
 
 `hub.secrets.internal` 配置同一个 Opaque Secret 的名称及 Modeling、Evaluation 各自使用的 key；`evaluation.secrets.encryptionKey` 配置另一个 Opaque Secret 的名称和 key。它们只填写引用，不填写密钥正文。安装器在 Helm 写入前自动创建缺失的内部 Secret，已有且完整的对象直接复用。如果安装器没有创建 Secret 的权限，平台管理员应先在 Modeling Namespace 创建与 values 中名称和 key 一致的对象；安装器仍需读取权限以校验和复用。创建失败且对象仍不存在时，安装会在 Helm 之前停止。升级已有 Hub/Evaluation 时不能更换内部 Secret 名称或 key；评测已有数据而原加密 Secret 缺失时，须恢复原密钥，不能重新生成。
 
-跨侧令牌在两侧 values 中各有一个引用，Secret 不能跨 namespace 直接引用：
+当前实际使用的跨侧令牌在两侧 values 中各有一个引用，Secret 不能跨 namespace 直接引用：
 
 | Modeling 中的目标引用 | 对应 Consumer 源引用 | 何时需要 |
 | --- | --- | --- |
-| `global.integration.serviceTokenSecret` | `global.integration.serviceTokenSecret` | 当前安装器校验或导入的集成 Secret；单独部署时目标须存在或有可读取的源引用 |
 | `hub.secrets.consumerToken` | `hub.tokenSecret` | Consumer 启用 Hub 时 |
 | `evaluation.secrets.consumerToken` | `global.integration.evaluationTokenSecret` | Consumer 配置评测调用令牌时 |
 | `evaluation.secrets.flywheelToken` | `flywheel.tokenSecret` | Modeling 开启 `evaluation.feedback.enabled`、接收 Consumer 反馈时 |
 
-后三项在客户 values 模板中是空引用，Chart 也默认为空；保持空值表示不使用该连接。仅把配置行注释掉也会采用 Chart 的空默认值，不会自动填入固定名称。**单独安装器不会读取 Consumer values 或推导这三项。**填写后，`name/key` 指向 Modeling namespace 中的目标 Secret；目标不存在时，可加完整 `sourceRef` 从 Consumer namespace 导入。导入要求部署身份能读取源 Secret、创建目标 Secret。有 `sourceRef` 且目标已存在时，安装器会核对源、目标 key 的值；无源读取权限时，预建同值目标 Secret 并不填写 `sourceRef`，但安装器无法比较两侧值。升级时沿用原引用和值。
+这三项在客户 values 模板中是空引用，Chart 也默认为空；保持空值表示不使用该连接。仅把配置行注释掉也会采用 Chart 的空默认值，不会自动填入固定名称。**单独安装器不会读取 Consumer values 或推导这三项。**填写后，`name/key` 指向 Modeling namespace 中的目标 Secret；目标不存在时，可加完整 `sourceRef` 从 Consumer namespace 导入。导入要求部署身份能读取源 Secret、创建目标 Secret。有 `sourceRef` 且目标已存在时，安装器会核对源、目标 key 的值；无源读取权限时，预建同值目标 Secret 并不填写 `sourceRef`，但安装器无法比较两侧值。升级时沿用原引用和值。
 
 例如 Consumer 已在 `consumer-demo` namespace 中使用 `flywheel.tokenSecret: {name: consumer-flywheel-credentials, key: service-token}`，Modeling 可在包外 values 中填写：
 

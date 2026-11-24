@@ -13,10 +13,6 @@ global:
   auth:
     issuer: ""
     audience: ""
-  integration:
-    serviceTokenSecret:
-      name: ""
-      key: ""
   access:
     mode: port
     elb:

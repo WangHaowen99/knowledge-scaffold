@@ -61,7 +61,7 @@ export JOINT_DIR=/path/to/cce-joint-customer  # 改为部署机上的实际绝�
 export CONSUMER_REPO_DIR=/path/to/consumer-repository  # 包含 consumer/deploy/ 的仓库根目录
 cd "$CONSUMER_REPO_DIR"
 bash consumer/deploy/build_cce_release.sh --version "$CONSUMER_VERSION" --arch "$ARCH" --cpu-level v1
-bash consumer/deploy/build_auth_release.sh --version "$AUTH_VERSION" --arch "$ARCH"  # 两方部署跳过此行
+bash consumer/deploy/build_auth_release.sh --version "$AUTH_VERSION" --arch "$ARCH"
 ```
 
 Modeling、Hub、Evaluation 在 Modeling 仓库根目录执行：
@@ -78,7 +78,7 @@ bash modeling/deploy/cce/build-offline.sh "$MODELING_VERSION" "$ARCH"
 
 ```bash
 export CONSUMER_PACKAGE_SOURCE="/path/to/consumer-cce-${CONSUMER_VERSION}-${ARCH}.tar.gz"
-export AUTH_PACKAGE_SOURCE="/path/to/onto-auth-${AUTH_VERSION}-${ARCH}.tar.gz"  # 两方部署跳过此行，并确保此变量未设置
+export AUTH_PACKAGE_SOURCE="/path/to/onto-auth-${AUTH_VERSION}-${ARCH}.tar.gz"
 export MODELING_PACKAGE_SOURCE="/path/to/modeling-cce-${MODELING_VERSION}-${ARCH}.tar.gz"
 mkdir -p "$JOINT_DIR"
 cp "$CONSUMER_PACKAGE_SOURCE" "$JOINT_DIR/"
@@ -248,7 +248,7 @@ cp -n "modeling-cce-${MODELING_VERSION}-${ARCH}/deploy/values.customer.example.y
 
 用 `vi "$JOINT_DIR/modeling-values.yaml"` 编辑包外文件。以下片段说明关键字段，**不要用片段覆盖整个模板**，否则会丢失 Chart 需要的配置：
 
-先从独立 Auth 的包外 `auth-values.yaml`（新装）或已安装 Auth release 的 values（迁移和升级）确认 `issuer/audience`。新装的 Service 名称由 Auth releaseName 决定；迁移和升级则从独立 Auth 实际 Service 确认名称、namespace 和端口。Modeling 示例模板中的 `http://consumer-auth:5056`、`knowledge-scaffold`、`consumer-auth` 只是默认示例，须按独立 Auth 配置替换。`issuer` 是 JWT 的 `iss`，不用于跨命名空间访问；Modeling 通过 `externalAuth` 访问 Auth Service。`externalConsumer` 配置 Evaluation 访问 Consumer Backend 的 Service 地址；它不会给 Onto Pod 注入 Consumer 服务令牌。
+先从独立 Auth 的包外 `auth-values.yaml`（新装）或已安装 Auth release 的 values（迁移和升级）确认 `issuer/audience`。新装的 Service 名称由 Auth releaseName 决定；迁移和升级则从独立 Auth 实际 Service 确认名称、namespace 和端口。Modeling 模板中的 `http://auth-auth:5056`、`knowledge-scaffold` 是身份示例，`auth-auth` 是独立 Auth release 名为 `auth` 时的 Service 名；三者都须按实际部署核对。旧内置 Auth 迁移后，`serviceName` 应保留原 Consumer Auth Service 名称。`issuer` 是 JWT 的 `iss`，不用于跨命名空间访问；Modeling 通过 `externalAuth` 访问 Auth Service。`externalConsumer` 配置 Evaluation 访问 Consumer Backend 的 Service 地址；它不会给 Onto Pod 注入 Consumer 服务令牌。
 
 ```yaml
 global:
@@ -260,10 +260,6 @@ global:
   imageDelivery:
     pullSecretNames:
       - <MODELING_IMAGE_PULL_SECRET>
-  integration:
-    serviceTokenSecret:
-      name: <MODELING_SERVICE_TOKEN_SECRET>
-      key: <TOKEN_KEY>
 
 externalAuth:
   apiVersion: auth-v1
@@ -279,26 +275,12 @@ externalConsumer:
 
 新装 Auth 的 Service 通常为 `<AUTH_RELEASE>-auth`；旧内置 Auth 完成所有权迁移后仍是独立 Auth，但 Service 沿用原 `<CONSUMER_RELEASE>-auth` 名称和 UID。Modeling 的 `externalAuth` 始终按独立 Auth 当前实际 Service 填写。联合安装器还会校验 Consumer 客户端指向同一个 Auth Service；这只是两侧引用一致性校验。
 
-`global.integration.serviceTokenSecret` 的目标 Secret 应与 Consumer Backend 使用的同用途令牌同值。可在 Modeling namespace 预建目标 Secret；也可在该引用下增加 `sourceRef: {namespace: <CONSUMER_NAMESPACE>, name: <Consumer源Secret>, key: <源key>}`，让 Modeling 安装器受限读取并创建目标 Secret。值不写入 YAML。显式配置目标且不带 `sourceRef` 时，联合入口只核对引用完整，**不会比较它与 Consumer 源 Secret 的值**；须自行核对同值。当前 Modeling Chart 没有将这一令牌注入 Onto Pod；安装器只校验或导入该 Secret，不能把配置完成当作 Modeling → Consumer 业务调用已验证。
-
-例如 Consumer values 中的源 Secret 为 `integration-credentials`、key 为 `service-token`，Consumer namespace 为 `onto-consumer` 时，在 **Modeling values 原有的** `global.integration.serviceTokenSecret` 项下添加：
-
-```yaml
-global:
-  integration:
-    serviceTokenSecret:
-      name: modeling-integration
-      key: service-token
-      sourceRef: {namespace: onto-consumer, name: integration-credentials, key: service-token}
-```
-
-以上只是该字段的填写示例，不要用它覆盖整个 values。执行安装器的身份需要读取 Consumer namespace 中这个源 Secret、在 Modeling namespace 创建目标 Secret 的权限；没有读取权限时先在 Modeling namespace 手工创建同值目标 Secret，再删去 `sourceRef`。
+Consumer 的 `global.integration.serviceTokenSecret` 仍由 Consumer 安装器生成并注入 Backend，用于保护其 Modeling 专用接口。当前 Modeling 运行时不调用这些接口，联合部署不再把这个令牌复制到 Modeling namespace。升级已有 Modeling release 时，从包外 `modeling-values.yaml` 删除旧 `global.integration` 段；新 Chart 不再接受该字段。旧目标 Secret 留在集群中，不再被新 Chart 引用；旧备份记录中这一项允许缺席，其余仍使用的 Secret 身份照常校验。
 
 联合入口按以下条件从 Consumer values 推导 Modeling 的跨侧 Secret 引用；它不会凭空生成固定的 Consumer 源名称：
 
 | Modeling 目标引用 | Consumer 源引用 | 自动补齐条件 | 目标 Secret 默认名称 |
 | --- | --- | --- | --- |
-| `global.integration.serviceTokenSecret` | `global.integration.serviceTokenSecret` | 源已填写且 Modeling 目标引用为空 | `<Modeling release>-integration` |
 | `hub.secrets.consumerToken` | `hub.tokenSecret` | `hub.enabled: true`，源已填写且目标为空 | `<Modeling release>-hub-consumer` |
 | `evaluation.secrets.consumerToken` | `global.integration.evaluationTokenSecret` | Consumer 源名称已填写，源 key 完整且目标为空 | `<Modeling release>-evaluation-consumer` |
 | `evaluation.secrets.flywheelToken` | `flywheel.tokenSecret` | Modeling 的 `evaluation.feedback.enabled: true`，源已填写且目标为空 | `<Modeling release>-flywheel-consumer` |

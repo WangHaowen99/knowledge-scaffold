@@ -596,10 +596,7 @@ def validate_cross_side(config, packages, consumer_values, modeling_values, comb
 def validate_integration_refs(config: dict, consumer_values: dict, modeling_values: dict) -> None:
     """Check which Consumer credential each Modeling import reads."""
     integration = consumer_values.get("global", {}).get("integration", {})
-    modeling_integration = modeling_values.get("global", {}).get("integration", {}).get("serviceTokenSecret", {})
     expected = (
-        ("global.integration.serviceTokenSecret", integration.get("serviceTokenSecret", {}),
-         modeling_integration, bool(integration.get("serviceTokenSecret") or modeling_integration)),
         ("hub.secrets.consumerToken", consumer_values.get("hub", {}).get("tokenSecret", {}),
          modeling_values.get("hub", {}).get("secrets", {}).get("consumerToken", {}),
          consumer_values.get("hub", {}).get("enabled", False)),
@@ -645,8 +642,6 @@ def default_consumer_secret_refs(config: dict, consumer_values: dict, modeling_v
     result = copy.deepcopy(modeling_values)
     integration = consumer_values.get("global", {}).get("integration", {})
     references = (
-        (integration.get("serviceTokenSecret", {}), ("global", "integration", "serviceTokenSecret"),
-         "integration", True),
         (consumer_values.get("hub", {}).get("tokenSecret", {}), ("hub", "secrets", "consumerToken"),
          "hub-consumer", consumer_values.get("hub", {}).get("enabled", False)),
         (integration.get("evaluationTokenSecret", {}), ("evaluation", "secrets", "consumerToken"),
