@@ -10,7 +10,7 @@ global:
   access:
     mode: port
     elb:
-      id: example-elb-id
+      id: example-elb-id # 部署时改为实际使用的 ELB ID。
       class: performance
     protocol: HTTP
     listenerPort: 80
