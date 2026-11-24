@@ -61,7 +61,7 @@ export JOINT_DIR=/path/to/cce-joint-customer  # 改为部署机上的实际绝�
 export CONSUMER_REPO_DIR=/path/to/consumer-repository  # 包含 consumer/deploy/ 的仓库根目录
 cd "$CONSUMER_REPO_DIR"
 bash consumer/deploy/build_cce_release.sh --version "$CONSUMER_VERSION" --arch "$ARCH" --cpu-level v1
-bash consumer/deploy/build_auth_release.sh --version "$AUTH_VERSION" --arch "$ARCH"
+bash consumer/deploy/build_auth_release.sh --version "$AUTH_VERSION" --arch "$ARCH"  # 两方部署跳过此行
 ```
 
 Modeling、Hub、Evaluation 在 Modeling 仓库根目录执行：
@@ -78,11 +78,11 @@ bash modeling/deploy/cce/build-offline.sh "$MODELING_VERSION" "$ARCH"
 
 ```bash
 export CONSUMER_PACKAGE_SOURCE="/path/to/consumer-cce-${CONSUMER_VERSION}-${ARCH}.tar.gz"
-export AUTH_PACKAGE_SOURCE="/path/to/onto-auth-${AUTH_VERSION}-${ARCH}.tar.gz"
+export AUTH_PACKAGE_SOURCE="/path/to/onto-auth-${AUTH_VERSION}-${ARCH}.tar.gz"  # 两方部署跳过此行，并确保此变量未设置
 export MODELING_PACKAGE_SOURCE="/path/to/modeling-cce-${MODELING_VERSION}-${ARCH}.tar.gz"
 mkdir -p "$JOINT_DIR"
 cp "$CONSUMER_PACKAGE_SOURCE" "$JOINT_DIR/"
-cp "$AUTH_PACKAGE_SOURCE" "$JOINT_DIR/"
+if [ -n "${AUTH_PACKAGE_SOURCE:-}" ]; then cp "$AUTH_PACKAGE_SOURCE" "$JOINT_DIR/"; fi
 cp "$MODELING_PACKAGE_SOURCE" "$JOINT_DIR/"
 ```
 
@@ -111,11 +111,11 @@ cce-joint-customer/
 ```bash
 cd "$JOINT_DIR"
 tar -xzf "consumer-cce-${CONSUMER_VERSION}-${ARCH}.tar.gz"
-tar -xzf "onto-auth-${AUTH_VERSION}-${ARCH}.tar.gz"
+if [ -n "${AUTH_PACKAGE_SOURCE:-}" ]; then tar -xzf "onto-auth-${AUTH_VERSION}-${ARCH}.tar.gz"; fi
 tar -xzf "modeling-cce-${MODELING_VERSION}-${ARCH}.tar.gz"
 (cd "consumer-cce-${CONSUMER_VERSION}-${ARCH}" && sha256sum -c checksums.sha256)
 (cd "modeling-cce-${MODELING_VERSION}-${ARCH}" && sha256sum -c checksums.sha256)
-cp -n "onto-auth-${AUTH_VERSION}-${ARCH}/cce/auth-values.example.yaml" auth-values.yaml
+if [ -n "${AUTH_PACKAGE_SOURCE:-}" ]; then cp -n "onto-auth-${AUTH_VERSION}-${ARCH}/cce/auth-values.example.yaml" auth-values.yaml; fi
 ```
 
 校验失败时停止。Auth 包的文件清单和 SHA256 由联合入口在执行时验证。后续复制模板的命令在 `JOINT_DIR` 中执行；仅执行联合入口时进入 Modeling 解压目录。升级时另行解压并校验新包，保留旧包和包外配置，不用旧模板覆盖已编辑文件。
@@ -140,7 +140,7 @@ Auth 和 Consumer 是**同一 Consumer namespace 中的两个 Helm release**；M
 | Consumer 客户端凭据 | 在 Consumer namespace 准备管理接口令牌 `Opaque` Secret，填 `consumer.authAdminTokenSecret`；其值须与 Auth 管理令牌一致 | 保留引用与值 | 从旧配置核对并沿用；不得将 bootstrap 密码放入 Consumer 客户端 Secret |
 | Modeling 客户端凭据 | 使用建模用户管理、自助改密或 Hub 成员同步时，在 Modeling namespace 准备与独立 Auth 管理令牌同值的 `Opaque` Secret，填 `modeling.secrets.authAdminToken` | 保留与 Auth 管理令牌一致的值 | 沿用 Auth 实际管理令牌；如原 CCE 未注入，升级时补齐 Secret 引用并验证功能 |
 | 镜像拉取 Secret | Consumer namespace 中准备能拉取 Auth、Consumer 镜像的 `kubernetes.io/dockerconfigjson` Secret；Modeling namespace 另备可拉取 Modeling、JiuwenBox 镜像的同类 Secret | 保留并核对新 digest 可拉取 | 同左，另保留旧 Auth digest 供恢复 |
-| 业务 Secret | Consumer 安装器按 values 中启用的用途初始化建模调用、MCP、Hub、评测和飞轮令牌；联合入口按条件补齐 Modeling 跨侧引用并导入源 Secret。Auth、TLS 和其他外部凭据仍需按各自要求准备 | 保留原引用与值；新增连接时核对两侧用途和 Secret 来源 | 保留原引用与值；新增连接时核对两侧用途和 Secret 来源 |
+| 业务 Secret | Consumer 安装器按 values 中的凭据引用初始化建模调用、MCP 及已配置的 Hub、评测和飞轮令牌；联合入口按条件补齐 Modeling 跨侧引用并导入源 Secret。Auth、TLS 和其他外部凭据仍需按各自要求准备 | 保留原引用与值；新增连接时核对两侧用途和 Secret 来源 | 保留原引用与值；新增连接时核对两侧用途和 Secret 来源 |
 | 节点和入口 | 与三份包架构一致的可调度节点；ELB 和互不冲突的监听端口 | 核对目标镜像架构和端口 | 核对旧 Auth 原 Service 名称、端口和 UID；迁移沿用它们 |
 | 快照能力 | 首装不创建升级快照；建议提前配置 Auth 的 `authSnapshotClass` 和 Consumer 的 `runtimeSnapshotClass` | Auth、Consumer、Modeling 升级前须有 VolumeSnapshot CRD、CSI 驱动、匹配源卷的 VolumeSnapshotClass 与权限 | **执行迁移前**原 Consumer 已安装 values 须有可用的 `authSnapshotClass`；业务升级还需 Consumer runtime、Modeling 各卷的快照能力 |
 
@@ -248,7 +248,7 @@ cp -n "modeling-cce-${MODELING_VERSION}-${ARCH}/deploy/values.customer.example.y
 
 用 `vi "$JOINT_DIR/modeling-values.yaml"` 编辑包外文件。以下片段说明关键字段，**不要用片段覆盖整个模板**，否则会丢失 Chart 需要的配置：
 
-先从独立 Auth 的包外 `auth-values.yaml`（新装）或已安装 Auth release 的 values（迁移和升级）确认 `issuer/audience`。新装的 Service 名称由 Auth releaseName 决定；迁移和升级则从独立 Auth 实际 Service 确认名称、namespace 和端口。Modeling 示例模板中的 `http://consumer-auth:5056`、`knowledge-scaffold`、`consumer-auth` 只是默认示例，须按独立 Auth 配置替换。`issuer` 是 JWT 的 `iss`，不用于跨命名空间访问；Modeling 通过 `externalAuth` 访问 Auth Service。`externalConsumer` 只配置 Modeling 调用 Consumer Backend 的独立链路。
+先从独立 Auth 的包外 `auth-values.yaml`（新装）或已安装 Auth release 的 values（迁移和升级）确认 `issuer/audience`。新装的 Service 名称由 Auth releaseName 决定；迁移和升级则从独立 Auth 实际 Service 确认名称、namespace 和端口。Modeling 示例模板中的 `http://consumer-auth:5056`、`knowledge-scaffold`、`consumer-auth` 只是默认示例，须按独立 Auth 配置替换。`issuer` 是 JWT 的 `iss`，不用于跨命名空间访问；Modeling 通过 `externalAuth` 访问 Auth Service。`externalConsumer` 配置 Evaluation 访问 Consumer Backend 的 Service 地址；它不会给 Onto Pod 注入 Consumer 服务令牌。
 
 ```yaml
 global:
@@ -279,7 +279,7 @@ externalConsumer:
 
 新装 Auth 的 Service 通常为 `<AUTH_RELEASE>-auth`；旧内置 Auth 完成所有权迁移后仍是独立 Auth，但 Service 沿用原 `<CONSUMER_RELEASE>-auth` 名称和 UID。Modeling 的 `externalAuth` 始终按独立 Auth 当前实际 Service 填写。联合安装器还会校验 Consumer 客户端指向同一个 Auth Service；这只是两侧引用一致性校验。
 
-`global.integration.serviceTokenSecret` 必须与 Consumer Backend 当前使用的服务令牌值一致。可在 Modeling namespace 预建目标 Secret；也可在该引用下增加 `sourceRef: {namespace: <CONSUMER_NAMESPACE>, name: <Consumer源Secret>, key: <源key>}`，让 Modeling 安装器受限读取并创建目标 Secret。值不写入 YAML。
+`global.integration.serviceTokenSecret` 的目标 Secret 应与 Consumer Backend 使用的同用途令牌同值。可在 Modeling namespace 预建目标 Secret；也可在该引用下增加 `sourceRef: {namespace: <CONSUMER_NAMESPACE>, name: <Consumer源Secret>, key: <源key>}`，让 Modeling 安装器受限读取并创建目标 Secret。值不写入 YAML。显式配置目标且不带 `sourceRef` 时，联合入口只核对引用完整，**不会比较它与 Consumer 源 Secret 的值**；须自行核对同值。当前 Modeling Chart 没有将这一令牌注入 Onto Pod；安装器只校验或导入该 Secret，不能把配置完成当作 Modeling → Consumer 业务调用已验证。
 
 例如 Consumer values 中的源 Secret 为 `integration-credentials`、key 为 `service-token`，Consumer namespace 为 `onto-consumer` 时，在 **Modeling values 原有的** `global.integration.serviceTokenSecret` 项下添加：
 
@@ -303,9 +303,9 @@ global:
 | `evaluation.secrets.consumerToken` | `global.integration.evaluationTokenSecret` | Consumer 源名称已填写，源 key 完整且目标为空 | `<Modeling release>-evaluation-consumer` |
 | `evaluation.secrets.flywheelToken` | `flywheel.tokenSecret` | Modeling 的 `evaluation.feedback.enabled: true`，源已填写且目标为空 | `<Modeling release>-flywheel-consumer` |
 
-补齐时目标 key 沿用源 key，并加 `sourceRef` 指向实际 Consumer namespace、源 Secret 名称和 key。联合安装先执行 Consumer，再执行 Modeling，因此 Consumer 已按其 values 初始化所需业务令牌后，Modeling 才导入同值令牌。三种可选连接使用不同用途的令牌。Modeling 模板中这三项保留空引用；即使把它们注释掉，Chart 默认值仍为空，联合入口在满足条件时也能自动补齐。不满足条件时保持为空，不要求额外 Secret。
+补齐时目标 key 沿用源 key，并加 `sourceRef` 指向实际 Consumer namespace、源 Secret 名称和 key。目标名称中的 Modeling release 部分取名称前 42 个字符并去除末尾连字符，名称较长时以实际生成结果为准。联合安装先执行 Consumer，再执行 Modeling，因此 Consumer 已按其 values 初始化所需业务令牌后，Modeling 才导入同值令牌。三种可选连接使用不同用途的令牌。Modeling 模板中这三项保留空引用；即使把它们注释掉，Chart 默认值仍为空，联合入口在满足条件时也能自动补齐。不满足条件时保持为空，不要求额外 Secret。
 
-若 Modeling 目标已显式填写 `name/key`，联合入口会保留原值，**不会自动增加 `sourceRef`**；目标 Secret 须事先存在，或者在包外 values 中显式写入与 Consumer 实际源一致的 `sourceRef`。联合入口会核对已有 `sourceRef` 的 namespace、源名称与 key。目标 Secret 已存在时，Modeling 安装器还会核对源、目标的值；没有跨 namespace 读取权限时，可预建同值目标 Secret 并省略 `sourceRef`。如先单独部署 Modeling，单独安装器不会读取 Consumer values，必须自行准备对应的目标 Secret 和引用。
+若 Modeling 目标已显式填写 `name/key`，联合入口会保留原值，**不会自动增加 `sourceRef`**；目标 Secret 须事先存在，或者在包外 values 中显式写入与 Consumer 实际源一致的 `sourceRef`。联合入口会核对已有 `sourceRef` 的 namespace、源名称与 key；有 `sourceRef` 且目标 Secret 已存在时，Modeling 安装器还会核对源、目标的值。没有跨 namespace 读取权限时，可预建同值目标 Secret 并省略 `sourceRef`，但此时安装器不比较两侧值。如先单独部署 Modeling，单独安装器不会读取 Consumer values，必须自行准备对应的目标 Secret 和引用。
 
 例如，只有在 Consumer values 确实使用 `consumer-demo` namespace、`flywheel.tokenSecret: {name: consumer-flywheel-credentials, key: service-token}`，且已配置反馈地址时，Modeling 才可显式填写以下引用：
 
@@ -492,7 +492,7 @@ modeling:
 | `modeling.namespace` | Modeling 命名空间 |
 | `modeling.values/resolvedImages` | 第 4、5.2 节准备的两个包外文件 |
 
-当前联合入口要求 Auth 与 Consumer 在同一 namespace，且 Helm release 名称不同；Modeling release 的名称与 namespace 组合也不能与前两者冲突。Consumer、Modeling 各自的 `issuer/audience` 和 `externalAuth` 须与独立 Auth 的身份、实际 Service 一致；联合入口会再核对两侧引用一致。所有路径都相对于 **`deployment.customer.yaml` 所在目录**解析，不是相对于当前 shell 目录。首次安装时 `compatibility-verified.yaml` 尚不存在是正常的，第 7 节会生成它。
+当前联合入口要求 Auth 与 Consumer 在同一 namespace，且 Helm release 名称不同；Modeling release 的名称与 namespace 组合也不能与前两者冲突。Consumer 的 Service 名称由 Chart 将 release 名截到前 40 个字符后生成，而联合入口按完整 release 名校验 Backend Service 引用；为避免两者不一致，联合部署的 Consumer release 名请控制在 40 个字符以内。Consumer、Modeling 各自的 `issuer/audience` 和 `externalAuth` 须与独立 Auth 的身份、实际 Service 一致；联合入口会再核对两侧引用一致。所有路径都相对于 **`deployment.customer.yaml` 所在目录**解析，不是相对于当前 shell 目录。首次安装时 `compatibility-verified.yaml` 尚不存在是正常的，第 7 节会生成它。
 
 ## 7. 生成 `compatibility-verified.yaml`
 
@@ -588,10 +588,10 @@ bash deploy/install-consumer-modeling.sh cce status \
 
 三方空环境直接运行上述 `install`，由联合入口先创建 Auth。两方部署若已单独安装 Auth，可以在 `install` 前执行 `preflight`。各命令的作用：
 
-1. `plan`：校验三份包、镜像映射、兼容性组合、三侧 Auth 引用与身份，并渲染检查；
+1. `plan`：校验三份包、镜像映射、兼容性组合、三侧 Auth 引用与身份，并渲染检查；会写入包外渲染文件，但不检查集群中的 Secret 或创建 Kubernetes 资源；
 2. `preflight`：检查集群、Secret、PVC、节点、Consumer 端点和 ELB 端口；三方空环境的 Auth 尚不存在，先运行 `install`；
 3. `install`：三方配置先安装 Auth，再安装 Consumer；联合入口在配置的 `timeoutSeconds` 内等待 Consumer 工作负载就绪，通过严格验证后才安装 Modeling。超时会指出未就绪的 Deployment，核对 Pod 状态后使用原操作 ID 续跑；两方配置沿用 Consumer → Modeling；
-4. `verify`：验证两侧工作负载、内部健康接口和 JiuwenBox 连接；
+4. `verify`：调用两侧安装器核对工作负载和各自健康检查；Modeling 会检查 sandbox-gateway 的健康接口，跨侧业务调用仍按第 12 节验收；
 5. `status`：读取两侧 Helm release 的状态和 Chart；三方配置同时核对 Auth owner 状态。
 
 每一步都应输出 `status: succeeded`。失败时保留 `customer-state`，不要立即删除一侧 release 或 PVC。
@@ -717,7 +717,7 @@ bash deploy/install-consumer-modeling.sh cce upgrade \
 
 ## 12. 联合验收
 
-将以下三个变量改为 `deployment.customer.yaml` 中的实际值，再执行验收命令：
+将以下变量改为 `deployment.customer.yaml` 和已安装 Auth release 中的实际值，再执行验收命令：
 
 ```bash
 export KUBE_CONTEXT=customer-demo

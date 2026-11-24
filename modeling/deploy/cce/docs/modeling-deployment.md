@@ -14,7 +14,7 @@ modeling-cce-customer/
 └── cce-state/
 ```
 
-解压离线包后，命令从解压目录的 `deploy/` 下执行：
+解压离线包后，进入解压目录根目录执行下文的 `bash deploy/install-cce.sh` 命令：
 
 ```bash
 tar -xzf modeling-cce-<版本>-<架构>.tar.gz
@@ -25,13 +25,13 @@ cd modeling-cce-<版本>-<架构>
 
 ## 2. CCE 侧前置资源
 
-在执行安装器前准备：
+在执行集群预检或安装前准备：
 
 - Modeling 命名空间；
 - Auth 与 Consumer 计划使用的命名空间须已创建并可查询；对应 Service 可以稍后创建。若复用一个 namespace，只需预建一次；
 - 三个独立 PVC，分别给 Onto、Hub、Evaluation；从旧版升级时原 Core、Agent PVC 继续保留；
 - Modeling 镜像拉取 Secret；
-- Modeling 调用 Consumer Backend 的服务令牌 Secret。若 Modeling 先装，先在 Modeling namespace 准备并约定同值令牌；Consumer 装好后再核对。Consumer 已安装时也可用 `sourceRef` 导入其源 Secret；
+- 与 Consumer `global.integration.serviceTokenSecret` 对应的 Modeling Secret。若 Modeling 先装，先在 Modeling namespace 准备并约定同值令牌；Consumer 装好后再核对。Consumer 已安装时也可用 `sourceRef` 导入其源 Secret。当前 Chart 未将这一引用注入 Onto Pod，配置它只完成 Secret 校验与导入；
 - 按启用的连接准备 Consumer → Hub、Evaluation → Consumer、Consumer → Evaluation 三种不同用途的令牌；Modeling 先装时在 Modeling namespace 预建目标 Secret，Consumer 已安装时可受限导入其源 Secret。未启用的连接不需要对应 Secret。Judge Key 按需准备；Hub 内部令牌和评测加密密钥由 Modeling 安装器创建；
 - 填写计划使用的 Auth Service 和 Consumer Backend Service 名称、namespace、端口。首次独立安装时两者可以尚不存在；已有部署的升级、正式预检和 `verify` 仍要求它们就绪。使用用户管理、自助改密或 Hub 成员同步时，还须在 Modeling namespace 预建与实际 Auth 管理令牌同值的 `Opaque` Secret，并在 `modeling.secrets.authAdminToken` 填写名称和 key；
 - 目标架构可调度工作节点；
@@ -81,7 +81,7 @@ global:
       key: <TOKEN_KEY>
 ```
 
-示例文件中的 `global.auth.issuer/audience` 须按实际 Auth 签发身份核对。Auth 尚未安装时先约定这两项，Auth 装好后必须与实际签发的 JWT `iss`、`aud` 一致。`issuer` 是验签身份，不是 Modeling Pod 访问 Auth Service 的地址。`global.integration.serviceTokenSecret` 是与 Consumer 预先约定的服务令牌引用；先装 Modeling 时目标 Secret 必须已在 Modeling namespace 存在，不要引用尚未创建的 Consumer 源 Secret。Consumer 已安装时，可为该项添加实际源 Secret 的 `sourceRef`；单独安装器不会从 Consumer values 自动推导。
+示例文件中的 `global.auth.issuer/audience` 须按实际 Auth 签发身份核对。Auth 尚未安装时先约定这两项，Auth 装好后必须与实际签发的 JWT `iss`、`aud` 一致。`issuer` 是验签身份，不是 Modeling Pod 访问 Auth Service 的地址。`global.integration.serviceTokenSecret` 是与 Consumer 预先约定的服务令牌引用；先装 Modeling 时目标 Secret 必须已在 Modeling namespace 存在，不要引用尚未创建的 Consumer 源 Secret。Consumer 已安装时，可为该项添加实际源 Secret 的 `sourceRef`；单独安装器不会从 Consumer values 自动推导。当前 Modeling Chart 没有把此令牌注入 Onto Pod；安装器对它进行校验或导入，不能将该配置视为 Modeling → Consumer 服务令牌调用已完成验收。
 
 Onto Modeling 使用 Auth 管理接口时，客户 values 示例默认引用 `authAdminToken: {name: modeling-auth-client, key: admin-token}`。Chart 将它注入为 `ONTO_WEB_AUTH_ADMIN_TOKEN`；该 Secret 必须预建在 Modeling namespace，值与 Auth owner 实际管理令牌相同，安装器不会自动创建。安装器会比较两侧 Secret 的值，不一致时在升级前停止。用户管理、自助改密和 Hub 成员同步依赖此令牌；普通登录和 JWT 验签无需该令牌。无需管理功能时可将 `name`、`key` 都改为空字符串。
 
@@ -107,7 +107,7 @@ externalConsumer:
 - `namespace` 是各 Service 实际所在的命名空间；
 - Auth Service 端口为 `5056`，以独立 Auth 实际 Service 为准；Consumer Backend 端口为 `5055`，按 Consumer 包的 `deploy/endpoints.yaml` 核对。
 
-Chart 使用填写的 Service 名和 namespace 生成跨命名空间地址。首次独立 `install` 允许两项 Service 缺席，并记录 `waiting-dependencies`；Onto Pod 的等待容器持续检查 Auth `/health` 与 `/status`，旧 Auth 没有 `/status` 时兼容 `/health`。Auth 上线后 Onto 自动启动。已存在的 Service 仍须通过端口及 Auth owner 身份检查；Service 存在但尚无可用端点时也记为待就绪。`preflight`、`verify`、`upgrade` 保持严格。后装 Consumer 与 Auth 可以按各自安装器支持的顺序执行；两者就绪后，先完成 Consumer 自身的 `verify`，再完成 Modeling 的 `verify`。旧 Auth 尚由 Consumer 管理时，单独升级 Modeling 继续使用 `v1` 契约。
+Chart 使用填写的 Service 名和 namespace 生成跨命名空间地址。首次独立 `install` 允许两项 Service 缺席，并记录 `waiting-dependencies`；Onto Pod 的等待容器先检查 Auth `/health`，再尝试 `/status`，旧 Auth 没有 `/status` 时仍可通过健康检查继续启动。Auth 上线后 Onto 自动启动。已存在的 Service 仍须通过端口及 Auth owner 身份检查；Service 存在但尚无可用端点时也记为待就绪。`preflight`、`verify`、`upgrade` 保持严格。后装 Consumer 与 Auth 可以按各自安装器支持的顺序执行；两者就绪后，先完成 Consumer 自身的 `verify`，再完成 Modeling 的 `verify`。旧 Auth 尚由 Consumer 管理时，单独升级 Modeling 继续使用 `v1` 契约。
 
 ### 3.4 对外访问
 
@@ -146,7 +146,7 @@ global:
 
 旧 Core MCP 的 5188 入口在目标版本下线。Onto 自有 MCP 使用 Onto Service 的现有入口，客户端须按其独立契约切换。
 
-`modeling.config.evalPublicUrl` 不在客户 values 示例中；Chart 默认留空，Onto 页面会让浏览器尝试访问建模页面同主机的 HTTP 5180 端口及 `/evaluation/` 路径。若评测对外监听端口改为其他值，须在包外 `modeling-values.yaml` 的 `modeling.config` 中填写浏览器可达的完整评测地址。评测页面需要使用与 Onto 页面不同的来源；集群内 Evaluation Service 的端口仍为 5180：
+`modeling.config.evalPublicUrl` 不在客户 values 示例中；Chart 默认留空，Onto 页面会让浏览器尝试访问建模页面同主机的 HTTP 5180 端口及 `/evaluation/` 路径。若评测对外监听端口改为其他值，须在包外 `modeling-values.yaml` 的 `modeling.config` 中填写浏览器可达的完整评测地址。评测页面需要使用与 Onto 页面不同的来源；若 Onto 页面使用 HTTPS，评测地址也必须使用 HTTPS。集群内 Evaluation Service 的端口仍为 5180：
 
 Onto 后端读取评测状态、报告和优化建议使用 Chart 内置的 `ONTO_WEB_EVAL_URL`，指向同一 release 的 Evaluation Service。这个集群内部地址与浏览器入口分开配置；不需要在客户 values 中填写。
 
@@ -215,12 +215,12 @@ modeling:
 
 | Modeling 中的目标引用 | 对应 Consumer 源引用 | 何时需要 |
 | --- | --- | --- |
-| `global.integration.serviceTokenSecret` | `global.integration.serviceTokenSecret` | Modeling 调用 Consumer Backend，必填 |
+| `global.integration.serviceTokenSecret` | `global.integration.serviceTokenSecret` | 当前安装器校验或导入的集成 Secret；单独部署时目标须存在或有可读取的源引用 |
 | `hub.secrets.consumerToken` | `hub.tokenSecret` | Consumer 启用 Hub 时 |
 | `evaluation.secrets.consumerToken` | `global.integration.evaluationTokenSecret` | Consumer 配置评测调用令牌时 |
 | `evaluation.secrets.flywheelToken` | `flywheel.tokenSecret` | Modeling 开启 `evaluation.feedback.enabled`、接收 Consumer 反馈时 |
 
-后三项在客户 values 模板中是空引用，Chart 也默认为空；保持空值表示不使用该连接。仅把配置行注释掉也会采用 Chart 的空默认值，不会自动填入固定名称。**单独安装器不会读取 Consumer values 或推导这三项。**填写后，`name/key` 指向 Modeling namespace 中的目标 Secret；目标不存在时，可加完整 `sourceRef` 从 Consumer namespace 导入。导入要求部署身份能读取源 Secret、创建目标 Secret。目标已存在时，安装器会核对源、目标 key 的值；无源读取权限时，预建同值目标 Secret 并不填写 `sourceRef`。升级时沿用原引用和值。
+后三项在客户 values 模板中是空引用，Chart 也默认为空；保持空值表示不使用该连接。仅把配置行注释掉也会采用 Chart 的空默认值，不会自动填入固定名称。**单独安装器不会读取 Consumer values 或推导这三项。**填写后，`name/key` 指向 Modeling namespace 中的目标 Secret；目标不存在时，可加完整 `sourceRef` 从 Consumer namespace 导入。导入要求部署身份能读取源 Secret、创建目标 Secret。有 `sourceRef` 且目标已存在时，安装器会核对源、目标 key 的值；无源读取权限时，预建同值目标 Secret 并不填写 `sourceRef`，但安装器无法比较两侧值。升级时沿用原引用和值。
 
 例如 Consumer 已在 `consumer-demo` namespace 中使用 `flywheel.tokenSecret: {name: consumer-flywheel-credentials, key: service-token}`，Modeling 可在包外 values 中填写：
 
@@ -293,7 +293,7 @@ bash deploy/install-cce.sh plan \
   --state-dir ../cce-state
 ```
 
-`plan` 只渲染和校验，不创建 Kubernetes 资源。检查 `cce-state/` 中生成的 rendered YAML。
+`plan` 只校验输入并渲染 Chart，不创建 Kubernetes 资源。检查 `cce-state/` 中生成的 rendered YAML；它不检查目标集群中的 Secret、PVC 或 Service，也不验证跨侧令牌值。`plan` 会在包外状态目录写入渲染文件。
 
 ### 5.2 预检
 
@@ -344,7 +344,7 @@ bash deploy/install-cce.sh status \
   --release <MODELING_RELEASE>
 ```
 
-`verify` 要求 Auth owner、签发身份、JWKS 与 Consumer Backend 已就绪；随后等待 Onto、Hub、Evaluation、sandbox-gateway，并从 Evaluation Pod 检查 Consumer `/ready`。成功后清空等待项；`status` 同时显示 `dependencyStage` 和 `pendingDependencies`。健康与端点检查完成后，仍需用合成测试账号验收登录；启用相应连接时，分别验证 Consumer → Hub、Evaluation → Consumer 的调用，以及 Consumer → Evaluation 的反馈提交与接收状态。只有启用 `notifyRuns` 时还需验证轮次通知；未启用的连接不要求这些业务调用。
+`verify` 要求 Auth Service 和 Consumer Backend Service 已存在，并检查 Auth owner、签发身份及 JWKS；随后等待 Onto、Hub、Evaluation、sandbox-gateway 并检查本地健康接口。若此前独立安装留下依赖状态记录，还会从 Evaluation Pod 检查 Consumer `/ready`，成功后清空等待项；`status` 可显示 `dependencyStage` 和 `pendingDependencies`。健康与端点检查完成后，仍需用合成测试账号验收登录；启用相应连接时，分别验证 Consumer → Hub、Evaluation → Consumer 的调用，以及 Consumer → Evaluation 的反馈提交与接收状态。只有启用 `notifyRuns` 时还需验证轮次通知；未启用的连接不要求这些业务调用。
 
 ## 6. 单独升级并保留数据
 
