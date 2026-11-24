@@ -57,13 +57,13 @@ class DatasetSettings:
     def ready(value):
         try:
             url = urlsplit(value.get('url') or '')
-            valid = plain_http_url(url) and url.path.rstrip('/').endswith('/evaluation/api/nl2sql')
+            valid = plain_http_url(url)
             if url.port is not None and not 0 < url.port <= 65535:
                 valid = False
         except ValueError:
             valid = False
         if not valid:
-            raise unavailable('dataset_query_unconfigured', '上传数据的查询入口尚未配置或格式无效。请管理员在“数据源 → 上传数据存储设置”中填写 Consumer 后端可访问的评测查询入口，路径为 /evaluation/api/nl2sql。')
+            raise unavailable('dataset_query_unconfigured', '上传数据的查询入口尚未配置或格式无效。请管理员填写 Consumer 后端可访问的 HTTP(S) NL2SQL 基础地址；内置查询入口路径为 /evaluation/api/nl2sql。')
         return value
 
     def view(self, admin=False):
@@ -114,6 +114,26 @@ class DatasetSettings:
             self.store.put_setting(KEY, {'sealed': self.store.encrypt(value)})
         return self.view(True)
 
+    @staticmethod
+    def connection_identity(sql):
+        return (sql.get('host'), sql.get('port', 3306), sql.get('user'), sql.get('unix_socket'))
+
+    def refresh_password(self, value):
+        try:
+            current = self.effective()['sql']
+        except Failure:
+            return value
+        pinned = value['sql']
+        if (self.connection_identity(current) != self.connection_identity(pinned)
+                or current.get('read_default_file') or pinned.get('read_default_file')):
+            return value
+        password = current.get('password') or current.get('passwd') or ''
+        if password == (pinned.get('password') or pinned.get('passwd') or ''):
+            return value
+        sql = {**pinned, 'password': password}
+        sql.pop('passwd', None)
+        return {**value, 'sql': sql}
+
     def bind(self, run_id, value=None):
         """Persist before any MySQL write; a retry or later settings change cannot redirect the run."""
         if not re.fullmatch(r'[a-f0-9]{32}', run_id):
@@ -121,16 +141,16 @@ class DatasetSettings:
         key = 'dataset-run:' + run_id
         with self.store.lock:
             saved = self.store.setting(key)
-            if saved:
-                return self.unpack(saved['sealed'])
-            value = self.ready(value or self.effective())
-            self.store.put_setting(key, {'sealed': self.store.encrypt(value)})
-            return value
+            bound = self.unpack(saved['sealed']) if saved else self.ready(value or self.effective())
+            refreshed = self.refresh_password(bound)
+            if not saved or refreshed != bound:
+                self.store.put_setting(key, {'sealed': self.store.encrypt(refreshed)})
+            return refreshed
 
     def for_run(self, run_id):
-        saved = self.store.setting('dataset-run:' + run_id)
         # Pre-upgrade runs used the deployment connection, never a newly saved page configuration.
-        return self.unpack(saved['sealed']) if saved else self.deployment()
+        with self.store.lock:
+            return self.bind(run_id) if self.store.setting('dataset-run:' + run_id) else self.deployment()
 
     def test(self, body):
         """Explicit admin action: create, write, read and remove a uniquely named synthetic probe database."""

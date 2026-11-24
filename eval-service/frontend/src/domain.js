@@ -77,8 +77,8 @@ export function datasetFieldErrors(form, saved = {}) {
     try {
       const url = new URL(form.query_url.trim());
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash ||
-          !url.pathname.replace(/\/+$/, '').endsWith('/evaluation/api/nl2sql')) throw new Error();
-    } catch { errors.query_url = '请填写有效的 HTTP(S) 查询地址，以 /evaluation/api/nl2sql 结尾；标准部署可留空'; }
+          url.port === '0') throw new Error();
+    } catch { errors.query_url = '请填写不含凭据、查询参数或片段的 HTTP(S) 基础地址；标准部署可留空'; }
   }
   return errors;
 }

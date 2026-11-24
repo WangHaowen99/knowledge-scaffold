@@ -61,12 +61,58 @@ def test_query_endpoint_defaults_to_container_port_and_explicit_override_wins(en
     assert (endpoint.scheme, endpoint.hostname, endpoint.port, endpoint.path) == (
         'http', 'evaluation', 8090, '/evaluation/api/nl2sql')
     assert response.json()['query_auto'] is True
-    cfg.nl2sql_url = 'https://evaluation.example.net/evaluation/api/nl2sql'
+    cfg.nl2sql_url = 'https://evaluation.example.net/query-adapter'
     response = client.put('/evaluation/api/dataset-settings', json=body)
     assert response.json()['query_url'] == cfg.nl2sql_url
-    response = client.put('/evaluation/api/dataset-settings', json={**body, 'query_url': 'https://service.example.net/evaluation/api/nl2sql'})
+    response = client.put('/evaluation/api/dataset-settings', json={**body, 'query_url': 'https://service.example.net/custom-gateway'})
     assert response.json()['query_auto'] is False
     assert response.json()['query_url'].startswith('https://service.example.net/')
+
+
+@pytest.mark.parametrize('endpoint', ['ftp://example.net', 'https://example.net:0',
+                                     'https://example.net/path?mode=demo', 'https://example.net/path#demo'])
+def test_invalid_query_endpoint_still_rejected(endpoint):
+    with pytest.raises(Failure) as error:
+        DatasetSettings.ready({'url': endpoint})
+    assert error.value.code == 'dataset_query_unconfigured'
+
+
+@pytest.mark.parametrize('identity_change', [{}, {'host': 'other.example.net'}, {'port': 3307}, {'user': 'other_user'}])
+def test_dataset_run_refreshes_password_only_for_same_connection(environment, identity_change):
+    _, app, _, cfg = environment
+    storage = DatasetSettings(cfg, app.state.store)
+    original, updated = settings(), settings()
+    storage.save(original)
+    snapshot = storage.effective()
+    started, pending = 'a' * 32, 'b' * 32
+    storage.bind(started, snapshot)
+    storage.save({**updated, **identity_change, 'query_url': 'https://example.net/new-gateway'})
+    expected_password = original['password'] if identity_change else updated['password']
+    for bound in (storage.bind(started, snapshot), storage.bind(pending, snapshot), storage.for_run(started)):
+        assert bound['sql'] == {**snapshot['sql'], 'password': expected_password}
+        assert bound['url'] == snapshot['url']
+
+
+def test_query_and_cleanup_can_use_rotated_password_without_reimport(environment, monkeypatch):
+    import pymysql
+    _, app, deps, cfg = environment
+    storage = DatasetSettings(cfg, app.state.store)
+    original, updated = settings(), settings()
+    storage.save(original)
+    rid = 'a' * 32
+    storage.bind(rid)
+    storage.save(updated)
+
+    def connect(**params):
+        assert params['host'] == original['host']
+        assert params['password'] == updated['password']
+        return Database([])
+
+    monkeypatch.setattr(pymysql, 'connect', connect)
+    scene = 'eval_' + rid
+    service = QueryService(cfg, deps, app.state.engine.judge.settings, storage)
+    assert service.query({'scene': scene, 'sql': 'SELECT value FROM items'}, scene_token(cfg, scene), direct=True)['success']
+    app.state.engine.data.cleanup(rid, {'mode': 'dataset'})
 
 
 def test_admin_only_encrypted_settings_and_secret_reuse(environment):

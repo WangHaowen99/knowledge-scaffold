@@ -75,7 +75,7 @@ export function DatasetSettings({ compact = false }) {
       <details className="dataset-settings-help dataset-settings-advanced" open={fieldErrors.query_url ? true : undefined}>
         <summary>高级设置{form.query_url ? ' · 已自定义查询入口' : ' · 查询入口自动配置'}</summary>
         <p>标准部署无需填写。仅当 Consumer 与评测服务跨机器部署或使用自定义网络时覆盖此地址。</p>
-        <Field label="自定义查询入口" error={fieldErrors.query_url} hint="留空使用部署默认地址；自定义地址须以 /evaluation/api/nl2sql 结尾。">
+        <Field label="自定义查询入口" error={fieldErrors.query_url} hint="留空使用部署默认地址；使用网关时，填写其 NL2SQL 基础地址。">
           <input {...field('query_url')} type="url" placeholder="留空，使用内置查询入口" />
         </Field>
         {!form.query_url && <p>当前默认：<code>{value.query_url}</code></p>}
@@ -83,7 +83,7 @@ export function DatasetSettings({ compact = false }) {
       <div className="dataset-settings-footer">
         <details className="dataset-settings-help"><summary>权限与生效范围</summary>
           <p>仅管理员可配置。账号须具有创建评测库、建表、写入、查询和清理权限；测试会创建临时库并在结束后删除。查询使用默认判分模型，无需另部署 NL2SQL。</p>
-          <p>保存立即用于新评测，已绑定数据库的任务继续使用原连接。密码留空仅在主机、端口、账号未变时沿用。MySQL 测试不验证 Consumer 到查询入口的网络。</p>
+          <p>保存立即用于新评测。已有任务仍使用原数据库与查询入口，同一 MySQL 连接可使用更新后的密码。MySQL 测试不验证 Consumer 到查询入口的网络。</p>
           <p>{value.configured ? `当前来源：${value.source === 'settings' ? '页面配置' : '部署配置'}` : '尚无完整配置'}</p>
         </details>
         <div className="row-actions">
