@@ -29,7 +29,10 @@ def select_only(sql):
         allowed={'COUNT','SUM','AVG','MIN','MAX','COALESCE','ABS','CAST','DATE','EXTRACT',
                  'ROUND','LOWER','UPPER','LENGTH','SUBSTRING','IF','NULLIF','CONCAT',
                  'YEAR','MONTH','DAY','DATEDIFF','DATE_ADD','DATE_SUB'}
-        if any(function.sql_name() not in allowed for function in tree.find_all(exp.Func)):
+        # SQLGlot also models AND/OR as Func nodes. They combine predicates,
+        # not function calls; still inspect their descendants for unsafe calls.
+        if any(not isinstance(function, (exp.And, exp.Or)) and function.sql_name() not in allowed
+               for function in tree.find_all(exp.Func)):
             raise ValueError()
         if tree.find(exp.Parameter) or tree.find(exp.SessionParameter):
             raise ValueError()

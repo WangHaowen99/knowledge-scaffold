@@ -34,6 +34,10 @@ def test_xlsx_csv_limits_and_duplicate_columns():
     "SELECT load_file('/tmp/synthetic')", 'SELECT sleep(1)', 'SELECT 1; SELECT 2',
     "SELECT value INTO OUTFILE '/tmp/synthetic' FROM items", 'SELECT @secret',
     'SELECT * FROM items FOR UPDATE', 'SELECT * FROM (SELECT * FROM other.items) q',
+    'SELECT id FROM items WHERE id = 1 OR SLEEP(1) = 0',
+    "SELECT id FROM items WHERE id = 1 AND (name = 'alpha' OR LOAD_FILE('/tmp/synthetic') IS NULL)",
+    'SELECT id FROM items WHERE id = 1 OR EXISTS (SELECT 1 FROM other.items)',
+    'SELECT id FROM items WHERE id = 1 AND @secret = 1',
 ])
 def test_query_scope_rejects_writes_and_external_schemas(sql):
     with pytest.raises(Failure): select_only(sql)
@@ -41,6 +45,22 @@ def test_query_scope_rejects_writes_and_external_schemas(sql):
 
 def test_query_scope_allows_aggregate():
     assert 'LIMIT 1000' in select_only('SELECT SUM(value) FROM items')
+
+
+@pytest.mark.parametrize('sql', [
+    "SELECT id, name FROM items WHERE name LIKE '%alpha%' OR name LIKE '%beta%'",
+    "SELECT id FROM items WHERE name LIKE '%alpha%' AND id IS NOT NULL",
+    "SELECT id FROM items WHERE (name LIKE '%alpha%' OR name LIKE '%beta%') AND value > 0",
+    "SELECT id FROM items WHERE NOT (name = 'alpha' OR name = 'beta') AND LOWER(name) = 'gamma'",
+])
+def test_query_scope_allows_combined_readonly_predicates(sql):
+    from sqlglot import parse_one
+
+    result = select_only(sql)
+    original = parse_one(sql, read='mysql')
+    checked = parse_one(result, read='mysql')
+    assert checked.args.get('where') == original.args.get('where')
+    assert 'LIMIT 1000' in result
 
 
 def test_connection_snapshot_and_graph_mapping(tmp_path):
