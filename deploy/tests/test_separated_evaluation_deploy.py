@@ -285,8 +285,9 @@ def test_evaluation_external_config_is_resolved_before_directory_changes(tmp_pat
     rc, output = _run(setup, interactive=interactive, EVAL_ENV_FILE=relative)
     assert rc == 0, output
     values = dict(line.split('=', 1) for line in external.read_text().splitlines())
-    assert all(values[key] == value for key, value in
-               (line.split('=', 1) for line in raw.splitlines()))
+    for line in raw.splitlines():
+        key, value = line.split('=', 1)
+        assert values[key] == value
     assert values['EVAL_FEEDBACK_ENABLED'] == 'true'
     assert values['EVAL_NOTIFY_FEEDBACK_RUNS'] == 'true'
     assert 'EVAL_AUTH_URL' not in values and 'EVAL_AUTH_ISSUER' not in values
