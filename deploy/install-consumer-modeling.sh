@@ -848,6 +848,22 @@ ensure_evaluation_service_token() {
     write_env_value "${env_file}" FLYWHEEL_SERVICE_TOKEN "${flywheel}"
 }
 
+initialize_consumer_integration() {
+    local tools="${1:-${CONSUMER_DIR}/deploy}" hub_url evaluation_url issuer
+    [ -f "${tools}/integration_config.sh" ] || die 'Consumer 发布包缺少 integration_config.sh，请使用配套版本'
+    hub_url="$(env_get "${CONSUMER_DIR}/backend/.env" HUB_BASE_URL)"
+    evaluation_url="$(env_get "${CONSUMER_DIR}/backend/.env" FLYWHEEL_EVALUATION_URL)"
+    issuer="$(env_get "${KNOWLEDGE_HUB_DIR}/.env" HUB_AUTH_ISSUER)"
+    [ -z "${issuer}" ] || [ "${issuer}" = "${AUTH_SHARED_ISSUER}" ] || die 'Hub issuer 与独立 Auth 不一致'
+    bash "${tools}/integration_config.sh" \
+        --consumer-env "${CONSUMER_DIR}/backend/.env" --hub-env "${KNOWLEDGE_HUB_DIR}/.env" \
+        --hub-url "${hub_url:-http://knowledge-hub:8200}" \
+        --evaluation-url "${evaluation_url:-http://knowledge-evaluation:5180}" \
+        --issuer "${issuer:-${AUTH_SHARED_ISSUER}}"
+    HUB_ENABLED="$(env_get "${CONSUMER_DIR}/backend/.env" HUB_ENABLED)"
+    export HUB_ENABLED
+}
+
 precheck_evaluation() {
     local expected owner
     [ ! -L "${EVALUATION_DIR}" ] && [ ! -L "${EVALUATION_DIR}/deploy" ] \
@@ -937,7 +953,8 @@ deploy_knowledge_hub() {
     [ -n "${network}" ] || die "无法探测 Consumer 容器网络，请确认 onto-agent-backend 已在运行"
     onto_token="$(env_get "${ONTO_MODELING_DIR}/.env" ONTO_HUB_SERVICE_TOKEN)"
     if ! (cd "${KNOWLEDGE_HUB_DIR}" \
-            && CONSUMER_NETWORK="${network}" HUB_SERVICE_TOKEN="${onto_token}" \
+        && CONSUMER_NETWORK="${network}" HUB_SERVICE_TOKEN="${onto_token}" \
+               HUB_CONSUMER_SERVICE_TOKEN="$(env_get "${CONSUMER_DIR}/backend/.env" HUB_CONSUMER_SERVICE_TOKEN)" \
                HUB_AUTH_URL="${AUTH_SHARED_URL}" HUB_AUTH_ISSUER="${AUTH_SHARED_ISSUER}" bash ./deploy.sh); then
         die "知识包 Hub 部署失败；Consumer 已完成，修复后可单独执行 bash ${KNOWLEDGE_HUB_DIR}/deploy.sh"
     fi
@@ -1038,6 +1055,7 @@ upgrade_core_services() {
     precheck_auth_references
     upgrade_independent_auth
     ensure_evaluation_service_token
+    initialize_consumer_integration "${stage_dir}/onto-agent/deploy"
     if ! run_consumer_upgrade "${stage_dir}/onto-agent" "${CONSUMER_DIR}"; then
         die "Consumer 升级失败"
     fi
@@ -1048,6 +1066,8 @@ upgrade_core_services() {
     deploy_knowledge_hub
     deploy_onto_modeling
     deploy_evaluation
+    bash "${CONSUMER_DIR}/deploy/integration_config.sh" --check-running \
+        || log '警告：Hub 或评测连接检查未通过，请检查目标服务状态及连接配置'
     log "Consumer、Onto Modeling、Hub 和评测升级完成"
 }
 
@@ -1063,6 +1083,19 @@ upgrade_install() {
 }
 
 validate_package "${CONSUMER_PACKAGE}" onto-agent
+python3 - "${CONSUMER_PACKAGE}" <<'PY'
+import sys
+import tarfile
+
+with tarfile.open(sys.argv[1], 'r:gz') as archive:
+    for name in ('integration_config.sh', 'env_config.sh', 'integration_probe.py'):
+        try:
+            member = archive.getmember('onto-agent/deploy/' + name)
+        except KeyError:
+            raise SystemExit('Consumer 发布包缺少配置依赖：' + name)
+        if not member.isfile() or not member.size:
+            raise SystemExit('Consumer 发布包配置依赖无效：' + name)
+PY
 validate_package "${ONTO_MODELING_PACKAGE}" onto-modeling
 validate_package "${KNOWLEDGE_HUB_PACKAGE}" knowledge-hub
 validate_evaluation_package
@@ -1133,6 +1166,7 @@ write_env_value \
     "${MODELING_SERVICE_TOKEN_VALUE}"
 log "共享 Modeling Token 已写入配置，已有值保持不变"
 ensure_evaluation_service_token
+initialize_consumer_integration
 
 log "开始安装 Consumer"
 cd "${CONSUMER_DIR}"
@@ -1148,6 +1182,8 @@ verify_consumer_auth_connection
 deploy_knowledge_hub
 deploy_onto_modeling
 deploy_evaluation
+bash "${CONSUMER_DIR}/deploy/integration_config.sh" --check-running \
+    || log '警告：Hub 或评测连接检查未通过，请检查目标服务状态及连接配置'
 
 log "Consumer、Onto Modeling、Hub 和评测安装完成"
 printf '[full-install] Consumer：%s\n' "${CONSUMER_DIR}"

@@ -111,11 +111,10 @@ class Config:
     notification_max_attempts: str = ''
     # Comma-separated host names a judge gateway may use although they resolve to a private address.
     judge_allowed_hosts: str = ''
-    # Consumer feedback (data flywheel): off unless 'true'. The service token is the consumer's FLYWHEEL_SERVICE_TOKEN.
-    feedback_enabled: str = ''
+    feedback_enabled: str = 'true'
     flywheel_token: str = ''
     # Whether runs built from consumer feedback are announced to onto-modeling; on once modeling files them by source.
-    notify_feedback_runs: str = ''
+    notify_feedback_runs: str = 'true'
     feedback_retention_days: str = ''
     feedback_window_days: str = ''
     feedback_min_users: str = ''
@@ -136,8 +135,9 @@ class Config:
 
     @classmethod
     def environment(cls):
+        defaults = {'EVAL_FEEDBACK_ENABLED': 'true', 'EVAL_NOTIFY_FEEDBACK_RUNS': 'true'}
         return cls(Path(os.environ.get('EVAL_DATA_DIR', '.runtime')),
-                   *[os.environ.get(name, '') for name in ENVIRONMENT])
+                   *[os.environ.get(name) or defaults.get(name, '') for name in ENVIRONMENT])
 
 
 def trusted_origins(value):

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 部署独立评测服务（compose 项目 knowledge-evaluation，见 docker-compose.eval-service.yml）。
-# 运行配置：设置 EVAL_ENV_FILE 时原样使用该受保护文件；否则读写本目录 .env（权限 600，不入库），
+# 运行配置：EVAL_ENV_FILE 指定受保护文件；部署前补齐并校验集成配置，否则读写本目录 .env。
 # 保存凭据、显式配置和选定的网络及 Auth 默认值（进程环境 > .env 已有值 > 默认值），首次部署生成加密密钥。其他非敏感的整栈默认地址
 # 写在 compose 中；运行配置以 --env-file 传给 compose，其中的同名值优先于默认值。
 # 整栈 deploy.sh 注入 Hub 与 consumer 实际生效的评测凭据（HUB_EVALUATION_SERVICE_TOKEN、
@@ -47,6 +47,66 @@ settle() { # <键>：进程环境 > .env 已有值，结果为空时不写入
 
 command -v docker >/dev/null 2>&1 || die 'docker is required'
 
+prepare_feedback_config() {
+    local key value answer backup token
+    local -A pending
+    for key in EVAL_FLYWHEEL_SERVICE_TOKEN EVAL_MODELING_SERVICE_TOKEN EVAL_MODELING_URL; do
+        value="$(env_get "$ENV_FILE" "$key")"
+        pending[$key]="${!key:-${value}}"
+    done
+    pending[EVAL_MODELING_URL]="${pending[EVAL_MODELING_URL]:-http://onto-modeling:8100}"
+    for key in EVAL_FEEDBACK_ENABLED EVAL_NOTIFY_FEEDBACK_RUNS; do
+        value="${!key:-$(env_get "$ENV_FILE" "$key")}"
+        case "${value,,}" in
+            ''|true|1|yes|on) pending[$key]=true ;;
+            false|0|no|off)
+                pending[$key]=false
+                if [ -z "${!key:-}" ]; then
+                    [ -t 0 ] || die "$key 已显式关闭，请确认后在调用环境中显式设置该开关为 true 或 false"
+                    read -r -p "$key 已关闭，是否开启？[y/N] " answer
+                    [ "${answer,,}" != y ] || pending[$key]=true
+                fi
+                ;;
+            *) die "$key 必须是布尔值" ;;
+        esac
+    done
+    if [ "${pending[EVAL_FEEDBACK_ENABLED]}" = true ]; then
+        token="${pending[EVAL_FLYWHEEL_SERVICE_TOKEN]}"
+        [ -n "$token" ] || die '开启反馈接收需要 EVAL_FLYWHEEL_SERVICE_TOKEN'
+    fi
+    if [ "${pending[EVAL_NOTIFY_FEEDBACK_RUNS]}" = true ]; then
+        token="${pending[EVAL_MODELING_SERVICE_TOKEN]}"
+        [ -n "$token" ] || die '开启反馈通知需要 EVAL_MODELING_SERVICE_TOKEN'
+        printf '%s' "${pending[EVAL_MODELING_URL]}" | python3 -c '
+import sys
+from urllib.parse import urlsplit
+value = sys.stdin.read()
+try:
+    parsed = urlsplit(value)
+    valid = parsed.scheme in {"http", "https"} and parsed.hostname and not any(
+        (parsed.username, parsed.password, parsed.query, parsed.fragment))
+    valid = valid and not any(character.isspace() for character in value)
+    parsed.port
+except ValueError:
+    valid = False
+sys.exit(0 if valid else 1)
+' || die 'EVAL_MODELING_URL 必须是有效的 HTTP(S) 地址'
+    fi
+    for key in "${!pending[@]}"; do
+        [ -n "${pending[$key]}" ] || continue
+        [ "$(env_get "$ENV_FILE" "$key")" != "${pending[$key]}" ] || continue
+        if [ -f "$ENV_FILE" ] && [ -z "${backup:-}" ]; then
+            backup="$(mktemp "$ENV_FILE.integration-backup.XXXXXX")"
+            chmod 600 "$backup"
+            cp "$ENV_FILE" "$backup"
+            chmod 600 "$backup"
+        fi
+        [ -f "$ENV_FILE" ] || (umask 077; : > "$ENV_FILE")
+        env_set "$ENV_FILE" "$key" "${pending[$key]}"
+        export "$key=${pending[$key]}"
+    done
+}
+
 if [ -n "${EVAL_ENV_FILE:-}" ]; then
     [ -f "$EVAL_ENV_FILE" ] && [ -r "$EVAL_ENV_FILE" ] || die \
         "Evaluation runtime configuration not found: EVAL_ENV_FILE=$EVAL_ENV_FILE (relative paths resolve from $(pwd)); fix the path, or unset EVAL_ENV_FILE to use $SCRIPT_DIR/.env"
@@ -67,9 +127,12 @@ EVAL_AUTH_ISSUER="${EVAL_AUTH_ISSUER:-$(env_get "$ENV_FILE" EVAL_AUTH_ISSUER)}"
 EVAL_AUTH_URL="${EVAL_AUTH_URL:-http://auth-server:5056}"
 EVAL_AUTH_ISSUER="${EVAL_AUTH_ISSUER:-http://auth-server:5056}"
 export EVAL_AUTH_URL EVAL_AUTH_ISSUER
+: "${EVAL_HUB_SERVICE_TOKEN:=${HUB_EVALUATION_SERVICE_TOKEN:-}}"
+: "${EVAL_CONSUMER_SERVICE_TOKEN:=${EVALUATION_SERVICE_TOKEN:-}}"
+prepare_feedback_config
 
 if [ -n "${EVAL_ENV_FILE:-}" ]; then
-    log 'Using EVAL_ENV_FILE as the runtime configuration (not modified)'
+    log 'Using EVAL_ENV_FILE with verified integration configuration'
 else
     [ -f "$ENV_FILE" ] || (umask 077 && : > "$ENV_FILE")
     chmod 600 "$ENV_FILE"

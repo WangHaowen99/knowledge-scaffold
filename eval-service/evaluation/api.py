@@ -177,7 +177,6 @@ def create_app(config=None,transport=None):
     delegations=Delegations(config,store,identity)
     engine.on_stop=jobs.schedule
     package_access=PackageAccess(packages)
-    # Consumer feedback (data flywheel): off unless EVAL_FEEDBACK_ENABLED; then a background thread processes it.
     jobs.notify_feedback=config.flag('notify_feedback_runs')
     pipeline=Pipeline(config,store,Assistant(judge_settings,http),jobs.schedule)
     intake=Intake(config,store,identity,pipeline.wake)
