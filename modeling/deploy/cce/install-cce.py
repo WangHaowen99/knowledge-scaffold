@@ -261,7 +261,7 @@ def load_inputs(args, root: Path):
     claims = [target_claim(merged, name) for name in WORKLOADS]
     if len(set(claims)) != len(claims):
         raise ConfigError("stateful workloads require distinct PVCs")
-    for section, keys in (("hub", ("consumerToken",)), ("evaluation", ("consumerToken", "judgeApiKey", "sqlConfig"))):
+    for section, keys in (("hub", ("consumerToken",)), ("evaluation", ("consumerToken", "flywheelToken", "judgeApiKey", "sqlConfig"))):
         for key in keys:
             ref = merged[section]["secrets"][key]
             if bool(ref["name"]) != bool(ref["key"]):
@@ -274,7 +274,7 @@ def load_inputs(args, root: Path):
     if internal["modelingTokenKey"] == internal["evaluationTokenKey"]:
         raise ConfigError("Hub internal token keys must be distinct")
     internal_names = set(_internal_secret_specs(merged))
-    external_names = {merged["global"]["integration"]["serviceTokenSecret"]["name"]}
+    external_names = set()
     for section in ("hub", "evaluation"):
         for key, ref in merged[section]["secrets"].items():
             if key not in ("internal", "encryptionKey", "notificationToken") and ref["name"]:
@@ -286,10 +286,11 @@ def load_inputs(args, root: Path):
         raise ConfigError("notification Secret must use a distinct object")
     if not notification_key:
         raise ConfigError("notification Secret key is required")
-    integration_source = merged["global"]["integration"]["serviceTokenSecret"].get("sourceRef") or {}
-    if integration_source and any(bool(integration_source.get(field)) for field in ("namespace", "name", "key")):
-        if not all(integration_source.get(field) for field in ("namespace", "name", "key")):
-            raise ConfigError("incomplete Modeling integration sourceRef")
+    feedback = merged["evaluation"].get("feedback", {})
+    if feedback.get("enabled") and not merged["evaluation"]["secrets"]["flywheelToken"]["name"]:
+        raise ConfigError("enabled Evaluation feedback requires flywheelToken Secret")
+    if feedback.get("notifyRuns") and not feedback.get("enabled"):
+        raise ConfigError("feedback run notifications require Evaluation feedback")
     if any(merged[name]["replicas"] != 1 for name in ("hub", "evaluation")):
         raise ConfigError("Hub and Evaluation must run at one replica")
     routes = access["listeners"] if access["mode"] == "port" else access["routes"]
@@ -459,7 +460,7 @@ def preflight(args, merged: dict, *, check_external_services: bool = True,
             existing_key = _read_secret(args, merged["evaluation"]["secrets"]["encryptionKey"]["name"])
             if existing_key is None and _evaluation_has_data(args, name):
                 raise ConfigError("Evaluation PVC contains data but its encryption Secret is missing")
-    refs = [merged["global"]["integration"]["serviceTokenSecret"]]
+    refs = []
     refs.extend(merged["modeling"]["secrets"].values())
     refs.extend(ref for key, ref in merged["hub"]["secrets"].items() if key != "internal")
     refs.extend(ref for key, ref in merged["evaluation"]["secrets"].items()
@@ -695,7 +696,8 @@ def upgrade_precheck(args, root: Path, release: dict, merged: dict) -> dict:
         raise ConfigError("cannot read backup record") from exc
     recorded_uids = backup_record.get("secretUids")
     if recorded_uids:
-        if not isinstance(recorded_uids, dict) or recorded_uids != _identity_record(args, merged):
+        if not isinstance(recorded_uids, dict) or not _secret_identities_match(
+                recorded_uids, _identity_record(args, merged), installed_values(args)):
             raise ConfigError("backup record Secret identities changed")
     before = bindings(kube, args, merged, stopped=True, workloads=workloads)
     assert_no_retired_claim_reuse(merged, before)
@@ -805,9 +807,6 @@ def _secret_identity(args, name: str) -> str:
 
 def _identity_record(args, merged: dict) -> dict[str, str]:
     names = [*list(_internal_secret_specs(merged)), _notification_secret_ref(args, merged)[0]]
-    integration = merged.get("global", {}).get("integration", {}).get("serviceTokenSecret", {})
-    if integration.get("name"):
-        names.append(integration["name"])
     auth_admin = merged.get("modeling", {}).get("secrets", {}).get("authAdminToken", {})
     if auth_admin.get("name"):
         names.append(auth_admin["name"])
@@ -815,6 +814,19 @@ def _identity_record(args, merged: dict) -> dict[str, str]:
         names.extend(ref["name"] for key, ref in merged.get(section, {}).get("secrets", {}).items()
                      if key not in ("internal", "encryptionKey") and ref["name"])
     return {name: _secret_identity(args, name) for name in sorted(set(names))}
+
+
+def _secret_identities_match(recorded: dict, current: dict, installed: dict) -> bool:
+    """Accept a legacy backup's retired integration Secret without weakening active identities."""
+    if not isinstance(recorded, dict):
+        return False
+    if recorded == current:
+        return True
+    legacy = installed.get("global", {}).get("integration", {}).get("serviceTokenSecret", {})
+    name = legacy.get("name") if isinstance(legacy, dict) else None
+    if not name or name in current or name not in recorded:
+        return False
+    return {key: uid for key, uid in recorded.items() if key != name} == current
 
 
 def _evaluation_has_data(args, claim_name: str) -> bool:
@@ -830,15 +842,41 @@ def _evaluation_has_data(args, claim_name: str) -> bool:
 def _assert_distinct_internal_tokens(args, merged: dict) -> None:
     internal = merged["hub"]["secrets"]["internal"]
     hub = _read_secret(args, internal["name"])
-    integration = _read_secret(args, merged["global"]["integration"]["serviceTokenSecret"]["name"])
-    if not hub or not integration:
+    if not hub:
         raise ConfigError("internal service tokens are unavailable")
     values = [hub.get("data", {}).get(internal["modelingTokenKey"]),
-              hub.get("data", {}).get(internal["evaluationTokenKey"]),
-              integration.get("data", {}).get(
-                  merged["global"]["integration"]["serviceTokenSecret"]["key"])]
+              hub.get("data", {}).get(internal["evaluationTokenKey"])]
     if any(not value for value in values) or len(set(values)) != len(values):
-        raise ConfigError("Hub and Modeling service tokens must be distinct")
+        raise ConfigError("Hub internal service tokens must be distinct")
+
+
+def _assert_distinct_flywheel_token(args, merged: dict) -> None:
+    flywheel = merged["evaluation"]["secrets"].get("flywheelToken", {})
+    if not flywheel.get("name"):
+        return
+    resource = _read_secret(args, flywheel["name"])
+    value = resource.get("data", {}).get(flywheel["key"]) if resource else None
+    if not value:
+        raise ConfigError("Evaluation flywheel token is missing")
+    try:
+        decoded = base64.b64decode(value, validate=True).decode()
+    except ValueError:
+        raise ConfigError("Evaluation flywheel token is invalid") from None
+    if len(decoded.strip()) < 32:
+        raise ConfigError("Evaluation flywheel token must contain at least 32 characters")
+    references = [merged["hub"]["secrets"].get("consumerToken", {}),
+                  merged["evaluation"]["secrets"].get("consumerToken", {}),
+                  merged["evaluation"]["secrets"].get("notificationToken", {})]
+    for reference in references:
+        if reference.get("name"):
+            other = _read_secret(args, reference["name"])
+            if other and other.get("data", {}).get(reference["key"]) == value:
+                raise ConfigError("Evaluation flywheel token must differ from other service tokens")
+    internal = merged["hub"]["secrets"]["internal"]
+    hub = _read_secret(args, internal["name"])
+    if hub and value in (hub.get("data", {}).get(internal["modelingTokenKey"]),
+                         hub.get("data", {}).get(internal["evaluationTokenKey"])):
+        raise ConfigError("Evaluation flywheel token must differ from other service tokens")
 
 
 def _create_secret(args, name: str, values: dict[str, str]) -> None:
@@ -921,30 +959,8 @@ def ensure_application_secrets(args, merged: dict) -> None:
                 current = _read_secret(args, ref["name"])
                 if current is None or current.get("type") != "Opaque" or ref["key"] not in current.get("data", {}):
                     raise ConfigError(f"unable to import {section}.{key} Secret")
-    integration = merged["global"]["integration"]["serviceTokenSecret"]
-    target = _read_secret(args, integration["name"])
-    if target is None:
-        source = integration.get("sourceRef") or {}
-        if not all(source.get(field) for field in ("namespace", "name", "key")):
-            raise ConfigError("Modeling integration Secret is missing")
-        origin = _read_secret(args, source["name"], source["namespace"])
-        encoded = origin.get("data", {}).get(source["key"]) if origin else None
-        if not encoded:
-            raise ConfigError("Modeling integration source Secret key is missing")
-        document = {
-            "apiVersion": "v1", "kind": "Secret",
-            "metadata": {"name": integration["name"], "namespace": args.namespace},
-            "type": "Opaque", "data": {integration["key"]: encoded},
-        }
-        result = run_program(
-            ("kubectl", "--context", args.context, "-n", args.namespace, "create", "-f", "-"),
-            input=json.dumps(document), text=True, capture_output=True,
-        )
-        if result.returncode:
-            current = _read_secret(args, integration["name"])
-            if current is None or current.get("type") != "Opaque" or current.get("data", {}).get(integration["key"]) != encoded:
-                raise ConfigError("unable to import Modeling integration Secret")
     _assert_distinct_internal_tokens(args, merged)
+    _assert_distinct_flywheel_token(args, merged)
 
 
 def _count_persisted_data(args) -> dict:
@@ -1392,7 +1408,8 @@ def prepare_auto_backup(args, root: Path, release: dict, merged: dict) -> Path:
         current_workloads = installed_workloads(installed_values(args))
         if set(claims) != set(current_workloads):
             raise ConfigError("automatic backup record workload set differs from installed release")
-        if record.get("secretUids") and record["secretUids"] != _identity_record(args, merged):
+        if record.get("secretUids") and not _secret_identities_match(
+                record["secretUids"], _identity_record(args, merged), installed_values(args)):
             raise ConfigError("automatic backup record Secret identities changed")
         args.backup_workloads = tuple(name for name in LEGACY_EXPANDED_WORKLOADS if name in claims)
         args.snapshot_claims = {name: {key: value for key, value in claims[name].items()
