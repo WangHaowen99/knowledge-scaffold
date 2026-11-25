@@ -1276,11 +1276,14 @@ def delete_knowledge(project_id: str, path: str, request: Request):
 def versions(project_id: str, request: Request, offset: int = 0, limit: int = 50):
     ensure_access(project_id, request)
     can_revert = _can_revert(project_id, request)
+    can_tag = _can_tag(project_id, request)
     entries = workspaces.versions(project_id, limit=limit, offset=offset)
     latest = workspaces.versions(project_id, limit=1)
     total = latest[0]["version"] if latest else 0
     return {
-        "versions": [{**entry, "can_revert": can_revert} for entry in entries],
+        "versions": [
+            {**entry, "can_revert": can_revert, "can_tag": can_tag} for entry in entries
+        ],
         "total": total,
         "next_offset": offset + len(entries) if offset + len(entries) < total else None,
     }
@@ -1295,6 +1298,15 @@ def _can_revert(project_id: str, request: Request) -> bool:
         meta, user.get("sub", ""), user.get("role") == "admin"
     )
     return role in ("owner", "admin") or not meta.get("owner")
+
+
+def _can_tag(project_id: str, request: Request) -> bool:
+    """标记与删除标记要求写权限（与 tag 接口的 ensure_access(write=True) 一致），只读评审不显示入口。"""
+    user = getattr(request.state, "user", None)
+    if user is None:
+        return True
+    meta = workspaces.get_project(project_id)
+    return workspaces.can_write(meta, user.get("sub", ""), user.get("role") == "admin")
 
 
 @router.get("/{project_id}/history")
@@ -1315,6 +1327,7 @@ def history(project_id: str, request: Request, limit: int = 50, cursor: str = ""
         limit,
         cursor,
         can_revert=_can_revert(project_id, request),
+        can_tag=_can_tag(project_id, request),
     )
 
 

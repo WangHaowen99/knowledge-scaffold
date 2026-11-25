@@ -42,6 +42,7 @@ import remarkGfm from 'remark-gfm';
 import { api } from '../lib/api.js';
 import { setWorkspaceDirty } from '../lib/workspaceDirty.js';
 import { showFileSaveFeedback } from '../lib/fileSaveFeedback.js';
+import { saveResolved, saveText, withSavedText } from '../lib/fileSave.js';
 import { SOLVER_DIR, isManagedSolverPath } from '../lib/solver-contract-model.js';
 import { versionTitle } from '../lib/versionHistory.js';
 import {
@@ -996,34 +997,42 @@ export default function CenterPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryPreset?.nonce]);
 
+  const writeFileText = (text, revision) => api.writeFile(project.id, file, text, revision || '');
+
+  // 保存成功：文件视图先换成实际写入的内容与修订，再交给调用方收尾（不能用保存前捕获的草稿）
+  const afterSaved = (after) => (saved) => {
+    setContent((prev) => withSavedText(prev, saved));
+    after?.(saved);
+  };
+
   const saveDraft = async (text, after) => {
     try {
-      const result = await api.writeFile(project.id, file, text, content?.revision || '');
-      setContent((prev) => (prev ? { ...prev, revision: result.revision } : prev));
-      showFileSaveFeedback(result, message);
-      onWorkspaceChanged?.();
-      after?.();
-    } catch (error) {
-      if (error.status === 409) {
-        // 与助手写入撞车：拉最新内容给用户对比合并，不静默覆盖（方案 7.4）
-        const latest = await api.readFile(project.id, file).catch(() => null);
-        if (latest) setConflict({ mine: text, theirs: latest, after });
-        return;
+      const outcome = await saveText({
+        write: writeFileText,
+        read: () => api.readFile(project.id, file),
+        text,
+        baseRevision: content?.revision,
+        after: afterSaved(after),
+      });
+      if (outcome.result) {
+        showFileSaveFeedback(outcome.result, message);
+        onWorkspaceChanged?.();
       }
+      // 与助手写入撞车：拉最新内容给用户对比合并，不静默覆盖（方案 7.4）
+      if (outcome.conflict) setConflict(outcome.conflict);
+    } catch (error) {
       message.error(error.message);
     }
   };
 
   const resolveConflictSave = async (text) => {
-    const { theirs, after } = conflict;
+    const resolving = conflict;
     setConflict(null);
     try {
-      const result = await api.writeFile(project.id, file, text, theirs.revision);
-      setContent({ ...theirs, content: text, revision: result.revision });
+      const result = await saveResolved(resolving, text, writeFileText);
       setDraft(text);
       showFileSaveFeedback(result, message);
       onWorkspaceChanged?.();
-      after?.();
     } catch (error) {
       message.error(error.message);
     }
@@ -1299,7 +1308,6 @@ export default function CenterPane({
                         onClick={() =>
                           saveDraft(draft, () => {
                             draftsRef.current.delete(file);
-                            setContent({ ...content, content: draft });
                             setEditing(false);
                             setRestoredDraft(false);
                           })
@@ -1384,9 +1392,17 @@ export default function CenterPane({
                   size="small"
                   type="primary"
                   onClick={() =>
-                    saveDraft(diffDraft, () =>
-                      setDiffState({ ...diffState, modified: diffDraft }),
-                    )
+                    saveDraft(diffDraft, (saved) => {
+                      // 冲突后写入的可能是对方版本：右侧编辑器按 key 重建才会换成它
+                      setDiffState((prev) =>
+                        prev && {
+                          ...prev,
+                          modified: saved.text,
+                          epoch: saved.resolved ? (prev.epoch || 0) + 1 : prev.epoch,
+                        },
+                      );
+                      setDiffDraft(saved.text);
+                    })
                   }
                 >
                   保存右侧内容
@@ -1395,7 +1411,7 @@ export default function CenterPane({
             </Space>
             {diffState ? (
               <MergeDiff
-                key={`${file}-${diffState.rev}`}
+                key={`${file}-${diffState.rev}-${diffState.epoch || 0}`}
                 original={diffState.original}
                 modified={diffState.modified}
                 onModifiedChange={setDiffDraft}
