@@ -120,6 +120,9 @@ def test_preview_reports_the_same_failures_as_import(environment, rows, value_ty
     response = client.post(f'{API}/data-source-previews', json=query)
     assert response.status_code == 422, response.text
     assert response.json()['code'] == code
+    if code == 'graph_key_missing':
+        assert caught.value.details['rows'] == [{'data_row': 1, 'fields': ['id']}]
+        assert response.json()['details'] == caught.value.details
     assert not deps.requests
 
 

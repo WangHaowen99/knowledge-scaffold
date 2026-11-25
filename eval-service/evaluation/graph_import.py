@@ -12,7 +12,7 @@ import threading
 import time
 
 from .core import Failure, canonical, digest
-from .data_sources import identifier
+from .data_sources import identifier, graph_keys
 from .mapping_rules import valid_relation_type
 from .field_types import TYPE_RULE_VERSION, convert_value, field_kind
 from .declared_types import parse_declared_type
@@ -438,8 +438,7 @@ class GraphImports:
             fields = item['sources'][0]['fields']
             if scope and any(key in fields for key in (scope.get('workspace_property'), scope.get('ontology_property'))):
                 raise Failure('graph_scope_conflict', '图隔离属性不能与业务字段重名', 422, 'data_import')
-            if not item['primary_key']:
-                raise Failure('graph_key_missing', '图数据缺少主键', 422, 'data_import')
+            graph_keys(label, item, tables[resource])
         kinds = resolved_field_kinds(mapping, relations)
         for label, item in mapping['objects'].items():
             resource = item['sources'][0]['resource']

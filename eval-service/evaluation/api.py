@@ -18,7 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from .core import Config, Failure, Identity, Transport, digest, trusted_origins
 from .store import Store
 from .packages import Packages, generate_mapping, MAPPING, unpack, validate_relations, RELATION_RULE_VERSION
-from .data_sources import DataSources, read_tables
+from .data_sources import DataSources, read_tables, graph_keys
+from .dataset_settings import dataset
 from .execution import Consumer, Credential, Judge, Engine, report, DEFAULT_CONCURRENCY, MAX_CONCURRENCY
 from .judge_settings import JudgeSettings, connection_test_failure
 from .modeling_projects import linked_projects
@@ -113,6 +114,14 @@ class JudgeConfig(Body):
 
 class JudgeSwitch(Body):
     enabled: bool
+
+
+class DatasetConfig(Body):
+    host: str = Field(title='MySQL 主机', min_length=1, max_length=253)
+    port: int = Field(title='端口', default=3306, ge=1, le=65535)
+    user: str = Field(title='MySQL 用户名', min_length=1, max_length=128)
+    password: str = Field(title='密码', default='', max_length=4096)
+    query_url: str = Field(title='自定义查询入口', default='', max_length=2048)
 
 
 class SourceConnectionTest(Body):
@@ -220,6 +229,24 @@ def create_app(config=None,transport=None):
 
     @app.exception_handler(RequestValidationError)
     async def validation_handler(request, exc):
+        if request.url.path in (f'{prefix}/dataset-settings', f'{prefix}/dataset-settings/test'):
+            issues = []
+            for error in exc.errors():
+                location = error.get('loc') or ()
+                field = location[-1] if location else ''
+                definition = DatasetConfig.model_fields.get(field)
+                if definition is None:
+                    continue
+                label = definition.title or str(field)
+                kind = error.get('type', '')
+                message = ('端口必须是 1–65535 的整数' if field == 'port' else
+                           '请填写' + label if kind in ('missing', 'string_too_short') else
+                           label + '过长，请缩短后重试' if kind == 'string_too_long' else
+                           label + '格式不正确，请检查')
+                issues.append({'field': field, 'message': message})
+            # Never echo Pydantic input/context: it may contain the database password.
+            return JSONResponse({'code': 'invalid_input', 'message': '；'.join(v.get('message', '') for v in issues) or '配置格式不正确，请检查表单',
+                                 'details': {'fields': issues}}, status_code=422)
         return JSONResponse({'code':'invalid_input','message':'输入格式无效，请检查字段'},status_code=422)
 
     @app.middleware('http')
@@ -353,7 +380,22 @@ def create_app(config=None,transport=None):
     def sql_query(operation:str,body:dict,request:Request):
         if operation not in ('query','sql'): raise Failure('not_found','操作不存在',404)
         header=request.headers.get('authorization','')
-        return QueryService(config,http,judge_settings).query(body,header[7:] if header.startswith('Bearer ') else '',operation=='sql')
+        return QueryService(config,http,judge_settings,sources.settings).query(body,header[7:] if header.startswith('Bearer ') else '',operation=='sql')
+
+    @app.get(f'{prefix}/dataset-settings')
+    def dataset_settings_view(request:Request):
+        _,role=account(request)
+        return sources.settings.view(role=='admin')
+
+    @app.put(f'{prefix}/dataset-settings')
+    def dataset_settings_save(body:DatasetConfig,request:Request):
+        administrator(request)
+        return sources.settings.save(body.model_dump())
+
+    @app.post(f'{prefix}/dataset-settings/test')
+    def dataset_settings_test(body:DatasetConfig,request:Request):
+        administrator(request)
+        return sources.settings.test(body.model_dump())
 
     @app.get(f'{prefix}/session')
     def session(request:Request):
@@ -567,13 +609,8 @@ def create_app(config=None,transport=None):
                 keys=mapping['objects'][name]['primary_key']
                 count=len({tuple(row[key] for key in keys) for row in converted[name]})
             elif graph and mapping and name in mapping['objects']:
-                keys=mapping['objects'][name].get('primary_key',[])
-                fields=mapping['objects'][name]['sources'][0]['fields']
-                columns=table.get('columns',[])
-                indices=[columns.index(fields[k]['source_column']) for k in keys if k in fields and fields[k]['source_column'] in columns]
+                indices=graph_keys(name,mapping['objects'][name],table)
                 if indices:
-                    if any(any(row[i] is None or row[i]=='' for i in indices) for row in table.get('rows',[])):
-                        raise Failure('graph_key_missing','图数据缺少主键，请补齐后重新预览',422,'data_import')
                     count=len({tuple(row[i] for i in indices) for row in table.get('rows',[])})
             objects.append({'name':name,'table':item.get('table'),'matched_columns':item.get('matched_columns',[]),'missing_columns':item.get('missing_columns',[]),'instances':count})
         relations=[]
@@ -809,6 +846,10 @@ def create_app(config=None,transport=None):
             if any(key[0]==owner for key in engine.active): raise Failure('evaluation_busy','已有活动评测，请先查看或停止当前任务',409)
             if len(engine.active)>=16: raise Failure('evaluation_busy','服务队列已满，请稍后再试',409)
             source=dict(prep['source'])
+            if dataset(source):
+                # Fail before creating a task or touching consumer; preserve the selected connection for this run.
+                storage=sources.settings.ready(sources.settings.effective())
+                source['dataset_storage']=store.encrypt(storage)
             if importing:
                 graph_available(source,prep['package_ref']['ontology_id'])
                 source['graph_confirmation']=sources.graph.authorize(owner,prep,check_id,replace)
