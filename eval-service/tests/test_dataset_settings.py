@@ -9,7 +9,7 @@ from evaluation.core import Failure
 from evaluation.dataset_settings import DatasetSettings
 from evaluation.data_sources import graph_keys
 from evaluation.nl2sql import QueryService, scene_token
-from test_evaluation import environment
+from test_evaluation import environment, run, wait
 
 
 def settings(host='mysql.example.net', password=None):
@@ -190,6 +190,89 @@ def test_explicit_connection_test_cleans_probe_even_when_write_fails(environment
     assert client.post('/evaluation/api/dataset-settings/test', json=settings()).json()['success']
 
 
+def test_saving_same_connection_preserves_deployment_tls_options(environment, monkeypatch):
+    _, app, _, cfg = environment
+    old = settings()
+    options = {'ssl_verify_cert': True, 'ssl_verify_identity': True, 'connect_timeout': 7}
+    cfg.sql_config = json.dumps({**{key: old[key] for key in ('host', 'port', 'user')},
+                                 'passwd': old['password'], **options})
+    storage = app.state.engine.data.settings
+    assert storage.view(True)['password_set']
+    calls = []
+    monkeypatch.setattr('pymysql.connect', lambda **sql: calls.append(sql) or Database([]))
+    updated = {**old, 'password': '', 'query_url': 'https://service.example.net/gateway'}
+    assert storage.test(updated)['success']
+    storage.save(updated)
+    saved = storage.effective()['sql']
+    assert all(saved[key] == calls[0][key] == value for key, value in options.items())
+    assert saved['password'] == old['password'] and 'passwd' not in saved
+    storage.save(settings(host='other.example.net'))
+    assert 'ssl_verify_cert' not in storage.effective()['sql']
+
+
+def test_legacy_socket_configuration_remains_usable(environment, monkeypatch):
+    _, app, deps, cfg = environment
+    cfg.sql_config = json.dumps({'unix_socket': '/tmp/example.sock', 'user': 'synthetic_user'})
+    sources = app.state.engine.data
+    captured = []
+    monkeypatch.setattr('pymysql.connect', lambda **sql: captured.append(sql) or Database([]))
+    rid = 'a' * 32
+    scene = 'eval_' + rid
+    query = QueryService(cfg, deps, app.state.engine.judge.settings, sources.settings)
+    assert query.query({'scene': scene, 'sql': 'SELECT 1'}, scene_token(cfg, scene), direct=True)['success']
+    sources.cleanup(rid, {'mode': 'dataset'})
+    assert sources.settings.view()['configured']
+    assert [sql['unix_socket'] for sql in captured] == ['/tmp/example.sock'] * 2
+
+
+def test_unimported_task_never_cleans_up_in_deployment_database(environment, monkeypatch):
+    _, app, _, cfg = environment
+    sources = app.state.engine.data
+    cfg.sql_config = json.dumps({'host': 'deployment.example.net'})
+    sources.settings.save(settings())
+    source = {'mode': 'dataset', 'dataset_storage': app.state.store.encrypt(sources.settings.effective())}
+    def unexpected(**sql):
+        pytest.fail('Unimported new run must not contact MySQL')
+    monkeypatch.setattr('pymysql.connect', unexpected)
+    sources.cleanup('a' * 32, source)
+
+
+def test_resume_repairs_query_url_without_switching_database(environment, monkeypatch):
+    client, app, deps, _ = environment
+    deps.roles['synthetic-user-a'] = 'admin'
+    config = settings()
+    wrong_url = config['query_url']
+    fixed_url = 'https://service.example.net/gateway'
+    current_urls, hosts = [], []
+    monkeypatch.setattr('pymysql.connect', lambda **sql: hosts.append(sql['host']) or Database([]))
+    original = deps.json
+    def call(method, base, path, **kwargs):
+        if method == 'PUT' and path.endswith('/data-source'):
+            current_urls.append(kwargs['json']['config']['url'])
+        if path.endswith('/data-source/test'):
+            return {'success': current_urls[-1] == fixed_url}
+        return original(method, base, path, **kwargs)
+    monkeypatch.setattr(deps, 'json', call)
+    assert client.put('/evaluation/api/dataset-settings', json=config).status_code == 200
+    upload = client.post('/evaluation/api/inputs', files={'file': ('items.csv', b'id,value\nitem_0001,2\n')}).json()
+    source = client.post('/evaluation/api/data-sources', json={'name': 'Synthetic dataset', 'mode': 'dataset',
+                                                              'input_ids': [upload['id']]}).json()
+    prep = client.post('/evaluation/api/package-preparations', json={'request_id': 'prepare_dataset',
+                       'package_ref': {'ontology_id': 'knowledge_package_demo', 'release_id': 'release_demo'},
+                       'data_source_id': source['id']}).json()
+    rid = run(client, prep)['id']
+    assert wait(client, rid)['error']['code'] == 'dataset_query_unavailable'
+    assert not deps.submissions
+    assert client.put('/evaluation/api/dataset-settings', json={**config, 'password': '', 'query_url': fixed_url}).status_code == 200
+    assert client.post(f'/evaluation/api/runs/{rid}/resume').status_code == 200
+    assert wait(client, rid, ('completed',))['status'] == 'completed'
+    assert current_urls == [wrong_url, fixed_url]
+    assert hosts == [config['host']] * 2
+    storage = app.state.engine.data.settings
+    storage.save({**config, 'query_url': wrong_url})
+    assert storage.for_run(rid)['url'] == fixed_url
+
+
 def test_import_query_and_cleanup_use_original_connection_after_settings_change(environment, monkeypatch):
     import pymysql
     client, app, deps, cfg = environment
@@ -202,7 +285,7 @@ def test_import_query_and_cleanup_use_original_connection_after_settings_change(
     monkeypatch.setattr(pymysql, 'connect', connect)
     source = {'mode': 'dataset', 'tables_snapshot': app.state.store.encrypt({
         'items': {'columns': ['id'], 'rows': [['item_0001']]}})}
-    rid = 'a' * 32
+    rid = app.state.store.create('owner_demo', 'runs', {'source': source})['id']
     app.state.engine.data.prepare(rid, source, None)
     storage.save(settings(host='other.example.net'))
     # Recreate the settings service to mimic process restart: binding is durable.
@@ -210,9 +293,13 @@ def test_import_query_and_cleanup_use_original_connection_after_settings_change(
     service = QueryService(cfg, deps, app.state.engine.judge.settings, storage)
     scene = 'eval_' + rid
     service.query({'scene': scene, 'sql': 'SELECT value FROM items'}, scene_token(cfg, scene), direct=True)
+    cfg.sql_config = json.dumps({'host': 'deployment.example.net'})
     app.state.engine.data.cleanup(rid, source)
-    assert hosts == ['mysql.example.net'] * 3
+    assert app.state.store.setting('dataset-run:' + rid) is not None
+    app.state.engine.data.cleanup(rid, source)
+    assert hosts == ['mysql.example.net'] * 4
     assert storage.effective()['sql']['host'] == 'other.example.net'
+    app.state.store.delete('owner_demo', rid)
     assert app.state.store.setting('dataset-run:' + rid) is None
 
 

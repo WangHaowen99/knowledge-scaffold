@@ -256,6 +256,7 @@ class Store:
             self.db.execute('DELETE FROM notifications WHERE run_id=?',(rid,))
             self.db.execute('DELETE FROM evidence WHERE run_id=?',(rid,))
             self.db.execute('DELETE FROM optimizations WHERE run_id=?',(rid,))
+            self.db.execute('DELETE FROM settings WHERE key=?',('dataset-run:' + rid,))
 
     def optimization(self, run_id):
         """How a run's suggestions are being handled by modeling, kept apart from the run so verdict changes never race it."""

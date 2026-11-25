@@ -36,7 +36,7 @@ export function DatasetSettings({ compact = false }) {
     try {
       const result = await api(test ? '/dataset-settings/test' : '/dataset-settings', { ...form, port: Number(form.port) }, test ? 'POST' : 'PUT');
       if (test) setMessage(result.message);
-      else { accept(result); setMessage('已保存，立即用于新评测。此前因未配置而中断的任务可以恢复；已绑定数据库的任务继续使用原连接。'); }
+      else { accept(result); setMessage('已保存，立即用于新评测。未通过查询入口检查的任务可以恢复；已绑定数据库的任务不会切换数据库。'); }
     } catch (e) {
       setError(e.message);
       setFieldErrors(Object.fromEntries((e.details?.fields || []).map(v => [v.field, v.message])));
@@ -83,7 +83,7 @@ export function DatasetSettings({ compact = false }) {
       <div className="dataset-settings-footer">
         <details className="dataset-settings-help"><summary>权限与生效范围</summary>
           <p>仅管理员可配置。账号须具有创建评测库、建表、写入、查询和清理权限；测试会创建临时库并在结束后删除。查询使用默认判分模型，无需另部署 NL2SQL。</p>
-          <p>保存立即用于新评测。已有任务仍使用原数据库与查询入口，同一 MySQL 连接可使用更新后的密码。MySQL 测试不验证 Consumer 到查询入口的网络。</p>
+          <p>保存立即用于新评测。已有任务仍使用原数据库；同一 MySQL 连接可更新密码，并在首次通过检查前修正查询入口。MySQL 测试不验证 Consumer 到查询入口的网络。</p>
           <p>{value.configured ? `当前来源：${value.source === 'settings' ? '页面配置' : '部署配置'}` : '尚无完整配置'}</p>
         </details>
         <div className="row-actions">

@@ -37,7 +37,7 @@ class DatasetSettings:
     def deployment(self):
         try:
             sql = json.loads(self.config.sql_config)
-            if not isinstance(sql, dict) or not sql.get('host'):
+            if not isinstance(sql, dict):
                 raise ValueError()
         except (ValueError, TypeError):
             raise unavailable() from None
@@ -82,7 +82,7 @@ class DatasetSettings:
         if admin:
             sql = value.get('sql') or {}
             result.update(host=sql.get('host', ''), port=sql.get('port', 3306), user=sql.get('user', ''),
-                          password_set=bool(sql.get('password')), query_url=value.get('url') or self.default_url(),
+                          password_set=bool(sql.get('password') or sql.get('passwd')), query_url=value.get('url') or self.default_url(),
                           query_auto=value.get('query_auto', not bool(value)),
                           revision=value.get('revision'), source='settings' if self.store.setting(KEY) else 'deployment')
         return result
@@ -91,19 +91,22 @@ class DatasetSettings:
         host, user = body['host'].strip(), body['user'].strip()
         if not host or not user or re.search(r'[\s/@?#]', host):
             raise unavailable('dataset_config_invalid', '请填写有效的 MySQL 主机名或 IP、用户名；主机地址不含协议和路径。')
+        try:
+            previous = self.effective()['sql']
+        except Failure:
+            previous = {}
+        same = (previous.get('host'), previous.get('port', 3306), previous.get('user')) == (host, body['port'], user)
         password = body.get('password') or ''
         if not password:
-            try:
-                old = self.effective()['sql']
-            except Failure:
-                old = {}
-            if (old.get('host'), old.get('port', 3306), old.get('user')) != (host, body['port'], user):
+            if not same:
                 raise unavailable('dataset_password_required', '首次配置或修改主机、端口、用户名后，请重新填写 MySQL 密码。')
-            password = old.get('password') or ''
+            password = previous.get('password') or previous.get('passwd') or ''
             if not password:
                 raise unavailable('dataset_password_required', '请填写 MySQL 密码。')
-        return self.ready({'sql': {'host': host, 'port': body['port'], 'user': user, 'password': password,
-                                  'charset': 'utf8mb4', 'connect_timeout': 10, 'read_timeout': 30, 'write_timeout': 30},
+        sql = {'charset': 'utf8mb4', 'connect_timeout': 10, 'read_timeout': 30, 'write_timeout': 30,
+               **(previous if same else {}), 'host': host, 'port': body['port'], 'user': user, 'password': password}
+        sql.pop('passwd', None)
+        return self.ready({'sql': sql,
                            'url': (body.get('query_url') or '').strip().rstrip('/') or self.default_url(),
                            'query_auto': not bool((body.get('query_url') or '').strip()),
                            'revision': uuid.uuid4().hex})
@@ -118,31 +121,39 @@ class DatasetSettings:
     def connection_identity(sql):
         return (sql.get('host'), sql.get('port', 3306), sql.get('user'), sql.get('unix_socket'))
 
-    def refresh_password(self, value):
+    def refresh(self, value, *, allow_query_update=False):
         try:
-            current = self.effective()['sql']
+            current = self.effective()
         except Failure:
             return value
         pinned = value['sql']
-        if (self.connection_identity(current) != self.connection_identity(pinned)
-                or current.get('read_default_file') or pinned.get('read_default_file')):
+        sql = current['sql']
+        if (self.connection_identity(sql) != self.connection_identity(pinned)
+                or any(options.get(field) for options in (sql, pinned)
+                       for field in ('read_default_file', 'read_default_group'))):
             return value
-        password = current.get('password') or current.get('passwd') or ''
-        if password == (pinned.get('password') or pinned.get('passwd') or ''):
-            return value
-        sql = {**pinned, 'password': password}
-        sql.pop('passwd', None)
-        return {**value, 'sql': sql}
+        password = sql.get('password') or sql.get('passwd') or ''
+        if password != (pinned.get('password') or pinned.get('passwd') or ''):
+            pinned = {**pinned, 'password': password}
+            pinned.pop('passwd', None)
+            value = {**value, 'sql': pinned}
+        if allow_query_update:
+            try:
+                self.ready(current)
+            except Failure:
+                return value
+            value = {**value, 'url': current['url'], 'query_auto': current['query_auto']}
+        return value
 
-    def bind(self, run_id, value=None):
-        """Persist before any MySQL write; a retry or later settings change cannot redirect the run."""
+    def bind(self, run_id, value=None, *, allow_query_update=False):
+        """Pin the MySQL target before any write; only preparation can repair its query URL."""
         if not re.fullmatch(r'[a-f0-9]{32}', run_id):
             raise Failure('invalid_run', '运行标识无效', 422)
         key = 'dataset-run:' + run_id
         with self.store.lock:
             saved = self.store.setting(key)
             bound = self.unpack(saved['sealed']) if saved else self.ready(value or self.effective())
-            refreshed = self.refresh_password(bound)
+            refreshed = self.refresh(bound, allow_query_update=allow_query_update)
             if not saved or refreshed != bound:
                 self.store.put_setting(key, {'sealed': self.store.encrypt(refreshed)})
             return refreshed

@@ -11,6 +11,7 @@ from urllib.parse import quote
 from . import solver_validation, execution_evidence
 from .artifacts import clip, failed_first, redact, summarize
 from .core import Failure, digest, transient
+from .dataset_settings import dataset
 from .judge_settings import connection_test_failure
 
 TERMINAL={'completed','failed','cancelled','awaiting_input'}
@@ -628,6 +629,8 @@ class Engine:
                 self.consumer.call('PUT',f"/ontologies/{quote(run['package_ref']['ontology_id'],safe='')}/data-source",token,ws,json=source)
                 probe=self.consumer.call('POST',f"/ontologies/{quote(run['package_ref']['ontology_id'],safe='')}/data-source/test",token,ws,json={})
                 if probe.get('success') is not True:
+                    if dataset(source_definition):
+                        raise Failure('dataset_query_unavailable', '请管理员确认 Consumer 能访问查询入口；使用同一 MySQL 连接时，可修正入口后恢复本任务。',503,'data_import')
                     raise Failure('data_source_unavailable','消费数据源连接检查失败',503,'data_import')
             run=self.update(owner,rid,data_ready=True)
         if run['source'].get('provider')=='neo4j' and run['source'].get('import_data'):

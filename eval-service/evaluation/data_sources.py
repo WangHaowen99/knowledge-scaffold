@@ -6,7 +6,7 @@ import zipfile
 from itertools import islice
 from .core import Failure
 from .nl2sql import scene_token
-from .dataset_settings import DatasetSettings
+from .dataset_settings import DatasetSettings, dataset
 
 IDENTIFIER=re.compile(r'^[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]{0,63}$')
 # Evaluation-only connection keys. Consumer rejects unknown provider fields, so they never leave this service.
@@ -160,7 +160,7 @@ class DataSources:
                 frozen = self.settings.ready(self.settings.deployment())
             except Failure:
                 pass
-        storage = self.settings.bind(run_id, frozen)
+        storage = self.settings.bind(run_id, frozen, allow_query_update=True)
         config = storage['sql']
         import pymysql
         schema='eval_'+run_id
@@ -187,17 +187,15 @@ class DataSources:
             'url':storage['url'],'scene':schema,'token':scene_token(self.config,schema)})
 
     def cleanup(self, run_id, source):
-        # Without an evaluation MySQL no run can have created its database, so there is nothing to drop.
-        if source.get('mode') != 'dataset' or source.get('provider') == 'neo4j':
+        if not dataset(source):
             return
         if not re.fullmatch(r'[a-f0-9]{32}',run_id):
             raise Failure('invalid_run','运行标识无效',422)
+        if not self.store.setting('dataset-run:' + run_id) and (source.get('dataset_storage') or not self.config.sql_config):
+            return
         import pymysql
-        if not self.store.setting('dataset-run:' + run_id) and not self.config.sql_config:
-            return  # No import ever reached a MySQL write.
         config=self.settings.for_run(run_id)['sql']
         with pymysql.connect(**config) as db:
             with db.cursor() as cursor:
                 cursor.execute('DROP DATABASE IF EXISTS `eval_'+run_id+'`')
             db.commit()
-        self.store.put_setting('dataset-run:' + run_id, None)
