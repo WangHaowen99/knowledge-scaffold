@@ -653,6 +653,112 @@ def test_migrate_from_modeling_end_to_end(manager: WorkspaceManager, tmp_path: P
     assert sum(1 for p in manager.list_projects() if p.get("migrated_from") == "pj_test1") == 1
 
 
+_PROJECTS_TABLE = (
+    "CREATE TABLE projects (id TEXT, owner TEXT, external_id TEXT, kind TEXT,"
+    " name TEXT, domain TEXT, background TEXT)"
+)
+_INSERT_PROJECT = "INSERT INTO projects VALUES (?, 'operator_a', ?, ?, ?, '', '')"
+# 旧版 modeling 库没有 external_id、kind 列
+_LEGACY_PROJECTS_TABLE = "CREATE TABLE projects (id TEXT, owner TEXT, name TEXT, domain TEXT, background TEXT)"
+_INSERT_LEGACY_PROJECT = "INSERT INTO projects VALUES (?, 'operator_a', ?, '', '')"
+# 合成项目：(id, external_id, kind, name)
+_MIGRATION_PROJECTS = [
+    ("pj_user", None, "modeling", "project_alpha"),
+    ("pj_eval", None, "package", "onto-eval-task-1a2b3c4d"),
+    ("pj_eval_retry", None, "package", "onto-eval-project-alpha-5e6f7a8b-1792370497"),
+    ("pj_mirror", "onto:project-beta-9c0d1e2f", "modeling", "project_beta"),
+    ("pj_lookalike", None, "modeling", "onto-eval-project-gamma-3a4b5c6d"),
+    ("pj_notes", None, "package", "onto-evaluation-notes"),
+    ("pj_other_client", "client:42", "modeling", "project_delta"),
+]
+
+
+def _run_modeling_migration(manager, tmp_path, monkeypatch, table, insert, rows, *extra_args):
+    """在合成的 modeling 数据目录上跑迁移，返回已迁移的源项目 id 与 summary。"""
+    import sqlite3
+    import sys
+
+    sys.path.append(str(Path(__file__).resolve().parents[1] / "scripts"))
+    import migrate_from_modeling as mig
+
+    source = tmp_path / "modeling-data"
+    source.mkdir(exist_ok=True)
+    database = source / "modeling.db"
+    if not database.exists():
+        db = sqlite3.connect(database)
+        db.execute(table)
+        db.execute(
+            "CREATE TABLE documents (project_id TEXT, filename TEXT, kind TEXT,"
+            " text_content TEXT, tables_json TEXT, lifecycle_status TEXT)"
+        )
+        db.executemany(insert, rows)
+        db.commit()
+        db.close()
+
+    from app import config as app_config
+
+    monkeypatch.setattr(app_config, "DATA_DIR", manager.workspaces_dir.parent)
+    monkeypatch.setattr(app_config, "ASSETS_DIR", manager.assets_dir)
+    summary = tmp_path / "summary.json"
+    monkeypatch.setattr(sys, "argv", ["mig", "--source", str(source), "--summary-file", str(summary), *extra_args])
+    assert mig.main() == 0
+    migrated = sorted(p.get("migrated_from") or "" for p in manager.list_projects())
+    return migrated, json.loads(summary.read_text(encoding="utf-8"))
+
+
+def test_migrate_from_modeling_skips_evaluation_and_onto_linked_projects(
+    manager: WorkspaceManager, tmp_path: Path, monkeypatch, capsys
+):
+    migrated, summary = _run_modeling_migration(
+        manager, tmp_path, monkeypatch, _PROJECTS_TABLE, _INSERT_PROJECT, _MIGRATION_PROJECTS,
+    )
+
+    # 用户建模项目、用户导入的知识包、其他系统的关联项目照常迁移，名称像评测的用户项目不误伤
+    assert migrated == ["pj_lookalike", "pj_notes", "pj_other_client", "pj_user"]
+    assert summary == {"schemaVersion": "core-project-migration/v1", "sourceProjects": 7,
+                       "migrated": 4, "skipped": 3, "excluded": 3}
+    output = capsys.readouterr().out
+    assert "跳过 pj_eval（onto-eval-task-1a2b3c4d）：Onto 数据评测导入的项目，无需迁移" in output
+    assert "跳过 pj_eval_retry（onto-eval-project-alpha-5e6f7a8b-1792370497）：Onto 数据评测导入的项目" in output
+    assert "跳过 pj_mirror（project_beta）：Onto 项目在 modeling 侧的关联项目，无需迁回" in output
+
+    # 重跑：已迁移的计入 skipped，不迁移的仍单独计数，总数与源库一致
+    migrated, summary = _run_modeling_migration(
+        manager, tmp_path, monkeypatch, _PROJECTS_TABLE, _INSERT_PROJECT, _MIGRATION_PROJECTS,
+    )
+    assert len(migrated) == 4
+    assert summary == {"schemaVersion": "core-project-migration/v1", "sourceProjects": 7,
+                       "migrated": 0, "skipped": 7, "excluded": 3}
+
+
+def test_migrate_from_modeling_single_project_counts_only_that_project(
+    manager: WorkspaceManager, tmp_path: Path, monkeypatch, capsys
+):
+    migrated, summary = _run_modeling_migration(
+        manager, tmp_path, monkeypatch, _PROJECTS_TABLE, _INSERT_PROJECT, _MIGRATION_PROJECTS,
+        "--project", "pj_user",
+    )
+
+    assert migrated == ["pj_user"]
+    assert summary == {"schemaVersion": "core-project-migration/v1", "sourceProjects": 1,
+                       "migrated": 1, "skipped": 0, "excluded": 0}
+    assert "跳过 pj_" not in capsys.readouterr().out
+
+
+def test_migrate_from_modeling_legacy_database_skips_evaluation_by_name(
+    manager: WorkspaceManager, tmp_path: Path, monkeypatch
+):
+    rows = [("pj_user", "project_alpha"), ("pj_eval", "onto-eval-task-1a2b3c4d"),
+            ("pj_notes", "onto-evaluation-notes")]
+    migrated, summary = _run_modeling_migration(
+        manager, tmp_path, monkeypatch, _LEGACY_PROJECTS_TABLE, _INSERT_LEGACY_PROJECT, rows,
+    )
+
+    assert migrated == ["pj_notes", "pj_user"]
+    assert summary == {"schemaVersion": "core-project-migration/v1", "sourceProjects": 3,
+                       "migrated": 2, "skipped": 1, "excluded": 1}
+
+
 def test_cce_migration_stages_wal_and_reports_counts(tmp_path: Path, monkeypatch, capsys):
     import sqlite3
     import subprocess
