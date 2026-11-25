@@ -100,6 +100,92 @@ def verify_quote(root: Path, capsys, cases_file: str = "tmp/quote.cases.json"):
     return code, json.loads(out.out) if out.out.strip() else None, out
 
 
+def test_generated_replenishment_requires_both_quantities(workspace, capsys):
+    """Exercise the template and verifier with synthetic inputs and a bound operation."""
+    source = (SCRIPTS.parent / "templates" / "script-template.py").read_text(encoding="utf-8")
+    imports = source[source.index("from __future__"):source.index("def function_name(")]
+    helpers = source[source.index("def _record_key("):]
+    helpers = helpers.replace(
+        '# parser.add_argument("--arg2", default=None, help="{说明}")',
+        'parser.add_argument("--inventory", type=json.loads)',
+    )
+    script = workspace / "ontology/scripts/replenishment_demo.py"
+    script.write_text(
+        '''"""
+关联operation：replenishment_demo
+功能描述：合成补货计算
+输入参数：
+    inventory    object    计算需要 current_qty 和 target_qty 两个非负整数，例：{"current_qty":10,"target_qty":50}
+输出：
+    suggestion_qty    integer    合成建议量
+"""
+'''
+        + imports
+        + '''def function_name(inventory):
+    record = _require_input_fields(inventory, "inventory", ("current_qty", "target_qty"))
+    for field in ("current_qty", "target_qty"):
+        quantity = record[field]
+        if type(quantity) is not int or quantity < 0:
+            raise ValueError(f"inventory.{field} 应为非负整数")
+    return {"suggestion_qty": max(0, record["target_qty"] - record["current_qty"])}
+
+
+'''
+        + helpers,
+        encoding="utf-8",
+    )
+    operations = workspace / "ontology/operation"
+    operations.mkdir()
+    (operations / "replenishment_demo.md").write_text(
+        "# 逻辑描述\n缺少库存记录或必要数量时要求补全。\n", encoding="utf-8",
+    )
+    inputs = [
+        ("missing_record", None, ("inventory",)),
+        ("empty_record", {}, ("inventory.current_qty", "inventory.target_qty")),
+        ("missing_target", {"current_qty": 3}, ("inventory.target_qty",)),
+        ("need_replenishment", {"current_qty": 10, "target_qty": 50}, 40),
+        ("enough_stock", {"current_qty": 50, "target_qty": 10}, 0),
+        ("zero_stock", {"current_qty": 0, "target_qty": 5}, 5),
+        ("null_current", {"current_qty": None, "target_qty": 5}, ("inventory.current_qty",)),
+        ("negative", {"current_qty": 3, "target_qty": -1}, ("inventory.target_qty",)),
+        ("fraction", {"current_qty": 3, "target_qty": 2.5}, ("inventory.target_qty",)),
+        ("boolean", {"current_qty": 3, "target_qty": True}, ("inventory.target_qty",)),
+        ("numeric_string", {"current_qty": 3, "target_qty": "5"}, ("inventory.target_qty",)),
+    ]
+    cases = []
+    for name, inventory, expected in inputs:
+        argv = [] if inventory is None else ["--inventory", json.dumps(inventory)]
+        case = {"name": name, "argv": argv, "expect": "success"}
+        if isinstance(expected, tuple):
+            case.update(expect="error", stdout_contains=["INVALID_INPUT", *expected])
+        cases.append(case)
+
+    descriptor = _load("script_descriptor")
+    assert descriptor.main(["render", "ontology"]) == 0
+    capsys.readouterr()
+    assert "| suggestion_qty | integer |" in script.with_suffix(".md").read_text(encoding="utf-8")
+    relative = script.relative_to(workspace).as_posix()
+    case_file = write_cases(workspace, script.stem, cases)
+    exit_code, output = run_cli(workspace, capsys, "run", relative, "--cases", case_file)
+    report = json.loads(output.out)
+    case_results = report.get("cases")
+    assert isinstance(case_results, list), "Verification report must contain a list of case results"
+    assert (exit_code, report["passed"], report["failed"], report["recorded"]) == (0, 11, 0, True), next(
+        (case.get("stderr") or case.get("reason") for case in case_results if not case.get("ok")),
+        None,
+    )
+    for (_, _, expected), result in zip(inputs, case_results, strict=True):
+        assert result["exit_code"] == 0
+        payload = json.loads(result["stdout"])
+        if isinstance(expected, tuple):
+            assert set(payload) == {"ok", "error"} and payload["ok"] is False
+            assert payload["error"]["code"] == "INVALID_INPUT"
+            assert all(path in payload["error"]["message"] for path in expected)
+        else:
+            assert type(payload["suggestion_qty"]) is int and payload["suggestion_qty"] == expected
+    assert verify.verification_problem(workspace, script) == ""
+
+
 def test_run_falls_back_to_local_and_records_verification(workspace, capsys):
     code, report, _out = verify_quote(workspace, capsys)
 

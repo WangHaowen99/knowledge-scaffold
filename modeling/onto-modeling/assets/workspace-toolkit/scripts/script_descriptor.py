@@ -333,7 +333,7 @@ def descriptor_issues(ontology_dir: Path) -> list[tuple[str, str, str]]:
             issues.append((f"scripts/{name}.py", "警告", (
                 "参数错误以非 0 退出（_public_error(\"INVALID_INPUT\", ...)）：consumer 遇到非 0 退出会直接结束本轮对话，"
                 "智能体没有机会改参数重试。参数错误改用 _invalid_input（退出码 0，输出 ok=false 与字段级原因）；"
-                "记录、字段、编号缺失或记录无法关联不是参数错误，按资料不足输出（写法见 .claude/templates/script-template.py）"
+                "操作明确要求补全的记录或字段也用 _invalid_input。允许缺失的资料按业务约定输出"
             )))
     scripts_dir = Path(ontology_dir) / "scripts"
     for name, content in sorted(expected.items()):

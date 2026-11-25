@@ -13,4 +13,3 @@ openjiuwen[observability,sqlite]>=0.1.19; python_version >= "3.11"
 # openjiuwen 0.1.19 的文件读写锁在两个不同的 task 里加锁、放锁，filelock 4.x 只允许加锁的 task 放锁：
 # 放锁失败导致锁泄漏，之后读写同一路径都要等满 300 秒超时，Jiuwen 一轮因此长时间没有输出
 filelock>=3.25,<4; python_version >= "3.11"
-opentelemetry-sdk>=1.25; python_version >= "3.11"

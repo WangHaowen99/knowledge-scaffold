@@ -113,7 +113,7 @@ def require_identity_free_case(source: str, cases: list[dict]) -> None:
         raise UsageError(
             f"缺少不带编号的成功用例：脚本参数里有编号（{'、'.join(identities)}）。请加一个 expect=success 的用例，"
             "顶层编号参数不传，记录里的编号与外键字段也全部删掉，题面没给取值的记录传 {}，模拟用户只描述情况、"
-            "没给编号的提问（consumer 不允许智能体编造编号）。脚本要照常给出结论，资料不全时输出资料不足，不能报错"
+            "没给编号的提问（consumer 不允许智能体编造编号）。用例应提供该结论所需的其他输入，只省略可选编号和外键"
         )
     if not any(case.get("stdout_contains") for case in identity_free):
         raise UsageError(
@@ -185,7 +185,7 @@ def judge(case: dict, result: dict) -> str:
         if failed_payload:
             return (
                 "预期成功，实际输出的是失败结果（ok=false / error / status=failed），consumer 会当成调用失败；"
-                "资料不足等业务结论写在业务字段里"
+                "按操作约定核对：业务结论写在业务字段里，明确要求补全的输入用例应预期错误"
             )
         if result.get("output_contract_error"):
             return result["output_contract_error"]
