@@ -40,9 +40,10 @@ def function_name(arg1: str, arg2: str | None = None) -> dict:
     # {在此实现业务逻辑，并替换函数名与签名}
     # 纯计算：禁用写法见 .claude/commands/ontology-codegen.md「脚本安全」，注释里也不要提这些模块名
     # 「不通过」「资料不足」等业务结论写在业务字段里，不要用 ok=False / error / status="failed" 表达
-    # 记录、字段、编号或外键缺失、记录之间无法关联，都按「资料不足」等结论正常返回，不要 raise
+    # 操作明确要求缺参时提示补全的，在计算前用 _require_input_fields 校验相应记录和字段。
+    # 缺可选资料、缺编号或无法关联时，按操作约定给出「资料不足」等业务结论。
     # 记录是否提供只看参数传没传：传了（包括 {} 和字段为空）就算提供，缺哪个字段按该字段的规则处理；
-    # 不要用编号或「有没有字段取值」判断记录缺不缺。编号只在两边都有值时核对；参数没传时用 _missing_record 说明
+    # 只有两边都有编号时才核对。若缺记录属于资料不足，用 _missing_record 说明。
     # 记录之间的匹配、去重、分组和 steps 的键都用 _record_key：没有编号时按位置，两个空编号不算同一条
     # 「是/否」字段先用 _yes_no 归一再判断，不要直接写 value == "是"
     # 枚举字段先用 _check_choice 校验取值：不认识的取值不能当成「条件不满足」往下算
@@ -76,6 +77,18 @@ def _missing_record(param: str) -> str:
     return f"缺失（参数 {param} 未传；如果题面说明这条记录已提供、只是没给取值，请传 {param}={{}} 后重新调用）"
 
 
+def _require_input_fields(record: object, param: str, fields: tuple[str, ...]) -> dict:
+    """校验操作明确要求补全的记录和字段，再由业务函数核对值的类型和范围。"""
+    if record is None:
+        raise ValueError(f"请补全 {param} 记录")
+    if not isinstance(record, dict):
+        raise ValueError(f"{param} 应为对象")
+    missing = [f"{param}.{field}" for field in fields if record.get(field) is None]
+    if missing:
+        raise ValueError(f"请补全 {'、'.join(missing)}")
+    return record
+
+
 def _yes_no(value) -> str | None:
     """「是/否」字段归一：图数据源把是/否列存成布尔值，查询结果原样拷贝过来就是 true/false。
     返回「是」「否」；取值缺失或认不出时返回 None，由调用方按资料不足处理。不需要时可删除。"""
@@ -99,7 +112,7 @@ def _cli() -> int:
     try:
         result = function_name(**vars(args))
     except ValueError as exc:
-        # 入口校验抛出的参数形态错误，如「events[1].EVENT_DATE 不是 YYYY-MM-DD 格式」；不回显取值
+        # 入口校验给出要补全或更正的参数路径，避免回显取值。
         return _invalid_input(str(exc))
     except Exception as exc:  # 意料之外的异常：写清出错的步骤
         return _public_error("SCRIPT_FAILED", f"{{当前步骤}}出错（{type(exc).__name__}）")
@@ -108,9 +121,10 @@ def _cli() -> int:
 
 
 def _invalid_input(message: str) -> int:
-    """参数形态错误（类型、格式、取值范围不对），智能体改了参数就能重试：退出码 0，输出 ok=false 与字段级原因。
-    consumer 把它当作这次调用失败，原因交给智能体；非 0 退出则会直接结束本轮对话。
-    资料缺失（记录、字段、编号缺失或记录无法关联）不是参数错误，按「资料不足」等业务结论输出。返回退出码。"""
+    """参数不符合操作输入约定时输出 ok=false 与字段级原因，返回退出码 0。
+
+    消费端据此提示用户补全或更正后再调用。允许缺失的资料按操作规则给出业务结论。
+    """
     _emit(json.dumps({"ok": False, "error": {"code": "INVALID_INPUT", "message": message[:240]}}, ensure_ascii=False))
     return 0
 
