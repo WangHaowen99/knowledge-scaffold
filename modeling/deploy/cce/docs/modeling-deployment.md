@@ -372,7 +372,7 @@ bash deploy/install-cce.sh upgrade \
 
 安装器从已安装的 Helm values 自动识别旧三服务、旧五服务或新三服务，无需额外退役参数。旧三服务首次升级时快照 Core、Agent、Onto 三卷；原五服务 release 升级时快照五卷；新三服务后续升级仅快照 Onto、Hub、Evaluation 三卷。旧三服务升级所需的 Hub、评测 PVC 必须预先创建且为 Bound 状态，并确保未被其他 Pod 挂载。安装器等待 CSI `VolumeAttachment` 完成卸载，再执行 Helm 升级并恢复单副本。原 Core、Agent PVC/PV 和快照不会自动删除，供必要时回退。旧 Core/MCP/Agent 入口随 Helm 升级删除，使用它们的客户端须先切换。
 
-检测到旧 Core 时，安装器在旧 Pod 停止并完成快照后，用新版 Onto 镜像创建临时迁移 Job，分别挂载只读 Core PVC 与可写 Onto PVC。Job 在 Onto 卷上生成一致的 SQLite 副本，调用与虚拟机相同的 `migrate_from_modeling.py`，迁移 Core 项目元数据、已解析资料及部分知识包文件；按 `migrated_from` 标记跳过已迁移项目。安装器核对源项目数与迁移/跳过数，删除 Job 及 Pod 并释放卷后才启动新版 Onto。Job 失败或数量不符时停止升级并尝试回滚；已写入 Onto 卷的项目不会由 Helm 回滚清除，重试依赖迁移标记避免重复创建。旧 Agent 运行记录、Core MCP Token 与旧评测历史不在此迁移范围，仍需按业务要求另行处理，旧卷和快照保留。
+检测到旧 Core 时，安装器在旧 Pod 停止并完成快照后，用新版 Onto 镜像创建临时迁移 Job，分别挂载只读 Core PVC 与可写 Onto PVC。Job 在 Onto 卷上生成一致的 SQLite 副本，调用与虚拟机相同的 `migrate_from_modeling.py`，迁移 Core 项目元数据、已解析资料及部分知识包文件；按 `migrated_from` 标记跳过已迁移项目。Onto 数据评测导入的知识包项目（名称 `onto-eval-<Onto 项目 id>`，重名时带时间戳后缀）和 Onto 项目在 Core 中的关联项目（`external_id` 以 `onto:` 开头）内容来自 Onto 自身，不迁移，计入跳过数，并在结果中单独记为 `excluded`。安装器核对源项目数与迁移/跳过数，删除 Job 及 Pod 并释放卷后才启动新版 Onto。Job 失败或数量不符时停止升级并尝试回滚；已写入 Onto 卷的项目不会由 Helm 回滚清除，重试依赖迁移标记避免重复创建。旧 Agent 运行记录、Core MCP Token 与旧评测历史不在此迁移范围，仍需按业务要求另行处理，旧卷和快照保留。
 
 新 CCE Chart 为 Onto 设置 `ONTO_WEB_MODELING_CORE_RETIRED=true`。旧项目的 `modeling_project_id` 等元数据不会自动删除；Onto 的成员修改与项目删除不再访问已退役的 Core，历史 Core 清理任务停止重试并保留记录。升级前盘点仍需使用旧 MCP Token、Agent 记录或旧评测数据的调用方，并安排这些数据的迁移或替代。
 

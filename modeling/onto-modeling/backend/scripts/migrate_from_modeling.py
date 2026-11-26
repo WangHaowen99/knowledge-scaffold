@@ -13,6 +13,9 @@
 
 幂等：工作区 meta 记录 migrated_from=<modeling项目id>，重复运行自动跳过。
 
+不迁移内容来自 Onto 自身的两类项目，迁回会生成重复的同名项目：Onto 数据评测导入的
+知识包项目，以及 Onto 项目在 modeling 侧的关联项目（见 not_migrated_reason）。
+
 用法（容器内）：
     python3 scripts/migrate_from_modeling.py --source /tmp/modeling-data [--owner 用户名]
 """
@@ -40,6 +43,31 @@ PACKAGE_DIR_MAP = {
     "diagrams": "ontology/diagrams",
 }
 SKIP_PACKAGE_DIRS = {"mappings"}
+# Onto 数据评测导入 modeling 时的包名：onto-eval-<Onto 项目 id>，重名时追加 -<时间戳>；
+# Onto 项目 id 为 <slug>-<8 位十六进制>
+EVALUATION_PROJECT_NAME = re.compile(r"onto-eval-[a-z0-9-]+-[0-9a-f]{8}(?:-[0-9]{10})?")
+# Onto 为自己的项目在 modeling 侧建关联项目时写入的 external_id 前缀
+ONTO_PROJECT_EXTERNAL_ID_PREFIX = "onto:"
+
+
+def not_migrated_reason(project: dict) -> str:
+    """内容来自 Onto 自身、迁回会重复的 modeling 项目返回原因，其余返回空串。
+
+    评测项目要同时满足 kind=package 与评测包名格式：用户导入的知识包同为 package，
+    用户建模项目可能恰好以 onto-eval 开头。旧版 modeling 库没有 kind、external_id 列时按缺失处理。
+    """
+    if str(project.get("external_id") or "").startswith(ONTO_PROJECT_EXTERNAL_ID_PREFIX):
+        return "Onto 项目在 modeling 侧的关联项目，无需迁回"
+    if project.get("kind") in (None, "package") and EVALUATION_PROJECT_NAME.fullmatch(project.get("name") or ""):
+        return "Onto 数据评测导入的项目，无需迁移"
+    return ""
+
+
+def read_projects(db: sqlite3.Connection) -> list[dict]:
+    """按列名读取 modeling 项目；kind、external_id 在旧版库中不存在。"""
+    cursor = db.cursor()
+    cursor.row_factory = sqlite3.Row
+    return [dict(row) for row in cursor.execute("SELECT * FROM projects")]
 
 
 def strip_frontmatter(text: str) -> str:
@@ -161,20 +189,25 @@ def main() -> int:
     }
 
     db = sqlite3.connect(str(db_path))
-    projects = db.execute(
-        "SELECT id, owner, name, domain, background FROM projects"
-    ).fetchall()
+    projects = read_projects(db)
 
-    done = skipped = 0
+    done = skipped = excluded = 0
     failed: list[str] = []
-    for pid, owner, name, domain, background in projects:
+    for project in projects:
+        pid, owner, name = project.get("id"), project.get("owner"), project.get("name")
         if args.project and pid != args.project:
+            continue
+        reason = not_migrated_reason(project)
+        if reason:
+            print(f"跳过 {pid}（{name}）：{reason}")
+            skipped += 1
+            excluded += 1
             continue
         if pid in migrated_ids:
             print(f"跳过 {pid}（{name}）：已迁移")
             skipped += 1
             continue
-        bg = "；".join(x for x in [domain, background] if x)
+        bg = "；".join(x for x in [project.get("domain"), project.get("background")] if x)
         meta = mgr.create_project(
             name, owner=args.owner or owner or "", background=bg
         )
@@ -197,7 +230,8 @@ def main() -> int:
         print(f"已迁移 {pid} → {meta['id']}（{name}）：资料 {docs} 份，知识包文件 {files} 个")
         done += 1
 
-    print(f"\n完成：迁移 {done} 个项目，跳过 {skipped} 个，失败 {len(failed)} 个。")
+    print(f"\n完成：迁移 {done} 个项目，跳过 {skipped} 个（其中评测和 Onto 关联项目 {excluded} 个不迁移），"
+          f"失败 {len(failed)} 个。")
     if done:
         print("提示：迁移文档保留 modeling 原结构，建议在各项目里跑一次 /ontology-validate，")
         print("     由助手按本工具集的模板规范化章节。")
@@ -208,9 +242,11 @@ def main() -> int:
         summary = Path(args.summary_file)
         summary.parent.mkdir(parents=True, exist_ok=True)
         temporary = summary.with_name(summary.name + ".tmp")
+        # skipped 含 excluded：部署器按 migrated + skipped == 源库项目数核对
         temporary.write_text(json.dumps({"schemaVersion": "core-project-migration/v1",
                                          "sourceProjects": done + skipped,
-                                         "migrated": done, "skipped": skipped}, sort_keys=True) + "\n",
+                                         "migrated": done, "skipped": skipped,
+                                         "excluded": excluded}, sort_keys=True) + "\n",
                              encoding="utf-8")
         temporary.replace(summary)
     return 0

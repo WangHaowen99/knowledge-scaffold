@@ -36,6 +36,9 @@ vi .env              # 默认 Auth 契约已填；实际契约不同时修改
 `deploy.sh` 检测到运行中的旧 `mw-modeling` 容器时，会调用
 `migrate-from-modeling.sh` 将项目元数据、已解析资料和部分知识包文件迁入 Onto。
 迁移按项目标记幂等；旧 Core 的 MCP Token、Agent 运行记录和评测历史不在迁移范围。
+内容来自 Onto 自身的两类旧 Core 项目不迁移，避免出现重复的同名项目：Onto 数据评测导入的
+知识包项目（类型为知识包，名称为 `onto-eval-<Onto 项目 id>`，重名时带时间戳后缀），以及 Onto
+项目在旧 Core 中的关联项目（`external_id` 以 `onto:` 开头）。用户建模项目和用户导入的知识包照常迁移。
 部署脚本不会自动配置旧 Core 的评测地址或 MCP 关联地址；若要退役旧 Core，须先处理
 其余客户端与旧数据，再删除相关配置。`.env` 含运行凭据，不可提交到 Git 或打入发布包。
 
@@ -154,7 +157,8 @@ Modeling Workbench（容器 `mw-modeling`）的源码已从仓库删除，仓库
 deploy.sh 部署完成后会自动检测 `mw-modeling` 容器（可用
 `ONTO_MODELING_MIGRATE_FROM=<容器名>` 覆盖），存在即执行
 `migrate-from-modeling.sh` 把项目/资料/知识包迁入本服务；迁移幂等，
-已迁移的项目自动跳过，也可随时手动重跑该脚本。
+已迁移的项目自动跳过，也可随时手动重跑该脚本。Onto 数据评测导入的项目和 Onto 项目的关联项目
+不迁移（规则见上文「旧 Core 项目迁移」）。
 Workbench 数据库处于 WAL 模式，脚本在 `mw-modeling` 容器内用 `VACUUM INTO` 导出一致性快照再迁移，
 因此需要该容器在运行中。迁移失败不影响 Onto Modeling 本身，deploy.sh 会打印 `[WARN]` 和重跑命令。
 

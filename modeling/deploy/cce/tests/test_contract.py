@@ -1960,7 +1960,7 @@ class CceContractTests(unittest.TestCase):
                   "modeling": {"workloads": {"onto": {"nodeSelector": {}}}}}
         before = {"core": {"claimName": "core-data"}, "onto": {"claimName": "onto-data"}}
         summary = {"schemaVersion": "core-project-migration/v1", "sourceProjects": 2,
-                   "migrated": 1, "skipped": 1}
+                   "migrated": 1, "skipped": 1, "excluded": 1}
         created = []
         calls = []
 
