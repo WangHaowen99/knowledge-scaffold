@@ -158,7 +158,8 @@ def test_release_creator_is_immutable_across_users_and_duplicate_uploads(store, 
     assert second['creator'] == second_user
     store.recover_all()
     assert store.listing('ontology_demo', first_actor.subject)['items'] == [second, first]
-    assert store.packages(first_actor.subject)['items'] == [second]
+    assert store.packages(first_actor.subject)['items'] == [
+        dict(second, latest_release_version=second['version'])]
     assert store.release('ontology_demo', first['release_id'], second_actor.subject)[0] == first
     store.revoke('ontology_demo', second_actor.subject, first_actor.subject)
     store.recover_all()

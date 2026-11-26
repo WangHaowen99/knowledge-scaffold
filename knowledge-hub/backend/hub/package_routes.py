@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from .package_contract import DelegationBody, Kind, PackageError, PublishBody, GrantBody
 from .package_store import PackageStore, public
+from .package_queries import PackageQueries
 from .storage import HubError, read_json, digest
 from .user_auth import authenticate, require_direct, validate_targets
 
@@ -30,6 +31,20 @@ def create_router(get_store, stream_file):
         except HubError as exc:
             raise PackageError('package_error', 'Package operation failed', exc.status) from exc
         except (OSError, ValueError, KeyError) as exc:
+            raise PackageError('storage_unavailable', 'Package storage unavailable', 503, 'storage') from exc
+
+    @contextmanager
+    def query(request):
+        actor = authenticate(request)
+        require_direct(actor)
+        request.scope['hub_query_complete'] = True
+        try:
+            yield PackageQueries(get_store()), actor
+        except PackageError:
+            raise
+        except HubError as exc:
+            raise PackageError('package_error', 'Package operation failed', exc.status) from exc
+        except (OSError, ValueError, KeyError, TypeError) as exc:
             raise PackageError('storage_unavailable', 'Package storage unavailable', 503, 'storage') from exc
 
     @router.post('/api/package-publish-requests')
@@ -71,15 +86,13 @@ def create_router(get_store, stream_file):
 
     @router.get('/api/packages')
     def packages(request: Request, offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=100)):
-        with operation(request) as (store, actor):
-            require_direct(actor)
+        with query(request) as (store, actor):
             return store.packages(actor.subject, offset, limit)
 
     @router.get('/api/packages/{ontology_id}/releases')
     def releases(ontology_id: str, request: Request, kind: Kind = 'release',
                  offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=100)):
-        with operation(request) as (store, actor):
-            require_direct(actor)
+        with query(request) as (store, actor):
             return store.listing(ontology_id, actor.subject, kind, offset, limit)
 
     @router.get('/api/packages/{ontology_id}/releases/{release_id}')

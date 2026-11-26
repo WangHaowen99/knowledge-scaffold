@@ -1,7 +1,8 @@
 """Ontology-scoped packages with durable request intents and immutable ZIP archives.
 
-All entry points run under the shared Store's global cross-process lock. A
-request is the recovery journal; only a durable committing intent can publish.
+Mutation and recovery entry points run under the shared Store's global lock.
+HTTP listings use package_queries for concurrent reads. A request is the
+recovery journal; only a durable committing intent can publish.
 """
 import hashlib
 import json
@@ -437,17 +438,8 @@ class PackageStore:
         return rows[0]
 
     def packages(self, subject, offset=0, limit=20):
-        rows = []
-        for path in (self.root / 'packages').glob('*/metadata.json'):
-            meta = read_json(path)
-            if meta['state'] == 'active' and subject in meta['authorized_users']:
-                try:
-                    rows.append(self.summary(meta['ontology_id'], subject))
-                except PackageError as exc:
-                    if exc.code != 'not_found':
-                        raise
-        rows.sort(key=lambda r: (r['committed_at'], r['ontology_id']), reverse=True)
-        return self.page(rows, offset, limit)
+        from .package_queries import PackageQueries
+        return PackageQueries(self.io).packages(subject, offset, limit)
 
     @staticmethod
     def page(rows, offset, limit):
