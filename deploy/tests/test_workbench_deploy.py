@@ -12,6 +12,7 @@ from deploy_synthetic_credentials import (
     AUTH_ADMIN_TOKEN,
     BOOTSTRAP_ADMIN_SECRET,
     MODELING_SERVICE_TOKEN,
+    prepare_consumer_integration,
 )
 from test_knowledge_hub_deploy import _run as _run_script
 
@@ -825,6 +826,8 @@ esac\
 def _write_release_package(path: Path, top: str, files: dict[str, str]) -> Path:
     """合成发布包：files 中 .sh 结尾和 opsctl 写成可执行脚本，其余原样写入。"""
     stage = path.parent / f"{path.name}.stage"
+    if top == 'onto-agent':
+        prepare_consumer_integration(stage / top / 'deploy')
     for relative, body in files.items():
         target = stage / top / relative
         if relative.endswith((".sh", "/opsctl")):
