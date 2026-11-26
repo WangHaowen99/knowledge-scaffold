@@ -287,8 +287,6 @@ deploy_knowledge_hub() { # <Hub 部署脚本> <onto-modeling 目录>
     onto_token="$(env_get "$2/.env" ONTO_HUB_SERVICE_TOKEN)"
     log "Deploying Knowledge Package Hub (independent compose project)"
     CONSUMER_NETWORK="${network}" HUB_SERVICE_TOKEN="${onto_token:-${HUB_SERVICE_TOKEN:-}}" \
-    HUB_CONSUMER_SERVICE_TOKEN="$(first_env_value HUB_CONSUMER_SERVICE_TOKEN \
-        "${SCRIPT_DIR}/../consumer/backend/.env" "${SCRIPT_DIR}/../backend/.env" "${INSTALL_DIR}/backend/.env")" \
     HUB_AUTH_URL="${STACK_AUTH_URL}" HUB_AUTH_ISSUER="${STACK_AUTH_ISSUER}" bash "$1"
 }
 
@@ -336,26 +334,6 @@ ensure_flywheel_service_token() { # <consumer backend/.env>
     [ "${secret}" != "$(env_get "$1" MODELING_SERVICE_TOKEN)" ] && [ "${secret}" != "$(env_get "$1" EVALUATION_SERVICE_TOKEN)" ] \
         || die "FLYWHEEL_SERVICE_TOKEN must differ from MODELING_SERVICE_TOKEN and EVALUATION_SERVICE_TOKEN"
     env_set "$1" FLYWHEEL_SERVICE_TOKEN "${secret}"
-}
-
-initialize_consumer_integration() {
-    local consumer_root="$1" tools="$2" hub_env="$3" issuer hub_url evaluation_url
-    [ -f "${tools}/integration_config.sh" ] || die 'Consumer 缺少 integration_config.sh，请使用配套发布包'
-    [ -f "${consumer_root}/backend/.env" ] || cp "${consumer_root}/backend/.env.example" "${consumer_root}/backend/.env"
-    ensure_evaluation_service_token "${consumer_root}/backend/.env"
-    issuer="$(env_get "${hub_env}" HUB_AUTH_ISSUER)"
-    if [ -z "${issuer}" ]; then
-        issuer="${AUTH_SERVER_ISSUER:-$(env_get "${consumer_root}/backend/.env" AUTH_SERVER_ISSUER)}"
-        issuer="${issuer:-http://auth-server:5056}"
-    fi
-    hub_url="$(env_get "${consumer_root}/backend/.env" HUB_BASE_URL)"
-    evaluation_url="$(env_get "${consumer_root}/backend/.env" FLYWHEEL_EVALUATION_URL)"
-    bash "${tools}/integration_config.sh" --consumer-env "${consumer_root}/backend/.env" \
-        --hub-env "${hub_env}" --hub-url "${hub_url:-http://knowledge-hub:8200}" \
-        --evaluation-url "${evaluation_url:-http://knowledge-evaluation:5180}" \
-        --issuer "${issuer}"
-    HUB_ENABLED="$(env_get "${consumer_root}/backend/.env" HUB_ENABLED)"
-    export HUB_ENABLED
 }
 
 first_env_value() { # <键> <文件>...：返回第一个非空值，用于在源码、发布包与安装目录布局间查找
@@ -491,13 +469,6 @@ fi
 # dispatch through its upgrade flow so BUNDLE_ROOT and persistent data stay
 # bound to the real installation directory.
 BUNDLE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-if [ -f "${SCRIPT_DIR}/deploy-consumer.sh" ] && [ "${ONTO_MODELING_ONLY}" = 0 ] \
-    && [ "${KNOWLEDGE_HUB_ONLY}" = 0 ]; then
-    for required in integration_config.sh env_config.sh integration_probe.py; do
-        [ -f "${SCRIPT_DIR}/${required}" ] && [ ! -L "${SCRIPT_DIR}/${required}" ] \
-            || die "Consumer 发布包缺少配置依赖：${required}"
-    done
-fi
 if [ -f "${SCRIPT_DIR}/manifest.json" ] && [ "${BUNDLE_ROOT}" != "${INSTALL_DIR}" ]; then
     EXISTING_INSTALL=false
     for marker in \
@@ -528,13 +499,8 @@ if [ -f "${SCRIPT_DIR}/manifest.json" ] && [ "${BUNDLE_ROOT}" != "${INSTALL_DIR}
         # upgrade.sh 沿用安装目录的 consumer 配置：先补齐评测凭据，consumer 升级重启后生效
         if [ -f "${INSTALL_DIR}/backend/.env" ]; then
             ensure_evaluation_service_token "${INSTALL_DIR}/backend/.env"
-            initialize_consumer_integration "${INSTALL_DIR}" "${SCRIPT_DIR}" "${INSTALL_DIR}/knowledge-hub/.env"
         fi
         bash "${SCRIPT_DIR}/upgrade.sh" "${UPGRADE_ARGS[@]}"
-        if [ -f "${INSTALL_DIR}/knowledge-hub/.env" ] && [ -d "${BUNDLE_ROOT}/knowledge-hub" ]; then
-            (umask 077 && cp "${INSTALL_DIR}/knowledge-hub/.env" "${BUNDLE_ROOT}/knowledge-hub/.env")
-            chmod 600 "${BUNDLE_ROOT}/knowledge-hub/.env"
-        fi
         # upgrade.sh 只覆盖 consumer；Hub 与 onto-modeling 升级后继续拉起
         if [ "${CONSUMER_ONLY}" = "0" ]; then
             deploy_bundle_hub_and_onto_modeling
@@ -546,8 +512,6 @@ if [ -f "${SCRIPT_DIR}/manifest.json" ] && [ "${BUNDLE_ROOT}" != "${INSTALL_DIR}
             (umask 077 && cp "${INSTALL_DIR}/eval-service/deploy/.env" "${BUNDLE_ROOT}/eval-service/deploy/.env")
         fi
         deploy_evaluation
-        bash "${SCRIPT_DIR}/integration_config.sh" --check-running \
-            || warn 'Hub 或评测连接检查未通过，请检查目标服务状态及连接配置'
         exit 0
     fi
 fi
@@ -596,7 +560,6 @@ ensure_release_modeling_service_token "${BUNDLE_ROOT}"
 if [ "${ONTO_MODELING_ONLY}" = "0" ] && [ "${KNOWLEDGE_HUB_ONLY}" = "0" ]; then
     [ -f "${CONSUMER_DEPLOY}" ] || die "Consumer deploy script not found: ${CONSUMER_DEPLOY}"
     ensure_evaluation_service_token "${BUNDLE_ROOT}/backend/.env"
-    initialize_consumer_integration "${BUNDLE_ROOT}" "${SCRIPT_DIR}" "${BUNDLE_ROOT}/knowledge-hub/.env"
     log "Deploying consumer services"
     bash "${CONSUMER_DEPLOY}"
 fi
@@ -606,8 +569,4 @@ if [ "${CONSUMER_ONLY}" = "0" ]; then
 fi
 
 deploy_evaluation
-if [ "${ONTO_MODELING_ONLY}" = "0" ] && [ "${KNOWLEDGE_HUB_ONLY}" = "0" ]; then
-    bash "${SCRIPT_DIR}/integration_config.sh" --check-running \
-        || warn 'Hub 或评测连接检查未通过，请检查目标服务状态及连接配置'
-fi
 log "Deployment finished successfully"

@@ -12,7 +12,6 @@ from contextlib import contextmanager
 import unittest
 
 from test_knowledge_hub_deploy import _run as run_script
-from deploy_synthetic_credentials import prepare_consumer_integration
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -46,7 +45,6 @@ def deployment():
     with TemporaryDirectory(prefix='evaluation-deploy-test-') as directory:
         root = Path(directory)
         (root / 'deploy').mkdir()
-        prepare_consumer_integration(root / 'deploy')
         shutil.copy2(ROOT / 'deploy/deploy.sh', root / 'deploy/deploy.sh')
         config = root / 'evaluation.config'
         config.write_text('# Synthetic configuration; no credentials.\n')

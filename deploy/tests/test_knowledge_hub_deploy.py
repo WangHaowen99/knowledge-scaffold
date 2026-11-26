@@ -12,7 +12,6 @@ import tarfile
 from pathlib import Path
 
 import pytest
-from deploy_synthetic_credentials import prepare_consumer_integration
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_ROOT = REPO_ROOT / "deploy"
@@ -519,7 +518,6 @@ def test_only_flags_cannot_be_combined(tmp_path: Path, flags: tuple[str, str]) -
 def _release_bundle(tmp_path: Path, *, with_hub: bool = True) -> tuple[Path, dict[str, str]]:
     deploy_dir = tmp_path / "deploy"
     deploy_dir.mkdir()
-    prepare_consumer_integration(deploy_dir)
     shutil.copy2(DEPLOY_ROOT / "deploy.sh", deploy_dir / "deploy.sh")
     (tmp_path / "backend").mkdir()
     (tmp_path / "backend" / ".env.example").write_text(

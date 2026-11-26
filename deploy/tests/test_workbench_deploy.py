@@ -107,7 +107,6 @@ def test_root_deploy_rejects_the_removed_modeling_only_option(tmp_path: Path) ->
 def test_root_release_deploys_consumer_and_skips_leftover_workbench(tmp_path: Path, evaluation_runtime) -> None:
     deploy_dir = tmp_path / "deploy"
     deploy_dir.mkdir()
-    prepare_consumer_integration(deploy_dir)
     shutil.copy2(DEPLOY_ROOT / "deploy.sh", deploy_dir / "deploy.sh")
     backend_dir = tmp_path / "backend"
     backend_dir.mkdir()
