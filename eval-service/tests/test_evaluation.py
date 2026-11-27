@@ -163,13 +163,14 @@ def environment(tmp_path):
         yield client,app,deps,cfg
 
 
-def test_refresh_proxy_distinguishes_invalid_credentials_from_temporary_failures(environment):
+@pytest.mark.parametrize('rejected_status', [400, 401])
+def test_refresh_proxy_distinguishes_invalid_credentials_from_temporary_failures(environment, rejected_status):
     client, _, deps, _ = environment
     original = deps.json
 
     def invalid(method, base, path, **kwargs):
         if path == '/token':
-            raise Failure('dependency_rejected', 'Synthetic rejection', 503, 'dependency', upstream_status=400)
+            raise Failure('dependency_rejected', 'Synthetic rejection', 503, 'dependency', upstream_status=rejected_status)
         return original(method, base, path, **kwargs)
 
     deps.json = invalid

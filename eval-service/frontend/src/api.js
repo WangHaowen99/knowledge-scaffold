@@ -114,6 +114,9 @@ export async function api(path, body, method = body === undefined ? 'GET' : 'POS
     if (localStorage.getItem(TOKEN) !== token) return api(path, body, method, false, read, session, options);
     window.dispatchEvent(new CustomEvent('evaluation-auth-required', { detail: { session, token } }));
   }
+  if (response.status === 401 && !retry && !path.startsWith('/auth/')) {
+    window.dispatchEvent(new CustomEvent('evaluation-auth-required', { detail: { session, token } }));
+  }
   const data = read === 'text' && response.ok ? await response.text() : await response.json().catch(() => ({}));
   options.signal?.throwIfAborted();
   if (!response.ok)

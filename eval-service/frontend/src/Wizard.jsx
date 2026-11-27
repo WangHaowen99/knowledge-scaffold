@@ -270,7 +270,10 @@ export function Wizard({
         // A model copied from an earlier run may have been disabled since.
         if (value.available) setModelId((id) => (value.items.some((item) => item.id === id) ? id : ''));
       })
-      .catch(() => live && setModels({ available: false, items: [] }));
+      .catch((error) => {
+        if (!live) return;
+        setError(error.status === 403 ? '权限不足，请检查账号权限或完成账号要求的操作' : error.message);
+      });
     return () => {
       live = false;
     };

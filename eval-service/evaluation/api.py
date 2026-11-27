@@ -476,7 +476,7 @@ def create_app(config=None,transport=None):
         try:
             result=http.json('POST',config.auth_url,'/token',json=payload,limit=16384)
         except Failure as exc:
-            if operation=='refresh' and exc.upstream_status==400:
+            if operation=='refresh' and exc.upstream_status in (400, 401):
                 raise Failure('refresh_invalid','登录已过期，请重新认证后继续查看',400,'authorization') from exc
             raise
         return {k:result[k] for k in ('access_token','refresh_token','expires_in','token_type') if k in result}
@@ -955,7 +955,9 @@ def create_app(config=None,transport=None):
         _,token=actor(request)
         try:
             return {'available':True,'items':consumer.selectable_models(token)}
-        except Failure:
+        except Failure as exc:
+            if exc.status != 503:
+                raise
             return {'available':False,'items':[]}
 
     @app.get(f'{prefix}/runs/{{rid}}')

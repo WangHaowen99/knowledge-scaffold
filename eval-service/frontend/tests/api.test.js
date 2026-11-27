@@ -9,6 +9,31 @@ function storage() {
     removeItem: (k) => values.delete(k),
   };
 }
+
+test('a second 401 after renewal requires login without another refresh', async () => {
+  globalThis.localStorage = storage();
+  saveLogin({ access_token: 'synthetic-access-old', refresh_token: 'synthetic-refresh-old' });
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: {} });
+  const events = [];
+  globalThis.CustomEvent = class { constructor(type, options) { this.type = type; this.detail = options.detail; } };
+  globalThis.window = { dispatchEvent: event => events.push(event) };
+  let refreshes = 0;
+  const credentials = [];
+  globalThis.fetch = async (url, init) => {
+    if (url.endsWith('/auth/refresh')) {
+      refreshes += 1;
+      return reply(200, { access_token: 'synthetic-access-new', refresh_token: 'synthetic-refresh-new' });
+    }
+    credentials.push(init.headers.Authorization);
+    return reply(401);
+  };
+  await assert.rejects(api('/consumer-models'), error => error.status === 401);
+  assert.equal(refreshes, 1);
+  assert.deepEqual(credentials, ['Bearer synthetic-access-old', 'Bearer synthetic-access-new']);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, 'evaluation-auth-required');
+  assert.equal(events[0].detail.token, 'synthetic-access-new');
+});
 test('request IDs survive retry and are separated by subject', () => {
   globalThis.localStorage = storage();
   globalThis.sessionStorage = storage();
