@@ -55,10 +55,11 @@ class PackageQueries:
                 raise ValueError('Invalid publication record')
             if row['status'] != 'committed' or row.get('existing'):
                 continue
-            if (row.get('kind') not in ('release', 'evaluation_snapshot')
-                    or any(not isinstance(row.get(key), str) for key in
-                           ('release_id', 'committed_at', 'version'))):
+            if row.get('kind') not in ('release', 'evaluation_snapshot'):
                 raise ValueError('Invalid committed record')
+            for key in ('release_id', 'committed_at', 'version'):
+                if not isinstance(row.get(key), str):
+                    raise ValueError('Invalid committed record')
             yield public(row)
 
     def packages(self, subject, offset=0, limit=20):
