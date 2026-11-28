@@ -351,6 +351,44 @@ probes:
 - 脚本不写文件，结果全打到标准输出，平台写进 `script.output` 并提交。
 - 沙箱不可用时返回 503，不会回退到本机运行。
 
+### 检查类节点（按规则查本体，没过挡住发布）
+
+规则确定的检查（每个对象都标了主键、英文名不为空、名字合格式）用 `script` 节点，规则只写在脚本里：
+
+```yaml
+# flow.yaml（检查类节点）
+probes:
+  my_check_report: {files: [reports], glob: my-check.md}   # 报告在
+  my_check_open: {pending: [reports], glob: my-check.md}   # 报告里还有没过的条目
+nodes:
+  - id: my-check.run
+    title: 检查对象主键
+    kind: script
+    after: core.validate
+    blocks: [core.publish]
+    done: [my_check_report, "!my_check_open"]
+    stale_on: [object]
+    produces:
+      - {path: reports/my-check.md, kind: report}
+    script:
+      name: my_check.py
+      inputs: ["ontology/object/**/*.md"]
+      output: reports/my-check.md
+```
+
+- 脚本从 `sys.argv[1]` 取根目录，只读这个根下的文件。沙箱传 `inputs`，下面的相对路径和工作区一样（`inputs/ontology/object/…`）。
+- 报告第一行写结论（「10 个对象，2 个没标主键」）；每个没过的条目写一行 `- [ ] 车系：没标主键`，过了的不写 `[ ]`。
+  条目多时只列前 20 条和总数，标准输出不超过 1500 字符。
+- 有没过的条目也照常退出码 0：报告写进 `script.output`，`my_check_open` 成立，节点不算完成，发布被挡；改好本体再跑一次，
+  报告里没有 `[ ]` 了才放行。退出码非 0 表示脚本自己出错，平台不写报告，上一次的报告留着。
+- 想让用户在对话里也能说「跑一下这个检查」，加一条命令，正文只写：运行 `python3 .claude/scripts/my_check.py .`
+  （当前目录是项目根，结构和沙箱的 `inputs` 一样），把标准输出原样写进 `reports/my-check.md`，告诉用户第一行的结论。
+  命令正文里不另写一遍规则：两处各写一份，改了一处另一处就对不上。命令在 `flow.yaml` 的 `commands` 里关联到这个节点。
+- 写完先在工作区跑 `python3 scripts/my_check.py <项目根>` 看结论。按现在的本体查不出问题时，在系统临时目录按同样的目录结构
+  造一个违反规则的合成样例再跑，确认报告里出现 `- [ ]`。
+
+要做语义判断的检查（叫法是不是业务名词、两个对象是不是同一个概念）用 `agent` 节点，命令写判断要点，见 `sample-review.check`。
+
 ## 12. 节点怎样进主流程
 
 启用节点包时，平台把包的 `flow.yaml` 和 core 的流程组装成一份，写到 `.claude/flow.yaml`（JSON 写法），节点带 `pack` 字段。

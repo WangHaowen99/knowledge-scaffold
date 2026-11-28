@@ -27,6 +27,7 @@ from app.services.packs import checks, dev_skill
 from app.services.packs import manifest as mf
 from app.services.packs import service as pack_service
 from tests.pack_helpers import NODE_PACK_FLOW, make_node_pack, make_pack
+from tests.proc import git as proc_git
 from tests.proc import run as run_cmd
 from tests.test_private_packs import (AS_OTHER, AS_OWNER, MINE, OWNER, install, post_zip, project,  # noqa: F401
                                        real_flow_env, zipped)
@@ -565,6 +566,73 @@ def test_node_pack_end_to_end(real_flow_env):
     assert {"my-review.check", "my-review.stats"} <= nodes
     assert (root / ".claude" / "scripts" / "my_review_stats.py").is_file()
     assert (root / ".claude" / "commands" / "my-review-run.md").is_file()
+
+
+CHECK_SCRIPT = '''"""合成检查：每个对象文件要有「主键：是」。"""
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1] if len(sys.argv) > 1 else "inputs")
+files = sorted(p for p in (root / "ontology" / "object").rglob("*.md") if p.name != "index.md")
+bad = [p.stem for p in files if "主键：是" not in p.read_text(encoding="utf-8")]
+lines = [f"{len(files)} 个对象，{len(bad)} 个没标主键"] + [f"- [ ] {name}：没标主键" for name in bad[:20]]
+sys.stdout.write("\\n".join(lines) + "\\n")
+'''
+
+
+def _reference_check_flow(skill: Path) -> dict:
+    """能力包参考文档「检查类节点」里的 flow.yaml，原样取出来。"""
+    text = (skill / "references" / "capability.md").read_text(encoding="utf-8")
+    block = text.split("# flow.yaml（检查类节点）\n", 1)[1].split("```", 1)[0]
+    return yaml.safe_load(block)
+
+
+def test_check_node_in_the_reference_blocks_until_the_ontology_passes(real_flow_env):
+    """参考文档教的检查类节点：脚本有没过的条目时节点不算完成（挡发布），改好再跑才完成；命令和节点跑同一个脚本。"""
+    client, manager, tmp_path = real_flow_env
+    pid = project(client)
+    skill = skill_dir(client, tmp_path, "capability")
+
+    def edit(directory: Path) -> None:
+        for old in (directory / "scripts").iterdir():
+            old.unlink()
+        (directory / "scripts" / "my_check.py").write_text(CHECK_SCRIPT, encoding="utf-8")
+        (directory / "commands" / "my-check-run.md").unlink()
+        (directory / "commands" / "my-check-run.md").write_text(
+            "运行 `python3 .claude/scripts/my_check.py .`，把标准输出原样写进 `reports/my-check.md`，告诉用户第一行的结论。\n",
+            encoding="utf-8")
+        flow = _reference_check_flow(skill)
+        flow["commands"] = {"my-check-run": {"node": "my-check.run", "requires": []}}
+        (directory / "flow.yaml").write_text(yaml.safe_dump(flow, allow_unicode=True), encoding="utf-8")
+        data = yaml.safe_load((directory / "manifest.yaml").read_text(encoding="utf-8"))
+        data["contributes"].update(commands=["my-check-run"], scripts=["my_check.py"], nodes=["my-check.run"])
+        (directory / "manifest.yaml").write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+
+    _make(client, tmp_path, "capability", "my-check", "--kind", "node", edit=edit)
+    root = _enable(client, manager, pid, "my-check")
+    node = next(node for node in view.build(root)["nodes"] if node["id"] == "my-check.run")
+    assert "last_run" in node and node["blocks"] == ["core.publish"]  # 脚本节点、发布关卡
+
+    def run_check() -> str:
+        # 对话里的命令：在项目根跑同一个脚本，标准输出写成报告（和沙箱写 script.output 一样）
+        done = run_cmd([sys.executable, str(root / ".claude" / "scripts" / "my_check.py"), "."],
+                       cwd=root, capture_output=True, text=True, timeout=60)
+        assert done.returncode == 0, done.stderr
+        (root / "reports").mkdir(exist_ok=True)
+        (root / "reports" / "my-check.md").write_text(done.stdout, encoding="utf-8")
+        proc_git(root, "-c", "core.hooksPath=/dev/null", "add", "-A")
+        proc_git(root, "-c", "core.hooksPath=/dev/null", "commit", "-qm", "合成：跑检查")
+        return done.stdout
+
+    (root / "ontology" / "object").mkdir(parents=True, exist_ok=True)
+    (root / "ontology" / "object" / "合成订单.md").write_text("# 合成订单\n\n订单号 主键：是\n", encoding="utf-8")
+    (root / "ontology" / "object" / "合成客户.md").write_text("# 合成客户\n\n客户名\n", encoding="utf-8")
+    assert run_check().startswith("2 个对象，1 个没标主键")
+    state = lambda: next(n for n in view.build(root)["nodes"] if n["id"] == "my-check.run")["state"]  # noqa: E731
+    assert state() != "confirmed"
+    (root / "ontology" / "object" / "合成客户.md").write_text("# 合成客户\n\n客户编号 主键：是\n", encoding="utf-8")
+    assert "- [ ]" not in run_check()
+    assert state() == "confirmed"
 
 
 @pytest.mark.parametrize("category, name, entry, scope, content", [
