@@ -9,8 +9,9 @@ import { rpc } from './rpc';
 import { errorText, useToast } from './toast';
 import type { DocumentItem, KnowledgeBase } from './types';
 import { unsupportedType } from './fileTypes';
-import { ACCEPT, MAX_FILE_MB, uploadFile, type ProcessOverrides } from './upload';
-import { Badge, Button, Empty, Field, Modal, NumberField, Spinner } from './ui';
+import { parentUploadFolder } from './folderUpload';
+import { ACCEPT, MAX_FILE_MB, uploadFile, UploadResultUnknown, type ProcessOverrides } from './upload';
+import { Badge, Button, Empty, Field, Menu, Modal, NumberField, Spinner } from './ui';
 
 type Tri = 'inherit' | 'on' | 'off';
 const triOf = (v: unknown): Tri => (v === true ? 'on' : v === false ? 'off' : 'inherit');
@@ -134,7 +135,7 @@ function UploadOptionsModal({
   );
 }
 
-type UploadState = { id: number; name: string; progress: number; error?: string; done?: boolean };
+type UploadState = { id: number; name: string; progress: number; error?: string; unconfirmed?: boolean; done?: boolean };
 type Folder = { path: string; documents: number };
 
 const STATUS_FILTERS = [
@@ -231,11 +232,14 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
   const [folders, setFolders] = useState<Folder[]>([]);
   const [folder, setFolder] = useState('');
   const [uploads, setUploads] = useState<UploadState[]>([]);
+  const [uploadingFolder, setUploadingFolder] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [modal, setModal] = useState<'url' | 'text' | 'options' | null>(null);
   const [overrides, setOverrides] = useState<ProcessOverrides | null>(null);
   const [openDoc, setOpenDoc] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
+  const canPickFolder = 'webkitdirectory' in HTMLInputElement.prototype;
   const uploadSeq = useRef(0);
 
   // the knowledge base's counts (header, sidebar) follow the list: refresh them whenever its total changes
@@ -243,7 +247,7 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
   onChangedRef.current = onChanged;
   const lastTotal = useRef<number | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (refreshCounts = true) => {
     try {
       const res = await rpc.call<{ items: DocumentItem[]; total: number }>('docs.list', {
         kb_id: kb.id,
@@ -255,7 +259,7 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
       setDocs(res.items);
       setTotal(res.total);
       if (!query.trim() && !status) {
-        if (lastTotal.current !== null && lastTotal.current !== res.total) onChangedRef.current();
+        if (refreshCounts && lastTotal.current !== null && lastTotal.current !== res.total) onChangedRef.current();
         lastTotal.current = res.total;
       }
     } catch (err) {
@@ -263,6 +267,10 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
       notify(errorText(err), true);
     }
   }, [kb.id, query, status, folder, notify]);
+
+  // A batch may outlive the list filters that were selected when it started.
+  const latestLoad = useRef(load);
+  latestLoad.current = load;
 
   // a backend with folders lists them with counts; they change when documents come and go
   const withFolders = offers(kb, 'folders');
@@ -315,32 +323,49 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
     ? `支持 ${backend.file_types.map((t) => t.toUpperCase()).join('、')}，单个不超过 ${maxMb}MB`
     : `支持 PDF、Word、PPT、Excel、CSV、Markdown、TXT、HTML，单个不超过 ${maxMb}MB`;
 
-  const startUploads = async (files: FileList | File[]) => {
+  const startUploads = async (files: FileList, fromFolder = false) => {
     const list = Array.from(files);
+    if (!list.length || (fromFolder && uploadingFolder)) return;
+    if (fromFolder) setUploadingFolder(true);
+    let uploaded = 0;
+    let unconfirmed = 0;
     for (const file of list) {
       const id = ++uploadSeq.current;
-      // a dropped file skips the picker's type filter: refuse it here instead of uploading it first
-      const refused = unsupportedType(file.name, backend?.file_types);
-      if (refused) {
-        setUploads((cur) => [...cur, { id, name: file.name, progress: 0, error: refused }]);
-        continue;
-      }
-      setUploads((cur) => [...cur, { id, name: file.name, progress: 0 }]);
+      const name = (fromFolder && file.webkitRelativePath) || file.name;
+      setUploads((cur) => [...cur, { id, name, progress: 0 }]);
       try {
+        const folderPath = fromFolder ? parentUploadFolder(file) : undefined;
+        const refused = unsupportedType(file.name, backend?.file_types);
+        if (refused) throw new Error(refused);
         await uploadFile(
           kb.id,
           file,
           (ratio) => setUploads((cur) => cur.map((u) => (u.id === id ? { ...u, progress: ratio } : u))),
           overrides,
           maxMb,
+          folderPath,
         );
+        uploaded++;
         setUploads((cur) => cur.map((u) => (u.id === id ? { ...u, progress: 1, done: true } : u)));
         window.setTimeout(() => setUploads((cur) => cur.filter((u) => u.id !== id)), 2500);
       } catch (err) {
-        setUploads((cur) => cur.map((u) => (u.id === id ? { ...u, error: errorText(err) } : u)));
+        const unknown = err instanceof UploadResultUnknown;
+        if (unknown) unconfirmed++;
+        setUploads((cur) => cur.map((u) => (u.id === id ? { ...u, error: errorText(err), unconfirmed: unknown } : u)));
       }
-      void load();
-      onChanged();
+      if (!fromFolder) {
+        if (fileInput.current) void latestLoad.current(false);
+        onChanged();
+      }
+    }
+    if (fromFolder) {
+      setUploadingFolder(false);
+      const failed = list.length - uploaded - unconfirmed;
+      if (folderInput.current) {
+        notify(`文件夹上传结束：已上传 ${uploaded} 个，失败 ${failed} 个${unconfirmed ? `，待核对 ${unconfirmed} 个` : ''}`, failed + unconfirmed > 0);
+        if (uploaded || unconfirmed) void latestLoad.current(false);
+      }
+      if (uploaded || unconfirmed) onChanged();
     }
   };
 
@@ -379,9 +404,22 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
     >
       <div className="toolbar">
         {has(kb, 'ingest.file') ? (
-          <Button variant="primary" icon={<Upload size={14} />} onClick={() => fileInput.current?.click()}>
-            上传文件
-          </Button>
+          <Menu
+            label="上传文件"
+            variant="primary"
+            size="md"
+            icon={<Upload size={14} />}
+            items={[
+              { key: 'files', label: '选择文件', onSelect: () => fileInput.current?.click() },
+              {
+                key: 'folder',
+                label: '选择文件夹',
+                disabled: !canPickFolder || uploadingFolder,
+                title: !canPickFolder ? '当前浏览器不支持选择文件夹' : uploadingFolder ? '文件夹正在上传' : undefined,
+                onSelect: () => folderInput.current?.click(),
+              },
+            ]}
+          />
         ) : null}
         {has(kb, 'ingest.url') ? (
           <Button icon={<Globe size={14} />} onClick={() => setModal('url')}>
@@ -437,6 +475,16 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
             e.target.value = '';
           }}
         />
+        <input
+          ref={folderInput}
+          type="file"
+          {...{ webkitdirectory: '' }}
+          hidden
+          onChange={(e) => {
+            if (e.currentTarget.files?.length) void startUploads(e.currentTarget.files, true);
+            e.currentTarget.value = '';
+          }}
+        />
       </div>
 
       {has(kb, 'ingest.file') ? (
@@ -450,9 +498,9 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
           {uploads.map((u) => (
             <div className="upload-row" key={u.id}>
               <FileText size={14} className="muted" />
-              <span className="upload-name">{u.name}</span>
+              <span className="upload-name" title={u.name}>{u.name}</span>
               {u.error ? (
-                <Badge tone="danger" title={u.error}>
+                <Badge tone={u.unconfirmed ? 'warning' : 'danger'} title={u.error}>
                   {u.error}
                 </Badge>
               ) : u.done ? (
@@ -505,6 +553,7 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
                         {doc.title}
                       </div>
                       <div className="doc-sub">
+                        {doc.source_type === 'file' && doc.folder_path && doc.file_name ? `${doc.folder_path}/` : ''}
                         {doc.source_type === 'url' ? doc.source_url : doc.file_name ?? '粘贴文本'}
                         {doc.file_size ? ` · ${formatBytes(doc.file_size)}` : ''}
                       </div>
