@@ -113,8 +113,18 @@ export function actionKind(action) {
 
 // 节点下拉里这个节点自己的按钮（FL-01 actions，动作的 when 后端已经筛过）：主命令在前、变体在后。
 // 过期时后端在最前面多给一条 refresh（叫节点名，发只查改动条目的命令），它顶替主命令；跳过、恢复、旧的「去确认」不在这里
+// 脚本节点由内核在沙箱里跑（FL-05）：节点名是主按钮（kind node，target 是节点 ID）；包另外声明的同名命令不再列
+// （原来点它是助手按命令自己读文件判断，没跑脚本）。人工节点照旧按声明的动作（发布去页面）；面板节点在插件页里操作
+const KERNEL_KINDS = ['script'];
+
 export function nodeButtons(node) {
   const acts = (node?.actions || []).filter((a) => ['start', 'refresh'].includes(a.kind) && String(a.target || '').trim());
+  if (KERNEL_KINDS.includes(node?.kind) && !node.panel) {
+    const reason = acts.find((a) => a.kind === 'refresh')?.reason || '';
+    const rest = acts.filter((a) => a.kind === 'start' && a.label !== node.title);
+    return [{ label: node.title, target: node.id, kind: 'node', primary: true, reason },
+      ...rest.map((a) => ({ label: a.label, target: String(a.target).trim(), kind: actionKind(a), primary: false, reason: a.reason || '' }))];
+  }
   const refresh = acts.find((a) => a.kind === 'refresh');
   const starts = acts.filter((a) => a.kind === 'start');
   const primary = refresh || starts.find((a) => !a.hook && a.label === node.title) || starts[0];

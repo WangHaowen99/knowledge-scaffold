@@ -53,3 +53,11 @@ test('⌘K 的命令和输入框「/」菜单同一份 S-18：组名是节点名
   assert.equal(many.length, COMMAND_MAX);
   assert.deepEqual(many.slice(0, 2).map((x) => x.label), ['资料分析', '追加资料分析']);
 });
+
+test('按页面名搜「插件中心」也能找到安装入口（评审 6.4：原来要搜「插件」才出来）', () => {
+  for (const projectId of ['task-a', undefined]) {
+    const list = paletteList({ q: '插件中心', hits: [], commands: [], statics: staticItems({ ...ctx, projectId }) });
+    assert.equal(list[0]?.label, '安装插件 / 能力包…');
+    assert.equal(list[0].page, 'plugins');
+  }
+});

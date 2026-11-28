@@ -714,6 +714,7 @@ export default function WorkbenchPage({ route }) {
   const navOrigin = { page: 'wb-l2', label: '导航栏' };
   const runNavButton = (b) => {
     if (b.kind === 'page') navigate(pagePath(b.target, pid));
+    else if (b.kind === 'node') submitOnce(() => api.startNode(pid, b.target, { conversation_id: cid, origin: navOrigin })).catch(fail);
     else if (b.kind === 'message') send({ text: b.target });
     else sendCommand({ ...catalogCommand(b), origin: navOrigin });
   };

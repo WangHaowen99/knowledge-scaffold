@@ -80,3 +80,23 @@ test('可选节点点名字开始：有斜杠命令的发主命令（过期发�
   };
   assert.deepEqual(optionalStart(stale), { kind: 'command', label: '绘制流程图', target: '/ontology-flowchart 只查改动' });
 });
+
+test('导航栏上的脚本节点：节点名是主按钮、调 FL-05 跑包里的脚本；包声明的同名命令不再列（评审 1.2）', () => {
+  const node = {
+    id: 'pk-check.scan', title: '检查对象主键', kind: 'script', need: 'required', nav: true,
+    actions: [{ kind: 'start', label: '检查对象主键', target: '/pk-check-run' }, { kind: 'start', label: '只查新对象', target: '/pk-check-run 新对象' }],
+  };
+  assert.deepEqual(nodeButtons(node).map((b) => [b.label, b.kind, b.target, b.primary]), [
+    ['检查对象主键', 'node', 'pk-check.scan', true], ['只查新对象', 'command', '/pk-check-run 新对象', false],
+  ]);
+  // 没声明命令的必需脚本节点原来下拉是空的、点不了
+  const bare = navMenu(flow(), { ...node, actions: [] }, pages);
+  assert.equal(bare.empty, false);
+  assert.deepEqual(bare.buttons.map((b) => b.kind), ['node']);
+  // 过期时刷新也是跑脚本，原因带在主按钮上
+  const stale = { ...node, actions: [{ kind: 'refresh', label: '检查对象主键', target: '/pk-check-run', reason: '对象有变化' }, ...node.actions] };
+  assert.deepEqual(nodeButtons(stale)[0], { label: '检查对象主键', target: 'pk-check.scan', kind: 'node', primary: true, reason: '对象有变化' });
+  assert.deepEqual(optionalStart({ ...node, need: 'optional' }), { kind: 'node', id: 'pk-check.scan' });
+  // 面板节点不在这里开始
+  assert.deepEqual(nodeButtons({ ...node, panel: true, actions: [] }), []);
+});
