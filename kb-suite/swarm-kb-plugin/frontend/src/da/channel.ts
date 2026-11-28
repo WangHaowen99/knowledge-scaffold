@@ -57,9 +57,13 @@ export class DaChannel {
   }
 
   send(msg: Record<string, unknown>): void {
-    const text = JSON.stringify(msg);
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(text);
-    else this.queue.push(text);
+    if (!this.sendIfConnected(msg)) this.queue.push(JSON.stringify(msg));
+  }
+
+  sendIfConnected(msg: Record<string, unknown>): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify(msg));
+    return true;
   }
 }
 

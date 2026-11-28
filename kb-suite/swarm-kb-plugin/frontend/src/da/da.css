@@ -99,7 +99,7 @@
 }
 .da-chip-on .da-chip-count { background: var(--color-action-primary); color: var(--color-action-primary-text); }
 .da-thread {
-  flex: 1; overflow: auto; background: var(--color-surface-card); border: 1px solid var(--color-border-default);
+  flex: 1; min-height: 0; overflow: auto; background: var(--color-surface-card); border: 1px solid var(--color-border-default);
   border-radius: 16px; padding: 16px 20px; box-shadow: var(--da-shadow-sm);
 }
 .da-thread-empty {
@@ -173,16 +173,27 @@
 .da-ask-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
 .da-ask-input { display: flex; gap: 6px; align-items: center; }
 .da-ask-input .input { flex: 1; }
+.da-pending-approvals {
+  display: flex; flex: none; flex-direction: column; gap: 8px;
+  max-height: 36vh; overflow: auto; overscroll-behavior: contain;
+}
+.da-pending-approvals .da-ask { flex: none; margin: 0; }
+.da-pending-approvals .da-ask-args { max-height: min(12vh, 96px); }
 .da-answer { margin-top: 6px; }
 .da-composer {
+  flex: none;
   background: var(--color-surface-card); border: 1px solid var(--color-border-default); border-radius: 16px;
   padding: 10px 12px 10px 14px; box-shadow: var(--da-shadow-sm); transition: border-color var(--duration-fast), box-shadow var(--duration-fast);
 }
 .da-composer:focus-within { border-color: var(--color-action-primary); box-shadow: 0 0 0 3px var(--color-action-primary-subtle); }
 .da-composer .textarea { min-height: 52px; max-height: 180px; border: 0; padding: 4px 2px; resize: none; background: transparent; }
-.da-composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.da-composer-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 10px; }
+.da-composer-options { display: flex; flex: 1 1 260px; align-items: center; gap: 8px; min-width: 0; }
 .da-composer-foot .muted { font-size: var(--font-size-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.da-composer-actions { display: flex; gap: 6px; flex: none; }
+.da-bypass-switch { flex: none; }
+.da-bypass-switch .switch-row { align-items: center; margin-bottom: 0; }
+.da-bypass-switch .field-label { margin: 0; font-size: var(--font-size-xs); white-space: nowrap; }
+.da-composer-actions { display: flex; gap: 6px; flex: none; margin-left: auto; }
 .da-layout { display: flex; height: 100%; }
 .da-layout .da-app { flex: 1; min-width: 0; }
 .da-history {
