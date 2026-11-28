@@ -52,6 +52,22 @@ export function deliveryNote(item, now = Date.now()) {
   }
 }
 
+// 没发出去的字按对话各存一份（会话存储）：切对话、切模式、去待处理再回来都不丢，也不串到别的对话
+const draftKey = (pid, cid) => `onto.wb.draft.${pid}.${cid}`;
+
+export function loadDraft(storage, pid, cid) {
+  if (!storage || !pid || !cid) return '';
+  try { return storage.getItem(draftKey(pid, cid)) || ''; } catch { return ''; }
+}
+
+export function saveDraft(storage, pid, cid, text) {
+  if (!storage || !pid || !cid) return;
+  try {
+    if (text) storage.setItem(draftKey(pid, cid), text);
+    else storage.removeItem(draftKey(pid, cid));
+  } catch { /* 存不下（隐私模式、满了）：只是少了跨对话保留 */ }
+}
+
 // 打断时撤回的话放回输入框：接在已经敲了的字后面，各占一行
 export function restoreText(current, returned) {
   return [current, ...(returned || [])].filter((t) => t && t.trim()).join('\n');

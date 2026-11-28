@@ -29,11 +29,14 @@ import { WbCtx } from './parts.jsx';
 import { EarlierHistory, Timeline } from './Timeline.jsx';
 import { NextBar, RunLine } from './RunLine.jsx';
 import { NavTrack } from './NavTrack.jsx';
-import { SUBMITTING_TEXT, createSubmitGuard, likelyDuplicate, restoreText, sendButtonMode } from './composerModel.js';
+import {
+  SUBMITTING_TEXT, createSubmitGuard, likelyDuplicate, loadDraft, restoreText, saveDraft, sendButtonMode,
+} from './composerModel.js';
 import { useConversation } from './useConversation.js';
 import { scrollFollow } from './scrollFollow.js';
 import {
-  BUSY_TEXT, isPluginConv, latestDraftCards, menuConversations, pickConversation, planEnterPlugin, planLeavePlugin, pluginReturn, returnTarget,
+  BUSY_TEXT, busyElsewhereText, isPluginConv, latestDraftCards, menuConversations, modeMenuBlocked, pickConversation, planEnterPlugin,
+  planLeavePlugin, pluginReturn, returnTarget,
 } from './pluginModeModel.js';
 import {
   DraftFilesDrawer, PluginCtx, PluginModeNote, PluginStart, PluginTrack, usePluginDrafts,
@@ -153,9 +156,17 @@ function StateChip({ session, queue }) {
 const MODES = [['L2', 'users', '陪伴建模'], ['L4', 'rocket', '自主构建']];
 // plugin：插件对话（ADR-0087）——模式胶囊显示「插件开发」，没有命令弹层。
 // 全部命令（输入「/」）：每次打开都重取 S-18；斜杠后面接着打字按名字筛，↑↓ 选、回车执行、Esc 关；没有匹配时回车按原文发
-function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCommand, onStop, plugin }) {
+function Composer({ pid, cid, apiRef, st, buildMode, modeLabel, modeBlocked, onMode, onSend, onCommand, onStop, plugin }) {
   const { api, services, config } = useApp();
-  const [text, setText] = useState('');
+  const [text, setText] = useState(() => loadDraft(window.sessionStorage, pid, cid));
+  // 输入框里的字属于哪条对话：换对话时先存下旧的（先跑的那个 effect），再取这条的
+  const textCid = useRef(cid);
+  useEffect(() => { if (textCid.current === cid) saveDraft(window.sessionStorage, pid, cid, text); }, [pid, cid, text]);
+  useEffect(() => {
+    if (textCid.current === cid) return;
+    textCid.current = cid;
+    setText(loadDraft(window.sessionStorage, pid, cid));
+  }, [pid, cid]);
   const [atts, setAtts] = useState([]);
   const [refs, setRefs] = useState([]);
   const [pop, setPop] = useState(null);
@@ -329,12 +340,12 @@ function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCom
       {pop === 'mode' ? (
         <div className="menu wb-pop wb-mode-pop">
           {MODES.map(([k, icon, label]) => (
-            <div key={k} className="mi" onClick={() => { setPop(null); onMode(k); }}>
+            <div key={k} className={cx('mi', modeBlocked?.[k] && 'off')} title={modeBlocked?.[k] || undefined} onClick={() => { setPop(null); onMode(k); }}>
               <Icon name={icon} size={14} /><span>{label}</span>{!plugin && buildMode === k ? <Icon name="check" size={14} className="k" /> : null}
             </div>
           ))}
           <hr />
-          <div className="mi" onClick={() => { setPop(null); onMode('plugin'); }}>
+          <div className={cx('mi', modeBlocked?.plugin && 'off')} title={modeBlocked?.plugin || undefined} onClick={() => { setPop(null); onMode('plugin'); }}>
             <Icon name="puzzle" size={14} /><span>插件开发</span>{plugin ? <Icon name="check" size={14} className="k" /> : null}
           </div>
         </div>
@@ -437,6 +448,7 @@ export default function WorkbenchPage({ route }) {
     if (target) modeSw.switchTo(target);
     return true;
   };
+  const modeBlocked = modeMenuBlocked({ plugin, sessionState: state.session.state, autobuildRunning: !!state.session.autobuild || ab.running });
   const onMode = (k) => {
     if (k === 'plugin') { if (!plugin) enterPlugin(); return; }
     if (plugin) leavePlugin(k); else modeSw.switchTo(k);
@@ -750,7 +762,7 @@ export default function WorkbenchPage({ route }) {
       return true;
     } catch (e) {
       if (local) conv.dispatch({ type: 'local_drop', id: localId });
-      fail(e);
+      toast(busyElsewhereText(e, list?.items, cid) || errorText(e), 'alert');
       return false;
     }
   }, false);
@@ -863,7 +875,7 @@ export default function WorkbenchPage({ route }) {
                     lead={returnId ? <span className="s" onClick={() => enterPlugin(returnId)}><Icon name="puzzle" size={12} />回到插件开发</span> : null}
                   />
                 )}
-                <Composer pid={pid} apiRef={comp} st={st} buildMode={modeSw.mode} modeLabel={plugin ? '插件开发' : modeSw.label} onMode={onMode} onSend={send} onCommand={sendCommand} onStop={canInterrupt(running, ab) ? interrupt : null} plugin={plugin} />
+                <Composer pid={pid} cid={cid} apiRef={comp} st={st} buildMode={modeSw.mode} modeLabel={plugin ? '插件开发' : modeSw.label} modeBlocked={modeBlocked} onMode={onMode} onSend={send} onCommand={sendCommand} onStop={canInterrupt(running, ab) ? interrupt : null} plugin={plugin} />
               </div>
             </div>
             {drag ? <div className="wb-dropmask"><Icon name="upload" size={24} /><b>松开以添加附件</b><span className="xs muted">Markdown、Word、Excel、PDF、Drawio、TXT · 单个不超过 20 MB</span></div> : null}

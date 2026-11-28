@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { applyEvents, applySnapshot, initialConversation } from '../src/state/conversation.js';
 import {
-  STEER_WAIT_MS, deliveryNote, fmtElapsed, restoreText, sendButtonMode,
+  STEER_WAIT_MS, deliveryNote, fmtElapsed, loadDraft, restoreText, saveDraft, sendButtonMode,
 } from '../src/pages/workbench/composerModel.js';
 
 let n = 0;
@@ -64,4 +64,20 @@ test('计时与撤回的话放回输入框', () => {
   assert.equal(fmtElapsed(-5), '0:00');
   assert.equal(restoreText('', ['顺便看下规则']), '顺便看下规则');
   assert.equal(restoreText('新敲的', ['a', 'b']), '新敲的\na\nb');
+});
+
+test('没发出去的字按对话各存一份：不串到别的对话，清空后删掉', () => {
+  const box = new Map();
+  const storage = { getItem: (k) => box.get(k) ?? null, setItem: (k, v) => box.set(k, v), removeItem: (k) => box.delete(k) };
+  saveDraft(storage, 'p', 'chat1', '简单介绍一下对象');
+  assert.equal(loadDraft(storage, 'p', 'chat1'), '简单介绍一下对象');
+  assert.equal(loadDraft(storage, 'p', 'plug1'), '');
+  assert.equal(loadDraft(storage, 'q', 'chat1'), '');
+  saveDraft(storage, 'p', 'chat1', '');
+  assert.equal(box.size, 0);
+  // 存储不可用时不报错
+  const broken = { getItem: () => { throw new Error('x'); }, setItem: () => { throw new Error('x'); }, removeItem: () => {} };
+  assert.equal(loadDraft(broken, 'p', 'c'), '');
+  saveDraft(broken, 'p', 'c', 'x');
+  assert.equal(loadDraft(null, 'p', 'c'), '');
 });
