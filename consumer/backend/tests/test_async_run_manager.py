@@ -2252,8 +2252,19 @@ def test_deterministic_preflight_receives_only_business_arguments(
     }
 
 
-def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
+def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path, monkeypatch):
     from agent.direct_execution.contracts import Completed, NotApplicable
+    from datetime import datetime, timedelta, timezone
+    import agent.runtime.service as runtime_service
+
+    class _Clock(datetime):
+        current = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current.astimezone(tz)
+
+    monkeypatch.setattr(runtime_service, "datetime", _Clock)
 
     class _RuntimeContext:
         latest = None
@@ -2309,6 +2320,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
         requests = []
 
         def execute(self, request, **kwargs):
+            _Clock.current += timedelta(seconds=2)
             type(self).requests.append(request)
             type(self).calls += 1
             manifest = kwargs.get("ontology_manifest")
@@ -2389,6 +2401,11 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
         elapsed_ms=4,
     )
     deterministic = internal(adapter).try_direct_execute_sync(context, dependencies)
+    assert deterministic[0].created_at == "2026-01-01T00:00:00+00:00"
+    assert deterministic[1].created_at == deterministic[0].created_at
+    assert datetime.fromisoformat(deterministic[-1].created_at) > datetime.fromisoformat(
+        deterministic[0].created_at
+    )
     assert [event.event_type for event in deterministic] == [
         "turn.started",
         "tool.started",

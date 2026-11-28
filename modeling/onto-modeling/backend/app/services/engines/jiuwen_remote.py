@@ -247,8 +247,13 @@ class RemoteJiuwenEngine(ObservableEngine):
 
     # ---- 协议 ----
 
-    async def send(self, text: str, context: str | None = None) -> None:
-        await self._worker.write({"op": "send", "sid": self.sid, "text": text, "context": context})
+    async def send(self, text: str, context: str | None = None, message_id: str | None = None) -> None:
+        await self._worker.write({
+            "op": "send", "sid": self.sid, "text": text, "context": context, "message_id": message_id,
+        })
+
+    async def steer(self, text: str, message_id: str) -> None:
+        await self._worker.write({"op": "steer", "sid": self.sid, "text": text, "message_id": message_id})
 
     async def _op(self, op: str) -> None:
         worker = self._worker
@@ -259,8 +264,15 @@ class RemoteJiuwenEngine(ObservableEngine):
         except (RuntimeError, asyncio.TimeoutError):
             pass
 
-    async def interrupt(self) -> None:
-        await self._op("interrupt")
+    async def interrupt(self, cancel_queued: bool = False) -> list[str] | None:
+        worker = self._worker
+        if worker is None or not worker.alive or self.sid not in worker.sessions:
+            return None
+        try:
+            reply = await worker.call({"op": "interrupt", "sid": self.sid, "cancel_queued": cancel_queued})
+        except (RuntimeError, asyncio.TimeoutError):
+            return None
+        return reply.get("withdrawn")
 
     async def disconnect(self) -> None:
         await self._op("disconnect")

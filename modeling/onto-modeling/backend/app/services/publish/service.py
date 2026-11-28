@@ -16,7 +16,7 @@ import time
 import uuid
 from pathlib import Path
 
-from .. import package_mapping, release_store
+from .. import deterministic_contract, package_mapping, release_store
 from .. import solver as solver_service
 from ..workspace.errors import WorkspaceError
 from ..workspace.files import unmarked_table_resources
@@ -106,7 +106,8 @@ def package_binding_check(manager, project_id: str, commit: str | None = None) -
     root = manager.project_root(project_id)
     commit = resolve_commit(root, commit)
     parts = content_checks(manager, project_id, root, commit)
-    binding, table_resources, solver = parts["binding"], parts["table_resources"], parts["solver"]
+    binding, table_resources = parts["binding"], parts["table_resources"]
+    solver, deterministic = parts["solver"], parts["deterministic"]
     script_findings, structure = parts["script_findings"], parts["structure"]
     pack_gates, tree_error = parts["pack_gates"], parts["tree_error"]
     issues = sorted(binding["issues"], key=lambda item: not item["blocking"])
@@ -123,7 +124,8 @@ def package_binding_check(manager, project_id: str, commit: str | None = None) -
     uncommitted = uncommitted_package_changes(root)
     stages = publish_stages.readiness(manager, project_id)
     gate_list = gates.gate_chain(
-        issues, solver, script_findings + structure["findings"], tree_error, pack_gates, stages, objects,
+        issues, solver, script_findings + structure["findings"], tree_error,
+        packs=pack_gates, stages=stages, deterministic=deterministic, objects=objects,
     )
     return {
         "commit": commit,
@@ -139,6 +141,7 @@ def package_binding_check(manager, project_id: str, commit: str | None = None) -
         "table_resources": table_resources,
         # 求解契约体检单列：blocking 仍只计数据绑定，普通包这里只有 enabled=False
         "solver": solver,
+        "deterministic": deterministic,
         # consumer 导入规则的结构自检单列：不计入数据绑定的 blocking，进「知识包结构」门禁
         "structure": structure,
         # 发布前必须完成的建模阶段（与 develop 同规则）
@@ -160,7 +163,8 @@ def content_checks(manager, project_id: str, root: Path, treeish: str) -> dict:
     """
     parts = {
         "binding": {"issues": [], "warnings": [], "tables": {}, "objects": {}, "problems": []},
-        "table_resources": [], "solver": {"enabled": False}, "script_findings": [],
+        "table_resources": [], "solver": {"enabled": False}, "deterministic": {"enabled": False},
+        "script_findings": [],
         "structure": {"blocking": 0, "findings": [], "truncated": False, "skipped": None},
         "pack_gates": [], "tree_error": None,
     }
@@ -170,9 +174,23 @@ def content_checks(manager, project_id: str, root: Path, treeish: str) -> dict:
                 tree, tables=package_mapping.read_source_tables(tree))
             parts["table_resources"] = unmarked_table_resources(tree, CHECK_LIMIT)
             parts["solver"] = solver = solver_service.release_status_at(tree, root)
+            parts["deterministic"] = deterministic = deterministic_contract.release_status_at(tree)
+            if solver.get("enabled") and deterministic.get("enabled"):
+                parts["deterministic"] = deterministic = {
+                    **deterministic,
+                    "findings": [
+                        *(deterministic.get("findings") or []),
+                        {
+                            "code": deterministic_contract.CODE_CONFLICT,
+                            "message": "第一版不能在同一知识包中混合 deterministic 与 solver_workflow",
+                        },
+                    ],
+                }
             src = _source(manager, project_id, root, tree, treeish, PREVIEW_VERSION)
             parts["script_findings"] = gates.render_findings(src)
-            parts["structure"] = _structure_check(manager, project_id, tree, solver, bool(parts["script_findings"]))
+            parts["structure"] = _structure_check(
+                manager, project_id, tree, solver, deterministic, bool(parts["script_findings"]),
+            )
         parts["pack_gates"] = _pack_gates(manager, root, treeish)
     except WorkspaceError as exc:
         if exc.code not in ("release_tree_unsafe", "release_tree_mismatch"):
@@ -181,14 +199,20 @@ def content_checks(manager, project_id: str, root: Path, treeish: str) -> dict:
     return parts
 
 
-def _structure_check(manager, project_id: str, tree: Path, solver: dict, render_failed: bool) -> dict:
+def _structure_check(
+    manager, project_id: str, tree: Path, solver: dict, deterministic: dict, render_failed: bool,
+) -> dict:
     """按 consumer 的导入规则检查这棵树导出的包（降级口径，数据绑定另有一栏）。
 
     求解契约有问题或渲染本身失败时导出不成包，那两处已经报过，这里跳过不重复。
     """
     from .. import hub_packages
 
-    skipped = "solver_findings" if solver.get("findings") else "render_failed" if render_failed else None
+    skipped = (
+        "solver_findings" if solver.get("findings")
+        else "deterministic_findings" if deterministic.get("findings")
+        else "render_failed" if render_failed else None
+    )
     if skipped:
         return {"blocking": 0, "findings": [], "truncated": False, "skipped": skipped}
     binding = package_mapping.resolve_object_tables(

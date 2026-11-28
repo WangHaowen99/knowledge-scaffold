@@ -107,10 +107,32 @@ def check_solver_contract_draft(manager, project_id: str, operations: list) -> d
     root = manager.project_root(project_id)
     stems, scripts = operation_stems(root), package_scripts(root)
     rejected, findings, rendered = solver_contract.check_draft(operations, stems, root, scripts)
+    if not rejected:
+        staged = solver_contract.stage_contracts(operations, stems)
+        rejected += _deterministic_conflicts(
+            root, solver_contract.staged_enabled_operations(staged, stems)
+        )
     evaluators = solver_contract.draft_evaluators(operations, stems, root, scripts)
     first = next(iter(evaluators.values()), "")
     return {"rejected": rejected, "findings": findings, "rendered": rendered,
             "evaluator": solver_contract.evaluator_summary(root / first) if first else None}
+
+
+def _deterministic_conflicts(root: Path, solver_operations: set[str]) -> list[dict]:
+    """把共享执行模式互斥结论转换为 Solver 面板的稳定 finding。"""
+    from .. import deterministic_contract
+
+    findings = deterministic_contract.execution_mode_conflicts(
+        deterministic_contract.enabled_operations(root), solver_operations,
+    )
+    return [
+        solver_contract.finding(solver_contract.SolverContractError(
+            solver_contract.CODE_EXECUTION_MODE_CONFLICT,
+            item["message"],
+            field="operation",
+        ))
+        for item in findings
+    ]
 
 def save_solver_contract(
     manager, project_id: str, operations: list, base_revision: str,
@@ -131,7 +153,18 @@ def save_solver_contract(
                 "求解契约已被他人或助手修改，请刷新对比后再保存", 409,
                 code="solver_contract_revision_conflict",
             )
-        staged = solver_contract.stage_contracts(operations, operation_stems(root))
+        stems = operation_stems(root)
+        staged = solver_contract.stage_contracts(operations, stems)
+        conflicts = _deterministic_conflicts(
+            root, solver_contract.staged_enabled_operations(staged, stems),
+        )
+        if conflicts:
+            raise solver_contract.SolverContractRejected([
+                solver_contract.SolverContractError(
+                    item["code"], item["message"], field=item.get("field", "operation"),
+                )
+                for item in conflicts
+            ])
         base = root / solver_contract.SOLVER_DIR
         if base.is_dir():
             for directory in base.iterdir():

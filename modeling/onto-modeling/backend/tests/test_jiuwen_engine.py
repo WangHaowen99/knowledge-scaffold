@@ -786,6 +786,23 @@ def test_jiuwen_model_config_ui_overrides_env(tmp_path, monkeypatch):
     assert "test-key" not in json.dumps(masked)  # 读取接口只出掩码
 
 
+def test_jiuwen_protocol_changes_fingerprint_for_personal_and_global_models(tmp_path, monkeypatch):
+    from app.services import personal_model_settings
+    from app.services.engines import jiuwen
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(personal_model_settings, "resolve", lambda *_: {
+        "base_url": "https://example.com/v1", "api_key": "synthetic-key", "model": "synthetic",
+    })
+    monkeypatch.setattr(config, "JIUWEN_API_MODE", "chat_completions")
+    before = jiuwen.model_config("operator_a")
+    assert before["api_mode"] == "chat_completions"
+    monkeypatch.setattr(config, "JIUWEN_API_MODE", "responses")
+    after = jiuwen.model_config("operator_a")
+    assert after["api_mode"] == jiuwen.model_config()["api_mode"] == "responses"
+    assert jiuwen._fingerprint(before) != jiuwen._fingerprint(after)
+
+
 def test_jiuwen_model_config_carries_context_into_fingerprint(tmp_path, monkeypatch):
     from app.services import model_settings
     from app.services.engines import jiuwen

@@ -108,12 +108,22 @@ class Worker:
         engine = self.engines.get(sid)
         if op == "send":
             if engine is not None:
-                await engine.send(message.get("text") or "", message.get("context"))
+                await engine.send(
+                    message.get("text") or "", message.get("context"), message_id=message.get("message_id"),
+                )
+            return
+        if op == "steer":
+            if engine is not None:
+                await engine.steer(message.get("text") or "", str(message.get("message_id") or ""))
             return
         if op in ("interrupt", "disconnect", "kill"):
+            withdrawn = None
             if engine is not None:
                 try:
-                    await getattr(engine, op)()
+                    if op == "interrupt":
+                        withdrawn = await engine.interrupt(cancel_queued=bool(message.get("cancel_queued")))
+                    else:
+                        await getattr(engine, op)()
                 except Exception as exc:  # noqa: BLE001 - 结果照常回，错误留档
                     self.emit({"event": "log_error", "sid": sid, "kind": f"worker_{op}", "text": str(exc)})
             if op in ("disconnect", "kill"):
@@ -121,7 +131,7 @@ class Worker:
                 pump = self.pumps.pop(sid, None)
                 if pump is not None:
                     pump.cancel()
-            self.emit({"event": "done", "id": message.get("id")})
+            self.emit({"event": "done", "id": message.get("id"), "withdrawn": withdrawn})
 
     async def _connect(self, sid: str, data: dict) -> None:
         try:

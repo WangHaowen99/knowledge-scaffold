@@ -7,7 +7,7 @@ import {
   diffContracts, draftKey, setEnabled, setField, setOptionLabel, setTemplateParam, toManual, toPayload,
 } from '../src/lib/solver-contract-model.js';
 import {
-  SOLVER_TYPE, candidateView, checkLines, contractChip, contractLocked, contractProblems, contractTitle, defaultPicked, defaultScript,
+  SOLVER_TYPE, availableScriptsTab, candidateView, checkLines, contractChip, contractLocked, contractProblems, contractTitle, defaultPicked, defaultScript,
   descriptorChip, draftOf, evaluatorCommand, evaluatorOptions, evaluatorTarget, familyOptions, fmtSecs, fmtStamp, generateCommand,
   lockText, modelOperation, moreItems, pickedOperations, removeUnit, revisionTag, rowAction, sandboxChip, sandboxView, savedToast,
   saveErrorView, saveState, scanCommand, scanLock, setUnit, templateCommand, toggleCapability, togglePicked, verificationView,
@@ -57,6 +57,25 @@ function server({ sc = {}, lock = null } = {}) {
 
 const fromPage = (cmd) => ({ ...cmd, origin: { page: 'scripts', label: '代码生成' } });
 
+test('本地及旧验证记录不能冒充沙箱执行或原始输出', () => {
+  for (const runtime of ['local', 'jiuwenbox', undefined]) {
+    const v = verificationView({ status: 'passed', runtime, network_access: runtime === 'jiuwenbox' ? false : null,
+      cases: [{ name: 'normal', expected: 'success', passed: true }] }, 'synthetic.py');
+    assert.equal(v.chip.tone, runtime === 'jiuwenbox' ? 'teal' : 'amber');
+    assert.equal(v.lines[0].text, '用例：normal');
+    assert.equal(v.lines[1].text, '预期：success（记录未保存原始输出）');
+    assert.equal(v.summary.text.endsWith('网络隔离未证实'), runtime !== 'jiuwenbox');
+  }
+  assert.equal(sandboxChip({ sandbox: { status: 'passed', runtime: 'local' } }).text, '本地通过');
+});
+
+test('确定性页签直接链接等待插件状态后再决定是否回退', () => {
+  assert.equal(availableScriptsTab('dt', null), 'dt');
+  assert.equal(availableScriptsTab('dt', true), 'dt');
+  assert.equal(availableScriptsTab('dt', false), 'sc');
+  assert.equal(availableScriptsTab('sv', false), 'sv');
+});
+
 // ---------- 页面纯逻辑：脚本 ----------
 
 test('时间与耗时的写法', () => {
@@ -75,7 +94,7 @@ test('脚本表三列状态与行末按钮', async () => {
   assert.deepEqual([a, b, c].map((r) => contractChip(r).text), ['通过', '通过', '未通过']);
   assert.equal(contractChip(c).pop, '头部注释声明的参数和 argparse 对不上：缺少 delivery_cycle');
   assert.deepEqual([a, b, c].map((r) => descriptorChip(r).text), ['已同步', '需更新', '—']);
-  assert.deepEqual([a, b, c].map((r) => sandboxChip(r).text), ['通过 · 1.2s', '通过 · 0.8s', '未运行']);
+  assert.deepEqual([a, b, c].map((r) => sandboxChip(r).text), ['环境未记录通过 · 1.2s', '环境未记录通过 · 0.8s', '未运行']);
   assert.equal(rowAction(a).kind, 'more');
   assert.deepEqual(moreItems(a).map((x) => x.label), ['重新生成脚本', '去 Studio 编辑']);
   assert.deepEqual(rowAction(b), {
@@ -121,15 +140,15 @@ test('沙箱：状态 chip 与验证输出', async () => {
   const v = (await call('GET', `${P}/scripts/build_replenish_order/verification`)).body;
   assert.equal(v.network_access, false);
   const vv = verificationView(v, 'build_replenish_order.py');
-  assert.equal(vv.chip.text, '通过');
+  assert.equal(vv.chip.text, '环境未记录通过');
   assert.equal(vv.sub, '10-31 15:19');
   assert.equal(vv.lines[0].text, '$ build_replenish_order.py --store_code A001 --request_qty 96');
-  assert.equal(vv.summary.text, '✓ 2/2 用例通过 · 0.8s · 无网络访问');
+  assert.equal(vv.summary.text, '✓ 2/2 用例通过 · 0.8s · 环境未记录执行 · 网络隔离未证实');
   const nr = (await call('GET', `${P}/scripts/overage_compare/verification`)).body;
   assert.equal(verificationView(nr, 'overage_compare.py').status, 'not_run');
   assert.equal(verificationView(nr, 'overage_compare.py').sub, null);
   const failed = verificationView({ status: 'failed', duration_ms: 900, network_access: false, cases: [{ args: '-x', output: 'boom', passed: false }] }, 'a.py');
-  assert.equal(failed.summary.text, '✗ 0/1 用例通过 · 0.9s · 无网络访问');
+  assert.equal(failed.summary.text, '✗ 0/1 用例通过 · 0.9s · 环境未记录执行 · 网络隔离未证实');
   assert.equal(failed.lines[1].kind, 'err');
   assert.equal((await call('GET', `${P}/scripts/nope/verification`)).status, 404);
 });

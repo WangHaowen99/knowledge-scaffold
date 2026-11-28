@@ -1,6 +1,6 @@
 """发布门禁链（详设 5.6、㉖；API 契约 PB-01 的 gates、7.14 GateResult）。
 
-平台自带三道：数据绑定（可降级）、求解契约（静态检查）、知识包结构（脚本绑定、入参形态、
+平台自带四道：数据绑定（可降级）、确定性执行契约、求解契约（静态检查）、知识包结构（脚本绑定、入参形态、
 文档元数据、发布树安全）；包声明的门禁（on 含 publish，`services/packs/extensions.publish_gates`）按包排在
 后面。证据出处与流程关卡随证据源、发布节点接进来。
 """
@@ -26,10 +26,11 @@ def render_findings(src: ReleaseSource) -> list[dict]:
 
     with tempfile.TemporaryDirectory(prefix="onto-gate-") as scratch:
         try:
-            ADAPTER.render(dataclasses.replace(src, allow_unbound=True, binding=None, draft=True), Path(scratch) / "check.zip")
+            preview_source = dataclasses.replace(src, allow_unbound=True, binding=None, draft=True)
+            ADAPTER.render(preview_source, Path(scratch) / "check.zip")
         except WorkspaceError as exc:
-            if exc.code.startswith("solver_"):
-                return []  # 求解契约问题由求解门禁报
+            if exc.code.startswith(("solver_", "deterministic_")):
+                return []  # 受管执行契约问题由各自的专门门禁报，避免在知识包结构中重复
             code = exc.code if exc.code in _RENDER_CODES else "package_render_failed"
             problems = (exc.details or {}).get("problems") if code == "relation_structure_invalid" else None
             if problems:
@@ -57,7 +58,10 @@ def _binding_gate(issues: list[dict], objects: dict | None = None) -> dict:
             "code": item["kind"],
             "level": "error" if item["blocking"] else "warning",
             "message": item["message"],
-            "target": {"kind": "object", "id": f"object:{item['object']}", "key": item["object"], "name": item["object"]},
+            "target": {
+                "kind": "object", "id": f"object:{item['object']}",
+                "key": item["object"], "name": item["object"],
+            },
             "path": f"ontology/object/{item['object']}.md",
         }
         for item in issues
@@ -106,6 +110,18 @@ def _structure_summary(findings: list[dict]) -> str:
     return f"{len(findings)} 个问题，consumer 导入会拒绝"
 
 
+def _deterministic_gate(deterministic: dict) -> dict | None:
+    if not deterministic.get("enabled") and not deterministic.get("findings"):
+        return None
+    findings = [{"level": "error", **item} for item in deterministic.get("findings") or []]
+    return {
+        "id": "deterministic_contract", "order": 2, "title": "确定性执行契约", "source": _PLATFORM,
+        "status": "fail" if findings else "pass",
+        "summary": findings[0]["message"] if findings else "确定性 Operation 的 Parser、Handler 和 Schema 检查通过",
+        "blocking": bool(findings), "degradable": False, "findings": findings, "action": None,
+    }
+
+
 def _structure_gate(findings: list[dict], order: int) -> dict:
     return {
         "id": "package_structure", "order": order, "title": "知识包结构", "source": _PLATFORM,
@@ -131,10 +147,14 @@ def _stages_gate(stages: dict | None) -> dict | None:
 
 
 def gate_chain(issues: list[dict], solver: dict, structure: list[dict], tree_error: dict | None = None,
-               packs: list[dict] | None = None, stages: dict | None = None, objects: dict | None = None) -> list[dict]:
+               packs: list[dict] | None = None, stages: dict | None = None,
+               deterministic: dict | None = None, objects: dict | None = None) -> list[dict]:
     stage_gate = _stages_gate(stages)
     chain = [stage_gate] if stage_gate else []
     chain.append({**_binding_gate(issues, objects), "order": len(chain) + 1})
+    deterministic_gate = _deterministic_gate(deterministic or {})
+    if deterministic_gate:
+        chain.append({**deterministic_gate, "order": len(chain) + 1})
     solver_gate = _solver_gate(solver)
     if solver_gate:
         chain.append({**solver_gate, "order": len(chain) + 1})

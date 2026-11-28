@@ -33,7 +33,7 @@ def findings_at(manager, project_id: str, treeish: str) -> list[dict]:
     parts = content_checks(manager, project_id, root, treeish)
     chain = gates.gate_chain(
         [], parts["solver"], parts["script_findings"] + parts["structure"]["findings"], parts["tree_error"],
-        parts["pack_gates"],
+        parts["pack_gates"], deterministic=parts["deterministic"],
     )
     out: list[dict] = []
     for gate in gates.blocking(chain, degrade=True):  # 降级只放宽数据绑定

@@ -35,10 +35,13 @@ ACTIVE_VERSION = "1.0.0"
 @pytest.fixture(autouse=True)
 def _configure_runtime_llm(monkeypatch, tmp_path):
     import config.system_config as system_config_module
+    import ontology.view_cache as view_cache_module
     from integration.observability.provider import reset_observer
     from system_config_migration_helpers import apply_test_system_config_migrations
 
     runtime_root = tmp_path / ".runtime"
+    # Each temporary package tree needs its own mutation/source history.
+    monkeypatch.setattr(view_cache_module, "_view_cache", view_cache_module.OntologyViewCache())
     monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
     monkeypatch.setenv("ONTO_PLATFORM_ENABLED", "false")
     config_dir = tmp_path / "config"
@@ -211,6 +214,104 @@ def test_selected_ontology_stamps_first_and_locked_turns(
         ACTIVE_VERSION,
         ACTIVE_VERSION,
     ]
+
+
+def test_auto_selected_package_reaches_preflight_and_runtime_without_session_lock(tmp_path, monkeypatch):
+    _write_ontology_manifest()
+    monkeypatch.setattr("ontology.ontologies.get_sole_enabled_ontology_id", lambda _workspace: ONTOLOGY_ID)
+    monkeypatch.setattr("ontology.ontologies.get_active_ontology_version", lambda *_args: ACTIVE_VERSION)
+    orchestrator, adapter = _services(tmp_path)
+    captured = []
+
+    def capture(_service, request, *, ontology_manifest=None):
+        captured.append(request)
+        return True
+
+    monkeypatch.setattr(
+        "agent.direct_execution.service.DeterministicExecutionService.is_potentially_applicable", capture,
+    )
+    snapshot = orchestrator.build_run_preflight_snapshot(
+        user_request="synthetic request", user_context={}, arguments={},
+        session_id="session-auto", user_id="user_demo", workspace_id=WORKSPACE_ID,
+    )
+    assert snapshot.ontology_id == ONTOLOGY_ID
+    assert snapshot.ontology_version == ACTIVE_VERSION
+    assert snapshot.deterministic_candidate is True
+    assert captured[-1].arguments == {}
+    # A subsequent registry change must not replace the admitted package.
+    monkeypatch.setattr("ontology.ontologies.get_sole_enabled_ontology_id", lambda _workspace: None)
+    prepared = _prepare_and_finalize(
+        adapter,
+        _context(run_id="run-auto", session_id="session-auto", turn_id=1).model_copy(
+            update={"preflight_snapshot": snapshot},
+        ),
+    )
+    assert prepared.arguments["selected_ontology_id"] == ONTOLOGY_ID
+    assert prepared.arguments["selected_ontology_version"] == ACTIVE_VERSION
+    metadata = orchestrator.chat_store.get_session_metadata("session-auto")
+    assert not metadata.get("selected_ontology_id")
+    assert not metadata.get("selected_ontology_version")
+
+
+@pytest.mark.parametrize("sole_id", [None, ""])
+def test_auto_selection_does_not_guess_when_no_unique_package(tmp_path, monkeypatch, sole_id):
+    monkeypatch.setattr("ontology.ontologies.get_sole_enabled_ontology_id", lambda _workspace: sole_id)
+    orchestrator, adapter = _services(tmp_path)
+    request, ontology_id, version, _profile = orchestrator._build_protocol_preflight_request(
+        user_request="synthetic request", user_context={}, arguments={},
+        session_id="session-no-unique", user_id="user_demo", workspace_id=WORKSPACE_ID,
+    )
+    assert (request, ontology_id, version) == (None, "", "")
+    prepared = _prepare_and_finalize(
+        adapter, _context(run_id="run-no-unique", session_id="session-no-unique", turn_id=1),
+    )
+    assert not (prepared.arguments or {}).get("selected_ontology_id")
+
+
+def test_auto_selected_session_resolves_new_active_version_each_turn(tmp_path, monkeypatch):
+    _write_ontology_manifest()
+    monkeypatch.setattr("ontology.ontologies.get_sole_enabled_ontology_id", lambda _workspace: ONTOLOGY_ID)
+    active = [ACTIVE_VERSION]
+    monkeypatch.setattr("ontology.ontologies.get_active_ontology_version", lambda *_args: active[0])
+    monkeypatch.setattr(
+        "ontology.ontologies.get_runtime_ontology_manifest",
+        lambda _id, **kwargs: SimpleNamespace(id=_id, version=kwargs["version"], name="Synthetic", enabled=True),
+    )
+    monkeypatch.setattr(
+        "agent.direct_execution.service.DeterministicExecutionService.is_potentially_applicable",
+        lambda *_args, **_kwargs: True,
+    )
+    orchestrator, adapter = _services(tmp_path)
+    first = _prepare_and_finalize(
+        adapter, _context(run_id="auto-first", session_id="auto-changing", turn_id=1),
+    )
+    active[0] = "2.0.0"
+    second = _prepare_and_finalize(
+        adapter, _context(run_id="auto-second", session_id="auto-changing", turn_id=2),
+    )
+    assert first.arguments["selected_ontology_version"] == ACTIVE_VERSION
+    assert second.arguments["selected_ontology_version"] == "2.0.0"
+    assert not orchestrator.chat_store.get_session_metadata("auto-changing").get("selected_ontology_id")
+
+
+def test_auto_selection_resume_uses_server_checkpoint_identity(tmp_path, monkeypatch):
+    _write_ontology_manifest()
+    orchestrator, _adapter = _services(tmp_path)
+    checkpoint = {"ontology_id": ONTOLOGY_ID, "ontology_version": ACTIVE_VERSION}
+    monkeypatch.setattr(
+        orchestrator.execution_store, "get_pending_deterministic_checkpoint", lambda _session: checkpoint,
+    )
+    # Another package may now be installed or active; never redirect a reply.
+    monkeypatch.setattr("ontology.ontologies.get_sole_enabled_ontology_id", lambda _workspace: None)
+    monkeypatch.setattr("ontology.ontologies.get_active_ontology_version", lambda *_args: "2.0.0")
+    request, ontology_id, version, _profile = orchestrator._build_protocol_preflight_request(
+        user_request="synthetic reply", user_context={"interaction_response": {"answer": "no"}}, arguments={},
+        session_id="session-auto-reply", user_id="user_demo", workspace_id=WORKSPACE_ID,
+    )
+    assert ontology_id == ONTOLOGY_ID
+    assert version == ACTIVE_VERSION
+    assert request.checkpoint == checkpoint
+    assert request.runtime_context.selected_ontology_version == ACTIVE_VERSION
 
 
 def test_requested_ontology_version_skips_active_registry_resolution(

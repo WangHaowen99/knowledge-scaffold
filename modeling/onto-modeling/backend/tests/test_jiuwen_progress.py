@@ -452,6 +452,8 @@ def test_real_runner_runs_repeated_subagent_dispatches(tmp_path):
         events = []
         tracker = JiuwenProgressTracker(events.append)
         model = SyntheticModel()
+        from app.services.engines.jiuwen_stream import preserve_tool_call_fragments
+        preserve_tool_call_fragments(model)
         rails = [build_progress_rail(_TOOL_NAME_MAP)]
         subagent_root = tmp_path / "sub_agents"
         spec = _general_purpose_spec(

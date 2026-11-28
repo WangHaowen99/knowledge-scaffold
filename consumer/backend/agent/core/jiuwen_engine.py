@@ -43,6 +43,7 @@ from ..tools.base import ToolContext
 from ..tools.executor import aexecute_tool_batch
 from .jiuwen.common import (
     JiuwenBackendUnavailable,
+    model_safe_tool_call_id,
 )
 from .jiuwen.common import format_jiuwen_import_error as _format_jiuwen_import_error
 from .jiuwen.common import read_field as _read_field
@@ -2426,6 +2427,9 @@ def _to_jiuwen_history_message(message: Mapping[str, Any]) -> Optional[Any]:
         payload: Dict[str, Any] = {"content": content}
         if message.get("tool_calls"):
             payload["tool_calls"] = deepcopy(message.get("tool_calls"))
+            for call in payload["tool_calls"]:
+                if isinstance(call, dict) and isinstance(call.get("id"), str):
+                    call["id"] = model_safe_tool_call_id(call["id"])
         reasoning_content = message.get("reasoning_content")
         if reasoning_content:
             payload["reasoning_content"] = str(reasoning_content)
@@ -2436,7 +2440,7 @@ def _to_jiuwen_history_message(message: Mapping[str, Any]) -> Optional[Any]:
             return None
         payload = {
             "content": content,
-            "tool_call_id": tool_call_id,
+            "tool_call_id": model_safe_tool_call_id(tool_call_id),
         }
         name = str(message.get("name") or "").strip()
         if name:

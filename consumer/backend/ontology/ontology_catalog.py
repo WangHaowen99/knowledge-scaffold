@@ -1953,8 +1953,10 @@ def _apply_operation_stage_routing(
         entry.update(
             {
                 "operation_key": stage,
-                "title": "Runs the full '{owner}' script; '{stage}' is one of its stages - read steps['{stage}'] for this"
-                " stage".format(owner=owner_key, stage=stage),
+                "title": (
+                    "Runs the full '{owner}' script; '{stage}' is one of its stages - "
+                    "read steps['{stage}'] for this stage"
+                ).format(owner=owner_key, stage=stage),
                 "_is_bound_operation": True,
                 "_is_deterministic_handler": False,
                 "_borrowed_from": owner_key,

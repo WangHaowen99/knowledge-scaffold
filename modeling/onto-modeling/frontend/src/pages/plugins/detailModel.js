@@ -122,7 +122,7 @@ export function contentGroups(d) {
 export const contentTotal = (groups) => groups.reduce((s, g) => s + g.count, 0);
 
 // ---------- 英雄区 ----------
-const DEP_LABEL = { core: '基础建模能力' };
+const DEP_LABEL = { core: '基础建模能力', codegen: '代码生成与求解' };
 /** 依赖范围的说法：">=1.4" →「1.4 以上」，">=1.0 <2.0" →「1.0 以上、2.0 以下」 */
 export function rangeText(range) {
   const toks = String(range || '').trim().split(/\s+/).filter(Boolean);

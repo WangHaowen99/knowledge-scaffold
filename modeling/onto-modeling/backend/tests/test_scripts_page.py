@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from app import config
@@ -82,10 +84,43 @@ def test_scripts_page_lists_candidates_contract_and_sandbox(tmp_path, monkeypatc
     assert row["contract"]["status"] in ("passed", "failed") and row["descriptor"] in ("none", "stale", "synced")
     assert row["sandbox"]["status"] == "not_run" and "regenerate" in row["actions"]
     verification = client.get(f"/api/v1/projects/{project_id}/scripts/restock_qty/verification").json()
-    assert verification["status"] == "not_run" and verification["network_access"] is False
+    assert verification["status"] == "not_run" and verification["network_access"] is None
     assert client.get(f"/api/v1/projects/{project_id}/scripts/none/verification").status_code == 404
     summary = client.get("/api/v1/sandbox/status").json()
     assert summary["available"] is False and summary["checked_at"]
+    builtin.clear_cache()
+
+
+@pytest.mark.parametrize("runtime", ["local", "jiuwenbox", None])
+def test_verification_reports_actual_runtime_without_inventing_output(tmp_path, monkeypatch, runtime):
+    from app.services.packs import contracts
+
+    builtin.clear_cache()
+    manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
+    monkeypatch.setattr(deps, "workspaces", manager)
+    monkeypatch.setattr(auth, "ENABLED", False)
+    project_id = manager.create_project("synthetic verification")["id"]
+    root = manager.project_root(project_id)
+    script = root / "ontology/scripts/restock_qty.py"
+    script.write_text(SCRIPT, encoding="utf-8")
+    record = {"source_hash": contracts.module_for(root, "jiuwenbox_client").source_hash(script),
+              "runtime": runtime, "verified_at": "2026-11-18T09:33:47+00:00",
+              "cases": [{"name": "normal", "expect": "success"}]}
+    (root / ".ontology-state").mkdir(exist_ok=True)
+    (root / ".ontology-state/script-verifications.json").write_text(
+        json.dumps({"version": 1, "scripts": {"ontology/scripts/restock_qty.py": record}}), encoding="utf-8")
+    client = TestClient(app)
+    base = f"/api/v1/projects/{project_id}/scripts"
+    row = client.get(base).json()["items"][0]
+    assert row["sandbox"]["runtime"] == runtime
+    result = client.get(base + "/restock_qty/verification").json()
+    assert result["status"] == "passed" and result["runtime"] == runtime
+    assert result["network_access"] is (False if runtime == "jiuwenbox" else None)
+    assert result["cases"] == [{"name": "normal", "expected": "success", "passed": True}]
+    script.write_text(SCRIPT + "\n# changed\n", encoding="utf-8")
+    stale = client.get(base + "/restock_qty/verification").json()
+    assert stale["status"] == "not_run" and stale["runtime"] is None
+    assert stale["network_access"] is None and stale["cases"] == []
     builtin.clear_cache()
 
 

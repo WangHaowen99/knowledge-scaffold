@@ -9,6 +9,7 @@ import { Button, Chip, Field, Icon, Menu, Prog, Toggle, cx, useOutside } from '.
 import { uiChip } from '../plugins/catalogModel.js';
 import { rejectedResourceMessage, uploadRules, validateResourceFiles } from '../../lib/resourceUpload.js';
 import { createBody } from './createBody.js';
+import { deterministicDependency, deterministicDependencyMissing } from './deterministicDependency.js';
 import { modelDisplayName } from '../settings/settingsModel.js';
 import { NameCount, NameLimitHint, limitProjectName, nameAtLimit } from '../projects/NameCount.jsx';
 
@@ -119,6 +120,8 @@ export default function CreatePage() {
   const sysPacks = packs.filter((p) => p.category === 'system');
   const capPacks = packs.filter((p) => p.category === 'capability');
   const selectedPages = capPacks.filter((p) => p.ui?.kind === 'page' && caps[p.name]).flatMap((p) => p.ui.pages.map((x) => x.title));
+  const deterministicRequires = deterministicDependency(capPacks);
+  const deterministicMissingCodegen = deterministicDependencyMissing(caps);
   const engineModel = model?.engines?.[engine];
   const modelName = modelDisplayName(engineModel);
   const uploading = files.some((f) => f.progress != null && f.progress < 100);
@@ -126,6 +129,11 @@ export default function CreatePage() {
   const create = async () => {
     if (!name.trim()) { setStep(1); setNameTouched(true); toast('请输入项目名称', 'alert'); return; }
     if (!goal.trim()) { setStep(1); toast('请写一句话目标', 'alert'); return; }
+    if (deterministicMissingCodegen) {
+      setStep(3);
+      toast(`“${deterministicRequires?.pack.label || '确定性执行'}”依赖“${deterministicRequires?.label || '代码生成与求解'} ${deterministicRequires?.range || '>=0.9'}”，请先开启该能力包`, 'alert');
+      return;
+    }
     setBusy(true);
     try {
       const finalName = conflict && chk.conflict?.candidates?.[0] ? chk.conflict.candidates[0] : name;
@@ -276,12 +284,16 @@ export default function CreatePage() {
                     const required = isRequired(p);
                     const offline = p.project_status === 'offline';
                     const on = required || !!caps[p.name];
+                    const deterministic = p.name === 'deterministic-execution';
                     return (
                       <div key={p.name} className={cx('en-cap', on && 'on', required && 'lock')}>
                         <span className="pi"><Icon name={CAP_ICON[p.name] || 'puzzle'} size={16} /></span>
                         <div className="grow" style={{ minWidth: 0 }}>
                           <div className="row g4"><b>{p.label}</b>{p.badges?.includes('recommended') ? <Chip tone="blue" sm>推荐</Chip> : null}</div>
                           <div className="xs muted">{p.description}</div>
+                          {deterministic && deterministicRequires ? <div className="xs muted mt4">依赖：{deterministicRequires.label} {deterministicRequires.range}</div> : null}
+                          {deterministic ? <div className="xs muted mt4">入口：代码生成 → 确定性执行</div> : null}
+                          {deterministic && on && deterministicMissingCodegen ? <div className="xs mt4" style={{ color: 'var(--red)' }}>请先开启“代码生成与求解”，否则无法创建项目。</div> : null}
                           {uiTag(p)}
                         </div>
                         {required ? <span className="chip gray sm"><Icon name="lock" />必装</span>

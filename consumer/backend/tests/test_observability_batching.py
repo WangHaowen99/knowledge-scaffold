@@ -21,6 +21,56 @@ def _event(index: int) -> RuntimeEvent:
     )
 
 
+def test_metric_admission_does_not_wait_for_exporter_initialization(monkeypatch):
+    from integration.observability import otel
+    from integration.observability.workspace_router import WorkspaceObservabilityRouter
+
+    router = WorkspaceObservabilityRouter()
+    lock_held = threading.Event()
+    release_exporter = threading.Event()
+    admitted = threading.Event()
+    results = []
+
+    class Recorder:
+        def __init__(self, **_kwargs):
+            pass
+
+        def instruments_for_workspace(self, _workspace_id):
+            return {"synthetic": True}
+
+    monkeypatch.setattr(otel, "_RouterBatchMetricRecorder", Recorder)
+    monkeypatch.setattr(otel, "_batch_metric_recorders", {})
+
+    def initialize_exporter():
+        with internal(router).lock:
+            lock_held.set()
+            release_exporter.wait(5)
+
+    def record_catalog_metric():
+        try:
+            results.append(internal(otel).get_batch_metric_instruments(
+                router_id=router.router_id,
+                workspace_id="workspace_synthetic",
+            ))
+        finally:
+            admitted.set()
+
+    exporter = threading.Thread(target=initialize_exporter, daemon=True)
+    reader = threading.Thread(target=record_catalog_metric, daemon=True)
+    exporter.start()
+    try:
+        assert lock_held.wait(2)
+        reader.start()
+        completed_without_exporter = admitted.wait(2)
+    finally:
+        release_exporter.set()
+        exporter.join(3)
+        if reader.ident is not None:
+            reader.join(3)
+    assert completed_without_exporter
+    assert results == [{"synthetic": True}]
+
+
 def _otel_record(index: int) -> dict[str, Any]:
     return {
         "schema_version": 2,

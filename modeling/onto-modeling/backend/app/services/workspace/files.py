@@ -599,6 +599,12 @@ class FilesMixin:
                 "求解契约是受管目录，请在求解模型面板中维护", 403, "managed_path",
                 {"path": rel_path, "use": f"/api/v1/projects/{project_id}/solver/contract"},
             )
+        from .. import deterministic_contract
+        if rel.as_posix().startswith(f"{deterministic_contract.CONTRACT_DIR}/"):
+            raise WorkspaceError(
+                "确定性执行契约是受管目录，请在确定性执行面板中维护", 403, "managed_path",
+                {"path": rel_path, "use": f"/api/v1/projects/{project_id}/deterministic/contract"},
+            )
         if _is_script_descriptor(rel):
             raise WorkspaceError(
                 "脚本描述符由同名 .py 自动生成，不能直接编辑；请修改对应的 .py 脚本", 403, "managed_path",

@@ -246,6 +246,54 @@ def test_v02_import_materializes_solver_contract_verbatim(
     assert manager.versions(meta["id"])
 
 
+def test_import_preview_rejects_mixed_solver_and_deterministic_operations(
+    manager: WorkspaceManager, tmp_path: Path,
+):
+    members = _package_members()
+    operation_path = "operations/查询站点.md"
+    operation = _front({
+        "resource": "operation",
+        "key": "查询站点",
+        "title": "查询站点",
+        "execution": {
+            "type": "deterministic",
+            "parser": "scripts/query_site_parser.py",
+            "input_schema": "schemas/query_site.input.json",
+            "output_schema": "schemas/query_site.output.json",
+        },
+    }) + "# 查询站点\n"
+    members[operation_path] = operation.encode("utf-8")
+    members["scripts/query_site.py"] = b"print('{}')\n"
+    members["scripts/query_site.md"] = (
+        _front({
+            "resource": "script", "key": "query_site", "title": "查询站点",
+            "bound_operation": "查询站点", "entrypoint": "query_site.py",
+            "data_access": "none",
+        }) + "# 脚本用途\n"
+    ).encode("utf-8")
+    members["scripts/query_site_parser.py"] = (
+        b"import argparse\nimport json\n"
+        b"parser = argparse.ArgumentParser()\n"
+        b"parser.add_argument('--request-json', required=True)\n"
+        b"args = parser.parse_args()\n"
+        b"json.loads(args.request_json)\n"
+        b"print(json.dumps({'matched': True, 'arguments': {}, 'issues': []}))\n"
+    )
+    members["schemas/query_site.input.json"] = b'{"type":"object"}\n'
+    members["schemas/query_site.output.json"] = b'{"type":"object"}\n'
+    archive = _write_zip(tmp_path / "mixed.zip", members)
+
+    summary = package_archive.inspect_archive(archive)
+
+    assert summary["solver_operations"] == 1
+    assert summary["deterministic_operations"] == 1, summary["deterministic_problems"]
+    assert any("deterministic 与 solver_workflow" in message for message in summary["blockers"])
+    before = len(manager.list_projects())
+    with pytest.raises(WorkspaceError, match="deterministic 与 solver_workflow"):
+        manager.import_package_zip("混合契约包", archive)
+    assert len(manager.list_projects()) == before
+
+
 @pytest.mark.parametrize(
     ("kwargs", "code"),
     [

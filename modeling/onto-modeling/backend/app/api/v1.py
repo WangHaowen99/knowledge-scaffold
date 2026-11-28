@@ -41,6 +41,7 @@ _QUERY_TOKEN_PATTERNS = (
     rf"^{_P}/files/raw$",
     rf"^{_P}/transfer-package$",
     rf"^{_P}/releases/[^/]+/download$",
+    rf"^{_P}/hub/releases/[^/]+/download$",
     rf"^{_P}/versions/[^/]+/files$",
     rf"^{_P}/packs/[^/]+/files$",  # PL-33 插件目录下载（ADR-0105）
     r"^/api/v1/admin/packs/uploads/[^/]+/report$",
@@ -64,6 +65,7 @@ def _routers():
         contracts,
         converters,
         datasources,
+        deterministic,
         evaluations,
         events,
         files,
@@ -121,6 +123,7 @@ def _routers():
         converters.router,
         artifacts.router,
         anchors.router,
+        deterministic.router,
         sessions.router,
         events.router,
         solver.router,

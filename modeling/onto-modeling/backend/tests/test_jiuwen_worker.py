@@ -116,6 +116,48 @@ def test_connect_failure_is_reported(worker, tmp_path):
     asyncio.run(scenario())
 
 
+def test_worker_preserves_message_ids_and_steer_delivery(worker, tmp_path):
+    async def scenario():
+        engine = make_engine(tmp_path, "workspace_demo", {})
+        await engine.connect()
+        events = engine.events()
+        try:
+            await engine.send("开始", message_id="message-1")
+            result = await next_event(engine, events, "result")
+            assert result["message_ids"] == ["message-1"]
+            await engine.steer("补充", "message-2")
+            delivery = await next_event(engine, events, "_delivery")
+            result = await next_event(engine, events, "result")
+            assert delivery == {"type": "_delivery", "message_id": "message-2", "state": "seen"}
+            assert result["message_ids"] == ["message-2"]
+        finally:
+            await engine.kill()
+            await worker.stop()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("cancel_queued", [False, True])
+def test_worker_interrupt_returns_only_withdrawn_steers(worker, tmp_path, cancel_queued):
+    async def scenario():
+        engine = make_engine(tmp_path, "workspace_demo", {})
+        await engine.connect()
+        events = engine.events()
+        try:
+            await engine.steer("等待插话", "message-pending")
+            await next_event(engine, events, "test_queued")
+            withdrawn = await engine.interrupt(cancel_queued=cancel_queued)
+            assert withdrawn == (["message-pending"] if cancel_queued else [])
+            if not cancel_queued:
+                assert await engine.interrupt(cancel_queued=True) == ["message-pending"]
+            assert await engine.interrupt(cancel_queued=True) == []
+        finally:
+            await engine.kill()
+            await worker.stop()
+
+    asyncio.run(scenario())
+
+
 def test_worker_injects_pack_prompt_rules_like_the_kernel(worker, tmp_path):
     """worker 进程自己登记包提示规则（app/wiring.install_worker）：按内核给的数据目录读装配，
     启用了声明提示规则的包（领域包扩展）的项目带提示，没启用的不带。"""

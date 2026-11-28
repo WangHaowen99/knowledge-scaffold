@@ -1,0 +1,32 @@
+# 把普通 Operation 制作为可随 schema 0.1 知识包发布的确定性执行闭包。
+name: deterministic-execution
+version: 0.1.0
+kind: capability
+category: capability
+label: 确定性执行
+description: 为 Operation 生成 Parser、Handler 和输入输出 Schema，并声明是否读取工作空间数据。
+ui_note: 启用后在“代码生成 → 确定性执行”中配置。
+publisher: {kind: official, label: 平台}
+default_on: false
+batch: second
+kernel_api: ">=1.0 <2.0"
+page_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+depends: {codegen: ">=0.9"}
+changelog: 首版支持 Parser、none 与 workspace_provider 两种数据访问契约。
+contributes:
+  commands:
+    - ontology-deterministic-scan
+    - ontology-deterministic-contract
+    - ontology-deterministic-generate
+    - ontology-deterministic-verify
+  reference: [deterministic-provider-sdk.md, deterministic-agent-draft.md]
+  flow: flow.yaml
+  nodes: [deterministic-execution.contract]
+  entries:
+    - id: deterministic-scan
+      kind: quick_action
+      label: 扫描确定性候选
+      command: /ontology-deterministic-scan
+      where: scripts
+checksums: checksums.sha256

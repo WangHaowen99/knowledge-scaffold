@@ -9,14 +9,14 @@ import hashlib
 import re
 from pathlib import Path
 
-from .. import solver_contract
+from .. import deterministic_contract, solver_contract
 
 # 发布读取的全部来源：渲染与数据绑定实际读的对象/操作/规则/指标/脚本/求解契约目录，
 # 以及资料区的用途清单和表格文件（数据绑定只读标了 schema 的表格，PDF、图片等既不读也不进包）。
 # 发布按提交从这些路径取只读树；预检与发布结果据此列出不会进包的未提交改动
 PACKAGE_SOURCE_DIRS = (
     "ontology/object", "ontology/operation", "ontology/logic", "ontology/rule",
-    "ontology/metric", "ontology/scripts", solver_contract.SOLVER_DIR,
+    "ontology/metric", "ontology/scripts", solver_contract.SOLVER_DIR, deterministic_contract.CONTRACT_DIR,
 )
 PACKAGE_SOURCE_PATHS = (*PACKAGE_SOURCE_DIRS, "resource")
 

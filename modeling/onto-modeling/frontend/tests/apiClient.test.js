@@ -3,7 +3,9 @@ import test from 'node:test';
 import {
   buildQuery, collectAll, createClient, createTokenStore, saveWithRevision, withConfirmation,
 } from '../src/api/client.js';
-import { ApiError, describeConflict, errorText } from '../src/api/errors.js';
+import {
+  ApiError, describeConflict, errorText, packActionErrorText,
+} from '../src/api/errors.js';
 
 function memoryStorage() {
   const m = new Map();
@@ -50,6 +52,16 @@ test('字节请求体原样发，Content-Type 是 octet-stream', async () => {
 test('响应体不是统一错误体时按状态码兜底', async () => {
   const client = createClient({ tokens: createTokenStore(memoryStorage()), fetchImpl: async () => new Response('<html>bad gateway</html>', { status: 502 }) });
   await assert.rejects(client.get('/projects'), (e) => e.code === 'upstream_unavailable' && errorText(e).includes('连不上'));
+});
+
+test('插件操作显示具体兼容原因，其他场景保留全局简短文案', () => {
+  const error = new ApiError({
+    status: 409,
+    code: 'pack_incompatible',
+    message: 'deterministic-execution 依赖 codegen >=0.9，本项目未启用',
+  });
+  assert.equal(errorText(error), '兼容检查没有通过');
+  assert.equal(packActionErrorText(error), 'deterministic-execution 依赖 codegen >=0.9，本项目未启用');
 });
 
 test('网络断开转成 status 0', async () => {

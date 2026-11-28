@@ -144,6 +144,7 @@ def render_descriptor(
     stage_of: list[str] | tuple[str, ...] = (),
     *,
     enums: dict[str, dict[str, list[str]]] | None = None,
+    data_access: str | None = None,
 ) -> str:
     """stage_of：调用 bound_operation 的父 operation。子操作自己的脚本只覆盖流程中的一步，
     标题与用途写明适用范围，consumer 的智能体选脚本时就能看到，不会拿它回答整个流程的问题。
@@ -166,6 +167,7 @@ def render_descriptor(
         f"bound_operation: {_yaml(bound_operation)}",
         "runtime: python",
         f"entrypoint: {entrypoint}",
+        *([f"data_access: {data_access}"] if data_access else []),
         "---",
         "",
         "# 脚本用途",

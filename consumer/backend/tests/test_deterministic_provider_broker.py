@@ -338,3 +338,41 @@ def test_broker_close_interrupts_active_backend_call(tmp_path, monkeypatch):
     assert released.is_set()
     assert not client_thread.is_alive()
     assert client_error
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix sockets unavailable")
+def test_modeling_provider_reference_executes_actual_sdk_protocol(tmp_path, monkeypatch):
+    """The Agent-visible SDK example must use the Broker's real result shape."""
+    from pathlib import Path
+
+    reference = Path(__file__).resolve().parents[3] / (
+        "modeling/onto-modeling/assets/packs/deterministic-execution/"
+        "reference/deterministic-provider-sdk.md"
+    )
+    source = reference.read_text(encoding="utf-8").split("```python\n", 1)[1].split("```", 1)[0]
+    calls = []
+
+    class SyntheticBackend:
+        provider = "neo4j"
+
+        def get_property_types(self, **_kwargs):
+            return {"property_types": {"category": "STRING"}, "complete": True}
+
+        def count_search(self, *, element_class, element_type, filter_dict, scope):
+            calls.append((element_class, element_type, filter_dict, scope.workspace_value))
+            return GraphBackendResult(records=[], total=3, truncated=False)
+
+        def close(self):
+            return None
+
+    broker = DeterministicProviderBroker(
+        binding=_binding(), socket_dir=tmp_path,
+        backend_factory=lambda _binding_value: SyntheticBackend(),
+    ).start()
+    monkeypatch.setenv(DETERMINISTIC_PROVIDER_SOCKET_ENV, str(broker.socket_path))
+    namespace = {}
+    try:
+        exec(compile(source, str(reference), "exec"), namespace)  # trusted repository example
+    finally:
+        broker.close()
+    assert namespace["count"] == 3
+    assert calls == [("SyntheticItem", "NODE", {"category": {"eq": "alpha"}}, "workspace_demo")]

@@ -196,7 +196,7 @@ def _ui(manifest: mf.Manifest) -> dict | None:
                                           for page in pages], "note": "启用后左栏出现对应页面"}
     if subpages:
         return {"kind": "subpages", "subpages": subpages, "note": "启用后在内核页面里多出子页"}
-    return {"kind": "none", "note": "没有页面，在对话里使用"}
+    return {"kind": "none", "note": str(manifest.raw.get("ui_note") or "没有页面，在对话里使用")}
 
 
 def _newer_available(repository, name: str, locked: str, channel: str) -> str | None:

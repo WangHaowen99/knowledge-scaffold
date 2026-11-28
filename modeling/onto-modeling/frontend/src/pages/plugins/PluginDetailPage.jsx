@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
-import { errorText } from '../../api/errors.js';
+import { errorText, packActionErrorText } from '../../api/errors.js';
 import { ShellG } from '../../shell/Shell.jsx';
 import { can } from '../../state/roles.js';
 import {
@@ -151,7 +151,7 @@ export default function PluginDetailPage({ route }) {
       setConfirmOff(false);
       toast(disableToast(d, res), 'check');
       load();
-    } catch (e) { toast(errorText(e), 'alert'); }
+    } catch (e) { toast(packActionErrorText(e), 'alert'); }
   };
 
   let body;

@@ -1006,8 +1006,14 @@ def _schema_index(schema_context: Mapping[str, Any] | None) -> dict[str, Any]:
         "relationship_types": relationship_types,
         "node_fields": node_fields,
         "edge_fields": edge_fields,
-        "node_labels_truncated": bool(isinstance(nodes_schema, Mapping) and (nodes_schema.get("truncated") or nodes_schema.get("source_truncated"))),
-        "relationship_types_truncated": bool(isinstance(edges_schema, Mapping) and (edges_schema.get("truncated") or edges_schema.get("source_truncated"))),
+        "node_labels_truncated": bool(
+            isinstance(nodes_schema, Mapping)
+            and (nodes_schema.get("truncated") or nodes_schema.get("source_truncated"))
+        ),
+        "relationship_types_truncated": bool(
+            isinstance(edges_schema, Mapping)
+            and (edges_schema.get("truncated") or edges_schema.get("source_truncated"))
+        ),
         "node_fields_truncated_for": node_fields_truncated_for,
         "edge_fields_truncated_for": edge_fields_truncated_for,
     }

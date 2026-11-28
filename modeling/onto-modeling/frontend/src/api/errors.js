@@ -241,6 +241,12 @@ export function errorText(err) {
   return err.serverMessage || BY_STATUS[err.status] || BY_STATUS[500];
 }
 
+// 插件启停需要告诉用户具体是哪个依赖或兼容条件不满足；
+// 其他页面仍使用全局简短文案，避免展示过长、偏技术的装配信息。
+export function packActionErrorText(err) {
+  return err?.code === 'pack_incompatible' && err.serverMessage ? err.serverMessage : errorText(err);
+}
+
 // 解析非 2xx 响应为 ApiError；响应体不是统一错误体时按状态码兜底
 export async function errorFromResponse(response) {
   let body = null;

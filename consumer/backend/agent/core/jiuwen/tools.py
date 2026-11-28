@@ -29,6 +29,7 @@ from ..shared.state_updates import apply_tool_batch_result_to_state
 from .common import (
     JiuwenBackendUnavailable,
     format_jiuwen_import_error,
+    model_safe_tool_call_id,
     normalize_arguments,
     read_field,
 )
@@ -275,11 +276,11 @@ class CurrentRuntimeToolAdapter:
             or str(self.state.get("session_id") or "").strip()
             or str(id(self.state))
         )
-        tool_call_id = "jiuwen_{}_{}_{}".format(
+        tool_call_id = model_safe_tool_call_id("jiuwen_{}_{}_{}".format(
             safe_jiuwen_resource_part(run_scope),
             safe_jiuwen_resource_part(self.tool_name),
             call_index,
-        )
+        ))
         invocation = ToolInvocation(
             id=tool_call_id,
             name=self.tool_name,

@@ -10,7 +10,7 @@ import {
 } from '../../ui/index.jsx';
 import { PackIcon, UiChip } from './catalogCards.jsx';
 import {
-  PACK_CATEGORIES, blockedView, bringsView, compatView, effectiveNote, enableToast, impactText, isDataPack, uiEffectText, updateRoute, updateToast,
+  PACK_CATEGORIES, blockedView, bringsView, compatView, dependencyInstruction, effectiveNote, enableToast, impactText, isDataPack, uiEffectText, updateRoute, updateToast,
 } from './catalogModel.js';
 
 function Brings({ brings }) {
@@ -49,6 +49,7 @@ function CompatChecks({ compat, ui }) {
 function EnableDialog({ dlg, projectName, busy, onOk, onClose }) {
   const { pack: p, compat, error } = dlg;
   const blocked = compat && !compat.ok ? blockedView(compat) : null;
+  const instruction = dependencyInstruction(p, compat);
   return (
     <Modal
       open
@@ -71,6 +72,7 @@ function EnableDialog({ dlg, projectName, busy, onOk, onClose }) {
       {error ? <Note tone="red">兼容检查没做成：{error}</Note> : null}
       {compat ? <CompatChecks key={compat.ok ? 'ok' : 'no'} compat={compat} ui={p.ui} /> : null}
       {blocked ? <Note tone="red" className="mt12">暂时不能启用：{blocked.reason}</Note> : null}
+      {instruction ? <Note tone="gray" className="mt12">{instruction}</Note> : null}
       <div className="sec-t" style={{ marginTop: 16 }}>会带来什么</div>
       {compat ? <Brings brings={compat.brings} /> : <div className="sm muted">{p.description}</div>}
       <div className="sec-t" style={{ marginTop: 16 }}>界面</div>

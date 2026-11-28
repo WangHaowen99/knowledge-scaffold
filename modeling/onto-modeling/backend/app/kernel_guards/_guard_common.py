@@ -867,11 +867,21 @@ def guard_scope(call: Call) -> str | None:
         target.destructive and target.path is not None and _covers(target, solver) for target in call.targets
     ):
         found.append(("ontology/solver", "managed"))
+    deterministic = call.root / "ext" / "deterministic-execution" / "contracts"
+    if _code_writes_to(call, ("ext/deterministic-execution/contracts",)) or any(
+        target.destructive and target.path is not None and _covers(target, deterministic) for target in call.targets
+    ):
+        found.append(("ext/deterministic-execution/contracts", "managed"))
     if not found:
         return _guard_confine(call)
     reasons = "; ".join(dict.fromkeys(raw for raw, _ in found))
     kinds = {kind for _, kind in found}
     if "managed" in kinds:
+        if any(raw.startswith("ext/deterministic-execution/contracts") for raw, _ in found):
+            return (
+                f"ext/deterministic-execution/contracts/ 是确定性执行契约受管目录，不允许直接写入：{reasons}。"
+                "Parser、Handler 和 Schema 必须成组一致，请提示用户在确定性执行面板中维护。"
+            )
         return (
             f"ontology/solver/ 是求解契约受管目录，不允许直接写入：{reasons}。"
             "Decision Model、Schema 与 Presentation 须成组一致，请提示用户在求解模型面板中维护。"
