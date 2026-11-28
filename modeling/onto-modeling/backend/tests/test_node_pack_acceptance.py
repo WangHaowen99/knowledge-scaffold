@@ -73,9 +73,13 @@ def track(flow: dict) -> list[str]:
     return order + [node["id"] for node in spine if node["id"] not in order]
 
 
-def test_imported_node_pack_appears_on_the_track_from_the_next_message(env):
+def test_imported_node_pack_appears_on_the_track_from_the_next_message(env, monkeypatch):
     client, workspaces, manager, project_id, tmp_path = env
     root = workspaces.project_root(project_id)
+    from app.services.packs import service as packs_service
+
+    # 助手在跑：启用等下一条消息前切换（空闲时当场出现，见下一个用例）
+    monkeypatch.setattr(packs_service, "_assistant_idle", lambda project_id: False)
 
     async def send(text: str):
         await manager.send(project_id, root, text, username="local")
@@ -116,4 +120,36 @@ def test_imported_node_pack_appears_on_the_track_from_the_next_message(env):
     assert node["plugin"]["name"] == "naming" and node["state"] == "not_ready"
     assert not after["notices"]
     assert (root / ".claude" / "commands" / "naming-check.md").is_file()
+    asyncio.run(manager.shutdown())
+
+
+def test_node_pack_enabled_while_idle_is_on_the_track_now_and_next_message_reconnects(env):
+    """助手空闲时启用节点包：进度条当场出现新节点、命令当场可用；引擎还连着旧版本，下一条消息照样重连（评审 1.1）。"""
+    client, workspaces, manager, project_id, tmp_path = env
+    root = workspaces.project_root(project_id)
+
+    async def send(text: str):
+        await manager.send(project_id, root, text, username="local")
+        return await settle(manager, project_id)
+
+    first = asyncio.run(send("你好"))
+    engine_before = first.engine
+    accepted = upload(client, zipped(make_node_pack(tmp_path / "src")))
+    assert accepted.status_code == 202, accepted.text
+    published = client.post(f"/api/v1/admin/packs/uploads/{accepted.json()['id']}/publish", json={"channel": "stable"})
+    assert published.status_code == 200, published.text
+
+    enabled = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "naming"})
+    assert enabled.status_code == 201 and enabled.json()["effective"] == "immediate"
+    now = client.get(f"/api/v1/projects/{project_id}/flow").json()
+    order = track(now)
+    assert "naming.check" in order and order.index("naming.check") == order.index("core.validate") + 1
+    assert not now["notices"]
+    assert (root / ".claude" / "commands" / "naming-check.md").is_file()
+    assert first.engine is engine_before and engine_before.client is not None  # 空闲的引擎不打断
+
+    second = asyncio.run(send("继续"))
+    assert second.engine is not engine_before
+    reconnected = [event for event in second.events if event.get("type") == "session_reconnected"]
+    assert reconnected and "assembly" in reconnected[-1]["changes"]
     asyncio.run(manager.shutdown())

@@ -7,9 +7,10 @@
 | running 进行中 | 有没结束的执行记录（运行中、等你回答） |
 | pending_confirm 待确认 | 执行结束了，节点的改动在没确认的变更集里 |
 | confirmed 已确认 | 完成判定在主线上满足，且记下的输入指纹没变 |
-| stale 过期 | 已确认之后，`stale_on` 声明的产物在主线上的指纹变了（`object_set`、`operation_set` 只看条目增删改名，ADR-0102） |
+| stale 过期 | 已确认之后，`stale_on` 声明的产物在主线上的指纹变了（`object_set`、`operation_set` 只看条目增删改名，ADR-0102）；
+插件节点的做法变了（`definition_signature`：脚本节点的脚本、agent 节点的主命令） |
 | skipped 已跳过 | 可选节点（`need: optional`）被你跳过（FL-03） |
-| blocked 被挡住 | 挡住它的关卡（`blocks` 指向它的节点）还没确认 |
+| blocked 被挡住 | 挡住它的关卡（`blocks` 指向它的节点）还没确认；发布前的关卡过期也算没过（要按现在的内容重跑） |
 | ready 可开始 | 输入都已确认（锚点链上的上游节点已确认或过期；没做的可选节点越过去看它的上游） |
 | not_ready 未就绪 | 其余 |
 
@@ -65,6 +66,9 @@ SET_KINDS = frozenset({"object_set", "operation_set"})
 # 拆分后的提取操作都盯着 object；规则一步并进了指标
 STALE_ON_BEFORE_0102 = {"core.metric": ("object", "operation"), "core.operation": ("object",)}
 REVIEW_SOURCES = ("autobuild", "upgrade", "import")
+PUBLISH_NODE = "core.publish"
+# 过期原因里「做法变了」这一类（workspace_labels.KIND_LABELS 里的说法）
+DEFINITION = "definition"
 DISPLAY = {"not_ready": "not_ready", "ready": "ready", "running": "running", "pending_confirm": "pending",
            "confirmed": "confirmed", "stale": "stale", "skipped": "skipped", "blocked": "blocked"}
 
@@ -313,7 +317,7 @@ def refresh_scope(root: Path, node: dict, record: dict | None = None) -> dict | 
     if not isinstance(record, dict):
         return None
     review = record.get("needs_review")
-    if isinstance(review, dict) and review.get("source") == "upgrade":
+    if isinstance(review, dict) and review.get("source") == "upgrade" or redefined(root, node, record):
         return None
     scope = changed_entries(root, record, list(node.get("stale_on") or []))
     if scope is None:
@@ -341,6 +345,42 @@ def done_signature(flow: dict, node: dict) -> str:
     names = [str(item).lstrip("!") for item in node.get("done") or []]
     body = {"done": node.get("done") or [], "probes": {name: probes.get(name) for name in names}}
     return hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def definition_signature(root: Path, node: dict) -> str | None:
+    """插件节点的做法签名：脚本节点是脚本声明与装配目录里的脚本内容，agent 节点是主命令文件的内容；
+    core 节点、读不到文件时为 None（不比较）。确认之后签名变了，旧的结论不再算数，节点按过期处理（评审 2.1：
+    插件更新后检查逻辑换了，之前的打勾还挂着、发布照样放行）。core 升级仍按完成判定签名标需复核（详设 6.9 第 6 条）。"""
+    if str(node.get("pack") or "core") == "core":
+        return None
+    claude = Path(root) / ".claude"
+    kind = str(node.get("kind") or "agent")
+    if kind == "script":
+        spec = node.get("script") if isinstance(node.get("script"), dict) else {}
+        target = claude / "scripts" / str(spec.get("name") or "")
+        body = {k: spec.get(k) for k in ("name", "inputs", "output", "args")}
+    elif kind == "agent":
+        command = primary_command(node).split()[0].lstrip("/") if primary_command(node) else ""
+        target = claude / "commands" / f"{command}.md"
+        body = {"command": command}
+    else:
+        return None
+    try:
+        content = target.read_bytes() if target.name and target.is_file() else None
+    except OSError:
+        content = None
+    if content is None:
+        return None
+    digest = hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True).encode("utf-8") + b"\0" + content)
+    return digest.hexdigest()[:16]
+
+
+def redefined(root: Path, node: dict, record: dict | None) -> bool:
+    """确认之后做法变了（记下的做法签名和现在的对不上）；没记过签名的老记录不算。"""
+    if not isinstance(record, dict) or not record.get("def"):
+        return False
+    current = definition_signature(root, node)
+    return current is not None and current != record["def"]
 
 
 # ---------------------------------------------------------------------------
@@ -413,10 +453,16 @@ def compute(root: Path, flow: dict, hits: dict[str, bool], *, project_id: str | 
                     stored["skipped"].pop(node_id)
                     changed = True
                 signature = done_signature(flow, node)
+                definition = definition_signature(root, node)
                 if record is None:
                     record = {"fp": fp(node), "kinds": kind_fingerprints(root, list(node.get("stale_on") or [])),
-                              "sig": signature, "at": time.time(), "rev": _head(root)}
+                              "sig": signature, "at": time.time(), "rev": _head(root),
+                              **({"def": definition} if definition else {})}
                     stored["nodes"][node_id] = record
+                    changed = True
+                elif definition and not record.get("def"):
+                    # 签名上线前确认的：按现在的做法记基线，不算变了
+                    record["def"] = definition
                     changed = True
                 elif record.get("sig") and record["sig"] != signature and not record.get("needs_review"):
                     # 节点升级、完成判定变了：旧的「已确认」标需复核，判定签名换成新的
@@ -427,10 +473,12 @@ def compute(root: Path, flow: dict, hits: dict[str, bool], *, project_id: str | 
                 if rebaseline_redefined(root, record, stale_on, fp(node), lambda: kind_fingerprints(root, stale_on),
                                         STALE_ON_BEFORE_0102.get(node_id)):
                     changed = True
-                state = "stale" if record.get("fp", "") != fp(node) else "confirmed"
+                method_changed = bool(definition) and record.get("def") != definition
+                state = "stale" if method_changed or record.get("fp", "") != fp(node) else "confirmed"
                 if state == "stale":
+                    kinds = changed_kinds(root, record, list(node.get("stale_on") or []))
                     result[node_id] = {"state": state, "flags": flags,
-                                       "changed": changed_kinds(root, record, list(node.get("stale_on") or []))}
+                                       "changed": [DEFINITION, *kinds] if method_changed else kinds}
                     continue
             else:
                 if record is not None and not record.get("needs_review"):
@@ -445,7 +493,9 @@ def compute(root: Path, flow: dict, hits: dict[str, bool], *, project_id: str | 
             if item["state"] is not None:
                 continue
             gates = [other for other in nodes if _gates(other, node["id"])]
-            if any(result[gate["id"]]["state"] not in ("confirmed", "stale", "skipped") for gate in gates):
+            # 关卡过期：建模中间的步骤照常往下做（发布前还会再挡）；发布要按现在的内容过关，过期不算过
+            passed = ("confirmed", "skipped") if node["id"] == PUBLISH_NODE else ("confirmed", "stale", "skipped")
+            if any(result[gate["id"]]["state"] not in passed for gate in gates):
                 item["state"] = "blocked"
                 continue
             anchor = node.get("after")
@@ -489,8 +539,10 @@ def confirm(root: Path, flow: dict, node_ids: list[str]) -> None:
                 continue
             # 人确认过（重做后确认生效）：需复核标记去掉（审查第 21 条）；补做完的可选节点不再算跳过
             kinds = list(node.get("stale_on") or [])
+            definition = definition_signature(root, node)
             stored["nodes"][node_id] = {"fp": fingerprint(root, kinds), "kinds": kind_fingerprints(root, kinds),
-                                        "sig": done_signature(flow, node), "at": time.time(), "rev": _head(root)}
+                                        "sig": done_signature(flow, node), "at": time.time(), "rev": _head(root),
+                                        **({"def": definition} if definition else {})}
             stored["skipped"].pop(node_id, None)
         save(root, stored)
 

@@ -144,10 +144,14 @@ def test_legacy_assets_upload_becomes_core_version_on_stable(env):
 # ---- 按项目启用、升级、回滚、停用 ----
 
 
-def test_enable_upgrade_rollback_disable_flow(env):
+def test_enable_upgrade_rollback_disable_flow(env, monkeypatch):
     client, manager, project_id, tmp_path = env
     root = manager.project_root(project_id)
     publish_pack(client, tmp_path, "trace", "0.9.0")
+    from app.services.packs import service
+
+    # 助手在跑：改能力包等下一条消息前切换（空闲时当场切，见下一个用例）
+    monkeypatch.setattr(service, "_assistant_idle", lambda project_id: False)
 
     catalog = client.get(f"/api/v1/packs?project_id={project_id}").json()
     trace = next(item for item in catalog["items"] if item["name"] == "trace")
@@ -182,8 +186,6 @@ def test_enable_upgrade_rollback_disable_flow(env):
 
     # 重新启用并让它生效（下一条消息前的准备）
     client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "trace"})
-    from app.services.packs import service
-
     service.prepare_for_message(manager, project_id)
     assert (root / ".claude" / "commands" / "trace-run.md").is_file()
     packs = client.get(f"/api/v1/projects/{project_id}/packs").json()
@@ -209,6 +211,41 @@ def test_enable_upgrade_rollback_disable_flow(env):
     assert core.status_code == 409 and core.json()["code"] == "pack_required"
     missing = client.post(f"/api/v1/projects/{project_id}/packs/trace/upgrade", json={"to_version": "0.10.0"})
     assert missing.json()["code"] == "pack_not_enabled"
+
+
+def test_capability_switch_while_assistant_idle_takes_effect_now(env, monkeypatch):
+    """项目里没有助手在跑：启用、升级、停用能力包当场切换装配目录，不再等下一条消息（评审 1.1、2.2）。"""
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    publish_pack(client, tmp_path, "trace", "0.9.0")
+    from app.services.packs import service
+
+    compat = client.get(f"/api/v1/packs/trace/versions/0.9.0/compatibility?project_id={project_id}").json()
+    assert compat["effective"] == "immediate"
+    enabled = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "trace"})
+    assert enabled.status_code == 201, enabled.text
+    assert enabled.json()["effective"] == "immediate" and enabled.json()["pack"]["status"] == "enabled"
+    assert (root / ".claude" / "commands" / "trace-run.md").is_file()
+    assembly = client.get(f"/api/v1/projects/{project_id}/assembly").json()
+    assert assembly["state"] == "applied" and not assembly["pending_changes"]
+
+    publish_pack(client, tmp_path, "trace", "0.10.0", files={"commands/trace-run.md": "新版\n"})
+    upgraded = client.post(f"/api/v1/projects/{project_id}/packs/trace/upgrade", json={"to_version": "0.10.0"})
+    assert upgraded.status_code == 200 and upgraded.json()["effective"] == "immediate"
+    assert upgraded.json()["pack"]["pending"] is None
+    assert (root / ".claude" / "commands" / "trace-run.md").read_text(encoding="utf-8") == "新版\n"
+
+    disabled = client.post(f"/api/v1/projects/{project_id}/packs/trace/disable")
+    assert disabled.status_code == 200 and disabled.json()["effective"] == "immediate"
+    assert not (root / ".claude" / "commands" / "trace-run.md").exists()
+
+    # 助手在跑时照旧：预告与结果都是下一条消息生效
+    monkeypatch.setattr(service, "_assistant_idle", lambda project_id: False)
+    compat = client.get(f"/api/v1/packs/trace/versions/0.10.0/compatibility?project_id={project_id}").json()
+    assert compat["effective"] == "next_message"
+    again = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "trace"})
+    assert again.json()["effective"] == "next_message" and again.json()["pack"]["status"] == "pending"
+    assert not (root / ".claude" / "commands" / "trace-run.md").exists()
 
 
 def test_knowledge_pack_takes_effect_immediately(env):

@@ -26,6 +26,7 @@ from app.services import agent_sessions, auth, streams
 from app.services.agent_sessions import SessionManager
 from app.services.engines.base import EngineContext
 from app.services.packs import builtin
+from app.services.packs import service as packs_service
 from app.services.session_host import fingerprint, injection
 from app.services.workspace import WorkspaceManager
 from tests.proc import run as run_cmd
@@ -85,8 +86,9 @@ def _count(project_id: str, event_type: str) -> int:
 # ---- S-20：页面按钮 → 包里的命令 ----
 
 
-def test_page_action_resolves_to_pack_command_and_disabled_pack_is_409(host):
+def test_page_action_resolves_to_pack_command_and_disabled_pack_is_409(host, monkeypatch):
     client, _, project_id, _ = host
+    monkeypatch.setattr(packs_service, "_assistant_idle", lambda project_id: False)  # 助手在跑：下一条消息前切换
     action = {"pack": "trace", "page": "scenarios", "action_id": "batch"}
     body = {"action": action, "args": {"scope": "all"}, "origin": {"page": "scenarios", "label": "场景模拟"}}
     sent = client.post(f"/api/v1/projects/{project_id}/commands", json=body)
@@ -164,8 +166,9 @@ def test_web_artifact_write_sends_one_artifacts_updated(host):
 # ---- extensions.updated、assembly.updated ----
 
 
-def test_extensions_changed_lists_only_changed_kinds(host):
+def test_extensions_changed_lists_only_changed_kinds(host, monkeypatch):
     client, _, project_id, _ = host
+    monkeypatch.setattr(packs_service, "_assistant_idle", lambda project_id: False)  # 助手在跑：下一条消息前切换
     _pack(client, project_id, "trace", enable=False)
     disabled = buffered(project_id, "extensions.updated")[-1]["data"]
     # 场景模拟包有左栏页面、产物类型与视图，没有资料子页、入口、门禁
@@ -184,9 +187,10 @@ def test_extensions_changed_lists_only_changed_kinds(host):
     assert switched["changed"] == ["pages"] and switched["pending_hash"] is None
 
 
-def test_assembly_updated_once_per_lock_commit_and_once_per_switch(host):
+def test_assembly_updated_once_per_lock_commit_and_once_per_switch(host, monkeypatch):
     client, _, project_id, _ = host
     assert _count(project_id, "assembly.updated") == 0
+    monkeypatch.setattr(packs_service, "_assistant_idle", lambda project_id: False)  # 助手在跑：下一条消息前切换
 
     # 能力包（H1）：锁文件提交时一次「待生效」，下一条消息前切换时一次「已生效」
     _pack(client, project_id, "codegen", enable=False)
@@ -227,8 +231,9 @@ def _both_engines(root: Path, message: str) -> tuple[str, str]:
         return (hook.get("hookSpecificOutput") or {}).get("additionalContext", ""), await jiuwen._model_query(message)
 
     return asyncio.run(scenario())
-def test_pack_prompt_rule_only_with_declaring_pack_for_both_engines(host):
+def test_pack_prompt_rule_only_with_declaring_pack_for_both_engines(host, monkeypatch):
     client, manager, project_id, root = host
+    monkeypatch.setattr(packs_service, "_assistant_idle", lambda project_id: False)  # 助手在跑：下一条消息前切换
     message = "这一轮就到这，结束本轮"
     plain_id = manager.create_project("无提示", packs=[])["id"]
     plain = manager.project_root(plain_id)
