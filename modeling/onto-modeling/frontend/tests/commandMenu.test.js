@@ -80,7 +80,8 @@ test('脚本步骤（kind node）同导航栏：按节点 ID 跑，不发斜杠�
 
 test('跑完脚本步骤提示「步骤名：结论」；不是脚本运行或没有结论不提示', async () => {
   const { scriptRunText } = await import('../src/state/flow.js');
-  assert.equal(scriptRunText({ title: '检查对象主键', run: { state: 'passed' }, last_run: { summary: '10 个对象，都标了主键' } }), '检查对象主键：10 个对象，都标了主键');
-  assert.equal(scriptRunText({ title: '检查对象主键', question: {} }), '');
-  assert.equal(scriptRunText({ title: '检查对象主键', run: {}, last_run: { summary: ' ' } }), '');
+  const node = { id: 'pk.check', title: '检查对象主键', last_run: { state: 'passed', summary: '10 个对象，都标了主键' } };
+  assert.equal(scriptRunText({ node, flow_hash: 'h', run: { state: 'passed', commit: null } }), '检查对象主键：10 个对象，都标了主键');
+  assert.equal(scriptRunText({ node, flow_hash: 'h', question: {} }), '');
+  assert.equal(scriptRunText({ node: { ...node, last_run: { summary: ' ' } }, run: {} }), '');
 });
