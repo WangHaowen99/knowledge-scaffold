@@ -313,6 +313,11 @@ def answer(manager, project_id: str, question_id: str, body: dict, *, actor: str
         data = _load(root)
         data[question_id] = {**item, "state": "answered", "answered_at": now, "answer": {"option_id": option_id}}
         _save(root, data)
+    # 同脚本节点：回答后按主线现状重记基线，过期后重新回答的这一步放行
+    from . import model
+    from . import state as node_state
+
+    node_state.confirm(root, model.load_for(root), [item["node_id"]])
     record = {"question_id": question_id, "answer": {"option_id": option_id}, "by": "user",
               "summary": f"选了 {chosen['key']}：{chosen['label']}", "answered_at": None}
     from ..session_host.views import iso

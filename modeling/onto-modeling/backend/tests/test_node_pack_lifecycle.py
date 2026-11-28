@@ -417,3 +417,26 @@ def test_human_node_only_asks_one_decision_card(env):
     assert client.post(url, json={"option_id": "pass"}).status_code == 410
     nodes = nodes_of(root)
     assert nodes["naming.signoff"]["state"] == "confirmed" and nodes["core.operation"]["state"] == "ready"
+
+
+def test_human_node_reanswered_after_stale_is_confirmed_again(env):
+    """人工节点过期后重新回答：按主线现状重记基线，不再一直是过期（同脚本节点 FL-05 重跑）。"""
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    research_and_object(root)
+    node = {**HUMAN_NODE, "stale_on": ["object"]}
+    install(manager, tmp_path, flow=kinds_flow(node, probes={"naming_signoff": {"files": ["reports"], "glob": "signoff-naming.md"}}))
+    enable_and_apply(client, manager, project_id)
+
+    def answer_signoff():
+        question = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.signoff/start", json={}).json()["question"]
+        url = (f"/api/v1/projects/{project_id}/conversations/{question['conversation_id']}"
+               f"/questions/{question['question_id']}/answer")
+        assert client.post(url, json={"option_id": "pass"}).status_code == 200
+
+    answer_signoff()
+    assert nodes_of(root)["naming.signoff"]["state"] == "confirmed"
+    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者，改了描述"))
+    assert nodes_of(root)["naming.signoff"]["state"] == "stale"
+    answer_signoff()
+    assert nodes_of(root)["naming.signoff"]["state"] == "confirmed"
