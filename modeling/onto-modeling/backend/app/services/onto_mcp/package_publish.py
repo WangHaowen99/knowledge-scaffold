@@ -109,9 +109,14 @@ def _blockers(manager, project_id, allow_unbound):
     """发布检查（PB-01 同口径）里挡发布的门禁；降级只放宽数据绑定。"""
     from .. import publish
 
+    from ..flow import view as flow_view
+
     check = publish.package_binding_check(manager, project_id)
-    failing = publish.gates.blocking(check["gates"], degrade=allow_unbound)
-    return check, [{"code": gate["id"], "message": gate["summary"]} for gate in failing]
+    # 流程关卡（挂在发布前的插件检查）和网页发布检查（routers/publish.check_view）一样算进来：没跑、过期都挡
+    flow_gates = flow_view.publish_gates(manager.project_root(project_id))
+    failing = publish.gates.blocking([*check["gates"], *flow_gates], degrade=allow_unbound)
+    return check, [{"code": gate["id"], "message": f"「{gate['title']}」{gate['summary']}"
+                    if (gate.get("source") or {}).get("kind") == "flow" else gate["summary"]} for gate in failing]
 
 
 def preview(manager, principal, args):

@@ -1,12 +1,15 @@
 // ⌘K 命令面板的数据：跳转项、全文搜索结果、排序（纯逻辑，单测用）
 import { can } from '../state/roles.js';
 
+// 跳转项第 6 位是只用来匹配、不显示的别名：按页面名搜（「插件中心」）也找得到
+const PLUGIN_CENTER = '插件中心';
+
 export function staticItems({ projectId, inboxCount, hasPlugin, user }) {
   const canOps = can(user, 'ops.read');
   if (!projectId) {
     return [
       ['跳转', '我的项目', 'grid', 'projects'], ['跳转', '新建项目…', 'plus', 'create'], ['跳转', '导入项目…', 'download', 'import'],
-      ['插件', '安装插件 / 能力包…', 'puzzle', 'plugins'], ['设置', '我的模型配置', 'key', 'me', { section: 'model' }],
+      ['插件', '安装插件 / 能力包…', 'puzzle', 'plugins', undefined, PLUGIN_CENTER], ['设置', '我的模型配置', 'key', 'me', { section: 'model' }],
       ...(can(user, 'admin') ? [['设置', '系统设置', 'gear', 'sys']] : []),
       ...(canOps ? [['运维', '查看运行状态', 'activity', 'ops']] : []),
     ];
@@ -21,7 +24,7 @@ export function staticItems({ projectId, inboxCount, hasPlugin, user }) {
     ['资料', '上传资料…', 'upload', 'resources'],
     ['发布', '发布检查与发布…', 'upload', 'publish'], ['发布', '标记一个版本…', 'tag', 'versions'],
     // 插件中心是全局页：带上当前项目，「启用到」就是这个项目（F2 第 4 条）
-    ['插件', '安装插件 / 能力包…', 'puzzle', 'plugins', { project: projectId }], ['插件', '本项目已启用的能力', 'layers', 'proj-settings', { section: 'plugins' }],
+    ['插件', '安装插件 / 能力包…', 'puzzle', 'plugins', { project: projectId }, PLUGIN_CENTER], ['插件', '本项目已启用的能力', 'layers', 'proj-settings', { section: 'plugins' }],
     ['设置', '我的模型配置', 'key', 'me', { section: 'model' }], ['设置', '对外 MCP 与 Token', 'link', 'proj-settings', { section: 'mcp' }],
     ...(canOps ? [['运维', '查看运行状态', 'activity', 'ops']] : []),
   ];
@@ -47,7 +50,7 @@ export const COMMAND_MAX = 6;
 export function paletteList({ q, hits, commands, statics }) {
   const items = [];
   statics
-    .filter(([g, t]) => !q || t.includes(q) || g.includes(q))
+    .filter(([g, t, , , , alias]) => !q || t.includes(q) || g.includes(q) || (alias || '').includes(q))
     .forEach(([g, t, i, page, params]) => items.push({ group: g, label: t, icon: i, page, params }));
   hits.forEach((h) => items.push({ group: '内容', label: h.label, icon: h.icon, page: h.page }));
   (commands || []).flatMap((g) => g.items.map((c) => ({ group: g.label, label: c.label, icon: 'cmd', command: c })))

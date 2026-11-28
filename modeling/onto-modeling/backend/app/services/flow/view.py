@@ -637,7 +637,8 @@ def publish_gates(root: Path) -> list[dict]:
             "source": {"kind": "flow", "label": plugin["label"] if plugin else "主流程",
                        **({"pack": plugin["name"]} if plugin else {})},
             "status": "pass" if passed else "fail" if node["state"] == "stale" else "not_run",
-            "summary": "" if passed else "过期" if node["state"] == "stale" else "还没运行",
+            "summary": ("已跳过" if node["state"] == "skipped" else "已完成") if passed
+            else "过期" if node["state"] == "stale" else "还没运行",
             "blocking": not passed, "degradable": False, "findings": [],
             "action": None if passed else {"type": "start_node", "node_id": node["id"]},
         })

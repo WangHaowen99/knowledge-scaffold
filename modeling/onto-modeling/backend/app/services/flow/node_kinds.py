@@ -152,6 +152,12 @@ def run_script(manager, project_id: str, node: dict, *, actor: str) -> dict:
             _record_run(root, node["id"], "failed", summary)
         raise
     _record_run(root, node["id"], "passed", _first_line(stdout) or run["output"])
+    # 跑完按主线现状重记基线（同 agent 节点的变更集合入）：过期、做法变了的这一步重跑后放行。原来脚本节点
+    # 一旦过期，重跑也一直是过期
+    from . import model
+    from . import state as node_state
+
+    node_state.confirm(root, model.load_for(root), [node["id"]])
     return run
 
 

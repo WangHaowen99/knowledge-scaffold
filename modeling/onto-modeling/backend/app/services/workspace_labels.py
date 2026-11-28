@@ -26,7 +26,9 @@ ENTRY_LABELS = {"object": "对象", "operation": "操作", "rule": "规则", "me
 # 流程节点 stale_on 的产物类别（flow/state.KIND_DIRS）→ 说法
 KIND_LABELS = {**ENTRY_LABELS, "research": "资料分析", "object_set": "对象清单", "operation_set": "操作清单",
                "mock": "模拟数据", "testcase": "测试用例", "diagram": "流程图",
-               "solver": "求解契约", "knowledge": "知识"}
+               "solver": "求解契约", "knowledge": "知识",
+               # 插件节点的做法变了（flow/state.definition_signature）：「做法有变化」
+               "definition": "做法"}
 
 
 def kinds_text(kinds, names: dict | None = None) -> str:

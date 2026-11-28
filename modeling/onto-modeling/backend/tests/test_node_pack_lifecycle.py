@@ -79,7 +79,7 @@ def test_enable_is_a_changeset_and_revert_restores(env):
     enabled = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "naming"})
     assert enabled.status_code == 201, enabled.text
     body = enabled.json()
-    assert body["changeset_id"] and body["effective"] == "next_message"
+    assert body["changeset_id"] and body["effective"] == "immediate"  # 助手空闲：当场切换
     assert trailer(root, "Onto-Source") == "plugin" and trailer(root, "Onto-Changeset") == body["changeset_id"]
     changed = sorted(git(root, "show", "--name-only", "--format=", "HEAD").split())
     assert changed == sorted([lockfile.LOCK_REL, flowlock.FLOW_LOCK_REL])
@@ -97,10 +97,11 @@ def test_enable_is_a_changeset_and_revert_restores(env):
     assert (root / flowlock.FLOW_LOCK_REL).read_text(encoding="utf-8") == flow_before
 
 
-def test_cancel_pending_reverts_the_changeset(env):
+def test_cancel_pending_reverts_the_changeset(env, monkeypatch):
     client, manager, project_id, tmp_path = env
     root = manager.project_root(project_id)
     install(manager, tmp_path)
+    monkeypatch.setattr(pack_service, "_assistant_idle", lambda project_id: False)  # 助手在跑才有待生效
     cs = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "naming"}).json()["changeset_id"]
     cancelled = client.post(f"/api/v1/projects/{project_id}/packs/naming/cancel-pending")
     assert cancelled.status_code == 200
@@ -336,6 +337,56 @@ def test_script_node_never_falls_back_to_the_main_container(env, fake_sandbox, m
     unavailable = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.lint/start", json={})
     assert unavailable.status_code == 503 and unavailable.json()["code"] == "service_unavailable"
     assert not (root / "reports" / "lint-naming.md").exists()
+
+
+def test_publish_gate_script_rerun_after_its_script_changes(env, fake_sandbox):
+    """挡发布的脚本节点（评审 1.5、2.1）：跑过的说明写「已完成」；插件更新换了脚本，之前的结论不算数——节点过期、
+    导航栏上发布被挡、发布检查（网页和 MCP 同口径）挡住，重跑之后放行；只改了节点名的版本不作废结论。"""
+    from app.services.onto_mcp import package_publish
+
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
+    gate = {**SCRIPT_NODE, "placement": "step", "after": "core.validate", "blocks": ["core.publish"]}
+    probes = {"naming_lint": {"files": ["reports"], "glob": "lint-naming.md"}}
+    files = {"commands/naming-check.md": "检查 $ARGUMENTS\n", "scripts/naming_lint.py": LINT_SCRIPT}
+    install(manager, tmp_path, flow=kinds_flow(gate, probes=probes), files=files)
+    enable_and_apply(client, manager, project_id)
+
+    def publish_gate():
+        return next(item for item in view.publish_gates(root) if item["id"] == "flow:naming.lint")
+
+    assert publish_gate()["summary"] == "还没运行" and nodes_of(root)["core.publish"]["state"] == "blocked"
+    assert client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.lint/start", json={}).status_code == 200
+    assert nodes_of(root)["naming.lint"]["state"] == "confirmed"
+    assert (publish_gate()["status"], publish_gate()["summary"]) == ("pass", "已完成")
+    assert nodes_of(root)["core.publish"]["state"] != "blocked"
+
+    # 只改节点名：结论照旧
+    renamed = {**gate, "title": "命名格式检查（新叫法）"}
+    install(manager, tmp_path, "0.1.1", flow=kinds_flow(renamed, probes=probes), files=files)
+    assert client.post(f"/api/v1/projects/{project_id}/packs/naming/upgrade", json={"to_version": "0.1.1"}).status_code == 200
+    node = nodes_of(root)["naming.lint"]
+    assert node["title"] == "命名格式检查（新叫法）" and node["state"] == "confirmed"
+
+    # 换了脚本：过期，发布挡住，原因写「做法有变化」
+    changed = {**files, "scripts/naming_lint.py": LINT_SCRIPT + "# 新规则\n"}
+    install(manager, tmp_path, "0.2.0", flow=kinds_flow(renamed, probes=probes), files=changed)
+    upgraded = client.post(f"/api/v1/projects/{project_id}/packs/naming/upgrade", json={"to_version": "0.2.0"})
+    assert upgraded.status_code == 200 and upgraded.json()["effective"] == "immediate"
+    nodes = nodes_of(root)
+    assert nodes["naming.lint"]["state"] == "stale" and nodes["core.publish"]["state"] == "blocked"
+    assert nodes["naming.lint"]["actions"] == [] or all(a["kind"] != "refresh" or "做法" in a.get("reason", "")
+                                                        for a in nodes["naming.lint"]["actions"])
+    assert (publish_gate()["status"], publish_gate()["blocking"]) == ("fail", True)
+    _check, blockers = package_publish._blockers(manager, project_id, False)
+    assert {"code": "flow:naming.lint", "message": "「命名格式检查（新叫法）」过期"} in blockers
+
+    # 重跑：按新脚本记基线，放行
+    assert client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.lint/start", json={}).status_code == 200
+    nodes = nodes_of(root)
+    assert nodes["naming.lint"]["state"] == "confirmed" and nodes["core.publish"]["state"] != "blocked"
+    assert publish_gate()["status"] == "pass"
 
 
 def test_human_node_only_asks_one_decision_card(env):

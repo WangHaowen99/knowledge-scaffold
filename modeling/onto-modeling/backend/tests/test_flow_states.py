@@ -176,6 +176,87 @@ def test_blocked_by_an_unconfirmed_gate(tmp_path):
     assert result["core.b"]["state"] == "ready"
 
 
+def _gate_root(tmp_path: Path) -> Path:
+    root = tmp_path / "data" / "workspaces" / "gate-stale"
+    (root / "ontology" / "object").mkdir(parents=True)
+    proc.run(["git", "init", "-q"], cwd=root, check=True)
+    _commit_file(root, "ontology/object/甲.md", "# 甲\n")
+    return root
+
+
+def _commit_file(root: Path, rel: str, text: str) -> None:
+    (root / rel).write_text(text, encoding="utf-8")
+    proc.run(["git", "add", rel], cwd=root, check=True)
+    proc.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", rel], cwd=root, check=True)
+
+
+def test_stale_gate_blocks_publish_but_not_modeling_steps(tmp_path):
+    """关卡过期：发布前的关卡按没过算，发布被挡（网页、MCP 的发布检查本来就挡，导航栏跟着一致）；
+    挂在建模中间步骤前的关卡过期照旧不挡，免得改一个对象就卡住后面的建模（发布前还会再挡）。"""
+    root = _gate_root(tmp_path)
+    flow = {"nodes": [
+        {"id": "core.a", "title": "甲", "done": ["a"]},
+        {"id": "x.gate", "title": "发布前检查", "after": "core.a", "done": ["g"], "stale_on": ["object"],
+         "blocks": ["core.publish"]},
+        {"id": "x.mid", "title": "中间检查", "after": "core.a", "done": ["m"], "stale_on": ["object"],
+         "blocks": ["core.b"]},
+        {"id": "core.b", "title": "乙", "after": "core.a", "done": ["b"]},
+        {"id": "core.publish", "title": "发布", "after": "core.b", "done": ["p"]},
+    ], "probes": {}}
+    hits = {"core.a": True, "x.gate": True, "x.mid": True, "core.b": True, "core.publish": False}
+    result = node_state.compute(root, flow, hits)
+    assert result["core.publish"]["state"] == "ready" and result["x.gate"]["state"] == "confirmed"
+    _commit_file(root, "ontology/object/乙.md", "# 乙\n")
+    result = node_state.compute(root, flow, {**hits, "core.b": False})
+    assert result["x.gate"]["state"] == "stale" and result["x.mid"]["state"] == "stale"
+    assert result["core.publish"]["state"] == "blocked"
+    assert result["core.b"]["state"] == "ready"
+
+
+def test_plugin_node_method_change_makes_it_stale_core_untouched(tmp_path):
+    """插件节点的做法（脚本、主命令内容）变了：结论作废、按过期处理，原因第一类是「做法」；只改节点名不算；
+    core 节点不比（core 升级照旧按完成判定签名标需复核）；签名上线前的老记录第一次只记基线。"""
+    root = _gate_root(tmp_path)
+    scripts, commands = root / ".claude" / "scripts", root / ".claude" / "commands"
+    scripts.mkdir(parents=True)
+    commands.mkdir(parents=True)
+    (scripts / "lint.py").write_text("print('ok')\n", encoding="utf-8")
+    (commands / "x-review.md").write_text("按规则复核\n", encoding="utf-8")
+    (commands / "ontology-a.md").write_text("做甲\n", encoding="utf-8")
+    flow = {"nodes": [
+        {"id": "core.a", "title": "甲", "done": ["a"], "actions": [{"label": "甲", "command": "/ontology-a"}]},
+        {"id": "x.lint", "title": "检查", "pack": "x", "kind": "script", "after": "core.a", "done": ["l"],
+         "script": {"name": "lint.py", "inputs": ["ontology/object/*.md"], "output": "reports/lint.md"}},
+        {"id": "x.review", "title": "复核", "pack": "x", "after": "core.a", "done": ["r"],
+         "actions": [{"label": "复核", "command": "/x-review 全部"}]},
+    ], "probes": {}}
+    hits = {"core.a": True, "x.lint": True, "x.review": True}
+    node_state.compute(root, flow, hits)
+    stored = node_state.load(root)["nodes"]
+    assert stored["x.lint"]["def"] and stored["x.review"]["def"] and "def" not in stored["core.a"]
+
+    renamed = {**flow, "nodes": [{**node, "title": node["title"] + "（新）"} for node in flow["nodes"]]}
+    assert {k: v["state"] for k, v in node_state.compute(root, renamed, hits).items()} == {
+        "core.a": "confirmed", "x.lint": "confirmed", "x.review": "confirmed"}
+
+    (scripts / "lint.py").write_text("print('新规则')\n", encoding="utf-8")
+    (commands / "x-review.md").write_text("按新规则复核\n", encoding="utf-8")
+    (commands / "ontology-a.md").write_text("换个说法做甲\n", encoding="utf-8")
+    result = node_state.compute(root, flow, hits)
+    assert result["x.lint"]["state"] == "stale" and result["x.lint"]["changed"][0] == node_state.DEFINITION
+    assert result["x.review"]["state"] == "stale" and result["core.a"]["state"] == "confirmed"
+
+    node_state.confirm(root, flow, ["x.lint", "x.review"])  # 重跑合入后放行
+    assert {node_state.compute(root, flow, hits)[k]["state"] for k in ("x.lint", "x.review")} == {"confirmed"}
+
+    # 老记录没有签名：第一次只记基线
+    stored = node_state.load(root)
+    stored["nodes"]["x.lint"].pop("def")
+    node_state.save(root, stored)
+    assert node_state.compute(root, flow, hits)["x.lint"]["state"] == "confirmed"
+    assert node_state.load(root)["nodes"]["x.lint"]["def"]
+
+
 def test_needs_review_after_upgrade_and_import(env):
     _client, _workspaces, _manager, _project_id, root = env
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))

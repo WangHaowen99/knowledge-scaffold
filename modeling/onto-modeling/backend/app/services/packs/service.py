@@ -322,7 +322,7 @@ def _flow_changed(manager, root, plan) -> bool:
 
 def _switch(manager, project_id: str, mutate, message: str, actor: str, *, pack: str = "", kind: str = "") -> dict:
     """改锁文件的公共流程：先装配新版本（失败就不改锁文件），再作为插件变更集提交锁文件与 flow.lock；
-    只动纯数据包时立即生效。"""
+    项目里没有助手在跑（`_assistant_idle`）或只动纯数据包时立即生效，否则下一条消息前切换。"""
     from . import changes
 
     runtime = manager.packs
@@ -354,7 +354,7 @@ def _switch(manager, project_id: str, mutate, message: str, actor: str, *, pack:
             commit = commit_lock(manager, project_id, "chore: 写入能力包锁文件", actor)
         active_before = (runtime.assembler.active(root) or {}).get("assembly_hash")
         try:
-            status = runtime.apply(root, h0_only=True)
+            status = runtime.apply(root, h0_only=not _assistant_idle(project_id))
         except AssemblyError:
             status = runtime.status(root)
     from .. import mainline
@@ -362,6 +362,28 @@ def _switch(manager, project_id: str, mutate, message: str, actor: str, *, pack:
     announce_immediate_switch(project_id, active_before, status)
     return {"result": result, "commit": commit or None, "version_label": mainline.state(root)["version_label"],
             "status": status, "changeset_id": record["id"] if record and record.get("state") == "merged" else None}
+
+
+def _assistant_idle(project_id: str) -> bool:
+    """项目里没有在跑、排队、连接、等确认、处理中的发送，也没有自主构建：改能力包（H1）当场切换装配目录。
+
+    调用方持项目锁：发消息前的 `fingerprint.prepare` 也要拿项目锁，所以这里判断完到切换完之间不会有新的一轮读到半新半旧的
+    装配；发送计数在拿项目锁之前就加上了，判断为空闲时还没有发送在路上。会话指纹按锁文件算，引擎连着的话下一条消息照样重连。
+    """
+    from ..agent_sessions import manager as sessions
+    from ..autobuild import store as autobuild_store
+
+    try:
+        return not sessions.workspace_busy(project_id) and autobuild_store.active(project_id) is None
+    except Exception:  # noqa: BLE001 - 判断不了按忙处理，退回下一条消息前切换
+        _log.warning("项目 %s 判断助手是否空闲失败，改能力包按下一条消息生效", project_id, exc_info=True)
+        return False
+
+
+def _preview_effective(manifest, project_id: str) -> str:
+    """PL-04 预告的生效时机：助手空闲时启用当场切换（见 `_switch`），预告「立即」；在跑时按包声明的时机。"""
+    declared = manifest.effective if manifest.effective != "restart" else "next_message"
+    return "immediate" if declared == "next_message" and _assistant_idle(project_id) else declared
 
 
 def _pack_view(manager, project_id: str, name: str) -> dict | None:
@@ -538,7 +560,7 @@ def _revert_pending(manager, project_id: str, name: str, actor: str) -> bool:
             return False
         active_before = (runtime.assembler.active(root) or {}).get("assembly_hash")
         try:
-            status = runtime.apply(root, h0_only=True)
+            status = runtime.apply(root, h0_only=not _assistant_idle(project_id))
         except AssemblyError:
             status = runtime.status(root)
     announce_immediate_switch(project_id, active_before, status)
@@ -642,7 +664,7 @@ def compatibility(manager, name: str, version: str, project_id: str) -> dict:
     ok = all(check["ok"] for check in checks)
     return {
         "ok": ok, "checks": checks, "brings": brings, "ui_effect": ui_effect,
-        "effective": manifest.effective if manifest.effective != "restart" else "next_message",
+        "effective": _preview_effective(manifest, project_id),
         "impact": {"needs_review_after_upgrade": len(_review_after(root, trial_flow)), "affected_artifacts": 0,
                    "note": None},
         "blocked_reason": None if ok else next(check["detail"] or check["label"] for check in checks if not check["ok"]),

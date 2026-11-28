@@ -2124,7 +2124,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   `/ontology-trace 全部`（原来 `/ontology-trace`，会先问做哪种）。
 - 刷新过期节点：节点声明了 `refresh_scope: changed_entries`、此刻过期且算得出改动范围时，命令改为 `<主命令> <条目名…> --since <确认时提交前 12 位>`（只查改动，ADR-0100）；算不出时照旧。
 - 响应 `202`：同 `S-20`。
-- 脚本节点（`kind: script`）当场在沙箱里跑完，响应 `200`：节点视图加 `run: {state, output, commit, version_label, duration_ms, runtime, warnings}`。`warnings: [{code: "pack_gate", level: "warning", message, gate, path}]` 是输出没过的包提交门禁：只提示，输出照常写进版本（F3b）。
+- 脚本节点（`kind: script`）当场在沙箱里跑完，跑完按主线现状重记这一步的基线（过期、做法变了的重跑后放行），响应 `200`：节点视图加 `run: {state, output, commit, version_label, duration_ms, runtime, warnings}`。`warnings: [{code: "pack_gate", level: "warning", message, gate, path}]` 是输出没过的包提交门禁：只提示，输出照常写进版本（F3b）。
 - 错误：`node_not_found`、`flow_assembly_failed`、`autobuild_running`。
 
 #### BP-01 建模蓝图
@@ -2479,7 +2479,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   | `checks` | `CompatCheck[]` | 内核接口 `kernel_api`、会话引擎、依赖、命令 / 子代理 / 脚本名唯一、流程组装、`page_api` |
   | `brings` | object | `{summary_md, commands: int, agents: int, skills: int, nodes: [{id, title, placement}], pages: [{id, title}], subpages: [{parent, id, title}]}` |
   | `ui_effect` | object | `{kind: "page"\|"subpages"\|"none"\|"kernel", text}`，如「启用后左栏出现「场景模拟」」 |
-  | `effective` | string | `next_message\|next_safe_point\|immediate`：行业包这类纯数据包是 `immediate` |
+  | `effective` | string | `next_message\|next_safe_point\|immediate`：行业包这类纯数据包是 `immediate`；项目里没有助手在跑（不在跑、排队、连接、等确认，没有自主构建）时启用当场生效，也是 `immediate` |
   | `impact` | object | `{needs_review_after_upgrade: int, affected_artifacts: int, note}`：节点完成判定变化等 |
   | `blocked_reason` | string \| null | 如「需要先升级基础建模能力」 |
 
@@ -2500,7 +2500,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 请求：`{name, version?: string}`，缺省取 stable 最新版。
 - 效果：
   - 改 `packs.lock`，作为一个变更集自动合入（`Onto-Source: plugin`），可撤回；
-  - 下一条消息前重新装配。
+  - 项目里没有助手在跑时当场重新装配（`effective: "immediate"`，导航栏、全部命令、发布检查随项目流 `assembly.updated`、
+    `flow.updated` 刷新；引擎还连着的话下一条消息照样按指纹重连）；有一轮在跑时下一条消息前重新装配。PL-07～PL-10 同。
 - 响应 `201`：`{pack: ProjectPack, commit, version_label, effective: "next_message"|"next_safe_point"|"immediate", extensions_pending_hash}`。
 - 错误：`pack_not_found`、`pack_already_enabled`、`pack_incompatible`、`pack_unavailable`、`page_api_unsupported`、`flow_assembly_failed`、`write_scope_locked`。
 
@@ -2511,6 +2512,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 请求：`{to_version: string, effective?: "next_message"|"next_autobuild"}`。
   - `next_autobuild` 对应「只在下次自主构建时启用新版本」。
 - 节点完成判定变了的话，旧的「已确认」标为「需复核」（6.9）。
+- 插件节点的做法变了（脚本节点的脚本、agent 节点主命令文件的内容），旧的「已确认」作废、按过期处理（FL-01 `stale`），
+  重跑后放行；只改节点名、说明不算。
 - 响应：同 `PL-06`。
 - 错误：同 `PL-06`，加 `pack_not_enabled`、`pack_version_not_found`。
 
@@ -5336,6 +5339,8 @@ type ProgressStep = { id: string; text: string; meta: string; state: "done" | "r
 ```ts
 // 详设 6.6：8 种状态 + 2 个附加标记
 type NodeState = "not_ready" | "ready" | "running" | "pending_confirm" | "confirmed" | "stale" | "skipped" | "blocked";
+// blocked：挡住它的关卡没过。发布前的关卡（blocks 含 core.publish）过期也算没过；挂在建模步骤前的关卡过期不挡。
+// 导航栏上脚本节点的主按钮调 FL-05（在沙箱里跑脚本），不发包里声明的同名命令。
 
 type FlowNode = {
   id: string; title: string;      // core.validate 的 title 恒为「校验」（11-05 起场景模拟包不再改它的显示名）
@@ -5705,7 +5710,7 @@ type GateResult = {
   id: string; order: number; title: string;
   source: { kind: "platform" | "pack" | "flow"; label: string; pack?: string };
   status: "pass" | "fail" | "not_run" | "warn";
-  summary: string;                // 「3 个对象和数据表对不上」「还没运行 · 挡住发布」
+  summary: string;                // 「3 个对象和数据表对不上」「还没运行」；流程关卡通过时「已完成」「已跳过」，过期是「过期」（挡发布）
   blocking: boolean; degradable: boolean;
   findings: Finding[];
   action: SuggestionAction | null;   // 如合规检查「去运行」
