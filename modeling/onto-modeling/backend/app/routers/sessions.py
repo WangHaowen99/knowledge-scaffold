@@ -78,19 +78,28 @@ def list_conversations(project_id: str, request: Request):
     }
 
 
-def _ensure_not_busy(project_id: str, conversation_id: str | None = None) -> None:
-    """另一条对话在跑（或运行中不能新建、删除）：409 session_busy。conversation_id 给定时只拦别的对话。"""
+def _ensure_not_busy(project_id: str, conversation_id: str | None = None, *, allow_waiting: bool = False) -> None:
+    """另一条对话在跑（或运行中不能新建、删除）：409 session_busy。conversation_id 给定时只拦别的对话。
+    allow_waiting：那条只是在等你回答时不拦（新建对话用不到引擎，发消息时再让出）。"""
     live = manager.live_status(project_id)
-    if live and live["busy"] and live["conversation_id"] != conversation_id:
+    if live and live["busy"] and live["conversation_id"] != conversation_id \
+            and not (allow_waiting and manager.waiting_only(project_id)):
         raise ApiError("session_busy", "有对话正在运行，请等它结束或先打断", 409,
                        {"running_conversation_id": live["conversation_id"]})
+
+
+async def _free_engine(project_id: str, conversation_id: str) -> None:
+    """要在这条对话里用引擎：引擎绑着的另一条只是在等你回答时，那条的问题撤回、这一轮停下，让出引擎；
+    另一条在真跑时照旧 409 session_busy。"""
+    await manager.release_waiting(project_id, conversation_id)
+    _ensure_not_busy(project_id, conversation_id)
 
 
 @router.post("/conversations")
 async def create_conversation(project_id: str, request: Request):
     deps.require_writable(project_id, request)
     body = await deps.json_body(request)
-    _ensure_not_busy(project_id)
+    _ensure_not_busy(project_id, allow_waiting=True)
     kind = str(body.get("kind") or "chat")
     if kind not in ("chat", "plugin"):  # 自主构建的对话由运行器建
         raise ApiError("invalid_argument", "kind 只能是 chat 或 plugin", 400, {"fields": {"kind": "enum"}})
@@ -303,7 +312,7 @@ async def _send(project_id: str, root: Path, conversation_id: str, request: Requ
     另给 next），已有一条时 409 next_occupied，meta 带 replace 时替换。"""
     autobuild_store.ensure_no_run(project_id)
     reject_new_session(project_id)
-    _ensure_not_busy(project_id, conversation_id)
+    await _free_engine(project_id, conversation_id)
     try:
         session, outcome = await manager.submit(project_id, root, text, conversation_id,
                                                 username=deps.username(request), meta=meta)
@@ -868,7 +877,7 @@ async def dispatch_command(project_id: str, root: Path, request: Request, body: 
     conversation_id = _resolve(project_id, str(body.get("conversation_id") or "-"))
     if body.get("from_suggestion"):
         await asyncio.to_thread(next_step.guard, project_id, conversation_id, {"type": "send", "command": name}, root)
-    _ensure_not_busy(project_id, conversation_id)
+    await _free_engine(project_id, conversation_id)
     text = _render_command(command, args, str(body.get("text") or ""))
     # 对话里显示名字、不出命令原文和参数（F4b-paths；端到端验证），页面另给的说明另起一段。名字按名字表取（命令连同
     # 动作自带的参数，「/ontology-research 追加」叫追加资料分析），认不出时才用页面给的按钮叫法；任务标题、排队条、

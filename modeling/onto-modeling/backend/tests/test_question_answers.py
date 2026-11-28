@@ -277,3 +277,63 @@ def test_waiting_for_an_answer_is_not_an_engine_stall(monkeypatch):
         assert not agent_sessions._stalled(session, time.time(), 60)
 
     asyncio.run(run())
+
+
+# ---- 在别的对话里用引擎：只在等回答的那条让出来（评审 5.1）----
+
+
+def _waiting(client, manager, project_id):
+    """引擎绑着默认对话、这一轮停在一张没答的决策卡上；打断由假实现直接置空闲。"""
+    session = _session(manager, project_id, state="running")
+    pending = client.portal.start_task_soon(manager._request_permission, session, "AskUserQuestion", ASK, None, None)
+    deadline = time.time() + 5
+    while not session.pending_permissions and time.time() < deadline:
+        time.sleep(0.02)
+    calls = []
+
+    async def fake_interrupt(project_id, conversation_id=None, *, by="user"):
+        calls.append(conversation_id)
+        session.state = "idle"
+        return False
+
+    manager.interrupt = fake_interrupt
+    return session, pending, calls
+
+
+def test_release_waiting_withdraws_the_question_and_frees_the_engine(api):
+    from app.services import conversation_store
+
+    client, manager, project_id = api
+    other = conversation_store.create(project_id)["id"]
+    session, pending, calls = _waiting(client, manager, project_id)
+    # 在同一条对话里不让
+    assert client.portal.call(manager.release_waiting, project_id, session.conversation_id) is False
+    assert client.portal.call(manager.release_waiting, project_id, other) is True
+    assert pending.result(timeout=5) == {"behavior": "deny", "message": agent_sessions.RELEASE_REASON}
+    assert calls == [session.conversation_id]
+    withdrawn = _events(session, "question_withdrawn")
+    assert len(withdrawn) == 3 and {item["reason"] for item in withdrawn} == {agent_sessions.RELEASE_REASON}
+    assert not session.pending_permissions and manager.live_status(project_id)["busy"] is False
+
+
+def test_release_waiting_leaves_a_turn_that_is_really_running(api):
+    from app.services import conversation_store
+
+    client, manager, project_id = api
+    other = conversation_store.create(project_id)["id"]
+    _session(manager, project_id, state="running")
+    assert manager.waiting_only(project_id) is False
+    assert client.portal.call(manager.release_waiting, project_id, other) is False
+    assert manager.live_status(project_id)["busy"] is True
+
+
+def test_new_conversation_while_another_only_waits_for_an_answer(api):
+    """新建对话用不到引擎：另一条只是在等回答时不挡（发消息时再让出）；在真跑时照旧 409。"""
+    client, manager, project_id = api
+    base = f"/api/v1/projects/{project_id}/conversations"
+    session, pending, _calls = _waiting(client, manager, project_id)
+    assert manager.waiting_only(project_id) is True
+    assert client.post(base, json={"kind": "plugin"}).status_code == 201
+    client.portal.call(manager.respond_permission, project_id, next(iter(session.pending_permissions)), "deny")
+    pending.result(timeout=5)
+    assert client.post(base, json={}).status_code == 409

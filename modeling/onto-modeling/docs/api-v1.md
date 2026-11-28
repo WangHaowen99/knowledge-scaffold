@@ -1758,8 +1758,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `POST /api/v1/projects/{id}/conversations` · 所有者 · 旧：`POST /api/projects/{id}/session/conversations` · 审计：是 · 依据：ADR 0013 · 页面：chat-states
 
 - 请求：`{title?: string}`。
-- 响应 `201`：`Conversation`。发第一条消息时引擎才换绑过来。
-- 错误：`session_busy`（当前有对话在运行）。
+- 响应 `201`：`Conversation`。发第一条消息时引擎才换绑过来。插件对话（`kind: "plugin"`）建时标题是占位的「新插件」，没绑草稿前
+  首条消息换掉它（同建模对话的自动标题），绑草稿后是插件名。
+- 错误：`session_busy`（当前有对话在运行）。另一条对话只是在等你回答（决策卡、确认卡）时不算，照常新建。
 
 #### S-03 重命名对话
 
@@ -1823,6 +1824,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   这时还没有用户气泡，`message_id` 为 null，开始时才写 `message.user`（`delivery="immediate"`，带原来的 `origin`）。最多存一条，已有时回 `next_occupied`。
 - `deferred`：自主构建运行对话里的补充说明，下一步开始前带给助手（不打断运行）。
 - `queued`：会话池满，排队。
+
+另一条对话只是在等你回答（决策卡、确认卡）时不回 `session_busy`：那条对话没回答的问题按 `reason`「已转到别的对话」撤回（EC-34），
+这一轮停下、记为打断（EC-05，可以从打断处继续），引擎让给这条。S-20 发命令同样处理。
 
 错误：
 
