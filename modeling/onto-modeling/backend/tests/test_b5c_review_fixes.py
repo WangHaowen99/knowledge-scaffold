@@ -317,8 +317,11 @@ def test_review_5_follow_waits_for_unconfirmed_assistant_changes_and_is_a_change
     assert head == record["id"]
 
 
-def test_review_5_cancel_pending_respects_unconfirmed_assistant_changes(env):
+def test_review_5_cancel_pending_respects_unconfirmed_assistant_changes(env, monkeypatch):
     from app.services.packs import lockfile
+    from app.services.packs import service as pack_service
+
+    monkeypatch.setattr(pack_service, "_assistant_idle", lambda project_id: False)  # 助手在跑才有待生效的切换可撤销
 
     client, manager, project_id, tmp_path = env
     root = manager.project_root(project_id)
@@ -371,8 +374,11 @@ def test_review_6_runner_reports_truncation(fake_sandbox):
 
 # ---- 审查第 7 条：同一条消息前切换了两次，PL-10 撤销要回到生效中的版本 ----
 
-def test_review_7_cancel_pending_undoes_stacked_switches(env):
+def test_review_7_cancel_pending_undoes_stacked_switches(env, monkeypatch):
     from app.services.packs import lockfile
+    from app.services.packs import service as pack_service
+
+    monkeypatch.setattr(pack_service, "_assistant_idle", lambda project_id: False)  # 助手在跑才有待生效的切换可撤销
     from tests.test_node_pack_lifecycle import node_ids
 
     client, manager, project_id, tmp_path = env
