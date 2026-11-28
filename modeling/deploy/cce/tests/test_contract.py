@@ -3205,7 +3205,7 @@ class CceContractTests(unittest.TestCase):
         run_test_command(["bash", str(script_dir / "build-images.sh"), "demo", "amd64"],
                        env=environment, check=True, capture_output=True, text=True)
         local_calls = calls.read_text().splitlines()
-        self.assertEqual(sum("--load" in line for line in local_calls), 3)
+        self.assertEqual(sum("--load" in line for line in local_calls), 4)  # 含连接器网关
         self.assertFalse(any("--push" in line or "imagetools" in line for line in local_calls))
         self.assertTrue(any("modeling-offline/onto-modeling:demo" in line for line in local_calls))
         self.assertTrue(any(f"--build-arg PIP_INDEX_URL={default_index}" in line
@@ -3214,8 +3214,8 @@ class CceContractTests(unittest.TestCase):
         run_test_command(["bash", str(script_dir / "build-images.sh"), "demo", "amd64", "registry.example.com/demo"],
                        env=environment, check=True, capture_output=True, text=True)
         registry_calls = calls.read_text().splitlines()
-        self.assertEqual(sum("--push" in line for line in registry_calls), 3)
-        self.assertEqual(sum("imagetools inspect" in line for line in registry_calls), 3)
+        self.assertEqual(sum("--push" in line for line in registry_calls), 4)
+        self.assertEqual(sum("imagetools inspect" in line for line in registry_calls), 4)
         self.assertFalse(any("--load" in line for line in registry_calls))
 
     def test_build_script_prepares_missing_dependencies_then_reuses_cache(self):
@@ -3311,13 +3311,13 @@ class CceContractTests(unittest.TestCase):
         self.assertFalse((root / "modeling/onto-modeling/vendor/drawio/webapp/index.html").exists())
         docker_calls = calls.read_text().splitlines()
         self.assertFalse(any(line.startswith("run") for line in docker_calls))
-        self.assertEqual(sum(line.startswith("buildx build") for line in docker_calls), 3)
+        self.assertEqual(sum(line.startswith("buildx build") for line in docker_calls), 4)
         calls.unlink()
         second = run_test_command(["bash", str(script_dir / "build-images.sh"), "demo", "amd64"],
                                 env=environment, capture_output=True, text=True)
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertIn("host npm unavailable", second.stderr)
-        self.assertEqual(sum(line.startswith("buildx build") for line in calls.read_text().splitlines()), 3)
+        self.assertEqual(sum(line.startswith("buildx build") for line in calls.read_text().splitlines()), 4)
 
         for name in ("mktemp", "rm"):
             (binary / name).symlink_to(shutil.which(name))
@@ -3329,7 +3329,7 @@ class CceContractTests(unittest.TestCase):
                                      env=environment, capture_output=True, text=True)
         self.assertEqual(failed_pack.returncode, 0, failed_pack.stderr)
         self.assertIn("drawio preparation failed", failed_pack.stderr)
-        self.assertEqual(sum(line.startswith("buildx build") for line in calls.read_text().splitlines()), 3)
+        self.assertEqual(sum(line.startswith("buildx build") for line in calls.read_text().splitlines()), 4)
 
     def test_build_offline_orchestrates_steps_and_default_output(self):
         script_dir = self.base / "modeling/deploy/cce"
@@ -3461,6 +3461,7 @@ class CceContractTests(unittest.TestCase):
                                      "--set", "evaluation.feedback.enabled=true,evaluation.feedback.notifyRuns=true",
                                      "--set", "evaluation.secrets.flywheelToken.name=feedback-credential,evaluation.secrets.flywheelToken.key=token",
                                      "--set", "global.resolvedImages.ontoModeling=example/onto@sha256:" + "a" * 64,
+                                     "--set", "global.resolvedImages.connectorGateway=example/gateway@sha256:" + "a" * 64,
                                      "--set", "global.resolvedImages.knowledgeHub=example/hub@sha256:" + "a" * 64,
                                      "--set", "global.resolvedImages.evaluation=example/eval@sha256:" + "a" * 64,
                                      "--set", "global.resolvedImages.jiuwenbox=example/box@sha256:" + "a" * 64],
