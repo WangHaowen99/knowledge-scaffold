@@ -455,7 +455,7 @@ def test_each_duplicate_reports_the_first_declaration_not_the_previous_duplicate
 @pytest.mark.parametrize("target_first", [False, True])
 @pytest.mark.parametrize("note", ["", "（fk → id）"])
 def test_relation_declared_once_in_each_endpoint_file_is_one_relation(target_first, note):
-    """Issue 419：源、目标两端文件各写一次是同一关系的两端描述，评测和导出都不算重复。"""
+    """Issue 419：源、目标两端文件各写一次是同一关系的两端描述，导出时不算重复。"""
     texts = _related_pair(note, ["fk"], ["id"])
     texts["object_b"] = texts["object_b"].replace("→ references →", f"→ references{note} →")
     # 名称不同的关系（如买方、卖方）同样两端各写一次，各自保留

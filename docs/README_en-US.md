@@ -8,7 +8,7 @@ English | [简体中文](../README.md)
 
 **Meta Wise** is an Agentic AI platform for enterprise knowledge engineering. It addresses the typical failure modes of general-purpose LLMs in enterprise settings — unfamiliar domain terminology, invented calculation rules, fabricated data fields — with an engineering approach: a business domain's objects, operations, calculation semantics, and data mappings are distilled into a structured **knowledge package** and bound to real enterprise data sources. Agents then answer according to the semantics defined in the package and query real data through the mappings: **every result is traceable, nothing is fabricated by the model.**
 
-The platform follows a three-part split: **design time builds the model** (the knowledge-package modeling workbench structures domain expertise into packages, `modeling/`), **runtime uses the model** (agents serve on top of the packages, `consumer/`), and **the platform does the wiring** (models, data, and tools). The runtime main application lives under `consumer/`: the Knowledge Engineering Console (React), the Flask backend, the workspace runtime, and an agent evaluation platform, with the agent main loop built on the open-source agent framework **openjiuwen**. The design-time modeling workbench lives under `modeling/` and closes the **model → evaluate → optimize** loop with consumer.
+The platform follows a three-part split: **design time builds the model** (the Onto Modeling workbench structures domain expertise into packages, `modeling/onto-modeling/`), **runtime uses the model** (agents serve on top of the packages, `consumer/`), and **the platform does the wiring** (models, data, and tools). The runtime main application lives under `consumer/`: the Knowledge Engineering Console (React), the Flask backend, the workspace runtime, and an agent evaluation platform, with the agent main loop built on the open-source agent framework **openjiuwen**. The design-time Onto Modeling workbench lives under `modeling/onto-modeling/`; it publishes packages to the Knowledge Hub, and the standalone evaluation service evaluates published versions to close the **model → evaluate → optimize** loop.
 
 ## Application Scenarios
 
@@ -17,7 +17,7 @@ Meta Wise targets scenarios where answers must follow **domain semantics and est
 - **Engineering change impact analysis**: change-record impact analysis, object/version mapping, inventory and supply risks, cost and schedule calculations.
 - **Production workflow planning**: production-plan decision support built on equipment, batch, material, and capacity knowledge.
 
-Domain knowledge packages are built and exported as ZIP files by the modeling workbench, then imported into consumer.
+Domain knowledge packages are built in Onto Modeling, published to the Knowledge Hub or exported as ZIP files, then imported into consumer.
 
 ## Core Features
 
@@ -37,15 +37,14 @@ Domain knowledge packages are built and exported as ZIP files by the modeling wo
 - ✅ **Layered configuration and access control**
     + Three scopes: Global (model pool, web search, platform connection, agent parameters) → Workspace (model selection, ontology-private data sources, runtime parameters, observability, MCP) → Personal (preferences, themes).
     + API keys live only in the global scope; workspaces reference model profiles without ever touching keys.
-    + Authentication is provided by the standalone auth server (`auth-server/`, an OAuth2/OIDC subset): consumer and modeling share one account system, the backend requires `AUTH_SERVER_URL`, and self-registration is enabled by default (one-step signup, no email verification code; it can be disabled explicitly).
+    + Authentication is provided by the standalone auth server (`auth-server/`, an OAuth2/OIDC subset): consumer and Onto Modeling share one account system, the backend requires `AUTH_SERVER_URL`, and self-registration is enabled by default (one-step signup, no email verification code; it can be disabled explicitly).
 - ✅ **Protocols and SDK**
     + A2A and ACP adapter layers plus an SDK expose the same runtime capabilities to external systems.
-- ✅ **Knowledge-package modeling workbench (design time)**
-    + An expert-facing web modeling tool (`modeling/`, Fastify + React + SQLite): upload Excel data tables and business documents, then follow a fixed trunk workflow — **project setup → material upload & parsing → domain analysis → knowledge-elicitation interview → package generation → package refinement → test-case entry → evaluation runs → optimization suggestions & application**.
-    + **Interview-style knowledge elicitation**: the system reads the material and produces a domain overview, candidate business objects, and "domain questions" (business questions the finished package must answer), then interviews the expert in batches — object boundaries, field semantics, calculation rules — and turns the answers into modeling evidence.
-    + **Package refinement**: a package health check (rule engine + semantic checks catching rule conflicts, missing fallbacks, duplicated routing); direct manual file revisions (revisions take precedence); and a repair chat that edits the package from natural language — impact analysis first, new version only after confirmation.
-    + **Modeling–evaluation loop**: packages are imported via API into a consumer shadow workspace and run against real test cases; an LLM judge scores each run (with manual overrides); the optimizer turns failing cases into structured suggestions — accept them to cut a new version (`1.N.0`) and re-evaluate; every version exports as a ZIP.
-    + **Demo mode**: set the LLM endpoint to `faux` to walk the whole modeling flow without an API key.
+- ✅ **Onto Modeling workbench (design time)**
+    + An expert-facing web modeling tool (`modeling/onto-modeling/`, FastAPI + React): upload business material, then a modeling assistant guides the stages — **material analysis → flowcharts → object and operation extraction → rules and metrics → quality check → mock data → scenario validation → code generation → solver adaptation**.
+    + **Traceable extraction**: uploads are classified by structure (data tables, glossaries), and extracted knowledge keeps anchors back to the original material so it can be verified.
+    + **Package refinement**: Studio graph, table and entry views with structured editing, item-by-item report review, and revisions through the chat; generated scripts are run and verified in the JiuwenBox sandbox before they can be committed.
+    + **Publish, evaluate, optimize**: packages are published to the Knowledge Hub; the standalone evaluation service evaluates a published version, and its report and suggestions can be imported back to optimize the package before the next release.
 - 🚧 **Golden domain packages**
     + Expert-curated, benchmark-quality packages serving both as warm-start templates for new domains and as golden references for tuning the modeling pipeline.
 
@@ -54,7 +53,7 @@ Domain knowledge packages are built and exported as ZIP files by the modeling wo
 ```mermaid
 flowchart LR
   subgraph Design["Design time"]
-    Expert["Domain expert"] --> ModelTool["Modeling workbench (modeling/)"]
+    Expert["Domain expert"] --> ModelTool["Onto Modeling (modeling/onto-modeling/)"]
   end
   ModelTool --> Package["Knowledge package (versioned / zip)"]
   User["User / External system"] --> Console["Knowledge Engineering Console (React)"]
@@ -71,17 +70,17 @@ flowchart LR
   Data --> Providers["MindsDB / NL2SQL / graph providers"]
   API --> Workspace["Workspace runtime (.onto-runtime)"]
   Evaluation["Evaluation platform"] --> API
-  ModelTool -. shadow-workspace evaluation · optimization loop .-> API
+  ModelTool -. published versions · evaluation · optimization loop .-> Evaluation
 ```
 
-A typical request enters the Flask API from the console or a protocol adapter; the `AgenticOrchestrator` creates the run state and the ReAct loop calls the model, triggering tools on demand. Tools read knowledge context, query business data, execute controlled scripts, or spawn sub-agents; results stream back to the frontend as SSE events. The dashed edge is the modeling–evaluation loop: the modeling workbench imports packages into a consumer shadow workspace for real evaluation runs, and the results drive continuous package iteration.
+A typical request enters the Flask API from the console or a protocol adapter; the `AgenticOrchestrator` creates the run state and the ReAct loop calls the model, triggering tools on demand. Tools read knowledge context, query business data, execute controlled scripts, or spawn sub-agents; results stream back to the frontend as SSE events. The dashed edge is the modeling–evaluation loop: the evaluation service runs published package versions against consumer, and the results drive continuous package iteration in Onto Modeling.
 
 - **Console** (runtime): login, masked onboarding tour, New Chat (with a Trace panel), Knowledge Package Workbench (browse full package directories online), and the three-scope Configuration Center.
 - **Orchestrator / ReAct loop** (runtime): run lifecycle, iteration limits, cancellation, usage accounting.
 - **Workspace runtime**: packages, connections, sessions, and configuration isolated per workspace under `.onto-runtime/`.
 - **Evaluation platform**: offline agent-quality evaluation on scenario test cases.
-- **Modeling workbench** (design time): builds knowledge packages from domain material and expert interviews, wired to consumer for the evaluation loop; login shares the auth-server account system with consumer.
-- **Auth server**: `auth-server/` provides standalone identity and token issuance (an OAuth2/OIDC subset). It is a required dependency of the consumer backend (`AUTH_SERVER_URL` must be set); consumer and modeling share one account system.
+- **Onto Modeling** (design time): builds knowledge packages from domain material with a guided modeling assistant and publishes them to the Knowledge Hub; login shares the auth-server account system with consumer.
+- **Auth server**: `auth-server/` provides standalone identity and token issuance (an OAuth2/OIDC subset). It is a required dependency of the consumer backend (`AUTH_SERVER_URL` must be set); consumer and Onto Modeling share one account system.
 
 # 📦 Installation
 
@@ -110,20 +109,13 @@ LLM_MODEL=<model-id>
 LLM_API_KEY=<api-key>
 ```
 
-For full-stack deployment (consumer + modeling workbench + auth server / evaluation database) with a one-shot orchestration script, see [deploy/README.md](../deploy/README.md).
+For full-stack deployment (Consumer, Onto Modeling, Knowledge Hub and the evaluation service) with a one-shot orchestration script, see [deploy/README.md](../deploy/README.md).
 
 ## Start the modeling workbench
 
-The modeling workbench delegates login to consumer (it reuses consumer accounts), so start consumer first. Requires Node ≥ 22:
+The modeling workbench is Onto Modeling (`modeling/onto-modeling/`). `./deploy/deploy.sh` deploys it together with consumer; for standalone startup, development and deployment see [modeling/onto-modeling/README.md](../modeling/onto-modeling/README.md).
 
-```bash
-cd modeling
-cp .env.example .env    # set MODELING_LLM_*, or use `faux` for a key-less demo mode
-npm install
-NODE_OPTIONS=--experimental-sqlite node --env-file=.env node_modules/.bin/tsx src/server.ts
-```
-
-Then open `http://localhost:5100` and log in with a consumer account. For frontend development, run `cd modeling/frontend && npm install && npm run dev` (port 6700, proxied to 5100).
+The NL2SQL service and MySQL database used for data evaluation are not part of the full-stack deployment. Deploy them on their own with `bash modeling/nl2sql-service/deploy.sh`; see [modeling/nl2sql-service/README.md](../modeling/nl2sql-service/README.md).
 
 ## Local development setup
 
@@ -167,11 +159,7 @@ On Windows, if Python dependency paths exceed the length limit, enable long-path
 
 ## Build a knowledge package (design time)
 
-1. **Configure the modeling tool** — open `http://localhost:5100`, log in, then use "⚙ Configuration Center" (top right) to set the LLM (with a one-click validity test), the consumer service address, and the evaluation data source; for a demo, set the LLM base URL to `faux`.
-2. **Create a project and upload material** — Excel data tables (one sheet per table, first row = field names, optional second row = notes) plus business documents (md / docx / pdf / txt).
-3. **Domain analysis and knowledge-elicitation interview** — the system reads the material into a domain overview, candidate objects, and domain questions (select ≥5 to unlock the interview), then interviews you in batches about object boundaries, field semantics, and calculation rules.
-4. **Generate and refine the package** — objects/operations/mappings are generated with domain-question coverage checks; polish the content with the package health check, manual revisions, and the repair chat.
-5. **Evaluate and optimize** — enter test cases (prefillable from domain questions), run real evaluations in a consumer shadow workspace, apply optimization suggestions to cut new versions, and export the final ZIP.
+Knowledge packages are built in Onto Modeling. See [modeling/onto-modeling/README.md](../modeling/onto-modeling/README.md) for the modeling workflow, evaluation setup and package publishing.
 
 **_Notes:_**
 
@@ -185,8 +173,11 @@ Repository layout:
 ```text
 .
 ├── consumer/                 # Runtime main app: backend, frontend, deploy scripts, SDK, app docs
-├── modeling/                 # Design-time modeling workbench (Fastify + React + SQLite)
-├── auth-server/              # Standalone auth service (OAuth2/OIDC subset, required by consumer/modeling)
+├── modeling/                 # Design-time modeling
+│   ├── onto-modeling/        # Guided ontology modeling workbench (FastAPI + React)
+│   ├── nl2sql-service/       # NL2SQL service and MySQL for data evaluation, deployed on its own
+│   └── deploy/cce/           # CCE deployment of Onto Modeling, Knowledge Hub and the evaluation service
+├── auth-server/              # Standalone auth service (OAuth2/OIDC subset, required by consumer and Onto Modeling)
 ├── common/                   # Lightweight shared code across modules
 ├── deploy/                   # Full-stack deployment guide and orchestration scripts
 └── docs/                     # Repository-level docs (translated READMEs, etc.)
@@ -205,10 +196,15 @@ cd consumer/frontend
 npm run lint
 npm run build
 
-# modeling typecheck and build
-cd modeling
-npm run typecheck && npm run build
-cd frontend && npm run build
+# onto-modeling tests and build
+cd modeling/onto-modeling/backend
+./venv/bin/python -m pytest tests/
+cd ../frontend
+npm test && npm run build
+
+# nl2sql-service typecheck, tests and build
+cd modeling/nl2sql-service
+npm run typecheck && npm test && npm run build
 ```
 
 Build and deploy (two independent paths):
@@ -223,7 +219,7 @@ cd consumer
 ./build.sh <version>
 ```
 
-See [deploy/README.md](../deploy/README.md) for full-stack deployment (including the modeling workbench) and [consumer/deploy/README.md](../consumer/deploy/README.md) for consumer release-package details.
+See [deploy/README.md](../deploy/README.md) for full-stack deployment and [consumer/deploy/README.md](../consumer/deploy/README.md) for consumer release-package details.
 
 Documentation map:
 
@@ -238,17 +234,14 @@ Documentation map:
 | [consumer/docs/business-data-provider-extension.md](../consumer/docs/business-data-provider-extension.md) | How to extend business data providers |
 | [consumer/sdk/README.md](../consumer/sdk/README.md) | SDK layout and publishing |
 | [consumer/deploy/README.md](../consumer/deploy/README.md) | Consumer image building, release packages and installation |
-| [modeling/README.md](../modeling/README.md) | Modeling workbench startup, verification, and API reference |
-| [modeling/docs/design.md](../modeling/docs/design.md) | Modeling tool design: positioning, workflow, data model, evaluation loop |
-| [modeling/docs/real-e2e-setup.md](../modeling/docs/real-e2e-setup.md) | Real end-to-end modeling–evaluation environment setup |
+| [modeling/onto-modeling/README.md](../modeling/onto-modeling/README.md) | Onto Modeling startup, deployment and evaluation integration |
+| [modeling/nl2sql-service/README.md](../modeling/nl2sql-service/README.md) | NL2SQL service and evaluation MySQL: deployment and API |
 | [auth-server/README.md](../auth-server/README.md) | Standalone auth service: endpoints, configuration, and operation |
 
 # ❓ FAQ
 
 - **The console starts but chat replies fail** — check that a model profile is configured (Configuration Center → Global → Model Pool: a profile is added, its key shows "configured", and a default model is selected), and that `LLM_*` variables are set when starting from `.env`.
 - **Business data queries return nothing** — a package only queries its own data source in the *current workspace*; select the package in the Knowledge Package Workbench, open Data Source, verify the configuration, and test it again.
-- **Modeling workbench login fails** — modeling delegates login to consumer (`AUTH_ISSUER_URL`); make sure consumer is running and the address is correct. The account is your consumer account.
-- **Modeling evaluations keep failing** — run the connectivity test under the modeling tool's Configuration Center → consumer service (service reachable / auth OK / model ready must all pass); query-style test cases also require an evaluation data connection.
 - **Windows dependency install fails with path errors** — enable long-path support; see [consumer/README.md](../consumer/README.md).
 
 # 🤝 Contributing
@@ -258,7 +251,7 @@ Issues and pull requests are welcome, especially around:
 - Knowledge package format, import validation, and example cases
 - Business data providers, graph providers, and tool extensions
 - Agent loop, sub-agent orchestration, memory and evolution strategies
-- The modeling workbench, the modeling–evaluation loop, and golden domain packages
+- Onto Modeling, the modeling–evaluation loop, and golden domain packages
 - Evaluation platform, test-case generation, trace replay and quality metrics
 - Documentation, deploy scripts, and developer experience
 

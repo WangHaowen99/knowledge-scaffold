@@ -16,6 +16,8 @@
 - `swarm-kb-plugin/`：JiuwenSwarm 应用插件（「知识库」管理页、「知识求索」页）
 - `deploy/compose/`：Docker Compose 部署清单和构建脚本，说明见其中的 `README.md`
 
+在知识库的「文档」页点「上传文件」，可选择一个或多个文件，也可选择一个文件夹，导入其中各级子目录里的文件。文件夹上传会保留相对目录，失败的文件会逐项显示原因。
+
 设计文档见 `docs/`，架构决策见 `docs/decisions/`。第三方代码来源见 `NOTICE`。
 
 ## 测试

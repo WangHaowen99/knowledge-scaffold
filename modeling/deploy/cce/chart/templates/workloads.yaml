@@ -228,6 +228,8 @@ spec:
             - {name: EVAL_HUB_URL, value: "http://{{ include "modeling.name" . }}-hub:8200"}
             - {name: EVAL_CONSUMER_API_URL, value: {{ include "modeling.consumerUrl" . | quote }}}
             - {name: EVAL_MODELING_URL, value: "http://{{ include "modeling.name" . }}-onto:8100"}
+            - {name: EVAL_FEEDBACK_ENABLED, value: {{ .Values.evaluation.feedback.enabled | quote }}}
+            - {name: EVAL_NOTIFY_FEEDBACK_RUNS, value: {{ .Values.evaluation.feedback.notifyRuns | quote }}}
             - name: EVAL_MODELING_SERVICE_TOKEN
               valueFrom:
                 secretKeyRef: {name: {{ default (printf "%s-notify" .Release.Name) .Values.evaluation.secrets.notificationToken.name | quote }}, key: {{ default "service-token" .Values.evaluation.secrets.notificationToken.key | quote }}}
@@ -246,6 +248,11 @@ spec:
             - name: EVAL_CONSUMER_SERVICE_TOKEN
               valueFrom:
                 secretKeyRef: {name: {{ .Values.evaluation.secrets.consumerToken.name | quote }}, key: {{ .Values.evaluation.secrets.consumerToken.key | quote }}}
+            {{- end }}
+            {{- if .Values.evaluation.secrets.flywheelToken.name }}
+            - name: EVAL_FLYWHEEL_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.evaluation.secrets.flywheelToken.name | quote }}, key: {{ .Values.evaluation.secrets.flywheelToken.key | quote }}}
             {{- end }}
             {{- if .Values.evaluation.secrets.judgeApiKey.name }}
             - name: EVAL_JUDGE_API_KEY

@@ -11,6 +11,7 @@ import importlib.util
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -136,10 +137,20 @@ class DownProvider(FakeProvider):
 class FakeSocket:
     """A page connection: `put` what the page sends, read what it got from `out`."""
 
-    def __init__(self) -> None:
+    def __init__(self, user_id: str = "") -> None:
         self.inbox: asyncio.Queue = asyncio.Queue()
         self.out: list[dict[str, Any]] = []
         self.slow: dict[str, float] = {}  # output_id -> seconds a write of it takes
+        self.message_received = asyncio.Event()
+        self.headers: dict[str, str] = {}
+        self.scope: dict[str, Any] = {}
+        if user_id:
+            async def authenticate(**kwargs: Any) -> Any:
+                return SimpleNamespace(success=True, user_id=user_id)
+
+            self.scope["app"] = SimpleNamespace(
+                state=SimpleNamespace(web_channel=SimpleNamespace(authenticate_handshake=authenticate)),
+            )
 
     async def accept(self) -> None:
         return None
@@ -154,6 +165,7 @@ class FakeSocket:
         msg = json.loads(text)
         await asyncio.sleep(self.slow.get(str(msg.get("output_id")), 0))
         self.out.append(msg)
+        self.message_received.set()
 
     def put(self, **msg: Any) -> None:
         self.inbox.put_nowait(json.dumps(msg))
@@ -163,6 +175,17 @@ class FakeSocket:
 
     def got(self, kind: str) -> list[dict[str, Any]]:
         return [m for m in self.out if m.get("t") == kind]
+
+    async def wait_for(self, kind: str, **fields: Any) -> dict[str, Any]:
+        async def receive() -> dict[str, Any]:
+            while True:
+                for msg in self.got(kind):
+                    if all(msg.get(key) == value for key, value in fields.items()):
+                        return msg
+                self.message_received.clear()
+                await self.message_received.wait()
+
+        return await asyncio.wait_for(receive(), timeout=2)
 
 
 def serve(ext: Any, socket: FakeSocket) -> asyncio.Task:
@@ -589,11 +612,177 @@ async def test_other_pages_see_what_one_page_put_in(ext: Any) -> None:
 
     assert [m["t"] for m in second.out if m["t"] in ("user", "steer", "answered")] == ["user", "steer", "answered"]
     assert second.got("user")[0]["client_id"] == "c1" and second.got("steer")[0]["text"] == "补充"
-    assert not first.got("user") and not first.got("steer") and not first.got("answered")  # it drew them itself
+    assert not first.got("user") and not first.got("steer")  # it drew them itself
+    assert first.got("answered") == second.got("answered")
     await question
     for socket in (first, second):
         socket.leave()
     await asyncio.gather(*tasks)
+
+
+@pytest.fixture()
+def approval_engine(ext: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openjiuwen.harness_protocol import HostCapability
+
+    class ApprovalProvider(FakeProvider):
+        card = SimpleNamespace(optional_host_capabilities=frozenset({HostCapability.TOOL_APPROVAL}))
+
+    monkeypatch.setattr(ext, "_provider_class", lambda engine: ApprovalProvider if engine == "deepanalyze" else FakeProvider)
+
+
+def _approval(request_id: str, turn_id: str) -> Any:
+    from openjiuwen.harness_protocol import ToolApprovalRequest
+
+    return ToolApprovalRequest(
+        request_id=request_id, call_id=request_id, tool_name="demo_tool",
+        arguments={"value": "synthetic"}, turn_id=turn_id,
+    )
+
+
+async def test_bypass_answers_only_new_tool_approvals(ext: Any, approval_engine: None) -> None:
+    from openjiuwen.harness_protocol import InteractionResponseStatus, ToolApprovalDecision
+
+    page = FakeSocket()
+    task = serve(ext, page)
+    session_id = "approval-demo"
+    page.put(type="start", host_session_id=session_id, browser_id="1" * 32)
+    started = await page.wait_for("started")
+    assert started["can_manage_bypass"] and not started["bypass_permission"]
+    page.put(type="send", text="合成测试", kb_ids=["kb_demo"], client_id="c1")
+    accepted = await page.wait_for("accepted")
+    turn_id = accepted["turn_id"]
+    conversation = ext.LIVE[session_id]
+    harness = conversation.harness
+
+    pending = harness.ask(_approval("manual", turn_id))
+    assert "answered" not in await page.wait_for("ask", request_id="manual")
+    page.put(type="set_bypass_permission", host_session_id=session_id, enabled=True, client_id="on")
+    assert (await page.wait_for("bypass_permission", client_id="on"))["enabled"] is True
+    assert not pending.done()
+    page.put(type="answer", host_session_id=session_id, request_id="manual", decision="deny", label="拒绝")
+    await page.wait_for("answered", request_id="manual", label="拒绝")
+    assert (await pending).decision is ToolApprovalDecision.DENY
+
+    for request_id in ("auto-one", "auto-two"):
+        response = await asyncio.wait_for(harness.ask(_approval(request_id, turn_id)), timeout=2)
+        assert response.decision is ToolApprovalDecision.ALLOW
+        wire = await page.wait_for("ask", request_id=request_id)
+        assert wire["answered"] == "自动允许"
+        assert "arguments" not in wire
+        assert wire in conversation.transcript.events
+
+    question = harness.ask(_question(turn_id))
+    assert (await page.wait_for("ask", request_id="r1"))["kind"] == "question"
+    assert not question.done()
+    page.put(type="answer", host_session_id=session_id, request_id="r1", content="合成答案", label="合成答案")
+    await page.wait_for("answered", request_id="r1")
+    assert (await question).status is InteractionResponseStatus.COMPLETED
+
+    page.put(type="set_bypass_permission", host_session_id=session_id, enabled=False, client_id="off")
+    assert (await page.wait_for("bypass_permission", client_id="off"))["enabled"] is False
+    after = harness.ask(_approval("after-off", turn_id))
+    assert "answered" not in await page.wait_for("ask", request_id="after-off")
+    page.put(type="abort")
+    await page.wait_for("ask_cancelled", request_id="after-off")
+    assert (await after).decision is ToolApprovalDecision.ABORT
+
+    page.leave()
+    await task
+    await conversation.close()
+
+
+async def test_bypass_is_bound_to_the_live_conversation(ext: Any, approval_engine: None) -> None:
+    from openjiuwen.harness_protocol import ToolApprovalDecision
+
+    browser_id = "1" * 32
+    session_id = "approval-demo"
+    first = FakeSocket()
+    initial = serve(ext, first)
+    first.put(type="start", host_session_id=session_id, browser_id=browser_id)
+    await first.wait_for("started")
+    first.put(type="set_bypass_permission", host_session_id=session_id, enabled=True, client_id="on")
+    await first.wait_for("bypass_permission", client_id="on")
+    first.put(type="send", text="合成测试", kb_ids=["kb_demo"], client_id="c1")
+    turn_id = (await first.wait_for("accepted"))["turn_id"]
+    first.leave()
+    await initial
+
+    conversation = ext.LIVE[session_id]
+    response = await asyncio.wait_for(conversation.harness.ask(_approval("background", turn_id)), timeout=2)
+    assert response.decision is ToolApprovalDecision.ALLOW
+
+    second = FakeSocket()
+    reopened = serve(ext, second)
+    second.put(type="start", host_session_id=session_id, browser_id=browser_id)
+    resumed = await second.wait_for("started", host_session_id=session_id)
+    assert resumed["live"] and resumed["bypass_permission"]
+    assert any(e.get("answered") == "自动允许" for e in resumed["transcript"])
+
+    second.put(type="start", host_session_id="another-demo", browser_id=browser_id)
+    other = await second.wait_for("started", host_session_id="another-demo")
+    assert not other["bypass_permission"]
+    second.put(type="set_bypass_permission", host_session_id=session_id, enabled=True, client_id="stale")
+    await second.wait_for("error", request="set_bypass_permission", client_id="stale")
+
+    await conversation.close()
+    second.put(type="start", host_session_id=session_id, browser_id=browser_id)
+    restarted = await second.wait_for("started", host_session_id=session_id, live=False)
+    assert restarted["can_manage_bypass"] and not restarted["bypass_permission"]
+    assert any(e.get("answered") == "自动允许" for e in restarted["transcript"])
+
+    second.put(type="start", host_session_id="loop-demo", engine="loopforest", browser_id=browser_id)
+    unsupported = await second.wait_for("started", host_session_id="loop-demo")
+    assert not unsupported["can_manage_bypass"]
+    second.put(type="set_bypass_permission", host_session_id="loop-demo", enabled=True, client_id="unsupported")
+    await second.wait_for("error", request="set_bypass_permission", client_id="unsupported")
+
+    second.leave()
+    await reopened
+    await asyncio.gather(*(live.close() for live in ext.LIVE.values()))
+
+
+async def test_another_operator_cannot_use_the_owners_bypass(ext: Any, approval_engine: None) -> None:
+    from openjiuwen.harness_protocol import ToolApprovalDecision
+
+    owner, guest = FakeSocket("operator_a"), FakeSocket("operator_b")
+    tasks = [serve(ext, owner), serve(ext, guest)]
+    session_id = "approval-demo"
+    for page in (owner, guest):
+        page.put(type="start", host_session_id=session_id, browser_id="1" * 32)
+        started = await page.wait_for("started")
+        assert started["can_manage_bypass"] is (page is owner)
+    owner.put(type="set_bypass_permission", host_session_id=session_id, enabled=True, client_id="on")
+    await owner.wait_for("bypass_permission", client_id="on")
+    guest.put(type="set_bypass_permission", host_session_id=session_id, enabled=False, client_id="foreign")
+    await guest.wait_for("error", request="set_bypass_permission", client_id="foreign")
+
+    conversation = ext.LIVE[session_id]
+    guest.put(type="send", text="合成测试", kb_ids=["kb_demo"], client_id="guest")
+    turn_id = (await guest.wait_for("accepted", client_id="guest"))["turn_id"]
+    pending = conversation.harness.ask(_approval("guest-approval", turn_id))
+    assert "answered" not in await guest.wait_for("ask", request_id="guest-approval")
+    guest.put(type="answer", request_id="guest-approval", decision="deny", label="拒绝")
+    await guest.wait_for("answered", request_id="guest-approval")
+    assert (await pending).decision is ToolApprovalDecision.DENY
+
+    owner.put(type="send", text="合成测试", kb_ids=["kb_demo"], client_id="owner")
+    owner_turn = (await owner.wait_for("accepted", client_id="owner"))["turn_id"]
+    question = conversation.harness.ask(_question(owner_turn))
+    await guest.wait_for("ask", request_id="r1")
+    guest.put(type="answer", request_id="r1", content="合成答案", label="合成答案")
+    await guest.wait_for("answered", request_id="r1")
+    await question
+    influenced = conversation.harness.ask(_approval("after-guest-answer", owner_turn))
+    assert "answered" not in await owner.wait_for("ask", request_id="after-guest-answer")
+    owner.put(type="answer", request_id="after-guest-answer", decision="deny", label="拒绝")
+    await owner.wait_for("answered", request_id="after-guest-answer")
+    assert (await influenced).decision is ToolApprovalDecision.DENY
+    assert conversation.bypass_permission
+
+    owner.leave()
+    guest.leave()
+    await asyncio.gather(*tasks)
+    await conversation.close()
 
 
 async def test_empty_selection_means_every_knowledge_base(ext: Any, monkeypatch: pytest.MonkeyPatch) -> None:

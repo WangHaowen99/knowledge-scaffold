@@ -3,8 +3,7 @@
 对象文档承载业务语义（「对象属性清单」的英文名称列就是真实列名），真实表名来自打了
 schema 标签的表格资料（一个 Sheet = 一张表）。两者在这里对齐一次，供发布包导出使用：
 objects/index.md 的「来源Sheet」列、对象文档的 `# 字段` 段，以及
-mappings/object-data-mappings.json —— modeling 导入后据此生成 sourceRefs 与 sourceColumn，
-nl2sql 才有表名和列名可用。
+mappings/object-data-mappings.json —— 导入方据此拿到表名和列名，nl2sql 才有表和列可查。
 
 发布门禁只拦"有数据表可核对、但声明对不上"的对象（issues 里 blocking=True）；当前没有任何
 可核对的数据表时，声明无从验证，只提示不阻断。阻断项可在发布前逐个修复（set_declared_source），
@@ -15,7 +14,7 @@ nl2sql 才有表名和列名可用。
 够不着就留空（来源Sheet 写 UNBOUND），不猜。
 首行写「无」是显式声明不落库（如只作为输出的单据），不再按重合度推断。
 
-图模式变体按 modeling 图导入契约导出（object_data_mappings(graph=True)），留作发布适配器的变体。
+Neo4j 图模式的包按图模式导出（object_data_mappings(graph=True)），留作发布适配器的变体。
 """
 
 from __future__ import annotations
@@ -29,16 +28,16 @@ from pathlib import Path
 
 from ..kernel import metamodel
 
-# modeling 契约：来源Sheet 为 "—" 表示该对象不绑定物理表（package-import 按此跳过）
+# 来源Sheet 为 "—" 表示该对象不绑定物理表
 UNBOUND = "—"
-# 包内部逻辑数据源别名，不是外部数据源的 provider；取 modeling 草稿同款默认值
+# 包内部逻辑数据源别名，不是外部数据源的 provider
 PROVIDER_ALIAS = "data"
 # 推断绑定的最低列命中数：低于此宁可不绑，错绑比不绑更难发现
 MIN_INFERRED_COLUMNS = 2
 # 修复建议里推荐的候选表个数，以及只靠表名相似（列一个都对不上）时的最低相似度
 MAX_CANDIDATES = 3
 MIN_NAME_SIMILARITY = 0.5
-# modeling 图导入对属性名与关系名的标识符约束（evaluation/data-source.ts GRAPH_IDENTIFIER）
+# 图模式下属性名与关系名的标识符约束
 GRAPH_IDENTIFIER = re.compile(r"^[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]*$")
 # 同一字符集、去掉锚点：从关系括注里取出字段候选，再拿两端属性清单裁决
 _IDENTIFIER_RE = re.compile(GRAPH_IDENTIFIER.pattern.strip("^$"))
@@ -86,7 +85,7 @@ def _is_empty(value: str) -> bool:
 
 
 def _section(text: str, name: str) -> str:
-    """取 `# name` 到下一个一级标题之间的正文（与 modeling 包解析同一切分口径）。"""
+    """取 `# name` 到下一个一级标题之间的正文。"""
     lines = text.replace("\r\n", "\n").split("\n")
     try:
         start = next(i for i, line in enumerate(lines) if line.strip() == f"# {name}")
@@ -503,10 +502,10 @@ def set_declared_source(text: str, table: str) -> str:
 
 
 def object_data_mappings(resolution: dict, graph: bool = False) -> dict:
-    """绑定结果 → mappings/object-data-mappings.json（modeling 包契约 §18）。
+    """绑定结果 → mappings/object-data-mappings.json（知识包数据映射）。
 
-    graph=True 按 modeling 图模式（packageMappingResource）导出：resource 为对象 key
-    （即 Neo4j Label），fields 覆盖对象 `# 字段` 的全部属性（图导入逐字段核对）；
+    graph=True 按图模式导出：resource 为对象 key（即 Neo4j Label），fields 覆盖对象
+    `# 字段` 的全部属性；
     Sheet 与列仍由 sources[] 声明。NL2SQL 模式 resource 为表名，fields 只收对上列的属性。
     """
     objects: dict[str, dict] = {}
@@ -534,14 +533,13 @@ def object_data_mappings(resolution: dict, graph: bool = False) -> dict:
             "sources": [{
                 "role": "primary",
                 "resource": item["table"],
-                # source_column 恒写：modeling 导入靠 sources[].fields 回填 sourceColumn，
-                # 省略同名列会让 nl2sql 拿不到列绑定
+                # source_column 恒写：省略同名列会让 nl2sql 拿不到列绑定
                 "fields": {f["key"]: {"source_column": f["column"]} for f in matched},
             }],
-            # 问答只读，行数上限对齐 modeling 渲染器的保守默认
+            # 问答只读，行数上限取保守默认
             "policy": {"read_only": True, "max_rows": 1000, "require_user_filter": []},
         }
-    # schema_version 在契约里是字符串；写成数字会被 modeling 当成非法版本
+    # schema_version 在契约里是字符串，不能写成数字
     return {"schema_version": "0.1", "default_provider_alias": PROVIDER_ALIAS, "objects": objects}
 
 
@@ -551,7 +549,7 @@ def _cell(value: str) -> str:
 
 
 def render_fields_section(fields: list[dict]) -> str:
-    """「对象属性清单」→ modeling 包契约的 `# 字段` 表（前六列按位解析，第七列留给属性规则）。"""
+    """「对象属性清单」→ 知识包的 `# 字段` 表（前六列按位解析，第七列留给属性规则）。"""
     rows = "\n".join(
         # 主键即必填：契约里没有独立的必填列，主键列是唯一可判定的来源
         f"| {_cell(f['key'])} | {_cell(f['cn'])} | {_cell(f['type'])} | "

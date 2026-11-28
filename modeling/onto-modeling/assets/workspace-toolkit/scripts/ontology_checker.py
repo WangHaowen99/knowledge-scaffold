@@ -24,11 +24,8 @@ from script_descriptor import descriptor_issues
 from operation_relations import (
     called_operation_stems as _called_operation_stems,
     caller_operation_stems as _caller_operation_stems,
-    index_row as _operation_index_row,
     link_stems as _stems_in_section,
-    parent_map as _operation_parent_map,
     parse_relation,
-    relations_from_documents as _operation_relations,
     standalone_flag,
     stops_before_call,
     sub_operation_call_sites as _extract_sub_operation_refs,
@@ -452,7 +449,7 @@ OPERATION_INPUT_REQUIRED_COLUMNS = ['参数名称', '描述']
 OPERATION_OUTPUT_REQUIRED_COLUMNS = ['参数名称', '描述']
 ACTION_REQUIRED_SECTIONS = ['动作描述']
 
-# 范式升级（ADR-0004）：规则/指标为一等实体，元信息对齐 modeling 知识包模型
+# 范式升级（ADR-0004）：规则/指标为一等实体
 RULE_REQUIRED_SECTIONS = ['规则描述', '适用对象', '约束表达']
 METRIC_REQUIRED_SECTIONS = ['指标描述', '计算公式', '数据来源']
 
@@ -461,7 +458,7 @@ _EMPTY_FIELD_ALIAS_MARKERS = {'无', '-', '—', '–', 'n/a'}
 
 
 def _normalize_field_name(value: str) -> str:
-    """与 modeling/src/workflow/field-alias.ts 保持一致的比较口径。"""
+    """字段名的比较口径：NFC 归一化并去掉首尾空白，纯 ASCII 名称不区分大小写。"""
     text = unicodedata.normalize('NFC', (value or '').strip())
     return text.lower() if text.isascii() else text
 
@@ -478,9 +475,6 @@ def _field_alias_tokens(value: str) -> list[str]:
 
 def check_object_field_name_conflicts(doc: OntologyDoc) -> list:
     """检查对象内 key、中文名、别名是否指向多个不同字段。
-
-    该规则与 modeling 的 findFieldNameConflicts 保持同一归一化口径，
-    供质量检查提前发现下游导入时会阻断的问题。
     """
     if doc.doc_type != 'object' or not doc.attribute_rows:
         return []
@@ -1448,7 +1442,7 @@ def check_graph_identifiers(doc: OntologyDoc, tables: dict) -> list:
     return issues
 
 
-# 知识包 key 约束（与 modeling/src/workflow/keys.ts 同一口径）：对象/操作/规则/指标/脚本的 key
+# 知识包 key 约束：对象/操作/规则/指标/脚本的 key
 # 取自文件名 stem，对象字段的 key 取自属性英文名称；不合规时整包渲染被拒
 KEY_MAX_LENGTH = 80
 _KEY_FORBIDDEN_RE = re.compile(r'[/\\#?&|]')
@@ -1497,100 +1491,42 @@ def check_entity_keys(doc: OntologyDoc) -> list:
 
 
 # consumer 导入知识包时的容量上限（consumer 后端 LimitsConfig 默认值，部署可通过环境变量调整）
-CONSUMER_OBJECT_MAX = 200
-CONSUMER_OPERATION_MAX = 100
-CONSUMER_ATTRIBUTE_MAX = 100
-CONSUMER_OPERATION_MAX_CHARS = 15000
-# 发布包的 objects/index.md 每个对象一行，consumer 把它也当对象文件、按单个对象的属性上限数表格行，
-# 所以对象实际最多 min(对象上限, 属性上限) 个
-PACKAGE_OBJECT_MAX = min(CONSUMER_OBJECT_MAX, CONSUMER_ATTRIBUTE_MAX)
-# 发布包 operations/index.md 的文件头与表头（后端 ontology_package 的 index_md；求解包多一列 execution，不计）；
-# consumer 对它同样查单个操作的字符上限
-_OPERATION_INDEX_HEAD = ('---\nresource: operation_index\nkey: "operations"\ntitle: "操作目录"\n---\n\n'
-                         '| operation key | 标题 | 输入 | 输出 |\n|' + ' --- |' * 4 + '\n')
-
-
-def _strip_frontmatter(raw: str) -> str:
-    """去掉文档自带的文件头（同后端 workspace.layout._strip_frontmatter），发布时另补。"""
-    if raw.startswith('---\n'):
-        end = raw.find('\n---', 4)
-        if end != -1:
-            return raw[end + 4:].lstrip('\n')
-    return raw
-
-
-def _exported_operation_chars(key: str, raw: str, object_keys: set, callees: list) -> int:
-    """发布包里 operations/<key>.md 的字符数：发布补的文件头（后端 ontology_package 的 front）+ 正文。"""
-    body = _strip_frontmatter(raw)
-    used = sorted(set(mm.link_names(body, object_keys)) & object_keys)
-    name = json.dumps(key, ensure_ascii=False)
-    head = f'---\nresource: operation\nkey: {name}\ntitle: {name}\n'
-    # 原文件头里只有 report_name 会带进发布包
-    head += ''.join(f'{line}\n' for line in raw[:len(raw) - len(body)].split('\n') if line.startswith('report_name:'))
-    head += f'uses:\n  objects: {json.dumps(used, ensure_ascii=False)}\n'
-    if callees:
-        head += f'  operations: {json.dumps(callees, ensure_ascii=False)}\n'
-    return len(head + '---\n\n' + body)
+CONSUMER_OBJECT_MAX = 1000
+CONSUMER_OPERATION_MAX = 500
+CONSUMER_ATTRIBUTE_MAX = 300
+CONSUMER_OPERATION_MAX_CHARS = 30000
 
 
 def check_package_limits(all_docs: dict, check_docs: dict) -> list:
-    """按发布包查 consumer 容量上限（package_validation.validate_ontology_tree_limits），超出时发布被拒。
-
-    数量与目录大小按全量统计，单文件上限只查 check_docs；只算会导出的对象、操作目录下的顶层文档。
-    """
-    objects = {stem: doc for stem, doc in all_docs.items()
-               if doc.doc_type == 'object' and doc.path.parent.name == 'object'}
-    operations = {stem: doc for stem, doc in all_docs.items()
-                  if doc.doc_type == 'operation' and doc.path.parent.name in ('operation', 'logic')}
+    """超出 consumer 容量上限的知识包导入时会被拒。数量按全量统计，单文件上限只查 check_docs。"""
+    objects = [doc for doc in all_docs.values() if doc.doc_type == 'object']
+    operations = [doc for doc in all_docs.values() if doc.doc_type == 'operation']
     issues = []
-    if len(objects) > PACKAGE_OBJECT_MAX:
-        issues.append(Issue(
-            file='object/', severity='错误', category='容量上限',
-            message=f'共有 {len(objects)} 个对象，超过 {PACKAGE_OBJECT_MAX} 个，发布会被拒：发布包的对象目录'
-                    f'（objects/index.md）每个对象占一行，consumer 按单个对象最多 {CONSUMER_ATTRIBUTE_MAX} 个属性查它。'
-                    '合并重复或过细的对象',
-            source='规则检查'))
-    if len(operations) > CONSUMER_OPERATION_MAX:
-        issues.append(Issue(
-            file='operation/', severity='错误', category='容量上限',
-            message=f'共有 {len(operations)} 个操作，超过 {CONSUMER_OPERATION_MAX} 个，'
-                    '发布会被拒：合并重复或过细的操作',
-            source='规则检查'))
-    bodies = {stem: _strip_frontmatter(doc.raw) for stem, doc in operations.items()}
-    relations = _operation_relations(bodies)
-    parents = _operation_parent_map(relations)
-    index_chars = len(_OPERATION_INDEX_HEAD) + sum(
-        len(_operation_index_row(stem, body, sorted(parent for parent in parents.get(stem, ()) if parent in relations)))
-        for stem, body in bodies.items())
-    if index_chars > CONSUMER_OPERATION_MAX_CHARS:
-        issues.append(Issue(
-            file='operation/', severity='错误', category='容量上限',
-            message=f'发布包的操作目录（operations/index.md）约 {index_chars} 字符，'
-                    f'超过 {CONSUMER_OPERATION_MAX_CHARS} 字符，发布会被拒：目录每个操作一行，列出输入、输出参数名。'
-                    '合并重复或过细的操作，或精简参数',
-            source='规则检查'))
-    for stem, doc in check_docs.items():
-        if stem in objects:
-            rows = len(_exported_attribute_rows(doc))
-            if rows > CONSUMER_ATTRIBUTE_MAX:
-                issues.append(Issue(
-                    file=_rel(doc), severity='错误', category='容量上限',
-                    message=f'对象有 {rows} 个属性，超过 {CONSUMER_ATTRIBUTE_MAX} 个，发布会被拒：'
-                            '按业务拆分对象或去掉用不到的属性',
-                    source='规则检查'))
-        elif stem in operations:
-            callees = [callee for callee in relations[stem].callees if callee in relations and callee != stem]
-            chars = _exported_operation_chars(stem, doc.raw, set(objects), callees)
-            if chars > CONSUMER_OPERATION_MAX_CHARS:
-                issues.append(Issue(
-                    file=_rel(doc), severity='错误', category='容量上限',
-                    message=f'操作文档发布后约 {chars} 字符（含发布补的文件头），超过 {CONSUMER_OPERATION_MAX_CHARS} '
-                            '字符，发布会被拒：拆成子操作，或把实现细节下沉到脚本',
-                    source='规则检查'))
+    for subdir, label, docs, limit in (('object/', '对象', objects, CONSUMER_OBJECT_MAX),
+                                       ('operation/', '操作', operations, CONSUMER_OPERATION_MAX)):
+        if len(docs) > limit:
+            issues.append(Issue(
+                file=subdir, severity='警告', category='容量上限',
+                message=f'共有 {len(docs)} 个{label}，超过 consumer 单个知识包 {limit} 个的上限，'
+                        f'导入 consumer 时会被拒：合并重复或过细的{label}',
+                source='规则检查'))
+    for doc in check_docs.values():
+        if doc.doc_type == 'object' and len(doc.attribute_rows) > CONSUMER_ATTRIBUTE_MAX:
+            issues.append(Issue(
+                file=_rel(doc), severity='警告', category='容量上限',
+                message=f'对象有 {len(doc.attribute_rows)} 个属性，超过 consumer 单个对象 '
+                        f'{CONSUMER_ATTRIBUTE_MAX} 个的上限，导入 consumer 时会被拒：按业务拆分对象或去掉用不到的属性',
+                source='规则检查'))
+        elif doc.doc_type == 'operation' and len(doc.raw) > CONSUMER_OPERATION_MAX_CHARS:
+            issues.append(Issue(
+                file=_rel(doc), severity='警告', category='容量上限',
+                message=f'操作文档 {len(doc.raw)} 字符，超过 consumer 单个操作 {CONSUMER_OPERATION_MAX_CHARS} '
+                        '字符的上限，导入 consumer 时会被拒：拆成子操作，或把实现细节下沉到脚本',
+                source='规则检查'))
     return issues
 
 
-# --- 关联对象的关系名称（与建模工作台 modeling/src/workflow/relation-name.ts 同一口径）---
+# --- 关联对象的关系名称 ---
 
 _CARDINALITY_WORDS = {'一对一', '一对多', '多对一', '多对多',
                       'onetoone', 'onetomany', 'manytoone', 'manytomany'}
@@ -2273,9 +2209,8 @@ def check_scripts(ontology_dir: Path) -> list:
 
 
 
-# 脚本安全（与 modeling/src/workflow/script-safety.ts validateGeneratedScriptSecurity 同一组规则）：
-# 知识包渲染与 modeling 导入时逐字匹配整份源码（含注释与字符串），命中即拒绝该脚本。
-# re.ASCII 让 \b 与 JS 正则一样只按 ASCII 判单词边界。
+# 脚本安全：逐字匹配整份源码（含注释与字符串），命中即拒绝该脚本。
+# re.ASCII 让 \b 只按 ASCII 判单词边界。
 SCRIPT_MAX_CHARS = 100_000
 _SCRIPT_FORBIDDEN_RULES = (
     (r'\b(?:import|from)\s+subprocess\b|\bsubprocess\s*\.', 'subprocess'),

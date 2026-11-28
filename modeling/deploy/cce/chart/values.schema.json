@@ -6,7 +6,7 @@
   "properties": {
     "global": {
       "type": "object", "additionalProperties": false,
-      "required": ["clusterFlavor", "targetArch", "imageDelivery", "resolvedImages", "auth", "integration", "access"],
+      "required": ["clusterFlavor", "targetArch", "imageDelivery", "resolvedImages", "auth", "access"],
       "properties": {
         "releaseVersion": {"type": "string"},
         "operationId": {"type": "string"},
@@ -17,7 +17,6 @@
           "ontoModeling": {"$ref": "#/definitions/image"}, "knowledgeHub": {"$ref": "#/definitions/image"}, "evaluation": {"$ref": "#/definitions/image"}, "jiuwenbox": {"$ref": "#/definitions/image"}
         }},
         "auth": {"type": "object", "additionalProperties": false, "required": ["issuer", "audience"], "properties": {"issuer": {"type": "string", "minLength": 1}, "audience": {"type": "string", "minLength": 1}}},
-        "integration": {"type": "object", "additionalProperties": false, "required": ["serviceTokenSecret"], "properties": {"serviceTokenSecret": {"$ref": "#/definitions/importableSecretRef"}}},
         "access": {"type": "object", "additionalProperties": false, "required": ["mode", "elb", "protocol", "listenerPort", "tlsSecretName", "ingressClassName", "routes", "listeners"], "properties": {
           "mode": {"enum": ["host", "port"]},
           "elb": {"type": "object", "additionalProperties": false, "required": ["id"], "properties": {"id": {"type": "string", "minLength": 1}, "class": {"type": "string"}}},
@@ -63,8 +62,9 @@
     }},
     "evaluation": {"type": "object", "additionalProperties": false, "required": ["replicas", "persistence", "resources", "trustedOrigins", "judge", "secrets"], "properties": {
       "replicas": {"type": "integer", "minimum": 0, "maximum": 1}, "persistence": {"$ref": "#/definitions/persistence"}, "resources": {"type": "object"}, "trustedOrigins": {"type": "array", "items": {"type": "string"}},
+      "feedback": {"type": "object", "additionalProperties": false, "required": ["enabled", "notifyRuns"], "properties": {"enabled": {"type": "boolean"}, "notifyRuns": {"type": "boolean"}}},
       "judge": {"type": "object", "additionalProperties": false, "required": ["baseUrl", "model", "configRevision"], "properties": {"baseUrl": {"type": "string"}, "model": {"type": "string"}, "configRevision": {"type": "string"}}},
-      "secrets": {"type": "object", "additionalProperties": false, "required": ["encryptionKey", "notificationToken", "consumerToken", "judgeApiKey", "sqlConfig"], "properties": {"encryptionKey": {"$ref": "#/definitions/secretRef"}, "notificationToken": {"$ref": "#/definitions/optionalSecretRef"}, "consumerToken": {"$ref": "#/definitions/importableSecretRef"}, "judgeApiKey": {"$ref": "#/definitions/importableSecretRef"}, "sqlConfig": {"$ref": "#/definitions/importableSecretRef"}}}
+      "secrets": {"type": "object", "additionalProperties": false, "required": ["encryptionKey", "notificationToken", "consumerToken", "judgeApiKey", "sqlConfig"], "properties": {"encryptionKey": {"$ref": "#/definitions/secretRef"}, "notificationToken": {"$ref": "#/definitions/optionalSecretRef"}, "consumerToken": {"$ref": "#/definitions/importableSecretRef"}, "flywheelToken": {"$ref": "#/definitions/importableSecretRef"}, "judgeApiKey": {"$ref": "#/definitions/importableSecretRef"}, "sqlConfig": {"$ref": "#/definitions/importableSecretRef"}}}
     }}
   },
   "definitions": {

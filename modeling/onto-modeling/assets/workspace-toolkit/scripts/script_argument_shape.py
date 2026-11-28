@@ -11,7 +11,7 @@ consumer（consumer/backend/agent/tools/execute_script.py）在启动脚本前�
 英文名称，取值原样拷贝；顶层的条件参数不与对象属性同名；标识参数不能必填（用户没给编号时
 智能体只能编造）。记录是否提供只看参数传没传：题面只说记录已提供、没给取值时传 {}。
 取值原样拷贝意味着脚本要认数据源的表示：图数据源把「是/否」列存成布尔值
-（modeling 图导入的 value-inference 把 是/否/true/false/yes/no/y/n 推断为 boolean）。
+（是/否/true/false/yes/no/y/n 推断为 boolean）。
 本模块据此做确定性检查，script_descriptor.py（规则检查与导出共用）调用它。仅依赖标准库。
 """
 from __future__ import annotations

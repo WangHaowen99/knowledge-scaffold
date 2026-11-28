@@ -26,8 +26,8 @@ class LimitsConfig:
     @classmethod
     def from_env(cls) -> LimitsConfig:
         return cls(
-            ontology_object_max_count=_limit("ONTOLOGY_OBJECT_MAX_COUNT", 200),
-            ontology_operation_max_count=_limit("ONTOLOGY_OPERATION_MAX_COUNT", 100),
-            entity_attribute_max_count=_limit("ENTITY_ATTRIBUTE_MAX_COUNT", 100),
-            operation_max_chars=_limit("ONTOLOGY_OPERATION_MAX_CHARS", 15000),
+            ontology_object_max_count=_limit("ONTOLOGY_OBJECT_MAX_COUNT", 1000),
+            ontology_operation_max_count=_limit("ONTOLOGY_OPERATION_MAX_COUNT", 500),
+            entity_attribute_max_count=_limit("ENTITY_ATTRIBUTE_MAX_COUNT", 300),
+            operation_max_chars=_limit("ONTOLOGY_OPERATION_MAX_CHARS", 30000),
         )

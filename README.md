@@ -29,17 +29,18 @@
 | 模块 | 目录 | 作用 |
 | --- | --- | --- |
 | 知识消费与推理 | [`consumer/`](consumer/) | React 控制台、Flask API、openJiuwen Agent Runtime、MCP、SDK 和部署脚本 |
-| 知识包建模 | [`modeling/`](modeling/) | 从业务资料生成、检查、评测、优化和导出知识包，并支持 Neo4j 图数据导入 |
-| 统一鉴权 | [`auth-server/`](auth-server/) | 独立 OAuth2/OIDC 子集服务，供 consumer 与 modeling 共用账号体系 |
+| 知识包建模 | [`modeling/`](modeling/) | `onto-modeling/` 为引导式本体建模工作台；`nl2sql-service/` 为评测用 NL2SQL 服务与 MySQL，单独一键部署 |
+| 统一鉴权 | [`auth-server/`](auth-server/) | 独立 OAuth2/OIDC 子集服务，供 consumer 与 Onto Modeling 共用账号体系 |
 | 知识服务与 Swarm 集成 | [`kb-suite/`](kb-suite/) | kb-gateway 统一知识接口（可接 kb-service、WeKnora、DA 知识管线等多个后端）、JiuwenSwarm 插件、DeepAnalyze / Loop Forest harness provider 和 Compose 部署 |
 
 ## 核心能力
 
 ### 知识包建模与版本管理
 
-- 资料上传与解析、领域分析、专家访谈、知识包生成、完善检查、评测、优化和导出；
-- 支持 Excel、Markdown、TXT、DOCX 和 PDF 资料；
-- 支持规则检查、语义检查、人工修订和对话式修缮；
+- 在 Onto Modeling 中由建模助手引导完成资料分析、流程图、对象与操作提取、规则与指标、质量检查、示例数据、场景验证、代码生成和求解适配；
+- 上传业务资料时按结构识别数据表与术语表，抽取结论可回溯到原文位置；
+- 支持 Studio 图、表、条目三种视图的结构化编辑，以及报告逐条评审和对话式修订；生成的脚本在 JiuwenBox 沙箱中运行验证；
+- 知识包发布到知识包 Hub，在独立评测服务中评测已发布版本，并根据评测结果优化；
 - 支持同一知识包多个版本共存、激活版本切换和按版本查看内容；
 - 已被会话引用的版本不能直接删除，避免历史会话失去执行语义；
 - 支持旧知识包导入、对象别名和字段别名转换。
@@ -153,13 +154,13 @@ MCP_TOKEN_SECRET=<至少32个字符、且与上项不同的随机值>
 
 ### 启动知识包建模工作台
 
-在 `consumer/backend/.env` 配置 `MODELING_LLM_BASE_URL`、`MODELING_LLM_MODEL` 和端点需要的 `MODELING_LLM_API_KEY`，然后从仓库根目录执行统一部署入口：
+从仓库根目录执行统一部署入口：
 
 ```bash
 ./deploy/deploy.sh
 ```
 
-脚本会部署 consumer、auth-server、JiuwenBox，以及 Workbench 所需的 `modeling` core 和 `modeling-agent`。访问 `http://localhost:5100/workbench.html#/create`。详细配置与工作流见 [modeling/README.md](modeling/README.md)。
+脚本会部署 Consumer、Onto Modeling、知识包 Hub 和独立评测服务。Onto Modeling 的配置与工作流见 [modeling/onto-modeling/README.md](modeling/onto-modeling/README.md)。评测用的 NL2SQL 服务和 MySQL 不在统一部署范围内，需要时按 [modeling/nl2sql-service/README.md](modeling/nl2sql-service/README.md) 单独部署。
 
 ## 系统架构
 
@@ -169,8 +170,8 @@ MCP_TOKEN_SECRET=<至少32个字符、且与上项不同的随机值>
 
 | 层次 | 核心职责 | 主要实现 |
 | --- | --- | --- |
-| 应用与接入层 | 面向使用者、建模人员、评测人员和外部系统提供入口 | Consumer 控制台、Modeling 工作台、Agent Eval、HTTP/SDK/MCP/A2A/ACP |
-| 知识与智能体平台层 | 完成知识包生产、知识增强推理和任务执行编排 | Modeling 知识工程引擎、openJiuwen ReAct Runtime、ContextEngine、工具与子 Agent |
+| 应用与接入层 | 面向使用者、建模人员、评测人员和外部系统提供入口 | Consumer 控制台、Onto Modeling 建模工作台、Agent Eval、HTTP/SDK/MCP/A2A/ACP |
+| 知识与智能体平台层 | 完成知识包生产、知识增强推理和任务执行编排 | Onto Modeling 建模助手、openJiuwen ReAct Runtime、ContextEngine、工具与子 Agent |
 | 平台公共服务层 | 提供跨应用复用的身份、工作空间、知识包、数据连接、协议和记录服务 | auth-server、Consumer API、知识包版本服务、Provider 管理、Trace 与评测记录 |
 | 执行与资源层 | 提供模型、企业数据、安全计算、持久化和运行基础设施 | 模型服务、Neo4j/MySQL/HugeGraph 等数据源、JiuwenBox、SQLite、Docker、Langfuse |
 
@@ -210,7 +211,10 @@ MCP_TOKEN_SECRET=<至少32个字符、且与上项不同的随机值>
 │   ├── frontend/             # React + Vite 控制台
 │   ├── deploy/               # 发布、升级、备份和回滚
 │   └── sdk/                  # Python / TypeScript SDK
-├── modeling/                 # Fastify + React + SQLite 知识包建模工作台
+├── modeling/                 # 知识包建模
+│   ├── onto-modeling/        # FastAPI + React 引导式本体建模工作台
+│   ├── nl2sql-service/       # 评测用 NL2SQL 服务与 MySQL，单独一键部署
+│   └── deploy/cce/           # Onto Modeling、知识包 Hub、独立评测的 CCE 部署
 ├── auth-server/              # 独立认证与用户服务
 ├── kb-suite/                 # 知识服务、JiuwenSwarm 插件与 harness provider
 ├── common/                   # 跨模块轻量公共代码
@@ -233,12 +237,18 @@ npm run lint
 npm test
 npm run build
 
-# modeling
-cd modeling
+# onto-modeling
+cd modeling/onto-modeling/backend
+./venv/bin/python -m pytest tests/
+cd ../frontend
+npm test
+npm run build
+
+# nl2sql-service
+cd modeling/nl2sql-service
 npm run typecheck
 npm test
 npm run build
-cd frontend && npm run build
 
 # auth-server
 cd auth-server
@@ -263,8 +273,8 @@ python -m pytest -q
 | [consumer/docs/business-data-provider-extension.md](consumer/docs/business-data-provider-extension.md) | 自定义业务数据 Provider |
 | [consumer/docs/jiuwenbox-sandbox-design.md](consumer/docs/jiuwenbox-sandbox-design.md) | JiuwenBox 脚本沙箱设计 |
 | [consumer/deploy/README.md](consumer/deploy/README.md) | 部署、升级、迁移、备份和回滚 |
-| [modeling/README.md](modeling/README.md) | 建模工作台运行方式和接口 |
-| [modeling/docs/design.md](modeling/docs/design.md) | 建模工作流、数据模型和评测闭环 |
+| [modeling/onto-modeling/README.md](modeling/onto-modeling/README.md) | Onto Modeling 运行、部署和评测接入 |
+| [modeling/nl2sql-service/README.md](modeling/nl2sql-service/README.md) | NL2SQL 服务与评测 MySQL 的部署和接口 |
 | [auth-server/README.md](auth-server/README.md) | 鉴权端点、配置和数据目录 |
 | [kb-suite/README.md](kb-suite/README.md) | kb-suite 组成和测试 |
 | [kb-suite/deploy/compose/README.md](kb-suite/deploy/compose/README.md) | kb-suite 部署、构建和 DA / Loop Forest 接入 |

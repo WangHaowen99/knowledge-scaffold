@@ -71,6 +71,21 @@ HUB_EVALUATION_SERVICE_TOKEN="${HUB_EVALUATION_SERVICE_TOKEN:-$(env_get "${ENV_F
     || die "HUB_EVALUATION_SERVICE_TOKEN 不能与 HUB_SERVICE_TOKEN 相同"
 env_set "${ENV_FILE}" HUB_EVALUATION_SERVICE_TOKEN "${HUB_EVALUATION_SERVICE_TOKEN}"
 export HUB_EVALUATION_SERVICE_TOKEN
+existing_consumer_token="$(env_get "${ENV_FILE}" HUB_CONSUMER_SERVICE_TOKEN)"
+if [ -n "${HUB_CONSUMER_SERVICE_TOKEN:-}" ] && [ -n "${existing_consumer_token}" ] \
+        && [ "${HUB_CONSUMER_SERVICE_TOKEN}" != "${existing_consumer_token}" ]; then
+    die 'HUB_CONSUMER_SERVICE_TOKEN 与已有配置冲突，请确认后对齐'
+fi
+HUB_CONSUMER_SERVICE_TOKEN="${HUB_CONSUMER_SERVICE_TOKEN:-${existing_consumer_token}}"
+if [ -n "${HUB_CONSUMER_SERVICE_TOKEN}" ]; then
+    [ "${#HUB_CONSUMER_SERVICE_TOKEN}" -ge 32 ] || die 'HUB_CONSUMER_SERVICE_TOKEN 至少需要 32 个字符'
+    [ "${HUB_CONSUMER_SERVICE_TOKEN}" != "${HUB_SERVICE_TOKEN}" ] \
+        && [ "${HUB_CONSUMER_SERVICE_TOKEN}" != "${HUB_EVALUATION_SERVICE_TOKEN}" ] \
+        || die 'Hub 消费、建模、评测凭据必须相互独立'
+    env_set "${ENV_FILE}" HUB_CONSUMER_SERVICE_TOKEN "${HUB_CONSUMER_SERVICE_TOKEN}"
+    export HUB_CONSUMER_SERVICE_TOKEN
+fi
+unset existing_consumer_token
 log "Hub 服务凭据已就绪（值不输出）"
 
 # 独立安装默认与 Onto、Auth 使用同一共享网络；已有配置与调用方注入优先。

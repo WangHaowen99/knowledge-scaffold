@@ -15,6 +15,7 @@ import {
 } from './domain.js';
 import { Alert, Badge, Button, Confirm, Empty, Field, Heading, Icon, Skeleton, useAction } from './ui.jsx';
 import { CaseEditor } from './CaseEditor.jsx';
+import { DatasetSettings } from './DatasetSettings.jsx';
 import { SolverCaseEditor } from './SolverCaseEditor.jsx';
 import { GraphScopeStatus, MappingConflicts, MappingPreview, SourceEditor, SourcePreview } from './SourceEditor.jsx';
 import { SourceScope } from './SourceScope.jsx';
@@ -269,7 +270,10 @@ export function Wizard({
         // A model copied from an earlier run may have been disabled since.
         if (value.available) setModelId((id) => (value.items.some((item) => item.id === id) ? id : ''));
       })
-      .catch(() => live && setModels({ available: false, items: [] }));
+      .catch((error) => {
+        if (!live) return;
+        setError(error.status === 403 ? '权限不足，请检查账号权限或完成账号要求的操作' : error.message);
+      });
     return () => {
       live = false;
     };
@@ -623,6 +627,7 @@ export function Wizard({
                   </Button>
                 </div>
                 <p className="help-text">选择已有配置，或新建后重复使用。</p>
+                {source?.mode === 'dataset' && source?.provider !== 'neo4j' && <DatasetSettings key={sourceId} compact />}
                 {solver && source?.provider !== 'neo4j' && (
                   <Alert tone="amber" title="求解验证需要 Neo4j 业务数据源">
                     consumer 的求解评估器只从 Neo4j 取数。请选择 Neo4j 连接：开启图数据导入，或使用已有数据的 Workspace 范围。

@@ -51,10 +51,10 @@ def merge(iterations, iterations_more, releases, releases_more, limit):
     return items, i, r
 
 
-def page(manager, pid, subject, token, limit=50, cursor='', can_revert=True):
+def page(manager, pid, subject, token, limit=50, cursor='', can_revert=True, can_tag=True):
     iteration_offset, release_offset = parse_cursor(cursor)
     iterations = [
-        {**entry, 'kind': 'iteration', 'can_revert': can_revert}
+        {**entry, 'kind': 'iteration', 'can_revert': can_revert, 'can_tag': can_tag}
         for entry in manager.versions(pid, limit, iteration_offset)
     ]
     # 版本号按提交计数，这一页最新的那条就说明一共有多少条

@@ -1,15 +1,15 @@
 # Docker Compose 部署（kb-suite）
 
-入口：`http://<部署机>:5199`。这是 JiuwenSwarm 的 Web 界面，默认用 develop 源码构建的开发版（`kb-suite/swarm:dev`，提交号见镜像标签 `kb-suite.swarm-commit`），没有改源码。左侧导航里有两个插件页面：「知识库」是 kb-manager，「知识求索」是 da-analyst。DA 还以「三方 Agent」的身份接进了集群模式，可以当团队成员用。
+本机入口为 `http://localhost:5199`。JiuwenSwarm 默认使用 PyPI 发布版 0.2.8。左侧导航里有两个插件页面，「知识库」是 kb-manager，「知识求索」是 da-analyst。DA 还以「三方 Agent」的身份接进了集群模式，可以当团队成员用。
 
-回到 PyPI 发布版 0.2.7：`SWARM_TAG=0.2.7 SWARM_HOME_SUFFIX= ./kbsuite.sh up`。两个版本的工作区卷是分开的（`kb-suite_swarm-home` / `kb-suite_swarm-home-dev`），互不迁移。
+运行 `./kbsuite.sh build-swarm` 构建发布镜像，运行 `./kbsuite.sh up` 启动。开发版先运行 `./kbsuite.sh build-swarm-dev`，再以 `SWARM_TAG=dev SWARM_HOME_SUFFIX=-dev ./kbsuite.sh up` 启动。发布版与开发版分别使用 `kb-suite_swarm-home` 和 `kb-suite_swarm-home-dev` 工作区卷。
 
 ## 组成
 
 | 服务 | 镜像 | 端口 | 说明 |
 |---|---|---|---|
 | edge | `nginx:alpine` | 5199 → 8080 | 对外入口，反代到 swarm:5173；加 gzip，插件页带哈希的资源改长缓存（见下文「切换插件页」） |
-| swarm | `kb-suite/swarm:dev`（或 `:0.2.7`） | 只在 compose 网络内（5173） | Swarm 的 Web、Gateway、AgentServer；镜像里带 `deepanalyze-harness`、`loopforest-harness` |
+| swarm | `kb-suite/swarm:0.2.8`（开发版为 `:dev`） | 只在 compose 网络内（5173） | Swarm 的 Web、Gateway、AgentServer；镜像里带 `deepanalyze-harness`、`loopforest-harness` |
 | kb-gateway | `kb-suite/kb-gateway:dev` | 127.0.0.1:5195 → 8080 | 对外的知识接口：管理 API、DA 工具接口 `/v1/tools/*`、MCP `/mcp/`，按知识库路由到各知识后端，见下文「知识网关」 |
 | kbs-api | `kb-suite/kb-service:dev` | 127.0.0.1:5198 → 8080 | 默认知识后端（knowledge-provider/v1），另有原生的 DA 工具接口和 MCP |
 | kbs-worker | 同上 | — | 解析、切分、向量化，以及摘要、问题生成、Wiki、知识库描述等增强任务 |
@@ -59,11 +59,11 @@
 ```bash
 cd deploy/compose
 export PATH=/usr/bin:$PATH      # 让 docker 指向 /usr/bin/docker（Docker Desktop 的 WSL 集成）
-./kbsuite.sh build            # kb-service、插件前端、docreader、Swarm（默认 develop 版；SWARM_TAG=0.2.7 构建发布版）
+./kbsuite.sh build            # 构建整套镜像，Swarm 默认使用发布版 0.2.8
 ./kbsuite.sh build-kbs        # 只重建 kb-service 镜像
 ./kbsuite.sh build-plugin     # 只重建插件页面（frontend/dist），swarm 重启后生效
 ./kbsuite.sh build-swarm-dev  # 插件页面 + develop 版 Swarm 镜像（SWARM_REPO / SWARM_REF，默认 origin/develop）
-./kbsuite.sh build-swarm      # 插件页面 + 0.2.7 版 Swarm 镜像
+./kbsuite.sh build-swarm      # 插件页面 + 0.2.8 版 Swarm 镜像
 ./kbsuite.sh build-docreader  # 只重建 docreader 覆盖镜像（WEKNORA_REPO / WEKNORA_REF）
 ./kbsuite.sh build-da         # 只构建 DA-java（见下）
 ./kbsuite.sh build-lf         # 只构建 Loop Forest 服务（要先 build-da，见下）
@@ -268,7 +268,8 @@ DA 有两种用法。
 **「知识求索」页**（0.2.7 和开发版都有）：da-analyst 插件当宿主。
 
 - 插件后端给每个对话起一个 `DeepAnalyzeHarness`，把 harness 事件转成简化的 JSON 推给页面；
-- DA 的提问和审批在页面上以卡片形式作答；
+- DA 的提问在消息中作答。待审批卡片显示在输入框上方，处理结果按请求发起的位置显示在当轮分析过程中。
+- DeepAnalyze 输入框下方的 `Bypass permission` 默认关闭。打开当前会话的浏览器可在二次确认后启用，后续由该操作者发起的工具审批会自动允许。已挂起的审批仍需手动处理。刷新后接回同一运行中的会话会恢复开关状态，新建对话或重启会话后默认关闭。
 - 页面支持多选知识库（一个都不选等于全部）、停止、执行中补充指令、新对话。
 - **对话不随页面断开而停止**：在左侧导航切到别的页面会重建 iframe、断开插件 WS，正在跑的分析照常跑完；切回来时页面按会话 id 重新接上，补齐期间的输出。没人看着、也没在跑的对话 10 分钟后才停掉 harness。
 - **历史对话**：页面左栏列出最近 50 个对话，可以打开、继续追问或删除。插件后端把每个对话的转录（用户输入加上页面用到的事件，流式输出合并成整段）存在 `~/.jiuwenswarm/da-analyst/history/<会话 id>.json`（`DA_ANALYST_HISTORY_DIR` 可改），在 swarm 的工作区卷里，重启不丢。打开一个已经停掉的对话时，用同一个会话 id 起新的 harness；DA 的会话 id 由它推出，所以只要 DA 还留着上下文，追问就能接上。Swarm 重启时正在跑的那一轮会显示为「已中断」。
@@ -276,7 +277,7 @@ DA 有两种用法。
 插件后端的单元测试（在 Swarm 镜像里跑，需要镜像里的 jiuwenswarm 和 openjiuwen）：
 
 ```bash
-docker run --rm --entrypoint sh -v "$PWD/swarm-kb-plugin:/src:ro" kb-suite/swarm:dev -c \
+docker run --rm --entrypoint sh -v "$PWD/swarm-kb-plugin:/src:ro" kb-suite/swarm:0.2.8 -c \
   "pip install -q pytest pytest-asyncio && cd /tmp && python -m pytest -q -p no:cacheprovider -o asyncio_mode=auto /src/tests"
 ```
 

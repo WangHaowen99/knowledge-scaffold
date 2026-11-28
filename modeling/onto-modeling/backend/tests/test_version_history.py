@@ -136,6 +136,41 @@ def test_iteration_entries_expose_revert_permission(hub):
     assert all(item['can_revert'] is False for item in result['items'])
 
 
+@pytest.mark.parametrize('username, can_tag, tag_status', [
+    ('owner_a', True, 200),
+    ('editor_b', True, 200),
+    ('viewer_c', False, 403),
+])
+def test_tag_entry_follows_write_permission(tmp_path, monkeypatch, username, can_tag, tag_status):
+    """只读评审在历史页看不到标记入口，与标记接口的写权限校验一致。"""
+    manager = WorkspaceManager(tmp_path / 'modeling', tmp_path / 'assets')
+    monkeypatch.setattr(config, 'DATA_DIR', tmp_path / 'modeling')
+    monkeypatch.setattr(projects, 'workspaces', manager)
+    monkeypatch.setattr(auth, 'ENABLED', False)
+    pid = manager.create_project('project_alpha', owner='owner_a')['id']
+    manager._update_meta(pid, members={'editor_b': 'editor', 'viewer_c': 'viewer'})
+    manager.write_file(pid, 'notes.md', 'synthetic content')
+    app = FastAPI()
+
+    @app.middleware('http')
+    async def identity_middleware(request, call_next):
+        request.state.user = {'sub': username}
+        return await call_next(request)
+    app.include_router(projects.router)
+
+    @app.exception_handler(WorkspaceError)
+    async def error(request, exc):
+        return JSONResponse({'error': str(exc)}, status_code=exc.status)
+    with TestClient(app) as client:
+        history = client.get(f'/api/projects/{pid}/history').json()['items']
+        versions = client.get(f'/api/projects/{pid}/versions').json()['versions']
+        assert history and versions
+        assert all(item['can_tag'] is can_tag for item in history + versions)
+        tagged = client.post(f'/api/projects/{pid}/versions/tag',
+                             json={'commit': versions[0]['commit'], 'label': 'synthetic label'})
+        assert tagged.status_code == tag_status
+
+
 @pytest.mark.parametrize('cursor', ['x', '1', '1:', '-1:0', '1:2:3', '1:on'])
 def test_invalid_cursor_is_rejected(cursor):
     with pytest.raises(WorkspaceError) as exc:

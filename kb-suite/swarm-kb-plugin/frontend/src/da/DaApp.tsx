@@ -2,12 +2,13 @@ import {
   Bot, Check, ChevronDown, ChevronRight, Compass, GitCompare, GitFork, History, Layers, Library, ListChecks,
   MessageCircleQuestion, Plus, Quote, ScanSearch, Search, Send, Sparkles, Square, Trash2, TriangleAlert, Wrench,
 } from 'lucide-react';
-import { useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { formatTime } from '../format';
 import { ToastProvider, useToast } from '../toast';
 import { Badge, Button, Spinner } from '../ui';
+import { BypassPermissionSwitch } from './BypassPermissionSwitch';
 import { channel, type Wire } from './channel';
 import { downloadPushedFile } from './download';
 import { NO_EXTRAS, applyFileItem, applyProviderEvent, applyToolResult, type Extras, type PushedFile } from './events';
@@ -34,7 +35,7 @@ type Turn = {
   steers: string[];
   outputs: { id: string; channel: string; text: string }[];
   tools: Tool[];
-  asks: Ask[];
+  asks: (Ask & { precedingToolCount: number })[];
   status: 'queued' | 'running' | 'finished' | 'aborted' | 'failed';
   final_output?: string;
   error?: string;
@@ -52,6 +53,7 @@ type HistoryItem = {
 };
 
 type State = { turns: Turn[]; running: boolean };
+type BypassPermission = { sessionId: string; enabled: boolean; revision: number };
 type Action =
   | { type: 'replay'; events: Wire[]; live: boolean; running: boolean; engineLabel: string }
   | { type: 'local'; turn: Turn }
@@ -65,6 +67,7 @@ type Action =
 const KB_KEY = 'da-analyst.kb-ids';
 const ENGINE_KEY = 'da-analyst.engine';
 const HISTORY_OPEN_KEY = 'da-analyst.history-open';
+const BROWSER_ID_KEY = 'da-analyst.browser-id';
 const DEFAULT_ENGINES: Engine[] = [{ id: 'deepanalyze', label: 'DeepAnalyze', ready: false }];
 // labels for history entries of engines this server no longer offers
 const ENGINE_LABELS: Record<string, string> = { deepanalyze: 'DeepAnalyze', loopforest: 'Loop Forest' };
@@ -72,6 +75,16 @@ const ENGINE_LABELS: Record<string, string> = { deepanalyze: 'DeepAnalyze', loop
 // server keeps it running across page reloads, so remember it beyond this tab
 const SESSION_PREFIX = 'da-analyst.host-session.';
 const sessionKey = (engine: string) => SESSION_PREFIX + engine;
+
+function startConversation(engine: string, hostSessionId: string, kbIds: string[]) {
+  let browserId = localStorage.getItem(BROWSER_ID_KEY) || '';
+  if (!/^[0-9a-f]{32}$/.test(browserId)) {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    browserId = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem(BROWSER_ID_KEY, browserId);
+  }
+  channel.send({ type: 'start', engine, host_session_id: hostSessionId, kb_ids: kbIds, browser_id: browserId });
+}
 
 // A deleted conversation must not be reopened under its id: the engine would pick up its old context.
 function forgetSession(hostSessionId: string): void {
@@ -257,7 +270,7 @@ function reducer(state: State, action: Action): State {
           ...state,
           turns: patchTurn(state.turns, m.turn_id, (t) => ({
             ...t,
-            asks: [...t.asks, m as unknown as Ask],
+            asks: [...t.asks, { ...(m as unknown as Ask), precedingToolCount: t.tools.length }],
           })),
         };
       }
@@ -311,7 +324,11 @@ function ToolCard({ tool }: { tool: Tool }) {
   );
 }
 
-function AskCard({ ask, onAnswer }: { ask: Ask; onAnswer: (payload: Record<string, unknown>, label: string) => void }) {
+function AskCard({ ask, disabled, onAnswer }: {
+  ask: Ask;
+  disabled?: boolean;
+  onAnswer: (payload: Record<string, unknown>, label: string) => void;
+}) {
   const [text, setText] = useState('');
   if (ask.answered) {
     return (
@@ -329,9 +346,9 @@ function AskCard({ ask, onAnswer }: { ask: Ask; onAnswer: (payload: Record<strin
         <div className="da-ask-q">DA 请求执行工具 <b>{ask.tool_name}</b>{!args && ask.prompt ? `：${ask.prompt}` : ''}</div>
         {args ? <pre className="da-ask-args">{json(args).slice(0, 1500)}</pre> : null}
         <div className="da-ask-actions">
-          <Button size="sm" variant="primary" onClick={() => onAnswer({ decision: 'allow' }, '允许')}>允许</Button>
-          <Button size="sm" onClick={() => onAnswer({ decision: 'deny' }, '拒绝')}>拒绝</Button>
-          <Button size="sm" variant="danger" onClick={() => onAnswer({ decision: 'abort' }, '终止任务')}>终止任务</Button>
+          <Button size="sm" variant="primary" disabled={disabled} onClick={() => onAnswer({ decision: 'allow' }, '允许')}>允许</Button>
+          <Button size="sm" disabled={disabled} onClick={() => onAnswer({ decision: 'deny' }, '拒绝')}>拒绝</Button>
+          <Button size="sm" variant="danger" disabled={disabled} onClick={() => onAnswer({ decision: 'abort' }, '终止任务')}>终止任务</Button>
         </div>
       </div>
     );
@@ -375,6 +392,15 @@ function TurnView({
   const answerParts = turn.outputs.filter((o) => o.channel === 'answer').map((o) => o.text);
   const answer = answerParts.join('\n\n') || turn.final_output || '';
   const live = turn.status === 'running' || turn.status === 'queued';
+  // Place completed approvals where their requests arrived in the tool sequence.
+  const approvalsByPosition = new Map<number, ReactNode[]>();
+  for (const ask of turn.asks) {
+    if (ask.kind !== 'approval' || !ask.answered) continue;
+    const position = ask.precedingToolCount;
+    const cards = approvalsByPosition.get(position) ?? [];
+    cards.push(<AskCard key={ask.request_id} ask={ask} onAnswer={(payload, label) => onAnswer(ask, payload, label)} />);
+    approvalsByPosition.set(position, cards);
+  }
   return (
     <div className="da-turn">
       <div className="da-user">{turn.input}</div>
@@ -407,8 +433,14 @@ function TurnView({
         ) : null}
         {turn.todos?.length ? <TodoPanel todos={turn.todos} live={live} /> : null}
         {turn.workflows.map((flow) => <WorkflowPanel key={flow.id} flow={flow} live={live} />)}
-        {turn.tools.map((tool) => <ToolCard key={tool.id} tool={tool} />)}
-        {turn.asks.map((ask) => (
+        {approvalsByPosition.get(0)}
+        {turn.tools.map((tool, index) => (
+          <Fragment key={tool.id}>
+            <ToolCard tool={tool} />
+            {approvalsByPosition.get(index + 1)}
+          </Fragment>
+        ))}
+        {turn.asks.filter((ask) => ask.kind === 'question').map((ask) => (
           <AskCard key={ask.request_id} ask={ask} onAnswer={(payload, label) => onAnswer(ask, payload, label)} />
         ))}
         {turn.pushes.map((push, i) => <PushCard key={i} push={push} />)}
@@ -522,11 +554,14 @@ function Shell() {
   // label of the engine behind a conversation shown read-only because that engine is unavailable
   const [readonlyEngine, setReadonlyEngine] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState('');
+  const [bypassPermission, setBypassPermission] = useState<BypassPermission | null>(null);
+  const [bypassUpdateId, setBypassUpdateId] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyOpen, setHistoryOpen] = useState(() => localStorage.getItem(HISTORY_OPEN_KEY) !== '0');
   const [text, setText] = useState('');
   const [showAllKbs, setShowAllKbs] = useState(false);
-  const bottom = useRef<HTMLDivElement>(null);
+  const thread = useRef<HTMLElement>(null);
+  const followOutput = useRef(true);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const kbsRef = useRef(kbs);
@@ -563,14 +598,19 @@ function Shell() {
         const kept = reconcileSelection(selectedRef.current, list, offline);
         setSelected(kept.ids);
         setSelectionLost(kept.lost);
-        channel.send({
-          type: 'start', engine: chosen, host_session_id: localStorage.getItem(sessionKey(chosen)) || '', kb_ids: kept.ids,
-        });
+        startConversation(chosen, localStorage.getItem(sessionKey(chosen)) || '', kept.ids);
       } else if (msg.t === 'started') {
         const opened = String(msg.engine || engineRef.current);
+        const hostSessionId = String(msg.host_session_id);
         const label = enginesRef.current.find((e) => e.id === opened)?.label ?? ENGINE_LABELS[opened] ?? opened;
         labelRef.current = label;
-        setSessionId(String(msg.host_session_id));
+        setSessionId(hostSessionId);
+        setBypassPermission(
+          msg.can_manage_bypass === true && typeof msg.bypass_revision === 'number'
+            ? { sessionId: hostSessionId, enabled: msg.bypass_permission === true, revision: msg.bypass_revision }
+            : null,
+        );
+        setBypassUpdateId(null);
         dispatch({
           type: 'replay', events: (msg.transcript as Wire[]) ?? [], live: Boolean(msg.live), running: Boolean(msg.running),
           engineLabel: label,
@@ -594,6 +634,15 @@ function Shell() {
         channel.send({ type: 'history' });
       } else if (msg.t === 'history') {
         setHistory((msg.items as HistoryItem[]) ?? []);
+      } else if (msg.t === 'bypass_permission') {
+        const revision = msg.revision;
+        if (typeof revision !== 'number') return;
+        setBypassPermission((current) =>
+          current && current.sessionId === msg.host_session_id && revision > current.revision
+            ? { ...current, enabled: msg.enabled === true, revision }
+            : current,
+        );
+        setBypassUpdateId((current) => current === msg.client_id ? null : current);
       } else if (msg.t === 'accepted') {
         const steer = pendingSteers.current.get(String(msg.client_id));
         if (steer !== undefined) {
@@ -604,6 +653,10 @@ function Shell() {
         }
       } else if (msg.t === 'error') {
         notify(String(msg.message), true);
+        if (msg.request === 'set_bypass_permission') {
+          setBypassUpdateId((current) => current === msg.client_id ? null : current);
+          return;
+        }
         const steer = pendingSteers.current.get(String(msg.client_id));
         if (steer !== undefined) {
           pendingSteers.current.delete(String(msg.client_id));
@@ -617,7 +670,8 @@ function Shell() {
         dispatch({ type: 'clear' });
         setStarted(false);
         setReadonlyEngine(null);
-        channel.send({ type: 'start', engine: engineRef.current, host_session_id: '', kb_ids: selectedRef.current });
+        followOutput.current = true;
+        startConversation(engineRef.current, '', selectedRef.current);
       } else if (INPUTS.has(msg.t)) {
         dispatch(entryAction(msg, labelRef.current)); // put in from another page on this conversation
       } else {
@@ -633,7 +687,10 @@ function Shell() {
 
   useEffect(() => {
     if (connected) channel.send({ type: 'hello' });
-    else setStarted(false);
+    else {
+      setStarted(false);
+      setBypassUpdateId(null);
+    }
   }, [connected]);
 
   useEffect(() => {
@@ -644,13 +701,42 @@ function Shell() {
     localStorage.setItem(HISTORY_OPEN_KEY, historyOpen ? '1' : '0');
   }, [historyOpen]);
 
-  useEffect(() => {
-    bottom.current?.scrollIntoView({ block: 'end' });
+  useLayoutEffect(() => {
+    const viewport = thread.current;
+    if (followOutput.current && viewport) viewport.scrollTop = viewport.scrollHeight;
   }, [state.turns]);
 
+  const updateScrollPosition = () => {
+    const viewport = thread.current;
+    if (viewport) {
+      followOutput.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 24;
+    }
+  };
+
   const running = state.running || state.turns.some((t) => t.status === 'running' || t.status === 'queued');
+  const pendingApprovals = state.turns.flatMap((turn) => turn.asks.filter((ask) => ask.kind === 'approval' && !ask.answered));
   const current = engines.find((e) => e.id === engine) ?? engines[0];
   const engineLabel = current?.label ?? 'DeepAnalyze';
+
+  const changeBypassPermission = (enabled: boolean) => {
+    if (!started || !bypassPermission || bypassUpdateId) return;
+    const clientId = `b-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    if (channel.sendIfConnected({
+      type: 'set_bypass_permission', host_session_id: bypassPermission.sessionId, enabled, client_id: clientId,
+    })) {
+      setBypassUpdateId(clientId);
+    } else {
+      notify('连接已断开，请在重新连接后重试', true);
+    }
+  };
+
+  const answerAsk = (ask: Ask, payload: Record<string, unknown>, label: string) => {
+    if (!started || !channel.sendIfConnected({
+      type: 'answer', host_session_id: sessionId, request_id: ask.request_id, label, ...payload,
+    })) {
+      notify('会话未连接，请在重新连接后重试', true);
+    }
+  };
 
   const submit = () => {
     const value = text.trim();
@@ -659,6 +745,7 @@ function Shell() {
       notify(LOST_SELECTION, true);
       return;
     }
+    followOutput.current = true;
     if (running) {
       const client_id = `s-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
       pendingSteers.current.set(client_id, value);
@@ -682,10 +769,11 @@ function Shell() {
   const open = (next: string, hostSessionId: string) => {
     if (started && next === engine && hostSessionId && hostSessionId === sessionId) return;
     // the engine switches once the server has started the conversation (`started`)
+    followOutput.current = true;
     dispatch({ type: 'clear' });
     setStarted(false);
     setReadonlyEngine(null);
-    channel.send({ type: 'start', engine: next, host_session_id: hostSessionId, kb_ids: selected });
+    startConversation(next, hostSessionId, selected);
   };
 
   const newConversation = () => {
@@ -848,7 +936,11 @@ function Shell() {
           {selectionLost ? <span className="da-scope-warn">{LOST_SELECTION}</span> : null}
           <span className="da-scope-hint">不选 = 检索全部知识库</span>
         </div>
-        <main className={`da-thread ${state.turns.length ? '' : 'da-thread-empty'}`}>
+        <main
+          className={`da-thread ${state.turns.length ? '' : 'da-thread-empty'}`}
+          ref={thread}
+          onScroll={updateScrollPosition}
+        >
           {state.turns.length === 0 ? (
             <div className="da-hero">
               <div className="da-hero-icon">
@@ -883,10 +975,7 @@ function Shell() {
               <TurnView
                 key={turn.client_id}
                 turn={turn}
-                onAnswer={(ask, payload, label) => {
-                  channel.send({ type: 'answer', request_id: ask.request_id, label, ...payload });
-                  dispatch({ type: 'answered', request_id: ask.request_id, label });
-                }}
+                onAnswer={answerAsk}
                 onDownload={(file) => {
                   // a failed read is reported by the socket's error message; a timeout only here
                   downloadPushedFile(sessionId, file.name, file.mimeType).catch((err: Error) => {
@@ -896,8 +985,19 @@ function Shell() {
               />
             ))
           )}
-          <div ref={bottom} />
         </main>
+        {pendingApprovals.length ? (
+          <section className="da-pending-approvals" aria-label="待审批">
+            {pendingApprovals.map((ask) => (
+              <AskCard
+                key={ask.request_id}
+                ask={ask}
+                disabled={!connected || !started}
+                onAnswer={(payload, label) => answerAsk(ask, payload, label)}
+              />
+            ))}
+          </section>
+        ) : null}
         <footer className="da-composer">
           <textarea
             className="textarea"
@@ -919,17 +1019,27 @@ function Shell() {
             }}
           />
           <div className="da-composer-foot">
-            <span className="muted">
-              {readonlyEngine
-                ? '引擎恢复后重新打开即可继续追问'
-                : selectionLost && !running
-                  ? '先重新选择知识库'
-                  : running
-                  ? '分析执行中，发送的内容会作为补充指令'
-                  : kbNames.length
-                    ? `将在「${kbNames.join('」「')}」中检索`
-                    : '将在全部知识库中检索'}
-            </span>
+            <div className="da-composer-options">
+              <span className="muted">
+                {readonlyEngine
+                  ? '引擎恢复后重新打开即可继续追问'
+                  : selectionLost && !running
+                    ? '先重新选择知识库'
+                    : running
+                    ? '分析执行中，发送的内容会作为补充指令'
+                    : kbNames.length
+                      ? `将在「${kbNames.join('」「')}」中检索`
+                      : '将在全部知识库中检索'}
+              </span>
+              {started && connected && bypassPermission ? (
+                <BypassPermissionSwitch
+                  key={bypassPermission.sessionId}
+                  enabled={bypassPermission.enabled}
+                  pending={bypassUpdateId !== null}
+                  onChange={changeBypassPermission}
+                />
+              ) : null}
+            </div>
             <div className="da-composer-actions">
               {running ? (
                 <Button variant="danger" icon={<Square size={13} />} onClick={() => channel.send({ type: 'abort' })}>停止</Button>

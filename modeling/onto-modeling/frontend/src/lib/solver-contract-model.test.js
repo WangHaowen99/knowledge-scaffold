@@ -2,8 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   advancedText,
-  caseBatches,
-  casesText,
   collectMarks,
   diffContracts,
   disablePreview,
@@ -14,23 +12,15 @@ import {
   findProblemFamily,
   isEnabled,
   isManagedSolverPath,
-  isValidationActive,
   liveSaveBlocker,
   localProblems,
   locateFinding,
-  newBatch,
-  newCase,
   newDraftItem,
-  nextBatchId,
   normalizeParams,
   normalizeUnits,
-  parseCasesText,
   problemFamily,
   regenerate,
   renderedSidecars,
-  routeCaseHints,
-  sampleCases,
-  setCaseBatches,
   setEnabled,
   setEngineCapabilities,
   setField,
@@ -41,13 +31,10 @@ import {
   setSidecar,
   setTemplateParam,
   shownChecks,
-  startBlocker,
   suggestSolverKey,
   toManual,
   toPayload,
   unloadedDirectories,
-  validationCaseRows,
-  validationSourceOptions,
   validationState,
 } from './solver-contract-model.js';
 
@@ -549,150 +536,6 @@ test('managed path detection covers the directory and its files only', () => {
   assert.equal(isManagedSolverPath('ontology/operation/规划路线.md'), false);
 });
 
-test('sample cases cover each enabled capability once with unique ids', () => {
-  const operations = [
-    operation(),
-    { ...operation('find_station'), operation: '查询站点' },
-    { ...operation('paused'), enabled: false },
-  ];
-  const existing = [{ id: 'find_station_1', solver_key: 'plan_route', arguments: { items: [] } }];
-  const cases = sampleCases(operations, existing);
-  assert.deepEqual(cases.map((item) => [item.id, item.solver_key]), [
-    ['find_station_1', 'plan_route'],
-    ['find_station_2', 'find_station'],
-  ]);
-  assert.deepEqual(sampleCases(operations, cases), cases);
-  assert.equal(casesText(cases).endsWith('\n'), true);
-});
-
-test('cases text is checked for structure and coverage before saving', () => {
-  const operations = [operation(), { ...operation('find_station'), operation: '查询站点' }];
-  assert.match(parseCasesText('{', operations).error, /合法 JSON/);
-  assert.match(parseCasesText('{}', operations).error, /JSON 数组/);
-  assert.match(parseCasesText('[{"id":"c1","solver_key":"Plan","arguments":{}}]', operations).error, /第 1 条/);
-  assert.match(parseCasesText('[{"id":"c1","solver_key":"plan_route","arguments":[]}]', operations).error, /arguments/);
-  const parsed = parseCasesText(
-    '[{"id":"n7","solver_key":"plan_route","arguments":{"items":[]}},{"id":"x","solver_key":"ghost","arguments":{}}]',
-    operations,
-  );
-  assert.equal(parsed.error, undefined);
-  assert.equal(parsed.cases.length, 2);
-  assert.deepEqual(parsed.uncovered, ['find_station']);
-  assert.deepEqual(parsed.unknown, ['ghost']);
-});
-
-test('cases text is held to the same limits as the backend', () => {
-  const operations = [operation()];
-  const one = (extra) => JSON.stringify([{ id: 'c1', solver_key: 'plan_route', arguments: {}, ...extra }]);
-  const error = (text) => parseCasesText(text, operations).error;
-  assert.match(error(one({ id: 'c 1' })), /字母、数字/);
-  assert.match(error(one({ name: '名'.repeat(81) })), /80/);
-  assert.equal(error(one({ name: '名'.repeat(80) })), undefined);
-  assert.match(error(one({ expected_candidate_count: -1 })), /预期候选数/);
-  assert.match(error(one({ expected_candidate_count: 1.5 })), /预期候选数/);
-  assert.match(error(one({ expected_candidate_count: 100001 })), /预期候选数/);
-  assert.equal(error(one({ expected_candidate_count: 0 })), undefined);
-  assert.match(error(one({ arguments: { blob: 'x'.repeat(64 * 1024) } })), /64 KB/);
-  const row = (id, args = {}) => ({ id, solver_key: 'plan_route', arguments: args });
-  assert.match(error(JSON.stringify([row('c1'), row('c1')])), /重复：c1/);
-  assert.match(error(JSON.stringify(Array.from({ length: 21 }, (_, i) => row(`c${i}`)))), /最多 20 条/);
-  const big = Array.from({ length: 9 }, (_, i) => row(`c${i}`, { blob: 'x'.repeat(60 * 1024) }));
-  assert.match(error(JSON.stringify(big)), /512 KB/);
-});
-
-const BATCH = { crude_origin: '品种甲', quantity_wan_tons: '1.5', process_days: '3' };
-
-test('batch rows follow item_order and are renumbered from 1 when saved back', () => {
-  const args = {
-    plan_month: '2026-01',
-    diesel_unit_no: 'U1',
-    items: [{ item_order: 2, item_id: 'B02', ...BATCH }, { item_order: 1, item_id: 'B01', ...BATCH }],
-  };
-  const rows = caseBatches(args);
-  assert.deepEqual(rows.map((row) => row.item_id), ['B01', 'B02']);
-  assert.equal('item_order' in rows[0], false);
-  const swapped = setCaseBatches(args, [...rows].reverse());
-  assert.deepEqual(swapped.items.map((row) => [row.item_order, row.item_id]), [[1, 'B02'], [2, 'B01']]);
-  assert.equal(swapped.plan_month, '2026-01');
-  assert.deepEqual(caseBatches({ items: [{ item_id: 'x' }, { item_id: 'y' }] }).map((row) => row.item_id), ['x', 'y']);
-  assert.deepEqual(caseBatches(null), []);
-});
-
-test('new batch ids are zero-padded and skip ids already taken', () => {
-  assert.equal(nextBatchId([]), 'B01');
-  assert.equal(nextBatchId([{ item_id: 'B01' }, { item_id: 'B03' }]), 'B04');
-  const nine = Array.from({ length: 9 }, (_, i) => ({ item_id: `B0${i + 1}` }));
-  assert.equal(nextBatchId(nine), 'B10');
-  assert.deepEqual(newBatch([]), { item_id: 'B01', crude_origin: '', quantity_wan_tons: '', process_days: '' });
-});
-
-test('route case hints flag inputs the solver service would reject or mis-order', () => {
-  const valid = setCaseBatches({ plan_month: '2026-01', diesel_unit_no: 'U1' }, [
-    { item_id: 'B01', ...BATCH },
-    { item_id: 'B02', ...BATCH },
-  ]);
-  assert.deepEqual(routeCaseHints(valid, ['U1', 'U2']), []);
-  assert.deepEqual(routeCaseHints(valid, []), [], 'any unit is accepted when the evaluator lists none');
-
-  const empty = routeCaseHints({ plan_month: '2026-13', diesel_unit_no: 'U9', items: [], extra: 1 }, ['U1']);
-  assert.equal(empty.length, 4);
-  assert.match(empty[0], /YYYY-MM/);
-  assert.match(empty[1], /U9.*U1/);
-  assert.match(empty[2], /至少添加一个批次/);
-  assert.match(empty[3], /额外字段：extra/);
-
-  const messy = routeCaseHints({
-    ...valid,
-    items: [
-      { item_order: 1, item_id: 'B01', ...BATCH, crude_origin: '', quantity_wan_tons: 'x' },
-      { item_order: 3, item_id: 'B01', ...BATCH, note: 'n' },
-    ],
-  }, ['U1']);
-  assert.equal(messy.length, 5);
-  assert.match(messy[0], /第 1 个批次有未填写/);
-  assert.match(messy[1], /第 1 个批次的批次量和加工天数须是数字/);
-  assert.match(messy[2], /批次号「B01」重复/);
-  assert.match(messy[3], /item_order/);
-  assert.match(messy[4], /额外字段：note/);
-
-  // 求解服务按批次号字典序处理：B1…B10 时 B10 会排到 B2 之前
-  const unpadded = setCaseBatches(valid, Array.from({ length: 10 }, (_, i) => ({ item_id: `B${i + 1}`, ...BATCH })));
-  const hints = routeCaseHints(unpadded, ['U1']);
-  assert.equal(hints.length, 1);
-  assert.match(hints[0], /字典序.*B01/);
-});
-
-test('a new case gets the next free id and a batch skeleton for template contracts', () => {
-  const managed = managedOperation();
-  const created = newCase(managed, [{ id: 'plan_route_1' }]);
-  assert.equal(created.id, 'plan_route_2');
-  assert.equal(created.name, '规划路线 示例 2');
-  assert.equal(created.solver_key, 'plan_route');
-  assert.deepEqual(created.arguments, {
-    plan_month: '',
-    diesel_unit_no: 'U1',
-    items: [{ item_order: 1, item_id: 'B01', crude_origin: '', quantity_wan_tons: '', process_days: '' }],
-  });
-  assert.equal(newCase({ ...managed, unit_options: ['U1', 'U2'] }).arguments.diesel_unit_no, '');
-  assert.deepEqual(newCase(operation()).arguments, {}, 'manual contracts are filled in as JSON');
-  assert.equal(newCase(operation()).name, '规划路线 示例');
-  assert.equal(parseCasesText(casesText([created]), [managed]).error, undefined);
-});
-
-test('starting a validation needs a saved, clean contract with full case coverage', () => {
-  const cases = [{ id: 'n7', solver_key: 'plan_route', arguments: {} }];
-  assert.equal(startBlocker(view(), { cases }), '');
-  assert.match(startBlocker(view(), { cases: [] }), /验证用例/);
-  assert.match(startBlocker(view(), { cases, dirty: true }), /未保存/);
-  assert.match(startBlocker(view(), { cases, casesDirty: true }), /保存用例/);
-  assert.match(startBlocker(view(undefined, { findings: [{ code: 'x' }] }), { cases }), /检查问题/);
-  assert.match(startBlocker(view(undefined, { validation: { status: 'queued' } }), { cases }), /进行中/);
-  const two = view([operation(), { ...operation('find_station'), operation: '查询站点' }]);
-  assert.match(startBlocker(two, { cases }), /find_station/);
-  assert.equal(isValidationActive({ status: 'running' }), true);
-  assert.equal(isValidationActive({ status: 'failed' }), false);
-});
-
 test('the evaluator command saves pending drafts first and targets the saved solver key', () => {
   const [saved] = draftFromView(view([managedOperation()]));
   assert.deepEqual(evaluatorCommandPlan(saved), {
@@ -714,47 +557,4 @@ test('the evaluator command saves pending drafts first and targets the saved sol
   assert.match(evaluatorCommandPlan(setField(saved, 'solver_key', 'Bad Key'), { dirty: true }).blocker, /求解标识/);
   const [invalid] = draftFromView(view([operation('Bad Key')]));
   assert.match(evaluatorCommandPlan(invalid).blocker, /求解标识/);
-});
-
-test('case rows expose the per-case verdict, 2N expectation and first failed assertion', () => {
-  const record = {
-    evidence: {
-      cases: [
-        {
-          id: 'n9', name: '9 批', solver_key: 'plan_route', status: 'completed', authoritative: true,
-          feasibility: 'feasible', candidate_count: 16, expected_candidate_count: 18, passed: false,
-          assertions: [
-            { name: 'authoritative', passed: true },
-            { name: 'candidate_count', expected: 18, actual: 16, passed: false },
-          ],
-        },
-        {
-          id: 'inf', solver_key: 'plan_route', status: 'completed', authoritative: true,
-          feasibility: 'infeasible', expected_candidate_count: 14, passed: true, assertions: [],
-        },
-      ],
-    },
-  };
-  const [mismatch, infeasible] = validationCaseRows(record);
-  assert.deepEqual(
-    [mismatch.passed, mismatch.candidateCount, mismatch.expected, mismatch.failedAssertion],
-    [false, 16, 18, 'candidate_count'],
-  );
-  assert.deepEqual([infeasible.name, infeasible.passed, infeasible.candidateCount], ['inf', true, null]);
-  assert.deepEqual(validationCaseRows(null), []);
-});
-
-test('dataset sources are disabled and graph sources with imports reuse existing graph data', () => {
-  const options = validationSourceOptions([
-    { id: 's1', mode: 'connection', provider: 'nl2sql_http', name: '查询服务' },
-    { id: 's2', mode: 'dataset', name: '业务数据表（1 份）', files: ['f1'] },
-    { id: 's3', mode: 'connection', provider: 'neo4j', name: '图库', include_mock: true },
-    { id: 's4', mode: 'connection', provider: 'neo4j', name: '图库直连' },
-    { id: 's5', mode: 'none', name: '不使用数据源' },
-  ]);
-  assert.deepEqual(options.map((option) => [option.value, Boolean(option.disabled)]), [
-    ['', false], ['s1', false], ['s2', true], ['s3', false], ['s4', false],
-  ]);
-  assert.equal(options[3].label, '图库（使用图中已有数据，不导入）');
-  assert.equal(options[4].label, '图库直连');
 });

@@ -29,7 +29,10 @@ def select_only(sql):
         allowed={'COUNT','SUM','AVG','MIN','MAX','COALESCE','ABS','CAST','DATE','EXTRACT',
                  'ROUND','LOWER','UPPER','LENGTH','SUBSTRING','IF','NULLIF','CONCAT',
                  'YEAR','MONTH','DAY','DATEDIFF','DATE_ADD','DATE_SUB'}
-        if any(function.sql_name() not in allowed for function in tree.find_all(exp.Func)):
+        # SQLGlot also models AND/OR as Func nodes. They combine predicates,
+        # not function calls; still inspect their descendants for unsafe calls.
+        if any(not isinstance(function, (exp.And, exp.Or)) and function.sql_name() not in allowed
+               for function in tree.find_all(exp.Func)):
             raise ValueError()
         if tree.find(exp.Parameter) or tree.find(exp.SessionParameter):
             raise ValueError()
@@ -39,7 +42,8 @@ def select_only(sql):
 
 
 class QueryService:
-    def __init__(self,config,http,judge_settings): self.config,self.http,self.judge_settings=config,http,judge_settings
+    def __init__(self,config,http,judge_settings,storage=None):
+        self.config,self.http,self.judge_settings,self.storage=config,http,judge_settings,storage
 
     def query(self,body,token,direct=False):
         scene=body.get('scene','')
@@ -47,7 +51,7 @@ class QueryService:
             raise Failure('query_forbidden','数据查询权限不足',403,'data_query')
         import pymysql
         try:
-            config=json.loads(self.config.sql_config)
+            config=self.storage.for_run(scene[5:])['sql'] if self.storage else json.loads(self.config.sql_config)
             with pymysql.connect(**{**config,'database':scene,'read_timeout':30,'write_timeout':30}) as connection:
                 with connection.cursor() as cursor:
                     cursor.execute('SHOW TABLES')

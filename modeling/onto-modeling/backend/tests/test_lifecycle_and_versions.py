@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from app.services import publish as publish_service
+from app.services import package_mapping
 from app.services.workspace import WorkspaceError, WorkspaceManager
 from app.services.workspace import ScriptContractError, _script_header_meta
 from tests.text_versions import write_text_versions
@@ -283,14 +284,14 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         assert 'objects: ["订单"]' in op
         assert "old: front" not in op
         obj_index = zf.read(f"{pid}/objects/index.md").decode("utf-8")
-        # 对齐 modeling 知识包契约：四列且 来源Sheet 是真实表名（不是对象名回填）
+        # 四列且 来源Sheet 是真实表名（不是对象名回填）
         assert "| object key | 标题 | 说明 | 来源Sheet |" in obj_index
         assert "| 订单 | 订单 | 订单 | ORDER_TABLE |" in obj_index
         # 工作区占位 index.md 不应进包
         assert f"{pid}/objects/index.md" in names and "待生成" not in obj_index
         # 五元组：规则/指标/脚本各自成组导出（ADR-0004）
         obj = zf.read(f"{pid}/objects/订单.md").decode("utf-8")
-        # 「对象属性清单」按 modeling 契约转成 `# 字段`（前六列按位解析）
+        # 「对象属性清单」转成 `# 字段`（前六列按位解析）
         assert "| 字段 key | 中文名 | 类型 | 必填 | 业务说明 | 别名 | 属性规则 |" in obj
         assert "| ORDER_ID | 订单号 | 字符串 | 是 | 编号 | 单号, 订单编号 |" in obj
         assert "# 对象属性清单" not in obj
@@ -319,11 +320,11 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         script_doc = zf.read(f"{pid}/scripts/calc_price.md").decode("utf-8")
         assert "resource: script" in script_doc
         # consumer load_script_catalog 要求 entrypoint，缺失会被静默剔除；
-        # modeling 按 scripts/<entrypoint> 取源码，故只写文件名、不带 scripts/ 前缀
+        # 按 scripts/<entrypoint> 取源码，故只写文件名、不带 scripts/ 前缀
         assert "entrypoint: calc_price.py\n" in script_doc
         # 执行契约：绑定 operation + 参数表（consumer execute_script 按此组装 CLI）
         assert 'bound_operation: "创建订单"' in script_doc
-        # 一级标题与 modeling scriptMd 一致：modeling 只认 `# 输入参数`
+        # 参数表在一级标题 `# 输入参数` 下
         assert "\n# 输入参数\n" in script_doc and "## 输入参数" not in script_doc
         assert "| 参数 key | CLI 参数 | 类型 | 必填 | 默认值 | 说明 |" in script_doc
         assert "| orders | --orders | json | 是 |  | 订单列表，必填 | 否 |  |" in script_doc
@@ -332,8 +333,60 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         assert f"{pid}/metrics/index.md" in names
 
 
+CUSTOMER_DOC = """# 数据来源
+客户表
+
+# 对象属性清单
+| 中文名称 | 英文名称 | 描述 | 主键 | 类型 |
+| --- | --- | --- | --- | --- |
+| 客户编号 | CUSTOMER_ID | 合成客户编号 | 是 | 字符串 |
+| 客户名称 | NAME | 合成客户名称 | 否 | 字符串 |
+
+# 关联对象
+- [[订单]] → 属于 → 当前对象
+"""
+
+ORDER_DOC = """# 数据来源
+订单表
+
+# 对象属性清单
+| 中文名称 | 英文名称 | 描述 | 主键 | 类型 |
+| --- | --- | --- | --- | --- |
+| 订单号 | ORDER_ID | 合成订单号 | 是 | 字符串 |
+| 客户编号 | CUSTOMER_ID | 下单客户 | 否 | 字符串 |
+
+# 关联对象
+- 当前对象 → 属于 → [[客户]]
+"""
+
+
+@pytest.mark.parametrize("graph", [False, True])
+def test_export_writes_relation_declared_in_both_endpoint_files_once(
+    manager: WorkspaceManager, tmp_path: Path, graph: bool
+):
+    """Issue 419：发布和发布前结构检查都走导出；两端各写一次的同一关系只导出一条。"""
+    pid = manager.create_project("两端关系")["id"]
+    object_dir = manager.project_root(pid) / "ontology" / "object"
+    object_dir.mkdir(parents=True, exist_ok=True)
+    (object_dir / "客户.md").write_text(CUSTOMER_DOC, encoding="utf-8")
+    (object_dir / "订单.md").write_text(ORDER_DOC, encoding="utf-8")
+    binding = package_mapping.resolve_object_tables(
+        manager.project_root(pid),
+        tables={"客户表": ["CUSTOMER_ID", "NAME"], "订单表": ["ORDER_ID", "CUSTOMER_ID"]},
+    )
+    dest = tmp_path / "relations.zip"
+
+    manager.export_package_zip(pid, dest, binding, graph=graph)
+
+    with zipfile.ZipFile(dest) as archive:
+        order = archive.read(f"{pid}/objects/订单.md").decode("utf-8")
+        customer = archive.read(f"{pid}/objects/客户.md").decode("utf-8")
+    assert order.count("| 属于 | 客户 |") == 1
+    assert "属于" not in customer
+
+
 def test_export_package_zip_script_entrypoint_is_ascii_filename(manager: WorkspaceManager, tmp_path: Path):
-    """modeling 要求 entrypoint 满足 ^[A-Za-z0-9_.-]+\\.py$，并按 scripts/<entrypoint> 取源码。"""
+    """entrypoint 须满足 ^[A-Za-z0-9_.-]+\\.py$，并按 scripts/<entrypoint> 取源码。"""
     meta = manager.create_project("脚本入口")
     root = manager.project_root(meta["id"])
     for operation in ("计价", "折扣"):
@@ -577,6 +630,112 @@ def test_migrate_from_modeling_end_to_end(manager: WorkspaceManager, tmp_path: P
     # 幂等：再跑一次跳过
     assert mig.main() == 0
     assert sum(1 for p in manager.list_projects() if p.get("migrated_from") == "pj_test1") == 1
+
+
+_PROJECTS_TABLE = (
+    "CREATE TABLE projects (id TEXT, owner TEXT, external_id TEXT, kind TEXT,"
+    " name TEXT, domain TEXT, background TEXT)"
+)
+_INSERT_PROJECT = "INSERT INTO projects VALUES (?, 'operator_a', ?, ?, ?, '', '')"
+# 旧版 modeling 库没有 external_id、kind 列
+_LEGACY_PROJECTS_TABLE = "CREATE TABLE projects (id TEXT, owner TEXT, name TEXT, domain TEXT, background TEXT)"
+_INSERT_LEGACY_PROJECT = "INSERT INTO projects VALUES (?, 'operator_a', ?, '', '')"
+# 合成项目：(id, external_id, kind, name)
+_MIGRATION_PROJECTS = [
+    ("pj_user", None, "modeling", "project_alpha"),
+    ("pj_eval", None, "package", "onto-eval-task-1a2b3c4d"),
+    ("pj_eval_retry", None, "package", "onto-eval-project-alpha-5e6f7a8b-1792370497"),
+    ("pj_mirror", "onto:project-beta-9c0d1e2f", "modeling", "project_beta"),
+    ("pj_lookalike", None, "modeling", "onto-eval-project-gamma-3a4b5c6d"),
+    ("pj_notes", None, "package", "onto-evaluation-notes"),
+    ("pj_other_client", "client:42", "modeling", "project_delta"),
+]
+
+
+def _run_modeling_migration(manager, tmp_path, monkeypatch, table, insert, rows, *extra_args):
+    """在合成的 modeling 数据目录上跑迁移，返回已迁移的源项目 id 与 summary。"""
+    import sqlite3
+    import sys
+
+    sys.path.append(str(Path(__file__).resolve().parents[1] / "scripts"))
+    import migrate_from_modeling as mig
+
+    source = tmp_path / "modeling-data"
+    source.mkdir(exist_ok=True)
+    database = source / "modeling.db"
+    if not database.exists():
+        db = sqlite3.connect(database)
+        db.execute(table)
+        db.execute(
+            "CREATE TABLE documents (project_id TEXT, filename TEXT, kind TEXT,"
+            " text_content TEXT, tables_json TEXT, lifecycle_status TEXT)"
+        )
+        db.executemany(insert, rows)
+        db.commit()
+        db.close()
+
+    from app import config as app_config
+
+    monkeypatch.setattr(app_config, "DATA_DIR", manager.workspaces_dir.parent)
+    monkeypatch.setattr(app_config, "ASSETS_DIR", manager.assets_dir)
+    summary = tmp_path / "summary.json"
+    monkeypatch.setattr(sys, "argv", ["mig", "--source", str(source), "--summary-file", str(summary), *extra_args])
+    assert mig.main() == 0
+    migrated = sorted(p.get("migrated_from") or "" for p in manager.list_projects())
+    return migrated, json.loads(summary.read_text(encoding="utf-8"))
+
+
+def test_migrate_from_modeling_skips_evaluation_and_onto_linked_projects(
+    manager: WorkspaceManager, tmp_path: Path, monkeypatch, capsys
+):
+    migrated, summary = _run_modeling_migration(
+        manager, tmp_path, monkeypatch, _PROJECTS_TABLE, _INSERT_PROJECT, _MIGRATION_PROJECTS,
+    )
+
+    # 用户建模项目、用户导入的知识包、其他系统的关联项目照常迁移，名称像评测的用户项目不误伤
+    assert migrated == ["pj_lookalike", "pj_notes", "pj_other_client", "pj_user"]
+    assert summary == {"schemaVersion": "core-project-migration/v1", "sourceProjects": 7,
+                       "migrated": 4, "skipped": 3, "excluded": 3}
+    output = capsys.readouterr().out
+    assert "跳过 pj_eval（onto-eval-task-1a2b3c4d）：Onto 数据评测导入的项目，无需迁移" in output
+    assert "跳过 pj_eval_retry（onto-eval-project-alpha-5e6f7a8b-1792370497）：Onto 数据评测导入的项目" in output
+    assert "跳过 pj_mirror（project_beta）：Onto 项目在 modeling 侧的关联项目，无需迁回" in output
+
+    # 重跑：已迁移的计入 skipped，不迁移的仍单独计数，总数与源库一致
+    migrated, summary = _run_modeling_migration(
+        manager, tmp_path, monkeypatch, _PROJECTS_TABLE, _INSERT_PROJECT, _MIGRATION_PROJECTS,
+    )
+    assert len(migrated) == 4
+    assert summary == {"schemaVersion": "core-project-migration/v1", "sourceProjects": 7,
+                       "migrated": 0, "skipped": 7, "excluded": 3}
+
+
+def test_migrate_from_modeling_single_project_counts_only_that_project(
+    manager: WorkspaceManager, tmp_path: Path, monkeypatch, capsys
+):
+    migrated, summary = _run_modeling_migration(
+        manager, tmp_path, monkeypatch, _PROJECTS_TABLE, _INSERT_PROJECT, _MIGRATION_PROJECTS,
+        "--project", "pj_user",
+    )
+
+    assert migrated == ["pj_user"]
+    assert summary == {"schemaVersion": "core-project-migration/v1", "sourceProjects": 1,
+                       "migrated": 1, "skipped": 0, "excluded": 0}
+    assert "跳过 pj_" not in capsys.readouterr().out
+
+
+def test_migrate_from_modeling_legacy_database_skips_evaluation_by_name(
+    manager: WorkspaceManager, tmp_path: Path, monkeypatch
+):
+    rows = [("pj_user", "project_alpha"), ("pj_eval", "onto-eval-task-1a2b3c4d"),
+            ("pj_notes", "onto-evaluation-notes")]
+    migrated, summary = _run_modeling_migration(
+        manager, tmp_path, monkeypatch, _LEGACY_PROJECTS_TABLE, _INSERT_LEGACY_PROJECT, rows,
+    )
+
+    assert migrated == ["pj_notes", "pj_user"]
+    assert summary == {"schemaVersion": "core-project-migration/v1", "sourceProjects": 3,
+                       "migrated": 2, "skipped": 1, "excluded": 1}
 
 
 def test_cce_migration_stages_wal_and_reports_counts(tmp_path: Path, monkeypatch, capsys):

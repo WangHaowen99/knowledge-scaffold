@@ -105,7 +105,7 @@ _DECIMAL = re.compile(r'^-?\d+\.\d+$|^-?\d+(?:\.\d+)?[eE][+-]?\d+$')
 _BOOLEAN_WORDS = {'true': 'true', 'false': 'false', '是': 'true', '否': 'false', 'yes': 'true', 'no': 'false'}
 _BOOLEAN_SHORT = frozenset({'t', 'f', 'y', 'n'})
 _DATE_TEXT = re.compile(r'^\d{4}\s*[-/.年]\s*\d{1,2}(?!\d)|^\d{1,2}[:：]\d{2}(?:[:：]\d{2})?$')
-# 与 modeling parseExcel 的注释行判定同一口径
+# 注释行判定：纯数字与含汉字的单元格
 _NOTE_NUMERIC = re.compile(r'^-?\d+(\.\d+)?$')
 _NOTE_CJK = re.compile(r'[一-龥]')
 
@@ -239,7 +239,7 @@ def _raw_length(row) -> int:
 
 
 def is_note_row(header: list, second, third) -> bool:
-    """表头下一行是否注释行：与 modeling parseExcel 同一判定，命中的行不算数据。"""
+    """表头下一行是否注释行：命中的行不算数据。"""
     if _raw_length(second) != len(header):
         return False
     texts = ['' if v is None else str(v).strip() for v in list(second)[:len(header)]]

@@ -2,8 +2,8 @@
 
 consumer 选 operation 时逐行比对 operations/index.md 的「输出」列，并优先选输出覆盖完整结论的
 主操作（consumer/backend/agent/prompts/universal.py）；它按 frontmatter 的 uses.operations
-识别主操作与子操作，没有自己脚本的子操作借用主操作的脚本跑完整流程。表头沿用 modeling 知识包
-契约（operation key / 标题 / 输入 / 输出），不能加列。
+识别主操作与子操作，没有自己脚本的子操作借用主操作的脚本跑完整流程。表头为
+operation key / 标题 / 输入 / 输出，不能加列。
 """
 
 from __future__ import annotations

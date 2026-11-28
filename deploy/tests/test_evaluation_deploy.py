@@ -271,6 +271,8 @@ def evaluation_service():
             'STUB_NETWORK': 'synthetic-network',
             'EVAL_AUTH_URL': 'https://auth.example.com',
             'EVAL_AUTH_ISSUER': 'https://auth.example.com',
+            'EVAL_FLYWHEEL_SERVICE_TOKEN': 'synthetic-feedback-credential-not-for-use',
+            'EVAL_MODELING_SERVICE_TOKEN': 'synthetic-notification-credential-not-for-use',
         }
         yield root, deploy_dir, env
 
@@ -334,7 +336,8 @@ class EvaluationServiceDeployTests(unittest.TestCase):
 
     def test_missing_modeling_notification_token_only_warns(self):
         with evaluation_service() as (root, deploy_dir, env):
-            env.update(CONSUMER_NETWORK='synthetic-network')
+            env.pop('EVAL_MODELING_SERVICE_TOKEN')
+            env.update(CONSUMER_NETWORK='synthetic-network', EVAL_NOTIFY_FEEDBACK_RUNS='false')
             result = run_service(deploy_dir, env)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('EVAL_MODELING_SERVICE_TOKEN is empty', result.stderr)
@@ -359,7 +362,7 @@ class EvaluationServiceDeployTests(unittest.TestCase):
             self.assertEqual(compose_calls(root), [])
             self.assertNotIn('EVAL_ENCRYPTION_KEY', (deploy_dir / '.env').read_text())
 
-    def test_external_configuration_is_used_unchanged(self):
+    def test_external_configuration_only_adds_feedback_settings(self):
         with evaluation_service() as (root, deploy_dir, env):
             external = root / 'protected.config'
             content = 'EVAL_HUB_SERVICE_TOKEN=synthetic-invalid-placeholder-0000\n'
@@ -367,7 +370,13 @@ class EvaluationServiceDeployTests(unittest.TestCase):
             env['EVAL_ENV_FILE'] = str(external)
             result = run_service(deploy_dir, env)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(external.read_text(), content + 'CONSUMER_NETWORK=synthetic-network\n')
+            values = dict(line.split('=', 1) for line in external.read_text().splitlines())
+            self.assertEqual(values['EVAL_HUB_SERVICE_TOKEN'], 'synthetic-invalid-placeholder-0000')
+            self.assertEqual(values['CONSUMER_NETWORK'], 'synthetic-network')
+            self.assertEqual(values['EVAL_FEEDBACK_ENABLED'], 'true')
+            self.assertEqual(values['EVAL_NOTIFY_FEEDBACK_RUNS'], 'true')
+            self.assertNotIn('EVAL_AUTH_URL', values)
+            self.assertNotIn('EVAL_AUTH_ISSUER', values)
             self.assertFalse((deploy_dir / '.env').exists())
             self.assertEqual(lines(root / 'compose-snapshot.txt')[0], f'ENV_FILE={external}')
             self.assertIn('ISSUER=https://auth.example.com', lines(root / 'compose-snapshot.txt'))

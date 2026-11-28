@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """jiuwenbox 沙箱客户端，以及在沙箱里运行 ontology/scripts 脚本的执行器。
 
-协议与 consumer（consumer/backend/integration/sandbox/client.py）、modeling 工作台
-（modeling/src/agent/sandbox.ts）一致：经 jiuwenbox 管理 socket 走 HTTP + JSON，
-建沙箱 → exec → 删沙箱。onto-modeling 的数据卷不在 jiuwenbox 容器里，所以脚本和它
-import 的同目录模块打包后随 exec 参数送进沙箱（同 modeling 工作台的做法）。
+协议与 consumer（consumer/backend/integration/sandbox/client.py）一致：经 jiuwenbox 管理
+socket 走 HTTP + JSON，建沙箱 → exec → 删沙箱。onto-modeling 的数据卷不在 jiuwenbox 容器里，
+所以脚本和它 import 的同目录模块打包后随 exec 参数送进沙箱。
 
 管理 socket 能决定沙箱怎么建（挂哪些目录、能否出网），只交给不跑 agent 的脚本验证网关容器
 （backend/app/sandbox_gateway.py）：网关用本模块的 run_bundle / probe 按写死的策略直连 jiuwenbox。
@@ -57,7 +56,7 @@ _BLOCKED_SYSCALLS = [
     "name_to_handle_at", "init_module", "finit_module", "delete_module", "acct",
 ]
 # 云厂商实例元数据地址：出网已默认全拒，这里再显式屏蔽，与 consumer（integration/sandbox/
-# policy_builder.py）和 modeling 工作台（src/agent/sandbox.ts）的沙箱策略一致。是屏蔽名单，不是连接目标。
+# policy_builder.py）的沙箱策略一致。是屏蔽名单，不是连接目标。
 _BLOCKED_METADATA_IPS = ("169.254.169.254/32",)  # NOSONAR(S1313)
 # 脚本执行环境与 consumer 在沙箱里执行脚本时一致（consumer/backend/integration/sandbox/
 # env_allowlist.py、executor.py：`/usr/bin/python3 -u <脚本> <参数>`），只是没有挂 consumer 的
@@ -218,7 +217,7 @@ def health(url: str | None = None, timeout: float = 3.0) -> None:
 
 
 def sandbox_policy() -> dict:
-    """与 modeling 工作台同一套策略：只挂系统目录、仅 /tmp 可写、出网全拒。"""
+    """只挂系统目录、仅 /tmp 可写、出网全拒。"""
     return {
         "version": 1,
         "name": "onto-modeling-script-verify",

@@ -182,17 +182,21 @@ export function NumberField({
   );
 }
 
-/** A small button that opens a list of choices. */
+/** A button that opens a list of choices. */
 export function Menu({
   label,
   icon,
   items,
   align = 'left',
+  variant = 'secondary',
+  size = 'sm',
 }: {
   label: string;
   icon?: ReactNode;
-  items: { key: string; label: string; title?: string; onSelect: () => void }[];
+  items: { key: string; label: string; title?: string; disabled?: boolean; onSelect: () => void }[];
   align?: 'left' | 'right';
+  variant?: ButtonProps['variant'];
+  size?: ButtonProps['size'];
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -203,8 +207,18 @@ export function Menu({
     return () => document.removeEventListener('mousedown', close);
   }, [open]);
   return (
-    <div className="menu" ref={ref}>
-      <Button size="sm" icon={icon} aria-expanded={open} onClick={() => setOpen(!open)}>
+    <div
+      className="menu"
+      ref={ref}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape' && open) {
+          event.stopPropagation();
+          setOpen(false);
+          ref.current?.querySelector('button')?.focus();
+        }
+      }}
+    >
+      <Button type="button" size={size} variant={variant} icon={icon} aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen(!open)}>
         {label}
         <ChevronDown size={12} className="menu-caret" />
       </Button>
@@ -213,8 +227,10 @@ export function Menu({
           {items.map((item) => (
             <button
               key={item.key}
+              type="button"
               role="menuitem"
               title={item.title}
+              disabled={item.disabled}
               className="menu-item"
               onClick={() => {
                 setOpen(false);

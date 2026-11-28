@@ -1,4 +1,4 @@
-import { rpc } from './rpc';
+import { rpc, RpcError } from './rpc';
 import type { DocumentItem } from './types';
 
 // the page's own cap; a backend behind kb-gateway may advertise its own (limits.max_upload_mb)
@@ -27,12 +27,15 @@ async function sha256Hex(file: File): Promise<string | undefined> {
 
 export type ProcessOverrides = Record<string, Record<string, unknown>>;
 
+export class UploadResultUnknown extends Error {}
+
 export async function uploadFile(
   kbId: string,
   file: File,
   onProgress: (ratio: number) => void,
   overrides?: ProcessOverrides | null,
   maxMb = MAX_FILE_MB,
+  folderPath?: string,
 ): Promise<DocumentItem> {
   if (file.size > maxMb * 1024 * 1024) throw new Error(`文件超过 ${maxMb}MB`);
   if (file.size === 0) throw new Error('文件为空');
@@ -40,6 +43,7 @@ export async function uploadFile(
   const begin = await rpc.call<{ upload_id: string; part_size: number; part_count: number }>('upload.begin', {
     kb_id: kbId,
     file_name: file.name,
+    folder_path: folderPath,
     file_size: file.size,
     sha256,
     process_overrides: overrides ?? undefined,
@@ -51,5 +55,12 @@ export async function uploadFile(
     await rpc.call('upload.part', { upload_id: begin.upload_id, index, data }, 300000);
     onProgress((index + 1) / begin.part_count);
   }
-  return rpc.call<DocumentItem>('upload.complete', { upload_id: begin.upload_id }, 300000);
+  try {
+    return await rpc.call<DocumentItem>('upload.complete', { upload_id: begin.upload_id }, 300000);
+  } catch (err) {
+    if (err instanceof RpcError && (err.code === 'disconnected' || err.code === 'timeout' || err.status === 408 || err.status >= 500)) {
+      throw new UploadResultUnknown(`结果待核对（${err.message}），请刷新文档列表后确认`);
+    }
+    throw err;
+  }
 }

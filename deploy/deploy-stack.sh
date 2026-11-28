@@ -248,7 +248,7 @@ cmd_up() {
     chmod 600 "$CONSUMER_DIR/backend/.env"
     ok "已从 .env.example 创建 consumer/backend/.env，请按报错提示补齐必填配置后重跑"
   fi
-  # consumer 的入站凭据；独立部署的 Modeling Workbench 须使用相同的值
+  # consumer 的入站服务凭据
   ensure_modeling_service_token
   ensure_evaluation_service_token
   local url token bootstrap_password

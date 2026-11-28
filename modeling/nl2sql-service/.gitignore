@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.env
+*.log
+# deploy.sh 按 NL2SQL_EXTERNAL_NETWORK 生成
+docker-compose.override.yml

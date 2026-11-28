@@ -9,11 +9,25 @@ import pytest
 from app.services import consumer_package_rules, hub_packages, package_mapping
 from app.services import publish as publish_service
 from app.services.workspace import WorkspaceManager, _git
+from app.services.consumer_package_rules.limits import LimitsConfig
+from app.services.consumer_package_rules.package_validation import validate_ontology_tree_limits
 from tests import test_solver_contract_check as solver_fixtures
 
 HEAD = '| 中文名称 | 英文名称 | 描述 | 主键 | 类型 |\n| --- | --- | --- | --- | --- |\n'
 ROW = '| 标识 | item_id | 合成字段 | 是 | 字符串 |\n'
 RULES_DIR = Path(consumer_package_rules.__file__).parent
+LIMIT_CASES = [
+    ('ontology_object_max_count', 'ONTOLOGY_OBJECT_MAX_COUNT', 1000, 200),
+    ('ontology_operation_max_count', 'ONTOLOGY_OPERATION_MAX_COUNT', 500, 100),
+    ('entity_attribute_max_count', 'ENTITY_ATTRIBUTE_MAX_COUNT', 300, 100),
+    ('operation_max_chars', 'ONTOLOGY_OPERATION_MAX_CHARS', 30000, 15000),
+]
+
+
+@pytest.fixture(autouse=True)
+def clear_limit_environment(monkeypatch):
+    for _field, variable, _default, _old_default in LIMIT_CASES:
+        monkeypatch.delenv(variable, raising=False)
 
 
 def _object(rows: str = ROW) -> str:
@@ -54,7 +68,7 @@ def _codes(findings: list[dict]) -> set[str]:
 
 
 def _many_objects(root):
-    for index in range(201):
+    for index in range(1001):
         (root / f'ontology/object/O{index}.md').write_text(_object(), encoding='utf-8')
 
 
@@ -69,10 +83,10 @@ ALIAS_TABLE = ('# 对象描述\n合成。\n\n# 对象属性清单\n| 中文名�
 REJECTED = {
     'over_object_limit': (_many_objects, 'package_limit_exceeded'),
     'over_attribute_limit': (
-        lambda r: (r / 'ontology/object/Item.md').write_text(_object(_rows(101)), encoding='utf-8'),
+        lambda r: (r / 'ontology/object/Item.md').write_text(_object(_rows(301)), encoding='utf-8'),
         'package_limit_exceeded'),
     'over_operation_size': (
-        lambda r: (r / 'ontology/operation/查询项.md').write_text('# 查询项\n\n查询[[Item]]\n' + '合成' * 7600,
+        lambda r: (r / 'ontology/operation/查询项.md').write_text('# 查询项\n\n查询[[Item]]\n' + '合成' * 15000,
                                                                 encoding='utf-8'),
         'package_limit_exceeded'),
     'duplicate_field_key': (
@@ -115,7 +129,7 @@ def test_valid_solver_packages_pass(manager, build):
 
 def test_solver_package_over_operation_limit_is_reported(manager):
     pid, root = solver_fixtures._with_contract(manager)
-    for index in range(101):
+    for index in range(501):
         (root / f'ontology/operation/合成操作{index}.md').write_text(f'# 合成操作{index}\n', encoding='utf-8')
     assert 'package_revision_invalid' in _codes(_findings(manager, pid))
 
@@ -126,6 +140,51 @@ def test_object_limit_follows_environment(manager, monkeypatch):
     assert _codes(_findings(manager, pid)) == {'package_limit_exceeded'}
     monkeypatch.setenv('ONTOLOGY_OBJECT_MAX_COUNT', 'not-a-number')
     assert _findings(manager, pid) == []
+
+
+@pytest.mark.parametrize('field,variable,default,old_default', LIMIT_CASES)
+def test_limit_defaults_and_environment(monkeypatch, field, variable, default, old_default):
+    assert getattr(LimitsConfig.from_env(), field) == default
+    for configured, expected in [('invalid', default), (str(old_default), old_default),
+                                 (str(default + 1), default + 1), ('0', 1), ('-1', 1)]:
+        monkeypatch.setenv(variable, configured)
+        assert getattr(LimitsConfig.from_env(), field) == expected
+
+
+@pytest.mark.parametrize('field,variable,default,old_default', LIMIT_CASES)
+@pytest.mark.parametrize('boundary', ['above_old', 'at_default', 'above_default'])
+def test_package_limit_boundaries(tmp_path, field, variable, default, old_default, boundary):
+    count = {'above_old': old_default + 1, 'at_default': default, 'above_default': default + 1}[boundary]
+    objects = tmp_path / 'objects'
+    operations = tmp_path / 'operations'
+    objects.mkdir()
+    operations.mkdir()
+    if field in ('ontology_object_max_count', 'ontology_operation_max_count'):
+        directory = objects if field == 'ontology_object_max_count' else operations
+        for index in range(count):
+            (directory / f'Item{index}.md').write_text('# Synthetic\n', encoding='utf-8')
+    elif field == 'entity_attribute_max_count':
+        (objects / 'Item.md').write_text(_object(_rows(count)), encoding='utf-8')
+    else:
+        (operations / 'Operation.md').write_text('示' * count, encoding='utf-8')
+    error = validate_ontology_tree_limits(tmp_path)
+    assert bool(error) == (boundary == 'above_default')
+
+
+def test_wide_object_publish_checks_follow_environment(manager, monkeypatch, tmp_path):
+    pid = _plain(manager, lambda root: (root / 'ontology/object/Item.md').write_text(
+        _object(_rows(116)), encoding='utf-8'))
+    root = manager.project_root(pid)
+    binding = package_mapping.resolve_object_tables(root, strict_declared=False)
+    folder = tmp_path / 'publication'
+    value, _digest = hub_packages.freeze(manager, pid, folder, True, binding=binding)
+    assert manager.package_binding_check(pid)['structure']['blocking'] == 0
+    hub_packages.ensure_importable(manager, pid, folder, value, True, False)
+    monkeypatch.setenv('ENTITY_ATTRIBUTE_MAX_COUNT', '100')
+    assert 'package_limit_exceeded' in _codes(manager.package_binding_check(pid)['structure']['findings'])
+    with pytest.raises(hub_packages.WorkspaceError, match='116 / 100') as caught:
+        hub_packages.ensure_importable(manager, pid, folder, value, True, False)
+    assert caught.value.code == 'package_structure_invalid'
 
 
 # ---- 求解布局：篡改合法导出包，确认副本的布局规则生效 ----

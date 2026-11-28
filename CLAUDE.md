@@ -167,7 +167,7 @@ Follow these general standards until language-specific rules are added:
 - Do not add comments for obvious code.
 - Add comments only for non-obvious decisions, constraints, or tradeoffs.
 - Keep public APIs stable once introduced.
-- Agent tool results must return conclusions, evidence anchors, and retrieval handles instead of raw bulk content. When adding or changing an agent tool, state its worst-case result size, cap it, and page or reference persisted data for anything larger. Do not inline content that already has a durable source of truth; return an anchor or ID instead. See `modeling/docs/decisions/instruction-lifetime-and-context-tier-governance.md`.
+- Agent tool results must return conclusions, evidence anchors, and retrieval handles instead of raw bulk content. When adding or changing an agent tool, state its worst-case result size, cap it, and page or reference persisted data for anything larger. Do not inline content that already has a durable source of truth; return an anchor or ID instead.
 
 When a language or framework is selected, update this section with specific conventions.
 
@@ -210,9 +210,8 @@ Current commands for the consumer application:
 - Check the frontend entry dependency baseline: `cd consumer/frontend && npm run check:entry`
 - Run full-stack Docker Compose: `cd consumer && docker compose up --build`
 - Build full release package: `./deploy/build.sh <version> [amd|arm]`; it also keeps the standalone Consumer, Onto Modeling, Knowledge Hub and evaluation packages under each area's `dist/` for the separated installers.
-- Deploy Consumer, Knowledge Hub, Onto Modeling and evaluation from source or an extracted release package (Modeling Workbench is built and deployed separately through `modeling/`): `./deploy/deploy.sh`
+- Deploy Consumer, Knowledge Hub, Onto Modeling and evaluation from source or an extracted release package: `./deploy/deploy.sh`
 - Build consumer-only release package: `cd consumer && ./build.sh <version> [amd|arm]`
-- Build modeling-only release package: `cd modeling && ./build.sh <version> [amd|arm]`
 
 Commands for the Onto Modeling application (`modeling/onto-modeling/`):
 
@@ -225,6 +224,12 @@ Commands for the Onto Modeling application (`modeling/onto-modeling/`):
 - Build onto-modeling frontend: `cd modeling/onto-modeling/frontend && npm run build`
 - Build onto-modeling release package: `cd modeling/onto-modeling && ./build.sh <version> [amd|arm]`
 - Run onto-modeling full stack from source: `cd modeling/onto-modeling && docker compose up --build`
+
+Commands for the NL2SQL service and evaluation MySQL (`modeling/nl2sql-service/`, deployed on its own and not part of `deploy/`):
+
+- Install dependencies: `cd modeling/nl2sql-service && npm install`
+- Run checks: `cd modeling/nl2sql-service && npm run typecheck && npm test && npm run build`
+- Deploy NL2SQL and MySQL with Docker Compose: `bash modeling/nl2sql-service/deploy.sh`
 
 Commands for kb-suite (`kb-suite/`, Python 3.11+):
 

@@ -517,7 +517,7 @@ LEGACY_EVALUATOR = (
 def test_solver_evaluator_ships_source_without_script_descriptor(
     manager: WorkspaceManager, tmp_path: Path, evaluator: str
 ):
-    # modeling 把每个脚本描述符都当 operation 实现校验，评估器带描述符会让整包被拒
+    # 描述符表示对外调用的 operation 脚本：评估器只带源码，不带描述符
     meta = manager.create_project("评估器任务")
     root = manager.project_root(meta["id"])
     scripts = root / "ontology" / "scripts"

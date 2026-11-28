@@ -98,9 +98,8 @@ services:
     restart: unless-stopped
 
   swarm:
-    # 默认用 develop 构建的 Swarm（./kbsuite.sh build-swarm-dev）；回到发布版：
-    #   SWARM_TAG=0.2.7 SWARM_HOME_SUFFIX= ./kbsuite.sh up
-    image: kb-suite/swarm:${SWARM_TAG:-dev}
+    # 开发版使用 SWARM_TAG=dev SWARM_HOME_SUFFIX=-dev。
+    image: kb-suite/swarm:${SWARM_TAG:-0.2.8}
     env_file:
       - ${KBS_SECRETS_DIR}/secrets.env
       - ${KBS_SECRETS_DIR}/keys.env
@@ -523,4 +522,4 @@ volumes:
     # 两个版本的工作区分开放，互不迁移
     # follows the compose project name however it was given (-p, KBS_PROJECT), so a second
     # stack never mounts another stack's workspace
-    name: ${COMPOSE_PROJECT_NAME}_swarm-home${SWARM_HOME_SUFFIX--dev}
+    name: ${COMPOSE_PROJECT_NAME}_swarm-home${SWARM_HOME_SUFFIX-}

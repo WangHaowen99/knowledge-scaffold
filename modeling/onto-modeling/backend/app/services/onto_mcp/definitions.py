@@ -1,4 +1,4 @@
-"""Public tool contract compatible with Modeling; persistence belongs to Onto."""
+"""Public MCP tool contract; persistence belongs to Onto."""
 from .errors import McpError
 
 SCOPES = (

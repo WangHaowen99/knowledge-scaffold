@@ -183,7 +183,7 @@ def test_fragment_binding_is_parsed_but_kept_apart():
     assert script_contract.parse_script('"""\n关联operation：无（公共模块）\n"""\n').bound == ""
 
 
-# ---- 描述符渲染：对齐 modeling scriptMd 与 consumer 读法 ----
+# ---- 描述符渲染：对齐 consumer 读法 ----
 
 
 def test_render_descriptor_matches_consumer_contract():

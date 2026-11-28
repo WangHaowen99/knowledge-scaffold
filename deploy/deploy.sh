@@ -101,7 +101,7 @@ consumer_container() {
     docker ps --format '{{.Names}}' | grep -E '^onto-agent-backend($|-)|^backend$' | head -n 1 || true
 }
 
-# 与 modeling/deploy/deploy.sh 同策略：显式覆盖 > 运行中 consumer 容器的实际
+# 探测顺序：显式覆盖 > 运行中 consumer 容器的实际
 # 网络 > 命名规律兜底。compose 项目名不同则网络名不同（onto-agent_default 即
 # 一例），只按 'onto-agent-network$' 匹配会漏。探测不到返回空、由调用方报错——
 # 不能猜名字，猜错会让 compose 以 declared as external, but could not be found 失败。
@@ -174,7 +174,7 @@ write_onto_modeling_stack_override() { # <onto-modeling 目录>
     fi
     cat > "${dir}/docker-compose.stack.yml" <<EOF2
 # 由 deploy.sh 生成（整栈部署形态，勿手改；单独部署 onto-modeling 时删除即可）：
-# 停用源码 Compose 的本地 Auth，共享 Consumer 当前 Auth；接入 Consumer 网络（独立部署的知识包 Hub、评测服务也在此网络）；
+# 停用源码 Compose 的本地 Auth，共享 Consumer 当前 Auth；接入 Consumer 网络；
 # 把 consumer 的 jiuwenbox socket 只读挂给脚本验证网关。
 services:
   auth-server:

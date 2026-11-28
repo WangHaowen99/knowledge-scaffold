@@ -5,10 +5,9 @@ import './legacy/studio-tokens.css';
 import './legacy/studio-base.css';
 import './legacy/studio.css';
 
-/** 原版 modeling Studio 图的宿主适配层（方案 7.1"整体搬迁"）。
+/** Studio 图的宿主适配层（方案 7.1"整体搬迁"）。
  *
- * 组件、样式、WebGL 力导运行时与 token 全部原样搬自
- * modeling/frontend/src/workbench/studio/，本层只做三件事：
+ * 组件、样式、WebGL 力导运行时与 token 在 studio/legacy/ 下，本层只做三件事：
  * 1. 数据映射：ST-02 关系图 → 原版契约（边的样式取 relation，「提及」统一按 references 画）；
  * 2. 受控：搜索词、规则链 / 指标链高亮、选中节点由页面传入，页面自己的工具条、图例、侧栏代替原版的；
  * 3. 回调：单击节点 onSelect(id)，双击 onOpen(id)。
@@ -66,7 +65,7 @@ export default function LegacyStudioGraphHost({ graph, query, highlight = 'all',
   const open = useCallback((elementId) => onOpen?.(elementId), [onOpen]);
 
   return (
-    // wb = modeling 工作台的样式作用域根类：原版 studio.css 与 tokens 全部以 .wb 前缀限定
+    // wb = Studio 图的样式作用域根类：studio.css 与 tokens 全部以 .wb 前缀限定
     <div className="legacy-studio-host wb">
       <StudioGraph session={session} update={update} onOpen={open} focus={null} />
     </div>

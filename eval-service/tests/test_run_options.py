@@ -1,6 +1,7 @@
 """Run concurrency, answering model choice and graph workspace binding; all data is synthetic."""
 import threading
 import time
+import pytest
 
 from evaluation.core import Failure
 from test_evaluation import consumer_data_source, environment, preparation, wait
@@ -105,6 +106,20 @@ def test_selected_personal_model_answers_every_case_and_must_stay_enabled(enviro
                      model_profile_id=PERSONAL_MODEL['id'])
     result = wait(client, response.json()['id'])
     assert result['status'] == 'interrupted' and result['error']['code'] == 'model_unavailable'
+
+
+@pytest.mark.parametrize('status', [401, 403, 409])
+def test_model_choices_preserve_auth_and_business_errors(environment, status):
+    client, app, deps, cfg = environment
+
+    def rejected(method, path, kwargs):
+        if path == '/agentic/workspaces':
+            raise Failure('dependency_rejected', 'Synthetic rejection', status, 'dependency')
+
+    wrap(deps, rejected)
+    response = client.get('/evaluation/api/consumer-models')
+    assert response.status_code == status
+    assert 'available' not in response.json()
 
 
 def test_model_choices_list_the_enabled_global_and_personal_pools(environment):

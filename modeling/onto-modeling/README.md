@@ -562,8 +562,8 @@ Hub 的包与版本标识，版本页按它标出发布。旧项目已有同号�
 - **发布前结构自检**：发布检查和提交 Hub 前，按正式发布的参数导出知识包，用 consumer 的导入规则检查
   （规则副本在 `backend/app/services/consumer_package_rules/`，来源与同步步骤见其中的 `PROVENANCE.md`）。
   consumer 会拒绝的包列在发布检查的「知识包结构」一栏，不能降级发布。consumer 调整了数量上限时，在本服务
-  设同名变量：`ONTOLOGY_OBJECT_MAX_COUNT`（默认 200）、`ONTOLOGY_OPERATION_MAX_COUNT`（100）、
-  `ENTITY_ATTRIBUTE_MAX_COUNT`（100）、`ONTOLOGY_OPERATION_MAX_CHARS`（15000）。consumer 把 `objects/index.md` 目录也当一个
+  设同名变量：`ONTOLOGY_OBJECT_MAX_COUNT`（默认 1000）、`ONTOLOGY_OPERATION_MAX_COUNT`（500）、
+  `ENTITY_ATTRIBUTE_MAX_COUNT`（300）、`ONTOLOGY_OPERATION_MAX_CHARS`（30000）。consumer 把 `objects/index.md` 目录也当一个
   实体数属性，对象数实际不能超过 `ENTITY_ATTRIBUTE_MAX_COUNT`。
 - **求解验证**：迁到评测服务，发布只受求解契约静态检查与结构自检约束。当前求解契约修订没有通过的求解验证时，
   发布要确认「求解能力尚未经端到端验证」（MCP 发布带 `solver_unverified_acknowledged: true`），否则返回 409。
@@ -669,7 +669,7 @@ Linux 全量用装了它的测试镜像。
 Consumer → Hub → Onto Modeling → 评测：仓库根 `deploy/build.sh` 产出含四者的完整离线包，`deploy/deploy.sh`
 部署（源码树或解压后的发布包均可）；`--onto-modeling-only` 只部署本服务，不碰 Hub 和评测。分离安装脚本的
 `--consumer-package`、`--onto-modeling-package`、`--knowledge-hub-package`、`--evaluation-package` 四项必填。
-见仓库根 `deploy/README.md`。
+安装入口须与发布包版本一致，见仓库根 `deploy/README.md`。
 
 ```bash
 ./build.sh <version> [amd|arm]     # 产出 dist/onto-modeling-<version>-linux-<arch>.tar.gz
@@ -693,7 +693,7 @@ docker compose up --build          # 本地从源码起本服务（onto-modeling
   索引不可达时兜底；宿主 Python 更低时环境标记无法按 3.11 求值、供应不完整，脚本跳过这一步，
   避免大包在宿主和镜像内各下一遍；
 - 运行镜像基于 `python:3.11-slim`、前端构建用 `node:22-slim`，与 auth-server /
-  consumer / modeling 同基础镜像，复用已拉取的层；
+  consumer 同基础镜像，复用已拉取的层；
 - npm 与 pip 均挂 BuildKit 缓存，同机重复构建不再重新下载。
 
 目标机部署流程与容量规划（含 AVX 预检、降级兼容包）见 `deploy/README.md`。
@@ -708,8 +708,7 @@ docker compose up --build          # 本地从源码起本服务（onto-modeling
 ## 项目级本地 MCP
 
 在项目设置的 MCP 页面创建 Token 并复制 Read / Change 地址。MCP 直接读写当前
-Onto 工作区，新建、导入和克隆项目无需创建 Modeling 关联。旧 Modeling MCP
-地址及 Token 不会自动迁移，请为本地端点重新创建 Token。
+Onto 工作区，新建、导入和克隆项目无需额外关联。
 
 - HTTP：`/api/v1/onto-mcp/{project_id}/{read|change}/mcp`。
 - SSE：`/api/v1/onto-mcp/{project_id}/{read|change}/sse`。
@@ -738,6 +737,28 @@ Onto 工作区，新建、导入和克隆项目无需创建 Modeling 关联。�
   芯片置灰，锚点失效时提示并显示开头；原文上方有「返回 <文档名>」。PDF 和图片在平台内打开，其他格式给下载入口。
 - `research_checker.py` 同时核对出处：文件不存在、锚点找不到、省略文件路径都不放行。
 - 发布包里规则正文原样带出，consumer 按 Markdown 显示这一节，不提供跳转。
+
+## 对象关系的身份与重复检查
+
+关系身份是规范化后的“源对象、关系名、目标对象、源关联字段、目标关联字段”。源对象和目标
+对象的文件各声明一次是同一关系的两端描述，合并为一条；同一文件里再次声明身份相同的关系
+才算重复，拒绝导出，并同时提示首次声明和重复声明的源文件及行号。同一对对象允许存在同名
+但关联字段不同的关系。箭头括注和标准表会解析为相同的字段对；未写字段按空字段对比较，
+不从其他声明补猜。知识包导出和发布前结构检查使用同一规则。
+
+允许自关联；自关联的重复声明同样按上述完整身份检查。图模式有明确字段时按字段值
+建立关联，未写字段时沿用同表同一行的关联语义。
+
+Studio 图接口 `GET /api/projects/{pid}/studio/graph` 中对象之间的关系与导出用同一套身份：源对象、
+关系名、目标对象和两端关联字段都相同才算同一条。两端重复声明只画一条；名称或关联字段不同的关系
+各画一条，同一对对象的同名关系在边标签里注明字段，如 `上级仓区（parent_area_id → area_id）`。
+同一对节点之间的多条关系画成分开的弧线。对象类型自关联（如仓区的上级仍是仓区）同样返回，画成节点
+上方带箭头的环线，多条环线由内到外嵌套。导出不认的声明（如关联字段不在属性清单里、旧产物
+「# 文档名 + ## 关联对象」里的写法）退回逐行扫描：同方向已有正式关系时不再显示，否则显示一条；
+自关联不走这条退路。正文里提到对象自己、操作调用自己等自引用不成边。
+
+正常关系会在导出、导入后保留；存量关系名称包含端点名称或基数时仍可导出。
+实现和验证范围见 [issue #367 修复记录](../../docs/issue-367-regression-review.md)。
 
 ## Studio 图谱的对象关系
 

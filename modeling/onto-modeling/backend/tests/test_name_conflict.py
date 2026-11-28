@@ -15,7 +15,6 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from app import config
 from app.main import app
 from app.api import deps
 from app.routers import projects
