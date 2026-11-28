@@ -114,7 +114,10 @@ def _commit_all(root: Path, message: str = "agent: 生成") -> None:
 # ---- 扩展项注册表与左栏 ----
 
 
-def test_extensions_nav_lists_kernel_pages_then_enabled_plugin_pages(env):
+def test_extensions_nav_lists_kernel_pages_then_enabled_plugin_pages(env, monkeypatch):
+    from app.services.packs import service as pack_service
+
+    monkeypatch.setattr(pack_service, "_assistant_idle", lambda project_id: False)  # 助手在跑：能力包待生效
     client, _, project_id = env
     before = client.get(f"/api/v1/projects/{project_id}/extensions").json()
     assert [item["id"] for item in before["nav"]] == ["wb-l2", "studio", "resources", "publish"]
@@ -163,6 +166,7 @@ def test_disabling_page_pack_hides_page_and_keeps_artifacts(env):
     root = manager.project_root(project_id)
     assert (root / "ext/checklist/items/shelf-limit.md").is_file()
 
+    sent = len(buffered(project_id, "extensions.updated"))
     assert client.post(f"/api/v1/projects/{project_id}/packs/checklist/disable").status_code == 200
     view = client.get(f"/api/v1/projects/{project_id}/extensions").json()
     assert [item["id"] for item in view["nav"]] == ["wb-l2", "studio", "resources", "publish"]
@@ -173,7 +177,8 @@ def test_disabling_page_pack_hides_page_and_keeps_artifacts(env):
     assert (root / "ext/checklist/items/shelf-limit.md").is_file()
     gone = client.get(f"/api/v1/projects/{project_id}/artifacts/checklist.item")
     assert gone.status_code == 404 and gone.json()["code"] == "artifact_type_unknown"
-    assert "nav" in buffered(project_id, "extensions.updated")[-1]["data"]["changed"]
+    # 空闲时当场生效：锁文件提交那条带变化，随后切换那条和新基准比为空，前端收到哪条都整份重拉
+    assert any("nav" in event["data"]["changed"] for event in buffered(project_id, "extensions.updated")[sent:])
 
     # 重新启用：页面回来，已有产物照常列出
     assert client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "checklist"}).status_code == 201
