@@ -294,10 +294,11 @@ export function revertBlockedText(preview) {
 
 // 版本右侧 ⋯ 的菜单（标记、回退在行内按钮上）
 // 时间线一行的 ⋯：查看文件、标记、回退（当前版本不能回退到自己，回退前会预览确认）
+// 没有写权限（can_tag=false，develop 只读评审）时不给标记入口
 export function versionMenu(v) {
   return [
     { key: 'files', label: '查看这一版的全部文件', icon: 'eye' },
-    { key: 'tag', label: '标记', icon: 'tag' },
+    ...(v.can_tag === false ? [] : [{ key: 'tag', label: '标记', icon: 'tag' }]),
     '-',
     {
       key: 'revert', label: '回退到这一版', icon: 'undo', disabled: !!v.current || v.can_revert === false,

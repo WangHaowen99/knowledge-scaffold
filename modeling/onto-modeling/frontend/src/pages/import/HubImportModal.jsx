@@ -11,6 +11,15 @@ import { Button, Inp, Modal, Note, Radio } from '../../ui/index.jsx';
 const PAGE = 20;
 const EMPTY = { items: [], total: 0 };
 
+// 版本的创建时间（develop !659）：年-月-日 时:分，取不到显示 —
+export function formatCreatedAt(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  const pad = (part) => String(part).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 function Pager({ page, total, onPage }) {
   const pages = Math.max(1, Math.ceil(total / PAGE));
   if (pages <= 1) return null;
@@ -37,7 +46,10 @@ function PickTable({ cols, rows, rowKey, selected, onPick, loading }) {
             return (
               <tr key={row[rowKey]} onClick={() => onPick(row)} style={{ cursor: 'pointer' }}>
                 <td><Radio on={on} onChange={() => onPick(row)} /></td>
-                {cols.map((c) => <td key={c.title} className="ell" style={{ maxWidth: 0 }} title={String(row[c.key] ?? '')}>{row[c.key]}</td>)}
+                {cols.map((c) => {
+                  const text = c.render ? c.render(row[c.key]) : row[c.key];
+                  return <td key={c.title} className="ell" style={{ maxWidth: 0 }} title={String(text ?? '')}>{text}</td>;
+                })}
               </tr>
             );
           })}
@@ -123,7 +135,7 @@ export default function HubImportModal({ open, onClose, onImported }) {
         </Note>
       ) : null}
       <PickTable
-        cols={[{ title: '知识包名称', key: 'name', w: '33%' }, { title: '版本', key: 'version', w: '17%' }, { title: '知识包 ID', key: 'ontology_id', w: '50%' }]}
+        cols={[{ title: '知识包名称', key: 'name', w: '33%' }, { title: '最新版本', key: 'version', w: '17%' }, { title: '知识包 ID', key: 'ontology_id', w: '50%' }]}
         rows={packages.items || []} rowKey="ontology_id" selected={selected} loading={loading}
         onPick={(row) => { setSelected(row); setVersionPage(1); setName(''); }}
       />
@@ -131,7 +143,7 @@ export default function HubImportModal({ open, onClose, onImported }) {
       {selected ? (
         <div className="mt12">
           <PickTable
-            cols={[{ title: '版本', key: 'version' }, { title: '来源', key: 'source_service' }, { title: '摘要', key: 'package_digest' }]}
+            cols={[{ title: '版本', key: 'version' }, { title: '来源', key: 'source_service' }, { title: '创建时间', key: 'created_at', render: formatCreatedAt }]}
             rows={versions.items || []} rowKey="release_id" selected={release} onPick={setRelease}
           />
           <Pager page={versionPage} total={versions.total || 0} onPage={setVersionPage} />

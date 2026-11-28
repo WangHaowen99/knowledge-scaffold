@@ -130,6 +130,8 @@ test('⋯ 菜单放查看文件、标记、回退（当前版本不能回退）�
   assert.equal(menu.find((x) => x.key === 'revert').disabled, true);
   assert.equal(versionMenu({ current: false }).find((x) => x.key === 'revert').disabled, false);
   assert.equal(versionMenu({ current: false, can_revert: false }).find((x) => x.key === 'revert').disabled, true);
+  // develop !647：没有写权限（can_tag=false）时不给标记入口
+  assert.deepEqual(versionMenu({ current: false, can_tag: false }).map((x) => (x === '-' ? x : x.key)), ['files', '-', 'revert']);
   const lock = { state: 'pending_confirm', entries: [{ kind: 'object', id: 'object:display_qty_std', key: 'display_qty_std', name: '陈列量标准' }], artifacts: [], paths: ['ext/trace/scenarios/**'] };
   assert.equal(pathLocked(lock, 'ontology/object/陈列量标准.md'), true);
   assert.equal(pathLocked(lock, 'ext/trace/scenarios/s-01.yaml'), true);

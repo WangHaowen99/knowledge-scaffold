@@ -2,6 +2,7 @@
 // 不依赖 randomUUID；浏览 Hub 包不带项目身份。包身份、名称全部为合成数据。
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { createApi } from '../src/api/endpoints.js';
 import { ApiError } from '../src/api/errors.js';
@@ -86,4 +87,12 @@ describe('知识包 Hub 接口', () => {
     await api.hubPackageReleases('package_demo', 40);
     assert.deepEqual(calls, [['/hub/packages', { offset: 20, limit: 20 }], ['/hub/packages/package_demo/releases', { offset: 40, limit: 20 }]]);
   });
+});
+
+// develop !659：包列表的版本列叫「最新版本」，版本列表用「创建时间」代替「摘要」
+test('导入已发布知识包的列表列名与 develop 一致', () => {
+  const source = readFileSync(new URL('../src/pages/import/HubImportModal.jsx', import.meta.url), 'utf8');
+  assert.match(source, /title: '最新版本', key: 'version'/);
+  assert.match(source, /title: '创建时间', key: 'created_at', render: formatCreatedAt/);
+  assert.doesNotMatch(source, /title: '摘要'/);
 });

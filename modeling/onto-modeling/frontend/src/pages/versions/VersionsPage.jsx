@@ -93,7 +93,7 @@ function HistoryRow({ v, on, onSelect, onMenu, onDelTag, reverting, downloading,
             {tags.map((t) => (
               <span key={t.name} className="mr-tagc">
                 <Icon name="tag" size={12} />{t.label}
-                <button type="button" title="删除标记" onClick={(e) => { e.stopPropagation(); onDelTag(t); }}><Icon name="x" size={12} /></button>
+                {v.can_tag === false ? null : <button type="button" title="删除标记" onClick={(e) => { e.stopPropagation(); onDelTag(t); }}><Icon name="x" size={12} /></button>}
               </span>
             ))}
           </div>
@@ -125,7 +125,7 @@ function VersionDetail({ v, detail, current, note, reverting, onPick, onFiles, o
           <div className="xs muted mt4">{[versionSub(v), v.author].filter(Boolean).join(' · ')}</div>
         </div>
         <div className="row g6" style={{ flex: 'none' }}>
-          <Button size="sm" kind="ghost" icon="tag" onClick={() => onTag(v)}>标记</Button>
+          {v.can_tag === false ? null : <Button size="sm" kind="ghost" icon="tag" onClick={() => onTag(v)}>标记</Button>}
           <Button size="sm" kind="ghost" icon="eye" onClick={() => onFiles(v)}>全部文件</Button>
           {!v.current && v.can_revert !== false ? (
             <Button size="sm" icon="undo" disabled={!!reverting} onClick={() => onRevert(v)}>{reverting === v.commit ? '回退中…' : '回退到这一版'}</Button>
