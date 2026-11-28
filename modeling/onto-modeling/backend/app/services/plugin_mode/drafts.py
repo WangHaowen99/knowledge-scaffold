@@ -14,6 +14,7 @@ import collections
 import difflib
 import hashlib
 import io
+import json
 import re
 import subprocess
 import tarfile
@@ -113,6 +114,31 @@ def _entries(root: Path, name: str) -> list[dict]:
     return sorted(entries, key=lambda entry: entry["path"])
 
 
+def _field(value) -> str | None:
+    return str(value) if isinstance(value, (str, int, float)) and str(value).strip() else None
+
+
+def raw_manifest(directory: Path) -> dict:
+    """清单原样读出的映射（不校验）：清单写坏时界面仍按读得出的名称、版本显示；读不出时为空。"""
+    try:
+        data = yaml.safe_load((Path(directory) / mf.MANIFEST_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError, yaml.YAMLError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def sync_titles(project_id: str, root: Path, names_: list[str]) -> None:
+    """主线上的草稿改了：绑定它、没手工改过标题的插件对话跟着草稿的名称改名（一轮合入、网页改、撤回都走这里）。"""
+    from .. import project_events
+
+    for name in names_:
+        if not _valid_name(name):
+            continue
+        label = str(raw_manifest(Path(root) / DRAFTS_DIR / name).get("label") or "")
+        for conversation_id in conversation_store.sync_plugin_title(project_id, name, label):
+            project_events.conversation_changed(project_id, conversation_id)
+
+
 def _updated_at(root: Path, name: str) -> str | None:
     from ..session_host.views import iso
 
@@ -164,6 +190,49 @@ def with_version(text: str, version: str) -> str:
     data = yaml.safe_load(text) or {}
     data["version"] = version
     return mf.dump(data)
+
+
+def with_changelog(text: str, note: str) -> str:
+    """清单里顶层 changelog 换成 note：原来是单行写法时只换这一行，别的写法（多行块）整份重写。"""
+    quoted = json.dumps(note, ensure_ascii=False)
+    pattern = r"(?m)^changelog:[^\n]*$"
+    found = re.search(pattern, text)
+    following = text[found.end():].split("\n", 2)[1:2] if found else []
+    if found and found.group(0).split(":", 1)[1].strip() not in ("", "|", ">", "|-", ">-") and not (
+            following and following[0].startswith((" ", "\t"))):
+        return re.sub(pattern, lambda _m: f"changelog: {quoted}", text, count=1)
+    data = yaml.safe_load(text) or {}
+    data["changelog"] = note
+    return mf.dump(data)
+
+
+CHANGELOG_FILES_MAX = 3
+
+
+def changelog_note(changed: list[str]) -> str:
+    """平台补的更新说明：只说改了哪些文件（草稿说明没跟着改时，不能沿用上一版的说明）。"""
+    if not changed:
+        return "内容没有变化。"
+    shown = "、".join(changed[:CHANGELOG_FILES_MAX])
+    return f"改了 {shown}" + (f" 等 {len(changed)} 个文件。" if len(changed) > CHANGELOG_FILES_MAX else "。")
+
+
+def _stale_changelog(repository, name: str, manifest, draft: Path, version: str) -> str | None:
+    """草稿的更新说明和上一个已装版本一字不差（网页上手改、助手忘了改）：返回平台补的说明，否则 None。"""
+    previous = next((v for v in repository.versions(name)
+                     if v != version and mf.version_key(v) < mf.version_key(version)), None)
+    if previous is None:
+        return None
+    try:
+        before = repository.manifest(name, previous)
+    except Exception:  # noqa: BLE001 - 旧版本读不出：不补说明
+        return None
+    if str(manifest.raw.get("changelog") or "").strip() != str(before.raw.get("changelog") or "").strip():
+        return None
+    mine, theirs = _digests(draft), _digests(repository.version_dir(name, previous))
+    changed = [rel for rel in sorted(set(mine) | set(theirs))
+               if rel != mf.MANIFEST_FILE and mine.get(rel) != theirs.get(rel)]
+    return changelog_note(changed)
 
 
 def _bump(version: str) -> str:
@@ -385,11 +454,13 @@ def _analyze(manager, project_id: str, name: str, owner: str) -> dict:
             manifest = mf.load(directory)
         except mf.ManifestError:
             manifest = None
+        raw = raw_manifest(directory)
+        shown = manifest or _lenient(raw, name)
         version = next_version(repository, name, manifest.version if manifest else None)
         twin = installed_twin(repository, name, owner, manifest, directory)
         result = {
-            "tree": tree, "manifest": manifest,
-            "contents": contents(root, directory, manifest) if manifest else
+            "tree": tree, "manifest": manifest, "raw": raw, "shown": shown,
+            "contents": contents(root, directory, shown) if shown else
             {"nodes": [], "commands": [], "agents": [], "skills": [], "scripts": [], "knowledge": None},
             "install": {**_install_state(repository, name, owner, enabled, directory, twin or version),
                         "reuse": bool(twin)},
@@ -404,20 +475,35 @@ def _analyze(manager, project_id: str, name: str, owner: str) -> dict:
     return result
 
 
+def _lenient(raw: dict, name: str):
+    """清单写坏（多半是版本号、包名写错）时，换上合法的包名、版本号再解析一次，只用来列启用后带来什么；还是不行就算了。"""
+    if not raw:
+        return None
+    try:
+        return mf.parse({**raw, "name": name, "version": "0.0.0"})
+    except mf.ManifestError:
+        return None
+
+
 def view(manager, project_id: str, name: str, owner: str, *, full: bool = True) -> dict:
     """DraftView（契约 F17 第 3 条）。full=False 是列表项：不带 files，预检只带失败项。"""
     root = manager.project_root(project_id)
     analysis = _analyze(manager, project_id, name, owner)
     manifest = analysis["manifest"]
+    raw = analysis.get("raw") or {}
+    shown = analysis.get("shown")
     entries = _entries(root, name)
     precheck = analysis["precheck"]
     items = precheck["items"] if full else [item for item in precheck["items"] if item["result"] == "fail"][
         :LIST_FAILED_MAX]
     out = {
         "name": name,
-        "label": manifest.label if manifest else None, "description": manifest.description if manifest else None,
-        "kind": manifest.kind if manifest else None, "category": manifest.category if manifest else None,
-        "version": manifest.version if manifest else None,
+        # 清单写坏时按原样读得出的字段显示，免得卡片标题退回包名、版本号消失
+        "label": manifest.label if manifest else _field(raw.get("label")),
+        "description": manifest.description if manifest else _field(raw.get("description")),
+        "kind": shown.kind if shown else _field(raw.get("kind")),
+        "category": shown.category if shown else _field(raw.get("category")),
+        "version": manifest.version if manifest else _field(raw.get("version")),
         "manifest_ok": manifest is not None,
         "file_count": len(entries),
         "updated_at": _updated_at(root, name),
@@ -573,14 +659,16 @@ def _project_install_lock(project_id: str) -> threading.Lock:
         return _install_locks.setdefault(project_id, threading.Lock())
 
 
-def _write_version(manager, project_id: str, name: str, version: str, actor: str) -> None:
+def _write_version(manager, project_id: str, name: str, version: str, actor: str, changelog: str | None = None) -> None:
     from ...kernel.writepath import ChangeTx, Origin
 
     rel = f"{_draft_rel(name)}/{mf.MANIFEST_FILE}"
     root = manager.project_root(project_id)
-    text = (root / rel).read_text(encoding="utf-8")
+    text = with_version((root / rel).read_text(encoding="utf-8"), version)
+    if changelog is not None:
+        text = with_changelog(text, changelog)
     with ChangeTx(manager, project_id, Origin("plugin", actor), summary=f"插件草稿 {name} 升版本") as tx:
-        tx.write(rel, with_version(text, version))
+        tx.write(rel, text)
         tx.commit(f"chore: 插件草稿 {name} 版本号升到 {version}")
 
 
@@ -621,11 +709,15 @@ def install(manager, project_id: str, name: str, actor: str) -> dict:
 
 
 def _upload_and_install(manager, project_id: str, name: str, version: str, manifest, actor: str) -> dict:
-    """版本号写回草稿（要升号时），打包，走普通用户上传同一条路：静态检查、装到本人名下。"""
+    """版本号写回草稿（要升号时；更新说明和上一版一字不差时补一条平台说明），打包，走普通用户上传同一条路：静态检查、装到本人名下。"""
     repository = manager.packs.repository
-    if version != manifest.version:
-        _write_version(manager, project_id, name, version, actor)
     root = manager.project_root(project_id)
+    with tempfile.TemporaryDirectory(prefix="onto-draft-notes-") as tmp:
+        current = Path(tmp) / name
+        export(root, name, current)
+        changelog = _stale_changelog(repository, name, manifest, current, version)
+    if version != manifest.version or changelog is not None:
+        _write_version(manager, project_id, name, version, actor, changelog)
     store = UploadStore(repository, manager.assets_dir)
     with tempfile.TemporaryDirectory(prefix="onto-draft-install-") as tmp:
         directory = Path(tmp) / name

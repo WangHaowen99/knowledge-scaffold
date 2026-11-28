@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  canEditFile, cardDiffRows, defaultFile, diffRows, draftCardHead, draftCardMode, fixMessage, groupFiles, isDraftCard, knowledgeTags,
+  canEditFile, cardDiffRows, defaultFile, diffRows, draftCardHead, draftCardMode, draftVersion, fixMessage, groupFiles, isDraftCard, knowledgeTags,
   latestDraftCards, menuConversations, nodePlacementText, pickConversation, planEnterPlugin, planLeavePlugin,
   pluginReturn, pluginSteps, precheckChip, returnTarget, splitPrecheck,
 } from '../src/pages/workbench/pluginModeModel.js';
@@ -121,6 +121,17 @@ test('草稿卡头部：草稿、已装、待更新、旧卡快照各自的眉�
   const snap = draftCardHead(draft({ version: '0.1.2' }), { name: 'naming-check', version: '0.1.0', changed_files: ['a', 'b'] }, 'snapshot', now);
   assert.deepEqual(snap, { eyebrow: '能力包 · 草稿', title: '命名检查', chip: { tone: 'line', text: '0.1.0' }, sub: '改了 2 个文件' });
   assert.equal(draftCardHead(null, { name: 'x' }, 'snapshot', now).title, 'x');
+});
+
+test('草稿显示的版本号：卡片与文件抽屉一致（网页上改过、清单写坏）', () => {
+  // 网页上手改：清单还是 0.1.1，装过了，再装会升到 0.1.2，抽屉和卡片都写 0.1.2
+  const edited = draft({ version: '0.1.1', install: { state: 'outdated', enabled_version: '0.1.1', next_version: '0.1.2', changes: [] } });
+  assert.equal(draftVersion(edited), '0.1.2');
+  assert.equal(draftCardHead(edited, {}, 'update', Date.now()).chip.text, '0.1.2');
+  assert.equal(draftVersion(draft({ install: { state: 'installed', enabled_version: '0.1.0', next_version: '0.1.1' } })), '0.1.0');
+  // 清单写坏：没有可用的号，按清单原样
+  assert.equal(draftVersion(draft({ version: 'abc', install: { state: 'not_installed', next_version: null } })), 'abc');
+  assert.equal(draftVersion(null), null);
 });
 
 test('流程行文字：排在锚点前后，挡发布时加一句', () => {

@@ -8,7 +8,7 @@ import { errorText, packActionErrorText } from '../../api/errors.js';
 import { Button, Chip, Drawer, Icon, cx } from '../../ui/index.jsx';
 import { CC, MSys } from './parts.jsx';
 import {
-  CHANGE_LABEL, START_OPTIONS, canEditFile, cardDiffRows, defaultFile, diffRows, draftCardHead, draftCardMode, fixMessage, groupFiles,
+  CHANGE_LABEL, START_OPTIONS, canEditFile, cardDiffRows, defaultFile, diffRows, draftCardHead, draftCardMode, draftVersion, fixMessage, groupFiles,
   knowledgeTags, nodePlacementText, pluginSteps, precheckChip, splitPrecheck,
 } from './pluginModeModel.js';
 import '../../styles/plugins.css';
@@ -318,7 +318,7 @@ export function DraftFilesDrawer({ open, name, changes, onClose }) {
       className="pm-dw"
       icon={<span className="pl-ico node" style={{ width: 32, height: 32, borderRadius: 9 }}><Icon name="puzzle" size={16} /></span>}
       title={draft?.label || name}
-      sub={draft ? `草稿 ${draft.version || ''} · ${draft.file_count ?? files.length} 个文件` : ''}
+      sub={draft ? `草稿 ${draftVersion(draft) || ''} · ${draft.file_count ?? files.length} 个文件` : ''}
       acts={acts}
     >
       <div className="pm-dwb">
