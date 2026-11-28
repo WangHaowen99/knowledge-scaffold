@@ -405,12 +405,13 @@ cd "$JOINT_DIR"
 cp -n "modeling-cce-${MODELING_VERSION}-${ARCH}/deploy/resolved-images.example.yaml" modeling-images.yaml
 ```
 
-同样按 Modeling 包 `release.yaml.images` 的 `archive` 和 `archiveRef` 上传三张自有镜像，再用 `vi "$JOINT_DIR/modeling-images.yaml"` 将目标仓库返回的 manifest digest 填入模板：
+同样按 Modeling 包 `release.yaml.images` 的 `archive` 和 `archiveRef` 上传四张自有镜像，再用 `vi "$JOINT_DIR/modeling-images.yaml"` 将目标仓库返回的 manifest digest 填入模板：
 
 ```yaml
 global:
   resolvedImages:
     ontoModeling: <REGISTRY>/onto-modeling@sha256:<64位digest>
+    connectorGateway: <REGISTRY>/onto-modeling-connector-gateway@sha256:<64位digest>
     knowledgeHub: <REGISTRY>/knowledge-hub@sha256:<64位digest>
     evaluation: <REGISTRY>/evaluation@sha256:<64位digest>
     jiuwenbox: <REGISTRY>/jiuwenbox@sha256:<64位digest>
@@ -573,7 +574,7 @@ bash deploy/install-consumer-modeling.sh cce status \
 1. `plan`：校验三份包、镜像映射、兼容性组合、三侧 Auth 引用与身份，并渲染检查；会写入包外渲染文件，但不检查集群中的 Secret 或创建 Kubernetes 资源；
 2. `preflight`：检查集群、Secret、PVC、节点、Consumer 端点和 ELB 端口；三方空环境的 Auth 尚不存在，先运行 `install`；
 3. `install`：三方配置先安装 Auth，再安装 Consumer；联合入口在配置的 `timeoutSeconds` 内等待 Consumer 工作负载就绪，通过严格验证后才安装 Modeling。超时会指出未就绪的 Deployment，核对 Pod 状态后使用原操作 ID 续跑；两方配置沿用 Consumer → Modeling；
-4. `verify`：调用两侧安装器核对工作负载和各自健康检查；Modeling 会检查 sandbox-gateway 的健康接口，跨侧业务调用仍按第 12 节验收；
+4. `verify`：调用两侧安装器核对工作负载和各自健康检查；Modeling 会检查 sandbox-gateway、connector-gateway 的健康接口，跨侧业务调用仍按第 12 节验收；
 5. `status`：读取两侧 Helm release 的状态和 Chart；三方配置同时核对 Auth owner 状态。
 
 每一步都应输出 `status: succeeded`。失败时保留 `customer-state`，不要立即删除一侧 release 或 PVC。

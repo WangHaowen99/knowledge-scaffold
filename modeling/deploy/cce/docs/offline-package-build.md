@@ -57,10 +57,11 @@ bash modeling/deploy/cce/build-offline.sh v2.0 amd64 \
   /path/to/modeling-cce-v2.0-amd64.tar.gz --cleanup-images
 ```
 
-该选项只执行以下三个精确标签的 `docker image rm`，不会执行 `docker prune`，也不会删除其他版本或其他仓库的镜像：
+该选项只执行以下四个精确标签的 `docker image rm`，不会执行 `docker prune`，也不会删除其他版本或其他仓库的镜像：
 
 ```text
 modeling-offline/onto-modeling:v2.0
+modeling-offline/onto-modeling-connector-gateway:v2.0
 modeling-offline/knowledge-hub:v2.0
 modeling-offline/evaluation:v2.0
 ```
@@ -125,10 +126,11 @@ modeling/onto-modeling/vendor/drawio/webapp/
 bash modeling/deploy/cce/build-images.sh <版本> <amd64|arm64>
 ```
 
-该命令把三个镜像加载为本地标签：
+该命令把四个镜像加载为本地标签（连接器网关是同一个 Dockerfile 的 `connector-gateway` 目标）：
 
 ```text
 modeling-offline/onto-modeling:<版本>
+modeling-offline/onto-modeling-connector-gateway:<版本>
 modeling-offline/knowledge-hub:<版本>
 modeling-offline/evaluation:<版本>
 ```
@@ -137,13 +139,14 @@ modeling-offline/evaluation:<版本>
 
 ## 3. 使用已推送镜像组包
 
-开发侧如果已经把三个镜像推送到镜像仓库，可以不使用 `--local`，改为按 digest 组包：
+开发侧如果已经把四个镜像推送到镜像仓库，可以不使用 `--local`，改为按 digest 组包：
 
 ```bash
 python3 modeling/deploy/cce/package-cce.py \
   --version <版本> \
   --arch <amd64|arm64> \
   --image 'ontoModeling=<仓库>/onto-modeling@sha256:<64位digest>' \
+  --image 'connectorGateway=<仓库>/onto-modeling-connector-gateway@sha256:<64位digest>' \
   --image 'knowledgeHub=<仓库>/knowledge-hub@sha256:<64位digest>' \
   --image 'evaluation=<仓库>/evaluation@sha256:<64位digest>' \
   --output modeling/dist/modeling-cce-<版本>-<架构>.tar.gz
@@ -217,6 +220,7 @@ sha256sum modeling/dist/modeling-cce-<版本>-<架构>.tar.gz
 global:
   resolvedImages:
     ontoModeling: <客户仓库>/onto-modeling@sha256:<64位digest>
+    connectorGateway: <客户仓库>/onto-modeling-connector-gateway@sha256:<64位digest>
     knowledgeHub: <客户仓库>/knowledge-hub@sha256:<64位digest>
     evaluation: <客户仓库>/evaluation@sha256:<64位digest>
     jiuwenbox: <客户仓库>/jiuwenbox@sha256:<64位digest>

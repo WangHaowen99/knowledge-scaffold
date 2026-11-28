@@ -36,6 +36,8 @@ modeling:
       resources: {requests: {cpu: 500m, memory: 1Gi}}
     sandboxGateway:
       resources: {requests: {cpu: 100m, memory: 256Mi}}
+    connectorGateway:
+      resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {memory: 1536Mi}}
   secrets:
     authAdminToken: {name: modeling-auth-client, key: admin-token} # 需在 Modeling namespace 预建，与 Auth 管理令牌同值。
 hub:

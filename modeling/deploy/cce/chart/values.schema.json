@@ -13,8 +13,8 @@
         "clusterFlavor": {"enum": ["standard", "turbo"]},
         "targetArch": {"enum": ["amd64", "arm64"]},
         "imageDelivery": {"type": "object", "additionalProperties": false, "required": ["pullSecretNames"], "properties": {"pullSecretNames": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}}},
-        "resolvedImages": {"type": "object", "additionalProperties": false, "required": ["ontoModeling", "knowledgeHub", "evaluation", "jiuwenbox"], "properties": {
-          "ontoModeling": {"$ref": "#/definitions/image"}, "knowledgeHub": {"$ref": "#/definitions/image"}, "evaluation": {"$ref": "#/definitions/image"}, "jiuwenbox": {"$ref": "#/definitions/image"}
+        "resolvedImages": {"type": "object", "additionalProperties": false, "required": ["ontoModeling", "knowledgeHub", "evaluation", "connectorGateway", "jiuwenbox"], "properties": {
+          "ontoModeling": {"$ref": "#/definitions/image"}, "knowledgeHub": {"$ref": "#/definitions/image"}, "evaluation": {"$ref": "#/definitions/image"}, "connectorGateway": {"$ref": "#/definitions/image"}, "jiuwenbox": {"$ref": "#/definitions/image"}
         }},
         "auth": {"type": "object", "additionalProperties": false, "required": ["issuer", "audience"], "properties": {"issuer": {"type": "string", "minLength": 1}, "audience": {"type": "string", "minLength": 1}}},
         "access": {"type": "object", "additionalProperties": false, "required": ["mode", "elb", "protocol", "listenerPort", "tlsSecretName", "ingressClassName", "routes", "listeners"], "properties": {
@@ -48,6 +48,9 @@
           "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}}, "runtimeClassName": {"type": "string"}, "resources": {"type": "object"}
         }},
         "sandboxGateway": {"type": "object", "additionalProperties": false, "required": ["resources"], "properties": {
+          "resources": {"type": "object"}
+        }},
+        "connectorGateway": {"type": "object", "additionalProperties": false, "required": ["resources"], "properties": {
           "resources": {"type": "object"}
         }}
       }},

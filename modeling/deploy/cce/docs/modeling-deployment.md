@@ -173,6 +173,8 @@ modeling:
       resources: {}
     sandboxGateway:
       resources: {requests: {cpu: 100m, memory: 256Mi}}
+    connectorGateway:
+      resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {memory: 1536Mi}}
 hub:
   persistence: {existingClaim: <HUB_PVC>}
   secrets:
@@ -268,12 +270,13 @@ cp deploy/resolved-images.example.yaml ../modeling-images.yaml
 global:
   resolvedImages:
     ontoModeling: <REGISTRY>/onto-modeling@sha256:<64位digest>
+    connectorGateway: <REGISTRY>/onto-modeling-connector-gateway@sha256:<64位digest>
     knowledgeHub: <REGISTRY>/knowledge-hub@sha256:<64位digest>
     evaluation: <REGISTRY>/evaluation@sha256:<64位digest>
     jiuwenbox: <REGISTRY>/jiuwenbox@sha256:<64位digest>
 ```
 
-单独部署必须填写三个自有镜像和 JiuwenBox 共四个 key。不能填写 tag，例如 `repository:onto-v2`。先装 Modeling 时，JiuwenBox 镜像仍需预先推送到客户镜像仓库并填写 digest；它源自 Consumer 的交付镜像，但无需先安装 Consumer release。若尚未取得该镜像，先完成镜像交付后再执行 Modeling `install`。
+单独部署必须填写四个自有镜像和 JiuwenBox 共五个 key。不能填写 tag，例如 `repository:onto-v2`。先装 Modeling 时，JiuwenBox 镜像仍需预先推送到客户镜像仓库并填写 digest；它源自 Consumer 的交付镜像，但无需先安装 Consumer release。若尚未取得该镜像，先完成镜像交付后再执行 Modeling `install`。
 
 ## 5. 单独部署命令
 
@@ -340,7 +343,7 @@ bash deploy/install-cce.sh status \
   --release <MODELING_RELEASE>
 ```
 
-`verify` 要求 Auth Service 和 Consumer Backend Service 已存在，并检查 Auth owner、签发身份及 JWKS；随后等待 Onto、Hub、Evaluation、sandbox-gateway 并检查本地健康接口。若此前独立安装留下依赖状态记录，还会从 Evaluation Pod 检查 Consumer `/ready`，成功后清空等待项；`status` 可显示 `dependencyStage` 和 `pendingDependencies`。健康与端点检查完成后，仍需用合成测试账号验收登录；启用相应连接时，分别验证 Consumer → Hub、Evaluation → Consumer 的调用，以及 Consumer → Evaluation 的反馈提交与接收状态。只有启用 `notifyRuns` 时还需验证轮次通知；未启用的连接不要求这些业务调用。
+`verify` 要求 Auth Service 和 Consumer Backend Service 已存在，并检查 Auth owner、签发身份及 JWKS；随后等待 Onto、Hub、Evaluation、sandbox-gateway、connector-gateway 并检查本地健康接口。若此前独立安装留下依赖状态记录，还会从 Evaluation Pod 检查 Consumer `/ready`，成功后清空等待项；`status` 可显示 `dependencyStage` 和 `pendingDependencies`。健康与端点检查完成后，仍需用合成测试账号验收登录；启用相应连接时，分别验证 Consumer → Hub、Evaluation → Consumer 的调用，以及 Consumer → Evaluation 的反馈提交与接收状态。只有启用 `notifyRuns` 时还需验证轮次通知；未启用的连接不要求这些业务调用。
 
 ## 6. 单独升级并保留数据
 
@@ -435,3 +438,15 @@ bash deploy/install-cce.sh uninstall \
 ```
 
 卸载只移除 Modeling Helm release；Auth 和 Consumer release 不受影响，Modeling 的 PVC、Secret、快照和包外备份记录继续保留。若卸载中断，先核对 Helm 中的实际状态，再用相同解压包、`state-dir` 和 `operation-id` 追加 `--resume modeling-uninstall-<ID>`。若要连同 Consumer、独立 Auth 一起卸载，使用[联合卸载](joint-deployment.md#10-联合卸载)，其顺序为 Modeling → Consumer → Auth，且必须在卸载配置中填写 `auth`。卸载后检查 Modeling release 和工作负载已移除，并确认需要保留的 PVC、Secret、快照仍在。
+
+## 连接器网关
+
+上传的 PDF、Word、Excel 由连接器网关（`<release>-connector-gateway`，镜像 `connectorGateway`）转成文本，资料分析和助手只读文本版；
+项目成员接入的业务数据库（MySQL、PostgreSQL）也由它采集。网关没起来时资料停在「等待转换」，恢复后 30 秒内自动补转。
+
+- Pod 以 65534 运行，只读根文件系统、无 capability，内存上限 1.5Gi（`modeling.workloads.connectorGateway.resources`）；每个转换一个子进程，
+  有超时和内存上限。
+- 内核签票据的公钥从 `http://<release>-onto:8100/api/v1/connector/issuer-key` 取；数据源连接不能指向本 Release 的服务和
+  Auth、Consumer 的 Service 名（`ONTO_CONNECTOR_EGRESS_DENY`）。业务库要能从集群内路由到。
+- 插件卷和凭据卷都是 emptyDir：插件由内核在 30 秒内重新交付；数据源凭据和自动生成的主密钥随 Pod 重建丢失，要在资料页「修改连接」重新填写。
+

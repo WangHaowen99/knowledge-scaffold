@@ -9,6 +9,7 @@ global:
     ontoModeling: ""
     knowledgeHub: ""
     evaluation: ""
+    connectorGateway: ""
     jiuwenbox: ""
   auth:
     issuer: ""
@@ -54,6 +55,9 @@ modeling:
       resources: {}
     sandboxGateway:
       resources: {requests: {cpu: 100m, memory: 256Mi}}
+    # 连接器网关（资料转文本、数据源采集）：每个任务一个子进程，内存上限与 compose 的 1.5G 一致
+    connectorGateway:
+      resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {memory: 1536Mi}}
   secrets:
     authAdminToken:
       name: ""

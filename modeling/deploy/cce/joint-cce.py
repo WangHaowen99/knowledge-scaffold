@@ -1001,7 +1001,7 @@ def effective_images(config, state: Path, source: str, operation_id: str) -> Pat
         raise ConfigError("JiuwenBox requires an immutable Consumer image reference")
     if modeling_images.get("jiuwenbox") not in (None, digest):
         raise ConfigError("Modeling JiuwenBox reference conflicts with selected Consumer digest")
-    if set(modeling_images) - {"ontoModeling", "knowledgeHub", "evaluation", "jiuwenbox"}:
+    if set(modeling_images) - {"ontoModeling", "connectorGateway", "knowledgeHub", "evaluation", "jiuwenbox"}:
         raise ConfigError("unexpected Modeling image ID")
     modeling_images["jiuwenbox"] = digest
     effective = state / f"{operation_id}-modeling-effective-images.yaml"

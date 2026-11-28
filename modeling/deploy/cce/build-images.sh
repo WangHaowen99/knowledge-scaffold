@@ -94,6 +94,11 @@ docker buildx build --platform "linux/$arch" "${output[@]}" \
   --build-arg "PIP_INDEX_URL=$onto_pip_index" -f "$project/Dockerfile" \
   -t "$registry/onto-modeling:$version" "$project"
 
+# 连接器网关（资料转文本、数据源采集）：同一个 Dockerfile 的 connector-gateway 目标，单独的镜像
+docker buildx build --platform "linux/$arch" "${output[@]}" \
+  --build-arg "PIP_INDEX_URL=$onto_pip_index" -f "$project/Dockerfile" --target connector-gateway \
+  -t "$registry/onto-modeling-connector-gateway:$version" "$project"
+
 hub_build_args=()
 if [ -n "${KNOWLEDGE_HUB_APT_MIRROR:-}" ]; then
   hub_build_args+=(--build-arg "APT_MIRROR=$KNOWLEDGE_HUB_APT_MIRROR")
@@ -119,7 +124,7 @@ docker buildx build --platform "linux/$arch" "${output[@]}" "${eval_build_args[@
 
 if [ "$#" -eq 3 ]; then
   echo 'Record and verify the immutable manifest digest for each pushed tag before packaging:'
-  for component in onto-modeling knowledge-hub evaluation; do
+  for component in onto-modeling onto-modeling-connector-gateway knowledge-hub evaluation; do
     docker buildx imagetools inspect "$registry/$component:$version"
   done
 else

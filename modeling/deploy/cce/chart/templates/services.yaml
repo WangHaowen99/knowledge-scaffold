@@ -26,3 +26,12 @@ spec:
   type: ClusterIP
   selector: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: sandbox-gateway}
   ports: [{name: http, port: 8110, targetPort: http}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-connector-gateway
+spec:
+  type: ClusterIP
+  selector: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: connector-gateway}
+  ports: [{name: http, port: 8120, targetPort: http}]

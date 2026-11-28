@@ -546,28 +546,40 @@ def render(args, root: Path, release: dict) -> Path:
     return output
 
 
+# Script sandbox and connector gateway (material conversion, data sources); Onto reaches both by Service name.
+GATEWAYS = (("sandbox-gateway", 8110), ("connector-gateway", 8120))
+
+
+def _wait_gateway_from_onto(args, gateway: str, port: int) -> None:
+    # The gateway Service can briefly have no endpoint while its Pod is
+    # recreated by Helm, even after its rollout reports ready.
+    deadline = time.monotonic() + min(args.timeout_seconds, 60)
+    url = f"http://{args.release}-{gateway}:{port}/health"
+    while True:
+        try:
+            run("kubectl", "--context", args.context, "-n", args.namespace, "exec",
+                f"deployment/{args.release}-onto", "-c", "onto", "--", "python", "-c",
+                "import sys, urllib.request; r=urllib.request.urlopen(sys.argv[1], timeout=5); "
+                "raise SystemExit(0 if r.status == 200 else 1)", url)
+            return
+        except RuntimeError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(2)
+
+
 def verify(args, root: Path, *, pending_auth: bool = False):
     for component in WORKLOADS:
         if pending_auth and component == "onto":
             continue
         run("kubectl", "--context", args.context, "-n", args.namespace, "rollout", "status",
             f"deployment/{args.release}-{component}", f"--timeout={args.timeout_seconds}s")
-    run("kubectl", "--context", args.context, "-n", args.namespace, "rollout", "status",
-        f"deployment/{args.release}-sandbox-gateway", f"--timeout={args.timeout_seconds}s")
+    for gateway, _ in GATEWAYS:
+        run("kubectl", "--context", args.context, "-n", args.namespace, "rollout", "status",
+            f"deployment/{args.release}-{gateway}", f"--timeout={args.timeout_seconds}s")
     if not pending_auth:
-        # The gateway Service can briefly have no endpoint while its Pod is
-        # recreated by Helm, even after its rollout reports ready.
-        deadline = time.monotonic() + min(args.timeout_seconds, 60)
-        while True:
-            try:
-                run("kubectl", "--context", args.context, "-n", args.namespace, "exec",
-                    f"deployment/{args.release}-onto", "-c", "onto", "--", "python", "-c",
-                    "import urllib.request; r=urllib.request.urlopen('http://%s-sandbox-gateway:8110/health', timeout=5); raise SystemExit(0 if r.status == 200 else 1)" % args.release)
-                break
-            except RuntimeError:
-                if time.monotonic() >= deadline:
-                    raise
-                time.sleep(2)
+        for gateway, port in GATEWAYS:
+            _wait_gateway_from_onto(args, gateway, port)
     for component, port, path in (("hub", 8200, "/api/health"),
                                   ("evaluation", 5180, "/evaluation/api/health")):
         run("kubectl", "--context", args.context, "-n", args.namespace, "exec",

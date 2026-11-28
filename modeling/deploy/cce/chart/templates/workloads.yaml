@@ -56,6 +56,8 @@ spec:
             - {name: ONTO_WEB_EVAL_PUBLIC_URL, value: {{ .Values.modeling.config.evalPublicUrl | quote }}}
             - {name: ONTO_WEB_EVAL_URL, value: "http://{{ include "modeling.name" . }}-evaluation:5180"}
             - {name: ONTO_WEB_SANDBOX_GATEWAY_URL, value: "http://{{ include "modeling.name" . }}-sandbox-gateway:8110"}
+            # 资料转文本、数据源采集经连接器网关（ADR-0073、ADR-0104）
+            - {name: ONTO_WEB_CONNECTOR_GATEWAY_URL, value: "http://{{ include "modeling.name" . }}-connector-gateway:8120"}
             - {name: ONTO_WEB_JIUWEN_BASE_URL, value: {{ .Values.modeling.config.ontoJiuwenBaseUrl | quote }}}
             - {name: ONTO_WEB_JIUWEN_MODEL, value: {{ .Values.modeling.config.ontoJiuwenModel | quote }}}
             - {name: ANTHROPIC_BASE_URL, value: {{ .Values.modeling.config.ontoAnthropicBaseUrl | quote }}}
@@ -151,6 +153,72 @@ spec:
           configMap: {name: {{ include "modeling.name" . }}-jiuwenbox-policy}
         - name: cgroup
           hostPath: {path: /sys/fs/cgroup, type: Directory}
+---
+# 连接器网关（ADR-0073、ADR-0104）：上传资料（PDF、Word、Excel）转文本、数据源采集。上传文件不可信，解析放在
+# 单独的镜像和 Pod 里：非 root、只读根文件系统、无 capability，每个任务一个有时限和内存上限的子进程。
+# 插件卷：插件中心信任后由内核交付，丢了内核会在 30 秒内重新交付。凭据卷：数据源凭据与自动生成的主密钥；
+# 这里用 emptyDir，Pod 重建后要在资料页「修改连接」重新填凭据（持久化需另配 PVC 并纳入备份流程）。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "modeling.name" . }}-connector-gateway
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: connector-gateway}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: connector-gateway}
+    spec:
+      securityContext:
+        fsGroup: 65534
+      automountServiceAccountToken: false
+      {{- if .Values.global.imageDelivery.pullSecretNames }}
+      imagePullSecrets: {{ include "modeling.pullSecrets" . | nindent 8 }}
+      {{- end }}
+      nodeSelector:
+        {{- toYaml (dict "kubernetes.io/arch" .Values.global.targetArch) | nindent 8 }}
+      containers:
+        - name: connector-gateway
+          image: {{ .Values.global.resolvedImages.connectorGateway | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 65534
+            runAsGroup: 65534
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          env:
+            - {name: ONTO_CONNECTOR_GATEWAY_PORT, value: "8120"}
+            # 内核签票据的公钥从这里取（网关自己不存任何能签票据的东西）
+            - {name: ONTO_CONNECTOR_ISSUER_KEY_URL, value: "http://{{ include "modeling.name" . }}-onto:8100/api/v1/connector/issuer-key"}
+            - {name: ONTO_CONNECTOR_PLUGINS_DIR, value: /var/lib/connector/plugins}
+            - {name: ONTO_CONNECTOR_SECRETS_DIR, value: /var/lib/connector/secrets}
+            # 数据源不能连到平台内部服务（同 compose 的服务名清单，换成本 Release 的 Service 名）
+            - name: ONTO_CONNECTOR_EGRESS_DENY
+              value: {{ printf "%[1]s-onto,%[1]s-hub,%[1]s-evaluation,%[1]s-sandbox-gateway,%[1]s-connector-gateway,%[2]s,%[3]s" (include "modeling.name" .) .Values.externalAuth.serviceName .Values.externalConsumer.serviceName | quote }}
+            - {name: PYTHONDONTWRITEBYTECODE, value: "1"}
+          ports: [{name: http, containerPort: 8120}]
+          volumeMounts:
+            - {name: plugins, mountPath: /var/lib/connector/plugins}
+            - {name: secrets, mountPath: /var/lib/connector/secrets}
+            - {name: tmp, mountPath: /tmp}
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 30
+          resources: {{ toYaml .Values.modeling.workloads.connectorGateway.resources | nindent 12 }}
+      volumes:
+        - name: plugins
+          emptyDir: {}
+        - name: secrets
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: apps/v1
 kind: Deployment

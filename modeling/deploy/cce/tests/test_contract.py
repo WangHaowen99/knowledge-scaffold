@@ -67,7 +67,7 @@ class CceContractTests(unittest.TestCase):
         root = self.base / "modeling-cce-demo-amd64"
         (root / "images").mkdir(parents=True)
         records = {}
-        for image_id in ("ontoModeling", "knowledgeHub", "evaluation"):
+        for image_id in ("ontoModeling", "connectorGateway", "knowledgeHub", "evaluation"):
             image = root / "images" / f"{image_id}.tar"
             image.write_bytes(b"synthetic image archive")
             records[image_id] = dict(archive=str(image.relative_to(root)), archiveSha256=checksum(image),
@@ -796,6 +796,21 @@ class CceContractTests(unittest.TestCase):
         self.assertIn("-sandbox-gateway", services)
         self.assertEqual(values["modeling"]["workloads"]["sandboxGateway"]["resources"]["requests"]["memory"], "256Mi")
 
+    def test_cce_chart_declares_connector_gateway(self):
+        """资料转文本与数据源采集（ADR-0073、ADR-0104）：单独镜像、非 root、只读根，Onto 经 Service 名访问。"""
+        workloads = (ROOT / "chart/templates/workloads.yaml").read_text()
+        services = (ROOT / "chart/templates/services.yaml").read_text()
+        defaults = yaml.safe_load((ROOT / "chart/values.yaml").read_text())
+        self.assertIn("-connector-gateway", workloads)
+        self.assertIn(".Values.global.resolvedImages.connectorGateway", workloads)
+        self.assertIn("ONTO_WEB_CONNECTOR_GATEWAY_URL", workloads)
+        self.assertIn("-connector-gateway:8120", workloads)
+        self.assertIn("/api/v1/connector/issuer-key", workloads)
+        self.assertIn("ONTO_CONNECTOR_EGRESS_DENY", workloads)
+        self.assertIn("-connector-gateway", services)
+        self.assertIn("connectorGateway", defaults["global"]["resolvedImages"])
+        self.assertEqual(defaults["modeling"]["workloads"]["connectorGateway"]["resources"]["limits"]["memory"], "1536Mi")
+
     def test_modeling_auth_admin_secret_is_optional_and_injected_for_management(self):
         defaults = yaml.safe_load((ROOT / "chart/values.yaml").read_text())
         values = yaml.safe_load((ROOT / "values.customer.example.yaml").read_text())
@@ -803,21 +818,29 @@ class CceContractTests(unittest.TestCase):
         import jsonschema
         merged = INSTALL.merge(defaults, values)
         merged["global"]["resolvedImages"] = {name: "registry.example.com/app@sha256:" + "a" * 64
-            for name in ("ontoModeling", "knowledgeHub", "evaluation", "jiuwenbox")}
+            for name in ("ontoModeling", "connectorGateway", "knowledgeHub", "evaluation", "jiuwenbox")}
         jsonschema.validate(merged, schema)
         values["modeling"]["secrets"]["authAdminToken"] = {"name": "modeling-auth-client", "key": "admin-token"}
         merged = INSTALL.merge(defaults, values)
         merged["global"]["resolvedImages"] = {name: "registry.example.com/app@sha256:" + "a" * 64
-            for name in ("ontoModeling", "knowledgeHub", "evaluation", "jiuwenbox")}
+            for name in ("ontoModeling", "connectorGateway", "knowledgeHub", "evaluation", "jiuwenbox")}
         jsonschema.validate(merged, schema)
         template = (ROOT / "chart/templates/workloads.yaml").read_text()
         self.assertIn("ONTO_WEB_AUTH_ADMIN_TOKEN", template)
         self.assertIn(".Values.modeling.secrets.authAdminToken.name", template)
 
-    def test_modeling_verify_checks_sandbox_gateway(self):
-        source = (ROOT / "install-cce.py").read_text()
-        self.assertIn("deployment/{args.release}-sandbox-gateway", source)
-        self.assertIn("-sandbox-gateway:8110/health", source)
+    def test_modeling_verify_checks_sandbox_and_connector_gateways(self):
+        self.assertEqual(INSTALL.GATEWAYS, (("sandbox-gateway", 8110), ("connector-gateway", 8120)))
+        args = SimpleNamespace(context="example", namespace="modeling-test", release="modeling", timeout_seconds=10)
+        calls = []
+        with mock.patch.object(INSTALL, "run", side_effect=lambda *argv: calls.append(argv) or ""):
+            INSTALL.verify(args, self.base)
+        rollouts = [item[-2] for item in calls if "rollout" in item]
+        self.assertIn("deployment/modeling-sandbox-gateway", rollouts)
+        self.assertIn("deployment/modeling-connector-gateway", rollouts)
+        health = [item[-1] for item in calls if "exec" in item and "deployment/modeling-onto" in item]
+        self.assertEqual(health, ["http://modeling-sandbox-gateway:8110/health",
+                                  "http://modeling-connector-gateway:8120/health"])
 
     def test_modeling_verify_retries_gateway_during_endpoint_recreation(self):
         args = SimpleNamespace(context="example", namespace="modeling-test", release="modeling",
@@ -843,7 +866,7 @@ class CceContractTests(unittest.TestCase):
         for item in calls:
             if "exec" in item and "deployment/modeling-onto" in item:
                 gateway_checks.append(item)
-        self.assertEqual(len(gateway_checks), 2)
+        self.assertEqual(len(gateway_checks), 3)  # 沙箱网关重试一次，连接器网关一次
         pause.assert_called_once_with(2)
 
     def test_evaluation_listener_can_use_a_custom_external_port(self):
@@ -860,11 +883,11 @@ class CceContractTests(unittest.TestCase):
         values_path = self.base / "modeling-values.yaml"
         values_path.write_text(yaml.safe_dump(values))
         images = {key: "registry.example.com/app@sha256:" + "a" * 64
-                  for key in ("ontoModeling", "knowledgeHub", "evaluation", "jiuwenbox")}
+                  for key in ("ontoModeling", "connectorGateway", "knowledgeHub", "evaluation", "jiuwenbox")}
         images_path = self.base / "modeling-images.yaml"
         images_path.write_text(yaml.safe_dump({"global": {"resolvedImages": images}}))
         release = {"platform": "linux-amd64", "images": {
-            key: {} for key in ("ontoModeling", "knowledgeHub", "evaluation")},
+            key: {} for key in ("ontoModeling", "connectorGateway", "knowledgeHub", "evaluation")},
             "imageDependencies": {"jiuwenbox": {}}}
         args = SimpleNamespace(values=values_path, resolved_images=images_path,
                                release="modeling", namespace="modeling-test")
@@ -1097,7 +1120,7 @@ class CceContractTests(unittest.TestCase):
         values = INSTALL.merge(yaml.safe_load((ROOT / "chart/values.yaml").read_text()),
                                yaml.safe_load((ROOT / "values.customer.example.yaml").read_text()))
         values["global"]["resolvedImages"] = {name: "registry.example.com/app@sha256:" + "a" * 64
-            for name in ("ontoModeling", "knowledgeHub", "evaluation", "jiuwenbox")}
+            for name in ("ontoModeling", "connectorGateway", "knowledgeHub", "evaluation", "jiuwenbox")}
         import jsonschema
         jsonschema.validate(values, schema)
         self.assertNotIn("integration", values["global"])
@@ -3004,7 +3027,7 @@ class CceContractTests(unittest.TestCase):
         old = sys.argv
         try:
             sys.argv = ["package-cce.py", "--version", "demo", "--arch", "amd64", "--output", str(output)]
-            for image_id in ("ontoModeling", "knowledgeHub", "evaluation"):
+            for image_id in ("ontoModeling", "connectorGateway", "knowledgeHub", "evaluation"):
                 sys.argv.extend(("--image", f"{image_id}=registry.example.com/{image_id}@sha256:" + "a" * 64))
             from contextlib import redirect_stdout
             from io import StringIO
@@ -3019,10 +3042,11 @@ class CceContractTests(unittest.TestCase):
             self.assertIn("modeling-cce-demo-amd64/deploy/chart/Chart.yaml", names)
             self.assertIn("modeling-cce-demo-amd64/deploy/upgrade.py", names)
             self.assertIn("modeling-cce-demo-amd64/images/knowledgeHub.tar", names)
+            self.assertIn("modeling-cce-demo-amd64/images/connectorGateway.tar", names)
             self.assertIn("modeling-cce-demo-amd64/images/evaluation.tar", names)
             release = yaml.safe_load(stream.extractfile("modeling-cce-demo-amd64/release.yaml"))
             chart = yaml.safe_load(stream.extractfile("modeling-cce-demo-amd64/deploy/chart/Chart.yaml"))
-        self.assertEqual(set(release["images"]), {"ontoModeling", "knowledgeHub", "evaluation"})
+        self.assertEqual(set(release["images"]), {"ontoModeling", "connectorGateway", "knowledgeHub", "evaluation"})
         self.assertEqual(chart["appVersion"], release["releaseVersion"])
         self.assertEqual(release["imageDependencies"]["jiuwenbox"]["sourceSide"], "consumer")
         unpacked = self.base / "unpacked"
@@ -3060,14 +3084,14 @@ class CceContractTests(unittest.TestCase):
             sys.argv = old
         self.assertFalse(any(command[:2] == ("docker", "pull") for command in calls))
         self.assertFalse(any(command[:2] == ("docker", "tag") for command in calls))
-        self.assertEqual(len([command for command in calls if command[:2] == ("docker", "save")]), 3)
+        self.assertEqual(len([command for command in calls if command[:2] == ("docker", "save")]), 4)
         unpacked = self.base / "unpacked-local"
         unpacked.mkdir()
         release = validate_release(safe_extract(output, unpacked, "modeling"), "modeling")
         self.assertTrue(all(record["sourceManifestDigest"] is None for record in release["images"].values()))
         self.assertEqual({record["archiveRef"] for record in release["images"].values()}, {
-            "modeling-offline/onto-modeling:demo", "modeling-offline/knowledge-hub:demo",
-            "modeling-offline/evaluation:demo",
+            "modeling-offline/onto-modeling:demo", "modeling-offline/onto-modeling-connector-gateway:demo",
+            "modeling-offline/knowledge-hub:demo", "modeling-offline/evaluation:demo",
         })
 
     def test_package_copies_chart_source_when_helm_is_unavailable(self):
@@ -3232,7 +3256,10 @@ class CceContractTests(unittest.TestCase):
         self.assertEqual(sum(line.startswith("pip:") for line in first_calls), 1)
         self.assertTrue(any(line.startswith("pip:") and f"-i {index_url}" in line for line in first_calls))
         self.assertEqual(sum(line.startswith("npm:") for line in first_calls), 1)
-        self.assertEqual(sum(line.startswith("docker:buildx build") for line in first_calls), 3)
+        self.assertEqual(sum(line.startswith("docker:buildx build") for line in first_calls), 4)
+        # 连接器网关是同一个 Dockerfile 的 connector-gateway 目标，单独打镜像
+        self.assertTrue(any("--target connector-gateway" in line and "onto-modeling-connector-gateway:demo" in line
+                            for line in first_calls))
         marker = root / "modeling/onto-modeling/vendor/wheels/.prepared-amd64"
         self.assertEqual(marker.read_text().strip(),
                          f"{checksum(requirements)}:{hashlib.sha256(index_url.encode()).hexdigest()}")
@@ -3242,7 +3269,7 @@ class CceContractTests(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr)
         second_calls = calls.read_text().splitlines()
         self.assertFalse(any(line.startswith("pip:") or line.startswith("npm:") for line in second_calls))
-        self.assertEqual(sum(line.startswith("docker:buildx build") for line in second_calls), 3)
+        self.assertEqual(sum(line.startswith("docker:buildx build") for line in second_calls), 4)
         requirements.write_text("synthetic-package==2.0\n")
         calls.unlink()
         third = run_test_command(command, env=environment, check=False, capture_output=True, text=True)
@@ -3375,7 +3402,9 @@ class CceContractTests(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = calls.read_text().splitlines()
-        self.assertLess(lines.index("docker:image rm modeling-offline/onto-modeling:demo modeling-offline/knowledge-hub:demo modeling-offline/evaluation:demo"),
+        self.assertLess(lines.index("docker:image rm modeling-offline/onto-modeling:demo "
+                                    "modeling-offline/onto-modeling-connector-gateway:demo "
+                                    "modeling-offline/knowledge-hub:demo modeling-offline/evaluation:demo"),
                         len(lines))
 
     def test_hub_evaluation_chart_and_secret_contract(self):
@@ -3421,7 +3450,7 @@ class CceContractTests(unittest.TestCase):
         schema = json.loads((ROOT / "chart/values.schema.json").read_text())
         values = INSTALL.merge(defaults, yaml.safe_load((ROOT / "values.customer.example.yaml").read_text()))
         values["global"]["resolvedImages"] = {name: "registry.example.com/app@sha256:" + "a" * 64
-            for name in ("ontoModeling", "knowledgeHub", "evaluation", "jiuwenbox")}
+            for name in ("ontoModeling", "connectorGateway", "knowledgeHub", "evaluation", "jiuwenbox")}
         values["evaluation"]["feedback"] = {"enabled": True, "notifyRuns": True}
         values["evaluation"]["secrets"]["flywheelToken"] = {"name": "feedback-credential", "key": "token"}
         jsonschema.validate(values, schema)
