@@ -6,7 +6,7 @@ import { toast } from '../app/toast.jsx';
 import { errorText } from '../api/errors.js';
 import { Icon, Kbd } from '../ui/index.jsx';
 import { contentHits, paletteList, staticItems } from './paletteModel.js';
-import { catalogCommand } from '../state/flow.js';
+import { catalogCommand, scriptRunText } from '../state/flow.js';
 import { filterCatalog } from '../state/commandMenu.js';
 
 const listeners = new Set();
@@ -73,9 +73,10 @@ export function CommandPalette({ projectId, inboxCount, extensions, conversation
     if (it.command) {
       try {
         const body = { ...catalogCommand(it.command), origin: { page: 'palette', label: '命令面板' }, conversation_id: conversationId || undefined };
-        await (body.node_id
-          ? api.startNode(projectId, body.node_id, { conversation_id: body.conversation_id, origin: body.origin })
-          : api.sendCommand(projectId, body));
+        if (body.node_id) {
+          const text = scriptRunText(await api.startNode(projectId, body.node_id, { conversation_id: body.conversation_id, origin: body.origin }));
+          if (text) toast(text, 'check');
+        } else await api.sendCommand(projectId, body);
         navigate(pagePath('wb-l2', projectId));
       } catch (e) {
         toast(errorText(e), 'alert');

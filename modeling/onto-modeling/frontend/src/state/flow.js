@@ -193,6 +193,12 @@ export function commandFromTarget(target) {
 
 // 全部命令（S-18）的条目 → S-20 请求体：发条目的完整命令文本（target，「/ontology-research 追加」），带上按钮名；
 // 对话里的名字由服务端按名字表取。老响应没有 target 时发命令名
+// FL-05 跑完脚本步骤的提示：结果和上次一样时步骤条、报告都不变，不提示就看不出跑过（复测 R1）
+export function scriptRunText(resp) {
+  const summary = resp?.run && String(resp?.last_run?.summary || '').trim();
+  return summary ? `${resp.title || ''}：${summary}` : '';
+}
+
 export function catalogCommand(item) {
   // 脚本步骤（S-18 kind node）同导航栏：由内核在沙箱里跑（FL-05），调用方按 node_id 走 startNode
   if (item?.kind === 'node') return { node_id: item.node_id || item.target, display_label: item.label || '' };

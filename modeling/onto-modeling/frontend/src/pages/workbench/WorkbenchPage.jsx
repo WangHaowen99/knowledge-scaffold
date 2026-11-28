@@ -6,7 +6,7 @@ import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, relativeTime } from '../../api/errors.js';
-import { catalogCommand, commandNode, suggestionCommand, overlayRunning } from '../../state/flow.js';
+import { catalogCommand, commandNode, scriptRunText, suggestionCommand, overlayRunning } from '../../state/flow.js';
 import {
   filterCatalog, flatItems, menuKey, menuQuery,
 } from '../../state/commandMenu.js';
@@ -621,9 +621,11 @@ export default function WorkbenchPage({ route }) {
 
   const fail = (e) => toast(errorText(e), 'alert');
   // 「全部命令」：脚本步骤在沙箱里跑（FL-05），其余发到对话
-  const runCatalog = (body) => (body.node_id
-    ? submitOnce(() => api.startNode(pid, body.node_id, { conversation_id: cid, origin: body.origin })).catch(fail)
-    : sendCommand(body));
+  const startNodeAndTell = (nodeId, origin) => submitOnce(async () => {
+    const text = scriptRunText(await api.startNode(pid, nodeId, { conversation_id: cid, origin }));
+    if (text) toast(text, 'check');
+  }).catch(fail);
+  const runCatalog = (body) => (body.node_id ? startNodeAndTell(body.node_id, body.origin) : sendCommand(body));
   // 决策卡草稿（question_id → 选了什么、写了什么）：问题失效后卡片只读留着这些内容
   const answerDrafts = useRef(new Map());
   const actions = useMemo(() => ({
@@ -730,7 +732,7 @@ export default function WorkbenchPage({ route }) {
   const navOrigin = { page: 'wb-l2', label: '导航栏' };
   const runNavButton = (b) => {
     if (b.kind === 'page') navigate(pagePath(b.target, pid));
-    else if (b.kind === 'node') submitOnce(() => api.startNode(pid, b.target, { conversation_id: cid, origin: navOrigin })).catch(fail);
+    else if (b.kind === 'node') startNodeAndTell(b.target, navOrigin);
     else if (b.kind === 'message') send({ text: b.target });
     else sendCommand({ ...catalogCommand(b), origin: navOrigin });
   };
