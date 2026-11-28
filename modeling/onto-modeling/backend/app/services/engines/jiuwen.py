@@ -85,6 +85,8 @@ _RUNNER_STARTED = False
 _RUNNER_LOCK: asyncio.Lock | None = None
 # 硬终止时等 agent 停下的上限：调用方整体只给 KILL_TIMEOUT_SECONDS，还要留时间取消轮任务
 _ABORT_TIMEOUT_SECONDS = 2.0
+# 提问前等已入队事件处理完的上限（_drain_events）
+DRAIN_TIMEOUT_SECONDS = 2.0
 # SDK 在步数用完、外层轮数用完或连续没有进展时收口：不是故障，但这一轮可能没做完
 ROUND_LIMIT_NOTICE = "这一轮已达到执行上限（步数用完或连续没有进展），任务可能还没做完。可以发送“继续”接着做。"
 
@@ -916,6 +918,7 @@ class JiuwenEngine(ObservableEngine):
         self.client: Any = None  # DeepAgent 实例（协议观察点：None = 未连接）
         self.resume_attempted = False
         self._queue: asyncio.Queue = asyncio.Queue()
+        self._readers = 0  # 正在读 events() 的会话宿主数（_drain_events 没人读时不等）
         self._turn_task: asyncio.Task | None = None
         # 插话（用户原文）：(message_id, 原文)。主 agent 下次调模型前插进去；本轮结束时还没插的拿来开下一轮
         self._steers: list[tuple[str, str]] = []
@@ -1222,12 +1225,29 @@ class JiuwenEngine(ObservableEngine):
     # ---- 事件流 ----
 
     async def events(self):
-        while True:
-            event = await self._queue.get()
-            self._notify(event)
-            yield event
-            if event.get("type") == "_engine_end":
-                return
+        self._readers += 1
+        try:
+            while True:
+                event = await self._queue.get()
+                self._notify(event)
+                try:
+                    yield event
+                finally:
+                    self._queue.task_done()  # 会话宿主处理完这一条（取下一条时）才算完，见 _drain_events
+                if event.get("type") == "_engine_end":
+                    return
+        finally:
+            self._readers -= 1
+
+    async def _drain_events(self) -> None:
+        """等已入队的事件都被会话宿主处理完。提问卡（question_asked）由宿主直接广播、不经队列：
+        不等的话，提问前那段话（随轮收尾才整段入队）会排在卡片之后落盘，重开对话时卡片跑到话前面。"""
+        if not self._readers:
+            return
+        try:
+            await asyncio.wait_for(self._queue.join(), timeout=DRAIN_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            pass  # 宿主卡住了：不为顺序卡住提问
 
     def _usage_snapshot(self) -> dict:
         tracker = self._tracker
@@ -1381,6 +1401,7 @@ class JiuwenEngine(ObservableEngine):
                         break
                     # 此刻存档带着挂起中断：等确认期间若进程重启，下次连接不能用它续接
                     self._ctx.clear_resume_token()
+                    await self._drain_events()
                     ii = InteractiveInput()
                     self._awaiting_user = True  # 等用户回答的时间不算挂起
                     try:

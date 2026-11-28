@@ -132,7 +132,7 @@ export function CC({
 }
 
 export function fmtDuration(ms) {
-  if (ms == null) return '';
+  if (ms == null || ms < 0) return '';
   const s = Math.round(ms / 1000);
   if (s < 60) return `${s} 秒`;
   const m = Math.floor(s / 60);
